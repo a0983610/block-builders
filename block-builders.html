@@ -132,8 +132,11 @@ let shake = 0;
 
 function resize(){
   DPR = Math.min(2, window.devicePixelRatio||1);
-  W = cvs.clientWidth  = window.innerWidth;
-  H = cvs.clientHeight = window.innerHeight;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  // canvas 是 replaced element，絕對定位下 width:auto 會採用內建尺寸（= cvs.width），
+  // 所以 CSS 尺寸要明講，不能只靠 inset:0；clientWidth/Height 是唯讀的，不可賦值。
+  cvs.style.width = W+'px';  cvs.style.height = H+'px';
   cvs.width = Math.round(W*DPR); cvs.height = Math.round(H*DPR);
   ctx.setTransform(DPR,0,0,DPR,0,0);
   focal = Math.min(W,H) * 0.92;
@@ -999,20 +1002,23 @@ function pickShape(target){
    建材方塊 + 物理
    ========================================================================= */
 const blocks=[], dying=[], workers=[];
-let bp=null, phase='built', phaseT=0, placedCnt=0, slotCursor=0, lastShape=-1, yardIdx=0;
+let bp=null, phase='built', phaseT=0, placedCnt=0, slotCursor=0, lastShape=-1;
 let targetCnt=170, nWorkers=7, speed=1, autoLoop=true, spinOn=true, shadOn=true;
-const YARD={x:20,z:20};
 
 function newBlock(){
   return { x:0,y:0.5,z:0, w:CS-GAP,h:CS-GAP,d:CS-GAP,
     rx:0,ry:0,rz:0, vx:0,vy:0,vz:0, avx:0,avy:0,avz:0,
     cr:200,cg:200,cb:200, state:'free', rest:true, claimed:false, slot:null,
-    settleT:0, hops:0, snap:0, al:1, m:new Float64Array(9),
+    // m 要先填成單位矩陣：全零矩陣會讓 halfY（沿世界 Y 的半高）算成 0
+    settleT:0, hops:0, snap:0, al:1, m:eulerMat(new Float64Array(9),0,0,0),
     q0x:0,q0y:0,q0z:0,q1x:0,q1y:0,q1z:0,sy0:0 };
 }
-function yardPos(i){
-  const c=i%6, r=Math.floor(i/6)%6, l=Math.floor(i/36);
-  return { x:YARD.x+(c-2.5)*1.15, y:0.5+l*1.02, z:YARD.z+(r-2.5)*1.15 };
+/* 料場：把 n 塊補料單層攤在地上（不堆高——堆高的話小人從下層抽走後，
+   上層會留在半空中，物理不會再叫醒它們）。整片推到工地圈外，連對角線也算進去。 */
+function yardLayout(n){
+  const side=Math.max(1,Math.ceil(Math.sqrt(n))), half=(side-1)/2*1.15;
+  const d=siteR+5+half*1.42, ax=Math.cos(0.9), az=Math.sin(0.9);
+  return { side, cx:ax*d, cz:az*d, off:(side-1)/2 };
 }
 function hardPlace(b,s){
   b.x=s.wx; b.y=s.wy; b.z=s.wz; b.w=s.tw; b.h=s.th; b.d=s.td;
@@ -1021,13 +1027,15 @@ function hardPlace(b,s){
   b.state='placed'; b.rest=true; b.claimed=false; b.snap=0; b.slot=s; b.al=1;
   s.filled=true; s.claimed=true;
 }
-function settle(b){
+/* 往工地外彈一下——碎塊堆在工地上，小人就走不到、建築會長在碎料裡 */
+function kickOut(b){
   const dd=Math.hypot(b.x,b.z);
-  if(dd<siteR+1.5 && b.hops<4){          // 別堆在工地上，往外彈開
-    b.hops++;
-    const a=(dd<0.001)?Math.random()*TAU:Math.atan2(b.z,b.x), s=rr(5,9.5);
-    b.vx=Math.cos(a)*s; b.vz=Math.sin(a)*s; b.vy=rr(4,7.5); b.settleT=0; return;
-  }
+  const a=(dd<0.001)?Math.random()*TAU:Math.atan2(b.z,b.x), s=rr(5,9.5);
+  b.rest=false; b.snap=0; b.settleT=0;
+  b.vx=Math.cos(a)*s; b.vz=Math.sin(a)*s; b.vy=rr(4,7.5);
+}
+function settle(b){
+  if(Math.hypot(b.x,b.z)<siteR+1.5 && b.hops<4){ b.hops++; kickOut(b); return; }
   b.rest=true; b.vx=b.vy=b.vz=0; b.avx=b.avy=b.avz=0; b.settleT=0;
   const Q=Math.PI/2;
   b.q0x=b.rx; b.q0y=b.ry; b.q0z=b.rz;
@@ -1118,6 +1126,12 @@ function assign(w){
   if(!best) return;
   s.claimed=true; best.claimed=true; w.slot=s; w.blk=best; w.st='toBlock';
 }
+/* 搬運姿勢：建材舉在小人頭頂上方，隨腳步微幅晃動 */
+function carryPose(w,b){
+  b.x=w.x+Math.sin(w.a)*0.06;
+  b.z=w.z+Math.cos(w.a)*0.06;
+  b.y=WTOP+b.h*0.5+Math.abs(Math.sin(w.ph))*0.05;
+}
 function releaseWorker(w){
   if(w.blk){ w.blk.claimed=false; w.blk.state='free'; w.blk.rest=true; w.blk.snap=0; }
   if(w.slot && !w.slot.filled) w.slot.claimed=false;
@@ -1135,12 +1149,11 @@ function updWorker(w,dt){
       if(walkTo(w,b.x,b.z,dt,1.05)){
         b.state='carried'; b.rest=true; b.snap=0;
         const p=standPoint(w.slot,w); w.tx=p.x; w.tz=p.z; w.st='toSite';
+        carryPose(w,b);              // 立刻舉起來，不然有一幀還黏在地上
       }
       break;
     case 'toSite': {
-      b.x=w.x+Math.sin(w.a)*0.06;
-      b.z=w.z+Math.cos(w.a)*0.06;
-      b.y=WTOP+b.h*0.5+Math.abs(Math.sin(w.ph))*0.05;
+      carryPose(w,b);
       const k=Math.min(1,dt*6);
       b.rx=lerp(b.rx,0,k); b.ry=lerp(b.ry,0,k); b.rz=lerp(b.rz,0,k);
       eulerMat(b.m,b.rx,b.ry,b.rz);
@@ -1194,11 +1207,18 @@ function reconcile(need){
     b.al=1; b.fade=1; dying.push(b);
     dust(b.x,b.y,b.z,5,1.8);
   }
-  while(blocks.length<need){
-    const b=newBlock(), p=yardPos(yardIdx++);
-    b.x=p.x; b.y=p.y; b.z=p.z; b.rest=true; b.state='free'; b.al=0; b.grow=1;
-    b.cr=200; b.cg=196; b.cb=186;
-    blocks.push(b);
+  const add=need-blocks.length;
+  if(add>0){
+    const y=yardLayout(add);
+    for(let i=0;i<add;i++){
+      const b=newBlock();
+      b.x=y.cx+(i%y.side-y.off)*1.15;
+      b.z=y.cz+(Math.floor(i/y.side)-y.off)*1.15;
+      b.y=b.h*0.5;                       // 踩在地面上
+      b.rest=true; b.state='free'; b.al=0; b.grow=1;
+      b.cr=200; b.cg=196; b.cb=186;
+      blocks.push(b);
+    }
   }
 }
 function startBuild(instant){
@@ -1206,7 +1226,9 @@ function startBuild(instant){
   lastShape=idx;
   bp=makeBlueprint(idx, targetCnt);
   siteR=Math.max(6,bp.radius);
-  YARD.x=Math.cos(0.9)*(siteR+10); YARD.z=Math.sin(0.9)*(siteR+10);
+  // 換成比較大的建築時，先前已落定的碎塊可能落在新工地範圍內 → 叫它們讓開
+  for(const b of blocks)
+    if(b.state==='free' && b.rest && Math.hypot(b.x,b.z)<siteR+1.5){ b.hops=0; kickOut(b); }
   fitCam(siteR, bp.height);
   camBase = instant ? camNear : camFar;
   applyZoom();
