@@ -1,0 +1,1477 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>拍散重建 · 小人蓋房子</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;overflow:hidden;background:#0d1220;
+    font-family:"Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;color:#eef3ff}
+  #c{position:fixed;inset:0;display:block;touch-action:none;cursor:crosshair}
+  .panel{position:fixed;background:rgba(14,20,34,.72);backdrop-filter:blur(8px);
+    border:1px solid rgba(255,255,255,.10);border-radius:14px;padding:12px 14px;
+    box-shadow:0 8px 28px rgba(0,0,0,.35)}
+  #info{top:14px;left:14px;min-width:210px}
+  #info .name{font-size:19px;font-weight:700;letter-spacing:1px}
+  #info .sub{font-size:12px;opacity:.62;margin-top:3px}
+  #info .prog{margin-top:9px;height:6px;border-radius:4px;background:rgba(255,255,255,.13);overflow:hidden}
+  #info .prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,#6fd3ff,#8affc1);
+    border-radius:4px;transition:width .18s}
+  #info .cnt{font-size:12px;opacity:.8;margin-top:6px;font-variant-numeric:tabular-nums}
+  #ctl{bottom:14px;left:14px;right:14px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center}
+  button{font:inherit;font-size:14px;padding:8px 15px;border-radius:10px;cursor:pointer;
+    border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.09);color:#eef3ff;
+    transition:.14s;white-space:nowrap}
+  button:hover{background:rgba(255,255,255,.19);transform:translateY(-1px)}
+  button.hot{background:linear-gradient(135deg,#ff7a59,#ff4d6d);border-color:transparent;font-weight:700}
+  .sl{display:flex;align-items:center;gap:7px;font-size:12px;opacity:.9;white-space:nowrap}
+  .sl input[type=range]{width:92px;accent-color:#6fd3ff}
+  .sl b{font-variant-numeric:tabular-nums;min-width:30px;text-align:right;opacity:.95}
+  .ck{display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;user-select:none;opacity:.9}
+  .ck input{accent-color:#8affc1;width:15px;height:15px}
+  #hint{position:fixed;top:14px;left:50%;transform:translateX(-50%);font-size:13px;
+    padding:7px 16px;border-radius:20px;background:rgba(14,20,34,.7);border:1px solid rgba(255,255,255,.1);
+    pointer-events:none;transition:opacity .5s}
+  #tog{position:fixed;bottom:14px;right:14px;display:none}
+  @media (max-width:720px){
+    #ctl{gap:8px 11px;padding:10px}
+    .sl input[type=range]{width:70px}
+    #info{min-width:0;padding:9px 11px}
+    #info .name{font-size:16px}
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="info" class="panel">
+  <div class="name" id="bName">—</div>
+  <div class="sub" id="bSub">準備中</div>
+  <div class="prog"><i id="bBar"></i></div>
+  <div class="cnt" id="bCnt">—</div>
+</div>
+
+<div id="hint">點建築物任一處，把它拍散 💥（拖曳可轉視角）</div>
+
+<div id="ctl" class="panel">
+  <button id="btnSmash" class="hot">💥 拍散</button>
+  <button id="btnNext">🔀 換一棟</button>
+  <button id="btnFinish">⏭ 立刻蓋完</button>
+  <span class="sl">建材 <input type="range" id="sCnt" min="80" max="440" step="10" value="170"><b id="vCnt">170</b></span>
+  <span class="sl">小人 <input type="range" id="sWk" min="1" max="16" step="1" value="7"><b id="vWk">7</b></span>
+  <span class="sl">速度 <input type="range" id="sSp" min="0.4" max="3" step="0.1" value="1"><b id="vSp">1.0</b></span>
+  <label class="ck"><input type="checkbox" id="cAuto" checked>自動循環</label>
+  <label class="ck"><input type="checkbox" id="cSpin" checked>自轉</label>
+  <label class="ck"><input type="checkbox" id="cShad" checked>陰影</label>
+  <label class="ck"><input type="checkbox" id="cSfx" checked>音效</label>
+</div>
+
+<script>
+"use strict";
+/* =========================================================================
+   拍散重建 · 小人蓋房子
+   自寫 canvas 2D 的方塊 3D 引擎（畫家演算法 + 背面剔除），零外部依賴。
+   ========================================================================= */
+
+const TAU = Math.PI * 2;
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+const lerp  = (a,b,t)=> a+(b-a)*t;
+const rr    = (a,b)=> a+Math.random()*(b-a);
+const ri    = (a,b)=> Math.floor(a+Math.random()*(b-a+1));
+const pick  = a => a[(Math.random()*a.length)|0];
+const ease  = t => t<0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+const easeOut = t => 1-Math.pow(1-t,3);
+
+function hex(h){ return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)]; }
+
+/* ---------- 3x3 旋轉矩陣（row-major，local -> world） ---------- */
+function eulerMat(out, rx, ry, rz){
+  const cx=Math.cos(rx), sx=Math.sin(rx);
+  const cy=Math.cos(ry), sy=Math.sin(ry);
+  const cz=Math.cos(rz), sz=Math.sin(rz);
+  out[0]=cz*cy;               out[1]=-sz*cx+cz*sy*sx;  out[2]=sz*sx+cz*sy*cx;
+  out[3]=sz*cy;               out[4]=cz*cx+sz*sy*sx;   out[5]=-cz*sx+sz*sy*cx;
+  out[6]=-sy;                 out[7]=cy*sx;            out[8]=cy*cx;
+  return out;
+}
+/* 繞世界 Y 軸（小人朝向）— 直接組 */
+function yawMat(out, a){
+  const c=Math.cos(a), s=Math.sin(a);
+  out[0]=c; out[1]=0; out[2]=s;
+  out[3]=0; out[4]=1; out[5]=0;
+  out[6]=-s;out[7]=0; out[8]=c;
+  return out;
+}
+function mul3(out, a, b){
+  for(let r=0;r<3;r++) for(let c=0;c<3;c++)
+    out[r*3+c] = a[r*3]*b[c] + a[r*3+1]*b[3+c] + a[r*3+2]*b[6+c];
+  return out;
+}
+function rotXMat(out, a){
+  const c=Math.cos(a), s=Math.sin(a);
+  out[0]=1;out[1]=0;out[2]=0;
+  out[3]=0;out[4]=c;out[5]=-s;
+  out[6]=0;out[7]=s;out[8]=c;
+  return out;
+}
+/* 方塊沿世界 Y 的半高（support function，任意旋轉都精準） */
+function halfY(m, w, h, d){
+  return m ? 0.5*(Math.abs(m[3])*w + Math.abs(m[4])*h + Math.abs(m[5])*d) : h*0.5;
+}
+
+/* ---------- 畫布 / 相機 ---------- */
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d', { alpha:false });
+let W=0, H=0, DPR=1, focal=800, cx0=0, cy0=0, skyGrad=null;
+
+const cam = { yaw:0.85, pitch:0.34, dist:60, tx:0, ty:8, tz:0 };
+const camPos = {x:0,y:0,z:0};
+const bR = {x:1,y:0,z:0}, bU = {x:0,y:1,z:0}, bF = {x:0,y:0,z:-1};
+let shake = 0;
+
+function resize(){
+  DPR = Math.min(2, window.devicePixelRatio||1);
+  W = cvs.clientWidth  = window.innerWidth;
+  H = cvs.clientHeight = window.innerHeight;
+  cvs.width = Math.round(W*DPR); cvs.height = Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  focal = Math.min(W,H) * 0.92;
+  cx0 = W/2; cy0 = H/2;
+  skyGrad = ctx.createLinearGradient(0,0,0,H);
+  skyGrad.addColorStop(0,   '#0a1024');
+  skyGrad.addColorStop(0.55,'#1b2b4d');
+  skyGrad.addColorStop(1,   '#3d5679');
+  if(bp) fitCam(siteR, bp.height);      // 視窗變了要重新取景（地面漸層每幀依地平線重建）
+}
+window.addEventListener('resize', resize);
+
+function updateCam(){
+  const cp=Math.cos(cam.pitch), sp=Math.sin(cam.pitch);
+  camPos.x = cam.tx + cam.dist*cp*Math.sin(cam.yaw);
+  camPos.y = cam.ty + cam.dist*sp;
+  camPos.z = cam.tz + cam.dist*cp*Math.cos(cam.yaw);
+  let fx=cam.tx-camPos.x, fy=cam.ty-camPos.y, fz=cam.tz-camPos.z;
+  const fl=Math.hypot(fx,fy,fz)||1; fx/=fl; fy/=fl; fz/=fl;
+  bF.x=fx; bF.y=fy; bF.z=fz;
+  // right = normalize(cross(F,(0,1,0))) = normalize(-Fz,0,Fx)
+  const rl=Math.hypot(fz,fx)||1;
+  bR.x=-fz/rl; bR.y=0; bR.z=fx/rl;
+  // up = cross(right, F)
+  bU.x = bR.y*fz - bR.z*fy;
+  bU.y = bR.z*fx - bR.x*fz;
+  bU.z = bR.x*fy - bR.y*fx;
+}
+/* 世界座標 -> 螢幕；回傳 view z（<=0 表示在相機後方） */
+function proj(x,y,z,out){
+  const dx=x-camPos.x, dy=y-camPos.y, dz=z-camPos.z;
+  const vz = dx*bF.x+dy*bF.y+dz*bF.z;
+  if(vz>0.06){
+    const k=focal/vz;
+    out[0]=cx0+(dx*bR.x+dy*bR.y+dz*bR.z)*k;
+    out[1]=cy0-(dx*bU.x+dy*bU.y+dz*bU.z)*k;
+  }
+  return vz;
+}
+/* camZoom = 使用者手動縮放倍率（換建築時保留）
+   camNear/camFar = 貼近建築 / 看得到整片碎料，兩者間平滑呼吸 */
+let camBase=60, camZoom=1, camNear=60, camFar=80;
+function applyZoom(){ cam.dist=clamp(camBase*camZoom,14,460); }
+function zoomBy(f){ camZoom=clamp(camZoom*f,0.35,3.0); applyZoom(); }
+function fitRadius(radius){
+  const ha = Math.min(Math.atan((H/2)/focal), Math.atan((W/2)/focal));
+  return clamp(radius/Math.max(0.15,Math.sin(ha))*1.02, 18, 460);
+}
+function fitCam(sr, height){
+  camNear = fitRadius(Math.max(sr+4.5, height*0.60, 9));
+  camFar  = fitRadius(Math.max(sr+13,  height*0.64, 16));
+  cam.ty = height*0.42;
+}
+
+/* ---------- 光照 ---------- */
+const LX=0.40, LY=0.83, LZ=0.39;   // 已正規化的光向量（約）
+const AMB=0.40, DIF=0.60;      // 兩者相加恰為 1.0，亮面不會溢出 255
+
+/* ---------- 繪製佇列 ---------- */
+const DL = [];            // draw list（重複使用）
+let pool = [], pn = 0;
+function slot3(){ let o=pool[pn]; if(!o) o=pool[pn]={}; pn++; return o; }
+function addBox(x,y,z,w,h,d,m,cr,cg,cb,alpha,edge){
+  const dx=x-camPos.x, dy=y-camPos.y, dz=z-camPos.z;
+  const vz=dx*bF.x+dy*bF.y+dz*bF.z;
+  if(vz<=0.4) return;
+  const o=slot3();
+  o.x=x;o.y=y;o.z=z;o.w=w;o.h=h;o.d=d;o.m=m;
+  o.cr=cr;o.cg=cg;o.cb=cb;o.a=alpha===undefined?1:alpha;
+  o.edge=edge!==false; o.dep=vz;
+  DL.push(o);
+}
+
+/* 立方體 8 角 / 6 面（角索引位元：1=x+, 2=y+, 4=z+） */
+const FACE = [
+  [1,3,7,5,  1, 0, 0], [0,4,6,2, -1, 0, 0],
+  [2,3,7,6,  0, 1, 0], [0,1,5,4,  0,-1, 0],
+  [4,5,7,6,  0, 0, 1], [0,2,3,1,  0, 0,-1]
+];
+const AX=new Float64Array(8), AY=new Float64Array(8), AZ=new Float64Array(8);
+const SX=new Float64Array(8), SY=new Float64Array(8), VZ=new Float64Array(8);
+
+function drawBoxItem(o){
+  const hw=o.w*0.5, hh=o.h*0.5, hd=o.d*0.5, m=o.m;
+  for(let i=0;i<8;i++){
+    const lx=(i&1)?hw:-hw, ly=(i&2)?hh:-hh, lz=(i&4)?hd:-hd;
+    let wx,wy,wz;
+    if(m){ wx=m[0]*lx+m[1]*ly+m[2]*lz; wy=m[3]*lx+m[4]*ly+m[5]*lz; wz=m[6]*lx+m[7]*ly+m[8]*lz; }
+    else { wx=lx; wy=ly; wz=lz; }
+    const px=o.x+wx, py=o.y+wy, pz=o.z+wz;
+    AX[i]=px; AY[i]=py; AZ[i]=pz;
+    const dx=px-camPos.x, dy=py-camPos.y, dz=pz-camPos.z;
+    const vz=dx*bF.x+dy*bF.y+dz*bF.z;
+    VZ[i]=vz;
+    if(vz>0.06){ const k=focal/vz;
+      SX[i]=cx0+(dx*bR.x+dy*bR.y+dz*bR.z)*k;
+      SY[i]=cy0-(dx*bU.x+dy*bU.y+dz*bU.z)*k;
+    }
+  }
+  if(o.a<1) ctx.globalAlpha=o.a;
+  for(let f=0;f<6;f++){
+    const F=FACE[f], i0=F[0],i1=F[1],i2=F[2],i3=F[3];
+    if(VZ[i0]<=0.06||VZ[i1]<=0.06||VZ[i2]<=0.06||VZ[i3]<=0.06) continue;
+    let nx=F[4], ny=F[5], nz=F[6];
+    if(m){ const a=nx,b=ny,c=nz;
+      nx=m[0]*a+m[1]*b+m[2]*c; ny=m[3]*a+m[4]*b+m[5]*c; nz=m[6]*a+m[7]*b+m[8]*c; }
+    const ccx=(AX[i0]+AX[i1]+AX[i2]+AX[i3])*0.25;
+    const ccy=(AY[i0]+AY[i1]+AY[i2]+AY[i3])*0.25;
+    const ccz=(AZ[i0]+AZ[i1]+AZ[i2]+AZ[i3])*0.25;
+    if(nx*(camPos.x-ccx)+ny*(camPos.y-ccy)+nz*(camPos.z-ccz) <= 0) continue;
+    let lum = AMB + DIF*Math.max(0, nx*LX+ny*LY+nz*LZ);
+    const r=(o.cr*lum)|0, g=(o.cg*lum)|0, b=(o.cb*lum)|0;
+    ctx.beginPath();
+    ctx.moveTo(SX[i0],SY[i0]); ctx.lineTo(SX[i1],SY[i1]);
+    ctx.lineTo(SX[i2],SY[i2]); ctx.lineTo(SX[i3],SY[i3]);
+    ctx.closePath();
+    ctx.fillStyle='rgb('+r+','+g+','+b+')';
+    ctx.fill();
+    if(o.edge){
+      ctx.strokeStyle='rgba('+((r*0.55)|0)+','+((g*0.55)|0)+','+((b*0.55)|0)+',.85)';
+      ctx.lineWidth=1; ctx.stroke();
+    }
+  }
+  if(o.a<1) ctx.globalAlpha=1;
+}
+
+/* 假陰影：底面投到地面 + 光向偏移 */
+const SP=[0,0];
+function drawShadow(o){
+  if(o.y>34) return;
+  const a = clamp(0.34*(1-o.y/34), 0.015, 0.34) * o.a;
+  if(a<=0.02) return;
+  const ox = -LX/LY*o.y, oz = -LZ/LY*o.y;
+  const hw=o.w*0.5, hh=o.h*0.5, hd=o.d*0.5, m=o.m;
+  const idx=[0,1,5,4];
+  ctx.beginPath();
+  for(let k=0;k<4;k++){
+    const i=idx[k];
+    const lx=(i&1)?hw:-hw, ly=(i&2)?hh:-hh, lz=(i&4)?hd:-hd;
+    let wx,wz;
+    if(m){ wx=m[0]*lx+m[1]*ly+m[2]*lz; wz=m[6]*lx+m[7]*ly+m[8]*lz; }
+    else { wx=lx; wz=lz; }
+    if(proj(o.x+wx+ox, 0.02, o.z+wz+oz, SP)<=0.4) return;
+    if(k===0) ctx.moveTo(SP[0],SP[1]); else ctx.lineTo(SP[0],SP[1]);
+  }
+  ctx.closePath();
+  ctx.fillStyle='rgba(6,10,18,'+a.toFixed(3)+')';
+  ctx.fill();
+}
+
+/* ---------- 地面 / 網格 ---------- */
+let siteR = 14;
+function drawGround(){
+  ctx.fillStyle=skyGrad; ctx.fillRect(0,0,W,H);
+  const fh=Math.hypot(bF.x,bF.z);
+  let yh = fh>1e-4 ? cy0 + bF.y*focal/fh : -1e5;
+  yh = clamp(yh, -H, H*2);
+  if(yh<H){
+    const g=ctx.createLinearGradient(0,yh,0,H);      // 由地平線的霧色漸深到近處地面
+    g.addColorStop(0,   '#4a5f78');
+    g.addColorStop(0.12,'#3d4f63');
+    g.addColorStop(1,   '#1a222e');
+    ctx.fillStyle=g; ctx.fillRect(0,yh,W,H-yh);
+    const hz=ctx.createLinearGradient(0,yh-18,0,yh+16);
+    hz.addColorStop(0,'rgba(150,180,215,0)');
+    hz.addColorStop(.5,'rgba(160,190,222,.20)');
+    hz.addColorStop(1,'rgba(150,180,215,0)');
+    ctx.fillStyle=hz; ctx.fillRect(0,yh-18,W,34);
+  }
+  // 網格
+  const GR=34, ST=4;
+  ctx.beginPath();
+  for(let i=-GR;i<=GR;i+=ST){
+    let started=false;
+    for(let t=-GR;t<=GR;t+=ST){
+      if(proj(i,0.01,t,SP)>0.5){ if(!started){ctx.moveTo(SP[0],SP[1]);started=true;} else ctx.lineTo(SP[0],SP[1]); }
+      else started=false;
+    }
+    started=false;
+    for(let t=-GR;t<=GR;t+=ST){
+      if(proj(t,0.01,i,SP)>0.5){ if(!started){ctx.moveTo(SP[0],SP[1]);started=true;} else ctx.lineTo(SP[0],SP[1]); }
+      else started=false;
+    }
+  }
+  ctx.strokeStyle='rgba(190,215,245,.085)'; ctx.lineWidth=1; ctx.stroke();
+  // 工地圓盤
+  ctx.beginPath();
+  let ok=true;
+  for(let i=0;i<=48;i++){
+    const a=i/48*TAU;
+    if(proj(Math.cos(a)*(siteR+1.6),0.02,Math.sin(a)*(siteR+1.6),SP)<=0.5){ ok=false; break; }
+    if(i===0) ctx.moveTo(SP[0],SP[1]); else ctx.lineTo(SP[0],SP[1]);
+  }
+  if(ok){ ctx.closePath(); ctx.fillStyle='rgba(255,238,180,.055)'; ctx.fill();
+    ctx.strokeStyle='rgba(255,225,140,.20)'; ctx.setLineDash([7,7]); ctx.stroke(); ctx.setLineDash([]); }
+}
+
+/* ---------- 粒子（塵土） ---------- */
+const parts=[];
+function dust(x,y,z,n,spd,tint){
+  for(let i=0;i<n&&parts.length<620;i++){
+    const a=Math.random()*TAU, e=rr(0.1,1.0);
+    parts.push({x,y,z,
+      vx:Math.cos(a)*spd*e, vy:rr(0.3,1.5)*spd*0.7, vz:Math.sin(a)*spd*e,
+      l:rr(0.5,1.25), m:1.25, s:rr(0.10,0.34), t:tint||[214,206,190]});
+  }
+}
+function stepParts(dt){
+  for(let i=parts.length-1;i>=0;i--){
+    const p=parts[i];
+    p.l-=dt; if(p.l<=0){ parts.splice(i,1); continue; }
+    p.vy-=9*dt;
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.z+=p.vz*dt;
+    const k=Math.pow(0.14,dt); p.vx*=k; p.vz*=k;
+    if(p.y<0.05){ p.y=0.05; p.vy*=-0.22; }
+  }
+}
+function drawParts(){
+  for(const p of parts){
+    const dx=p.x-camPos.x, dy=p.y-camPos.y, dz=p.z-camPos.z;
+    const vz=dx*bF.x+dy*bF.y+dz*bF.z;
+    if(vz<=0.5) continue;
+    const k=focal/vz;
+    const sx=cx0+(dx*bR.x+dy*bR.y+dz*bR.z)*k;
+    const sy=cy0-(dx*bU.x+dy*bU.y+dz*bU.z)*k;
+    const a=clamp(p.l/p.m,0,1)*0.5;
+    ctx.beginPath(); ctx.arc(sx,sy,Math.max(0.7,p.s*k),0,TAU);   // p.s 是世界尺寸，直接乘投影比例
+    ctx.fillStyle='rgba('+p.t[0]+','+p.t[1]+','+p.t[2]+','+a.toFixed(3)+')'; ctx.fill();
+  }
+}
+
+/* ---------- 音效（WebAudio，全部程式合成） ---------- */
+let actx=null, noiseBuf=null, sfxOn=true, lastThud=0;
+function AC(){
+  if(!actx){
+    try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ return null; }
+    const n=actx.sampleRate*0.5; noiseBuf=actx.createBuffer(1,n,actx.sampleRate);
+    const ch=noiseBuf.getChannelData(0);
+    for(let i=0;i<n;i++) ch[i]=(Math.random()*2-1)*(1-i/n);
+  }
+  if(actx.state==='suspended') actx.resume();
+  return actx;
+}
+function tone(freq,f2,dur,vol,type){
+  const a=AC(); if(!a) return;
+  const t=a.currentTime, o=a.createOscillator(), g=a.createGain();
+  o.type=type||'sine';
+  o.frequency.setValueAtTime(freq,t);
+  if(f2) o.frequency.exponentialRampToValueAtTime(Math.max(20,f2),t+dur);
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002,vol),t+0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g); g.connect(a.destination); o.start(t); o.stop(t+dur+0.02);
+}
+function noise(dur,vol,lp){
+  const a=AC(); if(!a||!noiseBuf) return;
+  const t=a.currentTime, s=a.createBufferSource(), g=a.createGain(), f=a.createBiquadFilter();
+  s.buffer=noiseBuf; f.type='lowpass'; f.frequency.value=lp||1400;
+  g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  s.connect(f); f.connect(g); g.connect(a.destination); s.start(t); s.stop(t+dur+0.02);
+}
+function sThud(v){
+  if(!sfxOn) return;
+  const now=performance.now(); if(now-lastThud<38) return; lastThud=now;
+  tone(rr(95,165), 44, 0.13, 0.075*v, 'sine'); noise(0.07, 0.028*v, 900);
+}
+function sClack(){ if(!sfxOn) return; tone(rr(560,880), rr(220,340), 0.075, 0.038, 'triangle'); noise(0.035,0.02,2600); }
+function sBoom(){ if(!sfxOn) return; tone(150,32,0.55,0.30,'sine'); tone(78,26,0.75,0.20,'triangle'); noise(0.5,0.20,760); }
+function sDone(){ if(!sfxOn) return; [0,4,7,12].forEach((s,i)=>setTimeout(()=>tone(392*Math.pow(2,s/12),null,0.34,0.055,'sine'),i*105)); }
+
+/* =========================================================================
+   藍圖：以「格子」定義建築，再合併成長短不一的磚塊
+   ========================================================================= */
+const R_W='wall', R_T='trim', R_R='roof', R_A='accent', R_B='base';
+
+function P(g,x,y,z,role){
+  x=Math.round(x); y=Math.round(y); z=Math.round(z);
+  if(y<0) return; g.set(x+','+y+','+z, role||R_W);
+}
+function DEL(g,x,y,z){ g.delete(Math.round(x)+','+Math.round(y)+','+Math.round(z)); }
+function fillB(g,x0,x1,y0,y1,z0,z1,r){ for(let y=y0;y<=y1;y++)for(let z=z0;z<=z1;z++)for(let x=x0;x<=x1;x++) P(g,x,y,z,r); }
+function shellB(g,x0,x1,y0,y1,z0,z1,r){
+  for(let y=y0;y<=y1;y++)for(let z=z0;z<=z1;z++)for(let x=x0;x<=x1;x++)
+    if(x===x0||x===x1||z===z0||z===z1) P(g,x,y,z,r);
+}
+function slabB(g,x0,x1,y,z0,z1,r){ for(let z=z0;z<=z1;z++)for(let x=x0;x<=x1;x++) P(g,x,y,z,r); }
+function ringB(g,cx,cz,rad,y,r){
+  const n=Math.max(8,Math.round(rad*7.2));
+  for(let i=0;i<n;i++){ const a=i/n*TAU; P(g,cx+Math.cos(a)*rad, y, cz+Math.sin(a)*rad, r); }
+}
+function discB(g,cx,cz,rad,y,r){
+  const q=Math.ceil(rad);
+  for(let z=-q;z<=q;z++)for(let x=-q;x<=q;x++) if(x*x+z*z<=rad*rad+0.3) P(g,cx+x,y,cz+z,r);
+}
+function cylB(g,cx,cz,rad,y0,y1,r){ for(let y=y0;y<=y1;y++) ringB(g,cx,cz,rad,y,r); }
+/* 以 (cx,cz) 為水平中心、y 從 cy 起算的空心盒 */
+function unit(g,cx,cy,cz,w,h,d,r,solid){
+  const x0=Math.round(cx-(w-1)/2), x1=x0+w-1, z0=Math.round(cz-(d-1)/2), z1=z0+d-1;
+  for(let y=cy;y<cy+h;y++)for(let z=z0;z<=z1;z++)for(let x=x0;x<=x1;x++)
+    if(solid||x===x0||x===x1||z===z0||z===z1||y===cy||y===cy+h-1) P(g,x,y,z,r);
+}
+/* 2D 剪影擠出（內部只留前後兩面，省建材） */
+function extrude2D(g,inside,xr,yr,th,rFace,rEdge){
+  for(let gy=0;gy<=yr;gy++)for(let ix=-xr;ix<=xr;ix++){
+    if(!inside(ix,gy)) continue;
+    const edge = !inside(ix+1,gy)||!inside(ix-1,gy)||!inside(ix,gy+1)||!inside(ix,gy-1);
+    if(edge){ for(let z=-th;z<=th;z++) P(g,ix,gy+1,z,rEdge||rFace); }
+    else { P(g,ix,gy+1,-th,rFace); P(g,ix,gy+1,th,rFace); }
+  }
+}
+
+const SHAPES=[
+{n:'高塔',min:3,max:13,gen(g,S){
+  const a=Math.max(1,Math.round(S*0.40)), h=Math.round(S*2.2)+4;
+  for(let y=0;y<=h;y++) shellB(g,-a,a,y,y,-a,a,(y%5===4)?R_T:R_W);
+  shellB(g,-a-1,a+1,h+1,h+1,-a-1,a+1,R_T);
+  for(let i=-a-1;i<=a+1;i++) if((i+a+1)%2===0){
+    P(g,i,h+2,-a-1,R_A);P(g,i,h+2,a+1,R_A);P(g,-a-1,h+2,i,R_A);P(g,a+1,h+2,i,R_A); }
+  DEL(g,0,0,-a); P(g,0,1,-a,R_A);
+}},
+{n:'金字塔',min:4,max:15,gen(g,S){
+  const h=Math.round(S*1.25)+3;
+  for(let y=0;y<=h;y++){
+    const q=h-y;
+    if(q<=0){ P(g,0,y,0,R_A); continue; }
+    for(let x=-q;x<=q;x++)for(let z=-q;z<=q;z++)
+      if(x===-q||x===q||z===-q||z===q) P(g,x,y,z,(y%3===0)?R_T:R_W);
+  }
+  slabB(g,-1,1,h,-1,1,R_A);
+  for(let y=0;y<=2;y++)for(let x=-1;x<=1;x++) P(g,x,y,-(h-y),R_A);
+}},
+{n:'階梯神塔',min:4,max:14,gen(g,S){
+  const tiers=Math.max(3,Math.round(S*0.5)), th=2, step=Math.max(1,Math.round(S*0.26));
+  let a=Math.round(S*0.95)+2, y=0;
+  for(let t=0;t<tiers;t++){
+    for(let k=0;k<th;k++,y++) shellB(g,-a,a,y,y,-a,a,R_W);
+    shellB(g,-a,a,y,y,-a,a,R_T); y++;
+    a-=step; if(a<1){ a=1; break; }
+  }
+  unit(g,0,y,0,3,2,3,R_A);
+  const z0=-(Math.round(S*0.95)+2)-1;                       // 正面大階梯
+  for(let k=0;k<y;k++) for(let x=-1;x<=1;x++) P(g,x,k,z0+Math.round(k*0.7),R_T);
+}},
+{n:'城堡',min:4,max:12,gen(g,S){
+  const a=Math.round(S*0.95)+2, wh=Math.max(3,Math.round(S*0.5));
+  for(let y=0;y<=wh;y++) shellB(g,-a,a,y,y,-a,a,(y===wh)?R_T:R_W);
+  for(let i=-a;i<=a;i++) if((i+a)%2===0){
+    P(g,i,wh+1,-a,R_A);P(g,i,wh+1,a,R_A);P(g,-a,wh+1,i,R_A);P(g,a,wh+1,i,R_A); }
+  const th=wh+Math.max(3,Math.round(S*0.75));
+  for(const sx of[-1,1])for(const sz of[-1,1]){
+    const cx=sx*a, cz=sz*a;
+    for(let y=0;y<=th;y++) ringB(g,cx,cz,1.7,y,(y%4===3)?R_T:R_W);
+    ringB(g,cx,cz,2.4,th+1,R_T);
+    discB(g,cx,cz,1.9,th+2,R_R); discB(g,cx,cz,1.1,th+3,R_R); P(g,cx,th+4,cz,R_A);
+  }
+  const k=Math.max(1,Math.round(S*0.34)), kh=wh+Math.max(4,Math.round(S*0.95));
+  for(let y=0;y<=kh;y++) shellB(g,-k,k,y,y,-k,k,(y%4===3)?R_T:R_W);
+  shellB(g,-k-1,k+1,kh+1,kh+1,-k-1,k+1,R_T);
+  for(let q=0;q<3;q++) P(g,0,kh+2+q,0,R_A);
+  for(let y=0;y<=2;y++)for(let x=-1;x<=1;x++) DEL(g,x,y,-a);
+  P(g,-2,0,-a,R_A);P(g,2,0,-a,R_A);P(g,-2,1,-a,R_A);P(g,2,1,-a,R_A);
+  for(let x=-1;x<=1;x++) P(g,x,3,-a,R_A);
+}},
+{n:'寶塔',min:4,max:14,gen(g,S){
+  const tiers=Math.max(3,Math.round(S*0.6));
+  let a=Math.max(2,Math.round(S*0.52)), y=0;
+  for(let t=0;t<tiers;t++){
+    const th=Math.max(2,Math.round(S*0.30));
+    for(let k=0;k<th;k++,y++) shellB(g,-a,a,y,y,-a,a,(k===0)?R_T:R_W);
+    shellB(g,-a-1,a+1,y,y,-a-1,a+1,R_R);
+    P(g,a+2,y,0,R_R);P(g,-a-2,y,0,R_R);P(g,0,y,a+2,R_R);P(g,0,y,-a-2,R_R);
+    y++;
+    if(a>1) a--;
+  }
+  for(let k=0;k<4;k++) P(g,0,y+k,0,R_A);
+}},
+{n:'教堂',min:4,max:12,gen(g,S){
+  const L=Math.round(S*1.3)+3, Wd=Math.max(2,Math.round(S*0.5)), Hh=Math.max(4,Math.round(S*0.8));
+  for(let y=0;y<=Hh;y++) shellB(g,-Wd,Wd,y,y,-L,L,R_W);
+  for(let k=0;k<=Wd;k++){
+    const y=Hh+1+k, ww=Wd-k;
+    for(let z=-L;z<=L;z++){ P(g,-ww,y,z,R_R); P(g,ww,y,z,R_R); }
+    for(let x=-ww;x<=ww;x++){ P(g,x,y,-L,R_W); P(g,x,y,L,R_W); }
+    if(ww===0) break;
+  }
+  const TH=Hh+Wd+Math.max(4,Math.round(S*1.0)), sz=-L-2;
+  for(let y=0;y<=TH;y++) shellB(g,-2,2,y,y,sz-2,sz+2,(y%5===4)?R_T:R_W);
+  for(let k=0;k<4;k++){ const q=2-k*0.55; if(q<0.6) break; ringB(g,0,sz,q,TH+1+k,R_R); }
+  P(g,0,TH+5,sz,R_A); P(g,0,TH+6,sz,R_A); P(g,-1,TH+6,sz,R_A); P(g,1,TH+6,sz,R_A);
+  const wy=Math.max(2,Math.round(Hh*0.6));
+  for(let z=-L+2;z<=L-2;z+=3){ P(g,-Wd,wy,z,R_A); P(g,Wd,wy,z,R_A); }
+  P(g,0,wy,L,R_A);
+  for(let y=0;y<=1;y++) DEL(g,0,y,sz-2);
+}},
+{n:'燈塔',min:4,max:14,gen(g,S){
+  const h=Math.round(S*2.4)+5, r0=Math.max(2,S*0.36);
+  for(let y=0;y<=h;y++) ringB(g,0,0,r0*(1-y/h*0.42),y,(Math.floor(y/3)%2===0)?R_W:R_A);
+  ringB(g,0,0,r0*0.72+1,h+1,R_T);
+  for(let y=h+2;y<=h+3;y++) ringB(g,0,0,Math.max(1.2,r0*0.56),y,R_A);
+  discB(g,0,0,Math.max(1.4,r0*0.66),h+4,R_R);
+  P(g,0,h+5,0,R_A);
+  ringB(g,0,0,r0+1.3,0,R_B);
+}},
+{n:'風車',min:4,max:13,gen(g,S){
+  const h=Math.round(S*1.9)+4, r0=Math.max(2,S*0.42);
+  for(let y=0;y<=h;y++) ringB(g,0,0,r0*(1-y/h*0.34),y,(y%4===3)?R_T:R_W);
+  discB(g,0,0,r0*0.72,h+1,R_R);
+  const zb=-Math.round(r0)-1, cy=h-1, bl=Math.round(S*1.1)+3;
+  for(let k=0;k<4;k++){
+    const a=k*Math.PI/2+0.42;
+    for(let t=1;t<=bl;t++){
+      P(g,Math.cos(a)*t, cy+Math.sin(a)*t, zb, R_A);
+      if(t>2) P(g,Math.cos(a)*t-Math.sin(a), cy+Math.sin(a)*t+Math.cos(a), zb, R_T);
+    }
+  }
+  P(g,0,cy,zb,R_T);
+  DEL(g,0,0,-Math.round(r0)); P(g,0,1,-Math.round(r0),R_A);
+}},
+{n:'拱橋',min:4,max:13,gen(g,S){
+  const L=Math.round(S*1.6)+4, Wd=Math.max(1,Math.round(S*0.22)), Hh=Math.max(4,Math.round(S*0.9));
+  for(const z of [-Wd,Wd]){
+    for(let x=-L;x<=L;x++){
+      const t=x/L, arch=Math.round(Math.sqrt(Math.max(0,1-t*t*2.4))*Hh*0.85);
+      for(let y=arch;y<Hh;y++) P(g,x,y,z,R_W);
+      if(arch>0) P(g,x,arch,z,R_T);
+    }
+  }
+  for(let x=-L;x<=L;x++)for(let z=-Wd;z<=Wd;z++) P(g,x,Hh,z,R_T);
+  for(let x=-L;x<=L;x++) if((x+L)%2===0){ P(g,x,Hh+1,-Wd,R_A); P(g,x,Hh+1,Wd,R_A); }
+  for(const sx of[-1,1]) for(let y=0;y<=Hh+3;y++) shellB(g,sx*L-1,sx*L+1,y,y,-Wd-1,Wd+1,(y===Hh+3)?R_T:R_W);
+}},
+{n:'摩天樓',min:3,max:12,gen(g,S){
+  let a=Math.max(2,Math.round(S*0.52)), y=0;
+  const secs=3+Math.round(S*0.14);
+  for(let s=0;s<secs;s++){
+    const hh=Math.max(3,Math.round(S*0.8));
+    for(let k=0;k<hh;k++,y++) shellB(g,-a,a,y,y,-a,a,(k%3===0)?R_T:R_W);
+    shellB(g,-a,a,y,y,-a,a,R_T); y++;
+    a--; if(a<1){ a=1; break; }
+  }
+  for(let k=0;k<Math.round(S*0.55)+3;k++) P(g,0,y+k,0,R_A);
+}},
+{n:'小屋',min:3,max:12,gen(g,S){
+  const Wd=Math.max(2,Math.round(S*0.6)), D=Math.max(2,Math.round(S*0.78)), Hh=Math.max(3,Math.round(S*0.62));
+  for(let y=0;y<=Hh;y++) shellB(g,-Wd,Wd,y,y,-D,D,R_W);
+  for(let k=0;k<=Wd;k++){
+    const y=Hh+1+k, ww=Wd+1-k;
+    for(let z=-D-1;z<=D+1;z++){ P(g,-ww,y,z,R_R); P(g,ww,y,z,R_R); }
+    for(let x=-(ww-1);x<=ww-1;x++){ P(g,x,y,-D,R_W); P(g,x,y,D,R_W); }
+    if(ww<=1) break;
+  }
+  for(let z=-D-1;z<=D+1;z++) P(g,0,Hh+1+Wd,z,R_T);
+  for(let k=0;k<3;k++) P(g,Wd-1,Hh+Wd+k,D-1,R_T);
+  DEL(g,0,0,-D); DEL(g,0,1,-D);
+  P(g,-1,1,-D,R_A); P(g,1,1,-D,R_A);
+  P(g,-Wd,Math.max(1,Math.round(Hh*0.6)),0,R_A); P(g,Wd,Math.max(1,Math.round(Hh*0.6)),0,R_A);
+}},
+{n:'城牆',min:4,max:15,gen(g,S){
+  const L=Math.round(S*2.2)+5, Hh=Math.max(3,Math.round(S*0.55));
+  for(let y=0;y<=Hh;y++)for(let x=-L;x<=L;x++)for(let z=-1;z<=1;z++)
+    if(z!==0||y===Hh) P(g,x,y,z,(y===Hh)?R_T:R_W);
+  for(let x=-L;x<=L;x++) if((x+L)%2===0){ P(g,x,Hh+1,-1,R_A); P(g,x,Hh+1,1,R_A); }
+  const nT=3+Math.round(S*0.2);
+  for(let i=0;i<nT;i++){
+    const cx=Math.round(-L+2*L*(i/(nT-1))), th=Hh+Math.max(2,Math.round(S*0.45));
+    for(let y=0;y<=th;y++) shellB(g,cx-2,cx+2,y,y,-2,2,(y%4===3)?R_T:R_W);
+    shellB(g,cx-2,cx+2,th+1,th+1,-2,2,R_A);
+  }
+}},
+{n:'競技場',min:5,max:15,gen(g,S){
+  const Rd=Math.max(4,S*0.95), Hh=Math.max(4,Math.round(S*0.75));
+  for(let y=0;y<=Hh;y++){ ringB(g,0,0,Rd,y,(y%3===2)?R_T:R_W); ringB(g,0,0,Rd-2.4,y,R_W); }
+  ringB(g,0,0,Rd,Hh+1,R_T); ringB(g,0,0,Rd-2.4,Hh+1,R_T);
+  const n=Math.max(6,Math.round(Rd*1.3));
+  for(let i=0;i<n;i++){ const a=i/n*TAU;
+    for(let y=0;y<=1;y++) DEL(g,Math.round(Math.cos(a)*Rd),y,Math.round(Math.sin(a)*Rd)); }
+  ringB(g,0,0,Math.max(1.5,Rd-4.8),0,R_B);
+  ringB(g,0,0,Math.max(1,Rd-6.8),0,R_A);
+}},
+{n:'神殿',min:4,max:12,gen(g,S){
+  const Wd=Math.max(2,Math.round(S*0.62)), D=Math.max(3,Math.round(S*0.88)), Hh=Math.max(4,Math.round(S*0.82));
+  for(let y=0;y<2;y++) shellB(g,-Wd-2+y,Wd+2-y,y,y,-D-2+y,D+2-y,R_B);
+  for(let x=-Wd;x<=Wd;x+=2)for(let z=-D;z<=D;z+=2)
+    if(Math.abs(x)===Wd||Math.abs(z)===D) for(let y=2;y<2+Hh;y++) P(g,x,y,z,R_T);
+  for(let y=2;y<2+Hh;y++) shellB(g,-Wd+2,Wd-2,y,y,-D+2,D-2,R_W);
+  shellB(g,-Wd,Wd,2+Hh,2+Hh,-D,D,R_T);
+  shellB(g,-Wd,Wd,3+Hh,3+Hh,-D,D,R_T);
+  for(let k=0;k<=Wd;k++){
+    const y=4+Hh+k, ww=Wd-k;
+    for(let x=-ww;x<=ww;x++){ P(g,x,y,-D,R_R); P(g,x,y,D,R_R); }
+    for(let z=-D;z<=D;z++){ P(g,-ww,y,z,R_R); P(g,ww,y,z,R_R); }
+    if(ww===0) break;
+  }
+}},
+{n:'火箭',min:4,max:14,gen(g,S){
+  const rd=Math.max(2,S*0.36), h=Math.round(S*2.2)+5;
+  for(let y=0;y<=h;y++) ringB(g,0,0,rd,y,(Math.floor(y/4)%2===0)?R_W:R_T);
+  const nh=Math.round(rd*1.9);
+  for(let k=1;k<=nh;k++){ const q=rd*(1-k/(nh+1)); if(q<0.7){ P(g,0,h+k,0,R_A); } else ringB(g,0,0,q,h+k,R_A); }
+  const fl=Math.round(rd*1.5)+1;
+  for(const dd of [[1,0],[-1,0],[0,1],[0,-1]])
+    for(let k=1;k<=fl;k++)for(let y=0;y<=fl-k;y++) P(g,dd[0]*(rd+k),y,dd[1]*(rd+k),R_A);
+  ringB(g,0,0,rd,Math.round(h*0.74),R_A);
+  ringB(g,0,0,rd*0.7,0,R_B);
+}},
+{n:'大樹',min:4,max:14,gen(g,S){
+  const th=Math.round(S*1.1)+3, rd=Math.max(3,S*0.85);
+  for(let y=0;y<=th;y++) ringB(g,0,0,1.35,y,R_B);
+  const cy=th+Math.round(rd*0.75), q=Math.round(rd);
+  for(let y=-q;y<=q;y++){
+    if(cy+y<th-1) continue;
+    const w2=Math.sqrt(Math.max(0,rd*rd-y*y));
+    if(w2<0.8){ P(g,0,cy+y,0,R_R); continue; }
+    ringB(g,0,0,w2,cy+y,(Math.random()<0.13)?R_A:R_R);
+  }
+  for(const dd of [[1,0],[-1,0],[0,1],[0,-1]])
+    for(let k=1;k<=2;k++) P(g,dd[0]*k,th-k+1,dd[1]*k,R_B);
+}},
+{n:'機器人',min:2,max:12,gen(g,S){
+  const u=Math.max(1,Math.round(S*0.26));
+  const bw=Math.max(3,Math.round(S*1.5)), bd=Math.max(2,Math.round(S*0.85)), bh=Math.max(3,Math.round(S*1.25));
+  const lh=Math.max(2,Math.round(S*0.95)), hs=Math.max(2,Math.round(S*0.9));
+  const lx=Math.round(bw*0.28);
+  unit(g,-lx,0,0,u,lh,u,R_T); unit(g,lx,0,0,u,lh,u,R_T);
+  unit(g,0,lh,0,bw,bh,bd,R_W);
+  const ax=Math.round(bw/2)+Math.ceil(u/2);
+  unit(g,-ax,lh+u,0,u,Math.max(2,bh-u),u,R_T); unit(g,ax,lh+u,0,u,Math.max(2,bh-u),u,R_T);
+  unit(g,0,lh+bh,0,hs,hs,hs,R_T);
+  const fz=-Math.ceil(hs/2);
+  P(g,-u,lh+bh+Math.round(hs*0.6),fz,R_A); P(g,u,lh+bh+Math.round(hs*0.6),fz,R_A);
+  P(g,0,lh+Math.round(bh*0.55),-Math.ceil(bd/2),R_A);
+  for(let k=0;k<u+2;k++) P(g,0,lh+bh+hs+k,0,R_A);
+}},
+{n:'帆船',min:4,max:13,gen(g,S){
+  const L=Math.round(S*1.5)+3, Wd=Math.max(1,Math.round(S*0.36)), Hh=Math.max(2,Math.round(S*0.45));
+  for(let x=-L;x<=L;x++){
+    const t=Math.abs(x)/L, ww=Math.max(0,Math.round(Wd*Math.sqrt(Math.max(0,1-t*t))));
+    for(let y=0;y<=Hh;y++)for(let z=-ww;z<=ww;z++)
+      if(z===-ww||z===ww||y===Hh||Math.abs(x)===L) P(g,x,y,z,(y===Hh)?R_T:R_W);
+  }
+  unit(g,Math.round(L*0.45),Hh+1,0,Math.max(2,Math.round(L*0.4)),Math.max(2,Math.round(S*0.3)),Math.max(1,Wd*2-1),R_T);
+  const mx=Math.round(-L*0.15), mh=Math.round(S*1.6)+4;
+  for(let y=Hh+1;y<=Hh+mh;y++) P(g,mx,y,0,R_B);
+  const sw=Math.max(2,Math.round(S*0.62));
+  for(let y=Hh+3;y<=Hh+mh-1;y++){
+    const t=(y-(Hh+3))/Math.max(1,mh-4), ww=Math.round(sw*(1-t*0.55));
+    for(let z=-ww;z<=ww;z++) P(g,mx,y,z,R_A);
+  }
+  P(g,mx,Hh+mh+1,0,R_A);
+}},
+{n:'摩天輪',min:5,max:13,gen(g,S){
+  const Rd=Math.max(5,S*1.0), cy=Math.round(Rd)+2;
+  const n=Math.max(22,Math.round(Rd*7));
+  for(let i=0;i<n;i++){ const a=i/n*TAU;
+    P(g,Math.cos(a)*Rd,cy+Math.sin(a)*Rd,-1,R_T); P(g,Math.cos(a)*Rd,cy+Math.sin(a)*Rd,1,R_T); }
+  const sp=8;
+  for(let i=0;i<sp;i++){ const a=i/sp*TAU;
+    for(let t=1;t<Rd;t++) P(g,Math.cos(a)*t,cy+Math.sin(a)*t,0,R_W); }
+  P(g,0,cy,0,R_A);
+  for(let i=0;i<sp;i++){ const a=i/sp*TAU, x=Math.cos(a)*(Rd+1), y=cy+Math.sin(a)*(Rd+1);
+    if(y>=0){ P(g,x,y,0,R_A); P(g,x,y,1,R_A); P(g,x,y,-1,R_A); } }
+  for(let t=0;t<=cy;t++){ const off=Math.round((cy-t)*0.55)+1; P(g,0,t,off,R_B); P(g,0,t,-off,R_B); }
+  ringB(g,0,0,Math.round(cy*0.55)+1,0,R_B);
+}},
+{n:'凱旋門',min:4,max:13,gen(g,S){
+  const Wd=Math.round(S*1.0)+2, Hh=Math.round(S*1.4)+4, D=Math.max(1,Math.round(S*0.38));
+  const ah=Math.round(Hh*0.62), aw=Math.max(1,Math.round(Wd*0.45));
+  const inA=(x,y)=> Math.abs(x)<=aw && (y<=ah-aw || (x*x+(y-(ah-aw))*(y-(ah-aw))<=aw*aw+0.4));
+  for(let y=0;y<=Hh;y++)for(let z=-D;z<=D;z++)for(let x=-Wd;x<=Wd;x++){
+    if(!(z===-D||z===D||Math.abs(x)===Wd)) continue;
+    if((z===-D||z===D)&&inA(x,y)) continue;
+    P(g,x,y,z,R_W);
+  }
+  for(let i=0;i<=44;i++){ const a=i/44*Math.PI, x=Math.cos(a)*aw, y=(ah-aw)+Math.sin(a)*aw;
+    P(g,x,y,-D,R_T); P(g,x,y,D,R_T); }
+  for(let z=-D;z<=D;z++)for(let x=-Wd;x<=Wd;x++) if(z===-D||z===D||Math.abs(x)===Wd) P(g,x,Hh+1,z,R_T);
+  shellB(g,-Wd-1,Wd+1,Hh+2,Hh+2,-D-1,D+1,R_T);
+  for(const dx of [-2,0,2]) unit(g,dx,Hh+3,0,1,2,1,R_A);
+}},
+{n:'雙塔天橋',min:4,max:12,gen(g,S){
+  const a=Math.max(1,Math.round(S*0.36)), h=Math.round(S*2.0)+5, gap=Math.round(S*0.9)+3;
+  for(const sx of[-1,1]){
+    const cx=sx*gap;
+    for(let y=0;y<=h;y++) shellB(g,cx-a,cx+a,y,y,-a,a,(y%5===4)?R_T:R_W);
+    shellB(g,cx-a-1,cx+a+1,h+1,h+1,-a-1,a+1,R_T);
+    for(let k=0;k<Math.round(S*0.4)+2;k++) P(g,cx,h+2+k,0,R_A);
+  }
+  const by=Math.round(h*0.66);
+  for(let y=by;y<=by+2;y++)for(let x=-gap+a;x<=gap-a;x++)for(let z=-1;z<=1;z++)
+    if(z!==0||y===by||y===by+2) P(g,x,y,z,(y===by+2)?R_T:R_A);
+}},
+{n:'螺旋塔',min:4,max:14,gen(g,S){
+  const h=Math.round(S*2.4)+6, rd=Math.max(2,S*0.58), turns=Math.max(2,Math.round(S*0.26));
+  for(let y=0;y<=h;y++) ringB(g,0,0,1.45,y,R_W);
+  for(let y=0;y<=h;y++){
+    const a=y/h*TAU*turns, q=rd*(1-y/h*0.35);
+    for(let t=2;t<=q;t++) P(g,Math.cos(a)*t,y,Math.sin(a)*t,(t>q-1)?R_A:R_T);
+  }
+  discB(g,0,0,2,h+1,R_R); P(g,0,h+2,0,R_A);
+}},
+{n:'蘑菇屋',min:4,max:14,gen(g,S){
+  const sh=Math.max(3,Math.round(S*0.9)), sr=Math.max(2,S*0.46), cr=Math.max(4,S*1.0);
+  for(let y=0;y<=sh;y++) ringB(g,0,0,sr,y,R_W);
+  const ch=Math.round(cr*0.85);
+  for(let k=0;k<=ch;k++){
+    const q=cr*Math.sqrt(Math.max(0,1-(k/(ch+1))*(k/(ch+1))));
+    if(q<0.8){ P(g,0,sh+1+k,0,R_R); continue; }
+    ringB(g,0,0,q,sh+1+k,(Math.random()<0.16)?R_A:R_R);
+  }
+  ringB(g,0,0,cr*0.76,sh,R_T);
+  DEL(g,0,0,-Math.round(sr)); DEL(g,0,1,-Math.round(sr));
+  P(g,Math.round(sr),2,0,R_A);
+}},
+{n:'水塔',min:4,max:13,gen(g,S){
+  const lh=Math.round(S*1.5)+4, rd=Math.max(2,S*0.56);
+  for(let i=0;i<4;i++){ const a=i/4*TAU+0.42;
+    for(let y=0;y<=lh;y++){ const q=rd*(1+(1-y/lh)*0.36); P(g,Math.cos(a)*q,y,Math.sin(a)*q,R_T); } }
+  for(let k=1;k<3;k++){ const y=Math.round(lh*k/3); ringB(g,0,0,rd*(1+(1-y/lh)*0.36),y,R_B); }
+  const th=Math.max(3,Math.round(S*0.72));
+  for(let y=lh+1;y<=lh+th;y++) ringB(g,0,0,rd+1,y,(y===lh+1||y===lh+th)?R_T:R_W);
+  discB(g,0,0,rd*0.6,lh+th+1,R_R);
+  for(let k=1;k<=2;k++){ const q=(rd+1)*(1-k/3); if(q<0.7) break; ringB(g,0,0,q,lh+th+1+k,R_R); }
+  P(g,0,lh+th+4,0,R_A);
+}},
+{n:'貓',min:2,max:13,gen(g,S){
+  const u=Math.max(1,Math.round(S*0.30));
+  const bw=Math.max(3,Math.round(S*1.3)), bh=Math.max(3,Math.round(S*1.25));
+  const bd=Math.max(2,Math.round(S*1.0)), hs=Math.max(2,Math.round(S*0.95)), ly=u;
+  for(const sx of[-1,1])for(const sz of[-1,1])
+    for(let y=0;y<ly;y++) P(g,sx*Math.round(bw/2-1),y,sz*Math.round(bd/2-1),R_T);
+  unit(g,0,ly,0,bw,bh,bd,R_W);
+  unit(g,0,ly+bh,0,hs,hs,hs,R_W);
+  for(const sx of[-1,1])for(let k=0;k<u+1;k++) P(g,sx*Math.round(hs/2-k*0.5),ly+bh+hs+k,0,R_T);
+  const fz=-Math.ceil(hs/2);
+  P(g,-u,ly+bh+2*u,fz,R_A); P(g,u,ly+bh+2*u,fz,R_A); P(g,0,ly+bh+u,fz,R_A);
+  for(let k=0;k<3*u;k++) P(g,0,Math.round(ly+bh*0.5+k*0.9),Math.ceil(bd/2)+1+Math.round(k*0.45),R_T);
+}},
+{n:'愛心',min:4,max:12,gen(g,S){
+  const sc=Math.max(3,S*0.85), th=Math.max(1,Math.round(S*0.22));
+  const xr=Math.round(1.35*sc), yr=Math.round(2.5*sc);
+  const inside=(ix,gy)=>{
+    const x=ix/sc, y=(gy-1.4*sc)/sc;
+    if(Math.abs(x)>1.4||y<-1.4||y>1.15) return false;
+    const t=x*x+y*y-1;
+    return t*t*t - x*x*y*y*y <= 0;
+  };
+  extrude2D(g,inside,xr,yr,th,R_A,R_R);
+}},
+{n:'星星',min:5,max:12,gen(g,S){
+  const Rd=Math.max(5,Math.round(S*1.15)), th=Math.max(1,Math.round(S*0.22));
+  const inside=(ix,gy)=>{
+    const x=ix, y=gy-Rd, r=Math.hypot(x,y);
+    if(r<0.4) return true;
+    const a=Math.atan2(y,x)-Math.PI/2;
+    const k=Math.cos(5*a)*0.5+0.5;
+    return r <= Rd*(0.40+0.60*Math.pow(k,0.65));
+  };
+  extrude2D(g,inside,Rd+1,2*Rd+1,th,R_A,R_T);
+}},
+{n:'冰屋',min:4,max:14,gen(g,S){
+  const Rd=Math.max(4,S*0.98), q=Math.round(Rd);
+  for(let y=0;y<=q;y++){
+    const w2=Math.sqrt(Math.max(0,Rd*Rd-y*y));
+    if(w2<0.9){ P(g,0,y,0,R_T); continue; }
+    ringB(g,0,0,w2,y,(y%2===0)?R_W:R_T);
+  }
+  const tl=Math.round(Rd*0.6)+1;
+  for(let k=0;k<=tl;k++){ const z=-q-k+1;
+    for(let y=0;y<=2;y++)for(let x=-2;x<=2;x++) if(Math.abs(x)===2||y===2) P(g,x,y,z,R_W); }
+  for(let y=0;y<=1;y++)for(let x=-1;x<=1;x++) DEL(g,x,y,-q-tl+1);
+}},
+{n:'小鎮',min:4,max:12,gen(g,S){
+  const n=Math.max(2,Math.round(S*0.34)), sp=Math.max(5,Math.round(S*0.8));
+  const hi=Math.max(2,Math.round(S*0.45));
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++){
+    const cx=Math.round((i-(n-1)/2)*sp), cz=Math.round((j-(n-1)/2)*sp);
+    const Wd=ri(1,2), D=ri(1,2), Hh=ri(2,2+hi);
+    for(let y=0;y<=Hh;y++) shellB(g,cx-Wd,cx+Wd,y,y,cz-D,cz+D,R_W);
+    for(let k=0;k<=Wd;k++){ const ww=Wd-k;
+      for(let z=cz-D;z<=cz+D;z++){ P(g,cx-ww,Hh+1+k,z,R_R); P(g,cx+ww,Hh+1+k,z,R_R); }
+      if(ww===0) break; }
+    for(let z=cz-D;z<=cz+D;z++) P(g,cx,Hh+1+Wd,z,R_R);
+    P(g,cx,1,cz-D,R_A);
+  }
+  const th=Math.round(S*0.9)+4;
+  for(let y=0;y<=th;y++) shellB(g,-1,1,y,y,-1,1,(y%4===3)?R_T:R_W);
+  P(g,0,th+1,0,R_A);
+}},
+{n:'太空站',min:5,max:13,gen(g,S){
+  const Rd=Math.max(5,S*1.0), y0=Math.max(4,Math.round(S*0.55)), cr=Math.max(2,Rd*0.28);
+  ringB(g,0,0,Rd,y0,R_T);
+  ringB(g,0,0,Rd,y0-1,R_W); ringB(g,0,0,Rd,y0+1,R_W);
+  ringB(g,0,0,Rd-1,y0,R_W); ringB(g,0,0,Rd+1,y0,R_W);
+  const q=Math.round(cr);
+  for(let y=y0-q;y<=y0+q;y++){
+    const w2=Math.sqrt(Math.max(0,cr*cr-(y-y0)*(y-y0)));
+    if(w2<0.9){ P(g,0,y,0,R_A); continue; }
+    ringB(g,0,0,w2,y,R_T);
+  }
+  for(let i=0;i<6;i++){ const a=i/6*TAU;
+    for(let t=Math.round(cr);t<=Rd-1;t++) P(g,Math.cos(a)*t,y0,Math.sin(a)*t,R_A); }
+  for(let y=0;y<y0-q;y++) ringB(g,0,0,1.25,y,R_B);
+  for(const sx of[-1,1])for(let t=1;t<=Math.round(Rd*0.5);t++)for(let z=-2;z<=2;z++)
+    P(g,sx*(Rd+1+t),y0,z,R_A);
+}},
+{n:'巨石陣',min:4,max:14,gen(g,S){
+  const Rd=Math.max(4,S*0.95), n=Math.max(6,Math.round(Rd*1.15)), h=Math.max(3,Math.round(S*0.75));
+  for(let i=0;i<n;i++){
+    const a=i/n*TAU, x=Math.cos(a)*Rd, z=Math.sin(a)*Rd;
+    for(let y=0;y<h;y++){ P(g,x,y,z,R_W); P(g,x+Math.cos(a+0.3)*0.95,y,z+Math.sin(a+0.3)*0.95,R_W); }
+    const a2=(i+0.5)/n*TAU;
+    P(g,x,h,z,R_T); P(g,Math.cos(a2)*Rd,h,Math.sin(a2)*Rd,R_T);
+  }
+  const R2=Rd*0.56, n2=Math.max(4,Math.round(R2*1.1));
+  for(let i=0;i<n2;i++){ const a=i/n2*TAU;
+    for(let y=0;y<h+2;y++) P(g,Math.cos(a)*R2,y,Math.sin(a)*R2,R_T); }
+  discB(g,0,0,1.7,0,R_A);
+}},
+{n:'鐘塔',min:4,max:13,gen(g,S){
+  const a=Math.max(1,Math.round(S*0.40)), h=Math.round(S*2.3)+5;
+  for(let y=0;y<=h;y++) shellB(g,-a,a,y,y,-a,a,(y%6===5)?R_T:R_W);
+  const fy=Math.max(2,h-a-1);
+  for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++) if(Math.abs(dx)+Math.abs(dy)<=1){
+    P(g,dx,fy+dy,-a,R_A); P(g,dx,fy+dy,a,R_A); P(g,-a,fy+dy,dx,R_A); P(g,a,fy+dy,dx,R_A); }
+  shellB(g,-a-1,a+1,h+1,h+1,-a-1,a+1,R_T);
+  for(let y=h+2;y<=h+3+a;y++)for(const sx of[-a,a])for(const sz of[-a,a]) P(g,sx,y,sz,R_T);
+  const ty=h+4+a;
+  shellB(g,-a-1,a+1,ty,ty,-a-1,a+1,R_T);
+  for(let k=0;k<=a+3;k++){
+    const q=(a+1)*(1-k/(a+3.2));
+    if(q<0.7){ P(g,0,ty+1+k,0,R_A); break; }
+    ringB(g,0,0,q,ty+1+k,R_R);
+  }
+  shellB(g,-a-1,a+1,0,0,-a-1,a+1,R_B);
+}}
+];
+
+/* ---------- 配色 ---------- */
+const PALETTES=[
+  {n:'磚紅陶瓦', wall:'#c4785a', trim:'#efd8b4', roof:'#7a3f46', accent:'#f2c14e', base:'#8c8378'},
+  {n:'米白灰石', wall:'#e3dccf', trim:'#fffcf2', roof:'#6e7c87', accent:'#c9a227', base:'#9a958c'},
+  {n:'森綠木屋', wall:'#a8b98b', trim:'#efe6ce', roof:'#47603f', accent:'#e2703a', base:'#7c7466'},
+  {n:'海藍',     wall:'#7fb6d9', trim:'#eaf6ff', roof:'#2e5c86', accent:'#ffd36e', base:'#8a9aa6'},
+  {n:'落日橘',   wall:'#e89a5a', trim:'#ffe6c4', roof:'#a34a3c', accent:'#f5e36b', base:'#8e7b6c'},
+  {n:'紫夢',     wall:'#b49ad1', trim:'#f0e8fa', roof:'#59417e', accent:'#ffc7e0', base:'#8a82a0'},
+  {n:'沙漠土',   wall:'#ddbe8a', trim:'#f6e7c6', roof:'#b5793f', accent:'#7fa8a0', base:'#9c8a6e'},
+  {n:'薄荷',     wall:'#a8ddcb', trim:'#f2fffb', roof:'#3e7c6b', accent:'#ff9e7d', base:'#86a399'},
+  {n:'櫻花',     wall:'#f2c0ce', trim:'#fff3f6', roof:'#a75a73', accent:'#f7e7a1', base:'#a38f95'},
+  {n:'石灰岩',   wall:'#cfc7b4', trim:'#efe9da', roof:'#8c6b4f', accent:'#d95f43', base:'#8f887a'},
+  {n:'夜曜',     wall:'#6e7ba6', trim:'#c6cfe8', roof:'#33395c', accent:'#ffd98a', base:'#4e5570'},
+  {n:'檸檬',     wall:'#f0df8c', trim:'#fff9dc', roof:'#c0873a', accent:'#6fa8c7', base:'#a39b72'}
+];
+
+/* ---------- 產生藍圖（含尺寸搜尋 + 磚塊合併） ---------- */
+const CS=1.0, GAP=0.07;
+
+const S_LO=1.3;                // 造型尺寸參數 S 的下限
+
+function genCells(sh,S){ const g=new Map(); sh.gen(g,S); return g; }
+
+/* 把格子依 (y,z,role) 分列，隨機合併成 1~3 格長的磚，並置中 */
+function buildSlots(g, pal){
+  const rows=new Map();
+  for(const [k,role] of g){
+    const p=k.split(',');
+    const rk=p[1]+'|'+p[2]+'|'+role;
+    let arr=rows.get(rk); if(!arr){ arr=[]; rows.set(rk,arr); }
+    arr.push(+p[0]);
+  }
+  const slots=[];
+  let minY=1e9,maxY=-1e9,minX=1e9,maxX=-1e9,minZ=1e9,maxZ=-1e9;
+  for(const [rk,xs] of rows){
+    const p=rk.split('|'), y=+p[0], z=+p[1], role=p[2];
+    xs.sort((a,b)=>a-b);
+    let i=0;
+    while(i<xs.length){
+      const cap = Math.random()<0.52 ? (Math.random()<0.34?3:2) : 1;
+      let len=1;
+      while(len<cap && i+len<xs.length && xs[i+len]===xs[i]+len) len++;
+      const x0=xs[i], x1=xs[i+len-1];
+      slots.push({ gx:(x0+x1)/2, gy:y, gz:z, len, role });
+      i+=len;
+      if(x0<minX) minX=x0; if(x1>maxX) maxX=x1;
+    }
+    if(y<minY)minY=y; if(y>maxY)maxY=y;
+    if(z<minZ)minZ=z; if(z>maxZ)maxZ=z;
+  }
+  const ox=(minX+maxX)/2, oz=(minZ+maxZ)/2;
+  let maxR=0;
+  for(const s of slots){
+    s.wx=(s.gx-ox)*CS; s.wy=(s.gy-minY+0.5)*CS; s.wz=(s.gz-oz)*CS;
+    s.tw=s.len*CS-GAP; s.th=CS-GAP; s.td=CS-GAP;
+    const base=hex(pal[s.role]||pal.wall);
+    const j=rr(-9,9), j2=rr(-4,4);
+    s.cr=clamp(base[0]+j,10,255)|0; s.cg=clamp(base[1]+j+j2,10,255)|0; s.cb=clamp(base[2]+j,10,255)|0;
+    s.filled=false; s.claimed=false;
+    const r=Math.hypot(Math.abs(s.wx)+s.tw*0.5, Math.abs(s.wz)+s.td*0.5);
+    if(r>maxR) maxR=r;
+  }
+  // 施工順序：由下往上，同層由內而外
+  slots.sort((a,b)=> (a.wy-b.wy) || (Math.hypot(a.wx,a.wz)-Math.hypot(b.wx,b.wz)));
+  return { slots, radius:maxR, height:(maxY-minY+1)*CS };
+}
+
+/* 只算「合併後會有幾塊磚」，給尺寸搜尋用（造型的磚數不一定隨 S 單調變化，
+   所以要整段掃過取最接近的，不能用比例回推） */
+function countMerged(g){
+  const rows=new Map();
+  for(const [k,role] of g){
+    const p=k.split(','), rk=p[1]+'|'+p[2]+'|'+role;
+    let a=rows.get(rk); if(!a){ a=[]; rows.set(rk,a); }
+    a.push(+p[0]);
+  }
+  let n=0;
+  for(const xs of rows.values()){
+    xs.sort((a,b)=>a-b);
+    for(let i=0;i<xs.length;){
+      const cap=Math.random()<0.52?(Math.random()<0.34?3:2):1;
+      let len=1;
+      while(len<cap && i+len<xs.length && xs[i+len]===xs[i]+len) len++;
+      n++; i+=len;
+    }
+  }
+  return n;
+}
+function makeBlueprint(idx, target){
+  const sh=SHAPES[idx], hi=sh.max;
+  let bestS=S_LO, bd=Infinity;
+  for(let s=S_LO;s<=hi+1e-6;s+=0.3){
+    const n=countMerged(genCells(sh,s));
+    const d=Math.abs(n-target);
+    if(d<bd){ bd=d; bestS=s; }
+    if(n>target*2.6) break;
+  }
+  const pal=pick(PALETTES);
+  const res=buildSlots(genCells(sh,bestS),pal);
+  res.name=sh.n; res.pal=pal;
+  return res;
+}
+/* 這個造型最少能做到幾塊（避免挑到遠超使用者設定建材數的造型） */
+function shapeMinCount(idx){
+  const sh=SHAPES[idx];
+  if(sh._mc===undefined) sh._mc=countMerged(genCells(sh,S_LO));
+  return sh._mc;
+}
+const recent=[];                            // 最近蓋過的，避免短期內重複
+function pickShape(target){
+  let idx=(Math.random()*SHAPES.length)|0, fallback=idx;
+  for(let k=0;k<40;k++){
+    const c=(Math.random()*SHAPES.length)|0;
+    const fits=shapeMinCount(c)<=target*1.6;
+    if(fits) fallback=c;
+    if(recent.includes(c)) continue;
+    if(fits){ idx=c; break; }
+    idx=fallback;
+  }
+  recent.push(idx);
+  while(recent.length>Math.min(8,SHAPES.length-2)) recent.shift();
+  return idx;
+}
+
+/* =========================================================================
+   建材方塊 + 物理
+   ========================================================================= */
+const blocks=[], dying=[], workers=[];
+let bp=null, phase='built', phaseT=0, placedCnt=0, slotCursor=0, lastShape=-1, yardIdx=0;
+let targetCnt=170, nWorkers=7, speed=1, autoLoop=true, spinOn=true, shadOn=true;
+const YARD={x:20,z:20};
+
+function newBlock(){
+  return { x:0,y:0.5,z:0, w:CS-GAP,h:CS-GAP,d:CS-GAP,
+    rx:0,ry:0,rz:0, vx:0,vy:0,vz:0, avx:0,avy:0,avz:0,
+    cr:200,cg:200,cb:200, state:'free', rest:true, claimed:false, slot:null,
+    settleT:0, hops:0, snap:0, al:1, m:new Float64Array(9),
+    q0x:0,q0y:0,q0z:0,q1x:0,q1y:0,q1z:0,sy0:0 };
+}
+function yardPos(i){
+  const c=i%6, r=Math.floor(i/6)%6, l=Math.floor(i/36);
+  return { x:YARD.x+(c-2.5)*1.15, y:0.5+l*1.02, z:YARD.z+(r-2.5)*1.15 };
+}
+function hardPlace(b,s){
+  b.x=s.wx; b.y=s.wy; b.z=s.wz; b.w=s.tw; b.h=s.th; b.d=s.td;
+  b.rx=b.ry=b.rz=0; b.vx=b.vy=b.vz=0; b.avx=b.avy=b.avz=0;
+  b.cr=s.cr; b.cg=s.cg; b.cb=s.cb;
+  b.state='placed'; b.rest=true; b.claimed=false; b.snap=0; b.slot=s; b.al=1;
+  s.filled=true; s.claimed=true;
+}
+function settle(b){
+  const dd=Math.hypot(b.x,b.z);
+  if(dd<siteR+1.5 && b.hops<4){          // 別堆在工地上，往外彈開
+    b.hops++;
+    const a=(dd<0.001)?Math.random()*TAU:Math.atan2(b.z,b.x), s=rr(5,9.5);
+    b.vx=Math.cos(a)*s; b.vz=Math.sin(a)*s; b.vy=rr(4,7.5); b.settleT=0; return;
+  }
+  b.rest=true; b.vx=b.vy=b.vz=0; b.avx=b.avy=b.avz=0; b.settleT=0;
+  const Q=Math.PI/2;
+  b.q0x=b.rx; b.q0y=b.ry; b.q0z=b.rz;
+  b.q1x=Math.round(b.rx/Q)*Q; b.q1y=Math.round(b.ry/Q)*Q; b.q1z=Math.round(b.rz/Q)*Q;
+  b.sy0=b.y; b.snap=1;
+}
+function stepPhysics(dt){
+  for(const b of blocks){
+    if(b.state!=='free') continue;
+    if(!b.rest){
+      b.vy-=44*dt;
+      b.x+=b.vx*dt; b.y+=b.vy*dt; b.z+=b.vz*dt;
+      b.rx+=b.avx*dt; b.ry+=b.avy*dt; b.rz+=b.avz*dt;
+      eulerMat(b.m,b.rx,b.ry,b.rz);
+      const hy=halfY(b.m,b.w,b.h,b.d);
+      if(b.y<hy){
+        b.y=hy;
+        if(b.vy<-2.0){
+          b.vy=-b.vy*0.26; b.vx*=0.60; b.vz*=0.60;
+          b.avx*=0.55; b.avy*=0.75; b.avz*=0.55;
+          dust(b.x,0.14,b.z,3,Math.min(5,Math.abs(b.vy)*0.85));
+          sThud(clamp(Math.abs(b.vy)/9,0.15,1));
+        } else {
+          b.vy=0;
+          const k=Math.pow(0.02,dt);
+          b.vx*=k; b.vz*=k; b.avx*=k; b.avy*=k; b.avz*=k;
+          if(Math.hypot(b.vx,b.vz)<0.35 && Math.abs(b.avx)+Math.abs(b.avz)<0.75){
+            b.settleT+=dt; if(b.settleT>0.22) settle(b);
+          } else b.settleT=0;
+        }
+      }
+      const dd=Math.hypot(b.x,b.z);
+      const lim=siteR+18;                     // 碎塊別散太遠，不然小人來回走太久
+      if(dd>lim){ const k=lim/dd; b.x*=k; b.z*=k; b.vx*=-0.3; b.vz*=-0.3; }
+    } else if(b.snap>0){                  // 落定後轉正
+      b.snap=Math.max(0,b.snap-dt/0.30);
+      const t=easeOut(1-b.snap);
+      b.rx=lerp(b.q0x,b.q1x,t); b.ry=lerp(b.q0y,b.q1y,t); b.rz=lerp(b.q0z,b.q1z,t);
+      eulerMat(b.m,b.rx,b.ry,b.rz);
+      const hy=halfY(b.m,b.w,b.h,b.d);
+      b.y=Math.max(hy, lerp(b.sy0,hy,t));
+    }
+  }
+}
+
+/* =========================================================================
+   小人（工人）
+   ========================================================================= */
+const WLEG=0.60, WTOR=0.60, WHEAD=0.46, WARM=0.52, WTOP=1.72;
+const WCOLS=['#ffd24a','#ff8a5c','#7fe3ff','#a8ff9e','#ff9ad5','#c9b6ff','#ffe08a','#8effd6'];
+function makeWorker(){
+  const a=Math.random()*TAU, r=rr(siteR+3,siteR+9);
+  const w={ x:Math.cos(a)*r, z:Math.sin(a)*r, a:a+Math.PI, ph:Math.random()*TAU, wob:Math.random()*TAU,
+    st:'idle', blk:null, slot:null, tx:0, tz:0, t:0, T:1, arc:2, from:null,
+    vest:hex(pick(WCOLS)), hat:hex('#ffcf33'), skin:hex('#f0c9a4'), limb:hex('#48536b'), mats:[] };
+  for(let i=0;i<5;i++) w.mats.push(new Float64Array(9));
+  return w;
+}
+function walkTo(w,tx,tz,dt,tol){
+  const dx=tx-w.x, dz=tz-w.z, d=Math.hypot(dx,dz);
+  const sp=5.8*speed;
+  if(d<tol){ w.ph+=dt*3; return true; }
+  const st=Math.min(d,sp*dt);
+  w.x+=dx/d*st; w.z+=dz/d*st;
+  const ta=Math.atan2(dx,dz);
+  let da=ta-w.a; while(da>Math.PI)da-=TAU; while(da<-Math.PI)da+=TAU;
+  w.a+=da*Math.min(1,dt*11);
+  w.ph+=dt*sp*2.4;
+  return false;
+}
+function standPoint(s,w){
+  let dx=s.wx, dz=s.wz, d=Math.hypot(dx,dz);
+  if(d<0.6){ dx=w.x; dz=w.z; d=Math.hypot(dx,dz)||1; }
+  const r=siteR+1.6;
+  return { x:dx/d*r, z:dz/d*r };
+}
+function assign(w){
+  if(phase!=='building'||!bp) return;
+  while(slotCursor<bp.slots.length && bp.slots[slotCursor].claimed) slotCursor++;
+  if(slotCursor>=bp.slots.length) return;
+  const s=bp.slots[slotCursor];
+  let best=null, bd=1e9;
+  for(const b of blocks){
+    if(b.state!=='free'||!b.rest||b.claimed||b.snap>0) continue;
+    const d=(b.x-w.x)*(b.x-w.x)+(b.z-w.z)*(b.z-w.z);
+    if(d<bd){ bd=d; best=b; }
+  }
+  if(!best) return;
+  s.claimed=true; best.claimed=true; w.slot=s; w.blk=best; w.st='toBlock';
+}
+function releaseWorker(w){
+  if(w.blk){ w.blk.claimed=false; w.blk.state='free'; w.blk.rest=true; w.blk.snap=0; }
+  if(w.slot && !w.slot.filled) w.slot.claimed=false;
+  w.blk=null; w.slot=null; w.st='idle';
+}
+function updWorker(w,dt){
+  const b=w.blk;
+  if((w.st!=='idle') && (!b || !w.slot)){ releaseWorker(w); return; }
+  switch(w.st){
+    case 'idle':
+      assign(w);
+      if(w.st==='idle') w.wob+=dt*2.0;
+      break;
+    case 'toBlock':
+      if(walkTo(w,b.x,b.z,dt,1.05)){
+        b.state='carried'; b.rest=true; b.snap=0;
+        const p=standPoint(w.slot,w); w.tx=p.x; w.tz=p.z; w.st='toSite';
+      }
+      break;
+    case 'toSite': {
+      b.x=w.x+Math.sin(w.a)*0.06;
+      b.z=w.z+Math.cos(w.a)*0.06;
+      b.y=WTOP+b.h*0.5+Math.abs(Math.sin(w.ph))*0.05;
+      const k=Math.min(1,dt*6);
+      b.rx=lerp(b.rx,0,k); b.ry=lerp(b.ry,0,k); b.rz=lerp(b.rz,0,k);
+      eulerMat(b.m,b.rx,b.ry,b.rz);
+      if(walkTo(w,w.tx,w.tz,dt,0.75)){
+        w.st='place'; w.t=0;
+        w.T=(0.40+w.slot.wy*0.032)/speed;
+        w.arc=1.3+w.slot.wy*0.09;
+        w.from={x:b.x,y:b.y,z:b.z,rx:b.rx,ry:b.ry,rz:b.rz,w:b.w,h:b.h,d:b.d,cr:b.cr,cg:b.cg,cb:b.cb};
+      }
+      break;
+    }
+    case 'place': {
+      w.t+=dt/w.T;
+      const t=clamp(w.t,0,1), e=ease(t), f=w.from, s=w.slot;
+      b.x=lerp(f.x,s.wx,e); b.z=lerp(f.z,s.wz,e);
+      b.y=lerp(f.y,s.wy,e)+Math.sin(Math.PI*t)*w.arc;
+      b.rx=lerp(f.rx,0,e); b.ry=lerp(f.ry,0,e); b.rz=lerp(f.rz,0,e);
+      b.w=lerp(f.w,s.tw,e); b.h=lerp(f.h,s.th,e); b.d=lerp(f.d,s.td,e);
+      b.cr=lerp(f.cr,s.cr,e)|0; b.cg=lerp(f.cg,s.cg,e)|0; b.cb=lerp(f.cb,s.cb,e)|0;
+      eulerMat(b.m,b.rx,b.ry,b.rz);
+      w.wob+=dt*3;
+      if(t>=1){
+        hardPlace(b,s); placedCnt++;
+        dust(s.wx,s.wy-s.th*0.5,s.wz,3,1.1); sClack();
+        w.blk=null; w.slot=null; w.st='idle';
+        updHUD();
+        if(placedCnt>=bp.slots.length){ phase='built'; phaseT=0; sDone(); updHUD(); }
+      }
+      break;
+    }
+  }
+}
+
+/* =========================================================================
+   流程：蓋 / 拍散
+   ========================================================================= */
+function reconcile(need){
+  while(blocks.length>need){
+    let bi=-1, bd=-1, restOnly=true;
+    for(let pass=0;pass<2&&bi<0;pass++){
+      for(let i=0;i<blocks.length;i++){
+        const b=blocks[i];
+        if(b.claimed) continue;
+        if(pass===0 && !b.rest) continue;
+        const d=b.x*b.x+b.z*b.z;
+        if(d>bd){ bd=d; bi=i; }
+      }
+    }
+    if(bi<0) break;
+    const b=blocks[bi]; blocks.splice(bi,1);
+    b.al=1; b.fade=1; dying.push(b);
+    dust(b.x,b.y,b.z,5,1.8);
+  }
+  while(blocks.length<need){
+    const b=newBlock(), p=yardPos(yardIdx++);
+    b.x=p.x; b.y=p.y; b.z=p.z; b.rest=true; b.state='free'; b.al=0; b.grow=1;
+    b.cr=200; b.cg=196; b.cb=186;
+    blocks.push(b);
+  }
+}
+function startBuild(instant){
+  const idx=pickShape(targetCnt);
+  lastShape=idx;
+  bp=makeBlueprint(idx, targetCnt);
+  siteR=Math.max(6,bp.radius);
+  YARD.x=Math.cos(0.9)*(siteR+10); YARD.z=Math.sin(0.9)*(siteR+10);
+  fitCam(siteR, bp.height);
+  camBase = instant ? camNear : camFar;
+  applyZoom();
+  for(const w of workers) releaseWorker(w);
+  reconcile(bp.slots.length);
+  placedCnt=0; slotCursor=0;
+  for(const s of bp.slots){ s.filled=false; s.claimed=false; }
+  if(instant){
+    for(let i=0;i<bp.slots.length;i++){ blocks[i].al=1; blocks[i].grow=0; hardPlace(blocks[i],bp.slots[i]); }
+    placedCnt=bp.slots.length; phase='built';
+  } else {
+    phase='building';
+  }
+  phaseT=0; updHUD();
+}
+function finishNow(){
+  if(phase!=='building'||!bp) return;
+  for(const w of workers) releaseWorker(w);
+  const free=blocks.filter(b=>b.state!=='placed');
+  let k=0;
+  for(const s of bp.slots){ if(s.filled) continue; if(k>=free.length) break;
+    const b=free[k++]; b.al=1; hardPlace(b,s); dust(s.wx,s.wy,s.wz,2,0.9); }
+  placedCnt=bp.slots.length; phase='built'; phaseT=0; sDone(); updHUD();
+}
+function smash(px,py,pz,st,dx,dz){
+  if(phase!=='built'||!bp) return;
+  let n=0;
+  for(const b of blocks){
+    if(b.state!=='placed') continue;
+    n++;
+    b.state='free'; b.rest=false; b.slot=null; b.claimed=false; b.hops=0; b.settleT=0; b.snap=0;
+    let ax=b.x-px, ay=b.y-py, az=b.z-pz;
+    const d=Math.hypot(ax,ay,az)+0.001, fall=1/(1+d*0.20), s=st*fall;
+    b.vx=ax/d*s*1.15 + dx*s*0.55 + rr(-2.2,2.2);
+    b.vy=Math.max(-0.2,ay/d)*s*0.75 + s*0.55 + rr(0,3.2);
+    b.vz=az/d*s*1.15 + dz*s*0.55 + rr(-2.2,2.2);
+    const sp=0.45+fall;
+    b.avx=rr(-9,9)*sp; b.avy=rr(-9,9)*sp; b.avz=rr(-9,9)*sp;
+  }
+  if(!n) return;
+  dust(px,py,pz,70,11); dust(px,0.25,pz,42,7.5);
+  shake=1; sBoom();
+  for(const w of workers) releaseWorker(w);
+  for(const s of bp.slots){ s.filled=false; s.claimed=false; }
+  placedCnt=0; slotCursor=0;
+  phase='debris'; phaseT=0; updHUD();
+}
+function autoSmash(){
+  if(!bp) return;
+  const a=Math.random()*TAU;
+  const r=Math.max(1.5,bp.radius*0.62);
+  smash(Math.cos(a)*r, bp.height*rr(0.30,0.78), Math.sin(a)*r, rr(15,21), Math.cos(a)*0.45, Math.sin(a)*0.45);
+}
+
+/* =========================================================================
+   小人渲染
+   ========================================================================= */
+const tmpR=new Float64Array(9), T3=[0,0,0];
+function wpt(M,px,py,pz,lx,ly,lz,out){
+  out[0]=px+M[0]*lx+M[1]*ly+M[2]*lz;
+  out[1]=py+M[3]*lx+M[4]*ly+M[5]*lz;
+  out[2]=pz+M[6]*lx+M[7]*ly+M[8]*lz;
+}
+function drawWorker(w){
+  const M=yawMat(w.mats[0],w.a);
+  const walking=(w.st==='toBlock'||w.st==='toSite');
+  const sw = walking ? Math.sin(w.ph)*0.68 : Math.sin(w.wob)*0.06;
+  const y0 = walking ? Math.abs(Math.sin(w.ph))*0.055 : Math.sin(w.wob*1.4)*0.015;
+  const carry=(w.st==='toSite'||w.st==='place');
+  // 軀幹（背心）
+  wpt(M,w.x,y0,w.z, 0, WLEG+WTOR*0.5, 0, T3);
+  addBox(T3[0],T3[1],T3[2], 0.48,WTOR,0.30, M, w.vest[0],w.vest[1],w.vest[2]);
+  // 頭
+  wpt(M,w.x,y0,w.z, 0, WLEG+WTOR+WHEAD*0.5, 0, T3);
+  addBox(T3[0],T3[1],T3[2], WHEAD,WHEAD,WHEAD, M, w.skin[0],w.skin[1],w.skin[2]);
+  // 安全帽
+  wpt(M,w.x,y0,w.z, 0, WLEG+WTOR+WHEAD+0.055, 0, T3);
+  addBox(T3[0],T3[1],T3[2], 0.56,0.13,0.56, M, w.hat[0],w.hat[1],w.hat[2]);
+  // 腿
+  for(let i=0;i<2;i++){
+    const s=i?1:-1, th=sw*s;
+    const m=mul3(w.mats[1+i], M, rotXMat(tmpR,th));
+    wpt(M,w.x,y0,w.z, s*0.13, WLEG-WLEG*0.5*Math.cos(th), -WLEG*0.5*Math.sin(th), T3);
+    addBox(T3[0],T3[1],T3[2], 0.19,WLEG,0.19, m, w.limb[0],w.limb[1],w.limb[2]);
+  }
+  // 手臂
+  const ab = carry ? -2.35 : 0;
+  for(let i=0;i<2;i++){
+    const s=i?1:-1, th=ab + (carry?0:-sw*s*0.9);
+    const m=mul3(w.mats[3+i], M, rotXMat(tmpR,th));
+    const sy=WLEG+WTOR-0.05;
+    wpt(M,w.x,y0,w.z, s*0.31, sy-WARM*0.5*Math.cos(th), -WARM*0.5*Math.sin(th), T3);
+    addBox(T3[0],T3[1],T3[2], 0.155,WARM,0.155, m, w.skin[0],w.skin[1],w.skin[2]);
+  }
+}
+
+/* =========================================================================
+   主迴圈
+   ========================================================================= */
+let dragging=false;
+function update(dt){
+  if(spinOn && !dragging) cam.yaw += dt*0.05;
+  // 拍散與剛開工時拉遠看整片碎料，蓋到一半後慢慢推近
+  const wide = (phase==='debris') || (phase==='building' && bp && placedCnt < bp.slots.length*0.45);
+  camBase = lerp(camBase, wide?camFar:camNear, Math.min(1,dt*0.9));
+  applyZoom();
+  updateCam();
+  let acc=Math.min(dt*speed,0.16);
+  while(acc>0){ const h=Math.min(1/70,acc); stepPhysics(h); acc-=h; }
+  stepParts(dt);
+  for(const b of blocks) if(b.grow>0){ b.grow=Math.max(0,b.grow-dt/0.5); b.al=1-b.grow; }
+  for(let i=dying.length-1;i>=0;i--){
+    const b=dying[i]; b.fade-=dt/0.85; b.al=Math.max(0,b.fade);
+    b.y=Math.max(b.h*0.5, b.y+dt*0.7);
+    if(b.fade<=0) dying.splice(i,1);
+  }
+  while(workers.length<nWorkers) workers.push(makeWorker());
+  while(workers.length>nWorkers) releaseWorker(workers.pop());
+  for(const w of workers) updWorker(w,dt);
+  phaseT+=dt;
+  if(phase==='debris' && phaseT>0.85) startBuild(false);
+  if(phase==='built' && autoLoop && phaseT>4.5) autoSmash();
+  shake=Math.max(0,shake-dt*2.5);
+}
+function render(){
+  cx0 = W/2 + (shake?rr(-1,1)*shake*10:0);
+  cy0 = H/2 + (shake?rr(-1,1)*shake*10:0);
+  drawGround();
+  DL.length=0; pn=0;
+  for(const b of blocks)
+    addBox(b.x,b.y,b.z,b.w,b.h,b.d,(b.rx||b.ry||b.rz)?b.m:null,b.cr,b.cg,b.cb,b.al);
+  for(const b of dying)
+    addBox(b.x,b.y,b.z,b.w,b.h,b.d,(b.rx||b.ry||b.rz)?b.m:null,b.cr,b.cg,b.cb,b.al);
+  for(const w of workers) drawWorker(w);
+  DL.sort((a,b)=>b.dep-a.dep);
+  if(shadOn) for(let i=0;i<DL.length;i++) drawShadow(DL[i]);
+  for(let i=0;i<DL.length;i++) drawBoxItem(DL[i]);
+  drawParts();
+}
+let last=0;
+function frame(now){
+  if(!last) last=now;
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  update(dt); render();
+  requestAnimationFrame(frame);
+}
+
+/* =========================================================================
+   互動
+   ========================================================================= */
+function rayAABB(dx,dy,dz,b){
+  let t0=0,t1=1e9;
+  const c=[b.x,b.y,b.z], h=[b.w*0.5+0.07,b.h*0.5+0.07,b.d*0.5+0.07];
+  const d=[dx,dy,dz], p=[camPos.x,camPos.y,camPos.z];
+  for(let i=0;i<3;i++){
+    if(Math.abs(d[i])<1e-9){ if(p[i]<c[i]-h[i]||p[i]>c[i]+h[i]) return null; continue; }
+    let a=(c[i]-h[i]-p[i])/d[i], e=(c[i]+h[i]-p[i])/d[i];
+    if(a>e){ const t=a; a=e; e=t; }
+    if(a>t0) t0=a;
+    if(e<t1) t1=e;
+    if(t0>t1) return null;
+  }
+  return t0;
+}
+function clickAt(mx,my){
+  hideHint();
+  const vx=(mx-W/2)/focal, vy=-(my-H/2)/focal;
+  let dx=bR.x*vx+bU.x*vy+bF.x, dy=bR.y*vx+bU.y*vy+bF.y, dz=bR.z*vx+bU.z*vy+bF.z;
+  const l=Math.hypot(dx,dy,dz)||1; dx/=l; dy/=l; dz/=l;
+  let bt=1e9, hit=null;
+  for(const b of blocks){
+    if(b.state!=='placed') continue;
+    const t=rayAABB(dx,dy,dz,b);
+    if(t!==null && t<bt){ bt=t; hit=b; }
+  }
+  if(hit){ smash(camPos.x+dx*bt, camPos.y+dy*bt, camPos.z+dz*bt, rr(15,21), dx, dz); return; }
+  if(dy<-1e-5){
+    const t=-camPos.y/dy, gx=camPos.x+dx*t, gz=camPos.z+dz*t;
+    if(Math.abs(gx)<70 && Math.abs(gz)<70){
+      dust(gx,0.15,gz,16,4.5); sThud(0.5);
+      if(phase==='built') smash(gx,0.5,gz,15,dx,dz);
+    }
+  }
+}
+const pts=new Map();
+let dragAmt=0, downT=0, pinchD=0;
+cvs.addEventListener('pointerdown',e=>{
+  cvs.setPointerCapture(e.pointerId);
+  pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  dragging=true; dragAmt=0; downT=performance.now(); pinchD=0; AC();
+});
+cvs.addEventListener('pointermove',e=>{
+  const p=pts.get(e.pointerId); if(!p) return;
+  const dx=e.clientX-p.x, dy=e.clientY-p.y;
+  p.x=e.clientX; p.y=e.clientY;
+  dragAmt+=Math.abs(dx)+Math.abs(dy);
+  if(pts.size>=2){
+    const it=[...pts.values()], d=Math.hypot(it[0].x-it[1].x, it[0].y-it[1].y);
+    if(pinchD>0) zoomBy(pinchD/Math.max(1,d));
+    pinchD=d;
+  } else {
+    cam.yaw -= dx*0.0062;
+    cam.pitch = clamp(cam.pitch + dy*0.0050, 0.09, 1.35);
+  }
+});
+function ptrEnd(e){
+  const had=pts.has(e.pointerId);
+  pts.delete(e.pointerId);
+  if(pts.size===0){
+    dragging=false;
+    if(had && dragAmt<9 && performance.now()-downT<500) clickAt(e.clientX,e.clientY);
+  }
+}
+cvs.addEventListener('pointerup',ptrEnd);
+cvs.addEventListener('pointercancel',e=>{ pts.delete(e.pointerId); if(!pts.size) dragging=false; });
+cvs.addEventListener('wheel',e=>{
+  e.preventDefault();
+  zoomBy(e.deltaY>0?1.09:1/1.09);
+},{passive:false});
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault(); AC(); hideHint(); autoSmash(); }
+  else if(e.key==='n'||e.key==='N') startBuild(true);
+  else if(e.key==='f'||e.key==='F') finishNow();
+});
+
+/* =========================================================================
+   HUD / 控制項
+   ========================================================================= */
+const $=id=>document.getElementById(id);
+const elHint=$('hint');
+let hintOff=false;
+function hideHint(){ if(!hintOff){ hintOff=true; elHint.style.opacity='0'; } }
+function updHUD(){
+  if(!bp) return;
+  const tot=bp.slots.length;
+  $('bName').textContent=bp.name;
+  $('bSub').textContent = phase==='building' ? '施工中…（'+bp.pal.n+'）'
+                        : phase==='debris'  ? '一片狼藉…'
+                        : '完工！（'+bp.pal.n+'）';
+  $('bBar').style.width=(tot?placedCnt/tot*100:0).toFixed(1)+'%';
+  $('bCnt').textContent='建材 '+placedCnt+' / '+tot+' 塊　·　小人 '+workers.length+' 名';
+}
+function bindSlider(id,vid,fn,fmt){
+  const s=$(id), v=$(vid);
+  const go=()=>{ const n=parseFloat(s.value); v.textContent=fmt?fmt(n):n; fn(n); };
+  s.addEventListener('input',go); go();
+}
+$('btnSmash').addEventListener('click',()=>{ AC(); hideHint(); autoSmash(); });
+$('btnNext').addEventListener('click',()=>{ AC(); hideHint(); startBuild(true); });
+$('btnFinish').addEventListener('click',()=>{ AC(); finishNow(); });
+bindSlider('sCnt','vCnt',n=>{ targetCnt=n; },n=>n);
+bindSlider('sWk','vWk',n=>{ nWorkers=n; updHUD(); },n=>n);
+bindSlider('sSp','vSp',n=>{ speed=n; },n=>n.toFixed(1));
+$('cAuto').addEventListener('change',e=>{ autoLoop=e.target.checked; });
+$('cSpin').addEventListener('change',e=>{ spinOn=e.target.checked; });
+$('cShad').addEventListener('change',e=>{ shadOn=e.target.checked; });
+$('cSfx').addEventListener('change',e=>{ sfxOn=e.target.checked; if(sfxOn) AC(); });
+
+/* ---------- 啟動 ---------- */
+resize();
+updateCam();
+for(let i=0;i<nWorkers;i++) workers.push(makeWorker());
+startBuild(true);
+requestAnimationFrame(frame);
+
+</script>
+</body>
+</html>
