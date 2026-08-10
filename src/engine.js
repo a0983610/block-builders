@@ -14,7 +14,8 @@ const ENG = (function () {
 
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
-  let ballMesh, tornadoGroup, hammerGroup;
+  let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh;
+  const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 3;
   const TW_SEG = 12;                // 龍捲風的分段數
   const tornadoSegs = [];
   const _axis = new T.Vector3();
@@ -171,6 +172,17 @@ const ENG = (function () {
     tornadoGroup.visible = false;
     scene.add(tornadoGroup);
 
+    /* 投石機：每台三個部位（底座、立柱、拋臂）全塞進同一個 InstancedMesh，
+       四台machine 也只吃 1 個 draw call。飛石另開一個。 */
+    trebMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXTREB * TREB_PARTS);
+    rockMesh = new T.InstancedMesh(unit, voxelMaterial({ color: 0x6b6660 }), MAXROCK);
+    for (const m of [trebMesh, rockMesh]) {
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.castShadow = true; m.count = 0; m.frustumCulled = false;
+      scene.add(m);
+    }
+    trebMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
     resize();
   }
 
@@ -202,15 +214,61 @@ const ENG = (function () {
     }
   }
   function hideTornado() { tornadoGroup.visible = false; }
-  /* (x,y,z) 是槌子擺放的位置，(tx,ty,tz) 是它要對準的落點，spin 是揮動時的側傾 */
-  function setHammer(x, y, z, tx, ty, tz, spin) {
+  /* (x,y,z) 是槌子擺放的位置，(tx,ty,tz) 是它要對準的落點，
+     spin 是揮動時的側傾，sc 是整支槌子的倍率（大槌用） */
+  function setHammer(x, y, z, tx, ty, tz, spin, sc) {
     hammerGroup.visible = true;
     hammerGroup.position.set(x, y, z);
     hammerGroup.lookAt(tx, ty, tz);
     hammerGroup.rotateZ(spin);
+    hammerGroup.scale.setScalar(sc || 1);
   }
   function hideHammer() { hammerGroup.visible = false; }
   function hammerVisible() { return hammerGroup.visible; }
+
+  /* 投石機。t：{x, z, a 面向, arm 拋臂角度}
+     底座與立柱固定，拋臂繞立柱頂端擺——發射時從後仰掃到前傾。 */
+  const TREB_PART = [
+    { p: [0, 0.4, 0], s: [3.4, 0.8, 2.6], c: 0x7a5334 },   // 底座
+    { p: [0, 2.0, 0], s: [0.6, 3.2, 0.6], c: 0x8a5f3c },   // 立柱
+    { p: [0, 3.6, 0], s: [0.5, 0.5, 6.5], c: 0x5f4126 }    // 拋臂
+  ];
+  function putTrebs(list) {
+    const n = Math.min(list.length, MAXTREB);
+    trebMesh.count = n * TREB_PARTS;
+    for (let i = 0; i < n; i++) {
+      const t = list[i];
+      scratch.position.set(t.x, 0, t.z);
+      scratch.rotation.set(0, t.a, 0);
+      scratch.scale.setScalar(1);
+      scratch.updateMatrix();
+      for (let k = 0; k < TREB_PARTS; k++) {
+        const b = TREB_PART[k];
+        scratchB.position.set(b.p[0], b.p[1], b.p[2]);
+        scratchB.rotation.set(k === 2 ? t.arm : 0, 0, 0);
+        scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        trebMesh.setMatrixAt(i * TREB_PARTS + k, tmpM);
+        trebMesh.setColorAt(i * TREB_PARTS + k, tmpC.setHex(b.c));
+      }
+    }
+    trebMesh.instanceMatrix.needsUpdate = true;
+    if (trebMesh.instanceColor) trebMesh.instanceColor.needsUpdate = true;
+  }
+  function putRocks(list) {
+    const n = Math.min(list.length, MAXROCK);
+    rockMesh.count = n;
+    for (let i = 0; i < n; i++) {
+      const r = list[i];
+      scratch.position.set(r.x, r.y, r.z);
+      scratch.rotation.set(r.rx, r.ry, 0);
+      scratch.scale.setScalar(r.s);
+      scratch.updateMatrix();
+      rockMesh.setMatrixAt(i, scratch.matrix);
+    }
+    rockMesh.instanceMatrix.needsUpdate = true;
+  }
   function hammerPos() { const p = hammerGroup.position; return { x: p.x, y: p.y, z: p.z }; }
 
   /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
@@ -421,7 +479,7 @@ const ENG = (function () {
     init, resize, render, info, pick,
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers,
-    putTrees, putDust,
+    putTrees, putDust, putTrebs, putRocks,
     setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible, hammerPos,
     fitCamera, updateCamera, orbit, zoom, shake,
     cam, camTarget, BS, MAXB, MAXW, WPARTS,

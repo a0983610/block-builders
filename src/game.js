@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -237,6 +237,7 @@ function startBuild(instant) {
   swing = null; ENG.hideHammer();
   ball = null; ENG.hideBall();
   twist = null; ENG.hideTornado();
+  trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
 
   const idx = pickShape();
   recent.push(idx); if (recent.length > 8) recent.shift();
@@ -677,9 +678,14 @@ function resetSave() {
 /* ── 破壞道具 ─────────────────────────────────────────────
    三種都走同一個出口 breakBlock()，差別只在「哪些積木被選中、給什麼速度」。 */
 const TOOLS = [
+  { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
   { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊', lock: null },
+  { id: 'bighammer', n: '大槌', k: '🔨', big: true, tip: '點建築：兩倍大的槌子，範圍也是兩倍',
+    lock: { txt: '累計擊飛 300 塊解鎖', ok: () => stats.smashed >= 300 } },
   { id: 'ball', n: '保齡球', k: '🎳', tip: '點建築：保齡球滾過去撞',
     lock: { txt: '拆掉 3 座建築解鎖', ok: () => stats.destroyed >= 3 } },
+  { id: 'treb', n: '投石機', k: '🪨', tip: '點一下：四周架起投石機，朝建築丟石頭',
+    lock: { txt: '拆掉 6 座建築解鎖', ok: () => stats.destroyed >= 6 } },
   { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去',
     lock: { txt: '累計擊飛 1000 塊解鎖', ok: () => stats.smashed >= 1000 } }
 ];
@@ -798,8 +804,9 @@ function afterHit(n, point, R) {
 
 /* 槌子：點狀衝擊。只有衝擊球內的積木會散，球外的原封不動；
    方向來自滑鼠射線，所以從上面砸跟從側面砸，塌的方式不一樣。 */
-function smash(point, dir) {
-  const R = hammerR, R2 = R * R;
+function smash(point, dir, R0, pow0) {
+  const R = R0 || hammerR, R2 = R * R;
+  const power = pow0 || hammerPow;
   let hitN = 0;
   for (const b of blocks) {
     if (b.st !== SET) continue;
@@ -807,7 +814,7 @@ function smash(point, dir) {
     const d2 = dx * dx + dy * dy + dz * dz;
     if (d2 <= R2) {
       const d = Math.sqrt(d2);
-      const f = Math.pow(1 - d / R, 0.65) * hammerPow;
+      const f = Math.pow(1 - d / R, 0.65) * power;
       const ol = Math.max(0.4, d);
       // 六成沿著揮擊方向、四成沿著離衝擊點的徑向——才有「往那個方向被打飛」的感覺
       breakBlock(b,
@@ -832,7 +839,7 @@ function smash(point, dir) {
 const SWING_DOWN = 0.19, SWING_BACK = 0.34;
 const SWING_ARM = 9, SWING_ANG = 2.15;
 let swingSide = 1;
-function launchHammer(point, dir) {
+function launchHammer(point, dir, big) {
   if (swing && !swing.hit) resolveSwing();        // 連點時先把上一槌結算掉，不要吃掉那一擊
   /* 側揮：揮動平面取「螢幕右方 × 世界上方」，弧線正對著鏡頭掃過來。
      沿著視線方向直直砸下去的話，槌子從頭到尾都是端面朝你，看不出那是一支槌子。 */
@@ -842,14 +849,16 @@ function launchHammer(point, dir) {
   swingSide = -swingSide;                          // 左右輪流，連續砸才不會每次都同一邊
   swing = { px: point.x, py: point.y, pz: point.z,
             dx: dir.x, dy: dir.y, dz: dir.z,
-            rx: rx * swingSide, rz: rz * swingSide, t: 0, hit: false };
+            rx: rx * swingSide, rz: rz * swingSide, t: 0, hit: false, big: !!big };
   sndSwing();
 }
 function resolveSwing() {
   if (!swing || swing.hit) return 0;
   swing.hit = true;
+  const m = swing.big ? 2 : 1;                   // 大槌：範圍兩倍、力道再多五成
   return smash({ x: swing.px, y: swing.py, z: swing.pz },
-               { x: swing.dx, y: swing.dy, z: swing.dz });
+               { x: swing.dx, y: swing.dy, z: swing.dz },
+               hammerR * m, hammerPow * (swing.big ? 1.5 : 1));
 }
 function stepSwing(dt) {
   if (!swing) return;
@@ -863,11 +872,82 @@ function stepSwing(dt) {
     : Math.pow((s.t - SWING_DOWN) / SWING_BACK, 0.6) * 0.7;
   const th = k * SWING_ANG, st = Math.sin(th), ct = Math.cos(th);
   /* 支點在落點正上方 SWING_ARM，槌頭繞著支點掃；th=0 時槌頭剛好落在落點上。
-     槌柄方向就是「支點 → 槌頭」。 */
-  const hx = s.px + SWING_ARM * st * s.rx;
-  const hy = s.py + SWING_ARM * (1 - ct);
-  const hz = s.pz + SWING_ARM * st * s.rz;
-  ENG.setHammer(hx, hy, hz, hx + st * s.rx, hy - ct, hz + st * s.rz, 0);
+     槌柄方向就是「支點 → 槌頭」。大槌整支放大，揮臂也要跟著加長。 */
+  const m = s.big ? 2 : 1;
+  const arm = SWING_ARM * (s.big ? 1.55 : 1);
+  const hx = s.px + arm * st * s.rx;
+  const hy = s.py + arm * (1 - ct);
+  const hz = s.pz + arm * st * s.rz;
+  ENG.setHammer(hx, hy, hz, hx + st * s.rx, hy - ct, hz + st * s.rz, 0, m);
+}
+
+/* ── 投石機 ─────────────────────────────────────────────
+   四周架起幾台，朝建築中心附近隨機丟石頭，走拋物線砸下來。 */
+const TREB_N = 4, TREB_SHOTS = 3, ROCK_R = 4.6, ROCK_POW = 12;
+let trebs = null;
+function launchTrebs() {
+  if (trebs) return;
+  const list = [];
+  const a0 = Math.random() * Math.PI * 2;
+  for (let i = 0; i < TREB_N; i++) {
+    const a = a0 + i / TREB_N * Math.PI * 2 + rr(-0.25, 0.25);
+    const d = siteR + 9;
+    const x = Math.cos(a) * d, z = Math.sin(a) * d;
+    // 面向工地中心：rotation.y = a 之後 local +Z 會指到 (sin a, 0, cos a)
+    list.push({ x, z, a: Math.atan2(-x, -z), arm: -0.8, next: rr(0.15, 1.2), left: TREB_SHOTS });
+  }
+  trebs = { list, rocks: [], life: 10 };
+  sndWind();
+}
+function fireRock(m) {
+  // 落點以建築中心為準隨機取（開根號讓分布均勻，不然會全擠在中心）
+  const a = Math.random() * Math.PI * 2;
+  const rad = Math.sqrt(Math.random()) * siteR * 0.85;
+  const tx = Math.cos(a) * rad, tz = Math.sin(a) * rad;
+  // 目標高度取那附近最高的積木，石頭才會砸在建築上而不是穿進去才炸
+  let ty = 0;
+  for (const b of blocks) {
+    if (b.st !== SET) continue;
+    if (Math.abs(b.x - tx) > 1.8 || Math.abs(b.z - tz) > 1.8) continue;
+    if (b.y > ty) ty = b.y;
+  }
+  const sy = 4.4, T = 1.7;
+  trebs.rocks.push({
+    x: m.x, y: sy, z: m.z,
+    vx: (tx - m.x) / T, vz: (tz - m.z) / T,
+    vy: (ty + 0.6 - sy) / T + 0.5 * GRAV * T,     // 解拋物線：湊出剛好 T 秒抵達
+    T, t: 0, rx: 0, ry: 0, s: rr(1.3, 2.1)
+  });
+  m.arm = 1.35;
+  sndSwing();
+}
+function rockHit(r) {
+  const p = { x: r.x, y: Math.max(0.5, r.y), z: r.z };
+  const n = smash(p, { x: 0.12, y: -1, z: 0.12 }, ROCK_R, ROCK_POW);
+  spawnDust(p, ROCK_R, n);
+  spawnRing({ x: p.x, y: 0, z: p.z }, 5);
+  ENG.shake(0.34);
+  sndSmash();
+}
+function stepTrebs(dt) {
+  if (!trebs) return;
+  trebs.life -= dt;
+  for (const m of trebs.list) {
+    m.arm += (-0.8 - m.arm) * Math.min(1, dt * 5);   // 甩出去之後慢慢拉回待發位置
+    if (m.left > 0) {
+      m.next -= dt;
+      if (m.next <= 0) { m.next = rr(1.2, 2); m.left--; fireRock(m); }
+    }
+  }
+  for (let i = trebs.rocks.length - 1; i >= 0; i--) {
+    const r = trebs.rocks[i];
+    r.t += dt;
+    r.vy -= GRAV * dt;
+    r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
+    r.rx += dt * 3.2; r.ry += dt * 2.4;
+    if (r.t >= r.T || r.y <= 0.6) { trebs.rocks.splice(i, 1); rockHit(r); }
+  }
+  if (trebs.life <= 0 && !trebs.rocks.length) { trebs = null; ENG.putTrebs([]); ENG.putRocks([]); }
 }
 
 /* 保齡球：貼著地面從場外滾進來，把沿路的東西撞飛。
@@ -980,8 +1060,11 @@ function stepTwist(dt) {
 
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
 function useTool(hit) {
-  if (tool === 'hammer') { launchHammer(hit.point, hit.dir); return 0; }
+  if (tool === 'finger') return 0;                 // 手指什麼都不破壞，只有戳小人有效
+  if (tool === 'hammer') { launchHammer(hit.point, hit.dir, false); return 0; }
+  if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true); return 0; }
   if (tool === 'ball') { launchBall(hit.point, hit.dir); return 0; }
+  if (tool === 'treb') { launchTrebs(); return 0; }
   if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   return 0;
 }
@@ -1102,6 +1185,7 @@ function step(dt) {
   stepSwing(dt);
   stepBall(dt);
   stepTwist(dt);
+  stepTrebs(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
     toasts[i].t -= dt;
     if (toasts[i].t <= 0) { toasts.splice(i, 1); renderToasts(); }
@@ -1158,7 +1242,10 @@ function draw() {
 
   ENG.putTrees(trees);
   ENG.putDust(dust);
+  ENG.putTrebs(trebs ? trebs.list : EMPTY);
+  ENG.putRocks(trebs ? trebs.rocks : EMPTY);
 }
+const EMPTY = [];
 
 /* ── 輸入 ───────────────────────────────────────────────── */
 let spinOn = false;
@@ -1201,8 +1288,8 @@ function onUp(e) {
     }
     return;
   }
-  // 龍捲風是往地面下的，點空地也算；其他工具要點到建築
-  if (hit.kind === 'block' || tool === 'tornado') useTool(hit);
+  // 龍捲風與投石機點空地也算；其他工具要點到建築
+  if (hit.kind === 'block' || tool === 'tornado' || tool === 'treb') useTool(hit);
 }
 
 /* ── HUD ────────────────────────────────────────────────── */
@@ -1328,6 +1415,7 @@ function boot() {
   completeNow();          // 開場直接給一座蓋好的建築，砸掉之後才會開始蓋下一座
   requestAnimationFrame(frame);
 }
+
 
 
 

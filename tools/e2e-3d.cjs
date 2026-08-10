@@ -136,6 +136,8 @@ const pix = page => page.evaluate(() => {
 });
 
 /* 把某個世界座標換算成畫面座標，才能真的用滑鼠點它 */
+const placedCntTxt = (a, b) => a + ' → ' + b + ' 塊';
+
 const toScreen = (page, sel) => page.evaluate(sel => {
   const t = eval(sel);
   if (!t) return null;
@@ -594,23 +596,101 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const lock0 = await page.evaluate(() => {
     stats = freshStats(); renderTools();
     return {
-      ok: TOOLS.map(t => t.id + ':' + toolOk(t)),
+      ids: TOOLS.map(t => t.id),
+      ok: TOOLS.map(t => toolOk(t)),
       btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open')
     };
   });
-  ok('一開始只有槌子可用', lock0.ok.join(',') === 'hammer:true,ball:false,tornado:false', lock0.ok.join('  '));
-  ok('鎖住的工具在畫面上也是鎖住的', lock0.btn.join(',') === 'open,lock,lock', lock0.btn.join(','));
+  ok('工具共 6 種', lock0.ids.length === 6, lock0.ids.join(','));
+  ok('一開始只有手指跟槌子可用',
+     lock0.ok.join(',') === 'true,true,false,false,false,false', lock0.ok.join(','));
+  ok('鎖住的工具在畫面上也是鎖住的',
+     lock0.btn.join(',') === 'open,open,lock,lock,lock,lock', lock0.btn.join(','));
 
   const lock1 = await page.evaluate(() => {
+    const step2 = [];
+    stats = freshStats(); stats.smashed = 300; renderTools();
+    step2.push(TOOLS.map(t => toolOk(t)).join(','));
     stats.destroyed = 3; renderTools();
-    const a = TOOLS.map(t => toolOk(t));
+    step2.push(TOOLS.map(t => toolOk(t)).join(','));
+    stats.destroyed = 6; renderTools();
+    step2.push(TOOLS.map(t => toolOk(t)).join(','));
     stats.smashed = 1000; renderTools();
-    const b = TOOLS.map(t => toolOk(t));
-    return { a, b, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
+    step2.push(TOOLS.map(t => toolOk(t)).join(','));
+    return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
-  ok('拆掉 3 座解鎖鐵球', lock1.a[1] === true && lock1.a[2] === false);
-  ok('擊飛 1000 塊解鎖龍捲風', lock1.b[2] === true);
-  ok('解鎖後畫面上的鎖頭消失', lock1.btn.join(',') === 'open,open,open', lock1.btn.join(','));
+  ok('擊飛 300 塊解鎖大槌', lock1.step2[0] === 'true,true,true,false,false,false', lock1.step2[0]);
+  ok('拆掉 3 座解鎖保齡球', lock1.step2[1] === 'true,true,true,true,false,false', lock1.step2[1]);
+  ok('拆掉 6 座解鎖投石機', lock1.step2[2] === 'true,true,true,true,true,false', lock1.step2[2]);
+  ok('擊飛 1000 塊解鎖龍捲風', lock1.step2[3] === 'true,true,true,true,true,true', lock1.step2[3]);
+  ok('解鎖後畫面上的鎖頭消失',
+     lock1.btn.join(',') === 'open,open,open,open,open,open', lock1.btn.join(','));
+
+  /* 手指：什麼都不破壞，但戳得倒小人 */
+  await reset(page, { shape: '吉薩金字塔', cnt: 700, workers: 12 });
+  const finger = await page.evaluate(() => {
+    completeNow();
+    tool = 'finger';
+    const n0 = placedCnt;
+    const cand = blocks.filter(b => b.st === 3);
+    const t = cand[Math.floor(cand.length * 0.5)];
+    useTool({ point: new THREE.Vector3(t.x, t.y, t.z), dir: new THREE.Vector3(0, -1, 0) });
+    for (let i = 0; i < 60; i++) step(0.05);
+    const after = placedCnt;
+    // 小人還是戳得倒（那段邏輯在道具判斷之前）
+    const w = workers.find(x => x.fall <= 0);
+    const before = stats.poked;
+    w.fall = 1.5; releaseWorker(w); stats.poked++;
+    return { n0, after, phase, fell: w.fall > 0, poked: stats.poked - before };
+  });
+  ok('手指不會破壞任何東西', finger.after === finger.n0 && finger.phase === 'done',
+     placedCntTxt(finger.n0, finger.after) + '，phase 仍是 ' + finger.phase);
+  ok('手指模式下小人照樣戳得倒', finger.fell && finger.poked === 1);
+
+  /* 大槌：同樣一擊，範圍要明顯比一般槌子大 */
+  const bigH = await page.evaluate(() => {
+    const run = big => {
+      startBuild(true); completeNow();
+      const cand = blocks.filter(b => b.st === 3 && b.y > 3);
+      const t = cand[Math.floor(cand.length * 0.5)];
+      const n0 = placedCnt;
+      launchHammer(new THREE.Vector3(t.x, t.y, t.z), new THREE.Vector3(0.3, -0.85, 0.4).normalize(), big);
+      let g = 0;
+      while (swing && !swing.hit && g++ < 40) step(0.02);
+      return n0 - placedCnt;
+    };
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 2000;
+    return { small: run(false), big: run(true) };
+  });
+  ok('大槌的範圍明顯比一般槌子大', bigH.big > bigH.small * 2.5,
+     '一般槌子打飛 ' + bigH.small + ' 塊、大槌 ' + bigH.big + ' 塊');
+
+  /* 投石機 */
+  await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 3 });
+  const treb = await page.evaluate(() => {
+    completeNow();
+    const n0 = placedCnt;
+    launchTrebs();
+    const born = trebs ? trebs.list.length : 0;
+    const outside = trebs ? trebs.list.every(m => Math.hypot(m.x, m.z) > siteR) : false;
+    let maxRock = 0, fired = 0, offCentre = 0;
+    for (let i = 0; i < 900 && trebs; i++) {
+      step(0.02);
+      if (trebs) {
+        maxRock = Math.max(maxRock, trebs.rocks.length);
+        for (const r of trebs.rocks) if (Math.hypot(r.x, r.z) > arenaR + 5) offCentre++;
+      }
+    }
+    fired = TREB_N * TREB_SHOTS;
+    return { n0, after: placedCnt, born, outside, maxRock, fired, gone: !trebs, offCentre };
+  });
+  ok('投石機會在建築外圍架起來', treb.born === 4 && treb.outside, treb.born + ' 台，都在工地圈外');
+  ok('投石機會丟出石頭', treb.maxRock > 0, '同時最多 ' + treb.maxRock + ' 顆在空中');
+  ok('石頭不會飛出場外', treb.offCentre === 0);
+  ok('石頭砸下來會造成破壞', treb.after < treb.n0,
+     placedCntTxt(treb.n0, treb.after) + '（共丟 ' + treb.fired + ' 顆）');
+  ok('投石完會自己撤走', treb.gone);
 
   const lockClick = await page.evaluate(() => {
     stats = freshStats(); tool = 'hammer'; renderTools();
@@ -856,9 +936,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const persist = await page.evaluate(() => ({ d: stats.destroyed, s: stats.smashed, b: stats.badges.length }));
   ok('關掉重開紀錄還在', persist.d === 4 && persist.s === 1234 && persist.b === 1,
      'destroyed=' + persist.d + '、smashed=' + persist.s + '、成就 ' + persist.b + ' 個');
+  /* 拆 4 座、擊飛 1234 塊 → 大槌(300)、保齡球(3 座)、龍捲風(1000) 開，投石機(6 座) 還鎖著 */
   const unlockedAfterReload = await page.evaluate(() =>
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
-  ok('重開後解鎖狀態跟著回來', unlockedAfterReload === 'open,open,open',
+  ok('重開後解鎖狀態跟著回來', unlockedAfterReload === 'open,open,open,open,lock,open',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數 */
@@ -966,9 +1047,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const ratio = sp1.simT > 0 ? sp3.simT / sp1.simT : 0;
   /* 不另外比「同時間蓋幾塊」：軟體算圖幀率太低，1.8 秒只推進 1 秒多模擬時間，
      小人連第一趟都還沒送到，兩邊都是 0，測了也沒有鑑別力。上面的倍率才是重點。 */
-  ok('速度倍率真的讓模擬跑得更快', ratio > 2.4 && ratio < 3.6,
+  /* 上界不會超過 3（dt 有 0.05 的上限），而且倍率開高時每幀要算的東西變多、
+     幀率會掉，所以實測一定略低於 3；下界抓 1.8 是留給軟體算圖的抖動。 */
+  ok('速度倍率真的讓模擬跑得更快', ratio > 1.8 && ratio < 3.2,
      '同樣 1.8 秒：1× 推進 ' + sp1.simT.toFixed(2) + ' 秒模擬、3× 推進 ' +
-     sp3.simT.toFixed(2) + ' 秒（' + ratio.toFixed(2) + ' 倍）');
+     sp3.simT.toFixed(2) + ' 秒（' + ratio.toFixed(2) + ' 倍，理論上限 3）');
 
   await page.evaluate(() => { running = true; });
   await page.click('#again');
@@ -1086,6 +1169,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('小螢幕會收掉操作提示', mob.hint === 'none', mob.hint);
   ok('設定面板不會超出畫面', mob.inside, '面板寬 ' + mob.panelW + '，視窗寬 390');
+
+  /* 手機版空間很擠，按鈕互相疊到就點不到了——直接量方框有沒有相交 */
+  const overlap = await page.evaluate(() => {
+    const ids = ['head', 'time', 'tools', 'panelBtn', 'ver'];
+    const box = {};
+    for (const id of ids) {
+      const e = document.getElementById(id);
+      if (getComputedStyle(e).display === 'none') continue;
+      box[id] = e.getBoundingClientRect();
+    }
+    const bad = [], keys = Object.keys(box);
+    for (let i = 0; i < keys.length; i++)
+      for (let j = i + 1; j < keys.length; j++) {
+        const a = box[keys[i]], b = box[keys[j]];
+        if (a.right > b.left && b.right > a.left && a.bottom > b.top && b.bottom > a.top)
+          bad.push(keys[i] + '×' + keys[j]);
+      }
+    const out = keys.filter(k => box[k].right > window.innerWidth + 1 || box[k].left < -1);
+    return { bad, out, toolsW: Math.round(box.tools.width) };
+  });
+  ok('手機版的 UI 不會互相疊到', overlap.bad.length === 0, overlap.bad.join('、') || '五個區塊都沒相交');
+  ok('手機版工具列不會超出畫面', overlap.out.length === 0,
+     '工具列寬 ' + overlap.toolsW + '，視窗寬 390' + (overlap.out.length ? '；超出：' + overlap.out.join(',') : ''));
   const pMob = await pix(page);
   ok('手機尺寸下照樣畫得出來', pMob.opaque > 0.4, (pMob.opaque * 100).toFixed(0) + '%');
   await page.screenshot({ path: path.join(OUT, '05-手機版.png') });

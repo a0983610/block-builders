@@ -76,8 +76,8 @@
     font-size:12px;white-space:nowrap;pointer-events:none;
   }
 
-  /* 破壞工具列 */
-  #tools{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:8px;z-index:6}
+  /* 破壞工具列（畫面上方中央） */
+  #tools{position:fixed;left:50%;top:14px;transform:translateX(-50%);display:flex;gap:7px;z-index:6}
   .tool{
     display:flex;flex-direction:column;align-items:center;gap:1px;
     min-width:62px;padding:6px 10px;border-radius:12px;
@@ -89,9 +89,11 @@
   .tool.on{background:var(--accent);color:#fff;border-color:transparent}
   .tool.on .n{opacity:.95}
   .tool.lock{opacity:.5;filter:grayscale(1)}
+  /* 大槌跟槌子同一個圖示，靠尺寸區分 */
+  .tool[data-tool="bighammer"] .k{font-size:25px}
 
-  /* 成就與提示 */
-  #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:15;
+  /* 成就與提示（工具列移到上方後，提示往下讓開） */
+  #toast{position:fixed;left:50%;top:88px;transform:translateX(-50%);z-index:15;
          display:flex;flex-direction:column;gap:6px;align-items:center;pointer-events:none}
   #toast .t{
     padding:8px 16px;border-radius:12px;background:rgba(27,36,48,.88);color:#fff;
@@ -127,13 +129,22 @@
   #bigTip{position:fixed;bottom:26px;left:0;right:0;text-align:center;font-size:13px;opacity:.45}
 
   @media (max-width:640px){
-    #head{min-width:0;padding:8px 11px}
+    /* 限寬，不然統計那一行會把卡片撐到右上角的時鐘底下 */
+    #head{min-width:0;padding:8px 11px;max-width:calc(100vw - 220px)}
     #head h1{font-size:15px}
     #stat{font-size:10px;gap:2px 8px}
     #clock{font-size:20px}
     #panel{width:calc(100vw - 28px)}
     #hint{display:none}
-    .tool{min-width:54px;padding:5px 8px}
+    /* 手機上頂端那一排已經被建築資訊卡與時鐘佔滿，工具列改放底部，
+       而且只留圖示；設定鈕與版本號互換位置讓出中間 */
+    #tools{top:auto;bottom:12px;gap:4px}
+    .tool{min-width:32px;padding:4px 3px}
+    .tool .k{font-size:17px}
+    .tool .n{display:none}
+    #panelBtn{right:14px;left:auto}
+    #ver{left:14px;right:auto}
+    #toast{top:14px}
   }
 </style>
 </head>
