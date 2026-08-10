@@ -13,7 +13,8 @@ const ENG = (function () {
   const T = THREE;
 
   let renderer, scene, camera, canvas;
-  let sun, ground, dirtPad, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
+  let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
+  let ballMesh, tornadoMesh;
   let W = 1, H = 1;
 
   const scratch = new T.Object3D();       // 借來組矩陣用，不進場景
@@ -87,9 +88,10 @@ const ENG = (function () {
        前者只要 2 個，畫面完全一樣。草皮比土層外擴一點，邊緣才有草蓋住土的層次。 */
     const unitBox = new T.BoxGeometry(1, 1, 1);
     dirtPad = new T.Mesh(unitBox, new T.MeshLambertMaterial({ color: 0x6f5134 }));
+    grassRim = new T.Mesh(unitBox, new T.MeshLambertMaterial({ color: 0x8a6b3f }));  // 草皮與土層之間的切邊
     ground = new T.Mesh(unitBox, new T.MeshLambertMaterial({ color: 0x5f8f3e }));
     ground.receiveShadow = true;
-    scene.add(dirtPad, ground);
+    scene.add(dirtPad, grassRim, ground);
     setGroundSize(120);
 
     const unit = new T.BoxGeometry(1, 1, 1);
@@ -129,14 +131,45 @@ const ENG = (function () {
     scene.add(dustMesh);
     dustMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
+    /* 破壞道具：鐵球與龍捲風。兩個都只有一顆，不用 instancing */
+    ballMesh = new T.Mesh(new T.SphereGeometry(1, 18, 14),
+      new T.MeshLambertMaterial({ color: 0x3a3f47 }));
+    ballMesh.castShadow = true; ballMesh.visible = false;
+    scene.add(ballMesh);
+
+    tornadoMesh = new T.Mesh(new T.ConeGeometry(1, 1, 18, 6, true),
+      new T.MeshBasicMaterial({ color: 0xcfd6dd, transparent: true, opacity: 0.24,
+                                side: T.DoubleSide, depthWrite: false }));
+    tornadoMesh.visible = false;
+    scene.add(tornadoMesh);
+
     resize();
   }
 
+  /* ── 破壞道具 ───────────────────────────────────── */
+  function setBall(x, y, z, r) {
+    ballMesh.visible = true;
+    ballMesh.position.set(x, y, z);
+    ballMesh.scale.setScalar(r);
+  }
+  function hideBall() { ballMesh.visible = false; }
+  /* 圓錐預設是尖端朝上，龍捲風要倒過來（尖端貼地） */
+  function setTornado(x, z, r, h, spin) {
+    tornadoMesh.visible = true;
+    tornadoMesh.position.set(x, h / 2, z);
+    tornadoMesh.scale.set(r, h, r);
+    tornadoMesh.rotation.set(Math.PI, spin, 0);
+  }
+  function hideTornado() { tornadoMesh.visible = false; }
+
+  /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
   function setGroundSize(r) {
     ground.scale.set(r * 2, 1.2, r * 2);
     ground.position.set(0, -0.6, 0);
-    dirtPad.scale.set(r * 1.96, 7, r * 1.96);
-    dirtPad.position.set(0, -4.2, 0);
+    grassRim.scale.set(r * 1.985, 1.1, r * 1.985);
+    grassRim.position.set(0, -1.65, 0);
+    dirtPad.scale.set(r * 1.95, 7, r * 1.95);
+    dirtPad.position.set(0, -5.2, 0);
   }
 
   function resize() {
@@ -338,6 +371,7 @@ const ENG = (function () {
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust,
+    setBall, hideBall, setTornado, hideTornado,
     fitCamera, updateCamera, orbit, zoom, shake,
     cam, camTarget, BS, MAXB, MAXW, WPARTS,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }

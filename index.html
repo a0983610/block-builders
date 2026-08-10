@@ -7,7 +7,7 @@
 <style>
   :root{
     --ink:#1b2430; --panel:rgba(255,255,255,.86); --line:rgba(27,36,48,.14);
-    --accent:#e8873c; --ok:#3f9e63;
+    --accent:#e8873c; --ok:#3f9e63; --bad:#c0483c;
   }
   *{box-sizing:border-box}
   html,body{height:100%;margin:0;overflow:hidden}
@@ -33,6 +33,10 @@
   #head .sub{display:flex;gap:8px;align-items:center;margin-top:4px;font-size:12px;opacity:.75}
   .tag{padding:1px 8px;border-radius:99px;background:var(--accent);color:#fff;font-size:11px;font-weight:700}
   .tag.ok{background:var(--ok)}
+  .tag.bad{background:var(--bad)}
+  #stat{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:7px;font-size:11px;opacity:.72;
+        font-variant-numeric:tabular-nums}
+  #stat b{font-weight:700;opacity:.95}
   #track{height:5px;border-radius:99px;background:rgba(27,36,48,.13);margin-top:8px;overflow:hidden}
   #bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#f0b46b);transition:width .25s}
 
@@ -62,10 +66,50 @@
   #panelBtn{position:fixed;left:14px;bottom:14px;z-index:5;padding:7px 11px}
 
   #hint{
-    position:fixed;left:50%;bottom:16px;transform:translateX(-50%);
+    position:fixed;left:50%;bottom:70px;transform:translateX(-50%);
     padding:7px 15px;border-radius:99px;background:rgba(27,36,48,.55);color:#fff;
     font-size:12px;white-space:nowrap;pointer-events:none;
   }
+
+  /* 破壞工具列 */
+  #tools{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:8px;z-index:6}
+  .tool{
+    display:flex;flex-direction:column;align-items:center;gap:1px;
+    min-width:62px;padding:6px 10px;border-radius:12px;
+    background:var(--panel);border:1px solid var(--line);
+    box-shadow:0 4px 16px rgba(20,32,48,.16);cursor:pointer;
+  }
+  .tool .k{font-size:19px;line-height:1.1}
+  .tool .n{font-size:11px;opacity:.8}
+  .tool.on{background:var(--accent);color:#fff;border-color:transparent}
+  .tool.on .n{opacity:.95}
+  .tool.lock{opacity:.5;filter:grayscale(1)}
+
+  /* 成就與提示 */
+  #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:15;
+         display:flex;flex-direction:column;gap:6px;align-items:center;pointer-events:none}
+  #toast .t{
+    padding:8px 16px;border-radius:12px;background:rgba(27,36,48,.88);color:#fff;
+    display:flex;flex-direction:column;align-items:center;line-height:1.35;
+    box-shadow:0 6px 20px rgba(0,0,0,.25);
+  }
+  #toast .t b{font-size:14px}
+  #toast .t span{font-size:11px;opacity:.72}
+
+  #badgeWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
+             background:rgba(12,18,26,.72)}
+  #badgeWrap.on{display:grid}
+  #badgeBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
+            max-height:82vh;overflow:auto}
+  #badgeBox h2{margin:0 0 2px;font-size:17px}
+  #badgeBox .sub{font-size:12px;opacity:.65;margin-bottom:12px}
+  .badge{display:flex;flex-direction:column;padding:8px 10px;border-radius:10px;
+         background:#f2f2f0;margin-bottom:7px;opacity:.55}
+  .badge.got{background:#fdf1e2;opacity:1}
+  .badge b{font-size:13px}
+  .badge span{font-size:11.5px;opacity:.7}
+  #badgeBox .row{display:flex;gap:8px;margin-top:12px}
+  #badgeBox .row button{flex:1}
 
   /* 全螢幕時鐘 */
   #bigWrap{
@@ -80,9 +124,11 @@
   @media (max-width:640px){
     #head{min-width:0;padding:8px 11px}
     #head h1{font-size:15px}
+    #stat{font-size:10px;gap:2px 8px}
     #clock{font-size:20px}
     #panel{width:calc(100vw - 28px)}
     #hint{display:none}
+    .tool{min-width:54px;padding:5px 8px}
   }
 </style>
 </head>
@@ -93,6 +139,12 @@
   <h1 id="bname">—</h1>
   <div class="sub"><span class="tag" id="phase">施工中</span><span id="prog">0 / 0</span><span id="bcount"></span></div>
   <div id="track"><div id="bar"></div></div>
+  <div id="stat">
+    <span>本次人力 <b id="cost">$0</b></span>
+    <span>累計 <b id="costAll">$0</b></span>
+    <span>拆掉 <b id="nDest">0</b> 座</span>
+    <span>擊飛 <b id="nSmash">0</b> 塊</span>
+  </div>
 </div>
 
 <div class="card" id="time">
@@ -100,7 +152,11 @@
   <div class="row">施工 <b id="timer">0:00</b></div>
   <div class="row" id="fps">— fps</div>
   <button id="clockBtn">全螢幕時鐘</button>
+  <button id="badgeBtn" style="margin-top:5px;width:100%">🏅 成就</button>
 </div>
+
+<div id="toast"></div>
+<div id="tools"></div>
 
 <button id="panelBtn">⚙ 設定</button>
 <div class="card" id="panel">
@@ -123,6 +179,18 @@
     <div id="bigDate"></div>
   </div>
   <div id="bigTip">點一下任意處回到工地</div>
+</div>
+
+<div id="badgeWrap">
+  <div id="badgeBox">
+    <h2>成就</h2>
+    <div class="sub">已解鎖 <span id="badgeN">0 / 0</span>　·　紀錄會自動存在這台電腦上</div>
+    <div id="badges"></div>
+    <div class="row">
+      <button id="resetBtn">清空紀錄</button>
+      <button class="primary" id="badgeClose">關閉</button>
+    </div>
+  </div>
 </div>
 
 <script src="lib/three.min.js"></script>

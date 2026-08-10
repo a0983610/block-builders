@@ -78,6 +78,9 @@ function sndPlace() { const p = bp ? placedCnt / bp.slots.length : 0; tone(420 +
 function sndSmash() { noise(0.42, 0.3, 1500); tone(78, 0.36, 'sawtooth', 0.1, 0.35); }
 function sndDone() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.22, 'triangle', 0.07), i * 110)); }
 function sndFall() { tone(200, 0.16, 'square', 0.05, 0.5); }
+function sndSwing() { tone(160, 0.3, 'sine', 0.06, 3.2); }
+function sndWind() { noise(1.6, 0.14, 480); }
+function sndBadge() { [784, 988, 1319].forEach((f, i) => setTimeout(() => tone(f, 0.18, 'triangle', 0.08), i * 90)); }
 
 /* ── 空間雜湊：讓落地的碎塊不要疊在同一點 ─────────────────── */
 const gkey = (x, z) => Math.floor(x / CELL) + ':' + Math.floor(z / CELL);
@@ -231,7 +234,7 @@ function startBuild(instant) {
   bp = makeBlueprint(idx, targetCnt);
   placedCnt = 0; slotCursor = 0;
   phase = 'build';
-  buildStart = performance.now(); buildElapsed = 0;
+  buildStart = performance.now(); buildElapsed = 0; spentThis = 0;
 
   siteR = Math.max(7, bp.radius);
   // 建材散落區從工地邊緣往外鋪，面積跟積木數成正比 → 不管 300 塊還 3000 塊都一樣鬆
@@ -244,6 +247,34 @@ function startBuild(instant) {
 
   makeTrees();
   ENG.fitCamera(siteR, bp.height, arenaR, !!instant);
+  syncHud();
+}
+
+/* 直接把整座蓋好。開場用——一進來就有一座完整的建築可以砸，
+   不用先盯著小人搬十分鐘才有東西玩。 */
+function completeNow() {
+  for (let i = 0; i < bp.slots.length && i < blocks.length; i++) {
+    const s = bp.slots[i], b = blocks[i];
+    if (b.cell) gridDel(b);
+    b.st = SET; b.slot = i; b.x = s.x; b.y = s.y + HB; b.z = s.z;
+    b.rx = b.ry = b.rz = 0; b.scale = 1; b.al = 1; b.holder = -1; b.snap = 0;
+    b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
+    const pal = bp.pal[s.c % bp.pal.length];
+    b.r = b.tr = ((pal >> 16) & 255) / 255;
+    b.g = b.tg = ((pal >> 8) & 255) / 255;
+    b.b = b.tb = (pal & 255) / 255;
+    s.filled = true; s.claimed = -1;
+  }
+  for (let i = bp.slots.length; i < blocks.length; i++) {     // 多的積木壓成靜止的散料
+    const b = blocks[i];
+    b.st = FREE; b.slot = -1; b.holder = -1; b.snap = 0; b.rest = true;
+    b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
+    if (!b.cell) gridAdd(b);
+  }
+  for (const w of workers) releaseWorker(w);
+  placedCnt = bp.slots.length;
+  phase = 'done';
+  buildElapsed = 0; spentThis = 0;
   syncHud();
 }
 
@@ -371,6 +402,22 @@ function updWorker(w, wi, dt) {
   }
   w.tilt += (0 - w.tilt) * Math.min(1, dt * 7);
 
+  if (phase === 'wreck') {
+    // 拆除中：不修、不蓋，躲遠一點看你拆。要等這座拆完換新藍圖才會回去工作
+    w.cheer = 0;
+    const d = Math.hypot(w.x, w.z);
+    if (d < arenaR * 0.62) {
+      const a = d < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(w.z, w.x);
+      w.tx = Math.cos(a) * arenaR * 0.78; w.tz = Math.sin(a) * arenaR * 0.78;
+    }
+    if (walkTo(w, dt)) {
+      const a = Math.random() * Math.PI * 2, r2 = arenaR * rr(0.6, 0.85);
+      w.tx = Math.cos(a) * r2; w.tz = Math.sin(a) * r2;
+    }
+    w.y += (0 - w.y) * Math.min(1, dt * 6);
+    return;
+  }
+
   if (phase === 'done') {                             // 蓋完了，繞著建築慶祝
     w.cheer += dt;
     if (w.cheer < 7) {
@@ -409,7 +456,7 @@ function updWorker(w, wi, dt) {
       w.tx = b.x; w.tz = b.z;
       if (walkTo(w, dt)) {
         if (b.cell) gridDel(b);
-        b.st = CARRY; b.rest = false; w.carry = true;
+        b.st = CARRY; b.rest = false; w.carry = true; stats.carried++;
         carryPose(w, b);                              // 立刻舉起來，不然有一幀還黏在地上
         const st = standPos(bp.slots[w.slot]);
         w.tx = st.x; w.tz = st.z; w.st = 'build';
@@ -479,15 +526,156 @@ function stepToss(b, dt) {
       buildElapsed = (performance.now() - buildStart) / 1000;
       for (const w of workers) w.cheer = 0;
       sndDone();
+      toast('🎉 ' + bp.name + ' 完工', fmtDur(buildElapsed) + '　人力 ' + money(spentThis));
+      noteBuilt();
     }
   }
 }
 
-/* ── 破壞 ───────────────────────────────────────────────── */
-let hammerR = 5.5, hammerPow = 15;
-let smashedTotal = 0, destroyedBuildings = 0;
+/* ── 紀錄 · 成就 · 存檔 ───────────────────────────────── */
+const WRECK_AT = 0.25;              // 剩下不到這個比例就算拆完了，換下一座
+const WAGE = 3;                     // 每個小人每秒的人力成本（$）
+const SAVE_KEY = 'block-builders/save1';
+const SAVE_MAGIC = 'BB1';
+const SAVE_XOR = 'winton-block-builders-2026';
 
-/* 重點：只有衝擊球內的積木會散，球外的原封不動。
+const freshStats = () => ({
+  destroyed: 0, smashed: 0, carried: 0, poked: 0, spent: 0,
+  bestHit: 0, miracle: false, built: [], badges: []
+});
+let stats = freshStats();
+let spentThis = 0;
+let savable = true;                 // 無痕模式之類的存不了，就安靜降級
+
+const BADGES = [
+  { id: 'first', n: '開工大吉', d: '蓋完第一座建築', chk: s => s.built.length >= 1 },
+  { id: 'demo50', n: '拆遷大隊', d: '一次擊飛超過 50 塊積木', chk: s => s.bestHit > 50 },
+  { id: 'boss20', n: '工頭嚴厲', d: '戳倒小人 20 次', chk: s => s.poked >= 20 },
+  { id: 'miracle', n: '奇蹟工程', d: '3 分鐘內蓋完吉薩金字塔', chk: s => !!s.miracle },
+  { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
+  { id: 'move10k', n: '愚公移山', d: '小人累計搬運 10000 塊', chk: s => s.carried >= 10000 },
+  { id: 'world10', n: '環遊世界', d: '蓋過 10 種不同地標', chk: s => s.built.length >= 10 },
+  { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 }
+];
+
+let toasts = [];
+function toast(txt, sub) {
+  toasts.push({ txt, sub: sub || '', t: 4 });
+  if (toasts.length > 3) toasts.shift();
+  renderToasts();
+}
+function checkBadges() {
+  let got = false;
+  for (const b of BADGES) {
+    if (stats.badges.indexOf(b.id) >= 0) continue;
+    if (!b.chk(stats)) continue;
+    stats.badges.push(b.id);
+    toast('🏅 ' + b.n, b.d);
+    got = true;
+  }
+  if (got) { sndBadge(); save(); renderBadges(); }
+  return got;
+}
+function noteBuilt() {
+  if (!bp) return;
+  if (stats.built.indexOf(bp.name) < 0) stats.built.push(bp.name);
+  if (bp.name === '吉薩金字塔' && buildElapsed > 0 && buildElapsed <= 180) stats.miracle = true;
+  checkBadges();
+  save();
+}
+
+/* 存檔：JSON → 校驗碼 → UTF-8 → XOR → base64。
+   不是真的加密（前端沒有真加密可言），目的是讓存檔不能隨手改，
+   改壞了校驗碼對不上就當作沒有存檔，不會讓程式吃到爛資料。 */
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+function xorBytes(bytes) {
+  const out = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) out[i] = bytes[i] ^ SAVE_XOR.charCodeAt(i % SAVE_XOR.length);
+  return out;
+}
+function packSave(obj) {
+  const body = JSON.stringify(obj);
+  const bytes = xorBytes(new TextEncoder().encode(SAVE_MAGIC + '|' + hashStr(body) + '|' + body));
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+function unpackSave(txt) {
+  const bin = atob(txt);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const raw = new TextDecoder().decode(xorBytes(bytes));
+  const p = raw.split('|');
+  if (p[0] !== SAVE_MAGIC) return null;
+  const body = p.slice(2).join('|');
+  if (hashStr(body) !== p[1]) return null;      // 被動過手腳
+  return JSON.parse(body);
+}
+let saveT = 0;
+function save() {
+  if (!savable) return;
+  try { localStorage.setItem(SAVE_KEY, packSave(stats)); }
+  catch (e) { savable = false; }
+}
+function load() {
+  try {
+    const txt = localStorage.getItem(SAVE_KEY);
+    if (!txt) return;
+    const o = unpackSave(txt);
+    if (!o) return;
+    const f = freshStats();
+    for (const k in f) if (o[k] !== undefined && typeof o[k] === typeof f[k]) f[k] = o[k];
+    f.badges = f.badges.filter(id => BADGES.some(b => b.id === id));
+    stats = f;
+  } catch (e) { savable = false; }
+}
+function resetSave() {
+  stats = freshStats(); spentThis = 0;
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* 存不了就算了 */ }
+  renderBadges(); renderTools(); syncHud();
+}
+
+/* ── 破壞道具 ─────────────────────────────────────────────
+   三種都走同一個出口 breakBlock()，差別只在「哪些積木被選中、給什麼速度」。 */
+const TOOLS = [
+  { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊', lock: null },
+  { id: 'ball', n: '鐵球', k: '⚫', tip: '點建築：鐵球沿視線貫穿',
+    lock: { txt: '拆掉 3 座建築解鎖', ok: () => stats.destroyed >= 3 } },
+  { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去',
+    lock: { txt: '累計擊飛 1000 塊解鎖', ok: () => stats.smashed >= 1000 } }
+];
+const toolOk = t => !t.lock || t.lock.ok();
+let tool = 'hammer';
+
+let hammerR = 5.5, hammerPow = 15;
+let ball = null;      // 飛行中的鐵球
+let twist = null;     // 作用中的龍捲風
+
+function breakBlock(b, vx, vy, vz) {
+  freeBlock(b);
+  b.vx = vx; b.vy = vy; b.vz = vz;
+  b.ax = rr(-9, 9); b.ay = rr(-9, 9); b.az = rr(-9, 9);
+}
+/* 每次造成破壞後的共通處理：計數、嚇小人、判斷這座是不是拆完了 */
+function afterHit(n, point, R) {
+  if (n <= 0) return;
+  stats.smashed += n;
+  if (n > stats.bestHit) stats.bestHit = n;
+  if (phase === 'done') phase = 'wreck';        // 完工的建築被動到 → 進入拆除中
+  for (const w of workers) {
+    if (Math.hypot(w.x - point.x, w.z - point.z) < R * 1.7 && w.fall <= 0) {
+      w.fall = rr(1.1, 2.3); releaseWorker(w); sndFall();
+    }
+  }
+  shakeTrees(point, R);
+  checkBadges();
+}
+
+/* 槌子：點狀衝擊。只有衝擊球內的積木會散，球外的原封不動；
    方向來自滑鼠射線，所以從上面砸跟從側面砸，塌的方式不一樣。 */
 function smash(point, dir) {
   const R = hammerR, R2 = R * R;
@@ -499,30 +687,123 @@ function smash(point, dir) {
     if (d2 <= R2) {
       const d = Math.sqrt(d2);
       const f = Math.pow(1 - d / R, 0.65) * hammerPow;
-      let ox = dx, oy = dy, oz = dz, ol = Math.max(0.4, d);
-      ox /= ol; oy /= ol; oz /= ol;
-      freeBlock(b);
+      const ol = Math.max(0.4, d);
       // 六成沿著揮擊方向、四成沿著離衝擊點的徑向——才有「往那個方向被打飛」的感覺
-      b.vx = (dir.x * 0.62 + ox * 0.55) * f + rr(-1.4, 1.4);
-      b.vy = (dir.y * 0.32 + oy * 0.62) * f + rr(2.2, 6.2);
-      b.vz = (dir.z * 0.62 + oz * 0.55) * f + rr(-1.4, 1.4);
-      b.ax = rr(-9, 9); b.ay = rr(-9, 9); b.az = rr(-9, 9);
+      breakBlock(b,
+        (dir.x * 0.62 + dx / ol * 0.55) * f + rr(-1.4, 1.4),
+        (dir.y * 0.32 + dy / ol * 0.62) * f + rr(2.2, 6.2),
+        (dir.z * 0.62 + dz / ol * 0.55) * f + rr(-1.4, 1.4));
       hitN++;
     } else if (d2 <= R2 * 3.4) {
       b.wob = 0.5;                        // 波及範圍：只是晃一下，不脫落
     }
   }
-  smashedTotal += hitN;
-  if (hitN > 0 && phase === 'done') { destroyedBuildings++; phase = 'build'; buildStart = performance.now() - buildElapsed * 1000; }
-  for (const w of workers) {              // 附近的小人被嚇倒
-    if (Math.hypot(w.x - point.x, w.z - point.z) < R * 1.7 && w.fall <= 0) {
-      w.fall = rr(1.1, 2.3); releaseWorker(w); sndFall();
-    }
-  }
+  afterHit(hitN, point, R);
   spawnDust(point, R, hitN);
+  spawnRing(point, R);
   ENG.shake(0.42 + Math.min(1.4, hitN * 0.02));
   sndSmash();
   return hitN;
+}
+
+/* 鐵球：從視線後方射出，沿著同一條射線貫穿過去，沿途的積木被推倒打飛 */
+/* 起點就放在同一條射線上、初速也完全沿著射線，中途只給很輕的重力。
+   起點若額外加高、初速若額外加上揚量，球會從建築頂上飛過去，一塊都打不到。 */
+function launchBall(point, dir) {
+  ball = {
+    x: point.x - dir.x * 40, y: point.y - dir.y * 40, z: point.z - dir.z * 40,
+    vx: dir.x * 46, vy: dir.y * 46, vz: dir.z * 46,
+    r: 3.2, life: 2.2, hit: 0
+  };
+  sndSwing();
+}
+function stepBall(dt) {
+  if (!ball) return;
+  ball.life -= dt;
+  ball.vy -= 6 * dt;
+  ball.x += ball.vx * dt; ball.y += ball.vy * dt; ball.z += ball.vz * dt;
+  const R = ball.r, R2 = R * R;
+  const sp = Math.hypot(ball.vx, ball.vy, ball.vz) || 1;
+  let n = 0;
+  for (const b of blocks) {
+    if (b.st !== SET) continue;
+    const dx = b.x - ball.x, dy = b.y - ball.y, dz = b.z - ball.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > R2) { if (d2 < R2 * 3) b.wob = 0.4; continue; }
+    const d = Math.max(0.4, Math.sqrt(d2));
+    breakBlock(b,
+      ball.vx / sp * 22 + dx / d * 6 + rr(-2, 2),
+      Math.max(2, ball.vy / sp * 10) + dy / d * 5 + rr(1, 5),
+      ball.vz / sp * 22 + dz / d * 6 + rr(-2, 2));
+    n++;
+  }
+  if (n) {
+    ball.hit += n;
+    afterHit(n, { x: ball.x, y: ball.y, z: ball.z }, R);
+    spawnDust({ x: ball.x, y: ball.y, z: ball.z }, R, n);
+    ENG.shake(0.3 + Math.min(1, n * 0.02));
+    if (Math.random() < 0.5) sndSmash();
+  }
+  if (ball.y < ball.r * 0.5 || ball.life <= 0 || Math.hypot(ball.x, ball.z) > arenaR + 30) {
+    if (ball.y < ball.r * 0.5) { spawnRing({ x: ball.x, y: 0, z: ball.z }, 7); sndSmash(); ENG.shake(0.8); }
+    ball = null; ENG.hideBall();
+  } else ENG.setBall(ball.x, ball.y, ball.z, ball.r);
+}
+
+/* 龍捲風：在地面走一段路，把沿路的積木吸起來繞圈，最後隨機甩出去 */
+function launchTornado(point) {
+  const a = Math.atan2(-point.z, -point.x);        // 大致朝著工地中心掃過去
+  twist = {
+    x: point.x, z: point.z, r: 6, h: 20, life: 5.5,
+    spin: 0, vx: Math.cos(a) * 3.2, vz: Math.sin(a) * 3.2, hit: 0
+  };
+  sndWind();
+}
+function stepTwist(dt) {
+  if (!twist) return;
+  twist.life -= dt;
+  twist.spin += dt * 7;
+  twist.x += twist.vx * dt; twist.z += twist.vz * dt;
+  // 每隔一陣子換個方向，走起來才像亂竄而不是直線
+  twist.vx += rr(-6, 6) * dt; twist.vz += rr(-6, 6) * dt;
+  const sp = Math.hypot(twist.vx, twist.vz);
+  if (sp > 6) { twist.vx = twist.vx / sp * 6; twist.vz = twist.vz / sp * 6; }
+  if (Math.hypot(twist.x, twist.z) > arenaR) { twist.vx *= -1; twist.vz *= -1; }
+
+  const R = twist.r, R2 = R * R;
+  let n = 0;
+  for (const b of blocks) {
+    if (b.st === CARRY || b.st === TOSS) continue;
+    const dx = b.x - twist.x, dz = b.z - twist.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > R2 || b.y > twist.h) continue;
+    const d = Math.max(0.5, Math.sqrt(d2));
+    // 切線方向繞圈 + 往內吸 + 往上捲
+    const tx = -dz / d, tz = dx / d;
+    const pull = (1 - d / R);
+    if (b.st === SET) { breakBlock(b, 0, 0, 0); n++; }
+    if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
+    b.vx += (tx * 26 + -dx / d * 10) * pull * dt * 3;
+    b.vz += (tz * 26 + -dz / d * 10) * pull * dt * 3;
+    b.vy += (16 + 30 * pull) * dt * 3;
+    b.ax += rr(-30, 30) * dt; b.ay += rr(-30, 30) * dt; b.az += rr(-30, 30) * dt;
+  }
+  if (n) {
+    twist.hit += n;
+    afterHit(n, { x: twist.x, y: 2, z: twist.z }, R * 0.6);
+  }
+  if (Math.random() < dt * 40) spawnDust({ x: twist.x, y: rr(0.5, twist.h * 0.7), z: twist.z }, R * 0.7, 4);
+  ENG.shake(0.06);
+  if (twist.life <= 0) { twist = null; ENG.hideTornado(); }
+  else ENG.setTornado(twist.x, twist.z, twist.r * 0.9, twist.h, twist.spin);
+}
+
+/* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
+function useTool(hit) {
+  if (tool === 'hammer') return smash(hit.point, hit.dir);
+  if (tool === 'ball') { launchBall(hit.point, hit.dir); return 0; }
+  if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
+  return 0;
 }
 
 function spawnDust(p, R, n) {
@@ -535,6 +816,19 @@ function spawnDust(p, R, n) {
       vx: Math.cos(a) * sp, vy: rr(1, 6), vz: Math.sin(a) * sp,
       rx: Math.random() * 6, ry: Math.random() * 6,
       life: rr(0.5, 1.35), max: 1, s: rr(0.18, 0.62), c: rr(0.62, 0.9)
+    });
+  }
+}
+/* 沿著地面往外擴散的一圈氣霧——打擊感的來源之一 */
+function spawnRing(p, R) {
+  const n = 28;
+  for (let i = 0; i < n; i++) {
+    if (dust.length > 400) break;
+    const a = i / n * Math.PI * 2 + rr(-0.1, 0.1);
+    dust.push({
+      x: p.x + Math.cos(a) * 1.4, y: 0.35, z: p.z + Math.sin(a) * 1.4,
+      vx: Math.cos(a) * rr(8, 15), vy: rr(0.3, 1.8), vz: Math.sin(a) * rr(8, 15),
+      rx: 0, ry: a, life: rr(0.45, 0.9), s: rr(0.4, 0.95), c: rr(0.72, 0.94)
     });
   }
 }
@@ -591,7 +885,28 @@ function frame(now) {
 
 /* 把一步拆出來，測試才能不靠 rAF 直接推進模擬 */
 function step(dt) {
-  if (phase === 'build' && bp) buildElapsed = (performance.now() - buildStart) / 1000;
+  if (phase === 'build' && bp) {
+    buildElapsed = (performance.now() - buildStart) / 1000;
+    // 人力成本只在真的在施工時累積，而且跟著模擬時間走（開 4 倍速就燒得快）
+    const c = workers.length * WAGE * dt;
+    spentThis += c; stats.spent += c;
+  }
+  /* 拆到剩沒幾塊就當這座拆完了：剩下的自己垮掉，直接開下一座。
+     不做這件事的話玩家得一塊一塊把最後的碎屑點掉，很煩。 */
+  if (phase === 'wreck' && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
+    stats.destroyed++;
+    toast('💥 ' + bp.name + ' 拆除完畢', '累計拆掉 ' + stats.destroyed + ' 座');
+    checkBadges(); save(); renderTools();
+    startBuild(false);
+  }
+  stepBall(dt);
+  stepTwist(dt);
+  for (let i = toasts.length - 1; i >= 0; i--) {
+    toasts[i].t -= dt;
+    if (toasts[i].t <= 0) { toasts.splice(i, 1); renderToasts(); }
+  }
+  saveT += dt;
+  if (saveT > 12) { saveT = 0; save(); }
 
   for (const b of blocks) {
     // 落定轉正期間 st 還是 FLY，所以 snap 要排在 FLY 前面判斷，否則重力會一直把它壓下去
@@ -665,13 +980,14 @@ function onUp(e) {
   if (!hit) return;
   if (hit.kind === 'worker') {            // 戳小人：跌倒、手上的積木掉下來
     const w = workers[hit.idx];
-    if (w && w.fall <= 0) { w.fall = rr(1.2, 2.4); releaseWorker(w); sndFall(); }
+    if (w && w.fall <= 0) {
+      w.fall = rr(1.2, 2.4); releaseWorker(w); sndFall();
+      stats.poked++; checkBadges();
+    }
     return;
   }
-  if (hit.kind === 'block') {
-    smash(hit.point, hit.dir);
-    shakeTrees(hit.point, hammerR);
-  }
+  // 龍捲風是往地面下的，點空地也算；其他工具要點到建築
+  if (hit.kind === 'block' || tool === 'tornado') useTool(hit);
 }
 
 /* ── HUD ────────────────────────────────────────────────── */
@@ -680,6 +996,10 @@ let hudLast = 0;
 const pad2 = n => (n < 10 ? '0' : '') + n;
 function fmtClock(d) { return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()); }
 function fmtDur(s) { return Math.floor(s / 60) + ':' + pad2(Math.floor(s % 60)); }
+
+const money = v => '$' + Math.round(v).toLocaleString('en-US');
+
+const PHASE_TXT = { build: ['施工中', ''], done: ['完工', 'ok'], wreck: ['拆除中', 'bad'] };
 
 function hudTick(now) {
   if (now - hudLast < 120) return;
@@ -694,8 +1014,13 @@ function hudTick(now) {
   $('fps').textContent = Math.round(fps) + ' fps';
   const pct = bp ? placedCnt / bp.slots.length * 100 : 0;
   $('bar').style.width = pct.toFixed(1) + '%';
-  $('phase').textContent = phase === 'done' ? '完工' : '施工中';
-  $('phase').className = 'tag ' + (phase === 'done' ? 'ok' : '');
+  const ph = PHASE_TXT[phase] || PHASE_TXT.build;
+  $('phase').textContent = ph[0];
+  $('phase').className = 'tag ' + ph[1];
+  $('cost').textContent = money(spentThis);
+  $('costAll').textContent = money(stats.spent);
+  $('nDest').textContent = stats.destroyed;
+  $('nSmash').textContent = stats.smashed.toLocaleString('en-US');
 }
 function syncHud() {
   $('bname').textContent = bp ? bp.name : '';
@@ -703,6 +1028,39 @@ function syncHud() {
   $('vCnt').textContent = targetCnt;
   $('vWk').textContent = workerCnt;
   $('vSpd').textContent = timeScale.toFixed(1) + '×';
+}
+
+/* 工具列：沒解鎖的畫成鎖住並寫出解鎖條件 */
+function renderTools() {
+  const box = $('tools');
+  box.innerHTML = '';
+  for (const t of TOOLS) {
+    const okNow = toolOk(t);
+    const b = document.createElement('button');
+    b.className = 'tool' + (tool === t.id ? ' on' : '') + (okNow ? '' : ' lock');
+    b.dataset.tool = t.id;
+    b.innerHTML = '<span class="k">' + (okNow ? t.k : '🔒') + '</span><span class="n">' + t.n + '</span>';
+    b.title = okNow ? t.tip : t.lock.txt;
+    b.addEventListener('click', () => {
+      if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return; }
+      tool = t.id; renderTools();
+      $('hint').textContent = t.tip + '　｜　拖曳轉視角　｜　滾輪縮放　｜　點小人會跌倒';
+    });
+    box.appendChild(b);
+  }
+}
+function renderBadges() {
+  const box = $('badges');
+  box.innerHTML = BADGES.map(b => {
+    const got = stats.badges.indexOf(b.id) >= 0;
+    return '<div class="badge' + (got ? ' got' : '') + '"><b>' + (got ? '🏅 ' : '🔒 ') + b.n +
+           '</b><span>' + b.d + '</span></div>';
+  }).join('');
+  $('badgeN').textContent = stats.badges.length + ' / ' + BADGES.length;
+}
+function renderToasts() {
+  $('toast').innerHTML = toasts.map(t =>
+    '<div class="t"><b>' + t.txt + '</b>' + (t.sub ? '<span>' + t.sub + '</span>' : '') + '</div>').join('');
 }
 
 /* ── 啟動 ───────────────────────────────────────────────── */
@@ -735,8 +1093,19 @@ function boot() {
   $('clockBtn').addEventListener('click', () => $('bigWrap').classList.add('on'));
   $('bigWrap').addEventListener('click', () => $('bigWrap').classList.remove('on'));
   $('panelBtn').addEventListener('click', () => $('panel').classList.toggle('hide'));
+  $('badgeBtn').addEventListener('click', () => { renderBadges(); $('badgeWrap').classList.add('on'); });
+  $('badgeWrap').addEventListener('click', e => {
+    if (e.target.id === 'badgeWrap' || e.target.id === 'badgeClose') $('badgeWrap').classList.remove('on');
+  });
+  $('resetBtn').addEventListener('click', () => {
+    if (confirm('清掉所有紀錄與成就？（建築不受影響）')) { resetSave(); toast('紀錄已清空'); }
+  });
 
+  load();
+  renderTools();
+  renderBadges();
   setWorkerCount(workerCnt);
   startBuild(true);
+  completeNow();          // 開場直接給一座蓋好的建築，砸掉之後才會開始蓋下一座
   requestAnimationFrame(frame);
 }
