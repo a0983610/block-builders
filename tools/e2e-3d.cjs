@@ -872,14 +872,51 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     for (let i = 0; i < 6; i++) step(0.02);
     const moved = probes.map(p => +((p.b.x - p.x0) * p.fx + (p.b.z - p.z0) * p.fz).toFixed(2));
+    // 碎料應該跟車子走一樣的距離——是被推著，不是被拉扯
+    const drove = dozers ? dozers.list.map((m, i) => +Math.hypot(m.x - view[i].x, m.z - view[i].z).toFixed(2)) : [];
     draw(); ENG.render();
-    return { n: view.length, moved, min: Math.min(...moved), calls: ENG.info().calls };
+    return { n: view.length, moved, drove, min: Math.min(...moved),
+             slip: Math.max(...moved.map((v, i) => Math.abs(v - drove[i]))), calls: ENG.info().calls };
   });
-  ok('鏟面正前方的碎料真的會被推走', dozAlign.min > 0.5,
-     dozAlign.n + ' 台機器各推了 ' + JSON.stringify(dozAlign.moved) +
-     ' 單位（0.12 秒內車子前進 0.78）');
+  ok('鏟面前的碎料跟著車子一起走', dozAlign.min > 0.5 && dozAlign.slip < 0.35,
+     '車子走了 ' + JSON.stringify(dozAlign.drove) + '，碎料走了 ' +
+     JSON.stringify(dozAlign.moved) + '（最大落差 ' + dozAlign.slip.toFixed(2) + '）');
   ok('推土機沒有多吃 draw call', dozAlign.calls <= 13,
      dozAlign.calls + ' 個（整地中含 3 台機器）');
+
+  /* 碎料要「被帶著走」，不能被彈開。踩過的雷：每幀直接呼叫 separate 擠開重疊，
+     它一幀能把積木推開 4.7 單位、遠比車速快，鏟子前的碎料瞬間就被彈出作用範圍——
+     畫面上是機器周圍一圈空地、鏟子前面什麼都沒有，完全不像在推。
+
+     量「一幀最多位移多少」最能抓到這件事：被推的話一幀頂多動一點點（車速×dt），
+     被彈開的話會一次跳好幾格。只看整地前後的分布是看不出來的。 */
+  const dozStep = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 1400; setWorkerCount(4); startBuild(true); completeNow();
+    for (const b of blocks) if (b.st === 3) freeBlock(b);
+    for (let i = 0; i < 140; i++) step(0.05);
+    startClear();
+    let worst = 0, samples = 0, big = 0, dt = 0.02;
+    for (let i = 0; i < 500 && phase === 'clear'; i++) {
+      const was = blocks.map(b => ({ st: b.st, x: b.x, z: b.z }));
+      step(dt);
+      for (let k = 0; k < blocks.length; k++) {
+        const b = blocks[k], w = was[k];
+        if (b.st !== 0 || w.st !== 0) continue;       // 只看一直是落定碎塊的那些
+        const d = Math.hypot(b.x - w.x, b.z - w.z);
+        if (d > worst) worst = d;
+        if (d > 1e-6) samples++;
+        if (d > 0.5) big++;
+      }
+    }
+    return { worst: +worst.toFixed(3), samples, big, cap: +(6.5 * dt).toFixed(3),
+             frac: samples ? +(big / samples).toFixed(4) : 1 };
+  });
+  ok('碎料是被推著走，不是被彈開的',
+     dozStep.samples > 200 && dozStep.worst < 1 && dozStep.frac < 0.02,
+     '全程 ' + dozStep.samples + ' 次位移，單幀最大 ' + dozStep.worst + '、超過半格的占 ' +
+     (dozStep.frac * 100).toFixed(2) + '%（車子一幀走 ' + dozStep.cap +
+     '；改用每幀 separate 的話是 2.9 與 8.4%）');
 
   const dozeSkip = await page.evaluate(() => {
     startBuild(true);

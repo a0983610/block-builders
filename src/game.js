@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -127,6 +127,30 @@ function separate(b) {
   }
   const d = Math.hypot(b.x, b.z);          // 保險：擠到最後還是要留在場內
   if (d > arenaR) { b.x = b.x / d * arenaR; b.z = b.z / d * arenaR; }
+}
+/* separate 的溫和版：只算一輪、力道打折、位移還給上限。
+   要「每幀都擠一點」的地方（推土機鏟子前那一坨）不能用 separate——
+   它是為「落地瞬間一次擠開」設計的，一幀就把碎料彈到幾個單位外。 */
+function nudgeApart(b, lim) {
+  if (lim <= 0) return;
+  const cx = Math.floor(b.x / CELL), cz = Math.floor(b.z / CELL);
+  let px = 0, pz = 0;
+  for (let i = -1; i <= 1; i++) for (let k = -1; k <= 1; k++) {
+    const a = restGrid.get((cx + i) + ':' + (cz + k)); if (!a) continue;
+    for (const o of a) {
+      if (o === b) continue;
+      let dx = b.x - o.x, dz = b.z - o.z;
+      let d = Math.hypot(dx, dz);
+      if (d >= ENG.BS) continue;
+      if (d < 1e-4) { const ang = Math.random() * Math.PI * 2; dx = Math.cos(ang); dz = Math.sin(ang); d = 1e-4; }
+      const push = (ENG.BS - d) * 0.25;
+      px += dx / d * push; pz += dz / d * push;
+    }
+  }
+  const pl = Math.hypot(px, pz);
+  if (pl < 1e-6) return;
+  if (pl > lim) { px = px / pl * lim; pz = pz / pl * lim; }
+  b.x += px; b.z += pz;
 }
 
 /* ── 積木 ───────────────────────────────────────────────── */
@@ -399,30 +423,40 @@ function dozRender(D) {
   return D.list.map(m => ({ x: m.x, z: m.z, a: m.a, bl: m.bl,
                             bob: Math.sin(D.t * 26 + m.k * 1.7) * 0.045 }));
 }
-/* 鏟面掃到的碎料往前推。只推落定的碎塊——已就位的建築、小人手上的、
-   還在飛的都不碰。推完位置變了，空間雜湊要跟著更新，順便擠開重疊的。
+/* 鏟面「前面」那一疊碎料跟著車子一起平移——整疊維持原本的相對位置往前走，
+   這才像被推著。只動落定的碎塊，已就位的建築、小人手上的、還在飛的都不碰。
 
-   兩個數字是量出來才敢寫的：
-   1. 抓取深度要看整堆，不能只看鏟面那一薄層。一坨碎料可以厚到幾十塊，
-      全部擠在鏟面前 2 單位是不可能的——擠不下的會被 separate 擠回鏟子後面，
-      然後就被丟下了（實測 1055 塊只推得動 167 塊）。
-   2. 一幀最多推車速的兩倍多一點。不設上限的話落後的積木會一次瞬移到鏟面前，
-      看起來是用吸的不是用推的。 */
-function pushWithBlade(m, dt) {
+   一開始寫反了：抓的是鏟面「後面」的積木，再一幀一幀把它們拉回鏟面前。
+   等於鏟子一路穿過碎料堆，碎料在原地被扯來扯去——看起來是在震動，不是被推走。
+   而且每幀還呼叫 separate 把它們互相擠開，有一半的推力是把積木推回鏟子後面，
+   下一幀又被拉回來，抖得更明顯。
+
+   平移量直接用車子這一幀實際走的位移，不是用車速去算——轉彎時車子走得比車速慢，
+   用車速算的話碎料會跑到鏟子前面去。 */
+function pushWithBlade(m, mvx, mvz) {
   const fx = Math.sin(m.a), fz = Math.cos(m.a);        // 車頭方向
   const frontX = m.x + fx * DOZ_FRONT, frontZ = m.z + fz * DOZ_FRONT;
-  const cap = DOZ_PUSH * dt * 2.2;
+  const mv = Math.hypot(mvx, mvz);
   for (const b of blocks) {
     if (b.st !== FREE) continue;
     const rx = b.x - frontX, rz = b.z - frontZ;
-    const ahead = rx * fx + rz * fz;                    // 在鏟面前方多遠（負的是還在後面）
-    if (ahead > 0.5 || ahead < -DOZ_PILE) continue;
+    const ahead = rx * fx + rz * fz;                    // 在鏟面前方多遠
+    // 已被輾過去的、還沒碰到的都不動。後界抓太深的話，落後的積木會被一次拉回鏟面前，
+    // 那一下就是個明顯的跳格（-0.8 會跳 1.1 個單位）
+    if (ahead < -0.4 || ahead > DOZ_PILE) continue;
     if (Math.abs(-rx * fz + rz * fx) > DOZ_W) continue; // 不在鏟子寬度內
-    const delta = Math.min(0.5 - ahead, cap);
     if (b.cell) gridDel(b);
-    b.x += fx * delta; b.z += fz * delta;
-    b.ry += dt * 2.4; b.wob = 0.4;
-    separate(b); gridAdd(b);
+    b.x += mvx; b.z += mvz;
+    /* 整疊往前擠會越擠越密（車子一直往前收新的進來），要讓它往前、往兩側慢慢散開，
+       鏟子前面那一坨才長得出形狀。散開的速度必須比車子慢，這是重點——
+       直接套 separate 的話一幀能推開 4.7 單位（那是為「落地瞬間擠開」設計的），
+       碎料會被彈出鏟子範圍，畫面上變成機器周圍一圈空地、鏟子前面什麼都沒有。 */
+    nudgeApart(b, mv * 0.9);
+    // 被擠到鏟面後面的要拉回來，不然下一幀就被當成「已經輾過去」丟下了
+    const d = (b.x - frontX) * fx + (b.z - frontZ) * fz;
+    if (d < 0.3) { const k = 0.3 - d; b.x += fx * k; b.z += fz * k; }
+    b.wob = 0.3;
+    gridAdd(b);
   }
 }
 function finishClear() {
@@ -462,8 +496,10 @@ function stepDozers(dt) {
       }
     } else if (m.st === 'push') {
       m.bl += (0 - m.bl) * Math.min(1, dt * 8);        // 鏟子放下來
-      pushWithBlade(m, dt);
-      if (driveTo(m, dt, DOZ_PUSH) || Math.hypot(m.x, m.z) > R + DOZ_PILE + 1) m.st = 'seek';
+      const px = m.x, pz = m.z;
+      const at = driveTo(m, dt, DOZ_PUSH);
+      pushWithBlade(m, m.x - px, m.z - pz);            // 碎料跟著車子走同樣的位移
+      if (at || Math.hypot(m.x, m.z) > R + DOZ_PILE + 1) m.st = 'seek';
     }
     if (m.st === 'seek') {
       const h = heaps.shift();                         // 最大的那坨先派，三台不會擠在一起
