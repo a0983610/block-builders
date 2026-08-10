@@ -719,6 +719,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'SET ' + twR.before + ' → ' + twR.after);
   ok('龍捲風結束後積木都會落地', twR.gone && twR.flying === 0, '還在飛 ' + twR.flying + ' 塊');
 
+  /* 龍捲風持續好幾秒，如果每幀都加震動，畫面會一路晃到結束 */
+  const twShake = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    ENG.cam.shake = 0;
+    launchTornado({ x: siteR * 0.5, z: 0 });
+    let peak = 0;
+    for (let i = 0; i < 120; i++) { step(0.03); peak = Math.max(peak, ENG.cam.shake); }
+    return { peak, alive: !!twist };
+  });
+  ok('龍捲風不會讓畫面一直晃', twShake.peak < 0.05,
+     '整段期間畫面震動峰值 ' + twShake.peak.toFixed(3) + '（龍捲風仍在作用 ' + twShake.alive + '）');
+
+  const hitShake = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    ENG.cam.shake = 0;
+    const cand = blocks.filter(b => b.st === 3 && b.y > 3);
+    const t = cand[Math.floor(cand.length * 0.5)];
+    launchHammer(new THREE.Vector3(t.x, t.y, t.z), new THREE.Vector3(0.3, -0.8, 0.5).normalize());
+    let peak = 0;
+    for (let i = 0; i < 40; i++) { step(0.02); peak = Math.max(peak, ENG.cam.shake); }
+    return peak;
+  });
+  ok('槌子這種單次撞擊仍然會震一下', hitShake > 0.2, '震動峰值 ' + hitShake.toFixed(2));
+
   /* ══════════ 人力金額 ══════════ */
   head('人力金額');
   const cost = await page.evaluate(() => {

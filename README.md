@@ -67,7 +67,7 @@ src/blueprints.js       36 座地標的 voxel 產生器，不依賴 three，可�
 src/engine.js           three 場景、光影、相機、InstancedMesh 積木池（只管怎麼畫）
 src/game.js             積木狀態、物理、小人 AI、破壞、主迴圈（只管規則）
 tools/build-three.cjs   把官方 three build 轉成 classic script
-tools/e2e-3d.cjs        端對端測試（145 項）
+tools/e2e-3d.cjs        端對端測試（147 項）
 ```
 
 ## three.js 為什麼要自己打包
@@ -132,4 +132,5 @@ headless chromium 用 SwiftShader 軟體算圖，所以測出來的 fps 沒有�
 - **龍捲風很強**。一發常常能吃掉一整座建築的大半。它是最後解鎖的道具，刻意這樣，
   但如果覺得太快結束，把 `game.js` 的 `launchTornado` 裡的 `r` 或 `life` 調小即可。
 - **拆除門檻是寫死的 25%**（`game.js` 的 `WRECK_AT`）。拆到剩 25% 以下就換下一座。
+
 

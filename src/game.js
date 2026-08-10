@@ -968,7 +968,8 @@ function stepTwist(dt) {
     afterHit(n, { x: twist.x, y: 2, z: twist.z }, R * 0.6);
   }
   spawnTwistDust(twist, dt);
-  ENG.shake(0.06);
+  /* 這裡刻意不做畫面震動。龍捲風會持續好幾秒，每幀都加一點震動的話
+     畫面就一路晃到結束，看久了很不舒服——震動留給槌子、保齡球那種單次撞擊。 */
   if (twist.life <= 0) { twist = null; ENG.hideTornado(); }
   else ENG.setTornado(twist.x, twist.z, twist.r * 0.9, twist.h, twist.spin);
 }
