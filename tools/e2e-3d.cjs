@@ -389,7 +389,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 垮塌 ══════════ */
   head('垮塌：下面沒了上面跟著垮');
-  await reset(page, { shape: '倫敦大笨鐘', cnt: 900, workers: 3 });
+  await reset(page, { shape: '倫敦大笨鐘', cnt: 900, workers: 1 });
   const tower = await page.evaluate(() => {
     completeNow();
     const before = placedCnt, h = bp.height;
@@ -402,7 +402,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 40; i++) step(0.05);
     return { before, cleared, rightAfter, after: placedCnt, h };
   });
-  ok('清掉底座，整座塔跟著垮下來', tower.after === 0,
+  /* 不要求正好剩 0：垮完的碎料就掉在腳邊，小人在這兩秒內可能已經撿起來擺回去了。
+     那是正常行為，不該讓這個測試變得時好時壞。 */
+  ok('清掉底座，整座塔跟著垮下來', tower.after < tower.before * 0.02,
      '高 ' + tower.h + ' 的塔：' + tower.before + ' → 清掉底座剩 ' + tower.rightAfter +
      ' → 垮完剩 ' + tower.after);
 
@@ -617,22 +619,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const cand = blocks.filter(b => b.st === 3 && b.y > 4);
     const t = cand[Math.floor(cand.length * 0.5)];
     const n0 = placedCnt;
-    useTool({ point: new THREE.Vector3(t.x, t.y, t.z),
-              dir: new THREE.Vector3(0.4, -0.7, 0.6).normalize() });
+    const dir = new THREE.Vector3(0.4, -0.7, 0.6).normalize();
+    useTool({ point: new THREE.Vector3(t.x, t.y, t.z), dir });
     const born = !!swing, immediate = placedCnt;      // 按下當下還不該有破壞
-    step(0.09);
-    const mid = { hit: swing.hit, n: placedCnt, vis: ENG.hammerVisible() };
-    step(0.09);
-    const landed = { hit: swing.hit, n: placedCnt };
+    step(0.07);
+    const p = ENG.hammerPos();
+    /* 側揮驗證：槌頭要明顯偏在落點的側邊，而不是疊在視線那條直線上。
+       取水平方向上「垂直於視線」的分量——那就是螢幕左右方向。 */
+    let sx = -dir.z, sz = dir.x;
+    const sl = Math.hypot(sx, sz); sx /= sl; sz /= sl;
+    const lateral = Math.abs((p.x - t.x) * sx + (p.z - t.z) * sz);
+    const along = Math.abs((p.x - t.x) * dir.x + (p.z - t.z) * dir.z);
+    const mid = { hit: swing.hit, n: placedCnt, vis: ENG.hammerVisible(), lateral, along, up: p.y - t.y };
+    // 推到它確實落下為止，不要寫死秒數——揮動時間調整過就會對不上
+    let guard = 0;
+    while (swing && !swing.hit && guard++ < 40) step(0.02);
+    const landed = { hit: !swing || swing.hit, n: placedCnt, steps: guard };
     for (let i = 0; i < 40; i++) step(0.05);
     return { n0, born, immediate, mid, landed, gone: !swing, vis: ENG.hammerVisible() };
   });
+  ok('槌子是從側邊揮下來的（看得出是槌子）',
+     hammerR2.mid.lateral > 3 && hammerR2.mid.lateral > hammerR2.mid.along * 2 && hammerR2.mid.up > 2,
+     '側向偏移 ' + hammerR2.mid.lateral.toFixed(1) + '、視線方向偏移 ' +
+     hammerR2.mid.along.toFixed(1) + '、高於落點 ' + hammerR2.mid.up.toFixed(1));
   ok('選槌子時畫面上真的有槌子揮下去', hammerR2.born && hammerR2.mid.vis,
      '按下後槌子出現在畫面上');
   ok('槌頭落下之前不會有破壞', hammerR2.immediate === hammerR2.n0 && !hammerR2.mid.hit,
      '按下當下 ' + hammerR2.n0 + ' → 揮到一半 ' + hammerR2.mid.n);
   ok('槌頭碰到的那一刻才炸開', hammerR2.landed.hit && hammerR2.landed.n < hammerR2.n0,
-     '落下後 ' + hammerR2.n0 + ' → ' + hammerR2.landed.n);
+     '落下後 ' + hammerR2.n0 + ' → ' + hammerR2.landed.n + '（多推了 ' + hammerR2.landed.steps + ' 步）');
   ok('揮完槌子會收掉', hammerR2.gone && !hammerR2.vis);
 
   const rapid = await page.evaluate(() => {
@@ -655,19 +670,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await reset(page, { shape: '吉薩金字塔', cnt: 900, workers: 4 });
   const ballR = await page.evaluate(() => {
     completeNow();
-    const cand = blocks.filter(b => b.st === 3).sort((a, b) => b.y - a.y);
-    const t = cand[Math.floor(cand.length * 0.25)];
-    const before = cand.length;
+    const cand = blocks.filter(b => b.st === 3 && b.y < 5);
+    const t = cand[Math.floor(cand.length * 0.5)];
+    const before = blocks.filter(b => b.st === 3).length;
     launchBall(new THREE.Vector3(t.x, t.y, t.z), new THREE.Vector3(0.5, -0.35, 0.79).normalize());
-    const born = !!ball;
-    let hit = 0;
-    for (let i = 0; i < 260; i++) { step(0.03); if (ball) hit = ball.hit; }
-    return { before, after: blocks.filter(b => b.st === 3).length, hit, born, gone: !ball };
+    const born = !!ball, r = ball.r;
+    const start = Math.hypot(ball.x - t.x, ball.z - t.z);
+    let hit = 0, offGround = 0, ang0 = ball.ang, maxAng = 0, moved = 0;
+    let px = ball.x, pz = ball.z;
+    for (let i = 0; i < 400 && ball; i++) {
+      step(0.03);
+      if (!ball) break;
+      hit = ball.hit;
+      if (Math.abs(ball.y - r) > 0.01) offGround++;     // 保齡球要一路貼著地面
+      maxAng = ball.ang;
+      moved += Math.hypot(ball.x - px, ball.z - pz); px = ball.x; pz = ball.z;
+    }
+    return { before, after: blocks.filter(b => b.st === 3).length, hit, born, gone: !ball,
+             offGround, start, spin: maxAng - ang0, moved, r };
   });
-  ok('鐵球會生出來並沿射線飛', ballR.born);
-  ok('鐵球會貫穿打飛沿途的積木', ballR.hit > 20 && ballR.after < ballR.before,
-     'SET ' + ballR.before + ' → ' + ballR.after + '，貫穿 ' + ballR.hit + ' 塊');
-  ok('鐵球用完會消失', ballR.gone);
+  ok('保齡球會生出來，而且是從建築外圍出發', ballR.born && ballR.start > 12,
+     '起點距落點 ' + ballR.start.toFixed(0) + ' 單位');
+  ok('保齡球一路貼著地面滾', ballR.offGround === 0,
+     '球心高度全程等於半徑 ' + ballR.r + '（離地 ' + ballR.offGround + ' 次）');
+  ok('滾動角度跟滾過的距離對得上', Math.abs(ballR.spin - ballR.moved / ballR.r) < 0.5,
+     '滾了 ' + ballR.moved.toFixed(0) + ' 單位、轉了 ' + ballR.spin.toFixed(1) + ' 弧度');
+  ok('保齡球會撞飛沿路的積木', ballR.hit > 15 && ballR.after < ballR.before,
+     'SET ' + ballR.before + ' → ' + ballR.after + '，撞飛 ' + ballR.hit + ' 塊');
+  ok('滾不動之後會停下消失', ballR.gone);
 
   const twR = await page.evaluate(() => {
     startBuild(true); completeNow();

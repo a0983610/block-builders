@@ -674,7 +674,7 @@ function resetSave() {
    三種都走同一個出口 breakBlock()，差別只在「哪些積木被選中、給什麼速度」。 */
 const TOOLS = [
   { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊', lock: null },
-  { id: 'ball', n: '鐵球', k: '⚫', tip: '點建築：鐵球沿視線貫穿',
+  { id: 'ball', n: '保齡球', k: '🎳', tip: '點建築：保齡球滾過去撞',
     lock: { txt: '拆掉 3 座建築解鎖', ok: () => stats.destroyed >= 3 } },
   { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去',
     lock: { txt: '累計擊飛 1000 塊解鎖', ok: () => stats.smashed >= 1000 } }
@@ -825,10 +825,20 @@ function smash(point, dir) {
 
 /* 揮槌：槌子沿著你的視線方向砸下去，槌頭碰到的那一刻才真的造成破壞。
    直接在按下的瞬間就把積木打飛的話，畫面上什麼都沒發生就散了，完全沒有打擊感。 */
-const SWING_DOWN = 0.15, SWING_BACK = 0.32;
+const SWING_DOWN = 0.19, SWING_BACK = 0.34;
+const SWING_ARM = 9, SWING_ANG = 2.15;
+let swingSide = 1;
 function launchHammer(point, dir) {
   if (swing && !swing.hit) resolveSwing();        // 連點時先把上一槌結算掉，不要吃掉那一擊
-  swing = { px: point.x, py: point.y, pz: point.z, dx: dir.x, dy: dir.y, dz: dir.z, t: 0, hit: false };
+  /* 側揮：揮動平面取「螢幕右方 × 世界上方」，弧線正對著鏡頭掃過來。
+     沿著視線方向直直砸下去的話，槌子從頭到尾都是端面朝你，看不出那是一支槌子。 */
+  let rx = -dir.z, rz = dir.x;
+  const rl = Math.hypot(rx, rz);
+  if (rl < 1e-4) { rx = 1; rz = 0; } else { rx /= rl; rz /= rl; }
+  swingSide = -swingSide;                          // 左右輪流，連續砸才不會每次都同一邊
+  swing = { px: point.x, py: point.y, pz: point.z,
+            dx: dir.x, dy: dir.y, dz: dir.z,
+            rx: rx * swingSide, rz: rz * swingSide, t: 0, hit: false };
   sndSwing();
 }
 function resolveSwing() {
@@ -843,57 +853,76 @@ function stepSwing(dt) {
   s.t += dt;
   if (!s.hit && s.t >= SWING_DOWN) resolveSwing();
   if (s.t >= SWING_DOWN + SWING_BACK) { swing = null; ENG.hideHammer(); return; }
-  // 砸下去越來越快，命中後再彈回去
+  // 掃過的角度：從側上方掃到 0（＝落點正上方落下），命中後再盪回去一些
   const k = s.t < SWING_DOWN
-    ? 1 - Math.pow(s.t / SWING_DOWN, 2)
-    : Math.pow((s.t - SWING_DOWN) / SWING_BACK, 0.6) * 0.95;
-  const d = 2.2 + k * 11;
-  ENG.setHammer(s.px - s.dx * d, s.py - s.dy * d + k * 1.5, s.pz - s.dz * d,
-                s.px, s.py, s.pz, k * 0.5);
+    ? 1 - Math.pow(s.t / SWING_DOWN, 1.7)          // 越接近落點越快
+    : Math.pow((s.t - SWING_DOWN) / SWING_BACK, 0.6) * 0.7;
+  const th = k * SWING_ANG, st = Math.sin(th), ct = Math.cos(th);
+  /* 支點在落點正上方 SWING_ARM，槌頭繞著支點掃；th=0 時槌頭剛好落在落點上。
+     槌柄方向就是「支點 → 槌頭」。 */
+  const hx = s.px + SWING_ARM * st * s.rx;
+  const hy = s.py + SWING_ARM * (1 - ct);
+  const hz = s.pz + SWING_ARM * st * s.rz;
+  ENG.setHammer(hx, hy, hz, hx + st * s.rx, hy - ct, hz + st * s.rz, 0);
 }
 
-/* 鐵球：從視線後方射出，沿著同一條射線貫穿過去，沿途的積木被推倒打飛 */
-/* 起點就放在同一條射線上、初速也完全沿著射線，中途只給很輕的重力。
-   起點若額外加高、初速若額外加上揚量，球會從建築頂上飛過去，一塊都打不到。 */
+/* 保齡球：貼著地面從場外滾進來，把沿路的東西撞飛。
+   撞掉越多減速越多，滾不動就停下。滾在地面而不是飛在半空，
+   剛好會先把建築的底部掏空——上面的部分接著就靠垮塌判定自己塌下來。 */
+const BALL_R = 3.1;
 function launchBall(point, dir) {
+  let dx = dir.x, dz = dir.z;                    // 只取水平方向，球是在地上滾的
+  const l = Math.hypot(dx, dz);
+  if (l < 1e-4) { dx = 1; dz = 0; } else { dx /= l; dz /= l; }
+  const back = siteR + 16;                       // 起點推到建築外圍，免得直接生在牆裡
   ball = {
-    x: point.x - dir.x * 40, y: point.y - dir.y * 40, z: point.z - dir.z * 40,
-    vx: dir.x * 46, vy: dir.y * 46, vz: dir.z * 46,
-    r: 3.2, life: 2.2, hit: 0
+    x: point.x - dx * back, y: BALL_R, z: point.z - dz * back,
+    vx: dx * 34, vz: dz * 34, r: BALL_R, ang: 0, hit: 0, life: 6
   };
   sndSwing();
 }
 function stepBall(dt) {
   if (!ball) return;
-  ball.life -= dt;
-  ball.vy -= 6 * dt;
-  ball.x += ball.vx * dt; ball.y += ball.vy * dt; ball.z += ball.vz * dt;
-  const R = ball.r, R2 = R * R;
-  const sp = Math.hypot(ball.vx, ball.vy, ball.vz) || 1;
+  const o = ball;
+  o.life -= dt;
+  o.x += o.vx * dt; o.z += o.vz * dt; o.y = o.r;
+  let sp = Math.hypot(o.vx, o.vz);
+  o.ang += sp / o.r * dt;                        // 滾動角度：走多遠就轉多少
+  const R = o.r + 0.7, R2 = R * R;
   let n = 0;
   for (const b of blocks) {
-    if (b.st !== SET) continue;
-    const dx = b.x - ball.x, dy = b.y - ball.y, dz = b.z - ball.z;
+    if (b.st !== SET && b.st !== FREE) continue;
+    const dx = b.x - o.x, dy = b.y - o.y, dz = b.z - o.z;
     const d2 = dx * dx + dy * dy + dz * dz;
-    if (d2 > R2) { if (d2 < R2 * 3) b.wob = 0.4; continue; }
+    if (d2 > R2) { if (b.st === SET && d2 < R2 * 2.6) b.wob = 0.4; continue; }
     const d = Math.max(0.4, Math.sqrt(d2));
+    const wasSet = b.st === SET;
     breakBlock(b,
-      ball.vx / sp * 22 + dx / d * 6 + rr(-2, 2),
-      Math.max(2, ball.vy / sp * 10) + dy / d * 5 + rr(1, 5),
-      ball.vz / sp * 22 + dz / d * 6 + rr(-2, 2));
-    n++;
+      o.vx * 0.5 + dx / d * 7 + rr(-2, 2),
+      Math.max(3, sp * 0.26) + dy / d * 3 + rr(1, 5),
+      o.vz * 0.5 + dz / d * 7 + rr(-2, 2));
+    if (wasSet) n++;                             // 地上的散料被撞開不算破壞
   }
   if (n) {
-    ball.hit += n;
-    afterHit(n, { x: ball.x, y: ball.y, z: ball.z }, R);
-    spawnDust({ x: ball.x, y: ball.y, z: ball.z }, R, n);
-    ENG.shake(0.3 + Math.min(1, n * 0.02));
-    if (Math.random() < 0.5) sndSmash();
+    o.hit += n;
+    afterHit(n, { x: o.x, y: o.y, z: o.z }, R);
+    spawnDust({ x: o.x, y: o.y, z: o.z }, R, n);
+    ENG.shake(0.28 + Math.min(1, n * 0.02));
+    if (Math.random() < 0.4) sndSmash();
+    const brake = Math.max(0.3, 1 - n * 0.006);  // 撞越多掉速越快
+    o.vx *= brake; o.vz *= brake;
   }
-  if (ball.y < ball.r * 0.5 || ball.life <= 0 || Math.hypot(ball.x, ball.z) > arenaR + 30) {
-    if (ball.y < ball.r * 0.5) { spawnRing({ x: ball.x, y: 0, z: ball.z }, 7); sndSmash(); ENG.shake(0.8); }
+  const roll = Math.pow(0.82, dt);               // 滾動阻力
+  o.vx *= roll; o.vz *= roll;
+  sp = Math.hypot(o.vx, o.vz);
+
+  if (sp < 4.5 || o.life <= 0 || Math.hypot(o.x, o.z) > arenaR + 6) {
+    spawnRing({ x: o.x, y: 0, z: o.z }, 5);
     ball = null; ENG.hideBall();
-  } else ENG.setBall(ball.x, ball.y, ball.z, ball.r);
+  } else {
+    // 滾動軸：水平、垂直於前進方向。方向弄反的話球會像倒著滾
+    ENG.setBall(o.x, o.y, o.z, o.r, o.vz / sp, -o.vx / sp, o.ang);
+  }
 }
 
 /* 龍捲風：在地面走一段路，把沿路的積木吸起來繞圈，最後隨機甩出去 */
@@ -938,7 +967,7 @@ function stepTwist(dt) {
     twist.hit += n;
     afterHit(n, { x: twist.x, y: 2, z: twist.z }, R * 0.6);
   }
-  if (Math.random() < dt * 40) spawnDust({ x: twist.x, y: rr(0.5, twist.h * 0.7), z: twist.z }, R * 0.7, 4);
+  spawnTwistDust(twist, dt);
   ENG.shake(0.06);
   if (twist.life <= 0) { twist = null; ENG.hideTornado(); }
   else ENG.setTornado(twist.x, twist.z, twist.r * 0.9, twist.h, twist.spin);
@@ -975,6 +1004,26 @@ function spawnRing(p, R) {
       x: p.x + Math.cos(a) * 1.4, y: 0.35, z: p.z + Math.sin(a) * 1.4,
       vx: Math.cos(a) * rr(8, 15), vy: rr(0.3, 1.8), vz: Math.sin(a) * rr(8, 15),
       rx: 0, ry: a, life: rr(0.45, 0.9), s: rr(0.4, 0.95), c: rr(0.72, 0.94)
+    });
+  }
+}
+/* 龍捲風的塵霧：沿著漏斗表面繞圈往上竄，不是往外噴。
+   往外噴的話看起來只是一團爆炸，看不出在「轉」。 */
+function spawnTwistDust(t, dt) {
+  t.emit = (t.emit || 0) + dt * 55;
+  while (t.emit >= 1) {
+    t.emit--;
+    if (dust.length > 380) break;
+    const a = Math.random() * Math.PI * 2;
+    const hy = rr(0.3, t.h * 0.85);
+    const rad = t.r * (0.2 + hy / t.h * 0.95);
+    dust.push({
+      x: t.x + Math.cos(a) * rad, y: hy, z: t.z + Math.sin(a) * rad,
+      vx: -Math.sin(a) * 15 - Math.cos(a) * 3 + t.vx,
+      vy: rr(7, 15),
+      vz: Math.cos(a) * 15 - Math.sin(a) * 3 + t.vz,
+      rx: Math.random() * 6, ry: a,
+      life: rr(0.5, 1.1), s: rr(0.45, 1.15), c: rr(0.78, 0.98)
     });
   }
 }
@@ -1273,4 +1322,6 @@ function boot() {
   completeNow();          // 開場直接給一座蓋好的建築，砸掉之後才會開始蓋下一座
   requestAnimationFrame(frame);
 }
+
+
 

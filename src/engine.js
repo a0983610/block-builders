@@ -14,7 +14,10 @@ const ENG = (function () {
 
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
-  let ballMesh, tornadoMesh, hammerGroup;
+  let ballMesh, tornadoGroup, hammerGroup;
+  const TW_SEG = 12;                // 龍捲風的分段數
+  const tornadoSegs = [];
+  const _axis = new T.Vector3();
   let W = 1, H = 1;
 
   const scratch = new T.Object3D();       // 借來組矩陣用，不進場景
@@ -151,30 +154,54 @@ const ENG = (function () {
     hammerGroup.visible = false;
     scene.add(hammerGroup);
 
-    tornadoMesh = new T.Mesh(new T.ConeGeometry(1, 1, 18, 6, true),
-      new T.MeshBasicMaterial({ color: 0xcfd6dd, transparent: true, opacity: 0.24,
-                                side: T.DoubleSide, depthWrite: false }));
-    tornadoMesh.visible = false;
-    scene.add(tornadoMesh);
+    /* 龍捲風：用一疊會各自轉、各自偏移的開口圓筒疊出扭曲的漏斗。
+       單一個圓錐太乾淨，看起來只是個半透明三角形。 */
+    tornadoGroup = new T.Group();
+    const twGeo = new T.CylinderGeometry(1, 1, 1, 20, 1, true);
+    for (let i = 0; i < TW_SEG; i++) {
+      const t = i / (TW_SEG - 1);
+      // 下濃上淡：整條才有「往上散開」的層次，全部同一個透明度會像一片平板
+      const m = new T.Mesh(twGeo, new T.MeshBasicMaterial({
+        color: t < 0.35 ? 0xb9c4cd : 0xdde6ee,
+        transparent: true, opacity: 0.30 - t * 0.19,
+        side: T.DoubleSide, depthWrite: false
+      }));
+      tornadoSegs.push(m); tornadoGroup.add(m);
+    }
+    tornadoGroup.visible = false;
+    scene.add(tornadoGroup);
 
     resize();
   }
 
   /* ── 破壞道具 ───────────────────────────────────── */
-  function setBall(x, y, z, r) {
+  /* (ax,az) 是滾動軸（水平、垂直於前進方向），ang 是已滾過的角度 */
+  function setBall(x, y, z, r, ax, az, ang) {
     ballMesh.visible = true;
     ballMesh.position.set(x, y, z);
     ballMesh.scale.setScalar(r);
+    if (ax !== undefined) {
+      _axis.set(ax, 0, az);
+      if (_axis.lengthSq() > 1e-6) ballMesh.setRotationFromAxisAngle(_axis.normalize(), ang);
+    }
   }
   function hideBall() { ballMesh.visible = false; }
-  /* 圓錐預設是尖端朝上，龍捲風要倒過來（尖端貼地） */
+
+  /* 漏斗：越往上越粗，每一段各自轉、各自往旁邊偏一點，整條才會扭起來 */
   function setTornado(x, z, r, h, spin) {
-    tornadoMesh.visible = true;
-    tornadoMesh.position.set(x, h / 2, z);
-    tornadoMesh.scale.set(r, h, r);
-    tornadoMesh.rotation.set(Math.PI, spin, 0);
+    tornadoGroup.visible = true;
+    for (let i = 0; i < TW_SEG; i++) {
+      const t = i / (TW_SEG - 1);
+      const seg = tornadoSegs[i];
+      const rr = r * (0.18 + t * t * 0.55 + t * 0.45);
+      const wob = Math.sin(spin * 1.3 + t * 5.2) * r * 0.3 * t;
+      const wob2 = Math.cos(spin * 1.1 + t * 4.4) * r * 0.3 * t;
+      seg.position.set(x + wob, h * t + h / TW_SEG * 0.5, z + wob2);
+      seg.scale.set(rr, h / TW_SEG * 1.35, rr);
+      seg.rotation.y = spin * (1 + t * 0.7);
+    }
   }
-  function hideTornado() { tornadoMesh.visible = false; }
+  function hideTornado() { tornadoGroup.visible = false; }
   /* (x,y,z) 是槌子擺放的位置，(tx,ty,tz) 是它要對準的落點，spin 是揮動時的側傾 */
   function setHammer(x, y, z, tx, ty, tz, spin) {
     hammerGroup.visible = true;
@@ -184,6 +211,7 @@ const ENG = (function () {
   }
   function hideHammer() { hammerGroup.visible = false; }
   function hammerVisible() { return hammerGroup.visible; }
+  function hammerPos() { const p = hammerGroup.position; return { x: p.x, y: p.y, z: p.z }; }
 
   /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
   function setGroundSize(r) {
@@ -394,7 +422,7 @@ const ENG = (function () {
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust,
-    setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible,
+    setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible, hammerPos,
     fitCamera, updateCamera, orbit, zoom, shake,
     cam, camTarget, BS, MAXB, MAXW, WPARTS,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }
