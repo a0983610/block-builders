@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>積木小人 · 世界地標工地</title>
+<style>
+  :root{
+    --ink:#1b2430; --panel:rgba(255,255,255,.86); --line:rgba(27,36,48,.14);
+    --accent:#e8873c; --ok:#3f9e63;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden}
+  body{
+    font:14px/1.5 "Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+    color:var(--ink); -webkit-user-select:none; user-select:none;
+    background:linear-gradient(#5f9fd4 0%,#8fc0e4 46%,#cfe3ec 72%,#e6eee6 100%);
+    -webkit-tap-highlight-color:transparent;
+  }
+  /* canvas 是 replaced element：絕對定位下 width:auto 會拿內建尺寸，
+     所以寬高一定要明講（three 也會再設一次 style，兩邊一致） */
+  #cv{position:fixed;inset:0;width:100vw;height:100vh;display:block;touch-action:none}
+
+  .card{
+    position:fixed;background:var(--panel);backdrop-filter:blur(8px);
+    border:1px solid var(--line);border-radius:14px;
+    box-shadow:0 6px 24px rgba(20,32,48,.16);
+  }
+
+  /* 左上：目前在蓋什麼 */
+  #head{top:14px;left:14px;padding:10px 14px;min-width:206px}
+  #head h1{margin:0;font-size:17px;font-weight:800;letter-spacing:.5px}
+  #head .sub{display:flex;gap:8px;align-items:center;margin-top:4px;font-size:12px;opacity:.75}
+  .tag{padding:1px 8px;border-radius:99px;background:var(--accent);color:#fff;font-size:11px;font-weight:700}
+  .tag.ok{background:var(--ok)}
+  #track{height:5px;border-radius:99px;background:rgba(27,36,48,.13);margin-top:8px;overflow:hidden}
+  #bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#f0b46b);transition:width .25s}
+
+  /* 右上：時鐘與計時 */
+  #time{top:14px;right:14px;padding:10px 14px;text-align:right}
+  #clock{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+  #time .row{margin-top:3px;font-size:12px;opacity:.72;font-variant-numeric:tabular-nums}
+  #clockBtn{margin-top:7px;width:100%}
+
+  /* 左下：設定 */
+  /* 面板往上讓出一排，收合鈕才不會壓在面板上 */
+  #panel{left:14px;bottom:58px;padding:12px 14px;width:262px;transition:transform .22s,opacity .22s}
+  #panel.hide{transform:translateY(calc(100% + 24px));opacity:0;pointer-events:none}
+  #panel .r{display:flex;align-items:center;gap:8px;margin:9px 0}
+  #panel label{flex:0 0 54px;font-size:12px;opacity:.78}
+  #panel .v{flex:0 0 46px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;opacity:.9}
+  input[type=range]{flex:1;accent-color:var(--accent);min-width:0}
+  select,button{
+    font:inherit;font-size:13px;color:var(--ink);background:#fff;
+    border:1px solid var(--line);border-radius:9px;padding:6px 9px;cursor:pointer;
+  }
+  select{width:100%}
+  button:active{transform:translateY(1px)}
+  button.primary{background:var(--accent);color:#fff;border-color:transparent;font-weight:700;width:100%}
+  .checks{display:flex;gap:14px;margin-top:10px;font-size:12px;opacity:.8}
+  .checks label{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+  #panelBtn{position:fixed;left:14px;bottom:14px;z-index:5;padding:7px 11px}
+
+  #hint{
+    position:fixed;left:50%;bottom:16px;transform:translateX(-50%);
+    padding:7px 15px;border-radius:99px;background:rgba(27,36,48,.55);color:#fff;
+    font-size:12px;white-space:nowrap;pointer-events:none;
+  }
+
+  /* 全螢幕時鐘 */
+  #bigWrap{
+    position:fixed;inset:0;z-index:20;display:none;place-items:center;
+    background:rgba(12,18,26,.92);color:#fff;cursor:pointer;
+  }
+  #bigWrap.on{display:grid}
+  #bigClock{font-size:min(20vw,220px);font-weight:800;font-variant-numeric:tabular-nums;line-height:1}
+  #bigDate{text-align:center;margin-top:14px;font-size:min(4vw,26px);opacity:.7}
+  #bigTip{position:fixed;bottom:26px;left:0;right:0;text-align:center;font-size:13px;opacity:.45}
+
+  @media (max-width:640px){
+    #head{min-width:0;padding:8px 11px}
+    #head h1{font-size:15px}
+    #clock{font-size:20px}
+    #panel{width:calc(100vw - 28px)}
+    #hint{display:none}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="card" id="head">
+  <h1 id="bname">—</h1>
+  <div class="sub"><span class="tag" id="phase">施工中</span><span id="prog">0 / 0</span><span id="bcount"></span></div>
+  <div id="track"><div id="bar"></div></div>
+</div>
+
+<div class="card" id="time">
+  <div id="clock">--:--:--</div>
+  <div class="row">施工 <b id="timer">0:00</b></div>
+  <div class="row" id="fps">— fps</div>
+  <button id="clockBtn">全螢幕時鐘</button>
+</div>
+
+<button id="panelBtn">⚙ 設定</button>
+<div class="card" id="panel">
+  <select id="shape"></select>
+  <div class="r"><label>建材</label><input id="cnt" type="range" min="300" max="3000" step="50" value="900"><span class="v" id="vCnt">900</span></div>
+  <div class="r"><label>小人</label><input id="wk" type="range" min="1" max="60" step="1" value="20"><span class="v" id="vWk">20</span></div>
+  <div class="r"><label>速度</label><input id="spd" type="range" min="0.2" max="4" step="0.1" value="1"><span class="v" id="vSpd">1.0×</span></div>
+  <button class="primary" id="again">換一座來蓋</button>
+  <div class="checks">
+    <label><input type="checkbox" id="spin"> 自轉</label>
+    <label><input type="checkbox" id="mute"> 靜音</label>
+  </div>
+</div>
+
+<div id="hint">點建築 = 一槌砸下去 ｜ 拖曳轉視角 ｜ 滾輪縮放 ｜ 點小人會跌倒</div>
+
+<div id="bigWrap">
+  <div>
+    <div id="bigClock">--:--:--</div>
+    <div id="bigDate"></div>
+  </div>
+  <div id="bigTip">點一下任意處回到工地</div>
+</div>
+
+<script src="lib/three.min.js"></script>
+<script src="src/blueprints.js"></script>
+<script src="src/engine.js"></script>
+<script src="src/game.js"></script>
+<script>boot();</script>
+</body>
+</html>

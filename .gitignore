@@ -1,2 +1,6 @@
 # e2e 測試產物（截圖）
 tools/.e2e-out/
+
+# three.js 完整原始碼（576MB）——只有重新打包 lib/three.min.js 時才需要，
+# 平常玩／跑測試都用不到。要重打包的話自己去 threejs.org 下載解壓到這裡。
+three.js-master/
