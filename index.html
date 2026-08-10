@@ -45,7 +45,6 @@
   #clock{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
   #time .row{margin-top:3px;font-size:12px;opacity:.72;font-variant-numeric:tabular-nums}
   #time .row.bad b{color:var(--bad)}          /* 損失用紅字，跟施工計時一眼分得開 */
-  #clockBtn{margin-top:7px;width:100%}
 
   /* 左下：設定 */
   /* 面板往上讓出一排，收合鈕才不會壓在面板上 */
@@ -122,16 +121,6 @@
   #badgeBox .row{display:flex;gap:8px;margin-top:12px}
   #badgeBox .row button{flex:1}
 
-  /* 全螢幕時鐘 */
-  #bigWrap{
-    position:fixed;inset:0;z-index:20;display:none;place-items:center;
-    background:rgba(12,18,26,.92);color:#fff;cursor:pointer;
-  }
-  #bigWrap.on{display:grid}
-  #bigClock{font-size:min(20vw,220px);font-weight:800;font-variant-numeric:tabular-nums;line-height:1}
-  #bigDate{text-align:center;margin-top:14px;font-size:min(4vw,26px);opacity:.7}
-  #bigTip{position:fixed;bottom:26px;left:0;right:0;text-align:center;font-size:13px;opacity:.45}
-
   @media (max-width:640px){
     /* 限寬，不然統計那一行會把卡片撐到右上角的時鐘底下 */
     #head{min-width:0;padding:8px 11px;max-width:calc(100vw - 220px)}
@@ -173,8 +162,7 @@
   <div class="row">施工 <b id="timer">0:00</b></div>
   <div class="row bad">損失 <b id="lossAll">$0</b></div>
   <div class="row" id="fps">— fps</div>
-  <button id="clockBtn">全螢幕時鐘</button>
-  <button id="badgeBtn" style="margin-top:5px;width:100%">🏅 成就</button>
+  <button id="badgeBtn" style="margin-top:7px;width:100%">🏅 成就</button>
 </div>
 
 <div id="toast"></div>
@@ -195,14 +183,6 @@
 
 <div id="hint">點建築 = 一槌砸下去 ｜ 拖曳轉視角 ｜ 滾輪縮放 ｜ 點小人會跌倒</div>
 <div id="ver"></div>
-
-<div id="bigWrap">
-  <div>
-    <div id="bigClock">--:--:--</div>
-    <div id="bigDate"></div>
-  </div>
-  <div id="bigTip">點一下任意處回到工地</div>
-</div>
 
 <div id="badgeWrap">
   <div id="badgeBox">

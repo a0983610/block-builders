@@ -769,7 +769,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '整地 ' + doze.secs + ' 秒，範圍內從最多 ' + doze.peak + ' 塊清到 ' + doze.dirty1 + ' 塊');
   ok('整完會自己開出場', doze.gone && doze.phase === 'build',
      doze.drove + ' 秒後開走，phase=' + doze.phase);
-  await page.screenshot({ path: path.join(OUT, '07-整地.png') });
+  await page.screenshot({ path: path.join(OUT, '04-整地.png') });
 
   /* 只拿槌子敲的話碎料會全堆在挨打的那一區——這才是推土機真正要處理的情況 */
   const dozeHeap = await page.evaluate(() => {
@@ -1481,7 +1481,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   await page.click('#badgeBtn');
   ok('成就面板打得開', await page.evaluate(() => document.getElementById('badgeWrap').classList.contains('on')));
-  await page.screenshot({ path: path.join(OUT, '08-成就.png') });
+  await page.screenshot({ path: path.join(OUT, '05-成就.png') });
   await page.click('#badgeClose');
   ok('成就面板關得掉', !(await page.evaluate(() => document.getElementById('badgeWrap').classList.contains('on'))));
 
@@ -1660,15 +1660,6 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '0.9 秒轉了 ' + ((yaw1 - yaw0) * 57.3).toFixed(1) + '°');
   await page.uncheck('#spin');
 
-  await page.click('#clockBtn');
-  ok('全螢幕時鐘會打開', await page.evaluate(() => document.getElementById('bigWrap').classList.contains('on')));
-  const bigTxt = await page.textContent('#bigClock');
-  ok('全螢幕時鐘顯示現在時間', /^\d{2}:\d{2}:\d{2}$/.test(bigTxt.trim()), bigTxt);
-  await page.screenshot({ path: path.join(OUT, '04-全螢幕時鐘.png') });
-  await page.click('#bigWrap');
-  ok('點一下會關掉全螢幕時鐘',
-     !(await page.evaluate(() => document.getElementById('bigWrap').classList.contains('on'))));
-
   const hud = await page.evaluate(() => ({
     clock: document.getElementById('clock').textContent,
     timer: document.getElementById('timer').textContent,
@@ -1788,7 +1779,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '工具列寬 ' + overlap.toolsW + '，視窗寬 390' + (overlap.out.length ? '；超出：' + overlap.out.join(',') : ''));
   const pMob = await pix(page);
   ok('手機尺寸下照樣畫得出來', pMob.opaque > 0.4, (pMob.opaque * 100).toFixed(0) + '%');
-  await page.screenshot({ path: path.join(OUT, '05-手機版.png') });
+  await page.screenshot({ path: path.join(OUT, '06-手機版.png') });
 
   const touch = await page.evaluate(() => {
     const y0 = ENG.cam.yaw;
@@ -1891,7 +1882,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.waitForTimeout(1500);
   ok('整輪跑完沒有累積任何 console 錯誤', errors.length === 0,
      errors.slice(0, 3).join(' | '));
-  await page.screenshot({ path: path.join(OUT, '06-結束畫面.png') });
+  await page.screenshot({ path: path.join(OUT, '07-結束畫面.png') });
 
   await browser.close();
 

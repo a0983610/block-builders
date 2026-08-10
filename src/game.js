@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1670,11 +1670,7 @@ const PHASE_TXT = { clear: ['整地中', ''], build: ['施工中', ''], done: ['
 function hudTick(now) {
   if (now - hudLast < 120) return;
   hudLast = now;
-  const d = new Date();
-  $('clock').textContent = fmtClock(d);
-  $('bigClock').textContent = fmtClock(d);
-  $('bigDate').textContent = d.getFullYear() + '/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()) +
-    ' 週' + '日一二三四五六'[d.getDay()];
+  $('clock').textContent = fmtClock(new Date());
   $('timer').textContent = fmtDur(buildElapsed);
   $('prog').textContent = placedCnt + ' / ' + (bp ? bp.slots.length : 0);
   $('fps').textContent = Math.round(fps) + ' fps';
@@ -1764,8 +1760,6 @@ function boot() {
   $('again').addEventListener('click', () => { audio(); startBuild(false); });
   $('spin').addEventListener('change', e => { spinOn = pref.spin = e.target.checked; save(); });
   $('mute').addEventListener('change', e => { muted = pref.mute = e.target.checked; save(); });
-  $('clockBtn').addEventListener('click', () => $('bigWrap').classList.add('on'));
-  $('bigWrap').addEventListener('click', () => $('bigWrap').classList.remove('on'));
   $('panelBtn').addEventListener('click', () => $('panel').classList.toggle('hide'));
   $('badgeBtn').addEventListener('click', () => { renderBadges(); $('badgeWrap').classList.add('on'); });
   $('badgeWrap').addEventListener('click', e => {
