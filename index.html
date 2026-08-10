@@ -111,10 +111,11 @@
             max-height:82vh;overflow:auto}
   #badgeBox h2{margin:0 0 2px;font-size:17px}
   #badgeBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
-  #badgeBox #badges{margin-top:12px}
+  /* 成就多了就排兩欄，不然要一直捲 */
+  #badgeBox #badges{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:7px}
   #badgeLoss{color:var(--bad);font-weight:700}
   .badge{display:flex;flex-direction:column;padding:8px 10px;border-radius:10px;
-         background:#f2f2f0;margin-bottom:7px;opacity:.55}
+         background:#f2f2f0;opacity:.55}
   .badge.got{background:#fdf1e2;opacity:1}
   .badge b{font-size:13px}
   .badge span{font-size:11.5px;opacity:.7}
@@ -148,6 +149,7 @@
     #panelBtn{right:14px;left:auto}
     #ver{left:14px;right:auto}
     #toast{top:14px}
+    #badgeBox #badges{grid-template-columns:1fr}   /* 手機排不下兩欄 */
   }
 </style>
 </head>

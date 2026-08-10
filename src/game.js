@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -829,7 +829,7 @@ const SAVE_XOR = 'winton-block-builders-2026';
 
 const freshStats = () => ({
   destroyed: 0, smashed: 0, carried: 0, poked: 0, spent: 0, wrecked: 0,
-  bestHit: 0, miracle: false, built: [], badges: []
+  bestHit: 0, bigBuild: 0, miracle: false, built: [], tools: [], badges: []
 });
 let stats = freshStats();
 /* 面板上的設定也一起存，不然每次打開都要重調一輪 */
@@ -840,14 +840,26 @@ let lossThis = 0;                   // 這一座造成的損失（換建築時�
 let savable = true;                 // 無痕模式之類的存不了，就安靜降級
 
 const BADGES = [
+  /* 排列順序＝面板上的顯示順序（兩欄，橫向填）。同一件事的兩個門檻排在一起，
+     一眼看得出「這個拿到了、下一階還沒」。 */
   { id: 'first', n: '開工大吉', d: '蓋完第一座建築', chk: s => s.built.length >= 1 },
-  { id: 'demo50', n: '拆遷大隊', d: '一次擊飛超過 50 塊積木', chk: s => s.bestHit > 50 },
-  { id: 'boss20', n: '工頭嚴厲', d: '戳倒小人 20 次', chk: s => s.poked >= 20 },
   { id: 'miracle', n: '奇蹟工程', d: '3 分鐘內蓋完吉薩金字塔', chk: s => !!s.miracle },
-  { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
-  { id: 'move10k', n: '愚公移山', d: '小人累計搬運 10000 塊', chk: s => s.carried >= 10000 },
+  { id: 'bigBuild', n: '大興土木', d: '蓋完一座 2500 塊以上的建築', chk: s => s.bigBuild >= 2500 },
   { id: 'world10', n: '環遊世界', d: '蓋過 10 種不同地標', chk: s => s.built.length >= 10 },
+  { id: 'worldAll', n: '地標蒐藏家', d: '蓋過全部 ' + SHAPES.length + ' 種地標',
+    chk: s => s.built.length >= SHAPES.length },
+  { id: 'move10k', n: '愚公移山', d: '小人累計搬運 10000 塊', chk: s => s.carried >= 10000 },
+  { id: 'move100k', n: '工蟻軍團', d: '小人累計搬運 100000 塊', chk: s => s.carried >= 100000 },
+  { id: 'demo50', n: '拆遷大隊', d: '一次擊飛超過 50 塊積木', chk: s => s.bestHit > 50 },
+  { id: 'hit200', n: '一發清空', d: '一次擊飛超過 200 塊積木', chk: s => s.bestHit > 200 },
+  { id: 'smash50k', n: '粉塵滿天', d: '累計擊飛 50000 塊積木', chk: s => s.smashed >= 50000 },
+  { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
+  { id: 'wreck25', n: '都市更新', d: '拆掉 25 座建築', chk: s => s.destroyed >= 25 },
+  { id: 'allTools', n: '工具箱清空', d: '六種破壞道具都用過', chk: s => s.tools.length >= TOOLS.length },
+  { id: 'boss20', n: '工頭嚴厲', d: '戳倒小人 20 次', chk: s => s.poked >= 20 },
+  { id: 'poke100', n: '工安黑名單', d: '戳倒小人 100 次', chk: s => s.poked >= 100 },
   { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 },
+  { id: 'spend10m', n: '無底錢坑', d: '累計人力支出破 $10,000,000', chk: s => s.spent >= 1e7 },
   { id: 'loss100k', n: '災情慘重', d: '累計造成 $100,000 損失', chk: s => s.wrecked >= 1e5 },
   { id: 'loss2m', n: '保險公司拒保', d: '累計造成 $2,000,000 損失', chk: s => s.wrecked >= 2e6 }
 ];
@@ -873,6 +885,7 @@ function checkBadges() {
 function noteBuilt() {
   if (!bp) return;
   if (stats.built.indexOf(bp.name) < 0) stats.built.push(bp.name);
+  if (bp.slots.length > stats.bigBuild) stats.bigBuild = bp.slots.length;
   if (bp.name === '吉薩金字塔' && buildElapsed > 0 && buildElapsed <= 180) stats.miracle = true;
   checkBadges();
   save();
@@ -929,7 +942,9 @@ function load() {
     const o = unpackSave(txt);
     if (!o || !o.s) return;
     const f = merge(freshStats(), o.s);
+    // 認得的才留：存檔被改過、或舊版留下已經不存在的 id，都不要讓它影響成就判定
     f.badges = f.badges.filter(id => BADGES.some(b => b.id === id));
+    f.tools = f.tools.filter(id => TOOLS.some(t => t.id === id));
     stats = f;
     const g = merge(freshPref(), o.p);
     // 數值一律夾回合法範圍，免得存檔壞掉時 slider 跑到界外
@@ -1400,6 +1415,8 @@ function stepTwist(dt) {
 
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
 function useTool(hit) {
+  // 記在最前面：手指也算一種道具，成就要的是「六種都試過」
+  if (stats.tools.indexOf(tool) < 0) { stats.tools.push(tool); checkBadges(); }
   if (tool === 'finger') return 0;                 // 手指什麼都不破壞，只有戳小人有效
   if (tool === 'hammer') { launchHammer(hit.point, hit.dir, false); return 0; }
   if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true); return 0; }

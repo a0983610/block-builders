@@ -914,8 +914,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { worst: +worst.toFixed(3), samples, big, cap: +(6.5 * dt).toFixed(3),
              frac: samples ? +(big / samples).toFixed(4) : 1 };
   });
+  /* 單幀上限這樣算：跟著車子走 0.13 ＋ 擠開 0.12 ＋ 落到鏟面後被拉回前緣最多 0.7
+     ＋ 車頭轉動時鏟面掃過的橫向量最多 0.22 ≈ 1.2，所以門檻放 1.4。
+     真正的判別靠 frac（超過半格的比例）：現在 0.3%，每幀 separate 是 8.4%。 */
   ok('碎料是被推著走，不是被彈開的',
-     dozStep.samples > 200 && dozStep.worst < 1 && dozStep.frac < 0.02,
+     dozStep.samples > 200 && dozStep.worst < 1.4 && dozStep.frac < 0.02,
      '全程 ' + dozStep.samples + ' 次位移，單幀最大 ' + dozStep.worst + '、超過半格的占 ' +
      (dozStep.frac * 100).toFixed(2) + '%（車子一幀走 ' + dozStep.cap +
      '；改用每幀 separate 的話是 2.9 與 8.4%）');
@@ -1395,6 +1398,78 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('3 分鐘內蓋完金字塔才給【奇蹟工程】', miracle.fast && !miracle.slow,
      '100 秒 → ' + miracle.fast + '，400 秒 → ' + miracle.slow);
+
+  /* 每個成就都要真的能拿到：湊出剛好達標的紀錄，一個一個確認 */
+  const reach = await page.evaluate(() => {
+    const cases = {
+      first: s => s.built = ['A'],
+      demo50: s => s.bestHit = 51,
+      boss20: s => s.poked = 20,
+      miracle: s => s.miracle = true,
+      wreck5: s => s.destroyed = 5,
+      move10k: s => s.carried = 10000,
+      world10: s => s.built = Array.from({ length: 10 }, (_, i) => 'B' + i),
+      million: s => s.spent = 1e6,
+      loss100k: s => s.wrecked = 1e5,
+      loss2m: s => s.wrecked = 2e6,
+      hit200: s => s.bestHit = 201,
+      allTools: s => s.tools = TOOLS.map(t => t.id),
+      bigBuild: s => s.bigBuild = 2500,
+      poke100: s => s.poked = 100,
+      wreck25: s => s.destroyed = 25,
+      smash50k: s => s.smashed = 50000,
+      move100k: s => s.carried = 100000,
+      spend10m: s => s.spent = 1e7,
+      worldAll: s => s.built = SHAPES.map(x => x.n)
+    };
+    const missing = BADGES.filter(b => !cases[b.id]).map(b => b.id);
+    const fail = [];
+    for (const id in cases) {
+      stats = freshStats();
+      cases[id](stats);
+      checkBadges();
+      if (stats.badges.indexOf(id) < 0) fail.push(id);
+    }
+    // 全部條件一起滿足時，一個都不能漏
+    stats = freshStats();
+    for (const id in cases) cases[id](stats);
+    checkBadges();
+    return { missing, fail, all: stats.badges.length, total: BADGES.length };
+  });
+  ok('每個成就都有對應的測試案例', reach.missing.length === 0,
+     reach.missing.length ? '沒測到：' + reach.missing.join(',') : reach.total + ' 個全部有測');
+  ok('每個成就都拿得到', reach.fail.length === 0,
+     reach.fail.length ? '拿不到：' + reach.fail.join(',') : reach.total + ' 個都驗過');
+  ok('條件全滿時全部解鎖', reach.all === reach.total, reach.all + ' / ' + reach.total);
+
+  /* 用過的道具要記起來——【工具箱清空】靠它 */
+  const toolRec = await page.evaluate(() => {
+    stats = freshStats();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(4); startBuild(true); completeNow();
+    const target = blocks.find(b => b.st === 3 && b.y > 3);
+    const hit = { kind: 'block', point: new THREE.Vector3(target.x, target.y, target.z),
+                  dir: new THREE.Vector3(0.2, -0.95, 0.1).normalize() };
+    for (const t of TOOLS) { tool = t.id; useTool(hit); for (let i = 0; i < 10; i++) step(0.05); }
+    const got = stats.badges.indexOf('allTools') >= 0;
+    // 同一種道具用兩次不會重複記
+    tool = 'hammer'; useTool(hit);
+    const n = stats.tools.length;
+    return { list: stats.tools.slice(), n, got, total: TOOLS.length };
+  });
+  ok('用過哪些道具會記起來', toolRec.n === toolRec.total,
+     toolRec.n + ' / ' + toolRec.total + '：' + toolRec.list.join(','));
+  ok('六種道具都用過解鎖【工具箱清空】', toolRec.got);
+
+  /* 存檔被改過時，不認得的道具 id 不該混進來 */
+  const toolClean = await page.evaluate(() => {
+    stats = freshStats();
+    stats.tools = ['hammer', 'laser', 'ball', 'nuke', 'tornado', 'treb', 'bighammer', 'finger'];
+    save(); stats = freshStats(); load();
+    return { list: stats.tools.slice(), got: stats.badges.indexOf('allTools') >= 0 };
+  });
+  ok('存檔裡不認得的道具會被丟掉', toolClean.list.length === 6 &&
+     toolClean.list.indexOf('laser') < 0, toolClean.list.join(','));
 
   // 擺一組像玩過一陣子的紀錄再開面板，截圖才看得出版面
   await page.evaluate(() => {
