@@ -42,7 +42,7 @@
 
 | 道具 | 效果 | 解鎖條件 |
 |---|---|---|
-| 🔨 槌子 | 點狀衝擊，只有衝擊球內的積木會飛 | 預設 |
+| 🔨 槌子 | 槌子沿視線揮下去，**槌頭碰到的那一刻**才點狀衝擊，只有衝擊球內的積木會飛 | 預設 |
 | ⚫ 鐵球 | 沿著你的視線射出，貫穿沿途的積木 | 拆掉 3 座建築 |
 | 🌪 龍捲風 | 在地面亂竄，把積木吸上天繞圈後甩開 | 累計擊飛 1000 塊 |
 
@@ -67,7 +67,7 @@ src/blueprints.js       36 座地標的 voxel 產生器，不依賴 three，可�
 src/engine.js           three 場景、光影、相機、InstancedMesh 積木池（只管怎麼畫）
 src/game.js             積木狀態、物理、小人 AI、破壞、主迴圈（只管規則）
 tools/build-three.cjs   把官方 three build 轉成 classic script
-tools/e2e-3d.cjs        端對端測試（137 項）
+tools/e2e-3d.cjs        端對端測試（142 項）
 ```
 
 ## three.js 為什麼要自己打包

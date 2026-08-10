@@ -610,6 +610,48 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('點鎖住的工具不會被選中', lockClick.blocked === 'hammer', '仍是 ' + lockClick.blocked);
   ok('解鎖後點得動', lockClick.after === 'ball', '選到 ' + lockClick.after);
 
+  await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 4 });
+  const hammerR2 = await page.evaluate(() => {
+    completeNow();
+    tool = 'hammer';
+    const cand = blocks.filter(b => b.st === 3 && b.y > 4);
+    const t = cand[Math.floor(cand.length * 0.5)];
+    const n0 = placedCnt;
+    useTool({ point: new THREE.Vector3(t.x, t.y, t.z),
+              dir: new THREE.Vector3(0.4, -0.7, 0.6).normalize() });
+    const born = !!swing, immediate = placedCnt;      // 按下當下還不該有破壞
+    step(0.09);
+    const mid = { hit: swing.hit, n: placedCnt, vis: ENG.hammerVisible() };
+    step(0.09);
+    const landed = { hit: swing.hit, n: placedCnt };
+    for (let i = 0; i < 40; i++) step(0.05);
+    return { n0, born, immediate, mid, landed, gone: !swing, vis: ENG.hammerVisible() };
+  });
+  ok('選槌子時畫面上真的有槌子揮下去', hammerR2.born && hammerR2.mid.vis,
+     '按下後槌子出現在畫面上');
+  ok('槌頭落下之前不會有破壞', hammerR2.immediate === hammerR2.n0 && !hammerR2.mid.hit,
+     '按下當下 ' + hammerR2.n0 + ' → 揮到一半 ' + hammerR2.mid.n);
+  ok('槌頭碰到的那一刻才炸開', hammerR2.landed.hit && hammerR2.landed.n < hammerR2.n0,
+     '落下後 ' + hammerR2.n0 + ' → ' + hammerR2.landed.n);
+  ok('揮完槌子會收掉', hammerR2.gone && !hammerR2.vis);
+
+  const rapid = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    const n0 = placedCnt;
+    const cand = blocks.filter(b => b.st === 3);
+    const a = cand[Math.floor(cand.length * 0.3)], c = cand[Math.floor(cand.length * 0.75)];
+    launchHammer(new THREE.Vector3(a.x, a.y, a.z), new THREE.Vector3(0.2, -0.9, 0.3).normalize());
+    step(0.03);
+    launchHammer(new THREE.Vector3(c.x, c.y, c.z), new THREE.Vector3(-0.2, -0.9, -0.3).normalize());
+    const afterSecondPress = placedCnt;
+    for (let i = 0; i < 20; i++) step(0.03);
+    return { n0, afterSecondPress, end: placedCnt };
+  });
+  /* 連點時前一擊還沒落下就被取代 → 那一擊要立刻結算掉，不能整個吃掉 */
+  ok('連點兩次不會吃掉前一擊',
+     rapid.afterSecondPress < rapid.n0 && rapid.end < rapid.afterSecondPress,
+     rapid.n0 + ' → 第二次按下時 ' + rapid.afterSecondPress + ' → 最後 ' + rapid.end);
+
   await reset(page, { shape: '吉薩金字塔', cnt: 900, workers: 4 });
   const ballR = await page.evaluate(() => {
     completeNow();

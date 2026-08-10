@@ -14,7 +14,7 @@ const ENG = (function () {
 
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
-  let ballMesh, tornadoMesh;
+  let ballMesh, tornadoMesh, hammerGroup;
   let W = 1, H = 1;
 
   const scratch = new T.Object3D();       // 借來組矩陣用，不進場景
@@ -137,6 +137,20 @@ const ENG = (function () {
     ballMesh.castShadow = true; ballMesh.visible = false;
     scene.add(ballMesh);
 
+    /* 槌子：槌頭朝 local +Z，握把往 −Z 拖在後面。
+       擺位時用 lookAt 對準落點——three 的 lookAt 對非相機物件是讓 +Z 指向目標。 */
+    hammerGroup = new T.Group();
+    // 尺寸抓得跟衝擊半徑（5.5）相稱，太小的話砸下去的份量感對不上散開的範圍
+    const hHandle = new T.Mesh(new T.BoxGeometry(0.44, 0.44, 5), voxelMaterial({ color: 0x8a5a34 }));
+    hHandle.position.z = -2.8;
+    const hHead = new T.Mesh(new T.BoxGeometry(3, 3, 1.9), voxelMaterial({ color: 0x474e57 }));
+    hHead.position.z = 0.2;
+    const hFace = new T.Mesh(new T.BoxGeometry(3.2, 3.2, 0.35), voxelMaterial({ color: 0x707a85 }));
+    hFace.position.z = 1.3;
+    for (const m of [hHandle, hHead, hFace]) { m.castShadow = true; hammerGroup.add(m); }
+    hammerGroup.visible = false;
+    scene.add(hammerGroup);
+
     tornadoMesh = new T.Mesh(new T.ConeGeometry(1, 1, 18, 6, true),
       new T.MeshBasicMaterial({ color: 0xcfd6dd, transparent: true, opacity: 0.24,
                                 side: T.DoubleSide, depthWrite: false }));
@@ -161,6 +175,15 @@ const ENG = (function () {
     tornadoMesh.rotation.set(Math.PI, spin, 0);
   }
   function hideTornado() { tornadoMesh.visible = false; }
+  /* (x,y,z) 是槌子擺放的位置，(tx,ty,tz) 是它要對準的落點，spin 是揮動時的側傾 */
+  function setHammer(x, y, z, tx, ty, tz, spin) {
+    hammerGroup.visible = true;
+    hammerGroup.position.set(x, y, z);
+    hammerGroup.lookAt(tx, ty, tz);
+    hammerGroup.rotateZ(spin);
+  }
+  function hideHammer() { hammerGroup.visible = false; }
+  function hammerVisible() { return hammerGroup.visible; }
 
   /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
   function setGroundSize(r) {
@@ -371,7 +394,7 @@ const ENG = (function () {
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust,
-    setBall, hideBall, setTornado, hideTornado,
+    setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible,
     fitCamera, updateCamera, orbit, zoom, shake,
     cam, camTarget, BS, MAXB, MAXW, WPARTS,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }

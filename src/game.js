@@ -229,6 +229,11 @@ function startBuild(instant) {
     }
   }
 
+  // 正在作用的道具要收掉，不然拆完換新建築時，還在飛的鐵球／龍捲風會繼續砸新的那座
+  swing = null; ENG.hideHammer();
+  ball = null; ENG.hideBall();
+  twist = null; ENG.hideTornado();
+
   const idx = pickShape();
   recent.push(idx); if (recent.length > 8) recent.shift();
   bp = makeBlueprint(idx, targetCnt);
@@ -678,6 +683,7 @@ const toolOk = t => !t.lock || t.lock.ok();
 let tool = 'hammer';
 
 let hammerR = 5.5, hammerPow = 15;
+let swing = null;     // 正在揮下去的槌子
 let ball = null;      // 飛行中的鐵球
 let twist = null;     // 作用中的龍捲風
 
@@ -817,6 +823,35 @@ function smash(point, dir) {
   return hitN;
 }
 
+/* 揮槌：槌子沿著你的視線方向砸下去，槌頭碰到的那一刻才真的造成破壞。
+   直接在按下的瞬間就把積木打飛的話，畫面上什麼都沒發生就散了，完全沒有打擊感。 */
+const SWING_DOWN = 0.15, SWING_BACK = 0.32;
+function launchHammer(point, dir) {
+  if (swing && !swing.hit) resolveSwing();        // 連點時先把上一槌結算掉，不要吃掉那一擊
+  swing = { px: point.x, py: point.y, pz: point.z, dx: dir.x, dy: dir.y, dz: dir.z, t: 0, hit: false };
+  sndSwing();
+}
+function resolveSwing() {
+  if (!swing || swing.hit) return 0;
+  swing.hit = true;
+  return smash({ x: swing.px, y: swing.py, z: swing.pz },
+               { x: swing.dx, y: swing.dy, z: swing.dz });
+}
+function stepSwing(dt) {
+  if (!swing) return;
+  const s = swing;
+  s.t += dt;
+  if (!s.hit && s.t >= SWING_DOWN) resolveSwing();
+  if (s.t >= SWING_DOWN + SWING_BACK) { swing = null; ENG.hideHammer(); return; }
+  // 砸下去越來越快，命中後再彈回去
+  const k = s.t < SWING_DOWN
+    ? 1 - Math.pow(s.t / SWING_DOWN, 2)
+    : Math.pow((s.t - SWING_DOWN) / SWING_BACK, 0.6) * 0.95;
+  const d = 2.2 + k * 11;
+  ENG.setHammer(s.px - s.dx * d, s.py - s.dy * d + k * 1.5, s.pz - s.dz * d,
+                s.px, s.py, s.pz, k * 0.5);
+}
+
 /* 鐵球：從視線後方射出，沿著同一條射線貫穿過去，沿途的積木被推倒打飛 */
 /* 起點就放在同一條射線上、初速也完全沿著射線，中途只給很輕的重力。
    起點若額外加高、初速若額外加上揚量，球會從建築頂上飛過去，一塊都打不到。 */
@@ -911,7 +946,7 @@ function stepTwist(dt) {
 
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
 function useTool(hit) {
-  if (tool === 'hammer') return smash(hit.point, hit.dir);
+  if (tool === 'hammer') { launchHammer(hit.point, hit.dir); return 0; }
   if (tool === 'ball') { launchBall(hit.point, hit.dir); return 0; }
   if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   return 0;
@@ -1010,6 +1045,7 @@ function step(dt) {
     checkBadges(); save(); renderTools();
     startBuild(false);
   }
+  stepSwing(dt);
   stepBall(dt);
   stepTwist(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
