@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -217,6 +217,29 @@ function stepSnap(b, dt) {
 }
 
 /* ── 藍圖與積木池 ───────────────────────────────────────── */
+/* 世界座標 ↔ 藍圖格子的換算。slot 的 x/z 是格子座標減掉一個置中定值、y 就是格子座標本身，
+   世界上的積木再往上抬半塊。順便記下格子上界：查表前先擋掉界外，
+   免得界外座標被 gkeyOf 的位元組合折回來，撞到某個真的存在的格子。 */
+let gOffX = 0, gOffZ = 0, gMaxX = 0, gMaxY = 0, gMaxZ = 0;
+function indexGrid() {
+  const s0 = bp.slots[0];
+  gOffX = s0.x - s0.gx; gOffZ = s0.z - s0.gz;
+  gMaxX = gMaxY = gMaxZ = 0;
+  for (const s of bp.slots) {
+    if (s.gx > gMaxX) gMaxX = s.gx;
+    if (s.gy > gMaxY) gMaxY = s.gy;
+    if (s.gz > gMaxZ) gMaxZ = s.gz;
+  }
+}
+/* 這個世界座標上有沒有一塊「已經就位」的積木（施工中／飛在半空的不算） */
+function blockAt(x, y, z) {
+  if (!bp) return false;
+  const gx = Math.round(x - gOffX), gy = Math.round(y - HB), gz = Math.round(z - gOffZ);
+  if (gx < 0 || gy < 0 || gz < 0 || gx > gMaxX || gy > gMaxY || gz > gMaxZ) return false;
+  const i = bp.at.get(gkeyOf(gx, gy, gz));
+  return i !== undefined && bp.slots[i].filled;
+}
+
 function pickShape() {
   if (shapePick >= 0) return shapePick;
   for (let t = 0; t < 40; t++) {
@@ -250,6 +273,7 @@ function startBuild(instant) {
   const idx = pickShape();
   recent.push(idx); if (recent.length > 8) recent.shift();
   bp = makeBlueprint(idx, targetCnt);
+  indexGrid();
   placedCnt = 0; slotCursor = 0;
   phase = 'build';
   buildStart = performance.now(); buildElapsed = 0; spentThis = 0;
@@ -349,7 +373,7 @@ function newWorker(i) {
   return {
     x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d, a: 0, ph: Math.random() * 6, gait: 0,
     tone: i, st: 'idle', block: -1, slot: -1, tx: 0, tz: 0,
-    wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, scale: rr(0.92, 1.08)
+    wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, pause: 0, scale: rr(0.92, 1.08)
   };
 }
 function setWorkerCount(n) {
@@ -450,9 +474,14 @@ function updWorker(w, wi, dt) {
     } else {
       // 慶祝完就整張草地隨便晃。地圖是方的，目標點也用方形分布
       w.y += (0 - w.y) * Math.min(1, dt * 6);
-      if (walkTo(w, dt)) {
+      if (w.pause > 0) {
+        // 到了定點站著發呆一下。全部人一路走不停的話，看起來像一群螞蟻在竄
+        w.pause -= dt;
+        w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+      } else if (walkTo(w, dt)) {
         const R = arenaR + 20;
         w.tx = rr(-R, R); w.tz = rr(-R, R);
+        if (Math.random() < 0.62) w.pause = rr(1.2, 4.5);
       }
     }
     return;
@@ -557,7 +586,7 @@ function stepToss(b, dt) {
     if (placedCnt >= bp.slots.length && phase === 'build') {
       phase = 'done';
       buildElapsed = (performance.now() - buildStart) / 1000;
-      for (const w of workers) w.cheer = 0;
+      for (const w of workers) { w.cheer = 0; w.pause = 0; }
       sndDone();
       toast('🎉 ' + bp.name + ' 完工', fmtDur(buildElapsed) + '　人力 ' + money(spentThis));
       noteBuilt();
@@ -973,6 +1002,30 @@ function fireRock(m) {
   m.arm = 1.35;
   sndSwing();
 }
+/* 石頭飛行途中撞到建築就當場炸開，撞在哪就從哪散。
+   只在終點判定的話，弧線會從屋頂、外牆直接穿過去——畫面上明明砸中了卻什麼事都沒有。
+   一幀最多前進一格出頭，所以沿著這一幀走過的線段取樣，不能只測終點位置。 */
+const ROCK_STEP = 0.4;              // 掃掠取樣間距，要小於一格才不會整格跳過去
+function sweepRock(r, px, py, pz) {
+  if (blockAt(r.x, r.y, r.z)) return true;      // 這一幀停的位置本身就埋在積木裡
+  const dx = r.x - px, dy = r.y - py, dz = r.z - pz;
+  const len = Math.hypot(dx, dy, dz);
+  if (len < 1e-5) return false;
+  // 掃過這一幀走的線段，末端再多探一個石頭半徑：碰到的該是石頭的正面，
+  // 不是等重心埋進積木裡才算
+  const total = len + r.s * 0.5;
+  const n = Math.ceil(total / ROCK_STEP);
+  const ux = dx / len, uy = dy / len, uz = dz / len;
+  for (let k = 1; k <= n; k++) {
+    const t = total * k / n;
+    if (blockAt(px + ux * t, py + uy * t, pz + uz * t)) {
+      const c = Math.min(t, len);                // 停在撞擊點，但別飛過這一幀該到的位置
+      r.x = px + ux * c; r.y = py + uy * c; r.z = pz + uz * c;
+      return true;
+    }
+  }
+  return false;
+}
 function rockHit(r) {
   const p = { x: r.x, y: Math.max(0.5, r.y), z: r.z };
   const n = smash(p, { x: 0.12, y: -1, z: 0.12 }, ROCK_R, ROCK_POW);
@@ -996,11 +1049,14 @@ function stepTrebs(dt) {
   }
   for (let i = trebs.rocks.length - 1; i >= 0; i--) {
     const r = trebs.rocks[i];
+    const px = r.x, py = r.y, pz = r.z;
     r.t += dt;
     r.vy -= GRAV * dt;
     r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
     r.rx += dt * 3.2; r.ry += dt * 2.4;
-    if (r.t >= r.T || r.y <= 0.6) { trebs.rocks.splice(i, 1); rockHit(r); }
+    if (sweepRock(r, px, py, pz) || r.t >= r.T || r.y <= 0.6) {
+      trebs.rocks.splice(i, 1); rockHit(r);
+    }
   }
   if (!trebs.list.length && !trebs.rocks.length) { trebs = null; ENG.putTrebs([]); ENG.putRocks([]); }
 }

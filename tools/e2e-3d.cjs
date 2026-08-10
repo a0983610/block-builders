@@ -636,6 +636,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '；進場時最遠的三個小人 ' + JSON.stringify(roam.pre) +
      (roam.worst ? '；第一次越界 ' + JSON.stringify(roam.worst) : ''));
 
+  /* 遊蕩要有停頓，不然一群人一路走不停，看起來像螞蟻在竄。
+     量每個小人「連續原地不動」最長撐幾秒——沒有停頓的話，
+     只有抵達目標那一幀不動（0.05 秒），撐不到一秒。 */
+  const idle = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(20); startBuild(true); completeNow();
+    for (let i = 0; i < 200; i++) step(0.05);          // 先把七秒的繞圈慶祝跑完
+    const run = workers.map(() => 0), best = workers.map(() => 0);
+    const px = workers.map(w => w.x), pz = workers.map(w => w.z);
+    let moved = 0, samples = 0;
+    for (let i = 0; i < 1200; i++) {
+      step(0.05);
+      for (let k = 0; k < workers.length; k++) {
+        const w = workers[k];
+        const d = Math.hypot(w.x - px[k], w.z - pz[k]);
+        px[k] = w.x; pz[k] = w.z; samples++;
+        if (d < 1e-6) { run[k] += 0.05; if (run[k] > best[k]) best[k] = run[k]; }
+        else { run[k] = 0; moved++; }
+      }
+    }
+    best.sort((a, b) => b - a);
+    return { longest: +best[0].toFixed(2), median: +best[best.length >> 1].toFixed(2),
+             least: +best[best.length - 1].toFixed(2),
+             movingFrac: +(moved / samples).toFixed(2), n: workers.length };
+  });
+  ok('遊蕩時會不時停下來站一會兒', idle.median >= 1.1,
+     idle.n + ' 人在 60 秒裡最長站定：中位數 ' + idle.median + ' 秒、最久 ' +
+     idle.longest + ' 秒、最短 ' + idle.least + ' 秒');
+  ok('但不會整群釘在原地', idle.movingFrac > 0.5 && idle.movingFrac < 0.97,
+     '有在移動的幀數占 ' + (idle.movingFrac * 100).toFixed(0) + '%');
+
   ok('拆完之後小人開始蓋新的', rebuild.mid > 20 && rebuild.ph0 === 'build',
      '蓋到 ' + rebuild.mid + ' / ' + rebuild.total + '（' + rebuild.ph0 + '）');
   ok('砸還沒蓋完的建築不會進入拆除中', rebuild.ph1 === 'build', 'phase=' + rebuild.ph1);
@@ -789,6 +820,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('石頭不會飛出場外', treb.offCentre === 0);
   ok('石頭砸下來會造成破壞', treb.after < treb.n0, placedCntTxt(treb.n0, treb.after));
   ok('打完會自己撤走', treb.gone);
+
+  /* 石頭穿牆：只在終點判定的話，拋物線會從屋頂／外牆直接穿過去，畫面上砸中了卻什麼事都沒有。
+     這裡不看實作的格子查表，改用 blocks 的真實座標量：
+     還活著的石頭跟任何一塊已就位積木的距離，永遠不該小於半格。 */
+  await reset(page, { shape: '中世紀城堡', cnt: 1600, workers: 3 });
+  const thru = await page.evaluate(() => {
+    completeNow();
+    const orig = rockHit, at = [];
+    rockHit = r => { at.push(+(r.t / r.T).toFixed(2)); orig(r); };
+    for (let k = 0; k < 6; k++) {           // 圍一圈打，各種角度的弧線都試到
+      const a = k / 6 * Math.PI * 2;
+      placeTreb({ x: Math.cos(a) * (siteR + 13), z: Math.sin(a) * (siteR + 13) });
+    }
+    let worst = 1e9, worstAt = null, seen = 0, frames = 0;
+    for (let i = 0; i < 2000 && trebs; i++) {
+      step(0.02); frames++;
+      if (!trebs) break;
+      for (const r of trebs.rocks) {
+        seen++;
+        for (const b of blocks) {
+          if (b.st !== 3) continue;
+          const d = Math.max(Math.abs(b.x - r.x), Math.abs(b.y - r.y), Math.abs(b.z - r.z));
+          if (d < worst) { worst = d; worstAt = { rock: [+r.x.toFixed(2), +r.y.toFixed(2), +r.z.toFixed(2)],
+                                                  block: [+b.x.toFixed(2), +b.y.toFixed(2), +b.z.toFixed(2)], i }; }
+        }
+      }
+    }
+    rockHit = orig;
+    return { worst: +worst.toFixed(3), worstAt, seen, frames, shots: at.length,
+             early: at.filter(v => v < 0.97).length, at: at.slice(0, 8) };
+  });
+  ok('石頭不會從積木裡穿過去', thru.seen > 0 && thru.worst >= 0.499,
+     '飛行中最近曾貼到 ' + thru.worst + ' 格（積木半邊 0.5）；取樣 ' + thru.seen +
+     ' 個石頭幀' + (thru.worst < 0.499 ? '；' + JSON.stringify(thru.worstAt) : ''));
+  ok('石頭半路撞到建築就當場炸開', thru.early > 0,
+     thru.shots + ' 發裡有 ' + thru.early + ' 發在抵達目標前就炸了（飛行進度 ' +
+     JSON.stringify(thru.at) + '）');
 
   const lockClick = await page.evaluate(() => {
     stats = freshStats(); tool = 'hammer'; renderTools();
