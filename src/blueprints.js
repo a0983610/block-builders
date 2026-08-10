@@ -918,6 +918,11 @@ const SHAPES = [
    而不是套公式估。掃粗的一輪找到大概位置，再在附近細掃一輪。 */
 function genCells(sh, s) { const v = new VOX(); sh.gen(v, s); return v; }
 
+/* 鄰居查表用的數值鍵。+1 是為了讓 −1 的鄰居也落在非負範圍，
+   不然 gx=-1 會跟 (1023, gy-1, gz) 撞在同一個鍵上。 */
+const NB6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+const gkeyOf = (x, y, z) => (x + 1) + (y + 1) * 1024 + (z + 1) * 1048576;
+
 function fitScale(sh, target) {
   let best = sh.lo, bd = Infinity;
   const scan = (from, to, step) => {
@@ -949,18 +954,40 @@ function makeBlueprint(idx, target) {
   }
   const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
 
+  /* 除了世界座標，也留一份整數格座標 gx/gy/gz。
+     世界座標置中之後可能是 .5，當不了鄰居查表的鍵；垮塌判定要靠整數格找上下左右。 */
   const slots = cells.map(c => ({
     x: c.x - cx, y: c.y - minY, z: c.z - cz, c: c.c,
-    filled: false, claimed: -1
+    gx: c.x - minX, gy: c.y - minY, gz: c.z - minZ,
+    filled: false, claimed: -1, anchor: false
   }));
   // 先低後高；同一層先蓋中間——這樣建築是從核心長出來的，看起來比較像在蓋
   slots.sort((a, b) => a.y - b.y || (a.x * a.x + a.z * a.z) - (b.x * b.x + b.z * b.z));
+
+  const at = new Map();
+  for (let i = 0; i < slots.length; i++) at.set(gkeyOf(slots[i].gx, slots[i].gy, slots[i].gz), i);
+
+  /* 整份藍圖都在的時候，哪些格子連得到地面。
+     有些造型本來就有懸空的部件（風車的扇葉、摩天輪的車廂），
+     那些不該因為「沒有支撐」就掉下來，所以垮塌判定只管有 anchor 的格子。 */
+  const stack = [];
+  for (let i = 0; i < slots.length; i++)
+    if (slots[i].gy === 0) { slots[i].anchor = true; stack.push(i); }
+  while (stack.length) {
+    const s = slots[stack.pop()];
+    for (let k = 0; k < NB6.length; k++) {
+      const d = NB6[k];
+      const j = at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
+      if (j === undefined || slots[j].anchor) continue;
+      slots[j].anchor = true; stack.push(j);
+    }
+  }
 
   let radius = 0;
   for (const s of slots) radius = Math.max(radius, Math.hypot(s.x, s.z));
 
   return {
-    idx, name: sh.n, pal: sh.pal, slots,
+    idx, name: sh.n, pal: sh.pal, slots, at,
     height: maxY - minY + 1,
     radius: radius + 1,
     count: slots.length
@@ -969,4 +996,4 @@ function makeBlueprint(idx, target) {
 
 /* node 也要能 require 這支檔來單獨測藍圖 */
 if (typeof module !== 'undefined' && module.exports)
-  module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale };
+  module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NB6, gkeyOf };

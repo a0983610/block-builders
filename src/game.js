@@ -123,7 +123,7 @@ function newBlock() {
     rx: 0, ry: 0, rz: 0, ax: 0, ay: 0, az: 0,
     r: 0.78, g: 0.74, b: 0.66, tr: 0.78, tg: 0.74, tb: 0.66,
     slot: -1, holder: -1, rest: true, cell: '',
-    scale: 1, snap: 0, snapFrom: null, arc: null, wob: 0, al: 1
+    scale: 1, snap: 0, snapFrom: null, arc: null, wob: 0, al: 1, fallIn: 0
   };
 }
 /* 旋轉之後，這塊積木沿世界 Y 的半高。躺平是 0.47，立起來轉 45° 是 0.66，
@@ -221,7 +221,7 @@ function startBuild(instant) {
   for (const w of workers) releaseWorker(w);
   for (const b of blocks) {
     if (b.st === SET || b.st === CARRY || b.st === TOSS) {
-      b.slot = -1; b.holder = -1; b.arc = null; b.scale = 1;
+      b.slot = -1; b.holder = -1; b.arc = null; b.scale = 1; b.fallIn = 0;
       b.st = FLY; b.rest = false; b.snap = 0;
       b.tr = 0.80; b.tg = 0.76; b.tb = 0.68;
       b.vx = rr(-5, 5); b.vy = rr(1, 6); b.vz = rr(-5, 5);
@@ -257,7 +257,7 @@ function completeNow() {
     const s = bp.slots[i], b = blocks[i];
     if (b.cell) gridDel(b);
     b.st = SET; b.slot = i; b.x = s.x; b.y = s.y + HB; b.z = s.z;
-    b.rx = b.ry = b.rz = 0; b.scale = 1; b.al = 1; b.holder = -1; b.snap = 0;
+    b.rx = b.ry = b.rz = 0; b.scale = 1; b.al = 1; b.holder = -1; b.snap = 0; b.fallIn = 0;
     b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
     const pal = bp.pal[s.c % bp.pal.length];
     b.r = b.tr = ((pal >> 16) & 255) / 255;
@@ -544,6 +544,9 @@ const freshStats = () => ({
   bestHit: 0, miracle: false, built: [], badges: []
 });
 let stats = freshStats();
+/* 面板上的設定也一起存，不然每次打開都要重調一輪 */
+const freshPref = () => ({ cnt: 900, wk: 20, spd: 1, mute: false, spin: false });
+let pref = freshPref();
 let spentThis = 0;
 let savable = true;                 // 無痕模式之類的存不了，就安靜降級
 
@@ -616,9 +619,16 @@ function unpackSave(txt) {
   return JSON.parse(body);
 }
 let saveT = 0;
+/* 只把存檔裡型別對得上的欄位搬過來，其他一律用預設值。
+   這樣舊版存檔、被改過的存檔都不會讓程式吃到奇怪的東西。 */
+function merge(fresh, src) {
+  const out = fresh;
+  if (src) for (const k in out) if (src[k] !== undefined && typeof src[k] === typeof out[k]) out[k] = src[k];
+  return out;
+}
 function save() {
   if (!savable) return;
-  try { localStorage.setItem(SAVE_KEY, packSave(stats)); }
+  try { localStorage.setItem(SAVE_KEY, packSave({ s: stats, p: pref })); }
   catch (e) { savable = false; }
 }
 function load() {
@@ -626,12 +636,28 @@ function load() {
     const txt = localStorage.getItem(SAVE_KEY);
     if (!txt) return;
     const o = unpackSave(txt);
-    if (!o) return;
-    const f = freshStats();
-    for (const k in f) if (o[k] !== undefined && typeof o[k] === typeof f[k]) f[k] = o[k];
+    if (!o || !o.s) return;
+    const f = merge(freshStats(), o.s);
     f.badges = f.badges.filter(id => BADGES.some(b => b.id === id));
     stats = f;
+    const g = merge(freshPref(), o.p);
+    // 數值一律夾回合法範圍，免得存檔壞掉時 slider 跑到界外
+    g.cnt = clamp(Math.round(g.cnt), 300, 3000);
+    g.wk = clamp(Math.round(g.wk), 1, ENG.MAXW);
+    g.spd = clamp(g.spd, 0.2, 4);
+    pref = g;
   } catch (e) { savable = false; }
+}
+/* 把存回來的設定套進變數與面板 */
+function applyPref() {
+  targetCnt = pref.cnt; timeScale = pref.spd; muted = pref.mute; spinOn = pref.spin;
+  setWorkerCount(pref.wk);
+  $('cnt').value = String(pref.cnt);
+  $('wk').value = String(pref.wk);
+  $('spd').value = String(pref.spd);
+  $('mute').checked = pref.mute;
+  $('spin').checked = pref.spin;
+  syncHud();
 }
 function resetSave() {
   stats = freshStats(); spentThis = 0;
@@ -657,8 +683,51 @@ let twist = null;     // 作用中的龍捲風
 
 function breakBlock(b, vx, vy, vz) {
   freeBlock(b);
+  b.fallIn = 0;
   b.vx = vx; b.vy = vy; b.vz = vz;
   b.ax = rr(-9, 9); b.ay = rr(-9, 9); b.az = rr(-9, 9);
+}
+
+/* ── 垮塌 ───────────────────────────────────────────────
+   把下面打掉，上面連不到地面的部分要跟著垮。
+   做法是從地面那一層做連通性搜尋，走不到的就鬆脫。
+
+   兩個要小心的地方：
+   1. 只處理 anchor 的格子。有些藍圖本身就有懸空部件（風車扇葉），
+      那些不是被打壞才浮著的，不該掉。
+   2. 施工中「已被小人認領、正在路上」的格子也算存在。
+      不然施工前緣一定有洞，剛放上去的積木會被自己的判定打下來。 */
+let supportDirty = false, supportT = 0;
+function markSupportDirty(delay) {
+  supportDirty = true;
+  supportT = delay === undefined ? 0.08 : delay;
+}
+function collapseUnsupported() {
+  if (!bp || !bp.at) return 0;
+  const S = bp.slots, n = S.length;
+  const here = i => S[i].filled || S[i].claimed >= 0;
+  const seen = new Uint8Array(n);
+  const stack = [];
+  for (let i = 0; i < n; i++) if (S[i].gy === 0 && here(i)) { seen[i] = 1; stack.push(i); }
+  while (stack.length) {
+    const s = S[stack.pop()];
+    for (let k = 0; k < NB6.length; k++) {
+      const d = NB6[k];
+      const j = bp.at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
+      if (j === undefined || seen[j] || !here(j)) continue;
+      seen[j] = 1; stack.push(j);
+    }
+  }
+  let fell = 0;
+  for (const b of blocks) {
+    if (b.st !== SET || b.slot < 0 || b.fallIn > 0) continue;
+    const s = S[b.slot];
+    if (!s.anchor || seen[b.slot]) continue;
+    // 越高的越晚鬆脫，垮下來才有由下往上的層次，不是整團同時消失
+    b.fallIn = 0.02 + s.gy * 0.012 + Math.random() * 0.06;
+    fell++;
+  }
+  return fell;
 }
 /* 每次造成破壞後的共通處理：計數、嚇小人、判斷這座是不是拆完了 */
 function afterHit(n, point, R) {
@@ -672,6 +741,7 @@ function afterHit(n, point, R) {
     }
   }
   shakeTrees(point, R);
+  markSupportDirty();
   checkBadges();
 }
 
@@ -908,7 +978,21 @@ function step(dt) {
   saveT += dt;
   if (saveT > 12) { saveT = 0; save(); }
 
+  if (supportDirty) {
+    supportT -= dt;
+    if (supportT <= 0) { supportDirty = false; collapseUnsupported(); }
+  }
+
   for (const b of blocks) {
+    if (b.fallIn > 0) {                 // 已判定要垮，等它的鬆脫時間到
+      b.fallIn -= dt;
+      if (b.fallIn <= 0) {
+        breakBlock(b, rr(-2.6, 2.6), rr(-1.6, 0.8), rr(-2.6, 2.6));
+        stats.smashed++;                // 垮下來的也算擊飛
+        // 這塊垮掉之後，原本靠它撐住的鄰居可能也懸空了，再算一次
+        markSupportDirty(0.05);
+      }
+    }
     // 落定轉正期間 st 還是 FLY，所以 snap 要排在 FLY 前面判斷，否則重力會一直把它壓下去
     if (b.snap > 0) stepSnap(b, dt);
     else if (b.st === FLY) stepBlock(b, dt);
@@ -1083,13 +1167,16 @@ function boot() {
     SHAPES.map((s, i) => '<option value="' + i + '">' + s.n + '</option>').join('');
   sel.addEventListener('change', () => { shapePick = +sel.value; startBuild(false); });
 
-  $('cnt').addEventListener('input', e => { targetCnt = +e.target.value; $('vCnt').textContent = targetCnt; });
-  $('cnt').addEventListener('change', () => startBuild(false));
-  $('wk').addEventListener('input', e => { setWorkerCount(+e.target.value); $('vWk').textContent = workerCnt; });
-  $('spd').addEventListener('input', e => { timeScale = +e.target.value; $('vSpd').textContent = timeScale.toFixed(1) + '×'; });
+  /* 設定改動一律寫回 pref 並存檔——下次打開就不用重調 */
+  $('cnt').addEventListener('input', e => { targetCnt = pref.cnt = +e.target.value; $('vCnt').textContent = targetCnt; });
+  $('cnt').addEventListener('change', () => { save(); startBuild(false); });
+  $('wk').addEventListener('input', e => { setWorkerCount(+e.target.value); pref.wk = workerCnt; $('vWk').textContent = workerCnt; });
+  $('wk').addEventListener('change', save);
+  $('spd').addEventListener('input', e => { timeScale = pref.spd = +e.target.value; $('vSpd').textContent = timeScale.toFixed(1) + '×'; });
+  $('spd').addEventListener('change', save);
   $('again').addEventListener('click', () => { audio(); startBuild(false); });
-  $('spin').addEventListener('change', e => { spinOn = e.target.checked; });
-  $('mute').addEventListener('change', e => { muted = e.target.checked; });
+  $('spin').addEventListener('change', e => { spinOn = pref.spin = e.target.checked; save(); });
+  $('mute').addEventListener('change', e => { muted = pref.mute = e.target.checked; save(); });
   $('clockBtn').addEventListener('click', () => $('bigWrap').classList.add('on'));
   $('bigWrap').addEventListener('click', () => $('bigWrap').classList.remove('on'));
   $('panelBtn').addEventListener('click', () => $('panel').classList.toggle('hide'));
@@ -1102,9 +1189,9 @@ function boot() {
   });
 
   load();
+  applyPref();
   renderTools();
   renderBadges();
-  setWorkerCount(workerCnt);
   startBuild(true);
   completeNow();          // 開場直接給一座蓋好的建築，砸掉之後才會開始蓋下一座
   requestAnimationFrame(frame);

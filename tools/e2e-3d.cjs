@@ -111,6 +111,10 @@ const fillAll = page => page.evaluate(() => {
 /* 畫面統計。render 與 readPixels 必須在同一個 evaluate 裡：
    合成之後 drawingBuffer 就被清掉了（preserveDrawingBuffer 預設 false）。 */
 const pix = page => page.evaluate(() => {
+  /* 相機是每幀漸進靠近目標的，而測試多半把 rAF 迴圈停掉了。
+     不先讓它收斂的話，量到的其實是「上一座建築的取景」，
+     開場那座又是隨機的 → 同一個測試每次跑出來的數字都不一樣。 */
+  for (let i = 0; i < 6; i++) ENG.updateCamera(1);
   draw(); ENG.render();
   const gl = ENG.three.renderer.getContext();
   const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
@@ -323,7 +327,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('衝擊範圍內的積木被打飛', smash1.inBroken === smash1.inR && smash1.inR > 5,
      smash1.inR + ' 塊裡飛出 ' + smash1.inBroken);
-  ok('範圍外的積木完全不受影響', smash1.farBroken === 0 && smash1.farMoved === 0,
+  /* 這裡量的是「揮擊當下」：遠處不該被直接波及。
+     至於失去支撐而跟著垮的部分，是下一段「垮塌」在管的事。 */
+  ok('揮擊當下範圍外的積木完全不受影響', smash1.farBroken === 0 && smash1.farMoved === 0,
      '遠處 ' + smash1.farN + ' 塊，壞了 ' + smash1.farBroken + '、位移 ' + smash1.farMoved);
   ok('一槌打飛的數量合理', smash1.n > 5 && smash1.n < 400, smash1.n + ' 塊（半徑 ' + smash1.R + '）');
   await page.screenshot({ path: path.join(OUT, '03-砸出一個洞.png') });
@@ -380,6 +386,69 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('碎塊不會陷進地面', land.sunk === 0, land.sunk + ' 塊陷入');
   ok('碎塊不會浮在半空', land.float === 0 && land.freeN > 10,
      land.freeN + ' 塊散料，浮空 ' + land.float + '（最高 ' + land.worstY.toFixed(2) + '）');
+
+  /* ══════════ 垮塌 ══════════ */
+  head('垮塌：下面沒了上面跟著垮');
+  await reset(page, { shape: '倫敦大笨鐘', cnt: 900, workers: 3 });
+  const tower = await page.evaluate(() => {
+    completeNow();
+    const before = placedCnt, h = bp.height;
+    // 直接把最底下兩層清乾淨——一槌的球半徑不一定蓋得住整個底座，
+    // 那樣測到的是「打不夠乾淨」而不是「垮不垮」
+    let cleared = 0;
+    for (const b of blocks) if (b.st === 3 && b.y < 2.2) { breakBlock(b, 0, 0, 0); cleared++; }
+    afterHit(cleared, { x: 0, y: 1, z: 0 }, 6);
+    const rightAfter = placedCnt;
+    for (let i = 0; i < 40; i++) step(0.05);
+    return { before, cleared, rightAfter, after: placedCnt, h };
+  });
+  ok('清掉底座，整座塔跟著垮下來', tower.after === 0,
+     '高 ' + tower.h + ' 的塔：' + tower.before + ' → 清掉底座剩 ' + tower.rightAfter +
+     ' → 垮完剩 ' + tower.after);
+
+  const side = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '萬里長城');
+    startBuild(true); completeNow();
+    const far0 = blocks.filter(b => b.st === 3 && b.x > 12).length;
+    const t = blocks.filter(b => b.st === 3 && b.x < -12)[0];
+    smash(new THREE.Vector3(t.x, t.y, t.z), new THREE.Vector3(0, -1, 0));
+    for (let i = 0; i < 80; i++) step(0.05);
+    return { far0, far1: blocks.filter(b => b.st === 3 && b.x > 12).length,
+             total: bp.slots.length, left: placedCnt };
+  });
+  ok('打一端不會讓另一端跟著垮', side.far1 === side.far0 && side.far0 > 5,
+     '另一端 ' + side.far0 + ' → ' + side.far1 + '（整體 ' + side.total + ' → ' + side.left + '）');
+
+  /* 有些造型本來就有懸空部件（風車扇葉、摩天輪車廂、大橋吊索），
+     那些不是被打壞才浮著的，不該因為「連不到地面」就掉下來 */
+  const floaty = await page.evaluate(() => {
+    const bad = [];
+    for (const nm of ['荷蘭風車', '倫敦眼摩天輪', '金門大橋', '嚴島神社鳥居', '雪梨歌劇院', '自由女神']) {
+      shapePick = SHAPES.findIndex(s => s.n === nm);
+      startBuild(true); completeNow();
+      const n0 = placedCnt;
+      markSupportDirty(0);
+      for (let i = 0; i < 60; i++) step(0.05);
+      if (placedCnt !== n0) bad.push(nm + ' ' + n0 + '→' + placedCnt);
+    }
+    return bad;
+  });
+  ok('藍圖本身就懸空的部件不會無故掉下來', floaty.length === 0, floaty.join('　') || '6 座都沒掉');
+
+  const noDip = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(40); startBuild(true);
+    let prev = placedCnt, dip = 0;
+    for (let i = 0; i < 4000; i++) {
+      step(0.05);
+      if (placedCnt < prev) dip = Math.max(dip, prev - placedCnt);   // 沒人在砸，進度就不該倒退
+      prev = placedCnt;
+      if (phase === 'done') break;
+    }
+    return { placed: placedCnt, total: bp.slots.length, phase, dip };
+  });
+  ok('施工前緣不會被垮塌判定誤傷', noDip.dip === 0 && noDip.phase === 'done',
+     noDip.placed + '/' + noDip.total + '，過程中最大回退 ' + noDip.dip + ' 塊');
 
   /* ══════════ 遊戲流程：蓋好 → 拆掉 → 蓋下一座 ══════════ */
   head('流程：蓋好 → 拆掉 → 蓋下一座');
@@ -653,6 +722,50 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
   ok('重開後解鎖狀態跟著回來', unlockedAfterReload === 'open,open,open',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
+
+  /* 設定也要一起存——不然每次打開都要重調建材數與小人數 */
+  const prefSaved = await page.evaluate(() => {
+    document.getElementById('cnt').value = '1700';
+    document.getElementById('cnt').dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('cnt').dispatchEvent(new Event('change', { bubbles: true }));
+    document.getElementById('wk').value = '37';
+    document.getElementById('wk').dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('wk').dispatchEvent(new Event('change', { bubbles: true }));
+    document.getElementById('spd').value = '2.5';
+    document.getElementById('spd').dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('spd').dispatchEvent(new Event('change', { bubbles: true }));
+    document.getElementById('mute').checked = true;
+    document.getElementById('mute').dispatchEvent(new Event('change', { bubbles: true }));
+    return { pref: JSON.parse(JSON.stringify(pref)) };
+  });
+  ok('改設定會寫進 pref', prefSaved.pref.cnt === 1700 && prefSaved.pref.wk === 37 &&
+     prefSaved.pref.spd === 2.5 && prefSaved.pref.mute === true, JSON.stringify(prefSaved.pref));
+
+  await page.reload();
+  await page.waitForTimeout(900);
+  const prefBack = await page.evaluate(() => ({
+    cnt: targetCnt, wk: workers.length, spd: timeScale, mute: muted,
+    domCnt: document.getElementById('cnt').value,
+    domWk: document.getElementById('wk').value,
+    domSpd: document.getElementById('spd').value,
+    domMute: document.getElementById('mute').checked,
+    label: document.getElementById('vCnt').textContent + '/' + document.getElementById('vWk').textContent
+  }));
+  ok('重開後設定自動套用（不用每次重調）',
+     prefBack.cnt === 1700 && prefBack.wk === 37 && Math.abs(prefBack.spd - 2.5) < 0.01 && prefBack.mute === true,
+     '建材 ' + prefBack.cnt + '、小人 ' + prefBack.wk + '、速度 ' + prefBack.spd + '、靜音 ' + prefBack.mute);
+  ok('面板上的滑桿也跟著回到存的值',
+     prefBack.domCnt === '1700' && prefBack.domWk === '37' && prefBack.domSpd === '2.5' && prefBack.domMute,
+     'slider=' + prefBack.domCnt + '/' + prefBack.domWk + '/' + prefBack.domSpd + '，標籤 ' + prefBack.label);
+
+  const prefClamp = await page.evaluate(() => {
+    pref.cnt = 99999; pref.wk = -5; pref.spd = 900; save();
+    stats = freshStats(); pref = freshPref(); load();
+    return JSON.parse(JSON.stringify(pref));
+  });
+  ok('存檔裡的設定超出範圍會被夾回來',
+     prefClamp.cnt <= 3000 && prefClamp.wk >= 1 && prefClamp.spd <= 4,
+     JSON.stringify(prefClamp));
 
   const cleared = await page.evaluate(() => {
     resetSave();
