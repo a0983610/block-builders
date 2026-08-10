@@ -44,6 +44,7 @@
   #time{top:14px;right:14px;padding:10px 14px;text-align:right}
   #clock{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
   #time .row{margin-top:3px;font-size:12px;opacity:.72;font-variant-numeric:tabular-nums}
+  #time .row.bad b{color:var(--bad)}          /* 損失用紅字，跟施工計時一眼分得開 */
   #clockBtn{margin-top:7px;width:100%}
 
   /* 左下：設定 */
@@ -109,7 +110,9 @@
   #badgeBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
             max-height:82vh;overflow:auto}
   #badgeBox h2{margin:0 0 2px;font-size:17px}
-  #badgeBox .sub{font-size:12px;opacity:.65;margin-bottom:12px}
+  #badgeBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
+  #badgeBox #badges{margin-top:12px}
+  #badgeLoss{color:var(--bad);font-weight:700}
   .badge{display:flex;flex-direction:column;padding:8px 10px;border-radius:10px;
          background:#f2f2f0;margin-bottom:7px;opacity:.55}
   .badge.got{background:#fdf1e2;opacity:1}
@@ -166,6 +169,7 @@
 <div class="card" id="time">
   <div id="clock">--:--:--</div>
   <div class="row">施工 <b id="timer">0:00</b></div>
+  <div class="row bad">損失 <b id="lossAll">$0</b></div>
   <div class="row" id="fps">— fps</div>
   <button id="clockBtn">全螢幕時鐘</button>
   <button id="badgeBtn" style="margin-top:5px;width:100%">🏅 成就</button>
@@ -201,7 +205,9 @@
 <div id="badgeWrap">
   <div id="badgeBox">
     <h2>成就</h2>
-    <div class="sub">已解鎖 <span id="badgeN">0 / 0</span>　·　紀錄會自動存在這台電腦上</div>
+    <div class="sub">已解鎖 <span id="badgeN">0 / 0</span>　·　累計造成損失 <b id="badgeLoss">$0</b>
+      （拆掉 <span id="badgeDest">0</span> 座、擊飛 <span id="badgeSmash">0</span> 塊）</div>
+    <div class="sub">紀錄會自動存在這台電腦上</div>
     <div id="badges"></div>
     <div class="row">
       <button id="resetBtn">清空紀錄</button>

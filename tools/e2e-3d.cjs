@@ -760,7 +760,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('整地時小人退出工地等，不會提早開工', doze.stillIn === 0 && doze.built === 0,
      '整完時還站在工地裡的有 ' + doze.stillIn + ' 人（最後一次有人在裡面是第 ' +
      doze.lastIn + ' 秒／共 ' + doze.secs + ' 秒），期間蓋了 ' + doze.built + ' 塊');
-  ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > 60,
+  /* 推得出去多少很看堆的位置（堆在正中央就推得遠、六秒半跑不完幾趟），
+     實測 54～301 塊。門檻只用來擋「鏟子完全沒作用」，不拿來宣稱清得多乾淨。 */
+  ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > 25,
      doze.cohort + ' 塊裡有 ' + doze.pushedOut + ' 塊被鏟出範圍，收尾彈掉 ' + doze.kicked +
      ' 塊；最密的一格 ' + JSON.stringify(doze.trail.slice(0, 12)));
   ok('整地完工地範圍是空的', doze.dirty1 === 0,
@@ -1293,6 +1295,73 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('累計支出跟著本次一起長', cost.b.all >= cost.b.th);
   ok('完工之後不再計費', Math.abs(cost.d - cost.c) < 0.001, cost.c.toFixed(0) + ' → ' + cost.d.toFixed(0));
 
+  /* ══════════ 破壞造成的損失 ══════════ */
+  head('破壞損失');
+  const loss = await page.evaluate(() => {
+    stats = freshStats();
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 1200; setWorkerCount(2); startBuild(true); completeNow();
+    const start = stats.wrecked;
+    // 一槌下去：打飛幾塊就該記幾塊的損失
+    const cand = blocks.filter(b => b.st === 3 && b.y > 4);
+    const t = cand[Math.floor(cand.length * 0.5)];
+    const n = smash(new THREE.Vector3(t.x, t.y, t.z), new THREE.Vector3(0.2, -0.95, 0.1).normalize());
+    const afterHitLoss = stats.wrecked - start;
+    /* 垮下來的也要算。把貼地那一層整層清掉，上面就整棟連不到地面——
+       只挖幾十塊零星的洞是不會垮的（26 鄰居連通，牆夠厚就繞得過去）。 */
+    for (let i = 0; i < 30; i++) step(0.05);
+    const beforeFall = stats.wrecked, standing = placedCnt;
+    const low = blocks.filter(b => b.st === 3 && b.y < 1.5);
+    const broke = low.length;
+    for (const b of low) breakBlock(b, 0, 0.5, 0);
+    markSupportDirty(0);       // 直接呼叫 breakBlock 不會排重算，垮塌判定要自己叫
+    for (let i = 0; i < 120; i++) step(0.05);
+    const fellLoss = stats.wrecked - beforeFall, fell = standing - placedCnt;
+    // 拆到門檻換下一座時，剩下沒打到的整棟報廢也要計進去
+    let g = 0;
+    while (phase === 'wreck' && g++ < 300) {
+      const c2 = blocks.filter(b => b.st === 3);
+      if (c2.length) {
+        const x = c2[Math.floor(Math.random() * c2.length)];
+        smash(new THREE.Vector3(x.x, x.y, x.z), new THREE.Vector3(0.2, -0.95, 0.1).normalize());
+      }
+      for (let k = 0; k < 8; k++) step(0.05);
+    }
+    const total = stats.wrecked;
+    // 換建築（不是破壞）不該產生損失
+    const beforeSwap = stats.wrecked;
+    startBuild(true); completeNow();
+    hudLast = 0; hudTick(performance.now());        // running=false 時 HUD 不會自己更新
+    return { afterHitLoss, hit: n, fellLoss, fell, broke, total, cost: WRECK_COST,
+             swapLoss: stats.wrecked - beforeSwap, lossThis,
+             dom: document.getElementById('lossAll').textContent };
+  });
+  ok('打飛積木會記成損失', loss.hit > 0 && loss.afterHitLoss === loss.hit * loss.cost,
+     '一槌打飛 ' + loss.hit + ' 塊 = ' + loss.afterHitLoss + '（每塊 $' + loss.cost + '）');
+  ok('失去支撐自己垮下來的也算損失',
+     loss.fell > loss.broke * 2 && loss.fellLoss === loss.fell * loss.cost,
+     '打掉貼地那層 ' + loss.broke + ' 塊，連帶垮掉共 ' + loss.fell + ' 塊 = ' + loss.fellLoss);
+  ok('拆完一座的損失是整棟的量級', loss.total > 1200 * loss.cost * 0.9,
+     '這座 1200 塊，累計損失 ' + loss.total + '（滿棟約 ' + (1200 * loss.cost) + '）');
+  ok('單純換建築不算損失', loss.swapLoss === 0, '換一座之後多了 ' + loss.swapLoss);
+  ok('換建築後本次損失歸零', loss.lossThis === 0, 'lossThis=' + loss.lossThis);
+  ok('右上角有顯示累計損失', /^\$[\d,]+$/.test(loss.dom) && loss.dom !== '$0', loss.dom);
+
+  const lossBadge = await page.evaluate(() => {
+    stats = freshStats(); stats.wrecked = 99999; checkBadges();
+    const notYet = stats.badges.indexOf('loss100k') >= 0;
+    stats.wrecked = 1e5; checkBadges();
+    const got = stats.badges.indexOf('loss100k') >= 0;
+    stats.wrecked = 2e6; checkBadges();
+    const big = stats.badges.indexOf('loss2m') >= 0;
+    renderBadges();
+    return { notYet, got, big, dom: document.getElementById('badgeLoss').textContent };
+  });
+  ok('$100,000 損失解鎖【災情慘重】', !lossBadge.notYet && lossBadge.got,
+     '$99,999 → ' + lossBadge.notYet + '、$100,000 → ' + lossBadge.got);
+  ok('$2,000,000 損失解鎖【保險公司拒保】', lossBadge.big);
+  ok('成就面板寫出累計損失', lossBadge.dom === '$2,000,000', lossBadge.dom);
+
   /* ══════════ 成就 ══════════ */
   head('成就');
   const badge = await page.evaluate(() => {
@@ -1327,8 +1396,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('3 分鐘內蓋完金字塔才給【奇蹟工程】', miracle.fast && !miracle.slow,
      '100 秒 → ' + miracle.fast + '，400 秒 → ' + miracle.slow);
 
+  // 擺一組像玩過一陣子的紀錄再開面板，截圖才看得出版面
+  await page.evaluate(() => {
+    stats = freshStats();
+    stats.destroyed = 7; stats.smashed = 8420; stats.wrecked = 742500;
+    stats.spent = 168000; stats.poked = 23; stats.bestHit = 74; stats.carried = 6100;
+    stats.built = ['吉薩金字塔', '中世紀城堡', '比薩斜塔', '羅馬競技場'];
+    checkBadges(); hudLast = 0; hudTick(performance.now());
+  });
   await page.click('#badgeBtn');
   ok('成就面板打得開', await page.evaluate(() => document.getElementById('badgeWrap').classList.contains('on')));
+  await page.screenshot({ path: path.join(OUT, '08-成就.png') });
   await page.click('#badgeClose');
   ok('成就面板關得掉', !(await page.evaluate(() => document.getElementById('badgeWrap').classList.contains('on'))));
 

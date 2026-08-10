@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.4.1';
+const VERSION = '1.5.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -176,7 +176,9 @@ function freeBlock(b) {
   if (b.slot >= 0) {
     // 已就位的被打掉，進度要跟著退回去。
     // 只認 SET：TOSS 中的積木雖然也占著 slot，但還沒計進 placedCnt。
-    if (b.st === SET) placedCnt--;
+    /* 這裡是「已就位的積木離開建築」唯一的出口，所以損失也記在這——
+       不管是被槌子打飛、被龍捲風吸走，還是失去支撐自己垮下來，都算。 */
+    if (b.st === SET) { placedCnt--; stats.wrecked += WRECK_COST; lossThis += WRECK_COST; }
     bp.slots[b.slot].filled = false; bp.slots[b.slot].claimed = -1; b.slot = -1;
   }
   // 不用 indexOf 反查——一次砸掉幾百塊時那是 O(n²)
@@ -301,7 +303,7 @@ function startBuild(instant) {
   bp = makeBlueprint(idx, targetCnt);
   indexGrid();
   placedCnt = 0; slotCursor = 0;
-  buildElapsed = 0; spentThis = 0;
+  buildElapsed = 0; spentThis = 0; lossThis = 0;
 
   siteR = Math.max(7, bp.radius);
   // 建材散落區從工地邊緣往外鋪，面積跟積木數成正比 → 不管 300 塊還 3000 塊都一樣鬆
@@ -535,7 +537,7 @@ function completeNow() {
   dozers = null; ENG.putDozers([]);      // 建築直接長出來了，整地機沒戲唱
   placedCnt = bp.slots.length;
   phase = 'done';
-  buildElapsed = 0; spentThis = 0;
+  buildElapsed = 0; spentThis = 0; lossThis = 0;
   computeSupport();
   syncHud();
 }
@@ -818,12 +820,15 @@ function stepToss(b, dt) {
 /* ── 紀錄 · 成就 · 存檔 ───────────────────────────────── */
 const WRECK_AT = 0.25;              // 剩下不到這個比例就算拆完了，換下一座
 const WAGE = 3;                     // 每個小人每秒的人力成本（$）
+/* 每塊積木從建築上掉下來，算多少損失。訂在 85 是要讓「拆一座」的數字有份量：
+   一千塊的建築拆完約 $85,000，跟蓋它花掉的人力錢是同一個量級。 */
+const WRECK_COST = 85;
 const SAVE_KEY = 'block-builders/save1';
 const SAVE_MAGIC = 'BB1';
 const SAVE_XOR = 'winton-block-builders-2026';
 
 const freshStats = () => ({
-  destroyed: 0, smashed: 0, carried: 0, poked: 0, spent: 0,
+  destroyed: 0, smashed: 0, carried: 0, poked: 0, spent: 0, wrecked: 0,
   bestHit: 0, miracle: false, built: [], badges: []
 });
 let stats = freshStats();
@@ -831,6 +836,7 @@ let stats = freshStats();
 const freshPref = () => ({ cnt: 900, wk: 20, spd: 1, mute: false, spin: false });
 let pref = freshPref();
 let spentThis = 0;
+let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
 let savable = true;                 // 無痕模式之類的存不了，就安靜降級
 
 const BADGES = [
@@ -841,7 +847,9 @@ const BADGES = [
   { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
   { id: 'move10k', n: '愚公移山', d: '小人累計搬運 10000 塊', chk: s => s.carried >= 10000 },
   { id: 'world10', n: '環遊世界', d: '蓋過 10 種不同地標', chk: s => s.built.length >= 10 },
-  { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 }
+  { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 },
+  { id: 'loss100k', n: '災情慘重', d: '累計造成 $100,000 損失', chk: s => s.wrecked >= 1e5 },
+  { id: 'loss2m', n: '保險公司拒保', d: '累計造成 $2,000,000 損失', chk: s => s.wrecked >= 2e6 }
 ];
 
 let toasts = [];
@@ -1511,7 +1519,11 @@ function step(dt) {
      不做這件事的話玩家得一塊一塊把最後的碎屑點掉，很煩。 */
   if (phase === 'wreck' && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
     stats.destroyed++;
-    toast('💥 ' + bp.name + ' 拆除完畢', '累計拆掉 ' + stats.destroyed + ' 座');
+    // 剩下沒打到的那些跟著整棟報廢，也要計進損失
+    const writeOff = placedCnt * WRECK_COST;
+    stats.wrecked += writeOff; lossThis += writeOff;
+    toast('💥 ' + bp.name + ' 拆除完畢',
+          '損失 ' + money(lossThis) + '　·　累計拆掉 ' + stats.destroyed + ' 座');
     checkBadges(); save(); renderTools();
     startBuild(false);
   }
@@ -1658,6 +1670,7 @@ function hudTick(now) {
   $('costAll').textContent = money(stats.spent);
   $('nDest').textContent = stats.destroyed;
   $('nSmash').textContent = stats.smashed.toLocaleString('en-US');
+  $('lossAll').textContent = money(stats.wrecked);
 }
 function syncHud() {
   $('bname').textContent = bp ? bp.name : '';
@@ -1694,6 +1707,9 @@ function renderBadges() {
            '</b><span>' + b.d + '</span></div>';
   }).join('');
   $('badgeN').textContent = stats.badges.length + ' / ' + BADGES.length;
+  $('badgeLoss').textContent = money(stats.wrecked);
+  $('badgeDest').textContent = stats.destroyed;
+  $('badgeSmash').textContent = stats.smashed.toLocaleString('en-US');
 }
 function renderToasts() {
   $('toast').innerHTML = toasts.map(t =>
