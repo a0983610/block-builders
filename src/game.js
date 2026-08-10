@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -296,18 +296,31 @@ function startBuild(instant) {
 }
 
 /* ── 整地：推土機 ───────────────────────────────────────
-   換建築時上一輪的碎料還躺在工地上。以前是瞬間把範圍內的碎塊往外彈，
-   現在改成幾台推土機並肩開進來，鏟到的一路往前推，推出工地範圍才放手。
-   推乾淨才切到施工中——小人不會在還沒整平的地上開工。
+   換建築時上一輪的碎料還躺在工地上，而且不是平均鋪開的——只拿槌子敲的話，
+   碎料會全堆在挨打的那一區。所以推土機要做的是「去把堆起來的推散」，
+   不是把整片地毯式掃一遍。
 
-   走法像割草：一整列並肩推掉一條帶狀範圍，一趟蓋不滿就掉頭推下一條。
-   全部帶掃完（或超過時限）就收尾，鏟子湊不齊的畸零角落直接彈出去。 */
+   每台機器自己找一坨最密的碎料，繞到那坨的內側，朝外把它推出工地範圍，
+   然後再找下一坨。找不到值得推的堆就收工。剩下的零星碎塊在收尾時彈出去，
+   不為了那幾塊讓玩家多等好幾秒。
+
+   車速是固定的，而且比小人走路快不了多少——推土機本來就該是慢的。
+   之前用「一趟固定跑幾秒」回推速度，大工地會飆到每秒 57 單位，看起來像在飛。 */
 // 鏟子的寬度與位置直接取畫面那邊的值，判定跟看到的才會是同一把鏟子
 const DOZ_W = ENG.DOZ_W, DOZ_FRONT = ENG.DOZ_FRONT;
-const DOZ_TURN = 0.6;               // 掉頭要幾秒
-const DOZ_PASS = 2.6;               // 一趟跑幾秒（速度由這個回推）
-const DOZ_WAIT = 1.3;               // 開推前在起點怠速幾秒，等飛在半空的碎料落地
-const DOZ_LIMIT = 16;               // 保險：整地最多拖這麼久
+const DOZ_N = 3;                    // 派幾台
+const DOZ_MOVE = 9.5;               // 空車趕路的速度
+const DOZ_PUSH = 6.5;               // 推著碎料時的速度
+const DOZ_TURN = 3.4;               // 轉向角速度（rad/s）
+const DOZ_BACK = 6;                 // 停在那坨的內側多遠開始推
+const DOZ_WAIT = 1.3;               // 開工前怠速幾秒，等飛在半空的碎料落地
+const DOZ_CELL = 5;                 // 找堆時的格子邊長
+const DOZ_HEAP = 12;                // 一格少於這麼多塊就不算「堆」，不值得專程去推
+const DOZ_LIMIT = 6.5;              // 整地最多拖這麼久。碎料鋪滿整片地時堆推不完，
+                                    // 但這是換場的空檔，不是關卡——時間到就收工，剩下的彈掉
+/* 鏟面後方多深之內都算同一堆，一起往前帶。抓得越深一次帶越多，但也得推得更遠
+   才能整堆送出範圍外——不然機器停下時，那一疊的尾巴還留在工地裡。 */
+const DOZ_PILE = 7;
 let dozers = null;
 
 const siteClearR = () => siteR + 1.4;
@@ -325,116 +338,140 @@ function beginBuild() {
   buildStart = performance.now();     // 施工計時從真正開工才起算，不含整地
 }
 function startClear() {
-  const A = Math.random() * Math.PI * 2, Rc = siteClearR();
-  /* 寧可多派幾台一次排開，也不要少少幾台來回跑。一整列涵蓋整個工地寬度時
-     只要推一趟就清完，而且沒有「這趟推出去的碎料被擠到隔壁趟的地盤」的問題。 */
-  const n = clamp(Math.ceil(Rc / DOZ_W), 2, 6);
-  const B = n * DOZ_W;                // 一整列並肩一趟能推掉的半寬
-  /* 每趟的中心線平均分在工地上，不是從邊緣一路排過去。
-     從邊緣排的話最後一趟會有大半落在工地外面——三台機器只有一台在做事。 */
-  const passes = Math.ceil(Rc / B);
-  /* 速度用「一趟固定跑幾秒」回推，不是給一個固定速度。金門大橋那種
-     半徑 69 的工地用小工地的速度會整地整二十秒，玩家只能乾等。
-     鏡頭本來就會跟著工地拉遠，畫面上看起來的速度其實差不多。 */
-  const L = siteR + 11;
+  const R = siteClearR() + 9;
   dozers = {
-    dx: Math.cos(A), dz: Math.sin(A), lx: -Math.sin(A), lz: Math.cos(A),
-    /* 開推之前先在起點怠速一下。剛換建築的那一刻，上一座還有四分之一是整片
-       炸開飛在半空的，馬上開推的話它們會落在鏟子後面已經推乾淨的地上，
-       接下來誰也碰不到，只能收尾時直接彈掉（實測漏掉的從 1~5% 惡化到 18%）。 */
-    wait: DOZ_WAIT,
-    n, B, Rc, passes, bands: passes, cw: 2 * Rc / passes, pass: 0, u: 0, turn: 0,
-    // 起訖點都拉到工地外，鏟面才掃得過整個範圍；堆在鏟子後面的那一疊也要落在範圍外
-    L, spd: 2 * L / DOZ_PASS, t: 0, leave: 0
+    t: 0, wait: DOZ_WAIT, done: false,
+    list: Array.from({ length: DOZ_N }, (_, k) => {
+      const ang = (k / DOZ_N + Math.random() * 0.2) * Math.PI * 2;  // 從場邊不同方向開進來
+      const x = Math.cos(ang) * R, z = Math.sin(ang) * R;
+      // rotation.y = a 會讓車頭（local +Z）指向 (sin a, cos a)，所以面向原點是 atan2(-x, -z)
+      return { x, z, a: Math.atan2(-x, -z), st: 'seek', tx: 0, tz: 0, ux: 0, uz: 0, bl: 1, k };
+    })
   };
   phase = 'clear';
   sndDozer();
 }
-/* 第 k 台在第 p 趟、行程走到 u 時的位置。u 從 0 到 2L，奇數趟反向開回來 */
-function dozPos(D, k, p, u) {
-  const sgn = p % 2 ? -1 : 1;
-  const s = sgn * (u - D.L);
-  const c = -D.Rc + D.cw * (Math.min(p, D.bands - 1) + 0.5) + (k - (D.n - 1) / 2) * 2 * DOZ_W;
-  return { x: D.dx * s + D.lx * c, z: D.dz * s + D.lz * c, s, c, sgn };
+
+/* 把工地上的碎料用粗格子數一數，回傳夠格稱為「堆」的那些，多的排前面。
+   一幀算一次三台共用，不要每台各掃一次 blocks。 */
+function listHeaps() {
+  const r = siteClearR(), cnt = new Map();
+  for (const b of blocks) {
+    if (b.st !== FREE || Math.hypot(b.x, b.z) >= r) continue;
+    const key = Math.floor(b.x / DOZ_CELL) + ':' + Math.floor(b.z / DOZ_CELL);
+    let c = cnt.get(key);
+    if (!c) cnt.set(key, c = { n: 0, x: 0, z: 0 });
+    c.n++; c.x += b.x; c.z += b.z;
+  }
+  const out = [];
+  for (const c of cnt.values())
+    if (c.n >= DOZ_HEAP) out.push({ n: c.n, x: c.x / c.n, z: c.z / c.n });
+  out.sort((a, b) => b.n - a.n);
+  return out;
+}
+/* 派工：繞到那坨的內側，等一下朝外推。堆剛好在正中心時就照現在的車頭方向推。 */
+function assignHeap(m, h) {
+  const d = Math.hypot(h.x, h.z);
+  const ux = d < 0.5 ? Math.sin(m.a) : h.x / d;
+  const uz = d < 0.5 ? Math.cos(m.a) : h.z / d;
+  m.ux = ux; m.uz = uz;
+  m.tx = h.x - ux * DOZ_BACK; m.tz = h.z - uz * DOZ_BACK;
+  m.st = 'move';
+}
+/* 開向目標點。回傳是否已抵達。轉向不是瞬間的，車頭要轉過去才走得順。 */
+function driveTo(m, dt, spd) {
+  const dx = m.tx - m.x, dz = m.tz - m.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 0.6) return true;
+  const want = Math.atan2(dx, dz);              // 跟畫面同一套：rotation.y 讓 +Z 指向這裡
+  let diff = want - m.a;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  const turn = Math.min(Math.abs(diff), DOZ_TURN * dt) * Math.sign(diff);
+  m.a += turn;
+  // 車頭還沒轉過來就先原地轉，不要斜著滑過去
+  const go = spd * dt * Math.max(0, 1 - Math.abs(diff) / 1.2);
+  m.x += Math.sin(m.a) * Math.min(go, d);
+  m.z += Math.cos(m.a) * Math.min(go, d);
+  return false;
 }
 function dozRender(D) {
-  const out = [];
-  for (let k = 0; k < D.n; k++) {
-    let x, z, a;
-    if (D.turn > 0) {
-      // 掉頭：位置從這趟終點滑到下一趟起點，同時把車頭轉半圈
-      const f = 1 - D.turn / DOZ_TURN, e = f * f * (3 - 2 * f);
-      const p0 = dozPos(D, k, D.pass, 2 * D.L), p1 = dozPos(D, k, D.pass + 1, 0);
-      x = p0.x + (p1.x - p0.x) * e; z = p0.z + (p1.z - p0.z) * e;
-      a = Math.atan2(p0.sgn * D.dx, p0.sgn * D.dz) + Math.PI * e;
-    } else {
-      const p = dozPos(D, k, D.pass, D.u);
-      x = p.x; z = p.z;
-      a = Math.atan2(p.sgn * D.dx, p.sgn * D.dz);
-    }
-    out.push({ x, z, a, bob: Math.sin(D.t * 26 + k * 1.7) * 0.045 });
-  }
-  return out;
+  return D.list.map(m => ({ x: m.x, z: m.z, a: m.a, bl: m.bl,
+                            bob: Math.sin(D.t * 26 + m.k * 1.7) * 0.045 }));
 }
 /* 鏟面掃到的碎料往前推。只推落定的碎塊——已就位的建築、小人手上的、
    還在飛的都不碰。推完位置變了，空間雜湊要跟著更新，順便擠開重疊的。
 
-   三個數字是量出來才敢寫的：
-   1. 抓取深度要看整堆，不能只看鏟面那一薄層。工地上的碎料可以多到把整塊地
-      鋪滿還有剩，全部擠在鏟面前 2 單位是不可能的——擠不下的會被 separate
-      擠回鏟子後面，然後就被丟下了（實測 1055 塊只推得動 167 塊）。
-   2. 但也不能無限深：一路往後抓會連工地外面的建材堆一起鏟走。所以再加一道
-      「工地入口那一邊以外的不碰」，鏟子後面的料場才不會被掃掉。
-   3. 一幀最多推 spd*dt 的兩倍多一點。不設上限的話落後的積木會一次瞬移到
-      鏟面前，看起來是用吸的不是用推的。 */
-const DOZ_PILE = 16;                // 鏟面後方多深之內都算同一堆，一起往前帶
-function pushWithBlade(D, dt) {
-  const sgn = D.pass % 2 ? -1 : 1;
-  const front = sgn * (D.u - D.L + DOZ_FRONT);
-  const c0 = -D.Rc + D.cw * (Math.min(D.pass, D.bands - 1) + 0.5);
-  const cap = D.spd * dt * 2.2;
+   兩個數字是量出來才敢寫的：
+   1. 抓取深度要看整堆，不能只看鏟面那一薄層。一坨碎料可以厚到幾十塊，
+      全部擠在鏟面前 2 單位是不可能的——擠不下的會被 separate 擠回鏟子後面，
+      然後就被丟下了（實測 1055 塊只推得動 167 塊）。
+   2. 一幀最多推車速的兩倍多一點。不設上限的話落後的積木會一次瞬移到鏟面前，
+      看起來是用吸的不是用推的。 */
+function pushWithBlade(m, dt) {
+  const fx = Math.sin(m.a), fz = Math.cos(m.a);        // 車頭方向
+  const frontX = m.x + fx * DOZ_FRONT, frontZ = m.z + fz * DOZ_FRONT;
+  const cap = DOZ_PUSH * dt * 2.2;
   for (const b of blocks) {
     if (b.st !== FREE) continue;
-    const al = b.x * D.dx + b.z * D.dz;
-    const ahead = (al - front) * sgn;              // 在鏟面前方多遠（負的是還在後面）
+    const rx = b.x - frontX, rz = b.z - frontZ;
+    const ahead = rx * fx + rz * fz;                    // 在鏟面前方多遠（負的是還在後面）
     if (ahead > 0.5 || ahead < -DOZ_PILE) continue;
-    if (al * sgn < -D.Rc - 2) continue;            // 工地外、鏟子後方的建材堆不要碰
-    const la = b.x * D.lx + b.z * D.lz;
-    const k = Math.round((la - c0) / (2 * DOZ_W) + (D.n - 1) / 2);
-    if (k < 0 || k >= D.n) continue;               // 不在這一列鏟子的寬度內
-    const need = 0.5 - ahead;                      // 還差多少才貼到鏟面前緣
-    const delta = sgn * Math.min(need, cap);
+    if (Math.abs(-rx * fz + rz * fx) > DOZ_W) continue; // 不在鏟子寬度內
+    const delta = Math.min(0.5 - ahead, cap);
     if (b.cell) gridDel(b);
-    b.x += D.dx * delta; b.z += D.dz * delta;
+    b.x += fx * delta; b.z += fz * delta;
     b.ry += dt * 2.4; b.wob = 0.4;
     separate(b); gridAdd(b);
   }
 }
 function finishClear() {
-  kickOutSite();                     // 鏟子掃不到的畸零角落直接彈出去收尾
-  dozers.leave = 1.6;                // 交給小人，自己往前開出場
+  kickOutSite();                     // 剩下的零星碎塊直接彈出去收尾
+  dozers.done = true;                // 交給小人，機器自己開出場
+  for (const m of dozers.list) {
+    m.st = 'leave'; m.bl = 1;
+    m.a = Math.atan2(m.x, m.z);      // 車頭轉朝外，不要再穿過工地
+  }
   beginBuild();
 }
 function stepDozers(dt) {
   const D = dozers; if (!D) return;
   D.t += dt;
-  if (D.leave > 0) {
-    D.leave -= dt; D.u += D.spd * dt;
-    if (D.leave <= 0) { dozers = null; ENG.putDozers([]); }
+  if (D.wait > 0) { D.wait -= dt; return; }            // 怠速等碎料落地
+  if (D.done) {
+    let alive = 0;
+    for (const m of D.list) {
+      m.x += Math.sin(m.a) * DOZ_MOVE * dt;
+      m.z += Math.cos(m.a) * DOZ_MOVE * dt;
+      if (Math.hypot(m.x, m.z) < arenaR + 14) alive++;
+    }
+    if (!alive) { dozers = null; ENG.putDozers([]); }
     return;
   }
-  if (D.wait > 0) { D.wait -= dt; return; }        // 在起點怠速等碎料落地
-  if (D.turn > 0) {
-    D.turn -= dt;
-    if (D.turn <= 0) { D.pass++; D.u = 0; }
-    return;
+  const R = siteClearR();
+  const heaps = listHeaps();
+  let idle = 0;
+  for (const m of D.list) {
+    if (m.st === 'move') {
+      m.bl += (1 - m.bl) * Math.min(1, dt * 6);        // 趕路時鏟子抬起來
+      if (driveTo(m, dt, DOZ_MOVE)) {
+        // 到位，開始朝外推。推到整疊都出了範圍才收手，不是車頭一出界就停
+        const out = R + DOZ_PILE + 2;
+        m.tx = m.ux * out; m.tz = m.uz * out;
+        m.st = 'push';
+      }
+    } else if (m.st === 'push') {
+      m.bl += (0 - m.bl) * Math.min(1, dt * 8);        // 鏟子放下來
+      pushWithBlade(m, dt);
+      if (driveTo(m, dt, DOZ_PUSH) || Math.hypot(m.x, m.z) > R + DOZ_PILE + 1) m.st = 'seek';
+    }
+    if (m.st === 'seek') {
+      const h = heaps.shift();                         // 最大的那坨先派，三台不會擠在一起
+      if (h) assignHeap(m, h); else idle++;
+    }
   }
-  D.u += D.spd * dt;
-  pushWithBlade(D, dt);
-  if (D.u >= 2 * D.L) {
-    if (D.pass + 1 >= D.passes || D.t > DOZ_LIMIT) finishClear();
-    else D.turn = DOZ_TURN;
-  }
+  // 全部都找不到值得推的堆了，或是拖太久，就收工——不為了零星幾塊讓玩家乾等
+  if (idle >= D.list.length || D.t > DOZ_LIMIT) finishClear();
 }
 
 /* 直接把整座蓋好。開場用——一進來就有一座完整的建築可以砸，

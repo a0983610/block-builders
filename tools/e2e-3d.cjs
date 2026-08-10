@@ -694,94 +694,142 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       for (let k = 0; k < 8; k++) step(0.05);
     }
-    const born = dozers ? { n: dozers.n, passes: dozers.passes, L: +dozers.L.toFixed(1) } : null;
+    const born = dozers ? dozers.list.length : 0;
     const drawn = dozers ? dozRender(dozers).length : 0;
     const R = siteR + 1.4;
     const dirtyOf = () => blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R).length;
-    // 分清楚「被鏟子推出去」跟「時間到直接彈出去」各占多少
+    // 最密的一格有幾塊——推土機的工作就是把這個數字壓下來
+    const heapOf = () => {
+      const c = new Map();
+      for (const b of blocks) {
+        if (b.st !== 0 || Math.hypot(b.x, b.z) >= R) continue;
+        const k = Math.floor(b.x / 5) + ':' + Math.floor(b.z / 5);
+        c.set(k, (c.get(k) || 0) + 1);
+      }
+      return c.size ? Math.max(...c.values()) : 0;
+    };
+    /* 「機器真的把料推出去了」跟「時間到直接彈掉」要分清楚。
+       收尾 kickOut 的那批在被彈的當下還在範圍內，所以整地結束時人在範圍外的，
+       就是被鏟子推出去的。 */
+    const cohort = blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R);
     const origKick = kickOut; let kicked = 0;
     kickOut = b => { kicked++; origKick(b); };
-    /* 「有被一路推著走」要看碎料沿推進方向的平均位置有沒有一路往前跑。
-       單看範圍內剩幾塊看不出來——一趟推到底的話，碎料是在鏟子逼近邊緣時才成批離開範圍。
-       追蹤對象要在一開始就定下來：拿「當下還在範圍內的」去平均的話，
-       推出去的一離開就不算了，平均值反而會往回跳。 */
-    const dx = dozers.dx, dz = dozers.dz;
-    const cohort = blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R);
-    const alongOf = () => {
-      let s = 0;
-      for (const b of cohort) s += b.x * dx + b.z * dz;
-      return cohort.length ? s / cohort.length : null;
-    };
-    const trail = [], along = [];
-    let peak = dirtyOf(), lastIn = 0, built = 0, guard = 0;
+    const trail = [];
+    let peak = dirtyOf(), heap0 = 0, lastIn = 0, built = 0, guard = 0;
+    let sawMove = 0, sawPush = 0, maxSpd = 0;
     while (phase === 'clear' && guard++ < 900) {
+      const before = dozers ? dozers.list.map(m => ({ x: m.x, z: m.z })) : null;
       step(0.05);
       const d = dirtyOf();
       if (d > peak) peak = d;
-      if (guard % 8 === 0) trail.push(d);
-      // 起步前那段怠速不取樣，不然「有沒有在前進」會被一串不動的樣本稀釋
-      if (guard % 4 === 0 && dozers && dozers.wait <= 0) {
-        const a = alongOf(); if (a !== null) along.push(+a.toFixed(1));
+      if (guard % 8 === 0) trail.push(heapOf());
+      if (dozers && dozers.wait <= 0) {
+        if (heap0 === 0) heap0 = heapOf();               // 開推那一刻最密的一格
+        for (const m of dozers.list) { if (m.st === 'move') sawMove++; if (m.st === 'push') sawPush++; }
+        if (before) for (let i = 0; i < dozers.list.length; i++) {
+          const m = dozers.list[i], p = before[i];
+          const v = Math.hypot(m.x - p.x, m.z - p.z) / 0.05;
+          if (v > maxSpd) maxSpd = v;
+        }
       }
       if (placedCnt > built) built = placedCnt;
+      // 留一張整地中的畫面：畫完就不再畫，後面截到的就是這一幀
+      if (guard === 55) { for (let i = 0; i < 8; i++) ENG.updateCamera(1); draw(); ENG.render(); }
       /* 小人本來就可能剛好站在工地正中央（上一秒還在遊蕩），走出去要好幾秒，
          所以不能要求「整段期間都不在裡面」。要驗的是他們有往外走、而且整完時人不在裡面。 */
       for (const w of workers) if (Math.hypot(w.x, w.z) < R) { lastIn = guard; break; }
     }
     const stillIn = workers.filter(w => Math.hypot(w.x, w.z) < R).length;
+    const pushedOut = cohort.filter(b => Math.hypot(b.x, b.z) >= R).length;
     kickOut = origKick;
     const dirty1 = dirtyOf(), secs = +(guard * 0.05).toFixed(1);
-    /* 看的是「有沒有倒退」，不是「每個取樣點都在前進」。鏟子從起點開到工地邊緣
-       那零點幾秒還沒碰到東西，前幾個取樣本來就是平的。 */
-    let down = 0;
-    for (let i = 1; i < along.length; i++) if (along[i] < along[i - 1] - 0.2) down++;
-    let g2 = 0; while (dozers && g2++ < 300) step(0.05);   // 整完會自己開走
-    return { born, drawn, peak, dirty1, kicked, trail, secs, built, along, stillIn,
-             gain: along.length > 1 ? +(along[along.length - 1] - along[0]).toFixed(1) : 0, down,
+    let g2 = 0; while (dozers && g2++ < 400) step(0.05);   // 整完會自己開走
+    return { born, drawn, peak, dirty1, trail, secs, built, stillIn, heap0,
+             cohort: cohort.length, pushedOut, kicked,
+             heapEnd: trail.length ? trail[trail.length - 1] : 0,
+             sawMove, sawPush, maxSpd: +maxSpd.toFixed(1),
              lastIn: +(lastIn * 0.05).toFixed(1),
              gone: !dozers, phase, drove: +(g2 * 0.05).toFixed(1) };
   });
-  ok('換建築時會開幾台推土機進來', doze.born && doze.born.n >= 2 && doze.drawn === doze.born.n,
-     doze.born ? doze.born.n + ' 台、' + doze.born.passes + ' 趟，畫面上放了 ' + doze.drawn + ' 台' : '沒有出現');
+  ok('換建築時會開幾台推土機進來', doze.born === 3 && doze.drawn === 3,
+     doze.born + ' 台，畫面上放了 ' + doze.drawn + ' 台');
+  ok('會先趕路再放下鏟子推', doze.sawMove > 0 && doze.sawPush > 0,
+     '趕路 ' + doze.sawMove + ' 幀、推 ' + doze.sawPush + ' 幀');
+  ok('車速在合理範圍，不會用飛的', doze.maxSpd > 3 && doze.maxSpd < 12,
+     '最快 ' + doze.maxSpd + ' 單位／秒（小人走路是 6.8）');
   ok('整地時小人退出工地等，不會提早開工', doze.stillIn === 0 && doze.built === 0,
      '整完時還站在工地裡的有 ' + doze.stillIn + ' 人（最後一次有人在裡面是第 ' +
      doze.lastIn + ' 秒／共 ' + doze.secs + ' 秒），期間蓋了 ' + doze.built + ' 塊');
+  ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > 60,
+     doze.cohort + ' 塊裡有 ' + doze.pushedOut + ' 塊被鏟出範圍，收尾彈掉 ' + doze.kicked +
+     ' 塊；最密的一格 ' + JSON.stringify(doze.trail.slice(0, 12)));
   ok('整地完工地範圍是空的', doze.dirty1 === 0,
      '整地 ' + doze.secs + ' 秒，範圍內從最多 ' + doze.peak + ' 塊清到 ' + doze.dirty1 + ' 塊');
-  ok('碎料是被鏟出去的，不是時間到瞬間彈掉',
-     doze.peak > 0 && doze.kicked < doze.peak * 0.12,      // 實測 1~5%，門檻放寬到 12%
-     '最多 ' + doze.peak + ' 塊，收尾時只彈了 ' + doze.kicked + ' 塊（其餘由鏟子推出去）');
-  ok('碎料是被一路推著走的，中途不會倒退', doze.gain > 8 && doze.down === 0,
-     '沿推進方向的平均位置前進了 ' + doze.gain + '，倒退 ' + doze.down + ' 次：' +
-     JSON.stringify(doze.along.slice(0, 12)) +
-     '；範圍內剩餘 ' + JSON.stringify(doze.trail.slice(0, 12)));
   ok('整完會自己開出場', doze.gone && doze.phase === 'build',
      doze.drove + ' 秒後開走，phase=' + doze.phase);
+  await page.screenshot({ path: path.join(OUT, '07-整地.png') });
 
-  /* 大工地一列排不滿，要來回推好幾趟——掉頭那段是另一條路徑，得單獨走過 */
+  /* 只拿槌子敲的話碎料會全堆在挨打的那一區——這才是推土機真正要處理的情況 */
+  const dozeHeap = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 1400; setWorkerCount(4); startBuild(true); completeNow();
+    // 固定敲同一角，把碎料集中砸成一大坨
+    const cand = blocks.filter(b => b.st === 3);
+    const t = cand[Math.floor(cand.length * 0.35)];
+    const spot = new THREE.Vector3(t.x, t.y, t.z);
+    for (let i = 0; i < 40; i++) {
+      smash(spot, new THREE.Vector3(0.1, -0.98, 0.1).normalize(), 7, 9);
+      for (let k = 0; k < 6; k++) step(0.05);
+    }
+    for (let i = 0; i < 60; i++) step(0.05);
+    const R = siteR + 1.4;
+    const densest = () => {
+      const c = new Map();
+      for (const b of blocks) {
+        if (b.st !== 0 || Math.hypot(b.x, b.z) >= R) continue;
+        const k = Math.floor(b.x / 5) + ':' + Math.floor(b.z / 5);
+        c.set(k, (c.get(k) || 0) + 1);
+      }
+      return c.size ? Math.max(...c.values()) : 0;
+    };
+    const before = densest();
+    startClear();
+    let g = 0, mid = 0;
+    while (phase === 'clear' && g++ < 900) { step(0.05); if (g === 60) mid = densest(); }
+    return { before, mid, after: densest(), secs: +(g * 0.05).toFixed(1) };
+  });
+  ok('只敲一個角砸出來的那一大坨也會被推散',
+     dozeHeap.before > 25 && dozeHeap.after < dozeHeap.before * 0.5,
+     '最密的一格 ' + dozeHeap.before + ' → ' + dozeHeap.after + ' 塊（' +
+     dozeHeap.secs + ' 秒）');
+
+  /* 大工地：機器慢慢開，不可能在時限內清光——重點是它不會沒完沒了，收尾照樣把地清乾淨 */
   const dozeBig = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '金門大橋');
     targetCnt = 2000; setWorkerCount(6); startBuild(true); completeNow();
-    // 手動把全部積木打散在工地上，再叫整地流程跑一次
     for (const b of blocks) { if (b.st === 3) freeBlock(b); }
     for (let i = 0; i < 120; i++) step(0.05);
     siteR = bp.radius; startClear();
-    const info = { n: dozers.n, passes: dozers.passes, spd: +dozers.spd.toFixed(1), siteR: +siteR.toFixed(0) };
     const R = siteR + 1.4;
     const dirty0 = blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R).length;
-    let turns = 0, maxPass = 0, g = 0;
+    let g = 0, maxSpd = 0;
     while (phase === 'clear' && g++ < 1200) {
+      const before = dozers ? dozers.list.map(m => ({ x: m.x, z: m.z })) : null;
       step(0.05);
-      if (dozers) { if (dozers.turn > 0) turns++; if (dozers.pass > maxPass) maxPass = dozers.pass; }
+      if (dozers && before) for (let i = 0; i < dozers.list.length; i++) {
+        const m = dozers.list[i], p = before[i];
+        const v = Math.hypot(m.x - p.x, m.z - p.z) / 0.05;
+        if (v > maxSpd) maxSpd = v;
+      }
     }
-    return { info, dirty0, turns, maxPass, secs: +(g * 0.05).toFixed(1), phase,
+    return { dirty0, secs: +(g * 0.05).toFixed(1), phase, siteR: +siteR.toFixed(0),
+             maxSpd: +maxSpd.toFixed(1),
              dirty1: blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R).length };
   });
-  ok('大工地會來回推好幾趟', dozeBig.info.passes >= 2 && dozeBig.maxPass >= 1 && dozeBig.turns > 0,
-     '半徑 ' + dozeBig.info.siteR + ' 的工地：' + dozeBig.info.n + ' 台推 ' +
-     dozeBig.info.passes + ' 趟（實際跑到第 ' + (dozeBig.maxPass + 1) + ' 趟，掉頭 ' + dozeBig.turns + ' 幀）');
-  ok('大工地也整得完，而且不會沒完沒了', dozeBig.dirty1 === 0 && dozeBig.secs < 16,
-     dozeBig.dirty0 + ' 塊 → ' + dozeBig.dirty1 + ' 塊，花 ' + dozeBig.secs + ' 秒（車速 ' + dozeBig.info.spd + '）');
+  ok('大工地的車速跟小工地一樣，不會為了趕時間飆起來', dozeBig.maxSpd < 12,
+     '半徑 ' + dozeBig.siteR + ' 的工地，最快 ' + dozeBig.maxSpd + ' 單位／秒');
+  ok('大工地不會沒完沒了，收尾照樣清乾淨', dozeBig.dirty1 === 0 && dozeBig.secs < 9,
+     dozeBig.dirty0 + ' 塊 → ' + dozeBig.dirty1 + ' 塊，花 ' + dozeBig.secs + ' 秒');
 
   /* 畫面上的鏟子跟判定用的鏟子要是同一把。
      在每台機器的鏟面正前方各擺一塊碎料，看它會不會被往前推——
@@ -794,7 +842,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     kickOutSite();                                  // 先清空，等一下自己擺測試用的積木
     for (let i = 0; i < 80; i++) step(0.05);
     startClear();
-    dozers.wait = 0; dozers.u = dozers.L;           // 跳過怠速，直接開到工地正中央
+    dozers.wait = 0;
     /* 先把場上其他碎料全部從空間雜湊裡拿掉並挪到場邊。留著的話，
        量到的位移會混進「碎料互相擠開」的成分——這裡要測的是鏟子推不推得到。 */
     for (const b of blocks) {
@@ -802,6 +850,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (b.cell) gridDel(b);
       b.x = arenaR * 0.98; b.z = arenaR * 0.98; b.y = 0.47;
     }
+    // 手動把三台都排進工地裡、轉成朝外推的狀態
+    dozers.list.forEach((m, i) => {
+      const ang = i / dozers.list.length * Math.PI * 2;
+      m.ux = Math.cos(ang); m.uz = Math.sin(ang);
+      m.x = m.ux * siteR * 0.3; m.z = m.uz * siteR * 0.3;
+      m.a = Math.atan2(m.ux, m.uz);
+      m.tx = m.ux * (siteR + 8); m.tz = m.uz * (siteR + 8);
+      m.st = 'push'; m.bl = 0;
+    });
     const view = dozRender(dozers);
     const probes = [];
     for (const v of view) {
@@ -815,18 +872,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     for (let i = 0; i < 6; i++) step(0.02);
     const moved = probes.map(p => +((p.b.x - p.x0) * p.fx + (p.b.z - p.z0) * p.fz).toFixed(2));
-    // 順便留一張整地中的畫面
-    for (let i = 0; i < 8; i++) ENG.updateCamera(1);
     draw(); ENG.render();
-    return { n: view.length, moved, min: Math.min(...moved),
-             blade: +(dozers ? dozers.spd * 0.12 : 0).toFixed(2), calls: ENG.info().calls };
+    return { n: view.length, moved, min: Math.min(...moved), calls: ENG.info().calls };
   });
-  ok('鏟面正前方的碎料真的會被推走', dozAlign.min > 0.8,
+  ok('鏟面正前方的碎料真的會被推走', dozAlign.min > 0.5,
      dozAlign.n + ' 台機器各推了 ' + JSON.stringify(dozAlign.moved) +
-     ' 單位（0.12 秒內鏟面前進 ' + dozAlign.blade + '）');
+     ' 單位（0.12 秒內車子前進 0.78）');
   ok('推土機沒有多吃 draw call', dozAlign.calls <= 13,
-     dozAlign.calls + ' 個（整地中含 5 台機器）');
-  await page.screenshot({ path: path.join(OUT, '07-整地.png') });
+     dozAlign.calls + ' 個（整地中含 3 台機器）');
 
   const dozeSkip = await page.evaluate(() => {
     startBuild(true);

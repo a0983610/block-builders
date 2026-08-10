@@ -281,22 +281,26 @@ const ENG = (function () {
     { p: [1.55, 0.95, 1.9], s: [0.36, 0.36, 3.4], c: 0x565c65 },      // 右推臂
     /* 鏟子畫得比推得到的寬度窄一點點：畫到一樣寬的話，並肩的機器會連成一道長牆，
        看起來只是一片會動的牆。高度也要壓在車身以下，不然整台被自己的鏟子擋光。 */
-    { p: [0, 0.95, DOZ_FRONT], s: [DOZ_W * 1.86, 1.5, 0.45], c: 0xc2c8d0, r: 0.13 },
-    { p: [0, 0.25, DOZ_FRONT + 0.18], s: [DOZ_W * 1.86, 0.55, 0.8], c: 0x8a9098 }  // 鏟刃
+    { p: [0, 0.95, DOZ_FRONT], s: [DOZ_W * 1.86, 1.5, 0.45], c: 0xc2c8d0, r: 0.13, bl: 1 },
+    { p: [0, 0.25, DOZ_FRONT + 0.18], s: [DOZ_W * 1.86, 0.55, 0.8], c: 0x8a9098, bl: 1 }  // 鏟刃
   ];
+  /* d.bl：鏟子抬起來的程度（0 貼地推、1 抬高趕路）。
+     空車趕路時鏟子還鏟在地上的話，看起來像是一路都在推東西。 */
   function putDozers(list) {
     const n = Math.min(list.length, MAXDOZ);
     dozMesh.count = n * DOZ_PARTS;
     for (let i = 0; i < n; i++) {
       const d = list[i];
+      const up = d.bl || 0;
       scratch.position.set(d.x, d.bob || 0, d.z);
       scratch.rotation.set(0, d.a, 0);
       scratch.scale.setScalar(1);
       scratch.updateMatrix();
       for (let k = 0; k < DOZ_PARTS; k++) {
         const b = DOZ_PART[k];
-        scratchB.position.set(b.p[0], b.p[1], b.p[2]);
-        scratchB.rotation.set(b.r || 0, 0, 0);
+        const lift = b.bl ? up : 0;
+        scratchB.position.set(b.p[0], b.p[1] + lift * 1.25, b.p[2] - lift * 0.5);
+        scratchB.rotation.set((b.r || 0) - lift * 0.55, 0, 0);
         scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
