@@ -442,29 +442,59 @@ const SHAPES = [
     v.box(0, y + Math.max(2, Math.round(h * 0.05)), 0, 1, Math.max(3, Math.round(h * 0.1)), 1, 2);
   } },
 
-{ n: '雪梨歌劇院', lo: 7, hi: 42, pal: [0xf4f2ec, 0xd9d6cd, 0x93a7b5],
+{ n: '雪梨歌劇院', lo: 6, hi: 30, pal: [0xf4f2ec, 0xc8c4b8, 0x8fa5b4],
   gen(v, s) {
-    v.box(0, 0, 0, Math.round(s * 2.1), 2, Math.round(s * 1.15), 2);     // 碼頭平台
-    /* 一片帆殼：側面是四分之一圓的弧，寬度隨高度收窄。
-       第一版把收窄係數同時乘到高度與深度上，整片殼就塌成一撮碎塊。 */
-    const shell = (cx, cz, R, dir) => {
-      for (let a = 0; a <= 92; a += 1.5) {
-        const rad = a * Math.PI / 180;
-        const y = 2 + Math.sin(rad) * R;
-        const z = cz + dir * Math.cos(rad) * R * 0.5;
-        const halfW = Math.max(0.5, R * 0.46 * (1 - Math.pow(a / 92, 1.6)));
-        for (let t = -halfW; t <= halfW; t += 0.7) v.set(cx + t, y, z, 0);
-        v.set(cx - halfW, y, z, 1); v.set(cx + halfW, y, z, 1);          // 殼緣加深色勾邊
+    /* 長軸取 x。台座只做側牆＋一層甲板：實心的話光台座就吃掉一千多塊，
+       帆殼反而沒積木可用，整座就矮成一坨（實測 1400 塊有 1393 塊在台座上）。 */
+    const PW = Math.max(11, Math.round(s * 2.2)), PD = Math.max(7, Math.round(s * 0.9));
+    v.walls(0, 0, 0, PW, 2, PD, 1, 1);
+    v.box(0, 2, 0, PW, 1, PD, 2);
+
+    /* 一片帆殼＝立在台座上的半個超橢球殼，刻意做成明顯高過寬。
+
+       試過兩種更「忠於原作」的做法，在這個積木尺度下都不行：
+       - 斷面是拱、沿長軸長大的號角：從斜上方只看得到兩片側壁，像石柱。
+       - 球面切下來的一瓣（真實歌劇院就是這樣蓋的）：一瓣的底邊落在離球心 R 遠的
+         地方，切出來是又窄又薄的刀片，不是殼。
+       所以改成「排列取勝」——認得出來靠的是一排由小到大、一片比一片高，
+       不是單片曲面有多正確。
+
+       P < 2 的超橢球：側面往內凹、頂端收成尖。用正圓（P = 2）的話頂是圓的，
+       一排下來像幾顆大石頭，完全沒有帆的感覺。 */
+    const P = 1.5;
+    const sup = (a, b) => Math.pow(Math.pow(a, P) + Math.pow(b, P), 1 / P);
+    const shell = (cx, cz, R, tall, c) => {
+      const nr = Math.ceil(R) + 1, nh = Math.ceil(R * tall) + 1;
+      // 只留朝 +z 的那一半：背面陡、正面弧線往下鋪 → 這才是「帆」的側面
+      for (let i = -nr; i <= nr; i++) for (let k = 0; k <= nr; k++) {
+        const flat = Math.hypot(i, k);
+        if (flat > R + 1) continue;
+        for (let j = 0; j <= nh; j++) {
+          if (Math.abs(sup(flat, j / tall) - R) > 0.7) continue;
+          v.set(cx + i, 2 + j, cz + k, c);
+        }
+      }
+      // 切面那一圈補上殼邊，不然從側後方看是一個被剖開的碗
+      for (let a = 0; a <= 48; a++) {
+        const t = a / 48;
+        const yy = R * t, fx = Math.pow(Math.max(0, Math.pow(R, P) - Math.pow(yy, P)), 1 / P);
+        v.set(cx + fx, 2 + yy * tall, cz, 1);
+        v.set(cx - fx, 2 + yy * tall, cz, 1);
       }
     };
-    // 帆殼要夠高（比平台長度的一半還高）才看得出是船帆而不是一排墓碑
-    const sc = s * 0.72;
-    shell(Math.round(-s * 0.66), Math.round(s * 0.16), sc * 1.0, 1);
-    shell(Math.round(-s * 0.66), Math.round(-s * 0.26), sc * 0.66, -1);
-    shell(Math.round(s * 0.02), Math.round(s * 0.2), sc * 0.84, 1);
-    shell(Math.round(s * 0.02), Math.round(-s * 0.22), sc * 0.55, -1);
-    shell(Math.round(s * 0.62), Math.round(s * 0.1), sc * 0.58, 1);
-    shell(Math.round(s * 0.62), Math.round(-s * 0.24), sc * 0.36, -1);
+    const TALL = 1.75;
+    /* 三片，尺寸差距拉到 1 : 1.5 : 2.3，而且底座之間不重疊只相切。
+       交疊過多時三片會融成一坨土丘——這點試錯了四五版才確定：
+       在這個積木尺度下，「看得出是幾片」比「單片曲面有多正確」重要得多。 */
+    const seq = [0.22, 0.34, 0.50];
+    let x = -s * 0.62;
+    for (let i = 0; i < seq.length; i++) {
+      shell(Math.round(x), Math.round(-s * 0.18), s * seq[i], TALL, 0);
+      if (i + 1 < seq.length) x += s * (seq[i] + seq[i + 1]);
+    }
+    // 側前方兩片小殼（歌劇廳與餐廳），破掉「整排一樣大小」的呆板感
+    shell(Math.round(-s * 0.34), Math.round(s * 0.22), s * 0.17, TALL, 0);
+    shell(Math.round(s * 0.16), Math.round(s * 0.26), s * 0.13, TALL, 0);
   } },
 
 { n: '荷蘭風車', lo: 7, hi: 46, pal: [0xd7cdb8, 0x8b5a3c, 0xf0e6d0, 0x6b4a30],
