@@ -1,6 +1,6 @@
 /* ============================================================
    積木小人 · 世界地標工地 — 端對端回歸測試
-   跑法：node tools/e2e.cjs
+   跑法：node tools/e2e-3d.cjs
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
@@ -419,21 +419,52 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('打一端不會讓另一端跟著垮', side.far1 === side.far0 && side.far0 > 5,
      '另一端 ' + side.far0 + ' → ' + side.far1 + '（整體 ' + side.total + ' → ' + side.left + '）');
 
-  /* 有些造型本來就有懸空部件（風車扇葉、摩天輪車廂、大橋吊索），
-     那些不是被打壞才浮著的，不該因為「連不到地面」就掉下來 */
+  /* 有些造型本來就有懸空部件（摩天輪車廂、大橋吊索、堆疊的塔節），
+     那些不是被打壞才浮著的，沒人動它就不該掉。36 座全部驗一遍。 */
   const floaty = await page.evaluate(() => {
     const bad = [];
-    for (const nm of ['荷蘭風車', '倫敦眼摩天輪', '金門大橋', '嚴島神社鳥居', '雪梨歌劇院', '自由女神']) {
-      shapePick = SHAPES.findIndex(s => s.n === nm);
-      startBuild(true); completeNow();
+    let withFloats = 0;
+    for (let i = 0; i < SHAPES.length; i++) {
+      shapePick = i; startBuild(true); completeNow();
+      if (bp.floats.length) withFloats++;
       const n0 = placedCnt;
       markSupportDirty(0);
-      for (let i = 0; i < 60; i++) step(0.05);
-      if (placedCnt !== n0) bad.push(nm + ' ' + n0 + '→' + placedCnt);
+      for (let k = 0; k < 80; k++) step(0.05);
+      if (placedCnt !== n0) bad.push(SHAPES[i].n + ' ' + n0 + '→' + placedCnt);
     }
-    return bad;
+    return { bad, withFloats };
   });
-  ok('藍圖本身就懸空的部件不會無故掉下來', floaty.length === 0, floaty.join('　') || '6 座都沒掉');
+  ok('36 座都不會無故掉塊', floaty.bad.length === 0,
+     floaty.bad.join('　') || '其中 ' + floaty.withFloats + ' 座有懸空部件，都沒掉');
+
+  /* 懸空部件不是無敵的：撐著它的結構被打掉，它也要跟著掉，而且要一路連鎖 */
+  const chain = await page.evaluate(() => {
+    const out = [];
+    for (const nm of ['台北 101', '倫敦眼摩天輪', '京都五重塔', '嚴島神社鳥居']) {
+      shapePick = SHAPES.findIndex(s => s.n === nm);
+      startBuild(true); setWorkerCount(1); completeNow();
+      const n0 = placedCnt, g = bp.floats.length;
+      let cleared = 0;
+      for (const b of blocks) if (b.st === 3 && b.y < 3.2) { breakBlock(b, 0, 0, 0); cleared++; }
+      afterHit(cleared, { x: 0, y: 1, z: 0 }, 6);
+      for (let k = 0; k < 160; k++) step(0.05);
+      out.push({ nm, n0, cleared, left: placedCnt, g });
+    }
+    return out;
+  });
+  for (const c of chain)
+    ok('打掉底座，' + c.nm + ' 的懸空部件跟著垮', c.left < c.n0 * 0.05,
+       c.n0 + ' −底座' + c.cleared + ' → 剩 ' + c.left + '（' + c.g + ' 組懸空部件）');
+
+  const supCost = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '艾菲爾鐵塔');
+    targetCnt = 3000; setWorkerCount(2); startBuild(true); completeNow();
+    const t0 = performance.now();
+    for (let i = 0; i < 50; i++) collapseUnsupported();
+    return { ms: (performance.now() - t0) / 50, n: blocks.length };
+  });
+  ok('垮塌判定夠便宜', supCost.ms < 4,
+     supCost.n + ' 塊時一次 ' + supCost.ms.toFixed(2) + ' ms（最多每 0.08 秒算一次）');
 
   const noDip = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');

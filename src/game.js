@@ -711,21 +711,62 @@ function collapseUnsupported() {
   for (let i = 0; i < n; i++) if (S[i].gy === 0 && here(i)) { seen[i] = 1; stack.push(i); }
   while (stack.length) {
     const s = S[stack.pop()];
-    for (let k = 0; k < NB6.length; k++) {
-      const d = NB6[k];
+    for (let k = 0; k < NBR.length; k++) {
+      const d = NBR[k];
       const j = bp.at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
       if (j === undefined || seen[j] || !here(j)) continue;
       seen[j] = 1; stack.push(j);
     }
   }
-  let fell = 0;
-  for (const b of blocks) {
-    if (b.st !== SET || b.slot < 0 || b.fallIn > 0) continue;
-    const s = S[b.slot];
-    if (!s.anchor || seen[b.slot]) continue;
+  const owner = new Int32Array(n).fill(-1);
+  for (let k = 0; k < blocks.length; k++) {
+    const b = blocks[k];
+    if (b.st === SET && b.slot >= 0) owner[b.slot] = k;
+  }
+  const drop = i => {
+    const k = owner[i];
+    if (k < 0) return 0;
+    const b = blocks[k];
+    if (b.fallIn > 0) return 0;
     // 越高的越晚鬆脫，垮下來才有由下往上的層次，不是整團同時消失
-    b.fallIn = 0.02 + s.gy * 0.012 + Math.random() * 0.06;
-    fell++;
+    b.fallIn = 0.02 + S[i].gy * 0.012 + Math.random() * 0.06;
+    return 1;
+  };
+
+  let fell = 0;
+  for (let i = 0; i < n; i++) if (S[i].anchor && !seen[i]) fell += drop(i);
+
+  /* 懸空部件（扇葉、車廂、堆疊的塔節）本來就不連到地面，靠旁邊的結構撐著。
+     旁邊撐著它的格子被打掉四分之三以上，這一組就整組掉下來。
+
+     這裡從「全部先當作沒支撐」開始往上長，而不是「全部先當作站著」再往下拆。
+     方向反過來的話，兩組互相當對方靠山的懸空部件（例如 101 疊起來的八節）
+     會形成循環支撐，誰都不會倒——實測整座塔只掉了底座、上面 733 塊卡在半空。 */
+  const F = bp.floats;
+  if (F && F.length) {
+    const standing = new Uint8Array(F.length);
+    const supported = i => {
+      if (!here(i)) return false;
+      const s = S[i];
+      return s.anchor ? !!seen[i] : (s.fg >= 0 ? !!standing[s.fg] : true);
+    };
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let gi = 0; gi < F.length; gi++) {
+        if (standing[gi]) continue;
+        const g = F[gi];
+        if (!g.props.length) { standing[gi] = 1; changed = true; continue; }  // 找不到靠山的永遠豁免
+        let alive = 0;
+        for (let k = 0; k < g.props.length; k++) if (supported(g.props[k])) alive++;
+        if (alive > g.props.length * 0.25) { standing[gi] = 1; changed = true; }
+      }
+    }
+    for (let gi = 0; gi < F.length; gi++) {
+      if (standing[gi]) continue;
+      const cells = F[gi].cells;
+      for (let k = 0; k < cells.length; k++) fell += drop(cells[k]);
+    }
   }
   return fell;
 }
@@ -1196,3 +1237,4 @@ function boot() {
   completeNow();          // 開場直接給一座蓋好的建築，砸掉之後才會開始蓋下一座
   requestAnimationFrame(frame);
 }
+

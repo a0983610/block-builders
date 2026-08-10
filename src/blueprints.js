@@ -918,9 +918,18 @@ const SHAPES = [
    而不是套公式估。掃粗的一輪找到大概位置，再在附近細掃一輪。 */
 function genCells(sh, s) { const v = new VOX(); sh.gen(v, s); return v; }
 
+/* 支撐關係用 26 鄰居（含斜角），不是只有上下左右前後 6 面。
+   voxel 造型很多是用斜線畫的——鐵塔的斜撐、螺旋、圓弧——
+   那些格子彼此只在對角相鄰。只認 6 面的話，艾菲爾鐵塔會有 1205/1225 塊
+   被判成「懸空」，垮塌判定等於整個失效。 */
+const NBR = [];
+for (let dx = -1; dx <= 1; dx++)
+  for (let dy = -1; dy <= 1; dy++)
+    for (let dz = -1; dz <= 1; dz++)
+      if (dx || dy || dz) NBR.push([dx, dy, dz]);
+
 /* 鄰居查表用的數值鍵。+1 是為了讓 −1 的鄰居也落在非負範圍，
    不然 gx=-1 會跟 (1023, gy-1, gz) 撞在同一個鍵上。 */
-const NB6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 const gkeyOf = (x, y, z) => (x + 1) + (y + 1) * 1024 + (z + 1) * 1048576;
 
 function fitScale(sh, target) {
@@ -959,7 +968,7 @@ function makeBlueprint(idx, target) {
   const slots = cells.map(c => ({
     x: c.x - cx, y: c.y - minY, z: c.z - cz, c: c.c,
     gx: c.x - minX, gy: c.y - minY, gz: c.z - minZ,
-    filled: false, claimed: -1, anchor: false
+    filled: false, claimed: -1, anchor: false, fg: -1
   }));
   // 先低後高；同一層先蓋中間——這樣建築是從核心長出來的，看起來比較像在蓋
   slots.sort((a, b) => a.y - b.y || (a.x * a.x + a.z * a.z) - (b.x * b.x + b.z * b.z));
@@ -975,19 +984,67 @@ function makeBlueprint(idx, target) {
     if (slots[i].gy === 0) { slots[i].anchor = true; stack.push(i); }
   while (stack.length) {
     const s = slots[stack.pop()];
-    for (let k = 0; k < NB6.length; k++) {
-      const d = NB6[k];
+    for (let k = 0; k < NBR.length; k++) {
+      const d = NBR[k];
       const j = at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
       if (j === undefined || slots[j].anchor) continue;
       slots[j].anchor = true; stack.push(j);
     }
   }
 
+  /* 懸空部件（扇葉、車廂、吊索）不連到地面，但也不是憑空浮著——
+     它們靠旁邊的結構撐著。把每一組懸空部件、以及附近撐著它的格子記下來，
+     旁邊被打掉之後這一組就會整組掉，而不是一律豁免、怎麼打都不動。 */
+  const comp = new Int32Array(slots.length).fill(-1);
+  let nComp = 0;
+  for (let i = 0; i < slots.length; i++) {
+    if (comp[i] >= 0) continue;
+    const id = nComp++;
+    const st2 = [i]; comp[i] = id;
+    while (st2.length) {
+      const s = slots[st2.pop()];
+      for (let k = 0; k < NBR.length; k++) {
+        const d = NBR[k];
+        const j = at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
+        if (j === undefined || comp[j] >= 0) continue;
+        comp[j] = id; st2.push(j);
+      }
+    }
+  }
+  const groups = new Map();
+  for (let i = 0; i < slots.length; i++) {
+    if (slots[i].anchor) continue;                 // anchor 的由連通性判定管
+    let g = groups.get(comp[i]);
+    if (!g) groups.set(comp[i], g = { cells: [], props: [] });
+    g.cells.push(i);
+  }
+  for (const g of groups.values()) {
+    if (g.cells.length > 2000) continue;           // 太大就不算，props 留空 = 永遠不掉
+    const set = new Set();
+    // 先找半徑 2 以內的鄰居；真的找不到再放寬到 3
+    for (let r = 2; r <= 3 && set.size === 0; r++) {
+      for (const i of g.cells) {
+        const s = slots[i];
+        for (let dx = -r; dx <= r; dx++)
+          for (let dy = -r; dy <= r; dy++)
+            for (let dz = -r; dz <= r; dz++) {
+              const j = at.get(gkeyOf(s.gx + dx, s.gy + dy, s.gz + dz));
+              if (j === undefined || comp[j] === comp[i]) continue;
+              set.add(j);
+            }
+      }
+    }
+    g.props = [...set];
+  }
+  const floats = [...groups.values()];
+  for (let gi = 0; gi < floats.length; gi++)
+    for (const i of floats[gi].cells) slots[i].fg = gi;   // 反查：這格屬於哪一組懸空部件
+
   let radius = 0;
   for (const s of slots) radius = Math.max(radius, Math.hypot(s.x, s.z));
 
   return {
-    idx, name: sh.n, pal: sh.pal, slots, at,
+    idx, name: sh.n, pal: sh.pal, slots, at, floats,
     height: maxY - minY + 1,
     radius: radius + 1,
     count: slots.length
@@ -996,4 +1053,5 @@ function makeBlueprint(idx, target) {
 
 /* node 也要能 require 這支檔來單獨測藍圖 */
 if (typeof module !== 'undefined' && module.exports)
-  module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NB6, gkeyOf };
+  module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NBR, gkeyOf };
+
