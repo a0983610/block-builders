@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.2.1';
+const VERSION = '1.3.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -32,7 +32,7 @@ let placedCnt = 0;
 let slotCursor = 0;
 let siteR = 12;                     // 建築占地半徑
 let arenaR = 40;                    // 整片工地半徑（建材散落 + 碎塊飛行上限）
-let phase = 'build';                // build | done
+let phase = 'build';                // clear（整地）| build | done | wreck
 let buildStart = 0, buildElapsed = 0;
 let timeScale = 1;
 let targetCnt = 900;
@@ -84,6 +84,7 @@ function sndDone() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => to
 function sndFall() { tone(200, 0.16, 'square', 0.05, 0.5); }
 function sndSwing() { tone(160, 0.3, 'sine', 0.06, 3.2); }
 function sndWind() { noise(1.6, 0.14, 480); }
+function sndDozer() { tone(58, 1.1, 'sawtooth', 0.05, 1.3); noise(1.1, 0.07, 260); }
 function sndBadge() { [784, 988, 1319].forEach((f, i) => setTimeout(() => tone(f, 0.18, 'triangle', 0.08), i * 90)); }
 
 /* ── 空間雜湊：讓落地的碎塊不要疊在同一點 ─────────────────── */
@@ -269,28 +270,171 @@ function startBuild(instant) {
   ball = null; ENG.hideBall();
   twist = null; ENG.hideTornado();
   trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
+  dozers = null; ENG.putDozers([]);
 
   const idx = pickShape();
   recent.push(idx); if (recent.length > 8) recent.shift();
   bp = makeBlueprint(idx, targetCnt);
   indexGrid();
   placedCnt = 0; slotCursor = 0;
-  phase = 'build';
-  buildStart = performance.now(); buildElapsed = 0; spentThis = 0;
+  buildElapsed = 0; spentThis = 0;
 
   siteR = Math.max(7, bp.radius);
   // 建材散落區從工地邊緣往外鋪，面積跟積木數成正比 → 不管 300 塊還 3000 塊都一樣鬆
   arenaR = Math.sqrt((siteR + 2) ** 2 + SPREAD * bp.slots.length / Math.PI) + 8;
   reconcilePool();
 
-  // 之前落定的碎塊如果卡在新工地範圍內，小人會走不進去、建築會長在碎料裡
-  for (const b of blocks)
-    if (b.st === FREE && Math.hypot(b.x, b.z) < siteR + 1.4) kickOut(b);
+  /* 上一輪的碎料躺在新工地上：叫幾台推土機開進來把範圍推乾淨，推完小人才開工。
+     開場那一座沒有前一輪的殘料，殘料少到不值得演的時候也直接清掉就好。 */
+  if (instant || countDirty() < 8) { kickOutSite(); beginBuild(); }
+  else startClear();
 
   makeTrees();
   computeSupport();                  // 派第一個工之前就要有支撐狀態可以查
   ENG.fitCamera(siteR, bp.height, arenaR, !!instant);
   syncHud();
+}
+
+/* ── 整地：推土機 ───────────────────────────────────────
+   換建築時上一輪的碎料還躺在工地上。以前是瞬間把範圍內的碎塊往外彈，
+   現在改成幾台推土機並肩開進來，鏟到的一路往前推，推出工地範圍才放手。
+   推乾淨才切到施工中——小人不會在還沒整平的地上開工。
+
+   走法像割草：一整列並肩推掉一條帶狀範圍，一趟蓋不滿就掉頭推下一條。
+   全部帶掃完（或超過時限）就收尾，鏟子湊不齊的畸零角落直接彈出去。 */
+// 鏟子的寬度與位置直接取畫面那邊的值，判定跟看到的才會是同一把鏟子
+const DOZ_W = ENG.DOZ_W, DOZ_FRONT = ENG.DOZ_FRONT;
+const DOZ_TURN = 0.6;               // 掉頭要幾秒
+const DOZ_PASS = 2.6;               // 一趟跑幾秒（速度由這個回推）
+const DOZ_WAIT = 1.3;               // 開推前在起點怠速幾秒，等飛在半空的碎料落地
+const DOZ_LIMIT = 16;               // 保險：整地最多拖這麼久
+let dozers = null;
+
+const siteClearR = () => siteR + 1.4;
+function countDirty() {
+  const r = siteClearR(); let n = 0;
+  for (const b of blocks) if (b.st === FREE && Math.hypot(b.x, b.z) < r) n++;
+  return n;
+}
+function kickOutSite() {
+  const r = siteClearR();
+  for (const b of blocks) if (b.st === FREE && Math.hypot(b.x, b.z) < r) kickOut(b);
+}
+function beginBuild() {
+  phase = 'build';
+  buildStart = performance.now();     // 施工計時從真正開工才起算，不含整地
+}
+function startClear() {
+  const A = Math.random() * Math.PI * 2, Rc = siteClearR();
+  /* 寧可多派幾台一次排開，也不要少少幾台來回跑。一整列涵蓋整個工地寬度時
+     只要推一趟就清完，而且沒有「這趟推出去的碎料被擠到隔壁趟的地盤」的問題。 */
+  const n = clamp(Math.ceil(Rc / DOZ_W), 2, 6);
+  const B = n * DOZ_W;                // 一整列並肩一趟能推掉的半寬
+  /* 每趟的中心線平均分在工地上，不是從邊緣一路排過去。
+     從邊緣排的話最後一趟會有大半落在工地外面——三台機器只有一台在做事。 */
+  const passes = Math.ceil(Rc / B);
+  /* 速度用「一趟固定跑幾秒」回推，不是給一個固定速度。金門大橋那種
+     半徑 69 的工地用小工地的速度會整地整二十秒，玩家只能乾等。
+     鏡頭本來就會跟著工地拉遠，畫面上看起來的速度其實差不多。 */
+  const L = siteR + 11;
+  dozers = {
+    dx: Math.cos(A), dz: Math.sin(A), lx: -Math.sin(A), lz: Math.cos(A),
+    /* 開推之前先在起點怠速一下。剛換建築的那一刻，上一座還有四分之一是整片
+       炸開飛在半空的，馬上開推的話它們會落在鏟子後面已經推乾淨的地上，
+       接下來誰也碰不到，只能收尾時直接彈掉（實測漏掉的從 1~5% 惡化到 18%）。 */
+    wait: DOZ_WAIT,
+    n, B, Rc, passes, bands: passes, cw: 2 * Rc / passes, pass: 0, u: 0, turn: 0,
+    // 起訖點都拉到工地外，鏟面才掃得過整個範圍；堆在鏟子後面的那一疊也要落在範圍外
+    L, spd: 2 * L / DOZ_PASS, t: 0, leave: 0
+  };
+  phase = 'clear';
+  sndDozer();
+}
+/* 第 k 台在第 p 趟、行程走到 u 時的位置。u 從 0 到 2L，奇數趟反向開回來 */
+function dozPos(D, k, p, u) {
+  const sgn = p % 2 ? -1 : 1;
+  const s = sgn * (u - D.L);
+  const c = -D.Rc + D.cw * (Math.min(p, D.bands - 1) + 0.5) + (k - (D.n - 1) / 2) * 2 * DOZ_W;
+  return { x: D.dx * s + D.lx * c, z: D.dz * s + D.lz * c, s, c, sgn };
+}
+function dozRender(D) {
+  const out = [];
+  for (let k = 0; k < D.n; k++) {
+    let x, z, a;
+    if (D.turn > 0) {
+      // 掉頭：位置從這趟終點滑到下一趟起點，同時把車頭轉半圈
+      const f = 1 - D.turn / DOZ_TURN, e = f * f * (3 - 2 * f);
+      const p0 = dozPos(D, k, D.pass, 2 * D.L), p1 = dozPos(D, k, D.pass + 1, 0);
+      x = p0.x + (p1.x - p0.x) * e; z = p0.z + (p1.z - p0.z) * e;
+      a = Math.atan2(p0.sgn * D.dx, p0.sgn * D.dz) + Math.PI * e;
+    } else {
+      const p = dozPos(D, k, D.pass, D.u);
+      x = p.x; z = p.z;
+      a = Math.atan2(p.sgn * D.dx, p.sgn * D.dz);
+    }
+    out.push({ x, z, a, bob: Math.sin(D.t * 26 + k * 1.7) * 0.045 });
+  }
+  return out;
+}
+/* 鏟面掃到的碎料往前推。只推落定的碎塊——已就位的建築、小人手上的、
+   還在飛的都不碰。推完位置變了，空間雜湊要跟著更新，順便擠開重疊的。
+
+   三個數字是量出來才敢寫的：
+   1. 抓取深度要看整堆，不能只看鏟面那一薄層。工地上的碎料可以多到把整塊地
+      鋪滿還有剩，全部擠在鏟面前 2 單位是不可能的——擠不下的會被 separate
+      擠回鏟子後面，然後就被丟下了（實測 1055 塊只推得動 167 塊）。
+   2. 但也不能無限深：一路往後抓會連工地外面的建材堆一起鏟走。所以再加一道
+      「工地入口那一邊以外的不碰」，鏟子後面的料場才不會被掃掉。
+   3. 一幀最多推 spd*dt 的兩倍多一點。不設上限的話落後的積木會一次瞬移到
+      鏟面前，看起來是用吸的不是用推的。 */
+const DOZ_PILE = 16;                // 鏟面後方多深之內都算同一堆，一起往前帶
+function pushWithBlade(D, dt) {
+  const sgn = D.pass % 2 ? -1 : 1;
+  const front = sgn * (D.u - D.L + DOZ_FRONT);
+  const c0 = -D.Rc + D.cw * (Math.min(D.pass, D.bands - 1) + 0.5);
+  const cap = D.spd * dt * 2.2;
+  for (const b of blocks) {
+    if (b.st !== FREE) continue;
+    const al = b.x * D.dx + b.z * D.dz;
+    const ahead = (al - front) * sgn;              // 在鏟面前方多遠（負的是還在後面）
+    if (ahead > 0.5 || ahead < -DOZ_PILE) continue;
+    if (al * sgn < -D.Rc - 2) continue;            // 工地外、鏟子後方的建材堆不要碰
+    const la = b.x * D.lx + b.z * D.lz;
+    const k = Math.round((la - c0) / (2 * DOZ_W) + (D.n - 1) / 2);
+    if (k < 0 || k >= D.n) continue;               // 不在這一列鏟子的寬度內
+    const need = 0.5 - ahead;                      // 還差多少才貼到鏟面前緣
+    const delta = sgn * Math.min(need, cap);
+    if (b.cell) gridDel(b);
+    b.x += D.dx * delta; b.z += D.dz * delta;
+    b.ry += dt * 2.4; b.wob = 0.4;
+    separate(b); gridAdd(b);
+  }
+}
+function finishClear() {
+  kickOutSite();                     // 鏟子掃不到的畸零角落直接彈出去收尾
+  dozers.leave = 1.6;                // 交給小人，自己往前開出場
+  beginBuild();
+}
+function stepDozers(dt) {
+  const D = dozers; if (!D) return;
+  D.t += dt;
+  if (D.leave > 0) {
+    D.leave -= dt; D.u += D.spd * dt;
+    if (D.leave <= 0) { dozers = null; ENG.putDozers([]); }
+    return;
+  }
+  if (D.wait > 0) { D.wait -= dt; return; }        // 在起點怠速等碎料落地
+  if (D.turn > 0) {
+    D.turn -= dt;
+    if (D.turn <= 0) { D.pass++; D.u = 0; }
+    return;
+  }
+  D.u += D.spd * dt;
+  pushWithBlade(D, dt);
+  if (D.u >= 2 * D.L) {
+    if (D.pass + 1 >= D.passes || D.t > DOZ_LIMIT) finishClear();
+    else D.turn = DOZ_TURN;
+  }
 }
 
 /* 直接把整座蓋好。開場用——一進來就有一座完整的建築可以砸，
@@ -315,6 +459,7 @@ function completeNow() {
     if (!b.cell) gridAdd(b);
   }
   for (const w of workers) releaseWorker(w);
+  dozers = null; ENG.putDozers([]);      // 建築直接長出來了，整地機沒戲唱
   placedCnt = bp.slots.length;
   phase = 'done';
   buildElapsed = 0; spentThis = 0;
@@ -447,8 +592,9 @@ function updWorker(w, wi, dt) {
   }
   w.tilt += (0 - w.tilt) * Math.min(1, dt * 7);
 
-  if (phase === 'wreck') {
-    // 拆除中：不修、不蓋，躲遠一點看你拆。要等這座拆完換新藍圖才會回去工作
+  if (phase === 'wreck' || phase === 'clear') {
+    /* 拆除中：不修、不蓋，躲遠一點看你拆。要等這座拆完換新藍圖才會回去工作。
+       整地中一樣退到旁邊等——推土機還在推，這時候進場只會被鏟到。 */
     w.cheer = 0;
     const d = Math.hypot(w.x, w.z);
     if (d < arenaR * 0.62) {
@@ -456,7 +602,9 @@ function updWorker(w, wi, dt) {
       w.tx = Math.cos(a) * arenaR * 0.78; w.tz = Math.sin(a) * arenaR * 0.78;
     }
     if (walkTo(w, dt)) {
-      const a = Math.random() * Math.PI * 2, r2 = arenaR * rr(0.6, 0.85);
+      /* 下一個閒晃點取在自己附近的角度，不是整圈亂挑。挑到對面去的話
+         他會直接穿過工地正中央——拆到一半的建築裡、推土機的車道上都照走。 */
+      const a = Math.atan2(w.z, w.x) + rr(-0.8, 0.8), r2 = arenaR * rr(0.6, 0.85);
       w.tx = Math.cos(a) * r2; w.tz = Math.sin(a) * r2;
     }
     w.y += (0 - w.y) * Math.min(1, dt * 6);
@@ -1298,6 +1446,7 @@ function step(dt) {
   stepBall(dt);
   stepTwist(dt);
   stepTrebs(dt);
+  stepDozers(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
     toasts[i].t -= dt;
     if (toasts[i].t <= 0) { toasts.splice(i, 1); renderToasts(); }
@@ -1356,6 +1505,7 @@ function draw() {
   ENG.putDust(dust);
   ENG.putTrebs(trebs ? trebs.list : EMPTY);
   ENG.putRocks(trebs ? trebs.rocks : EMPTY);
+  if (dozers) ENG.putDozers(dozRender(dozers));
 }
 const EMPTY = [];
 
@@ -1413,7 +1563,7 @@ function fmtDur(s) { return Math.floor(s / 60) + ':' + pad2(Math.floor(s % 60));
 
 const money = v => '$' + Math.round(v).toLocaleString('en-US');
 
-const PHASE_TXT = { build: ['施工中', ''], done: ['完工', 'ok'], wreck: ['拆除中', 'bad'] };
+const PHASE_TXT = { clear: ['整地中', ''], build: ['施工中', ''], done: ['完工', 'ok'], wreck: ['拆除中', 'bad'] };
 
 function hudTick(now) {
   if (now - hudLast < 120) return;

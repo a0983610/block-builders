@@ -14,8 +14,11 @@ const ENG = (function () {
 
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
-  let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh;
+  let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
+  const MAXDOZ = 6, DOZ_PARTS = 10;
+  // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
+  const DOZ_W = 3.2, DOZ_FRONT = 3.6;
   const TW_SEG = 12;                // 龍捲風的分段數
   const tornadoSegs = [];
   const _axis = new T.Vector3();
@@ -176,12 +179,14 @@ const ENG = (function () {
        四台machine 也只吃 1 個 draw call。飛石另開一個。 */
     trebMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXTREB * TREB_PARTS);
     rockMesh = new T.InstancedMesh(unit, voxelMaterial({ color: 0x6b6660 }), MAXROCK);
-    for (const m of [trebMesh, rockMesh]) {
+    dozMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXDOZ * DOZ_PARTS);
+    for (const m of [trebMesh, rockMesh, dozMesh]) {
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
       m.castShadow = true; m.count = 0; m.frustumCulled = false;
       scene.add(m);
     }
     trebMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    dozMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
     resize();
   }
@@ -260,6 +265,47 @@ const ENG = (function () {
     }
     trebMesh.instanceMatrix.needsUpdate = true;
     if (trebMesh.instanceColor) trebMesh.instanceColor.needsUpdate = true;
+  }
+  /* 推土機。d：{x, z, a 朝向, bob 引擎抖動}
+     車頭（推土鏟）朝 local +Z，跟投石機同一套擺位方式。
+     鏟子的寬度就是規則那邊 DOZ_W 的兩倍——畫面上推得到的寬度必須跟判定一致，
+     不然玩家會看到鏟子明明掃過去卻有積木沒動。 */
+  const DOZ_PART = [
+    { p: [-1.75, 0.5, -0.4], s: [1.15, 1.0, 6.0], c: 0x2f3238 },      // 左履帶
+    { p: [1.75, 0.5, -0.4], s: [1.15, 1.0, 6.0], c: 0x2f3238 },       // 右履帶
+    { p: [0, 1.35, -0.7], s: [2.8, 1.3, 4.4], c: 0xefa81c },          // 車體（比履帶窄，履帶才露得出來）
+    { p: [0, 2.5, -1.8], s: [2.1, 1.2, 2.1], c: 0x3f4650 },           // 駕駛室：深色才看得出是座艙
+    { p: [0, 3.2, -1.8], s: [2.4, 0.25, 2.4], c: 0xefa81c },          // 車頂
+    { p: [0.95, 2.5, 0.7], s: [0.35, 1.8, 0.35], c: 0x2f3238 },       // 排氣管
+    { p: [-1.55, 0.95, 1.9], s: [0.36, 0.36, 3.4], c: 0x565c65 },     // 左推臂
+    { p: [1.55, 0.95, 1.9], s: [0.36, 0.36, 3.4], c: 0x565c65 },      // 右推臂
+    /* 鏟子畫得比推得到的寬度窄一點點：畫到一樣寬的話，並肩的機器會連成一道長牆，
+       看起來只是一片會動的牆。高度也要壓在車身以下，不然整台被自己的鏟子擋光。 */
+    { p: [0, 0.95, DOZ_FRONT], s: [DOZ_W * 1.86, 1.5, 0.45], c: 0xc2c8d0, r: 0.13 },
+    { p: [0, 0.25, DOZ_FRONT + 0.18], s: [DOZ_W * 1.86, 0.55, 0.8], c: 0x8a9098 }  // 鏟刃
+  ];
+  function putDozers(list) {
+    const n = Math.min(list.length, MAXDOZ);
+    dozMesh.count = n * DOZ_PARTS;
+    for (let i = 0; i < n; i++) {
+      const d = list[i];
+      scratch.position.set(d.x, d.bob || 0, d.z);
+      scratch.rotation.set(0, d.a, 0);
+      scratch.scale.setScalar(1);
+      scratch.updateMatrix();
+      for (let k = 0; k < DOZ_PARTS; k++) {
+        const b = DOZ_PART[k];
+        scratchB.position.set(b.p[0], b.p[1], b.p[2]);
+        scratchB.rotation.set(b.r || 0, 0, 0);
+        scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        dozMesh.setMatrixAt(i * DOZ_PARTS + k, tmpM);
+        dozMesh.setColorAt(i * DOZ_PARTS + k, tmpC.setHex(b.c));
+      }
+    }
+    dozMesh.instanceMatrix.needsUpdate = true;
+    if (dozMesh.instanceColor) dozMesh.instanceColor.needsUpdate = true;
   }
   function putRocks(list) {
     const n = Math.min(list.length, MAXROCK);
@@ -484,10 +530,10 @@ const ENG = (function () {
     init, resize, render, info, pick,
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers,
-    putTrees, putDust, putTrebs, putRocks,
+    putTrees, putDust, putTrebs, putRocks, putDozers,
     setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible, hammerPos,
     fitCamera, updateCamera, orbit, zoom, shake,
-    cam, camTarget, BS, MAXB, MAXW, WPARTS,
+    cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }
   };
 })();

@@ -588,10 +588,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       hits++;
       for (let k = 0; k < 8; k++) step(0.05);
     }
-    return { hits, phase, placed: placedCnt, destroyed: stats.destroyed, gained: stats.destroyed - d0, name0, name: bp.name };
+    const at = phase, placed = placedCnt;
+    // 換場先整地（推土機），整完才輪到小人
+    let wait = 0;
+    while (phase === 'clear' && wait < 800) { step(0.05); wait++; }
+    return { hits, at, phase, placed, wait, destroyed: stats.destroyed, gained: stats.destroyed - d0, name0, name: bp.name };
   });
-  ok('拆到門檻就自動開下一座', wreck.phase === 'build' && wreck.placed < 30,
-     '砸 ' + wreck.hits + ' 槌後 phase=' + wreck.phase + '，進度歸零到 ' + wreck.placed);
+  ok('拆到門檻就自動開下一座', wreck.at === 'clear' && wreck.placed < 30,
+     '砸 ' + wreck.hits + ' 槌後 phase=' + wreck.at + '，進度歸零到 ' + wreck.placed);
+  ok('整地完才換成施工中', wreck.phase === 'build' && wreck.wait > 0 && wreck.wait < 800,
+     '整地 ' + (wreck.wait * 0.05).toFixed(1) + ' 秒後 phase=' + wreck.phase);
   ok('拆掉的座數有計進紀錄', wreck.gained === 1, '+' + wreck.gained + '（累計 ' + wreck.destroyed + '）');
 
   const rebuild = await page.evaluate(() => {
@@ -673,19 +679,193 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('施工中被砸，小人會把洞補回去', rebuild.after > rebuild.hurt,
      '砸到剩 ' + rebuild.hurt + ' → 補回 ' + rebuild.after);
 
+  /* ══════════ 整地推土機 ══════════ */
+  head('整地推土機');
+  await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 12 });
+  const doze = await page.evaluate(() => {
+    completeNow();
+    // 先把整座砸爛，讓碎料鋪滿工地，砸到門檻它就會自己換下一座
+    let g = 0;
+    while (phase !== 'clear' && g++ < 200) {
+      const cand = blocks.filter(b => b.st === 3);
+      if (cand.length) {
+        const t = cand[Math.floor(Math.random() * cand.length)];
+        smash(new THREE.Vector3(t.x, t.y, t.z), new THREE.Vector3(0.2, -0.95, 0.1).normalize());
+      }
+      for (let k = 0; k < 8; k++) step(0.05);
+    }
+    const born = dozers ? { n: dozers.n, passes: dozers.passes, L: +dozers.L.toFixed(1) } : null;
+    const drawn = dozers ? dozRender(dozers).length : 0;
+    const R = siteR + 1.4;
+    const dirtyOf = () => blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R).length;
+    // 分清楚「被鏟子推出去」跟「時間到直接彈出去」各占多少
+    const origKick = kickOut; let kicked = 0;
+    kickOut = b => { kicked++; origKick(b); };
+    /* 「有被一路推著走」要看碎料沿推進方向的平均位置有沒有一路往前跑。
+       單看範圍內剩幾塊看不出來——一趟推到底的話，碎料是在鏟子逼近邊緣時才成批離開範圍。
+       追蹤對象要在一開始就定下來：拿「當下還在範圍內的」去平均的話，
+       推出去的一離開就不算了，平均值反而會往回跳。 */
+    const dx = dozers.dx, dz = dozers.dz;
+    const cohort = blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R);
+    const alongOf = () => {
+      let s = 0;
+      for (const b of cohort) s += b.x * dx + b.z * dz;
+      return cohort.length ? s / cohort.length : null;
+    };
+    const trail = [], along = [];
+    let peak = dirtyOf(), lastIn = 0, built = 0, guard = 0;
+    while (phase === 'clear' && guard++ < 900) {
+      step(0.05);
+      const d = dirtyOf();
+      if (d > peak) peak = d;
+      if (guard % 8 === 0) trail.push(d);
+      // 起步前那段怠速不取樣，不然「有沒有在前進」會被一串不動的樣本稀釋
+      if (guard % 4 === 0 && dozers && dozers.wait <= 0) {
+        const a = alongOf(); if (a !== null) along.push(+a.toFixed(1));
+      }
+      if (placedCnt > built) built = placedCnt;
+      /* 小人本來就可能剛好站在工地正中央（上一秒還在遊蕩），走出去要好幾秒，
+         所以不能要求「整段期間都不在裡面」。要驗的是他們有往外走、而且整完時人不在裡面。 */
+      for (const w of workers) if (Math.hypot(w.x, w.z) < R) { lastIn = guard; break; }
+    }
+    const stillIn = workers.filter(w => Math.hypot(w.x, w.z) < R).length;
+    kickOut = origKick;
+    const dirty1 = dirtyOf(), secs = +(guard * 0.05).toFixed(1);
+    /* 看的是「有沒有倒退」，不是「每個取樣點都在前進」。鏟子從起點開到工地邊緣
+       那零點幾秒還沒碰到東西，前幾個取樣本來就是平的。 */
+    let down = 0;
+    for (let i = 1; i < along.length; i++) if (along[i] < along[i - 1] - 0.2) down++;
+    let g2 = 0; while (dozers && g2++ < 300) step(0.05);   // 整完會自己開走
+    return { born, drawn, peak, dirty1, kicked, trail, secs, built, along, stillIn,
+             gain: along.length > 1 ? +(along[along.length - 1] - along[0]).toFixed(1) : 0, down,
+             lastIn: +(lastIn * 0.05).toFixed(1),
+             gone: !dozers, phase, drove: +(g2 * 0.05).toFixed(1) };
+  });
+  ok('換建築時會開幾台推土機進來', doze.born && doze.born.n >= 2 && doze.drawn === doze.born.n,
+     doze.born ? doze.born.n + ' 台、' + doze.born.passes + ' 趟，畫面上放了 ' + doze.drawn + ' 台' : '沒有出現');
+  ok('整地時小人退出工地等，不會提早開工', doze.stillIn === 0 && doze.built === 0,
+     '整完時還站在工地裡的有 ' + doze.stillIn + ' 人（最後一次有人在裡面是第 ' +
+     doze.lastIn + ' 秒／共 ' + doze.secs + ' 秒），期間蓋了 ' + doze.built + ' 塊');
+  ok('整地完工地範圍是空的', doze.dirty1 === 0,
+     '整地 ' + doze.secs + ' 秒，範圍內從最多 ' + doze.peak + ' 塊清到 ' + doze.dirty1 + ' 塊');
+  ok('碎料是被鏟出去的，不是時間到瞬間彈掉',
+     doze.peak > 0 && doze.kicked < doze.peak * 0.12,      // 實測 1~5%，門檻放寬到 12%
+     '最多 ' + doze.peak + ' 塊，收尾時只彈了 ' + doze.kicked + ' 塊（其餘由鏟子推出去）');
+  ok('碎料是被一路推著走的，中途不會倒退', doze.gain > 8 && doze.down === 0,
+     '沿推進方向的平均位置前進了 ' + doze.gain + '，倒退 ' + doze.down + ' 次：' +
+     JSON.stringify(doze.along.slice(0, 12)) +
+     '；範圍內剩餘 ' + JSON.stringify(doze.trail.slice(0, 12)));
+  ok('整完會自己開出場', doze.gone && doze.phase === 'build',
+     doze.drove + ' 秒後開走，phase=' + doze.phase);
+
+  /* 大工地一列排不滿，要來回推好幾趟——掉頭那段是另一條路徑，得單獨走過 */
+  const dozeBig = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '金門大橋');
+    targetCnt = 2000; setWorkerCount(6); startBuild(true); completeNow();
+    // 手動把全部積木打散在工地上，再叫整地流程跑一次
+    for (const b of blocks) { if (b.st === 3) freeBlock(b); }
+    for (let i = 0; i < 120; i++) step(0.05);
+    siteR = bp.radius; startClear();
+    const info = { n: dozers.n, passes: dozers.passes, spd: +dozers.spd.toFixed(1), siteR: +siteR.toFixed(0) };
+    const R = siteR + 1.4;
+    const dirty0 = blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R).length;
+    let turns = 0, maxPass = 0, g = 0;
+    while (phase === 'clear' && g++ < 1200) {
+      step(0.05);
+      if (dozers) { if (dozers.turn > 0) turns++; if (dozers.pass > maxPass) maxPass = dozers.pass; }
+    }
+    return { info, dirty0, turns, maxPass, secs: +(g * 0.05).toFixed(1), phase,
+             dirty1: blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R).length };
+  });
+  ok('大工地會來回推好幾趟', dozeBig.info.passes >= 2 && dozeBig.maxPass >= 1 && dozeBig.turns > 0,
+     '半徑 ' + dozeBig.info.siteR + ' 的工地：' + dozeBig.info.n + ' 台推 ' +
+     dozeBig.info.passes + ' 趟（實際跑到第 ' + (dozeBig.maxPass + 1) + ' 趟，掉頭 ' + dozeBig.turns + ' 幀）');
+  ok('大工地也整得完，而且不會沒完沒了', dozeBig.dirty1 === 0 && dozeBig.secs < 16,
+     dozeBig.dirty0 + ' 塊 → ' + dozeBig.dirty1 + ' 塊，花 ' + dozeBig.secs + ' 秒（車速 ' + dozeBig.info.spd + '）');
+
+  /* 畫面上的鏟子跟判定用的鏟子要是同一把。
+     在每台機器的鏟面正前方各擺一塊碎料，看它會不會被往前推——
+     只驗座標的話，鏟子畫在別的地方也測不出來。 */
+  const dozAlign = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 700; setWorkerCount(6); startBuild(true); completeNow();
+    for (const b of blocks) if (b.st === 3) freeBlock(b);
+    for (let i = 0; i < 120; i++) step(0.05);
+    kickOutSite();                                  // 先清空，等一下自己擺測試用的積木
+    for (let i = 0; i < 80; i++) step(0.05);
+    startClear();
+    dozers.wait = 0; dozers.u = dozers.L;           // 跳過怠速，直接開到工地正中央
+    /* 先把場上其他碎料全部從空間雜湊裡拿掉並挪到場邊。留著的話，
+       量到的位移會混進「碎料互相擠開」的成分——這裡要測的是鏟子推不推得到。 */
+    for (const b of blocks) {
+      if (b.st !== 0) continue;
+      if (b.cell) gridDel(b);
+      b.x = arenaR * 0.98; b.z = arenaR * 0.98; b.y = 0.47;
+    }
+    const view = dozRender(dozers);
+    const probes = [];
+    for (const v of view) {
+      const fx = Math.sin(v.a), fz = Math.cos(v.a);  // rotation.y = a → local +Z 指向這裡
+      const b = blocks.find(x => x.st === 0 && !x.probe);
+      b.probe = 1;
+      const at = ENG.DOZ_FRONT + 0.2;                // 剛好貼在鏟面前
+      b.x = v.x + fx * at; b.z = v.z + fz * at; b.y = 0.47; b.rest = true;
+      gridAdd(b);
+      probes.push({ b, x0: b.x, z0: b.z, fx, fz });
+    }
+    for (let i = 0; i < 6; i++) step(0.02);
+    const moved = probes.map(p => +((p.b.x - p.x0) * p.fx + (p.b.z - p.z0) * p.fz).toFixed(2));
+    // 順便留一張整地中的畫面
+    for (let i = 0; i < 8; i++) ENG.updateCamera(1);
+    draw(); ENG.render();
+    return { n: view.length, moved, min: Math.min(...moved),
+             blade: +(dozers ? dozers.spd * 0.12 : 0).toFixed(2), calls: ENG.info().calls };
+  });
+  ok('鏟面正前方的碎料真的會被推走', dozAlign.min > 0.8,
+     dozAlign.n + ' 台機器各推了 ' + JSON.stringify(dozAlign.moved) +
+     ' 單位（0.12 秒內鏟面前進 ' + dozAlign.blade + '）');
+  ok('推土機沒有多吃 draw call', dozAlign.calls <= 13,
+     dozAlign.calls + ' 個（整地中含 5 台機器）');
+  await page.screenshot({ path: path.join(OUT, '07-整地.png') });
+
+  const dozeSkip = await page.evaluate(() => {
+    startBuild(true);
+    return { phase, doz: !!dozers };
+  });
+  ok('開場那一座不用整地', dozeSkip.phase === 'build' && !dozeSkip.doz,
+     'phase=' + dozeSkip.phase + '、推土機 ' + (dozeSkip.doz ? '有' : '沒有'));
+
   /* ══════════ 小人反應 ══════════ */
   head('小人反應');
   await reset(page, { shape: '吉薩金字塔', cnt: 500, workers: 20 });
   await sim(page, 400);
   const scare = await page.evaluate(() => {
-    const w = workers.find(x => x.fall <= 0);
-    const p = new THREE.Vector3(w.x, 1, w.z);
+    /* 要砸在「有積木、旁邊又有小人」的地方。隨便挑一個小人往腳下砸的話，
+       他可能正在遠處的料堆撿貨，一塊都打不到——沒打到就不會有人被嚇到，
+       測到的是「打空了」不是「不會嚇到人」。 */
+    let best = null, guard = 0;
+    while (guard++ < 400) {
+      best = null;
+      const set = blocks.filter(b => b.st === 3);
+      for (const w of workers) {
+        if (w.fall > 0) continue;
+        for (const b of set) {
+          const d = Math.hypot(b.x - w.x, b.z - w.z);
+          if (!best || d < best.d) best = { d, b };
+        }
+      }
+      if (best && best.d < 4) break;      // 等到真的有人站在建築旁邊再砸
+      step(0.05);
+    }
+    const p = new THREE.Vector3(best.b.x, best.b.y, best.b.z);
     const carried = blocks.filter(b => b.st === 1).length;
     const n = smash(p, new THREE.Vector3(0, -1, 0));
-    return { fallen: workers.filter(x => x.fall > 0).length, carriedBefore: carried,
+    return { n, near: +best.d.toFixed(1),
+             fallen: workers.filter(x => x.fall > 0).length, carriedBefore: carried,
              carriedAfter: blocks.filter(b => b.st === 1).length };
   });
-  ok('衝擊附近的小人會被嚇倒', scare.fallen > 0, scare.fallen + ' 人跌倒');
+  ok('衝擊附近的小人會被嚇倒', scare.fallen > 0,
+     scare.fallen + ' 人跌倒（打飛 ' + scare.n + ' 塊，最近的小人距落點 ' + scare.near + '）');
   ok('跌倒時手上的積木會掉', scare.carriedAfter <= scare.carriedBefore,
      '搬運中 ' + scare.carriedBefore + ' → ' + scare.carriedAfter);
   const recover = await page.evaluate(() => {
