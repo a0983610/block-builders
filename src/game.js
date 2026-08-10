@@ -8,6 +8,10 @@
    ============================================================ */
 'use strict';
 
+/* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
+   功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
+const VERSION = '1.0.0';
+
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
 const GRAV = 26;                    // 重力
@@ -1276,6 +1280,7 @@ function renderToasts() {
 
 /* ── 啟動 ───────────────────────────────────────────────── */
 function boot() {
+  $('ver').textContent = 'v' + VERSION;
   ENG.init($('cv'));
   window.addEventListener('resize', () => ENG.resize());
 

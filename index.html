@@ -65,6 +65,11 @@
   .checks label{display:flex;align-items:center;gap:5px;flex:0 0 auto}
   #panelBtn{position:fixed;left:14px;bottom:14px;z-index:5;padding:7px 11px}
 
+  #ver{
+    position:fixed;right:14px;bottom:14px;z-index:4;
+    font-size:11px;font-variant-numeric:tabular-nums;color:var(--ink);opacity:.42;
+    pointer-events:none;
+  }
   #hint{
     position:fixed;left:50%;bottom:70px;transform:translateX(-50%);
     padding:7px 15px;border-radius:99px;background:rgba(27,36,48,.55);color:#fff;
@@ -172,6 +177,7 @@
 </div>
 
 <div id="hint">點建築 = 一槌砸下去 ｜ 拖曳轉視角 ｜ 滾輪縮放 ｜ 點小人會跌倒</div>
+<div id="ver"></div>
 
 <div id="bigWrap">
   <div>

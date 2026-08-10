@@ -1,4 +1,4 @@
-# 積木小人 · 世界地標工地
+# 積木小人 · 世界地標工地　`v1.0.0`
 
 一進來就有一座蓋好的世界地標。你把它砸爛，小人們才會從滿地的碎料裡
 一塊一塊搬出來，慢慢蓋出下一座。被打到的地方才會壞，沒波及的地方原封不動。
@@ -58,6 +58,13 @@ localStorage，下次打開直接套用，不用每次重調。
 這只是讓存檔不能隨手改；改壞了校驗碼對不上就整份不採用，不會讓程式吃到爛資料。
 設定值讀回來時一律夾回合法範圍。
 
+## 版本號
+
+版本號寫在 `src/game.js` 最上面的 `VERSION`，畫面右下角會顯示。
+
+**每次 commit 都要動版本號**：一般改動 `patch +1`，功能性改動 `minor +1`（patch 歸零）。
+改完記得同步這份 README 開頭的版本——e2e 會檢查兩邊一致，對不上就失敗。
+
 ## 檔案
 
 ```
@@ -67,7 +74,7 @@ src/blueprints.js       36 座地標的 voxel 產生器，不依賴 three，可�
 src/engine.js           three 場景、光影、相機、InstancedMesh 積木池（只管怎麼畫）
 src/game.js             積木狀態、物理、小人 AI、破壞、主迴圈（只管規則）
 tools/build-three.cjs   把官方 three build 轉成 classic script
-tools/e2e-3d.cjs        端對端測試（147 項）
+tools/e2e-3d.cjs        端對端測試（150 項）
 ```
 
 ## three.js 為什麼要自己打包
@@ -132,5 +139,6 @@ headless chromium 用 SwiftShader 軟體算圖，所以測出來的 fps 沒有�
 - **龍捲風很強**。一發常常能吃掉一整座建築的大半。它是最後解鎖的道具，刻意這樣，
   但如果覺得太快結束，把 `game.js` 的 `launchTornado` 裡的 `r` 或 `life` 調小即可。
 - **拆除門檻是寫死的 25%**（`game.js` 的 `WRECK_AT`）。拆到剩 25% 以下就換下一座。
+
 
 

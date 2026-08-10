@@ -187,6 +187,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('canvas 有明確的 CSS 尺寸', boot.cssW === VIEW.width + 'px',
      'style.width=' + boot.cssW + '（canvas 是 replaced element，沒設就會用內建尺寸）');
 
+  const ver = await page.evaluate(() => ({
+    v: typeof VERSION !== 'undefined' ? VERSION : null,
+    shown: document.getElementById('ver').textContent,
+    vis: getComputedStyle(document.getElementById('ver')).display !== 'none'
+  }));
+  ok('有版本號而且格式正確', !!ver.v && /^\d+\.\d+\.\d+$/.test(ver.v), 'VERSION = ' + ver.v);
+  ok('版本號有顯示在畫面上', ver.vis && ver.shown === 'v' + ver.v, ver.shown);
+  /* README 也要跟著更新，不然文件跟程式會各說各話 */
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  ok('README 的版本號跟程式一致', readme.indexOf('v' + ver.v) >= 0, '找 v' + ver.v);
+
   /* ══════════ 打包出來的 three ══════════ */
   head('three.js 打包');
   const libSrc = fs.readFileSync(path.join(ROOT, 'lib', 'three.min.js'), 'utf8');
