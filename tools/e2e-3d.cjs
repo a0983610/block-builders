@@ -138,6 +138,25 @@ const pix = page => page.evaluate(() => {
 /* 把某個世界座標換算成畫面座標，才能真的用滑鼠點它 */
 const placedCntTxt = (a, b) => a + ' → ' + b + ' 塊';
 
+/* 常設哨兵：積木或小人跑到場外，代表某處的位移沒有上限。
+   這是實際踩過的雷——落地分離的推擠量會累加，把積木彈到 4700 單位外，
+   小人接著就一路走出地圖去撿它。 */
+const probeWorkers = async (page, tag) => {
+  const r = await page.evaluate(() => {
+    let mw = 0, mb = 0, who = null;
+    for (const w of workers) {
+      const d = Math.hypot(w.x, w.z);
+      if (d > mw) { mw = d; who = { d: +d.toFixed(0), tx: +w.tx.toFixed(0), tz: +w.tz.toFixed(0), st: w.st }; }
+    }
+    for (const b of blocks) mb = Math.max(mb, Math.hypot(b.x, b.z));
+    return { mw, mb, who, arenaR };
+  });
+  const lim = r.arenaR + 30;
+  ok('（' + tag + '）沒有東西跑出場外', r.mw < lim && r.mb < lim,
+     '最遠小人 ' + r.mw.toFixed(0) + '、最遠積木 ' + r.mb.toFixed(0) +
+     '，場地半徑 ' + r.arenaR.toFixed(0) + (r.mw >= lim ? '　' + JSON.stringify(r.who) : ''));
+};
+
 const toScreen = (page, sel) => page.evaluate(sel => {
   const t = eval(sel);
   if (!t) return null;
@@ -314,6 +333,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '搬 ' + done.carry + '、拋 ' + done.toss);
   await page.screenshot({ path: path.join(OUT, '02-完工.png') });
 
+  await probeWorkers(page, '小人施工後');
+
   /* ══════════ 破壞（局部） ══════════ */
   head('破壞：只壞被打到的地方');
   await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 4 });
@@ -400,6 +421,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('碎塊不會浮在半空', land.float === 0 && land.freeN > 10,
      land.freeN + ' 塊散料，浮空 ' + land.float + '（最高 ' + land.worstY.toFixed(2) + '）');
 
+  await probeWorkers(page, '破壞後');
+
   /* ══════════ 垮塌 ══════════ */
   head('垮塌：下面沒了上面跟著垮');
   await reset(page, { shape: '倫敦大笨鐘', cnt: 900, workers: 1 });
@@ -481,11 +504,42 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('垮塌判定夠便宜', supCost.ms < 4,
      supCost.n + ' 塊時一次 ' + supCost.ms.toFixed(2) + ' ms（最多每 0.08 秒算一次）');
 
+  /* 蓋到一半把地基敲掉，小人不能繼續往上疊——那會蓋出一整片浮在半空的積木。
+     量法：逐步比對「這一步新填上的格子」，看它填上去的當下連不連得到地面。
+     不能只看某個瞬間的總數——剛敲掉地基、垮塌判定還沒跑的那 0.08 秒裡，
+     整棟都還「連不到地面」，那是過渡態不是 bug。 */
+  const midBuild = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '倫敦大笨鐘');
+    targetCnt = 900; setWorkerCount(30); startBuild(true);
+    for (let i = 0; i < 500; i++) step(0.05);
+    const mid = placedCnt;
+    let cleared = 0;
+    for (const b of blocks) if (b.st === 3 && b.y < 2.2) { breakBlock(b, 0, 0, 0); cleared++; }
+    afterHit(cleared, { x: 0, y: 1, z: 0 }, 6);
+    const S = bp.slots, before = new Uint8Array(S.length);
+    let placed = 0, bad = 0;
+    for (let i = 0; i < 1600; i++) {
+      for (let k = 0; k < S.length; k++) before[k] = S[k].filled ? 1 : 0;
+      step(0.05);
+      computeSupport();
+      for (let k = 0; k < S.length; k++) {
+        if (!S[k].filled || before[k]) continue;
+        placed++;
+        if (!supported(k)) bad++;
+      }
+    }
+    return { mid, cleared, end: placedCnt, placed, bad };
+  });
+  ok('地基被敲掉後不會蓋出浮空的積木', midBuild.bad === 0,
+     '蓋到 ' + midBuild.mid + ' 塊時挖掉地基 ' + midBuild.cleared + ' 塊；之後新放上去 ' +
+     midBuild.placed + ' 塊，落地當下連不到地面的有 ' + midBuild.bad + ' 塊（重建到 ' + midBuild.end + '）');
+
   const noDip = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 500; setWorkerCount(40); startBuild(true);
     let prev = placedCnt, dip = 0;
-    for (let i = 0; i < 4000; i++) {
+    // 步數要給夠：有些格子的支撐要等上面那圈蓋好才成立，會排到最後才輪到
+    for (let i = 0; i < 8000; i++) {
       step(0.05);
       if (placedCnt < prev) dip = Math.max(dip, prev - placedCnt);   // 沒人在砸，進度就不該倒退
       prev = placedCnt;
@@ -493,8 +547,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return { placed: placedCnt, total: bp.slots.length, phase, dip };
   });
-  ok('施工前緣不會被垮塌判定誤傷', noDip.dip === 0 && noDip.phase === 'done',
-     noDip.placed + '/' + noDip.total + '，過程中最大回退 ' + noDip.dip + ' 塊');
+  /* 重點是「沒人在砸，進度就不該倒退」。有沒有在時限內剛好蓋完是另一回事——
+     那個由「會蓋到完工」那項負責，寫在這裡只會讓測試對時序敏感。 */
+  ok('施工前緣不會被垮塌判定誤傷', noDip.dip === 0 && noDip.placed > noDip.total * 0.9,
+     noDip.placed + '/' + noDip.total + '（' + noDip.phase + '），過程中最大回退 ' + noDip.dip + ' 塊');
+
+  await probeWorkers(page, '垮塌後');
 
   /* ══════════ 遊戲流程：蓋好 → 拆掉 → 蓋下一座 ══════════ */
   head('流程：蓋好 → 拆掉 → 蓋下一座');
@@ -549,6 +607,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 900; i++) step(0.05);
     return { mid, ph0, hurt, ph1, after: placedCnt, phase, total: bp.slots.length };
   });
+  await probeWorkers(page, '拆除重建後');
+  const roam = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(20); startBuild(true); completeNow();
+    const pre = workers.map(w => ({ d: Math.round(Math.hypot(w.x, w.z)), td: Math.round(Math.hypot(w.tx, w.tz)), st: w.st }))
+      .sort((a, b) => b.d - a.d).slice(0, 3);
+    for (let i = 0; i < 200; i++) step(0.05);        // 先把七秒的繞圈慶祝跑完
+    const a0 = arenaR, ph0 = phase;
+    let far = 0, out = 0, worst = null;
+    for (let i = 0; i < 3000; i++) {
+      step(0.05);
+      const lim = arenaR + 26;                      // 草地島的半邊長，會隨建築換而改
+      for (const w of workers) {
+        const d = Math.max(Math.abs(w.x), Math.abs(w.z));
+        if (d > far) far = d;
+        if (d > lim && !worst) worst = { d: +d.toFixed(1), lim: +lim.toFixed(1), i, phase, name: bp.name };
+        if (d > lim) out++;
+      }
+    }
+    return { far, out, worst, a0, ph0, arenaR, siteR, phase, name: bp.name, lim: arenaR + 26, pre };
+  });
+  ok('完工後小人會逛遍整張地圖', roam.far > roam.a0 + 8,
+     '最遠走到 ' + roam.far.toFixed(0) + '（建築半徑 ' + roam.siteR.toFixed(0) +
+     '、工地半徑 ' + roam.a0.toFixed(0) + '）');
+  ok('但不會走出草地', roam.out === 0,
+     '越界 ' + roam.out + ' 次；草地半邊長 ' + roam.lim.toFixed(0) +
+     '；進場時最遠的三個小人 ' + JSON.stringify(roam.pre) +
+     (roam.worst ? '；第一次越界 ' + JSON.stringify(roam.worst) : ''));
+
   ok('拆完之後小人開始蓋新的', rebuild.mid > 20 && rebuild.ph0 === 'build',
      '蓋到 ' + rebuild.mid + ' / ' + rebuild.total + '（' + rebuild.ph0 + '）');
   ok('砸還沒蓋完的建築不會進入拆除中', rebuild.ph1 === 'build', 'phase=' + rebuild.ph1);
@@ -671,26 +758,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const treb = await page.evaluate(() => {
     completeNow();
     const n0 = placedCnt;
-    launchTrebs();
-    const born = trebs ? trebs.list.length : 0;
-    const outside = trebs ? trebs.list.every(m => Math.hypot(m.x, m.z) > siteR) : false;
-    let maxRock = 0, fired = 0, offCentre = 0;
-    for (let i = 0; i < 900 && trebs; i++) {
+    // 點在空地上：機台就該出現在那裡
+    const spot = { x: siteR + 14, z: -siteR * 0.4 };
+    placeTreb(spot);
+    const one = trebs.list.length;
+    const at = trebs.list[0];
+    const put = Math.hypot(at.x - spot.x, at.z - spot.z);
+    // 再點一台，數量要疊加
+    placeTreb({ x: -siteR - 12, z: siteR * 0.3 });
+    const two = trebs.list.length;
+    // 點在建築正中央：要被推到建築外圍，不能長在牆裡
+    placeTreb({ x: 0, z: 0 });
+    const pushed = Math.hypot(trebs.list[2].x, trebs.list[2].z);
+    let maxRock = 0, offCentre = 0;
+    for (let i = 0; i < 1400 && trebs; i++) {
       step(0.02);
       if (trebs) {
         maxRock = Math.max(maxRock, trebs.rocks.length);
         for (const r of trebs.rocks) if (Math.hypot(r.x, r.z) > arenaR + 5) offCentre++;
       }
     }
-    fired = TREB_N * TREB_SHOTS;
-    return { n0, after: placedCnt, born, outside, maxRock, fired, gone: !trebs, offCentre };
+    return { n0, after: placedCnt, one, two, put, pushed, siteR, maxRock, gone: !trebs, offCentre };
   });
-  ok('投石機會在建築外圍架起來', treb.born === 4 && treb.outside, treb.born + ' 台，都在工地圈外');
+  ok('點一下就在點的位置架一台', treb.one === 1 && treb.put < 0.001,
+     '機台落在點擊處，誤差 ' + treb.put.toFixed(3));
+  ok('可以連續架好幾台', treb.two === 2, treb.two + ' 台');
+  ok('點在建築上會把機台推到外圍', treb.pushed > treb.siteR,
+     '距中心 ' + treb.pushed.toFixed(1) + '（建築半徑 ' + treb.siteR.toFixed(1) + '）');
   ok('投石機會丟出石頭', treb.maxRock > 0, '同時最多 ' + treb.maxRock + ' 顆在空中');
   ok('石頭不會飛出場外', treb.offCentre === 0);
-  ok('石頭砸下來會造成破壞', treb.after < treb.n0,
-     placedCntTxt(treb.n0, treb.after) + '（共丟 ' + treb.fired + ' 顆）');
-  ok('投石完會自己撤走', treb.gone);
+  ok('石頭砸下來會造成破壞', treb.after < treb.n0, placedCntTxt(treb.n0, treb.after));
+  ok('打完會自己撤走', treb.gone);
 
   const lockClick = await page.evaluate(() => {
     stats = freshStats(); tool = 'hammer'; renderTools();
@@ -1033,25 +1131,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     await page.evaluate(sc => {
       running = false;
       if (!window.__origStep) window.__origStep = step;
-      window.__simT = 0;
-      step = dt => { window.__simT += dt; window.__origStep(dt); };
+      window.__simT = 0; window.__frames = 0;
+      step = dt => { window.__simT += dt; window.__frames++; window.__origStep(dt); };
       shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
       targetCnt = 900; setWorkerCount(24); timeScale = sc;
       startBuild(true); running = true;
     }, sc);
     await page.waitForTimeout(1800);
-    return page.evaluate(() => { running = false; return { simT: window.__simT, placed: placedCnt }; });
+    return page.evaluate(() => {
+      running = false;
+      return { simT: window.__simT, frames: window.__frames, placed: placedCnt };
+    });
   };
   const sp1 = await measureSpeed(1), sp3 = await measureSpeed(3);
   await page.evaluate(() => { if (window.__origStep) step = window.__origStep; });
-  const ratio = sp1.simT > 0 ? sp3.simT / sp1.simT : 0;
-  /* 不另外比「同時間蓋幾塊」：軟體算圖幀率太低，1.8 秒只推進 1 秒多模擬時間，
-     小人連第一趟都還沒送到，兩邊都是 0，測了也沒有鑑別力。上面的倍率才是重點。 */
-  /* 上界不會超過 3（dt 有 0.05 的上限），而且倍率開高時每幀要算的東西變多、
-     幀率會掉，所以實測一定略低於 3；下界抓 1.8 是留給軟體算圖的抖動。 */
-  ok('速度倍率真的讓模擬跑得更快', ratio > 1.8 && ratio < 3.2,
-     '同樣 1.8 秒：1× 推進 ' + sp1.simT.toFixed(2) + ' 秒模擬、3× 推進 ' +
-     sp3.simT.toFixed(2) + ' 秒（' + ratio.toFixed(2) + ' 倍，理論上限 3）');
+  /* 量「每幀推進多少模擬時間」的比值，而不是「同樣秒數推進多少」。
+     dt = min(0.05, 實際幀長) × 倍率，上限是套在幀長上、再乘倍率，
+     所以每幀的比值理論上剛好是 3，跟當下幀率無關；
+     直接比總量的話兩次量測期間的幀率抖動會讓結果在 2.3～3.2 之間亂跑。 */
+  const per1 = sp1.frames ? sp1.simT / sp1.frames : 0;
+  const per3 = sp3.frames ? sp3.simT / sp3.frames : 0;
+  const ratio = per1 > 0 ? per3 / per1 : 0;
+  ok('速度倍率真的讓模擬跑得更快', ratio > 2.7 && ratio < 3.3,
+     '每幀推進：1× ' + (per1 * 1000).toFixed(1) + 'ms、3× ' + (per3 * 1000).toFixed(1) +
+     'ms（' + ratio.toFixed(2) + ' 倍；' + sp1.frames + ' / ' + sp3.frames + ' 幀）');
 
   await page.evaluate(() => { running = true; });
   await page.click('#again');
@@ -1317,3 +1420,4 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   console.error('\n測試腳本自己爆了：\n' + (e && e.stack || e));
   process.exit(2);
 });
+

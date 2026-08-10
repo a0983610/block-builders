@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -101,7 +101,7 @@ function gridDel(b) {
 }
 function separate(b) {
   for (let it = 0; it < 5; it++) {
-    let moved = false;
+    let px = 0, pz = 0, moved = false;
     const cx = Math.floor(b.x / CELL), cz = Math.floor(b.z / CELL);
     for (let i = -1; i <= 1; i++) for (let k = -1; k <= 1; k++) {
       const a = restGrid.get((cx + i) + ':' + (cz + k)); if (!a) continue;
@@ -112,12 +112,20 @@ function separate(b) {
         if (d >= ENG.BS) continue;
         if (d < 1e-4) { const ang = Math.random() * Math.PI * 2; dx = Math.cos(ang); dz = Math.sin(ang); d = 1e-4; }
         const push = (ENG.BS - d) * 0.5;
-        b.x += dx / d * push; b.z += dz / d * push;
+        px += dx / d * push; pz += dz / d * push;
         moved = true;
       }
     }
     if (!moved) break;
+    /* 一次最多推開一格。上百塊同時落在同一點時（例如整座建築垮下來），
+       每個鄰居的推力累加起來會把積木一口氣彈到幾千單位外——
+       實測看過積木飛到 4700，小人還傻傻追過去撿。 */
+    const pl = Math.hypot(px, pz);
+    if (pl > ENG.BS) { px = px / pl * ENG.BS; pz = pz / pl * ENG.BS; }
+    b.x += px; b.z += pz;
   }
+  const d = Math.hypot(b.x, b.z);          // 保險：擠到最後還是要留在場內
+  if (d > arenaR) { b.x = b.x / d * arenaR; b.z = b.z / d * arenaR; }
 }
 
 /* ── 積木 ───────────────────────────────────────────────── */
@@ -256,6 +264,7 @@ function startBuild(instant) {
     if (b.st === FREE && Math.hypot(b.x, b.z) < siteR + 1.4) kickOut(b);
 
   makeTrees();
+  computeSupport();                  // 派第一個工之前就要有支撐狀態可以查
   ENG.fitCamera(siteR, bp.height, arenaR, !!instant);
   syncHud();
 }
@@ -285,6 +294,7 @@ function completeNow() {
   placedCnt = bp.slots.length;
   phase = 'done';
   buildElapsed = 0; spentThis = 0;
+  computeSupport();
   syncHud();
 }
 
@@ -358,20 +368,21 @@ function releaseWorker(w) {
   if (w.slot >= 0 && bp && bp.slots[w.slot]) {
     bp.slots[w.slot].claimed = -1;
     slotCursor = Math.min(slotCursor, w.slot);
+    markSupportDirty(0.05);          // 放掉認領也會改變支撐狀態
   }
   w.block = -1; w.slot = -1; w.carry = false; w.st = 'idle';
 }
 
 function findSlot() {
-  while (slotCursor < bp.slots.length &&
-         (bp.slots[slotCursor].filled || bp.slots[slotCursor].claimed >= 0)) slotCursor++;
-  if (slotCursor >= bp.slots.length) {
-    // 游標到底不代表蓋完了：中途被打掉的洞在游標後面，從頭掃一次補起來
-    for (let i = 0; i < bp.slots.length; i++)
-      if (!bp.slots[i].filled && bp.slots[i].claimed < 0) return i;
-    return -1;
-  }
-  return slotCursor;
+  const S = bp.slots;
+  while (slotCursor < S.length && (S[slotCursor].filled || S[slotCursor].claimed >= 0)) slotCursor++;
+  /* 只派「現在真的蓋得起來」的格子。游標之後找不到就從頭掃一次——
+     中途被打掉的洞會落在游標後面，尤其地基被敲掉時要能回頭補。 */
+  for (let i = slotCursor; i < S.length; i++)
+    if (!S[i].filled && S[i].claimed < 0 && canPlace(i)) return i;
+  for (let i = 0; i < slotCursor; i++)
+    if (!S[i].filled && S[i].claimed < 0 && canPlace(i)) return i;
+  return -1;
 }
 function findBlock(wx, wz) {
   let best = -1, bd = Infinity;
@@ -437,10 +448,11 @@ function updWorker(w, wi, dt) {
       walkTo(w, dt);
       w.y = Math.abs(Math.sin(w.ph * 0.9)) * 0.28;    // 邊跑邊跳
     } else {
+      // 慶祝完就整張草地隨便晃。地圖是方的，目標點也用方形分布
       w.y += (0 - w.y) * Math.min(1, dt * 6);
       if (walkTo(w, dt)) {
-        const a = Math.random() * Math.PI * 2, d = siteR + rr(2, 12);
-        w.tx = Math.cos(a) * d; w.tz = Math.sin(a) * d;
+        const R = arenaR + 20;
+        w.tx = rr(-R, R); w.tz = rr(-R, R);
       }
     }
     return;
@@ -456,6 +468,7 @@ function updWorker(w, wi, dt) {
       if (bi < 0) { wander(w, dt); return; }
       bp.slots[s].claimed = wi;
       blocks[bi].holder = wi;
+      markSupportDirty(0.05);        // 認領也算「這格有東西了」，會影響上面能不能蓋
       w.slot = s; w.block = bi; w.st = 'pick';
       w.tx = blocks[bi].x; w.tz = blocks[bi].z;
       break;
@@ -523,6 +536,15 @@ function stepToss(b, dt) {
   b.y = a.y0 + (a.y1 - a.y0) * t + Math.sin(t * Math.PI) * a.peak;
   b.rx += dt * 5; b.ry += dt * 3.5;
   if (t >= 1) {
+    // 飛到一半底下被打掉的話就別擺上去了，直接當碎料掉下來
+    freshSupport();
+    if (!canPlace(b.slot)) {
+      bp.slots[b.slot].claimed = -1;
+      b.arc = null;
+      freeBlock(b);
+      b.vy = 1.5;
+      return;
+    }
     b.st = SET; b.arc = null; b.rest = true;
     b.x = a.x1; b.y = a.y1; b.z = a.z1;
     b.rx = b.ry = b.rz = 0;
@@ -530,6 +552,7 @@ function stepToss(b, dt) {
     bp.slots[b.slot].filled = true;
     bp.slots[b.slot].claimed = -1;
     placedCnt++;
+    markSupportDirty(0.05);
     sndPlace();
     if (placedCnt >= bp.slots.length && phase === 'build') {
       phase = 'done';
@@ -684,7 +707,7 @@ const TOOLS = [
     lock: { txt: '累計擊飛 300 塊解鎖', ok: () => stats.smashed >= 300 } },
   { id: 'ball', n: '保齡球', k: '🎳', tip: '點建築：保齡球滾過去撞',
     lock: { txt: '拆掉 3 座建築解鎖', ok: () => stats.destroyed >= 3 } },
-  { id: 'treb', n: '投石機', k: '🪨', tip: '點一下：四周架起投石機，朝建築丟石頭',
+  { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
     lock: { txt: '拆掉 6 座建築解鎖', ok: () => stats.destroyed >= 6 } },
   { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去',
     lock: { txt: '累計擊飛 1000 塊解鎖', ok: () => stats.smashed >= 1000 } }
@@ -713,27 +736,80 @@ function breakBlock(b, vx, vy, vz) {
       那些不是被打壞才浮著的，不該掉。
    2. 施工中「已被小人認領、正在路上」的格子也算存在。
       不然施工前緣一定有洞，剛放上去的積木會被自己的判定打下來。 */
-let supportDirty = false, supportT = 0;
+let supportDirty = false, supportT = 0, supFresh = false;
 function markSupportDirty(delay) {
   supportDirty = true;
   supportT = delay === undefined ? 0.08 : delay;
 }
-function collapseUnsupported() {
-  if (!bp || !bp.at) return 0;
+/* 需要「當下就正確」的支撐狀態時用這個（例如積木正要落定的那一刻）。
+   快取最多會差 0.08 秒，拿舊的去判會誤判成沒支撐而白白把積木丟掉。
+   每幀最多重算一次，成本才不會失控。 */
+function freshSupport() {
+  if (supportDirty && !supFresh) { computeSupport(); supFresh = true; }
+}
+/* 支撐狀態：哪些格子連得到地面（supSeen）、哪些懸空部件還撐著（supStand）。
+   垮塌判定與派工判定共用同一份，才不會出現「這邊說垮、那邊照蓋」。 */
+let supSeen = null, supStand = null;
+const isHere = i => bp.slots[i].filled || bp.slots[i].claimed >= 0;
+function supported(i) {
+  if (!supSeen || !isHere(i)) return false;
+  const s = bp.slots[i];
+  return s.anchor ? !!supSeen[i] : (s.fg >= 0 ? !!supStand[s.fg] : true);
+}
+function computeSupport() {
+  if (!bp || !bp.at) return;
   const S = bp.slots, n = S.length;
-  const here = i => S[i].filled || S[i].claimed >= 0;
-  const seen = new Uint8Array(n);
+  if (!supSeen || supSeen.length !== n) supSeen = new Uint8Array(n); else supSeen.fill(0);
   const stack = [];
-  for (let i = 0; i < n; i++) if (S[i].gy === 0 && here(i)) { seen[i] = 1; stack.push(i); }
+  for (let i = 0; i < n; i++) if (S[i].gy === 0 && isHere(i)) { supSeen[i] = 1; stack.push(i); }
   while (stack.length) {
     const s = S[stack.pop()];
     for (let k = 0; k < NBR.length; k++) {
       const d = NBR[k];
       const j = bp.at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
-      if (j === undefined || seen[j] || !here(j)) continue;
-      seen[j] = 1; stack.push(j);
+      if (j === undefined || supSeen[j] || !isHere(j)) continue;
+      supSeen[j] = 1; stack.push(j);
     }
   }
+  /* 懸空部件從「全部先當作沒支撐」開始往上長，而不是反過來往下拆。
+     方向反了的話，兩組互相當對方靠山的部件（例如 101 疊起來的八節）
+     會形成循環支撐，誰都不會倒。 */
+  const F = bp.floats;
+  if (!supStand || supStand.length !== F.length) supStand = new Uint8Array(F.length);
+  else supStand.fill(0);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let gi = 0; gi < F.length; gi++) {
+      if (supStand[gi]) continue;
+      const g = F[gi];
+      if (!g.props.length) { supStand[gi] = 1; changed = true; continue; }  // 找不到靠山的永遠豁免
+      let alive = 0;
+      for (let k = 0; k < g.props.length; k++) if (supported(g.props[k])) alive++;
+      if (alive > g.props.length * 0.25) { supStand[gi] = 1; changed = true; }
+    }
+  }
+}
+
+/* 這一格現在蓋得起來嗎？沒有這道檢查的話，地基被敲掉之後
+   小人會繼續往上疊，蓋出一整片浮在半空的積木。 */
+function canPlace(i) {
+  const s = bp.slots[i];
+  if (s.gy === 0) return true;                       // 貼地那層永遠可以蓋
+  if (!s.anchor) return s.fg >= 0 ? !!supStand[s.fg] : true;
+  for (let k = 0; k < NBR.length; k++) {
+    const d = NBR[k];
+    const j = bp.at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
+    if (j !== undefined && supported(j)) return true;
+  }
+  return false;
+}
+
+function collapseUnsupported() {
+  if (!bp || !bp.at) return 0;
+  computeSupport();
+  const S = bp.slots, n = S.length;
+  const seen = supSeen;
   const owner = new Int32Array(n).fill(-1);
   for (let k = 0; k < blocks.length; k++) {
     const b = blocks[k];
@@ -752,37 +828,12 @@ function collapseUnsupported() {
   let fell = 0;
   for (let i = 0; i < n; i++) if (S[i].anchor && !seen[i]) fell += drop(i);
 
-  /* 懸空部件（扇葉、車廂、堆疊的塔節）本來就不連到地面，靠旁邊的結構撐著。
-     旁邊撐著它的格子被打掉四分之三以上，這一組就整組掉下來。
-
-     這裡從「全部先當作沒支撐」開始往上長，而不是「全部先當作站著」再往下拆。
-     方向反過來的話，兩組互相當對方靠山的懸空部件（例如 101 疊起來的八節）
-     會形成循環支撐，誰都不會倒——實測整座塔只掉了底座、上面 733 塊卡在半空。 */
+  // 撐不住的懸空部件整組掉下來
   const F = bp.floats;
-  if (F && F.length) {
-    const standing = new Uint8Array(F.length);
-    const supported = i => {
-      if (!here(i)) return false;
-      const s = S[i];
-      return s.anchor ? !!seen[i] : (s.fg >= 0 ? !!standing[s.fg] : true);
-    };
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (let gi = 0; gi < F.length; gi++) {
-        if (standing[gi]) continue;
-        const g = F[gi];
-        if (!g.props.length) { standing[gi] = 1; changed = true; continue; }  // 找不到靠山的永遠豁免
-        let alive = 0;
-        for (let k = 0; k < g.props.length; k++) if (supported(g.props[k])) alive++;
-        if (alive > g.props.length * 0.25) { standing[gi] = 1; changed = true; }
-      }
-    }
-    for (let gi = 0; gi < F.length; gi++) {
-      if (standing[gi]) continue;
-      const cells = F[gi].cells;
-      for (let k = 0; k < cells.length; k++) fell += drop(cells[k]);
-    }
+  if (F) for (let gi = 0; gi < F.length; gi++) {
+    if (supStand[gi]) continue;
+    const cells = F[gi].cells;
+    for (let k = 0; k < cells.length; k++) fell += drop(cells[k]);
   }
   return fell;
 }
@@ -883,20 +934,21 @@ function stepSwing(dt) {
 
 /* ── 投石機 ─────────────────────────────────────────────
    四周架起幾台，朝建築中心附近隨機丟石頭，走拋物線砸下來。 */
-const TREB_N = 4, TREB_SHOTS = 3, ROCK_R = 4.6, ROCK_POW = 12;
+const TREB_MAX = 8, TREB_SHOTS = 5, ROCK_R = 4.6, ROCK_POW = 12;
 let trebs = null;
-function launchTrebs() {
-  if (trebs) return;
-  const list = [];
-  const a0 = Math.random() * Math.PI * 2;
-  for (let i = 0; i < TREB_N; i++) {
-    const a = a0 + i / TREB_N * Math.PI * 2 + rr(-0.25, 0.25);
-    const d = siteR + 9;
-    const x = Math.cos(a) * d, z = Math.sin(a) * d;
-    // 面向工地中心：rotation.y = a 之後 local +Z 會指到 (sin a, 0, cos a)
-    list.push({ x, z, a: Math.atan2(-x, -z), arm: -0.8, next: rr(0.15, 1.2), left: TREB_SHOTS });
+/* 點一下就在那個位置架一台。點在建築上的話推到外圍，
+   不然機台會直接長在牆裡面。 */
+function placeTreb(point) {
+  if (!trebs) trebs = { list: [], rocks: [] };
+  if (trebs.list.length >= TREB_MAX) trebs.list.shift();
+  let x = point.x, z = point.z;
+  const d = Math.hypot(x, z), minD = siteR + 5;
+  if (d < minD) {
+    const a = d < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(z, x);
+    x = Math.cos(a) * minD; z = Math.sin(a) * minD;
   }
-  trebs = { list, rocks: [], life: 10 };
+  // 面向工地中心：rotation.y = a 之後 local +Z 會指到 (sin a, 0, cos a)
+  trebs.list.push({ x, z, a: Math.atan2(-x, -z), arm: -0.8, next: 0.4, left: TREB_SHOTS, idle: 0 });
   sndWind();
 }
 function fireRock(m) {
@@ -931,12 +983,15 @@ function rockHit(r) {
 }
 function stepTrebs(dt) {
   if (!trebs) return;
-  trebs.life -= dt;
-  for (const m of trebs.list) {
+  for (let i = trebs.list.length - 1; i >= 0; i--) {
+    const m = trebs.list[i];
     m.arm += (-0.8 - m.arm) * Math.min(1, dt * 5);   // 甩出去之後慢慢拉回待發位置
     if (m.left > 0) {
       m.next -= dt;
       if (m.next <= 0) { m.next = rr(1.2, 2); m.left--; fireRock(m); }
+    } else {
+      m.idle += dt;                                  // 打完站一下再撤走
+      if (m.idle > 3.5) trebs.list.splice(i, 1);
     }
   }
   for (let i = trebs.rocks.length - 1; i >= 0; i--) {
@@ -947,7 +1002,7 @@ function stepTrebs(dt) {
     r.rx += dt * 3.2; r.ry += dt * 2.4;
     if (r.t >= r.T || r.y <= 0.6) { trebs.rocks.splice(i, 1); rockHit(r); }
   }
-  if (trebs.life <= 0 && !trebs.rocks.length) { trebs = null; ENG.putTrebs([]); ENG.putRocks([]); }
+  if (!trebs.list.length && !trebs.rocks.length) { trebs = null; ENG.putTrebs([]); ENG.putRocks([]); }
 }
 
 /* 保齡球：貼著地面從場外滾進來，把沿路的東西撞飛。
@@ -1064,7 +1119,7 @@ function useTool(hit) {
   if (tool === 'hammer') { launchHammer(hit.point, hit.dir, false); return 0; }
   if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true); return 0; }
   if (tool === 'ball') { launchBall(hit.point, hit.dir); return 0; }
-  if (tool === 'treb') { launchTrebs(); return 0; }
+  if (tool === 'treb') { placeTreb({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   return 0;
 }
@@ -1168,6 +1223,7 @@ function frame(now) {
 
 /* 把一步拆出來，測試才能不靠 rAF 直接推進模擬 */
 function step(dt) {
+  supFresh = false;
   if (phase === 'build' && bp) {
     buildElapsed = (performance.now() - buildStart) / 1000;
     // 人力成本只在真的在施工時累積，而且跟著模擬時間走（開 4 倍速就燒得快）
@@ -1415,6 +1471,7 @@ function boot() {
   completeNow();          // 開場直接給一座蓋好的建築，砸掉之後才會開始蓋下一座
   requestAnimationFrame(frame);
 }
+
 
 
 

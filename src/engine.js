@@ -15,7 +15,7 @@ const ENG = (function () {
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh;
-  const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 3;
+  const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const TW_SEG = 12;                // 龍捲風的分段數
   const tornadoSegs = [];
   const _axis = new T.Vector3();
@@ -228,10 +228,13 @@ const ENG = (function () {
 
   /* 投石機。t：{x, z, a 面向, arm 拋臂角度}
      底座與立柱固定，拋臂繞立柱頂端擺——發射時從後仰掃到前傾。 */
+  const CW_ARM = 3.4;               // 配重掛在拋臂後端多遠
   const TREB_PART = [
-    { p: [0, 0.4, 0], s: [3.4, 0.8, 2.6], c: 0x7a5334 },   // 底座
-    { p: [0, 2.0, 0], s: [0.6, 3.2, 0.6], c: 0x8a5f3c },   // 立柱
-    { p: [0, 3.6, 0], s: [0.5, 0.5, 6.5], c: 0x5f4126 }    // 拋臂
+    { p: [0, 0.35, 0], s: [3.8, 0.7, 2.9], c: 0x7a5334 },        // 底座
+    { p: [-1.05, 2.1, 0], s: [0.5, 3.6, 0.5], c: 0x8a5f3c },     // 左立柱
+    { p: [1.05, 2.1, 0], s: [0.5, 3.6, 0.5], c: 0x8a5f3c },      // 右立柱
+    { p: [0, 3.85, 0], s: [0.45, 0.45, 7.4], c: 0x5f4126, arm: 1 },   // 拋臂
+    { p: [0, 3.85, 0], s: [1.6, 1.6, 1.6], c: 0x494440, cw: 1 }       // 配重
   ];
   function putTrebs(list) {
     const n = Math.min(list.length, MAXTREB);
@@ -244,8 +247,10 @@ const ENG = (function () {
       scratch.updateMatrix();
       for (let k = 0; k < TREB_PARTS; k++) {
         const b = TREB_PART[k];
-        scratchB.position.set(b.p[0], b.p[1], b.p[2]);
-        scratchB.rotation.set(k === 2 ? t.arm : 0, 0, 0);
+        // 配重要跟著拋臂繞支點轉：把 (0,0,-CW_ARM) 繞 X 軸轉 arm 角度
+        if (b.cw) scratchB.position.set(b.p[0], b.p[1] + Math.sin(t.arm) * CW_ARM, -Math.cos(t.arm) * CW_ARM);
+        else scratchB.position.set(b.p[0], b.p[1], b.p[2]);
+        scratchB.rotation.set(b.arm ? t.arm : 0, 0, 0);
         scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
