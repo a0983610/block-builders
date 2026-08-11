@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.9.0';
+const VERSION = '1.10.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -593,7 +593,10 @@ function newWorker(i) {
   return {
     x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d, a: 0, ph: Math.random() * 6, gait: 0,
     tone: i, st: 'idle', block: -1, slot: -1, tx: 0, tz: 0,
-    wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, pause: 0, scale: rr(0.92, 1.08)
+    wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, pause: 0, leg: 0,
+    /* 每個人身高略有差異。1.06–1.24 大約是積木邊長的一個半，
+       比原本大一成半——太小的話遠鏡頭下只剩一撮色點，看不出在做什麼。 */
+    scale: rr(1.06, 1.24)
   };
 }
 function setWorkerCount(n) {
@@ -701,10 +704,10 @@ function updWorker(w, wi, dt) {
         // 到了定點站著發呆一下。全部人一路走不停的話，看起來像一群螞蟻在竄
         w.pause -= dt;
         w.gait += (0 - w.gait) * Math.min(1, dt * 8);
-      } else if (walkTo(w, dt)) {
+      } else if (strollTo(w, dt)) {
+        strollPause(w);
         const R = arenaR + 20;
         w.tx = rr(-R, R); w.tz = rr(-R, R);
-        if (Math.random() < 0.62) w.pause = rr(1.2, 4.5);
       }
     }
     return;
@@ -722,6 +725,7 @@ function updWorker(w, wi, dt) {
       blocks[bi].holder = wi;
       markSupportDirty(0.05);        // 認領也算「這格有東西了」，會影響上面能不能蓋
       w.slot = s; w.block = bi; w.st = 'pick';
+      w.leg = 0;                     // 接到工作就把閒晃里程歸零，別把它算進下次的發呆時間
       w.tx = blocks[bi].x; w.tz = blocks[bi].z;
       break;
     }
@@ -769,11 +773,65 @@ function updWorker(w, wi, dt) {
 function carryPose(w, b) {
   b.x = w.x + Math.sin(w.a) * 0.05;
   b.z = w.z + Math.cos(w.a) * 0.05;
-  b.y = 1.45 + Math.abs(Math.sin(w.ph)) * 0.05;
+  // 舉的高度要跟著身高走，不然高個子的積木會陷進自己的安全帽裡
+  b.y = (1.45 + Math.abs(Math.sin(w.ph)) * 0.05) * w.scale;
   b.rx += (0 - b.rx) * 0.2; b.rz += (0 - b.rz) * 0.2;
 }
+/* ── 閒晃 ─────────────────────────────────────────────────
+   沒事做的時候走的路，跟施工中的走法分開：
+   pick／build 本來就得走進工地擺積木，這裡則是要繞開已經蓋好的建築。
+   把建築當成以工地中心為圓心、半徑 siteR 的一根柱子繞過去就好——
+   要的是「不要從建築中間穿過去」，不是貼著每一塊積木算精確的邊。 */
+const KEEP = 1.5;                   // 閒晃時跟建築外圍保持的距離
+
+/* 走到定點就站一會兒。站的時間跟**剛走完**那段路成比例——
+   寫死秒數的話，換一座大的（工地大、走得久）站著的人就變少，比例會跟著建築跑掉；
+   算成「接下來要走的那段」則更糟：剛擺完積木的人會先在工地正中央發呆快十秒才動身。
+   2.4 倍是量出來的：任一瞬間大約七成的人站著不動。 */
+function strollPause(w) { w.pause = w.leg / WALK * rr(1.7, 3.1); w.leg = 0; }
+
+function strollTo(w, dt) {
+  const keep = siteR + KEEP;
+  /* 目標點落在建築裡就先推到外圈。不推的話他會繞著建築打轉永遠抵達不了，
+     也就永遠不換下一個目標，等於卡死在那一圈上。 */
+  const tr = Math.hypot(w.tx, w.tz);
+  if (tr < keep) {
+    const a = tr < 0.001 ? Math.atan2(w.z, w.x) : Math.atan2(w.tz, w.tx);
+    w.tx = Math.cos(a) * keep; w.tz = Math.sin(a) * keep;
+  }
+  const dx = w.tx - w.x, dz = w.tz - w.z, d = Math.hypot(dx, dz);
+  if (d < REACH) { w.gait += (0 - w.gait) * Math.min(1, dt * 8); return true; }
+
+  let ux = dx / d, uz = dz / d;
+  const pr = Math.hypot(w.x, w.z);
+  const nx = pr < 0.001 ? 1 : w.x / pr, nz = pr < 0.001 ? 0 : w.z / pr;   // 由工地中心往外
+  if (pr < keep) {
+    // 人已經在建築範圍內（剛擺完積木站在外圈的就是這樣）——先往外走出去
+    ux += nx * 1.5; uz += nz * 1.5;
+  } else if (pr < keep + 3 && ux * nx + uz * nz < 0) {
+    /* 快貼到牆了又還朝著中心走：把方向掰到切線上，選跟原方向同側的那一條，
+       離牆越近掰得越兇。直接煞停的話他會頂著牆原地發抖。 */
+    let sx = -nz, sz = nx;
+    if (ux * sx + uz * sz < 0) { sx = nz; sz = -nx; }
+    const k = (keep + 3 - pr) / 3;
+    ux += (sx - ux) * k; uz += (sz - uz) * k;
+  }
+  const m = Math.hypot(ux, uz) || 1;
+  ux /= m; uz /= m;
+
+  const sp = Math.min(WALK * dt, d);
+  w.x += ux * sp; w.z += uz * sp;
+  w.leg += sp;                         // 這趟閒晃走了多遠，抵達後拿來算站多久
+  w.a = Math.atan2(ux, uz);            // 面向真正在走的方向，不是目標方向
+  w.ph += dt * 11;
+  w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
+  return false;
+}
+
 function wander(w, dt) {
-  if (walkTo(w, dt)) {
+  if (w.pause > 0) { w.pause -= dt; w.gait += (0 - w.gait) * Math.min(1, dt * 8); return; }
+  if (strollTo(w, dt)) {
+    strollPause(w);
     const a = Math.random() * Math.PI * 2, d = siteR + rr(2, 9);
     w.tx = Math.cos(a) * d; w.tz = Math.sin(a) * d;
   }

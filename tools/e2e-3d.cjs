@@ -319,6 +319,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const b1 = await st(page);
   ok('小人開始搬運', b1.carry + b1.toss + b1.set > 0,
      '搬 ' + b1.carry + '、拋 ' + b1.toss + '、就位 ' + b1.set);
+
+  /* 每個人身高不一樣，舉東西的高度就得跟著身高走。
+     寫死一個高度的話，高個子的積木會陷進自己的安全帽裡——
+     這裡驗「積木中心在帽子上方、底面又還碰得到帽子」，兩邊都要。
+     1.31 是安全帽頂（engine.js 的 BODY：p 1.24 + 高度 0.14 的一半）。 */
+  const carry = await page.evaluate(() => {
+    const HAT = 1.31;
+    let n = 0, sunk = 0, float = 0, lo = Infinity, hi = -Infinity;
+    for (const w of workers) {
+      if (!w.carry || w.block < 0) continue;
+      const b = blocks[w.block];
+      if (!b || b.st !== 1) continue;
+      const head = HAT * w.scale;
+      n++;
+      if (b.y <= head) sunk++;                 // 陷進頭裡
+      if (b.y - HB > head) float++;            // 飄在半空
+      if (w.scale < lo) lo = w.scale;
+      if (w.scale > hi) hi = w.scale;
+    }
+    return { n, sunk, float, lo: +lo.toFixed(2), hi: +hi.toFixed(2) };
+  });
+  ok('搬運中的積木架在頭頂上，不會陷進去也不會飄著',
+     carry.n > 0 && carry.sunk === 0 && carry.float === 0,
+     carry.n + ' 人搬運中，陷入 ' + carry.sunk + '、飄浮 ' + carry.float +
+     '；身高 ' + carry.lo + '–' + carry.hi);
   await sim(page, 900);
   const b2 = await st(page);
   ok('進度持續往上', b2.set > b1.set, b1.set + ' → ' + b2.set + ' / ' + b2.total);
@@ -651,7 +676,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 200; i++) step(0.05);          // 先把七秒的繞圈慶祝跑完
     const run = workers.map(() => 0), best = workers.map(() => 0);
     const px = workers.map(w => w.x), pz = workers.map(w => w.z);
-    let moved = 0, samples = 0;
+    let moved = 0, samples = 0, near = Infinity;
     for (let i = 0; i < 1200; i++) {
       step(0.05);
       for (let k = 0; k < workers.length; k++) {
@@ -660,18 +685,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         px[k] = w.x; pz[k] = w.z; samples++;
         if (d < 1e-6) { run[k] += 0.05; if (run[k] > best[k]) best[k] = run[k]; }
         else { run[k] = 0; moved++; }
+        const r = Math.hypot(w.x, w.z);         // 離工地中心多遠——閒晃不該踩進建築裡
+        if (r < near) near = r;
       }
     }
     best.sort((a, b) => b - a);
     return { longest: +best[0].toFixed(2), median: +best[best.length >> 1].toFixed(2),
              least: +best[best.length - 1].toFixed(2),
-             movingFrac: +(moved / samples).toFixed(2), n: workers.length };
+             movingFrac: +(moved / samples).toFixed(2), n: workers.length,
+             near: +near.toFixed(2), siteR: +siteR.toFixed(2) };
   });
   ok('遊蕩時會不時停下來站一會兒', idle.median >= 1.1,
      idle.n + ' 人在 60 秒裡最長站定：中位數 ' + idle.median + ' 秒、最久 ' +
      idle.longest + ' 秒、最短 ' + idle.least + ' 秒');
-  ok('但不會整群釘在原地', idle.movingFrac > 0.5 && idle.movingFrac < 0.97,
-     '有在移動的幀數占 ' + (idle.movingFrac * 100).toFixed(0) + '%');
+  /* 要的是「大部分人站著，但整群不是死的」。兩邊都要卡：
+     全在走看起來像螞蟻竄，全站著看起來像當機。 */
+  ok('閒晃時約七成的人站著不動', idle.movingFrac >= 0.2 && idle.movingFrac <= 0.4,
+     '站著的幀數占 ' + ((1 - idle.movingFrac) * 100).toFixed(0) + '%（目標 70%）');
+  /* 閒晃的人不會從蓋好的建築中間穿過去。走到牆邊要繞開，
+     所以最近距離會停在建築外圈；踩進去的話這個數字會小於建築半徑。 */
+  ok('閒晃不會穿過建築', idle.near >= idle.siteR,
+     '最近只走到離工地中心 ' + idle.near + '（建築半徑 ' + idle.siteR + '）');
 
   ok('拆完之後小人開始蓋新的', rebuild.mid > 20 && rebuild.ph0 === 'build',
      '蓋到 ' + rebuild.mid + ' / ' + rebuild.total + '（' + rebuild.ph0 + '）');
