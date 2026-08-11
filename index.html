@@ -121,12 +121,12 @@
   #badgeBox .row{display:flex;gap:8px;margin-top:12px}
   #badgeBox .row button{flex:1}
 
-  /* 九種道具排成一排要 614px，左上的建築資訊卡玩久了會撐到 354px
+  /* 十種道具排成一排要 691px，左上的建築資訊卡玩久了會撐到 354px
      （累計金額變七位數那一刻），右緣就落在 368。工具列置中，
-     左緣是 (視窗 − 614) / 2，要閃過 368 得有 1366 以上——量出來 1341 還差 4px。
-     所以不到 1380 就整排搬到畫面底部、只留圖示：
+     左緣是 (視窗 − 691) / 2，要閃過 368 得有 1427 以上。
+     所以不到 1430 就整排搬到畫面底部、只留圖示：
      版面本來就空著的下緣拿來放它，比擠在上面兩張卡中間好。 */
-  @media (max-width:1380px){
+  @media (max-width:1430px){
     #tools{top:auto;bottom:12px;gap:4px;flex-wrap:wrap;justify-content:center;
            max-width:calc(100vw - 190px)}
     .tool{min-width:32px;padding:4px 3px}
