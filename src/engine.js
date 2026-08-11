@@ -34,7 +34,10 @@ const ENG = (function () {
   /* 軌道相機：自己寫，不引 OrbitControls（那支在 examples/jsm，
      還得多打包一份 ESM，而我們要的功能就這幾行） */
   const cam = { tx: 0, ty: 6, tz: 0, dist: 40, yaw: 0.9, pitch: 0.42, shake: 0, shakeT: 0 };
-  const camTarget = { dist: 40, ty: 6 };
+  const camTarget = { dist: 40, ty: 6, tx: 0, tz: 0 };
+  /* 平移速度跟目前視距成正比——拉遠之後還用同一個速度會像在爬。
+     視距 60 時約每秒 36 單位，橫越整片工地約兩秒。 */
+  const PAN_SPD = 0.6;
   /* 取景留白。1 = 建築剛好貼齊畫面邊，越大退越遠、四周留白越多。
      1.27 是量出來的：36 座 × 4 個角度掃過去，最擠的一座（3000 塊的美國國會大廈）
      佔畫面 0.80，一般的落在 0.74，上緣不會頂到工具列。 */
@@ -491,7 +494,8 @@ const ENG = (function () {
     camTarget.dist = Math.max(R / Math.sin(halfV),
                               (radius * 1.05 + 2) / Math.sin(halfH)) * FIT_MARGIN;
     camTarget.ty = height * 0.44 + 1.5;
-    if (instant) { cam.dist = camTarget.dist; cam.ty = camTarget.ty; }
+    camTarget.tx = camTarget.tz = 0;          // 換一座就把鏡頭帶回工地中心，不然新的那座在畫面外
+    if (instant) { cam.dist = camTarget.dist; cam.ty = camTarget.ty; cam.tx = cam.tz = 0; }
     // 陰影相機要蓋住整片工地，不然大建築跟遠處碎料的影子會被裁掉
     const s = Math.max(45, arena + height * 0.5);
     const sc = sun.shadow.camera;
@@ -509,6 +513,10 @@ const ENG = (function () {
   function updateCamera(dt) {
     cam.dist += (camTarget.dist - cam.dist) * Math.min(1, dt * 2.2);
     cam.ty += (camTarget.ty - cam.ty) * Math.min(1, dt * 2.2);
+    /* 平移跟得比縮放緊。用 2.2 的話等速平移時鏡頭會落後目標約 16 單位——
+       那跟整座建築的半徑同一個量級，按下去會有一段明顯的空檔。8 大約落後 4.5 單位。 */
+    cam.tx += (camTarget.tx - cam.tx) * Math.min(1, dt * 8);
+    cam.tz += (camTarget.tz - cam.tz) * Math.min(1, dt * 8);
     cam.pitch = Math.max(0.06, Math.min(1.45, cam.pitch));
     const cp = Math.cos(cam.pitch);
     let x = cam.tx + Math.cos(cam.yaw) * cp * cam.dist;
@@ -528,6 +536,22 @@ const ENG = (function () {
   }
 
   function orbit(dx, dy) { cam.yaw -= dx * 0.006; cam.pitch += dy * 0.005; }
+
+  /* 平移旋轉中心。fwd/side 是 −1..1，方向以**畫面**為準而不是世界軸——
+     相機在旋轉中心的 (cos yaw, sin yaw) 方向上，所以畫面的「往前」是它的反向。
+     照世界軸走的話，轉過視角之後按 W 會往螢幕的斜後方跑。 */
+  function pan(fwd, side, dt) {
+    const fx = -Math.cos(cam.yaw), fz = -Math.sin(cam.yaw);   // 畫面往前
+    const k = PAN_SPD * cam.dist * dt;
+    let x = camTarget.tx + (fx * fwd - fz * side) * k;        // 往右 = 往前轉 90°
+    let z = camTarget.tz + (fz * fwd + fx * side) * k;
+    /* 草地是有限的圓島，中心固定在原點（setGroundSize 只設 scale，位置永遠是 0），
+       不夾住就會平移出去看到虛空。夾在碎料散落範圍內，剛好能看到料場。 */
+    const lim = lastFit ? lastFit.arena : 40;
+    const d = Math.hypot(x, z);
+    if (d > lim) { x = x / d * lim; z = z / d * lim; }
+    camTarget.tx = x; camTarget.tz = z;
+  }
   function zoom(f) { camTarget.dist = Math.max(6, Math.min(360, camTarget.dist * f)); }
   function shake(a) { cam.shake = Math.min(2.6, cam.shake + a); }
 
@@ -554,7 +578,7 @@ const ENG = (function () {
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust, putTrebs, putRocks, putDozers,
     setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible, hammerPos,
-    fitCamera, updateCamera, orbit, zoom, shake,
+    fitCamera, updateCamera, orbit, pan, zoom, shake,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }
   };

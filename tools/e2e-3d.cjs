@@ -1703,6 +1703,78 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('滾輪可以縮放', zoomOut > camBefore.dist && zoomIn < zoomOut,
      camBefore.dist.toFixed(1) + ' → ' + zoomOut.toFixed(1) + ' → ' + zoomIn.toFixed(1));
 
+  /* ── 鍵盤平移 ──
+     一律走真的鍵盤事件，listener 有沒有接上、e.code 對不對都一起測到。
+     平移是在 frame() 裡推進的，running 關掉就不會動，所以先打開。 */
+  const wasRunning = await page.evaluate(() => { const r = running; running = true; return r; });
+  const resetPan = () => page.evaluate(() => {
+    ENG.camTarget.tx = ENG.camTarget.tz = 0; ENG.cam.tx = ENG.cam.tz = 0;
+  });
+  const panBy = async (key, ms) => {
+    await page.keyboard.down(key); await page.waitForTimeout(ms); await page.keyboard.up(key);
+    return page.evaluate(() => ({ tx: ENG.camTarget.tx, tz: ENG.camTarget.tz }));
+  };
+
+  await resetPan();
+  const wMove = await panBy('w', 250);
+  ok('WASD 可以平移鏡頭', Math.hypot(wMove.tx, wMove.tz) > 1,
+     '按住 W 250ms 移動了 ' + Math.hypot(wMove.tx, wMove.tz).toFixed(1) + ' 單位');
+
+  /* 平移方向要以畫面為準。照世界軸走的話，轉過視角之後按 W 會往螢幕斜後方跑 */
+  const dirs = [];
+  for (const yaw of [0, Math.PI / 2]) {
+    await page.evaluate(y => { ENG.cam.yaw = y; }, yaw);
+    await resetPan();
+    dirs.push(await panBy('w', 200));
+  }
+  let dAng = Math.abs(Math.atan2(dirs[1].tz, dirs[1].tx) - Math.atan2(dirs[0].tz, dirs[0].tx));
+  if (dAng > Math.PI) dAng = 2 * Math.PI - dAng;
+  ok('平移方向跟著視角轉，不是固定的世界軸', Math.abs(dAng - Math.PI / 2) < 0.2,
+     '視角轉 90°，同一顆鍵的世界方向差 ' + (dAng * 57.3).toFixed(0) + '°');
+
+  /* 草地是有限的圓島，推到底要停在場地邊緣，不能飄出去看到虛空 */
+  const clamped = await page.evaluate(() => {
+    ENG.camTarget.tx = ENG.camTarget.tz = 0;
+    for (let i = 0; i < 600; i++) ENG.pan(1, 0.3, 0.05);
+    return { d: Math.hypot(ENG.camTarget.tx, ENG.camTarget.tz), arena: arenaR };
+  });
+  ok('平移不會跑出場地', clamped.d <= clamped.arena + 0.01,
+     '一直推 → 停在 ' + clamped.d.toFixed(1) + '，場地半徑 ' + clamped.arena.toFixed(1));
+
+  const panReset = await page.evaluate(() => {
+    ENG.camTarget.tx = 30; ENG.camTarget.tz = -20;
+    startBuild(false);
+    return { tx: ENG.camTarget.tx, tz: ENG.camTarget.tz };
+  });
+  ok('換一座建築鏡頭回到工地中心', panReset.tx === 0 && panReset.tz === 0,
+     'tx ' + panReset.tx + '、tz ' + panReset.tz);
+
+  await resetPan();
+  await page.focus('#shape');
+  await panBy('w', 200);
+  const onSelect = await page.evaluate(() => {
+    document.getElementById('shape').blur();
+    return Math.hypot(ENG.camTarget.tx, ENG.camTarget.tz);
+  });
+  ok('焦點在建築下拉選單上時不搶鍵盤', onSelect < 0.01,
+     '在選單上按 W，鏡頭移動 ' + onSelect.toFixed(2) + ' 單位');
+
+  /* 按著 W 切去別的視窗，keyup 收不到，回來鏡頭會自己一直飄 */
+  await resetPan();
+  await page.keyboard.down('w');
+  await page.waitForTimeout(150);
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  const drift0 = await page.evaluate(() => Math.hypot(ENG.camTarget.tx, ENG.camTarget.tz));
+  await page.waitForTimeout(250);
+  const drift1 = await page.evaluate(() => Math.hypot(ENG.camTarget.tx, ENG.camTarget.tz));
+  await page.keyboard.up('w');
+  ok('視窗失焦會放開按鍵，鏡頭不會一直飄',
+     drift0 > 0.5 && Math.abs(drift1 - drift0) < 0.01,
+     '失焦當下 ' + drift0.toFixed(1) + '，再等 250ms 還是 ' + drift1.toFixed(1));
+
+  await resetPan();
+  await page.evaluate(r => { running = r; }, wasRunning);
+
   /* 取景測「使用者看到什麼」，而不是把相機公式抄一份到測試裡（那是拿實作驗實作） */
   const framing = await page.evaluate(() => {
     startBuild(true);

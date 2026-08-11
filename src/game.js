@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.8.0';
+const VERSION = '1.9.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1517,6 +1517,7 @@ function frame(now) {
   if (!running) { ENG.render(); return; }
   const dt = Math.min(0.05, raw) * timeScale;
 
+  panStep(Math.min(0.05, raw));
   step(dt);
   draw();
   ENG.render();
@@ -1656,6 +1657,31 @@ function onUp(e) {
   if (hit.kind === 'block' || tool === 'tornado' || tool === 'treb') useTool(hit);
 }
 
+/* ── 鍵盤平移鏡頭 ─────────────────────────────────────────
+   用 e.code（實體鍵位）不是 e.key：非 QWERTY 的鍵盤排列也是同樣那四顆鍵的位置。 */
+const PAN_KEY = { KeyW: [1, 0], KeyS: [-1, 0], KeyA: [0, -1], KeyD: [0, 1] };
+const keyDown = Object.create(null);
+
+function onKey(e) {
+  if (!PAN_KEY[e.code]) return;
+  /* 只擋下拉選單：字母鍵在 select 上是拿來跳選項的。
+     滑桿與核取方塊吃的是方向鍵與空白鍵，跟 WASD 不衝突，
+     一起擋掉的話「剛拉完滑桿就按不動鏡頭」反而莫名其妙。 */
+  if (e.target && e.target.tagName === 'SELECT') return;
+  keyDown[e.code] = e.type === 'keydown';
+}
+// 按著 W 切去別的視窗，keyup 收不到，切回來鏡頭會自己一直飄
+function clearKeys() { for (const k in keyDown) keyDown[k] = false; }
+
+/* 用真實時間推進，不吃時間倍率——開四倍速不該讓鏡頭也快四倍 */
+function panStep(dt) {
+  let f = 0, s = 0;
+  for (const k in PAN_KEY) if (keyDown[k]) { f += PAN_KEY[k][0]; s += PAN_KEY[k][1]; }
+  if (!f && !s) return;
+  const n = Math.hypot(f, s);             // 斜著按兩顆不該比只按一顆快
+  ENG.pan(f / n, s / n, dt);
+}
+
 /* ── HUD ────────────────────────────────────────────────── */
 const $ = id => document.getElementById(id);
 let hudLast = 0;
@@ -1744,6 +1770,9 @@ function boot() {
   cv.addEventListener('touchend', onUp);
   cv.addEventListener('wheel', e => { ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9); e.preventDefault(); }, { passive: false });
   cv.addEventListener('contextmenu', e => e.preventDefault());
+  window.addEventListener('keydown', onKey);
+  window.addEventListener('keyup', onKey);
+  window.addEventListener('blur', clearKeys);
 
   const sel = $('shape');
   sel.innerHTML = '<option value="-1">🎲 隨機</option>' +
