@@ -121,6 +121,24 @@
   #badgeBox .row{display:flex;gap:8px;margin-top:12px}
   #badgeBox .row button{flex:1}
 
+  /* 九種道具排成一排要 614px，左上的建築資訊卡玩久了會撐到 354px
+     （累計金額變七位數那一刻），右緣就落在 368。工具列置中，
+     左緣是 (視窗 − 614) / 2，要閃過 368 得有 1366 以上——量出來 1341 還差 4px。
+     所以不到 1380 就整排搬到畫面底部、只留圖示：
+     版面本來就空著的下緣拿來放它，比擠在上面兩張卡中間好。 */
+  @media (max-width:1380px){
+    #tools{top:auto;bottom:12px;gap:4px;flex-wrap:wrap;justify-content:center;
+           max-width:calc(100vw - 190px)}
+    .tool{min-width:32px;padding:4px 3px}
+    .tool .k{font-size:17px}
+    .tool .n{display:none}
+    /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具列 */
+    #panelBtn{right:14px;left:auto}
+    #ver{left:14px;right:auto}
+    /* 手機寬度下工具列會折成兩排，設定面板要跟著往上讓，不然會壓在工具上 */
+    #panel{bottom:84px}
+  }
+
   @media (max-width:640px){
     /* 限寬，不然統計那一行會把卡片撐到右上角的時鐘底下 */
     #head{min-width:0;padding:8px 11px;max-width:calc(100vw - 220px)}
@@ -129,14 +147,6 @@
     #clock{font-size:20px}
     #panel{width:calc(100vw - 28px)}
     #hint{display:none}
-    /* 手機上頂端那一排已經被建築資訊卡與時鐘佔滿，工具列改放底部，
-       而且只留圖示；設定鈕與版本號互換位置讓出中間 */
-    #tools{top:auto;bottom:12px;gap:4px}
-    .tool{min-width:32px;padding:4px 3px}
-    .tool .k{font-size:17px}
-    .tool .n{display:none}
-    #panelBtn{right:14px;left:auto}
-    #ver{left:14px;right:auto}
     #toast{top:14px}
     #badgeBox #badges{grid-template-columns:1fr}   /* 手機排不下兩欄 */
   }

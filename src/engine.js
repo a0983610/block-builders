@@ -15,8 +15,12 @@ const ENG = (function () {
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
+  let bombMesh, nukeGroup, magicGroup, magSpokeMesh;
+  const magRings = [];
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
+  const MAXBOMB = 6, BOMB_PARTS = 3;
+  const MAG_MAX = 4, MAG_SPOKE = 8;      // 魔法陣最多幾層、每層幾根輻條
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
   const TW_SEG = 12;                // 龍捲風的分段數
@@ -196,6 +200,62 @@ const ENG = (function () {
     trebMesh.setColorAt(0, tmpC.setHex(0xffffff));
     dozMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
+    /* 定時炸彈：可以同時放好幾顆，走 instancing。
+       新道具的網格一律「沒在用就 visible=false」——InstancedMesh 就算 count=0
+       還是會吃掉一個 draw call，平常不該為了沒放的道具付這個錢。 */
+    bombMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXBOMB * BOMB_PARTS);
+    bombMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    bombMesh.castShadow = true; bombMesh.count = 0;
+    bombMesh.frustumCulled = false; bombMesh.visible = false;
+    scene.add(bombMesh);
+    bombMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
+    /* 核彈：彈體朝 −Y 落下，一次只有一顆，用 Group 就好 */
+    nukeGroup = new T.Group();
+    const nParts = [
+      [[0, 2.6, 0], [1.7, 4.4, 1.7], 0x5c636d],        // 彈體
+      [[0, 0.5, 0], [1.25, 1.1, 1.25], 0xb8402f],      // 彈頭
+      [[0, 3.7, 0], [1.85, 0.5, 1.85], 0xe8c33c],      // 警戒環
+      [[-0.9, 5.2, 0], [0.22, 1.7, 1.6], 0x767d87],    // 尾翼 ×4
+      [[0.9, 5.2, 0], [0.22, 1.7, 1.6], 0x767d87],
+      [[0, 5.2, -0.9], [1.6, 1.7, 0.22], 0x767d87],
+      [[0, 5.2, 0.9], [1.6, 1.7, 0.22], 0x767d87]
+    ];
+    for (const [p, s, c] of nParts) {
+      const m = new T.Mesh(new T.BoxGeometry(s[0], s[1], s[2]), voxelMaterial({ color: c }));
+      m.position.set(p[0], p[1], p[2]);
+      m.castShadow = true;
+      nukeGroup.add(m);
+    }
+    nukeGroup.scale.setScalar(1.5);
+    nukeGroup.visible = false;
+    scene.add(nukeGroup);
+
+    /* 魔法陣：每層一個扁環 + 一圈輻條。
+       只有環的話它是旋轉對稱的，轉起來看不出在轉——輻條才是「在轉」的證據。
+       用加法混色，紫光疊在綠草地上才會發亮而不是變成一片髒灰。 */
+    magicGroup = new T.Group();
+    for (let i = 0; i < MAG_MAX; i++) {
+      /* 環用一般混色：加法混色疊在亮綠色草地上會被洗成白的，看不出是紫的。
+         輻條那圈小的才用加法，當作陣上的光點。 */
+      const m = new T.Mesh(new T.RingGeometry(0.87, 1, 64), new T.MeshBasicMaterial({
+        color: 0x8b3ff0, transparent: true, opacity: 0.7,
+        side: T.DoubleSide, depthWrite: false
+      }));
+      m.rotation.x = -Math.PI / 2;        // RingGeometry 生在 XY 平面，要放平
+      m.frustumCulled = false;
+      magRings.push(m); magicGroup.add(m);
+    }
+    magSpokeMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
+      color: 0xdcb0ff, transparent: true, opacity: 0.85,
+      depthWrite: false, blending: T.AdditiveBlending
+    }), MAG_MAX * MAG_SPOKE);
+    magSpokeMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    magSpokeMesh.count = 0; magSpokeMesh.frustumCulled = false;
+    magicGroup.add(magSpokeMesh);
+    magicGroup.visible = false;
+    scene.add(magicGroup);
+
     resize();
   }
 
@@ -333,6 +393,77 @@ const ENG = (function () {
     rockMesh.instanceMatrix.needsUpdate = true;
   }
   function hammerPos() { const p = hammerGroup.position; return { x: p.x, y: p.y, z: p.z }; }
+
+  /* 定時炸彈。b：{x, y, z, blink 0/1 閃燈亮不亮}
+     頂端那顆燈直接切換顏色而不是漸變——真的引信燈就是這樣一明一滅，
+     漸變反而看起來像在呼吸。 */
+  const BOMB_PART = [
+    { p: [0, 0.62, 0], s: [1.5, 1.24, 1.5], c: 0x2b2f36 },      // 本體
+    { p: [0, 1.32, 0], s: [1.0, 0.26, 1.0], c: 0x555c66 },      // 頸環
+    { p: [0, 1.6, 0], s: [0.44, 0.44, 0.44], c: 0x4a1a12, lamp: 1 }   // 閃燈
+  ];
+  function putBombs(list) {
+    const n = Math.min(list.length, MAXBOMB);
+    bombMesh.visible = n > 0;
+    bombMesh.count = n * BOMB_PARTS;
+    for (let i = 0; i < n; i++) {
+      const b = list[i];
+      scratch.position.set(b.x, b.y, b.z);
+      scratch.rotation.set(0, b.a || 0, 0);
+      scratch.scale.setScalar(1);
+      scratch.updateMatrix();
+      for (let k = 0; k < BOMB_PARTS; k++) {
+        const p = BOMB_PART[k];
+        scratchB.position.set(p.p[0], p.p[1], p.p[2]);
+        scratchB.rotation.set(0, 0, 0);
+        scratchB.scale.set(p.s[0], p.s[1], p.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        bombMesh.setMatrixAt(i * BOMB_PARTS + k, tmpM);
+        bombMesh.setColorAt(i * BOMB_PARTS + k,
+          tmpC.setHex(p.lamp && b.blink ? 0xff6a4a : p.c));
+      }
+    }
+    bombMesh.instanceMatrix.needsUpdate = true;
+    if (bombMesh.instanceColor) bombMesh.instanceColor.needsUpdate = true;
+  }
+
+  /* 核彈：只管畫在哪、轉多少，什麼時候掉、掉多快是規則那邊的事 */
+  function setNuke(x, y, z, spin) {
+    nukeGroup.visible = true;
+    nukeGroup.position.set(x, y, z);
+    nukeGroup.rotation.y = spin;
+  }
+  function hideNuke() { nukeGroup.visible = false; }
+
+  /* 魔法陣。rings：由內而外每一層 {r 半徑, y 離地, spin 轉到哪, op 濃度}，
+     長度就是「現在該顯示幾層」——依序長出來這件事由規則那邊決定。 */
+  function setMagic(x, z, rings) {
+    const n = Math.min(rings.length, MAG_MAX);
+    magicGroup.visible = n > 0;
+    let s = 0;
+    for (let i = 0; i < MAG_MAX; i++) {
+      const r = i < n ? rings[i] : null;
+      const m = magRings[i];
+      m.visible = !!r;
+      if (!r) continue;
+      m.position.set(x, r.y, z);
+      m.scale.set(r.r, r.r, 1);
+      m.rotation.z = r.spin;              // 放平之後，繞自己的法線轉就是 local Z
+      m.material.opacity = r.op * 0.85;
+      for (let k = 0; k < MAG_SPOKE; k++) {
+        const a = r.spin + k / MAG_SPOKE * Math.PI * 2;
+        scratch.position.set(x + Math.cos(a) * r.r * 0.93, r.y, z + Math.sin(a) * r.r * 0.93);
+        scratch.rotation.set(0, -a, 0);   // 繞 Y 轉 −a，local +X 才會指向外
+        scratch.scale.set(r.r * 0.17, 0.05, r.r * 0.05);
+        scratch.updateMatrix();
+        magSpokeMesh.setMatrixAt(s++, scratch.matrix);
+      }
+    }
+    magSpokeMesh.count = s;
+    magSpokeMesh.instanceMatrix.needsUpdate = true;
+  }
+  function hideMagic() { magicGroup.visible = false; }
 
   /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
   function setGroundSize(r) {
@@ -473,7 +604,9 @@ const ENG = (function () {
       scratch.scale.setScalar(p.s);
       scratch.updateMatrix();
       dustMesh.setMatrixAt(i, scratch.matrix);
-      tmpC.setRGB(p.c, p.c, p.c * 0.96);
+      // 預設是灰白煙塵；火球那種要自己指定顏色的才給 cr/cg/cb
+      if (p.cr === undefined) tmpC.setRGB(p.c, p.c, p.c * 0.96);
+      else tmpC.setRGB(p.cr, p.cg, p.cb);
       dustMesh.setColorAt(i, tmpC);
     }
     dustMesh.instanceMatrix.needsUpdate = true;
@@ -578,6 +711,7 @@ const ENG = (function () {
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust, putTrebs, putRocks, putDozers,
     setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible, hammerPos,
+    putBombs, setNuke, hideNuke, setMagic, hideMagic,
     fitCamera, updateCamera, orbit, pan, zoom, shake,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }

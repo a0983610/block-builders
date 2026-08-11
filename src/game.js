@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.10.0';
+const VERSION = '1.11.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -86,6 +86,15 @@ function sndSwing() { tone(160, 0.3, 'sine', 0.06, 3.2); }
 function sndWind() { noise(1.6, 0.14, 480); }
 function sndDozer() { tone(58, 1.1, 'sawtooth', 0.05, 1.3); noise(1.1, 0.07, 260); }
 function sndBadge() { [784, 988, 1319].forEach((f, i) => setTimeout(() => tone(f, 0.18, 'triangle', 0.08), i * 90)); }
+/* 爆炸：比槌子低一個八度、拖得更長。R 越大轟得越久 */
+function sndBoom(R) {
+  const k = clamp(R / 11, 1, 2.6);
+  noise(0.5 * k, 0.34, 900); tone(46, 0.75 * k, 'sawtooth', 0.12, 0.3);
+}
+function sndTick() { tone(1250, 0.045, 'square', 0.045); }
+function sndSiren() { tone(560, 1.1, 'sine', 0.05, 1.7); }
+/* 魔法陣長一層：越外層音越高，疊起來像在充能 */
+function sndRune(i) { tone(300 + i * 120, 0.5, 'triangle', 0.05, 1.35); }
 
 /* ── 空間雜湊：讓落地的碎塊不要疊在同一點 ─────────────────── */
 const gkey = (x, z) => Math.floor(x / CELL) + ':' + Math.floor(z / CELL);
@@ -297,6 +306,10 @@ function startBuild(instant) {
   twist = null; ENG.hideTornado();
   trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
   dozers = null; ENG.putDozers([]);
+  // 倒數中的炸彈／核彈／魔法陣也一樣：留著的話會炸到剛換上來的新建築
+  bombs = null; ENG.putBombs([]);
+  nuke = null; ENG.hideNuke();
+  magic = null; ENG.hideMagic();
 
   const idx = pickShape();
   recent.push(idx); if (recent.length > 8) recent.shift();
@@ -913,7 +926,7 @@ const BADGES = [
   { id: 'smash50k', n: '粉塵滿天', d: '累計擊飛 50000 塊積木', chk: s => s.smashed >= 50000 },
   { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
   { id: 'wreck25', n: '都市更新', d: '拆掉 25 座建築', chk: s => s.destroyed >= 25 },
-  { id: 'allTools', n: '工具箱清空', d: '六種破壞道具都用過', chk: s => s.tools.length >= TOOLS.length },
+  { id: 'allTools', n: '工具箱清空', d: '九種破壞道具都用過', chk: s => s.tools.length >= TOOLS.length },
   { id: 'boss20', n: '工頭嚴厲', d: '戳倒小人 20 次', chk: s => s.poked >= 20 },
   { id: 'poke100', n: '工安黑名單', d: '戳倒小人 100 次', chk: s => s.poked >= 100 },
   { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 },
@@ -1041,15 +1054,27 @@ const TOOLS = [
   { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
     lock: { txt: '拆掉 6 座建築解鎖', ok: () => stats.destroyed >= 6 } },
   { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去',
-    lock: { txt: '累計擊飛 1000 塊解鎖', ok: () => stats.smashed >= 1000 } }
+    lock: { txt: '累計擊飛 1000 塊解鎖', ok: () => stats.smashed >= 1000 } },
+  { id: 'bomb', n: '定時炸彈', k: '💣', tip: '點一下：放一顆炸彈，3 秒後炸開',
+    lock: { txt: '拆掉 10 座建築解鎖', ok: () => stats.destroyed >= 10 } },
+  { id: 'nuke', n: '核彈', k: '☢', tip: '點一下：2 秒後天上掉核彈下來',
+    lock: { txt: '累計擊飛 3000 塊解鎖', ok: () => stats.smashed >= 3000 } },
+  { id: 'magic', n: '爆裂魔法', k: '🔮', tip: '點一下：魔法陣一層層展開，6 秒後爆炸',
+    lock: { txt: '拆掉 15 座建築解鎖', ok: () => stats.destroyed >= 15 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
+/* 這幾種點空地也算數：它們的用法就是「選一個地點」，
+   規定一定要點到建築的話，站在旁邊的空地放炸彈反而做不到。 */
+const GROUND_TOOL = { tornado: 1, treb: 1, bomb: 1, nuke: 1, magic: 1 };
 let tool = 'hammer';
 
 let hammerR = 5.5, hammerPow = 15;
 let swing = null;     // 正在揮下去的槌子
 let ball = null;      // 飛行中的鐵球
 let twist = null;     // 作用中的龍捲風
+let bombs = null;     // 已放下、倒數中的定時炸彈
+let nuke = null;      // 已呼叫的核彈（倒數或下墜中）
+let magic = null;     // 正在展開的魔法陣
 
 function breakBlock(b, vx, vy, vz) {
   freeBlock(b);
@@ -1471,6 +1496,189 @@ function stepTwist(dt) {
   else ENG.setTornado(twist.x, twist.z, twist.r * 0.9, twist.h, twist.spin);
 }
 
+/* ── 爆炸 ───────────────────────────────────────────────
+   炸彈、核彈、魔法共用的出口。跟槌子的差別是「沒有揮擊方向」——
+   純徑向往外加一股上抬，所以積木是往四面八方噴，不是被打向某一側。 */
+function explode(point, R, power) {
+  const R2 = R * R;
+  let n = 0;
+  for (const b of blocks) {
+    if (b.st !== SET && b.st !== FREE) continue;   // 小人手上跟飛行中的不動它
+    const dx = b.x - point.x, dy = b.y - point.y, dz = b.z - point.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > R2) { if (b.st === SET && d2 < R2 * 1.7) b.wob = 0.55; continue; }
+    const d = Math.sqrt(d2), ol = Math.max(0.7, d);
+    const f = Math.pow(1 - d / R, 0.55) * power;   // 越靠近炸點噴越遠
+    const wasSet = b.st === SET;
+    /* 垂直分量一律往上：照 dy 的正負給的話，炸點底下的積木會被往地面壓，
+       看起來像陷進地裡而不是被炸開。 */
+    breakBlock(b,
+      dx / ol * f + rr(-2, 2),
+      Math.abs(dy) / ol * f * 0.45 + f * 0.3 + rr(2, 7),
+      dz / ol * f + rr(-2, 2));
+    if (wasSet) n++;
+  }
+  afterHit(n, point, R);
+  /* 就算一塊都沒炸到（點在空地上），站在火球裡的人照樣要被掀倒。
+     afterHit 在 n=0 時會直接 return，所以這裡自己來一次。 */
+  for (const w of workers) {
+    if (w.fall <= 0 && Math.hypot(w.x - point.x, w.z - point.z) < R) {
+      w.fall = rr(1.2, 2.6); releaseWorker(w); sndFall();
+    }
+  }
+  spawnFire(point, R);
+  spawnDust(point, R, n);
+  spawnRing(point, R);
+  ENG.shake(0.5 + Math.min(1.8, R * 0.03 + n * 0.015));
+  sndBoom(R);
+  return n;
+}
+
+/* ── 定時炸彈 ───────────────────────────────────────────
+   放下去 3 秒後炸，範圍跟大槌一樣。點在牆上就黏在牆上，
+   點在地上就擺在地上——「在點選的地方」就是字面意思。 */
+const BOMB_MAX = 6, BOMB_FUSE = 3, BOMB_R = 11, BOMB_POW = 17;
+function placeBomb(point) {
+  if (!bombs) bombs = [];
+  if (bombs.length >= BOMB_MAX) bombs.shift();      // 放太多顆就把最早那顆擠掉
+  bombs.push({ x: point.x, y: Math.max(0.6, point.y), z: point.z,
+               t: BOMB_FUSE, beep: 0, blink: 0, a: rr(0, 6.28) });
+  sndTick();
+}
+function stepBombs(dt) {
+  if (!bombs) return;
+  for (let i = bombs.length - 1; i >= 0; i--) {
+    const b = bombs[i];
+    b.t -= dt;
+    // 嗶聲與閃燈越接近爆炸越急，最後一秒幾乎是連續的
+    b.beep -= dt;
+    if (b.beep <= 0) { b.beep = Math.max(0.1, b.t * 0.3); b.blink = 1; sndTick(); }
+    else if (b.beep < 0.06) b.blink = 0;
+    if (b.t <= 0) {
+      bombs.splice(i, 1);
+      explode({ x: b.x, y: b.y, z: b.z }, BOMB_R, BOMB_POW);
+    }
+  }
+  if (!bombs.length) bombs = null;
+}
+
+/* ── 核彈 ───────────────────────────────────────────────
+   點下去先在地上標一圈、拉警報，2 秒後彈體才從天上掉下來。
+   倒數期間什麼都不畫的話，前兩秒看起來就像點了沒反應。
+   一次只有一顆：倒數中再點會改打新的地點。 */
+const NUKE_WAIT = 2, NUKE_FALL = 0.8, NUKE_TOP = 130, NUKE_R = 30, NUKE_POW = 34;
+function callNuke(point) {
+  nuke = { x: point.x, z: point.z, t: NUKE_WAIT + NUKE_FALL, mark: 0, spin: 0 };
+  sndSiren();
+}
+function stepNuke(dt) {
+  if (!nuke) return;
+  nuke.t -= dt;
+  nuke.spin += dt * 1.7;
+  if (nuke.t > NUKE_FALL) {
+    nuke.mark -= dt;
+    if (nuke.mark <= 0) { nuke.mark = 0.5; spawnRing({ x: nuke.x, y: 0, z: nuke.z }, 6); }
+  } else if (nuke.t > 0) {
+    const k = nuke.t / NUKE_FALL;                  // 1 → 0
+    ENG.setNuke(nuke.x, k * k * NUKE_TOP + 3, nuke.z, nuke.spin);   // 平方 = 越掉越快
+  } else {
+    const p = { x: nuke.x, y: 2.5, z: nuke.z };
+    nuke = null;
+    ENG.hideNuke();
+    explode(p, NUKE_R, NUKE_POW);
+    spawnMushroom(p, NUKE_R);
+  }
+}
+
+/* ── 爆裂魔法 ───────────────────────────────────────────
+   魔法陣一層層往外長，最外圈就是等一下的爆炸範圍——
+   讓你在那六秒裡看得出來會炸到哪。一次只有一個，再點會移到新的地點重來。 */
+const MAG_TIME = 6, MAG_R = 30, MAG_POW = 34, MAG_LAYERS = 4;
+const MAG_GAP = 1.1, MAG_GROW = 0.5;      // 每隔多久長一層、一層長多久
+function castMagic(point) {
+  magic = { x: point.x, z: point.z, t: MAG_TIME, spin: 0, shown: 0 };
+  sndRune(0);
+}
+function stepMagic(dt) {
+  if (!magic) return;
+  magic.t -= dt;
+  const el = MAG_TIME - magic.t;
+  // 越接近爆炸轉越快，最後那一下像是要甩出去
+  magic.spin += dt * (1.1 + Math.pow(el / MAG_TIME, 2) * 7);
+  if (magic.t <= 0) {
+    const p = { x: magic.x, y: 1.5, z: magic.z };
+    magic = null;
+    ENG.hideMagic();
+    explode(p, MAG_R, MAG_POW);
+    return;
+  }
+  const rings = [];
+  for (let i = 0; i < MAG_LAYERS; i++) {
+    const g = (el - i * MAG_GAP) / MAG_GROW;       // 這一層長到幾成
+    if (g <= 0) break;
+    const k = Math.min(1, g);
+    rings.push({
+      r: MAG_R * (0.31 + i * 0.23) * (0.55 + 0.45 * k),   // 長出來的時候由小擴到定位
+      y: 0.12 + i * 0.06,                                  // 每層墊高一點，免得互相 z-fighting
+      spin: magic.spin * (i % 2 ? -1.35 : 1) * (1 + i * 0.15),   // 一層順一層逆
+      op: k
+    });
+  }
+  if (rings.length > magic.shown) { magic.shown = rings.length; sndRune(magic.shown - 1); }
+  ENG.setMagic(magic.x, magic.z, rings);
+}
+
+/* 火球：爆炸中心炸開的一團橘紅。用塵霧那套粒子，只是自己指定顏色、
+   而且往上飄（重力給負的）——灰白煙塵混在裡面就沒有「燒起來」的感覺。 */
+function spawnFire(p, R) {
+  const count = Math.min(70, 26 + Math.round(R * 1.4));
+  for (let i = 0; i < count; i++) {
+    if (dust.length > 380) break;
+    const a = Math.random() * Math.PI * 2, sp = rr(0.25, 1) * R * 0.9;
+    const up = Math.random();
+    dust.push({
+      x: p.x + Math.cos(a) * rr(0, R * 0.3), y: p.y + rr(0, R * 0.25), z: p.z + Math.sin(a) * rr(0, R * 0.3),
+      vx: Math.cos(a) * sp, vy: rr(2, 9) + up * R * 0.4, vz: Math.sin(a) * sp,
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(0.45, 1.1), s: rr(0.5, 0.35 + R * 0.09), c: 1, g: -2, fade: 0.6,
+      cr: 1, cg: rr(0.35, 0.72), cb: 0.12
+    });
+  }
+}
+/* 蘑菇雲：一根往上竄的柱子 + 頂上散開的傘蓋，然後慢慢淡掉。
+   重力給負的讓它一路上升，fade 讓它縮著消失——直接等 life 到期會「啪」地整團不見。 */
+function spawnMushroom(p, R) {
+  /* 傘蓋一開始的高度。壓得比「真的蘑菇雲」矮：鏡頭是照建築取景的，
+     升太高會整朵跑到畫面外，只剩下面那根柱子看得到。
+     0.33 是量出來的——把雲頂投影到畫面上，最高的時候大約落在畫面高度的八成半，
+     0.4 的話中型建築（城堡、金字塔）會超出上緣約兩成。 */
+  const H = R * 0.33;
+  /* 橫向擴散只能靠「生出來時就在那個位置」，不能靠速度：
+     塵霧每幀乘 0.94 的阻力，橫速不到一秒就歸零，給再大的初速也只多跑一兩單位。
+     重力給正的小值，讓它一路上升又慢慢緩下來，最後停在半空——
+     給負的會一路加速衝到天上去。 */
+  for (let i = 0; i < 38; i++) {                    // 柱子
+    if (dust.length > 400) break;
+    const a = Math.random() * Math.PI * 2, rad = rr(0.2, R * 0.1);
+    dust.push({
+      x: p.x + Math.cos(a) * rad, y: rr(1, H * 0.85), z: p.z + Math.sin(a) * rad,
+      vx: Math.cos(a) * rr(0.2, 1.4), vy: rr(2.5, 4.5), vz: Math.sin(a) * rr(0.2, 1.4),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(6, 8.5), s: rr(1.3, 2.8), c: rr(0.72, 0.94), g: 1.3, fade: 4
+    });
+  }
+  for (let i = 0; i < 54; i++) {                    // 傘蓋
+    if (dust.length > 400) break;
+    const a = Math.random() * Math.PI * 2, rad = Math.sqrt(rr(0.02, 1)) * R * 0.42;
+    dust.push({
+      x: p.x + Math.cos(a) * rad, y: H + rr(-R * 0.06, R * 0.1), z: p.z + Math.sin(a) * rad,
+      vx: Math.cos(a) * rr(0.5, 2.2), vy: rr(3, 5.5), vz: Math.sin(a) * rr(0.5, 2.2),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(6.5, 9), s: rr(2.4, 4.6), c: rr(0.78, 0.98), g: 1.3, fade: 4.5
+    });
+  }
+}
+
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
 function useTool(hit) {
   // 記在最前面：手指也算一種道具，成就要的是「六種都試過」
@@ -1481,6 +1689,9 @@ function useTool(hit) {
   if (tool === 'ball') { launchBall(hit.point, hit.dir); return 0; }
   if (tool === 'treb') { placeTreb({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'bomb') { placeBomb(hit.point); return 0; }
+  if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   return 0;
 }
 
@@ -1535,9 +1746,12 @@ function stepDust(dt) {
     const d = dust[i];
     d.life -= dt;
     if (d.life <= 0) { dust.splice(i, 1); continue; }
-    d.vy -= 7 * dt; d.vx *= 0.94; d.vz *= 0.94;
+    // g 給負的就是會往上飄（火球、蘑菇雲）；沒給就是一般會落下的煙塵
+    d.vy -= (d.g === undefined ? 7 : d.g) * dt; d.vx *= 0.94; d.vz *= 0.94;
     d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
     if (d.y < 0.1) { d.y = 0.1; d.vy = 0; d.vx *= 0.8; d.vz *= 0.8; }
+    // 要慢慢淡掉的（蘑菇雲）用縮的。單靠 life 到期會「啪」地整團同時不見
+    if (d.fade) d.s *= Math.pow(0.5, dt / d.fade);
     d.rx += dt * 2; d.ry += dt * 3;
   }
 }
@@ -1607,6 +1821,9 @@ function step(dt) {
   stepBall(dt);
   stepTwist(dt);
   stepTrebs(dt);
+  stepBombs(dt);
+  stepNuke(dt);
+  stepMagic(dt);
   stepDozers(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
     toasts[i].t -= dt;
@@ -1666,6 +1883,7 @@ function draw() {
   ENG.putDust(dust);
   ENG.putTrebs(trebs ? trebs.list : EMPTY);
   ENG.putRocks(trebs ? trebs.rocks : EMPTY);
+  ENG.putBombs(bombs || EMPTY);
   if (dozers) ENG.putDozers(dozRender(dozers));
 }
 const EMPTY = [];
@@ -1711,8 +1929,8 @@ function onUp(e) {
     }
     return;
   }
-  // 龍捲風與投石機點空地也算；其他工具要點到建築
-  if (hit.kind === 'block' || tool === 'tornado' || tool === 'treb') useTool(hit);
+  // 這幾種點空地也算（本來就是「選一個地點」）；其他工具要點到建築
+  if (hit.kind === 'block' || GROUND_TOOL[tool]) useTool(hit);
 }
 
 /* ── 鍵盤平移鏡頭 ─────────────────────────────────────────

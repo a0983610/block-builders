@@ -1028,30 +1028,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open')
     };
   });
-  ok('工具共 6 種', lock0.ids.length === 6, lock0.ids.join(','));
+  /* 九種工具的解鎖狀態拼成一長串很難讀，用「前 n 種開著」來寫 */
+  const NTOOL = 9;
+  const opened = n => Array(NTOOL).fill('false').fill('true', 0, n).join(',');
+  const btnOpen = n => Array(NTOOL).fill('lock').fill('open', 0, n).join(',');
+  ok('工具共 9 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
   ok('一開始只有手指跟槌子可用',
-     lock0.ok.join(',') === 'true,true,false,false,false,false', lock0.ok.join(','));
+     lock0.ok.join(',') === opened(2), lock0.ok.join(','));
   ok('鎖住的工具在畫面上也是鎖住的',
-     lock0.btn.join(',') === 'open,open,lock,lock,lock,lock', lock0.btn.join(','));
+     lock0.btn.join(',') === btnOpen(2), lock0.btn.join(','));
 
   const lock1 = await page.evaluate(() => {
     const step2 = [];
-    stats = freshStats(); stats.smashed = 300; renderTools();
-    step2.push(TOOLS.map(t => toolOk(t)).join(','));
-    stats.destroyed = 3; renderTools();
-    step2.push(TOOLS.map(t => toolOk(t)).join(','));
-    stats.destroyed = 6; renderTools();
-    step2.push(TOOLS.map(t => toolOk(t)).join(','));
-    stats.smashed = 1000; renderTools();
+    const at = (k, v) => { stats = freshStats(); stats[k] = v; renderTools(); step2.push(TOOLS.map(t => toolOk(t)).join(',')); };
+    /* 每一關都從乾淨的紀錄重新設一個門檻值，不是一路往上疊——
+       疊著設的話「拆掉 15 座」會連帶滿足前面所有拆除門檻，
+       就分不出某一項到底是被自己的條件開的還是被別人順便開的。 */
+    at('smashed', 300);
+    at('destroyed', 3);
+    at('destroyed', 6);
+    at('smashed', 1000);
+    at('destroyed', 10);
+    at('smashed', 3000);
+    stats = freshStats(); stats.destroyed = 15; stats.smashed = 3000; renderTools();
     step2.push(TOOLS.map(t => toolOk(t)).join(','));
     return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
-  ok('擊飛 300 塊解鎖大槌', lock1.step2[0] === 'true,true,true,false,false,false', lock1.step2[0]);
-  ok('拆掉 3 座解鎖保齡球', lock1.step2[1] === 'true,true,true,true,false,false', lock1.step2[1]);
-  ok('拆掉 6 座解鎖投石機', lock1.step2[2] === 'true,true,true,true,true,false', lock1.step2[2]);
-  ok('擊飛 1000 塊解鎖龍捲風', lock1.step2[3] === 'true,true,true,true,true,true', lock1.step2[3]);
+  ok('擊飛 300 塊解鎖大槌', lock1.step2[0] === opened(3), lock1.step2[0]);
+  ok('拆掉 3 座解鎖保齡球', lock1.step2[1] === 'true,true,false,true,false,false,false,false,false', lock1.step2[1]);
+  ok('拆掉 6 座解鎖投石機', lock1.step2[2] === 'true,true,false,true,true,false,false,false,false', lock1.step2[2]);
+  ok('擊飛 1000 塊解鎖龍捲風', lock1.step2[3] === 'true,true,true,false,false,true,false,false,false', lock1.step2[3]);
+  ok('拆掉 10 座解鎖定時炸彈', lock1.step2[4] === 'true,true,false,true,true,false,true,false,false', lock1.step2[4]);
+  ok('擊飛 3000 塊解鎖核彈', lock1.step2[5] === 'true,true,true,false,false,true,false,true,false', lock1.step2[5]);
+  ok('拆掉 15 座解鎖爆裂魔法', lock1.step2[6] === opened(NTOOL), lock1.step2[6]);
   ok('解鎖後畫面上的鎖頭消失',
-     lock1.btn.join(',') === 'open,open,open,open,open,open', lock1.btn.join(','));
+     lock1.btn.join(',') === btnOpen(NTOOL), lock1.btn.join(','));
 
   /* 手指：什麼都不破壞，但戳得倒小人 */
   await reset(page, { shape: '吉薩金字塔', cnt: 700, workers: 12 });
@@ -1309,6 +1320,142 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('槌子這種單次撞擊仍然會震一下', hitShake > 0.2, '震動峰值 ' + hitShake.toFixed(2));
 
+  /* ══════════ 倒數型道具：炸彈／核彈／魔法 ══════════
+     三個的共通點是「點下去不會馬上炸」。全部拿大建築來測：
+     小建築被炸掉七成五就整棟垮掉換下一座，數字會被那條規則洗掉，
+     量到的就不是這個道具自己的範圍。 */
+  head('倒數型道具');
+  await reset(page, { shape: '美國國會大廈', cnt: 3000, workers: 6 });
+  const bomb = await page.evaluate(() => {
+    completeNow();
+    const p = { x: 12, y: 4, z: 0 };
+    const inR = b => Math.hypot(b.x - p.x, b.y - p.y, b.z - p.z) <= 11;
+    const outR = b => Math.hypot(b.x - p.x, b.y - p.y, b.z - p.z) > 13;
+    const near0 = blocks.filter(b => b.st === 3 && inR(b)).length;
+    const far0 = blocks.filter(b => b.st === 3 && outR(b)).length;
+    placeBomb(p);
+    const placed = bombs ? bombs.length : 0;
+    for (let i = 0; i < 59; i++) step(0.05);            // 2.95 秒：引信還沒燒完
+    const early = near0 - blocks.filter(b => b.st === 3 && inR(b)).length;
+    step(0.05); step(0.05);                            // 過 3 秒
+    const nearLeft = blocks.filter(b => b.st === 3 && inR(b)).length;
+    const farLeft = blocks.filter(b => b.st === 3 && outR(b)).length;
+    /* 往外噴：速度跟「離炸點的方向」同向才算。
+       這個要在爆炸後馬上量——晚幾幀就被重力與碰撞改掉了。 */
+    let out = 0, tot = 0, up = 0;
+    for (const b of blocks) {
+      if (b.st !== 4) continue;
+      const dx = b.x - p.x, dz = b.z - p.z, d = Math.hypot(dx, dz);
+      if (d < 1) continue;
+      tot++;
+      if ((b.vx * dx + b.vz * dz) / d > 0) out++;
+      if (b.vy > 0) up++;
+    }
+    return { near0, far0, placed, early, nearLeft, farLeft, tot,
+             outward: tot ? out / tot : 0, upward: tot ? up / tot : 0,
+             left: bombs ? bombs.length : 0 };
+  });
+  ok('放下去的炸彈會留在場上倒數', bomb.placed === 1 && bomb.early === 0,
+     '放了 ' + bomb.placed + ' 顆，2.95 秒時打飛 ' + bomb.early + ' 塊');
+  ok('3 秒後才爆，範圍內全清光', bomb.nearLeft === 0 && bomb.near0 > 100,
+     '範圍內 ' + bomb.near0 + ' 塊 → 剩 ' + bomb.nearLeft);
+  ok('範圍外的積木原封不動', bomb.farLeft === bomb.far0,
+     '範圍外 ' + bomb.far0 + ' 塊 → 剩 ' + bomb.farLeft);
+  ok('炸開的積木是往外噴的', bomb.outward > 0.9 && bomb.upward > 0.9,
+     bomb.tot + ' 塊飛出去，背離炸點 ' + (bomb.outward * 100).toFixed(0) +
+     '%、往上 ' + (bomb.upward * 100).toFixed(0) + '%');
+  ok('炸完的炸彈會從場上消失', bomb.left === 0);
+
+  const nk = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    callNuke({ x: 0, z: 0 });
+    const set0 = blocks.filter(b => b.st === 3).length;
+    for (let i = 0; i < 39; i++) step(0.05);            // 1.95 秒：還在倒數，彈體都還沒出現
+    const wait = blocks.filter(b => b.st === 3).length;
+    for (let i = 0; i < 16; i++) step(0.05);            // 2.75 秒：下墜中，還沒炸
+    const falling = blocks.filter(b => b.st === 3).length, inAir = !!nuke;
+    step(0.05); step(0.05);
+    const set1 = blocks.filter(b => b.st === 3).length;
+    let hitMax = 0;
+    for (const b of blocks) if (b.st === 4) hitMax = Math.max(hitMax, Math.hypot(b.x, b.y - 2.5, b.z));
+    const cloud0 = dust.filter(d => d.fade).length;
+    const y0 = Math.max(...dust.filter(d => d.fade).map(d => d.y));
+    let peak = 0, peakY = 0;
+    for (let i = 0; i < 60; i++) {                      // 爆後 3 秒：雲往上飄
+      step(0.05);
+      const c = dust.filter(d => d.fade);
+      if (c.length) peakY = Math.max(peakY, Math.max(...c.map(d => d.y)));
+      peak = Math.max(peak, c.length);
+    }
+    const mid = dust.filter(d => d.fade);
+    const midSize = mid.reduce((a, d) => a + d.s, 0) / Math.max(1, mid.length);
+    for (let i = 0; i < 200; i++) step(0.05);           // 再 10 秒
+    return { set0, wait, falling, inAir, set1, hitMax, cloud0, y0, peakY, peak,
+             midSize, gone: dust.filter(d => d.fade).length, alive: !!nuke };
+  });
+  ok('核彈 2 秒內不會炸', nk.wait === nk.set0, nk.set0 + ' → ' + nk.wait);
+  ok('2 秒後彈體才從天上掉下來', nk.inAir && nk.falling === nk.set0,
+     '2.75 秒時彈體還在空中、建築仍是 ' + nk.falling + ' 塊');
+  ok('落地就大爆炸，範圍約 30', nk.set1 < nk.set0 * 0.2 && nk.hitMax > 20 && nk.hitMax <= 31,
+     'SET ' + nk.set0 + ' → ' + nk.set1 + '，最遠打飛到 ' + nk.hitMax.toFixed(1));
+  ok('爆完會長出一朵蘑菇雲', nk.cloud0 > 60, nk.cloud0 + ' 團煙，起始最高 ' + nk.y0.toFixed(0));
+  ok('蘑菇雲會往上飄', nk.peakY > nk.y0 + 3,
+     '雲頂 ' + nk.y0.toFixed(0) + ' → ' + nk.peakY.toFixed(0));
+  ok('蘑菇雲會慢慢縮小、最後散掉', nk.midSize < 3 && nk.gone === 0,
+     '三秒後平均大小 ' + nk.midSize.toFixed(2) + '，十三秒後剩 ' + nk.gone + ' 團');
+
+  const mg = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    castMagic({ x: 0, z: 0 });
+    const set0 = blocks.filter(b => b.st === 3).length;
+    const seq = [];
+    for (let i = 0; i < 119; i++) {                     // 5.95 秒
+      step(0.05);
+      if (i % 22 === 0) seq.push(magic ? magic.shown : -1);
+    }
+    const before = blocks.filter(b => b.st === 3).length, alive = !!magic;
+    step(0.05); step(0.05);
+    let hitMax = 0;
+    for (const b of blocks) if (b.st === 4) hitMax = Math.max(hitMax, Math.hypot(b.x, b.y - 1.5, b.z));
+    return { set0, seq, before, alive, set1: blocks.filter(b => b.st === 3).length,
+             hitMax, after: !!magic };
+  });
+  ok('魔法陣是一層層長出來的', mg.seq[0] === 1 && mg.seq[mg.seq.length - 1] === 4 &&
+     mg.seq.every((v, i) => i === 0 || v >= mg.seq[i - 1]), '每 1.1 秒取樣：' + mg.seq.join(' → '));
+  ok('魔法 6 秒內不會炸', mg.before === mg.set0 && mg.alive, mg.set0 + ' → ' + mg.before);
+  ok('6 秒到就爆，範圍約 30', mg.set1 < mg.set0 * 0.2 && mg.hitMax > 20 && mg.hitMax <= 31 && !mg.after,
+     'SET ' + mg.set0 + ' → ' + mg.set1 + '，最遠打飛到 ' + mg.hitMax.toFixed(1));
+
+  /* 倒數中換建築：留著的話會炸到剛蓋好的新那座 */
+  const swap = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    placeBomb({ x: 3, y: 2, z: 3 }); callNuke({ x: 0, z: 0 }); castMagic({ x: 5, z: 5 });
+    const armed = [bombs ? bombs.length : 0, nuke ? 1 : 0, magic ? 1 : 0].join(',');
+    startBuild(true);
+    const after = [bombs ? bombs.length : 0, nuke ? 1 : 0, magic ? 1 : 0].join(',');
+    const n0 = placedCnt;
+    for (let i = 0; i < 200; i++) step(0.05);           // 10 秒：三個的倒數都早就到了
+    return { armed, after, n0, hurt: n0 - placedCnt, phase };
+  });
+  ok('換建築會把倒數中的道具一起收掉', swap.after === '0,0,0',
+     '換之前 ' + swap.armed + ' → 換之後 ' + swap.after);
+  ok('新建築不會被上一輪的倒數炸到', swap.hurt <= 0,
+     '換場後 10 秒內少了 ' + swap.hurt + ' 塊（phase=' + swap.phase + '）');
+
+  /* 沒在用的道具不該平白多吃 draw call：InstancedMesh 就算 count=0 也算一個 */
+  const dc = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    draw(); ENG.render();
+    const idle = ENG.info().calls;
+    placeBomb({ x: 4, y: 1, z: 4 }); castMagic({ x: 0, z: 0 });
+    for (let i = 0; i < 40; i++) step(0.05);
+    draw(); ENG.render();
+    return { idle, busy: ENG.info().calls };
+  });
+  ok('沒放道具時 draw call 不變', dc.idle <= 12, dc.idle + ' 個');
+  ok('炸彈與魔法陣在場上才多吃 draw call', dc.busy > dc.idle && dc.busy <= 20,
+     '放了炸彈與四層魔法陣時 ' + dc.busy + ' 個');
+
   /* ══════════ 人力金額 ══════════ */
   head('人力金額');
   const cost = await page.evaluate(() => {
@@ -1493,17 +1640,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('用過哪些道具會記起來', toolRec.n === toolRec.total,
      toolRec.n + ' / ' + toolRec.total + '：' + toolRec.list.join(','));
-  ok('六種道具都用過解鎖【工具箱清空】', toolRec.got);
+  ok('九種道具都用過解鎖【工具箱清空】', toolRec.got);
 
   /* 存檔被改過時，不認得的道具 id 不該混進來 */
   const toolClean = await page.evaluate(() => {
     stats = freshStats();
-    stats.tools = ['hammer', 'laser', 'ball', 'nuke', 'tornado', 'treb', 'bighammer', 'finger'];
+    // laser／railgun 是永遠不會存在的 id——拿真道具的名字當假資料會測不出東西
+    stats.tools = ['hammer', 'laser', 'ball', 'railgun', 'tornado', 'treb', 'bighammer', 'finger'];
     save(); stats = freshStats(); load();
     return { list: stats.tools.slice(), got: stats.badges.indexOf('allTools') >= 0 };
   });
   ok('存檔裡不認得的道具會被丟掉', toolClean.list.length === 6 &&
-     toolClean.list.indexOf('laser') < 0, toolClean.list.join(','));
+     toolClean.list.indexOf('laser') < 0 && toolClean.list.indexOf('railgun') < 0,
+     toolClean.list.join(','));
 
   // 擺一組像玩過一陣子的紀錄再開面板，截圖才看得出版面
   await page.evaluate(() => {
@@ -1559,10 +1708,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const persist = await page.evaluate(() => ({ d: stats.destroyed, s: stats.smashed, b: stats.badges.length }));
   ok('關掉重開紀錄還在', persist.d === 4 && persist.s === 1234 && persist.b === 1,
      'destroyed=' + persist.d + '、smashed=' + persist.s + '、成就 ' + persist.b + ' 個');
-  /* 拆 4 座、擊飛 1234 塊 → 大槌(300)、保齡球(3 座)、龍捲風(1000) 開，投石機(6 座) 還鎖著 */
+  /* 拆 4 座、擊飛 1234 塊 → 大槌(300)、保齡球(3 座)、龍捲風(1000) 開；
+     投石機(6 座)、定時炸彈(10 座)、核彈(3000 塊)、爆裂魔法(15 座) 還鎖著 */
   const unlockedAfterReload = await page.evaluate(() =>
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
-  ok('重開後解鎖狀態跟著回來', unlockedAfterReload === 'open,open,open,open,lock,open',
+  ok('重開後解鎖狀態跟著回來', unlockedAfterReload === 'open,open,open,open,lock,open,lock,lock,lock',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數 */
@@ -1863,6 +2013,47 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('畫面比例變了會重新取景', distTall > distWide * 1.05,
      '金門大橋：橫式 ' + distWide.toFixed(1) + ' → 直式 ' + distTall.toFixed(1));
   await page.evaluate(i => { shapePick = i; startBuild(true); shapePick = -1; }, prevShape);
+
+  /* 工具列一排排九種要 614px，視窗一窄就會壓到左上角的建築資訊卡。
+     量之前一定要先把數字灌到最寬的狀態：累計金額變成七位數那一刻，
+     資訊卡會從 266px 撐到 354px——用剛開新局的空帳號去量，會量到「沒撞到」的假象。 */
+  await page.evaluate(() => {
+    stats.destroyed = 128; stats.smashed = 987654; stats.spent = 1234567; stats.wrecked = 9876543;
+    renderTools(); hudLast = 0; hudTick(performance.now());
+  });
+  // 1381 是斷點上緣的第一格：工具列還留在上面，剛好要閃過撐到最寬的資訊卡
+  const widths = [1600, 1440, 1381, 1280, 1100, 900, 700];
+  const clash = [];
+  let statTxt = '', barAt = [];
+  for (const w of widths) {
+    await page.setViewportSize({ width: w, height: 800 });
+    await page.waitForTimeout(120);
+    const r = await page.evaluate(() => {
+      const box = {};
+      for (const id of ['head', 'time', 'tools', 'panelBtn', 'ver']) {
+        const e = document.getElementById(id);
+        if (getComputedStyle(e).display !== 'none') box[id] = e.getBoundingClientRect();
+      }
+      const bad = [], keys = Object.keys(box);
+      for (let i = 0; i < keys.length; i++)
+        for (let j = i + 1; j < keys.length; j++) {
+          const a = box[keys[i]], b = box[keys[j]];
+          if (a.right > b.left && b.right > a.left && a.bottom > b.top && b.bottom > a.top)
+            bad.push(keys[i] + '×' + keys[j]);
+        }
+      return { bad, headW: Math.round(box.head.width), top: Math.round(box.tools.top),
+               out: box.tools.left < -1 || box.tools.right > window.innerWidth + 1,
+               txt: document.getElementById('stat').textContent.replace(/\s+/g, ' ').trim() };
+    });
+    statTxt = r.txt;
+    barAt.push(w + '→' + (r.top < 200 ? '上' : '下'));
+    if (r.bad.length) clash.push(w + 'px：' + r.bad.join('、'));
+    if (r.out) clash.push(w + 'px：工具列超出畫面');
+  }
+  ok('量的時候資訊卡確實是最寬的狀態', /累計\s*\$1,234,567/.test(statTxt), statTxt);
+  ok('桌機縮視窗，工具列不會壓到資訊卡', clash.length === 0,
+     clash.join(' / ') || '工具列位置：' + barAt.join('、'));
+  await page.evaluate(() => { stats = freshStats(); renderTools(); hudLast = 0; hudTick(performance.now()); });
 
   /* ══════════ 手機版 ══════════ */
   head('手機版 · 觸控');
