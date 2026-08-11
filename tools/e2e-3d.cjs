@@ -1481,6 +1481,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('每一層都是填滿的盤加螺旋紋路，不只是一個圈',
      mgRing.solid === 6 && mgRing.lace === 6,
      '填滿的盤 ' + mgRing.solid + ' 片、帶紋路的層 ' + mgRing.lace + ' 層');
+
+  /* 每層半徑帶隨機抖動：兩次施法要長得不一樣，但**同一次施法內不能變**——
+     每幀重抽的話整疊會一直閃。 */
+  const mgVary = await page.evaluate(() => {
+    const cast = () => {
+      startBuild(true); completeNow();
+      castMagic({ x: 0, z: 0 });
+      for (let i = 0; i < 100; i++) step(0.05);
+      return magic.rings.filter(o => !o.add).map(o => +o.r.toFixed(3));
+    };
+    const a = cast(), b = cast();
+    const c = magic.rings.filter(o => !o.add).map(o => +o.r.toFixed(3));
+    for (let i = 0; i < 8; i++) step(0.05);
+    const d = magic.rings.filter(o => !o.add).map(o => +o.r.toFixed(3));
+    return { a, b, differ: a.some((v, i) => Math.abs(v - b[i]) > 0.3), steady: c.join() === d.join() };
+  });
+  ok('每次施法的層半徑都不一樣', mgVary.differ,
+     '第一次 ' + mgVary.a.map(v => v.toFixed(1)).join('/') +
+     '、第二次 ' + mgVary.b.map(v => v.toFixed(1)).join('/'));
+  ok('但同一次施法內不會逐幀跳動', mgVary.steady);
   /* 整疊都浮在半空：最下層離地也有一段，而且不做滿爆炸半徑——
      做滿的話那一圈會比建築大一大圈，看起來像地上的跑道而不是浮空的陣。 */
   ok('最下層浮在半空，也沒有大到蓋滿爆炸範圍',

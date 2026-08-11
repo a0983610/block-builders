@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.16.0';
+const VERSION = '1.16.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1613,16 +1613,24 @@ const MAG_GAP = 0.8, MAG_GROW = 0.5;      // 每隔多久長一層、一層長�
    中間收窄、最上面那層再放大一點——照參考圖的層次。r 與 y 都是 MAG_R 的倍率。
    最下層不做滿爆炸半徑（那會比建築大一大圈，看起來像地上的跑道），
    代價是「最外圈就是爆炸範圍」這個提示沒了。 */
+/* 半徑刻意不照大小排：由大到小再放大會太像一個規矩的陀螺，
+   夾一層特別小、一層又鼓回來，看起來才像法陣不像機械零件。
+   每次施法再各自乘一個 0.82–1.18 的抖動（施法當下決定，不是每幀跳）。 */
 const MAG_LAYER = [
   { r: 0.62, y: 0.16 },
-  { r: 0.50, y: 0.28 },
-  { r: 0.40, y: 0.40 },
+  { r: 0.42, y: 0.28 },
+  { r: 0.53, y: 0.40 },
   { r: 0.33, y: 0.51 },
-  { r: 0.40, y: 0.62 },
-  { r: 0.52, y: 0.73 }
+  { r: 0.47, y: 0.62 },
+  { r: 0.57, y: 0.73 }
 ];
+const MAG_JITTER = 0.18;
 function castMagic(point) {
-  magic = { x: point.x, z: point.z, t: MAG_TIME, spin: 0, shown: 0 };
+  magic = {
+    x: point.x, z: point.z, t: MAG_TIME, spin: 0, shown: 0,
+    // 每層的半徑抖動：施法當下抽一次存起來，每幀重抽的話整疊會一直閃
+    rj: MAG_LAYER.map(() => rr(1 - MAG_JITTER, 1 + MAG_JITTER))
+  };
   sndRune(0);
 }
 function stepMagic(dt) {
@@ -1648,7 +1656,7 @@ function stepMagic(dt) {
     const L = MAG_LAYER[i];
     /* 長出來的方式：位置一開始就在它該在的高度，只有半徑從很小擴到定位。
        高度也跟著長的話，看起來是「從地上飄上去」而不是「在那裡展開」。 */
-    const rad = MAG_R * L.r * (0.12 + 0.88 * k);
+    const rad = MAG_R * L.r * magic.rj[i] * (0.12 + 0.88 * k);
     const y = 0.12 + MAG_R * L.y;
     const spin = magic.spin * (i % 2 ? -1.35 : 1) * (1 + i * 0.15);   // 一層順一層逆
     /* 每一層是兩個環疊出來的：裡面一圈實色的芯，外面一圈加法混色的暈。
