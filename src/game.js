@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.20.0';
+const VERSION = '1.21.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -35,7 +35,7 @@ let arenaR = 40;                    // 整片工地半徑（建材散落 + 碎�
 let phase = 'build';                // clear（整地）| build | done | wreck
 let buildStart = 0, buildElapsed = 0;
 let timeScale = 1;
-let targetCnt = 900;
+let targetCnt = 3000;
 let workerCnt = 20;
 let shapePick = -1;                 // -1 = 隨機
 let running = true;
@@ -536,7 +536,7 @@ function stepDozers(dt) {
 }
 
 /* 直接把整座蓋好。開場用——一進來就有一座完整的建築可以砸，
-   不用先盯著小人搬十分鐘才有東西玩。 */
+   不用先盯著小人搬十分鐘才有東西玩。設定面板的「立刻建成」也走這裡。 */
 function completeNow() {
   for (let i = 0; i < bp.slots.length && i < blocks.length; i++) {
     const s = bp.slots[i], b = blocks[i];
@@ -560,7 +560,12 @@ function completeNow() {
   dozers = null; ENG.putDozers([]);      // 建築直接長出來了，整地機沒戲唱
   placedCnt = bp.slots.length;
   phase = 'done';
-  buildElapsed = 0; spentThis = 0; lossThis = 0;
+  /* 施工計時歸零：這一座不是小人蓋的，時間不算它的。順帶擋掉「奇蹟工程」——
+     noteBuilt() 要 buildElapsed > 0 才給那個成就，按鈕就白拿不到。
+     spentThis／lossThis 不動：中途按下按鈕時，小人已經領到的工錢是真的花掉了，
+     歸零的話 HUD 的「本次人力」會突然變 $0，跟「累計」對不起來。
+     （開場呼叫這裡時兩個本來就是 0，所以行為沒變） */
+  buildElapsed = 0;
   computeSupport();
   syncHud();
 }
@@ -914,7 +919,8 @@ const freshStats = () => ({
 });
 let stats = freshStats();
 /* 面板上的設定也一起存，不然每次打開都要重調一輪 */
-const freshPref = () => ({ cnt: 900, wk: 20, spd: 1, mute: false, spin: false });
+/* v 是設定檔版本。舊存檔沒有這個欄位，load() 靠它認出「這份存檔是預設值改掉之前存的」 */
+const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -1028,6 +1034,9 @@ function load() {
     f.tools = f.tools.filter(id => TOOLS.some(t => t.id === id));
     stats = f;
     const g = merge(freshPref(), o.p);
+    /* 沒有版本欄位＝預設建材還是 900 那個年代存的。那時候的 900 分不出是玩家挑的
+       還是預設值，所以一次性換成新預設，不然改了預設的人永遠看不到 3000。 */
+    if (o.p && o.p.v === undefined) g.cnt = freshPref().cnt;
     // 數值一律夾回合法範圍，免得存檔壞掉時 slider 跑到界外
     g.cnt = clamp(Math.round(g.cnt), 300, 3000);
     g.wk = clamp(Math.round(g.wk), 1, ENG.MAXW);
@@ -2445,6 +2454,8 @@ function hudTick(now) {
   $('nDest').textContent = stats.destroyed;
   $('nSmash').textContent = stats.smashed.toLocaleString('en-US');
   $('lossAll').textContent = money(stats.wrecked);
+  // 已經蓋好或正在拆的時候沒什麼可以「立刻建成」，按鈕就灰掉
+  $('finish').disabled = phase !== 'build' && phase !== 'clear';
 }
 function syncHud() {
   $('bname').textContent = bp ? bp.name : '';
@@ -2522,6 +2533,17 @@ function boot() {
   $('spd').addEventListener('input', e => { timeScale = pref.spd = +e.target.value; $('vSpd').textContent = timeScale.toFixed(1) + '×'; });
   $('spd').addEventListener('change', save);
   $('again').addEventListener('click', () => { audio(); startBuild(false); });
+  /* 立刻建成：不想等小人搬完時用。走的是開場那條 completeNow()，
+     所以人力費一毛都不加（stats.spent 只在 step() 裡隨施工時間累積），
+     按不出「百萬工程」那類花錢成就；蓋過哪些地標、幾塊的大工程照記。 */
+  $('finish').addEventListener('click', () => {
+    audio();
+    if (phase !== 'build' && phase !== 'clear') return;
+    completeNow();
+    noteBuilt();
+    sndDone();
+    toast('⚡ ' + bp.name + ' 直接完工', '沒有算人力費');
+  });
   $('spin').addEventListener('change', e => { spinOn = pref.spin = e.target.checked; save(); });
   $('mute').addEventListener('change', e => { muted = pref.mute = e.target.checked; save(); });
   $('panelBtn').addEventListener('click', () => $('panel').classList.toggle('hide'));

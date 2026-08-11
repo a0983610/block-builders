@@ -222,18 +222,30 @@ const SHAPES = [
     v.box(0, h - Math.round(h * 0.14), 0, w + 1, 1, d + 1, 2);
   } },
 
-{ n: '艾菲爾鐵塔', lo: 9, hi: 72, pal: [0x9c7b53, 0x7e6242, 0xc9a978],
+{ n: '艾菲爾鐵塔', lo: 9, hi: 92, pal: [0x9c7b53, 0x7e6242, 0xc9a978],
   gen(v, s) {
     const h = Math.round(s);
     // 底部外張、上部近乎垂直——鐵塔的輪廓全靠這條曲線
     const R = y => Math.max(1, s * 0.24 * Math.pow(1 - y / h, 2.4) + s * 0.022 + 0.9);
     for (let y = 0; y < h; y++) {
       const n = Math.round(R(y));
-      corners4(v, n, n, (vv, dx, dz) => vv.set(dx, y, dz, y > h * 0.8 ? 2 : 0));
+      /* 下半段的塔腳要粗。真的鐵塔下面是四座巨大的桁架墩，
+         整根都只有一格粗的話，尺度一放大就整座空掉——3000 塊的目標
+         也永遠填不滿（實測只長到 1806 塊就頂到尺度上限）。
+         但只有大版本才加粗：h 不到 45 的時候整座才十幾層高、底邊十來格寬，
+         柱子一變 2×2 就跟斜撐黏成實心，400 塊的版本會變成一座階梯金字塔。 */
+      const t = h >= 45 && y < h * 0.44 ? 2 : 1;
+      corners4(v, n, n, (vv, dx, dz) => {
+        for (let a = 0; a < t; a++) for (let b = 0; b < t; b++)
+          vv.set(dx - Math.sign(dx) * a, y, dz - Math.sign(dz) * b, y > h * 0.8 ? 2 : 0);
+      });
     }
     // 四個面各拉 X 形斜撐。注意不能每隔幾層畫「一整圈」橫桿，
     // 那會讓鐵塔變成千層蛋糕（第一版就是這樣）。
-    const segs = Math.max(7, Math.round(s / 7));   // 塔越大斜撐分段越多，才填得滿也才像真的
+    /* 塔越大斜撐分段越多，才填得滿也才像真的。分段別再更密了：
+       試過 s/4.6，3000 塊時下半段的 X 撐整片黏成實心，底下的四道大拱全被埋掉，
+       遠看像個階梯金字塔而不是鐵塔。要塊數就讓它長高，不是把面填滿。 */
+    const segs = Math.max(7, Math.round(s / 7));
     for (let i = 0; i < segs; i++) {
       const y0 = Math.round(h * i / segs), y1 = Math.round(h * (i + 1) / segs) - 1;
       if (y1 <= y0) continue;
@@ -279,7 +291,11 @@ const SHAPES = [
 
 { n: '倫敦大笨鐘', lo: 8, hi: 70, pal: [0xc9a15c, 0xa8813f, 0x4d6b4a, 0xf2e3b0],
   gen(v, s) {
-    const h = Math.round(s), w = Math.max(3, Math.round(s * 0.2)) | 1;
+    /* 塔身寬度只能是奇數（鐘面靠 (w−1)/2 貼在牆面上，偶數會浮出一格），
+       所以 w 一跳就是 2 格，塊數跟著一階一階跳。係數 0.2 那階之間差到 1077 塊
+       （2687 直接跳 3764），目標 3000 永遠差 10%；改成 0.17 讓塔瘦一點、
+       同一個 w 撐得更高，階距縮小到 3000 只差 1%——順帶也更接近真的大笨鐘（高寬比 8:1）。 */
+    const h = Math.round(s), w = Math.max(3, Math.round(s * 0.17)) | 1;
     v.walls(0, 0, 0, w, h, w, 0, 1);
     for (let y = 0; y < h; y += Math.max(4, Math.round(h / 7))) v.box(0, y, 0, w + 1, 1, w + 1, 1);
     const cy = Math.round(h * 0.82);              // 四面鐘面
@@ -377,8 +393,10 @@ const SHAPES = [
 { n: '帝國大廈', lo: 9, hi: 76, pal: [0xbfb9a8, 0xa39c8c, 0x8b8474, 0xd9d2be],
   gen(v, s) {
     const h = Math.round(s);
-    // 底座要夠寬（0.5×高），退縮才看得出來；第一版 0.32 太瘦，整棟像根柱子
-    let w = Math.max(7, Math.round(s * 0.5)) | 1, y = 0;
+    /* 底座要夠寬退縮才看得出來；第一版 0.32 太瘦，整棟像根柱子。
+       0.5 又太寬：w 只能是奇數，一跳 2 格乘上五段牆就是 800 塊，目標 3000 只能到 2734。
+       0.42 兩邊都顧到——退縮的切法（3/2/2/1 格）沒動，看得出來的階梯還是一樣。 */
+    let w = Math.max(7, Math.round(s * 0.42)) | 1, y = 0;
     const steps = [[0.12, 3], [0.26, 2], [0.60, 2], [0.82, 1]];   // 逐段退縮
     for (const [f, cut] of steps) {
       const top = Math.round(h * f);
@@ -641,20 +659,25 @@ const SHAPES = [
     v.box(0, ty + Math.max(2, Math.round(s * 0.1)), 0, 1, Math.max(2, Math.round(s * 0.09)), 1, 3);
   } },
 
-{ n: '金門大橋', lo: 8, hi: 62, pal: [0xc0392b, 0xa02f22, 0x8d8d8d, 0xdd5540],
+{ n: '金門大橋', lo: 8, hi: 80, pal: [0xc0392b, 0xa02f22, 0x8d8d8d, 0xdd5540],
   gen(v, s) {
     const L = Math.round(s * 2.2), th = Math.round(s * 0.85), tx = Math.round(L * 0.26);
-    for (let x = -L / 2; x <= L / 2; x++) for (let z = -1; z <= 1; z++)
+    /* 跨距用整數半跨 hL 來跑，不用 ±L/2：L 是奇數時 −L/2 是 .5，整條橋的 x 都變半格，
+       下面的 `x % 3 === 0` 就永遠不成立——那個尺度的橋整座長不出吊索
+       （實測 s=56 只有 1636 塊，比小一號的 s=50 的 1847 還少）。 */
+    const hL = Math.floor(L / 2);
+    /* 橋面鋪滿兩道主纜之間（z 從 −2 到 2）。原本只鋪 3 格寬，兩側的吊索是吊在
+       橋面外面的空氣裡，而且橋是六車道的——鋪滿才對，順帶也才吃得動 3000 塊。 */
+    for (let x = -hL; x <= hL; x++) for (let z = -2; z <= 2; z++)
       v.set(x, Math.round(s * 0.26), z, 2);                            // 橋面
     for (const sx of [-1, 1]) {                                        // 橋塔
       for (const z of [-2, 2]) v.box(sx * tx, 0, z, 2, th, 2, 0);
       for (let k = 0; k < 3; k++) v.box(sx * tx, th * (0.45 + k * 0.26), 0, 2, 1, 5, 1);
     }
-    for (let x = -L / 2; x <= L / 2; x++) {                            // 主纜（懸鏈）
-      const t = Math.abs(x) / (L / 2);
+    for (let x = -hL; x <= hL; x++) {                                  // 主纜（懸鏈）
       let y;
       if (Math.abs(x) <= tx) y = th - (th - s * 0.34) * (1 - (x / tx) ** 2);
-      else y = th * (1 - (Math.abs(x) - tx) / (L / 2 - tx) * 0.85);
+      else y = th * (1 - (Math.abs(x) - tx) / (hL - tx) * 0.85);
       for (const z of [-2, 2]) v.set(x, Math.round(y), z, 3);
       if (x % 3 === 0) for (const z of [-2, 2])
         for (let yy = Math.round(s * 0.26); yy < y; yy += 2) v.set(x, yy, z, 3);   // 吊索
@@ -894,7 +917,7 @@ const SHAPES = [
     v.box(0, Math.round(h * 0.78) + 2, 0, 3, Math.round(h * 0.22), 2, 3);    // 額束
   } },
 
-{ n: '羅浮宮金字塔', lo: 7, hi: 44, pal: [0x9fc4d8, 0x7ba5bd, 0xd8e6ee, 0xc9bfa8],
+{ n: '羅浮宮金字塔', lo: 7, hi: 52, pal: [0x9fc4d8, 0x7ba5bd, 0xd8e6ee, 0xc9bfa8],
   gen(v, s) {
     const b = Math.round(s) | 1, hb = (b - 1) / 2;
     for (let y = 0; y <= hb; y++) {                                         // 只有骨架，玻璃是空的
@@ -976,7 +999,10 @@ function fitScale(sh, target) {
   };
   const coarse = (sh.hi - sh.lo) / 22;
   scan(sh.lo, sh.hi, coarse);
-  scan(best - coarse, best + coarse, coarse / 6);
+  /* 細掃的步長要夠小。造型參數大多會經過 round()／|1 取整，塊數是一階一階跳的，
+     兩階之間的邊界很窄——步長 coarse/6 會整階跨過去，挑到偏差 7% 的那一階
+     （實測京都五重塔挑到 3205，其實同一段裡有 2978；雙子星塔 3176 vs 2856）。 */
+  scan(best - coarse, best + coarse, coarse / 20);
   return best;
 }
 

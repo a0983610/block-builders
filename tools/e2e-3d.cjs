@@ -203,6 +203,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      boot.bp + ' ' + boot.placed + '/' + boot.total + '，phase=' + boot.phase);
   ok('積木池已建立', boot.blocks > 100, boot.blocks + ' 塊');
   ok('小人已就位', boot.workers > 0, boot.workers + ' 人');
+
+  /* 預設建材數：程式變數、freshPref、slider、標籤四個地方要一致，
+     不然開場那座跟面板上寫的數字會對不起來 */
+  const defCnt = await page.evaluate(() => ({
+    target: targetCnt, fresh: freshPref().cnt,
+    slider: document.getElementById('cnt').value,
+    label: document.getElementById('vCnt').textContent,
+    max: document.getElementById('cnt').max
+  }));
+  ok('預設建材 3000 塊', defCnt.target === 3000 && defCnt.fresh === 3000 &&
+     defCnt.slider === '3000' && defCnt.label === '3000',
+     'targetCnt=' + defCnt.target + '、freshPref=' + defCnt.fresh +
+     '、slider=' + defCnt.slider + '（上限 ' + defCnt.max + '）、標籤 ' + defCnt.label);
+  ok('開場那座就真的是 3000 塊上下', Math.abs(boot.total - 3000) / 3000 < 0.05,
+     boot.bp + ' ' + boot.total + ' 塊');
   ok('canvas 繪圖尺寸吃到 DPR',
      boot.cvW === Math.round(VIEW.width * Math.min(2, boot.dpr)), boot.cvW + '×' + boot.cvH);
   ok('canvas 有明確的 CSS 尺寸', boot.cssW === VIEW.width + 'px',
@@ -295,7 +310,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         res.push({ n: SHAPES[i].n, t, c, err: Math.abs(c - t) / t });
       }
     res.sort((a, b) => b.err - a.err);
-    return { worst: res[0], over50: res.filter(r => r.err > 0.5).length, total: res.length };
+    const big = res.filter(r => r.t === 3000).sort((a, b) => b.err - a.err);
+    return { worst: res[0], over50: res.filter(r => r.err > 0.5).length, total: res.length,
+             bigOver: big.filter(r => r.err > 0.05).map(r => r.n + ' ' + r.c),
+             bigWorst: big.slice(0, 3).map(r => r.n + ' ' + r.c) };
   });
   /* 有些造型（八節的 101、五座塔的吳哥）本身就有最少積木數，做不了太小的版本，
      所以驗兩件事：沒有任何一座離譜到 2 倍以上，而且超標的是少數。 */
@@ -303,6 +321,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fitStat.worst.err < 1.6 && fitStat.over50 <= 6,
      fitStat.total + ' 組裡有 ' + fitStat.over50 + ' 組偏差 >50%；最差 ' +
      fitStat.worst.n + ' 目標 ' + fitStat.worst.t + ' 得到 ' + fitStat.worst.c);
+  /* 預設值那一檔要抓緊：人力費算的是工時，塊數少的那座就明顯便宜。
+     以前這裡最差差到 40%（鐵塔頂到尺度上限只長 1806 塊）。 */
+  ok('預設 3000 塊時每座都貼近（36 座偏差都 <5%）',
+     fitStat.bigOver.length === 0,
+     '最遠的三座：' + fitStat.bigWorst.join('、') +
+     (fitStat.bigOver.length ? '；超過 5% 的：' + fitStat.bigOver.join('、') : ''));
+
+  /* 金門大橋：跨距是奇數時 −L/2 是 .5，整條橋的 x 都變半格，
+     吊索那行的 `x % 3 === 0` 永遠不成立 → 那個尺度整座橋沒有吊索，
+     塊數比小一號的還少。修法是用整數半跨跑迴圈。 */
+  const bridge = await page.evaluate(() => {
+    const sh = SHAPES.find(s => s.n === '金門大橋');
+    const cnt = [];
+    for (let s = 40; s <= 78; s += 2) cnt.push(genCells(sh, s).m.size);
+    let drops = 0;
+    for (let i = 1; i < cnt.length; i++) if (cnt[i] < cnt[i - 1]) drops++;
+    return { cnt, drops };
+  });
+  ok('金門大橋每個尺度都吊得出吊索（塊數不會忽然掉一截）', bridge.drops === 0,
+     '尺度 40→78：' + bridge.cnt.slice(0, 3).join(',') + ' … ' + bridge.cnt.slice(-3).join(',') +
+     '（' + bridge.drops + ' 處往下掉）');
 
   const variety = await page.evaluate(() => {
     shapePick = -1; const seen = [];
@@ -1641,7 +1680,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      flash.born[0].y > 6,
      '爆後 0.05 秒半徑 ' + (flash.born[0] ? flash.born[0].r : '—') +
      '（上限 30）、球心 y=' + (flash.born[0] ? flash.born[0].y : '—') + '（爆點 2.5）');
-  ok('火球真的亮在畫面上', flash.on.pct > 1 && flash.on.pct > flash.off.pct * 3,
+  /* 門檻 0.6%：帝國大廈的藍圖改瘦之後（0.5→0.42），同樣 2400 塊會長得更高，
+     取景跟著拉遠，火球在畫面上占的比例就從 1.23% 掉到 0.91%。
+     這裡真正要驗的是「有火球才有過曝白」，所以看的是跟拿掉火球那幀的倍數關係。 */
+  ok('火球真的亮在畫面上', flash.on.pct > 0.6 && flash.on.pct > flash.off.pct * 3,
      '同一幀有火球 ' + flash.on.pct.toFixed(2) + '% 過曝、拿掉只剩 ' +
      flash.off.pct.toFixed(2) + '%');
   ok('火球固定吃五個 draw call（每層球殼一個）', flash.on.calls - flash.off.calls === 5,
@@ -2256,6 +2298,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      prefClamp.cnt <= 3000 && prefClamp.wk >= 1 && prefClamp.spd <= 4,
      JSON.stringify(prefClamp));
 
+  /* 預設建材從 900 改成 3000 那次：舊存檔裡的 900 分不出是玩家挑的還是舊預設，
+     所以認「沒有 v 欄位」的存檔，一次性換成新預設。存過一次之後就不再動它。 */
+  const prefMigrate = await page.evaluate(() => {
+    localStorage.setItem('block-builders/save1',
+      packSave({ s: freshStats(), p: { cnt: 900, wk: 20, spd: 1, mute: false, spin: false } }));
+    stats = freshStats(); pref = freshPref(); load();
+    const migrated = pref.cnt;
+    pref.cnt = 900; save();                     // 這次是玩家自己選的 900
+    stats = freshStats(); pref = freshPref(); load();
+    return { migrated, keep: pref.cnt, v: pref.v };
+  });
+  ok('舊存檔的建材數換成新預設，而且只換一次',
+     prefMigrate.migrated === 3000 && prefMigrate.keep === 900 && prefMigrate.v === 1,
+     '舊存檔 900 → ' + prefMigrate.migrated + '；之後自己選 900 → ' + prefMigrate.keep +
+     '（存檔版本 v' + prefMigrate.v + '）');
+
   const cleared = await page.evaluate(() => {
     resetSave();
     return { d: stats.destroyed, raw: localStorage.getItem('block-builders/save1') };
@@ -2332,6 +2390,79 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.click('#again');
   await page.waitForTimeout(400);
   ok('「換一座來蓋」會換建築', (await st(page)).placed < 30, '重新開工');
+
+  /* ── 立刻建成 ──
+     跳過施工過程用的。重點是它不能變成刷錢成就的捷徑：
+     人力費是 step() 裡隨施工時間累積的，這顆按鈕一毛都不加。 */
+  const instant = await page.evaluate(() => {
+    running = false; stats = freshStats();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 1200; setWorkerCount(12); startBuild(true);
+    for (let i = 0; i < 100; i++) step(0.05);        // 先讓小人蓋一陣、也先燒一點錢
+    hudLast = 0; hudTick(performance.now());
+    const mid = { phase, placed: placedCnt, spent: stats.spent, spentThis,
+                  dis: document.getElementById('finish').disabled };
+    document.getElementById('finish').click();
+    const after = { phase, placed: placedCnt, total: bp.slots.length, spent: stats.spent,
+                    spentThis, elapsed: buildElapsed, built: stats.built.slice(),
+                    miracle: !!stats.miracle, badges: stats.badges.slice(),
+                    carry: blocks.filter(b => b.st === 1).length };
+    hudLast = 0; hudTick(performance.now());
+    const disAfter = document.getElementById('finish').disabled;
+    for (let i = 0; i < 100; i++) step(0.05);        // 完工了就不該再燒錢
+    return { mid, after, disAfter, spentLater: stats.spent };
+  });
+  ok('施工中「立刻建成」可以按', instant.mid.phase === 'build' && !instant.mid.dis,
+     'phase=' + instant.mid.phase + '、disabled=' + instant.mid.dis);
+  ok('一按就整座蓋好',
+     instant.after.placed === instant.after.total && instant.after.phase === 'done' &&
+     instant.after.carry === 0,
+     instant.mid.placed + ' → ' + instant.after.placed + '/' + instant.after.total +
+     '，phase=' + instant.after.phase);
+  ok('立刻建成不加人力費（按不出花錢成就）',
+     instant.after.spent === instant.mid.spent && instant.spentLater === instant.mid.spent,
+     '按之前累計 $' + instant.mid.spent.toFixed(0) + '，按完 $' + instant.after.spent.toFixed(0) +
+     '，再跑 5 秒還是 $' + instant.spentLater.toFixed(0));
+  ok('已經花掉的工錢不會被抹掉', instant.after.spentThis === instant.mid.spentThis,
+     '本次人力 $' + instant.after.spentThis.toFixed(0) + '（歸零的話會跟累計對不上）');
+  ok('立刻建成拿不到【奇蹟工程】（那是比速度的）',
+     !instant.after.miracle && instant.after.badges.indexOf('miracle') < 0 &&
+     instant.after.elapsed === 0,
+     'buildElapsed=' + instant.after.elapsed + '、miracle=' + instant.after.miracle);
+  ok('蓋過哪些地標照記', instant.after.built.indexOf('吉薩金字塔') >= 0 &&
+     instant.after.badges.indexOf('first') >= 0,
+     '記到 ' + instant.after.built.join('、') + '，成就 ' + instant.after.badges.join(','));
+  ok('完工後按鈕會灰掉', instant.disAfter);
+
+  /* 整地中也算「還沒蓋」，按了就直接長出來、推土機收工 */
+  const instantClear = await page.evaluate(() => {
+    running = false; targetCnt = 1200; startBuild(true); completeNow();
+    let g = 0;
+    while (phase !== 'clear' && g++ < 200) {        // 砸到門檻它會自己換下一座 → 進整地
+      const cand = blocks.filter(b => b.st === 3);
+      if (cand.length) {
+        const t = cand[Math.floor(Math.random() * cand.length)];
+        smash(new THREE.Vector3(t.x, t.y, t.z), new THREE.Vector3(0.2, -0.95, 0.1).normalize());
+      }
+      for (let k = 0; k < 8; k++) step(0.05);
+    }
+    hudLast = 0; hudTick(performance.now());
+    const before = { phase, dis: document.getElementById('finish').disabled, doz: !!dozers };
+    document.getElementById('finish').click();
+    return { before, phase, placed: placedCnt, total: bp.slots.length, doz: !!dozers };
+  });
+  ok('整地中按也算（推土機直接收工）',
+     instantClear.before.phase === 'clear' && !instantClear.before.dis && instantClear.before.doz &&
+     instantClear.phase === 'done' && instantClear.placed === instantClear.total && !instantClear.doz,
+     'clear（推土機 ' + instantClear.before.doz + '）→ ' + instantClear.phase + ' ' +
+     instantClear.placed + '/' + instantClear.total);
+  /* 上面兩段把 rAF 迴圈關掉、也把建築蓋完了。後面的自轉與施工計時要靠真的迴圈跑、
+     而且計時只在 phase='build' 時前進，所以這裡把場面還原成「正在施工」。 */
+  await page.evaluate(() => {
+    stats = freshStats(); shapePick = -1; targetCnt = 1200;
+    startBuild(true); running = true;
+  });
+  await page.waitForTimeout(300);
 
   const yaw0 = await page.evaluate(() => ENG.cam.yaw);
   await page.check('#spin');
