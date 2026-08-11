@@ -1481,8 +1481,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('每一層都是填滿的盤加放射紋路，不只是一個圈',
      mgRing.solid === 4 && mgRing.lace === 4,
      '填滿的盤 ' + mgRing.solid + ' 片、帶紋路的層 ' + mgRing.lace + ' 層');
-  ok('貼地那圈的半徑就是爆炸範圍', Math.abs(mgRing.ground - 30) < 0.5,
-     '地面圈半徑 ' + mgRing.ground + '（爆炸範圍 30）');
+  /* 整疊都浮在半空：最下層離地也有一段，而且不做滿爆炸半徑——
+     做滿的話那一圈會比建築大一大圈，看起來像地上的跑道而不是浮空的陣。 */
+  ok('最下層浮在半空，也沒有大到蓋滿爆炸範圍',
+     mgRing.rings[0].y > 2 && mgRing.ground < 30 * 0.8,
+     '最下層離地 ' + mgRing.rings[0].y + '、半徑 ' + mgRing.ground + '（爆炸範圍 30）');
 
   /* 衝擊波是球狀的，而且越靠近炸心抬得越高——積木要沿拋物線拋上去再落下，
      不是貼著地面掃出去。只量「有沒有飛出去」的話，兩種都會過。 */
