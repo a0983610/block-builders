@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.14.0';
+const VERSION = '1.15.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1648,7 +1648,7 @@ function stepMagic(dt) {
     const spin = magic.spin * (i % 2 ? -1.35 : 1) * (1 + i * 0.15);   // 一層順一層逆
     /* 每一層是兩個環疊出來的：裡面一圈實色的芯，外面一圈加法混色的暈。
        只畫一個環的話它就只是地上一條紅色帶子，不像在發光。 */
-    rings.push({ x: magic.x, z: magic.z, r: rad, y, spin, op: k, c: 0xff3a1c, sp: 1 });
+    rings.push({ x: magic.x, z: magic.z, r: rad, y, spin, op: k, c: 0xff3a1c, sp: 1, fill: 1 });
     rings.push({ x: magic.x, z: magic.z, r: rad * 1.04, y, spin: -spin * 0.6,
                  op: k * 0.75, c: 0xff9a4a, add: 1 });
   }
@@ -1681,17 +1681,36 @@ function implode(m, dt) {
     b.vy += 5 * pull;                                   // 稍微跳起來，不然只是在地上滑
     b.ay += rr(-6, 6) * dt;
   }
-  // 魔力光點：從陣的外圈生出來，靠 pull 一路捲進中心
+  /* 魔力光點：從陣的外圈生出來，靠 pull 一路捲進中心。
+     三成給青藍色——參考圖裡捲上來的能量流是冷色的，跟紅陣對比才看得出「被吸進去」。 */
   m.motes = (m.motes || 0) + dt * (10 + 46 * k);
   while (m.motes >= 1) {
     m.motes--;
     if (hot.length >= HOT_MAX) break;
     const a = Math.random() * Math.PI * 2, rad = rr(0.45, 1.05) * R;
+    const cold = Math.random() < 0.32;
     hot.push({
       x: m.x + Math.cos(a) * rad, y: rr(0.4, R * 0.5), z: m.z + Math.sin(a) * rad,
       vx: 0, vy: 0, vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
       s: rr(0.3, 0.85), life: rr(0.8, 1.8), g: 0, grow: 0.9,
-      cr: 1, cg: rr(0.25, 0.6), cb: rr(0.2, 0.45), pull: [m.x, m.z]
+      cr: cold ? rr(0.15, 0.4) : 1,
+      cg: cold ? rr(0.7, 0.95) : rr(0.25, 0.6),
+      cb: cold ? 1 : rr(0.2, 0.45),
+      pull: [m.x, m.z]
+    });
+  }
+  /* 陣心那道往上衝的光柱：參考圖裡幾層陣是被中間一道亮芯串起來的，
+     少了它就只是四個各自轉的圈圈，看不出是同一個法術。 */
+  m.beam = (m.beam || 0) + dt * (6 + 26 * k);
+  while (m.beam >= 1) {
+    m.beam--;
+    if (hot.length >= HOT_MAX) break;
+    const a = Math.random() * Math.PI * 2, rad = rr(0, 1.1);
+    hot.push({
+      x: m.x + Math.cos(a) * rad, y: rr(0.3, 2), z: m.z + Math.sin(a) * rad,
+      vx: 0, vy: rr(9, 17) * (0.5 + k), vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.5, 1.3), life: rr(0.7, 1.4), g: -1.5, grow: 0.85,
+      cr: 1, cg: rr(0.85, 1), cb: rr(0.5, 0.85)
     });
   }
 }

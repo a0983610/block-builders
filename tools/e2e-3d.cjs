@@ -1471,11 +1471,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const halo = all.filter(o => o.add);
     return { n: core.length, halo: halo.length, rings: core,
              rising: core.every((o, i) => i === 0 || o.y > core[i - 1].y),
-             red: core.every(o => o.c === 0xff3a1c), ground: core[0] ? core[0].r : 0 };
+             red: core.every(o => o.c === 0xff3a1c), ground: core[0] ? core[0].r : 0,
+             // 每層都要有填滿的盤與放射紋路，只有環的話看起來是「地上畫了一個圈」
+             solid: all.filter(o => o.fill).length, lace: all.filter(o => o.sp).length };
   });
   ok('魔法陣是紅色、而且一層一層往上疊',
      mgRing.n === 4 && mgRing.halo === 4 && mgRing.rising && mgRing.red,
      mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、') + '，外圈暈 ' + mgRing.halo + ' 個');
+  ok('每一層都是填滿的盤加放射紋路，不只是一個圈',
+     mgRing.solid === 4 && mgRing.lace === 4,
+     '填滿的盤 ' + mgRing.solid + ' 片、帶紋路的層 ' + mgRing.lace + ' 層');
   ok('貼地那圈的半徑就是爆炸範圍', Math.abs(mgRing.ground - 30) < 0.5,
      '地面圈半徑 ' + mgRing.ground + '（爆炸範圍 30）');
 

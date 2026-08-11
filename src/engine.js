@@ -16,14 +16,28 @@ const ENG = (function () {
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
   let bombMesh, nukeGroup, ringGroup, magSpokeMesh, fireMesh;
-  const magRings = [];
+  const magRings = [], magDiscs = [];
+  const MAG_DISC = 4;                      // 填滿的圓盤（魔法陣每層一片）
   const MAXFIRE = 240;
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXBOMB = 6, BOMB_PARTS = 3;
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
      四層就吃掉八個，再加上爆炸衝擊環與蘑菇雲腰環。 */
-  const MAG_MAX = 12, MAG_SPOKE = 8;
+  const MAG_MAX = 12;
+  /* 每一層的紋路：兩組反向轉的放射線 + 兩圈虛線同心圓。
+     放射線從近中心拉到外圈，中心那一小塊被上百根疊在一起，加法混色自然亮成一顆核；
+     虛線圓補上曼陀羅那種橫向的織紋。單一組放射線只會像一把扇子。
+     n 根數、len 長度、at 中心離陣心多遠、w 寬度（都是半徑的倍率）、
+     spin 轉速倍率（負的就是反向）、tan 是不是切線方向擺。 */
+  const MAG_FAN = [
+    { n: 40, len: 0.94, at: 0.52, w: 0.006, spin: 1, tan: 0 },
+    { n: 40, len: 0.66, at: 0.36, w: 0.006, spin: -0.65, tan: 0 },
+    { n: 26, len: 0.11, at: 0.46, w: 0.010, spin: -0.4, tan: 1 },
+    { n: 30, len: 0.11, at: 0.78, w: 0.010, spin: 0.7, tan: 1 }
+  ];
+  const MAG_SPOKE = MAG_FAN.reduce((s, f) => s + f.n, 0);   // 一層要幾個 instance
+  const MAG_SP_RINGS = 6;                                    // 最多幾層會帶紋路
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
   const TW_SEG = 12;                // 龍捲風的分段數
@@ -255,16 +269,30 @@ const ENG = (function () {
          看不出是紅的。爆炸的衝擊環才給加法（它就是要發光），逐環切換。 */
       const m = new T.Mesh(new T.RingGeometry(0.93, 1, 64), new T.MeshBasicMaterial({
         color: 0xff2d20, transparent: true, opacity: 0.7,
-        side: T.DoubleSide, depthWrite: false
+        side: T.DoubleSide, depthWrite: false, forceSinglePass: true
       }));
       m.rotation.x = -Math.PI / 2;        // RingGeometry 生在 XY 平面，要放平
       m.frustumCulled = false;
       magRings.push(m); ringGroup.add(m);
     }
+    /* 每層底下墊一片填滿的圓盤。只有環與紋路的話，看起來是「地上畫了一個圈」，
+       參考圖那種是一整片在發光的盤。 */
+    for (let i = 0; i < MAG_DISC; i++) {
+      /* forceSinglePass：透明的雙面材質，three 預設會分兩趟畫（先背面再正面），
+         draw call 直接翻倍。這些是貼平的薄片，用不到那個排序，關掉省一半。 */
+      const d = new T.Mesh(new T.CircleGeometry(1, 56), new T.MeshBasicMaterial({
+        color: 0xff5a18, transparent: true, opacity: 0.28,
+        side: T.DoubleSide, depthWrite: false, forceSinglePass: true
+      }));
+      d.rotation.x = -Math.PI / 2;
+      d.frustumCulled = false; d.visible = false;
+      magDiscs.push(d); ringGroup.add(d);
+    }
+
     magSpokeMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
-      color: 0xffc4a0, transparent: true, opacity: 0.85,
+      color: 0xffa028, transparent: true, opacity: 0.3,
       depthWrite: false, blending: T.AdditiveBlending
-    }), MAG_MAX * MAG_SPOKE);
+    }), MAG_SP_RINGS * MAG_SPOKE);
     magSpokeMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     magSpokeMesh.count = 0; magSpokeMesh.frustumCulled = false;
     ringGroup.add(magSpokeMesh);
@@ -458,7 +486,7 @@ const ENG = (function () {
   function setRings(list) {
     const n = Math.min(list.length, MAG_MAX);
     ringGroup.visible = n > 0;
-    let s = 0;
+    let s = 0, disc = 0;
     for (let i = 0; i < MAG_MAX; i++) {
       const r = i < n ? list[i] : null;
       const m = magRings[i];
@@ -472,16 +500,33 @@ const ENG = (function () {
       // 混色模式只在真的變了才動：每幀設 needsUpdate 會逼 three 重建 shader
       const bl = r.add ? T.AdditiveBlending : T.NormalBlending;
       if (m.material.blending !== bl) { m.material.blending = bl; m.material.needsUpdate = true; }
-      if (!r.sp) continue;
-      for (let k = 0; k < MAG_SPOKE; k++) {
-        const a = (r.spin || 0) + k / MAG_SPOKE * Math.PI * 2;
-        scratch.position.set(r.x + Math.cos(a) * r.r * 0.93, r.y, r.z + Math.sin(a) * r.r * 0.93);
-        scratch.rotation.set(0, -a, 0);   // 繞 Y 轉 −a，local +X 才會指向外
-        scratch.scale.set(r.r * 0.3, 0.04, r.r * 0.018);   // 細長的光條，不是粗短的刻度
-        scratch.updateMatrix();
-        magSpokeMesh.setMatrixAt(s++, scratch.matrix);
+      // 墊在底下那片盤
+      if (r.fill && disc < MAG_DISC) {
+        const dm = magDiscs[disc++];
+        dm.visible = true;
+        dm.position.set(r.x, r.y - 0.015, r.z);        // 壓在環下面一點，免得 z-fighting
+        dm.scale.set(r.r * 0.97, r.r * 0.97, 1);
+        dm.material.opacity = r.op * 0.3;
+      }
+      // 陣的紋路（見 MAG_FAN）。中心那顆亮核不用另外畫，是放射線疊出來的
+      if (!r.sp || s + MAG_SPOKE > MAG_SP_RINGS * MAG_SPOKE) continue;
+      for (let fi = 0; fi < MAG_FAN.length; fi++) {
+        const F = MAG_FAN[fi];
+        const sp = (r.spin || 0) * F.spin + fi * 0.13;
+        for (let k = 0; k < F.n; k++) {
+          const a = sp + k / F.n * Math.PI * 2;
+          scratch.position.set(r.x + Math.cos(a) * r.r * F.at, r.y + fi * 0.02,
+                               r.z + Math.sin(a) * r.r * F.at);
+          /* 繞 Y 轉 −a，local +X 才會指向外；切線那兩圈再多轉 90°，
+             長邊就沿著圓周擺，一圈虛線連起來像同心圓。 */
+          scratch.rotation.set(0, -a + (F.tan ? Math.PI / 2 : 0), 0);
+          scratch.scale.set(r.r * F.len, 0.04, r.r * F.w);
+          scratch.updateMatrix();
+          magSpokeMesh.setMatrixAt(s++, scratch.matrix);
+        }
       }
     }
+    for (let i = disc; i < MAG_DISC; i++) magDiscs[i].visible = false;
     magSpokeMesh.count = s;
     magSpokeMesh.instanceMatrix.needsUpdate = true;
   }
