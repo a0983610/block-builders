@@ -1378,10 +1378,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const set1 = blocks.filter(b => b.st === 3).length;
     let hitMax = 0;
     for (const b of blocks) if (b.st === 4) hitMax = Math.max(hitMax, Math.hypot(b.x, b.y - 2.5, b.z));
+    /* 爆炸當下該有的：火球（hot 粒子）＋ 貼地的衝擊環。
+       這兩個都活不到一秒，所以要在爆完的那一刻量。 */
+    const fire0 = hot.length, ring0 = fxRings.length;
+    /* 冷卻要盯著「同一批粒子」看，不能看全場平均——蘑菇雲會一直補新的火光進來，
+       平均值被新粒子拉高，就算每顆都有乖乖冷卻也測不出來。 */
+    const sample = hot.filter(d => d.to);
+    const avgG = a => a.reduce((s, d) => s + d.cg, 0) / Math.max(1, a.length);
+    const lit0 = avgG(sample);
     const cloud0 = dust.filter(d => d.fade).length;
-    const y0 = Math.max(...dust.filter(d => d.fade).map(d => d.y));
-    let peak = 0, peakY = 0;
-    for (let i = 0; i < 60; i++) {                      // 爆後 3 秒：雲往上飄
+    for (let i = 0; i < 12; i++) step(0.05);            // 0.6 秒
+    const lit1 = avgG(sample.filter(d => d.life > 0));
+    let peak = 0, peakY = 0, y1 = 0;
+    for (let i = 0; i < 12; i++) step(0.05);            // 爆後 1.2 秒：整朵雲該長齊了
+    const cloud1 = dust.filter(d => d.fade).length;
+    y1 = Math.max(...dust.filter(d => d.fade).map(d => d.y));
+    for (let i = 0; i < 36; i++) {                      // 再 1.8 秒：雲往上飄
       step(0.05);
       const c = dust.filter(d => d.fade);
       if (c.length) peakY = Math.max(peakY, Math.max(...c.map(d => d.y)));
@@ -1390,19 +1402,33 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mid = dust.filter(d => d.fade);
     const midSize = mid.reduce((a, d) => a + d.s, 0) / Math.max(1, mid.length);
     for (let i = 0; i < 200; i++) step(0.05);           // 再 10 秒
-    return { set0, wait, falling, inAir, set1, hitMax, cloud0, y0, peakY, peak,
-             midSize, gone: dust.filter(d => d.fade).length, alive: !!nuke };
+    return { set0, wait, falling, inAir, set1, hitMax, fire0, ring0, lit0, lit1,
+             cloud0, cloud1, y1, peakY, peak, midSize,
+             gone: dust.filter(d => d.fade).length, fireGone: hot.length,
+             ringGone: fxRings.length, alive: !!nuke };
   });
   ok('核彈 2 秒內不會炸', nk.wait === nk.set0, nk.set0 + ' → ' + nk.wait);
   ok('2 秒後彈體才從天上掉下來', nk.inAir && nk.falling === nk.set0,
      '2.75 秒時彈體還在空中、建築仍是 ' + nk.falling + ' 塊');
   ok('落地就大爆炸，範圍約 30', nk.set1 < nk.set0 * 0.2 && nk.hitMax > 20 && nk.hitMax <= 31,
      'SET ' + nk.set0 + ' → ' + nk.set1 + '，最遠打飛到 ' + nk.hitMax.toFixed(1));
-  ok('爆完會長出一朵蘑菇雲', nk.cloud0 > 60, nk.cloud0 + ' 團煙，起始最高 ' + nk.y0.toFixed(0));
-  ok('蘑菇雲會往上飄', nk.peakY > nk.y0 + 3,
-     '雲頂 ' + nk.y0.toFixed(0) + ' → ' + nk.peakY.toFixed(0));
-  ok('蘑菇雲會慢慢縮小、最後散掉', nk.midSize < 3 && nk.gone === 0,
+  ok('爆炸當下有火球與衝擊環', nk.fire0 > 50 && nk.ring0 >= 2,
+     nk.fire0 + ' 顆火球、' + nk.ring0 + ' 圈衝擊環');
+  /* 火球會冷卻：綠色分量從亮黃(高)掉到暗紅(低)。
+     只看「有沒有火球」的話，顏色一路卡在白熱也測不出來。 */
+  ok('火球會由亮黃冷成暗紅', nk.lit1 < nk.lit0 * 0.75,
+     '同一批粒子的綠分量 0.6 秒內 ' + nk.lit0.toFixed(2) + ' → ' + nk.lit1.toFixed(2));
+  /* 蘑菇雲是「長出來」的不是「跳出來」的：爆炸當下只有零星幾團，
+     一秒多之後柱子與傘蓋才長齊。一次生完的話這兩個數字會一樣大。 */
+  ok('蘑菇雲是隨時間長出來的', nk.cloud0 < 20 && nk.cloud1 > 90,
+     '爆炸當下 ' + nk.cloud0 + ' 團 → 1.2 秒後 ' + nk.cloud1 + ' 團');
+  ok('蘑菇雲會往上飄', nk.peakY > nk.y1 + 2,
+     '雲頂 ' + nk.y1.toFixed(0) + ' → ' + nk.peakY.toFixed(0));
+  ok('蘑菇雲會慢慢縮小、最後散掉', nk.midSize < 4 && nk.gone === 0,
      '三秒後平均大小 ' + nk.midSize.toFixed(2) + '，十三秒後剩 ' + nk.gone + ' 團');
+  ok('火球與衝擊環是短暫的，不會留在場上',
+     nk.fireGone === 0 && nk.ringGone === 0,
+     '十三秒後火球 ' + nk.fireGone + ' 顆、光環 ' + nk.ringGone + ' 圈');
 
   const mg = await page.evaluate(() => {
     startBuild(true); completeNow();
@@ -1417,14 +1443,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     step(0.05); step(0.05);
     let hitMax = 0;
     for (const b of blocks) if (b.st === 4) hitMax = Math.max(hitMax, Math.hypot(b.x, b.y - 1.5, b.z));
+    const fire = hot.length;
+    for (let i = 0; i < 24; i++) step(0.05);            // 1.2 秒後：雲該長齊了
+    const cloud = dust.filter(d => d.fade).length;
+    // 魔法版燒的是紅光、還會撒星光：粒子有自己的顏色（cr 有值）而不是灰白煙
+    const tinted = dust.filter(d => d.fade && d.cr !== undefined).length;
     return { set0, seq, before, alive, set1: blocks.filter(b => b.st === 3).length,
-             hitMax, after: !!magic };
+             hitMax, after: !!magic, fire, cloud, tinted };
   });
   ok('魔法陣是一層層長出來的', mg.seq[0] === 1 && mg.seq[mg.seq.length - 1] === 4 &&
      mg.seq.every((v, i) => i === 0 || v >= mg.seq[i - 1]), '每 1.1 秒取樣：' + mg.seq.join(' → '));
   ok('魔法 6 秒內不會炸', mg.before === mg.set0 && mg.alive, mg.set0 + ' → ' + mg.before);
   ok('6 秒到就爆，範圍約 30', mg.set1 < mg.set0 * 0.2 && mg.hitMax > 20 && mg.hitMax <= 31 && !mg.after,
      'SET ' + mg.set0 + ' → ' + mg.set1 + '，最遠打飛到 ' + mg.hitMax.toFixed(1));
+  ok('魔法爆完也會留一朵蘑菇雲，而且是紅的', mg.fire > 50 && mg.cloud > 90 && mg.tinted === mg.cloud,
+     mg.fire + ' 顆火球、1.2 秒後 ' + mg.cloud + ' 團煙（染紅的 ' + mg.tinted + ' 團）');
 
   /* 倒數中換建築：留著的話會炸到剛蓋好的新那座 */
   const swap = await page.evaluate(() => {
@@ -1442,9 +1475,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('新建築不會被上一輪的倒數炸到', swap.hurt <= 0,
      '換場後 10 秒內少了 ' + swap.hurt + ' 塊（phase=' + swap.phase + '）');
 
+  /* 一發核彈常常直接把整棟夷平，那會立刻觸發「剩不到 25% 就換下一座」。
+     換場如果把特效也清掉，蘑菇雲就會在爆炸後 0.05 秒整朵消失——等於白做。
+     這裡驗的是「換場了、但雲還在」，兩個條件缺一不可。 */
+  const keepFx = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    const ph0 = phase;
+    callNuke({ x: 0, z: 0 });
+    for (let i = 0; i < 58; i++) step(0.05);           // 炸下去
+    const ph1 = phase;
+    for (let i = 0; i < 24; i++) step(0.05);           // 1.2 秒後雲該長齊了
+    return { ph0, ph1, phase, cloud: dust.filter(d => d.fade).length, fire: hot.length };
+  });
+  ok('炸到整棟夷平而自動換場時，蘑菇雲不會跟著消失',
+     keepFx.ph1 !== 'done' && keepFx.cloud > 90,
+     'phase ' + keepFx.ph0 + ' → ' + keepFx.ph1 + ' → ' + keepFx.phase +
+     '，雲 ' + keepFx.cloud + ' 團、火球 ' + keepFx.fire + ' 顆');
+
   /* 沒在用的道具不該平白多吃 draw call：InstancedMesh 就算 count=0 也算一個 */
   const dc = await page.evaluate(() => {
     startBuild(true); completeNow();
+    // 先等前面測試留下的煙與火球散乾淨，不然量到的是上一發爆炸的帳
+    for (let i = 0; i < 320; i++) step(0.05);
     draw(); ENG.render();
     const idle = ENG.info().calls;
     placeBomb({ x: 4, y: 1, z: 4 }); castMagic({ x: 0, z: 0 });
@@ -2181,6 +2233,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        r.step + r.draw < 4,
        'step ' + r.step.toFixed(2) + 'ms + draw ' + r.draw.toFixed(2) + 'ms = ' +
        (r.step + r.draw).toFixed(2) + 'ms（CPU 上限約 ' + Math.round(1000 / (r.step + r.draw)) + ' fps）');
+
+  /* 最貴的一幀是核彈剛炸完：三千塊碎料在飛，加上滿場的火球與蘑菇雲粒子。
+     粒子上限從 420 拉到 560、又多了一組火球，這裡守住它沒有把成本翻上去。 */
+  const perfBoom = await page.evaluate(() => {
+    targetCnt = 3000; shapePick = 0; setWorkerCount(40); startBuild(true); completeNow();
+    callNuke({ x: 0, z: 0 });
+    for (let i = 0; i < 60; i++) step(0.016 * 3);       // 推到爆炸後不久
+    const parts = dust.length + hot.length;
+    let t = performance.now();
+    for (let i = 0; i < 90; i++) step(0.016);
+    const s = (performance.now() - t) / 90;
+    t = performance.now();
+    for (let i = 0; i < 90; i++) draw();
+    const d = (performance.now() - t) / 90;
+    return { step: s, draw: d, parts, blocks: blocks.length };
+  });
+  ok('核彈爆炸當下：CPU 每幀 < 4ms', perfBoom.step + perfBoom.draw < 4,
+     perfBoom.blocks + ' 塊積木 + ' + perfBoom.parts + ' 顆粒子：step ' +
+     perfBoom.step.toFixed(2) + 'ms + draw ' + perfBoom.draw.toFixed(2) + 'ms = ' +
+     (perfBoom.step + perfBoom.draw).toFixed(2) + 'ms');
 
   const bpTime = await page.evaluate(() => {
     let worst = 0, name = '';

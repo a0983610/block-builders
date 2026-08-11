@@ -15,8 +15,9 @@ const ENG = (function () {
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
-  let bombMesh, nukeGroup, magicGroup, magSpokeMesh;
+  let bombMesh, nukeGroup, ringGroup, magSpokeMesh, fireMesh;
   const magRings = [];
+  const MAXFIRE = 240;
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXBOMB = 6, BOMB_PARTS = 3;
@@ -52,7 +53,7 @@ const ENG = (function () {
   const MAXB = 4200;                       // 積木池上限
   const MAXW = 80;                         // 小人上限
   const WPARTS = 7;                        // 每個小人的部位數
-  const MAXDUST = 420;
+  const MAXDUST = 560;                     // 蘑菇雲一朵就吃掉兩百多顆，420 會把爆炸的煙擠掉
 
   /* ── 材質：在 Lambert 上加一圈深色邊，voxel 才有實體感 ──
      邊緣判定不靠 uv（不同 three 版本 uv attribute 有沒有宣告不一定），
@@ -231,20 +232,32 @@ const ENG = (function () {
     nukeGroup.visible = false;
     scene.add(nukeGroup);
 
-    /* 魔法陣：每層一個扁環 + 一圈輻條。
-       只有環的話它是旋轉對稱的，轉起來看不出在轉——輻條才是「在轉」的證據。
-       用加法混色，紫光疊在綠草地上才會發亮而不是變成一片髒灰。 */
-    magicGroup = new T.Group();
+    /* 火球：跟塵霧分開一個 mesh。塵霧那顆材質固定 50% 透明（煙就是要透），
+       火球用同一顆的話永遠亮不起來，爆炸看起來就只是幾片橘色玻璃。
+       這顆幾乎不透明、而且寫深度，才會像實體的火。 */
+    fireMesh = new T.InstancedMesh(unit,
+      new T.MeshBasicMaterial({ transparent: true, opacity: 0.95 }), MAXFIRE);
+    fireMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    fireMesh.count = 0; fireMesh.frustumCulled = false; fireMesh.visible = false;
+    scene.add(fireMesh);
+    fireMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
+    /* 貼地的發光圓環：魔法陣的每一層、爆炸的衝擊波、蘑菇雲腰上那一圈，
+       都是這一組。每層一個扁環 + 一圈輻條——只有環的話它是旋轉對稱的，
+       轉起來看不出在轉，輻條才是「在轉」的證據。 */
+    ringGroup = new T.Group();
     for (let i = 0; i < MAG_MAX; i++) {
       /* 環用一般混色：加法混色疊在亮綠色草地上會被洗成白的，看不出是紫的。
          輻條那圈小的才用加法，當作陣上的光點。 */
+      /* 魔法陣那幾層用一般混色：加法混色疊在亮綠色草地上會被洗成白的，
+         看不出是紫的。爆炸的衝擊環才給加法（它就是要發光），逐環切換。 */
       const m = new T.Mesh(new T.RingGeometry(0.87, 1, 64), new T.MeshBasicMaterial({
         color: 0x8b3ff0, transparent: true, opacity: 0.7,
         side: T.DoubleSide, depthWrite: false
       }));
       m.rotation.x = -Math.PI / 2;        // RingGeometry 生在 XY 平面，要放平
       m.frustumCulled = false;
-      magRings.push(m); magicGroup.add(m);
+      magRings.push(m); ringGroup.add(m);
     }
     magSpokeMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
       color: 0xdcb0ff, transparent: true, opacity: 0.85,
@@ -252,9 +265,9 @@ const ENG = (function () {
     }), MAG_MAX * MAG_SPOKE);
     magSpokeMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     magSpokeMesh.count = 0; magSpokeMesh.frustumCulled = false;
-    magicGroup.add(magSpokeMesh);
-    magicGroup.visible = false;
-    scene.add(magicGroup);
+    ringGroup.add(magSpokeMesh);
+    ringGroup.visible = false;
+    scene.add(ringGroup);
 
     resize();
   }
@@ -436,24 +449,31 @@ const ENG = (function () {
   }
   function hideNuke() { nukeGroup.visible = false; }
 
-  /* 魔法陣。rings：由內而外每一層 {r 半徑, y 離地, spin 轉到哪, op 濃度}，
-     長度就是「現在該顯示幾層」——依序長出來這件事由規則那邊決定。 */
-  function setMagic(x, z, rings) {
-    const n = Math.min(rings.length, MAG_MAX);
-    magicGroup.visible = n > 0;
+  /* 貼地圓環。list 每一項 {x, z, y, r 半徑, spin 轉到哪, op 濃度,
+     c 顏色, sp 要不要輻條, add 要不要加法混色}。
+     魔法陣的每一層、爆炸衝擊波、蘑菇雲腰上那一圈都走這裡，所以位置逐環給，
+     不是共用一個圓心——不然衝擊波還在擴散時再放一個魔法陣就會互相拉走。 */
+  function setRings(list) {
+    const n = Math.min(list.length, MAG_MAX);
+    ringGroup.visible = n > 0;
     let s = 0;
     for (let i = 0; i < MAG_MAX; i++) {
-      const r = i < n ? rings[i] : null;
+      const r = i < n ? list[i] : null;
       const m = magRings[i];
       m.visible = !!r;
       if (!r) continue;
-      m.position.set(x, r.y, z);
+      m.position.set(r.x, r.y, r.z);
       m.scale.set(r.r, r.r, 1);
-      m.rotation.z = r.spin;              // 放平之後，繞自己的法線轉就是 local Z
+      m.rotation.z = r.spin || 0;         // 放平之後，繞自己的法線轉就是 local Z
       m.material.opacity = r.op * 0.85;
+      m.material.color.setHex(r.c === undefined ? 0x8b3ff0 : r.c);
+      // 混色模式只在真的變了才動：每幀設 needsUpdate 會逼 three 重建 shader
+      const bl = r.add ? T.AdditiveBlending : T.NormalBlending;
+      if (m.material.blending !== bl) { m.material.blending = bl; m.material.needsUpdate = true; }
+      if (!r.sp) continue;
       for (let k = 0; k < MAG_SPOKE; k++) {
-        const a = r.spin + k / MAG_SPOKE * Math.PI * 2;
-        scratch.position.set(x + Math.cos(a) * r.r * 0.93, r.y, z + Math.sin(a) * r.r * 0.93);
+        const a = (r.spin || 0) + k / MAG_SPOKE * Math.PI * 2;
+        scratch.position.set(r.x + Math.cos(a) * r.r * 0.93, r.y, r.z + Math.sin(a) * r.r * 0.93);
         scratch.rotation.set(0, -a, 0);   // 繞 Y 轉 −a，local +X 才會指向外
         scratch.scale.set(r.r * 0.17, 0.05, r.r * 0.05);
         scratch.updateMatrix();
@@ -463,7 +483,25 @@ const ENG = (function () {
     magSpokeMesh.count = s;
     magSpokeMesh.instanceMatrix.needsUpdate = true;
   }
-  function hideMagic() { magicGroup.visible = false; }
+  function hideRings() { ringGroup.visible = false; }
+
+  /* 火球粒子。跟塵霧同一套資料格式，只是走那顆不透明的材質 */
+  function putFire(parts) {
+    const n = Math.min(parts.length, MAXFIRE);
+    fireMesh.visible = n > 0;
+    fireMesh.count = n;
+    for (let i = 0; i < n; i++) {
+      const p = parts[i];
+      scratch.position.set(p.x, p.y, p.z);
+      scratch.rotation.set(p.rx, p.ry, 0);
+      scratch.scale.setScalar(p.s);
+      scratch.updateMatrix();
+      fireMesh.setMatrixAt(i, scratch.matrix);
+      fireMesh.setColorAt(i, tmpC.setRGB(p.cr, p.cg, p.cb));
+    }
+    fireMesh.instanceMatrix.needsUpdate = true;
+    if (fireMesh.instanceColor) fireMesh.instanceColor.needsUpdate = true;
+  }
 
   /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
   function setGroundSize(r) {
@@ -711,7 +749,7 @@ const ENG = (function () {
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust, putTrebs, putRocks, putDozers,
     setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible, hammerPos,
-    putBombs, setNuke, hideNuke, setMagic, hideMagic,
+    putBombs, setNuke, hideNuke, setRings, hideRings, putFire,
     fitCamera, updateCamera, orbit, pan, zoom, shake,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }

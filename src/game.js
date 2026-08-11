@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.11.0';
+const VERSION = '1.12.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -309,7 +309,11 @@ function startBuild(instant) {
   // 倒數中的炸彈／核彈／魔法陣也一樣：留著的話會炸到剛換上來的新建築
   bombs = null; ENG.putBombs([]);
   nuke = null; ENG.hideNuke();
-  magic = null; ENG.hideMagic();
+  magic = null;
+  /* 火球、蘑菇雲、光環**不**清掉。它們純粹是畫面，不會動到積木，
+     而且一發核彈常常直接把整棟夷平——那會立刻觸發「剩不到 25% 就換下一座」，
+     清掉的話蘑菇雲會在爆炸後 0.05 秒整朵消失，等於白做。
+     塵霧（dust）本來就是這樣處理的，這裡跟它一致。 */
 
   const idx = pickShape();
   recent.push(idx); if (recent.length > 8) recent.shift();
@@ -1075,6 +1079,9 @@ let twist = null;     // 作用中的龍捲風
 let bombs = null;     // 已放下、倒數中的定時炸彈
 let nuke = null;      // 已呼叫的核彈（倒數或下墜中）
 let magic = null;     // 正在展開的魔法陣
+const hot = [];       // 火球粒子（走不透明那顆材質，才亮得起來）
+const fxRings = [];   // 地面衝擊環與蘑菇雲腰環
+const clouds = [];    // 正在成形的蘑菇雲（會隨時間往上長，不是一次生出來）
 
 function breakBlock(b, vx, vy, vz) {
   freeBlock(b);
@@ -1499,7 +1506,7 @@ function stepTwist(dt) {
 /* ── 爆炸 ───────────────────────────────────────────────
    炸彈、核彈、魔法共用的出口。跟槌子的差別是「沒有揮擊方向」——
    純徑向往外加一股上抬，所以積木是往四面八方噴，不是被打向某一側。 */
-function explode(point, R, power) {
+function explode(point, R, power, magic) {
   const R2 = R * R;
   let n = 0;
   for (const b of blocks) {
@@ -1526,7 +1533,7 @@ function explode(point, R, power) {
       w.fall = rr(1.2, 2.6); releaseWorker(w); sndFall();
     }
   }
-  spawnFire(point, R);
+  spawnBlast(point, R, magic);
   spawnDust(point, R, n);
   spawnRing(point, R);
   ENG.shake(0.5 + Math.min(1.8, R * 0.03 + n * 0.015));
@@ -1586,7 +1593,7 @@ function stepNuke(dt) {
     nuke = null;
     ENG.hideNuke();
     explode(p, NUKE_R, NUKE_POW);
-    spawnMushroom(p, NUKE_R);
+    startCloud(p, NUKE_R, false);
   }
 }
 
@@ -1608,8 +1615,8 @@ function stepMagic(dt) {
   if (magic.t <= 0) {
     const p = { x: magic.x, y: 1.5, z: magic.z };
     magic = null;
-    ENG.hideMagic();
-    explode(p, MAG_R, MAG_POW);
+    explode(p, MAG_R, MAG_POW, true);
+    startCloud(p, MAG_R, true);       // 魔法爆完也留一朵，只是燒的是紅光還帶星光
     return;
   }
   const rings = [];
@@ -1618,6 +1625,7 @@ function stepMagic(dt) {
     if (g <= 0) break;
     const k = Math.min(1, g);
     rings.push({
+      x: magic.x, z: magic.z, sp: 1,
       r: MAG_R * (0.31 + i * 0.23) * (0.55 + 0.45 * k),   // 長出來的時候由小擴到定位
       y: 0.12 + i * 0.06,                                  // 每層墊高一點，免得互相 z-fighting
       spin: magic.spin * (i % 2 ? -1.35 : 1) * (1 + i * 0.15),   // 一層順一層逆
@@ -1625,57 +1633,164 @@ function stepMagic(dt) {
     });
   }
   if (rings.length > magic.shown) { magic.shown = rings.length; sndRune(magic.shown - 1); }
-  ENG.setMagic(magic.x, magic.z, rings);
+  magic.rings = rings;
 }
 
-/* 火球：爆炸中心炸開的一團橘紅。用塵霧那套粒子，只是自己指定顏色、
-   而且往上飄（重力給負的）——灰白煙塵混在裡面就沒有「燒起來」的感覺。 */
-function spawnFire(p, R) {
-  const count = Math.min(70, 26 + Math.round(R * 1.4));
-  for (let i = 0; i < count; i++) {
-    if (dust.length > 380) break;
-    const a = Math.random() * Math.PI * 2, sp = rr(0.25, 1) * R * 0.9;
-    const up = Math.random();
-    dust.push({
-      x: p.x + Math.cos(a) * rr(0, R * 0.3), y: p.y + rr(0, R * 0.25), z: p.z + Math.sin(a) * rr(0, R * 0.3),
-      vx: Math.cos(a) * sp, vy: rr(2, 9) + up * R * 0.4, vz: Math.sin(a) * sp,
+/* ── 爆炸特效 ─────────────────────────────────────────────
+   三層東西疊出來的：正中央一顆白閃、往外膨脹的火球、貼地掃出去的衝擊環。
+   火球走 hot（不透明材質）而不是塵霧——塵霧那顆固定 50% 透明，
+   火球混在裡面只會像幾片橘色玻璃，飛塊一擋就完全看不到了。 */
+const HOT_MAX = 220;
+function spawnBlast(p, R, magic) {
+  const n = Math.min(96, 22 + Math.round(R * 2.4));
+  for (let i = 0; i < n; i++) {
+    if (hot.length >= HOT_MAX) break;
+    const a = Math.random() * Math.PI * 2;
+    const u = Math.pow(Math.random(), 0.6);              // 中間密、外圍疏
+    const rad = u * R * 0.5;
+    const up = Math.random() * R * 0.3;
+    /* 顏色照半徑分：核心亮黃、外圍橘。整團都給接近白的話，
+       近看就只是一片奶油色，看不出是火。 */
+    const core = u < 0.35;
+    hot.push({
+      x: p.x + Math.cos(a) * rad, y: p.y + up * 0.6 + 0.5, z: p.z + Math.sin(a) * rad,
+      vx: Math.cos(a) * rad * 1.5, vy: 2 + up * 1.3, vz: Math.sin(a) * rad * 1.5,
       rx: Math.random() * 6, ry: Math.random() * 6,
-      life: rr(0.45, 1.1), s: rr(0.5, 0.35 + R * 0.09), c: 1, g: -2, fade: 0.6,
-      cr: 1, cg: rr(0.35, 0.72), cb: 0.12
+      s: rr(0.6, 1) * (0.8 + R * 0.055), life: rr(0.45, 1.1),
+      g: -1.5, grow: 1.25, cool: rr(0.5, 0.9),
+      cr: 1, cg: core ? rr(0.78, 0.92) : rr(0.34, 0.5), cb: core ? rr(0.3, 0.5) : rr(0.04, 0.12),
+      to: magic ? [0.85, 0.12, 0.32] : [0.5, 0.12, 0.03]            // 冷成暗紅／暗橘
     });
+  }
+  // 正中央那顆閃光：白、兩三幀就收掉。爆炸的「一下」就是靠它，太大會整個畫面糊掉
+  for (let i = 0; i < 6; i++) {
+    if (hot.length >= HOT_MAX) break;
+    const a = Math.random() * Math.PI * 2;
+    hot.push({
+      x: p.x + Math.cos(a) * R * 0.1, y: p.y + rr(0.5, R * 0.16), z: p.z + Math.sin(a) * R * 0.1,
+      vx: 0, vy: 3, vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
+      s: R * rr(0.12, 0.2), life: rr(0.12, 0.2), g: -1, grow: 0.4, cool: 0.2,
+      cr: 1, cg: 1, cb: rr(0.8, 0.95), to: magic ? [1, 0.5, 0.6] : [1, 0.75, 0.3]
+    });
+  }
+  // 貼地往外掃的兩圈光。參考圖裡那幾道橫向的環就是這個
+  const c = magic ? 0xff3b6b : 0xffb038;
+  for (let i = 0; i < 2; i++)
+    fxRings.push({ x: p.x, z: p.z, y: 0.16 + i * 0.12, r: R * 0.2, vr: R * (2.2 - i * 0.8),
+                   op: 1, fade: 0.5 + i * 0.3, c, add: 1, spin: rr(0, 6.28) });
+}
+
+/* ── 蘑菇雲 ───────────────────────────────────────────────
+   不是一次生出來的：柱子先往上冒，半秒後才在頂端撐出傘蓋，同時腰上出現一圈環。
+   一次生完的話它會「啪」地整朵出現在半空，看起來像貼圖不像爆炸長出來的。
+   火光在裡面燒約 0.8 秒再冷掉，那是參考圖裡雲心會發亮的來源。 */
+const CLOUD_GROW = 2.4;         // 整朵長完要多久
+function startCloud(p, R, magic) { clouds.push({ x: p.x, z: p.z, R, magic, t: 0, emit: 0 }); }
+function stepClouds(dt) {
+  for (let i = clouds.length - 1; i >= 0; i--) {
+    const c = clouds[i], t0 = c.t;
+    c.t += dt;
+    const R = c.R;
+    /* 傘蓋現在爬到哪。柱子要靠這個值決定生到多高——柱子不是「自己往上長」，
+       而是「傘蓋往上升，沿路留下來的那一條」。
+       兩邊都從地面往上噴的話會混成一團胖雲，看不出蘑菇的頸子。 */
+    const capY = R * 0.28 + Math.max(0, c.t - 0.45) * 5;
+    if (c.t < 1.3) {
+      c.emit += dt * 40;
+      while (c.emit >= 1) {
+        c.emit--;
+        const a = Math.random() * Math.PI * 2, rad = rr(0.2, R * 0.07);
+        const x = c.x + Math.cos(a) * rad, z = c.z + Math.sin(a) * rad;
+        if (c.t < 0.8 && hot.length < HOT_MAX)      // 柱心的火光
+          hot.push({ x, y: rr(0.6, Math.max(3, capY * 0.7)), z,
+            vx: Math.cos(a) * 0.6, vy: rr(2, 5), vz: Math.sin(a) * 0.6,
+            rx: Math.random() * 6, ry: Math.random() * 6,
+            s: rr(1, 2.2), life: rr(0.5, 1.1), g: 1.4, grow: 1.04, cool: rr(0.4, 0.8),
+            cr: 1, cg: rr(0.62, 0.86), cb: rr(0.16, 0.4),
+            to: c.magic ? [0.9, 0.15, 0.4] : [0.6, 0.16, 0.04] });
+        if (dust.length < 520)                       // 柱子的煙：沿著整根柱子生
+          dust.push({ x, y: rr(0.6, capY * 0.92), z,
+            vx: Math.cos(a) * rr(0.2, 1.2), vy: rr(0.8, 2.4), vz: Math.sin(a) * rr(0.2, 1.2),
+            rx: Math.random() * 6, ry: Math.random() * 6,
+            life: rr(6, 8.5), s: rr(1.4, 3), c: rr(0.34, 0.56), g: 1.4, fade: 4,
+            cr: c.magic ? 0.55 : undefined, cg: c.magic ? 0.24 : 0, cb: c.magic ? 0.28 : 0 });
+      }
+    }
+    /* 傘蓋：0.45 秒時一次撐開，然後自己往上升。
+       生在柱子上方、給比柱子快的初速，收尾就是「上面一團、下面一根」。 */
+    if (t0 < 0.45 && c.t >= 0.45) {
+      const H = R * 0.28;
+      for (let k = 0; k < 84; k++) {
+        if (dust.length >= 520) break;
+        const a = Math.random() * Math.PI * 2;
+        const rad = Math.sqrt(rr(0.03, 1)) * R * 0.5;
+        dust.push({
+          x: c.x + Math.cos(a) * rad, y: H + rr(-R * 0.05, R * 0.1), z: c.z + Math.sin(a) * rad,
+          vx: Math.cos(a) * rr(0.4, 2), vy: rr(5, 6.5), vz: Math.sin(a) * rr(0.4, 2),
+          rx: Math.random() * 6, ry: Math.random() * 6,
+          life: rr(6.5, 9), s: rr(3, 5.6), c: rr(0.18, 0.42), g: 1.8, fade: 4.5,
+          cr: c.magic ? 0.52 : undefined, cg: c.magic ? 0.2 : 0, cb: c.magic ? 0.24 : 0
+        });
+      }
+      for (let k = 0; k < 34; k++) {                 // 傘蓋裡的火光，燒一下就冷掉
+        if (hot.length >= HOT_MAX) break;
+        const a = Math.random() * Math.PI * 2;
+        const rad = Math.sqrt(rr(0.02, 1)) * R * 0.34;
+        hot.push({
+          x: c.x + Math.cos(a) * rad, y: H + rr(0, R * 0.06), z: c.z + Math.sin(a) * rad,
+          vx: Math.cos(a) * rr(0.3, 1.5), vy: rr(5, 6.5), vz: Math.sin(a) * rr(0.3, 1.5),
+          rx: Math.random() * 6, ry: Math.random() * 6,
+          s: rr(1.6, 3.2), life: rr(0.7, 1.5), g: 1.8, grow: 1.04, cool: rr(0.6, 1.1),
+          cr: 1, cg: rr(0.68, 0.9), cb: rr(0.2, 0.45),
+          to: c.magic ? [0.9, 0.15, 0.4] : [0.55, 0.14, 0.04]
+        });
+      }
+      // 腰上那一圈：參考圖裡最好認的特徵
+      fxRings.push({ x: c.x, z: c.z, y: R * 0.13, r: R * 0.2, vr: R * 0.4, vy: R * 0.07,
+                     op: 0.9, fade: 1.4, c: c.magic ? 0xff5577 : 0xffd08a, add: 1, spin: rr(0, 6.28) });
+    }
+    /* 魔法版另外撒星光：參考圖的那些小星星。不冷卻，就是一閃一閃地飄上去 */
+    if (c.magic && c.t < 1.8 && Math.random() < dt * 26 && hot.length < HOT_MAX) {
+      const a = Math.random() * Math.PI * 2, rad = rr(0.2, 1) * R * 0.5;
+      hot.push({
+        x: c.x + Math.cos(a) * rad, y: rr(1, R * 0.4), z: c.z + Math.sin(a) * rad,
+        vx: 0, vy: rr(3, 7), vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
+        s: rr(0.35, 0.8), life: rr(0.7, 1.6), g: 0.6, grow: 0.75,
+        cr: 1, cg: rr(0.55, 0.9), cb: 1
+      });
+    }
+    if (c.t > CLOUD_GROW) clouds.splice(i, 1);
   }
 }
-/* 蘑菇雲：一根往上竄的柱子 + 頂上散開的傘蓋，然後慢慢淡掉。
-   重力給負的讓它一路上升，fade 讓它縮著消失——直接等 life 到期會「啪」地整團不見。 */
-function spawnMushroom(p, R) {
-  /* 傘蓋一開始的高度。壓得比「真的蘑菇雲」矮：鏡頭是照建築取景的，
-     升太高會整朵跑到畫面外，只剩下面那根柱子看得到。
-     0.33 是量出來的——把雲頂投影到畫面上，最高的時候大約落在畫面高度的八成半，
-     0.4 的話中型建築（城堡、金字塔）會超出上緣約兩成。 */
-  const H = R * 0.33;
-  /* 橫向擴散只能靠「生出來時就在那個位置」，不能靠速度：
-     塵霧每幀乘 0.94 的阻力，橫速不到一秒就歸零，給再大的初速也只多跑一兩單位。
-     重力給正的小值，讓它一路上升又慢慢緩下來，最後停在半空——
-     給負的會一路加速衝到天上去。 */
-  for (let i = 0; i < 38; i++) {                    // 柱子
-    if (dust.length > 400) break;
-    const a = Math.random() * Math.PI * 2, rad = rr(0.2, R * 0.1);
-    dust.push({
-      x: p.x + Math.cos(a) * rad, y: rr(1, H * 0.85), z: p.z + Math.sin(a) * rad,
-      vx: Math.cos(a) * rr(0.2, 1.4), vy: rr(2.5, 4.5), vz: Math.sin(a) * rr(0.2, 1.4),
-      rx: Math.random() * 6, ry: Math.random() * 6,
-      life: rr(6, 8.5), s: rr(1.3, 2.8), c: rr(0.72, 0.94), g: 1.3, fade: 4
-    });
+
+/* 火球粒子。跟塵霧分開走一套：會冷卻（顏色往暗紅收）、會膨脹或縮小 */
+function stepHot(dt) {
+  for (let i = hot.length - 1; i >= 0; i--) {
+    const d = hot[i];
+    d.life -= dt;
+    if (d.life <= 0) { hot.splice(i, 1); continue; }
+    d.vy -= (d.g === undefined ? -1.5 : d.g) * dt;
+    d.vx *= 0.9; d.vz *= 0.9;
+    d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
+    if (d.y < 0.4) { d.y = 0.4; d.vy = Math.max(0, d.vy); }
+    d.rx += dt * 1.6; d.ry += dt * 2.2;
+    if (d.to) {                                   // 亮黃 → 橘 → 暗紅
+      const k = Math.min(1, dt / d.cool);
+      d.cr += (d.to[0] - d.cr) * k;
+      d.cg += (d.to[1] - d.cg) * k;
+      d.cb += (d.to[2] - d.cb) * k;
+    }
+    if (d.grow) d.s *= Math.pow(d.grow, dt * 6);
   }
-  for (let i = 0; i < 54; i++) {                    // 傘蓋
-    if (dust.length > 400) break;
-    const a = Math.random() * Math.PI * 2, rad = Math.sqrt(rr(0.02, 1)) * R * 0.42;
-    dust.push({
-      x: p.x + Math.cos(a) * rad, y: H + rr(-R * 0.06, R * 0.1), z: p.z + Math.sin(a) * rad,
-      vx: Math.cos(a) * rr(0.5, 2.2), vy: rr(3, 5.5), vz: Math.sin(a) * rr(0.5, 2.2),
-      rx: Math.random() * 6, ry: Math.random() * 6,
-      life: rr(6.5, 9), s: rr(2.4, 4.6), c: rr(0.78, 0.98), g: 1.3, fade: 4.5
-    });
+}
+/* 地面上的光環：往外擴、淡掉就消失 */
+function stepFxRings(dt) {
+  for (let i = fxRings.length - 1; i >= 0; i--) {
+    const f = fxRings[i];
+    f.r += f.vr * dt;
+    if (f.vy) f.y += f.vy * dt;
+    f.op -= dt / f.fade;
+    if (f.op <= 0) fxRings.splice(i, 1);
   }
 }
 
@@ -1824,6 +1939,9 @@ function step(dt) {
   stepBombs(dt);
   stepNuke(dt);
   stepMagic(dt);
+  stepClouds(dt);
+  stepHot(dt);
+  stepFxRings(dt);
   stepDozers(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
     toasts[i].t -= dt;
@@ -1884,6 +2002,12 @@ function draw() {
   ENG.putTrebs(trebs ? trebs.list : EMPTY);
   ENG.putRocks(trebs ? trebs.rocks : EMPTY);
   ENG.putBombs(bombs || EMPTY);
+  ENG.putFire(hot);
+  /* 魔法陣與爆炸光環共用同一組環，在這裡合起來丟過去。
+     魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。 */
+  if (magic && magic.rings) ENG.setRings(magic.rings.concat(fxRings));
+  else if (fxRings.length) ENG.setRings(fxRings);
+  else ENG.hideRings();
   if (dozers) ENG.putDozers(dozRender(dozers));
 }
 const EMPTY = [];
