@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.18.0';
+const VERSION = '1.18.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1632,19 +1632,22 @@ const MAG_GAP = 0.8, MAG_GROW = 0.5;      // 每隔多久長一層、一層長�
    夾一層特別小、一層又鼓回來，看起來才像法陣不像機械零件。
    每次施法再各自乘一個 0.82–1.18 的抖動（施法當下決定，不是每幀跳）。 */
 const MAG_LAYER = [
-  { r: 0.62, y: 0.16 },
-  { r: 0.42, y: 0.28 },
-  { r: 0.53, y: 0.40 },
-  { r: 0.33, y: 0.51 },
-  { r: 0.47, y: 0.62 },
-  { r: 0.57, y: 0.73 }
+  { r: 0.62, y: 0.22 },
+  { r: 0.42, y: 0.34 },
+  { r: 0.53, y: 0.46 },
+  { r: 0.33, y: 0.57 },
+  { r: 0.47, y: 0.68 },
+  { r: 0.57, y: 0.79 }
 ];
 const MAG_JITTER = 0.18;
 function castMagic(point) {
   magic = {
-    x: point.x, z: point.z, t: MAG_TIME, spin: 0, shown: 0,
+    x: point.x, z: point.z, t: MAG_TIME, shown: 0,
     // 每層的半徑抖動：施法當下抽一次存起來，每幀重抽的話整疊會一直閃
-    rj: MAG_LAYER.map(() => rr(1 - MAG_JITTER, 1 + MAG_JITTER))
+    rj: MAG_LAYER.map(() => rr(1 - MAG_JITTER, 1 + MAG_JITTER)),
+    /* 陣不轉，但每層的紋路角度在施法當下各抽一個定值：六層都給同一個角度的話
+       螺旋會完全對齊，整疊看起來像一支花紋對齊的柱子。 */
+    sj: MAG_LAYER.map(() => rr(0, 6.28))
   };
   sndRune(0);
 }
@@ -1652,8 +1655,6 @@ function stepMagic(dt) {
   if (!magic) return;
   magic.t -= dt;
   const el = MAG_TIME - magic.t;
-  // 越接近爆炸轉越快，最後那一下像是要甩出去
-  magic.spin += dt * (1.1 + Math.pow(el / MAG_TIME, 2) * 7);
   if (magic.t <= 0) {
     const p = { x: magic.x, y: 1.5, z: magic.z };
     magic = null;
@@ -1673,11 +1674,11 @@ function stepMagic(dt) {
        高度也跟著長的話，看起來是「從地上飄上去」而不是「在那裡展開」。 */
     const rad = MAG_R * L.r * magic.rj[i] * (0.12 + 0.88 * k);
     const y = 0.12 + MAG_R * L.y;
-    const spin = magic.spin * (i % 2 ? -1.35 : 1) * (1 + i * 0.15);   // 一層順一層逆
+    const spin = magic.sj[i];                      // 固定角度，陣不轉
     /* 每一層是兩個環疊出來的：裡面一圈實色的芯，外面一圈加法混色的暈。
        只畫一個環的話它就只是地上一條紅色帶子，不像在發光。 */
     rings.push({ x: magic.x, z: magic.z, r: rad, y, spin, op: k, c: 0xff3a1c, sp: 1, fill: 1 });
-    rings.push({ x: magic.x, z: magic.z, r: rad * 1.04, y, spin: -spin * 0.6,
+    rings.push({ x: magic.x, z: magic.z, r: rad * 1.04, y, spin,
                  op: k * 0.75, c: 0xff9a4a, add: 1 });
   }
   // 一層兩個環（芯 + 暈），所以要數層數不是數環數，音效才不會一層響兩次

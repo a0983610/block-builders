@@ -1619,6 +1619,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '第一次 ' + mgVary.a.map(v => v.toFixed(1)).join('/') +
      '、第二次 ' + mgVary.b.map(v => v.toFixed(1)).join('/'));
   ok('但同一次施法內不會逐幀跳動', mgVary.steady);
+
+  /* 陣不轉：紋路的角度要一路固定。每層各自一個角度（六層同角度的話螺旋會對齊，
+     整疊看起來像一支花紋對齊的柱子），但同一層不能隨時間變。 */
+  const mgSpin = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    castMagic({ x: 0, z: 0 });
+    for (let i = 0; i < 100; i++) step(0.05);
+    const at = () => magic.rings.filter(o => !o.add).map(o => +o.spin.toFixed(4));
+    const a = at();
+    for (let i = 0; i < 20; i++) step(0.05);          // 再一秒（越接近爆炸原本轉越快）
+    const b = at();
+    return { a, b, still: a.join() === b.join(), spread: new Set(a).size };
+  });
+  ok('魔法陣不會旋轉', mgSpin.still,
+     '一秒前後的角度：' + mgSpin.a.map(v => v.toFixed(2)).join('/') + ' → ' +
+     mgSpin.b.map(v => v.toFixed(2)).join('/'));
+  ok('但每一層的紋路角度各自不同', mgSpin.spread === mgSpin.a.length,
+     mgSpin.a.length + ' 層裡有 ' + mgSpin.spread + ' 種角度');
   /* 整疊都浮在半空：最下層離地也有一段，而且不做滿爆炸半徑——
      做滿的話那一圈會比建築大一大圈，看起來像地上的跑道而不是浮空的陣。 */
   ok('最下層浮在半空，也沒有大到蓋滿爆炸範圍',
