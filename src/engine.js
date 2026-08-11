@@ -35,6 +35,11 @@ const ENG = (function () {
      還得多打包一份 ESM，而我們要的功能就這幾行） */
   const cam = { tx: 0, ty: 6, tz: 0, dist: 40, yaw: 0.9, pitch: 0.42, shake: 0, shakeT: 0 };
   const camTarget = { dist: 40, ty: 6 };
+  /* 取景留白。1 = 建築剛好貼齊畫面邊，越大退越遠、四周留白越多。
+     1.27 是量出來的：36 座 × 4 個角度掃過去，最擠的一座（3000 塊的美國國會大廈）
+     佔畫面 0.80，一般的落在 0.74，上緣不會頂到工具列。 */
+  const FIT_MARGIN = 1.27;
+  let lastFit = null;                      // 最後一次取景的參數，畫面比例變了要拿它重算
 
   const BS = 0.94;                         // 積木實際邊長（留 0.06 縫，看得出一塊一塊）
   const MAXB = 4200;                       // 積木池上限
@@ -343,6 +348,8 @@ const ENG = (function () {
     renderer.setSize(W, H);          // 要讓 three 一併設 style 寬高，canvas 的內建尺寸靠不住
     camera.aspect = W / H;
     camera.updateProjectionMatrix();
+    // 取景距離跟畫面比例有關，轉向或拉視窗都要重算：不然直式轉橫式會空一大片，反過來會被切掉
+    if (lastFit) fitCamera(lastFit.radius, lastFit.height, lastFit.arena, true);
   }
 
   /* ── 積木 ───────────────────────────────────────────── */
@@ -473,9 +480,16 @@ const ENG = (function () {
   /* ── 相機 ─────────────────────────────────────────── */
   /* radius/height 是建築本身，arena 是碎料散落範圍（決定草地與陰影要多大） */
   function fitCamera(radius, height, arena, instant) {
-    // 把建築當成一顆球來取景：距離 = 球半徑 / sin(半視角)
+    lastFit = { radius, height, arena };
+    /* 把建築當成一顆球來取景：距離 = 球半徑 / sin(半視角)。
+       上下用球半徑（高度通常是大的那邊），左右另外用真正的水平半徑再算一次，取遠的那個。
+       兩邊都用球半徑的話，又高又細的建築（艾菲爾鐵塔）會被自己的高度推到天邊；
+       左右完全不算的話，直式手機（畫面高瘦）裝不下，36 座有 24 座被切掉、金門大橋溢出六成。 */
     const R = Math.max(radius * 1.05, height * 0.62) + 2;
-    camTarget.dist = R / Math.sin(camera.fov * Math.PI / 360) * 1.06;
+    const halfV = camera.fov * Math.PI / 360;
+    const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
+    camTarget.dist = Math.max(R / Math.sin(halfV),
+                              (radius * 1.05 + 2) / Math.sin(halfH)) * FIT_MARGIN;
     camTarget.ty = height * 0.44 + 1.5;
     if (instant) { cam.dist = camTarget.dist; cam.ty = camTarget.ty; }
     // 陰影相機要蓋住整片工地，不然大建築跟遠處碎料的影子會被裁掉
@@ -484,8 +498,12 @@ const ENG = (function () {
     sc.left = -s; sc.right = s; sc.top = s; sc.bottom = -s;
     sc.updateProjectionMatrix();
     setGroundSize(arena + 26);
-    scene.fog.near = arena + 20;
-    scene.fog.far = arena * 2.6 + 90;
+    /* 霧是給遠方地平線的，不該把建築本身吃掉，所以起霧處也要跟著取景距離走。
+       只綁 arena 的話，相機退得遠時建築會泡在霧裡——直式手機看金門大橋要退到 460，
+       而霧只到 316，整座橋會白掉。 */
+    const fogAt = Math.max(arena + 20, camTarget.dist);
+    scene.fog.near = fogAt;
+    scene.fog.far = Math.max(arena * 2.6 + 90, fogAt * 3);
   }
 
   function updateCamera(dt) {

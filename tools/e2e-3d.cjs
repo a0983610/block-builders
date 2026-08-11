@@ -1743,6 +1743,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('縮小後畫面仍然畫得出來', pSmall.opaque > 0.2 && pSmall.colors > 20,
      '不透明 ' + (pSmall.opaque * 100).toFixed(0) + '%、' + pSmall.colors + ' 種顏色');
 
+  /* 取景距離跟畫面比例有關：轉成直式之後左右變窄，寬的地標得退更遠才框得住。
+     resize 只更新 aspect 不重新取景的話，橫式轉直式就會把建築切掉。
+     一定要挑又長又扁的金門大橋——高瘦的建築左右本來就不吃緊，轉向不該動距離，
+     拿它來測會量到「沒變」然後誤判成壞掉。 */
+  const prevShape = await page.evaluate(() => {
+    const p = bp.idx; shapePick = 22; targetCnt = 900; startBuild(true); return p;
+  });
+  const distWide = await page.evaluate(() => ENG.camTarget.dist);
+  await page.setViewportSize({ width: 620, height: 900 });
+  await page.waitForTimeout(300);
+  const distTall = await page.evaluate(() => ENG.camTarget.dist);
+  ok('畫面比例變了會重新取景', distTall > distWide * 1.05,
+     '金門大橋：橫式 ' + distWide.toFixed(1) + ' → 直式 ' + distTall.toFixed(1));
+  await page.evaluate(i => { shapePick = i; startBuild(true); shapePick = -1; }, prevShape);
+
   /* ══════════ 手機版 ══════════ */
   head('手機版 · 觸控');
   await page.setViewportSize({ width: 390, height: 780 });
@@ -1792,6 +1807,57 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { d: ENG.cam.yaw - y0 };
   });
   ok('單指拖曳可以轉視角', Math.abs(touch.d) > 0.05, '轉了 ' + (touch.d * 57.3).toFixed(1) + '°');
+
+  /* 直式手機的水平視角比垂直窄得多，取景只算垂直 fov 的話寬的地標會被切掉：
+     修之前 36 座有 24 座出界，金門大橋溢出六成。挑最寬的四座來守。 */
+  const portraitFit = await page.evaluate(() => {
+    const out = [];
+    const v = new THREE.Vector3();
+    for (const i of [22, 8, 33, 16]) {          // 金門大橋、萬里長城、嚴島神社鳥居、巨石陣
+      shapePick = i; targetCnt = 3000; startBuild(true);
+      for (let k = 0; k < bp.slots.length && k < blocks.length; k++) {
+        const s = bp.slots[k], b = blocks[k];
+        b.st = 3; b.x = s.x; b.y = s.y + HB; b.z = s.z;
+      }
+      for (let k = 0; k < 6; k++) ENG.updateCamera(1);      // dt=1 一次就收斂到目標距離
+      const cam = ENG.three.camera;
+      let worst = 0;
+      for (let a = 0; a < 4; a++) {
+        ENG.cam.yaw = a * Math.PI / 2 + 0.4;                // 長條形建築要轉一圈才量得到最寬那面
+        ENG.updateCamera(0); cam.updateMatrixWorld();
+        for (const s of bp.slots) {
+          v.set(s.x, s.y + HB, s.z).project(cam);
+          worst = Math.max(worst, Math.abs(v.x), Math.abs(v.y));
+        }
+      }
+      out.push({ n: bp.name, worst });
+    }
+    shapePick = -1;
+    return out;
+  });
+  const pWorst = portraitFit.reduce((a, r) => Math.max(a, r.worst), 0);
+  ok('直式手機也框得住最寬的地標', pWorst < 1,
+     portraitFit.map(r => r.n + ' ' + r.worst.toFixed(2)).join('、') + '（1 = 貼齊畫面邊）');
+
+  /* 霧是給遠方地平線的，不能連建築本身一起吃掉。相機退得遠時霧沒跟著往後推的話，
+     整座建築會白掉——直式手機的金門大橋要退到 460，而霧原本只到 316，吃霧 100%。
+     直式是最嚴苛的情況（退得最遠），這裡守住桌機也不會出事。 */
+  const fogHit = await page.evaluate(() => {
+    let worst = -Infinity, name = '';       // 全都沒吃到霧時，也要記得住是哪一座最接近
+    for (let i = 0; i < SHAPES.length; i++) {
+      shapePick = i; targetCnt = 1500; startBuild(true);
+      const f = ENG.three.scene.fog;
+      // 建築中心到相機的距離就是取景距離，量它落在霧的哪一段
+      const amt = (ENG.camTarget.dist - f.near) / (f.far - f.near);
+      if (amt > worst) { worst = amt; name = bp.name; }
+    }
+    shapePick = -1;
+    return { worst, name };
+  });
+  ok('霧不會把建築本身吃掉', fogHit.worst < 0.15,
+     '最重的是 ' + fogHit.name + '，建築中心吃霧 ' +
+     (Math.max(0, fogHit.worst) * 100).toFixed(0) + '%');
+
   await page.setViewportSize(VIEW);
   await page.waitForTimeout(200);
 
