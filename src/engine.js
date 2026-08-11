@@ -17,26 +17,26 @@ const ENG = (function () {
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
   let bombMesh, nukeGroup, ringGroup, magSpokeMesh, fireMesh;
   const magRings = [], magDiscs = [];
-  const MAG_DISC = 4;                      // 填滿的圓盤（魔法陣每層一片）
+  const MAG_DISC = 6;                      // 填滿的圓盤（魔法陣每層一片）
   const MAXFIRE = 240;
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXBOMB = 6, BOMB_PARTS = 3;
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
      四層就吃掉八個，再加上爆炸衝擊環與蘑菇雲腰環。 */
-  const MAG_MAX = 12;
-  /* 每一層的紋路：兩組反向轉的放射線 + 兩圈虛線同心圓。
-     放射線從近中心拉到外圈，中心那一小塊被上百根疊在一起，加法混色自然亮成一顆核；
-     虛線圓補上曼陀羅那種橫向的織紋。單一組放射線只會像一把扇子。
-     n 根數、len 長度、at 中心離陣心多遠、w 寬度（都是半徑的倍率）、
-     spin 轉速倍率（負的就是反向）、tan 是不是切線方向擺。 */
-  const MAG_FAN = [
-    { n: 40, len: 0.94, at: 0.52, w: 0.006, spin: 1, tan: 0 },
-    { n: 40, len: 0.66, at: 0.36, w: 0.006, spin: -0.65, tan: 0 },
-    { n: 26, len: 0.11, at: 0.46, w: 0.010, spin: -0.4, tan: 1 },
-    { n: 30, len: 0.11, at: 0.78, w: 0.010, spin: 0.7, tan: 1 }
+  const MAG_MAX = 14;
+  /* 盤面的紋路：兩組反向的螺旋臂 + 一圈虛線。
+     直的放射線看起來像車輪，參考圖是**捲進去的漩渦**——每條臂切成幾段短棒
+     沿著曲線擺，段數夠多就連成一道弧。臂的內端都收在中心附近，
+     那一小塊被上百段疊在一起，加法混色自然亮成一顆核，不用另外畫。
+     arms 幾條臂、seg 每條切幾段、turn 一條臂繞幾弧度（負的就是反向捲）、
+     r0 內端從哪裡起（半徑倍率）、w 粗細、spin 轉速倍率。 */
+  const MAG_SWIRL = [
+    { arms: 7, seg: 9, turn: 2.0, r0: 0.14, w: 0.030, spin: 1 },
+    { arms: 5, seg: 8, turn: -1.5, r0: 0.28, w: 0.022, spin: -0.6 }
   ];
-  const MAG_SPOKE = MAG_FAN.reduce((s, f) => s + f.n, 0);   // 一層要幾個 instance
+  const MAG_DASH = 26;                                       // 外圈那一圈虛線的段數
+  const MAG_SPOKE = MAG_SWIRL.reduce((s, f) => s + f.arms * f.seg, 0) + MAG_DASH;
   const MAG_SP_RINGS = 6;                                    // 最多幾層會帶紋路
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
@@ -508,22 +508,41 @@ const ENG = (function () {
         dm.scale.set(r.r * 0.97, r.r * 0.97, 1);
         dm.material.opacity = r.op * 0.3;
       }
-      // 陣的紋路（見 MAG_FAN）。中心那顆亮核不用另外畫，是放射線疊出來的
+      // 盤面的紋路（見 MAG_SWIRL）
       if (!r.sp || s + MAG_SPOKE > MAG_SP_RINGS * MAG_SPOKE) continue;
-      for (let fi = 0; fi < MAG_FAN.length; fi++) {
-        const F = MAG_FAN[fi];
-        const sp = (r.spin || 0) * F.spin + fi * 0.13;
-        for (let k = 0; k < F.n; k++) {
-          const a = sp + k / F.n * Math.PI * 2;
-          scratch.position.set(r.x + Math.cos(a) * r.r * F.at, r.y + fi * 0.02,
-                               r.z + Math.sin(a) * r.r * F.at);
-          /* 繞 Y 轉 −a，local +X 才會指向外；切線那兩圈再多轉 90°，
-             長邊就沿著圓周擺，一圈虛線連起來像同心圓。 */
-          scratch.rotation.set(0, -a + (F.tan ? Math.PI / 2 : 0), 0);
-          scratch.scale.set(r.r * F.len, 0.04, r.r * F.w);
-          scratch.updateMatrix();
-          magSpokeMesh.setMatrixAt(s++, scratch.matrix);
+      for (let fi = 0; fi < MAG_SWIRL.length; fi++) {
+        const F = MAG_SWIRL[fi];
+        const base = (r.spin || 0) * F.spin + fi * 0.2;
+        for (let arm = 0; arm < F.arms; arm++) {
+          const a0 = base + arm / F.arms * Math.PI * 2;
+          for (let i = 0; i < F.seg; i++) {
+            // 這一段的兩端：半徑線性往外、角度同時往前捲，就是一條螺旋
+            const t0 = i / F.seg, t1 = (i + 1) / F.seg;
+            const p0 = F.r0 + (1 - F.r0) * t0, p1 = F.r0 + (1 - F.r0) * t1;
+            const h0 = a0 + F.turn * t0, h1 = a0 + F.turn * t1;
+            const x0 = Math.cos(h0) * p0, z0 = Math.sin(h0) * p0;
+            const dx = Math.cos(h1) * p1 - x0, dz = Math.sin(h1) * p1 - z0;
+            scratch.position.set(r.x + (x0 + dx / 2) * r.r, r.y + fi * 0.02,
+                                 r.z + (z0 + dz / 2) * r.r);
+            // 繞 Y 轉 atan2(−dz, dx)，local +X 才會對齊這一段的方向
+            scratch.rotation.set(0, Math.atan2(-dz, dx), 0);
+            // 長度多給一成半，段與段之間才不會有縫；越外面越粗，像被甩開的尾巴
+            scratch.scale.set(Math.hypot(dx, dz) * 1.15 * r.r, 0.04,
+                              r.r * F.w * (0.5 + t0));
+            scratch.updateMatrix();
+            magSpokeMesh.setMatrixAt(s++, scratch.matrix);
+          }
         }
+      }
+      // 外圈那一圈虛線：長邊沿著圓周擺，連起來像一圈細框
+      for (let k = 0; k < MAG_DASH; k++) {
+        const a = -(r.spin || 0) * 0.4 + k / MAG_DASH * Math.PI * 2;
+        scratch.position.set(r.x + Math.cos(a) * r.r * 0.88, r.y + 0.05,
+                             r.z + Math.sin(a) * r.r * 0.88);
+        scratch.rotation.set(0, -a + Math.PI / 2, 0);
+        scratch.scale.set(r.r * 0.13, 0.04, r.r * 0.009);
+        scratch.updateMatrix();
+        magSpokeMesh.setMatrixAt(s++, scratch.matrix);
       }
     }
     for (let i = disc; i < MAG_DISC; i++) magDiscs[i].visible = false;

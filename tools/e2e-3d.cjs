@@ -1437,7 +1437,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const seq = [];
     for (let i = 0; i < 119; i++) {                     // 5.95 秒
       step(0.05);
-      if (i % 22 === 0) seq.push(magic ? magic.shown : -1);
+      if (i % 16 === 0) seq.push(magic ? magic.shown : -1);   // 每 0.8 秒（＝長一層）取樣
     }
     const before = blocks.filter(b => b.st === 3).length, alive = !!magic;
     step(0.05); step(0.05);
@@ -1451,8 +1451,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { set0, seq, before, alive, set1: blocks.filter(b => b.st === 3).length,
              hitMax, after: !!magic, fire, cloud, tinted };
   });
-  ok('魔法陣是一層層長出來的', mg.seq[0] === 1 && mg.seq[mg.seq.length - 1] === 4 &&
-     mg.seq.every((v, i) => i === 0 || v >= mg.seq[i - 1]), '每 1.1 秒取樣：' + mg.seq.join(' → '));
+  ok('魔法陣是一層層長出來的', mg.seq[0] === 1 && mg.seq[mg.seq.length - 1] === 6 &&
+     mg.seq.every((v, i) => i === 0 || v >= mg.seq[i - 1]), '每 0.8 秒取樣：' + mg.seq.join(' → '));
   ok('魔法 6 秒內不會炸', mg.before === mg.set0 && mg.alive, mg.set0 + ' → ' + mg.before);
   ok('6 秒到就爆，範圍約 30', mg.set1 < mg.set0 * 0.2 && mg.hitMax > 20 && mg.hitMax <= 31 && !mg.after,
      'SET ' + mg.set0 + ' → ' + mg.set1 + '，最遠打飛到 ' + mg.hitMax.toFixed(1));
@@ -1476,10 +1476,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              solid: all.filter(o => o.fill).length, lace: all.filter(o => o.sp).length };
   });
   ok('魔法陣是紅色、而且一層一層往上疊',
-     mgRing.n === 4 && mgRing.halo === 4 && mgRing.rising && mgRing.red,
+     mgRing.n === 6 && mgRing.halo === 6 && mgRing.rising && mgRing.red,
      mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、') + '，外圈暈 ' + mgRing.halo + ' 個');
-  ok('每一層都是填滿的盤加放射紋路，不只是一個圈',
-     mgRing.solid === 4 && mgRing.lace === 4,
+  ok('每一層都是填滿的盤加螺旋紋路，不只是一個圈',
+     mgRing.solid === 6 && mgRing.lace === 6,
      '填滿的盤 ' + mgRing.solid + ' 片、帶紋路的層 ' + mgRing.lace + ' 層');
   /* 整疊都浮在半空：最下層離地也有一段，而且不做滿爆炸半徑——
      做滿的話那一圈會比建築大一大圈，看起來像地上的跑道而不是浮空的陣。 */
@@ -1607,16 +1607,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 320; i++) step(0.05);
     draw(); ENG.render();
     const idle = ENG.info().calls;
-    placeBomb({ x: 4, y: 1, z: 4 }); castMagic({ x: 0, z: 0 });
-    for (let i = 0; i < 40; i++) step(0.05);
+    castMagic({ x: 0, z: 0 });
+    for (let i = 0; i < 100; i++) step(0.05);       // 5 秒：六層全開，最貴的一幀
+    placeBomb({ x: 4, y: 1, z: 4 });               // 炸彈最後才放，才不會先炸掉建築換場
     draw(); ENG.render();
     return { idle, busy: ENG.info().calls };
   });
   ok('沒放道具時 draw call 不變', dc.idle <= 12, dc.idle + ' 個');
-  /* 魔法陣一層是兩個環（芯 + 暈），四層就八個環，各自一個 draw call。
+  /* 魔法陣一層是「盤 + 芯環 + 暈環」三個 draw call，六層就十八個。
      只在陣展開的那六秒會這樣，平常是 11。 */
-  ok('炸彈與魔法陣在場上才多吃 draw call', dc.busy > dc.idle && dc.busy <= 26,
-     '放了炸彈與四層魔法陣時 ' + dc.busy + ' 個');
+  ok('炸彈與魔法陣在場上才多吃 draw call', dc.busy > dc.idle && dc.busy <= 36,
+     '放了炸彈與六層魔法陣時 ' + dc.busy + ' 個');
 
   /* ══════════ 人力金額 ══════════ */
   head('人力金額');
