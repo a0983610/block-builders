@@ -40,7 +40,8 @@ const ENG = (function () {
   const MAG_SP_RINGS = 6;                                    // 最多幾層會帶紋路
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
-  const TW_SEG = 12;                // 龍捲風的分段數
+  const TW_SEG = 16;                // 龍捲風的分段數
+  const TW_MAX = 4;                 // 最多同時畫幾道
   const tornadoSegs = [];
   const _axis = new T.Vector3();
   let W = 1, H = 1;
@@ -188,17 +189,25 @@ const ENG = (function () {
     scene.add(hammerGroup);
 
     /* 龍捲風：用一疊會各自轉、各自偏移的開口圓筒疊出扭曲的漏斗。
-       單一個圓錐太乾淨，看起來只是個半透明三角形。 */
+       單一個圓錐太乾淨，看起來只是個半透明三角形。
+
+       一層一顆 InstancedMesh、每道龍捲風在每層各占一個 instance：
+       濃淡是逐層不同的（材質不同，沒辦法併成一顆），但同一層不管場上有幾道
+       都只吃一個 draw call——所以總成本固定是 TW_SEG，不隨龍捲風數量增加。 */
     tornadoGroup = new T.Group();
     const twGeo = new T.CylinderGeometry(1, 1, 1, 20, 1, true);
     for (let i = 0; i < TW_SEG; i++) {
       const t = i / (TW_SEG - 1);
       // 下濃上淡：整條才有「往上散開」的層次，全部同一個透明度會像一片平板
-      const m = new T.Mesh(twGeo, new T.MeshBasicMaterial({
+      const m = new T.InstancedMesh(twGeo, new T.MeshBasicMaterial({
         color: t < 0.35 ? 0xb9c4cd : 0xdde6ee,
         transparent: true, opacity: 0.30 - t * 0.19,
-        side: T.DoubleSide, depthWrite: false
-      }));
+        // forceSinglePass：透明的雙面材質 three 預設分兩趟畫，draw call 直接翻倍。
+        // 這是一層薄霧，用不到那個排序
+        side: T.DoubleSide, depthWrite: false, forceSinglePass: true
+      }), TW_MAX);
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.count = 0; m.frustumCulled = false;
       tornadoSegs.push(m); tornadoGroup.add(m);
     }
     tornadoGroup.visible = false;
@@ -315,21 +324,35 @@ const ENG = (function () {
   }
   function hideBall() { ballMesh.visible = false; }
 
-  /* 漏斗：越往上越粗，每一段各自轉、各自往旁邊偏一點，整條才會扭起來 */
-  function setTornado(x, z, r, h, spin) {
-    tornadoGroup.visible = true;
+  /* 漏斗：越往上越粗，每一段各自轉、各自往旁邊偏一點，整條才會扭起來。
+     list 是規則那邊的龍捲風本體 {x,z,r,h,spin}，一次可以給好幾道。 */
+  function putTornados(list) {
+    const n = Math.min(list.length, TW_MAX);
+    tornadoGroup.visible = n > 0;
     for (let i = 0; i < TW_SEG; i++) {
       const t = i / (TW_SEG - 1);
       const seg = tornadoSegs[i];
-      const rr = r * (0.18 + t * t * 0.55 + t * 0.45);
-      const wob = Math.sin(spin * 1.3 + t * 5.2) * r * 0.3 * t;
-      const wob2 = Math.cos(spin * 1.1 + t * 4.4) * r * 0.3 * t;
-      seg.position.set(x + wob, h * t + h / TW_SEG * 0.5, z + wob2);
-      seg.scale.set(rr, h / TW_SEG * 1.35, rr);
-      seg.rotation.y = spin * (1 + t * 0.7);
+      seg.count = n;
+      for (let k = 0; k < n; k++) {
+        const w = list[k];
+        // 漏斗畫得比作用範圍細一點：邊緣的積木先被吸進來才碰到雲柱，看起來才像被風捲走
+        const r = w.r * 0.9, h = w.h, spin = w.spin;
+        /* 上緣張得比以前開：漏斗拉高之後還用原本的錐度，整條會細成一根針。
+           底細頂寬才是漏斗，錐度大致跟著高度一起放大。 */
+        const rad = r * (0.18 + t * t * 1.25 + t * 0.55);
+        const wob = Math.sin(spin * 1.3 + t * 5.2) * r * 0.3 * t;
+        const wob2 = Math.cos(spin * 1.1 + t * 4.4) * r * 0.3 * t;
+        scratch.position.set(w.x + wob, h * t + h / TW_SEG * 0.5, w.z + wob2);
+        scratch.rotation.set(0, spin * (1 + t * 0.7), 0);
+        /* 段與段刻意只疊 35%：接縫留下來的一圈圈橫紋就是「它在轉」的線索，
+           疊到糊掉會變成一個乾淨的半透明圓錐，反而看不出是龍捲風。 */
+        scratch.scale.set(rad, h / TW_SEG * 1.35, rad);
+        scratch.updateMatrix();
+        seg.setMatrixAt(k, scratch.matrix);
+      }
+      seg.instanceMatrix.needsUpdate = true;
     }
   }
-  function hideTornado() { tornadoGroup.visible = false; }
   /* (x,y,z) 是槌子擺放的位置，(tx,ty,tz) 是它要對準的落點，
      spin 是揮動時的側傾，sc 是整支槌子的倍率（大槌用） */
   function setHammer(x, y, z, tx, ty, tz, spin, sc) {
@@ -839,7 +862,7 @@ const ENG = (function () {
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust, putTrebs, putRocks, putDozers,
-    setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible, hammerPos,
+    setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, setNuke, hideNuke, setRings, hideRings, putFire,
     fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,

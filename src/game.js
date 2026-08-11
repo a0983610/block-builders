@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.16.1';
+const VERSION = '1.17.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -303,7 +303,7 @@ function startBuild(instant) {
   // 正在作用的道具要收掉，不然拆完換新建築時，還在飛的鐵球／龍捲風會繼續砸新的那座
   swing = null; ENG.hideHammer();
   ball = null; ENG.hideBall();
-  twist = null; ENG.hideTornado();
+  twists = null; ENG.putTornados([]);
   trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
   dozers = null; ENG.putDozers([]);
   // 倒數中的炸彈／核彈／魔法陣也一樣：留著的話會炸到剛換上來的新建築
@@ -1057,7 +1057,7 @@ const TOOLS = [
     lock: { txt: '拆掉 3 座建築解鎖', ok: () => stats.destroyed >= 3 } },
   { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
     lock: { txt: '拆掉 6 座建築解鎖', ok: () => stats.destroyed >= 6 } },
-  { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去',
+  { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去，可以同時來好幾道',
     lock: { txt: '累計擊飛 1000 塊解鎖', ok: () => stats.smashed >= 1000 } },
   { id: 'bomb', n: '定時炸彈', k: '💣', tip: '點一下：放一顆炸彈，3 秒後炸開',
     lock: { txt: '拆掉 10 座建築解鎖', ok: () => stats.destroyed >= 10 } },
@@ -1075,7 +1075,7 @@ let tool = 'hammer';
 let hammerR = 5.5, hammerPow = 15;
 let swing = null;     // 正在揮下去的槌子
 let ball = null;      // 飛行中的鐵球
-let twist = null;     // 作用中的龍捲風
+let twists = null;    // 作用中的龍捲風（可以同時好幾道）
 let bombs = null;     // 已放下、倒數中的定時炸彈
 let nuke = null;      // 已呼叫的核彈（倒數或下墜中）
 let magic = null;     // 正在展開的魔法陣
@@ -1454,53 +1454,68 @@ function stepBall(dt) {
   }
 }
 
-/* 龍捲風：在地面走一段路，把沿路的積木吸起來繞圈，最後隨機甩出去 */
+/* 龍捲風：在地面走一段路，把沿路的積木吸起來繞圈，最後隨機甩出去。
+   可以同時存在好幾道——畫面成本跟道數無關（引擎那邊一層一顆 InstancedMesh），
+   真正的上限是塵霧配額，所以卡在 TW_MAX 道。 */
+const TW_MAX = 4, TW_LIFE = 7, TW_R = 6, TW_H = 34;
 function launchTornado(point) {
-  const a = Math.atan2(-point.z, -point.x);        // 大致朝著工地中心掃過去
-  twist = {
-    x: point.x, z: point.z, r: 6, h: 20, life: 5.5,
-    spin: 0, vx: Math.cos(a) * 3.2, vz: Math.sin(a) * 3.2, hit: 0
-  };
+  /* 大致朝著工地中心掃過去，但要偏一點：好幾道都精準對著同一點的話，
+     幾秒後全部疊在中心變成一團，看不出是好幾道。 */
+  const a = Math.atan2(-point.z, -point.x) + rr(-0.7, 0.7);
+  if (!twists) twists = [];
+  if (twists.length >= TW_MAX) twists.shift();     // 放太多道就把最早那道擠掉
+  twists.push({
+    x: point.x, z: point.z, r: TW_R, h: TW_H, life: TW_LIFE,
+    /* 起始角度隨機：漏斗的扭曲完全是 spin 的函數，都從 0 開始的話
+       同時在場的幾道會擺出一模一樣的姿勢，看起來像複製貼上。 */
+    spin: rr(0, 6.28), vx: Math.cos(a) * 3.2, vz: Math.sin(a) * 3.2, hit: 0
+  });
+  /* 拉高之後漏斗頂會超出畫面上緣（矮建築取景近，量到 NDC 1.45），
+     跟核彈的蘑菇雲同一個處理：作用期間鏡頭退開一點，結束後自己收回去。 */
+  ENG.holdWide(TW_H * 1.9, TW_LIFE + 1);
   sndWind();
 }
 function stepTwist(dt) {
-  if (!twist) return;
-  twist.life -= dt;
-  twist.spin += dt * 7;
-  twist.x += twist.vx * dt; twist.z += twist.vz * dt;
-  // 每隔一陣子換個方向，走起來才像亂竄而不是直線
-  twist.vx += rr(-6, 6) * dt; twist.vz += rr(-6, 6) * dt;
-  const sp = Math.hypot(twist.vx, twist.vz);
-  if (sp > 6) { twist.vx = twist.vx / sp * 6; twist.vz = twist.vz / sp * 6; }
-  if (Math.hypot(twist.x, twist.z) > arenaR) { twist.vx *= -1; twist.vz *= -1; }
+  if (!twists) return;
+  for (let i = twists.length - 1; i >= 0; i--) {
+    const w = twists[i];
+    w.life -= dt;
+    w.spin += dt * 7;
+    w.x += w.vx * dt; w.z += w.vz * dt;
+    // 每隔一陣子換個方向，走起來才像亂竄而不是直線
+    w.vx += rr(-6, 6) * dt; w.vz += rr(-6, 6) * dt;
+    const sp = Math.hypot(w.vx, w.vz);
+    if (sp > 6) { w.vx = w.vx / sp * 6; w.vz = w.vz / sp * 6; }
+    if (Math.hypot(w.x, w.z) > arenaR) { w.vx *= -1; w.vz *= -1; }
 
-  const R = twist.r, R2 = R * R;
-  let n = 0;
-  for (const b of blocks) {
-    if (b.st === CARRY || b.st === TOSS) continue;
-    const dx = b.x - twist.x, dz = b.z - twist.z;
-    const d2 = dx * dx + dz * dz;
-    if (d2 > R2 || b.y > twist.h) continue;
-    const d = Math.max(0.5, Math.sqrt(d2));
-    // 切線方向繞圈 + 往內吸 + 往上捲
-    const tx = -dz / d, tz = dx / d;
-    const pull = (1 - d / R);
-    if (b.st === SET) { breakBlock(b, 0, 0, 0); n++; }
-    if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
-    b.vx += (tx * 26 + -dx / d * 10) * pull * dt * 3;
-    b.vz += (tz * 26 + -dz / d * 10) * pull * dt * 3;
-    b.vy += (16 + 30 * pull) * dt * 3;
-    b.ax += rr(-30, 30) * dt; b.ay += rr(-30, 30) * dt; b.az += rr(-30, 30) * dt;
+    const R = w.r, R2 = R * R;
+    let n = 0;
+    for (const b of blocks) {
+      if (b.st === CARRY || b.st === TOSS) continue;
+      const dx = b.x - w.x, dz = b.z - w.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > R2 || b.y > w.h) continue;
+      const d = Math.max(0.5, Math.sqrt(d2));
+      // 切線方向繞圈 + 往內吸 + 往上捲
+      const tx = -dz / d, tz = dx / d;
+      const pull = (1 - d / R);
+      if (b.st === SET) { breakBlock(b, 0, 0, 0); n++; }
+      if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
+      b.vx += (tx * 26 + -dx / d * 10) * pull * dt * 3;
+      b.vz += (tz * 26 + -dz / d * 10) * pull * dt * 3;
+      b.vy += (16 + 30 * pull) * dt * 3;
+      b.ax += rr(-30, 30) * dt; b.ay += rr(-30, 30) * dt; b.az += rr(-30, 30) * dt;
+    }
+    if (n) {
+      w.hit += n;
+      afterHit(n, { x: w.x, y: 2, z: w.z }, R * 0.6);
+    }
+    spawnTwistDust(w, dt, twists.length);
+    /* 這裡刻意不做畫面震動。龍捲風會持續好幾秒，每幀都加一點震動的話
+       畫面就一路晃到結束，看久了很不舒服——震動留給槌子、保齡球那種單次撞擊。 */
+    if (w.life <= 0) twists.splice(i, 1);
   }
-  if (n) {
-    twist.hit += n;
-    afterHit(n, { x: twist.x, y: 2, z: twist.z }, R * 0.6);
-  }
-  spawnTwistDust(twist, dt);
-  /* 這裡刻意不做畫面震動。龍捲風會持續好幾秒，每幀都加一點震動的話
-     畫面就一路晃到結束，看久了很不舒服——震動留給槌子、保齡球那種單次撞擊。 */
-  if (twist.life <= 0) { twist = null; ENG.hideTornado(); }
-  else ENG.setTornado(twist.x, twist.z, twist.r * 0.9, twist.h, twist.spin);
+  if (!twists.length) twists = null;
 }
 
 /* ── 爆炸 ───────────────────────────────────────────────
@@ -1944,14 +1959,18 @@ function spawnRing(p, R) {
 }
 /* 龍捲風的塵霧：沿著漏斗表面繞圈往上竄，不是往外噴。
    往外噴的話看起來只是一團爆炸，看不出在「轉」。 */
-function spawnTwistDust(t, dt) {
-  t.emit = (t.emit || 0) + dt * 55;
+/* n 是場上總共幾道：塵霧總量有上限（MAXDUST），一次好幾道全開火的話
+   迴圈先跑到的那幾道會把配額吃光，排最後那道就變成沒有煙的空殼。 */
+function spawnTwistDust(t, dt, n) {
+  t.emit = (t.emit || 0) + dt * 78 / Math.sqrt(n || 1);
   while (t.emit >= 1) {
     t.emit--;
     if (dust.length > 380) break;
     const a = Math.random() * Math.PI * 2;
     const hy = rr(0.3, t.h * 0.85);
-    const rad = t.r * (0.2 + hy / t.h * 0.95);
+    // 跟著漏斗的錐度長（引擎那條公式的同一個形狀），不然煙會跟雲柱分家
+    const f = hy / t.h;
+    const rad = t.r * (0.2 + f * f * 1.2 + f * 0.55);
     dust.push({
       x: t.x + Math.cos(a) * rad, y: hy, z: t.z + Math.sin(a) * rad,
       vx: -Math.sin(a) * 15 - Math.cos(a) * 3 + t.vx,
@@ -2108,6 +2127,7 @@ function draw() {
   ENG.putTrebs(trebs ? trebs.list : EMPTY);
   ENG.putRocks(trebs ? trebs.rocks : EMPTY);
   ENG.putBombs(bombs || EMPTY);
+  ENG.putTornados(twists || EMPTY);
   ENG.putFire(hot);
   /* 魔法陣與爆炸光環共用同一組環，在這裡合起來丟過去。
      魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。 */

@@ -1280,17 +1280,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     const before = blocks.filter(b => b.st === 3).length;
     launchTornado({ x: siteR * 0.6, z: 0 });
-    const born = !!twist;
+    const born = twists ? twists.length : 0;
     let lifted = 0;
     for (let i = 0; i < 260; i++) {
       step(0.03);
       lifted = Math.max(lifted, blocks.filter(b => b.st === 4 && b.y > 6).length);
     }
     for (let i = 0; i < 700; i++) step(0.05);       // 等它們全部落地
-    return { before, after: blocks.filter(b => b.st === 3).length, lifted, born, gone: !twist,
+    return { before, after: blocks.filter(b => b.st === 3).length, lifted, born, gone: !twists,
              flying: blocks.filter(b => b.st === 4).length };
   });
-  ok('龍捲風會生出來', twR.born);
+  ok('龍捲風會生出來', twR.born === 1);
   ok('龍捲風會把積木捲上天', twR.lifted > 20, '同時在空中最多 ' + twR.lifted + ' 塊');
   ok('龍捲風掃過會拆掉建築', twR.after < twR.before * 0.6,
      'SET ' + twR.before + ' → ' + twR.after);
@@ -1303,10 +1303,102 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     launchTornado({ x: siteR * 0.5, z: 0 });
     let peak = 0;
     for (let i = 0; i < 120; i++) { step(0.03); peak = Math.max(peak, ENG.cam.shake); }
-    return { peak, alive: !!twist };
+    return { peak, alive: !!twists };
   });
   ok('龍捲風不會讓畫面一直晃', twShake.peak < 0.05,
      '整段期間畫面震動峰值 ' + twShake.peak.toFixed(3) + '（龍捲風仍在作用 ' + twShake.alive + '）');
+
+  /* 同時好幾道：每道各走各的、各轉各的，超過上限就擠掉最早那道。
+     全部對著工地中心衝的話幾秒後會疊成一團，所以起始方向要帶點偏差——
+     量「最近的兩道相距多遠」最能抓到這件事。 */
+  const twMany = await page.evaluate(() => {
+    /* 挑萬里長城、建材給滿：四道同時掃很快就把整棟夷平，那會觸發自動換場、
+       把龍捲風一起收掉，測到的就不是「同時存在幾道」而是換場時機。
+       長城拉得長，一次只咬得到一段（實測單道掃完還剩五到九成）。 */
+    shapePick = SHAPES.findIndex(s => s.n === '萬里長城');
+    targetCnt = 3000; startBuild(true); completeNow();
+    for (let k = 0; k < 6; k++)                    // 故意多丟兩道，測上限
+      launchTornado({ x: Math.cos(k * 1.6) * siteR * 0.8, z: Math.sin(k * 1.6) * siteR * 0.8 });
+    const born = twists.length;
+    const spins = twists.map(w => +w.spin.toFixed(2));
+    for (let i = 0; i < 60; i++) step(0.02);       // 1.2 秒後看它們有沒有黏在一起
+    const alive = twists ? twists.length : 0;
+    let gap = 1e9;
+    for (let i = 0; i < alive; i++)
+      for (let j = i + 1; j < alive; j++)
+        gap = Math.min(gap, Math.hypot(twists[i].x - twists[j].x, twists[i].z - twists[j].z));
+    return { born, alive, spins, gap: +gap.toFixed(1), max: TW_MAX,
+             same: new Set(spins).size };
+  });
+  ok('龍捲風可以同時存在好幾道', twMany.born === twMany.max && twMany.alive === twMany.max,
+     '連丟 6 道 → 場上 ' + twMany.born + ' 道（上限 ' + twMany.max + '，多的把最早那道擠掉）');
+  ok('每一道各轉各的', twMany.same === twMany.born,
+     '起始角度 ' + JSON.stringify(twMany.spins) + '（都一樣的話幾道會擺出同一個姿勢）');
+  ok('幾道不會疊在同一點', twMany.gap > 6,
+     '1.2 秒後最近的兩道相距 ' + twMany.gap + ' 單位');
+
+  /* 一道跟四道畫起來一樣貴：每一層是一顆 InstancedMesh，場上幾道只是多幾個 instance */
+  const twCalls = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    draw(); ENG.render();
+    const idle = ENG.info().calls;
+    launchTornado({ x: siteR * 0.5, z: 0 });
+    for (let i = 0; i < 10; i++) step(0.02);
+    draw(); ENG.render();
+    const one = ENG.info().calls;
+    for (let k = 0; k < 3; k++) launchTornado({ x: -siteR * 0.5, z: siteR * 0.4 * (k - 1) });
+    for (let i = 0; i < 10; i++) step(0.02);
+    draw(); ENG.render();
+    const four = ENG.info().calls;
+    twists = null; ENG.putTornados([]);
+    draw(); ENG.render();
+    return { idle, one, four, after: ENG.info().calls };
+  });
+  ok('多幾道龍捲風不會多吃 draw call', twCalls.four === twCalls.one && twCalls.one > twCalls.idle,
+     '沒有 ' + twCalls.idle + ' 個、一道 ' + twCalls.one + ' 個、四道 ' + twCalls.four + ' 個');
+  ok('收掉之後畫面成本回到原點', twCalls.after === twCalls.idle, twCalls.after + ' 個');
+
+  /* 漏斗拉高到 34 之後會頂出畫面上緣（矮建築取景近，改之前量到 NDC 1.45）。
+     跟蘑菇雲同一套：作用期間鏡頭退開，結束後自己收回去。 */
+  const twFrame = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 1200; startBuild(true); completeNow();
+    /* 先空跑 13 秒：前面幾段測試留下的爆炸運鏡還沒到期，
+       這時候量「原本的取景」會量到被撐大的值。 */
+    for (let i = 0; i < 260; i++) step(0.05);
+    const nat = ENG.camTarget.dist;
+    launchTornado({ x: siteR * 0.5, z: 0 });
+    for (let i = 0; i < 110; i++) step(0.02);
+    const wide = ENG.cam.dist;
+    const w = twists[0];
+    const top = new THREE.Vector3(w.x, w.h, w.z).project(ENG.three.camera).y;
+    // 運鏡是 TW_LIFE + 1 秒，多等 3 秒確定到期（中途若整棟被夷平換了場也沒關係，
+    // 底下的基準是拿「現在場上這座」重算的）
+    for (let i = 0; i < (TW_LIFE + 4) * 50; i++) step(0.02);
+    const back = ENG.camTarget.dist;
+    ENG.fitCamera(siteR, bp.height, arenaR);
+    return { nat: +nat.toFixed(1), wide: +wide.toFixed(1), top: +top.toFixed(2),
+             back: +back.toFixed(1), now: +ENG.camTarget.dist.toFixed(1) };
+  });
+  ok('龍捲風期間鏡頭會退開，漏斗頂留在畫面內', twFrame.wide > twFrame.nat * 1.15 && twFrame.top < 1,
+     '取景 ' + twFrame.nat + ' → ' + twFrame.wide + '，漏斗頂 NDC ' + twFrame.top);
+  ok('龍捲風結束後鏡頭收回原本的取景', Math.abs(twFrame.back - twFrame.now) < 1,
+     twFrame.wide + ' → ' + twFrame.back + '（這座的基準 ' + twFrame.now + '）');
+
+  /* 持續時間拿城堡量：金字塔是實心堆疊，被掃到底層整座垮下來會提早換場，
+     量到的就不是龍捲風自己的壽命（實測 4 次有 2 次被砍到 2.6 秒）。 */
+  const twLife = await page.evaluate(() => {
+    targetCnt = 2400; startBuild(true); completeNow();
+    for (let i = 0; i < 40; i++) step(0.05);
+    launchTornado({ x: siteR * 0.5, z: 0 });
+    let secs = 0;
+    while (twists && secs < 12) { step(0.02); secs += 0.02; }
+    // 還原成這一段開始前的狀態（後面幾個測試接著用城堡 1200）
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡'); targetCnt = 1200;
+    return { secs: +secs.toFixed(2), life: TW_LIFE };
+  });
+  ok('龍捲風持續時間跟設定一致', Math.abs(twLife.secs - twLife.life) < 0.2,
+     '撐了 ' + twLife.secs + ' 秒（設定 ' + twLife.life + ' 秒）');
 
   const hitShake = await page.evaluate(() => {
     startBuild(true); completeNow();
