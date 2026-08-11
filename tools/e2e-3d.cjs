@@ -1465,15 +1465,72 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     for (let i = 0; i < 100; i++) step(0.05);       // 5 秒：四層都長齊
-    const r = (magic ? magic.rings : []).map(o => ({ y: +o.y.toFixed(1), r: +o.r.toFixed(1), c: o.c }));
-    return { n: r.length, rings: r,
-             rising: r.every((o, i) => i === 0 || o.y > r[i - 1].y),
-             red: r.every(o => o.c === 0xff2d20), ground: r[0] ? r[0].r : 0 };
+    const all = magic ? magic.rings : [];
+    // 一層是兩個環疊出來的：實色的芯 + 加法混色的暈。層次要看芯那幾個
+    const core = all.filter(o => !o.add).map(o => ({ y: +o.y.toFixed(1), r: +o.r.toFixed(1), c: o.c }));
+    const halo = all.filter(o => o.add);
+    return { n: core.length, halo: halo.length, rings: core,
+             rising: core.every((o, i) => i === 0 || o.y > core[i - 1].y),
+             red: core.every(o => o.c === 0xff3a1c), ground: core[0] ? core[0].r : 0 };
   });
-  ok('魔法陣是紅色、而且一層一層往上疊', mgRing.n === 4 && mgRing.rising && mgRing.red,
-     mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、'));
+  ok('魔法陣是紅色、而且一層一層往上疊',
+     mgRing.n === 4 && mgRing.halo === 4 && mgRing.rising && mgRing.red,
+     mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、') + '，外圈暈 ' + mgRing.halo + ' 個');
   ok('貼地那圈的半徑就是爆炸範圍', Math.abs(mgRing.ground - 30) < 0.5,
      '地面圈半徑 ' + mgRing.ground + '（爆炸範圍 30）');
+
+  /* 衝擊波是球狀的，而且越靠近炸心抬得越高——積木要沿拋物線拋上去再落下，
+     不是貼著地面掃出去。只量「有沒有飛出去」的話，兩種都會過。 */
+  const arc = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    explode({ x: 0, y: 2.5, z: 0 }, 30, 34);
+    const fly = blocks.filter(b => b.st === 4);
+    const avgVy = a => a.reduce((s, b) => s + b.vy, 0) / Math.max(1, a.length);
+    const nearVy = avgVy(fly.filter(b => Math.hypot(b.x, b.z) < 8));
+    const farVy = avgVy(fly.filter(b => Math.hypot(b.x, b.z) > 20));
+    let peak = 0, air = 0;
+    for (let i = 0; i < 120; i++) {
+      step(0.05);
+      let flying = 0;
+      for (const b of blocks) if (b.st === 4) { flying++; if (b.y > peak) peak = b.y; }
+      if (flying > fly.length * 0.5) air += 0.05;   // 一半以上還在空中就算滯空
+    }
+    return { n: fly.length, nearVy, farVy, peak, air };
+  });
+  ok('炸開的積木是拋上去的，不是貼地掃出去', arc.peak > 25 && arc.air > 1.5,
+     arc.n + ' 塊飛出去，最高 ' + arc.peak.toFixed(0) + '、滯空 ' + arc.air.toFixed(1) + ' 秒');
+  ok('越靠近炸心抬得越高', arc.nearVy > arc.farVy * 1.6,
+     '近處起飛速度 ' + arc.nearVy.toFixed(0) + '、遠處 ' + arc.farVy.toFixed(0));
+
+  /* 先收縮後爆發：陣在充能時把周圍碎料往中心捲，六秒到再全部噴出去。
+     只驗「有沒有吸」不夠——吸完要能噴回去才是那個反差。 */
+  const imp = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    // 把外圈的積木改成散落的碎料，當作被吸的對象
+    const loose = [];
+    for (const b of blocks) {
+      if (loose.length >= 80) break;
+      if (b.st !== 3 || Math.hypot(b.x, b.z) < siteR * 0.8) continue;
+      if (b.slot >= 0) { bp.slots[b.slot].filled = false; b.slot = -1; }
+      const a = Math.random() * Math.PI * 2, rad = 16 + Math.random() * 11;
+      b.st = 0; b.rest = true; b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad; b.y = HB;
+      b.vx = b.vy = b.vz = 0;
+      loose.push(b);
+    }
+    const mean = () => loose.reduce((s, b) => s + Math.hypot(b.x, b.z), 0) / loose.length;
+    castMagic({ x: 0, z: 0 });
+    for (let i = 0; i < 30; i++) step(0.05);        // 1.5 秒：吸力剛要開始
+    const d0 = mean();
+    for (let i = 0; i < 80; i++) step(0.05);        // 5.5 秒：吸了四秒
+    const d1 = mean(), motes = hot.filter(h => h.pull).length;
+    for (let i = 0; i < 30; i++) step(0.05);        // 過 6 秒：炸開，再看一秒後噴到哪
+    return { n: loose.length, d0, d1, d2: mean(), motes };
+  });
+  ok('魔法陣充能時會把碎料往陣心捲進去', imp.d1 < imp.d0 * 0.85,
+     imp.n + ' 塊碎料離陣心 ' + imp.d0.toFixed(1) + ' → ' + imp.d1.toFixed(1));
+  ok('陣上會冒出往中心捲的魔力光點', imp.motes > 10, imp.motes + ' 顆');
+  ok('六秒一到再把它們全噴出去', imp.d2 > imp.d1 * 1.2,
+     '爆炸後 ' + imp.d1.toFixed(1) + ' → ' + imp.d2.toFixed(1));
 
   /* 雲頂會升到 40 以上，貼著建築的取景根本裝不下——引爆時鏡頭要退開，
      而且事後要自己收回來，不能一直停在遠處。
@@ -1548,7 +1605,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { idle, busy: ENG.info().calls };
   });
   ok('沒放道具時 draw call 不變', dc.idle <= 12, dc.idle + ' 個');
-  ok('炸彈與魔法陣在場上才多吃 draw call', dc.busy > dc.idle && dc.busy <= 20,
+  /* 魔法陣一層是兩個環（芯 + 暈），四層就八個環，各自一個 draw call。
+     只在陣展開的那六秒會這樣，平常是 11。 */
+  ok('炸彈與魔法陣在場上才多吃 draw call', dc.busy > dc.idle && dc.busy <= 26,
      '放了炸彈與四層魔法陣時 ' + dc.busy + ' 個');
 
   /* ══════════ 人力金額 ══════════ */

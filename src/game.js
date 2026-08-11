@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.13.0';
+const VERSION = '1.14.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1506,22 +1506,29 @@ function stepTwist(dt) {
 /* ── 爆炸 ───────────────────────────────────────────────
    炸彈、核彈、魔法共用的出口。跟槌子的差別是「沒有揮擊方向」——
    純徑向往外加一股上抬，所以積木是往四面八方噴，不是被打向某一側。 */
+const Y_BOOST = 0.85;               // 抬升占衝擊力道的比例（重力 26，這個值約抬 16 單位高）
 function explode(point, R, power, magic) {
   const R2 = R * R;
   let n = 0;
   for (const b of blocks) {
-    if (b.st !== SET && b.st !== FREE) continue;   // 小人手上跟飛行中的不動它
+    /* 只有小人手上（含正拋向工地）的不動它。
+       半空中的碎料也要吃到衝擊波——魔法陣先把碎料吸到陣心，那些都是 FLY，
+       漏掉的話「先收縮後爆發」會變成「吸過來然後靜靜落地」。 */
+    if (b.st === CARRY || b.st === TOSS) continue;
     const dx = b.x - point.x, dy = b.y - point.y, dz = b.z - point.z;
     const d2 = dx * dx + dy * dy + dz * dz;
     if (d2 > R2) { if (b.st === SET && d2 < R2 * 1.7) b.wob = 0.55; continue; }
     const d = Math.sqrt(d2), ol = Math.max(0.7, d);
     const f = Math.pow(1 - d / R, 0.55) * power;   // 越靠近炸點噴越遠
     const wasSet = b.st === SET;
-    /* 垂直分量一律往上：照 dy 的正負給的話，炸點底下的積木會被往地面壓，
-       看起來像陷進地裡而不是被炸開。 */
+    /* 衝擊波是球狀的：方向取「炸心 → 積木」的三維單位向量，再疊一股往上的抬升。
+       抬升跟「離炸心多近」成正比——越近的拋得越高，落地才有明顯的拋物線；
+       只給徑向的話積木是貼著地面往外掃，看起來像被推倒不像被炸飛。
+       垂直分量一律取正（用 |dy|）：照 dy 正負給的話，炸點底下的積木會被往地裡壓。 */
+    const lift = f * Y_BOOST * (0.35 + 0.65 * (1 - d / R));
     breakBlock(b,
       dx / ol * f + rr(-2, 2),
-      Math.abs(dy) / ol * f * 0.45 + f * 0.3 + rr(2, 7),
+      Math.abs(dy) / ol * f * 0.5 + lift + rr(1, 4),
       dz / ol * f + rr(-2, 2));
     if (wasSet) n++;
   }
@@ -1629,21 +1636,64 @@ function stepMagic(dt) {
     return;
   }
   const rings = [];
+  let layers = 0;
   for (let i = 0; i < MAG_LAYER.length; i++) {
     const g = (el - i * MAG_GAP) / MAG_GROW;       // 這一層長到幾成
     if (g <= 0) break;
+    layers++;
     const k = Math.min(1, g);
     const L = MAG_LAYER[i];
-    rings.push({
-      x: magic.x, z: magic.z, sp: 1, c: 0xff2d20,
-      r: MAG_R * L.r * (0.55 + 0.45 * k),          // 長出來的時候由小擴到定位
-      y: 0.12 + MAG_R * L.y * k,                   // 一邊淡入一邊升到它該在的高度
-      spin: magic.spin * (i % 2 ? -1.35 : 1) * (1 + i * 0.15),   // 一層順一層逆
-      op: k
+    const rad = MAG_R * L.r * (0.55 + 0.45 * k);   // 長出來的時候由小擴到定位
+    const y = 0.12 + MAG_R * L.y * k;              // 一邊淡入一邊升到它該在的高度
+    const spin = magic.spin * (i % 2 ? -1.35 : 1) * (1 + i * 0.15);   // 一層順一層逆
+    /* 每一層是兩個環疊出來的：裡面一圈實色的芯，外面一圈加法混色的暈。
+       只畫一個環的話它就只是地上一條紅色帶子，不像在發光。 */
+    rings.push({ x: magic.x, z: magic.z, r: rad, y, spin, op: k, c: 0xff3a1c, sp: 1 });
+    rings.push({ x: magic.x, z: magic.z, r: rad * 1.04, y, spin: -spin * 0.6,
+                 op: k * 0.75, c: 0xff9a4a, add: 1 });
+  }
+  // 一層兩個環（芯 + 暈），所以要數層數不是數環數，音效才不會一層響兩次
+  if (layers > magic.shown) { magic.shown = layers; sndRune(magic.shown - 1); }
+  magic.rings = rings;
+  implode(magic, dt);
+}
+
+/* ── 引力坍縮 ─────────────────────────────────────────────
+   爆炸前的最後幾秒，把周圍的碎料往陣心捲進去（內吸 + 切線 = 螺旋），
+   再撒一些往中心捲的魔力光點。先收縮、後爆發，張力才拉得起來。
+   只動散落的碎料，不動建築本身——蓋好的部分要留到那一下才炸開。 */
+const IMP_TIME = 4.5;               // 倒數剩幾秒開始吸
+function implode(m, dt) {
+  const k = Math.min(1, (IMP_TIME - m.t) / IMP_TIME);   // 0 → 1，越接近爆炸吸得越猛
+  if (k <= 0) return;
+  const R = MAG_R, R2 = R * R;
+  for (const b of blocks) {
+    if (b.st !== FREE && b.st !== FLY) continue;        // 只吸碎料
+    const dx = b.x - m.x, dz = b.z - m.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > R2 || d2 < 1) continue;
+    const d = Math.sqrt(d2), nx = dx / d, nz = dz / d;
+    if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
+    // 內吸 + 切線；越靠近陣心吸力越強，看起來才像被捲進去而不是等速平移
+    const pull = (0.35 + 0.65 * (1 - d / R)) * k * dt * 3;
+    b.vx += (-nx * 9 - nz * 5) * pull;
+    b.vz += (-nz * 9 + nx * 5) * pull;
+    b.vy += 5 * pull;                                   // 稍微跳起來，不然只是在地上滑
+    b.ay += rr(-6, 6) * dt;
+  }
+  // 魔力光點：從陣的外圈生出來，靠 pull 一路捲進中心
+  m.motes = (m.motes || 0) + dt * (10 + 46 * k);
+  while (m.motes >= 1) {
+    m.motes--;
+    if (hot.length >= HOT_MAX) break;
+    const a = Math.random() * Math.PI * 2, rad = rr(0.45, 1.05) * R;
+    hot.push({
+      x: m.x + Math.cos(a) * rad, y: rr(0.4, R * 0.5), z: m.z + Math.sin(a) * rad,
+      vx: 0, vy: 0, vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.3, 0.85), life: rr(0.8, 1.8), g: 0, grow: 0.9,
+      cr: 1, cg: rr(0.25, 0.6), cb: rr(0.2, 0.45), pull: [m.x, m.z]
     });
   }
-  if (rings.length > magic.shown) { magic.shown = rings.length; sndRune(magic.shown - 1); }
-  magic.rings = rings;
 }
 
 /* ── 爆炸特效 ─────────────────────────────────────────────
@@ -1711,7 +1761,7 @@ function stepClouds(dt) {
        兩邊都從地面往上噴的話會混成一團胖雲，看不出蘑菇的頸子。 */
     const capY = R * 0.4 + Math.max(0, c.t - 0.45) * 8.5;
     if (c.t < 2.2) {                              // 柱子要一路補到傘蓋升上去為止
-      c.emit += dt * 44;
+      c.emit += dt * 58;
       while (c.emit >= 1) {
         c.emit--;
         const a = Math.random() * Math.PI * 2, rad = rr(0.2, R * 0.07);
@@ -1727,7 +1777,7 @@ function stepClouds(dt) {
           dust.push({ x, y: rr(0.6, capY * 0.92), z,
             vx: Math.cos(a) * rr(0.2, 1.2), vy: rr(0.8, 2.4), vz: Math.sin(a) * rr(0.2, 1.2),
             rx: Math.random() * 6, ry: Math.random() * 6,
-            life: rr(6, 8.5), s: rr(1.4, 3), c: rr(0.34, 0.56), g: 1.4, fade: 4,
+            life: rr(6, 8.5), s: rr(1.7, 3.4), c: rr(0.34, 0.56), g: 1.4, fade: 4,
             cr: c.magic ? 0.55 : undefined, cg: c.magic ? 0.24 : 0, cb: c.magic ? 0.28 : 0 });
       }
     }
@@ -1735,15 +1785,15 @@ function stepClouds(dt) {
        生在柱子上方、給比柱子快的初速，收尾就是「上面一團、下面一根」。 */
     if (t0 < 0.45 && c.t >= 0.45) {
       const H = R * 0.4;
-      for (let k = 0; k < 84; k++) {
+      for (let k = 0; k < 112; k++) {
         if (dust.length >= 520) break;
         const a = Math.random() * Math.PI * 2;
         const rad = Math.sqrt(rr(0.03, 1)) * R * 0.5;
         dust.push({
-          x: c.x + Math.cos(a) * rad, y: H + rr(-R * 0.05, R * 0.1), z: c.z + Math.sin(a) * rad,
+          x: c.x + Math.cos(a) * rad, y: H + rr(-R * 0.06, R * 0.12), z: c.z + Math.sin(a) * rad,
           vx: Math.cos(a) * rr(0.4, 2), vy: rr(8, 10.5), vz: Math.sin(a) * rr(0.4, 2),
           rx: Math.random() * 6, ry: Math.random() * 6,
-          life: rr(6.5, 9), s: rr(3, 5.6), c: rr(0.18, 0.42), g: 1.8, fade: 4.5,
+          life: rr(6.5, 9), s: rr(3.4, 6.2), c: rr(0.18, 0.42), g: 1.8, fade: 4.5,
           cr: c.magic ? 0.52 : undefined, cg: c.magic ? 0.2 : 0, cb: c.magic ? 0.24 : 0
         });
       }
@@ -1785,6 +1835,15 @@ function stepHot(dt) {
     d.life -= dt;
     if (d.life <= 0) { hot.splice(i, 1); continue; }
     d.vy -= (d.g === undefined ? -1.5 : d.g) * dt;
+    /* 被魔法陣吸的光點：往中心加速再加一股切線，走出螺旋。
+       只給內吸的話會直直射進中心，看起來像雨點不像在聚集魔力。 */
+    if (d.pull) {
+      const px = d.pull[0] - d.x, pz = d.pull[1] - d.z;
+      const pd = Math.hypot(px, pz) || 1;
+      d.vx += (px / pd * 30 - pz / pd * 20) * dt;
+      d.vz += (pz / pd * 30 + px / pd * 20) * dt;
+      d.vy += 16 * dt;
+    }
     d.vx *= 0.9; d.vz *= 0.9;
     d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
     if (d.y < 0.4) { d.y = 0.4; d.vy = Math.max(0, d.vy); }

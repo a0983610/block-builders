@@ -21,7 +21,9 @@ const ENG = (function () {
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXBOMB = 6, BOMB_PARTS = 3;
-  const MAG_MAX = 4, MAG_SPOKE = 8;      // 魔法陣最多幾層、每層幾根輻條
+  /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
+     四層就吃掉八個，再加上爆炸衝擊環與蘑菇雲腰環。 */
+  const MAG_MAX = 12, MAG_SPOKE = 8;
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
   const TW_SEG = 12;                // 龍捲風的分段數
@@ -144,7 +146,7 @@ const ENG = (function () {
 
     /* 塵霧：不投影、不受光，用 Basic 才不會被陰影吃掉 */
     dustMesh = new T.InstancedMesh(unit,
-      new T.MeshBasicMaterial({ transparent: true, opacity: 0.5, depthWrite: false }), MAXDUST);
+      new T.MeshBasicMaterial({ transparent: true, opacity: 0.62, depthWrite: false }), MAXDUST);
     dustMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     dustMesh.count = 0;
     dustMesh.frustumCulled = false;
@@ -475,7 +477,7 @@ const ENG = (function () {
         const a = (r.spin || 0) + k / MAG_SPOKE * Math.PI * 2;
         scratch.position.set(r.x + Math.cos(a) * r.r * 0.93, r.y, r.z + Math.sin(a) * r.r * 0.93);
         scratch.rotation.set(0, -a, 0);   // 繞 Y 轉 −a，local +X 才會指向外
-        scratch.scale.set(r.r * 0.17, 0.05, r.r * 0.05);
+        scratch.scale.set(r.r * 0.3, 0.04, r.r * 0.018);   // 細長的光條，不是粗短的刻度
         scratch.updateMatrix();
         magSpokeMesh.setMatrixAt(s++, scratch.matrix);
       }
