@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.18.1';
+const VERSION = '1.19.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1080,6 +1080,7 @@ let bombs = null;     // 已放下、倒數中的定時炸彈
 let nuke = null;      // 已呼叫的核彈（倒數或下墜中）
 let magic = null;     // 正在展開的魔法陣
 const hot = [];       // 火球粒子（走不透明那顆材質，才亮得起來）
+const flashes = [];   // 爆炸正中央那顆火球本體（好幾發一起炸就好幾顆）
 const fxRings = [];   // 地面衝擊環與蘑菇雲腰環
 const clouds = [];    // 正在成形的蘑菇雲（會隨時間往上長，不是一次生出來）
 
@@ -1745,47 +1746,69 @@ function implode(m, dt) {
 }
 
 /* ── 爆炸特效 ─────────────────────────────────────────────
-   三層東西疊出來的：正中央一顆白閃、往外膨脹的火球、貼地掃出去的衝擊環。
-   火球走 hot（不透明材質）而不是塵霧——塵霧那顆固定 50% 透明，
+   三層東西疊出來的：正中央一顆白熱的火球、從球面往外噴的火星、
+   貼地掃出去的衝擊環。
+   火星走 hot（不透明材質）而不是塵霧——塵霧那顆固定 50% 透明，
    火球混在裡面只會像幾片橘色玻璃，飛塊一擋就完全看不到了。 */
 const HOT_MAX = 220;
+/* 中央那顆火球。粒子撐不出「一整顆在發光的球」——96 顆小方塊再多也是一團碎火，
+   中間該最亮的地方反而因為方塊之間有縫而透出背景。所以球本體交給實體球殼
+   （見引擎 FLASH_SHELL），粒子留著當從球裡噴出來的火星。 */
+const FLASH_MAX = 4;
+const FLASH_LIFE = 0.65;         // 亮多久：蘑菇雲 0.45 秒撐傘蓋，火球要撐到那之後才收乾
+const FLASH_HOLD = 0.2;          // 前 0.2 秒維持全亮，之後才開始暗
+const FLASH_UP = 0.22;           // 球心抬離爆點多少（半徑的倍率）
 function spawnBlast(p, R, magic) {
+  /* 火球球心抬到爆點上方一點：貼著地面生的話會被自己炸出來的碎料堆整個埋掉——
+     它是加法混色，擋在前面的積木照樣不透明，量過只剩一成看得到。
+     抬起來之後球的下緣還是切在地面附近（埋在地下的那部分被草地擋掉），
+     上半個球高過碎料堆，才是參考圖那顆罩在爆心上的火球。 */
+  if (flashes.length >= FLASH_MAX) flashes.shift();
+  flashes.push({ x: p.x, y: p.y + R * FLASH_UP, z: p.z, R, magic, t: 0, r: R * 0.34, op: 1 });
   const n = Math.min(96, 22 + Math.round(R * 2.4));
   for (let i = 0; i < n; i++) {
     if (hot.length >= HOT_MAX) break;
     const a = Math.random() * Math.PI * 2;
-    const u = Math.pow(Math.random(), 0.6);              // 中間密、外圍疏
-    const rad = u * R * 0.5;
+    const u = Math.pow(Math.random(), 0.6);
+    /* 火星生在球面附近往外噴，不生在球心。生在球裡的話這些幾乎不透明的方塊
+       會整片糊在球的正面，把中間最亮的地方遮成一堆橘色碎片——
+       火球就退回「一團碎火」，正是要避開的那個樣子。 */
+    const rad = R * (0.52 + 0.46 * u);
     const up = Math.random() * R * 0.3;
-    /* 顏色照半徑分：核心亮黃、外圍橘。整團都給接近白的話，
+    /* 顏色照半徑分：貼著球面的亮黃、噴得最遠的橘。整團都給接近白的話，
        近看就只是一片奶油色，看不出是火。 */
     const core = u < 0.35;
     hot.push({
       x: p.x + Math.cos(a) * rad, y: p.y + up * 0.6 + 0.5, z: p.z + Math.sin(a) * rad,
       vx: Math.cos(a) * rad * 1.5, vy: 3 + up * 1.9, vz: Math.sin(a) * rad * 1.5,
       rx: Math.random() * 6, ry: Math.random() * 6,
-      s: rr(0.6, 1) * (0.8 + R * 0.055), life: rr(0.45, 1.1),
+      s: rr(0.45, 0.8) * (0.8 + R * 0.055), life: rr(0.45, 1.1),
       g: -1.5, grow: 1.25, cool: rr(0.5, 0.9),
       cr: 1, cg: core ? rr(0.78, 0.92) : rr(0.34, 0.5), cb: core ? rr(0.3, 0.5) : rr(0.04, 0.12),
       to: magic ? [0.85, 0.12, 0.32] : [0.5, 0.12, 0.03]            // 冷成暗紅／暗橘
     });
   }
-  // 正中央那顆閃光：白、兩三幀就收掉。爆炸的「一下」就是靠它，太大會整個畫面糊掉
-  for (let i = 0; i < 6; i++) {
-    if (hot.length >= HOT_MAX) break;
-    const a = Math.random() * Math.PI * 2;
-    hot.push({
-      x: p.x + Math.cos(a) * R * 0.1, y: p.y + rr(0.5, R * 0.16), z: p.z + Math.sin(a) * R * 0.1,
-      vx: 0, vy: 3, vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
-      s: R * rr(0.12, 0.2), life: rr(0.12, 0.2), g: -1, grow: 0.4, cool: 0.2,
-      cr: 1, cg: 1, cb: rr(0.8, 0.95), to: magic ? [1, 0.5, 0.6] : [1, 0.75, 0.3]
-    });
-  }
+  /* 中央的白閃原本是幾顆放大的白色方塊，現在球本體的核心就是白熱的，
+     再疊那幾顆只會在球的正面糊出幾片奶油色的方形，所以拿掉了。 */
   // 貼地往外掃的兩圈光。參考圖裡那幾道橫向的環就是這個
   const c = magic ? 0xff3b6b : 0xffb038;
   for (let i = 0; i < 2; i++)
     fxRings.push({ x: p.x, z: p.z, y: 0.16 + i * 0.12, r: R * 0.2, vr: R * (2.2 - i * 0.8),
                    op: 1, fade: 0.5 + i * 0.3, c, add: 1, spin: rr(0, 6.28) });
+}
+
+/* 火球：先一瞬間衝到大半個尺寸，之後慢慢撐開；亮度收得比半徑快。
+   兩者同速的話它會像顆縮回去的氣球，火球是「膨脹的同時燒完冷掉」。 */
+function stepFlash(dt) {
+  for (let i = flashes.length - 1; i >= 0; i--) {
+    const f = flashes[i];
+    f.t += dt;
+    const k = f.t / FLASH_LIFE;
+    if (k >= 1) { flashes.splice(i, 1); continue; }
+    f.r = f.R * (0.34 + 0.72 * Math.sqrt(k));       // sqrt：一開始猛、後面慢
+    const fade = f.t < FLASH_HOLD ? 1 : 1 - (f.t - FLASH_HOLD) / (FLASH_LIFE - FLASH_HOLD);
+    f.op = fade * fade;                             // 平方：亮的時間長、最後幾幀掉得乾脆
+  }
 }
 
 /* ── 蘑菇雲 ───────────────────────────────────────────────
@@ -2093,6 +2116,7 @@ function step(dt) {
   stepMagic(dt);
   stepClouds(dt);
   stepHot(dt);
+  stepFlash(dt);
   stepFxRings(dt);
   stepDozers(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
@@ -2156,6 +2180,7 @@ function draw() {
   ENG.putBombs(bombs || EMPTY);
   ENG.putTornados(twists || EMPTY);
   ENG.putFire(hot);
+  ENG.putFlash(flashes);
   /* 魔法陣與爆炸光環共用同一組環，在這裡合起來丟過去。
      魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。 */
   if (magic && magic.rings) ENG.setRings(magic.rings.concat(fxRings));

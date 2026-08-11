@@ -15,10 +15,26 @@ const ENG = (function () {
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
-  let bombMesh, nukeGroup, ringGroup, magSpokeMesh, fireMesh;
+  let bombMesh, nukeGroup, ringGroup, magSpokeMesh, fireMesh, flashGroup;
   const magRings = [], magDiscs = [];
+  const flashShells = [];
   const MAG_DISC = 6;                      // 填滿的圓盤（魔法陣每層一片）
   const MAXFIRE = 240;
+  /* 爆炸中心的火球。一顆球撐不起來：加法混色的單一顆球是「整片同亮度」，
+     邊緣硬得像顆塑膠球。改用幾層同心殼各給低濃度疊起來——中心被五層疊到爆白，
+     往外一層層淡出去，才是參考圖那種糊掉的光。
+     每層的濃度都壓得很低是因為加法混色會累加：中心是五層疊起來的（總和約 1.26，
+     剛好過曝成白），各層給高一點整顆就平成一片死白，黃橘的漸層全看不見。
+     r 半徑倍率、op 這層的濃度、c 平常的顏色、mc 魔法版的顏色。 */
+  const FLASH_SHELL = [
+    { r: 0.40, op: 0.50, c: 0xfffdf2, mc: 0xfff2f8 },
+    { r: 0.58, op: 0.30, c: 0xffeda6, mc: 0xffc9e0 },
+    { r: 0.75, op: 0.22, c: 0xffc44a, mc: 0xff86b6 },
+    { r: 0.92, op: 0.15, c: 0xff9a22, mc: 0xff4f86 },
+    { r: 1.10, op: 0.09, c: 0xff6d12, mc: 0xe22f6e }
+  ];
+  const FLASH_MAX = 4;                     // 最多同時幾顆（好幾發一起炸）
+  const FLASH_SQUASH = 0.82;               // 壓扁一點：貼地炸開的火球是扁的，不是正球
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXBOMB = 6, BOMB_PARTS = 3;
@@ -267,6 +283,25 @@ const ENG = (function () {
     fireMesh.count = 0; fireMesh.frustumCulled = false; fireMesh.visible = false;
     scene.add(fireMesh);
     fireMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
+    /* 火球的球殼：一層一顆 InstancedMesh，同時炸幾發都只吃 FLASH_SHELL.length 個
+       draw call。顏色走 instance color——加法混色下 instance color 就是亮度旋鈕，
+       亮度衰減與魔法版的粉紅都靠它，材質不用每幀改。
+       不寫深度但照樣測深度：埋在地面下的那半自然被草地擋掉，剩下的就是一頂圓罩。 */
+    flashGroup = new T.Group();
+    const flGeo = new T.SphereGeometry(1, 20, 14);
+    for (const sh of FLASH_SHELL) {
+      const m = new T.InstancedMesh(flGeo, new T.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: sh.op,
+        depthWrite: false, blending: T.AdditiveBlending
+      }), FLASH_MAX);
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.count = 0; m.frustumCulled = false;
+      m.setColorAt(0, tmpC.setHex(0xffffff));
+      flashShells.push(m); flashGroup.add(m);
+    }
+    flashGroup.visible = false;
+    scene.add(flashGroup);
 
     /* 貼地的發光圓環：魔法陣的每一層、爆炸的衝擊波、蘑菇雲腰上那一圈，
        都是這一組。每層一個扁環 + 一圈紋路——只有環的話它就是一條紅色的帶子，
@@ -593,6 +628,29 @@ const ENG = (function () {
     if (fireMesh.instanceColor) fireMesh.instanceColor.needsUpdate = true;
   }
 
+  /* 爆炸中心那顆火球。list 每一項 {x, y, z, r 現在的半徑, op 亮度, magic 要不要粉紅} */
+  function putFlash(list) {
+    const n = Math.min(list.length, FLASH_MAX);
+    flashGroup.visible = n > 0;
+    if (!n) return;
+    for (let i = 0; i < FLASH_SHELL.length; i++) {
+      const sh = FLASH_SHELL[i], m = flashShells[i];
+      m.count = n;
+      for (let k = 0; k < n; k++) {
+        const f = list[k];
+        const r = f.r * sh.r;
+        scratch.position.set(f.x, f.y, f.z);
+        scratch.rotation.set(0, 0, 0);
+        scratch.scale.set(r, r * FLASH_SQUASH, r);
+        scratch.updateMatrix();
+        m.setMatrixAt(k, scratch.matrix);
+        m.setColorAt(k, tmpC.setHex(f.magic ? sh.mc : sh.c).multiplyScalar(f.op));
+      }
+      m.instanceMatrix.needsUpdate = true;
+      if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    }
+  }
+
   /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
   function setGroundSize(r) {
     ground.scale.set(r * 2, 1.2, r * 2);
@@ -864,7 +922,7 @@ const ENG = (function () {
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust, putTrebs, putRocks, putDozers,
     setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
-    putBombs, setNuke, hideNuke, setRings, hideRings, putFire,
+    putBombs, setNuke, hideNuke, setRings, hideRings, putFire, putFlash,
     fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }

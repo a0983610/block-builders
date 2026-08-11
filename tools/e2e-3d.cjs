@@ -1522,6 +1522,75 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      nk.fireGone === 0 && nk.ringGone === 0,
      '十三秒後火球 ' + nk.fireGone + ' 顆、光環 ' + nk.ringGone + ' 圈');
 
+  /* 爆炸中心那顆火球（flashes）。粒子撐不出「一整顆在發光的球」，所以球本體是
+     實體球殼，火星退居噴出來的碎火。這裡驗的是：球真的畫在畫面上（過曝的白像素
+     只能來自它——把它拿掉重畫一次同一幀就知道差多少）、成本固定五個 draw call、
+     球心有抬離爆點（不抬會被自己炸出來的碎料堆埋掉）、亮完會收乾淨。 */
+  const flash = await page.evaluate(() => {
+    const shot = () => {
+      draw(); ENG.render();
+      const gl = ENG.three.renderer.getContext();
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let n = 0, lit = 0;
+      for (let i = 0; i < px.length; i += 4 * 17) {
+        n++;
+        if (px[i] > 245 && px[i + 1] > 240 && px[i + 2] > 200) lit++;   // 過曝的白
+      }
+      return { pct: lit / n * 100, calls: ENG.info().calls };
+    };
+    targetCnt = 2400; shapePick = SHAPES.findIndex(s => s.n === '帝國大廈');
+    startBuild(true); completeNow();
+    for (let i = 0; i < 240; i++) step(0.05);          // 等前一發的煙火散乾淨
+    callNuke({ x: 0, z: 0 });
+    for (let i = 0; i < 57; i++) step(0.05);           // 落地爆炸（2.8 秒）後約 0.05 秒
+    const born = flashes.map(f => ({ r: +f.r.toFixed(1), op: f.op, y: +f.y.toFixed(1) }));
+    const on = shot();
+    const saved = flashes.splice(0, flashes.length);   // 同一幀只把火球拿掉，其他都不動
+    const off = shot();
+    flashes.push(...saved);
+    step(0.05); step(0.05);                            // 爆後 0.15 秒：還在全亮期
+    const hold = flashes.length ? flashes[0].op : -1;
+    for (let i = 0; i < 6; i++) step(0.05);            // 爆後 0.45 秒：該撐大也該暗了
+    const fade = flashes.length ? { r: +flashes[0].r.toFixed(1), op: flashes[0].op } : null;
+    for (let i = 0; i < 6; i++) step(0.05);            // 爆後 0.75 秒：超過 FLASH_LIFE
+    const left = flashes.length;
+    /* 火星的分布單獨量：這一刻場上的 hot 混著蘑菇雲柱心的火光（那些本來就生在中心），
+       混在一起量不出「火星有沒有生在球面外」。直接叫一次 spawnBlast 最乾淨。 */
+    hot.length = 0; flashes.length = 0; fxRings.length = 0;
+    spawnBlast({ x: 0, y: 2.5, z: 0 }, 30, false);
+    const sparkMin = Math.min(...hot.map(d => Math.hypot(d.x, d.z)));
+    for (let i = 0; i < 6; i++) spawnBlast({ x: i * 3, y: 2.5, z: 0 }, 30, false);
+    const capped = flashes.length;
+    hot.length = 0; flashes.length = 0; fxRings.length = 0;
+    return { born, on, off, hold, fade, left, sparkMin, capped };
+  });
+  /* 半徑走 sqrt，爆後第一幀（0.05 秒）就衝到一半以上——「一瞬間撐開」是刻意的，
+     等速膨脹看起來像吹氣球。所以這裡量的是「一幀內有沒有到半徑的一半」。 */
+  ok('爆炸中心有一顆實體火球，一幀就撐開、球心抬離地面',
+     flash.born.length === 1 && flash.born[0].r > 15 && flash.born[0].r < 20 &&
+     flash.born[0].y > 6,
+     '爆後 0.05 秒半徑 ' + (flash.born[0] ? flash.born[0].r : '—') +
+     '（上限 30）、球心 y=' + (flash.born[0] ? flash.born[0].y : '—') + '（爆點 2.5）');
+  ok('火球真的亮在畫面上', flash.on.pct > 1 && flash.on.pct > flash.off.pct * 3,
+     '同一幀有火球 ' + flash.on.pct.toFixed(2) + '% 過曝、拿掉只剩 ' +
+     flash.off.pct.toFixed(2) + '%');
+  ok('火球固定吃五個 draw call（每層球殼一個）', flash.on.calls - flash.off.calls === 5,
+     flash.off.calls + ' → ' + flash.on.calls + ' 個');
+  ok('火球先全亮一下才開始暗', flash.hold === 1, '爆後 0.15 秒亮度 ' + flash.hold);
+  ok('火球會一邊撐大一邊暗下來',
+     !!flash.fade && flash.fade.r > flash.born[0].r + 8 && flash.fade.op < 0.7,
+     '0.45 秒時半徑 ' + (flash.fade ? flash.fade.r : '—') + '、亮度 ' +
+     (flash.fade ? flash.fade.op.toFixed(2) : '—'));
+  ok('火球 0.75 秒內收乾淨', flash.left === 0, '剩 ' + flash.left + ' 顆');
+  /* 火星要生在球面外。生在球心的話那些幾乎不透明的方塊會整片糊在球的正面，
+     把最亮的核心遮成一堆橘色碎片——改成球殼的意義就沒了。 */
+  ok('火星生在球面外，不會糊住核心', flash.sparkMin > 30 * 0.45,
+     '最近的一顆離爆心 ' + flash.sparkMin.toFixed(1) + '（半徑 30 的 45% 是 13.5）');
+  ok('同時炸好幾發也只留最新的四顆火球', flash.capped === 4,
+     '連續 7 發 → 場上 ' + flash.capped + ' 顆');
+
   /* 腳下那圈煙：柱子不能從一塊乾淨的草地長出來。
      光看「貼地的煙有幾團」不夠——柱子底部本來就有煙。要看的是它有沒有往外鋪開，
      所以量「離爆心 R×0.25 以外、貼著地面的煙」有幾團、最遠鋪到哪。
