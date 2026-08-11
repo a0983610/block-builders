@@ -250,9 +250,9 @@ const ENG = (function () {
       /* 環用一般混色：加法混色疊在亮綠色草地上會被洗成白的，看不出是紫的。
          輻條那圈小的才用加法，當作陣上的光點。 */
       /* 魔法陣那幾層用一般混色：加法混色疊在亮綠色草地上會被洗成白的，
-         看不出是紫的。爆炸的衝擊環才給加法（它就是要發光），逐環切換。 */
-      const m = new T.Mesh(new T.RingGeometry(0.87, 1, 64), new T.MeshBasicMaterial({
-        color: 0x8b3ff0, transparent: true, opacity: 0.7,
+         看不出是紅的。爆炸的衝擊環才給加法（它就是要發光），逐環切換。 */
+      const m = new T.Mesh(new T.RingGeometry(0.93, 1, 64), new T.MeshBasicMaterial({
+        color: 0xff2d20, transparent: true, opacity: 0.7,
         side: T.DoubleSide, depthWrite: false
       }));
       m.rotation.x = -Math.PI / 2;        // RingGeometry 生在 XY 平面，要放平
@@ -260,7 +260,7 @@ const ENG = (function () {
       magRings.push(m); ringGroup.add(m);
     }
     magSpokeMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
-      color: 0xdcb0ff, transparent: true, opacity: 0.85,
+      color: 0xffc4a0, transparent: true, opacity: 0.85,
       depthWrite: false, blending: T.AdditiveBlending
     }), MAG_MAX * MAG_SPOKE);
     magSpokeMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -673,15 +673,40 @@ const ENG = (function () {
     sc.left = -s; sc.right = s; sc.top = s; sc.bottom = -s;
     sc.updateProjectionMatrix();
     setGroundSize(arena + 26);
-    /* 霧是給遠方地平線的，不該把建築本身吃掉，所以起霧處也要跟著取景距離走。
-       只綁 arena 的話，相機退得遠時建築會泡在霧裡——直式手機看金門大橋要退到 460，
-       而霧只到 316，整座橋會白掉。 */
+    // 爆炸運鏡期間不准把鏡頭收回去，不然核彈把建築夷平換場時，蘑菇雲會被拉出畫面
+    if (wideT > 0) {
+      camTarget.dist = Math.max(camTarget.dist, wideDist);
+      camTarget.ty = Math.max(camTarget.ty, wideDist * 0.22);
+    }
+    setFog();
+  }
+
+  /* 霧是給遠方地平線的，不該把建築本身吃掉，所以起霧處要跟著目前的取景距離走。
+     只綁 arena 的話，相機退得遠時建築會泡在霧裡——直式手機看金門大橋要退到 460，
+     而霧只到 316，整座橋會白掉。爆炸運鏡拉開視距時也是同一個問題，所以獨立成一支。 */
+  function setFog() {
+    const arena = lastFit ? lastFit.arena : 40;
     const fogAt = Math.max(arena + 20, camTarget.dist);
     scene.fog.near = fogAt;
     scene.fog.far = Math.max(arena * 2.6 + 90, fogAt * 3);
   }
 
+  /* 爆炸運鏡：暫時把鏡頭退開、視線抬高，整朵蘑菇雲才進得了畫面。
+     時間到之後用最後一次取景的參數自己收回去，不會一直停在遠處。 */
+  let wideT = 0, wideDist = 0;
+  function holdWide(dist, secs) {
+    wideDist = Math.max(camTarget.dist, dist);
+    wideT = Math.max(wideT, secs);
+    camTarget.dist = wideDist;
+    camTarget.ty = Math.max(camTarget.ty, wideDist * 0.22);
+    setFog();
+  }
+
   function updateCamera(dt) {
+    if (wideT > 0) {                          // 爆炸運鏡到期，回到原本的取景
+      wideT -= dt;
+      if (wideT <= 0 && lastFit) fitCamera(lastFit.radius, lastFit.height, lastFit.arena);
+    }
     cam.dist += (camTarget.dist - cam.dist) * Math.min(1, dt * 2.2);
     cam.ty += (camTarget.ty - cam.ty) * Math.min(1, dt * 2.2);
     /* 平移跟得比縮放緊。用 2.2 的話等速平移時鏡頭會落後目標約 16 單位——
@@ -750,7 +775,7 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putDozers,
     setBall, hideBall, setTornado, hideTornado, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, setNuke, hideNuke, setRings, hideRings, putFire,
-    fitCamera, updateCamera, orbit, pan, zoom, shake,
+    fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }
   };

@@ -1459,6 +1459,49 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('魔法爆完也會留一朵蘑菇雲，而且是紅的', mg.fire > 50 && mg.cloud > 90 && mg.tinted === mg.cloud,
      mg.fire + ' 顆火球、1.2 秒後 ' + mg.cloud + ' 團煙（染紅的 ' + mg.tinted + ' 團）');
 
+  /* 陣是由下往上疊的，不是同心圓：層與層之間高度要遞增，
+     而且貼地那圈的半徑就是爆炸範圍（要讓玩家看得出會炸到哪）。 */
+  const mgRing = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    castMagic({ x: 0, z: 0 });
+    for (let i = 0; i < 100; i++) step(0.05);       // 5 秒：四層都長齊
+    const r = (magic ? magic.rings : []).map(o => ({ y: +o.y.toFixed(1), r: +o.r.toFixed(1), c: o.c }));
+    return { n: r.length, rings: r,
+             rising: r.every((o, i) => i === 0 || o.y > r[i - 1].y),
+             red: r.every(o => o.c === 0xff2d20), ground: r[0] ? r[0].r : 0 };
+  });
+  ok('魔法陣是紅色、而且一層一層往上疊', mgRing.n === 4 && mgRing.rising && mgRing.red,
+     mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、'));
+  ok('貼地那圈的半徑就是爆炸範圍', Math.abs(mgRing.ground - 30) < 0.5,
+     '地面圈半徑 ' + mgRing.ground + '（爆炸範圍 30）');
+
+  /* 雲頂會升到 40 以上，貼著建築的取景根本裝不下——引爆時鏡頭要退開，
+     而且事後要自己收回來，不能一直停在遠處。
+     建築鎖同一座，換場後的取景距離才有得比。 */
+  const camFx = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 900; startBuild(true); completeNow();
+    // 前面的測試剛炸過，運鏡還沒收完。先讓它跑完，不然量到的起點就是「已經退開」的視距
+    for (let i = 0; i < 200; i++) step(0.05);
+    startBuild(true); completeNow();
+    const d0 = ENG.camTarget.dist;
+    callNuke({ x: 0, z: 0 });
+    for (let i = 0; i < 58; i++) step(0.05);        // 引爆
+    const wide = ENG.camTarget.dist, ty = ENG.camTarget.ty;
+    for (let i = 0; i < 60; i++) step(0.05);        // 3 秒後：雲正高，還要維持
+    const hold = ENG.camTarget.dist;
+    for (let i = 0; i < 160; i++) step(0.05);       // 過了 7 秒的運鏡時間
+    const back = ENG.camTarget.dist;
+    shapePick = -1;
+    return { d0, wide, ty, hold, back };
+  });
+  ok('核彈引爆時鏡頭會退開，整朵雲才進得了畫面',
+     camFx.wide > camFx.d0 * 1.3 && camFx.hold === camFx.wide,
+     '視距 ' + camFx.d0.toFixed(0) + ' → ' + camFx.wide.toFixed(0) +
+     '（視線高度 ' + camFx.ty.toFixed(0) + '），三秒後仍維持');
+  ok('運鏡結束後鏡頭會自己收回來', Math.abs(camFx.back - camFx.d0) < 2,
+     '七秒後回到 ' + camFx.back.toFixed(0) + '（原本 ' + camFx.d0.toFixed(0) + '）');
+
   /* 倒數中換建築：留著的話會炸到剛蓋好的新那座 */
   const swap = await page.evaluate(() => {
     startBuild(true); completeNow();

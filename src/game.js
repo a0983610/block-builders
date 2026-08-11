@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.12.0';
+const VERSION = '1.13.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1600,8 +1600,17 @@ function stepNuke(dt) {
 /* ── 爆裂魔法 ───────────────────────────────────────────
    魔法陣一層層往外長，最外圈就是等一下的爆炸範圍——
    讓你在那六秒裡看得出來會炸到哪。一次只有一個，再點會移到新的地點重來。 */
-const MAG_TIME = 6, MAG_R = 30, MAG_POW = 34, MAG_LAYERS = 4;
+const MAG_TIME = 6, MAG_R = 30, MAG_POW = 34;
 const MAG_GAP = 1.1, MAG_GROW = 0.5;      // 每隔多久長一層、一層長多久
+/* 陣是**由下往上疊**的，不是同心圓：貼地那圈的半徑就是爆炸範圍（要讓你看得出會炸到哪），
+   上面三圈浮在半空，最上面那圈再放大一點——照參考圖的層次。
+   r 與 y 都是 MAG_R 的倍率。 */
+const MAG_LAYER = [
+  { r: 1.00, y: 0.004 },
+  { r: 0.55, y: 0.22 },
+  { r: 0.38, y: 0.42 },
+  { r: 0.60, y: 0.62 }
+];
 function castMagic(point) {
   magic = { x: point.x, z: point.z, t: MAG_TIME, spin: 0, shown: 0 };
   sndRune(0);
@@ -1620,14 +1629,15 @@ function stepMagic(dt) {
     return;
   }
   const rings = [];
-  for (let i = 0; i < MAG_LAYERS; i++) {
+  for (let i = 0; i < MAG_LAYER.length; i++) {
     const g = (el - i * MAG_GAP) / MAG_GROW;       // 這一層長到幾成
     if (g <= 0) break;
     const k = Math.min(1, g);
+    const L = MAG_LAYER[i];
     rings.push({
-      x: magic.x, z: magic.z, sp: 1,
-      r: MAG_R * (0.31 + i * 0.23) * (0.55 + 0.45 * k),   // 長出來的時候由小擴到定位
-      y: 0.12 + i * 0.06,                                  // 每層墊高一點，免得互相 z-fighting
+      x: magic.x, z: magic.z, sp: 1, c: 0xff2d20,
+      r: MAG_R * L.r * (0.55 + 0.45 * k),          // 長出來的時候由小擴到定位
+      y: 0.12 + MAG_R * L.y * k,                   // 一邊淡入一邊升到它該在的高度
       spin: magic.spin * (i % 2 ? -1.35 : 1) * (1 + i * 0.15),   // 一層順一層逆
       op: k
     });
@@ -1654,7 +1664,7 @@ function spawnBlast(p, R, magic) {
     const core = u < 0.35;
     hot.push({
       x: p.x + Math.cos(a) * rad, y: p.y + up * 0.6 + 0.5, z: p.z + Math.sin(a) * rad,
-      vx: Math.cos(a) * rad * 1.5, vy: 2 + up * 1.3, vz: Math.sin(a) * rad * 1.5,
+      vx: Math.cos(a) * rad * 1.5, vy: 3 + up * 1.9, vz: Math.sin(a) * rad * 1.5,
       rx: Math.random() * 6, ry: Math.random() * 6,
       s: rr(0.6, 1) * (0.8 + R * 0.055), life: rr(0.45, 1.1),
       g: -1.5, grow: 1.25, cool: rr(0.5, 0.9),
@@ -1685,7 +1695,12 @@ function spawnBlast(p, R, magic) {
    一次生完的話它會「啪」地整朵出現在半空，看起來像貼圖不像爆炸長出來的。
    火光在裡面燒約 0.8 秒再冷掉，那是參考圖裡雲心會發亮的來源。 */
 const CLOUD_GROW = 2.4;         // 整朵長完要多久
-function startCloud(p, R, magic) { clouds.push({ x: p.x, z: p.z, R, magic, t: 0, emit: 0 }); }
+function startCloud(p, R, magic) {
+  clouds.push({ x: p.x, z: p.z, R, magic, t: 0, emit: 0 });
+  /* 順手把鏡頭退開。雲頂會升到 R×1.3 左右，用原本貼著建築的取景根本裝不下——
+     量過：不退的話中型建築只看得到那根柱子，傘蓋整個在畫面上緣外。 */
+  ENG.holdWide(R * 2.2, 7);
+}
 function stepClouds(dt) {
   for (let i = clouds.length - 1; i >= 0; i--) {
     const c = clouds[i], t0 = c.t;
@@ -1694,9 +1709,9 @@ function stepClouds(dt) {
     /* 傘蓋現在爬到哪。柱子要靠這個值決定生到多高——柱子不是「自己往上長」，
        而是「傘蓋往上升，沿路留下來的那一條」。
        兩邊都從地面往上噴的話會混成一團胖雲，看不出蘑菇的頸子。 */
-    const capY = R * 0.28 + Math.max(0, c.t - 0.45) * 5;
-    if (c.t < 1.3) {
-      c.emit += dt * 40;
+    const capY = R * 0.4 + Math.max(0, c.t - 0.45) * 8.5;
+    if (c.t < 2.2) {                              // 柱子要一路補到傘蓋升上去為止
+      c.emit += dt * 44;
       while (c.emit >= 1) {
         c.emit--;
         const a = Math.random() * Math.PI * 2, rad = rr(0.2, R * 0.07);
@@ -1719,14 +1734,14 @@ function stepClouds(dt) {
     /* 傘蓋：0.45 秒時一次撐開，然後自己往上升。
        生在柱子上方、給比柱子快的初速，收尾就是「上面一團、下面一根」。 */
     if (t0 < 0.45 && c.t >= 0.45) {
-      const H = R * 0.28;
+      const H = R * 0.4;
       for (let k = 0; k < 84; k++) {
         if (dust.length >= 520) break;
         const a = Math.random() * Math.PI * 2;
         const rad = Math.sqrt(rr(0.03, 1)) * R * 0.5;
         dust.push({
           x: c.x + Math.cos(a) * rad, y: H + rr(-R * 0.05, R * 0.1), z: c.z + Math.sin(a) * rad,
-          vx: Math.cos(a) * rr(0.4, 2), vy: rr(5, 6.5), vz: Math.sin(a) * rr(0.4, 2),
+          vx: Math.cos(a) * rr(0.4, 2), vy: rr(8, 10.5), vz: Math.sin(a) * rr(0.4, 2),
           rx: Math.random() * 6, ry: Math.random() * 6,
           life: rr(6.5, 9), s: rr(3, 5.6), c: rr(0.18, 0.42), g: 1.8, fade: 4.5,
           cr: c.magic ? 0.52 : undefined, cg: c.magic ? 0.2 : 0, cb: c.magic ? 0.24 : 0
@@ -1738,7 +1753,7 @@ function stepClouds(dt) {
         const rad = Math.sqrt(rr(0.02, 1)) * R * 0.34;
         hot.push({
           x: c.x + Math.cos(a) * rad, y: H + rr(0, R * 0.06), z: c.z + Math.sin(a) * rad,
-          vx: Math.cos(a) * rr(0.3, 1.5), vy: rr(5, 6.5), vz: Math.sin(a) * rr(0.3, 1.5),
+          vx: Math.cos(a) * rr(0.3, 1.5), vy: rr(8, 10.5), vz: Math.sin(a) * rr(0.3, 1.5),
           rx: Math.random() * 6, ry: Math.random() * 6,
           s: rr(1.6, 3.2), life: rr(0.7, 1.5), g: 1.8, grow: 1.04, cool: rr(0.6, 1.1),
           cr: 1, cg: rr(0.68, 0.9), cb: rr(0.2, 0.45),
@@ -1746,7 +1761,7 @@ function stepClouds(dt) {
         });
       }
       // 腰上那一圈：參考圖裡最好認的特徵
-      fxRings.push({ x: c.x, z: c.z, y: R * 0.13, r: R * 0.2, vr: R * 0.4, vy: R * 0.07,
+      fxRings.push({ x: c.x, z: c.z, y: R * 0.18, r: R * 0.2, vr: R * 0.4, vy: R * 0.12,
                      op: 0.9, fade: 1.4, c: c.magic ? 0xff5577 : 0xffd08a, add: 1, spin: rr(0, 6.28) });
     }
     /* 魔法版另外撒星光：參考圖的那些小星星。不冷卻，就是一閃一閃地飄上去 */
