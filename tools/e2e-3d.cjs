@@ -1067,11 +1067,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open')
     };
   });
-  /* 十種工具的解鎖狀態拼成一長串很難讀，用「前 n 種開著」來寫 */
-  const NTOOL = 10;
+  /* 十一種工具的解鎖狀態拼成一長串很難讀，用「前 n 種開著」來寫 */
+  const NTOOL = 11;
   const opened = n => Array(NTOOL).fill('false').fill('true', 0, n).join(',');
   const btnOpen = n => Array(NTOOL).fill('lock').fill('open', 0, n).join(',');
-  ok('工具共 10 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
+  ok('工具共 11 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
   ok('一開始只有手指跟槌子可用',
      lock0.ok.join(',') === opened(2), lock0.ok.join(','));
   ok('鎖住的工具在畫面上也是鎖住的',
@@ -1089,19 +1089,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     at('smashed', 1000);
     at('destroyed', 8);
     at('destroyed', 10);
+    at('smashed', 2000);
     at('smashed', 3000);
     stats = freshStats(); stats.destroyed = 15; stats.smashed = 3000; renderTools();      // 全開
     step2.push(TOOLS.map(t => toolOk(t)).join(','));
     return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
   ok('擊飛 300 塊解鎖大槌', lock1.step2[0] === opened(3), lock1.step2[0]);
-  ok('拆掉 3 座解鎖保齡球', lock1.step2[1] === 'true,true,false,true,false,false,false,false,false,false', lock1.step2[1]);
-  ok('拆掉 6 座解鎖投石機', lock1.step2[2] === 'true,true,false,true,true,false,false,false,false,false', lock1.step2[2]);
-  ok('擊飛 1000 塊解鎖龍捲風', lock1.step2[3] === 'true,true,true,false,false,true,false,false,false,false', lock1.step2[3]);
-  ok('拆掉 8 座解鎖放火', lock1.step2[4] === 'true,true,false,true,true,false,true,false,false,false', lock1.step2[4]);
-  ok('拆掉 10 座解鎖定時炸彈', lock1.step2[5] === 'true,true,false,true,true,false,true,true,false,false', lock1.step2[5]);
-  ok('擊飛 3000 塊解鎖核彈', lock1.step2[6] === 'true,true,true,false,false,true,false,false,true,false', lock1.step2[6]);
-  ok('拆掉 15 座解鎖爆裂魔法', lock1.step2[7] === opened(NTOOL), lock1.step2[7]);
+  ok('拆掉 3 座解鎖保齡球', lock1.step2[1] === 'true,true,false,true,false,false,false,false,false,false,false', lock1.step2[1]);
+  ok('拆掉 6 座解鎖投石機', lock1.step2[2] === 'true,true,false,true,true,false,false,false,false,false,false', lock1.step2[2]);
+  ok('擊飛 1000 塊解鎖龍捲風', lock1.step2[3] === 'true,true,true,false,false,true,false,false,false,false,false', lock1.step2[3]);
+  ok('拆掉 8 座解鎖放火', lock1.step2[4] === 'true,true,false,true,true,false,true,false,false,false,false', lock1.step2[4]);
+  ok('拆掉 10 座解鎖定時炸彈', lock1.step2[5] === 'true,true,false,true,true,false,true,true,false,false,false', lock1.step2[5]);
+  // 擊飛 2000 也順便滿足大槌(300)與龍捲風(1000)，但還沒到核彈的 3000
+  ok('擊飛 2000 塊解鎖隕石', lock1.step2[6] === 'true,true,true,false,false,true,false,false,true,false,false', lock1.step2[6]);
+  ok('擊飛 3000 塊解鎖核彈', lock1.step2[7] === 'true,true,true,false,false,true,false,false,true,true,false', lock1.step2[7]);
+  ok('拆掉 15 座解鎖爆裂魔法', lock1.step2[8] === opened(NTOOL), lock1.step2[8]);
   ok('解鎖後畫面上的鎖頭消失',
      lock1.btn.join(',') === btnOpen(NTOOL), lock1.btn.join(','));
 
@@ -1906,15 +1909,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const swap = await page.evaluate(() => {
     startBuild(true); completeNow();
     placeBomb({ x: 3, y: 2, z: 3 }); callNuke({ x: 0, z: 0 }); castMagic({ x: 5, z: 5 });
-    const armed = [bombs ? bombs.length : 0, nuke ? 1 : 0, magic ? 1 : 0].join(',');
+    callMeteor({ x: -4, y: 2, z: 2 });
+    const cnt = () => [bombs ? bombs.length : 0, nuke ? 1 : 0, magic ? 1 : 0,
+                       meteors ? meteors.length : 0].join(',');
+    const armed = cnt();
     startBuild(true);
-    const after = [bombs ? bombs.length : 0, nuke ? 1 : 0, magic ? 1 : 0].join(',');
+    const after = cnt();
     const n0 = placedCnt;
     for (let i = 0; i < 200; i++) step(0.05);           // 10 秒：三個的倒數都早就到了
     return { armed, after, n0, hurt: n0 - placedCnt, phase };
   });
-  ok('換建築會把倒數中的道具一起收掉', swap.after === '0,0,0',
-     '換之前 ' + swap.armed + ' → 換之後 ' + swap.after);
+  ok('換建築會把倒數中的道具一起收掉', swap.after === '0,0,0,0',
+     '炸彈／核彈／魔法／隕石：換之前 ' + swap.armed + ' → 換之後 ' + swap.after);
   ok('新建築不會被上一輪的倒數炸到', swap.hurt <= 0,
      '換場後 10 秒內少了 ' + swap.hurt + ' 塊（phase=' + swap.phase + '）');
 
@@ -1993,6 +1999,130 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      只在陣展開的那六秒會這樣，平常是 11。 */
   ok('炸彈與魔法陣在場上才多吃 draw call', dc.busy > dc.idle && dc.busy <= 36,
      '放了炸彈與六層魔法陣時 ' + dc.busy + ' 個');
+
+  /* ══════════ 隕石 ══════════ */
+  head('隕石');
+  await reset(page, { shape: '中世紀城堡', cnt: 3000, workers: 4 });
+  const met = await page.evaluate(() => {
+    completeNow();
+    if (fires) { for (const f of fires) f.b.burn = 0; fires = null; }
+    hot.length = 0; flashes.length = 0; dust.length = 0;
+    const dust0 = dust.length;
+    callMeteor({ x: 0, y: 4, z: 0 });
+    const m = meteors[0];
+    const aim = { x: m.tx, y: m.ty, z: m.tz };
+    for (let i = 0; i < 40; i++) step(0.05);          // 2 秒：還在倒數
+    draw(); ENG.render();
+    const wait = { n: meteors.length, lit: meteors.filter(k => k.lit).length,
+                   mark: dust.length - dust0, calls: ENG.info().calls };
+    let g = 0;
+    while (meteors && !meteors[0].lit && g++ < 60) step(0.05);
+    const enter = { t: +(g * 0.05).toFixed(2), y: +meteors[0].y.toFixed(1) };
+    /* 45°：水平還要飛的距離要等於還沒掉的高度。取兩個時間點量，
+       不是只量出現的那一刻——只量一點的話，等速直線與拋物線分不出來。 */
+    const ang = [];
+    for (let k = 0; k < 8; k++) {
+      step(0.05);
+      if (!meteors || !meteors[0]) break;
+      const q = meteors[0];
+      ang.push({ h: +Math.hypot(q.x - aim.x, q.z - aim.z).toFixed(2), up: +(q.y - aim.y).toFixed(2) });
+    }
+    /* draw call 要用「同一幀有沒有它」來量，不能比前後兩幀：
+       倒數中的地面標記、飛行中的火苗與煙各自都會讓別的 mesh 現身，
+       前後相減量到的是那些東西的帳。lit 歸零就等於這一幀沒有隕石在天上。 */
+    draw(); ENG.render();
+    const callsOn = ENG.info().calls;
+    const litSaved = meteors.map(k => k.lit);
+    for (const k of meteors) k.lit = 0;
+    draw(); ENG.render();
+    const callsOff = ENG.info().calls;
+    meteors.forEach((k, i) => { k.lit = litSaved[i]; });
+    const flying = { hot: hot.length, on: callsOn, off: callsOff };
+    let g2 = 0;
+    while (meteors && g2++ < 60) step(0.05);          // 撞下去
+    const hit = { fires: fires ? fires.length : 0, flash: flashes.length,
+                  fy: flashes.length ? +flashes[0].y.toFixed(1) : -1, smashed: stats.smashed };
+    for (let i = 0; i < 40; i++) step(0.05);          // 兩秒後火該蔓延開了
+    const spread = fires ? fires.length : 0;
+    return { wait, enter, ang, flying, hit, spread, R: MET_R, rockR: ROCK_R, fall: MET_FALL };
+  });
+  ok('點下去先倒數，天上還沒東西',
+     met.wait.n === 1 && met.wait.lit === 0 && met.wait.mark > 20,
+     '兩秒後：場上 ' + met.wait.n + ' 顆、在飛 ' + met.wait.lit +
+     ' 顆，地面標記噴了 ' + met.wait.mark + ' 團塵');
+  ok('3 秒後才進大氣層', met.enter.t >= 0.9 && met.enter.t <= 1.15 && met.enter.y > 50,
+     '倒數結束後 ' + met.enter.t + ' 秒開始畫，出現高度 y=' + met.enter.y);
+  /* 45° 就是「水平還要飛的距離＝還沒掉的高度」。等速直線的話這個比值全程都是 1 */
+  ok('以 45 度直線插下來', met.ang.length >= 6 &&
+     met.ang.every(a => Math.abs(a.h / a.up - 1) < 0.06),
+     met.ang.slice(0, 4).map(a => '水平 ' + a.h + '／高度 ' + a.up).join('　'));
+  ok('下墜時拖著一條火', met.flying.hot > 25, '同時 ' + met.flying.hot + ' 顆火苗');
+  /* 一個是主畫面、一個是陰影貼圖：石頭有 castShadow，落地前地上那塊影子
+     剛好提示它要砸哪裡，這個 call 是值得付的。不飛的時候兩個都不畫。 */
+  ok('那顆石頭吃 2 個 draw call（畫面＋陰影），沒在飛就不畫',
+     met.flying.on - met.flying.off === 2,
+     '同一幀有石頭 ' + met.flying.on + ' 個 call、拿掉 ' + met.flying.off + ' 個');
+  ok('落地就炸開，而且會燒起來',
+     met.hit.flash > 0 && met.hit.fires > 0 && met.spread > met.hit.fires,
+     '爆炸火球 ' + met.hit.flash + ' 顆、當場點著 ' + met.hit.fires +
+     ' 塊，兩秒後蔓延到 ' + met.spread + ' 塊');
+  ok('範圍是投石機石頭的兩倍', Math.abs(met.R - met.rockR * 2) < 1e-6,
+     '石頭 ' + met.rockR + ' → 隕石 ' + met.R);
+
+  /* 威力：同一座建築、同一個落點，隕石打掉的要明顯比投石機的石頭多。
+     只比常數不算驗證——要驗的是那個半徑真的有作用到積木上。 */
+  const metPow = await page.evaluate(() => {
+    const one = go => {
+      targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '美國國會大廈');
+      startBuild(true); completeNow();
+      const n0 = placedCnt;
+      go();
+      return n0 - placedCnt;            // 只看爆炸當下打飛幾塊，還沒垮塌
+    };
+    const rock = one(() => rockHit({ x: 0, y: 6, z: 0, s: 1.7 }));
+    const meteor = one(() => meteorHit({ x: 0, y: 6, z: 0 }));
+    return { rock, meteor };
+  });
+  ok('同一個落點，隕石打掉的比石頭多',
+     metPow.meteor > metPow.rock * 2.5,
+     '石頭 ' + metPow.rock + ' 塊 → 隕石 ' + metPow.meteor + ' 塊');
+
+  const metMany = await page.evaluate(() => {
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '萬里長城');
+    startBuild(true); completeNow();
+    for (let i = 0; i < 3; i++) callMeteor({ x: -30 + i * 30, y: 3, z: 0 });
+    const three = meteors.length;
+    let g = 0, maxFly = 0;
+    while (meteors && g++ < 120) {
+      step(0.05);
+      if (meteors) maxFly = Math.max(maxFly, meteors.filter(m => m.lit).length);
+    }
+    const boom = flashes.length;
+    // 上限：連叫九顆只留最新的六顆
+    startBuild(true); completeNow();
+    for (let i = 0; i < 9; i++) callMeteor({ x: i * 4 - 16, y: 3, z: 0 });
+    return { three, maxFly, boom, capped: meteors.length, cap: MET_MAX };
+  });
+  ok('可以同時來好幾顆', metMany.three === 3 && metMany.maxFly === 3 && metMany.boom >= 2,
+     '叫了 3 顆，最多同時 ' + metMany.maxFly + ' 顆在飛，落地後場上 ' +
+     metMany.boom + ' 顆火球');
+  ok('同時最多 ' + metMany.cap + ' 顆', metMany.capped === metMany.cap,
+     '連叫 9 顆 → 場上 ' + metMany.capped + ' 顆');
+
+  /* 半路撞到建築就當場炸開。落點給在高塔的正下方：45° 斜插進來的話，
+     一定會先擦到塔身——只在終點判定的話它會從屋頂穿過去、在地面才炸。 */
+  const metSweep = await page.evaluate(() => {
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '帝國大廈');
+    startBuild(true); completeNow();
+    flashes.length = 0;
+    callMeteor({ x: 0, y: 0.6, z: 0 });
+    let g = 0;
+    while (meteors && g++ < 120) step(0.05);
+    return { fy: flashes.length ? +flashes[0].y.toFixed(1) : -1, h: bp.height };
+  });
+  ok('半路撞到建築就當場炸開，不會穿進去',
+     metSweep.fy > 5,
+     '落點指在 y=0.6，實際炸在 y=' + metSweep.fy + '（塔高 ' + metSweep.h + '）');
 
   /* ══════════ 人力金額 ══════════ */
   head('人力金額');
@@ -2178,7 +2308,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('用過哪些道具會記起來', toolRec.n === toolRec.total,
      toolRec.n + ' / ' + toolRec.total + '：' + toolRec.list.join(','));
-  ok('十種道具都用過解鎖【工具箱清空】', toolRec.got);
+  ok('十一種道具都用過解鎖【工具箱清空】', toolRec.got);
 
   /* 存檔被改過時，不認得的道具 id 不該混進來 */
   const toolClean = await page.evaluate(() => {
@@ -2251,7 +2381,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const unlockedAfterReload = await page.evaluate(() =>
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
   ok('重開後解鎖狀態跟著回來',
-     unlockedAfterReload === 'open,open,open,open,lock,open,lock,lock,lock,lock',
+     unlockedAfterReload === 'open,open,open,open,lock,open,lock,lock,lock,lock,lock',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數 */
@@ -2642,15 +2772,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '金門大橋：橫式 ' + distWide.toFixed(1) + ' → 直式 ' + distTall.toFixed(1));
   await page.evaluate(i => { shapePick = i; startBuild(true); shapePick = -1; }, prevShape);
 
-  /* 工具列一排排十種要 691px，視窗一窄就會壓到左上角的建築資訊卡。
+  /* 工具列一排排十一種要 760px，視窗一窄就會壓到左上角的建築資訊卡。
      量之前一定要先把數字灌到最寬的狀態：累計金額變成七位數那一刻，
      資訊卡會從 266px 撐到 354px——用剛開新局的空帳號去量，會量到「沒撞到」的假象。 */
   await page.evaluate(() => {
     stats.destroyed = 128; stats.smashed = 987654; stats.spent = 1234567; stats.wrecked = 9876543;
     renderTools(); hudLast = 0; hudTick(performance.now());
   });
-  // 1431 是斷點上緣的第一格：工具列還留在上面，剛好要閃過撐到最寬的資訊卡
-  const widths = [1600, 1440, 1431, 1280, 1100, 900, 700];
+  // 1501 是斷點上緣的第一格：工具列還留在上面，剛好要閃過撐到最寬的資訊卡
+  const widths = [1600, 1520, 1501, 1400, 1280, 1100, 900, 700];
   const clash = [];
   let statTxt = '', barAt = [];
   for (const w of widths) {

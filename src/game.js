@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.21.0';
+const VERSION = '1.22.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -94,6 +94,9 @@ function sndBoom(R) {
   noise(0.5 * k, 0.34, 900); tone(46, 0.75 * k, 'sawtooth', 0.12, 0.3);
 }
 function sndTick() { tone(1250, 0.045, 'square', 0.045); }
+/* 隕石進大氣層：拖長的低頻呼嘯，滑音往下＝由遠而近砸過來。
+   比爆炸本身早一步響，聽到就知道要閃了 */
+function sndMeteor() { noise(0.9, 0.22, 700); tone(340, 0.85, 'sawtooth', 0.07, 0.22); }
 function sndSiren() { tone(560, 1.1, 'sine', 0.05, 1.7); }
 /* 魔法陣長一層：越外層音越高，疊起來像在充能 */
 function sndRune(i) { tone(300 + i * 120, 0.5, 'triangle', 0.05, 1.35); }
@@ -311,6 +314,7 @@ function startBuild(instant) {
   dozers = null; ENG.putDozers([]);
   // 倒數中的炸彈／核彈／魔法陣也一樣：留著的話會炸到剛換上來的新建築
   bombs = null; ENG.putBombs([]);
+  meteors = null; ENG.putMeteors([]);
   nuke = null; ENG.hideNuke();
   magic = null;
   /* 火也要收：燒的是「哪一塊積木」，積木待會會被回收去蓋新的那座，
@@ -942,7 +946,7 @@ const BADGES = [
   { id: 'smash50k', n: '粉塵滿天', d: '累計擊飛 50000 塊積木', chk: s => s.smashed >= 50000 },
   { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
   { id: 'wreck25', n: '都市更新', d: '拆掉 25 座建築', chk: s => s.destroyed >= 25 },
-  { id: 'allTools', n: '工具箱清空', d: '十種破壞道具都用過', chk: s => s.tools.length >= TOOLS.length },
+  { id: 'allTools', n: '工具箱清空', d: '十一種破壞道具都用過', chk: s => s.tools.length >= TOOLS.length },
   { id: 'boss20', n: '工頭嚴厲', d: '戳倒小人 20 次', chk: s => s.poked >= 20 },
   { id: 'poke100', n: '工安黑名單', d: '戳倒小人 100 次', chk: s => s.poked >= 100 },
   { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 },
@@ -1078,6 +1082,8 @@ const TOOLS = [
     lock: { txt: '拆掉 8 座建築解鎖', ok: () => stats.destroyed >= 8 } },
   { id: 'bomb', n: '定時炸彈', k: '💣', tip: '點一下：放一顆炸彈，3 秒後炸開',
     lock: { txt: '拆掉 10 座建築解鎖', ok: () => stats.destroyed >= 10 } },
+  { id: 'meteor', n: '隕石', k: '☄', tip: '點一下：3 秒後從斜上方砸下一顆燃燒隕石，可以同時來好幾顆',
+    lock: { txt: '累計擊飛 2000 塊解鎖', ok: () => stats.smashed >= 2000 } },
   { id: 'nuke', n: '核彈', k: '☢', tip: '點一下：2 秒後天上掉核彈下來',
     lock: { txt: '累計擊飛 3000 塊解鎖', ok: () => stats.smashed >= 3000 } },
   { id: 'magic', n: '爆裂魔法', k: '🔮', tip: '點一下：魔法陣一層層展開，6 秒後爆炸',
@@ -1086,7 +1092,7 @@ const TOOLS = [
 const toolOk = t => !t.lock || t.lock.ok();
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
    規定一定要點到建築的話，站在旁邊的空地放炸彈反而做不到。 */
-const GROUND_TOOL = { tornado: 1, treb: 1, bomb: 1, nuke: 1, magic: 1 };
+const GROUND_TOOL = { tornado: 1, treb: 1, bomb: 1, meteor: 1, nuke: 1, magic: 1 };
 let tool = 'hammer';
 
 let hammerR = 5.5, hammerPow = 15;
@@ -1094,6 +1100,7 @@ let swing = null;     // 正在揮下去的槌子
 let ball = null;      // 飛行中的鐵球
 let twists = null;    // 作用中的龍捲風（可以同時好幾道）
 let bombs = null;     // 已放下、倒數中的定時炸彈
+let meteors = null;   // 已呼叫的隕石（倒數或下墜中，可以好幾顆）
 let nuke = null;      // 已呼叫的核彈（倒數或下墜中）
 let magic = null;     // 正在展開的魔法陣
 let fires = null;     // 正在燒的積木（會往鄰居蔓延）
@@ -1756,6 +1763,110 @@ function stepBombs(dt) {
   if (!bombs.length) bombs = null;
 }
 
+/* ── 隕石 ───────────────────────────────────────────────
+   點一下先在地上一圈一圈地標，3 秒後隕石從斜上方 45° 斜插進來。
+   範圍是投石機石頭的兩倍，威力介於石頭與定時炸彈之間——它的重點是火不是威力：
+   落點一帶會燒起來，火接著自己往鄰居蔓延（跟放火同一套）。
+   可以同時來好幾顆，每顆各自從一個方位進來、倒數也各走各的。 */
+const MET_MAX = 6;              // 同時最多幾顆（畫面那邊的 MAXMET 也是 6）
+const MET_WAIT = 3;             // 點下去到出現在天上（跟定時炸彈的引信一樣長）
+const MET_FALL = 0.9;           // 從天上到落點
+const MET_TOP = 62;             // 出現的高度。45° → 水平也退開同樣的距離
+const MET_R = ROCK_R * 2;       // 「範圍是投石機石頭的兩倍」就是字面意思
+const MET_POW = 16;             // 介於石頭（12）與定時炸彈（17）之間
+function callMeteor(point) {
+  if (!meteors) meteors = [];
+  if (meteors.length >= MET_MAX) meteors.shift();   // 超過就把最早那顆擠掉，跟定時炸彈一樣
+  const m = {
+    tx: point.x, ty: Math.max(0.6, point.y), tz: point.z,
+    a: rr(0, Math.PI * 2),       // 從哪個方位斜進來，每顆各抽一個
+    t: MET_WAIT + MET_FALL, mark: 0, lit: 0, em: 0,
+    x: 0, y: 0, z: 0, rx: rr(0, 6), ry: rr(0, 6), s: 2, hot: 0, smoke: 0
+  };
+  posMeteor(m, 1);               // 先擺到出現的位置：第一幀掃掠要有正確的起點
+  meteors.push(m);
+  sndTick();
+}
+/* k：1 = 剛出現在天上，0 = 落到目標點。
+   45° 的意思就是「水平還要飛的距離＝還沒掉的高度」，所以兩邊共用同一個 up。 */
+function posMeteor(m, k) {
+  const up = k * MET_TOP;
+  m.x = m.tx + Math.cos(m.a) * up;
+  m.y = m.ty + up;
+  m.z = m.tz + Math.sin(m.a) * up;
+}
+function meteorHit(m) {
+  const p = { x: m.x, y: Math.max(0.8, m.y), z: m.z };
+  explode(p, MET_R, MET_POW);        // 爆炸、餘火、火球、煙、衝擊環、震動、聲音都在裡面
+  /* 爆炸本身已經帶一點餘火，但隕石是「燃燒」的——落點一帶再多點幾塊起來。
+     這是它跟同尺寸的普通爆炸最明顯的差別。 */
+  igniteAround(p, MET_R * 1.6, Math.round(MET_R * 1.6), SET);
+}
+function stepMeteors(dt) {
+  if (!meteors) return;
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    m.t -= dt;
+    if (m.t > MET_FALL) {
+      /* 倒數期間在落點一圈一圈地標。什麼都不畫的話這三秒看起來就像點了沒反應
+         （核彈第一版就是這樣）。 */
+      m.mark -= dt;
+      if (m.mark <= 0) { m.mark = 0.5; spawnRing({ x: m.tx, y: 0, z: m.tz }, 5); sndTick(); }
+      continue;
+    }
+    if (!m.lit) { m.lit = 1; sndMeteor(); }        // 進大氣層：這一刻才開始畫、才有聲音
+    const px = m.x, py = m.y, pz = m.z;
+    posMeteor(m, Math.max(0, m.t / MET_FALL));     // 等速直線：隕石不是被丟出來的，不走拋物線
+    m.rx += dt * 5.5; m.ry += dt * 4.2;
+    m.hot = Math.min(1, m.hot + dt * 3);
+    /* 拖著火：沿著這一幀走過的線段補火苗，不是只在現在的位置生。
+       它一幀跑五個單位，只生在端點的話尾巴會斷成一節一節的。
+       火苗要小、要密、要短命——大顆又長命的話尾巴會散成一串橘色方塊，
+       看起來像撒紙花不像火（第一版 s 給到 1.2 就是這樣）。 */
+    m.em += dt * 150;
+    while (m.em >= 1) {
+      m.em--;
+      if (hot.length > HOT_MAX - 30) break;        // 留一截給落地那顆火球
+      /* 三顆裡有一顆是「火頭」：生在石頭四周（不是沿著路徑），大顆、短命，
+         整圈把石頭包起來。全部平均撒在線段上的話，畫面是「一塊石頭後面跟著一串小點」，
+         看不出石頭本身在燒；生在石頭正中央也不行——那顆立方體會把火擋在後面。 */
+      const head = Math.random() < 0.34;
+      const u = head ? 1 : Math.random();
+      const j = head ? 1.35 : 0.3;
+      hot.push({
+        x: px + (m.x - px) * u + rr(-j, j),
+        y: py + (m.y - py) * u + rr(-j, j),
+        z: pz + (m.z - pz) * u + rr(-j, j),
+        vx: rr(-0.7, 0.7), vy: rr(0.6, 2.2), vz: rr(-0.7, 0.7),
+        rx: Math.random() * 6, ry: Math.random() * 6,
+        s: head ? rr(1, 1.8) : rr(0.24, 0.62),
+        life: head ? rr(0.1, 0.2) : rr(0.16, 0.4),
+        g: -1.6, grow: head ? 1.1 : 1.04, cool: rr(0.2, 0.42),
+        cr: 1, cg: rr(0.5, 0.84), cb: rr(0.06, 0.22), to: [0.55, 0.1, 0.02]
+      });
+    }
+    // 尾煙：火後面拖一條深色的煙，尾巴才有長度感（往上飄，所以 g 給負的）
+    m.smoke += dt * 44;
+    while (m.smoke >= 1) {
+      m.smoke--;
+      if (dust.length > 380) break;
+      const u = Math.random();
+      dust.push({
+        x: px + (m.x - px) * u + rr(-0.5, 0.5),
+        y: py + (m.y - py) * u + rr(-0.5, 0.5),
+        z: pz + (m.z - pz) * u + rr(-0.5, 0.5),
+        vx: rr(-1, 1), vy: rr(0.5, 2), vz: rr(-1, 1),
+        rx: Math.random() * 6, ry: Math.random() * 6,
+        life: rr(0.9, 2), s: rr(0.55, 1.35), c: rr(0.22, 0.38), g: -0.5, fade: 1.8
+      });
+    }
+    /* 半路撞到建築就當場炸開，跟投石機的石頭共用同一套掃掠判定：
+       只在終點判定的話，斜插進來的隕石會從屋頂穿過去才炸。 */
+    if (m.t <= 0 || sweepRock(m, px, py, pz)) { meteors.splice(i, 1); meteorHit(m); }
+  }
+  if (!meteors.length) meteors = null;
+}
+
 /* ── 核彈 ───────────────────────────────────────────────
    點下去先在地上標一圈、拉警報，2 秒後彈體才從天上掉下來。
    倒數期間什麼都不畫的話，前兩秒看起來就像點了沒反應。
@@ -2141,6 +2252,7 @@ function useTool(hit) {
   if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fire') { torch(hit); return 0; }
   if (tool === 'bomb') { placeBomb(hit.point); return 0; }
+  if (tool === 'meteor') { callMeteor(hit.point); return 0; }
   if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   return 0;
@@ -2277,6 +2389,7 @@ function step(dt) {
   stepTwist(dt);
   stepTrebs(dt);
   stepBombs(dt);
+  stepMeteors(dt);
   stepFire(dt);
   stepNuke(dt);
   stepMagic(dt);
@@ -2344,6 +2457,11 @@ function draw() {
   ENG.putTrebs(trebs ? trebs.list : EMPTY);
   ENG.putRocks(trebs ? trebs.rocks : EMPTY);
   ENG.putBombs(bombs || EMPTY);
+  /* 只把真的在天上飛的隕石丟過去（還在倒數的那幾顆連影子都不該有）。
+     重用同一個陣列，不要每幀配置一個新的。 */
+  metFly.length = 0;
+  if (meteors) for (const m of meteors) if (m.lit) metFly.push(m);
+  ENG.putMeteors(metFly);
   ENG.putTornados(twists || EMPTY);
   ENG.putFire(hot);
   ENG.putFlash(flashes);
@@ -2355,6 +2473,7 @@ function draw() {
   if (dozers) ENG.putDozers(dozRender(dozers));
 }
 const EMPTY = [];
+const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石
 
 /* ── 輸入 ───────────────────────────────────────────────── */
 let spinOn = false;

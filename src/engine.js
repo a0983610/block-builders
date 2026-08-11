@@ -15,7 +15,7 @@ const ENG = (function () {
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
-  let bombMesh, nukeGroup, ringGroup, magSpokeMesh, fireMesh, flashGroup;
+  let bombMesh, nukeGroup, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   const magRings = [], magDiscs = [];
   const flashShells = [];
   const MAG_DISC = 6;                      // 填滿的圓盤（魔法陣每層一片）
@@ -38,6 +38,7 @@ const ENG = (function () {
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXBOMB = 6, BOMB_PARTS = 3;
+  const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
      四層就吃掉八個，再加上爆炸衝擊環與蘑菇雲腰環。 */
   const MAG_MAX = 14;
@@ -252,6 +253,15 @@ const ENG = (function () {
     bombMesh.frustumCulled = false; bombMesh.visible = false;
     scene.add(bombMesh);
     bombMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
+    /* 隕石：一顆一個 instance。石頭本體走 instance color，越接近落地燒得越紅
+       （火焰本身是 hot 那批粒子拖出來的，這裡只負責那顆石頭）。 */
+    meteorMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXMET);
+    meteorMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    meteorMesh.castShadow = true; meteorMesh.count = 0;
+    meteorMesh.frustumCulled = false; meteorMesh.visible = false;
+    scene.add(meteorMesh);
+    meteorMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
     /* 核彈：彈體朝 −Y 落下，一次只有一顆，用 Group 就好 */
     nukeGroup = new T.Group();
@@ -528,6 +538,30 @@ const ENG = (function () {
     }
     bombMesh.instanceMatrix.needsUpdate = true;
     if (bombMesh.instanceColor) bombMesh.instanceColor.needsUpdate = true;
+  }
+
+  /* 隕石。m：{x, y, z, rx, ry, s, hot 0–1 燒得多紅}
+     只畫真的在天上飛的那幾顆——還在倒數的那些由規則那邊自己濾掉，
+     這裡收到的就是要畫的。 */
+  function putMeteors(list) {
+    const n = Math.min(list.length, MAXMET);
+    meteorMesh.visible = n > 0;
+    meteorMesh.count = n;
+    for (let i = 0; i < n; i++) {
+      const m = list[i];
+      scratch.position.set(m.x, m.y, m.z);
+      scratch.rotation.set(m.rx, m.ry, 0);
+      scratch.scale.setScalar(m.s);
+      scratch.updateMatrix();
+      meteorMesh.setMatrixAt(i, scratch.matrix);
+      /* 焦黑的石頭 → 燒紅。材質色是白的，所以 instance color 就是最終顏色。
+         刻意壓暗：亮橘的石頭在陽光下就只是一個橘色箱子，火要交給拖在後面的火苗去演，
+         這顆的角色是「一塊燒紅的岩石」。 */
+      const k = m.hot || 0;
+      meteorMesh.setColorAt(i, tmpC.setRGB(0.16 + 0.30 * k, 0.14 + 0.06 * k, 0.13 + 0.01 * k));
+    }
+    meteorMesh.instanceMatrix.needsUpdate = true;
+    if (meteorMesh.instanceColor) meteorMesh.instanceColor.needsUpdate = true;
   }
 
   /* 核彈：只管畫在哪、轉多少，什麼時候掉、掉多快是規則那邊的事 */
@@ -922,7 +956,7 @@ const ENG = (function () {
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust, putTrebs, putRocks, putDozers,
     setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
-    putBombs, setNuke, hideNuke, setRings, hideRings, putFire, putFlash,
+    putBombs, putMeteors, setNuke, hideNuke, setRings, hideRings, putFire, putFlash,
     fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }
