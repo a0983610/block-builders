@@ -1522,6 +1522,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      nk.fireGone === 0 && nk.ringGone === 0,
      '十三秒後火球 ' + nk.fireGone + ' 顆、光環 ' + nk.ringGone + ' 圈');
 
+  /* 腳下那圈煙：柱子不能從一塊乾淨的草地長出來。
+     光看「貼地的煙有幾團」不夠——柱子底部本來就有煙。要看的是它有沒有往外鋪開，
+     所以量「離爆心 R×0.25 以外、貼著地面的煙」有幾團、最遠鋪到哪。
+     同時要確認它沒有把塵霧配額吃光：傘蓋是 0.45 秒一次要 112 顆的爆量，
+     被擠掉的話蘑菇會變成一根沒有頭的柱子。 */
+  const skirt = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    callNuke({ x: 0, z: 0 });
+    for (let i = 0; i < 58; i++) step(0.05);            // 炸下去
+    for (let i = 0; i < 30; i++) step(0.05);            // 爆後 1.5 秒
+    const cloud = dust.filter(d => d.fade);
+    const low = cloud.filter(d => d.y < 6);
+    const far = low.filter(d => Math.hypot(d.x, d.z) > NUKE_R * 0.25);
+    const out = { low: low.length, far: far.length, R: NUKE_R,
+             wide: +Math.max(0, ...low.map(d => Math.hypot(d.x, d.z))).toFixed(1),
+             high: cloud.filter(d => d.y > 14).length };
+    // 這朵散乾淨再交棒：留著的灰煙會混進下一段（魔法那朵要驗「全部染紅」）
+    for (let i = 0; i < 200; i++) step(0.05);
+    return out;
+  });
+  ok('蘑菇雲腳下有一圈往外鋪開的煙', skirt.far > 40 && skirt.wide > skirt.R * 0.4,
+     '貼地 ' + skirt.low + ' 團，其中 ' + skirt.far + ' 團在爆心 ' +
+     (skirt.R * 0.25).toFixed(0) + ' 單位外，最遠鋪到 ' + skirt.wide);
+  ok('腳下的煙沒有把傘蓋的配額吃掉', skirt.high > 60,
+     '雲上半部仍有 ' + skirt.high + ' 團');
+
   const mg = await page.evaluate(() => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });

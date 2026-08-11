@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.17.0';
+const VERSION = '1.18.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1792,6 +1792,7 @@ function spawnBlast(p, R, magic) {
    一次生完的話它會「啪」地整朵出現在半空，看起來像貼圖不像爆炸長出來的。
    火光在裡面燒約 0.8 秒再冷掉，那是參考圖裡雲心會發亮的來源。 */
 const CLOUD_GROW = 2.4;         // 整朵長完要多久
+const SKIRT_T = 1.7;            // 腳下那圈煙要往外鋪多久
 function startCloud(p, R, magic) {
   clouds.push({ x: p.x, z: p.z, R, magic, t: 0, emit: 0 });
   /* 順手把鏡頭退開。雲頂會升到 R×1.3 左右，用原本貼著建築的取景根本裝不下——
@@ -1860,6 +1861,31 @@ function stepClouds(dt) {
       // 腰上那一圈：參考圖裡最好認的特徵
       fxRings.push({ x: c.x, z: c.z, y: R * 0.18, r: R * 0.2, vr: R * 0.4, vy: R * 0.12,
                      op: 0.9, fade: 1.4, c: c.magic ? 0xff5577 : 0xffd08a, add: 1, spin: rr(0, 6.28) });
+    }
+    /* 腳下的煙裙：參考圖裡蘑菇雲底部鋪開的那一圈翻滾濃煙。
+       沒有它的話柱子是從一塊乾淨的草地長出來的，看起來像插在地上的柱子。
+
+       橫向鋪開不能靠速度——塵霧每幀吃 0.94 的阻力，水平速度一秒內就沒了，
+       一顆頂多滾 3 個單位，鋪不出半徑 30 那麼寬。所以「生成半徑隨時間往外擴」，
+       速度只負責近處的翻滾感；重力給大一點，噴起來就會壓回地面貼著滾。 */
+    if (c.t < SKIRT_T) {
+      c.semit = (c.semit || 0) + dt * 62;
+      while (c.semit >= 1) {
+        c.semit--;
+        /* 這裡的上限壓在 430，比柱子與傘蓋的 520 低：傘蓋是 0.45 秒一次要 112 顆的
+           爆量，煙裙要是先把配額吃光，蘑菇就會變成一根沒有頭的柱子。 */
+        if (dust.length > 430) break;
+        const a = Math.random() * Math.PI * 2;
+        const k = Math.min(1, c.t / (SKIRT_T * 0.8));
+        const rad = R * (0.12 + 0.36 * k) * rr(0.75, 1.15);
+        dust.push({
+          x: c.x + Math.cos(a) * rad, y: rr(0.3, R * 0.09), z: c.z + Math.sin(a) * rad,
+          vx: Math.cos(a) * rr(1.2, 4), vy: rr(1, 3), vz: Math.sin(a) * rr(1.2, 4),
+          rx: Math.random() * 6, ry: Math.random() * 6,
+          life: rr(5, 7.5), s: rr(2.6, 5), c: rr(0.26, 0.46), g: 3.2, fade: 3.4,
+          cr: c.magic ? 0.5 : undefined, cg: c.magic ? 0.22 : 0, cb: c.magic ? 0.26 : 0
+        });
+      }
     }
     /* 魔法版另外撒星光：參考圖的那些小星星。不冷卻，就是一閃一閃地飄上去 */
     if (c.magic && c.t < 1.8 && Math.random() < dt * 26 && hot.length < HOT_MAX) {
