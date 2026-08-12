@@ -1321,37 +1321,112 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      rapid.afterSecondPress < rapid.n0 && rapid.end < rapid.afterSecondPress,
      rapid.n0 + ' → 第二次按下時 ' + rapid.afterSecondPress + ' → 最後 ' + rapid.end);
 
+  /* 槌子砸在空地上：不是點狀衝擊，而是整棟震一震，隨機一小部分自己掉下來。
+     兩件事要分開驗：掉的量對不對、掉的位置是不是散在整棟（不是砸出一個洞）。 */
+  const quakeT = await page.evaluate(() => {
+    const one = (big) => {
+      shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+      targetCnt = 2000; startBuild(true); completeNow();
+      shapePick = -1;
+      const set0 = placedCnt;
+      const at = blocks.map(b => b.st === 3 ? { x: b.x, y: b.y, z: b.z } : null);
+      const hx = siteR + 9;                          // 建築外的空地
+      launchHammer(new THREE.Vector3(hx, 0, 0), new THREE.Vector3(0, -1, 0), big, true);
+      let g = 0;
+      while (!quake && g++ < 20) step(0.05);         // 等槌子落下
+      const born = !!quake, hitFrames = [];
+      let prev = placedCnt;
+      while (quake && g++ < 200) {
+        step(0.05);
+        if (placedCnt < prev) hitFrames.push(prev - placedCnt);
+        prev = placedCnt;
+      }
+      const mid = placedCnt;
+      for (let i = 0; i < 40; i++) step(0.05);       // 震完就該停了
+      let near = 0, tot = 0, lo = 0, hi = 0;
+      blocks.forEach((b, i) => {
+        if (!at[i] || b.st === 3) return;
+        tot++;
+        if (Math.hypot(at[i].x - hx, at[i].z) < 10) near++;   // 掉在槌子那一帶的
+        if (at[i].y < bp.height * 0.4) lo++; else hi++;
+      });
+      return { set0, born, fell: set0 - mid, frac: (set0 - mid) / set0,
+               waves: hitFrames.length, after: mid - placedCnt,
+               nearFrac: tot ? near / tot : -1, lo, hi };
+    };
+    const small = one(false), big = one(true);
+    return { small, big };
+  });
+  ok('槌子砸空地會地震，震掉約 5% 的積木',
+     quakeT.small.born && quakeT.small.frac > 0.045 && quakeT.small.frac < 0.09,
+     quakeT.small.set0 + ' 塊掉了 ' + quakeT.small.fell + '（' +
+     (quakeT.small.frac * 100).toFixed(1) + '%）');
+  ok('是分好幾波掉的，不是同一幀全掉', quakeT.small.waves >= 4,
+     '掉了 ' + quakeT.small.waves + ' 波');
+  ok('震掉的散在整棟，不是在槌子那一帶砸出一個洞',
+     quakeT.small.nearFrac >= 0 && quakeT.small.nearFrac < 0.35 &&
+     quakeT.small.lo > 0 && quakeT.small.hi > 0,
+     '落點 10 單位內只占 ' + (quakeT.small.nearFrac * 100).toFixed(0) +
+     '%，下半部 ' + quakeT.small.lo + ' 塊、上半部 ' + quakeT.small.hi + ' 塊');
+  ok('震完就停，不會一直掉', quakeT.small.after === 0,
+     '地震結束後 2 秒又掉了 ' + quakeT.small.after + ' 塊');
+  ok('大槌砸空地震得比較兇（兩倍）',
+     quakeT.big.frac > quakeT.small.frac * 1.7 && quakeT.big.frac < 0.18,
+     '槌子 ' + (quakeT.small.frac * 100).toFixed(1) + '% → 大槌 ' +
+     (quakeT.big.frac * 100).toFixed(1) + '%');
+
   await reset(page, { shape: '吉薩金字塔', cnt: 900, workers: 4 });
   const ballR = await page.evaluate(() => {
     completeNow();
-    const cand = blocks.filter(b => b.st === 3 && b.y < 5);
-    const t = cand[Math.floor(cand.length * 0.5)];
     const before = blocks.filter(b => b.st === 3).length;
-    launchBall(new THREE.Vector3(t.x, t.y, t.z), new THREE.Vector3(0.5, -0.35, 0.79).normalize());
+    const p = { x: -42, y: 0, z: 5 };                  // 點在場邊的空地上
+    launchBall(p);
     const born = !!ball, r = ball.r;
-    const start = Math.hypot(ball.x - t.x, ball.z - t.z);
-    let hit = 0, offGround = 0, ang0 = ball.ang, maxAng = 0, moved = 0;
+    const out = { d0: Math.hypot(ball.x - p.x, ball.z - p.z), y0: ball.y };
+    let hit = 0, t = 0, settle = 0, hops = 0, apex = 0, moved = 0, maxAng = 0;
     let px = ball.x, pz = ball.z;
     for (let i = 0; i < 400 && ball; i++) {
-      step(0.03);
+      step(0.03); t += 0.03;
       if (!ball) break;
-      hit = ball.hit;
-      if (Math.abs(ball.y - r) > 0.01) offGround++;     // 保齡球要一路貼著地面
-      maxAng = ball.ang;
+      hit = ball.hit; hops = ball.hops; maxAng = ball.ang;
+      if (ball.y > r + 0.01) { settle = t; if (hops >= 1) apex = Math.max(apex, ball.y - r); }
       moved += Math.hypot(ball.x - px, ball.z - pz); px = ball.x; pz = ball.z;
     }
     return { before, after: blocks.filter(b => b.st === 3).length, hit, born, gone: !ball,
-             offGround, start, spin: maxAng - ang0, moved, r };
+             settle: +settle.toFixed(2), life: +t.toFixed(2), hops, apex, spin: maxAng,
+             moved, r, ...out };
   });
-  ok('保齡球會生出來，而且是從建築外圍出發', ballR.born && ballR.start > 12,
-     '起點距落點 ' + ballR.start.toFixed(0) + ' 單位');
-  ok('保齡球一路貼著地面滾', ballR.offGround === 0,
-     '球心高度全程等於半徑 ' + ballR.r + '（離地 ' + ballR.offGround + ' 次）');
+  ok('保齡球從你點的地方出手，而且是舉高了丟出去',
+     ballR.born && ballR.d0 < 0.01 && ballR.y0 > ballR.r + 3,
+     '起點就是落點（差 ' + ballR.d0.toFixed(2) + '），球心離地 ' + ballR.y0.toFixed(1));
+  /* 彈跳要在前段結束：球水平 34 單位/秒，一直彈的話它是「飛」到建築上的，
+     中間那段滾就不見了。所以除了「有彈」還要驗「什麼時候不再離地」。 */
+  ok('像丟保齡球一樣先彈幾下，之後就一路滾',
+     ballR.hops >= 2 && ballR.apex > 0.3 && ballR.settle < 1.2 &&
+     ballR.life - ballR.settle > 0.5,
+     '彈了 ' + ballR.hops + ' 下（第一次落地後還彈起 ' + ballR.apex.toFixed(1) +
+     '），' + ballR.settle + ' 秒後不再離地，之後滾了 ' +
+     (ballR.life - ballR.settle).toFixed(1) + ' 秒');
   ok('滾動角度跟滾過的距離對得上', Math.abs(ballR.spin - ballR.moved / ballR.r) < 0.5,
      '滾了 ' + ballR.moved.toFixed(0) + ' 單位、轉了 ' + ballR.spin.toFixed(1) + ' 弧度');
   ok('保齡球會撞飛沿路的積木', ballR.hit > 15 && ballR.after < ballR.before,
      'SET ' + ballR.before + ' → ' + ballR.after + '，撞飛 ' + ballR.hit + ' 塊');
   ok('滾不動之後會停下消失', ballR.gone);
+
+  /* 丟出去的方向：朝建築中心，但每一發都帶一點隨機偏差 */
+  const ballAim = await page.evaluate(() => {
+    const p = { x: -30, y: 0, z: 0 };                  // 正對中心＝角度 0
+    const a = [];
+    for (let k = 0; k < 8; k++) { launchBall(p); a.push(Math.atan2(ball.vz, ball.vx)); }
+    ball = null; ENG.hideBall();
+    return { max: +Math.max(...a.map(Math.abs)).toFixed(3),
+             min: +Math.min(...a.map(Math.abs)).toFixed(3),
+             uniq: new Set(a.map(v => v.toFixed(4))).size, n: a.length, lim: BALL_SPREAD };
+  });
+  ok('球是朝建築丟的，但每一發角度都不一樣',
+     ballAim.max <= ballAim.lim && ballAim.min > 0 && ballAim.uniq === ballAim.n,
+     ballAim.n + ' 發全部落在 ±' + ballAim.lim + ' rad 內（最大偏 ' + ballAim.max +
+     '、最小 ' + ballAim.min + '），沒有兩發相同');
 
   const twR = await page.evaluate(() => {
     startBuild(true); completeNow();
@@ -1781,8 +1856,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      先讓球上路，再把人排到它正前方，不然量到的是「球從空地滾過去」。 */
   const bowled = await page.evaluate(() => {
     startBuild(true); completeNow();
-    launchBall({ x: 0, y: 1, z: 0 }, { x: 1, y: 0, z: 0 });
-    step(0.05);
+    launchBall({ x: -30, y: 0, z: 0 });
+    // 球是舉高了丟出去的，先等它落地開始滾——還在半空飛過頭頂時本來就不該撞到人
+    let g = 0;
+    while (ball && ball.y > ball.r + 0.1 && g++ < 200) step(0.05);
     workers.forEach((w, i) => {
       w.x = ball.x + 5 + (i % 5) * 1.7; w.z = (i % 3 - 1) * 0.6;
       w.y = 0; w.air = 0; w.burn = 0; w.fall = 0;
@@ -1936,12 +2013,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const set0 = blocks.filter(b => b.st === 3).length;
     for (let i = 0; i < 39; i++) step(0.05);            // 1.95 秒：還在倒數，彈體都還沒出現
     const wait = blocks.filter(b => b.st === 3).length;
-    for (let i = 0; i < 16; i++) step(0.05);            // 2.75 秒：下墜中，還沒炸
+    for (let i = 0; i < 4; i++) step(0.05);             // 2.15 秒：下墜中，還沒碰到樓頂
     const falling = blocks.filter(b => b.st === 3).length, inAir = !!nuke;
+    const fallY = nuke ? nuke.y : -1, roof = bp.height;
+    /* 掉到碰著建築才炸，所以不能數死步數。下墜末段一幀就掉快十單位，
+       這裡把步長縮到 0.005 秒再逼近，記下的最後高度才等於接觸點。 */
+    let boomY = -1, g = 0;
+    while (nuke && g++ < 400) { boomY = nuke.y; step(0.005); }
     step(0.05); step(0.05);
     const set1 = blocks.filter(b => b.st === 3).length;
     let hitMax = 0;
-    for (const b of blocks) if (b.st === 4) hitMax = Math.max(hitMax, Math.hypot(b.x, b.y - 2.5, b.z));
+    for (const b of blocks) if (b.st === 4) hitMax = Math.max(hitMax, Math.hypot(b.x, b.y - boomY, b.z));
     /* 爆炸當下該有的：火球（hot 粒子）＋ 貼地的衝擊環。
        這兩個都活不到一秒，所以要在爆完的那一刻量。 */
     const fire0 = hot.length, ring0 = fxRings.length;
@@ -1970,15 +2052,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mid = cloudy();
     const midSize = mid.reduce((a, d) => a + d.s, 0) / Math.max(1, mid.length);
     for (let i = 0; i < 200; i++) step(0.05);           // 再 10 秒
-    return { set0, wait, falling, inAir, set1, hitMax, fire0, ring0, lit0, lit1,
+    return { set0, wait, falling, inAir, fallY, roof, boomY, set1, hitMax, fire0, ring0, lit0, lit1,
              cloud0, cloud1, y1, peakY, peak, midSize,
              gone: cloudy().length, fireGone: hot.length,
              ringGone: fxRings.length, alive: !!nuke };
   });
   ok('核彈 2 秒內不會炸', nk.wait === nk.set0, nk.set0 + ' → ' + nk.wait);
-  ok('2 秒後彈體才從天上掉下來', nk.inAir && nk.falling === nk.set0,
-     '2.75 秒時彈體還在空中、建築仍是 ' + nk.falling + ' 塊');
-  ok('落地就大爆炸，範圍約 30', nk.set1 < nk.set0 * 0.2 && nk.hitMax > 20 && nk.hitMax <= 31,
+  ok('2 秒後彈體才從天上掉下來', nk.inAir && nk.falling === nk.set0 && nk.fallY > nk.roof,
+     '2.15 秒時彈體在 y=' + nk.fallY.toFixed(0) + '（樓頂 ' + nk.roof + '），建築仍是 ' +
+     nk.falling + ' 塊');
+  /* 炸點跟著接觸點走，不是固定在地面：打高樓時固定炸地面的話，上半截等於沒被炸到。
+     這裡驗「炸在樓頂那一帶」——彈頭比模型原點再往前探一點，所以會比樓頂略高。 */
+  ok('碰到建築的那一點就炸，不是穿到地面才炸',
+     nk.boomY > nk.roof && nk.boomY < nk.roof + 5,
+     '樓頂 ' + nk.roof + ' → 炸在 y=' + nk.boomY.toFixed(1));
+  ok('炸開就是一大片，範圍約 30', nk.set1 < nk.set0 * 0.2 && nk.hitMax > 20 && nk.hitMax <= 31,
      'SET ' + nk.set0 + ' → ' + nk.set1 + '，最遠打飛到 ' + nk.hitMax.toFixed(1));
   ok('爆炸當下有火球與衝擊環', nk.fire0 > 50 && nk.ring0 >= 2,
      nk.fire0 + ' 顆火球、' + nk.ring0 + ' 圈衝擊環');
@@ -2020,7 +2108,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     for (let i = 0; i < 240; i++) step(0.05);          // 等前一發的煙火散乾淨
     callNuke({ x: 0, z: 0 });
-    for (let i = 0; i < 57; i++) step(0.05);           // 落地爆炸（2.8 秒）後約 0.05 秒
+    while (nuke && nuke.t > NUKE_FALL) step(0.05);     // 兩秒倒數
+    // 碰到樓頂就炸，步數是浮動的；末段用小步長逼近，boomY 才等於接觸點
+    let boomY = -1, g = 0;
+    while (nuke && g++ < 400) { boomY = nuke.y; step(0.005); }
+    step(0.05);                                       // 爆後 0.05 秒
     const born = flashes.map(f => ({ r: +f.r.toFixed(1), op: f.op, y: +f.y.toFixed(1) }));
     const on = shot();
     const saved = flashes.splice(0, flashes.length);   // 同一幀只把火球拿掉，其他都不動
@@ -2040,19 +2132,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 6; i++) spawnBlast({ x: i * 3, y: 2.5, z: 0 }, 30, false);
     const capped = flashes.length;
     hot.length = 0; flashes.length = 0; fxRings.length = 0;
-    return { born, on, off, hold, fade, left, sparkMin, capped };
+    return { born, on, off, hold, fade, left, sparkMin, capped, boomY };
   });
   /* 半徑走 sqrt，爆後第一幀（0.05 秒）就衝到一半以上——「一瞬間撐開」是刻意的，
      等速膨脹看起來像吹氣球。所以這裡量的是「一幀內有沒有到半徑的一半」。 */
-  ok('爆炸中心有一顆實體火球，一幀就撐開、球心抬離地面',
+  ok('爆炸中心有一顆實體火球，一幀就撐開、球心抬離爆點',
      flash.born.length === 1 && flash.born[0].r > 15 && flash.born[0].r < 20 &&
-     flash.born[0].y > 6,
+     Math.abs(flash.born[0].y - (flash.boomY + 30 * 0.22)) < 1.2,
      '爆後 0.05 秒半徑 ' + (flash.born[0] ? flash.born[0].r : '—') +
-     '（上限 30）、球心 y=' + (flash.born[0] ? flash.born[0].y : '—') + '（爆點 2.5）');
-  /* 門檻 0.6%：帝國大廈的藍圖改瘦之後（0.5→0.42），同樣 2400 塊會長得更高，
-     取景跟著拉遠，火球在畫面上占的比例就從 1.23% 掉到 0.91%。
-     這裡真正要驗的是「有火球才有過曝白」，所以看的是跟拿掉火球那幀的倍數關係。 */
-  ok('火球真的亮在畫面上', flash.on.pct > 0.6 && flash.on.pct > flash.off.pct * 3,
+     '（上限 30）、球心 y=' + (flash.born[0] ? flash.born[0].y : '—') +
+     '（爆點 ' + flash.boomY.toFixed(1) + ' + 抬升 6.6）');
+  /* 絕對門檻一路在降：藍圖改瘦（0.5→0.42）讓建築長更高、取景拉遠，1.23% → 0.91%；
+     核彈改成炸在接觸點之後，帝國大廈這一發是打在樓頂而不是腳邊，火球在畫面上的
+     位置與遮擋都變了，再掉到 0.41%。這裡真正要驗的是「有火球才有過曝白」，
+     所以看的是跟拿掉火球那幀的倍數關係，絕對值只當作「它沒有小到看不見」。 */
+  ok('火球真的亮在畫面上', flash.on.pct > 0.25 && flash.on.pct > flash.off.pct * 3,
      '同一幀有火球 ' + flash.on.pct.toFixed(2) + '% 過曝、拿掉只剩 ' +
      flash.off.pct.toFixed(2) + '%');
   ok('火球固定吃五個 draw call（每層球殼一個）', flash.on.calls - flash.off.calls === 5,
@@ -2370,8 +2464,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 先收縮後爆發：陣在充能時把周圍碎料往中心捲，六秒到再全部噴出去。
      只驗「有沒有吸」不夠——吸完要能噴回去才是那個反差。 */
   const imp = await page.evaluate(() => {
-    startBuild(true); completeNow();
-    // 把外圈的積木改成散落的碎料，當作被吸的對象
+    /* 建築要指定：外圈那些積木是「被吸的對象」，隨機藍圖抽到小又矮的話
+       siteR 會被 7 這個下限撐開，一塊都選不到，量到的就是 0 塊在吸。 */
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 1500; startBuild(true); completeNow();
+    shapePick = -1;
     const loose = [];
     for (const b of blocks) {
       if (loose.length >= 80) break;
@@ -2516,7 +2613,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const bombE = one('美國國會大廈', () => placeBomb({ x: 14, y: 4, z: 0 }), () => !!bombs);
     const nukeE = one('萬里長城', () => callNuke({ x: 0, z: 0 }), () => !!nuke);
     const magicE = one('萬里長城', () => castMagic({ x: 0, z: 0 }), () => !!magic);
-    const flatE = one('美國國會大廈', () => callNuke({ x: 0, z: 0 }), () => !!nuke);
+    /* 「剛好被夷平」要挑矮的：核彈炸在接觸點上，打高樓時炸點在樓頂，
+       下半截會留著（那些就會有站著的餘火）。金字塔頂只有 14 高，整座都在半徑內。 */
+    const flatE = one('吉薩金字塔', () => callNuke({ x: 0, z: 0 }), () => !!nuke);
     return { bomb: bombE, nuke: nukeE, magic: magicE, flat: flatE };
   });
   ok('炸彈、核彈、魔法都會在周圍留下餘火',

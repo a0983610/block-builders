@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.27.0';
+const VERSION = '1.28.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -314,6 +314,7 @@ function startBuild(instant) {
 
   // 正在作用的道具要收掉，不然拆完換新建築時，還在飛的鐵球／龍捲風會繼續砸新的那座
   swing = null; ENG.hideHammer();
+  quake = null;                       // 地震點名要掉的是「這一座」的積木，換場就作廢
   ball = null; ENG.hideBall();
   twists = null; ENG.putTornados([]);
   trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
@@ -1195,10 +1196,12 @@ function resetSave() {
    三種都走同一個出口 breakBlock()，差別只在「哪些積木被選中、給什麼速度」。 */
 const TOOLS = [
   { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
-  { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊', lock: null },
-  { id: 'bighammer', n: '大槌', k: '🔨', big: true, tip: '點建築：兩倍大的槌子，範圍也是兩倍',
+  { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：地震，震掉 5% 的積木',
+    lock: null },
+  { id: 'bighammer', n: '大槌', k: '🔨', big: true,
+    tip: '點建築：兩倍大的槌子，範圍也是兩倍　·　點地面：地震，震掉 10%',
     lock: { txt: '累計擊飛 300 塊解鎖', ok: () => stats.smashed >= 300 } },
-  { id: 'ball', n: '保齡球', k: '🎳', tip: '點建築：保齡球滾過去撞',
+  { id: 'ball', n: '保齡球', k: '🎳', tip: '點地面：從那裡把保齡球丟向建築，彈幾下再滾過去',
     lock: { txt: '拆掉 3 座建築解鎖', ok: () => stats.destroyed >= 3 } },
   { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
     lock: { txt: '拆掉 6 座建築解鎖', ok: () => stats.destroyed >= 6 } },
@@ -1217,8 +1220,10 @@ const TOOLS = [
 ];
 const toolOk = t => !t.lock || t.lock.ok();
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
-   規定一定要點到建築的話，站在旁邊的空地放炸彈反而做不到。 */
-const GROUND_TOOL = { tornado: 1, treb: 1, bomb: 1, meteor: 1, nuke: 1, magic: 1 };
+   規定一定要點到建築的話，站在旁邊的空地放炸彈反而做不到。
+   槌子點空地是地震、保齡球點空地是從那裡把球丟出去，所以也在這裡。 */
+const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1,
+                      bomb: 1, meteor: 1, nuke: 1, magic: 1 };
 let tool = 'hammer';
 
 let hammerR = 5.5, hammerPow = 15;
@@ -1402,12 +1407,63 @@ function smash(point, dir, R0, pow0) {
   return hitN;
 }
 
+/* ── 地震：槌子砸在地上 ─────────────────────────────────
+   敲空地本來什麼事都不會發生。現在改成震一下：整棟跟著晃，隨機 QUAKE_FRAC 的積木
+   鬆脫掉下來。掉的是「原地垮下來」不是被打飛——它們沒有被誰打到，只是站不住了。
+   分成好幾波掉，不是同一幀全掉：一次掉完看起來像被隱形的東西打到，不像在震。 */
+const QUAKE_TIME = 1.1;             // 震多久（大槌 ×1.5）
+const QUAKE_FRAC = 0.05;            // 一次震掉多少比例（大槌 ×2）
+const QUAKE_WAVE = 0.12;            // 每隔多久掉一波
+let quake = null;
+
+function startQuake(p, big) {
+  /* 先把要掉的那些抽好放著，不要每一波再抽一次：每波重抽的話，
+     先掉的那些留下的空洞會讓後面幾波集中在同一區，看起來像被鑿了一個洞。 */
+  const std = [];
+  for (let i = 0; i < blocks.length; i++) if (blocks[i].st === SET) std.push(i);
+  const n = Math.min(std.length, Math.round(std.length * QUAKE_FRAC * (big ? 2 : 1)));
+  for (let i = 0; i < n; i++) {                     // 只洗要用到的前 n 個
+    const j = i + Math.floor(Math.random() * (std.length - i));
+    const t = std[i]; std[i] = std[j]; std[j] = t;
+  }
+  quake = { t: QUAKE_TIME * (big ? 1.5 : 1), next: 0, list: std.slice(0, n), cur: 0,
+            x: p.x, z: p.z, big: !!big };
+  ENG.shake(big ? 1.5 : 1);
+  sndSmash();
+  spawnRing({ x: p.x, y: 0, z: p.z }, big ? 9 : 6);
+  return n;
+}
+function stepQuake(dt) {
+  if (!quake) return;
+  const q = quake;
+  q.t -= dt;
+  q.next -= dt;
+  if (q.next > 0 && q.t > 0) return;
+  q.next = QUAKE_WAVE;
+  // 這一波掉幾塊：剩下的量平均分給剩下的波數，最後一波把尾數收乾淨
+  const waves = Math.max(1, Math.ceil(q.t / QUAKE_WAVE));
+  const take = q.t <= 0 ? q.list.length - q.cur
+                        : Math.ceil((q.list.length - q.cur) / waves);
+  let n = 0;
+  for (let k = 0; k < take && q.cur < q.list.length; k++) {
+    const b = blocks[q.list[q.cur++]];
+    if (!b || b.st !== SET) continue;               // 這中間被別的東西打掉了
+    breakBlock(b, rr(-1.2, 1.2), rr(-0.5, 1.2), rr(-1.2, 1.2));
+    n++;
+  }
+  // 還沒掉的也要跟著抖：地震看的是整棟在晃，不是幾塊在掉
+  for (const b of blocks) if (b.st === SET && Math.random() < 0.5) b.wob = 0.4;
+  if (n) afterHit(n, { x: q.x, y: 1, z: q.z }, 5);
+  ENG.shake(0.5);
+  if (q.t <= 0) quake = null;
+}
+
 /* 揮槌：槌子沿著你的視線方向砸下去，槌頭碰到的那一刻才真的造成破壞。
    直接在按下的瞬間就把積木打飛的話，畫面上什麼都沒發生就散了，完全沒有打擊感。 */
 const SWING_DOWN = 0.19, SWING_BACK = 0.34;
 const SWING_ARM = 9, SWING_ANG = 2.15;
 let swingSide = 1;
-function launchHammer(point, dir, big) {
+function launchHammer(point, dir, big, ground) {
   if (swing && !swing.hit) resolveSwing();        // 連點時先把上一槌結算掉，不要吃掉那一擊
   /* 側揮：揮動平面取「螢幕右方 × 世界上方」，弧線正對著鏡頭掃過來。
      沿著視線方向直直砸下去的話，槌子從頭到尾都是端面朝你，看不出那是一支槌子。 */
@@ -1417,15 +1473,18 @@ function launchHammer(point, dir, big) {
   swingSide = -swingSide;                          // 左右輪流，連續砸才不會每次都同一邊
   swing = { px: point.x, py: point.y, pz: point.z,
             dx: dir.x, dy: dir.y, dz: dir.z,
-            rx: rx * swingSide, rz: rz * swingSide, t: 0, hit: false, big: !!big };
+            rx: rx * swingSide, rz: rz * swingSide, t: 0, hit: false,
+            big: !!big, ground: !!ground };
   sndSwing();
 }
 function resolveSwing() {
   if (!swing || swing.hit) return 0;
   swing.hit = true;
+  const p = { x: swing.px, y: swing.py, z: swing.pz };
+  // 砸在空地上：不是點狀衝擊，而是把整棟震一震（震到的那些自己垮下來）
+  if (swing.ground) return startQuake(p, swing.big);
   const m = swing.big ? 2 : 1;                   // 大槌：範圍兩倍、力道再多五成
-  return smash({ x: swing.px, y: swing.py, z: swing.pz },
-               { x: swing.dx, y: swing.dy, z: swing.dz },
+  return smash(p, { x: swing.dx, y: swing.dy, z: swing.dz },
                hammerR * m, hammerPow * (swing.big ? 1.5 : 1));
 }
 function stepSwing(dt) {
@@ -1553,14 +1612,23 @@ function stepTrebs(dt) {
    撞掉越多減速越多，滾不動就停下。滾在地面而不是飛在半空，
    剛好會先把建築的底部掏空——上面的部分接著就靠垮塌判定自己塌下來。 */
 const BALL_R = 3.1;
-function launchBall(point, dir) {
-  let dx = dir.x, dz = dir.z;                    // 只取水平方向，球是在地上滾的
+/* 點地面 = 從那裡把球丟向建築。出手有高度，落地彈幾下才開始往前滾——
+   直接貼地放出去的話它就只是一顆在地上平移的球，看不出是被「丟」出來的。
+   方向帶一點隨機偏差：每次滾出來的線不一樣，同一個位置點兩次不會是同一發。 */
+/* 出手高度與回彈都要壓著點：球水平是 34 單位/秒，多滯空 0.1 秒就多飛 3.4 單位。
+   彈太久的話它是「飛」到建築上的，看不出中間那段滾。現在兩下彈完，約 0.9 秒進入滾。 */
+const BALL_DROP = 3.4;              // 出手高度（球心離「貼地時的球心」多高）
+const BALL_SPREAD = 0.22;           // 方向偏差 ±rad（約 ±12.6°）
+const BALL_BOUNCE = 0.42;           // 落地回彈保留多少垂直速度
+function launchBall(point) {
+  let dx = -point.x, dz = -point.z;              // 朝工地中心丟
   const l = Math.hypot(dx, dz);
   if (l < 1e-4) { dx = 1; dz = 0; } else { dx /= l; dz /= l; }
-  const back = siteR + 16;                       // 起點推到建築外圍，免得直接生在牆裡
+  const a = Math.atan2(dz, dx) + rr(-BALL_SPREAD, BALL_SPREAD);
   ball = {
-    x: point.x - dx * back, y: BALL_R, z: point.z - dz * back,
-    vx: dx * 34, vz: dz * 34, r: BALL_R, ang: 0, hit: 0, life: 6
+    x: point.x, y: BALL_R + BALL_DROP, z: point.z,
+    vx: Math.cos(a) * 34, vz: Math.sin(a) * 34, vy: rr(-3, -0.5),   // 是往下丟不是往上拋
+    r: BALL_R, ang: 0, hit: 0, life: 6, hops: 0
   };
   sndSwing();
 }
@@ -1568,7 +1636,16 @@ function stepBall(dt) {
   if (!ball) return;
   const o = ball;
   o.life -= dt;
-  o.x += o.vx * dt; o.z += o.vz * dt; o.y = o.r;
+  o.vy -= GRAV * dt;
+  o.x += o.vx * dt; o.z += o.vz * dt; o.y += o.vy * dt;
+  if (o.y <= o.r) {                              // 落地：彈一下，越彈越低
+    o.y = o.r;
+    if (o.vy < -2.5) {
+      o.vy = -o.vy * BALL_BOUNCE; o.hops++;
+      spawnDust({ x: o.x, y: 0.4, z: o.z }, 4, 6);
+      ENG.shake(0.22); sndSmash();
+    } else o.vy = 0;
+  }
   let sp = Math.hypot(o.vx, o.vz);
   o.ang += sp / o.r * dt;                        // 滾動角度：走多遠就轉多少
   const R = o.r + 0.7, R2 = R * R;
@@ -1590,10 +1667,11 @@ function stepBall(dt) {
      所以正面被撞的往前飛，擦邊的往旁邊彈開。球不會點火，純粹是被推走。 */
   for (const w of workers) {
     if (w.air) continue;
-    const dx = w.x - o.x, dz = w.z - o.z;
-    const dd = dx * dx + dz * dz;
+    // 高度也要算：球還在半空中飛過頭頂時不該把下面的人撞飛
+    const dx = w.x - o.x, dy = o.y - 0.9, dz = w.z - o.z;
+    const dd = dx * dx + dy * dy + dz * dz;
     if (dd > (R + 0.8) * (R + 0.8)) continue;
-    const d = Math.max(0.4, Math.sqrt(dd));
+    const d = Math.max(0.4, Math.hypot(dx, dz));
     tossWorker(w, o.vx * 0.6 + dx / d * 6, rr(4, 7), o.vz * 0.6 + dz / d * 6, false);
   }
   if (n) {
@@ -1609,7 +1687,9 @@ function stepBall(dt) {
   o.vx *= roll; o.vz *= roll;
   sp = Math.hypot(o.vx, o.vz);
 
-  if (sp < 4.5 || o.life <= 0 || Math.hypot(o.x, o.z) > arenaR + 6) {
+  /* 停下來的條件。範圍放到草地邊緣（不是工地邊緣）：現在球是從玩家點的地方丟出來的，
+     點在場邊時起點本來就在工地外，用工地邊緣當界的話那一發出手就被收掉。 */
+  if (sp < 4.5 || o.life <= 0 || Math.hypot(o.x, o.z) > arenaR + 24) {
     spawnRing({ x: o.x, y: 0, z: o.z }, 5);
     ball = null; ENG.hideBall();
   } else {
@@ -2061,9 +2141,19 @@ function stepMeteors(dt) {
    倒數期間什麼都不畫的話，前兩秒看起來就像點了沒反應。
    一次只有一顆：倒數中再點會改打新的地點。 */
 const NUKE_WAIT = 2, NUKE_FALL = 0.8, NUKE_TOP = 130, NUKE_R = 30, NUKE_POW = 34;
+/* 彈頭在彈體模型的原點上（nukeGroup 的 y=0 附近），所以掃掠只要往前多探這麼一點，
+   碰到的就是彈頭的鼻尖，不是等整顆彈體埋進屋頂才算。 */
+const NUKE_NOSE = 1.8;
 function callNuke(point) {
-  nuke = { x: point.x, z: point.z, t: NUKE_WAIT + NUKE_FALL, mark: 0, spin: 0 };
+  nuke = { x: point.x, y: NUKE_TOP + 3, z: point.z, s: NUKE_NOSE,
+           t: NUKE_WAIT + NUKE_FALL, mark: 0, spin: 0 };
   sndSiren();
+}
+function nukeHit(p) {
+  nuke = null;
+  ENG.hideNuke();
+  explode(p, NUKE_R, NUKE_POW);
+  startCloud(p, NUKE_R, false);
 }
 function stepNuke(dt) {
   if (!nuke) return;
@@ -2074,13 +2164,18 @@ function stepNuke(dt) {
     if (nuke.mark <= 0) { nuke.mark = 0.5; spawnRing({ x: nuke.x, y: 0, z: nuke.z }, 6); }
   } else if (nuke.t > 0) {
     const k = nuke.t / NUKE_FALL;                  // 1 → 0
-    ENG.setNuke(nuke.x, k * k * NUKE_TOP + 3, nuke.z, nuke.spin);   // 平方 = 越掉越快
+    const py = nuke.y;
+    nuke.y = k * k * NUKE_TOP + 3;                 // 平方 = 越掉越快
+    /* 半路碰到建築就在碰到的那一點炸，跟隕石／投石機共用同一套掃掠判定。
+       固定炸在 y=2.5 的話，打台北 101 這種高的會從樓頂穿到腳邊才炸，
+       上半截等於沒被炸到——那是衝擊波半徑量得到的差別，不只是好不好看。 */
+    if (sweepRock(nuke, nuke.x, py, nuke.z)) {
+      nukeHit({ x: nuke.x, y: Math.max(2.5, nuke.y), z: nuke.z });
+      return;
+    }
+    ENG.setNuke(nuke.x, nuke.y, nuke.z, nuke.spin);
   } else {
-    const p = { x: nuke.x, y: 2.5, z: nuke.z };
-    nuke = null;
-    ENG.hideNuke();
-    explode(p, NUKE_R, NUKE_POW);
-    startCloud(p, NUKE_R, false);
+    nukeHit({ x: nuke.x, y: 2.5, z: nuke.z });     // 沒撞到東西：照樣炸在地面
   }
 }
 
@@ -2507,9 +2602,10 @@ function useTool(hit) {
   // 記在最前面：手指也算一種道具，成就要的是「六種都試過」
   if (stats.tools.indexOf(tool) < 0) { stats.tools.push(tool); checkBadges(); }
   if (tool === 'finger') return 0;                 // 手指什麼都不破壞，只有戳小人有效
-  if (tool === 'hammer') { launchHammer(hit.point, hit.dir, false); return 0; }
-  if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true); return 0; }
-  if (tool === 'ball') { launchBall(hit.point, hit.dir); return 0; }
+  const onGround = hit.kind === 'ground';
+  if (tool === 'hammer') { launchHammer(hit.point, hit.dir, false, onGround); return 0; }
+  if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true, onGround); return 0; }
+  if (tool === 'ball') { launchBall(hit.point); return 0; }
   if (tool === 'treb') { placeTreb({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fire') { torch(hit); return 0; }
@@ -2657,6 +2753,7 @@ function step(dt) {
     }
   }
   stepSwing(dt);
+  stepQuake(dt);
   stepBall(dt);
   stepTwist(dt);
   stepTrebs(dt);
