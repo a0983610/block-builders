@@ -1951,20 +1951,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       ndc = +v.y.toFixed(2);
     }
     const setAtBurst = placedCnt;
-    // 火星飛完
-    let fall = 0;
-    while (fwSparks && fall < 8) { step(0.05); fall += 0.05; }
-    const lit = fires || [];
-    const seeds = lit.filter(f => f.b.st === 3).length;
-    // 種子點要散開，不是全擠在同一塊
+    /* 等火星飛完，數它點著了幾處、散得多開。
+       火星的方向是隨機的，整發都落在空地上是**正常**的，所以這裡連放兩發看合計——
+       要驗的是「火星真的會點著建築」，不是「每一發都一定點得著」。
+       每一發之前先 clearFires()，不然數到的會是上一發自己蔓延出去的火。 */
+    const shot = () => {
+      let fall = 0;
+      while (fwSparks && fall < 8) { step(0.05); fall += 0.05; }
+      return { pts: (fires || []).filter(f => f.b.st === 3).map(f => ({ x: f.b.x, z: f.b.z })), fall };
+    };
+    const s1 = shot();
+    clearFires();
+    launchFw({ x: 0, z: 0 });
+    let rise2 = 0;
+    while (fworks && rise2 < 4) { step(0.05); rise2 += 0.05; }
+    const s2 = shot();
+    const pts = s1.pts.concat(s2.pts);      // 散開程度算兩發的聯集，不是各自算
     let spread = 0;
-    if (seeds > 1) {
-      const p = lit.filter(f => f.b.st === 3).map(f => f.b);
-      for (const a of p) for (const b of p) spread = Math.max(spread, Math.hypot(a.x - b.x, a.z - b.z));
-    }
+    for (const a of pts) for (const b of pts) spread = Math.max(spread, Math.hypot(a.x - b.x, a.z - b.z));
     return { set0, setAtBurst, top: +top.toFixed(1), rise: +rise.toFixed(2), sparks,
-             burstY: +burstY.toFixed(1), ndc, seeds, spread: +spread.toFixed(1),
-             phase, d0: +d0.toFixed(0), dist: +dist.toFixed(0), fall: +fall.toFixed(2),
+             burstY: +burstY.toFixed(1), ndc,
+             seeds: pts.length, each: [s1.pts.length, s2.pts.length], spread: +spread.toFixed(1),
+             phase, d0: +d0.toFixed(0), dist: +dist.toFixed(0), fall: +s1.fall.toFixed(2),
              hold: +(FW_TOP * 2.1).toFixed(0) };
   });
   ok('煙火會從地面竄上天再炸開',
@@ -1979,7 +1987,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fw.set0 + ' → ' + fw.setAtBurst + ' 塊（它是灑火種，不是爆炸）');
   ok('落下來的火星把建築點著，而且點在好幾個地方',
      fw.seeds >= 2 && fw.spread > 4 && fw.phase === 'wreck',
-     '燒起來 ' + fw.seeds + ' 處，最遠兩處相距 ' + fw.spread + '（phase=' + fw.phase + '）');
+     '兩發合計燒起來 ' + fw.seeds + ' 處（' + fw.each.join(' + ') +
+     '），同一發最遠兩處相距 ' + fw.spread + '（phase=' + fw.phase + '）');
   const fwOff = await page.evaluate(() => {
     startBuild(true); completeNow(); clearFires();
     // 打在建築外的空地上：火星落在草地上就只是熄掉
