@@ -90,7 +90,9 @@ const ENG = (function () {
   const MAXB = 4200;                       // 積木池上限
   const MAXW = 80;                         // 小人上限
   const WPARTS = 7;                        // 每個小人的部位數
-  const MAXDUST = 560;                     // 蘑菇雲一朵就吃掉兩百多顆，420 會把爆炸的煙擠掉
+  /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
+     核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。 */
+  const MAXDUST = 720;
 
   /* ── 材質：在 Lambert 上加一圈深色邊，voxel 才有實體感 ──
      邊緣判定不靠 uv（不同 three 版本 uv attribute 有沒有宣告不一定），

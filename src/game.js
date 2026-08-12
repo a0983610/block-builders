@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.26.0';
+const VERSION = '1.26.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -909,6 +909,10 @@ function stepToss(b, dt) {
 
 /* ── 紀錄 · 成就 · 存檔 ───────────────────────────────── */
 const WRECK_AT = 0.25;              // 剩下不到這個比例就算拆完了，換下一座
+/* 但不要立刻換：拆完那一下常常是核彈或魔法陣，火球、蘑菇雲、滿地碎料都還在演，
+   立刻叫推土機進場等於把那一發的收尾剪掉。先站在原地看這麼久再收拾。 */
+const SWAP_WAIT = 3;
+let swapWait = 0;                   // 已經等了幾秒（跟著模擬時間走，開快轉就等得短）
 const WAGE = 3;                     // 每個小人每秒的人力成本（$）
 /* 每塊積木從建築上掉下來，算多少損失。訂在 85 是要讓「拆一座」的數字有份量：
    一千塊的建築拆完約 $85,000，跟蓋它花掉的人力錢是同一個量級。 */
@@ -2219,7 +2223,7 @@ function stepClouds(dt) {
             s: rr(1, 2.2), life: rr(0.5, 1.1), g: 1.4, grow: 1.04, cool: rr(0.4, 0.8),
             cr: 1, cg: rr(0.62, 0.86), cb: rr(0.16, 0.4),
             to: c.magic ? [0.9, 0.15, 0.4] : [0.6, 0.16, 0.04] });
-        if (dust.length < 520)                       // 柱子的煙：沿著整根柱子生
+        if (dust.length < 680)                       // 柱子的煙：沿著整根柱子生
           dust.push({ x, y: rr(0.6, capY * 0.92), z,
             vx: Math.cos(a) * rr(0.2, 1.2), vy: rr(0.8, 2.4), vz: Math.sin(a) * rr(0.2, 1.2),
             rx: Math.random() * 6, ry: Math.random() * 6,
@@ -2232,7 +2236,7 @@ function stepClouds(dt) {
     if (t0 < 0.45 && c.t >= 0.45) {
       const H = R * 0.4;
       for (let k = 0; k < 112; k++) {
-        if (dust.length >= 520) break;
+        if (dust.length >= 680) break;
         const a = Math.random() * Math.PI * 2;
         const rad = Math.sqrt(rr(0.03, 1)) * R * 0.5;
         dust.push({
@@ -2270,9 +2274,12 @@ function stepClouds(dt) {
       c.semit = (c.semit || 0) + dt * 62;
       while (c.semit >= 1) {
         c.semit--;
-        /* 這裡的上限壓在 430，比柱子與傘蓋的 520 低：傘蓋是 0.45 秒一次要 112 顆的
-           爆量，煙裙要是先把配額吃光，蘑菇就會變成一根沒有頭的柱子。 */
-        if (dust.length > 430) break;
+        /* 這裡的上限壓在 590，比柱子與傘蓋的 680 低：傘蓋是 0.45 秒一次要 112 顆的
+           爆量，煙裙要是先把配額吃光，蘑菇就會變成一根沒有頭的柱子。
+           兩個數字都比整朵雲自己要的（柱 128 + 傘 112 + 裙 105）高一截，是留給
+           碎料的火苗煙——核彈會點著整棟，那些煙先搶走兩百多格，配額不夠寬的話
+           煙裙就鋪不出來（量過：99 團 → 27 團，只剩柱子腳邊一小圈）。 */
+        if (dust.length > 590) break;
         const a = Math.random() * Math.PI * 2;
         const k = Math.min(1, c.t / (SKIRT_T * 0.8));
         const rad = R * (0.12 + 0.36 * k) * rr(0.75, 1.15);
@@ -2471,19 +2478,27 @@ function step(dt) {
     const c = workers.length * WAGE * dt;
     spentThis += c; stats.spent += c;
   }
-  /* 拆到剩沒幾塊就當這座拆完了：剩下的自己垮掉，直接開下一座。
+  /* 拆到剩沒幾塊就當這座拆完了：剩下的自己垮掉，換下一座。
      不做這件事的話玩家得一塊一塊把最後的碎屑點掉，很煩。
+     跌破門檻不馬上換，先等 SWAP_WAIT 秒讓最後那一發演完；這段時間還能繼續砸殘骸，
+     所以結算（報廢的那些、拆除完畢的通知）留到真的要換場那一刻才做，
+     不然等待中被打掉的積木會被算兩次錢。
      魔法陣還在充能時例外：它會先把建築扯下來捲進陣心，那個過程一定會跌破這條線——
-     照換的話陣會被 startBuild 收掉，那一發永遠等不到爆炸，玩家只看到建築消失。 */
-  if (phase === 'wreck' && !magic && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
-    stats.destroyed++;
-    // 剩下沒打到的那些跟著整棟報廢，也要計進損失
-    const writeOff = placedCnt * WRECK_COST;
-    stats.wrecked += writeOff; lossThis += writeOff;
-    toast('💥 ' + bp.name + ' 拆除完畢',
-          '損失 ' + money(lossThis) + '　·　累計拆掉 ' + stats.destroyed + ' 座');
-    checkBadges(); save(); renderTools();
-    startBuild(false);
+     照換的話陣會被 startBuild 收掉，那一發永遠等不到爆炸，玩家只看到建築消失。
+     （等待中途離開 wreck——按了「立刻建成」之類——就把秒數丟掉重算） */
+  if (phase !== 'wreck') swapWait = 0;
+  else if (!magic && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
+    swapWait += dt;
+    if (swapWait >= SWAP_WAIT) {
+      stats.destroyed++;
+      // 剩下沒打到的那些跟著整棟報廢，也要計進損失
+      const writeOff = placedCnt * WRECK_COST;
+      stats.wrecked += writeOff; lossThis += writeOff;
+      toast('💥 ' + bp.name + ' 拆除完畢',
+            '損失 ' + money(lossThis) + '　·　累計拆掉 ' + stats.destroyed + ' 座');
+      checkBadges(); save(); renderTools();
+      startBuild(false);
+    }
   }
   stepSwing(dt);
   stepBall(dt);

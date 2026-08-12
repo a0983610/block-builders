@@ -752,6 +752,39 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('施工中被砸，小人會把洞補回去', rebuild.after > rebuild.hurt,
      '砸到剩 ' + rebuild.hurt + ' → 補回 ' + rebuild.after);
 
+  /* 跌破門檻不會當場換場：最後那一下（常常是核彈）的火球跟碎料還在演，
+     要站在原地等 SWAP_WAIT 秒才收拾。一幀一幀推，量「跌破」到「離開 wreck」隔多久。 */
+  const lag = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 700; startBuild(true); completeNow();
+    const gate = Math.floor(bp.slots.length * WRECK_AT), d0 = stats.destroyed;
+    let t = 0, tUnder = -1, tSwap = -1, mid = null;
+    for (let i = 0; i < 600 && tSwap < 0; i++) {
+      if (tUnder < 0) {                       // 還沒跌破門檻就繼續砸
+        const cand = blocks.filter(b => b.st === 3);
+        if (cand.length) {
+          const x = cand[Math.floor(Math.random() * cand.length)];
+          smash(new THREE.Vector3(x.x, x.y, x.z), new THREE.Vector3(0.2, -0.95, 0.1).normalize());
+        }
+      }
+      step(0.05); t += 0.05;
+      if (tUnder < 0) { if (placedCnt <= gate) tUnder = t; continue; }
+      // 等待中途取樣一次：這時候還不該有任何換場動作
+      if (!mid && t - tUnder > 1.5) mid = { phase, doz: !!dozers, gained: stats.destroyed - d0 };
+      if (phase !== 'wreck') tSwap = t;
+    }
+    return { gap: +(tSwap - tUnder).toFixed(2), mid, wait: SWAP_WAIT,
+             phase, gained: stats.destroyed - d0, placed: placedCnt, gate };
+  });
+  ok('拆到門檻不會當場換場，先讓最後那一發演完',
+     lag.mid && lag.mid.phase === 'wreck' && !lag.mid.doz && lag.mid.gained === 0,
+     '跌破門檻（剩 ' + lag.gate + ' 以下）後 1.5 秒：phase=' +
+     (lag.mid && lag.mid.phase) + '、推土機 ' + (lag.mid && lag.mid.doz ? '已進場' : '還沒來'));
+  ok('等滿三秒才換下一座', lag.gap > lag.wait - 0.2 && lag.gap <= lag.wait &&
+     lag.phase !== 'wreck' && lag.gained === 1,
+     '隔 ' + lag.gap + ' 秒（設定 ' + lag.wait + '）後 phase=' + lag.phase +
+     '，拆掉座數 +' + lag.gained);
+
   /* ══════════ 整地推土機 ══════════ */
   head('整地推土機');
   await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 12 });
@@ -2177,8 +2210,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 118; i++) step(0.05);          // 5.9 秒：早就跌破那條線了
     const mid = { alive: !!magic, placed: placedCnt, gate: Math.floor(total0 * WRECK_AT),
                   same: bp.slots.length === total0, dest: stats.destroyed };
-    for (let i = 0; i < 8; i++) step(0.05);            // 過 6 秒：炸完、這時候才准換場
+    for (let i = 0; i < 8; i++) step(0.05);            // 過 6 秒：炸完、這時候才輪得到換場
     const out = { mid, after: !!magic, boom: flashes.length > 0, dest: stats.destroyed };
+    for (let i = 0; i < 70; i++) step(0.05);           // 換場前還要等 SWAP_WAIT 秒讓爆炸演完
+    out.dest = stats.destroyed;
     shapePick = -1;
     return out;
   });
@@ -2238,18 +2273,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      換場如果把特效也清掉，蘑菇雲就會在爆炸後 0.05 秒整朵消失——等於白做。
      這裡驗的是「換場了、但雲還在」，兩個條件缺一不可。 */
   const keepFx = await page.evaluate(() => {
+    const puffs = () => dust.filter(d => d.fade >= 3).length;   // 只算雲，碎料的火苗煙是 2.2
     startBuild(true); completeNow();
     const ph0 = phase;
     callNuke({ x: 0, z: 0 });
     for (let i = 0; i < 58; i++) step(0.05);           // 炸下去
     const ph1 = phase;
     for (let i = 0; i < 24; i++) step(0.05);           // 1.2 秒後雲該長齊了
-    return { ph0, ph1, phase, cloud: dust.filter(d => d.fade).length, fire: hot.length };
+    const grown = puffs();
+    for (let i = 0; i < 44; i++) step(0.05);           // 再 2.2 秒：等滿 SWAP_WAIT，這時候才換場
+    return { ph0, ph1, phase, grown, cloud: puffs(), fire: hot.length };
   });
   ok('炸到整棟夷平而自動換場時，蘑菇雲不會跟著消失',
-     keepFx.ph1 !== 'done' && keepFx.cloud > 90,
+     keepFx.ph1 !== 'done' && keepFx.phase !== 'wreck' &&
+     keepFx.grown > 90 && keepFx.cloud > 90,
      'phase ' + keepFx.ph0 + ' → ' + keepFx.ph1 + ' → ' + keepFx.phase +
-     '，雲 ' + keepFx.cloud + ' 團、火球 ' + keepFx.fire + ' 顆');
+     '，雲 ' + keepFx.grown + ' → ' + keepFx.cloud + ' 團、火球 ' + keepFx.fire + ' 顆');
 
   /* 餘火：三種爆炸都要在周圍點起火來。三個共用 explode()，但還是三個都測——
      哪天有人在某一支的路徑上繞過 explode，只測一種是看不出來的。
