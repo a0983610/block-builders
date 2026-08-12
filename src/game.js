@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.23.0';
+const VERSION = '1.24.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1924,31 +1924,47 @@ function stepNuke(dt) {
    讓你在那六秒裡看得出來會炸到哪。一次只有一個，再點會移到新的地點重來。 */
 const MAG_TIME = 6, MAG_R = 30, MAG_POW = 34;
 const MAG_GAP = 0.8, MAG_GROW = 0.5;      // 每隔多久長一層、一層長多久
-/* 陣是**由下往上疊**的，不是同心圓：整疊都浮在半空，最下面那層離地也有一段，
+/* 陣是**六層疊起來**的，不是同心圓：整疊都浮在半空，最下面那層離地就有 12 單位，
    中間收窄、最上面那層再放大一點——照參考圖的層次。r 與 y 都是 MAG_R 的倍率。
    最下層不做滿爆炸半徑（那會比建築大一大圈，看起來像地上的跑道），
-   代價是「最外圈就是爆炸範圍」這個提示沒了。 */
+   代價是「最外圈就是爆炸範圍」這個提示沒了。
+   整疊拉到 0.40～1.15R（12～34.6）：最寬那圈直徑就有 37，疊得矮的話整組是扁的，
+   遠看像一疊盤子不像一座法陣。34.6 這個高度跟龍捲風同級，配上施法期間的運鏡塞得進畫面。 */
 /* 半徑刻意不照大小排：由大到小再放大會太像一個規矩的陀螺，
    夾一層特別小、一層又鼓回來，看起來才像法陣不像機械零件。
    每次施法再各自乘一個 0.82–1.18 的抖動（施法當下決定，不是每幀跳）。 */
 const MAG_LAYER = [
-  { r: 0.62, y: 0.22 },
-  { r: 0.42, y: 0.34 },
-  { r: 0.53, y: 0.46 },
-  { r: 0.33, y: 0.57 },
-  { r: 0.47, y: 0.68 },
-  { r: 0.57, y: 0.79 }
+  { r: 0.62, y: 0.40 },
+  { r: 0.42, y: 0.55 },
+  { r: 0.53, y: 0.70 },
+  { r: 0.33, y: 0.85 },
+  { r: 0.47, y: 1.00 },
+  { r: 0.57, y: 1.15 }
 ];
 const MAG_JITTER = 0.18;
+const MAG_SPIN = 0.42;                    // 陣的轉速（rad/s，逆時針；六秒約轉 145°）
 function castMagic(point) {
+  /* 出現順序每次洗牌。固定由下往上長的話，那六秒每次都長得一模一樣；
+     洗的只是「哪一層什麼時候出現」，每層自己的高度與半徑不動。 */
+  const ord = MAG_LAYER.map((_, i) => i);
+  for (let i = ord.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = ord[i]; ord[i] = ord[j]; ord[j] = t;
+  }
   magic = {
-    x: point.x, z: point.z, t: MAG_TIME, shown: 0,
+    x: point.x, z: point.z, t: MAG_TIME, shown: 0, ord,
     // 每層的半徑抖動：施法當下抽一次存起來，每幀重抽的話整疊會一直閃
     rj: MAG_LAYER.map(() => rr(1 - MAG_JITTER, 1 + MAG_JITTER)),
-    /* 陣不轉，但每層的紋路角度在施法當下各抽一個定值：六層都給同一個角度的話
+    /* 每層的紋路起始角度各抽一個定值：六層都從同一個角度起跳的話，
        螺旋會完全對齊，整疊看起來像一支花紋對齊的柱子。 */
-    sj: MAG_LAYER.map(() => rr(0, 6.28))
+    sj: MAG_LAYER.map(() => rr(0, 6.28)),
+    /* 轉速再各乘一個倍率：同速的話整疊像一塊剛體在轉，錯開才像好幾層各自運轉。
+       全部都是正的——正的就是俯視逆時針，這是使用者指定的方向。 */
+    wj: MAG_LAYER.map(() => rr(0.7, 1.35))
   };
+  /* 整疊頂端在 34.6，貼著建築的取景裝不下（矮建築取景更近）。
+     跟龍捲風、蘑菇雲同一套：施法期間鏡頭退開，爆完那朵雲會再接手撐住這個距離。 */
+  ENG.holdWide(MAG_R * 2.2, MAG_TIME + 1);
   sndRune(0);
 }
 function stepMagic(dt) {
@@ -1965,8 +1981,8 @@ function stepMagic(dt) {
   const rings = [];
   let layers = 0;
   for (let i = 0; i < MAG_LAYER.length; i++) {
-    const g = (el - i * MAG_GAP) / MAG_GROW;       // 這一層長到幾成
-    if (g <= 0) break;
+    const g = (el - magic.ord[i] * MAG_GAP) / MAG_GROW;   // 這一層長到幾成
+    if (g <= 0) continue;                          // 順序是洗過的，不能像以前那樣 break
     layers++;
     const k = Math.min(1, g);
     const L = MAG_LAYER[i];
@@ -1974,7 +1990,10 @@ function stepMagic(dt) {
        高度也跟著長的話，看起來是「從地上飄上去」而不是「在那裡展開」。 */
     const rad = MAG_R * L.r * magic.rj[i] * (0.12 + 0.88 * k);
     const y = 0.12 + MAG_R * L.y;
-    const spin = magic.sj[i];                      // 固定角度，陣不轉
+    /* 逆時針慢轉。角度一路累加，不是每幀重抽——重抽的話紋路會亂閃不是在轉。
+       減不是加：紋路的角度 a 是用 (cos a, sin a) 擺到 (x, z) 上的，而畫面看下去 +Z 朝下，
+       所以 a 變大在畫面上是順時針。量過的：a 遞增時螢幕外積 −0.0067（順時針）。 */
+    const spin = magic.sj[i] - el * MAG_SPIN * magic.wj[i];
     /* 每一層是兩個環疊出來的：裡面一圈實色的芯，外面一圈加法混色的暈。
        只畫一個環的話它就只是地上一條紅色帶子，不像在發光。 */
     rings.push({ x: magic.x, z: magic.z, r: rad, y, spin, op: k, c: 0xff3a1c, sp: 1, fill: 1 });
@@ -1988,16 +2007,29 @@ function stepMagic(dt) {
 }
 
 /* ── 引力坍縮 ─────────────────────────────────────────────
-   爆炸前的最後幾秒，把周圍的碎料往陣心捲進去（內吸 + 切線 = 螺旋），
-   再撒一些往中心捲的魔力光點。先收縮、後爆發，張力才拉得起來。
-   只動散落的碎料，不動建築本身——蓋好的部分要留到那一下才炸開。 */
-const IMP_TIME = 4.5;               // 倒數剩幾秒開始吸
+   爆炸前的最後幾秒，把周圍的東西往陣心捲進去（內吸 + 切線 = 螺旋），
+   再撒一些往中心捲的魔力光點。先收縮、後爆發，張力才拉得起來——
+   這是它跟核彈最大的差別：核彈是「一下打平」，魔法是「先聚成一團再炸開」。 */
+const IMP_TIME = 4.5;               // 倒數剩幾秒開始吸碎料
+const TEAR_TIME = 2.2;              // 倒數剩幾秒開始把建築本身也扯下來
+const TEAR_RATE = 2.6;              // 扯的速率上限（每塊每秒的機率），會隨時間往上爬
 function implode(m, dt) {
   const k = Math.min(1, (IMP_TIME - m.t) / IMP_TIME);   // 0 → 1，越接近爆炸吸得越猛
   if (k <= 0) return;
+  /* 最後這兩秒連「還站著的建築」都一塊塊扯下來捲進去。只吸散落的碎料的話，
+     打在完好的建築上幾乎看不到收縮這段——地上根本沒有碎料可吸。
+     機率隨時間往上爬，所以是「開始鬆動 → 整棟被拆著吸進去」而不是一次全開。 */
+  const q = Math.max(0, (TEAR_TIME - m.t) / TEAR_TIME);
+  let torn = 0;
   const R = MAG_R, R2 = R * R;
   for (const b of blocks) {
-    if (b.st !== FREE && b.st !== FLY) continue;        // 只吸碎料
+    if (b.st === SET) {
+      if (q <= 0 || Math.random() > dt * TEAR_RATE * q) continue;
+      const ax = b.x - m.x, az = b.z - m.z;
+      if (ax * ax + az * az > R2) continue;
+      breakBlock(b, 0, rr(0.5, 3), 0);                 // 只扯下來，往哪走交給下面的吸力
+      torn++;
+    } else if (b.st !== FREE && b.st !== FLY) continue;   // 小人手上的不動
     const dx = b.x - m.x, dz = b.z - m.z;
     const d2 = dx * dx + dz * dz;
     if (d2 > R2 || d2 < 1) continue;
@@ -2010,6 +2042,9 @@ function implode(m, dt) {
     b.vy += 5 * pull;                                   // 稍微跳起來，不然只是在地上滑
     b.ay += rr(-6, 6) * dt;
   }
+  /* 扯下來的要記帳：計數、嚇小人、標記垮塌重算。半徑給 6（陣心那一圈）而不是 30，
+     不然整個工地的小人會每一幀被掀倒一次。 */
+  if (torn) afterHit(torn, { x: m.x, y: 2, z: m.z }, 6);
   /* 魔力光點：從陣的外圈生出來，靠 pull 一路捲進中心。
      三成給青藍色——參考圖裡捲上來的能量流是冷色的，跟紅陣對比才看得出「被吸進去」。 */
   m.motes = (m.motes || 0) + dt * (10 + 46 * k);
@@ -2397,8 +2432,10 @@ function step(dt) {
     spentThis += c; stats.spent += c;
   }
   /* 拆到剩沒幾塊就當這座拆完了：剩下的自己垮掉，直接開下一座。
-     不做這件事的話玩家得一塊一塊把最後的碎屑點掉，很煩。 */
-  if (phase === 'wreck' && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
+     不做這件事的話玩家得一塊一塊把最後的碎屑點掉，很煩。
+     魔法陣還在充能時例外：它會先把建築扯下來捲進陣心，那個過程一定會跌破這條線——
+     照換的話陣會被 startBuild 收掉，那一發永遠等不到爆炸，玩家只看到建築消失。 */
+  if (phase === 'wreck' && !magic && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
     stats.destroyed++;
     // 剩下沒打到的那些跟著整棟報廢，也要計進損失
     const writeOff = placedCnt * WRECK_COST;

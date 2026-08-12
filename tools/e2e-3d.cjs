@@ -1870,32 +1870,55 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     const set0 = blocks.filter(b => b.st === 3).length;
+    const mean0 = blocks.filter(b => b.st === 3)
+      .reduce((s, b) => s + Math.hypot(b.x, b.z), 0) / set0;   // 建築本身的平均半徑
     const seq = [];
+    let calm = -1;
     for (let i = 0; i < 119; i++) {                     // 5.95 秒
       step(0.05);
       if (i % 16 === 0) seq.push(magic ? magic.shown : -1);   // 每 0.8 秒（＝長一層）取樣
+      if (i === 59) calm = blocks.filter(b => b.st === 3).length;   // 3 秒：還沒開始扯
     }
     const before = blocks.filter(b => b.st === 3).length, alive = !!magic;
-    step(0.05); step(0.05);
-    let hitMax = 0;
-    for (const b of blocks) if (b.st === 4) hitMax = Math.max(hitMax, Math.hypot(b.x, b.y - 1.5, b.z));
+    /* 爆炸前那一刻碎料擠在哪：陣把建築扯下來捲進陣心，所以這時候它們該全部聚在中間。
+       跟施法當下建築本身的平均半徑比，才知道是「被吸過來」不是「本來就在那」。 */
+    const meanOf = f => { const a = blocks.filter(f); return a.length
+      ? a.reduce((s, b) => s + Math.hypot(b.x, b.z), 0) / a.length : 0; };
+    const gathered = meanOf(b => b.st === 4);
+    step(0.05);                                        // 這一幀爆
+    phase = 'done';    // 擋掉「拆完換下一座」：要留著現場量噴多遠，不然下一座已經開工了
     const fire = hot.length;
-    for (let i = 0; i < 24; i++) step(0.05);            // 1.2 秒後：雲該長齊了
-    const cloud = dust.filter(d => d.fade).length;
+    const flew = meanOf(b => b.st === 4);
+    for (let i = 0; i < 20; i++) step(0.05);            // 一秒：讓它們飛出去
+    let hitMax = 0;
+    for (const b of blocks) if (b.st === 4 || b.st === 0) hitMax = Math.max(hitMax, Math.hypot(b.x, b.z));
+    const flew1 = meanOf(b => b.st === 4 || b.st === 0);
+    for (let i = 0; i < 4; i++) step(0.05);             // 補到爆後 1.2 秒：雲該長齊了
+    const cloud = dust.filter(d => d.fade >= 3).length;
     // 魔法版燒的是紅光、還會撒星光：粒子有自己的顏色（cr 有值）而不是灰白煙
-    const tinted = dust.filter(d => d.fade && d.cr !== undefined).length;
-    return { set0, seq, before, alive, set1: blocks.filter(b => b.st === 3).length,
+    const tinted = dust.filter(d => d.fade >= 3 && d.cr !== undefined).length;
+    return { set0, mean0, calm, seq, before, alive, gathered, flew, flew1,
+             set1: blocks.filter(b => b.st === 3).length,
              hitMax, after: !!magic, fire, cloud, tinted };
   });
   ok('魔法陣是一層層長出來的', mg.seq[0] === 1 && mg.seq[mg.seq.length - 1] === 6 &&
      mg.seq.every((v, i) => i === 0 || v >= mg.seq[i - 1]), '每 0.8 秒取樣：' + mg.seq.join(' → '));
-  ok('魔法 6 秒內不會炸', mg.before === mg.set0 && mg.alive, mg.set0 + ' → ' + mg.before);
-  ok('6 秒到就爆，範圍約 30', mg.set1 < mg.set0 * 0.2 && mg.hitMax > 20 && mg.hitMax <= 31 && !mg.after,
-     'SET ' + mg.set0 + ' → ' + mg.set1 + '，最遠打飛到 ' + mg.hitMax.toFixed(1));
+  /* 前三秒只長陣、不動建築；最後兩秒才開始扯。兩段都要驗：
+     只驗「六秒內沒爆」的話，第一秒就把建築拆光也會過。 */
+  ok('前三秒只長陣，不動建築', mg.calm === mg.set0 && mg.alive,
+     '3 秒時 ' + mg.set0 + ' → ' + mg.calm + ' 塊');
+  ok('最後兩秒把建築本身扯下來捲進陣心',
+     mg.before < mg.set0 * 0.35 && mg.gathered < mg.mean0 * 0.8,
+     '建築 ' + mg.set0 + ' → ' + mg.before + ' 塊，碎料離陣心 ' +
+     mg.gathered.toFixed(1) + '（建築原本平均 ' + mg.mean0.toFixed(1) + '）');
+  ok('六秒一到火球把它們全噴出去',
+     mg.set1 < mg.set0 * 0.2 && !mg.after && mg.flew1 > mg.flew * 1.5 && mg.hitMax > 25,
+     '爆炸當下離陣心 ' + mg.flew.toFixed(1) + ' → 一秒後 ' + mg.flew1.toFixed(1) +
+     '，最遠 ' + mg.hitMax.toFixed(1));
   ok('魔法爆完也會留一朵蘑菇雲，而且是紅的', mg.fire > 50 && mg.cloud > 90 && mg.tinted === mg.cloud,
      mg.fire + ' 顆火球、1.2 秒後 ' + mg.cloud + ' 團煙（染紅的 ' + mg.tinted + ' 團）');
 
-  /* 陣是由下往上疊的，不是同心圓：層與層之間高度要遞增，
+  /* 陣是一層層疊起來的，不是同心圓：層與層之間高度要遞增，
      而且貼地那圈的半徑就是爆炸範圍（要讓玩家看得出會炸到哪）。 */
   const mgRing = await page.evaluate(() => {
     startBuild(true); completeNow();
@@ -1938,28 +1961,116 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、第二次 ' + mgVary.b.map(v => v.toFixed(1)).join('/'));
   ok('但同一次施法內不會逐幀跳動', mgVary.steady);
 
-  /* 陣不轉：紋路的角度要一路固定。每層各自一個角度（六層同角度的話螺旋會對齊，
-     整疊看起來像一支花紋對齊的柱子），但同一層不能隨時間變。 */
+  /* 陣要**逆時針**慢慢轉。方向不能只看 spin 這個數字：紋路的角度是用
+     (cos a, sin a) 擺到 (x, z) 上的，而畫面看下去 +Z 朝下，所以 a 變大在畫面上是順時針。
+     這裡直接抓場上真的畫出來的那些紋路，投影到畫面看它往哪邊掃。 */
   const mgSpin = await page.evaluate(() => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
-    for (let i = 0; i < 100; i++) step(0.05);
+    for (let i = 0; i < 100; i++) step(0.05);        // 5 秒：六層都在，紋路的編號不再變動
+    draw(); ENG.render();
     const at = () => magic.rings.filter(o => !o.add).map(o => +o.spin.toFixed(4));
     const a = at();
-    for (let i = 0; i < 20; i++) step(0.05);          // 再一秒（越接近爆炸原本轉越快）
+    // 陣的紋路（螺旋臂與外圈虛線）都在 ringGroup 底下那顆 InstancedMesh 上
+    let grp = null;
+    ENG.three.scene.traverse(o => {
+      if (!grp && o.geometry && o.geometry.type === 'RingGeometry') grp = o.parent;
+    });
+    const sp = grp.children.find(o => o.isInstancedMesh);
+    const M = new THREE.Matrix4(), V = new THREE.Vector3();
+    const posOf = i => { sp.getMatrixAt(i, M); return V.setFromMatrixPosition(M).clone(); };
+    // 挑離陣心最遠的那一段：半徑越大，投影出來的角度變化越明顯
+    let idx = 0, far = -1;
+    for (let i = 0; i < sp.count; i++) {
+      const q = posOf(i), d = Math.hypot(q.x - magic.x, q.z - magic.z);
+      if (d > far) { far = d; idx = i; }
+    }
+    const proj = v => { const q = v.clone().project(ENG.three.camera); return [q.x, q.y]; };
+    const c = proj(new THREE.Vector3(magic.x, posOf(idx).y, magic.z));
+    const P0 = proj(posOf(idx));
+    for (let i = 0; i < 8; i++) step(0.05);          // 0.4 秒
+    draw(); ENG.render();
+    const P1 = proj(posOf(idx));
     const b = at();
-    return { a, b, still: a.join() === b.join(), spread: new Set(a).size };
+    // 畫面上（y 朝上）的外積 > 0 就是逆時針
+    const cross = (P0[0] - c[0]) * (P1[1] - c[1]) - (P0[1] - c[1]) * (P1[0] - c[0]);
+    return { a, b, cross, far: +far.toFixed(1),
+             moved: a.every((v, i) => Math.abs(v - b[i]) > 1e-4),
+             rate: Math.max(...a.map((v, i) => Math.abs(v - b[i]))) / 0.4,
+             spread: new Set(a).size };
   });
-  ok('魔法陣不會旋轉', mgSpin.still,
-     '一秒前後的角度：' + mgSpin.a.map(v => v.toFixed(2)).join('/') + ' → ' +
-     mgSpin.b.map(v => v.toFixed(2)).join('/'));
+  ok('魔法陣會逆時針轉', mgSpin.cross > 0 && mgSpin.moved,
+     '0.4 秒裡最外圈那段紋路（離陣心 ' + mgSpin.far + '）在畫面上往逆時針掃，外積 ' +
+     mgSpin.cross.toFixed(4));
+  /* 「緩慢」也要驗：轉太快就變成電風扇。最快的那層一圈也要 11 秒以上。 */
+  ok('而且是慢慢轉', mgSpin.rate > 0.1 && mgSpin.rate < 0.8,
+     '最快的一層 ' + mgSpin.rate.toFixed(2) + ' rad/s（一圈 ' +
+     (6.283 / mgSpin.rate).toFixed(0) + ' 秒）');
   ok('但每一層的紋路角度各自不同', mgSpin.spread === mgSpin.a.length,
      mgSpin.a.length + ' 層裡有 ' + mgSpin.spread + ' 種角度');
+
+  /* 出現順序每次施法都要洗牌：固定由下往上長的話，那六秒每次都長得一模一樣。 */
+  const mgOrd = await page.evaluate(() => {
+    const casts = [];
+    for (let i = 0; i < 8; i++) {
+      startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
+      casts.push(magic.ord.join());
+    }
+    const valid = casts.every(s =>
+      s.split(',').map(Number).sort((x, y) => x - y).join() === '0,1,2,3,4,5');
+    /* 洗出來的順序真的有在用嗎：第一個冒出來的那層，高度要對得上 ord 裡排 0 的那層。
+       只驗 ord 陣列的話，畫的時候照舊由下往上長也會過。 */
+    startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
+    const first = MAG_LAYER[magic.ord.indexOf(0)];
+    for (let i = 0; i < 6; i++) step(0.05);          // 0.3 秒：只該有一層
+    const shown = magic.rings.filter(o => !o.add);
+    return { casts, valid, uniq: new Set(casts).size, n: shown.length,
+             y: shown.length ? +shown[0].y.toFixed(2) : -1,
+             want: +(0.12 + MAG_R * first.y).toFixed(2) };
+  });
+  ok('每次施法的出現順序都不一樣', mgOrd.valid && mgOrd.uniq >= 6,
+     '八次施法有 ' + mgOrd.uniq + ' 種順序，例如 ' + mgOrd.casts[0]);
+  ok('第一個冒出來的就是洗到第一順位的那層',
+     mgOrd.n === 1 && Math.abs(mgOrd.y - mgOrd.want) < 0.01,
+     '0.3 秒時只有 1 層，高度 ' + mgOrd.y + '（該層應在 ' + mgOrd.want + '）');
   /* 整疊都浮在半空：最下層離地也有一段，而且不做滿爆炸半徑——
      做滿的話那一圈會比建築大一大圈，看起來像地上的跑道而不是浮空的陣。 */
   ok('最下層浮在半空，也沒有大到蓋滿爆炸範圍',
-     mgRing.rings[0].y > 2 && mgRing.ground < 30 * 0.8,
+     mgRing.rings[0].y > 8 && mgRing.ground < 30 * 0.8,
      '最下層離地 ' + mgRing.rings[0].y + '、半徑 ' + mgRing.ground + '（爆炸範圍 30）');
+  /* 整疊要夠高。最寬那圈直徑就有 37，疊得矮的話遠看是一疊盤子不是一座法陣——
+     這條線是使用者反映「太扁平」之後訂的。 */
+  ok('整疊夠高，不是扁扁的一疊',
+     mgRing.rings[5].y - mgRing.rings[0].y > 20,
+     '最下層 ' + mgRing.rings[0].y + ' → 最上層 ' + mgRing.rings[5].y +
+     '（高 ' + (mgRing.rings[5].y - mgRing.rings[0].y).toFixed(1) + '，最寬半徑 ' +
+     Math.max(...mgRing.rings.map(o => o.r)).toFixed(1) + '）');
+
+  /* 拉高之後整疊頂端會頂出畫面上緣（矮建築取景近）。跟龍捲風、蘑菇雲同一套：
+     施法期間鏡頭先退開。NDC y 超過 1 就是被切掉，量的是最上層外緣那一點。 */
+  const mgCam = await page.evaluate(() => {
+    const one = shape => {
+      shapePick = SHAPES.findIndex(s => s.n === shape);
+      targetCnt = 800; startBuild(true); completeNow();
+      for (let i = 0; i < 200; i++) step(0.05);        // 先讓上一發的運鏡收乾淨
+      const d0 = ENG.cam.dist;
+      castMagic({ x: 0, z: 0 });
+      for (let i = 0; i < 100; i++) step(0.05);        // 5 秒：六層都在
+      const top = Math.max(...magic.rings.map(o => o.y));
+      const wide = magic.rings.reduce((s, o) => Math.max(s, o.r), 0);
+      const v = new THREE.Vector3(wide, top, 0).project(ENG.three.camera);
+      return { d0: +d0.toFixed(0), dist: +ENG.cam.dist.toFixed(0),
+               top: +top.toFixed(1), ndc: +v.y.toFixed(2) };
+    };
+    const r = { pyramid: one('吉薩金字塔'), castle: one('中世紀城堡') };
+    shapePick = -1;
+    return r;
+  });
+  ok('施法時鏡頭會退開，整疊才進得了畫面',
+     mgCam.pyramid.dist > mgCam.pyramid.d0 * 1.2 &&
+     mgCam.pyramid.ndc < 0.95 && mgCam.castle.ndc < 0.95,
+     '吉薩金字塔視距 ' + mgCam.pyramid.d0 + ' → ' + mgCam.pyramid.dist +
+     '，頂端 NDC ' + mgCam.pyramid.ndc + '／城堡 ' + mgCam.castle.ndc);
 
   /* 衝擊波是球狀的，而且越靠近炸心抬得越高——積木要沿拋物線拋上去再落下，
      不是貼著地面掃出去。只量「有沒有飛出去」的話，兩種都會過。 */
@@ -2013,6 +2124,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('陣上會冒出往中心捲的魔力光點', imp.motes > 10, imp.motes + ' 顆');
   ok('六秒一到再把它們全噴出去', imp.d2 > imp.d1 * 1.2,
      '爆炸後 ' + imp.d1.toFixed(1) + ' → ' + imp.d2.toFixed(1));
+
+  /* 陣把建築扯下來捲進去的過程，一定會跌破「剩不到 25% 就換下一座」那條線。
+     照換的話 startBuild 會把陣一起收掉，那一發永遠等不到爆炸——玩家只看到建築消失。 */
+  const mgHold = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 900; startBuild(true); completeNow();
+    const total0 = bp.slots.length;
+    castMagic({ x: 0, z: 0 });
+    for (let i = 0; i < 118; i++) step(0.05);          // 5.9 秒：早就跌破那條線了
+    const mid = { alive: !!magic, placed: placedCnt, gate: Math.floor(total0 * WRECK_AT),
+                  same: bp.slots.length === total0, dest: stats.destroyed };
+    for (let i = 0; i < 8; i++) step(0.05);            // 過 6 秒：炸完、這時候才准換場
+    const out = { mid, after: !!magic, boom: flashes.length > 0, dest: stats.destroyed };
+    shapePick = -1;
+    return out;
+  });
+  ok('陣還在充能就不換下一座，那一發才炸得成',
+     mgHold.mid.alive && mgHold.mid.same && mgHold.mid.placed < mgHold.mid.gate &&
+     !mgHold.after && mgHold.boom && mgHold.dest > mgHold.mid.dest,
+     '5.9 秒時只剩 ' + mgHold.mid.placed + ' 塊（換場線 ' + mgHold.mid.gate +
+     '）仍沒換場，爆完才記一座拆除');
 
   /* 雲頂會升到 40 以上，貼著建築的取景根本裝不下——引爆時鏡頭要退開，
      而且事後要自己收回來，不能一直停在遠處。
@@ -2195,7 +2327,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('以 45 度直線插下來', met.ang.length >= 6 &&
      met.ang.every(a => Math.abs(a.h / a.up - 1) < 0.06),
      met.ang.slice(0, 4).map(a => '水平 ' + a.h + '／高度 ' + a.up).join('　'));
-  ok('下墜時拖著一條火', met.flying.hot > 25, '同時 ' + met.flying.hot + ' 顆火苗');
+  /* 門檻壓在 15：尾巴的火苗壽命只有 0.1～0.4 秒又逐顆隨機，同一個取樣點量到的
+     在 24～40 之間跳（原本訂 25 會偶爾誤判）。要驗的是「有一條火」，不是精確的顆數。 */
+  ok('下墜時拖著一條火', met.flying.hot > 15, '同時 ' + met.flying.hot + ' 顆火苗');
   /* 一個是主畫面、一個是陰影貼圖：石頭有 castShadow，落地前地上那塊影子
      剛好提示它要砸哪裡，這個 call 是值得付的。不飛的時候兩個都不畫。 */
   ok('那顆石頭吃 2 個 draw call（畫面＋陰影），沒在飛就不畫',

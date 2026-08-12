@@ -47,11 +47,13 @@ const ENG = (function () {
      沿著曲線擺，段數夠多就連成一道弧。臂的內端都收在中心附近，
      那一小塊被上百段疊在一起，加法混色自然亮成一顆核，不用另外畫。
      arms 幾條臂、seg 每條切幾段、turn 一條臂繞幾弧度（負的就是反向捲）、
-     r0 內端從哪裡起（半徑倍率）、w 粗細、spin 這一組的角度倍率
-     （陣是不轉的，這個值只是讓兩組螺旋彼此錯開）。 */
+     r0 內端從哪裡起（半徑倍率）、w 粗細、spin 這一組的角度倍率。
+     spin 一律取正：陣會轉之後，這個倍率就是「這一組相對於陣的轉速」，
+     給負的那一組會逆著整個陣往回轉——指定的方向是逆時針，只有它反著轉會很突兀。
+     兩組給不同的正倍率，一樣有錯開的效果（起始角度也就不同）。 */
   const MAG_SWIRL = [
     { arms: 7, seg: 9, turn: 2.0, r0: 0.14, w: 0.030, spin: 1 },
-    { arms: 5, seg: 8, turn: -1.5, r0: 0.28, w: 0.022, spin: -0.6 }
+    { arms: 5, seg: 8, turn: -1.5, r0: 0.28, w: 0.022, spin: 0.62 }
   ];
   const MAG_DASH = 26;                                       // 外圈那一圈虛線的段數
   const MAG_SPOKE = MAG_SWIRL.reduce((s, f) => s + f.arms * f.seg, 0) + MAG_DASH;
@@ -627,9 +629,10 @@ const ENG = (function () {
           }
         }
       }
-      // 外圈那一圈虛線：長邊沿著圓周擺，連起來像一圈細框
+      /* 外圈那一圈虛線：長邊沿著圓周擺，連起來像一圈細框。
+         倍率 0.4 是正的，跟盤面同向、只是慢一點——負的會變成外框倒著轉。 */
       for (let k = 0; k < MAG_DASH; k++) {
-        const a = -(r.spin || 0) * 0.4 + k / MAG_DASH * Math.PI * 2;
+        const a = (r.spin || 0) * 0.4 + k / MAG_DASH * Math.PI * 2;
         scratch.position.set(r.x + Math.cos(a) * r.r * 0.88, r.y + 0.05,
                              r.z + Math.sin(a) * r.r * 0.88);
         scratch.rotation.set(0, -a + Math.PI / 2, 0);
