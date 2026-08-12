@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.34.0';
+const VERSION = '1.34.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2400,12 +2400,18 @@ function stepMagic(dt) {
       const y0 = 0.12 + MAG_R * MAG_LAYER[layers - 1].y;
       const y1 = 0.12 + MAG_R * MAG_LAYER[layers].y;
       const fy = y0 + (y1 - y0) * u;
-      const fr = seedR * (0.78 + 0.22 * Math.sin(u * Math.PI));   // 升到一半微微鼓起來
+      /* 一路等大上升，不忽大忽小：脈動會讓人以為它在呼吸或快要炸開，
+         這個火種要傳達的只有「往上帶」。等大剛好也就是新層的起始半徑，交接不跳。
+         顏色直接抄爆炸火球那組色階（FLASH_SHELL 的亮黃 → 橘），跟火球是同一團火。
+         芯要疊兩圈：環的線寬是半徑的 7%，半徑才 4.2 的小圈只畫一圈的話那條線
+         細到看不出顏色，剩下的只有底下那片淡淡的盤。 */
       const fs = -el * MAG_SPIN * 3.4;                            // 轉得比陣快，才像在竄
-      rings.push({ x: magic.x, z: magic.z, r: fr, y: fy, spin: fs,
-                   op: 1, c: 0xffb42a, fill: 1, seed: 1 });
-      rings.push({ x: magic.x, z: magic.z, r: fr * 1.7, y: fy, spin: fs * 0.6,
-                   op: 0.85, c: 0xff5a10, add: 1, seed: 1 });
+      rings.push({ x: magic.x, z: magic.z, r: seedR, y: fy, spin: fs,
+                   op: 1, c: 0xffeda6, seed: 1 });
+      rings.push({ x: magic.x, z: magic.z, r: seedR * 1.2, y: fy, spin: fs * 0.8,
+                   op: 1, c: 0xffc44a, fill: 1, seed: 1 });
+      rings.push({ x: magic.x, z: magic.z, r: seedR * 1.75, y: fy, spin: fs * 0.6,
+                   op: 0.85, c: 0xff9a22, add: 1, seed: 1 });
     }
   }
   // 一層兩個環（芯 + 暈），所以要數層數不是數環數，音效才不會一層響兩次
