@@ -1489,9 +1489,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const onGround = charred.filter(b => b.y < 2.5).length;
     const burnt = { n: charred.length, onGround, set: placedCnt, sm: stats.smashed };
     /* 同時在燒的上限。手動一路點到點不動為止——真的等它自己燒到 150 塊要好幾十秒，
-       而且會先把建築燒垮。 */
+       而且會先把建築燒垮。數的是 nSpread（還站著的那種火）：碎料的火走另一份額度。 */
     for (const b of blocks) igniteBlock(b);              // 點到點不動為止
-    const cap = { fires: fires.length, hot: 0, HOT_MAX, FIRE_MAX };
+    const cap = { fires: nSpread, all: fires.length, hot: 0, HOT_MAX, FIRE_MAX };
     // 火苗要跑幾幀才生得出來，量的是這段時間的峰值
     for (let i = 0; i < 30; i++) { step(0.05); cap.hot = Math.max(cap.hot, hot.length); }
     startBuild(true);
@@ -1514,13 +1514,145 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('掉下來之後還是焦黑的，不會恢復原色', fire.burnt.onGround > 10,
      '地上有 ' + fire.burnt.onGround + ' 塊目標色還是黑的');
   ok('同時在燒的塊數有上限', fire.cap.fires === fire.cap.FIRE_MAX,
-     fire.cap.fires + ' / ' + fire.cap.FIRE_MAX + ' 塊');
+     '還站著的 ' + fire.cap.fires + ' / ' + fire.cap.FIRE_MAX + ' 塊（連碎料共 ' +
+     fire.cap.all + ' 塊在燒）');
   /* 火苗跟爆炸的火球共用同一個粒子池。整棟在燒時把池子吃光的話，
      這時候丟一發核彈就會沒有火球，所以火苗的配額除以 √(在燒的塊數)、並留一截給爆炸。 */
   ok('整棟在燒也不會把爆炸的火球配額吃光', fire.cap.hot < fire.cap.HOT_MAX - 30,
      fire.cap.FIRE_MAX + ' 塊在燒時 ' + fire.cap.hot + ' / ' + fire.cap.HOT_MAX + ' 顆火粒子');
   ok('換建築時火會一起收掉', fire.swap.fires === 0 && fire.swap.burning === 0,
      '換場後 ' + fire.swap.fires + ' 處在燒、' + fire.swap.burning + ' 塊還帶著火');
+
+  /* ══════════ 碎料燃燒 ══════════
+     爆炸打出來的碎料會帶著火飛出去，燒滿 3 秒變成一塊焦炭。
+     一律拿大城堡的邊角開炸：塌不到 25%，量到一半才不會被「拆完換下一座」洗掉狀態。 */
+  head('碎料燃燒');
+  const emb2 = await page.evaluate(() => {
+    running = false;
+    const setup = () => {
+      targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+      setWorkerCount(6); startBuild(true); completeNow(); clearFires();
+      const cand = blocks.filter(b => b.st === 3).sort((a, b) => b.x - a.x);
+      return { x: cand[0].x, y: cand[0].y, z: cand[0].z };
+    };
+
+    /* 1. 這一發炸到的每一塊都要在燒。先自己算「範圍內有幾塊」，
+       再跟點著的塊數對——只驗「有燒起來」的話，燒 5 塊跟燒 500 塊看起來一樣對。 */
+    let p = setup();
+    let inR = 0;
+    for (const b of blocks) {
+      if (b.st === 1 || b.st === 2) continue;                 // 小人手上的不算
+      if ((b.x - p.x) ** 2 + (b.y - p.y) ** 2 + (b.z - p.z) ** 2 <= 121) inR++;
+    }
+    explode(p, 11, 17);
+    const all = { inR, ember: fires.filter(f => !f.sp).length, spread: nSpread,
+                  unlit: blocks.filter(b => b.st === 4 && !b.burn).length };
+
+    // 2. 燒 3 秒：目標色一路往焦黑走，中點該剛好在一半
+    const sample = fires.filter(f => !f.sp).slice(0, 40).map(f => f.b);
+    const at = [];
+    const snap = t => at.push({ t, tr: +sample[0].tr.toFixed(3),
+                                burn: sample.filter(b => b.burn).length,
+                                black: sample.filter(b => b.tr < 0.06).length });
+    snap(0);
+    for (let i = 0; i < 90; i++) step(1 / 60); snap(1.5);
+    for (let i = 0; i < 90; i++) step(1 / 60); snap(3);
+    for (let i = 0; i < 120; i++) step(1 / 60); snap(5);
+
+    /* 3. 一塊碎料單獨燒：量準確的燒完時間，順便驗它燒完只是停在焦黑——
+       建築那種火燒完會 breakBlock 再掉一次，碎料本來就在地上，不該再被打一次。 */
+    p = setup();
+    // 挑最底層那塊：一敲就落地躺好，3 秒後還在半空的話這條會分不出「燒完彈起來」
+    const solo = blocks.filter(b => b.st === 3).sort((a, b) => a.y - b.y)[0];
+    breakBlock(solo, 0, 0, 0);
+    clearFires();
+    igniteBlock(solo);                     // 要趁它還是 FLY：躺穩變 FREE 之後就點不著了
+    const sm0 = stats.smashed, pl0 = placedCnt;
+    let g = 0;
+    while (solo.burn && g++ < 400) step(1 / 60);
+    const one = { t: +(g / 60).toFixed(2), st: solo.st, tr: +solo.tr.toFixed(3),
+                  sm: stats.smashed - sm0, pl: pl0 - placedCnt,
+                  fires: fires ? fires.length : 0 };
+
+    /* 4. 兩份額度分開：一發核彈級的爆炸點著上千塊碎料之後，
+       還站著的照樣點得起來（共用一份額度的話這裡會回 false）。 */
+    p = setup();
+    explode(p, 30, 34);
+    phase = 'done';               // 擋掉「拆完換下一座」——它會把火全收掉
+    const stand = blocks.filter(b => b.st === 3 && !b.burn);
+    const quota = { ember: fires.filter(f => !f.sp).length, spread: nSpread,
+                    standing: stand.length, canLight: stand.length ? igniteBlock(stand[0]) : null };
+
+    /* 5. 火苗要平順。同一幀點著上千塊，配額若從 0 起跳它們會同時湊滿一顆，
+       火就變成「整片一起閃、然後一起沒有」。量 1 秒內每幀的火苗數，看谷底。 */
+    const hots = [];
+    for (let i = 0; i < 60; i++) { step(1 / 60); hots.push(hot.length); }
+    const smooth = { min: Math.min(...hots.slice(20)), max: Math.max(...hots),
+                     dust: dust.length };
+
+    // 6. 效能：上千塊在燒的當下
+    for (let i = 0; i < 12; i++) step(1 / 60);
+    let t0 = performance.now();
+    for (let i = 0; i < 60; i++) step(1 / 60);
+    const stepMs = (performance.now() - t0) / 60;
+    t0 = performance.now();
+    for (let i = 0; i < 60; i++) draw();
+    const drawMs = (performance.now() - t0) / 60;
+    const perf = { fires: fires ? fires.length : 0, stepMs, drawMs };
+
+    // 7. 不是爆炸的道具不該點火：投石機的石頭只是砸
+    p = setup();
+    const rockN = smash(p, { x: 0.12, y: -1, z: 0.12 }, ROCK_R, ROCK_POW);
+    const rock = { n: rockN, fires: fires ? fires.length : 0 };
+
+    // 8. 換場要把碎料的火與額度一起歸零
+    p = setup();
+    explode(p, 11, 17);
+    startBuild(true);
+    const swap = { fires: fires ? fires.length : 0, spread: nSpread,
+                   burning: blocks.filter(b => b.burn).length };
+    return { all, at, one, quota, smooth, perf, rock, swap };
+  });
+  ok('爆炸打出來的碎料每一塊都在燒',
+     emb2.all.ember === emb2.all.inR && emb2.all.unlit === 0,
+     '範圍內 ' + emb2.all.inR + ' 塊 → 點著 ' + emb2.all.ember +
+     ' 塊碎料（另有 ' + emb2.all.spread + ' 塊還站著的餘火）');
+  /* 目標色從建材色 0.80 線性收到焦黑 0.05，所以 1.5 秒該剛好在中點 0.425。
+     只驗頭尾的話，燒 1 秒或燒 10 秒都會通過。 */
+  ok('碎料燒 3 秒，顏色一路收到焦黑',
+     Math.abs(emb2.at[1].tr - 0.425) < 0.02 && emb2.at[1].burn === 40 &&
+     emb2.at[2].black === 40,
+     '0 秒 ' + emb2.at[0].tr + ' → 1.5 秒 ' + emb2.at[1].tr + ' → 3 秒 ' + emb2.at[2].tr);
+  ok('燒完就停在焦黑，不會恢復原色', emb2.at[3].burn === 0 && emb2.at[3].black === 40,
+     '5 秒後 ' + emb2.at[3].black + ' / 40 塊還是黑的，' + emb2.at[3].burn + ' 塊還在燒');
+  ok('單獨一塊碎料剛好燒 3.0 秒',
+     Math.abs(emb2.one.t - 3) < 0.05 && emb2.one.tr < 0.06,
+     '燒了 ' + emb2.one.t + ' 秒，收在 ' + emb2.one.tr);
+  /* 建築那種火燒完會 breakBlock（再飛一次、記一次擊飛）。碎料走同一份程式碼，
+     少了 f.sp 這道閘門的話，地上躺著的碎料會在燒完那一刻自己彈起來。 */
+  ok('碎料燒完不會再被打掉一次',
+     emb2.one.st === 0 && emb2.one.sm === 0 && emb2.one.pl === 0,
+     '燒完 st=' + emb2.one.st + '（0=躺在地上）、擊飛 +' + emb2.one.sm + '、進度 -' + emb2.one.pl);
+  ok('碎料的火不會吃掉建築那份額度',
+     emb2.quota.ember > 500 && emb2.quota.canLight === true &&
+     emb2.quota.spread < 150,
+     emb2.quota.ember + ' 塊碎料在燒時，還站著的火只用了 ' + emb2.quota.spread +
+     ' / 150，仍點得起來（' + emb2.quota.canLight + '）');
+  ok('上千塊一起燒，火苗不會整片一起閃一起沒',
+     emb2.smooth.min > 60 && emb2.smooth.max <= 190,
+     '1 秒內火苗數 ' + emb2.smooth.min + ' ~ ' + emb2.smooth.max + ' 顆（煙 ' +
+     emb2.smooth.dust + ' 團）');
+  ok('上千塊碎料在燒：CPU 每幀 < 4ms', emb2.perf.stepMs + emb2.perf.drawMs < 4,
+     emb2.perf.fires + ' 塊在燒：step ' + emb2.perf.stepMs.toFixed(2) + 'ms + draw ' +
+     emb2.perf.drawMs.toFixed(2) + 'ms');
+  /* 「爆炸類」才點火。投石機的石頭是砸不是炸，砸出來的碎料不該起火——
+     一起燒的話這個道具會變成放火的低配版。 */
+  ok('不是爆炸的道具不會把碎料點著', emb2.rock.n > 0 && emb2.rock.fires === 0,
+     '投石機砸掉 ' + emb2.rock.n + ' 塊，起火 ' + emb2.rock.fires + ' 處');
+  ok('換建築時碎料的火與額度一起歸零',
+     emb2.swap.fires === 0 && emb2.swap.spread === 0 && emb2.swap.burning === 0,
+     '換場後 ' + emb2.swap.fires + ' 處在燒、額度 ' + emb2.swap.spread +
+     '、' + emb2.swap.burning + ' 塊還帶著火');
 
   /* ══════════ 倒數型道具：炸彈／核彈／魔法 ══════════
      三個的共通點是「點下去不會馬上炸」。全部拿大建築來測：
@@ -1588,25 +1720,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const sample = hot.filter(d => d.to);
     const avgG = a => a.reduce((s, d) => s + d.cg, 0) / Math.max(1, a.length);
     const lit0 = avgG(sample);
-    const cloud0 = dust.filter(d => d.fade).length;
+    /* 蘑菇雲那幾團的 fade 是 3.4／4／4.5，燒起來的煙是 2.2、隕石的尾煙 1.8。
+       只認 d.fade 的話，爆炸點著的上千塊碎料冒的煙會被算成蘑菇雲——
+       那個數字爆炸當下就有好幾十團，「雲是慢慢長出來的」就測不出來了。 */
+    const cloudy = () => dust.filter(d => d.fade >= 3);
+    const cloud0 = cloudy().length;
     for (let i = 0; i < 12; i++) step(0.05);            // 0.6 秒
     const lit1 = avgG(sample.filter(d => d.life > 0));
     let peak = 0, peakY = 0, y1 = 0;
     for (let i = 0; i < 12; i++) step(0.05);            // 爆後 1.2 秒：整朵雲該長齊了
-    const cloud1 = dust.filter(d => d.fade).length;
-    y1 = Math.max(...dust.filter(d => d.fade).map(d => d.y));
+    const cloud1 = cloudy().length;
+    y1 = Math.max(...cloudy().map(d => d.y));
     for (let i = 0; i < 36; i++) {                      // 再 1.8 秒：雲往上飄
       step(0.05);
-      const c = dust.filter(d => d.fade);
+      const c = cloudy();
       if (c.length) peakY = Math.max(peakY, Math.max(...c.map(d => d.y)));
       peak = Math.max(peak, c.length);
     }
-    const mid = dust.filter(d => d.fade);
+    const mid = cloudy();
     const midSize = mid.reduce((a, d) => a + d.s, 0) / Math.max(1, mid.length);
     for (let i = 0; i < 200; i++) step(0.05);           // 再 10 秒
     return { set0, wait, falling, inAir, set1, hitMax, fire0, ring0, lit0, lit1,
              cloud0, cloud1, y1, peakY, peak, midSize,
-             gone: dust.filter(d => d.fade).length, fireGone: hot.length,
+             gone: cloudy().length, fireGone: hot.length,
              ringGone: fxRings.length, alive: !!nuke };
   });
   ok('核彈 2 秒內不會炸', nk.wait === nk.set0, nk.set0 + ' → ' + nk.wait);
@@ -1957,7 +2093,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const one = (shape, go, armed) => {
       targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === shape);
       startBuild(true); completeNow();
-      if (fires) { for (const f of fires) f.b.burn = 0; fires = null; }
+      clearFires();
       go();
       let n = 0;
       while (armed() && n++ < 400) step(0.05);              // 停在爆炸的那一幀
@@ -2005,7 +2141,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await reset(page, { shape: '中世紀城堡', cnt: 3000, workers: 4 });
   const met = await page.evaluate(() => {
     completeNow();
-    if (fires) { for (const f of fires) f.b.burn = 0; fires = null; }
+    clearFires();
     hot.length = 0; flashes.length = 0; dust.length = 0;
     const dust0 = dust.length;
     callMeteor({ x: 0, y: 4, z: 0 });
@@ -2040,10 +2176,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const flying = { hot: hot.length, on: callsOn, off: callsOff };
     let g2 = 0;
     while (meteors && g2++ < 60) step(0.05);          // 撞下去
-    const hit = { fires: fires ? fires.length : 0, flash: flashes.length,
+    /* 只數「還站著又燒起來」的：碎料的火另外算（爆炸一次就上千塊），
+       混在一起的話這裡量到的是碎料的量，不是火有沒有蔓延。 */
+    const nSet = () => fires ? fires.filter(f => f.sp).length : 0;
+    const hit = { fires: nSet(), flash: flashes.length,
                   fy: flashes.length ? +flashes[0].y.toFixed(1) : -1, smashed: stats.smashed };
     for (let i = 0; i < 40; i++) step(0.05);          // 兩秒後火該蔓延開了
-    const spread = fires ? fires.length : 0;
+    const spread = nSet();
     return { wait, enter, ang, flying, hit, spread, R: MET_R, rockR: ROCK_R, fall: MET_FALL };
   });
   ok('點下去先倒數，天上還沒東西',

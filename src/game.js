@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.22.0';
+const VERSION = '1.23.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -319,7 +319,7 @@ function startBuild(instant) {
   magic = null;
   /* 火也要收：燒的是「哪一塊積木」，積木待會會被回收去蓋新的那座，
      不收的話新建築會從某幾塊莫名地開始燒起來。 */
-  if (fires) { for (const f of fires) f.b.burn = 0; fires = null; }
+  clearFires();
   /* 火球、蘑菇雲、光環**不**清掉。它們純粹是畫面，不會動到積木，
      而且一發核彈常常直接把整棟夷平——那會立刻觸發「剩不到 25% 就換下一座」，
      清掉的話蘑菇雲會在爆炸後 0.05 秒整朵消失，等於白做。
@@ -1103,7 +1103,8 @@ let bombs = null;     // 已放下、倒數中的定時炸彈
 let meteors = null;   // 已呼叫的隕石（倒數或下墜中，可以好幾顆）
 let nuke = null;      // 已呼叫的核彈（倒數或下墜中）
 let magic = null;     // 正在展開的魔法陣
-let fires = null;     // 正在燒的積木（會往鄰居蔓延）
+let fires = null;     // 正在燒的積木（還站著的會往鄰居蔓延，碎料的只燒自己）
+let nSpread = 0;      // fires 裡有幾筆是「還站著的建築」——碎料不占那個額度
 const hot = [];       // 火球粒子（走不透明那顆材質，才亮得起來）
 const flashes = [];   // 爆炸正中央那顆火球本體（好幾發一起炸就好幾顆）
 const fxRings = [];   // 地面衝擊環與蘑菇雲腰環
@@ -1571,6 +1572,10 @@ function explode(point, R, power, magic) {
       dx / ol * f + rr(-2, 2),
       Math.abs(dy) / ol * f * 0.5 + lift + rr(1, 4),
       dz / ol * f + rr(-2, 2));
+    /* 爆炸打出來的碎料一律點著：拖著火飛出去、落地是一塊焦炭。
+       點在這裡而不是事後用 igniteAround 撈，是因為「被這一發炸到的」就是這個迴圈掃到的這些，
+       事後撈還要再掃一次全部積木、還分不出哪些是別發炸出來早就躺在那裡的。 */
+    igniteBlock(b);
     if (wasSet) n++;
   }
   afterHit(n, point, R);
@@ -1581,13 +1586,10 @@ function explode(point, R, power, magic) {
       w.fall = rr(1.2, 2.6); releaseWorker(w); sndFall();
     }
   }
-  /* 餘火，分兩種。
-     還站著的（SET）：半徑放到 1.5 倍去找——衝擊圈內幾乎都被炸飛了，
+  /* 還站著的（SET）餘火：半徑放到 1.5 倍去找——衝擊圈內幾乎都被炸飛了，
      沒倒的都在圈外那一帶。這些會繼續往鄰居蔓延。
-     剛被炸飛的（FLY）：拖著火飛出去、落地變成焦炭。少了這個的話，
-     整棟剛好被夷平的那種爆炸（範圍蓋滿建築）會完全看不到火——沒有還站著的可以燒。 */
+     碎料的火不在這裡點，在上面那個迴圈裡逐塊點——見那邊的說明。 */
   igniteAround(point, R * 1.5, Math.round(R * 0.8), SET);
-  igniteAround(point, R, Math.round(R * 0.5), FLY);
   spawnBlast(point, R, magic);
   spawnDust(point, R, n);
   spawnRing(point, R);
@@ -1605,24 +1607,43 @@ function explode(point, R, power, magic) {
 
    蔓延用 26 鄰居（含斜角），跟支撐判定共用同一份 NBR：voxel 造型很多是斜線畫的
    （鐵塔的斜撐、螺旋、圓弧），只認 6 面的話火會在斜著相鄰的地方整片停死。 */
-const FIRE_MAX = 150;         // 同時最多幾塊在燒——粒子與 CPU 的閘門
+const FIRE_MAX = 150;         // 同時最多幾塊「還站著的」在燒——粒子與 CPU 的閘門
+/* 碎料的額度要蓋得住「一發核彈打出來的全部碎料」——半徑 30 幾乎蓋住整棟，
+   量過一發能打出 2861 塊。訂太低的話同一發爆炸裡會有一批碎料沒燒起來，
+   看起來不像設計，像額度用完了。成本量過：2511 塊在燒時每幀多 0.23ms（預算 4ms）。 */
+const EMBER_MAX = 3000;
 const BURN_TIME = 2.2;        // 一塊從點著到燒斷掉下來
+const EMBER_TIME = 3;         // 碎料燒多久——燒完就是一塊焦炭，不會再掉一次
 const BURN_SPREAD = 0.35;     // 燒到幾成才開始把火傳給鄰居
 let slotOwner = null;         // slot → blocks 索引；只有蔓延需要反查，燒的時候每幀重建
 
-/* 點著一塊。SET（還站著的）跟 FLY（剛被炸飛的）都燒得起來：
-   前者會焦黑、鬆脫掉下來，還會把火傳給鄰居；後者只是拖著火落地變成焦炭
+/* 點著一塊。SET（還站著的）跟 FLY（碎料）都燒得起來，但燒法不同：
+   前者燒 BURN_TIME、會焦黑鬆脫掉下來、還會把火傳給鄰居；
+   後者燒固定 EMBER_TIME，只是拖著火飛、落地變成一塊焦炭
    （它已經離開建築了，沒有鄰居可傳，也不用再打掉一次）。 */
 function igniteBlock(b) {
   if (!b || b.burn || (b.st !== SET && b.st !== FLY)) return false;
-  if (fires && fires.length >= FIRE_MAX) return false;
+  const sp = b.st === SET;
+  /* 兩種火各有各的額度。共用一個的話，一發爆炸打出來的幾百塊碎料會把額度整個吃光，
+     旁邊還站著的那半棟就再也燒不起來——那才是這個道具最該看到的畫面。 */
+  if (fires && (sp ? nSpread >= FIRE_MAX : fires.length - nSpread >= EMBER_MAX)) return false;
   if (!fires) fires = [];
   b.burn = 1;
+  if (sp) nSpread++;
   /* 燒的快慢每塊各抽一個倍率：全部同速的話整面牆會同一秒一起變黑、一起掉下來，
-     看起來像在播動畫不像在燒。c0 記原本的顏色，焦黑是從它往黑內插出來的。 */
-  fires.push({ b, t: 0, rate: rr(0.8, 1.3), next: rr(0.1, 0.3), em: 0,
-               c0: [b.tr, b.tg, b.tb] });
+     看起來像在播動畫不像在燒。碎料不抽，它就是規定的那 3 秒。
+     c0 記原本的顏色，焦黑是從它往黑內插出來的。
+     em（火苗的配額累積）則是從隨機的地方起跳、不是 0：一發爆炸會在同一幀點著上千塊，
+     全部從 0 開始的話它們會同時湊滿第一顆火苗——火就變成「整片一起閃、然後一起沒有」。 */
+  fires.push({ b, sp, dur: sp ? BURN_TIME : EMBER_TIME, t: 0, rate: sp ? rr(0.8, 1.3) : 1,
+               next: rr(0.1, 0.3), em: Math.random(), c0: [b.tr, b.tg, b.tb] });
   return true;
+}
+/* 換建築、或測試要回到乾淨狀態時，把火整批收掉。
+   b.burn 是掛在積木上的旗標，只把 fires 設成 null 的話那些積木會永遠點不著。 */
+function clearFires() {
+  if (fires) for (const f of fires) f.b.burn = 0;
+  fires = null; nSpread = 0;
 }
 /* 放火道具的入口。點到的是碎料（不是建築的一部分）時就改找落點附近最近的一塊建築——
    不然點在牆前面那堆碎料上會像沒反應。 */
@@ -1659,8 +1680,9 @@ function igniteAround(p, R, n, st) {
 function stepFire(dt) {
   if (!fires) return;
   /* slot → 積木的反查表。蔓延要沿著格子走，而積木只記得自己在哪個 slot，沒有反向的表。
-     燒的時候每幀重建一次；沒在燒就完全不會走到這裡。 */
-  if (bp) {
+     有東西在蔓延時每幀重建一次；只有碎料在燒（爆炸過後的常態）就整段跳過——
+     碎料不蔓延，為它每幀掃三千塊積木是白花的。 */
+  if (bp && nSpread) {
     const n = bp.slots.length;
     if (!slotOwner || slotOwner.length !== n) slotOwner = new Int32Array(n);
     slotOwner.fill(-1);
@@ -1672,7 +1694,7 @@ function stepFire(dt) {
   for (let i = fires.length - 1; i >= 0; i--) {
     const f = fires[i], b = f.b;
     f.t += dt * f.rate;
-    const k = Math.min(1, f.t / BURN_TIME);
+    const k = Math.min(1, f.t / f.dur);
     // 焦黑：只動目標色，實際顏色每幀自己往目標靠（見 step 裡的 b.r += (b.tr − b.r) × …）
     b.tr = f.c0[0] * (1 - k) + 0.05 * k;
     b.tg = f.c0[1] * (1 - k) + 0.045 * k;
@@ -1699,16 +1721,18 @@ function stepFire(dt) {
         rx: Math.random() * 6, ry: Math.random() * 6,
         life: rr(1.6, 3.2), s: rr(0.5, 1.1), c: rr(0.2, 0.36), g: -0.6, fade: 2.2
       });
-    if (f.t > BURN_TIME * BURN_SPREAD) {
+    if (f.sp && f.t > BURN_TIME * BURN_SPREAD) {
       f.next -= dt;
       if (f.next <= 0) { f.next = rr(0.1, 0.24); spreadFire(b); }
     }
-    if (f.t < BURN_TIME) continue;
-    // 燒斷了：焦黑的那塊鬆脫掉下來
+    if (f.t < f.dur) continue;
+    // 燒完了：建築那塊焦黑鬆脫掉下來；碎料就停在焦黑
     b.burn = 0;
-    /* 已經不是 SET 的（燒到一半被上面垮下來的帶走）就只剩焦黑，不用再打掉一次；
+    if (f.sp) nSpread--;
+    /* 碎料（f.sp = false）本來就在地上或半空，沒有「鬆脫」可言，燒完只剩焦黑。
+       已經不是 SET 的建築塊（燒到一半被上面垮下來的帶走）也一樣不用再打掉一次；
        placedCnt 與損失在 freeBlock 那邊算，重複呼叫會多扣一次。 */
-    if (b.st === SET) {
+    if (f.sp && b.st === SET) {
       breakBlock(b, rr(-1.3, 1.3), rr(-0.4, 0.6), rr(-1.3, 1.3));
       stats.smashed++;
       markSupportDirty(0.05);
