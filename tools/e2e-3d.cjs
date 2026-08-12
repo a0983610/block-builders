@@ -339,10 +339,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const cs = SHAPES.filter(s => s.custom);
     const i = SHAPES.findIndex(s => s.custom);
     const sizes = [300, 1000, 3000].map(t => makeBlueprint(i, t).slots.length);
+    /* 參數化的重點：每個尺寸都重畫一次，所以小尺寸也該畫得出每一種部件
+       （門、窗、煙囪各自是不同的顏色索引，用到的顏色沒少就代表部件沒消失） */
+    const colsAt = t => [...new Set(makeBlueprint(i, t).slots.map(s => s.c))].sort().join('');
+    const parts = { min: colsAt(300), max: colsAt(3000) };
     const bpc = makeBlueprint(i, 1000);
     const opts = [...document.querySelectorAll('#shape option')].map(o => o.textContent);
     return { n: cs.length, name: cs[0] ? cs[0].n : '', i, sizes, files: window.BP_FILES || [],
-             base: cs[0] ? cs[0].base : null,
+             parts, isGen: !cs[0].base,
              inMenu: opts.indexOf(cs[0] ? cs[0].n : '@') >= 0, opts: opts.length,
              h: bpc.height, r: +bpc.radius.toFixed(1), pal: bpc.pal.length,
              ground: bpc.slots.filter(s => s.gy === 0).length,
@@ -355,11 +359,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   // 選單第一項是「隨機」，所以是藍圖數 + 1
   ok('自訂藍圖會出現在建築下拉選單裡', custom.inMenu && custom.opts === ALL_SHAPES + 1,
      '選單共 ' + custom.opts + ' 項（隨機 + ' + ALL_SHAPES + ' 座）');
-  /* 字元圖是固定解析度的，但建材數滑桿是 300–3000——載入時包的那層縮放要能推得動。 */
-  ok('字元圖藍圖會跟著建材數縮放',
+  ok('自訂藍圖會跟著建材數縮放',
      custom.sizes[0] < 500 && custom.sizes[2] > 2400 && custom.sizes[2] > custom.sizes[0] * 4,
-     '基準 ' + (custom.base ? custom.base.n + ' 格（' + custom.base.W + '×' + custom.base.H +
-     '×' + custom.base.D + '）' : '?') + ' → 目標 300/1000/3000 得到 ' + custom.sizes.join(' / '));
+     '目標 300/1000/3000 得到 ' + custom.sizes.join(' / '));
+  /* 範例藍圖示範的是參數化寫法（gen(v, s) 按 s 重畫），不是固定解析度的字元圖——
+     說明文件叫 AI 這樣寫，附的範例自己要先做到。 */
+  ok('範例藍圖是參數化寫的，縮到最小也不會掉部件',
+     custom.isGen && custom.parts.min === custom.parts.max && custom.parts.min.length === 5,
+     (custom.isGen ? 'gen(v,s)' : '字元圖') + '：300 塊用到顏色 ' + custom.parts.min +
+     '、3000 塊用到 ' + custom.parts.max);
   ok('自訂藍圖的顏色與貼地層都正常',
      custom.pal === 5 && custom.ground > 0 && custom.cols.every(c => c >= 0 && c < 5),
      '顏色 ' + custom.pal + ' 種（用到 ' + custom.cols.join(',') + '）、貼地 ' +
@@ -377,6 +385,47 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('格式錯的自訂藍圖會被擋掉，不會弄壞遊戲',
      badBp.r.every(v => v === -1) && badBp.added === 0,
      '四種壞檔全部回傳 -1，SHAPES 沒有多出 ' + badBp.added + ' 座');
+
+  /* 字元圖（layers）是給草稿用的備案路徑。範例藍圖已經改成參數化，所以它的覆蓋要自己補。
+     重點在縮小：取樣點取的是輸出格「中心」而不是左邊界——取左邊界的話最後一列永遠取不到，
+     而那一列就是最外面那面牆（1 格厚，掉一列就整面消失，實測小木屋縮到 300 塊時掉了兩面）。 */
+  const gridBp = await page.evaluate(() => {
+    const ring = ['1'.repeat(13)];
+    for (let i = 0; i < 11; i++) ring.push('1' + '.'.repeat(11) + '1');
+    ring.push('1'.repeat(13));
+    const layers = [];
+    for (let i = 0; i < 7; i++) layers.push(ring);
+    const i = customBlueprint({ name: '測試用字元圖', pal: ['#c8a06a'], layers });
+    if (i < 0) return { i };
+    const sh = SHAPES[i];
+    /* 四面外牆各自「該有的格數」＝ 跨距 × 層數。整面在就接近 1，被抽掉的話
+       最外圈會退到內部那一圈，一層只剩兩個角，比值直接掉到 0.2 以下。 */
+    const at = t => {
+      const cells = genCells(sh, fitScale(sh, t)).cells();
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, y1 = 0;
+      for (const c of cells) {
+        if (c.x < x0) x0 = c.x; if (c.x > x1) x1 = c.x;
+        if (c.z < z0) z0 = c.z; if (c.z > z1) z1 = c.z;
+        if (c.y > y1) y1 = c.y;
+      }
+      const ny = y1 + 1, sx = x1 - x0 + 1, sz = z1 - z0 + 1;
+      const cnt = f => cells.filter(f).length;
+      return { n: cells.length, size: sx + '×' + ny + '×' + sz,
+               walls: [cnt(c => c.x === x0) / (sz * ny), cnt(c => c.x === x1) / (sz * ny),
+                       cnt(c => c.z === z0) / (sx * ny), cnt(c => c.z === z1) / (sx * ny)]
+                        .map(v => +v.toFixed(2)) };
+    };
+    const r = { i, lo: +sh.lo.toFixed(2), min: at(200), mid: at(300), big: at(3000) };
+    SHAPES.pop();                       // 測完收掉，別影響後面掃全部 SHAPES 的測試
+    return r;
+  });
+  ok('字元圖藍圖也會跟著建材數縮放', gridBp.i >= 0 &&
+     gridBp.min.n < gridBp.big.n / 4,
+     '基準 336 格（13×7×13）→ ' + gridBp.min.n + ' / ' + gridBp.mid.n + ' / ' + gridBp.big.n +
+     ' 格（尺度下限 ' + gridBp.lo + '）');
+  ok('字元圖縮小時四面外牆都還在',
+     [gridBp.min, gridBp.mid, gridBp.big].every(a => a.walls.every(v => v >= 0.8)),
+     '縮到最小 ' + gridBp.min.size + ' 時四面牆完整度 ' + gridBp.min.walls.join('／'));
 
   /* 金門大橋：跨距是奇數時 −L/2 是 .5，整條橋的 x 都變半格，
      吊索那行的 `x % 3 === 0` 永遠不成立 → 那個尺度整座橋沒有吊索，

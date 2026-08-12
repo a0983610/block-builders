@@ -1167,17 +1167,22 @@ function customBlueprint(def) {
     console.warn('[自訂藍圖] ' + who + '：不認得的字元「' + [...unknown].join('') + '」當成空白處理');
 
   /* 縮放：輸出格回頭取樣來源格（最近鄰）。放大是複製、縮小是抽樣，
-     兩個方向共用同一段程式。座標不置中——makeBlueprint 會自己抓包圍盒置中。 */
+     兩個方向共用同一段程式。座標不置中——makeBlueprint 會自己抓包圍盒置中。
+
+     取樣點是輸出格的「中心」（+0.5），不是左邊界。差別在縮小的時候：
+     用左邊界的話最後一列永遠取不到（D=9 縮成 8 列時，來源第 8 列直接消失），
+     而那一列剛好就是最外面那面牆——牆只有 1 格厚，掉一列就整面不見。
+     取中心會改成漏掉中間某一列，中空建築的內部本來就是空的，看不出來。 */
   const gen = (v, s) => {
     const ow = Math.max(1, Math.round(W * s));
     const oh = Math.max(1, Math.round(H * s));
     const od = Math.max(1, Math.round(D * s));
     for (let y = 0; y < oh; y++) {
-      const sy = Math.min(H - 1, Math.floor(y * H / oh));
+      const sy = Math.min(H - 1, Math.floor((y + 0.5) * H / oh));
       for (let z = 0; z < od; z++) {
-        const sz = Math.min(D - 1, Math.floor(z * D / od));
+        const sz = Math.min(D - 1, Math.floor((z + 0.5) * D / od));
         for (let x = 0; x < ow; x++) {
-          const c = src[(sy * D + sz) * W + Math.min(W - 1, Math.floor(x * W / ow))];
+          const c = src[(sy * D + sz) * W + Math.min(W - 1, Math.floor((x + 0.5) * W / ow))];
           if (c >= 0) v.set(x, y, z, c);
         }
       }
