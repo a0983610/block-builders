@@ -1100,11 +1100,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open')
     };
   });
-  /* 十一種工具的解鎖狀態拼成一長串很難讀，用「前 n 種開著」來寫 */
-  const NTOOL = 11;
+  /* 十二種工具的解鎖狀態拼成一長串很難讀，用「前 n 種開著」來寫 */
+  const NTOOL = 12;
   const opened = n => Array(NTOOL).fill('false').fill('true', 0, n).join(',');
   const btnOpen = n => Array(NTOOL).fill('lock').fill('open', 0, n).join(',');
-  ok('工具共 11 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
+  ok('工具共 12 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
   ok('一開始只有手指跟槌子可用',
      lock0.ok.join(',') === opened(2), lock0.ok.join(','));
   ok('鎖住的工具在畫面上也是鎖住的',
@@ -1116,28 +1116,42 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 每一關都從乾淨的紀錄重新設一個門檻值，不是一路往上疊——
        疊著設的話「拆掉 15 座」會連帶滿足前面所有拆除門檻，
        就分不出某一項到底是被自己的條件開的還是被別人順便開的。 */
-    at('smashed', 300);
-    at('destroyed', 3);
-    at('destroyed', 6);
-    at('smashed', 1000);
+    at('smashed', 500);
+    at('destroyed', 2);
+    at('destroyed', 4);
+    at('smashed', 5000);
     at('destroyed', 8);
-    at('destroyed', 10);
-    at('smashed', 2000);
-    at('smashed', 3000);
-    stats = freshStats(); stats.destroyed = 15; stats.smashed = 3000; renderTools();      // 全開
+    at('smashed', 12000);
+    at('destroyed', 12);
+    at('smashed', 30000);
+    at('destroyed', 18);
+    at('smashed', 60000);
+    stats = freshStats(); stats.destroyed = 18; stats.smashed = 60000; renderTools();     // 全開
     step2.push(TOOLS.map(t => toolOk(t)).join(','));
     return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
-  ok('擊飛 300 塊解鎖大槌', lock1.step2[0] === opened(3), lock1.step2[0]);
-  ok('拆掉 3 座解鎖保齡球', lock1.step2[1] === 'true,true,false,true,false,false,false,false,false,false,false', lock1.step2[1]);
-  ok('拆掉 6 座解鎖投石機', lock1.step2[2] === 'true,true,false,true,true,false,false,false,false,false,false', lock1.step2[2]);
-  ok('擊飛 1000 塊解鎖龍捲風', lock1.step2[3] === 'true,true,true,false,false,true,false,false,false,false,false', lock1.step2[3]);
-  ok('拆掉 8 座解鎖放火', lock1.step2[4] === 'true,true,false,true,true,false,true,false,false,false,false', lock1.step2[4]);
-  ok('拆掉 10 座解鎖定時炸彈', lock1.step2[5] === 'true,true,false,true,true,false,true,true,false,false,false', lock1.step2[5]);
-  // 擊飛 2000 也順便滿足大槌(300)與龍捲風(1000)，但還沒到核彈的 3000
-  ok('擊飛 2000 塊解鎖隕石', lock1.step2[6] === 'true,true,true,false,false,true,false,false,true,false,false', lock1.step2[6]);
-  ok('擊飛 3000 塊解鎖核彈', lock1.step2[7] === 'true,true,true,false,false,true,false,false,true,true,false', lock1.step2[7]);
-  ok('拆掉 15 座解鎖爆裂魔法', lock1.step2[8] === opened(NTOOL), lock1.step2[8]);
+  /* 順序：手指／槌子／大槌／保齡球／投石機／龍捲風／煙火／放火／炸彈／隕石／核彈／魔法。
+     兩種紀錄輪流當門檻，所以「擊飛」那幾關會順便開掉前面同一側的，但開不了另一側的。 */
+  ok('擊飛 500 塊解鎖大槌', lock1.step2[0] === opened(3), lock1.step2[0]);
+  ok('拆掉 2 座解鎖保齡球',
+     lock1.step2[1] === 'true,true,false,true,false,false,false,false,false,false,false,false', lock1.step2[1]);
+  ok('拆掉 4 座解鎖投石機',
+     lock1.step2[2] === 'true,true,false,true,true,false,false,false,false,false,false,false', lock1.step2[2]);
+  ok('擊飛 5,000 塊解鎖龍捲風',
+     lock1.step2[3] === 'true,true,true,false,false,true,false,false,false,false,false,false', lock1.step2[3]);
+  ok('拆掉 8 座解鎖煙火',
+     lock1.step2[4] === 'true,true,false,true,true,false,true,false,false,false,false,false', lock1.step2[4]);
+  ok('擊飛 12,000 塊解鎖放火',
+     lock1.step2[5] === 'true,true,true,false,false,true,false,true,false,false,false,false', lock1.step2[5]);
+  ok('拆掉 12 座解鎖定時炸彈',
+     lock1.step2[6] === 'true,true,false,true,true,false,true,false,true,false,false,false', lock1.step2[6]);
+  ok('擊飛 30,000 塊解鎖隕石',
+     lock1.step2[7] === 'true,true,true,false,false,true,false,true,false,true,false,false', lock1.step2[7]);
+  ok('拆掉 18 座解鎖核彈',
+     lock1.step2[8] === 'true,true,false,true,true,false,true,false,true,false,true,false', lock1.step2[8]);
+  ok('擊飛 60,000 塊解鎖爆裂魔法',
+     lock1.step2[9] === 'true,true,true,false,false,true,false,true,false,true,false,true', lock1.step2[9]);
+  ok('兩邊都推到頂就全開', lock1.step2[10] === opened(NTOOL), lock1.step2[10]);
   ok('解鎖後畫面上的鎖頭消失',
      lock1.btn.join(',') === btnOpen(NTOOL), lock1.btn.join(','));
 
@@ -1259,7 +1273,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     stats = freshStats(); tool = 'hammer'; renderTools();
     document.querySelector('[data-tool="tornado"]').click();   // 鎖著的不該被選到
     const blocked = tool;
-    stats.destroyed = 9; stats.smashed = 9999; renderTools();
+    stats.destroyed = 9; stats.smashed = 99999; renderTools();
     document.querySelector('[data-tool="ball"]').click();
     return { blocked, after: tool };
   });
@@ -1269,7 +1283,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 工具選單平常收在小窗裡，滑鼠指上去才展開。要驗兩件事：
      收著的時候那塊區域是「透明的」（點下去要打到畫布，不能擋操作），
      以及小窗顯示的一定是現在拿的那把。 */
-  await page.evaluate(() => { stats.destroyed = 15; stats.smashed = 9999; tool = 'hammer'; renderTools(); });
+  await page.evaluate(() => { stats.destroyed = 18; stats.smashed = 60000; tool = 'hammer'; renderTools(); });
   const menuIdle = await page.evaluate(() => {
     const r = document.getElementById('tools').getBoundingClientRect();
     const mid = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
@@ -1819,6 +1833,76 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '換場後 ' + emb2.swap.fires + ' 處在燒、額度 ' + emb2.swap.spread +
      '、' + emb2.swap.burning + ' 塊還帶著火');
 
+  /* ══════════ 煙火 ══════════
+     它是「往天上灑火種」：一發打不掉任何積木，但落下來的火星碰到建築就從那一塊燒起來。 */
+  head('煙火');
+  await reset(page, { shape: '中世紀城堡', cnt: 2000, workers: 4 });
+  const fw = await page.evaluate(() => {
+    completeNow();
+    clearFires();
+    const set0 = placedCnt, d0 = ENG.camTarget.dist;
+    launchFw({ x: 0, z: 0 });
+    const dist = ENG.camTarget.dist;
+    let top = 0, rise = 0, sparks = 0, burstY = 0, ndc = -9;
+    while (fworks && rise < 4) { step(0.05); rise += 0.05; if (fworks) top = Math.max(top, fworks[0].y); }
+    if (fwSparks) {
+      sparks = fwSparks.length;
+      burstY = fwSparks.reduce((s, x) => s + x.y, 0) / sparks;
+      const v = new THREE.Vector3(fwSparks[0].x, fwSparks[0].y, fwSparks[0].z).project(ENG.three.camera);
+      ndc = +v.y.toFixed(2);
+    }
+    const setAtBurst = placedCnt;
+    // 火星飛完
+    let fall = 0;
+    while (fwSparks && fall < 8) { step(0.05); fall += 0.05; }
+    const lit = fires || [];
+    const seeds = lit.filter(f => f.b.st === 3).length;
+    // 種子點要散開，不是全擠在同一塊
+    let spread = 0;
+    if (seeds > 1) {
+      const p = lit.filter(f => f.b.st === 3).map(f => f.b);
+      for (const a of p) for (const b of p) spread = Math.max(spread, Math.hypot(a.x - b.x, a.z - b.z));
+    }
+    return { set0, setAtBurst, top: +top.toFixed(1), rise: +rise.toFixed(2), sparks,
+             burstY: +burstY.toFixed(1), ndc, seeds, spread: +spread.toFixed(1),
+             phase, d0: +d0.toFixed(0), dist: +dist.toFixed(0), fall: +fall.toFixed(2),
+             hold: +(FW_TOP * 2.1).toFixed(0) };
+  });
+  ok('煙火會從地面竄上天再炸開',
+     fw.top > 30 && fw.rise > 0.8 && fw.rise < 2.5 && fw.sparks > 30,
+     fw.rise + ' 秒竄到 ' + fw.top + '，炸開 ' + fw.sparks + ' 顆火星');
+  /* 不退鏡頭的話整發都在畫面外（量過：貼著城堡的取景，火星的 NDC y 是 1.5，1 就出界了）。
+     這裡驗兩件事：視距有被拉到煙火要的那個距離、火星確實落在畫面內。 */
+  ok('炸開的高度框得進畫面（施放時鏡頭會退開）',
+     fw.dist >= fw.hold && fw.ndc < 0.95 && fw.ndc > -1,
+     '視距 ' + fw.d0 + ' → ' + fw.dist + '（煙火要 ' + fw.hold + '），火星 NDC y=' + fw.ndc);
+  ok('炸開那一刻一塊積木都沒掉', fw.setAtBurst === fw.set0,
+     fw.set0 + ' → ' + fw.setAtBurst + ' 塊（它是灑火種，不是爆炸）');
+  ok('落下來的火星把建築點著，而且點在好幾個地方',
+     fw.seeds >= 2 && fw.spread > 4 && fw.phase === 'wreck',
+     '燒起來 ' + fw.seeds + ' 處，最遠兩處相距 ' + fw.spread + '（phase=' + fw.phase + '）');
+  const fwOff = await page.evaluate(() => {
+    startBuild(true); completeNow(); clearFires();
+    // 打在建築外的空地上：火星落在草地上就只是熄掉
+    launchFw({ x: arenaR + 12, z: 0 });
+    let g = 0;
+    while ((fworks || fwSparks) && g++ < 400) step(0.05);
+    return { fires: fires ? fires.length : 0, set: placedCnt, total: bp.slots.length, phase };
+  });
+  ok('掉在草地上的火星只是熄掉，不會憑空燒起來',
+     fwOff.fires === 0 && fwOff.set === fwOff.total,
+     '起火 ' + fwOff.fires + ' 處、建築仍是 ' + fwOff.set + '/' + fwOff.total + ' 塊');
+  const fwSwap = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    launchFw({ x: 0, z: 0 });
+    for (let i = 0; i < 34; i++) step(0.05);          // 炸開了，火星還在天上
+    const flying = fwSparks ? fwSparks.length : 0;
+    startBuild(false);
+    return { flying, left: (fworks ? fworks.length : 0) + (fwSparks ? fwSparks.length : 0) };
+  });
+  ok('換建築時還在飛的火星要收掉', fwSwap.flying > 0 && fwSwap.left === 0,
+     '換場前 ' + fwSwap.flying + ' 顆在飛 → 換場後 ' + fwSwap.left + ' 顆');
+
   /* ══════════ 小人也會被拆除工具波及 ══════════
      邏輯跟碎料同一套：吹飛／推走／炸飛走彈道，落地那一刻才判定要不要燒起來。
      每個案例都自己把人擺到定位再動手——照原本的分布，人多半在遠處撿貨，
@@ -1984,6 +2068,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dropped.d < 2 && dropped.burn > 2.9 && dropped.roll === 1,
      '飛出去時沒著火 → 落在燒著的碎料旁 ' + dropped.d + ' 單位處，開始燒 ' +
      dropped.burn + ' 秒');
+
 
   /* 換場要把人身上的火收掉：積木會被回收去蓋新的那座，人也得回去上工 */
   const wswap = await page.evaluate(() => {
@@ -3015,7 +3100,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('用過哪些道具會記起來', toolRec.n === toolRec.total,
      toolRec.n + ' / ' + toolRec.total + '：' + toolRec.list.join(','));
-  ok('十一種道具都用過解鎖【工具箱清空】', toolRec.got);
+  ok('十二種道具都用過解鎖【工具箱清空】', toolRec.got);
 
   /* 存檔被改過時，不認得的道具 id 不該混進來 */
   const toolClean = await page.evaluate(() => {
@@ -3083,12 +3168,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const persist = await page.evaluate(() => ({ d: stats.destroyed, s: stats.smashed, b: stats.badges.length }));
   ok('關掉重開紀錄還在', persist.d === 4 && persist.s === 1234 && persist.b === 1,
      'destroyed=' + persist.d + '、smashed=' + persist.s + '、成就 ' + persist.b + ' 個');
-  /* 拆 4 座、擊飛 1234 塊 → 大槌(300)、保齡球(3 座)、龍捲風(1000) 開；
-     投石機(6 座)、放火(8 座)、定時炸彈(10 座)、核彈(3000 塊)、爆裂魔法(15 座) 還鎖著 */
+  /* 拆 4 座、擊飛 1234 塊 → 大槌(擊飛 500)、保齡球(2 座)、投石機(4 座) 開；
+     龍捲風(5,000)、煙火(8 座)、放火(12,000)、炸彈(12 座)、隕石(30,000)、
+     核彈(18 座)、爆裂魔法(60,000) 還鎖著 */
   const unlockedAfterReload = await page.evaluate(() =>
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
   ok('重開後解鎖狀態跟著回來',
-     unlockedAfterReload === 'open,open,open,open,lock,open,lock,lock,lock,lock,lock',
+     unlockedAfterReload === 'open,open,open,open,open,lock,lock,lock,lock,lock,lock,lock',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數 */
@@ -3479,7 +3565,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '金門大橋：橫式 ' + distWide.toFixed(1) + ' → 直式 ' + distTall.toFixed(1));
   await page.evaluate(i => { shapePick = i; startBuild(true); shapePick = -1; }, prevShape);
 
-  /* 工具列一排排十一種要 760px，視窗一窄就會壓到左上角的建築資訊卡。
+  /* 工具收成一顆小窗之後就不會撐寬了，但左上角的建築資訊卡還是會隨數字變寬。
      量之前一定要先把數字灌到最寬的狀態：累計金額變成七位數那一刻，
      資訊卡會從 266px 撐到 354px——用剛開新局的空帳號去量，會量到「沒撞到」的假象。 */
   await page.evaluate(() => {

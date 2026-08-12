@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.29.0';
+const VERSION = '1.30.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -86,6 +86,9 @@ function sndSwing() { tone(160, 0.3, 'sine', 0.06, 3.2); }
 function sndWind() { noise(1.6, 0.14, 480); }
 /* 點火：短促的「噗」一聲。只在點下去那一刻響，每塊都響會變成一片白噪音 */
 function sndFire() { noise(0.55, 0.16, 1600); tone(150, 0.4, 'sawtooth', 0.05, 2.4); }
+/* 煙火：往上是「咻」（音高一路往上滑），到頂是「啪」 */
+function sndFwUp() { tone(260, 1.1, 'sawtooth', 0.035, 4.2); noise(1, 0.045, 1100); }
+function sndFwPop() { noise(0.4, 0.16, 2600); tone(120, 0.32, 'square', 0.05, 0.45); }
 function sndDozer() { tone(58, 1.1, 'sawtooth', 0.05, 1.3); noise(1.1, 0.07, 260); }
 function sndBadge() { [784, 988, 1319].forEach((f, i) => setTimeout(() => tone(f, 0.18, 'triangle', 0.08), i * 90)); }
 /* 爆炸：比槌子低一個八度、拖得更長。R 越大轟得越久 */
@@ -322,6 +325,7 @@ function startBuild(instant) {
   // 倒數中的炸彈／核彈／魔法陣也一樣：留著的話會炸到剛換上來的新建築
   bombs = null; ENG.putBombs([]);
   meteors = null; ENG.putMeteors([]);
+  fworks = null; fwSparks = null;     // 還在飛的煙火火星會把剛蓋好的新建築點著
   nuke = null; ENG.hideNuke();
   magic = null;
   /* 火也要收：燒的是「哪一塊積木」，積木待會會被回收去蓋新的那座，
@@ -1073,7 +1077,7 @@ const BADGES = [
   { id: 'smash50k', n: '粉塵滿天', d: '累計擊飛 50000 塊積木', chk: s => s.smashed >= 50000 },
   { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
   { id: 'wreck25', n: '都市更新', d: '拆掉 25 座建築', chk: s => s.destroyed >= 25 },
-  { id: 'allTools', n: '工具箱清空', d: '十一種破壞道具都用過', chk: s => s.tools.length >= TOOLS.length },
+  { id: 'allTools', n: '工具箱清空', d: '十二種破壞道具都用過', chk: s => s.tools.length >= TOOLS.length },
   { id: 'boss20', n: '工頭嚴厲', d: '戳倒小人 20 次', chk: s => s.poked >= 20 },
   { id: 'poke100', n: '工安黑名單', d: '戳倒小人 100 次', chk: s => s.poked >= 100 },
   { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 },
@@ -1194,35 +1198,40 @@ function resetSave() {
 
 /* ── 破壞道具 ─────────────────────────────────────────────
    三種都走同一個出口 breakBlock()，差別只在「哪些積木被選中、給什麼速度」。 */
+/* 解鎖階梯：兩種紀錄輪流當門檻（擊飛數／拆除座數），兩邊都得推進才走得完。
+   一座 3000 塊的建築拆到門檻約 2200 塊擊飛，所以擊飛那一側大約是
+   500＝暖身、5000＝兩三座、12000＝五六座、30000＝十幾座。 */
 const TOOLS = [
   { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
   { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：地震，震掉 5% 的積木',
     lock: null },
   { id: 'bighammer', n: '大槌', k: '🔨', big: true,
     tip: '點建築：兩倍大的槌子，範圍也是兩倍　·　點地面：地震，震掉 10%',
-    lock: { txt: '累計擊飛 300 塊解鎖', ok: () => stats.smashed >= 300 } },
+    lock: { txt: '累計擊飛 500 塊解鎖', ok: () => stats.smashed >= 500 } },
   { id: 'ball', n: '保齡球', k: '🎳', tip: '點地面：從那裡把保齡球丟向建築，彈幾下再滾過去',
-    lock: { txt: '拆掉 3 座建築解鎖', ok: () => stats.destroyed >= 3 } },
+    lock: { txt: '拆掉 2 座建築解鎖', ok: () => stats.destroyed >= 2 } },
   { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
-    lock: { txt: '拆掉 6 座建築解鎖', ok: () => stats.destroyed >= 6 } },
+    lock: { txt: '拆掉 4 座建築解鎖', ok: () => stats.destroyed >= 4 } },
   { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去，可以同時來好幾道',
-    lock: { txt: '累計擊飛 1000 塊解鎖', ok: () => stats.smashed >= 1000 } },
-  { id: 'fire', n: '放火', k: '🔥', tip: '點建築：從那一塊燒起來，火會往旁邊蔓延',
+    lock: { txt: '累計擊飛 5,000 塊解鎖', ok: () => stats.smashed >= 5000 } },
+  { id: 'fw', n: '煙火', k: '🎆', tip: '點地面：往天上射一發煙火，落下來的火星會把建築點著',
     lock: { txt: '拆掉 8 座建築解鎖', ok: () => stats.destroyed >= 8 } },
+  { id: 'fire', n: '放火', k: '🔥', tip: '點建築：從那一塊燒起來，火會往旁邊蔓延',
+    lock: { txt: '累計擊飛 12,000 塊解鎖', ok: () => stats.smashed >= 12000 } },
   { id: 'bomb', n: '定時炸彈', k: '💣', tip: '點一下：放一顆炸彈，3 秒後炸開',
-    lock: { txt: '拆掉 10 座建築解鎖', ok: () => stats.destroyed >= 10 } },
+    lock: { txt: '拆掉 12 座建築解鎖', ok: () => stats.destroyed >= 12 } },
   { id: 'meteor', n: '隕石', k: '☄', tip: '點一下：3 秒後從斜上方砸下一顆燃燒隕石，可以同時來好幾顆',
-    lock: { txt: '累計擊飛 2000 塊解鎖', ok: () => stats.smashed >= 2000 } },
+    lock: { txt: '累計擊飛 30,000 塊解鎖', ok: () => stats.smashed >= 30000 } },
   { id: 'nuke', n: '核彈', k: '☢', tip: '點一下：2 秒後天上掉核彈下來',
-    lock: { txt: '累計擊飛 3000 塊解鎖', ok: () => stats.smashed >= 3000 } },
+    lock: { txt: '拆掉 18 座建築解鎖', ok: () => stats.destroyed >= 18 } },
   { id: 'magic', n: '爆裂魔法', k: '🔮', tip: '點一下：魔法陣一層層展開，6 秒後爆炸',
-    lock: { txt: '拆掉 15 座建築解鎖', ok: () => stats.destroyed >= 15 } }
+    lock: { txt: '累計擊飛 60,000 塊解鎖', ok: () => stats.smashed >= 60000 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
    規定一定要點到建築的話，站在旁邊的空地放炸彈反而做不到。
    槌子點空地是地震、保齡球點空地是從那裡把球丟出去，所以也在這裡。 */
-const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1,
+const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1 };
 let tool = 'hammer';
 
@@ -1907,6 +1916,115 @@ function torch(hit) {
   if (phase === 'done') phase = 'wreck';               // 完工的建築被動到 → 進入拆除中
   sndFire();
 }
+/* ── 煙火 ───────────────────────────────────────────────
+   點地面：一發往天上竄，到頂炸開成一球火星，火星帶著火慢慢落下來。
+   落到建築上就從那一塊燒起來——所以它是「往天上灑火種」，不是爆炸：
+   一發打不掉任何積木，但落點散得開，燒起來的地方比放火多。 */
+const FW_TOP = 38;                  // 竄多高（±15%）
+const FW_RISE = 30;                 // 上升速度
+const FW_SPARK = 46;                // 炸開幾顆火星
+const FW_SPEED = 14;                // 火星炸開的初速
+const FW_DRAG = 0.42;               // 火星的空氣阻力（每秒保留的比例）——飄下來，不是拋物線
+const FW_FALL = 0.34;               // 火星吃多少重力（比積木輕很多）
+const FW_LIFE = 3.4;                // 火星最多飛多久
+const FW_MAX = 5;                   // 同時最多幾發在天上
+/* 每發抽一個顏色。cr/cg/cb 是亮的那一刻，to 是冷掉之後的——
+   都收成同色系的暗版，落下來那一段才看得出「這一發是綠的」。 */
+const FW_COL = [
+  [[1, 0.42, 0.42], [0.5, 0.08, 0.08]],   // 紅
+  [[0.45, 0.75, 1], [0.08, 0.2, 0.5]],    // 藍
+  [[0.55, 1, 0.55], [0.1, 0.42, 0.12]],   // 綠
+  [[1, 0.88, 0.45], [0.5, 0.3, 0.05]],    // 金
+  [[1, 0.55, 1], [0.45, 0.1, 0.42]]       // 粉
+];
+let fworks = null;                  // 正在往上竄的
+let fwSparks = null;                // 炸開後落下的火星
+
+function launchFw(p) {
+  if (!fworks) fworks = [];
+  if (fworks.length >= FW_MAX) fworks.shift();
+  fworks.push({ x: p.x, y: 0.8, z: p.z, vx: rr(-1.6, 1.6), vz: rr(-1.6, 1.6),
+                top: FW_TOP * rr(0.85, 1.15), em: 0,
+                c: FW_COL[Math.floor(Math.random() * FW_COL.length)] });
+  /* 跟龍捲風、蘑菇雲同一套：不退鏡頭的話整發都在畫面外。
+     量過：貼著中世紀城堡的取景，炸開那一刻火星的 NDC y 是 1.5（1 就已經出界了）。
+     秒數蓋住「上升 1.4 秒 ＋ 火星最多 3.4 秒」。 */
+  ENG.holdWide(FW_TOP * 2.1, 5.5);
+  sndFwUp();
+}
+/* 火星／尾巴共用的粒子。s 小、命短：大顆長命的話整發會糊成一團橘色方塊 */
+function fwHot(x, y, z, c, s, life, sp) {
+  if (hot.length > HOT_MAX - 40) return;            // 留一截給爆炸的火球
+  hot.push({
+    x, y, z, vx: rr(-sp, sp), vy: rr(-sp, sp), vz: rr(-sp, sp),
+    rx: Math.random() * 6, ry: Math.random() * 6,
+    s, life, g: -1.2, grow: 0.96, cool: rr(0.3, 0.7),
+    cr: c[0][0], cg: c[0][1], cb: c[0][2], to: c[1]
+  });
+}
+const rgbHex = c => (Math.round(c[0] * 255) << 16) | (Math.round(c[1] * 255) << 8) |
+                    Math.round(c[2] * 255);
+function burstFw(f) {
+  if (!fwSparks) fwSparks = [];
+  for (let i = 0; i < FW_SPARK; i++) {
+    /* 均勻撒在球面上：三個分量各自亂數的話會集中在立方體的八個角，
+       炸開來是一團方的，不是一顆球。 */
+    const a = Math.random() * Math.PI * 2, u = rr(-1, 1), s = Math.sqrt(1 - u * u);
+    const sp = FW_SPEED * rr(0.7, 1.15);
+    fwSparks.push({ x: f.x, y: f.y, z: f.z,
+                    vx: Math.cos(a) * s * sp, vy: u * sp, vz: Math.sin(a) * s * sp,
+                    t: FW_LIFE * rr(0.8, 1.2), em: 0, c: f.c });
+  }
+  // 炸開那一瞬間的光圈，讓「啪」有個形狀
+  fxRings.push({ x: f.x, z: f.z, y: f.y, r: 1, vr: 26, op: 0.85, fade: 0.45,
+                 c: rgbHex(f.c[0]), add: 1, spin: rr(0, 6.28) });
+  sndFwPop();
+}
+/* 火星碰到的那一塊：燒起來的是「離落點最近、還站著」的那一塊。
+   只在真的碰到（blockAt 是格子查表，很便宜）才掃一次 blocks。 */
+function igniteAt(x, y, z) {
+  let best = null, bd = 2.2 * 2.2;
+  for (const b of blocks) {
+    if (b.st !== SET || b.burn) continue;
+    const d2 = (b.x - x) ** 2 + (b.y - y) ** 2 + (b.z - z) ** 2;
+    if (d2 < bd) { bd = d2; best = b; }
+  }
+  if (!best || !igniteBlock(best)) return false;
+  if (phase === 'done') phase = 'wreck';             // 完工的建築被動到 → 進入拆除中
+  return true;
+}
+function stepFw(dt) {
+  if (fworks) {
+    for (let i = fworks.length - 1; i >= 0; i--) {
+      const f = fworks[i];
+      f.y += FW_RISE * dt; f.x += f.vx * dt; f.z += f.vz * dt;
+      f.em += dt * 110;                              // 尾巴要密，不然是一串點不是一條線
+      while (f.em >= 1) { f.em--; fwHot(f.x + rr(-0.2, 0.2), f.y, f.z + rr(-0.2, 0.2), f.c, rr(0.3, 0.55), rr(0.2, 0.45), 0.5); }
+      if (f.y >= f.top) { burstFw(f); fworks.splice(i, 1); }
+    }
+    if (!fworks.length) fworks = null;
+  }
+  if (!fwSparks) return;
+  const drag = Math.pow(FW_DRAG, dt);
+  for (let i = fwSparks.length - 1; i >= 0; i--) {
+    const s = fwSparks[i];
+    s.t -= dt;
+    s.vy -= GRAV * FW_FALL * dt;
+    s.vx *= drag; s.vy *= drag; s.vz *= drag;
+    const px = s.x, py = s.y, pz = s.z;
+    s.x += s.vx * dt; s.y += s.vy * dt; s.z += s.vz * dt;
+    s.em += dt * 30;
+    while (s.em >= 1) { s.em--; fwHot(s.x, s.y, s.z, s.c, rr(0.36, 0.68), rr(0.25, 0.5), 0.3); }
+    if (s.t <= 0 || s.y <= 0.3) { fwSparks.splice(i, 1); continue; }
+    /* 打到建築就從那一塊燒起來。中點也要驗：火星一幀跑得比一格寬，
+       只看終點的話會直接穿過薄牆。 */
+    if (blockAt(s.x, s.y, s.z)) { igniteAt(s.x, s.y, s.z); fwSparks.splice(i, 1); continue; }
+    const mx = (px + s.x) / 2, my = (py + s.y) / 2, mz = (pz + s.z) / 2;
+    if (blockAt(mx, my, mz)) { igniteAt(mx, my, mz); fwSparks.splice(i, 1); }
+  }
+  if (!fwSparks.length) fwSparks = null;
+}
+
 /* 爆炸的餘火：範圍內 st 這個狀態的積木隨機點幾塊起來。限量是必要的——
    一發核彈的範圍內有上百塊，全點著會一次吃光 FIRE_MAX，之後別的地方就再也燒不起來了。 */
 function igniteAround(p, R, n, st) {
@@ -2599,7 +2717,7 @@ function stepFxRings(dt) {
 
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
 function useTool(hit) {
-  // 記在最前面：手指也算一種道具，成就要的是「六種都試過」
+  // 記在最前面：手指也算一種道具，成就要的是「每一種都試過」
   if (stats.tools.indexOf(tool) < 0) { stats.tools.push(tool); checkBadges(); }
   if (tool === 'finger') return 0;                 // 手指什麼都不破壞，只有戳小人有效
   const onGround = hit.kind === 'ground';
@@ -2608,6 +2726,7 @@ function useTool(hit) {
   if (tool === 'ball') { launchBall(hit.point); return 0; }
   if (tool === 'treb') { placeTreb({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'fw') { launchFw({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fire') { torch(hit); return 0; }
   if (tool === 'bomb') { placeBomb(hit.point); return 0; }
   if (tool === 'meteor') { callMeteor(hit.point); return 0; }
@@ -2759,6 +2878,7 @@ function step(dt) {
   stepTrebs(dt);
   stepBombs(dt);
   stepMeteors(dt);
+  stepFw(dt);
   stepFire(dt);
   stepNuke(dt);
   stepMagic(dt);
