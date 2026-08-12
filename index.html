@@ -176,6 +176,17 @@
     #toast{top:14px}
     #badgeBox #badges{grid-template-columns:1fr}   /* 手機排不下兩欄 */
   }
+
+  /* 相依檔沒載到／啟動失敗時蓋上來的說明。平常不存在（由最後那段 script 現做），
+     樣式寫在這裡是因為它跟 index.html 同一支檔，一定跟得到。 */
+  #fatal{position:fixed;inset:0;z-index:99;display:flex;align-items:center;justify-content:center;
+         background:rgba(27,36,48,.55);padding:20px}
+  #fatal .box{background:#fff;border-radius:14px;padding:22px 26px;max-width:520px;
+              box-shadow:0 18px 50px rgba(27,36,48,.3);line-height:1.75}
+  #fatal h2{margin:0 0 10px;font-size:18px}
+  #fatal ul{margin:8px 0;padding-left:20px}
+  #fatal code{background:rgba(27,36,48,.07);border-radius:4px;padding:1px 5px;font-size:13px}
+  #fatal .why{margin-top:14px;font-size:12px;opacity:.72}
 </style>
 </head>
 <body>
@@ -253,6 +264,50 @@
 </script>
 <script src="src/engine.js"></script>
 <script src="src/game.js"></script>
-<script>boot();</script>
+<script>
+/* 開場防呆：相依檔沒跟著複製過來時（最常見：直接在壓縮檔裡按兩下 index.html，
+   Windows 只解出這一支），畫面會只剩 body 的漸層背景，看起來像遊戲壞了。
+   這段一定要寫在 index.html 裡——game.js 自己沒載到時，寫在它裡面的檢查根本不會執行。 */
+(function () {
+  /* ENG／SHAPES 是 const：那支檔執行到一半炸掉會卡在 TDZ，連 typeof 都噴 ReferenceError，
+     所以每個都要包 try——抓到就等同「這支沒好」。 */
+  var need = [
+    ['lib/three.min.js',  function () { return THREE; }],
+    ['src/blueprints.js', function () { return SHAPES; }],
+    ['src/engine.js',     function () { return ENG; }],
+    ['src/game.js',       function () { return boot; }]
+  ], miss = [], i;
+  for (i = 0; i < need.length; i++) {
+    try { if (!need[i][1]()) miss.push(need[i][0]); } catch (e) { miss.push(need[i][0]); }
+  }
+
+  function fatal(html) {
+    var d = document.createElement('div');
+    d.id = 'fatal';
+    d.innerHTML = '<div class="box">' + html + '</div>';
+    document.body.appendChild(d);
+  }
+
+  if (miss.length) {
+    fatal('<h2>🧱 檔案沒放齊，遊戲跑不起來</h2>' +
+          '<code>index.html</code> 旁邊這些檔沒有載進來：<ul><li><code>' +
+          miss.join('</code></li><li><code>') + '</code></li></ul>' +
+          '請把整包<b>解壓縮出來</b>之後，再開資料夾裡的 <code>index.html</code>。' +
+          '<div class="why">直接在壓縮檔裡按兩下 index.html 是不行的：' +
+          '那樣只會解出那一支檔，旁邊的 lib／src 都不在。</div>');
+    return;
+  }
+
+  try { boot(); }
+  catch (e) {
+    console.error(e);          /* 保留原始錯誤，F12 還查得到 */
+    fatal('<h2>⚠ 遊戲啟動失敗</h2>' +
+          '檔案是齊的，但初始化時出錯了：<ul><li><code>' +
+          String(e && e.message || e).replace(/[<>]/g, '') + '</code></li></ul>' +
+          '這通常是瀏覽器不支援 WebGL（太舊、或顯卡加速被關掉）。' +
+          '<div class="why">換 Chrome／Edge 新版再試；按 F12 看 Console 有完整錯誤訊息。</div>');
+  }
+})();
+</script>
 </body>
 </html>

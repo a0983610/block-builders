@@ -3869,6 +3869,79 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('反覆重建不會累積物件', memGrow.after < memGrow.before * 2 + 200,
      memGrow.before + ' → ' + memGrow.after);
 
+  /* ══════════ 檔案沒放齊的防呆 ══════════ */
+  head('檔案沒放齊的防呆');
+  /* 把遊戲寄給別人，對方直接在壓縮檔裡按兩下 index.html——Windows 只解出那一支檔，
+     旁邊的 lib／src 都不在，畫面就只剩 body 的漸層背景，看起來像遊戲自己壞了。
+     這裡真的做殘缺的複本去開，驗證會蓋出說明而不是一片空白。 */
+  const copyInto = (rel, dir) => {
+    const from = path.join(ROOT, rel), to = path.join(dir, rel);
+    if (fs.statSync(from).isDirectory()) {
+      fs.mkdirSync(to, { recursive: true });
+      for (const e of fs.readdirSync(from)) copyInto(path.join(rel, e), dir);
+    } else fs.copyFileSync(from, to);
+  };
+  const brokenCase = (tag, build) => {
+    const d = path.join(OUT, 'broken-' + tag);
+    fs.rmSync(d, { recursive: true, force: true });
+    fs.mkdirSync(d, { recursive: true });
+    copyInto('index.html', d);
+    build(d);
+    return 'file:///' + path.join(d, 'index.html').replace(/\\/g, '/');
+  };
+  const readFatal = async url => {
+    const p = await browser.newPage({ viewport: VIEW });
+    await p.goto(url);
+    await p.waitForTimeout(700);
+    const r = await p.evaluate(() => {
+      const f = document.getElementById('fatal');
+      const mid = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+      return { shown: !!f, text: f ? f.innerText : '',
+               /* 掃到 DOM 不等於使用者看得到：畫面正中央點下去要真的落在遮罩裡 */
+               onTop: !!(mid && mid.closest && mid.closest('#fatal')) };
+    });
+    r.page = p;
+    return r;
+  };
+
+  const zipCase = await readFatal(brokenCase('只有index', () => {}));
+  ok('只有 index.html：蓋出說明而不是一片空白', zipCase.shown && zipCase.onTop,
+     zipCase.shown ? (zipCase.onTop ? '' : '有元素但被蓋住') : '完全沒有提示');
+  ok('四支相依檔全被列出來',
+     ['lib/three.min.js', 'src/blueprints.js', 'src/engine.js', 'src/game.js']
+       .every(f => zipCase.text.includes(f)),
+     zipCase.text.replace(/\s+/g, ' ').slice(0, 90));
+  ok('有講怎麼救（解壓縮後再開）',
+     zipCase.text.includes('解壓縮') && zipCase.text.includes('index.html'));
+  await zipCase.page.screenshot({ path: path.join(OUT, '08-檔案沒放齊.png') });
+  await zipCase.page.close();
+
+  /* 只缺 three：engine.js 會執行到一半炸掉，ENG 卡在 TDZ 連 typeof 都噴 ReferenceError。
+     偵測沒包 try 的話這裡會整段死掉，反而連提示都蓋不出來。 */
+  const libCase = await readFatal(brokenCase('缺three', d => {
+    copyInto('src', d); copyInto('blueprints', d);
+  }));
+  ok('只缺 three.min.js 也擋得住（TDZ 不會反過來弄死偵測）', libCase.shown && libCase.onTop);
+  ok('缺的那支被點名', libCase.text.includes('lib/three.min.js'),
+     libCase.text.replace(/\s+/g, ' ').slice(0, 90));
+
+  /* 檔案齊、但初始化炸掉（對方的瀏覽器不支援 WebGL 就長這樣）：走另一條訊息 */
+  const bootCase = await readFatal(brokenCase('啟動失敗', d => {
+    copyInto('lib', d); copyInto('src', d); copyInto('blueprints', d);
+    fs.writeFileSync(path.join(d, 'src/game.js'),
+      'function boot() { throw new Error("測試用：假裝初始化失敗"); }\n');
+  }));
+  ok('檔案齊但啟動失敗：走「啟動失敗」那條訊息',
+     bootCase.shown && bootCase.onTop && bootCase.text.includes('啟動失敗') &&
+     !bootCase.text.includes('解壓縮'),
+     bootCase.text.replace(/\s+/g, ' ').slice(0, 70));
+  ok('原始錯誤訊息有帶出來', bootCase.text.includes('假裝初始化失敗'));
+  await bootCase.page.close();
+  await libCase.page.close();
+
+  ok('正常開啟時不會誤蓋提示',
+     await page.evaluate(() => !document.getElementById('fatal')));
+
   /* ══════════ 整體 ══════════ */
   head('整體');
   await page.evaluate(() => { running = true; timeScale = 1; setWorkerCount(20); });
