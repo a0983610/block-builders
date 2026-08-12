@@ -749,8 +749,10 @@ const ENG = (function () {
   };
 
   function setWorkerCount(n) { workerMesh.count = Math.min(n, MAXW) * WPARTS; }
+  const CHAR = new T.Color(0x2b1d15);        // 燒起來的人往這個焦黑色靠
 
-  /* w：{x,y,z,a 朝向,ph 步伐相位,carry 是否舉手,tilt 跌倒角度,tone 膚色/衣色編號} */
+  /* w：{x,y,z,a 朝向,ph 步伐相位,carry 是否舉手,tilt 跌倒角度,tone 膚色/衣色編號,
+        burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）} */
   function putWorker(i, w) {
     scratch.position.set(w.x, w.y, w.z);
     scratch.rotation.set(w.tilt || 0, w.a, 0, 'YXZ');
@@ -780,6 +782,7 @@ const ENG = (function () {
       workerMesh.setMatrixAt(i * WPARTS + k, tmpM);
       const pal = WCOL[b.c];
       tmpC.setHex(pal[w.tone % pal.length]);
+      if (w.burnK) tmpC.lerp(CHAR, w.burnK);
       workerMesh.setColorAt(i * WPARTS + k, tmpC);
     }
   }

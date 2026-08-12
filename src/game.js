@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.26.1';
+const VERSION = '1.27.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -295,7 +295,13 @@ function startBuild(instant) {
   /* 順序有講究：先把小人和舊建築解開（他們的 slot 指的是「舊」藍圖），
      再換 bp，最後才調整積木池——反過來做的話，
      reconcilePool 的 splice 會讓 w.block 指到別塊積木上。 */
-  for (const w of workers) releaseWorker(w);
+  /* 小人身上的火跟碎料的火一起收：積木待會要回收去蓋新的那座，
+     人也一樣得回去上工，不能有人還在新工地旁邊打滾。 */
+  for (const w of workers) {
+    releaseWorker(w);
+    w.air = 0; w.burn = 0; w.burnK = 0; w.lit = 0; w.roll = 0; w.fall = 0;
+    w.y = 0; w.tilt = 0; w.vx = w.vy = w.vz = 0;
+  }
   for (const b of blocks) {
     if (b.st === SET || b.st === CARRY || b.st === TOSS) {
       b.slot = -1; b.holder = -1; b.arc = null; b.scale = 1; b.fallIn = 0;
@@ -626,6 +632,10 @@ function newWorker(i) {
     x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d, a: 0, ph: Math.random() * 6, gait: 0,
     tone: i, st: 'idle', block: -1, slot: -1, tx: 0, tz: 0,
     wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, pause: 0, leg: 0,
+    /* 被工具波及時才用得到：air 是正在飛，vx/vy/vz 是彈道，spin 是翻滾角速度，
+       lit 是「落地要著火」的記號，burn 是還要燒幾秒，burnK 是身上焦黑的深淺。 */
+    air: 0, vx: 0, vy: 0, vz: 0, spin: 0, lit: 0, burn: 0, burnK: 0, roll: 0,
+    bem: 0, bx: 0, bz: 0, br: 0, ba: 0,
     /* 每個人身高略有差異。1.06–1.24 大約是積木邊長的一個半，
        比原本大一成半——太小的話遠鏡頭下只剩一撮色點，看不出在做什麼。 */
     scale: rr(1.06, 1.24)
@@ -650,6 +660,105 @@ function releaseWorker(w) {
     markSupportDirty(0.05);          // 放掉認領也會改變支撐狀態
   }
   w.block = -1; w.slot = -1; w.carry = false; w.st = 'idle';
+}
+
+/* ── 小人被拆除工具波及 ───────────────────────────────────
+   邏輯跟碎料同一套：被吹飛／推走／炸飛就脫手、走彈道、一路翻滾。
+   會不會燒起來留到**落地那一刻**才判定——所以飛在半空的還只是被丟出去的人。
+   燒起來的演法看落地姿勢：摔在地上的就地打滾，站著被點著的抱頭跑圈圈。 */
+const W_BURN = 3;                   // 小人燒多久（跟碎料的 EMBER_TIME 同長）
+const W_TOSS_MAX = 22;              // 被拋出去的水平速度上限——不設的話一發核彈會把人送出草地
+const W_ROLL = 9;                   // 打滾的翻滾角速度（rad/s）
+const W_PANIC = 3.4;                // 跑圈圈的角速度
+let burningW = 0;                   // 這一幀有幾個人在燒：火苗配額要分給他們
+
+function tossWorker(w, vx, vy, vz, lit) {
+  releaseWorker(w);
+  const sp = Math.hypot(vx, vz);
+  if (sp > W_TOSS_MAX) { const k = W_TOSS_MAX / sp; vx *= k; vz *= k; }
+  w.air = 1; w.fall = 0; w.cheer = 0; w.pause = 0; w.gait = 0;
+  w.vx = vx; w.vy = vy; w.vz = vz;
+  w.spin = rr(5, 12) * (Math.random() < 0.5 ? -1 : 1);
+  if (lit) w.lit = 1;
+}
+/* roll=1 是摔在地上燒（就地打滾），roll=0 是站著被點著（抱頭跑圈圈） */
+function igniteWorker(w, roll) {
+  if (w.burn > 0) return false;
+  releaseWorker(w);
+  w.burn = W_BURN; w.roll = roll ? 1 : 0; w.bem = Math.random(); w.fall = 0;
+  w.bx = w.x; w.bz = w.z; w.br = rr(1.6, 2.8); w.ba = Math.random() * Math.PI * 2;
+  return true;
+}
+/* 摔下來的地方有沒有正在燒的東西。只在落地那一幀查一次，不是每幀掃 fires。 */
+function nearFire(w) {
+  if (!fires) return false;
+  for (const f of fires) {
+    const b = f.b;
+    if (b.y > 2.5) continue;
+    if ((b.x - w.x) ** 2 + (b.z - w.z) ** 2 < 4) return true;
+  }
+  return false;
+}
+/* 身上的火：跟燒積木共用同一個粒子池，配額同樣除以 √(在燒的人數) */
+function burnFx(w, dt) {
+  const h = 1.5 * w.scale;
+  w.bem += dt * 26 / Math.sqrt(burningW || 1);
+  while (w.bem >= 1) {
+    w.bem--;
+    if (hot.length > HOT_MAX - 40) break;              // 留一截給爆炸的火球
+    hot.push({
+      x: w.x + rr(-0.35, 0.35), y: w.y + rr(0.1, h), z: w.z + rr(-0.35, 0.35),
+      vx: rr(-0.6, 0.6), vy: rr(2, 4), vz: rr(-0.6, 0.6),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.26, 0.56), life: rr(0.3, 0.6), g: -2.6, grow: 1.06, cool: rr(0.25, 0.5),
+      cr: 1, cg: rr(0.5, 0.82), cb: rr(0.06, 0.24), to: [0.6, 0.12, 0.02]
+    });
+  }
+  if (Math.random() < dt * 2 && dust.length < 380)
+    dust.push({
+      x: w.x + rr(-0.3, 0.3), y: w.y + h, z: w.z + rr(-0.3, 0.3),
+      vx: rr(-0.5, 0.5), vy: rr(1.2, 2.6), vz: rr(-0.5, 0.5),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(1.2, 2.4), s: rr(0.4, 0.9), c: rr(0.2, 0.36), g: -0.6, fade: 2.2
+    });
+}
+/* 飛在半空：走彈道、一路翻滾。撞到草地邊緣就彈回來——
+   核彈的衝擊力算出來足夠把人送出地圖，飛出去就再也回不來了。 */
+function flyWorker(w, dt) {
+  w.vy -= GRAV * dt;
+  w.x += w.vx * dt; w.y += w.vy * dt; w.z += w.vz * dt;
+  w.tilt = (w.tilt + w.spin * dt) % (Math.PI * 2);
+  w.a += w.spin * 0.35 * dt;
+  const lim = arenaR + 22;
+  if (Math.abs(w.x) > lim) { w.x = clamp(w.x, -lim, lim); w.vx *= -0.4; }
+  if (Math.abs(w.z) > lim) { w.z = clamp(w.z, -lim, lim); w.vz *= -0.4; }
+  if (w.y > 0) return;
+  w.y = 0; w.air = 0; w.vx = w.vy = w.vz = 0;
+  // 落地這一刻才判定燒不燒：被爆炸掃到的（lit）一定燒，摔進火堆裡的也會被引燃
+  const lit = w.lit || nearFire(w);
+  w.lit = 0;
+  if (lit) igniteWorker(w, true);
+  else { w.tilt = 0; w.fall = rr(0.8, 1.7); }          // 沒著火的就趴一下再爬起來
+  sndFall();
+}
+/* 燒起來的兩種演法。跑圈圈是繞著「被點著時站的那個位置」轉，不是隨機亂走——
+   繞定點才看得出是同一個人在原地打轉，隨機走看起來只是走得比較快。 */
+function burnMove(w, dt) {
+  const lim = arenaR + 22;
+  if (w.roll) {
+    w.tilt = (w.tilt + dt * W_ROLL) % (Math.PI * 2);   // 一路往前翻，不是左右搖
+    w.x = clamp(w.x + Math.sin(w.a) * dt * 1.5, -lim, lim);
+    w.z = clamp(w.z + Math.cos(w.a) * dt * 1.5, -lim, lim);
+    w.gait = 0;
+  } else {
+    w.ba += dt * W_PANIC;
+    w.x = clamp(w.bx + Math.cos(w.ba) * w.br, -lim, lim);
+    w.z = clamp(w.bz + Math.sin(w.ba) * w.br, -lim, lim);
+    w.a = Math.atan2(-Math.sin(w.ba), Math.cos(w.ba));  // 面向切線＝繞著跑
+    w.ph += dt * 22;                                    // 腳步比平常快一倍
+    w.gait = 1;
+    w.tilt += (0 - w.tilt) * Math.min(1, dt * 8);
+  }
 }
 
 function findSlot() {
@@ -693,6 +802,19 @@ function walkTo(w, dt) {
 }
 
 function updWorker(w, wi, dt) {
+  if (w.burn > 0) {
+    w.burn -= dt;
+    burnFx(w, dt);
+    // 燒完就拍拍灰站起來，顏色自己褪回原色
+    if (w.burn <= 0) { w.burn = 0; w.roll = 0; w.tilt = 0; w.gait = 0; w.st = 'idle'; }
+  }
+  if (w.burn > 0 || w.burnK > 0.002) {
+    const t = w.burn > 0 ? 0.8 : 0;
+    w.burnK += (t - w.burnK) * Math.min(1, dt * (w.burn > 0 ? 1.1 : 2.2));
+  }
+  if (w.air) { flyWorker(w, dt); return; }            // 被吹飛／炸飛：走彈道
+  if (w.burn > 0) { burnMove(w, dt); return; }        // 燒起來：打滾或跑圈圈
+
   if (w.fall > 0) {                                   // 被震倒／被戳倒
     w.fall -= dt;
     w.tilt += (Math.PI * 0.44 - w.tilt) * Math.min(1, dt * 9);
@@ -1238,6 +1360,7 @@ function afterHit(n, point, R) {
   if (n > stats.bestHit) stats.bestHit = n;
   if (phase === 'done') phase = 'wreck';        // 完工的建築被動到 → 進入拆除中
   for (const w of workers) {
+    if (w.air || w.burn > 0) continue;                // 正在飛／正在燒的不用再掀一次
     if (Math.hypot(w.x - point.x, w.z - point.z) < R * 1.7 && w.fall <= 0) {
       w.fall = rr(1.1, 2.3); releaseWorker(w); sndFall();
     }
@@ -1463,6 +1586,16 @@ function stepBall(dt) {
       o.vz * 0.5 + dz / d * 7 + rr(-2, 2));
     if (wasSet) n++;                             // 地上的散料被撞開不算破壞
   }
+  /* 擋在球路上的人被撞開：方向是「球的行進方向 ＋ 從球心往外推」，
+     所以正面被撞的往前飛，擦邊的往旁邊彈開。球不會點火，純粹是被推走。 */
+  for (const w of workers) {
+    if (w.air) continue;
+    const dx = w.x - o.x, dz = w.z - o.z;
+    const dd = dx * dx + dz * dz;
+    if (dd > (R + 0.8) * (R + 0.8)) continue;
+    const d = Math.max(0.4, Math.sqrt(dd));
+    tossWorker(w, o.vx * 0.6 + dx / d * 6, rr(4, 7), o.vz * 0.6 + dz / d * 6, false);
+  }
   if (n) {
     o.hit += n;
     afterHit(n, { x: o.x, y: o.y, z: o.z }, R);
@@ -1537,6 +1670,20 @@ function stepTwist(dt) {
       b.vy += (16 + 30 * pull) * dt * 3;
       b.ax += rr(-30, 30) * dt; b.ay += rr(-30, 30) * dt; b.az += rr(-30, 30) * dt;
     }
+    /* 小人跟碎料吃同一組力：切線繞圈 ＋ 往內吸 ＋ 往上捲。
+       第一次掃到才 tossWorker（把工作脫手、進入飛行），之後每幀只加速度——
+       每幀都呼叫的話速度會被歸零，人就黏在漏斗底部原地抖。 */
+    for (const p of workers) {
+      const dx = p.x - w.x, dz = p.z - w.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > R2 || p.y > w.h) continue;
+      const d = Math.max(0.5, Math.sqrt(d2));
+      if (!p.air) tossWorker(p, 0, 0, 0, false);
+      const pull = 1 - d / R;
+      p.vx += (-dz / d * 26 + -dx / d * 10) * pull * dt * 3;
+      p.vz += (dx / d * 26 + -dz / d * 10) * pull * dt * 3;
+      p.vy += (16 + 30 * pull) * dt * 3;
+    }
     if (n) {
       w.hit += n;
       afterHit(n, { x: w.x, y: 2, z: w.z }, R * 0.6);
@@ -1587,14 +1734,23 @@ function explode(point, R, power, magic) {
     igniteBlock(b);
     if (wasSet) n++;
   }
-  afterHit(n, point, R);
-  /* 就算一塊都沒炸到（點在空地上），站在火球裡的人照樣要被掀倒。
-     afterHit 在 n=0 時會直接 return，所以這裡自己來一次。 */
+  /* 站在火球裡的人跟碎料同一套：吃同一條衝擊力公式、被炸飛出去，而且一律點著
+     （落地才開始燒）。圈外那一帶不吹飛，交給 afterHit 把他們掀倒就好。
+     這段要排在 afterHit 前面：afterHit 不會再去動已經飛起來的人。
+     這裡只取水平距離——人站在地上，用三維距離的話炸點抬高一點就打不到人了。 */
   for (const w of workers) {
-    if (w.fall <= 0 && Math.hypot(w.x - point.x, w.z - point.z) < R) {
-      w.fall = rr(1.2, 2.6); releaseWorker(w); sndFall();
-    }
+    if (w.air) continue;
+    const dx = w.x - point.x, dz = w.z - point.z;
+    const d = Math.hypot(dx, dz);
+    if (d > R) continue;
+    const f = Math.pow(1 - d / R, 0.55) * power;
+    const lift = f * Y_BOOST * (0.35 + 0.65 * (1 - d / R));   // 抬升的算法跟積木同一條
+    const ol = Math.max(0.6, d);
+    let nx = dx / ol, nz = dz / ol;
+    if (d < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
+    tossWorker(w, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true);
   }
+  afterHit(n, point, R);
   /* 還站著的（SET）餘火：半徑放到 1.5 倍去找——衝擊圈內幾乎都被炸飛了，
      沒倒的都在圈外那一帶。這些會繼續往鄰居蔓延。
      碎料的火不在這裡點，在上面那個迴圈裡逐塊點——見那邊的說明。 */
@@ -2547,6 +2703,8 @@ function step(dt) {
     b.g += (b.tg - b.g) * Math.min(1, dt * 5);
     b.b += (b.tb - b.b) * Math.min(1, dt * 5);
   }
+  burningW = 0;
+  for (const w of workers) if (w.burn > 0) burningW++;    // 火苗配額要照人數分
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);
   stepTrees(dt);
@@ -2626,7 +2784,10 @@ function onUp(e) {
   if (!hit) return;
   if (hit.kind === 'worker') {            // 戳小人：跌倒、手上的積木掉下來
     const w = workers[hit.idx];
-    if (w && w.fall <= 0) {
+    if (!w || w.air) return;
+    // 拿著火把戳人就是點他：站著被點著的會抱頭跑圈圈
+    if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); return; }
+    if (w.fall <= 0 && w.burn <= 0) {
       w.fall = rr(1.2, 2.4); releaseWorker(w); sndFall();
       stats.poked++; checkBadges();
     }

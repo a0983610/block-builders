@@ -1687,6 +1687,203 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '換場後 ' + emb2.swap.fires + ' 處在燒、額度 ' + emb2.swap.spread +
      '、' + emb2.swap.burning + ' 塊還帶著火');
 
+  /* ══════════ 小人也會被拆除工具波及 ══════════
+     邏輯跟碎料同一套：吹飛／推走／炸飛走彈道，落地那一刻才判定要不要燒起來。
+     每個案例都自己把人擺到定位再動手——照原本的分布，人多半在遠處撿貨，
+     量到的會是「沒打到」而不是「打到了沒反應」。 */
+  head('小人被工具波及');
+  await reset(page, { shape: '中世紀城堡', cnt: 900, workers: 20 });
+  // 把人排在工地上，炸點就在他們中間
+  const blown = await page.evaluate(() => {
+    completeNow();
+    workers.forEach((w, i) => {
+      const a = i / workers.length * Math.PI * 2;
+      w.x = Math.cos(a) * rr(3, 9); w.z = Math.sin(a) * rr(3, 9);
+      w.y = 0; w.air = 0; w.burn = 0; w.fall = 0;
+    });
+    const p0 = workers.map(w => ({ x: w.x, z: w.z }));
+    explode({ x: 0, y: 2, z: 0 }, 14, 17, false);
+    const hit = { air: workers.filter(w => w.air).length, n: workers.length,
+                  fall: workers.filter(w => w.fall > 0).length };
+    let peak = 0, t = 0;
+    while (workers.some(w => w.air) && t < 6) {
+      step(0.05); t += 0.05;
+      peak = Math.max(peak, ...workers.map(w => w.y));
+    }
+    const land = {
+      t: +t.toFixed(2), peak: +peak.toFixed(1),
+      burn: workers.filter(w => w.burn > 0).length,
+      roll: workers.filter(w => w.roll).length,
+      moved: +(workers.reduce((s, w, i) => s + Math.hypot(w.x - p0[i].x, w.z - p0[i].z), 0) / workers.length).toFixed(1),
+      out: workers.filter(w => Math.max(Math.abs(w.x), Math.abs(w.z)) > arenaR + 22.5).length,
+      busy: workers.filter(w => w.block >= 0 || w.carry).length
+    };
+    // 燒的中途看一眼：身上要有火、要在翻滾、不能回去工作
+    for (let i = 0; i < 20; i++) step(0.05);
+    const mid = { burn: workers.filter(w => w.burn > 0).length,
+                  k: +Math.max(...workers.map(w => w.burnK)).toFixed(2),
+                  busy: workers.filter(w => w.block >= 0 || w.carry).length,
+                  hotNear: hot.filter(h => workers.some(w => Math.hypot(h.x - w.x, h.z - w.z) < 1.2)).length };
+    for (let i = 0; i < 50; i++) step(0.05);            // 湊滿 3 秒＋
+    const done = { burn: workers.filter(w => w.burn > 0).length,
+                   y: +Math.max(...workers.map(w => w.y)).toFixed(2),
+                   tilt: +Math.max(...workers.map(w => Math.abs(w.tilt))).toFixed(2),
+                   k: +Math.max(...workers.map(w => w.burnK)).toFixed(2) };
+    for (let i = 0; i < 60; i++) step(0.05);
+    done.k2 = +Math.max(...workers.map(w => w.burnK)).toFixed(3);
+    done.walking = workers.filter(w => w.gait > 0.1).length;
+    return { hit, land, mid, done };
+  });
+  ok('爆炸會把小人炸飛，不是只有原地跌倒',
+     blown.hit.air === blown.hit.n && blown.land.peak > 2 && blown.land.moved > 4,
+     blown.hit.air + '/' + blown.hit.n + ' 人飛起來，最高 ' + blown.land.peak +
+     '、平均被轟出 ' + blown.land.moved + ' 單位，滯空 ' + blown.land.t + ' 秒');
+  ok('炸飛的人落地就燒起來，而且是就地打滾',
+     blown.land.burn === blown.hit.n && blown.land.roll === blown.hit.n,
+     blown.land.burn + ' 人著火，其中 ' + blown.land.roll + ' 人是打滾（站著被點的才跑圈圈）');
+  ok('燒起來的人身上有火、身體會燒黑',
+     blown.mid.hotNear > 20 && blown.mid.k > 0.5,
+     '小人身上 ' + blown.mid.hotNear + ' 顆火苗，焦黑深度 ' + blown.mid.k);
+  ok('燒的時候不會回去搬積木',
+     blown.land.busy === 0 && blown.mid.busy === 0,
+     '飛出去當下 ' + blown.land.busy + ' 人、燒到一半 ' + blown.mid.busy + ' 人還握著工作');
+  ok('燒滿三秒站起來，顏色也褪回原色',
+     blown.done.burn === 0 && blown.done.y === 0 && blown.done.tilt === 0 &&
+     blown.done.k2 < 0.02 && blown.done.walking > 0,
+     '3 秒後躺著的 ' + blown.done.burn + ' 人、傾角 ' + blown.done.tilt +
+     '，焦黑 ' + blown.done.k + ' → ' + blown.done.k2 + '，走動中 ' + blown.done.walking + ' 人');
+  ok('炸得再遠也不會被轟出草地', blown.land.out === 0,
+     '越界 ' + blown.land.out + ' 人（邊界＝工地半徑 + 22）');
+
+  /* 龍捲風：吃的是跟碎料同一組力（切線繞圈＋往內吸＋往上捲），所以人也會被捲上天 */
+  const twisted = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    workers.forEach((w, i) => {
+      const a = i / workers.length * Math.PI * 2;
+      w.x = Math.cos(a) * rr(2, 7); w.z = Math.sin(a) * rr(2, 7);
+      w.y = 0; w.air = 0; w.burn = 0; w.fall = 0;
+    });
+    launchTornado({ x: 0, z: 0 });
+    let peak = 0, air = 0;
+    for (let i = 0; i < 120; i++) {
+      step(0.05);
+      peak = Math.max(peak, ...workers.map(w => w.y));
+      air = Math.max(air, workers.filter(w => w.air).length);
+    }
+    return { peak: +peak.toFixed(1), air, burn: workers.filter(w => w.burn > 0).length };
+  });
+  ok('龍捲風會把小人一起捲上天', twisted.air > 0 && twisted.peak > 15,
+     '最多 ' + twisted.air + ' 人在空中，最高被捲到 ' + twisted.peak);
+  ok('龍捲風不會點火，人落地只是摔一跤', twisted.burn === 0,
+     '著火 ' + twisted.burn + ' 人');
+
+  /* 保齡球：擋在球路上的被撞開。球速 34，人自己又一直在走——
+     先讓球上路，再把人排到它正前方，不然量到的是「球從空地滾過去」。 */
+  const bowled = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    launchBall({ x: 0, y: 1, z: 0 }, { x: 1, y: 0, z: 0 });
+    step(0.05);
+    workers.forEach((w, i) => {
+      w.x = ball.x + 5 + (i % 5) * 1.7; w.z = (i % 3 - 1) * 0.6;
+      w.y = 0; w.air = 0; w.burn = 0; w.fall = 0;
+    });
+    const p0 = workers.map(w => w.x);
+    const top = workers.map(w => w.x);
+    const flew = new Set();
+    let air = 0;
+    for (let i = 0; i < 60; i++) {
+      step(0.05);
+      workers.forEach((w, k) => { if (w.air) { flew.add(k); top[k] = Math.max(top[k], w.x); } });
+      air = Math.max(air, workers.filter(w => w.air).length);
+    }
+    // 只看真的被撞飛的那些飛了多遠——沒被撞到的人自己也會走，混進來就不是這個數字
+    const push = [...flew].map(k => top[k] - p0[k]).sort((a, b) => b - a);
+    return { air, flew: flew.size, best: +(push[0] || 0).toFixed(1),
+             burn: workers.filter(w => w.burn > 0).length };
+  });
+  ok('保齡球會把擋路的小人推走', bowled.flew > 0 && bowled.best > 4,
+     bowled.flew + ' 人被撞飛（同時最多 ' + bowled.air + ' 人在空中），最遠往球的方向推了 ' +
+     bowled.best + ' 單位');
+  ok('保齡球也不會點火', bowled.burn === 0, '著火 ' + bowled.burn + ' 人');
+
+  /* 放火點站著的人：抱頭跑圈圈——會一直動，但繞著被點著的那個位置轉，不會跑掉 */
+  const torched = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    const w = workers[0];
+    w.x = 12; w.z = 0; w.y = 0; w.air = 0; w.burn = 0; w.fall = 0;
+    const x0 = w.x, z0 = w.z;
+    const lit = igniteWorker(w, false);
+    let far = 0, path = 0, px = w.x, pz = w.z;
+    for (let i = 0; i < 56; i++) {
+      step(0.05);
+      far = Math.max(far, Math.hypot(w.x - x0, w.z - z0));
+      path += Math.hypot(w.x - px, w.z - pz); px = w.x; pz = w.z;
+      }
+    return { lit, roll: w.roll, far: +far.toFixed(1), path: +path.toFixed(1),
+             gait: +w.gait.toFixed(2), y: +w.y.toFixed(2) };
+  });
+  ok('放火點著站著的小人 → 抱頭跑圈圈',
+     torched.lit && !torched.roll && torched.far < 6 && torched.path > 14,
+     '2.8 秒跑了 ' + torched.path + ' 單位，但離原地最遠只有 ' + torched.far +
+     '（步伐 ' + torched.gait + '）');
+
+  /* 燒不燒是在**落地那一刻**判定的，不是被打到的當下——所以不是被爆炸掃到的人，
+     摔進一堆還在燒的碎料裡照樣會被引燃。 */
+  const dropped = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    // 弄一塊在燒的碎料躺在 (20,20)
+    const b = blocks.find(x => x.st === 3);
+    breakBlock(b, 0, 0, 0);
+    b.x = 20; b.z = 20; b.y = 0.5; b.vx = b.vy = b.vz = 0;
+    igniteBlock(b);
+    const w = workers[0];
+    w.x = 20; w.z = 20 - 3.69; w.y = 0; w.air = 0; w.burn = 0; w.fall = 0;
+    tossWorker(w, 0, 8, 6, false);        // 沒有 lit：純粹被丟過去，落點才是關鍵
+    const air0 = { air: w.air, burn: w.burn, lit: w.lit };
+    let g = 0;
+    while (w.air && g++ < 100) step(0.05);
+    return { air0, burn: +w.burn.toFixed(2), roll: w.roll, fire: !!b.burn,
+             d: +Math.hypot(w.x - b.x, w.z - b.z).toFixed(1) };
+  });
+  ok('摔進火堆裡的人也會被引燃（燒不燒是落地才算的）',
+     dropped.air0.burn === 0 && !dropped.air0.lit && dropped.fire &&
+     dropped.d < 2 && dropped.burn > 2.9 && dropped.roll === 1,
+     '飛出去時沒著火 → 落在燒著的碎料旁 ' + dropped.d + ' 單位處，開始燒 ' +
+     dropped.burn + ' 秒');
+
+  /* 換場要把人身上的火收掉：積木會被回收去蓋新的那座，人也得回去上工 */
+  const wswap = await page.evaluate(() => {
+    workers.forEach(w => { w.y = 0; w.air = 0; w.fall = 0; igniteWorker(w, 1); });
+    const before = workers.filter(w => w.burn > 0).length;
+    startBuild(false);
+    return { before, burn: workers.filter(w => w.burn > 0).length,
+             air: workers.filter(w => w.air).length,
+             k: +Math.max(...workers.map(w => w.burnK)).toFixed(2) };
+  });
+  ok('換建築時小人身上的火一起收掉',
+     wswap.before > 0 && wswap.burn === 0 && wswap.air === 0 && wswap.k === 0,
+     '換場前 ' + wswap.before + ' 人在燒 → 換場後 ' + wswap.burn + ' 人（焦黑 ' + wswap.k + '）');
+
+  const wperf = await page.evaluate(() => {
+    targetCnt = 2000; setWorkerCount(60); startBuild(true); completeNow();
+    workers.forEach((w, i) => {
+      const a = i / workers.length * Math.PI * 2;
+      w.x = Math.cos(a) * rr(2, 12); w.z = Math.sin(a) * rr(2, 12);
+      w.y = 0; w.air = 0; w.fall = 0; igniteWorker(w, i % 2);
+    });
+    for (let i = 0; i < 10; i++) step(0.05);
+    const n = workers.filter(w => w.burn > 0).length;
+    let t0 = performance.now();
+    for (let i = 0; i < 30; i++) step(0.02);
+    const stepMs = (performance.now() - t0) / 30;
+    t0 = performance.now();
+    for (let i = 0; i < 30; i++) { draw(); ENG.render(); }
+    return { n, stepMs, drawMs: (performance.now() - t0) / 30, hot: hot.length };
+  });
+  ok('六十個人同時在燒：CPU 每幀 < 4ms', wperf.stepMs + wperf.drawMs < 4,
+     wperf.n + ' 人在燒（火苗 ' + wperf.hot + ' 顆）：step ' + wperf.stepMs.toFixed(2) +
+     'ms + draw ' + wperf.drawMs.toFixed(2) + 'ms');
+
   /* ══════════ 倒數型道具：炸彈／核彈／魔法 ══════════
      三個的共通點是「點下去不會馬上炸」。全部拿大建築來測：
      小建築被炸掉七成五就整棟垮掉換下一座，數字會被那條規則洗掉，
