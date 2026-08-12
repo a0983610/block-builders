@@ -36,7 +36,9 @@ const ROOT = path.resolve(__dirname, '..');
 const APP = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
 const OUT = path.join(__dirname, '.e2e-out');
 const VIEW = { width: 1280, height: 800 };
-const SHAPE_COUNT = 36;          // 與 blueprints.js 的 SHAPES 數量一致
+const SHAPE_COUNT = 36;          // blueprints.js 內建的 SHAPES 數量
+const CUSTOM_COUNT = 1;          // blueprints/ 資料夾裡預設附的自訂藍圖（範例小木屋）
+const ALL_SHAPES = SHAPE_COUNT + CUSTOM_COUNT;
 
 /* ---------- 記分板 ---------- */
 const R = [];
@@ -197,7 +199,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('沒有 JS 例外或 console 錯誤', errors.length === 0, errors.slice(0, 3).join(' | '));
   ok('three.js 有載入（classic script）', boot.three === '185', 'REVISION=' + boot.three);
   ok('InstancedMesh 可用', boot.inst);
-  ok('藍圖數量 = ' + SHAPE_COUNT, boot.shapes === SHAPE_COUNT, '實際 ' + boot.shapes);
+  ok('藍圖數量 = 內建 ' + SHAPE_COUNT + ' + 自訂 ' + CUSTOM_COUNT,
+     boot.shapes === ALL_SHAPES, '實際 ' + boot.shapes);
   ok('開場就選好一座建築', !!boot.bp, boot.bp || '');
   ok('開場就是一座蓋好的建築', boot.phase === 'done' && boot.placed === boot.total && boot.total > 100,
      boot.bp + ' ' + boot.placed + '/' + boot.total + '，phase=' + boot.phase);
@@ -293,7 +296,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return out;
   }, 1000);
-  ok('36 座都產得出來', bpAll.length === SHAPE_COUNT);
+  ok('每一座都產得出來（含自訂的）', bpAll.length === ALL_SHAPES,
+     bpAll.length + ' / ' + ALL_SHAPES);
   ok('每座都有名字與配色', bpAll.every(b => b.n && b.pal > 0 && !b.badPal));
   ok('施工順序由下往上', bpAll.every(b => b.sorted),
      bpAll.filter(b => !b.sorted).map(b => b.n).join(','));
@@ -327,6 +331,52 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fitStat.bigOver.length === 0,
      '最遠的三座：' + fitStat.bigWorst.join('、') +
      (fitStat.bigOver.length ? '；超過 5% 的：' + fitStat.bigOver.join('、') : ''));
+
+  /* ── 自訂藍圖（blueprints/ 資料夾） ──────────────────────
+     機制是：list.js 列檔名 → index.html 逐一載入 → 檔案呼叫 customBlueprint()
+     把自己接到 SHAPES 後面。之後就跟內建的走完全一樣的路。 */
+  const custom = await page.evaluate(() => {
+    const cs = SHAPES.filter(s => s.custom);
+    const i = SHAPES.findIndex(s => s.custom);
+    const sizes = [300, 1000, 3000].map(t => makeBlueprint(i, t).slots.length);
+    const bpc = makeBlueprint(i, 1000);
+    const opts = [...document.querySelectorAll('#shape option')].map(o => o.textContent);
+    return { n: cs.length, name: cs[0] ? cs[0].n : '', i, sizes, files: window.BP_FILES || [],
+             base: cs[0] ? cs[0].base : null,
+             inMenu: opts.indexOf(cs[0] ? cs[0].n : '@') >= 0, opts: opts.length,
+             h: bpc.height, r: +bpc.radius.toFixed(1), pal: bpc.pal.length,
+             ground: bpc.slots.filter(s => s.gy === 0).length,
+             cols: [...new Set(bpc.slots.map(s => s.c))].sort() };
+  });
+  ok('blueprints/ 資料夾裡的自訂藍圖會被讀進來',
+     custom.n === CUSTOM_COUNT && custom.i === SHAPE_COUNT && custom.files.length === CUSTOM_COUNT,
+     'list.js 列了 ' + custom.files.join('、') + ' → 接在第 ' + custom.i + ' 個（內建 ' +
+     SHAPE_COUNT + ' 座之後），名字「' + custom.name + '」');
+  // 選單第一項是「隨機」，所以是藍圖數 + 1
+  ok('自訂藍圖會出現在建築下拉選單裡', custom.inMenu && custom.opts === ALL_SHAPES + 1,
+     '選單共 ' + custom.opts + ' 項（隨機 + ' + ALL_SHAPES + ' 座）');
+  /* 字元圖是固定解析度的，但建材數滑桿是 300–3000——載入時包的那層縮放要能推得動。 */
+  ok('字元圖藍圖會跟著建材數縮放',
+     custom.sizes[0] < 500 && custom.sizes[2] > 2400 && custom.sizes[2] > custom.sizes[0] * 4,
+     '基準 ' + (custom.base ? custom.base.n + ' 格（' + custom.base.W + '×' + custom.base.H +
+     '×' + custom.base.D + '）' : '?') + ' → 目標 300/1000/3000 得到 ' + custom.sizes.join(' / '));
+  ok('自訂藍圖的顏色與貼地層都正常',
+     custom.pal === 5 && custom.ground > 0 && custom.cols.every(c => c >= 0 && c < 5),
+     '顏色 ' + custom.pal + ' 種（用到 ' + custom.cols.join(',') + '）、貼地 ' +
+     custom.ground + ' 格、高 ' + custom.h + '、半徑 ' + custom.r);
+  /* 格式錯的檔案不能把整個遊戲弄壞：跳過那一份、在 console 留警告就好。
+     （console.warn 不是 error，不會被「沒有 console 錯誤」那條抓到） */
+  const badBp = await page.evaluate(() => {
+    const n0 = SHAPES.length;
+    const r = [customBlueprint({}),                                   // 沒 name
+              customBlueprint({ name: '空的', layers: [] }),           // 沒圖
+              customBlueprint({ name: '全空', layers: [['...', '...']] }),
+              customBlueprint({ name: '吉薩金字塔', layers: [['1']] })]; // 撞號
+    return { r, added: SHAPES.length - n0 };
+  });
+  ok('格式錯的自訂藍圖會被擋掉，不會弄壞遊戲',
+     badBp.r.every(v => v === -1) && badBp.added === 0,
+     '四種壞檔全部回傳 -1，SHAPES 沒有多出 ' + badBp.added + ' 座');
 
   /* 金門大橋：跨距是奇數時 −L/2 是 .5，整條橋的 x 都變半格，
      吊索那行的 `x % 3 === 0` 永遠不成立 → 那個尺度整座橋沒有吊索，

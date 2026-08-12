@@ -242,6 +242,15 @@
 
 <script src="lib/three.min.js"></script>
 <script src="src/blueprints.js"></script>
+<!-- 自訂藍圖：list.js 列出檔名，下面這段逐一叫進來，接在內建的 36 座後面。
+     file:// 沒辦法列資料夾內容（fetch 會被 CORS 擋），所以一定要有那份清單；
+     用 document.write 是因為它是解析期同步插入，順序保證排在 game.js 前面
+     （game.js 一開始就要讀 SHAPES 把下拉選單建出來）。 -->
+<script src="blueprints/list.js"></script>
+<script>
+  if (window.BP_FILES) for (var i = 0; i < BP_FILES.length; i++)
+    document.write('<script src="blueprints/' + encodeURI(BP_FILES[i]) + '"><\/script>');
+</script>
 <script src="src/engine.js"></script>
 <script src="src/game.js"></script>
 <script>boot();</script>

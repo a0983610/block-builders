@@ -1107,7 +1107,92 @@ function makeBlueprint(idx, target) {
   };
 }
 
+/* ── 自訂藍圖 ──────────────────────────────────────────────
+   `blueprints/` 資料夾裡的檔案呼叫這個函式，把自己接到 SHAPES 後面，
+   之後跟內建的 36 座走完全一樣的路（下拉選單、隨機挑、成就都算）。
+   寫法與規則見 `blueprints/藍圖製作說明.md`——那份是寫給 AI 看的。
+
+   兩種給法：
+   1. layers：一層一層的字元圖（最直觀，AI 看著圖片畫得出來）。
+      這裡會把它包成一個會縮放的 gen()，建材數滑桿才推得動。
+   2. gen：直接給產生函式，跟內建那 36 座同一套 VOX API（進階用）。 */
+const CUSTOM_MIN = 180, CUSTOM_MAX = 3600;   // 縮放範圍要蓋住建材數滑桿的 300–3000
+
+function bpColor(c) {
+  if (typeof c === 'number') return c;
+  const s = String(c).replace('#', '').trim();
+  const n = parseInt(s, 16);
+  return Number.isFinite(n) ? n : 0xcfc7b8;
+}
+function customBlueprint(def) {
+  const who = (def && def.name) || '(沒有 name)';
+  const bad = m => { console.warn('[自訂藍圖] ' + who + '：' + m + '，這一份跳過'); return -1; };
+  if (!def || !def.name) return bad('缺 name');
+  if (SHAPES.some(s => s.n === def.name)) return bad('名字跟現有的藍圖撞號');
+  const pal = (Array.isArray(def.pal) && def.pal.length ? def.pal : ['#cfc7b8']).map(bpColor);
+
+  if (typeof def.gen === 'function') {          // 進階：自己寫產生函式
+    SHAPES.push({ n: def.name, lo: def.lo || 6, hi: def.hi || 30, pal, gen: def.gen, custom: true });
+    return SHAPES.length - 1;
+  }
+
+  if (!Array.isArray(def.layers) || !def.layers.length) return bad('缺 layers');
+  // 一層可以給字串陣列，也可以給一整段含換行的字串
+  const rows = def.layers.map(l => (typeof l === 'string' ? l.split(/\r?\n/) : (l || []).slice()));
+  const H = rows.length;
+  let W = 0, D = 0;
+  for (const r of rows) { D = Math.max(D, r.length); for (const line of r) W = Math.max(W, (line || '').length); }
+  if (!W || !D) return bad('layers 是空的');
+
+  /* -1 = 空。長短不齊的列自動補空白：AI 產的圖常常尾巴少幾個點，
+     為了那個把整份丟掉太脆弱，補完照用就好。 */
+  const src = new Int8Array(W * H * D).fill(-1);
+  const unknown = new Set();
+  let n = 0;
+  for (let y = 0; y < H; y++) {
+    for (let z = 0; z < rows[y].length; z++) {
+      const line = rows[y][z] || '';
+      for (let x = 0; x < line.length; x++) {
+        const ch = line[x];
+        if (ch === '.' || ch === ' ' || ch === '0') continue;
+        const ci = '123456789'.indexOf(ch);
+        if (ci < 0) { unknown.add(ch); continue; }
+        src[(y * D + z) * W + x] = Math.min(ci, pal.length - 1);
+        n++;
+      }
+    }
+  }
+  if (!n) return bad('layers 裡一格實心的都沒有');
+  if (unknown.size)
+    console.warn('[自訂藍圖] ' + who + '：不認得的字元「' + [...unknown].join('') + '」當成空白處理');
+
+  /* 縮放：輸出格回頭取樣來源格（最近鄰）。放大是複製、縮小是抽樣，
+     兩個方向共用同一段程式。座標不置中——makeBlueprint 會自己抓包圍盒置中。 */
+  const gen = (v, s) => {
+    const ow = Math.max(1, Math.round(W * s));
+    const oh = Math.max(1, Math.round(H * s));
+    const od = Math.max(1, Math.round(D * s));
+    for (let y = 0; y < oh; y++) {
+      const sy = Math.min(H - 1, Math.floor(y * H / oh));
+      for (let z = 0; z < od; z++) {
+        const sz = Math.min(D - 1, Math.floor(z * D / od));
+        for (let x = 0; x < ow; x++) {
+          const c = src[(sy * D + sz) * W + Math.min(W - 1, Math.floor(x * W / ow))];
+          if (c >= 0) v.set(x, y, z, c);
+        }
+      }
+    }
+  };
+  /* 格數大約隨 s³ 走，所以尺度範圍直接由「基準模型有幾格」反推。
+     藍圖作者因此不必自己算 lo/hi——那是內建那 36 座才需要手調的東西。 */
+  const cube = t => Math.cbrt(t / n);
+  const lo = Math.max(0.34, cube(CUSTOM_MIN));
+  const hi = Math.max(lo + 0.3, cube(CUSTOM_MAX));
+  SHAPES.push({ n: def.name, lo, hi, pal, gen, custom: true, base: { W, H, D, n } });
+  return SHAPES.length - 1;
+}
+
 /* node 也要能 require 這支檔來單獨測藍圖 */
 if (typeof module !== 'undefined' && module.exports)
-  module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NBR, gkeyOf };
+  module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NBR, gkeyOf, customBlueprint };
 
