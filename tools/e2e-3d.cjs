@@ -36,7 +36,7 @@ const ROOT = path.resolve(__dirname, '..');
 const APP = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
 const OUT = path.join(__dirname, '.e2e-out');
 const VIEW = { width: 1280, height: 800 };
-const SHAPE_COUNT = 36;          // blueprints.js 內建的 SHAPES 數量
+const SHAPE_COUNT = 48;          // blueprints.js 內建的 SHAPES 數量
 const CUSTOM_COUNT = 1;          // blueprints/ 資料夾裡預設附的自訂藍圖（範例小木屋）
 const ALL_SHAPES = SHAPE_COUNT + CUSTOM_COUNT;
 
@@ -327,10 +327,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fitStat.worst.n + ' 目標 ' + fitStat.worst.t + ' 得到 ' + fitStat.worst.c);
   /* 預設值那一檔要抓緊：人力費算的是工時，塊數少的那座就明顯便宜。
      以前這裡最差差到 40%（鐵塔頂到尺度上限只長 1806 塊）。 */
-  ok('預設 3000 塊時每座都貼近（36 座偏差都 <5%）',
+  ok('預設 3000 塊時每座都貼近（48 座偏差都 <5%）',
      fitStat.bigOver.length === 0,
      '最遠的三座：' + fitStat.bigWorst.join('、') +
      (fitStat.bigOver.length ? '；超過 5% 的：' + fitStat.bigOver.join('、') : ''));
+
+  /* 動物／交通工具／特殊這 12 座的設計前提是「整尊都站在地上」——
+     不像風車扇葉、摩天輪車廂那樣有故意懸空的部件（那些靠 floats 機制管）。
+     這裡守的是「座標算錯一格，整組就浮起來」這類錯：
+     蒸汽火車第一版 3010 塊裡有 2976 塊連不到地面（只有排障器最底那排踩著地，
+     底盤跟排障器中間差了三格 z）；木魚第一版魚身與坐墊之間空一格，951 塊整顆浮著。 */
+  const grounded = await page.evaluate(() => {
+    const NEW = ['大象', '暴龍', '長頸鹿', '貓咪', '蒸汽火車', '噴射客機', '大帆船', '雙層巴士',
+                 '木魚', '大頭像', '聖誕樹', '巨型骰子'];
+    const bad = [];
+    let n = 0;
+    for (const nm of NEW) {
+      const i = SHAPES.findIndex(s => s.n === nm);
+      if (i < 0) { bad.push(nm + ' 不存在'); continue; }
+      n++;
+      for (const t of [400, 3000]) {
+        const b = makeBlueprint(i, t);
+        const free = b.slots.filter(s => !s.anchor).length;
+        if (free) bad.push(nm + '@' + t + ' 浮空 ' + free + '/' + b.slots.length);
+      }
+    }
+    return { bad, n };
+  });
+  ok('新增的 12 座整尊都連得到地面', grounded.bad.length === 0 && grounded.n === 12,
+     grounded.bad.join('、') || grounded.n + ' 座在 400 與 3000 塊都沒有一格浮空');
 
   /* ── 自訂藍圖（blueprints/ 資料夾） ──────────────────────
      機制是：list.js 列檔名 → index.html 逐一載入 → 檔案呼叫 customBlueprint()
@@ -621,7 +646,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '另一端 ' + side.far0 + ' → ' + side.far1 + '（整體 ' + side.total + ' → ' + side.left + '）');
 
   /* 有些造型本來就有懸空部件（摩天輪車廂、大橋吊索、堆疊的塔節），
-     那些不是被打壞才浮著的，沒人動它就不該掉。36 座全部驗一遍。 */
+     那些不是被打壞才浮著的，沒人動它就不該掉。48 座全部驗一遍。 */
   const floaty = await page.evaluate(() => {
     const bad = [];
     let withFloats = 0;
@@ -635,7 +660,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return { bad, withFloats };
   });
-  ok('36 座都不會無故掉塊', floaty.bad.length === 0,
+  ok('48 座都不會無故掉塊', floaty.bad.length === 0,
      floaty.bad.join('　') || '其中 ' + floaty.withFloats + ' 座有懸空部件，都沒掉');
 
   /* 懸空部件不是無敵的：撐著它的結構被打掉，它也要跟著掉，而且要一路連鎖 */
@@ -1589,12 +1614,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const a = [];
     for (let k = 0; k < 8; k++) { launchBall(p); a.push(Math.atan2(ball.vz, ball.vx)); }
     ball = null; ENG.hideBall();
+    /* 判斷要用原始值，不能用四捨五入過的顯示值：偏差是 ±0.22 rad 的連續亂數，
+       真的抽到 0.0003 這種小數字是完全正常的，但 toFixed(3) 會把它變成 0，
+       「min > 0」就誤判成「這一發沒有隨機偏差」——實測 2000 輪有 1.7% 會這樣掛，
+       而真的等於 0 的是 0 輪。uniq 同理，改成直接比浮點數本身（比 toFixed(4)
+       少掉 8 發撞進同一格的 0.6% 誤判）。 */
     return { max: +Math.max(...a.map(Math.abs)).toFixed(3),
              min: +Math.min(...a.map(Math.abs)).toFixed(3),
-             uniq: new Set(a.map(v => v.toFixed(4))).size, n: a.length, lim: BALL_SPREAD };
+             minRaw: Math.min(...a.map(Math.abs)),
+             uniq: new Set(a).size, n: a.length, lim: BALL_SPREAD };
   });
   ok('球是朝建築丟的，但每一發角度都不一樣',
-     ballAim.max <= ballAim.lim && ballAim.min > 0 && ballAim.uniq === ballAim.n,
+     ballAim.max <= ballAim.lim && ballAim.minRaw > 0 && ballAim.uniq === ballAim.n,
      ballAim.n + ' 發全部落在 ±' + ballAim.lim + ' rad 內（最大偏 ' + ballAim.max +
      '、最小 ' + ballAim.min + '），沒有兩發相同');
 

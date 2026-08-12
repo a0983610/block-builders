@@ -1,5 +1,5 @@
 /* ============================================================
-   藍圖：36 座世界地標的 voxel 產生器
+   藍圖：48 座建築與物件的 voxel 產生器（地標 36 ＋ 動物 4 ＋ 交通工具 4 ＋ 特殊 4）
    每座建築是一個吃尺度參數 s 的函式，畫出一堆 (x,y,z,顏色索引) 格子。
    積木數不是寫死的——makeBlueprint() 會掃 s 找出最接近目標積木數的那個尺寸，
    所以同一座金字塔可以是 300 塊也可以是 3000 塊。
@@ -140,7 +140,56 @@ function corners4(v, dx, dz, fn) {
   fn(v, dx, dz); fn(v, -dx, dz); fn(v, dx, -dz); fn(v, -dx, -dz);
 }
 
-/* ── 36 座地標 ────────────────────────────────────────────
+/* 臥式圓柱（沿 z 軸躺著）。VOX.cyl 畫的是站著的柱子，
+   火車鍋爐、飛機機身、引擎這種橫躺的圓柱得另外來。hollow 給牆厚就只留外殼。 */
+function tubeZ(v, x0, y0, z0, r, len, c, hollow) {
+  const n = Math.ceil(r), ri = hollow ? r - hollow : -1;
+  for (let k = 0; k < len; k++)
+    for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++) {
+      const d = Math.hypot(i, j);
+      if (d > r + 0.35 || d < ri) continue;
+      v.set(x0 + i, y0 + j, z0 + k, c);
+    }
+}
+
+/* 車輪：圓面立在 y–z 平面上、厚度沿 x（車軸方向），x0 是靠外那一面。
+   rim 給了就把外圈一圈換成輪箍色。 */
+function wheelX(v, x0, y0, z0, r, t, c, rim) {
+  const n = Math.ceil(r);
+  for (let a = 0; a < t; a++)
+    for (let j = -n; j <= n; j++) for (let k = -n; k <= n; k++) {
+      const d = Math.hypot(j, k);
+      if (d > r + 0.35) continue;
+      v.set(x0 + a, y0 + j, z0 + k, rim !== undefined && d > r - 1.2 ? rim : c);
+    }
+}
+
+/* 只在「已經有積木」的格子上換色。眼睛、斑紋、骰子點數這種裝飾一律用它，
+   不要用 v.set：曲面上算出來的座標常常落在空氣裡，那就長出一顆孤立的懸空格。 */
+function tint(v, x, y, z, c) { if (!v.has(x, y, z)) return false; v.set(x, y, z, c); return true; }
+
+/* 從外面往裡掃，找到第一格實心的就換色。曲面（球面的臉、圓角的骰子）
+   要在「表面」上畫東西就得這樣找，算不出正確的表面座標。 */
+function paintFrom(v, x, y, z, dx, dy, dz, n, c) {
+  for (let i = n; i >= 0; i--)
+    if (tint(v, x + dx * i, y + dy * i, z + dz * i, c)) return true;
+  return false;
+}
+
+/* 實心（或帶殼）橢球——動物的軀幹、頭、木魚的身體都靠它。
+   半徑刻意不取整：塊數才會隨尺度連續變化。整數邊長的量體會一階一階跳，
+   跳幅大到怎麼掃都對不上目標塊數（骰子那座就是為此改用連續半徑的圓角立方）。 */
+function blob(v, x0, y0, z0, rx, ry, rz, c, shell) {
+  const nx = Math.ceil(rx), ny = Math.ceil(ry), nz = Math.ceil(rz);
+  const inner = shell ? 1 - shell / Math.min(rx, ry, rz) : -1;
+  for (let i = -nx; i <= nx; i++) for (let j = -ny; j <= ny; j++) for (let k = -nz; k <= nz; k++) {
+    const d = Math.hypot(i / rx, j / ry, k / rz);
+    if (d > 1.02 || d < inner) continue;
+    v.set(x0 + i, y0 + j, z0 + k, c);
+  }
+}
+
+/* ── 48 座 ────────────────────────────────────────────────
    lo/hi 是尺度參數的可用範圍，makeBlueprint 會在其中找最接近目標積木數的值。
    pal 是這座建築的配色，格子的 c 就是 pal 的索引。 */
 const SHAPES = [
@@ -963,6 +1012,554 @@ const SHAPES = [
     const ty = cy + Math.round(h * 0.3) + Math.ceil(w / 2);
     v.box(0, ty, 0, 1, Math.max(2, Math.round(s * 0.1)), 1, 3);
     v.box(0, ty + Math.max(2, Math.round(s * 0.1)), 0, 3, 3, 3, 3);         // 紅寶石星
+  } },
+
+/* ── 動物 ─────────────────────────────────────────────────
+   一律面向 −z（跟獅身人面像同一個朝向）。
+   軀幹、頭這種大塊量體用 blob()：半徑連續，塊數才跟著尺度連續長。
+   尾巴、鼻子、脖子這種彎曲的部件一律「沿整數座標一格一格走」——
+   用等分的 t 去走，步距會超過一格，中間一斷就變成會掉下來的懸空部件。 */
+
+{ n: '大象', lo: 7, hi: 26, pal: [0x8f9296, 0x757a7e, 0xece5d3, 0x4c5054],
+  gen(v, s) {
+    const bx = s * 0.32, by = s * 0.36, bz = s * 0.52;         // 軀幹半徑
+    const lh = Math.max(3, Math.round(s * 0.44));              // 腿長
+    const cy = lh + by * 0.92;
+    blob(v, 0, cy, 0, bx, by, bz, 0);
+    /* 四條柱腿一層一層畫，半徑從腳掌往上略微變粗。
+       整條腿同一個半徑不行：半徑一跨過某條格線，四條腿十幾層會同時多一圈，
+       一階就是三百塊，掃描怎麼掃都對不準目標（長頸鹿實測一步跳 588 塊）。 */
+    for (const sx of [-1, 1]) for (const sz of [-1, 1])
+      for (let y = 0; y <= lh + 1; y++)
+        v.cyl(sx * Math.round(bx * 0.58), y, sz * Math.round(bz * 0.6),
+              Math.max(1.4, s * (0.1 + 0.04 * y / (lh + 1))), 1, y === 0 ? 2 : 1);
+    /* 頭要明顯長在軀幹「前面」，中間留一段收窄的脖子。
+       第一版頭後緣比軀幹前緣還深 0.12s，頭跟身黏成一坨，遠看只是一塊大石頭。 */
+    const hr = s * 0.25, hz = -Math.round(bz + hr * 1.1), hy = Math.round(cy - by * 0.02);
+    blob(v, 0, Math.round(cy - by * 0.15), -Math.round(bz * 0.95), bx * 0.6, by * 0.52, hr * 0.55, 0);   // 脖子
+    blob(v, 0, hy, hz, hr * 0.8, hr, hr * 0.7, 0);             // 頭
+    for (const sx of [-1, 1]) {
+      // 大耳朵是大象的辨識點：薄薄一片、比頭高、往後張開
+      blob(v, sx * Math.round(hr * 0.82), hy + hr * 0.1, hz + Math.round(hr * 0.55), 1.3, hr * 1.4, hr * 1.05, 1);
+      paintFrom(v, sx * Math.round(hr * 0.45), Math.round(hy + hr * 0.3), hz, 0, 0, -1, Math.ceil(hr) + 2, 3);  // 眼
+    }
+    /* 長鼻子要甩到軀幹前面去，不然從側面看跟前腳分不出來 */
+    const ty0 = Math.round(hy - hr * 0.35), ty1 = Math.max(1, Math.round(lh * 0.22));
+    for (let y = ty0; y >= ty1; y--) {                         // 一格一格往下捲
+      const t = (ty0 - y) / Math.max(1, ty0 - ty1);
+      v.cyl(0, y, hz - Math.round(hr * 0.6 + Math.sin(t * Math.PI * 0.85) * s * 0.24),
+            Math.max(1.2, hr * (0.46 - t * 0.28)), 1, 0);
+    }
+    for (const sx of [-1, 1])                                  // 象牙
+      v.line(sx * Math.round(hr * 0.45), Math.round(hy - hr * 0.35), hz - Math.round(hr * 0.55),
+             sx * Math.round(hr * 0.7), Math.round(hy - hr * 1.1), hz - Math.round(hr * 1.5), 2);
+    /* 尾巴：先從軀幹裡面往後接一小段尾根再垂下來。
+       直接在軀幹後面憑空畫一條垂線是不行的——那個高度的軀幹側面已經收窄，
+       線會整條離開身體，變成一組會掉下來的懸空部件。 */
+    const tz = Math.round(bz) + 1, ty = Math.round(cy + by * 0.45);
+    for (let k = Math.round(bz * 0.5); k <= tz; k++) v.set(0, ty, k, 1);
+    for (let i = 1; i <= Math.round(s * 0.26); i++) v.set(0, ty - i, tz, i > s * 0.2 ? 3 : 1);
+  } },
+
+{ n: '暴龍', lo: 7, hi: 26, pal: [0x6f8a4f, 0x466030, 0xf2ecd8, 0xd08a4a],
+  gen(v, s) {
+    const bx = s * 0.21, by = s * 0.28, bz = s * 0.38;
+    const lh = Math.max(3, Math.round(s * 0.38));              // 腿長（下半身）
+    const cy = lh + by * 0.95;
+    blob(v, 0, cy, 0, bx, by, bz, 0);                          // 軀幹
+    /* 尾巴往後平伸微微上翹，一片一片收細。這條尾巴是配重：
+       沒有它整尊就是一隻站著的大蜥蜴，側影完全不像暴龍。 */
+    const tl = Math.max(5, Math.round(s * 0.8));
+    for (let k = 1; k <= tl; k++) {
+      const t = k / tl;
+      const r = Math.max(1, bx * (1 - t * 0.86));
+      blob(v, 0, cy - by * 0.3 + t * by * 0.5, Math.round(bz * 0.85) + k, r, r * 1.15, 1.1, t > 0.5 ? 1 : 0);
+    }
+    const nz0 = -Math.round(bz * 0.72), ny0 = Math.round(cy + by * 0.42);
+    const hy = ny0 + Math.round(s * 0.3), hz = nz0 - Math.round(s * 0.26);
+    const nn = Math.max(4, Math.round(s * 0.44));
+    for (let i = 0; i <= nn; i++) {                                  // 脖子：粗一點、往前上方彎
+      const t = i / nn;
+      blob(v, 0, Math.round(ny0 + (hy - ny0) * t), Math.round(nz0 + (hz - nz0) * t),
+           bx * (0.62 - t * 0.2), bx * (0.7 - t * 0.18), 1.4, 0);
+    }
+    /* 頭要做大：真的暴龍頭長超過軀幹的四分之一。
+       第一版頭只有 bx*0.5 寬，整尊看起來就是一隻站著的大蜥蜴。 */
+    const hl = s * 0.32;
+    blob(v, 0, hy, hz - Math.round(hl * 0.42), bx * 0.8, s * 0.145, hl * 0.6, 0);     // 頭
+    v.box(0, Math.round(hy - s * 0.15), Math.round(hz - hl * 0.48),
+          Math.max(3, Math.round(bx * 0.95)), Math.max(2, Math.round(s * 0.06)),
+          Math.max(4, Math.round(hl)), 0);                                           // 下顎
+    for (const sx of [-1, 1]) {
+      for (let k = 0; k <= Math.round(hl); k += 2)                                   // 牙齒
+        tint(v, sx * Math.round(bx * 0.45), Math.round(hy - s * 0.13), Math.round(hz - hl * 0.95) + k, 2);
+      paintFrom(v, 0, hy + Math.round(s * 0.07), hz - Math.round(hl * 0.45), sx, 0, 0, Math.ceil(bx) + 2, 2);  // 眼
+    }
+    for (const sx of [-1, 1]) {
+      for (let y = 0; y <= lh + 1; y++)                                              // 粗腿（逐層漸變，理由同大象）
+        v.cyl(sx * Math.round(bx * 0.7), y, Math.round(bz * 0.1),
+              Math.max(1.5, s * (0.072 + 0.05 * y / (lh + 1))), 1, 0);
+      v.box(sx * Math.round(bx * 0.7), 0, Math.round(bz * 0.1) - Math.round(s * 0.06),
+            Math.max(3, Math.round(s * 0.13)), 1, Math.max(3, Math.round(s * 0.2)), 1);              // 腳掌
+      v.box(sx * Math.round(bx * 0.62), Math.round(cy + by * 0.1), Math.round(-bz * 0.55),
+            2, 2, Math.max(2, Math.round(s * 0.14)), 3);                                             // 小小的前肢
+    }
+    for (let k = -Math.round(bz * 0.9); k <= Math.round(bz * 0.9); k += 2)           // 背脊：往下找到背那一格再換色
+      paintFrom(v, 0, Math.round(cy + by) - 3, k, 0, 1, 0, 5, 1);
+    /* 整尊只有一種顏色的話遠看就是一坨綠色的山——第一版 3033 塊裡有 2838 塊同色。
+       腹部換淺色、背上加幾道深色橫紋，輪廓才讀得出來。 */
+    for (const p of v.cells()) {
+      if (p.c !== 0) continue;
+      if (p.y < cy - by * 0.2 && p.z < bz * 0.85) { v.set(p.x, p.y, p.z, 3); continue; }
+      if (Math.sin(p.z * 0.5) > 0.6 || p.y > cy + by * 0.72) v.set(p.x, p.y, p.z, 1);
+    }
+  } },
+
+{ n: '長頸鹿', lo: 8, hi: 34, pal: [0xe0b25c, 0x8a5a2b, 0x5a3a1f, 0xf2e6cf],
+  gen(v, s) {
+    const bx = s * 0.2, by = s * 0.24, bz = s * 0.38;
+    const lh = Math.max(4, Math.round(s * 0.62));              // 長腿
+    const cy = lh + by * 0.9;
+    blob(v, 0, cy, 0, bx, by, bz, 0);                          // 軀幹（前高後低）
+    for (const sx of [-1, 1]) for (const sz of [-1, 1])        // 四條長腿（逐層漸變，理由同大象）
+      for (let y = 0; y <= lh + 1; y++)
+        v.cyl(sx * Math.round(bx * 0.6), y, sz * Math.round(bz * 0.62),
+              Math.max(1.1, s * (0.058 + 0.04 * y / (lh + 1))), 1, y === 0 ? 2 : 0);
+    /* 脖子：從肩膀斜斜往上前方長，長度是身體的兩倍——比例不誇張就只是隻馬 */
+    const ny0 = Math.round(cy + by * 0.55), nz0 = -Math.round(bz * 0.62);
+    const hy = ny0 + Math.max(6, Math.round(s * 0.78)), hz = nz0 - Math.max(2, Math.round(s * 0.2));
+    for (let y = ny0; y <= hy; y++) {
+      const t = (y - ny0) / Math.max(1, hy - ny0);
+      v.cyl(0, y, Math.round(nz0 + (hz - nz0) * t), Math.max(1.2, s * 0.095 * (1 - t * 0.28)), 1, 0);
+      if (t > 0.15 && y % 2 === 0)                             // 鬃毛：貼在脖子後緣那一格上
+        paintFrom(v, 0, y, Math.round(nz0 + (hz - nz0) * t), 0, 0, 1, Math.ceil(s * 0.1) + 2, 2);
+    }
+    const hcz = hz - Math.round(s * 0.06);
+    blob(v, 0, hy + Math.round(s * 0.06), hcz,
+         Math.max(1.6, s * 0.09), Math.max(1.6, s * 0.08), Math.max(2, s * 0.13), 0);   // 頭
+    for (const sx of [-1, 1]) {
+      v.box(sx * Math.max(1, Math.round(s * 0.05)), hy + Math.round(s * 0.1), hcz,
+            1, Math.max(2, Math.round(s * 0.08)), 1, 2);                                // 肉角
+      paintFrom(v, sx * Math.max(1, Math.round(s * 0.05)), hy + Math.round(s * 0.06), hcz,
+                0, 0, -1, Math.ceil(s * 0.13) + 2, 2);                                  // 眼
+    }
+    const tz = Math.round(bz) + 1, ty = Math.round(cy + by * 0.45);                     // 尾巴（尾根先接進軀幹）
+    for (let k = Math.round(bz * 0.5); k <= tz; k++) v.set(0, ty, k, 0);
+    for (let i = 1; i <= Math.round(s * 0.26); i++) v.set(0, ty - i, tz, i > s * 0.19 ? 2 : 0);
+    /* 斑塊：整尊畫完之後挑一部分表面換成深色。
+       用固定的三角函數組合當花紋，同一個尺寸永遠長一樣，不會每次重蓋都不同。 */
+    for (const p of v.cells()) {
+      if (p.c !== 0) continue;
+      if (Math.sin(p.x * 0.8) + Math.cos(p.z * 0.62) + Math.sin(p.y * 0.5 + p.z * 0.3) > 0.85)
+        v.set(p.x, p.y, p.z, 1);
+    }
+  } },
+
+{ n: '貓咪', lo: 6, hi: 24, pal: [0xd99a52, 0xf5efe3, 0x3a3330, 0xb87a38, 0xd98c8c],
+  gen(v, s) {
+    /* 坐姿：屁股貼地，胸往前上、頭再上去。四腳站著的貓側影跟狗分不出來，
+       坐著才有貓的樣子（而且高度撐得起來，不會攤成一片）。 */
+    const hx = s * 0.3, hy = s * 0.44, hz = s * 0.32;
+    blob(v, 0, hy, Math.round(hz * 0.5), hx, hy, hz, 0);                       // 臀
+    const chY = hy * 1.32, chZ = -Math.round(hz * 0.55);
+    blob(v, 0, chY, chZ, hx * 0.76, hy * 0.6, hz * 0.72, 0);                    // 胸
+    const hr = s * 0.26, hdY = chY + hy * 0.5 + hr * 0.55, hdZ = chZ - Math.round(hr * 0.3);
+    blob(v, 0, hdY, hdZ, hr, hr * 0.9, hr * 0.86, 0);                           // 頭
+    for (const sx of [-1, 1]) {
+      v.pyramid(sx * Math.round(hr * 0.62), Math.round(hdY + hr * 0.78), Math.round(hdZ),
+                Math.max(3, Math.round(hr * 0.7)) | 1, 0);                      // 尖耳朵
+      for (let y = 0; y < Math.max(2, Math.round(hy * 0.95)); y++)              // 前腳
+        v.cyl(sx * Math.round(hx * 0.5), y, Math.round(chZ - hz * 0.45),
+              Math.max(1.2, s * (0.07 + 0.03 * y / Math.max(1, hy))), 1, y === 0 ? 1 : 0);
+      paintFrom(v, sx * Math.round(hr * 0.42), Math.round(hdY + hr * 0.12), Math.round(hdZ),
+                0, 0, -1, Math.ceil(hr) + 2, 2);                                // 眼
+    }
+    const mw = Math.max(1, Math.round(hr * 0.34));                              // 白口鼻＋粉紅鼻頭
+    for (let i = -mw; i <= mw; i++)
+      for (let j = -Math.max(1, Math.round(hr * 0.22)); j <= 0; j++)
+        paintFrom(v, i, Math.round(hdY - hr * 0.1) + j, Math.round(hdZ), 0, 0, -1, Math.ceil(hr) + 2, 1);
+    paintFrom(v, 0, Math.round(hdY - hr * 0.08), Math.round(hdZ), 0, 0, -1, Math.ceil(hr) + 2, 4);
+    /* 尾巴：從臀部側後方的體表出發，一路垂到地面再往前繞。
+       起點一定要落在身體裡（第一版起點在體外，尾端三格整組斷開），
+       步距也要小於一格——中間一斷就是一組會掉下來的懸空部件。 */
+    const tn = Math.max(18, Math.round(s * 2.6));
+    for (let i = 0; i <= tn; i++) {
+      const t = i / tn, a = t * 2.3, rr = hz * 0.95 + t * hx * 0.5;
+      v.set(Math.round(Math.sin(a) * rr), Math.max(0, Math.round(hy * (1 - t * 1.7))),
+            Math.round(hz * 0.5 + Math.cos(a) * rr), t > 0.78 ? 1 : 0);
+    }
+    // 虎斑條紋＋白肚子：畫完之後換色，位置固定不隨機
+    for (const p of v.cells()) {
+      if (p.c !== 0) continue;
+      if (p.z < chZ - hz * 0.25 && p.y < chY && p.y > hy * 0.5) { v.set(p.x, p.y, p.z, 1); continue; }
+      if (Math.sin(p.y * 0.9 + Math.abs(p.x) * 0.25) > 0.78) v.set(p.x, p.y, p.z, 3);
+    }
+  } },
+
+/* ── 交通工具 ─────────────────────────────────────────────
+   全部沿 z 前進、車頭在 −z。輪子用 wheelX（圓面立在 y–z 上），
+   車身／機身橫躺的圓柱用 tubeZ。 */
+
+{ n: '蒸汽火車', lo: 5, hi: 30, pal: [0x2f3338, 0x8e2f28, 0xd9b96a, 0x6e747a, 0xf2efe6],
+  gen(v, s) {
+    /* 縱向每一段都從車頭 zF 往後推算，不各自算自己的中心點。
+       第一版底盤與排障器各用自己的中心擺，中間差了三格 z 沒接上，
+       整台車只有排障器最底那排踩在地上——3010 塊裡 2976 塊被判成懸空。 */
+    const R = Math.max(2.2, s * 0.17);                         // 大動輪半徑
+    const wy = Math.max(2, Math.round(R));                     // 車軸高＝輪半徑，輪子才踩得到地面
+    const r = s * 0.24, hw = Math.round(r) + 1;                // 鍋爐半徑／底盤半寬
+    const L = Math.max(6, Math.round(s * 1.05));               // 鍋爐長
+    const cd = Math.max(5, Math.round(s * 0.5)) | 1;           // 駕駛室深（奇數，牆才對稱）
+    const pl = Math.max(2, Math.round(s * 0.16));              // 排障器長
+    const zF = -Math.round(s * 0.86);                          // 底盤最前端
+    const fy = wy + 2;                                         // 底盤上緣
+    const zC = zF + L + 1 + (cd - 1) / 2;                      // 駕駛室中心
+    for (let k = zF; k <= zF + L + cd; k++) v.box(0, wy, k, hw * 2 + 1, 2, 1, 3);       // 底盤大梁
+    /* 鍋爐前粗後細一點（真的鍋爐也是煙箱那頭最粗）。整根同一個半徑不行：
+       半徑一跨過格線，整根十幾層會同時多一圈，一階就是一兩百塊。 */
+    const by = fy + Math.round(r);
+    for (let k = 1; k <= L; k++)
+      tubeZ(v, 0, by, zF + k, r * (1 - 0.09 * k / L), 1, 0, Math.max(1.5, r * 0.5));
+    for (let j = -Math.ceil(r); j <= Math.ceil(r); j++)                                 // 煙箱門（紅圈白心）
+      for (let i = -Math.ceil(r); i <= Math.ceil(r); i++) {
+        const d = Math.hypot(i, j);
+        if (d <= r + 0.35) v.set(i, by + j, zF, d > r * 0.5 ? 1 : 4);
+      }
+    const ch = Math.max(3, Math.round(s * 0.34)), chZ = zF + Math.max(2, Math.round(s * 0.14));
+    v.cyl(0, by, chZ, Math.max(1.4, s * 0.08), Math.round(r) + ch, 3);                   // 煙囪
+    v.cyl(0, by + Math.round(r) + ch, chZ, Math.max(2, s * 0.11), 1, 2);
+    v.cyl(0, by, zF + Math.round(L * 0.55), Math.max(1.2, s * 0.07),
+          Math.round(r) + Math.max(2, Math.round(s * 0.12)), 2);                        // 汽包（銅色）
+    const cwd = hw * 2 + 1, cht = Math.max(4, Math.round(s * 0.6));                     // 駕駛室
+    v.walls(0, fy, zC, cwd, cht, cd, 0, 1);
+    v.box(0, fy + cht, zC, cwd + 2, 1, cd + 2, 3);                                      // 車頂
+    for (const sx of [-1, 1])                                                           // 側窗
+      v.box(sx * ((cwd - 1) / 2), fy + Math.round(cht * 0.5), zC,
+            1, Math.max(2, Math.round(cht * 0.34)), Math.max(2, Math.round(cd * 0.5)), 4);
+    const t = 2, wx = sx => sx > 0 ? hw : -hw - t + 1;
+    for (let k = 0; k < 3; k++) for (const sx of [-1, 1])                               // 三對大動輪
+      wheelX(v, wx(sx), wy, zF + Math.round(L * (0.3 + k * 0.29)), R, t, 1, 4);
+    for (const sx of [-1, 1])                                                           // 前導小輪
+      wheelX(v, wx(sx), Math.max(1, wy - Math.round(R * 0.45)), chZ,
+             Math.max(1.4, R * 0.5), t, 1, 4);
+    for (let k = 0; k < pl; k++) {                                                      // 排障器：斜面接到底盤前緣
+      const zz = zF - pl + k, top = Math.max(1, Math.round((k + 1) / pl * fy));
+      const half = hw - (pl - 1 - k) * 0.7;
+      for (let i = -hw; i <= hw; i++) {
+        if (Math.abs(i) > half) continue;
+        v.set(i, 0, zz, 1); v.set(i, top, zz, 1);
+        if (Math.abs(i) > half - 1) for (let y = 0; y <= top; y++) v.set(i, y, zz, 1);
+      }
+    }
+  } },
+
+{ n: '噴射客機', lo: 8, hi: 36, pal: [0xf2f4f6, 0x2f5f9e, 0x9aa3aa, 0x2b3138, 0xc0392b],
+  gen(v, s) {
+    const r = s * 0.155;                                       // 機身半徑
+    const L = Math.max(10, Math.round(s * 1.6));               // 機身長
+    const gy = Math.max(2, Math.round(s * 0.15));              // 起落架高
+    const cy = gy + Math.round(r) + 1;
+    const zF = -Math.round(L * 0.52);
+    /* 機身後段微收（真的客機尾錐也是這樣）。整根同一個半徑不行：
+       半徑一跨過格線整根四十幾層同時多一圈，一階三百多塊，掃描對不準目標。 */
+    for (let k = 0; k < L; k++)
+      tubeZ(v, 0, cy, zF + k, r * (1 - 0.3 * Math.max(0, k / (L - 1) - 0.58) / 0.42), 1, 0,
+            Math.max(1.5, r * 0.55));
+    for (let k = 1; k <= Math.round(r * 1.8); k++) {           // 機鼻收成圓錐
+      const rr = r * Math.sqrt(Math.max(0, 1 - (k / (r * 1.9)) ** 2));
+      if (rr < 0.7) break;
+      blob(v, 0, cy, zF - k, rr, rr, 1.1, 0);
+    }
+    /* 主翼：往後掠、往外收窄。後掠角是客機的辨識點，
+       翼弦不收窄的話遠看是兩塊長方板，像模型飛機不像客機。 */
+    const span = Math.max(4, Math.round(s * 0.6));
+    for (let i = 1; i <= span; i++) {
+      const t = i / span;
+      const chord = Math.max(2, Math.round(s * 0.32 * (1 - t * 0.58)));
+      const back = Math.round(s * 0.26 * t);
+      for (const sx of [-1, 1])
+        v.box(sx * (Math.floor(r) + i), Math.round(cy - r * 0.5), Math.round(s * 0.1) + back, 1, 1, chord, 2);
+    }
+    const ez = Math.round(s * 0.1) + Math.round(s * 0.26 * 0.42);
+    for (const sx of [-1, 1])                                  // 兩具吊掛引擎
+      tubeZ(v, sx * (Math.floor(r) + Math.round(span * 0.45)), Math.round(cy - r * 0.5) - 2,
+            ez - Math.round(s * 0.12), Math.max(1.4, s * 0.065), Math.max(3, Math.round(s * 0.22)), 3);
+    const tz = zF + L - 1;
+    const fh = Math.max(4, Math.round(s * 0.42));
+    /* 尾翼從機身「裡面」起算往上長，不從機身表面起算：
+       表面那一格取整之後常常差一格，尾翼就整片浮在機身上方（實測 300 塊時 8 格斷開）。 */
+    for (let j = 0; j <= fh + Math.round(r); j++) {
+      const t = Math.max(0, j - Math.round(r)) / fh;
+      v.box(0, cy + j, tz - Math.round(s * 0.02) + Math.round(t * s * 0.13),
+            1, 1, Math.max(2, Math.round(s * 0.24 * (1 - t * 0.6))), 1);
+    }
+    for (let i = 1; i <= Math.max(3, Math.round(s * 0.24)); i++)  // 水平尾翼
+      for (const sx of [-1, 1])
+        v.box(sx * (Math.floor(r * 0.7) + i), Math.round(cy + r * 0.4), tz - Math.round(s * 0.04),
+              1, 1, Math.max(2, Math.round(s * 0.14)), 2);
+    for (let k = zF + Math.round(r * 2.4); k < tz - Math.round(r); k += 2)   // 舷窗＋腰線
+      for (const sx of [-1, 1]) {
+        paintFrom(v, 0, cy + Math.round(r * 0.35), k, sx, 0, 0, Math.ceil(r) + 2, 3);
+        paintFrom(v, 0, cy - Math.round(r * 0.35), k, sx, 0, 0, Math.ceil(r) + 2, 1);
+      }
+    const gear = [[0, zF + Math.round(r * 2.2)], [-1, ez], [1, ez]];
+    for (const [sx, gz] of gear) {                             // 起落架：要撐到地面才站得住
+      v.box(sx * Math.round(r * 1.1), 0, gz, 1, cy, 1, 3);
+      v.box(sx * Math.round(r * 1.1), 0, gz, 2, 2, 2, 3);
+    }
+    for (let i = -1; i <= 1; i++)                              // 駕駛艙窗
+      paintFrom(v, i, cy + Math.round(r * 0.45), zF, 0, 0, -1, Math.ceil(r * 2) + 2, 4);
+  } },
+
+{ n: '大帆船', lo: 7, hi: 28, pal: [0x6b4a2f, 0x8f6440, 0xf7f2e4, 0x33383d, 0xc0392b],
+  gen(v, s) {
+    const HL = Math.max(6, Math.round(s * 0.78));              // 半船長（沿 z）
+    const hw = s * 0.26;                                       // 最寬半寬
+    const hh = Math.max(5, Math.round(s * 0.44));              // 船殼高
+    for (let k = -HL; k <= HL; k++) {
+      const t = Math.abs(k) / HL;
+      const w = hw * Math.sqrt(Math.max(0, 1 - t * t * 0.9));   // 兩端收尖
+      if (w < 0.7) continue;
+      for (let y = 0; y < hh; y++) {
+        const ww = w * (0.4 + 0.6 * (y / (hh - 1)));            // V 型船底
+        const n = Math.ceil(ww);
+        for (let i = -n; i <= n; i++) {
+          if (Math.abs(i) > ww) continue;
+          // 中間挖空當船艙，只留船殼與甲板——實心的話光船身就吃掉大半積木
+          if (y < hh - 1 && y > ww * 0.6 && Math.abs(i) < ww - 1.3) continue;
+          v.set(i, y, k, y >= hh - 2 ? 1 : 0);
+        }
+      }
+    }
+    for (let k = -HL; k <= HL; k++) {                           // 船舷欄
+      const t = Math.abs(k) / HL;
+      const w = hw * Math.sqrt(Math.max(0, 1 - t * t * 0.9));
+      if (w < 1.2) continue;
+      for (const sx of [-1, 1]) v.set(sx * Math.round(w), hh, k, 1);
+    }
+    v.box(0, hh, Math.round(HL * 0.62), Math.round(hw * 1.2), Math.max(2, Math.round(s * 0.18)),
+          Math.round(HL * 0.45), 0);                            // 船尾樓
+    const masts = [[-0.42, 0.86], [0.02, 1.06], [0.46, 0.82]];
+    for (const [fz, fh] of masts) {
+      const mz = Math.round(HL * fz), mh = Math.max(6, Math.round(s * fh));
+      v.cyl(0, hh, mz, Math.max(1.1, s * 0.045), mh, 3);        // 桅杆
+      for (let q = 0; q < 2; q++) {                             // 兩道橫桁＋兩面方帆
+        const yy = hh + Math.round(mh * (0.34 + q * 0.36));
+        const sw = Math.max(4, Math.round(hw * (1.9 - q * 0.4))) | 1;
+        // 帆高不能吃滿兩道橫桁之間：兩面帆一貼上就連成一整片牆，看不出是幾張帆
+        const sh = Math.max(2, Math.round(mh * 0.26));
+        v.box(0, yy, mz, sw + 2, 1, 1, 3);                      // 橫桁
+        v.box(0, yy - sh, mz, sw, sh, 1, 2);                    // 帆
+      }
+      v.set(0, hh + mh, mz, 4);                                 // 桅頂旗
+      v.set(1, hh + mh, mz, 4);
+    }
+    for (let i = 0; i <= Math.round(s * 0.4); i++)              // 船首斜桅
+      v.set(0, hh + Math.round(i * 0.35), -HL - i, 3);
+    for (let k = -HL; k <= HL; k++) {                           // 舷側金線
+      const t = Math.abs(k) / HL;
+      const w = hw * Math.sqrt(Math.max(0, 1 - t * t * 0.9));
+      if (w < 1.2) continue;
+      for (const sx of [-1, 1]) v.set(sx * Math.round(w), hh - 2, k, 1);
+    }
+  } },
+
+{ n: '雙層巴士', lo: 6, hi: 34, pal: [0xc0392b, 0xf2efe6, 0x2b3138, 0x8e2a20, 0x9aa3aa],
+  gen(v, s) {
+    /* 比例照真的雙層巴士抓（高 : 長 ≈ 1 : 2.5）。第一版是 1 : 1.5，
+       又短又胖又頂著白屋頂，遠看就是一棟紅色小樓房。
+       底盤與二樓地板都只鋪外圈：從外面根本看不到中間，鋪滿要多花上千塊，
+       那些積木寧可拿去把車身拉長。 */
+    const w = Math.max(5, Math.round(s * 0.42)) | 1;
+    const h = Math.max(7, Math.round(s * 0.58));
+    const d = Math.max(9, Math.round(s * 1.45));
+    const R = Math.max(1.8, s * 0.12), t = 2;
+    const wy = Math.max(2, Math.round(R));                     // 車軸高＝輪半徑，輪子才踩得到地
+    const fy = wy + 1;                                         // 車身底板
+    const hd = (d - 1) / 2, hw = (w - 1) / 2;
+    v.walls(0, fy - 1, 0, w, 1, d, 4, 2);                      // 底盤裙邊
+    v.walls(0, fy, 0, w, h, d, 0, 1);                          // 車身四面
+    v.box(0, fy + h, 0, w, 1, d, 0);                           // 紅車頂
+    v.walls(0, fy + Math.round(h * 0.5), 0, w - 2, 1, d - 2, 4, 2);   // 二樓地板
+    /* 車窗直接在牆面上換色，不挖洞：挖穿的話兩層樓板之間只剩幾根柱子撐著，
+       蓋到一半就會被垮塌判定判成沒支撐。 */
+    for (const deck of [0.72, 0.22]) {
+      const y0 = fy + Math.round(h * deck), wh = Math.max(2, Math.round(h * 0.22));
+      for (let k = -hd + 1; k <= hd - 1; k++) {
+        v.set(-hw, y0 - 1, k, 1); v.set(hw, y0 - 1, k, 1);      // 上下白窗框
+        v.set(-hw, y0 + wh, k, 1); v.set(hw, y0 + wh, k, 1);
+        if ((k + hd) % 5 === 0) continue;                       // 窗柱
+        for (let j = 0; j < wh; j++) { v.set(-hw, y0 + j, k, 2); v.set(hw, y0 + j, k, 2); }
+      }
+    }
+    /* 車頭：兩層各一整片大擋風玻璃，上面一條路線牌。
+       這是雙層巴士最好認的一面——不做的話正面跟側面一樣是一片紅牆。 */
+    const gw = Math.max(3, w - 2);
+    v.box(0, fy + Math.round(h * 0.56), -hd, gw, Math.max(3, Math.round(h * 0.3)), 1, 2);
+    v.box(0, fy + Math.round(h * 0.14), -hd, gw, Math.max(3, Math.round(h * 0.3)), 1, 2);
+    v.box(0, fy + h - 1, -hd, gw, 1, 1, 1);                    // 路線牌
+    v.box(0, fy + Math.round(h * 0.58), hd, gw, Math.max(2, Math.round(h * 0.26)), 1, 2);   // 車尾窗
+    for (const zz of [-Math.round(d * 0.3), Math.round(d * 0.28)])    // 四個輪子（胎黑、輪轂灰）
+      for (const sx of [-1, 1])
+        wheelX(v, sx > 0 ? hw : -hw - t + 1, wy, zz, R, t, 4, 2);
+  } },
+
+/* ── 特殊 ─────────────────────────────────────────────────
+   不是建築，就是些看著很想拆掉的東西。 */
+
+{ n: '木魚', lo: 6, hi: 26, pal: [0x8a5a3c, 0x5c3a24, 0xb03a2e, 0xd9b26a, 0x3a2416],
+  gen(v, s) {
+    const r = s * 0.5, ry = r * 0.82;
+    const py = Math.max(2, Math.round(s * 0.1));
+    /* 魚身底部要正好落在坐墊上緣。第一版用 round() 算中心高，
+       結果坐墊在 y=0、魚身從 y=2 起，中間空一格——整顆魚身被判成懸空（951 格）。 */
+    const cy = py + Math.floor(ry * 1.02);
+    v.cyl(0, 0, 0, r * 1.15, py, 2, 0);                        // 紅坐墊
+    blob(v, 0, cy, 0, r, ry, r * 1.05, 0, Math.max(2, r * 0.3));   // 圓鼓的魚身（中空，敲了才響）
+    /* 正面那道大開口是木魚的辨識點：從魚嘴往裡挖一道楔形縫，
+       前面開得寬、越往裡越窄，所以一格一格挖，不是一次 carve。 */
+    const mouth = Math.max(2, Math.round(r * 0.42));
+    for (let k = 0; k <= Math.round(r * 1.1); k++) {
+      const mh = Math.max(1, Math.round(mouth * (1 - k / (r * 1.5))));
+      v.carve(0, cy - Math.round(mouth * 0.5), -Math.round(r * 1.05) + k, Math.round(r * 1.3), mh, 1);
+    }
+    for (const sx of [-1, 1])                                  // 兩顆魚眼
+      paintFrom(v, sx * Math.round(r * 0.5), Math.round(cy + r * 0.3), 0, 0, 0, -1, Math.ceil(r * 1.1) + 2, 1);
+    for (let a = 1; a <= 30; a++) {                            // 背上的螺旋刻紋
+      const t = a / 30, ang = t * Math.PI * 3.2;
+      paintFrom(v, Math.round(Math.cos(ang) * r * 0.5 * t), cy, Math.round(Math.sin(ang) * r * 0.6 * t),
+                0, 1, 0, Math.ceil(ry) + 2, 1);
+    }
+    v.cyl(0, cy, Math.round(r * 0.6), Math.max(1.2, r * 0.16),
+          Math.round(ry) + Math.max(2, Math.round(r * 0.22)), 1);          // 尾鰭把手
+    /* 木槌擺在旁邊。它跟木魚沒有相連，但槌柄貼著地面，
+       所以垮塌判定看得到它連到地，不會被當成懸空部件掉下來。 */
+    const mx = Math.round(r * 1.5), ml = Math.max(4, Math.round(s * 0.5));
+    for (let k = 0; k < ml; k++) v.set(mx, 0, Math.round(-r * 0.4) + k, 3);
+    v.cyl(mx, 0, Math.round(-r * 0.4) - 1, Math.max(1.4, s * 0.09), Math.max(2, Math.round(s * 0.12)), 3);
+  } },
+
+{ n: '大頭像', lo: 6, hi: 24, pal: [0xe3a878, 0x3a3230, 0xf7f3ea, 0xb5544a, 0xc98f62],
+  gen(v, s) {
+    const r = s * 0.62;
+    const nk = Math.max(2, Math.round(s * 0.2));
+    v.box(0, 0, 0, Math.round(r * 1.6) | 1, 1, Math.round(r * 1.6) | 1, 4);      // 台座
+    v.cyl(0, 1, 0, Math.max(2, r * 0.4), nk, 4);                                 // 脖子
+    const cy = 1 + nk + Math.round(r * 0.9);
+    /* 頭做成殼：實心的話 3000 塊只夠一顆直徑 18 的頭，
+       殼可以做到 30 出頭，五官才畫得開（跟摩艾那尊實心方頭剛好對比）。 */
+    blob(v, 0, cy, 0, r * 0.88, r, r * 0.84, 0, Math.max(2, r * 0.24));
+    /* 五官一律「從最前面往裡找到第一格實心再換色」——
+       頭是球面，直接算座標會把顏色點在空氣裡。 */
+    const front = (x, y, c) => {
+      for (let k = -Math.ceil(r) - 2; k <= 0; k++) if (v.has(x, y, k)) { v.set(x, y, k, c); return true; }
+      return false;
+    };
+    const er = Math.max(1, Math.round(r * 0.17)), ex = Math.round(r * 0.38), ey = Math.round(cy + r * 0.16);
+    for (const sx of [-1, 1]) {
+      for (let i = -er; i <= er; i++) for (let j = -er; j <= er; j++) {
+        if (Math.hypot(i, j) > er) continue;
+        front(sx * ex + i, ey + j, 2);                                           // 眼白
+      }
+      for (let i = -Math.max(0, er - 1); i <= Math.max(0, er - 1); i++)          // 瞳孔
+        for (let j = -Math.max(0, er - 1); j <= Math.max(0, er - 1); j++)
+          if (Math.hypot(i, j) <= er - 1) front(sx * ex + i, ey + j, 1);
+      for (let i = -Math.round(r * 0.22); i <= Math.round(r * 0.22); i++)        // 眉毛
+        front(sx * ex + i, ey + er + Math.max(2, Math.round(r * 0.16)), 1);
+      blob(v, sx * Math.round(r * 0.94), cy - r * 0.04, Math.round(r * 0.1), 2.0, r * 0.32, r * 0.24, 0);  // 耳朵
+    }
+    /* 鼻子要往外凸兩三格才看得出來——只換顏色不改輪廓的話正面是一片平的 */
+    const nh = Math.max(3, Math.round(r * 0.34));
+    for (let j = 0; j < nh; j++) {
+      const out = 1 + Math.round(j / nh * Math.max(1, r * 0.16));
+      blob(v, 0, cy + Math.round(r * 0.12) - j, -Math.round(r * 0.8) - out,
+           Math.max(1, r * 0.05 + j * 0.18), 1, out + 0.6, j > nh - 2 ? 4 : 0);
+    }
+    const mw = Math.round(r * 0.34);                                             // 笑起來的嘴
+    for (let i = -mw; i <= mw; i++)
+      front(i, Math.round(cy - r * 0.42) - Math.round((1 - (i / mw) ** 2) * r * 0.14), 3);
+    // 頭髮：頭頂連同兩側鬢角整片換深色，髮線做一點起伏才不像戴安全帽
+    for (const p of v.cells()) {
+      if (p.c !== 0) continue;
+      const lim = cy + r * 0.42 + Math.sin(p.x * 0.55) * r * 0.1 + Math.cos(p.z * 0.4) * r * 0.06;
+      if (p.y > lim || (p.z > r * 0.3 && p.y > cy - r * 0.1)) v.set(p.x, p.y, p.z, 1);
+    }
+  } },
+
+{ n: '聖誕樹', lo: 6, hi: 30, pal: [0x2f7a4a, 0x1f5c36, 0xc0392b, 0xe8c34a, 0x8a5a3c],
+  gen(v, s) {
+    const pot = Math.max(2, Math.round(s * 0.16));
+    v.cyl(0, 0, 0, Math.max(2.4, s * 0.24), pot, 2, 0);                          // 紅花盆
+    v.cyl(0, pot, 0, Math.max(1.4, s * 0.075), Math.max(2, Math.round(s * 0.16)), 4);   // 樹幹
+    let y = pot + Math.max(1, Math.round(s * 0.1));
+    const tiers = [[0.5, 0.5], [0.38, 0.44], [0.26, 0.38]];                      // 三層針葉，一層比一層小
+    const rings = [];
+    for (const [fr, fh] of tiers) {
+      const r0 = Math.max(2.5, s * fr), hgt = Math.max(3, Math.round(s * fh));
+      v.taper(0, y, 0, r0, Math.max(0.8, r0 * 0.14), hgt, 0);
+      v.cyl(0, y, 0, r0 + 0.4, 1, 1, 1.6);                                       // 每層下緣壓一圈深色
+      rings.push({ y, r0, hgt });
+      y += hgt - Math.max(1, Math.round(hgt * 0.24));                            // 上一層咬進下一層
+    }
+    const top = rings[rings.length - 1];
+    y = top.y + top.hgt;
+    /* 裝飾球用黃金角散開，位置從圓錐外面往內找到第一格實心的再換色。
+       照算出來的座標直接 v.set 的話，有一部分會落在樹外面的空氣裡，
+       那就是一顆顆會掉下來的孤立格子。 */
+    const n = Math.max(6, Math.round(s * 1.1));
+    for (let i = 0; i < n; i++) {
+      const g = rings[i % rings.length], t = ((i * 7) % 11) / 11 * 0.72 + 0.12;
+      const a = i * 2.39996, rr = g.r0 * (1 - 0.86 * t) + 1.5;
+      paintFrom(v, 0, g.y + Math.round(t * g.hgt), 0, Math.cos(a), 0, Math.sin(a),
+                Math.round(rr), i % 2 ? 2 : 3);
+    }
+    const arm = Math.max(2, Math.round(s * 0.11));                               // 金星
+    v.cyl(0, y, 0, 1.2, arm, 4);                                                 // 星星底下的短枝
+    const sy = y + arm;
+    for (let i = -arm; i <= arm; i++) {
+      v.set(i, sy, 0, 3); v.set(0, sy + i, 0, 3);                                // 十字
+      const q = Math.round((arm - Math.abs(i)) * 0.55);                           // 四道斜角
+      v.set(i, sy - q, 0, 3);
+      if (Math.abs(i) < arm) v.set(i, sy + q, 0, 3);
+    }
+  } },
+
+{ n: '巨型骰子', lo: 3.5, hi: 22, pal: [0xf4f1e8, 0x2b2b2b, 0xc0392b, 0xdad5c6],
+  gen(v, s) {
+    /* 正立方體的塊數只能一階一階跳（邊長 14→15 就是 +23%），怎麼掃都對不上目標。
+       改成 P 次方範數的「圓角立方」：半徑 R 連續，塊數就連續——
+       順帶也才像顆真骰子，真骰子的稜角本來就是圓的。 */
+    const R = s, P = 5, t = Math.max(1.6, R * 0.17), n = Math.ceil(R), yc = Math.round(R);
+    const norm = (i, j, k) => Math.pow(Math.pow(Math.abs(i), P) + Math.pow(Math.abs(j), P) +
+                                       Math.pow(Math.abs(k), P), 1 / P);
+    for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++) for (let k = -n; k <= n; k++) {
+      const d = norm(i, j, k);
+      if (d > R || d < R - t) continue;
+      const m = [Math.abs(i), Math.abs(j), Math.abs(k)].sort((a, b) => b - a);
+      v.set(i, yc + j, k, m[1] > R * 0.74 ? 3 : 0);            // 稜線一圈壓深一點
+    }
+    const o = Math.max(1.5, R * 0.42), pr = Math.max(1, R * 0.18);
+    /* 點數要從外面往裡找到第一格實心再換色：表面是圓角的，
+       直接照平面座標點會有一部分點在空氣裡。 */
+    const pip = (ax, sg, a, b, c) => {
+      const m = Math.ceil(pr);
+      for (let u = -m; u <= m; u++) for (let w = -m; w <= m; w++) {
+        if (Math.hypot(u, w) > pr) continue;
+        for (let q = n + 1; q >= 0; q--) {
+          const p = [0, 0, 0];
+          p[ax] = sg * q; p[(ax + 1) % 3] = Math.round(a) + u; p[(ax + 2) % 3] = Math.round(b) + w;
+          if (v.has(p[0], yc + p[1], p[2])) { v.set(p[0], yc + p[1], p[2], c); break; }
+        }
+      }
+    };
+    const A = [[-o, -o], [o, o]], B = [[-o, -o], [-o, o], [o, -o], [o, o]];
+    const faces = [[1, 1, [[0, 0]], 2],                        // 上：一點（紅）
+                   [1, -1, B.concat([[-o, 0], [o, 0]]), 1],    // 下：六點
+                   [2, -1, A, 1],                              // 前：二點
+                   [2, 1, B.concat([[0, 0]]), 1],              // 後：五點
+                   [0, 1, [[-o, -o], [0, 0], [o, o]], 1],      // 右：三點
+                   [0, -1, B, 1]];                             // 左：四點（對面加起來都是七）
+    for (const [ax, sg, pts, c] of faces) for (const [a, b] of pts) pip(ax, sg, a, b, c);
   } }
 ];
 
@@ -1109,13 +1706,13 @@ function makeBlueprint(idx, target) {
 
 /* ── 自訂藍圖 ──────────────────────────────────────────────
    `blueprints/` 資料夾裡的檔案呼叫這個函式，把自己接到 SHAPES 後面，
-   之後跟內建的 36 座走完全一樣的路（下拉選單、隨機挑、成就都算）。
+   之後跟內建的 48 座走完全一樣的路（下拉選單、隨機挑、成就都算）。
    寫法與規則見 `blueprints/藍圖製作說明.md`——那份是寫給 AI 看的。
 
    兩種給法：
    1. layers：一層一層的字元圖（最直觀，AI 看著圖片畫得出來）。
       這裡會把它包成一個會縮放的 gen()，建材數滑桿才推得動。
-   2. gen：直接給產生函式，跟內建那 36 座同一套 VOX API（進階用）。 */
+   2. gen：直接給產生函式，跟內建那 48 座同一套 VOX API（進階用）。 */
 const CUSTOM_MIN = 180, CUSTOM_MAX = 3600;   // 縮放範圍要蓋住建材數滑桿的 300–3000
 
 function bpColor(c) {
@@ -1189,7 +1786,7 @@ function customBlueprint(def) {
     }
   };
   /* 格數大約隨 s³ 走，所以尺度範圍直接由「基準模型有幾格」反推。
-     藍圖作者因此不必自己算 lo/hi——那是內建那 36 座才需要手調的東西。 */
+     藍圖作者因此不必自己算 lo/hi——那是內建那 48 座才需要手調的東西。 */
   const cube = t => Math.cbrt(t / n);
   const lo = Math.max(0.34, cube(CUSTOM_MIN));
   const hi = Math.max(lo + 0.3, cube(CUSTOM_MAX));
