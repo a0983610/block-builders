@@ -80,18 +80,44 @@
     font-size:12px;white-space:nowrap;pointer-events:none;
   }
 
-  /* 破壞工具列（畫面上方中央） */
-  #tools{position:fixed;left:50%;top:14px;transform:translateX(-50%);display:flex;gap:7px;z-index:6}
+  /* 破壞工具（畫面上方中央）：平常只留一顆「現在拿什麼」的小窗，
+     滑鼠指上去才展開整份選單。選單是會自動換行的網格，所以之後再加道具
+     不用重新安排版面，也不會把整排推到壓住別的卡片。 */
+  #toolbox{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:6}
+  #toolNow{
+    display:flex;align-items:center;gap:8px;padding:7px 13px;border-radius:12px;
+    background:var(--panel);border:1px solid var(--line);color:var(--ink);
+    box-shadow:0 4px 16px rgba(20,32,48,.16);cursor:pointer;font:inherit;
+  }
+  #toolNow .k{font-size:19px;line-height:1.1}
+  #toolNow .n{font-size:12.5px;font-weight:700}
+  #toolNow .c{font-size:9px;opacity:.4}
+  #toolbox:hover #toolNow,#toolbox.open #toolNow{border-color:var(--accent)}
+  /* padding 那一段是刻意留的「橋」：小窗與選單之間不能有真空的縫，
+     不然滑鼠往下移到縫上就 mouseleave，選單會在半路收掉。 */
+  #toolMenu{
+    position:absolute;top:100%;left:50%;transform:translateX(-50%);padding-top:8px;
+    opacity:0;visibility:hidden;transition:opacity .12s;
+  }
+  #toolbox:hover #toolMenu,#toolbox.open #toolMenu{opacity:1;visibility:visible}
+  /* 這裡不用 --panel（86% 半透明白）：選單底下常常剛好是操作提示那條深色藥丸，
+     透上來會把字襯得看不清楚。其他卡片是靜態的所以透一點沒關係，這個是蓋在上面的選單。 */
+  #tools{
+    display:grid;grid-template-columns:repeat(4,76px);gap:6px;padding:8px;
+    border-radius:14px;background:#fff;border:1px solid var(--line);
+    box-shadow:0 10px 28px rgba(20,32,48,.22);
+  }
   .tool{
     display:flex;flex-direction:column;align-items:center;gap:1px;
-    min-width:62px;padding:6px 10px;border-radius:12px;
-    background:var(--panel);border:1px solid var(--line);
-    box-shadow:0 4px 16px rgba(20,32,48,.16);cursor:pointer;
+    padding:6px 4px;border-radius:10px;
+    background:transparent;border:1px solid transparent;cursor:pointer;
   }
+  .tool:hover{background:#f1efec}
   .tool .k{font-size:19px;line-height:1.1}
   .tool .n{font-size:11px;opacity:.8}
   .tool.on{background:var(--accent);color:#fff;border-color:transparent}
   .tool.on .n{opacity:.95}
+  .tool.on:hover{background:var(--accent)}
   .tool.lock{opacity:.5;filter:grayscale(1)}
   /* 大槌跟槌子同一個圖示，靠尺寸區分 */
   .tool[data-tool="bighammer"] .k{font-size:25px}
@@ -125,21 +151,16 @@
   #badgeBox .row{display:flex;gap:8px;margin-top:12px}
   #badgeBox .row button{flex:1}
 
-  /* 十一種道具排成一排要 760px（量出來的），左上的建築資訊卡玩久了會撐到 354px
-     （累計金額變七位數那一刻），右緣就落在 368。工具列置中，
-     左緣是 (視窗 − 760) / 2，要閃過 368 得有 1496 以上。
-     所以不到 1500 就整排搬到畫面底部、只留圖示：
-     版面本來就空著的下緣拿來放它，比擠在上面兩張卡中間好。 */
+  /* 小窗只有約 120px 寬，上方中央本來就放得下；1500 這個斷點是留給窄視窗的：
+     畫面越窄、左上的建築資訊卡（玩久了會撐到 354px）與右上的時鐘越靠中間，
+     下緣本來就空著，小窗搬過去比擠在兩張卡中間好。選單跟著往上開。 */
   @media (max-width:1500px){
-    #tools{top:auto;bottom:12px;gap:4px;flex-wrap:wrap;justify-content:center;
-           max-width:calc(100vw - 190px)}
-    .tool{min-width:32px;padding:4px 3px}
-    .tool .k{font-size:17px}
-    .tool .n{display:none}
-    /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具列 */
+    #toolbox{top:auto;bottom:12px}
+    #toolMenu{top:auto;bottom:100%;padding:0 0 8px}
+    /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具小窗 */
     #panelBtn{right:14px;left:auto}
     #ver{left:14px;right:auto}
-    /* 手機寬度下工具列會折成兩排，設定面板要跟著往上讓，不然會壓在工具上 */
+    /* 設定面板要讓開底部的小窗，不然會壓在它上面 */
     #panel{bottom:84px}
   }
 
@@ -150,6 +171,7 @@
     #stat{font-size:10px;gap:2px 8px}
     #clock{font-size:20px}
     #panel{width:calc(100vw - 28px)}
+    #tools{grid-template-columns:repeat(3,74px)}   /* 四欄 338px 在 390 的螢幕上太貼邊 */
     #hint{display:none}
     #toast{top:14px}
     #badgeBox #badges{grid-template-columns:1fr}   /* 手機排不下兩欄 */
@@ -180,7 +202,10 @@
 </div>
 
 <div id="toast"></div>
-<div id="tools"></div>
+<div id="toolbox">
+  <button id="toolNow" type="button"><span class="k">🔨</span><span class="n">槌子</span><span class="c">▾</span></button>
+  <div id="toolMenu"><div id="tools"></div></div>
+</div>
 
 <button id="panelBtn">⚙ 設定</button>
 <div class="card" id="panel">

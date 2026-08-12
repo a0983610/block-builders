@@ -1266,6 +1266,63 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('點鎖住的工具不會被選中', lockClick.blocked === 'hammer', '仍是 ' + lockClick.blocked);
   ok('解鎖後點得動', lockClick.after === 'ball', '選到 ' + lockClick.after);
 
+  /* 工具選單平常收在小窗裡，滑鼠指上去才展開。要驗兩件事：
+     收著的時候那塊區域是「透明的」（點下去要打到畫布，不能擋操作），
+     以及小窗顯示的一定是現在拿的那把。 */
+  await page.evaluate(() => { stats.destroyed = 15; stats.smashed = 9999; tool = 'hammer'; renderTools(); });
+  const menuIdle = await page.evaluate(() => {
+    const r = document.getElementById('tools').getBoundingClientRect();
+    const mid = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { menu: getComputedStyle(document.getElementById('toolMenu')).visibility,
+             now: getComputedStyle(document.getElementById('toolNow')).visibility,
+             hit: mid ? mid.tagName : '—',
+             label: document.getElementById('toolNow').textContent.replace(/\s+/g, ''),
+             cur: document.getElementById('toolNow').dataset.cur };
+  });
+  ok('平常只看得到「現在拿什麼」的小窗，選單是收著的',
+     menuIdle.menu === 'hidden' && menuIdle.now === 'visible',
+     '小窗 ' + menuIdle.now + '、選單 ' + menuIdle.menu + '，小窗寫著「' + menuIdle.label + '」');
+  ok('收著的選單不會擋住畫面', menuIdle.hit === 'CANVAS',
+     '選單那塊區域點下去打到 ' + menuIdle.hit);
+
+  await page.hover('#toolNow');
+  await page.waitForTimeout(200);
+  const menuOpen = await page.evaluate(() => ({
+    menu: getComputedStyle(document.getElementById('toolMenu')).visibility,
+    n: document.querySelectorAll('#tools .tool').length,
+    on: [...document.querySelectorAll('#tools .tool.on')].map(e => e.dataset.tool).join(',')
+  }));
+  ok('滑鼠指到小窗才展開整份選單',
+     menuOpen.menu === 'visible' && menuOpen.n === NTOOL && menuOpen.on === 'hammer',
+     '展開後 ' + menuOpen.n + ' 個按鈕，標成「使用中」的是 ' + menuOpen.on);
+
+  await page.click('#tools [data-tool="tornado"]');
+  const picked = await page.evaluate(() => ({
+    tool, cur: document.getElementById('toolNow').dataset.cur,
+    label: document.getElementById('toolNow').textContent.replace(/\s+/g, ''),
+    open: document.getElementById('toolbox').classList.contains('open')
+  }));
+  ok('選了哪把，小窗就換成哪把', picked.tool === 'tornado' && picked.cur === 'tornado' &&
+     picked.label.indexOf('龍捲風') >= 0, '小窗寫著「' + picked.label + '」');
+
+  /* 觸控沒有 hover：小窗自己要能點開，點畫面別的地方要收起來 */
+  const tapMenu = await page.evaluate(() => {
+    const box = document.getElementById('toolbox');
+    box.classList.remove('open');
+    document.getElementById('toolNow').click();
+    const opened = box.classList.contains('open');
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const closed = !box.classList.contains('open');
+    document.getElementById('toolNow').click();
+    document.querySelector('#tools [data-tool="hammer"]').click();   // 選完也要自己收
+    return { opened, closed, afterPick: !box.classList.contains('open'), tool };
+  });
+  ok('觸控也能用：點小窗展開，點別處或選完就收起來',
+     tapMenu.opened && tapMenu.closed && tapMenu.afterPick && tapMenu.tool === 'hammer',
+     '點開 ' + tapMenu.opened + '、點別處收起 ' + tapMenu.closed +
+     '、選完收起 ' + tapMenu.afterPick);
+  await page.evaluate(() => { stats = freshStats(); tool = 'hammer'; renderTools(); });
+
   await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 4 });
   const hammerR2 = await page.evaluate(() => {
     completeNow();
@@ -3438,7 +3495,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     await page.waitForTimeout(120);
     const r = await page.evaluate(() => {
       const box = {};
-      for (const id of ['head', 'time', 'tools', 'panelBtn', 'ver']) {
+      // 量的是收起來的小窗（toolbox）：選單平常是藏著的，不占版面
+      for (const id of ['head', 'time', 'toolbox', 'panelBtn', 'ver']) {
         const e = document.getElementById(id);
         if (getComputedStyle(e).display !== 'none') box[id] = e.getBoundingClientRect();
       }
@@ -3449,8 +3507,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           if (a.right > b.left && b.right > a.left && a.bottom > b.top && b.bottom > a.top)
             bad.push(keys[i] + '×' + keys[j]);
         }
-      return { bad, headW: Math.round(box.head.width), top: Math.round(box.tools.top),
-               out: box.tools.left < -1 || box.tools.right > window.innerWidth + 1,
+      return { bad, headW: Math.round(box.head.width), top: Math.round(box.toolbox.top),
+               out: box.toolbox.left < -1 || box.toolbox.right > window.innerWidth + 1,
                txt: document.getElementById('stat').textContent.replace(/\s+/g, ' ').trim() };
     });
     statTxt = r.txt;
@@ -3477,7 +3535,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 手機版空間很擠，按鈕互相疊到就點不到了——直接量方框有沒有相交 */
   const overlap = await page.evaluate(() => {
-    const ids = ['head', 'time', 'tools', 'panelBtn', 'ver'];
+    const ids = ['head', 'time', 'toolbox', 'panelBtn', 'ver'];
     const box = {};
     for (const id of ids) {
       const e = document.getElementById(id);
@@ -3491,12 +3549,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (a.right > b.left && b.right > a.left && a.bottom > b.top && b.bottom > a.top)
           bad.push(keys[i] + '×' + keys[j]);
       }
+    // 展開的選單也要留在畫面內——手機上它是往上開的，寬度受限於三欄
+    document.getElementById('toolbox').classList.add('open');
+    const menu = document.getElementById('tools').getBoundingClientRect();
+    document.getElementById('toolbox').classList.remove('open');
     const out = keys.filter(k => box[k].right > window.innerWidth + 1 || box[k].left < -1);
-    return { bad, out, toolsW: Math.round(box.tools.width) };
+    return { bad, out, toolsW: Math.round(box.toolbox.width),
+             menu: { w: Math.round(menu.width), l: Math.round(menu.left),
+                     r: Math.round(menu.right), t: Math.round(menu.top) } };
   });
   ok('手機版的 UI 不會互相疊到', overlap.bad.length === 0, overlap.bad.join('、') || '五個區塊都沒相交');
-  ok('手機版工具列不會超出畫面', overlap.out.length === 0,
-     '工具列寬 ' + overlap.toolsW + '，視窗寬 390' + (overlap.out.length ? '；超出：' + overlap.out.join(',') : ''));
+  ok('手機版工具小窗不會超出畫面', overlap.out.length === 0,
+     '小窗寬 ' + overlap.toolsW + '，視窗寬 390' + (overlap.out.length ? '；超出：' + overlap.out.join(',') : ''));
+  ok('手機版展開的工具選單也在畫面內',
+     overlap.menu.l >= 0 && overlap.menu.r <= 390 && overlap.menu.t >= 0,
+     '選單寬 ' + overlap.menu.w + '，左 ' + overlap.menu.l + '、右 ' + overlap.menu.r +
+     '、上 ' + overlap.menu.t);
   const pMob = await pix(page);
   ok('手機尺寸下照樣畫得出來', pMob.opaque > 0.4, (pMob.opaque * 100).toFixed(0) + '%');
   await page.screenshot({ path: path.join(OUT, '06-手機版.png') });

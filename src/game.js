@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.28.0';
+const VERSION = '1.29.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2958,7 +2958,8 @@ function syncHud() {
   $('vSpd').textContent = timeScale.toFixed(1) + '×';
 }
 
-/* 工具列：沒解鎖的畫成鎖住並寫出解鎖條件 */
+/* 工具選單：沒解鎖的畫成鎖住並寫出解鎖條件。
+   平常收在小窗裡（滑鼠指上去才展開），所以這裡順便把小窗更新成目前拿的那把。 */
 function renderTools() {
   const box = $('tools');
   box.innerHTML = '';
@@ -2972,10 +2973,18 @@ function renderTools() {
     b.addEventListener('click', () => {
       if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return; }
       tool = t.id; renderTools();
+      $('toolbox').classList.remove('open');       // 選好就收起來，不要一直擋著畫面
       $('hint').textContent = t.tip + '　｜　拖曳轉視角　｜　滾輪縮放　｜　點小人會跌倒';
     });
     box.appendChild(b);
   }
+  const cur = TOOLS.find(t => t.id === tool) || TOOLS[0];
+  $('toolNow').innerHTML = '<span class="k">' + cur.k + '</span><span class="n">' + cur.n +
+                           '</span><span class="c">▾</span>';
+  $('toolNow').title = cur.tip;
+  /* 這裡刻意不是 data-tool：選單裡的按鈕才是 data-tool，
+     小窗也掛的話 querySelector('[data-tool=x]') 會先撈到小窗（它排在前面）。 */
+  $('toolNow').dataset.cur = cur.id;
 }
 function renderBadges() {
   const box = $('badges');
@@ -3040,6 +3049,12 @@ function boot() {
   $('spin').addEventListener('change', e => { spinOn = pref.spin = e.target.checked; save(); });
   $('mute').addEventListener('change', e => { muted = pref.mute = e.target.checked; save(); });
   $('panelBtn').addEventListener('click', () => $('panel').classList.toggle('hide'));
+  /* 工具選單平常靠 :hover 展開。觸控沒有 hover，所以小窗自己也能點開；
+     開著的時候點畫面上任何別的地方就收起來，不然它會一直擋著。 */
+  $('toolNow').addEventListener('click', () => $('toolbox').classList.toggle('open'));
+  document.addEventListener('pointerdown', e => {
+    if (!$('toolbox').contains(e.target)) $('toolbox').classList.remove('open');
+  });
   $('badgeBtn').addEventListener('click', () => { renderBadges(); $('badgeWrap').classList.add('on'); });
   $('badgeWrap').addEventListener('click', e => {
     if (e.target.id === 'badgeWrap' || e.target.id === 'badgeClose') $('badgeWrap').classList.remove('on');
