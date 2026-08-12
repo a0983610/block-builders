@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.25.0';
+const VERSION = '1.26.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1568,10 +1568,15 @@ function explode(point, R, power, magic) {
        只給徑向的話積木是貼著地面往外掃，看起來像被推倒不像被炸飛。
        垂直分量一律取正（用 |dy|）：照 dy 正負給的話，炸點底下的積木會被往地裡壓。 */
     const lift = f * Y_BOOST * (0.35 + 0.65 * (1 - d / R));
+    /* 積木剛好疊在炸點上時（魔法陣先把整棟吸到陣心就是這樣），
+       「炸心 → 積木」是個接近零的向量，照算的話這些積木只剩 lift，
+       會整團直直往上噴成一根柱子。這種時候方向改抽一個隨機的水平角。 */
+    let nx = dx / ol, nz = dz / ol;
+    if (d < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
     breakBlock(b,
-      dx / ol * f + rr(-2, 2),
+      nx * f + rr(-2, 2),
       Math.abs(dy) / ol * f * 0.5 + lift + rr(1, 4),
-      dz / ol * f + rr(-2, 2));
+      nz * f + rr(-2, 2));
     /* 爆炸打出來的碎料一律點著：拖著火飛出去、落地是一塊焦炭。
        點在這裡而不是事後用 igniteAround 撈，是因為「被這一發炸到的」就是這個迴圈掃到的這些，
        事後撈還要再掃一次全部積木、還分不出哪些是別發炸出來早就躺在那裡的。 */
@@ -2017,34 +2022,45 @@ function stepMagic(dt) {
    再撒一些往中心捲的魔力光點。先收縮、後爆發，張力才拉得起來——
    這是它跟核彈最大的差別：核彈是「一下打平」，魔法是「先聚成一團再炸開」。 */
 const IMP_TIME = 4.5;               // 倒數剩幾秒開始吸碎料
-/* 建築本身在最後 1.1 秒才被扯下來，而且扯下來就直接往陣心丟：
-   「脫離 → 收攏 → 炸開」要擠在很短的時間裡，拖長了就變成慢慢崩塌，不像被吸走。
-   速率 6 是配著這個窗口算的：1 − e^(−6×1.1/2) ≈ 96% 的積木會在這 1.1 秒內被扯下來。 */
-const TEAR_TIME = 1.1;              // 倒數剩幾秒開始把建築本身也扯下來
-const TEAR_RATE = 6;                // 扯的速率上限（每塊每秒的機率），會隨時間往上爬
-const TEAR_IN = 2.6;                // 扯下來當下就往陣心丟：初速＝距離 × 這個值（約 0.38 秒到位）
+/* 「脫離 → 收攏 → 炸開」全部擠進最後 0.3 秒，而且是**一次**扯下來、
+   速度算成「剛好在爆炸那一刻抵達陣心」——分好幾幀慢慢扯的話，
+   最後被扯下來的還在半路上就被炸開了，看起來就是三段各做各的、對不起來。 */
+const CRUSH_AT = 0.3;               // 倒數剩幾秒把範圍內的東西整個扯下來砸向陣心
+const CRUSH_BALL = 3;               // 收攏成一顆這麼大的球，不是收成一個點
+function crushIn(m) {
+  const T = Math.max(0.08, m.t);    // 距離爆炸還有多久：速度就照這個算
+  const R2 = MAG_R * MAG_R;
+  let n = 0;
+  for (const b of blocks) {
+    if (b.st === CARRY || b.st === TOSS) continue;      // 小人手上的不動
+    const dx = b.x - m.x, dz = b.z - m.z;
+    if (dx * dx + dz * dz > R2) continue;
+    const wasSet = b.st === SET;
+    /* 每塊各瞄陣心附近的一個隨機點。全部瞄同一個點的話，最後 0.1 秒整棟會疊成
+       一顆積木大小的小點，看起來像憑空消失；散一顆球才看得到那團被壓縮的東西。 */
+    const tx = m.x + rr(-CRUSH_BALL, CRUSH_BALL);
+    const ty = MAG_CORE_Y + rr(-CRUSH_BALL * 0.8, CRUSH_BALL * 0.8);
+    const tz = m.z + rr(-CRUSH_BALL, CRUSH_BALL);
+    /* 水平：距離除以剩餘時間，遠的近的同時到。
+       垂直：除了補上高度差，還要加回這段時間會被重力吃掉的 GRAV×T/2，
+       不然整團會在半路往下沉，收攏的位置就不在爆點上。 */
+    breakBlock(b, (tx - b.x) / T, (ty - b.y) / T + GRAV * T / 2, (tz - b.z) / T);
+    if (wasSet) n++;
+  }
+  /* 記帳：計數、嚇小人、標記垮塌重算。半徑給 6（陣心那一圈）而不是 30，
+     不然整個工地的小人都會被掀倒。 */
+  if (n) afterHit(n, { x: m.x, y: MAG_CORE_Y, z: m.z }, 6);
+}
 function implode(m, dt) {
   const k = Math.min(1, (IMP_TIME - m.t) / IMP_TIME);   // 0 → 1，越接近爆炸吸得越猛
   if (k <= 0) return;
-  /* 最後這兩秒連「還站著的建築」都一塊塊扯下來捲進去。只吸散落的碎料的話，
-     打在完好的建築上幾乎看不到收縮這段——地上根本沒有碎料可吸。
-     機率隨時間往上爬，所以是「開始鬆動 → 整棟被拆著吸進去」而不是一次全開。 */
-  const q = Math.max(0, (TEAR_TIME - m.t) / TEAR_TIME);
-  let torn = 0;
+  if (!m.crush && m.t <= CRUSH_AT) { m.crush = 1; crushIn(m); }
   const R = MAG_R, R2 = R * R;
+  /* 收攏開始之後就不再加吸力：那些積木已經在算好的彈道上，再推一把就會提早對穿過去。
+     這一段只負責收攏之前那幾秒，把散落的碎料慢慢捲過來。 */
   for (const b of blocks) {
-    if (b.st === SET) {
-      if (q <= 0 || Math.random() > dt * TEAR_RATE * q) continue;
-      const ax = b.x - m.x, az = b.z - m.z;
-      if (ax * ax + az * az > R2) continue;
-      /* 扯下來的當下就往陣心丟：初速跟距離成正比，遠的近的才會同時到（約 0.38 秒），
-         看起來是「唰一下全部收攏」而不是「近的先到、遠的慢慢飄過來」。
-         切線那一股讓收攏的路徑是螺旋；垂直那一股把它送到最低層那圈的高度（＝爆點）。 */
-      breakBlock(b, -ax * TEAR_IN - az * 0.8,
-                 (MAG_CORE_Y - b.y) * TEAR_IN,
-                 -az * TEAR_IN + ax * 0.8);
-      torn++;
-    } else if (b.st !== FREE && b.st !== FLY) continue;   // 小人手上的不動
+    if (m.crush) break;
+    if (b.st !== FREE && b.st !== FLY) continue;        // 只吸碎料，建築等 crushIn 一次處理
     const dx = b.x - m.x, dz = b.z - m.z;
     const d2 = dx * dx + dz * dz;
     if (d2 > R2) continue;
@@ -2069,9 +2085,6 @@ function implode(m, dt) {
     b.vx += (-nx * 30 - nz * 11) * pull;
     b.vz += (-nz * 30 + nx * 11) * pull;
   }
-  /* 扯下來的要記帳：計數、嚇小人、標記垮塌重算。半徑給 6（陣心那一圈）而不是 30，
-     不然整個工地的小人會每一幀被掀倒一次。 */
-  if (torn) afterHit(torn, { x: m.x, y: 2, z: m.z }, 6);
   /* 魔力光點：從陣的外圈生出來，靠 pull 一路捲進中心。
      三成給青藍色——參考圖裡捲上來的能量流是冷色的，跟紅陣對比才看得出「被吸進去」。 */
   m.motes = (m.motes || 0) + dt * (10 + 46 * k);

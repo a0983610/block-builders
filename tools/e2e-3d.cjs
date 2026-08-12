@@ -1878,12 +1878,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mean0 = farD();
     const seq = [];
     const minD = far0.map(() => Infinity);   // 這 40 塊各自「最靠近陣心」到什麼程度
-    let calm = -1, full = -1;
+    let calm = -1, full = -1, preCrush = -1, crush = null;
     for (let i = 0; i < 119; i++) {                     // 5.95 秒
       step(0.05);
       if (i % 16 === 0) seq.push(magic ? magic.shown : -1);   // 每 0.8 秒取樣
       if (full < 0 && magic && magic.shown === 6) full = +((i + 1) * 0.05).toFixed(2);
       if (i === 89) calm = blocks.filter(b => b.st === 3).length;   // 4.5 秒：還沒開始扯
+      if (i === 112) preCrush = blocks.filter(b => b.st === 3).length;  // 5.65 秒：收攏前一刻
+      // 收攏是一次做完的，抓它發生的那一幀
+      if (magic && magic.crush && !crush)
+        crush = { left: +magic.t.toFixed(2), set: blocks.filter(b => b.st === 3).length };
       /* 收攏得看「最靠近時到哪」，不能只看爆炸前那一瞬間：扯是隨機的，
          最後幾幀才被扯下來的那幾塊還在半路上，會把當下的平均值整個拉高。 */
       if (i > 88) far0.forEach((b, j) => {
@@ -1916,6 +1920,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 魔法版燒的是紅光、還會撒星光：粒子有自己的顏色（cr 有值）而不是灰白煙
     const tinted = dust.filter(d => d.fade >= 3 && d.cr !== undefined).length;
     return { set0, mean0, calm, seq, full, magTime: MAG_TIME, coreY: MAG_CORE_Y,
+             preCrush, crush, crushAt: CRUSH_AT,
              before, alive, gathered, gatherY, pulled, flashY, flew, flew1,
              set1: blocks.filter(b => b.st === 3).length,
              hitMax, after: !!magic, fire, cloud, tinted };
@@ -1930,12 +1935,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      只驗「六秒內沒爆」的話，第一秒就把建築拆光也會過。 */
   ok('前四秒半只長陣，不動建築', mg.calm === mg.set0 && mg.alive,
      '4.5 秒時 ' + mg.set0 + ' → ' + mg.calm + ' 塊');
-  ok('最後一秒多把建築扯下來、吸到陣心那個高度',
-     mg.before < mg.set0 * 0.35 && mg.pulled < mg.mean0 * 0.45 &&
-     Math.abs(mg.gatherY - mg.coreY) < 6,
-     '建築 ' + mg.set0 + ' → ' + mg.before + ' 塊；最外圈那 40 塊原本離陣心 ' +
-     mg.mean0.toFixed(1) + '，最靠近時 ' + mg.pulled.toFixed(1) +
-     '，爆炸當下高度 ' + mg.gatherY.toFixed(1) + '（陣心 ' + mg.coreY.toFixed(1) + '）');
+  /* 收攏是**一幀之內一次做完**的，不是分好幾幀慢慢扯：分著扯的話，最後被扯下來的
+     還在半路上就被炸開了——「脫離 → 收攏 → 炸開」對不起來就是這樣來的。 */
+  ok('最後 0.3 秒才動手，而且整棟一次扯下來',
+     mg.preCrush === mg.set0 && !!mg.crush &&
+     mg.crush.left <= mg.crushAt && mg.crush.left > mg.crushAt - 0.06 && mg.crush.set === 0,
+     '剩 0.35 秒時還是完好的 ' + mg.preCrush + ' 塊；剩 ' + (mg.crush ? mg.crush.left : '?') +
+     ' 秒那一幀整棟脫離，剩 ' + (mg.crush ? mg.crush.set : '?') + ' 塊站著');
+  ok('收攏剛好在爆炸那一刻到位（就在爆點上）',
+     mg.pulled < mg.mean0 * 0.35 && mg.gathered < 5 &&
+     Math.abs(mg.gatherY - mg.coreY) < 2,
+     '最外圈那 40 塊原本離陣心 ' + mg.mean0.toFixed(1) + '，爆炸當下 ' +
+     mg.gathered.toFixed(1) + '（最靠近 ' + mg.pulled.toFixed(1) + '），高度 ' +
+     mg.gatherY.toFixed(1) + '（爆點 ' + mg.coreY.toFixed(1) + '）');
   /* 爆點要在最低那層的圓心上，不是地面：碎料被吸到那個高度，火球就該從那裡炸開。
      火球本體再往上抬 R×0.22（免得被自己炸出來的碎料堆埋掉），所以對得上 12.1 + 6.6。 */
   ok('爆點在最低層魔法陣的圓心上',
