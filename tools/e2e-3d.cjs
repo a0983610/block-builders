@@ -369,10 +369,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const colsAt = t => [...new Set(makeBlueprint(i, t).slots.map(s => s.c))].sort().join('');
     const parts = { min: colsAt(300), max: colsAt(3000) };
     const bpc = makeBlueprint(i, 1000);
-    const opts = [...document.querySelectorAll('#shape option')].map(o => o.textContent);
+    const optEls = [...document.querySelectorAll('#shape option')];
+    const opts = optEls.map(o => o.textContent);
+    const at = opts.indexOf(cs[0] ? cs[0].n : '@');
     return { n: cs.length, name: cs[0] ? cs[0].n : '', i, sizes, files: window.BP_FILES || [],
              parts, isGen: !cs[0].base,
-             inMenu: opts.indexOf(cs[0] ? cs[0].n : '@') >= 0, opts: opts.length,
+             menuAt: at, menuVal: at >= 0 ? +optEls[at].value : -99, opts: opts.length,
              h: bpc.height, r: +bpc.radius.toFixed(1), pal: bpc.pal.length,
              ground: bpc.slots.filter(s => s.gy === 0).length,
              cols: [...new Set(bpc.slots.map(s => s.c))].sort() };
@@ -381,9 +383,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      custom.n === CUSTOM_COUNT && custom.i === SHAPE_COUNT && custom.files.length === CUSTOM_COUNT,
      'list.js 列了 ' + custom.files.join('、') + ' → 接在第 ' + custom.i + ' 個（內建 ' +
      SHAPE_COUNT + ' 座之後），名字「' + custom.name + '」');
-  // 選單第一項是「隨機」，所以是藍圖數 + 1
-  ok('自訂藍圖會出現在建築下拉選單裡', custom.inMenu && custom.opts === ALL_SHAPES + 1,
-     '選單共 ' + custom.opts + ' 項（隨機 + ' + ALL_SHAPES + ' 座）');
+  /* 選單第 0 項是「隨機」，自訂藍圖就緊接在後面（第 1 項）。
+     同時守住那個關鍵不變量：排到前面只改顯示順序，option 的 value
+     一定還是 SHAPES 的索引——不然選什麼都會蓋錯建築。 */
+  ok('自訂藍圖排在下拉選單最前面，而且 value 還是 SHAPES 的索引',
+     custom.menuAt === 1 && custom.menuVal === custom.i && custom.opts === ALL_SHAPES + 1,
+     '「' + custom.name + '」在第 ' + custom.menuAt + ' 項（第 0 項是隨機）、value=' +
+     custom.menuVal + '（SHAPES 第 ' + custom.i + ' 個），選單共 ' + custom.opts +
+     ' 項（隨機 + ' + ALL_SHAPES + ' 座）');
   ok('自訂藍圖會跟著建材數縮放',
      custom.sizes[0] < 500 && custom.sizes[2] > 2400 && custom.sizes[2] > custom.sizes[0] * 4,
      '目標 300/1000/3000 得到 ' + custom.sizes.join(' / '));

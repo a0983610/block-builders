@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.33.0';
+const VERSION = '1.33.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3143,8 +3143,15 @@ function boot() {
   window.addEventListener('blur', clearKeys);
 
   const sel = $('shape');
+  /* 自訂藍圖排在最前面（緊接在「隨機」後面）：會自己丟檔案進 blueprints/ 的人
+     就是想馬上看到成果，排在內建 48 座後面每次都得捲到底。
+     只動顯示順序——option 的 value 一律還是 SHAPES 的索引，
+     所以 shapePick、存檔記的編號、測試裡寫死的索引都不受影響。
+     用兩次 filter 而不是 sort：不必依賴 sort 的穩定性，同一群內的原順序就是原順序。 */
+  const ord = SHAPES.map((s, i) => i);
   sel.innerHTML = '<option value="-1">🎲 隨機</option>' +
-    SHAPES.map((s, i) => '<option value="' + i + '">' + s.n + '</option>').join('');
+    ord.filter(i => SHAPES[i].custom).concat(ord.filter(i => !SHAPES[i].custom))
+       .map(i => '<option value="' + i + '">' + SHAPES[i].n + '</option>').join('');
   sel.addEventListener('change', () => { shapePick = +sel.value; startBuild(false); });
 
   /* 設定改動一律寫回 pref 並存檔——下次打開就不用重調 */
