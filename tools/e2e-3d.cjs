@@ -1990,27 +1990,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     const setAtBurst = placedCnt;
     /* 等火星飛完，數它點著了幾處、散得多開。
-       火星的方向是隨機的，整發都落在空地上是**正常**的，所以這裡連放兩發看合計——
-       要驗的是「火星真的會點著建築」，不是「每一發都一定點得著」。
-       每一發之前先 clearFires()，不然數到的會是上一發自己蔓延出去的火。 */
+       火星的方向是隨機的，整發都落在空地上、或整發都擠在同一個角落，都是**正常**的，
+       所以這裡連放三發看合計——要驗的是「火星真的會點著建築、而且不是只點一處」，
+       不是「每一發都一定點得著」。每一發之前先 clearFires()，
+       不然數到的會是上一發自己蔓延出去的火。
+       三發是量出來的：中世紀城堡 2000 塊跑 60 輪，兩發合計有 1 輪散開只有 2.2
+       （門檻是 4，也就是約 1.7% 會誤判）；三發 0/60，最差也散開 14.2。 */
     const shot = () => {
       let fall = 0;
       while (fwSparks && fall < 8) { step(0.05); fall += 0.05; }
       return { pts: (fires || []).filter(f => f.b.st === 3).map(f => ({ x: f.b.x, z: f.b.z })), fall };
     };
-    const s1 = shot();
-    clearFires();
-    launchFw({ x: 0, z: 0 });
-    let rise2 = 0;
-    while (fworks && rise2 < 4) { step(0.05); rise2 += 0.05; }
-    const s2 = shot();
-    const pts = s1.pts.concat(s2.pts);      // 散開程度算兩發的聯集，不是各自算
+    const shots = [shot()];                 // 第一發在上面量爆開高度時就已經放上去了
+    while (shots.length < 3) {
+      clearFires();
+      launchFw({ x: 0, z: 0 });
+      let up = 0;
+      while (fworks && up < 4) { step(0.05); up += 0.05; }
+      shots.push(shot());
+    }
+    const pts = [].concat(...shots.map(s => s.pts));   // 散開程度算三發的聯集，不是各自算
     let spread = 0;
     for (const a of pts) for (const b of pts) spread = Math.max(spread, Math.hypot(a.x - b.x, a.z - b.z));
     return { set0, setAtBurst, top: +top.toFixed(1), rise: +rise.toFixed(2), sparks,
              burstY: +burstY.toFixed(1), ndc,
-             seeds: pts.length, each: [s1.pts.length, s2.pts.length], spread: +spread.toFixed(1),
-             phase, d0: +d0.toFixed(0), dist: +dist.toFixed(0), fall: +s1.fall.toFixed(2),
+             seeds: pts.length, each: shots.map(s => s.pts.length), spread: +spread.toFixed(1),
+             phase, d0: +d0.toFixed(0), dist: +dist.toFixed(0), fall: +shots[0].fall.toFixed(2),
              hold: +(FW_TOP * 2.1).toFixed(0) };
   });
   ok('煙火會從地面竄上天再炸開',
@@ -2025,8 +2030,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fw.set0 + ' → ' + fw.setAtBurst + ' 塊（它是灑火種，不是爆炸）');
   ok('落下來的火星把建築點著，而且點在好幾個地方',
      fw.seeds >= 2 && fw.spread > 4 && fw.phase === 'wreck',
-     '兩發合計燒起來 ' + fw.seeds + ' 處（' + fw.each.join(' + ') +
-     '），同一發最遠兩處相距 ' + fw.spread + '（phase=' + fw.phase + '）');
+     '三發合計燒起來 ' + fw.seeds + ' 處（' + fw.each.join(' + ') +
+     '），三發合起來最遠兩處相距 ' + fw.spread + '（phase=' + fw.phase + '）');
   const fwOff = await page.evaluate(() => {
     startBuild(true); completeNow(); clearFires();
     // 打在建築外的空地上：火星落在草地上就只是熄掉
@@ -2539,9 +2544,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('魔法陣是一層層長出來的', mg.seq[0] === 1 && mg.seq[mg.seq.length - 1] === 6 &&
      mg.seq.every((v, i) => i === 0 || v >= mg.seq[i - 1]), '每 0.8 秒取樣：' + mg.seq.join(' → '));
-  /* 六層要快點長齊，「六層都在場上轉」那一段才留得久——那一段才是陣蓄滿的樣子。 */
+  /* 六層要快點長齊，「六層都在場上轉」那一段才留得久——那一段才是陣蓄滿的樣子。
+     每層之間是 0.54 秒（擴張 0.24 ＋ 小火圈爬升 0.3），六層 2.94 秒長齊、滿陣還有 3 秒。
+     火圈那一段是使用者要的效果，換來的是滿陣從 4.1 秒縮到 3 秒——所以下限就守在 2.9。 */
   ok('六層很快長齊，之後有一大段時間都是滿的',
-     mg.full > 0 && mg.full < 2.5 && mg.magTime - mg.full > 3.4,
+     mg.full > 0 && mg.full < 3.1 && mg.magTime - mg.full > 2.9,
      mg.full + ' 秒就六層都在，滿陣狀態持續 ' + (mg.magTime - mg.full).toFixed(1) + ' 秒');
   /* 前四秒半只長陣、不動建築；最後一秒多才開始扯。兩段都要驗：
      只驗「六秒內沒爆」的話，第一秒就把建築拆光也會過。 */
@@ -2663,30 +2670,45 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('但每一層的紋路角度各自不同', mgSpin.spread === mgSpin.a.length,
      mgSpin.a.length + ' 層裡有 ' + mgSpin.spread + ' 種角度');
 
-  /* 出現順序每次施法都要洗牌：固定由下往上長的話，那六秒每次都長得一模一樣。 */
-  const mgOrd = await page.evaluate(() => {
-    const casts = [];
-    for (let i = 0; i < 8; i++) {
+  /* 展開的方式：由下往上一層一層長，中間靠一個小火圈把火帶上去——
+     先出現最下面那層 → 小火圈從它的圓心升到上一層的高度 → 抵達才擴張成新的一層。
+     兩件事都要驗：火圈真的在爬（不是原地閃），而且「爬完才多一層」，
+     不然它就只是個裝飾，六層還是各自憑空亮起來。 */
+  const mgSeed = await page.evaluate(() => {
+    const lay = MAG_LAYER.map(L => +(0.12 + MAG_R * L.y).toFixed(2));
+    const coreY = () => magic.rings.filter(o => !o.add && !o.seed).map(o => +o.y.toFixed(2));
+    const seedY = () => {
+      const s = magic.rings.find(o => o.seed && !o.add);
+      return s ? +s.y.toFixed(2) : -1;
+    };
+    // 每次施法都要從最下面那層開始（不再洗順序）
+    const firsts = [];
+    for (let k = 0; k < 4; k++) {
       startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
-      casts.push(magic.ord.join());
+      for (let i = 0; i < 4; i++) step(0.05);        // 0.2 秒：只該有最下面那層
+      firsts.push({ n: coreY().length, y: coreY()[0] });
     }
-    const valid = casts.every(s =>
-      s.split(',').map(Number).sort((x, y) => x - y).join() === '0,1,2,3,4,5');
-    /* 洗出來的順序真的有在用嗎：第一個冒出來的那層，高度要對得上 ord 裡排 0 的那層。
-       只驗 ord 陣列的話，畫的時候照舊由下往上長也會過。 */
+    // 追第一段的爬升：0.7 秒剛好走完「長第一層 → 火圈上升 → 長第二層」
     startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
-    const first = MAG_LAYER[magic.ord.indexOf(0)];
-    for (let i = 0; i < 4; i++) step(0.05);          // 0.2 秒：只該有一層（下一層 0.36 秒才來）
-    const shown = magic.rings.filter(o => !o.add);
-    return { casts, valid, uniq: new Set(casts).size, n: shown.length,
-             y: shown.length ? +shown[0].y.toFixed(2) : -1,
-             want: +(0.12 + MAG_R * first.y).toFixed(2) };
+    const trail = [];
+    for (let i = 0; i < 14; i++) { step(0.05); trail.push({ n: coreY().length, s: seedY() }); }
+    const up = trail.filter(o => o.s > 0);
+    return { lay, firsts,
+             steps: up.length, rising: up.length > 3 && up.every((o, i) => i === 0 || o.s > up[i - 1].s),
+             lo: up.length ? up[0].s : -1, hi: up.length ? up[up.length - 1].s : -1,
+             whileRising: up.every(o => o.n === 1), after: trail[trail.length - 1].n,
+             seedGone: trail[trail.length - 1].s < 0 };
   });
-  ok('每次施法的出現順序都不一樣', mgOrd.valid && mgOrd.uniq >= 6,
-     '八次施法有 ' + mgOrd.uniq + ' 種順序，例如 ' + mgOrd.casts[0]);
-  ok('第一個冒出來的就是洗到第一順位的那層',
-     mgOrd.n === 1 && Math.abs(mgOrd.y - mgOrd.want) < 0.01,
-     '0.3 秒時只有 1 層，高度 ' + mgOrd.y + '（該層應在 ' + mgOrd.want + '）');
+  ok('一定從最下面那層開始長，不再洗出現順序',
+     mgSeed.firsts.every(f => f.n === 1 && Math.abs(f.y - mgSeed.lay[0]) < 0.01),
+     '四次施法在 0.2 秒時都只有 1 層、高度 ' + mgSeed.firsts.map(f => f.y).join('／') +
+     '（最下層在 ' + mgSeed.lay[0] + '）');
+  ok('小火圈從下面那層升到上一層，升到位才長出新的一層',
+     mgSeed.rising && mgSeed.whileRising && mgSeed.after === 2 && mgSeed.seedGone &&
+     Math.abs(mgSeed.lo - mgSeed.lay[0]) < 1.5 && Math.abs(mgSeed.hi - mgSeed.lay[1]) < 1.5,
+     '火圈' + mgSeed.steps + ' 幀從 y' + mgSeed.lo + ' 升到 y' + mgSeed.hi +
+     '（第一層 ' + mgSeed.lay[0] + ' → 第二層 ' + mgSeed.lay[1] +
+     '），升的過程中都只有 1 層，抵達後變 ' + mgSeed.after + ' 層、火圈收掉');
   /* 整疊都浮在半空：最下層離地也有一段，而且不做滿爆炸半徑——
      做滿的話那一圈會比建築大一大圈，看起來像地上的跑道而不是浮空的陣。 */
   ok('最下層浮在半空，也沒有大到蓋滿爆炸範圍',

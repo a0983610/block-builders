@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.33.1';
+const VERSION = '1.34.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2301,10 +2301,14 @@ function stepNuke(dt) {
    魔法陣一層層往外長，最外圈就是等一下的爆炸範圍——
    讓你在那六秒裡看得出來會炸到哪。一次只有一個，再點會移到新的地點重來。 */
 const MAG_TIME = 6, MAG_R = 30, MAG_POW = 34;
-/* 每隔多久長一層、一層長多久。六層在 5×0.36+0.3 ＝ 2.1 秒內長齊，
-   剩下的 3.9 秒六層都在場上轉——這一段才是「陣蓄滿了」的樣子，要留得夠久。
-   （原本 0.8／0.5 是 4.5 秒才長齊，六層同時在場只有 1.5 秒。） */
-const MAG_GAP = 0.36, MAG_GROW = 0.3;
+/* 一層擴張到定位要多久、小火圈從一層升到上一層要多久。
+   兩者相加就是「每隔多久多一層」，六層在 5×0.54+0.24 ＝ 2.94 秒內長齊，
+   剩下的 3 秒六層都在場上轉——這一段才是「陣蓄滿了」的樣子，要留得夠久。 */
+const MAG_GROW = 0.24, MAG_RISE = 0.3;
+const MAG_GAP = MAG_GROW + MAG_RISE;
+/* 小火圈的半徑（MAG_R 的倍率）。新的一層就是從這個半徑擴張出去的，
+   所以兩邊一定要用同一個數字——不然「火圈擴張成魔法陣」中間會跳一下。 */
+const MAG_SEED = 0.14;
 /* 陣是**六層疊起來**的，不是同心圓：整疊都浮在半空，最下面那層離地就有 12 單位，
    中間收窄、最上面那層再放大一點——照參考圖的層次。r 與 y 都是 MAG_R 的倍率。
    最下層不做滿爆炸半徑（那會比建築大一大圈，看起來像地上的跑道），
@@ -2328,15 +2332,13 @@ const MAG_SPIN = 0.42;                    // 陣的轉速（rad/s，逆時針；
    爆點放地面的話，火球會從那團碎料的下方冒出來，看起來像另一件事。 */
 const MAG_CORE_Y = 0.12 + MAG_R * MAG_LAYER[0].y;
 function castMagic(point) {
-  /* 出現順序每次洗牌。固定由下往上長的話，那六秒每次都長得一模一樣；
-     洗的只是「哪一層什麼時候出現」，每層自己的高度與半徑不動。 */
-  const ord = MAG_LAYER.map((_, i) => i);
-  for (let i = ord.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const t = ord[i]; ord[i] = ord[j]; ord[j] = t;
-  }
+  /* 由下往上一層一層長，中間靠一個小火圈把火帶上去：
+     先出現最下面那層 → 小火圈從它的圓心升到上一層的高度 → 抵達才擴張成新的一層。
+     （原本是把六層的出現順序洗牌，每層各自憑空亮起來；改成固定順序＋看得見的火種，
+     六層才像「一層帶起一層」而不是六件各自發生的事。每次施法的差異交給半徑、
+     起始角度、轉速那三組抖動去做，那些本來就是每次都不一樣的。） */
   magic = {
-    x: point.x, z: point.z, t: MAG_TIME, shown: 0, ord,
+    x: point.x, z: point.z, t: MAG_TIME, shown: 0,
     // 每層的半徑抖動：施法當下抽一次存起來，每幀重抽的話整疊會一直閃
     rj: MAG_LAYER.map(() => rr(1 - MAG_JITTER, 1 + MAG_JITTER)),
     /* 每層的紋路起始角度各抽一個定值：六層都從同一個角度起跳的話，
@@ -2364,15 +2366,19 @@ function stepMagic(dt) {
   }
   const rings = [];
   let layers = 0;
+  const seedR = MAG_R * MAG_SEED;
   for (let i = 0; i < MAG_LAYER.length; i++) {
-    const g = (el - magic.ord[i] * MAG_GAP) / MAG_GROW;   // 這一層長到幾成
-    if (g <= 0) continue;                          // 順序是洗過的，不能像以前那樣 break
+    const g = (el - i * MAG_GAP) / MAG_GROW;       // 這一層長到幾成
+    if (g <= 0) break;                             // 由下往上長，後面幾層還沒輪到
     layers++;
     const k = Math.min(1, g);
     const L = MAG_LAYER[i];
-    /* 長出來的方式：位置一開始就在它該在的高度，只有半徑從很小擴到定位。
-       高度也跟著長的話，看起來是「從地上飄上去」而不是「在那裡展開」。 */
-    const rad = MAG_R * L.r * magic.rj[i] * (0.12 + 0.88 * k);
+    /* 長出來的方式：位置一開始就在它該在的高度，只有半徑從小火圈的大小擴到定位。
+       高度也跟著長的話，看起來是「從地上飄上去」而不是「在那裡展開」。
+       起始半徑就是小火圈的半徑——火圈升到位之後直接被撐開成這一層，中間不跳。
+       先快後慢（1−(1−k)²）：像被撐開的，等速擴張看起來是機械的。 */
+    const full = MAG_R * L.r * magic.rj[i];
+    const rad = seedR + (full - seedR) * (1 - (1 - k) * (1 - k));
     const y = 0.12 + MAG_R * L.y;
     /* 逆時針慢轉。角度一路累加，不是每幀重抽——重抽的話紋路會亂閃不是在轉。
        減不是加：紋路的角度 a 是用 (cos a, sin a) 擺到 (x, z) 上的，而畫面看下去 +Z 朝下，
@@ -2383,6 +2389,24 @@ function stepMagic(dt) {
     rings.push({ x: magic.x, z: magic.z, r: rad, y, spin, op: k, c: 0xff3a1c, sp: 1, fill: 1 });
     rings.push({ x: magic.x, z: magic.z, r: rad * 1.04, y, spin,
                  op: k * 0.75, c: 0xff9a4a, add: 1 });
+  }
+  /* 小火圈：夾在「這一層長好了」與「上一層開始長」之間，從這一層的圓心升到上一層的高度。
+     它是整疊的火種，看得到它把火帶上去，六層才像一層帶起一層。
+     只在爬升那一段畫，抵達的同一刻新的一層就從同樣的半徑撐開，所以兩者不會同時出現。
+     不給 sp／fill 以外的東西：紋路留給正式的六層，這裡要的是一小團在竄的火。 */
+  if (layers > 0 && layers < MAG_LAYER.length) {
+    const u = (el - ((layers - 1) * MAG_GAP + MAG_GROW)) / MAG_RISE;
+    if (u > 0 && u < 1) {
+      const y0 = 0.12 + MAG_R * MAG_LAYER[layers - 1].y;
+      const y1 = 0.12 + MAG_R * MAG_LAYER[layers].y;
+      const fy = y0 + (y1 - y0) * u;
+      const fr = seedR * (0.78 + 0.22 * Math.sin(u * Math.PI));   // 升到一半微微鼓起來
+      const fs = -el * MAG_SPIN * 3.4;                            // 轉得比陣快，才像在竄
+      rings.push({ x: magic.x, z: magic.z, r: fr, y: fy, spin: fs,
+                   op: 1, c: 0xffb42a, fill: 1, seed: 1 });
+      rings.push({ x: magic.x, z: magic.z, r: fr * 1.7, y: fy, spin: fs * 0.6,
+                   op: 0.85, c: 0xff5a10, add: 1, seed: 1 });
+    }
   }
   // 一層兩個環（芯 + 暈），所以要數層數不是數環數，音效才不會一層響兩次
   if (layers > magic.shown) { magic.shown = layers; sndRune(magic.shown - 1); }
