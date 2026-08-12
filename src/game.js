@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.24.0';
+const VERSION = '1.25.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1923,7 +1923,10 @@ function stepNuke(dt) {
    魔法陣一層層往外長，最外圈就是等一下的爆炸範圍——
    讓你在那六秒裡看得出來會炸到哪。一次只有一個，再點會移到新的地點重來。 */
 const MAG_TIME = 6, MAG_R = 30, MAG_POW = 34;
-const MAG_GAP = 0.8, MAG_GROW = 0.5;      // 每隔多久長一層、一層長多久
+/* 每隔多久長一層、一層長多久。六層在 5×0.36+0.3 ＝ 2.1 秒內長齊，
+   剩下的 3.9 秒六層都在場上轉——這一段才是「陣蓄滿了」的樣子，要留得夠久。
+   （原本 0.8／0.5 是 4.5 秒才長齊，六層同時在場只有 1.5 秒。） */
+const MAG_GAP = 0.36, MAG_GROW = 0.3;
 /* 陣是**六層疊起來**的，不是同心圓：整疊都浮在半空，最下面那層離地就有 12 單位，
    中間收窄、最上面那層再放大一點——照參考圖的層次。r 與 y 都是 MAG_R 的倍率。
    最下層不做滿爆炸半徑（那會比建築大一大圈，看起來像地上的跑道），
@@ -1943,6 +1946,9 @@ const MAG_LAYER = [
 ];
 const MAG_JITTER = 0.18;
 const MAG_SPIN = 0.42;                    // 陣的轉速（rad/s，逆時針；六秒約轉 145°）
+/* 最低那層的圓心高度。碎料被吸到這裡聚成一團，六秒一到也從這裡炸開——
+   爆點放地面的話，火球會從那團碎料的下方冒出來，看起來像另一件事。 */
+const MAG_CORE_Y = 0.12 + MAG_R * MAG_LAYER[0].y;
 function castMagic(point) {
   /* 出現順序每次洗牌。固定由下往上長的話，那六秒每次都長得一模一樣；
      洗的只是「哪一層什麼時候出現」，每層自己的高度與半徑不動。 */
@@ -1972,7 +1978,7 @@ function stepMagic(dt) {
   magic.t -= dt;
   const el = MAG_TIME - magic.t;
   if (magic.t <= 0) {
-    const p = { x: magic.x, y: 1.5, z: magic.z };
+    const p = { x: magic.x, y: MAG_CORE_Y, z: magic.z };   // 爆點＝最低那層的圓心
     magic = null;
     explode(p, MAG_R, MAG_POW, true);
     startCloud(p, MAG_R, true);       // 魔法爆完也留一朵，只是燒的是紅光還帶星光
@@ -2011,8 +2017,12 @@ function stepMagic(dt) {
    再撒一些往中心捲的魔力光點。先收縮、後爆發，張力才拉得起來——
    這是它跟核彈最大的差別：核彈是「一下打平」，魔法是「先聚成一團再炸開」。 */
 const IMP_TIME = 4.5;               // 倒數剩幾秒開始吸碎料
-const TEAR_TIME = 2.2;              // 倒數剩幾秒開始把建築本身也扯下來
-const TEAR_RATE = 2.6;              // 扯的速率上限（每塊每秒的機率），會隨時間往上爬
+/* 建築本身在最後 1.1 秒才被扯下來，而且扯下來就直接往陣心丟：
+   「脫離 → 收攏 → 炸開」要擠在很短的時間裡，拖長了就變成慢慢崩塌，不像被吸走。
+   速率 6 是配著這個窗口算的：1 − e^(−6×1.1/2) ≈ 96% 的積木會在這 1.1 秒內被扯下來。 */
+const TEAR_TIME = 1.1;              // 倒數剩幾秒開始把建築本身也扯下來
+const TEAR_RATE = 6;                // 扯的速率上限（每塊每秒的機率），會隨時間往上爬
+const TEAR_IN = 2.6;                // 扯下來當下就往陣心丟：初速＝距離 × 這個值（約 0.38 秒到位）
 function implode(m, dt) {
   const k = Math.min(1, (IMP_TIME - m.t) / IMP_TIME);   // 0 → 1，越接近爆炸吸得越猛
   if (k <= 0) return;
@@ -2027,20 +2037,37 @@ function implode(m, dt) {
       if (q <= 0 || Math.random() > dt * TEAR_RATE * q) continue;
       const ax = b.x - m.x, az = b.z - m.z;
       if (ax * ax + az * az > R2) continue;
-      breakBlock(b, 0, rr(0.5, 3), 0);                 // 只扯下來，往哪走交給下面的吸力
+      /* 扯下來的當下就往陣心丟：初速跟距離成正比，遠的近的才會同時到（約 0.38 秒），
+         看起來是「唰一下全部收攏」而不是「近的先到、遠的慢慢飄過來」。
+         切線那一股讓收攏的路徑是螺旋；垂直那一股把它送到最低層那圈的高度（＝爆點）。 */
+      breakBlock(b, -ax * TEAR_IN - az * 0.8,
+                 (MAG_CORE_Y - b.y) * TEAR_IN,
+                 -az * TEAR_IN + ax * 0.8);
       torn++;
     } else if (b.st !== FREE && b.st !== FLY) continue;   // 小人手上的不動
     const dx = b.x - m.x, dz = b.z - m.z;
     const d2 = dx * dx + dz * dz;
-    if (d2 > R2 || d2 < 1) continue;
-    const d = Math.sqrt(d2), nx = dx / d, nz = dz / d;
+    if (d2 > R2) continue;
     if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
-    // 內吸 + 切線；越靠近陣心吸力越強，看起來才像被捲進去而不是等速平移
+    const d = Math.sqrt(d2);
     const pull = (0.35 + 0.65 * (1 - d / R)) * k * dt * 3;
-    b.vx += (-nx * 9 - nz * 5) * pull;
-    b.vz += (-nz * 9 + nx * 5) * pull;
-    b.vy += 5 * pull;                                   // 稍微跳起來，不然只是在地上滑
+    /* 垂直方向拉向最低層那圈的高度（＝爆點）。重力一直往下拉 26，所以這裡是
+       「離目標高度多遠」的彈簧加一股固定上抬，碎料才會停在那個高度翻攪，
+       而不是聚攏之後整團掉回地上。這一段放在 d2 < 1 的檢查前面：
+       剛好落在陣心正上方的那幾塊要是被跳過，會從團裡掉出來。 */
+    b.vy += ((MAG_CORE_Y - b.y) * 1.6 + 9) * pull;
     b.ay += rr(-6, 6) * dt;
+    /* 進到陣心那一團就被拖慢。少了這一段，強吸力會讓積木直接對穿過去再飛出另一邊，
+       爆炸當下反而是散開的——量過：沒有阻尼時爆炸當下平均離陣心 13.9，有的話 5.6。 */
+    if (d < 7) {
+      const f = 1 - Math.min(0.5, 4 * dt * (1 - d / 7));
+      b.vx *= f; b.vy *= f; b.vz *= f;
+    }
+    if (d2 < 1) continue;                               // 已經在陣心，再算內吸會除以 0
+    const nx = dx / d, nz = dz / d;
+    // 內吸 + 切線；越靠近陣心吸力越強，看起來才像被捲進去而不是等速平移
+    b.vx += (-nx * 30 - nz * 11) * pull;
+    b.vz += (-nz * 30 + nx * 11) * pull;
   }
   /* 扯下來的要記帳：計數、嚇小人、標記垮塌重算。半徑給 6（陣心那一圈）而不是 30，
      不然整個工地的小人會每一幀被掀倒一次。 */

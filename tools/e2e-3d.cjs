@@ -1870,24 +1870,42 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     const set0 = blocks.filter(b => b.st === 3).length;
-    const mean0 = blocks.filter(b => b.st === 3)
-      .reduce((s, b) => s + Math.hypot(b.x, b.z), 0) / set0;   // 建築本身的平均半徑
+    /* 追蹤固定的一批：離陣心最遠那 40 塊。用「全部碎料的平均距離」當指標會被
+       後來才扯下來、還在半路上的那些拉高，看不出這批到底有沒有被拉近。 */
+    const far0 = blocks.filter(b => b.st === 3)
+      .sort((a, b) => Math.hypot(b.x, b.z) - Math.hypot(a.x, a.z)).slice(0, 40);
+    const farD = () => far0.reduce((s, b) => s + Math.hypot(b.x, b.z), 0) / far0.length;
+    const mean0 = farD();
     const seq = [];
-    let calm = -1;
+    const minD = far0.map(() => Infinity);   // 這 40 塊各自「最靠近陣心」到什麼程度
+    let calm = -1, full = -1;
     for (let i = 0; i < 119; i++) {                     // 5.95 秒
       step(0.05);
-      if (i % 16 === 0) seq.push(magic ? magic.shown : -1);   // 每 0.8 秒（＝長一層）取樣
-      if (i === 59) calm = blocks.filter(b => b.st === 3).length;   // 3 秒：還沒開始扯
+      if (i % 16 === 0) seq.push(magic ? magic.shown : -1);   // 每 0.8 秒取樣
+      if (full < 0 && magic && magic.shown === 6) full = +((i + 1) * 0.05).toFixed(2);
+      if (i === 89) calm = blocks.filter(b => b.st === 3).length;   // 4.5 秒：還沒開始扯
+      /* 收攏得看「最靠近時到哪」，不能只看爆炸前那一瞬間：扯是隨機的，
+         最後幾幀才被扯下來的那幾塊還在半路上，會把當下的平均值整個拉高。 */
+      if (i > 88) far0.forEach((b, j) => {
+        const d = Math.hypot(b.x, b.z);
+        if (d < minD[j]) minD[j] = d;
+      });
     }
+    const pulled = minD.reduce((s, v) => s + v, 0) / minD.length;
     const before = blocks.filter(b => b.st === 3).length, alive = !!magic;
     /* 爆炸前那一刻碎料擠在哪：陣把建築扯下來捲進陣心，所以這時候它們該全部聚在中間。
        跟施法當下建築本身的平均半徑比，才知道是「被吸過來」不是「本來就在那」。 */
     const meanOf = f => { const a = blocks.filter(f); return a.length
       ? a.reduce((s, b) => s + Math.hypot(b.x, b.z), 0) / a.length : 0; };
-    const gathered = meanOf(b => b.st === 4);
-    step(0.05);                                        // 這一幀爆
+    const gathered = farD();
+    const gatherY = far0.reduce((s, b) => s + b.y, 0) / far0.length;
+    /* 推到真的爆開那一幀為止。寫死步數會踩到浮點邊界：0.05 累加 120 次不會剛好是 6，
+       差一點點就變成「還沒爆」，後面量到的火球是空的。 */
+    let g = 0;
+    while (magic && g++ < 6) step(0.05);
     phase = 'done';    // 擋掉「拆完換下一座」：要留著現場量噴多遠，不然下一座已經開工了
     const fire = hot.length;
+    const flashY = flashes.length ? flashes[flashes.length - 1].y : -1;
     const flew = meanOf(b => b.st === 4);
     for (let i = 0; i < 20; i++) step(0.05);            // 一秒：讓它們飛出去
     let hitMax = 0;
@@ -1897,20 +1915,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const cloud = dust.filter(d => d.fade >= 3).length;
     // 魔法版燒的是紅光、還會撒星光：粒子有自己的顏色（cr 有值）而不是灰白煙
     const tinted = dust.filter(d => d.fade >= 3 && d.cr !== undefined).length;
-    return { set0, mean0, calm, seq, before, alive, gathered, flew, flew1,
+    return { set0, mean0, calm, seq, full, magTime: MAG_TIME, coreY: MAG_CORE_Y,
+             before, alive, gathered, gatherY, pulled, flashY, flew, flew1,
              set1: blocks.filter(b => b.st === 3).length,
              hitMax, after: !!magic, fire, cloud, tinted };
   });
   ok('魔法陣是一層層長出來的', mg.seq[0] === 1 && mg.seq[mg.seq.length - 1] === 6 &&
      mg.seq.every((v, i) => i === 0 || v >= mg.seq[i - 1]), '每 0.8 秒取樣：' + mg.seq.join(' → '));
-  /* 前三秒只長陣、不動建築；最後兩秒才開始扯。兩段都要驗：
+  /* 六層要快點長齊，「六層都在場上轉」那一段才留得久——那一段才是陣蓄滿的樣子。 */
+  ok('六層很快長齊，之後有一大段時間都是滿的',
+     mg.full > 0 && mg.full < 2.5 && mg.magTime - mg.full > 3.4,
+     mg.full + ' 秒就六層都在，滿陣狀態持續 ' + (mg.magTime - mg.full).toFixed(1) + ' 秒');
+  /* 前四秒半只長陣、不動建築；最後一秒多才開始扯。兩段都要驗：
      只驗「六秒內沒爆」的話，第一秒就把建築拆光也會過。 */
-  ok('前三秒只長陣，不動建築', mg.calm === mg.set0 && mg.alive,
-     '3 秒時 ' + mg.set0 + ' → ' + mg.calm + ' 塊');
-  ok('最後兩秒把建築本身扯下來捲進陣心',
-     mg.before < mg.set0 * 0.35 && mg.gathered < mg.mean0 * 0.8,
-     '建築 ' + mg.set0 + ' → ' + mg.before + ' 塊，碎料離陣心 ' +
-     mg.gathered.toFixed(1) + '（建築原本平均 ' + mg.mean0.toFixed(1) + '）');
+  ok('前四秒半只長陣，不動建築', mg.calm === mg.set0 && mg.alive,
+     '4.5 秒時 ' + mg.set0 + ' → ' + mg.calm + ' 塊');
+  ok('最後一秒多把建築扯下來、吸到陣心那個高度',
+     mg.before < mg.set0 * 0.35 && mg.pulled < mg.mean0 * 0.45 &&
+     Math.abs(mg.gatherY - mg.coreY) < 6,
+     '建築 ' + mg.set0 + ' → ' + mg.before + ' 塊；最外圈那 40 塊原本離陣心 ' +
+     mg.mean0.toFixed(1) + '，最靠近時 ' + mg.pulled.toFixed(1) +
+     '，爆炸當下高度 ' + mg.gatherY.toFixed(1) + '（陣心 ' + mg.coreY.toFixed(1) + '）');
+  /* 爆點要在最低那層的圓心上，不是地面：碎料被吸到那個高度，火球就該從那裡炸開。
+     火球本體再往上抬 R×0.22（免得被自己炸出來的碎料堆埋掉），所以對得上 12.1 + 6.6。 */
+  ok('爆點在最低層魔法陣的圓心上',
+     Math.abs(mg.flashY - (mg.coreY + 30 * 0.22)) < 0.05,
+     '火球中心 y=' + mg.flashY.toFixed(1) + '（陣心 ' + mg.coreY.toFixed(1) + ' + 抬升 6.6）');
   ok('六秒一到火球把它們全噴出去',
      mg.set1 < mg.set0 * 0.2 && !mg.after && mg.flew1 > mg.flew * 1.5 && mg.hitMax > 25,
      '爆炸當下離陣心 ' + mg.flew.toFixed(1) + ' → 一秒後 ' + mg.flew1.toFixed(1) +
@@ -2022,7 +2052,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        只驗 ord 陣列的話，畫的時候照舊由下往上長也會過。 */
     startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
     const first = MAG_LAYER[magic.ord.indexOf(0)];
-    for (let i = 0; i < 6; i++) step(0.05);          // 0.3 秒：只該有一層
+    for (let i = 0; i < 4; i++) step(0.05);          // 0.2 秒：只該有一層（下一層 0.36 秒才來）
     const shown = magic.rings.filter(o => !o.add);
     return { casts, valid, uniq: new Set(casts).size, n: shown.length,
              y: shown.length ? +shown[0].y.toFixed(2) : -1,
