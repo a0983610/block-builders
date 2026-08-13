@@ -1761,43 +1761,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const step2 = [];
     const at = (k, v) => { stats = freshStats(); stats[k] = v; renderTools(); step2.push(TOOLS.map(t => toolOk(t)).join(',')); };
     /* 每一關都從乾淨的紀錄重新設一個門檻值，不是一路往上疊——
-       疊著設的話「拆掉 15 座」會連帶滿足前面所有拆除門檻，
+       疊著設的話「拆掉 10 座」會連帶滿足前面所有拆除門檻，
        就分不出某一項到底是被自己的條件開的還是被別人順便開的。 */
-    at('smashed', 500);
+    at('smashed', 2000);
     at('destroyed', 2);
+    at('smashed', 6000);
     at('destroyed', 4);
-    at('smashed', 5000);
+    at('smashed', 11000);
+    at('destroyed', 6);
+    at('smashed', 15000);
     at('destroyed', 8);
-    at('smashed', 12000);
-    at('destroyed', 12);
-    at('smashed', 30000);
-    at('destroyed', 18);
-    at('smashed', 60000);
-    stats = freshStats(); stats.destroyed = 18; stats.smashed = 60000; renderTools();     // 全開
+    at('smashed', 19000);
+    at('destroyed', 10);
+    stats = freshStats(); stats.destroyed = 10; stats.smashed = 19000; renderTools();     // 全開
     step2.push(TOOLS.map(t => toolOk(t)).join(','));
     return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
   /* 順序：手指／槌子／大槌／保齡球／投石機／龍捲風／煙火／放火／炸彈／隕石／核彈／魔法。
      兩種紀錄輪流當門檻，所以「擊飛」那幾關會順便開掉前面同一側的，但開不了另一側的。 */
-  ok('擊飛 500 塊解鎖大槌', lock1.step2[0] === opened(3), lock1.step2[0]);
+  ok('擊飛 2,000 塊解鎖大槌', lock1.step2[0] === opened(3), lock1.step2[0]);
   ok('拆掉 2 座解鎖保齡球',
      lock1.step2[1] === 'true,true,false,true,false,false,false,false,false,false,false,false', lock1.step2[1]);
-  ok('拆掉 4 座解鎖投石機',
-     lock1.step2[2] === 'true,true,false,true,true,false,false,false,false,false,false,false', lock1.step2[2]);
-  ok('擊飛 5,000 塊解鎖龍捲風',
-     lock1.step2[3] === 'true,true,true,false,false,true,false,false,false,false,false,false', lock1.step2[3]);
-  ok('拆掉 8 座解鎖煙火',
-     lock1.step2[4] === 'true,true,false,true,true,false,true,false,false,false,false,false', lock1.step2[4]);
-  ok('擊飛 12,000 塊解鎖放火',
-     lock1.step2[5] === 'true,true,true,false,false,true,false,true,false,false,false,false', lock1.step2[5]);
-  ok('拆掉 12 座解鎖定時炸彈',
-     lock1.step2[6] === 'true,true,false,true,true,false,true,false,true,false,false,false', lock1.step2[6]);
-  ok('擊飛 30,000 塊解鎖隕石',
-     lock1.step2[7] === 'true,true,true,false,false,true,false,true,false,true,false,false', lock1.step2[7]);
-  ok('拆掉 18 座解鎖核彈',
-     lock1.step2[8] === 'true,true,false,true,true,false,true,false,true,false,true,false', lock1.step2[8]);
-  ok('擊飛 60,000 塊解鎖爆裂魔法',
-     lock1.step2[9] === 'true,true,true,false,false,true,false,true,false,true,false,true', lock1.step2[9]);
+  ok('擊飛 6,000 塊解鎖投石機',
+     lock1.step2[2] === 'true,true,true,false,true,false,false,false,false,false,false,false', lock1.step2[2]);
+  ok('拆掉 4 座解鎖龍捲風',
+     lock1.step2[3] === 'true,true,false,true,false,true,false,false,false,false,false,false', lock1.step2[3]);
+  ok('擊飛 11,000 塊解鎖煙火',
+     lock1.step2[4] === 'true,true,true,false,true,false,true,false,false,false,false,false', lock1.step2[4]);
+  ok('拆掉 6 座解鎖放火',
+     lock1.step2[5] === 'true,true,false,true,false,true,false,true,false,false,false,false', lock1.step2[5]);
+  ok('擊飛 15,000 塊解鎖定時炸彈',
+     lock1.step2[6] === 'true,true,true,false,true,false,true,false,true,false,false,false', lock1.step2[6]);
+  ok('拆掉 8 座解鎖隕石',
+     lock1.step2[7] === 'true,true,false,true,false,true,false,true,false,true,false,false', lock1.step2[7]);
+  ok('擊飛 19,000 塊解鎖核彈',
+     lock1.step2[8] === 'true,true,true,false,true,false,true,false,true,false,true,false', lock1.step2[8]);
+  ok('拆掉 10 座解鎖爆裂魔法',
+     lock1.step2[9] === 'true,true,false,true,false,true,false,true,false,true,false,true', lock1.step2[9]);
   ok('兩邊都推到頂就全開', lock1.step2[10] === opened(NTOOL), lock1.step2[10]);
   ok('解鎖後畫面上的鎖頭消失',
      lock1.btn.join(',') === btnOpen(NTOOL), lock1.btn.join(','));
@@ -2299,31 +2299,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('收掉之後畫面成本回到原點', twCalls.after === twCalls.idle, twCalls.after + ' 個');
 
   /* 漏斗拉高到 34 之後會頂出畫面上緣（矮建築取景近，改之前量到 NDC 1.45）。
-     跟蘑菇雲同一套：作用期間鏡頭退開，結束後自己收回去。 */
+     跟蘑菇雲同一套：鏡頭退開，而且退開之後就停在那裡不收回來。 */
   const twFrame = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
     targetCnt = 1200; startBuild(true); completeNow();
-    /* 先空跑 13 秒：前面幾段測試留下的爆炸運鏡還沒到期，
-       這時候量「原本的取景」會量到被撐大的值。 */
-    for (let i = 0; i < 260; i++) step(0.05);
+    // startBuild(true) 走的是開場那條，會立刻照這座重新取景，量到的就是「原本的取景」
     const nat = ENG.camTarget.dist;
     launchTornado({ x: siteR * 0.5, z: 0 });
     for (let i = 0; i < 110; i++) step(0.02);
     const wide = ENG.cam.dist;
     const w = twists[0];
     const top = new THREE.Vector3(w.x, w.h, w.z).project(ENG.three.camera).y;
-    // 運鏡是 TW_LIFE + 1 秒，多等 3 秒確定到期（中途若整棟被夷平換了場也沒關係，
-    // 底下的基準是拿「現在場上這座」重算的）
+    // 龍捲風散掉、換場都做完之後再量一次：鏡頭不該自己跑回去
     for (let i = 0; i < (TW_LIFE + 4) * 50; i++) step(0.02);
     const back = ENG.camTarget.dist;
-    ENG.fitCamera(siteR, bp.height, arenaR);
     return { nat: +nat.toFixed(1), wide: +wide.toFixed(1), top: +top.toFixed(2),
-             back: +back.toFixed(1), now: +ENG.camTarget.dist.toFixed(1) };
+             back: +back.toFixed(1) };
   });
   ok('龍捲風期間鏡頭會退開，漏斗頂留在畫面內', twFrame.wide > twFrame.nat * 1.15 && twFrame.top < 1,
      '取景 ' + twFrame.nat + ' → ' + twFrame.wide + '，漏斗頂 NDC ' + twFrame.top);
-  ok('龍捲風結束後鏡頭收回原本的取景', Math.abs(twFrame.back - twFrame.now) < 1,
-     twFrame.wide + ' → ' + twFrame.back + '（這座的基準 ' + twFrame.now + '）');
+  ok('龍捲風結束後鏡頭停在退開的位置', twFrame.back >= twFrame.wide - 1,
+     twFrame.nat + ' → ' + twFrame.wide + '，七秒後仍是 ' + twFrame.back);
 
   /* 持續時間拿城堡量：金字塔是實心堆疊，被掃到底層整座垮下來會提早換場，
      量到的就不是龍捲風自己的壽命（實測 4 次有 2 次被砍到 2.6 秒）。 */
@@ -3585,8 +3581,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const one = shape => {
       shapePick = SHAPES.findIndex(s => s.n === shape);
       targetCnt = 800; startBuild(true); completeNow();
-      for (let i = 0; i < 200; i++) step(0.05);        // 先讓上一發的運鏡收乾淨
-      const d0 = ENG.cam.dist;
+      for (let i = 0; i < 200; i++) step(0.05);        // 讓剛蓋好的這座沉澱一下
+      const d0 = ENG.cam.dist;                         // startBuild(true) 已經照這座重新取景
       castMagic({ x: 0, z: 0 });
       for (let i = 0; i < 100; i++) step(0.05);        // 5 秒：六層都在
       const top = Math.max(...magic.rings.map(o => o.y));
@@ -3684,32 +3680,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '5.9 秒時只剩 ' + mgHold.mid.placed + ' 塊（換場線 ' + mgHold.mid.gate +
      '）仍沒換場，爆完才記一座拆除');
 
-  /* 雲頂會升到 40 以上，貼著建築的取景根本裝不下——引爆時鏡頭要退開，
-     而且事後要自己收回來，不能一直停在遠處。
+  /* 雲頂會升到 40 以上，貼著建築的取景根本裝不下——引爆時鏡頭要退開。
+     退開之後就停在那裡：自己收回來的話等於每發都把鏡頭搶走兩次。
      建築鎖同一座，換場後的取景距離才有得比。 */
   const camFx = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    // startBuild(true) 會照這座重新取景，量到的 d0 就是「沒退開」的基準
     targetCnt = 900; startBuild(true); completeNow();
-    // 前面的測試剛炸過，運鏡還沒收完。先讓它跑完，不然量到的起點就是「已經退開」的視距
-    for (let i = 0; i < 200; i++) step(0.05);
-    startBuild(true); completeNow();
     const d0 = ENG.camTarget.dist;
     callNuke({ x: 0, z: 0 });
     for (let i = 0; i < 58; i++) step(0.05);        // 引爆
     const wide = ENG.camTarget.dist, ty = ENG.camTarget.ty;
     for (let i = 0; i < 60; i++) step(0.05);        // 3 秒後：雲正高，還要維持
     const hold = ENG.camTarget.dist;
-    for (let i = 0; i < 160; i++) step(0.05);       // 過了 7 秒的運鏡時間
+    for (let i = 0; i < 160; i++) step(0.05);       // 再等 8 秒（雲早就散了，還換過場）
     const back = ENG.camTarget.dist;
+    // 連炸第二發不該再往外跳一次：退開取的是「現在」與「這一發要的」之中的大者
+    callNuke({ x: 0, z: 0 });
+    for (let i = 0; i < 58; i++) step(0.05);
+    const again = ENG.camTarget.dist;
     shapePick = -1;
-    return { d0, wide, ty, hold, back };
+    return { d0, wide, ty, hold, back, again };
   });
   ok('核彈引爆時鏡頭會退開，整朵雲才進得了畫面',
      camFx.wide > camFx.d0 * 1.3 && camFx.hold === camFx.wide,
      '視距 ' + camFx.d0.toFixed(0) + ' → ' + camFx.wide.toFixed(0) +
      '（視線高度 ' + camFx.ty.toFixed(0) + '），三秒後仍維持');
-  ok('運鏡結束後鏡頭會自己收回來', Math.abs(camFx.back - camFx.d0) < 2,
-     '七秒後回到 ' + camFx.back.toFixed(0) + '（原本 ' + camFx.d0.toFixed(0) + '）');
+  ok('退開之後不會自己收回來', camFx.back === camFx.wide,
+     '八秒後（含換場）仍是 ' + camFx.back.toFixed(0) + '（原本 ' + camFx.d0.toFixed(0) + '）');
+  ok('連炸第二發不會再退得更遠', camFx.again === camFx.wide,
+     '第二發後 ' + camFx.again.toFixed(0) + '（第一發 ' + camFx.wide.toFixed(0) + '）');
 
   /* 倒數中換建築：留著的話會炸到剛蓋好的新那座 */
   const swap = await page.evaluate(() => {
@@ -4200,13 +4200,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const persist = await page.evaluate(() => ({ d: stats.destroyed, s: stats.smashed, b: stats.badges.length }));
   ok('關掉重開紀錄還在', persist.d === 4 && persist.s === 1234 && persist.b === 1,
      'destroyed=' + persist.d + '、smashed=' + persist.s + '、成就 ' + persist.b + ' 個');
-  /* 拆 4 座、擊飛 1234 塊 → 大槌(擊飛 500)、保齡球(2 座)、投石機(4 座) 開；
-     龍捲風(5,000)、煙火(8 座)、放火(12,000)、炸彈(12 座)、隕石(30,000)、
-     核彈(18 座)、爆裂魔法(60,000) 還鎖著 */
+  /* 拆 4 座、擊飛 1234 塊 → 保齡球(2 座)、龍捲風(4 座) 開；
+     大槌(擊飛 2,000)、投石機(6,000)、煙火(11,000)、放火(6 座)、炸彈(15,000)、
+     隕石(8 座)、核彈(19,000)、爆裂魔法(10 座) 還鎖著 */
   const unlockedAfterReload = await page.evaluate(() =>
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
   ok('重開後解鎖狀態跟著回來',
-     unlockedAfterReload === 'open,open,open,open,open,lock,lock,lock,lock,lock,lock,lock',
+     unlockedAfterReload === 'open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數 */

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.39.0';
+const VERSION = '1.40.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1573,33 +1573,36 @@ function resetSave() {
 /* ── 破壞道具 ─────────────────────────────────────────────
    三種都走同一個出口 breakBlock()，差別只在「哪些積木被選中、給什麼速度」。 */
 /* 解鎖階梯：兩種紀錄輪流當門檻（擊飛數／拆除座數），兩邊都得推進才走得完。
-   一座 3000 塊的建築拆到門檻約 2200 塊擊飛，所以擊飛那一側大約是
-   500＝暖身、5000＝兩三座、12000＝五六座、30000＝十幾座。 */
+   難度定在「大約拆一座建築開一格」：建材用預設的 3000 塊時，一座拆到換場門檻
+   （剩 WRECK_AT＝25% 就算拆完）至少會擊飛 2,250 塊，所以擊飛那一側就照
+   1／3／5／7／9 座換算成 2,000／6,000／11,000／15,000／19,000，
+   拆除那一側直接寫 2／4／6／8／10 座——十格走完大約就是十座。
+   建材調小的話一座擊飛得少，擊飛那一側自然要多拆幾座才追得上（工作量差不多）。 */
 const TOOLS = [
   { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
   { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：地震，震掉 5% 的積木',
     lock: null },
   { id: 'bighammer', n: '大槌', k: '🔨', big: true,
     tip: '點建築：兩倍大的槌子，範圍也是兩倍　·　點地面：地震，震掉 10%',
-    lock: { txt: '累計擊飛 500 塊解鎖', ok: () => stats.smashed >= 500 } },
+    lock: { txt: '累計擊飛 2,000 塊解鎖', ok: () => stats.smashed >= 2000 } },
   { id: 'ball', n: '保齡球', k: '🎳', tip: '點兩下：先點出手的地方，再點要滾過去的方向',
     lock: { txt: '拆掉 2 座建築解鎖', ok: () => stats.destroyed >= 2 } },
   { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
-    lock: { txt: '拆掉 4 座建築解鎖', ok: () => stats.destroyed >= 4 } },
+    lock: { txt: '累計擊飛 6,000 塊解鎖', ok: () => stats.smashed >= 6000 } },
   { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去，可以同時來好幾道',
-    lock: { txt: '累計擊飛 5,000 塊解鎖', ok: () => stats.smashed >= 5000 } },
+    lock: { txt: '拆掉 4 座建築解鎖', ok: () => stats.destroyed >= 4 } },
   { id: 'fw', n: '煙火', k: '🎆', tip: '點地面：一次射三發煙火，落下來的火星會把建築點著',
-    lock: { txt: '拆掉 8 座建築解鎖', ok: () => stats.destroyed >= 8 } },
+    lock: { txt: '累計擊飛 11,000 塊解鎖', ok: () => stats.smashed >= 11000 } },
   { id: 'fire', n: '放火', k: '🔥', tip: '點建築：從那一塊燒起來，火會往旁邊蔓延',
-    lock: { txt: '累計擊飛 12,000 塊解鎖', ok: () => stats.smashed >= 12000 } },
+    lock: { txt: '拆掉 6 座建築解鎖', ok: () => stats.destroyed >= 6 } },
   { id: 'bomb', n: '定時炸彈', k: '💣', tip: '點一下：放一顆炸彈，3 秒後炸開',
-    lock: { txt: '拆掉 12 座建築解鎖', ok: () => stats.destroyed >= 12 } },
+    lock: { txt: '累計擊飛 15,000 塊解鎖', ok: () => stats.smashed >= 15000 } },
   { id: 'meteor', n: '隕石', k: '☄', tip: '點一下：3 秒後從斜上方砸下一顆燃燒隕石，可以同時來好幾顆',
-    lock: { txt: '累計擊飛 30,000 塊解鎖', ok: () => stats.smashed >= 30000 } },
+    lock: { txt: '拆掉 8 座建築解鎖', ok: () => stats.destroyed >= 8 } },
   { id: 'nuke', n: '核彈', k: '☢', tip: '點一下：2 秒後天上掉核彈下來',
-    lock: { txt: '拆掉 18 座建築解鎖', ok: () => stats.destroyed >= 18 } },
+    lock: { txt: '累計擊飛 19,000 塊解鎖', ok: () => stats.smashed >= 19000 } },
   { id: 'magic', n: '爆裂魔法', k: '🔮', tip: '點一下：魔法陣一層層展開，6 秒後爆炸',
-    lock: { txt: '累計擊飛 60,000 塊解鎖', ok: () => stats.smashed >= 60000 } }
+    lock: { txt: '拆掉 10 座建築解鎖', ok: () => stats.destroyed >= 10 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
@@ -2160,8 +2163,8 @@ function launchTornado(point) {
     spin: rr(0, 6.28), vx: Math.cos(a) * 3.2, vz: Math.sin(a) * 3.2, hit: 0
   });
   /* 拉高之後漏斗頂會超出畫面上緣（矮建築取景近，量到 NDC 1.45），
-     跟核彈的蘑菇雲同一個處理：作用期間鏡頭退開一點，結束後自己收回去。 */
-  ENG.holdWide(TW_H * 1.9, TW_LIFE + 1);
+     跟核彈的蘑菇雲同一個處理：鏡頭退開一點，之後就停在那裡不收回來。 */
+  ENG.holdWide(TW_H * 1.9);
   sndWind();
 }
 function stepTwist(dt) {
@@ -2407,9 +2410,8 @@ function launchFw(p) {
                   t: i * rr(FW_GAP[0], FW_GAP[1]) });
   }
   /* 跟龍捲風、蘑菇雲同一套：不退鏡頭的話整發都在畫面外。
-     量過：貼著中世紀城堡的取景，炸開那一刻火星的 NDC y 是 1.5（1 就已經出界了）。
-     秒數蓋住「最後一發晚 1 秒出膛 ＋ 上升 1.6 秒 ＋ 火星最多 4 秒」。 */
-  ENG.holdWide(FW_HOLD, 7);
+     量過：貼著中世紀城堡的取景，炸開那一刻火星的 NDC y 是 1.5（1 就已經出界了）。 */
+  ENG.holdWide(FW_HOLD);
 }
 /* 一發：抽兩個顏色（外層一個、芯一個），高度也各抽一個 */
 function fireShell(x, z) {
@@ -2865,7 +2867,7 @@ function castMagic(point) {
   };
   /* 整疊頂端在 34.6，貼著建築的取景裝不下（矮建築取景更近）。
      跟龍捲風、蘑菇雲同一套：施法期間鏡頭退開，爆完那朵雲會再接手撐住這個距離。 */
-  ENG.holdWide(MAG_R * 2.2, MAG_TIME + 1);
+  ENG.holdWide(MAG_R * 2.2);
   alertFlee(point, MAG_R, MAG_TIME);      // 魔法陣一亮，站在陣裡的人就往外跑
 }
 function stepMagic(dt) {
@@ -3164,7 +3166,7 @@ function startCloud(p, R, magic) {
   clouds.push({ x: p.x, z: p.z, R, magic, t: 0, emit: 0 });
   /* 順手把鏡頭退開。雲頂會升到 R×1.3 左右，用原本貼著建築的取景根本裝不下——
      量過：不退的話中型建築只看得到那根柱子，傘蓋整個在畫面上緣外。 */
-  ENG.holdWide(R * 2.2, 7);
+  ENG.holdWide(R * 2.2);
 }
 function stepClouds(dt) {
   for (let i = clouds.length - 1; i >= 0; i--) {

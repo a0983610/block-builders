@@ -939,11 +939,6 @@ const ENG = (function () {
     sc.left = -s; sc.right = s; sc.top = s; sc.bottom = -s;
     sc.updateProjectionMatrix();
     setGroundSize(arena + 26);
-    // 爆炸運鏡期間不准把鏡頭收回去，不然核彈把建築夷平換場時，蘑菇雲會被拉出畫面
-    if (wideT > 0 && !keepView) {
-      camTarget.dist = Math.max(camTarget.dist, wideDist);
-      camTarget.ty = Math.max(camTarget.ty, wideDist * 0.22);
-    }
     setFog();
   }
 
@@ -957,22 +952,18 @@ const ENG = (function () {
     scene.fog.far = Math.max(arena * 2.6 + 90, fogAt * 3);
   }
 
-  /* 爆炸運鏡：暫時把鏡頭退開、視線抬高，整朵蘑菇雲才進得了畫面。
-     時間到之後用最後一次取景的參數自己收回去，不會一直停在遠處。 */
-  let wideT = 0, wideDist = 0;
-  function holdWide(dist, secs) {
-    wideDist = Math.max(camTarget.dist, dist);
-    wideT = Math.max(wideT, secs);
-    camTarget.dist = wideDist;
-    camTarget.ty = Math.max(camTarget.ty, wideDist * 0.22);
+  /* 爆炸運鏡：鏡頭退開、視線抬高，整朵蘑菇雲才進得了畫面。
+     只退不收：退開之後就停在那個視距，要拉回來是玩家自己滾輪的事。
+     以前是幾秒後用最後一次取景的參數自己收回去，但那等於每放一發就把鏡頭搶走兩次
+     （退開一次、收回一次），連放兩發還會在遠近之間來回跳。
+     只退不收也不會越退越遠：距離取的是「現在」與「這一發要的」之中的大者。 */
+  function holdWide(dist) {
+    camTarget.dist = Math.max(camTarget.dist, dist);
+    camTarget.ty = Math.max(camTarget.ty, camTarget.dist * 0.22);
     setFog();
   }
 
   function updateCamera(dt) {
-    if (wideT > 0) {                          // 爆炸運鏡到期，回到原本的取景
-      wideT -= dt;
-      if (wideT <= 0 && lastFit) fitCamera(lastFit.radius, lastFit.height, lastFit.arena);
-    }
     cam.dist += (camTarget.dist - cam.dist) * Math.min(1, dt * 2.2);
     cam.ty += (camTarget.ty - cam.ty) * Math.min(1, dt * 2.2);
     /* 平移跟得比縮放緊。用 2.2 的話等速平移時鏡頭會落後目標約 16 單位——
