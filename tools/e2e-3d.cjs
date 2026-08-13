@@ -737,12 +737,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (let i = 0; i < 300; i++) step(0.05);
       return { name, f6, all, ...face() };
     };
-    return { box: run('帝國大廈'), lat: run('艾菲爾鐵塔') };
+    /* 帝國大廈打三輪：同一發石頭有時候會引發整棟連鎖崩塌，剩幾塊是浮動的
+       （實測八輪 0～641）。「還剩東西可驗」只要有一輪成立就夠，
+       「沒有漏網的對角勾著」則是每一輪都必須成立。 */
+    const box = [run('帝國大廈'), run('帝國大廈'), run('帝國大廈')];
+    return { box: box[0], boxBad: box.reduce((s, r) => s + r.badF6, 0),
+             boxLive: Math.max(...box.map(r => r.live)),
+             boxAll: box.map(r => r.live), lat: run('艾菲爾鐵塔') };
   });
   ok('炸穿牆腳之後不會留下只靠對角勾著的積木',
-     hung.box.badF6 === 0 && hung.box.live > 100,
-     '帝國大廈中一發石頭：剩 ' + hung.box.live + ' 塊，只靠對角勾著的 ' + hung.box.badF6 +
-     ' 塊（沒有這一關會留下一百多塊）');
+     hung.boxBad === 0 && hung.boxLive > 100,
+     '帝國大廈中一發石頭三輪：剩 ' + JSON.stringify(hung.boxAll) +
+     ' 塊，只靠對角勾著的合計 ' + hung.boxBad + ' 塊（沒有這一關會留下一百多塊）');
   /* 反面：本來就靠斜格子疊起來的造型不歸這一關管，不然它們會自己解體。
      艾菲爾鐵塔完好時只有 672/1497 格是「六面連得到地面」。 */
   ok('斜格子造型不會被這一關誤殺',
@@ -1209,6 +1215,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const born = dozers ? dozers.list.length : 0;
     const drawn = dozers ? dozRender(dozers).length : 0;
     const R = siteR + 1.4;
+    const wantN = Math.max(3, Math.min(6, Math.round(Math.PI * R * R / 160)));
     const dirtyOf = () => blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R).length;
     // 最密的一格有幾塊——推土機的工作就是把這個數字壓下來
     const heapOf = () => {
@@ -1228,7 +1235,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     kickOut = b => { kicked++; origKick(b); };
     const trail = [];
     let peak = dirtyOf(), heap0 = 0, lastIn = 0, built = 0, guard = 0;
-    let sawMove = 0, sawPush = 0, maxSpd = 0;
+    let sawPush = 0, maxSpd = 0, mFrames = 0;
+    let inSite = 0, blDown = 0;
     while (phase === 'clear' && guard++ < 900) {
       const before = dozers ? dozers.list.map(m => ({ x: m.x, z: m.z })) : null;
       step(0.05);
@@ -1237,7 +1245,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (guard % 8 === 0) trail.push(heapOf());
       if (dozers && dozers.wait <= 0) {
         if (heap0 === 0) heap0 = heapOf();               // 開推那一刻最密的一格
-        for (const m of dozers.list) { if (m.st === 'move') sawMove++; if (m.st === 'push') sawPush++; }
+        /* 鏟子該不該放下來只看位置：在工作範圍內就得放下。
+           以前是「趕路抬起、推的時候放下」，機器抬著鏟子穿過工地的那一大段完全沒產出。 */
+        for (const m of dozers.list) {
+          mFrames++;
+          if (m.st === 'push') sawPush++;
+          if (Math.hypot(m.x, m.z) < siteClearR()) { inSite++; if (m.bl < 0.35) blDown++; }
+        }
         if (before) for (let i = 0; i < dozers.list.length; i++) {
           const m = dozers.list[i], p = before[i];
           const v = Math.hypot(m.x - p.x, m.z - p.z) / 0.05;
@@ -1259,23 +1273,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { born, drawn, peak, dirty1, trail, secs, built, stillIn, heap0,
              cohort: cohort.length, pushedOut, kicked,
              heapEnd: trail.length ? trail[trail.length - 1] : 0,
-             sawMove, sawPush, maxSpd: +maxSpd.toFixed(1),
+             sawPush, wantN, inSite, blDown, mFrames, maxSpd: +maxSpd.toFixed(1),
              lastIn: +(lastIn * 0.05).toFixed(1),
              gone: !dozers, phase, drove: +(g2 * 0.05).toFixed(1) };
   });
-  ok('換建築時會開幾台推土機進來', doze.born === 3 && doze.drawn === 3,
-     doze.born + ' 台，畫面上放了 ' + doze.drawn + ' 台');
-  ok('會先趕路再放下鏟子推', doze.sawMove > 0 && doze.sawPush > 0,
-     '趕路 ' + doze.sawMove + ' 幀、推 ' + doze.sawPush + ' 幀');
+  /* 台數跟工地面積走：小工地 3 台就夠，大工地固定三台根本清不動
+     （實測 siteR 44 的工地六秒半推出去 0 塊，全靠收尾彈掉）。上限 6 是畫面的容量。 */
+  ok('推土機台數跟著工地大小走', doze.born === doze.wantN && doze.drawn === doze.born &&
+     doze.born >= 3 && doze.born <= 6,
+     doze.born + ' 台（面積換算要 ' + doze.wantN + ' 台），畫面上放了 ' + doze.drawn + ' 台');
+  /* 以前是「趕路抬鏟、到位才放下」，機器抬著鏟子橫越工地那一段完全沒產出——
+     實測吃掉三成到七成七的機器時間。現在鏟子只看位置：進了範圍就放下。 */
+  /* 扣掉的那幾幀是鏟子放下來的緩降動畫（進場那一下 bl 從 1 降到 0 要幾幀），
+     每台抓 3 幀的餘裕。 */
+  ok('人在工地裡就一定在推，不會抬著鏟子空跑',
+     doze.inSite > 50 && doze.blDown >= doze.inSite - doze.born * 3 &&
+     doze.sawPush > doze.mFrames * 0.95,
+     '範圍內 ' + doze.inSite + ' 幀，鏟子放下的有 ' + doze.blDown + ' 幀（差的是進場放鏟那幾幀）；' +
+     '整段有 ' + (doze.sawPush / doze.mFrames * 100).toFixed(0) + '% 的機器時間在推');
   ok('車速在合理範圍，不會用飛的', doze.maxSpd > 3 && doze.maxSpd < 12,
      '最快 ' + doze.maxSpd + ' 單位／秒（小人走路是 6.8）');
   ok('整地時小人退出工地等，不會提早開工', doze.stillIn === 0 && doze.built === 0,
      '整完時還站在工地裡的有 ' + doze.stillIn + ' 人（最後一次有人在裡面是第 ' +
      doze.lastIn + ' 秒／共 ' + doze.secs + ' 秒），期間蓋了 ' + doze.built + ' 塊');
-  /* 推得出去多少很看堆的位置（堆在正中央就推得遠、六秒半跑不完幾趟），
-     實測 54～301 塊。門檻只用來擋「鏟子完全沒作用」，不拿來宣稱清得多乾淨。 */
-  ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > 25,
-     doze.cohort + ' 塊裡有 ' + doze.pushedOut + ' 塊被鏟出範圍，收尾彈掉 ' + doze.kicked +
+  /* 清得掉多少很看堆的位置，但門檻要有意義：改之前同一支量測是平均 27～33%
+     （中世紀城堡四輪 15/18/32/43%），改之後 51～69%。門檻放四成，擋的是退步不是抖動。 */
+  ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > doze.cohort * 0.4,
+     doze.cohort + ' 塊裡有 ' + doze.pushedOut + ' 塊被鏟出範圍（' +
+     (doze.pushedOut / doze.cohort * 100).toFixed(0) + '%），收尾彈掉 ' + doze.kicked +
      ' 塊；最密的一格 ' + JSON.stringify(doze.trail.slice(0, 12)));
   ok('整地完工地範圍是空的', doze.dirty1 === 0,
      '整地 ' + doze.secs + ' 秒，範圍內從最多 ' + doze.peak + ' 塊清到 ' + doze.dirty1 + ' 塊');
@@ -1396,7 +1421,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '車子走了 ' + JSON.stringify(dozAlign.drove) + '，碎料走了 ' +
      JSON.stringify(dozAlign.moved) + '（最大落差 ' + dozAlign.slip.toFixed(2) + '）');
   ok('推土機沒有多吃 draw call', dozAlign.calls <= 13,
-     dozAlign.calls + ' 個（整地中含 3 台機器）');
+     dozAlign.calls + ' 個（整地中的機器共用一個 InstancedMesh，幾台都一樣）');
 
   /* 碎料要「被帶著走」，不能被彈開。踩過的雷：每幀直接呼叫 separate 擠開重疊，
      它一幀能把積木推開 4.7 單位、遠比車速快，鏟子前的碎料瞬間就被彈出作用範圍——
@@ -1495,6 +1520,113 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('戳正在搬運的小人會跌倒並掉落積木',
      poke.skip || (poke.fall && poke.after < poke.carried),
      poke.skip ? '（這輪沒有人在搬運，略過）' : poke.carried + ' → ' + poke.after);
+
+  /* 手上的積木被波及時要真的脫手：解除跟小人的綁定、回到散落佇列、掉到地上。
+     上面兩條只比了「搬運中的總數有沒有變少」，那個 <= 永遠成立，證不到單一塊的下場。 */
+  const unpar = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    for (let i = 0; i < 400; i++) step(0.05);
+    // 逃命會讓人提早脫手，這裡要驗的是「被炸到才脫手」那條路徑，先關掉
+    const orig = alertFlee; alertFlee = () => {};
+    const held = [];
+    for (let i = 0; i < workers.length; i++) {
+      const b = workers[i].block;
+      if (b >= 0 && (blocks[b].st === 1 || blocks[b].st === 2)) held.push({ w: i, b });
+    }
+    explode({ x: 0, y: 3, z: 0 }, 40, 30);
+    alertFlee = orig;
+    let stuck = 0, holder = 0, slot = 0;
+    for (const o of held) {
+      const b = blocks[o.b];
+      if (b.st === 1 || b.st === 2) stuck++;                 // 還黏在手上
+      if (b.holder >= 0) holder++;                           // 還記著是誰拿的
+      if (b.slot >= 0) slot++;                               // 還占著藍圖格子
+    }
+    const hands = held.filter(o => workers[o.w].block >= 0 || workers[o.w].carry).length;
+    for (let i = 0; i < 40; i++) step(0.05);
+    const landed = held.filter(o => blocks[o.b].st === 0).length;   // FREE＝回到散落佇列
+    return { n: held.length, stuck, holder, slot, hands, landed };
+  });
+  ok('被炸到時手上的積木會脫手、掉回散落佇列',
+     unpar.n > 0 && unpar.stuck === 0 && unpar.holder === 0 && unpar.slot === 0 &&
+     unpar.hands === 0 && unpar.landed === unpar.n,
+     unpar.n + ' 塊在手上：黏著不放的 ' + unpar.stuck + ' 塊、還記著持有人的 ' + unpar.holder +
+     ' 塊、還占著格子的 ' + unpar.slot + ' 塊；落地變回散料的 ' + unpar.landed + ' 塊');
+
+  /* ══════════ 逃命 ══════════ */
+  head('逃命');
+  /* 核彈有 2.8 秒倒數、魔法陣有 6 秒——預告一出現，範圍內的人就該丟下東西往外跑。
+     對照組把 alertFlee 換成空的，量「沒這個機制會被炸飛幾個」。 */
+  const flee = await page.evaluate(() => {
+    const run = on => {
+      const orig = alertFlee;
+      if (!on) alertFlee = () => {};
+      shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+      targetCnt = 900; setWorkerCount(20); startBuild(true);
+      for (let i = 0; i < 400; i++) step(0.05);
+      const near = workers.filter(w => Math.hypot(w.x, w.z) < NUKE_R);
+      const d0 = near.map(w => Math.hypot(w.x, w.z));
+      callNuke({ x: 0, z: 0 });
+      const fleeing = workers.filter(w => w.flee > 0).length;
+      // 預告期間不該有人還搬著積木、還占著格子；而且要越跑越遠
+      let carry = 0, slot = 0, back = 0, maxPh = 0, prev = d0.slice();
+      for (let i = 0; i < 60 && nuke; i++) {
+        step(0.05);
+        for (let k = 0; k < near.length; k++) {
+          const w = near[k];
+          if (w.flee <= 0) continue;
+          if (w.carry) carry++;
+          if (w.slot >= 0) slot++;
+          const d = Math.hypot(w.x - 0, w.z - 0);
+          if (d < prev[k] - 1e-6) back++;               // 往爆心跑＝方向錯了
+          prev[k] = d;
+        }
+      }
+      for (const w of near) if (w.gait > maxPh) maxPh = w.gait;
+      for (let i = 0; i < 4; i++) step(0.05);
+      const escaped = near.filter(w => Math.hypot(w.x, w.z) >= NUKE_R).length;
+      const tossed = near.filter(w => w.air).length;
+      for (let i = 0; i < 160; i++) step(0.05);
+      alertFlee = orig;
+      return { near: near.length, fleeing, carry, slot, back, escaped, tossed,
+               stuckFlee: workers.filter(w => w.flee > 0).length,
+               busy: workers.filter(w => w.st !== 'idle').length };
+    };
+    const on = run(true), off = run(false);
+    // 魔法陣：六秒預告，圈內的人夠時間全部跑出去
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    for (let i = 0; i < 400; i++) step(0.05);
+    const inRing = workers.filter(w => Math.hypot(w.x, w.z) < MAG_R);
+    castMagic({ x: 0, z: 0 });
+    const magFlee = workers.filter(w => w.flee > 0).length;
+    for (let i = 0; i < 130 && magic; i++) step(0.05);
+    const magOut = inRing.filter(w => Math.hypot(w.x, w.z) >= MAG_R).length;
+    const magFar = Math.max(...inRing.map(w => Math.hypot(w.x, w.z)));
+    return { on, off, mag: { n: inRing.length, fleeing: magFlee, out: magOut,
+                             far: +magFar.toFixed(1) } };
+  });
+  ok('核彈倒數一出現，範圍內的人全部開始逃', flee.on.near > 5 && flee.on.fleeing >= flee.on.near,
+     '半徑 30 內有 ' + flee.on.near + ' 人，' + flee.on.fleeing + ' 人進入逃命狀態');
+  ok('逃命時會丟下手上的積木、放掉認領的格子',
+     flee.on.carry === 0 && flee.on.slot === 0,
+     '逃跑期間還搬著積木的有 ' + flee.on.carry + ' 幀、還占著格子的 ' + flee.on.slot + ' 幀');
+  ok('跑的方向是背對爆心', flee.on.back === 0,
+     '逃跑期間離爆心變近的取樣 ' + flee.on.back + ' 次');
+  /* 跑得掉的逃過一劫、跑不掉的照樣被炸飛——腳程只有 1.55 倍就是為了留下這個差別。
+     實測開著逃命被炸飛 3～10 人，關掉是 13～19 人。 */
+  ok('跑得掉的人真的躲過爆炸', flee.on.escaped > flee.on.near * 0.3 &&
+     flee.on.tossed < flee.off.tossed * 0.8,
+     '逃出半徑的 ' + flee.on.escaped + '/' + flee.on.near + ' 人，被炸飛 ' + flee.on.tossed +
+     ' 人（關掉逃命機制是 ' + flee.off.tossed + '/' + flee.off.near + ' 人）');
+  ok('炸完會回去工作，不會卡在逃命狀態',
+     flee.on.stuckFlee === 0 && flee.on.busy > 0,
+     '還在逃的 ' + flee.on.stuckFlee + ' 人，回去工作的 ' + flee.on.busy + ' 人');
+  ok('魔法陣六秒預告，圈內的人來得及全部跑出去',
+     flee.mag.n > 5 && flee.mag.fleeing >= flee.mag.n && flee.mag.out === flee.mag.n,
+     '圈內 ' + flee.mag.n + ' 人全部起跑，跑出半徑 30 的有 ' + flee.mag.out +
+     ' 人（最遠 ' + flee.mag.far + '）');
 
   /* ══════════ 破壞道具與解鎖 ══════════ */
   head('破壞道具與解鎖');
@@ -1845,7 +1977,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      quakeT.small.lo > 0 && quakeT.small.hi > 0,
      '落點 10 單位內只占 ' + (quakeT.small.nearFrac * 100).toFixed(0) +
      '%，下半部 ' + quakeT.small.lo + ' 塊、上半部 ' + quakeT.small.hi + ' 塊');
-  ok('震完就停，不會一直掉', quakeT.small.after === 0,
+  /* 允許一點餘波：震掉的那批本來就是分批落下的（fallIn 按高度錯開），
+     最後一兩塊落地時抽掉鄰居的支撐，連帶再掉一塊是對的物理。
+     要擋的是「一直掉」不是「完全不掉」——實測十二輪 0～2 塊（門檻 0 會有三成機率誤判）。 */
+  ok('震完就停，不會一直掉', quakeT.small.after <= 3,
      '地震結束後 2 秒又掉了 ' + quakeT.small.after + ' 塊');
   ok('大槌砸空地震得比較兇（兩倍）',
      quakeT.big.frac > quakeT.small.frac * 1.7 && quakeT.big.frac < 0.18,

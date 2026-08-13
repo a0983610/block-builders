@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.36.0';
+const VERSION = '1.37.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -370,30 +370,56 @@ function startBuild(instant) {
    碎料會全堆在挨打的那一區。所以推土機要做的是「去把堆起來的推散」，
    不是把整片地毯式掃一遍。
 
-   每台機器自己找一坨最密的碎料，繞到那坨的內側，朝外把它推出工地範圍，
-   然後再找下一坨。找不到值得推的堆就收工。剩下的零星碎塊在收尾時彈出去，
+   每台機器自己找一坨最密的碎料，從現在的位置直接對準它切進去，一路推到工地
+   另一頭出去，再找下一坨。找不到值得推的堆就收工。剩下的零星碎塊在收尾時彈出去，
    不為了那幾塊讓玩家多等好幾秒。
+
+   本來的做法是「先繞到那坨的內側，再朝外推」——推的距離短，聽起來省力，
+   但機器得先抬著鏟子穿過整個工地才站得到內側。實測那趟空跑吃掉三成到七成七的
+   機器時間，而且六秒半只夠跑完一趟（中世紀城堡整段整地期間只派了三次工），
+   碎料有 65～100% 是時間到了直接彈掉的，不是真的被推出去的。
+   對穿就沒有這個問題：進了範圍鏟子就放下來，出範圍才抬起來。
 
    車速是固定的，而且比小人走路快不了多少——推土機本來就該是慢的。
    之前用「一趟固定跑幾秒」回推速度，大工地會飆到每秒 57 單位，看起來像在飛。 */
 // 鏟子的寬度與位置直接取畫面那邊的值，判定跟看到的才會是同一把鏟子
 const DOZ_W = ENG.DOZ_W, DOZ_FRONT = ENG.DOZ_FRONT;
-const DOZ_N = 3;                    // 派幾台
-const DOZ_MOVE = 9.5;               // 空車趕路的速度
-const DOZ_PUSH = 6.5;               // 推著碎料時的速度
+/* 派幾台看工地多大：地面每這麼多平方單位派一台。時限固定，一台在時限內大概只推得動
+   一條線那麼寬，所以工地一大就得靠台數補。固定三台的話大工地根本清不動
+   （實測 siteR 44 的工地，六秒半推出去 0 塊，1391 塊全靠收尾彈掉）。
+   上限 6 是畫面那邊 MAXDOZ 的容量。 */
+const DOZ_AREA = 160;
+const DOZ_MIN = 3, DOZ_MAX = 6;
+const DOZ_MOVE = 9.5;               // 空鏟趕路的速度
+const DOZ_PUSH = 6.5;               // 鏟子上有料時的速度
+const DOZ_LOAD = 0.5;               // 鏟到料之後還維持慢速幾秒
 const DOZ_TURN = 3.4;               // 轉向角速度（rad/s）
-const DOZ_BACK = 6;                 // 停在那坨的內側多遠開始推
 const DOZ_WAIT = 1.3;               // 開工前怠速幾秒，等飛在半空的碎料落地
 const DOZ_CELL = 5;                 // 找堆時的格子邊長
 const DOZ_HEAP = 12;                // 一格少於這麼多塊就不算「堆」，不值得專程去推
-const DOZ_LIMIT = 6.5;              // 整地最多拖這麼久。碎料鋪滿整片地時堆推不完，
-                                    // 但這是換場的空檔，不是關卡——時間到就收工，剩下的彈掉
+/* 整地最多拖這麼久（含開工前的怠速）。碎料鋪滿整片地時堆推不完，但這是換場的空檔，
+   不是關卡——時間到就收工，剩下的彈掉。堆推完了本來就會提早收工，這只是上限。
+   試過讓時限跟工地大小走（金門大橋那種橫跨 44 單位的會拉到 11.7 秒），
+   換來的只有 7～10% 清除率——多等五秒不值得，維持固定。 */
+const DOZ_LIMIT = 6.5;
 /* 鏟面後方多深之內都算同一堆，一起往前帶。抓得越深一次帶越多，但也得推得更遠
    才能整堆送出範圍外——不然機器停下時，那一疊的尾巴還留在工地裡。 */
 const DOZ_PILE = 7;
+/* 派工的距離折價：一坨的分數是「塊數 ÷ (1 + 距離×DOZ_TRIP)」。以前是「最大的那坨先派」，
+   結果幾台會為了同一坨橫跨整個工地，路上鏟子還是抬著的——實測那趟空跑吃掉機器
+   三成到七成七的時間。就近推小坨的產出反而比較高。
+   用比值不用扣分：扣分要跟「塊數」同一個尺度，堆的大小一變就整個歪掉
+   （試過每單位扣 2.2 塊，結果所有堆都被扣成負分，機器有一半時間在空轉）。 */
+const DOZ_TRIP = 0.12;
 let dozers = null;
 
 const siteClearR = () => siteR + 1.4;
+/* 鏟子放得下來的範圍，以及一趟推到哪裡才算送出去。
+   鏟面在車體前方 DOZ_FRONT，鏟面前那一疊還會再往前延伸 DOZ_PILE，所以車體只要過了
+   邊界一點點，整疊就已經在工地外面了。以前設在邊界外 9 單位收手——那多出來的
+   七八個單位全是空地，卻要用推料的慢速跑完，實測整趟路線因此被灌水兩成。 */
+const dozWorkR = () => siteClearR() + 3;
+const dozOutR = () => siteClearR() + 2;
 function countDirty() {
   const r = siteClearR(); let n = 0;
   for (const b of blocks) if (b.st === FREE && Math.hypot(b.x, b.z) < r) n++;
@@ -408,14 +434,17 @@ function beginBuild() {
   buildStart = performance.now();     // 施工計時從真正開工才起算，不含整地
 }
 function startClear() {
-  const R = siteClearR() + 9;
+  /* 從邊界外一點點進場就好。以前擺在外面 9 單位，光是開到有碎料的地方就吃掉
+     時限的兩成——而那段路上什麼都沒有。 */
+  const R = siteClearR() + 4;
+  const n = clamp(Math.round(Math.PI * siteClearR() ** 2 / DOZ_AREA), DOZ_MIN, DOZ_MAX);
   dozers = {
     t: 0, wait: DOZ_WAIT, done: false,
-    list: Array.from({ length: DOZ_N }, (_, k) => {
-      const ang = (k / DOZ_N + Math.random() * 0.2) * Math.PI * 2;  // 從場邊不同方向開進來
+    list: Array.from({ length: n }, (_, k) => {
+      const ang = (k / n + Math.random() * 0.2) * Math.PI * 2;      // 從場邊不同方向開進來
       const x = Math.cos(ang) * R, z = Math.sin(ang) * R;
       // rotation.y = a 會讓車頭（local +Z）指向 (sin a, cos a)，所以面向原點是 atan2(-x, -z)
-      return { x, z, a: Math.atan2(-x, -z), st: 'seek', tx: 0, tz: 0, ux: 0, uz: 0, bl: 1, k };
+      return { x, z, a: Math.atan2(-x, -z), st: 'seek', tx: 0, tz: 0, bl: 1, load: 0, k };
     })
   };
   phase = 'clear';
@@ -439,14 +468,40 @@ function listHeaps() {
   out.sort((a, b) => b.n - a.n);
   return out;
 }
-/* 派工：繞到那坨的內側，等一下朝外推。堆剛好在正中心時就照現在的車頭方向推。 */
-function assignHeap(m, h) {
-  const d = Math.hypot(h.x, h.z);
-  const ux = d < 0.5 ? Math.sin(m.a) : h.x / d;
-  const uz = d < 0.5 ? Math.cos(m.a) : h.z / d;
-  m.ux = ux; m.uz = uz;
-  m.tx = h.x - ux * DOZ_BACK; m.tz = h.z - uz * DOZ_BACK;
-  m.st = 'move';
+/* 一趟的路線：從機器現在的位置對準那一坨，穿過去、繼續往前直到出了工作範圍。
+   整趟就是一條直線，中間不用掉頭也不用繞路。
+   機器剛好站在那一坨上時（幾乎不會發生）就照現在的車頭方向推。 */
+function dozPath(m, h) {
+  const dx = h.x - m.x, dz = h.z - m.z;
+  const d = Math.hypot(dx, dz);
+  const fx = d < 0.5 ? Math.sin(m.a) : dx / d;
+  const fz = d < 0.5 ? Math.cos(m.a) : dz / d;
+  /* 解 |h + f·t| = out，取正根：沿著行進方向從那一坨再往前多遠才出得了工地。 */
+  const out = dozOutR();
+  const b = h.x * fx + h.z * fz;
+  const t = Math.sqrt(Math.max(0, b * b + out * out - h.x * h.x - h.z * h.z)) - b;
+  return { tx: h.x + fx * t, tz: h.z + fz * t, len: d + t };
+}
+/* 挑一坨給這台推：塊數多的優先，但整趟路線越長折價越多。挑走的從清單移除，
+   幾台機器才不會擠在同一坨上。回傳 null 表示沒有值得專程去推的了。
+
+   折的是「整趟路線」不是「到那一坨的距離」，而且剩下的時間跑不完的那趟直接當成
+   沒價值——跑不完等於把鏟子前面那一疊丟在工地中間，比不推還糟。
+   大工地最明顯：不看這條的話，六台會全部挑正中央那一坨最大的（實測路線 81～97 單位、
+   時限內連一趟都跑不完），六秒半下來送出工地的是 0 塊。邊上的小坨雖然只有十幾塊，
+   但一趟二十幾單位跑得完，真的送得出去。 */
+function pickHeap(m, heaps, tLeft) {
+  let bi = -1, best = -1, bestP = null;
+  for (let i = 0; i < heaps.length; i++) {
+    const p = dozPath(m, heaps[i]);
+    // 樂觀估：整趟都用空鏟的速度跑。連這樣都來不及的就是真的來不及
+    const fit = p.len / DOZ_MOVE <= tLeft ? 1 : 0.05;
+    const s = heaps[i].n / (1 + p.len * DOZ_TRIP) * fit;
+    if (s > best) { best = s; bi = i; bestP = p; }
+  }
+  if (bi < 0) return null;
+  heaps.splice(bi, 1);
+  return bestP;
 }
 /* 開向目標點。回傳是否已抵達。轉向不是瞬間的，車頭要轉過去才走得順。 */
 function driveTo(m, dt, spd) {
@@ -478,11 +533,14 @@ function dozRender(D) {
    下一幀又被拉回來，抖得更明顯。
 
    平移量直接用車子這一幀實際走的位移，不是用車速去算——轉彎時車子走得比車速慢，
-   用車速算的話碎料會跑到鏟子前面去。 */
+   用車速算的話碎料會跑到鏟子前面去。
+
+   回傳這一幀鏟到幾塊：鏟子空的時候可以開快一點（見 stepDozers）。 */
 function pushWithBlade(m, mvx, mvz) {
   const fx = Math.sin(m.a), fz = Math.cos(m.a);        // 車頭方向
   const frontX = m.x + fx * DOZ_FRONT, frontZ = m.z + fz * DOZ_FRONT;
   const mv = Math.hypot(mvx, mvz);
+  let n = 0;
   for (const b of blocks) {
     if (b.st !== FREE) continue;
     const rx = b.x - frontX, rz = b.z - frontZ;
@@ -503,7 +561,9 @@ function pushWithBlade(m, mvx, mvz) {
     if (d < 0.3) { const k = 0.3 - d; b.x += fx * k; b.z += fz * k; }
     b.wob = 0.3;
     gridAdd(b);
+    n++;
   }
+  return n;
 }
 function finishClear() {
   kickOutSite();                     // 剩下的零星碎塊直接彈出去收尾
@@ -517,7 +577,10 @@ function finishClear() {
 function stepDozers(dt) {
   const D = dozers; if (!D) return;
   D.t += dt;
-  if (D.wait > 0) { D.wait -= dt; return; }            // 怠速等碎料落地
+  /* 怠速等碎料落地。試過讓機器利用這一秒多先開進場中央待命，結果反而變差
+     （中世紀城堡 58.5%→45.5%、大象 59.3%→46.5%）：從場中央起步的第一趟太短，
+     一下就推出去了，等於少掃了一整條穿過工地的線。 */
+  if (D.wait > 0) { D.wait -= dt; return; }
   if (D.done) {
     let alive = 0;
     for (const m of D.list) {
@@ -528,28 +591,26 @@ function stepDozers(dt) {
     if (!alive) { dozers = null; ENG.putDozers([]); }
     return;
   }
-  const R = siteClearR();
   const heaps = listHeaps();
   let idle = 0;
   for (const m of D.list) {
-    if (m.st === 'move') {
-      m.bl += (1 - m.bl) * Math.min(1, dt * 6);        // 趕路時鏟子抬起來
-      if (driveTo(m, dt, DOZ_MOVE)) {
-        // 到位，開始朝外推。推到整疊都出了範圍才收手，不是車頭一出界就停
-        const out = R + DOZ_PILE + 2;
-        m.tx = m.ux * out; m.tz = m.uz * out;
-        m.st = 'push';
-      }
-    } else if (m.st === 'push') {
-      m.bl += (0 - m.bl) * Math.min(1, dt * 8);        // 鏟子放下來
+    if (m.st === 'push') {
+      /* 鏟子只看位置，不看在跑哪一段：進了工作範圍就放下來推，出了範圍才抬起來。
+         速度看鏟子上有沒有料：空鏟就開快的。工地大半是空地，整趟都用推料的慢速跑，
+         等於把時限花在沒東西可推的地方（中世紀城堡實測有 2 秒多是這樣耗掉的）。 */
+      const work = Math.hypot(m.x, m.z) < dozWorkR();
+      m.bl += ((work ? 0 : 1) - m.bl) * Math.min(1, dt * (work ? 8 : 6));
       const px = m.x, pz = m.z;
-      const at = driveTo(m, dt, DOZ_PUSH);
-      pushWithBlade(m, m.x - px, m.z - pz);            // 碎料跟著車子走同樣的位移
-      if (at || Math.hypot(m.x, m.z) > R + DOZ_PILE + 1) m.st = 'seek';
+      const at = driveTo(m, dt, work && m.load > 0 ? DOZ_PUSH : DOZ_MOVE);
+      // 碎料跟著車子走同樣的位移
+      const n = work ? pushWithBlade(m, m.x - px, m.z - pz) : 0;
+      // 留一點餘裕再加速，不然碎料稀疏的地方會一路走走停停
+      m.load = n > 0 ? DOZ_LOAD : Math.max(0, m.load - dt);
+      if (at) m.st = 'seek';
     }
     if (m.st === 'seek') {
-      const h = heaps.shift();                         // 最大的那坨先派，三台不會擠在一起
-      if (h) assignHeap(m, h); else idle++;
+      const p = pickHeap(m, heaps, DOZ_LIMIT - D.t);      // 挑一坨，幾台不會擠在一起
+      if (p) { m.tx = p.tx; m.tz = p.tz; m.st = 'push'; } else idle++;
     }
   }
   // 全部都找不到值得推的堆了，或是拖太久，就收工——不為了零星幾塊讓玩家乾等
@@ -653,6 +714,9 @@ function newWorker(i) {
        泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手。 */
     eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
+    /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
+       fer 是逃到離爆心多遠才算安全。 */
+    flee: 0, fdel: 0, fex: 0, fez: 0, fer: 0,
     /* 每個人身高略有差異。1.06–1.24 大約是積木邊長的一個半，
        比原本大一成半——太小的話遠鏡頭下只剩一撮色點，看不出在做什麼。 */
     scale: rr(1.06, 1.24)
@@ -713,7 +777,7 @@ function tossWorker(w, vx, vy, vz, lit) {
   releaseWorker(w);
   const sp = Math.hypot(vx, vz);
   if (sp > W_TOSS_MAX) { const k = W_TOSS_MAX / sp; vx *= k; vz *= k; }
-  w.air = 1; w.fall = 0; w.cheer = 0; w.pause = 0; w.gait = 0;
+  w.air = 1; w.fall = 0; w.cheer = 0; w.pause = 0; w.gait = 0; w.flee = 0;
   w.vx = vx; w.vy = vy; w.vz = vz;
   w.spin = rr(5, 12) * (Math.random() < 0.5 ? -1 : 1);
   if (lit) w.lit = 1;
@@ -722,7 +786,7 @@ function tossWorker(w, vx, vy, vz, lit) {
 function igniteWorker(w, roll) {
   if (w.burn > 0) return false;
   releaseWorker(w);
-  w.burn = W_BURN; w.roll = roll ? 1 : 0; w.bem = Math.random(); w.fall = 0;
+  w.burn = W_BURN; w.roll = roll ? 1 : 0; w.bem = Math.random(); w.fall = 0; w.flee = 0;
   w.bx = w.x; w.bz = w.z; w.br = rr(1.6, 2.8); w.ba = Math.random() * Math.PI * 2;
   return true;
 }
@@ -838,6 +902,61 @@ function walkTo(w, dt) {
   return false;
 }
 
+/* ── 逃命 ─────────────────────────────────────────────────
+   核彈（2 秒倒數）跟爆裂魔法（6 秒魔法陣）都會先預告。預告一出現，範圍內的小人
+   就丟下手上的東西往反方向跑，跑出安全距離才停下來回頭看。
+   跑得掉的逃過一劫、跑不掉的照樣被炸飛——這一段完全交給位置決定，不另外判生死。
+
+   安全距離抓比爆炸半徑再遠一點：剛好站在半徑上還是會被掃到（explode 是照距離
+   衰減的，邊緣一樣有力）。 */
+/* 腳程倍率跟腳步動畫倍率分開：動畫照使用者說的加倍，腳程只到 1.55。
+   兩個都給 2 的話核彈半徑 30、倒數 2.8 秒，圈內每一個人都跑得掉（實測 20/20 逃出），
+   等於幫小人開了無敵。1.55 的話站在爆心那一帶的來不及——有人逃掉、有人被炸飛，
+   那才是這個機制要的畫面。 */
+const FLEE_SPD = 1.55;
+const FLEE_STEP = 2;
+const FLEE_PAD = 6;                 // 逃到爆炸半徑外多遠才停
+const FLEE_TAIL = 0.6;              // 爆炸之後再多警戒幾秒，不要炸完立刻回頭上工
+const FLEE_REACT = [0.15, 0.55];    // 反應時間。全員同一幀起跑像一群機器人
+function alertFlee(point, R, t) {
+  for (const w of workers) {
+    if (w.air || w.burn > 0) continue;              // 已經在飛／在燒的，逃不了了
+    if ((w.x - point.x) ** 2 + (w.z - point.z) ** 2 > R * R) continue;
+    releaseWorker(w);                               // 手上的積木一律扔下（也會放掉認領的格子）
+    w.flee = t + FLEE_TAIL;
+    w.fdel = rr(FLEE_REACT[0], FLEE_REACT[1]);
+    w.fex = point.x; w.fez = point.z; w.fer = R + FLEE_PAD;
+    w.cheer = 0; w.pause = 0;
+  }
+}
+/* 逃命這一幀。跑出安全距離就停下來面向爆心看——一路跑到地圖邊緣看起來像在鬧脾氣，
+   而且六秒的魔法陣夠所有人跑出兩倍半徑那麼遠。 */
+function stepFlee(w, dt) {
+  w.flee -= dt;
+  if (w.fdel > 0) {                                 // 愣住那零點幾秒：抬頭看，還沒起步
+    w.fdel -= dt;
+    w.a = Math.atan2(w.fex - w.x, w.fez - w.z);
+    w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+    return;
+  }
+  const dx = w.x - w.fex, dz = w.z - w.fez;
+  const d = Math.hypot(dx, dz);
+  if (d >= w.fer) {                                 // 安全了：站定回頭看
+    w.a = Math.atan2(-dx, -dz);
+    w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+    w.ph += dt * 4;
+    return;
+  }
+  const ux = d < 0.001 ? Math.cos(w.a) : dx / d;    // 剛好站在爆心正下方就隨便挑一邊
+  const uz = d < 0.001 ? Math.sin(w.a) : dz / d;
+  const lim = arenaR + 20;
+  w.x = clamp(w.x + ux * WALK * FLEE_SPD * dt, -lim, lim);
+  w.z = clamp(w.z + uz * WALK * FLEE_SPD * dt, -lim, lim);
+  w.a = Math.atan2(ux, uz);
+  w.ph += dt * 11 * FLEE_STEP;                      // 腳步加倍
+  w.gait += (1 - w.gait) * Math.min(1, dt * 10);
+}
+
 /* 沿著建築外圈繞過去，不走直線——直線會從蓋好的建築正中央穿過去。
    角度先轉、半徑再收，兩個都到位才算抵達。 */
 function ringWalk(w, ta, rad, dt) {
@@ -894,9 +1013,9 @@ function updWorker(w, wi, dt) {
      不歸零的話工程師被戳倒了還躺在地上舉著圖。 */
   w.hail = 0; w.plan = 0;
   if (w.chatCd > 0) w.chatCd -= dt;
-  /* 被吹飛／點著／推倒，或是換場要清工地了——聊天一律中斷。
+  /* 被吹飛／點著／推倒／要逃命，或是換場要清工地了——聊天一律中斷。
      蓋完的那一刻也中斷：慶祝要全員到齊，不然聊到一半的那兩個會晚五秒才入圈。 */
-  if (w.chat > 0 && (w.air || w.burn > 0 || w.fall > 0 ||
+  if (w.chat > 0 && (w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
       (phase !== 'build' && phase !== 'done') || (phase === 'done' && w.cheer < CHEER_T)))
     endChat(w);
   if (w.burn > 0) {
@@ -920,6 +1039,10 @@ function updWorker(w, wi, dt) {
     return;
   }
   w.tilt += (0 - w.tilt) * Math.min(1, dt * 7);
+
+  /* 逃命優先於一切還站得起來的行為：施工、閒晃、慶祝、監工都先擱著。
+     擺在跌倒／著火之後——那兩種本來就動不了，逃不掉才合理。 */
+  if (w.flee > 0) { stepFlee(w, dt); w.y += (0 - w.y) * Math.min(1, dt * 6); return; }
 
   if (w.chat > 0) { stepChat(w, wi, dt); return; }
 
@@ -1140,7 +1263,8 @@ function endChat(w) {
 /* 閒著沒事、站得穩、剛剛沒聊過的才會被湊成一對。
    施工中只有「找不到工作」的人算閒晃（st 卡在 idle）；工程師在看圖不算閒。 */
 function chatFree(w) {
-  if (w.chat > 0 || w.chatCd > 0 || w.air || w.burn > 0 || w.fall > 0 || w.carry) return false;
+  if (w.chat > 0 || w.chatCd > 0 || w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
+      w.carry) return false;
   if (phase === 'done') return w.cheer >= CHEER_T;
   return phase === 'build' && w.st === 'idle' && !w.eng;
 }
@@ -2484,6 +2608,8 @@ const NUKE_NOSE = 1.8;
 function callNuke(point) {
   nuke = { x: point.x, y: NUKE_TOP + 3, z: point.z, s: NUKE_NOSE,
            t: NUKE_WAIT + NUKE_FALL, mark: 0, spin: 0 };
+  // 警報一響，準心範圍內的人就開始跑。倒數多久就給他們跑多久
+  alertFlee(point, NUKE_R, NUKE_WAIT + NUKE_FALL);
   sndSiren();
 }
 function nukeHit(p) {
@@ -2570,6 +2696,7 @@ function castMagic(point) {
   /* 整疊頂端在 34.6，貼著建築的取景裝不下（矮建築取景更近）。
      跟龍捲風、蘑菇雲同一套：施法期間鏡頭退開，爆完那朵雲會再接手撐住這個距離。 */
   ENG.holdWide(MAG_R * 2.2, MAG_TIME + 1);
+  alertFlee(point, MAG_R, MAG_TIME);      // 魔法陣一亮，站在陣裡的人就往外跑
   sndRune(0);
 }
 function stepMagic(dt) {
