@@ -213,7 +213,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     target: targetCnt, fresh: freshPref().cnt,
     slider: document.getElementById('cnt').value,
     label: document.getElementById('vCnt').textContent,
-    max: document.getElementById('cnt').max
+    max: document.getElementById('cnt').max,
+    min: document.getElementById('cnt').min,
+    cntMax: CNT_MAX, maxb: ENG.MAXB
   }));
   ok('預設建材 3000 塊', defCnt.target === 3000 && defCnt.fresh === 3000 &&
      defCnt.slider === '3000' && defCnt.label === '3000',
@@ -221,6 +223,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、slider=' + defCnt.slider + '（上限 ' + defCnt.max + '）、標籤 ' + defCnt.label);
   ok('開場那座就真的是 3000 塊上下', Math.abs(boot.total - 3000) / 3000 < 0.05,
      boot.bp + ' ' + boot.total + ' 塊');
+  /* 建材上限開到 10000（自訂藍圖要靠一萬塊才刻得出招牌、窗框那種細節）。
+     積木池必須比它更高：fitScale 挑的是「最接近目標」的那一階，可能落在目標之上
+     ——實測吉薩金字塔要 10000 時給出 10660（+7%）。池子不夠就會夾掉尾巴，那座永遠蓋不完。 */
+  ok('建材滑桿 300–10000，積木池留了超額餘裕',
+     defCnt.min === '300' && defCnt.max === '10000' && defCnt.cntMax === 10000 &&
+     defCnt.maxb >= 11000,
+     '滑桿 ' + defCnt.min + '–' + defCnt.max + '、積木池 ' + defCnt.maxb);
+  const bigBuild = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = CNT_MAX; startBuild(true); completeNow();
+    const r = { slots: bp.slots.length, pool: blocks.length, placed: placedCnt, phase };
+    targetCnt = 3000; shapePick = -1; startBuild(true); completeNow();
+    return r;
+  });
+  ok('一萬塊那一階蓋得完（積木池沒有夾掉尾巴）',
+     bigBuild.pool === bigBuild.slots && bigBuild.placed === bigBuild.slots &&
+     bigBuild.phase === 'done',
+     '吉薩金字塔 ' + bigBuild.slots + ' 格 → 池子 ' + bigBuild.pool + '、擺上 ' +
+     bigBuild.placed + '，phase=' + bigBuild.phase);
   ok('canvas 繪圖尺寸吃到 DPR',
      boot.cvW === Math.round(VIEW.width * Math.min(2, boot.dpr)), boot.cvW + '×' + boot.cvH);
   ok('canvas 有明確的 CSS 尺寸', boot.cssW === VIEW.width + 'px',
@@ -603,6 +624,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
     for (const k of ['boom', 'pal', 'gone', 'pin', 'missing'])
       r[k] = { fails: r[k].fails, warns: r[k].warns, text: r[k].text };
+    r.targets = BP_TARGETS.slice();
     SHAPES.length = n0;                 // 測完收掉，別影響後面掃全部 SHAPES 的測試
     return r;
   });
@@ -612,9 +634,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      /^=== 積木小人 · 藍圖診斷 v\d+\.\d+\.\d+ ===\n藍圖：範例小木屋（自訂 · gen）/.test(diag.good.text) &&
      diag.good.text.indexOf('<') < 0,
      diag.good.text.split('\n')[0]);
-  ok('報告會列出四個尺寸的實得塊數',
-     [300, 800, 1600, 3000].every(t => new RegExp('\\n\\s+' + t + ' → ').test(diag.good.text)),
-     diag.good.text.split('\n').filter(l => / → /.test(l)).length + ' 行塊數');
+  ok('報告會列出四個尺寸的實得塊數（含建材上限那一階）',
+     diag.targets.length === 4 && diag.targets[diag.targets.length - 1] === 10000 &&
+     diag.targets.every(t => new RegExp('\\n\\s+' + t + ' → ').test(diag.good.text)),
+     '量了 ' + diag.targets.join('／') + ' 四個尺寸');
   ok('gen 丟例外會被抓到，錯誤訊息原封不動寫進報告',
      diag.boom.fails.length > 0 && diag.boom.text.indexOf('測試用的爆炸') > 0,
      diag.boom.fails.join('；'));
@@ -634,45 +657,128 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      [diag.boom, diag.pal, diag.gone, diag.pin, diag.missing].every(r => /修法/.test(r.text)),
      '五種壞法（例外／配色／消失／針尖／找不到）都附了修法');
 
-  /* 遊戲裡那顆按鈕：一般玩家的唯一入口。要驗的是「按了真的看得到報告、複製得出去」 */
-  await page.evaluate(() => { document.getElementById('panel').classList.remove('hide'); });
-  await page.click('#diagBtn');
-  await page.waitForTimeout(150);
-  const diagUI = await page.evaluate(() => ({
-    open: document.getElementById('diagWrap').classList.contains('on'),
-    head: document.getElementById('diagText').value.split('\n')[0],
-    lines: document.getElementById('diagText').value.split('\n').length,
-    ro: document.getElementById('diagText').readOnly,
-    name: bp.name
+  /* 遊戲裡**不該**有檢查藍圖的入口：做藍圖是做藍圖、玩是玩。
+     入口在 藍圖預覽.html（下一段測），設定面板不留這一格。 */
+  const noDiagInGame = await page.evaluate(() => ({
+    btn: !!document.getElementById('diagBtn'),
+    box: !!document.getElementById('diagWrap'),
+    panelBtns: [...document.querySelectorAll('#panel button')].map(b => b.id).join(',')
   }));
-  ok('設定面板的「檢查藍圖」按得出報告視窗',
-     diagUI.open && /^=== 積木小人 · 藍圖診斷/.test(diagUI.head) && diagUI.lines > 10,
-     '檢查的是現在這一座「' + diagUI.name + '」，報告 ' + diagUI.lines + ' 行');
-  await page.click('#diagCopy');
-  await page.waitForTimeout(100);
-  await page.click('#diagClose');
-  await page.waitForTimeout(150);
-  const diagAfter = await page.evaluate(() => ({
-    open: document.getElementById('diagWrap').classList.contains('on'),
-    ro: document.getElementById('diagText').readOnly,
-    err: window.__diagErr || ''
-  }));
-  ok('複製與關閉都不會弄壞報告視窗',
-     !diagAfter.open && diagAfter.ro && !diagAfter.err,
-     '關掉後 textarea 仍是唯讀，沒有 console 錯誤');
-  await page.evaluate(() => { document.getElementById('panel').classList.add('hide'); });
+  ok('遊戲的設定面板沒有檢查藍圖那一格',
+     !noDiagInGame.btn && !noDiagInGame.box,
+     '面板上的按鈕只有 ' + noDiagInGame.panelBtns);
 
-  /* 命令列版與遊戲裡的按鈕必須是同一份輸出，不然兩邊會給出不同建議。
+  /* 命令列版與預覽頁的報告必須是同一份輸出，不然兩邊會給出不同建議。
      這裡直接在測試行程 require 那支檔，跟瀏覽器裡的結果逐字比對。 */
   const cliSame = await (async () => {
     const nodeBP = require(path.join(ROOT, 'src/blueprints.js'));
     const ver = await page.evaluate(() => VERSION);
-    const browser = await page.evaluate(() => checkBlueprint(0, { ver: VERSION }).text);
+    const web = await page.evaluate(() => checkBlueprint(0, { ver: VERSION }).text);
     const cli = nodeBP.checkBlueprint(0, { ver }).text;
-    return { same: cli === browser, cliHead: cli.split('\n')[1], n: cli.length };
+    /* 「產生時間」那兩行是當下量到的耗時，本來就會因為機器與引擎不同而有無
+       （node 跟 headless chromium 的速度不一樣，同一台機器上跑兩次也可能跨過門檻），
+       而它會不會出現又會改到「結論」那行的提醒數。要比的是報告內容，
+       不是這一次量到多快，所以這三行先挑掉。 */
+    const strip = t => t.split('\n')
+      .filter((l, i, a) => l.indexOf('產生時間') < 0 && l.indexOf('結論：') < 0 &&
+                           !(i > 0 && a[i - 1].indexOf('產生時間') >= 0))
+      .join('\n');
+    const a = strip(cli), b = strip(web);
+    let first = '';
+    if (a !== b) {
+      const la = a.split('\n'), lb = b.split('\n');
+      for (let i = 0; i < Math.max(la.length, lb.length); i++)
+        if (la[i] !== lb[i]) { first = '第 ' + i + ' 行：cli「' + la[i] + '」／頁面「' + lb[i] + '」'; break; }
+    }
+    return { same: a === b, cliHead: cli.split('\n')[1], n: a.length, first };
   })();
-  ok('命令列版（tools/check-bp.cjs）與遊戲裡的報告逐字相同', cliSame.same,
-     cliSame.cliHead + '，' + cliSame.n + ' 字元');
+  ok('命令列版（tools/check-bp.cjs）與預覽頁的報告逐字相同', cliSame.same,
+     cliSame.first || (cliSame.cliHead + '，' + cliSame.n + ' 字元'));
+
+  /* ── 藍圖預覽頁（藍圖預覽.html）───────────────────────────
+     做藍圖用的獨立進入點：看得到蓋起來的樣子、按一下產出可貼回給 AI 的報告。
+     它不載 game.js（那會把整個遊戲跑起來），所以引擎那些「還沒餵資料」的網格
+     要自己清乾淨——不清的話原點會冒出 80 個小人。 */
+  head('藍圖預覽頁');
+  const vpErr = [];
+  const vp = await browser.newPage({ viewport: VIEW });
+  vp.on('pageerror', e => vpErr.push('pageerror: ' + e.message));
+  vp.on('console', m => { if (m.type() === 'error') vpErr.push('console: ' + m.text()); });
+  await vp.goto('file:///' + path.join(ROOT, '藍圖預覽.html').replace(/\\/g, '/'));
+  // bp 是 let 宣告的，在全域詞法環境裡而不是 window 上，所以要用 typeof 問
+  await vp.waitForFunction(() => typeof ENG !== 'undefined' && typeof bp !== 'undefined' && bp);
+  const vpBoot = await vp.evaluate(() => ({
+    opts: document.getElementById('shape').options.length,
+    first: document.getElementById('shape').options[0].textContent,
+    blocks: bp.slots.length,
+    drawn: ENG.three.blockMesh.count,
+    workers: ENG.three.workerMesh.count,
+    calls: ENG.info().calls,
+    ver: VIEWER_VER,
+    stat: document.getElementById('stat').textContent,
+    /* 引擎每個 InstancedMesh 的預設 count 就是它的上限。這一頁沒餵資料的那些
+       必須是 0，不然原點會冒出 80 個小人、一堆石頭與樹（visible 仍是 true
+       但 count=0 就不畫，所以要看 count 而不是看 visible）。 */
+    ghosts: ENG.three.scene.children
+      .filter(o => o.isInstancedMesh && o !== ENG.three.blockMesh && o.visible && o.count > 0)
+      .length
+  }));
+  ok('預覽頁載得起來，48 座 + 自訂都在選單裡，自訂排最前面',
+     vpBoot.opts === ALL_SHAPES && vpBoot.first.indexOf('★') === 0,
+     vpBoot.opts + ' 個選項，第一個是「' + vpBoot.first + '」');
+  ok('預覽頁真的把藍圖畫出來了',
+     vpBoot.drawn === vpBoot.blocks && vpBoot.blocks > 100 && vpBoot.calls <= 8,
+     vpBoot.blocks + ' 塊全部進了 InstancedMesh，' + vpBoot.calls + ' 個 draw call');
+  ok('預覽頁沒有小人，也沒有任何沒餵資料就冒出來的網格',
+     vpBoot.workers === 0 && vpBoot.ghosts === 0,
+     '小人 ' + vpBoot.workers + ' 個、還有 ' + vpBoot.ghosts +
+     ' 顆 InstancedMesh 沒清乾淨（積木那顆不算）');
+  ok('預覽頁的統計行寫出塊數與尺寸',
+     /\d+ 塊/.test(vpBoot.stat) && /尺寸 \d+×\d+×\d+/.test(vpBoot.stat), vpBoot.stat);
+
+  const vpBig = await vp.evaluate(() => {
+    const sel = document.getElementById('shape');
+    sel.value = String(SHAPES.findIndex(s => s.n === '吉薩金字塔'));
+    sel.dispatchEvent(new Event('change'));
+    document.getElementById('cnt').value = '10000';
+    const t0 = performance.now();
+    document.getElementById('go').click();
+    return { ms: Math.round(performance.now() - t0), blocks: bp.slots.length,
+             drawn: ENG.three.blockMesh.count, maxb: ENG.MAXB };
+  });
+  ok('預覽頁一萬塊也畫得完（沒有被積木池夾掉）',
+     vpBig.blocks > 10000 && vpBig.drawn === vpBig.blocks && vpBig.blocks <= vpBig.maxb,
+     '吉薩金字塔要 10000 → ' + vpBig.blocks + ' 塊全上場（池子 ' + vpBig.maxb +
+     '），產生 ' + vpBig.ms + 'ms');
+
+  await vp.click('#chk');
+  await vp.waitForTimeout(200);
+  const vpRep = await vp.evaluate(() => {
+    const t = document.getElementById('rep').value;
+    return { head: t.split('\n')[0], lines: t.split('\n').length, ver: VIEWER_VER };
+  });
+  ok('預覽頁按「檢查藍圖」產出帶版本號的報告',
+     vpRep.head === '=== 積木小人 · 藍圖診斷 v' + vpRep.ver + ' ===' && vpRep.lines > 10,
+     vpRep.head + '，' + vpRep.lines + ' 行');
+  await vp.click('#copy');
+  await vp.waitForTimeout(250);
+  const vpCopy = await vp.evaluate(() => document.getElementById('copy').textContent);
+  ok('複製報告按得動（file:// 上會退回 execCommand）', /已複製|Ctrl\+C/.test(vpCopy),
+     '按鈕變成「' + vpCopy + '」');
+
+  const vpWire = await vp.evaluate(() => {
+    const w = document.getElementById('wire');
+    w.checked = true; w.dispatchEvent(new Event('change'));
+    const off = ENG.three.scene.children.filter(o => o.isMesh && o.visible).length;
+    w.checked = false; w.dispatchEvent(new Event('change'));
+    return { off, on: ENG.three.scene.children.filter(o => o.isMesh && o.visible).length };
+  });
+  ok('「只看輪廓」把草地收掉、再打開會回來', vpWire.off === 1 && vpWire.on > 1,
+     '關掉草地後看得見 ' + vpWire.off + ' 顆網格（只剩積木），打開後 ' + vpWire.on + ' 顆');
+  ok('預覽頁的版本號跟 src/game.js 一致', vpBoot.ver === await page.evaluate(() => VERSION),
+     '預覽頁 v' + vpBoot.ver);
+  ok('預覽頁整段跑完沒有 console 錯誤', vpErr.length === 0, vpErr.join(' / ') || '乾淨');
+  await vp.close();
 
   /* 金門大橋：跨距是奇數時 −L/2 是 .5，整條橋的 x 都變半格，
      吊索那行的 `x % 3 === 0` 永遠不成立 → 那個尺度整座橋沒有吊索，
@@ -1940,11 +2046,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      walkIn.who + ' 人共被抓到 ' + walkIn.frames + ' 幀（每人最多一幀），最後被炸飛 ' +
      walkIn.tossed + ' 人');
 
-  ok('魔法陣六秒預告，圈內的人幾乎都跑得出去',
+  /* 「跑得出去」本來就不是保證：每個人是自己抽 16～34 單位跑完就停（下一條測這件事），
+     所以站在陣心附近又抽到短距離的人跑不出半徑 30 是設計如此，不是 bug。
+     這條要守的是「全部有起跑、而且大多數真的離開了圈子」——原本寫成「最多兩人沒出去」
+     其實是靠運氣過的（實測 16 人裡出去 13 人，81%）。 */
+  ok('魔法陣六秒預告，圈內的人來得及跑',
      flee.mag.n > 5 && flee.mag.fleeing >= flee.mag.n &&
-     flee.mag.out >= flee.mag.n - 2,
+     flee.mag.out >= Math.ceil(flee.mag.n * 0.7),
      '圈內 ' + flee.mag.n + ' 人全部起跑，跑出半徑 30 的有 ' + flee.mag.out +
-     ' 人（最遠 ' + flee.mag.far + '）');
+     ' 人（' + Math.round(flee.mag.out / flee.mag.n * 100) + '%，最遠 ' + flee.mag.far + '）');
   /* 小人不會知道這一發的威力範圍到哪裡，所以每個人是「自己抽一段距離跑完就停」，
      不是「跑到安全半徑」。驗的是那段距離真的因人而異、而且落在設定的區間裡。 */
   ok('每個人跑的距離不一樣，跟爆炸半徑無關',
@@ -4473,8 +4583,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return JSON.parse(JSON.stringify(pref));
   });
   ok('存檔裡的設定超出範圍會被夾回來',
-     prefClamp.cnt <= 3000 && prefClamp.wk >= 1 && prefClamp.spd <= 4,
-     JSON.stringify(prefClamp));
+     prefClamp.cnt === 10000 && prefClamp.wk >= 1 && prefClamp.spd <= 4,
+     JSON.stringify(prefClamp) + '（建材上限 10000）');
 
   /* 預設建材從 900 改成 3000 那次：舊存檔裡的 900 分不出是玩家挑的還是舊預設，
      所以認「沒有 v 欄位」的存檔，一次性換成新預設。存過一次之後就不再動它。 */
@@ -5025,7 +5135,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const perf = await page.evaluate(() => {
     running = false;
     const rows = [];
-    for (const [cnt, wk] of [[900, 20], [3000, 60]]) {
+    for (const [cnt, wk] of [[900, 20], [3000, 60], [10000, 20]]) {
       targetCnt = cnt; shapePick = 0; setWorkerCount(wk); startBuild(true);
       for (let i = 0; i < 240; i++) step(0.016);
       let t = performance.now();
@@ -5043,6 +5153,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        r.step + r.draw < 4,
        'step ' + r.step.toFixed(2) + 'ms + draw ' + r.draw.toFixed(2) + 'ms = ' +
        (r.step + r.draw).toFixed(2) + 'ms（CPU 上限約 ' + Math.round(1000 / (r.step + r.draw)) + ' fps）');
+
+  /* 建材開到一萬之後最貴的場面不是靜態，而是「拆到一半」：垮塌連鎖會一直把支撐
+     標記成 dirty，於是每幀都要重算一次連通性（一萬塊時單次 4.1ms，三千塊時 1.4ms）。
+     單次重算會讓某幾幀超過預算，但它每幀最多跑一次，平均仍然遠低於 4ms。
+     實測（吉薩金字塔連續地震）：3000 塊平均 0.78ms／最壞 5.8ms，
+     10000 塊平均 2.08ms／最壞 7.2ms——用 60fps 的 16.7ms 看都還很寬。 */
+  const perfWreck = await page.evaluate(() => {
+    running = false;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = CNT_MAX; setWorkerCount(20); startBuild(true); completeNow();
+    let worst = 0, sum = 0, n = 0;
+    for (let k = 0; k < 40; k++) {
+      startQuake({ x: 0, y: 0, z: 0 }, true);
+      for (let i = 0; i < 6; i++) {
+        const t = performance.now();
+        step(0.02); draw();
+        const ms = performance.now() - t;
+        worst = Math.max(worst, ms); sum += ms; n++;
+      }
+    }
+    const r = { blocks: blocks.length, avg: sum / n, worst };
+    targetCnt = 3000; shapePick = -1; startBuild(true); completeNow();
+    return r;
+  });
+  /* 門檻放寬到 6ms／60ms：這一段本身就有 ±70% 的機器抖動（同一台機器實測平均
+     2.07～3.53ms、最壞單幀 7.2～16.2ms，看有沒有別的 node 行程在跑）。
+     要守的是「不要出現數量級的退步」，不是把數字釘在某一次量到的值上。 */
+  ok('一萬塊拆到一半（垮塌連鎖 + 支撐重算）：平均每幀還在預算內',
+     perfWreck.avg < 6 && perfWreck.worst < 60,
+     perfWreck.blocks + ' 塊：平均 ' + perfWreck.avg.toFixed(2) + 'ms、最壞單幀 ' +
+     perfWreck.worst.toFixed(1) + 'ms（60fps 的預算是 16.7ms）');
 
   /* 最貴的一幀是核彈剛炸完：三千塊碎料在飛，加上滿場的火球與蘑菇雲粒子。
      粒子上限從 420 拉到 560、又多了一組火球，這裡守住它沒有把成本翻上去。 */

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.41.0';
+const VERSION = '1.42.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -35,6 +35,13 @@ let arenaR = 40;                    // 整片工地半徑（建材散落 + 碎�
 let phase = 'build';                // clear（整地）| build | done | wreck
 let buildStart = 0, buildElapsed = 0;
 let timeScale = 1;
+/* 建材數的上下限（跟 index.html 的滑桿一致）。上限開到 10000 是為了自訂藍圖的
+   「相似度」——一萬塊才刻得出招牌、窗框、屋脊那種細節。實測 10000 塊時每幀
+   step 0.20ms + draw 0.77ms（預算 4ms），拆到一半連鎖垮塌時平均 2.08ms、
+   最壞單幀 7.2ms（3000 塊時是 0.78／5.8ms）——用 60fps 的 16.7ms 看都還很寬。
+   內建那 48 座多半到自己的 hi 就停了（金門大橋 3347、巨石陣 3296），
+   真的長得到一萬的是金字塔、長城、城堡、聖家堂、吳哥窟這幾座。 */
+const CNT_MIN = 300, CNT_MAX = 10000;
 let targetCnt = 3000;
 let workerCnt = 20;
 let shapePick = -1;                 // -1 = 隨機
@@ -1547,7 +1554,7 @@ function load() {
        還是預設值，所以一次性換成新預設，不然改了預設的人永遠看不到 3000。 */
     if (o.p && o.p.v === undefined) g.cnt = freshPref().cnt;
     // 數值一律夾回合法範圍，免得存檔壞掉時 slider 跑到界外
-    g.cnt = clamp(Math.round(g.cnt), 300, 3000);
+    g.cnt = clamp(Math.round(g.cnt), 300, CNT_MAX);
     g.wk = clamp(Math.round(g.wk), 1, ENG.MAXW);
     g.spd = clamp(g.spd, 0.2, 4);
     pref = g;
@@ -3657,18 +3664,6 @@ function panStep(dt) {
 
 /* ── HUD ────────────────────────────────────────────────── */
 const $ = id => document.getElementById(id);
-/* 舊派複製：選起來 + execCommand。clipboard API 在 file:// 不保證給，
-   而診斷報告的整個價值就在「複製得出去」，所以一定要留這條退路。 */
-function legacyCopy(ta, done) {
-  try {
-    ta.removeAttribute('readonly');       // iOS Safari 對 readonly 的欄位不給選
-    ta.focus(); ta.select();
-    const ok = document.execCommand('copy');
-    ta.setAttribute('readonly', '');
-    if (ok) { done(); return; }
-  } catch (e) { /* 兩條都不通 */ }
-  toast('這個瀏覽器不讓程式複製', '報告已經全選，按 Ctrl+C');
-}
 let hudLast = 0;
 const pad2 = n => (n < 10 ? '0' : '') + n;
 function fmtClock(d) { return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()); }
@@ -3816,36 +3811,6 @@ function boot() {
   });
   $('resetBtn').addEventListener('click', () => {
     if (confirm('清掉所有紀錄與成就？（建築不受影響）')) { resetSave(); toast('紀錄已清空'); }
-  });
-
-  /* 藍圖診斷：檢查「現在場上這一座」，產出一段純文字報告。
-     設計成可以整段複製，是因為自訂藍圖的產出者是網頁版 AI——
-     玩家把說明文件貼給它、拿回 .js、放進 blueprints/，回饋也只能靠貼。
-     詳見 blueprints/藍圖製作說明.md 與 src/blueprints.js 的 checkBlueprint()。 */
-  $('diagBtn').addEventListener('click', () => {
-    audio();
-    const r = checkBlueprint(bp ? bp.idx : undefined, { ver: VERSION });
-    $('diagText').value = r.text;
-    $('diagWrap').classList.add('on');
-    toast(r.fails.length ? '🔍 ' + r.name + '：' + r.fails.length + ' 個必修'
-                         : '🔍 ' + r.name + '：沒有必修的問題',
-          r.warns.length ? r.warns.length + ' 個提醒' : '');
-  });
-  $('diagWrap').addEventListener('click', e => {
-    if (e.target.id === 'diagWrap' || e.target.id === 'diagClose') $('diagWrap').classList.remove('on');
-  });
-  /* 複製：file:// 不一定給 clipboard API（瀏覽器政策不一），
-     所以先試新的、失敗就退回 select + execCommand，兩條都掛才叫玩家自己選。 */
-  $('diagCopy').addEventListener('click', () => {
-    const ta = $('diagText');
-    const done = () => toast('已複製', '貼回給 AI 就行了');
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(ta.value).then(done, () => legacyCopy(ta, done));
-        return;
-      }
-    } catch (e) { /* 往下走舊路 */ }
-    legacyCopy(ta, done);
   });
 
   load();
