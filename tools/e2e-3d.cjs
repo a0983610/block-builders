@@ -1668,6 +1668,58 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('炸完會回去工作，不會卡在逃命狀態',
      flee.on.stuckFlee === 0 && flee.on.busy > 0,
      '還在逃的 ' + flee.on.stuckFlee + ' 人，回去工作的 ' + flee.on.busy + ' 人');
+  /* 下令那一刻在圈外的人不會被標記，但工地就在爆心上——他去撿料、去放積木都是往裡面走。
+     只在下令那一刻掃一次的話，那些人會一路走進範圍裡被炸飛，看起來像完全沒在反應。
+     所以預告範圍要留著，每幀掃：踏進來的當場開始逃。 */
+  const walkIn = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 900; setWorkerCount(24); startBuild(true);
+    for (let i = 0; i < 200; i++) step(0.05);
+    // 全部擺到圈外（下令時不會被標記），施法之後再一步一步推進去
+    const plant = workers.slice(0, 10);
+    const ang = plant.map((w, i) => i / plant.length * Math.PI * 2);
+    plant.forEach((w, i) => {
+      releaseWorker(w);
+      w.x = Math.cos(ang[i]) * (MAG_R + 3.75); w.z = Math.sin(ang[i]) * (MAG_R + 3.75); w.y = 0;
+    });
+    castMagic({ x: 0, z: 0 });
+    const tagged0 = plant.filter(w => w.flee > 0).length;   // 下令當下應該一個都沒有
+    let frames = 0; const who = new Set();
+    for (let i = 0; i < 120 && magic; i++) {
+      step(0.05);
+      plant.forEach((w, k) => {
+        /* 還沒開始逃的，直接把他擺到更靠內的位置——模擬「去撿料、去放積木都是
+           往裡面走」。用擺的不用推的：施工中的小人自己會往料堆（外圈）跑，
+           推的力道跟他自己的腳程同級的話，會有一半的人根本走不進來。 */
+        if (w.flee <= 0 && !w.air && w.burn <= 0) {
+          /* 每一格都要明確在圈內或圈外：正好停在半徑上的話，浮點誤差會讓
+             scareIn 判「在裡面」而這裡的 < 判「在外面」，一半的人就對不起來 */
+          const r = Math.max(3, MAG_R + 3.75 - i * 0.5);
+          w.x = Math.cos(ang[k]) * r; w.z = Math.sin(ang[k]) * r; w.y = 0;
+        }
+        if (w.air || w.burn > 0 || w.flee > 0) return;
+        if (Math.hypot(w.x, w.z) < MAG_R) { frames++; who.add(k); }
+      });
+    }
+    for (let i = 0; i < 4; i++) step(0.05);
+    const r = { tagged0, frames, who: who.size, n: plant.length,
+                tossed: plant.filter(w => w.air).length };
+    /* 這一段真的炸了一次魔法陣，留下的煙雲、火星、光環會飄到後面幾段的畫面裡去
+       （量到火球那段的過曝白像素從 0.38% 被壓到 0.23%）。自己收乾淨再走。 */
+    clouds.length = 0; dust.length = 0; hot.length = 0;
+    flashes.length = 0; fxRings.length = 0;
+    clearFires();
+    return r;
+  });
+  /* 每個踏進來的人最多只會被抓到一幀（掃描排在小人移動之前，所以是下一幀才喊）。
+     自然情境下的同一份量測：改之前 428～660 幀、4～8 人被炸飛；改之後 3～6 幀、0 人。 */
+  ok('預告期間走進範圍的人會當場開始逃',
+     walkIn.tagged0 === 0 && walkIn.who === walkIn.n &&
+     walkIn.frames <= walkIn.who && walkIn.tossed === 0,
+     '下令時在圈外的 ' + walkIn.n + ' 人（標記到 ' + walkIn.tagged0 + ' 人），期間踏進範圍的 ' +
+     walkIn.who + ' 人共被抓到 ' + walkIn.frames + ' 幀（每人最多一幀），最後被炸飛 ' +
+     walkIn.tossed + ' 人');
+
   ok('魔法陣六秒預告，圈內的人來得及全部跑出去',
      flee.mag.n > 5 && flee.mag.fleeing >= flee.mag.n && flee.mag.out === flee.mag.n,
      '圈內 ' + flee.mag.n + ' 人全部起跑，跑出半徑 30 的有 ' + flee.mag.out +
@@ -2576,6 +2628,46 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '，焦黑 ' + blown.done.k + ' → ' + blown.done.k2 + '，走動中 ' + blown.done.walking + ' 人');
   ok('炸得再遠也不會被轟出草地', blown.land.out === 0,
      '越界 ' + blown.land.out + ' 人（邊界＝工地半徑 + 22）');
+
+  /* 打滾要繞「身體中段」轉，不是繞腳底。小人的原點在腳底，直接繞原點轉的話 tilt 一過水平
+     整個人就插進地面下（實測有大半圈是埋著的），畫面上變成「倒下去→消失→從另一邊冒出來」。
+     量法：把 tilt 掃一圈，讀 InstancedMesh 裡每個部位的世界座標高度。 */
+  const rollPose = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    const w = workers[0];
+    w.x = 0; w.z = 0; w.y = 0; w.a = 0; w.gait = 0; w.carry = false;
+    w.plan = 0; w.bub = 0; w.scale = 1.2;
+    const m = new THREE.Matrix4(), v = new THREE.Vector3();
+    const read = () => {
+      ENG.putWorker(0, w);
+      let lo = 1e9, hi = -1e9;
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        ENG.three.workerMesh.getMatrixAt(k, m);
+        v.setFromMatrixPosition(m);
+        // 道具（藍圖、泡泡）沒拿的時候縮成 0，位置沒意義，跳過
+        if (m.elements[0] === 0 && m.elements[5] === 0) continue;
+        if (v.y < lo) lo = v.y;
+        if (v.y > hi) hi = v.y;
+      }
+      return { lo: +lo.toFixed(2), hi: +hi.toFixed(2) };
+    };
+    const stand = (w.roll = 0, w.tilt = 0, read());     // 站著（沒在打滾）當基準
+    w.roll = 1;
+    const poses = [];
+    for (let i = 0; i < 8; i++) { w.tilt = i / 8 * Math.PI * 2; poses.push(read()); }
+    w.roll = 0; w.tilt = 0;
+    return { stand, up: poses[0], flat: poses[2], down: poses[4],
+             lo: Math.min(...poses.map(p => p.lo)), hi: Math.max(...poses.map(p => p.hi)) };
+  });
+  ok('打滾時整個人都在地面上，不會轉到地底下', rollPose.lo > -0.3,
+     '掃一圈 tilt，最低的部位在 y=' + rollPose.lo + '（繞腳底轉的話會到 -1.3）');
+  ok('打滾的樞紐不影響站姿',
+     rollPose.up.lo === rollPose.stand.lo && rollPose.up.hi === rollPose.stand.hi,
+     '站著 y=' + rollPose.stand.lo + '～' + rollPose.stand.hi +
+     '，打滾但 tilt=0 時 y=' + rollPose.up.lo + '～' + rollPose.up.hi);
+  ok('橫躺那半圈是真的躺在草地上，不是浮著',
+     rollPose.flat.hi < rollPose.stand.hi * 0.55 && rollPose.flat.lo > -0.3,
+     '橫躺時最高的部位只到 y=' + rollPose.flat.hi + '（站著是 ' + rollPose.stand.hi + '）');
 
   /* 龍捲風：吃的是跟碎料同一組力（切線繞圈＋往內吸＋往上捲），所以人也會被捲上天 */
   const twisted = await page.evaluate(() => {

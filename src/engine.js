@@ -767,11 +767,21 @@ const ENG = (function () {
   function setWorkerCount(n) { workerMesh.count = Math.min(n, MAXW) * WPARTS; }
   const CHAR = new T.Color(0x2b1d15);        // 燒起來的人往這個焦黑色靠
 
+  /* 打滾時的旋轉中心：身體從腳底 0 長到帽頂 1.31，中段在 0.65。
+     小人的原點在腳底，直接繞原點轉的話那是「以腳為軸繞圈」不是打滾——
+     tilt 轉過水平之後整個人會插進地面下，實測有大半圈是埋在地裡的，
+     看起來就變成「倒下去→消失→從另一邊冒出來」。
+
+     中心離地多高還要跟著姿勢走：站著（或倒立）時是半個身高，橫躺時只有半個身厚。
+     固定用半個身高的話，橫躺那半圈整個人浮在草皮上面。 */
+  const ROLL_PIVOT = 0.65, ROLL_FLAT = 0.25;
   /* w：{x,y,z,a 朝向,ph 步伐相位,carry 是否舉手,tilt 跌倒角度,tone 膚色/衣色編號,
-        burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）,
+        burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）,roll 正在打滾,
         hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1} */
   function putWorker(i, w) {
-    scratch.position.set(w.x, w.y, w.z);
+    const piv = w.roll ? ROLL_PIVOT : 0;
+    const lift = piv && (ROLL_FLAT + (ROLL_PIVOT - ROLL_FLAT) * Math.abs(Math.cos(w.tilt || 0)));
+    scratch.position.set(w.x, w.y + lift * (w.scale || 1), w.z);
     scratch.rotation.set(w.tilt || 0, w.a, 0, 'YXZ');
     scratch.scale.setScalar(w.scale || 1);
     scratch.updateMatrix();
@@ -830,6 +840,7 @@ const ENG = (function () {
           scratchB.position.y = b.p[1] + Math.sin(w.ph * 2.6) * 0.05;
         }
       }
+      scratchB.position.y -= piv;      // 打滾時整具身體往下挪，旋轉中心才落在身體中段
       scratchB.updateMatrix();
       tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
       workerMesh.setMatrixAt(i * WPARTS + k, tmpM);

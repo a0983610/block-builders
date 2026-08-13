@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.37.1';
+const VERSION = '1.37.2';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -334,6 +334,7 @@ function startBuild(instant) {
   fworks = null; fwSparks = null;     // 還在飛的煙火火星會把剛蓋好的新建築點著
   nuke = null; ENG.hideNuke();
   magic = null;
+  dangers = [];                       // 預告沒了，警戒範圍也要跟著撤
   /* 火也要收：燒的是「哪一塊積木」，積木待會會被回收去蓋新的那座，
      不收的話新建築會從某幾塊莫名地開始燒起來。 */
   clearFires();
@@ -924,21 +925,41 @@ const FLEE_PAD = [2, 15];
 const FLEE_SKEW = 0.5;
 const FLEE_TAIL = 0.6;              // 爆炸之後再多警戒幾秒，不要炸完立刻回頭上工
 const FLEE_REACT = [0.15, 0.55];    // 反應時間。全員同一幀起跑像一群機器人
+/* 預告中的爆炸範圍。放成清單是因為兩發可以疊著預告（先開魔法陣再叫核彈），
+   只留一個的話後叫的會蓋掉前一個，前一個剩下的時間就沒人在盯了。 */
+let dangers = [];
 function alertFlee(point, R, t) {
-  for (const w of workers) {
-    if (w.air || w.burn > 0) continue;              // 已經在飛／在燒的，逃不了了
-    if ((w.x - point.x) ** 2 + (w.z - point.z) ** 2 > R * R) continue;
-    releaseWorker(w);                               // 手上的積木一律扔下（也會放掉認領的格子）
-    w.flee = t + FLEE_TAIL;
-    w.fdel = rr(FLEE_REACT[0], FLEE_REACT[1]);
-    w.fex = point.x; w.fez = point.z;
-    w.fer = R + rr(FLEE_PAD[0], FLEE_PAD[1]);
-    const dx = w.x - point.x, dz = w.z - point.z;
-    // 剛好站在爆心正上方就隨便挑一邊
-    const away = dx * dx + dz * dz < 1e-6 ? rr(0, Math.PI * 2) : Math.atan2(dx, dz);
-    w.fdir = away + rr(-FLEE_SKEW, FLEE_SKEW);
-    w.cheer = 0; w.pause = 0;
-  }
+  dangers.push({ x: point.x, z: point.z, r: R, t });
+  scareIn();
+}
+/* 每幀掃一次：站進預告範圍裡、又還沒在逃的，當場開始逃。
+   只在下令那一刻掃一次是不夠的——當時離爆心遠的小人照樣會走進來
+   （工地就在爆心上，他去撿料、去放積木都是往裡面走），走到一半被炸飛看起來像沒在反應。 */
+function scareIn() {
+  for (const d of dangers)
+    for (const w of workers) {
+      if (w.flee > 0 || w.air || w.burn > 0) continue;   // 已經在逃／在飛／在燒的不用再喊
+      if ((w.x - d.x) ** 2 + (w.z - d.z) ** 2 > d.r * d.r) continue;
+      startFlee(w, d);
+    }
+}
+function stepDanger(dt) {
+  if (!dangers.length) return;
+  for (const d of dangers) d.t -= dt;
+  dangers = dangers.filter(d => d.t > 0);
+  scareIn();
+}
+function startFlee(w, d) {
+  releaseWorker(w);                               // 手上的積木一律扔下（也會放掉認領的格子）
+  w.flee = d.t + FLEE_TAIL;
+  w.fdel = rr(FLEE_REACT[0], FLEE_REACT[1]);
+  w.fex = d.x; w.fez = d.z;
+  w.fer = d.r + rr(FLEE_PAD[0], FLEE_PAD[1]);
+  const dx = w.x - d.x, dz = w.z - d.z;
+  // 剛好站在爆心正上方就隨便挑一邊
+  const away = dx * dx + dz * dz < 1e-6 ? rr(0, Math.PI * 2) : Math.atan2(dx, dz);
+  w.fdir = away + rr(-FLEE_SKEW, FLEE_SKEW);
+  w.cheer = 0; w.pause = 0;
 }
 /* 逃命這一幀。跑出安全距離就停下來面向爆心看——一路跑到地圖邊緣看起來像在鬧脾氣，
    而且六秒的魔法陣夠所有人跑出兩倍半徑那麼遠。 */
@@ -3268,6 +3289,7 @@ function step(dt) {
   stepFire(dt);
   stepNuke(dt);
   stepMagic(dt);
+  stepDanger(dt);
   stepClouds(dt);
   stepHot(dt);
   stepFlash(dt);
