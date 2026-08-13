@@ -92,7 +92,9 @@ const ENG = (function () {
   const BS = 0.94;                         // 積木實際邊長（留 0.06 縫，看得出一塊一塊）
   const MAXB = 4200;                       // 積木池上限
   const MAXW = 80;                         // 小人上限
-  const WPARTS = 7;                        // 每個小人的部位數
+  /* 每個小人的部位數。7 個身體部位 ＋ 藍圖 ＋ 聊天泡泡兩塊——後面三個是道具，
+     沒拿的人整片縮到 0（同一個 InstancedMesh，不多一個 draw call）。 */
+  const WPARTS = 10;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。 */
   const MAXDUST = 720;
@@ -741,21 +743,33 @@ const ENG = (function () {
     { p: [-0.14, 0.20, 0], s: [0.20, 0.42, 0.24], c: 'leg', swing: -1 },
     { p: [0.14, 0.20, 0], s: [0.20, 0.42, 0.24], c: 'leg', swing: 1 },
     { p: [-0.34, 0.62, 0], s: [0.16, 0.44, 0.20], c: 'skin', arm: -1 },
-    { p: [0.34, 0.62, 0], s: [0.16, 0.44, 0.20], c: 'skin', arm: 1 }
+    { p: [0.34, 0.62, 0], s: [0.16, 0.44, 0.20], c: 'skin', arm: 1 },
+    /* 以下三塊是道具。p/s 只是預設值，真正的位置在 putWorker 裡按姿勢重算；
+       沒拿的人 scale 設 0（退化成一個點，畫不出東西）。 */
+    /* 藍圖畫得比肩膀寬（身體 0.50，圖 0.80），而且斜立起來——工程師是面向建築站的，
+       玩家多半從他背後看過去，圖只有露出身體兩側的那一截看得到。 */
+    { p: [0, 0.80, 0.26], s: [0.80, 0.05, 0.50], c: 'plan', plan: 1 },   // 工程師的藍色設計圖
+    /* 聊天泡泡要兩塊：頭上一顆白方塊自己看起來只是一塊飄在半空的積木，
+       加一顆小的把它跟頭連起來，才讀得出是對話框。 */
+    { p: [0.20, 1.68, 0], s: [0.46, 0.34, 0.38], c: 'talk', bub: 1 },
+    { p: [0.11, 1.44, 0], s: [0.18, 0.18, 0.16], c: 'talk', bub: 1 }
   ];
   /* BODY 裡每個部位的 c 都必須在這裡有對應的色組，漏一個就整個 draw 掛掉 */
   const WCOL = {
     skin: [0xf0c39a, 0xd9a173, 0xbb8055, 0xe8b489],
     suit: [0xe8a13c, 0x4a8fd8, 0x54b06a, 0xd66a5a],
     leg: [0x3f4a5c, 0x5a4632, 0x2f3a49, 0x4a4030],
-    hat: [0xf5e14b]
+    hat: [0xf5e14b],
+    plan: [0x2f6fd0],
+    talk: [0xffffff]
   };
 
   function setWorkerCount(n) { workerMesh.count = Math.min(n, MAXW) * WPARTS; }
   const CHAR = new T.Color(0x2b1d15);        // 燒起來的人往這個焦黑色靠
 
   /* w：{x,y,z,a 朝向,ph 步伐相位,carry 是否舉手,tilt 跌倒角度,tone 膚色/衣色編號,
-        burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）} */
+        burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）,
+        hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1} */
   function putWorker(i, w) {
     scratch.position.set(w.x, w.y, w.z);
     scratch.rotation.set(w.tilt || 0, w.a, 0, 'YXZ');
@@ -772,12 +786,48 @@ const ENG = (function () {
         scratchB.position.z = Math.sin(sw) * 0.2;
         scratchB.position.y = 0.20 - Math.abs(Math.sin(sw)) * 0.05;
       }
+      /* 手的姿勢有先後：搬東西 → 歡呼 → 拿藍圖（含指揮）→ 說話比劃 → 走路擺手。
+         負的 rotation.x 是把手往前上方抬（-1.5 是水平前伸，-2.8 幾乎舉直）。 */
       if (b.arm) {
         if (w.carry) {                      // 搬東西時雙手舉高
           scratchB.rotation.x = -2.5;
           scratchB.position.y = 0.85; scratchB.position.z = -0.16;
+        } else if (w.hail) {                // 慶祝：雙手舉高、跟著跳的節奏晃
+          scratchB.rotation.x = -2.75 + Math.sin(w.ph) * 0.22;
+          scratchB.rotation.z = b.arm * 0.30;
+          scratchB.position.y = 0.82;
+        } else if (w.plan) {
+          if (w.point > 0 && b.arm > 0) {   // 指揮：右手抬起來朝建築指，左手還端著圖
+            scratchB.rotation.x = -2.05 - Math.sin(w.ph * 2.2) * 0.28;
+            scratchB.position.y = 0.80;
+          } else {                          // 讀圖：雙手前伸把圖端在胸前
+            scratchB.rotation.x = -1.25;
+            scratchB.position.y = 0.70; scratchB.position.z = 0.14;
+          }
+        } else if (w.talk && b.arm > 0) {   // 說話的人單手比劃
+          scratchB.rotation.x = -1.0 - Math.sin(w.ph * 2.6) * 0.45;
+          scratchB.position.y = 0.66; scratchB.position.z = 0.10;
         } else {
           scratchB.rotation.x = -Math.sin(w.ph) * b.arm * w.gait * 0.8;
+        }
+      }
+      /* 藍圖跟著手走：指揮時收到左手邊垂著，平常端在胸前、斜著朝自己 */
+      if (b.plan) {
+        if (!w.plan) scratchB.scale.setScalar(0);
+        else if (w.point > 0) {
+          scratchB.position.set(-0.34, 0.56, 0.14);
+          scratchB.rotation.set(-0.35, 0, 0.55);
+        } else {
+          scratchB.rotation.x = -1.0;
+        }
+      }
+      /* 聊天泡泡：說話的那一方才鼓起來，還會隨語氣上下浮 */
+      if (b.bub) {
+        const k = w.bub || 0;
+        if (k < 0.02) scratchB.scale.setScalar(0);
+        else {
+          scratchB.scale.set(b.s[0] * k, b.s[1] * k, b.s[2] * k);
+          scratchB.position.y = b.p[1] + Math.sin(w.ph * 2.6) * 0.05;
         }
       }
       scratchB.updateMatrix();

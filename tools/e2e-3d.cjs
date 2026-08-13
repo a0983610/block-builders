@@ -877,6 +877,191 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('閒晃不會穿過建築', idle.near >= idle.siteR,
      '最近只走到離工地中心 ' + idle.near + '（建築半徑 ' + idle.siteR + '）');
 
+  /* ══════════ 完工慶祝 ══════════ */
+  head('完工慶祝');
+  /* 要讓它自己蓋到完工，不能用 completeNow：上一段測試把人放到地圖邊緣去遊蕩了，
+     從 60 單位外走回工地本來就要七秒，量到的會是「走回來多久」而不是「圍圈多快」。
+     真的蓋完的那一刻，人都還站在工地邊上——那才是這段要量的起點。 */
+  const cheer = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(20); startBuild(true);
+    for (let i = 0; i < 20000 && phase !== 'done'; i++) step(0.05);
+    let allAt = -1, maxY = 0, jumps = 0, landed = 0, up = false, drift = 0, ring = null;
+    const px = workers.map(w => w.x), pz = workers.map(w => w.z);
+    for (let i = 0; i < 130; i++) {
+      step(0.05);
+      // 圈要在慶祝還沒結束時量：時間到了他們就散開去閒晃了
+      if (i === 100) ring = workers.map(w => ({ d: +Math.hypot(w.x, w.z).toFixed(2),
+                                                a: Math.atan2(w.z, w.x) }));
+      if (allAt < 0 && workers.every(w => w.hail)) allAt = +(i * 0.05).toFixed(2);
+      for (const w of workers) if (w.y > maxY) maxY = w.y;
+      const w0 = workers[0];
+      if (w0.y > 0.02 && !up) jumps++;            // 一次離地算一跳
+      if (w0.y <= 0.02 && up) landed++;           // 每跳都要真的落回地面
+      up = w0.y > 0.02;
+      /* 就位之後就不該再有水平位移了（給一秒讓最後到的人站定）。
+         舊版是繞著建築跑，這個數字會是每個人每一幀都在動。 */
+      for (let k = 0; k < workers.length; k++) {
+        const w = workers[k];
+        if (allAt >= 0 && i * 0.05 > allAt + 1 && Math.hypot(w.x - px[k], w.z - pz[k]) > 1e-6) drift++;
+        px[k] = w.x; pz[k] = w.z;
+      }
+    }
+    // 圍成一圈：到中心的距離與相鄰角度差
+    const ds = ring.map(r => r.d);
+    const angs = ring.map(r => r.a).sort((a, b) => a - b);
+    const gaps = angs.map((a, i) => {
+      const b = i + 1 < angs.length ? angs[i + 1] : angs[0] + Math.PI * 2;
+      return +((b - a) * 180 / Math.PI).toFixed(1);
+    });
+    // 慶祝完要散開去閒晃，不能一直杵在圈上
+    for (let i = 0; i < 200; i++) step(0.05);
+    const after = workers.filter(w => w.hail).length;
+    const spread = Math.max(...workers.map(w => +Math.hypot(w.x, w.z).toFixed(2)));
+    return { allAt, maxY: +maxY.toFixed(2), jumps, landed, drift,
+             rad: { lo: Math.min(...ds), hi: Math.max(...ds), want: +(siteR + 2.6).toFixed(2) },
+             gap: { lo: Math.min(...gaps), hi: Math.max(...gaps), want: +(360 / workers.length).toFixed(1) },
+             after, spread, siteR: +siteR.toFixed(1) };
+  });
+  ok('蓋完後很快就圍成一圈', cheer.allAt > 0 && cheer.allAt < 2.5,
+     cheer.allAt + ' 秒全員就位（照現況分配位置，不是照編號硬分）');
+  ok('圍的是等分的一圈', cheer.gap.hi - cheer.gap.lo < 1 &&
+     Math.abs(cheer.gap.lo - cheer.gap.want) < 1 && cheer.rad.hi - cheer.rad.lo < 0.1,
+     '相鄰間隔 ' + cheer.gap.lo + '–' + cheer.gap.hi + '°（等分是 ' + cheer.gap.want +
+     '°）、半徑 ' + cheer.rad.lo + '–' + cheer.rad.hi + '（建築 ' + cheer.siteR + ' + 2.6）');
+  /* 慶祝感的重點是「跳」：離地要有高度、要落回地面、而且是站定了跳不是邊跑邊顛。
+     舊版是繞著建築跑一圈，y 用 |sin| 連續起伏——那看起來像在漂浮。 */
+  ok('站定原地跳，不是邊跑邊顛', cheer.jumps >= 5 && cheer.landed >= 5 &&
+     cheer.maxY > 0.4 && cheer.drift === 0,
+     '慶祝的六秒半裡跳 ' + cheer.jumps + ' 次、落地 ' + cheer.landed + ' 次，最高 ' +
+     cheer.maxY + '；就位後還在水平移動的人次 ' + cheer.drift);
+  ok('慶祝完就散開去閒晃', cheer.after === 0 && cheer.spread > cheer.rad.hi + 3,
+     '還在舉手的 ' + cheer.after + ' 人，最遠走到 ' + cheer.spread);
+
+  /* ══════════ 工程師 ══════════ */
+  head('工程師');
+  const engr = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(12); startBuild(true);
+    const e = workers[0];
+    let n = 0, carried = 0, claimed = 0, plan = 0, point = 0, near = Infinity, far = 0;
+    const angs = [];
+    /* 先等他走到定位再開始量，不然量到的第一段是「走過來」——上一段測試可能
+       把他丟在四十單位外遊蕩，用寫死的秒數等會時靈時不靈。 */
+    const ring = siteR + 3.4;
+    for (let i = 0; i < 400 && Math.abs(Math.hypot(e.x, e.z) - ring) > 0.1; i++) step(0.05);
+    for (let i = 0; i < 2400 && phase === 'build'; i++) {
+      step(0.05);
+      n++;
+      if (e.carry) carried++;
+      if (e.slot >= 0 || e.block >= 0) claimed++;
+      if (e.plan) plan++;
+      if (e.point > 0) point++;
+      const d = Math.hypot(e.x, e.z);
+      if (d < near) near = d;
+      if (d > far) far = d;
+      if (i % 200 === 0) angs.push(Math.round(Math.atan2(e.z, e.x) * 180 / Math.PI));
+    }
+    return { n, carried, claimed, planPct: +(plan / n).toFixed(2), pointPct: +(point / n).toFixed(2),
+             near: +near.toFixed(1), far: +far.toFixed(1), siteR: +siteR.toFixed(1),
+             moves: new Set(angs).size, others: workers.slice(1).filter(w => w.eng).length,
+             placed: placedCnt, carriedAll: stats.carried };
+  });
+  ok('工程師只有一個，而且不搬積木', engr.others === 0 && engr.carried === 0 && engr.claimed === 0,
+     '其他人當工程師的 ' + engr.others + ' 個；' + (engr.n * 0.05).toFixed(0) +
+     ' 秒內他搬了 ' + engr.carried + ' 幀、認領了 ' + engr.claimed + ' 格（其他人共搬了 ' +
+     engr.carriedAll + ' 趟）');
+  ok('施工中一直拿著設計圖在看', engr.planPct === 1,
+     '拿著圖的幀數占 ' + (engr.planPct * 100).toFixed(0) + '%');
+  ok('站在建築外圍，會換位置但不會走進工地',
+     engr.near > engr.siteR && engr.far < engr.siteR + 4 && engr.moves > 3,
+     '離工地中心 ' + engr.near + '–' + engr.far + '（建築半徑 ' + engr.siteR +
+     '），換過 ' + engr.moves + ' 個角度');
+  ok('偶爾會做指揮動作', engr.pointPct > 0.03 && engr.pointPct < 0.5,
+     '指揮的幀數占 ' + (engr.pointPct * 100).toFixed(0) + '%');
+  /* 只有一個人的時候不能把他派去看圖，不然這座永遠蓋不起來 */
+  const solo = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(1); startBuild(true);
+    const eng1 = workers.filter(w => w.eng).length;
+    for (let i = 0; i < 3000 && phase === 'build'; i++) step(0.05);
+    const built = placedCnt;
+    setWorkerCount(8);
+    return { eng1, built, eng8: workers.filter(w => w.eng).length,
+             idx: workers.findIndex(w => w.eng) };
+  });
+  ok('只剩一個人時不派工程師，照樣蓋得起來',
+     solo.eng1 === 0 && solo.built > 30 && solo.eng8 === 1 && solo.idx === 0,
+     '1 人時工程師 ' + solo.eng1 + ' 個、蓋了 ' + solo.built + ' 塊；加到 8 人後第 ' +
+     solo.idx + ' 號接任');
+
+  /* ══════════ 閒聊 ══════════ */
+  head('閒聊');
+  const chat = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(20); startBuild(true); completeNow();
+    for (let i = 0; i < 200; i++) step(0.05);          // 先把慶祝跑完
+    let starts = 0, frames = 0, samples = 0, broken = 0, maxD = 0, bub = 0, moved = 0;
+    const durs = [];
+    const seen = workers.map(() => 0);
+    const px = workers.map(w => w.x), pz = workers.map(w => w.z);
+    for (let i = 0; i < 2400; i++) {
+      step(0.05);
+      for (let k = 0; k < workers.length; k++) {
+        const w = workers[k];
+        samples++;
+        if (w.chat > 0) {
+          frames++;
+          const p = workers[w.cw];
+          if (!p || p.cw !== k || p.chat <= 0) broken++;      // 一定要兩邊互指
+          else {
+            const d = Math.hypot(p.x - w.x, p.z - w.z);
+            if (d > maxD) maxD = d;
+          }
+          if (w.bub > 0.5) bub++;
+          if (Math.hypot(w.x - px[k], w.z - pz[k]) > 1e-6) moved++;   // 聊天時不該移動
+          // 開場就已經在聊的那幾場記成 -1：從中途開始數的長度不算數
+          if (!seen[k]) { starts++; seen[k] = i > 0 ? i : -1; }
+        } else if (seen[k]) {
+          if (seen[k] > 0) durs.push(+((i - seen[k]) * 0.05).toFixed(2));
+          seen[k] = 0;
+        }
+        px[k] = w.x; pz[k] = w.z;
+      }
+    }
+    durs.sort((a, b) => a - b);
+    return { pairs: starts / 2, pct: +(frames / samples).toFixed(2), broken, moved,
+             maxD: +maxD.toFixed(2), bubPct: +(bub / (frames || 1)).toFixed(2),
+             dur: durs.length ? [durs[0], durs[durs.length - 1]] : [] };
+  });
+  ok('閒晃時走近的兩個人會停下來聊天', chat.pairs >= 5 && chat.dur.length > 0,
+     '兩分鐘內聊了 ' + chat.pairs + ' 場，占閒晃幀數 ' + (chat.pct * 100).toFixed(0) + '%');
+  ok('一場聊 5 秒', chat.dur[0] >= 4.9 && chat.dur[1] <= 5.1,
+     '每場 ' + chat.dur[0] + '–' + chat.dur[1] + ' 秒');
+  ok('聊天一定是兩個人互指，而且站著不動',
+     chat.broken === 0 && chat.moved === 0 && chat.maxD <= 2.61,
+     '單向配對 ' + chat.broken + ' 幀、聊天中移動 ' + chat.moved + ' 幀、兩人最遠 ' + chat.maxD);
+  /* 泡泡是輪流冒的：兩個人同時講話看起來像在吵架 */
+  ok('說話的泡泡輪流冒', chat.bubPct > 0.3 && chat.bubPct < 0.7,
+     '冒泡泡的幀數占聊天中的 ' + (chat.bubPct * 100).toFixed(0) + '%（輪流的話約一半）');
+  /* 施工中不能聊天聊到不做事：有活幹的人 st 不會停在 idle */
+  const busy = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true);
+    let chatting = 0, working = 0;
+    for (let i = 0; i < 1200 && phase === 'build'; i++) {
+      step(0.05);
+      for (const w of workers) {
+        if (w.chat > 0 && (w.carry || w.st === 'pick' || w.st === 'build')) chatting++;
+        if (w.st === 'pick' || w.st === 'build') working++;
+      }
+    }
+    return { chatting, working, placed: placedCnt };
+  });
+  ok('手上有工作的人不會停下來聊天', busy.chatting === 0 && busy.working > 100,
+     '搬運中聊天 ' + busy.chatting + ' 幀（同期有 ' + busy.working + ' 幀在搬運，蓋了 ' +
+     busy.placed + ' 塊）');
+
   ok('拆完之後小人開始蓋新的', rebuild.mid > 20 && rebuild.ph0 === 'build',
      '蓋到 ' + rebuild.mid + ' / ' + rebuild.total + '（' + rebuild.ph0 + '）');
   ok('砸還沒蓋完的建築不會進入拆除中', rebuild.ph1 === 'build', 'phase=' + rebuild.ph1);

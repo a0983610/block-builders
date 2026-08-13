@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.34.1';
+const VERSION = '1.35.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -575,6 +575,7 @@ function completeNow() {
   dozers = null; ENG.putDozers([]);      // 建築直接長出來了，整地機沒戲唱
   placedCnt = bp.slots.length;
   phase = 'done';
+  assignSpots();                         // 慶祝要圍的那一圈
   /* 施工計時歸零：這一座不是小人蓋的，時間不算它的。順帶擋掉「奇蹟工程」——
      noteBuilt() 要 buildElapsed > 0 才給那個成就，按鈕就白拿不到。
      spentThis／lossThis 不動：中途按下按鈕時，小人已經領到的工錢是真的花掉了，
@@ -641,6 +642,11 @@ function newWorker(i) {
        lit 是「落地要著火」的記號，burn 是還要燒幾秒，burnK 是身上焦黑的深淺。 */
     air: 0, vx: 0, vy: 0, vz: 0, spin: 0, lit: 0, burn: 0, burnK: 0, roll: 0,
     bem: 0, bx: 0, bz: 0, br: 0, ba: 0,
+    /* 工程師（eng）：拿藍圖 plan、站的角度 eang、下一個動作倒數 et、指揮動作剩幾秒 point。
+       聊天：剩幾秒 chat、對象編號 cw、輪到誰講 side、講完多久才會再聊 chatCd、
+       泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手。 */
+    eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0,
+    chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
     /* 每個人身高略有差異。1.06–1.24 大約是積木邊長的一個半，
        比原本大一成半——太小的話遠鏡頭下只剩一撮色點，看不出在做什麼。 */
     scale: rr(1.06, 1.24)
@@ -651,7 +657,26 @@ function setWorkerCount(n) {
   while (workers.length < n) workers.push(newWorker(workers.length));
   while (workers.length > n) { releaseWorker(workers[workers.length - 1]); workers.pop(); }
   workerCnt = n;
+  tagEngineer();
+  if (phase === 'done') assignSpots();      // 慶祝中加減人：圈要重新等分
   ENG.setWorkerCount(workers.length);
+}
+/* 工地上派一個人當工程師：只看圖、只指揮，不搬積木。
+   **只有兩個人以上才派**——剩一個人還去看圖的話，這座就永遠蓋不起來。
+   固定挑 0 號是為了讓他穩定：每次重挑的話，滑桿一動工程師就換人。 */
+function tagEngineer() {
+  const on = workers.length >= 2;
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    const eng = on && i === 0 ? 1 : 0;
+    if (eng && !w.eng) {
+      releaseWorker(w);                  // 手上還有貨就先放掉，工程師不搬東西
+      w.eang = Math.atan2(w.z, w.x);     // 從他現在站的角度接手，不用先跑半圈
+      w.et = rr(1.5, 3);
+    }
+    if (!eng && w.eng) { w.plan = 0; w.point = 0; w.st = 'idle'; }
+    w.eng = eng;
+  }
 }
 function releaseWorker(w) {
   if (w.block >= 0) {
@@ -665,6 +690,7 @@ function releaseWorker(w) {
     markSupportDirty(0.05);          // 放掉認領也會改變支撐狀態
   }
   w.block = -1; w.slot = -1; w.carry = false; w.st = 'idle';
+  endChat(w);
 }
 
 /* ── 小人被拆除工具波及 ───────────────────────────────────
@@ -806,7 +832,67 @@ function walkTo(w, dt) {
   return false;
 }
 
+/* 沿著建築外圈繞過去，不走直線——直線會從蓋好的建築正中央穿過去。
+   角度先轉、半徑再收，兩個都到位才算抵達。 */
+function ringWalk(w, ta, rad, dt) {
+  const cr = Math.hypot(w.x, w.z);
+  const ca = cr < 0.001 ? ta : Math.atan2(w.z, w.x);
+  const TAU = Math.PI * 2;
+  // 取最短那一邊繞。ta 可能是累加出來的（工程師換位置一次加一點），先折回 ±π
+  const dA = ((((ta - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
+  const maxA = WALK * dt / Math.max(rad, 1), maxR = WALK * dt;
+  const dr = rad - cr;
+  const na = ca + clamp(dA, -maxA, maxA), nr = cr + clamp(dr, -maxR, maxR);
+  const px = w.x, pz = w.z;
+  w.x = Math.cos(na) * nr; w.z = Math.sin(na) * nr;
+  const mx = w.x - px, mz = w.z - pz;
+  if (Math.hypot(mx, mz) > 1e-4) {
+    w.a = Math.atan2(mx, mz);
+    w.ph += dt * 11;
+    w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
+  }
+  return Math.abs(dA) <= maxA && Math.abs(dr) <= maxR;
+}
+
+/* ── 完工慶祝 ─────────────────────────────────────────────
+   七秒（維持原本的長度）。原本是繞著建築跑一圈就結束，看起來只是在趕路；
+   現在改成「跑到定位 → 站定面向建築原地跳」，跳才有慶祝感。 */
+const CHEER_T = 7;
+const JUMP_T = 0.62;                // 一次跳躍的週期
+const JUMP_AIR = 0.72;              // 週期裡有多少比例在空中，剩下的是落地停頓
+const JUMP_H = 0.55;                // 跳多高
+
+/* 圈上的位置照「開始慶祝那一刻各自站的角度」分，不是照編號硬分——
+   照編號分的話，站在對面的人得沿著外圈走半圈才就位（量過要六秒），
+   七秒的慶祝就只剩一秒在跳。
+   等分的起點也不取固定的 0 度：取「現況跟等分格的角度差」的平均方向當起點，
+   整組人各自挪一點點就成圈。 */
+function assignSpots() {
+  const n = workers.length;
+  if (!n) return;
+  const TAU = Math.PI * 2, gap = TAU / n;
+  const ord = workers.map((w, i) => i)
+    .sort((a, b) => Math.atan2(workers[a].z, workers[a].x) - Math.atan2(workers[b].z, workers[b].x));
+  let sx = 0, sz = 0;
+  for (let k = 0; k < n; k++) {
+    const w = workers[ord[k]];
+    const d = Math.atan2(w.z, w.x) - k * gap;
+    sx += Math.cos(d); sz += Math.sin(d);
+  }
+  const base = Math.atan2(sz, sx);
+  for (let k = 0; k < n; k++) workers[ord[k]].spot = base + k * gap;
+}
+
 function updWorker(w, wi, dt) {
+  /* 姿勢旗標每幀重算：跌倒、被炸飛、跑去躲的那幾條路徑都是 return 出去的，
+     不歸零的話工程師被戳倒了還躺在地上舉著圖。 */
+  w.hail = 0; w.plan = 0;
+  if (w.chatCd > 0) w.chatCd -= dt;
+  /* 被吹飛／點著／推倒，或是換場要清工地了——聊天一律中斷。
+     蓋完的那一刻也中斷：慶祝要全員到齊，不然聊到一半的那兩個會晚五秒才入圈。 */
+  if (w.chat > 0 && (w.air || w.burn > 0 || w.fall > 0 ||
+      (phase !== 'build' && phase !== 'done') || (phase === 'done' && w.cheer < CHEER_T)))
+    endChat(w);
   if (w.burn > 0) {
     w.burn -= dt;
     burnFx(w, dt);
@@ -829,6 +915,8 @@ function updWorker(w, wi, dt) {
   }
   w.tilt += (0 - w.tilt) * Math.min(1, dt * 7);
 
+  if (w.chat > 0) { stepChat(w, wi, dt); return; }
+
   if (phase === 'wreck' || phase === 'clear') {
     /* 拆除中：不修、不蓋，躲遠一點看你拆。要等這座拆完換新藍圖才會回去工作。
        整地中一樣退到旁邊等——推土機還在推，這時候進場只會被鏟到。 */
@@ -848,14 +936,23 @@ function updWorker(w, wi, dt) {
     return;
   }
 
-  if (phase === 'done') {                             // 蓋完了，繞著建築慶祝
+  if (phase === 'done') {                             // 蓋完了，圍成一圈慶祝
     w.cheer += dt;
-    if (w.cheer < 7) {
-      const ang = Math.atan2(w.z, w.x) + dt * 1.15;
-      const rad = siteR + 2.6;
-      w.tx = Math.cos(ang) * rad; w.tz = Math.sin(ang) * rad;
-      walkTo(w, dt);
-      w.y = Math.abs(Math.sin(w.ph * 0.9)) * 0.28;    // 邊跑邊跳
+    if (w.cheer < CHEER_T) {
+      /* 先各自跑到自己那一格（等分一圈，所以站得開），到位就轉身面向建築
+         原地跳。跳的相位照編號錯開 0.09 秒，一圈看過去是一道波浪，
+         不是全場同手同腳。 */
+      if (ringWalk(w, w.spot, siteR + 2.6, dt)) {
+        w.a = Math.atan2(-w.x, -w.z);                 // 面向建築
+        w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+        w.ph += dt * 9;                               // 舉起來的手跟著擺
+        w.hail = 1;
+        const u = (w.cheer + wi * 0.09) % JUMP_T / JUMP_T;
+        /* 落地要有停頓才看得出是「跳」：|sin| 那種連續起伏只會像在漂浮。 */
+        w.y = u < JUMP_AIR ? Math.sin(u / JUMP_AIR * Math.PI) * JUMP_H : 0;
+      } else {
+        w.y += (0 - w.y) * Math.min(1, dt * 6);
+      }
     } else {
       // 慶祝完就整張草地隨便晃。地圖是方的，目標點也用方形分布
       w.y += (0 - w.y) * Math.min(1, dt * 6);
@@ -873,6 +970,7 @@ function updWorker(w, wi, dt) {
   }
   w.y += (0 - w.y) * Math.min(1, dt * 6);
   w.cheer = 0;
+  if (w.eng) { updEng(w, dt); return; }      // 工程師只看圖、只指揮
 
   switch (w.st) {
     case 'idle': {
@@ -995,6 +1093,89 @@ function wander(w, dt) {
     w.tx = Math.cos(a) * d; w.tz = Math.sin(a) * d;
   }
 }
+
+/* ── 工程師 ───────────────────────────────────────────────
+   施工中站在建築外圍看藍圖，不搬積木、不認領格子（所以他不占人手，
+   蓋的速度就是少一個人）。偶爾抬手指揮一下，偶爾換個角度繼續看。
+   換角度是沿著外圈繞過去的：拉直線的話他會從蓋到一半的建築中間穿過去。 */
+const ENG_KEEP = 3.4;               // 站得比閒晃的人再外面一點，看得到整座
+const ENG_POINT = 0.62;             // 每次換動作有多少機率是「指揮」，其餘是換位置
+
+function updEng(w, dt) {
+  w.plan = 1;
+  if (!ringWalk(w, w.eang, siteR + ENG_KEEP, dt)) return;   // 還在走位
+  w.a = Math.atan2(-w.x, -w.z);                             // 站定就面向建築
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  if (w.point > 0) {
+    w.point -= dt;
+    w.ph += dt * 9;                                         // 指的那隻手要動
+    if (w.point <= 0) { w.point = 0; w.et = rr(2.5, 5); }
+    return;
+  }
+  w.et -= dt;
+  if (w.et > 0) return;
+  if (Math.random() < ENG_POINT) w.point = rr(1.2, 2.2);
+  else { w.eang += rr(0.5, 1.5) * (Math.random() < 0.5 ? -1 : 1); w.et = rr(2.5, 5); }
+}
+
+/* ── 閒聊 ─────────────────────────────────────────────────
+   沒事做的兩個人走近了就停下來聊五秒：面對面、輪流講、講的那個
+   頭上冒泡泡並且比手畫腳。聊完各自散開，隔一段時間才會再聊
+   （不設冷卻的話同兩個人會黏在一起聊個沒完）。 */
+const CHAT_T = 5;                   // 聊多久
+const CHAT_D = 2.6;                 // 多近才聊得起來
+const CHAT_CD = 9;                  // 聊完至少隔幾秒才會再聊（實際是 1～2 倍隨機）
+const CHAT_TURN = 1.15;             // 每個人一次講幾秒，輪流換
+
+function endChat(w) {
+  if (w.chat > 0) w.chatCd = rr(CHAT_CD, CHAT_CD * 2);
+  w.chat = 0; w.cw = -1; w.bub = 0; w.talk = 0;
+}
+/* 閒著沒事、站得穩、剛剛沒聊過的才會被湊成一對。
+   施工中只有「找不到工作」的人算閒晃（st 卡在 idle）；工程師在看圖不算閒。 */
+function chatFree(w) {
+  if (w.chat > 0 || w.chatCd > 0 || w.air || w.burn > 0 || w.fall > 0 || w.carry) return false;
+  if (phase === 'done') return w.cheer >= CHEER_T;
+  return phase === 'build' && w.st === 'idle' && !w.eng;
+}
+function pairChat() {
+  if (phase !== 'build' && phase !== 'done') return;
+  for (let i = 0; i < workers.length; i++) {
+    const a = workers[i];
+    if (!chatFree(a)) continue;
+    for (let j = i + 1; j < workers.length; j++) {
+      const b = workers[j];
+      if (!chatFree(b)) continue;
+      if ((a.x - b.x) ** 2 + (a.z - b.z) ** 2 > CHAT_D * CHAT_D) continue;
+      a.chat = b.chat = CHAT_T;
+      a.cw = j; b.cw = i;
+      a.side = 0; b.side = 1;                 // 先開口的是 a
+      a.pause = b.pause = 0;
+      break;                                  // 一次只配一個對象
+    }
+  }
+}
+function stepChat(w, wi, dt) {
+  const p = workers[w.cw];
+  if (!p || p.chat <= 0 || p.cw !== wi) { endChat(w); return; }   // 對方被抓走了
+  w.chat -= dt;
+  w.y += (0 - w.y) * Math.min(1, dt * 6);
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  const dx = p.x - w.x, dz = p.z - w.z;
+  if (dx || dz) w.a = Math.atan2(dx, dz);                        // 面對面
+  const speak = Math.floor((CHAT_T - w.chat) / CHAT_TURN) % 2 === w.side;
+  w.talk = speak ? 1 : 0;
+  if (speak) w.ph += dt * 9;
+  w.bub += ((speak ? 1 : 0) - w.bub) * Math.min(1, dt * 12);
+  if (w.chat <= 0) {
+    endChat(w);
+    // 聊完就走：給一個新的閒晃目標，不然兩個人會杵在原地等發呆時間跑完
+    const a = Math.random() * Math.PI * 2, d = siteR + rr(2, 9);
+    w.tx = Math.cos(a) * d; w.tz = Math.sin(a) * d;
+    w.pause = 0;
+  }
+}
+
 /* 拋物線飛向藍圖位置。到頂就定位，slot 標記填好 */
 function stepToss(b, dt) {
   const a = b.arc;
@@ -1027,6 +1208,7 @@ function stepToss(b, dt) {
       phase = 'done';
       buildElapsed = (performance.now() - buildStart) / 1000;
       for (const w of workers) { w.cheer = 0; w.pause = 0; }
+      assignSpots();
       sndDone();
       toast('🎉 ' + bp.name + ' 完工', fmtDur(buildElapsed) + '　人力 ' + money(spentThis));
       noteBuilt();
@@ -2952,6 +3134,7 @@ function step(dt) {
   }
   burningW = 0;
   for (const w of workers) if (w.burn > 0) burningW++;    // 火苗配額要照人數分
+  pairChat();                                            // 湊對要在更新之前，配到的當幀就停下來
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);
   stepTrees(dt);
