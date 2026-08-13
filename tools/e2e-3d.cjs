@@ -2100,8 +2100,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const ballR = await page.evaluate(() => {
     completeNow();
     const before = blocks.filter(b => b.st === 3).length;
-    const p = { x: -42, y: 0, z: 5 };                  // 點在場邊的空地上
-    launchBall(p);
+    const p = { x: -42, y: 0, z: 5 };                  // 第一點：場邊的空地
+    launchBall(p, { x: 0, z: 0 });                     // 第二點：工地中心
     const born = !!ball, r = ball.r;
     const out = { d0: Math.hypot(ball.x - p.x, ball.z - p.z), y0: ball.y };
     let hit = 0, t = 0, settle = 0, hops = 0, apex = 0, moved = 0, maxAng = 0;
@@ -2134,26 +2134,84 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'SET ' + ballR.before + ' → ' + ballR.after + '，撞飛 ' + ballR.hit + ' 塊');
   ok('滾不動之後會停下消失', ballR.gone);
 
-  /* 丟出去的方向：朝建築中心，但每一發都帶一點隨機偏差 */
+  /* 方向：第一點 → 第二點。八個不同的方向各丟一發，每一發都要對得上自己那個方向，
+     而且只差在 ±BALL_SPREAD 的手感偏差裡（本來是「一律朝工地中心」）。 */
   const ballAim = await page.evaluate(() => {
-    const p = { x: -30, y: 0, z: 0 };                  // 正對中心＝角度 0
-    const a = [];
-    for (let k = 0; k < 8; k++) { launchBall(p); a.push(Math.atan2(ball.vz, ball.vx)); }
+    const err = [];
+    for (let k = 0; k < 8; k++) {
+      const from = { x: Math.cos(k * 0.8) * 40, z: Math.sin(k * 0.8) * 40 };
+      const want = k * 0.77 + 0.3;                     // 跟出手點無關的方向
+      launchBall(from, { x: from.x + Math.cos(want) * 25, z: from.z + Math.sin(want) * 25 });
+      let d = Math.atan2(ball.vz, ball.vx) - want;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      err.push(d);
+    }
     ball = null; ENG.hideBall();
-    /* 判斷要用原始值，不能用四捨五入過的顯示值：偏差是 ±0.22 rad 的連續亂數，
+    /* 判斷要用原始值，不能用四捨五入過的顯示值：偏差是 ±BALL_SPREAD 的連續亂數，
        真的抽到 0.0003 這種小數字是完全正常的，但 toFixed(3) 會把它變成 0，
-       「min > 0」就誤判成「這一發沒有隨機偏差」——實測 2000 輪有 1.7% 會這樣掛，
-       而真的等於 0 的是 0 輪。uniq 同理，改成直接比浮點數本身（比 toFixed(4)
-       少掉 8 發撞進同一格的 0.6% 誤判）。 */
-    return { max: +Math.max(...a.map(Math.abs)).toFixed(3),
-             min: +Math.min(...a.map(Math.abs)).toFixed(3),
-             minRaw: Math.min(...a.map(Math.abs)),
-             uniq: new Set(a).size, n: a.length, lim: BALL_SPREAD };
+       「min > 0」就誤判成「這一發沒有隨機偏差」。uniq 同理，直接比浮點數本身。 */
+    return { max: +Math.max(...err.map(Math.abs)).toFixed(3),
+             minRaw: Math.min(...err.map(Math.abs)),
+             uniq: new Set(err).size, n: err.length, lim: BALL_SPREAD };
   });
-  ok('球是朝建築丟的，但每一發角度都不一樣',
-     ballAim.max <= ballAim.lim && ballAim.minRaw > 0 && ballAim.uniq === ballAim.n,
-     ballAim.n + ' 發全部落在 ±' + ballAim.lim + ' rad 內（最大偏 ' + ballAim.max +
-     '、最小 ' + ballAim.min + '），沒有兩發相同');
+  ok('球滾去的方向就是你指的第二點',
+     ballAim.max <= ballAim.lim && ballAim.uniq === ballAim.n,
+     ballAim.n + ' 個方向各丟一發，最大只差 ' + ballAim.max + ' rad（手感偏差上限 ' +
+     ballAim.lim + '）');
+  ok('但每一發還是帶一點隨機偏差，不會兩發一模一樣',
+     ballAim.minRaw > 0 && ballAim.uniq === ballAim.n, '八發角度互不相同');
+
+  /* 兩下點擊的流程：第一下只是選出手點（球還沒生），第二下才丟。
+     瞄到一半換道具、換建築都要把那個點收掉，不然下次點某處會莫名其妙從舊的點丟出去。 */
+  const ballClick = await page.evaluate(() => {
+    const keep = tool;
+    tool = 'ball'; ballAim = null; ball = null;
+    useTool({ kind: 'ground', point: { x: -40, y: 0, z: 0 } });
+    const first = { aim: !!ballAim, ball: !!ball, rings: ballAim ? aimRings().length : 0 };
+    useTool({ kind: 'ground', point: { x: -40, y: 0, z: 20 } });
+    // 第二點在第一點的 +z 方向 → 角度應該是 π/2
+    const second = { aim: !!ballAim, ball: !!ball,
+                     x: ball ? +ball.x.toFixed(2) : null, z: ball ? +ball.z.toFixed(2) : null,
+                     ang: ball ? +Math.atan2(ball.vz, ball.vx).toFixed(3) : null };
+    ball = null; ENG.hideBall();
+    useTool({ kind: 'ground', point: { x: 9, y: 0, z: 9 } });   // 瞄一半就換建築
+    const aimed = !!ballAim;
+    startBuild(true);
+    const afterSwap = !ballAim;
+    tool = keep;
+    return { first, second, aimed, afterSwap, lim: BALL_SPREAD };
+  });
+  ok('第一下只是選出手點，球還沒出去',
+     ballClick.first.aim && !ballClick.first.ball && ballClick.first.rings === 2,
+     '出手點已記下、球 ' + (ballClick.first.ball ? '生了' : '還沒生') +
+     '，地上畫了 ' + ballClick.first.rings + ' 圈瞄準環');
+  ok('第二下從第一點出手、往第二點滾',
+     ballClick.second.ball && !ballClick.second.aim &&
+     ballClick.second.x === -40 && ballClick.second.z === 0 &&
+     Math.abs(ballClick.second.ang - Math.PI / 2) <= ballClick.lim,
+     '球生在 (' + ballClick.second.x + ', ' + ballClick.second.z + ')，角度 ' +
+     ballClick.second.ang + '（要 ' + (Math.PI / 2).toFixed(3) + ' ±' + ballClick.lim + '）');
+  ok('換建築會取消瞄到一半的出手點', ballClick.aimed && ballClick.afterSwap);
+
+  /* 滾多遠：把積木清空、場地放大，量到的就是摩擦與壽命本身（不含撞到東西的煞車）。
+     v1.39 之前是 6 秒 ×每秒保留 0.82，量到 119.3；現在 7.5 秒 ×0.86，量到 152.7。 */
+  const ballRun = await page.evaluate(() => {
+    const bk = blocks, wk = workers, ar = arenaR;
+    blocks = []; workers = []; arenaR = 300;
+    launchBall({ x: -80, z: 0 }, { x: 100, z: 0 });
+    let moved = 0, px = ball.x, pz = ball.z, t = 0;
+    for (let i = 0; i < 800 && ball; i++) {
+      step(0.03); t += 0.03;
+      if (!ball) break;
+      moved += Math.hypot(ball.x - px, ball.z - pz); px = ball.x; pz = ball.z;
+    }
+    blocks = bk; workers = wk; arenaR = ar;
+    return { moved: +moved.toFixed(1), t: +t.toFixed(2), life: BALL_LIFE };
+  });
+  ok('空場上一發滾得完整個工地那麼遠',
+     ballRun.moved > 140 && ballRun.t >= ballRun.life - 0.1,
+     '滾了 ' + ballRun.moved + ' 單位、' + ballRun.t + ' 秒（v1.38 是 119.3 單位／6 秒）');
 
   const twR = await page.evaluate(() => {
     startBuild(true); completeNow();
@@ -2490,7 +2548,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、' + emb2.swap.burning + ' 塊還帶著火');
 
   /* ══════════ 煙火 ══════════
-     它是「往天上灑火種」：一發打不掉任何積木，但落下來的火星碰到建築就從那一塊燒起來。 */
+     它是「往天上灑火種」：一發打不掉任何積木，但落下來的火星碰到建築就從那一塊燒起來。
+     v1.39 起一次點下去是**三發齊射**（第二、三發晚 0.2～0.5 秒 ×序號出膛）。 */
   head('煙火');
   await reset(page, { shape: '中世紀城堡', cnt: 2000, workers: 4 });
   const fw = await page.evaluate(() => {
@@ -2499,8 +2558,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const set0 = placedCnt, d0 = ENG.camTarget.dist;
     launchFw({ x: 0, z: 0 });
     const dist = ENG.camTarget.dist;
-    let top = 0, rise = 0, sparks = 0, burstY = 0, ndc = -9;
-    while (fworks && rise < 4) { step(0.05); rise += 0.05; if (fworks) top = Math.max(top, fworks[0].y); }
+    /* 追第一發：齊射之後 fworks[0] 會換人（先炸的先離開陣列），
+       所以要認物件本身，不能認索引——不然量到的「竄多高」是三發混在一起的。 */
+    const shell0 = fworks[0];
+    const seen = new Set(fworks);                  // 一共出膛幾發（含還在排隊的那兩發）
+    let top = 0, rise = 0, all = 0, sparks = 0, burstY = 0, ndc = -9;
+    while (fworks && fworks.indexOf(shell0) >= 0 && rise < 4) {
+      step(0.05); rise += 0.05; all = rise;
+      if (fworks) for (const f of fworks) seen.add(f);
+      if (fworks && fworks.indexOf(shell0) >= 0) top = Math.max(top, shell0.y);
+    }
+    while (fworks && all < 6) {                    // 等其他兩發也炸完
+      step(0.05); all += 0.05;
+      if (fworks) for (const f of fworks) seen.add(f);
+    }
+    const shells = seen.size, tops = [...seen].map(f => +f.top.toFixed(1));
     if (fwSparks) {
       sparks = fwSparks.length;
       burstY = fwSparks.reduce((s, x) => s + x.y, 0) / sparks;
@@ -2532,14 +2604,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let spread = 0;
     for (const a of pts) for (const b of pts) spread = Math.max(spread, Math.hypot(a.x - b.x, a.z - b.z));
     return { set0, setAtBurst, top: +top.toFixed(1), rise: +rise.toFixed(2), sparks,
+             shells, tops, all: +all.toFixed(2),
              burstY: +burstY.toFixed(1), ndc,
              seeds: pts.length, each: shots.map(s => s.pts.length), spread: +spread.toFixed(1),
              phase, d0: +d0.toFixed(0), dist: +dist.toFixed(0), fall: +shots[0].fall.toFixed(2),
-             hold: +(FW_TOP * 2.1).toFixed(0) };
+             hold: +FW_HOLD.toFixed(0), shot: FW_SHOT };
   });
   ok('煙火會從地面竄上天再炸開',
-     fw.top > 30 && fw.rise > 0.8 && fw.rise < 2.5 && fw.sparks > 30,
-     fw.rise + ' 秒竄到 ' + fw.top + '，炸開 ' + fw.sparks + ' 顆火星');
+     fw.top > 30 && fw.rise > 0.8 && fw.rise < 2.5 && fw.sparks > 120,
+     '第一發 ' + fw.rise + ' 秒竄到 ' + fw.top + '，三發合計 ' + fw.sparks + ' 顆火星在天上');
+  /* 一次點下去是一場齊射，不是一發：三發、時間錯開、高度各自抽。
+     高度全一樣的話三發會在同一條線上炸開，看起來像同一發連放三次。 */
+  ok('一次點下去放三發，出膛時間與高度都錯開',
+     fw.shells === fw.shot && new Set(fw.tops).size >= 2 &&
+     fw.all > fw.rise && fw.all < 3.2,
+     fw.shells + ' 發，炸開高度 ' + fw.tops.join('／') + '，全部炸完花 ' + fw.all + ' 秒');
   /* 不退鏡頭的話整發都在畫面外（量過：貼著城堡的取景，火星的 NDC y 是 1.5，1 就出界了）。
      這裡驗兩件事：視距有被拉到煙火要的那個距離、火星確實落在畫面內。 */
   ok('炸開的高度框得進畫面（施放時鏡頭會退開）',
@@ -2549,12 +2628,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fw.set0 + ' → ' + fw.setAtBurst + ' 塊（它是灑火種，不是爆炸）');
   ok('落下來的火星把建築點著，而且點在好幾個地方',
      fw.seeds >= 2 && fw.spread > 4 && fw.phase === 'wreck',
-     '三發合計燒起來 ' + fw.seeds + ' 處（' + fw.each.join(' + ') +
-     '），三發合起來最遠兩處相距 ' + fw.spread + '（phase=' + fw.phase + '）');
+     '三輪合計燒起來 ' + fw.seeds + ' 處（' + fw.each.join(' + ') +
+     '），三輪合起來最遠兩處相距 ' + fw.spread + '（phase=' + fw.phase + '）');
   const fwOff = await page.evaluate(() => {
     startBuild(true); completeNow(); clearFires();
-    // 打在建築外的空地上：火星落在草地上就只是熄掉
-    launchFw({ x: arenaR + 12, z: 0 });
+    /* 打在建築外的空地上：火星落在草地上就只是熄掉。
+       離遠一點（+20 而不是 +12）：齊射的第二、三發落點會在點擊處周圍 3～7 單位，
+       火星本身又散得開，貼著草地邊緣打的話會有幾顆飄回建築上。 */
+    launchFw({ x: arenaR + 20, z: 0 });
     let g = 0;
     while ((fworks || fwSparks) && g++ < 400) step(0.05);
     return { fires: fires ? fires.length : 0, set: placedCnt, total: bp.slots.length, phase };
@@ -2565,13 +2646,83 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const fwSwap = await page.evaluate(() => {
     startBuild(true); completeNow();
     launchFw({ x: 0, z: 0 });
-    for (let i = 0; i < 34; i++) step(0.05);          // 炸開了，火星還在天上
+    for (let i = 0; i < 12; i++) step(0.05);          // 第一發還在竄、後兩發還在排隊
+    const queued = fwWait ? fwWait.length : 0;
+    for (let i = 0; i < 22; i++) step(0.05);          // 炸開了，火星還在天上
     const flying = fwSparks ? fwSparks.length : 0;
     startBuild(false);
-    return { flying, left: (fworks ? fworks.length : 0) + (fwSparks ? fwSparks.length : 0) };
+    return { flying, queued,
+             left: (fworks ? fworks.length : 0) + (fwSparks ? fwSparks.length : 0) +
+                   (fwWait ? fwWait.length : 0) };
   });
   ok('換建築時還在飛的火星要收掉', fwSwap.flying > 0 && fwSwap.left === 0,
      '換場前 ' + fwSwap.flying + ' 顆在飛 → 換場後 ' + fwSwap.left + ' 顆');
+  // 排隊中的那幾發也要收：留著的話會在新建築上空炸開，把剛蓋好的那座點著
+  ok('齊射還沒出膛的那幾發也要收掉', fwSwap.queued > 0,
+     '換場前有 ' + fwSwap.queued + ' 發在排隊，換場後全部歸零');
+
+  /* 一場齊射的火星密度：火星比配額多的時候，配額不能被陣列前面那幾顆整碗端走
+     （那會讓第二、三發完全沒有尾巴）。改成頂掉自己人裡最老的那顆之後，
+     粒子數會穩穩貼著 FW_HOT，而不是卡在某一發身上。 */
+  const fwDense = await page.evaluate(() => {
+    startBuild(true); completeNow(); clearFires();
+    hot.length = 0;
+    launchFw({ x: 0, z: 0 });
+    let maxHot = 0, maxSp = 0, full = 0;
+    for (let i = 0; i < 120; i++) {
+      step(0.05);
+      maxHot = Math.max(maxHot, hot.length);
+      maxSp = Math.max(maxSp, fwSparks ? fwSparks.length : 0);
+      if (hot.length >= FW_HOT - 2) full++;
+    }
+    /* 引擎那顆 InstancedMesh 也要畫得下：塞 400 顆進去，看 count 停在哪。
+       停在 240（v1.38 的 MAXFIRE）的話，配額再大也有一截根本沒畫出來。 */
+    const meshes = [];
+    ENG.three.scene.traverse(o => { if (o.isInstancedMesh) meshes.push(o); });
+    const was = meshes.map(o => o.count);
+    const fake = [];
+    for (let i = 0; i < 400; i++)
+      fake.push({ x: 0, y: 500, z: 0, s: 0.01, rx: 0, ry: 0, cr: 1, cg: 1, cb: 1 });
+    ENG.putFire(fake);
+    const drawable = Math.max(...meshes.map((o, i) => o.count !== was[i] ? o.count : 0));
+    ENG.putFire(hot);                                  // 收回去，別把假粒子留在畫面上
+    return { maxHot, maxSp, full, cap: FW_HOT, drawable };
+  });
+  ok('齊射期間火星粒子一直是滿的，不是只有第一發有尾巴',
+     fwDense.maxHot >= fwDense.cap - 2 && fwDense.full > 40 && fwDense.maxSp > 200,
+     '最多 ' + fwDense.maxSp + ' 顆火星、粒子 ' + fwDense.maxHot + '/' + fwDense.cap +
+     '，滿的幀數 ' + fwDense.full);
+  ok('引擎畫得下整場齊射的火星', fwDense.drawable >= fwDense.cap,
+     '一次畫得下 ' + fwDense.drawable + ' 顆（配額 ' + fwDense.cap + '）');
+
+  /* 一發的內容：外層一大球 + 芯一小球（換個顏色、速度只有一半），
+     再加上幾顆飛到一半自己再炸開的。只放一發（不走齊射）才數得清楚。 */
+  const fwLayer = await page.evaluate(() => {
+    startBuild(true); completeNow(); clearFires();
+    fworks = null; fwSparks = null; fwWait = null;
+    fireShell(0, 0);
+    const f = fworks[0], twoCol = f.c !== f.c2;
+    while (fworks) step(0.05);                        // 竄到頂、炸開
+    const cols = new Set(fwSparks.map(s => s.c)).size;
+    const n0 = fwSparks.length;
+    const crackers = fwSparks.filter(s => s.crack > 0).length;
+    // 芯那球比較慢：兩群的平均速度要差得出來
+    const sp = c => { const g = fwSparks.filter(s => s.c === c);
+                      return g.reduce((a, s) => a + Math.hypot(s.vx, s.vy, s.vz), 0) / g.length; };
+    const outer = +sp(f.c).toFixed(1), core = +sp(f.c2).toFixed(1);
+    let peak = n0;
+    for (let i = 0; i < 30 && fwSparks; i++) { step(0.05); peak = Math.max(peak, fwSparks.length); }
+    return { twoCol, cols, n0, crackers, peak, outer, core,
+             want: FW_SPARK + FW_CORE, crack: FW_CRACK, crackN: FW_CRACK_N };
+  });
+  ok('一發是雙層的花：外層一個顏色，芯另一個顏色又慢一半',
+     fwLayer.twoCol && fwLayer.cols === 2 && fwLayer.n0 === fwLayer.want &&
+     fwLayer.core < fwLayer.outer * 0.6,
+     fwLayer.n0 + ' 顆分成兩色，平均速度 外層 ' + fwLayer.outer + '／芯 ' + fwLayer.core);
+  ok('有幾顆火星會二次炸開',
+     fwLayer.crackers === fwLayer.crack && fwLayer.peak >= fwLayer.n0 + fwLayer.crack * 2,
+     fwLayer.crackers + ' 顆帶二次炸開（各炸 ' + fwLayer.crackN + ' 顆），火星數從 ' +
+     fwLayer.n0 + ' 漲到 ' + fwLayer.peak);
 
   /* ══════════ 小人也會被拆除工具波及 ══════════
      邏輯跟碎料同一套：吹飛／推走／炸飛走彈道，落地那一刻才判定要不要燒起來。
@@ -2764,7 +2915,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      先讓球上路，再把人排到它正前方，不然量到的是「球從空地滾過去」。 */
   const bowled = await page.evaluate(() => {
     startBuild(true); completeNow();
-    launchBall({ x: -30, y: 0, z: 0 });
+    launchBall({ x: -30, y: 0, z: 0 }, { x: 0, z: 0 });   // 從場邊往工地中心滾
     // 球是舉高了丟出去的，先等它落地開始滾——還在半空飛過頭頂時本來就不該撞到人
     let g = 0;
     while (ball && ball.y > ball.r + 0.1 && g++ < 200) step(0.05);
@@ -3023,6 +3174,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     while (nuke && g++ < 400) { boomY = nuke.y; step(0.005); }
     step(0.05);                                       // 爆後 0.05 秒
     const born = flashes.map(f => ({ r: +f.r.toFixed(1), op: f.op, y: +f.y.toFixed(1) }));
+    /* 風壓那幾圈先撤掉再量：它們是鋪滿半個畫面的加法混色大環，
+       兩幀都會被它墊高（量過：留著的話「拿掉火球」那幀從 0.13% 漲到 0.17%，
+       火球的對比就從 3.0 倍掉到 2.9 倍）。這裡要驗的是火球，風壓有自己的測試。 */
+    const gust = fxRings.filter(f => f.wind);
+    for (const g of gust) fxRings.splice(fxRings.indexOf(g), 1);
     const on = shot();
     const saved = flashes.splice(0, flashes.length);   // 同一幀只把火球拿掉，其他都不動
     const off = shot();
@@ -3072,6 +3228,47 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '最近的一顆離爆心 ' + flash.sparkMin.toFixed(1) + '（半徑 30 的 45% 是 13.5）');
   ok('同時炸好幾發也只留最新的四顆火球', flash.capped === 4,
      '連續 7 發 → 場上 ' + flash.capped + ' 顆');
+
+  /* 風壓：核彈與爆裂魔法才有的那一下氣浪。火球只有爆炸半徑那麼大，
+     威力看起來就到那裡為止；風壓要掃得比爆炸範圍更遠，還要把地面的塵土一起帶走。
+     它是純特效——會不會壞東西還是 explode 那一圈說了算，所以「不動任何積木」也要驗。 */
+  const wind = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    for (let i = 0; i < 40; i++) step(0.05);            // 讓上一段的殘留先散掉
+    fxRings.length = 0; dust.length = 0;
+    const st0 = blocks.map(b => b.st).join('');
+    spawnWind({ x: 0, y: 2.5, z: 0 }, NUKE_R, false);
+    const still = blocks.map(b => b.st).join('') === st0;
+    const rings = fxRings.filter(f => f.wind).length, wd = dust.filter(d => d.keep).length;
+    let ringMax = 0, dustMax = 0;
+    for (let i = 0; i < 40; i++) {
+      step(0.05);
+      for (const f of fxRings) ringMax = Math.max(ringMax, f.r);
+      for (const d of dust) if (d.keep) dustMax = Math.max(dustMax, Math.hypot(d.x, d.z));
+    }
+    fxRings.length = 0; dust.length = 0;
+    // 核彈爆炸真的會帶風壓；炸彈那種小爆炸不帶（半徑才 7～14，掃 2.6 倍會比核彈還顯眼）
+    explode({ x: 0, y: 2.5, z: 0 }, NUKE_R, NUKE_POW, false, true);
+    const nukeWind = dust.filter(d => d.keep).length;
+    fxRings.length = 0; dust.length = 0; hot.length = 0; flashes.length = 0;
+    explode({ x: 0, y: 2, z: 0 }, BOMB_R, BOMB_POW);
+    const bombWind = dust.filter(d => d.keep).length;
+    fxRings.length = 0; dust.length = 0; hot.length = 0; flashes.length = 0;
+    clearFires();
+    return { still, rings, wd, ringMax: +ringMax.toFixed(0), dustMax: +dustMax.toFixed(0),
+             nukeWind, bombWind, R: NUKE_R, mult: WIND_R, want: WIND_RINGS, dustN: WIND_DUST };
+  });
+  ok('風壓掃出爆炸範圍外，不是貼在火球邊上',
+     wind.rings === wind.want && wind.ringMax > wind.R * 1.8,
+     wind.want + ' 圈氣浪掃到 ' + wind.ringMax + '（爆炸半徑 ' + wind.R +
+     '，目標 ' + (wind.R * wind.mult).toFixed(0) + '）');
+  ok('地上的塵土被吹著一路往外跑',
+     wind.wd === wind.dustN && wind.dustMax > wind.R,
+     wind.wd + ' 顆塵土跑到離爆心 ' + wind.dustMax + '（爆炸半徑 ' + wind.R + '）');
+  ok('風壓只是特效，不會多壞一塊積木', wind.still);
+  ok('只有核彈與魔法有風壓，炸彈那種小爆炸沒有',
+     wind.nukeWind === wind.dustN && wind.bombWind === 0,
+     '核彈 ' + wind.nukeWind + ' 顆、炸彈 ' + wind.bombWind + ' 顆');
 
   /* 腳下那圈煙：柱子不能從一塊乾淨的草地長出來。
      光看「貼地的煙有幾團」不夠——柱子底部本來就有煙。要看的是它有沒有往外鋪開，
@@ -3201,7 +3398,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     for (let i = 0; i < 100; i++) step(0.05);       // 5 秒：四層都長齊
-    const all = magic ? magic.rings : [];
+    const all = (magic ? magic.rings : []).filter(o => !o.seed);   // 火種那三圈另外驗
     // 一層是兩個環疊出來的：實色的芯 + 加法混色的暈。層次要看芯那幾個
     const core = all.filter(o => !o.add).map(o => ({ y: +o.y.toFixed(1), r: +o.r.toFixed(1), c: o.c }));
     const halo = all.filter(o => o.add);
@@ -3225,12 +3422,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       startBuild(true); completeNow();
       castMagic({ x: 0, z: 0 });
       for (let i = 0; i < 100; i++) step(0.05);
-      return magic.rings.filter(o => !o.add).map(o => +o.r.toFixed(3));
+      return magic.rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
     };
     const a = cast(), b = cast();
-    const c = magic.rings.filter(o => !o.add).map(o => +o.r.toFixed(3));
+    const c = magic.rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
     for (let i = 0; i < 8; i++) step(0.05);
-    const d = magic.rings.filter(o => !o.add).map(o => +o.r.toFixed(3));
+    const d = magic.rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
     return { a, b, differ: a.some((v, i) => Math.abs(v - b[i]) > 0.3), steady: c.join() === d.join() };
   });
   ok('每次施法的層半徑都不一樣', mgVary.differ,
@@ -3246,7 +3443,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     castMagic({ x: 0, z: 0 });
     for (let i = 0; i < 100; i++) step(0.05);        // 5 秒：六層都在，紋路的編號不再變動
     draw(); ENG.render();
-    const at = () => magic.rings.filter(o => !o.add).map(o => +o.spin.toFixed(4));
+    // 火種那圈轉得比陣快 3.4 倍（它是「在竄」不是「在轉」），量陣的轉速要把它排掉
+    const at = () => magic.rings.filter(o => !o.add && !o.seed).map(o => +o.spin.toFixed(4));
     const a = at();
     // 陣的紋路（螺旋臂與外圈虛線）都在 ringGroup 底下那顆 InstancedMesh 上
     let grp = null;
@@ -3286,10 +3484,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('但每一層的紋路角度各自不同', mgSpin.spread === mgSpin.a.length,
      mgSpin.a.length + ' 層裡有 ' + mgSpin.spread + ' 種角度');
 
-  /* 展開的方式：由下往上一層一層長，中間靠一個小火圈把火帶上去——
-     先出現最下面那層 → 小火圈從它的圓心升到上一層的高度 → 抵達才擴張成新的一層。
-     兩件事都要驗：火圈真的在爬（不是原地閃），而且「爬完才多一層」，
-     不然它就只是個裝飾，六層還是各自憑空亮起來。 */
+  /* 展開的方式：由下往上一層一層長，中間靠一個小火圈（火種）把火帶上去——
+     先出現最下面那層 → 火種從它的圓心升到上一層的高度 → 抵達才擴張成新的一層。
+     兩件事都要驗：火種真的在爬（不是原地閃），而且「爬完才多一層」，
+     不然它就只是個裝飾，六層還是各自憑空亮起來。
+     v1.39 起火種**一直都在**：長層的那 0.24 秒它停在那一層的圓心等，不再消失。 */
   const mgSeed = await page.evaluate(() => {
     const lay = MAG_LAYER.map(L => +(0.12 + MAG_R * L.y).toFixed(2));
     const coreY = () => magic.rings.filter(o => !o.add && !o.seed).map(o => +o.y.toFixed(2));
@@ -3304,27 +3503,69 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (let i = 0; i < 4; i++) step(0.05);        // 0.2 秒：只該有最下面那層
       firsts.push({ n: coreY().length, y: coreY()[0] });
     }
-    // 追第一段的爬升：0.7 秒剛好走完「長第一層 → 火圈上升 → 長第二層」
+    /* 追第一段：0.7 秒剛好走完「長第一層 → 火種上升 → 長第二層」。
+       同時整場（六秒）都盯著火種在不在、有沒有往下掉。 */
     startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
     const trail = [];
     for (let i = 0; i < 14; i++) { step(0.05); trail.push({ n: coreY().length, s: seedY() }); }
-    const up = trail.filter(o => o.s > 0);
+    const rise = trail.filter((o, i) => i > 0 && o.s > trail[i - 1].s + 0.01);   // 真的在爬的那幾幀
+    const hold = trail.filter((o, i) => i > 0 && Math.abs(o.s - trail[i - 1].s) < 0.01);
+    let gaps = 0, drops = 0, last = -1, tail = -1;
+    for (let i = 0; i < 105 && magic; i++) {
+      step(0.05);
+      if (!magic) break;
+      const s = seedY();
+      if (s < 0) gaps++;
+      else { if (last >= 0 && s < last - 0.01) drops++; last = s; }
+      tail = s;
+    }
     return { lay, firsts,
-             steps: up.length, rising: up.length > 3 && up.every((o, i) => i === 0 || o.s > up[i - 1].s),
-             lo: up.length ? up[0].s : -1, hi: up.length ? up[up.length - 1].s : -1,
-             whileRising: up.every(o => o.n === 1), after: trail[trail.length - 1].n,
-             seedGone: trail[trail.length - 1].s < 0 };
+             steps: rise.length, held: hold.length,
+             lo: trail[0].s, hi: trail[trail.length - 1].s,
+             /* 爬升途中只該有一層——但最後那一幀例外：火種抵達上一層高度的同一刻
+                新的一層就從它身上撐開，所以那一幀「已經到位、也已經兩層」是對的。 */
+             whileRising: rise.every(o => o.n === 1 || Math.abs(o.s - lay[1]) < 0.1),
+             after: trail[trail.length - 1].n,
+             gaps, drops, tail, top: +(0.12 + MAG_R * MAG_LAYER[MAG_LAYER.length - 1].y).toFixed(2) };
   });
   ok('一定從最下面那層開始長，不再洗出現順序',
      mgSeed.firsts.every(f => f.n === 1 && Math.abs(f.y - mgSeed.lay[0]) < 0.01),
      '四次施法在 0.2 秒時都只有 1 層、高度 ' + mgSeed.firsts.map(f => f.y).join('／') +
      '（最下層在 ' + mgSeed.lay[0] + '）');
-  ok('小火圈從下面那層升到上一層，升到位才長出新的一層',
-     mgSeed.rising && mgSeed.whileRising && mgSeed.after === 2 && mgSeed.seedGone &&
+  ok('火種從下面那層升到上一層，升到位才長出新的一層',
+     mgSeed.steps > 3 && mgSeed.whileRising && mgSeed.after === 2 &&
      Math.abs(mgSeed.lo - mgSeed.lay[0]) < 1.5 && Math.abs(mgSeed.hi - mgSeed.lay[1]) < 1.5,
-     '火圈' + mgSeed.steps + ' 幀從 y' + mgSeed.lo + ' 升到 y' + mgSeed.hi +
+     '火種 ' + mgSeed.steps + ' 幀從 y' + mgSeed.lo + ' 升到 y' + mgSeed.hi +
      '（第一層 ' + mgSeed.lay[0] + ' → 第二層 ' + mgSeed.lay[1] +
-     '），升的過程中都只有 1 層，抵達後變 ' + mgSeed.after + ' 層、火圈收掉');
+     '），升的過程中都只有 1 層，抵達後變 ' + mgSeed.after + ' 層');
+  /* 使用者要的：火種不要在「某一層正在長」的空檔消失。
+     以前只在爬升那 0.3 秒畫，長層的 0.24 秒它不見 → 看起來是一閃一閃地跳上去。 */
+  ok('火種一直都在，長層的那段是停在原地等，不是消失',
+     mgSeed.gaps === 0 && mgSeed.held > 3,
+     '六秒裡有 ' + mgSeed.gaps + ' 幀看不到火種，前 0.7 秒有 ' + mgSeed.held + ' 幀停在原地');
+  ok('火種只會往上，最後停在最上層等爆炸',
+     mgSeed.drops === 0 && Math.abs(mgSeed.tail - mgSeed.top) < 0.01,
+     '一路沒有往下掉過，最後停在 y' + mgSeed.tail + '（最上層 ' + mgSeed.top + '）');
+
+  /* 魔法陣長層的音效（sndRune）拿掉了：六層一路響上去太吵，
+     還蓋掉引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 要留著——不是整個魔法變靜音。 */
+  const mgSnd = await page.evaluate(() => ({ rune: typeof sndRune, boom: typeof sndBoom }));
+  ok('魔法陣長層不再出聲', mgSnd.rune === 'undefined' && mgSnd.boom === 'function',
+     'sndRune 是 ' + mgSnd.rune + '、sndBoom 還是 ' + mgSnd.boom);
+
+  // 魔法爆炸也要有風壓（跟核彈同一套，只是顏色偏紅）
+  const mgWind = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    castMagic({ x: 0, z: 0 });
+    let g = 0;
+    while (magic && g++ < 200) step(0.05);
+    const wd = dust.filter(d => d.keep).length;
+    for (let i = 0; i < 60; i++) step(0.05);
+    clearFires();
+    return { wd, want: WIND_DUST };
+  });
+  ok('魔法爆炸也會掃出風壓', mgWind.wd === mgWind.want,
+     '被風吹著跑的塵土 ' + mgWind.wd + ' 顆');
   /* 整疊都浮在半空：最下層離地也有一段，而且不做滿爆炸半徑——
      做滿的話那一圈會比建築大一大圈，看起來像地上的跑道而不是浮空的陣。 */
   ok('最下層浮在半空，也沒有大到蓋滿爆炸範圍',
@@ -3571,9 +3812,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { idle, busy: ENG.info().calls };
   });
   ok('沒放道具時 draw call 不變', dc.idle <= 12, dc.idle + ' 個');
-  /* 魔法陣一層是「盤 + 芯環 + 暈環」三個 draw call，六層就十八個。
+  /* 魔法陣一層是「盤 + 芯環 + 暈環」三個 draw call，六層就十八個；
+     v1.39 起那顆火種一路留到爆炸，再加「盤 + 兩圈 + 一圈暈」四個（36 → 37）。
      只在陣展開的那六秒會這樣，平常是 11。 */
-  ok('炸彈與魔法陣在場上才多吃 draw call', dc.busy > dc.idle && dc.busy <= 36,
+  ok('炸彈與魔法陣在場上才多吃 draw call', dc.busy > dc.idle && dc.busy <= 40,
      '放了炸彈與六層魔法陣時 ' + dc.busy + ' 個');
 
   /* ══════════ 隕石 ══════════ */
@@ -3881,6 +4123,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const hit = { kind: 'block', point: new THREE.Vector3(target.x, target.y, target.z),
                   dir: new THREE.Vector3(0.2, -0.95, 0.1).normalize() };
     for (const t of TOOLS) { tool = t.id; useTool(hit); for (let i = 0; i < 10; i++) step(0.05); }
+    ballAim = null;                 // 保齡球那一輪只點了第一下，別把瞄準環留給後面的截圖
     const got = stats.badges.indexOf('allTools') >= 0;
     // 同一種道具用兩次不會重複記
     tool = 'hammer'; useTool(hit);

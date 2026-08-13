@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.38.0';
+const VERSION = '1.39.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -101,8 +101,8 @@ function sndTick() { tone(1250, 0.045, 'square', 0.045); }
    比爆炸本身早一步響，聽到就知道要閃了 */
 function sndMeteor() { noise(0.9, 0.22, 700); tone(340, 0.85, 'sawtooth', 0.07, 0.22); }
 function sndSiren() { tone(560, 1.1, 'sine', 0.05, 1.7); }
-/* 魔法陣長一層：越外層音越高，疊起來像在充能 */
-function sndRune(i) { tone(300 + i * 120, 0.5, 'triangle', 0.05, 1.35); }
+/* 魔法陣長層的音效（sndRune）拿掉了：六層一路響上去太吵，
+   而且蓋掉了引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 還在。 */
 
 /* ── 空間雜湊：讓落地的碎塊不要疊在同一點 ─────────────────── */
 const gkey = (x, z) => Math.floor(x / CELL) + ':' + Math.floor(z / CELL);
@@ -325,13 +325,15 @@ function startBuild(instant) {
   swing = null; ENG.hideHammer();
   quake = null;                       // 地震點名要掉的是「這一座」的積木，換場就作廢
   ball = null; ENG.hideBall();
+  ballAim = null;                     // 瞄到一半換場：那個出手點是舊工地的事了
   twists = null; ENG.putTornados([]);
   trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
   dozers = null; ENG.putDozers([]);
   // 倒數中的炸彈／核彈／魔法陣也一樣：留著的話會炸到剛換上來的新建築
   bombs = null; ENG.putBombs([]);
   meteors = null; ENG.putMeteors([]);
-  fworks = null; fwSparks = null;     // 還在飛的煙火火星會把剛蓋好的新建築點著
+  // 還在飛的煙火火星會把剛蓋好的新建築點著；還沒出膛的那幾發也要一起收
+  fworks = null; fwSparks = null; fwWait = null;
   nuke = null; ENG.hideNuke();
   magic = null;
   dangers = [];                       // 預告沒了，警戒範圍也要跟著撤
@@ -1580,13 +1582,13 @@ const TOOLS = [
   { id: 'bighammer', n: '大槌', k: '🔨', big: true,
     tip: '點建築：兩倍大的槌子，範圍也是兩倍　·　點地面：地震，震掉 10%',
     lock: { txt: '累計擊飛 500 塊解鎖', ok: () => stats.smashed >= 500 } },
-  { id: 'ball', n: '保齡球', k: '🎳', tip: '點地面：從那裡把保齡球丟向建築，彈幾下再滾過去',
+  { id: 'ball', n: '保齡球', k: '🎳', tip: '點兩下：先點出手的地方，再點要滾過去的方向',
     lock: { txt: '拆掉 2 座建築解鎖', ok: () => stats.destroyed >= 2 } },
   { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
     lock: { txt: '拆掉 4 座建築解鎖', ok: () => stats.destroyed >= 4 } },
   { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去，可以同時來好幾道',
     lock: { txt: '累計擊飛 5,000 塊解鎖', ok: () => stats.smashed >= 5000 } },
-  { id: 'fw', n: '煙火', k: '🎆', tip: '點地面：往天上射一發煙火，落下來的火星會把建築點著',
+  { id: 'fw', n: '煙火', k: '🎆', tip: '點地面：一次射三發煙火，落下來的火星會把建築點著',
     lock: { txt: '拆掉 8 座建築解鎖', ok: () => stats.destroyed >= 8 } },
   { id: 'fire', n: '放火', k: '🔥', tip: '點建築：從那一塊燒起來，火會往旁邊蔓延',
     lock: { txt: '累計擊飛 12,000 塊解鎖', ok: () => stats.smashed >= 12000 } },
@@ -2024,25 +2026,56 @@ function stepTrebs(dt) {
    撞掉越多減速越多，滾不動就停下。滾在地面而不是飛在半空，
    剛好會先把建築的底部掏空——上面的部分接著就靠垮塌判定自己塌下來。 */
 const BALL_R = 3.1;
-/* 點地面 = 從那裡把球丟向建築。出手有高度，落地彈幾下才開始往前滾——
-   直接貼地放出去的話它就只是一顆在地上平移的球，看不出是被「丟」出來的。
-   方向帶一點隨機偏差：每次滾出來的線不一樣，同一個位置點兩次不會是同一發。 */
+/* 點兩下：第一點是出手的地方，第二點決定往哪邊滾（第一點 → 第二點的方向）。
+   本來是「點一下，自動朝工地中心丟」——那等於方向不歸玩家管，
+   想從側面掏牆角、想擦過某一排都做不到。
+   出手有高度，落地彈幾下才開始往前滾——直接貼地放出去的話它就只是一顆
+   在地上平移的球，看不出是被「丟」出來的。
+   方向仍留一點隨機偏差，但從 ±0.22 收到 ±0.08：偏差是丟球的手感，
+   不該蓋過玩家指的方向（滾 60 單位的話橫向差 ±4.8）。 */
 /* 出手高度與回彈都要壓著點：球水平是 34 單位/秒，多滯空 0.1 秒就多飛 3.4 單位。
    彈太久的話它是「飛」到建築上的，看不出中間那段滾。現在兩下彈完，約 0.9 秒進入滾。 */
 const BALL_DROP = 3.4;              // 出手高度（球心離「貼地時的球心」多高）
-const BALL_SPREAD = 0.22;           // 方向偏差 ±rad（約 ±12.6°）
+const BALL_SPREAD = 0.08;           // 方向偏差 ±rad（約 ±4.6°）
 const BALL_BOUNCE = 0.42;           // 落地回彈保留多少垂直速度
-function launchBall(point) {
-  let dx = -point.x, dz = -point.z;              // 朝工地中心丟
+/* 滾多久、掉速多快。方向改成玩家自己指之後，射程短了就白瞄——
+   兩個都放寬一點：6 秒 ×0.82 的衰減滾得到約 119 單位，7.5 秒 ×0.86 約 152。 */
+const BALL_LIFE = 7.5;              // 最多滾幾秒
+const BALL_ROLL = 0.86;             // 滾動阻力：每秒保留多少速度
+let ballAim = null;                 // 已經點好、還在等第二點的出手位置
+
+/* 第一下記位置，第二下才丟出去。同一點連按兩下（兩點幾乎重疊）時沒有方向可用，
+   就退回舊行為朝工地中心丟——不然那一下會變成沒反應。 */
+function aimBall(point) {
+  if (!ballAim) { ballAim = { x: point.x, z: point.z, ph: 0 }; sndTick(); return; }
+  launchBall(ballAim, point);
+}
+function launchBall(from, toward) {
+  let dx = toward ? toward.x - from.x : -from.x;
+  let dz = toward ? toward.z - from.z : -from.z;
+  if (Math.hypot(dx, dz) < 0.5) { dx = -from.x; dz = -from.z; }   // 兩點重疊 → 朝工地中心
   const l = Math.hypot(dx, dz);
   if (l < 1e-4) { dx = 1; dz = 0; } else { dx /= l; dz /= l; }
   const a = Math.atan2(dz, dx) + rr(-BALL_SPREAD, BALL_SPREAD);
   ball = {
-    x: point.x, y: BALL_R + BALL_DROP, z: point.z,
+    x: from.x, y: BALL_R + BALL_DROP, z: from.z,
     vx: Math.cos(a) * 34, vz: Math.sin(a) * 34, vy: rr(-3, -0.5),   // 是往下丟不是往上拋
-    r: BALL_R, ang: 0, hit: 0, life: 6, hops: 0
+    r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 0
   };
+  ballAim = null;
   sndSwing();
+}
+/* 等第二點的時候在出手位置畫一圈會脈動的光環：沒有這個的話，
+   第一下點下去畫面完全沒反應，看起來像點壞了。 */
+const AIM_RING = [];
+function aimRings() {
+  AIM_RING.length = 0;
+  const p = 0.5 + 0.5 * Math.sin(ballAim.ph * 4.5);
+  AIM_RING.push({ x: ballAim.x, z: ballAim.z, y: 0.14, r: BALL_R * (1.1 + 0.14 * p),
+                  spin: ballAim.ph * 0.8, op: 0.9, c: 0x8fe6ff, add: 1 });
+  AIM_RING.push({ x: ballAim.x, z: ballAim.z, y: 0.13, r: BALL_R * 0.5,
+                  spin: -ballAim.ph * 0.5, op: 0.35 + 0.5 * p, c: 0xffffff, add: 1 });
+  return AIM_RING;
 }
 function stepBall(dt) {
   if (!ball) return;
@@ -2095,7 +2128,7 @@ function stepBall(dt) {
     const brake = Math.max(0.3, 1 - n * 0.006);  // 撞越多掉速越快
     o.vx *= brake; o.vz *= brake;
   }
-  const roll = Math.pow(0.82, dt);               // 滾動阻力
+  const roll = Math.pow(BALL_ROLL, dt);          // 滾動阻力
   o.vx *= roll; o.vz *= roll;
   sp = Math.hypot(o.vx, o.vz);
 
@@ -2192,7 +2225,10 @@ function stepTwist(dt) {
    炸彈、核彈、魔法共用的出口。跟槌子的差別是「沒有揮擊方向」——
    純徑向往外加一股上抬，所以積木是往四面八方噴，不是被打向某一側。 */
 const Y_BOOST = 0.85;               // 抬升占衝擊力道的比例（重力 26，這個值約抬 16 單位高）
-function explode(point, R, power, magic) {
+/* wind：要不要加那一圈往外掃的風壓（核彈與爆裂魔法專用，見 spawnWind）。
+   炸彈／隕石／投石機那幾種小爆炸不給——它們的半徑才 7～14，
+   掃出 2.6 倍的氣浪會比爆炸本身還顯眼，變成小道具看起來比核彈兇。 */
+function explode(point, R, power, magic, wind) {
   const R2 = R * R;
   let n = 0;
   for (const b of blocks) {
@@ -2250,6 +2286,8 @@ function explode(point, R, power, magic) {
   spawnBlast(point, R, magic);
   spawnDust(point, R, n);
   spawnRing(point, R);
+  // 風壓排在最後：它吃的塵霧配額比較兇，先讓爆炸本身那些拿到自己的份
+  if (wind) spawnWind(point, R, magic);
   ENG.shake(0.5 + Math.min(1.8, R * 0.03 + n * 0.015));
   sndBoom(R);
   return n;
@@ -2320,17 +2358,33 @@ function torch(hit) {
   sndFire();
 }
 /* ── 煙火 ───────────────────────────────────────────────
-   點地面：一發往天上竄，到頂炸開成一球火星，火星帶著火慢慢落下來。
-   落到建築上就從那一塊燒起來——所以它是「往天上灑火種」，不是爆炸：
-   一發打不掉任何積木，但落點散得開，燒起來的地方比放火多。 */
-const FW_TOP = 38;                  // 竄多高（±15%）
-const FW_RISE = 30;                 // 上升速度
-const FW_SPARK = 46;                // 炸開幾顆火星
-const FW_SPEED = 14;                // 火星炸開的初速
+   點地面：一次齊射三發往天上竄，到頂各自炸開成雙層的一球火星，
+   火星帶著火慢慢落下來。落到建築上就從那一塊燒起來——
+   所以它是「往天上灑火種」，不是爆炸：一塊積木都打不掉，
+   但落點散得開，燒起來的地方比放火多。 */
+const FW_TOP = 42;                  // 竄多高（每發再抽 ±20%，高度錯開才有層次）
+const FW_RISE = 32;                 // 上升速度
+const FW_HOLD = FW_TOP * 2.6;       // 施放期間鏡頭退到多遠（齊射散得比一發開，要再退一點）
+/* 一次點下去放三發：一發就是一朵花，三發錯開時間、錯開落點、錯開高度才叫「一場煙火」。
+   後面兩發各晚 0.2～0.5 秒 ×序號出膛，落點在點擊處周圍 3～7 單位。 */
+const FW_SHOT = 3;
+const FW_GAP = [0.2, 0.5];
+const FW_OFF = 7;
+const FW_SPARK = 44;                // 外層炸開幾顆火星
+const FW_CORE = 20;                 // 內層那球幾顆：換第二個顏色、速度只有一半 → 雙層的花
+/* 煙火自己的粒子配額。通用的 HOT_MAX（220）是「爆炸火球＋幾棟在燒」抓的，
+   一場齊射光是天上的火星就有三百多顆，共用那個配額的話平均每顆火星分不到一顆粒子，
+   整片會變成一閃一閃的點而不是一朵花。畫得出來的上限是引擎的 MAXFIRE。 */
+const FW_HOT = 300;
+const FW_SPEED = 17;                // 火星炸開的初速
 const FW_DRAG = 0.42;               // 火星的空氣阻力（每秒保留的比例）——飄下來，不是拋物線
 const FW_FALL = 0.34;               // 火星吃多少重力（比積木輕很多）
 const FW_LIFE = 3.4;                // 火星最多飛多久
-const FW_MAX = 5;                   // 同時最多幾發在天上
+/* 二次炸開：外層挑這麼多顆，飛到一半自己再炸成一小球。
+   一次撒得再多也只是「炸開的那一瞬間很滿」，有二次炸開才會一直啪下去。 */
+const FW_CRACK = 8;
+const FW_CRACK_N = 6;               // 二次各炸出幾顆
+const FW_MAX = 8;                   // 同時最多幾發在天上（一次齊射就三發）
 /* 每發抽一個顏色。cr/cg/cb 是亮的那一刻，to 是冷掉之後的——
    都收成同色系的暗版，落下來那一段才看得出「這一發是綠的」。 */
 const FW_COL = [
@@ -2342,46 +2396,93 @@ const FW_COL = [
 ];
 let fworks = null;                  // 正在往上竄的
 let fwSparks = null;                // 炸開後落下的火星
+let fwWait = null;                  // 已經點下去、還沒出膛的那幾發（齊射的第二、三發）
 
 function launchFw(p) {
-  if (!fworks) fworks = [];
-  if (fworks.length >= FW_MAX) fworks.shift();
-  fworks.push({ x: p.x, y: 0.8, z: p.z, vx: rr(-1.6, 1.6), vz: rr(-1.6, 1.6),
-                top: FW_TOP * rr(0.85, 1.15), em: 0,
-                c: FW_COL[Math.floor(Math.random() * FW_COL.length)] });
+  fireShell(p.x, p.z);
+  for (let i = 1; i < FW_SHOT; i++) {
+    if (!fwWait) fwWait = [];
+    const a = rr(0, Math.PI * 2), d = rr(FW_OFF * 0.4, FW_OFF);
+    fwWait.push({ x: p.x + Math.cos(a) * d, z: p.z + Math.sin(a) * d,
+                  t: i * rr(FW_GAP[0], FW_GAP[1]) });
+  }
   /* 跟龍捲風、蘑菇雲同一套：不退鏡頭的話整發都在畫面外。
      量過：貼著中世紀城堡的取景，炸開那一刻火星的 NDC y 是 1.5（1 就已經出界了）。
-     秒數蓋住「上升 1.4 秒 ＋ 火星最多 3.4 秒」。 */
-  ENG.holdWide(FW_TOP * 2.1, 5.5);
+     秒數蓋住「最後一發晚 1 秒出膛 ＋ 上升 1.6 秒 ＋ 火星最多 4 秒」。 */
+  ENG.holdWide(FW_HOLD, 7);
+}
+/* 一發：抽兩個顏色（外層一個、芯一個），高度也各抽一個 */
+function fireShell(x, z) {
+  if (!fworks) fworks = [];
+  if (fworks.length >= FW_MAX) fworks.shift();
+  const i = Math.floor(Math.random() * FW_COL.length);
+  let j = Math.floor(Math.random() * (FW_COL.length - 1));
+  if (j >= i) j++;                                  // 芯一定跟外層不同色
+  fworks.push({ x, y: 0.8, z, vx: rr(-1.6, 1.6), vz: rr(-1.6, 1.6),
+                top: FW_TOP * rr(0.8, 1.2), em: 0, c: FW_COL[i], c2: FW_COL[j] });
   sndFwUp();
 }
-/* 火星／尾巴共用的粒子。s 小、命短：大顆長命的話整發會糊成一團橘色方塊 */
+/* 火星／尾巴共用的粒子。s 小、命短：大顆長命的話整發會糊成一團橘色方塊。
+   配額滿了的時候是「頂掉自己人裡最老的那顆」，不是「這一顆不冒」——
+   直接不冒的話配額會被陣列前面那幾顆火星整碗端走（實測一發就想冒 4747 顆、
+   只進得去 1938 顆），齊射的第二、三發等於整發沒有尾巴。
+   只頂 fw 的：爆炸火球那些不能被煙火擠掉，那是別的道具的畫面。 */
 function fwHot(x, y, z, c, s, life, sp) {
-  if (hot.length > HOT_MAX - 40) return;            // 留一截給爆炸的火球
+  if (hot.length >= FW_HOT) {
+    const i = hot.findIndex(h => h.fw);
+    if (i < 0) return;
+    hot.splice(i, 1);
+  }
   hot.push({
     x, y, z, vx: rr(-sp, sp), vy: rr(-sp, sp), vz: rr(-sp, sp),
     rx: Math.random() * 6, ry: Math.random() * 6,
     s, life, g: -1.2, grow: 0.96, cool: rr(0.3, 0.7),
-    cr: c[0][0], cg: c[0][1], cb: c[0][2], to: c[1]
+    cr: c[0][0], cg: c[0][1], cb: c[0][2], to: c[1], fw: 1
   });
 }
 const rgbHex = c => (Math.round(c[0] * 255) << 16) | (Math.round(c[1] * 255) << 8) |
                     Math.round(c[2] * 255);
-function burstFw(f) {
-  if (!fwSparks) fwSparks = [];
-  for (let i = 0; i < FW_SPARK; i++) {
+/* 撒一球火星。crack 是「前幾顆要帶二次炸開」 */
+function fwSpray(x, y, z, c, n, speed, life, crack) {
+  for (let i = 0; i < n; i++) {
+    if (fwSparks.length > 900) return;               // 保險絲，正常一場齊射約 500 顆
     /* 均勻撒在球面上：三個分量各自亂數的話會集中在立方體的八個角，
        炸開來是一團方的，不是一顆球。 */
     const a = Math.random() * Math.PI * 2, u = rr(-1, 1), s = Math.sqrt(1 - u * u);
-    const sp = FW_SPEED * rr(0.7, 1.15);
-    fwSparks.push({ x: f.x, y: f.y, z: f.z,
+    const sp = speed * rr(0.7, 1.15);
+    fwSparks.push({ x, y, z,
                     vx: Math.cos(a) * s * sp, vy: u * sp, vz: Math.sin(a) * s * sp,
-                    t: FW_LIFE * rr(0.8, 1.2), em: 0, c: f.c });
+                    t: life * rr(0.8, 1.2), em: 0, c,
+                    crack: i < crack ? rr(0.45, 0.8) : 0 });
   }
-  // 炸開那一瞬間的光圈，讓「啪」有個形狀
-  fxRings.push({ x: f.x, z: f.z, y: f.y, r: 1, vr: 26, op: 0.85, fade: 0.45,
+}
+function burstFw(f) {
+  if (!fwSparks) fwSparks = [];
+  fwSpray(f.x, f.y, f.z, f.c, FW_SPARK, FW_SPEED, FW_LIFE, FW_CRACK);
+  // 芯：同一個位置再撒一球慢的、換個顏色。外面一大球、裡面一小球 = 雙層的花
+  fwSpray(f.x, f.y, f.z, f.c2, FW_CORE, FW_SPEED * 0.45, FW_LIFE * 0.8, 0);
+  // 炸開那一瞬間的光圈，讓「啪」有個形狀。外圈快、芯那圈慢又是另一個顏色
+  fxRings.push({ x: f.x, z: f.z, y: f.y, r: 1, vr: 30, op: 0.9, fade: 0.5,
                  c: rgbHex(f.c[0]), add: 1, spin: rr(0, 6.28) });
+  fxRings.push({ x: f.x, z: f.z, y: f.y, r: 1, vr: 13, op: 0.85, fade: 0.75,
+                 c: rgbHex(f.c2[0]), add: 1, spin: rr(0, 6.28) });
   sndFwPop();
+}
+/* 二次炸開：一顆火星飛到一半自己再炸成一小球。
+   不放光圈——十幾顆同時炸就是十幾個環，每個環是一個 draw call。
+   改成在原地補幾顆亮的粒子，「啪」一樣看得到，成本是 0 個 draw call。 */
+function crackFw(s) {
+  for (let i = 0; i < FW_CRACK_N; i++) {
+    if (fwSparks.length > 900) break;
+    const a = Math.random() * Math.PI * 2, u = rr(-1, 1), q = Math.sqrt(1 - u * u);
+    const sp = 6 * rr(0.6, 1.2);
+    fwSparks.push({ x: s.x, y: s.y, z: s.z,
+                    vx: s.vx * 0.3 + Math.cos(a) * q * sp,
+                    vy: s.vy * 0.3 + u * sp,
+                    vz: s.vz * 0.3 + Math.sin(a) * q * sp,
+                    t: rr(0.6, 1.2), em: 0, c: s.c, crack: 0 });
+  }
+  for (let i = 0; i < 3; i++) fwHot(s.x, s.y, s.z, s.c, rr(0.5, 0.9), rr(0.15, 0.3), 1.2);
 }
 /* 火星碰到的那一塊：燒起來的是「離落點最近、還站著」的那一塊。
    只在真的碰到（blockAt 是格子查表，很便宜）才掃一次 blocks。 */
@@ -2397,6 +2498,14 @@ function igniteAt(x, y, z) {
   return true;
 }
 function stepFw(dt) {
+  if (fwWait) {                                      // 齊射還沒出膛的那幾發
+    for (let i = fwWait.length - 1; i >= 0; i--) {
+      const w = fwWait[i];
+      w.t -= dt;
+      if (w.t <= 0) { fireShell(w.x, w.z); fwWait.splice(i, 1); }
+    }
+    if (!fwWait.length) fwWait = null;
+  }
   if (fworks) {
     for (let i = fworks.length - 1; i >= 0; i--) {
       const f = fworks[i];
@@ -2412,6 +2521,7 @@ function stepFw(dt) {
   for (let i = fwSparks.length - 1; i >= 0; i--) {
     const s = fwSparks[i];
     s.t -= dt;
+    if (s.crack > 0) { s.crack -= dt; if (s.crack <= 0) crackFw(s); }
     s.vy -= GRAV * FW_FALL * dt;
     s.vx *= drag; s.vy *= drag; s.vz *= drag;
     const px = s.x, py = s.y, pz = s.z;
@@ -2675,7 +2785,7 @@ function callNuke(point) {
 function nukeHit(p) {
   nuke = null;
   ENG.hideNuke();
-  explode(p, NUKE_R, NUKE_POW);
+  explode(p, NUKE_R, NUKE_POW, false, true);      // true = 加風壓
   startCloud(p, NUKE_R, false);
 }
 function stepNuke(dt) {
@@ -2757,7 +2867,6 @@ function castMagic(point) {
      跟龍捲風、蘑菇雲同一套：施法期間鏡頭退開，爆完那朵雲會再接手撐住這個距離。 */
   ENG.holdWide(MAG_R * 2.2, MAG_TIME + 1);
   alertFlee(point, MAG_R, MAG_TIME);      // 魔法陣一亮，站在陣裡的人就往外跑
-  sndRune(0);
 }
 function stepMagic(dt) {
   if (!magic) return;
@@ -2766,7 +2875,7 @@ function stepMagic(dt) {
   if (magic.t <= 0) {
     const p = { x: magic.x, y: MAG_CORE_Y, z: magic.z };   // 爆點＝最低那層的圓心
     magic = null;
-    explode(p, MAG_R, MAG_POW, true);
+    explode(p, MAG_R, MAG_POW, true, true);       // 第二個 true = 加風壓
     startCloud(p, MAG_R, true);       // 魔法爆完也留一朵，只是燒的是紅光還帶星光
     return;
   }
@@ -2796,32 +2905,36 @@ function stepMagic(dt) {
     rings.push({ x: magic.x, z: magic.z, r: rad * 1.04, y, spin,
                  op: k * 0.75, c: 0xff9a4a, add: 1 });
   }
-  /* 小火圈：夾在「這一層長好了」與「上一層開始長」之間，從這一層的圓心升到上一層的高度。
-     它是整疊的火種，看得到它把火帶上去，六層才像一層帶起一層。
-     只在爬升那一段畫，抵達的同一刻新的一層就從同樣的半徑撐開，所以兩者不會同時出現。
-     不給 sp／fill 以外的東西：紋路留給正式的六層，這裡要的是一小團在竄的火。 */
-  if (layers > 0 && layers < MAG_LAYER.length) {
-    const u = (el - ((layers - 1) * MAG_GAP + MAG_GROW)) / MAG_RISE;
-    if (u > 0 && u < 1) {
-      const y0 = 0.12 + MAG_R * MAG_LAYER[layers - 1].y;
-      const y1 = 0.12 + MAG_R * MAG_LAYER[layers].y;
-      const fy = y0 + (y1 - y0) * u;
-      /* 一路等大上升，不忽大忽小：脈動會讓人以為它在呼吸或快要炸開，
-         這個火種要傳達的只有「往上帶」。等大剛好也就是新層的起始半徑，交接不跳。
-         顏色直接抄爆炸火球那組色階（FLASH_SHELL 的亮黃 → 橘），跟火球是同一團火。
-         芯要疊兩圈：環的線寬是半徑的 7%，半徑才 4.2 的小圈只畫一圈的話那條線
-         細到看不出顏色，剩下的只有底下那片淡淡的盤。 */
-      const fs = -el * MAG_SPIN * 3.4;                            // 轉得比陣快，才像在竄
-      rings.push({ x: magic.x, z: magic.z, r: seedR, y: fy, spin: fs,
-                   op: 1, c: 0xffeda6, seed: 1 });
-      rings.push({ x: magic.x, z: magic.z, r: seedR * 1.2, y: fy, spin: fs * 0.8,
-                   op: 1, c: 0xffc44a, fill: 1, seed: 1 });
-      rings.push({ x: magic.x, z: magic.z, r: seedR * 1.75, y: fy, spin: fs * 0.6,
-                   op: 0.85, c: 0xff9a22, add: 1, seed: 1 });
+  /* 小火圈（火種）：第一層一亮它就在場上，之後**一直都在**，直到爆炸。
+     一層長好 → 升到上一層的高度 → 停在那裡等那一層長好 → 再往上升。
+     停留的那一段就待在「正在長的那一層」的圓心，新的一層等於是從它身上撐開的；
+     原本只在爬升那 0.3 秒畫，長層的 0.24 秒它就不見了，看起來是一閃一閃地跳上去。
+     六層長齊之後它留在頂端那層，一路燒到爆炸。
+     不給 sp：紋路留給正式的六層，這裡要的是一小團在竄的火。 */
+  if (layers > 0) {
+    const top = layers - 1;
+    const yTop = 0.12 + MAG_R * MAG_LAYER[top].y;
+    let fy = yTop;
+    if (top + 1 < MAG_LAYER.length) {
+      // 這一層還在長的時候 u <= 0（停著），長好才開始爬，爬到 1 就換這一層當 top
+      const u = (el - (top * MAG_GAP + MAG_GROW)) / MAG_RISE;
+      if (u > 0) fy = yTop + (0.12 + MAG_R * MAG_LAYER[top + 1].y - yTop) * Math.min(1, u);
     }
+    /* 一路等大，不忽大忽小：脈動會讓人以為它在呼吸或快要炸開，
+       這個火種要傳達的只有「往上帶」。等大剛好也就是新層的起始半徑，交接不跳。
+       顏色直接抄爆炸火球那組色階（FLASH_SHELL 的亮黃 → 橘），跟火球是同一團火。
+       芯要疊兩圈：環的線寬是半徑的 7%，半徑才 4.2 的小圈只畫一圈的話那條線
+       細到看不出顏色，剩下的只有底下那片淡淡的盤。 */
+    const fs = -el * MAG_SPIN * 3.4;                            // 轉得比陣快，才像在竄
+    rings.push({ x: magic.x, z: magic.z, r: seedR, y: fy, spin: fs,
+                 op: 1, c: 0xffeda6, seed: 1 });
+    rings.push({ x: magic.x, z: magic.z, r: seedR * 1.2, y: fy, spin: fs * 0.8,
+                 op: 1, c: 0xffc44a, fill: 1, seed: 1 });
+    rings.push({ x: magic.x, z: magic.z, r: seedR * 1.75, y: fy, spin: fs * 0.6,
+                 op: 0.85, c: 0xff9a22, add: 1, seed: 1 });
   }
-  // 一層兩個環（芯 + 暈），所以要數層數不是數環數，音效才不會一層響兩次
-  if (layers > magic.shown) { magic.shown = layers; sndRune(magic.shown - 1); }
+  // 一層兩個環（芯 + 暈），所以要數層數不是數環數
+  if (layers > magic.shown) magic.shown = layers;
   magic.rings = rings;
   implode(magic, dt);
 }
@@ -2978,6 +3091,53 @@ function spawnBlast(p, R, magic) {
   for (let i = 0; i < 2; i++)
     fxRings.push({ x: p.x, z: p.z, y: 0.16 + i * 0.12, r: R * 0.2, vr: R * (2.2 - i * 0.8),
                    op: 1, fade: 0.5 + i * 0.3, c, add: 1, spin: rr(0, 6.28) });
+}
+
+/* ── 風壓 ─────────────────────────────────────────────────
+   核彈與爆裂魔法才有的那一下氣浪。火球只有爆炸半徑那麼大（30），
+   看起來威力就到那裡為止；風壓是「火球之外還掃出去一大圈」——
+   掃到 2.6 倍半徑（78 單位，比整座工地還寬），才看得出這一發有多兇。
+
+   兩樣東西疊出來的：
+   1. 四圈往外衝的光環，越高的越小、擴得越慢 → 側面看是一個往外撐開的半球罩，
+      不是地上四個同心圓（環本身是平的，靠高度差堆出弧度）。
+   2. 地面被掀起來的一道塵牆，跟著環一起往外跑。它才是「地上的東西真的被吹到了」，
+      只有光環的話那圈看起來像貼在地上的裝飾。
+   不動任何積木與小人：這是特效，破壞範圍還是 explode 那一圈說了算。 */
+const WIND_R = 2.6;                 // 氣浪掃到爆炸半徑的幾倍
+const WIND_RINGS = 4;
+const WIND_DUST = 64;               // 塵牆幾顆
+function spawnWind(p, R, magic) {
+  /* 顏色偏暖、不要接近白：這幾圈是加法混色又鋪得很大，給白的話整片畫面會過曝，
+     連中間那顆火球都被洗掉（量過：拿掉火球的同一幀，過曝白從 0.13% 漲到 0.21%，
+     火球本身的對比就從 3 倍掉到 2.8 倍）。風壓是被掀起來的塵，不是第二顆火球。 */
+  const c = magic ? 0xff6fae : 0xffc078;
+  for (let i = 0; i < WIND_RINGS; i++) {
+    const k = i / (WIND_RINGS - 1);                 // 0 = 貼地那圈，1 = 最高那圈
+    /* fade 是「淡掉要幾秒」，vr 要照它算：兩者不配的話環會在半路上就消失，
+       掃不到該掃到的距離。目標是每一圈都在淡掉前後走到 WIND_R × R。 */
+    const fade = 0.85 - 0.13 * k;
+    fxRings.push({
+      x: p.x, z: p.z, y: 0.2 + R * 0.4 * k,
+      r: R * (0.3 - 0.14 * k),
+      vr: R * WIND_R * (1 - 0.26 * k) / fade,
+      vy: R * 0.05 * k,                             // 高的那幾圈邊擴邊往上飄一點
+      op: 0.65 - 0.14 * k, fade, c, add: 1, spin: rr(0, 6.28), wind: 1
+    });
+  }
+  for (let i = 0; i < WIND_DUST; i++) {
+    if (dust.length > 600) break;                   // 引擎的塵霧上限是 720
+    const a = i / WIND_DUST * Math.PI * 2 + rr(-0.06, 0.06);
+    const sp = R * rr(1.1, 1.9);                    // 追得上光環的速度，才像同一股風
+    dust.push({
+      x: p.x + Math.cos(a) * R * 0.3, y: rr(0.3, 1.8), z: p.z + Math.sin(a) * R * 0.3,
+      vx: Math.cos(a) * sp, vy: rr(0.4, 2.6), vz: Math.sin(a) * sp,
+      // 顏色壓得比一般煙塵暗一點：這是被掀起來的土，太白會像整片起霧
+      rx: 0, ry: a, life: rr(0.9, 1.7), s: rr(0.9, 2.4), c: rr(0.55, 0.82),
+      keep: 0.985                                   // 預設 0.94 會讓它原地就停住
+    });
+  }
+  ENG.shake(0.45);                                  // 疊在 explode 本來那一下上面
 }
 
 /* 火球：先一瞬間衝到大半個尺寸，之後慢慢撐開；亮度收得比半徑快。
@@ -3159,7 +3319,7 @@ function useTool(hit) {
   const onGround = hit.kind === 'ground';
   if (tool === 'hammer') { launchHammer(hit.point, hit.dir, false, onGround); return 0; }
   if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true, onGround); return 0; }
-  if (tool === 'ball') { launchBall(hit.point); return 0; }
+  if (tool === 'ball') { aimBall(hit.point); return 0; }
   if (tool === 'treb') { placeTreb({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fw') { launchFw({ x: hit.point.x, z: hit.point.z }); return 0; }
@@ -3227,7 +3387,11 @@ function stepDust(dt) {
     d.life -= dt;
     if (d.life <= 0) { dust.splice(i, 1); continue; }
     // g 給負的就是會往上飄（火球、蘑菇雲）；沒給就是一般會落下的煙塵
-    d.vy -= (d.g === undefined ? 7 : d.g) * dt; d.vx *= 0.94; d.vz *= 0.94;
+    d.vy -= (d.g === undefined ? 7 : d.g) * dt;
+    /* 水平阻力。預設 0.94 是「爆起來一團、幾乎就地停住」的煙塵；
+       風壓那道塵牆要一路掃出去，所以它自己帶一個比較鬆的 keep。 */
+    const kp = d.keep === undefined ? 0.94 : d.keep;
+    d.vx *= kp; d.vz *= kp;
     d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
     if (d.y < 0.1) { d.y = 0.1; d.vy = 0; d.vx *= 0.8; d.vz *= 0.8; }
     // 要慢慢淡掉的（蘑菇雲）用縮的。單靠 life 到期會「啪」地整團同時不見
@@ -3323,6 +3487,7 @@ function step(dt) {
   stepHot(dt);
   stepFlash(dt);
   stepFxRings(dt);
+  if (ballAim) ballAim.ph += dt;         // 瞄準環的脈動
   stepDozers(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
     toasts[i].t -= dt;
@@ -3394,10 +3559,14 @@ function draw() {
   ENG.putTornados(twists || EMPTY);
   ENG.putFire(hot);
   ENG.putFlash(flashes);
-  /* 魔法陣與爆炸光環共用同一組環，在這裡合起來丟過去。
-     魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。 */
-  if (magic && magic.rings) ENG.setRings(magic.rings.concat(fxRings));
-  else if (fxRings.length) ENG.setRings(fxRings);
+  /* 魔法陣、爆炸光環、保齡球的瞄準環共用同一組環，在這裡合起來丟過去。
+     魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。
+     沒東西在瞄／沒魔法陣時不做 concat：那是每幀都會跑到的路徑。 */
+  let ringList = null;
+  if (magic && magic.rings) ringList = fxRings.length ? magic.rings.concat(fxRings) : magic.rings;
+  else if (fxRings.length) ringList = fxRings;
+  if (ballAim) ringList = ringList ? ringList.concat(aimRings()) : aimRings();
+  if (ringList) ENG.setRings(ringList);
   else ENG.hideRings();
   if (dozers) ENG.putDozers(dozRender(dozers));
 }
@@ -3537,9 +3706,9 @@ function renderTools() {
     b.title = okNow ? t.tip : t.lock.txt;
     b.addEventListener('click', () => {
       if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return; }
-      tool = t.id; renderTools();
+      tool = t.id; ballAim = null; renderTools();   // 換道具就把瞄一半的出手點收掉
       $('toolbox').classList.remove('open');       // 選好就收起來，不要一直擋著畫面
-      $('hint').textContent = t.tip + '　｜　拖曳轉視角　｜　滾輪縮放　｜　點小人會跌倒';
+      $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移　｜　滾輪縮放　｜　點小人會跌倒';
     });
     box.appendChild(b);
   }
