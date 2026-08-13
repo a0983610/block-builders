@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.37.0';
+const VERSION = '1.37.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -715,8 +715,8 @@ function newWorker(i) {
     eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
-       fer 是逃到離爆心多遠才算安全。 */
-    flee: 0, fdel: 0, fex: 0, fez: 0, fer: 0,
+       fer 是逃到離爆心多遠才算安全，fdir 是起跑時定好的逃跑方向。 */
+    flee: 0, fdel: 0, fex: 0, fez: 0, fer: 0, fdir: 0,
     /* 每個人身高略有差異。1.06–1.24 大約是積木邊長的一個半，
        比原本大一成半——太小的話遠鏡頭下只剩一撮色點，看不出在做什麼。 */
     scale: rr(1.06, 1.24)
@@ -909,13 +909,19 @@ function walkTo(w, dt) {
 
    安全距離抓比爆炸半徑再遠一點：剛好站在半徑上還是會被掃到（explode 是照距離
    衰減的，邊緣一樣有力）。 */
-/* 腳程倍率跟腳步動畫倍率分開：動畫照使用者說的加倍，腳程只到 1.55。
+/* 腳程倍率跟腳步動畫倍率分開：動畫加倍，腳程只到 1.2（使用者指定）。
    兩個都給 2 的話核彈半徑 30、倒數 2.8 秒，圈內每一個人都跑得掉（實測 20/20 逃出），
-   等於幫小人開了無敵。1.55 的話站在爆心那一帶的來不及——有人逃掉、有人被炸飛，
-   那才是這個機制要的畫面。 */
-const FLEE_SPD = 1.55;
+   等於幫小人開了無敵。 */
+const FLEE_SPD = 1.2;
 const FLEE_STEP = 2;
-const FLEE_PAD = 6;                 // 逃到爆炸半徑外多遠才停
+/* 逃到爆炸半徑外多遠才停——**每個人抽自己的**。給同一個值的話所有人都停在離爆心
+   剛好一樣遠的地方，二十個人會站成一個正圓，看起來像在圍圈不像在逃。 */
+const FLEE_PAD = [2, 15];
+/* 跑的方向偏離「正背對爆心」多少。完全照半徑跑的話，一群人的路線是從同一點射出去的
+   放射線，散開的那一下也很像陣型。偏一點才像各跑各的。
+   方向在起跑那一刻就定死、之後走直線：每幀拿「當下的半徑方向 + 固定偏角」重算的話，
+   軌跡會變成等角螺旋——真的繞著爆心畫圈圈。 */
+const FLEE_SKEW = 0.5;
 const FLEE_TAIL = 0.6;              // 爆炸之後再多警戒幾秒，不要炸完立刻回頭上工
 const FLEE_REACT = [0.15, 0.55];    // 反應時間。全員同一幀起跑像一群機器人
 function alertFlee(point, R, t) {
@@ -925,7 +931,12 @@ function alertFlee(point, R, t) {
     releaseWorker(w);                               // 手上的積木一律扔下（也會放掉認領的格子）
     w.flee = t + FLEE_TAIL;
     w.fdel = rr(FLEE_REACT[0], FLEE_REACT[1]);
-    w.fex = point.x; w.fez = point.z; w.fer = R + FLEE_PAD;
+    w.fex = point.x; w.fez = point.z;
+    w.fer = R + rr(FLEE_PAD[0], FLEE_PAD[1]);
+    const dx = w.x - point.x, dz = w.z - point.z;
+    // 剛好站在爆心正上方就隨便挑一邊
+    const away = dx * dx + dz * dz < 1e-6 ? rr(0, Math.PI * 2) : Math.atan2(dx, dz);
+    w.fdir = away + rr(-FLEE_SKEW, FLEE_SKEW);
     w.cheer = 0; w.pause = 0;
   }
 }
@@ -947,12 +958,11 @@ function stepFlee(w, dt) {
     w.ph += dt * 4;
     return;
   }
-  const ux = d < 0.001 ? Math.cos(w.a) : dx / d;    // 剛好站在爆心正下方就隨便挑一邊
-  const uz = d < 0.001 ? Math.sin(w.a) : dz / d;
+  const ux = Math.sin(w.fdir), uz = Math.cos(w.fdir);   // 起跑時定好的那條直線
   const lim = arenaR + 20;
   w.x = clamp(w.x + ux * WALK * FLEE_SPD * dt, -lim, lim);
   w.z = clamp(w.z + uz * WALK * FLEE_SPD * dt, -lim, lim);
-  w.a = Math.atan2(ux, uz);
+  w.a = w.fdir;
   w.ph += dt * 11 * FLEE_STEP;                      // 腳步加倍
   w.gait += (1 - w.gait) * Math.min(1, dt * 10);
 }

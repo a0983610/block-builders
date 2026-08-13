@@ -1590,10 +1590,45 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (let i = 0; i < 160; i++) step(0.05);
       alertFlee = orig;
       return { near: near.length, fleeing, carry, slot, back, escaped, tossed,
+               gained: +(near.reduce((s, w, k) => s + prev[k] - d0[k], 0) / near.length).toFixed(1),
                stuckFlee: workers.filter(w => w.flee > 0).length,
                busy: workers.filter(w => w.st !== 'idle').length };
     };
     const on = run(true), off = run(false);
+    /* 遠近各擺十個人，逃不逃得掉就不再看那一輪小人剛好站在哪裡：
+       腳程 1.2 倍、倒數 2.8 秒、反應 0.15～0.55 秒 → 跑得動大約 20 單位。
+       站在 26 的跑得出半徑 30，站在 4 的跑不到。 */
+    const planted = (() => {
+      shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+      targetCnt = 900; setWorkerCount(20); startBuild(true);
+      for (let i = 0; i < 60; i++) step(0.05);
+      const far = [], nearW = [];
+      workers.forEach((w, i) => {
+        releaseWorker(w);
+        const a = i / workers.length * Math.PI * 2, r = i % 2 ? 26 : 4;
+        w.x = Math.cos(a) * r; w.z = Math.sin(a) * r; w.y = 0;
+        (i % 2 ? far : nearW).push(w);
+      });
+      callNuke({ x: 0, z: 0 });
+      // 軌跡彎不彎：起點到終點的直線距離 ÷ 實際走的路程。1 就是直線
+      const tr = workers.map(w => ({ w, lx: w.x, lz: w.z, x0: w.x, z0: w.z, run: 0 }));
+      for (let i = 0; i < 60 && nuke; i++) {
+        step(0.05);
+        for (const t of tr) {
+          t.run += Math.hypot(t.w.x - t.lx, t.w.z - t.lz);
+          t.lx = t.w.x; t.lz = t.w.z;
+        }
+      }
+      const straight = tr.filter(t => t.run > 3)
+        .map(t => Math.hypot(t.w.x - t.x0, t.w.z - t.z0) / t.run);
+      const rad = workers.map(w => Math.hypot(w.x, w.z)).sort((a, b) => a - b);
+      for (let i = 0; i < 4; i++) step(0.05);
+      return { farOut: far.filter(w => Math.hypot(w.x, w.z) >= NUKE_R).length,
+               farN: far.length, nearOut: nearW.filter(w => Math.hypot(w.x, w.z) >= NUKE_R).length,
+               nearN: nearW.length,
+               straight: +Math.min(...straight).toFixed(3),
+               spread: +(rad[rad.length - 1] - rad[0]).toFixed(1) };
+    })();
     // 魔法陣：六秒預告，圈內的人夠時間全部跑出去
     shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
@@ -1604,8 +1639,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 130 && magic; i++) step(0.05);
     const magOut = inRing.filter(w => Math.hypot(w.x, w.z) >= MAG_R).length;
     const magFar = Math.max(...inRing.map(w => Math.hypot(w.x, w.z)));
-    return { on, off, mag: { n: inRing.length, fleeing: magFlee, out: magOut,
-                             far: +magFar.toFixed(1) } };
+    return { on, off, planted, mag: { n: inRing.length, fleeing: magFlee, out: magOut,
+                                      far: +magFar.toFixed(1) } };
   });
   ok('核彈倒數一出現，範圍內的人全部開始逃', flee.on.near > 5 && flee.on.fleeing >= flee.on.near,
      '半徑 30 內有 ' + flee.on.near + ' 人，' + flee.on.fleeing + ' 人進入逃命狀態');
@@ -1614,12 +1649,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '逃跑期間還搬著積木的有 ' + flee.on.carry + ' 幀、還占著格子的 ' + flee.on.slot + ' 幀');
   ok('跑的方向是背對爆心', flee.on.back === 0,
      '逃跑期間離爆心變近的取樣 ' + flee.on.back + ' 次');
-  /* 跑得掉的逃過一劫、跑不掉的照樣被炸飛——腳程只有 1.55 倍就是為了留下這個差別。
-     實測開著逃命被炸飛 3～10 人，關掉是 13～19 人。 */
-  ok('跑得掉的人真的躲過爆炸', flee.on.escaped > flee.on.near * 0.3 &&
-     flee.on.tossed < flee.off.tossed * 0.8,
-     '逃出半徑的 ' + flee.on.escaped + '/' + flee.on.near + ' 人，被炸飛 ' + flee.on.tossed +
-     ' 人（關掉逃命機制是 ' + flee.off.tossed + '/' + flee.off.near + ' 人）');
+  /* 跑得掉的逃過一劫、跑不掉的照樣被炸飛——腳程只有 1.2 倍就是為了留下這個差別。
+     那一輪逃掉幾個很看小人剛好站在哪裡（實測 3～12/20），所以生死的部分改用
+     下面「遠近各擺十個」那條驗，這裡只驗「整群人確實往外移動了」。 */
+  ok('整群人真的往外跑了一段', flee.on.gained > 12 && flee.off.gained < 3,
+     '平均離爆心多出 ' + flee.on.gained + ' 單位（關掉逃命機制只有 ' + flee.off.gained + '）');
+  ok('離得夠遠的跑得掉、站在爆心那一帶的跑不掉',
+     flee.planted.farOut === flee.planted.farN && flee.planted.nearOut === 0,
+     '站在 26 的 ' + flee.planted.farOut + '/' + flee.planted.farN + ' 人逃出半徑 30，' +
+     '站在 4 的 ' + flee.planted.nearOut + '/' + flee.planted.nearN + ' 人');
+  /* 使用者回報「看起來像跑成一個圓圈」，兩個成因各驗一條：
+     方向每幀重算會走成等角螺旋（改成起跑就定死一條直線）、
+     安全距離給同一個值會讓所有人停在同一個圓上（改成每人各抽）。 */
+  ok('逃跑路線是直的，不會繞著爆心畫圈', flee.planted.straight > 0.97,
+     '最彎的一條，直線距離÷實走路程 = ' + flee.planted.straight + '（1 就是直線）');
+  ok('停下來的位置不會排成一個圓', flee.planted.spread > 8,
+     '停下時離爆心最遠與最近差 ' + flee.planted.spread + ' 單位');
   ok('炸完會回去工作，不會卡在逃命狀態',
      flee.on.stuckFlee === 0 && flee.on.busy > 0,
      '還在逃的 ' + flee.on.stuckFlee + ' 人，回去工作的 ' + flee.on.busy + ' 人');
