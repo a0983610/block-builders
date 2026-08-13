@@ -1578,6 +1578,10 @@ for (let dx = -1; dx <= 1; dx++)
     for (let dz = -1; dz <= 1; dz++)
       if (dx || dy || dz) NBR.push([dx, dy, dz]);
 
+/* 只有六個面的鄰居。**不是拿來當一般支撐判定用的**（那樣艾菲爾鐵塔會自己解體），
+   只用來偵測「本來好好疊著、現在只剩對角勾著」這種退化——見 slots[i].f6。 */
+const NBR6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
 /* 鄰居查表用的數值鍵。+1 是為了讓 −1 的鄰居也落在非負範圍，
    不然 gx=-1 會跟 (1023, gy-1, gz) 撞在同一個鍵上。 */
 const gkeyOf = (x, y, z) => (x + 1) + (y + 1) * 1024 + (z + 1) * 1048576;
@@ -1621,7 +1625,7 @@ function makeBlueprint(idx, target) {
   const slots = cells.map(c => ({
     x: c.x - cx, y: c.y - minY, z: c.z - cz, c: c.c,
     gx: c.x - minX, gy: c.y - minY, gz: c.z - minZ,
-    filled: false, claimed: -1, anchor: false, fg: -1
+    filled: false, claimed: -1, anchor: false, fg: -1, f6: false
   }));
   // 先低後高；同一層先蓋中間——這樣建築是從核心長出來的，看起來比較像在蓋
   slots.sort((a, b) => a.y - b.y || (a.x * a.x + a.z * a.z) - (b.x * b.x + b.z * b.z));
@@ -1642,6 +1646,22 @@ function makeBlueprint(idx, target) {
       const j = at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
       if (j === undefined || slots[j].anchor) continue;
       slots[j].anchor = true; stack.push(j);
+    }
+  }
+
+  /* 再算一次「只靠六個面連不連得到地面」。這份不是支撐判定，是**退化偵測的基準線**：
+     完好時就靠對角相連的格子（艾菲爾鐵塔的斜撐、螺旋梯）本來就長那樣，怎麼打都不該
+     因為「只剩對角」被判掉；只有本來六面疊得好好的、被打到剩下對角勾著，才是該掉的。 */
+  const st6 = [];
+  for (let i = 0; i < slots.length; i++)
+    if (slots[i].gy === 0) { slots[i].f6 = true; st6.push(i); }
+  while (st6.length) {
+    const s = slots[st6.pop()];
+    for (let k = 0; k < NBR6.length; k++) {
+      const d = NBR6[k];
+      const j = at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
+      if (j === undefined || slots[j].f6) continue;
+      slots[j].f6 = true; st6.push(j);
     }
   }
 

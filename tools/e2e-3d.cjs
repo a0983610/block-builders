@@ -699,6 +699,59 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('垮塌判定夠便宜', supCost.ms < 4,
      supCost.n + ' 塊時一次 ' + supCost.ms.toFixed(2) + ' ms（最多每 0.08 秒算一次）');
 
+  /* 支撐判定用 26 鄰居（角碰角就算連著），所以炸穿一面牆之後會留下「用一個角
+     吊在半空」的積木或整坨。dropHung 專門收這種：基準線是藍圖的 f6
+     （完好時六個面就連得到地面），本來這樣站著、現在只剩對角勾著的才掉。
+     量法：打完之後從地面做一次 6 面連通，還活著卻連不到的就是漏網的。 */
+  const hung = await page.evaluate(() => {
+    const face = () => {
+      const S = bp.slots, n = S.length;
+      const here = new Uint8Array(n);
+      for (const b of blocks) if (b.st === 3 && b.slot >= 0 && b.fallIn <= 0) here[b.slot] = 1;
+      const F6 = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+      const seen = new Uint8Array(n), st = [];
+      for (let i = 0; i < n; i++) if (here[i] && S[i].gy === 0) { seen[i] = 1; st.push(i); }
+      while (st.length) {
+        const s = S[st.pop()];
+        for (const d of F6) {
+          const j = bp.at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
+          if (j === undefined || seen[j] || !here[j]) continue;
+          seen[j] = 1; st.push(j);
+        }
+      }
+      let live = 0, bad = 0, badF6 = 0;
+      for (let i = 0; i < n; i++) {
+        if (!here[i]) continue;
+        live++;
+        if (seen[i]) continue;
+        bad++;
+        if (S[i].f6) badF6++;               // 本來六面站得住的才算漏網
+      }
+      return { live, bad, badF6 };
+    };
+    const run = name => {
+      shapePick = SHAPES.findIndex(s => s.n === name);
+      targetCnt = 1500; setWorkerCount(4); startBuild(true); completeNow();
+      const f6 = bp.slots.filter(s => s.f6).length, all = bp.slots.length;
+      explode({ x: siteR * 0.5, y: 1.2, z: 0 }, ROCK_R, ROCK_POW);   // 投石機石頭：最小的爆炸
+      for (let i = 0; i < 300; i++) step(0.05);
+      return { name, f6, all, ...face() };
+    };
+    return { box: run('帝國大廈'), lat: run('艾菲爾鐵塔') };
+  });
+  ok('炸穿牆腳之後不會留下只靠對角勾著的積木',
+     hung.box.badF6 === 0 && hung.box.live > 100,
+     '帝國大廈中一發石頭：剩 ' + hung.box.live + ' 塊，只靠對角勾著的 ' + hung.box.badF6 +
+     ' 塊（沒有這一關會留下一百多塊）');
+  /* 反面：本來就靠斜格子疊起來的造型不歸這一關管，不然它們會自己解體。
+     艾菲爾鐵塔完好時只有 672/1497 格是「六面連得到地面」。 */
+  ok('斜格子造型不會被這一關誤殺',
+     hung.lat.f6 < hung.lat.all * 0.5 && hung.lat.live > hung.lat.all * 0.75 &&
+     hung.lat.bad > 400 && hung.lat.badF6 === 0,
+     '艾菲爾鐵塔：完好時六面站得住的只有 ' + hung.lat.f6 + '/' + hung.lat.all +
+     '；中一發石頭後還剩 ' + hung.lat.live + ' 塊，其中 ' + hung.lat.bad +
+     ' 塊本來就是靠斜角連的（都還在）');
+
   /* 蓋到一半把地基敲掉，小人不能繼續往上疊——那會蓋出一整片浮在半空的積木。
      量法：逐步比對「這一步新填上的格子」，看它填上去的當下連不連得到地面。
      不能只看某個瞬間的總數——剛敲掉地基、垮塌判定還沒跑的那 0.08 秒裡，
@@ -728,6 +781,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('地基被敲掉後不會蓋出浮空的積木', midBuild.bad === 0,
      '蓋到 ' + midBuild.mid + ' 塊時挖掉地基 ' + midBuild.cleared + ' 塊；之後新放上去 ' +
      midBuild.placed + ' 塊，落地當下連不到地面的有 ' + midBuild.bad + ' 塊（重建到 ' + midBuild.end + '）');
+
+  /* 破壞打出來的洞排在派工游標「後面」，findSlot 是從游標往後掃、掃不到才回頭，
+     所以不把游標退回去的話小人會先在上面蓋一大段才回頭補
+     （改之前實測：中世紀城堡第一塊補回去要 10.5 秒，期間別處先蓋了 350 塊）。
+     freeBlock 現在會把游標退到那個洞。 */
+  const repair = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 1200; setWorkerCount(30); startBuild(true);
+    for (let i = 0; i < 1500 && phase === 'build'; i++) step(0.05);
+    const S = bp.slots;
+    const before = S.map(s => (s.filled ? 1 : 0));
+    explode({ x: 0, y: 1, z: 0 }, 7, 18);
+    for (let i = 0; i < 20; i++) step(0.05);
+    const hole = new Set();
+    for (let i = 0; i < S.length; i++) if (before[i] && !S[i].filled) hole.add(i);
+    const cur = slotCursor, holes = hole.size;
+    const mark = S.map(s => (s.filled ? 1 : 0));
+    let fixed = 0, other = 0, first = -1, t = 0;
+    for (let i = 0; i < 400; i++) {                 // 看爆炸後的 20 秒
+      step(0.05); t += 0.05;
+      for (let k = 0; k < S.length; k++) {
+        if (!S[k].filled || mark[k]) continue;
+        mark[k] = 1;
+        if (hole.has(k)) { fixed++; if (first < 0) first = +t.toFixed(2); }
+        else other++;
+      }
+    }
+    return { holes, cur, fixed, other, first, phase };
+  });
+  /* 門檻取自 5 輪對照（同一個情境、爆炸後 20 秒）：
+     退游標前 第一塊 9.4–12.3 秒、別處蓋 50–82 塊；退了之後 1.4–2.2 秒、別處 0–14 塊。
+     兩邊都留兩倍以上的餘裕，才不會因為爆炸的隨機性時靈時不靈。 */
+  ok('炸出來的洞會先補，不是繼續往上疊',
+     repair.holes > 20 && repair.fixed > 20 && repair.first > 0 && repair.first < 5 &&
+     repair.other <= 30,
+     '洞 ' + repair.holes + ' 格：20 秒內補回 ' + repair.fixed + ' 格、別處只蓋了 ' +
+     repair.other + ' 塊，第一塊補回去 ' + repair.first + ' 秒（爆炸當下游標在 ' + repair.cur + '）');
 
   const noDip = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
@@ -3060,9 +3150,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 一發核彈常常直接把整棟夷平，那會立刻觸發「剩不到 25% 就換下一座」。
      換場如果把特效也清掉，蘑菇雲就會在爆炸後 0.05 秒整朵消失——等於白做。
-     這裡驗的是「換場了、但雲還在」，兩個條件缺一不可。 */
+     這裡驗的是「換場了、但雲還在」，兩個條件缺一不可。
+
+     藍圖要指定，不能沿用前面留下來的隨機值：核彈半徑 30 打不平所有造型，
+     49 座裡有 13 座會剩超過 25%（掃過一輪：艾菲爾鐵塔剩 89%、巨石陣 62%、
+     帝國大廈 58%、金門大橋、倫敦眼、鳥居……），抽到那些這條就會無故失敗。 */
   const keepFx = await page.evaluate(() => {
     const puffs = () => dust.filter(d => d.fade >= 3).length;   // 只算雲，碎料的火苗煙是 2.2
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
     startBuild(true); completeNow();
     const ph0 = phase;
     callNuke({ x: 0, z: 0 });

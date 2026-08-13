@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.35.0';
+const VERSION = '1.36.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -197,7 +197,13 @@ function freeBlock(b) {
     /* 這裡是「已就位的積木離開建築」唯一的出口，所以損失也記在這——
        不管是被槌子打飛、被龍捲風吸走，還是失去支撐自己垮下來，都算。 */
     if (b.st === SET) { placedCnt--; stats.wrecked += WRECK_COST; lossThis += WRECK_COST; }
-    bp.slots[b.slot].filled = false; bp.slots[b.slot].claimed = -1; b.slot = -1;
+    bp.slots[b.slot].filled = false; bp.slots[b.slot].claimed = -1;
+    /* 派工游標退回這個洞。不退的話洞排在游標後面，只有「游標之後找不到任何
+       蓋得起來的格子」時才輪得到——地基被炸掉之後小人會先在上面蓋一大段
+       （實測中世紀城堡第一塊補回去要 10.5 秒，期間別處先蓋了 350 塊）。
+       releaseWorker 放掉認領時本來就是這樣做的，破壞這條路徑漏了。 */
+    slotCursor = Math.min(slotCursor, b.slot);
+    b.slot = -1;
   }
   // 不用 indexOf 反查——一次砸掉幾百塊時那是 O(n²)
   if (b.holder >= 0) {
@@ -1547,6 +1553,37 @@ function collapseUnsupported() {
     const cells = F[gi].cells;
     for (let k = 0; k < cells.length; k++) fell += drop(cells[k]);
   }
+  return fell + dropHung(drop);
+}
+
+/* 只剩對角勾著的也要掉。
+   26 鄰居的支撐判定放得很寬——只要角碰角就算連著，所以打穿一面牆之後，
+   會留下用一個角吊在半空的積木（或一整坨）。這一關專門收這種：
+
+   - 基準線是藍圖的 f6（完好時六個面就連得到地面）。完好時本來就靠對角相連的
+     （艾菲爾鐵塔 825/1497 格）不在這關的管轄範圍，怎麼打都不會因此掉。
+   - 判的是「整坨」不是單塊：六面相連的一群積木彼此黏著，只要整群都碰不到地面，
+     就整群一起掉。只看單塊六面全空的話，兩塊黏在一起吊在半空就抓不到。
+   - **施工中不判**。蓋到一半的建築四處都是還沒補上的鄰居，用這麼嚴的尺會把
+     剛放上去的積木一直打下來，蓋不完。 */
+let hung6 = null;
+function dropHung(drop) {
+  if (phase === 'build') return 0;
+  const S = bp.slots, n = S.length;
+  if (!hung6 || hung6.length !== n) hung6 = new Uint8Array(n); else hung6.fill(0);
+  const stack = [];
+  for (let i = 0; i < n; i++) if (S[i].filled && S[i].gy === 0) { hung6[i] = 1; stack.push(i); }
+  while (stack.length) {
+    const s = S[stack.pop()];
+    for (let k = 0; k < NBR6.length; k++) {
+      const d = NBR6[k];
+      const j = bp.at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
+      if (j === undefined || hung6[j] || !S[j].filled) continue;
+      hung6[j] = 1; stack.push(j);
+    }
+  }
+  let fell = 0;
+  for (let i = 0; i < n; i++) if (S[i].f6 && S[i].filled && !hung6[i]) fell += drop(i);
   return fell;
 }
 /* 每次造成破壞後的共通處理：計數、嚇小人、判斷這座是不是拆完了 */
