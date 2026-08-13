@@ -459,6 +459,221 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      [gridBp.min, gridBp.mid, gridBp.big].every(a => a.walls.every(v => v >= 0.8)),
      '縮到最小 ' + gridBp.min.size + ' 時四面牆完整度 ' + gridBp.min.walls.join('／'));
 
+  /* ── 組合工具與藍圖體檢 ─────────────────────────────────
+     這一組服務的是「AI 產藍圖」那條路：一般玩家手上只有網頁版 AI，
+     所以（1）組合工具要能讓它少寫樣板、少犯下限與奇偶的錯，
+     （2）checkBlueprint() 要吐出一段能整段複製、貼回去給 AI 的純文字報告。
+     遊戲裡的按鈕與 tools/check-bp.cjs 共用同一支，最後一條測試守著這件事。 */
+  head('藍圖工具與體檢');
+  const bpTool = await page.evaluate(() => {
+    /* function 宣告會掛上 window，所以自訂藍圖檔（<script> 載進來的）叫得到 */
+    const names = ['dim', 'ringOf', 'mirrorX', 'mirrorZ', 'arch', 'archRow', 'stairs',
+                   'hipRoof', 'windowGrid', 'lattice', 'corners4', 'tubeZ', 'wheelX',
+                   'tint', 'paintFrom', 'blob', 'checkBlueprint'];
+    const missing = names.filter(n => typeof window[n] !== 'function');
+
+    // dim：夾下限、取奇數
+    const d = [dim(0.1, 1, 5), dim(10, 1, 2), dim(10, 1, 2, true), dim(4, 1, 1, true)];
+
+    /* arch：在一片實心牆上挖拱。中線那一列要通到底，拱頂上面要還有牆，
+       而且開口最寬處就是給的 w（拱心落在中線 = 寬度自動取奇數的意義）。 */
+    const va = new VOX();
+    va.box(0, 0, 0, 21, 20, 1, 0);
+    arch(va, 0, 0, 0, 9, 6, 1);
+    const openAt = y => { let n = 0; for (let x = -10; x <= 10; x++) if (!va.has(x, y, 0)) n++; return n; };
+    const archR = { mid: openAt(3), top: openAt(9), above: va.has(0, 12, 0),
+                    solidSide: va.has(-10, 3, 0) };
+
+    // arch 的 c 給了要自己補一片牆
+    const vb = new VOX();
+    arch(vb, 0, 0, 0, 7, 5, 2, 1);
+    const archMade = { n: vb.m.size, hole: !vb.has(0, 2, 0), wall: vb.has(4, 2, 0) };
+
+    /* stairs：每一階都填實到底。只鋪踏面的話最底層只有 1 排，
+       那些踏面會變成一組會掉下來的懸空部件。 */
+    const vc = new VOX();
+    stairs(vc, 0, 0, 0, 6, 3, 'x', 0);
+    const st = { floor: vc.cells().filter(c => c.y === 0).length,
+                 top: Math.max(...vc.cells().map(c => c.y)) + 1,
+                 hollow: vc.cells().some(c => c.y > 0 && !vc.has(c.x, c.y - 1, c.z)) };
+
+    /* windowGrid 走 tint：牆不在那裡就一格都不畫（回傳 0、總格數不變），
+       牆在的話只換色、不會多出格子。 */
+    const vd = new VOX();
+    const air = windowGrid(vd, { x: 0, y: 2, z: 0, cols: 3, rows: 2, w: 1, h: 2, c: 1 });
+    const airCells = vd.m.size;
+    vd.box(0, 0, 0, 21, 12, 1, 0);
+    const n0 = vd.m.size;
+    const on = windowGrid(vd, { x: 0, y: 2, z: 0, cols: 3, rows: 2, stepX: 4, stepY: 4, w: 1, h: 2, c: 1 });
+    const lit = vd.cells().filter(c => c.c === 1).length;
+    const wg = { air, airCells, on, lit, grew: vd.m.size - n0 };
+
+    // ringOf：n 個都在半徑 r 上
+    const ring = [];
+    ringOf(null, 8, 10, (vv, x, z) => ring.push(+Math.hypot(x, z).toFixed(2)));
+    const ringOk = ring.length === 8 && ring.every(v => Math.abs(v - 10) < 0.01);
+
+    // hipRoof：每層寬與深一起縮 2（gable 只縮寬）
+    const ve = new VOX();
+    hipRoof(ve, 0, 0, 0, 9, 7, 0);
+    const layer = y => {
+      const c = ve.cells().filter(o => o.y === y);
+      return c.length ? [Math.max(...c.map(o => o.x)) - Math.min(...c.map(o => o.x)) + 1,
+                         Math.max(...c.map(o => o.z)) - Math.min(...c.map(o => o.z)) + 1] : null;
+    };
+    const hip = [layer(0), layer(1), layer(2)];
+
+    // mirrorX / mirrorZ：兩份，位置相反
+    const mx = []; mirrorX(null, 7, (vv, dx) => mx.push(dx));
+    const mz = []; mirrorZ(null, 4, (vv, dz) => mz.push(dz));
+
+    // lattice：兩根柱子之間拉出交叉，中間段一定有格子
+    const vf = new VOX();
+    lattice(vf, { x0: -8, z0: 0, x1: 8, z1: 0, y: 0, h: 20, n: 4, c: 0 });
+    const lat = { n: vf.m.size, mid: vf.cells().some(c => Math.abs(c.x) <= 1 && c.y > 1 && c.y < 19) };
+
+    return { missing, d, archR, archMade, st, wg, ring, ringOk, hip, mx, mz, lat };
+  });
+  ok('組合工具全都掛在全域，自訂藍圖叫得到', bpTool.missing.length === 0,
+     bpTool.missing.length ? '沒有：' + bpTool.missing.join('、') : '17 支都在');
+  ok('dim 會夾下限也會取奇數',
+     bpTool.d[0] === 5 && bpTool.d[1] === 10 && bpTool.d[2] === 11 && bpTool.d[3] === 5,
+     'dim(0.1,1,5)=' + bpTool.d[0] + '、dim(10,1,2)=' + bpTool.d[1] +
+     '、加 odd → ' + bpTool.d[2] + '、dim(4,1,1,odd)=' + bpTool.d[3]);
+  ok('arch 在牆上挖出正對中線的拱洞',
+     bpTool.archR.mid === 9 && bpTool.archR.top < 9 && bpTool.archR.top > 0 &&
+     bpTool.archR.above && bpTool.archR.solidSide,
+     '柱身段開口 ' + bpTool.archR.mid + ' 格（給 9）、拱頂那層 ' + bpTool.archR.top +
+     ' 格，拱頂上面還是實心 ' + bpTool.archR.above);
+  ok('arch 給了顏色會自己補一片牆再挖',
+     bpTool.archMade.n > 0 && bpTool.archMade.hole && bpTool.archMade.wall,
+     bpTool.archMade.n + ' 格，中間是空的、旁邊是牆');
+  ok('stairs 每一階都填到底，不會留懸空踏面',
+     bpTool.st.floor === 18 && bpTool.st.top === 6 && !bpTool.st.hollow,
+     '6 階 × 寬 3：最底層 ' + bpTool.st.floor + ' 格、最高 ' + bpTool.st.top +
+     ' 層，懸空格 ' + (bpTool.st.hollow ? '有' : '沒有'));
+  ok('windowGrid 只換已經有積木的格子',
+     bpTool.wg.air === 0 && bpTool.wg.airCells === 0 &&
+     bpTool.wg.on > 0 && bpTool.wg.grew === 0 && bpTool.wg.lit === bpTool.wg.on,
+     '空氣中畫 ' + bpTool.wg.air + ' 格；牆上畫 ' + bpTool.wg.on +
+     ' 格、總格數多了 ' + bpTool.wg.grew + ' 格（只換色）');
+  ok('ringOf 把東西平均排在一個圓上', bpTool.ringOk,
+     '8 個點離中心 ' + bpTool.ring[0] + '（給 10）');
+  ok('hipRoof 寬深一起收（不是只收寬）',
+     bpTool.hip[0][0] === 9 && bpTool.hip[0][1] === 7 &&
+     bpTool.hip[1][0] === 7 && bpTool.hip[1][1] === 5 &&
+     bpTool.hip[2][0] === 5 && bpTool.hip[2][1] === 3,
+     bpTool.hip.map(a => a.join('×')).join(' → '));
+  ok('mirrorX／mirrorZ 各放正負兩份',
+     bpTool.mx.join(',') === '7,-7' && bpTool.mz.join(',') === '4,-4',
+     'mirrorX → ' + bpTool.mx.join(',') + '、mirrorZ → ' + bpTool.mz.join(','));
+  ok('lattice 在兩根柱子之間拉出交叉斜撐', bpTool.lat.n > 40 && bpTool.lat.mid,
+     bpTool.lat.n + ' 格，跨距中段有料');
+
+  /* 體檢報告：對好的藍圖不該有必修，對壞的要指名問題並附修法。
+     每一種壞法都真的做一份藍圖出來測——這幾種就是 AI 產藍圖最常見的死法。 */
+  const diag = await page.evaluate(() => {
+    const good = checkBlueprint('範例小木屋', { ver: VERSION });
+    const n0 = SHAPES.length;
+    const mk = (name, def) => { def.name = name; return customBlueprint(def); };
+    // ① gen 直接丟例外
+    mk('__壞 例外', { pal: ['#fff'], lo: 2, hi: 9, gen() { throw new Error('測試用的爆炸'); } });
+    // ② pal 不夠：用到索引 3，只給 1 色
+    mk('__壞 配色', { pal: ['#fff'], lo: 2, hi: 9,
+      gen(v, s) { v.box(0, 0, 0, dim(s, 2, 5), dim(s, 2, 5), dim(s, 2, 5), 3); } });
+    /* ③ 小尺寸時整組部件消失。真實案例是「尺寸沒給下限，算出 0 就什麼都沒畫」，
+       這裡用一個門檻直接模擬那個結果（300 塊時 s≈3.5、3000 塊時 s≈7.2）。 */
+    mk('__壞 消失', { pal: ['#fff', '#c00'], lo: 2, hi: 9, gen(v, s) {
+      const w = dim(s, 2, 5), h = dim(s, 2, 5);
+      v.box(0, 0, 0, w, h, w, 0);
+      if (s > 5) v.box(0, h, 0, 3, 3, 3, 1);       // 頂上的小塔尖
+    } });
+    // ④ 整棟只靠一格站在地上
+    mk('__壞 針尖', { pal: ['#fff'], lo: 2, hi: 9, gen(v, s) {
+      v.set(0, 0, 0, 0);
+      v.box(0, 1, 0, dim(s, 2, 5), dim(s, 2, 5), dim(s, 2, 5), 0);
+    } });
+    const r = {
+      good: { fails: good.fails.length, warns: good.warns.length, text: good.text },
+      boom: checkBlueprint('__壞 例外', { ver: VERSION }),
+      pal: checkBlueprint('__壞 配色', { ver: VERSION }),
+      gone: checkBlueprint('__壞 消失', { ver: VERSION }),
+      pin: checkBlueprint('__壞 針尖', { ver: VERSION }),
+      missing: checkBlueprint('根本沒有這座', { ver: VERSION })
+    };
+    for (const k of ['boom', 'pal', 'gone', 'pin', 'missing'])
+      r[k] = { fails: r[k].fails, warns: r[k].warns, text: r[k].text };
+    SHAPES.length = n0;                 // 測完收掉，別影響後面掃全部 SHAPES 的測試
+    return r;
+  });
+  ok('好的藍圖檢查起來沒有必修', diag.good.fails === 0,
+     '範例小木屋：' + diag.good.fails + ' 個必修、' + diag.good.warns + ' 個提醒');
+  ok('報告是純文字、開頭帶版本號',
+     /^=== 積木小人 · 藍圖診斷 v\d+\.\d+\.\d+ ===\n藍圖：範例小木屋（自訂 · gen）/.test(diag.good.text) &&
+     diag.good.text.indexOf('<') < 0,
+     diag.good.text.split('\n')[0]);
+  ok('報告會列出四個尺寸的實得塊數',
+     [300, 800, 1600, 3000].every(t => new RegExp('\\n\\s+' + t + ' → ').test(diag.good.text)),
+     diag.good.text.split('\n').filter(l => / → /.test(l)).length + ' 行塊數');
+  ok('gen 丟例外會被抓到，錯誤訊息原封不動寫進報告',
+     diag.boom.fails.length > 0 && diag.boom.text.indexOf('測試用的爆炸') > 0,
+     diag.boom.fails.join('；'));
+  ok('pal 不夠會被抓到', diag.pal.fails.some(f => f.indexOf('pal 不夠') === 0) &&
+     diag.pal.text.indexOf('修法：pal 至少要 4 色') > 0,
+     diag.pal.fails.join('；'));
+  ok('部件在小尺寸整組消失會被抓到',
+     diag.gone.fails.some(f => /整組消失/.test(f)) && diag.gone.text.indexOf('dim(s, 係數, 下限)') > 0,
+     diag.gone.fails.join('；'));
+  ok('整棟只靠一格站在地上會被提醒',
+     diag.pin.warns.length + diag.pin.fails.length > 0 && diag.pin.text.indexOf('最底層 1 格⚠') > 0,
+     diag.pin.text.split('\n').find(l => l.indexOf('最底層') > 0) || '(沒寫到最底層)');
+  ok('名字打錯時報告會教怎麼修，而不是丟例外',
+     diag.missing.fails.length === 1 && diag.missing.text.indexOf('list.js') > 0,
+     diag.missing.text.split('\n')[1]);
+  ok('每一份有問題的報告都寫得出修法',
+     [diag.boom, diag.pal, diag.gone, diag.pin, diag.missing].every(r => /修法/.test(r.text)),
+     '五種壞法（例外／配色／消失／針尖／找不到）都附了修法');
+
+  /* 遊戲裡那顆按鈕：一般玩家的唯一入口。要驗的是「按了真的看得到報告、複製得出去」 */
+  await page.evaluate(() => { document.getElementById('panel').classList.remove('hide'); });
+  await page.click('#diagBtn');
+  await page.waitForTimeout(150);
+  const diagUI = await page.evaluate(() => ({
+    open: document.getElementById('diagWrap').classList.contains('on'),
+    head: document.getElementById('diagText').value.split('\n')[0],
+    lines: document.getElementById('diagText').value.split('\n').length,
+    ro: document.getElementById('diagText').readOnly,
+    name: bp.name
+  }));
+  ok('設定面板的「檢查藍圖」按得出報告視窗',
+     diagUI.open && /^=== 積木小人 · 藍圖診斷/.test(diagUI.head) && diagUI.lines > 10,
+     '檢查的是現在這一座「' + diagUI.name + '」，報告 ' + diagUI.lines + ' 行');
+  await page.click('#diagCopy');
+  await page.waitForTimeout(100);
+  await page.click('#diagClose');
+  await page.waitForTimeout(150);
+  const diagAfter = await page.evaluate(() => ({
+    open: document.getElementById('diagWrap').classList.contains('on'),
+    ro: document.getElementById('diagText').readOnly,
+    err: window.__diagErr || ''
+  }));
+  ok('複製與關閉都不會弄壞報告視窗',
+     !diagAfter.open && diagAfter.ro && !diagAfter.err,
+     '關掉後 textarea 仍是唯讀，沒有 console 錯誤');
+  await page.evaluate(() => { document.getElementById('panel').classList.add('hide'); });
+
+  /* 命令列版與遊戲裡的按鈕必須是同一份輸出，不然兩邊會給出不同建議。
+     這裡直接在測試行程 require 那支檔，跟瀏覽器裡的結果逐字比對。 */
+  const cliSame = await (async () => {
+    const nodeBP = require(path.join(ROOT, 'src/blueprints.js'));
+    const ver = await page.evaluate(() => VERSION);
+    const browser = await page.evaluate(() => checkBlueprint(0, { ver: VERSION }).text);
+    const cli = nodeBP.checkBlueprint(0, { ver }).text;
+    return { same: cli === browser, cliHead: cli.split('\n')[1], n: cli.length };
+  })();
+  ok('命令列版（tools/check-bp.cjs）與遊戲裡的報告逐字相同', cliSame.same,
+     cliSame.cliHead + '，' + cliSame.n + ' 字元');
+
   /* 金門大橋：跨距是奇數時 −L/2 是 .5，整條橋的 x 都變半格，
      吊索那行的 `x % 3 === 0` 永遠不成立 → 那個尺度整座橋沒有吊索，
      塊數比小一號的還少。修法是用整數半跨跑迴圈。 */
@@ -2640,22 +2855,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fwOff.fires === 0 && fwOff.set === fwOff.total,
      '起火 ' + fwOff.fires + ' 處、建築仍是 ' + fwOff.set + '/' + fwOff.total + ' 塊');
   const fwSwap = await page.evaluate(() => {
+    /* 佇列在「剛點下去」那一刻量，不要先空跑幾幀——出膛間隔是 0.2～0.5 秒的亂數，
+       等半秒有時候三發都出去了，量到 0 發在排隊（這條測試因此偶發失敗過）。 */
     startBuild(true); completeNow();
     launchFw({ x: 0, z: 0 });
-    for (let i = 0; i < 12; i++) step(0.05);          // 第一發還在竄、後兩發還在排隊
-    const queued = fwWait ? fwWait.length : 0;
-    for (let i = 0; i < 22; i++) step(0.05);          // 炸開了，火星還在天上
+    const queued = fwWait ? fwWait.length : 0;       // FW_SHOT − 1 發還在排隊
+    startBuild(false);
+    const leftQ = (fworks ? fworks.length : 0) + (fwWait ? fwWait.length : 0);
+    // 再放一場，這次讓它炸開，驗「還在天上飛的火星」也會被收掉
+    startBuild(true); completeNow();
+    launchFw({ x: 0, z: 0 });
+    for (let i = 0; i < 34; i++) step(0.05);
     const flying = fwSparks ? fwSparks.length : 0;
     startBuild(false);
-    return { flying, queued,
+    return { flying, queued, leftQ, shots: FW_SHOT,
              left: (fworks ? fworks.length : 0) + (fwSparks ? fwSparks.length : 0) +
                    (fwWait ? fwWait.length : 0) };
   });
   ok('換建築時還在飛的火星要收掉', fwSwap.flying > 0 && fwSwap.left === 0,
      '換場前 ' + fwSwap.flying + ' 顆在飛 → 換場後 ' + fwSwap.left + ' 顆');
   // 排隊中的那幾發也要收：留著的話會在新建築上空炸開，把剛蓋好的那座點著
-  ok('齊射還沒出膛的那幾發也要收掉', fwSwap.queued > 0,
-     '換場前有 ' + fwSwap.queued + ' 發在排隊，換場後全部歸零');
+  ok('齊射還沒出膛的那幾發也要收掉',
+     fwSwap.queued === fwSwap.shots - 1 && fwSwap.leftQ === 0,
+     '點下去當下 ' + fwSwap.queued + ' 發在排隊（齊射 ' + fwSwap.shots +
+     ' 發）→ 換場後 ' + fwSwap.leftQ + ' 發');
 
   /* 一場齊射的火星密度：火星比配額多的時候，配額不能被陣列前面那幾顆整碗端走
      （那會讓第二、三發完全沒有尾巴）。改成頂掉自己人裡最老的那顆之後，

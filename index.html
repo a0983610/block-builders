@@ -133,13 +133,14 @@
   #toast .t b{font-size:14px}
   #toast .t span{font-size:11px;opacity:.72}
 
-  #badgeWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
+  #badgeWrap,#diagWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
              background:rgba(12,18,26,.72)}
-  #badgeWrap.on{display:grid}
-  #badgeBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
+  #badgeWrap.on,#diagWrap.on{display:grid}
+  #badgeBox,#diagBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
             max-height:82vh;overflow:auto}
-  #badgeBox h2{margin:0 0 2px;font-size:17px}
-  #badgeBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
+  #badgeBox h2,#diagBox h2{margin:0 0 2px;font-size:17px}
+  #badgeBox .sub,#diagBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
+  #diagBox{width:min(640px,94vw)}                 /* 報告是等寬字，比成就那張要寬一點 */
   /* 成就多了就排兩欄，不然要一直捲 */
   #badgeBox #badges{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:7px}
   #badgeLoss{color:var(--bad);font-weight:700}
@@ -148,8 +149,14 @@
   .badge.got{background:#fdf1e2;opacity:1}
   .badge b{font-size:13px}
   .badge span{font-size:11.5px;opacity:.7}
-  #badgeBox .row{display:flex;gap:8px;margin-top:12px}
-  #badgeBox .row button{flex:1}
+  #badgeBox .row,#diagBox .row{display:flex;gap:8px;margin-top:12px}
+  #badgeBox .row button,#diagBox .row button{flex:1}
+
+  /* 藍圖診斷：跟成就同一套置中卡片。報告是要被「複製貼回給 AI」的，
+     所以本體是 textarea（可以整段選、可以捲），不是排版好看的 HTML。 */
+  #diagText{width:100%;height:46vh;margin-top:10px;box-sizing:border-box;
+            font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre;
+            border:1px solid #dcd7cc;border-radius:10px;padding:9px 10px;resize:vertical}
 
   /* 小窗只有約 120px 寬，上方中央本來就放得下；1500 這個斷點是留給窄視窗的：
      畫面越窄、左上的建築資訊卡（玩久了會撐到 354px）與右上的時鐘越靠中間，
@@ -232,6 +239,9 @@
     <label><input type="checkbox" id="spin"> 自轉</label>
     <label><input type="checkbox" id="mute"> 靜音</label>
   </div>
+  <div class="btns" style="margin-top:8px">
+    <button id="diagBtn" title="檢查現在這一座藍圖，產出一段可以貼回給 AI 的診斷報告">🔍 檢查藍圖</button>
+  </div>
 </div>
 
 <div id="hint">點建築 = 一槌砸下去 ｜ 拖曳／QE 轉視角 ｜ WASD 平移 ｜ 滾輪縮放 ｜ 點小人會跌倒</div>
@@ -247,6 +257,18 @@
     <div class="row">
       <button id="resetBtn">清空紀錄</button>
       <button class="primary" id="badgeClose">關閉</button>
+    </div>
+  </div>
+</div>
+
+<div id="diagWrap">
+  <div id="diagBox">
+    <h2>藍圖診斷</h2>
+    <div class="sub">把整段複製、貼回產出這份藍圖的 AI，它就知道要改哪裡</div>
+    <textarea id="diagText" readonly spellcheck="false"></textarea>
+    <div class="row">
+      <button id="diagCopy">複製報告</button>
+      <button class="primary" id="diagClose">關閉</button>
     </div>
   </div>
 </div>

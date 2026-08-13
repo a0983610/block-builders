@@ -189,6 +189,121 @@ function blob(v, x0, y0, z0, rx, ry, rz, c, shell) {
   }
 }
 
+/* ── 組合工具（藍圖作者用）─────────────────────────────────
+   下面這些不是 VOX 的方法，是包在外面的組合函式：48 座裡反覆手刻的那幾件事
+   （尺寸下限、排成一圈、拱門、對稱、階梯、四坡頂、立面開窗、斜撐）收在這裡。
+   自訂藍圖直接叫得到——`blueprints/` 的檔案是 <script> 載進來的，同一個全域。 */
+
+/* 尺寸：dim(s, 係數, 下限, 要不要奇數)。
+   48 座裡 `Math.max(下限, Math.round(s * 係數))` 這個樣板出現 193 次，
+   而「忘了給下限」就是自訂藍圖最常見的失敗——s 小的時候算出 0 或 1，
+   那個部件在 300 塊時整組消失。靠中線對稱的東西（屋脊、正門、塔尖）給 odd。 */
+function dim(s, k, min, odd) {
+  const n = Math.max(Math.max(1, min || 1), Math.round(s * k));
+  return odd ? (n | 1) : n;
+}
+
+/* 平均排成一圈：fn(v, x, z, 角度, 第幾個)。柱廊、環形塔樓、輻條都是這件事
+   （48 座裡有 28 處自己寫 cos/sin 迴圈）。a0 是起始角，預設從 +x 出發。 */
+function ringOf(v, n, r, fn, x0, z0, a0) {
+  n = Math.max(1, Math.round(n));
+  for (let i = 0; i < n; i++) {
+    const a = (a0 || 0) + i / n * Math.PI * 2;
+    fn(v, (x0 || 0) + Math.cos(a) * r, (z0 || 0) + Math.sin(a) * r, a, i);
+  }
+}
+
+/* 左右／前後對稱各放一次。corners4 是四個角，這兩支是一對。 */
+function mirrorX(v, dx, fn) { fn(v, dx); fn(v, -dx); }
+function mirrorZ(v, dz, fn) { fn(v, dz); fn(v, -dz); }
+
+/* 拱門：w 是開口寬（會逼成奇數，不然拱心落在兩格之間），h 是直柱段高度，
+   t 是牆厚（沿 z）。開口總高 = h + (w−1)/2。
+   c 給了就先補一片比開口大一圈的牆再挖；不給就只挖洞（用在已經有牆的立面上）。 */
+function arch(v, x0, y0, z0, w, h, t, c) {
+  w = Math.max(1, Math.round(w)) | 1;
+  t = Math.max(1, Math.round(t || 1));
+  h = Math.max(0, Math.round(h));
+  const r = (w - 1) / 2;
+  if (c !== undefined) v.box(x0, y0, z0, w + 2, h + r + 2, t, c);
+  if (h > 0) v.carve(x0, y0, z0, w, h, t);
+  for (let j = 0; j <= r; j++) {
+    const half = Math.round(Math.sqrt(Math.max(0, r * r - j * j)));
+    v.carve(x0, y0 + h + j, z0, half * 2 + 1, 1, t);
+  }
+}
+
+/* 連拱：沿 x 排 n 個拱，中間隔著寬 pier 的柱子（競技場、水道橋、迴廊）。
+   回傳整排的總寬，接著要算旁邊的東西時直接用。 */
+function archRow(v, x0, y0, z0, n, w, h, t, pier, c) {
+  n = Math.max(1, Math.round(n));
+  w = Math.max(1, Math.round(w)) | 1;
+  pier = Math.max(1, Math.round(pier || 1));
+  const pitch = w + pier;
+  for (let i = 0; i < n; i++)
+    arch(v, x0 + (i - (n - 1) / 2) * pitch, y0, z0, w, h, t, c);
+  return n * pitch - pier;
+}
+
+/* 階梯。dir 是往哪邊爬：'x' / '-x' / 'z' / '-z'。
+   每一階都從 y0 往上填實，不是只鋪一片踏面——踏面懸空的話會變成一組孤島。 */
+function stairs(v, x0, y0, z0, n, wide, dir, c) {
+  n = Math.max(1, Math.round(n));
+  wide = Math.max(1, Math.round(wide));
+  const alongX = dir === 'x' || dir === '-x';
+  const sg = (dir === '-x' || dir === '-z') ? -1 : 1;
+  for (let i = 0; i < n; i++) {
+    const o = sg * i;
+    if (alongX) v.box(x0 + o, y0, z0, 1, i + 1, wide, c);
+    else v.box(x0, y0, z0 + o, wide, i + 1, 1, c);
+  }
+}
+
+/* 四坡屋頂：每層四邊各縮 1 格。gable 只收寬不收深（兩坡），這支兩邊一起收。 */
+function hipRoof(v, x0, y0, z0, w, d, c) {
+  let ww = Math.max(1, Math.round(w)), dd = Math.max(1, Math.round(d)), y = 0;
+  while (ww >= 1 && dd >= 1) {
+    v.box(x0, y0 + y, z0, ww, 1, dd, c);
+    ww -= 2; dd -= 2; y++;
+  }
+}
+
+/* 這兩支參數多，改吃**具名物件**（其餘都是 x, y, z 開頭的位置參數）：
+   十個位置參數排錯一個就整片跑掉，而且看不出來哪裡錯。 */
+
+/* 立面窗陣列。{x,y,z} 是第一排最中間那格所在的牆面位置，
+   cols／rows 是橫向幾個、往上幾排，stepX／stepY 是間距，w／h 是每個窗的大小，
+   axis:'x'（預設，窗沿 x 排在朝 ±z 的那面牆上）或 'z'（沿 z 排，側面那兩片牆）。
+   走 tint 只換「已經有積木」的格子——牆上沒有的地方不會長出一片懸空的窗。
+   回傳真的畫上去幾格：0 表示那面牆不在你以為的位置。 */
+function windowGrid(v, o) {
+  const cols = Math.max(1, Math.round(o.cols || 1)), rows = Math.max(1, Math.round(o.rows || 1));
+  const w = Math.max(1, Math.round(o.w || 1)), h = Math.max(1, Math.round(o.h || 1));
+  const sx = o.stepX || (w + 1), sy = o.stepY || (h + 1);
+  const alongZ = o.axis === 'z';
+  let n = 0;
+  for (let r = 0; r < rows; r++) for (let i = 0; i < cols; i++) {
+    const base = (i - (cols - 1) / 2) * sx;
+    for (let dy = 0; dy < h; dy++) for (let da = 0; da < w; da++) {
+      const pa = base - (w - 1) / 2 + da, py = (o.y || 0) + r * sy + dy;
+      if (tint(v, alongZ ? o.x : o.x + pa, py, alongZ ? o.z + pa : o.z, o.c)) n++;
+    }
+  }
+  return n;
+}
+
+/* 斜撐格架：兩根柱子之間拉 n 段交叉斜撐（鐵塔、桁架橋、電塔）。
+   {x0,z0} 與 {x1,z1} 是兩根柱子的位置，從 y 往上拉 h 高、分 n 段。
+   斜線上的格子彼此只在對角相鄰，遊戲的支撐判定認 26 鄰居，所以撐得住。 */
+function lattice(v, o) {
+  const n = Math.max(1, Math.round(o.n || 1)), dy = (o.h || 1) / n, y0 = o.y || 0;
+  for (let i = 0; i < n; i++) {
+    const ya = y0 + i * dy, yb = y0 + (i + 1) * dy;
+    v.line(o.x0, ya, o.z0, o.x1, yb, o.z1, o.c);
+    v.line(o.x1, ya, o.z1, o.x0, yb, o.z0, o.c);
+  }
+}
+
 /* ── 48 座 ────────────────────────────────────────────────
    lo/hi 是尺度參數的可用範圍，makeBlueprint 會在其中找最接近目標積木數的值。
    pal 是這座建築的配色，格子的 c 就是 pal 的索引。 */
@@ -1814,7 +1929,196 @@ function customBlueprint(def) {
   return SHAPES.length - 1;
 }
 
+/* ── 藍圖體檢 ─────────────────────────────────────────────
+   產出一份**純文字報告**，用途是「貼回去給產出這份藍圖的 AI」。
+   為什麼要這樣設計：一般玩家手上不會有能跑指令的 AI，流程是把
+   〈藍圖製作說明.md〉＋圖片貼進網頁版 AI、拿回一支 .js、放進 blueprints/，
+   所以回饋也必須是「一段可以複製貼上的文字」才接得回去。
+   因此每個 ✘ 後面都跟一行「修法」——AI 看不到遊戲原始碼，只能靠報告知道要改哪裡。
+   遊戲裡的按鈕與 tools/check-bp.cjs 共用這一支，兩邊輸出一模一樣。 */
+const BP_TARGETS = [300, 800, 1600, 3000];
+const BP_SLOW_MS = 250;         // 產一份藍圖的時間預算（換建築不能卡畫面）
+/* 門檻是拿內建 48 座校準過的，只留「真的是缺陷」的那幾條：
+   包圍盒大小與懸空比例都**不**示警——金門大橋單邊 163、吳哥窟懸空 83%、
+   倫敦眼有 156 組小孤島，那些是吊索與輻條，本來就長那樣。示警了只會逼 AI
+   去「修」沒壞的東西。最小尺寸做不到 300 塊也一樣：48 座裡有 15 座如此，
+   而照著那個示警去縮部件，換來的是部件在小尺寸整組消失——反而更糟。 */
+
+function bpIndexOf(which) {
+  if (typeof which === 'number') return which >= 0 && which < SHAPES.length ? which : -1;
+  if (typeof which === 'string' && which) return SHAPES.findIndex(sh => sh.n === which);
+  for (let i = SHAPES.length - 1; i >= 0; i--) if (SHAPES[i].custom) return i;   // 預設：最後加進來的自訂藍圖
+  return -1;
+}
+
+function checkBlueprint(which, opt) {
+  const ver = (opt && opt.ver) || (typeof VERSION !== 'undefined' ? VERSION : '?');
+  const L = [], fails = [], warns = [];
+  const bad = m => { fails.push(m); };
+  const warn = m => { warns.push(m); };
+  const pad = (v, n) => String(v).padStart(n);
+  L.push('=== 積木小人 · 藍圖診斷 v' + ver + ' ===');
+
+  const idx = bpIndexOf(which);
+  if (idx < 0) {
+    L.push('✘ 找不到藍圖：' + (which === undefined || which === '' ? '（沒有任何自訂藍圖）' : which));
+    L.push('  修法：確認 customBlueprint 的 name 跟要檢查的名字一致，'
+         + '而且檔名已經加進 blueprints/list.js。');
+    return { idx: -1, name: '', fails: ['找不到藍圖'], warns: [], text: L.join('\n') };
+  }
+  const sh = SHAPES[idx];
+  const isLayers = !!sh.base;
+  L.push('藍圖：' + sh.n + (sh.custom ? (isLayers ? '（自訂 · 字元圖）' : '（自訂 · gen）') : '（內建）'));
+
+  /* 每個尺寸各產一次：塊數、實際用到的尺度、包圍盒、各色格數。
+     gen() 丟例外是自訂藍圖的頭號死法（算出負數、undefined 進了迴圈），
+     所以每一輪都包起來，把錯誤訊息原封不動寫進報告——那是 AI 唯一的線索。 */
+  const rows = [];
+  let maxC = -1, threw = false;
+  for (const t of BP_TARGETS) {
+    const t0 = Date.now();
+    let s, cells;
+    try {
+      s = fitScale(sh, t);
+      cells = genCells(sh, s).cells();
+    } catch (e) {
+      bad(t + ' 塊時 gen() 出錯');
+      threw = true;
+      rows.push({ t, err: (e && e.message) ? e.message : String(e) });
+      continue;
+    }
+    const hist = {};
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+    for (const c of cells) {
+      hist[c.c] = (hist[c.c] || 0) + 1;
+      if (c.c > maxC) maxC = c.c;
+      if (c.x < mnx) mnx = c.x; if (c.x > mxx) mxx = c.x;
+      if (c.y < mny) mny = c.y; if (c.y > mxy) mxy = c.y;
+      if (c.z < mnz) mnz = c.z; if (c.z > mxz) mxz = c.z;
+    }
+    rows.push({ t, s, n: cells.length, hist, ms: Date.now() - t0,
+                w: cells.length ? mxx - mnx + 1 : 0,
+                h: cells.length ? mxy - mny + 1 : 0,
+                d: cells.length ? mxz - mnz + 1 : 0,
+                floor: cells.filter(c => c.y === mny).length });
+  }
+
+  /* 塊數 */
+  L.push('');
+  L.push('塊數（目標 → 實得，偏差）');
+  const span = sh.hi - sh.lo;
+  for (const r of rows) {
+    if (r.err) { L.push('  ' + pad(r.t, 5) + ' → ✘ gen() 出錯：' + r.err); continue; }
+    const dev = r.n / r.t - 1;
+    /* 門檻拿「印出來的那個整數百分比」去比，不是拿原始值——不然報告上會出現
+       「+10% ✔」跟「+10% ⚠」兩種，讀報告的 AI 只會覺得規則不一致。 */
+    const shown = Math.round(dev * 100);
+    /* 最小那一階給得寬：造型的最小可行尺寸本來就可能比 300 塊大（48 座裡 15 座如此），
+       那是「這座就是不能再小」，不是缺陷。硬要縮到 300 只會讓部件消失。 */
+    const floor300 = r.t === BP_TARGETS[0] && shown > 10;
+    const off = Math.abs(shown) > 10 && !floor300;
+    if (off) warn(r.t + ' 塊偏差 ' + shown + '%');
+    L.push('  ' + pad(r.t, 5) + ' → ' + pad(r.n, 5) + '  ' +
+           pad((shown >= 0 ? '+' : '') + shown + '%', 5) +
+           '  s=' + r.s.toFixed(2) + '  ' + (off ? '⚠' : '✔') +
+           (floor300 ? '（這座最小就是這麼大，設 300 也會拿到 ' + r.n + ' 格）' : ''));
+    if (!off) continue;
+    if (isLayers)
+      L.push('    修法：字元圖的 lo/hi 是自動反推的，改不動。偏差大表示原圖太小或太細，'
+           + '要治本得改寫成 gen(v, s)。');
+    else if (dev < 0 && r.s > sh.hi - span * 0.05)
+      L.push('    修法：s 已經頂到 hi=' + sh.hi + '，塊數追不上目標。把 hi 調大（例如 ' +
+             (sh.hi * 1.4).toFixed(0) + '）。');
+    else if (dev > 0 && r.s < sh.lo + span * 0.05)
+      L.push('    修法：s 已經壓到 lo=' + sh.lo + '，最小的造型還是太大。把 lo 調小（例如 ' +
+             (sh.lo * 0.7).toFixed(1) + '），或把各部件的下限（dim 的第三個參數）改小。');
+    else
+      L.push('    修法：塊數一階一階跳，階距太大。把跳最兇的那個維度係數調小一點，'
+           + '讓別的維度連續變化去補；或者只有真的要對稱的那一個取奇數。');
+  }
+
+  if (threw)
+    L.push('  修法：照上面的錯誤訊息修。常見原因是尺寸算出 0 或負數、undefined 進了迴圈、'
+         + '或用了這份說明文件裡沒有的函式。');
+
+  /* 尺寸、站幾格、配色 */
+  const big = rows.filter(r => !r.err).pop();
+  if (big) {
+    L.push('尺寸 ' + big.w + '×' + big.h + '×' + big.d + ' 格' +
+           '　最底層 ' + big.floor + ' 格' + (big.floor < 3 ? '⚠' : '✔'));
+    if (big.floor < 3) {
+      warn('最底層只有 ' + big.floor + ' 格');
+      L.push('  修法：整棟只靠 ' + big.floor + ' 格站在地上，那幾格一掉就整棟報廢。'
+           + '底下補一層地板或底座（遊戲會自動把最低那層貼到地面，不必自己保證 y=0）。');
+    }
+    if (big.ms > BP_SLOW_MS) {
+      warn('產一份要 ' + big.ms + 'ms');
+      L.push('產生時間 ' + big.ms + 'ms（預算 ' + BP_SLOW_MS + 'ms）⚠');
+      L.push('  修法：造型的迴圈太重，換建築時畫面會卡一下。少用逐格計算的巨大實心量體。');
+    }
+  }
+  if (maxC >= sh.pal.length) {
+    bad('pal 不夠：用到索引 ' + maxC + '，只有 ' + sh.pal.length + ' 色');
+    L.push('✘ 配色：pal 只有 ' + sh.pal.length + ' 色，但格子用到索引 ' + maxC);
+    L.push('  修法：pal 至少要 ' + (maxC + 1) + ' 色（索引從 0 算）。');
+  } else {
+    L.push('配色 ' + sh.pal.length + ' 色，用到最大索引 ' + maxC + ' ✔');
+  }
+
+  /* 小尺寸的部件存活：大尺寸有、小尺寸沒有的顏色，就是「那個部件整組消失了」。
+     這是自訂藍圖最常見也最難自己看出來的錯（作者只看 3000 塊那版）。 */
+  const small = rows[0], last = big;
+  if (small && !small.err && last && last !== small) {
+    L.push('');
+    L.push(small.t + ' 塊時各色還在不在（跟 ' + last.t + ' 塊比）');
+    const parts = [];
+    for (const k of Object.keys(last.hist).sort((a, b) => a - b)) {
+      const a = last.hist[k], b = small.hist[k] || 0;
+      if (b === 0) {
+        bad('pal[' + k + '] 在 ' + small.t + ' 塊時整組消失');
+        L.push('  ✘ pal[' + k + ']　' + a + ' → 0 格，整組消失');
+        L.push('    修法：這一組的尺寸下限太小。用 dim(s, 係數, 下限) 把下限提到 2 以上'
+             + '（例如 dim(s, 0.35, 2)），不要寫 Math.round(s * 0.35)。');
+      } else {
+        parts.push('pal[' + k + '] ' + a + '→' + b);
+      }
+    }
+    if (parts.length) L.push('  ✔ ' + parts.join('　'));
+  }
+
+  /* 連通性：拿遊戲自己的那份判定（26 鄰居、從最低層往上長），報告才跟實際行為一致。
+     這一段**只報數字不示警**：懸空是允許的，48 座裡吳哥窟懸空 83%、倫敦眼有 156 組
+     小孤島（輻條與車廂），都是故意的。要判斷「這是意外嗎」只有作者自己知道，
+     所以附一句怎麼看，讓 AI 自己對照它畫了什麼。 */
+  L.push('');
+  try {
+    const b = makeBlueprint(idx, BP_TARGETS[BP_TARGETS.length - 1]);
+    const float = b.floats.reduce((n, g) => n + g.cells.length, 0);
+    const tiny = b.floats.filter(g => g.cells.length <= 4);
+    L.push('連通性（' + b.count + ' 格）：連到地面 ' + (b.count - float) + ' 格、懸空 ' +
+           float + ' 格' + (b.floats.length ? '（' + b.floats.length + ' 組，其中 ' +
+           tiny.length + ' 組只有 ≤4 格）' : ''));
+    if (tiny.length)
+      L.push('  懸空本身沒問題（扇葉、吊索、拱下的空洞都是）。但如果你沒有故意做懸空部件，'
+           + '那些幾格的小孤島通常是在曲面上用 v.set 點裝飾造成的——改用 tint() / paintFrom()，'
+           + '它們只換「已經有積木」的格子。');
+  } catch (e) {
+    bad('makeBlueprint 出錯');
+    L.push('✘ 排施工順序時出錯：' + ((e && e.message) ? e.message : String(e)));
+  }
+
+  L.push('');
+  L.push('結論：' + (fails.length ? fails.length + ' 個必修 ✘' : '沒有必修') +
+         '、' + (warns.length ? warns.length + ' 個提醒 ⚠' : '沒有提醒'));
+  if (fails.length || warns.length)
+    L.push('（把整段複製、貼回產出這份藍圖的 AI，它就知道要改哪裡）');
+  return { idx, name: sh.n, fails, warns, text: L.join('\n') };
+}
+
 /* node 也要能 require 這支檔來單獨測藍圖 */
 if (typeof module !== 'undefined' && module.exports)
-  module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NBR, gkeyOf, customBlueprint };
+  module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NBR, gkeyOf, customBlueprint,
+                     checkBlueprint, bpIndexOf, BP_TARGETS,
+                     dim, ringOf, mirrorX, mirrorZ, arch, archRow, stairs, hipRoof,
+                     windowGrid, lattice, corners4, tubeZ, wheelX, tint, paintFrom, blob };
 
