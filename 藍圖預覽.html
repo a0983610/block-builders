@@ -73,7 +73,8 @@
     <button id="chk">🔍 檢查藍圖</button>
   </div>
   <div class="checks">
-    <label><input type="checkbox" id="spin" checked> 自轉</label>
+    <!-- 自轉預設關：要對照參考圖的時候，畫面一直在轉反而不好比 -->
+    <label><input type="checkbox" id="spin"> 自轉</label>
     <label><input type="checkbox" id="wire"> 只看輪廓（隱藏草地）</label>
   </div>
   <!-- 預設展開：AI 產的藍圖多半是「貼上」而不是「存檔」進來的，這是主要入口 -->
@@ -105,7 +106,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.43.0';
+const VIEWER_VER = '1.43.1';
 
 const $ = id => document.getElementById(id);
 

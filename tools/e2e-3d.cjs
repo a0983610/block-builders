@@ -715,6 +715,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     workers: ENG.three.workerMesh.count,
     calls: ENG.info().calls,
     ver: VIEWER_VER,
+    spin: document.getElementById('spin').checked,
     stat: document.getElementById('stat').textContent,
     /* 引擎每個 InstancedMesh 的預設 count 就是它的上限。這一頁沒餵資料的那些
        必須是 0，不然原點會冒出 80 個小人、一堆石頭與樹（visible 仍是 true
@@ -735,6 +736,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 顆 InstancedMesh 沒清乾淨（積木那顆不算）');
   ok('預覽頁的統計行寫出塊數與尺寸',
      /\d+ 塊/.test(vpBoot.stat) && /尺寸 \d+×\d+×\d+/.test(vpBoot.stat), vpBoot.stat);
+  // 自轉預設關：對照參考圖時畫面一直轉反而不好比
+  ok('預覽頁的自轉預設是關著的', vpBoot.spin === false,
+     '開場 spin=' + vpBoot.spin);
 
   const vpBig = await vp.evaluate(() => {
     const sel = document.getElementById('shape');
