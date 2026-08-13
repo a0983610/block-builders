@@ -39,6 +39,15 @@
   #rep{flex:1;min-height:120px;width:100%;resize:none;
     font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre;
     border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:#fff}
+  #pasteBox{border:1px solid var(--line);border-radius:10px;padding:7px 9px;background:#fff}
+  #pasteBox summary{cursor:pointer;font-size:12.5px;font-weight:700}
+  #paste{width:100%;height:92px;margin:7px 0;resize:vertical;
+    font:11.5px/1.45 ui-monospace,Consolas,monospace;
+    border:1px solid var(--line);border-radius:8px;padding:7px 8px}
+  #pasteMsg{font-size:11.5px;margin-top:6px;display:none}
+  #pasteMsg.on{display:block}
+  #pasteMsg.bad{color:#c0483c}
+  #pasteMsg.good{color:#3f7a34}
   .hint{font-size:11.5px;opacity:.6}
   .checks{display:flex;gap:12px;font-size:12px;opacity:.85}
   #err{position:fixed;inset:0;z-index:9;display:none;place-items:center;padding:24px;
@@ -67,10 +76,18 @@
     <label><input type="checkbox" id="spin" checked> 自轉</label>
     <label><input type="checkbox" id="wire"> 只看輪廓（隱藏草地）</label>
   </div>
+  <!-- 預設展開：AI 產的藍圖多半是「貼上」而不是「存檔」進來的，這是主要入口 -->
+  <details id="pasteBox" open>
+    <summary>貼上藍圖（不用先存檔）</summary>
+    <textarea id="paste" spellcheck="false"
+      placeholder="把 AI 給的整段貼進來（就是 blueprints/ 裡那種 customBlueprint({...}) 的內容），按下面的按鈕就直接預覽並診斷。```js 圍籬與「檔名：xxx.js」那行會自動忽略。"></textarea>
+    <div class="btns"><button id="load">貼上並預覽</button></div>
+  </details>
+  <div id="pasteMsg"></div>
   <div id="stat"></div>
   <textarea id="rep" readonly spellcheck="false" placeholder="按「🔍 檢查藍圖」產出報告，整段複製貼回給產出這份藍圖的 AI。"></textarea>
   <div class="btns"><button id="copy">複製報告</button></div>
-  <div class="hint">拖曳轉視角　·　滾輪縮放　·　改了 blueprints/ 裡的檔案按 F5 重新載入</div>
+  <div class="hint">拖曳轉視角　·　滾輪縮放　·　貼上的藍圖只活在這一頁（要留著就存進 <code>blueprints/</code> 並加進 <code>list.js</code>）</div>
 </div>
 
 <div id="err"></div>
@@ -88,7 +105,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.42.0';
+const VIEWER_VER = '1.43.0';
 
 const $ = id => document.getElementById(id);
 
@@ -117,11 +134,16 @@ ENG.putFire([]); ENG.putFlash([]);
 ENG.hideBall(); ENG.hideHammer(); ENG.hideNuke(); ENG.hideRings();
 window.addEventListener('resize', () => ENG.resize());
 
-/* ── 選單：自訂藍圖排前面（自己丟檔案進來的人就是想馬上看到它） ── */
-const order = SHAPES.map((s, i) => i)
-  .sort((a, b) => (SHAPES[b].custom ? 1 : 0) - (SHAPES[a].custom ? 1 : 0));
-$('shape').innerHTML = order.map(i =>
-  '<option value="' + i + '">' + (SHAPES[i].custom ? '★ ' : '') + SHAPES[i].n + '</option>').join('');
+/* ── 選單：自訂藍圖排前面（自己丟檔案進來的人就是想馬上看到它） ──
+   sort 在現代 JS 是穩定的，所以內建那 48 座之間的先後不會被打亂。 */
+function refreshMenu(pick) {
+  const order = SHAPES.map((s, i) => i)
+    .sort((a, b) => (SHAPES[b].custom ? 1 : 0) - (SHAPES[a].custom ? 1 : 0));
+  $('shape').innerHTML = order.map(i =>
+    '<option value="' + i + '">' + (SHAPES[i].custom ? '★ ' : '') + SHAPES[i].n + '</option>').join('');
+  if (pick !== undefined) $('shape').value = String(pick);
+}
+refreshMenu();
 
 /* ── 產生一份藍圖並擺上場 ───────────────────────────────── */
 const HB = ENG.BS / 2;
@@ -168,6 +190,64 @@ function build() {
             '，多的沒畫出來</b>' : '');
 }
 
+/* ── 貼上藍圖 ─────────────────────────────────────────────
+   做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，中間不該卡著「存檔案 + 編輯 list.js」。
+   所以這裡貼進來的藍圖**只活在這一頁**（F5 就沒了，要留著就照下面那行提示存檔）。
+   這等於執行使用者自己貼進來的程式碼——跟把 .js 丟進 blueprints/ 同一個信任等級，
+   而這一頁本來就是給做藍圖的人用的。遊戲（index.html）沒有這個入口。 */
+const pasted = new Set();          // 這一頁貼進來的那幾份在 SHAPES 的索引
+
+function cleanPaste(t) {
+  return String(t)
+    .replace(/```[a-zA-Z]*\n?/g, '')     // AI 很愛加的 markdown 圍籬
+    .replace(/^\s*檔名[：:].*$/gm, '')    // 「檔名：我的塔.js」那一行
+    .trim();
+}
+
+function pasteBlueprint(raw) {
+  const code = cleanPaste(raw);
+  if (!code) throw new Error('貼上的內容是空的。');
+  if (code.indexOf('customBlueprint') < 0)
+    throw new Error('看不到 customBlueprint(...)。要貼的是 blueprints/ 裡那種檔案的整段內容。');
+
+  /* 先用一個攔截版的 customBlueprint 把定義接下來：這樣能先看名字，
+     決定要不要蓋掉上一次貼的同名那份，再交給真正的 customBlueprint 走它的驗證。
+     其他工具（dim／blob／tint…）都是全域，貼進來的程式直接看得到。 */
+  const defs = [];
+  let fn;
+  try { fn = new Function('customBlueprint', code); }
+  catch (e) { throw new Error('程式有語法錯誤：' + e.message); }
+  try { fn(d => { defs.push(d); return 0; }); }
+  catch (e) { throw new Error('執行時出錯：' + e.message); }
+  if (!defs.length) throw new Error('這段程式沒有真的呼叫到 customBlueprint(...)。');
+
+  const added = [];
+  for (const def of defs) {
+    if (!def || !def.name) throw new Error('customBlueprint 少了 name。');
+    const old = SHAPES.findIndex(s => s.n === def.name);
+    if (old >= 0) {
+      if (!pasted.has(old))
+        throw new Error('名字「' + def.name + '」跟內建或 blueprints/ 裡的藍圖撞號，改個 name 再貼。');
+      /* 只蓋掉自己貼的那份。splice 會讓後面的索引往前挪一格，所以整組重算 */
+      SHAPES.splice(old, 1);
+      const moved = [];
+      for (const i of pasted) if (i !== old) moved.push(i > old ? i - 1 : i);
+      pasted.clear();
+      for (const i of moved) pasted.add(i);
+    }
+    // customBlueprint 擋掉時的理由只走 console.warn，借過來當錯誤訊息
+    let why = '';
+    const orig = console.warn;
+    console.warn = m => { why = String(m); };
+    let idx;
+    try { idx = customBlueprint(def); } finally { console.warn = orig; }
+    if (idx < 0) throw new Error(why || '這份藍圖被 customBlueprint 擋掉了。');
+    pasted.add(idx);
+    added.push({ idx: idx, name: def.name });
+  }
+  return added;
+}
+
 /* ── 體檢報告 ───────────────────────────────────────────── */
 function diagnose() {
   const r = checkBlueprint(+$('shape').value, { ver: VIEWER_VER });
@@ -208,6 +288,26 @@ $('cnt').addEventListener('input', e => { $('vCnt').textContent = e.target.value
 $('cnt').addEventListener('change', build);
 $('go').addEventListener('click', build);
 $('chk').addEventListener('click', diagnose);
+/* 貼上 → 進清單 → 選起來 → 畫出來 → 順手把診斷也跑掉。
+   貼的人要的就是這一連串，不該還要自己再按兩個按鈕。 */
+$('load').addEventListener('click', () => {
+  const msg = $('pasteMsg');
+  try {
+    const added = pasteBlueprint($('paste').value);
+    const last = added[added.length - 1];
+    refreshMenu(last.idx);
+    build();
+    diagnose();
+    msg.className = 'on good';
+    msg.textContent = '✔ 已載入「' + added.map(a => a.name).join('、') + '」' +
+      (added.length > 1 ? '（' + added.length + ' 份，選的是最後一份）' : '') + '，下面是它的診斷。';
+    // 成功就把貼上區收起來，把版面讓給報告（失敗時留著，那段文字還要改）
+    $('pasteBox').open = false;
+  } catch (e) {
+    msg.className = 'on bad';
+    msg.textContent = '✘ ' + ((e && e.message) ? e.message : e);
+  }
+});
 $('copy').addEventListener('click', copyReport);
 /* 「只看輪廓」＝把草地那三層藏起來。引擎沒有給那幾顆網格取名字，
    但上面已經把其他東西全餵空的了，所以「現在還看得見、又不是積木的網格」

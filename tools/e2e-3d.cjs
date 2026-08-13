@@ -777,6 +777,62 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '關掉草地後看得見 ' + vpWire.off + ' 顆網格（只剩積木），打開後 ' + vpWire.on + ' 顆');
   ok('預覽頁的版本號跟 src/game.js 一致', vpBoot.ver === await page.evaluate(() => VERSION),
      '預覽頁 v' + vpBoot.ver);
+
+  /* 貼上藍圖：做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，中間不該卡著存檔案 + 編輯 list.js。
+     這幾條驗的是那條路的每一種結局，包含 AI 實際輸出長什麼樣（markdown 圍籬 + 檔名那行）。 */
+  const SAMPLE = fs.readFileSync(path.join(ROOT, 'blueprints/範例-小木屋.js'), 'utf8')
+                   .replace("name: '範例小木屋'", "name: '貼上來的小屋'");
+  const pasteInto = async src => {
+    await vp.evaluate(t => {
+      document.getElementById('pasteBox').open = true;
+      document.getElementById('paste').value = t;
+    }, src);
+    await vp.click('#load');
+    await vp.waitForTimeout(200);
+    return vp.evaluate(() => ({
+      msg: document.getElementById('pasteMsg').textContent,
+      bad: document.getElementById('pasteMsg').className.indexOf('bad') >= 0,
+      open: document.getElementById('pasteBox').open,
+      picked: document.getElementById('shape').selectedOptions[0].textContent,
+      name: bp ? bp.name : null,
+      drawn: ENG.three.blockMesh.count,
+      shapes: SHAPES.length,
+      rep: document.getElementById('rep').value.split('\n')[1] || ''
+    }));
+  };
+  const pGood = await pasteInto('檔名：我的小屋.js\n```js\n' + SAMPLE + '\n```');
+  ok('貼上 AI 給的整段（含 ```js 圍籬與檔名那行）就能預覽',
+     !pGood.bad && pGood.name === '貼上來的小屋' && pGood.drawn > 100 &&
+     pGood.picked.indexOf('貼上來的小屋') > 0 && pGood.shapes === ALL_SHAPES + 1,
+     pGood.msg + '（畫了 ' + pGood.drawn + ' 塊）');
+  ok('貼上之後順手把診斷也跑掉了',
+     pGood.rep === '藍圖：貼上來的小屋（自訂 · gen）' && !pGood.open,
+     '報告第二行「' + pGood.rep + '」，貼上區已收起');
+  const pAgain = await pasteInto(SAMPLE.replace("'#c0483c'", "'#3a6fc0'"));
+  ok('同名再貼一次是蓋掉，不會愈貼愈多',
+     !pAgain.bad && pAgain.shapes === ALL_SHAPES + 1 && pAgain.name === '貼上來的小屋',
+     '清單仍是 ' + pAgain.shapes + ' 座（內建 48 + 檔案 1 + 貼上 1）');
+  const pClash = await pasteInto(SAMPLE.replace("name: '貼上來的小屋'", "name: '吉薩金字塔'"));
+  ok('撞到內建或檔案裡的名字會被擋掉，而且說得出原因',
+     pClash.bad && pClash.msg.indexOf('撞號') > 0 && pClash.shapes === ALL_SHAPES + 1,
+     pClash.msg);
+  const pSyntax = await pasteInto('customBlueprint({ name: "壞的", pal: ["#fff"], gen(v, s) { v.box(0,0,0 } });');
+  ok('語法錯的貼上會講「語法錯誤」，不是靜靜地什麼都沒發生',
+     pSyntax.bad && pSyntax.msg.indexOf('語法錯誤') > 0 && pSyntax.shapes === ALL_SHAPES + 1,
+     pSyntax.msg);
+  const pJunk = await pasteInto('console.log("hello")');
+  ok('貼到不是藍圖的東西會講清楚要貼什麼',
+     pJunk.bad && pJunk.msg.indexOf('customBlueprint') > 0, pJunk.msg);
+  const pBoom = await pasteInto(
+    "customBlueprint({ name: '會爆的', pal: ['#fff'], lo: 2, hi: 9, gen() { throw new Error('測試用'); } });");
+  ok('gen 會爆的藍圖照樣載得進來，讓報告去指出哪裡爆',
+     !pBoom.bad && pBoom.drawn === 0 && pBoom.rep === '藍圖：會爆的（自訂 · gen）',
+     '畫不出東西（' + pBoom.drawn + ' 塊），但報告認得它');
+  const pBoomRep = await vp.evaluate(() => document.getElementById('rep').value);
+  ok('那份報告裡有 gen 的錯誤訊息與修法',
+     pBoomRep.indexOf('測試用') > 0 && pBoomRep.indexOf('修法') > 0,
+     pBoomRep.split('\n').find(l => l.indexOf('測試用') > 0) || '(沒寫到)');
+
   ok('預覽頁整段跑完沒有 console 錯誤', vpErr.length === 0, vpErr.join(' / ') || '乾淨');
   await vp.close();
 
