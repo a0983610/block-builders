@@ -2629,15 +2629,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('炸得再遠也不會被轟出草地', blown.land.out === 0,
      '越界 ' + blown.land.out + ' 人（邊界＝工地半徑 + 22）');
 
-  /* 打滾要繞「身體中段」轉，不是繞腳底。小人的原點在腳底，直接繞原點轉的話 tilt 一過水平
-     整個人就插進地面下（實測有大半圈是埋著的），畫面上變成「倒下去→消失→從另一邊冒出來」。
-     量法：把 tilt 掃一圈，讀 InstancedMesh 裡每個部位的世界座標高度。 */
+  /* 「停、躺、滾」：人是躺平之後**沿著身體長軸**滾（像滾木頭），不是頭上腳下翻筋斗。
+     兩個轉軸都要驗，兩個都踩過雷：
+     - 繞小人的原點（腳底）轉 → 傾角一過水平整個人插進地面下，最低到 y=-1.3，
+       畫面上是「倒下去→消失→從另一邊冒出來」。要繞身體中段。
+     - 繞身體的左右軸轉 → 那是翻筋斗，頭一下在上一下在下。要繞長軸。
+     量法：讀 InstancedMesh 裡各部位的世界座標。 */
   const rollPose = await page.evaluate(() => {
     startBuild(true); completeNow();
     const w = workers[0];
     w.x = 0; w.z = 0; w.y = 0; w.a = 0; w.gait = 0; w.carry = false;
-    w.plan = 0; w.bub = 0; w.scale = 1.2;
+    w.plan = 0; w.bub = 0; w.scale = 1.2; w.roll = 0; w.tilt = 0; w.rspin = 0;
     const m = new THREE.Matrix4(), v = new THREE.Vector3();
+    const pos = k => { ENG.three.workerMesh.getMatrixAt(k, m); v.setFromMatrixPosition(m); return v.clone(); };
     const read = () => {
       ENG.putWorker(0, w);
       let lo = 1e9, hi = -1e9;
@@ -2649,25 +2653,65 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (v.y < lo) lo = v.y;
         if (v.y > hi) hi = v.y;
       }
-      return { lo: +lo.toFixed(2), hi: +hi.toFixed(2) };
+      return { lo: +lo.toFixed(2), hi: +hi.toFixed(2), head: pos(1), leg: pos(3) };
     };
-    const stand = (w.roll = 0, w.tilt = 0, read());     // 站著（沒在打滾）當基準
-    w.roll = 1;
+    const stand = read();                               // 站著（沒在打滾）當基準
+    w.roll = 1; w.tilt = Math.PI * 0.5;                 // 躺平
     const poses = [];
-    for (let i = 0; i < 8; i++) { w.tilt = i / 8 * Math.PI * 2; poses.push(read()); }
-    w.roll = 0; w.tilt = 0;
-    return { stand, up: poses[0], flat: poses[2], down: poses[4],
-             lo: Math.min(...poses.map(p => p.lo)), hi: Math.max(...poses.map(p => p.hi)) };
+    for (let i = 0; i < 12; i++) { w.rspin = i / 12 * Math.PI * 2; poses.push(read()); }
+    w.roll = 1; w.tilt = 0; w.rspin = 0;
+    const up = read();                                  // 打滾旗標開著、但還沒躺下
+    w.roll = 0;
+    const hy = poses.map(p => p.head.y);
+    // 沿長軸滾的話頭一直在同一邊（車頭方向 a=0 → +Z），翻筋斗的話會前後甩
+    const hz = poses.map(p => p.head.z), lz = poses.map(p => p.leg.z);
+    return { stand: { lo: stand.lo, hi: stand.hi }, up: { lo: up.lo, hi: up.hi },
+             flat: { lo: poses[0].lo, hi: Math.max(...poses.map(p => p.hi)) },
+             lo: Math.min(...poses.map(p => p.lo)),
+             headY: [+Math.min(...hy).toFixed(2), +Math.max(...hy).toFixed(2)],
+             aheadMin: +Math.min(...hz.map((z, i) => z - lz[i])).toFixed(2) };
   });
   ok('打滾時整個人都在地面上，不會轉到地底下', rollPose.lo > -0.3,
-     '掃一圈 tilt，最低的部位在 y=' + rollPose.lo + '（繞腳底轉的話會到 -1.3）');
+     '滾一圈，最低的部位在 y=' + rollPose.lo + '（繞腳底轉的話會到 -1.3）');
   ok('打滾的樞紐不影響站姿',
      rollPose.up.lo === rollPose.stand.lo && rollPose.up.hi === rollPose.stand.hi,
      '站著 y=' + rollPose.stand.lo + '～' + rollPose.stand.hi +
-     '，打滾但 tilt=0 時 y=' + rollPose.up.lo + '～' + rollPose.up.hi);
-  ok('橫躺那半圈是真的躺在草地上，不是浮著',
+     '，打滾旗標開著但還沒躺下時 y=' + rollPose.up.lo + '～' + rollPose.up.hi);
+  ok('打滾時是躺在草地上，不是站著也不是浮著',
      rollPose.flat.hi < rollPose.stand.hi * 0.55 && rollPose.flat.lo > -0.3,
-     '橫躺時最高的部位只到 y=' + rollPose.flat.hi + '（站著是 ' + rollPose.stand.hi + '）');
+     '躺著時最高的部位只到 y=' + rollPose.flat.hi + '（站著是 ' + rollPose.stand.hi + '）');
+  /* 滾木頭：頭全程貼著地面同一個高度、而且一直在腿的前方。
+     翻筋斗的話頭會從 1.4 掃到 0、也會轉到腿的後面去。 */
+  ok('滾的是身體長軸，不是頭上腳下翻筋斗',
+     rollPose.headY[1] - rollPose.headY[0] < 0.05 && rollPose.headY[1] < 0.6 &&
+     rollPose.aheadMin > 0.4,
+     '滾一圈頭的高度 ' + rollPose.headY[0] + '～' + rollPose.headY[1] +
+     '，頭一直在腿前方至少 ' + rollPose.aheadMin + ' 單位');
+
+  /* 沿長軸滾當然是往**旁邊**移動，而且轉多少就該走多少（半徑 × 角度），
+     不然看起來是一邊轉一邊在冰上滑。 */
+  const rollMove = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    const w = workers[0];
+    w.x = 0; w.z = 0; w.y = 0; w.a = 0; w.air = 0; w.fall = 0; w.burn = 0;
+    igniteWorker(w, true);
+    // rspin 會對 2π 取餘數，總轉角要一幀一幀累加
+    let prev = w.rspin, turned = 0;
+    for (let i = 0; i < 20; i++) {
+      step(0.05);
+      let d = w.rspin - prev; if (d < 0) d += Math.PI * 2;
+      turned += d; prev = w.rspin;
+    }
+    const fwd = w.x * Math.sin(w.a) + w.z * Math.cos(w.a);   // 沿車頭方向的位移
+    const side = w.x * Math.cos(w.a) - w.z * Math.sin(w.a);  // 側向的位移
+    return { fwd: +fwd.toFixed(2), side: +side.toFixed(2), turned: +turned.toFixed(2),
+             ratio: +(Math.abs(side) / turned).toFixed(3) };
+  });
+  ok('滾的方向是身體側向，而且轉多少就走多少（不打滑）',
+     Math.abs(rollMove.fwd) < 0.05 && rollMove.side < -0.5 &&
+     Math.abs(rollMove.ratio - 0.28) < 0.03,
+     '一秒滾了 ' + rollMove.turned + ' rad，側向走 ' + rollMove.side +
+     '、正前方走 ' + rollMove.fwd + '（位移÷角度 = ' + rollMove.ratio + '，滾動半徑 0.28）');
 
   /* 龍捲風：吃的是跟碎料同一組力（切線繞圈＋往內吸＋往上捲），所以人也會被捲上天 */
   const twisted = await page.evaluate(() => {

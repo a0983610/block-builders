@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.37.2';
+const VERSION = '1.37.3';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -708,7 +708,7 @@ function newWorker(i) {
     wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, pause: 0, leg: 0,
     /* 被工具波及時才用得到：air 是正在飛，vx/vy/vz 是彈道，spin 是翻滾角速度，
        lit 是「落地要著火」的記號，burn 是還要燒幾秒，burnK 是身上焦黑的深淺。 */
-    air: 0, vx: 0, vy: 0, vz: 0, spin: 0, lit: 0, burn: 0, burnK: 0, roll: 0,
+    air: 0, vx: 0, vy: 0, vz: 0, spin: 0, lit: 0, burn: 0, burnK: 0, roll: 0, rspin: 0,
     bem: 0, bx: 0, bz: 0, br: 0, ba: 0,
     /* 工程師（eng）：拿藍圖 plan、站的角度 eang、下一個動作倒數 et、指揮動作剩幾秒 point。
        聊天：剩幾秒 chat、對象編號 cw、輪到誰講 side、講完多久才會再聊 chatCd、
@@ -770,7 +770,10 @@ function releaseWorker(w) {
    燒起來的演法看落地姿勢：摔在地上的就地打滾，站著被點著的抱頭跑圈圈。 */
 const W_BURN = 3;                   // 小人燒多久（跟碎料的 EMBER_TIME 同長）
 const W_TOSS_MAX = 22;              // 被拋出去的水平速度上限——不設的話一發核彈會把人送出草地
-const W_ROLL = 9;                   // 打滾的翻滾角速度（rad/s）
+const W_ROLL = 9;                   // 打滾的角速度（rad/s）
+/* 滾動半徑＝身體橫躺時的半厚。位移用「角速度 × 這個」算出來，滾一圈剛好走一個圓周，
+   才不會看起來像一邊轉一邊在冰上滑。 */
+const ROLL_R = 0.28;
 const W_PANIC = 3.4;                // 跑圈圈的角速度
 let burningW = 0;                   // 這一幀有幾個人在燒：火苗配額要分給他們
 
@@ -788,6 +791,8 @@ function igniteWorker(w, roll) {
   if (w.burn > 0) return false;
   releaseWorker(w);
   w.burn = W_BURN; w.roll = roll ? 1 : 0; w.bem = Math.random(); w.fall = 0; w.flee = 0;
+  // 躺平角直接就位（人本來就是摔在地上才點著的），滾的相位每個人不一樣
+  if (roll) { w.tilt = Math.PI * 0.5; w.rspin = rr(0, Math.PI * 2); }
   w.bx = w.x; w.bz = w.z; w.br = rr(1.6, 2.8); w.ba = Math.random() * Math.PI * 2;
   return true;
 }
@@ -848,9 +853,17 @@ function flyWorker(w, dt) {
 function burnMove(w, dt) {
   const lim = arenaR + 22;
   if (w.roll) {
-    w.tilt = (w.tilt + dt * W_ROLL) % (Math.PI * 2);   // 一路往前翻，不是左右搖
-    w.x = clamp(w.x + Math.sin(w.a) * dt * 1.5, -lim, lim);
-    w.z = clamp(w.z + Math.cos(w.a) * dt * 1.5, -lim, lim);
+    /* 「停、躺、滾」：人是**躺平之後沿著身體長軸滾**（像滾木頭），不是頭上腳下翻筋斗。
+       所以躺平角固定在 90°、轉的是另一根軸（rspin），而且滾的位移是身體的**側向**，
+       不是正前方——沿著長軸滾當然是往旁邊移動。
+       翻筋斗版本轉軸整個是錯的：頭會一下在上一下在下，看起來像在翻跟斗不像在滅火。 */
+    w.tilt += (Math.PI * 0.5 - w.tilt) * Math.min(1, dt * 12);
+    w.rspin = (w.rspin + dt * W_ROLL) % (Math.PI * 2);
+    /* 正向 rspin 是繞著「車頭方向」那根軸轉，接觸點在正下方，
+       不打滑的話身體要往 (−cos a, sin a) 走。 */
+    const v = W_ROLL * ROLL_R * dt;
+    w.x = clamp(w.x - Math.cos(w.a) * v, -lim, lim);
+    w.z = clamp(w.z + Math.sin(w.a) * v, -lim, lim);
     w.gait = 0;
   } else {
     w.ba += dt * W_PANIC;
@@ -1053,7 +1066,7 @@ function updWorker(w, wi, dt) {
     w.burn -= dt;
     burnFx(w, dt);
     // 燒完就拍拍灰站起來，顏色自己褪回原色
-    if (w.burn <= 0) { w.burn = 0; w.roll = 0; w.tilt = 0; w.gait = 0; w.st = 'idle'; }
+    if (w.burn <= 0) { w.burn = 0; w.roll = 0; w.tilt = 0; w.rspin = 0; w.gait = 0; w.st = 'idle'; }
   }
   if (w.burn > 0 || w.burnK > 0.002) {
     const t = w.burn > 0 ? 0.8 : 0;

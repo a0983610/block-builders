@@ -774,7 +774,7 @@ const ENG = (function () {
 
      中心離地多高還要跟著姿勢走：站著（或倒立）時是半個身高，橫躺時只有半個身厚。
      固定用半個身高的話，橫躺那半圈整個人浮在草皮上面。 */
-  const ROLL_PIVOT = 0.65, ROLL_FLAT = 0.25;
+  const ROLL_PIVOT = 0.65, ROLL_FLAT = 0.30;
   /* w：{x,y,z,a 朝向,ph 步伐相位,carry 是否舉手,tilt 跌倒角度,tone 膚色/衣色編號,
         burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）,roll 正在打滾,
         hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1} */
@@ -782,7 +782,9 @@ const ENG = (function () {
     const piv = w.roll ? ROLL_PIVOT : 0;
     const lift = piv && (ROLL_FLAT + (ROLL_PIVOT - ROLL_FLAT) * Math.abs(Math.cos(w.tilt || 0)));
     scratch.position.set(w.x, w.y + lift * (w.scale || 1), w.z);
-    scratch.rotation.set(w.tilt || 0, w.a, 0, 'YXZ');
+    /* 順序用 YZX：R = Ry(朝向)·Rz(打滾)·Rx(躺平)。z 那一軸轉的是「躺平之後的身體長軸」，
+       也就是滾木頭那個滾法。沒在打滾時 z 給 0，跟原本的 YXZ 完全等價。 */
+    scratch.rotation.set(w.tilt || 0, w.a, w.roll ? (w.rspin || 0) : 0, 'YZX');
     scratch.scale.setScalar(w.scale || 1);
     scratch.updateMatrix();
     for (let k = 0; k < WPARTS; k++) {
