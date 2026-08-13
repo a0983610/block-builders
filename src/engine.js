@@ -909,20 +909,24 @@ const ENG = (function () {
 
   /* ── 相機 ─────────────────────────────────────────── */
   /* radius/height 是建築本身，arena 是碎料散落範圍（決定草地與陰影要多大） */
-  function fitCamera(radius, height, arena, instant) {
+  /* keepView：只更新草地／陰影／霧，不動鏡頭。換建築時用這個——
+     玩家自己轉好、拉近、平移過的視角不該被搶走。 */
+  function fitCamera(radius, height, arena, instant, keepView) {
     lastFit = { radius, height, arena };
     /* 把建築當成一顆球來取景：距離 = 球半徑 / sin(半視角)。
        上下用球半徑（高度通常是大的那邊），左右另外用真正的水平半徑再算一次，取遠的那個。
        兩邊都用球半徑的話，又高又細的建築（艾菲爾鐵塔）會被自己的高度推到天邊；
        左右完全不算的話，直式手機（畫面高瘦）裝不下，36 座有 24 座被切掉、金門大橋溢出六成。 */
-    const R = Math.max(radius * 1.05, height * 0.62) + 2;
-    const halfV = camera.fov * Math.PI / 360;
-    const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
-    camTarget.dist = Math.max(R / Math.sin(halfV),
-                              (radius * 1.05 + 2) / Math.sin(halfH)) * FIT_MARGIN;
-    camTarget.ty = height * 0.44 + 1.5;
-    camTarget.tx = camTarget.tz = 0;          // 換一座就把鏡頭帶回工地中心，不然新的那座在畫面外
-    if (instant) { cam.dist = camTarget.dist; cam.ty = camTarget.ty; cam.tx = cam.tz = 0; }
+    if (!keepView) {
+      const R = Math.max(radius * 1.05, height * 0.62) + 2;
+      const halfV = camera.fov * Math.PI / 360;
+      const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
+      camTarget.dist = Math.max(R / Math.sin(halfV),
+                                (radius * 1.05 + 2) / Math.sin(halfH)) * FIT_MARGIN;
+      camTarget.ty = height * 0.44 + 1.5;
+      camTarget.tx = camTarget.tz = 0;        // 取景時把鏡頭帶回工地中心
+      if (instant) { cam.dist = camTarget.dist; cam.ty = camTarget.ty; cam.tx = cam.tz = 0; }
+    }
     // 陰影相機要蓋住整片工地，不然大建築跟遠處碎料的影子會被裁掉
     const s = Math.max(45, arena + height * 0.5);
     const sc = sun.shadow.camera;
@@ -930,7 +934,7 @@ const ENG = (function () {
     sc.updateProjectionMatrix();
     setGroundSize(arena + 26);
     // 爆炸運鏡期間不准把鏡頭收回去，不然核彈把建築夷平換場時，蘑菇雲會被拉出畫面
-    if (wideT > 0) {
+    if (wideT > 0 && !keepView) {
       camTarget.dist = Math.max(camTarget.dist, wideDist);
       camTarget.ty = Math.max(camTarget.ty, wideDist * 0.22);
     }

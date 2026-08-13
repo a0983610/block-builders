@@ -1634,13 +1634,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = 900; setWorkerCount(20); startBuild(true);
     for (let i = 0; i < 400; i++) step(0.05);
     const inRing = workers.filter(w => Math.hypot(w.x, w.z) < MAG_R);
+    const ring0 = inRing.map(w => ({ x: w.x, z: w.z }));
     castMagic({ x: 0, z: 0 });
     const magFlee = workers.filter(w => w.flee > 0).length;
     for (let i = 0; i < 130 && magic; i++) step(0.05);
     const magOut = inRing.filter(w => Math.hypot(w.x, w.z) >= MAG_R).length;
     const magFar = Math.max(...inRing.map(w => Math.hypot(w.x, w.z)));
+    // 各自跑了多遠（起點到終點的直線距離，路線本來就是直的）
+    const runs = inRing.map((w, k) => Math.hypot(w.x - ring0[k].x, w.z - ring0[k].z));
     return { on, off, planted, mag: { n: inRing.length, fleeing: magFlee, out: magOut,
-                                      far: +magFar.toFixed(1) } };
+                                      far: +magFar.toFixed(1),
+                                      runMin: +Math.min(...runs).toFixed(1),
+                                      runMax: +Math.max(...runs).toFixed(1) } };
   });
   ok('核彈倒數一出現，範圍內的人全部開始逃', flee.on.near > 5 && flee.on.fleeing >= flee.on.near,
      '半徑 30 內有 ' + flee.on.near + ' 人，' + flee.on.fleeing + ' 人進入逃命狀態');
@@ -1720,10 +1725,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      walkIn.who + ' 人共被抓到 ' + walkIn.frames + ' 幀（每人最多一幀），最後被炸飛 ' +
      walkIn.tossed + ' 人');
 
-  ok('魔法陣六秒預告，圈內的人來得及全部跑出去',
-     flee.mag.n > 5 && flee.mag.fleeing >= flee.mag.n && flee.mag.out === flee.mag.n,
+  ok('魔法陣六秒預告，圈內的人幾乎都跑得出去',
+     flee.mag.n > 5 && flee.mag.fleeing >= flee.mag.n &&
+     flee.mag.out >= flee.mag.n - 2,
      '圈內 ' + flee.mag.n + ' 人全部起跑，跑出半徑 30 的有 ' + flee.mag.out +
      ' 人（最遠 ' + flee.mag.far + '）');
+  /* 小人不會知道這一發的威力範圍到哪裡，所以每個人是「自己抽一段距離跑完就停」，
+     不是「跑到安全半徑」。驗的是那段距離真的因人而異、而且落在設定的區間裡。 */
+  ok('每個人跑的距離不一樣，跟爆炸半徑無關',
+     flee.mag.runMin >= 15 && flee.mag.runMax <= 35 &&
+     flee.mag.runMax - flee.mag.runMin > 6,
+     '圈內的人各跑了 ' + flee.mag.runMin + '～' + flee.mag.runMax + ' 單位（設定 16～34）');
 
   /* ══════════ 破壞道具與解鎖 ══════════ */
   head('破壞道具與解鎖');
@@ -2688,30 +2700,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '滾一圈頭的高度 ' + rollPose.headY[0] + '～' + rollPose.headY[1] +
      '，頭一直在腿前方至少 ' + rollPose.aheadMin + ' 單位');
 
-  /* 沿長軸滾當然是往**旁邊**移動，而且轉多少就該走多少（半徑 × 角度），
-     不然看起來是一邊轉一邊在冰上滑。 */
+  /* 滅火是**來回**翻壓熄身上的火，不是往同一邊一直滾——一直滾同一邊的話人會一路
+     平移出去，在草地上遠航。而且沿長軸滾是往**旁邊**移動，轉多少就該走多少
+     （半徑 × 這一幀的轉角），不然看起來是一邊轉一邊在冰上滑。 */
   const rollMove = await page.evaluate(() => {
     startBuild(true); completeNow();
     const w = workers[0];
     w.x = 0; w.z = 0; w.y = 0; w.a = 0; w.air = 0; w.fall = 0; w.burn = 0;
     igniteWorker(w, true);
-    // rspin 會對 2π 取餘數，總轉角要一幀一幀累加
-    let prev = w.rspin, turned = 0;
-    for (let i = 0; i < 20; i++) {
+    let prev = w.rspin, px = w.x, pz = w.z;
+    let up = 0, dn = 0, slip = 0, fwdMax = 0;
+    const sp = [];
+    for (let i = 0; i < 60; i++) {
       step(0.05);
-      let d = w.rspin - prev; if (d < 0) d += Math.PI * 2;
-      turned += d; prev = w.rspin;
+      const d = w.rspin - prev;
+      if (d > 1e-6) up++; else if (d < -1e-6) dn++;
+      const dx = w.x - px, dz = w.z - pz;
+      // 這一幀的位移該是「轉角 × 滾動半徑」，方向是側向
+      const side = dx * Math.cos(w.a) - dz * Math.sin(w.a);
+      const fwd = dx * Math.sin(w.a) + dz * Math.cos(w.a);
+      if (Math.abs(fwd) > fwdMax) fwdMax = Math.abs(fwd);
+      const err = Math.abs(-side - d * 0.28);
+      if (err > slip) slip = err;
+      sp.push(w.rspin); prev = w.rspin; px = w.x; pz = w.z;
     }
-    const fwd = w.x * Math.sin(w.a) + w.z * Math.cos(w.a);   // 沿車頭方向的位移
-    const side = w.x * Math.cos(w.a) - w.z * Math.sin(w.a);  // 側向的位移
-    return { fwd: +fwd.toFixed(2), side: +side.toFixed(2), turned: +turned.toFixed(2),
-             ratio: +(Math.abs(side) / turned).toFixed(3) };
+    return { up, dn, lo: +Math.min(...sp).toFixed(2), hi: +Math.max(...sp).toFixed(2),
+             drift: +Math.hypot(w.x, w.z).toFixed(2),
+             slip: +slip.toFixed(4), fwdMax: +fwdMax.toFixed(4) };
   });
+  ok('是來回翻滾，不是往同一邊一直滾',
+     rollMove.up > 10 && rollMove.dn > 10 &&
+     rollMove.lo < -1.5 && rollMove.hi > 1.5 && rollMove.drift < 2,
+     '三秒內往兩邊各滾了 ' + rollMove.up + '／' + rollMove.dn + ' 幀，角度在 ' +
+     rollMove.lo + '～' + rollMove.hi + ' rad 之間來回，人只挪了 ' + rollMove.drift + ' 單位');
   ok('滾的方向是身體側向，而且轉多少就走多少（不打滑）',
-     Math.abs(rollMove.fwd) < 0.05 && rollMove.side < -0.5 &&
-     Math.abs(rollMove.ratio - 0.28) < 0.03,
-     '一秒滾了 ' + rollMove.turned + ' rad，側向走 ' + rollMove.side +
-     '、正前方走 ' + rollMove.fwd + '（位移÷角度 = ' + rollMove.ratio + '，滾動半徑 0.28）');
+     rollMove.slip < 0.002 && rollMove.fwdMax < 0.002,
+     '每一幀「位移 vs 轉角×0.28」最大差 ' + rollMove.slip +
+     '，正前方的位移最大 ' + rollMove.fwdMax);
 
   /* 龍捲風：吃的是跟碎料同一組力（切線繞圈＋往內吸＋往上捲），所以人也會被捲上天 */
   const twisted = await page.evaluate(() => {
@@ -4240,13 +4265,58 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('平移不會跑出場地', clamped.d <= clamped.arena + 0.01,
      '一直推 → 停在 ' + clamped.d.toFixed(1) + '，場地半徑 ' + clamped.arena.toFixed(1));
 
-  const panReset = await page.evaluate(() => {
-    ENG.camTarget.tx = 30; ENG.camTarget.tz = -20;
-    startBuild(false);
-    return { tx: ENG.camTarget.tx, tz: ENG.camTarget.tz };
+  /* ── Q／E 轉視角 ── */
+  await page.evaluate(() => { ENG.cam.yaw = 0; });
+  const qe = { };
+  await page.keyboard.down('e'); await page.waitForTimeout(300); await page.keyboard.up('e');
+  qe.e = await page.evaluate(() => ENG.cam.yaw);
+  await page.keyboard.down('q'); await page.waitForTimeout(300); await page.keyboard.up('q');
+  qe.back = await page.evaluate(() => ENG.cam.yaw);
+  ok('Q／E 可以轉視角，兩顆方向相反',
+     Math.abs(qe.e) > 0.2 && Math.abs(qe.back) < Math.abs(qe.e) * 0.5,
+     '按 E 300ms → yaw ' + qe.e.toFixed(2) + '，再按 Q 300ms → ' + qe.back.toFixed(2));
+  /* E 要對應「滑鼠往右拖」，不然兩套操作的手感會相反 */
+  const qeDir = await page.evaluate(() => {
+    ENG.cam.yaw = 0; ENG.orbit(100, 0);
+    return ENG.cam.yaw;
   });
-  ok('換一座建築鏡頭回到工地中心', panReset.tx === 0 && panReset.tz === 0,
-     'tx ' + panReset.tx + '、tz ' + panReset.tz);
+  ok('E 的方向跟滑鼠往右拖一致', Math.sign(qe.e) === Math.sign(qeDir),
+     'E 是 ' + (qe.e > 0 ? '+' : '−') + '、往右拖是 ' + (qeDir > 0 ? '+' : '−'));
+
+  /* 換建築**不准**動鏡頭：玩家自己轉好、拉近、平移過的視角不該被搶走。
+     只有開場那一次（instant）才取景。草地／陰影／霧還是要照新工地重算。 */
+  const keepView = await page.evaluate(() => {
+    const sp0 = shapePick, tc0 = targetCnt;             // 這一段會換藍圖，測完要還原
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 900;
+    startBuild(true);                                   // 開場：取景
+    const fit = { d: ENG.camTarget.dist, ty: ENG.camTarget.ty,
+                  tx: ENG.camTarget.tx, tz: ENG.camTarget.tz };
+    ENG.orbit(300, 0); ENG.zoom(-400); ENG.pan(1, 0.4, 1);   // 玩家自己動鏡頭
+    const was = { d: ENG.camTarget.dist, ty: ENG.camTarget.ty,
+                  tx: ENG.camTarget.tx, tz: ENG.camTarget.tz, yaw: ENG.cam.yaw };
+    const arena0 = arenaR;
+    shapePick = SHAPES.findIndex(s => s.n === '金門大橋');
+    targetCnt = 2000; startBuild(false);                // 遊戲中換一座
+    const now = { d: ENG.camTarget.dist, ty: ENG.camTarget.ty,
+                  tx: ENG.camTarget.tx, tz: ENG.camTarget.tz, yaw: ENG.cam.yaw };
+    const arena1 = arenaR;
+    shapePick = sp0; targetCnt = tc0; startBuild(true);
+    return { same: ['d', 'ty', 'tx', 'tz', 'yaw'].every(k => was[k] === now[k]),
+             fit, was, now, moved: was.d !== fit.d || was.tx !== fit.tx,
+             arena0: +arena0.toFixed(1), arena1: +arena1.toFixed(1) };
+  });
+  ok('換一座建築不會搶走鏡頭', keepView.same,
+     '換之前 dist ' + keepView.was.d.toFixed(1) + '／tx ' + keepView.was.tx.toFixed(1) +
+     '／yaw ' + keepView.was.yaw.toFixed(2) + '，換之後 dist ' + keepView.now.d.toFixed(1) +
+     '／tx ' + keepView.now.tx.toFixed(1) + '／yaw ' + keepView.now.yaw.toFixed(2));
+  ok('鏡頭不動，但草地範圍還是照新工地重算', keepView.arena1 > keepView.arena0 * 1.2,
+     '場地半徑 ' + keepView.arena0 + ' → ' + keepView.arena1);
+  ok('開場那一次還是會取景，鏡頭不會停在原點',
+     keepView.fit.d > 20 && keepView.fit.ty > 1 &&
+     keepView.fit.tx === 0 && keepView.fit.tz === 0 && keepView.moved,
+     '開場取到 dist ' + keepView.fit.d.toFixed(1) + '、視線高 ' + keepView.fit.ty.toFixed(1) +
+     '，玩家動過之後變成 dist ' + keepView.was.d.toFixed(1));
 
   await resetPan();
   await page.focus('#shape');

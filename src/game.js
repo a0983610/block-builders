@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.37.3';
+const VERSION = '1.38.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -362,7 +362,10 @@ function startBuild(instant) {
 
   makeTrees();
   computeSupport();                  // 派第一個工之前就要有支撐狀態可以查
-  ENG.fitCamera(siteR, bp.height, arenaR, !!instant);
+  /* 第五個參數＝保留現在的視角。開場那一次要取景（不然一進來不知道鏡頭在哪），
+     之後每換一座都不再動鏡頭——玩家自己轉好、拉近、平移過的視角不該被搶走。
+     草地大小、陰影範圍、霧的起點還是照新工地重算，那些不是「鏡頭」。 */
+  ENG.fitCamera(siteR, bp.height, arenaR, !!instant, !instant);
   syncHud();
 }
 
@@ -708,7 +711,8 @@ function newWorker(i) {
     wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, pause: 0, leg: 0,
     /* 被工具波及時才用得到：air 是正在飛，vx/vy/vz 是彈道，spin 是翻滾角速度，
        lit 是「落地要著火」的記號，burn 是還要燒幾秒，burnK 是身上焦黑的深淺。 */
-    air: 0, vx: 0, vy: 0, vz: 0, spin: 0, lit: 0, burn: 0, burnK: 0, roll: 0, rspin: 0,
+    air: 0, vx: 0, vy: 0, vz: 0, spin: 0, lit: 0, burn: 0, burnK: 0,
+    roll: 0, rspin: 0, rph: 0,
     bem: 0, bx: 0, bz: 0, br: 0, ba: 0,
     /* 工程師（eng）：拿藍圖 plan、站的角度 eang、下一個動作倒數 et、指揮動作剩幾秒 point。
        聊天：剩幾秒 chat、對象編號 cw、輪到誰講 side、講完多久才會再聊 chatCd、
@@ -716,8 +720,8 @@ function newWorker(i) {
     eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
-       fer 是逃到離爆心多遠才算安全，fdir 是起跑時定好的逃跑方向。 */
-    flee: 0, fdel: 0, fex: 0, fez: 0, fer: 0, fdir: 0,
+       frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
+    flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
     /* 每個人身高略有差異。1.06–1.24 大約是積木邊長的一個半，
        比原本大一成半——太小的話遠鏡頭下只剩一撮色點，看不出在做什麼。 */
     scale: rr(1.06, 1.24)
@@ -770,9 +774,12 @@ function releaseWorker(w) {
    燒起來的演法看落地姿勢：摔在地上的就地打滾，站著被點著的抱頭跑圈圈。 */
 const W_BURN = 3;                   // 小人燒多久（跟碎料的 EMBER_TIME 同長）
 const W_TOSS_MAX = 22;              // 被拋出去的水平速度上限——不設的話一發核彈會把人送出草地
-const W_ROLL = 9;                   // 打滾的角速度（rad/s）
-/* 滾動半徑＝身體橫躺時的半厚。位移用「角速度 × 這個」算出來，滾一圈剛好走一個圓周，
-   才不會看起來像一邊轉一邊在冰上滑。 */
+/* 打滾是**來回**滾，不是一直往同一邊滾——滅火本來就是左右翻壓熄身上的火，
+   一路滾同一個方向的話人會一直往旁邊平移，變成在草地上遠航。
+   角度直接用正弦波：振幅 1.9 rad（約 109°，從側躺翻過正面到另一邊）、每秒 0.9 個來回。 */
+const ROLL_AMP = 1.9, ROLL_HZ = 0.9;
+/* 滾動半徑＝身體橫躺時的半厚。位移用「這一幀轉了多少 × 這個」算，轉多少走多少，
+   才不會看起來像一邊轉一邊在冰上滑。來回滾的淨位移接近 0，人留在原地翻。 */
 const ROLL_R = 0.28;
 const W_PANIC = 3.4;                // 跑圈圈的角速度
 let burningW = 0;                   // 這一幀有幾個人在燒：火苗配額要分給他們
@@ -791,8 +798,11 @@ function igniteWorker(w, roll) {
   if (w.burn > 0) return false;
   releaseWorker(w);
   w.burn = W_BURN; w.roll = roll ? 1 : 0; w.bem = Math.random(); w.fall = 0; w.flee = 0;
-  // 躺平角直接就位（人本來就是摔在地上才點著的），滾的相位每個人不一樣
-  if (roll) { w.tilt = Math.PI * 0.5; w.rspin = rr(0, Math.PI * 2); }
+  // 躺平角直接就位（人本來就是摔在地上才點著的），來回滾的相位每個人不一樣
+  if (roll) {
+    w.tilt = Math.PI * 0.5; w.rph = rr(0, Math.PI * 2);
+    w.rspin = ROLL_AMP * Math.sin(w.rph);
+  }
   w.bx = w.x; w.bz = w.z; w.br = rr(1.6, 2.8); w.ba = Math.random() * Math.PI * 2;
   return true;
 }
@@ -858,10 +868,13 @@ function burnMove(w, dt) {
        不是正前方——沿著長軸滾當然是往旁邊移動。
        翻筋斗版本轉軸整個是錯的：頭會一下在上一下在下，看起來像在翻跟斗不像在滅火。 */
     w.tilt += (Math.PI * 0.5 - w.tilt) * Math.min(1, dt * 12);
-    w.rspin = (w.rspin + dt * W_ROLL) % (Math.PI * 2);
+    w.rph += dt * ROLL_HZ * Math.PI * 2;
+    const was = w.rspin;
+    w.rspin = ROLL_AMP * Math.sin(w.rph);
     /* 正向 rspin 是繞著「車頭方向」那根軸轉，接觸點在正下方，
-       不打滑的話身體要往 (−cos a, sin a) 走。 */
-    const v = W_ROLL * ROLL_R * dt;
+       不打滑的話身體要往 (−cos a, sin a) 走。位移跟著**這一幀的轉角**走，
+       所以往回滾的時候也往回挪，整段下來人留在原地翻。 */
+    const v = (w.rspin - was) * ROLL_R;
     w.x = clamp(w.x - Math.cos(w.a) * v, -lim, lim);
     w.z = clamp(w.z + Math.sin(w.a) * v, -lim, lim);
     w.gait = 0;
@@ -928,9 +941,11 @@ function walkTo(w, dt) {
    等於幫小人開了無敵。 */
 const FLEE_SPD = 1.2;
 const FLEE_STEP = 2;
-/* 逃到爆炸半徑外多遠才停——**每個人抽自己的**。給同一個值的話所有人都停在離爆心
-   剛好一樣遠的地方，二十個人會站成一個正圓，看起來像在圍圈不像在逃。 */
-const FLEE_PAD = [2, 15];
+/* 一口氣要跑多遠——**每個人抽自己的一段距離**，跟爆炸半徑無關。
+   小人不會知道這一發的威力範圍到哪裡，用「半徑 + 幾單位」當目標等於幫他們開天眼；
+   而且那樣算出來的終點全落在同一個圓上，二十個人會站成一圈，像在圍觀不像在逃。
+   跑完就停下來回頭看——跑得夠遠的躲過去了，估錯的還站在火球裡。 */
+const FLEE_RUN = [16, 34];
 /* 跑的方向偏離「正背對爆心」多少。完全照半徑跑的話，一群人的路線是從同一點射出去的
    放射線，散開的那一下也很像陣型。偏一點才像各跑各的。
    方向在起跑那一刻就定死、之後走直線：每幀拿「當下的半徑方向 + 固定偏角」重算的話，
@@ -967,7 +982,7 @@ function startFlee(w, d) {
   w.flee = d.t + FLEE_TAIL;
   w.fdel = rr(FLEE_REACT[0], FLEE_REACT[1]);
   w.fex = d.x; w.fez = d.z;
-  w.fer = d.r + rr(FLEE_PAD[0], FLEE_PAD[1]);
+  w.frem = rr(FLEE_RUN[0], FLEE_RUN[1]);
   const dx = w.x - d.x, dz = w.z - d.z;
   // 剛好站在爆心正上方就隨便挑一邊
   const away = dx * dx + dz * dz < 1e-6 ? rr(0, Math.PI * 2) : Math.atan2(dx, dz);
@@ -984,14 +999,13 @@ function stepFlee(w, dt) {
     w.gait += (0 - w.gait) * Math.min(1, dt * 8);
     return;
   }
-  const dx = w.x - w.fex, dz = w.z - w.fez;
-  const d = Math.hypot(dx, dz);
-  if (d >= w.fer) {                                 // 安全了：站定回頭看
-    w.a = Math.atan2(-dx, -dz);
+  if (w.frem <= 0) {                                // 跑夠了：站定回頭看
+    w.a = Math.atan2(w.fex - w.x, w.fez - w.z);
     w.gait += (0 - w.gait) * Math.min(1, dt * 8);
     w.ph += dt * 4;
     return;
   }
+  w.frem -= WALK * FLEE_SPD * dt;
   const ux = Math.sin(w.fdir), uz = Math.cos(w.fdir);   // 起跑時定好的那條直線
   const lim = arenaR + 20;
   w.x = clamp(w.x + ux * WALK * FLEE_SPD * dt, -lim, lim);
@@ -1066,7 +1080,9 @@ function updWorker(w, wi, dt) {
     w.burn -= dt;
     burnFx(w, dt);
     // 燒完就拍拍灰站起來，顏色自己褪回原色
-    if (w.burn <= 0) { w.burn = 0; w.roll = 0; w.tilt = 0; w.rspin = 0; w.gait = 0; w.st = 'idle'; }
+    if (w.burn <= 0) {
+      w.burn = 0; w.roll = 0; w.tilt = 0; w.rspin = 0; w.rph = 0; w.gait = 0; w.st = 'idle';
+    }
   }
   if (w.burn > 0 || w.burnK > 0.002) {
     const t = w.burn > 0 ? 0.8 : 0;
@@ -3436,13 +3452,17 @@ function onUp(e) {
   if (hit.kind === 'block' || GROUND_TOOL[tool]) useTool(hit);
 }
 
-/* ── 鍵盤平移鏡頭 ─────────────────────────────────────────
-   用 e.code（實體鍵位）不是 e.key：非 QWERTY 的鍵盤排列也是同樣那四顆鍵的位置。 */
+/* ── 鍵盤平移／旋轉鏡頭 ─────────────────────────────────────────
+   用 e.code（實體鍵位）不是 e.key：非 QWERTY 的鍵盤排列也是同樣那幾顆鍵的位置。 */
 const PAN_KEY = { KeyW: [1, 0], KeyS: [-1, 0], KeyA: [0, -1], KeyD: [0, 1] };
+/* Q／E 轉視角。orbit 吃的是滑鼠的像素位移（yaw -= dx × 0.006），所以這裡給的是
+   「每秒相當於拖曳幾像素」——220 換算過來是 1.3 rad/s。E 對應「往右拖」，跟滑鼠同手感。 */
+const ORBIT_KEY = { KeyQ: -1, KeyE: 1 };
+const ORBIT_RATE = 220;
 const keyDown = Object.create(null);
 
 function onKey(e) {
-  if (!PAN_KEY[e.code]) return;
+  if (!PAN_KEY[e.code] && !ORBIT_KEY[e.code]) return;
   /* 只擋下拉選單：字母鍵在 select 上是拿來跳選項的。
      滑桿與核取方塊吃的是方向鍵與空白鍵，跟 WASD 不衝突，
      一起擋掉的話「剛拉完滑桿就按不動鏡頭」反而莫名其妙。 */
@@ -3454,6 +3474,9 @@ function clearKeys() { for (const k in keyDown) keyDown[k] = false; }
 
 /* 用真實時間推進，不吃時間倍率——開四倍速不該讓鏡頭也快四倍 */
 function panStep(dt) {
+  let r = 0;
+  for (const k in ORBIT_KEY) if (keyDown[k]) r += ORBIT_KEY[k];
+  if (r) ENG.orbit(r * ORBIT_RATE * dt, 0);
   let f = 0, s = 0;
   for (const k in PAN_KEY) if (keyDown[k]) { f += PAN_KEY[k][0]; s += PAN_KEY[k][1]; }
   if (!f && !s) return;
