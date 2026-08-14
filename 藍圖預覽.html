@@ -25,9 +25,10 @@
   .sub{font-size:12px;opacity:.62;margin-top:-4px}
   .r{display:flex;align-items:center;gap:8px}
   .r label{flex:0 0 44px;font-size:12px;opacity:.78}
-  .r .v{flex:0 0 50px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums}
-  select,input[type=range]{flex:1;min-width:0}
-  select{padding:5px 6px;border:1px solid var(--line);border-radius:8px;background:#fff;font:inherit}
+  .seg{display:flex;flex:1;gap:5px;min-width:0}
+  .seg button{flex:1;min-width:0;padding:5px 2px;font-size:12.5px;font-variant-numeric:tabular-nums}
+  .seg button.on{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
+  select{flex:1;min-width:0;padding:5px 6px;border:1px solid var(--line);border-radius:8px;background:#fff;font:inherit}
   .btns{display:flex;gap:7px}
   button{flex:1;padding:7px 10px;border:1px solid var(--line);border-radius:9px;
     background:#fff;font:inherit;cursor:pointer}
@@ -65,9 +66,8 @@
   <h1>藍圖預覽</h1>
   <div class="sub">看藍圖蓋起來的樣子，並產出貼得回去給 AI 的體檢報告</div>
   <div class="r"><label>藍圖</label><select id="shape"></select></div>
-  <div class="r"><label>建材</label>
-    <input id="cnt" type="range" min="300" max="10000" step="100" value="3000">
-    <span class="v" id="vCnt">3000</span></div>
+  <!-- 三檔按鈕，跟遊戲的設定面板同一組數字（e2e 有一條測試守著兩邊一致） -->
+  <div class="r"><label>建材</label><div class="seg" id="cnt"></div></div>
   <div class="btns">
     <button class="primary" id="go">重新產生</button>
     <button id="chk">🔍 檢查藍圖</button>
@@ -106,7 +106,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.44.2';
+const VIEWER_VER = '1.45.0';
 
 const $ = id => document.getElementById(id);
 
@@ -151,8 +151,26 @@ const HB = ENG.BS / 2;
 const ZERO = new THREE.Euler();
 let bp = null;
 
+/* 建材三檔：跟遊戲設定面板同一組數字。這一頁不載 game.js（那會把整個遊戲跑起來），
+   所以自己留一份，e2e 有一條測試守著它跟 game.js 的 CNT_OPTS 一致。 */
+const CNT_OPTS = [1800, 3000, 9000];
+let wantCnt = 3000;
+(function makeSeg() {
+  const box = $('cnt');
+  for (const v of CNT_OPTS) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.dataset.v = String(v); b.textContent = String(v);
+    b.addEventListener('click', () => { wantCnt = v; syncSeg(); build(); });
+    box.appendChild(b);
+  }
+})();
+function syncSeg() {
+  for (const b of $('cnt').children) b.classList.toggle('on', +b.dataset.v === wantCnt);
+}
+syncSeg();
+
 function build() {
-  const idx = +$('shape').value, want = +$('cnt').value;
+  const idx = +$('shape').value, want = wantCnt;
   const t0 = performance.now();
   try {
     bp = makeBlueprint(idx, want);
@@ -285,8 +303,6 @@ function copyReport() {
 
 /* ── 操作 ───────────────────────────────────────────────── */
 $('shape').addEventListener('change', () => { build(); $('rep').value = ''; });
-$('cnt').addEventListener('input', e => { $('vCnt').textContent = e.target.value; });
-$('cnt').addEventListener('change', build);
 $('go').addEventListener('click', build);
 $('chk').addEventListener('click', diagnose);
 /* 貼上 → 進清單 → 選起來 → 畫出來 → 順手把診斷也跑掉。

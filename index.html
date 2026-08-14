@@ -52,8 +52,11 @@
   #panel.hide{transform:translateY(calc(100% + 24px));opacity:0;pointer-events:none}
   #panel .r{display:flex;align-items:center;gap:8px;margin:9px 0}
   #panel label{flex:0 0 54px;font-size:12px;opacity:.78}
-  #panel .v{flex:0 0 46px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;opacity:.9}
-  input[type=range]{flex:1;accent-color:var(--accent);min-width:0}
+  /* 三檔按鈕：min-width:0 一定要給，不然按鈕的內容寬度會把整排撐爆 */
+  #panel .seg{display:flex;flex:1;gap:5px;min-width:0}
+  #panel .seg button{flex:1;min-width:0;padding:5px 2px;font-size:12.5px;
+    font-variant-numeric:tabular-nums}
+  #panel .seg button.on{background:var(--accent);border-color:transparent;color:#fff;font-weight:700}
   select,button{
     font:inherit;font-size:13px;color:var(--ink);background:#fff;
     border:1px solid var(--line);border-radius:9px;padding:6px 9px;cursor:pointer;
@@ -221,9 +224,11 @@
 <button id="panelBtn">⚙ 設定</button>
 <div class="card" id="panel">
   <select id="shape"></select>
-  <div class="r"><label>建材</label><input id="cnt" type="range" min="300" max="10000" step="100" value="3000"><span class="v" id="vCnt">3000</span></div>
-  <div class="r"><label>小人</label><input id="wk" type="range" min="1" max="60" step="1" value="20"><span class="v" id="vWk">20</span></div>
-  <div class="r"><label>速度</label><input id="spd" type="range" min="0.2" max="4" step="0.1" value="1"><span class="v" id="vSpd">1.0×</span></div>
+  <!-- 三檔按鈕，不是滑桿。按鈕是照 game.js 的 CNT_OPTS／WK_OPTS／SPD_OPTS 生出來的，
+       數字只寫在那邊一份，HTML 這裡只留空盒子，兩邊不會對不起來。 -->
+  <div class="r"><label>建材</label><div class="seg" id="cnt"></div></div>
+  <div class="r"><label>小人</label><div class="seg" id="wk"></div></div>
+  <div class="r"><label>速度</label><div class="seg" id="spd"></div></div>
   <div class="btns">
     <button class="primary" id="again">換一座來蓋</button>
     <button id="finish" title="跳過施工過程，直接把這一座蓋好（不算人力費）">⚡ 立刻建成</button>

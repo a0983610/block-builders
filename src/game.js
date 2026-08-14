@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.44.2';
+const VERSION = '1.45.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -35,13 +35,20 @@ let arenaR = 40;                    // 整片工地半徑（建材散落 + 碎�
 let phase = 'build';                // clear（整地）| build | done | wreck
 let buildStart = 0, buildElapsed = 0;
 let timeScale = 1;
-/* 建材數的上下限（跟 index.html 的滑桿一致）。上限開到 10000 是為了自訂藍圖的
-   「相似度」——一萬塊才刻得出招牌、窗框、屋脊那種細節。實測 10000 塊時每幀
-   step 0.20ms + draw 0.77ms（預算 4ms），拆到一半連鎖垮塌時平均 2.08ms、
-   最壞單幀 7.2ms（3000 塊時是 0.78／5.8ms）——用 60fps 的 16.7ms 看都還很寬。
+/* 面板上的三檔。做成按鈕不是滑桿：這三檔就是「小場地／標準／大場面」，
+   中間那些數字沒人特別要，滑桿反而每次都得對半天，手機上更難對。
+   這三個陣列是唯一的來源——index.html 只留空盒子，按鈕照這裡生（見 makeSeg）。
+
+   建材開到 9000 是為了自訂藍圖的「相似度」——上萬塊才刻得出招牌、窗框、屋脊那種細節。
+   實測 10000 塊時每幀 step 0.20ms + draw 0.77ms（預算 4ms），拆到一半連鎖垮塌時
+   平均 2.08ms、最壞單幀 7.2ms（3000 塊時是 0.78／5.8ms）——用 60fps 的 16.7ms 看都還很寬。
    內建那 48 座多半到自己的 hi 就停了（金門大橋 3347、巨石陣 3296），
-   真的長得到一萬的是金字塔、長城、城堡、聖家堂、吳哥窟這幾座。 */
-const CNT_MIN = 300, CNT_MAX = 10000;
+   真的長得到上萬的是金字塔、長城、城堡、聖家堂、吳哥窟這幾座。
+   （藍圖體檢仍然照 300／1600／3000／10000 四個目標量，那是藍圖的事，跟面板無關。） */
+const CNT_OPTS = [1800, 3000, 9000];
+const WK_OPTS = [20, 40, 60];
+const SPD_OPTS = [0.5, 1, 4];
+const CNT_MAX = CNT_OPTS[CNT_OPTS.length - 1];
 let targetCnt = 3000;
 let workerCnt = 20;
 let shapePick = -1;                 // -1 = 隨機
@@ -780,7 +787,7 @@ function setWorkerCount(n) {
 }
 /* 工地上派一個人當工程師：只看圖、只指揮，不搬積木。
    **只有兩個人以上才派**——剩一個人還去看圖的話，這座就永遠蓋不起來。
-   固定挑 0 號是為了讓他穩定：每次重挑的話，滑桿一動工程師就換人。 */
+   固定挑 0 號是為了讓他穩定：每次重挑的話，人數一改工程師就換人。 */
 function tagEngineer() {
   const on = workers.length >= 2;
   for (let i = 0; i < workers.length; i++) {
@@ -1586,20 +1593,23 @@ function load() {
     /* 沒有版本欄位＝預設建材還是 900 那個年代存的。那時候的 900 分不出是玩家挑的
        還是預設值，所以一次性換成新預設，不然改了預設的人永遠看不到 3000。 */
     if (o.p && o.p.v === undefined) g.cnt = freshPref().cnt;
-    // 數值一律夾回合法範圍，免得存檔壞掉時 slider 跑到界外
-    g.cnt = clamp(Math.round(g.cnt), 300, CNT_MAX);
-    g.wk = clamp(Math.round(g.wk), 1, ENG.MAXW);
-    g.spd = clamp(g.spd, 0.2, 4);
+    /* 面板改成三檔按鈕之後，中間值選不出來了：舊存檔（還有被改壞的存檔）
+       一律吸到最近的一檔。不吸的話畫面上會三顆都不亮，跑的卻是第四個數字。 */
+    g.cnt = snapOpt(g.cnt, CNT_OPTS);
+    g.wk = snapOpt(g.wk, WK_OPTS);
+    g.spd = snapOpt(g.spd, SPD_OPTS);
     pref = g;
   } catch (e) { savable = false; }
+}
+/* 數字吸到最近的一檔。壞掉的存檔（NaN、字串）當 0 處理，會吸到最小的那一檔 */
+function snapOpt(v, opts) {
+  const n = +v || 0;
+  return opts.reduce((a, b) => Math.abs(b - n) < Math.abs(a - n) ? b : a);
 }
 /* 把存回來的設定套進變數與面板 */
 function applyPref() {
   targetCnt = pref.cnt; timeScale = pref.spd; muted = pref.mute; spinOn = pref.spin;
   setWorkerCount(pref.wk);
-  $('cnt').value = String(pref.cnt);
-  $('wk').value = String(pref.wk);
-  $('spd').value = String(pref.spd);
   $('mute').checked = pref.mute;
   $('spin').checked = pref.spin;
   syncHud();
@@ -3686,8 +3696,8 @@ const keyDown = Object.create(null);
 function onKey(e) {
   if (!PAN_KEY[e.code] && !ORBIT_KEY[e.code]) return;
   /* 只擋下拉選單：字母鍵在 select 上是拿來跳選項的。
-     滑桿與核取方塊吃的是方向鍵與空白鍵，跟 WASD 不衝突，
-     一起擋掉的話「剛拉完滑桿就按不動鏡頭」反而莫名其妙。 */
+     面板的按鈕與核取方塊吃的是空白鍵／Enter，跟 WASD 不衝突，
+     一起擋掉的話「剛按完設定就按不動鏡頭」反而莫名其妙。 */
   if (e.target && e.target.tagName === 'SELECT') return;
   keyDown[e.code] = e.type === 'keydown';
 }
@@ -3737,12 +3747,34 @@ function hudTick(now) {
   // 已經蓋好或正在拆的時候沒什麼可以「立刻建成」，按鈕就灰掉
   $('finish').disabled = phase !== 'build' && phase !== 'clear';
 }
+/* ── 面板的三檔按鈕 ─────────────────────────────────────
+   一組按鈕就是一個設定。數字只寫在 CNT_OPTS／WK_OPTS／SPD_OPTS 那三個陣列裡，
+   按鈕照著生，所以 HTML 那邊不會有第二份數字跟程式對不起來。 */
+function makeSeg(id, opts, fmt, pick) {
+  const box = $(id);
+  box.innerHTML = '';
+  for (const v of opts) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.v = String(v);
+    b.textContent = fmt(v);
+    // audio()：第一次點任何東西才有資格開音訊（瀏覽器要求使用者手勢）
+    b.addEventListener('click', () => { audio(); pick(v); });
+    box.appendChild(b);
+  }
+}
+/* 亮起目前這一檔。值不在清單裡就三顆都不亮——那代表有人繞過面板直接改變數（測試會這樣做） */
+function syncSeg(id, v) {
+  for (const b of $(id).children) b.classList.toggle('on', +b.dataset.v === v);
+}
 function syncHud() {
   $('bname').textContent = bp ? bp.name : '';
   $('bcount').textContent = bp ? bp.slots.length + ' 塊' : '';
-  $('vCnt').textContent = targetCnt;
-  $('vWk').textContent = workerCnt;
-  $('vSpd').textContent = timeScale.toFixed(1) + '×';
+  /* 亮起來的那一顆就是目前的值——面板上沒有另外一個數字標籤了。
+     這裡不是只有點按鈕時才需要：測試與程式內部也會直接改 targetCnt／人數。 */
+  syncSeg('cnt', targetCnt);
+  syncSeg('wk', workerCnt);
+  syncSeg('spd', timeScale);
 }
 
 /* 工具選單：沒解鎖的畫成鎖住並寫出解鎖條件。
@@ -3821,13 +3853,11 @@ function boot() {
        .map(i => '<option value="' + i + '">' + SHAPES[i].n + '</option>').join('');
   sel.addEventListener('change', () => { shapePick = +sel.value; startBuild(false); });
 
-  /* 設定改動一律寫回 pref 並存檔——下次打開就不用重調 */
-  $('cnt').addEventListener('input', e => { targetCnt = pref.cnt = +e.target.value; $('vCnt').textContent = targetCnt; });
-  $('cnt').addEventListener('change', () => { save(); startBuild(false); });
-  $('wk').addEventListener('input', e => { setWorkerCount(+e.target.value); pref.wk = workerCnt; $('vWk').textContent = workerCnt; });
-  $('wk').addEventListener('change', save);
-  $('spd').addEventListener('input', e => { timeScale = pref.spd = +e.target.value; $('vSpd').textContent = timeScale.toFixed(1) + '×'; });
-  $('spd').addEventListener('change', save);
+  /* 設定改動一律寫回 pref 並存檔——下次打開就不用重調。
+     建材改了要重蓋（那是「下一座蓋多大」），小人與速度是當下就生效，不必打斷這一座。 */
+  makeSeg('cnt', CNT_OPTS, v => v, v => { targetCnt = pref.cnt = v; save(); startBuild(false); });
+  makeSeg('wk', WK_OPTS, v => v, v => { setWorkerCount(v); pref.wk = workerCnt; syncHud(); save(); });
+  makeSeg('spd', SPD_OPTS, v => v + '×', v => { timeScale = pref.spd = v; syncHud(); save(); });
   $('again').addEventListener('click', () => { audio(); startBuild(false); });
   /* 立刻建成：不想等小人搬完時用。走的是開場那條 completeNow()，
      所以人力費一毛都不加（stats.spent 只在 step() 裡隨施工時間累積），

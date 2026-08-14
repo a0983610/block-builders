@@ -76,8 +76,10 @@ async function reset(page, o = {}) {
        Playwright 會看到「已經勾了」而不觸發 change，測到的就不是真的 UI 行為 */
     document.getElementById('spin').checked = false;
     document.getElementById('mute').checked = true;
-    if (o.cnt != null) { targetCnt = o.cnt; document.getElementById('cnt').value = String(o.cnt); }
-    if (o.workers != null) { setWorkerCount(o.workers); document.getElementById('wk').value = String(o.workers); }
+    /* 建材與人數直接改變數就好：面板現在是三檔按鈕，測試要的值多半不在那三檔裡
+       （亮不亮是 syncHud 的事，startBuild 會叫到）。 */
+    if (o.cnt != null) targetCnt = o.cnt;
+    if (o.workers != null) setWorkerCount(o.workers);
     timeScale = o.scale != null ? o.scale : 1;
     shapePick = o.shape ? SHAPES.findIndex(s => s.n === o.shape) : (o.shapeIdx != null ? o.shapeIdx : -1);
     document.getElementById('shape').value = String(shapePick);
@@ -207,29 +209,46 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('積木池已建立', boot.blocks > 100, boot.blocks + ' 塊');
   ok('小人已就位', boot.workers > 0, boot.workers + ' 人');
 
-  /* 預設建材數：程式變數、freshPref、slider、標籤四個地方要一致，
-     不然開場那座跟面板上寫的數字會對不起來 */
-  const defCnt = await page.evaluate(() => ({
-    target: targetCnt, fresh: freshPref().cnt,
-    slider: document.getElementById('cnt').value,
-    label: document.getElementById('vCnt').textContent,
-    max: document.getElementById('cnt').max,
-    min: document.getElementById('cnt').min,
-    cntMax: CNT_MAX, maxb: ENG.MAXB
-  }));
-  ok('預設建材 3000 塊', defCnt.target === 3000 && defCnt.fresh === 3000 &&
-     defCnt.slider === '3000' && defCnt.label === '3000',
-     'targetCnt=' + defCnt.target + '、freshPref=' + defCnt.fresh +
-     '、slider=' + defCnt.slider + '（上限 ' + defCnt.max + '）、標籤 ' + defCnt.label);
+  /* 面板的三檔按鈕：數字只寫在 CNT_OPTS／WK_OPTS／SPD_OPTS，按鈕照著生。
+     這裡驗「畫面上長出來的就是那三個數字」，順便驗預設值那顆有亮起來。 */
+  const seg = await page.evaluate(() => {
+    const read = id => [...document.getElementById(id).children]
+      .map(b => ({ v: b.dataset.v, txt: b.textContent, on: b.classList.contains('on') }));
+    return {
+      cnt: read('cnt'), wk: read('wk'), spd: read('spd'),
+      opts: { cnt: CNT_OPTS, wk: WK_OPTS, spd: SPD_OPTS },
+      target: targetCnt, workers: workerCnt, scale: timeScale,
+      fresh: freshPref(), cntMax: CNT_MAX, maxb: ENG.MAXB
+    };
+  });
+  const segVals = g => g.map(b => +b.v);
+  const segOn = g => g.filter(b => b.on).map(b => +b.v);
+  ok('三組設定都是三檔按鈕，數字跟程式裡的清單一致',
+     String(segVals(seg.cnt)) === String(seg.opts.cnt) &&
+     String(segVals(seg.wk)) === String(seg.opts.wk) &&
+     String(segVals(seg.spd)) === String(seg.opts.spd) &&
+     seg.spd.map(b => b.txt).join('/') === '0.5×/1×/4×',
+     '建材 ' + segVals(seg.cnt) + '、小人 ' + segVals(seg.wk) +
+     '、速度 ' + seg.spd.map(b => b.txt).join('／'));
+  ok('每組只有一顆亮著，亮的就是目前的值',
+     String(segOn(seg.cnt)) === String([seg.target]) &&
+     String(segOn(seg.wk)) === String([seg.workers]) &&
+     String(segOn(seg.spd)) === String([seg.scale]),
+     '亮的是 建材 ' + segOn(seg.cnt) + '、小人 ' + segOn(seg.wk) + '、速度 ' + segOn(seg.spd));
+  ok('預設是 3000 塊 / 20 人 / 1×',
+     seg.target === 3000 && seg.fresh.cnt === 3000 &&
+     seg.workers === 20 && seg.fresh.wk === 20 &&
+     seg.scale === 1 && seg.fresh.spd === 1,
+     'targetCnt=' + seg.target + '、freshPref=' + JSON.stringify(seg.fresh));
   ok('開場那座就真的是 3000 塊上下', Math.abs(boot.total - 3000) / 3000 < 0.05,
      boot.bp + ' ' + boot.total + ' 塊');
-  /* 建材上限開到 10000（自訂藍圖要靠一萬塊才刻得出招牌、窗框那種細節）。
+  /* 最大那一檔 9000（自訂藍圖要靠上萬塊才刻得出招牌、窗框那種細節）。
      積木池必須比它更高：fitScale 挑的是「最接近目標」的那一階，可能落在目標之上
-     ——實測吉薩金字塔要 10000 時給出 10660（+7%）。池子不夠就會夾掉尾巴，那座永遠蓋不完。 */
-  ok('建材滑桿 300–10000，積木池留了超額餘裕',
-     defCnt.min === '300' && defCnt.max === '10000' && defCnt.cntMax === 10000 &&
-     defCnt.maxb >= 11000,
-     '滑桿 ' + defCnt.min + '–' + defCnt.max + '、積木池 ' + defCnt.maxb);
+     ——實測吉薩金字塔要 10000 時給出 10660（+7%）。池子不夠就會夾掉尾巴，那座永遠蓋不完。
+     池子留到 11500 是照 10000 抓的：藍圖體檢仍然量到 10000，留著才不用跟著面板改來改去。 */
+  ok('最大一檔 9000，積木池留了超額餘裕',
+     seg.cntMax === 9000 && seg.maxb >= 11000,
+     '最大 ' + seg.cntMax + '、積木池 ' + seg.maxb);
   const bigBuild = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = CNT_MAX; startBuild(true); completeNow();
@@ -237,7 +256,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = 3000; shapePick = -1; startBuild(true); completeNow();
     return r;
   });
-  ok('一萬塊那一階蓋得完（積木池沒有夾掉尾巴）',
+  ok('最大那一檔蓋得完（積木池沒有夾掉尾巴）',
      bigBuild.pool === bigBuild.slots && bigBuild.placed === bigBuild.slots &&
      bigBuild.phase === 'done',
      '吉薩金字塔 ' + bigBuild.slots + ' 格 → 池子 ' + bigBuild.pool + '、擺上 ' +
@@ -744,16 +763,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const sel = document.getElementById('shape');
     sel.value = String(SHAPES.findIndex(s => s.n === '吉薩金字塔'));
     sel.dispatchEvent(new Event('change'));
-    document.getElementById('cnt').value = '10000';
+    const btns = [...document.getElementById('cnt').children];
     const t0 = performance.now();
-    document.getElementById('go').click();
-    return { ms: Math.round(performance.now() - t0), blocks: bp.slots.length,
-             drawn: ENG.three.blockMesh.count, maxb: ENG.MAXB };
+    btns[btns.length - 1].click();                   // 最大那一檔
+    return { ms: Math.round(performance.now() - t0), want: wantCnt, blocks: bp.slots.length,
+             drawn: ENG.three.blockMesh.count, maxb: ENG.MAXB,
+             opts: btns.map(b => +b.dataset.v), on: btns.filter(b => b.classList.contains('on')).length };
   });
-  ok('預覽頁一萬塊也畫得完（沒有被積木池夾掉）',
-     vpBig.blocks > 10000 && vpBig.drawn === vpBig.blocks && vpBig.blocks <= vpBig.maxb,
-     '吉薩金字塔要 10000 → ' + vpBig.blocks + ' 塊全上場（池子 ' + vpBig.maxb +
+  ok('預覽頁最大那一檔也畫得完（沒有被積木池夾掉）',
+     vpBig.want === 9000 && vpBig.blocks > 8500 && vpBig.drawn === vpBig.blocks &&
+     vpBig.blocks <= vpBig.maxb && vpBig.on === 1,
+     '吉薩金字塔要 ' + vpBig.want + ' → ' + vpBig.blocks + ' 塊全上場（池子 ' + vpBig.maxb +
      '），產生 ' + vpBig.ms + 'ms');
+  // 兩頁的建材檔位要一樣：預覽頁不載 game.js，所以那三個數字是各留一份的
+  const vpOpts = await vp.evaluate(() => CNT_OPTS);
+  const gameOpts = await page.evaluate(() => CNT_OPTS);
+  ok('預覽頁的建材三檔跟遊戲一致', String(vpOpts) === String(gameOpts),
+     '預覽頁 ' + vpOpts + '、遊戲 ' + gameOpts);
 
   await vp.click('#chk');
   await vp.waitForTimeout(200);
@@ -4657,49 +4683,53 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      unlockedAfterReload === 'open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
-  /* 設定也要一起存——不然每次打開都要重調建材數與小人數 */
+  /* 設定也要一起存——不然每次打開都要重調建材數與小人數。
+     一律用「點按鈕」而不是直接改變數：要測的就是面板真的接上去了。 */
   const prefSaved = await page.evaluate(() => {
-    document.getElementById('cnt').value = '1700';
-    document.getElementById('cnt').dispatchEvent(new Event('input', { bubbles: true }));
-    document.getElementById('cnt').dispatchEvent(new Event('change', { bubbles: true }));
-    document.getElementById('wk').value = '37';
-    document.getElementById('wk').dispatchEvent(new Event('input', { bubbles: true }));
-    document.getElementById('wk').dispatchEvent(new Event('change', { bubbles: true }));
-    document.getElementById('spd').value = '2.5';
-    document.getElementById('spd').dispatchEvent(new Event('input', { bubbles: true }));
-    document.getElementById('spd').dispatchEvent(new Event('change', { bubbles: true }));
+    const hit = (id, v) => [...document.getElementById(id).children]
+      .find(b => +b.dataset.v === v).click();
+    hit('cnt', 1800); hit('wk', 40); hit('spd', 0.5);
     document.getElementById('mute').checked = true;
     document.getElementById('mute').dispatchEvent(new Event('change', { bubbles: true }));
     return { pref: JSON.parse(JSON.stringify(pref)) };
   });
-  ok('改設定會寫進 pref', prefSaved.pref.cnt === 1700 && prefSaved.pref.wk === 37 &&
-     prefSaved.pref.spd === 2.5 && prefSaved.pref.mute === true, JSON.stringify(prefSaved.pref));
+  ok('改設定會寫進 pref', prefSaved.pref.cnt === 1800 && prefSaved.pref.wk === 40 &&
+     prefSaved.pref.spd === 0.5 && prefSaved.pref.mute === true, JSON.stringify(prefSaved.pref));
 
   await page.reload();
   await page.waitForTimeout(900);
-  const prefBack = await page.evaluate(() => ({
-    cnt: targetCnt, wk: workers.length, spd: timeScale, mute: muted,
-    domCnt: document.getElementById('cnt').value,
-    domWk: document.getElementById('wk').value,
-    domSpd: document.getElementById('spd').value,
-    domMute: document.getElementById('mute').checked,
-    label: document.getElementById('vCnt').textContent + '/' + document.getElementById('vWk').textContent
-  }));
+  const prefBack = await page.evaluate(() => {
+    const on = id => [...document.getElementById(id).children]
+      .filter(b => b.classList.contains('on')).map(b => +b.dataset.v);
+    return {
+      cnt: targetCnt, wk: workers.length, spd: timeScale, mute: muted,
+      onCnt: on('cnt'), onWk: on('wk'), onSpd: on('spd'),
+      domMute: document.getElementById('mute').checked
+    };
+  });
   ok('重開後設定自動套用（不用每次重調）',
-     prefBack.cnt === 1700 && prefBack.wk === 37 && Math.abs(prefBack.spd - 2.5) < 0.01 && prefBack.mute === true,
+     prefBack.cnt === 1800 && prefBack.wk === 40 && Math.abs(prefBack.spd - 0.5) < 0.01 && prefBack.mute === true,
      '建材 ' + prefBack.cnt + '、小人 ' + prefBack.wk + '、速度 ' + prefBack.spd + '、靜音 ' + prefBack.mute);
-  ok('面板上的滑桿也跟著回到存的值',
-     prefBack.domCnt === '1700' && prefBack.domWk === '37' && prefBack.domSpd === '2.5' && prefBack.domMute,
-     'slider=' + prefBack.domCnt + '/' + prefBack.domWk + '/' + prefBack.domSpd + '，標籤 ' + prefBack.label);
+  ok('面板上亮的那一顆也跟著回到存的值',
+     String(prefBack.onCnt) === '1800' && String(prefBack.onWk) === '40' &&
+     String(prefBack.onSpd) === '0.5' && prefBack.domMute,
+     '亮的是 ' + prefBack.onCnt + '/' + prefBack.onWk + '/' + prefBack.onSpd);
 
+  /* 面板只剩三檔，中間值選不出來了：存檔裡不是那三檔的值一律吸到最近的一檔
+     （壞掉的存檔也一樣，不然畫面上會三顆都不亮、跑的卻是第四個數字）。 */
   const prefClamp = await page.evaluate(() => {
     pref.cnt = 99999; pref.wk = -5; pref.spd = 900; save();
     stats = freshStats(); pref = freshPref(); load();
-    return JSON.parse(JSON.stringify(pref));
+    const a = JSON.parse(JSON.stringify(pref));
+    pref.cnt = 2600; pref.wk = 33; pref.spd = 2.4; save();       // 剛好落在兩檔中間附近
+    stats = freshStats(); pref = freshPref(); load();
+    return { a, b: JSON.parse(JSON.stringify(pref)) };
   });
-  ok('存檔裡的設定超出範圍會被夾回來',
-     prefClamp.cnt === 10000 && prefClamp.wk >= 1 && prefClamp.spd <= 4,
-     JSON.stringify(prefClamp) + '（建材上限 10000）');
+  ok('存檔裡的設定會吸到最近的一檔',
+     prefClamp.a.cnt === 9000 && prefClamp.a.wk === 20 && prefClamp.a.spd === 4 &&
+     prefClamp.b.cnt === 3000 && prefClamp.b.wk === 40 && prefClamp.b.spd === 1,
+     '99999/-5/900 → ' + prefClamp.a.cnt + '/' + prefClamp.a.wk + '/' + prefClamp.a.spd +
+     '；2600/33/2.4 → ' + prefClamp.b.cnt + '/' + prefClamp.b.wk + '/' + prefClamp.b.spd);
 
   /* 預設建材從 900 改成 3000 那次：舊存檔裡的 900 分不出是玩家挑的還是舊預設，
      所以認「沒有 v 欄位」的存檔，一次性換成新預設。存過一次之後就不再動它。 */
@@ -4708,14 +4738,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       packSave({ s: freshStats(), p: { cnt: 900, wk: 20, spd: 1, mute: false, spin: false } }));
     stats = freshStats(); pref = freshPref(); load();
     const migrated = pref.cnt;
-    pref.cnt = 900; save();                     // 這次是玩家自己選的 900
+    pref.cnt = 900; save();                     // 這次是「存過一次之後」的 900
     stats = freshStats(); pref = freshPref(); load();
     return { migrated, keep: pref.cnt, v: pref.v };
   });
+  /* 沒有 v 欄位的舊存檔換成新預設 3000；存過一次之後就不再套那條規則——
+     所以第二次那個 900 走的是吸附（→ 1800），而不是又被換成預設值。 */
   ok('舊存檔的建材數換成新預設，而且只換一次',
-     prefMigrate.migrated === 3000 && prefMigrate.keep === 900 && prefMigrate.v === 1,
-     '舊存檔 900 → ' + prefMigrate.migrated + '；之後自己選 900 → ' + prefMigrate.keep +
-     '（存檔版本 v' + prefMigrate.v + '）');
+     prefMigrate.migrated === 3000 && prefMigrate.keep === 1800 && prefMigrate.v === 1,
+     '舊存檔 900 → ' + prefMigrate.migrated + '；存過一次之後的 900 → ' + prefMigrate.keep +
+     '（吸到最近的一檔，不是預設值 3000；存檔版本 v' + prefMigrate.v + '）');
 
   const cleared = await page.evaluate(() => {
     resetSave();
@@ -4732,29 +4764,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.waitForTimeout(400);
   ok('藍圖下拉可以指定建築', (await st(page)).name === '倫敦眼摩天輪', (await st(page)).name);
 
-  await page.evaluate(() => {
-    const el = document.getElementById('cnt');
-    el.value = '2000';
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  /* 三檔按鈕：點下去要真的生效。用真的 click，才連 listener 有沒有接上都一起測到。 */
+  const hitSeg = (id, v) => page.evaluate(([id, v]) =>
+    [...document.getElementById(id).children].find(b => +b.dataset.v === v).click(), [id, v]);
+  await hitSeg('cnt', 1800);
   await page.waitForTimeout(500);
   const cntS = await st(page);
-  ok('建材 slider 會改變積木數', cntS.target === 2000 && cntS.total > 1300,
+  ok('建材按鈕會改變積木數', cntS.target === 1800 && cntS.total > 1200,
      '目標 ' + cntS.target + '，實得 ' + cntS.total + ' 塊');
   ok('積木池跟著藍圖走', Math.abs(cntS.pool - cntS.total) <= 2, cntS.pool + ' vs ' + cntS.total);
 
-  await page.evaluate(() => {
-    const el = document.getElementById('wk');
-    el.value = '35'; el.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  ok('小人 slider 會改變人數', (await st(page)).workers === 35);
+  await hitSeg('wk', 60);
+  ok('小人按鈕會改變人數', (await st(page)).workers === 60, (await st(page)).workers + ' 人');
 
-  await page.evaluate(() => {
-    const el = document.getElementById('spd');
-    el.value = '2.5'; el.dispatchEvent(new Event('input', { bubbles: true }));
+  await hitSeg('spd', 4);
+  ok('速度按鈕會改變時間倍率', Math.abs((await st(page)).scale - 4) < 0.01);
+  // 點過之後亮的那一顆要換過去（面板上沒有別的地方寫著現在是哪一檔）
+  const segAfter = await page.evaluate(() => {
+    const on = id => [...document.getElementById(id).children]
+      .filter(b => b.classList.contains('on')).map(b => +b.dataset.v);
+    return { cnt: on('cnt'), wk: on('wk'), spd: on('spd') };
   });
-  ok('速度 slider 會改變時間倍率', Math.abs((await st(page)).scale - 2.5) < 0.01);
+  ok('點過的那一顆會亮起來，而且只有一顆',
+     String(segAfter.cnt) === '1800' && String(segAfter.wk) === '60' && String(segAfter.spd) === '4',
+     '亮的是 ' + segAfter.cnt + '/' + segAfter.wk + '/' + segAfter.spd);
+  await hitSeg('wk', 20);            // 後面的測試照 20 人算，改回來
+  await hitSeg('spd', 1);
 
   /* timeScale 是在 frame() 裡乘進 dt 的，直接呼叫 step(0.05) 會繞過倍率，
      所以一定要走真正的 rAF 迴圈。但「同樣秒數蓋幾塊」在軟體算圖下幀率太低會測不準，
