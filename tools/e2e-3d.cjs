@@ -1723,6 +1723,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '最密的一格 ' + dozeHeap.before + ' → ' + dozeHeap.after + ' 塊（' +
      dozeHeap.secs + ' 秒）');
 
+  /* 整地不碰鏡頭。使用者回報「出現推土機好像會把鏡頭拉遠」，查下來整地這條路上沒有任何運鏡：
+     看到的是前一發核彈／魔法退開之後就停在那裡（只退不收），推土機進場時鏡頭還在那個位置。
+     這條守住「整地本身不動鏡頭」，以後有人往這裡塞運鏡會被擋下來。 */
+  const dozeCam = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 1200; startBuild(true); completeNow();
+    for (const b of blocks) { if (b.st === 3) freeBlock(b); }
+    for (let i = 0; i < 120; i++) step(0.05);
+    const d0 = ENG.camTarget.dist, ty0 = ENG.camTarget.ty;
+    startClear();
+    let g = 0, dMax = d0, dMin = d0, tyMax = ty0;
+    while (phase === 'clear' && g++ < 900) {
+      step(0.05);
+      dMax = Math.max(dMax, ENG.camTarget.dist); dMin = Math.min(dMin, ENG.camTarget.dist);
+      tyMax = Math.max(tyMax, ENG.camTarget.ty);
+    }
+    return { d0: +d0.toFixed(2), dMax: +dMax.toFixed(2), dMin: +dMin.toFixed(2),
+             ty0: +ty0.toFixed(2), tyMax: +tyMax.toFixed(2), secs: +(g * 0.05).toFixed(1) };
+  });
+  ok('整地期間鏡頭完全不動',
+     dozeCam.dMax === dozeCam.d0 && dozeCam.dMin === dozeCam.d0 && dozeCam.tyMax === dozeCam.ty0,
+     '整地 ' + dozeCam.secs + ' 秒，視距一路都是 ' + dozeCam.d0 + '、視線高度 ' + dozeCam.ty0);
+
   /* 大工地：機器慢慢開，不可能在時限內清光——重點是它不會沒完沒了，收尾照樣把地清乾淨 */
   const dozeBig = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '金門大橋');
@@ -2684,8 +2707,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('收掉之後畫面成本回到原點', twCalls.after === twCalls.idle, twCalls.after + ' 個');
 
   /* 漏斗拉高到 34 之後會頂出畫面上緣（矮建築取景近，改之前量到 NDC 1.45）。
-     跟蘑菇雲同一套：鏡頭退開，而且退開之後就停在那裡不收回來。 */
+     跟蘑菇雲同一套：鏡頭退到這個效果進得了畫面的距離，而且退開之後就停在那裡不收回來。 */
   const twFrame = await page.evaluate(() => {
+    /* 「這一發要退到多遠」直接問 holdWide：把視距壓到最近再問一次，答案就是它要的距離。
+       這樣測試不必自己複製一份公式；下面的 startBuild(true) 會照建築重新取景，把這裡動過的蓋掉。 */
+    ENG.camTarget.dist = 6; ENG.camTarget.ty = 0; ENG.holdWide(TW_H, TW_R);
+    const need = ENG.camTarget.dist;
     shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
     targetCnt = 1200; startBuild(true); completeNow();
     // startBuild(true) 走的是開場那條，會立刻照這座重新取景，量到的就是「原本的取景」
@@ -2698,11 +2725,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 龍捲風散掉、換場都做完之後再量一次：鏡頭不該自己跑回去
     for (let i = 0; i < (TW_LIFE + 4) * 50; i++) step(0.02);
     const back = ENG.camTarget.dist;
-    return { nat: +nat.toFixed(1), wide: +wide.toFixed(1), top: +top.toFixed(2),
-             back: +back.toFixed(1) };
+    return { nat: +nat.toFixed(1), need: +need.toFixed(1), wide: +wide.toFixed(1),
+             top: +top.toFixed(2), back: +back.toFixed(1) };
   });
-  ok('龍捲風期間鏡頭會退開，漏斗頂留在畫面內', twFrame.wide > twFrame.nat * 1.15 && twFrame.top < 1,
+  ok('龍捲風期間漏斗頂留在畫面內', twFrame.top < 0.95 && twFrame.top > -1,
      '取景 ' + twFrame.nat + ' → ' + twFrame.wide + '，漏斗頂 NDC ' + twFrame.top);
+  /* 「退到看得完整」與「退過頭」是兩件事：距離取的是「原本的取景」與「這一發要的」之中的大者，
+     本來就夠遠就不該再往後推（矮建築才會真的退）。差 1.5 是 cam.dist 追 camTarget 的殘差。 */
+  ok('鏡頭只退到看得完整那麼遠，不會多退一截',
+     Math.abs(twFrame.wide - Math.max(twFrame.nat, twFrame.need)) < 1.5,
+     '取景 ' + twFrame.nat + '、龍捲風要 ' + twFrame.need + ' → 實際 ' + twFrame.wide);
   ok('龍捲風結束後鏡頭停在退開的位置', twFrame.back >= twFrame.wide - 1,
      twFrame.nat + ' → ' + twFrame.wide + '，七秒後仍是 ' + twFrame.back);
 
@@ -2936,6 +2968,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const fw = await page.evaluate(() => {
     completeNow();
     clearFires();
+    // 這一場齊射「要」退到多遠：把視距壓到最近問一次 holdWide 就知道（測試不自己複製公式）
+    const d1 = ENG.camTarget.dist, ty1 = ENG.camTarget.ty;
+    ENG.camTarget.dist = 6; ENG.camTarget.ty = 0; ENG.holdWide(FW_HOLD_TOP, FW_HOLD_R);
+    const need = ENG.camTarget.dist;
+    ENG.camTarget.dist = d1; ENG.camTarget.ty = ty1;
     const set0 = placedCnt, d0 = ENG.camTarget.dist;
     launchFw({ x: 0, z: 0 });
     const dist = ENG.camTarget.dist;
@@ -2989,7 +3026,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              burstY: +burstY.toFixed(1), ndc,
              seeds: pts.length, each: shots.map(s => s.pts.length), spread: +spread.toFixed(1),
              phase, d0: +d0.toFixed(0), dist: +dist.toFixed(0), fall: +shots[0].fall.toFixed(2),
-             hold: +FW_HOLD.toFixed(0), shot: FW_SHOT };
+             hold: +need.toFixed(0), shot: FW_SHOT };
   });
   ok('煙火會從地面竄上天再炸開',
      fw.top > 30 && fw.rise > 0.8 && fw.rise < 2.5 && fw.sparks > 120,
@@ -3001,9 +3038,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fw.all > fw.rise && fw.all < 3.2,
      fw.shells + ' 發，炸開高度 ' + fw.tops.join('／') + '，全部炸完花 ' + fw.all + ' 秒');
   /* 不退鏡頭的話整發都在畫面外（量過：貼著城堡的取景，火星的 NDC y 是 1.5，1 就出界了）。
-     這裡驗兩件事：視距有被拉到煙火要的那個距離、火星確實落在畫面內。 */
-  ok('炸開的高度框得進畫面（施放時鏡頭會退開）',
-     fw.dist >= fw.hold && fw.ndc < 0.95 && fw.ndc > -1,
+     這裡驗兩件事：視距剛好是「原本取景」與「這場齊射要的」之中的大者（不多退）、
+     火星確實落在畫面內。 */
+  ok('炸開的高度框得進畫面，而且不會退過頭',
+     fw.dist === Math.max(fw.d0, fw.hold) && fw.ndc < 0.95 && fw.ndc > -1,
      '視距 ' + fw.d0 + ' → ' + fw.dist + '（煙火要 ' + fw.hold + '），火星 NDC y=' + fw.ndc);
   ok('炸開那一刻一塊積木都沒掉', fw.setAtBurst === fw.set0,
      fw.set0 + ' → ' + fw.setAtBurst + ' 塊（它是灑火種，不是爆炸）');
@@ -3976,23 +4014,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       targetCnt = 800; startBuild(true); completeNow();
       for (let i = 0; i < 200; i++) step(0.05);        // 讓剛蓋好的這座沉澱一下
       const d0 = ENG.cam.dist;                         // startBuild(true) 已經照這座重新取景
+      // 這一陣「要」退到多遠：問一次 holdWide，問完把鏡頭放回去（測試不自己複製公式）
+      const ty0 = ENG.camTarget.ty;
+      ENG.camTarget.dist = 6; ENG.camTarget.ty = 0; ENG.holdWide(MAG_TOP, MAG_WIDE);
+      const need = ENG.camTarget.dist;
+      ENG.camTarget.dist = d0; ENG.camTarget.ty = ty0;
       castMagic({ x: 0, z: 0 });
       for (let i = 0; i < 100; i++) step(0.05);        // 5 秒：六層都在
       const top = Math.max(...magic.rings.map(o => o.y));
       const wide = magic.rings.reduce((s, o) => Math.max(s, o.r), 0);
       const v = new THREE.Vector3(wide, top, 0).project(ENG.three.camera);
-      return { d0: +d0.toFixed(0), dist: +ENG.cam.dist.toFixed(0),
+      return { d0: +d0.toFixed(0), need: +need.toFixed(0), dist: +ENG.cam.dist.toFixed(0),
                top: +top.toFixed(1), ndc: +v.y.toFixed(2) };
     };
     const r = { pyramid: one('吉薩金字塔'), castle: one('中世紀城堡') };
     shapePick = -1;
     return r;
   });
-  ok('施法時鏡頭會退開，整疊才進得了畫面',
-     mgCam.pyramid.dist > mgCam.pyramid.d0 * 1.2 &&
+  /* 矮建築（金字塔取景很近）要退才裝得下整疊；城堡本來就退得夠遠，就不該再多退一截。
+     兩座都驗頂端沒被切掉——那才是運鏡真正要保證的事。 */
+  ok('施法時鏡頭退到整疊進得了畫面，而且不會退過頭',
+     Math.abs(mgCam.pyramid.dist - Math.max(mgCam.pyramid.d0, mgCam.pyramid.need)) <= 1 &&
+     Math.abs(mgCam.castle.dist - Math.max(mgCam.castle.d0, mgCam.castle.need)) <= 1 &&
      mgCam.pyramid.ndc < 0.95 && mgCam.castle.ndc < 0.95,
      '吉薩金字塔視距 ' + mgCam.pyramid.d0 + ' → ' + mgCam.pyramid.dist +
-     '，頂端 NDC ' + mgCam.pyramid.ndc + '／城堡 ' + mgCam.castle.ndc);
+     '（陣要 ' + mgCam.pyramid.need + '），頂端 NDC ' + mgCam.pyramid.ndc +
+     '／城堡 ' + mgCam.castle.d0 + ' → ' + mgCam.castle.dist + '，NDC ' + mgCam.castle.ndc);
 
   /* 衝擊波是球狀的，而且越靠近炸心抬得越高——積木要沿拋物線拋上去再落下，
      不是貼著地面掃出去。只量「有沒有飛出去」的話，兩種都會過。 */
@@ -4080,7 +4127,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
     // startBuild(true) 會照這座重新取景，量到的 d0 就是「沒退開」的基準
     targetCnt = 900; startBuild(true); completeNow();
-    const d0 = ENG.camTarget.dist;
+    const d0 = ENG.camTarget.dist, ty0 = ENG.camTarget.ty;
+    // 這朵雲「要」退到多遠：問一次 holdWide，問完把鏡頭放回去（測試不自己複製公式）
+    ENG.camTarget.dist = 6; ENG.camTarget.ty = 0; ENG.holdWide(NUKE_R * 1.3, NUKE_R * 0.55);
+    const need = ENG.camTarget.dist;
+    ENG.camTarget.dist = d0; ENG.camTarget.ty = ty0;
     callNuke({ x: 0, z: 0 });
     for (let i = 0; i < 58; i++) step(0.05);        // 引爆
     const wide = ENG.camTarget.dist, ty = ENG.camTarget.ty;
@@ -4093,12 +4144,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 58; i++) step(0.05);
     const again = ENG.camTarget.dist;
     shapePick = -1;
-    return { d0, wide, ty, hold, back, again };
+    return { d0, need, wide, ty, hold, back, again };
   });
   ok('核彈引爆時鏡頭會退開，整朵雲才進得了畫面',
-     camFx.wide > camFx.d0 * 1.3 && camFx.hold === camFx.wide,
+     camFx.wide > camFx.d0 && camFx.hold === camFx.wide,
      '視距 ' + camFx.d0.toFixed(0) + ' → ' + camFx.wide.toFixed(0) +
      '（視線高度 ' + camFx.ty.toFixed(0) + '），三秒後仍維持');
+  /* 退開的距離是照雲的尺寸算的，不是隨便乘一個倍率：多退一截等於把玩家的鏡頭多搶走一截 */
+  ok('只退到整朵雲進得了畫面那麼遠', Math.abs(camFx.wide - Math.max(camFx.d0, camFx.need)) < 0.01,
+     '雲要 ' + camFx.need.toFixed(0) + '、原本取景 ' + camFx.d0.toFixed(0) +
+     ' → 退到 ' + camFx.wide.toFixed(0));
   ok('退開之後不會自己收回來', camFx.back === camFx.wide,
      '八秒後（含換場）仍是 ' + camFx.back.toFixed(0) + '（原本 ' + camFx.d0.toFixed(0) + '）');
   ok('連炸第二發不會再退得更遠', camFx.again === camFx.wide,
@@ -4862,6 +4917,39 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const zoomIn = await page.evaluate(() => ENG.camTarget.dist);
   ok('滾輪可以縮放', zoomOut > camBefore.dist && zoomIn < zoomOut,
      camBefore.dist.toFixed(1) + ' → ' + zoomOut.toFixed(1) + ' → ' + zoomIn.toFixed(1));
+
+  /* 震動是固定的世界座標位移，畫面上晃多少全看視距：同樣的一發，視距 10 時鏡頭偏 22°、
+     視距 66 只有 3.6°——貼著建築看的時候會晃到看不清楚。所以近距離不震，遠了才是全額。
+     量的是「同一發震動造成的鏡頭位移」：把 cam 與 camTarget 對齊，lerp 就不會動，
+     位移就只剩震動那一份。 */
+  const shakeAt = await page.evaluate(() => {
+    const cam = ENG.cam, ct = ENG.camTarget, C = ENG.three.camera;
+    const at = dist => {
+      ct.dist = cam.dist = dist; ct.ty = cam.ty = 6; ct.tx = cam.tx = ct.tz = cam.tz = 0;
+      cam.shake = 0; ENG.updateCamera(0.016);
+      const base = C.position.clone();
+      cam.shakeT = 0;
+      let mx = 0;
+      for (let i = 0; i < 8; i++) {                  // 8 幀約半個週期，抓得到峰值
+        cam.shake = 2.6;                             // 每幀補回來：比的是同一發在不同視距的差
+        ENG.updateCamera(0.016);
+        mx = Math.max(mx, C.position.distanceTo(base));
+      }
+      cam.shake = 0; ENG.updateCamera(0.016);
+      return +mx.toFixed(2);
+    };
+    const keep = { d: ct.dist, ty: ct.ty };
+    const r = { d12: at(12), d24: at(24), d36: at(36), d60: at(60), d160: at(160) };
+    // 量完把鏡頭放回去：後面的平移測試速度是跟著視距走的，留在 160 會變成另一回事
+    ct.dist = cam.dist = keep.d; ct.ty = cam.ty = keep.ty;
+    return r;
+  });
+  ok('鏡頭拉很近的時候不會震動', shakeAt.d12 === 0 && shakeAt.d24 === 0,
+     '視距 12 位移 ' + shakeAt.d12 + '、視距 24 位移 ' + shakeAt.d24);
+  ok('拉開之後震動照舊', shakeAt.d60 > 3 && shakeAt.d160 === shakeAt.d60 &&
+     shakeAt.d36 > 0 && shakeAt.d36 < shakeAt.d60,
+     '視距 36 位移 ' + shakeAt.d36 + '（過渡）、60 位移 ' + shakeAt.d60 +
+     '、160 位移 ' + shakeAt.d160);
 
   /* ── 鍵盤平移 ──
      一律走真的鍵盤事件，listener 有沒有接上、e.code 對不對都一起測到。

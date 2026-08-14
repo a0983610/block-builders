@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.43.1';
+const VERSION = '1.44.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2170,8 +2170,9 @@ function launchTornado(point) {
     spin: rr(0, 6.28), vx: Math.cos(a) * 3.2, vz: Math.sin(a) * 3.2, hit: 0
   });
   /* 拉高之後漏斗頂會超出畫面上緣（矮建築取景近，量到 NDC 1.45），
-     跟核彈的蘑菇雲同一個處理：鏡頭退開一點，之後就停在那裡不收回來。 */
-  ENG.holdWide(TW_H * 1.9);
+     跟核彈的蘑菇雲同一個處理：鏡頭退到整支漏斗進得了畫面的距離，之後就停在那裡不收回來。
+     漏斗很瘦（半徑才 6），所以決定距離的一定是高度那一邊。 */
+  ENG.holdWide(TW_H, TW_R);
   sndWind();
 }
 function stepTwist(dt) {
@@ -2374,7 +2375,10 @@ function torch(hit) {
    但落點散得開，燒起來的地方比放火多。 */
 const FW_TOP = 42;                  // 竄多高（每發再抽 ±20%，高度錯開才有層次）
 const FW_RISE = 32;                 // 上升速度
-const FW_HOLD = FW_TOP * 2.6;       // 施放期間鏡頭退到多遠（齊射散得比一發開，要再退一點）
+/* 施放期間鏡頭要退到「整場齊射進得了畫面」的距離，所以給的是齊射的實際尺寸。
+   實測一場齊射（三發，追七秒）：火星最高衝到 58、最遠散到 23。
+   FW_TOP 只是彈體出膛的高度，炸開之後火星自己還會再往上竄十幾單位，照它抓會少算一截。 */
+const FW_HOLD_TOP = 58, FW_HOLD_R = 23;
 /* 一次點下去放三發：一發就是一朵花，三發錯開時間、錯開落點、錯開高度才叫「一場煙火」。
    後面兩發各晚 0.2～0.5 秒 ×序號出膛，落點在點擊處周圍 3～7 單位。 */
 const FW_SHOT = 3;
@@ -2418,7 +2422,7 @@ function launchFw(p) {
   }
   /* 跟龍捲風、蘑菇雲同一套：不退鏡頭的話整發都在畫面外。
      量過：貼著中世紀城堡的取景，炸開那一刻火星的 NDC y 是 1.5（1 就已經出界了）。 */
-  ENG.holdWide(FW_HOLD);
+  ENG.holdWide(FW_HOLD_TOP, FW_HOLD_R);
 }
 /* 一發：抽兩個顏色（外層一個、芯一個），高度也各抽一個 */
 function fireShell(x, z) {
@@ -2855,6 +2859,10 @@ const MAG_SPIN = 0.42;                    // 陣的轉速（rad/s，逆時針；
 /* 最低那層的圓心高度。碎料被吸到這裡聚成一團，六秒一到也從這裡炸開——
    爆點放地面的話，火球會從那團碎料的下方冒出來，看起來像另一件事。 */
 const MAG_CORE_Y = 0.12 + MAG_R * MAG_LAYER[0].y;
+/* 整疊的頂端與最寬那一圈——施法期間的運鏡拿這兩個數字去算要退多遠。
+   半徑要算進每層的抖動上限（rj 最多 1+MAG_JITTER），不然最寬那圈偶爾會被切到。 */
+const MAG_TOP = 0.12 + MAG_R * MAG_LAYER[MAG_LAYER.length - 1].y;
+const MAG_WIDE = MAG_R * Math.max(...MAG_LAYER.map(l => l.r)) * (1 + MAG_JITTER);
 function castMagic(point) {
   /* 由下往上一層一層長，中間靠一個小火圈把火帶上去：
      先出現最下面那層 → 小火圈從它的圓心升到上一層的高度 → 抵達才擴張成新的一層。
@@ -2873,8 +2881,9 @@ function castMagic(point) {
     wj: MAG_LAYER.map(() => rr(0.7, 1.35))
   };
   /* 整疊頂端在 34.6，貼著建築的取景裝不下（矮建築取景更近）。
-     跟龍捲風、蘑菇雲同一套：施法期間鏡頭退開，爆完那朵雲會再接手撐住這個距離。 */
-  ENG.holdWide(MAG_R * 2.2);
+     跟龍捲風、蘑菇雲同一套：施法期間鏡頭退到整疊進得了畫面的距離，
+     爆完那朵雲會再接手撐住這個距離。 */
+  ENG.holdWide(MAG_TOP, MAG_WIDE);
   alertFlee(point, MAG_R, MAG_TIME);      // 魔法陣一亮，站在陣裡的人就往外跑
 }
 function stepMagic(dt) {
@@ -3171,9 +3180,11 @@ const CLOUD_GROW = 2.4;         // 整朵長完要多久
 const SKIRT_T = 1.7;            // 腳下那圈煙要往外鋪多久
 function startCloud(p, R, magic) {
   clouds.push({ x: p.x, z: p.z, R, magic, t: 0, emit: 0 });
-  /* 順手把鏡頭退開。雲頂會升到 R×1.3 左右，用原本貼著建築的取景根本裝不下——
-     量過：不退的話中型建築只看得到那根柱子，傘蓋整個在畫面上緣外。 */
-  ENG.holdWide(R * 2.2);
+  /* 順手把鏡頭退到整朵雲進得了畫面的距離。用原本貼著建築的取景根本裝不下——
+     量過：不退的話中型建築只看得到那根柱子，傘蓋整個在畫面上緣外。
+     尺寸是實測 R=30 那朵：3.7 秒升到 39（≈R×1.3）、傘蓋半徑 15.4（≈R×0.51）。
+     雲會一直往上飄，框的是「傘蓋撐開那幾秒」的樣子，不是它飄走之後的高度。 */
+  ENG.holdWide(R * 1.3, R * 0.55);
 }
 function stepClouds(dt) {
   for (let i = clouds.length - 1; i >= 0; i--) {

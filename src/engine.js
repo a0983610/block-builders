@@ -93,6 +93,14 @@ const ENG = (function () {
      1.27 是量出來的：36 座 × 4 個角度掃過去，最擠的一座（3000 塊的美國國會大廈）
      佔畫面 0.80，一般的落在 0.74，上緣不會頂到工具列。 */
   const FIT_MARGIN = 1.27;
+  /* 爆炸運鏡的留白。比 FIT_MARGIN 小：那個是給建築的（四周要留白才好看），
+     這裡只要求「效果整個進得了畫面」，留太多等於白白把鏡頭往後推。 */
+  const HOLD_MARGIN = 1.15;
+  /* 畫面震動要看視距才算數：位移是固定的世界座標（最多 2.6 單位），
+     換算到畫面上，視距 10 時那 2.6 單位是偏 14.6°、視距 66 只剩 2.3°。
+     貼著建築看的時候同一發爆炸會晃到看不清楚，所以視距 SHAKE_NEAR 以下完全不震，
+     到 SHAKE_FULL 才是全額，中間線性接起來——硬切的話滾輪停在門檻附近會忽晃忽不晃。 */
+  const SHAKE_NEAR = 24, SHAKE_FULL = 48;
   let lastFit = null;                      // 最後一次取景的參數，畫面比例變了要拿它重算
 
   const BS = 0.94;                         // 積木實際邊長（留 0.06 縫，看得出一塊一塊）
@@ -956,14 +964,23 @@ const ENG = (function () {
     scene.fog.far = Math.max(arena * 2.6 + 90, fogAt * 3);
   }
 
-  /* 爆炸運鏡：鏡頭退開、視線抬高，整朵蘑菇雲才進得了畫面。
+  /* 爆炸運鏡：把鏡頭退到「這個效果整個進得了畫面」的距離，順便把視線抬到它的腰間。
+     top＝效果會長到多高、radius＝它有多寬，都以爆點為原點量。
+     要看的是 0～top 這一段，所以視線抬到 top 的一半，距離就照 fitCamera 那一套算：
+     垂直要塞得下半個高度、水平要塞得下寬度，取遠的那個（只算高度的話，
+     直式手機那種高瘦畫面會把魔法陣切掉兩側）。
+     以前是各家自己抓一個倍率當距離（煙火 FW_TOP×2.6＝109），跟畫面實際裝得下多少無關，
+     矮建築被拉到兩倍遠都還在退；而視線抬起來之後，同樣看得完整反而不用退那麼遠。
      只退不收：退開之後就停在那個視距，要拉回來是玩家自己滾輪的事。
      以前是幾秒後用最後一次取景的參數自己收回去，但那等於每放一發就把鏡頭搶走兩次
      （退開一次、收回一次），連放兩發還會在遠近之間來回跳。
      只退不收也不會越退越遠：距離取的是「現在」與「這一發要的」之中的大者。 */
-  function holdWide(dist) {
-    camTarget.dist = Math.max(camTarget.dist, dist);
-    camTarget.ty = Math.max(camTarget.ty, camTarget.dist * 0.22);
+  function holdWide(top, radius) {
+    const halfV = camera.fov * Math.PI / 360;
+    const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
+    const need = Math.max(top * 0.5 / Math.sin(halfV), radius / Math.sin(halfH)) * HOLD_MARGIN;
+    camTarget.dist = Math.max(camTarget.dist, need);
+    camTarget.ty = Math.max(camTarget.ty, top * 0.5);
     setFog();
   }
 
@@ -979,9 +996,9 @@ const ENG = (function () {
     let x = cam.tx + Math.cos(cam.yaw) * cp * cam.dist;
     let y = cam.ty + Math.sin(cam.pitch) * cam.dist;
     let z = cam.tz + Math.sin(cam.yaw) * cp * cam.dist;
-    if (cam.shake > 0.001) {                 // 打擊時的畫面震動
+    if (cam.shake > 0.001) {                 // 打擊時的畫面震動（太近就不震，見 SHAKE_NEAR）
       cam.shakeT += dt * 47;
-      const k = cam.shake;
+      const k = cam.shake * Math.max(0, Math.min(1, (cam.dist - SHAKE_NEAR) / (SHAKE_FULL - SHAKE_NEAR)));
       x += Math.sin(cam.shakeT) * k; y += Math.cos(cam.shakeT * 1.37) * k; z += Math.sin(cam.shakeT * 0.83) * k;
       cam.shake *= Math.pow(0.02, dt);
     }
