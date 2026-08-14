@@ -16,6 +16,7 @@ const ENG = (function () {
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
   let bombMesh, nukeGroup, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
+  let starMesh, boltMesh;
   const magRings = [], magDiscs = [];
   const flashShells = [];
   /* 填滿的圓盤：魔法陣每層一片，再加一片給那顆一直在的火種
@@ -64,6 +65,13 @@ const ENG = (function () {
     { arms: 7, seg: 9, turn: 2.0, r0: 0.14, w: 0.030, spin: 1 },
     { arms: 5, seg: 8, turn: -1.5, r0: 0.28, w: 0.022, spin: 0.62 }
   ];
+  /* 十字星光：魔法陣長層時撒的那種四角星（參考圖裡那些一閃一閃的星芒）。
+     一顆一個 instance，每幀轉向鏡頭當公告板——粒子那顆方塊做不出尖角。
+     48 顆是「六層各撒七顆、前後幾層還疊著沒熄」的量。 */
+  const MAXSTAR = 48;
+  /* 藍色閃電的線段上限。一道電折六段、可能再帶一條分岔，同時最多六道 → 不到 60；
+     96 留了餘裕，反正是一顆 InstancedMesh，多開 instance 不多吃 draw call。 */
+  const MAXBOLT = 96;
   const MAG_DASH = 26;                                       // 外圈那一圈虛線的段數
   const MAG_SPOKE = MAG_SWIRL.reduce((s, f) => s + f.arms * f.seg, 0) + MAG_DASH;
   const MAG_SP_RINGS = 6;                                    // 最多幾層會帶紋路
@@ -73,6 +81,9 @@ const ENG = (function () {
   const TW_MAX = 4;                 // 最多同時畫幾道
   const tornadoSegs = [];
   const _axis = new T.Vector3();
+  const _xAxis = new T.Vector3(1, 0, 0);    // 閃電：每一段都是從 +X 轉過去的
+  const _zAxis = new T.Vector3(0, 0, 1);    // 星光：公告板繞自己的法線自轉
+  const _spin = new T.Quaternion();
   let W = 1, H = 1;
 
   const scratch = new T.Object3D();       // 借來組矩陣用，不進場景
@@ -340,6 +351,38 @@ const ENG = (function () {
     }
     flashGroup.visible = false;
     scene.add(flashGroup);
+
+    /* 十字星光：一片薄薄的四角星（中心一點 + 外圈八個尖凹交錯的點接成扇形）。
+       畫成平面而不是方塊，是因為要的就是那四道尖角；每幀轉向鏡頭，
+       所以不管軌道相機轉到哪，看到的都是正面那個十字。 */
+    const stPos = [0, 0, 0], stIdx = [], stN = 8;
+    for (let i = 0; i < stN; i++) {
+      const a = i / stN * Math.PI * 2;
+      const r = i % 2 === 0 ? 1 : 0.11;         // 尖端拉到 1、腰收到 0.11，才是十字不是八角形
+      stPos.push(Math.cos(a) * r, Math.sin(a) * r, 0);
+    }
+    for (let i = 0; i < stN; i++) stIdx.push(0, 1 + i, 1 + (i + 1) % stN);
+    const stGeo = new T.BufferGeometry();
+    stGeo.setAttribute('position', new T.Float32BufferAttribute(stPos, 3));
+    stGeo.setIndex(stIdx);
+    starMesh = new T.InstancedMesh(stGeo, new T.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.95,
+      side: T.DoubleSide, depthWrite: false, blending: T.AdditiveBlending
+    }), MAXSTAR);
+    starMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    starMesh.count = 0; starMesh.frustumCulled = false; starMesh.visible = false;
+    starMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(starMesh);
+
+    /* 藍色閃電：每一段就是一根被拉長的細方塊。
+       **不用加法混色**——理由跟魔法陣那幾層一樣：這片天空是白的、草地是亮綠的，
+       加法疊上去只會被洗成背景色，量過整道電幾乎看不見。實色的藍在白天空與
+       綠草地上都讀得出來。不透明也省掉跟煙塵排序的麻煩。 */
+    boltMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: 0xffffff }), MAXBOLT);
+    boltMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    boltMesh.count = 0; boltMesh.frustumCulled = false; boltMesh.visible = false;
+    boltMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(boltMesh);
 
     /* 貼地的發光圓環：魔法陣的每一層、爆炸的衝擊波、蘑菇雲腰上那一圈，
        都是這一組。每層一個扁環 + 一圈紋路——只有環的話它就是一條紅色的帶子，
@@ -714,6 +757,55 @@ const ENG = (function () {
     }
   }
 
+  /* 十字星光。list 每一項 {x, y, z, s 大小, rot 自轉角, op 亮度, cr/cg/cb 顏色}。
+     公告板：直接抄鏡頭的旋轉，再繞自己的法線轉 rot——這樣星芒永遠正對著看的人，
+     而 rot 才是「每顆星各自斜著」的那個角度。順序不能反，反了就變成先斜再面向鏡頭。 */
+  function putStars(list) {
+    const n = Math.min(list.length, MAXSTAR);
+    starMesh.visible = n > 0;
+    starMesh.count = n;
+    for (let i = 0; i < n; i++) {
+      const p = list[i];
+      scratch.position.set(p.x, p.y, p.z);
+      scratch.quaternion.copy(camera.quaternion);
+      _spin.setFromAxisAngle(_zAxis, p.rot);
+      scratch.quaternion.multiply(_spin);
+      scratch.scale.setScalar(p.s);
+      scratch.updateMatrix();
+      starMesh.setMatrixAt(i, scratch.matrix);
+      // 加法混色下 instance color 就是亮度旋鈕：顏色乘上濃度，一顆星的明滅全靠它
+      starMesh.setColorAt(i, tmpC.setRGB(p.cr * p.op, p.cg * p.op, p.cb * p.op));
+    }
+    starMesh.instanceMatrix.needsUpdate = true;
+    if (starMesh.instanceColor) starMesh.instanceColor.needsUpdate = true;
+  }
+
+  /* 藍色閃電。list 每一項是一小段 {x1,y1,z1 → x2,y2,z2, w 粗細, op 亮度}。
+     一段一個 instance：把單位方塊沿 X 拉成這一段的長度，再把 +X 轉到這一段的方向。
+     顏色固定藍（0.22/0.5/1）——這是「藍色閃電」，顏色不是每段可調的參數。
+     綠分量壓在一半以下才是藍的：0.72 那種是青色，量過送到畫面上時
+     藍與綠只差 3/255，看起來就是一條淺水藍。
+     op 是明滅用的亮度旋鈕（實色材質，所以它調的是顏色深淺不是透明度）。 */
+  function putBolts(list) {
+    const n = Math.min(list.length, MAXBOLT);
+    boltMesh.visible = n > 0;
+    boltMesh.count = n;
+    for (let i = 0; i < n; i++) {
+      const s = list[i];
+      const dx = s.x2 - s.x1, dy = s.y2 - s.y1, dz = s.z2 - s.z1;
+      const len = Math.hypot(dx, dy, dz) || 0.001;
+      _axis.set(dx / len, dy / len, dz / len);
+      scratch.position.set((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, (s.z1 + s.z2) / 2);
+      scratch.quaternion.setFromUnitVectors(_xAxis, _axis);
+      scratch.scale.set(len, s.w, s.w);
+      scratch.updateMatrix();
+      boltMesh.setMatrixAt(i, scratch.matrix);
+      boltMesh.setColorAt(i, tmpC.setRGB(0.22 * s.op, 0.50 * s.op, s.op));
+    }
+    boltMesh.instanceMatrix.needsUpdate = true;
+    if (boltMesh.instanceColor) boltMesh.instanceColor.needsUpdate = true;
+  }
+
   /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
   function setGroundSize(r) {
     ground.scale.set(r * 2, 1.2, r * 2);
@@ -1054,6 +1146,7 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putDozers,
     setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, setNuke, hideNuke, setRings, hideRings, putFire, putFlash,
+    putStars, putBolts,
     fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }

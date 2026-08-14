@@ -3811,10 +3811,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('魔法陣是一層層長出來的', mg.seq[0] === 1 && mg.seq[mg.seq.length - 1] === 6 &&
      mg.seq.every((v, i) => i === 0 || v >= mg.seq[i - 1]), '每 0.8 秒取樣：' + mg.seq.join(' → '));
   /* 六層要快點長齊，「六層都在場上轉」那一段才留得久——那一段才是陣蓄滿的樣子。
-     每層之間是 0.54 秒（擴張 0.24 ＋ 小火圈爬升 0.3），六層 2.94 秒長齊、滿陣還有 3 秒。
-     火圈那一段是使用者要的效果，換來的是滿陣從 4.1 秒縮到 3 秒——所以下限就守在 2.9。 */
+     每層之間是 0.32 秒（擴張 0.15 ＋ 小火圈爬升 0.17），六層 1.75 秒長齊、滿陣還有 4.25 秒。
+     v1.47 照使用者要求再加快一次（原本 0.54 秒一層、滿陣只有 3 秒）：
+     長的過程是過場，滿陣才是主角。守在 2 秒／4 秒，再快就看不出是一層一層長的了。 */
   ok('六層很快長齊，之後有一大段時間都是滿的',
-     mg.full > 0 && mg.full < 3.1 && mg.magTime - mg.full > 2.9,
+     mg.full > 0 && mg.full < 2 && mg.magTime - mg.full > 4,
      mg.full + ' 秒就六層都在，滿陣狀態持續 ' + (mg.magTime - mg.full).toFixed(1) + ' 秒');
   /* 前四秒半只長陣、不動建築；最後一秒多才開始扯。兩段都要驗：
      只驗「六秒內沒爆」的話，第一秒就把建築拆光也會過。 */
@@ -3956,11 +3957,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (let i = 0; i < 4; i++) step(0.05);        // 0.2 秒：只該有最下面那層
       firsts.push({ n: coreY().length, y: coreY()[0] });
     }
-    /* 追第一段：0.7 秒剛好走完「長第一層 → 火種上升 → 長第二層」。
+    /* 追第一段：0.45 秒剛好走完「長第一層 → 火種上升 → 長第二層」
+       （0.15 擴張 + 0.17 爬升 + 0.15 擴張；v1.47 之前這一段是 0.7 秒）。
        同時整場（六秒）都盯著火種在不在、有沒有往下掉。 */
     startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
     const trail = [];
-    for (let i = 0; i < 14; i++) { step(0.05); trail.push({ n: coreY().length, s: seedY() }); }
+    for (let i = 0; i < 9; i++) { step(0.05); trail.push({ n: coreY().length, s: seedY() }); }
     const rise = trail.filter((o, i) => i > 0 && o.s > trail[i - 1].s + 0.01);   // 真的在爬的那幾幀
     const hold = trail.filter((o, i) => i > 0 && Math.abs(o.s - trail[i - 1].s) < 0.01);
     let gaps = 0, drops = 0, last = -1, tail = -1;
@@ -3999,6 +4001,200 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('火種只會往上，最後停在最上層等爆炸',
      mgSeed.drops === 0 && Math.abs(mgSeed.tail - mgSeed.top) < 0.01,
      '一路沒有往下掉過，最後停在 y' + mgSeed.tail + '（最上層 ' + mgSeed.top + '）');
+
+  /* v1.47：陣心那道往上衝的光柱換成「魔力粒子往陣心集中」。
+     使用者看到的是「中心點像在冒煙」——一股從陣心往外噴的東西，
+     跟這個法術正在做的事（把周圍全部吸進來）完全相反，所以整個掉頭。
+     四件事要驗：一施法就有、每顆真的在靠近、到了就熄、而且中心不再往外噴。 */
+  const mgZip = await page.evaluate(() => {
+    /* 上一段的陣還在場上、粒子也還在飛：先讓它炸完、散乾淨再開始。
+       不清的話這裡追到的會混進上一發的粒子——那些已經快到陣心了，位移量全失真。 */
+    while (magic) step(0.05);
+    for (let i = 0; i < 120; i++) step(0.05);
+    clearFires();
+    startBuild(true); completeNow();
+    castMagic({ x: 0, z: 0 });
+    const dist = h => Math.hypot(h.x - magic.x, h.y - MAG_CORE_Y, h.z - magic.z);
+    for (let i = 0; i < 6; i++) step(0.05);          // 0.3 秒：施法一開始就該有
+    // 追固定的一批，不是每幀重抽（重抽的話量到的是「現在場上這些離陣心多遠」）
+    const batch = hot.filter(h => h.suck).map(h => ({ h, d0: dist(h) }));
+    for (let i = 0; i < 8; i++) step(0.05);          // 0.4 秒
+    const closer = batch.filter(o => dist(o.h) < o.d0 - 1).length;
+    /* 速度只能拿「這 0.4 秒都還活著」的那些來算：半路就到陣心熄掉的那幾顆
+       位置從此凍住，把它們算進去等於用「飛了 0.2 秒的位移」除以 0.4 秒。 */
+    const live = batch.filter(o => hot.indexOf(o.h) >= 0);
+    const spd = live.reduce((s, o) => s + (o.d0 - dist(o.h)), 0) / (live.length * 0.4);
+    for (let i = 0; i < 30; i++) step(0.05);         // 再 1.5 秒：這批早該到陣心熄掉了
+    const left = batch.filter(o => hot.indexOf(o.h) >= 0).length;
+    /* 原本那道光柱長這樣：陣心附近、往上飛、不帶 suck 也不帶 pull。
+       接下來兩秒一顆都不該有（碎料的火苗也長這樣，所以這座建築要是完好的）。 */
+    let plume = 0, alive = 0;
+    for (let i = 0; i < 40; i++) {
+      step(0.05);
+      plume += hot.filter(h => !h.suck && !h.pull && h.vy > 0 &&
+                               Math.hypot(h.x - magic.x, h.z - magic.z) < 6).length;
+      alive = Math.max(alive, hot.filter(h => h.suck).length);
+    }
+    while (magic) step(0.05);
+    for (let i = 0; i < 140; i++) step(0.05);        // 爆炸、雲、藍電都散乾淨再交棒
+    clearFires();
+    return { n: batch.length, closer, spd: +spd.toFixed(1), left, plume, alive, want: SUCK_SPD };
+  });
+  ok('一施法魔力粒子就開始往陣心捲', mgZip.n >= 6 && mgZip.n < 16 && mgZip.alive > 20,
+     '0.3 秒時場上 ' + mgZip.n + ' 顆，最多同時 ' + mgZip.alive + ' 顆在飛');
+  ok('每一顆都真的在靠近陣心，而且飛得快',
+     mgZip.closer === mgZip.n && mgZip.spd > mgZip.want * 0.6,
+     mgZip.n + ' 顆裡有 ' + mgZip.closer + ' 顆靠近了，平均每秒收 ' + mgZip.spd +
+     ' 單位（設定 ' + mgZip.want + '）');
+  ok('捲到陣心就熄掉，不會對穿過去再飛出另一邊', mgZip.left === 0,
+     '1.9 秒後那批 ' + mgZip.n + ' 顆一顆都不剩');
+  ok('陣心不再往外冒東西（原本那道光柱）', mgZip.plume === 0,
+     '兩秒裡陣心 6 單位內往上飛的粒子累計 ' + mgZip.plume + ' 顆次');
+
+  /* v1.47 新增：每長出一層，就在那一圈上撒一把十字星光（使用者給的參考圖那種星芒）。
+     星芒是平面的，靠公告板每幀正對鏡頭——所以「有撒」跟「面向鏡頭」都要驗，
+     只驗資料的話，鏡頭一轉就變成一片看不見的紙片也會過。 */
+  const mgStar = await page.evaluate(() => {
+    const orig = spawnStars;
+    const calls = [];
+    window.spawnStars = function (x, z, y, rad) {
+      calls.push({ y: +y.toFixed(1), rad: +rad.toFixed(1) });
+      return orig(x, z, y, rad);
+    };
+    startBuild(true); completeNow();
+    castMagic({ x: 0, z: 0 });
+    let peak = 0, lastAt = -1, el = 0, first = null;
+    const pops = [];                                  // 追第一顆星的亮度曲線
+    for (let i = 0; i < 70; i++) {                    // 3.5 秒：六層早就長齊了
+      step(0.05); el += 0.05;
+      if (!first && stars.length) first = stars[0];
+      if (first && stars.indexOf(first) >= 0) pops.push(+first.op.toFixed(2));
+      peak = Math.max(peak, stars.length);
+      if (stars.length) lastAt = +el.toFixed(2);
+    }
+    window.spawnStars = orig;
+    /* 畫面那半：星星那顆 InstancedMesh 的幾何只有 9 個頂點（中心 + 8 個尖凹點），
+       場上沒有第二顆長這樣。法線與鏡頭視線的夾角接近 0 就是正對著鏡頭。 */
+    castMagic({ x: 0, z: 0 });
+    step(0.05); draw(); ENG.render();
+    let sm = null;
+    ENG.three.scene.traverse(o => {
+      if (!sm && o.isInstancedMesh && o.geometry.attributes.position.count === 9) sm = o;
+    });
+    const faceOf = () => {
+      const M = new THREE.Matrix4(); sm.getMatrixAt(0, M);
+      const n = new THREE.Vector3(0, 0, 1).transformDirection(M);
+      const cd = new THREE.Vector3(); ENG.three.camera.getWorldDirection(cd);
+      return +Math.abs(n.dot(cd)).toFixed(3);
+    };
+    const drawn = sm ? sm.count : -1, dot0 = sm ? faceOf() : -1;
+    const yaw0 = ENG.cam.yaw, pit0 = ENG.cam.pitch;
+    ENG.cam.yaw += 1.2; ENG.cam.pitch = 0.8;          // 鏡頭轉開，公告板要跟著轉過來
+    ENG.updateCamera(0.001); draw(); ENG.render();
+    const dot1 = sm ? faceOf() : -1;
+    // 轉回去：yaw/pitch 不歸位的話，後面驗取景的測試量到的是這裡留下的角度
+    ENG.cam.yaw = yaw0; ENG.cam.pitch = pit0;
+    ENG.updateCamera(0.001);
+    while (magic) step(0.05);
+    for (let i = 0; i < 140; i++) step(0.05);
+    clearFires();
+    return { calls, peak, lastAt, pops, drawn, dot0, dot1,
+             lay: MAG_LAYER.map(L => +(0.12 + MAG_R * L.y).toFixed(1)) };
+  });
+  ok('每長出一層就在那一圈撒一把十字星光',
+     mgStar.calls.length === 6 && mgStar.calls.every((c, i) => c.y === mgStar.lay[i]) &&
+     mgStar.peak > 10,
+     '六層各撒一把（高度 ' + mgStar.calls.map(c => c.y).join('／') +
+     '），最多同時 ' + mgStar.peak + ' 顆在場上');
+  ok('星光是一閃：亮起來快、收得慢，滿陣之後就不再撒',
+     mgStar.pops.length > 3 && Math.max(...mgStar.pops) > 0.9 &&
+     mgStar.pops[0] < 0.6 && mgStar.pops[mgStar.pops.length - 1] < 0.4 &&
+     mgStar.lastAt > 1.7 && mgStar.lastAt < 3,
+     '亮度 ' + mgStar.pops.join('→') + '，最後一顆熄在 ' + mgStar.lastAt + ' 秒');
+  ok('星光真的畫出來了，而且鏡頭轉到哪都正對著鏡頭',
+     mgStar.drawn > 0 && mgStar.dot0 > 0.99 && mgStar.dot1 > 0.99,
+     '畫了 ' + mgStar.drawn + ' 顆，法線與視線的 |cos| ＝ ' + mgStar.dot0 +
+     '，鏡頭轉開後 ' + mgStar.dot1);
+
+  /* v1.47 新增：火球收乾之後，爆點還會往四周劈三秒的藍色閃電。
+     稀疏、從爆點出發、純特效。最後一條用像素驗——讀狀態只能證明資料在，
+     證明不了使用者看得到（加法混色的藍在白天空上就是看不到的，踩過）。 */
+  const mgArc = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    castMagic({ x: 0, z: 0 });
+    while (magic) step(0.05);
+    /* 像素：同一幀「有電」與「把電清掉」的藍色像素差。一定要在爆完的現場量——
+       完好的建築上放電的話，大半段電被埋在牆裡（實色材質會被積木擋掉），
+       量到的差會是 0，那不是「沒畫」而是「被擋住」。 */
+    const blue = () => {
+      draw(); ENG.render();
+      const gl = ENG.three.renderer.getContext();
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let n = 0;
+      for (let k = 0; k < px.length; k += 4)
+        if (px[k + 2] > px[k] + 60 && px[k + 2] > px[k + 1] + 40) n++;
+      return n;
+    };
+    let t = 0, first = -1, last = -1, peak = 0, ball = -1, best = 0, shots = 0;
+    const from = [], to = [];
+    for (let i = 0; i < 100; i++) {                   // 爆炸後五秒
+      step(0.05); t += 0.05;
+      if (!bolts.length) continue;
+      if (first < 0) { first = +t.toFixed(2); ball = flashes.length; }
+      last = +t.toFixed(2);
+      peak = Math.max(peak, bolts.length);
+      for (const b of bolts) if (b.pts.length === ARC_SEG + 1) {     // 主幹，不是分岔那條
+        const p = b.pts[0], q = b.pts[b.pts.length - 1];
+        from.push(Math.hypot(p.x, p.y - MAG_CORE_Y, p.z));
+        to.push(Math.hypot(q.x, q.z));
+      }
+      /* 取幾幀來量，取最好的那一幀：單挑一幀會抽到「這道電剛好整條躲在煙柱後面」，
+         那量到的 0 是被擋住不是沒畫。八幀夠了——每量一幀要多算兩張圖。 */
+      if (shots < 8 && i % 3 === 0) {
+        shots++;
+        const with_ = blue();
+        const keep = bolts.slice();
+        bolts.length = 0;
+        const without = blue();
+        bolts.push(...keep);                          // 量完放回去，後面的統計才不會少一段
+        best = Math.max(best, with_ - without);
+      }
+    }
+    for (let i = 0; i < 60; i++) step(0.05);
+    clearFires();
+    /* 純特效：在完好的建築上直接放電三秒，一塊都不該少、也不該起火。
+       （接在爆炸後面量的話分不出是誰弄倒的。） */
+    startBuild(true); completeNow();
+    const set0 = blocks.filter(b => b.st === 3).length;
+    startArcs({ x: 0, y: MAG_CORE_Y, z: 0 }, MAG_R);
+    for (let i = 0; i < 80; i++) step(0.05);
+    const set1 = blocks.filter(b => b.st === 3).length, burn = fires ? fires.length : 0;
+    bolts.length = 0; arcSrc = null;                  // 收乾淨，別把電留給下一段測試
+    return { first, last, ball, peak, set0, set1, burn, best, shots,
+             from: +Math.max(0, ...from).toFixed(2), n: to.length,
+             reach: +Math.max(0, ...to).toFixed(1),
+             mid: +(to.reduce((s, v) => s + v, 0) / (to.length || 1)).toFixed(1),
+             R: MAG_R, life: FLASH_LIFE, want: ARC_TIME };
+  });
+  ok('火球收乾之後才開始劈電',
+     mgArc.first >= mgArc.life - 0.06 && mgArc.first < mgArc.life + 0.4 && mgArc.ball === 0,
+     '爆炸後 ' + mgArc.first + ' 秒第一道（火球亮 ' + mgArc.life + ' 秒，那時場上 ' +
+     mgArc.ball + ' 顆火球）');
+  ok('劈滿三秒，而且很稀疏',
+     Math.abs((mgArc.last - mgArc.first) - mgArc.want) < 0.45 && mgArc.peak <= 4,
+     mgArc.first + ' → ' + mgArc.last + ' 秒（' + (mgArc.last - mgArc.first).toFixed(2) +
+     ' 秒），最多同時 ' + mgArc.peak + ' 道');
+  ok('每一道都從爆點劈出去，電到周圍那一圈裡',
+     mgArc.n > 10 && mgArc.from < 0.01 && mgArc.reach <= mgArc.R && mgArc.mid > mgArc.R * 0.3,
+     mgArc.n + ' 道的起點都在爆點上（最遠 ' + mgArc.from + '），落點平均 ' + mgArc.mid +
+     '、最遠 ' + mgArc.reach + '（範圍 ' + mgArc.R + '）');
+  ok('閃電純特效，不拆房子也不點火', mgArc.set1 === mgArc.set0 && mgArc.burn === 0,
+     '放電三秒後還是 ' + mgArc.set1 + ' 塊站著（原本 ' + mgArc.set0 + '），起火 ' +
+     mgArc.burn + ' 處');
+  ok('電是真的藍、而且看得到', mgArc.best > 200,
+     '取樣 ' + mgArc.shots + ' 幀，最好的那一幀比「把電清掉」多了 ' + mgArc.best + ' 個藍色像素');
 
   /* 魔法陣長層的音效（sndRune）拿掉了：六層一路響上去太吵，
      還蓋掉引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 要留著——不是整個魔法變靜音。 */

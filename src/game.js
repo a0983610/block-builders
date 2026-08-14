@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.46.0';
+const VERSION = '1.47.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2888,9 +2888,11 @@ function stepNuke(dt) {
    讓你在那六秒裡看得出來會炸到哪。一次只有一個，再點會移到新的地點重來。 */
 const MAG_TIME = 6, MAG_R = 30, MAG_POW = 34;
 /* 一層擴張到定位要多久、小火圈從一層升到上一層要多久。
-   兩者相加就是「每隔多久多一層」，六層在 5×0.54+0.24 ＝ 2.94 秒內長齊，
-   剩下的 3 秒六層都在場上轉——這一段才是「陣蓄滿了」的樣子，要留得夠久。 */
-const MAG_GROW = 0.24, MAG_RISE = 0.3;
+   兩者相加就是「每隔多久多一層」，六層在 5×0.32+0.15 ＝ 1.75 秒內長齊，
+   剩下的 4.25 秒六層都在場上轉——這一段才是「陣蓄滿了」的樣子，要留得夠久。
+   （v1.47 把 0.24/0.3 收成 0.15/0.17：長的過程本來就是過場，滿陣才是主角，
+   滿陣從 3 秒延到 4.25 秒。再快就看不清楚是一層一層長的了。） */
+const MAG_GROW = 0.15, MAG_RISE = 0.17;
 const MAG_GAP = MAG_GROW + MAG_RISE;
 /* 小火圈的半徑（MAG_R 的倍率）。新的一層就是從這個半徑擴張出去的，
    所以兩邊一定要用同一個數字——不然「火圈擴張成魔法陣」中間會跳一下。 */
@@ -2953,6 +2955,7 @@ function stepMagic(dt) {
     magic = null;
     explode(p, MAG_R, MAG_POW, true, true);       // 第二個 true = 加風壓
     startCloud(p, MAG_R, true);       // 魔法爆完也留一朵，只是燒的是紅光還帶星光
+    startArcs(p, MAG_R);              // 火球收乾之後，爆點還會劈三秒的藍電
     return;
   }
   const rings = [];
@@ -3010,9 +3013,46 @@ function stepMagic(dt) {
                  op: 0.85, c: 0xff9a22, add: 1, seed: 1 });
   }
   // 一層兩個環（芯 + 暈），所以要數層數不是數環數
-  if (layers > magic.shown) magic.shown = layers;
+  if (layers > magic.shown) {
+    /* 新的一層剛開始長 → 就在那一圈上撒一把十字星光。
+       撒的位置用「長好之後」的半徑，不是這一瞬間的（那時它才火種那麼大）：
+       星光要先標出這一層將要長到哪，環再追上來。 */
+    for (let i = magic.shown; i < layers; i++)
+      spawnStars(magic.x, magic.z, 0.12 + MAG_R * MAG_LAYER[i].y,
+                 MAG_R * MAG_LAYER[i].r * magic.rj[i]);
+    magic.shown = layers;
+  }
   magic.rings = rings;
+  magSuck(magic, dt);
   implode(magic, dt);
+}
+
+/* ── 往陣心捲進去的魔力粒子 ───────────────────────────────
+   施法一開始就有，一路捲到爆炸：小、快、密，從陣外一路螺旋進陣心
+   （就是等一下的爆點）。最後 0.3 秒真的把整棟捲進去的是 crushIn，
+   這些光點是那件事的前奏——六秒裡一直在說「能量正往那一點集中」。
+   v1.47 之前這裡是一道從陣心往上衝的光柱，看起來像中心在冒煙：方向反了，
+   陣是在吸不是在噴，所以整個掉頭。 */
+const SUCK_SPD = 34;              // 飛多快（單位／秒）：從外圈到陣心約 0.8 秒
+function magSuck(m, dt) {
+  const k = Math.min(1, (MAG_TIME - m.t) / MAG_TIME);      // 越接近爆炸吸得越急
+  m.zip = (m.zip || 0) + dt * (30 + 54 * k);
+  while (m.zip >= 1) {
+    m.zip--;
+    if (hot.length >= HOT_MAX - 30) break;    // 留一截給爆炸的火球與還在燒的碎料
+    const a = Math.random() * Math.PI * 2, rad = rr(0.55, 1.1) * MAG_R;
+    /* 冷色：紅陣上疊暖色會糊成一片，青藍與粉紫才看得出是「另一股東西被吸進去」。
+       這跟那些慢慢捲上來的魔力光點是同一套配色。 */
+    const cyan = Math.random() < 0.6;
+    hot.push({
+      x: m.x + Math.cos(a) * rad, y: rr(1.5, MAG_CORE_Y + 9), z: m.z + Math.sin(a) * rad,
+      vx: 0, vy: 0, vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.18, 0.42), life: 2.5,               // 到陣心就自己熄，life 只是保險
+      cr: cyan ? rr(0.2, 0.45) : rr(0.75, 1),
+      cg: cyan ? rr(0.75, 1) : rr(0.3, 0.5), cb: 1,
+      suck: [m.x, MAG_CORE_Y, m.z], spd: SUCK_SPD * rr(0.85, 1.2)
+    });
+  }
 }
 
 /* ── 引力坍縮 ─────────────────────────────────────────────
@@ -3101,20 +3141,9 @@ function implode(m, dt) {
       pull: [m.x, m.z]
     });
   }
-  /* 陣心那道往上衝的光柱：參考圖裡幾層陣是被中間一道亮芯串起來的，
-     少了它就只是四個各自轉的圈圈，看不出是同一個法術。 */
-  m.beam = (m.beam || 0) + dt * (6 + 26 * k);
-  while (m.beam >= 1) {
-    m.beam--;
-    if (hot.length >= HOT_MAX) break;
-    const a = Math.random() * Math.PI * 2, rad = rr(0, 1.1);
-    hot.push({
-      x: m.x + Math.cos(a) * rad, y: rr(0.3, 2), z: m.z + Math.sin(a) * rad,
-      vx: 0, vy: rr(9, 17) * (0.5 + k), vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
-      s: rr(0.5, 1.3), life: rr(0.7, 1.4), g: -1.5, grow: 0.85,
-      cr: 1, cg: rr(0.85, 1), cb: rr(0.5, 0.85)
-    });
-  }
+  /* 陣心原本還有一道往上衝的光柱（六層被中間一道亮芯串起來）。v1.47 拿掉了：
+     使用者看到的是「中心點在冒煙」——一股從陣心往外噴的東西，跟這個法術
+     正在做的事（把周圍全部吸進來）完全相反。那股力氣改給 magSuck，方向掉頭。 */
 }
 
 /* ── 爆炸特效 ─────────────────────────────────────────────
@@ -3355,6 +3384,21 @@ function stepHot(dt) {
     const d = hot[i];
     d.life -= dt;
     if (d.life <= 0) { hot.splice(i, 1); continue; }
+    /* 被捲進陣心的魔力粒子：每幀重新瞄準陣心，再加一股切線 → 路徑是螺旋不是直線。
+       速度直接指定而不是加速度：這些要「快又準」，靠加速度追會被下面那道
+       水平阻尼吃掉大半，飛到一半就停在半空了。所以整段也不吃重力與阻尼。 */
+    if (d.suck) {
+      const tx = d.suck[0] - d.x, ty = d.suck[1] - d.y, tz = d.suck[2] - d.z;
+      const dd = Math.hypot(tx, ty, tz);
+      if (dd < 1.5) { hot.splice(i, 1); continue; }   // 到了就熄，不要對穿過去再飛出另一邊
+      const dh = Math.hypot(tx, tz) || 1;
+      d.vx = (tx / dd - tz / dh * 0.55) * d.spd;
+      d.vy = ty / dd * d.spd;
+      d.vz = (tz / dd + tx / dh * 0.55) * d.spd;
+      d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
+      d.rx += dt * 5; d.ry += dt * 6.5;
+      continue;
+    }
     d.vy -= (d.g === undefined ? -1.5 : d.g) * dt;
     /* 被魔法陣吸的光點：往中心加速再加一股切線，走出螺旋。
        只給內吸的話會直直射進中心，看起來像雨點不像在聚集魔力。 */
@@ -3387,6 +3431,125 @@ function stepFxRings(dt) {
     f.op -= dt / f.fade;
     if (f.op <= 0) fxRings.splice(i, 1);
   }
+}
+
+/* ── 十字星光 ─────────────────────────────────────────────
+   魔法陣每長出一層，就在那一圈上撒幾顆四角星。星芒是平面的、每幀正對鏡頭
+   （公告板在引擎那邊做），所以不管軌道相機轉到哪，看到的都是那個十字。
+   只在「長層」那一下撒，滿陣之後就不撒了——一直閃的話它會變成背景紋理，
+   而這幾顆要的是「這一層剛剛出現」的那一下。 */
+const STAR_MAX = 48;
+const STAR_PER = 7;              // 一層撒幾顆
+const stars = [];
+function spawnStars(x, z, y, rad) {
+  for (let i = 0; i < STAR_PER; i++) {
+    if (stars.length >= STAR_MAX) break;
+    const a = Math.random() * Math.PI * 2;
+    const r = rad * rr(0.45, 1.12);          // 有的落在圈內、有的甩到圈外一點
+    /* 粉紫與金黃各半。全給暖色的話會跟紅陣糊在一起，粉的那幾顆才跳得出來。 */
+    const pink = Math.random() < 0.55;
+    stars.push({
+      x: x + Math.cos(a) * r, y: y + rr(-1.8, 3.2), z: z + Math.sin(a) * r,
+      s0: rr(1.8, 3.6), s: 0, rot: rr(0, 6.28), spin: rr(-1.3, 1.3),
+      vy: rr(1.2, 3.4), t: 0, life: rr(0.5, 0.95), op: 0,
+      cr: 1, cg: pink ? rr(0.45, 0.7) : rr(0.82, 0.95), cb: pink ? 1 : rr(0.42, 0.7)
+    });
+  }
+}
+function stepStars(dt) {
+  for (let i = stars.length - 1; i >= 0; i--) {
+    const s = stars[i];
+    s.t += dt;
+    if (s.t >= s.life) { stars.splice(i, 1); continue; }
+    s.y += s.vy * dt;
+    s.rot += s.spin * dt;
+    /* 前兩成時間撐開到最亮最大，之後一路收掉。等速淡出的星星看起來像貼在那裡的圖，
+       這樣才是「一閃」。大小也跟著走，但留 45% 的底——縮到 0 反而像被吸走。 */
+    const k = s.t / s.life;
+    s.op = k < 0.2 ? k / 0.2 : 1 - (k - 0.2) / 0.8;
+    s.s = s.s0 * (0.45 + 0.55 * s.op);
+  }
+}
+
+/* ── 爆裂魔法的餘電 ───────────────────────────────────────
+   火球收乾之後，爆點還會往四周劈三秒的藍色閃電。
+   稀疏是重點：一次一兩道、每道只亮 0.1 秒出頭，看起來才像放完電還在跳的殘餘電流，
+   而不是一團持續發亮的電漿。純特效——不推積木、不燒東西、不嚇小人，
+   破壞範圍還是 explode 那一下說了算。 */
+const ARC_TIME = 3;              // 劈多久（使用者指定：三秒）
+const ARC_SEG = 6;               // 一道電折幾段
+const ARC_MAX = 6;               // 場上同時最多幾道
+const ARC_JIT = 0.13;            // 折點抖多開（爆炸半徑的倍率）
+let arcSrc = null;               // 正在放電的爆點（一次只有一處）
+const bolts = [];
+function startArcs(p, R) {
+  /* 等火球亮完才開始：火球本身就是一大顆加法混色的白光，這幾道電劈在裡面
+     一條都看不到，等於白劈。 */
+  arcSrc = { x: p.x, y: p.y, z: p.z, R, t: -FLASH_LIFE, next: 0 };
+}
+/* 一道折線。兩端的抖動要收斂到 0（sin(πu) 中間最大），
+   不然電會從爆點旁邊冒出來、也接不到它該打中的那一點。 */
+function boltPts(x0, y0, z0, x1, y1, z1, jit, seg) {
+  const pts = [];
+  for (let i = 0; i <= seg; i++) {
+    const u = i / seg, j = Math.sin(u * Math.PI) * jit;
+    pts.push({ x: x0 + (x1 - x0) * u + rr(-j, j),
+               y: y0 + (y1 - y0) * u + rr(-j, j) * 0.6,
+               z: z0 + (z1 - z0) * u + rr(-j, j) });
+  }
+  return pts;
+}
+function spawnBolt(a) {
+  /* 打向陣裡隨機一處、貼近地面的高度：爆點在半空，電是從那裡劈下來打在滿地的碎料上。
+     全部水平掃出去的話會變成一圈圍著爆點的電網，那是另一種東西。 */
+  const ang = Math.random() * Math.PI * 2, rad = rr(0.3, 1) * a.R;
+  const pts = boltPts(a.x, a.y, a.z,
+                      a.x + Math.cos(ang) * rad, rr(0.6, 5), a.z + Math.sin(ang) * rad,
+                      a.R * ARC_JIT, ARC_SEG);
+  const life = rr(0.1, 0.2);
+  bolts.push({ pts, t: 0, life, op: 1, w: rr(0.3, 0.55) });
+  // 三成機率從中段再岔出一條短的：分岔是閃電的招牌，但每道都岔就變成一張網
+  if (Math.random() < 0.3 && bolts.length < ARC_MAX + 2) {
+    const s = pts[3], b = Math.random() * Math.PI * 2, br = rr(0.15, 0.35) * a.R;
+    bolts.push({
+      pts: boltPts(s.x, s.y, s.z, s.x + Math.cos(b) * br, Math.max(0.6, s.y - rr(2, 8)),
+                   s.z + Math.sin(b) * br, a.R * ARC_JIT * 0.6, 3),
+      t: 0, life: life * 0.7, op: 1, w: rr(0.18, 0.32)
+    });
+  }
+}
+function stepArcs(dt) {
+  if (arcSrc) {
+    arcSrc.t += dt;
+    if (arcSrc.t >= 0) {
+      arcSrc.next -= dt;
+      // 間隔一定要往前推，不能等「有空位」才推——排滿時會變成無窮迴圈
+      while (arcSrc.next <= 0) {
+        if (bolts.length < ARC_MAX) spawnBolt(arcSrc);
+        arcSrc.next += rr(0.12, 0.3);
+      }
+    }
+    if (arcSrc.t >= ARC_TIME) arcSrc = null;
+  }
+  for (let i = bolts.length - 1; i >= 0; i--) {
+    const b = bolts[i];
+    b.t += dt;
+    if (b.t >= b.life) { bolts.splice(i, 1); continue; }
+    /* 明滅而不是淡出：電是一閃一閃跳的，線性淡出看起來像有人在關調光器。
+       只讓它一路暗到七成，剩下的交給「時間到就整道消失」。 */
+    b.op = (1 - 0.3 * b.t / b.life) * rr(0.82, 1);
+  }
+}
+/* 把每道折線攤成一段一段丟給引擎。重用同一個陣列，不要每幀配置一個新的 */
+const boltSegs = [];
+function boltList() {
+  boltSegs.length = 0;
+  for (const b of bolts)
+    for (let i = 1; i < b.pts.length; i++) {
+      const p = b.pts[i - 1], q = b.pts[i];
+      boltSegs.push({ x1: p.x, y1: p.y, z1: p.z, x2: q.x, y2: q.y, z2: q.z, w: b.w, op: b.op });
+    }
+  return boltSegs;
 }
 
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
@@ -3565,6 +3728,8 @@ function step(dt) {
   stepHot(dt);
   stepFlash(dt);
   stepFxRings(dt);
+  stepStars(dt);
+  stepArcs(dt);
   if (ballAim) ballAim.ph += dt;         // 瞄準環的脈動
   stepDozers(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
@@ -3637,6 +3802,8 @@ function draw() {
   ENG.putTornados(twists || EMPTY);
   ENG.putFire(hot);
   ENG.putFlash(flashes);
+  ENG.putStars(stars);
+  ENG.putBolts(bolts.length ? boltList() : EMPTY);
   /* 魔法陣、爆炸光環、保齡球的瞄準環共用同一組環，在這裡合起來丟過去。
      魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。
      沒東西在瞄／沒魔法陣時不做 concat：那是每幀都會跑到的路徑。 */
