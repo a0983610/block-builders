@@ -37,6 +37,8 @@
     background:#fff;font:inherit;cursor:pointer}
   button:hover{background:#f4efe7}
   button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
+  button:disabled{opacity:.42;cursor:default}
+  button:disabled:hover{background:#fff}
   #stat{font-size:12px;line-height:1.7;font-variant-numeric:tabular-nums;
     border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:7px 0}
   #stat b{font-weight:700}
@@ -96,8 +98,10 @@
   <div class="btns">
     <button id="copy">複製報告</button>
     <button id="shot">下載畫面</button>
+    <!-- 貼進來的藍圖存成檔案。內建與 blueprints/ 裡的本來就有檔案，所以那些選起來時是灰的 -->
+    <button id="save" disabled title="貼上來的藍圖才存得出檔案">下載 .js</button>
   </div>
-  <div class="hint">拖曳轉視角　·　滾輪縮放　·　貼上的藍圖只活在這一頁（要留著就存進 <code>blueprints/</code> 並加進 <code>list.js</code>）</div>
+  <div class="hint">拖曳轉視角　·　滾輪縮放　·　貼上的藍圖只活在這一頁（滿意了就按「下載 .js」存進 <code>blueprints/</code>，再把檔名加進 <code>list.js</code>）</div>
 </div>
 
 <div id="err"></div>
@@ -115,7 +119,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.52.0';
+const VIEWER_VER = '1.53.0';
 
 const $ = id => document.getElementById(id);
 
@@ -224,6 +228,10 @@ function build() {
    這等於執行使用者自己貼進來的程式碼——跟把 .js 丟進 blueprints/ 同一個信任等級，
    而這一頁本來就是給做藍圖的人用的。遊戲（index.html）沒有這個入口。 */
 const pasted = new Set();          // 這一頁貼進來的那幾份在 SHAPES 的索引
+/* 貼進來的原始碼，用藍圖名字當鍵（SHAPES 裡名字不會重複，索引則會因為蓋掉同名而位移）。
+   留著是為了「下載 .js」：滿意了就直接存成檔案，不必回頭去翻剛才貼的那段。
+   一次貼進好幾份的話，每一份指到的都是同一段程式——它們本來就是同一個檔案。 */
+const pastedSrc = new Map();
 
 function cleanPaste(t) {
   return String(t)
@@ -271,9 +279,18 @@ function pasteBlueprint(raw) {
     try { idx = customBlueprint(def); } finally { console.warn = orig; }
     if (idx < 0) throw new Error(why || '這份藍圖被 customBlueprint 擋掉了。');
     pasted.add(idx);
+    pastedSrc.set(def.name, { file: fileNameOf(code, def.name), code: code });
     added.push({ idx: idx, name: def.name });
   }
   return added;
+}
+/* 存檔要用的檔名。AI 照〈藍圖製作說明〉會在第一行寫 `// 檔名：xxx.js`（那行是合法的
+   註解，所以留在程式裡不必清掉）；沒寫就拿藍圖名字當檔名。
+   路徑分隔字元與 Windows 不收的字要濾掉——檔名是從貼進來的文字撈的，不是我們給的。 */
+function fileNameOf(code, name) {
+  const m = code.match(/檔名\s*[：:]\s*([^\r\n]+?\.js)\s*$/m);
+  const raw = m ? m[1] : name + '.js';
+  return raw.replace(/[\\/:*?"<>|]/g, '').trim() || (name + '.js');
 }
 
 /* ── 體檢報告 ───────────────────────────────────────────── */
@@ -311,7 +328,7 @@ function copyReport() {
 }
 
 /* ── 操作 ───────────────────────────────────────────────── */
-$('shape').addEventListener('change', () => { build(); $('rep').value = ''; });
+$('shape').addEventListener('change', () => { build(); $('rep').value = ''; syncSave(); });
 $('go').addEventListener('click', build);
 $('chk').addEventListener('click', diagnose);
 /* 貼上 → 進清單 → 選起來 → 畫出來 → 順手把診斷也跑掉。
@@ -324,6 +341,7 @@ $('load').addEventListener('click', () => {
     refreshMenu(last.idx);
     build();
     diagnose();
+    syncSave();
     msg.className = 'on good';
     msg.textContent = '✔ 已載入「' + added.map(a => a.name).join('、') + '」' +
       (added.length > 1 ? '（' + added.length + ' 份，選的是最後一份）' : '') + '，下面是它的診斷。';
@@ -360,6 +378,32 @@ function shotPng() {
   setTimeout(() => { $('shot').textContent = '下載畫面'; }, 1600);
 }
 $('shot').addEventListener('click', shotPng);
+
+/* 下載 .js：貼上來的藍圖存成檔案。做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，
+   滿意的那一版就在貼上框裡，但要留下來還得自己選取、複製、開編輯器、貼上、存檔——
+   這顆按鈕把那五步收成一步。存出來的就是貼進來的那段（圍籬已經清掉、檔名那行留著）。
+   內建與 blueprints/ 裡的藍圖本來就有檔案，所以選到那些時按鈕是灰的。 */
+function currentSrc() {
+  const sh = SHAPES[+$('shape').value];
+  return sh ? pastedSrc.get(sh.n) : null;
+}
+function syncSave() { $('save').disabled = !currentSrc(); }
+function saveJs() {
+  const src = currentSrc();
+  if (!src) return;
+  const href = URL.createObjectURL(
+    new Blob([src.code.replace(/\s*$/, '') + '\n'], { type: 'text/javascript;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = src.file;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
+  $('save').textContent = '已下載 ✓';
+  setTimeout(() => { $('save').textContent = '下載 .js'; }, 1600);
+}
+$('save').addEventListener('click', saveJs);
 /* 「只看輪廓」＝把草地那三層藏起來。引擎沒有給那幾顆網格取名字，
    但上面已經把其他東西全餵空的了，所以「現在還看得見、又不是積木的網格」
    就是草皮／切邊／土層這三顆。開場記下來，之後只切它們。 */
@@ -393,6 +437,7 @@ function frame(now) {
 }
 
 build();
+syncSave();
 requestAnimationFrame(frame);
 </script>
 </body>

@@ -902,6 +902,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      pBoomRep.indexOf('測試用') > 0 && pBoomRep.indexOf('修法') > 0,
      pBoomRep.split('\n').find(l => l.indexOf('測試用') > 0) || '(沒寫到)');
 
+  /* 下載 .js（v1.53）：滿意的那一版就在貼上框裡，但要留下來還得自己選取、複製、開編輯器、
+     貼上、存檔。這幾條驗的是「真的掉得出一個檔案、檔名照『// 檔名：』那行、
+     內容乾淨到可以直接丟回來再跑一次」。 */
+  const pKeep = await pasteInto('```js\n// 檔名：我的小屋.js\n' + SAMPLE + '\n```');
+  const pickShape = n => vp.evaluate(n => {
+    const sel = document.getElementById('shape');
+    sel.value = String(SHAPES.findIndex(s => s.n === n));
+    sel.dispatchEvent(new Event('change'));
+    return document.getElementById('save').disabled;
+  }, n);
+  const saveOnPasted = await vp.evaluate(() => document.getElementById('save').disabled);
+  const saveOnBuiltin = await pickShape('吉薩金字塔');
+  await pickShape('貼上來的小屋');
+  const [jsDl] = await Promise.all([vp.waitForEvent('download'), vp.click('#save')]);
+  const jsPath = path.join(OUT, 'viewer-save.js');
+  await jsDl.saveAs(jsPath);
+  const jsText = fs.readFileSync(jsPath, 'utf8');
+  ok('內建藍圖沒有「下載 .js」可按，貼上來的才有',
+     saveOnBuiltin === true && saveOnPasted === false && !pKeep.bad,
+     '貼上來的 disabled=' + saveOnPasted + '、內建 disabled=' + saveOnBuiltin);
+  ok('按「下載 .js」存得出檔案，檔名照「// 檔名：」那一行',
+     jsDl.suggestedFilename() === '我的小屋.js' && jsText.indexOf('```') < 0 &&
+     jsText.indexOf("name: '貼上來的小屋'") > 0 && jsText.trim().endsWith('});'),
+     '檔名「' + jsDl.suggestedFilename() + '」，' + jsText.split('\n').length + ' 行、' +
+     Math.round(jsText.length / 1024) + ' KB');
+  const pRound = await pasteInto(jsText);
+  ok('存出來的檔案再貼回來照樣跑得動（可以直接放進 blueprints/）',
+     !pRound.bad && pRound.name === '貼上來的小屋' && pRound.drawn > 100,
+     pRound.msg + '（畫了 ' + pRound.drawn + ' 塊）');
+
   ok('預覽頁整段跑完沒有 console 錯誤', vpErr.length === 0, vpErr.join(' / ') || '乾淨');
   await vp.close();
 
