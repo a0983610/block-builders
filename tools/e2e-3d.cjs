@@ -4925,17 +4925,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       audio = () => proxy; muted = false;
       fn();
       const d = (await ctx.startRendering()).getChannelData(0);
-      let s = 0, peak = 0;
-      for (let i = 0; i < d.length; i++) { s += d[i] * d[i]; const v = Math.abs(d[i]); if (v > peak) peak = v; }
-      return { rms: Math.sqrt(s / d.length), peak };
+      let s = 0, peak = 0, over = 0;
+      for (let i = 0; i < d.length; i++) {
+        const v = Math.abs(d[i]); if (v > peak) peak = v; if (v >= 0.999) over++;
+        s += d[i] * d[i];
+      }
+      return { rms: Math.sqrt(s / d.length), peak, over };
     };
     const one = async fn => {
       const all = await render(fn), hi = await render(fn, 'hi'), body = await render(fn, 'body');
-      return { rms: +all.rms.toFixed(4), peak: +all.peak.toFixed(3),
+      return { rms: +all.rms.toFixed(4), peak: +all.peak.toFixed(3), over: all.over,
                hiPct: +(hi.rms / all.rms * 100).toFixed(1), body: +body.rms.toFixed(4) };
     };
     const r = { nuke: await one(() => sndBoom(30)), bomb: await one(() => sndBoom(BOMB_R)),
-                smash: await one(() => sndSmash()) };
+                smash: await one(() => sndSmash()),
+                fall1: await one(() => sndFall()),
+                fall4: await one(() => { for (let i = 0; i < 4; i++) sndFall(); }),
+                fall20: await one(() => { for (let i = 0; i < 20; i++) sndFall(); }),
+                nukeHit: await one(() => { sndBoom(30); for (let i = 0; i < 20; i++) sndFall(); }) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
   });
@@ -4956,6 +4963,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      snd.bomb.rms < snd.nuke.rms && Math.abs(snd.bomb.hiPct - snd.nuke.hiPct) < 3,
      '炸彈 rms ' + snd.bomb.rms + '、核彈 ' + snd.nuke.rms +
      '（高頻占比 ' + snd.bomb.hiPct + '% vs ' + snd.nuke.hiPct + '%）');
+
+  /* 「炸空地還好、炸到建築就刺耳」的根源不是爆炸，是被同一發掀倒的那一排小人：
+     二十聲 sndFall 是二十個從相位 0 起跳的同頻方波，同相疊起來峰值 0.047 → 0.95
+     （幾乎滿刻度的方波，比爆炸本身的 0.14 刺得多）。
+     現在同一支音效 0.06 秒內最多疊 3 個，超過的不放，所以 4 個跟 20 個一樣大。 */
+  ok('一排小人同時被掀倒，不會疊成一聲滿刻度的方波',
+     snd.fall20.peak < 0.2 && Math.abs(snd.fall20.peak - snd.fall4.peak) < 0.03 &&
+     snd.fall4.peak > snd.fall1.peak,
+     '1 個 peak ' + snd.fall1.peak + '、4 個 ' + snd.fall4.peak + '、20 個 ' + snd.fall20.peak);
+  ok('核彈打在建築上那一幀不會破表',
+     snd.nukeHit.peak < 0.25 && snd.nukeHit.over === 0,
+     '爆炸＋20 人跌倒 peak ' + snd.nukeHit.peak + '、rms ' + snd.nukeHit.rms +
+     '（爆炸自己 ' + snd.nuke.peak + '）');
 
   /* ══════════ 視角操作 ══════════ */
   head('視角操作');

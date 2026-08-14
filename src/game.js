@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.44.1';
+const VERSION = '1.44.2';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -65,8 +65,30 @@ function audio() {
   if (AC && AC.state === 'suspended') AC.resume();
   return AC;
 }
-function tone(freq, dur, type, vol, slide) {
+/* 同一瞬間放同一支音效，波形會「同相疊加」：每個 OscillatorNode 都從相位 0 起跳、
+   頻率又一模一樣，N 個疊起來就是振幅 N 倍的同一個波。
+   一發核彈打在建築上會同時掀倒二十個小人 → 二十個一模一樣的 200Hz 方波
+   → 實測峰值 0.047 疊成 0.95，幾乎滿刻度的方波。**這才是「炸到建築特別刺耳」的來源**，
+   不是爆炸本身（爆炸自己只有 0.144）；炸空地時附近沒那麼多人，所以聽起來就沒事。
+   所以同一支音效在 VOICE_WIN 秒內最多疊 VOICE_MAX 個，超過的直接不放——
+   二十個一模一樣的聲音本來也聽不出是二十個，只會變大聲。
+   計數表綁在 context 上：離線量測時每次都是新的 context（currentTime 恆為 0），
+   不跟著換的話第二次之後全部會被當成「同一瞬間」擋掉。 */
+const VOICE_WIN = 0.06, VOICE_MAX = 3;
+let voiceCtx = null;
+const voices = new Map();
+function voiceOK(key, c) {
+  if (voiceCtx !== c) { voices.clear(); voiceCtx = c; }
+  const v = voices.get(key);
+  if (!v || c.currentTime - v.t > VOICE_WIN) { voices.set(key, { t: c.currentTime, n: 1 }); return true; }
+  if (v.n >= VOICE_MAX) return false;
+  v.n++; return true;
+}
+/* key：把「同一支音效」歸成同一組。不給的話用波形＋音高當 key，
+   但音高有抖動的那些（跌倒聲）每次都會算成不同組，所以那種要自己指定。 */
+function tone(freq, dur, type, vol, slide, key) {
   const c = audio(); if (!c || muted) return;
+  if (!voiceOK(key || (type || 'square') + Math.round(freq), c)) return;
   const o = c.createOscillator(), g = c.createGain();
   o.type = type || 'square'; o.frequency.value = freq;
   if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq * slide), c.currentTime + dur);
@@ -76,6 +98,7 @@ function tone(freq, dur, type, vol, slide) {
 }
 function noise(dur, vol, cut) {
   const c = audio(); if (!c || muted) return;
+  if (!voiceOK('noise' + (cut || 900), c)) return;
   const n = Math.floor(c.sampleRate * dur);
   const buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
   for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
@@ -88,7 +111,9 @@ function noise(dur, vol, cut) {
 function sndPlace() { const p = bp ? placedCnt / bp.slots.length : 0; tone(420 + p * 620, 0.06, 'square', 0.045); }
 function sndSmash() { noise(0.42, 0.3, 1500); tone(78, 0.36, 'sawtooth', 0.1, 0.35); }
 function sndDone() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.22, 'triangle', 0.07), i * 110)); }
-function sndFall() { tone(200, 0.16, 'square', 0.05, 0.5); }
+/* 跌倒聲每次抽一個音高：一排人被同一發掀倒時，同音高的那幾聲會疊成「一聲比較大的」，
+   抖開之後才聽得出是好幾個人各跌各的（音高抖開也順便讓它們不再完全同相）。 */
+function sndFall() { tone(rr(170, 245), 0.16, 'square', 0.05, 0.5, 'fall'); }
 function sndSwing() { tone(160, 0.3, 'sine', 0.06, 3.2); }
 function sndWind() { noise(1.6, 0.14, 480); }
 /* 點火：短促的「噗」一聲。只在點下去那一刻響，每塊都響會變成一片白噪音 */
