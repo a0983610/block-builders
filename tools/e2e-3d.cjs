@@ -1013,6 +1013,75 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('走路時鞋跟著同一隻腿擺，而且擺得比腿更遠',
      build.same && build.far > 0.05,
      '鞋比腿多往前 ' + build.far + '（鞋離髖 0.36、腿離髖 0.21）');
+  /* ── 不從蓋好的部分中間穿過去（v1.52）────────────────────────
+     以前 pick／build 是兩點拉直線、站位只往外推 1.3 格，於是搬積木的人整趟都在
+     建築裡面走，站位還常常落在牆裡（舊版實測：城堡 32%、聖母院 42% 的人-幀在牆裡）。
+     三件事一起改：站位退到外緣、路線繞開、拋物線跨過中間的牆。
+     這裡量的是「人-幀」與「拋出去的積木有沒有從牆裡穿過去」。 */
+  const route = await page.evaluate(() => {
+    const run = name => {
+      shapePick = SHAPES.findIndex(s => s.n === name);
+      targetCnt = 3000; setWorkerCount(20); startBuild(true);
+      let frames = 0, inWall = 0, arcs = 0, arcHit = 0;
+      const seen = new Set();
+      for (let i = 0; i < 2400 && phase !== 'done'; i++) {
+        step(0.05);
+        if (i % 4 === 0) for (const w of workers) {
+          if (w.st !== 'pick' && w.st !== 'build' && w.st !== 'wait') continue;
+          frames++;
+          // 腳邊那兩層有已就位的積木 = 人卡在建築裡
+          if (blockAt(w.x, HB, w.z) || blockAt(w.x, 1 + HB, w.z)) inWall++;
+        }
+        for (const b of blocks) {
+          if (b.st !== 2 || !b.arc || seen.has(b)) continue;
+          seen.add(b); arcs++;
+          const a = b.arc;
+          for (let k = 5; k < 37; k++) {          // 掐頭去尾：出手與落點本來就貼著積木
+            const u = k / 40;
+            const y = a.y0 + (a.y1 - a.y0) * u + Math.sin(u * Math.PI) * a.peak;
+            if (blockAt(a.x0 + (a.x1 - a.x0) * u, y, a.z0 + (a.z1 - a.z0) * u)) { arcHit++; break; }
+          }
+        }
+      }
+      return { name, placed: placedCnt,
+               inWall: +(inWall / Math.max(1, frames) * 100).toFixed(2),
+               arc: +(arcHit / Math.max(1, arcs) * 100).toFixed(2) };
+    };
+    return ['中世紀城堡', '巴黎聖母院'].map(run);
+  });
+  ok('施工中不會有人在蓋好的積木裡走動',
+     route.every(r => r.inWall < 8),
+     route.map(r => r.name + ' ' + r.inWall + '%').join('、') + '（舊版 32%／42%）');
+  ok('拋出去的積木不會從牆裡穿過去',
+     route.every(r => r.arc < 6),
+     route.map(r => r.name + ' ' + r.arc + '%').join('、') + '（舊版 20%／45%）');
+
+  /* 站位本身：拿蓋好的整座來算，每個格子的站位都不該落在積木裡。
+     實心造型的正中央退到外緣要超過 TOSS_MAX 格，那種會退回原本的做法（見 standPos）。 */
+  const stand = await page.evaluate(() => {
+    const run = name => {
+      shapePick = SHAPES.findIndex(s => s.n === name);
+      targetCnt = 3000; startBuild(true); completeNow();
+      let n = 0, bad = 0, out = 0, far = 0;
+      for (const s of bp.slots) {
+        if (s.y < 2) continue;                   // 蓋第 0、1 層時周圍還是空地
+        n++;
+        const p = standPos(s);
+        if (footBlocked(p.x, p.z)) bad++;        // 站位在積木裡（＝退不出來的那種）
+        const d = Math.hypot(p.x - s.x, p.z - s.z);
+        if (d > 1.31) out++;                     // 有退到外緣
+        if (d > 11.31) far++;                    // 超過 TOSS_MAX 還在退（不該發生）
+      }
+      return { name, n, bad: +(bad / n * 100).toFixed(1), out: +(out / n * 100).toFixed(1), far };
+    };
+    return ['中世紀城堡', '台北 101'].map(run);
+  });
+  ok('內部的格子會退到外緣站，退不出來的才照舊走進去',
+     stand.every(r => r.bad < 25 && r.out > 25 && r.far === 0),
+     stand.map(r => r.name + '：退到外緣 ' + r.out + '%、站位仍在積木裡 ' + r.bad + '%').join('　'));
+
+  await reset(page, { shape: '吉薩金字塔', cnt: 400, workers: 16, scale: 1 });
+  await sim(page, 200);
   await sim(page, 900);
   const b2 = await st(page);
   ok('進度持續往上', b2.set > b1.set, b1.set + ' → ' + b2.set + ' / ' + b2.total);

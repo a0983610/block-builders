@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.51.0';
+const VERSION = '1.52.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -345,6 +345,20 @@ function blockAt(x, y, z) {
   if (gx < 0 || gy < 0 || gz < 0 || gx > gMaxX || gy > gMaxY || gz > gMaxZ) return false;
   const i = bp.at.get(gkeyOf(gx, gy, gz));
   return i !== undefined && bp.slots[i].filled;
+}
+/* 站在這個位置會不會卡進建築裡。小人約 2.2 格高，頭上還頂著一塊建材（頂到 3 格左右），
+   所以要看腳邊三層；再高的樓層是從頭頂上過的，不擋路。
+   只看兩層的話，人會站到挑出來的樓板底下，手上那塊建材整個埋在樓板裡。 */
+function footBlocked(x, z) {
+  return blockAt(x, HB, z) || blockAt(x, 1 + HB, z) || blockAt(x, 2 + HB, z);
+}
+/* 這根柱子從地面往上「連續」疊到第幾層（沒有就 −1）。中間斷掉就不再往上算：
+   斷掉上面那些是挑出去的樓板、拱門的上緣，積木是從它們**底下**穿過去的，不是翻過去。
+   算成整根最高的話，台北 101 的裙樓格子會被要求拋過四十層高的塔身。 */
+function colTop(x, z) {
+  let gy = -1;
+  while (gy < gMaxY && blockAt(x, gy + 1 + HB, z)) gy++;
+  return gy;
 }
 
 function pickShape() {
@@ -770,6 +784,8 @@ function newWorker(i) {
     x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d, a: 0, ph: Math.random() * 6, gait: 0,
     tone: i, st: 'idle', block: -1, slot: -1, tx: 0, tz: 0,
     wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, pause: 0, leg: 0,
+    /* 上工的路：clear 是「直線走得通」，chk 是還有多久要重算一次（見 buildWalk） */
+    chk: 0, clear: 0,
     /* 被工具波及時才用得到：air 是正在飛，vx/vy/vz 是彈道，spin 是翻滾角速度，
        lit 是「落地要著火」的記號，burn 是還要燒幾秒，burnK 是身上焦黑的深淺。 */
     air: 0, vx: 0, vy: 0, vz: 0, spin: 0, lit: 0, burn: 0, burnK: 0,
@@ -962,6 +978,10 @@ function findSlot() {
     if (!S[i].filled && S[i].claimed < 0 && canPlace(i)) return i;
   return -1;
 }
+/* 挑「離我最近」的那一塊建材。試過改成「我走過去 ＋ 搬到定位」加起來最短，
+   想省掉繞路的成本，結果兩邊都更差：那個判準會挑到躺在建築腳邊的料，
+   人為了撿它反而走進工地裡（實測台北 101 的「站在牆裡」從 0.35% 跳到 5.98%，
+   同樣時間蓋的塊數也少了一成）。 */
 function findBlock(wx, wz) {
   let best = -1, bd = Infinity;
   for (let i = 0; i < blocks.length; i++) {
@@ -972,15 +992,31 @@ function findBlock(wx, wz) {
   }
   return best;
 }
-/* 放置時小人站的位置：從工地中心往外推，站在建築外圈才不會卡進牆裡 */
+/* ── 放置時小人站的位置 ─────────────────────────────────
+   從格子往外推 STAND_OUT 格。但對「建築內部」的格子，往外推一格還是在牆裡面——
+   v1.51 之前就是這樣：中世紀城堡有 45% 的格子把人擺進牆裡，吉薩金字塔是 100%。
+   小人放大之後這件事終於看得見了（頭卡在牆上、只露出安全帽）。
+
+   現在改成沿著半徑往外掃，找**從那裡到工地外圈整段都沒有積木**的第一個位置：
+   不能只找「第一個空的柱子」，中庭那種地方是空的，但外面還隔著一圈牆，
+   走進去照樣得穿牆。掃不到（實心造型的正中央）就退回原本的做法——
+   拋太遠的話那不是工人是投石機，而且那種地方蓋完也看不到裡面。 */
+const STAND_OUT = 1.3;              // 站在格子外面多遠
+const TOSS_MAX = 10;                 // 最多退到離格子幾格，超過就照舊走進去
 function standPos(s) {
   const d = Math.hypot(s.x, s.z);
-  const r = Math.max(1.5, d + 1.3);
-  if (d < 0.001) return { x: r, z: 0 };
-  return { x: s.x / d * r, z: s.z / d * r };
+  const ux = d < 0.001 ? 1 : s.x / d, uz = d < 0.001 ? 0 : s.z / d;
+  const near = Math.max(1.5, d + STAND_OUT);
+  const far = Math.max(near, siteR + KEEP);
+  let r = near;
+  for (let t = near; t <= far; t += 0.5)              // 由內往外掃，記住最外面那道牆
+    if (footBlocked(ux * t, uz * t)) r = t + 1;
+  if (r > d + STAND_OUT + TOSS_MAX) r = near;         // 退太遠了：照舊走進去
+  return { x: ux * r, z: uz * r };
 }
-function walkTo(w, dt) {
-  const dx = w.tx - w.x, dz = w.tz - w.z;
+function walkTo(w, dt) { return stepTo(w, w.tx, w.tz, dt); }
+function stepTo(w, tx, tz, dt) {
+  const dx = tx - w.x, dz = tz - w.z;
   const d = Math.hypot(dx, dz);
   if (d < REACH) { w.gait += (0 - w.gait) * Math.min(1, dt * 8); return true; }
   const sp = WALK * dt;
@@ -989,6 +1025,62 @@ function walkTo(w, dt) {
   w.ph += dt * 11;
   w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
   return false;
+}
+
+/* ── 上工的走法 ─────────────────────────────────────────
+   閒晃早就會繞開建築了（strollTo），但 pick／build 一直是兩點拉直線——
+   於是搬積木的人整段路都從蓋好的部分中間穿過去。建築一樣當成半徑 siteR 的一根柱子：
+
+     人在柱子裡、目標不在同一條半徑上 → 先沿半徑走出來
+     兩端都在柱子外                   → 交給 strollTo 那套切線閃避
+     要走進柱子裡                     → 先繞到目標那條半徑的外圈，再直直走進去
+
+   最後那一段之所以是通的，是因為 standPos 挑的位置保證「從那裡往外到外圈沒有積木」。
+   對得準不準用「離目標那條半徑線多遠」判斷，不用角度：站在中心附近時角度會亂跳。 */
+/* 從現在的位置直直走到目標，腳邊會不會撞到已經蓋好的部分 */
+function pathClear(w) {
+  const dx = w.tx - w.x, dz = w.tz - w.z;
+  const n = Math.ceil(Math.hypot(dx, dz) / 0.7);
+  for (let i = 1; i <= n; i++) {
+    const t = i / n;
+    if (footBlocked(w.x + dx * t, w.z + dz * t)) return false;
+  }
+  return true;
+}
+const PATH_CHK = 0.25;              // 隔多久重算一次「直線通不通」
+const PATH_EYE = 1.3;               // 每一幀往前看多遠（走得比重算快，會撞上新蓋的牆）
+function buildWalk(w, dt) {
+  /* 直線走得通就直線走。一律繞外圈的話，蓋一座要多花兩三倍時間（實測城堡的 200 秒
+     從 1163 塊掉到 405 塊），而多數路線本來就沒被擋到。
+     要重算是因為建築正在長：走到一半可能被新蓋起來的一面牆擋住。整條路每 0.25 秒
+     重算一次，另外每一幀看一眼正前方——不看的話，那 0.25 秒足夠他走進牆裡 1.7 格。 */
+  w.chk -= dt;
+  if (w.clear) {
+    const dx = w.tx - w.x, dz = w.tz - w.z, d = Math.hypot(dx, dz);
+    if (d > REACH && footBlocked(w.x + dx / d * PATH_EYE, w.z + dz / d * PATH_EYE)) w.chk = 0;
+  }
+  if (w.chk <= 0) { w.chk = PATH_CHK; w.clear = pathClear(w) ? 1 : 0; }
+  if (w.clear) return walkTo(w, dt);
+
+  const outer = siteR + KEEP;
+  const pr = Math.hypot(w.x, w.z), tr = Math.hypot(w.tx, w.tz);
+  const aligned = tr < 0.6 ||
+    (w.x * w.tx + w.z * w.tz > 0 && Math.abs(w.x * w.tz - w.z * w.tx) / tr < 0.6);
+  if (pr < outer - 0.01 && !aligned) {              // 人在建築裡：先出來再說
+    ringWalk(w, Math.atan2(w.z, w.x), outer, dt);
+    return false;
+  }
+  if (tr >= outer) {                                // 目標在外面（撿積木多半是這種）
+    const leg = w.leg;
+    const done = strollTo(w, dt);
+    w.leg = leg;             // 這段是上工的路，不算進閒晃里程（那個是拿來算發呆多久的）
+    return done;
+  }
+  if (!aligned || pr > outer + 0.5) {               // 要進去：先繞到那條半徑的外圈
+    ringWalk(w, Math.atan2(w.tz, w.tx), outer, dt);
+    return false;
+  }
+  return walkTo(w, dt);
 }
 
 /* ── 逃命 ─────────────────────────────────────────────────
@@ -1248,7 +1340,7 @@ function updWorker(w, wi, dt) {
       const b = blocks[w.block];
       if (!b || b.st !== FREE) { releaseWorker(w); return; }
       w.tx = b.x; w.tz = b.z;
-      if (walkTo(w, dt)) {
+      if (buildWalk(w, dt)) {
         if (b.cell) gridDel(b);
         b.st = CARRY; b.rest = false; w.carry = true; stats.carried++;
         carryPose(w, b);                              // 立刻舉起來，不然有一幀還黏在地上
@@ -1261,14 +1353,24 @@ function updWorker(w, wi, dt) {
       const b = blocks[w.block];
       if (!b || b.st !== CARRY) { releaseWorker(w); return; }
       carryPose(w, b);
-      if (walkTo(w, dt)) {
+      if (buildWalk(w, dt)) {
+        /* 走過來的這幾秒建築一直在長，站位可能已經被別人補起來了。
+           重新挑一個再走過去——就這樣從牆裡把積木丟出去的話，出手那一下整塊在牆裡。
+           挑回同一個位置（實心造型的正中央就會這樣）就認了，不然會在原地來回。 */
+        if (footBlocked(w.x, w.z)) {
+          const st2 = standPos(bp.slots[w.slot]);
+          if (Math.hypot(st2.x - w.x, st2.z - w.z) > 1) {
+            w.tx = st2.x; w.tz = st2.z; w.chk = 0;
+            break;
+          }
+        }
         const s = bp.slots[w.slot];
         w.a = Math.atan2(-w.x, -w.z);                 // 面向建築再丟
         b.st = TOSS;
         b.arc = {
           t: 0, dur: 0.34 + Math.hypot(s.x - w.x, s.z - w.z) * 0.02 + s.y * 0.012,
           x0: b.x, y0: b.y, z0: b.z, x1: s.x, y1: s.y + HB, z1: s.z,
-          peak: Math.max(1.6, (s.y + HB - b.y) * 0.45 + 1.8)
+          peak: tossPeak(b.x, b.y, b.z, s)
         };
         const pal = bp.pal[s.c % bp.pal.length];
         b.tr = ((pal >> 16) & 255) / 255; b.tg = ((pal >> 8) & 255) / 255; b.tb = (pal & 255) / 255;
@@ -1283,6 +1385,32 @@ function updWorker(w, wi, dt) {
       if (w.wait <= 0) { w.block = -1; w.slot = -1; w.st = 'idle'; }
       break;
   }
+}
+/* 拋物線的頂點。只看高度差是不夠的（v1.51 之前那版就是）：人退到外緣之後，
+   出手點跟目標之間隔著下面幾層的牆——城堡第 10 層那種，飛到三成路程時高度才 9.0，
+   而那裡的牆有 10 格高，積木會從牆裡穿出去。變成「積木穿牆」換掉「人穿牆」，沒有比較好看。
+   所以沿路取樣，每一點都算「頂點要多高才過得去」，取最大的那個。
+   擋路的高度用 colTop（從地面連續疊上來的那一段），挑出去的樓板不算——
+   那些是從底下穿過去的。 */
+function tossPeak(x0, y0, z0, s) {
+  const y1 = s.y + HB;
+  const dx = s.x - x0, dz = s.z - z0;
+  const dist = Math.hypot(dx, dz);
+  let peak = Math.max(1.6, (y1 - y0) * 0.45 + 1.8);
+  /* 取樣點要密，而且不能只照距離給：出手後那一小段爬得最急，
+     「要多高才過得去」在 t 很小的時候最大（分母 sin(πt) 趨近 0）。
+     照距離每半格取一點的話，2 格的拋擲只有 6 點，t=0.13 那個尖峰整個漏掉——
+     實測台北 101 有 5.6% 的積木就是這樣從旁邊那道牆穿出去的。 */
+  const n = 24;
+  for (let i = 1; i < n; i++) {
+    const t = i / n;
+    const cy = colTop(x0 + dx * t, z0 + dz * t);
+    if (cy < 0) continue;
+    // 積木中心要比那格的中心高 1.1（一格是 1，剛好 1 是擦過去）
+    const need = (cy + 1.1 - y0 - (y1 - y0) * t) / Math.sin(t * Math.PI);
+    if (need > peak) peak = need;
+  }
+  return Math.min(peak, 26);
 }
 /* 搬運姿勢：建材舉在頭頂上方，隨腳步微幅晃動 */
 function carryPose(w, b) {
