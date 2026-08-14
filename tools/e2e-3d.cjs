@@ -852,10 +852,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const SAMPLE = fs.readFileSync(path.join(ROOT, 'blueprints/範例-小教堂.js'), 'utf8')
                    .replace("name: '範例小教堂'", "name: '貼上來的小屋'");
   const pasteInto = async src => {
-    await vp.evaluate(t => {
-      document.getElementById('pasteBox').open = true;
-      document.getElementById('paste').value = t;
-    }, src);
+    // 不強制展開：貼上區要自己一直開著（v1.50.1），這裡幫它打開就驗不到那件事
+    await vp.evaluate(t => { document.getElementById('paste').value = t; }, src);
     await vp.click('#load');
     await vp.waitForTimeout(200);
     return vp.evaluate(() => ({
@@ -875,9 +873,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      !pGood.bad && pGood.name === '貼上來的小屋' && pGood.drawn > 100 &&
      pGood.picked.indexOf('貼上來的小屋') > 0 && pGood.shapes === ALL_SHAPES + 1,
      pGood.msg + '（畫了 ' + pGood.drawn + ' 塊）');
-  ok('貼上之後順手把診斷也跑掉了',
-     pGood.rep === '藍圖：貼上來的小屋（自訂 · gen）' && !pGood.open,
-     '報告第二行「' + pGood.rep + '」，貼上區已收起');
+  /* 載入成功不去動貼上區：下一輪還要在那段文字上改，自動收起來的話每次都得先點開 */
+  ok('貼上之後順手把診斷也跑掉了，而且貼上區還開著',
+     pGood.rep === '藍圖：貼上來的小屋（自訂 · gen）' && pGood.open,
+     '報告第二行「' + pGood.rep + '」，貼上區 open=' + pGood.open);
   const pAgain = await pasteInto(SAMPLE.replace("'#4a5a68'", "'#3a6fc0'"));
   ok('同名再貼一次是蓋掉，不會愈貼愈多',
      !pAgain.bad && pAgain.shapes === ALL_SHAPES + 1 && pAgain.name === '貼上來的小屋',

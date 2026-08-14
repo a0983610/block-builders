@@ -115,7 +115,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.50.0';
+const VIEWER_VER = '1.50.1';
 
 const $ = id => document.getElementById(id);
 
@@ -327,8 +327,9 @@ $('load').addEventListener('click', () => {
     msg.className = 'on good';
     msg.textContent = '✔ 已載入「' + added.map(a => a.name).join('、') + '」' +
       (added.length > 1 ? '（' + added.length + ' 份，選的是最後一份）' : '') + '，下面是它的診斷。';
-    // 成功就把貼上區收起來，把版面讓給報告（失敗時留著，那段文字還要改）
-    $('pasteBox').open = false;
+    /* 載完不動貼上區（v1.50.1）：這一頁的節奏是「貼上 → 看 → 改 → 再貼」，
+       每次都自動收起來的話，下一輪要先把它點開才改得到那段文字。
+       要讓版面給報告的人自己點標題收起來就好——收起來的狀態也不會被這裡蓋回去。 */
   } catch (e) {
     msg.className = 'on bad';
     msg.textContent = '✘ ' + ((e && e.message) ? e.message : e);
