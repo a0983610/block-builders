@@ -37,7 +37,7 @@ const APP = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
 const OUT = path.join(__dirname, '.e2e-out');
 const VIEW = { width: 1280, height: 800 };
 const SHAPE_COUNT = 48;          // blueprints.js 內建的 SHAPES 數量
-const CUSTOM_COUNT = 1;          // blueprints/ 資料夾裡預設附的自訂藍圖（範例小木屋）
+const CUSTOM_COUNT = 1;          // blueprints/ 資料夾裡預設附的自訂藍圖（範例小教堂）
 const ALL_SHAPES = SHAPE_COUNT + CUSTOM_COUNT;
 
 /* ---------- 記分板 ---------- */
@@ -403,9 +403,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const custom = await page.evaluate(() => {
     const cs = SHAPES.filter(s => s.custom);
     const i = SHAPES.findIndex(s => s.custom);
-    const sizes = [300, 1000, 3000].map(t => makeBlueprint(i, t).slots.length);
+    // 面板的三檔就是玩家真的會設的值，拿它們來驗縮放
+    const sizes = [1800, 3000, 9000].map(t => makeBlueprint(i, t).slots.length);
     /* 參數化的重點：每個尺寸都重畫一次，所以小尺寸也該畫得出每一種部件
-       （門、窗、煙囪各自是不同的顏色索引，用到的顏色沒少就代表部件沒消失） */
+       （門、窗、十字架各自是不同的顏色索引，用到的顏色沒少就代表部件沒消失） */
     const colsAt = t => [...new Set(makeBlueprint(i, t).slots.map(s => s.c))].sort().join('');
     const parts = { min: colsAt(300), max: colsAt(3000) };
     const bpc = makeBlueprint(i, 1000);
@@ -431,17 +432,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '「' + custom.name + '」在第 ' + custom.menuAt + ' 項（第 0 項是隨機）、value=' +
      custom.menuVal + '（SHAPES 第 ' + custom.i + ' 個），選單共 ' + custom.opts +
      ' 項（隨機 + ' + ALL_SHAPES + ' 座）');
-  ok('自訂藍圖會跟著建材數縮放',
-     custom.sizes[0] < 500 && custom.sizes[2] > 2400 && custom.sizes[2] > custom.sizes[0] * 4,
-     '目標 300/1000/3000 得到 ' + custom.sizes.join(' / '));
+  /* 面板三檔各要落在目標的 ±10% 內。這是「參數化寫法真的追得上目標塊數」的證據，
+     光看「大的比小的多」是不夠的——係數沒對齊時塊數會一階跳掉一大截。 */
+  ok('自訂藍圖會跟著建材數縮放，三檔都對得上',
+     [1800, 3000, 9000].every((t, k) => Math.abs(custom.sizes[k] / t - 1) < 0.1),
+     '目標 1800/3000/9000 得到 ' + custom.sizes.join(' / ') + '（偏差 ' +
+     [1800, 3000, 9000].map((t, k) => Math.round((custom.sizes[k] / t - 1) * 100) + '%').join('／') + '）');
   /* 範例藍圖示範的是參數化寫法（gen(v, s) 按 s 重畫），不是固定解析度的字元圖——
      說明文件叫 AI 這樣寫，附的範例自己要先做到。 */
   ok('範例藍圖是參數化寫的，縮到最小也不會掉部件',
-     custom.isGen && custom.parts.min === custom.parts.max && custom.parts.min.length === 5,
+     custom.isGen && custom.parts.min === custom.parts.max && custom.parts.min.length === 6,
      (custom.isGen ? 'gen(v,s)' : '字元圖') + '：300 塊用到顏色 ' + custom.parts.min +
      '、3000 塊用到 ' + custom.parts.max);
   ok('自訂藍圖的顏色與貼地層都正常',
-     custom.pal === 5 && custom.ground > 0 && custom.cols.every(c => c >= 0 && c < 5),
+     custom.pal === 6 && custom.ground > 0 && custom.cols.every(c => c >= 0 && c < 6),
      '顏色 ' + custom.pal + ' 種（用到 ' + custom.cols.join(',') + '）、貼地 ' +
      custom.ground + ' 格、高 ' + custom.h + '、半徑 ' + custom.r);
   /* 格式錯的檔案不能把整個遊戲弄壞：跳過那一份、在 console 留警告就好。
@@ -613,7 +617,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 體檢報告：對好的藍圖不該有必修，對壞的要指名問題並附修法。
      每一種壞法都真的做一份藍圖出來測——這幾種就是 AI 產藍圖最常見的死法。 */
   const diag = await page.evaluate(() => {
-    const good = checkBlueprint('範例小木屋', { ver: VERSION });
+    const good = checkBlueprint('範例小教堂', { ver: VERSION });
     const n0 = SHAPES.length;
     const mk = (name, def) => { def.name = name; return customBlueprint(def); };
     // ① gen 直接丟例外
@@ -648,9 +652,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return r;
   });
   ok('好的藍圖檢查起來沒有必修', diag.good.fails === 0,
-     '範例小木屋：' + diag.good.fails + ' 個必修、' + diag.good.warns + ' 個提醒');
+     '範例小教堂：' + diag.good.fails + ' 個必修、' + diag.good.warns + ' 個提醒');
   ok('報告是純文字、開頭帶版本號',
-     /^=== 積木小人 · 藍圖診斷 v\d+\.\d+\.\d+ ===\n藍圖：範例小木屋（自訂 · gen）/.test(diag.good.text) &&
+     /^=== 積木小人 · 藍圖診斷 v\d+\.\d+\.\d+ ===\n藍圖：範例小教堂（自訂 · gen）/.test(diag.good.text) &&
      diag.good.text.indexOf('<') < 0,
      diag.good.text.split('\n')[0]);
   ok('報告會列出四個尺寸的實得塊數（含建材上限那一階）',
@@ -720,7 +724,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      要自己清乾淨——不清的話原點會冒出 80 個小人。 */
   head('藍圖預覽頁');
   const vpErr = [];
-  const vp = await browser.newPage({ viewport: VIEW });
+  // acceptDownloads：那一頁的「下載畫面」要真的存得出檔案才驗得到
+  const vp = await browser.newPage({ viewport: VIEW, acceptDownloads: true });
   vp.on('pageerror', e => vpErr.push('pageerror: ' + e.message));
   vp.on('console', m => { if (m.type() === 'error') vpErr.push('console: ' + m.text()); });
   await vp.goto('file:///' + path.join(ROOT, '藍圖預覽.html').replace(/\\/g, '/'));
@@ -808,10 +813,44 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('預覽頁的版本號跟 src/game.js 一致', vpBoot.ver === await page.evaluate(() => VERSION),
      '預覽頁 v' + vpBoot.ver);
 
+  /* v1.49 的版面：貼上框是這一頁的主角（AI 給的藍圖動輒上百行），
+     報告是拿來複製的不是拿來讀完的，所以它比貼上框矮。 */
+  const vpBox = await vp.evaluate(() => {
+    const h = id => Math.round(document.getElementById(id).getBoundingClientRect().height);
+    const box = document.getElementById('pasteBox');
+    box.open = true;
+    const open = h('side');
+    box.open = false;
+    const shut = h('side');
+    box.open = true;
+    return { paste: h('paste'), rep: h('rep'), open, shut, view: window.innerHeight };
+  });
+  /* 卡片高度跟著內容走：貼上區收起來就該跟著變矮。以前是 top/bottom 都釘住，
+     報告縮小之後下面會留一塊空白。 */
+  ok('貼上框比報告框大，卡片高度跟著內容走',
+     vpBox.paste > vpBox.rep * 1.4 && vpBox.paste > 180 &&
+     vpBox.shut < vpBox.open - 150 && vpBox.shut < vpBox.view - 150,
+     '貼上框 ' + vpBox.paste + 'px、報告 ' + vpBox.rep + 'px；卡片展開 ' + vpBox.open +
+     'px、收起 ' + vpBox.shut + 'px（畫面高 ' + vpBox.view + '）');
+
+  /* 下載畫面：報告講不出「像不像」，那要看圖。這條要驗到真的有一個 PNG 掉下來——
+     canvas 的 drawingBuffer 合成後就被清空，沒有「render 完馬上取」的話會存到全黑或全空。 */
+  const [vpDl] = await Promise.all([
+    vp.waitForEvent('download'),
+    vp.click('#shot')
+  ]);
+  const dlPath = path.join(OUT, 'viewer-shot.png');
+  await vpDl.saveAs(dlPath);
+  const dlSize = fs.statSync(dlPath).size;
+  const dlHead = fs.readFileSync(dlPath).slice(1, 4).toString('latin1');
+  ok('按「下載畫面」真的存得出一張畫面 PNG',
+     dlHead === 'PNG' && dlSize > 20000 && /\.png$/.test(vpDl.suggestedFilename()),
+     '檔名「' + vpDl.suggestedFilename() + '」，' + Math.round(dlSize / 1024) + ' KB');
+
   /* 貼上藍圖：做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，中間不該卡著存檔案 + 編輯 list.js。
      這幾條驗的是那條路的每一種結局，包含 AI 實際輸出長什麼樣（markdown 圍籬 + 檔名那行）。 */
-  const SAMPLE = fs.readFileSync(path.join(ROOT, 'blueprints/範例-小木屋.js'), 'utf8')
-                   .replace("name: '範例小木屋'", "name: '貼上來的小屋'");
+  const SAMPLE = fs.readFileSync(path.join(ROOT, 'blueprints/範例-小教堂.js'), 'utf8')
+                   .replace("name: '範例小教堂'", "name: '貼上來的小屋'");
   const pasteInto = async src => {
     await vp.evaluate(t => {
       document.getElementById('pasteBox').open = true;
@@ -830,15 +869,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       rep: document.getElementById('rep').value.split('\n')[1] || ''
     }));
   };
-  const pGood = await pasteInto('檔名：我的小屋.js\n```js\n' + SAMPLE + '\n```');
-  ok('貼上 AI 給的整段（含 ```js 圍籬與檔名那行）就能預覽',
+  const pGood = await pasteInto('```js\n// 檔名：我的小屋.js\n' + SAMPLE + '\n```');
+  // v1.49 起說明文件要求 AI 整份包成一個 ```js 區塊、第一行是檔名註解——照那個格式貼
+  ok('貼上 AI 給的整個 ```js 區塊（含圍籬與檔名那行）就能預覽',
      !pGood.bad && pGood.name === '貼上來的小屋' && pGood.drawn > 100 &&
      pGood.picked.indexOf('貼上來的小屋') > 0 && pGood.shapes === ALL_SHAPES + 1,
      pGood.msg + '（畫了 ' + pGood.drawn + ' 塊）');
   ok('貼上之後順手把診斷也跑掉了',
      pGood.rep === '藍圖：貼上來的小屋（自訂 · gen）' && !pGood.open,
      '報告第二行「' + pGood.rep + '」，貼上區已收起');
-  const pAgain = await pasteInto(SAMPLE.replace("'#c0483c'", "'#3a6fc0'"));
+  const pAgain = await pasteInto(SAMPLE.replace("'#4a5a68'", "'#3a6fc0'"));
   ok('同名再貼一次是蓋掉，不會愈貼愈多',
      !pAgain.bad && pAgain.shapes === ALL_SHAPES + 1 && pAgain.name === '貼上來的小屋',
      '清單仍是 ' + pAgain.shapes + ' 座（內建 48 + 檔案 1 + 貼上 1）');
@@ -3610,8 +3650,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
       const px = new Uint8Array(w * h * 4);
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      /* 每 5 個像素取一個。以前是每 17 個，取樣數只有六萬、過曝白才一百多點，
+         抖動大到會壓在門檻上（實測同一份程式一次 0.41%、一次 0.25%）。 */
       let n = 0, lit = 0;
-      for (let i = 0; i < px.length; i += 4 * 17) {
+      for (let i = 0; i < px.length; i += 4 * 5) {
         n++;
         if (px[i] > 245 && px[i + 1] > 240 && px[i + 2] > 200) lit++;   // 過曝的白
       }
@@ -3663,8 +3705,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 絕對門檻一路在降：藍圖改瘦（0.5→0.42）讓建築長更高、取景拉遠，1.23% → 0.91%；
      核彈改成炸在接觸點之後，帝國大廈這一發是打在樓頂而不是腳邊，火球在畫面上的
      位置與遮擋都變了，再掉到 0.41%。這裡真正要驗的是「有火球才有過曝白」，
-     所以看的是跟拿掉火球那幀的倍數關係，絕對值只當作「它沒有小到看不見」。 */
-  ok('火球真的亮在畫面上', flash.on.pct > 0.25 && flash.on.pct > flash.off.pct * 3,
+     所以看的是跟拿掉火球那幀的倍數關係，絕對值只當作「它沒有小到看不見」，
+     門檻也就留寬一點（0.25 → 0.15）：那個數字是取樣估計，不是常數。 */
+  ok('火球真的亮在畫面上', flash.on.pct > 0.15 && flash.on.pct > flash.off.pct * 3,
      '同一幀有火球 ' + flash.on.pct.toFixed(2) + '% 過曝、拿掉只剩 ' +
      flash.off.pct.toFixed(2) + '%');
   ok('火球固定吃五個 draw call（每層球殼一個）', flash.on.calls - flash.off.calls === 5,
@@ -4129,14 +4172,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* v1.48：陣在場上的時候就一直撒，而且平均分在每一層。
      “平均”是隨機挑層、機率一樣，所以驗的是「六層都分得到、最少的不會少於最多的一半」，
      不是皮的相等（它本來就是隨機的）。 */
-  /* 「平均」是隨機挑層、機率一樣，所以驗的是「每一層都落在平均值的 ±45% 內」
-     （三次施法約 190 顆分六層，±45% 約是 ±2.8 個標準差），不是硬要它們相等。 */
+  /* 「平均」是隨機挑層、機率一樣，所以門檻要照**取樣數**算，不能用固定的百分比：
+     每層的次數服從二項分佈，σ = √(n·(1/6)·(5/6))，三次施法約 190 顆時 σ≈5.2。
+     容許到 4σ——系統性的偏（某一層拿不到、或某一層拿兩倍）一定抓得到，
+     而純運氣造成的誤判低於萬分之五。用 ±45% 那種固定門檻的話，這條大約 3% 的機率會假失敗
+     （實測跑到一次 16／35／35／31／35／39，那 16 只是運氣）。 */
   const avg = mgStar.each.reduce((a, b) => a + b, 0) / mgStar.each.length;
+  const sd = Math.sqrt(avg * 6 * (1 / 6) * (5 / 6));
   ok('陣在場上就一直撒，而且六層平均分',
-     mgStar.sprinkle > 200 && mgStar.each.every(n => n > avg * 0.55 && n < avg * 1.45) &&
+     mgStar.sprinkle > 200 && mgStar.each.every(n => Math.abs(n - avg) < 4 * sd) &&
      mgStar.lastAt > 5.5 && mgStar.gap <= 2,
      '三次施法一共又撒了 ' + mgStar.sprinkle + ' 顆；滿陣之後那些六層各分到 ' +
-     mgStar.each.join('／') + '（平均 ' + avg.toFixed(1) + '）；最後一顆在 ' +
+     mgStar.each.join('／') + '（平均 ' + avg.toFixed(1) + '，容許 ±' +
+     (4 * sd).toFixed(1) + '）；最後一顆在 ' +
      mgStar.lastAt + ' 秒（爆炸在 6），中間最長斷 ' + mgStar.gap + ' 幀');
   ok('星光是一閃：亮起來快、收得慢',
      mgStar.pops.length > 3 && Math.max(...mgStar.pops) > 0.9 &&

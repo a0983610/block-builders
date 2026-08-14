@@ -17,7 +17,10 @@
     font:14px/1.5 "Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;color:var(--ink)}
   body{background:linear-gradient(#bcd3e0,#e7eef2)}
   #cv{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
-  #side{position:fixed;left:14px;top:14px;bottom:14px;width:388px;z-index:3;
+  /* 高度跟著內容走（bottom:auto）：報告縮小之後，卡片就跟著收短，
+     不會在下面留一塊空白。內容真的比畫面高時才捲動。 */
+  #side{position:fixed;left:14px;top:14px;width:388px;z-index:3;
+    max-height:calc(100% - 28px);overflow:auto;
     display:flex;flex-direction:column;gap:9px;
     background:var(--card);border-radius:16px;padding:14px 16px;
     box-shadow:0 8px 26px rgba(20,30,40,.18);backdrop-filter:blur(3px)}
@@ -37,12 +40,15 @@
   #stat{font-size:12px;line-height:1.7;font-variant-numeric:tabular-nums;
     border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:7px 0}
   #stat b{font-weight:700}
-  #rep{flex:1;min-height:120px;width:100%;resize:none;
+  /* 報告只留讀得到「結論」那幾行的高度：它是拿來複製的，不是拿來讀完的。
+     真要細看可以捲動或複製出去。貼上框才是這一頁要給空間的地方。 */
+  #rep{flex:0 0 auto;height:132px;width:100%;resize:vertical;
     font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre;
     border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:#fff}
   #pasteBox{border:1px solid var(--line);border-radius:10px;padding:7px 9px;background:#fff}
   #pasteBox summary{cursor:pointer;font-size:12.5px;font-weight:700}
-  #paste{width:100%;height:92px;margin:7px 0;resize:vertical;
+  /* AI 給的藍圖動輒上百行，92px 一次只看得到五六行，貼錯了也看不出來 */
+  #paste{width:100%;height:230px;margin:7px 0;resize:vertical;
     font:11.5px/1.45 ui-monospace,Consolas,monospace;
     border:1px solid var(--line);border-radius:8px;padding:7px 8px}
   #pasteMsg{font-size:11.5px;margin-top:6px;display:none}
@@ -87,7 +93,10 @@
   <div id="pasteMsg"></div>
   <div id="stat"></div>
   <textarea id="rep" readonly spellcheck="false" placeholder="按「🔍 檢查藍圖」產出報告，整段複製貼回給產出這份藍圖的 AI。"></textarea>
-  <div class="btns"><button id="copy">複製報告</button></div>
+  <div class="btns">
+    <button id="copy">複製報告</button>
+    <button id="shot">下載畫面</button>
+  </div>
   <div class="hint">拖曳轉視角　·　滾輪縮放　·　貼上的藍圖只活在這一頁（要留著就存進 <code>blueprints/</code> 並加進 <code>list.js</code>）</div>
 </div>
 
@@ -106,7 +115,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.48.0';
+const VIEWER_VER = '1.49.0';
 
 const $ = id => document.getElementById(id);
 
@@ -326,6 +335,30 @@ $('load').addEventListener('click', () => {
   }
 });
 $('copy').addEventListener('click', copyReport);
+
+/* 下載目前畫面：報告只講得出塊數與結構，講不出「像不像」——那要看圖。
+   存成 PNG 之後跟報告一起丟回去給 AI，它才知道自己畫出來的是什麼樣子。
+   canvas 的 drawingBuffer 在合成之後就被清掉了（preserveDrawingBuffer 預設 false），
+   所以一定要在同一個工作裡先 render 再取，不能等下一幀。
+   data: URL 直接掛 <a download> 有些瀏覽器會擋，轉成 blob 最保險（file:// 也通）。 */
+function shotPng() {
+  ENG.render();
+  const url = ENG.three.renderer.domElement.toDataURL('image/png');
+  const bin = atob(url.slice(url.indexOf(',') + 1));
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  const href = URL.createObjectURL(new Blob([buf], { type: 'image/png' }));
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = (bp ? bp.name : '藍圖') + '-' + (bp ? bp.slots.length : 0) + '塊.png';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
+  $('shot').textContent = '已下載 ✓';
+  setTimeout(() => { $('shot').textContent = '下載畫面'; }, 1600);
+}
+$('shot').addEventListener('click', shotPng);
 /* 「只看輪廓」＝把草地那三層藏起來。引擎沒有給那幾顆網格取名字，
    但上面已經把其他東西全餵空的了，所以「現在還看得見、又不是積木的網格」
    就是草皮／切邊／土層這三顆。開場記下來，之後只切它們。 */
