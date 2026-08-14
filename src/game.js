@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.50.1';
+const VERSION = '1.51.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -700,7 +700,10 @@ function completeNow() {
     b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
     if (!b.cell) gridAdd(b);
   }
-  for (const w of workers) releaseWorker(w);
+  /* 慶祝計時要跟著歸零，跟「小人自己蓋完」那條路徑一致（見 stepToss）。
+     不歸零的話，上一座已經慶祝完、正在閒晃的人 cheer 還停在 7 秒以上，
+     這一座蓋好的瞬間他們就直接跳過慶祝——一圈只站得到剛加入的那幾個。 */
+  for (const w of workers) { releaseWorker(w); w.cheer = 0; w.pause = 0; }
   dozers = null; ENG.putDozers([]);      // 建築直接長出來了，整地機沒戲唱
   placedCnt = bp.slots.length;
   phase = 'done';
@@ -780,9 +783,10 @@ function newWorker(i) {
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
-    /* 每個人身高略有差異。1.06–1.24 大約是積木邊長的一個半，
-       比原本大一成半——太小的話遠鏡頭下只剩一撮色點，看不出在做什麼。 */
-    scale: rr(1.06, 1.24)
+    /* 每個人身高略有差異。v1.51 整體再放大 1.5 倍（1.06–1.24 → 1.59–1.86）：
+       模型從腳底到帽頂是 1.31，乘上去大約是 2.1–2.4 格，也就是兩塊多積木高。
+       之前那一版遠鏡頭下只剩一撮色點，數不出幾個人、也看不出誰頭上頂著積木。 */
+    scale: rr(1.59, 1.86)
   };
 }
 function setWorkerCount(n) {
@@ -1102,6 +1106,13 @@ const CHEER_T = 7;
 const JUMP_T = 0.62;                // 一次跳躍的週期
 const JUMP_AIR = 0.72;              // 週期裡有多少比例在空中，剩下的是落地停頓
 const JUMP_H = 0.55;                // 跳多高
+/* 圈上一個人分到多寬的弧長。小人放大後連手臂約 1.56 格寬，留一點縫 = 1.9。
+   半徑本來寫死 siteR + 2.6：最小的建築 siteR 只有 7，圈長 60 格分給 60 個人
+   等於每人 1 格——放大之後整圈的人會互相插在一起。 */
+const CHEER_GAP = 1.9;
+function cheerR() {
+  return Math.max(siteR + 2.6, workers.length * CHEER_GAP / (Math.PI * 2));
+}
 
 /* 圈上的位置照「開始慶祝那一刻各自站的角度」分，不是照編號硬分——
    照編號分的話，站在對面的人得沿著外圈走半圈才就位（量過要六秒），
@@ -1189,7 +1200,7 @@ function updWorker(w, wi, dt) {
       /* 先各自跑到自己那一格（等分一圈，所以站得開），到位就轉身面向建築
          原地跳。跳的相位照編號錯開 0.09 秒，一圈看過去是一道波浪，
          不是全場同手同腳。 */
-      if (ringWalk(w, w.spot, siteR + 2.6, dt)) {
+      if (ringWalk(w, w.spot, cheerR(), dt)) {
         w.a = Math.atan2(-w.x, -w.z);                 // 面向建築
         w.gait += (0 - w.gait) * Math.min(1, dt * 8);
         w.ph += dt * 9;                               // 舉起來的手跟著擺

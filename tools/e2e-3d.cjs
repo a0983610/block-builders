@@ -939,7 +939,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 每個人身高不一樣，舉東西的高度就得跟著身高走。
      寫死一個高度的話，高個子的積木會陷進自己的安全帽裡——
      這裡驗「積木中心在帽子上方、底面又還碰得到帽子」，兩邊都要。
-     1.31 是安全帽頂（engine.js 的 BODY：p 1.24 + 高度 0.14 的一半）。 */
+     1.31 是安全帽頂（engine.js 的 BODY：帽頂 p 1.25 + 高度 0.12 的一半）。 */
   const carry = await page.evaluate(() => {
     const HAT = 1.31;
     let n = 0, sunk = 0, float = 0, lo = Infinity, hi = -Infinity;
@@ -960,6 +960,59 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      carry.n > 0 && carry.sunk === 0 && carry.float === 0,
      carry.n + ' 人搬運中，陷入 ' + carry.sunk + '、飄浮 ' + carry.float +
      '；身高 ' + carry.lo + '–' + carry.hi);
+
+  /* v1.51 整體放大 1.5 倍：之前遠鏡頭下只剩一撮色點，數不出幾個人、
+     也看不出誰頭上頂著積木。模型腳底到帽頂 1.31，乘上個體身高要落在兩塊多積木。 */
+  ok('小人有兩塊多積木高', 1.31 * carry.lo > 2 && 1.31 * carry.hi < 2.6,
+     '身高 ' + (1.31 * carry.lo).toFixed(2) + '–' + (1.31 * carry.hi).toFixed(2) +
+     ' 格（積木邊長 0.94、格距 1）');
+
+  /* 放大之後那七塊方塊就是一疊方塊，所以補了臉、鞋、腰帶。
+     這裡不看像不像，只驗「該有的部位真的擺在該在的位置」——
+     部位漏掉或位置寫錯（例如鞋子留在原地不跟腿走）從畫面上不一定看得出來。 */
+  const build = await page.evaluate(() => {
+    const pose = extra => {
+      const w = workers[1];
+      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0 }, extra);
+      ENG.putWorker(1, w);
+      const m = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        ENG.three.workerMesh.getMatrixAt(ENG.WPARTS + k, m);
+        if (m.elements[0] === 0 && m.elements[5] === 0) continue;   // 沒拿的道具縮成 0
+        v.setFromMatrixPosition(m);
+        out.push({ x: v.x, y: v.y, z: v.z });
+      }
+      return { s: w.scale, parts: out.sort((p, q) => p.y - q.y) };
+    };
+    const st = pose({});
+    const s = st.s;
+    // 臉朝 +z（a=0）：眼睛要凸出臉皮、左右對稱；帽舌要更往前而且在帽子的高度
+    const eyes = st.parts.filter(p => Math.abs(p.y - 1.06 * s) < 0.03 * s &&
+                                      p.z > 0.19 * s && Math.abs(p.x) > 0.05 * s);
+    const peak = st.parts.filter(p => p.z > 0.28 * s && p.y > 1.1 * s);
+    // 由低到高：最低兩塊是鞋、再上去兩塊是腿
+    const lowest = st.parts.slice(0, 4);
+    // 走路時鞋要跟著同一隻腿往同一邊擺，而且擺得比腿更遠（它離髖關節更遠）
+    const wk = pose({ gait: 1, ph: Math.PI / 2 });
+    const low = wk.parts.slice(0, 4);
+    const shoeL = low.slice(0, 2).find(p => p.x < 0), shoeR = low.slice(0, 2).find(p => p.x > 0);
+    const legL = low.slice(2, 4).find(p => p.x < 0), legR = low.slice(2, 4).find(p => p.x > 0);
+    const same = shoeL && legL && shoeR && legR &&
+                 shoeL.z * legL.z > 0 && shoeR.z * legR.z > 0;
+    return { n: st.parts.length, parts: ENG.WPARTS, s: +s.toFixed(2),
+             eyes: eyes.length, sym: eyes.length === 2 ? +(eyes[0].x + eyes[1].x).toFixed(3) : 9,
+             peak: peak.length, shoeY: +(lowest[1].y / s).toFixed(2), legY: +(lowest[3].y / s).toFixed(2),
+             same, far: same ? +(Math.abs(shoeL.z) - Math.abs(legL.z)).toFixed(3) : -1 };
+  });
+  ok('臉上有兩顆對稱的眼睛、帽子有帽舌、腳上有鞋',
+     build.eyes === 2 && Math.abs(build.sym) < 1e-6 && build.peak === 1 &&
+     build.shoeY < 0.12 && build.legY > 0.15,
+     build.parts + ' 塊部位畫了 ' + build.n + ' 塊（其餘是沒拿的道具）；鞋在 y=' +
+     build.shoeY + '、腿在 y=' + build.legY);
+  ok('走路時鞋跟著同一隻腿擺，而且擺得比腿更遠',
+     build.same && build.far > 0.05,
+     '鞋比腿多往前 ' + build.far + '（鞋離髖 0.36、腿離髖 0.21）');
   await sim(page, 900);
   const b2 = await st(page);
   ok('進度持續往上', b2.set > b1.set, b1.set + ' → ' + b2.set + ' / ' + b2.total);
@@ -1461,16 +1514,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const after = workers.filter(w => w.hail).length;
     const spread = Math.max(...workers.map(w => +Math.hypot(w.x, w.z).toFixed(2)));
     return { allAt, maxY: +maxY.toFixed(2), jumps, landed, drift,
-             rad: { lo: Math.min(...ds), hi: Math.max(...ds), want: +(siteR + 2.6).toFixed(2) },
+             rad: { lo: Math.min(...ds), hi: Math.max(...ds), want: +cheerR().toFixed(2) },
              gap: { lo: Math.min(...gaps), hi: Math.max(...gaps), want: +(360 / workers.length).toFixed(1) },
              after, spread, siteR: +siteR.toFixed(1) };
   });
   ok('蓋完後很快就圍成一圈', cheer.allAt > 0 && cheer.allAt < 2.5,
      cheer.allAt + ' 秒全員就位（照現況分配位置，不是照編號硬分）');
   ok('圍的是等分的一圈', cheer.gap.hi - cheer.gap.lo < 1 &&
-     Math.abs(cheer.gap.lo - cheer.gap.want) < 1 && cheer.rad.hi - cheer.rad.lo < 0.1,
+     Math.abs(cheer.gap.lo - cheer.gap.want) < 1 && cheer.rad.hi - cheer.rad.lo < 0.1 &&
+     Math.abs(cheer.rad.lo - cheer.rad.want) < 0.15,
      '相鄰間隔 ' + cheer.gap.lo + '–' + cheer.gap.hi + '°（等分是 ' + cheer.gap.want +
-     '°）、半徑 ' + cheer.rad.lo + '–' + cheer.rad.hi + '（建築 ' + cheer.siteR + ' + 2.6）');
+     '°）、半徑 ' + cheer.rad.lo + '–' + cheer.rad.hi + '（該站 ' + cheer.rad.want +
+     '，建築半徑 ' + cheer.siteR + '）');
   /* 慶祝感的重點是「跳」：離地要有高度、要落回地面、而且是站定了跳不是邊跑邊顛。
      舊版是繞著建築跑一圈，y 用 |sin| 連續起伏——那看起來像在漂浮。 */
   ok('站定原地跳，不是邊跑邊顛', cheer.jumps >= 5 && cheer.landed >= 5 &&
@@ -1479,6 +1534,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      cheer.maxY + '；就位後還在水平移動的人次 ' + cheer.drift);
   ok('慶祝完就散開去閒晃', cheer.after === 0 && cheer.spread > cheer.rad.hi + 3,
      '還在舉手的 ' + cheer.after + ' 人，最遠走到 ' + cheer.spread);
+  /* 圈的半徑本來寫死 siteR + 2.6。最小的建築 siteR 只有 7，那一圈長 60 格，
+     分給 60 個人是每人 1 格——小人放大之後（連手臂約 1.56 格寬）整圈會插在一起。
+     所以半徑要跟著人數走，這條驗的是「人多的時候真的撐得開」。 */
+  const crowd = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '木魚');
+    targetCnt = 1800; setWorkerCount(60); startBuild(true);
+    /* 上一段測試把人散到四十單位外去了，從那裡走回來要九秒——比慶祝本身還久。
+       真的蓋完的那一刻，人都還在工地邊上，所以先把大家擺回工地旁邊。
+       一定要在 completeNow() **之前**：圈上的位置是照「那一刻各自站的角度」分的，
+       先分完再瞬移的話，每個人都得繞半圈去自己的位置，七秒根本走不到。 */
+    for (const w of workers) {
+      const a = Math.random() * Math.PI * 2, d = siteR + rr(3, 9);
+      w.x = Math.cos(a) * d; w.z = Math.sin(a) * d;
+    }
+    completeNow();
+    for (let i = 0; i < 120; i++) step(0.05);        // 6 秒：慶祝只有 7 秒，滿了他們就散開了
+    const on = workers.map(w => ({ a: Math.atan2(w.z, w.x), r: Math.hypot(w.x, w.z) }))
+                      .sort((p, q) => p.a - q.a);
+    let gap = 1e9;                                   // 圈上相鄰兩人的最小弧長
+    for (let i = 0; i < on.length; i++) {
+      const b = on[(i + 1) % on.length];
+      const d = Math.abs(((b.a - on[i].a + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+      gap = Math.min(gap, d * on[i].r);
+    }
+    return { gap: +gap.toFixed(2), r: +on[0].r.toFixed(1),
+             hail: workers.filter(w => w.hail).length, tight: +(siteR + 2.6).toFixed(1) };
+  });
+  ok('六十個人的慶祝圈會撐開，不會擠成一團',
+     crowd.gap > 1.7 && crowd.hail >= 55,
+     crowd.hail + ' 人在圈上，半徑撐到 ' + crowd.r + '（寫死的話是 ' + crowd.tight +
+     '），每人分到 ' + crowd.gap + ' 格');
 
   /* ══════════ 工程師 ══════════ */
   head('工程師');
