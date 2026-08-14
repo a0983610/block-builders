@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.45.0';
+const VERSION = '1.46.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -142,6 +142,15 @@ function sndBadge() { [784, 988, 1319].forEach((f, i) => setTimeout(() => tone(f
 function sndBoom(R) {
   const k = clamp(R / 11, 1, 2.6);
   noise(0.5 * k, 0.26, 500); tone(46, 0.75 * k, 'sawtooth', 0.085, 0.3);
+}
+/* 砸下來那一下（隕石）：一聲低沉的悶響，不是爆炸。
+   跟 sndBoom 比是「短一半、暗一截」——噪音切在 340（爆炸是 500）、拖尾只有 0.3 秒
+   （炸彈 0.49、核彈 1.26），聽起來才像一大塊東西撞到地上，而不是又炸了一發。
+   離線量出來 rms 0.0085，比炸彈的 0.010 小一點但仍聽得清楚；
+   再壓下去（第一版噪音切 250、音量 0.24）只有 0.005，砸掉上千塊卻幾乎沒聲音。 */
+function sndThud(R) {
+  const k = clamp(R / 11, 0.8, 1.6);
+  noise(0.34 * k, 0.34, 340); tone(54, 0.55 * k, 'sawtooth', 0.11, 0.42);
 }
 function sndTick() { tone(1250, 0.045, 'square', 0.045); }
 /* 隕石進大氣層：拖長的低頻呼嘯，滑音往下＝由遠而近砸過來。
@@ -2282,7 +2291,10 @@ const Y_BOOST = 0.85;               // 抬升占衝擊力道的比例（重力 2
 /* wind：要不要加那一圈往外掃的風壓（核彈與爆裂魔法專用，見 spawnWind）。
    炸彈／隕石／投石機那幾種小爆炸不給——它們的半徑才 7～14，
    掃出 2.6 倍的氣浪會比爆炸本身還顯眼，變成小道具看起來比核彈兇。 */
-function explode(point, R, power, magic, wind) {
+/* crash＝隕石那種「砸下來」的爆法：一樣把積木掃飛、一樣點火，但不走火球那一套
+   （發光球殼、噴出來的火星、貼地光環、衝擊環），聲音也改成一聲悶響。
+   隕石的重點本來就是火不是爆炸，掛一顆跟核彈同款的火球在上面反而搶戲。 */
+function explode(point, R, power, magic, wind, crash) {
   const R2 = R * R;
   let n = 0;
   for (const b of blocks) {
@@ -2337,13 +2349,13 @@ function explode(point, R, power, magic, wind) {
      沒倒的都在圈外那一帶。這些會繼續往鄰居蔓延。
      碎料的火不在這裡點，在上面那個迴圈裡逐塊點——見那邊的說明。 */
   igniteAround(point, R * 1.5, Math.round(R * 0.8), SET);
-  spawnBlast(point, R, magic);
+  // 火球與衝擊環是「爆炸」的長相，crash 那條只留下被砸飛的積木與揚起來的塵土
+  if (!crash) { spawnBlast(point, R, magic); spawnRing(point, R); }
   spawnDust(point, R, n);
-  spawnRing(point, R);
   // 風壓排在最後：它吃的塵霧配額比較兇，先讓爆炸本身那些拿到自己的份
   if (wind) spawnWind(point, R, magic);
   ENG.shake(0.5 + Math.min(1.8, R * 0.03 + n * 0.015));
-  sndBoom(R);
+  if (crash) sndThud(R); else sndBoom(R);
   return n;
 }
 
@@ -2753,7 +2765,10 @@ function posMeteor(m, k) {
 }
 function meteorHit(m) {
   const p = { x: m.x, y: Math.max(0.8, m.y), z: m.z };
-  explode(p, MET_R, MET_POW);        // 爆炸、餘火、火球、煙、衝擊環、震動、聲音都在裡面
+  /* 第六個參數＝crash：掃飛積木、揚塵、震動、點火都照舊，但不生火球與衝擊環，
+     聲音也換成悶響——隕石是「砸下來燒起來」，不是又一發爆炸。
+     倒數期間地上那一圈一圈的預告環不受影響，那是預告不是爆炸。 */
+  explode(p, MET_R, MET_POW, false, false, true);
   /* 爆炸本身已經帶一點餘火，但隕石是「燃燒」的——落點一帶再多點幾塊起來。
      這是它跟同尺寸的普通爆炸最明顯的差別。 */
   igniteAround(p, MET_R * 1.6, Math.round(MET_R * 1.6), SET);

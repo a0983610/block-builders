@@ -4359,10 +4359,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('那顆石頭吃 2 個 draw call（畫面＋陰影），沒在飛就不畫',
      met.flying.on - met.flying.off === 2,
      '同一幀有石頭 ' + met.flying.on + ' 個 call、拿掉 ' + met.flying.off + ' 個');
-  ok('落地就炸開，而且會燒起來',
-     met.hit.flash > 0 && met.hit.fires > 0 && met.spread > met.hit.fires,
-     '爆炸火球 ' + met.hit.flash + ' 顆、當場點著 ' + met.hit.fires +
+  /* v1.46 起隕石不生火球：它是「砸下來燒起來」，不是又一發爆炸。
+     燒起來與蔓延照舊——那才是這把道具的重點。 */
+  ok('落地不炸出火球，但會燒起來',
+     met.hit.flash === 0 && met.hit.fires > 0 && met.spread > met.hit.fires,
+     '火球 ' + met.hit.flash + ' 顆、當場點著 ' + met.hit.fires +
      ' 塊，兩秒後蔓延到 ' + met.spread + ' 塊');
+  /* 拿掉的只有「爆炸的長相」：火球、噴出來的火星、貼地光環、衝擊環。
+     衝擊波本身留著（積木照樣被砸飛），塵土與震動也留著。
+     直接叫 meteorHit 量：這樣不會混到倒數期間那些地面預告環。 */
+  const metLook = await page.evaluate(() => {
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '美國國會大廈');
+    startBuild(true); completeNow();
+    clearFires();
+    hot.length = 0; flashes.length = 0; fxRings.length = 0; dust.length = 0;
+    const set0 = placedCnt;
+    meteorHit({ x: 0, y: 6, z: 0 });
+    const mine = { flash: flashes.length, rings: fxRings.length, hot: hot.length,
+                   dust: dust.length, smashed: set0 - placedCnt,
+                   fires: fires ? fires.length : 0, shake: +ENG.cam.shake.toFixed(2) };
+    // 對照組：同尺寸的普通爆炸該有火球與衝擊環
+    hot.length = 0; flashes.length = 0; fxRings.length = 0;
+    startBuild(true); completeNow();
+    explode({ x: 0, y: 6, z: 0 }, MET_R, MET_POW);
+    return { mine, boom: { flash: flashes.length, rings: fxRings.length, hot: hot.length } };
+  });
+  ok('不生火球、火星與衝擊環（同尺寸的普通爆炸都有）',
+     metLook.mine.flash === 0 && metLook.mine.rings === 0 && metLook.mine.hot === 0 &&
+     metLook.boom.flash > 0 && metLook.boom.rings > 0 && metLook.boom.hot > 0,
+     '隕石 火球 ' + metLook.mine.flash + '／環 ' + metLook.mine.rings + '／火星 ' + metLook.mine.hot +
+     '　普通爆炸 ' + metLook.boom.flash + '／' + metLook.boom.rings + '／' + metLook.boom.hot);
+  ok('衝擊波、塵土、震動、點火都還在',
+     metLook.mine.smashed > 30 && metLook.mine.dust > 10 &&
+     metLook.mine.shake > 0.3 && metLook.mine.fires > 0,
+     '砸飛 ' + metLook.mine.smashed + ' 塊、揚塵 ' + metLook.mine.dust +
+     ' 團、震動 ' + metLook.mine.shake + '、點著 ' + metLook.mine.fires + ' 塊');
   ok('範圍是投石機石頭的兩倍', Math.abs(met.R - met.rockR * 2) < 1e-6,
      '石頭 ' + met.rockR + ' → 隕石 ' + met.R);
 
@@ -4389,20 +4420,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     for (let i = 0; i < 3; i++) callMeteor({ x: -30 + i * 30, y: 3, z: 0 });
     const three = meteors.length;
+    /* 「真的砸下去了」以前是數火球，現在沒有火球了——改成包一層 meteorHit 直接數命中。
+       meteorHit 是 function 宣告（掛在 global 上），覆寫它 stepMeteors 就會呼叫到包裝版。 */
+    const origHit = meteorHit; let boom = 0;
+    meteorHit = m => { boom++; origHit(m); };
     let g = 0, maxFly = 0;
     while (meteors && g++ < 120) {
       step(0.05);
       if (meteors) maxFly = Math.max(maxFly, meteors.filter(m => m.lit).length);
     }
-    const boom = flashes.length;
+    meteorHit = origHit;
     // 上限：連叫九顆只留最新的六顆
     startBuild(true); completeNow();
     for (let i = 0; i < 9; i++) callMeteor({ x: i * 4 - 16, y: 3, z: 0 });
     return { three, maxFly, boom, capped: meteors.length, cap: MET_MAX };
   });
   ok('可以同時來好幾顆', metMany.three === 3 && metMany.maxFly === 3 && metMany.boom >= 2,
-     '叫了 3 顆，最多同時 ' + metMany.maxFly + ' 顆在飛，落地後場上 ' +
-     metMany.boom + ' 顆火球');
+     '叫了 3 顆，最多同時 ' + metMany.maxFly + ' 顆在飛，真的砸下去 ' +
+     metMany.boom + ' 顆');
   ok('同時最多 ' + metMany.cap + ' 顆', metMany.capped === metMany.cap,
      '連叫 9 顆 → 場上 ' + metMany.capped + ' 顆');
 
@@ -4411,15 +4446,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const metSweep = await page.evaluate(() => {
     targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '帝國大廈');
     startBuild(true); completeNow();
-    flashes.length = 0;
+    /* 沒有火球可以量了，改成包一層 meteorHit 記下命中那一刻的高度——比舊寫法還準
+       （舊的量的是火球球心，那個還帶了 R×0.22 的抬升）。 */
+    const origHit = meteorHit; let hitY = -1;
+    meteorHit = m => { hitY = m.y; origHit(m); };
     callMeteor({ x: 0, y: 0.6, z: 0 });
     let g = 0;
-    while (meteors && g++ < 120) step(0.05);
-    return { fy: flashes.length ? +flashes[0].y.toFixed(1) : -1, h: bp.height };
+    while (meteors && g++ < 400) step(0.02);
+    meteorHit = origHit;
+    return { fy: +hitY.toFixed(1), h: bp.height };
   });
-  ok('半路撞到建築就當場炸開，不會穿進去',
+  ok('半路撞到建築就當場砸開，不會穿進去',
      metSweep.fy > 5,
-     '落點指在 y=0.6，實際炸在 y=' + metSweep.fy + '（塔高 ' + metSweep.h + '）');
+     '落點指在 y=0.6，實際砸在 y=' + metSweep.fy + '（塔高 ' + metSweep.h + '）');
 
   /* ══════════ 人力金額 ══════════ */
   head('人力金額');
