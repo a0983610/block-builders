@@ -417,8 +417,10 @@ const ENG = (function () {
       magDiscs.push(d); ringGroup.add(d);
     }
 
+    /* 紋路走金黃（v1.54，原本 #ffa028 偏橘）：盤是深紅的，紋路要比它黃一階才浮得出來，
+       中心那顆亮核也是這些臂的內端加法混色疊出來的，越黃越像燒白的核。 */
     magSpokeMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
-      color: 0xffa028, transparent: true, opacity: 0.3,
+      color: 0xffc83c, transparent: true, opacity: 0.3,
       depthWrite: false, blending: T.AdditiveBlending
     }), MAG_SP_RINGS * MAG_SPOKE);
     magSpokeMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -672,7 +674,10 @@ const ENG = (function () {
         dm.visible = true;
         dm.position.set(r.x, r.y - 0.015, r.z);        // 壓在環下面一點，免得 z-fighting
         dm.scale.set(r.r * 0.97, r.r * 0.97, 1);
-        dm.material.opacity = r.op * 0.3;
+        dm.material.opacity = r.op * 0.42;
+        /* 盤跟它那一圈同色（v1.54）。原本是寫死的橘：陣改成深紅之後盤還是橘的，
+           整疊就糊成一片；而且那顆火種的盤也該跟著它自己的火黃走，不是跟著陣。 */
+        dm.material.color.setHex(r.c === undefined ? 0xff5a18 : r.c);
       }
       // 盤面的紋路（見 MAG_SWIRL）
       if (!r.sp || s + MAG_SPOKE > MAG_SP_RINGS * MAG_SPOKE) continue;

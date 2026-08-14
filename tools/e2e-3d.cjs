@@ -4093,7 +4093,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const halo = all.filter(o => o.add);
     return { n: core.length, halo: halo.length, rings: core,
              rising: core.every((o, i) => i === 0 || o.y > core[i - 1].y),
-             red: core.every(o => o.c === 0xff3a1c), ground: core[0] ? core[0].r : 0,
+             red: core.every(o => o.c === 0xe81a08), ground: core[0] ? core[0].r : 0,
              // 每層都要有填滿的盤與放射紋路，只有環的話看起來是「地上畫了一個圈」
              solid: all.filter(o => o.fill).length, lace: all.filter(o => o.sp).length };
   });
@@ -4510,6 +4510,67 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '最下層 ' + mgRing.rings[0].y + ' → 最上層 ' + mgRing.rings[5].y +
      '（高 ' + (mgRing.rings[5].y - mgRing.rings[0].y).toFixed(1) + '，最寬半徑 ' +
      Math.max(...mgRing.rings.map(o => o.r)).toFixed(1) + '）');
+
+  /* 形狀（v1.54）：高度不動、半徑收一圈（最寬 0.62 → 0.56R），而且改成**上下大、中間細**。
+     「通常」是抖動的功勞——每層各乘 0.82～1.18，偶爾會讓中間那層鼓過頭，
+     所以這裡量的是比例不是「每次都成立」（只驗一次施法等於在賭骰子）。 */
+  const mgShape = await page.evaluate(() => {
+    const base = MAG_LAYER.map(L => L.r);
+    const hist = [0, 0, 0, 0, 0, 0];
+    let ends2 = 0;
+    const N = 300;
+    for (let k = 0; k < N; k++) {
+      castMagic({ x: 0, z: 0 });
+      const rs = MAG_LAYER.map((L, i) => L.r * magic.rj[i]);
+      magic = null; dangers.length = 0;      // 每次只要那組抖動，別讓預告與逃命累積下去
+      let mi = 0;
+      rs.forEach((v, i) => { if (v > rs[mi]) mi = i; });
+      hist[mi]++;
+      const order = rs.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
+      if ([order[0][1], order[1][1]].every(i => i === 0 || i === 5)) ends2++;
+    }
+    for (const w of workers) w.flee = 0;
+    return { base, hist, ends2, N, wide: Math.max(...base),
+             mid: Math.max(...base.slice(1, 5)) };
+  });
+  ok('上下兩層最寬、中間收窄，整疊比以前瘦',
+     mgShape.base[0] > mgShape.mid && mgShape.base[5] > mgShape.mid && mgShape.wide <= 0.56,
+     '各層 ' + mgShape.base.join('／') + 'R（中間最寬的一層 ' + mgShape.mid +
+     'R，v1.53 最寬是 0.62R）');
+  ok('最寬的一圈「通常」落在最上或最下',
+     (mgShape.hist[0] + mgShape.hist[5]) / mgShape.N > 0.9 &&
+     mgShape.ends2 / mgShape.N > 0.8 && mgShape.ends2 < mgShape.N,
+     mgShape.N + ' 次施法：最寬落在第 ' + mgShape.hist.map((v, i) => i + '層' + v).join('／') +
+     '，最上最下同時是前二寬的有 ' + (mgShape.ends2 / mgShape.N * 100).toFixed(0) + '%');
+
+  /* 配色（v1.54，照使用者給的參考圖）：深紅的盤 + 金黃的紋路與外暈。
+     盤是引擎那邊發的，顏色**跟著它那一圈走**——只驗 game.js 裡的色碼會漏掉
+     「盤還是寫死那個橘」的情況，所以直接去場上抓那幾片盤的材質顏色。
+     火種那片盤要維持它自己的火黃（它跟爆炸火球是同一團火，不該被陣染紅）。 */
+  const mgHue = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    castMagic({ x: 0, z: 0 });
+    for (let i = 0; i < 100; i++) step(0.05);
+    draw(); ENG.render();
+    const lay = magic.rings.filter(o => !o.seed);
+    const seed = magic.rings.find(o => o.seed && o.fill);
+    let grp = null;
+    ENG.three.scene.traverse(o => {
+      if (!grp && o.geometry && o.geometry.type === 'RingGeometry') grp = o.parent;
+    });
+    const discs = grp.children.filter(o => o.visible && o.geometry &&
+                                           o.geometry.type === 'CircleGeometry');
+    return { core: lay.find(o => !o.add).c, halo: lay.find(o => o.add).c, seed: seed.c,
+             discs: discs.map(d => d.material.color.getHex()),
+             spoke: grp.children.find(o => o.isInstancedMesh).material.color.getHex() };
+  });
+  const hex = c => '#' + c.toString(16).padStart(6, '0');
+  ok('陣是深紅的盤配金黃的紋路，火種還是火黃',
+     mgHue.core === 0xe81a08 && mgHue.halo === 0xffb42a && mgHue.spoke === 0xffc83c &&
+     mgHue.discs.length === 7 && mgHue.discs.slice(0, 6).every(c => c === mgHue.core) &&
+     mgHue.discs[6] === mgHue.seed,
+     '芯與盤 ' + hex(mgHue.core) + '、外暈 ' + hex(mgHue.halo) + '、紋路 ' + hex(mgHue.spoke) +
+     '、火種那片盤 ' + hex(mgHue.discs[6]));
 
   /* 拉高之後整疊頂端會頂出畫面上緣（矮建築取景近）。跟龍捲風、蘑菇雲同一套：
      施法期間鏡頭先退開。NDC y 超過 1 就是被切掉，量的是最上層外緣那一點。 */
