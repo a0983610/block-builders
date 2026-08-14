@@ -1280,19 +1280,25 @@ const SHAPES = [
     blob(v, 0, chY, chZ, hx * 0.76, hy * 0.6, hz * 0.72, 0);                    // 胸
     const hr = s * 0.26, hdY = chY + hy * 0.5 + hr * 0.55, hdZ = chZ - Math.round(hr * 0.3);
     blob(v, 0, hdY, hdZ, hr, hr * 0.9, hr * 0.86, 0);                           // 頭
+    /* 口鼻的高度先算出來，眼睛才知道自己要閃到哪裡去：兩件事畫在同一片臉上，
+       各自從頭心量自己的高度，而口鼻是後畫的，重疊到就把眼睛整個蓋成白的。
+       頭大時差得開，但係數是乘上頭半徑的——s 小的時候頭只有五格高，兩者四捨五入
+       到同一排，眼睛（唯一的黑色）在 300 塊時整組消失。 */
+    const mw = Math.max(1, Math.round(hr * 0.34));                              // 白口鼻的半寬
+    const my = Math.round(hdY - hr * 0.1);                                      // 口鼻最上面那排
+    const eyY = Math.max(my + 1, Math.round(hdY + hr * 0.12));                  // 眼：至少高過口鼻一排
+    const eyX = Math.round(hr * 0.42);
     for (const sx of [-1, 1]) {
       v.pyramid(sx * Math.round(hr * 0.62), Math.round(hdY + hr * 0.78), Math.round(hdZ),
                 Math.max(3, Math.round(hr * 0.7)) | 1, 0);                      // 尖耳朵
       for (let y = 0; y < Math.max(2, Math.round(hy * 0.95)); y++)              // 前腳
         v.cyl(sx * Math.round(hx * 0.5), y, Math.round(chZ - hz * 0.45),
               Math.max(1.2, s * (0.07 + 0.03 * y / Math.max(1, hy))), 1, y === 0 ? 1 : 0);
-      paintFrom(v, sx * Math.round(hr * 0.42), Math.round(hdY + hr * 0.12), Math.round(hdZ),
-                0, 0, -1, Math.ceil(hr) + 2, 2);                                // 眼
+      paintFrom(v, sx * eyX, eyY, Math.round(hdZ), 0, 0, -1, Math.ceil(hr) + 2, 2);   // 眼
     }
-    const mw = Math.max(1, Math.round(hr * 0.34));                              // 白口鼻＋粉紅鼻頭
-    for (let i = -mw; i <= mw; i++)
+    for (let i = -mw; i <= mw; i++)                                             // 白口鼻＋粉紅鼻頭
       for (let j = -Math.max(1, Math.round(hr * 0.22)); j <= 0; j++)
-        paintFrom(v, i, Math.round(hdY - hr * 0.1) + j, Math.round(hdZ), 0, 0, -1, Math.ceil(hr) + 2, 1);
+        paintFrom(v, i, my + j, Math.round(hdZ), 0, 0, -1, Math.ceil(hr) + 2, 1);
     paintFrom(v, 0, Math.round(hdY - hr * 0.08), Math.round(hdZ), 0, 0, -1, Math.ceil(hr) + 2, 4);
     /* 尾巴：從臀部側後方的體表出發，一路垂到地面再往前繞。
        起點一定要落在身體裡（第一版起點在體外，尾端三格整組斷開），

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.49.0';
+const VERSION = '1.50.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1639,10 +1639,10 @@ function resetSave() {
    建材調小的話一座擊飛得少，擊飛那一側自然要多拆幾座才追得上（工作量差不多）。 */
 const TOOLS = [
   { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
-  { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：地震，震掉 5% 的積木',
+  { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：只敲地板，建築不受影響',
     lock: null },
   { id: 'bighammer', n: '大槌', k: '🔨', big: true,
-    tip: '點建築：兩倍大的槌子，範圍也是兩倍　·　點地面：地震，震掉 10%',
+    tip: '點建築：兩倍大的槌子，範圍也是兩倍　·　點地面：地震，震掉 10% 的積木',
     lock: { txt: '累計擊飛 2,000 塊解鎖', ok: () => stats.smashed >= 2000 } },
   { id: 'ball', n: '保齡球', k: '🎳', tip: '點兩下：先點出手的地方，再點要滾過去的方向',
     lock: { txt: '拆掉 2 座建築解鎖', ok: () => stats.destroyed >= 2 } },
@@ -1666,7 +1666,8 @@ const TOOLS = [
 const toolOk = t => !t.lock || t.lock.ok();
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
    規定一定要點到建築的話，站在旁邊的空地放炸彈反而做不到。
-   槌子點空地是地震、保齡球點空地是從那裡把球丟出去，所以也在這裡。 */
+   大槌點空地是地震、保齡球點空地是從那裡把球丟出去，所以也在這裡。
+   小槌點空地什麼都不會掉，但仍然留在這裡：拿掉的話那一下完全沒反應，看起來像點壞了。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1 };
 let tool = 'hammer';
@@ -1883,31 +1884,41 @@ function smash(point, dir, R0, pow0) {
   return hitN;
 }
 
-/* ── 地震：槌子砸在地上 ─────────────────────────────────
+/* ── 地震：大槌砸在地上 ─────────────────────────────────
    敲空地本來什麼事都不會發生。現在改成震一下：整棟跟著晃，隨機 QUAKE_FRAC 的積木
    鬆脫掉下來。掉的是「原地垮下來」不是被打飛——它們沒有被誰打到，只是站不住了。
-   分成好幾波掉，不是同一幀全掉：一次掉完看起來像被隱形的東西打到，不像在震。 */
-const QUAKE_TIME = 1.1;             // 震多久（大槌 ×1.5）
-const QUAKE_FRAC = 0.05;            // 一次震掉多少比例（大槌 ×2）
+   分成好幾波掉，不是同一幀全掉：一次掉完看起來像被隱形的東西打到，不像在震。
+
+   v1.50 起只有大槌會震（小槌改成 thumpGround）：小槌是拿來「點」的精準工具，
+   瞄邊角時很容易擦過去點到地面，那一下震掉 5% 等於每失手一次就賠掉一大片。 */
+const QUAKE_TIME = 1.65;            // 震多久
+const QUAKE_FRAC = 0.1;             // 一次震掉多少比例
 const QUAKE_WAVE = 0.12;            // 每隔多久掉一波
 let quake = null;
 
-function startQuake(p, big) {
+function startQuake(p) {
   /* 先把要掉的那些抽好放著，不要每一波再抽一次：每波重抽的話，
      先掉的那些留下的空洞會讓後面幾波集中在同一區，看起來像被鑿了一個洞。 */
   const std = [];
   for (let i = 0; i < blocks.length; i++) if (blocks[i].st === SET) std.push(i);
-  const n = Math.min(std.length, Math.round(std.length * QUAKE_FRAC * (big ? 2 : 1)));
+  const n = Math.min(std.length, Math.round(std.length * QUAKE_FRAC));
   for (let i = 0; i < n; i++) {                     // 只洗要用到的前 n 個
     const j = i + Math.floor(Math.random() * (std.length - i));
     const t = std[i]; std[i] = std[j]; std[j] = t;
   }
-  quake = { t: QUAKE_TIME * (big ? 1.5 : 1), next: 0, list: std.slice(0, n), cur: 0,
-            x: p.x, z: p.z, big: !!big };
-  ENG.shake(big ? 1.5 : 1);
+  quake = { t: QUAKE_TIME, next: 0, list: std.slice(0, n), cur: 0, x: p.x, z: p.z };
+  ENG.shake(1.5);
   sndSmash();
-  spawnRing({ x: p.x, y: 0, z: p.z }, big ? 9 : 6);
+  spawnRing({ x: p.x, y: 0, z: p.z }, 9);
   return n;
+}
+/* 小槌砸在地上：就只是敲了一下地板。灰塵、音效照給（不然像點壞了），
+   但建築一塊都不掉、畫面也不震——會震整棟的是大槌那一支。 */
+function thumpGround(p) {
+  spawnDust({ x: p.x, y: 0.3, z: p.z }, 3, 0);
+  spawnRing({ x: p.x, y: 0, z: p.z }, 4);
+  sndSmash();
+  return 0;
 }
 function stepQuake(dt) {
   if (!quake) return;
@@ -1957,8 +1968,8 @@ function resolveSwing() {
   if (!swing || swing.hit) return 0;
   swing.hit = true;
   const p = { x: swing.px, y: swing.py, z: swing.pz };
-  // 砸在空地上：不是點狀衝擊，而是把整棟震一震（震到的那些自己垮下來）
-  if (swing.ground) return startQuake(p, swing.big);
+  // 砸在空地上：大槌是把整棟震一震（震到的那些自己垮下來），小槌只是敲一下地板
+  if (swing.ground) return swing.big ? startQuake(p) : thumpGround(p);
   const m = swing.big ? 2 : 1;                   // 大槌：範圍兩倍、力道再多五成
   return smash(p, { x: swing.dx, y: swing.dy, z: swing.dz },
                hammerR * m, hammerPow * (swing.big ? 1.5 : 1));

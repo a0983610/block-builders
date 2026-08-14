@@ -2513,8 +2513,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      rapid.afterSecondPress < rapid.n0 && rapid.end < rapid.afterSecondPress,
      rapid.n0 + ' → 第二次按下時 ' + rapid.afterSecondPress + ' → 最後 ' + rapid.end);
 
-  /* 槌子砸在空地上：不是點狀衝擊，而是整棟震一震，隨機一小部分自己掉下來。
-     兩件事要分開驗：掉的量對不對、掉的位置是不是散在整棟（不是砸出一個洞）。 */
+  /* 大槌砸在空地上：不是點狀衝擊，而是整棟震一震，隨機一小部分自己掉下來。
+     兩件事要分開驗：掉的量對不對、掉的位置是不是散在整棟（不是砸出一個洞）。
+     小槌砸空地是另一回事——v1.50 起它一塊都不該掉，跟著一起驗。 */
   const quakeT = await page.evaluate(() => {
     const one = (big) => {
       shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
@@ -2522,11 +2523,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       shapePick = -1;
       const set0 = placedCnt;
       const at = blocks.map(b => b.st === 3 ? { x: b.x, y: b.y, z: b.z } : null);
+      dust.length = 0;               // 先清乾淨才量得準（塵霧有 400 顆上限，滿了就不再生）
       const hx = siteR + 9;                          // 建築外的空地
       launchHammer(new THREE.Vector3(hx, 0, 0), new THREE.Vector3(0, -1, 0), big, true);
       let g = 0;
-      while (!quake && g++ < 20) step(0.05);         // 等槌子落下
-      const born = !!quake, hitFrames = [];
+      while (!quake && swing && !swing.hit && g++ < 20) step(0.05);   // 等槌子落下
+      const born = !!quake, swung = !!swing && swing.hit, hitFrames = [];
+      const dustUp = dust.length;
       let prev = placedCnt;
       while (quake && g++ < 200) {
         step(0.05);
@@ -2542,33 +2545,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (Math.hypot(at[i].x - hx, at[i].z) < 10) near++;   // 掉在槌子那一帶的
         if (at[i].y < bp.height * 0.4) lo++; else hi++;
       });
-      return { set0, born, fell: set0 - mid, frac: (set0 - mid) / set0,
-               waves: hitFrames.length, after: mid - placedCnt,
+      return { set0, born, swung, dustUp, fell: set0 - mid, frac: (set0 - mid) / set0,
+               waves: hitFrames.length, after: mid - placedCnt, end: placedCnt,
                nearFrac: tot ? near / tot : -1, lo, hi };
     };
     const small = one(false), big = one(true);
     return { small, big };
   });
-  ok('槌子砸空地會地震，震掉約 5% 的積木',
-     quakeT.small.born && quakeT.small.frac > 0.045 && quakeT.small.frac < 0.09,
-     quakeT.small.set0 + ' 塊掉了 ' + quakeT.small.fell + '（' +
-     (quakeT.small.frac * 100).toFixed(1) + '%）');
-  ok('是分好幾波掉的，不是同一幀全掉', quakeT.small.waves >= 4,
-     '掉了 ' + quakeT.small.waves + ' 波');
+  ok('大槌砸空地會地震，震掉約 10% 的積木',
+     quakeT.big.born && quakeT.big.frac > 0.09 && quakeT.big.frac < 0.18,
+     quakeT.big.set0 + ' 塊掉了 ' + quakeT.big.fell + '（' +
+     (quakeT.big.frac * 100).toFixed(1) + '%）');
+  ok('是分好幾波掉的，不是同一幀全掉', quakeT.big.waves >= 4,
+     '掉了 ' + quakeT.big.waves + ' 波');
   ok('震掉的散在整棟，不是在槌子那一帶砸出一個洞',
-     quakeT.small.nearFrac >= 0 && quakeT.small.nearFrac < 0.35 &&
-     quakeT.small.lo > 0 && quakeT.small.hi > 0,
-     '落點 10 單位內只占 ' + (quakeT.small.nearFrac * 100).toFixed(0) +
-     '%，下半部 ' + quakeT.small.lo + ' 塊、上半部 ' + quakeT.small.hi + ' 塊');
+     quakeT.big.nearFrac >= 0 && quakeT.big.nearFrac < 0.35 &&
+     quakeT.big.lo > 0 && quakeT.big.hi > 0,
+     '落點 10 單位內只占 ' + (quakeT.big.nearFrac * 100).toFixed(0) +
+     '%，下半部 ' + quakeT.big.lo + ' 塊、上半部 ' + quakeT.big.hi + ' 塊');
   /* 允許一點餘波：震掉的那批本來就是分批落下的（fallIn 按高度錯開），
      最後一兩塊落地時抽掉鄰居的支撐，連帶再掉一塊是對的物理。
      要擋的是「一直掉」不是「完全不掉」——實測十二輪 0～2 塊（門檻 0 會有三成機率誤判）。 */
-  ok('震完就停，不會一直掉', quakeT.small.after <= 3,
-     '地震結束後 2 秒又掉了 ' + quakeT.small.after + ' 塊');
-  ok('大槌砸空地震得比較兇（兩倍）',
-     quakeT.big.frac > quakeT.small.frac * 1.7 && quakeT.big.frac < 0.18,
-     '槌子 ' + (quakeT.small.frac * 100).toFixed(1) + '% → 大槌 ' +
-     (quakeT.big.frac * 100).toFixed(1) + '%');
+  ok('震完就停，不會一直掉', quakeT.big.after <= 3,
+     '地震結束後 2 秒又掉了 ' + quakeT.big.after + ' 塊');
+  /* 小槌瞄邊角時很容易擦過去點到地面，那一下震掉 5% 等於每失手一次就賠掉一大片 */
+  ok('小槌砸空地不會地震，建築一塊都不掉',
+     !quakeT.small.born && quakeT.small.end === quakeT.small.set0,
+     quakeT.small.set0 + ' 塊 → ' + quakeT.small.end + ' 塊，quake=' + quakeT.small.born);
+  ok('但槌子照樣揮下去、地上照樣噴灰塵（不然像點壞了）',
+     quakeT.small.swung && quakeT.small.dustUp > 20,
+     '揮擊結算 ' + quakeT.small.swung + '，多了 ' + quakeT.small.dustUp + ' 顆塵');
 
   await reset(page, { shape: '吉薩金字塔', cnt: 900, workers: 4 });
   const ballR = await page.evaluate(() => {
@@ -5759,7 +5765,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = CNT_MAX; setWorkerCount(20); startBuild(true); completeNow();
     let worst = 0, sum = 0, n = 0;
     for (let k = 0; k < 40; k++) {
-      startQuake({ x: 0, y: 0, z: 0 }, true);
+      startQuake({ x: 0, y: 0, z: 0 });
       for (let i = 0; i < 6; i++) {
         const t = performance.now();
         step(0.02); draw();
