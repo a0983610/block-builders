@@ -4894,6 +4894,69 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   }));
   ok('施工計時會往前走', timerRun.a !== timerRun.b, timerRun.a + ' → ' + timerRun.b);
 
+  /* ══════════ 音效 ══════════
+     音效全是即時合成的（沒有音檔），所以可以用 OfflineAudioContext 把波形算出來直接量，
+     不必真的發出聲音。tone()／noise() 都是先叫 audio() 拿 context，
+     把 audio 換掉就能把整段導到離線 context；量完要把 audio 與 muted 放回去。 */
+  head('音效');
+  const snd = await page.evaluate(async () => {
+    const SR = 44100, SEC = 3, realAudio = audio, wasMuted = muted, wasRunning = running;
+    /* 量的時候一定要把遊戲停下來：算圖是非同步的，中間遊戲迴圈只要放了任何一聲
+       （擺積木、碎料落地…）就會一起錄進這個離線 context。
+       第一版沒停，核彈的高頻占比量到 51.7%，其實是混進了槌子那種高頻音。 */
+    running = false;
+    const render = async (fn, band) => {
+      const ctx = new OfflineAudioContext(1, SR * SEC, SR);
+      let dest = ctx.destination;
+      const mk = (type, f) => {
+        const q = ctx.createBiquadFilter(); q.type = type; q.frequency.value = f; q.Q.value = 0.7; return q;
+      };
+      if (band === 'hi') { const f = mk('highpass', 2000); f.connect(dest); dest = f; }
+      if (band === 'body') {                       // 80–250Hz：小喇叭真正推得出來的那一段
+        const lo = mk('highpass', 80), hi = mk('lowpass', 250);
+        hi.connect(dest); lo.connect(hi); dest = lo;
+      }
+      const proxy = new Proxy(ctx, {
+        get(t, k) {
+          if (k === 'destination') return dest;
+          const v = t[k]; return typeof v === 'function' ? v.bind(t) : v;
+        }
+      });
+      audio = () => proxy; muted = false;
+      fn();
+      const d = (await ctx.startRendering()).getChannelData(0);
+      let s = 0, peak = 0;
+      for (let i = 0; i < d.length; i++) { s += d[i] * d[i]; const v = Math.abs(d[i]); if (v > peak) peak = v; }
+      return { rms: Math.sqrt(s / d.length), peak };
+    };
+    const one = async fn => {
+      const all = await render(fn), hi = await render(fn, 'hi'), body = await render(fn, 'body');
+      return { rms: +all.rms.toFixed(4), peak: +all.peak.toFixed(3),
+               hiPct: +(hi.rms / all.rms * 100).toFixed(1), body: +body.rms.toFixed(4) };
+    };
+    const r = { nuke: await one(() => sndBoom(30)), bomb: await one(() => sndBoom(BOMB_R)),
+                smash: await one(() => sndSmash()) };
+    audio = realAudio; muted = wasMuted; running = wasRunning;
+    return r;
+  });
+  /* 爆炸聲刺不刺，看的是 2kHz 以上占多少能量。改之前噪音低通切在 900、音量 0.34，
+     那一帶留著一大截高頻嘶聲，占了 25.1%（rms 0.0249）——聽起來就是又大聲又刺。
+     門檻用 rms 不用 peak：noise() 每次都是重新抽的隨機取樣，峰值會跳，rms 才穩。 */
+  ok('爆炸聲不刺耳，音量也壓下來了', snd.nuke.hiPct < 18 && snd.nuke.rms < 0.02,
+     '核彈 2kHz 以上 ' + snd.nuke.hiPct + '%、rms ' + snd.nuke.rms +
+     '、peak ' + snd.nuke.peak + '（槌子 ' + snd.smash.hiPct + '%）');
+  /* 但不能壓成一聲悶悶的氣音：最大的那一發還是要比槌子有份量，
+     份量看的是 80–250Hz（46Hz 的基音小喇叭根本推不出來，聽得到的是它的泛音）。 */
+  ok('爆炸仍然是全場最有份量的一聲',
+     snd.nuke.body > snd.smash.body * 1.3 && snd.nuke.rms > snd.smash.rms,
+     '核彈 80–250Hz ' + snd.nuke.body + '（槌子 ' + snd.smash.body + '），總 rms ' +
+     snd.nuke.rms + ' vs ' + snd.smash.rms);
+  // 半徑只放大時間不放大音量：炸彈跟核彈是同一支音效，差在轟多久
+  ok('小爆炸比大爆炸短，但不是另一種聲音',
+     snd.bomb.rms < snd.nuke.rms && Math.abs(snd.bomb.hiPct - snd.nuke.hiPct) < 3,
+     '炸彈 rms ' + snd.bomb.rms + '、核彈 ' + snd.nuke.rms +
+     '（高頻占比 ' + snd.bomb.hiPct + '% vs ' + snd.nuke.hiPct + '%）');
+
   /* ══════════ 視角操作 ══════════ */
   head('視角操作');
   await reset(page, { shape: '艾菲爾鐵塔', cnt: 900, workers: 6 });
