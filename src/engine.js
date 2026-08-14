@@ -782,9 +782,10 @@ const ENG = (function () {
 
   /* 藍色閃電。list 每一項是一小段 {x1,y1,z1 → x2,y2,z2, w 粗細, op 亮度}。
      一段一個 instance：把單位方塊沿 X 拉成這一段的長度，再把 +X 轉到這一段的方向。
-     顏色固定藍（0.22/0.5/1）——這是「藍色閃電」，顏色不是每段可調的參數。
-     綠分量壓在一半以下才是藍的：0.72 那種是青色，量過送到畫面上時
-     藍與綠只差 3/255，看起來就是一條淺水藍。
+     顏色固定淺藍（0.32/0.58/1）——這是「藍色閃電」，顏色不是每段可調的參數。
+     深淺有個窄窗，而且要連遠處都還看得出是藍的（場景有霧，越遠越往天空色洗）：
+     綠 0.72 在畫面上藍綠只差 3/255，是青白色的；0.5 很藍但偏重（使用者要淺一點）；
+     0.68 在遠鏡頭下被霧洗到只差 19，所以停在 0.58。
      op 是明滅用的亮度旋鈕（實色材質，所以它調的是顏色深淺不是透明度）。 */
   function putBolts(list) {
     const n = Math.min(list.length, MAXBOLT);
@@ -800,7 +801,7 @@ const ENG = (function () {
       scratch.scale.set(len, s.w, s.w);
       scratch.updateMatrix();
       boltMesh.setMatrixAt(i, scratch.matrix);
-      boltMesh.setColorAt(i, tmpC.setRGB(0.22 * s.op, 0.50 * s.op, s.op));
+      boltMesh.setColorAt(i, tmpC.setRGB(0.32 * s.op, 0.58 * s.op, s.op));
     }
     boltMesh.instanceMatrix.needsUpdate = true;
     if (boltMesh.instanceColor) boltMesh.instanceColor.needsUpdate = true;

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.47.0';
+const VERSION = '1.48.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2857,7 +2857,7 @@ function nukeHit(p) {
   nuke = null;
   ENG.hideNuke();
   explode(p, NUKE_R, NUKE_POW, false, true);      // true = 加風壓
-  startCloud(p, NUKE_R, false);
+  startCloud(p, NUKE_R);
 }
 function stepNuke(dt) {
   if (!nuke) return;
@@ -2954,7 +2954,7 @@ function stepMagic(dt) {
     const p = { x: magic.x, y: MAG_CORE_Y, z: magic.z };   // 爆點＝最低那層的圓心
     magic = null;
     explode(p, MAG_R, MAG_POW, true, true);       // 第二個 true = 加風壓
-    startCloud(p, MAG_R, true);       // 魔法爆完也留一朵，只是燒的是紅光還帶星光
+    startCloud(p, MAG_R);             // 魔法爆完也留一朵，跟核彈同一種
     startArcs(p, MAG_R);              // 火球收乾之後，爆點還會劈三秒的藍電
     return;
   }
@@ -3017,10 +3017,16 @@ function stepMagic(dt) {
     /* 新的一層剛開始長 → 就在那一圈上撒一把十字星光。
        撒的位置用「長好之後」的半徑，不是這一瞬間的（那時它才火種那麼大）：
        星光要先標出這一層將要長到哪，環再追上來。 */
-    for (let i = magic.shown; i < layers; i++)
-      spawnStars(magic.x, magic.z, 0.12 + MAG_R * MAG_LAYER[i].y,
-                 MAG_R * MAG_LAYER[i].r * magic.rj[i]);
+    for (let i = magic.shown; i < layers; i++) starsOn(i, STAR_PER);
     magic.shown = layers;
+  }
+  /* 長完之後也一直撒（v1.48）：只在長層那一下撒的話，滿陣那四秒整座陣是靜的。
+     每次隨機挑一層，機率一樣——「平均撒在每一層」就是這個意思，
+     不是每層各自計時（那樣看起來會像六排整齊的節拍器）。 */
+  magic.star = (magic.star || 0) + dt * STAR_RATE;
+  while (magic.star >= 1) {
+    magic.star--;
+    starsOn(Math.floor(Math.random() * layers), 1);
   }
   magic.rings = rings;
   magSuck(magic, dt);
@@ -3033,6 +3039,12 @@ function stepMagic(dt) {
    這些光點是那件事的前奏——六秒裡一直在說「能量正往那一點集中」。
    v1.47 之前這裡是一道從陣心往上衝的光柱，看起來像中心在冒煙：方向反了，
    陣是在吸不是在噴，所以整個掉頭。 */
+/* 第 i 層的位置與長好之後的半徑 → 撒 n 顆星光。長層那一下與滿陣期間都走這裡，
+   兩邊算法一致，星星才會剛好落在那一圈上。 */
+function starsOn(i, n) {
+  spawnStars(magic.x, magic.z, 0.12 + MAG_R * MAG_LAYER[i].y,
+             MAG_R * MAG_LAYER[i].r * magic.rj[i], n);
+}
 const SUCK_SPD = 34;              // 飛多快（單位／秒）：從外圈到陣心約 0.8 秒
 function magSuck(m, dt) {
   const k = Math.min(1, (MAG_TIME - m.t) / MAG_TIME);      // 越接近爆炸吸得越急
@@ -3265,8 +3277,10 @@ function stepFlash(dt) {
    火光在裡面燒約 0.8 秒再冷掉，那是參考圖裡雲心會發亮的來源。 */
 const CLOUD_GROW = 2.4;         // 整朵長完要多久
 const SKIRT_T = 1.7;            // 腳下那圈煙要往外鋪多久
-function startCloud(p, R, magic) {
-  clouds.push({ x: p.x, z: p.z, R, magic, t: 0, emit: 0 });
+/* 核彈與爆裂魔法共用同一朵。魔法版原本是紅的、還會撒星光，v1.48 併回來——
+   使用者要的是同一種雲，兩套配色只是讓同一件事看起來像兩件事。 */
+function startCloud(p, R) {
+  clouds.push({ x: p.x, z: p.z, R, t: 0, emit: 0 });
   /* 順手把鏡頭退到整朵雲進得了畫面的距離。用原本貼著建築的取景根本裝不下——
      量過：不退的話中型建築只看得到那根柱子，傘蓋整個在畫面上緣外。
      尺寸是實測 R=30 那朵：3.7 秒升到 39（≈R×1.3）、傘蓋半徑 15.4（≈R×0.51）。
@@ -3294,13 +3308,12 @@ function stepClouds(dt) {
             rx: Math.random() * 6, ry: Math.random() * 6,
             s: rr(1, 2.2), life: rr(0.5, 1.1), g: 1.4, grow: 1.04, cool: rr(0.4, 0.8),
             cr: 1, cg: rr(0.62, 0.86), cb: rr(0.16, 0.4),
-            to: c.magic ? [0.9, 0.15, 0.4] : [0.6, 0.16, 0.04] });
+            to: [0.6, 0.16, 0.04] });
         if (dust.length < 680)                       // 柱子的煙：沿著整根柱子生
           dust.push({ x, y: rr(0.6, capY * 0.92), z,
             vx: Math.cos(a) * rr(0.2, 1.2), vy: rr(0.8, 2.4), vz: Math.sin(a) * rr(0.2, 1.2),
             rx: Math.random() * 6, ry: Math.random() * 6,
-            life: rr(6, 8.5), s: rr(1.7, 3.4), c: rr(0.34, 0.56), g: 1.4, fade: 4,
-            cr: c.magic ? 0.55 : undefined, cg: c.magic ? 0.24 : 0, cb: c.magic ? 0.28 : 0 });
+            life: rr(6, 8.5), s: rr(1.7, 3.4), c: rr(0.34, 0.56), g: 1.4, fade: 4 });
       }
     }
     /* 傘蓋：0.45 秒時一次撐開，然後自己往上升。
@@ -3315,8 +3328,7 @@ function stepClouds(dt) {
           x: c.x + Math.cos(a) * rad, y: H + rr(-R * 0.06, R * 0.12), z: c.z + Math.sin(a) * rad,
           vx: Math.cos(a) * rr(0.4, 2), vy: rr(8, 10.5), vz: Math.sin(a) * rr(0.4, 2),
           rx: Math.random() * 6, ry: Math.random() * 6,
-          life: rr(6.5, 9), s: rr(3.4, 6.2), c: rr(0.18, 0.42), g: 1.8, fade: 4.5,
-          cr: c.magic ? 0.52 : undefined, cg: c.magic ? 0.2 : 0, cb: c.magic ? 0.24 : 0
+          life: rr(6.5, 9), s: rr(3.4, 6.2), c: rr(0.18, 0.42), g: 1.8, fade: 4.5
         });
       }
       for (let k = 0; k < 34; k++) {                 // 傘蓋裡的火光，燒一下就冷掉
@@ -3329,12 +3341,12 @@ function stepClouds(dt) {
           rx: Math.random() * 6, ry: Math.random() * 6,
           s: rr(1.6, 3.2), life: rr(0.7, 1.5), g: 1.8, grow: 1.04, cool: rr(0.6, 1.1),
           cr: 1, cg: rr(0.68, 0.9), cb: rr(0.2, 0.45),
-          to: c.magic ? [0.9, 0.15, 0.4] : [0.55, 0.14, 0.04]
+          to: [0.55, 0.14, 0.04]
         });
       }
       // 腰上那一圈：參考圖裡最好認的特徵
       fxRings.push({ x: c.x, z: c.z, y: R * 0.18, r: R * 0.2, vr: R * 0.4, vy: R * 0.12,
-                     op: 0.9, fade: 1.4, c: c.magic ? 0xff5577 : 0xffd08a, add: 1, spin: rr(0, 6.28) });
+                     op: 0.9, fade: 1.4, c: 0xffd08a, add: 1, spin: rr(0, 6.28) });
     }
     /* 腳下的煙裙：參考圖裡蘑菇雲底部鋪開的那一圈翻滾濃煙。
        沒有它的話柱子是從一塊乾淨的草地長出來的，看起來像插在地上的柱子。
@@ -3359,20 +3371,9 @@ function stepClouds(dt) {
           x: c.x + Math.cos(a) * rad, y: rr(0.3, R * 0.09), z: c.z + Math.sin(a) * rad,
           vx: Math.cos(a) * rr(1.2, 4), vy: rr(1, 3), vz: Math.sin(a) * rr(1.2, 4),
           rx: Math.random() * 6, ry: Math.random() * 6,
-          life: rr(5, 7.5), s: rr(2.6, 5), c: rr(0.26, 0.46), g: 3.2, fade: 3.4,
-          cr: c.magic ? 0.5 : undefined, cg: c.magic ? 0.22 : 0, cb: c.magic ? 0.26 : 0
+          life: rr(5, 7.5), s: rr(2.6, 5), c: rr(0.26, 0.46), g: 3.2, fade: 3.4
         });
       }
-    }
-    /* 魔法版另外撒星光：參考圖的那些小星星。不冷卻，就是一閃一閃地飄上去 */
-    if (c.magic && c.t < 1.8 && Math.random() < dt * 26 && hot.length < HOT_MAX) {
-      const a = Math.random() * Math.PI * 2, rad = rr(0.2, 1) * R * 0.5;
-      hot.push({
-        x: c.x + Math.cos(a) * rad, y: rr(1, R * 0.4), z: c.z + Math.sin(a) * rad,
-        vx: 0, vy: rr(3, 7), vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
-        s: rr(0.35, 0.8), life: rr(0.7, 1.6), g: 0.6, grow: 0.75,
-        cr: 1, cg: rr(0.55, 0.9), cb: 1
-      });
     }
     if (c.t > CLOUD_GROW) clouds.splice(i, 1);
   }
@@ -3434,15 +3435,17 @@ function stepFxRings(dt) {
 }
 
 /* ── 十字星光 ─────────────────────────────────────────────
-   魔法陣每長出一層，就在那一圈上撒幾顆四角星。星芒是平面的、每幀正對鏡頭
-   （公告板在引擎那邊做），所以不管軌道相機轉到哪，看到的都是那個十字。
-   只在「長層」那一下撒，滿陣之後就不撒了——一直閃的話它會變成背景紋理，
-   而這幾顆要的是「這一層剛剛出現」的那一下。 */
+   魔法陣每長出一層就在那一圈上撒一把四角星，之後**整個施法期間一直撒**，
+   每次隨機挑一層（機率一樣 → 平均分在每一層）。星芒是平面的、每幀正對鏡頭
+   （公告板在引擎那邊做），所以不管軌道相機轉到哪，看到的都是那個十字。 */
 const STAR_MAX = 48;
-const STAR_PER = 7;              // 一層撒幾顆
+const STAR_PER = 7;              // 長出一層的那一下撒幾顆
+/* 滿陣期間每秒撒幾顆。16 顆分給六層 ≈ 一層每秒不到 3 顆，加上每顆只亮 0.5–0.95 秒，
+   場上同時約十來顆：夠讓整座陣一直在閃，又不會多到變成鋪在陣上的一層星星底紋。 */
+const STAR_RATE = 16;
 const stars = [];
-function spawnStars(x, z, y, rad) {
-  for (let i = 0; i < STAR_PER; i++) {
+function spawnStars(x, z, y, rad, n) {
+  for (let i = 0; i < n; i++) {
     if (stars.length >= STAR_MAX) break;
     const a = Math.random() * Math.PI * 2;
     const r = rad * rr(0.45, 1.12);          // 有的落在圈內、有的甩到圈外一點
@@ -3507,14 +3510,14 @@ function spawnBolt(a) {
                       a.x + Math.cos(ang) * rad, rr(0.6, 5), a.z + Math.sin(ang) * rad,
                       a.R * ARC_JIT, ARC_SEG);
   const life = rr(0.1, 0.2);
-  bolts.push({ pts, t: 0, life, op: 1, w: rr(0.3, 0.55) });
+  bolts.push({ pts, t: 0, life, op: 1, w: rr(0.16, 0.3) });
   // 三成機率從中段再岔出一條短的：分岔是閃電的招牌，但每道都岔就變成一張網
   if (Math.random() < 0.3 && bolts.length < ARC_MAX + 2) {
     const s = pts[3], b = Math.random() * Math.PI * 2, br = rr(0.15, 0.35) * a.R;
     bolts.push({
       pts: boltPts(s.x, s.y, s.z, s.x + Math.cos(b) * br, Math.max(0.6, s.y - rr(2, 8)),
                    s.z + Math.sin(b) * br, a.R * ARC_JIT * 0.6, 3),
-      t: 0, life: life * 0.7, op: 1, w: rr(0.18, 0.32)
+      t: 0, life: life * 0.7, op: 1, w: rr(0.1, 0.18)
     });
   }
 }

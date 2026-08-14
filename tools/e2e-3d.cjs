@@ -3800,7 +3800,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const flew1 = meanOf(b => b.st === 4 || b.st === 0);
     for (let i = 0; i < 4; i++) step(0.05);             // 補到爆後 1.2 秒：雲該長齊了
     const cloud = dust.filter(d => d.fade >= 3).length;
-    // 魔法版燒的是紅光、還會撒星光：粒子有自己的顏色（cr 有值）而不是灰白煙
+    /* v1.48 起魔法的雲跟核彈同一種：灰白煙（不給 cr，引擎就走預設的灰）。
+       以前整朵染紅、雲裡還撒粉白星光，使用者要的是同一種雲。 */
     const tinted = dust.filter(d => d.fade >= 3 && d.cr !== undefined).length;
     return { set0, mean0, calm, seq, full, magTime: MAG_TIME, coreY: MAG_CORE_Y,
              preCrush, crush, crushAt: CRUSH_AT,
@@ -3843,8 +3844,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mg.set1 < mg.set0 * 0.2 && !mg.after && mg.flew1 > mg.flew * 1.5 && mg.hitMax > 25,
      '爆炸當下離陣心 ' + mg.flew.toFixed(1) + ' → 一秒後 ' + mg.flew1.toFixed(1) +
      '，最遠 ' + mg.hitMax.toFixed(1));
-  ok('魔法爆完也會留一朵蘑菇雲，而且是紅的', mg.fire > 50 && mg.cloud > 90 && mg.tinted === mg.cloud,
-     mg.fire + ' 顆火球、1.2 秒後 ' + mg.cloud + ' 團煙（染紅的 ' + mg.tinted + ' 團）');
+  ok('魔法爆完也會留一朵蘑菇雲，而且跟核彈同一種',
+     mg.fire > 50 && mg.cloud > 90 && mg.tinted === 0,
+     mg.fire + ' 顆火球、1.2 秒後 ' + mg.cloud + ' 團煙，染色的 ' + mg.tinted + ' 團');
 
   /* 陣是一層層疊起來的，不是同心圓：層與層之間高度要遞增，
      而且貼地那圈的半徑就是爆炸範圍（要讓玩家看得出會炸到哪）。 */
@@ -4057,20 +4059,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const mgStar = await page.evaluate(() => {
     const orig = spawnStars;
     const calls = [];
-    window.spawnStars = function (x, z, y, rad) {
-      calls.push({ y: +y.toFixed(1), rad: +rad.toFixed(1) });
-      return orig(x, z, y, rad);
+    window.spawnStars = function (x, z, y, rad, n) {
+      // el：這一把是施法後第幾秒撒的。要分開看「長層期間」與「滿陣之後」
+      calls.push({ y: +y.toFixed(1), rad: +rad.toFixed(1), n, el: MAG_TIME - magic.t });
+      return orig(x, z, y, rad, n);
     };
-    startBuild(true); completeNow();
-    castMagic({ x: 0, z: 0 });
-    let peak = 0, lastAt = -1, el = 0, first = null;
+    let peak = 0, lastAt = -1, first = null, gap = 0, quiet = 0;
     const pops = [];                                  // 追第一顆星的亮度曲線
-    for (let i = 0; i < 70; i++) {                    // 3.5 秒：六層早就長齊了
-      step(0.05); el += 0.05;
-      if (!first && stars.length) first = stars[0];
-      if (first && stars.indexOf(first) >= 0) pops.push(+first.op.toFixed(2));
-      peak = Math.max(peak, stars.length);
-      if (stars.length) lastAt = +el.toFixed(2);
+    /* 施三次法再統計「哪一層分到幾顆」：挑層是隨機的，一次施法只撒九十幾顆，
+       單看一次的分佈本來就會忽高忽低（±2σ 就佔平均的四成），
+       那樣的門檻不是在驗程式而是在賭骰子。 */
+    for (let cast = 0; cast < 3; cast++) {
+      while (magic) step(0.05);
+      for (let i = 0; i < 60; i++) step(0.05);
+      startBuild(true); completeNow();
+      castMagic({ x: 0, z: 0 });
+      let el = 0;
+      for (let i = 0; i < 119 && magic; i++) {        // 整個施法期間（六秒）
+        step(0.05); el += 0.05;
+        if (cast > 0) continue;                       // 亮度曲線與空窗只看第一次就夠
+        if (!first && stars.length) first = stars[0];
+        if (first && stars.indexOf(first) >= 0) pops.push(+first.op.toFixed(2));
+        peak = Math.max(peak, stars.length);
+        if (stars.length) { lastAt = +el.toFixed(2); quiet = 0; }
+        else if (el > 0.2) { quiet++; gap = Math.max(gap, quiet); }   // 最長空窗幾幀
+      }
     }
     window.spawnStars = orig;
     /* 畫面那半：星星那顆 InstancedMesh 的幾何只有 9 個頂點（中心 + 8 個尖凹點），
@@ -4098,19 +4111,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     while (magic) step(0.05);
     for (let i = 0; i < 140; i++) step(0.05);
     clearFires();
-    return { calls, peak, lastAt, pops, drawn, dot0, dot1,
-             lay: MAG_LAYER.map(L => +(0.12 + MAG_R * L.y).toFixed(1)) };
+    const lay = MAG_LAYER.map(L => +(0.12 + MAG_R * L.y).toFixed(1));
+    /* 一顆一顆撒的那些按高度分組。只數「滿陣之後」的：長的那 1.75 秒上層根本還沒出現，
+       把那一段算進來的話低層本來就會多一截，那不是分佈不均是它還沒長出來。 */
+    const each = lay.map(y => calls.filter(c => c.n === 1 && c.y === y && c.el > 2).length);
+    return { peak, lastAt, pops, drawn, dot0, dot1, gap, lay, each, casts: 3,
+             burst: calls.filter(c => c.n > 1).map(c => c.y),
+             sprinkle: calls.filter(c => c.n === 1).length,
+             stray: calls.filter(c => lay.indexOf(c.y) < 0).length };
   });
   ok('每長出一層就在那一圈撒一把十字星光',
-     mgStar.calls.length === 6 && mgStar.calls.every((c, i) => c.y === mgStar.lay[i]) &&
-     mgStar.peak > 10,
-     '六層各撒一把（高度 ' + mgStar.calls.map(c => c.y).join('／') +
+     mgStar.burst.length === 6 * mgStar.casts &&
+     mgStar.burst.every((y, i) => y === mgStar.lay[i % 6]) &&
+     mgStar.stray === 0 && mgStar.peak > 10,
+     '每次施法六層各撒一把（高度 ' + mgStar.burst.slice(0, 6).join('／') +
      '），最多同時 ' + mgStar.peak + ' 顆在場上');
-  ok('星光是一閃：亮起來快、收得慢，滿陣之後就不再撒',
+  /* v1.48：陣在場上的時候就一直撒，而且平均分在每一層。
+     “平均”是隨機挑層、機率一樣，所以驗的是「六層都分得到、最少的不會少於最多的一半」，
+     不是皮的相等（它本來就是隨機的）。 */
+  /* 「平均」是隨機挑層、機率一樣，所以驗的是「每一層都落在平均值的 ±45% 內」
+     （三次施法約 190 顆分六層，±45% 約是 ±2.8 個標準差），不是硬要它們相等。 */
+  const avg = mgStar.each.reduce((a, b) => a + b, 0) / mgStar.each.length;
+  ok('陣在場上就一直撒，而且六層平均分',
+     mgStar.sprinkle > 200 && mgStar.each.every(n => n > avg * 0.55 && n < avg * 1.45) &&
+     mgStar.lastAt > 5.5 && mgStar.gap <= 2,
+     '三次施法一共又撒了 ' + mgStar.sprinkle + ' 顆；滿陣之後那些六層各分到 ' +
+     mgStar.each.join('／') + '（平均 ' + avg.toFixed(1) + '）；最後一顆在 ' +
+     mgStar.lastAt + ' 秒（爆炸在 6），中間最長斷 ' + mgStar.gap + ' 幀');
+  ok('星光是一閃：亮起來快、收得慢',
      mgStar.pops.length > 3 && Math.max(...mgStar.pops) > 0.9 &&
-     mgStar.pops[0] < 0.6 && mgStar.pops[mgStar.pops.length - 1] < 0.4 &&
-     mgStar.lastAt > 1.7 && mgStar.lastAt < 3,
-     '亮度 ' + mgStar.pops.join('→') + '，最後一顆熄在 ' + mgStar.lastAt + ' 秒');
+     mgStar.pops[0] < 0.6 && mgStar.pops[mgStar.pops.length - 1] < 0.4,
+     '亮度 ' + mgStar.pops.join('→'));
   ok('星光真的畫出來了，而且鏡頭轉到哪都正對著鏡頭',
      mgStar.drawn > 0 && mgStar.dot0 > 0.99 && mgStar.dot1 > 0.99,
      '畫了 ' + mgStar.drawn + ' 顆，法線與視線的 |cos| ＝ ' + mgStar.dot0 +
@@ -4123,21 +4154,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     while (magic) step(0.05);
-    /* 像素：同一幀「有電」與「把電清掉」的藍色像素差。一定要在爆完的現場量——
-       完好的建築上放電的話，大半段電被埋在牆裡（實色材質會被積木擋掉），
-       量到的差會是 0，那不是「沒畫」而是「被擋住」。 */
-    const blue = () => {
-      draw(); ENG.render();
-      const gl = ENG.three.renderer.getContext();
-      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
-      const px = new Uint8Array(w * h * 4);
-      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
-      let n = 0;
-      for (let k = 0; k < px.length; k += 4)
-        if (px[k + 2] > px[k] + 60 && px[k + 2] > px[k + 1] + 40) n++;
-      return n;
-    };
-    let t = 0, first = -1, last = -1, peak = 0, ball = -1, best = 0, shots = 0;
+    let t = 0, first = -1, last = -1, peak = 0, ball = -1;
     const from = [], to = [];
     for (let i = 0; i < 100; i++) {                   // 爆炸後五秒
       step(0.05); t += 0.05;
@@ -4150,20 +4167,45 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         from.push(Math.hypot(p.x, p.y - MAG_CORE_Y, p.z));
         to.push(Math.hypot(q.x, q.z));
       }
-      /* 取幾幀來量，取最好的那一幀：單挑一幀會抽到「這道電剛好整條躲在煙柱後面」，
-         那量到的 0 是被擋住不是沒畫。八幀夠了——每量一幀要多算兩張圖。 */
-      if (shots < 8 && i % 3 === 0) {
-        shots++;
-        const with_ = blue();
-        const keep = bolts.slice();
-        bolts.length = 0;
-        const without = blue();
-        bolts.push(...keep);                          // 量完放回去，後面的統計才不會少一段
-        best = Math.max(best, with_ - without);
-      }
     }
-    for (let i = 0; i < 60; i++) step(0.05);
+    /* 顏色與可見度：等煙散乾淨之後，自己造一道**固定**的電，量「有電」與「沒電」的差。
+       不在放電當下隨機挑一幀量——會抽到「整道電剛好埋在煙柱裡」：塵霧是半透明的，
+       疊個十層就把電蓋掉，量到 0 不是沒畫而是被蓋住（踩過，同一份程式一次 892 一次 0）。
+       這裡量的是引擎那一段：同樣走 draw() → putBolts → 真的 WebGL。 */
+    for (let i = 0; i < 200; i++) step(0.05);         // 十秒：煙散乾淨
     clearFires();
+    const shot = () => {
+      draw(); ENG.render();
+      const gl = ENG.three.renderer.getContext();
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return px;
+    };
+    const pts = [];
+    for (let i = 0; i <= ARC_SEG; i++) {
+      const u = i / ARC_SEG;
+      pts.push({ x: 20 * u, y: MAG_CORE_Y + (1 - MAG_CORE_Y) * u, z: 0 });
+    }
+    bolts.push({ pts, t: 0, life: 1, op: 1, w: 0.24 });
+    const A = shot();
+    bolts.length = 0;
+    const B = shot();
+    let px = 0, blue = 0;
+    const tally = new Map();
+    for (let k = 0; k < A.length; k += 4) {
+      if (A[k] === B[k] && A[k + 1] === B[k + 1] && A[k + 2] === B[k + 2]) continue;
+      px++;
+      // 藍：藍分量明顯高過紅與綠。白煙與灰碎料的三個分量差不多，草地是綠的
+      if (A[k + 2] > A[k] + 50 && A[k + 2] > A[k + 1] + 25) blue++;
+      const key = A[k] + ',' + A[k + 1] + ',' + A[k + 2];
+      tally.set(key, (tally.get(key) || 0) + 1);
+    }
+    /* 主證據取**出現最多次的那個顏色**，不是平均色：這條電有一段被霧往天空色洗
+       （越遠越白）、邊緣還有抗鋸齒的混色，平均下來會被那些拉淡。
+       最常出現的那個就是沒被洗到的本體顏色。 */
+    let mode = [0, 0, 0], modeN = 0;
+    for (const [key, n] of tally) if (n > modeN) { modeN = n; mode = key.split(',').map(Number); }
     /* 純特效：在完好的建築上直接放電三秒，一塊都不該少、也不該起火。
        （接在爆炸後面量的話分不出是誰弄倒的。） */
     startBuild(true); completeNow();
@@ -4172,7 +4214,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 80; i++) step(0.05);
     const set1 = blocks.filter(b => b.st === 3).length, burn = fires ? fires.length : 0;
     bolts.length = 0; arcSrc = null;                  // 收乾淨，別把電留給下一段測試
-    return { first, last, ball, peak, set0, set1, burn, best, shots,
+    return { first, last, ball, peak, set0, set1, burn, px, blue, mode, modeN,
              from: +Math.max(0, ...from).toFixed(2), n: to.length,
              reach: +Math.max(0, ...to).toFixed(1),
              mid: +(to.reduce((s, v) => s + v, 0) / (to.length || 1)).toFixed(1),
@@ -4193,8 +4235,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('閃電純特效，不拆房子也不點火', mgArc.set1 === mgArc.set0 && mgArc.burn === 0,
      '放電三秒後還是 ' + mgArc.set1 + ' 塊站著（原本 ' + mgArc.set0 + '），起火 ' +
      mgArc.burn + ' 處');
-  ok('電是真的藍、而且看得到', mgArc.best > 200,
-     '取樣 ' + mgArc.shots + ' 幀，最好的那一幀比「把電清掉」多了 ' + mgArc.best + ' 個藍色像素');
+  ok('電是真的藍、而且看得到',
+     mgArc.px > 200 && mgArc.blue > mgArc.px * 0.5 &&
+     mgArc.mode[2] > mgArc.mode[0] + 50 && mgArc.mode[2] > mgArc.mode[1] + 25,
+     '一道電在畫面上佔 ' + mgArc.px + ' 個像素，最多的那個顏色是 rgb(' +
+     mgArc.mode.join(',') + ')×' + mgArc.modeN + '，逐點算有 ' + mgArc.blue + ' 個是藍的');
 
   /* 魔法陣長層的音效（sndRune）拿掉了：六層一路響上去太吵，
      還蓋掉引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 要留著——不是整個魔法變靜音。 */
