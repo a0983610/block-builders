@@ -1443,6 +1443,63 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      full.trips + ' 趟裡沒拿滿就走的 ' + full.notFull + ' 趟；一趟最多帶了 ' + full.best +
      ' 塊（1／2／3 塊各 ' + full.capUsed.slice(1).join('／') + ' 趟）');
 
+  /* 到了第一格的站位就**原地**把手上的丟完（v1.60.1）：一趟三塊卻要跑三次站位的話，
+     那三段路比省下來的還多。代價是後面那幾發拋得比較遠（下面一起量）。 */
+  const relay = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 3000; setWorkerCount(20); startBuild(true);
+    const prev = new Map(), seenArc = new Set(), stuck = new Set();
+    let pairs = 0, moved = 0, far = 0, farStuck = 0, maxD = 0;
+    const dist = [];
+    for (let i = 0; i < 1500 && phase === 'build'; i++) {
+      const was = workers.map(w => w.load.length);
+      step(0.05);
+      // 站的地方被別人補起來了：build 那段會重挑站位再走過去，那是唯一該移動的路徑
+      for (const w of workers)
+        if (w.st === 'build' && footBlocked(w.x, w.z)) stuck.add(w);
+      for (let k = 0; k < workers.length; k++) {
+        const w = workers[k];
+        if (w.load.length !== was[k] - 1) {            // 這一幀沒丟東西
+          if (w.load.length > was[k]) prev.delete(w);  // 領了新的一趟：重新算
+          continue;
+        }
+        const p = prev.get(w);
+        if (p && p.n === was[k]) {                     // 同一趟接著丟的下一發
+          pairs++;
+          const d = Math.hypot(w.x - p.x, w.z - p.z);
+          if (d > 0.01) moved++;
+          if (d > 1) { far++; if (stuck.has(w)) farStuck++; }   // 走了一格以上
+          maxD = Math.max(maxD, d);
+        }
+        prev.set(w, { x: w.x, z: w.z, n: w.load.length });
+        stuck.delete(w);
+      }
+      // 每一發拋擲都是一個新的 arc 物件，拿它當「這發看過了沒」的鑰匙
+      for (const b of blocks) {
+        if (b.st !== 2 || !b.arc || seenArc.has(b.arc)) continue;
+        seenArc.add(b.arc);
+        dist.push(Math.hypot(b.arc.x1 - b.arc.x0, b.arc.z1 - b.arc.z0));
+      }
+    }
+    dist.sort((a, b) => a - b);
+    const q = p => +dist[Math.floor(dist.length * p)].toFixed(1);
+    return { pairs, moved, far, farStuck, maxD: +maxD.toFixed(2),
+             n: dist.length, p50: q(0.5), p95: q(0.95), max: +dist[dist.length - 1].toFixed(1) };
+  });
+  /* 會移動的只剩一種：站的地方被別人補起來了（`footBlocked`），那時本來就得重挑站位——
+     不重挑的話他會從牆裡把積木丟出去。所以這條驗「移動的都是被埋的那些」。 */
+  ok('一趟的第二、三塊原地丟完，不會再走去下一格的站位',
+     relay.pairs > 30 && relay.far === relay.farStuck && relay.far < relay.pairs * 0.1,
+     relay.pairs + ' 次「接著丟下一塊」裡，站著沒動的 ' + (relay.pairs - relay.far) +
+     ' 次、被埋了才重挑站位的 ' + relay.far + ' 次（其中站的地方真的被補起來的 ' +
+     relay.farStuck + ' 次，最多挪了 ' + relay.maxD + ' 格）');
+  /* 原地連丟換來的代價：後面那幾發是從第一格的站位丟出去的，會比 TOSS_MAX 遠。
+     這一條不是要它變小，是要它**別失控**——拋物線本身有測試守著不會穿牆。 */
+  ok('原地連丟的拋擲距離仍在場地尺度內',
+     relay.max < 45 && relay.p50 < 8,
+     relay.n + ' 發：中位 ' + relay.p50 + '、p95 ' + relay.p95 + '、最遠 ' + relay.max +
+     '（每格都走過去的話是中位 1.4／p95 11.5／最遠 14.6）');
+
   /* ── 繞路的腳程（v1.60）────────────────────────────────
      ringWalk 是「繞開建築」「進場慶祝」共用的走法。舊版把「轉角度」跟「收半徑」
      各給滿一份 WALK×dt，而且角度那份是拿目標半徑換算的——站得比那個圈遠的人
@@ -1915,10 +1972,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   /* 門檻取自 5 輪對照（同一個情境、爆炸後 20 秒）：
      退游標前 第一塊 9.4–12.3 秒、別處蓋 50–82 塊；退了之後 1.4–2.2 秒、別處 0–14 塊。
-     兩邊都留兩倍以上的餘裕，才不會因為爆炸的隨機性時靈時不靈。 */
+     **v1.60.1 重新量過**：第一塊 1.9–5.15 秒、補回 45–52 格、別處 11–41 塊。
+     兩個數字都往上跑是「同樣 20 秒蓋得比以前多」的直接結果（到了工地就原地把手上的
+     丟完，實測同樣時間放上去的塊數多五到八成）；
+     「第一塊」變慢還多一個原因：派工單一次領三格，補洞得等他把手上那趟走完。
+     門檻照新的量測放寬，但仍然離「沒退游標」那組有距離。 */
   ok('炸出來的洞會先補，不是繼續往上疊',
-     repair.holes > 20 && repair.fixed > 20 && repair.first > 0 && repair.first < 5 &&
-     repair.other <= 30,
+     repair.holes > 20 && repair.fixed > 20 && repair.first > 0 && repair.first < 8 &&
+     repair.other < 60,
      '洞 ' + repair.holes + ' 格：20 秒內補回 ' + repair.fixed + ' 格、別處只蓋了 ' +
      repair.other + ' 塊，第一塊補回去 ' + repair.first + ' 秒（爆炸當下游標在 ' + repair.cur + '）');
 

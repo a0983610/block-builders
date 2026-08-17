@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.60.0';
+const VERSION = '1.60.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1449,6 +1449,7 @@ function updWorker(w, wi, dt) {
         b.holder = -1;                                // 出手了就不再屬於任何人
         w.load.shift();
         if (!w.load.length) w.carry = false;
+        carryPose(w);                                 // 剩下的那疊要馬上往下遞補一格
         w.st = 'wait'; w.wait = 0.28;
       }
       break;
@@ -1457,8 +1458,8 @@ function updWorker(w, wi, dt) {
       carryPose(w);                                   // 手上還有貨的話要跟著站好
       w.gait += (0 - w.gait) * Math.min(1, dt * 8);
       w.wait -= dt;
-      // 一趟丟完才回去重領。還有貨就直接走下一格，不必再跑一次「找工作」
-      if (w.wait <= 0) { if (w.load.length) toSlot(w); else w.st = 'idle'; }
+      // 一趟丟完才回去重領。還有貨就**站在原地**繼續丟，不必走去下一格的站位
+      if (w.wait <= 0) { if (w.load.length) toSlot(w, true); else w.st = 'idle'; }
       break;
   }
 }
@@ -1479,11 +1480,17 @@ function loadUp(w, wi) {
   }
   if (w.load.length) markSupportDirty(0.05);
 }
-/* 去丟手上第一塊：站位照那一格重算，並且要求重新判斷直線通不通 */
-function toSlot(w) {
+/* 去丟手上第一塊。stay = 已經站在工地邊上了（剛丟完前一塊）：
+   **原地繼續丟**，不必走去下一格的站位（v1.60.1）——一趟三塊卻要跑三趟站位的話，
+   那三塊之間的路比省下來的還多，看起來是在原地繞圈。
+   一次領的幾格本來就是藍圖上前後相鄰的（findSlot 是照順序往下派），
+   從同一個位置丟得到；拋物線本來就會沿路算「要多高才過得去」（tossPeak），
+   中間隔著牆的話它會自己拉高。
+   只有一種情況要重走：站的地方被補起來了（下面 build 那段的 footBlocked）。 */
+function toSlot(w, stay) {
   if (!w.load.length) { w.st = 'idle'; return; }   // 整趟都被抽光了
   w.st = 'build';
-  const st = standPos(bp.slots[w.load[0].s]);
+  const st = stay ? { x: w.x, z: w.z } : standPos(bp.slots[w.load[0].s]);
   w.tx = st.x; w.tz = st.z; w.chk = 0;
 }
 /* 拋物線的頂點。只看高度差是不夠的（v1.51 之前那版就是）：人退到外緣之後，
