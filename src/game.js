@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.61.1';
+const VERSION = '1.62.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1984,7 +1984,7 @@ const TOOLS = [
   { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
     lock: { txt: '累計擊飛 6,000 塊解鎖', ok: () => stats.smashed >= 6000 } },
   { id: 'tornado', n: '龍捲風', k: '🌪',
-    tip: '點兩下：先點龍捲風出現的地方，再點要掃過去的方向（會一路亂竄，5 秒）',
+    tip: '點兩下：先點龍捲風出現的地方，再點要掃過去的方向（會一路亂竄 10 秒，掃到的建築吸走兩成）',
     lock: { txt: '拆掉 4 座建築解鎖', ok: () => stats.destroyed >= 4 } },
   { id: 'fw', n: '煙火', k: '🎆', tip: '點地面：一次射三發煙火，落下來的火星會把建築點著',
     lock: { txt: '累計擊飛 11,000 塊解鎖', ok: () => stats.smashed >= 11000 } },
@@ -2568,12 +2568,22 @@ function stepBall(dt) {
   }
 }
 
-/* 龍捲風：在地面走一段路，把沿路的積木吸起來繞圈，最後隨機甩出去。
+/* 龍捲風：在地面走一段路，把沿路的碎料與部分積木吸起來繞圈，最後隨機甩出去。
    可以同時存在好幾道——畫面成本跟道數無關（引擎那邊一層一顆 InstancedMesh），
    真正的上限是塵霧配額，所以卡在 TW_MAX 道。 */
-/* 5 秒（v1.58，本來 7）：方向改成玩家自己指之後，看的是「它照我指的方向掃過去」
-   那一段，尾巴那兩秒它早就自己亂竄到別處了。 */
-const TW_MAX = 4, TW_LIFE = 5, TW_R = 6, TW_H = 34;
+/* 壽命 10 秒（v1.62，本來 5）：改成「路過不再把建築整段吸光」之後，
+   一趟只咬得走兩成，掃過去的那幾秒不夠看出它在幹什麼——時間還回去讓它多掃幾趟。
+   （v1.58 曾從 7 收到 5，理由是尾巴那兩秒它早就亂竄到別處；現在那反而是好事：
+   同一棟被咬過的地方它不會再咬第二次，亂竄過去的下一段才有東西吸。） */
+const TW_MAX = 4, TW_LIFE = 10, TW_R = 6, TW_H = 34;
+/* 路過一棟建築帶走幾成（v1.62）。本來範圍內的積木**全部**當場脫離，一道掃過去
+   等於把沿路的建築整條刨掉；使用者要的是「吸走碎料，加上隨機兩成的積木」——
+   建築被啃出缺口、但不會整段消失。碎料（FREE／FLY）不受這條限制，照樣全部捲走。 */
+const TW_TAKE = 0.2;
+/* 每一道自己的編號：某一塊被抽中「這道不吸」之後要記著，不然下一幀重抽一次，
+   十秒的壽命裡同一塊會被抽 300 次，兩成的機率照樣把整棟吸光。
+   抽中要吸的不必記——當場就脫離了，不再是 SET，下一幀不會再被算一次。 */
+let twSeq = 0;
 const TW_SPREAD = 0.12;             // 方向偏差 ±rad（約 ±7°），跟保齡球同一個用意
 const TW_SWAY = 0.85;               // 轉向角的擺幅（rad/s）：一路歪來歪去用的
 /* 點兩下：第一點是龍捲風出現的地方，第二點決定往哪邊掃（跟保齡球同一套操作）。
@@ -2589,7 +2599,7 @@ function launchTornado(from, toward) {
   if (!twists) twists = [];
   if (twists.length >= TW_MAX) twists.shift();     // 放太多道就把最早那道擠掉
   twists.push({
-    x: from.x, z: from.z, r: TW_R, h: TW_H, life: TW_LIFE,
+    x: from.x, z: from.z, r: TW_R, h: TW_H, life: TW_LIFE, id: ++twSeq,
     /* 起始角度隨機：漏斗的扭曲完全是 spin 的函數，都從 0 開始的話
        同時在場的幾道會擺出一模一樣的姿勢，看起來像複製貼上。 */
     spin: rr(0, 6.28), vx: Math.cos(a) * 3.2, vz: Math.sin(a) * 3.2, hit: 0,
@@ -2631,7 +2641,13 @@ function stepTwist(dt) {
       // 切線方向繞圈 + 往內吸 + 往上捲
       const tx = -dz / d, tz = dx / d;
       const pull = (1 - d / R);
-      if (b.st === SET) { breakBlock(b, 0, 0, 0); n++; }
+      /* 還站著的積木：這一道只咬得走兩成，其餘的原地留著（連力都不加——
+         SET 的積木本來就不吃速度，加了只是等它下次被算到時帶著一組舊的速度脫離）。 */
+      if (b.st === SET) {
+        if (b.twSkip === w.id) continue;                 // 這道已經放過它了
+        if (Math.random() >= TW_TAKE) { b.twSkip = w.id; continue; }
+        breakBlock(b, 0, 0, 0); n++;
+      }
       if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
       b.vx += (tx * 26 + -dx / d * 10) * pull * dt * 3;
       b.vz += (tz * 26 + -dz / d * 10) * pull * dt * 3;
@@ -3344,7 +3360,7 @@ function stepNuke(dt) {
    魔法陣一層層往外長，最外圈就是等一下的爆炸範圍——
    讓你在那六秒裡看得出來會炸到哪。
    v1.59 起可以同時好幾個（本來是「一次一個，再點會移到新地點重來」）。
-   一個陣要吃掉 15 個圓環（六層×2 ＋ 火種 3）與 7 片圓盤，引擎那邊的池子
+   一個陣要吃掉 15 個圓環（六層×2 ＋ 火種 3）與 6 片圓盤（火種 v1.62 起不墊盤），引擎那邊的池子
    照 MAG_CAST 開好了；沒用到的環是 visible=false，不佔 draw call。 */
 const MAG_TIME = 6, MAG_R = 30, MAG_POW = 34;
 const MAG_CAST = 3;                       // 最多同時幾個陣，跟引擎的池子大小綁在一起
@@ -3454,9 +3470,14 @@ function stepOneMagic(magic, dt) {
        配色照參考圖收（v1.54）：芯與盤是**深紅**（原本 #ff3a1c 偏橘，整疊看起來是一團橘），
        外圈的暈改成**金黃**（原本 #ff9a4a 也是橘，跟芯同色等於沒有層次）——
        深紅的盤 + 金黃的紋路與外暈，紅黃分得開才有參考圖那種灼燒感。 */
-    rings.push({ x: magic.x, z: magic.z, r: rad, y, spin, op: k, c: 0xe81a08, sp: 1, fill: 1 });
+    /* rag：邊緣不要是圓規畫出來的（v1.62，照使用者的參考圖）——外緣照角度燒出幾處
+       往外舔的火舌，見引擎的 flameRing。同一層的芯與暈要指同一種邊（rag 值一樣），
+       不然暈會從芯的凹處穿出來；六層輪著用四種，錯開才不會六層凹凸完全對齊。 */
+    const rag = 1 + i % 4;
+    rings.push({ x: magic.x, z: magic.z, r: rad, y, spin, op: k, c: 0xe81a08,
+                 sp: 1, fill: 1, rag });
     rings.push({ x: magic.x, z: magic.z, r: rad * 1.04, y, spin,
-                 op: k * 0.75, c: 0xffb42a, add: 1 });
+                 op: k * 0.75, c: 0xffb42a, add: 1, rag });
   }
   /* 小火圈（火種）：第一層一亮它就在場上，之後**一直都在**，直到爆炸。
      一層長好 → 升到上一層的高度 → 停在那裡等那一層長好 → 再往上升。
@@ -3477,14 +3498,22 @@ function stepOneMagic(magic, dt) {
        這個火種要傳達的只有「往上帶」。等大剛好也就是新層的起始半徑，交接不跳。
        顏色直接抄爆炸火球那組色階（FLASH_SHELL 的亮黃 → 橘），跟火球是同一團火。
        芯要疊兩圈：環的線寬是半徑的 7%，半徑才 4.2 的小圈只畫一圈的話那條線
-       細到看不出顏色，剩下的只有底下那片淡淡的盤。 */
+       細到看不出顏色。
+       v1.62 照參考圖收成「單純的火圈」，兩件事：
+       ①**中間不再墊那片填滿的盤**——參考圖裡的火圈中間是空的、透得到背景，
+         墊了盤它就是一團在發光的餅，不是一個圈。
+       ②三圈改成**貼著疊成一條管子**（半徑 1／1.07／1.14）。環的線寬是半徑的 7%，
+         所以下一圈的內緣剛好接在上一圈的外緣上，三圈連起來就是一條有厚度的火環，
+         顏色由內而外亮黃 → 琥珀 → 橘紅（原本是 1／1.2／1.75，中間空一大段，
+         看起來是「一片光餅外面另外套一個圈」）。三圈轉速也統一，
+         火焰邊的凹凸才對齊成同一條管子，不會各轉各的糊掉。 */
     const fs = -el * MAG_SPIN * 3.4;                            // 轉得比陣快，才像在竄
     rings.push({ x: magic.x, z: magic.z, r: seedR, y: fy, spin: fs,
-                 op: 1, c: 0xffeda6, seed: 1 });
-    rings.push({ x: magic.x, z: magic.z, r: seedR * 1.2, y: fy, spin: fs * 0.8,
-                 op: 1, c: 0xffc44a, fill: 1, seed: 1 });
-    rings.push({ x: magic.x, z: magic.z, r: seedR * 1.75, y: fy, spin: fs * 0.6,
-                 op: 0.85, c: 0xff9a22, add: 1, seed: 1 });
+                 op: 1, c: 0xffeda6, seed: 1, rag: 5 });
+    rings.push({ x: magic.x, z: magic.z, r: seedR * 1.07, y: fy, spin: fs,
+                 op: 0.9, c: 0xffc44a, add: 1, seed: 1, rag: 5 });
+    rings.push({ x: magic.x, z: magic.z, r: seedR * 1.14, y: fy, spin: fs,
+                 op: 0.7, c: 0xff5a2a, add: 1, seed: 1, rag: 5 });
   }
   // 一層兩個環（芯 + 暈），所以要數層數不是數環數
   if (layers > magic.shown) {
@@ -3552,6 +3581,11 @@ const IMP_TIME = 4.5;               // 倒數剩幾秒開始吸碎料
    最後被扯下來的還在半路上就被炸開了，看起來就是三段各做各的、對不起來。 */
 const CRUSH_AT = 0.3;               // 倒數剩幾秒把範圍內的東西整個扯下來砸向陣心
 const CRUSH_BALL = 3;               // 收攏成一顆這麼大的球，不是收成一個點
+/* 扯得動幾成還站著的積木（v1.62）。本來範圍內**全部**一次扯下來，整棟在爆炸前
+   0.3 秒就先消失；使用者要的是「只吸碎料，加上範圍內隨機兩成的積木」——
+   看到的是碎料與幾片牆被捲進陣心，建築本體留到火球那一下才散。
+   碎料不受這條限制：它們本來就是散的，全部捲進去才有「收攏成一團」可看。 */
+const CRUSH_TAKE = 0.2;
 function crushIn(m) {
   const T = Math.max(0.08, m.t);    // 距離爆炸還有多久：速度就照這個算
   const R2 = MAG_R * MAG_R;
@@ -3561,6 +3595,8 @@ function crushIn(m) {
     const dx = b.x - m.x, dz = b.z - m.z;
     if (dx * dx + dz * dz > R2) continue;
     const wasSet = b.st === SET;
+    // 只跑一次（m.crush 擋著），所以這裡當場抽就夠，不必像龍捲風那樣記住抽過的結果
+    if (wasSet && Math.random() >= CRUSH_TAKE) continue;
     /* 每塊各瞄陣心附近的一個隨機點。全部瞄同一個點的話，最後 0.1 秒整棟會疊成
        一顆積木大小的小點，看起來像憑空消失；散一顆球才看得到那團被壓縮的東西。 */
     const tx = m.x + rr(-CRUSH_BALL, CRUSH_BALL);
@@ -3585,7 +3621,7 @@ function implode(m, dt) {
      這一段只負責收攏之前那幾秒，把散落的碎料慢慢捲過來。 */
   for (const b of blocks) {
     if (m.crush) break;
-    if (b.st !== FREE && b.st !== FLY) continue;        // 只吸碎料，建築等 crushIn 一次處理
+    if (b.st !== FREE && b.st !== FLY) continue;        // 只吸碎料；還站著的等 crushIn 抽兩成
     const dx = b.x - m.x, dz = b.z - m.z;
     const d2 = dx * dx + dz * dz;
     if (d2 > R2) continue;
@@ -4173,10 +4209,11 @@ function step(dt) {
      跌破門檻不馬上換，先等 SWAP_WAIT 秒讓最後那一發演完；這段時間還能繼續砸殘骸，
      所以結算（報廢的那些、拆除完畢的通知）留到真的要換場那一刻才做，
      不然等待中被打掉的積木會被算兩次錢。
-     魔法陣還在充能時例外：它會先把建築扯下來捲進陣心，那個過程一定會跌破這條線。
-     v1.59 之前的理由是「換場會把陣收掉，那一發永遠等不到爆炸」；現在道具換場不收了，
-     但這條還是留著——那一發是衝著**這一座**來的，它把整棟捲進去了就該讓它炸完，
+     魔法陣還在充能時例外。v1.59 之前的理由是「換場會把陣收掉，那一發永遠等不到爆炸」；
+     現在道具換場不收了，但這條還是留著——那一發是衝著**這一座**來的，就該讓它炸完，
      換到一半的話玩家看到的是建築憑空消失。
+     （v1.62 之前是「陣一定會先把整棟扯下來捲進陣心，所以一定會跌破這條線」；
+     現在它只扯得走兩成，跌破多半是玩家在那六秒裡又補了幾發，但要擋的事情一樣。）
      （等待中途離開 wreck——按了「立刻建成」之類——就把秒數丟掉重算） */
   if (phase !== 'wreck') swapWait = 0;
   else if (!magics && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {

@@ -24,10 +24,10 @@ const ENG = (function () {
   const _nOuter = new T.Object3D(), _nMat = new T.Matrix4();
   const magRings = [], magDiscs = [];
   const flashShells = [];
-  /* 填滿的圓盤：魔法陣每層一片，再加一片給那顆一直在的火種
-     （盤是照 list 的順序發的，只給六片的話火種那圈在滿陣時就分不到）。
-     ×3 是因為 v1.59 起最多同時三個陣。 */
-  const MAG_DISC = 21;
+  /* 填滿的圓盤：魔法陣每層一片。×3 是因為 v1.59 起最多同時三個陣。
+     （v1.62 起那顆火種不再墊盤——參考圖裡的火圈中間是空的，見規則那邊的火種註解，
+     所以從 7×3 收成 6×3。） */
+  const MAG_DISC = 18;
   /* 火／火星粒子。240 是「一次爆炸的火球 + 幾棟在燒」的量；
      煙火改成一次三發齊射之後，光是天上的火星就要三百顆才不會變成一顆一顆的點。
      v1.58 再放大到 960：煙火的每一顆火星自己就是一條拖線（一顆 instance），
@@ -82,6 +82,47 @@ const ENG = (function () {
      96 留了餘裕，反正是一顆 InstancedMesh，多開 instance 不多吃 draw call。 */
   const MAXBOLT = 96;
   const MAG_DASH = 26;                                       // 外圈那一圈虛線的段數
+  /* 魔法陣的邊緣不要是圓規畫出來的（v1.62，照使用者給的參考圖）：外緣照角度加幾組
+     不同頻率的正弦波，燒出幾處往外舔的火舌。三件事定下這組數字：
+     ① 只推外緣，內緣（0.93R）一律不動——它藏在底下那片盤（0.97R）下面，
+        往外推會讓盤的邊露出一條完美的圓弧，改了反而更圓。
+     ② 每組的頻率一定是整數，不然波在 0 與 2π 接不起來，會留一道摺痕。
+     ③ 偏移量含一個正的底 RAG_BIAS：五組振幅加起來 0.108，底給 0.085，
+        外緣就落在 0.977～1.193R——最小值仍蓋得住那片盤的邊。
+     頻率的分配是看出來的：第一版把振幅壓在低頻（3、5 為主），畫出來是一片會蠕動的
+     阿米巴，不像在燒。能量挪到高頻（11、19、29）之後才是參考圖那種「一圈細火舌
+     加幾處鼓起來的大浪」——低頻負責整體不對稱，高頻負責火的質感。
+     分幾種邊：六層輪著用前四種（六層凹凸完全對齊會像一支雕花柱子），火種吃第五種。 */
+  const RAG_WAVE = [[3, 0.030], [7, 0.030], [11, 0.022], [19, 0.016], [29, 0.010]];
+  const RAG_BIAS = 0.085;
+  /* 分段要夠密，不然最高那組（29）的波峰會被切成一段一段的折線：
+     256 段等於一個波周期還有 8 段。一種邊 512 個三角形、共五種，一次做好不再動。 */
+  const RAG_SEG = 256;
+  const RAG_N = 5;
+  const ringRag = [];
+  let ringSmooth = null;
+  /* 火焰邊的環。做法是拿一顆正常的 RingGeometry 再逐點推外緣，不是自己組
+     BufferGeometry：省掉一份索引與 UV 的手工活，也留著 geometry.type = 'RingGeometry'
+     （測試靠它在場景裡認出這一組環）。 */
+  function flameRing(seed) {
+    const g = new T.RingGeometry(0.93, 1, RAG_SEG, 1);
+    const p = g.attributes.position;
+    /* 每一組波的相位：同一顆環的每一點共用，凹凸才是同一條曲線上的。
+       用 sin 湊出來的定值雜訊——要的只是「每種邊各不相同、而且每次啟動都一樣」。 */
+    const ph = RAG_WAVE.map((w, k) =>
+      (Math.sin((seed + 1) * 12.9898 + k * 78.233) * 43758.5453) % 6.283);
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), y = p.getY(i);
+      const rad = Math.hypot(x, y);
+      if (rad < 0.965) continue;                  // 內緣那一圈不動（見上面 ①）
+      const a = Math.atan2(y, x);
+      let n = RAG_BIAS;
+      for (let k = 0; k < RAG_WAVE.length; k++)
+        n += Math.sin(a * RAG_WAVE[k][0] + ph[k]) * RAG_WAVE[k][1];
+      p.setXY(i, x * (1 + n), y * (1 + n));
+    }
+    return g;
+  }
   const MAG_SPOKE = MAG_SWIRL.reduce((s, f) => s + f.arms * f.seg, 0) + MAG_DASH;
   const MAG_SP_RINGS = 18;             // 最多幾層會帶紋路（六層 × 最多三個陣）
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
@@ -405,12 +446,17 @@ const ENG = (function () {
        都是這一組。每層一個扁環 + 一圈紋路——只有環的話它就是一條紅色的帶子，
        盤面的螺旋紋才讓它像「陣」。 */
     ringGroup = new T.Group();
+    /* 幾何體共用一份：54 顆環各自 new 一顆 RingGeometry 是白花的（形狀完全一樣，
+       大小是逐環 scale 出來的）。火焰邊的那幾種也在這裡先做好，setRings 再照
+       每一環的 rag 換過去——換的只是參考，不重建任何東西。 */
+    ringSmooth = new T.RingGeometry(0.93, 1, 64);
+    for (let i = 0; i < RAG_N; i++) ringRag.push(flameRing(i));
     for (let i = 0; i < MAG_MAX; i++) {
       /* 環用一般混色：加法混色疊在亮綠色草地上會被洗成白的，看不出是紫的。
          輻條那圈小的才用加法，當作陣上的光點。 */
       /* 魔法陣那幾層用一般混色：加法混色疊在亮綠色草地上會被洗成白的，
          看不出是紅的。爆炸的衝擊環才給加法（它就是要發光），逐環切換。 */
-      const m = new T.Mesh(new T.RingGeometry(0.93, 1, 64), new T.MeshBasicMaterial({
+      const m = new T.Mesh(ringSmooth, new T.MeshBasicMaterial({
         color: 0xff2d20, transparent: true, opacity: 0.7,
         side: T.DoubleSide, depthWrite: false, forceSinglePass: true
       }));
@@ -692,6 +738,10 @@ const ENG = (function () {
       const m = magRings[i];
       m.visible = !!r;
       if (!r) continue;
+      /* 火焰邊還是圓的邊：魔法陣那幾層與火種給 rag（見 flameRing），
+         爆炸衝擊環、風壓、瞄準環維持正圓——那幾個是「範圍提示」，燒起來反而看不懂。 */
+      const geo = r.rag ? ringRag[(r.rag - 1) % RAG_N] : ringSmooth;
+      if (m.geometry !== geo) m.geometry = geo;
       m.position.set(r.x, r.y, r.z);
       m.scale.set(r.r, r.r, 1);
       m.rotation.z = r.spin || 0;         // 放平之後，繞自己的法線轉就是 local Z
