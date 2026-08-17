@@ -1103,12 +1103,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const impOpen = await gp.evaluate(() => ({
     on: document.getElementById('impWrap').classList.contains('on'),
     none: document.getElementById('impList').textContent,
-    outOff: document.getElementById('impOut').disabled,
     docOff: document.getElementById('impDoc').disabled
   }));
-  ok('按下去面板開起來，還沒匯過時清單是空的、匯出按不動',
-     impOpen.on && impOpen.outOff === true && impOpen.docOff === false &&
-     impOpen.none.indexOf('還沒有匯入過') >= 0,
+  ok('按下去面板開起來，還沒匯過時清單是空的',
+     impOpen.on && impOpen.docOff === false && impOpen.none.indexOf('還沒有匯入過') >= 0,
      impOpen.none.trim());
 
   /* 取得 prompt：整份〈藍圖製作說明〉進剪貼簿。玩家拿它去餵網頁版 AI，
@@ -1154,14 +1152,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              rows: document.querySelectorAll('#impList .it').length,
              row: (document.querySelector('#impList .it') || {}).textContent || '',
              inMenu: [...sel.options].map(o => o.textContent).indexOf('貼上來的小屋'),
-             outOff: document.getElementById('impOut').disabled,
              saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]') };
   }, '```js\n// 檔名：我的小屋.js\n' + SAMPLE + '\n```');
   /* 下拉的第 2 項：[0] 是「🎲 隨機」、[1] 是 blueprints/ 裡那支範例小教堂，
      自訂的都排在內建 48 座前面，剛匯入的接在自訂那一群的最後面。 */
   ok('貼上並匯入之後，藍圖清單、下拉選單、存檔三邊都跟上了',
      impGood.good && impGood.shapes === impUi.shapes + 1 && impGood.rows === 1 &&
-     impGood.inMenu === 2 && impGood.outOff === false && impGood.left === '' &&
+     impGood.inMenu === 2 && impGood.left === '' &&
      impGood.saved.length === 1 && impGood.saved[0].names[0] === '貼上來的小屋' &&
      impGood.saved[0].file === '我的小屋.js',
      impGood.msg + '　清單「' + impGood.row + '」，下拉第 ' + impGood.inMenu + ' 項');
@@ -1190,14 +1187,62 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      impKeep.has && impKeep.shapes === impUi.shapes + 1 && impKeep.inMenu === 2,
      '共 ' + impKeep.shapes + ' 座，下拉第 ' + impKeep.inMenu + ' 項');
 
+  /* 匯出是**一列一顆**（v1.57.1）：分享的單位是「一座建築」，不是整包。
+     所以先匯第二座進來，才驗得到「按第二列匯出來的真的只有第二座」。 */
   await gp.click('#impBtn');
-  const [impDl] = await Promise.all([gp.waitForEvent('download'), gp.click('#impOut')]);
+  const impTwo = await gp.evaluate(src => {
+    document.getElementById('impPaste').value = src;
+    document.getElementById('impGo').click();
+    return { rows: document.querySelectorAll('#impList .it').length,
+             outs: document.querySelectorAll('#impList [data-out]').length,
+             dels: document.querySelectorAll('#impList [data-del]').length,
+             names: [...document.querySelectorAll('#impList .it b')].map(b => b.textContent) };
+  }, '// 檔名：我的塔.js\n' + SAMPLE.replace("name: '貼上來的小屋'", "name: '貼上來的塔'"));
+  ok('每一列都有自己的「匯出」與「刪除」',
+     impTwo.rows === 2 && impTwo.outs === 2 && impTwo.dels === 2 &&
+     impTwo.names.join(',') === '貼上來的小屋,貼上來的塔',
+     impTwo.rows + ' 列：' + impTwo.names.join('、'));
+
+  const [impDl2] = await Promise.all([
+    gp.waitForEvent('download'),
+    gp.click('#impList [data-out="1"]')
+  ]);
+  const impPath2 = path.join(OUT, 'game-export-2.js');
+  await impDl2.saveAs(impPath2);
+  const impText2 = fs.readFileSync(impPath2, 'utf8');
+  ok('按第二列的「匯出」，下載的就只有第二座（檔名也是它自己的）',
+     impDl2.suggestedFilename() === '我的塔.js' &&
+     impText2.indexOf("name: '貼上來的塔'") > 0 &&
+     impText2.indexOf('貼上來的小屋') < 0 &&
+     impText2.indexOf('積木小人 · 匯出的藍圖（貼上來的塔）') > 0,
+     '檔名「' + impDl2.suggestedFilename() + '」，' + impText2.split('\n').length + ' 行、' +
+     '沒夾帶另一座');
+  const impBtnBack = await gp.evaluate(() =>
+    document.querySelector('#impList [data-out="1"]').textContent);
+  ok('按下去那一列的按鈕會回報已下載', impBtnBack === '已下載 ✓', '按鈕變成「' + impBtnBack + '」');
+
+  const impDel2 = await gp.evaluate(() => {
+    document.querySelector('#impList [data-del="1"]').click();
+    return { rows: document.querySelectorAll('#impList .it').length,
+             left: [...document.querySelectorAll('#impList .it b')].map(b => b.textContent).join(','),
+             has: SHAPES.some(s => s.n === '貼上來的塔'),
+             shapes: SHAPES.length };
+  });
+  ok('刪第二列只刪掉第二座，第一座留著',
+     impDel2.rows === 1 && impDel2.left === '貼上來的小屋' && !impDel2.has &&
+     impDel2.shapes === impUi.shapes + 1,
+     '剩下「' + impDel2.left + '」，共 ' + impDel2.shapes + ' 座');
+
+  const [impDl] = await Promise.all([
+    gp.waitForEvent('download'),
+    gp.click('#impList [data-out="0"]')
+  ]);
   const impPath = path.join(OUT, 'game-export.js');
   await impDl.saveAs(impPath);
   const impText = fs.readFileSync(impPath, 'utf8');
-  ok('「匯出 .js」存得出一支可以傳給別人的藍圖檔',
+  ok('匯出來的是一支可以傳給別人的藍圖檔',
      impDl.suggestedFilename() === '我的小屋.js' && impText.indexOf('customBlueprint') > 0 &&
-     impText.indexOf('```') < 0 && impText.indexOf('積木小人 · 匯出的藍圖（1 座）') > 0,
+     impText.indexOf('```') < 0 && impText.indexOf('積木小人 · 匯出的藍圖（貼上來的小屋）') > 0,
      '檔名「' + impDl.suggestedFilename() + '」，' + impText.split('\n').length + ' 行');
   const impRound = await gp.evaluate(src => {
     document.getElementById('impPaste').value = src;
@@ -1212,19 +1257,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      impRound.msg);
 
   const impDel = await gp.evaluate(() => {
-    document.querySelector('#impList .it button').click();
+    document.querySelector('#impList [data-del="0"]').click();
     const sel = document.getElementById('shape');
     return { shapes: SHAPES.length,
              has: SHAPES.some(s => s.n === '貼上來的小屋'),
              rows: document.querySelectorAll('#impList .it').length,
              inMenu: [...sel.options].map(o => o.textContent).indexOf('貼上來的小屋'),
              pick: shapePick,
-             saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]').length,
-             outOff: document.getElementById('impOut').disabled };
+             saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]').length };
   });
   ok('刪掉之後 SHAPES、下拉選單、存檔三邊都清乾淨了',
      !impDel.has && impDel.shapes === impUi.shapes && impDel.rows === 0 &&
-     impDel.inMenu < 0 && impDel.saved === 0 && impDel.outOff === true,
+     impDel.inMenu < 0 && impDel.saved === 0,
      '回到 ' + impDel.shapes + ' 座，存檔 ' + impDel.saved + ' 筆');
   /* 剛才選的就是被刪掉那一座：shapePick 不能繼續指著那個索引，
      不然「指定要蓋的」會悄悄變成剛好遞補上來的別座。 */

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.57.0';
+const VERSION = '1.57.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -4239,9 +4239,9 @@ function dropShape(at) {
 function renderImports() {
   $('impList').innerHTML = imported.length
     ? imported.map((e, i) => '<div class="it"><b>' + esc(e.names.join('、')) + '</b><span>' +
-        esc(e.file) + '</span><button data-del="' + i + '">刪除</button></div>').join('')
+        esc(e.file) + '</span><button data-out="' + i + '">匯出</button>' +
+        '<button data-del="' + i + '">刪除</button></div>').join('')
     : '<div class="none">還沒有匯入過。上面那四顆是「去弄一份藍圖」的捷徑。</div>';
-  $('impOut').disabled = !imported.length;
 }
 
 function doImport() {
@@ -4278,19 +4278,25 @@ function download(name, text) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(href), 4000);
 }
-/* 匯出：把存下來的整包存成一支 .js，傳給別人就能用（對方放進 blueprints/，
-   或一樣從「匯入建築」貼進去）。一份檔案本來就可以呼叫好幾次 customBlueprint，
-   所以整包接在一起就是合法的藍圖檔。 */
-function exportImports() {
-  if (!imported.length) return;
-  const n = imported.reduce((k, e) => k + e.names.length, 0);
-  const text = '/* 積木小人 · 匯出的藍圖（' + n + ' 座）\n' +
+/* 匯出：一列一支 .js，檔名就是它自己那個（傳給別人，對方放進 blueprints/，
+   或一樣從「匯入建築」貼進去）。一份一支而不是整包一支：分享的單位是「一座建築」，
+   整包丟過去的話對方想留哪座、不想留哪座都得自己拆。 */
+function exportOne(i) {
+  const e = imported[i];
+  if (!e) return;
+  const text = '/* 積木小人 · 匯出的藍圖（' + e.names.join('、') + '）\n' +
                '   用法二選一：放進 blueprints/ 並把檔名加進 list.js，\n' +
                '   或在遊戲裡按「📥 匯入建築」把整份貼進去。 */\n\n' +
-               imported.map(e => e.code.replace(/\s*$/, '')).join('\n\n') + '\n';
-  download(imported.length === 1 ? imported[0].file : '我的藍圖-' + n + '座.js', text);
-  $('impOut').textContent = '已下載 ✓';
-  setTimeout(() => { $('impOut').textContent = '匯出 .js'; }, 1600);
+               e.code.replace(/\s*$/, '') + '\n';
+  download(e.file, text);
+  const btn = document.querySelector('#impList [data-out="' + i + '"]');
+  if (!btn) return;
+  btn.textContent = '已下載 ✓';
+  setTimeout(() => {
+    /* 這一秒半內可能已經刪過、重畫過了，重抓一次才不會寫到別列身上 */
+    const b = document.querySelector('#impList [data-out="' + i + '"]');
+    if (b) b.textContent = '匯出';
+  }, 1600);
 }
 
 /* 複製到剪貼簿。file:// 上 clipboard API 給不給要看瀏覽器政策，
@@ -4386,7 +4392,6 @@ function boot() {
     if (e.target.id === 'impWrap' || e.target.id === 'impClose') $('impWrap').classList.remove('on');
   });
   $('impGo').addEventListener('click', doImport);
-  $('impOut').addEventListener('click', exportImports);
   /* 沒放 src/bpdoc.js 的話遊戲照跑，只有這顆拿不到說明全文 */
   if (typeof BP_DOC === 'string')
     $('impDoc').addEventListener('click', () => copyText(BP_DOC, $('impDoc'), '📋 取得 prompt'));
@@ -4395,6 +4400,7 @@ function boot() {
     $('impDoc').title = 'src/bpdoc.js 沒放進來，拿不到〈藍圖製作說明〉全文';
   }
   $('impList').addEventListener('click', e => {
+    if (e.target.dataset.out !== undefined) { exportOne(+e.target.dataset.out); return; }
     const at = e.target.dataset.del;
     if (at === undefined) return;
     const it = imported[+at];

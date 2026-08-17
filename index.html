@@ -297,10 +297,8 @@
     </div>
     <textarea id="impPaste" spellcheck="false"
       placeholder="把 AI 給的整段貼進來（就是 customBlueprint({...}) 那種內容）。```js 圍籬與「檔名：xxx.js」那行會自動忽略。"></textarea>
-    <div class="row">
-      <button class="primary" id="impGo">匯入</button>
-      <button id="impOut" title="把存下來的藍圖存成一支 .js，可以傳給別人">匯出 .js</button>
-    </div>
+    <!-- 匯出在下面每一列各自一顆：分享的單位是「一座建築」，不是整包 -->
+    <div class="row"><button class="primary" id="impGo">匯入</button></div>
     <div id="impMsg"></div>
     <div id="impList"></div>
     <div class="row"><button id="impClose">關閉</button></div>
