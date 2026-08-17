@@ -2529,9 +2529,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('整地時小人退出工地等，不會提早開工', doze.stillIn === 0 && doze.built === 0,
      '整完時還站在工地裡的有 ' + doze.stillIn + ' 人（最後一次有人在裡面是第 ' +
      doze.lastIn + ' 秒／共 ' + doze.secs + ' 秒），期間蓋了 ' + doze.built + ' 塊');
-  /* 清得掉多少很看堆的位置，但門檻要有意義：改之前同一支量測是平均 27～33%
-     （中世紀城堡四輪 15/18/32/43%），改之後 51～69%。門檻放四成，擋的是退步不是抖動。 */
-  ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > doze.cohort * 0.4,
+  /* 清得掉多少很看堆的位置，但門檻要有意義：繞內側那版是平均 27～33%
+     （中世紀城堡四輪 15/18/32/43%），對穿之後 51～69%，時限拉到 10 秒（v1.61.1）
+     之後是 82～87%。門檻放六成，擋的是退步不是抖動。 */
+  ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > doze.cohort * 0.6,
      doze.cohort + ' 塊裡有 ' + doze.pushedOut + ' 塊被鏟出範圍（' +
      (doze.pushedOut / doze.cohort * 100).toFixed(0) + '%），收尾彈掉 ' + doze.kicked +
      ' 塊；最密的一格 ' + JSON.stringify(doze.trail.slice(0, 12)));
@@ -2597,8 +2598,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dozIn.inFrames > 50 && dozIn.outFrames > 50,
      '範圍內 ' + dozIn.inFrames + ' 幀裡放著鏟的 ' + dozIn.inDown + '、範圍外 ' +
      dozIn.outFrames + ' 幀裡抬著的 ' + dozIn.outUp + '（差的是漸變那幾幀）');
-  /* 一趟含進場（約 2.5 秒）加穿過工地（約 4 秒），時限 6.5 秒內不是每台都轉得了一次，
-     所以只要求「真的有人轉彎再推」，不要求每台都有。 */
+  /* 一趟含進場（約 2.5 秒）加穿過工地（約 4 秒），所以只要求「真的有人轉彎再推」，
+     不要求每台都轉同樣的次數。 */
   ok('第一趟穿出去之後會轉彎再推一趟', dozIn.passes >= 2,
      dozIn.n + ' 台在 ' + dozIn.secs + ' 秒裡總共又轉彎推了 ' + dozIn.passes + ' 趟');
 
@@ -2711,9 +2712,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('大工地的車速跟小工地一樣，不會為了趕時間飆起來', dozeBig.maxSpd < 12,
      '半徑 ' + dozeBig.siteR + ' 的工地，最快 ' + dozeBig.maxSpd + ' 單位／秒');
-  /* 上限 11 秒＝進場（從地圖邊緣開到工地，v1.61 起大約 1.8–2.5 秒）＋ DOZ_LIMIT 6.5 秒
-     ＋ 收尾。改成從邊緣進場之前是 9 秒（原地怠速 1.3 ＋ 6.5）。守的是「不會沒完沒了」。 */
-  ok('大工地不會沒完沒了，收尾照樣清乾淨', dozeBig.dirty1 === 0 && dozeBig.secs < 11,
+  /* 上限 15 秒＝進場（從地圖邊緣開到工地，v1.61 起大約 1.8–2.5 秒）＋ DOZ_LIMIT 10 秒
+     ＋ 收尾（實測 12.7 秒）。守的是「不會沒完沒了」，不是把數字釘在某一次量到的值上。 */
+  ok('大工地不會沒完沒了，收尾照樣清乾淨', dozeBig.dirty1 === 0 && dozeBig.secs < 15,
      dozeBig.dirty0 + ' 塊 → ' + dozeBig.dirty1 + ' 塊，花 ' + dozeBig.secs + ' 秒');
 
   /* 畫面上的鏟子跟判定用的鏟子要是同一把。
