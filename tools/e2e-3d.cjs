@@ -2476,7 +2476,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const d = dirtyOf();
       if (d > peak) peak = d;
       if (guard % 8 === 0) trail.push(heapOf());
-      if (dozers && dozers.wait <= 0) {
+      if (dozers && dozers.on) {
         if (heap0 === 0) heap0 = heapOf();               // 開推那一刻最密的一格
         /* 鏟子該不該放下來只看位置：在工作範圍內就得放下。
            以前是「趕路抬起、推的時候放下」，機器抬著鏟子穿過工地的那一大段完全沒產出。 */
@@ -2540,6 +2540,94 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('整完會自己開出場', doze.gone && doze.phase === 'build',
      doze.drove + ' 秒後開走，phase=' + doze.phase);
   await page.screenshot({ path: path.join(OUT, '04-整地.png') });
+
+  /* ── 從地圖邊緣進場、分頭走不同的路（v1.61）──────────────────
+     以前是「在工地邊上憑空出現、原地怠速 1.3 秒」，而且幾台可能對著同一坨開。
+     現在從碎料場外緣開進來，每台走自己的一條弦，第一趟就分頭掃過工地的不同地帶。 */
+  const dozIn = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 1200; setWorkerCount(4); startBuild(true); completeNow();
+    for (const b of blocks) if (b.st === 3) freeBlock(b);
+    for (let i = 0; i < 120; i++) step(0.05);
+    startClear();
+    const spawnR = dozers.list.map(m => +Math.hypot(m.x, m.z).toFixed(1));
+    const outsideAtBirth = dozers.list.filter(m => Math.hypot(m.x, m.z) > arenaR).length;
+    const entry = new Map();
+    let outFrames = 0, outUp = 0, inFrames = 0, inDown = 0, passes = 0;
+    const wasSt = new Map();
+    let g = 0;
+    while (phase === 'clear' && g++ < 900) {
+      step(0.05);
+      if (!dozers) break;
+      for (const m of dozers.list) {
+        const d = Math.hypot(m.x, m.z);
+        if (d < dozWorkR() && !entry.has(m)) entry.set(m, { x: m.x, z: m.z });
+        /* 離開建築範圍就關掉推土效果：鏟子抬起來。留 1.5 格的餘裕給抬鏟的動畫
+           （bl 是漸變的），進場那一側同理。 */
+        if (d > dozWorkR() + 1.5) { outFrames++; if (m.bl > 0.5) outUp++; }
+        if (d < dozWorkR() - 1.5) { inFrames++; if (m.bl < 0.5) inDown++; }
+        /* 改派一趟 = 目標換了一個點。seek 那一格在同一幀就會轉回 push，
+           從外面看永遠看不到 seek，所以用目標的變化來數。 */
+        const key = m.tx.toFixed(2) + ',' + m.tz.toFixed(2);
+        if (wasSt.has(m) && wasSt.get(m) !== key) passes++;
+        wasSt.set(m, key);
+      }
+    }
+    // 各自踏進工地的入口點：分散進場的話這些點會散在工地外圍，不會擠在一起
+    const es = Array.from(entry.values());
+    let minEntry = Infinity;
+    for (let a = 0; a < es.length; a++)
+      for (let b = a + 1; b < es.length; b++)
+        minEntry = Math.min(minEntry, Math.hypot(es[a].x - es[b].x, es[a].z - es[b].z));
+    return { n: dozers ? dozers.list.length : 0, spawnR, outsideAtBirth,
+             arena: +arenaR.toFixed(1), work: +dozWorkR().toFixed(1),
+             entered: es.length, minEntry: +minEntry.toFixed(1),
+             outFrames, outUp, inFrames, inDown, passes, secs: +(g * 0.05).toFixed(1) };
+  });
+  ok('推土機從地圖邊緣進場，不是在工地邊上憑空出現',
+     dozIn.outsideAtBirth === dozIn.n && Math.min(...dozIn.spawnR) > dozIn.arena,
+     dozIn.n + ' 台的出發點都在半徑 ' + dozIn.spawnR.join('／') + '（碎料場外緣是 ' +
+     dozIn.arena + '、工作範圍是 ' + dozIn.work + '）');
+  ok('多台分頭進場，不會擠在同一條路上',
+     dozIn.entered === dozIn.n && dozIn.minEntry > 6,
+     dozIn.n + ' 台都開進了工地，兩兩之間最近的入口相隔 ' + dozIn.minEntry + ' 格');
+  // 每台留 3 幀給放鏟／抬鏟的漸變動畫（bl 是 lerp 過去的，不是瞬間切換）
+  ok('進了建築範圍才放鏟，離開就抬起來',
+     dozIn.inDown >= dozIn.inFrames - dozIn.n * 3 && dozIn.outUp >= dozIn.outFrames - dozIn.n * 3 &&
+     dozIn.inFrames > 50 && dozIn.outFrames > 50,
+     '範圍內 ' + dozIn.inFrames + ' 幀裡放著鏟的 ' + dozIn.inDown + '、範圍外 ' +
+     dozIn.outFrames + ' 幀裡抬著的 ' + dozIn.outUp + '（差的是漸變那幾幀）');
+  /* 一趟含進場（約 2.5 秒）加穿過工地（約 4 秒），時限 6.5 秒內不是每台都轉得了一次，
+     所以只要求「真的有人轉彎再推」，不要求每台都有。 */
+  ok('第一趟穿出去之後會轉彎再推一趟', dozIn.passes >= 2,
+     dozIn.n + ' 台在 ' + dozIn.secs + ' 秒裡總共又轉彎推了 ' + dozIn.passes + ' 趟');
+
+  /* 「避免都清同一個點」的規則本身：A 已經在清某一坨時，B 就不該再挑那一坨。
+     光靠「挑走就從清單移除」擋不住——heaps 每幀重算，兩台改派的時機又不同。 */
+  const dozApart = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 1200; setWorkerCount(4); startBuild(true); completeNow();
+    for (const b of blocks) if (b.st === 3) freeBlock(b);
+    for (let i = 0; i < 120; i++) step(0.05);
+    startClear();
+    const heaps = listHeaps();
+    if (heaps.length < 2) return { skip: true };
+    for (const m of dozers.list) m.st = 'seek';        // 先讓所有人都空著，只留 A、B 互動
+    const A = dozers.list[0], B = dozers.list[1];
+    // 沒人在清的時候 B 會挑哪一坨
+    const first = pickHeap(B, heaps.slice(), 99);
+    if (!first) return { skip: true };
+    // 換 A 去清那一坨，B 就該改挑別的
+    A.st = 'push'; A.hx = first.hx; A.hz = first.hz;
+    const second = pickHeap(B, heaps.slice(), 99);
+    const d = second ? Math.hypot(second.hx - first.hx, second.hz - first.hz) : -1;
+    return { skip: false, heaps: heaps.length, d: +d.toFixed(1), apart: DOZ_APART };
+  });
+  ok('別台已經在清的那一坨，不會再派第二台過去',
+     dozApart.skip || dozApart.d >= dozApart.apart,
+     dozApart.skip ? '（這輪堆不夠多，略過）'
+       : dozApart.heaps + ' 坨：同一台原本挑的那一坨被別人接手之後，改挑了 ' +
+         dozApart.d + ' 格外的另一坨（門檻 ' + dozApart.apart + '）');
 
   /* 只拿槌子敲的話碎料會全堆在挨打的那一區——這才是推土機真正要處理的情況 */
   const dozeHeap = await page.evaluate(() => {
@@ -2623,7 +2711,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('大工地的車速跟小工地一樣，不會為了趕時間飆起來', dozeBig.maxSpd < 12,
      '半徑 ' + dozeBig.siteR + ' 的工地，最快 ' + dozeBig.maxSpd + ' 單位／秒');
-  ok('大工地不會沒完沒了，收尾照樣清乾淨', dozeBig.dirty1 === 0 && dozeBig.secs < 9,
+  /* 上限 11 秒＝進場（從地圖邊緣開到工地，v1.61 起大約 1.8–2.5 秒）＋ DOZ_LIMIT 6.5 秒
+     ＋ 收尾。改成從邊緣進場之前是 9 秒（原地怠速 1.3 ＋ 6.5）。守的是「不會沒完沒了」。 */
+  ok('大工地不會沒完沒了，收尾照樣清乾淨', dozeBig.dirty1 === 0 && dozeBig.secs < 11,
      dozeBig.dirty0 + ' 塊 → ' + dozeBig.dirty1 + ' 塊，花 ' + dozeBig.secs + ' 秒');
 
   /* 畫面上的鏟子跟判定用的鏟子要是同一把。
@@ -2637,7 +2727,6 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     kickOutSite();                                  // 先清空，等一下自己擺測試用的積木
     for (let i = 0; i < 80; i++) step(0.05);
     startClear();
-    dozers.wait = 0;
     /* 先把場上其他碎料全部從空間雜湊裡拿掉並挪到場邊。留著的話，
        量到的位移會混進「碎料互相擠開」的成分——這裡要測的是鏟子推不推得到。 */
     for (const b of blocks) {
