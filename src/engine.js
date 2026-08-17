@@ -15,13 +15,19 @@ const ENG = (function () {
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
-  let bombMesh, nukeGroup, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
+  let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
+  /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
+     一顆七個部位，全部在同一顆 InstancedMesh 裡。 */
+  const NUKE_MAX = 4;
+  let NUKE_PARTS = null;                     // [[位移], [尺寸], 顏色]，init 時填
+  const _nOuter = new T.Object3D(), _nMat = new T.Matrix4();
   const magRings = [], magDiscs = [];
   const flashShells = [];
   /* 填滿的圓盤：魔法陣每層一片，再加一片給那顆一直在的火種
-     （盤是照 list 的順序發的，只給六片的話火種那圈在滿陣時就分不到） */
-  const MAG_DISC = 7;
+     （盤是照 list 的順序發的，只給六片的話火種那圈在滿陣時就分不到）。
+     ×3 是因為 v1.59 起最多同時三個陣。 */
+  const MAG_DISC = 21;
   /* 火／火星粒子。240 是「一次爆炸的火球 + 幾棟在燒」的量；
      煙火改成一次三發齊射之後，光是天上的火星就要三百顆才不會變成一顆一顆的點。
      v1.58 再放大到 960：煙火的每一顆火星自己就是一條拖線（一顆 instance），
@@ -49,11 +55,12 @@ const ENG = (function () {
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
      四層就吃掉八個，再加上爆炸衝擊環與蘑菇雲腰環。 */
-  /* 同時能畫幾個圓環。魔法陣最多六層×2 個環＝12，那顆一直在的小火圈再吃 3 個，
-     剩下的留給爆炸衝擊波、風壓那幾圈與蘑菇雲腰上那圈——不夠的話它們會被截掉
-     （陣還在場上時放核彈就是這種情況：15 個先被陣佔走）。
-     沒用到的環是 visible = false，不佔 draw call，開多幾個不花錢。 */
-  const MAG_MAX = 24;
+  /* 同時能畫幾個圓環。一個魔法陣最多六層×2 個環＝12，那顆一直在的小火圈再吃 3 個
+     ＝ 15；v1.59 起最多可以同時有三個陣（45），剩下的留給爆炸衝擊波、風壓那幾圈
+     與蘑菇雲腰上那圈——不夠的話它們會被截掉。
+     沒用到的環是 visible = false，不佔 draw call，開多幾個不花錢
+     （真的三個陣同時滿版時 draw call 才會衝上去，那是玩家自己按出來的畫面）。 */
+  const MAG_MAX = 54;
   /* 盤面的紋路：兩組反向的螺旋臂 + 一圈虛線。
      直的放射線看起來像車輪，參考圖是**捲進去的漩渦**——每條臂切成幾段短棒
      沿著曲線擺，段數夠多就連成一道弧。臂的內端都收在中心附近，
@@ -76,7 +83,7 @@ const ENG = (function () {
   const MAXBOLT = 96;
   const MAG_DASH = 26;                                       // 外圈那一圈虛線的段數
   const MAG_SPOKE = MAG_SWIRL.reduce((s, f) => s + f.arms * f.seg, 0) + MAG_DASH;
-  const MAG_SP_RINGS = 6;                                    // 最多幾層會帶紋路
+  const MAG_SP_RINGS = 18;             // 最多幾層會帶紋路（六層 × 最多三個陣）
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
   const TW_SEG = 16;                // 龍捲風的分段數
@@ -309,8 +316,9 @@ const ENG = (function () {
     scene.add(meteorMesh);
     meteorMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
-    /* 核彈：彈體朝 −Y 落下，一次只有一顆，用 Group 就好 */
-    nukeGroup = new T.Group();
+    /* 核彈：彈體朝 −Y 落下。v1.59 起可以同時有好幾顆，所以七個部位全部塞進
+       同一顆 InstancedMesh（跟小人一樣的做法）——四顆核彈 28 個 instance、
+       還是 1 個 draw call，比原本一顆就吃 7 個 Mesh 還省。 */
     const nParts = [
       [[0, 2.6, 0], [1.7, 4.4, 1.7], 0x5c636d],        // 彈體
       [[0, 0.5, 0], [1.25, 1.1, 1.25], 0xb8402f],      // 彈頭
@@ -320,15 +328,17 @@ const ENG = (function () {
       [[0, 5.2, -0.9], [1.6, 1.7, 0.22], 0x767d87],
       [[0, 5.2, 0.9], [1.6, 1.7, 0.22], 0x767d87]
     ];
-    for (const [p, s, c] of nParts) {
-      const m = new T.Mesh(new T.BoxGeometry(s[0], s[1], s[2]), voxelMaterial({ color: c }));
-      m.position.set(p[0], p[1], p[2]);
-      m.castShadow = true;
-      nukeGroup.add(m);
-    }
-    nukeGroup.scale.setScalar(1.5);
-    nukeGroup.visible = false;
-    scene.add(nukeGroup);
+    nukeMesh = new T.InstancedMesh(unit, voxelMaterial({ color: 0xffffff }),
+                                   NUKE_MAX * nParts.length);
+    nukeMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    nukeMesh.castShadow = true;
+    nukeMesh.count = 0; nukeMesh.frustumCulled = false; nukeMesh.visible = false;
+    scene.add(nukeMesh);
+    /* 部位的顏色一顆核彈裡是固定的，開場一次寫完就好——每幀重寫等於白花一次上傳 */
+    for (let i = 0; i < NUKE_MAX; i++)
+      for (let k = 0; k < nParts.length; k++)
+        nukeMesh.setColorAt(i * nParts.length + k, tmpC.setHex(nParts[k][2]));
+    NUKE_PARTS = nParts;
 
     /* 火球：跟塵霧分開一個 mesh。塵霧那顆材質固定 50% 透明（煙就是要透），
        火球用同一顆的話永遠亮不起來，爆炸看起來就只是幾片橘色玻璃。
@@ -644,13 +654,30 @@ const ENG = (function () {
     if (meteorMesh.instanceColor) meteorMesh.instanceColor.needsUpdate = true;
   }
 
-  /* 核彈：只管畫在哪、轉多少，什麼時候掉、掉多快是規則那邊的事 */
-  function setNuke(x, y, z, spin) {
-    nukeGroup.visible = true;
-    nukeGroup.position.set(x, y, z);
-    nukeGroup.rotation.y = spin;
+  /* 核彈：只管畫在哪、轉多少，什麼時候掉、掉多快是規則那邊的事。
+     list 每一項 {x, y, z, spin}。整顆的變換（位置＋自轉＋放大 1.5）套在外層，
+     每個部位自己的位移與尺寸套在內層，兩個矩陣相乘就是那個 instance 的矩陣。 */
+  function putNukes(list) {
+    const P = NUKE_PARTS, n = Math.min(list.length, NUKE_MAX);
+    nukeMesh.visible = n > 0;
+    nukeMesh.count = n * P.length;
+    for (let i = 0; i < n; i++) {
+      const o = list[i];
+      _nOuter.position.set(o.x, o.y, o.z);
+      _nOuter.rotation.set(0, o.spin, 0);
+      _nOuter.scale.setScalar(1.5);
+      _nOuter.updateMatrix();
+      for (let k = 0; k < P.length; k++) {
+        scratch.position.set(P[k][0][0], P[k][0][1], P[k][0][2]);
+        scratch.rotation.set(0, 0, 0);
+        scratch.scale.set(P[k][1][0], P[k][1][1], P[k][1][2]);
+        scratch.updateMatrix();
+        _nMat.multiplyMatrices(_nOuter.matrix, scratch.matrix);
+        nukeMesh.setMatrixAt(i * P.length + k, _nMat);
+      }
+    }
+    nukeMesh.instanceMatrix.needsUpdate = true;
   }
-  function hideNuke() { nukeGroup.visible = false; }
 
   /* 貼地圓環。list 每一項 {x, z, y, r 半徑, spin 轉到哪, op 濃度,
      c 顏色, sp 要不要輻條, add 要不要加法混色}。
@@ -1234,7 +1261,7 @@ const ENG = (function () {
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust, putTrebs, putRocks, putDozers,
     setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
-    putBombs, putMeteors, setNuke, hideNuke, setRings, hideRings, putFire, putFlash,
+    putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts,
     fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,

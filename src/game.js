@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.58.0';
+const VERSION = '1.59.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -391,25 +391,20 @@ function startBuild(instant) {
     }
   }
 
-  // 正在作用的道具要收掉，不然拆完換新建築時，還在飛的鐵球／龍捲風會繼續砸新的那座
-  swing = null; ENG.hideHammer();
-  quake = null;                       // 地震點名要掉的是「這一座」的積木，換場就作廢
-  ball = null; ENG.hideBall();
-  aim = null;                         // 瞄到一半換場：那第一點是舊工地的事了
-  twists = null; ENG.putTornados([]);
-  trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
+  /* 正在作用的破壞道具**不收**（v1.59）。本來是換場時一次全部清掉，理由是
+     「留著會砸到剛換上來的那一座」——但那一瞬間畫面上所有東西同時消失
+     （還在滾的球、天上的龍捲風、倒數中的核彈、整棟的火），「換場感」就是這麼來的。
+     現在它們照樣跑完自己的壽命，會不會波及新的那座是它們的事，本來就該是。
+
+     只有兩樣還是要收，因為它們記的是「哪幾塊積木」，而那些積木待會就會被回收去
+     蓋新的那座：地震點名的那份清單，還有推土機（它不是道具，是整地流程的一部分，
+     下面的 startClear 會重派）。 */
+  quake = null;
   dozers = null; ENG.putDozers([]);
-  // 倒數中的炸彈／核彈／魔法陣也一樣：留著的話會炸到剛換上來的新建築
-  bombs = null; ENG.putBombs([]);
-  meteors = null; ENG.putMeteors([]);
-  // 還在飛的煙火火星會把剛蓋好的新建築點著；還沒出膛的那幾發也要一起收
-  fworks = null; fwSparks = null; fwWait = null;
-  nuke = null; ENG.hideNuke();
-  magic = null;
-  dangers = [];                       // 預告沒了，警戒範圍也要跟著撤
-  /* 火也要收：燒的是「哪一塊積木」，積木待會會被回收去蓋新的那座，
-     不收的話新建築會從某幾塊莫名地開始燒起來。 */
-  clearFires();
+  /* 火留著（v1.59）：一整棟在燒的建築忽然全暗，是換場感最重的一筆。
+     燒著的積木這一刻全部被打散成碎料，會拖著火飛出去、落地燒成焦炭，很自然。
+     唯一要擋的是「小人把還在燒的碎料撿去蓋新的那座」——那一步在 pick 那裡熄掉
+     （見 douse），不然火會被砌進新建築裡。 */
   /* 火球、蘑菇雲、光環**不**清掉。它們純粹是畫面，不會動到積木，
      而且一發核彈常常直接把整棟夷平——那會立刻觸發「剩不到 25% 就換下一座」，
      清掉的話蘑菇雲會在爆炸後 0.05 秒整朵消失，等於白做。
@@ -1342,6 +1337,7 @@ function updWorker(w, wi, dt) {
       w.tx = b.x; w.tz = b.z;
       if (buildWalk(w, dt)) {
         if (b.cell) gridDel(b);
+        douse(b);                                     // 撿起來的碎料還在燒的話，先熄掉
         b.st = CARRY; b.rest = false; w.carry = true; stats.carried++;
         carryPose(w, b);                              // 立刻舉起來，不然有一幀還黏在地上
         const st = standPos(bp.slots[w.slot]);
@@ -1818,8 +1814,8 @@ let ball = null;      // 飛行中的鐵球
 let twists = null;    // 作用中的龍捲風（可以同時好幾道）
 let bombs = null;     // 已放下、倒數中的定時炸彈
 let meteors = null;   // 已呼叫的隕石（倒數或下墜中，可以好幾顆）
-let nuke = null;      // 已呼叫的核彈（倒數或下墜中）
-let magic = null;     // 正在展開的魔法陣
+let nukes = null;     // 已呼叫的核彈（倒數或下墜中，可以好幾顆）
+let magics = null;    // 正在展開的魔法陣（可以好幾個）
 let fires = null;     // 正在燒的積木（還站著的會往鄰居蔓延，碎料的只燒自己）
 let nSpread = 0;      // fires 裡有幾筆是「還站著的建築」——碎料不占那個額度
 const hot = [];       // 火球粒子（走不透明那顆材質，才亮得起來）
@@ -2590,6 +2586,19 @@ function clearFires() {
   if (fires) for (const f of fires) f.b.burn = 0;
   fires = null; nSpread = 0;
 }
+/* 把單獨一塊上的火弄熄。用在「小人撿起還在燒的碎料」：換建築時火不再整批收掉
+   （v1.59），上一座的碎料會拖著火躺在新工地上等著被撿去蓋，撿起來還燒著的話，
+   火就跟著被砌進新建築裡了。燒黑的顏色留著不還原——那是一塊真的被燒過的積木。 */
+function douse(b) {
+  if (!b || !b.burn) return;
+  b.burn = 0;
+  if (!fires) return;
+  const i = fires.findIndex(f => f.b === b);
+  if (i < 0) return;
+  if (fires[i].sp) nSpread--;
+  fires.splice(i, 1);
+  if (!fires.length) { fires = null; nSpread = 0; }
+}
 /* 放火道具的入口。點到的是碎料（不是建築的一部分）時就改找落點附近最近的一塊建築——
    不然點在牆前面那堆碎料上會像沒反應。 */
 function torch(hit) {
@@ -3076,52 +3085,69 @@ function stepMeteors(dt) {
 /* ── 核彈 ───────────────────────────────────────────────
    點下去先在地上標一圈、拉警報，2 秒後彈體才從天上掉下來。
    倒數期間什麼都不畫的話，前兩秒看起來就像點了沒反應。
-   一次只有一顆：倒數中再點會改打新的地點。 */
+   v1.59 起可以同時好幾顆（本來是「一次一顆，再點會改打新地點」）：
+   一顆一個 instance，畫面成本跟顆數無關（引擎那邊七個部位共用一顆 InstancedMesh）。 */
 const NUKE_WAIT = 2, NUKE_FALL = 0.8, NUKE_TOP = 130, NUKE_R = 30, NUKE_POW = 34;
+const NUKE_MAX = 4;                 // 跟引擎的 NUKE_MAX 一致，多的把最早那顆擠掉
 /* 彈頭在彈體模型的原點上（nukeGroup 的 y=0 附近），所以掃掠只要往前多探這麼一點，
    碰到的就是彈頭的鼻尖，不是等整顆彈體埋進屋頂才算。 */
 const NUKE_NOSE = 1.8;
 function callNuke(point) {
-  nuke = { x: point.x, y: NUKE_TOP + 3, z: point.z, s: NUKE_NOSE,
-           t: NUKE_WAIT + NUKE_FALL, mark: 0, spin: 0 };
+  if (!nukes) nukes = [];
+  if (nukes.length >= NUKE_MAX) nukes.shift();     // 放太多顆就把最早那顆擠掉
+  nukes.push({ x: point.x, y: NUKE_TOP + 3, z: point.z, s: NUKE_NOSE,
+               t: NUKE_WAIT + NUKE_FALL, mark: 0, spin: 0 });
   // 警報一響，準心範圍內的人就開始跑。倒數多久就給他們跑多久
   alertFlee(point, NUKE_R, NUKE_WAIT + NUKE_FALL);
   sndSiren();
 }
 function nukeHit(p) {
-  nuke = null;
-  ENG.hideNuke();
   explode(p, NUKE_R, NUKE_POW, false, true);      // true = 加風壓
   startCloud(p, NUKE_R);
 }
+/* 畫面上要畫的那幾顆（倒數中的還在天上等，不畫）。重用同一個陣列，不要每幀配一個新的 */
+const nukeFly = [];
 function stepNuke(dt) {
-  if (!nuke) return;
-  nuke.t -= dt;
-  nuke.spin += dt * 1.7;
-  if (nuke.t > NUKE_FALL) {
-    nuke.mark -= dt;
-    if (nuke.mark <= 0) { nuke.mark = 0.5; spawnRing({ x: nuke.x, y: 0, z: nuke.z }, 6); }
-  } else if (nuke.t > 0) {
-    const k = nuke.t / NUKE_FALL;                  // 1 → 0
-    const py = nuke.y;
-    nuke.y = k * k * NUKE_TOP + 3;                 // 平方 = 越掉越快
-    /* 半路碰到建築就在碰到的那一點炸，跟隕石／投石機共用同一套掃掠判定。
-       固定炸在 y=2.5 的話，打台北 101 這種高的會從樓頂穿到腳邊才炸，
-       上半截等於沒被炸到——那是衝擊波半徑量得到的差別，不只是好不好看。 */
-    if (sweepRock(nuke, nuke.x, py, nuke.z)) {
-      nukeHit({ x: nuke.x, y: Math.max(2.5, nuke.y), z: nuke.z });
-      return;
+  if (!nukes) return;
+  nukeFly.length = 0;
+  for (let i = nukes.length - 1; i >= 0; i--) {
+    const n = nukes[i];
+    n.t -= dt;
+    n.spin += dt * 1.7;
+    if (n.t > NUKE_FALL) {
+      n.mark -= dt;
+      if (n.mark <= 0) { n.mark = 0.5; spawnRing({ x: n.x, y: 0, z: n.z }, 6); }
+    } else if (n.t > 0) {
+      const k = n.t / NUKE_FALL;                   // 1 → 0
+      const py = n.y;
+      n.y = k * k * NUKE_TOP + 3;                  // 平方 = 越掉越快
+      /* 半路碰到建築就在碰到的那一點炸，跟隕石／投石機共用同一套掃掠判定。
+         固定炸在 y=2.5 的話，打台北 101 這種高的會從樓頂穿到腳邊才炸，
+         上半截等於沒被炸到——那是衝擊波半徑量得到的差別，不只是好不好看。 */
+      if (sweepRock(n, n.x, py, n.z)) {
+        nukes.splice(i, 1);
+        nukeHit({ x: n.x, y: Math.max(2.5, n.y), z: n.z });
+        continue;
+      }
+      nukeFly.push(n);
+    } else {
+      nukes.splice(i, 1);
+      nukeHit({ x: n.x, y: 2.5, z: n.z });         // 沒撞到東西：照樣炸在地面
+      continue;
     }
-    ENG.setNuke(nuke.x, nuke.y, nuke.z, nuke.spin);
-  } else {
-    nukeHit({ x: nuke.x, y: 2.5, z: nuke.z });     // 沒撞到東西：照樣炸在地面
   }
+  ENG.putNukes(nukeFly);
+  if (!nukes.length) nukes = null;
 }
 
 /* ── 爆裂魔法 ───────────────────────────────────────────
    魔法陣一層層往外長，最外圈就是等一下的爆炸範圍——
-   讓你在那六秒裡看得出來會炸到哪。一次只有一個，再點會移到新的地點重來。 */
+   讓你在那六秒裡看得出來會炸到哪。
+   v1.59 起可以同時好幾個（本來是「一次一個，再點會移到新地點重來」）。
+   一個陣要吃掉 15 個圓環（六層×2 ＋ 火種 3）與 7 片圓盤，引擎那邊的池子
+   照 MAG_CAST 開好了；沒用到的環是 visible=false，不佔 draw call。 */
 const MAG_TIME = 6, MAG_R = 30, MAG_POW = 34;
+const MAG_CAST = 3;                       // 最多同時幾個陣，跟引擎的池子大小綁在一起
 /* 一層擴張到定位要多久、小火圈從一層升到上一層要多久。
    兩者相加就是「每隔多久多一層」，六層在 5×0.32+0.15 ＝ 1.75 秒內長齊，
    剩下的 4.25 秒六層都在場上轉——這一段才是「陣蓄滿了」的樣子，要留得夠久。
@@ -3167,7 +3193,9 @@ function castMagic(point) {
      （原本是把六層的出現順序洗牌，每層各自憑空亮起來；改成固定順序＋看得見的火種，
      六層才像「一層帶起一層」而不是六件各自發生的事。每次施法的差異交給半徑、
      起始角度、轉速那三組抖動去做，那些本來就是每次都不一樣的。） */
-  magic = {
+  if (!magics) magics = [];
+  if (magics.length >= MAG_CAST) magics.shift();     // 放太多個就把最早那個擠掉
+  magics.push({
     x: point.x, z: point.z, t: MAG_TIME, shown: 0,
     // 每層的半徑抖動：施法當下抽一次存起來，每幀重抽的話整疊會一直閃
     rj: MAG_LAYER.map(() => rr(1 - MAG_JITTER, 1 + MAG_JITTER)),
@@ -3177,7 +3205,7 @@ function castMagic(point) {
     /* 轉速再各乘一個倍率：同速的話整疊像一塊剛體在轉，錯開才像好幾層各自運轉。
        全部都是正的——正的就是俯視逆時針，這是使用者指定的方向。 */
     wj: MAG_LAYER.map(() => rr(0.7, 1.35))
-  };
+  });
   /* 整疊頂端在 34.6，貼著建築的取景裝不下（矮建築取景更近）。
      跟龍捲風、蘑菇雲同一套：施法期間鏡頭退到整疊進得了畫面的距離，
      爆完那朵雲會再接手撐住這個距離。 */
@@ -3185,16 +3213,21 @@ function castMagic(point) {
   alertFlee(point, MAG_R, MAG_TIME);      // 魔法陣一亮，站在陣裡的人就往外跑
 }
 function stepMagic(dt) {
-  if (!magic) return;
+  if (!magics) return;
+  for (let i = magics.length - 1; i >= 0; i--)
+    if (stepOneMagic(magics[i], dt)) magics.splice(i, 1);
+  if (!magics.length) magics = null;
+}
+/* 一個陣的一幀。回傳 true = 這個陣炸掉了、可以從清單移除。 */
+function stepOneMagic(magic, dt) {
   magic.t -= dt;
   const el = MAG_TIME - magic.t;
   if (magic.t <= 0) {
     const p = { x: magic.x, y: MAG_CORE_Y, z: magic.z };   // 爆點＝最低那層的圓心
-    magic = null;
     explode(p, MAG_R, MAG_POW, true, true);       // 第二個 true = 加風壓
     startCloud(p, MAG_R);             // 魔法爆完也留一朵，跟核彈同一種
     startArcs(p, MAG_R);              // 火球收乾之後，爆點還會劈三秒的藍電
-    return;
+    return true;
   }
   const rings = [];
   let layers = 0;
@@ -3258,7 +3291,7 @@ function stepMagic(dt) {
     /* 新的一層剛開始長 → 就在那一圈上撒一把十字星光。
        撒的位置用「長好之後」的半徑，不是這一瞬間的（那時它才火種那麼大）：
        星光要先標出這一層將要長到哪，環再追上來。 */
-    for (let i = magic.shown; i < layers; i++) starsOn(i, STAR_PER);
+    for (let i = magic.shown; i < layers; i++) starsOn(magic, i, STAR_PER);
     magic.shown = layers;
   }
   /* 長完之後也一直撒（v1.48）：只在長層那一下撒的話，滿陣那四秒整座陣是靜的。
@@ -3267,11 +3300,12 @@ function stepMagic(dt) {
   magic.star = (magic.star || 0) + dt * STAR_RATE;
   while (magic.star >= 1) {
     magic.star--;
-    starsOn(Math.floor(Math.random() * layers), 1);
+    starsOn(magic, Math.floor(Math.random() * layers), 1);
   }
   magic.rings = rings;
   magSuck(magic, dt);
   implode(magic, dt);
+  return false;
 }
 
 /* ── 往陣心捲進去的魔力粒子 ───────────────────────────────
@@ -3282,7 +3316,7 @@ function stepMagic(dt) {
    陣是在吸不是在噴，所以整個掉頭。 */
 /* 第 i 層的位置與長好之後的半徑 → 撒 n 顆星光。長層那一下與滿陣期間都走這裡，
    兩邊算法一致，星星才會剛好落在那一圈上。 */
-function starsOn(i, n) {
+function starsOn(magic, i, n) {
   spawnStars(magic.x, magic.z, 0.12 + MAG_R * MAG_LAYER[i].y,
              MAG_R * MAG_LAYER[i].r * magic.rj[i], n);
 }
@@ -3939,11 +3973,13 @@ function step(dt) {
      跌破門檻不馬上換，先等 SWAP_WAIT 秒讓最後那一發演完；這段時間還能繼續砸殘骸，
      所以結算（報廢的那些、拆除完畢的通知）留到真的要換場那一刻才做，
      不然等待中被打掉的積木會被算兩次錢。
-     魔法陣還在充能時例外：它會先把建築扯下來捲進陣心，那個過程一定會跌破這條線——
-     照換的話陣會被 startBuild 收掉，那一發永遠等不到爆炸，玩家只看到建築消失。
+     魔法陣還在充能時例外：它會先把建築扯下來捲進陣心，那個過程一定會跌破這條線。
+     v1.59 之前的理由是「換場會把陣收掉，那一發永遠等不到爆炸」；現在道具換場不收了，
+     但這條還是留著——那一發是衝著**這一座**來的，它把整棟捲進去了就該讓它炸完，
+     換到一半的話玩家看到的是建築憑空消失。
      （等待中途離開 wreck——按了「立刻建成」之類——就把秒數丟掉重算） */
   if (phase !== 'wreck') swapWait = 0;
-  else if (!magic && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
+  else if (!magics && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
     swapWait += dt;
     if (swapWait >= SWAP_WAIT) {
       stats.destroyed++;
@@ -4052,8 +4088,16 @@ function draw() {
      魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。
      沒東西在瞄／沒魔法陣時不做 concat：那是每幀都會跑到的路徑。 */
   let ringList = null;
-  if (magic && magic.rings) ringList = fxRings.length ? magic.rings.concat(fxRings) : magic.rings;
-  else if (fxRings.length) ringList = fxRings;
+  if (magics) {
+    /* 好幾個陣的環接在一起（v1.59）。只有一個的話就直接用它那份，不多配一個陣列——
+       這是每幀都會跑到的路徑。 */
+    ringList = magics.length === 1 ? (magics[0].rings || null) : null;
+    if (!ringList) {
+      ringList = [];
+      for (const m of magics) if (m.rings) for (const r of m.rings) ringList.push(r);
+    }
+    if (fxRings.length) ringList = ringList.concat(fxRings);
+  } else if (fxRings.length) ringList = fxRings;
   if (aim) ringList = ringList ? ringList.concat(aimRings()) : aimRings();
   if (ringList) ENG.setRings(ringList);
   else ENG.hideRings();

@@ -140,7 +140,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.58.0';
+const VIEWER_VER = '1.59.0';
 
 const $ = id => document.getElementById(id);
 
@@ -165,8 +165,8 @@ ENG.resize();
 ENG.setWorkerCount(0);
 ENG.putTrees([]); ENG.putDust([]); ENG.putRocks([]); ENG.putTrebs([]);
 ENG.putDozers([]); ENG.putBombs([]); ENG.putMeteors([]); ENG.putTornados([]);
-ENG.putFire([]); ENG.putFlash([]);
-ENG.hideBall(); ENG.hideHammer(); ENG.hideNuke(); ENG.hideRings();
+ENG.putFire([]); ENG.putFlash([]); ENG.putNukes([]);
+ENG.hideBall(); ENG.hideHammer(); ENG.hideRings();
 window.addEventListener('resize', () => ENG.resize());
 
 /* ── 選單：自訂藍圖排前面（自己丟檔案進來的人就是想馬上看到它） ──

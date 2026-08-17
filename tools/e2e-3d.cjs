@@ -70,6 +70,7 @@ const st = page => page.evaluate(() => ({
 
 /* 重設到可預期的起點。shape 指定藍圖名稱，不給就維持隨機。 */
 async function reset(page, o = {}) {
+  await installClean(page);          // 頁面重載過就沒了，每次重來都補一次
   await page.evaluate(o => {
     running = false; spinOn = false; muted = true;
     /* 變數與 checkbox 要一起改，否則後面用 page.check() 操作 UI 時，
@@ -83,9 +84,30 @@ async function reset(page, o = {}) {
     timeScale = o.scale != null ? o.scale : 1;
     shapePick = o.shape ? SHAPES.findIndex(s => s.n === o.shape) : (o.shapeIdx != null ? o.shapeIdx : -1);
     document.getElementById('shape').value = String(shapePick);
+    cleanTools();                 // 見下面 installClean()：測試要的是乾淨的起點
     startBuild(true);
   }, o);
 }
+
+/* 把世界弄乾淨。v1.59 起換建築**不會**自動收掉正在作用的道具（畫面上所有東西
+   同時消失就是「換場感」的來源），但每一條測試都需要一個乾淨的起點——上一條留在
+   天上的核彈、還在滾的球會把這一條的建築拆掉，量到的就不是這一條在測的東西。
+   裝成頁面上的一支函式，reset() 與那些直接呼叫 startBuild 的測試共用同一份。 */
+const installClean = page => page.evaluate(() => {
+  window.cleanTools = () => {
+    swing = null; ENG.hideHammer();
+    ball = null; ENG.hideBall(); aim = null;
+    twists = null; ENG.putTornados([]);
+    trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
+    bombs = null; ENG.putBombs([]);
+    meteors = null; ENG.putMeteors([]);
+    nukes = null; ENG.putNukes([]);
+    magics = null;
+    fworks = null; fwSparks = null; fwWait = null;
+    dangers = []; quake = null;
+    clearFires();
+  };
+});
 
 /* 直接推模擬，不等 rAF——測試才能決定性重現 */
 const sim = (page, steps, dt = 0.05) =>
@@ -182,6 +204,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   head('啟動');
   await page.goto(APP);
   await page.waitForTimeout(1200);
+  await installClean(page);
 
   const boot = await page.evaluate(() => ({
     three: typeof THREE !== 'undefined' ? THREE.REVISION : null,
@@ -1698,7 +1721,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
     const run = name => {
       shapePick = SHAPES.findIndex(s => s.n === name);
-      targetCnt = 1500; setWorkerCount(4); startBuild(true); completeNow();
+      cleanTools(); targetCnt = 1500; setWorkerCount(4); startBuild(true); completeNow();
       const f6 = bp.slots.filter(s => s.f6).length, all = bp.slots.length;
       explode({ x: siteR * 0.5, y: 1.2, z: 0 }, ROCK_R, ROCK_POW);   // 投石機石頭：最小的爆炸
       for (let i = 0; i < 300; i++) step(0.05);
@@ -2594,7 +2617,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const fleeing = workers.filter(w => w.flee > 0).length;
       // 預告期間不該有人還搬著積木、還占著格子；而且要越跑越遠
       let carry = 0, slot = 0, back = 0, maxPh = 0, prev = d0.slice();
-      for (let i = 0; i < 60 && nuke; i++) {
+      for (let i = 0; i < 60 && nukes; i++) {
         step(0.05);
         for (let k = 0; k < near.length; k++) {
           const w = near[k];
@@ -2635,7 +2658,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       callNuke({ x: 0, z: 0 });
       // 軌跡彎不彎：起點到終點的直線距離 ÷ 實際走的路程。1 就是直線
       const tr = workers.map(w => ({ w, lx: w.x, lz: w.z, x0: w.x, z0: w.z, run: 0 }));
-      for (let i = 0; i < 60 && nuke; i++) {
+      for (let i = 0; i < 60 && nukes; i++) {
         step(0.05);
         for (const t of tr) {
           t.run += Math.hypot(t.w.x - t.lx, t.w.z - t.lz);
@@ -2660,7 +2683,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const ring0 = inRing.map(w => ({ x: w.x, z: w.z }));
     castMagic({ x: 0, z: 0 });
     const magFlee = workers.filter(w => w.flee > 0).length;
-    for (let i = 0; i < 130 && magic; i++) step(0.05);
+    for (let i = 0; i < 130 && magics; i++) step(0.05);
     const magOut = inRing.filter(w => Math.hypot(w.x, w.z) >= MAG_R).length;
     const magFar = Math.max(...inRing.map(w => Math.hypot(w.x, w.z)));
     // 各自跑了多遠（起點到終點的直線距離，路線本來就是直的）
@@ -2713,7 +2736,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     castMagic({ x: 0, z: 0 });
     const tagged0 = plant.filter(w => w.flee > 0).length;   // 下令當下應該一個都沒有
     let frames = 0; const who = new Set();
-    for (let i = 0; i < 120 && magic; i++) {
+    for (let i = 0; i < 120 && magics; i++) {
       step(0.05);
       plant.forEach((w, k) => {
         /* 還沒開始逃的，直接把他擺到更靠內的位置——模擬「去撿料、去放積木都是
@@ -3225,7 +3248,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(ballClick.second.ang - Math.PI / 2) <= ballClick.lim,
      '球生在 (' + ballClick.second.x + ', ' + ballClick.second.z + ')，角度 ' +
      ballClick.second.ang + '（要 ' + (Math.PI / 2).toFixed(3) + ' ±' + ballClick.lim + '）');
-  ok('換建築會取消瞄到一半的出手點', ballClick.aimed && ballClick.afterSwap);
+  /* v1.59：換建築不再收掉正在作用的道具，瞄到一半的第一點也一樣留著
+     （它就是地面上的一個位置，跟哪一座建築沒關係）。換道具才會作廢。 */
+  ok('換建築不會把瞄到一半的出手點吃掉', ballClick.aimed && !ballClick.afterSwap,
+     '換場後那個點還在');
 
   /* 會「持續破壞」的那幾種不震畫面（v1.58）：球一路滾、投石機連丟好幾顆，
      每一下都震的話畫面從頭晃到尾，看久了很不舒服。震動留給槌子那種單次撞擊。 */
@@ -3445,7 +3471,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 一道跟四道畫起來一樣貴：每一層是一顆 InstancedMesh，場上幾道只是多幾個 instance */
   const twCalls = await page.evaluate(() => {
-    startBuild(true); completeNow();
+    cleanTools(); startBuild(true); completeNow();
     draw(); ENG.render();
     const idle = ENG.info().calls;
     launchTornado({ x: siteR * 0.5, z: 0 });
@@ -3584,8 +3610,33 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      這時候丟一發核彈就會沒有火球，所以火苗的配額除以 √(在燒的塊數)、並留一截給爆炸。 */
   ok('整棟在燒也不會把爆炸的火球配額吃光', fire.cap.hot < fire.cap.HOT_MAX - 30,
      fire.cap.FIRE_MAX + ' 塊在燒時 ' + fire.cap.hot + ' / ' + fire.cap.HOT_MAX + ' 顆火粒子');
-  ok('換建築時火會一起收掉', fire.swap.fires === 0 && fire.swap.burning === 0,
-     '換場後 ' + fire.swap.fires + ' 處在燒、' + fire.swap.burning + ' 塊還帶著火');
+  /* v1.59 反過來了：換建築時火**不收**。一整棟在燒忽然全暗是「換場感」最重的一筆，
+     現在那些燒著的積木會被打散成碎料、拖著火飛出去、落地燒成焦炭。
+     擋的是下一步——小人把還在燒的碎料撿去蓋新的那座（見下面那條 douse 的測試）。 */
+  ok('換建築時火不會被收掉，燒著的碎料繼續燒',
+     fire.swap.fires > 0 && fire.swap.burning > 0,
+     '換場後 ' + fire.swap.fires + ' 處還在燒、' + fire.swap.burning + ' 塊還帶著火');
+  /* 火留著之後唯一要擋的：小人把還在燒的碎料撿去砌新的那座。
+     不擋的話新建築會從某幾塊莫名地開始燒起來——那正是 v1.59 之前整批收火的理由。 */
+  const carryFire = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    for (const b of blocks) if (b.st === 3) igniteBlock(b);
+    const lit = fires ? fires.length : 0;
+    startBuild(true);                                  // 整棟被打散成碎料，火跟著留下來
+    const kept = fires ? fires.length : 0;
+    let worst = 0, i = 0;
+    while (i++ < 900 && placedCnt < 40) {              // 蓋到四十塊就夠看出來了
+      step(0.05);
+      if (fires) worst = Math.max(worst, fires.filter(f => f.b.st === 3).length);
+    }
+    const placed = placedCnt;
+    cleanTools();
+    return { lit, kept, worst, placed };
+  });
+  ok('燒著的碎料被撿去蓋新的那座之前會先熄掉',
+     carryFire.lit > 0 && carryFire.kept > 0 && carryFire.placed >= 40 && carryFire.worst === 0,
+     '換場時 ' + carryFire.kept + ' 塊還帶著火 → 新建築砌了 ' + carryFire.placed +
+     ' 塊，其中著火的 ' + carryFire.worst + ' 塊');
 
   /* ══════════ 碎料燃燒 ══════════
      爆炸打出來的碎料會帶著火飛出去，燒滿 3 秒變成一塊焦炭。
@@ -3713,8 +3764,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      一起燒的話這個道具會變成放火的低配版。 */
   ok('不是爆炸的道具不會把碎料點著', emb2.rock.n > 0 && emb2.rock.fires === 0,
      '投石機砸掉 ' + emb2.rock.n + ' 塊，起火 ' + emb2.rock.fires + ' 處');
-  ok('換建築時碎料的火與額度一起歸零',
-     emb2.swap.fires === 0 && emb2.swap.spread === 0 && emb2.swap.burning === 0,
+  ok('換建築時碎料的火照樣留著（v1.59）',
+     emb2.swap.fires > 0 && emb2.swap.burning > 0,
      '換場後 ' + emb2.swap.fires + ' 處在燒、額度 ' + emb2.swap.spread +
      '、' + emb2.swap.burning + ' 塊還帶著火');
 
@@ -3838,11 +3889,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              left: (fworks ? fworks.length : 0) + (fwSparks ? fwSparks.length : 0) +
                    (fwWait ? fwWait.length : 0) };
   });
-  ok('換建築時還在飛的火星要收掉', fwSwap.flying > 0 && fwSwap.left === 0,
+  /* v1.59：換建築不收道具，天上那些火星照樣飛完、照樣會把新的那座點著——
+     那本來就是它們的事（「換場感」就是所有東西同時消失來的）。 */
+  ok('換建築時還在飛的火星不會被收掉', fwSwap.flying > 0 && fwSwap.left > 0,
      '換場前 ' + fwSwap.flying + ' 顆在飛 → 換場後 ' + fwSwap.left + ' 顆');
-  // 排隊中的那幾發也要收：留著的話會在新建築上空炸開，把剛蓋好的那座點著
-  ok('齊射還沒出膛的那幾發也要收掉',
-     fwSwap.queued === fwSwap.shots - 1 && fwSwap.leftQ === 0,
+  ok('齊射還沒出膛的那幾發也留著，會照原本的節奏出膛',
+     fwSwap.queued === fwSwap.shots - 1 && fwSwap.leftQ > 0,
      '點下去當下 ' + fwSwap.queued + ' 發在排隊（齊射 ' + fwSwap.shots +
      ' 發）→ 換場後 ' + fwSwap.leftQ + ' 發');
 
@@ -4281,18 +4333,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('炸完的炸彈會從場上消失', bomb.left === 0);
 
   const nk = await page.evaluate(() => {
-    startBuild(true); completeNow();
+    cleanTools(); startBuild(true); completeNow();
     callNuke({ x: 0, z: 0 });
     const set0 = blocks.filter(b => b.st === 3).length;
     for (let i = 0; i < 39; i++) step(0.05);            // 1.95 秒：還在倒數，彈體都還沒出現
     const wait = blocks.filter(b => b.st === 3).length;
     for (let i = 0; i < 4; i++) step(0.05);             // 2.15 秒：下墜中，還沒碰到樓頂
-    const falling = blocks.filter(b => b.st === 3).length, inAir = !!nuke;
-    const fallY = nuke ? nuke.y : -1, roof = bp.height;
+    const falling = blocks.filter(b => b.st === 3).length, inAir = !!nukes;
+    const fallY = nukes ? nukes[0].y : -1, roof = bp.height;
     /* 掉到碰著建築才炸，所以不能數死步數。下墜末段一幀就掉快十單位，
        這裡把步長縮到 0.005 秒再逼近，記下的最後高度才等於接觸點。 */
     let boomY = -1, g = 0;
-    while (nuke && g++ < 400) { boomY = nuke.y; step(0.005); }
+    while (nukes && g++ < 400) { boomY = nukes[0].y; step(0.005); }
     step(0.05); step(0.05);
     const set1 = blocks.filter(b => b.st === 3).length;
     let hitMax = 0;
@@ -4328,7 +4380,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { set0, wait, falling, inAir, fallY, roof, boomY, set1, hitMax, fire0, ring0, lit0, lit1,
              cloud0, cloud1, y1, peakY, peak, midSize,
              gone: cloudy().length, fireGone: hot.length,
-             ringGone: fxRings.length, alive: !!nuke };
+             ringGone: fxRings.length, alive: !!nukes };
   });
   ok('核彈 2 秒內不會炸', nk.wait === nk.set0, nk.set0 + ' → ' + nk.wait);
   ok('2 秒後彈體才從天上掉下來', nk.inAir && nk.falling === nk.set0 && nk.fallY > nk.roof,
@@ -4383,10 +4435,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     for (let i = 0; i < 240; i++) step(0.05);          // 等前一發的煙火散乾淨
     callNuke({ x: 0, z: 0 });
-    while (nuke && nuke.t > NUKE_FALL) step(0.05);     // 兩秒倒數
+    while (nukes && nukes[0].t > NUKE_FALL) step(0.05);     // 兩秒倒數
     // 碰到樓頂就炸，步數是浮動的；末段用小步長逼近，boomY 才等於接觸點
     let boomY = -1, g = 0;
-    while (nuke && g++ < 400) { boomY = nuke.y; step(0.005); }
+    while (nukes && g++ < 400) { boomY = nukes[0].y; step(0.005); }
     step(0.05);                                       // 爆後 0.05 秒
     const born = flashes.map(f => ({ r: +f.r.toFixed(1), op: f.op, y: +f.y.toFixed(1) }));
     /* 風壓那幾圈先撤掉再量：它們是鋪滿半個畫面的加法混色大環，
@@ -4515,7 +4567,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '雲上半部仍有 ' + skirt.high + ' 團');
 
   const mg = await page.evaluate(() => {
-    startBuild(true); completeNow();
+    cleanTools(); startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     const set0 = blocks.filter(b => b.st === 3).length;
     /* 追蹤固定的一批：離陣心最遠那 40 塊。用「全部碎料的平均距離」當指標會被
@@ -4529,13 +4581,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let calm = -1, full = -1, preCrush = -1, crush = null;
     for (let i = 0; i < 119; i++) {                     // 5.95 秒
       step(0.05);
-      if (i % 16 === 0) seq.push(magic ? magic.shown : -1);   // 每 0.8 秒取樣
-      if (full < 0 && magic && magic.shown === 6) full = +((i + 1) * 0.05).toFixed(2);
+      if (i % 16 === 0) seq.push(magics ? magics[0].shown : -1);   // 每 0.8 秒取樣
+      if (full < 0 && magics && magics[0].shown === 6) full = +((i + 1) * 0.05).toFixed(2);
       if (i === 89) calm = blocks.filter(b => b.st === 3).length;   // 4.5 秒：還沒開始扯
       if (i === 112) preCrush = blocks.filter(b => b.st === 3).length;  // 5.65 秒：收攏前一刻
       // 收攏是一次做完的，抓它發生的那一幀
-      if (magic && magic.crush && !crush)
-        crush = { left: +magic.t.toFixed(2), set: blocks.filter(b => b.st === 3).length };
+      if (magics && magics[0].crush && !crush)
+        crush = { left: +magics[0].t.toFixed(2), set: blocks.filter(b => b.st === 3).length };
       /* 收攏得看「最靠近時到哪」，不能只看爆炸前那一瞬間：扯是隨機的，
          最後幾幀才被扯下來的那幾塊還在半路上，會把當下的平均值整個拉高。 */
       if (i > 88) far0.forEach((b, j) => {
@@ -4544,7 +4596,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       });
     }
     const pulled = minD.reduce((s, v) => s + v, 0) / minD.length;
-    const before = blocks.filter(b => b.st === 3).length, alive = !!magic;
+    const before = blocks.filter(b => b.st === 3).length, alive = !!magics;
     /* 爆炸前那一刻碎料擠在哪：陣把建築扯下來捲進陣心，所以這時候它們該全部聚在中間。
        跟施法當下建築本身的平均半徑比，才知道是「被吸過來」不是「本來就在那」。 */
     const meanOf = f => { const a = blocks.filter(f); return a.length
@@ -4554,7 +4606,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 推到真的爆開那一幀為止。寫死步數會踩到浮點邊界：0.05 累加 120 次不會剛好是 6，
        差一點點就變成「還沒爆」，後面量到的火球是空的。 */
     let g = 0;
-    while (magic && g++ < 6) step(0.05);
+    while (magics && g++ < 6) step(0.05);
     phase = 'done';    // 擋掉「拆完換下一座」：要留著現場量噴多遠，不然下一座已經開工了
     const fire = hot.length;
     const flashY = flashes.length ? flashes[flashes.length - 1].y : -1;
@@ -4572,7 +4624,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              preCrush, crush, crushAt: CRUSH_AT,
              before, alive, gathered, gatherY, pulled, flashY, flew, flew1,
              set1: blocks.filter(b => b.st === 3).length,
-             hitMax, after: !!magic, fire, cloud, tinted };
+             hitMax, after: !!magics, fire, cloud, tinted };
   });
   ok('魔法陣是一層層長出來的', mg.seq[0] === 1 && mg.seq[mg.seq.length - 1] === 6 &&
      mg.seq.every((v, i) => i === 0 || v >= mg.seq[i - 1]), '每 0.8 秒取樣：' + mg.seq.join(' → '));
@@ -4619,7 +4671,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     for (let i = 0; i < 100; i++) step(0.05);       // 5 秒：四層都長齊
-    const all = (magic ? magic.rings : []).filter(o => !o.seed);   // 火種那三圈另外驗
+    const all = (magics ? magics[0].rings : []).filter(o => !o.seed);   // 火種那三圈另外驗
     // 一層是兩個環疊出來的：實色的芯 + 加法混色的暈。層次要看芯那幾個
     const core = all.filter(o => !o.add).map(o => ({ y: +o.y.toFixed(1), r: +o.r.toFixed(1), c: o.c }));
     const halo = all.filter(o => o.add);
@@ -4643,12 +4695,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       startBuild(true); completeNow();
       castMagic({ x: 0, z: 0 });
       for (let i = 0; i < 100; i++) step(0.05);
-      return magic.rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
+      return magics[0].rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
     };
     const a = cast(), b = cast();
-    const c = magic.rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
+    const c = magics[0].rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
     for (let i = 0; i < 8; i++) step(0.05);
-    const d = magic.rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
+    const d = magics[0].rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
     return { a, b, differ: a.some((v, i) => Math.abs(v - b[i]) > 0.3), steady: c.join() === d.join() };
   });
   ok('每次施法的層半徑都不一樣', mgVary.differ,
@@ -4665,7 +4717,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 100; i++) step(0.05);        // 5 秒：六層都在，紋路的編號不再變動
     draw(); ENG.render();
     // 火種那圈轉得比陣快 3.4 倍（它是「在竄」不是「在轉」），量陣的轉速要把它排掉
-    const at = () => magic.rings.filter(o => !o.add && !o.seed).map(o => +o.spin.toFixed(4));
+    const at = () => magics[0].rings.filter(o => !o.add && !o.seed).map(o => +o.spin.toFixed(4));
     const a = at();
     // 陣的紋路（螺旋臂與外圈虛線）都在 ringGroup 底下那顆 InstancedMesh 上
     let grp = null;
@@ -4678,11 +4730,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 挑離陣心最遠的那一段：半徑越大，投影出來的角度變化越明顯
     let idx = 0, far = -1;
     for (let i = 0; i < sp.count; i++) {
-      const q = posOf(i), d = Math.hypot(q.x - magic.x, q.z - magic.z);
+      const q = posOf(i), d = Math.hypot(q.x - magics[0].x, q.z - magics[0].z);
       if (d > far) { far = d; idx = i; }
     }
     const proj = v => { const q = v.clone().project(ENG.three.camera); return [q.x, q.y]; };
-    const c = proj(new THREE.Vector3(magic.x, posOf(idx).y, magic.z));
+    const c = proj(new THREE.Vector3(magics[0].x, posOf(idx).y, magics[0].z));
     const P0 = proj(posOf(idx));
     for (let i = 0; i < 8; i++) step(0.05);          // 0.4 秒
     draw(); ENG.render();
@@ -4712,30 +4764,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      v1.39 起火種**一直都在**：長層的那 0.24 秒它停在那一層的圓心等，不再消失。 */
   const mgSeed = await page.evaluate(() => {
     const lay = MAG_LAYER.map(L => +(0.12 + MAG_R * L.y).toFixed(2));
-    const coreY = () => magic.rings.filter(o => !o.add && !o.seed).map(o => +o.y.toFixed(2));
+    const coreY = () => magics[0].rings.filter(o => !o.add && !o.seed).map(o => +o.y.toFixed(2));
     const seedY = () => {
-      const s = magic.rings.find(o => o.seed && !o.add);
+      const s = magics[0].rings.find(o => o.seed && !o.add);
       return s ? +s.y.toFixed(2) : -1;
     };
     // 每次施法都要從最下面那層開始（不再洗順序）
     const firsts = [];
     for (let k = 0; k < 4; k++) {
-      startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
+      cleanTools(); startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
       for (let i = 0; i < 4; i++) step(0.05);        // 0.2 秒：只該有最下面那層
       firsts.push({ n: coreY().length, y: coreY()[0] });
     }
     /* 追第一段：0.45 秒剛好走完「長第一層 → 火種上升 → 長第二層」
        （0.15 擴張 + 0.17 爬升 + 0.15 擴張；v1.47 之前這一段是 0.7 秒）。
        同時整場（六秒）都盯著火種在不在、有沒有往下掉。 */
-    startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
+    cleanTools(); startBuild(true); completeNow(); castMagic({ x: 0, z: 0 });
     const trail = [];
     for (let i = 0; i < 9; i++) { step(0.05); trail.push({ n: coreY().length, s: seedY() }); }
     const rise = trail.filter((o, i) => i > 0 && o.s > trail[i - 1].s + 0.01);   // 真的在爬的那幾幀
     const hold = trail.filter((o, i) => i > 0 && Math.abs(o.s - trail[i - 1].s) < 0.01);
     let gaps = 0, drops = 0, last = -1, tail = -1;
-    for (let i = 0; i < 105 && magic; i++) {
+    for (let i = 0; i < 105 && magics; i++) {
       step(0.05);
-      if (!magic) break;
+      if (!magics) break;
       const s = seedY();
       if (s < 0) gaps++;
       else { if (last >= 0 && s < last - 0.01) drops++; last = s; }
@@ -4776,12 +4828,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const mgZip = await page.evaluate(() => {
     /* 上一段的陣還在場上、粒子也還在飛：先讓它炸完、散乾淨再開始。
        不清的話這裡追到的會混進上一發的粒子——那些已經快到陣心了，位移量全失真。 */
-    while (magic) step(0.05);
+    while (magics) step(0.05);
     for (let i = 0; i < 120; i++) step(0.05);
     clearFires();
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
-    const dist = h => Math.hypot(h.x - magic.x, h.y - MAG_CORE_Y, h.z - magic.z);
+    const dist = h => Math.hypot(h.x - magics[0].x, h.y - MAG_CORE_Y, h.z - magics[0].z);
     for (let i = 0; i < 6; i++) step(0.05);          // 0.3 秒：施法一開始就該有
     // 追固定的一批，不是每幀重抽（重抽的話量到的是「現在場上這些離陣心多遠」）
     const batch = hot.filter(h => h.suck).map(h => ({ h, d0: dist(h) }));
@@ -4799,10 +4851,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 40; i++) {
       step(0.05);
       plume += hot.filter(h => !h.suck && !h.pull && h.vy > 0 &&
-                               Math.hypot(h.x - magic.x, h.z - magic.z) < 6).length;
+                               Math.hypot(h.x - magics[0].x, h.z - magics[0].z) < 6).length;
       alive = Math.max(alive, hot.filter(h => h.suck).length);
     }
-    while (magic) step(0.05);
+    while (magics) step(0.05);
     for (let i = 0; i < 140; i++) step(0.05);        // 爆炸、雲、藍電都散乾淨再交棒
     clearFires();
     return { n: batch.length, closer, spd: +spd.toFixed(1), left, plume, alive, want: SUCK_SPD };
@@ -4826,7 +4878,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const calls = [];
     window.spawnStars = function (x, z, y, rad, n) {
       // el：這一把是施法後第幾秒撒的。要分開看「長層期間」與「滿陣之後」
-      calls.push({ y: +y.toFixed(1), rad: +rad.toFixed(1), n, el: MAG_TIME - magic.t });
+      calls.push({ y: +y.toFixed(1), rad: +rad.toFixed(1), n, el: MAG_TIME - magics[0].t });
       return orig(x, z, y, rad, n);
     };
     let peak = 0, lastAt = -1, first = null, gap = 0, quiet = 0;
@@ -4835,12 +4887,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        單看一次的分佈本來就會忽高忽低（±2σ 就佔平均的四成），
        那樣的門檻不是在驗程式而是在賭骰子。 */
     for (let cast = 0; cast < 3; cast++) {
-      while (magic) step(0.05);
+      while (magics) step(0.05);
       for (let i = 0; i < 60; i++) step(0.05);
       startBuild(true); completeNow();
       castMagic({ x: 0, z: 0 });
       let el = 0;
-      for (let i = 0; i < 119 && magic; i++) {        // 整個施法期間（六秒）
+      for (let i = 0; i < 119 && magics; i++) {        // 整個施法期間（六秒）
         step(0.05); el += 0.05;
         if (cast > 0) continue;                       // 亮度曲線與空窗只看第一次就夠
         if (!first && stars.length) first = stars[0];
@@ -4873,7 +4925,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 轉回去：yaw/pitch 不歸位的話，後面驗取景的測試量到的是這裡留下的角度
     ENG.cam.yaw = yaw0; ENG.cam.pitch = pit0;
     ENG.updateCamera(0.001);
-    while (magic) step(0.05);
+    while (magics) step(0.05);
     for (let i = 0; i < 140; i++) step(0.05);
     clearFires();
     const lay = MAG_LAYER.map(L => +(0.12 + MAG_R * L.y).toFixed(1));
@@ -4923,7 +4975,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const mgArc = await page.evaluate(() => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
-    while (magic) step(0.05);
+    while (magics) step(0.05);
     let t = 0, first = -1, last = -1, peak = 0, ball = -1;
     const from = [], to = [];
     for (let i = 0; i < 100; i++) {                   // 爆炸後五秒
@@ -5028,7 +5080,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     let g = 0;
-    while (magic && g++ < 200) step(0.05);
+    while (magics && g++ < 200) step(0.05);
     const wd = dust.filter(d => d.keep).length;
     for (let i = 0; i < 60; i++) step(0.05);
     clearFires();
@@ -5059,8 +5111,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const N = 300;
     for (let k = 0; k < N; k++) {
       castMagic({ x: 0, z: 0 });
-      const rs = MAG_LAYER.map((L, i) => L.r * magic.rj[i]);
-      magic = null; dangers.length = 0;      // 每次只要那組抖動，別讓預告與逃命累積下去
+      const rs = MAG_LAYER.map((L, i) => L.r * magics[0].rj[i]);
+      magics = null; dangers.length = 0;      // 每次只要那組抖動，別讓預告與逃命累積下去
       let mi = 0;
       rs.forEach((v, i) => { if (v > rs[mi]) mi = i; });
       hist[mi]++;
@@ -5090,8 +5142,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     castMagic({ x: 0, z: 0 });
     for (let i = 0; i < 100; i++) step(0.05);
     draw(); ENG.render();
-    const lay = magic.rings.filter(o => !o.seed);
-    const seed = magic.rings.find(o => o.seed && o.fill);
+    const lay = magics[0].rings.filter(o => !o.seed);
+    const seed = magics[0].rings.find(o => o.seed && o.fill);
     let grp = null;
     ENG.three.scene.traverse(o => {
       if (!grp && o.geometry && o.geometry.type === 'RingGeometry') grp = o.parent;
@@ -5125,8 +5177,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       ENG.camTarget.dist = d0; ENG.camTarget.ty = ty0;
       castMagic({ x: 0, z: 0 });
       for (let i = 0; i < 100; i++) step(0.05);        // 5 秒：六層都在
-      const top = Math.max(...magic.rings.map(o => o.y));
-      const wide = magic.rings.reduce((s, o) => Math.max(s, o.r), 0);
+      const top = Math.max(...magics[0].rings.map(o => o.y));
+      const wide = magics[0].rings.reduce((s, o) => Math.max(s, o.r), 0);
       const v = new THREE.Vector3(wide, top, 0).project(ENG.three.camera);
       return { d0: +d0.toFixed(0), need: +need.toFixed(0), dist: +ENG.cam.dist.toFixed(0),
                top: +top.toFixed(1), ndc: +v.y.toFixed(2) };
@@ -5209,10 +5261,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const total0 = bp.slots.length;
     castMagic({ x: 0, z: 0 });
     for (let i = 0; i < 118; i++) step(0.05);          // 5.9 秒：早就跌破那條線了
-    const mid = { alive: !!magic, placed: placedCnt, gate: Math.floor(total0 * WRECK_AT),
+    const mid = { alive: !!magics, placed: placedCnt, gate: Math.floor(total0 * WRECK_AT),
                   same: bp.slots.length === total0, dest: stats.destroyed };
     for (let i = 0; i < 8; i++) step(0.05);            // 過 6 秒：炸完、這時候才輪得到換場
-    const out = { mid, after: !!magic, boom: flashes.length > 0, dest: stats.destroyed };
+    const out = { mid, after: !!magics, boom: flashes.length > 0, dest: stats.destroyed };
     for (let i = 0; i < 70; i++) step(0.05);           // 換場前還要等 SWAP_WAIT 秒讓爆炸演完
     out.dest = stats.destroyed;
     shapePick = -1;
@@ -5263,24 +5315,123 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('連炸第二發不會再退得更遠', camFx.again === camFx.wide,
      '第二發後 ' + camFx.again.toFixed(0) + '（第一發 ' + camFx.wide.toFixed(0) + '）');
 
-  /* 倒數中換建築：留著的話會炸到剛蓋好的新那座 */
+  /* 倒數中換建築（v1.59 反過來了）：倒數中的道具**不收**，照樣數完、照樣炸下去。
+     本來是全部清掉——理由是「留著會炸到剛蓋好的新那座」，但那一瞬間畫面上所有東西
+     同時消失，正是「換場感」的來源。會不會波及新的那座，本來就該是它們的事。 */
   const swap = await page.evaluate(() => {
-    startBuild(true); completeNow();
+    cleanTools(); startBuild(true); completeNow();
     placeBomb({ x: 3, y: 2, z: 3 }); callNuke({ x: 0, z: 0 }); castMagic({ x: 5, z: 5 });
     callMeteor({ x: -4, y: 2, z: 2 });
-    const cnt = () => [bombs ? bombs.length : 0, nuke ? 1 : 0, magic ? 1 : 0,
+    const cnt = () => [bombs ? bombs.length : 0, nukes ? nukes.length : 0, magics ? magics.length : 0,
                        meteors ? meteors.length : 0].join(',');
     const armed = cnt();
     startBuild(true);
     const after = cnt();
-    const n0 = placedCnt;
-    for (let i = 0; i < 200; i++) step(0.05);           // 10 秒：三個的倒數都早就到了
-    return { armed, after, n0, hurt: n0 - placedCnt, phase };
+    /* 「真的炸了」看火球：換場當下新的那座還沒蓋起來，炸在空地上砸不到任何積木，
+       拿 stats.smashed 當證據會是 0。火球是爆炸自己留下的東西，跟現場有沒有積木無關。 */
+    let sawFlash = 0;
+    for (let i = 0; i < 200; i++) {                     // 10 秒：四個的倒數都早就到了
+      step(0.05);
+      sawFlash = Math.max(sawFlash, flashes.length);
+    }
+    return { armed, after, sawFlash, left: cnt(), phase };
   });
-  ok('換建築會把倒數中的道具一起收掉', swap.after === '0,0,0,0',
+  ok('換建築不會把倒數中的道具收掉', swap.after === swap.armed && swap.armed === '1,1,1,1',
      '炸彈／核彈／魔法／隕石：換之前 ' + swap.armed + ' → 換之後 ' + swap.after);
-  ok('新建築不會被上一輪的倒數炸到', swap.hurt <= 0,
-     '換場後 10 秒內少了 ' + swap.hurt + ' 塊（phase=' + swap.phase + '）');
+  ok('它們照樣數完、照樣炸下去', swap.sawFlash > 0 && swap.left === '0,0,0,0',
+     '十秒後全部引爆完畢（' + swap.left + '），期間同時最多 ' + swap.sawFlash + ' 顆火球');
+
+  /* 核彈可以同時好幾顆（v1.59，本來是「一次一顆，再點會改打新地點」）。
+     七個部位全部塞進同一顆 InstancedMesh，所以幾顆都只吃一個 draw call。 */
+  const nukeMany = await page.evaluate(() => {
+    /* 場上所有 InstancedMesh 的 instance 數。核彈那一顆會從 7（一顆）變成 21（三顆），
+       靠這個變化把它認出來——不必知道它在場景樹的哪個位置。 */
+    const counts = () => {
+      const a = [];
+      ENG.three.scene.traverse(o => { if (o.isInstancedMesh) a.push(o.count); });
+      return a;
+    };
+    const fall = () => { while (nukes && nukes[0].t > NUKE_FALL) step(0.02); step(0.02); };
+    cleanTools(); startBuild(true); completeNow();
+    callNuke({ x: 0, z: 0 });
+    fall(); draw(); ENG.render();
+    const c1 = counts(), calls1 = ENG.info().calls;
+
+    cleanTools();
+    for (let i = 0; i < 3; i++) callNuke({ x: (i - 1) * 24, z: 0 });
+    const armed = nukes.length;
+    fall(); draw(); ENG.render();
+    const c3 = counts(), calls3 = ENG.info().calls;
+    const flying = nukes ? nukes.length : 0;
+    const hi = nukes ? Math.max(...nukes.map(n => n.y)) : -1;
+
+    // nukeHit 是 function 宣告（掛在 global 上），覆寫它就數得到真的炸了幾次
+    const orig = nukeHit; let boom = 0;
+    nukeHit = p => { boom++; orig(p); };
+    let g = 0;
+    while (nukes && g++ < 400) step(0.02);
+    nukeHit = orig;
+
+    cleanTools();
+    for (let i = 0; i < 6; i++) callNuke({ x: i * 9 - 22, z: 0 });   // 連叫六顆
+    const capped = nukes.length;
+    cleanTools();
+    const idx = c1.map((v, i) => (v === 7 && c3[i] === 21 ? i : -1)).filter(i => i >= 0);
+    return { armed, flying, boom, capped, max: NUKE_MAX, calls1, calls3, idx: idx.length,
+             hi: +hi.toFixed(0) };
+  });
+  ok('核彈可以同時好幾顆，每一顆各自掉、各自炸',
+     nukeMany.armed === 3 && nukeMany.flying === 3 && nukeMany.boom === 3,
+     '同時叫 3 顆 → 3 顆一起掉（最高的在 y=' + nukeMany.hi + '）→ 炸了 ' + nukeMany.boom + ' 次');
+  ok('幾顆核彈都只吃一個 draw call',
+     nukeMany.idx === 1 && nukeMany.calls3 === nukeMany.calls1,
+     '一顆 7 個 instance、三顆 21 個，都是同一顆 InstancedMesh；draw call ' +
+     nukeMany.calls1 + ' → ' + nukeMany.calls3);
+  ok('核彈超過上限就把最早那顆擠掉', nukeMany.capped === nukeMany.max,
+     '連叫 6 顆 → 場上 ' + nukeMany.capped + ' 顆（上限 ' + nukeMany.max + '）');
+
+  /* 爆裂魔法也可以同時好幾個（v1.59）。引擎那邊的環／盤／紋路池子要放得下：
+     一個陣吃 15 個環（六層×2 ＋ 火種 3）與 7 片盤，三個就是 45 與 21。 */
+  const magMany = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    for (let i = 0; i < 3; i++) castMagic({ x: (i - 1) * 26, z: 0 });
+    const cast = magics.length;
+    for (let i = 0; i < 40; i++) step(0.05);          // 2 秒：三個陣都長滿六層了
+    const rings = magics.reduce((n, m) => n + (m.rings ? m.rings.length : 0), 0);
+    const layers = magics.map(m => m.shown).join('/');
+    const at = magics.map(m => +m.x.toFixed(0)).join('/');
+    draw();
+    /* 真的畫出來幾個環／幾片盤：池子不夠的話會被截掉，畫面上就少一個陣的圖案 */
+    let vis = 0, disc = 0;
+    ENG.three.scene.traverse(o => {
+      if (!o.isMesh || !o.visible || !o.parent.visible || !o.geometry) return;
+      if (o.geometry.type === 'RingGeometry') vis++;
+      if (o.geometry.type === 'CircleGeometry') disc++;
+    });
+    const fills = magics.reduce((n, m) => n + m.rings.filter(r => r.fill).length, 0);
+    let g = 0, boom = 0;
+    const orig = explode;
+    while (magics && g++ < 300) {
+      const before = magics.length;
+      step(0.05);
+      boom += before - (magics ? magics.length : 0);
+    }
+    cleanTools();
+    for (let i = 0; i < 5; i++) castMagic({ x: i * 12 - 24, z: 8 });   // 連放五個
+    const capped = magics.length;
+    cleanTools();
+    return { cast, rings, layers, at, vis, disc, fills, boom, capped, max: MAG_CAST };
+  });
+  ok('爆裂魔法可以同時好幾個，各長各的、各炸各的',
+     magMany.cast === 3 && magMany.layers === '6/6/6' && magMany.boom === 3,
+     '同時放 3 個（x=' + magMany.at + '）→ 兩秒後各自 ' + magMany.layers +
+     ' 層 → 各自炸了（共 ' + magMany.boom + ' 次）');
+  ok('三個陣的環與盤都畫得出來，不會被池子截掉',
+     magMany.vis === magMany.rings && magMany.disc === magMany.fills && magMany.rings >= 45,
+     '要 ' + magMany.rings + ' 個環、' + magMany.fills + ' 片盤 → 真的畫出 ' +
+     magMany.vis + ' 個、' + magMany.disc + ' 片');
+  ok('魔法陣超過上限就把最早那個擠掉', magMany.capped === magMany.max,
+     '連放 5 個 → 場上 ' + magMany.capped + ' 個（上限 ' + magMany.max + '）');
 
   /* 一發核彈常常直接把整棟夷平，那會立刻觸發「剩不到 25% 就換下一座」。
      換場如果把特效也清掉，蘑菇雲就會在爆炸後 0.05 秒整朵消失——等於白做。
@@ -5333,13 +5484,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                fly: lit.filter(f => f.b.st === 4).length,   // 被炸飛、拖著火落地的
                left: placedCnt, frame: n };
     };
-    /* 變數不能取名 nuke／magic：那會遮住同名的全域狀態，armed() 讀到的就是自己 */
+    /* 變數不能取名 nukes／magics：那會遮住同名的全域狀態，armed() 讀到的就是自己 */
     const bombE = one('美國國會大廈', () => placeBomb({ x: 14, y: 4, z: 0 }), () => !!bombs);
-    const nukeE = one('萬里長城', () => callNuke({ x: 0, z: 0 }), () => !!nuke);
-    const magicE = one('萬里長城', () => castMagic({ x: 0, z: 0 }), () => !!magic);
+    const nukeE = one('萬里長城', () => callNuke({ x: 0, z: 0 }), () => !!nukes);
+    const magicE = one('萬里長城', () => castMagic({ x: 0, z: 0 }), () => !!magics);
     /* 「剛好被夷平」要挑矮的：核彈炸在接觸點上，打高樓時炸點在樓頂，
        下半截會留著（那些就會有站著的餘火）。金字塔頂只有 14 高，整座都在半徑內。 */
-    const flatE = one('吉薩金字塔', () => callNuke({ x: 0, z: 0 }), () => !!nuke);
+    const flatE = one('吉薩金字塔', () => callNuke({ x: 0, z: 0 }), () => !!nukes);
     return { bomb: bombE, nuke: nukeE, magic: magicE, flat: flatE };
   });
   ok('炸彈、核彈、魔法都會在周圍留下餘火',
@@ -5523,7 +5674,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      一定會先擦到塔身——只在終點判定的話它會從屋頂穿過去、在地面才炸。 */
   const metSweep = await page.evaluate(() => {
     targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '帝國大廈');
-    startBuild(true); completeNow();
+    cleanTools(); startBuild(true); completeNow();
     /* 沒有火球可以量了，改成包一層 meteorHit 記下命中那一刻的高度——比舊寫法還準
        （舊的量的是火球球心，那個還帶了 R×0.22 的抬升）。 */
     const origHit = meteorHit; let hitY = -1;
