@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.59.0';
+const VERSION = '1.60.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -261,10 +261,14 @@ function freeBlock(b) {
     slotCursor = Math.min(slotCursor, b.slot);
     b.slot = -1;
   }
-  // 不用 indexOf 反查——一次砸掉幾百塊時那是 O(n²)
+  // 不用 indexOf 反查 blocks——一次砸掉幾百塊時那是 O(n²)。
+  // 工作單只有幾筆，那一份 findIndex 是常數成本
   if (b.holder >= 0) {
     const w = workers[b.holder];
-    if (w && blocks[w.block] === b) { w.block = -1; w.slot = -1; w.carry = false; w.st = 'idle'; }
+    if (w) {
+      const k = w.load.findIndex(j => blocks[j.b] === b);
+      if (k >= 0) dropJob(w, k);
+    }
     b.holder = -1;
   }
   if (b.cell) gridDel(b);
@@ -373,7 +377,7 @@ function pickShape() {
 function startBuild(instant) {
   /* 順序有講究：先把小人和舊建築解開（他們的 slot 指的是「舊」藍圖），
      再換 bp，最後才調整積木池——反過來做的話，
-     reconcilePool 的 splice 會讓 w.block 指到別塊積木上。 */
+     reconcilePool 的 splice 會讓工作單（w.load）上的編號指到別塊積木上。 */
   /* 小人身上的火跟碎料的火一起收：積木待會要回收去蓋新的那座，
      人也一樣得回去上工，不能有人還在新工地旁邊打滾。 */
   for (const w of workers) {
@@ -773,11 +777,40 @@ function reconcilePool() {
 }
 
 /* ── 小人 ───────────────────────────────────────────────── */
+/* 一趟搬幾塊（v1.60）。以前一個人一次只搬一塊：走過去、撿起來、走回工地、丟上去，
+   四段路只換到一塊積木，遠看是一群人在跑空車。現在一次領好幾塊，
+   撿滿了才回工地，回程一路把手上的貨丟完。
+   幾塊看**個子**：高的搬得多。但不照身高線性換算——那樣 1／2／3 塊各佔三分之一，
+   像刻意分成三組。以 2 塊為中心抽常態亂數，身高只把中心往上／往下推半塊，
+   於是多數人搬 2 塊，1 塊跟 3 塊都是少數。 */
+const CARRY_MIN = 1, CARRY_MAX = 3;
+const CARRY_MID = 2;                // 常態分布的中心（塊）
+const CARRY_SD = 0.55;              // 標準差（塊）
+const CARRY_SIZE = 0.5;             // 身高最多把中心推幾塊
+const W_LO = 1.59, W_HI = 1.86;     // 身高的抽樣範圍
+/* 標準常態亂數（Box–Muller）。均勻亂數做不出「中間多、兩端少」那個形狀。 */
+function gauss() {
+  const u = Math.random() || 1e-9;
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(Math.random() * Math.PI * 2);
+}
+function carryCap(scale) {
+  const mid = (W_LO + W_HI) / 2;
+  const size = (scale - mid) / ((W_HI - W_LO) / 2);         // 身高換算成 −1 ~ +1
+  return clamp(Math.round(CARRY_MID + size * CARRY_SIZE + gauss() * CARRY_SD),
+               CARRY_MIN, CARRY_MAX);
+}
 function newWorker(i) {
   const a = Math.random() * Math.PI * 2, d = siteR + rr(3, 9);
+  /* 每個人身高略有差異。v1.51 整體再放大 1.5 倍（1.06–1.24 → 1.59–1.86）：
+     模型從腳底到帽頂是 1.31，乘上去大約是 2.1–2.4 格，也就是兩塊多積木高。
+     之前那一版遠鏡頭下只剩一撮色點，數不出幾個人、也看不出誰頭上頂著積木。 */
+  const scale = rr(W_LO, W_HI);
   return {
     x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d, a: 0, ph: Math.random() * 6, gait: 0,
-    tone: i, st: 'idle', block: -1, slot: -1, tx: 0, tz: 0,
+    tone: i, st: 'idle', tx: 0, tz: 0,
+    /* 這一趟的工作單：load 是 {b 積木, s 藍圖格子} 一對一對排好的，
+       cap 是一趟最多領幾對，li 是撿到第幾對（回程時一律從第 0 對開始丟）。 */
+    load: [], cap: carryCap(scale), li: 0,
     wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, pause: 0, leg: 0,
     /* 上工的路：clear 是「直線走得通」，chk 是還有多久要重算一次（見 buildWalk） */
     chk: 0, clear: 0,
@@ -794,10 +827,7 @@ function newWorker(i) {
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
-    /* 每個人身高略有差異。v1.51 整體再放大 1.5 倍（1.06–1.24 → 1.59–1.86）：
-       模型從腳底到帽頂是 1.31，乘上去大約是 2.1–2.4 格，也就是兩塊多積木高。
-       之前那一版遠鏡頭下只剩一撮色點，數不出幾個人、也看不出誰頭上頂著積木。 */
-    scale: rr(1.59, 1.86)
+    scale: scale
   };
 }
 function setWorkerCount(n) {
@@ -826,19 +856,37 @@ function tagEngineer() {
     w.eng = eng;
   }
 }
+/* 放掉一個認領的格子。放掉也會改變支撐狀態，而且派工游標要退回去補這個洞 */
+function freeClaim(s) {
+  if (s < 0 || !bp || !bp.slots[s]) return;
+  bp.slots[s].claimed = -1;
+  slotCursor = Math.min(slotCursor, s);
+  markSupportDirty(0.05);
+}
 function releaseWorker(w) {
-  if (w.block >= 0) {
-    const b = blocks[w.block];
-    if (b && (b.st === CARRY || b.st === TOSS)) { b.holder = -1; freeBlock(b); b.vy = 2; }
+  for (const j of w.load) {
+    const b = blocks[j.b];
+    // 先把 holder 清掉再 freeBlock：不然它會回頭再抽一次這個人的工作單
+    if (b && b.st === CARRY) { b.holder = -1; freeBlock(b); b.vy = 2; }
     else if (b) b.holder = -1;
+    freeClaim(j.s);
   }
-  if (w.slot >= 0 && bp && bp.slots[w.slot]) {
-    bp.slots[w.slot].claimed = -1;
-    slotCursor = Math.min(slotCursor, w.slot);
-    markSupportDirty(0.05);          // 放掉認領也會改變支撐狀態
-  }
-  w.block = -1; w.slot = -1; w.carry = false; w.st = 'idle';
+  w.load.length = 0; w.li = 0; w.carry = false; w.st = 'idle';
   endChat(w);
+}
+/* 工作單裡的某一塊出事了（被打飛、被搶走、藍圖換掉）：只抽掉那一筆，其餘照搬。
+   一塊出事就整趟作廢的話，搬三塊的人被抽掉一塊就得回頭重領一次。 */
+function dropJob(w, k) {
+  const j = w.load[k];
+  if (j) {
+    const b = blocks[j.b];
+    if (b && b.st !== CARRY) b.holder = -1;   // 還在手上的不動（那是 releaseWorker 的事）
+    freeClaim(j.s);
+    w.load.splice(k, 1);
+    if (w.li > k) w.li--;
+  }
+  if (w.li > w.load.length) w.li = w.load.length;
+  if (!w.load.length) { w.carry = false; w.li = 0; w.st = 'idle'; }
 }
 
 /* ── 小人被拆除工具波及 ───────────────────────────────────
@@ -997,7 +1045,9 @@ function findBlock(wx, wz) {
    走進去照樣得穿牆。掃不到（實心造型的正中央）就退回原本的做法——
    拋太遠的話那不是工人是投石機，而且那種地方蓋完也看不到裡面。 */
 const STAND_OUT = 1.3;              // 站在格子外面多遠
-const TOSS_MAX = 10;                 // 最多退到離格子幾格，超過就照舊走進去
+/* 最多退到離格子幾格，超過就照舊走進去。v1.60 從 10 拉到 13：拋得遠一點，
+   就有更多「內部的格子」退得出牆外，不必走進去擺。 */
+const TOSS_MAX = 13;
 function standPos(s) {
   const d = Math.hypot(s.x, s.z);
   const ux = d < 0.001 ? 1 : s.x / d, uz = d < 0.001 ? 0 : s.z / d;
@@ -1165,16 +1215,29 @@ function stepFlee(w, dt) {
 }
 
 /* 沿著建築外圈繞過去，不走直線——直線會從蓋好的建築正中央穿過去。
-   角度先轉、半徑再收，兩個都到位才算抵達。 */
+   角度與半徑一起收，兩個都到位才算抵達。 */
+/* 一幀只能走 WALK×dt 這麼遠，「轉角度」跟「收半徑」要分同一份腳程（v1.60）。
+   舊版是兩邊各自吃滿 WALK×dt，於是繞路的人會用飄的：
+     · 光是同時收半徑又轉角度，斜邊就有 1.41 倍
+     · 角度那一份還是拿**目標**半徑換算的，站得比那個圈遠的人弧速直接爆掉——
+       實測站在半徑 20 要繞半徑 8 的圈，最快衝到 2.69 倍腳程
+   修法：把「還差多少」看成一個向量（弧長 dA×當下半徑、徑向 dr），照比例縮到這一步
+   走得完的長度。兩邊同時收、合起來剛好是 WALK（實測全程 1.00 倍），而且同時到位。
+   不改成「半徑先走完再轉角度」是因為那樣繞遠路：慶祝進場實測會慢一秒。
+   「從建築裡走出來」那條路不受影響——它傳進來的目標角度就是人自己現在的角度
+   （dA = 0），整份腳程本來就全給徑向。 */
 function ringWalk(w, ta, rad, dt) {
   const cr = Math.hypot(w.x, w.z);
   const ca = cr < 0.001 ? ta : Math.atan2(w.z, w.x);
   const TAU = Math.PI * 2;
   // 取最短那一邊繞。ta 可能是累加出來的（工程師換位置一次加一點），先折回 ±π
   const dA = ((((ta - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
-  const maxA = WALK * dt / Math.max(rad, 1), maxR = WALK * dt;
   const dr = rad - cr;
-  const na = ca + clamp(dA, -maxA, maxA), nr = cr + clamp(dr, -maxR, maxR);
+  const budget = WALK * dt;
+  const left = Math.hypot(dA * cr, dr);               // 還差多遠（弧長 + 徑向）
+  const arrive = left <= budget;
+  const k = arrive ? 1 : budget / left;
+  const na = ca + dA * k, nr = cr + dr * k;
   const px = w.x, pz = w.z;
   w.x = Math.cos(na) * nr; w.z = Math.sin(na) * nr;
   const mx = w.x - px, mz = w.z - pz;
@@ -1183,7 +1246,7 @@ function ringWalk(w, ta, rad, dt) {
     w.ph += dt * 11;
     w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
   }
-  return Math.abs(dA) <= maxA && Math.abs(dr) <= maxR;
+  return arrive;
 }
 
 /* ── 完工慶祝 ─────────────────────────────────────────────
@@ -1248,8 +1311,12 @@ function updWorker(w, wi, dt) {
   if (w.burn > 0) { burnMove(w, dt); return; }        // 燒起來：打滾或跑圈圈
 
   if (w.fall > 0) {                                   // 被震倒／被戳倒
+    /* 躺平就是躺平（v1.60）：以前只倒到 0.44π（79°），停在一個「快躺平又還撐著」的
+       角度。現在倒滿 90°，而且是**往後仰躺**（負角）——往前趴的話帽舌、鼻尖那幾塊
+       會插進草地裡，仰躺貼地的是背面，那是整個模型最平的一面。
+       躺平之後身體會落在草皮那一層，所以 engine 會照傾角把人抬起半個身厚。 */
     w.fall -= dt;
-    w.tilt += (Math.PI * 0.44 - w.tilt) * Math.min(1, dt * 9);
+    w.tilt += (-Math.PI * 0.5 - w.tilt) * Math.min(1, dt * 9);
     w.gait += (0 - w.gait) * Math.min(1, dt * 6);
     if (w.fall <= 0) w.st = 'idle';
     return;
@@ -1282,6 +1349,7 @@ function updWorker(w, wi, dt) {
   }
 
   if (phase === 'done') {                             // 蓋完了，圍成一圈慶祝
+    const was = w.cheer;
     w.cheer += dt;
     if (w.cheer < CHEER_T) {
       /* 先各自跑到自己那一格（等分一圈，所以站得開），到位就轉身面向建築
@@ -1299,6 +1367,10 @@ function updWorker(w, wi, dt) {
         w.y += (0 - w.y) * Math.min(1, dt * 6);
       }
     } else {
+      /* 慶祝完的那一刻，交談先進冷卻（v1.60）。圈上兩個人只隔 CHEER_GAP 1.9 格，
+         比「多近才聊得起來」的 2.6 還近——不推冷卻的話散場那一瞬間整圈人同時配對，
+         剛跳完就變成一圈人兩兩站著講話。 */
+      if (was < CHEER_T) w.chatCd = rr(CHAT_CD, CHAT_CD * 2);
       // 慶祝完就整張草地隨便晃。地圖是方的，目標點也用方形分布
       w.y += (0 - w.y) * Math.min(1, dt * 6);
       if (w.pause > 0) {
@@ -1319,48 +1391,51 @@ function updWorker(w, wi, dt) {
 
   switch (w.st) {
     case 'idle': {
-      const s = findSlot();
-      if (s < 0) { wander(w, dt); return; }
-      const bi = findBlock(w.x, w.z);
-      if (bi < 0) { wander(w, dt); return; }
-      bp.slots[s].claimed = wi;
-      blocks[bi].holder = wi;
-      markSupportDirty(0.05);        // 認領也算「這格有東西了」，會影響上面能不能蓋
-      w.slot = s; w.block = bi; w.st = 'pick';
+      loadUp(w, wi);
+      if (!w.load.length) { wander(w, dt); return; }
+      w.st = 'pick'; w.li = 0;
       w.leg = 0;                     // 接到工作就把閒晃里程歸零，別把它算進下次的發呆時間
-      w.tx = blocks[bi].x; w.tz = blocks[bi].z;
+      const b = blocks[w.load[0].b];
+      w.tx = b.x; w.tz = b.z;
       break;
     }
     case 'pick': {
-      const b = blocks[w.block];
-      if (!b || b.st !== FREE) { releaseWorker(w); return; }
+      // 要撿的那幾塊中途被抽掉，剩下的已經都在手上了：直接回工地
+      if (w.li >= w.load.length) { w.li = 0; toSlot(w); break; }
+      const j = w.load[w.li];
+      const b = j && blocks[j.b];
+      if (!b || b.st !== FREE) { dropJob(w, w.li); break; }
       w.tx = b.x; w.tz = b.z;
       if (buildWalk(w, dt)) {
         if (b.cell) gridDel(b);
         douse(b);                                     // 撿起來的碎料還在燒的話，先熄掉
         b.st = CARRY; b.rest = false; w.carry = true; stats.carried++;
-        carryPose(w, b);                              // 立刻舉起來，不然有一幀還黏在地上
-        const st = standPos(bp.slots[w.slot]);
-        w.tx = st.x; w.tz = st.z; w.st = 'build';
+        w.li++;
+        if (w.li < w.load.length) {                   // 還沒拿滿：直接去下一塊
+          const nb = blocks[w.load[w.li].b];
+          w.tx = nb.x; w.tz = nb.z; w.chk = 0;
+        } else { w.li = 0; toSlot(w); }               // 拿滿了才回工地
       }
+      carryPose(w);                                   // 立刻舉起來，不然有一幀還黏在地上
       break;
     }
     case 'build': {
-      const b = blocks[w.block];
-      if (!b || b.st !== CARRY) { releaseWorker(w); return; }
-      carryPose(w, b);
+      const j = w.load[0];
+      const b = j && blocks[j.b];
+      if (!b || b.st !== CARRY) { dropJob(w, 0); if (w.load.length) toSlot(w); break; }
+      carryPose(w);
       if (buildWalk(w, dt)) {
         /* 走過來的這幾秒建築一直在長，站位可能已經被別人補起來了。
            重新挑一個再走過去——就這樣從牆裡把積木丟出去的話，出手那一下整塊在牆裡。
            挑回同一個位置（實心造型的正中央就會這樣）就認了，不然會在原地來回。 */
         if (footBlocked(w.x, w.z)) {
-          const st2 = standPos(bp.slots[w.slot]);
+          const st2 = standPos(bp.slots[j.s]);
           if (Math.hypot(st2.x - w.x, st2.z - w.z) > 1) {
             w.tx = st2.x; w.tz = st2.z; w.chk = 0;
             break;
           }
         }
-        const s = bp.slots[w.slot];
+        const s = bp.slots[j.s];
         w.a = Math.atan2(-w.x, -w.z);                 // 面向建築再丟
         b.st = TOSS;
         b.arc = {
@@ -1370,17 +1445,46 @@ function updWorker(w, wi, dt) {
         };
         const pal = bp.pal[s.c % bp.pal.length];
         b.tr = ((pal >> 16) & 255) / 255; b.tg = ((pal >> 8) & 255) / 255; b.tb = (pal & 255) / 255;
-        b.slot = w.slot;
-        w.carry = false; w.st = 'wait'; w.wait = 0.28;
+        b.slot = j.s;
+        b.holder = -1;                                // 出手了就不再屬於任何人
+        w.load.shift();
+        if (!w.load.length) w.carry = false;
+        w.st = 'wait'; w.wait = 0.28;
       }
       break;
     }
     case 'wait':
+      carryPose(w);                                   // 手上還有貨的話要跟著站好
       w.gait += (0 - w.gait) * Math.min(1, dt * 8);
       w.wait -= dt;
-      if (w.wait <= 0) { w.block = -1; w.slot = -1; w.st = 'idle'; }
+      // 一趟丟完才回去重領。還有貨就直接走下一格，不必再跑一次「找工作」
+      if (w.wait <= 0) { if (w.load.length) toSlot(w); else w.st = 'idle'; }
       break;
   }
+}
+/* 領一趟的工作單：格子與建材成對領，領到 cap 對為止（不夠就領幾對算幾對）。
+   下一塊建材是從「上一塊建材那裡」找最近的，不是從人現在站的地方找——
+   撿完第一塊人就站在那裡了，一直用人的位置算會挑到同一個方向的料。 */
+function loadUp(w, wi) {
+  let sx = w.x, sz = w.z;
+  for (let k = 0; k < w.cap; k++) {
+    const s = findSlot();
+    if (s < 0) break;
+    const bi = findBlock(sx, sz);
+    if (bi < 0) break;
+    bp.slots[s].claimed = wi;        // 認領也算「這格有東西了」，會影響上面能不能蓋
+    blocks[bi].holder = wi;
+    w.load.push({ b: bi, s: s });
+    sx = blocks[bi].x; sz = blocks[bi].z;
+  }
+  if (w.load.length) markSupportDirty(0.05);
+}
+/* 去丟手上第一塊：站位照那一格重算，並且要求重新判斷直線通不通 */
+function toSlot(w) {
+  if (!w.load.length) { w.st = 'idle'; return; }   // 整趟都被抽光了
+  w.st = 'build';
+  const st = standPos(bp.slots[w.load[0].s]);
+  w.tx = st.x; w.tz = st.z; w.chk = 0;
 }
 /* 拋物線的頂點。只看高度差是不夠的（v1.51 之前那版就是）：人退到外緣之後，
    出手點跟目標之間隔著下面幾層的牆——城堡第 10 層那種，飛到三成路程時高度才 9.0，
@@ -1408,13 +1512,21 @@ function tossPeak(x0, y0, z0, s) {
   }
   return Math.min(peak, 26);
 }
-/* 搬運姿勢：建材舉在頭頂上方，隨腳步微幅晃動 */
-function carryPose(w, b) {
-  b.x = w.x + Math.sin(w.a) * 0.05;
-  b.z = w.z + Math.cos(w.a) * 0.05;
-  // 舉的高度要跟著身高走，不然高個子的積木會陷進自己的安全帽裡
-  b.y = (1.45 + Math.abs(Math.sin(w.ph)) * 0.05) * w.scale;
-  b.rx += (0 - b.rx) * 0.2; b.rz += (0 - b.rz) * 0.2;
+/* 搬運姿勢：建材舉在頭頂上方，隨腳步微幅晃動。
+   一趟可以搬好幾塊（v1.60），所以頭上是一疊——間距用格距 1（跟建築上的疊法一樣，
+   看得出一塊一塊）。工作單裡已經在手上的才算，還沒撿的那幾塊還躺在地上。 */
+function carryPose(w) {
+  let k = 0;
+  for (const j of w.load) {
+    const b = blocks[j.b];
+    if (!b || b.st !== CARRY) continue;
+    b.x = w.x + Math.sin(w.a) * 0.05;
+    b.z = w.z + Math.cos(w.a) * 0.05;
+    // 舉的高度要跟著身高走，不然高個子的積木會陷進自己的安全帽裡
+    b.y = (1.45 + Math.abs(Math.sin(w.ph)) * 0.05) * w.scale + k;
+    b.rx += (0 - b.rx) * 0.2; b.rz += (0 - b.rz) * 0.2;
+    k++;
+  }
 }
 /* ── 閒晃 ─────────────────────────────────────────────────
    沒事做的時候走的路，跟施工中的走法分開：
@@ -4150,7 +4262,10 @@ function onUp(e) {
   drag = null;
   if (!isClick) return;
   audio();                                // 使用者互動後才允許出聲
-  const hit = ENG.pick(x, y);
+  /* 拿哪一把決定「小人算不算被點到」（v1.60）：
+     手指只戳人，人排第一（不然站在建築前面的戳不到）；火把兩種用途都有，照舊；
+     其餘破壞道具**一律不理小人**——那些是對著建築用的，被路過的人擋掉那一下就白點了。 */
+  const hit = ENG.pick(x, y, tool === 'finger' ? 'man' : tool === 'fire' ? '' : 'skip');
   if (!hit) return;
   if (hit.kind === 'worker') {            // 戳小人：跌倒、手上的積木掉下來
     const w = workers[hit.idx];

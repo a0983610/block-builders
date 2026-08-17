@@ -957,13 +957,20 @@ const ENG = (function () {
      中心離地多高還要跟著姿勢走：站著（或倒立）時是半個身高，橫躺時只有半個身厚。
      固定用半個身高的話，橫躺那半圈整個人浮在草皮上面。 */
   const ROLL_PIVOT = 0.65, ROLL_FLAT = 0.30;
+  /* 仰躺時最深的那一塊是安全帽的帽緣（0.54 深的一片，半深 0.27）。
+     抬這麼多，整個人剛好躺在草皮上，一塊都不埋（v1.60）。 */
+  const FLAT_LIFT = 0.27;
   const HIP = 0.41;                          // 髖關節高度（腿的上緣），走路擺動的圓心
   /* w：{x,y,z,a 朝向,ph 步伐相位,carry 是否舉手,tilt 跌倒角度,tone 膚色/衣色編號,
         burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）,roll 正在打滾,
         hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1} */
   function putWorker(i, w) {
     const piv = w.roll ? ROLL_PIVOT : 0;
-    const lift = piv && (ROLL_FLAT + (ROLL_PIVOT - ROLL_FLAT) * Math.abs(Math.cos(w.tilt || 0)));
+    /* 沒在打滾但身體是斜的（被戳倒、被震倒、飛在半空翻滾）也要抬——
+       原點在腳底，倒到水平時整個身體剛好落在草皮那一層，半個身厚是埋在地裡的。
+       抬 |sin(傾角)| × 半個身厚：站直時 0，躺平時剛好把人托在草地上（v1.60）。 */
+    const lift = piv ? (ROLL_FLAT + (ROLL_PIVOT - ROLL_FLAT) * Math.abs(Math.cos(w.tilt || 0)))
+                     : FLAT_LIFT * Math.abs(Math.sin(w.tilt || 0));
     scratch.position.set(w.x, w.y + lift * (w.scale || 1), w.z);
     /* 順序用 YZX：R = Ry(朝向)·Rz(打滾)·Rx(躺平)。z 那一軸轉的是「躺平之後的身體長軸」，
        也就是滾木頭那個滾法。沒在打滾時 z 給 0，跟原本的 YXZ 完全等價。 */
@@ -1223,13 +1230,22 @@ const ENG = (function () {
 
   /* ── 點選 ─────────────────────────────────────────── */
   /* 回傳 {kind:'block'|'worker'|'ground', idx, point}；point 一定有值 */
-  /* 點到什麼的優先序：建築 > 小人 > 地板，**不是**「誰比較近」（v1.58）。
+  /* 點到什麼的優先序不是「誰比較近」（v1.58），而且**看手上拿的是哪一把**（v1.60）：
+
+       mode 'man'（手指）  小人 > 建築 > 地板   手指只戳人，別的都不做，人當然排第一
+       mode 'skip'（多數） 建築 > 地板          小人整個當透明，射線直接穿過去
+       預設（火把）        建築 > 小人 > 地板    對著人點是要點著他，對著建築點是放火
+
      照距離排的話，拿槌子對著建築點下去、剛好有小人走在前面，那一下就變成戳人——
      破壞道具都是對著建築用的，被路過的小人擋掉最惱人。地板排最後同理：
      從側面點建築的下緣時，射線常常先擦過建築前面那片草地。
-     代價是「站在建築正前方的小人戳不到」，要戳他就從沒有建築當背景的角度點。 */
+     反過來，v1.58 把小人排在建築後面之後，「站在建築正前方的小人戳不到」——
+     手指改成小人優先就解決了：那把工具本來就只有戳人一種用途。 */
   const PICK_RANK = { block: 0, worker: 1, ground: 2 };
-  function pick(px, py) {
+  const PICK_MAN = { worker: 0, block: 1, ground: 2 };
+  const PICK_SKIP = { block: 0, ground: 1 };
+  function pick(px, py, mode) {
+    const rankOf = mode === 'man' ? PICK_MAN : mode === 'skip' ? PICK_SKIP : PICK_RANK;
     ndc.set(px / W * 2 - 1, -(py / H * 2 - 1));
     raycaster.setFromCamera(ndc, camera);
     // intersectObjects 是照距離排好的，所以同一種裡先遇到的就是最近的那個
@@ -1239,15 +1255,15 @@ const ENG = (function () {
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
                  : h.object === ground ? 'ground' : null;
-      if (kind === null || PICK_RANK[kind] >= rank) continue;
-      rank = PICK_RANK[kind];
+      if (kind === null || !(rankOf[kind] < rank)) continue;
+      rank = rankOf[kind];
       best = {
         kind: kind,
         idx: kind === 'block' ? h.instanceId
            : kind === 'worker' ? Math.floor(h.instanceId / WPARTS) : -1,
         point: h.point, dir: raycaster.ray.direction.clone()
       };
-      if (rank === 0) break;                    // 建築最優先，找到就不必再看了
+      if (rank === 0) break;                    // 已經是這一把的最優先，不必再看了
     }
     return best;
   }

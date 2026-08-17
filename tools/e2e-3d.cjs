@@ -130,7 +130,7 @@ const fillAll = page => page.evaluate(() => {
     b.st = 0; b.slot = -1; b.holder = -1; b.snap = 0;
     b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
   }
-  for (const w of workers) { w.block = -1; w.slot = -1; w.carry = false; w.st = 'idle'; }
+  for (const w of workers) { w.load.length = 0; w.li = 0; w.carry = false; w.st = 'idle'; }
   placedCnt = bp.slots.length; phase = 'done';
 });
 
@@ -1364,24 +1364,124 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      1.31 是安全帽頂（engine.js 的 BODY：帽頂 p 1.25 + 高度 0.12 的一半）。 */
   const carry = await page.evaluate(() => {
     const HAT = 1.31;
-    let n = 0, sunk = 0, float = 0, lo = Infinity, hi = -Infinity;
+    let n = 0, sunk = 0, float = 0, gap = 0, lo = Infinity, hi = -Infinity, most = 0;
     for (const w of workers) {
-      if (!w.carry || w.block < 0) continue;
-      const b = blocks[w.block];
-      if (!b || b.st !== 1) continue;
+      if (!w.carry) continue;
+      // 一趟可以搬好幾塊（v1.60）：整疊由下往上檢查
+      const held = w.load.map(j => blocks[j.b]).filter(b => b && b.st === 1);
+      if (!held.length) continue;
       const head = HAT * w.scale;
       n++;
-      if (b.y <= head) sunk++;                 // 陷進頭裡
-      if (b.y - HB > head) float++;            // 飄在半空
+      if (held.length > most) most = held.length;
+      if (held[0].y <= head) sunk++;                 // 最底下那塊陷進頭裡
+      if (held[0].y - HB > head) float++;            // 最底下那塊飄在半空
+      // 其餘是疊在前一塊上面的，間距要剛好一格（跟建築上的疊法一樣）
+      for (let k = 1; k < held.length; k++)
+        if (Math.abs(held[k].y - held[k - 1].y - 1) > 1e-6) gap++;
       if (w.scale < lo) lo = w.scale;
       if (w.scale > hi) hi = w.scale;
     }
-    return { n, sunk, float, lo: +lo.toFixed(2), hi: +hi.toFixed(2) };
+    return { n, sunk, float, gap, most, lo: +lo.toFixed(2), hi: +hi.toFixed(2) };
   });
   ok('搬運中的積木架在頭頂上，不會陷進去也不會飄著',
      carry.n > 0 && carry.sunk === 0 && carry.float === 0,
      carry.n + ' 人搬運中，陷入 ' + carry.sunk + '、飄浮 ' + carry.float +
      '；身高 ' + carry.lo + '–' + carry.hi);
+  ok('搬好幾塊時是一疊，一格一格往上疊',
+     carry.most > 1 && carry.gap === 0,
+     '最多一次搬 ' + carry.most + ' 塊，疊距不是 1 格的有 ' + carry.gap + ' 處');
+
+  /* ── 一趟搬幾塊（v1.60）────────────────────────────────
+     以前一個人一次只搬一塊，四段路只換到一塊積木。現在一次領 1～3 塊，
+     幾塊看個子、而且是常態分布——照身高線性換算的話三種各佔三分之一，
+     看起來像刻意分成三組。 */
+  const capDist = await page.evaluate(() => {
+    const hist = [0, 0, 0, 0], small = [0, 0, 0, 0], big = [0, 0, 0, 0];
+    const mid = (W_LO + W_HI) / 2;
+    for (let i = 0; i < 4000; i++) {
+      const w = newWorker(0);
+      hist[w.cap]++;
+      (w.scale < mid ? small : big)[w.cap]++;
+    }
+    const avg = h => (h[1] + h[2] * 2 + h[3] * 3) / (h[1] + h[2] + h[3]);
+    return { hist, lo: +avg(small).toFixed(2), hi: +avg(big).toFixed(2),
+             out: hist[0] + hist.slice(4).length };
+  });
+  ok('一趟搬 1～3 塊，多數人搬 2 塊（常態分布）',
+     capDist.out === 0 && capDist.hist[2] > capDist.hist[1] * 1.8 &&
+     capDist.hist[2] > capDist.hist[3] * 1.8 && capDist.hist[1] > 200 && capDist.hist[3] > 200,
+     '4000 個人：1 塊 ' + capDist.hist[1] + '、2 塊 ' + capDist.hist[2] +
+     '、3 塊 ' + capDist.hist[3] + '（超出 1–3 的 ' + capDist.out + ' 人）');
+  ok('個子大的搬得多', capDist.hi - capDist.lo > 0.3,
+     '矮的平均 ' + capDist.lo + ' 塊、高的平均 ' + capDist.hi + ' 塊');
+
+  /* 「去尋找積木拿滿 再去建造」：切到 build 的那一刻，工作單上每一塊都要已經在手上。
+     少一塊就代表他還沒撿完就往工地走了。 */
+  const full = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 3000; setWorkerCount(20); startBuild(true);
+    const was = workers.map(w => w.st);
+    let trips = 0, notFull = 0, best = 0;
+    const capUsed = [0, 0, 0, 0];
+    for (let i = 0; i < 2000 && phase === 'build'; i++) {
+      step(0.05);
+      for (let k = 0; k < workers.length; k++) {
+        const w = workers[k];
+        if (w.st === 'build' && was[k] === 'pick') {          // 剛撿完要回工地那一幀
+          trips++;
+          const held = w.load.filter(j => blocks[j.b].st === 1).length;
+          if (held !== w.load.length) notFull++;
+          if (held > best) best = held;
+          capUsed[Math.min(3, held)]++;
+        }
+        was[k] = w.st;
+      }
+    }
+    return { trips, notFull, best, capUsed };
+  });
+  ok('拿滿了才回工地建造', full.trips > 50 && full.notFull === 0 && full.best > 1,
+     full.trips + ' 趟裡沒拿滿就走的 ' + full.notFull + ' 趟；一趟最多帶了 ' + full.best +
+     ' 塊（1／2／3 塊各 ' + full.capUsed.slice(1).join('／') + ' 趟）');
+
+  /* ── 繞路的腳程（v1.60）────────────────────────────────
+     ringWalk 是「繞開建築」「進場慶祝」共用的走法。舊版把「轉角度」跟「收半徑」
+     各給滿一份 WALK×dt，而且角度那份是拿目標半徑換算的——站得比那個圈遠的人
+     弧速直接爆掉。這裡拿舊版的算式當對照組，量的是每一幀真的走了幾倍腳程。 */
+  const ringSpd = await page.evaluate(() => {
+    const oldRing = (w, ta, rad, dt) => {                     // 舊版（v1.59）的算式
+      const cr = Math.hypot(w.x, w.z);
+      const ca = cr < 0.001 ? ta : Math.atan2(w.z, w.x);
+      const TAU = Math.PI * 2;
+      const dA = ((((ta - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
+      const maxA = WALK * dt / Math.max(rad, 1), maxR = WALK * dt;
+      const dr = rad - cr;
+      const na = ca + clamp(dA, -maxA, maxA), nr = cr + clamp(dr, -maxR, maxR);
+      w.x = Math.cos(na) * nr; w.z = Math.sin(na) * nr;
+      return Math.abs(dA) <= maxA && Math.abs(dr) <= maxR;
+    };
+    const run = (fn, cr, rad, ta) => {
+      const w = newWorker(0);
+      w.x = cr; w.z = 0; w.y = 0; w.a = 0; w.gait = 0;
+      let worst = 0;
+      const dt = 1 / 60;
+      for (let i = 0; i < 3000; i++) {
+        const px = w.x, pz = w.z;
+        const done = fn(w, ta, rad, dt);
+        worst = Math.max(worst, Math.hypot(w.x - px, w.z - pz) / dt / WALK);
+        if (done) break;
+      }
+      return +worst.toFixed(2);
+    };
+    // 站在圈上／圈內／圈外三種路況，都要以正常腳程走
+    const cases = [[20, 8, Math.PI], [4, 12, Math.PI], [12, 12, Math.PI], [30, 12, 0.6]];
+    return cases.map(c => ({ cr: c[0], rad: c[1],
+                             old: run(oldRing, c[0], c[1], c[2]), now: run(ringWalk, c[0], c[1], c[2]) }));
+  });
+  // 1.02 的餘裕給極座標的近似：腳程是用「弧長 + 徑向」估的，實際位移是弦，兩者差 1% 上下
+  ok('繞路的速度跟平常走路一樣快',
+     ringSpd.every(r => r.now <= 1.02) && Math.max(...ringSpd.map(r => r.old)) > 1.4,
+     ringSpd.map(r => '半徑 ' + r.cr + '→' + r.rad + '：' + r.old + ' → ' + r.now).join('　') +
+     '（倍，1 = 正常腳程）');
 
   /* v1.51 整體放大 1.5 倍：之前遠鏡頭下只剩一撮色點，數不出幾個人、
      也看不出誰頭上頂著積木。模型腳底到帽頂 1.31，乘上個體身高要落在兩塊多積木。 */
@@ -1484,7 +1584,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const run = name => {
       shapePick = SHAPES.findIndex(s => s.n === name);
       targetCnt = 3000; startBuild(true); completeNow();
-      let n = 0, bad = 0, out = 0, far = 0;
+      let n = 0, bad = 0, out = 0, far = 0, over10 = 0;
       for (const s of bp.slots) {
         if (s.y < 2) continue;                   // 蓋第 0、1 層時周圍還是空地
         n++;
@@ -1492,15 +1592,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (footBlocked(p.x, p.z)) bad++;        // 站位在積木裡（＝退不出來的那種）
         const d = Math.hypot(p.x - s.x, p.z - s.z);
         if (d > 1.31) out++;                     // 有退到外緣
-        if (d > 11.31) far++;                    // 超過 TOSS_MAX 還在退（不該發生）
+        if (d > 14.31) far++;                    // 超過 TOSS_MAX（13）還在退（不該發生）
+        if (d > 11.31) over10++;                 // 退得比舊上限（10）還遠：拋得更遠才做得到
       }
-      return { name, n, bad: +(bad / n * 100).toFixed(1), out: +(out / n * 100).toFixed(1), far };
+      return { name, n, bad: +(bad / n * 100).toFixed(1), out: +(out / n * 100).toFixed(1),
+               far, over10 };
     };
-    return ['中世紀城堡', '台北 101'].map(run);
+    return ['中世紀城堡', '台北 101', '吉薩金字塔'].map(run);
   });
   ok('內部的格子會退到外緣站，退不出來的才照舊走進去',
      stand.every(r => r.bad < 25 && r.out > 25 && r.far === 0),
      stand.map(r => r.name + '：退到外緣 ' + r.out + '%、站位仍在積木裡 ' + r.bad + '%').join('　'));
+  /* 拋遠一點（TOSS_MAX 10 → 13，v1.60）：多出來的那三格讓更多內部格子退得出牆外。
+     實測退不出來的比例：中世紀城堡 10% → 3%、吉薩金字塔 18.2% → 4.3%。 */
+  ok('拋得更遠之後，退不出來的格子變少',
+     stand.some(r => r.over10 > 0) && stand.every(r => r.bad < 6),
+     stand.map(r => r.name + '：退超過舊上限的 ' + r.over10 + ' 格、仍在積木裡 ' + r.bad + '%').join('　'));
 
   await reset(page, { shape: '吉薩金字塔', cnt: 400, workers: 16, scale: 1 });
   await sim(page, 200);
@@ -2025,6 +2132,48 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      cheer.maxY + '；就位後還在水平移動的人次 ' + cheer.drift);
   ok('慶祝完就散開去閒晃', cheer.after === 0 && cheer.spread > cheer.rad.hi + 3,
      '還在舉手的 ' + cheer.after + ' 人，最遠走到 ' + cheer.spread);
+
+  /* 慶祝完交談先進冷卻（v1.60）。圈上兩個人只隔 CHEER_GAP 1.9 格，比「多近才聊得起來」
+     的 CHAT_D 2.6 還近——不推冷卻的話散場那一瞬間整圈人同時配對，
+     剛跳完就變成一圈人兩兩站著講話。冷卻是「先不要」不是「不准」，過一陣子要聊得起來。 */
+  const coolChat = await page.evaluate(() => {
+    /* 要用擠得滿的那種圈：人少的時候圈上間隔就大於 CHAT_D，本來就聊不起來，
+       那樣測到的是「反正沒人靠近」。六十個人的圈才是每人分到 CHEER_GAP 1.9 格。 */
+    shapePick = SHAPES.findIndex(s => s.n === '木魚');
+    targetCnt = 1800; setWorkerCount(60); startBuild(true);
+    for (const w of workers) {
+      const a = Math.random() * Math.PI * 2, d = siteR + rr(3, 9);
+      w.x = Math.cos(a) * d; w.z = Math.sin(a) * d;
+      w.chat = 0; w.chatCd = 0;
+    }
+    completeNow();
+    let guard = 0;
+    while (guard++ < 400 && !workers.every(w => w.cheer >= CHEER_T)) step(0.05);
+    // 散場那一刻的狀態：全員該進冷卻，而且真的有很多對站在聊得起來的距離內
+    const cd = workers.filter(w => w.chatCd > 0).length;
+    const lo = +Math.min(...workers.map(w => w.chatCd)).toFixed(1);
+    let near = 0;
+    for (let a = 0; a < workers.length; a++)
+      for (let b = a + 1; b < workers.length; b++)
+        if (Math.hypot(workers[a].x - workers[b].x, workers[a].z - workers[b].z) < CHAT_D) near++;
+    let chats = 0;
+    for (let i = 0; i < 150; i++) {                 // 7.5 秒：比最短的冷卻（CHAT_CD）短
+      step(0.05);
+      chats = Math.max(chats, workers.filter(w => w.chat > 0).length);
+    }
+    let later = 0;                                   // 冷卻跑完之後照樣聊得起來
+    for (let i = 0; i < 1200; i++) {
+      step(0.05);
+      later = Math.max(later, workers.filter(w => w.chat > 0).length);
+    }
+    return { cd, lo, near, chats, later, n: workers.length, cdMin: CHAT_CD };
+  });
+  ok('慶祝完交談進入冷卻，不會剛跳完就整圈聊起來',
+     coolChat.cd === coolChat.n && coolChat.lo > coolChat.cdMin * 0.9 &&
+     coolChat.near > 5 && coolChat.chats === 0,
+     coolChat.n + ' 人全部進冷卻（最短還剩 ' + coolChat.lo + ' 秒），散場那一刻站在 2.6 格內的有 ' +
+     coolChat.near + ' 對，之後 7.5 秒聊起來的 ' + coolChat.chats + ' 人');
+  ok('冷卻過了照樣會聊天', coolChat.later > 0, '之後有 ' + coolChat.later + ' 人在聊');
   /* 圈的半徑本來寫死 siteR + 2.6。最小的建築 siteR 只有 7，那一圈長 60 格，
      分給 60 個人是每人 1 格——小人放大之後（連手臂約 1.56 格寬）整圈會插在一起。
      所以半徑要跟著人數走，這條驗的是「人多的時候真的撐得開」。 */
@@ -2073,7 +2222,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       step(0.05);
       n++;
       if (e.carry) carried++;
-      if (e.slot >= 0 || e.block >= 0) claimed++;
+      if (e.load.length) claimed++;
       if (e.plan) plan++;
       if (e.point > 0) point++;
       const d = Math.hypot(e.x, e.z);
@@ -2567,6 +2716,49 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      poke.skip || (poke.fall && poke.after < poke.carried),
      poke.skip ? '（這輪沒有人在搬運，略過）' : poke.carried + ' → ' + poke.after);
 
+  /* 倒下就躺平（v1.60）。以前只倒到 0.44π（79°），停在一個「快躺平又還撐著」的角度。
+     而且是往後仰躺：往前趴的話帽舌、鼻尖那幾塊會插進草地。躺平之後身體落在草皮
+     那一層，所以 engine 要照傾角把人抬起半個身厚——這裡量的是每一塊部位的**底面**
+     （不是中心），一塊都不能低於草皮。 */
+  const flat = await page.evaluate(() => {
+    const m = new THREE.Matrix4(), v = new THREE.Vector3();
+    // 這一塊畫出來的世界範圍：底面 = 中心 − 半高（半高照旋轉後的三根軸算）
+    const span = () => {
+      let lowest = Infinity, high = -Infinity, len = 0;
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        ENG.three.workerMesh.getMatrixAt(k, m);
+        const e = m.elements;
+        if (e[0] === 0 && e[5] === 0) continue;            // 沒拿的道具縮成 0
+        v.setFromMatrixPosition(m);
+        const hy = 0.5 * (Math.abs(e[1]) + Math.abs(e[5]) + Math.abs(e[9]));
+        lowest = Math.min(lowest, v.y - hy);
+        high = Math.max(high, v.y + hy);
+        len = Math.max(len, Math.abs(v.z));                // 躺平之後身體是沿著 z 攤開的（a=0）
+      }
+      return { lowest: +lowest.toFixed(3), high: +high.toFixed(2), len: +len.toFixed(2) };
+    };
+    const w = workers[0];
+    Object.assign(w, { x: 0, y: 0, z: 0, a: 0, air: 0, burn: 0, roll: 0, flee: 0,
+                       tilt: 0, gait: 0, fall: 1.5, st: 'idle' });
+    releaseWorker(w);
+    w.fall = 1.5;
+    for (let i = 0; i < 20; i++) step(0.05);              // 一秒：倒下去的過渡跑完
+    const tilt = w.tilt;
+    ENG.putWorker(0, w);
+    const down = span();
+    ENG.putWorker(0, Object.assign({}, w, { tilt: 0, fall: 0 }));   // 站直的同一個人當對照
+    const up = span();
+    return { deg: +(tilt * 180 / Math.PI).toFixed(1), down, up };
+  });
+  ok('被戳倒的小人躺成水平（往後仰躺）',
+     Math.abs(flat.deg + 90) < 1.5 && flat.down.len > flat.up.high * 0.5 &&
+     flat.down.high < flat.up.high * 0.65,
+     '傾角 ' + flat.deg + '°（舊版停在 −79°），身體攤開 ' + flat.down.len +
+     '、最高只剩 ' + flat.down.high + '（站直時高 ' + flat.up.high + '）');
+  // 站直時鞋底本來就壓進草皮 0.005（看起來才像踩在地上），躺平不該比那個更深
+  ok('躺平之後一塊都沒埋進草地', flat.down.lowest >= flat.up.lowest,
+     '最低的部位底面在 y=' + flat.down.lowest + '（0 是草皮；站直時是 ' + flat.up.lowest + '）');
+
   /* 手上的積木被波及時要真的脫手：解除跟小人的綁定、回到散落佇列、掉到地上。
      上面兩條只比了「搬運中的總數有沒有變少」，那個 <= 永遠成立，證不到單一塊的下場。 */
   const unpar = await page.evaluate(() => {
@@ -2576,10 +2768,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 逃命會讓人提早脫手，這裡要驗的是「被炸到才脫手」那條路徑，先關掉
     const orig = alertFlee; alertFlee = () => {};
     const held = [];
-    for (let i = 0; i < workers.length; i++) {
-      const b = workers[i].block;
-      if (b >= 0 && (blocks[b].st === 1 || blocks[b].st === 2)) held.push({ w: i, b });
-    }
+    for (let i = 0; i < workers.length; i++)
+      for (const j of workers[i].load)
+        if (blocks[j.b].st === 1 || blocks[j.b].st === 2) held.push({ w: i, b: j.b });
     explode({ x: 0, y: 3, z: 0 }, 40, 30);
     alertFlee = orig;
     let stuck = 0, holder = 0, slot = 0;
@@ -2589,7 +2780,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (b.holder >= 0) holder++;                           // 還記著是誰拿的
       if (b.slot >= 0) slot++;                               // 還占著藍圖格子
     }
-    const hands = held.filter(o => workers[o.w].block >= 0 || workers[o.w].carry).length;
+    const hands = held.filter(o => workers[o.w].load.length || workers[o.w].carry).length;
     for (let i = 0; i < 40; i++) step(0.05);
     const landed = held.filter(o => blocks[o.b].st === 0).length;   // FREE＝回到散落佇列
     return { n: held.length, stuck, holder, slot, hands, landed };
@@ -2623,7 +2814,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           const w = near[k];
           if (w.flee <= 0) continue;
           if (w.carry) carry++;
-          if (w.slot >= 0) slot++;
+          if (w.load.length) slot++;
           const d = Math.hypot(w.x - 0, w.z - 0);
           if (d < prev[k] - 1e-6) back++;               // 往爆心跑＝方向錯了
           prev[k] = d;
@@ -3376,8 +3567,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const only = rc.intersectObjects([ENG.three.blockMesh, ENG.three.workerMesh], false)
                    .map(h => h.object === ENG.three.workerMesh ? 'w' : 'b').join('');
     const solo = ENG.pick((v2.x + 1) / 2 * window.innerWidth, (1 - v2.y) / 2 * window.innerHeight);
+    const soloPx = (v2.x + 1) / 2 * window.innerWidth, soloPy = (1 - v2.y) / 2 * window.innerHeight;
+    /* 手上拿的是哪一把也算數（v1.60）：
+       skip = 破壞道具，小人整個當透明；man = 手指，小人排第一。 */
+    const soloSkip = ENG.pick(soloPx, soloPy, 'skip');
+    // 擋在建築前面的那個位置要再擺一次（上面把他搬到草地前面了）
+    w.x = c.x + (b.x - c.x) * t;
+    w.z = c.z + (b.z - c.z) * t;
+    w.y = c.y + (b.y - c.y) * t - 0.9;
+    draw();
+    const manHit = ENG.pick(px, py, 'man');
+    const skipHit = ENG.pick(px, py, 'skip');
     return { clean: clean && clean.kind, blocked: blocked && blocked.kind,
-             solo: solo && solo.kind, order: order.slice(0, 4), only: only.slice(0, 4) };
+             solo: solo && solo.kind, order: order.slice(0, 4), only: only.slice(0, 4),
+             soloSkip: soloSkip && soloSkip.kind, man: manHit && manHit.kind,
+             skip: skipHit && skipHit.kind, manIdx: manHit && manHit.idx };
   });
   ok('小人擋在建築前面時，點下去打的是建築',
      pickOrder.clean === 'block' && pickOrder.order[0] === 'w' && pickOrder.blocked === 'block',
@@ -3385,6 +3589,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('小人背後沒有建築時照樣戳得到他',
      pickOrder.solo === 'worker' && pickOrder.only.indexOf('b') < 0,
      '射線上只有「' + pickOrder.only + '」 → 判定給 ' + pickOrder.solo);
+  /* v1.60：手指以外的破壞道具不理小人。點在人身上（背後是空地）也要打到地板，
+     不然那一發就白點了——想炸的地方剛好有人走過就吃掉一次操作。 */
+  ok('破壞道具點在小人身上，打的是他背後的東西',
+     pickOrder.soloSkip === 'ground' && pickOrder.skip === 'block',
+     '背景是草地 → ' + pickOrder.soloSkip + '、背景是建築 → ' + pickOrder.skip);
+  /* 反過來，手指只有「戳人」一種用途，所以小人排第一——
+     v1.58 之後「站在建築正前方的人戳不到」就是這樣解掉的。 */
+  ok('拿手指時，站在建築正前方的小人也戳得到',
+     pickOrder.man === 'worker' && pickOrder.manIdx === 0,
+     '同一個位置：一般判定給 ' + pickOrder.blocked + '、手指判定給 ' + pickOrder.man +
+     '（第 ' + pickOrder.manIdx + ' 個人）');
 
   /* 滾多遠：把積木清空、場地放大，量到的就是摩擦與壽命本身（不含撞到東西的煞車）。
      v1.39 之前是 6 秒 ×每秒保留 0.82，量到 119.3；現在 7.5 秒 ×0.86，量到 152.7。 */
@@ -4018,13 +4233,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       roll: workers.filter(w => w.roll).length,
       moved: +(workers.reduce((s, w, i) => s + Math.hypot(w.x - p0[i].x, w.z - p0[i].z), 0) / workers.length).toFixed(1),
       out: workers.filter(w => Math.max(Math.abs(w.x), Math.abs(w.z)) > arenaR + 22.5).length,
-      busy: workers.filter(w => w.block >= 0 || w.carry).length
+      busy: workers.filter(w => w.load.length || w.carry).length
     };
     // 燒的中途看一眼：身上要有火、要在翻滾、不能回去工作
     for (let i = 0; i < 20; i++) step(0.05);
     const mid = { burn: workers.filter(w => w.burn > 0).length,
                   k: +Math.max(...workers.map(w => w.burnK)).toFixed(2),
-                  busy: workers.filter(w => w.block >= 0 || w.carry).length,
+                  busy: workers.filter(w => w.load.length || w.carry).length,
                   hotNear: hot.filter(h => workers.some(w => Math.hypot(h.x - w.x, h.z - w.z) < 1.2)).length };
     for (let i = 0; i < 50; i++) step(0.05);            // 湊滿 3 秒＋
     const done = { burn: workers.filter(w => w.burn > 0).length,
