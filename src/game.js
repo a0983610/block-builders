@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.57.1';
+const VERSION = '1.57.2';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -4392,6 +4392,11 @@ function boot() {
     if (e.target.id === 'impWrap' || e.target.id === 'impClose') $('impWrap').classList.remove('on');
   });
   $('impGo').addEventListener('click', doImport);
+  /* ⓘ：整條路怎麼走。收在按鈕後面而不是攤在面板上——知道怎麼用的人不必每次讀一遍 */
+  $('impInfo').addEventListener('click', () => {
+    const on = $('impHelp').classList.toggle('on');
+    $('impInfo').classList.toggle('on', on);
+  });
   /* 沒放 src/bpdoc.js 的話遊戲照跑，只有這顆拿不到說明全文 */
   if (typeof BP_DOC === 'string')
     $('impDoc').addEventListener('click', () => copyText(BP_DOC, $('impDoc'), '📋 取得 prompt'));

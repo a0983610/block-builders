@@ -1109,6 +1109,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      impOpen.on && impOpen.docOff === false && impOpen.none.indexOf('還沒有匯入過') >= 0,
      impOpen.none.trim());
 
+  /* ⓘ 說明：第一次來的人看到四顆按鈕跟一個空框，不知道要幹嘛。整條路收在這裡面。 */
+  const impHelp = await gp.evaluate(() => {
+    const h = document.getElementById('impHelp'), i = document.getElementById('impInfo');
+    const shut0 = getComputedStyle(h).display;
+    i.click();
+    const open = getComputedStyle(h).display, lit = i.classList.contains('on');
+    const text = h.textContent;
+    i.click();
+    const shut1 = getComputedStyle(h).display;
+    i.click();                                  // 留著展開，下面那幾條要對照它的內容
+    return { shut0, open, shut1, lit, steps: h.querySelectorAll('li').length, text,
+             btns: ['impDoc', 'impGem', 'impGpt', 'impGo'].map(b =>
+               document.getElementById(b).textContent.replace('📋 ', '')) };
+  });
+  ok('ⓘ 預設收著，點一下展開、再點收起來',
+     impHelp.shut0 === 'none' && impHelp.open === 'block' && impHelp.shut1 === 'none' &&
+     impHelp.lit,
+     '展開後 ' + impHelp.steps + ' 個步驟');
+  /* 說明裡指名的按鈕要真的叫那個名字：改了按鈕文字卻忘了改說明，
+     照著做的人會在面板上找不到那顆。 */
+  ok('說明從「取得 prompt」一路講到匯入，指名的按鈕都真的在面板上',
+     impHelp.steps === 7 && impHelp.btns.every(t => impHelp.text.indexOf(t) >= 0) &&
+     ['剪貼簿', 'Ctrl+V', '下拉選單', '匯出', '刪除', '藍圖預覽']
+       .every(k => impHelp.text.indexOf(k) >= 0),
+     impHelp.steps + ' 步，提到的按鈕：' + impHelp.btns.join('／'));
+
   /* 取得 prompt：整份〈藍圖製作說明〉進剪貼簿。玩家拿它去餵網頁版 AI，
      所以它必須跟 blueprints/ 裡那份逐字相同——那支 .js 是工具產出來的，
      改了 .md 忘了重跑就會在這裡被抓到。 */

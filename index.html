@@ -155,6 +155,15 @@
   #badgeBox .row button,#impBox .row button{flex:1}
 
   /* 匯入建築：先去拿一份藍圖（四顆入口）→ 貼進來 → 匯入 → 下面是存下來的清單 */
+  #impInfo{width:21px;height:21px;padding:0;border-radius:99px;line-height:1;
+    font:700 13px/1 Georgia,"Times New Roman",serif;vertical-align:2px;opacity:.5}
+  #impInfo:hover{opacity:1}
+  #impInfo.on{background:var(--accent);border-color:transparent;color:#fff;opacity:1}
+  #impHelp{display:none;margin:10px 0 0;padding:9px 10px 9px 30px;border-radius:10px;
+    background:#f7f4f0;font-size:12px;line-height:1.8}
+  #impHelp.on{display:block}
+  #impHelp li{margin:3px 0}
+  #impHelp code{background:rgba(27,36,48,.08);border-radius:4px;padding:0 4px}
   #impBox .go{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:12px}
   #impBox .go a,#impBox .go button{display:flex;align-items:center;justify-content:center;
     padding:7px 4px;font-size:12.5px;white-space:nowrap;text-decoration:none;
@@ -286,8 +295,24 @@
      跟藍圖預覽.html 的貼上框走同一支 importBlueprint()，差別是這邊會存起來。 -->
 <div id="impWrap">
   <div id="impBox">
-    <h2>📥 匯入建築</h2>
+    <!-- 用純字母 i 不用 ⓘ：那個字元多半走 emoji 呈現，吃不到 color，
+         展開時「白字配橘底」會變成一顆看不清楚的深色圓點。按鈕自己就是圓的。 -->
+    <h2>📥 匯入建築 <button id="impInfo" type="button" title="怎麼弄一份藍圖">i</button></h2>
     <div class="sub">請 AI 照說明做一份藍圖，貼進來就能在遊戲裡蓋。匯進來的會存在這台電腦上。</div>
+    <!-- 點 ⓘ 才展開：知道怎麼用的人不必每次都看一遍，第一次來的人有整條路可以照著走 -->
+    <ol id="impHelp">
+      <li>按 <b>📋 取得 prompt</b>——整份〈藍圖製作說明〉會複製到剪貼簿。</li>
+      <li>按 <b>Gemini</b> 或 <b>GPT</b> 開新分頁，把剪貼簿貼進對話框（Ctrl+V）送出。
+          要指定蓋什麼就補一句「請做一座 ○○○」，附一張參考圖會更像。</li>
+      <li>AI 會回一段 <code>```js</code> 開頭的程式碼，<b>整段複製</b>起來
+          （圍籬跟「檔名：」那幾行不用清掉，貼進來會自動忽略）。</li>
+      <li>貼進下面那個框，按 <b>匯入</b>。名字撞到現有藍圖會被擋下來，回去請 AI 改個 name。</li>
+      <li>匯完它就在<b>設定面板的下拉選單</b>裡（自訂的排在最前面），選了就開始蓋。</li>
+      <li>匯進來的<b>會存著</b>，關掉再開還在。清單那一列可以 <b>匯出</b> 成 .js 傳給別人，
+          或 <b>刪除</b>。</li>
+      <li>想先看看蓋起來的樣子，或讓 AI 照體檢報告改到好——按 <b>藍圖預覽</b>，
+          診斷報告只有那一頁產得出來。</li>
+    </ol>
     <div class="go">
       <button id="impDoc" type="button">📋 取得 prompt</button>
       <!-- 這兩個是外站，藍圖預覽是同一個資料夾裡的那一頁（相對網址＝同網址） -->
