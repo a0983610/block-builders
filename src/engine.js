@@ -104,6 +104,9 @@ const ENG = (function () {
      1.27 是量出來的：36 座 × 4 個角度掃過去，最擠的一座（3000 塊的美國國會大廈）
      佔畫面 0.80，一般的落在 0.74，上緣不會頂到工具列。 */
   const FIT_MARGIN = 1.27;
+  /* 手機版的斷點，跟 index.html 那條 @media (max-width:640px) 同一個數字：
+     版面切成手機那一套的同時，取景也切回原本的「看腰間」（見 fitCamera）。 */
+  const MOBILE_W = 640;
   /* 爆炸運鏡的留白。比 FIT_MARGIN 小：那個是給建築的（四周要留白才好看），
      這裡只要求「效果整個進得了畫面」，留太多等於白白把鏡頭往後推。 */
   const HOLD_MARGIN = 1.15;
@@ -1061,12 +1064,20 @@ const ENG = (function () {
        兩邊都用球半徑的話，又高又細的建築（艾菲爾鐵塔）會被自己的高度推到天邊；
        左右完全不算的話，直式手機（畫面高瘦）裝不下，36 座有 24 座被切掉、金門大橋溢出六成。 */
     if (!keepView) {
-      const R = Math.max(radius * 1.05, height * 0.62) + 2;
+      /* 桌機（v1.55）：視線放在**建築底部中心**（工地原點），那一點就是畫面正中央。
+         看的範圍因此變成「原點往上整個 height」，不再是以腰間為中心的上下各一半——
+         上下的取景半徑要用整個高度，不然視線降下來之後上緣會被切掉。
+         代價是建築整個被推到畫面上半部，看起來比以前小一截：底部要落在正中央，
+         建築就只剩上半部可以站，這是換來的，不是取景壞了。
+         手機（直式、畫面高瘦）維持原本的**看腰間**：那種畫面再把建築推到上半部
+         會小到看不清楚。斷點跟 index.html 那條 @media (max-width:640px) 同一個數字。 */
+      const atBase = window.innerWidth > MOBILE_W;
+      const R = Math.max(radius * 1.05, height * (atBase ? 1 : 0.62)) + 2;
       const halfV = camera.fov * Math.PI / 360;
       const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
       camTarget.dist = Math.max(R / Math.sin(halfV),
                                 (radius * 1.05 + 2) / Math.sin(halfH)) * FIT_MARGIN;
-      camTarget.ty = height * 0.44 + 1.5;
+      camTarget.ty = atBase ? 0 : height * 0.44 + 1.5;
       camTarget.tx = camTarget.tz = 0;        // 取景時把鏡頭帶回工地中心
       if (instant) { cam.dist = camTarget.dist; cam.ty = camTarget.ty; cam.tx = cam.tz = 0; }
     }
@@ -1075,8 +1086,25 @@ const ENG = (function () {
     const sc = sun.shadow.camera;
     sc.left = -s; sc.right = s; sc.top = s; sc.bottom = -s;
     sc.updateProjectionMatrix();
-    setGroundSize(arena + 26);
+    /* 島還要大到蓋住畫面下緣（v1.55）。視線落到地面之後，下緣那兩個角會打在很外面——
+       量過：艾菲爾鐵塔打到島半徑的 2.07 倍、台北 101 是 1.21 倍，畫面左下角就直接看到
+       島的邊與底下那層土。島變大不多花 draw call（就那三個盒子），遠處交給霧。 */
+    setGroundSize(Math.max(arena + 26, groundReach()));
     setFog();
+  }
+
+  /* 畫面下緣（左下角、正下方、右下角）三條射線打到地面的落點，離工地中心最遠那個。
+     相機朝原點看，所以只有俯角、視角與視距在決定它，跟 yaw 無關；島是正方形，
+     用「半徑」當半邊長是刻意保守——轉視角時最短的是邊心不是角。 */
+  function groundReach() {
+    const tanV = Math.tan(camera.fov * Math.PI / 360);
+    const tanH = tanV * camera.aspect;
+    const sp = Math.sin(cam.pitch), cp = Math.cos(cam.pitch);
+    const down = sp + cp * tanV;                       // 下緣射線往前一單位就往下這麼多
+    if (down < 0.01) return 0;                         // 幾乎平視：下緣打不到地面
+    const t = (camTarget.ty + sp * camTarget.dist) / down;
+    const fwd = cp * camTarget.dist - t * (cp - sp * tanV);
+    return Math.hypot(fwd, t * tanH);
   }
 
   /* 霧是給遠方地平線的，不該把建築本身吃掉，所以起霧處要跟著目前的取景距離走。

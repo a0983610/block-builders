@@ -3894,10 +3894,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（爆點 ' + flash.boomY.toFixed(1) + ' + 抬升 6.6）');
   /* 絕對門檻一路在降：藍圖改瘦（0.5→0.42）讓建築長更高、取景拉遠，1.23% → 0.91%；
      核彈改成炸在接觸點之後，帝國大廈這一發是打在樓頂而不是腳邊，火球在畫面上的
-     位置與遮擋都變了，再掉到 0.41%。這裡真正要驗的是「有火球才有過曝白」，
-     所以看的是跟拿掉火球那幀的倍數關係，絕對值只當作「它沒有小到看不見」，
-     門檻也就留寬一點（0.25 → 0.15）：那個數字是取樣估計，不是常數。 */
-  ok('火球真的亮在畫面上', flash.on.pct > 0.15 && flash.on.pct > flash.off.pct * 3,
+     位置與遮擋都變了，再掉到 0.41%；v1.55 取景改成「建築底部置中」，帝國大廈的
+     視距從 110 退到 175，同一顆火球在畫面上只剩 0.14%。這裡真正要驗的是
+     「有火球才有過曝白」，所以看的是跟拿掉火球那幀的倍數關係（0.14% vs 0.01%，14 倍），
+     絕對值只當作「它沒有小到看不見」，門檻也就一路留寬（0.25 → 0.15 → 0.06）：
+     那個數字是取樣估計跟著取景走，不是常數。 */
+  ok('火球真的亮在畫面上', flash.on.pct > 0.06 && flash.on.pct > flash.off.pct * 3,
      '同一幀有火球 ' + flash.on.pct.toFixed(2) + '% 過曝、拿掉只剩 ' +
      flash.off.pct.toFixed(2) + '%');
   ok('火球固定吃五個 draw call（每層球殼一個）', flash.on.calls - flash.off.calls === 5,
@@ -4412,6 +4414,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        這裡量的是引擎那一段：同樣走 draw() → putBolts → 真的 WebGL。 */
     for (let i = 0; i < 200; i++) step(0.05);         // 十秒：煙散乾淨
     clearFires();
+    /* 量顏色之前先把鏡頭釘在這道電上（v1.55）。取景改成「建築底部置中」之後鏡頭退得更遠，
+       同一道電在畫面上只剩三百個像素，其中一半是抗鋸齒的混色邊——那樣量到的是
+       「鏡頭退多遠」而不是「電是不是藍的」。這一條要驗的是後者，所以視角自己定。 */
+    ENG.camTarget.tx = ENG.cam.tx = 10; ENG.camTarget.tz = ENG.cam.tz = 0;
+    ENG.camTarget.ty = ENG.cam.ty = 6.5; ENG.camTarget.dist = ENG.cam.dist = 46;
+    ENG.updateCamera(0);
     const shot = () => {
       draw(); ENG.render();
       const gl = ENG.three.renderer.getContext();
@@ -5733,8 +5741,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '／tx ' + keepView.now.tx.toFixed(1) + '／yaw ' + keepView.now.yaw.toFixed(2));
   ok('鏡頭不動，但草地範圍還是照新工地重算', keepView.arena1 > keepView.arena0 * 1.2,
      '場地半徑 ' + keepView.arena0 + ' → ' + keepView.arena1);
+  /* 視線高在桌機是 0（v1.55 起看的是建築底部中心），所以這裡只能驗距離與圓心，
+     不能再用 ty > 1 當「有取過景」的證據。 */
   ok('開場那一次還是會取景，鏡頭不會停在原點',
-     keepView.fit.d > 20 && keepView.fit.ty > 1 &&
+     keepView.fit.d > 20 && keepView.fit.ty === 0 &&
      keepView.fit.tx === 0 && keepView.fit.tz === 0 && keepView.moved,
      '開場取到 dist ' + keepView.fit.d.toFixed(1) + '、視線高 ' + keepView.fit.ty.toFixed(1) +
      '，玩家動過之後變成 dist ' + keepView.was.d.toFixed(1));
@@ -5790,6 +5800,73 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('建築在畫面裡的比例合理',
      Math.max(framing.fw, framing.fh) > 0.30 && Math.max(framing.fw, framing.fh) < 0.99,
      '占畫面 ' + (Math.max(framing.fw, framing.fh) * 100).toFixed(0) + '%');
+
+  /* 桌機開場的視線放在**建築底部中心**（工地原點），那一點要**剛好**落在畫面正中央
+     （v1.55）。挑高的、矮的、寬的各一座：底部置中之後建築整個站在上半部，
+     高的那幾座最容易被上緣切掉，所以同時驗「一塊都沒出界」。 */
+  const baseMid = await page.evaluate(() => {
+    const out = [];
+    const v = new THREE.Vector3();
+    for (const n of ['艾菲爾鐵塔', '台北 101', '大頭像', '吉薩金字塔', '金門大橋']) {
+      shapePick = SHAPES.findIndex(s => s.n === n);
+      targetCnt = 3000; startBuild(true);
+      for (let k = 0; k < bp.slots.length && k < blocks.length; k++) {
+        const s = bp.slots[k], b = blocks[k];
+        b.st = 3; b.x = s.x; b.y = s.y + HB; b.z = s.z;
+      }
+      for (let k = 0; k < 6; k++) ENG.updateCamera(1);
+      const cam = ENG.three.camera; cam.updateMatrixWorld();
+      const base = v.set(0, 0, 0).project(cam).clone();
+      let off = 0, top = -9;
+      for (const b of blocks) {
+        if (b.st !== 3) continue;
+        v.set(b.x, b.y, b.z).project(cam);
+        if (Math.abs(v.x) > 1 || Math.abs(v.y) > 1) off++;
+        if (v.y > top) top = v.y;
+      }
+      out.push({ n: bp.name, x: +base.x.toFixed(3), y: +base.y.toFixed(3), off,
+                 top: +top.toFixed(2), ty: +ENG.camTarget.ty.toFixed(2) });
+    }
+    shapePick = -1;
+    return out;
+  });
+  ok('桌機開場：建築底部中心就在畫面正中央',
+     baseMid.every(o => Math.abs(o.x) < 0.005 && Math.abs(o.y) < 0.005 && o.ty === 0),
+     baseMid.map(o => o.n + ' (' + o.x + ',' + o.y + ')').join('、'));
+  ok('底部置中之後上緣也沒切到建築',
+     baseMid.every(o => o.off === 0 && o.top < 0.95),
+     baseMid.map(o => o.n + ' 最高 ' + o.top + '／出界 ' + o.off).join('、'));
+
+  /* 視線落到地面之後，畫面下緣那兩個角會打得很外面——草地島不夠大就會看到島的邊
+     與底下那層土（艾菲爾鐵塔打到島半徑的 2.07 倍）。島要跟著補大。
+     測的是「下緣三條射線打到地面的落點還在島上」，不是抄公式。 */
+  const isleFit = await page.evaluate(() => {
+    let isle = null;
+    ENG.three.scene.traverse(o => {
+      if (!isle && o.material && o.material.color && o.material.color.getHex() === 0x5f8f3e) isle = o;
+    });
+    const out = [];
+    for (const n of ['艾菲爾鐵塔', '倫敦眼摩天輪', '台北 101', '金門大橋']) {
+      shapePick = SHAPES.findIndex(s => s.n === n);
+      targetCnt = 3000; startBuild(true);
+      for (let k = 0; k < 6; k++) ENG.updateCamera(1);
+      const cam = ENG.three.camera; cam.updateMatrixWorld();
+      const half = isle.scale.x / 2;
+      let worst = 0;
+      for (const nx of [-1, 0, 1]) {
+        const a = new THREE.Vector3(nx, -1, -1).unproject(cam);
+        const c = cam.position, d = a.clone().sub(c).normalize();
+        if (d.y >= -1e-6) continue;                     // 下緣朝天：打不到地面
+        const p = c.clone().addScaledVector(d, -c.y / d.y);
+        worst = Math.max(worst, Math.max(Math.abs(p.x), Math.abs(p.z)) / half);
+      }
+      out.push({ n: bp.name, half: Math.round(half), worst: +worst.toFixed(2) });
+    }
+    shapePick = -1;
+    return out;
+  });
+  ok('畫面下緣看不到草地島的邊', isleFit.every(o => o.worst <= 1),
+     isleFit.map(o => o.n + ' 島半徑 ' + o.half + '、下緣打到 ' + o.worst + ' 倍').join('、'));
 
   /* ══════════ 視窗縮放 ══════════ */
   head('視窗縮放');
@@ -5952,6 +6029,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const pWorst = portraitFit.reduce((a, r) => Math.max(a, r.worst), 0);
   ok('直式手機也框得住最寬的地標', pWorst < 1,
      portraitFit.map(r => r.n + ' ' + r.worst.toFixed(2)).join('、') + '（1 = 貼齊畫面邊）');
+
+  /* 手機版的取景**維持原樣**（v1.55 只改桌機）：視線還是放在建築腰間（0.44×高 + 1.5），
+     底部中心因此落在畫面中央的下方。畫面高瘦，再把建築整個推到上半部會小到看不清楚。 */
+  const mobFit = await page.evaluate(() => {
+    const out = [];
+    const v = new THREE.Vector3();
+    for (const n of ['艾菲爾鐵塔', '台北 101', '大頭像']) {
+      shapePick = SHAPES.findIndex(s => s.n === n);
+      targetCnt = 3000; startBuild(true);
+      for (let k = 0; k < 6; k++) ENG.updateCamera(1);
+      const cam = ENG.three.camera; cam.updateMatrixWorld();
+      out.push({ n: bp.name, ty: +ENG.camTarget.ty.toFixed(1),
+                 want: +(bp.height * 0.44 + 1.5).toFixed(1),
+                 y: +v.set(0, 0, 0).project(cam).y.toFixed(2) });
+    }
+    shapePick = -1;
+    return out;
+  });
+  ok('手機版的視線還是看腰間，底部中心在中央下方',
+     mobFit.every(o => Math.abs(o.ty - o.want) < 0.05 && o.y < -0.1),
+     mobFit.map(o => o.n + ' 視線高 ' + o.ty + '、底部中心 NDC y=' + o.y).join('、'));
 
   /* 霧是給遠方地平線的，不能連建築本身一起吃掉。相機退得遠時霧沒跟著往後推的話，
      整座建築會白掉——直式手機的金門大橋要退到 460，而霧原本只到 316，吃霧 100%。
