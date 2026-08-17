@@ -47,8 +47,15 @@
   #rep{flex:0 0 auto;height:132px;width:100%;resize:vertical;
     font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre;
     border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:#fff}
-  #pasteBox{border:1px solid var(--line);border-radius:10px;padding:7px 9px;background:#fff}
-  #pasteBox summary{cursor:pointer;font-size:12.5px;font-weight:700}
+  #pasteBox,#listBox{border:1px solid var(--line);border-radius:10px;padding:7px 9px;background:#fff}
+  #pasteBox summary,#listBox summary{cursor:pointer;font-size:12.5px;font-weight:700}
+  #listBox .btns{margin-top:7px}
+  /* 檔案清單：勾一勾就產出新的 list.js。跟報告框一樣只給「看得到幾行」的高度 */
+  #files{max-height:120px;overflow:auto;border:1px solid var(--line);border-radius:8px;
+    margin:7px 0;padding:4px 7px;font-size:12px}
+  #files label{display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer}
+  #files label span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #files em{flex:0 0 auto;font-style:normal;font-size:11px;opacity:.55}
   /* AI 給的藍圖動輒上百行，92px 一次只看得到五六行，貼錯了也看不出來 */
   #paste{width:100%;height:230px;margin:7px 0;resize:vertical;
     font:11.5px/1.45 ui-monospace,Consolas,monospace;
@@ -101,7 +108,21 @@
     <!-- 貼進來的藍圖存成檔案。內建與 blueprints/ 裡的本來就有檔案，所以那些選起來時是灰的 -->
     <button id="save" disabled title="貼上來的藍圖才存得出檔案">下載 .js</button>
   </div>
-  <div class="hint">拖曳轉視角　·　滾輪縮放　·　貼上的藍圖只活在這一頁（滿意了就按「下載 .js」存進 <code>blueprints/</code>，再把檔名加進 <code>list.js</code>）</div>
+  <!-- 產生 list.js：存了 .js 進 blueprints/ 之後還得自己把檔名加進 list.js，忘了加等於沒放。
+       這一格把那件事收成「掃一下資料夾 → 勾一勾 → 下載」。 -->
+  <details id="listBox">
+    <summary>產生 list.js（藍圖檔案清單）</summary>
+    <div class="btns">
+      <button id="scan">選 blueprints 資料夾</button>
+      <button id="allOn">全不選</button>
+    </div>
+    <div id="files"></div>
+    <div class="btns"><button class="primary" id="dlList">下載 list.js</button></div>
+    <div class="hint" id="listMsg"></div>
+    <!-- webkitdirectory 是瀏覽器唯一肯交出「資料夾裡有哪些檔案」的路，選了不會上傳任何東西 -->
+    <input type="file" id="dir" webkitdirectory multiple hidden>
+  </details>
+  <div class="hint">拖曳轉視角　·　滾輪縮放　·　貼上的藍圖只活在這一頁（滿意了就按「下載 .js」存進 <code>blueprints/</code>，再用上面的「產生 list.js」把檔名補進清單）</div>
 </div>
 
 <div id="err"></div>
@@ -119,7 +140,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.55.0';
+const VIEWER_VER = '1.56.0';
 
 const $ = id => document.getElementById(id);
 
@@ -342,6 +363,7 @@ $('load').addEventListener('click', () => {
     build();
     diagnose();
     syncSave();
+    renderList();                     // 貼進來的檔名也要進 list.js 的候選清單
     msg.className = 'on good';
     msg.textContent = '✔ 已載入「' + added.map(a => a.name).join('、') + '」' +
       (added.length > 1 ? '（' + added.length + ' 份，選的是最後一份）' : '') + '，下面是它的診斷。';
@@ -404,6 +426,124 @@ function saveJs() {
   setTimeout(() => { $('save').textContent = '下載 .js'; }, 1600);
 }
 $('save').addEventListener('click', saveJs);
+
+/* ── 產生 list.js ─────────────────────────────────────────
+   存了 .js 進 blueprints/ 之後還得自己把檔名加進 list.js，忘了加就等於沒放進來
+   （檔案在那裡、遊戲卻看不到，而且不會有任何錯誤訊息）。這一段把那件事收成
+   「掃一下資料夾 → 勾一勾 → 下載」。
+
+   為什麼要按一次「選資料夾」而不是自己去讀：file:// 讀不到資料夾內容——
+   fetch 會被 CORS 擋掉，一支一支去試載入又會在 console 留一堆 404，
+   list.js 這份清單本來就是為了這件事才存在的。<input webkitdirectory> 是瀏覽器
+   唯一肯交出檔名清單的路，選了不會上傳任何東西，只是在這一頁讀到檔名而已。
+
+   抬頭那段註解跟 blueprints/list.js 現在那份逐字相同：產出來的檔案要能直接覆蓋回去，
+   而不是每產一次就把說明洗掉一次（e2e 有一條測試守著兩邊一致）。 */
+const LIST_HEAD = `/* 自訂藍圖的檔案清單。
+   新增一份藍圖 = 在 blueprints/ 放一支 .js，然後把檔名加進這個陣列
+   （藍圖預覽.html 的「產生 list.js」會掃資料夾直接產一份新的，不必自己編輯）。
+
+   為什麼要這份清單：整個遊戲是用 file:// 直接開的（不架伺服器），
+   而 file:// 沒有辦法列出資料夾內容——fetch 會被 CORS 擋掉，
+   一支一支去試載入又會在 console 留下一堆 404。所以檔名得自己列。
+
+   順序＝這些自訂藍圖之間的先後（它們一起排在選單最前面，內建 48 座在後）。 */
+`;
+
+/* 掃過資料夾之後就以資料夾為準（掃到什麼就是什麼，舊清單列了但檔案不在的不再出現——
+   那種檔名留著只會產出一份載入時 404 的 list.js）。還沒掃之前列的是
+   「現在載進來的 list.js」＋「這一頁貼進來的」。 */
+let scanned = null;
+const listOn = new Map();          // 檔名 → 勾了沒。重畫時記得住使用者的取捨
+
+function listCand() {
+  if (scanned) return scanned.slice();
+  const out = (window.BP_FILES || []).slice();
+  for (const s of pastedSrc.values()) if (out.indexOf(s.file) < 0) out.push(s.file);
+  return out;
+}
+/* 檔名是從檔案系統與貼上的文字撈來的，不是我們給的，所以進 HTML 前要跳脫 */
+function esc(t) {
+  return String(t).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+function tagOf(f) {
+  const inList = (window.BP_FILES || []).indexOf(f) >= 0;
+  if (inList) return '';
+  return scanned ? '新的' : '這一頁貼上的';
+}
+function renderList() {
+  const files = listCand();
+  for (const f of files) if (!listOn.has(f)) listOn.set(f, true);      // 預設全選
+  $('files').innerHTML = files.length
+    ? files.map(f => '<label><input type="checkbox" data-f="' + esc(f) + '"' +
+        (listOn.get(f) ? ' checked' : '') + '><span>' + esc(f) + '</span><em>' +
+        tagOf(f) + '</em></label>').join('')
+    : '<div class="hint">一支自訂藍圖都沒有。放 .js 進 blueprints/ 之後再掃一次。</div>';
+  const on = files.filter(f => listOn.get(f)).length;
+  $('allOn').textContent = on === files.length && files.length ? '全不選' : '全選';
+  $('dlList').disabled = !files.length;
+  $('listMsg').textContent =
+    (scanned ? '掃到 ' + scanned.length + ' 支藍圖 .js（list.js 本身不算）'
+             : '還沒掃資料夾，先列現在的 list.js ＋ 這一頁貼上的') +
+    '，勾了 ' + on + ' 支。下載後直接覆蓋 blueprints/list.js。';
+}
+$('files').addEventListener('change', e => {
+  if (!e.target.dataset.f) return;
+  listOn.set(e.target.dataset.f, e.target.checked);
+  renderList();
+});
+$('allOn').addEventListener('click', () => {
+  const files = listCand(), to = $('allOn').textContent === '全選';
+  for (const f of files) listOn.set(f, to);
+  renderList();
+});
+
+/* 資料夾裡的檔案 → 清單。抽成一支純函式：e2e 才驗得到「選錯成整包根目錄」那條路
+   （那要有真的 webkitRelativePath，用 setInputFiles 餵不出來）。 */
+function bpFilesFrom(rel) {
+  /* 使用者可能選到整包的根目錄而不是 blueprints/。看得到 blueprints/ 這一層
+     就只收它底下的，否則收全部——不然會把 src/game.js 那些也列進來。 */
+  const inBp = rel.filter(p => p.indexOf('blueprints/') === 0);
+  const list = (inBp.length ? inBp.map(p => p.slice('blueprints/'.length)) : rel)
+    .filter(p => /\.js$/i.test(p) && p !== 'list.js');
+  /* 舊清單的順序有意義（＝這幾座在選單裡的先後），所以本來就在的照舊排前面 */
+  const was = (window.BP_FILES || []).filter(f => list.indexOf(f) >= 0);
+  return was.concat(list.filter(f => was.indexOf(f) < 0)
+                        .sort((a, b) => a.localeCompare(b, 'zh-Hant')));
+}
+$('scan').addEventListener('click', () => $('dir').click());
+$('dir').addEventListener('change', e => {
+  scanned = bpFilesFrom([...e.target.files].map(f => {
+    /* webkitRelativePath 的第一段是使用者選的那個資料夾自己的名字，剝掉。
+       拿不到相對路徑時（有些瀏覽器只給得出檔名）就用檔名。 */
+    const p = f.webkitRelativePath || '';
+    return p ? p.split('/').slice(1).join('/') : f.name;
+  }));
+  e.target.value = '';               // 同一個資料夾再選一次也要能觸發 change
+  renderList();
+});
+
+function listText() {
+  const files = listCand().filter(f => listOn.get(f));
+  return LIST_HEAD + 'var BP_FILES = [' +
+    (files.length ? '\n' + files.map(f =>
+      "  '" + f.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'").join(',\n') + '\n' : '') +
+    '];\n';
+}
+$('dlList').addEventListener('click', () => {
+  const href = URL.createObjectURL(new Blob([listText()], { type: 'text/javascript;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = 'list.js';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
+  $('dlList').textContent = '已下載 ✓';
+  setTimeout(() => { $('dlList').textContent = '下載 list.js'; }, 1600);
+});
+
 /* 「只看輪廓」＝把草地那三層藏起來。引擎沒有給那幾顆網格取名字，
    但上面已經把其他東西全餵空的了，所以「現在還看得見、又不是積木的網格」
    就是草皮／切邊／土層這三顆。開場記下來，之後只切它們。 */
@@ -438,6 +578,7 @@ function frame(now) {
 
 build();
 syncSave();
+renderList();
 requestAnimationFrame(frame);
 </script>
 </body>

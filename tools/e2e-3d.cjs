@@ -554,7 +554,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
     // ringOf：n 個都在半徑 r 上
     const ring = [];
-    ringOf(null, 8, 10, (vv, x, z) => ring.push(+Math.hypot(x, z).toFixed(2)));
+    /* 第一個參數餵真的 VOX（v1.56 起「忘了傳 v」會被擋下來）；這幾支只是把它轉交給
+       callback，這裡的 callback 沒用到，但 API 的約定就是要傳 v。 */
+    ringOf(new VOX(), 8, 10, (vv, x, z) => ring.push(+Math.hypot(x, z).toFixed(2)));
     const ringOk = ring.length === 8 && ring.every(v => Math.abs(v - 10) < 0.01);
 
     // hipRoof：每層寬與深一起縮 2（gable 只縮寬）
@@ -568,8 +570,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const hip = [layer(0), layer(1), layer(2)];
 
     // mirrorX / mirrorZ：兩份，位置相反
-    const mx = []; mirrorX(null, 7, (vv, dx) => mx.push(dx));
-    const mz = []; mirrorZ(null, 4, (vv, dz) => mz.push(dz));
+    const mx = []; mirrorX(new VOX(), 7, (vv, dx) => mx.push(dx));
+    const mz = []; mirrorZ(new VOX(), 4, (vv, dz) => mz.push(dz));
 
     // lattice：兩根柱子之間拉出交叉，中間段一定有格子
     const vf = new VOX();
@@ -637,15 +639,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       v.set(0, 0, 0, 0);
       v.box(0, 1, 0, dim(s, 2, 5), dim(s, 2, 5), dim(s, 2, 5), 0);
     } });
+    /* ⑤ 少給參數：v.box 忘了最後那個顏色。這是 AI 最常手滑的地方，
+       而且以前是**靜默**的——格子的 c 是 undefined，畫出來是黑的、報告也算不出配色。 */
+    mk('__壞 少參數', { pal: ['#fff'], lo: 2, hi: 9, gen(v, s) {
+      const w = dim(s, 2, 5);
+      v.box(0, 0, 0, w, w, w);
+    } });
+    /* ⑥ 參數算成 NaN：blob 少一個半徑。以前 Math.ceil(NaN) 讓迴圈一次都不跑，
+       那顆球就這樣整組消失，報告只看得到「塊數少了一截」。 */
+    mk('__壞 NaN', { pal: ['#fff'], lo: 2, hi: 9, gen(v, s) {
+      blob(v, 0, 0, 0, dim(s, 1, 3), undefined, dim(s, 1, 3), 0);
+    } });
     const r = {
       good: { fails: good.fails.length, warns: good.warns.length, text: good.text },
       boom: checkBlueprint('__壞 例外', { ver: VERSION }),
+      args: checkBlueprint('__壞 少參數', { ver: VERSION }),
+      nan: checkBlueprint('__壞 NaN', { ver: VERSION }),
       pal: checkBlueprint('__壞 配色', { ver: VERSION }),
       gone: checkBlueprint('__壞 消失', { ver: VERSION }),
       pin: checkBlueprint('__壞 針尖', { ver: VERSION }),
       missing: checkBlueprint('根本沒有這座', { ver: VERSION })
     };
-    for (const k of ['boom', 'pal', 'gone', 'pin', 'missing'])
+    for (const k of ['boom', 'args', 'nan', 'pal', 'gone', 'pin', 'missing'])
       r[k] = { fails: r[k].fails, warns: r[k].warns, text: r[k].text };
     r.targets = BP_TARGETS.slice();
     SHAPES.length = n0;                 // 測完收掉，別影響後面掃全部 SHAPES 的測試
@@ -664,6 +679,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('gen 丟例外會被抓到，錯誤訊息原封不動寫進報告',
      diag.boom.fails.length > 0 && diag.boom.text.indexOf('測試用的爆炸') > 0,
      diag.boom.fails.join('；'));
+  /* v1.56：少給參數以前是靜默的（NaN 進迴圈整個部件不見、顏色沒給就畫成黑的），
+     報告只看得到「塊數少了一截」。現在畫圖函式進來就擋，訊息要指名是哪一支的第幾個參數。 */
+  ok('少給參數會被抓到，而且指名是哪一支函式的第幾個參數',
+     diag.args.fails.length > 0 &&
+     /參數錯誤：v\.box\(x0, y0, z0, w, h, d, c\) 的第 7 個參數 c 沒給/.test(diag.args.text),
+     diag.args.text.split('\n').find(l => l.indexOf('參數錯誤') > 0) || '(報告裡沒有參數錯誤)');
+  ok('參數算成 NaN／undefined 也擋得下來，不會整個部件靜靜消失',
+     diag.nan.fails.length > 0 &&
+     diag.nan.text.indexOf('blob(v, x0, y0, z0, rx, ry, rz, c, shell) 的第 6 個參數 ry 沒給') > 0,
+     diag.nan.text.split('\n').find(l => l.indexOf('參數錯誤') > 0) || '(報告裡沒有參數錯誤)');
+  ok('參數錯誤的修法直接指到說明文件的參數表',
+     diag.args.text.indexOf('3.1／3.2 的參數表') > 0 &&
+     diag.boom.text.indexOf('3.1／3.2 的參數表') < 0,
+     '參數錯誤給參數表、其他例外仍給原本那句通用修法');
   ok('pal 不夠會被抓到', diag.pal.fails.some(f => f.indexOf('pal 不夠') === 0) &&
      diag.pal.text.indexOf('修法：pal 至少要 4 色') > 0,
      diag.pal.fails.join('；'));
@@ -677,8 +706,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      diag.missing.fails.length === 1 && diag.missing.text.indexOf('list.js') > 0,
      diag.missing.text.split('\n')[1]);
   ok('每一份有問題的報告都寫得出修法',
-     [diag.boom, diag.pal, diag.gone, diag.pin, diag.missing].every(r => /修法/.test(r.text)),
-     '五種壞法（例外／配色／消失／針尖／找不到）都附了修法');
+     [diag.boom, diag.args, diag.nan, diag.pal, diag.gone, diag.pin, diag.missing]
+       .every(r => /修法/.test(r.text)),
+     '七種壞法（例外／少參數／NaN／配色／消失／針尖／找不到）都附了修法');
 
   /* 遊戲裡**不該**有檢查藍圖的入口：做藍圖是做藍圖、玩是玩。
      入口在 藍圖預覽.html（下一段測），設定面板不留這一格。 */
@@ -764,6 +794,46 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('預覽頁的自轉預設是關著的', vpBoot.spin === false,
      '開場 spin=' + vpBoot.spin);
 
+  /* list.js 產生器（v1.56）：.js 存進 blueprints/ 之後還得自己把檔名加進 list.js，
+     忘了加就等於沒放——檔案在那裡、遊戲卻看不到，而且不會有任何錯誤訊息。
+     這幾條驗開場的預設狀態，以及「產出來的檔案能不能直接覆蓋回去」。 */
+  const vpList0 = await vp.evaluate(() => {
+    const box = [...document.querySelectorAll('#files input')];
+    return { files: box.map(i => i.dataset.f), on: box.filter(i => i.checked).length,
+             open: document.getElementById('listBox').open,
+             toggle: document.getElementById('allOn').textContent,
+             msg: document.getElementById('listMsg').textContent };
+  });
+  ok('list.js 產生器列出 blueprints/ 現在有的藍圖，預設全勾',
+     vpList0.files.join(',') === '範例-小教堂.js' && vpList0.on === vpList0.files.length &&
+     vpList0.toggle === '全不選' && vpList0.open === false,
+     vpList0.on + '／' + vpList0.files.length + ' 勾起來（' + vpList0.files.join('、') +
+     '），預設收合，' + vpList0.msg);
+  await vp.evaluate(() => { document.getElementById('listBox').open = true; });
+  const [listDl] = await Promise.all([vp.waitForEvent('download'), vp.click('#dlList')]);
+  const listPath = path.join(OUT, 'viewer-list.js');
+  await listDl.saveAs(listPath);
+  /* 產出來的要能直接覆蓋回 blueprints/list.js，所以連抬頭那段註解都要一樣——
+     不然每產一次就把「為什麼要這份清單」那段說明洗掉一次。
+     （工作區的換行是 CRLF、產出來的是 LF，比的是內容不是換行。） */
+  const nl = t => t.replace(/\r\n/g, '\n');
+  const listMade = nl(fs.readFileSync(listPath, 'utf8'));
+  const listReal = nl(fs.readFileSync(path.join(ROOT, 'blueprints/list.js'), 'utf8'));
+  ok('產出來的 list.js 跟現在那份逐字相同（可以直接覆蓋回去）',
+     listDl.suggestedFilename() === 'list.js' && listMade === listReal,
+     '檔名「' + listDl.suggestedFilename() + '」，' + listMade.split('\n').length + ' 行' +
+     (listMade === listReal ? '' : '（跟 blueprints/list.js 不一樣）'));
+  ok('產出來的 list.js 是合法的 JS，載進去拿得到 BP_FILES',
+     (() => {
+       try {
+         const got = new Function(listMade + ';return typeof BP_FILES !== "undefined" ? BP_FILES : null;')();
+         return Array.isArray(got) && got.join(',') === '範例-小教堂.js';
+       } catch (e) { return false; }
+     })(),
+     'BP_FILES 解析得出來');
+  // 收回預設狀態：它預設是收合的，下面量版面那條要在預設狀態下量
+  await vp.evaluate(() => { document.getElementById('listBox').open = false; });
+
   const vpBig = await vp.evaluate(() => {
     const sel = document.getElementById('shape');
     sel.value = String(SHAPES.findIndex(s => s.n === '吉薩金字塔'));
@@ -817,21 +887,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      報告是拿來複製的不是拿來讀完的，所以它比貼上框矮。 */
   const vpBox = await vp.evaluate(() => {
     const h = id => Math.round(document.getElementById(id).getBoundingClientRect().height);
+    const side = document.getElementById('side');
     const box = document.getElementById('pasteBox');
     box.open = true;
-    const open = h('side');
+    /* 量 scrollHeight 而不是外框高度：卡片有 max-height，展開時早就頂到上限了，
+       拿外框相減量到的是「被夾掉多少」而不是「內容差多少」（面板一多一格就會誤判）。 */
+    const open = side.scrollHeight;
     box.open = false;
-    const shut = h('side');
+    const shut = side.scrollHeight;
+    const fits = Math.round(side.getBoundingClientRect().height);
     box.open = true;
-    return { paste: h('paste'), rep: h('rep'), open, shut, view: window.innerHeight };
+    return { paste: h('paste'), rep: h('rep'), open, shut, fits, view: window.innerHeight };
   });
-  /* 卡片高度跟著內容走：貼上區收起來就該跟著變矮。以前是 top/bottom 都釘住，
-     報告縮小之後下面會留一塊空白。 */
+  /* 卡片高度跟著內容走：貼上區收起來就該跟著變矮，而且外框要剛好等於內容
+     （以前是 top/bottom 都釘住，報告縮小之後下面會留一塊空白）。 */
   ok('貼上框比報告框大，卡片高度跟著內容走',
      vpBox.paste > vpBox.rep * 1.4 && vpBox.paste > 180 &&
-     vpBox.shut < vpBox.open - 150 && vpBox.shut < vpBox.view - 150,
-     '貼上框 ' + vpBox.paste + 'px、報告 ' + vpBox.rep + 'px；卡片展開 ' + vpBox.open +
-     'px、收起 ' + vpBox.shut + 'px（畫面高 ' + vpBox.view + '）');
+     vpBox.shut < vpBox.open - 200 && Math.abs(vpBox.fits - vpBox.shut) <= 1 &&
+     vpBox.shut < vpBox.view - 150,
+     '貼上框 ' + vpBox.paste + 'px、報告 ' + vpBox.rep + 'px；內容展開 ' + vpBox.open +
+     'px、收起 ' + vpBox.shut + 'px（外框 ' + vpBox.fits + '，畫面高 ' + vpBox.view + '）');
 
   /* 下載畫面：報告講不出「像不像」，那要看圖。這條要驗到真的有一個 PNG 掉下來——
      canvas 的 drawingBuffer 合成後就被清空，沒有「render 完馬上取」的話會存到全黑或全空。 */
@@ -931,6 +1006,55 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('存出來的檔案再貼回來照樣跑得動（可以直接放進 blueprints/）',
      !pRound.bad && pRound.name === '貼上來的小屋' && pRound.drawn > 100,
      pRound.msg + '（畫了 ' + pRound.drawn + ' 塊）');
+
+  /* 貼進來的檔名也要進候選清單：節奏是「貼上 → 下載 .js → 放進資料夾 → 補 list.js」，
+     最後那一步緊接在後面，不該還要自己回頭打一次檔名。 */
+  const vpList1 = await vp.evaluate(() => {
+    const box = [...document.querySelectorAll('#files input')];
+    return { files: box.map(i => i.dataset.f), on: box.filter(i => i.checked).length,
+             tags: [...document.querySelectorAll('#files em')].map(e => e.textContent) };
+  });
+  ok('這一頁貼上的藍圖檔名也會出現在清單裡，並標明來源',
+     vpList1.files.indexOf('我的小屋.js') > 0 && vpList1.on === vpList1.files.length &&
+     vpList1.tags.filter(t => t === '這一頁貼上的').length === vpList1.files.length - 1,
+     vpList1.files.join('、'));
+  const vpList2 = await vp.evaluate(() => {
+    const t = [...document.querySelectorAll('#files input')].find(i => i.dataset.f === '會爆的.js');
+    t.checked = false;
+    t.dispatchEvent(new Event('change', { bubbles: true }));
+    return { text: listText(), toggle: document.getElementById('allOn').textContent };
+  });
+  ok('取消勾選的檔名就不會寫進 list.js',
+     vpList2.text.indexOf("'會爆的.js'") < 0 && vpList2.text.indexOf("'我的小屋.js'") > 0 &&
+     vpList2.text.indexOf("'範例-小教堂.js'") > 0 && vpList2.toggle === '全選',
+     '產出來的清單是 ' + (vpList2.text.match(/'[^']+'/g) || []).join('、'));
+
+  /* 掃資料夾：file:// 沒辦法自己列資料夾（fetch 被 CORS 擋），
+     <input webkitdirectory> 是瀏覽器唯一肯交出檔名清單的路。掃完就以資料夾為準。 */
+  // 餵真的資料夾（webkitdirectory 的 input 只收得下目錄），檔案的 webkitRelativePath 才是真的
+  await vp.setInputFiles('#dir', path.join(ROOT, 'blueprints'));
+  const vpScan = await vp.evaluate(() => {
+    const box = [...document.querySelectorAll('#files input')];
+    return { files: box.map(i => i.dataset.f), on: box.filter(i => i.checked).length,
+             msg: document.getElementById('listMsg').textContent };
+  });
+  ok('掃過資料夾之後，清單就等於資料夾裡真的有的藍圖（list.js 與非 .js 都不算）',
+     vpScan.files.join(',') === '範例-小教堂.js' && vpScan.on === 1 &&
+     vpScan.msg.indexOf('掃到 1 支') === 0,
+     vpScan.msg);
+  const vpPaths = await vp.evaluate(() => ({
+    inner: bpFilesFrom(['my-tower.js', 'list.js', '藍圖製作說明.md', 'sub/hut.js']),
+    root: bpFilesFrom(['index.html', 'src/game.js', 'blueprints/list.js',
+                       'blueprints/my-tower.js', 'blueprints/範例-小教堂.js']),
+    order: bpFilesFrom(['ZZ.js', '範例-小教堂.js', 'AA.js'])
+  }));
+  ok('選錯成整包的根目錄也接得住（只收 blueprints/ 底下那些）',
+     vpPaths.inner.join(',') === 'my-tower.js,sub/hut.js' &&
+     vpPaths.root.join(',') === '範例-小教堂.js,my-tower.js',
+     '選資料夾本身 → ' + vpPaths.inner.join('、') + '；選根目錄 → ' + vpPaths.root.join('、'));
+  ok('本來就在 list.js 裡的排前面，新掃到的接在後面',
+     vpPaths.order.join(',') === '範例-小教堂.js,AA.js,ZZ.js',
+     vpPaths.order.join(' → '));
 
   ok('預覽頁整段跑完沒有 console 錯誤', vpErr.length === 0, vpErr.join(' / ') || '乾淨');
   await vp.close();

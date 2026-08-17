@@ -7,12 +7,61 @@
    ============================================================ */
 'use strict';
 
+/* ── 參數檢查 ──────────────────────────────────────────────
+   AI 產的藍圖最常見的死法是「呼叫畫圖函式時少給一個參數」，而它幾乎都是**靜默**的：
+   少一個尺寸 → NaN 進迴圈 → Math.ceil(NaN) 讓迴圈一次都不跑 → 那個部件整組不見；
+   少最後那個顏色 → 格子的 c 是 undefined → 配色算不出來、畫出來是黑的。
+   兩種都不丟例外，體檢報告只看得到「塊數少了一截」，看不出原因，AI 也就修不到點上。
+   所以每支畫圖函式進來先驗一次參數，把它變成一句講得清楚的例外——報告會把訊息
+   原封不動印出來（checkBlueprint 的「gen() 出錯」那行），那是 AI 唯一的線索。
+
+   kinds 一個字元對一個參數：v=VOX、n=數字、c=顏色索引、f=函式、s=字串、o=物件。
+   只寫到「最後一個必要參數」為止，後面的可選參數不驗（arch 的 c、blob 的 shell 這種
+   本來就可以不給）。訊息一律以「參數錯誤：」開頭，報告靠它挑出對應的修法。 */
+const BP_KIND = {
+  v: [o => !!o && typeof o.set === 'function' && typeof o.has === 'function', '一個 VOX（第一個參數要傳 v）'],
+  n: [o => typeof o === 'number' && Number.isFinite(o), '數字'],
+  c: [o => typeof o === 'number' && Number.isFinite(o) && o >= 0, '顏色索引（pal 的第幾個，從 0 算）'],
+  f: [o => typeof o === 'function', '函式'],
+  s: [o => typeof o === 'string' && !!o, '字串'],
+  o: [o => !!o && typeof o === 'object', '物件（具名參數）']
+};
+function bpShow(v) {
+  if (typeof v === 'string') return "'" + v + "'";
+  if (Array.isArray(v)) return '一個陣列';
+  if (v !== null && typeof v === 'object') return '一個物件';
+  return String(v);                       // undefined／null／NaN／true 都直接寫出來
+}
+function bpArgs(sig, kinds, vals) {
+  for (let i = 0; i < kinds.length; i++) {
+    const k = BP_KIND[kinds[i]];
+    if (k[0](vals[i])) continue;
+    const names = sig.slice(sig.indexOf('(') + 1, -1).split(',');
+    throw new Error('參數錯誤：' + sig + ' 的第 ' + (i + 1) + ' 個參數 ' + names[i].trim() +
+                    (vals[i] === undefined ? ' 沒給' : ' 收到 ' + bpShow(vals[i])) +
+                    '，要的是' + k[1]);
+  }
+}
+/* 吃具名物件的那兩支（windowGrid／lattice）：少一個鍵跟少一個位置參數一樣靜默。 */
+function bpKeys(sig, o, keys) {
+  for (const k of keys.split(' ')) {
+    const v = o[k];
+    if (typeof v === 'number' && Number.isFinite(v)) continue;
+    throw new Error('參數錯誤：' + sig + ' 的 ' + k +
+                    (v === undefined ? ' 沒給' : ' 收到 ' + bpShow(v)) + '，要的是數字');
+  }
+}
+
 /* ── voxel 收集器 ──────────────────────────────────────────
    用 Map 去重，後寫的蓋掉先寫的——很多造型是「先填實心再挖洞」。 */
 function VOX() { this.m = new Map(); }
 VOX.prototype = {
   constructor: VOX,
   set(x, y, z, c) {
+    /* 每一格都會走這裡，所以直接比、不配陣列（bpArgs 那條路只有真的出事時才走）。
+       上游哪一支算出 NaN、或忘了給顏色，最後都會流到這裡——擋在這裡等於一次守住全部。 */
+    if (!(typeof c === 'number' && c >= 0) || !Number.isFinite(x + y + z))
+      bpArgs('v.set(x, y, z, c)', 'nnnc', [x, y, z, c]);
     x = Math.round(x); y = Math.round(y); z = Math.round(z);
     if (y < 0) return;
     this.m.set(x + ':' + y + ':' + z, c);
@@ -22,6 +71,7 @@ VOX.prototype = {
 
   /* 實心長方體。x0/z0 是中心，y0 是底面所在層 */
   box(x0, y0, z0, w, h, d, c) {
+    bpArgs('v.box(x0, y0, z0, w, h, d, c)', 'nnnnnnc', [x0, y0, z0, w, h, d, c]);
     w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h)); d = Math.max(1, Math.round(d));
     const hx = (w - 1) / 2, hz = (d - 1) / 2;
     for (let y = 0; y < h; y++) for (let i = 0; i < w; i++) for (let k = 0; k < d; k++)
@@ -29,6 +79,7 @@ VOX.prototype = {
   },
   /* 只留四面牆，t 是牆厚 */
   walls(x0, y0, z0, w, h, d, c, t) {
+    bpArgs('v.walls(x0, y0, z0, w, h, d, c, t)', 'nnnnnnc', [x0, y0, z0, w, h, d, c]);
     t = t || 1;
     w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h)); d = Math.max(1, Math.round(d));
     const hx = (w - 1) / 2, hz = (d - 1) / 2;
@@ -39,12 +90,14 @@ VOX.prototype = {
   },
   /* 挖空一塊長方體 */
   carve(x0, y0, z0, w, h, d) {
+    bpArgs('v.carve(x0, y0, z0, w, h, d)', 'nnnnnn', [x0, y0, z0, w, h, d]);
     const hx = (w - 1) / 2, hz = (d - 1) / 2;
     for (let y = 0; y < h; y++) for (let i = 0; i < w; i++) for (let k = 0; k < d; k++)
       this.del(x0 - hx + i, y0 + y, z0 - hz + k);
   },
   /* 圓柱（voxel 近似）。hollow 給牆厚就只留外環 */
   cyl(x0, y0, z0, r, h, c, hollow) {
+    bpArgs('v.cyl(x0, y0, z0, r, h, c, hollow)', 'nnnnnc', [x0, y0, z0, r, h, c]);
     const R = Math.max(0.5, r), ri = hollow ? R - hollow : -1;
     const n = Math.ceil(R);
     for (let y = 0; y < h; y++) for (let i = -n; i <= n; i++) for (let k = -n; k <= n; k++) {
@@ -55,6 +108,10 @@ VOX.prototype = {
   },
   /* 橢圓環（競技場、摩天輪底座用） */
   ellipseRing(x0, y0, z0, rx, rz, h, c, thick) {
+    /* thick 沒給的話 rx - thick 是 NaN，內圈判定整個失效——畫出來會是一坨實心橢圓
+       而不是環。這種「有畫東西、但畫錯」比不畫還難查，所以它是必要參數。 */
+    bpArgs('v.ellipseRing(x0, y0, z0, rx, rz, h, c, thick)', 'nnnnnncn',
+           [x0, y0, z0, rx, rz, h, c, thick]);
     const nx = Math.ceil(rx), nz = Math.ceil(rz);
     for (let y = 0; y < h; y++) for (let i = -nx; i <= nx; i++) for (let k = -nz; k <= nz; k++) {
       const o = Math.hypot(i / rx, k / rz);
@@ -65,6 +122,7 @@ VOX.prototype = {
   },
   /* 收斂柱體：底半徑 r0 收到頂半徑 r1。shell 給牆厚就中空 */
   taper(x0, y0, z0, r0, r1, h, c, shell) {
+    bpArgs('v.taper(x0, y0, z0, r0, r1, h, c, shell)', 'nnnnnnc', [x0, y0, z0, r0, r1, h, c]);
     for (let y = 0; y < h; y++) {
       const r = r0 + (r1 - r0) * (h <= 1 ? 0 : y / (h - 1));
       const n = Math.ceil(r);
@@ -78,12 +136,14 @@ VOX.prototype = {
   },
   /* 方錐（階梯金字塔）。step 是每層縮幾格 */
   pyramid(x0, y0, z0, b, c, step) {
+    bpArgs('v.pyramid(x0, y0, z0, b, c, step)', 'nnnnc', [x0, y0, z0, b, c]);
     step = step || 1;
     let w = b, y = 0;
     while (w >= 1) { this.box(x0, y0 + y, z0, w, 1, w, c); w -= step * 2; y++; }
   },
   /* 圓頂（只做殼，實心太吃積木） */
   dome(x0, y0, z0, r, c, squash) {
+    bpArgs('v.dome(x0, y0, z0, r, c, squash)', 'nnnnc', [x0, y0, z0, r, c]);
     squash = squash || 1;
     const n = Math.ceil(r);
     for (let y = 0; y <= Math.ceil(r * squash); y++) for (let i = -n; i <= n; i++) for (let k = -n; k <= n; k++) {
@@ -94,6 +154,7 @@ VOX.prototype = {
   },
   /* 洋蔥頂（聖巴索、天壇用）：先鼓出來再收尖 */
   onion(x0, y0, z0, r, h, c) {
+    bpArgs('v.onion(x0, y0, z0, r, h, c)', 'nnnnnc', [x0, y0, z0, r, h, c]);
     for (let y = 0; y < h; y++) {
       const t = y / (h - 1);
       const rr = r * Math.sin(Math.PI * (0.18 + t * 0.78)) * (1 - t * 0.15);
@@ -108,12 +169,14 @@ VOX.prototype = {
   /* 屋簷（東方建築的關鍵造型）：一圈比下面寬的簷邊。
      只畫外圈不填滿——中間會被上一層塔身蓋住，填實心純粹浪費幾百塊積木。 */
   eave(x0, y0, z0, w, d, c, layers) {
+    bpArgs('v.eave(x0, y0, z0, w, d, c, layers)', 'nnnnnc', [x0, y0, z0, w, d, c]);
     layers = layers || 2;
     for (let l = 0; l < layers; l++)
       this.walls(x0, y0 + l, z0, w - l * 2, 1, d - l * 2, c, 2);
   },
   /* 兩點之間拉一條線（鐵塔斜撐、吊索用） */
   line(x0, y0, z0, x1, y1, z1, c) {
+    bpArgs('v.line(x0, y0, z0, x1, y1, z1, c)', 'nnnnnnc', [x0, y0, z0, x1, y1, z1, c]);
     const n = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), Math.abs(z1 - z0)));
     for (let i = 0; i <= n; i++) {
       const t = n ? i / n : 0;
@@ -122,6 +185,7 @@ VOX.prototype = {
   },
   /* 山牆屋頂（神廟、房子用） */
   gable(x0, y0, z0, w, d, c) {
+    bpArgs('v.gable(x0, y0, z0, w, d, c)', 'nnnnnc', [x0, y0, z0, w, d, c]);
     let ww = w, y = 0;
     while (ww >= 1) { this.box(x0, y0 + y, z0, ww, 1, d, c); ww -= 2; y++; }
   },
@@ -137,12 +201,14 @@ VOX.prototype = {
 
 /* 對稱擺放小工具：在四個角各放一次 */
 function corners4(v, dx, dz, fn) {
+  bpArgs('corners4(v, dx, dz, fn)', 'vnnf', [v, dx, dz, fn]);
   fn(v, dx, dz); fn(v, -dx, dz); fn(v, dx, -dz); fn(v, -dx, -dz);
 }
 
 /* 臥式圓柱（沿 z 軸躺著）。VOX.cyl 畫的是站著的柱子，
    火車鍋爐、飛機機身、引擎這種橫躺的圓柱得另外來。hollow 給牆厚就只留外殼。 */
 function tubeZ(v, x0, y0, z0, r, len, c, hollow) {
+  bpArgs('tubeZ(v, x0, y0, z0, r, len, c, hollow)', 'vnnnnnc', [v, x0, y0, z0, r, len, c]);
   const n = Math.ceil(r), ri = hollow ? r - hollow : -1;
   for (let k = 0; k < len; k++)
     for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++) {
@@ -155,6 +221,7 @@ function tubeZ(v, x0, y0, z0, r, len, c, hollow) {
 /* 車輪：圓面立在 y–z 平面上、厚度沿 x（車軸方向），x0 是靠外那一面。
    rim 給了就把外圈一圈換成輪箍色。 */
 function wheelX(v, x0, y0, z0, r, t, c, rim) {
+  bpArgs('wheelX(v, x0, y0, z0, r, t, c, rim)', 'vnnnnnc', [v, x0, y0, z0, r, t, c]);
   const n = Math.ceil(r);
   for (let a = 0; a < t; a++)
     for (let j = -n; j <= n; j++) for (let k = -n; k <= n; k++) {
@@ -166,11 +233,17 @@ function wheelX(v, x0, y0, z0, r, t, c, rim) {
 
 /* 只在「已經有積木」的格子上換色。眼睛、斑紋、骰子點數這種裝飾一律用它，
    不要用 v.set：曲面上算出來的座標常常落在空氣裡，那就長出一顆孤立的懸空格。 */
-function tint(v, x, y, z, c) { if (!v.has(x, y, z)) return false; v.set(x, y, z, c); return true; }
+function tint(v, x, y, z, c) {
+  bpArgs('tint(v, x, y, z, c)', 'vnnnc', [v, x, y, z, c]);
+  if (!v.has(x, y, z)) return false;
+  v.set(x, y, z, c);
+  return true;
+}
 
 /* 從外面往裡掃，找到第一格實心的就換色。曲面（球面的臉、圓角的骰子）
    要在「表面」上畫東西就得這樣找，算不出正確的表面座標。 */
 function paintFrom(v, x, y, z, dx, dy, dz, n, c) {
+  bpArgs('paintFrom(v, x, y, z, dx, dy, dz, n, c)', 'vnnnnnnnc', [v, x, y, z, dx, dy, dz, n, c]);
   for (let i = n; i >= 0; i--)
     if (tint(v, x + dx * i, y + dy * i, z + dz * i, c)) return true;
   return false;
@@ -180,6 +253,7 @@ function paintFrom(v, x, y, z, dx, dy, dz, n, c) {
    半徑刻意不取整：塊數才會隨尺度連續變化。整數邊長的量體會一階一階跳，
    跳幅大到怎麼掃都對不上目標塊數（骰子那座就是為此改用連續半徑的圓角立方）。 */
 function blob(v, x0, y0, z0, rx, ry, rz, c, shell) {
+  bpArgs('blob(v, x0, y0, z0, rx, ry, rz, c, shell)', 'vnnnnnnc', [v, x0, y0, z0, rx, ry, rz, c]);
   const nx = Math.ceil(rx), ny = Math.ceil(ry), nz = Math.ceil(rz);
   const inner = shell ? 1 - shell / Math.min(rx, ry, rz) : -1;
   for (let i = -nx; i <= nx; i++) for (let j = -ny; j <= ny; j++) for (let k = -nz; k <= nz; k++) {
@@ -199,6 +273,8 @@ function blob(v, x0, y0, z0, rx, ry, rz, c, shell) {
    而「忘了給下限」就是自訂藍圖最常見的失敗——s 小的時候算出 0 或 1，
    那個部件在 300 塊時整組消失。靠中線對稱的東西（屋脊、正門、塔尖）給 odd。 */
 function dim(s, k, min, odd) {
+  /* min 照舊可以不給（有預設值 1），只驗 s 與係數：這兩個算錯的話後面每個尺寸都是 NaN */
+  bpArgs('dim(s, 係數, 下限, 奇數?)', 'nn', [s, k]);
   const n = Math.max(Math.max(1, min || 1), Math.round(s * k));
   return odd ? (n | 1) : n;
 }
@@ -206,6 +282,7 @@ function dim(s, k, min, odd) {
 /* 平均排成一圈：fn(v, x, z, 角度, 第幾個)。柱廊、環形塔樓、輻條都是這件事
    （48 座裡有 28 處自己寫 cos/sin 迴圈）。a0 是起始角，預設從 +x 出發。 */
 function ringOf(v, n, r, fn, x0, z0, a0) {
+  bpArgs('ringOf(v, n, r, fn, x0, z0, a0)', 'vnnf', [v, n, r, fn]);
   n = Math.max(1, Math.round(n));
   for (let i = 0; i < n; i++) {
     const a = (a0 || 0) + i / n * Math.PI * 2;
@@ -214,13 +291,21 @@ function ringOf(v, n, r, fn, x0, z0, a0) {
 }
 
 /* 左右／前後對稱各放一次。corners4 是四個角，這兩支是一對。 */
-function mirrorX(v, dx, fn) { fn(v, dx); fn(v, -dx); }
-function mirrorZ(v, dz, fn) { fn(v, dz); fn(v, -dz); }
+function mirrorX(v, dx, fn) {
+  bpArgs('mirrorX(v, dx, fn)', 'vnf', [v, dx, fn]);
+  fn(v, dx); fn(v, -dx);
+}
+function mirrorZ(v, dz, fn) {
+  bpArgs('mirrorZ(v, dz, fn)', 'vnf', [v, dz, fn]);
+  fn(v, dz); fn(v, -dz);
+}
 
 /* 拱門：w 是開口寬（會逼成奇數，不然拱心落在兩格之間），h 是直柱段高度，
    t 是牆厚（沿 z）。開口總高 = h + (w−1)/2。
    c 給了就先補一片比開口大一圈的牆再挖；不給就只挖洞（用在已經有牆的立面上）。 */
 function arch(v, x0, y0, z0, w, h, t, c) {
+  // t 有預設值、c 不給就只挖洞（用在已經有牆的立面上），所以這兩個都可以不給
+  bpArgs('arch(v, x0, y0, z0, w, h, t, c)', 'vnnnnn', [v, x0, y0, z0, w, h]);
   w = Math.max(1, Math.round(w)) | 1;
   t = Math.max(1, Math.round(t || 1));
   h = Math.max(0, Math.round(h));
@@ -236,6 +321,7 @@ function arch(v, x0, y0, z0, w, h, t, c) {
 /* 連拱：沿 x 排 n 個拱，中間隔著寬 pier 的柱子（競技場、水道橋、迴廊）。
    回傳整排的總寬，接著要算旁邊的東西時直接用。 */
 function archRow(v, x0, y0, z0, n, w, h, t, pier, c) {
+  bpArgs('archRow(v, x0, y0, z0, n, w, h, t, pier, c)', 'vnnnnnn', [v, x0, y0, z0, n, w, h]);
   n = Math.max(1, Math.round(n));
   w = Math.max(1, Math.round(w)) | 1;
   pier = Math.max(1, Math.round(pier || 1));
@@ -248,6 +334,12 @@ function archRow(v, x0, y0, z0, n, w, h, t, pier, c) {
 /* 階梯。dir 是往哪邊爬：'x' / '-x' / 'z' / '-z'。
    每一階都從 y0 往上填實，不是只鋪一片踏面——踏面懸空的話會變成一組孤島。 */
 function stairs(v, x0, y0, z0, n, wide, dir, c) {
+  bpArgs('stairs(v, x0, y0, z0, n, wide, dir, c)', 'vnnnnnsc', [v, x0, y0, z0, n, wide, dir, c]);
+  /* dir 打錯字（'X'、'+x'）不會報錯，只會靜靜地往 +z 爬——階梯長在別的方向上，
+     作者看圖才發現。認得的就那四個，其餘擋掉。 */
+  if (dir !== 'x' && dir !== '-x' && dir !== 'z' && dir !== '-z')
+    throw new Error('參數錯誤：stairs(...) 的 dir 收到 ' + bpShow(dir) +
+                    "，只能是 'x'／'-x'／'z'／'-z'");
   n = Math.max(1, Math.round(n));
   wide = Math.max(1, Math.round(wide));
   const alongX = dir === 'x' || dir === '-x';
@@ -261,6 +353,7 @@ function stairs(v, x0, y0, z0, n, wide, dir, c) {
 
 /* 四坡屋頂：每層四邊各縮 1 格。gable 只收寬不收深（兩坡），這支兩邊一起收。 */
 function hipRoof(v, x0, y0, z0, w, d, c) {
+  bpArgs('hipRoof(v, x0, y0, z0, w, d, c)', 'vnnnnnc', [v, x0, y0, z0, w, d, c]);
   let ww = Math.max(1, Math.round(w)), dd = Math.max(1, Math.round(d)), y = 0;
   while (ww >= 1 && dd >= 1) {
     v.box(x0, y0 + y, z0, ww, 1, dd, c);
@@ -277,6 +370,8 @@ function hipRoof(v, x0, y0, z0, w, d, c) {
    走 tint 只換「已經有積木」的格子——牆上沒有的地方不會長出一片懸空的窗。
    回傳真的畫上去幾格：0 表示那面牆不在你以為的位置。 */
 function windowGrid(v, o) {
+  bpArgs('windowGrid(v, { … })', 'vo', [v, o]);
+  bpKeys('windowGrid(v, { x, y, z, cols, rows, stepX, stepY, w, h, c, axis })', o, 'x y z c');
   const cols = Math.max(1, Math.round(o.cols || 1)), rows = Math.max(1, Math.round(o.rows || 1));
   const w = Math.max(1, Math.round(o.w || 1)), h = Math.max(1, Math.round(o.h || 1));
   const sx = o.stepX || (w + 1), sy = o.stepY || (h + 1);
@@ -296,6 +391,8 @@ function windowGrid(v, o) {
    {x0,z0} 與 {x1,z1} 是兩根柱子的位置，從 y 往上拉 h 高、分 n 段。
    斜線上的格子彼此只在對角相鄰，遊戲的支撐判定認 26 鄰居，所以撐得住。 */
 function lattice(v, o) {
+  bpArgs('lattice(v, { … })', 'vo', [v, o]);
+  bpKeys('lattice(v, { x0, z0, x1, z1, y, h, n, c })', o, 'x0 z0 x1 z1 c');
   const n = Math.max(1, Math.round(o.n || 1)), dy = (o.h || 1) / n, y0 = o.y || 0;
   for (let i = 0; i < n; i++) {
     const ya = y0 + i * dy, yb = y0 + (i + 1) * dy;
@@ -2046,9 +2143,17 @@ function checkBlueprint(which, opt) {
            + '讓別的維度連續變化去補；或者只有真的要對稱的那一個取奇數。');
   }
 
-  if (threw)
-    L.push('  修法：照上面的錯誤訊息修。常見原因是尺寸算出 0 或負數、undefined 進了迴圈、'
-         + '或用了這份說明文件裡沒有的函式。');
+  /* 「參數錯誤：」是畫圖函式自己丟的（見檔案開頭的 bpArgs）——那一類的修法很具體，
+     直接指到參數表就好，不必再叫 AI 去猜「undefined 是從哪裡進迴圈的」。 */
+  if (threw) {
+    const argErr = rows.some(r => r.err && r.err.indexOf('參數錯誤：') === 0);
+    L.push(argErr
+      ? '  修法：上面那行是「呼叫函式時參數給錯了」，訊息裡已經指出是哪一支的第幾個參數。'
+        + '照〈藍圖製作說明〉3.1／3.2 的參數表補齊——最常見的是最後那個顏色索引 c 忘了給，'
+        + '或某個尺寸自己算成了 NaN／undefined。'
+      : '  修法：照上面的錯誤訊息修。常見原因是尺寸算出 0 或負數、undefined 進了迴圈、'
+        + '或用了這份說明文件裡沒有的函式。');
+  }
 
   /* 尺寸、站幾格、配色 */
   const big = rows.filter(r => !r.err).pop();
