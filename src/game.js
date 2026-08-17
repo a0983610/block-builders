@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.57.2';
+const VERSION = '1.58.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -395,7 +395,7 @@ function startBuild(instant) {
   swing = null; ENG.hideHammer();
   quake = null;                       // 地震點名要掉的是「這一座」的積木，換場就作廢
   ball = null; ENG.hideBall();
-  ballAim = null;                     // 瞄到一半換場：那個出手點是舊工地的事了
+  aim = null;                         // 瞄到一半換場：那第一點是舊工地的事了
   twists = null; ENG.putTornados([]);
   trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
   dozers = null; ENG.putDozers([]);
@@ -1787,7 +1787,8 @@ const TOOLS = [
     lock: { txt: '拆掉 2 座建築解鎖', ok: () => stats.destroyed >= 2 } },
   { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
     lock: { txt: '累計擊飛 6,000 塊解鎖', ok: () => stats.smashed >= 6000 } },
-  { id: 'tornado', n: '龍捲風', k: '🌪', tip: '點地面：龍捲風掃過去，可以同時來好幾道',
+  { id: 'tornado', n: '龍捲風', k: '🌪',
+    tip: '點兩下：先點龍捲風出現的地方，再點要掃過去的方向（會一路亂竄，5 秒）',
     lock: { txt: '拆掉 4 座建築解鎖', ok: () => stats.destroyed >= 4 } },
   { id: 'fw', n: '煙火', k: '🎆', tip: '點地面：一次射三發煙火，落下來的火星會把建築點著',
     lock: { txt: '累計擊飛 11,000 塊解鎖', ok: () => stats.smashed >= 11000 } },
@@ -1993,7 +1994,9 @@ function afterHit(n, point, R) {
 
 /* 槌子：點狀衝擊。只有衝擊球內的積木會散，球外的原封不動；
    方向來自滑鼠射線，所以從上面砸跟從側面砸，塌的方式不一樣。 */
-function smash(point, dir, R0, pow0) {
+/* quiet：不要震畫面。給投石機用的——它一台連丟好幾顆、還能架好幾台，
+   每一顆都晃一下的話畫面會一路抖到它撤走（見 rockHit）。 */
+function smash(point, dir, R0, pow0, quiet) {
   const R = R0 || hammerR, R2 = R * R;
   const power = pow0 || hammerPow;
   let hitN = 0;
@@ -2018,7 +2021,7 @@ function smash(point, dir, R0, pow0) {
   afterHit(hitN, point, R);
   spawnDust(point, R, hitN);
   spawnRing(point, R);
-  ENG.shake(0.42 + Math.min(1.4, hitN * 0.02));
+  if (!quiet) ENG.shake(0.42 + Math.min(1.4, hitN * 0.02));
   sndSmash();
   return hitN;
 }
@@ -2201,10 +2204,12 @@ function sweepRock(r, px, py, pz) {
 }
 function rockHit(r) {
   const p = { x: r.x, y: Math.max(0.5, r.y), z: r.z };
-  const n = smash(p, { x: 0.12, y: -1, z: 0.12 }, ROCK_R, ROCK_POW);
+  /* 不震畫面（v1.58）：一台投石機連丟好幾顆、又可以同時架好幾台，
+     每一顆落地都晃一下的話畫面會一路抖到它們撤走——跟龍捲風同一個道理，
+     震動留給槌子那種「點一下、響一聲」的單次撞擊。灰塵與氣浪照舊，打擊感靠它們。 */
+  const n = smash(p, { x: 0.12, y: -1, z: 0.12 }, ROCK_R, ROCK_POW, true);
   spawnDust(p, ROCK_R, n);
   spawnRing({ x: p.x, y: 0, z: p.z }, 5);
-  ENG.shake(0.34);
   sndSmash();
 }
 function stepTrebs(dt) {
@@ -2254,39 +2259,50 @@ const BALL_BOUNCE = 0.42;           // 落地回彈保留多少垂直速度
    兩個都放寬一點：6 秒 ×0.82 的衰減滾得到約 119 單位，7.5 秒 ×0.86 約 152。 */
 const BALL_LIFE = 7.5;              // 最多滾幾秒
 const BALL_ROLL = 0.86;             // 滾動阻力：每秒保留多少速度
-let ballAim = null;                 // 已經點好、還在等第二點的出手位置
+/* 已經點好、還在等第二點的那一點。保齡球與龍捲風共用（v1.58 起兩個都是點兩下）：
+   {x, z, ph 光環的脈動相位, r 光環半徑, c 光環顏色}。 */
+let aim = null;
 
-/* 第一下記位置，第二下才丟出去。同一點連按兩下（兩點幾乎重疊）時沒有方向可用，
-   就退回舊行為朝工地中心丟——不然那一下會變成沒反應。 */
-function aimBall(point) {
-  if (!ballAim) { ballAim = { x: point.x, z: point.z, ph: 0 }; sndTick(); return; }
-  launchBall(ballAim, point);
+/* 兩點式的第一下：記位置、畫個光環、等第二下。 */
+function aimFirst(point, r, c) {
+  aim = { x: point.x, z: point.z, ph: 0, r: r, c: c };
+  sndTick();
 }
-function launchBall(from, toward) {
+/* 第一點 → 第二點的方向。兩點幾乎重疊（同一個地方連點兩下）時沒有方向可用，
+   就退回「朝工地中心」——不然那一下會變成沒反應。回傳的是弧度。 */
+function aimDir(from, toward, spread) {
   let dx = toward ? toward.x - from.x : -from.x;
   let dz = toward ? toward.z - from.z : -from.z;
-  if (Math.hypot(dx, dz) < 0.5) { dx = -from.x; dz = -from.z; }   // 兩點重疊 → 朝工地中心
-  const l = Math.hypot(dx, dz);
-  if (l < 1e-4) { dx = 1; dz = 0; } else { dx /= l; dz /= l; }
-  const a = Math.atan2(dz, dx) + rr(-BALL_SPREAD, BALL_SPREAD);
+  if (Math.hypot(dx, dz) < 0.5) { dx = -from.x; dz = -from.z; }
+  if (Math.hypot(dx, dz) < 1e-4) { dx = 1; dz = 0; }
+  return Math.atan2(dz, dx) + rr(-spread, spread);
+}
+
+/* 第一下記位置，第二下才丟出去。 */
+function aimBall(point) {
+  if (!aim) { aimFirst(point, BALL_R, 0x8fe6ff); return; }
+  launchBall(aim, point);
+}
+function launchBall(from, toward) {
+  const a = aimDir(from, toward, BALL_SPREAD);
   ball = {
     x: from.x, y: BALL_R + BALL_DROP, z: from.z,
     vx: Math.cos(a) * 34, vz: Math.sin(a) * 34, vy: rr(-3, -0.5),   // 是往下丟不是往上拋
     r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 0
   };
-  ballAim = null;
+  aim = null;
   sndSwing();
 }
-/* 等第二點的時候在出手位置畫一圈會脈動的光環：沒有這個的話，
+/* 等第二點的時候在第一點畫一圈會脈動的光環：沒有這個的話，
    第一下點下去畫面完全沒反應，看起來像點壞了。 */
 const AIM_RING = [];
 function aimRings() {
   AIM_RING.length = 0;
-  const p = 0.5 + 0.5 * Math.sin(ballAim.ph * 4.5);
-  AIM_RING.push({ x: ballAim.x, z: ballAim.z, y: 0.14, r: BALL_R * (1.1 + 0.14 * p),
-                  spin: ballAim.ph * 0.8, op: 0.9, c: 0x8fe6ff, add: 1 });
-  AIM_RING.push({ x: ballAim.x, z: ballAim.z, y: 0.13, r: BALL_R * 0.5,
-                  spin: -ballAim.ph * 0.5, op: 0.35 + 0.5 * p, c: 0xffffff, add: 1 });
+  const p = 0.5 + 0.5 * Math.sin(aim.ph * 4.5);
+  AIM_RING.push({ x: aim.x, z: aim.z, y: 0.14, r: aim.r * (1.1 + 0.14 * p),
+                  spin: aim.ph * 0.8, op: 0.9, c: aim.c, add: 1 });
+  AIM_RING.push({ x: aim.x, z: aim.z, y: 0.13, r: aim.r * 0.5,
+                  spin: -aim.ph * 0.5, op: 0.35 + 0.5 * p, c: 0xffffff, add: 1 });
   return AIM_RING;
 }
 function stepBall(dt) {
@@ -2300,7 +2316,7 @@ function stepBall(dt) {
     if (o.vy < -2.5) {
       o.vy = -o.vy * BALL_BOUNCE; o.hops++;
       spawnDust({ x: o.x, y: 0.4, z: o.z }, 4, 6);
-      ENG.shake(0.22); sndSmash();
+      sndSmash();                                // 不震畫面（v1.58），理由同下面撞到積木那段
     } else o.vy = 0;
   }
   let sp = Math.hypot(o.vx, o.vz);
@@ -2335,7 +2351,8 @@ function stepBall(dt) {
     o.hit += n;
     afterHit(n, { x: o.x, y: o.y, z: o.z }, R);
     spawnDust({ x: o.x, y: o.y, z: o.z }, R, n);
-    ENG.shake(0.28 + Math.min(1, n * 0.02));
+    /* 不震畫面（v1.58）：球一路滾過去是「每一幀都在撞」，每幀加一點震動的話
+       畫面從出手晃到停下，看久了很不舒服——跟龍捲風、投石機同一個道理。 */
     if (Math.random() < 0.4) sndSmash();
     const brake = Math.max(0.3, 1 - n * 0.006);  // 撞越多掉速越快
     o.vx *= brake; o.vz *= brake;
@@ -2358,18 +2375,31 @@ function stepBall(dt) {
 /* 龍捲風：在地面走一段路，把沿路的積木吸起來繞圈，最後隨機甩出去。
    可以同時存在好幾道——畫面成本跟道數無關（引擎那邊一層一顆 InstancedMesh），
    真正的上限是塵霧配額，所以卡在 TW_MAX 道。 */
-const TW_MAX = 4, TW_LIFE = 7, TW_R = 6, TW_H = 34;
-function launchTornado(point) {
-  /* 大致朝著工地中心掃過去，但要偏一點：好幾道都精準對著同一點的話，
-     幾秒後全部疊在中心變成一團，看不出是好幾道。 */
-  const a = Math.atan2(-point.z, -point.x) + rr(-0.7, 0.7);
+/* 5 秒（v1.58，本來 7）：方向改成玩家自己指之後，看的是「它照我指的方向掃過去」
+   那一段，尾巴那兩秒它早就自己亂竄到別處了。 */
+const TW_MAX = 4, TW_LIFE = 5, TW_R = 6, TW_H = 34;
+const TW_SPREAD = 0.12;             // 方向偏差 ±rad（約 ±7°），跟保齡球同一個用意
+const TW_SWAY = 0.85;               // 轉向角的擺幅（rad/s）：一路歪來歪去用的
+/* 點兩下：第一點是龍捲風出現的地方，第二點決定往哪邊掃（跟保齡球同一套操作）。
+   本來是「點一下，自動朝工地中心掃、方向再亂加 ±0.7」——那等於方向不歸玩家管。
+   出發方向照指的走，之後仍然一路亂竄（見 stepTwist），所以不會是一條直線。 */
+function aimTornado(point) {
+  if (!aim) { aimFirst(point, TW_R, 0xd6e6f0); return; }
+  launchTornado(aim, point);
+}
+function launchTornado(from, toward) {
+  const a = aimDir(from, toward, TW_SPREAD);
+  aim = null;
   if (!twists) twists = [];
   if (twists.length >= TW_MAX) twists.shift();     // 放太多道就把最早那道擠掉
   twists.push({
-    x: point.x, z: point.z, r: TW_R, h: TW_H, life: TW_LIFE,
+    x: from.x, z: from.z, r: TW_R, h: TW_H, life: TW_LIFE,
     /* 起始角度隨機：漏斗的扭曲完全是 spin 的函數，都從 0 開始的話
        同時在場的幾道會擺出一模一樣的姿勢，看起來像複製貼上。 */
-    spin: rr(0, 6.28), vx: Math.cos(a) * 3.2, vz: Math.sin(a) * 3.2, hit: 0
+    spin: rr(0, 6.28), vx: Math.cos(a) * 3.2, vz: Math.sin(a) * 3.2, hit: 0,
+    /* 擺動的相位與頻率各自抽（見 stepTwist）：同時來好幾道時，
+       都用同一組的話它們會擺得一模一樣，看起來像複製貼上。 */
+    ph: rr(0, 6.28), sw: rr(0.9, 1.5)
   });
   /* 拉高之後漏斗頂會超出畫面上緣（矮建築取景近，量到 NDC 1.45），
      跟核彈的蘑菇雲同一個處理：鏡頭退到整支漏斗進得了畫面的距離，之後就停在那裡不收回來。
@@ -2384,10 +2414,14 @@ function stepTwist(dt) {
     w.life -= dt;
     w.spin += dt * 7;
     w.x += w.vx * dt; w.z += w.vz * dt;
-    // 每隔一陣子換個方向，走起來才像亂竄而不是直線
-    w.vx += rr(-6, 6) * dt; w.vz += rr(-6, 6) * dt;
-    const sp = Math.hypot(w.vx, w.vz);
-    if (sp > 6) { w.vx = w.vx / sp * 6; w.vz = w.vz / sp * 6; }
+    /* 走的路要歪（v1.58）。本來是每幀加一點亂數加速度，但那種東西左右互相抵銷——
+       實測整段 10 單位的路只偏離直線 0.27 單位，看起來就是直直推過去。
+       改成「轉向角自己在擺」：每道各有自己的擺動頻率與起始相位，5 秒的壽命裡
+       剛好掃出一道 S 形，而且不會原地打轉（純亂數轉向會）。 */
+    w.ph += dt * w.sw;
+    const ang = Math.atan2(w.vz, w.vx) + (Math.sin(w.ph) * TW_SWAY + rr(-0.5, 0.5)) * dt;
+    const sp = Math.max(2.2, Math.min(6, Math.hypot(w.vx, w.vz) + rr(-3, 3) * dt));
+    w.vx = Math.cos(ang) * sp; w.vz = Math.sin(ang) * sp;
     if (Math.hypot(w.x, w.z) > arenaR) { w.vx *= -1; w.vz *= -1; }
 
     const R = w.r, R2 = R * R;
@@ -2591,10 +2625,19 @@ const FW_GAP = [0.2, 0.5];
 const FW_OFF = 7;
 const FW_SPARK = 44;                // 外層炸開幾顆火星
 const FW_CORE = 20;                 // 內層那球幾顆：換第二個顏色、速度只有一半 → 雙層的花
-/* 煙火自己的粒子配額。通用的 HOT_MAX（220）是「爆炸火球＋幾棟在燒」抓的，
-   一場齊射光是天上的火星就有三百多顆，共用那個配額的話平均每顆火星分不到一顆粒子，
-   整片會變成一閃一閃的點而不是一朵花。畫得出來的上限是引擎的 MAXFIRE。 */
-const FW_HOT = 300;
+/* 煙火自己的粒子配額（只管往上竄那幾發的尾巴與二次炸開的火花）。
+   通用的 HOT_MAX（220）是「爆炸火球＋幾棟在燒」抓的，跟它共用會互相排擠。
+   火星本身不吃這個配額——它是每幀重畫的一條拖線，見 fwStreaks。 */
+const FW_HOT = 240;
+/* 火星畫成一條拖線，不是沿路灑一串小點（v1.58）。
+   參考圖那種放射狀的細線是長曝光：一顆火星在底片上留下一整條軌跡。
+   照舊那樣「每秒灑 30 顆小方塊」做不出來——一場齊射有三百多顆火星，
+   配額 300 顆平均下來每顆火星只分得到一顆粒子，畫出來就是一片閃爍的點。
+   改成一顆火星一條線之後，一顆火星只吃一個 instance，長度還能跟著速度走。 */
+const FW_TAIL = 0.34;               // 拖線代表最近這麼多秒的軌跡（速度 × 它 = 線長）
+const FW_TAIL_MAX = 9;              // 線最長到這裡，剛炸開那一瞬間不要拉成一條掃把
+const FW_TAIL_W = 0.17;             // 線多粗
+const FW_TAIL_MIN = 0.6;            // 慢到這個速度以下就不畫線了：那已經是一顆餘燼
 const FW_SPEED = 17;                // 火星炸開的初速
 const FW_DRAG = 0.42;               // 火星的空氣阻力（每秒保留的比例）——飄下來，不是拋物線
 const FW_FALL = 0.34;               // 火星吃多少重力（比積木輕很多）
@@ -2645,18 +2688,52 @@ function fireShell(x, z) {
    直接不冒的話配額會被陣列前面那幾顆火星整碗端走（實測一發就想冒 4747 顆、
    只進得去 1938 顆），齊射的第二、三發等於整發沒有尾巴。
    只頂 fw 的：爆炸火球那些不能被煙火擠掉，那是別的道具的畫面。 */
-function fwHot(x, y, z, c, s, life, sp) {
+function fwHot(x, y, z, c, s, life, sp, seg) {
   if (hot.length >= FW_HOT) {
     const i = hot.findIndex(h => h.fw);
     if (i < 0) return;
     hot.splice(i, 1);
   }
-  hot.push({
+  const h = {
     x, y, z, vx: rr(-sp, sp), vy: rr(-sp, sp), vz: rr(-sp, sp),
     rx: Math.random() * 6, ry: Math.random() * 6,
     s, life, g: -1.2, grow: 0.96, cool: rr(0.3, 0.7),
     cr: c[0][0], cg: c[0][1], cb: c[0][2], to: c[1], fw: 1
-  });
+  };
+  // seg 有給就拉成一小段線（往上竄那一段的尾巴），沒給就是一顆亂翻的碎火
+  if (seg) { h.dx = seg.dx; h.dy = seg.dy; h.dz = seg.dz; h.ln = seg.ln; }
+  hot.push(h);
+}
+/* 每一顆火星的拖線：從「它 FW_TAIL 秒前所在的位置」拉到現在的位置。
+   每幀重算，所以不進 hot（那裡放的是會自己活一段時間的粒子）。
+   物件掛在火星身上重複用，不要每幀配置幾百個新的。 */
+function fwStreaks(out) {
+  for (const s of fwSparks) {
+    const sp = Math.hypot(s.vx, s.vy, s.vz);
+    if (sp < FW_TAIL_MIN) continue;
+    const ln = Math.min(FW_TAIL_MAX, sp * FW_TAIL);
+    const dx = s.vx / sp, dy = s.vy / sp, dz = s.vz / sp;
+    const o = s.st || (s.st = { s: FW_TAIL_W, fw: 1 });
+    // 位置擺在線段中點，頭才會落在火星身上（putFire 是以中心擺的）
+    o.x = s.x - dx * ln * 0.5; o.y = s.y - dy * ln * 0.5; o.z = s.z - dz * ln * 0.5;
+    o.dx = dx; o.dy = dy; o.dz = dz; o.ln = ln;
+    // 最後 1.2 秒收成同色系的暗版，落下來那一段才看得出「這一發是綠的」
+    const k = Math.min(1, s.t / 1.2), c0 = s.c[0], c1 = s.c[1];
+    o.cr = c1[0] + (c0[0] - c1[0]) * k;
+    o.cg = c1[1] + (c0[1] - c1[1]) * k;
+    o.cb = c1[2] + (c0[2] - c1[2]) * k;
+    out.push(o);
+  }
+}
+/* 送去畫的火粒子＝hot ＋ 那幾百條拖線。沒有煙火在天上時直接把 hot 交出去，
+   那是每幀都會跑到的路徑，不要白白複製一次。 */
+const fireOut = [];
+function fireList() {
+  if (!fwSparks) return hot;
+  fireOut.length = 0;
+  for (const h of hot) fireOut.push(h);
+  fwStreaks(fireOut);
+  return fireOut;
 }
 const rgbHex = c => (Math.round(c[0] * 255) << 16) | (Math.round(c[1] * 255) << 8) |
                     Math.round(c[2] * 255);
@@ -2670,7 +2747,7 @@ function fwSpray(x, y, z, c, n, speed, life, crack) {
     const sp = speed * rr(0.7, 1.15);
     fwSparks.push({ x, y, z,
                     vx: Math.cos(a) * s * sp, vy: u * sp, vz: Math.sin(a) * s * sp,
-                    t: life * rr(0.8, 1.2), em: 0, c,
+                    t: life * rr(0.8, 1.2), c,
                     crack: i < crack ? rr(0.45, 0.8) : 0 });
   }
 }
@@ -2698,7 +2775,7 @@ function crackFw(s) {
                     vx: s.vx * 0.3 + Math.cos(a) * q * sp,
                     vy: s.vy * 0.3 + u * sp,
                     vz: s.vz * 0.3 + Math.sin(a) * q * sp,
-                    t: rr(0.6, 1.2), em: 0, c: s.c, crack: 0 });
+                    t: rr(0.6, 1.2), c: s.c, crack: 0 });
   }
   for (let i = 0; i < 3; i++) fwHot(s.x, s.y, s.z, s.c, rr(0.5, 0.9), rr(0.15, 0.3), 1.2);
 }
@@ -2728,8 +2805,16 @@ function stepFw(dt) {
     for (let i = fworks.length - 1; i >= 0; i--) {
       const f = fworks[i];
       f.y += FW_RISE * dt; f.x += f.vx * dt; f.z += f.vz * dt;
-      f.em += dt * 110;                              // 尾巴要密，不然是一串點不是一條線
-      while (f.em >= 1) { f.em--; fwHot(f.x + rr(-0.2, 0.2), f.y, f.z + rr(-0.2, 0.2), f.c, rr(0.3, 0.55), rr(0.2, 0.45), 0.5); }
+      /* 往上竄那一段的尾巴。這裡的一發是一個物件（不是幾百顆火星），
+         所以灑得起 110/s；每一顆再沿著飛行方向拉成一小段，接起來就是一條線。 */
+      f.em += dt * 110;
+      const fsp = Math.hypot(f.vx, FW_RISE, f.vz);
+      const seg = { dx: f.vx / fsp, dy: FW_RISE / fsp, dz: f.vz / fsp, ln: fsp / 110 * 1.6 };
+      while (f.em >= 1) {
+        f.em--;
+        fwHot(f.x + rr(-0.08, 0.08), f.y, f.z + rr(-0.08, 0.08), f.c,
+              rr(0.14, 0.24), rr(0.2, 0.45), 0.3, seg);
+      }
       if (f.y >= f.top) { burstFw(f); fworks.splice(i, 1); }
     }
     if (!fworks.length) fworks = null;
@@ -2744,8 +2829,8 @@ function stepFw(dt) {
     s.vx *= drag; s.vy *= drag; s.vz *= drag;
     const px = s.x, py = s.y, pz = s.z;
     s.x += s.vx * dt; s.y += s.vy * dt; s.z += s.vz * dt;
-    s.em += dt * 30;
-    while (s.em >= 1) { s.em--; fwHot(s.x, s.y, s.z, s.c, rr(0.36, 0.68), rr(0.25, 0.5), 0.3); }
+    /* 這裡本來每秒灑 30 顆小方塊當尾巴。現在火星自己就是一條拖線（fwStreaks），
+       再灑一層點只會把線糊掉，配額也是它在吃。 */
     if (s.t <= 0 || s.y <= 0.3) { fwSparks.splice(i, 1); continue; }
     /* 打到建築就從那一塊燒起來。中點也要驗：火星一幀跑得比一格寬，
        只看終點的話會直接穿過薄牆。 */
@@ -3721,7 +3806,7 @@ function useTool(hit) {
   if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true, onGround); return 0; }
   if (tool === 'ball') { aimBall(hit.point); return 0; }
   if (tool === 'treb') { placeTreb({ x: hit.point.x, z: hit.point.z }); return 0; }
-  if (tool === 'tornado') { launchTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'tornado') { aimTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fw') { launchFw({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fire') { torch(hit); return 0; }
   if (tool === 'bomb') { placeBomb(hit.point); return 0; }
@@ -3889,7 +3974,7 @@ function step(dt) {
   stepFxRings(dt);
   stepStars(dt);
   stepArcs(dt);
-  if (ballAim) ballAim.ph += dt;         // 瞄準環的脈動
+  if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepDozers(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
     toasts[i].t -= dt;
@@ -3959,7 +4044,7 @@ function draw() {
   if (meteors) for (const m of meteors) if (m.lit) metFly.push(m);
   ENG.putMeteors(metFly);
   ENG.putTornados(twists || EMPTY);
-  ENG.putFire(hot);
+  ENG.putFire(fireList());
   ENG.putFlash(flashes);
   ENG.putStars(stars);
   ENG.putBolts(bolts.length ? boltList() : EMPTY);
@@ -3969,7 +4054,7 @@ function draw() {
   let ringList = null;
   if (magic && magic.rings) ringList = fxRings.length ? magic.rings.concat(fxRings) : magic.rings;
   else if (fxRings.length) ringList = fxRings;
-  if (ballAim) ringList = ringList ? ringList.concat(aimRings()) : aimRings();
+  if (aim) ringList = ringList ? ringList.concat(aimRings()) : aimRings();
   if (ringList) ENG.setRings(ringList);
   else ENG.hideRings();
   if (dozers) ENG.putDozers(dozRender(dozers));
@@ -3981,7 +4066,17 @@ const metFly = [];              // draw() 每幀重填：這一刻真的在天�
 let spinOn = false;
 let drag = null;
 
+/* 觸控之後瀏覽器還會補送一組 mousedown／mouseup（給沒寫觸控的網頁用的相容事件）。
+   兩組都收的話，手機上點一下地板等於用了兩次道具——同一個位置冒出兩顆隕石、
+   兩台投石機，而點兩下才發動的保齡球與龍捲風則會在原地立刻發動（第一點就是第二點）。
+   記下最後一次真的碰到螢幕的時間，緊接著那組滑鼠事件一律不理。
+   700ms：相容事件是 touchend 之後馬上送的（含舊瀏覽器那 300ms 的點擊延遲），
+   留一倍餘裕；混用滑鼠與觸控的機器最多就是「剛戳完螢幕的那一下滑鼠點擊不算」。 */
+const GHOST_MS = 700;
+let lastTouch = 0;
 function onDown(e) {
+  if (e.touches) lastTouch = performance.now();
+  else if (performance.now() - lastTouch < GHOST_MS) return;
   const p = e.touches ? e.touches[0] : e;
   drag = { x: p.clientX, y: p.clientY, x0: p.clientX, y0: p.clientY, moved: 0, t: performance.now(), n: e.touches ? e.touches.length : 1, pinch: 0 };
   if (e.touches && e.touches.length === 2)
@@ -4002,6 +4097,9 @@ function onMove(e) {
   if (e.touches) e.preventDefault();
 }
 function onUp(e) {
+  // touchend 的 e.touches 是空的 TouchList，仍然是物件——分得出這是不是觸控來的
+  if (e.touches) lastTouch = performance.now();
+  else if (performance.now() - lastTouch < GHOST_MS) { drag = null; return; }
   if (!drag) return;
   const isClick = drag.moved < 8 && performance.now() - drag.t < 650;
   const x = drag.x0, y = drag.y0;
@@ -4134,7 +4232,7 @@ function renderTools() {
     b.title = okNow ? t.tip : t.lock.txt;
     b.addEventListener('click', () => {
       if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return; }
-      tool = t.id; ballAim = null; renderTools();   // 換道具就把瞄一半的出手點收掉
+      tool = t.id; aim = null; renderTools();       // 換道具就把瞄一半的第一點收掉
       $('toolbox').classList.remove('open');       // 選好就收起來，不要一直擋著畫面
       $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移　｜　滾輪縮放　｜　點小人會跌倒';
     });

@@ -24,8 +24,10 @@ const ENG = (function () {
   const MAG_DISC = 7;
   /* 火／火星粒子。240 是「一次爆炸的火球 + 幾棟在燒」的量；
      煙火改成一次三發齊射之後，光是天上的火星就要三百顆才不會變成一顆一顆的點。
-     這顆是 InstancedMesh，多開instance 不多吃 draw call，只多幾筆矩陣運算。 */
-  const MAXFIRE = 320;
+     v1.58 再放大到 960：煙火的每一顆火星自己就是一條拖線（一顆 instance），
+     一場齊射約 500 顆火星，加上還在燒的建築與爆炸火球才擠得下。
+     這顆是 InstancedMesh，多開 instance 不多吃 draw call，只多幾筆矩陣運算。 */
+  const MAXFIRE = 960;
   /* 爆炸中心的火球。一顆球撐不起來：加法混色的單一顆球是「整片同亮度」，
      邊緣硬得像顆塑膠球。改用幾層同心殼各給低濃度疊起來——中心被五層疊到爆白，
      往外一層層淡出去，才是參考圖那種糊掉的光。
@@ -734,8 +736,18 @@ const ENG = (function () {
     for (let i = 0; i < n; i++) {
       const p = parts[i];
       scratch.position.set(p.x, p.y, p.z);
-      scratch.rotation.set(p.rx, p.ry, 0);
-      scratch.scale.setScalar(p.s);
+      /* ln 有值＝這顆要拉成一條（煙火的火星尾）：沿著它飛的方向拉長、橫向壓細。
+         連續幾顆首尾接起來就是一條線，而不是一串點——參考圖那種放射狀的細線
+         靠的就是這個。dx/dy/dz 要先正規化好（單位向量轉單位向量）。
+         其他粒子照舊給隨機角度，那要的是亂翻的碎火。 */
+      if (p.ln) {
+        _axis.set(p.dx, p.dy, p.dz);
+        scratch.quaternion.setFromUnitVectors(_xAxis, _axis);
+        scratch.scale.set(p.ln, p.s, p.s);
+      } else {
+        scratch.rotation.set(p.rx, p.ry, 0);
+        scratch.scale.setScalar(p.s);
+      }
       scratch.updateMatrix();
       fireMesh.setMatrixAt(i, scratch.matrix);
       fireMesh.setColorAt(i, tmpC.setRGB(p.cr, p.cg, p.cb));
@@ -1184,16 +1196,33 @@ const ENG = (function () {
 
   /* ── 點選 ─────────────────────────────────────────── */
   /* 回傳 {kind:'block'|'worker'|'ground', idx, point}；point 一定有值 */
+  /* 點到什麼的優先序：建築 > 小人 > 地板，**不是**「誰比較近」（v1.58）。
+     照距離排的話，拿槌子對著建築點下去、剛好有小人走在前面，那一下就變成戳人——
+     破壞道具都是對著建築用的，被路過的小人擋掉最惱人。地板排最後同理：
+     從側面點建築的下緣時，射線常常先擦過建築前面那片草地。
+     代價是「站在建築正前方的小人戳不到」，要戳他就從沒有建築當背景的角度點。 */
+  const PICK_RANK = { block: 0, worker: 1, ground: 2 };
   function pick(px, py) {
     ndc.set(px / W * 2 - 1, -(py / H * 2 - 1));
     raycaster.setFromCamera(ndc, camera);
+    // intersectObjects 是照距離排好的，所以同一種裡先遇到的就是最近的那個
     const hits = raycaster.intersectObjects([blockMesh, workerMesh, ground], false);
+    let best = null, rank = 9;
     for (const h of hits) {
-      if (h.object === blockMesh) return { kind: 'block', idx: h.instanceId, point: h.point, dir: raycaster.ray.direction.clone() };
-      if (h.object === workerMesh) return { kind: 'worker', idx: Math.floor(h.instanceId / WPARTS), point: h.point, dir: raycaster.ray.direction.clone() };
-      if (h.object === ground) return { kind: 'ground', idx: -1, point: h.point, dir: raycaster.ray.direction.clone() };
+      const kind = h.object === blockMesh ? 'block'
+                 : h.object === workerMesh ? 'worker'
+                 : h.object === ground ? 'ground' : null;
+      if (kind === null || PICK_RANK[kind] >= rank) continue;
+      rank = PICK_RANK[kind];
+      best = {
+        kind: kind,
+        idx: kind === 'block' ? h.instanceId
+           : kind === 'worker' ? Math.floor(h.instanceId / WPARTS) : -1,
+        point: h.point, dir: raycaster.ray.direction.clone()
+      };
+      if (rank === 0) break;                    // 建築最優先，找到就不必再看了
     }
-    return null;
+    return best;
   }
 
   function render() { renderer.render(scene, camera); }

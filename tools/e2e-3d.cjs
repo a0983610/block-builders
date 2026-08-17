@@ -3199,19 +3199,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      瞄到一半換道具、換建築都要把那個點收掉，不然下次點某處會莫名其妙從舊的點丟出去。 */
   const ballClick = await page.evaluate(() => {
     const keep = tool;
-    tool = 'ball'; ballAim = null; ball = null;
+    tool = 'ball'; aim = null; ball = null;
     useTool({ kind: 'ground', point: { x: -40, y: 0, z: 0 } });
-    const first = { aim: !!ballAim, ball: !!ball, rings: ballAim ? aimRings().length : 0 };
+    const first = { aim: !!aim, ball: !!ball, rings: aim ? aimRings().length : 0 };
     useTool({ kind: 'ground', point: { x: -40, y: 0, z: 20 } });
     // 第二點在第一點的 +z 方向 → 角度應該是 π/2
-    const second = { aim: !!ballAim, ball: !!ball,
+    const second = { aim: !!aim, ball: !!ball,
                      x: ball ? +ball.x.toFixed(2) : null, z: ball ? +ball.z.toFixed(2) : null,
                      ang: ball ? +Math.atan2(ball.vz, ball.vx).toFixed(3) : null };
     ball = null; ENG.hideBall();
     useTool({ kind: 'ground', point: { x: 9, y: 0, z: 9 } });   // 瞄一半就換建築
-    const aimed = !!ballAim;
+    const aimed = !!aim;
     startBuild(true);
-    const afterSwap = !ballAim;
+    const afterSwap = !aim;
     tool = keep;
     return { first, second, aimed, afterSwap, lim: BALL_SPREAD };
   });
@@ -3226,6 +3226,139 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '球生在 (' + ballClick.second.x + ', ' + ballClick.second.z + ')，角度 ' +
      ballClick.second.ang + '（要 ' + (Math.PI / 2).toFixed(3) + ' ±' + ballClick.lim + '）');
   ok('換建築會取消瞄到一半的出手點', ballClick.aimed && ballClick.afterSwap);
+
+  /* 會「持續破壞」的那幾種不震畫面（v1.58）：球一路滾、投石機連丟好幾顆，
+     每一下都震的話畫面從頭晃到尾，看久了很不舒服。震動留給槌子那種單次撞擊。 */
+  const shakes = await page.evaluate(() => {
+    const real = ENG.shake;
+    let n = 0;
+    ENG.shake = v => { n++; return real(v); };
+    const count = fn => { n = 0; fn(); return n; };
+    startBuild(true); completeNow();
+    const ballN = count(() => {
+      launchBall({ x: -60, z: 0 }, { x: 0, z: 0 });      // 從場邊滾過整座建築
+      for (let i = 0; i < 160 && ball; i++) step(0.05);
+    });
+    const trebN = count(() => {
+      placeTreb({ x: 46, z: 0 });
+      for (let i = 0; i < 400 && trebs; i++) step(0.05);
+    });
+    // 對照組：槌子那一下還是要震，不然就是整套震動被我弄壞了
+    const hamN = count(() => smash({ x: 0, y: 4, z: 0 }, { x: 0, y: -1, z: 0 }, 6, 15));
+    ENG.shake = real;
+    return { ballN, trebN, hamN };
+  });
+  ok('保齡球滾一整趟、投石機打完一整輪，畫面一次都不震',
+     shakes.ballN === 0 && shakes.trebN === 0,
+     '保齡球 ' + shakes.ballN + ' 次、投石機 ' + shakes.trebN + ' 次');
+  ok('槌子那種單次撞擊照樣震', shakes.hamN === 1, '敲一下震 ' + shakes.hamN + ' 次');
+
+  /* 龍捲風改成跟保齡球同一套操作（v1.58）：第一點是它出現的地方，第二點是掃過去的方向。
+     本來是點一下就朝工地中心掃，方向完全不歸玩家管。 */
+  const twClick = await page.evaluate(() => {
+    const keep = tool;
+    tool = 'tornado'; aim = null; twists = null;
+    useTool({ kind: 'ground', point: { x: -30, y: 0, z: 0 } });
+    const first = { aim: !!aim, n: twists ? twists.length : 0,
+                    rings: aim ? aimRings().length : 0 };
+    useTool({ kind: 'ground', point: { x: -30, y: 0, z: 20 } });      // 往 +z
+    const w = twists && twists[0];
+    const second = { aim: !!aim, n: twists ? twists.length : 0,
+                     x: w ? +w.x.toFixed(2) : null, z: w ? +w.z.toFixed(2) : null,
+                     ang: w ? +Math.atan2(w.vz, w.vx).toFixed(3) : null,
+                     life: w ? w.life : null };
+    for (let i = 0; i < 130 && twists; i++) step(0.05);      // 追到它自己消失
+    const gone = !twists;
+    twists = null; ENG.putTornados([]); aim = null;
+    tool = keep;
+    return { first, second, gone, lim: TW_SPREAD, life: TW_LIFE };
+  });
+  ok('龍捲風第一下只是選地點，還沒真的來',
+     twClick.first.aim && twClick.first.n === 0 && twClick.first.rings === 2,
+     '地上畫了 ' + twClick.first.rings + ' 圈瞄準環，場上 ' + twClick.first.n + ' 道');
+  ok('第二下從第一點生出來，往第二點掃過去',
+     twClick.second.n === 1 && !twClick.second.aim &&
+     twClick.second.x === -30 && twClick.second.z === 0 &&
+     Math.abs(twClick.second.ang - Math.PI / 2) <= twClick.lim,
+     '生在 (' + twClick.second.x + ', ' + twClick.second.z + ')，角度 ' +
+     twClick.second.ang + '（要 ' + (Math.PI / 2).toFixed(3) + ' ±' + twClick.lim + '）');
+  /* 走的路不是一條直線。量「行進方向偏離出發方向多少」，每 0.25 秒取樣一次
+     （每幀取的話量到的是雜訊，不是路徑）。擺動的起始相位是隨機的，單跑一道
+     會忽大忽小，所以跑八道看中位數——這樣才是「這個機制會不會讓它歪」而不是手氣。
+     改之前那版（每幀加亂數加速度、左右互相抵銷）同樣量法只有 0.15 rad。 */
+  const twPath = await page.evaluate(() => {
+    const out = [];
+    for (let run = 0; run < 8; run++) {
+      twists = null;
+      launchTornado({ x: -30, z: 0 }, { x: -30, z: 20 });
+      const a0 = Math.atan2(twists[0].vz, twists[0].vx);
+      let worst = 0;
+      for (let i = 0; i < 20 && twists && twists.length; i++) {
+        for (let k = 0; k < 5; k++) step(0.05);
+        if (!twists || !twists.length) break;
+        let d = Math.atan2(twists[0].vz, twists[0].vx) - a0;
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        worst = Math.max(worst, Math.abs(d));
+      }
+      out.push(+worst.toFixed(2));
+    }
+    twists = null; ENG.putTornados([]);
+    return out.sort((a, b) => a - b);
+  });
+  ok('出發之後一路歪來歪去，不是照直線走',
+     twPath[4] > 0.4 && twPath[0] > 0.15,
+     '八道各自最多偏離出發方向 ' + twPath.join('／') + ' rad（中位數 ' + twPath[4] + '）');
+  ok('龍捲風 5 秒就收', twClick.second.life === 5 && twClick.life === 5 && twClick.gone,
+     'TW_LIFE = ' + twClick.life + ' 秒，追到它自己消失');
+
+  /* 點下去算誰被點到：建築 > 小人 > 地板，不是「誰比較近」（v1.58）。
+     拿槌子對著建築點，剛好有小人走在前面的話，那一下本來會變成戳人。 */
+  const pickOrder = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    const cam = ENG.three.camera;
+    ENG.updateCamera(1); cam.updateMatrixWorld();
+    draw();                       // 積木的位置是 draw() 才推進 InstancedMesh 的，不先畫射線會落空
+    const b = blocks.find(x => x.st === 3 && x.y > 4);
+    const v = new THREE.Vector3(b.x, b.y, b.z).project(cam);
+    const px = (v.x + 1) / 2 * window.innerWidth, py = (1 - v.y) / 2 * window.innerHeight;
+    const clean = ENG.pick(px, py);
+    // 把一個小人搬到「相機與那塊積木之間」，正好擋在射線上
+    const c = cam.position, t = 0.62;
+    const w = workers[0];
+    w.air = 0; w.fall = 0; w.burn = 0;
+    w.x = c.x + (b.x - c.x) * t;
+    w.z = c.z + (b.z - c.z) * t;
+    w.y = c.y + (b.y - c.y) * t - 0.9;                  // 身體中段對準射線
+    draw();
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(new THREE.Vector2(v.x, v.y), cam);
+    const hits = rc.intersectObjects([ENG.three.blockMesh, ENG.three.workerMesh], false);
+    const order = hits.map(h => h.object === ENG.three.workerMesh ? 'w' : 'b').join('');
+    const blocked = ENG.pick(px, py);
+    /* 反過來也要成立：小人身後沒有建築時，點他還是點得到（不然就戳不動人了）。
+       把他搬到相機正前方 40 單位、再往旁邊挪 16——那個方向看過去背景只有草地。 */
+    const fwd = new THREE.Vector3(); cam.getWorldDirection(fwd);
+    const side = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+    w.x = c.x + fwd.x * 40 + side.x * 16;
+    w.z = c.z + fwd.z * 40 + side.z * 16;
+    w.y = 0;
+    draw();
+    const v2 = new THREE.Vector3(w.x, w.y + 0.9, w.z).project(cam);
+    rc.setFromCamera(new THREE.Vector2(v2.x, v2.y), cam);
+    // 自我檢查：這個方向上真的只有小人、沒有積木，不然這一條就白測了
+    const only = rc.intersectObjects([ENG.three.blockMesh, ENG.three.workerMesh], false)
+                   .map(h => h.object === ENG.three.workerMesh ? 'w' : 'b').join('');
+    const solo = ENG.pick((v2.x + 1) / 2 * window.innerWidth, (1 - v2.y) / 2 * window.innerHeight);
+    return { clean: clean && clean.kind, blocked: blocked && blocked.kind,
+             solo: solo && solo.kind, order: order.slice(0, 4), only: only.slice(0, 4) };
+  });
+  ok('小人擋在建築前面時，點下去打的是建築',
+     pickOrder.clean === 'block' && pickOrder.order[0] === 'w' && pickOrder.blocked === 'block',
+     '射線先碰到的是「' + pickOrder.order + '」，判定仍然給 ' + pickOrder.blocked);
+  ok('小人背後沒有建築時照樣戳得到他',
+     pickOrder.solo === 'worker' && pickOrder.only.indexOf('b') < 0,
+     '射線上只有「' + pickOrder.only + '」 → 判定給 ' + pickOrder.solo);
 
   /* 滾多遠：把積木清空、場地放大，量到的就是摩擦與壽命本身（不含撞到東西的煞車）。
      v1.39 之前是 6 秒 ×每秒保留 0.82，量到 119.3；現在 7.5 秒 ×0.86，量到 152.7。 */
@@ -3713,39 +3846,67 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '點下去當下 ' + fwSwap.queued + ' 發在排隊（齊射 ' + fwSwap.shots +
      ' 發）→ 換場後 ' + fwSwap.leftQ + ' 發');
 
-  /* 一場齊射的火星密度：火星比配額多的時候，配額不能被陣列前面那幾顆整碗端走
-     （那會讓第二、三發完全沒有尾巴）。改成頂掉自己人裡最老的那顆之後，
-     粒子數會穩穩貼著 FW_HOT，而不是卡在某一發身上。 */
+  /* 火星要畫成一條拖線，不是一顆點（v1.58，參考圖是長曝光的軌跡）。
+     舊做法是沿路灑小方塊當尾巴：一場齊射三百多顆火星共用 300 顆粒子的配額，
+     平均一顆火星分不到一顆，畫出來就是一片閃爍的點。現在一顆火星＝一條線＝
+     一個 instance，長度跟著它當下的速度走。 */
   const fwDense = await page.evaluate(() => {
     startBuild(true); completeNow(); clearFires();
     hot.length = 0;
     launchFw({ x: 0, z: 0 });
-    let maxHot = 0, maxSp = 0, full = 0;
+    let maxSp = 0, maxDraw = 0, maxLine = 0, minLn = 99, maxLn = 0, aligned = 0, off = 0;
+    let dirBad = 0, headBad = 0, n = 0;
     for (let i = 0; i < 120; i++) {
       step(0.05);
-      maxHot = Math.max(maxHot, hot.length);
+      const list = fireList();
+      /* 每一條線都要對著它那顆火星的速度方向，頭也要落在火星身上——
+         這兩件事才是「看起來像放射狀的線」的來源。要在飛的當下驗，
+         等它們燒完就一顆都不剩了。 */
+      if (fwSparks) for (const s of fwSparks) {
+        const spd = Math.hypot(s.vx, s.vy, s.vz);
+        // 慢到不畫線的那幾顆身上留的是上一幀的線，本來就不會跟現在的速度對得上
+        if (!s.st || spd < FW_TAIL_MIN) continue;
+        n++;
+        if (Math.abs(s.st.dx - s.vx / spd) > 1e-6) dirBad++;
+        const hx = s.st.x + s.st.dx * s.st.ln / 2, hy = s.st.y + s.st.dy * s.st.ln / 2;
+        if (Math.abs(hx - s.x) > 1e-6 || Math.abs(hy - s.y) > 1e-6) headBad++;
+      }
       maxSp = Math.max(maxSp, fwSparks ? fwSparks.length : 0);
-      if (hot.length >= FW_HOT - 2) full++;
+      maxDraw = Math.max(maxDraw, list.length);
+      let lines = 0;
+      for (const p of list) {
+        if (!p.ln) continue;
+        lines++;
+        minLn = Math.min(minLn, p.ln); maxLn = Math.max(maxLn, p.ln);
+        // 方向必須是單位向量，不然引擎那邊 setFromUnitVectors 會歪掉
+        Math.abs(Math.hypot(p.dx, p.dy, p.dz) - 1) < 1e-6 ? aligned++ : off++;
+      }
+      maxLine = Math.max(maxLine, lines);
     }
-    /* 引擎那顆 InstancedMesh 也要畫得下：塞 400 顆進去，看 count 停在哪。
-       停在 240（v1.38 的 MAXFIRE）的話，配額再大也有一截根本沒畫出來。 */
+    /* 引擎那顆 InstancedMesh 也要畫得下：塞 900 條進去，看 count 停在哪。
+       停在 320（v1.57 的 MAXFIRE）的話，一場齊射有一半根本沒畫出來。 */
     const meshes = [];
     ENG.three.scene.traverse(o => { if (o.isInstancedMesh) meshes.push(o); });
     const was = meshes.map(o => o.count);
     const fake = [];
-    for (let i = 0; i < 400; i++)
+    for (let i = 0; i < 900; i++)
       fake.push({ x: 0, y: 500, z: 0, s: 0.01, rx: 0, ry: 0, cr: 1, cg: 1, cb: 1 });
     ENG.putFire(fake);
     const drawable = Math.max(...meshes.map((o, i) => o.count !== was[i] ? o.count : 0));
     ENG.putFire(hot);                                  // 收回去，別把假粒子留在畫面上
-    return { maxHot, maxSp, full, cap: FW_HOT, drawable };
+    return { maxSp, maxDraw, maxLine, aligned, off, dirBad, headBad, n,
+             minLn: +minLn.toFixed(2), maxLn: +maxLn.toFixed(2), drawable,
+             tail: FW_TAIL, cap: FW_TAIL_MAX };
   });
-  ok('齊射期間火星粒子一直是滿的，不是只有第一發有尾巴',
-     fwDense.maxHot >= fwDense.cap - 2 && fwDense.full > 40 && fwDense.maxSp > 200,
-     '最多 ' + fwDense.maxSp + ' 顆火星、粒子 ' + fwDense.maxHot + '/' + fwDense.cap +
-     '，滿的幀數 ' + fwDense.full);
-  ok('引擎畫得下整場齊射的火星', fwDense.drawable >= fwDense.cap,
-     '一次畫得下 ' + fwDense.drawable + ' 顆（配額 ' + fwDense.cap + '）');
+  ok('一場齊射的每一顆火星都有自己的一條拖線',
+     fwDense.maxSp > 200 && fwDense.maxLine > 200 && fwDense.off === 0,
+     '最多 ' + fwDense.maxSp + ' 顆火星、同時 ' + fwDense.maxLine + ' 條線，' +
+     '線長 ' + fwDense.minLn + '～' + fwDense.maxLn + '（上限 ' + fwDense.cap + '）');
+  ok('每條線都順著那顆火星飛的方向，線頭就在火星身上',
+     fwDense.n > 0 && fwDense.dirBad === 0 && fwDense.headBad === 0,
+     '量了 ' + fwDense.n + ' 條，方向錯 ' + fwDense.dirBad + '、線頭錯 ' + fwDense.headBad);
+  ok('引擎畫得下整場齊射的火星', fwDense.drawable >= fwDense.maxDraw && fwDense.drawable >= 900,
+     '一次畫得下 ' + fwDense.drawable + ' 顆（齊射最多送 ' + fwDense.maxDraw + ' 顆）');
 
   /* 一發的內容：外層一大球 + 芯一小球（換個顏色、速度只有一半），
      再加上幾顆飛到一半自己再炸開的。只放一發（不走齊射）才數得清楚。 */
@@ -6367,6 +6528,61 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { d: ENG.cam.yaw - y0 };
   });
   ok('單指拖曳可以轉視角', Math.abs(touch.d) > 0.05, '轉了 ' + (touch.d * 57.3).toFixed(1) + '°');
+
+  /* 觸控之後瀏覽器會補送一組 mousedown／mouseup（給沒寫觸控的網頁用的相容事件）。
+     兩組都收的話手機上點一下等於用了兩次道具——同一個位置兩顆隕石、兩台投石機，
+     而點兩下才發動的保齡球與龍捲風會在原地立刻發動（第一點就是第二點）。 */
+  const ghost = await page.evaluate(() => {
+    const keep = tool;
+    const cv = document.getElementById('cv');
+    const mkT = (t, x, y) => {
+      const e = new Event(t, { bubbles: true, cancelable: true });
+      e.touches = t === 'touchend' ? [] : [{ clientX: x, clientY: y }];
+      return e;
+    };
+    const mkM = (t, x, y) => new MouseEvent(t, { bubbles: true, clientX: x, clientY: y });
+    /* 真的用手指點一下：touchstart → touchend，接著瀏覽器補的那一組滑鼠事件 */
+    const tap = (x, y) => {
+      cv.dispatchEvent(mkT('touchstart', x, y));
+      cv.dispatchEvent(mkT('touchend', x, y));
+      cv.dispatchEvent(mkM('mousedown', x, y));
+      window.dispatchEvent(mkM('mouseup', x, y));
+    };
+    tool = 'meteor'; meteors = null;
+    tap(195, 470);
+    const met = meteors ? meteors.length : 0;
+    meteors = null; ENG.putMeteors([]);
+
+    tool = 'treb'; trebs = null;
+    tap(195, 470);
+    const treb = trebs ? trebs.list.length : 0;
+    trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
+
+    /* 手機也要跟桌機同一套操作：兩點式的工具點兩下才發動，
+       第一下只是選地點（相容事件如果沒擋掉，第一下就會自己變成兩下）。 */
+    tool = 'tornado'; twists = null; aim = null;
+    tap(150, 470);
+    const midAim = !!aim, mid = twists ? twists.length : 0;
+    tap(260, 500);
+    const after = twists ? twists.length : 0;
+    twists = null; ENG.putTornados([]); aim = null;
+
+    tool = 'ball'; ball = null; aim = null;
+    tap(150, 470);
+    const ballMid = !!ball;
+    tap(260, 500);
+    const ballAfter = !!ball;
+    ball = null; ENG.hideBall(); aim = null;
+    tool = keep;
+    return { met, treb, midAim, mid, after, ballMid, ballAfter };
+  });
+  ok('手機上點一下地板只算一次，不會變成兩顆隕石、兩台投石機',
+     ghost.met === 1 && ghost.treb === 1,
+     '點一下 → 隕石 ' + ghost.met + ' 顆、投石機 ' + ghost.treb + ' 台');
+  ok('兩點式的工具在手機上也是點兩下（跟桌機同一套操作）',
+     ghost.midAim && ghost.mid === 0 && ghost.after === 1 &&
+     !ghost.ballMid && ghost.ballAfter,
+     '第一下：龍捲風 ' + ghost.mid + ' 道、球還沒出手；第二下：龍捲風 ' + ghost.after + ' 道、球出手了');
 
   /* 直式手機的水平視角比垂直窄得多，取景只算垂直 fov 的話寬的地標會被切掉：
      修之前 36 座有 24 座出界，金門大橋溢出六成。挑最寬的四座來守。 */
