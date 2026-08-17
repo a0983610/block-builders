@@ -1059,6 +1059,181 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('預覽頁整段跑完沒有 console 錯誤', vpErr.length === 0, vpErr.join(' / ') || '乾淨');
   await vp.close();
 
+  /* ── 匯入建築（v1.57）─────────────────────────────────────
+     遊戲本來只吃檔案（.js 放進 blueprints/ 再加進 list.js），拿到一份 AI 給的藍圖
+     要蓋來看看得繞一大圈。這一段驗整條路：取得 prompt → 貼進來 → 匯入 → 選得到 →
+     關掉再開還在 → 匯得出去給別人 → 刪得掉。
+
+     開一個獨立的分頁跑：匯入會動到 SHAPES、還會寫 localStorage，
+     混進主分頁那條長長的流程裡會影響後面每一條測試。 */
+  head('匯入建築');
+  const impErr = [];
+  const gp = await browser.newPage({ viewport: VIEW, acceptDownloads: true,
+                                     permissions: ['clipboard-read', 'clipboard-write'] });
+  gp.on('pageerror', e => impErr.push('pageerror: ' + e.message));
+  gp.on('console', m => { if (m.type() === 'error') impErr.push('console: ' + m.text().split('\n')[0]); });
+  gp.on('dialog', d => d.accept());          // 刪除會 confirm 一次
+  await gp.goto(APP);
+  await gp.waitForFunction(() => typeof bp !== 'undefined' && bp);
+  // 上一輪測試留下來的（file:// 的 localStorage 是所有 file:// 頁面共用的）
+  await gp.evaluate(() => localStorage.removeItem('block-builders/bp1'));
+
+  const impUi = await gp.evaluate(() => ({
+    after: document.getElementById('badgeBtn').nextElementSibling.id,
+    inCard: document.getElementById('badgeBtn').parentElement.id,
+    open: document.getElementById('impWrap').classList.contains('on'),
+    gem: document.getElementById('impGem').getAttribute('href'),
+    gpt: document.getElementById('impGpt').getAttribute('href'),
+    /* 「同網址的藍圖預覽.html」＝相對網址，解出來要剛好是這一頁旁邊那一支 */
+    sameDir: document.getElementById('impView').href ===
+             location.href.replace(/[^/]*$/, '') + encodeURI('藍圖預覽.html'),
+    blank: ['impGem', 'impGpt', 'impView']
+      .every(i => document.getElementById(i).target === '_blank'),
+    shapes: SHAPES.length
+  }));
+  ok('成就按鈕下面多一顆「匯入建築」，面板預設是關著的',
+     impUi.after === 'impBtn' && impUi.inCard === 'time' && impUi.open === false,
+     '在右上那張卡裡，緊接在 badgeBtn 後面');
+  ok('Gemini／GPT 連到對的網站，藍圖預覽開的是同一個資料夾裡那一支',
+     impUi.gem === 'https://gemini.google.com/app' && impUi.gpt === 'https://chatgpt.com/' &&
+     impUi.sameDir && impUi.blank,
+     impUi.gem + '、' + impUi.gpt + '、藍圖預覽=同網址（都是新分頁）');
+
+  await gp.click('#impBtn');
+  const impOpen = await gp.evaluate(() => ({
+    on: document.getElementById('impWrap').classList.contains('on'),
+    none: document.getElementById('impList').textContent,
+    outOff: document.getElementById('impOut').disabled,
+    docOff: document.getElementById('impDoc').disabled
+  }));
+  ok('按下去面板開起來，還沒匯過時清單是空的、匯出按不動',
+     impOpen.on && impOpen.outOff === true && impOpen.docOff === false &&
+     impOpen.none.indexOf('還沒有匯入過') >= 0,
+     impOpen.none.trim());
+
+  /* 取得 prompt：整份〈藍圖製作說明〉進剪貼簿。玩家拿它去餵網頁版 AI，
+     所以它必須跟 blueprints/ 裡那份逐字相同——那支 .js 是工具產出來的，
+     改了 .md 忘了重跑就會在這裡被抓到。 */
+  await gp.click('#impDoc');
+  await gp.waitForTimeout(250);
+  const impDoc = await gp.evaluate(async () => {
+    let clip = '';
+    try { clip = await navigator.clipboard.readText(); } catch (e) { clip = '(讀不到剪貼簿)'; }
+    return { btn: document.getElementById('impDoc').textContent, clip: clip, doc: BP_DOC };
+  });
+  const mdText = fs.readFileSync(path.join(ROOT, 'blueprints/藍圖製作說明.md'), 'utf8')
+                   .replace(/\r\n/g, '\n');
+  ok('src/bpdoc.js 跟〈藍圖製作說明.md〉逐字相同（改了 .md 要重跑 build-bpdoc）',
+     impDoc.doc === mdText,
+     'BP_DOC ' + impDoc.doc.length + ' 字、.md ' + mdText.length + ' 字');
+  /* 剪貼簿讀回來是 CRLF：Windows 的剪貼簿本來就存 CRLF，貼進 AI 的輸入框沒有差別 */
+  ok('按「取得 prompt」整份說明真的進了剪貼簿',
+     impDoc.btn === '已複製 ✓' && impDoc.clip.replace(/\r\n/g, '\n') === mdText,
+     '按鈕變成「' + impDoc.btn + '」，剪貼簿 ' + impDoc.clip.length + ' 字');
+
+  const impBad = await gp.evaluate(() => {
+    document.getElementById('impPaste').value = 'console.log("哈囉")';
+    document.getElementById('impGo').click();
+    return { msg: document.getElementById('impMsg').textContent,
+             bad: document.getElementById('impMsg').className.indexOf('bad') >= 0,
+             shapes: SHAPES.length, saved: localStorage.getItem('block-builders/bp1') };
+  });
+  ok('貼到不是藍圖的東西會講清楚，而且什麼都不會被加進去',
+     impBad.bad && impBad.msg.indexOf('customBlueprint') > 0 &&
+     impBad.shapes === impUi.shapes && !impBad.saved,
+     impBad.msg);
+
+  const impGood = await gp.evaluate(src => {
+    document.getElementById('impPaste').value = src;
+    document.getElementById('impGo').click();
+    const sel = document.getElementById('shape');
+    return { msg: document.getElementById('impMsg').textContent,
+             good: document.getElementById('impMsg').className.indexOf('good') >= 0,
+             shapes: SHAPES.length,
+             left: document.getElementById('impPaste').value,
+             rows: document.querySelectorAll('#impList .it').length,
+             row: (document.querySelector('#impList .it') || {}).textContent || '',
+             inMenu: [...sel.options].map(o => o.textContent).indexOf('貼上來的小屋'),
+             outOff: document.getElementById('impOut').disabled,
+             saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]') };
+  }, '```js\n// 檔名：我的小屋.js\n' + SAMPLE + '\n```');
+  /* 下拉的第 2 項：[0] 是「🎲 隨機」、[1] 是 blueprints/ 裡那支範例小教堂，
+     自訂的都排在內建 48 座前面，剛匯入的接在自訂那一群的最後面。 */
+  ok('貼上並匯入之後，藍圖清單、下拉選單、存檔三邊都跟上了',
+     impGood.good && impGood.shapes === impUi.shapes + 1 && impGood.rows === 1 &&
+     impGood.inMenu === 2 && impGood.outOff === false && impGood.left === '' &&
+     impGood.saved.length === 1 && impGood.saved[0].names[0] === '貼上來的小屋' &&
+     impGood.saved[0].file === '我的小屋.js',
+     impGood.msg + '　清單「' + impGood.row + '」，下拉第 ' + impGood.inMenu + ' 項');
+
+  const impBuild = await gp.evaluate(() => {
+    const sel = document.getElementById('shape');
+    sel.value = String(SHAPES.findIndex(s => s.n === '貼上來的小屋'));
+    sel.dispatchEvent(new Event('change'));
+    return { name: bp.name, blocks: bp.slots.length, drawn: ENG.three.blockMesh.count };
+  });
+  ok('匯進來的藍圖選得到，也真的蓋得出來',
+     impBuild.name === '貼上來的小屋' && impBuild.blocks > 100 && impBuild.drawn === impBuild.blocks,
+     impBuild.name + '　' + impBuild.blocks + ' 塊全上場');
+
+  /* 關掉再開還要在：預覽頁的貼上是「F5 就沒了」（那是工作台），
+     遊戲這邊是拿來玩的，存下來才有意義。 */
+  await gp.reload();
+  await gp.waitForFunction(() => typeof bp !== 'undefined' && bp);
+  const impKeep = await gp.evaluate(() => ({
+    shapes: SHAPES.length,
+    has: SHAPES.some(s => s.n === '貼上來的小屋'),
+    inMenu: [...document.getElementById('shape').options].map(o => o.textContent)
+              .indexOf('貼上來的小屋')
+  }));
+  ok('重開頁面之後匯進來的藍圖還在（而且還是排在自訂那一群裡）',
+     impKeep.has && impKeep.shapes === impUi.shapes + 1 && impKeep.inMenu === 2,
+     '共 ' + impKeep.shapes + ' 座，下拉第 ' + impKeep.inMenu + ' 項');
+
+  await gp.click('#impBtn');
+  const [impDl] = await Promise.all([gp.waitForEvent('download'), gp.click('#impOut')]);
+  const impPath = path.join(OUT, 'game-export.js');
+  await impDl.saveAs(impPath);
+  const impText = fs.readFileSync(impPath, 'utf8');
+  ok('「匯出 .js」存得出一支可以傳給別人的藍圖檔',
+     impDl.suggestedFilename() === '我的小屋.js' && impText.indexOf('customBlueprint') > 0 &&
+     impText.indexOf('```') < 0 && impText.indexOf('積木小人 · 匯出的藍圖（1 座）') > 0,
+     '檔名「' + impDl.suggestedFilename() + '」，' + impText.split('\n').length + ' 行');
+  const impRound = await gp.evaluate(src => {
+    document.getElementById('impPaste').value = src;
+    document.getElementById('impGo').click();
+    return { good: document.getElementById('impMsg').className.indexOf('good') >= 0,
+             msg: document.getElementById('impMsg').textContent,
+             shapes: SHAPES.length,
+             rows: document.querySelectorAll('#impList .it').length };
+  }, impText);
+  ok('匯出來的檔案貼回去照樣匯得進來，而且是蓋掉不是又多一座',
+     impRound.good && impRound.shapes === impUi.shapes + 1 && impRound.rows === 1,
+     impRound.msg);
+
+  const impDel = await gp.evaluate(() => {
+    document.querySelector('#impList .it button').click();
+    const sel = document.getElementById('shape');
+    return { shapes: SHAPES.length,
+             has: SHAPES.some(s => s.n === '貼上來的小屋'),
+             rows: document.querySelectorAll('#impList .it').length,
+             inMenu: [...sel.options].map(o => o.textContent).indexOf('貼上來的小屋'),
+             pick: shapePick,
+             saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]').length,
+             outOff: document.getElementById('impOut').disabled };
+  });
+  ok('刪掉之後 SHAPES、下拉選單、存檔三邊都清乾淨了',
+     !impDel.has && impDel.shapes === impUi.shapes && impDel.rows === 0 &&
+     impDel.inMenu < 0 && impDel.saved === 0 && impDel.outOff === true,
+     '回到 ' + impDel.shapes + ' 座，存檔 ' + impDel.saved + ' 筆');
+  /* 剛才選的就是被刪掉那一座：shapePick 不能繼續指著那個索引，
+     不然「指定要蓋的」會悄悄變成剛好遞補上來的別座。 */
+  ok('刪掉正在指定的那一座，會退回「隨機」而不是指向別座',
+     impDel.pick === -1, 'shapePick = ' + impDel.pick);
+
+  ok('匯入建築整段跑完沒有 console 錯誤', impErr.length === 0, impErr.join(' / ') || '乾淨');
+  await gp.close();
+
   /* 金門大橋：跨距是奇數時 −L/2 是 .5，整條橋的 x 都變半格，
      吊索那行的 `x % 3 === 0` 永遠不成立 → 那個尺度整座橋沒有吊索，
      塊數比小一號的還少。修法是用整數半跨跑迴圈。 */

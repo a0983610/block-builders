@@ -140,7 +140,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.56.0';
+const VIEWER_VER = '1.57.0';
 
 const $ = id => document.getElementById(id);
 
@@ -246,72 +246,18 @@ function build() {
 /* ── 貼上藍圖 ─────────────────────────────────────────────
    做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，中間不該卡著「存檔案 + 編輯 list.js」。
    所以這裡貼進來的藍圖**只活在這一頁**（F5 就沒了，要留著就照下面那行提示存檔）。
-   這等於執行使用者自己貼進來的程式碼——跟把 .js 丟進 blueprints/ 同一個信任等級，
-   而這一頁本來就是給做藍圖的人用的。遊戲（index.html）沒有這個入口。 */
+   真正把程式跑起來的是 blueprints.js 的 importBlueprint()——遊戲的「匯入建築」
+   走的是同一支，兩邊的清洗與撞名規則才會一模一樣。 */
 const pasted = new Set();          // 這一頁貼進來的那幾份在 SHAPES 的索引
 /* 貼進來的原始碼，用藍圖名字當鍵（SHAPES 裡名字不會重複，索引則會因為蓋掉同名而位移）。
    留著是為了「下載 .js」：滿意了就直接存成檔案，不必回頭去翻剛才貼的那段。
    一次貼進好幾份的話，每一份指到的都是同一段程式——它們本來就是同一個檔案。 */
 const pastedSrc = new Map();
 
-function cleanPaste(t) {
-  return String(t)
-    .replace(/```[a-zA-Z]*\n?/g, '')     // AI 很愛加的 markdown 圍籬
-    .replace(/^\s*檔名[：:].*$/gm, '')    // 「檔名：我的塔.js」那一行
-    .trim();
-}
-
 function pasteBlueprint(raw) {
-  const code = cleanPaste(raw);
-  if (!code) throw new Error('貼上的內容是空的。');
-  if (code.indexOf('customBlueprint') < 0)
-    throw new Error('看不到 customBlueprint(...)。要貼的是 blueprints/ 裡那種檔案的整段內容。');
-
-  /* 先用一個攔截版的 customBlueprint 把定義接下來：這樣能先看名字，
-     決定要不要蓋掉上一次貼的同名那份，再交給真正的 customBlueprint 走它的驗證。
-     其他工具（dim／blob／tint…）都是全域，貼進來的程式直接看得到。 */
-  const defs = [];
-  let fn;
-  try { fn = new Function('customBlueprint', code); }
-  catch (e) { throw new Error('程式有語法錯誤：' + e.message); }
-  try { fn(d => { defs.push(d); return 0; }); }
-  catch (e) { throw new Error('執行時出錯：' + e.message); }
-  if (!defs.length) throw new Error('這段程式沒有真的呼叫到 customBlueprint(...)。');
-
-  const added = [];
-  for (const def of defs) {
-    if (!def || !def.name) throw new Error('customBlueprint 少了 name。');
-    const old = SHAPES.findIndex(s => s.n === def.name);
-    if (old >= 0) {
-      if (!pasted.has(old))
-        throw new Error('名字「' + def.name + '」跟內建或 blueprints/ 裡的藍圖撞號，改個 name 再貼。');
-      /* 只蓋掉自己貼的那份。splice 會讓後面的索引往前挪一格，所以整組重算 */
-      SHAPES.splice(old, 1);
-      const moved = [];
-      for (const i of pasted) if (i !== old) moved.push(i > old ? i - 1 : i);
-      pasted.clear();
-      for (const i of moved) pasted.add(i);
-    }
-    // customBlueprint 擋掉時的理由只走 console.warn，借過來當錯誤訊息
-    let why = '';
-    const orig = console.warn;
-    console.warn = m => { why = String(m); };
-    let idx;
-    try { idx = customBlueprint(def); } finally { console.warn = orig; }
-    if (idx < 0) throw new Error(why || '這份藍圖被 customBlueprint 擋掉了。');
-    pasted.add(idx);
-    pastedSrc.set(def.name, { file: fileNameOf(code, def.name), code: code });
-    added.push({ idx: idx, name: def.name });
-  }
+  const added = importBlueprint(raw, pasted);
+  for (const a of added) pastedSrc.set(a.name, { file: a.file, code: a.code });
   return added;
-}
-/* 存檔要用的檔名。AI 照〈藍圖製作說明〉會在第一行寫 `// 檔名：xxx.js`（那行是合法的
-   註解，所以留在程式裡不必清掉）；沒寫就拿藍圖名字當檔名。
-   路徑分隔字元與 Windows 不收的字要濾掉——檔名是從貼進來的文字撈的，不是我們給的。 */
-function fileNameOf(code, name) {
-  const m = code.match(/檔名\s*[：:]\s*([^\r\n]+?\.js)\s*$/m);
-  const raw = m ? m[1] : name + '.js';
-  return raw.replace(/[\\/:*?"<>|]/g, '').trim() || (name + '.js');
 }
 
 /* ── 體檢報告 ───────────────────────────────────────────── */

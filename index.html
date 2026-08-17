@@ -136,13 +136,13 @@
   #toast .t b{font-size:14px}
   #toast .t span{font-size:11px;opacity:.72}
 
-  #badgeWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
+  #badgeWrap,#impWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
              background:rgba(12,18,26,.72)}
-  #badgeWrap.on{display:grid}
-  #badgeBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
+  #badgeWrap.on,#impWrap.on{display:grid}
+  #badgeBox,#impBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
             max-height:82vh;overflow:auto}
-  #badgeBox h2{margin:0 0 2px;font-size:17px}
-  #badgeBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
+  #badgeBox h2,#impBox h2{margin:0 0 2px;font-size:17px}
+  #badgeBox .sub,#impBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
   /* 成就多了就排兩欄，不然要一直捲 */
   #badgeBox #badges{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:7px}
   #badgeLoss{color:var(--bad);font-weight:700}
@@ -151,8 +151,31 @@
   .badge.got{background:#fdf1e2;opacity:1}
   .badge b{font-size:13px}
   .badge span{font-size:11.5px;opacity:.7}
-  #badgeBox .row{display:flex;gap:8px;margin-top:12px}
-  #badgeBox .row button{flex:1}
+  #badgeBox .row,#impBox .row{display:flex;gap:8px;margin-top:12px}
+  #badgeBox .row button,#impBox .row button{flex:1}
+
+  /* 匯入建築：先去拿一份藍圖（四顆入口）→ 貼進來 → 匯入 → 下面是存下來的清單 */
+  #impBox .go{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:12px}
+  #impBox .go a,#impBox .go button{display:flex;align-items:center;justify-content:center;
+    padding:7px 4px;font-size:12.5px;white-space:nowrap;text-decoration:none;
+    color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:9px;cursor:pointer}
+  #impBox .go a:hover,#impBox .go button:hover{background:#f4efe7}
+  /* body 給了 user-select:none（免得拖曳轉視角時選到字），輸入框要自己要回來 */
+  #impPaste{width:100%;height:118px;margin-top:9px;resize:vertical;color:var(--ink);
+    font:11.5px/1.45 ui-monospace,Consolas,monospace;
+    border:1px solid var(--line);border-radius:9px;padding:7px 8px;
+    -webkit-user-select:text;user-select:text}
+  #impMsg{display:none;font-size:12px;margin-top:7px;line-height:1.6}
+  #impMsg.on{display:block}
+  #impMsg.bad{color:var(--bad)}
+  #impMsg.good{color:var(--ok)}
+  #impList{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+  #impList .it{display:flex;align-items:center;gap:8px;padding:6px 10px;
+    border-radius:10px;background:#f4f2ef;font-size:12.5px}
+  #impList .it span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;font-size:11.5px;opacity:.58}
+  #impList .it button{padding:3px 9px;font-size:12px}
+  #impList .none{font-size:12px;opacity:.6;padding:3px 2px}
 
   /* 小窗只有約 120px 寬，上方中央本來就放得下；1500 這個斷點是留給窄視窗的：
      畫面越窄、左上的建築資訊卡（玩久了會撐到 354px）與右上的時鐘越靠中間，
@@ -168,8 +191,10 @@
   }
 
   @media (max-width:640px){
-    /* 限寬，不然統計那一行會把卡片撐到右上角的時鐘底下 */
-    #head{min-width:0;padding:8px 11px;max-width:calc(100vw - 220px)}
+    /* 限寬，不然統計那一行會把卡片撐到右上角的時鐘底下。
+       扣掉的是時鐘那張卡的寬度＋兩邊留白：它的寬度是裡面最寬那顆按鈕撐出來的，
+       v1.57 多了「📥 匯入建築」之後從 186 變成 193px（220 那版會剛好疊到 1px）。 */
+    #head{min-width:0;padding:8px 11px;max-width:calc(100vw - 232px)}
     #head h1{font-size:15px}
     #stat{font-size:10px;gap:2px 8px}
     #clock{font-size:20px}
@@ -213,6 +238,7 @@
   <div class="row bad">損失 <b id="lossAll">$0</b></div>
   <div class="row" id="fps">— fps</div>
   <button id="badgeBtn" style="margin-top:7px;width:100%">🏅 成就</button>
+  <button id="impBtn" style="margin-top:6px;width:100%">📥 匯入建築</button>
 </div>
 
 <div id="toast"></div>
@@ -256,8 +282,37 @@
   </div>
 </div>
 
+<!-- 匯入建築：請 AI 照〈藍圖製作說明〉做一份藍圖，貼進來就能在遊戲裡蓋出來。
+     跟藍圖預覽.html 的貼上框走同一支 importBlueprint()，差別是這邊會存起來。 -->
+<div id="impWrap">
+  <div id="impBox">
+    <h2>📥 匯入建築</h2>
+    <div class="sub">請 AI 照說明做一份藍圖，貼進來就能在遊戲裡蓋。匯進來的會存在這台電腦上。</div>
+    <div class="go">
+      <button id="impDoc" type="button">📋 取得 prompt</button>
+      <!-- 這兩個是外站，藍圖預覽是同一個資料夾裡的那一頁（相對網址＝同網址） -->
+      <a id="impGem" href="https://gemini.google.com/app" target="_blank" rel="noopener">Gemini</a>
+      <a id="impGpt" href="https://chatgpt.com/" target="_blank" rel="noopener">GPT</a>
+      <a id="impView" href="藍圖預覽.html" target="_blank" rel="noopener">藍圖預覽</a>
+    </div>
+    <textarea id="impPaste" spellcheck="false"
+      placeholder="把 AI 給的整段貼進來（就是 customBlueprint({...}) 那種內容）。```js 圍籬與「檔名：xxx.js」那行會自動忽略。"></textarea>
+    <div class="row">
+      <button class="primary" id="impGo">匯入</button>
+      <button id="impOut" title="把存下來的藍圖存成一支 .js，可以傳給別人">匯出 .js</button>
+    </div>
+    <div id="impMsg"></div>
+    <div id="impList"></div>
+    <div class="row"><button id="impClose">關閉</button></div>
+  </div>
+</div>
+
 <script src="lib/three.min.js"></script>
 <script src="src/blueprints.js"></script>
+<!-- 〈藍圖製作說明.md〉包成的 JS（tools/build-bpdoc.cjs 產出）：
+     file:// 讀不到旁邊的 .md，而「取得 prompt」要把整份說明放進剪貼簿。
+     沒放這一支的話遊戲照跑，只有那顆按鈕會停用。 -->
+<script src="src/bpdoc.js"></script>
 <!-- 自訂藍圖：list.js 列出檔名，下面這段逐一叫進來，接在內建的 48 座後面。
      file:// 沒辦法列資料夾內容（fetch 會被 CORS 擋），所以一定要有那份清單；
      用 document.write 是因為它是解析期同步插入，順序保證排在 game.js 前面

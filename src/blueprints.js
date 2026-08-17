@@ -2032,6 +2032,71 @@ function customBlueprint(def) {
   return SHAPES.length - 1;
 }
 
+/* ── 匯入一段貼上來的藍圖 ─────────────────────────────────
+   「把 AI 給的整段 customBlueprint({...}) 貼進來」有兩個入口：藍圖預覽.html 的貼上框、
+   遊戲的「匯入建築」。兩邊的清洗、撞名規則、錯誤訊息都必須一模一樣，所以收在這裡一份。
+
+   這等於執行使用者自己貼進來的程式碼——跟把 .js 丟進 blueprints/ 同一個信任等級。
+   own 是「這個入口自己貼進來的那幾份」在 SHAPES 的索引：只有自己貼的才准蓋掉，
+   撞到內建或 blueprints/ 裡的一律擋下來（不然會愈貼愈多，或蓋掉別人的檔案）。 */
+function cleanPaste(t) {
+  return String(t)
+    .replace(/```[a-zA-Z]*\n?/g, '')     // AI 很愛加的 markdown 圍籬
+    .replace(/^\s*檔名[：:].*$/gm, '')    // 「檔名：我的塔.js」那一行（沒有 // 的那種）
+    .trim();
+}
+/* 存檔要用的檔名。AI 照〈藍圖製作說明〉會在第一行寫 `// 檔名：xxx.js`（那行是合法的
+   註解，所以留在程式裡不必清掉）；沒寫就拿藍圖名字當檔名。
+   路徑分隔字元與 Windows 不收的字要濾掉——檔名是從貼進來的文字撈的，不是我們給的。 */
+function bpFileName(code, name) {
+  const m = code.match(/檔名\s*[：:]\s*([^\r\n]+?\.js)\s*$/m);
+  const raw = m ? m[1] : name + '.js';
+  return raw.replace(/[\\/:*?"<>|]/g, '').trim() || (name + '.js');
+}
+function importBlueprint(raw, own) {
+  const code = cleanPaste(raw);
+  if (!code) throw new Error('貼上的內容是空的。');
+  if (code.indexOf('customBlueprint') < 0)
+    throw new Error('看不到 customBlueprint(...)。要貼的是 blueprints/ 裡那種檔案的整段內容。');
+
+  /* 先用一個攔截版的 customBlueprint 把定義接下來：這樣能先看名字，
+     決定要不要蓋掉上一次貼的同名那份，再交給真正的 customBlueprint 走它的驗證。
+     其他工具（dim／blob／tint…）都是全域，貼進來的程式直接看得到。 */
+  const defs = [];
+  let fn;
+  try { fn = new Function('customBlueprint', code); }
+  catch (e) { throw new Error('程式有語法錯誤：' + e.message); }
+  try { fn(d => { defs.push(d); return 0; }); }
+  catch (e) { throw new Error('執行時出錯：' + e.message); }
+  if (!defs.length) throw new Error('這段程式沒有真的呼叫到 customBlueprint(...)。');
+
+  const added = [];
+  for (const def of defs) {
+    if (!def || !def.name) throw new Error('customBlueprint 少了 name。');
+    const old = SHAPES.findIndex(s => s.n === def.name);
+    if (old >= 0) {
+      if (!own.has(old))
+        throw new Error('名字「' + def.name + '」跟內建或 blueprints/ 裡的藍圖撞號，改個 name 再貼。');
+      /* 只蓋掉自己貼的那份。splice 會讓後面的索引往前挪一格，所以整組重算 */
+      SHAPES.splice(old, 1);
+      const moved = [];
+      for (const i of own) if (i !== old) moved.push(i > old ? i - 1 : i);
+      own.clear();
+      for (const i of moved) own.add(i);
+    }
+    // customBlueprint 擋掉時的理由只走 console.warn，借過來當錯誤訊息
+    let why = '';
+    const orig = console.warn;
+    console.warn = m => { why = String(m); };
+    let idx;
+    try { idx = customBlueprint(def); } finally { console.warn = orig; }
+    if (idx < 0) throw new Error(why || '這份藍圖被 customBlueprint 擋掉了。');
+    own.add(idx);
+    added.push({ idx: idx, name: def.name, file: bpFileName(code, def.name), code: code });
+  }
+  return added;
+}
+
 /* ── 藍圖體檢 ─────────────────────────────────────────────
    產出一份**純文字報告**，用途是「貼回去給產出這份藍圖的 AI」。
    為什麼要這樣設計：一般玩家手上不會有能跑指令的 AI，流程是把
@@ -2233,6 +2298,7 @@ function checkBlueprint(which, opt) {
 if (typeof module !== 'undefined' && module.exports)
   module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NBR, gkeyOf, customBlueprint,
                      checkBlueprint, bpIndexOf, BP_TARGETS,
+                     cleanPaste, bpFileName, importBlueprint,
                      dim, ringOf, mirrorX, mirrorZ, arch, archRow, stairs, hipRoof,
                      windowGrid, lattice, corners4, tubeZ, wheelX, tint, paintFrom, blob };
 

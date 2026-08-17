@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.56.0';
+const VERSION = '1.57.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -4036,10 +4036,12 @@ const keyDown = Object.create(null);
 
 function onKey(e) {
   if (!PAN_KEY[e.code] && !ORBIT_KEY[e.code]) return;
-  /* 只擋下拉選單：字母鍵在 select 上是拿來跳選項的。
+  /* 只擋下拉選單與輸入框：字母鍵在 select 上是拿來跳選項的，在「匯入建築」的
+     貼上框裡是真的在打字（不擋的話貼一段藍圖進去，鏡頭會跟著 WASD 一路飄走）。
      面板的按鈕與核取方塊吃的是空白鍵／Enter，跟 WASD 不衝突，
      一起擋掉的話「剛按完設定就按不動鏡頭」反而莫名其妙。 */
-  if (e.target && e.target.tagName === 'SELECT') return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'INPUT') return;
   keyDown[e.code] = e.type === 'keydown';
 }
 // 按著 W 切去別的視窗，keyup 收不到，切回來鏡頭會自己一直飄
@@ -4163,6 +4165,160 @@ function renderToasts() {
     '<div class="t"><b>' + t.txt + '</b>' + (t.sub ? '<span>' + t.sub + '</span>' : '') + '</div>').join('');
 }
 
+/* ── 匯入建築 ─────────────────────────────────────────────
+   遊戲本來只吃檔案（.js 放進 blueprints/ 再加進 list.js），那對「拿到一份 AI 給的
+   藍圖、想馬上蓋來看看」太遠了。這一格把整條路收進遊戲裡：
+   取得 prompt → 去 Gemini／GPT 要一份 → 貼進來 → 匯入 → 立刻選得到。
+
+   跟藍圖預覽.html 走同一支 importBlueprint()（清洗、撞名規則、錯誤訊息都一樣），
+   差別是這邊會存下來：預覽頁是做藍圖的工作台，F5 就沒了才對；遊戲是拿來玩的，
+   關掉再開還要在。這等於在遊戲裡執行使用者自己貼進來的程式碼——跟把 .js 丟進
+   blueprints/ 同一個信任等級，差別只在「存起來的每次開頁都會再跑一次」。 */
+const IMPORT_KEY = 'block-builders/bp1';
+/* 存原始碼而不是產生出來的格子：藍圖是一支會跟著建材檔位重畫的函式，
+   存格子等於把它釘死在某一個大小。一次匯入算一筆——一支檔案可以呼叫好幾次
+   customBlueprint，那幾座就一起進來、一起刪、一起匯出。 */
+let imported = [];                 // [{file, code, names:[…]}]
+const importedIdx = new Set();     // 這幾座在 SHAPES 的索引；importBlueprint 靠它判斷能不能蓋掉
+
+const esc = t => String(t).replace(/[&<>"]/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function loadImports() {
+  let txt = null;
+  try { txt = localStorage.getItem(IMPORT_KEY); } catch (e) { return; }   // 無痕模式會直接丟例外
+  if (!txt) return;
+  let list;
+  try { list = JSON.parse(txt); } catch (e) { return; }
+  if (!Array.isArray(list)) return;
+  for (const it of list) {
+    if (!it || typeof it.code !== 'string') continue;
+    /* 一份壞的不能把遊戲弄到開不起來，也不能拖垮其他份——存檔可能是舊版存的，
+       也可能被手改過。跳過它、其餘照常，理由留在 console。 */
+    try {
+      const added = importBlueprint(it.code, importedIdx);
+      imported.push({ file: added[0].file, code: added[0].code, names: added.map(a => a.name) });
+    } catch (e) {
+      console.warn('[匯入的藍圖] ' + ((it.names && it.names[0]) || it.file || '?') +
+                   ' 載不起來，跳過：' + e.message);
+    }
+  }
+}
+function saveImports() {
+  try { localStorage.setItem(IMPORT_KEY, JSON.stringify(imported)); return true; }
+  catch (e) { return false; }               // 空間滿了：這一輪還在，關掉就沒了
+}
+
+/* 下拉選單重建。匯入／刪除之後都要叫一次，不然新的那座選不到、刪掉的還留在單子上。
+   自訂藍圖排在最前面（緊接在「隨機」後面）：會自己弄藍圖的人就是想馬上看到成果，
+   排在內建 48 座後面每次都得捲到底。只動顯示順序——option 的 value 一律還是
+   SHAPES 的索引，所以 shapePick、存檔記的編號、測試裡寫死的索引都不受影響。
+   用兩次 filter 而不是 sort：不必依賴 sort 的穩定性，同一群內的原順序就是原順序。 */
+function refreshShapeMenu() {
+  const sel = $('shape'), ord = SHAPES.map((s, i) => i);
+  sel.innerHTML = '<option value="-1">🎲 隨機</option>' +
+    ord.filter(i => SHAPES[i].custom).concat(ord.filter(i => !SHAPES[i].custom))
+       .map(i => '<option value="' + i + '">' + esc(SHAPES[i].n) + '</option>').join('');
+  sel.value = String(shapePick);
+  if (sel.value !== String(shapePick)) sel.value = '-1';    // 指定的那座剛被刪掉
+}
+
+/* 把某一座從 SHAPES 拿掉。匯進來的一律排在最後面（內建 48 → blueprints/ → 匯入），
+   所以只會動到其他匯入的索引；splice 之後那些要整組往前挪一格。
+   shapePick 也得跟著挪，不然「指定要蓋的那一座」會悄悄變成別座。 */
+function dropShape(at) {
+  SHAPES.splice(at, 1);
+  const moved = [];
+  for (const i of importedIdx) if (i !== at) moved.push(i > at ? i - 1 : i);
+  importedIdx.clear();
+  for (const i of moved) importedIdx.add(i);
+  if (shapePick === at) shapePick = -1;
+  else if (shapePick > at) shapePick--;
+}
+
+function renderImports() {
+  $('impList').innerHTML = imported.length
+    ? imported.map((e, i) => '<div class="it"><b>' + esc(e.names.join('、')) + '</b><span>' +
+        esc(e.file) + '</span><button data-del="' + i + '">刪除</button></div>').join('')
+    : '<div class="none">還沒有匯入過。上面那四顆是「去弄一份藍圖」的捷徑。</div>';
+  $('impOut').disabled = !imported.length;
+}
+
+function doImport() {
+  const msg = $('impMsg');
+  try {
+    const added = importBlueprint($('impPaste').value, importedIdx);
+    /* 同名再匯一次是「換一版」：舊那筆要拿掉，不然清單多一列、匯出也會重複一份。
+       SHAPES 那邊 importBlueprint 已經自己蓋掉了。 */
+    imported = imported.filter(e => !e.names.some(n => added.some(a => a.name === n)));
+    imported.push({ file: added[0].file, code: added[0].code, names: added.map(a => a.name) });
+    const kept = saveImports();
+    refreshShapeMenu();
+    renderImports();
+    $('impPaste').value = '';               // 免得手滑再按一次又匯一遍
+    const who = added.map(a => a.name).join('、');
+    msg.className = 'on good';
+    msg.textContent = '✔ 匯入「' + who + '」，設定面板的下拉選單裡選得到了。' +
+      (kept ? '' : '（存不下來：瀏覽器的儲存空間滿了，這一份關掉頁面就沒了）');
+    toast('📥 ' + who, '匯入完成');
+  } catch (e) {
+    msg.className = 'on bad';
+    msg.textContent = '✘ ' + ((e && e.message) ? e.message : e);
+  }
+}
+
+/* 存成檔案。data: URL 直接掛 <a download> 有些瀏覽器會擋，轉成 blob 最保險（file:// 也通）。 */
+function download(name, text) {
+  const href = URL.createObjectURL(new Blob([text], { type: 'text/javascript;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
+}
+/* 匯出：把存下來的整包存成一支 .js，傳給別人就能用（對方放進 blueprints/，
+   或一樣從「匯入建築」貼進去）。一份檔案本來就可以呼叫好幾次 customBlueprint，
+   所以整包接在一起就是合法的藍圖檔。 */
+function exportImports() {
+  if (!imported.length) return;
+  const n = imported.reduce((k, e) => k + e.names.length, 0);
+  const text = '/* 積木小人 · 匯出的藍圖（' + n + ' 座）\n' +
+               '   用法二選一：放進 blueprints/ 並把檔名加進 list.js，\n' +
+               '   或在遊戲裡按「📥 匯入建築」把整份貼進去。 */\n\n' +
+               imported.map(e => e.code.replace(/\s*$/, '')).join('\n\n') + '\n';
+  download(imported.length === 1 ? imported[0].file : '我的藍圖-' + n + '座.js', text);
+  $('impOut').textContent = '已下載 ✓';
+  setTimeout(() => { $('impOut').textContent = '匯出 .js'; }, 1600);
+}
+
+/* 複製到剪貼簿。file:// 上 clipboard API 給不給要看瀏覽器政策，
+   所以留一條 execCommand 的退路（跟藍圖預覽.html 那顆「複製報告」同一套）。 */
+function copyText(text, btn, back) {
+  const done = () => { btn.textContent = '已複製 ✓'; setTimeout(() => { btn.textContent = back; }, 1600); };
+  const legacy = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    if (ok) { done(); return; }
+    btn.textContent = '複製不了 · 按 F12 貼';
+    setTimeout(() => { btn.textContent = back; }, 2200);
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, legacy);
+      return;
+    }
+  } catch (e) { /* 往下走舊路 */ }
+  legacy();
+}
+
 /* ── 啟動 ───────────────────────────────────────────────── */
 function boot() {
   $('ver').textContent = 'v' + VERSION;
@@ -4182,17 +4338,10 @@ function boot() {
   window.addEventListener('keyup', onKey);
   window.addEventListener('blur', clearKeys);
 
-  const sel = $('shape');
-  /* 自訂藍圖排在最前面（緊接在「隨機」後面）：會自己丟檔案進 blueprints/ 的人
-     就是想馬上看到成果，排在內建 48 座後面每次都得捲到底。
-     只動顯示順序——option 的 value 一律還是 SHAPES 的索引，
-     所以 shapePick、存檔記的編號、測試裡寫死的索引都不受影響。
-     用兩次 filter 而不是 sort：不必依賴 sort 的穩定性，同一群內的原順序就是原順序。 */
-  const ord = SHAPES.map((s, i) => i);
-  sel.innerHTML = '<option value="-1">🎲 隨機</option>' +
-    ord.filter(i => SHAPES[i].custom).concat(ord.filter(i => !SHAPES[i].custom))
-       .map(i => '<option value="' + i + '">' + SHAPES[i].n + '</option>').join('');
-  sel.addEventListener('change', () => { shapePick = +sel.value; startBuild(false); });
+  /* 上次匯進來的藍圖要在建選單之前進 SHAPES，不然這一輪選單裡沒有它們 */
+  loadImports();
+  refreshShapeMenu();
+  $('shape').addEventListener('change', e => { shapePick = +e.target.value; startBuild(false); });
 
   /* 設定改動一律寫回 pref 並存檔——下次打開就不用重調。
      建材改了要重蓋（那是「下一座蓋多大」），小人與速度是當下就生效，不必打斷這一座。 */
@@ -4226,6 +4375,43 @@ function boot() {
   });
   $('resetBtn').addEventListener('click', () => {
     if (confirm('清掉所有紀錄與成就？（建築不受影響）')) { resetSave(); toast('紀錄已清空'); }
+  });
+
+  $('impBtn').addEventListener('click', () => {
+    renderImports();
+    $('impMsg').className = '';               // 上一次的結果不要留到下一次開啟
+    $('impWrap').classList.add('on');
+  });
+  $('impWrap').addEventListener('click', e => {
+    if (e.target.id === 'impWrap' || e.target.id === 'impClose') $('impWrap').classList.remove('on');
+  });
+  $('impGo').addEventListener('click', doImport);
+  $('impOut').addEventListener('click', exportImports);
+  /* 沒放 src/bpdoc.js 的話遊戲照跑，只有這顆拿不到說明全文 */
+  if (typeof BP_DOC === 'string')
+    $('impDoc').addEventListener('click', () => copyText(BP_DOC, $('impDoc'), '📋 取得 prompt'));
+  else {
+    $('impDoc').disabled = true;
+    $('impDoc').title = 'src/bpdoc.js 沒放進來，拿不到〈藍圖製作說明〉全文';
+  }
+  $('impList').addEventListener('click', e => {
+    const at = e.target.dataset.del;
+    if (at === undefined) return;
+    const it = imported[+at];
+    if (!it || !confirm('刪掉「' + it.names.join('、') + '」？刪了就沒有備份了。')) return;
+    /* 由後往前拿掉，才不會刪一座就讓下一座的索引跑掉 */
+    const gone = [];
+    for (const n of it.names) {
+      const g = SHAPES.findIndex(s => s.n === n);
+      if (g >= 0) gone.push(g);
+    }
+    gone.sort((a, b) => b - a);
+    for (const g of gone) dropShape(g);
+    imported.splice(+at, 1);
+    saveImports();
+    refreshShapeMenu();
+    renderImports();
+    toast('已刪除', it.names.join('、'));
   });
 
   load();
