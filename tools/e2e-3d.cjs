@@ -3677,6 +3677,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('出發之後一路歪來歪去，不是照直線走',
      twPath[4] > 0.4 && twPath[0] > 0.15,
      '八道各自最多偏離出發方向 ' + twPath.join('／') + ' rad（中位數 ' + twPath[4] + '）');
+  /* 移動速度（v1.62.2 使用者指定「提升」，整組乘 1.6）。量的是**每秒真的走幾單位**，
+     不是讀常數：速度每幀被亂數推一下、又夾在上下限之間，讀常數證明不了它實際走多快。
+     跑八道看中位數（單跑一道會被那組亂數帶偏），順便驗沒有任何一幀跑出上下限。 */
+  const twSpd = await page.evaluate(() => {
+    const out = [];
+    let lo = 1e9, hi = 0;
+    for (let run = 0; run < 8; run++) {
+      twists = null;
+      launchTornado({ x: 0, z: 0 }, { x: 0, z: 20 });
+      let d = 0, t = 0, px = twists[0].x, pz = twists[0].z;
+      for (let i = 0; i < 100 && twists && twists.length; i++) {
+        step(0.05); t += 0.05;
+        if (!twists || !twists.length) break;
+        const w = twists[0], one = Math.hypot(w.x - px, w.z - pz);
+        lo = Math.min(lo, one / 0.05); hi = Math.max(hi, one / 0.05);
+        d += one; px = w.x; pz = w.z;
+      }
+      out.push(+(d / t).toFixed(2));
+    }
+    twists = null; ENG.putTornados([]);
+    return { spd: out.sort((a, b) => a - b), lo: +lo.toFixed(2), hi: +hi.toFixed(2),
+             s0: TW_SPD0, min: TW_SPD_MIN, max: TW_SPD_MAX };
+  });
+  ok('龍捲風走得比以前快（v1.62.2）',
+     twSpd.spd[4] > 4.5 && twSpd.spd[0] > 3.5,
+     '八道各自的平均速度 ' + twSpd.spd.join('／') + ' 單位／秒（中位數 ' + twSpd.spd[4] +
+     '；出發 ' + twSpd.s0 + '，改之前是 3.2）');
+  ok('速度一直待在上下限之間',
+     twSpd.lo >= twSpd.min - 0.01 && twSpd.hi <= twSpd.max + 0.01,
+     '整段量到最慢 ' + twSpd.lo + '、最快 ' + twSpd.hi +
+     '（上下限 ' + twSpd.min + '～' + twSpd.max + '）');
+
   /* 10 秒（v1.62，本來 5）：改成「一趟只咬得走兩成」之後，五秒不夠看出它在做什麼。 */
   ok('龍捲風 10 秒才收', twClick.second.life === 10 && twClick.life === 10 && twClick.gone,
      'TW_LIFE = ' + twClick.life + ' 秒，追到它自己消失');

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.62.1';
+const VERSION = '1.62.2';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1996,7 +1996,7 @@ const TOOLS = [
     lock: { txt: '拆掉 8 座建築解鎖', ok: () => stats.destroyed >= 8 } },
   { id: 'nuke', n: '核彈', k: '☢', tip: '點一下：2 秒後天上掉核彈下來',
     lock: { txt: '累計擊飛 19,000 塊解鎖', ok: () => stats.smashed >= 19000 } },
-  { id: 'magic', n: '爆裂魔法', k: '🔮', tip: '點一下：魔法陣一層層展開，6 秒後爆炸',
+  { id: 'magic', n: '爆裂魔法', k: '💥', tip: '點一下：魔法陣一層層展開，6 秒後爆炸',
     lock: { txt: '拆掉 10 座建築解鎖', ok: () => stats.destroyed >= 10 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
@@ -2580,6 +2580,12 @@ const TW_MAX = 4, TW_LIFE = 10, TW_R = 6, TW_H = 34;
    等於把沿路的建築整條刨掉；使用者要的是「吸走碎料，加上隨機兩成的積木」——
    建築被啃出缺口、但不會整段消失。碎料（FREE／FLY）不受這條限制，照樣全部捲走。 */
 const TW_TAKE = 0.2;
+/* 走多快（單位／秒）：出發時 TW_SPD0，之後每幀被亂數推一下，夾在 MIN～MAX 之間。
+   v1.62.2 整組乘 1.6（3.2／2.2／6 → 5.2／3.6／9.6，使用者指定「提升移動速度」）：
+   漏斗半徑才 6，舊的速度連自己的直徑都要走 3.75 秒，看起來像在原地磨。
+   轉向的擺幅（TW_SWAY）不跟著調——那是「每秒轉幾弧度」，跟走多快無關；
+   跟著調的話走得快、轉得也快，等於原地繞圈，路線反而不會拉開。 */
+const TW_SPD0 = 5.2, TW_SPD_MIN = 3.6, TW_SPD_MAX = 9.6;
 /* 每一道自己的編號：某一塊被抽中「這道不吸」之後要記著，不然下一幀重抽一次，
    十秒的壽命裡同一塊會被抽 300 次，兩成的機率照樣把整棟吸光。
    抽中要吸的不必記——當場就脫離了，不再是 SET，下一幀不會再被算一次。 */
@@ -2602,7 +2608,7 @@ function launchTornado(from, toward) {
     x: from.x, z: from.z, r: TW_R, h: TW_H, life: TW_LIFE, id: ++twSeq,
     /* 起始角度隨機：漏斗的扭曲完全是 spin 的函數，都從 0 開始的話
        同時在場的幾道會擺出一模一樣的姿勢，看起來像複製貼上。 */
-    spin: rr(0, 6.28), vx: Math.cos(a) * 3.2, vz: Math.sin(a) * 3.2, hit: 0,
+    spin: rr(0, 6.28), vx: Math.cos(a) * TW_SPD0, vz: Math.sin(a) * TW_SPD0, hit: 0,
     /* 擺動的相位與頻率各自抽（見 stepTwist）：同時來好幾道時，
        都用同一組的話它們會擺得一模一樣，看起來像複製貼上。 */
     ph: rr(0, 6.28), sw: rr(0.9, 1.5)
@@ -2626,7 +2632,8 @@ function stepTwist(dt) {
        剛好掃出一道 S 形，而且不會原地打轉（純亂數轉向會）。 */
     w.ph += dt * w.sw;
     const ang = Math.atan2(w.vz, w.vx) + (Math.sin(w.ph) * TW_SWAY + rr(-0.5, 0.5)) * dt;
-    const sp = Math.max(2.2, Math.min(6, Math.hypot(w.vx, w.vz) + rr(-3, 3) * dt));
+    const sp = Math.max(TW_SPD_MIN,
+                        Math.min(TW_SPD_MAX, Math.hypot(w.vx, w.vz) + rr(-3, 3) * dt));
     w.vx = Math.cos(ang) * sp; w.vz = Math.sin(ang) * sp;
     if (Math.hypot(w.x, w.z) > arenaR) { w.vx *= -1; w.vz *= -1; }
 
