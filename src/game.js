@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.66.0';
+const VERSION = '1.67.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3686,11 +3686,18 @@ function stepOneMagic(magic, dt) {
        v1.54 那組（深紅的盤 + 金黃的暈）整疊偏紅橘，跟參考圖差一個色相。
        所以芯環改成**亮黃**（它就是參考圖裡那條最亮的鑲邊），盤另外用 fc 指定成**桃紅**
        （不指定的話盤會跟著芯變黃，整片糊成一大片黃，鑲邊就不見了），
-       外暈改成**紅粉**。 */
+       外暈改成**紅粉**。
+       v1.67 三色各往橘黃挪一點點（使用者：「魔法陣顏色調整偏橘黃一點點」）：
+       作法是每個色碼往橘色混進四分之一，色相各挪 3–11°——鑲邊 #ffe14a→#ffd33f
+       （亮黃→金黃）、盤 #ef1f6b→#f33658（桃紅→偏紅橘的桃紅）、
+       外暈 #ff3a6e→#ff4a5a（紅粉→珊瑚紅）。挪這麼一點的理由：整疊要還是同一座陣，
+       只是暖一階；混到一半就成了橘色的陣，那不是「一點點」。
+       紋路那條（引擎的 magSpokeMesh，#ffe9a0）**不動**：它是靠「接近白的黃」
+       跟盤分開的，跟著盤一起往暖色挪就會糊回去（v1.62.1 那條註解記的就是這件事）。 */
     rings.push({ x: magic.x, z: magic.z, r: rad, y, spin, op: k,
-                 c: 0xffe14a, fc: 0xef1f6b, sp: 1, fill: 1 });
+                 c: 0xffd33f, fc: 0xf33658, sp: 1, fill: 1 });
     rings.push({ x: magic.x, z: magic.z, r: rad * 1.04, y, spin,
-                 op: k * 0.75, c: 0xff3a6e, add: 1 });
+                 op: k * 0.75, c: 0xff4a5a, add: 1 });
   }
   /* 小火圈（火種）：第一層一亮它就在場上，之後**一直都在**，直到爆炸。
      一層長好 → 升到上一層的高度 → 停在那裡等那一層長好 → 再往上升。
@@ -4206,14 +4213,28 @@ function stepStars(dt) {
    破壞範圍還是 explode 那一下說了算。 */
 const ARC_TIME = 3;              // 劈多久（使用者指定：三秒）
 const ARC_SEG = 6;               // 一道電折幾段
-const ARC_MAX = 6;               // 場上同時最多幾道
+const ARC_MAX = 6;               // **一處**爆點同時最多幾道（不是全場的額度，見 boltsOf）
 const ARC_JIT = 0.13;            // 折點抖多開（爆炸半徑的倍率）
-let arcSrc = null;               // 正在放電的爆點（一次只有一處）
+/* 正在放電的那幾處爆點。v1.67 從一個變數改成清單：本來後爆的那一發會把前一處
+   **整個蓋掉**（`arcSrc = {...}`），所以同時開好幾個陣（v1.59 起最多三個）時，
+   只有最後爆的那一發劈得出電——使用者回報的就是這件事。
+   上限跟陣一樣是 MAG_CAST：三個陣同時爆就是三處在放電，真的更多就擠掉最早那處。 */
+let arcSrcs = null;
 const bolts = [];
 function startArcs(p, R) {
   /* 等火球亮完才開始：火球本身就是一大顆加法混色的白光，這幾道電劈在裡面
      一條都看不到，等於白劈。 */
-  arcSrc = { x: p.x, y: p.y, z: p.z, R, t: -FLASH_LIFE, next: 0 };
+  if (!arcSrcs) arcSrcs = [];
+  if (arcSrcs.length >= MAG_CAST) arcSrcs.shift();
+  arcSrcs.push({ x: p.x, y: p.y, z: p.z, R, t: -FLASH_LIFE, next: 0 });
+}
+/* 這一處爆點現在場上有幾道電（含它自己岔出去的那些）。
+   額度是**每一處**各算的：全場共用六道的話，三處同時放電就變成三處分六道，
+   每一處都比原本稀疏——那不是「同時三處都在劈」該有的樣子。 */
+function boltsOf(a) {
+  let n = 0;
+  for (const b of bolts) if (b.src === a) n++;
+  return n;
 }
 /* 一道折線。兩端的抖動要收斂到 0（sin(πu) 中間最大），
    不然電會從爆點旁邊冒出來、也接不到它該打中的那一點。 */
@@ -4235,29 +4256,34 @@ function spawnBolt(a) {
                       a.x + Math.cos(ang) * rad, rr(0.6, 5), a.z + Math.sin(ang) * rad,
                       a.R * ARC_JIT, ARC_SEG);
   const life = rr(0.1, 0.2);
-  bolts.push({ pts, t: 0, life, op: 1, w: rr(0.16, 0.3) });
+  // src 記著是哪一處爆點劈的：六道的額度按爆點分開算（boltsOf）
+  bolts.push({ pts, t: 0, life, op: 1, w: rr(0.16, 0.3), src: a });
   // 三成機率從中段再岔出一條短的：分岔是閃電的招牌，但每道都岔就變成一張網
-  if (Math.random() < 0.3 && bolts.length < ARC_MAX + 2) {
+  if (Math.random() < 0.3 && boltsOf(a) < ARC_MAX + 2) {
     const s = pts[3], b = Math.random() * Math.PI * 2, br = rr(0.15, 0.35) * a.R;
     bolts.push({
       pts: boltPts(s.x, s.y, s.z, s.x + Math.cos(b) * br, Math.max(0.6, s.y - rr(2, 8)),
                    s.z + Math.sin(b) * br, a.R * ARC_JIT * 0.6, 3),
-      t: 0, life: life * 0.7, op: 1, w: rr(0.1, 0.18)
+      t: 0, life: life * 0.7, op: 1, w: rr(0.1, 0.18), src: a
     });
   }
 }
 function stepArcs(dt) {
-  if (arcSrc) {
-    arcSrc.t += dt;
-    if (arcSrc.t >= 0) {
-      arcSrc.next -= dt;
-      // 間隔一定要往前推，不能等「有空位」才推——排滿時會變成無窮迴圈
-      while (arcSrc.next <= 0) {
-        if (bolts.length < ARC_MAX) spawnBolt(arcSrc);
-        arcSrc.next += rr(0.12, 0.3);
+  if (arcSrcs) {
+    for (let i = arcSrcs.length - 1; i >= 0; i--) {
+      const a = arcSrcs[i];
+      a.t += dt;
+      if (a.t >= 0) {
+        a.next -= dt;
+        // 間隔一定要往前推，不能等「有空位」才推——排滿時會變成無窮迴圈
+        while (a.next <= 0) {
+          if (boltsOf(a) < ARC_MAX) spawnBolt(a);
+          a.next += rr(0.12, 0.3);
+        }
       }
+      if (a.t >= ARC_TIME) arcSrcs.splice(i, 1);
     }
-    if (arcSrc.t >= ARC_TIME) arcSrc = null;
+    if (!arcSrcs.length) arcSrcs = null;
   }
   for (let i = bolts.length - 1; i >= 0; i--) {
     const b = bolts[i];

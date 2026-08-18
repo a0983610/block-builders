@@ -5589,13 +5589,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { n: core.length, halo: halo.length, rings: core,
              rising: core.every((o, i) => i === 0 || o.y > core[i - 1].y),
              /* v1.62.1 照參考圖：那一圈本身是亮黃的鑲邊，桃紅的場在 fc（盤）上。
-                只驗 c 會漏掉「盤跟著芯一起變黃、整片糊成一大片」那種改壞法。 */
-             red: core.every(o => o.c === 0xffe14a && o.fc === 0xef1f6b),
+                只驗 c 會漏掉「盤跟著芯一起變黃、整片糊成一大片」那種改壞法。
+                v1.67 兩個色碼各往橘黃挪一點點（金黃的鑲邊 + 偏紅橘的桃紅場）。 */
+             red: core.every(o => o.c === 0xffd33f && o.fc === 0xf33658),
              ground: core[0] ? core[0].r : 0,
              // 每層都要有填滿的盤與放射紋路，只有環的話看起來是「地上畫了一個圈」
              solid: all.filter(o => o.fill).length, lace: all.filter(o => o.sp).length };
   });
-  ok('魔法陣是亮黃鑲邊配桃紅的場，而且一層一層往上疊',
+  ok('魔法陣是金黃鑲邊配偏橘的桃紅場，而且一層一層往上疊',
      mgRing.n === 6 && mgRing.halo === 6 && mgRing.rising && mgRing.red,
      mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、') + '，外圈暈 ' + mgRing.halo + ' 個');
   ok('每一層都是填滿的盤加螺旋紋路，不只是一個圈',
@@ -5962,7 +5963,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startArcs({ x: 0, y: MAG_CORE_Y, z: 0 }, MAG_R);
     for (let i = 0; i < 80; i++) step(0.05);
     const set1 = blocks.filter(b => b.st === 3).length, burn = fires ? fires.length : 0;
-    bolts.length = 0; arcSrc = null;                  // 收乾淨，別把電留給下一段測試
+    bolts.length = 0; arcSrcs = null;                 // 收乾淨，別把電留給下一段測試
     return { first, last, ball, peak, set0, set1, burn, px, blue, mode, modeN,
              from: +Math.max(0, ...from).toFixed(2), n: to.length,
              reach: +Math.max(0, ...to).toFixed(1),
@@ -5989,6 +5990,50 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mgArc.mode[2] > mgArc.mode[0] + 50 && mgArc.mode[2] > mgArc.mode[1] + 25,
      '一道電在畫面上佔 ' + mgArc.px + ' 個像素，最多的那個顏色是 rgb(' +
      mgArc.mode.join(',') + ')×' + mgArc.modeN + '，逐點算有 ' + mgArc.blue + ' 個是藍的');
+
+  /* v1.67：同時開三個陣，三處爆點就要各自劈電。
+     本來放電的爆點是**一個變數**，後爆的那一發直接把前一處蓋掉，
+     所以使用者看到的是「只有最後那發有藍色閃電」。
+     電的起點就是它那一處的爆點（`boltPts` 兩端不抖，前一條已經量到起點離爆點 0），
+     所以按 pts[0].x 分堆就分得出是哪一處劈的。 */
+  const mgArc3 = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    const at = [-20, 0, 20];
+    for (const x of at) castMagic({ x, z: 0 });     // 同一幀開三個，六秒後同一幀爆
+    while (magics) step(0.05);
+    const frames = new Map(), peak = new Map();
+    let srcs = 0, seg = 0, stray = 0;
+    for (let i = 0; i < 80; i++) {                  // 爆炸後四秒（劈三秒，還有 0.65 秒的火球）
+      step(0.05);
+      srcs = Math.max(srcs, arcSrcs ? arcSrcs.length : 0);
+      seg = Math.max(seg, boltList().length);
+      const now = new Map();
+      for (const b of bolts) {
+        // 分岔那條是從主幹中段長出來的，起點不在爆點上——分堆只數主幹
+        if (b.pts.length !== ARC_SEG + 1) continue;
+        const k = Math.round(b.pts[0].x);
+        now.set(k, (now.get(k) || 0) + 1);
+        frames.set(k, (frames.get(k) || 0) + 1);
+      }
+      // 分岔也要記著自己屬於哪一處（額度是按 src 算的，記錯就會借到別處的額度）
+      for (const b of bolts) if (!at.includes(Math.round(b.src.x))) stray++;
+      for (const [k, n] of now) peak.set(k, Math.max(peak.get(k) || 0, n));
+    }
+    bolts.length = 0; arcSrcs = null;
+    return { srcs, spots: frames.size, want: MAG_CAST, seg, stray,
+             frames: at.map(x => frames.get(x) || 0),
+             peak: at.map(x => peak.get(x) || 0), cap: ARC_MAX };
+  });
+  ok('三個陣同時爆，三處爆點都各自劈電（不是只有最後那發）',
+     mgArc3.srcs === mgArc3.want && mgArc3.spots === 3 &&
+     mgArc3.frames.every(n => n > 20),
+     '同時 ' + mgArc3.srcs + ' 處在放電，四秒內三處各累計 ' + mgArc3.frames.join('／') + ' 道-幀');
+  ok('額度是每一處各算的，加起來也塞得進引擎的池子',
+     mgArc3.peak.every(n => n > 0 && n <= mgArc3.cap) && mgArc3.stray === 0 &&
+     mgArc3.seg <= 96 * 3,
+     '三處同時最多 ' + mgArc3.peak.join('／') + ' 道主幹（每處上限 ' + mgArc3.cap +
+     '），畫面上最多 ' + mgArc3.seg + ' 段（池子 ' + (96 * 3) + '），認錯爆點的 ' +
+     mgArc3.stray + ' 道');
 
   /* 魔法陣長層的音效（sndRune）拿掉了：六層一路響上去太吵，
      還蓋掉引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 要留著——不是整個魔法變靜音。 */
@@ -6082,8 +6127,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              spoke: grp.children.find(o => o.isInstancedMesh).material.color.getHex() };
   });
   const hex = c => '#' + c.toString(16).padStart(6, '0');
-  ok('陣是桃紅的場配亮黃的鑲邊與紋路，火圈是亮黃到紅粉',
-     mgHue.core === 0xffe14a && mgHue.fc === 0xef1f6b && mgHue.halo === 0xff3a6e &&
+  ok('陣是偏橘的桃紅場配金黃的鑲邊、亮黃白的紋路，火圈是亮黃到紅粉',
+     mgHue.core === 0xffd33f && mgHue.fc === 0xf33658 && mgHue.halo === 0xff4a5a &&
      mgHue.spoke === 0xffe9a0 &&
      mgHue.discs.length === 6 && mgHue.discs.every(c => c === mgHue.fc) &&
      mgHue.seed.join() === [0xfff3c4, 0xff8a3c, 0xff2f6b].join(),
