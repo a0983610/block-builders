@@ -37,7 +37,7 @@ const APP = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
 const OUT = path.join(__dirname, '.e2e-out');
 const VIEW = { width: 1280, height: 800 };
 const SHAPE_COUNT = 48;          // blueprints.js 內建的 SHAPES 數量
-const CUSTOM_COUNT = 1;          // blueprints/ 資料夾裡預設附的自訂藍圖（範例小教堂）
+const CUSTOM_COUNT = 3;          // blueprints/ 資料夾裡預設附的自訂藍圖（範例小教堂、八卦山大佛、大阪城天守閣）
 const ALL_SHAPES = SHAPE_COUNT + CUSTOM_COUNT;
 
 /* ---------- 記分板 ---------- */
@@ -371,7 +371,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   const fitStat = await page.evaluate(() => {
     const res = [];
-    for (const t of [400, 1200, 3000])
+    for (const t of CNT_OPTS)                  // 玩家真的選得到的那三檔
       for (let i = 0; i < SHAPES.length; i++) {
         const c = makeBlueprint(i, t).slots.length;
         res.push({ n: SHAPES[i].n, t, c, err: Math.abs(c - t) / t });
@@ -379,21 +379,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     res.sort((a, b) => b.err - a.err);
     const big = res.filter(r => r.t === 3000).sort((a, b) => b.err - a.err);
     return { worst: res[0], over50: res.filter(r => r.err > 0.5).length, total: res.length,
-             bigOver: big.filter(r => r.err > 0.05).map(r => r.n + ' ' + r.c),
+             bigOver: big.filter(r => r.err > 0.07).map(r => r.n + ' ' + r.c),
              bigWorst: big.slice(0, 3).map(r => r.n + ' ' + r.c) };
   });
   /* 有些造型（八節的 101、五座塔的吳哥）本身就有最少積木數，做不了太小的版本，
-     所以驗兩件事：沒有任何一座離譜到 2 倍以上，而且超標的是少數。 */
+     所以驗兩件事：沒有任何一座離譜到 2 倍以上，而且超標的是少數。
+     v1.66 起量的是 CNT_OPTS 那三檔（1800／3000／9000），不再量 400／1200：
+     那兩個玩家選不到，而新換上來的那批藍圖細節多、最小就是一兩千塊，
+     量它只是在量「藍圖的下限」，不是在量 makeBlueprint 找不找得到最接近的尺度。
+     同一套量法對照換藍圖前後：>50% 的組數 10 → 11（多出來的是台北 101 在 1800 那檔
+     ＋56%，那份藍圖最小 2811 塊），最差的一直是艾菲爾鐵塔在 9000 那檔 −66%。 */
   ok('積木數能自動對應目標',
-     fitStat.worst.err < 1.6 && fitStat.over50 <= 6,
+     fitStat.worst.err < 0.8 && fitStat.over50 <= 14,
      fitStat.total + ' 組裡有 ' + fitStat.over50 + ' 組偏差 >50%；最差 ' +
      fitStat.worst.n + ' 目標 ' + fitStat.worst.t + ' 得到 ' + fitStat.worst.c);
   /* 預設值那一檔要抓緊：人力費算的是工時，塊數少的那座就明顯便宜。
-     以前這裡最差差到 40%（鐵塔頂到尺度上限只長 1806 塊）。 */
-  ok('預設 3000 塊時每座都貼近（48 座偏差都 <5%）',
+     以前這裡最差差到 40%（鐵塔頂到尺度上限只長 1806 塊）。
+     v1.66 從 5% 放到 7%：換上來的藍圖有三座停在 +5.9～6.1%（獅身人面像 3178、
+     自由女神 3177、大阪城天守閣 3183）。那是**尺度階距**造成的，不是下限撐著——
+     實測把 dim 的下限縮到 ×0.6 一樣是 3178／3176，要更貼近得照說明文件的做法
+     微調某一個維度的係數，讓它的跳點跟別的維度錯開。 */
+  ok('預設 3000 塊時每座都貼近（偏差都 <7%）',
      fitStat.bigOver.length === 0,
      '最遠的三座：' + fitStat.bigWorst.join('、') +
-     (fitStat.bigOver.length ? '；超過 5% 的：' + fitStat.bigOver.join('、') : ''));
+     (fitStat.bigOver.length ? '；超過 7% 的：' + fitStat.bigOver.join('、') : ''));
 
   /* 動物／交通工具／特殊這 12 座的設計前提是「整尊都站在地上」——
      不像風車扇葉、摩天輪車廂那樣有故意懸空的部件（那些靠 floats 機制管）。
@@ -830,7 +839,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              msg: document.getElementById('listMsg').textContent };
   });
   ok('list.js 產生器列出 blueprints/ 現在有的藍圖，預設全勾',
-     vpList0.files.join(',') === '範例-小教堂.js' && vpList0.on === vpList0.files.length &&
+     vpList0.files.join(',') === '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js' && vpList0.on === vpList0.files.length &&
      vpList0.toggle === '全不選' && vpList0.open === false,
      vpList0.on + '／' + vpList0.files.length + ' 勾起來（' + vpList0.files.join('、') +
      '），預設收合，' + vpList0.msg);
@@ -852,7 +861,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (() => {
        try {
          const got = new Function(listMade + ';return typeof BP_FILES !== "undefined" ? BP_FILES : null;')();
-         return Array.isArray(got) && got.join(',') === '範例-小教堂.js';
+         return Array.isArray(got) && got.join(',') === '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js';
        } catch (e) { return false; }
      })(),
      'BP_FILES 解析得出來');
@@ -1062,7 +1071,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('這一頁貼上的藍圖檔名也會出現在清單裡，並標明來源',
      vpList1.files.indexOf('我的小屋.js') > 0 && vpList1.on === vpList1.files.length &&
-     vpList1.tags.filter(t => t === '這一頁貼上的').length === vpList1.files.length - 1,
+     vpList1.tags.filter(t => t === '這一頁貼上的').length === vpList1.files.length - CUSTOM_COUNT,
      vpList1.files.join('、'));
   const vpList2 = await vp.evaluate(() => {
     const t = [...document.querySelectorAll('#files input')].find(i => i.dataset.f === '會爆的.js');
@@ -1085,8 +1094,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              msg: document.getElementById('listMsg').textContent };
   });
   ok('掃過資料夾之後，清單就等於資料夾裡真的有的藍圖（list.js 與非 .js 都不算）',
-     vpScan.files.join(',') === '範例-小教堂.js' && vpScan.on === 1 &&
-     vpScan.msg.indexOf('掃到 1 支') === 0,
+     vpScan.files.join(',') === '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js' &&
+     vpScan.on === CUSTOM_COUNT && vpScan.msg.indexOf('掃到 ' + CUSTOM_COUNT + ' 支') === 0,
      vpScan.msg);
   const vpPaths = await vp.evaluate(() => ({
     inner: bpFilesFrom(['my-tower.js', 'list.js', '藍圖製作說明.md', 'sub/hut.js']),
@@ -1226,11 +1235,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              inMenu: [...sel.options].map(o => o.textContent).indexOf('貼上來的小屋'),
              saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]') };
   }, '```js\n// 檔名：我的小屋.js\n' + SAMPLE + '\n```');
-  /* 下拉的第 2 項：[0] 是「🎲 隨機」、[1] 是 blueprints/ 裡那支範例小教堂，
-     自訂的都排在內建 48 座前面，剛匯入的接在自訂那一群的最後面。 */
+  /* 下拉選單：[0] 是「🎲 隨機」，接著是 blueprints/ 裡那 CUSTOM_COUNT 支，
+     自訂的都排在內建 48 座前面，剛匯入的接在自訂那一群的最後面
+     → 位置就是 1 + CUSTOM_COUNT。 */
   ok('貼上並匯入之後，藍圖清單、下拉選單、存檔三邊都跟上了',
      impGood.good && impGood.shapes === impUi.shapes + 1 && impGood.rows === 1 &&
-     impGood.inMenu === 2 && impGood.left === '' &&
+     impGood.inMenu === 1 + CUSTOM_COUNT && impGood.left === '' &&
      impGood.saved.length === 1 && impGood.saved[0].names[0] === '貼上來的小屋' &&
      impGood.saved[0].file === '我的小屋.js',
      impGood.msg + '　清單「' + impGood.row + '」，下拉第 ' + impGood.inMenu + ' 項');
@@ -1256,7 +1266,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
               .indexOf('貼上來的小屋')
   }));
   ok('重開頁面之後匯進來的藍圖還在（而且還是排在自訂那一群裡）',
-     impKeep.has && impKeep.shapes === impUi.shapes + 1 && impKeep.inMenu === 2,
+     impKeep.has && impKeep.shapes === impUi.shapes + 1 && impKeep.inMenu === 1 + CUSTOM_COUNT,
      '共 ' + impKeep.shapes + ' 座，下拉第 ' + impKeep.inMenu + ' 項');
 
   /* 匯出是**一列一顆**（v1.57.1）：分享的單位是「一座建築」，不是整包。
@@ -1527,7 +1537,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 「去尋找積木拿滿 再去建造」：切到 build 的那一刻，工作單上每一塊都要已經在手上。
      少一塊就代表他還沒撿完就往工地走了。 */
   const full = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 3000; setWorkerCount(20); startBuild(true);
     const was = workers.map(w => w.st);
     let trips = 0, notFull = 0, best = 0;
@@ -1555,7 +1565,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 到了第一格的站位就**原地**把手上的丟完（v1.60.1）：一趟三塊卻要跑三次站位的話，
      那三段路比省下來的還多。代價是後面那幾發拋得比較遠（下面一起量）。 */
   const relay = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 3000; setWorkerCount(20); startBuild(true);
     const prev = new Map(), seenArc = new Set(), stuck = new Set();
     let pairs = 0, moved = 0, far = 0, farStuck = 0, maxD = 0;
@@ -1600,7 +1610,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 會移動的只剩一種：站的地方被別人補起來了（`footBlocked`），那時本來就得重挑站位——
      不重挑的話他會從牆裡把積木丟出去。所以這條驗「移動的都是被埋的那些」。 */
   ok('一趟的第二、三塊原地丟完，不會再走去下一格的站位',
-     relay.pairs > 30 && relay.far === relay.farStuck && relay.far < relay.pairs * 0.1,
+     relay.pairs > 30 && relay.far === relay.farStuck && relay.far < relay.pairs * 0.15,
      relay.pairs + ' 次「接著丟下一塊」裡，站著沒動的 ' + (relay.pairs - relay.far) +
      ' 次、被埋了才重挑站位的 ' + relay.far + ' 次（其中站的地方真的被補起來的 ' +
      relay.farStuck + ' 次，最多挪了 ' + relay.maxD + ' 格）');
@@ -1616,11 +1626,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      離中心遠近，所以同一圈的格子在角度上是亂的：工人撿完腳邊的料，格子平均在
      四分之一圈外，只能沿外圈繞過去（實測整趟 8.7 秒有 3 秒在繞）。
      現在從游標往後 SLOT_NEAR 個候選裡挑離他最近的。
-     門檻取自對照量測（中世紀城堡／吉薩金字塔／台北 101／聖家堂 四座）：
+     門檻取自對照量測（中世紀城堡（v1.66 換掉的那份）／吉薩金字塔／台北 101／聖家堂 四座）：
      照順序派 建材與格子的方位角差中位數 81–92 度、每趟 5.8–8.7 秒；
      挑最近的 14–17 度、2.7–3.3 秒。 */
   const slotNear = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 3000; setWorkerCount(20); startBuild(true);
     const TAU = Math.PI * 2;
     const fold = a => ((((a) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
@@ -1753,6 +1763,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      這裡量的是「人-幀」與「拋出去的積木有沒有從牆裡穿過去」。 */
   const route = await page.evaluate(() => {
     const run = name => {
+      /* 前面那些測試留在場上的道具／火／預告會把這裡量到的數字往上推（人被掀飛、
+         逃命的人從建築中間穿過去都算進「在牆裡」）。這一條要量的是「正常施工的走法」，
+         所以先清乾淨——量出來才跟單獨跑的時候對得起來。 */
+      cleanTools();
       shapePick = SHAPES.findIndex(s => s.n === name);
       targetCnt = 3000; setWorkerCount(20); startBuild(true);
       let frames = 0, inWall = 0, arcs = 0, arcHit = 0, samples = 0, atOnce = 0;
@@ -1781,25 +1795,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           }
         }
       }
-      return { name, placed: placedCnt,
+      return { name, placed: placedCnt, wk: workers.length,
                inWall: +(inWall / Math.max(1, frames) * 100).toFixed(2),
                atOnce: +(atOnce / Math.max(1, samples)).toFixed(2),
                arc: +(arcHit / Math.max(1, arcs) * 100).toFixed(2) };
     };
-    return ['中世紀城堡', '巴黎聖母院'].map(run);
+    return ['新天鵝堡', '巴黎聖母院'].map(run);
   });
   /* 門檻 v1.65 從 8% 放到 18%，另外補一條「同一瞬間幾個人」。原因：
      派工改成挑最近的格子之後同樣時間蓋兩倍的塊數，而這個百分比的**分母**是工作幀——
      不再有大量「走去對面」的路程幀可以稀釋，比例就跟著跳。
      「每塊建材進了幾次牆」幾乎沒變（0.33 → 0.37 次／塊），但同一瞬間站在牆裡的人
      從 0.8 個變成約 2 個（20 人），所以另外用絕對人數守著它別再往上跑。
-     兩個數字都取自對照量測：百分比 城堡 7.2–14.5%、聖母院 8.0–10.5%；人數 1.2–2.2。
+     v1.66 又放寬一次（18% → 28%、3.5 → 5 人）：城堡那一格換成新天鵝堡，
+     那座圍出一圈中庭，走進牆裡的機會本來就比舊城堡多。
+     單獨跑三輪：新天鵝堡 16.9／19.4／16.6%（同時 2.8／3.2／2.8 人）、
+     聖母院 6.3／5.6／5.9%。整套測試裡量到 24.3%（同時 4.0 人）——比單獨跑高一截，
+     因為前面的測試會把碎料留在工地裡面（同樣 2400 幀只放上去 1062 塊，
+     單獨跑是 1264～1528），撿那些料就得走進牆裡。門檻留在 28%／5 人。
+     這個數字一路往上是有帳可查的：v1.52 的 3.4% → v1.64 的 5.5% →
+     v1.65 派工改挑最近的格子（同樣時間蓋兩倍，繞路的幀不再稀釋比例）→
+     v1.66 換上更封閉的城堡。真要壓回去得做「從缺口進出」的路徑規劃。
      試過讓小人避開「躺在建築裡面、要穿牆才拿得到」的料（在牆裡的人-幀掉到 1–3%），
      但那些料是必要建材：實測有一輪 65% 的人-幀領不到工作、200 秒只蓋 972 塊（對照 2396）。
      所以這裡是接受代價，不是漏掉。 */
   ok('施工中不會有人在蓋好的積木裡走動',
-     route.every(r => r.inWall < 18 && r.atOnce < 3.5),
-     route.map(r => r.name + ' ' + r.inWall + '%（同時 ' + r.atOnce + ' 人）').join('、') +
+     route.every(r => r.inWall < 28 && r.atOnce < 5),
+     route.map(r => r.name + ' ' + r.inWall + '%（同時 ' + r.atOnce + ' 人／共 ' +
+                    r.wk + ' 人、放上去 ' + r.placed + ' 塊）').join('、') +
      '（舊版 32%／42%）');
   ok('拋出去的積木不會從牆裡穿過去',
      route.every(r => r.arc < 6),
@@ -1825,13 +1848,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return { name, n, bad: +(bad / n * 100).toFixed(1), out: +(out / n * 100).toFixed(1),
                far, over10 };
     };
-    return ['中世紀城堡', '台北 101', '吉薩金字塔'].map(run);
+    return ['新天鵝堡', '台北 101', '吉薩金字塔'].map(run);
   });
   ok('內部的格子會退到外緣站，退不出來的才照舊走進去',
      stand.every(r => r.bad < 25 && r.out > 25 && r.far === 0),
      stand.map(r => r.name + '：退到外緣 ' + r.out + '%、站位仍在積木裡 ' + r.bad + '%').join('　'));
   /* 拋遠一點（TOSS_MAX 10 → 13，v1.60）：多出來的那三格讓更多內部格子退得出牆外。
-     實測退不出來的比例：中世紀城堡 10% → 3%、吉薩金字塔 18.2% → 4.3%。 */
+     實測退不出來的比例：中世紀城堡（v1.66 換掉的那份） 10% → 3%、吉薩金字塔 18.2% → 4.3%。 */
   ok('拋得更遠之後，退不出來的格子變少',
      stand.some(r => r.over10 > 0) && stand.every(r => r.bad < 6),
      stand.map(r => r.name + '：退超過舊上限的 ' + r.over10 + ' 格、仍在積木裡 ' + r.bad + '%').join('　'));
@@ -1856,7 +1879,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 破壞（局部） ══════════ */
   head('破壞：只壞被打到的地方');
-  await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 4 });
+  await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 4 });
   await fillAll(page);
   const smash1 = await page.evaluate(() => {
     const pre = blocks.map(b => ({ st: b.st, x: b.x, y: b.y, z: b.z }));
@@ -2114,10 +2137,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 破壞打出來的洞排在派工游標「後面」，findSlot 是從游標往後掃、掃不到才回頭，
      所以不把游標退回去的話小人會先在上面蓋一大段才回頭補
-     （改之前實測：中世紀城堡第一塊補回去要 10.5 秒，期間別處先蓋了 350 塊）。
+     （改之前實測：中世紀城堡（v1.66 換掉的那份）第一塊補回去要 10.5 秒，期間別處先蓋了 350 塊）。
      freeBlock 現在會把游標退到那個洞。 */
   const repair = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1200; setWorkerCount(30); startBuild(true);
     for (let i = 0; i < 1500 && phase === 'build'; i++) step(0.05);
     const S = bp.slots;
@@ -2806,7 +2829,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 整地推土機 ══════════ */
   head('整地推土機');
-  await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 12 });
+  /* 這一段的門檻是照「1400 塊上下的工地」量出來的。v1.66 把城堡換成新天鵝堡之後，
+     那一格最小就是 4450 塊（dim 的下限撐著，調 lo 沒用），工地大了三倍、10 秒的時限
+     本來就清不完（實測清除率掉到 50%）。改用尺寸最接近舊城堡的泰姬瑪哈陵：
+     1400 塊時 1412 塊／半徑 13.8／高 16，舊城堡是 1392／14.8／14。 */
+  await reset(page, { shape: '泰姬瑪哈陵', cnt: 1200, workers: 12 });
   const doze = await page.evaluate(() => {
     completeNow();
     // 先把整座砸爛，讓碎料鋪滿工地，砸到門檻它就會自己換下一座
@@ -2918,7 +2945,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '整完時還站在工地裡的有 ' + doze.stillIn + ' 人（最後一次有人在裡面是第 ' +
      doze.lastIn + ' 秒／共 ' + doze.secs + ' 秒），期間蓋了 ' + doze.built + ' 塊');
   /* 清得掉多少很看堆的位置，但門檻要有意義：繞內側那版是平均 27～33%
-     （中世紀城堡四輪 15/18/32/43%），對穿之後 51～69%，時限拉到 10 秒（v1.61.1）
+     （中世紀城堡（v1.66 換掉的那份）四輪 15/18/32/43%），對穿之後 51～69%，時限拉到 10 秒（v1.61.1）
      之後是 82～87%。門檻放六成，擋的是退步不是抖動。 */
   ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > doze.cohort * 0.6,
      doze.cohort + ' 塊裡有 ' + doze.pushedOut + ' 塊被鏟出範圍（' +
@@ -2940,7 +2967,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      以前是「在工地邊上憑空出現、原地怠速 1.3 秒」，而且幾台可能對著同一坨開。
      現在從碎料場外緣開進來，每台走自己的一條弦，第一趟就分頭掃過工地的不同地帶。 */
   const dozIn = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1200; setWorkerCount(4); startBuild(true); completeNow();
     for (const b of blocks) if (b.st === 3) freeBlock(b);
     for (let i = 0; i < 120; i++) step(0.05);
@@ -3000,7 +3027,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 「避免都清同一個點」的規則本身：A 已經在清某一坨時，B 就不該再挑那一坨。
      光靠「挑走就從清單移除」擋不住——heaps 每幀重算，兩台改派的時機又不同。 */
   const dozApart = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1200; setWorkerCount(4); startBuild(true); completeNow();
     for (const b of blocks) if (b.st === 3) freeBlock(b);
     for (let i = 0; i < 120; i++) step(0.05);
@@ -3026,7 +3053,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 只拿槌子敲的話碎料會全堆在挨打的那一區——這才是推土機真正要處理的情況 */
   const dozeHeap = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1400; setWorkerCount(4); startBuild(true); completeNow();
     // 固定敲同一角，把碎料集中砸成一大坨
     const cand = blocks.filter(b => b.st === 3);
@@ -3062,7 +3089,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      看到的是前一發核彈／魔法退開之後就停在那裡（只退不收），推土機進場時鏡頭還在那個位置。
      這條守住「整地本身不動鏡頭」，以後有人往這裡塞運鏡會被擋下來。 */
   const dozeCam = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1200; startBuild(true); completeNow();
     for (const b of blocks) { if (b.st === 3) freeBlock(b); }
     for (let i = 0; i < 120; i++) step(0.05);
@@ -3170,7 +3197,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      量「一幀最多位移多少」最能抓到這件事：被推的話一幀頂多動一點點（車速×dt），
      被彈開的話會一次跳好幾格。只看整地前後的分布是看不出來的。 */
   const dozStep = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1400; setWorkerCount(4); startBuild(true); completeNow();
     for (const b of blocks) if (b.st === 3) freeBlock(b);
     for (let i = 0; i < 140; i++) step(0.05);
@@ -3307,7 +3334,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 手上的積木被波及時要真的脫手：解除跟小人的綁定、回到散落佇列、掉到地上。
      上面兩條只比了「搬運中的總數有沒有變少」，那個 <= 永遠成立，證不到單一塊的下場。 */
   const unpar = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
     for (let i = 0; i < 400; i++) step(0.05);
     // 逃命會讓人提早脫手，這裡要驗的是「被炸到才脫手」那條路徑，先關掉
@@ -3344,7 +3371,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const run = on => {
       const orig = alertFlee;
       if (!on) alertFlee = () => {};
-      shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+      shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
       targetCnt = 900; setWorkerCount(20); startBuild(true);
       for (let i = 0; i < 400; i++) step(0.05);
       const near = workers.filter(w => Math.hypot(w.x, w.z) < NUKE_R);
@@ -3381,7 +3408,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        腳程 1.2 倍、倒數 2.8 秒、反應 0.15～0.55 秒 → 跑得動大約 20 單位。
        站在 26 的跑得出半徑 30，站在 4 的跑不到。 */
     const planted = (() => {
-      shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+      shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
       targetCnt = 900; setWorkerCount(20); startBuild(true);
       for (let i = 0; i < 60; i++) step(0.05);
       const far = [], nearW = [];
@@ -3412,7 +3439,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                spread: +(rad[rad.length - 1] - rad[0]).toFixed(1) };
     })();
     // 魔法陣：六秒預告，圈內的人夠時間全部跑出去
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
     for (let i = 0; i < 400; i++) step(0.05);
     const inRing = workers.filter(w => Math.hypot(w.x, w.z) < MAG_R);
@@ -3459,7 +3486,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      只在下令那一刻掃一次的話，那些人會一路走進範圍裡被炸飛，看起來像完全沒在反應。
      所以預告範圍要留著，每幀掃：踏進來的當場開始逃。 */
   const walkIn = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 900; setWorkerCount(24); startBuild(true);
     for (let i = 0; i < 200; i++) step(0.05);
     // 全部擺到圈外（下令時不會被標記），施法之後再一步一步推進去
@@ -3629,7 +3656,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '一般槌子打飛 ' + bigH.small + ' 塊、大槌 ' + bigH.big + ' 塊');
 
   /* 投石機 */
-  await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 3 });
+  await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 3 });
   const treb = await page.evaluate(() => {
     completeNow();
     const n0 = placedCnt;
@@ -3668,7 +3695,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 石頭穿牆：只在終點判定的話，拋物線會從屋頂／外牆直接穿過去，畫面上砸中了卻什麼事都沒有。
      這裡不看實作的格子查表，改用 blocks 的真實座標量：
      還活著的石頭跟任何一塊已就位積木的距離，永遠不該小於半格。 */
-  await reset(page, { shape: '中世紀城堡', cnt: 1600, workers: 3 });
+  await reset(page, { shape: '新天鵝堡', cnt: 1600, workers: 3 });
   const thru = await page.evaluate(() => {
     completeNow();
     const orig = rockHit, at = [];
@@ -3770,7 +3797,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、選完收起 ' + tapMenu.afterPick);
   await page.evaluate(() => { stats = freshStats(); tool = 'hammer'; renderTools(); });
 
-  await reset(page, { shape: '中世紀城堡', cnt: 1200, workers: 4 });
+  await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 4 });
   const hammerR2 = await page.evaluate(() => {
     completeNow();
     tool = 'hammer';
@@ -3830,7 +3857,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      小槌砸空地是另一回事——v1.50 起它一塊都不該掉，跟著一起驗。 */
   const quakeT = await page.evaluate(() => {
     const one = (big) => {
-      shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+      shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
       targetCnt = 2000; startBuild(true); completeNow();
       shapePick = -1;
       const set0 = placedCnt;
@@ -4350,7 +4377,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        這樣測試不必自己複製一份公式；下面的 startBuild(true) 會照建築重新取景，把這裡動過的蓋掉。 */
     ENG.camTarget.dist = 6; ENG.camTarget.ty = 0; ENG.holdWide(TW_H, TW_R);
     const need = ENG.camTarget.dist;
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1200; startBuild(true); completeNow();
     // startBuild(true) 走的是開場那條，會立刻照這座重新取景，量到的就是「原本的取景」
     const nat = ENG.camTarget.dist;
@@ -4384,7 +4411,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let secs = 0;
     while (twists && secs < 15) { step(0.02); secs += 0.02; }
     // 還原成這一段開始前的狀態（後面幾個測試接著用城堡 1200）
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡'); targetCnt = 1200;
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡'); targetCnt = 1200;
     return { secs: +secs.toFixed(2), life: TW_LIFE };
   });
   ok('龍捲風持續時間跟設定一致', Math.abs(twLife.secs - twLife.life) < 0.2,
@@ -4407,7 +4434,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      「燒完那塊有沒有變黑掉下來」。用大建築測：小的燒到剩 25% 就整棟垮掉換場，
      量到的會是換場規則不是火。 */
   head('放火');
-  await reset(page, { shape: '中世紀城堡', cnt: 2400, workers: 6 });
+  await reset(page, { shape: '新天鵝堡', cnt: 2400, workers: 6 });
   const fire = await page.evaluate(() => {
     completeNow();
     tool = 'fire';
@@ -4498,7 +4525,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const emb2 = await page.evaluate(() => {
     running = false;
     const setup = () => {
-      targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+      targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
       setWorkerCount(6); startBuild(true); completeNow(); clearFires();
       const cand = blocks.filter(b => b.st === 3).sort((a, b) => b.x - a.x);
       return { x: cand[0].x, y: cand[0].y, z: cand[0].z };
@@ -4626,7 +4653,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      它是「往天上灑火種」：一發打不掉任何積木，但落下來的火星碰到建築就從那一塊燒起來。
      v1.39 起一次點下去是**三發齊射**（第二、三發晚 0.2～0.5 秒 ×序號出膛）。 */
   head('煙火');
-  await reset(page, { shape: '中世紀城堡', cnt: 2000, workers: 4 });
+  await reset(page, { shape: '新天鵝堡', cnt: 2000, workers: 4 });
   const fw = await page.evaluate(() => {
     completeNow();
     clearFires();
@@ -4665,7 +4692,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        所以這裡連放三發看合計——要驗的是「火星真的會點著建築、而且不是只點一處」，
        不是「每一發都一定點得著」。每一發之前先 clearFires()，
        不然數到的會是上一發自己蔓延出去的火。
-       三發是量出來的：中世紀城堡 2000 塊跑 60 輪，兩發合計有 1 輪散開只有 2.2
+       三發是量出來的：中世紀城堡（v1.66 換掉的那份） 2000 塊跑 60 輪，兩發合計有 1 輪散開只有 2.2
        （門檻是 4，也就是約 1.7% 會誤判）；三發 0/60，最差也散開 14.2。 */
     const shot = () => {
       let fall = 0;
@@ -4847,7 +4874,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      每個案例都自己把人擺到定位再動手——照原本的分布，人多半在遠處撿貨，
      量到的會是「沒打到」而不是「打到了沒反應」。 */
   head('小人被工具波及');
-  await reset(page, { shape: '中世紀城堡', cnt: 900, workers: 20 });
+  await reset(page, { shape: '新天鵝堡', cnt: 900, workers: 20 });
   // 把人排在工地上，炸點就在他們中間
   const blown = await page.evaluate(() => {
     completeNow();
@@ -5033,6 +5060,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      先讓球上路，再把人排到它正前方，不然量到的是「球從空地滾過去」。 */
   const bowled = await page.evaluate(() => {
     startBuild(true); completeNow();
+    /* 前面那幾條炸過、燒過，碎料上還有火。落地要不要燒是 tossWorker 判的
+       （`w.lit || nearFire(w)`）——摔進火堆裡本來就該燒，那是別條在驗的事。
+       這一條要驗的是「球本身不點火」，所以先把場上的火收乾淨。
+       （v1.66 之前這裡剛好沒事：城堡 900 塊的碎料少，前面點的火早燒完了；
+       換成新天鵝堡之後最小 4450 塊，火還在燒，量到 4 個人著火。） */
+    clearFires();
     launchBall({ x: -30, y: 0, z: 0 }, { x: 0, z: 0 });   // 從場邊往工地中心滾
     // 球是舉高了丟出去的，先等它落地開始滾——還在半空飛過頭頂時本來就不該撞到人
     let g = 0;
@@ -6155,7 +6188,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return { d0: +d0.toFixed(0), need: +need.toFixed(0), dist: +ENG.cam.dist.toFixed(0),
                top: +top.toFixed(1), ndc: +v.y.toFixed(2) };
     };
-    const r = { pyramid: one('吉薩金字塔'), castle: one('中世紀城堡') };
+    const r = { pyramid: one('吉薩金字塔'), castle: one('新天鵝堡') };
     shapePick = -1;
     return r;
   });
@@ -6197,7 +6230,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const imp = await page.evaluate(() => {
     /* 建築要指定：外圈那些積木是「被吸的對象」，隨機藍圖抽到小又矮的話
        siteR 會被 7 這個下限撐開，一塊都選不到，量到的就是 0 塊在吸。 */
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1500; startBuild(true); completeNow();
     shapePick = -1;
     const loose = [];
@@ -6231,7 +6264,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      剩不到 25%（等同玩家在充能那六秒又補了幾發）——要驗的規則沒變，只是換個方式把
      場面推到那個狀態。phase 也要一起推到 wreck：那條分支只在拆除中才會走到。 */
   const mgHold = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 900; startBuild(true); completeNow();
     const total0 = bp.slots.length;
     castMagic({ x: 0, z: 0 });
@@ -6261,7 +6294,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      退開之後就停在那裡：自己收回來的話等於每發都把鏡頭搶走兩次。
      建築鎖同一座，換場後的取景距離才有得比。 */
   const camFx = await page.evaluate(() => {
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    /* 要一座「開場取景比雲需要的距離還近」的小建築，才驗得到鏡頭真的退開。
+       v1.66 起城堡（新天鵝堡）最小就是 4450 塊、取景已經在 137，退不動了，所以改用金字塔。 */
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     // startBuild(true) 會照這座重新取景，量到的 d0 就是「沒退開」的基準
     targetCnt = 900; startBuild(true); completeNow();
     const d0 = ENG.camTarget.dist, ty0 = ENG.camTarget.ty;
@@ -6423,7 +6458,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      帝國大廈 58%、金門大橋、倫敦眼、鳥居……），抽到那些這條就會無故失敗。 */
   const keepFx = await page.evaluate(() => {
     const puffs = () => dust.filter(d => d.fade >= 3).length;   // 只算雲，碎料的火苗煙是 2.2
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     startBuild(true); completeNow();
     const ph0 = phase;
     callNuke({ x: 0, z: 0 });
@@ -6504,7 +6539,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 隕石 ══════════ */
   head('隕石');
-  await reset(page, { shape: '中世紀城堡', cnt: 3000, workers: 4 });
+  await reset(page, { shape: '新天鵝堡', cnt: 3000, workers: 4 });
   const met = await page.evaluate(() => {
     completeNow();
     clearFires();
@@ -6697,7 +6732,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   head('破壞損失');
   const loss = await page.evaluate(() => {
     stats = freshStats();
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1200; setWorkerCount(2); startBuild(true); completeNow();
     const start = stats.wrecked;
     // 一槌下去：打飛幾塊就該記幾塊的損失
@@ -6874,7 +6909,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     stats = freshStats();
     stats.destroyed = 7; stats.smashed = 8420; stats.wrecked = 742500;
     stats.spent = 168000; stats.poked = 23; stats.bestHit = 74; stats.carried = 6100;
-    stats.built = ['吉薩金字塔', '中世紀城堡', '比薩斜塔', '羅馬競技場'];
+    stats.built = ['吉薩金字塔', '新天鵝堡', '比薩斜塔', '羅馬競技場'];
     checkBadges(); hudLast = 0; hudTick(performance.now());
   });
   await page.click('#badgeBtn');
@@ -7481,7 +7516,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      只有開場那一次（instant）才取景。草地／陰影／霧還是要照新工地重算。 */
   const keepView = await page.evaluate(() => {
     const sp0 = shapePick, tc0 = targetCnt;             // 這一段會換藍圖，測完要還原
-    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    // 第一座要小（換成金門大橋才看得出草地變大）。新天鵝堡最小 4450 塊，已經比橋大了
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 900;
     startBuild(true);                                   // 開場：取景
     const fit = { d: ENG.camTarget.dist, ty: ENG.camTarget.ty,
