@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.67.0';
+const VERSION = '1.68.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -259,7 +259,8 @@ function newBlock() {
     r: 0.78, g: 0.74, b: 0.66, tr: 0.78, tg: 0.74, tb: 0.66,
     slot: -1, holder: -1, rest: true, cell: '',
     scale: 1, snap: 0, snapFrom: null, arc: null, wob: 0, al: 1, fallIn: 0,
-    burn: 0                              // 1 = 正在燒（狀態本體在 fires 那筆裡）
+    burn: 0,                             // 1 = 正在燒（狀態本體在 fires 那筆裡）
+    wet: 0                               // 還濕幾秒（>0 就點不著，顏色也壓深一點）
   };
 }
 /* 旋轉之後，這塊積木沿世界 Y 的半高。躺平是 0.47，立起來轉 45° 是 0.66，
@@ -408,6 +409,7 @@ function startBuild(instant) {
   for (const w of workers) {
     releaseWorker(w);
     w.air = 0; w.burn = 0; w.burnK = 0; w.lit = 0; w.roll = 0; w.fall = 0;
+    w.wet = 0; w.wetK = 0;
     w.y = 0; w.tilt = 0; w.vx = w.vy = w.vz = 0;
   }
   for (const b of blocks) {
@@ -415,6 +417,7 @@ function startBuild(instant) {
       b.slot = -1; b.holder = -1; b.arc = null; b.scale = 1; b.fallIn = 0;
       b.st = FLY; b.rest = false; b.snap = 0;
       b.tr = 0.80; b.tg = 0.76; b.tb = 0.68;
+      b.wet = 0;                     // 上一座淋到的水不要跟著進新工地（人那邊同理，見上面）
       b.vx = rr(-5, 5); b.vy = rr(1, 6); b.vz = rr(-5, 5);
       b.ax = rr(-6, 6); b.ay = rr(-6, 6); b.az = rr(-6, 6);
     }
@@ -430,6 +433,7 @@ function startBuild(instant) {
      下面的 startClear 會重派）。 */
   quake = null;
   dozers = null; ENG.putDozers([]);
+  trucks = null;                     // 上一座的消防車也一起收（它跟整地一樣是流程的一部分）
   /* 火留著（v1.59）：一整棟在燒的建築忽然全暗，是換場感最重的一筆。
      燒著的積木這一刻全部被打散成碎料，會拖著火飛出去、落地燒成焦炭，很自然。
      唯一要擋的是「小人把還在燒的碎料撿去蓋新的那座」——那一步在 pick 那裡熄掉
@@ -930,6 +934,8 @@ function newWorker(i) {
     /* 被工具波及時才用得到：air 是正在飛，vx/vy/vz 是彈道，spin 是翻滾角速度，
        lit 是「落地要著火」的記號，burn 是還要燒幾秒，burnK 是身上焦黑的深淺。 */
     air: 0, vx: 0, vy: 0, vz: 0, spin: 0, lit: 0, burn: 0, burnK: 0,
+    // 被消防車噴到：wet 是還濕幾秒（這期間點不著），wetK 是身上顏色要乘的倍率
+    wet: 0, wetK: 0,
     roll: 0, rspin: 0, rph: 0,
     bem: 0, bx: 0, bz: 0, br: 0, ba: 0,
     /* 工程師（eng）：拿藍圖 plan、站的角度 eang、下一個動作倒數 et、指揮動作剩幾秒 point。
@@ -1055,7 +1061,7 @@ function tossWorker(w, vx, vy, vz, lit) {
 }
 /* roll=1 是摔在地上燒（就地打滾），roll=0 是站著被點著（抱頭跑圈圈） */
 function igniteWorker(w, roll) {
-  if (w.burn > 0) return false;
+  if (w.burn > 0 || w.wet > 0) return false;      // 剛被消防車噴過的點不著
   releaseWorker(w);
   w.burn = W_BURN; w.roll = roll ? 1 : 0; w.bem = Math.random(); w.fall = 0; w.flee = 0;
   // 躺平角直接就位（人本來就是摔在地上才點著的），來回滾的相位每個人不一樣
@@ -1114,8 +1120,8 @@ function flyWorker(w, dt) {
   // 落地這一刻才判定燒不燒：被爆炸掃到的（lit）一定燒，摔進火堆裡的也會被引燃
   const lit = w.lit || nearFire(w);
   w.lit = 0;
-  if (lit) igniteWorker(w, true);
-  else { w.tilt = 0; w.fall = rr(0.8, 1.7); }          // 沒著火的就趴一下再爬起來
+  // igniteWorker 會擋掉濕的人，擋掉之後要走「沒著火」這條，不然他會躺著不動
+  if (!lit || !igniteWorker(w, true)) { w.tilt = 0; w.fall = rr(0.8, 1.7); }
   sndFall();
 }
 /* 燒起來的兩種演法。跑圈圈是繞著「被點著時站的那個位置」轉，不是隨機亂走——
@@ -1470,6 +1476,16 @@ function updWorker(w, wi, dt) {
   if (w.burn > 0 || w.burnK > 0.002) {
     const t = w.burn > 0 ? 0.8 : 0;
     w.burnK += (t - w.burnK) * Math.min(1, dt * (w.burn > 0 ? 1.1 : 2.2));
+  }
+  /* 濕度（v1.68）。wetK 是引擎那邊要乘的倍率，所以「沒濕」是 0 而不是 1——
+     0 讓引擎整段跳過，不必為了每個人都乘一次 1。乾了才歸零，中間都在漸變。 */
+  if (w.wet > 0) {
+    w.wet = Math.max(0, w.wet - dt);
+    if (!w.wetK) w.wetK = 1;                        // 剛淋到：從原色開始往深的走
+    w.wetK += (WET_DARK - w.wetK) * Math.min(1, dt * 6);
+  } else if (w.wetK) {
+    w.wetK += (1 - w.wetK) * Math.min(1, dt * 4);
+    if (w.wetK > 0.99) w.wetK = 0;                  // 乾了歸零，引擎那邊整段跳過
   }
   if (w.air) { flyWorker(w, dt); return; }            // 被吹飛／炸飛：走彈道
   if (w.burn > 0) { burnMove(w, dt); return; }        // 燒起來：打滾或跑圈圈
@@ -2992,7 +3008,7 @@ let slotOwner = null;         // slot → blocks 索引；只有蔓延需要反�
    後者燒固定 EMBER_TIME，只是拖著火飛、落地變成一塊焦炭
    （它已經離開建築了，沒有鄰居可傳，也不用再打掉一次）。 */
 function igniteBlock(b) {
-  if (!b || b.burn || (b.st !== SET && b.st !== FLY)) return false;
+  if (!b || b.burn || b.wet > 0 || (b.st !== SET && b.st !== FLY)) return false;
   const sp = b.st === SET;
   /* 兩種火各有各的額度。共用一個的話，一發爆炸打出來的幾百塊碎料會把額度整個吃光，
      旁邊還站著的那半棟就再也燒不起來——那才是這個道具最該看到的畫面。 */
@@ -3028,6 +3044,33 @@ function douse(b) {
   fires.splice(i, 1);
   if (!fires.length) { fires = null; nSpread = 0; }
 }
+/* ── 潮濕 ───────────────────────────────────────────────
+   被水噴到的東西濕 5 秒（使用者指定），這 5 秒內點不著，顏色壓深一點點。
+   積木的濕度就掛在 b.wet 一個數字上，每幀在顏色那條 lerp 旁邊自己遞減
+   （見 step 裡的 b.wet -= dt）——不另外開清單，因為那條迴圈本來就每幀跑過每一塊。
+   小人的濕度是 w.wet，深淺走 w.wetK（引擎那邊乘上去的倍率）。 */
+const WET_TIME = 5;                 // 濕多久
+const WET_DARK = 0.8;               // 濕的時候顏色乘多少（使用者指定 ×0.8：深一點點）
+/* 淋濕一塊。還在燒的先熄掉——「噴水滅火」就是這一行，douse 會把它從 fires 拿掉，
+   燒黑的顏色留著不還原（那是真的被燒過的痕跡，v1.59 訂的規則）。 */
+function wetBlock(b) {
+  if (!b) return false;
+  douse(b);
+  b.wet = WET_TIME;
+  return true;
+}
+/* 淋濕一個人。身上有火就一起澆熄，站起來的收尾跟「燒完了」走同一組欄位
+   （見 updWorker 裡 w.burn <= 0 那段），不然人會一直躺在地上打滾。 */
+function wetWorker(w) {
+  if (!w) return false;
+  w.wet = WET_TIME;
+  if (w.burn > 0) {
+    w.burn = 0; w.roll = 0; w.tilt = 0; w.rspin = 0; w.rph = 0; w.gait = 0; w.st = 'idle';
+    w.fall = rr(0.5, 1.1);            // 被水柱打到會先蹲一下再起來
+  }
+  return true;
+}
+
 /* 放火道具的入口。點到的是碎料（不是建築的一部分）時就改找落點附近最近的一塊建築——
    不然點在牆前面那堆碎料上會像沒反應。 */
 function torch(hit) {
@@ -3045,6 +3088,201 @@ function torch(hit) {
   if (phase === 'done') phase = 'wreck';               // 完工的建築被動到 → 進入拆除中
   sndFire();
 }
+/* ── 消防車 ─────────────────────────────────────────────
+   建造中失火會卡死：小人把積木補回火場旁邊 → 新放上去的又被蔓延點著。
+   實測（在蓋到一半的巴黎聖母院放一把火，20 人、3000 塊）三輪都跑到 600 秒還沒完工，
+   放上去只有 741／728／1032 塊（共 3121），結束時還有二十幾塊在燒；
+   同一座沒放火是 334 秒完工。所以消防車不是特效，它是這個死結的解。
+
+   只在**建造中**派車（使用者指定）：拆除中你自己點的火不該被 AI 滅掉。
+   車走**外圈**——建造中不能像整地那樣叫小人退到旁邊等，所以車停在 siteClearR 外面
+   往裡面噴，工地裡的路一條都不占（代價是它打不到工地正中央深處，見 ftRange）。 */
+const FT_MAX = 2;                   // 最多幾台，跟畫面那邊的 MAXTRUCK 綁在一起
+/* 工地每這麼多平方單位派一台（1～FT_MAX）。2000 是照「一般工地一台、大工地兩台」訂的：
+   siteR 14 的小工地面積 745 → 1 台，siteR 33 以上（面積 3700+）→ 2 台。 */
+const FT_AREA = 2000;
+const FT_CALL = 6;                  // 同時燒著幾塊才叫車：一兩塊自己就燒完了，不值得出動
+const FT_MOVE = 13;                 // 車速。比推土機快（DOZ_MOVE 9.5）——它是趕著來的
+const FT_WET_R = 3.2;               // 水柱落點這麼近的積木都會被淋濕
+const FT_SWEEP = 17;                // 落點每秒掃多快：掃過去才像在澆，瞬移看起來像在閃
+const FT_PICK = 0.4;                // 多久重挑一次目標
+const FT_QUIT = 2.5;                // 火滅乾淨之後再待這麼久才走（復燃就不用重新叫車）
+const FT_LIMIT = 120;               // 保險絲：待再久也要收工
+/* 一次最多轉這麼多弧度去找下一個路點。直接朝目標角度切過去的話，火在對面時
+   那條直線會穿過工地正中央——「車走外圈」就白寫了。算過：從場外開進來時
+   0.3 rad 的路點讓整條路離場中心最近 20（外圈半徑本身 20、工地 16），0.5 rad 會掉到 13。 */
+const FT_ARC = 0.3;
+const ftRing = () => siteClearR() + 4;      // 停在外圈這個半徑上（比推土機的工作圈還外面）
+const ftRange = () => ftRing() + 7;         // 射程：打得到場中心再過去一點
+const WATER_G = 12;                 // 水滴的重力（塵霧預設 7；水要沉一點才像水）
+let trucks = null;                  // 在場的消防車 { t, quit, out, list }
+
+/* 還站著在燒的那些塊的平均位置角度——車從這個方向的場外進來。 */
+function fireAngle() {
+  let x = 0, z = 0, n = 0;
+  if (fires) for (const f of fires) {
+    if (!f.sp || f.b.st !== SET) continue;
+    x += f.b.x; z += f.b.z; n++;
+  }
+  return n ? Math.atan2(x / n, z / n) : Math.random() * Math.PI * 2;
+}
+function callTrucks() {
+  const n = clamp(Math.round(Math.PI * siteClearR() ** 2 / FT_AREA), 1, FT_MAX);
+  const base = fireAngle();
+  const far = arenaR + DOZ_FAR;             // 跟推土機同一個進場圈
+  trucks = {
+    t: 0, quit: 0, out: false,
+    list: Array.from({ length: n }, (_, k) => {
+      const off = (k - (n - 1) / 2) * 0.5;  // 兩台在外圈上錯開一點，不要擠在同一個點
+      const ang = base + off;
+      return { x: Math.sin(ang) * far, z: Math.cos(ang) * far, a: ang + Math.PI,
+               off, t: rr(0, 2), bob: 0, bk: 0, tx: 0, tz: 0,
+               pick: 0, aim: null, jet: 0, jx: 0, jy: 0, jz: 0, em: 0 };
+    })
+  };
+}
+/* 還澆得到的目標：離這台車最近、**還站著**在燒的那一塊。
+   碎料的火（f.sp = false）不追——它們散得到處都是，而且燒完自己就成焦炭，
+   追著跑的話車會一路被拉離建築；掃到的碎料照樣會被水淋濕（見 wetSpray）。 */
+function pickFire(m) {
+  if (!fires) return null;
+  let best = null, bd = Infinity;
+  for (const f of fires) {
+    if (!f.sp || f.b.st !== SET) continue;
+    const d = (f.b.x - m.x) ** 2 + (f.b.z - m.z) ** 2;
+    if (d < bd) { bd = d; best = f.b; }
+  }
+  return best;
+}
+const aimOk = b => !!b && b.burn === 1 && b.st === SET;
+/* 只轉車頭、不前進。停下來噴水時要對著火場轉，driveTo 那支會連帶把車開走。 */
+function faceTo(m, dt, x, z) {
+  let d = Math.atan2(x - m.x, z - m.z) - m.a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  m.a += Math.min(Math.abs(d), DOZ_TURN * dt) * Math.sign(d);
+}
+/* 下一個路點：外圈上、離車子現在的角度最多 FT_ARC 的那一點（見 FT_ARC 的註解）。 */
+function ftWaypoint(m, ang) {
+  const now = Math.atan2(m.x, m.z);
+  let d = ang - now;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  const a = now + clamp(d, -FT_ARC, FT_ARC);
+  m.tx = Math.sin(a) * ftRing();
+  m.tz = Math.cos(a) * ftRing();
+}
+/* 水柱：從砲口噴到落點的一串水滴，走現成的塵霧粒子池（那邊支援每顆自己的顏色），
+   所以整個水效果是 0 個新 draw call。
+   速度是解彈道解出來的（給定飛行時間，垂直初速要補上重力那一段），
+   不是「往那個方向噴一個固定速度」——後者近的打太遠、遠的掉在半路。
+   keep: 1 是關掉水平阻尼：塵霧預設每幀乘 0.94，水滴吃了那個會在半空停住。 */
+function sprayFx(m, dt) {
+  const nx = m.x + Math.sin(m.a) * 1.4, nz = m.z + Math.cos(m.a) * 1.4, ny = 3.05;
+  const d = Math.hypot(m.jx - nx, m.jz - nz);
+  const t = Math.max(0.12, d / 30);
+  /* 一秒 130 顆、每顆 0.12～0.26 格（v1.68 調過一次：原本 75 顆、0.16～0.34 格，
+     看起來是一串在飛的冰塊不是一道水柱——水要「細而密」，顆粒大反而像碎石）。 */
+  m.em += dt * 130;
+  while (m.em >= 1) {
+    m.em--;
+    if (dust.length > 560) break;               // 留一截給煙塵：火場本來就在冒煙
+    dust.push({
+      x: nx + rr(-0.12, 0.12), y: ny + rr(-0.1, 0.1), z: nz + rr(-0.12, 0.12),
+      vx: (m.jx - nx) / t + rr(-0.8, 0.8),
+      vy: (m.jy - ny) / t + 0.5 * WATER_G * t + rr(-0.4, 0.4),
+      vz: (m.jz - nz) / t + rr(-0.8, 0.8),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: t * rr(0.92, 1.12), s: rr(0.12, 0.26),
+      cr: 0.58, cg: 0.82, cb: 1, g: WATER_G, keep: 1
+    });
+  }
+  // 打在牆上濺開的那幾滴：往上彈、吃一點阻尼，落點才看得出來是「打到東西了」
+  if (Math.random() < dt * 55 && dust.length < 620)
+    dust.push({
+      x: m.jx + rr(-0.7, 0.7), y: m.jy + rr(-0.5, 0.5), z: m.jz + rr(-0.7, 0.7),
+      vx: rr(-2.4, 2.4), vy: rr(1.6, 4.4), vz: rr(-2.4, 2.4),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(0.3, 0.6), s: rr(0.12, 0.26),
+      cr: 0.74, cg: 0.91, cb: 1, g: WATER_G, keep: 0.9
+    });
+}
+/* 水柱落點附近的東西都淋濕。一幀掃一趟積木，兩台車共用這一趟——
+   一台掃一趟的話同一塊會被判兩次，而且掃兩遍三千塊是白花的。 */
+function wetSpray() {
+  const jets = [];
+  for (const m of trucks.list) if (m.jet) jets.push(m);
+  if (!jets.length) return;
+  const r2 = FT_WET_R * FT_WET_R;
+  for (const b of blocks) {
+    if (b.holder >= 0) continue;                 // 扛在人身上的不算（人自己會被淋到）
+    for (const m of jets)
+      if ((b.x - m.jx) ** 2 + (b.y - m.jy) ** 2 + (b.z - m.jz) ** 2 < r2) { wetBlock(b); break; }
+  }
+  for (const w of workers) {
+    if (w.wet > WET_TIME - 0.2) continue;        // 剛淋過就不必再算一次
+    for (const m of jets)
+      if ((w.x - m.jx) ** 2 + (w.z - m.jz) ** 2 < r2 &&
+          Math.abs(m.jy - w.y) < FT_WET_R + 1.5) { wetWorker(w); break; }
+  }
+}
+function stepTrucks(dt) {
+  // 叫車：只有建造中，而且火勢到一定規模
+  if (!trucks && phase === 'build' && nSpread >= FT_CALL) callTrucks();
+  if (!trucks) return;
+  const T = trucks;
+  T.t += dt;
+  /* 收工／回頭。收工條件：不在建造中了（換場、完工、開始拆）、火滅乾淨、或待太久。
+     還沒開出地圖前火又燒起來的話直接回頭，不必等這批走光再叫新的一批。 */
+  if (T.out) {
+    if (phase === 'build' && nSpread >= FT_CALL) { T.out = false; T.quit = 0; }
+  } else {
+    if (phase !== 'build' || T.t > FT_LIMIT) T.out = true;
+    else if (nSpread) T.quit = 0;
+    else { T.quit += dt; if (T.quit > FT_QUIT) T.out = true; }
+  }
+  for (let i = T.list.length - 1; i >= 0; i--) {
+    const m = T.list[i];
+    m.t += dt;
+    m.bob = Math.sin(m.t * 24) * 0.05;            // 引擎抖動：停著也在抖
+    m.bk = Math.floor(m.t * 3.4) % 2;             // 警示燈：一秒閃三下多
+    if (T.out) {
+      m.jet = 0;
+      faceTo(m, dt, m.x * 3, m.z * 3);            // 車頭轉朝外，直線開出去
+      m.x += Math.sin(m.a) * FT_MOVE * dt;
+      m.z += Math.cos(m.a) * FT_MOVE * dt;
+      if (Math.hypot(m.x, m.z) > arenaR + 14) T.list.splice(i, 1);
+      continue;
+    }
+    m.pick -= dt;
+    if (m.pick <= 0 || !aimOk(m.aim)) { m.pick = FT_PICK; m.aim = pickFire(m); }
+    const a = m.aim;
+    if (!a) { m.jet = 0; continue; }               // 沒得澆：停在原地等，外圈本來就是它的位置
+    /* 要先開到外圈上才噴（v1.68）。只看「打得到了嗎」的話，車會停在剛好進入射程的
+       那個位置——聖母院實測停在半徑 33，外圈才 21.4，遠遠停在場外對著建築噴。
+       所以兩個條件都要成立：人已經在外圈那一帶、目標也在射程內。 */
+    const reach = Math.hypot(a.x - m.x, a.z - m.z) <= ftRange();
+    if (!reach || Math.hypot(m.x, m.z) > ftRing() + 2) {
+      m.jet = 0;                                  // 還在路上就先收水柱，不要邊開邊亂噴
+      ftWaypoint(m, Math.atan2(a.x, a.z) + m.off);
+      driveTo(m, dt, FT_MOVE);
+      continue;
+    }
+    // 打得到了：停下來、車頭轉向火場、水柱往目標掃過去
+    faceTo(m, dt, a.x, a.z);
+    if (!m.jet) { m.jet = 1; m.jx = a.x; m.jy = a.y; m.jz = a.z; }
+    else {
+      const dx = a.x - m.jx, dy = a.y - m.jy, dz = a.z - m.jz;
+      const d = Math.hypot(dx, dy, dz), go = FT_SWEEP * dt;
+      if (d <= go) { m.jx = a.x; m.jy = a.y; m.jz = a.z; }
+      else { m.jx += dx / d * go; m.jy += dy / d * go; m.jz += dz / d * go; }
+    }
+    sprayFx(m, dt);
+  }
+  if (!T.list.length) { trucks = null; return; }
+  wetSpray();
+}
+
 /* ── 煙火 ───────────────────────────────────────────────
    點地面：一次齊射三發往天上竄，到頂各自炸開成雙層的一球火星，
    火星帶著火慢慢落下來。落到建築上就從那一塊燒起來——
@@ -4489,6 +4727,7 @@ function step(dt) {
   stepArcs(dt);
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepDozers(dt);
+  stepTrucks(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
     toasts[i].t -= dt;
     if (toasts[i].t <= 0) { toasts.splice(i, 1); renderToasts(); }
@@ -4518,9 +4757,15 @@ function step(dt) {
     if (b.scale > 1) b.scale = Math.max(1, b.scale - dt * 1.6);
     if (b.wob > 0) b.wob = Math.max(0, b.wob - dt * 2.2);
     if (b.al < 1) b.al = Math.min(1, b.al + dt * 2);
-    b.r += (b.tr - b.r) * Math.min(1, dt * 5);
-    b.g += (b.tg - b.g) * Math.min(1, dt * 5);
-    b.b += (b.tb - b.b) * Math.min(1, dt * 5);
+    /* 淋濕的積木顏色壓深一點點（v1.68）。做法是**只動這裡的目標值**，不去改 b.tr——
+       b.tr 是「這塊積木自己的顏色」，被燒黑、被打成碎料、被砌進新建築都會改寫它，
+       濕度若也寫進 b.tr，乾了要還原就得記一份原色、還要在那三條路上各補一次還原。
+       乘在目標上就沒有這些事：乾了自己乘回 1，而且淋濕與變乾的漸變是現成的那條 lerp。 */
+    if (b.wet > 0) b.wet = Math.max(0, b.wet - dt);
+    const wk = b.wet > 0 ? WET_DARK : 1;
+    b.r += (b.tr * wk - b.r) * Math.min(1, dt * 5);
+    b.g += (b.tg * wk - b.g) * Math.min(1, dt * 5);
+    b.b += (b.tb * wk - b.b) * Math.min(1, dt * 5);
   }
   burningW = 0;
   for (const w of workers) if (w.burn > 0) burningW++;    // 火苗配額要照人數分
@@ -4579,6 +4824,7 @@ function draw() {
   if (ringList) ENG.setRings(ringList);
   else ENG.hideRings();
   if (dozers) ENG.putDozers(dozRender(dozers));
+  ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
 }
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石

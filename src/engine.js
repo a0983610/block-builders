@@ -14,7 +14,7 @@ const ENG = (function () {
 
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
-  let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh;
+  let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh;
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
@@ -51,6 +51,7 @@ const ENG = (function () {
   const FLASH_SQUASH = 0.82;               // 壓扁一點：貼地炸開的火球是扁的，不是正球
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
+  const MAXTRUCK = 2, TRK_PARTS = 11;       // 消防車：最多兩台，一台 11 個部位
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
@@ -320,6 +321,17 @@ const ENG = (function () {
     }
     trebMesh.setColorAt(0, tmpC.setHex(0xffffff));
     dozMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
+    /* 消防車（v1.68）。跟推土機同一套：整台車的部位塞進一顆 InstancedMesh，
+       所以**一台跟兩台一樣貴**（它會投影，在場時是 2 個 draw call：主畫面 + 陰影那一趟）。
+       差別是它照新規矩「沒車就 visible=false」——建造中沒火的時候一台都不在場，
+       不該為了它固定付這個錢。 */
+    trkMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXTRUCK * TRK_PARTS);
+    trkMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    trkMesh.castShadow = true; trkMesh.count = 0;
+    trkMesh.frustumCulled = false; trkMesh.visible = false;
+    trkMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(trkMesh);
 
     /* 定時炸彈：可以同時放好幾顆，走 instancing。
        新道具的網格一律「沒在用就 visible=false」——InstancedMesh 就算 count=0
@@ -609,6 +621,50 @@ const ENG = (function () {
     }
     dozMesh.instanceMatrix.needsUpdate = true;
     if (dozMesh.instanceColor) dozMesh.instanceColor.needsUpdate = true;
+  }
+  /* 消防車。m：{x, z, a 朝向, bob 引擎抖動, bk 警示燈亮不亮}
+     車頭朝 local +Z，跟推土機、投石機同一套擺位。水砲固定朝車頭——
+     車子停下來會先把車頭轉向火場，所以砲口自然對著要噴的地方，不必再單獨轉砲塔。 */
+  const TRK_PART = [
+    { p: [-1.45, 0.55, -2.0], s: [0.75, 1.1, 1.1], c: 0x23262b },   // 左後輪
+    { p: [1.45, 0.55, -2.0], s: [0.75, 1.1, 1.1], c: 0x23262b },    // 右後輪
+    { p: [-1.45, 0.55, 1.9], s: [0.75, 1.1, 1.1], c: 0x23262b },    // 左前輪
+    { p: [1.45, 0.55, 1.9], s: [0.75, 1.1, 1.1], c: 0x23262b },     // 右前輪
+    { p: [0, 1.5, -0.9], s: [2.9, 1.7, 5.4], c: 0xd8262c },         // 車廂
+    { p: [0, 1.35, 2.1], s: [2.8, 1.4, 2.4], c: 0xd8262c },         // 引擎蓋
+    { p: [0, 2.45, 1.7], s: [2.6, 1.3, 2.2], c: 0x2b3038 },         // 駕駛室：深色才看得出是座艙
+    { p: [0, 1.05, -0.9], s: [2.96, 0.34, 5.46], c: 0xf2f4f6 },     // 車身那道白線（比車廂窄一點，才是線不是底板）
+    { p: [0, 2.55, -1.4], s: [1.3, 0.6, 1.3], c: 0xc2c8d0 },        // 水砲底座
+    { p: [0, 2.9, 0.1], s: [0.34, 0.34, 2.6], c: 0x8a9098 },        // 水砲管（朝車頭）
+    /* 警示燈。閃是靠顏色換，不是靠位置動——一顆 instance 只有一個顏色，
+       換色最省事，而且遠遠看就是那一點在跳。 */
+    { p: [0, 3.25, 1.7], s: [1.7, 0.32, 0.6], c: 0xff2f24, bk: 1 }
+  ];
+  const TRK_DARK = 0x5c1512;                   // 警示燈暗掉那一格的顏色
+  function putTrucks(list) {
+    const n = Math.min(list.length, MAXTRUCK);
+    trkMesh.visible = n > 0;
+    trkMesh.count = n * TRK_PARTS;
+    for (let i = 0; i < n; i++) {
+      const d = list[i];
+      scratch.position.set(d.x, d.bob || 0, d.z);
+      scratch.rotation.set(0, d.a, 0);
+      scratch.scale.setScalar(1);
+      scratch.updateMatrix();
+      for (let k = 0; k < TRK_PARTS; k++) {
+        const b = TRK_PART[k];
+        scratchB.position.set(b.p[0], b.p[1], b.p[2]);
+        scratchB.rotation.set(0, 0, 0);
+        scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        trkMesh.setMatrixAt(i * TRK_PARTS + k, tmpM);
+        trkMesh.setColorAt(i * TRK_PARTS + k,
+                           tmpC.setHex(b.bk && !d.bk ? TRK_DARK : b.c));
+      }
+    }
+    trkMesh.instanceMatrix.needsUpdate = true;
+    if (trkMesh.instanceColor) trkMesh.instanceColor.needsUpdate = true;
   }
   function putRocks(list) {
     const n = Math.min(list.length, MAXROCK);
@@ -1145,6 +1201,8 @@ const ENG = (function () {
       // 寶珠在施法時亮起來，還帶一點明滅——這是「他正在施法」最省事的那個訊號
       if (b.orb && w.cast) tmpC.lerp(ORB_LIT, w.cast * (0.55 + 0.3 * Math.sin(w.ph * 3)));
       if (w.burnK) tmpC.lerp(CHAR, w.burnK);
+      // wetK：被水噴到之後整個人要乘的倍率（沒濕就不給）。深淺是規則那邊定的，不在這裡寫死
+      if (w.wetK) tmpC.multiplyScalar(w.wetK);
       workerMesh.setColorAt(i * WPARTS + k, tmpC);
     }
   }
@@ -1379,7 +1437,7 @@ const ENG = (function () {
     init, resize, render, info, pick,
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers,
-    putTrees, putDust, putTrebs, putRocks, putDozers,
+    putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks,
     setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts,

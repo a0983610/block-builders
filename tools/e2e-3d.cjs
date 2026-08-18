@@ -103,9 +103,13 @@ const installClean = page => page.evaluate(() => {
     meteors = null; ENG.putMeteors([]);
     nukes = null; ENG.putNukes([]);
     magics = null;
+    trucks = null;
     fworks = null; fwSparks = null; fwWait = null;
     dangers = []; quake = null;
     clearFires();
+    // 弄乾：濕的積木點不著，留給下一條測試會讓它「放火放不起來」（踩過）
+    for (const b of blocks) b.wet = 0;
+    for (const w of workers) { w.wet = 0; w.wetK = 0; }
   };
 });
 
@@ -4652,6 +4656,249 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ══════════ 煙火 ══════════
      它是「往天上灑火種」：一發打不掉任何積木，但落下來的火星碰到建築就從那一塊燒起來。
      v1.39 起一次點下去是**三發齊射**（第二、三發晚 0.2～0.5 秒 ×序號出膛）。 */
+  /* ══════════ 消防車與潮濕 ══════════
+     建造中失火本來會卡死（沒有消防車的量測見 README）：小人把積木補回火場旁邊，
+     新放上去的又被蔓延點著。v1.68 加了「被水噴到就濕 5 秒、濕的點不著」，
+     以及建造中會從地圖邊緣開進來的消防車。 */
+  head('消防車與潮濕');
+
+  const wetOne = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    const b = blocks.find(k => k.st === 3);
+    for (let i = 0; i < 20; i++) step(0.05);          // 顏色先收斂到它自己的建材色
+    const dry = b.r, tr0 = b.tr;
+    wetBlock(b);
+    const litWet = igniteBlock(b);                   // 濕的點不著
+    for (let i = 0; i < 20; i++) step(0.05);          // 1 秒：顏色已經壓深了
+    const wetC = b.r, trWet = b.tr;
+    for (let i = 0; i < 120; i++) step(0.05);         // 再 6 秒：早就乾了
+    const back = b.r, litDry = igniteBlock(b);
+    cleanTools();
+    return { dry: +dry.toFixed(3), wetC: +wetC.toFixed(3), back: +back.toFixed(3),
+             ratio: +(wetC / dry).toFixed(3), litWet, litDry,
+             sameTr: Math.abs(tr0 - trWet) < 1e-9, want: WET_DARK, life: WET_TIME };
+  });
+  ok('淋濕的積木點不著，乾了才又點得著',
+     wetOne.litWet === false && wetOne.litDry === true,
+     '濕的時候 igniteBlock ' + wetOne.litWet + '、' + wetOne.life + ' 秒後 ' + wetOne.litDry);
+  ok('淋濕的積木顏色壓深 ×0.8，而且不去改它自己的顏色',
+     Math.abs(wetOne.ratio - wetOne.want) < 0.02 && wetOne.sameTr &&
+     Math.abs(wetOne.back - wetOne.dry) < 0.005,
+     '乾 ' + wetOne.dry + ' → 濕 ' + wetOne.wetC + '（×' + wetOne.ratio + '）→ 乾 ' +
+     wetOne.back + '；b.tr 沒被動過 ' + wetOne.sameTr);
+
+  /* 讀 b.r 只證明「資料算對了」，證明不了使用者看得到（這支程式踩過幾次）。
+     所以再量一次畫面：同一個機位，全乾拍一張、全濕拍一張，比「像積木的那些像素」的亮度。
+     金字塔是米色的一大片，最適合量這種整體變深；順便看一眼引擎收到的 instance 顏色。 */
+  const wetPix = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    startBuild(true); completeNow();
+    for (let i = 0; i < 6; i++) ENG.updateCamera(1);
+    const shot = () => {
+      draw(); ENG.render();
+      const gl = ENG.three.renderer.getContext();
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      // 只取像積木的像素：偏灰白（R≈G≈B 而且夠亮）。草地是綠的、天空是藍的
+      let sum = 0, n = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        const r = px[i], g = px[i + 1], b = px[i + 2];
+        if (r > 90 && Math.abs(r - g) < 26 && r > b && r - b < 60) { sum += r; n++; }
+      }
+      return { avg: +(sum / Math.max(1, n)).toFixed(1), n };
+    };
+    const dry = shot();
+    for (const b of blocks) if (b.st === 3) wetBlock(b);
+    for (let i = 0; i < 40; i++) step(0.05);
+    const wet = shot();
+    const one = blocks.find(b => b.st === 3);
+    const col = ENG.three.blockMesh.instanceColor;
+    const c0 = col ? +col.array[0].toFixed(3) : -1;
+    cleanTools();
+    return { dry, wet, base: +one.tr.toFixed(3), drawn: +one.r.toFixed(3), c0 };
+  });
+  ok('濕了是真的畫得比較深，不只是資料上比較深',
+     wetPix.wet.avg < wetPix.dry.avg - 8 && wetPix.dry.n > 20000 &&
+     Math.abs(wetPix.c0 - wetPix.base * 0.8) < 0.01,
+     '積木那些像素平均亮度 ' + wetPix.dry.avg + ' → ' + wetPix.wet.avg + '（' +
+     wetPix.dry.n + ' 個像素），引擎收到的第一塊顏色 ' + wetPix.c0 +
+     '（原色 ' + wetPix.base + ' × 0.8）');
+
+  /* 「噴水滅火」就是 wetBlock 裡那一行 douse：燒黑的顏色留著不還原
+     （那是真的被燒過的痕跡），但火要當場滅。 */
+  const wetDouse = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    const b = blocks.find(k => k.st === 3);
+    igniteBlock(b);
+    for (let i = 0; i < 20; i++) step(0.05);          // 燒一秒，顏色已經往焦黑走了
+    const burning = b.burn, n0 = fires ? fires.length : 0, char = +b.tr.toFixed(3);
+    wetBlock(b);
+    const after = { burn: b.burn, n: fires ? fires.length : 0, tr: +b.tr.toFixed(3) };
+    cleanTools();
+    return { burning, n0, char, after };
+  });
+  ok('水澆在燒著的積木上會當場滅火，燒黑的痕跡留著',
+     wetDouse.burning === 1 && wetDouse.after.burn === 0 &&
+     wetDouse.after.n === wetDouse.n0 - 1 && wetDouse.after.tr === wetDouse.char,
+     '澆水前 ' + wetDouse.n0 + ' 處在燒 → 澆水後 ' + wetDouse.after.n +
+     '，那一塊的目標色停在 ' + wetDouse.after.tr + '（燒黑的）');
+
+  /* 派車：只有建造中。拆除中你自己點的火不該被 AI 滅掉（使用者指定）。 */
+  const ftCall = await page.evaluate(() => {
+    const fireUp = (n) => {                            // 一次點著 n 塊，湊到叫車門檻
+      const cand = blocks.filter(k => k.st === 3 && !k.burn);
+      for (let i = 0; i < n && i < cand.length; i++)
+        igniteBlock(cand[Math.floor(i * cand.length / n)]);
+    };
+    // 建造中
+    cleanTools(); startBuild(true); completeNow();
+    phase = 'build';
+    fireUp(FT_CALL + 4);
+    const lit = nSpread;
+    for (let i = 0; i < 4; i++) step(0.05);
+    const inBuild = trucks ? trucks.list.length : 0;
+    const startR = trucks ? Math.min(...trucks.list.map(m => Math.hypot(m.x, m.z))) : 0;
+    // 拆除中
+    cleanTools(); startBuild(true); completeNow();
+    phase = 'wreck';
+    fireUp(FT_CALL + 4);
+    const litW = nSpread;
+    for (let i = 0; i < 40; i++) step(0.05);
+    const inWreck = trucks ? trucks.list.length : 0;
+    cleanTools();
+    return { lit, inBuild, startR: +startR.toFixed(1), litW, inWreck,
+             call: FT_CALL, edge: +(arenaR + DOZ_FAR).toFixed(1), max: FT_MAX };
+  });
+  ok('建造中火勢起來會叫消防車，而且從地圖邊緣進場',
+     ftCall.lit >= ftCall.call && ftCall.inBuild >= 1 && ftCall.inBuild <= ftCall.max &&
+     ftCall.startR > ftCall.edge - 4,
+     ftCall.lit + ' 塊在燒 → 來了 ' + ftCall.inBuild + ' 台（上限 ' + ftCall.max +
+     '），出發點在半徑 ' + ftCall.startR + '（碎料場外緣 ' + ftCall.edge + '）');
+  ok('拆除中不叫車：你自己點的火不該被 AI 滅掉',
+     ftCall.litW >= ftCall.call && ftCall.inWreck === 0,
+     ftCall.litW + ' 塊在燒，兩秒後場上 ' + ftCall.inWreck + ' 台');
+
+  /* 車走外圈（使用者指定）：建造中不能像整地那樣叫小人退到旁邊等，
+     所以車一步都不進工地，停在 siteClearR 外面往裡面噴。 */
+  const ftRun = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '巴黎聖母院');
+    setWorkerCount(20);
+    startBuild(true);
+    // 先瞬間砌好一半（真的蓋要兩分鐘，這一條要驗的是火跟車，不是搬磚）
+    const half = Math.floor(bp.slots.length * 0.45);
+    for (let i = 0; i < half; i++) {
+      const s = bp.slots[i], b = blocks[i];
+      if (b.cell) gridDel(b);
+      b.st = 3; b.slot = i; b.x = s.x; b.y = s.y + HB; b.z = s.z;
+      b.rx = b.ry = b.rz = 0; b.scale = 1; b.al = 1; b.holder = -1;
+      b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
+      s.filled = true; s.claimed = -1;
+    }
+    placedCnt = half; phase = 'build';
+    for (const w of workers) { w.load.length = 0; w.li = 0; w.carry = false; w.st = 'idle'; }
+    for (let i = 0; i < 40; i++) step(0.05);           // 讓小人回到工作節奏
+    // 從中段高度放一把火
+    const cand = blocks.filter(b => b.st === 3 && b.y > 3);
+    cand.sort((a, b) => b.y - a.y);
+    igniteBlock(cand[Math.floor(cand.length * 0.3)]);
+    const at = placedCnt;
+    let peak = 0, called = 0, arrive = -1, fireOut = -1, low = placedCnt;
+    let minR = Infinity, sprayed = 0, wetMax = 0, gone = -1, t = 0;
+    while (t < 60) {
+      step(0.05); t += 0.05;
+      peak = Math.max(peak, nSpread);
+      low = Math.min(low, placedCnt);
+      wetMax = Math.max(wetMax, blocks.filter(b => b.wet > 0).length);
+      if (trucks) {
+        called = Math.max(called, trucks.list.length);
+        for (const m of trucks.list) {
+          minR = Math.min(minR, Math.hypot(m.x, m.z));
+          if (m.jet) { sprayed++; if (arrive < 0) arrive = +t.toFixed(1); }
+        }
+      } else if (called && gone < 0) gone = +t.toFixed(1);
+      if (!nSpread && fireOut < 0 && t > 1) fireOut = +t.toFixed(1);
+    }
+    const end = placedCnt;
+    cleanTools();
+    return { at, peak, called, arrive, fireOut, low, end, sprayed, wetMax, gone, quit: FT_QUIT,
+             minR: +minR.toFixed(1), site: +siteClearR().toFixed(1),
+             ring: +ftRing().toFixed(1), range: +ftRange().toFixed(1) };
+  });
+  /* 噴幾幀不設高門檻：淋濕一片就把蔓延的鏈子切斷了，火自己燒完，
+     所以「噴多久」是看火多快死，量到 20～29 幀（1～1.5 秒）都算正常。
+     這一條要驗的是「有噴，而且沒進工地」，滅得掉不掉由下面那條驗。 */
+  ok('車一步都不進工地，停在外圈往裡面噴',
+     ftRun.minR > ftRun.site && ftRun.sprayed > 5,
+     '最靠近場中心 ' + ftRun.minR + '（工地 ' + ftRun.site + '、外圈 ' + ftRun.ring +
+     '、射程 ' + ftRun.range + '），噴了 ' + ftRun.sprayed + ' 幀');
+  ok('水柱掃過的一片都會濕',
+     ftRun.wetMax > 40,
+     '同時最多 ' + ftRun.wetMax + ' 塊是濕的');
+  ok('建造中被放一把火：火會被撲掉，工程繼續往前',
+     ftRun.called >= 1 && ftRun.arrive > 0 && ftRun.arrive < 25 &&
+     ftRun.fireOut > 0 && ftRun.fireOut < 40 &&
+     ftRun.low > ftRun.at - 250 && ftRun.end > ftRun.at,
+     // 門檻 −250：v1.67（沒有消防車）同樣的放法是從 1561 掉到 741，差 −820
+     '放火時 ' + ftRun.at + ' 塊 → 最多 ' + ftRun.peak + ' 塊在燒、車 ' + ftRun.arrive +
+     ' 秒後開始噴、' + ftRun.fireOut + ' 秒火全滅；進度最低 ' + ftRun.low +
+     '、六十秒後 ' + ftRun.end + ' 塊');
+  ok('火滅乾淨之後車自己離場',
+     ftRun.gone > ftRun.fireOut && ftRun.gone < 60,
+     '火滅在 ' + ftRun.fireOut + ' 秒、車在 ' + ftRun.gone + ' 秒離場（等 ' +
+     ftRun.quit + ' 秒沒復燃才走）');
+
+  /* 小人也會被噴到（使用者指定）：濕 5 秒、期間點不著，身上顏色一樣壓深。 */
+  const wetWk = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    const w = workers[0];
+    w.wet = 0; w.wetK = 0; w.burn = 0;
+    const dryK = w.wetK;
+    wetWorker(w);
+    const litWet = igniteWorker(w, false);
+    for (let i = 0; i < 20; i++) step(0.05);
+    const k = +w.wetK.toFixed(3);
+    // 身上有火的被澆到要當場熄
+    w.wet = 0; w.wetK = 0;
+    igniteWorker(w, true);
+    const burning = w.burn > 0;
+    wetWorker(w);
+    const outNow = w.burn === 0 && w.roll === 0;
+    for (let i = 0; i < 140; i++) step(0.05);          // 7 秒：乾了，wetK 歸零
+    const dried = w.wetK;
+    cleanTools();
+    return { dryK, litWet, k, burning, outNow, dried, want: WET_DARK };
+  });
+  ok('淋濕的小人不會被點燃，身上顏色也壓深',
+     wetWk.litWet === false && Math.abs(wetWk.k - wetWk.want) < 0.03 && wetWk.dried === 0,
+     '濕的時候 igniteWorker ' + wetWk.litWet + '、身上顏色 ×' + wetWk.k +
+     '，乾了之後 wetK 回到 ' + wetWk.dried);
+  ok('身上著火的小人被水柱打到會當場熄',
+     wetWk.burning && wetWk.outNow, '澆水前在燒 ' + wetWk.burning + ' → 澆水後熄掉 ' +
+     wetWk.outNow);
+
+  /* 整台車的部位塞在同一顆 InstancedMesh 裡：一台跟兩台一樣貴。
+     它會投影，所以在場的時候是 **2 個** draw call（主畫面 + 陰影那一趟），
+     跟隕石同一個道理；沒車的時候 visible=false，一個都不吃。 */
+  const ftCalls = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    draw(); ENG.render();
+    const idle = ENG.info().calls;
+    callTrucks();
+    const one = trucks.list.length;
+    draw(); ENG.render();
+    const withCar = ENG.info().calls;
+    trucks = null;
+    draw(); ENG.render();
+    return { idle, one, withCar, after: ENG.info().calls };
+  });
+  ok('消防車在場多吃 2 個 draw call（含陰影），沒車的時候一個都不吃',
+     ftCalls.withCar === ftCalls.idle + 2 && ftCalls.after === ftCalls.idle,
+     '沒車 ' + ftCalls.idle + ' 個 → ' + ftCalls.one + ' 台 ' + ftCalls.withCar +
+     ' 個 → 收掉 ' + ftCalls.after + ' 個');
+
   head('煙火');
   await reset(page, { shape: '新天鵝堡', cnt: 2000, workers: 4 });
   const fw = await page.evaluate(() => {
