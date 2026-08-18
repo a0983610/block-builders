@@ -1583,9 +1583,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         prev.set(w, { x: w.x, z: w.z, n: w.load.length });
         stuck.delete(w);
       }
-      // 每一發拋擲都是一個新的 arc 物件，拿它當「這發看過了沒」的鑰匙
+      /* 每一發拋擲都是一個新的 arc 物件，拿它當「這發看過了沒」的鑰匙。
+         魔法師隔空拋的那些（arc.mage）要濾掉：這一條量的是「工人原地連丟拋多遠」，
+         他那條本來就是從十幾格外的料堆直接飛過來的，混進來會把中位數整個拉高。 */
       for (const b of blocks) {
-        if (b.st !== 2 || !b.arc || seenArc.has(b.arc)) continue;
+        if (b.st !== 2 || !b.arc || b.arc.mage || seenArc.has(b.arc)) continue;
         seenArc.add(b.arc);
         dist.push(Math.hypot(b.arc.x1 - b.arc.x0, b.arc.z1 - b.arc.z0));
       }
@@ -2432,6 +2434,175 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      solo.eng1 === 0 && solo.built > 30 && solo.eng8 === 1 && solo.idx === 0,
      '1 人時工程師 ' + solo.eng1 + ' 個、蓋了 ' + solo.built + ' 塊；加到 8 人後第 ' +
      solo.idx + ' 號接任');
+
+  /* ══════════ 魔法師 ══════════ */
+  head('魔法師');
+  /* v1.64：十個人有一個是魔法師，站在工地旁邊隔空把建材拋上去。
+     這一段驗的是「他真的沒搬」——不是看畫面上有沒有巫師帽，而是看那些積木
+     從躺著的地方直接進拋物線，中途沒有任何一幀是被人舉在手上的。
+     工人自己丟的那些拿來當對照組：同一份資料裡兩種拋物線的長度、起點距離都量。 */
+  const wz = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    const mi = workers.map((w, i) => w.mage ? i : -1).filter(i => i >= 0);
+    const m = workers[mi[0]];
+    let carried = 0, loadMax = 0, flyMax = 0, cast = 0, near = Infinity, far = 0;
+    let starMax = 0, inHand = 0, launches = 0, frames = 0, lastMb = -1;
+    const mDur = [], wDur = [], mY0 = [], wY0 = [], reach = [];
+    const seen = new Set(), mine = new Map();
+    /* 先等他走到施法位再開始量：上一段測試可能把他丟在工地正中央，
+       那一段「走過來」會被算成「他站得多近」。 */
+    for (let i = 0; i < 400 &&
+         Math.abs(Math.hypot(m.x, m.z) - (siteR + MAGE_KEEP)) > 0.15; i++) step(0.05);
+    for (let i = 0; i < 3000 && phase === 'build'; i++) {
+      step(0.05); frames++;
+      if (m.carry) carried++;
+      loadMax = Math.max(loadMax, m.load.length);
+      if (m.cast > 0.5) cast++;
+      if (m.st === 'cast') {                        // 施工中站哪裡（閒著沒事去閒晃的不算）
+        const d = Math.hypot(m.x, m.z);
+        if (d < near) near = d;
+        if (d > far) far = d;
+      }
+      starMax = Math.max(starMax, stars.length);
+      // 魔法師名下的積木，任何一幀都不該是「被舉在手上」（st 1 = CARRY）
+      for (const b of blocks) if (b.st === 1 && mi.indexOf(b.holder) >= 0) inHand++;
+      if (m.mb >= 0 && m.mb !== lastMb) {
+        launches++; mine.set(m.mb, m.ms);
+        const a = blocks[m.mb].arc;                 // 出手那一刻，那塊料離他多遠
+        if (a) reach.push(Math.hypot(a.x0 - m.x, a.z0 - m.z));
+      }
+      lastMb = m.mb;
+      let fly = 0;                                  // 他發出去、此刻還在飛的有幾塊
+      for (const [k, s] of mine) {
+        const b = blocks[k];
+        if (b && b.st === 2 && b.slot === s) fly++; else mine.delete(k);
+      }
+      flyMax = Math.max(flyMax, fly);
+      for (let k = 0; k < blocks.length; k++) {
+        const b = blocks[k];
+        if (b.st !== 2 || !b.arc) continue;
+        const key = k + ':' + b.slot;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        // 起飛高度就是「這塊料當時在哪」：躺在地上是半格高，被舉在頭上是兩格多
+        if (b.arc.mage) { mDur.push(b.arc.dur); mY0.push(b.arc.y0); }
+        else { wDur.push(b.arc.dur); wY0.push(b.arc.y0); }
+      }
+    }
+    const med = a => a.length ? +a.slice().sort((x, y) => x - y)[a.length >> 1].toFixed(2) : -1;
+    return { mi, carried, loadMax, flyMax, inHand, launches, frames, starMax,
+             castPct: +(cast / frames).toFixed(2), near: +near.toFixed(1), far: +far.toFixed(1),
+             siteR: +siteR.toFixed(1), mN: mDur.length, wN: wDur.length,
+             mDur: med(mDur), wDur: med(wDur), mY0: med(mY0), wY0: med(wY0),
+             reach: med(reach), placed: placedCnt };
+  });
+  ok('魔法師一塊積木都不搬', wz.carried === 0 && wz.inHand === 0 && wz.launches > 20,
+     wz.frames + ' 幀裡他舉著積木 ' + wz.carried + ' 幀、名下有積木被舉在手上 ' +
+     wz.inHand + ' 幀；同一段時間他發了 ' + wz.launches + ' 塊出去');
+  /* 「從遠處直接拋到位置上」拆成兩件可量的事：起飛高度證明它是從地上起飛的
+     （被人搬的話那一發是從頭頂丟出去的），出手距離證明那塊料本來就在遠處。 */
+  ok('建材是從躺著的地方直接飛上去的，不是先搬到工地邊再丟',
+     wz.mN > 20 && wz.mY0 < 1 && wz.wY0 > 2 && wz.reach > 5,
+     '魔法師的 ' + wz.mN + ' 條拋物線從離地 ' + wz.mY0 + ' 格起飛、出手時那塊料離他 ' +
+     wz.reach + ' 格；工人自己丟的 ' + wz.wN + ' 條是從頭頂 ' + wz.wY0 + ' 格丟出去的');
+  ok('飛得比工人丟的慢一倍以上', wz.mDur > 1.2 && wz.mDur > wz.wDur * 2,
+     '魔法師 ' + wz.mDur + ' 秒／塊，工人 ' + wz.wDur + ' 秒／塊（都取中位數）');
+  ok('一次只送一塊，送到了才送下一塊', wz.flyMax === 1 && wz.loadMax === 1,
+     '同時在飛的最多 ' + wz.flyMax + ' 塊、手上的工作單最多 ' + wz.loadMax + ' 格');
+  ok('站在工地旁邊施法，不走進工地', wz.near > wz.siteR + 2,
+     '離工地中心 ' + wz.near + '–' + wz.far + '（建築半徑 ' + wz.siteR + '）');
+  ok('施法時才舉杖，兩塊之間會把杖收下來',
+     wz.castPct > 0.5 && wz.castPct < 0.95,
+     '舉著杖的幀數占 ' + (wz.castPct * 100).toFixed(0) + '%');
+  /* 使用者要的是「一點點、看得出是他在施法」，所以特效量也要驗：
+     星星是跟魔法陣共用的那一池（上限 48），施工中同時亮著十來顆就是「一點點」。 */
+  ok('施法特效留得小', wz.starMax > 0 && wz.starMax < 24,
+     '整段最多同時 ' + wz.starMax + ' 顆星（池子上限 48）');
+
+  const wzN = await page.evaluate(() => {
+    const out = {};
+    for (const n of [5, 6, 10, 20, 40, 60]) { setWorkerCount(n); out[n] = workers.filter(w => w.mage).length; }
+    setWorkerCount(20);
+    return { out, idx: workers.map((w, i) => w.mage ? i : -1).filter(i => i >= 0),
+             engMage: workers[0].mage, engIdx: workers.findIndex(w => w.eng) };
+  });
+  ok('十個人裡一個魔法師，而且不會派到工程師頭上',
+     wzN.out[5] === 0 && wzN.out[10] === 1 && wzN.out[20] === 2 &&
+     wzN.out[40] === 4 && wzN.out[60] === 6 && !wzN.engMage,
+     '5／10／20／40／60 人時各有 ' + [5, 10, 20, 40, 60].map(n => wzN.out[n]).join('／') +
+     ' 個；20 人時是第 ' + wzN.idx.join('、') + ' 號（工程師是第 ' + wzN.engIdx + ' 號）');
+
+  /* 外觀：巫師帽與法杖只有魔法師有，而且他不戴安全帽（兩頂疊著會穿模）。
+     用顏色認部位——位置會隨姿勢跑，顏色不會。 */
+  const wiz = await page.evaluate(() => {
+    const look = (i, extra) => {
+      const w = workers[i];
+      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         cast: 0 }, extra);
+      ENG.putWorker(i, w);
+      const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
+      const col = ENG.three.workerMesh.instanceColor.array;
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        const at = i * ENG.WPARTS + k;
+        ENG.three.workerMesh.getMatrixAt(at, M);
+        v.setFromMatrixPosition(M);
+        out.push({ k, vis: !(M.elements[0] === 0 && M.elements[5] === 0),   // 沒拿的道具縮成 0
+                   y: +(v.y / w.scale).toFixed(2), z: +(v.z / w.scale).toFixed(2),
+                   c: [0, 1, 2].map(j => Math.round(col[at * 3 + j] * 255)).join(',') });
+      }
+      return out;
+    };
+    setWorkerCount(20);
+    const mi = workers.findIndex(w => w.mage);
+    const pi = workers.findIndex((w, i) => !w.mage && !w.eng);
+    const mage = look(mi, {}), plain = look(pi, {});
+    const lit = look(mi, { cast: 1 });
+    const on = a => a.filter(p => p.vis);
+    const cols = a => on(a).map(p => p.c);
+    const orb = a => a[a.length - 1];              // 寶珠是 BODY 的最後一塊
+    const lum = c => { const v = c.split(',').map(Number); return v[0] * 0.3 + v[1] * 0.6 + v[2] * 0.1; };
+    /* 安全帽的顏色直接從帽緣那一塊（BODY 第 2 塊）讀，不要用「出現三次的顏色」去猜——
+       膚色也剛好是三塊（頭 ＋ 兩隻手），猜出來的會是膚色。 */
+    const hatC = plain[2].c;
+    return { mageN: on(mage).length, plainN: on(plain).length,
+             hatN: cols(plain).filter(c => c === hatC).length,
+             hatOnMage: cols(mage).filter(c => c === hatC).length,
+             newCols: cols(mage).filter(c => cols(plain).indexOf(c) < 0)
+                        .filter((c, i, a) => a.indexOf(c) === i).length,
+             top: Math.max.apply(null, on(mage).map(p => p.y)),
+             plainTop: Math.max.apply(null, on(plain).map(p => p.y)),
+             orbUp: +(orb(lit).y - orb(mage).y).toFixed(2),
+             orbFwd: +(orb(lit).z - orb(mage).z).toFixed(2),
+             orbLum: +(lum(orb(lit).c) - lum(orb(mage).c)).toFixed(0) };
+  });
+  ok('魔法師戴巫師帽拿法杖，而且不戴安全帽',
+     wiz.hatN === 3 && wiz.hatOnMage === 0 && wiz.newCols === 3 &&
+     wiz.top > wiz.plainTop + 0.3,
+     '一般工人身上安全帽色 ' + wiz.hatN + ' 塊、他身上 ' + wiz.hatOnMage +
+     ' 塊，多出 ' + wiz.newCols + ' 種顏色（帽、杖、寶珠）；頭頂 ' + wiz.top +
+     '，一般工人 ' + wiz.plainTop);
+  ok('施法時杖抬起來、杖頭往前傾、寶珠亮起來',
+     wiz.orbUp > 0.25 && wiz.orbFwd > 0.1 && wiz.orbLum > 20,
+     '寶珠抬高 ' + wiz.orbUp + '、往前 ' + wiz.orbFwd + ' 格，亮度 +' + wiz.orbLum);
+
+  /* 舉杖是每幀預設往下收、只有施法那條路徑撐得住的——被戳倒那一路是 return 出去的，
+     不收的話那個人躺在地上還把杖舉著。 */
+  const wzDown = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    const m = workers.find(w => w.mage);
+    let up = 0;
+    for (let i = 0; i < 1200 && m.cast < 0.95; i++) step(0.05);
+    up = +m.cast.toFixed(2);
+    m.fall = 1.5; releaseWorker(m);                 // 戳倒他
+    for (let i = 0; i < 10; i++) step(0.05);
+    return { up, after: +m.cast.toFixed(2), tilt: +m.tilt.toFixed(2) };
+  });
+  ok('被戳倒的魔法師會把杖放下', wzDown.up > 0.9 && wzDown.after < 0.05,
+     '倒下前舉杖 ' + wzDown.up + '，倒下半秒後 ' + wzDown.after +
+     '（身體傾角 ' + wzDown.tilt + '）');
 
   /* ══════════ 閒聊 ══════════ */
   head('閒聊');
@@ -5472,10 +5643,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const mgStar = await page.evaluate(() => {
     const orig = spawnStars;
     const calls = [];
-    window.spawnStars = function (x, z, y, rad, n) {
-      // el：這一把是施法後第幾秒撒的。要分開看「長層期間」與「滿陣之後」
-      calls.push({ y: +y.toFixed(1), rad: +rad.toFixed(1), n, el: MAG_TIME - magics[0].t });
-      return orig(x, z, y, rad, n);
+    window.spawnStars = function (x, z, y, rad, n, k) {
+      /* 魔法師施法也撒星（v1.64）：他那把會給第六個參數 k（縮小倍率），魔法陣這一套不給。
+         上一座被這裡炸完會換場重蓋，蓋到一半魔法師就開始施法——不濾掉的話
+         這裡不但統計會混到別人的星，magics 還是 null（下面那個 el 直接爆掉）。 */
+      if (k === undefined)
+        // el：這一把是施法後第幾秒撒的。要分開看「長層期間」與「滿陣之後」
+        calls.push({ y: +y.toFixed(1), rad: +rad.toFixed(1), n, el: MAG_TIME - magics[0].t });
+      return orig(x, z, y, rad, n, k);
     };
     let peak = 0, lastAt = -1, first = null, gap = 0, quiet = 0;
     const pops = [];                                  // 追第一顆星的亮度曲線
@@ -5487,6 +5662,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (let i = 0; i < 60; i++) step(0.05);
       startBuild(true); completeNow();
       castMagic({ x: 0, z: 0 });
+      /* 上一發炸完會換場重蓋，蓋到一半魔法師就在旁邊施法（v1.64），他撒的星還亮著。
+         不清掉的話 first 會抓到別人的星，量到的是那顆的**尾巴**（亮度 0.02）而不是一閃。 */
+      stars.length = 0;
       let el = 0;
       for (let i = 0; i < 119 && magics; i++) {        // 整個施法期間（六秒）
         step(0.05); el += 0.05;

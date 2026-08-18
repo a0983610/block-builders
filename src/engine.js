@@ -156,10 +156,11 @@ const ENG = (function () {
   const MAXB = 11500;
   const MAXW = 80;                         // 小人上限
   /* 每個小人的部位數，要跟 BODY 的長度一模一樣。7 個身體部位 ＋ 藍圖 ＋ 聊天泡泡兩塊
-     ＋ v1.51 補的七塊細節（帽頂、帽舌、兩顆眼睛、兩隻鞋、腰帶）。
+     ＋ v1.51 補的七塊細節（帽頂、帽舌、兩顆眼睛、兩隻鞋、腰帶）
+     ＋ v1.64 魔法師的五塊（巫師帽三塊、法杖、寶珠）。
      道具沒拿的人整片縮到 0；全部共用同一個 InstancedMesh，不多一個 draw call。
      實測 60 個人擺一輪：10 塊時 0.106ms、17 塊時 0.150ms——每幀預算 4ms，加得起。 */
-  const WPARTS = 17;
+  const WPARTS = 22;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。 */
   const MAXDUST = 720;
@@ -948,6 +949,11 @@ const ENG = (function () {
   }
 
   /* ── 小人 ───────────────────────────────────────────── */
+  /* 法杖的尺寸（v1.64）。杖身中心在 STAFF_MID、杖頭（寶珠）在它上面 STAFF_TIP 處，
+     施法時整根往上抬 CAST_LIFT、杖頭往前傾 CAST_TILT——抬完手掌那個高度剛好落在杖身上。
+     這幾個值 BODY、putWorker、WAND_TIP 三處都要用，所以擺在最前面只寫一次。 */
+  const STAFF_X = 0.42, STAFF_MID = 0.78, STAFF_Z = 0.02, STAFF_TIP = 0.86;
+  const CAST_LIFT = 0.34, CAST_TILT = 0.24;
   /* 身體各部位（相對小人原點）。x 會左右鏡射，所以只寫一半 */
   const BODY = [
     { p: [0, 0.60, 0], s: [0.50, 0.52, 0.34], c: 'suit' },   // 身體
@@ -955,7 +961,7 @@ const ENG = (function () {
     /* 安全帽拆成「帽緣一圈 + 帽頂一塊 + 前面帽舌」三塊（v1.51）。
        本來是一塊 0.52×0.14×0.52 的平板，遠看是頭上蓋了張紙。
        帽頂的上緣仍然停在 1.31——那個高度是搬運時積木擱的位置，改了積木就會陷進帽子。 */
-    { p: [0, 1.19, 0], s: [0.54, 0.06, 0.54], c: 'hat' },    // 帽緣（比帽頂寬一圈）
+    { p: [0, 1.19, 0], s: [0.54, 0.06, 0.54], c: 'hat', hard: 1 },   // 帽緣（比帽頂寬一圈）
     { p: [-0.14, 0.20, 0], s: [0.20, 0.42, 0.24], c: 'leg', swing: -1 },
     { p: [0.14, 0.20, 0], s: [0.20, 0.42, 0.24], c: 'leg', swing: 1 },
     { p: [-0.34, 0.62, 0], s: [0.16, 0.44, 0.20], c: 'skin', arm: -1 },
@@ -973,8 +979,8 @@ const ENG = (function () {
        小人放大 1.5 倍之後，原本那七塊看起來就是一疊方塊。這六塊補的是
        「一眼看出他面朝哪邊、腳踩在哪裡」——臉、鞋、腰各一件事。 */
     /* 帽頂要夠厚：帽緣只比它寬 0.05，才是工地安全帽；帽緣太寬會變成一頂草帽。 */
-    { p: [0, 1.25, 0], s: [0.44, 0.12, 0.44], c: 'hat' },       // 帽頂（上緣停在 1.31）
-    { p: [0, 1.185, 0.32], s: [0.34, 0.05, 0.20], c: 'hat' },   // 帽舌（只有前面有，指出朝向）
+    { p: [0, 1.25, 0], s: [0.44, 0.12, 0.44], c: 'hat', hard: 1 },       // 帽頂（上緣停在 1.31）
+    { p: [0, 1.185, 0.32], s: [0.34, 0.05, 0.20], c: 'hat', hard: 1 },   // 帽舌（只有前面有，指出朝向）
     /* 眼睛貼在臉皮外面一點點（頭的前緣在 z=0.20，眼睛中心也在 0.20，凸出去 0.015）：
        完全切齊的話兩個面共平面，會閃爍。 */
     { p: [-0.10, 1.06, 0.20], s: [0.08, 0.10, 0.03], c: 'eye' },
@@ -982,8 +988,23 @@ const ENG = (function () {
     /* 鞋子比腿寬一點、往前多一點，而且要跟著腿擺（swing 跟同一邊的腿同號）。 */
     { p: [-0.14, 0.05, 0.03], s: [0.23, 0.11, 0.30], c: 'shoe', swing: -1 },
     { p: [0.14, 0.05, 0.03], s: [0.23, 0.11, 0.30], c: 'shoe', swing: 1 },
-    { p: [0, 0.40, 0], s: [0.53, 0.10, 0.37], c: 'belt' }       // 腰帶：把長條的身體斷開
+    { p: [0, 0.40, 0], s: [0.53, 0.10, 0.37], c: 'belt' },      // 腰帶：把長條的身體斷開
+    /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
+       巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
+       只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
+       （hard 那三塊縮到 0），兩頂疊著會直接穿模。 */
+    { p: [0, 1.21, 0], s: [0.66, 0.07, 0.66], c: 'wiz', wiz: 1 },   // 帽簷（比安全帽寬得多）
+    { p: [0, 1.40, 0], s: [0.38, 0.32, 0.38], c: 'wiz', wiz: 1 },   // 帽身
+    { p: [0, 1.64, 0], s: [0.17, 0.22, 0.17], c: 'wiz', wiz: 1 },   // 帽尖
+    /* 法杖：一根長方塊 ＋ 頂端一顆寶珠。位置在 putWorker 裡按施法深淺重算，
+       這裡寫的是垂在右手邊的常態姿勢。 */
+    { p: [STAFF_X, STAFF_MID, STAFF_Z], s: [0.09, 1.56, 0.09], c: 'staff', wiz: 1, staff: 1 },
+    { p: [STAFF_X, STAFF_MID + STAFF_TIP, STAFF_Z], s: [0.22, 0.22, 0.22], c: 'orb', wiz: 1, orb: 1 }
   ];
+  /* 施法時杖頭在世界座標的位置（相對小人原點、還沒乘身高）。規則那邊要拿它撒星，
+     兩邊各寫一份的話改了傾角星星就飄到別的地方去。 */
+  const WAND_TIP = [STAFF_X, STAFF_MID + CAST_LIFT + Math.cos(CAST_TILT) * STAFF_TIP,
+                    STAFF_Z + Math.sin(CAST_TILT) * STAFF_TIP];
   /* BODY 裡每個部位的 c 都必須在這裡有對應的色組，漏一個就整個 draw 掛掉。
      只有一個顏色的色組是「所有人都一樣」（w.tone % 1 永遠是 0）。 */
   const WCOL = {
@@ -995,8 +1016,14 @@ const ENG = (function () {
     talk: [0xffffff],
     eye: [0x2a231d],
     shoe: [0x3b332c],
-    belt: [0x4a4039]
+    belt: [0x4a4039],
+    /* 魔法師的配色照場上既有的「魔法」語彙走：陣是桃紅、星是粉與金，
+       所以帽子給深紫（安全帽的亮黃旁邊一眼認得出不是同一種人）、寶珠給金。 */
+    wiz: [0x4a3b8c],
+    staff: [0x6a4a30],
+    orb: [0xffd66b]
   };
+  const ORB_LIT = new T.Color(0xffffff);   // 施法時寶珠往這個亮色靠（要跟金色差得夠開才看得出亮起來）
 
   function setWorkerCount(n) { workerMesh.count = Math.min(n, MAXW) * WPARTS; }
   const CHAR = new T.Color(0x2b1d15);        // 燒起來的人往這個焦黑色靠
@@ -1015,7 +1042,8 @@ const ENG = (function () {
   const HIP = 0.41;                          // 髖關節高度（腿的上緣），走路擺動的圓心
   /* w：{x,y,z,a 朝向,ph 步伐相位,carry 是否舉手,tilt 跌倒角度,tone 膚色/衣色編號,
         burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）,roll 正在打滾,
-        hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1} */
+        hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1,
+        mage 是不是魔法師（戴巫師帽、拿法杖）,cast 施法深淺 0～1（杖抬多高、寶珠多亮）} */
   function putWorker(i, w) {
     const piv = w.roll ? ROLL_PIVOT : 0;
     /* 沒在打滾但身體是斜的（被戳倒、被震倒、飛在半空翻滾）也要抬——
@@ -1052,6 +1080,9 @@ const ENG = (function () {
           scratchB.rotation.x = -2.75 + Math.sin(w.ph) * 0.22;
           scratchB.rotation.z = b.arm * 0.30;
           scratchB.position.y = 0.82;
+        } else if (w.cast > 0.02 && b.arm > 0) {   // 施法：拿杖那隻手抬起來扶著杖身
+          scratchB.rotation.x = -1.15 * w.cast;
+          scratchB.position.y = b.p[1] + 0.16 * w.cast;
         } else if (w.plan) {
           if (w.point > 0 && b.arm > 0) {   // 指揮：右手抬起來朝建築指，左手還端著圖
             scratchB.rotation.x = -2.05 - Math.sin(w.ph * 2.2) * 0.28;
@@ -1086,12 +1117,31 @@ const ENG = (function () {
           scratchB.position.y = b.p[1] + Math.sin(w.ph * 2.6) * 0.05;
         }
       }
+      /* 魔法師戴巫師帽，安全帽那三塊收掉——兩頂疊在同一顆頭上會直接穿模。 */
+      if (b.hard && w.mage) scratchB.scale.setScalar(0);
+      /* 巫師帽與法杖只有魔法師有。杖與寶珠跟著施法深淺（w.cast 0～1）抬起來，
+         寶珠的位置是用杖的傾角算出來的：寫死的話一抬杖它就脫離杖頂飄在旁邊。 */
+      if (b.wiz) {
+        if (!w.mage) scratchB.scale.setScalar(0);
+        else if (b.staff || b.orb) {
+          const k = w.cast || 0, tl = CAST_TILT * k;
+          if (b.staff) {
+            scratchB.rotation.x = tl;
+            scratchB.position.y = b.p[1] + CAST_LIFT * k;
+          } else {
+            scratchB.position.y = STAFF_MID + CAST_LIFT * k + Math.cos(tl) * STAFF_TIP;
+            scratchB.position.z = b.p[2] + Math.sin(tl) * STAFF_TIP;
+          }
+        }
+      }
       scratchB.position.y -= piv;      // 打滾時整具身體往下挪，旋轉中心才落在身體中段
       scratchB.updateMatrix();
       tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
       workerMesh.setMatrixAt(i * WPARTS + k, tmpM);
       const pal = WCOL[b.c];
       tmpC.setHex(pal[w.tone % pal.length]);
+      // 寶珠在施法時亮起來，還帶一點明滅——這是「他正在施法」最省事的那個訊號
+      if (b.orb && w.cast) tmpC.lerp(ORB_LIT, w.cast * (0.55 + 0.3 * Math.sin(w.ph * 3)));
       if (w.burnK) tmpC.lerp(CHAR, w.burnK);
       workerMesh.setColorAt(i * WPARTS + k, tmpC);
     }
@@ -1332,7 +1382,7 @@ const ENG = (function () {
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts,
     fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
-    cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT,
+    cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }
   };
 })();

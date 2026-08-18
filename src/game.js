@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.63.0';
+const VERSION = '1.64.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -930,6 +930,10 @@ function newWorker(i) {
        泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手。 */
     eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
+    /* 魔法師（mage，v1.64）：不搬積木，站在工地旁邊隔空把建材拋上去。
+       cast 是舉杖的深淺 0～1（畫杖與寶珠用），mang 是站的角度，ct 是這一段還剩幾秒，
+       mb／ms 是正在飛的那一塊積木與它要去的格子，trail 是下一顆星還有多久。 */
+    mage: 0, cast: 0, mang: 0, ct: 0, mb: -1, ms: -1, trail: 0,
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
@@ -942,6 +946,7 @@ function setWorkerCount(n) {
   while (workers.length > n) { releaseWorker(workers[workers.length - 1]); workers.pop(); }
   workerCnt = n;
   tagEngineer();
+  tagMage();
   if (phase === 'done') assignSpots();      // 慶祝中加減人：圈要重新等分
   ENG.setWorkerCount(workers.length);
 }
@@ -962,6 +967,23 @@ function tagEngineer() {
     w.eng = eng;
   }
 }
+/* 十個人裡有一個是魔法師（v1.64）。跟工程師一樣**照編號固定挑**、不隨機抽：
+   隨機的話人數一動整組人就換一輪身分，剛才那個戴巫師帽的下一秒又變回工人。
+   排在 5 號起算是為了跟 0 號的工程師錯開——沒有人是既看圖又施法的。 */
+const MAGE_EVERY = 10, MAGE_AT = 5;
+function tagMage() {
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    const mage = i % MAGE_EVERY === MAGE_AT ? 1 : 0;
+    if (mage && !w.mage) {
+      releaseWorker(w);                  // 手上還有貨就先放掉，魔法師不搬東西
+      w.mang = Math.atan2(w.z, w.x);     // 從他現在站的角度接手，不用先繞半圈
+      w.ct = 0;
+    }
+    if (!mage && w.mage) { releaseWorker(w); w.ct = 0; }
+    w.mage = mage;
+  }
+}
 /* 放掉一個認領的格子。放掉也會改變支撐狀態，而且派工游標要退回去補這個洞 */
 function freeClaim(s) {
   if (s < 0 || !bp || !bp.slots[s]) return;
@@ -978,6 +1000,9 @@ function releaseWorker(w) {
     freeClaim(j.s);
   }
   w.load.length = 0; w.li = 0; w.carry = false; w.st = 'idle';
+  /* 魔法師手上那一發也跟著取消。飛在半空的那一塊不管（它自己會落定），
+     但這個編號要清掉——換藍圖時整池積木會重編，留著會指到別人的積木上。 */
+  w.mb = -1; w.ms = -1;
   endChat(w);
 }
 /* 工作單裡的某一塊出事了（被打飛、被搶走、藍圖換掉）：只抽掉那一筆，其餘照搬。
@@ -1395,6 +1420,10 @@ function updWorker(w, wi, dt) {
   /* 姿勢旗標每幀重算：跌倒、被炸飛、跑去躲的那幾條路徑都是 return 出去的，
      不歸零的話工程師被戳倒了還躺在地上舉著圖。 */
   w.hail = 0; w.plan = 0;
+  /* 舉杖同理，只是它是漸進的（瞬間切 0/1 的話杖會用瞬移的抬起放下）：
+     這裡每幀往下收，只有真的在施法那條路徑會用兩倍速把它撐回去（castPose）。
+     被炸飛、跌倒、換場都是 return 出去的，不預設收的話那個人躺在地上還舉著杖。 */
+  if (w.cast > 0) w.cast = Math.max(0, w.cast - dt * CAST_DOWN);
   if (w.chatCd > 0) w.chatCd -= dt;
   /* 被吹飛／點著／推倒／要逃命，或是換場要清工地了——聊天一律中斷。
      蓋完的那一刻也中斷：慶祝要全員到齊，不然聊到一半的那兩個會晚五秒才入圈。 */
@@ -1494,6 +1523,7 @@ function updWorker(w, wi, dt) {
   w.y += (0 - w.y) * Math.min(1, dt * 6);
   w.cheer = 0;
   if (w.eng) { updEng(w, dt); return; }      // 工程師只看圖、只指揮
+  if (w.mage) { updMage(w, wi, dt); return; }   // 魔法師不搬，站在旁邊隔空拋
 
   switch (w.st) {
     case 'idle': {
@@ -1570,11 +1600,12 @@ function updWorker(w, wi, dt) {
   }
 }
 /* 領一趟的工作單：格子與建材成對領，領到 cap 對為止（不夠就領幾對算幾對）。
+   cap 給了就用給的（魔法師一次只領一對），沒給就用這個人搬得動的量。
    下一塊建材是從「上一塊建材那裡」找最近的，不是從人現在站的地方找——
    撿完第一塊人就站在那裡了，一直用人的位置算會挑到同一個方向的料。 */
-function loadUp(w, wi) {
+function loadUp(w, wi, cap) {
   let sx = w.x, sz = w.z;
-  for (let k = 0; k < w.cap; k++) {
+  for (let k = 0; k < (cap || w.cap); k++) {
     const s = findSlot();
     if (s < 0) break;
     const bi = findBlock(sx, sz);
@@ -1723,6 +1754,111 @@ function updEng(w, dt) {
   if (w.et > 0) return;
   if (Math.random() < ENG_POINT) w.point = rr(1.2, 2.2);
   else { w.eang += rr(0.5, 1.5) * (Math.random() < 0.5 ? -1 : 1); w.et = rr(2.5, 5); }
+}
+
+/* ── 魔法師 ───────────────────────────────────────────────
+   十個人有一個是魔法師：戴巫師帽、拿法杖，一塊積木都不搬。他站在工地旁邊，
+   把散在遠處的建材一塊接著一塊隔空拋到藍圖的位置上——整段路都是那條拋物線，
+   中途不經過任何人的手。一次只送一塊，而且飛得比工人自己丟的慢一倍以上，
+   看起來才是「慢慢一塊一塊擺上去」而不是連發。
+
+   施法特效刻意留得小（使用者要的是「一點點、看得出是他在施法」）：
+   杖頭的寶珠亮起來、出手時腳下一圈淡光加杖頭一小撮星，飛行途中每隔一段撒一顆。 */
+const MAGE_KEEP = 2.6;              // 站得離工地外圍多遠（工程師是 3.4，錯開才不會疊在一起）
+const MAGE_CHARGE = 0.8;            // 站定到出手要蓄多久
+const MAGE_REST = 0.55;             // 一塊落定到下一次舉杖之間停多久
+/* 飛行時間：起手 0.9 秒，再照水平距離與高度加。二十格外的建材大約飛兩秒——
+   工人自己丟那一下是 0.34 秒起跳，慢到這個程度才看得出「這塊是飄過去的」。 */
+const MAGE_DUR0 = 0.9, MAGE_DUR_D = 0.055, MAGE_DUR_Y = 0.02;
+const MAGE_LIFT = 1.6;              // 弧頂比工人丟的再高一點（tossPeak 只保證閃得過牆）
+const MAGE_TRAIL = 0.22;            // 飛行中每隔幾秒撒一顆星
+const MAGE_STAR = 0.22;             // 那些星是魔法陣那種星的幾分之幾大
+const CAST_UP = 8, CAST_DOWN = 4;   // 舉杖／收杖的速度（每秒），舉的要比收的快才撐得住
+
+/* 舉杖的姿勢。收杖是 updWorker 每幀預設在做的事，這裡只負責把它撐回去。 */
+function castPose(w, dt, on) {
+  if (on) w.cast = Math.min(1, w.cast + dt * CAST_UP);
+  if (w.cast > 0.02) w.ph += dt * 3;        // 站著不走也要讓 ph 跑，寶珠才會明滅
+}
+/* 杖頭在世界座標的位置。偏移量向引擎拿（ENG.WAND_TIP，那是杖真正被畫在哪），
+   再照這個人的朝向繞 Y 轉、照身高縮放——不轉的話星星會撒進他身體裡。 */
+function staffTip(w) {
+  const t = ENG.WAND_TIP, sa = Math.sin(w.a), ca = Math.cos(w.a), s = w.scale;
+  return { x: w.x + (t[0] * ca + t[2] * sa) * s,
+           y: w.y + t[1] * s,
+           z: w.z + (-t[0] * sa + t[2] * ca) * s };
+}
+function updMage(w, wi, dt) {
+  /* 手上這一發還在飛：站著把杖舉著跟到底，杖口跟著它轉。 */
+  if (w.mb >= 0) {
+    const b = blocks[w.mb];
+    if (b && b.st === TOSS && b.slot === w.ms) {
+      w.a = Math.atan2(b.x - w.x, b.z - w.z);
+      w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+      castPose(w, dt, 1);
+      w.trail -= dt;
+      if (w.trail <= 0) { spawnStars(b.x, b.z, b.y, 0.5, 1, MAGE_STAR); w.trail = MAGE_TRAIL; }
+      return;
+    }
+    // 落定了（或半路被打掉）：收杖，喘一口再送下一塊
+    w.mb = -1; w.ms = -1; w.ct = MAGE_REST;
+  }
+  if (!w.load.length) {
+    if (w.ct > 0) {                                  // 兩塊之間的空檔
+      w.ct -= dt;
+      w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+      return;
+    }
+    loadUp(w, wi, 1);                                // 一次只領一格一塊
+    /* 沒格子可蓋或沒建材了：留在施法位站著等，不跟一般人一樣去閒晃。
+       閒晃那條路會沿用上一輪留下的目標點（慶祝散場時取的是整片草地），
+       他一沒工作就往四十幾格外走，蓋完要圍圈時得從場外跑回來。 */
+    if (!w.load.length) {
+      w.st = 'idle';
+      if (ringWalk(w, w.mang, siteR + MAGE_KEEP, dt)) {
+        w.a = Math.atan2(-w.x, -w.z);                // 站定就面向建築等下一批
+        w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+      }
+      return;
+    }
+    // 領到了就開始蓄力。這裡不設的話，站定在原地的人會在領到的同一幀就出手
+    w.st = 'cast'; w.leg = 0; w.ct = MAGE_CHARGE;
+  }
+  const j = w.load[0];
+  const b = blocks[j.b];
+  if (!b || b.st !== FREE || !b.rest) { dropJob(w, 0); return; }   // 認的那塊被搶走／被打飛了
+  // 還在走位：蓄力從「站定」那一刻才開始算，不然半路被撞倒的人一站起來就發一塊
+  if (!ringWalk(w, w.mang, siteR + MAGE_KEEP, dt)) { w.ct = MAGE_CHARGE; return; }
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  w.a = Math.atan2(b.x - w.x, b.z - w.z);            // 面向要拉起來的那一塊
+  castPose(w, dt, 1);
+  w.ct -= dt;
+  if (w.ct <= 0) launchMage(w, j, b);
+}
+/* 出手：那一塊直接從躺著的地方進入拋物線，不經過 CARRY。 */
+function launchMage(w, j, b) {
+  const s = bp.slots[j.s];
+  if (b.cell) gridDel(b);
+  douse(b);                                          // 還在燒的話先熄掉，跟工人撿起來一樣
+  b.st = TOSS; b.rest = false;
+  b.arc = {
+    t: 0,
+    dur: MAGE_DUR0 + Math.hypot(s.x - b.x, s.z - b.z) * MAGE_DUR_D + s.y * MAGE_DUR_Y,
+    x0: b.x, y0: b.y, z0: b.z, x1: s.x, y1: s.y + HB, z1: s.z,
+    peak: tossPeak(b.x, b.y, b.z, s) + MAGE_LIFT,
+    mage: 1                       // 這條是隔空拋的，量「工人丟多遠」的地方要濾掉它
+  };
+  const pal = bp.pal[s.c % bp.pal.length];
+  b.tr = ((pal >> 16) & 255) / 255; b.tg = ((pal >> 8) & 255) / 255; b.tb = (pal & 255) / 255;
+  b.slot = j.s;
+  b.holder = -1;                                     // 出手了就不再屬於任何人
+  w.mb = j.b; w.ms = j.s; w.trail = 0;
+  w.load.shift();
+  stats.carried++;                                   // 「累計搬運」照算：這一塊也是小人送上去的
+  const tip = staffTip(w);
+  spawnStars(tip.x, tip.z, tip.y, 0.5, 3, MAGE_STAR);
+  fxRings.push({ x: w.x, z: w.z, y: 0.14, r: 0.5, vr: 2.4, op: 0.5, fade: 0.7,
+                 c: 0xff8ec4, add: 1, spin: rr(0, 6.28) });
 }
 
 /* ── 閒聊 ─────────────────────────────────────────────────
@@ -3999,7 +4135,10 @@ const STAR_PER = 7;              // 長出一層的那一下撒幾顆
    場上同時約十來顆：夠讓整座陣一直在閃，又不會多到變成鋪在陣上的一層星星底紋。 */
 const STAR_RATE = 16;
 const stars = [];
-function spawnStars(x, z, y, rad, n) {
+/* k 是尺寸倍率（不給就是 1）：魔法師杖頭那幾顆用的是同一套星，但只有魔法陣的兩成大——
+   星星本身、散開的高度、往上飄的速度要一起縮，只縮大小的話會變成幾顆小星星飛得像煙火。 */
+function spawnStars(x, z, y, rad, n, k) {
+  k = k || 1;
   for (let i = 0; i < n; i++) {
     if (stars.length >= STAR_MAX) break;
     const a = Math.random() * Math.PI * 2;
@@ -4007,9 +4146,9 @@ function spawnStars(x, z, y, rad, n) {
     /* 粉紫與金黃各半。全給暖色的話會跟紅陣糊在一起，粉的那幾顆才跳得出來。 */
     const pink = Math.random() < 0.55;
     stars.push({
-      x: x + Math.cos(a) * r, y: y + rr(-1.8, 3.2), z: z + Math.sin(a) * r,
-      s0: rr(1.8, 3.6), s: 0, rot: rr(0, 6.28), spin: rr(-1.3, 1.3),
-      vy: rr(1.2, 3.4), t: 0, life: rr(0.5, 0.95), op: 0,
+      x: x + Math.cos(a) * r, y: y + rr(-1.8, 3.2) * k, z: z + Math.sin(a) * r,
+      s0: rr(1.8, 3.6) * k, s: 0, rot: rr(0, 6.28), spin: rr(-1.3, 1.3),
+      vy: rr(1.2, 3.4) * k, t: 0, life: rr(0.5, 0.95), op: 0,
       cr: 1, cg: pink ? rr(0.45, 0.7) : rr(0.82, 0.95), cb: pink ? 1 : rr(0.42, 0.7)
     });
   }
