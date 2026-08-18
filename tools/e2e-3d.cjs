@@ -5124,15 +5124,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 100; i++) step(0.05);       // 5 秒：四層都長齊
     const all = (magics ? magics[0].rings : []).filter(o => !o.seed);   // 火種那三圈另外驗
     // 一層是兩個環疊出來的：實色的芯 + 加法混色的暈。層次要看芯那幾個
-    const core = all.filter(o => !o.add).map(o => ({ y: +o.y.toFixed(1), r: +o.r.toFixed(1), c: o.c }));
+    const core = all.filter(o => !o.add)
+      .map(o => ({ y: +o.y.toFixed(1), r: +o.r.toFixed(1), c: o.c, fc: o.fc }));
     const halo = all.filter(o => o.add);
     return { n: core.length, halo: halo.length, rings: core,
              rising: core.every((o, i) => i === 0 || o.y > core[i - 1].y),
-             red: core.every(o => o.c === 0xe81a08), ground: core[0] ? core[0].r : 0,
+             /* v1.62.1 照參考圖：那一圈本身是亮黃的鑲邊，桃紅的場在 fc（盤）上。
+                只驗 c 會漏掉「盤跟著芯一起變黃、整片糊成一大片」那種改壞法。 */
+             red: core.every(o => o.c === 0xffe14a && o.fc === 0xef1f6b),
+             ground: core[0] ? core[0].r : 0,
              // 每層都要有填滿的盤與放射紋路，只有環的話看起來是「地上畫了一個圈」
              solid: all.filter(o => o.fill).length, lace: all.filter(o => o.sp).length };
   });
-  ok('魔法陣是紅色、而且一層一層往上疊',
+  ok('魔法陣是亮黃鑲邊配桃紅的場，而且一層一層往上疊',
      mgRing.n === 6 && mgRing.halo === 6 && mgRing.rising && mgRing.red,
      mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、') + '，外圈暈 ' + mgRing.halo + ' 個');
   ok('每一層都是填滿的盤加螺旋紋路，不只是一個圈',
@@ -5584,11 +5588,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mgShape.N + ' 次施法：最寬落在第 ' + mgShape.hist.map((v, i) => i + '層' + v).join('／') +
      '，最上最下同時是前二寬的有 ' + (mgShape.ends2 / mgShape.N * 100).toFixed(0) + '%');
 
-  /* 配色（v1.54，照使用者給的參考圖）：深紅的盤 + 金黃的紋路與外暈。
-     盤是引擎那邊發的，顏色**跟著它那一圈走**——只驗 game.js 裡的色碼會漏掉
-     「盤還是寫死那個橘」的情況，所以直接去場上抓那幾片盤的材質顏色。
+  /* 配色（v1.62.1，照使用者給的參考圖重排）：**桃紅的場 + 亮黃的鑲邊與線條**，
+     外圈再暈一圈紅粉。v1.54 那組是「深紅的盤 + 金黃的暈」，整疊偏紅橘，
+     使用者說「顏色也不對」。
+     盤是引擎那邊發的，所以直接去場上抓那幾片盤的材質顏色——只驗 game.js 裡的色碼
+     會漏掉「盤沒吃到 fc、跟著芯一起變黃」的情況（那會讓整片糊成一大片黃，鑲邊就不見了）。
      v1.62 起火種不墊盤（參考圖裡那個火圈中間是空的），所以盤只剩六片，
-     火種的火黃改驗它自己那一圈。 */
+     火種的顏色改驗它自己那三圈。 */
   const mgHue = await page.evaluate(() => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
@@ -5603,17 +5609,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const discs = grp.children.filter(o => o.visible && o.geometry &&
                                            o.geometry.type === 'CircleGeometry');
     return { core: lay.find(o => !o.add).c, halo: lay.find(o => o.add).c,
-             seed: seed[0].c, seedN: seed.length, seedFill: seed.filter(o => o.fill).length,
+             fc: lay.find(o => !o.add).fc,
+             seed: seed.map(o => o.c), seedN: seed.length,
+             seedFill: seed.filter(o => o.fill).length,
              discs: discs.map(d => d.material.color.getHex()),
              spoke: grp.children.find(o => o.isInstancedMesh).material.color.getHex() };
   });
   const hex = c => '#' + c.toString(16).padStart(6, '0');
-  ok('陣是深紅的盤配金黃的紋路，火種還是火黃',
-     mgHue.core === 0xe81a08 && mgHue.halo === 0xffb42a && mgHue.spoke === 0xffc83c &&
-     mgHue.discs.length === 6 && mgHue.discs.every(c => c === mgHue.core) &&
-     mgHue.seed === 0xffeda6,
-     '芯與盤 ' + hex(mgHue.core) + '、外暈 ' + hex(mgHue.halo) + '、紋路 ' + hex(mgHue.spoke) +
-     '（' + mgHue.discs.length + ' 片盤）、火種那圈 ' + hex(mgHue.seed));
+  ok('陣是桃紅的場配亮黃的鑲邊與紋路，火圈是亮黃到紅粉',
+     mgHue.core === 0xffe14a && mgHue.fc === 0xef1f6b && mgHue.halo === 0xff3a6e &&
+     mgHue.spoke === 0xffe9a0 &&
+     mgHue.discs.length === 6 && mgHue.discs.every(c => c === mgHue.fc) &&
+     mgHue.seed.join() === [0xfff3c4, 0xff8a3c, 0xff2f6b].join(),
+     '鑲邊 ' + hex(mgHue.core) + '、盤 ' + hex(mgHue.fc) + '（' + mgHue.discs.length +
+     ' 片，實際畫出來的顏色 ' + hex(mgHue.discs[0]) + '）、外暈 ' + hex(mgHue.halo) +
+     '、紋路 ' + hex(mgHue.spoke) + '、火圈 ' + mgHue.seed.map(hex).join(' → '));
   /* 使用者要的「比較單純的火圈」：中間**不要**那片填滿的盤（參考圖裡它是空心的），
      三圈貼著疊成一條管子——下一圈的內緣（0.93×半徑）要接得上上一圈的外緣，
      中間空一段的話看起來會是「一片光餅外面另外套一個圈」，正是要改掉的那個樣子。 */
@@ -5628,46 +5638,68 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '三圈半徑 ' + mgSeedRing.s.join('／') + '（中間 ' + mgSeedRing.fill +
      ' 片盤；下一圈內緣與上一圈外緣的落差 ' + mgSeedRing.gap.join('／') + '，要 ≤0）');
 
-  /* 邊緣不要是圓規畫出來的（v1.62，使用者反映「太圓」，照參考圖改成火焰邊）。
-     量的是引擎真的拿去畫的那顆幾何體：外緣的半徑要有起伏，內緣不能動
-     （內緣藏在底下那片盤 0.97R 下面，往外推會讓盤的邊露出一條完美的圓弧），
-     而且外緣的最小值要 ≥0.97 才蓋得住那片盤。
-     直接餵 ENG.setRings 兩個環（一個要火焰邊、一個不要）：不必挑場上第幾個是哪一層，
-     而且順便驗「範圍提示用的環仍然是正圓」——衝擊波、風壓、瞄準環都走那條。 */
-  const mgEdge = await page.evaluate(() => {
-    const rag = [1, 2, 3, 4, 5].map(k => ({ x: 0, z: 0, y: 1, r: 5, op: 1, c: 0xffffff, rag: k }));
-    const plain = { x: 0, z: 0, y: 1, r: 5, op: 1, c: 0xffffff };
-    ENG.setRings(rag.concat([plain, plain]));      // 最後兩個不要火焰邊：也驗幾何體共用
+  /* 邊緣的不規則是**螺旋狀**的（v1.62.1，照參考圖）：不是把環的外緣弄皺，
+     是幾道沿著邊掃出去的筆觸疊在一起，尾巴伸出環外那一截撐出鼓鼓的邊。
+     （v1.62 曾經真的去弄皺環的外緣，使用者看了說「不是現在的歪歪扭扭」。）
+     三件事要驗，缺一條就會退回去那個樣子：
+     ① 真的有東西掃到環外（不然邊就只是那個正圓）。
+     ② 輪廓是**不規則**的：某些角度伸到 1.15R 外，某些角度就停在環上。
+     ③ 那些筆觸是**螺旋**：方向跟半徑方向有夾角。等半徑的圓弧夾角是 0
+        （外圈那一圈虛線就是這樣，拿它當對照組）。
+     直接餵 ENG.setRings 兩個環（一個要紋路、一個不要），不必挑場上第幾個是哪一層；
+     順便驗環本身回到正圓、而且幾何體是共用的一顆。 */
+  const mgRim = await page.evaluate(() => {
+    const R = 10;
+    ENG.setRings([{ x: 0, z: 0, y: 1, r: R, op: 1, c: 0xffffff, sp: 1, fill: 1 },
+                  { x: 0, z: 0, y: 1, r: R, op: 1, c: 0xffffff }]);
     let grp = null;
     ENG.three.scene.traverse(o => {
       if (!grp && o.geometry && o.geometry.type === 'RingGeometry') grp = o.parent;
     });
     const ms = grp.children.filter(o => o.isMesh && o.geometry &&
                                         o.geometry.type === 'RingGeometry');
-    const stat = m => {
-      const p = m.geometry.attributes.position;
-      let lo = 9, hi = 0, iLo = 9, iHi = 0;
-      for (let i = 0; i < p.count; i++) {
-        const r = Math.hypot(p.getX(i), p.getY(i));
-        if (r > 0.965) { lo = Math.min(lo, r); hi = Math.max(hi, r); }
-        else { iLo = Math.min(iLo, r); iHi = Math.max(iHi, r); }
-      }
-      return { lo: +lo.toFixed(3), hi: +hi.toFixed(3), iLo: +iLo.toFixed(3), iHi: +iHi.toFixed(3) };
-    };
-    return { rag: stat(ms[0]), plain: stat(ms[5]),
-             shapes: new Set(ms.slice(0, 5).map(m => m.geometry.uuid)).size,
-             shared: ms[5].geometry.uuid === ms[6].geometry.uuid };
+    const sp = grp.children.find(o => o.isInstancedMesh);
+    const M = new THREE.Matrix4(), P = new THREE.Vector3();
+    const X = new THREE.Vector3(), Y = new THREE.Vector3(), Z = new THREE.Vector3();
+    const BINS = 36;
+    const bins = new Array(BINS).fill(0);      // 每個角度方向上，畫到最遠是幾倍半徑
+    let out = 0, radial = 0, dash = 0, dashRadial = 0;
+    for (let i = 0; i < sp.count; i++) {
+      sp.getMatrixAt(i, M);
+      P.setFromMatrixPosition(M);
+      M.extractBasis(X, Y, Z); X.normalize();          // local +X 就是這一段的走向
+      const rad = Math.hypot(P.x, P.z) / R;
+      const a = Math.atan2(P.z, P.x);
+      const b = Math.floor(((a % 6.283) + 6.283) / 6.283 * BINS) % BINS;
+      if (rad > bins[b]) bins[b] = rad;
+      // 走向與半徑方向的夾角餘弦：0 = 純繞圈，越大越像往外爬
+      const dot = Math.abs(X.x * Math.cos(a) + X.z * Math.sin(a));
+      if (rad > 1.05) { out++; radial += dot; }
+      if (Math.abs(rad - 0.88) < 0.01) { dash++; dashRadial += dot; }   // 對照組：外圈虛線
+    }
+    const g = ms[0].geometry.attributes.position;
+    let lo = 9, hi = 0;
+    for (let i = 0; i < g.count; i++) {
+      const r = Math.hypot(g.getX(i), g.getY(i));
+      if (r > 0.965) { lo = Math.min(lo, r); hi = Math.max(hi, r); }
+    }
+    return { out, radial: out ? +(radial / out).toFixed(3) : 0,
+             dash, dashRadial: dash ? +(dashRadial / dash).toFixed(3) : 0,
+             far: +Math.max(...bins).toFixed(2), near: +Math.min(...bins).toFixed(2),
+             ringLo: +lo.toFixed(3), ringHi: +hi.toFixed(3),
+             shared: ms[0].geometry.uuid === ms[1].geometry.uuid };
   });
-  ok('魔法陣的邊是燒出來的，不是圓規畫的',
-     mgEdge.rag.hi - mgEdge.rag.lo > 0.1 && mgEdge.rag.lo >= 0.97 &&
-     mgEdge.rag.iLo === 0.93 && mgEdge.rag.iHi === 0.93,
-     '外緣 ' + mgEdge.rag.lo + '～' + mgEdge.rag.hi + ' R（起伏 ' +
-     ((mgEdge.rag.hi - mgEdge.rag.lo) * 100).toFixed(0) + '%，最小要 ≥0.97 才蓋得住盤），' +
-     '內緣 ' + mgEdge.rag.iLo + '～' + mgEdge.rag.iHi);
-  ok('每一層的邊各不相同，而且範圍提示用的環仍然是正圓',
-     mgEdge.shapes === 5 && mgEdge.plain.hi === 1 && mgEdge.plain.lo === 1 && mgEdge.shared,
-     mgEdge.shapes + ' 種火焰邊；不要火焰邊的那個外緣 ' + mgEdge.plain.lo + '～' +
-     mgEdge.plain.hi + '（幾何體是共用的：' + mgEdge.shared + '）');
+  ok('邊上有掃出環外的筆觸，輪廓不是一條正圓',
+     mgRim.out > 20 && mgRim.far >= 1.15 && mgRim.near <= 1.05,
+     mgRim.out + ' 段掃到環外；36 個方向上畫到最遠 ' + mgRim.far + 'R、最近 ' +
+     mgRim.near + 'R（都一樣就是一條正圓的邊）');
+  ok('那些筆觸是螺旋的，不是一截等半徑的圓弧',
+     mgRim.radial > 0.05 && mgRim.dash > 0 && mgRim.dashRadial < 0.02,
+     '筆觸的走向與半徑方向夾角餘弦平均 ' + mgRim.radial +
+     '（對照組：外圈那一圈等半徑的虛線 ' + mgRim.dashRadial + '，' + mgRim.dash + ' 段）');
+  ok('環本身回到正圓，而且幾何體是共用的一顆',
+     mgRim.ringLo === 1 && mgRim.ringHi === 1 && mgRim.shared,
+     '環的外緣 ' + mgRim.ringLo + '～' + mgRim.ringHi + ' R（共用：' + mgRim.shared + '）');
 
   /* 拉高之後整疊頂端會頂出畫面上緣（矮建築取景近）。跟龍捲風、蘑菇雲同一套：
      施法期間鏡頭先退開。NDC y 超過 1 就是被切掉，量的是最上層外緣那一點。 */

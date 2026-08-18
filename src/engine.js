@@ -82,48 +82,28 @@ const ENG = (function () {
      96 留了餘裕，反正是一顆 InstancedMesh，多開 instance 不多吃 draw call。 */
   const MAXBOLT = 96;
   const MAG_DASH = 26;                                       // 外圈那一圈虛線的段數
-  /* 魔法陣的邊緣不要是圓規畫出來的（v1.62，照使用者給的參考圖）：外緣照角度加幾組
-     不同頻率的正弦波，燒出幾處往外舔的火舌。三件事定下這組數字：
-     ① 只推外緣，內緣（0.93R）一律不動——它藏在底下那片盤（0.97R）下面，
-        往外推會讓盤的邊露出一條完美的圓弧，改了反而更圓。
-     ② 每組的頻率一定是整數，不然波在 0 與 2π 接不起來，會留一道摺痕。
-     ③ 偏移量含一個正的底 RAG_BIAS：五組振幅加起來 0.108，底給 0.085，
-        外緣就落在 0.977～1.193R——最小值仍蓋得住那片盤的邊。
-     頻率的分配是看出來的：第一版把振幅壓在低頻（3、5 為主），畫出來是一片會蠕動的
-     阿米巴，不像在燒。能量挪到高頻（11、19、29）之後才是參考圖那種「一圈細火舌
-     加幾處鼓起來的大浪」——低頻負責整體不對稱，高頻負責火的質感。
-     分幾種邊：六層輪著用前四種（六層凹凸完全對齊會像一支雕花柱子），火種吃第五種。 */
-  const RAG_WAVE = [[3, 0.030], [7, 0.030], [11, 0.022], [19, 0.016], [29, 0.010]];
-  const RAG_BIAS = 0.085;
-  /* 分段要夠密，不然最高那組（29）的波峰會被切成一段一段的折線：
-     256 段等於一個波周期還有 8 段。一種邊 512 個三角形、共五種，一次做好不再動。 */
-  const RAG_SEG = 256;
-  const RAG_N = 5;
-  const ringRag = [];
+  /* 邊上的螺旋筆觸（v1.62.1，照參考圖）。使用者要的邊緣不規則是**螺旋狀**的：
+     參考圖裡那一圈不是一條被弄皺的圓弧，是**幾道沿著邊掃出去的粗筆觸疊在一起**——
+     每一道從內側起筆、一路往外掃，收筆時已經在環外，尾巴伸出去那一截就是邊上
+     鼓出來的那幾處。上一版是把環的外緣本身加正弦波弄皺（歪歪扭扭的阿米巴），
+     使用者看了說不對，整個換掉：環本身回到正圓，不規則交給這些筆觸。
+     arcs 幾道、seg 每道切幾段、sweep 一道掃幾弧度、r0→r1 起筆到收筆的半徑（倍率）、
+     w 粗細、spin 相對於陣的轉速。兩組給不同的轉速：它們會互相滑過去，
+     疊出來的形狀一直在變，看起來才像在燒而不是一個固定的花邊。
+     第二組往內收（r0 > r1），跟第一組交叉才有「捲」的感覺。 */
+  /* 盤的濃度。v1.54 是 0.42（深紅在大白天的綠地上要這麼濃才讀得出是紅的）；
+     v1.62.1 改成桃紅之後再提一階：桃紅的藍多、綠地把它拉得更兇。 */
+  const DISC_OP = 0.5;
+  const MAG_RIM = [
+    { arcs: 3, seg: 14, sweep: 2.4, r0: 0.92, r1: 1.20, w: 0.060, spin: 1.35 },
+    { arcs: 2, seg: 12, sweep: 1.7, r0: 1.08, r1: 0.92, w: 0.038, spin: 0.55 }
+  ];
+  /* 筆觸掃得最遠到幾倍半徑。規則那邊算「這一陣要退多遠才進得了畫面」要用它——
+     只照環本身算的話，掃出去那一截會被切在畫面外。 */
+  const MAG_RIM_OUT = Math.max(...MAG_RIM.map(f => Math.max(f.r0, f.r1)));
   let ringSmooth = null;
-  /* 火焰邊的環。做法是拿一顆正常的 RingGeometry 再逐點推外緣，不是自己組
-     BufferGeometry：省掉一份索引與 UV 的手工活，也留著 geometry.type = 'RingGeometry'
-     （測試靠它在場景裡認出這一組環）。 */
-  function flameRing(seed) {
-    const g = new T.RingGeometry(0.93, 1, RAG_SEG, 1);
-    const p = g.attributes.position;
-    /* 每一組波的相位：同一顆環的每一點共用，凹凸才是同一條曲線上的。
-       用 sin 湊出來的定值雜訊——要的只是「每種邊各不相同、而且每次啟動都一樣」。 */
-    const ph = RAG_WAVE.map((w, k) =>
-      (Math.sin((seed + 1) * 12.9898 + k * 78.233) * 43758.5453) % 6.283);
-    for (let i = 0; i < p.count; i++) {
-      const x = p.getX(i), y = p.getY(i);
-      const rad = Math.hypot(x, y);
-      if (rad < 0.965) continue;                  // 內緣那一圈不動（見上面 ①）
-      const a = Math.atan2(y, x);
-      let n = RAG_BIAS;
-      for (let k = 0; k < RAG_WAVE.length; k++)
-        n += Math.sin(a * RAG_WAVE[k][0] + ph[k]) * RAG_WAVE[k][1];
-      p.setXY(i, x * (1 + n), y * (1 + n));
-    }
-    return g;
-  }
-  const MAG_SPOKE = MAG_SWIRL.reduce((s, f) => s + f.arms * f.seg, 0) + MAG_DASH;
+  const MAG_SPOKE = MAG_SWIRL.reduce((s, f) => s + f.arms * f.seg, 0) +
+                    MAG_RIM.reduce((s, f) => s + f.arcs * f.seg, 0) + MAG_DASH;
   const MAG_SP_RINGS = 18;             // 最多幾層會帶紋路（六層 × 最多三個陣）
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
@@ -447,10 +427,8 @@ const ENG = (function () {
        盤面的螺旋紋才讓它像「陣」。 */
     ringGroup = new T.Group();
     /* 幾何體共用一份：54 顆環各自 new 一顆 RingGeometry 是白花的（形狀完全一樣，
-       大小是逐環 scale 出來的）。火焰邊的那幾種也在這裡先做好，setRings 再照
-       每一環的 rag 換過去——換的只是參考，不重建任何東西。 */
+       大小是逐環 scale 出來的）。 */
     ringSmooth = new T.RingGeometry(0.93, 1, 64);
-    for (let i = 0; i < RAG_N; i++) ringRag.push(flameRing(i));
     for (let i = 0; i < MAG_MAX; i++) {
       /* 環用一般混色：加法混色疊在亮綠色草地上會被洗成白的，看不出是紫的。
          輻條那圈小的才用加法，當作陣上的光點。 */
@@ -478,10 +456,12 @@ const ENG = (function () {
       magDiscs.push(d); ringGroup.add(d);
     }
 
-    /* 紋路走金黃（v1.54，原本 #ffa028 偏橘）：盤是深紅的，紋路要比它黃一階才浮得出來，
+    /* 紋路走亮黃白（v1.62.1，原本 #ffc83c 偏金）：參考圖裡盤是桃紅的場，
+       線條與邊上的筆觸是**接近白的黃**——黃得不夠就跟盤糊在一起。
+       濃度 0.3 → 0.42：邊上那幾道筆觸是整座陣最亮的東西，0.3 在大白天的綠地上壓不住。
        中心那顆亮核也是這些臂的內端加法混色疊出來的，越黃越像燒白的核。 */
     magSpokeMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
-      color: 0xffc83c, transparent: true, opacity: 0.3,
+      color: 0xffe9a0, transparent: true, opacity: 0.42,
       depthWrite: false, blending: T.AdditiveBlending
     }), MAG_SP_RINGS * MAG_SPOKE);
     magSpokeMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -738,10 +718,6 @@ const ENG = (function () {
       const m = magRings[i];
       m.visible = !!r;
       if (!r) continue;
-      /* 火焰邊還是圓的邊：魔法陣那幾層與火種給 rag（見 flameRing），
-         爆炸衝擊環、風壓、瞄準環維持正圓——那幾個是「範圍提示」，燒起來反而看不懂。 */
-      const geo = r.rag ? ringRag[(r.rag - 1) % RAG_N] : ringSmooth;
-      if (m.geometry !== geo) m.geometry = geo;
       m.position.set(r.x, r.y, r.z);
       m.scale.set(r.r, r.r, 1);
       m.rotation.z = r.spin || 0;         // 放平之後，繞自己的法線轉就是 local Z
@@ -756,10 +732,12 @@ const ENG = (function () {
         dm.visible = true;
         dm.position.set(r.x, r.y - 0.015, r.z);        // 壓在環下面一點，免得 z-fighting
         dm.scale.set(r.r * 0.97, r.r * 0.97, 1);
-        dm.material.opacity = r.op * 0.42;
-        /* 盤跟它那一圈同色（v1.54）。原本是寫死的橘：陣改成深紅之後盤還是橘的，
-           整疊就糊成一片；而且那顆火種的盤也該跟著它自己的火黃走，不是跟著陣。 */
-        dm.material.color.setHex(r.c === undefined ? 0xff5a18 : r.c);
+        dm.material.opacity = r.op * DISC_OP;
+        /* 盤的顏色跟著那一圈走（v1.54，原本是引擎裡寫死的橘，陣改色之後就糊了）。
+           v1.62.1 起可以用 fc 另外指定：照參考圖，那一圈本身是亮黃的鑲邊、
+           盤是桃紅的場——同色的話整片會變成一大片黃，鑲邊就不見了。 */
+        dm.material.color.setHex(r.fc !== undefined ? r.fc
+                                 : r.c === undefined ? 0xff5a18 : r.c);
       }
       // 盤面的紋路（見 MAG_SWIRL）
       if (!r.sp || s + MAG_SPOKE > MAG_SP_RINGS * MAG_SPOKE) continue;
@@ -782,6 +760,30 @@ const ENG = (function () {
             // 長度多給一成半，段與段之間才不會有縫；越外面越粗，像被甩開的尾巴
             scratch.scale.set(Math.hypot(dx, dz) * 1.15 * r.r, 0.04,
                               r.r * F.w * (0.5 + t0));
+            scratch.updateMatrix();
+            magSpokeMesh.setMatrixAt(s++, scratch.matrix);
+          }
+        }
+      }
+      /* 邊上的螺旋筆觸（見 MAG_RIM）。跟盤面的螺旋臂同一套組法：切成短棒沿曲線擺，
+         差別在半徑是「起筆 → 收筆」在跑（掃出去的同時往外／往內滑），
+         而且粗細兩端收尖（`sin(πt)`）——這樣才是一道筆觸，不是一截等寬的圓弧。 */
+      for (let fi = 0; fi < MAG_RIM.length; fi++) {
+        const F = MAG_RIM[fi];
+        const base = (r.spin || 0) * F.spin + fi * 1.1;
+        for (let arc = 0; arc < F.arcs; arc++) {
+          const a0 = base + arc / F.arcs * Math.PI * 2;
+          for (let i = 0; i < F.seg; i++) {
+            const t0 = i / F.seg, t1 = (i + 1) / F.seg;
+            const p0 = F.r0 + (F.r1 - F.r0) * t0, p1 = F.r0 + (F.r1 - F.r0) * t1;
+            const h0 = a0 + F.sweep * t0, h1 = a0 + F.sweep * t1;
+            const x0 = Math.cos(h0) * p0, z0 = Math.sin(h0) * p0;
+            const dx = Math.cos(h1) * p1 - x0, dz = Math.sin(h1) * p1 - z0;
+            scratch.position.set(r.x + (x0 + dx / 2) * r.r, r.y + 0.06 + fi * 0.02,
+                                 r.z + (z0 + dz / 2) * r.r);
+            scratch.rotation.set(0, Math.atan2(-dz, dx), 0);
+            scratch.scale.set(Math.hypot(dx, dz) * 1.15 * r.r, 0.04,
+                              r.r * F.w * (0.25 + 0.75 * Math.sin(Math.PI * (t0 + t1) / 2)));
             scratch.updateMatrix();
             magSpokeMesh.setMatrixAt(s++, scratch.matrix);
           }
@@ -1330,7 +1332,7 @@ const ENG = (function () {
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts,
     fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
-    cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT,
+    cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT,
     get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }
   };
 })();
