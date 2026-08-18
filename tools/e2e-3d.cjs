@@ -6825,7 +6825,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 fall1: await one(() => sndFall()),
                 fall4: await one(() => { for (let i = 0; i < 4; i++) sndFall(); }),
                 fall20: await one(() => { for (let i = 0; i < 20; i++) sndFall(); }),
-                nukeHit: await one(() => { sndBoom(30); for (let i = 0; i < 20; i++) sndFall(); }) };
+                nukeHit: await one(() => { sndBoom(30); for (let i = 0; i < 20; i++) sndFall(); }),
+                /* 放置音（v1.62.3 改成低頻、悅耳）。舊的那一版就地重建當對照組——
+                   「變低、變柔」是相對的，沒有對照組就只是在背一組絕對數字。 */
+                place: await one(() => sndPlace()),
+                placeOld: await one(() => tone(420, 0.06, 'square', 0.045)),
+                placeTop: await one(() => { placedCnt = bp.slots.length; sndPlace(); }),
+                placeOldTop: await one(() => tone(1040, 0.06, 'square', 0.045)),
+                wind: await one(() => sndWind()) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
   });
@@ -6855,6 +6862,102 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      snd.fall20.peak < 0.2 && Math.abs(snd.fall20.peak - snd.fall4.peak) < 0.03 &&
      snd.fall4.peak > snd.fall1.peak,
      '1 個 peak ' + snd.fall1.peak + '、4 個 ' + snd.fall4.peak + '、20 個 ' + snd.fall20.peak);
+  /* 放置音（v1.62.3，使用者要「比較低頻悅耳」）。三件事分開驗：
+     ① 高頻少了很多——方波的奇次泛音是 1/n，這就是「尖」的來源。
+     ② 音高整組往下——蓋到最後那一聲最高，拿新舊的最高音比才公平
+        （比起手那一聲的話，光是起點不同就會過）。
+     ③ 音高吸在五聲音階上，不是連續滑音：連續的頻率會落在半音與微分音上，
+        一路蓋下來像走音的哨子。這一條直接攔 tone() 看它到底被餵了什麼頻率。 */
+  ok('放置音變柔了（高頻少很多）',
+     snd.place.hiPct < snd.placeOld.hiPct * 0.5,
+     '2kHz 以上占比 ' + snd.placeOld.hiPct + '% → ' + snd.place.hiPct + '%');
+  /* 音高直接攔 tone() 看它被餵了什麼頻率——這是振盪器真正在響的音，
+     比從波形反推可靠。舊的那條公式（420 + p×620）就地算一份當對照組。 */
+  const placeNotes = await page.evaluate(() => {
+    const real = tone, hit = [], old = [];
+    tone = f => hit.push(+f.toFixed(2));
+    const keep = placedCnt;
+    for (let i = 0; i <= 20; i++) {
+      const p = i / 20;
+      placedCnt = Math.round(bp.slots.length * p);
+      sndPlace();
+      old.push(420 + p * 620);                    // v1.62.2 之前那條連續滑音
+    }
+    placedCnt = keep; tone = real;
+    return { hit, off: hit.filter(f => PLACE_SCALE.indexOf(f) < 0).length,
+             lo: Math.min(...hit), hi: Math.max(...hit), kinds: new Set(hit).size,
+             ratio: +Math.max(...hit.map((f, i) => f / old[i])).toFixed(2),
+             mean: +(hit.reduce((a, f, i) => a + f / old[i], 0) / hit.length).toFixed(2) };
+  });
+  ok('放置音整組降下去了',
+     placeNotes.ratio < 0.65 && placeNotes.mean < 0.55 && placeNotes.hi <= 588,
+     '同一個進度下，新的音高平均是舊的 ' + placeNotes.mean + ' 倍、最高的那一聲也只有 ' +
+     placeNotes.ratio + ' 倍（舊的 420～1040Hz → 新的 ' + placeNotes.lo + '～' +
+     placeNotes.hi + 'Hz，約降一個八度）');
+  ok('每一聲都落在五聲音階上，不是連續的滑音',
+     placeNotes.off === 0 && placeNotes.kinds > 4 &&
+     placeNotes.hi <= 588 && placeNotes.lo >= 196,
+     '從 0% 蓋到 100% 取 21 個點：' + placeNotes.kinds + ' 種音、' +
+     placeNotes.lo + '～' + placeNotes.hi + 'Hz，不在音階上的有 ' + placeNotes.off + ' 聲');
+
+  /* 起音（v1.62.3）：從 0 直接跳到音量會有「喀」的一聲。一整棟要敲幾百次，
+     這一聲跟音色一樣影響「悅不悅耳」。量法是把波形算出來看**前 2 毫秒**多大聲：
+     沒有起音的話第一個取樣就是滿音量。 */
+  const placeAtk = await page.evaluate(async () => {
+    const SR = 44100, realAudio = audio, wasMuted = muted, wasRunning = running;
+    running = false;
+    const head = async fn => {
+      const ctx = new OfflineAudioContext(1, SR, SR);
+      audio = () => ctx; muted = false;
+      fn();
+      const d = (await ctx.startRendering()).getChannelData(0);
+      let early = 0, peak = 0;
+      for (let i = 0; i < d.length; i++) {
+        const v = Math.abs(d[i]);
+        if (i < SR * 0.002) early = Math.max(early, v);
+        peak = Math.max(peak, v);
+      }
+      return { early: +early.toFixed(4), peak: +peak.toFixed(4) };
+    };
+    const now = await head(() => sndPlace());
+    const before = await head(() => tone(420, 0.06, 'square', 0.045));
+    audio = realAudio; muted = wasMuted; running = wasRunning;
+    return { now, before };
+  });
+  ok('放置音不再「喀」一聲起頭',
+     placeAtk.now.early < placeAtk.now.peak * 0.35 &&
+     placeAtk.before.early > placeAtk.before.peak * 0.9,
+     '前 2 毫秒的音量佔整聲的 ' +
+     (placeAtk.before.early / placeAtk.before.peak * 100).toFixed(0) + '% → ' +
+     (placeAtk.now.early / placeAtk.now.peak * 100).toFixed(0) + '%');
+
+  /* 龍捲風的風聲（v1.62.3）。使用者的說法是「好像沒有音效」——其實有，
+     但只在出場放一聲 1.6 秒的噪音，而它現在活 10 秒，後面八秒多是靜的。
+     所以要驗的不是「有沒有響」，是**整段都在響**：攔下 sndWind 記錄它在第幾秒被叫，
+     然後看最長的空檔有多久（超過一段的長度就代表中間真的靜掉了）。 */
+  const windLoop = await page.evaluate(() => {
+    const real = sndWind, at = [];
+    twists = null;
+    let t = 0;
+    sndWind = () => at.push(+t.toFixed(2));
+    launchTornado({ x: 0, z: 0 }, { x: 0, z: 20 });
+    while (twists && t < 13) { step(0.02); t += 0.02; }
+    sndWind = real;
+    twists = null; ENG.putTornados([]);
+    const gaps = at.slice(1).map((v, i) => +(v - at[i]).toFixed(2));
+    return { at, n: at.length, gaps, worst: Math.max(...gaps, at[0]),
+             last: +(TW_LIFE - at[at.length - 1]).toFixed(2),
+             dur: WIND_DUR, gap: WIND_GAP, tail: WIND_TAIL };
+  });
+  ok('風聲整段都在，不是出場響一聲就沒了',
+     windLoop.n >= 6 && windLoop.worst <= windLoop.dur,
+     '10 秒裡響了 ' + windLoop.n + ' 段（每段 ' + windLoop.dur + ' 秒），最長的空檔 ' +
+     windLoop.worst + ' 秒——比一段還短就表示前一段還沒收就接上了');
+  ok('最後一段不會拖到龍捲風散了還在吹',
+     windLoop.last >= windLoop.tail && windLoop.dur - windLoop.last <= 1.1,
+     '最後一段在還剩 ' + windLoop.last + ' 秒時起頭，所以它收乾淨的時間點在漏斗散掉後 ' +
+     (windLoop.dur - windLoop.last).toFixed(2) + ' 秒（上限 1.1）');
+
   ok('核彈打在建築上那一幀不會破表',
      snd.nukeHit.peak < 0.25 && snd.nukeHit.over === 0,
      '爆炸＋20 人跌倒 peak ' + snd.nukeHit.peak + '、rms ' + snd.nukeHit.rms +

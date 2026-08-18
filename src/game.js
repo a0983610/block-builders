@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.62.2';
+const VERSION = '1.62.3';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -93,13 +93,20 @@ function voiceOK(key, c) {
 }
 /* key：把「同一支音效」歸成同一組。不給的話用波形＋音高當 key，
    但音高有抖動的那些（跌倒聲）每次都會算成不同組，所以那種要自己指定。 */
-function tone(freq, dur, type, vol, slide, key) {
+/* atk：起音要花幾秒爬到滿音量（省略＝0，跟以前一樣一開聲就是滿的）。
+   從 0 直接跳到音量會有「喀」的一聲，短音特別明顯——放置音那種要敲幾百次的才需要。 */
+function tone(freq, dur, type, vol, slide, key, atk) {
   const c = audio(); if (!c || muted) return;
   if (!voiceOK(key || (type || 'square') + Math.round(freq), c)) return;
   const o = c.createOscillator(), g = c.createGain();
   o.type = type || 'square'; o.frequency.value = freq;
   if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq * slide), c.currentTime + dur);
-  g.gain.setValueAtTime(vol || 0.06, c.currentTime);
+  const v = vol || 0.06;
+  // 指數斜坡碰不到 0，所以起訖都用 0.0008 當「無聲」
+  if (atk) {
+    g.gain.setValueAtTime(0.0008, c.currentTime);
+    g.gain.exponentialRampToValueAtTime(v, c.currentTime + atk);
+  } else g.gain.setValueAtTime(v, c.currentTime);
   g.gain.exponentialRampToValueAtTime(0.0008, c.currentTime + dur);
   o.connect(g).connect(c.destination); o.start(); o.stop(c.currentTime + dur);
 }
@@ -114,15 +121,33 @@ function noise(dur, vol, cut) {
   const g = c.createGain(); g.gain.value = vol || 0.18;
   src.connect(f).connect(g).connect(c.destination); src.start();
 }
-/* 放置音的音高隨進度往上爬——蓋到最後會有「快完成了」的爽感 */
-function sndPlace() { const p = bp ? placedCnt / bp.slots.length : 0; tone(420 + p * 620, 0.06, 'square', 0.045); }
+/* 放置音的音高隨進度往上爬——蓋到最後會有「快完成了」的爽感。
+   v1.62.3 照使用者要求改成「低頻、悅耳」，三件事一起改（本來是 420→1040Hz 的方波，
+   蓋一整棟就是幾百聲尖尖的「嗶」）：
+   ① 音色 square → triangle。方波的奇次泛音是 1/n、三角是 1/n²，同一個音高柔得多。
+   ② 音高整組往下降約一個八度：420～1040 → 196～587（G3～D5）。
+   ③ 音高**吸到五聲音階上**，不再是連續的滑音。連續的頻率會落在半音與微分音上，
+      一路蓋下來像走音的哨子；吸到五聲音階（C 大調，沒有半音）之後，
+      不管前後跳到哪兩個音都是協和的，蓋房子就變成在敲一串木琴。
+   ④ 給 8ms 的起音：從 0 直接跳到音量會有「喀」的一聲，這種要敲幾百次的短音最明顯。 */
+const PLACE_SCALE = [196.00, 220.00, 261.63, 293.66, 329.63,
+                     392.00, 440.00, 523.25, 587.33];
+function sndPlace() {
+  const p = bp ? placedCnt / bp.slots.length : 0;
+  const i = clamp(Math.floor(p * PLACE_SCALE.length), 0, PLACE_SCALE.length - 1);
+  tone(PLACE_SCALE[i], 0.14, 'triangle', 0.05, 0, 0, 0.008);
+}
 function sndSmash() { noise(0.42, 0.3, 1500); tone(78, 0.36, 'sawtooth', 0.1, 0.35); }
 function sndDone() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.22, 'triangle', 0.07), i * 110)); }
 /* 跌倒聲每次抽一個音高：一排人被同一發掀倒時，同音高的那幾聲會疊成「一聲比較大的」，
    抖開之後才聽得出是好幾個人各跌各的（音高抖開也順便讓它們不再完全同相）。 */
 function sndFall() { tone(rr(170, 245), 0.16, 'square', 0.05, 0.5, 'fall'); }
 function sndSwing() { tone(160, 0.3, 'sine', 0.06, 3.2); }
-function sndWind() { noise(1.6, 0.14, 480); }
+/* 龍捲風的風聲。v1.62.3 之前只在出場放**一聲** 1.6 秒的噪音，而它現在活 10 秒——
+   使用者的說法是「好像沒有音效」，其實是響完之後有八秒多是靜的。
+   改成整段一直重放（見 stepTwist 的 w.snd），並且加一支低頻的呼嘯：
+   純噪音低通切在 480，小喇叭放出來很薄，配一支往下滑的鋸齒才聽得出是「一股風在轉」。 */
+function sndWind() { noise(WIND_DUR, 0.17, 520); tone(82, WIND_DUR * 0.9, 'sawtooth', 0.035, 0.75); }
 /* 點火：短促的「噗」一聲。只在點下去那一刻響，每塊都響會變成一片白噪音 */
 function sndFire() { noise(0.55, 0.16, 1600); tone(150, 0.4, 'sawtooth', 0.05, 2.4); }
 /* 煙火：往上是「咻」（音高一路往上滑），到頂是「啪」 */
@@ -2586,6 +2611,10 @@ const TW_TAKE = 0.2;
    轉向的擺幅（TW_SWAY）不跟著調——那是「每秒轉幾弧度」，跟走多快無關；
    跟著調的話走得快、轉得也快，等於原地繞圈，路線反而不會拉開。 */
 const TW_SPD0 = 5.2, TW_SPD_MIN = 3.6, TW_SPD_MAX = 9.6;
+/* 風聲一段多長、每隔多久補一段（v1.62.3）。間隔比長度短，兩段有 0.5 秒重疊，
+   接起來才是「一直在吹」而不是「呼、呼、呼」三聲分開的；
+   最後 WIND_TAIL 秒不再補新的，不然漏斗都散了風還在吹。 */
+const WIND_DUR = 1.9, WIND_GAP = 1.4, WIND_TAIL = 0.9;
 /* 每一道自己的編號：某一塊被抽中「這道不吸」之後要記著，不然下一幀重抽一次，
    十秒的壽命裡同一塊會被抽 300 次，兩成的機率照樣把整棟吸光。
    抽中要吸的不必記——當場就脫離了，不再是 SET，下一幀不會再被算一次。 */
@@ -2611,7 +2640,8 @@ function launchTornado(from, toward) {
     spin: rr(0, 6.28), vx: Math.cos(a) * TW_SPD0, vz: Math.sin(a) * TW_SPD0, hit: 0,
     /* 擺動的相位與頻率各自抽（見 stepTwist）：同時來好幾道時，
        都用同一組的話它們會擺得一模一樣，看起來像複製貼上。 */
-    ph: rr(0, 6.28), sw: rr(0.9, 1.5)
+    ph: rr(0, 6.28), sw: rr(0.9, 1.5),
+    snd: WIND_GAP                     // 出場那一聲在下面放了，下一段等 WIND_GAP 秒
   });
   /* 拉高之後漏斗頂會超出畫面上緣（矮建築取景近，量到 NDC 1.45），
      跟核彈的蘑菇雲同一個處理：鏡頭退到整支漏斗進得了畫面的距離，之後就停在那裡不收回來。
@@ -2625,6 +2655,9 @@ function stepTwist(dt) {
     const w = twists[i];
     w.life -= dt;
     w.spin += dt * 7;
+    // 風聲一段一段接下去（見 sndWind）。快散了就不再補，讓最後那段自己收尾
+    w.snd -= dt;
+    if (w.snd <= 0 && w.life > WIND_TAIL) { sndWind(); w.snd = WIND_GAP; }
     w.x += w.vx * dt; w.z += w.vz * dt;
     /* 走的路要歪（v1.58）。本來是每幀加一點亂數加速度，但那種東西左右互相抵銷——
        實測整段 10 單位的路只偏離直線 0.27 單位，看起來就是直直推過去。
