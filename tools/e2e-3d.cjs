@@ -2253,8 +2253,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 20000 && phase !== 'done'; i++) step(0.05);
     let allAt = -1, maxY = 0, jumps = 0, landed = 0, up = false, drift = 0, ring = null;
     const px = workers.map(w => w.x), pz = workers.map(w => w.z);
+    /* 蓋完那一刻各自站在哪：這段的耗時就是「最遠那個人走回圈上」，
+       數字不對時要能直接看出是誰、從多遠開始走（不然只剩一個秒數可以瞪）。 */
+    const at0 = workers.map(w => ({ d: +Math.hypot(w.x, w.z).toFixed(1), mage: w.mage }));
+    const arrive = workers.map(() => -1);
     for (let i = 0; i < 130; i++) {
       step(0.05);
+      for (let k = 0; k < workers.length; k++)
+        if (arrive[k] < 0 && workers[k].hail) arrive[k] = +(i * 0.05).toFixed(2);
       // 圈要在慶祝還沒結束時量：時間到了他們就散開去閒晃了
       if (i === 100) ring = workers.map(w => ({ d: +Math.hypot(w.x, w.z).toFixed(2),
                                                 a: Math.atan2(w.z, w.x) }));
@@ -2283,13 +2289,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 200; i++) step(0.05);
     const after = workers.filter(w => w.hail).length;
     const spread = Math.max(...workers.map(w => +Math.hypot(w.x, w.z).toFixed(2)));
+    const slow = arrive.indexOf(Math.max.apply(null, arrive));
     return { allAt, maxY: +maxY.toFixed(2), jumps, landed, drift,
+             slow: { d: at0[slow].d, mage: at0[slow].mage },
+             farD: Math.max.apply(null, at0.map(o => o.d)),
              rad: { lo: Math.min(...ds), hi: Math.max(...ds), want: +cheerR().toFixed(2) },
              gap: { lo: Math.min(...gaps), hi: Math.max(...gaps), want: +(360 / workers.length).toFixed(1) },
              after, spread, siteR: +siteR.toFixed(1) };
   });
   ok('蓋完後很快就圍成一圈', cheer.allAt > 0 && cheer.allAt < 2.5,
-     cheer.allAt + ' 秒全員就位（照現況分配位置，不是照編號硬分）');
+     cheer.allAt + ' 秒全員就位（照現況分配位置，不是照編號硬分）；最後到的那個蓋完時站在 ' +
+     cheer.slow.d + '（' + (cheer.slow.mage ? '魔法師' : '工人') + '），全場最遠 ' +
+     cheer.farD + '，圈半徑 ' + cheer.rad.want);
   ok('圍的是等分的一圈', cheer.gap.hi - cheer.gap.lo < 1 &&
      Math.abs(cheer.gap.lo - cheer.gap.want) < 1 && cheer.rad.hi - cheer.rad.lo < 0.1 &&
      Math.abs(cheer.rad.lo - cheer.rad.want) < 0.15,
@@ -2447,9 +2458,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mi = workers.map((w, i) => w.mage ? i : -1).filter(i => i >= 0);
     const m = workers[mi[0]];
     let carried = 0, loadMax = 0, flyMax = 0, cast = 0, near = Infinity, far = 0;
-    let starMax = 0, inHand = 0, launches = 0, frames = 0, lastMb = -1;
-    const mDur = [], wDur = [], mY0 = [], wY0 = [], reach = [];
-    const seen = new Set(), mine = new Map();
+    let starMax = 0, inHand = 0, launches = 0, frames = 0, lastN = 0, lastAt = -1;
+    const mDur = [], wDur = [], mY0 = [], wY0 = [], reach = [], gaps = [];
+    const seen = new Set();
     /* 先等他走到施法位再開始量：上一段測試可能把他丟在工地正中央，
        那一段「走過來」會被算成「他站得多近」。 */
     for (let i = 0; i < 400 &&
@@ -2467,18 +2478,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       starMax = Math.max(starMax, stars.length);
       // 魔法師名下的積木，任何一幀都不該是「被舉在手上」（st 1 = CARRY）
       for (const b of blocks) if (b.st === 1 && mi.indexOf(b.holder) >= 0) inHand++;
-      if (m.mb >= 0 && m.mb !== lastMb) {
-        launches++; mine.set(m.mb, m.ms);
-        const a = blocks[m.mb].arc;                 // 出手那一刻，那塊料離他多遠
-        if (a) reach.push(Math.hypot(a.x0 - m.x, a.z0 - m.z));
+      if (m.fly.length > lastN) {                   // 這一幀他又發了一塊
+        launches++;
+        const a = blocks[m.fly[m.fly.length - 1].b].arc;
+        if (a) reach.push(Math.hypot(a.x0 - m.x, a.z0 - m.z));   // 出手那一刻那塊料離他多遠
+        if (lastAt >= 0) gaps.push((i - lastAt) * 0.05);         // 距離上一發幾秒
+        lastAt = i;
       }
-      lastMb = m.mb;
-      let fly = 0;                                  // 他發出去、此刻還在飛的有幾塊
-      for (const [k, s] of mine) {
-        const b = blocks[k];
-        if (b && b.st === 2 && b.slot === s) fly++; else mine.delete(k);
-      }
-      flyMax = Math.max(flyMax, fly);
+      lastN = m.fly.length;
+      flyMax = Math.max(flyMax, m.fly.length);      // 他發出去、此刻還在飛的有幾塊
       for (let k = 0; k < blocks.length; k++) {
         const b = blocks[k];
         if (b.st !== 2 || !b.arc) continue;
@@ -2495,7 +2503,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              castPct: +(cast / frames).toFixed(2), near: +near.toFixed(1), far: +far.toFixed(1),
              siteR: +siteR.toFixed(1), mN: mDur.length, wN: wDur.length,
              mDur: med(mDur), wDur: med(wDur), mY0: med(mY0), wY0: med(wY0),
-             reach: med(reach), placed: placedCnt };
+             reach: med(reach), gap: med(gaps), placed: placedCnt };
   });
   ok('魔法師一塊積木都不搬', wz.carried === 0 && wz.inHand === 0 && wz.launches > 20,
      wz.frames + ' 幀裡他舉著積木 ' + wz.carried + ' 幀、名下有積木被舉在手上 ' +
@@ -2508,12 +2516,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wz.reach + ' 格；工人自己丟的 ' + wz.wN + ' 條是從頭頂 ' + wz.wY0 + ' 格丟出去的');
   ok('飛得比工人丟的慢一倍以上', wz.mDur > 1.2 && wz.mDur > wz.wDur * 2,
      '魔法師 ' + wz.mDur + ' 秒／塊，工人 ' + wz.wDur + ' 秒／塊（都取中位數）');
-  ok('一次只送一塊，送到了才送下一塊', wz.flyMax === 1 && wz.loadMax === 1,
-     '同時在飛的最多 ' + wz.flyMax + ' 塊、手上的工作單最多 ' + wz.loadMax + ' 格');
+  /* v1.64.1：上一塊還在半空就送下一塊。發的間隔要明顯短於一塊飛完的時間，
+     天上才會同時掛著好幾塊——兩者一樣長的話又變回「一塊一塊搬」。 */
+  ok('上一塊還在飛就送下一塊，天上連成一串',
+     wz.flyMax >= 2 && wz.gap < wz.mDur * 0.6 && wz.loadMax === 1,
+     '每 ' + wz.gap + ' 秒發一塊、一塊飛 ' + wz.mDur + ' 秒 → 同時在飛的最多 ' +
+     wz.flyMax + ' 塊（手上的工作單一次還是只有 ' + wz.loadMax + ' 格）');
   ok('站在工地旁邊施法，不走進工地', wz.near > wz.siteR + 2,
      '離工地中心 ' + wz.near + '–' + wz.far + '（建築半徑 ' + wz.siteR + '）');
-  ok('施法時才舉杖，兩塊之間會把杖收下來',
-     wz.castPct > 0.5 && wz.castPct < 0.95,
+  /* 連發之後杖就一直舉著（v1.64.1）：每 0.85 秒發一塊，中間沒有「放下再舉起來」的空檔。 */
+  ok('施工中杖一直舉著', wz.castPct > 0.85,
      '舉著杖的幀數占 ' + (wz.castPct * 100).toFixed(0) + '%');
   /* 使用者要的是「一點點、看得出是他在施法」，所以特效量也要驗：
      星星是跟魔法陣共用的那一池（上限 48），施工中同時亮著十來顆就是「一點點」。 */
@@ -2586,6 +2598,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('施法時杖抬起來、杖頭往前傾、寶珠亮起來',
      wiz.orbUp > 0.25 && wiz.orbFwd > 0.1 && wiz.orbLum > 20,
      '寶珠抬高 ' + wiz.orbUp + '、往前 ' + wiz.orbFwd + ' 格，亮度 +' + wiz.orbLum);
+
+  /* 沒工可做就把杖收下來。連發之後這是唯一一種「站著卻沒在施法」的情況，
+     所以要驗：把場上的建材全認走（等於沒料可搬），他該收杖站在原地等，不是舉著空杖。 */
+  const wzWait = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    const m = workers.find(w => w.mage);
+    // 先等他走到施法位：上一段測試可能把他丟在工地正中央，那一段路會被算成「他移動了」
+    for (let i = 0; i < 400 &&
+         Math.abs(Math.hypot(m.x, m.z) - (siteR + MAGE_KEEP)) > 0.15; i++) step(0.05);
+    for (let i = 0; i < 1200 && m.cast < 0.95; i++) step(0.05);
+    const up = +m.cast.toFixed(2);
+    for (const b of blocks) if (b.st === 0 && b.holder < 0) b.holder = 0;   // 建材全被認走
+    const d0 = +Math.hypot(m.x, m.z).toFixed(1);
+    for (let i = 0; i < 120; i++) step(0.05);        // 手上那一塊飛完（最久 3.5 秒）就沒得發了
+    return { up, after: +m.cast.toFixed(2), st: m.st, fly: m.fly.length,
+             moved: +(Math.hypot(m.x, m.z) - d0).toFixed(1) };
+  });
+  ok('沒建材可發就把杖收下來，站在原地等',
+     wzWait.up > 0.9 && wzWait.after < 0.05 && wzWait.st === 'idle' &&
+     Math.abs(wzWait.moved) < 1,
+     '斷料前舉杖 ' + wzWait.up + '，六秒後 ' + wzWait.after + '（狀態 ' + wzWait.st +
+     '、還在飛 ' + wzWait.fly + ' 塊、站的位置挪了 ' + wzWait.moved + ' 格）');
 
   /* 舉杖是每幀預設往下收、只有施法那條路徑撐得住的——被戳倒那一路是 return 出去的，
      不收的話那個人躺在地上還把杖舉著。 */

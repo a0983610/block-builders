@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.64.0';
+const VERSION = '1.64.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -931,9 +931,10 @@ function newWorker(i) {
     eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
     /* 魔法師（mage，v1.64）：不搬積木，站在工地旁邊隔空把建材拋上去。
-       cast 是舉杖的深淺 0～1（畫杖與寶珠用），mang 是站的角度，ct 是這一段還剩幾秒，
-       mb／ms 是正在飛的那一塊積木與它要去的格子，trail 是下一顆星還有多久。 */
-    mage: 0, cast: 0, mang: 0, ct: 0, mb: -1, ms: -1, trail: 0,
+       cast 是舉杖的深淺 0～1（畫杖與寶珠用），mang 是站的角度，ct 是這一發還要蓄幾秒，
+       fly 是已經送出去、還在半空的那幾塊（連發，所以是一份清單），
+       trail 是下一顆星還有多久。 */
+    mage: 0, cast: 0, mang: 0, ct: 0, fly: [], trail: 0,
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
@@ -1000,9 +1001,9 @@ function releaseWorker(w) {
     freeClaim(j.s);
   }
   w.load.length = 0; w.li = 0; w.carry = false; w.st = 'idle';
-  /* 魔法師手上那一發也跟著取消。飛在半空的那一塊不管（它自己會落定），
-     但這個編號要清掉——換藍圖時整池積木會重編，留著會指到別人的積木上。 */
-  w.mb = -1; w.ms = -1;
+  /* 魔法師還在半空的那幾塊也從清單上劃掉。積木本身不管（它自己會落定），
+     但編號要清掉——換藍圖時整池積木會重編，留著會指到別人的積木上。 */
+  w.fly.length = 0;
   endChat(w);
 }
 /* 工作單裡的某一塊出事了（被打飛、被搶走、藍圖換掉）：只抽掉那一筆，其餘照搬。
@@ -1759,19 +1760,22 @@ function updEng(w, dt) {
 /* ── 魔法師 ───────────────────────────────────────────────
    十個人有一個是魔法師：戴巫師帽、拿法杖，一塊積木都不搬。他站在工地旁邊，
    把散在遠處的建材一塊接著一塊隔空拋到藍圖的位置上——整段路都是那條拋物線，
-   中途不經過任何人的手。一次只送一塊，而且飛得比工人自己丟的慢一倍以上，
-   看起來才是「慢慢一塊一塊擺上去」而不是連發。
+   中途不經過任何人的手。單塊飛得比工人自己丟的慢一倍以上（看得出是飄過去的），
+   但**上一塊還在半空就送下一塊**（v1.64.1）：他每 MAGE_GAP 秒發一塊，
+   一塊要飛兩三秒，所以天上隨時掛著兩到五塊，連成一條往建築流過去的線。
+   等一塊落定才動下一塊的話，那是「一塊一塊搬」，不是「一路把料吸過去」。
 
    施法特效刻意留得小（使用者要的是「一點點、看得出是他在施法」）：
    杖頭的寶珠亮起來、出手時腳下一圈淡光加杖頭一小撮星，飛行途中每隔一段撒一顆。 */
-const MAGE_KEEP = 2.6;              // 站得離工地外圍多遠（工程師是 3.4，錯開才不會疊在一起）
-const MAGE_CHARGE = 0.8;            // 站定到出手要蓄多久
-const MAGE_REST = 0.55;             // 一塊落定到下一次舉杖之間停多久
+const MAGE_KEEP = 5.5;              // 站得離工地外圍多遠（工程師 3.4、閒晃的人 1.5，他站最外面）
+const MAGE_GAP = 0.85;              // 每隔幾秒發一塊（也是「面向那塊料舉著杖」的時間）
 /* 飛行時間：起手 0.9 秒，再照水平距離與高度加。二十格外的建材大約飛兩秒——
    工人自己丟那一下是 0.34 秒起跳，慢到這個程度才看得出「這塊是飄過去的」。 */
 const MAGE_DUR0 = 0.9, MAGE_DUR_D = 0.055, MAGE_DUR_Y = 0.02;
 const MAGE_LIFT = 1.6;              // 弧頂比工人丟的再高一點（tossPeak 只保證閃得過牆）
-const MAGE_TRAIL = 0.22;            // 飛行中每隔幾秒撒一顆星
+/* 飛行中每隔幾秒撒一顆星。節拍是**一個人一份**，不是一塊一份：同時飛兩三塊的話
+   一塊一份就是三倍的星，那池星只有 48 顆，滿場魔法師會把它吃光。 */
+const MAGE_TRAIL = 0.35;
 const MAGE_STAR = 0.22;             // 那些星是魔法陣那種星的幾分之幾大
 const CAST_UP = 8, CAST_DOWN = 4;   // 舉杖／收杖的速度（每秒），舉的要比收的快才撐得住
 
@@ -1789,46 +1793,43 @@ function staffTip(w) {
            z: w.z + (-t[0] * sa + t[2] * ca) * s };
 }
 function updMage(w, wi, dt) {
-  /* 手上這一發還在飛：站著把杖舉著跟到底，杖口跟著它轉。 */
-  if (w.mb >= 0) {
-    const b = blocks[w.mb];
-    if (b && b.st === TOSS && b.slot === w.ms) {
-      w.a = Math.atan2(b.x - w.x, b.z - w.z);
-      w.gait += (0 - w.gait) * Math.min(1, dt * 8);
-      castPose(w, dt, 1);
-      w.trail -= dt;
-      if (w.trail <= 0) { spawnStars(b.x, b.z, b.y, 0.5, 1, MAGE_STAR); w.trail = MAGE_TRAIL; }
-      return;
+  /* 已經送出去的那幾塊：落定了（或半路被打掉）就從清單移掉。留著只為了兩件事——
+     沿路撒星，以及「還有東西在飛就先別收杖」。 */
+  for (let i = w.fly.length - 1; i >= 0; i--) {
+    const f = w.fly[i], b = blocks[f.b];
+    if (!b || b.st !== TOSS || b.slot !== f.s) w.fly.splice(i, 1);
+  }
+  if (w.fly.length) {
+    w.trail -= dt;
+    if (w.trail <= 0) {                              // 隨機挑一塊還在飛的撒（見 MAGE_TRAIL）
+      const b = blocks[w.fly[Math.floor(Math.random() * w.fly.length)].b];
+      if (b) spawnStars(b.x, b.z, b.y, 0.5, 1, MAGE_STAR);
+      w.trail = MAGE_TRAIL;
     }
-    // 落定了（或半路被打掉）：收杖，喘一口再送下一塊
-    w.mb = -1; w.ms = -1; w.ct = MAGE_REST;
   }
   if (!w.load.length) {
-    if (w.ct > 0) {                                  // 兩塊之間的空檔
-      w.ct -= dt;
-      w.gait += (0 - w.gait) * Math.min(1, dt * 8);
-      return;
-    }
     loadUp(w, wi, 1);                                // 一次只領一格一塊
     /* 沒格子可蓋或沒建材了：留在施法位站著等，不跟一般人一樣去閒晃。
        閒晃那條路會沿用上一輪留下的目標點（慶祝散場時取的是整片草地），
        他一沒工作就往四十幾格外走，蓋完要圍圈時得從場外跑回來。 */
     if (!w.load.length) {
       w.st = 'idle';
+      if (w.fly.length) castPose(w, dt, 1);          // 還有在飛的就先舉著杖送它們到定位
       if (ringWalk(w, w.mang, siteR + MAGE_KEEP, dt)) {
         w.a = Math.atan2(-w.x, -w.z);                // 站定就面向建築等下一批
         w.gait += (0 - w.gait) * Math.min(1, dt * 8);
       }
       return;
     }
-    // 領到了就開始蓄力。這裡不設的話，站定在原地的人會在領到的同一幀就出手
-    w.st = 'cast'; w.leg = 0; w.ct = MAGE_CHARGE;
+    /* 領到了就開始蓄這一發。這裡不設的話，站定在原地的人會在領到的同一幀就出手；
+       它同時也是連發的節拍——上一塊出手後 load 就空了，下一幀馬上領下一塊重新蓄。 */
+    w.st = 'cast'; w.leg = 0; w.ct = MAGE_GAP;
   }
   const j = w.load[0];
   const b = blocks[j.b];
   if (!b || b.st !== FREE || !b.rest) { dropJob(w, 0); return; }   // 認的那塊被搶走／被打飛了
   // 還在走位：蓄力從「站定」那一刻才開始算，不然半路被撞倒的人一站起來就發一塊
-  if (!ringWalk(w, w.mang, siteR + MAGE_KEEP, dt)) { w.ct = MAGE_CHARGE; return; }
+  if (!ringWalk(w, w.mang, siteR + MAGE_KEEP, dt)) { w.ct = MAGE_GAP; return; }
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
   w.a = Math.atan2(b.x - w.x, b.z - w.z);            // 面向要拉起來的那一塊
   castPose(w, dt, 1);
@@ -1852,12 +1853,14 @@ function launchMage(w, j, b) {
   b.tr = ((pal >> 16) & 255) / 255; b.tg = ((pal >> 8) & 255) / 255; b.tb = (pal & 255) / 255;
   b.slot = j.s;
   b.holder = -1;                                     // 出手了就不再屬於任何人
-  w.mb = j.b; w.ms = j.s; w.trail = 0;
+  w.fly.push({ b: j.b, s: j.s });
   w.load.shift();
   stats.carried++;                                   // 「累計搬運」照算：這一塊也是小人送上去的
+  /* 出手那一下的特效。連發之後這兩樣每 0.85 秒就來一次，所以量都比單發時再收一點：
+     杖頭兩顆星、腳下那圈也淡一些，不然整個人會被自己的特效裹住。 */
   const tip = staffTip(w);
-  spawnStars(tip.x, tip.z, tip.y, 0.5, 3, MAGE_STAR);
-  fxRings.push({ x: w.x, z: w.z, y: 0.14, r: 0.5, vr: 2.4, op: 0.5, fade: 0.7,
+  spawnStars(tip.x, tip.z, tip.y, 0.5, 2, MAGE_STAR);
+  fxRings.push({ x: w.x, z: w.z, y: 0.14, r: 0.5, vr: 2.2, op: 0.42, fade: 0.7,
                  c: 0xff8ec4, add: 1, spin: rr(0, 6.28) });
 }
 
