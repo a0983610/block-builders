@@ -2817,9 +2817,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const pushedOut = cohort.filter(b => Math.hypot(b.x, b.z) >= R).length;
     kickOut = origKick;
     const dirty1 = dirtyOf(), secs = +(guard * 0.05).toFixed(1);
-    let g2 = 0; while (dozers && g2++ < 400) step(0.05);   // 整完會自己開走
+    /* 整完會自己開走。這一段（v1.64.2）也要驗：時限到不代表鏟子當場抬起來——
+       車子還在工作範圍內就得繼續推，不然最後那一趟是抬著鏟子穿過工地。 */
+    const opw = pushWithBlade;
+    let g2 = 0, outFrames = 0, outDown = 0, outPush = 0;
+    window.pushWithBlade = (m, mx, mz) => {
+      const n = opw(m, mx, mz);
+      if (n && dozers && dozers.done) outPush += n;
+      return n;
+    };
+    while (dozers && g2++ < 400) {
+      const L = dozers.list;
+      step(0.05);
+      for (const m of L) if (Math.hypot(m.x, m.z) < dozWorkR()) { outFrames++; if (m.bl < 0.35) outDown++; }
+    }
+    window.pushWithBlade = opw;
     return { born, drawn, peak, dirty1, trail, secs, built, stillIn, heap0,
-             cohort: cohort.length, pushedOut, kicked,
+             cohort: cohort.length, pushedOut, kicked, outFrames, outDown, outPush,
              heapEnd: trail.length ? trail[trail.length - 1] : 0,
              sawPush, wantN, inSite, blDown, mFrames, maxSpd: +maxSpd.toFixed(1),
              lastIn: +(lastIn * 0.05).toFixed(1),
@@ -2855,6 +2869,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '整地 ' + doze.secs + ' 秒，範圍內從最多 ' + doze.peak + ' 塊清到 ' + doze.dirty1 + ' 塊');
   ok('整完會自己開出場', doze.gone && doze.phase === 'build',
      doze.drove + ' 秒後開走，phase=' + doze.phase);
+  /* v1.64.2：以前時限一到就 `m.bl = 1`（鏟子當場抬起來）再直線開出去，
+     最後那一趟等於白跑——而且畫面上是抬著鏟子從料堆中間穿過去。 */
+  ok('時限到離場的路上，還在工地裡就繼續推',
+     doze.outFrames > 10 && doze.outDown === doze.outFrames && doze.outPush > 200,
+     '離場那 ' + doze.drove + ' 秒裡，車子在工作範圍內 ' + doze.outFrames +
+     ' 幀、鏟子放著的有 ' + doze.outDown + ' 幀，順路又推了 ' + doze.outPush + ' 塊次');
   await page.screenshot({ path: path.join(OUT, '04-整地.png') });
 
   /* ── 從地圖邊緣進場、分頭走不同的路（v1.61）──────────────────

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.64.1';
+const VERSION = '1.64.2';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -740,10 +740,26 @@ function finishClear() {
   kickOutSite();                     // 剩下的零星碎塊直接彈出去收尾
   dozers.done = true;                // 交給小人，機器自己開出場
   for (const m of dozers.list) {
-    m.st = 'leave'; m.bl = 1;
+    m.st = 'leave';
     m.a = Math.atan2(m.x, m.z);      // 車頭轉朝外，不要再穿過工地
   }
   beginBuild();
+}
+/* 開一步。鏟子放不放下來、推不推料**只看位置**，不看在跑哪一段（v1.64.2）：
+   進了工作範圍就放下來推，出了範圍才抬起來。速度看鏟子上有沒有料——空鏟就開快的，
+   工地大半是空地，整趟都用推料的慢速跑等於把時限花在沒東西可推的地方
+   （中世紀城堡實測有 2 秒多是這樣耗掉的）。
+   怎麼開由呼叫端給：推的時候是 driveTo 追目標，離場是直線往外。 */
+function dozeMove(m, dt, move) {
+  const work = Math.hypot(m.x, m.z) < dozWorkR();
+  m.bl += ((work ? 0 : 1) - m.bl) * Math.min(1, dt * (work ? 8 : 6));
+  const px = m.x, pz = m.z;
+  const at = move(work && m.load > 0 ? DOZ_PUSH : DOZ_MOVE);
+  // 碎料跟著車子走同樣的位移
+  const n = work ? pushWithBlade(m, m.x - px, m.z - pz) : 0;
+  // 留一點餘裕再加速，不然碎料稀疏的地方會一路走走停停
+  m.load = n > 0 ? DOZ_LOAD : Math.max(0, m.load - dt);
+  return at;
 }
 function stepDozers(dt) {
   const D = dozers; if (!D) return;
@@ -760,10 +776,12 @@ function stepDozers(dt) {
   }
   if (D.on) D.t += dt;
   if (D.done) {
+    /* 離場的路上照樣推（v1.64.2）：時限到了不代表鏟子當場該抬起來——
+       車子還在工地裡就繼續推，開出工作範圍鏟子才自己升上去。
+       收尾的 kickOut 只彈掉 siteClearR 以內的，外圈那一圈剛推出來的料還在路上。 */
     let alive = 0;
     for (const m of D.list) {
-      m.x += Math.sin(m.a) * DOZ_MOVE * dt;
-      m.z += Math.cos(m.a) * DOZ_MOVE * dt;
+      dozeMove(m, dt, sp => { m.x += Math.sin(m.a) * sp * dt; m.z += Math.cos(m.a) * sp * dt; });
       if (Math.hypot(m.x, m.z) < arenaR + 14) alive++;
     }
     if (!alive) { dozers = null; ENG.putDozers([]); }
@@ -773,18 +791,7 @@ function stepDozers(dt) {
   let idle = 0;
   for (const m of D.list) {
     if (m.st === 'push') {
-      /* 鏟子只看位置，不看在跑哪一段：進了工作範圍就放下來推，出了範圍才抬起來。
-         速度看鏟子上有沒有料：空鏟就開快的。工地大半是空地，整趟都用推料的慢速跑，
-         等於把時限花在沒東西可推的地方（中世紀城堡實測有 2 秒多是這樣耗掉的）。 */
-      const work = Math.hypot(m.x, m.z) < dozWorkR();
-      m.bl += ((work ? 0 : 1) - m.bl) * Math.min(1, dt * (work ? 8 : 6));
-      const px = m.x, pz = m.z;
-      const at = driveTo(m, dt, work && m.load > 0 ? DOZ_PUSH : DOZ_MOVE);
-      // 碎料跟著車子走同樣的位移
-      const n = work ? pushWithBlade(m, m.x - px, m.z - pz) : 0;
-      // 留一點餘裕再加速，不然碎料稀疏的地方會一路走走停停
-      m.load = n > 0 ? DOZ_LOAD : Math.max(0, m.load - dt);
-      if (at) m.st = 'seek';
+      if (dozeMove(m, dt, sp => driveTo(m, dt, sp))) m.st = 'seek';
     }
     if (m.st === 'seek') {
       // 出了工地還有很多碎料就轉個彎再直線推一趟，挑的是別台沒在清的那一坨
