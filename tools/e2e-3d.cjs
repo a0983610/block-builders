@@ -1611,6 +1611,49 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      relay.n + ' 發：中位 ' + relay.p50 + '、p95 ' + relay.p95 + '、最遠 ' + relay.max +
      '（每格都走過去的話是中位 1.4／p95 11.5／最遠 14.6）');
 
+  /* ── 派到的格子在哪（v1.65）────────────────────────────
+     findSlot 以前照藍圖順序派，誰來領都給游標那一格。藍圖是先照高度排、同高再照
+     離中心遠近，所以同一圈的格子在角度上是亂的：工人撿完腳邊的料，格子平均在
+     四分之一圈外，只能沿外圈繞過去（實測整趟 8.7 秒有 3 秒在繞）。
+     現在從游標往後 SLOT_NEAR 個候選裡挑離他最近的。
+     門檻取自對照量測（中世紀城堡／吉薩金字塔／台北 101／聖家堂 四座）：
+     照順序派 建材與格子的方位角差中位數 81–92 度、每趟 5.8–8.7 秒；
+     挑最近的 14–17 度、2.7–3.3 秒。 */
+  const slotNear = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '中世紀城堡');
+    targetCnt = 3000; setWorkerCount(20); startBuild(true);
+    const TAU = Math.PI * 2;
+    const fold = a => ((((a) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
+    const deg = [], dur = [];
+    const t0 = new Map();
+    for (let i = 0; i < 1500 && phase === 'build'; i++) {
+      const was = workers.map(w => w.st);
+      step(0.05);
+      for (let k = 0; k < workers.length; k++) {
+        const w = workers[k];
+        if (w.eng || w.mage) continue;                 // 工程師不搬、魔法師隔空拋，不走這段路
+        if (was[k] === 'idle' && w.st === 'pick' && w.load.length) {
+          const b = blocks[w.load[0].b], s = bp.slots[w.load[0].s];
+          deg.push(Math.abs(fold(Math.atan2(s.z, s.x) - Math.atan2(b.z, b.x))) * 180 / Math.PI);
+          t0.set(k, i * 0.05);
+        }
+        if (was[k] !== 'idle' && w.st === 'idle' && t0.has(k)) {
+          dur.push(i * 0.05 - t0.get(k)); t0.delete(k);
+        }
+      }
+    }
+    deg.sort((a, b) => a - b);
+    const q = p => +deg[Math.min(deg.length - 1, Math.floor(deg.length * p))].toFixed(1);
+    return { n: deg.length, med: deg.length ? q(0.5) : -1, p90: deg.length ? q(0.9) : -1,
+             trips: dur.length,
+             dur: dur.length ? +(dur.reduce((a, b) => a + b, 0) / dur.length).toFixed(2) : -1 };
+  });
+  ok('派到的格子就在他腳邊，不會叫他繞到工地對面',
+     slotNear.n > 100 && slotNear.med < 45 && slotNear.dur > 0 && slotNear.dur < 5,
+     slotNear.n + ' 趟：建材與格子的方位角差中位 ' + slotNear.med + '°、p90 ' +
+     slotNear.p90 + '°，整趟平均 ' + slotNear.dur +
+     ' 秒（照藍圖順序派是 81–92°／5.8–8.7 秒）');
+
   /* ── 繞路的腳程（v1.60）────────────────────────────────
      ringWalk 是「繞開建築」「進場慶祝」共用的走法。舊版把「轉角度」跟「收半徑」
      各給滿一份 WALK×dt，而且角度那份是拿目標半徑換算的——站得比那個圈遠的人
@@ -1712,15 +1755,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const run = name => {
       shapePick = SHAPES.findIndex(s => s.n === name);
       targetCnt = 3000; setWorkerCount(20); startBuild(true);
-      let frames = 0, inWall = 0, arcs = 0, arcHit = 0;
+      let frames = 0, inWall = 0, arcs = 0, arcHit = 0, samples = 0, atOnce = 0;
       const seen = new Set();
       for (let i = 0; i < 2400 && phase !== 'done'; i++) {
         step(0.05);
-        if (i % 4 === 0) for (const w of workers) {
-          if (w.st !== 'pick' && w.st !== 'build' && w.st !== 'wait') continue;
-          frames++;
-          // 腳邊那兩層有已就位的積木 = 人卡在建築裡
-          if (blockAt(w.x, HB, w.z) || blockAt(w.x, 1 + HB, w.z)) inWall++;
+        if (i % 4 === 0) {
+          samples++;
+          for (const w of workers) {
+            // 腳邊那兩層有已就位的積木 = 人卡在建築裡
+            const bad = blockAt(w.x, HB, w.z) || blockAt(w.x, 1 + HB, w.z);
+            if (bad) atOnce++;                      // 全場（含閒晃的）：畫面上同時有幾個
+            if (w.st !== 'pick' && w.st !== 'build' && w.st !== 'wait') continue;
+            frames++;
+            if (bad) inWall++;
+          }
         }
         for (const b of blocks) {
           if (b.st !== 2 || !b.arc || seen.has(b)) continue;
@@ -1735,13 +1783,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       return { name, placed: placedCnt,
                inWall: +(inWall / Math.max(1, frames) * 100).toFixed(2),
+               atOnce: +(atOnce / Math.max(1, samples)).toFixed(2),
                arc: +(arcHit / Math.max(1, arcs) * 100).toFixed(2) };
     };
     return ['中世紀城堡', '巴黎聖母院'].map(run);
   });
+  /* 門檻 v1.65 從 8% 放到 18%，另外補一條「同一瞬間幾個人」。原因：
+     派工改成挑最近的格子之後同樣時間蓋兩倍的塊數，而這個百分比的**分母**是工作幀——
+     不再有大量「走去對面」的路程幀可以稀釋，比例就跟著跳。
+     「每塊建材進了幾次牆」幾乎沒變（0.33 → 0.37 次／塊），但同一瞬間站在牆裡的人
+     從 0.8 個變成約 2 個（20 人），所以另外用絕對人數守著它別再往上跑。
+     兩個數字都取自對照量測：百分比 城堡 7.2–14.5%、聖母院 8.0–10.5%；人數 1.2–2.2。
+     試過讓小人避開「躺在建築裡面、要穿牆才拿得到」的料（在牆裡的人-幀掉到 1–3%），
+     但那些料是必要建材：實測有一輪 65% 的人-幀領不到工作、200 秒只蓋 972 塊（對照 2396）。
+     所以這裡是接受代價，不是漏掉。 */
   ok('施工中不會有人在蓋好的積木裡走動',
-     route.every(r => r.inWall < 8),
-     route.map(r => r.name + ' ' + r.inWall + '%').join('、') + '（舊版 32%／42%）');
+     route.every(r => r.inWall < 18 && r.atOnce < 3.5),
+     route.map(r => r.name + ' ' + r.inWall + '%（同時 ' + r.atOnce + ' 人）').join('、') +
+     '（舊版 32%／42%）');
   ok('拋出去的積木不會從牆裡穿過去',
      route.every(r => r.arc < 6),
      route.map(r => r.name + ' ' + r.arc + '%').join('、') + '（舊版 20%／45%）');

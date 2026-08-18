@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.64.2';
+const VERSION = '1.65.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1149,16 +1149,37 @@ function burnMove(w, dt) {
   }
 }
 
-function findSlot() {
+/* ── 派格子 ───────────────────────────────────────────────
+   v1.65 之前是「照藍圖順序往下派」，誰來領都給游標那一格。藍圖的排序是
+   先照高度、同高再照離中心遠近（blueprints.js 的 slots.sort），
+   所以同一層同一圈的格子在**角度上是亂的**——工人撿完腳邊的料，被指派的格子
+   平均在四分之一圈外（實測建材與格子的方位角差：中位數 81°、平均 89°、
+   最差的一成幾乎在正對面），只能沿著建築外圈繞過去。
+   繞外圈本身沒錯（不繞就穿牆，而且目標貼在牆上時弧線就是最短路），
+   問題是他被叫去對面：實測整趟 8.7 秒裡有 3 秒在繞，全部走路距離的 39% 是弧。
+
+   現在改成：從游標往後看 SLOT_NEAR 個「蓋得起來」的格子，派其中離人最近的那個。
+   不改成「所有格子裡最近的」是要留住藍圖順序——那個順序決定建築一層一層長上來的
+   樣子。實測兩者差不多（同樣 200 秒 2367 vs 2401 塊），但全掃描每一步多 0.08ms，
+   視窗版量不出成本。 */
+const SLOT_NEAR = 24;               // 一次從幾個候選裡挑
+function findSlot(wx, wz) {
   const S = bp.slots;
   while (slotCursor < S.length && (S[slotCursor].filled || S[slotCursor].claimed >= 0)) slotCursor++;
-  /* 只派「現在真的蓋得起來」的格子。游標之後找不到就從頭掃一次——
+  /* 只派「現在真的蓋得起來」的格子。游標之後找不到才從頭掃一次——
      中途被打掉的洞會落在游標後面，尤其地基被敲掉時要能回頭補。 */
-  for (let i = slotCursor; i < S.length; i++)
-    if (!S[i].filled && S[i].claimed < 0 && canPlace(i)) return i;
-  for (let i = 0; i < slotCursor; i++)
-    if (!S[i].filled && S[i].claimed < 0 && canPlace(i)) return i;
-  return -1;
+  const near = (from, to) => {
+    let best = -1, bd = Infinity, seen = 0;
+    for (let i = from; i < to; i++) {
+      if (S[i].filled || S[i].claimed >= 0 || !canPlace(i)) continue;
+      const d = (S[i].x - wx) ** 2 + (S[i].z - wz) ** 2;
+      if (d < bd) { bd = d; best = i; }
+      if (++seen >= SLOT_NEAR) break;
+    }
+    return best;
+  };
+  const i = near(slotCursor, S.length);
+  return i >= 0 ? i : near(0, slotCursor);
 }
 /* 挑「離我最近」的那一塊建材。試過改成「我走過去 ＋ 搬到定位」加起來最短，
    想省掉繞路的成本，結果兩邊都更差：那個判準會挑到躺在建築腳邊的料，
@@ -1614,7 +1635,7 @@ function updWorker(w, wi, dt) {
 function loadUp(w, wi, cap) {
   let sx = w.x, sz = w.z;
   for (let k = 0; k < (cap || w.cap); k++) {
-    const s = findSlot();
+    const s = findSlot(w.x, w.z);    // 派離他現在站的地方最近的那一格
     if (s < 0) break;
     const bi = findBlock(sx, sz);
     if (bi < 0) break;
@@ -1628,7 +1649,7 @@ function loadUp(w, wi, cap) {
 /* 去丟手上第一塊。stay = 已經站在工地邊上了（剛丟完前一塊）：
    **原地繼續丟**，不必走去下一格的站位（v1.60.1）——一趟三塊卻要跑三趟站位的話，
    那三塊之間的路比省下來的還多，看起來是在原地繞圈。
-   一次領的幾格本來就是藍圖上前後相鄰的（findSlot 是照順序往下派），
+   一次領的幾格都是同一個視窗裡「離他最近」的那幾格（findSlot），彼此就在附近，
    從同一個位置丟得到；拋物線本來就會沿路算「要多高才過得去」（tossPeak），
    中間隔著牆的話它會自己拉高。
    只有一種情況要重走：站的地方被補起來了（下面 build 那段的 footBlocked）。 */
