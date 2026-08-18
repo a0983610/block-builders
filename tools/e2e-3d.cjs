@@ -778,7 +778,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   head('藍圖預覽頁');
   const vpErr = [];
   // acceptDownloads：那一頁的「下載畫面」要真的存得出檔案才驗得到
-  const vp = await browser.newPage({ viewport: VIEW, acceptDownloads: true });
+  // clipboard：v1.63 起這一頁也有「取得 prompt」，要能讀回剪貼簿才驗得到內容
+  const vp = await browser.newPage({ viewport: VIEW, acceptDownloads: true,
+                                     permissions: ['clipboard-read', 'clipboard-write'] });
   vp.on('pageerror', e => vpErr.push('pageerror: ' + e.message));
   vp.on('console', m => { if (m.type() === 'error') vpErr.push('console: ' + m.text()); });
   await vp.goto('file:///' + path.join(ROOT, '藍圖預覽.html').replace(/\\/g, '/'));
@@ -893,6 +895,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const vpCopy = await vp.evaluate(() => document.getElementById('copy').textContent);
   ok('複製報告按得動（file:// 上會退回 execCommand）', /已複製|Ctrl\+C/.test(vpCopy),
      '按鈕變成「' + vpCopy + '」');
+
+  /* 取得 prompt（v1.63）：這一頁自己也要拿得到〈藍圖製作說明〉。
+     整條路是「按這顆拿說明 → 貼給 AI → 把它回的貼進上面那個框」，
+     以前只有遊戲那邊有這顆，來預覽頁的人得先回遊戲一趟。
+     跟遊戲那顆是同一支 BP_DOC，所以這裡驗的是「這一頁載到了、而且真的複製得出去」。 */
+  await vp.click('#doc');
+  await vp.waitForTimeout(250);
+  const vpDoc = await vp.evaluate(async () => {
+    let clip = '';
+    try { clip = await navigator.clipboard.readText(); } catch (e) { clip = '(讀不到剪貼簿)'; }
+    return { btn: document.getElementById('doc').textContent,
+             off: document.getElementById('doc').disabled,
+             len: typeof BP_DOC === 'string' ? BP_DOC.length : -1, clip };
+  });
+  const vpMd = fs.readFileSync(path.join(ROOT, 'blueprints/藍圖製作說明.md'), 'utf8')
+                 .replace(/\r\n/g, '\n');
+  ok('預覽頁也載得到〈藍圖製作說明〉全文', !vpDoc.off && vpDoc.len === vpMd.length,
+     'BP_DOC ' + vpDoc.len + ' 字、.md ' + vpMd.length + ' 字');
+  ok('按「取得 prompt」整份說明真的進了剪貼簿',
+     /已複製|Ctrl\+C/.test(vpDoc.btn) && vpDoc.clip.replace(/\r\n/g, '\n') === vpMd,
+     '按鈕變成「' + vpDoc.btn + '」，剪貼簿 ' + vpDoc.clip.length + ' 字');
 
   const vpWire = await vp.evaluate(() => {
     const w = document.getElementById('wire');
@@ -1323,6 +1346,92 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      不然「指定要蓋的」會悄悄變成剛好遞補上來的別座。 */
   ok('刪掉正在指定的那一座，會退回「隨機」而不是指向別座',
      impDel.pick === -1, 'shapePick = ' + impDel.pick);
+
+  /* ── 存檔搬家（v1.63）─────────────────────────────────
+     紀錄平常只活在這台電腦的 localStorage 裡，換電腦就沒了。成就頁多了匯出／匯入：
+     匯出下載一份檔案、匯入**直接覆蓋**（使用者指定，不合併也不問「確定嗎」）。
+     跟匯入建築同一個分頁跑：兩邊都會動 localStorage，混進主分頁會影響後面的測試。 */
+  const svSet = await gp.evaluate(() => {
+    // 上一段的「匯入建築」還開著，兩個都是滿版的遮罩：不關掉的話點不到成就頁的按鈕
+    document.getElementById('impClose').click();
+    stats.destroyed = 7; stats.smashed = 12345; stats.carried = 88;
+    stats.badges = BADGES.slice(0, 3).map(b => b.id);
+    stats.tools = TOOLS.slice(0, 4).map(t => t.id);
+    pref.cnt = 9000; pref.wk = 60; pref.spd = 4;
+    save();
+    document.getElementById('badgeBtn').click();
+    return { on: document.getElementById('badgeWrap').classList.contains('on'),
+             btns: ['saveOut', 'saveIn'].map(id => !!document.getElementById(id)) };
+  });
+  ok('成就頁上有匯出／匯入存檔', svSet.on && svSet.btns.every(Boolean),
+     '面板開著、兩顆按鈕都在');
+
+  const [svDl] = await Promise.all([
+    gp.waitForEvent('download'),
+    gp.click('#saveOut')
+  ]);
+  const svPath = path.join(OUT, 'save-export.txt');
+  await svDl.saveAs(svPath);
+  const svText = fs.readFileSync(svPath, 'utf8');
+  const svLines = svText.split(/\r?\n/).filter(l => l.trim());
+  ok('按「匯出存檔」下載得到一份存檔檔案',
+     /^積木小人-存檔-\d{8}\.txt$/.test(svDl.suggestedFilename()) &&
+     svLines[0].indexOf('積木小人') === 0 && svLines.length === 4,
+     '檔名「' + svDl.suggestedFilename() + '」，' + svLines.length + ' 行（3 行抬頭 + 1 行本體）');
+  /* 存檔本體要跟 localStorage 裡那一份逐字相同：另外編一種格式的話，
+     同一份東西就有兩套解析要維護，遲早有一邊沒跟上。 */
+  const svSame = await gp.evaluate(() => localStorage.getItem(SAVE_KEY));
+  ok('檔案裡那一行就是 localStorage 裡的那一份',
+     svLines[svLines.length - 1] === svSame,
+     '本體 ' + svLines[svLines.length - 1].length + ' 字，跟 localStorage 的 ' +
+     (svSame || '').length + ' 字' + (svLines[svLines.length - 1] === svSame ? '一致' : '不一致'));
+
+  // 先把紀錄弄成另一個樣子，才看得出匯入到底有沒有蓋過去
+  await gp.evaluate(() => {
+    stats = freshStats(); pref = freshPref(); pref.cnt = 1800; pref.wk = 20;
+    save(); renderBadges(); renderTools(); syncHud(); applyPref();
+  });
+  await gp.setInputFiles('#saveFile', svPath);
+  await gp.waitForTimeout(300);
+  const svIn = await gp.evaluate(() => ({
+    d: stats.destroyed, s: stats.smashed, c: stats.carried,
+    b: stats.badges.length, t: stats.tools.length,
+    cnt: pref.cnt, wk: pref.wk, spd: pref.spd,
+    live: { cnt: targetCnt, spd: timeScale, wk: workers.length },
+    msg: document.getElementById('saveMsg').textContent,
+    good: document.getElementById('saveMsg').className.indexOf('good') >= 0,
+    stored: localStorage.getItem(SAVE_KEY),
+    badgeN: document.getElementById('badgeN').textContent
+  }));
+  ok('匯入存檔直接蓋掉現在的紀錄',
+     svIn.d === 7 && svIn.s === 12345 && svIn.c === 88 && svIn.b === 3 && svIn.t === 4 && svIn.good,
+     '拆掉 ' + svIn.d + ' 座、擊飛 ' + svIn.s + ' 塊、' + svIn.b + ' 個成就（訊息：' +
+     svIn.msg.slice(0, 24) + '…）');
+  /* 設定也要跟著回來，而且要**立刻**套到跑的那一份上（applyPref），
+     不然玩家看到成就數字變了、建材與速度卻還是舊的，要重開才生效。 */
+  ok('連設定一起帶回來，而且當場就生效',
+     svIn.cnt === 9000 && svIn.wk === 60 && svIn.spd === 4 &&
+     svIn.live.cnt === 9000 && svIn.live.spd === 4 && svIn.live.wk === 60,
+     '建材 ' + svIn.live.cnt + '、小人 ' + svIn.live.wk + '、速度 ' + svIn.live.spd + '×');
+  ok('匯進來的也存回這台電腦，關掉再開還在',
+     svIn.stored === svSame, '存回去的跟匯出的' + (svIn.stored === svSame ? '一致' : '不一致'));
+  ok('成就頁的數字當場就換過來', svIn.badgeN.indexOf('3 /') === 0,
+     '已解鎖 ' + svIn.badgeN);
+
+  /* 讀壞掉的檔案要原封不動：先解包驗過校驗碼才動 stats，
+     不然讀到一半失敗就等於把紀錄弄丟了——那是使用者最不能接受的失敗。 */
+  const svBadPath = path.join(OUT, 'save-bad.txt');
+  fs.writeFileSync(svBadPath, '積木小人 · 存檔\n\nZm9vYmFyLW5vdC1hLXNhdmU=\n', 'utf8');
+  await gp.setInputFiles('#saveFile', svBadPath);
+  await gp.waitForTimeout(300);
+  const svBad = await gp.evaluate(() => ({
+    d: stats.destroyed, s: stats.smashed,
+    msg: document.getElementById('saveMsg').textContent,
+    bad: document.getElementById('saveMsg').className.indexOf('bad') >= 0
+  }));
+  ok('讀到不是存檔的檔案：擋下來並且不動現有紀錄',
+     svBad.bad && svBad.d === 7 && svBad.s === 12345,
+     '訊息「' + svBad.msg + '」，紀錄仍是拆掉 ' + svBad.d + ' 座、擊飛 ' + svBad.s + ' 塊');
 
   ok('匯入建築整段跑完沒有 console 錯誤', impErr.length === 0, impErr.join(' / ') || '乾淨');
   await gp.close();

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.62.3';
+const VERSION = '1.63.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1953,22 +1953,28 @@ function load() {
     if (!txt) return;
     const o = unpackSave(txt);
     if (!o || !o.s) return;
-    const f = merge(freshStats(), o.s);
-    // 認得的才留：存檔被改過、或舊版留下已經不存在的 id，都不要讓它影響成就判定
-    f.badges = f.badges.filter(id => BADGES.some(b => b.id === id));
-    f.tools = f.tools.filter(id => TOOLS.some(t => t.id === id));
-    stats = f;
-    const g = merge(freshPref(), o.p);
-    /* 沒有版本欄位＝預設建材還是 900 那個年代存的。那時候的 900 分不出是玩家挑的
-       還是預設值，所以一次性換成新預設，不然改了預設的人永遠看不到 3000。 */
-    if (o.p && o.p.v === undefined) g.cnt = freshPref().cnt;
-    /* 面板改成三檔按鈕之後，中間值選不出來了：舊存檔（還有被改壞的存檔）
-       一律吸到最近的一檔。不吸的話畫面上會三顆都不亮，跑的卻是第四個數字。 */
-    g.cnt = snapOpt(g.cnt, CNT_OPTS);
-    g.wk = snapOpt(g.wk, WK_OPTS);
-    g.spd = snapOpt(g.spd, SPD_OPTS);
-    pref = g;
+    applySave(o);
   } catch (e) { savable = false; }
+}
+/* 把一份解包好的存檔套進 stats／pref。開場的 load() 與「匯入存檔」都走這裡——
+   兩邊都要做同一套整理（認不得的成就丟掉、舊版設定吸到最近的一檔），
+   各寫一份的話遲早會有一邊漏掉。這一層不碰 DOM，畫面由呼叫端自己刷。 */
+function applySave(o) {
+  const f = merge(freshStats(), o.s);
+  // 認得的才留：存檔被改過、或舊版留下已經不存在的 id，都不要讓它影響成就判定
+  f.badges = f.badges.filter(id => BADGES.some(b => b.id === id));
+  f.tools = f.tools.filter(id => TOOLS.some(t => t.id === id));
+  stats = f;
+  const g = merge(freshPref(), o.p);
+  /* 沒有版本欄位＝預設建材還是 900 那個年代存的。那時候的 900 分不出是玩家挑的
+     還是預設值，所以一次性換成新預設，不然改了預設的人永遠看不到 3000。 */
+  if (o.p && o.p.v === undefined) g.cnt = freshPref().cnt;
+  /* 面板改成三檔按鈕之後，中間值選不出來了：舊存檔（還有被改壞的存檔）
+     一律吸到最近的一檔。不吸的話畫面上會三顆都不亮，跑的卻是第四個數字。 */
+  g.cnt = snapOpt(g.cnt, CNT_OPTS);
+  g.wk = snapOpt(g.wk, WK_OPTS);
+  g.spd = snapOpt(g.spd, SPD_OPTS);
+  pref = g;
 }
 /* 數字吸到最近的一檔。壞掉的存檔（NaN、字串）當 0 處理，會吸到最小的那一檔 */
 function snapOpt(v, opts) {
@@ -4719,6 +4725,60 @@ function exportOne(i) {
   }, 1600);
 }
 
+/* ── 存檔搬家 ─────────────────────────────────────────────
+   紀錄平常只活在這台電腦的 localStorage 裡：換電腦、換瀏覽器、清了瀏覽資料就沒了。
+   匯出下載一份檔案、匯入把它讀回來，換一台機器也接得下去。
+   檔案內容就是 localStorage 裡那一份（packSave 出來的那串），前面加幾行給人看的抬頭——
+   另外設計一種格式的話，同一份東西就有兩套解析要維護。
+   帶的是「紀錄與設定」，不含匯入的建築：那些一座一支 .js，在「匯入建築」那邊各自匯出。 */
+const SAVE_FILE_HEAD = '積木小人 · 世界地標工地 — 存檔\n' +
+                       '把整個檔案從「🏅 成就 → 匯入存檔」讀回去就接得下去。\n' +
+                       '下面那一行是存檔本體，改壞了就讀不回來。\n';
+function saveText() {
+  return SAVE_FILE_HEAD + '\n' + packSave({ s: stats, p: pref }) + '\n';
+}
+/* 檔名帶日期：備份好幾份時分得出哪份新。日期用本地時間，不是 UTC——
+   玩家看到的日期要跟他的桌曆一樣。 */
+function saveName() {
+  const d = new Date(), p2 = n => (n < 10 ? '0' : '') + n;
+  return '積木小人-存檔-' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '.txt';
+}
+function exportSave() {
+  download(saveName(), saveText());
+  const b = $('saveOut');
+  b.textContent = '已下載 ✓';
+  setTimeout(() => { b.textContent = '⬇ 匯出存檔'; }, 1600);
+}
+/* 抬頭那幾行是給人看的，解析時要跳過：取「最後一行非空白的」當本體，
+   順便也吃得下「只複製存檔那一行」存成的檔案。 */
+function saveBody(txt) {
+  const lines = String(txt).split(/\r?\n/).map(l => l.trim()).filter(l => l);
+  return lines.length ? lines[lines.length - 1] : '';
+}
+/* 匯入＝**直接覆蓋**（使用者指定）：不合併、不問「確定嗎」。
+   讀壞了就原封不動——先解包驗過校驗碼才動 stats，不會讀到一半把紀錄弄丟。 */
+function importSave(file) {
+  const msg = $('saveMsg');
+  const fail = why => { msg.className = 'on bad'; msg.textContent = '✘ ' + why; };
+  const r = new FileReader();
+  r.onerror = () => fail('讀不到這個檔案');
+  r.onload = () => {
+    let o = null;
+    try { o = unpackSave(saveBody(r.result)); } catch (e) { o = null; }
+    if (!o || !o.s) { fail('這不是這個遊戲的存檔，或檔案內容被改壞了'); return; }
+    applySave(o);
+    applyPref();                       // 設定要立刻套到面板與變數上，不然要重開才生效
+    spentThis = 0;                     // 這一座已經花掉的錢是舊紀錄的帳，不要帶進來
+    save(); renderBadges(); renderTools(); syncHud();
+    msg.className = 'on good';
+    msg.textContent = '✔ 讀進來了：拆掉 ' + stats.destroyed + ' 座、擊飛 ' +
+                      stats.smashed + ' 塊、' + stats.badges.length + ' 個成就（原本的紀錄已被蓋掉）';
+    toast('📤 存檔已匯入', '拆掉 ' + stats.destroyed + ' 座　·　' +
+          stats.badges.length + ' 個成就');
+  };
+  r.readAsText(file);
+}
+
 /* 複製到剪貼簿。file:// 上 clipboard API 給不給要看瀏覽器政策，
    所以留一條 execCommand 的退路（跟藍圖預覽.html 那顆「複製報告」同一套）。 */
 function copyText(text, btn, back) {
@@ -4795,12 +4855,25 @@ function boot() {
   document.addEventListener('pointerdown', e => {
     if (!$('toolbox').contains(e.target)) $('toolbox').classList.remove('open');
   });
-  $('badgeBtn').addEventListener('click', () => { renderBadges(); $('badgeWrap').classList.add('on'); });
+  $('badgeBtn').addEventListener('click', () => {
+    renderBadges();
+    $('saveMsg').className = '';              // 上一次匯入的結果不要留到下一次開啟
+    $('badgeWrap').classList.add('on');
+  });
   $('badgeWrap').addEventListener('click', e => {
     if (e.target.id === 'badgeWrap' || e.target.id === 'badgeClose') $('badgeWrap').classList.remove('on');
   });
   $('resetBtn').addEventListener('click', () => {
     if (confirm('清掉所有紀錄與成就？（建築不受影響）')) { resetSave(); toast('紀錄已清空'); }
+  });
+  $('saveOut').addEventListener('click', exportSave);
+  // 真正的 <input type=file> 藏起來，按鈕代點：它自己的樣子在各瀏覽器長得都不一樣
+  $('saveIn').addEventListener('click', () => $('saveFile').click());
+  $('saveFile').addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    // 清掉才能連續選同一個檔案（值沒變就不會再觸發 change）
+    e.target.value = '';
+    if (f) importSave(f);
   });
 
   $('impBtn').addEventListener('click', () => {

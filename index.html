@@ -146,6 +146,11 @@
   /* 成就多了就排兩欄，不然要一直捲 */
   #badgeBox #badges{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:7px}
   #badgeLoss{color:var(--bad);font-weight:700}
+  /* 匯入／匯出的結果訊息：跟「匯入建築」那個框同一套配色，成功綠、失敗紅 */
+  #saveMsg{font-size:12px;margin-top:7px;display:none}
+  #saveMsg.on{display:block}
+  #saveMsg.bad{color:var(--bad)}
+  #saveMsg.good{color:#3f7a34}
   .badge{display:flex;flex-direction:column;padding:8px 10px;border-radius:10px;
          background:#f2f2f0;opacity:.55}
   .badge.got{background:#fdf1e2;opacity:1}
@@ -283,6 +288,16 @@
     <div class="sub">已解鎖 <span id="badgeN">0 / 0</span>　·　累計造成損失 <b id="badgeLoss">$0</b>
       （拆掉 <span id="badgeDest">0</span> 座、擊飛 <span id="badgeSmash">0</span> 塊）</div>
     <div class="sub">紀錄會自動存在這台電腦上</div>
+    <!-- 存檔搬家：紀錄平常只活在這台電腦的 localStorage 裡，換電腦、換瀏覽器就沒了。
+         匯出下載一份檔案，匯入把它讀回來（**直接覆蓋**現在的紀錄）。
+         排在「紀錄存在這台電腦上」那句下面：那句話講的就是這件事，而且成就一多，
+         擺到最下面等於要捲過十九個成就才看得到。 -->
+    <div class="row">
+      <button id="saveOut">⬇ 匯出存檔</button>
+      <button id="saveIn">⬆ 匯入存檔</button>
+    </div>
+    <div id="saveMsg"></div>
+    <input type="file" id="saveFile" accept=".txt,text/plain" hidden>
     <div id="badges"></div>
     <div class="row">
       <button id="resetBtn">清空紀錄</button>

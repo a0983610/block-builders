@@ -97,7 +97,12 @@
     <summary>貼上藍圖（不用先存檔）</summary>
     <textarea id="paste" spellcheck="false"
       placeholder="把 AI 給的整段貼進來（就是 blueprints/ 裡那種 customBlueprint({...}) 的內容），按下面的按鈕就直接預覽並診斷。```js 圍籬與「檔名：xxx.js」那行會自動忽略。"></textarea>
-    <div class="btns"><button id="load">貼上並預覽</button></div>
+    <!-- 取得 prompt 排在前面：整條路是「先拿說明去問 AI → 再把它給的貼回這個框」，
+         按鈕的順序就照那個順序排。跟遊戲裡「匯入建築」那顆是同一份說明、同一支 BP_DOC。 -->
+    <div class="btns">
+      <button id="doc">📋 取得 prompt</button>
+      <button id="load">貼上並預覽</button>
+    </div>
   </details>
   <div id="pasteMsg"></div>
   <div id="stat"></div>
@@ -135,12 +140,16 @@
   if (window.BP_FILES) for (var i = 0; i < BP_FILES.length; i++)
     document.write('<script src="blueprints/' + encodeURI(BP_FILES[i]) + '"><\/script>');
 </script>
+<!-- 〈藍圖製作說明.md〉包成的 JS（tools/build-bpdoc.cjs 產出）：
+     file:// 讀不到旁邊的 .md，而「取得 prompt」要把整份說明放進剪貼簿。
+     沒放這一支的話這一頁照跑，只有那顆按鈕會停用。 -->
+<script src="src/bpdoc.js"></script>
 <script src="src/engine.js"></script>
 <script>
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.62.3';
+const VIEWER_VER = '1.63.0';
 
 const $ = id => document.getElementById(id);
 
@@ -268,30 +277,37 @@ function diagnose() {
 }
 
 /* 複製：file:// 給不給 clipboard API 看瀏覽器政策，所以留一條 execCommand 的退路。
-   報告的整個價值就在「複製得出去」。 */
-function copyReport() {
-  const ta = $('rep');
-  if (!ta.value) { ta.value = diagnose().text; }
-  const done = () => { $('copy').textContent = '已複製 ✓';
-                       setTimeout(() => { $('copy').textContent = '複製報告'; }, 1600); };
+   報告的整個價值就在「複製得出去」。
+   退路是「塞一個看不見的 textarea 進去選取再 execCommand」——報告那一顆本來直接選
+   畫面上那個 textarea，但 prompt 那一顆沒有對應的框，所以統一走這條。 */
+function copyText(text, btn, back) {
+  const done = () => { btn.textContent = '已複製 ✓';
+                       setTimeout(() => { btn.textContent = back; }, 1600); };
   const legacy = () => {
-    try {
-      ta.removeAttribute('readonly');
-      ta.focus(); ta.select();
-      const ok = document.execCommand('copy');
-      ta.setAttribute('readonly', '');
-      if (ok) { done(); return; }
-    } catch (e) { /* 兩條都不通 */ }
-    $('copy').textContent = '請按 Ctrl+C';
-    setTimeout(() => { $('copy').textContent = '複製報告'; }, 2200);
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    if (ok) { done(); return; }
+    btn.textContent = '請按 Ctrl+C';
+    setTimeout(() => { btn.textContent = back; }, 2200);
   };
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(ta.value).then(done, legacy);
+      navigator.clipboard.writeText(text).then(done, legacy);
       return;
     }
   } catch (e) { /* 往下走舊路 */ }
   legacy();
+}
+function copyReport() {
+  const ta = $('rep');
+  if (!ta.value) { ta.value = diagnose().text; }
+  copyText(ta.value, $('copy'), '複製報告');
 }
 
 /* ── 操作 ───────────────────────────────────────────────── */
@@ -322,6 +338,13 @@ $('load').addEventListener('click', () => {
   }
 });
 $('copy').addEventListener('click', copyReport);
+/* 沒放 src/bpdoc.js 的話這一頁照跑，只有這顆拿不到說明全文（跟遊戲那邊同一套處理） */
+if (typeof BP_DOC === 'string')
+  $('doc').addEventListener('click', () => copyText(BP_DOC, $('doc'), '📋 取得 prompt'));
+else {
+  $('doc').disabled = true;
+  $('doc').title = 'src/bpdoc.js 沒放進來，拿不到〈藍圖製作說明〉全文';
+}
 
 /* 下載目前畫面：報告只講得出塊數與結構，講不出「像不像」——那要看圖。
    存成 PNG 之後跟報告一起丟回去給 AI，它才知道自己畫出來的是什麼樣子。
