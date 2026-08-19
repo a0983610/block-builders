@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.77.0';
+const VERSION = '1.78.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3354,7 +3354,7 @@ const WB_WALL = 40;                 // 找「牆頂在哪」時最多往上看�
 const COL_MAX = 4000;               // 一團水最多蓋幾根柱子（也是畫面上的 instance 上限來源）
 const POOL_MIN = 0.6;               // 攤在平地上的最小深度（格）：再薄就不往外攤，改成往上疊
 const RISE = 7;                     // 畫面上的水面每秒最多升降幾格（讓它「升上來」而不是瞬間到位）
-const LEAK_K = 25;                  // 破口流量係數：每秒流出 = LEAK_K × √水頭
+const ORI_K = 6;                    // 破口流量係數（見 oriFlow：把破口當矩形孔口積分）
 const SPILL_MAX = 24;               // 一個破口最多分成幾道水柱（洞再寬，畫的成本也就這樣）
 const JET_EM = 170;                 // 一道水柱每秒噴幾顆水珠
 const JET_WIDE = 2;                 // 破口很寬時總量最多是單口的幾倍（塵霧池共 720，不能全吃光）
@@ -3597,10 +3597,12 @@ function solveBody(b) {
     if (region.length >= COL_MAX) { level += vol / region.length; break; }
   }
   b.level = level; b.cols = region; b.spill = spill; b.sill = sill; b.dirty = 0;
+  const inr = new Set();
+  for (const c of region) inr.add(c.gx + ':' + c.gz);
   /* 水從**整個破口**流出去，不是從一個點。邊界上凡是不高於水面的格子都在漏——
      使用者回報「這麼大的洞卻像只有一個地方在流水出來」：v1.75 只記了最先碰到的那一格，
      實測杯壁開一個 5 寬 × 6 高的窗，噴出來的還是一道水柱。 */
-  b.spills = spill ? pickSpills(front, sill) : null;
+  b.spills = spill ? pickSpills(front, sill, inr) : null;
   /* 這個水面裝得下多少水（到漏口為止）。b.vol 超過它的那一部分就是**正在往外流的水**：
      倒進一個滿出來的杯子、或倒在一條窄檐上，多的水都該流掉，不是把水面往上抬。 */
   let cap = 0;
@@ -3610,8 +3612,6 @@ function solveBody(b) {
   /* 這根柱子有幾面「露在外面」：旁邊沒有水，而且從水底到水面之間鄰居有一層是空的
      （岸邊、屋簷、被敲出來的破口）。貼著牆的那面不算——水靠著牆是滿的。
      poolList 靠這個決定畫多高、要不要薄下去。 */
-  const inr = new Set();
-  for (const c of region) inr.add(c.gx + ':' + c.gz);
   /* 掃到**畫面上的水面**為止，不是只掃到水位：破口在水面下、水還沒退到破口時，
      從洞口看進去要看得到那一面水（v1.76 一開始只掃到 level，破口就變成一個看穿的洞）。 */
   const top = Math.max(level, b.shown, seed + 1);
@@ -3626,13 +3626,60 @@ function solveBody(b) {
     c.rim = open;
   }
 }
-/* 破口太寬時只挑幾道來畫（等距抽，才會攤在整個破口上而不是擠在一頭）。 */
-function pickSpills(front, sill) {
+/* 破口太寬時只挑幾道（等距抽，才會攤在整個破口上而不是擠在一頭）。
+   每一道順便記**上緣 lip**：從門檻那一層往上找到第一個實心的高度，
+   也就是「這個洞開到多高」。杯壁上的洞有上緣（是孔口），屋簷邊沒有（是溢流堰）。
+   流量與噴水的高度都靠它——見 oriFlow。 */
+function pickSpills(front, sill, inr) {
   const all = front.filter(f => f.base <= sill + 1e-6);
-  if (all.length <= SPILL_MAX) return all;
-  const st = all.length / SPILL_MAX, out = [];
-  for (let i = 0; i < SPILL_MAX; i++) out.push(all[Math.floor(i * st)]);
+  let out = all;
+  if (all.length > SPILL_MAX) {
+    const st = all.length / SPILL_MAX;
+    out = [];
+    for (let i = 0; i < SPILL_MAX; i++) out.push(all[Math.floor(i * st)]);
+  }
+  const y0 = Math.floor(sill);
+  const lipAt = (gx, gz) => {
+    let y = y0;
+    while (y < y0 + WB_WALL && !solidAt(gx, y, gz)) y++;
+    return y;
+  };
+  for (const s of out) {
+    let lip = lipAt(s.gx, s.gz);
+    /* 這一格比門檻**低**（水已經離開了，例如破口外面的地面）：它自己頭上沒東西擋，
+       但水是**穿過牆上那個洞**過來的，上緣得取「旁邊那根還在水裡的柱子」的洞口高度。
+       不修的話它會被當成一道開到天上的溢流堰——實測 3 格的小洞流量會多四倍。 */
+    if (s.base < sill - 1e-6)
+      for (const v of DIR4) {
+        const nx = s.gx + v[0], nz = s.gz + v[1];
+        if (inr.has(nx + ':' + nz)) lip = Math.min(lip, lipAt(nx, nz));
+      }
+    s.lip = lip;
+  }
   return out;
+}
+/* 破口的流量：把破口當一個**矩形孔口**，把托里切利沿深度積起來——
+   每一道破口出水的那一帶是「門檻 → 水面或破口上緣（取低的）」，
+   Q = ORI_K × Σ(h2^1.5 − h1^1.5)，h2 ＝ 水面到門檻的深度、h1 ＝ 水面到上緣的深度。
+
+   - 水面還在破口上緣以上 → 整個洞都在出水（h1 > 0，一大管）
+   - 水面掉進破口裡 → h1 = 0，出水的只剩水面以下那一截，流量照 1.5 次方縮小
+   - 水面退到門檻 → h2 = 0，停
+
+   這也讓「洞開多大」真的有差：v1.76 的 `LEAK_K × √水頭` 跟洞的大小無關，
+   杯壁開一個 7×6 的窗跟開一格的縫流一樣快（使用者回報「照理說水流會很像這口
+   這麼大一管」）。ORI_K 是照遊戲節奏訂的（教科書的 Cd 大約是它的一半，
+   那樣一杯水要漏兩分鐘）。 */
+function oriFlow(b) {
+  const ss = b.spills;
+  if (!ss || !ss.length) return 0;
+  const h2 = Math.pow(Math.max(0, b.shown - b.sill), 1.5);
+  let q = 0;
+  for (const s of ss) {
+    const h1 = Math.max(0, b.shown - s.lip);
+    q += h2 - Math.pow(h1, 1.5);
+  }
+  return ORI_K * Math.max(0, q);
 }
 /* 每幀：水面往目標追（看得到在升／在降）、從破口噴出去、慢慢滲掉。 */
 function stepBodies(dt) {
@@ -3645,25 +3692,25 @@ function stepBodies(dt) {
     if (b.dirty || redo) solveBody(b);           // 新開的、或時間到了就重算一次
     /* 從漏口流出去。水面（shown）與水量是綁在一起降的：流掉多少，水面就降多少——
        這樣「看到的水」跟「還有多少水」永遠對得起來。兩種速度：
-       ① **水面還在漏口以上**（剛敲破杯壁）：照托里切利 `LEAK_K×√水頭`，
+       ① **水面還在漏口以上**（剛敲破杯壁）：照孔口流量 `oriFlow`（洞多大就流多快），
           水面看得見一路降到破口的高度。
        ② **水面已經在漏口上、但還有水一直進來**（倒進滿的杯子、倒在窄檐上）：
           那些水站不住，當場流掉。 */
     const over = b.vol - (b.cap || 0);
     const head = b.spill ? b.shown - b.sill : 0;
     if (b.spill && head > 0.02 && over > 0.01) {
-      const out = Math.min(over, LEAK_K * Math.sqrt(head) * dt);
+      const out = Math.min(over, oriFlow(b) * dt);
       b.vol -= out;
       if (b.cols.length) b.shown -= out / b.cols.length;
-      jetFx(b, head, dt);
+      jetFx(b, dt);
       b.bank += out;
-      leakDrop(b, head);
+      leakDrop(b);
     } else if (b.spill && over > 0.01) {
       const out = Math.min(over, over * 5 * dt);
       b.vol -= out;
-      jetFx(b, 0.5, dt);
+      jetFx(b, dt);
       b.bank += out;
-      leakDrop(b, 0.5);
+      leakDrop(b);
     }
     // 滲：地面滲得快、積在建築上的從積木縫隙慢慢漏，兩個都跟「攤多大」成正比
     const seep = (b.ground ? SEEP_G : SEEP_B) * b.cols.length * dt;
@@ -3692,41 +3739,53 @@ function stepBodies(dt) {
   }
 }
 /* 從漏口流出去的水本身也要落地：攢到一團的量就丟一團出去 */
-function leakDrop(b, head) {
+function leakDrop(b) {
   const W = water;
   if (b.bank < WB_VOL || W.drops.length >= WB_MAX) return;
   const ss = b.spills && b.spills.length ? b.spills : [b.spill];
   b.dn = ((b.dn || 0) + 1) % ss.length;          // 一道一道輪流丟，落下來的水才鋪滿整個破口
-  const p = spillPos(b, ss[b.dn], head);
-  const d = newDrop(p.x, p.y, p.z, b.bank);
-  d.vx = p.dx * p.sp; d.vz = p.dz * p.sp; d.vy = 0;
+  const p = spillBand(b, ss[b.dn]);
+  const y = (p.lo + p.hi) / 2, sp = jetSpeed(b, y);
+  const d = newDrop(p.x, y, p.z, b.bank);
+  d.vx = p.dx * sp; d.vz = p.dz * sp; d.vy = 0;
   W.drops.push(d);
   b.bank = 0;
 }
-/* 這一道破口在世界座標的哪裡、水往哪個方向噴、噴多快 */
-function spillPos(b, s, head) {
+/* 這一道破口：出水的那一帶在哪（門檻 → 水面或破口上緣，取低的）、水往哪個方向噴。
+   噴多快由**那一顆水在哪個高度出來**決定（越深壓力越大），所以速度不在這裡算。 */
+function spillBand(b, s) {
   let dx = s.gx - b.sx, dz = s.gz - b.sz;
   const L = Math.hypot(dx, dz) || 1;
-  dx /= L; dz /= L;
-  return { x: wldX(s.gx), y: b.sill + 0.35, z: wldZ(s.gz),
-           dx, dz, sp: Math.sqrt(2 * WATER_G * Math.max(0.4, head)) * 0.55 };
+  return { x: wldX(s.gx), z: wldZ(s.gz), dx: dx / L, dz: dz / L,
+           lo: b.sill, hi: Math.max(b.sill + 0.12, Math.min(b.shown, s.lip)) };
 }
-/* 從破口噴出來的水。水頭越高噴得越平、越遠；水位降下來就變成垂下去的細流。
-   洞有多寬就噴多寬：粒子輪流從每一道破口出來，總量最多加到單口的 JET_WIDE 倍
-   （再多會把塵霧池吃光，連帶把水珠的軌跡擠掉）。 */
-function jetFx(b, head, dt) {
+/* 從某個高度噴出來的水，出口速度 √(2g·那一點的水深) */
+function jetSpeed(b, y) {
+  return Math.sqrt(2 * WATER_G * Math.max(0.4, b.shown - y)) * 0.55;
+}
+/* 從破口噴出來的水。**出水口有多大就噴多大一管**：每一顆水珠隨機挑一道破口、
+   再在那一道的出水帶（門檻 → 水面／上緣）裡隨機挑一個高度出來，越深噴得越平越遠。
+   所以水面掉進破口裡的時候，噴出來的那一管會自己跟著變矮、變短、變細。
+   總量與水珠大小都跟出水口的面積掛勾，但總量最多加到單口的 JET_WIDE 倍
+   （再多會把 720 顆的塵霧池吃光，連帶把在流的水的軌跡擠掉）。 */
+function jetFx(b, dt) {
   const ss = b.spills && b.spills.length ? b.spills : [b.spill];
-  b.jem = (b.jem || 0) + dt * JET_EM * Math.min(JET_WIDE, ss.length);
+  let area = 0;                                  // 出水口有多大（格²）
+  for (const s of ss) area += Math.max(0, Math.min(b.shown, s.lip) - b.sill);
+  const tall = area / ss.length;                 // 平均開多高 → 水珠畫多大
+  const big = 1 + Math.min(0.8, tall * 0.13);
+  b.jem = (b.jem || 0) + dt * JET_EM * Math.min(JET_WIDE, Math.max(0.35, area * 0.5));
   while (b.jem >= 1) {
     b.jem--;
     if (dust.length > 620) break;
     b.jn = ((b.jn || 0) + 1) % ss.length;
-    const p = spillPos(b, ss[b.jn], head);
+    const p = spillBand(b, ss[b.jn]);
+    const y = rr(p.lo, p.hi), sp = jetSpeed(b, y);
     dust.push({
-      x: p.x + rr(-0.2, 0.2), y: p.y + rr(-0.15, 0.15), z: p.z + rr(-0.2, 0.2),
-      vx: p.dx * p.sp + rr(-0.5, 0.5), vy: rr(-0.4, 0.4), vz: p.dz * p.sp + rr(-0.5, 0.5),
+      x: p.x + rr(-0.2, 0.2), y: y + rr(-0.1, 0.1), z: p.z + rr(-0.2, 0.2),
+      vx: p.dx * sp + rr(-0.5, 0.5), vy: rr(-0.4, 0.4), vz: p.dz * sp + rr(-0.5, 0.5),
       rx: Math.random() * 6, ry: Math.random() * 6,
-      life: rr(0.4, 0.8), s: rr(0.3, 0.52), fade: 0.4,
+      life: rr(0.4, 0.8), s: rr(0.3, 0.52) * big, fade: 0.4,
       cr: 0.42, cg: 0.74, cb: 1, g: WATER_G, keep: 1
     });
   }

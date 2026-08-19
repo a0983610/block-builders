@@ -5072,6 +5072,77 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '敲掉 ' + wbWide.broke + ' 塊開一個 7 格寬的窗 → ' + wbWide.spills +
      ' 道水柱、橫跨 ' + wbWide.wide + ' 格');
 
+  /* 破口是一個**孔口**，不是一個固定流量的洞。使用者：「照理說水流會很像這口這麼大一管，
+     然後水面低到圓上方水流越來越小，最後水面到圓下方。」
+     v1.77 之前流量是 `LEAK_K × √水頭`——跟洞開多大**完全無關**，
+     杯壁開一個 7×6 的窗跟開一格的縫流一樣快。
+     現在把破口當矩形孔口沿深度積托里切利（見 oriFlow），這一條驗兩件事：
+     ① 洞開多大就流多快　② 水面掉進破口裡之後，出水口跟著變小、流量跟著縮。 */
+  const wbOri = await page.evaluate(() => {
+    // 蓋一座裝了兩下水的馬克杯，在杯壁半腰開一個 wide 寬 × tall 高的窗
+    const mug = (wide, tall) => {
+      cleanTools();
+      targetCnt = 3000;
+      shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+      startBuild(true); completeNow();
+      let rim = 0;
+      for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+      for (let i = 0; i < 12 * 60; i++) { if (i === 0) pourBucket(0, rim + 2, 0, WB_DROPS); step(1 / 60); }
+      for (let i = 0; i < 10 * 60; i++) { if (i === 0) pourBucket(0, rim + 2, 0, WB_DROPS); step(1 / 60); }
+      const hy = Math.round((water.bodies[0].level + 2) / 2);
+      buildSlotOwner();
+      const mx = cellX(0), mz = cellZ(0), h = wide >> 1;
+      for (let gx = mx - h; gx <= mx + h; gx++)
+        for (let yy = hy - 2; yy < hy - 2 + tall; yy++)
+          for (let gz = mz; gz < mz + 40; gz++) {
+            const bl = blockOn(gx, yy, gz);
+            if (bl) breakBlock(bl, 0, 1, 3);
+          }
+      step(1 / 60);
+      return water.bodies[0];
+    };
+    /* 出水口現在有多大（格²）＝ 每一道破口「門檻 → 水面或破口上緣（取低的）」的總和。
+       畫面上噴出來的那一管就是照這個範圍灑的，所以它縮，看到的水柱就縮。
+       水退到門檻之後這一團水就找不到漏口了（水量已經低於「裝到門檻的量」），
+       spills 是 null，出水口自然是 0。 */
+    const area = (b) => (b.spills || []).reduce(
+      (a, s) => a + Math.max(0, Math.min(b.shown, s.lip) - b.sill), 0);
+    const alive = (b) => !!water && water.bodies.indexOf(b) >= 0;
+
+    const big = mug(7, 6);
+    const r = { sill: +big.sill.toFixed(1), lip: big.spills[0].lip,
+                big: { spills: big.spills.length, area: +area(big).toFixed(1),
+                       q: Math.round(oriFlow(big)) } };
+    // 三個階段：水面在破口上緣以上／掉到破口中間／退到門檻
+    const at = (y) => {
+      let n = 0;
+      while (alive(big) && big.shown > y && n < 60 * 150) { step(1 / 60); n++; }
+      return { t: +(n / 60).toFixed(1), shown: +big.shown.toFixed(1),
+               area: +area(big).toFixed(1), q: Math.round(oriFlow(big)) };
+    };
+    r.hi = at(r.lip + 2);
+    r.mid = at((r.sill + r.lip) / 2);
+    r.lo = at(r.sill + 0.15);
+
+    const small = mug(1, 1);                       // 同一座杯子、同樣的水，只開一格的縫
+    r.small = { spills: small.spills.length, area: +area(small).toFixed(1),
+                q: Math.round(oriFlow(small)) };
+    cleanTools();
+    return r;
+  });
+  ok('洞開多大就流多快（破口是孔口，不是固定流量）',
+     wbOri.big.q > wbOri.small.q * 5 && wbOri.big.area > wbOri.small.area * 5,
+     '7×6 的窗：出水口 ' + wbOri.big.area + ' 格²、每秒流 ' + wbOri.big.q +
+     ' 格；同一杯水開一格的縫：' + wbOri.small.area + ' 格²、每秒 ' + wbOri.small.q + ' 格');
+  ok('水面掉進破口裡之後，出水口與水流跟著變小',
+     wbOri.hi.area > wbOri.mid.area * 1.6 && wbOri.hi.q > wbOri.mid.q * 2 &&
+     wbOri.lo.area < 3 && wbOri.lo.q < 20,
+     '破口第 ' + wbOri.sill + '～' + wbOri.lip + ' 層：水面 ' + wbOri.hi.shown +
+     '（上緣以上）出水口 ' + wbOri.hi.area + ' 格²／每秒 ' + wbOri.hi.q + ' 格 → ' +
+     wbOri.mid.shown + '（破口中間）' + wbOri.mid.area + '／' + wbOri.mid.q + ' → ' +
+     wbOri.lo.shown + '（退到門檻）' + wbOri.lo.area + '／' + wbOri.lo.q +
+     '（' + wbOri.lo.t + ' 秒）');
+
   // 一下的水從屋頂一路流到地面，沿路把積木淋濕，但一塊都不會掉
   const wbFlow = await page.evaluate(() => {
     cleanTools();
