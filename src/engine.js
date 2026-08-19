@@ -53,8 +53,8 @@ const ENG = (function () {
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXTRUCK = 2, TRK_PARTS = 11;       // 消防車：最多兩台，一台 11 個部位
-  const MAXPOOL = 8000;                     // 積水：同時最多幾格（規則那邊的 POOL_MAX 跟它綁在一起）
-  const MAXPOOLV = 66000;                   // 積水的頂點上限（一格最多 5 面 × 6 頂點）
+  const MAXPOOL = 4000;                     // 水：同時最多幾格（規則那邊的 WT_CELLS 跟它綁在一起）
+  const MAXPOOLV = 90000;                   // 水的頂點上限（一格最多 6 面 × 6 頂點）
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
@@ -696,10 +696,10 @@ const ENG = (function () {
     trkMesh.instanceMatrix.needsUpdate = true;
     if (trkMesh.instanceColor) trkMesh.instanceColor.needsUpdate = true;
   }
-  /* 一攤水：p = {x, z 那一格的中心, y0 水底, y1 水面, f 哪幾面露在外面（位元）}。
-     每一格一定畫水面（頂面），側面只畫規則那邊標出來「旁邊不是水」的那幾面——
-     被水包住的側面不畫，一整片水面才是一整片（見上面 poolGeo 那段）。
-     f 的位元跟規則那邊的 DIR4 同順序：1=+x　2=−x　4=+z　8=−z。 */
+  /* 一格水：p = {x, z 那一格的中心, y0 水底, y1 水面, f 哪幾面要畫（位元）}。
+     只畫規則那邊標出來「旁邊不是水」的那幾面——被水包住的面根本不存在，
+     一大片水才不會疊出方格紋（見上面 poolGeo 那段）。
+     位元跟規則那邊的 DIR4 同順序：1=+x　2=−x　4=+z　8=−z，再加 16=底面　32=頂面。 */
   function putPools(list) {
     const n = Math.min(list.length, MAXPOOL);
     const P = poolPos;
@@ -713,7 +713,8 @@ const ENG = (function () {
       const p = list[i];
       if (v + 90 > P.length) break;                // 一格最多 5 面 × 2 三角形 × 9 float
       const x0 = p.x - 0.5, x1 = p.x + 0.5, z0 = p.z - 0.5, z1 = p.z + 0.5, ya = p.y0, yb = p.y1;
-      tri(x0, yb, z0, x1, yb, z0, x1, yb, z1); tri(x0, yb, z0, x1, yb, z1, x0, yb, z1);
+      if (p.f & 32) { tri(x0, yb, z0, x1, yb, z0, x1, yb, z1); tri(x0, yb, z0, x1, yb, z1, x0, yb, z1); }
+      if (p.f & 16) { tri(x0, ya, z0, x1, ya, z0, x1, ya, z1); tri(x0, ya, z0, x1, ya, z1, x0, ya, z1); }
       if (p.f & 1) { tri(x1, ya, z0, x1, yb, z0, x1, yb, z1); tri(x1, ya, z0, x1, yb, z1, x1, ya, z1); }
       if (p.f & 2) { tri(x0, ya, z0, x0, yb, z0, x0, yb, z1); tri(x0, ya, z0, x0, yb, z1, x0, ya, z1); }
       if (p.f & 4) { tri(x0, ya, z1, x0, yb, z1, x1, yb, z1); tri(x0, ya, z1, x1, yb, z1, x1, ya, z1); }
