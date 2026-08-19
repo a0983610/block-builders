@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.72.0';
+const VERSION = '1.73.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3315,59 +3315,56 @@ function stepTrucks(dt) {
 }
 
 /* ── 水桶 ───────────────────────────────────────────────
-   點一下就往那裡倒一桶水。水不是貼上去的特效，它會自己找路：
-   一團水沿著建築表面往下流，腳下沒東西撐就掉下去、前面是牆就轉彎、
-   四面都是牆（凹處）就停下來積成一攤；流到地面攤成一攤水窪，再慢慢滲進地底。
-   碰到的積木與小人一律濕 WET_TIME 秒——所以澆過的地方點不著、燒著的會被澆熄，
-   那一段跟消防車共用（見〈潮濕〉）。
+   點一下倒一大缸水。水分兩層：
 
-   為什麼是「一團一團走格子」而不是流體格網：
-   建築本身就是格子、blockAt() 是現成的查表，一團水只要記自己在哪一格、下一格往哪走，
-   「沿牆流下來」「從破洞漏出去」「積在凹處」就一次做完了。流體格網得為整棟每一格
-   存一個水量（三千格起跳）、換一座建築重配一次，而水實際上只蓋到其中一條路徑——
-   那張表九成九是空的。
+   ① **在流的水**（drops）：一團一團往下掉、沿著表面流。畫面上的水柱、
+      從破口噴出來的那一道，都是它們沿路灑的水珠。
+   ② **積起來的水**（bodies，v1.73 改）：一團連通的水**共用一個水位**。
+      倒進去水位就往上升、破了洞水位就整片降下來，水面永遠是平的。
 
-   座標約定：一團水待在**空的**那一格，d.gy 是自己那一格的層數，
-   腳下的積木在 d.gy − 1、擋路的牆在 d.gy。積水也記在「水占的那一格」上。 */
-/* 一次點下去倒多少水（v1.71，使用者：「改成點一下就超大量的水…預計點一下裝 1/2 的量」）。
-   單位是**格**：一格積木大小的空間裝滿算 1。基準是使用者放進 blueprints/ 的那個馬克杯
-   ——3000 建材時杯內是 193 格 × 24 層 = 4632 格，半杯就是 2316 格。 */
-const WB_CLICK = 2300;              // 點一下倒幾格的水（＝馬克杯半杯）
-const WB_DROPS = 40;                // 那一下分成幾團倒（每團帶 WB_CLICK / WB_DROPS 格）
-const WB_POUR = 0.7;                // 那一桶倒完要幾秒：一次全出來是「潑」，不是「倒」
-/* 按住不放時的流量。每秒 40 團 × 每團 57.5 格 = 每秒 2300 格，
-   跟「點一下」剛好同一個量：按住一秒 ＝ 點一下。 */
+   v1.72 之前積水是「每一格各自存一個水量」，三個毛病都出在那裡（使用者回報）：
+   水面一格一格長出來、半滿的格子變成一片片懸空的薄片、破洞要靠鄰居一格一格
+   把水挪過去才流得動（所以「沒有從破口流出的水柱」）。改成水體之後，
+   一團水只要記「蓋到哪幾根柱子」與「水面在哪個高度」，那三件事都變成一行算式。
+
+   水位怎麼算（priority flood，跟量地形積水的演算法同一套）：
+   從落點那根柱子開始，每次把**周圍最矮的那根**吸進來、水面跟著抬到它的高度，
+   抬不動了就把剩下的水攤平在現有的柱子上。吸進來的柱子比水面**還低**，
+   代表水會從那裡流走——那就是溢出點（破口、屋簷、杯口）。
+
+   座標約定：柱子用格子座標 (gx,gz)，`base` 是「水在這根柱子上會停在哪一層」，
+   水面 `level` 是浮點的層高。積木在第 g 層代表它占 y ∈ [g, g+BS]。 */
+const WB_CLICK = 2300;              // 點一下倒幾格的水（＝馬克杯半杯，v1.71 訂的基準）
+const WB_POUR = 2.5;                // 那一下倒完要幾秒——看得到水位一路升上來，不是瞬間滿
+const WB_DROPS = 100;               // 那一下分成幾團倒
+const WB_VOL = WB_CLICK / WB_DROPS; // 每一團帶幾格的水（23）
+/* 按住不放時每秒幾團。× WB_VOL = 920 格／秒，跟「點一下」是同一個流量
+   （點一下 2300 格 ÷ 2.5 秒），所以按住兩秒半就等於點一下。 */
 const WB_RATE = 40;
 const WB_SND = 0.45;                // 按住時每隔多久再補一次水聲
 const WB_FLOW = 6.5;                // 沿表面流的速度
 const WB_FALL = 13;                 // 落下的速度上限
 const WB_LIFE = 22;                 // 一團水最多活幾秒（保險絲：繞不出去的自己消失）
-const WB_MAX = 200;                 // 同時最多幾團（按住不放時真的會塞滿，見 dripFx 的粒子上限）
+const WB_MAX = 200;                 // 同時最多幾團在流
 const WB_TRAIL = 20;                // 一團水一秒灑幾顆水珠——畫面上看到的水就是這些
 /* 水珠的總配額。跟火苗同一個道理（整棟在燒時每塊都全速噴會把粒子池吃光）：
    按住不放時同時有兩百團水在流，每團都照 WB_TRAIL 灑的話，額度全被源頭那幾團吃光，
    畫面上就只剩源頭一坨白、看不到水沿著牆流下來。所以配額按團數攤掉。 */
 const WB_DUST = 460;                // 水珠同時最多幾顆（塵霧池共 720，留一截給煙）
-const WB_STUCK = 12;                // 同一層平地連走幾格還下不去，就當它在盆地裡，就地積起來
 const WB_WET = 0.12;                // 每隔多久把身邊那幾格淋濕一次
 const WB_UP = 0.55;                 // 倒水口比點到的地方高多少
-/* 積水一律以「一格」為單位（v1.71）：一格裝滿就是 1，鋪不下就往旁邊、往上長。
-   v1.70 之前地面的水是一片「半徑照水量算」的圓盤、建築上的才是格子，兩套並存；
-   要把一個杯子裝到半滿就得記到「哪一格有多少水」，所以統一成格子。 */
-const POOL_CELL = 1;                // 一格裝得下多少水
-const POOL_MAX = 8000;              // 同時最多幾格（跟畫面那邊的 MAXPOOL 綁在一起）
-/* 地面的水滲得很快（v1.72，使用者：「流到地面讓他很快速滲入地下」）。
-   一格 1.7 秒滲光——流到草地上的水就是一路往下滲，不會在地面積成一大片湖。
-   這也順便解掉「點地面沒反應」：地面的水不再長期占著積水格的額度。 */
-const POOL_SEEP = 0.6;              // 地面的水每格每秒滲掉多少（一格約 1.7 秒滲光）
-const POOL_DRIP = 0.02;             // 積在建築上的漏得慢（一格約 50 秒，從積木縫隙）
-const POOL_WET = 0.35;              // 每隔多久用積水把泡在裡面的東西再淋一次
-const POOL_FLOW = 0.12;             // 每隔多久算一次「積水有沒有路可以流走」
-const POOL_MOVE = 0.08;             // 兩格的水差多少才值得挪（再小就會一直來回搬）
-const POOL_LEAK = 60;               // 一次最多幾格從破口流出去（不然一層同時倒出來會塞爆水團）
-const SPILL_MAX = 4000;             // 一團水鋪開時最多碰幾格（保險絲）
-const SPILL_UP = 60;                // 一團水一次最多往上疊幾層
-let water = null;                   // { pours, drops, map, wt }
+const WB_WALL = 40;                 // 找「牆頂在哪」時最多往上看幾格
+
+const COL_MAX = 4000;               // 一團水最多蓋幾根柱子（也是畫面上的 instance 上限來源）
+const POOL_MIN = 0.6;               // 攤在平地上的最小深度（格）：再薄就不往外攤，改成往上疊
+const RISE = 7;                     // 畫面上的水面每秒最多升降幾格（讓它「升上來」而不是瞬間到位）
+const LEAK_K = 25;                  // 破口流量係數：每秒流出 = LEAK_K × √水頭
+const SEEP_G = 0.6;                 // 地面每根柱子每秒滲掉多少格（一格約 1.7 秒）
+const SEEP_B = 0.02;                // 積在建築上的每根柱子每秒漏多少（積木縫隙，很慢）
+const BODY_WET = 0.35;              // 每隔多久用積水把泡在裡面的東西再淋一次
+const BODY_MAX = 24;                // 同時最多幾團水體
+const BODY_SOLVE = 0.12;            // 每隔多久重算一次水位（積木被打掉、破口出現都靠這個發現）
+let water = null;                   // { pours, drops, bodies, cols, wt, st }
 
 // 世界座標 ↔ 格子。積木的格子就是建築的格子（見 blockAt），水直接借同一套
 const cellX = x => Math.round(x - gOffX);
@@ -3376,19 +3373,25 @@ const wldX = gx => gx + gOffX;
 const wldZ = gz => gz + gOffZ;
 const topY = gy => gy + ENG.BS;                 // 第 gy 層積木的上表面（水就貼在這個高度）
 const solidAt = (gx, gy, gz) => blockAt(wldX(gx), gy + HB, wldZ(gz));
-const poolAt = (gx, gy, gz) => water ? water.map.get(gx + ':' + gy + ':' + gz) : undefined;
-/* 這一格底下踩得住嗎：地面（gy < 0 就是草地）、積木、已經有水的格子都算。
-   地面那一條很重要——沒有它的話 spill 會把每一格草地都當成破口。 */
-const floorAt = (gx, gy, gz) => gy < 0 || solidAt(gx, gy, gz) || poolAt(gx, gy, gz) !== undefined;
+const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+// 這根柱子屬於哪一團水（回傳 { body, base }），沒有就 undefined
+const colAt = (gx, gz) => water ? water.cols.get(gx + ':' + gz) : undefined;
+// 這根柱子的水面在哪（格）；沒水就回一個很低的數
+function waterTop(gx, gz) {
+  const c = colAt(gx, gz);
+  return c && c.body.shown > c.base ? c.body.shown : -1e9;
+}
+/* 這一格底下踩得住嗎：地面（gy < 0 就是草地）、積木、或已經淹過那一格的水。 */
+const floorAt = (gx, gy, gz) => gy < 0 || solidAt(gx, gy, gz) || waterTop(gx, gz) >= gy + 0.5;
 
 function newWater() {
-  if (!water) water = { pours: [], drops: [], map: new Map(), wt: 0, ft: 0 };
+  if (!water) water = { pours: [], drops: [], bodies: [], cols: new Map(), wt: 0, st: 0 };
   return water;
 }
 /* 倒一桶。倒水口比點到的地方高一點，才看得出來是「從上面倒下去」的。
    n 是分成幾團、vol 是每一團帶多少格的水。 */
 function pourBucket(x, y, z, n, vol) {
-  newWater().pours.push({ x, y, z, n, out: 0, t: 0, vol: vol || WB_CLICK / WB_DROPS });
+  newWater().pours.push({ x, y, z, n, out: 0, t: 0, vol: vol || WB_VOL });
 }
 /* 倒一桶（點一下就放開、或程式直接呼叫時走這條）。 */
 function pourWater(hit) {
@@ -3399,7 +3402,7 @@ function pourWater(hit) {
 /* ── 按住不放：一直倒 ───────────────────────────────────
    使用者要的是「按住就一直流水進去」，所以水桶按下去那一刻就開始倒、放開才停，
    中間拖到哪水就澆到哪（拿著水桶拖曳因此不轉視角——鏡頭還有 QE／WASD／滾輪）。
-   點一下就放開的也不吃虧：放開時倒不滿一桶的會補到一桶，見 pourEnd。 */
+   點一下就放開的也不吃虧：放開時倒不滿一下的量會補到一整下，見 pourEnd。 */
 let pourJet = null;                 // { x, y, z, out 已經倒了幾團, em, snd }
 function pourStart(x, y, z) { pourJet = { x, y, z, out: 0, em: 0, snd: 0 }; }
 function pourAim(x, y, z) { if (pourJet) { pourJet.x = x; pourJet.y = y; pourJet.z = z; } }
@@ -3417,26 +3420,25 @@ function pourFlow(dt) {
   j.em += dt * WB_RATE;
   while (j.em >= 1) {
     j.em--;
-    j.out++;                        // 額度滿了也算倒過（放開時才不會又補一桶）
+    j.out++;                        // 額度滿了也算倒過（放開時才不會又補一整下）
     // 按住的水柱比單獨一桶粗（散開 ±0.5 格）：同一點灌四十團／秒會擠成一坨
     if (water.drops.length < WB_MAX)
-      water.drops.push(newDrop(j.x + rr(-0.5, 0.5), j.y, j.z + rr(-0.5, 0.5),
-                               WB_CLICK / WB_DROPS));
+      water.drops.push(newDrop(j.x + rr(-0.5, 0.5), j.y, j.z + rr(-0.5, 0.5), WB_VOL));
   }
 }
-/* 一團水。vol 是它帶著的水量（格）——畫面上一團就是一團，
+/* 一團在流的水。vol 是它帶著的水量（格）——畫面上一團就是一團，
    要倒得多不是靠團數多（那會把粒子池與 CPU 吃光），是靠每一團帶得多。 */
 function newDrop(x, y, z, vol) {
   return { x, y, z, vx: rr(-0.5, 0.5), vy: 0, vz: rr(-0.5, 0.5),
            gy: 0, tx: x, tz: z, px: 1e9, pz: 1e9, vol: vol || 1,
-           fall: 1, t: 0, stuck: 0, em: Math.random(), wt: rr(0, WB_WET) };
+           fall: 1, t: 0, em: Math.random(), wt: rr(0, WB_WET) };
 }
 
 function stepWater(dt) {
   if (pourJet) pourFlow(dt);        // 按著不放：這一幀先把水加進來（需要時自己開 water）
   if (!water) return;
   const W = water;
-  // 一桶水分 WB_POUR 秒倒完，不是一幀全部出現
+  // 一下倒的水分 WB_POUR 秒流完，不是一幀全部出現
   for (let i = W.pours.length - 1; i >= 0; i--) {
     const p = W.pours[i];
     p.t += dt;
@@ -3461,29 +3463,31 @@ function stepWater(dt) {
     d.wt -= dt;
     if (d.wt <= 0) { d.wt = WB_WET; wetAround(d); }
   }
-  stepPools(dt);
-  W.ft -= dt;
-  if (W.ft <= 0) { W.ft = POOL_FLOW; drainPools(); }
+  stepBodies(dt);
   W.wt -= dt;
-  if (W.wt <= 0) { W.wt = POOL_WET; wetPools(); }
-  if (!pourJet && !W.pours.length && !W.drops.length && !W.map.size) water = null;
+  if (W.wt <= 0) { W.wt = BODY_WET; wetBodies(); }
+  if (!pourJet && !W.pours.length && !W.drops.length && !W.bodies.length) water = null;
 }
 
-/* 一團水走一步。回傳 false 代表它結束了（併進某一攤水裡）。 */
+/* 一團水走一步。回傳 false 代表它結束了（併進某一團水裡）。 */
 function stepDrop(d, dt) {
   if (d.fall) {
     d.vy = Math.max(-WB_FALL, d.vy - WATER_G * dt);
     d.x += d.vx * dt; d.z += d.vz * dt;
     const ny = d.y + d.vy * dt;
+    const cx = cellX(d.x), cz = cellZ(d.z);
+    // 掉到水面上：就地併進那一團水（不然會穿過水面掉到底）
+    const top = waterTop(cx, cz);
+    if (ny <= top) { splashFx(d.x, top, d.z); return !joinBody(d, cx, cz, top); }
     /* 逐格往下檢查，不是只看終點：掉得快的時候一幀會跨過好幾格，
        只看終點的話水會直接穿過薄屋頂。 */
     const g1 = Math.round(ny - HB);
     for (let g = Math.round(d.y - HB); g >= g1; g--)
-      if (solidAt(cellX(d.x), g, cellZ(d.z))) return land(d, g);
+      if (solidAt(cx, g, cz)) return land(d, g);
     d.y = ny;
     if (d.y > 0.12) return true;
-    splashFx(d.x, 0.12, d.z);                    // 落地：濺一下，然後在那裡鋪開
-    return !spill(d, cellX(d.x), 0, cellZ(d.z));
+    splashFx(d.x, 0.12, d.z);                    // 落地
+    return !joinBody(d, cx, cz, 0);
   }
   // 貼著表面走：朝下一格的中心移動，到了再挑下一格
   const step = WB_FLOW * dt;
@@ -3494,177 +3498,203 @@ function stepDrop(d, dt) {
     d.fall = 1; d.vy = 0; d.vx = 0; d.vz = 0;
     return true;
   }
-  return nextCell(d, 0);
+  return nextCell(d);
 }
 /* 落到第 g 層積木上面：從此改成貼著表面走，位置先對齊到格子中心（之後一格一格走）。 */
 function land(d, g) {
   d.fall = 0; d.gy = g + 1; d.y = topY(g);
   d.x = wldX(cellX(d.x)); d.z = wldZ(cellZ(d.z));
-  d.tx = d.x; d.tz = d.z; d.px = 1e9; d.pz = 1e9; d.stuck = 0;
+  d.tx = d.x; d.tz = d.z; d.px = 1e9; d.pz = 1e9;
   splashFx(d.x, d.y, d.z);
-  return nextCell(d, 0);
+  return nextCell(d);
 }
-/* 挑下一格。優先往「腳下是空的」那一格走（水往低處流），其次是平的，回頭路留到最後
-   ——不然兩格之間會來回彈。走不掉就地積起來；那一格已經積滿了就把水位往上抬一層，
-   再從上面找一次路——杯子就是這樣一層一層滿上來的。 */
-const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-function nextCell(d, up) {
+/* 挑下一格。**只往下走**：旁邊哪一格「腳下是空的」就往那裡瀉（一路流到低處）。
+   四周都沒有下坡＝到底了，就地併進積水裡，剩下的交給水體去攤平、去找溢出口。
+   v1.72 之前這裡還會在平地上繞（直走優先、繞十二格才停），那是因為當時沒有水體、
+   得靠一團水自己走去找凹處；現在水位是水體算的，繼續繞只會讓水「晚幾秒才出現」
+   ——實測一團水要繞 1.8 秒才肯停下來，倒下去要等五秒杯子裡才看得到水。 */
+function nextCell(d) {
   const cx = cellX(d.x), cz = cellZ(d.z);
-  // 走到已經有水的那一格：直接併進那一團水裡（鋪不下就往旁邊、往上，見 spill）
-  const here = poolAt(cx, d.gy, cz);
-  if (here) return !spill(d, cx, d.gy, cz);
+  // 走到已經有水的地方：直接併進那一團水
+  if (waterTop(cx, cz) >= d.gy - 0.5) return !joinBody(d, cx, cz, d.gy);
   const off = Math.floor(Math.random() * 4);
-  let down = null, straight = null, flat = null, back = null;
+  let down = null;
   for (let i = 0; i < 4; i++) {
     const v = DIR4[(i + off) % 4];
     const nx = cx + v[0], nz = cz + v[1];
     if (solidAt(nx, d.gy, nz)) continue;                  // 那一格是牆
-    if (nx === d.px && nz === d.pz) { back = v; continue; }
     if (!floorAt(nx, d.gy - 1, nz)) { down = v; break; }   // 那一格腳下是空的：往那裡瀉
-    /* 平地上優先「直走」。四個方向裡亂數挑的話，水在大屋頂上就是隨機漫步——
-       實測聖母院一團水要繞七秒才走到屋簷；直走優先之後是一條一條沖出去的水路。 */
-    if (v[0] === cx - d.px && v[1] === cz - d.pz) straight = v;
-    else if (!flat) flat = v;
   }
-  let v = down || straight || flat || back;
-  // 同一層平地上繞了 WB_STUCK 格還下不去 = 在盆地裡，別再找出口了，就地鋪開
-  if (v && !down && d.stuck >= WB_STUCK) v = null;
-  if (!v) return !spill(d, cx, d.gy, cz);      // 鋪完了就結束，還有剩的話繼續流（見 spill）
+  if (!down) return !joinBody(d, cx, cz, d.gy);
   d.px = cx; d.pz = cz;
-  d.tx = wldX(cx + v[0]); d.tz = wldZ(cz + v[1]);
-  d.stuck = down ? 0 : d.stuck + 1;
+  d.tx = wldX(cx + down[0]); d.tz = wldZ(cz + down[1]);
   return true;
 }
-/* 一團水停下來了：就地把它帶的水鋪開。
-   同一層先鋪滿再往上一層——水面因此會自己找平，而不是在原地往上疊成一根柱子
-   （這是「把杯子裝到半滿」跟「一格一格各積各的」的差別，v1.71）。
-   鋪的過程中碰到「腳下沒東西撐」的格子＝這一層有破口，水從那裡漏出去：
-   把剩下的水交回給那一團，讓它從破口繼續往下流。
-   回傳 true 代表這一團倒完了（可以收掉）。 */
-function spill(d, gx, gy, gz) {
-  for (let up = 0; up < SPILL_UP; up++) {
-    const level = gy + up;
-    const seen = new Set([gx + ':' + gz]);
-    const q = [[gx, gz]];
-    let leak = null;
-    while (q.length) {
-      const c = q.shift();
-      const x = c[0], z = c[1];
-      if (solidAt(x, level, z)) continue;                       // 牆：繞過去
-      if (!floorAt(x, level - 1, z)) { leak = c; break; }        // 破口：水從這裡漏下去
-      const p = poolAt(x, level, z);
-      const free = POOL_CELL - (p ? p.vol : 0);
-      if (free > 1e-6) {
-        d.vol -= addPoolVol(x, level, z, Math.min(free, d.vol));
-        if (d.vol <= 1e-6) return true;                          // 倒完了
-      }
-      if (seen.size >= SPILL_MAX) break;
-      for (const v of DIR4) {
-        const nx = x + v[0], nz = z + v[1], k = nx + ':' + nz;
-        if (!seen.has(k)) { seen.add(k); q.push([nx, nz]); }
-      }
-    }
-    if (leak) {                                  // 從破口繼續往下流（剩下的水跟著走）
-      d.fall = 1; d.vy = 0; d.vx = 0; d.vz = 0;
-      d.gy = level; d.y = topY(level - 1);
-      d.x = d.tx = wldX(leak[0]); d.z = d.tz = wldZ(leak[1]);
-      d.px = 1e9; d.pz = 1e9; d.stuck = 0;
-      return false;
-    }
+
+/* ── 水體：一組柱子共用一個水位 ─────────────────────────── */
+/* 水在這根柱子上會停在哪一層。y0 是這團水的基準高度：
+   這一格是實心（牆）→ 往上找到牆頂，水要漫過它才過得去；
+   這一格是空的 → 往下掉到有底為止（第 0 層的底就是草地）。 */
+function baseOf(gx, gz, y0) {
+  if (solidAt(gx, y0, gz)) {
+    let y = y0 + 1;
+    while (y < y0 + WB_WALL && solidAt(gx, y, gz)) y++;
+    return y;
   }
-  return true;                                   // 疊到 SPILL_UP 還沒倒完：剩下的當它滲掉
+  let y = y0;
+  while (y > 0 && !solidAt(gx, y - 1, gz)) y--;
+  return y;
 }
-/* 把 v 格的水倒進 (gx,gy,gz) 那一格，回傳實際吃進去多少（那一格最多裝 POOL_CELL）。 */
-function addPoolVol(gx, gy, gz, v) {
-  if (v <= 0) return 0;
-  const W = water, k = gx + ':' + gy + ':' + gz;
-  const p = W.map.get(k);
-  if (p) {
-    const put = Math.min(v, POOL_CELL - p.vol);
-    if (put <= 0) return 0;
-    p.vol += put;
-    return put;
+function newBody(gx, gz, y0) {
+  return { sx: gx, sz: gz, y0, vol: 0, level: y0, shown: y0,
+           cols: [], spill: null, bank: 0, dirty: 1 };
+}
+/* 一團在流的水併進積水裡。找得到現成的水體就加進去，沒有就開一團新的。 */
+function joinBody(d, gx, gz, y0) {
+  const W = newWater();
+  const c = W.cols.get(gx + ':' + gz);
+  let b = c ? c.body : null;
+  if (!b) {
+    if (W.bodies.length >= BODY_MAX) return true;   // 保險絲：水體不會無限開
+    b = newBody(gx, gz, Math.max(0, Math.round(y0)));
+    W.bodies.push(b);
+    /* 馬上登記這根柱子：同一幀落下來的第二團水才找得到它，
+       不然一次倒水會開出幾十團互相重疊的水體。 */
+    W.cols.set(gx + ':' + gz, { body: b, base: b.y0 });
   }
-  if (W.map.size >= POOL_MAX) return v;        // 額度用完：當它滲掉了（吃掉才不會無限累積）
-  const put = Math.min(v, POOL_CELL);
-  /* 一格水畫成整整一格寬（0.5 半徑），不是積木那樣留 0.06 的縫——
-     積木要看得出一塊一塊，水是流體，一整片水面中間不該有格線。 */
-  W.map.set(k, { k, gx, gy, gz, vol: put, x: wldX(gx), y: 0, z: wldZ(gz),
-                 r: 0.5, h: 0 });
-  return put;
+  b.vol += d.vol;
+  /* 水位先用增量推（水量 ÷ 蓋到幾根柱子），完整的 priority flood 每 BODY_SOLVE 秒
+     才跑一次——每一團水每幀都重算的話，光是 baseOf 的查表就要好幾千次。 */
+  if (b.cols.length) b.level += d.vol / b.cols.length;
+  else b.dirty = 1;
+  return true;
 }
-/* 水窪：慢慢滲掉，順便把畫面上的大小算好（水量 → 半徑與水位）。
-   撐著它的那塊積木不見了（被打掉、燒斷）就整攤漏下去，變回幾團水繼續往下找路——
-   那就是「杯子敲一個洞，水會從破口流出來」。 */
-function stepPools(dt) {
+/* 算這一團水的水面在哪、蓋到哪幾根柱子、會從哪裡溢出去（priority flood）。
+   每次從落點那根柱子重算一遍：積木被打掉、破口被敲出來，都靠這一趟自己發現。 */
+function solveBody(b) {
+  const seed = baseOf(b.sx, b.sz, b.y0);
+  const region = [{ gx: b.sx, gz: b.sz, base: seed }];
+  const seen = new Set([b.sx + ':' + b.sz]);
+  const front = [];
+  const add = (gx, gz) => {
+    const k = gx + ':' + gz;
+    if (seen.has(k)) return;
+    seen.add(k);
+    front.push({ gx, gz, base: baseOf(gx, gz, seed) });
+  };
+  for (const v of DIR4) add(b.sx + v[0], b.sz + v[1]);
+  let level = seed, vol = b.vol, spill = null, sill = 0;
+  while (vol > 1e-6) {
+    if (!front.length) { level += vol / region.length; break; }
+    let k = 0;                                   // region 不大，線性找最小就夠（不必開堆）
+    for (let i = 1; i < front.length; i++) if (front[i].base < front[k].base) k = i;
+    const c = front[k];
+    if (c.base < level - 1e-6) {                 // 比水面低：水會從這裡流走
+      /* sill 是「水要爬過多高才到得了那裡」＝找到它的當下的水面高度。
+         破口在杯壁半腰時，水只會洩到破口那個高度就停——洩到破口以下是不對的，
+         那些水根本流不到破口（用 spill.base 當停點的話整杯會漏光）。 */
+      spill = c; sill = level; level += vol / region.length; break;
+    }
+    const need = region.length * (c.base - level);
+    // 同高度的鄰居吸進來不用水，但攤太薄就停手——不然一灘水會鋪滿整片草地
+    if (need <= 1e-6 && vol / (region.length + 1) < POOL_MIN) {
+      level += vol / region.length; break;
+    }
+    if (vol < need) { level += vol / region.length; break; }
+    vol -= need; level = c.base;
+    front.splice(k, 1); region.push(c);
+    for (const v of DIR4) add(c.gx + v[0], c.gz + v[1]);
+    if (region.length >= COL_MAX) { level += vol / region.length; break; }
+  }
+  b.level = level; b.cols = region; b.spill = spill; b.sill = sill; b.dirty = 0;
+  b.ground = region[0].base <= 0;                // 底就是草地 → 滲得快
+}
+/* 每幀：水面往目標追（看得到在升／在降）、從破口噴出去、慢慢滲掉。 */
+function stepBodies(dt) {
   const W = water;
-  for (const p of W.map.values()) {
-    /* 撐著這一格水的東西不見了 → 這一格的水往下流。
-       撐得住的除了積木還有「下面那一格的水」（floorAt，不是 solidAt）——
-       只認積木的話，疊在水上面的那一層每一幀都會被判成沒有底、當場拆掉，
-       水就永遠疊不高（杯子只裝得到第一層）。那一團帶著這一格的水量走，水不會憑空少。 */
-    if (p.gy > 0 && !floorAt(p.gx, p.gy - 1, p.gz)) {
-      W.map.delete(p.k);
-      if (W.drops.length < WB_MAX)
-        W.drops.push(newDrop(p.x + rr(-0.2, 0.2), p.y, p.z + rr(-0.2, 0.2), p.vol));
-      continue;
-    }
-    p.vol -= (p.gy > 0 ? POOL_DRIP : POOL_SEEP) * dt;
-    if (p.vol <= 0) { W.map.delete(p.k); continue; }
-    /* 一格水的樣子：占滿那一格的方塊，高度跟著水量走（看得出水位在漲）。
-       地面那一層的底是草地（y=0），建築上的底是下面那塊積木的頂。 */
-    p.h = Math.max(0.12, p.vol / POOL_CELL) * ENG.BS;
-    p.y = (p.gy > 0 ? topY(p.gy - 1) : 0.02) + p.h / 2;
-  }
-}
-/* 積水會往「有路可走」的地方流。
-   v1.71 只有「腳下的東西不見了」才會動，所以在杯壁上敲一個洞，
-   洞旁邊那一格的水不會流出去，整杯水就卡在那裡（使用者回報：「目前不會流出來」）。
-   兩條規則，一格一次只做一件事：
-   ① 同一層的鄰居**腳下是空的**（牆上的破口、屋簷邊）→ 整格變成一團水往下流；
-   ② 鄰居還裝得下、而且比自己少 → 挪一半過去。水面因此會自己找平，
-      也讓離破口比較遠的水一格一格挪過來、接著流出去。
-   只管建築上的水：地面那一層本來就在快速下滲，讓它再往旁邊爬只是白花力氣。 */
-function drainPools() {
-  const W = water;
-  if (!W.map.size) return;
-  let leaks = 0;
-  for (const p of [...W.map.values()]) {          // 先拍一份：底下會加減格子
-    if (p.gy <= 0 || p.vol <= 0) continue;
-    /* ⓪ 先往下沉：下面那一格還沒裝滿就先掉下去。
-       少了這一條，水面永遠停在原來的高度、只是每一格越來越薄——
-       破口把水放掉了，看起來卻還是滿的（一疊半高的水片）。 */
-    const under = poolAt(p.gx, p.gy - 1, p.gz);
-    if (under && under.vol < POOL_CELL) {
-      p.vol -= addPoolVol(p.gx, p.gy - 1, p.gz, Math.min(p.vol, POOL_CELL - under.vol));
-      if (p.vol <= 1e-6) W.map.delete(p.k);
-      continue;
-    }
-    const off = Math.floor(Math.random() * 4);    // 從隨機方向開始繞，不然水永遠往同一邊偏
-    for (let i = 0; i < 4; i++) {
-      const v = DIR4[(i + off) % 4];
-      const nx = p.gx + v[0], nz = p.gz + v[1];
-      if (solidAt(nx, p.gy, nz)) continue;        // 那邊是牆
-      if (!floorAt(nx, p.gy - 1, nz)) {           // 破口：從那裡倒出去
-        if (leaks >= POOL_LEAK || W.drops.length >= WB_MAX) break;
-        leaks++;
-        W.map.delete(p.k);
-        W.drops.push(newDrop(wldX(nx), topY(p.gy - 1), wldZ(nz), p.vol));
-        break;
-      }
-      const n = poolAt(nx, p.gy, nz);
-      const nv = n ? n.vol : 0;
-      if (nv < p.vol - POOL_MOVE) {               // 那邊比較低：挪一半過去
-        p.vol -= addPoolVol(nx, p.gy, nz, (p.vol - nv) / 2);
-        break;
+  W.st -= dt;
+  const redo = W.st <= 0;
+  if (redo) W.st = BODY_SOLVE;
+  for (let i = W.bodies.length - 1; i >= 0; i--) {
+    const b = W.bodies[i];
+    if (b.dirty || redo) solveBody(b);           // 新開的、或時間到了就重算一次
+    // 破口：水頭越高噴得越遠（Torricelli），水位降到破口就停
+    if (b.spill && b.level > b.sill + 0.02) {
+      const head = b.level - b.sill;
+      const out = Math.min(b.vol, LEAK_K * Math.sqrt(head) * dt);
+      b.vol -= out;
+      if (b.cols.length) b.level -= out / b.cols.length;
+      jetFx(b, head, dt);
+      b.bank += out;
+      if (b.bank >= WB_VOL && W.drops.length < WB_MAX) {   // 噴出去的水本身也要落地
+        const p = spillPos(b);
+        const d = newDrop(p.x, p.y, p.z, b.bank);
+        d.vx = p.dx * p.sp; d.vz = p.dz * p.sp; d.vy = 0;
+        W.drops.push(d);
+        b.bank = 0;
       }
     }
+    // 滲：地面滲得快、積在建築上的從積木縫隙慢慢漏，兩個都跟「攤多大」成正比
+    const seep = (b.ground ? SEEP_G : SEEP_B) * b.cols.length * dt;
+    b.vol -= seep;
+    if (b.cols.length) b.level -= seep / b.cols.length;
+    if (b.vol <= 0) { W.bodies.splice(i, 1); continue; }   // 滲光了
+    // 畫面上的水面用追的：一下倒 2300 格，水位若是瞬間到位就看不到「裝滿」的過程
+    const step = RISE * dt;
+    b.shown += clamp(b.level - b.shown, -step, step);
+  }
+  /* 柱子 → 水體的反查表（每幀重建：水體會長大、縮小、消失）。
+     順便併團：兩團水蓋到同一根柱子，那就是同一團水（各自倒在盆地兩端會這樣）。 */
+  W.cols.clear();
+  for (let i = 0; i < W.bodies.length; i++) {
+    const b = W.bodies[i];
+    let host = null;
+    for (const c of b.cols) {
+      const got = W.cols.get(c.gx + ':' + c.gz);
+      if (got && got.body !== b) { host = got.body; break; }
+    }
+    if (host) { host.vol += b.vol; host.dirty = 1; W.bodies.splice(i--, 1); continue; }
+    for (const c of b.cols) W.cols.set(c.gx + ':' + c.gz, { body: b, base: c.base });
   }
 }
+/* 破口在世界座標的哪裡、水往哪個方向噴、噴多快 */
+function spillPos(b) {
+  const s = b.spill;
+  let dx = s.gx - b.sx, dz = s.gz - b.sz;
+  const L = Math.hypot(dx, dz) || 1;
+  dx /= L; dz /= L;
+  const head = Math.max(0, b.shown - b.sill);
+  return { x: wldX(s.gx), y: b.sill + 0.35, z: wldZ(s.gz),
+           dx, dz, sp: Math.sqrt(2 * WATER_G * head) * 0.55 };
+}
+/* 從破口噴出來的那一道水柱。水頭越高噴得越平、越遠；水位降下來就變成一條垂下去的細流。 */
+function jetFx(b, head, dt) {
+  const p = spillPos(b);
+  b.jem = (b.jem || 0) + dt * 170;              // 噴出來的要看得出是一道水柱，不是一串點
+  while (b.jem >= 1) {
+    b.jem--;
+    if (dust.length > 620) break;
+    dust.push({
+      x: p.x + rr(-0.2, 0.2), y: p.y + rr(-0.15, 0.15), z: p.z + rr(-0.2, 0.2),
+      vx: p.dx * p.sp + rr(-0.5, 0.5), vy: rr(-0.4, 0.4), vz: p.dz * p.sp + rr(-0.5, 0.5),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(0.4, 0.8), s: rr(0.3, 0.52), fade: 0.4,
+      cr: 0.42, cg: 0.74, cb: 1, g: WATER_G, keep: 1
+    });
+  }
+}
+/* 畫面上的積水：一根柱子畫一個從底到水面的方塊（所以水面是平的一片，不是一格一格）。
+   一整片水面中間不該有格線，所以寬度給整整一格（0.5 半徑），不留積木那 0.06 的縫。 */
 const poolBuf = [];
 function poolList() {
   poolBuf.length = 0;
-  for (const p of water.map.values()) poolBuf.push(p);
+  for (const b of water.bodies)
+    for (const c of b.cols) {
+      const h = b.shown - c.base;
+      if (h <= 0.02) continue;                   // 這根柱子還沒淹到
+      poolBuf.push({ x: wldX(c.gx), y: (c.base + b.shown) / 2, z: wldZ(c.gz), r: 0.5, h });
+      if (poolBuf.length >= 8000) return poolBuf;
+    }
   return poolBuf;
 }
 /* 一團水流過的地方要濕：腳下那一塊，加上左右前後貼著的那四塊
@@ -3679,28 +3709,26 @@ function wetAround(d) {
   }
 }
 /* 泡在水裡的東西要持續濕著（不然水還在，積木卻乾了又能點著）。
-   每一塊積木去問「我這一格、頭上那一格、貼著的那四格有沒有水」——六次查表。
-   v1.70 之前是「每一格水對每一塊積木算距離」，積水一多就是幾千乘幾千；
-   現在裝一個杯子就是幾千格水，那種算法一定要換掉。碎料也吃得到這條
-   （它不在藍圖格子裡，但它有座標），所以躺在水裡的碎料一樣點不著。
-   每 POOL_WET 秒才跑一趟，不是每幀。 */
-function wetPools() {
-  if (!water.map.size) return;
+   每一塊積木去問「我這根柱子有沒有水、我在不在水面下」——一次雜湊查表，
+   跟水量無關（一杯水可以是幾千格，逐格算距離會是幾千乘幾千）。碎料也吃得到這條。
+   每 BODY_WET 秒才跑一趟，不是每幀。 */
+function wetBodies() {
+  const W = water;
+  if (!W.cols.size) return;
   for (const b of blocks) {
     if (b.holder >= 0) continue;                 // 扛在人身上的不算（人自己會被淋到）
-    const gx = cellX(b.x), gz = cellZ(b.z), gy = Math.round(b.y - HB);
-    if (poolAt(gx, gy, gz) || poolAt(gx, gy + 1, gz)) { wetBlock(b); continue; }
-    for (const v of DIR4)                        // 貼著水的那一面也算（杯壁就是這樣濕的）
-      if (poolAt(gx + v[0], gy, gz + v[1])) { wetBlock(b); break; }
+    const c = W.cols.get(cellX(b.x) + ':' + cellZ(b.z));
+    if (!c) continue;
+    const y = b.y - HB;                          // 這塊積木的底在哪一層
+    if (y <= c.body.shown && y + 1 >= c.base - 1) wetBlock(b);
   }
-  // 人只要問他站的那一格（腳下與腰的高度各一格）有沒有水
   for (const w of workers) {
     if (w.wet > WET_TIME - 0.5) continue;        // 剛淋過就不必再算一次
-    const gx = cellX(w.x), gz = cellZ(w.z), gy = Math.round(w.y - HB);
-    if (poolAt(gx, gy, gz) || poolAt(gx, gy + 1, gz)) wetWorker(w);
+    const c = W.cols.get(cellX(w.x) + ':' + cellZ(w.z));
+    if (c && w.y <= c.body.shown && w.y + 2 >= c.base) wetWorker(w);
   }
 }
-/* 畫面上的水就是這些水珠：一團水沿路灑，灑出去就停在原地淡掉（g: 0、fade），
+/* 畫面上在流的水就是這些水珠：一團水沿路灑，灑出去就停在原地淡掉（g: 0、fade），
    連起來就是一條貼著牆流下來的水痕。走現成的塵霧粒子池，0 個新 draw call。 */
 function dripFx(d, dt, rate) {
   d.em += dt * rate;
@@ -3710,7 +3738,7 @@ function dripFx(d, dt, rate) {
     dust.push({
       x: d.x + rr(-0.14, 0.14), y: d.y + rr(-0.12, 0.12), z: d.z + rr(-0.14, 0.14),
       vx: 0, vy: 0, vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
-      life: rr(0.3, 0.55), s: rr(0.24, 0.42), fade: 0.35,
+      life: rr(0.3, 0.55), s: rr(0.32, 0.58), fade: 0.35,
       cr: 0.42, cg: 0.74, cb: 1, g: 0, keep: 0.9
     });
   }

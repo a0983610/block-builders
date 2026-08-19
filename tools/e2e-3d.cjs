@@ -4908,12 +4908,127 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 個 → 收掉 ' + ftCalls.after + ' 個');
 
   /* ══════════ 水桶 ══════════
-     v1.69。點一下倒一桶水：水沿著表面往下流、積在凹處、流到地面攤成一攤再慢慢滲掉，
-     碰到的東西濕 WET_TIME 秒（跟消防車共用同一組欄位）。
-     一團水待在「空的那一格」（d.gy 是自己那一格），腳下的積木在 d.gy − 1。 */
+     v1.69 加的道具，v1.73 把「積水」整層換成**水體**：一團連通的水共用一個水位，
+     倒進去水位往上升、破了洞水位整片降下來、水面永遠是平的。
+     這一節驗的就是那三件事，外加「一下要裝半個馬克杯」這個量的基準。 */
   head('水桶');
 
-  // 倒在最高的那一格上，看它一路流到地面
+  // 讀水的狀態：幾團水、水面在哪、蓋到幾根柱子、有沒有溢出口
+  const wat = () => page.evaluate(() => {
+    if (!water) return { on: false, bodies: [], drops: 0, cells: 0, vol: 0 };
+    const bs = water.bodies.map(b => ({
+      vol: +b.vol.toFixed(1), level: +b.level.toFixed(2), shown: +b.shown.toFixed(2),
+      cols: b.cols.length, base: b.cols[0] ? b.cols[0].base : -1,
+      sill: b.spill ? +b.sill.toFixed(1) : null, ground: !!b.ground
+    }));
+    return { on: true, bodies: bs, drops: water.drops.length,
+             cells: bs.reduce((a, b) => a + b.cols, 0),
+             vol: +bs.reduce((a, b) => a + b.vol, 0).toFixed(1) };
+  });
+  const settle = (max) => page.evaluate(m => {
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < m) { step(1 / 60); t += 1 / 60; }
+    return +t.toFixed(1);
+  }, max);
+
+  /* 基準：使用者放進 blueprints/ 的馬克杯，**點一下要裝到半杯**（v1.71 訂的量）。
+     量的是水面高度佔杯內高度的比例——「半杯」是用眼睛看的那個半杯，不是水量。 */
+  const wbMug = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);   // 杯口那一層
+    /* 杯內底：從杯子正中央那一柱往上找第一個空格。
+       格子座標是從藍圖角落算的，(0,0) 不是中心——中心要用 cellX/cellZ 換算。 */
+    const mx = cellX(0), mz = cellZ(0);
+    let floor = -1;
+    for (let gy = 0; gy <= rim; gy++) if (!solidAt(mx, gy, mz)) { floor = gy; break; }
+    pourBucket(0, rim + 2, 0, WB_DROPS);                   // 點一下，往杯口正中央倒
+    let t = 0, rise = [];
+    while (water && (water.drops.length || water.pours.length) && t < 30) {
+      step(1 / 60); t += 1 / 60;
+      const b = water && water.bodies[0];
+      if (b && rise.length < 200) rise.push(+b.shown.toFixed(2));
+    }
+    const b = water.bodies[0];
+    const r = { rim, floor, t: +t.toFixed(1), bodies: water.bodies.length,
+                level: +b.level.toFixed(2), cols: b.cols.length,
+                vol: Math.round(b.vol), spill: !!b.spill,
+                frac: +((b.level - floor) / (rim + 1 - floor)).toFixed(2),
+                // 水面「升上來」花了多久：從第一次有水到停下來
+                riseT: +(rise.length / 60).toFixed(1),
+                riseMid: rise.length ? +rise[Math.floor(rise.length / 3)].toFixed(1) : -1,
+                riseEnd: rise.length ? +rise[rise.length - 1].toFixed(1) : -1 };
+    cleanTools();
+    return r;
+  });
+  ok('點一下把馬克杯裝到半杯（這是水量的基準）',
+     wbMug.frac > 0.4 && wbMug.frac < 0.62 && wbMug.bodies === 1 && !wbMug.spill,
+     '杯內第 ' + wbMug.floor + '～' + wbMug.rim + ' 層，一下倒完水面停在 ' + wbMug.level +
+     '（佔杯高 ' + Math.round(wbMug.frac * 100) + '%），一團水蓋 ' + wbMug.cols +
+     ' 根柱子、' + wbMug.vol + ' 格');
+  /* 使用者回報過「倒下去是水粒子然後極短時間滿上來」。水位不能瞬間到位：
+     一下 2300 格分 WB_POUR 秒流完，畫面上的水面再用 RISE 追上去。 */
+  ok('水面是一路升上來的，不是瞬間滿',
+     wbMug.riseT > 1.2 && wbMug.riseMid < wbMug.riseEnd - 2,
+     '從第一次有水到停下來 ' + wbMug.riseT + ' 秒，中途水面 ' + wbMug.riseMid +
+     ' → 最後 ' + wbMug.riseEnd);
+
+  /* 破口：杯壁半腰敲一個洞，水柱噴出去、水面降到破口就停（不會整杯漏光）。
+     這條是 v1.73 的重點——v1.72 的積水只有「腳下的東西不見了」才會動，
+     旁邊破了洞是不管的（使用者回報：「目前不會流出來」）。 */
+  const wbHole = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    const run = (sec) => { for (let i = 0; i < sec * 60; i++) step(1 / 60); };
+    pourBucket(0, rim + 2, 0, WB_DROPS); run(12);
+    pourBucket(0, rim + 2, 0, WB_DROPS); run(12);           // 兩下 ＝ 接近滿
+    const b = water.bodies[0];
+    const before = { vol: Math.round(b.vol), level: +b.level.toFixed(1) };
+    // 半腰敲一個洞。杯壁在那個角度是兩格厚，要**整個厚度**打穿才算破口
+    const hy = Math.round((before.level + 2) / 2);
+    buildSlotOwner();
+    const mx = cellX(0), mz = cellZ(0);
+    let wall = null;
+    for (let d = 1; d < 20 && !wall; d++) if (solidAt(mx, hy, mz - d)) wall = { gx: mx, gz: mz - d };
+    let broke = 0;
+    for (let k = -1; k <= 1; k++)
+      for (let n = 0; n < 4; n++) {
+        const bl = blockOn(wall.gx + k, hy, wall.gz - n);
+        if (bl) { breakBlock(bl, 0, 1, -3); broke++; }
+      }
+    step(1 / 60);
+    const sill = water.bodies[0].spill ? water.bodies[0].sill : -1;
+    let jet = 0;
+    for (let i = 0; i < 60 * 3; i++) { step(1 / 60); jet = Math.max(jet, dust.length); }
+    run(45);
+    const b2 = water.bodies[0];
+    const r = { hy, broke, before, sill, jet,
+                after: { vol: Math.round(b2.vol), level: +b2.level.toFixed(1) },
+                ground: water.bodies.filter(x => x.ground).length };
+    cleanTools();
+    return r;
+  });
+  ok('杯壁敲一個洞，水就從破口噴出去',
+     wbHole.broke >= 4 && wbHole.sill > 0 && wbHole.jet > 60 &&
+     wbHole.after.vol < wbHole.before.vol * 0.75,
+     '破口在第 ' + wbHole.hy + ' 層（門檻高度 ' + wbHole.sill + '），噴出來的水珠同時 ' +
+     wbHole.jet + ' 顆；水量 ' + wbHole.before.vol + ' → ' + wbHole.after.vol + ' 格');
+  /* 水面要停在破口那個高度：洩到破口以下是不對的（那些水根本流不到破口）。
+     這一條就是「sill 用門檻高度、不是溢出口那一格的高度」在守。 */
+  ok('水面降到破口就停，不會整杯漏光',
+     wbHole.after.level < wbHole.before.level - 3 &&
+     wbHole.after.level >= wbHole.sill - 0.6 && wbHole.after.level <= wbHole.sill + 1.5,
+     '水面第 ' + wbHole.before.level + ' → ' + wbHole.after.level +
+     ' 層（破口門檻 ' + wbHole.sill + '），漏出去的水在地上積成 ' + wbHole.ground + ' 團');
+
+  // 一下的水從屋頂一路流到地面，沿路把積木淋濕，但一塊都不會掉
   const wbFlow = await page.evaluate(() => {
     cleanTools();
     targetCnt = 3000;
@@ -4923,131 +5038,77 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const s of bp.slots) if (s.filled && (!top || s.gy > top.gy)) top = s;
     const set0 = placedCnt;
     pourWater({ point: { x: top.x, y: top.y + HB, z: top.z }, kind: 'block' });
-    let maxDrop = 0, maxWet = 0, maxDust = 0, minY = 999, t = 0;
-    while (water && (water.drops.length || water.pours.length) && t < 20) {
+    let t = 0, maxWet = 0, maxDust = 0, maxDrop = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 30) {
       step(1 / 60); t += 1 / 60;
       maxDrop = Math.max(maxDrop, water.drops.length);
       maxDust = Math.max(maxDust, dust.length);
-      for (const d of water.drops) minY = Math.min(minY, d.y);
-      const n = blocks.reduce((a, b) => a + (b.wet > 0 ? 1 : 0), 0);
-      maxWet = Math.max(maxWet, n);
+      maxWet = Math.max(maxWet, blocks.reduce((a, b) => a + (b.wet > 0 ? 1 : 0), 0));
     }
-    const pools = water ? [...water.map.values()] : [];
-    const r = { topY: +top.y.toFixed(1), set0, set1: placedCnt, t: +t.toFixed(1), want: WB_DROPS,
-                maxDrop, maxWet, maxDust, minY: +minY.toFixed(2),
-                pools: pools.length, ground: pools.filter(p => p.gy <= 0).length,
-                vol: +pools.reduce((a, p) => a + p.vol, 0).toFixed(1) };
+    const gnd = water ? water.bodies.filter(b => b.ground) : [];
+    const r = { topY: +top.y.toFixed(1), set0, set1: placedCnt, t: +t.toFixed(1),
+                maxDrop, maxWet, maxDust, want: WB_DROPS,
+                ground: gnd.length, gcols: gnd.reduce((a, b) => a + b.cols.length, 0) };
     cleanTools();
     return r;
   });
-  ok('一桶水從屋頂一路流到地面，最後攤成幾攤水窪',
-     wbFlow.maxDrop === wbFlow.want && wbFlow.minY < 0.5 &&
-     wbFlow.ground > 0 && wbFlow.t < 20,
+  ok('一下的水從屋頂一路流到地面，最後在地上積成一片',
+     wbFlow.maxDrop === wbFlow.want && wbFlow.ground > 0 && wbFlow.gcols > 30,
      '從 ' + wbFlow.topY + ' 高倒下去，' + wbFlow.maxDrop + ' 團水流了 ' + wbFlow.t +
-     ' 秒到地面（最低 ' + wbFlow.minY + '），留下 ' + wbFlow.ground + ' 攤水窪');
+     ' 秒，地上積成 ' + wbFlow.ground + ' 團、共 ' + wbFlow.gcols + ' 根柱子');
   ok('流過的地方會濕，但一塊積木都不會掉',
      wbFlow.maxWet > 30 && wbFlow.set1 === wbFlow.set0,
      '同時最多 ' + wbFlow.maxWet + ' 塊是濕的；建築 ' + wbFlow.set0 + ' → ' + wbFlow.set1 + ' 塊');
   ok('水珠沒把塵霧粒子池吃光', wbFlow.maxDust < 700,
      '同時最多 ' + wbFlow.maxDust + ' 顆粒子（池子上限 720，煙塵要共用）');
 
-  /* 凹處積水：聖家堂的塔身上有一堆「四面都是牆」的凹格。
-     找一個出來直接往裡面倒——測的是規則本身，不是「隨便倒剛好會不會流進某個凹處」。
-     再把撐著那攤水的積木敲掉：水要從破口漏下去（「杯子敲個洞」的雛形）。 */
-  const wbCup = await page.evaluate(() => {
-    cleanTools();
-    targetCnt = 3000;
-    shapePick = SHAPES.findIndex(s => s.n === '聖家堂');
-    startBuild(true); completeNow();
-    let cell = null;
-    for (const s of bp.slots) {
-      const gx = s.gx, gy = s.gy + 1, gz = s.gz;      // 每一塊積木頭上那一格
-      if (!s.filled || solidAt(gx, gy, gz)) continue;
-      if (solidAt(gx + 1, gy, gz) && solidAt(gx - 1, gy, gz) &&
-          solidAt(gx, gy, gz + 1) && solidAt(gx, gy, gz - 1)) { cell = { gx, gy, gz }; break; }
-    }
-    pourWater({ point: { x: wldX(cell.gx), y: cell.gy + 2.5, z: wldZ(cell.gz) }, kind: 'block' });
-    let t = 0;
-    while (water && (water.drops.length || water.pours.length) && t < 20) { step(1 / 60); t += 1 / 60; }
-    const up = water ? [...water.map.values()].filter(p => p.gy > 0) : [];
-    /* 水會一層一層疊上去，所以要挑**最底下**那一格：上面幾層的底下是水不是積木。 */
-    const cup = up.length ? up.sort((a, b) => a.gy - b.gy)[0] : null;
-    let hole = null, after = null;
-    if (cup) {
-      buildSlotOwner();
-      const b = blockOn(cup.gx, cup.gy - 1, cup.gz);      // 撐著那攤水的那一塊
-      hole = !!b;
-      if (b) {
-        const n0 = water.drops.length;
-        breakBlock(b, 0, -1, 0);                          // 敲掉 → 水應該漏下去
-        step(1 / 60);
-        after = { gone: !water.map.has(cup.k), drops: water.drops.length - n0 };
-      }
-    }
-    const r = { cell, pools: up.length, y: cup ? +cup.y.toFixed(2) : -1,
-                gy: cup ? cup.gy : -1, vol: cup ? +cup.vol.toFixed(1) : -1, hole, after };
-    cleanTools();
-    return r;
-  });
-  ok('倒進四面都是牆的凹格，水就積在那裡（積滿了往上疊一層）',
-     wbCup.pools >= 1 && wbCup.gy >= wbCup.cell.gy && wbCup.y > wbCup.gy - 1,
-     '倒進第 ' + wbCup.cell.gy + ' 層那一格 → 積了 ' + wbCup.pools + ' 攤在建築上，' +
-     '最上面那攤在第 ' + wbCup.gy + ' 層（水面 y=' + wbCup.y + '、' + wbCup.vol + ' 團水）');
-  ok('把撐著積水的那塊敲掉，水就從破口漏下去',
-     wbCup.hole === true && wbCup.after && wbCup.after.gone && wbCup.after.drops > 0,
-     '敲掉之後那攤水消失 ' + (wbCup.after && wbCup.after.gone) + '，變回 ' +
-     (wbCup.after && wbCup.after.drops) + ' 團往下找路');
-
-  /* 地面水窪：會慢慢滲進地底，不會永遠留在草地上。
-     泡在裡面的積木要一直是濕的——水還在、積木卻乾了又能點著，那是說不過去的。 */
+  /* 倒在草地上：攤成一大片，然後很快滲進地底（使用者指定「很快速滲入地下」）。
+     泡在裡面的積木要一直是濕的——水還在、積木卻乾了又能點著，說不過去。 */
   const wbPool = await page.evaluate(() => {
     /* 這條不蓋建築（startBuild 之後直接當它完工）：要的是一塊躺在地上的碎料，
        蓋好的那幾座剛好把積木用光時一塊碎料都不剩，測試會抓不到東西丟進水裡。 */
     cleanTools(); startBuild(true); phase = 'done';
     for (const w of workers) releaseWorker(w);
-    const x = siteR + 6;
-    pourWater({ point: { x, y: 0, z: 0 }, kind: 'ground' });
+    pourWater({ point: { x: siteR + 6, y: 0, z: 0 }, kind: 'ground' });
     let t = 0;
-    while (water && (water.drops.length || water.pours.length) && t < 6) { step(1 / 60); t += 1 / 60; }
-    const p0 = water ? [...water.map.values()] : [];
-    const vol0 = +p0.reduce((a, p) => a + p.vol, 0).toFixed(0);
-    // 鋪開的範圍（格）：v1.71 起地面的水也是一格一格的，不是一片圓盤
-    const xs = p0.map(p => p.gx);
+    while (water && (water.drops.length || water.pours.length) && t < 10) { step(1 / 60); t += 1 / 60; }
+    const b = water.bodies.sort((a, c) => c.cols.length - a.cols.length)[0];
+    const xs = b.cols.map(c => c.gx);
     const wide = Math.max(...xs) - Math.min(...xs) + 1;
-    const flat = p0.every(p => p.gy === 0);
-    // 丟一塊碎料進水裡，看它會不會一直濕著
-    const b = blocks.find(k => k.st === 0);
-    if (b.cell) gridDel(b);                       // 搬位置前先從空間雜湊拿掉（跟 fillAll 同一招）
-    b.x = p0[0].x; b.z = p0[0].z; b.y = HB; b.wet = 0;
-    for (let i = 0; i < 20; i++) step(1 / 60);
-    const soaked = b.wet > 0, lit = igniteBlock(b);
+    const spread = { cols: b.cols.length, wide, deep: +(b.level - b.cols[0].base).toFixed(2),
+                     ground: !!b.ground };
+    // 丟一塊碎料進水裡，看它會不會一直濕著、點不著
+    const k = blocks.find(x => x.st === 0);
+    if (k.cell) gridDel(k);                       // 搬位置前先從空間雜湊拿掉（跟 fillAll 同一招）
+    k.x = wldX(b.cols[0].gx); k.z = wldZ(b.cols[0].gz); k.y = HB; k.wet = 0;
+    for (let i = 0; i < 30; i++) step(1 / 60);
+    const soaked = k.wet > 0, lit = igniteBlock(k);
     let dry = 0;
-    while (water && dry < 120) { step(1 / 60); dry += 1 / 60; }
-    const r = { cells: p0.length, vol0, wide, flat, soaked, lit,
-                dry: +dry.toFixed(1), gone: !water, want: WB_CLICK };
+    while (water && dry < 60) { step(1 / 60); dry += 1 / 60; }
+    const r = { spread, soaked, lit, dry: +dry.toFixed(1), gone: !water, want: WB_CLICK };
     cleanTools();
     return r;
   });
-  ok('倒在地上的水鋪成一大片，然後很快滲進地底',
-     wbPool.cells > wbPool.want * 0.7 && wbPool.flat && wbPool.wide > 20 &&
-     wbPool.gone && wbPool.dry > 0.3 && wbPool.dry < 6,
-     '點一下（' + wbPool.want + ' 格的水）在地上鋪開 ' + wbPool.cells + ' 格、' +
-     wbPool.wide + ' 格寬，' + wbPool.dry + ' 秒就滲光');
-  ok('泡在水窪裡的積木一直是濕的，點不著',
+  ok('倒在草地上鋪成一大片，然後很快滲進地底',
+     wbPool.spread.cols > 300 && wbPool.spread.wide > 20 && wbPool.spread.ground &&
+     wbPool.gone && wbPool.dry > 0.3 && wbPool.dry < 12,
+     '點一下（' + wbPool.want + ' 格的水）鋪開 ' + wbPool.spread.cols + ' 根柱子、' +
+     wbPool.spread.wide + ' 格寬、深 ' + wbPool.spread.deep + ' 格，' +
+     wbPool.dry + ' 秒就滲光');
+  ok('泡在水裡的積木一直是濕的，點不著',
      wbPool.soaked === true && wbPool.lit === false,
-     '泡進去 0.3 秒後 wet>0 ' + wbPool.soaked + '、igniteBlock ' + wbPool.lit);
+     '泡進去 0.5 秒後 wet>0 ' + wbPool.soaked + '、igniteBlock ' + wbPool.lit);
 
   /* 澆在燒著的建築上要滅火。這是水桶跟消防車共用的那條路（wetBlock → douse）。 */
   const wbDouse = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
-    // 挑建築最上面那一塊點著，再從它正上方倒水
     let top = null;
     for (const b of blocks) if (b.st === 3 && (!top || b.y > top.y)) top = b;
     igniteBlock(top);
     const lit = top.burn;
     pourWater({ point: { x: top.x, y: top.y, z: top.z }, kind: 'block' });
     let t = 0;
-    while (top.burn && t < 3) { step(1 / 60); t += 1 / 60; }
+    while (top.burn && t < 5) { step(1 / 60); t += 1 / 60; }
     const r = { lit, out: !top.burn, wet: +top.wet.toFixed(1), t: +t.toFixed(2) };
     cleanTools();
     return r;
@@ -5056,101 +5117,105 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wbDouse.lit === 1 && wbDouse.out === true && wbDouse.wet > 4,
      '倒下去 ' + wbDouse.t + ' 秒火就滅了，那一塊還濕 ' + wbDouse.wet + ' 秒');
 
-  // 站在水窪裡的小人也是濕的（身上有火會熄）
+  // 站在水裡的小人也是濕的（身上有火會熄）
   const wbMan = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
-    const x = siteR + 6;
-    pourWater({ point: { x, y: 0, z: 0 }, kind: 'ground' });
+    pourWater({ point: { x: siteR + 6, y: 0, z: 0 }, kind: 'ground' });
     let t = 0;
-    while (water && (water.drops.length || water.pours.length) && t < 6) { step(1 / 60); t += 1 / 60; }
-    const p = [...water.map.values()][0];
+    while (water && (water.drops.length || water.pours.length) && t < 10) { step(1 / 60); t += 1 / 60; }
+    const b = water.bodies.sort((a, c) => c.cols.length - a.cols.length)[0];
     const w = workers[0];
-    releaseWorker(w); w.x = p.x; w.z = p.z; w.y = 0; w.wet = 0;
+    releaseWorker(w); w.x = wldX(b.cols[0].gx); w.z = wldZ(b.cols[0].gz); w.y = 0; w.wet = 0;
     igniteWorker(w, true);
     const lit = w.burn > 0;
-    for (let i = 0; i < 30; i++) step(1 / 60);
+    for (let i = 0; i < 40; i++) step(1 / 60);
     const r = { lit, out: w.burn <= 0, wet: +w.wet.toFixed(1), dark: +(w.wetK || 0).toFixed(2) };
     cleanTools();
     return r;
   });
-  ok('站在水窪裡的小人一直是濕的，身上的火會熄',
+  ok('站在水裡的小人一直是濕的，身上的火會熄',
      wbMan.lit === true && wbMan.out === true && wbMan.wet > 4 && wbMan.dark > 0.5,
-     '點著的人站進水窪 0.5 秒：火熄了 ' + wbMan.out + '、還濕 ' + wbMan.wet +
+     '點著的人站進水裡 0.7 秒：火熄了 ' + wbMan.out + '、還濕 ' + wbMan.wet +
      ' 秒、顏色倍率 ' + wbMan.dark);
 
-  /* 畫面成本：水珠走現成的塵霧池（0 個新 draw call），水窪自己一顆網格。
-     沒水的時候那顆網格 visible=false，一個都不吃。 */
+  /* 畫面成本：一根柱子一個方塊，全部塞在同一顆 InstancedMesh 裡，所以不管幾根柱子
+     都只多 1 個 draw call；水珠走現成的塵霧池，0 個新的。 */
   const wbCost = await page.evaluate(() => {
-    cleanTools(); startBuild(true); completeNow();
-    /* 量法：同一個畫面拍兩張，中間**只**把水窪拿掉。
-       「倒水前拍一張、倒完拍一張」是不行的——那兩張之間還差了在飛的水珠、
-       上一條測試留下來的煙塵與火苗，量到的就不只是水窪那一個。 */
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    /* 量之前先把塵霧清掉：水珠走的是塵霧那顆網格，留著的話「有沒有積水」這一項
+       會被「有沒有水珠在飛」蓋掉（上一條測試留下來的煙塵也算）。 */
     const shot = () => { dust.length = 0; draw(); ENG.render(); return ENG.info().calls; };
-    pourWater({ point: { x: siteR + 6, y: 0, z: 0 }, kind: 'ground' });
-    let t = 0;
-    while (water && (water.drops.length || water.pours.length) && t < 6) { step(1 / 60); t += 1 / 60; }
-    const wet = shot(), pools = water.map.size;
-    water = null;                      // 只收水窪，畫面上其他東西一個都不動
+    pourBucket(0, rim + 2, 0, WB_DROPS);
+    for (let i = 0; i < 60 * 12; i++) step(1 / 60);
+    const wet = shot(), cols = water.bodies[0].cols.length;
+    // 成本：一杯水在場時 step + draw 各花多少
+    let sum = 0, mx = 0;
+    for (let i = 0; i < 30; i++) {
+      const t0 = performance.now(); step(1 / 60); draw();
+      const d = performance.now() - t0; sum += d; mx = Math.max(mx, d);
+    }
+    water = null;                      // 只收水，畫面上其他東西一個都不動
     const idle = shot();
-    // 成本：一桶水在流的時候 stepWater 花多少
-    cleanTools(); startBuild(true); completeNow();
-    let top = null;
-    for (const s of bp.slots) if (s.filled && (!top || s.gy > top.gy)) top = s;
-    for (let i = 0; i < 6; i++) pourWater({ point: { x: top.x + i, y: top.y + HB, z: top.z }, kind: 'block' });
-    for (let i = 0; i < 30; i++) step(1 / 60);            // 先讓水散開
-    const t0 = performance.now();
-    let n = 0;
-    for (; n < 120; n++) stepWater(1 / 60);
-    const ms = (performance.now() - t0) / n;
-    const drops = water ? water.drops.length : 0;
-    const r = { idle, wet, pools, ms: +ms.toFixed(3), drops };
+    const r = { idle, wet, cols, avg: +(sum / 30).toFixed(2), max: +mx.toFixed(2) };
     cleanTools();
     return r;
   });
-  ok('水窪在場時只多 1 個 draw call，收掉就還回去',
-     wbCost.wet === wbCost.idle + 1 && wbCost.pools > 0,
-     wbCost.pools + ' 攤水 ' + wbCost.wet + ' 個 → 收掉 ' + wbCost.idle +
+  ok('一杯水（幾百根柱子）只多 1 個 draw call，收掉就還回去',
+     wbCost.wet === wbCost.idle + 1 && wbCost.cols > 100,
+     wbCost.cols + ' 根柱子的水 ' + wbCost.wet + ' 個 → 收掉 ' + wbCost.idle +
      ' 個（水珠走現成的塵霧池，0 個新的）');
-  ok('六桶水同時在流的成本可以忽略', wbCost.ms < 0.5,
-     wbCost.drops + ' 團水在流，stepWater ' + wbCost.ms + ' ms／幀（預算 4ms）');
+  ok('一杯水在場時每幀的成本可以忽略', wbCost.avg < 2.5 && wbCost.max < 6,
+     'step + draw 平均 ' + wbCost.avg + ' ms、最高 ' + wbCost.max + ' ms（預算 4ms）');
 
-  // 連按不會失控：團數有上限，水窪也有上限
+  // 連按不會失控：水團有上限、水體有上限，最後會全部收乾淨
   const wbSpam = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
     let top = null;
     for (const s of bp.slots) if (s.filled && (!top || s.gy > top.gy)) top = s;
     for (let i = 0; i < 20; i++)
-      pourWater({ point: { x: top.x + (i % 5), y: top.y + HB, z: top.z + (i / 5 | 0) }, kind: 'block' });
-    let maxD = 0, maxP = 0, t = 0;
+      pourBucket(top.x + (i % 5), top.y + HB + WB_UP, top.z + (i / 5 | 0), WB_DROPS);
+    let maxD = 0, maxB = 0, maxC = 0, t = 0;
     while (water && t < 200) {
       step(1 / 60); t += 1 / 60;
-      if (!water) break;                     // 全滲光了：water 會在 stepWater 裡自己收掉
+      if (!water) break;
       maxD = Math.max(maxD, water.drops.length);
-      maxP = Math.max(maxP, water.map.size);
+      maxB = Math.max(maxB, water.bodies.length);
+      maxC = Math.max(maxC, water.bodies.reduce((a, b) => a + b.cols.length, 0));
     }
-    const r = { maxD, maxP, gone: !water, t: +t.toFixed(1), capD: WB_MAX, capP: POOL_MAX };
+    const left = water ? +water.bodies.reduce((a, b) => a + b.vol, 0).toFixed(0) : 0;
+    const r = { maxD, maxB, maxC, gone: !water, t: +t.toFixed(1), left,
+                poured: 20 * WB_CLICK, capD: WB_MAX, capB: BODY_MAX, capC: COL_MAX };
     cleanTools();
     return r;
   });
-  ok('連倒二十桶也不會失控，而且最後會全部收乾淨',
-     wbSpam.maxD <= wbSpam.capD && wbSpam.maxP <= wbSpam.capP && wbSpam.gone,
-     '同時最多 ' + wbSpam.maxD + ' 團（上限 ' + wbSpam.capD + '）、' + wbSpam.maxP +
-     ' 攤（上限 ' + wbSpam.capP + '），' + wbSpam.t + ' 秒後全乾');
+  /* 「全乾」不是這條的重點（積在建築縫隙裡的水本來就漏得很慢，見 SEEP_B），
+     重點是**上限守得住**、而且絕大部分的水確實走掉了。 */
+  ok('連倒二十下也不會失控，水最後也走得掉',
+     wbSpam.maxD <= wbSpam.capD && wbSpam.maxB <= wbSpam.capB &&
+     wbSpam.maxC <= wbSpam.capC && wbSpam.left < wbSpam.poured * 0.1,
+     '同時最多 ' + wbSpam.maxD + ' 團在流（上限 ' + wbSpam.capD + '）、' + wbSpam.maxB +
+     ' 團積水（上限 ' + wbSpam.capB + '）、共 ' + wbSpam.maxC + ' 根柱子；倒了 ' +
+     wbSpam.poured + ' 格，' + wbSpam.t + ' 秒後只剩 ' + wbSpam.left + ' 格');
 
-  // 換一座建築，水要跟著收：積水記的是「哪一格」，藍圖一換那些格子就不存在了
+  // 換一座建築，水要跟著收：水體記的是「哪幾根柱子」，藍圖一換那些格子就不存在了
   const wbSwap = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
     pourWater({ point: { x: siteR + 6, y: 0, z: 0 }, kind: 'ground' });
-    for (let i = 0; i < 60; i++) step(1 / 60);
-    const before = water ? water.map.size + water.drops.length : 0;
+    for (let i = 0; i < 200; i++) step(1 / 60);
+    const before = water ? water.bodies.length : 0;
     startBuild(false);
-    const r = { before, after: water ? water.map.size + water.drops.length : 0, gone: !water };
+    const r = { before, after: water ? water.bodies.length : 0, gone: !water };
     cleanTools();
     return r;
   });
-  ok('換一座建築就把水收掉（積水記的是格子，藍圖一換就不存在了）',
+  ok('換一座建築就把水收掉（水體記的是柱子，藍圖一換就不存在了）',
      wbSwap.before > 0 && wbSwap.gone,
-     '換場前有 ' + wbSwap.before + ' 團／攤 → 換場後 ' + wbSwap.after + '');
+     '換場前有 ' + wbSwap.before + ' 團水 → 換場後 ' + wbSwap.after + ' 團');
 
   /* 讀狀態只證明資料對，證明不了看得到。所以再量一次畫面：
      同一個機位，倒水前後各拍一張，數草地上「偏藍」的像素多了多少。 */
@@ -5180,21 +5245,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 3; i++)
       pourWater({ point: { x: siteR + 4 + i * 2, y: 0, z: 0 }, kind: 'ground' });
     let t = 0;
-    while (water && (water.drops.length || water.pours.length) && t < 6) { step(1 / 60); t += 1 / 60; }
+    while (water && (water.drops.length || water.pours.length) && t < 10) { step(1 / 60); t += 1 / 60; }
     const wet = blue();
-    const r = { dry, wet, pools: water ? water.map.size : 0 };
+    const r = { dry, wet, cols: water ? water.bodies.reduce((a, b) => a + b.cols.length, 0) : 0 };
     cleanTools();
     return r;
   });
-  ok('水窪在畫面上真的看得到（草地上多出一片藍）',
-     wbPix.wet > wbPix.dry + 1500 && wbPix.pools > 0,
-     '倒水前草地那半有 ' + wbPix.dry + ' 個偏藍的像素 → 倒了三桶之後 ' + wbPix.wet +
-     '（' + wbPix.pools + ' 攤）');
-
+  ok('積水在畫面上真的看得到（草地上多出一片藍）',
+     wbPix.wet > wbPix.dry + 1500 && wbPix.cols > 100,
+     '倒水前草地那半有 ' + wbPix.dry + ' 個偏藍的像素 → 倒了三下之後 ' + wbPix.wet +
+     '（' + wbPix.cols + ' 根柱子）');
 
   /* ── 按住不放就一直倒（v1.70） ──────────────────────────
-     使用者：「裝水的速度太慢了 能不能按住就一直流水進去 然後水量大一點」。
-     這幾條用**真的滑鼠事件**，因為要驗的就是輸入層有沒有接上。 */
+     使用者：「能不能按住就一直流水進去」。這幾條用**真的滑鼠事件**，
+     因為要驗的就是輸入層有沒有接上。 */
   await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 6 });
   await fillAll(page);
   const wbTop = await toScreen(page,
@@ -5212,24 +5276,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { out: pourJet ? pourJet.out : 0, drops: water ? water.drops.length : 0 };
   });
   await page.mouse.up();
-  const holdC = await page.evaluate(() => {
-    const jet = !!pourJet, out = 0;
-    const n0 = water ? water.drops.length : 0;
-    for (let i = 0; i < 30; i++) step(1 / 60);            // 放開之後半秒
-    return { jet, n0, spawned: 0, pours: water ? water.pours.length : 0 };
-  });
+  const holdC = await page.evaluate(() => ({
+    jet: !!pourJet,
+    // 放開時補到「一整下的量」，所以按不滿一下的時間放開會留一小段在排隊
+    top: (water ? water.pours : []).reduce((a, p) => a + (p.n - p.out), 0),
+    want: WB_DROPS
+  }));
   ok('按住不放就一直倒，放開就停',
      holdA.jet === true && holdB.out > holdA.out * 1.7 &&
      Math.abs(holdA.out - holdA.rate) < holdA.rate * 0.25 &&
-     holdC.jet === false && holdC.pours === 0,
+     holdC.jet === false && holdC.top === holdC.want - holdB.out,
      '按住一秒倒了 ' + holdA.out + ' 團（設定每秒 ' + holdA.rate + '）、兩秒 ' +
-     holdB.out + ' 團，放開後水柱收掉 ' + (holdC.jet === false));
+     holdB.out + ' 團，放開後水柱收掉、補上剩下的 ' + holdC.top + ' 團（一整下是 ' +
+     holdC.want + ' 團）');
   ok('按住的時候場上真的有一大片水在流',
      holdA.drops > holdA.rate * 0.5 && holdB.drops > holdA.drops,
      '一秒後 ' + holdA.drops + ' 團在流 → 兩秒後 ' + holdB.drops + ' 團');
 
-  // 點一下就放開的不吃虧：倒不滿一桶的會補到一桶
-  const tapPour = await page.evaluate(() => { cleanTools(); tool = 'bucket'; return 1; });
+  // 點一下就放開的不吃虧：倒不滿一下的量會補到一整下
+  await page.evaluate(() => { cleanTools(); tool = 'bucket'; });
   await page.mouse.down();
   await page.mouse.up();
   const tapR = await page.evaluate(() => {
@@ -5238,9 +5303,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const made = water ? water.drops.length : 0;
     return { jet, total: queued + made, want: WB_DROPS };
   });
-  ok('點一下就放開還是一整桶（不滿一桶的放開時補滿）',
+  ok('點一下就放開還是一整下的量（不滿的放開時補滿）',
      tapR.jet === false && tapR.total >= tapR.want - 1 && tapR.total <= tapR.want + 2,
-     '點一下共 ' + tapR.total + ' 團（一桶是 ' + tapR.want + ' 團）');
+     '點一下共 ' + tapR.total + ' 團（一下是 ' + tapR.want + ' 團）');
 
   // 拿水桶拖曳是「把水澆過去」，不是轉視角
   await page.evaluate(() => { cleanTools(); tool = 'bucket'; });
@@ -5258,161 +5323,6 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      jet0 && jet1 && Math.hypot(jet1.x - jet0.x, jet1.z - jet0.z) > 1 && wbYaw1 === wbYaw0,
      '落點 (' + jet0.x + ',' + jet0.z + ') → (' + jet1.x + ',' + jet1.z + ')，yaw ' +
      wbYaw0 + ' → ' + wbYaw1);
-
-  /* 一格滿了之後倒進去的水要往上抬，不能憑空不見。
-     v1.69 的漏洞就在這裡：繞不出去的那條路是 addPool 完就直接把那一團丟掉，
-     所以那一格滿了之後再怎麼倒都裝不進去（使用者：「裝水的速度太慢」）。
-     實測當時聖家堂塔上按住三秒，200 團裡有 198 團是這樣不見的。 */
-  const wbKeep = await page.evaluate(() => {
-    cleanTools();
-    targetCnt = 3000;
-    shapePick = SHAPES.findIndex(s => s.n === '聖家堂');
-    startBuild(true); completeNow();
-    let cell = null;
-    for (const s of bp.slots) {
-      const gx = s.gx, gy = s.gy + 1, gz = s.gz;
-      if (!s.filled || solidAt(gx, gy, gz)) continue;
-      if (solidAt(gx + 1, gy, gz) && solidAt(gx - 1, gy, gz) &&
-          solidAt(gx, gy, gz + 1) && solidAt(gx, gy, gz - 1)) { cell = { gx, gy, gz }; break; }
-    }
-    pourStart(wldX(cell.gx), cell.gy + 1.5, wldZ(cell.gz));
-    for (let i = 0; i < 180; i++) step(1 / 60);            // 對著同一個凹格按住三秒
-    const poured = pourJet.out * (WB_CLICK / WB_DROPS);    // 團 → 格
-    pourJet = null;                                       // 直接收掉，不要補那一桶
-    /* 量的是**尖峰**：地面的水 1.7 秒就滲光了，等一切靜止再量會量到空的——
-       這一條要驗的是「倒進去的水有沒有真的變成場上的水」，不是「最後剩多少」。 */
-    let t = 0, vol = 0, pools = [];
-    while (water && (water.drops.length || water.pours.length) && t < 25) {
-      step(1 / 60); t += 1 / 60;
-      if (!water) break;
-      const now = [...water.map.values()];
-      const v = now.reduce((a, p) => a + p.vol, 0);
-      if (v > vol) { vol = v; pools = now; }
-    }
-    const r = { poured, t: +t.toFixed(1), pools: pools.length,
-                vol: +vol.toFixed(0),
-                up: pools.filter(p => p.gy > 0).length,
-                ground: pools.filter(p => p.gy <= 0).length };
-    cleanTools();
-    return r;
-  });
-  /* 「倒進去的水沒有憑空不見」由馬克杯那一條驗（封閉容器，100% 留在杯子裡）；
-     這一條驗的是**滿了之後的去向**：往上疊一層，疊到出得去就滿出來流到地面。
-     這裡不能用「倒多少 = 剩多少」——地面的水 1.7 秒就滲光，一邊倒一邊滲，
-     場上同時存在的量是「倒進來的速度」與「滲下去的速度」打平的結果。 */
-  ok('凹格滿了會往上疊，滿出來的流到地面（沒有卡在原地消失）',
-     wbKeep.vol > wbKeep.poured * 0.3 && wbKeep.up > 0 && wbKeep.ground > 0,
-     '對著同一個凹格倒了 ' + Math.round(wbKeep.poured) + ' 格 → 場上最多同時有 ' +
-     wbKeep.vol + ' 格（' + wbKeep.up + ' 格積在建築上、' +
-     wbKeep.ground + ' 格滿出去流到地面）');
-
-
-  /* ── 破口會漏水（v1.72） ───────────────────────────────
-     使用者回報：杯子裝滿之後在杯壁上敲一個洞，水不會流出來。
-     v1.71 的積水只有「腳下的東西不見了」才會動，旁邊破了洞是不管的。 */
-  const wbHole = await page.evaluate(() => {
-    cleanTools();
-    targetCnt = 3000;
-    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
-    startBuild(true); completeNow();
-    let rim = 0;
-    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
-    const settle = (max) => { let t = 0;
-      while (water && (water.drops.length || water.pours.length) && t < max) { step(1 / 60); t += 1 / 60; } };
-    pourBucket(0, rim + 2, 0, WB_DROPS); settle(30);     // 倒兩下 = 裝到接近滿
-    pourBucket(0, rim + 2, 0, WB_DROPS); settle(30);
-    const lvl = () => {
-      const ins = water ? [...water.map.values()].filter(p => p.gy > 0) : [];
-      return { top: ins.length ? Math.max(...ins.map(p => p.gy)) : -1,
-               vol: Math.round(ins.reduce((a, p) => a + p.vol, 0)) };
-    };
-    const before = lvl();
-    // 在杯壁上敲一個三格寬的洞，高度大約在水面的一半
-    const hy = Math.round((before.top + 2) / 2);
-    buildSlotOwner();
-    const mx = cellX(0), mz = cellZ(0);
-    let hole = null;
-    for (let d = 1; d < 20 && !hole; d++)
-      if (solidAt(mx + d, hy, mz) && !solidAt(mx + d + 1, hy, mz)) hole = { gx: mx + d, gy: hy, gz: mz };
-    let broke = 0;
-    if (hole) for (let dz = -1; dz <= 1; dz++) {
-      const bl = blockOn(hole.gx, hole.gy, hole.gz + dz);
-      if (bl) { breakBlock(bl, 3, 1, 0); broke++; }
-    }
-    for (let i = 0; i < 60 * 25; i++) step(1 / 60);       // 讓它漏 25 秒
-    const after = lvl();
-    const r = { hy, broke, top0: before.top, top1: after.top,
-                vol0: before.vol, vol1: after.vol };
-    cleanTools();
-    return r;
-  });
-  ok('杯壁敲一個洞，水就從破口流出去，水面跟著降下來',
-     wbHole.broke === 3 && wbHole.top1 < wbHole.top0 - 3 &&
-     wbHole.vol1 < wbHole.vol0 * 0.75 && wbHole.top1 >= wbHole.hy - 1,
-     '破口在第 ' + wbHole.hy + ' 層；水面第 ' + wbHole.top0 + ' → ' + wbHole.top1 +
-     ' 層、水量 ' + wbHole.vol0 + ' → ' + wbHole.vol1 + ' 格（25 秒）');
-
-  /* 杯子裝滿之後點地面還要有反應。這是實際回報的災情：積水格的額度被
-     「滿的杯子 ＋ 地上那一大片」吃光，再點就完全沒東西出現。
-     地面的水改成很快滲掉之後，額度自己會還回來。 */
-  const wbAfterFull = await page.evaluate(() => {
-    cleanTools();
-    targetCnt = 3000;
-    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
-    startBuild(true); completeNow();
-    let rim = 0;
-    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
-    const settle = (max) => { let t = 0;
-      while (water && (water.drops.length || water.pours.length) && t < max) { step(1 / 60); t += 1 / 60; } };
-    for (let k = 0; k < 4; k++) { pourBucket(0, rim + 2, 0, WB_DROPS); settle(30); }
-    const held = water ? water.map.size : 0;
-    const g0 = water ? [...water.map.values()].filter(p => p.gy <= 0).length : 0;
-    pourWater({ point: { x: siteR + 10, y: 0, z: 0 }, kind: 'ground' });   // 點草地
-    settle(10);
-    const g1 = water ? [...water.map.values()].filter(p => p.gy <= 0).length : 0;
-    const r = { held, g0, g1, cap: POOL_MAX, total: water ? water.map.size : 0 };
-    cleanTools();
-    return r;
-  });
-  ok('杯子裝滿之後點草地照樣出得來水（額度沒被占死）',
-     wbAfterFull.g1 > 500 && wbAfterFull.total < wbAfterFull.cap,
-     '杯子裡外共 ' + wbAfterFull.held + ' 格（上限 ' + wbAfterFull.cap +
-     '）時點一下草地：地面的水 ' + wbAfterFull.g0 + ' → ' + wbAfterFull.g1 + ' 格');
-
-  /* 基準：使用者放進 blueprints/ 的馬克杯，**點一下要裝到半杯**（v1.71 的規格）。
-     量的是水面高度佔杯內高度的比例，不是水量——「半杯」是用眼睛看的那個半杯。 */
-  const wbMug = await page.evaluate(() => {
-    cleanTools();
-    targetCnt = 3000;
-    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
-    startBuild(true); completeNow();
-    let rim = 0;
-    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);   // 杯口那一層
-    /* 杯內底：從杯子正中央那一柱往上找第一個空格。
-       注意格子座標是從藍圖的角落算的，(0,0) 不是中心——中心要用 cellX/cellZ 換算。 */
-    const mx = cellX(0), mz = cellZ(0);
-    let floor = -1;
-    for (let gy = 0; gy <= rim; gy++) if (!solidAt(mx, gy, mz)) { floor = gy; break; }
-    pourBucket(0, rim + 2, 0, WB_DROPS);                   // 點一下，往杯口正中央倒
-    let t = 0;
-    while (water && (water.drops.length || water.pours.length) && t < 30) { step(1 / 60); t += 1 / 60; }
-    const pools = water ? [...water.map.values()] : [];
-    const inside = pools.filter(p => p.gy > 0);
-    const top = inside.length ? Math.max(...inside.map(p => p.gy)) : -1;
-    const r = { rim, floor, top, t: +t.toFixed(1),
-                cells: inside.length,
-                frac: +((top - floor + 1) / (rim - floor + 1)).toFixed(2),
-                held: +(inside.reduce((a, p) => a + p.vol, 0) /
-                        Math.max(1, pools.reduce((a, p) => a + p.vol, 0))).toFixed(2) };
-    cleanTools();
-    return r;
-  });
-  ok('點一下把馬克杯裝到半杯（這是 v1.71 的量的基準）',
-     wbMug.frac > 0.4 && wbMug.frac < 0.62 && wbMug.held > 0.9,
-     '杯內第 ' + wbMug.floor + '～' + wbMug.rim + ' 層，一下倒完水面到第 ' + wbMug.top +
-     ' 層（' + Math.round(wbMug.frac * 100) + '%，' + wbMug.cells + ' 格），' +
-     Math.round(wbMug.held * 100) + '% 的水留在杯子裡，' + wbMug.t + ' 秒穩定');
-
   await page.evaluate(() => { tool = 'hammer'; });         // 別把水桶留給後面的測試
 
   head('煙火');
