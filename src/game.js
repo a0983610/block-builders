@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.71.0';
+const VERSION = '1.72.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3356,9 +3356,15 @@ const WB_UP = 0.55;                 // 倒水口比點到的地方高多少
    要把一個杯子裝到半滿就得記到「哪一格有多少水」，所以統一成格子。 */
 const POOL_CELL = 1;                // 一格裝得下多少水
 const POOL_MAX = 8000;              // 同時最多幾格（跟畫面那邊的 MAXPOOL 綁在一起）
-const POOL_SEEP = 0.08;             // 地面的水每格每秒滲掉多少（一格約 12 秒滲光）
+/* 地面的水滲得很快（v1.72，使用者：「流到地面讓他很快速滲入地下」）。
+   一格 1.7 秒滲光——流到草地上的水就是一路往下滲，不會在地面積成一大片湖。
+   這也順便解掉「點地面沒反應」：地面的水不再長期占著積水格的額度。 */
+const POOL_SEEP = 0.6;              // 地面的水每格每秒滲掉多少（一格約 1.7 秒滲光）
 const POOL_DRIP = 0.02;             // 積在建築上的漏得慢（一格約 50 秒，從積木縫隙）
 const POOL_WET = 0.35;              // 每隔多久用積水把泡在裡面的東西再淋一次
+const POOL_FLOW = 0.12;             // 每隔多久算一次「積水有沒有路可以流走」
+const POOL_MOVE = 0.08;             // 兩格的水差多少才值得挪（再小就會一直來回搬）
+const POOL_LEAK = 60;               // 一次最多幾格從破口流出去（不然一層同時倒出來會塞爆水團）
 const SPILL_MAX = 4000;             // 一團水鋪開時最多碰幾格（保險絲）
 const SPILL_UP = 60;                // 一團水一次最多往上疊幾層
 let water = null;                   // { pours, drops, map, wt }
@@ -3376,7 +3382,7 @@ const poolAt = (gx, gy, gz) => water ? water.map.get(gx + ':' + gy + ':' + gz) :
 const floorAt = (gx, gy, gz) => gy < 0 || solidAt(gx, gy, gz) || poolAt(gx, gy, gz) !== undefined;
 
 function newWater() {
-  if (!water) water = { pours: [], drops: [], map: new Map(), wt: 0 };
+  if (!water) water = { pours: [], drops: [], map: new Map(), wt: 0, ft: 0 };
   return water;
 }
 /* 倒一桶。倒水口比點到的地方高一點，才看得出來是「從上面倒下去」的。
@@ -3456,6 +3462,8 @@ function stepWater(dt) {
     if (d.wt <= 0) { d.wt = WB_WET; wetAround(d); }
   }
   stepPools(dt);
+  W.ft -= dt;
+  if (W.ft <= 0) { W.ft = POOL_FLOW; drainPools(); }
   W.wt -= dt;
   if (W.wt <= 0) { W.wt = POOL_WET; wetPools(); }
   if (!pourJet && !W.pours.length && !W.drops.length && !W.map.size) water = null;
@@ -3607,6 +3615,50 @@ function stepPools(dt) {
        地面那一層的底是草地（y=0），建築上的底是下面那塊積木的頂。 */
     p.h = Math.max(0.12, p.vol / POOL_CELL) * ENG.BS;
     p.y = (p.gy > 0 ? topY(p.gy - 1) : 0.02) + p.h / 2;
+  }
+}
+/* 積水會往「有路可走」的地方流。
+   v1.71 只有「腳下的東西不見了」才會動，所以在杯壁上敲一個洞，
+   洞旁邊那一格的水不會流出去，整杯水就卡在那裡（使用者回報：「目前不會流出來」）。
+   兩條規則，一格一次只做一件事：
+   ① 同一層的鄰居**腳下是空的**（牆上的破口、屋簷邊）→ 整格變成一團水往下流；
+   ② 鄰居還裝得下、而且比自己少 → 挪一半過去。水面因此會自己找平，
+      也讓離破口比較遠的水一格一格挪過來、接著流出去。
+   只管建築上的水：地面那一層本來就在快速下滲，讓它再往旁邊爬只是白花力氣。 */
+function drainPools() {
+  const W = water;
+  if (!W.map.size) return;
+  let leaks = 0;
+  for (const p of [...W.map.values()]) {          // 先拍一份：底下會加減格子
+    if (p.gy <= 0 || p.vol <= 0) continue;
+    /* ⓪ 先往下沉：下面那一格還沒裝滿就先掉下去。
+       少了這一條，水面永遠停在原來的高度、只是每一格越來越薄——
+       破口把水放掉了，看起來卻還是滿的（一疊半高的水片）。 */
+    const under = poolAt(p.gx, p.gy - 1, p.gz);
+    if (under && under.vol < POOL_CELL) {
+      p.vol -= addPoolVol(p.gx, p.gy - 1, p.gz, Math.min(p.vol, POOL_CELL - under.vol));
+      if (p.vol <= 1e-6) W.map.delete(p.k);
+      continue;
+    }
+    const off = Math.floor(Math.random() * 4);    // 從隨機方向開始繞，不然水永遠往同一邊偏
+    for (let i = 0; i < 4; i++) {
+      const v = DIR4[(i + off) % 4];
+      const nx = p.gx + v[0], nz = p.gz + v[1];
+      if (solidAt(nx, p.gy, nz)) continue;        // 那邊是牆
+      if (!floorAt(nx, p.gy - 1, nz)) {           // 破口：從那裡倒出去
+        if (leaks >= POOL_LEAK || W.drops.length >= WB_MAX) break;
+        leaks++;
+        W.map.delete(p.k);
+        W.drops.push(newDrop(wldX(nx), topY(p.gy - 1), wldZ(nz), p.vol));
+        break;
+      }
+      const n = poolAt(nx, p.gy, nz);
+      const nv = n ? n.vol : 0;
+      if (nv < p.vol - POOL_MOVE) {               // 那邊比較低：挪一半過去
+        p.vol -= addPoolVol(nx, p.gy, nz, (p.vol - nv) / 2);
+        break;
+      }
+    }
   }
 }
 const poolBuf = [];
