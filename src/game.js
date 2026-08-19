@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.68.0';
+const VERSION = '1.68.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3181,19 +3181,21 @@ function sprayFx(m, dt) {
   const nx = m.x + Math.sin(m.a) * 1.4, nz = m.z + Math.cos(m.a) * 1.4, ny = 3.05;
   const d = Math.hypot(m.jx - nx, m.jz - nz);
   const t = Math.max(0.12, d / 30);
-  /* 一秒 130 顆、每顆 0.12～0.26 格（v1.68 調過一次：原本 75 顆、0.16～0.34 格，
-     看起來是一串在飛的冰塊不是一道水柱——水要「細而密」，顆粒大反而像碎石）。 */
-  m.em += dt * 130;
+  /* 水柱的粗細（使用者：「水柱可以粗一點」，v1.68.1 調粗）：
+     一秒 175 顆、每顆 0.2～0.42 格，出口左右散開 ±0.24 格、速度再抖 ±1.1。
+     三個數字要一起加才會變「粗」：只放大顆粒是一串大冰塊，只加量是同一條線變密，
+     只散開是霧。歷程：75 顆／0.16～0.34（像飛石）→ 130 顆／0.12～0.26（太細）→ 現在這組。 */
+  m.em += dt * 175;
   while (m.em >= 1) {
     m.em--;
     if (dust.length > 560) break;               // 留一截給煙塵：火場本來就在冒煙
     dust.push({
-      x: nx + rr(-0.12, 0.12), y: ny + rr(-0.1, 0.1), z: nz + rr(-0.12, 0.12),
-      vx: (m.jx - nx) / t + rr(-0.8, 0.8),
-      vy: (m.jy - ny) / t + 0.5 * WATER_G * t + rr(-0.4, 0.4),
-      vz: (m.jz - nz) / t + rr(-0.8, 0.8),
+      x: nx + rr(-0.24, 0.24), y: ny + rr(-0.18, 0.18), z: nz + rr(-0.24, 0.24),
+      vx: (m.jx - nx) / t + rr(-1.1, 1.1),
+      vy: (m.jy - ny) / t + 0.5 * WATER_G * t + rr(-0.5, 0.5),
+      vz: (m.jz - nz) / t + rr(-1.1, 1.1),
       rx: Math.random() * 6, ry: Math.random() * 6,
-      life: t * rr(0.92, 1.12), s: rr(0.12, 0.26),
+      life: t * rr(0.92, 1.12), s: rr(0.2, 0.42),
       cr: 0.58, cg: 0.82, cb: 1, g: WATER_G, keep: 1
     });
   }
@@ -3203,7 +3205,7 @@ function sprayFx(m, dt) {
       x: m.jx + rr(-0.7, 0.7), y: m.jy + rr(-0.5, 0.5), z: m.jz + rr(-0.7, 0.7),
       vx: rr(-2.4, 2.4), vy: rr(1.6, 4.4), vz: rr(-2.4, 2.4),
       rx: Math.random() * 6, ry: Math.random() * 6,
-      life: rr(0.3, 0.6), s: rr(0.12, 0.26),
+      life: rr(0.3, 0.6), s: rr(0.18, 0.38),
       cr: 0.74, cg: 0.91, cb: 1, g: WATER_G, keep: 0.9
     });
 }
