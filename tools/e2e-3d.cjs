@@ -5245,6 +5245,47 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、當成菱形算 ' + wbRound.diamond + '（越接近 1 就是那個形狀），岸邊 ' +
      wbRound.rim + ' 根');
 
+  /* 積在檯面上的一點點水要**流下去**，不能站在原地。使用者回報兩件事——
+     「還沒敲的時候就有奇怪的漏水」（倒滿溢出來的水積在杯子裙邊上不走）、
+     「敲到底部時只剩部分杯底有水」（幾根孤零零的水柱留在原地）——都是同一個原因：
+     POOL_MIN（攤太薄就不往外攤）連「還沒走到邊緣」的時候也照停，
+     於是水停在檯面中間，既流不掉、又因為柱子越縮越少而**越站越高**。
+     v1.79 起攤到 POOL_WIDE 根柱子以前不管深度，水才走得到邊緣。 */
+  const wbLedge = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    // 找馬克杯的裙邊（杯壁外面那一圈只有一層高的底座）
+    const mx = cellX(0), mz = cellZ(0);
+    let wall = null, ring = null;
+    for (let d = 1; d < 30; d++) {
+      if (wall == null && solidAt(mx, 10, mz + d)) wall = mz + d;
+      else if (wall != null && !solidAt(mx, 10, mz + d) && solidAt(mx, 0, mz + d)) { ring = mz + d; break; }
+    }
+    let top = 0;
+    while (solidAt(mx, top, ring)) top++;
+    pourBucket(wldX(mx), top + 2, wldZ(ring), 1, 5);      // 裙邊上倒 5 格水
+    let t = 0, hi = -1, first = -1, sill = null;
+    while (water && t < 60) {
+      step(1 / 60); t += 1 / 60;
+      const b = water && water.bodies[0];       // 滲光的那一幀 water 就變回 null 了
+      if (b) {
+        if (first < 0) first = +b.level.toFixed(2);
+        hi = Math.max(hi, b.level);
+        if (b.spill) sill = +b.sill.toFixed(1);
+      }
+    }
+    const r = { ring, top, gone: +t.toFixed(1), first, hi: +hi.toFixed(2), sill };
+    cleanTools();
+    return r;
+  });
+  ok('積在檯面上的一點點水會流下去，不會站在原地越站越高',
+     wbLedge.gone < 8 && wbLedge.sill !== null && wbLedge.hi <= wbLedge.first + 0.05,
+     '在第 ' + wbLedge.top + ' 層的裙邊上倒 5 格水：找到邊緣（門檻 ' + wbLedge.sill +
+     '）、' + wbLedge.gone + ' 秒就沒了；水面最高 ' + wbLedge.hi +
+     '（一開始 ' + wbLedge.first + '，改以前會一路升到 1.99 而且撐過一分鐘）');
+
   /* 澆在燒著的建築上要滅火。這是水桶跟消防車共用的那條路（wetBlock → douse）。 */
   const wbDouse = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.78.0';
+const VERSION = '1.79.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3353,6 +3353,7 @@ const WB_WALL = 40;                 // 找「牆頂在哪」時最多往上看�
 
 const COL_MAX = 4000;               // 一團水最多蓋幾根柱子（也是畫面上的 instance 上限來源）
 const POOL_MIN = 0.6;               // 攤在平地上的最小深度（格）：再薄就不往外攤，改成往上疊
+const POOL_WIDE = 24;               // 但攤到這麼多根柱子以前不管深度（見 solveBody：不然剩一點水會卡在原地）
 const RISE = 7;                     // 畫面上的水面每秒最多升降幾格（讓它「升上來」而不是瞬間到位）
 const ORI_K = 6;                    // 破口流量係數（見 oriFlow：把破口當矩形孔口積分）
 const SPILL_MAX = 24;               // 一個破口最多分成幾道水柱（洞再寬，畫的成本也就這樣）
@@ -3586,8 +3587,13 @@ function solveBody(b) {
       break;
     }
     const need = region.length * (c.base - level);
-    // 同高度的鄰居吸進來不用水，但攤太薄就停手——不然一灘水會鋪滿整片草地
-    if (need <= 1e-6 && vol / (region.length + 1) < POOL_MIN) {
+    /* 同高度的鄰居吸進來不用水，但攤太薄就停手——不然一灘水會鋪滿整片草地。
+       **攤到 POOL_WIDE 根柱子以前不管深度**：剩一點水的時候還照這條停手的話，
+       水會停在「還沒走到邊緣」的地方——本來該從裙邊、屋簷流掉的水就流不掉了，
+       就地變成一根孤零零、而且**越縮越高**的水柱（實測裙邊上倒 5 格水：
+       7 根柱子、水面 1.68、找不到漏口，一分鐘後剩 1 根、水面反而升到 1.99）。
+       使用者兩張截圖（沒敲就有奇怪的漏水、敲完杯底只剩部分有水）都是這個。 */
+    if (need <= 1e-6 && region.length >= POOL_WIDE && vol / (region.length + 1) < POOL_MIN) {
       level += vol / region.length; break;
     }
     if (vol < need) { level += vol / region.length; break; }
