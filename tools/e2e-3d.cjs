@@ -37,7 +37,8 @@ const APP = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
 const OUT = path.join(__dirname, '.e2e-out');
 const VIEW = { width: 1280, height: 800 };
 const SHAPE_COUNT = 48;          // blueprints.js 內建的 SHAPES 數量
-const CUSTOM_COUNT = 3;          // blueprints/ 資料夾裡預設附的自訂藍圖（範例小教堂、八卦山大佛、大阪城天守閣）
+const CUSTOM_COUNT = 4;          // blueprints/ 資料夾裡預設附的自訂藍圖
+const CUSTOM_FILES = '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js,馬克杯.js';
 const ALL_SHAPES = SHAPE_COUNT + CUSTOM_COUNT;
 
 /* ---------- 記分板 ---------- */
@@ -844,7 +845,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              msg: document.getElementById('listMsg').textContent };
   });
   ok('list.js 產生器列出 blueprints/ 現在有的藍圖，預設全勾',
-     vpList0.files.join(',') === '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js' && vpList0.on === vpList0.files.length &&
+     vpList0.files.join(',') === CUSTOM_FILES && vpList0.on === vpList0.files.length &&
      vpList0.toggle === '全不選' && vpList0.open === false,
      vpList0.on + '／' + vpList0.files.length + ' 勾起來（' + vpList0.files.join('、') +
      '），預設收合，' + vpList0.msg);
@@ -866,7 +867,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (() => {
        try {
          const got = new Function(listMade + ';return typeof BP_FILES !== "undefined" ? BP_FILES : null;')();
-         return Array.isArray(got) && got.join(',') === '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js';
+         return Array.isArray(got) && got.join(',') === CUSTOM_FILES;
        } catch (e) { return false; }
      })(),
      'BP_FILES 解析得出來');
@@ -1099,7 +1100,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              msg: document.getElementById('listMsg').textContent };
   });
   ok('掃過資料夾之後，清單就等於資料夾裡真的有的藍圖（list.js 與非 .js 都不算）',
-     vpScan.files.join(',') === '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js' &&
+     vpScan.files.join(',') === CUSTOM_FILES &&
      vpScan.on === CUSTOM_COUNT && vpScan.msg.indexOf('掃到 ' + CUSTOM_COUNT + ' 支') === 0,
      vpScan.msg);
   const vpPaths = await vp.evaluate(() => ({
@@ -4969,7 +4970,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let t = 0;
     while (water && (water.drops.length || water.pours.length) && t < 20) { step(1 / 60); t += 1 / 60; }
     const up = water ? [...water.map.values()].filter(p => p.gy > 0) : [];
-    const cup = up.length ? up.sort((a, b) => b.vol - a.vol)[0] : null;
+    /* 水會一層一層疊上去，所以要挑**最底下**那一格：上面幾層的底下是水不是積木。 */
+    const cup = up.length ? up.sort((a, b) => a.gy - b.gy)[0] : null;
     let hole = null, after = null;
     if (cup) {
       buildSlotOwner();
@@ -5008,8 +5010,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let t = 0;
     while (water && (water.drops.length || water.pours.length) && t < 6) { step(1 / 60); t += 1 / 60; }
     const p0 = water ? [...water.map.values()] : [];
-    const vol0 = +p0.reduce((a, p) => a + p.vol, 0).toFixed(1);
-    const r0 = +Math.max(...p0.map(p => p.r)).toFixed(2);
+    const vol0 = +p0.reduce((a, p) => a + p.vol, 0).toFixed(0);
+    // 鋪開的範圍（格）：v1.71 起地面的水也是一格一格的，不是一片圓盤
+    const xs = p0.map(p => p.gx);
+    const wide = Math.max(...xs) - Math.min(...xs) + 1;
+    const flat = p0.every(p => p.gy === 0);
     // 丟一塊碎料進水裡，看它會不會一直濕著
     const b = blocks.find(k => k.st === 0);
     if (b.cell) gridDel(b);                       // 搬位置前先從空間雜湊拿掉（跟 fillAll 同一招）
@@ -5018,14 +5023,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const soaked = b.wet > 0, lit = igniteBlock(b);
     let dry = 0;
     while (water && dry < 120) { step(1 / 60); dry += 1 / 60; }
-    const r = { vol0, r0, soaked, lit, dry: +dry.toFixed(1), gone: !water };
+    const r = { cells: p0.length, vol0, wide, flat, soaked, lit,
+                dry: +dry.toFixed(1), gone: !water, want: WB_CLICK };
     cleanTools();
     return r;
   });
-  ok('倒在地上的水攤成一攤水窪，然後慢慢滲進地底',
-     wbPool.vol0 > 10 && wbPool.r0 > 1 && wbPool.gone && wbPool.dry > 8,
-     '一桶水攤成 ' + wbPool.vol0 + ' 團（半徑 ' + wbPool.r0 + '），' +
-     wbPool.dry + ' 秒後滲光');
+  ok('倒在地上的水鋪成一大片，然後慢慢滲進地底',
+     wbPool.cells > wbPool.want * 0.7 && wbPool.flat && wbPool.wide > 20 &&
+     wbPool.gone && wbPool.dry > 6,
+     '點一下（' + wbPool.want + ' 格的水）在地上鋪開 ' + wbPool.cells + ' 格、' +
+     wbPool.wide + ' 格寬，' + wbPool.dry + ' 秒後滲光');
   ok('泡在水窪裡的積木一直是濕的，點不著',
      wbPool.soaked === true && wbPool.lit === false,
      '泡進去 0.3 秒後 wet>0 ' + wbPool.soaked + '、igniteBlock ' + wbPool.lit);
@@ -5270,7 +5277,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     pourStart(wldX(cell.gx), cell.gy + 1.5, wldZ(cell.gz));
     for (let i = 0; i < 180; i++) step(1 / 60);            // 對著同一個凹格按住三秒
-    const poured = pourJet.out;
+    const poured = pourJet.out * (WB_CLICK / WB_DROPS);    // 團 → 格
     pourJet = null;                                       // 直接收掉，不要補那一桶
     let t = 0;
     while (water && (water.drops.length || water.pours.length) && t < 25) { step(1 / 60); t += 1 / 60; }
@@ -5283,9 +5290,44 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return r;
   });
   ok('一格裝滿之後的水會往上抬、或滿出去流到地面，不會憑空不見',
-     wbKeep.vol > wbKeep.poured * 0.8 && wbKeep.up > 0 && wbKeep.ground > 0,
-     '倒了 ' + wbKeep.poured + ' 團 → 最後還有 ' + wbKeep.vol + ' 團在場上（' +
+     wbKeep.vol > wbKeep.poured * 0.7 && wbKeep.up > 0 && wbKeep.ground > 0,
+     '倒了 ' + Math.round(wbKeep.poured) + ' 格 → 最後還有 ' + wbKeep.vol + ' 格在場上（' +
      wbKeep.up + ' 攤積在建築上、' + wbKeep.ground + ' 攤滿出去流到地面）');
+
+  /* 基準：使用者放進 blueprints/ 的馬克杯，**點一下要裝到半杯**（v1.71 的規格）。
+     量的是水面高度佔杯內高度的比例，不是水量——「半杯」是用眼睛看的那個半杯。 */
+  const wbMug = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);   // 杯口那一層
+    /* 杯內底：從杯子正中央那一柱往上找第一個空格。
+       注意格子座標是從藍圖的角落算的，(0,0) 不是中心——中心要用 cellX/cellZ 換算。 */
+    const mx = cellX(0), mz = cellZ(0);
+    let floor = -1;
+    for (let gy = 0; gy <= rim; gy++) if (!solidAt(mx, gy, mz)) { floor = gy; break; }
+    pourBucket(0, rim + 2, 0, WB_DROPS);                   // 點一下，往杯口正中央倒
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 30) { step(1 / 60); t += 1 / 60; }
+    const pools = water ? [...water.map.values()] : [];
+    const inside = pools.filter(p => p.gy > 0);
+    const top = inside.length ? Math.max(...inside.map(p => p.gy)) : -1;
+    const r = { rim, floor, top, t: +t.toFixed(1),
+                cells: inside.length,
+                frac: +((top - floor + 1) / (rim - floor + 1)).toFixed(2),
+                held: +(inside.reduce((a, p) => a + p.vol, 0) /
+                        Math.max(1, pools.reduce((a, p) => a + p.vol, 0))).toFixed(2) };
+    cleanTools();
+    return r;
+  });
+  ok('點一下把馬克杯裝到半杯（這是 v1.71 的量的基準）',
+     wbMug.frac > 0.4 && wbMug.frac < 0.62 && wbMug.held > 0.9,
+     '杯內第 ' + wbMug.floor + '～' + wbMug.rim + ' 層，一下倒完水面到第 ' + wbMug.top +
+     ' 層（' + Math.round(wbMug.frac * 100) + '%，' + wbMug.cells + ' 格），' +
+     Math.round(wbMug.held * 100) + '% 的水留在杯子裡，' + wbMug.t + ' 秒穩定');
+
   await page.evaluate(() => { tool = 'hammer'; });         // 別把水桶留給後面的測試
 
   head('煙火');
