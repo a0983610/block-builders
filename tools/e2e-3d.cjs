@@ -5028,6 +5028,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '水面第 ' + wbHole.before.level + ' → ' + wbHole.after.level +
      ' 層（破口門檻 ' + wbHole.sill + '），漏出去的水在地上積成 ' + wbHole.ground + ' 團');
 
+  /* 破口有多寬，就有多寬在流水。使用者回報「這麼大的洞，卻像只有一個地方在流水出來」——
+     v1.75 的 solveBody 只記了**最先碰到的那一格**漏水，杯壁開一個 7 格寬的窗，
+     噴出來的還是一道水柱。 */
+  const wbWide = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    const run = (sec) => { for (let i = 0; i < sec * 60; i++) step(1 / 60); };
+    pourBucket(0, rim + 2, 0, WB_DROPS); run(12);
+    pourBucket(0, rim + 2, 0, WB_DROPS); run(12);
+    const hy = Math.round((water.bodies[0].level + 2) / 2);
+    buildSlotOwner();
+    const mx = cellX(0), mz = cellZ(0);
+    // 從杯子正中央往外掃，7 格寬 × 6 格高整排打掉（杯壁是圓的，每一排厚度不同）
+    let broke = 0;
+    for (let gx = mx - 3; gx <= mx + 3; gx++)
+      for (let yy = hy - 2; yy <= hy + 3; yy++)
+        for (let gz = mz; gz < mz + 40; gz++) {
+          const bl = blockOn(gx, yy, gz);
+          if (bl) { breakBlock(bl, 0, 1, 3); broke++; }
+        }
+    step(1 / 60);
+    const ss = water.bodies[0].spills || [];
+    const xs = ss.map(s => s.gx);
+    const r = { broke, spills: ss.length,
+                wide: ss.length ? Math.max.apply(null, xs) - Math.min.apply(null, xs) + 1 : 0 };
+    cleanTools();
+    return r;
+  });
+  ok('破口有多寬，水就從多寬流出來（不是一個點）',
+     wbWide.spills >= 4 && wbWide.wide >= 4,
+     '敲掉 ' + wbWide.broke + ' 塊開一個 7 格寬的窗 → ' + wbWide.spills +
+     ' 道水柱、橫跨 ' + wbWide.wide + ' 格');
+
   // 一下的水從屋頂一路流到地面，沿路把積木淋濕，但一塊都不會掉
   const wbFlow = await page.evaluate(() => {
     cleanTools();
@@ -5098,6 +5135,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('泡在水裡的積木一直是濕的，點不著',
      wbPool.soaked === true && wbPool.lit === false,
      '泡進去 0.5 秒後 wet>0 ' + wbPool.soaked + '、igniteBlock ' + wbPool.lit);
+
+  /* 攤在平地上要是一攤**圓的、邊緣不齊**的水。使用者回報「流到地面卻是一個正方形」：
+     平地上每一格底一樣高，v1.75 誰先排進佇列誰先被吸進來（＝BFS），
+     一攤水就長成曼哈頓圓盤——轉 45 度看就是一個正方形，實測面積剛好 2r²。 */
+  const wbRound = await page.evaluate(() => {
+    cleanTools(); startBuild(true); phase = 'done';
+    for (const w of workers) releaseWorker(w);
+    pourWater({ point: { x: siteR + 6, y: 0, z: 0 }, kind: 'ground' });
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 10) { step(1 / 60); t += 1 / 60; }
+    const b = water.bodies.sort((a, c) => c.cols.length - a.cols.length)[0];
+    let man = 0, euc = 0;
+    for (const c of b.cols) {
+      const dx = c.gx - b.sx, dz = c.gz - b.sz;
+      man = Math.max(man, Math.abs(dx) + Math.abs(dz));
+      euc = Math.max(euc, Math.hypot(dx, dz));
+    }
+    /* 菱形的面積是 2r²（r 量曼哈頓半徑），圓的是 πr²（r 量直線半徑）。
+       哪一種算出來的填滿率接近 1，這攤水就是哪一種形狀。 */
+    const r = { cols: b.cols.length, man, euc: +euc.toFixed(1),
+                diamond: +(b.cols.length / (2 * man * man)).toFixed(2),
+                round: +(b.cols.length / (Math.PI * euc * euc)).toFixed(2),
+                rim: b.cols.filter(c => c.rim).length };
+    cleanTools();
+    return r;
+  });
+  ok('攤在平地上是一攤圓的水，不是菱形',
+     wbRound.round > 0.7 && wbRound.diamond < wbRound.round && wbRound.rim > 20,
+     '鋪開 ' + wbRound.cols + ' 根柱子：當成圓的算填滿率 ' + wbRound.round +
+     '、當成菱形算 ' + wbRound.diamond + '（越接近 1 就是那個形狀），岸邊 ' +
+     wbRound.rim + ' 根');
 
   /* 澆在燒著的建築上要滅火。這是水桶跟消防車共用的那條路（wetBlock → douse）。 */
   const wbDouse = await page.evaluate(() => {
