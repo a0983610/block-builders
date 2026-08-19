@@ -5235,7 +5235,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const r = { cols: b.cols.length, man, euc: +euc.toFixed(1),
                 diamond: +(b.cols.length / (2 * man * man)).toFixed(2),
                 round: +(b.cols.length / (Math.PI * euc * euc)).toFixed(2),
-                rim: b.cols.filter(c => c.rim).length };
+                // 岸邊＝四周至少有一面不是水的柱子（畫的時候那一面要畫出水的側面）
+                rim: b.cols.filter(c => c.nb && c.nb.some(n => !n)).length };
     cleanTools();
     return r;
   });
@@ -5285,6 +5286,107 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '在第 ' + wbLedge.top + ' 層的裙邊上倒 5 格水：找到邊緣（門檻 ' + wbLedge.sill +
      '）、' + wbLedge.gone + ' 秒就沒了；水面最高 ' + wbLedge.hi +
      '（一開始 ' + wbLedge.first + '，改以前會一路升到 1.99 而且撐過一分鐘）');
+
+  /* 水**有厚度**，而且水面以下也畫得出來。使用者回報「水面下的水體看不見」：
+     v1.76～1.79 為了消掉方格紋（一格一個方塊、透明又不寫深度 → 每一格的側面都會
+     透過鄰居的水面疊上去），把被水包住的柱子改成只畫貼著水面的 0.14 格；
+     方格紋沒了，但泡在水裡的積木看起來就是乾的。
+     v1.80 換成一整片網格：每一格都從水底畫到水面，側面只畫「旁邊不是水」的那幾面
+     ——內部的面根本不存在，所以既有厚度、又沒有方格紋。 */
+  const wbFace = await page.evaluate(() => {
+    cleanTools(); startBuild(true); phase = 'done';
+    for (const w of workers) releaseWorker(w);
+    pourWater({ point: { x: siteR + 6, y: 0, z: 0 }, kind: 'ground' });
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 10) { step(1 / 60); t += 1 / 60; }
+    const list = poolList();
+    const r = { n: list.length,
+                deep: list.filter(p => p.y1 - p.y0 > 0.3).length,   // 從水底畫到水面
+                edge: list.filter(p => p.f !== 0).length,           // 岸邊：有側面要畫
+                inner: list.filter(p => p.f === 0).length };        // 被水包住：一面都不畫
+    cleanTools();
+    return r;
+  });
+  ok('水面下的水體畫得出來，而且不畫被水包住的側面',
+     wbFace.n > 300 && wbFace.deep === wbFace.n &&
+     wbFace.edge > 20 && wbFace.inner > wbFace.n * 0.6,
+     wbFace.n + ' 根柱子全部從水底畫到水面；' + wbFace.edge +
+     ' 根在岸邊（要畫側面）、' + wbFace.inner + ' 根被水包住（一面都不畫）');
+
+  /* 直接把杯底敲掉。使用者回報「看起來就很奇怪，還會導致地面水出現又消失、忽大忽小」，
+     這一條同時守三件事：
+     ① **畫面上的水不能比實際的水多**——把水攤平在它蓋到的柱子上有多高，shown 就不能
+        比那個高。杯底一沒了，這團水的柱子從杯內 193 根變成攤在地上的幾百根，
+        shown 卻還停在第 25 層，畫面上就是一座比杯子還寬的水塔。
+     ② **從破口流出去的水一團一團走**——水珠池滿的時候攢下來的水不能一次倒完，
+        實測會出現一顆帶 274 格的水珠（正常 23），落地當場把一攤水從 480 根撐成 4000 根。
+     ③ **攤到最薄的水面厚度不能抖**——那種水面少了水是「面積變小」不是「變淺」，
+        跟著變淺的話每 0.12 秒重算一次就彈回來，整片水以 8 Hz 忽大忽小。 */
+  const wbFloor = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    for (let k = 0; k < 2; k++) {
+      pourBucket(0, rim + 2, 0, WB_DROPS);
+      for (let i = 0; i < 12 * 60; i++) step(1 / 60);
+    }
+    buildSlotOwner();
+    const mx = cellX(0), mz = cellZ(0);
+    let broke = 0;
+    for (let gx = mx - 9; gx <= mx + 9; gx++)
+      for (let gz = mz - 9; gz <= mz + 9; gz++) {
+        if (Math.hypot(gx - mx, gz - mz) > 8) continue;
+        for (let gy = 0; gy <= 1; gy++) {
+          const bl = blockOn(gx, gy, gz);
+          if (bl) { breakBlock(bl, 0, 1, 0); broke++; }
+        }
+      }
+    /* 量的是**畫面上真的畫了多少水**（每一根柱子從水底到水面的高度加起來），
+       跟場上真的有多少水（積水 ＋ 還沒送出去的 ＋ 在飛的水珠）比。 */
+    const seen = () => {
+      let rend = 0, deep = 0;
+      for (const q of poolList()) { rend += q.y1 - q.y0; deep = Math.max(deep, q.y1 - q.y0); }
+      let real = 0;
+      for (const b of water.bodies) real += b.vol + (b.bank || 0);
+      for (const d of water.drops) real += d.vol;
+      return { rend, real, deep };
+    };
+    let over = 0, maxDrop = 0, grow = 0, t = 0, prev = -1, deep0 = 0, deep1 = 0;
+    while (water && t < 14) {
+      step(1 / 60); t += 1 / 60;
+      if (!water) break;
+      const x = seen();
+      if (x.rend > x.real + 1) over++;                  // ① 畫出來的水比實際的多
+      if (t < 0.1) deep0 = x.deep;                      // 剛敲掉時最深畫到幾格
+      if (t > 2 && t < 2.1) deep1 = x.deep;             // 兩秒後（水柱該塌下來攤開了）
+      if (t > 5) {                                      // ③ 沒有新水進來之後只能變少
+        if (prev >= 0) grow = Math.max(grow, x.rend - prev);
+        prev = x.rend;
+      }
+      for (const d of water.drops) maxDrop = Math.max(maxDrop, d.vol);
+    }
+    const r = { broke, over, maxDrop: +maxDrop.toFixed(1), want: WB_VOL,
+                grow: +grow.toFixed(2), deep0: +deep0.toFixed(1), deep1: +deep1.toFixed(1),
+                t: +t.toFixed(1) };
+    cleanTools();
+    return r;
+  });
+  ok('杯底整片敲掉：畫面上的水不會比實際的水多，而且水柱會塌下來攤開',
+     wbFloor.over === 0 && wbFloor.deep0 > 8 && wbFloor.deep1 < wbFloor.deep0 * 0.3,
+     '敲掉 ' + wbFloor.broke + ' 塊杯底，跟了 ' + wbFloor.t +
+     ' 秒：畫出來的水量超過實際水量的幀數 ' + wbFloor.over +
+     '；最深從 ' + wbFloor.deep0 + ' 格塌到 ' + wbFloor.deep1 + ' 格');
+  ok('從破口流出去的水一團一團走，不會一次倒一大缸',
+     wbFloor.maxDrop <= wbFloor.want + 0.01,
+     '最大一團帶 ' + wbFloor.maxDrop + ' 格（一團就是 ' + wbFloor.want +
+     ' 格；改以前水珠池滿了會攢出一顆帶 274 格的）');
+  ok('沒有新水進來之後，畫面上的水只會變少，不會忽大忽小',
+     wbFloor.grow < 1,
+     '第 5 秒之後畫出來的水量單幀最多多了 ' + wbFloor.grow +
+     ' 格（改以前水面在 0.52～0.59 之間來回，整片水以 8 Hz 抖）');
 
   /* 澆在燒著的建築上要滅火。這是水桶跟消防車共用的那條路（wetBlock → douse）。 */
   const wbDouse = await page.evaluate(() => {

@@ -15,6 +15,7 @@ const ENG = (function () {
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh, poolMesh;
+  let poolGeo, poolPos;
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
@@ -53,6 +54,7 @@ const ENG = (function () {
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXTRUCK = 2, TRK_PARTS = 11;       // 消防車：最多兩台，一台 11 個部位
   const MAXPOOL = 8000;                     // 積水：同時最多幾格（規則那邊的 POOL_MAX 跟它綁在一起）
+  const MAXPOOLV = 66000;                   // 積水的頂點上限（一格最多 5 面 × 6 頂點）
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
@@ -334,16 +336,31 @@ const ENG = (function () {
     trkMesh.setColorAt(0, tmpC.setHex(0xffffff));
     scene.add(trkMesh);
 
-    /* 水窪（v1.69）。水桶倒下去的水積在凹處、流到地面攤成一攤，都是這一顆網格：
-       一攤水就是一片壓扁的方塊，透明、不寫深度、**不投影**——所以它在場時只吃
-       1 個 draw call（會投影的才要多跑一趟陰影，見消防車那段），沒水的時候
-       visible=false 一個都不吃。
-       用方塊不用圓盤：這座城市每一樣東西都是方的，圓形的水窪反而突兀。 */
-    poolMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
-      color: 0x4aa6de, transparent: true, opacity: 0.62, depthWrite: false
-    }), MAXPOOL);
-    poolMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
-    poolMesh.count = 0; poolMesh.frustumCulled = false; poolMesh.visible = false;
+    /* 水窪（v1.69，v1.80 從「一格一個方塊」換成**一整片網格**）。
+       透明、不寫深度、不投影——在場時只吃 1 個 draw call（會投影的才要多跑一趟陰影，
+       見消防車那段），沒水的時候 visible=false 一個都不吃。
+
+       為什麼不用 instancing 疊方塊：水是透明又不寫深度的，一格一個方塊的話**每一格的
+       側面都會透過鄰居的水面疊上去**，一整片水面看起來像鋪磁磚（使用者截圖）。
+       v1.76～1.79 的擋法是「被水包住的柱子只畫貼著水面的一層」，方格紋沒了，
+       但水面以下就整個不見了——泡在水裡的積木看起來是乾的（使用者：「水面下的水體
+       看不見」）。現在改成規則那邊算好「哪幾面露在外面」，這裡只把那些面組成三角形：
+       水有厚度、泡在水裡的東西有水色，而且**內部的面根本不存在**，沒有方格紋。
+       頂點資料每幀重寫（水面會漲會退），所以是 DynamicDrawUsage。 */
+    poolGeo = new T.BufferGeometry();
+    poolPos = new Float32Array(MAXPOOLV * 3);
+    const poolAttr = new T.BufferAttribute(poolPos, 3);
+    poolAttr.setUsage(T.DynamicDrawUsage);
+    poolGeo.setAttribute('position', poolAttr);
+    poolGeo.setDrawRange(0, 0);
+    poolMesh = new T.Mesh(poolGeo, new T.MeshBasicMaterial({
+      color: 0x4aa6de, transparent: true, opacity: 0.62, depthWrite: false,
+      /* 兩面都畫（從水面下往上看也要看得到），但**要 forceSinglePass**：
+         three.js 對「透明 + DoubleSide」預設會拆成背面／正面兩趟畫，
+         那就變成 2 個 draw call（實測 11 → 13）。 */
+      side: T.DoubleSide, forceSinglePass: true
+    }));
+    poolMesh.frustumCulled = false; poolMesh.visible = false;
     scene.add(poolMesh);
 
     /* 定時炸彈：可以同時放好幾顆，走 instancing。
@@ -679,21 +696,36 @@ const ENG = (function () {
     trkMesh.instanceMatrix.needsUpdate = true;
     if (trkMesh.instanceColor) trkMesh.instanceColor.needsUpdate = true;
   }
-  /* 一攤水：p = {x, y, z, r 半徑, h 厚度}。壓扁的方塊，貼在它積水的那一格上。
-     厚度是規則那邊照水量算好的——水多就滿到那一格的頂，看得出水位在漲。 */
+  /* 一攤水：p = {x, z 那一格的中心, y0 水底, y1 水面, f 哪幾面露在外面（位元）}。
+     每一格一定畫水面（頂面），側面只畫規則那邊標出來「旁邊不是水」的那幾面——
+     被水包住的側面不畫，一整片水面才是一整片（見上面 poolGeo 那段）。
+     f 的位元跟規則那邊的 DIR4 同順序：1=+x　2=−x　4=+z　8=−z。 */
   function putPools(list) {
     const n = Math.min(list.length, MAXPOOL);
-    poolMesh.visible = n > 0;
-    poolMesh.count = n;
+    const P = poolPos;
+    let v = 0;                                     // 已經寫到第幾個 float
+    const tri = (ax, ay, az, bx, by, bz, cx, cy, cz) => {
+      P[v++] = ax; P[v++] = ay; P[v++] = az;
+      P[v++] = bx; P[v++] = by; P[v++] = bz;
+      P[v++] = cx; P[v++] = cy; P[v++] = cz;
+    };
     for (let i = 0; i < n; i++) {
       const p = list[i];
-      scratch.position.set(p.x, p.y, p.z);
-      scratch.rotation.set(0, 0, 0);
-      scratch.scale.set(p.r * 2, p.h, p.r * 2);
-      scratch.updateMatrix();
-      poolMesh.setMatrixAt(i, scratch.matrix);
+      if (v + 90 > P.length) break;                // 一格最多 5 面 × 2 三角形 × 9 float
+      const x0 = p.x - 0.5, x1 = p.x + 0.5, z0 = p.z - 0.5, z1 = p.z + 0.5, ya = p.y0, yb = p.y1;
+      tri(x0, yb, z0, x1, yb, z0, x1, yb, z1); tri(x0, yb, z0, x1, yb, z1, x0, yb, z1);
+      if (p.f & 1) { tri(x1, ya, z0, x1, yb, z0, x1, yb, z1); tri(x1, ya, z0, x1, yb, z1, x1, ya, z1); }
+      if (p.f & 2) { tri(x0, ya, z0, x0, yb, z0, x0, yb, z1); tri(x0, ya, z0, x0, yb, z1, x0, ya, z1); }
+      if (p.f & 4) { tri(x0, ya, z1, x0, yb, z1, x1, yb, z1); tri(x0, ya, z1, x1, yb, z1, x1, ya, z1); }
+      if (p.f & 8) { tri(x0, ya, z0, x0, yb, z0, x1, yb, z0); tri(x0, ya, z0, x1, yb, z0, x1, ya, z0); }
     }
-    poolMesh.instanceMatrix.needsUpdate = true;
+    poolMesh.visible = v > 0;
+    poolGeo.setDrawRange(0, v / 3);
+    const at = poolGeo.attributes.position;
+    // 只上傳真的有用到的那一段（整條 66000 頂點每幀傳一次太浪費）
+    if (at.clearUpdateRanges) { at.clearUpdateRanges(); at.addUpdateRange(0, v); }
+    else if (at.updateRange) { at.updateRange.offset = 0; at.updateRange.count = v; }
+    at.needsUpdate = true;
   }
   function putRocks(list) {
     const n = Math.min(list.length, MAXROCK);

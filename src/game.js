@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.79.0';
+const VERSION = '1.80.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3360,8 +3360,6 @@ const SPILL_MAX = 24;               // 一個破口最多分成幾道水柱（�
 const JET_EM = 170;                 // 一道水柱每秒噴幾顆水珠
 const JET_WIDE = 2;                 // 破口很寬時總量最多是單口的幾倍（塵霧池共 720，不能全吃光）
 const SHORE = 2.2;                  // 攤在平地上時岸邊的亂度（格）：水的邊緣不是切齊的
-const SHORE_THIN = 0.24;            // 岸邊每空一面就薄掉幾成（水攤到最後是薄薄一層，不是一道牆）
-const POOL_SKIN = 0.14;             // 被水包住的柱子只畫貼著水面的這一層（見 poolList）
 const SEEP_G = 0.6;                 // 地面每根柱子每秒滲掉多少格（一格約 1.7 秒）
 const SEEP_B = 0.02;                // 積在建築上的每根柱子每秒漏多少（積木縫隙，很慢）
 const BODY_WET = 0.35;              // 每隔多久用積水把泡在裡面的東西再淋一次
@@ -3569,7 +3567,7 @@ function solveBody(b) {
                  d: Math.hypot(gx - b.sx, gz - b.sz) + cellRnd(gx, gz) * SHORE });
   };
   for (const v of DIR4) add(b.sx + v[0], b.sz + v[1]);
-  let level = seed, vol = b.vol, spill = null, sill = 0;
+  let level = seed, vol = b.vol, spill = null, sill = 0, thin = 0;
   while (vol > 1e-6) {
     if (!front.length) { level += vol / region.length; break; }   // 完全封閉
     let k = 0;                                   // region 不大，線性找最小就夠（不必開堆）
@@ -3594,7 +3592,7 @@ function solveBody(b) {
        7 根柱子、水面 1.68、找不到漏口，一分鐘後剩 1 根、水面反而升到 1.99）。
        使用者兩張截圖（沒敲就有奇怪的漏水、敲完杯底只剩部分有水）都是這個。 */
     if (need <= 1e-6 && region.length >= POOL_WIDE && vol / (region.length + 1) < POOL_MIN) {
-      level += vol / region.length; break;
+      level += vol / region.length; thin = 1; break;    // 攤到最薄才停的（見 stepBodies 的滲）
     }
     if (vol < need) { level += vol / region.length; break; }
     vol -= need; level = c.base;
@@ -3602,34 +3600,33 @@ function solveBody(b) {
     for (const v of DIR4) add(c.gx + v[0], c.gz + v[1]);
     if (region.length >= COL_MAX) { level += vol / region.length; break; }
   }
-  b.level = level; b.cols = region; b.spill = spill; b.sill = sill; b.dirty = 0;
-  const inr = new Set();
-  for (const c of region) inr.add(c.gx + ':' + c.gz);
+  b.level = level; b.cols = region; b.spill = spill; b.sill = sill; b.thin = thin; b.dirty = 0;
+  const inr = new Map();
+  for (const c of region) inr.set(c.gx + ':' + c.gz, c);
   /* 水從**整個破口**流出去，不是從一個點。邊界上凡是不高於水面的格子都在漏——
      使用者回報「這麼大的洞卻像只有一個地方在流水出來」：v1.75 只記了最先碰到的那一格，
      實測杯壁開一個 5 寬 × 6 高的窗，噴出來的還是一道水柱。 */
   b.spills = spill ? pickSpills(front, sill, inr) : null;
   /* 這個水面裝得下多少水（到漏口為止）。b.vol 超過它的那一部分就是**正在往外流的水**：
      倒進一個滿出來的杯子、或倒在一條窄檐上，多的水都該流掉，不是把水面往上抬。 */
-  let cap = 0;
-  for (const c of region) cap += Math.max(0, level - c.base);
+  let cap = 0, bsum = 0;
+  for (const c of region) { cap += Math.max(0, level - c.base); bsum += c.base; }
   b.cap = cap;
+  b.bsum = bsum;                                 // 柱底高度總和：算「把水攤平會是多高」用（見 stepBodies）
   b.ground = region[0].base <= 0;                // 底就是草地 → 滲得快
   /* 這根柱子有幾面「露在外面」：旁邊沒有水，而且從水底到水面之間鄰居有一層是空的
      （岸邊、屋簷、被敲出來的破口）。貼著牆的那面不算——水靠著牆是滿的。
      poolList 靠這個決定畫多高、要不要薄下去。 */
-  /* 掃到**畫面上的水面**為止，不是只掃到水位：破口在水面下、水還沒退到破口時，
-     從洞口看進去要看得到那一面水（v1.76 一開始只掃到 level，破口就變成一個看穿的洞）。 */
-  const top = Math.max(level, b.shown, seed + 1);
-  for (const c of region) {
-    let open = 0;
-    for (const v of DIR4) {
-      const nx = c.gx + v[0], nz = c.gz + v[1];
-      if (inr.has(nx + ':' + nz)) continue;
-      for (let y = Math.floor(c.base); y < top; y++)
-        if (!solidAt(nx, y, nz)) { open++; break; }
-    }
-    c.rim = open;
+  /* 每一根柱子的四個鄰居各是「哪一根水柱」（不是水就是 null）。
+     畫的時候靠它決定側面要不要畫：旁邊也是水就不畫（那一面根本不存在），
+     旁邊是牆、是空地、是還沒淹到的柱子就要畫。存柱子本身而不是存旗標，
+     是因為「淹到沒有」每幀都在變（水面會漲會退），而這裡每 BODY_SOLVE 秒才算一次。 */
+  for (let i = 0; i < region.length; i++) {
+    const c = region[i];
+    c.i = i;                                     // 被吸進來的順序（低的、近的先）——poolList 退水時要用
+    if (!c.nb) c.nb = [null, null, null, null];
+    for (let k = 0; k < 4; k++)
+      c.nb[k] = inr.get((c.gx + DIR4[k][0]) + ':' + (c.gz + DIR4[k][1])) || null;
   }
 }
 /* 破口太寬時只挑幾道（等距抽，才會攤在整個破口上而不是擠在一頭）。
@@ -3721,8 +3718,21 @@ function stepBodies(dt) {
     // 滲：地面滲得快、積在建築上的從積木縫隙慢慢漏，兩個都跟「攤多大」成正比
     const seep = (b.ground ? SEEP_G : SEEP_B) * b.cols.length * dt;
     b.vol -= seep;
-    if (b.cols.length) b.level -= seep / b.cols.length;
+    /* 已經攤到最薄（POOL_MIN）的那種水面**不要跟著往下拉**：它少了水是「面積變小」，
+       不是「變淺」。拉了的話每 BODY_SOLVE 重算一次就彈回 POOL_MIN，
+       畫面上整片水的厚度會以 8 Hz 抖動（實測 shown 在 0.52～0.59 之間跳，
+       使用者回報「忽大忽小」）。 */
+    if (b.cols.length && !b.thin) b.level -= seep / b.cols.length;
     if (b.vol <= 0) { W.bodies.splice(i, 1); continue; }   // 滲光了
+    /* **畫面上的水不能比實際的水多。** 把這團水攤平在它蓋到的柱子上會是多高（fair），
+       shown 就不能比那個高。平常這條是恆等式（shown 本來就跟水量綁著降），
+       只有「腳下的東西突然不見了」才會咬到：杯底被打掉的那一瞬間，這團水蓋的柱子
+       從杯內 193 根變成攤在地上的幾百根，shown 卻還停在第 25 層——畫面上就是一座
+       25 格高、比杯子還寬的水塔（使用者：「直接敲掉杯子底部看起來就很奇怪」）。 */
+    if (b.cols.length) {
+      const fair = (b.bsum + b.vol) / b.cols.length;
+      if (b.shown > fair) b.shown = fair;
+    }
     /* 畫面上的水面：**往上**用追的（一下倒 2300 格，瞬間到位就看不到「裝滿」的過程），
        **往下**只有兩種情況會動——沒有漏口時跟著水量降（滲掉），
        有漏口時由上面那段「流出去多少就降多少」自己降。 */
@@ -3744,18 +3754,23 @@ function stepBodies(dt) {
     for (const c of b.cols) W.cols.set(c.gx + ':' + c.gz, { body: b, base: c.base });
   }
 }
-/* 從漏口流出去的水本身也要落地：攢到一團的量就丟一團出去 */
+/* 從漏口流出去的水本身也要落地：攢到一團的量就丟一團出去。
+   **一團只帶 WB_VOL，不能把攢下來的一次倒完**：水珠池滿的時候 bank 會一直攢，
+   等到有空位就變成一顆帶好幾百格的水珠，落地當場把一攤水從 480 根柱子撐成 4000 根
+   （使用者回報「地面水出現又消失、忽大忽小」，實測一顆水珠帶了 274 格）。
+   池子滿了就讓水留在 bank 裡等，下一幀有空位再送。 */
 function leakDrop(b) {
   const W = water;
-  if (b.bank < WB_VOL || W.drops.length >= WB_MAX) return;
   const ss = b.spills && b.spills.length ? b.spills : [b.spill];
-  b.dn = ((b.dn || 0) + 1) % ss.length;          // 一道一道輪流丟，落下來的水才鋪滿整個破口
-  const p = spillBand(b, ss[b.dn]);
-  const y = (p.lo + p.hi) / 2, sp = jetSpeed(b, y);
-  const d = newDrop(p.x, y, p.z, b.bank);
-  d.vx = p.dx * sp; d.vz = p.dz * sp; d.vy = 0;
-  W.drops.push(d);
-  b.bank = 0;
+  while (b.bank >= WB_VOL && W.drops.length < WB_MAX) {
+    b.dn = ((b.dn || 0) + 1) % ss.length;        // 一道一道輪流丟，落下來的水才鋪滿整個破口
+    const p = spillBand(b, ss[b.dn]);
+    const y = (p.lo + p.hi) / 2, sp = jetSpeed(b, y);
+    const d = newDrop(p.x, y, p.z, WB_VOL);
+    d.vx = p.dx * sp; d.vz = p.dz * sp; d.vy = 0;
+    W.drops.push(d);
+    b.bank -= WB_VOL;
+  }
 }
 /* 這一道破口：出水的那一帶在哪（門檻 → 水面或破口上緣，取低的）、水往哪個方向噴。
    噴多快由**那一顆水在哪個高度出來**決定（越深壓力越大），所以速度不在這裡算。 */
@@ -3798,26 +3813,35 @@ function jetFx(b, dt) {
 }
 /* 畫面上的積水：一根柱子畫一個從底到水面的方塊（所以水面是平的一片，不是一格一格）。
    一整片水面中間不該有格線，所以寬度給整整一格（0.5 半徑），不留積木那 0.06 的縫。 */
+/* 畫面上的積水：一根柱子交一筆「從水底到水面」，外加**哪幾面露在外面**。
+   引擎只把露出來的面組成三角形——被水包住的側面不畫，一整片水面才是一整片
+   （不然透明又不寫深度，每一格的側面會透過鄰居的水面疊出方格紋）。
+   露在外面 ＝ 旁邊不是水，或旁邊那根還沒淹到（水面比它的底還低）。 */
 const poolBuf = [];
 function poolList() {
   poolBuf.length = 0;
-  for (const b of water.bodies)
-    for (const c of b.cols) {
-      let h = b.shown - c.base, y;
-      if (h <= 0.02) continue;                   // 這根柱子還沒淹到
-      if (c.rim) {                               // 露在外面：畫整根，而且往岸邊薄下去
-        h *= Math.max(0.2, 1 - SHORE_THIN * c.rim);
-        y = c.base + h / 2;
-      } else if (h > POOL_SKIN) {
-        /* 被水包住的柱子**只畫貼著水面的一層**。水體不寫深度（那是 1 個 draw call 的
-           代價），所以每根柱子的側面都會透過鄰居的水面疊上去，一格一格疊成方格紋
-           ——使用者截圖裡「地面那一片像磁磚」就是這個。被水包住的側面本來就看不到，
-           不畫它，整片水面才是一片。 */
-        h = POOL_SKIN; y = b.shown - h / 2;
-      } else y = c.base + h / 2;
-      poolBuf.push({ x: wldX(c.gx), y, z: wldZ(c.gz), r: 0.5, h });
+  for (const b of water.bodies) {
+    /* 攤到最薄（POOL_MIN）的那種水面，少了水是**面積變小**、不是變淺。
+       水位每 BODY_SOLVE 秒才重算一次，照重算結果畫的話面積會每 0.12 秒一圈一圈退、
+       厚度還跟著彈（使用者回報「地面水出現又消失、忽大忽小」）。
+       所以這裡自己換算：這些水鋪 POOL_MIN 深夠鋪幾根柱子，就畫前幾根——
+       柱子的順序是「低的、近的先」（見 solveBody 的 c.i），退水就從外圈開始退，
+       而且是每一幀連續退的。 */
+    const cap = b.thin ? Math.max(1, Math.round(b.vol / POOL_MIN)) : b.cols.length;
+    const n = Math.min(b.cols.length, cap);
+    for (let i = 0; i < n; i++) {
+      const c = b.cols[i];
+      if (b.shown - c.base <= 0.02) continue;    // 這根柱子還沒淹到
+      let f = 0;
+      const nb = c.nb;
+      for (let k = 0; k < 4; k++) {
+        const q = nb ? nb[k] : null;
+        if (!q || q.i >= n || b.shown - q.base <= 0.02) f |= 1 << k;
+      }
+      poolBuf.push({ x: wldX(c.gx), z: wldZ(c.gz), y0: c.base, y1: b.shown, f });
       if (poolBuf.length >= 8000) return poolBuf;
     }
+  }
   return poolBuf;
 }
 /* 一團水流過的地方要濕：腳下那一塊，加上左右前後貼著的那四塊
