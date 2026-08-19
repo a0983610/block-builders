@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.73.0';
+const VERSION = '1.74.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2194,7 +2194,7 @@ function resetSave() {
 const TOOLS = [
   { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
   { id: 'bucket', n: '水桶', k: '🪣',
-    tip: '按住不放就一直倒（拖著走水柱跟著跑，這把不轉視角）。水沿著表面往下流、積在凹處、流到地面慢慢滲掉；淋到的積木與小人濕 5 秒，點不著',
+    tip: '點一下：往那裡倒一大缸水（馬克杯半杯的量）。積起來的水共用一個水位，杯壁破洞就從破口噴出去；淋到的積木與小人濕 5 秒，點不著',
     lock: null },
   { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：只敲地板，建築不受影響',
     lock: null },
@@ -3338,10 +3338,6 @@ const WB_CLICK = 2300;              // 點一下倒幾格的水（＝馬克杯�
 const WB_POUR = 2.5;                // 那一下倒完要幾秒——看得到水位一路升上來，不是瞬間滿
 const WB_DROPS = 100;               // 那一下分成幾團倒
 const WB_VOL = WB_CLICK / WB_DROPS; // 每一團帶幾格的水（23）
-/* 按住不放時每秒幾團。× WB_VOL = 920 格／秒，跟「點一下」是同一個流量
-   （點一下 2300 格 ÷ 2.5 秒），所以按住兩秒半就等於點一下。 */
-const WB_RATE = 40;
-const WB_SND = 0.45;                // 按住時每隔多久再補一次水聲
 const WB_FLOW = 6.5;                // 沿表面流的速度
 const WB_FALL = 13;                 // 落下的速度上限
 const WB_LIFE = 22;                 // 一團水最多活幾秒（保險絲：繞不出去的自己消失）
@@ -3399,33 +3395,6 @@ function pourWater(hit) {
   sndWater();
 }
 
-/* ── 按住不放：一直倒 ───────────────────────────────────
-   使用者要的是「按住就一直流水進去」，所以水桶按下去那一刻就開始倒、放開才停，
-   中間拖到哪水就澆到哪（拿著水桶拖曳因此不轉視角——鏡頭還有 QE／WASD／滾輪）。
-   點一下就放開的也不吃虧：放開時倒不滿一下的量會補到一整下，見 pourEnd。 */
-let pourJet = null;                 // { x, y, z, out 已經倒了幾團, em, snd }
-function pourStart(x, y, z) { pourJet = { x, y, z, out: 0, em: 0, snd: 0 }; }
-function pourAim(x, y, z) { if (pourJet) { pourJet.x = x; pourJet.y = y; pourJet.z = z; } }
-function pourEnd() {
-  if (!pourJet) return;
-  const left = WB_DROPS - pourJet.out;          // 按不到一下的時間就放開 → 補到一整下的量
-  if (left > 0) pourBucket(pourJet.x, pourJet.y, pourJet.z, left);
-  pourJet = null;
-}
-function pourFlow(dt) {
-  const j = pourJet;
-  newWater();
-  j.snd -= dt;
-  if (j.snd <= 0) { j.snd = WB_SND; sndWater(); }      // 一直按著就一直有水聲
-  j.em += dt * WB_RATE;
-  while (j.em >= 1) {
-    j.em--;
-    j.out++;                        // 額度滿了也算倒過（放開時才不會又補一整下）
-    // 按住的水柱比單獨一桶粗（散開 ±0.5 格）：同一點灌四十團／秒會擠成一坨
-    if (water.drops.length < WB_MAX)
-      water.drops.push(newDrop(j.x + rr(-0.5, 0.5), j.y, j.z + rr(-0.5, 0.5), WB_VOL));
-  }
-}
 /* 一團在流的水。vol 是它帶著的水量（格）——畫面上一團就是一團，
    要倒得多不是靠團數多（那會把粒子池與 CPU 吃光），是靠每一團帶得多。 */
 function newDrop(x, y, z, vol) {
@@ -3435,7 +3404,6 @@ function newDrop(x, y, z, vol) {
 }
 
 function stepWater(dt) {
-  if (pourJet) pourFlow(dt);        // 按著不放：這一幀先把水加進來（需要時自己開 water）
   if (!water) return;
   const W = water;
   // 一下倒的水分 WB_POUR 秒流完，不是一幀全部出現
@@ -3466,7 +3434,7 @@ function stepWater(dt) {
   stepBodies(dt);
   W.wt -= dt;
   if (W.wt <= 0) { W.wt = BODY_WET; wetBodies(); }
-  if (!pourJet && !W.pours.length && !W.drops.length && !W.bodies.length) water = null;
+  if (!W.pours.length && !W.drops.length && !W.bodies.length) water = null;
 }
 
 /* 一團水走一步。回傳 false 代表它結束了（併進某一團水裡）。 */
@@ -3585,15 +3553,21 @@ function solveBody(b) {
   for (const v of DIR4) add(b.sx + v[0], b.sz + v[1]);
   let level = seed, vol = b.vol, spill = null, sill = 0;
   while (vol > 1e-6) {
-    if (!front.length) { level += vol / region.length; break; }
+    // 沒有邊界了＝這一團水沒有東西圍著。有漏口就只能停在漏口那個高度
+    if (!front.length) { if (spill) level = sill; else level += vol / region.length; break; }
     let k = 0;                                   // region 不大，線性找最小就夠（不必開堆）
     for (let i = 1; i < front.length; i++) if (front[i].base < front[k].base) k = i;
     const c = front[k];
-    if (c.base < level - 1e-6) {                 // 比水面低：水會從這裡流走
-      /* sill 是「水要爬過多高才到得了那裡」＝找到它的當下的水面高度。
-         破口在杯壁半腰時，水只會洩到破口那個高度就停——洩到破口以下是不對的，
-         那些水根本流不到破口（用 spill.base 當停點的話整杯會漏光）。 */
-      spill = c; sill = level; level += vol / region.length; break;
+    if (c.base < level - 1e-6) {
+      /* 這一格比水面低 → 水會從這裡流走：記下來，但**不要吸收它、也不往它那邊擴張**，
+         然後繼續看別的邊界。杯壁半腰破一個洞的時候，水還是被更高的杯壁圍著、
+         可以站在破口以上（只是一直漏），停在這裡不繼續 flood 的話，
+         整杯水會被誤判成「站不住」。
+         sill 是「水要爬過多高才到得了那裡」＝發現它的當下的水面高度，
+         也就是水最後會退到的高度。 */
+      if (!spill) { spill = c; sill = level; }
+      front.splice(k, 1);
+      continue;
     }
     const need = region.length * (c.base - level);
     // 同高度的鄰居吸進來不用水，但攤太薄就停手——不然一灘水會鋪滿整片草地
@@ -3607,6 +3581,12 @@ function solveBody(b) {
     if (region.length >= COL_MAX) { level += vol / region.length; break; }
   }
   b.level = level; b.cols = region; b.spill = spill; b.sill = sill; b.dirty = 0;
+  /* 這個水面裝得下多少水。b.vol 超過它的部分是「站不住的水」——
+     倒進一個已經滿出來的杯子時，多的水應該當場從杯口流掉，
+     不是把水面往上抬（v1.73 就是這樣抬出一片懸在半空的水牆）。 */
+  let cap = 0;
+  for (const c of region) cap += Math.max(0, level - c.base);
+  b.cap = cap;
   b.ground = region[0].base <= 0;                // 底就是草地 → 滲得快
 }
 /* 每幀：水面往目標追（看得到在升／在降）、從破口噴出去、慢慢滲掉。 */
@@ -3618,16 +3598,22 @@ function stepBodies(dt) {
   for (let i = W.bodies.length - 1; i >= 0; i--) {
     const b = W.bodies[i];
     if (b.dirty || redo) solveBody(b);           // 新開的、或時間到了就重算一次
-    // 破口：水頭越高噴得越遠（Torricelli），水位降到破口就停
-    if (b.spill && b.level > b.sill + 0.02) {
-      const head = b.level - b.sill;
-      const out = Math.min(b.vol, LEAK_K * Math.sqrt(head) * dt);
+    /* 水往外走有兩種：
+       ① **滿出來的**（b.vol 超過這個水面裝得下的量）：站不住，當場流掉——
+          往一個已經滿的杯子裡倒水，多的就是從杯口一直流出去，水面停在杯口。
+       ② **站在門檻以上的**（杯壁半腰有破口）：水是被圍著的，照托里切利慢慢洩，
+          水面看得見一路降到破口的高度。 */
+    const over = b.vol - (b.cap || 0);
+    const head = b.spill ? Math.max(0, b.level - b.sill) : 0;
+    if (b.spill && (over > 0.01 || head > 0.02)) {
+      const rate = over > 0.01 ? Math.max(over * 4, LEAK_K) : LEAK_K * Math.sqrt(head);
+      const out = Math.min(b.vol, rate * dt);
       b.vol -= out;
-      if (b.cols.length) b.level -= out / b.cols.length;
-      jetFx(b, head, dt);
+      if (over <= 0.01 && b.cols.length) b.level -= out / b.cols.length;
+      jetFx(b, Math.max(head, 0.4), dt);
       b.bank += out;
       if (b.bank >= WB_VOL && W.drops.length < WB_MAX) {   // 噴出去的水本身也要落地
-        const p = spillPos(b);
+        const p = spillPos(b, head);
         const d = newDrop(p.x, p.y, p.z, b.bank);
         d.vx = p.dx * p.sp; d.vz = p.dz * p.sp; d.vy = 0;
         W.drops.push(d);
@@ -3658,18 +3644,17 @@ function stepBodies(dt) {
   }
 }
 /* 破口在世界座標的哪裡、水往哪個方向噴、噴多快 */
-function spillPos(b) {
+function spillPos(b, head) {
   const s = b.spill;
   let dx = s.gx - b.sx, dz = s.gz - b.sz;
   const L = Math.hypot(dx, dz) || 1;
   dx /= L; dz /= L;
-  const head = Math.max(0, b.shown - b.sill);
   return { x: wldX(s.gx), y: b.sill + 0.35, z: wldZ(s.gz),
-           dx, dz, sp: Math.sqrt(2 * WATER_G * head) * 0.55 };
+           dx, dz, sp: Math.sqrt(2 * WATER_G * Math.max(0.4, head)) * 0.55 };
 }
 /* 從破口噴出來的那一道水柱。水頭越高噴得越平、越遠；水位降下來就變成一條垂下去的細流。 */
 function jetFx(b, head, dt) {
-  const p = spillPos(b);
+  const p = spillPos(b, head);
   b.jem = (b.jem || 0) + dt * 170;              // 噴出來的要看得出是一道水柱，不是一串點
   while (b.jem >= 1) {
     b.jem--;
@@ -5318,36 +5303,8 @@ function onDown(e) {
   else if (performance.now() - lastTouch < GHOST_MS) return;
   const p = e.touches ? e.touches[0] : e;
   drag = { x: p.clientX, y: p.clientY, x0: p.clientX, y0: p.clientY, moved: 0, t: performance.now(), n: e.touches ? e.touches.length : 1, pinch: 0 };
-  if (e.touches && e.touches.length === 2) {
+  if (e.touches && e.touches.length === 2)
     drag.pinch = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    return;                          // 兩指是縮放，不是倒水
-  }
-  if (tool === 'bucket') startPourAt(drag.x0, drag.y0);
-}
-/* 水桶按下去：點到小人就是澆他一身水（跟原本點一下一樣），其餘就地開一道水柱。 */
-function startPourAt(px, py) {
-  audio();                                       // 使用者互動後才允許出聲
-  const hit = ENG.pick(px, py, '');
-  if (!hit) return;
-  markTool('bucket');
-  if (hit.kind === 'worker') {
-    const w = workers[hit.idx];
-    if (w && !w.air) { wetWorker(w); splashFx(w.x, w.y + 1.4, w.z); sndWater(); }
-    return;                                      // 澆人不開水柱：人會走掉，水柱會跟丟
-  }
-  pourStart(hit.point.x, hit.point.y + WB_UP, hit.point.z);
-  drag.pour = 1;
-}
-/* 拖著倒：落點跟著游標走。picking 要拿射線去打三千塊積木，
-   所以不是每個 mousemove 都算——隔 WB_PICK_MS 才重算一次，中間水柱留在原地。 */
-const WB_PICK_MS = 60;
-let pourPickT = 0;
-function aimPour(px, py) {
-  const now = performance.now();
-  if (now - pourPickT < WB_PICK_MS) return;
-  pourPickT = now;
-  const hit = ENG.pick(px, py, 'skip');          // 拖過去的時候不理小人，要的是落點
-  if (hit) pourAim(hit.point.x, hit.point.y + WB_UP, hit.point.z);
 }
 function onMove(e) {
   if (!drag) return;
@@ -5360,8 +5317,6 @@ function onMove(e) {
   const dx = p.clientX - drag.x, dy = p.clientY - drag.y;
   drag.x = p.clientX; drag.y = p.clientY;
   drag.moved += Math.abs(dx) + Math.abs(dy);
-  // 拿水桶按著的時候，拖曳是「把水澆過去」，不是轉視角
-  if (drag.pour) { aimPour(p.clientX, p.clientY); if (e.touches) e.preventDefault(); return; }
   if (drag.moved > 6) ENG.orbit(dx, dy);
   if (e.touches) e.preventDefault();
 }
@@ -5370,8 +5325,6 @@ function onUp(e) {
   if (e.touches) lastTouch = performance.now();
   else if (performance.now() - lastTouch < GHOST_MS) { drag = null; return; }
   if (!drag) return;
-  // 水桶：按下去那一刻就在倒了，放開就停（不滿一桶的會在 pourEnd 補滿）
-  if (drag.pour) { pourEnd(); drag = null; return; }
   const isClick = drag.moved < 8 && performance.now() - drag.t < 650;
   const x = drag.x0, y = drag.y0;
   drag = null;
@@ -5767,13 +5720,11 @@ function boot() {
   cv.addEventListener('touchstart', onDown, { passive: false });
   cv.addEventListener('touchmove', onMove, { passive: false });
   cv.addEventListener('touchend', onUp);
-  cv.addEventListener('touchcancel', onUp);      // 被系統打斷（來電、多工）也要把水關掉
   cv.addEventListener('wheel', e => { ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9); e.preventDefault(); }, { passive: false });
   cv.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKey);
-  // 切到別的視窗時鬆手事件收不到，水會一直倒下去，所以這裡一起關掉
-  window.addEventListener('blur', () => { clearKeys(); pourEnd(); });
+  window.addEventListener('blur', clearKeys);
 
   /* 上次匯進來的藍圖要在建選單之前進 SHAPES，不然這一輪選單裡沒有它們 */
   loadImports();

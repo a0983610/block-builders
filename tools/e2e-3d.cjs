@@ -105,7 +105,7 @@ const installClean = page => page.evaluate(() => {
     nukes = null; ENG.putNukes([]);
     magics = null;
     trucks = null;
-    water = null; pourJet = null;
+    water = null;
     fworks = null; fwSparks = null; fwWait = null;
     dangers = []; quake = null;
     clearFires();
@@ -5256,9 +5256,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '倒水前草地那半有 ' + wbPix.dry + ' 個偏藍的像素 → 倒了三下之後 ' + wbPix.wet +
      '（' + wbPix.cols + ' 根柱子）');
 
-  /* ── 按住不放就一直倒（v1.70） ──────────────────────────
-     使用者：「能不能按住就一直流水進去」。這幾條用**真的滑鼠事件**，
-     因為要驗的就是輸入層有沒有接上。 */
+  /* ── 水桶就是一般工具：點一下用一次、拖曳轉視角（v1.74 改回來） ──────
+     v1.70～1.73 是「按住不放一直倒、拖曳不轉視角」，使用者要求改回跟其他工具一致。
+     這幾條用**真的滑鼠事件**，因為要驗的就是輸入層有沒有接上。 */
   await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 6 });
   await fillAll(page);
   const wbTop = await toScreen(page,
@@ -5266,63 +5266,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { cleanTools(); tool = 'bucket'; });
   await page.mouse.move(wbTop.x, wbTop.y);
   await page.mouse.down();
-  const holdA = await page.evaluate(() => {
-    for (let i = 0; i < 60; i++) step(1 / 60);            // 按住第一秒
-    return { jet: !!pourJet, out: pourJet ? pourJet.out : 0,
-             drops: water ? water.drops.length : 0, rate: WB_RATE };
-  });
-  const holdB = await page.evaluate(() => {
-    for (let i = 0; i < 60; i++) step(1 / 60);            // 按住第二秒
-    return { out: pourJet ? pourJet.out : 0, drops: water ? water.drops.length : 0 };
-  });
+  const wbDown = await page.evaluate(() => ({ water: !!water }));   // 按下去還沒放：不該有水
   await page.mouse.up();
-  const holdC = await page.evaluate(() => ({
-    jet: !!pourJet,
-    // 放開時補到「一整下的量」，所以按不滿一下的時間放開會留一小段在排隊
-    top: (water ? water.pours : []).reduce((a, p) => a + (p.n - p.out), 0),
-    want: WB_DROPS
-  }));
-  ok('按住不放就一直倒，放開就停',
-     holdA.jet === true && holdB.out > holdA.out * 1.7 &&
-     Math.abs(holdA.out - holdA.rate) < holdA.rate * 0.25 &&
-     holdC.jet === false && holdC.top === holdC.want - holdB.out,
-     '按住一秒倒了 ' + holdA.out + ' 團（設定每秒 ' + holdA.rate + '）、兩秒 ' +
-     holdB.out + ' 團，放開後水柱收掉、補上剩下的 ' + holdC.top + ' 團（一整下是 ' +
-     holdC.want + ' 團）');
-  ok('按住的時候場上真的有一大片水在流',
-     holdA.drops > holdA.rate * 0.5 && holdB.drops > holdA.drops,
-     '一秒後 ' + holdA.drops + ' 團在流 → 兩秒後 ' + holdB.drops + ' 團');
-
-  // 點一下就放開的不吃虧：倒不滿一下的量會補到一整下
-  await page.evaluate(() => { cleanTools(); tool = 'bucket'; });
-  await page.mouse.down();
-  await page.mouse.up();
-  const tapR = await page.evaluate(() => {
-    const jet = !!pourJet;
+  const wbClick = await page.evaluate(() => {
     const queued = (water ? water.pours : []).reduce((a, p) => a + (p.n - p.out), 0);
-    const made = water ? water.drops.length : 0;
-    return { jet, total: queued + made, want: WB_DROPS };
+    return { on: !!water, total: queued + (water ? water.drops.length : 0), want: WB_DROPS };
   });
-  ok('點一下就放開還是一整下的量（不滿的放開時補滿）',
-     tapR.jet === false && tapR.total >= tapR.want - 1 && tapR.total <= tapR.want + 2,
-     '點一下共 ' + tapR.total + ' 團（一下是 ' + tapR.want + ' 團）');
+  ok('點一下倒一整下的量（放開才發動，跟其他工具一樣）',
+     wbDown.water === false && wbClick.on === true &&
+     wbClick.total >= wbClick.want - 1 && wbClick.total <= wbClick.want + 1,
+     '按著的時候沒有水 ' + (wbDown.water === false) + '，放開後排了 ' + wbClick.total +
+     ' 團（一下是 ' + wbClick.want + ' 團）');
 
-  // 拿水桶拖曳是「把水澆過去」，不是轉視角
+  // 拿水桶拖曳＝轉視角（跟槌子一樣），而且拖完不會倒水
   await page.evaluate(() => { cleanTools(); tool = 'bucket'; });
-  const wbYaw0 = await page.evaluate(() => +ENG.cam.yaw.toFixed(4));
+  const wbYaw0 = await page.evaluate(() => ENG.cam.yaw);
   await page.mouse.move(wbTop.x, wbTop.y);
   await page.mouse.down();
-  const jet0 = await page.evaluate(() => pourJet ? { x: +pourJet.x.toFixed(2), z: +pourJet.z.toFixed(2) } : null);
-  await page.mouse.move(wbTop.x + 130, wbTop.y + 50, { steps: 6 });
-  await page.waitForTimeout(120);                          // 落點是節流的（WB_PICK_MS）
-  await page.mouse.move(wbTop.x + 150, wbTop.y + 60, { steps: 2 });
-  const jet1 = await page.evaluate(() => pourJet ? { x: +pourJet.x.toFixed(2), z: +pourJet.z.toFixed(2) } : null);
-  const wbYaw1 = await page.evaluate(() => +ENG.cam.yaw.toFixed(4));
+  await page.mouse.move(wbTop.x + 160, wbTop.y + 60, { steps: 8 });
   await page.mouse.up();
-  ok('拖著倒：水柱跟著游標走，而且這一下不轉視角',
-     jet0 && jet1 && Math.hypot(jet1.x - jet0.x, jet1.z - jet0.z) > 1 && wbYaw1 === wbYaw0,
-     '落點 (' + jet0.x + ',' + jet0.z + ') → (' + jet1.x + ',' + jet1.z + ')，yaw ' +
-     wbYaw0 + ' → ' + wbYaw1);
+  const wbDrag = await page.evaluate(() => ({ yaw: ENG.cam.yaw, water: !!water }));
+  ok('拿水桶拖曳是轉視角，不會倒出水來',
+     Math.abs(wbDrag.yaw - wbYaw0) > 0.1 && wbDrag.water === false,
+     'yaw 轉了 ' + (wbDrag.yaw - wbYaw0).toFixed(2) + '，倒出水來了嗎 ' + wbDrag.water);
+
   await page.evaluate(() => { tool = 'hammer'; });         // 別把水桶留給後面的測試
 
   head('煙火');
