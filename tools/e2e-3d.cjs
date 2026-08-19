@@ -104,6 +104,7 @@ const installClean = page => page.evaluate(() => {
     nukes = null; ENG.putNukes([]);
     magics = null;
     trucks = null;
+    water = null;
     fworks = null; fwSparks = null; fwWait = null;
     dangers = []; quake = null;
     clearFires();
@@ -3564,15 +3565,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open')
     };
   });
-  /* 十二種工具的解鎖狀態拼成一長串很難讀，用「前 n 種開著」來寫 */
-  const NTOOL = 12;
-  const opened = n => Array(NTOOL).fill('false').fill('true', 0, n).join(',');
-  const btnOpen = n => Array(NTOOL).fill('lock').fill('open', 0, n).join(',');
-  ok('工具共 12 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
-  ok('一開始只有手指跟槌子可用',
-     lock0.ok.join(',') === opened(2), lock0.ok.join(','));
+  /* 解鎖狀態拼成一長串 true/false 很難讀（而且插進一種新道具就整排要重寫），
+     所以照 id 來寫：「本來就開著的那幾種，加上這一關該開的」。
+     手指與水桶不破壞任何東西，沒有鎖；破壞道具的階梯從槌子開始。 */
+  const NTOOL = 13;
+  const FREE = ['finger', 'bucket', 'hammer'];
+  const isOpen = (id, ids) => FREE.indexOf(id) >= 0 || ids.indexOf(id) >= 0;
+  const opened = (...ids) => lock0.ids.map(id => String(isOpen(id, ids))).join(',');
+  const btnOpen = (...ids) => lock0.ids.map(id => isOpen(id, ids) ? 'open' : 'lock').join(',');
+  const allOpen = () => Array(NTOOL).fill('true').join(',');
+  ok('工具共 13 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
+  ok('一開始只有手指、水桶跟槌子可用',
+     lock0.ok.join(',') === opened(), lock0.ok.join(','));
   ok('鎖住的工具在畫面上也是鎖住的',
-     lock0.btn.join(',') === btnOpen(2), lock0.btn.join(','));
+     lock0.btn.join(',') === btnOpen(), lock0.btn.join(','));
 
   const lock1 = await page.evaluate(() => {
     const step2 = [];
@@ -3594,30 +3600,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     step2.push(TOOLS.map(t => toolOk(t)).join(','));
     return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
-  /* 順序：手指／槌子／大槌／保齡球／投石機／龍捲風／煙火／放火／炸彈／隕石／核彈／魔法。
-     兩種紀錄輪流當門檻，所以「擊飛」那幾關會順便開掉前面同一側的，但開不了另一側的。 */
-  ok('擊飛 2,000 塊解鎖大槌', lock1.step2[0] === opened(3), lock1.step2[0]);
-  ok('拆掉 2 座解鎖保齡球',
-     lock1.step2[1] === 'true,true,false,true,false,false,false,false,false,false,false,false', lock1.step2[1]);
+  /* 兩種紀錄輪流當門檻，所以「擊飛」那幾關會順便開掉前面同一側的，但開不了另一側的
+     ——每一關列出來的就是那一側到這一關為止的全部。 */
+  ok('擊飛 2,000 塊解鎖大槌', lock1.step2[0] === opened('bighammer'), lock1.step2[0]);
+  ok('拆掉 2 座解鎖保齡球', lock1.step2[1] === opened('ball'), lock1.step2[1]);
   ok('擊飛 6,000 塊解鎖投石機',
-     lock1.step2[2] === 'true,true,true,false,true,false,false,false,false,false,false,false', lock1.step2[2]);
+     lock1.step2[2] === opened('bighammer', 'treb'), lock1.step2[2]);
   ok('拆掉 4 座解鎖龍捲風',
-     lock1.step2[3] === 'true,true,false,true,false,true,false,false,false,false,false,false', lock1.step2[3]);
+     lock1.step2[3] === opened('ball', 'tornado'), lock1.step2[3]);
   ok('擊飛 11,000 塊解鎖煙火',
-     lock1.step2[4] === 'true,true,true,false,true,false,true,false,false,false,false,false', lock1.step2[4]);
+     lock1.step2[4] === opened('bighammer', 'treb', 'fw'), lock1.step2[4]);
   ok('拆掉 6 座解鎖放火',
-     lock1.step2[5] === 'true,true,false,true,false,true,false,true,false,false,false,false', lock1.step2[5]);
+     lock1.step2[5] === opened('ball', 'tornado', 'fire'), lock1.step2[5]);
   ok('擊飛 15,000 塊解鎖定時炸彈',
-     lock1.step2[6] === 'true,true,true,false,true,false,true,false,true,false,false,false', lock1.step2[6]);
+     lock1.step2[6] === opened('bighammer', 'treb', 'fw', 'bomb'), lock1.step2[6]);
   ok('拆掉 8 座解鎖隕石',
-     lock1.step2[7] === 'true,true,false,true,false,true,false,true,false,true,false,false', lock1.step2[7]);
+     lock1.step2[7] === opened('ball', 'tornado', 'fire', 'meteor'), lock1.step2[7]);
   ok('擊飛 19,000 塊解鎖核彈',
-     lock1.step2[8] === 'true,true,true,false,true,false,true,false,true,false,true,false', lock1.step2[8]);
+     lock1.step2[8] === opened('bighammer', 'treb', 'fw', 'bomb', 'nuke'), lock1.step2[8]);
   ok('拆掉 10 座解鎖爆裂魔法',
-     lock1.step2[9] === 'true,true,false,true,false,true,false,true,false,true,false,true', lock1.step2[9]);
-  ok('兩邊都推到頂就全開', lock1.step2[10] === opened(NTOOL), lock1.step2[10]);
+     lock1.step2[9] === opened('ball', 'tornado', 'fire', 'meteor', 'magic'), lock1.step2[9]);
+  ok('兩邊都推到頂就全開', lock1.step2[10] === allOpen(), lock1.step2[10]);
   ok('解鎖後畫面上的鎖頭消失',
-     lock1.btn.join(',') === btnOpen(NTOOL), lock1.btn.join(','));
+     lock1.btn.join(',') === btnOpen('bighammer', 'ball', 'treb', 'tornado', 'fw',
+                                     'fire', 'bomb', 'meteor', 'nuke', 'magic'),
+     lock1.btn.join(','));
 
   /* 手指：什麼都不破壞，但戳得倒小人 */
   await reset(page, { shape: '吉薩金字塔', cnt: 700, workers: 12 });
@@ -4898,6 +4905,284 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ftCalls.withCar === ftCalls.idle + 2 && ftCalls.after === ftCalls.idle,
      '沒車 ' + ftCalls.idle + ' 個 → ' + ftCalls.one + ' 台 ' + ftCalls.withCar +
      ' 個 → 收掉 ' + ftCalls.after + ' 個');
+
+  /* ══════════ 水桶 ══════════
+     v1.69。點一下倒一桶水：水沿著表面往下流、積在凹處、流到地面攤成一攤再慢慢滲掉，
+     碰到的東西濕 WET_TIME 秒（跟消防車共用同一組欄位）。
+     一團水待在「空的那一格」（d.gy 是自己那一格），腳下的積木在 d.gy − 1。 */
+  head('水桶');
+
+  // 倒在最高的那一格上，看它一路流到地面
+  const wbFlow = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '巴黎聖母院');
+    startBuild(true); completeNow();
+    let top = null;
+    for (const s of bp.slots) if (s.filled && (!top || s.gy > top.gy)) top = s;
+    const set0 = placedCnt;
+    pourWater({ point: { x: top.x, y: top.y + HB, z: top.z }, kind: 'block' });
+    let maxDrop = 0, maxWet = 0, maxDust = 0, minY = 999, t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 20) {
+      step(1 / 60); t += 1 / 60;
+      maxDrop = Math.max(maxDrop, water.drops.length);
+      maxDust = Math.max(maxDust, dust.length);
+      for (const d of water.drops) minY = Math.min(minY, d.y);
+      const n = blocks.reduce((a, b) => a + (b.wet > 0 ? 1 : 0), 0);
+      maxWet = Math.max(maxWet, n);
+    }
+    const pools = water ? [...water.map.values()] : [];
+    const r = { topY: +top.y.toFixed(1), set0, set1: placedCnt, t: +t.toFixed(1), want: WB_DROPS,
+                maxDrop, maxWet, maxDust, minY: +minY.toFixed(2),
+                pools: pools.length, ground: pools.filter(p => p.gy <= 0).length,
+                vol: +pools.reduce((a, p) => a + p.vol, 0).toFixed(1) };
+    cleanTools();
+    return r;
+  });
+  ok('一桶水從屋頂一路流到地面，最後攤成幾攤水窪',
+     wbFlow.maxDrop === wbFlow.want && wbFlow.minY < 0.5 &&
+     wbFlow.ground > 0 && wbFlow.t < 20,
+     '從 ' + wbFlow.topY + ' 高倒下去，' + wbFlow.maxDrop + ' 團水流了 ' + wbFlow.t +
+     ' 秒到地面（最低 ' + wbFlow.minY + '），留下 ' + wbFlow.ground + ' 攤水窪');
+  ok('流過的地方會濕，但一塊積木都不會掉',
+     wbFlow.maxWet > 30 && wbFlow.set1 === wbFlow.set0,
+     '同時最多 ' + wbFlow.maxWet + ' 塊是濕的；建築 ' + wbFlow.set0 + ' → ' + wbFlow.set1 + ' 塊');
+  ok('水珠沒把塵霧粒子池吃光', wbFlow.maxDust < 700,
+     '同時最多 ' + wbFlow.maxDust + ' 顆粒子（池子上限 720，煙塵要共用）');
+
+  /* 凹處積水：聖家堂的塔身上有一堆「四面都是牆」的凹格。
+     找一個出來直接往裡面倒——測的是規則本身，不是「隨便倒剛好會不會流進某個凹處」。
+     再把撐著那攤水的積木敲掉：水要從破口漏下去（「杯子敲個洞」的雛形）。 */
+  const wbCup = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '聖家堂');
+    startBuild(true); completeNow();
+    let cell = null;
+    for (const s of bp.slots) {
+      const gx = s.gx, gy = s.gy + 1, gz = s.gz;      // 每一塊積木頭上那一格
+      if (!s.filled || solidAt(gx, gy, gz)) continue;
+      if (solidAt(gx + 1, gy, gz) && solidAt(gx - 1, gy, gz) &&
+          solidAt(gx, gy, gz + 1) && solidAt(gx, gy, gz - 1)) { cell = { gx, gy, gz }; break; }
+    }
+    pourWater({ point: { x: wldX(cell.gx), y: cell.gy + 2.5, z: wldZ(cell.gz) }, kind: 'block' });
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 20) { step(1 / 60); t += 1 / 60; }
+    const up = water ? [...water.map.values()].filter(p => p.gy > 0) : [];
+    const cup = up.length ? up.sort((a, b) => b.vol - a.vol)[0] : null;
+    let hole = null, after = null;
+    if (cup) {
+      buildSlotOwner();
+      const b = blockOn(cup.gx, cup.gy - 1, cup.gz);      // 撐著那攤水的那一塊
+      hole = !!b;
+      if (b) {
+        const n0 = water.drops.length;
+        breakBlock(b, 0, -1, 0);                          // 敲掉 → 水應該漏下去
+        step(1 / 60);
+        after = { gone: !water.map.has(cup.k), drops: water.drops.length - n0 };
+      }
+    }
+    const r = { cell, pools: up.length, y: cup ? +cup.y.toFixed(2) : -1,
+                gy: cup ? cup.gy : -1, vol: cup ? +cup.vol.toFixed(1) : -1, hole, after };
+    cleanTools();
+    return r;
+  });
+  ok('倒進四面都是牆的凹格，水就積在那裡（積滿了往上疊一層）',
+     wbCup.pools >= 1 && wbCup.gy >= wbCup.cell.gy && wbCup.y > wbCup.gy - 1,
+     '倒進第 ' + wbCup.cell.gy + ' 層那一格 → 積了 ' + wbCup.pools + ' 攤在建築上，' +
+     '最上面那攤在第 ' + wbCup.gy + ' 層（水面 y=' + wbCup.y + '、' + wbCup.vol + ' 團水）');
+  ok('把撐著積水的那塊敲掉，水就從破口漏下去',
+     wbCup.hole === true && wbCup.after && wbCup.after.gone && wbCup.after.drops > 0,
+     '敲掉之後那攤水消失 ' + (wbCup.after && wbCup.after.gone) + '，變回 ' +
+     (wbCup.after && wbCup.after.drops) + ' 團往下找路');
+
+  /* 地面水窪：會慢慢滲進地底，不會永遠留在草地上。
+     泡在裡面的積木要一直是濕的——水還在、積木卻乾了又能點著，那是說不過去的。 */
+  const wbPool = await page.evaluate(() => {
+    /* 這條不蓋建築（startBuild 之後直接當它完工）：要的是一塊躺在地上的碎料，
+       蓋好的那幾座剛好把積木用光時一塊碎料都不剩，測試會抓不到東西丟進水裡。 */
+    cleanTools(); startBuild(true); phase = 'done';
+    for (const w of workers) releaseWorker(w);
+    const x = siteR + 6;
+    pourWater({ point: { x, y: 0, z: 0 }, kind: 'ground' });
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 6) { step(1 / 60); t += 1 / 60; }
+    const p0 = water ? [...water.map.values()] : [];
+    const vol0 = +p0.reduce((a, p) => a + p.vol, 0).toFixed(1);
+    const r0 = +Math.max(...p0.map(p => p.r)).toFixed(2);
+    // 丟一塊碎料進水裡，看它會不會一直濕著
+    const b = blocks.find(k => k.st === 0);
+    if (b.cell) gridDel(b);                       // 搬位置前先從空間雜湊拿掉（跟 fillAll 同一招）
+    b.x = p0[0].x; b.z = p0[0].z; b.y = HB; b.wet = 0;
+    for (let i = 0; i < 20; i++) step(1 / 60);
+    const soaked = b.wet > 0, lit = igniteBlock(b);
+    let dry = 0;
+    while (water && dry < 120) { step(1 / 60); dry += 1 / 60; }
+    const r = { vol0, r0, soaked, lit, dry: +dry.toFixed(1), gone: !water };
+    cleanTools();
+    return r;
+  });
+  ok('倒在地上的水攤成一攤水窪，然後慢慢滲進地底',
+     wbPool.vol0 > 10 && wbPool.r0 > 1 && wbPool.gone && wbPool.dry > 8,
+     '一桶水攤成 ' + wbPool.vol0 + ' 團（半徑 ' + wbPool.r0 + '），' +
+     wbPool.dry + ' 秒後滲光');
+  ok('泡在水窪裡的積木一直是濕的，點不著',
+     wbPool.soaked === true && wbPool.lit === false,
+     '泡進去 0.3 秒後 wet>0 ' + wbPool.soaked + '、igniteBlock ' + wbPool.lit);
+
+  /* 澆在燒著的建築上要滅火。這是水桶跟消防車共用的那條路（wetBlock → douse）。 */
+  const wbDouse = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    // 挑建築最上面那一塊點著，再從它正上方倒水
+    let top = null;
+    for (const b of blocks) if (b.st === 3 && (!top || b.y > top.y)) top = b;
+    igniteBlock(top);
+    const lit = top.burn;
+    pourWater({ point: { x: top.x, y: top.y, z: top.z }, kind: 'block' });
+    let t = 0;
+    while (top.burn && t < 3) { step(1 / 60); t += 1 / 60; }
+    const r = { lit, out: !top.burn, wet: +top.wet.toFixed(1), t: +t.toFixed(2) };
+    cleanTools();
+    return r;
+  });
+  ok('把水倒在燒著的那一塊上，火會被澆熄',
+     wbDouse.lit === 1 && wbDouse.out === true && wbDouse.wet > 4,
+     '倒下去 ' + wbDouse.t + ' 秒火就滅了，那一塊還濕 ' + wbDouse.wet + ' 秒');
+
+  // 站在水窪裡的小人也是濕的（身上有火會熄）
+  const wbMan = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    const x = siteR + 6;
+    pourWater({ point: { x, y: 0, z: 0 }, kind: 'ground' });
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 6) { step(1 / 60); t += 1 / 60; }
+    const p = [...water.map.values()][0];
+    const w = workers[0];
+    releaseWorker(w); w.x = p.x; w.z = p.z; w.y = 0; w.wet = 0;
+    igniteWorker(w, true);
+    const lit = w.burn > 0;
+    for (let i = 0; i < 30; i++) step(1 / 60);
+    const r = { lit, out: w.burn <= 0, wet: +w.wet.toFixed(1), dark: +(w.wetK || 0).toFixed(2) };
+    cleanTools();
+    return r;
+  });
+  ok('站在水窪裡的小人一直是濕的，身上的火會熄',
+     wbMan.lit === true && wbMan.out === true && wbMan.wet > 4 && wbMan.dark > 0.5,
+     '點著的人站進水窪 0.5 秒：火熄了 ' + wbMan.out + '、還濕 ' + wbMan.wet +
+     ' 秒、顏色倍率 ' + wbMan.dark);
+
+  /* 畫面成本：水珠走現成的塵霧池（0 個新 draw call），水窪自己一顆網格。
+     沒水的時候那顆網格 visible=false，一個都不吃。 */
+  const wbCost = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    /* 量法：同一個畫面拍兩張，中間**只**把水窪拿掉。
+       「倒水前拍一張、倒完拍一張」是不行的——那兩張之間還差了在飛的水珠、
+       上一條測試留下來的煙塵與火苗，量到的就不只是水窪那一個。 */
+    const shot = () => { dust.length = 0; draw(); ENG.render(); return ENG.info().calls; };
+    pourWater({ point: { x: siteR + 6, y: 0, z: 0 }, kind: 'ground' });
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 6) { step(1 / 60); t += 1 / 60; }
+    const wet = shot(), pools = water.map.size;
+    water = null;                      // 只收水窪，畫面上其他東西一個都不動
+    const idle = shot();
+    // 成本：一桶水在流的時候 stepWater 花多少
+    cleanTools(); startBuild(true); completeNow();
+    let top = null;
+    for (const s of bp.slots) if (s.filled && (!top || s.gy > top.gy)) top = s;
+    for (let i = 0; i < 6; i++) pourWater({ point: { x: top.x + i, y: top.y + HB, z: top.z }, kind: 'block' });
+    for (let i = 0; i < 30; i++) step(1 / 60);            // 先讓水散開
+    const t0 = performance.now();
+    let n = 0;
+    for (; n < 120; n++) stepWater(1 / 60);
+    const ms = (performance.now() - t0) / n;
+    const drops = water ? water.drops.length : 0;
+    const r = { idle, wet, pools, ms: +ms.toFixed(3), drops };
+    cleanTools();
+    return r;
+  });
+  ok('水窪在場時只多 1 個 draw call，收掉就還回去',
+     wbCost.wet === wbCost.idle + 1 && wbCost.pools > 0,
+     wbCost.pools + ' 攤水 ' + wbCost.wet + ' 個 → 收掉 ' + wbCost.idle +
+     ' 個（水珠走現成的塵霧池，0 個新的）');
+  ok('六桶水同時在流的成本可以忽略', wbCost.ms < 0.5,
+     wbCost.drops + ' 團水在流，stepWater ' + wbCost.ms + ' ms／幀（預算 4ms）');
+
+  // 連按不會失控：團數有上限，水窪也有上限
+  const wbSpam = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    let top = null;
+    for (const s of bp.slots) if (s.filled && (!top || s.gy > top.gy)) top = s;
+    for (let i = 0; i < 20; i++)
+      pourWater({ point: { x: top.x + (i % 5), y: top.y + HB, z: top.z + (i / 5 | 0) }, kind: 'block' });
+    let maxD = 0, maxP = 0, t = 0;
+    while (water && t < 200) {
+      step(1 / 60); t += 1 / 60;
+      if (!water) break;                     // 全滲光了：water 會在 stepWater 裡自己收掉
+      maxD = Math.max(maxD, water.drops.length);
+      maxP = Math.max(maxP, water.map.size);
+    }
+    const r = { maxD, maxP, gone: !water, t: +t.toFixed(1), capD: WB_MAX, capP: POOL_MAX };
+    cleanTools();
+    return r;
+  });
+  ok('連倒二十桶也不會失控，而且最後會全部收乾淨',
+     wbSpam.maxD <= wbSpam.capD && wbSpam.maxP <= wbSpam.capP && wbSpam.gone,
+     '同時最多 ' + wbSpam.maxD + ' 團（上限 ' + wbSpam.capD + '）、' + wbSpam.maxP +
+     ' 攤（上限 ' + wbSpam.capP + '），' + wbSpam.t + ' 秒後全乾');
+
+  // 換一座建築，水要跟著收：積水記的是「哪一格」，藍圖一換那些格子就不存在了
+  const wbSwap = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    pourWater({ point: { x: siteR + 6, y: 0, z: 0 }, kind: 'ground' });
+    for (let i = 0; i < 60; i++) step(1 / 60);
+    const before = water ? water.map.size + water.drops.length : 0;
+    startBuild(false);
+    const r = { before, after: water ? water.map.size + water.drops.length : 0, gone: !water };
+    cleanTools();
+    return r;
+  });
+  ok('換一座建築就把水收掉（積水記的是格子，藍圖一換就不存在了）',
+     wbSwap.before > 0 && wbSwap.gone,
+     '換場前有 ' + wbSwap.before + ' 團／攤 → 換場後 ' + wbSwap.after + '');
+
+  /* 讀狀態只證明資料對，證明不了看得到。所以再量一次畫面：
+     同一個機位，倒水前後各拍一張，數草地上「偏藍」的像素多了多少。 */
+  const wbPix = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    startBuild(true); completeNow();
+    for (let i = 0; i < 6; i++) ENG.updateCamera(1);
+    const blue = () => {
+      draw(); ENG.render();
+      const gl = ENG.three.renderer.getContext();
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      /* 只數畫面**下半部**（草地那半）的藍：天空整片是藍的，全畫面數的話它會蓋過一切。
+         判準是「藍明顯多於紅、也多於綠」——草是綠的、積木是米色的，都不符合。 */
+      let n = 0;
+      for (let y = 0; y < h / 2; y++)
+        for (let x = 0; x < w; x++) {
+          const i = (y * w + x) * 4;
+          if (px[i + 2] > px[i] + 30 && px[i + 2] > px[i + 1] + 12) n++;
+        }
+      return n;
+    };
+    const dry = blue();
+    for (let i = 0; i < 3; i++)
+      pourWater({ point: { x: siteR + 4 + i * 2, y: 0, z: 0 }, kind: 'ground' });
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 6) { step(1 / 60); t += 1 / 60; }
+    const wet = blue();
+    const r = { dry, wet, pools: water ? water.map.size : 0 };
+    cleanTools();
+    return r;
+  });
+  ok('水窪在畫面上真的看得到（草地上多出一片藍）',
+     wbPix.wet > wbPix.dry + 1500 && wbPix.pools > 0,
+     '倒水前草地那半有 ' + wbPix.dry + ' 個偏藍的像素 → 倒了三桶之後 ' + wbPix.wet +
+     '（' + wbPix.pools + ' 攤）');
 
   head('煙火');
   await reset(page, { shape: '新天鵝堡', cnt: 2000, workers: 4 });
@@ -7182,7 +7467,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('用過哪些道具會記起來', toolRec.n === toolRec.total,
      toolRec.n + ' / ' + toolRec.total + '：' + toolRec.list.join(','));
-  ok('十二種道具都用過解鎖【工具箱清空】', toolRec.got);
+  ok('十三種道具都用過解鎖【工具箱清空】', toolRec.got);
 
   /* 存檔被改過時，不認得的道具 id 不該混進來 */
   const toolClean = await page.evaluate(() => {
@@ -7256,7 +7541,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const unlockedAfterReload = await page.evaluate(() =>
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
   ok('重開後解鎖狀態跟著回來',
-     unlockedAfterReload === 'open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock',
+     unlockedAfterReload === 'open,open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數。

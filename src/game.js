@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.68.2';
+const VERSION = '1.69.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -150,6 +150,8 @@ function sndSwing() { tone(160, 0.3, 'sine', 0.06, 3.2); }
 function sndWind() { noise(WIND_DUR, 0.17, 520); tone(82, WIND_DUR * 0.9, 'sawtooth', 0.035, 0.75); }
 /* 點火：短促的「噗」一聲。只在點下去那一刻響，每塊都響會變成一片白噪音 */
 function sndFire() { noise(0.55, 0.16, 1600); tone(150, 0.4, 'sawtooth', 0.05, 2.4); }
+// 倒水：低通壓得比火低（水聲沒有火那種高頻的嘶），再墊一顆往下滑的低音當「灌下去」
+function sndWater() { noise(0.6, 0.13, 620); tone(210, 0.45, 'sine', 0.04, 0.5); }
 /* 煙火：往上是「咻」（音高一路往上滑），到頂是「啪」 */
 function sndFwUp() { tone(260, 1.1, 'sawtooth', 0.035, 4.2); noise(1, 0.045, 1100); }
 function sndFwPop() { noise(0.4, 0.16, 2600); tone(120, 0.32, 'square', 0.05, 0.45); }
@@ -434,6 +436,9 @@ function startBuild(instant) {
   quake = null;
   dozers = null; ENG.putDozers([]);
   trucks = null;                     // 上一座的消防車也一起收（它跟整地一樣是流程的一部分）
+  /* 水也收：積水記的是「哪一格」，藍圖一換那些格子就不存在了，
+     留著會變成半空中的一攤水。火留得住是因為它記的是積木本身（見下面）。 */
+  water = null;
   /* 火留著（v1.59）：一整棟在燒的建築忽然全暗，是換場感最重的一筆。
      燒著的積木這一刻全部被打散成碎料，會拖著火飛出去、落地燒成焦炭，很自然。
      唯一要擋的是「小人把還在燒的碎料撿去蓋新的那座」——那一步在 pick 那裡熄掉
@@ -2050,7 +2055,7 @@ const BADGES = [
   { id: 'smash50k', n: '粉塵滿天', d: '累計擊飛 50000 塊積木', chk: s => s.smashed >= 50000 },
   { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
   { id: 'wreck25', n: '都市更新', d: '拆掉 25 座建築', chk: s => s.destroyed >= 25 },
-  { id: 'allTools', n: '工具箱清空', d: '十二種破壞道具都用過', chk: s => s.tools.length >= TOOLS.length },
+  { id: 'allTools', n: '工具箱清空', d: '十三種道具都用過', chk: s => s.tools.length >= TOOLS.length },
   { id: 'boss20', n: '工頭嚴厲', d: '戳倒小人 20 次', chk: s => s.poked >= 20 },
   { id: 'poke100', n: '工安黑名單', d: '戳倒小人 100 次', chk: s => s.poked >= 100 },
   { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 },
@@ -2188,6 +2193,9 @@ function resetSave() {
    建材調小的話一座擊飛得少，擊飛那一側自然要多拆幾座才追得上（工作量差不多）。 */
 const TOOLS = [
   { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
+  { id: 'bucket', n: '水桶', k: '🪣',
+    tip: '點一下：往那裡倒一桶水。水會沿著表面往下流、積在凹處、流到地面慢慢滲掉；淋到的積木與小人濕 5 秒，點不著',
+    lock: null },
   { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：只敲地板，建築不受影響',
     lock: null },
   { id: 'bighammer', n: '大槌', k: '🔨', big: true,
@@ -2219,7 +2227,7 @@ const toolOk = t => !t.lock || t.lock.ok();
    大槌點空地是地震、保齡球點空地是從那裡把球丟出去，所以也在這裡。
    小槌點空地什麼都不會掉，但仍然留在這裡：拿掉的話那一下完全沒反應，看起來像點壞了。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
-                      bomb: 1, meteor: 1, nuke: 1, magic: 1 };
+                      bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1 };
 let tool = 'hammer';
 
 let hammerR = 5.5, hammerPow = 15;
@@ -3002,6 +3010,26 @@ const BURN_TIME = 2.2;        // 一塊從點著到燒斷掉下來
 const EMBER_TIME = 3;         // 碎料燒多久——燒完就是一塊焦炭，不會再掉一次
 const BURN_SPREAD = 0.35;     // 燒到幾成才開始把火傳給鄰居
 let slotOwner = null;         // slot → blocks 索引；只有蔓延需要反查，燒的時候每幀重建
+/* 重建那張反查表。積木只記得自己在哪個 slot，沒有反向的表，而「沿著格子走」的東西
+   （火的蔓延、水沿表面流）都得從格子反查回積木。要用的那一幀自己重建一次：
+   三千格的整數陣列填一趟，比維護一份增量的表單純得多。 */
+function buildSlotOwner() {
+  const n = bp.slots.length;
+  if (!slotOwner || slotOwner.length !== n) slotOwner = new Int32Array(n);
+  slotOwner.fill(-1);
+  for (let k = 0; k < blocks.length; k++) {
+    const b = blocks[k];
+    if (b.st === SET && b.slot >= 0) slotOwner[b.slot] = k;
+  }
+}
+// 這一格站著哪一塊積木（沒有就 null）。呼叫前這一幀要先 buildSlotOwner() 過
+function blockOn(gx, gy, gz) {
+  if (!bp || !bp.at || !slotOwner) return null;
+  const j = bp.at.get(gkeyOf(gx, gy, gz));
+  if (j === undefined) return null;
+  const k = slotOwner[j];
+  return k >= 0 ? blocks[k] : null;
+}
 
 /* 點著一塊。SET（還站著的）跟 FLY（碎料）都燒得起來，但燒法不同：
    前者燒 BURN_TIME、會焦黑鬆脫掉下來、還會把火傳給鄰居；
@@ -3286,6 +3314,278 @@ function stepTrucks(dt) {
   wetSpray();
 }
 
+/* ── 水桶 ───────────────────────────────────────────────
+   點一下就往那裡倒一桶水。水不是貼上去的特效，它會自己找路：
+   一團水沿著建築表面往下流，腳下沒東西撐就掉下去、前面是牆就轉彎、
+   四面都是牆（凹處）就停下來積成一攤；流到地面攤成一攤水窪，再慢慢滲進地底。
+   碰到的積木與小人一律濕 WET_TIME 秒——所以澆過的地方點不著、燒著的會被澆熄，
+   那一段跟消防車共用（見〈潮濕〉）。
+
+   為什麼是「一團一團走格子」而不是流體格網：
+   建築本身就是格子、blockAt() 是現成的查表，一團水只要記自己在哪一格、下一格往哪走，
+   「沿牆流下來」「從破洞漏出去」「積在凹處」就一次做完了。流體格網得為整棟每一格
+   存一個水量（三千格起跳）、換一座建築重配一次，而水實際上只蓋到其中一條路徑——
+   那張表九成九是空的。
+
+   座標約定：一團水待在**空的**那一格，d.gy 是自己那一格的層數，
+   腳下的積木在 d.gy − 1、擋路的牆在 d.gy。積水也記在「水占的那一格」上。 */
+const WB_DROPS = 22;                // 一桶倒幾團水
+const WB_POUR = 0.7;                // 倒完要幾秒：一次全出來是「潑」，不是「倒」
+const WB_FLOW = 6.5;                // 沿表面流的速度
+const WB_FALL = 13;                 // 落下的速度上限
+const WB_LIFE = 22;                 // 一團水最多活幾秒（保險絲：繞不出去的自己消失）
+const WB_MAX = 120;                 // 同時最多幾團（連按十下也不會把粒子池吃光）
+const WB_TRAIL = 20;                // 一團水一秒灑幾顆水珠——畫面上看到的水就是這些
+const WB_STUCK = 12;                // 同一層平地連走幾格還下不去，就當它在盆地裡，就地積起來
+const WB_WET = 0.12;                // 每隔多久把身邊那幾格淋濕一次
+const WB_UP = 0.55;                 // 倒水口比點到的地方高多少
+const POOL_MAX = 48;                // 同時最多幾攤，跟畫面那邊的 MAXPOOL 綁在一起
+const POOL_FILL = 4;                // 建築上一格積滿要幾團，滿了之後水位往上抬一層
+const POOL_SEEP = 0.55;             // 地面水窪每秒滲掉多少（單位：團）——一桶水攤在地上約 30 秒滲光
+const POOL_DRIP = 0.1;              // 積在建築上的漏得慢（從積木縫隙一點一點漏）
+const POOL_R = 0.52;                // 地面水窪攤開的半徑 = POOL_R × √水量
+const POOL_RMAX = 2.2;              // 一桶水最多攤到這麼大（直徑 4.4，約四塊半積木寬）
+const POOL_WET = 0.35;              // 每隔多久用水窪把泡在裡面的東西再淋一次
+let water = null;                   // { pours, drops, map, wt }
+
+// 世界座標 ↔ 格子。積木的格子就是建築的格子（見 blockAt），水直接借同一套
+const cellX = x => Math.round(x - gOffX);
+const cellZ = z => Math.round(z - gOffZ);
+const wldX = gx => gx + gOffX;
+const wldZ = gz => gz + gOffZ;
+const topY = gy => gy + ENG.BS;                 // 第 gy 層積木的上表面（水就貼在這個高度）
+const solidAt = (gx, gy, gz) => blockAt(wldX(gx), gy + HB, wldZ(gz));
+const poolAt = (gx, gy, gz) => water ? water.map.get(gx + ':' + gy + ':' + gz) : undefined;
+// 這一格底下踩得住嗎：積木或已經積滿的水都算（水面上還能再積一層）
+const floorAt = (gx, gy, gz) => solidAt(gx, gy, gz) || poolAt(gx, gy, gz) !== undefined;
+
+/* 倒一桶。倒水口比點到的地方高一點，才看得出來是「從上面倒下去」的。 */
+function pourWater(hit) {
+  if (!water) water = { pours: [], drops: [], map: new Map(), wt: 0 };
+  water.pours.push({ x: hit.point.x, y: hit.point.y + WB_UP, z: hit.point.z,
+                     n: WB_DROPS, out: 0, t: 0 });
+  sndWater();
+}
+function newDrop(x, y, z) {
+  return { x, y, z, vx: rr(-0.5, 0.5), vy: 0, vz: rr(-0.5, 0.5),
+           gy: 0, tx: x, tz: z, px: 1e9, pz: 1e9,
+           fall: 1, t: 0, stuck: 0, em: Math.random(), wt: rr(0, WB_WET) };
+}
+
+function stepWater(dt) {
+  if (!water) return;
+  const W = water;
+  // 一桶水分 WB_POUR 秒倒完，不是一幀全部出現
+  for (let i = W.pours.length - 1; i >= 0; i--) {
+    const p = W.pours[i];
+    p.t += dt;
+    const want = Math.min(p.n, Math.ceil(p.t / WB_POUR * p.n));
+    while (p.out < want) {
+      p.out++;
+      if (W.drops.length < WB_MAX)
+        W.drops.push(newDrop(p.x + rr(-0.3, 0.3), p.y, p.z + rr(-0.3, 0.3)));
+    }
+    if (p.out >= p.n) W.pours.splice(i, 1);
+  }
+  if (W.drops.length && bp) buildSlotOwner();    // 流過去要把碰到的積木淋濕，得從格子反查
+  for (let i = W.drops.length - 1; i >= 0; i--) {
+    const d = W.drops[i];
+    d.t += dt;
+    // 保險絲：卡在平台上繞不出去的、被爆炸掃出場外的，時間到就當它滲掉了
+    if (d.t > WB_LIFE || Math.hypot(d.x, d.z) > arenaR + 8) { W.drops.splice(i, 1); continue; }
+    if (!stepDrop(d, dt)) { W.drops.splice(i, 1); continue; }
+    dripFx(d, dt);
+    d.wt -= dt;
+    if (d.wt <= 0) { d.wt = WB_WET; wetAround(d); }
+  }
+  stepPools(dt);
+  W.wt -= dt;
+  if (W.wt <= 0) { W.wt = POOL_WET; wetPools(); }
+  if (!W.pours.length && !W.drops.length && !W.map.size) water = null;
+}
+
+/* 一團水走一步。回傳 false 代表它結束了（併進某一攤水裡）。 */
+function stepDrop(d, dt) {
+  if (d.fall) {
+    d.vy = Math.max(-WB_FALL, d.vy - WATER_G * dt);
+    d.x += d.vx * dt; d.z += d.vz * dt;
+    const ny = d.y + d.vy * dt;
+    /* 逐格往下檢查，不是只看終點：掉得快的時候一幀會跨過好幾格，
+       只看終點的話水會直接穿過薄屋頂。 */
+    const g1 = Math.round(ny - HB);
+    for (let g = Math.round(d.y - HB); g >= g1; g--)
+      if (solidAt(cellX(d.x), g, cellZ(d.z))) return land(d, g);
+    d.y = ny;
+    if (d.y > 0.12) return true;
+    splashFx(d.x, 0.12, d.z);                    // 落地：濺一下，然後在那裡攤成一攤
+    addPool(cellX(d.x), 0, cellZ(d.z));
+    return false;
+  }
+  // 貼著表面走：朝下一格的中心移動，到了再挑下一格
+  const step = WB_FLOW * dt;
+  const dx = d.tx - d.x, dz = d.tz - d.z, dist = Math.hypot(dx, dz);
+  if (dist > step) { d.x += dx / dist * step; d.z += dz / dist * step; return true; }
+  d.x = d.tx; d.z = d.tz;
+  if (!floorAt(cellX(d.x), d.gy - 1, cellZ(d.z))) {   // 腳下空了：從這裡瀉下去
+    d.fall = 1; d.vy = 0; d.vx = 0; d.vz = 0;
+    return true;
+  }
+  return nextCell(d, 0);
+}
+/* 落到第 g 層積木上面：從此改成貼著表面走，位置先對齊到格子中心（之後一格一格走）。 */
+function land(d, g) {
+  d.fall = 0; d.gy = g + 1; d.y = topY(g);
+  d.x = wldX(cellX(d.x)); d.z = wldZ(cellZ(d.z));
+  d.tx = d.x; d.tz = d.z; d.px = 1e9; d.pz = 1e9; d.stuck = 0;
+  splashFx(d.x, d.y, d.z);
+  return nextCell(d, 0);
+}
+/* 挑下一格。優先往「腳下是空的」那一格走（水往低處流），其次是平的，回頭路留到最後
+   ——不然兩格之間會來回彈。四面都是牆就是凹處：就地積起來；
+   那一格已經積滿了就把水位往上抬一層，再從上面找一次路（杯子就是這樣一層一層滿上來的）。 */
+const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+function nextCell(d, up) {
+  const cx = cellX(d.x), cz = cellZ(d.z);
+  const here = poolAt(cx, d.gy, cz);
+  if (here && (d.gy <= 0 || here.vol < POOL_FILL)) { here.vol++; return false; }  // 併進現成的水
+  const off = Math.floor(Math.random() * 4);
+  let down = null, straight = null, flat = null, back = null;
+  for (let i = 0; i < 4; i++) {
+    const v = DIR4[(i + off) % 4];
+    const nx = cx + v[0], nz = cz + v[1];
+    if (solidAt(nx, d.gy, nz)) continue;                  // 那一格是牆
+    if (nx === d.px && nz === d.pz) { back = v; continue; }
+    if (!floorAt(nx, d.gy - 1, nz)) { down = v; break; }   // 那一格腳下是空的：往那裡瀉
+    /* 平地上優先「直走」。四個方向裡亂數挑的話，水在大屋頂上就是隨機漫步——
+       實測聖母院一團水要繞七秒才走到屋簷；直走優先之後是一條一條沖出去的水路。 */
+    if (v[0] === cx - d.px && v[1] === cz - d.pz) straight = v;
+    else if (!flat) flat = v;
+  }
+  const v = down || straight || flat || back;
+  if (!v) {                                    // 四面都是牆
+    if (addPool(cx, d.gy, cz)) return false;   // 還裝得下：併進去
+    if (up >= 6) return false;                 // 疊六層還出不去就當它滲掉了（保險絲）
+    d.gy++; d.y = topY(d.gy - 1);              // 這一格滿了：水位往上抬一層再找路
+    d.px = 1e9; d.pz = 1e9;
+    return nextCell(d, up + 1);
+  }
+  d.px = cx; d.pz = cz;
+  d.tx = wldX(cx + v[0]); d.tz = wldZ(cz + v[1]);
+  d.stuck = down ? 0 : d.stuck + 1;
+  if (d.stuck > WB_STUCK) { addPool(cx, d.gy, cz); return false; }   // 在盆地裡繞不出去
+  return true;
+}
+/* 把一團水併進 (gx,gy,gz) 那一格。那一格還沒水就開一攤；回傳 false 代表已經滿了。
+   地面那一層（gy 0）不設上限——地面的水是往外攤開，不是往上疊。 */
+function addPool(gx, gy, gz) {
+  const W = water, k = gx + ':' + gy + ':' + gz;
+  const p = W.map.get(k);
+  if (p) {
+    if (gy > 0 && p.vol >= POOL_FILL) return false;
+    p.vol++;
+    return true;
+  }
+  if (W.map.size >= POOL_MAX) return true;     // 額度用完：當它滲掉了，不要無限長
+  W.map.set(k, { k, gx, gy, gz, vol: 1, x: wldX(gx), y: 0, z: wldZ(gz), r: 0, h: 0 });
+  return true;
+}
+/* 水窪：慢慢滲掉，順便把畫面上的大小算好（水量 → 半徑與水位）。
+   撐著它的那塊積木不見了（被打掉、燒斷）就整攤漏下去，變回幾團水繼續往下找路——
+   那就是「杯子敲一個洞，水會從破口流出來」。 */
+function stepPools(dt) {
+  const W = water;
+  for (const p of W.map.values()) {
+    if (p.gy > 0 && !solidAt(p.gx, p.gy - 1, p.gz)) {
+      W.map.delete(p.k);
+      const n = Math.min(3, Math.round(p.vol));
+      for (let i = 0; i < n; i++)
+        if (W.drops.length < WB_MAX)
+          W.drops.push(newDrop(p.x + rr(-0.2, 0.2), p.y, p.z + rr(-0.2, 0.2)));
+      continue;
+    }
+    p.vol -= (p.gy > 0 ? POOL_DRIP : POOL_SEEP) * dt;
+    if (p.vol <= 0) { W.map.delete(p.k); continue; }
+    if (p.gy > 0) {                                  // 積在建築上：占滿那一格，水位跟著水量漲
+      p.r = ENG.BS / 2;
+      p.h = Math.max(0.2, Math.min(1, p.vol / POOL_FILL)) * ENG.BS;
+      p.y = topY(p.gy - 1) + p.h / 2;
+    } else {                                         // 地面：厚度固定，往外攤開
+      p.r = Math.min(POOL_RMAX, POOL_R * Math.sqrt(p.vol));
+      p.h = 0.09;
+      p.y = 0.05;
+    }
+  }
+}
+const poolBuf = [];
+function poolList() {
+  poolBuf.length = 0;
+  for (const p of water.map.values()) poolBuf.push(p);
+  return poolBuf;
+}
+/* 一團水流過的地方要濕：腳下那一塊，加上左右前後貼著的那四塊
+   （從屋簷瀉下來的時候，濕的是它擦過的那面牆）。 */
+function wetAround(d) {
+  const cx = cellX(d.x), cz = cellZ(d.z), gy = d.fall ? Math.round(d.y - HB) : d.gy;
+  let b = blockOn(cx, gy - 1, cz);
+  if (b) wetBlock(b);
+  for (const v of DIR4) {
+    b = blockOn(cx + v[0], gy, cz + v[1]);
+    if (b) wetBlock(b);
+  }
+}
+/* 泡在水裡的東西要持續濕著（不然水還在，積木卻乾了又能點著）。
+   一趟掃完所有積木、所有水窪共用這一趟——跟消防車的 wetSpray 同一個理由：
+   一攤掃一趟會把同一塊判好幾次。而且每 POOL_WET 秒才跑一趟，不是每幀。 */
+const wetBuf = [];
+function wetPools() {
+  wetBuf.length = 0;
+  for (const p of water.map.values()) wetBuf.push(p);
+  if (!wetBuf.length) return;
+  for (const b of blocks) {
+    if (b.holder >= 0) continue;                 // 扛在人身上的不算（人自己會被淋到）
+    for (const p of wetBuf) {
+      const r = p.r + 0.5;
+      if ((b.x - p.x) ** 2 + (b.z - p.z) ** 2 < r * r && Math.abs(b.y - p.y) < 1.2)
+        { wetBlock(b); break; }
+    }
+  }
+  for (const w of workers) {
+    if (w.wet > WET_TIME - 0.5) continue;        // 剛淋過就不必再算一次
+    for (const p of wetBuf) {
+      const r = p.r + 0.5;
+      if ((w.x - p.x) ** 2 + (w.z - p.z) ** 2 < r * r && Math.abs(w.y - p.y) < 1.4)
+        { wetWorker(w); break; }
+    }
+  }
+}
+/* 畫面上的水就是這些水珠：一團水沿路灑，灑出去就停在原地淡掉（g: 0、fade），
+   連起來就是一條貼著牆流下來的水痕。走現成的塵霧粒子池，0 個新 draw call。 */
+function dripFx(d, dt) {
+  d.em += dt * WB_TRAIL;
+  while (d.em >= 1) {
+    d.em--;
+    if (dust.length > 600) break;                // 留一截給煙塵
+    dust.push({
+      x: d.x + rr(-0.14, 0.14), y: d.y + rr(-0.12, 0.12), z: d.z + rr(-0.14, 0.14),
+      vx: 0, vy: 0, vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(0.3, 0.55), s: rr(0.24, 0.42), fade: 0.35,
+      cr: 0.42, cg: 0.74, cb: 1, g: 0, keep: 0.9
+    });
+  }
+}
+// 打到東西那一下濺開的幾滴（跟消防車水柱的落點用同一組顏色）
+function splashFx(x, y, z) {
+  for (let i = 0; i < 4; i++) {
+    if (dust.length > 620) break;
+    dust.push({
+      x, y, z, vx: rr(-1.8, 1.8), vy: rr(0.8, 2.6), vz: rr(-1.8, 1.8),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(0.25, 0.45), s: rr(0.2, 0.36),
+      cr: 0.74, cg: 0.91, cb: 1, g: WATER_G, keep: 0.9
+    });
+  }
+}
+
 /* ── 煙火 ───────────────────────────────────────────────
    點地面：一次齊射三發往天上竄，到頂各自炸開成雙層的一球火星，
    火星帶著火慢慢落下來。落到建築上就從那一塊燒起來——
@@ -3540,15 +3840,7 @@ function stepFire(dt) {
   /* slot → 積木的反查表。蔓延要沿著格子走，而積木只記得自己在哪個 slot，沒有反向的表。
      有東西在蔓延時每幀重建一次；只有碎料在燒（爆炸過後的常態）就整段跳過——
      碎料不蔓延，為它每幀掃三千塊積木是白花的。 */
-  if (bp && nSpread) {
-    const n = bp.slots.length;
-    if (!slotOwner || slotOwner.length !== n) slotOwner = new Int32Array(n);
-    slotOwner.fill(-1);
-    for (let k = 0; k < blocks.length; k++) {
-      const b = blocks[k];
-      if (b.st === SET && b.slot >= 0) slotOwner[b.slot] = k;
-    }
-  }
+  if (bp && nSpread) buildSlotOwner();
   for (let i = fires.length - 1; i >= 0; i--) {
     const f = fires[i], b = f.b;
     f.t += dt * f.rate;
@@ -4560,6 +4852,7 @@ function useTool(hit) {
   if (tool === 'tornado') { aimTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fw') { launchFw({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fire') { torch(hit); return 0; }
+  if (tool === 'bucket') { pourWater(hit); return 0; }
   if (tool === 'bomb') { placeBomb(hit.point); return 0; }
   if (tool === 'meteor') { callMeteor(hit.point); return 0; }
   if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }); return 0; }
@@ -4731,6 +5024,7 @@ function step(dt) {
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepDozers(dt);
   stepTrucks(dt);
+  stepWater(dt);
   for (let i = toasts.length - 1; i >= 0; i--) {
     toasts[i].t -= dt;
     if (toasts[i].t <= 0) { toasts.splice(i, 1); renderToasts(); }
@@ -4828,6 +5122,7 @@ function draw() {
   else ENG.hideRings();
   if (dozers) ENG.putDozers(dozRender(dozers));
   ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
+  ENG.putPools(water ? poolList() : EMPTY);         // 水窪同理
 }
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石
@@ -4879,13 +5174,16 @@ function onUp(e) {
   /* 拿哪一把決定「小人算不算被點到」（v1.60）：
      手指只戳人，人排第一（不然站在建築前面的戳不到）；火把兩種用途都有，照舊；
      其餘破壞道具**一律不理小人**——那些是對著建築用的，被路過的人擋掉那一下就白點了。 */
-  const hit = ENG.pick(x, y, tool === 'finger' ? 'man' : tool === 'fire' ? '' : 'skip');
+  const hit = ENG.pick(x, y, tool === 'finger' ? 'man'
+                            : tool === 'fire' || tool === 'bucket' ? '' : 'skip');
   if (!hit) return;
   if (hit.kind === 'worker') {            // 戳小人：跌倒、手上的積木掉下來
     const w = workers[hit.idx];
     if (!w || w.air) return;
     // 拿著火把戳人就是點他：站著被點著的會抱頭跑圈圈
     if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); return; }
+    // 拿水桶澆人：濕 5 秒（身上有火的當場熄），不會把人打倒
+    if (tool === 'bucket') { wetWorker(w); splashFx(w.x, w.y + 1.4, w.z); sndWater(); return; }
     if (w.fall <= 0 && w.burn <= 0) {
       w.fall = rr(1.2, 2.4); releaseWorker(w); sndFall();
       stats.poked++; checkBadges();

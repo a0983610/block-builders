@@ -14,7 +14,7 @@ const ENG = (function () {
 
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
-  let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh;
+  let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh, poolMesh;
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
@@ -52,6 +52,7 @@ const ENG = (function () {
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXTRUCK = 2, TRK_PARTS = 11;       // 消防車：最多兩台，一台 11 個部位
+  const MAXPOOL = 48;                       // 水窪：同時最多幾攤（規則那邊的 POOL_MAX 跟它綁在一起）
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
@@ -332,6 +333,18 @@ const ENG = (function () {
     trkMesh.frustumCulled = false; trkMesh.visible = false;
     trkMesh.setColorAt(0, tmpC.setHex(0xffffff));
     scene.add(trkMesh);
+
+    /* 水窪（v1.69）。水桶倒下去的水積在凹處、流到地面攤成一攤，都是這一顆網格：
+       一攤水就是一片壓扁的方塊，透明、不寫深度、**不投影**——所以它在場時只吃
+       1 個 draw call（會投影的才要多跑一趟陰影，見消防車那段），沒水的時候
+       visible=false 一個都不吃。
+       用方塊不用圓盤：這座城市每一樣東西都是方的，圓形的水窪反而突兀。 */
+    poolMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
+      color: 0x4aa6de, transparent: true, opacity: 0.62, depthWrite: false
+    }), MAXPOOL);
+    poolMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    poolMesh.count = 0; poolMesh.frustumCulled = false; poolMesh.visible = false;
+    scene.add(poolMesh);
 
     /* 定時炸彈：可以同時放好幾顆，走 instancing。
        新道具的網格一律「沒在用就 visible=false」——InstancedMesh 就算 count=0
@@ -665,6 +678,22 @@ const ENG = (function () {
     }
     trkMesh.instanceMatrix.needsUpdate = true;
     if (trkMesh.instanceColor) trkMesh.instanceColor.needsUpdate = true;
+  }
+  /* 一攤水：p = {x, y, z, r 半徑, h 厚度}。壓扁的方塊，貼在它積水的那一格上。
+     厚度是規則那邊照水量算好的——水多就滿到那一格的頂，看得出水位在漲。 */
+  function putPools(list) {
+    const n = Math.min(list.length, MAXPOOL);
+    poolMesh.visible = n > 0;
+    poolMesh.count = n;
+    for (let i = 0; i < n; i++) {
+      const p = list[i];
+      scratch.position.set(p.x, p.y, p.z);
+      scratch.rotation.set(0, 0, 0);
+      scratch.scale.set(p.r * 2, p.h, p.r * 2);
+      scratch.updateMatrix();
+      poolMesh.setMatrixAt(i, scratch.matrix);
+    }
+    poolMesh.instanceMatrix.needsUpdate = true;
   }
   function putRocks(list) {
     const n = Math.min(list.length, MAXROCK);
@@ -1437,7 +1466,7 @@ const ENG = (function () {
     init, resize, render, info, pick,
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers,
-    putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks,
+    putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
     setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts,
