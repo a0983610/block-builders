@@ -269,8 +269,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      seg.workers === 20 && seg.fresh.wk === 20 &&
      seg.scale === 1 && seg.fresh.spd === 1,
      'targetCnt=' + seg.target + '、freshPref=' + JSON.stringify(seg.fresh));
-  ok('開場那座就真的是 3000 塊上下', Math.abs(boot.total - 3000) / 3000 < 0.05,
-     boot.bp + ' ' + boot.total + ' 塊');
+  /* 容差 10%：使用者定調「積木數量大約就好，容差 10% 也都還好」。
+     開場那座是**隨機挑**的，而 48 座裡有三座固定停在 +5.9～6.1%（獅身人面像 3178、
+     自由女神 3177、大阪城天守閣 3183，是尺度階距，見下面〈每座都貼近〉那條），
+     所以 5% 的容差本來就會隨機紅——大約每 17 次一次。 */
+  ok('開場那座就真的是 3000 塊上下（偏差 <10%）',
+     Math.abs(boot.total - 3000) / 3000 < 0.1,
+     boot.bp + ' ' + boot.total + ' 塊，偏差 ' +
+     (Math.abs(boot.total - 3000) / 30).toFixed(1) + '%');
   /* 最大那一檔 9000（自訂藍圖要靠上萬塊才刻得出招牌、窗框那種細節）。
      積木池必須比它更高：fitScale 挑的是「最接近目標」的那一階，可能落在目標之上
      ——實測吉薩金字塔要 10000 時給出 10660（+7%）。池子不夠就會夾掉尾巴，那座永遠蓋不完。
@@ -385,7 +391,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     res.sort((a, b) => b.err - a.err);
     const big = res.filter(r => r.t === 3000).sort((a, b) => b.err - a.err);
     return { worst: res[0], over50: res.filter(r => r.err > 0.5).length, total: res.length,
-             bigOver: big.filter(r => r.err > 0.07).map(r => r.n + ' ' + r.c),
+             bigOver: big.filter(r => r.err > 0.1).map(r => r.n + ' ' + r.c),
              bigWorst: big.slice(0, 3).map(r => r.n + ' ' + r.c) };
   });
   /* 有些造型（八節的 101、五座塔的吳哥）本身就有最少積木數，做不了太小的版本，
@@ -404,8 +410,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      v1.66 從 5% 放到 7%：換上來的藍圖有三座停在 +5.9～6.1%（獅身人面像 3178、
      自由女神 3177、大阪城天守閣 3183）。那是**尺度階距**造成的，不是下限撐著——
      實測把 dim 的下限縮到 ×0.6 一樣是 3178／3176，要更貼近得照說明文件的做法
-     微調某一個維度的係數，讓它的跳點跟別的維度錯開。 */
-  ok('預設 3000 塊時每座都貼近（偏差都 <7%）',
+     微調某一個維度的係數，讓它的跳點跟別的維度錯開。
+     v1.77 放到 10%：使用者定調「積木數量大約就好，容差 10% 也都還好」。 */
+  ok('預設 3000 塊時每座都貼近（偏差都 <10%）',
      fitStat.bigOver.length === 0,
      '最遠的三座：' + fitStat.bigWorst.join('、') +
      (fitStat.bigOver.length ? '；超過 7% 的：' + fitStat.bigOver.join('、') : ''));
