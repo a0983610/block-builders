@@ -5256,6 +5256,44 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '倒水前草地那半有 ' + wbPix.dry + ' 個偏藍的像素 → 倒了三下之後 ' + wbPix.wet +
      '（' + wbPix.cols + ' 根柱子）');
 
+  /* 水不能站在沒有東西撐的地方，也不能高過漏口。這條規則錯過兩次
+     （v1.73 杯口以上的懸空水牆、v1.74 窄檐上十幾格高的立牆），所以用**掃六座建築**
+     的方式守著，不是只驗一個場景：
+     ① 每一根畫得出來的水柱，底下那一格必須是實心、或它本來就在地面；
+     ② 有漏口的水體，靜下來之後水面不能還停在漏口以上。 */
+  const wbSolid = await page.evaluate(() => {
+    const names = ['巴黎凱旋門', '美國國會大廈', '巴黎聖母院', '吉薩金字塔', '經典馬克杯', '羅馬競技場'];
+    const out = [];
+    for (const n of names) {
+      const i = SHAPES.findIndex(s => s.n === n);
+      if (i < 0) continue;
+      cleanTools();
+      targetCnt = 3000;
+      shapePick = i; startBuild(true); completeNow();
+      let top = null;
+      for (const s of bp.slots) if (s.filled && (!top || s.gy > top.gy)) top = s;
+      pourWater({ point: { x: top.x, y: top.y + HB, z: top.z }, kind: 'block' });
+      for (let k = 0; k < 60 * 12; k++) step(1 / 60);       // 倒完 + 靜下來
+      let air = 0, high = 0, cols = 0, worst = 0;
+      for (const b of (water ? water.bodies : [])) {
+        if (b.spill && b.shown > b.sill + 1.5) { high++; worst = Math.max(worst, +(b.shown - b.sill).toFixed(1)); }
+        for (const c of b.cols) {
+          if (b.shown - c.base <= 0.02) continue;           // 這根還沒淹到，不畫
+          cols++;
+          if (c.base > 0 && !solidAt(c.gx, c.base - 1, c.gz)) air++;
+        }
+      }
+      out.push({ n, cols, air, high, worst });
+    }
+    cleanTools();
+    return out;
+  });
+  const wbBad = wbSolid.filter(r => r.air > 0 || r.high > 0);
+  ok('六座建築倒過一遍：沒有懸空的水、也沒有站在漏口以上的水',
+     wbBad.length === 0 && wbSolid.reduce((a, r) => a + r.cols, 0) > 200,
+     wbSolid.map(r => r.n + ' ' + r.cols + ' 根').join('、') +
+     (wbBad.length ? '　✗ ' + wbBad.map(r => r.n + ' 懸空' + r.air + '、超過漏口' + r.worst).join('；') : ''));
+
   /* ── 水桶就是一般工具：點一下用一次、拖曳轉視角（v1.74 改回來） ──────
      v1.70～1.73 是「按住不放一直倒、拖曳不轉視角」，使用者要求改回跟其他工具一致。
      這幾條用**真的滑鼠事件**，因為要驗的就是輸入層有沒有接上。 */

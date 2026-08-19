@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.74.0';
+const VERSION = '1.75.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3553,21 +3553,17 @@ function solveBody(b) {
   for (const v of DIR4) add(b.sx + v[0], b.sz + v[1]);
   let level = seed, vol = b.vol, spill = null, sill = 0;
   while (vol > 1e-6) {
-    // 沒有邊界了＝這一團水沒有東西圍著。有漏口就只能停在漏口那個高度
-    if (!front.length) { if (spill) level = sill; else level += vol / region.length; break; }
+    if (!front.length) { level += vol / region.length; break; }   // 完全封閉
     let k = 0;                                   // region 不大，線性找最小就夠（不必開堆）
     for (let i = 1; i < front.length; i++) if (front[i].base < front[k].base) k = i;
     const c = front[k];
     if (c.base < level - 1e-6) {
-      /* 這一格比水面低 → 水會從這裡流走：記下來，但**不要吸收它、也不往它那邊擴張**，
-         然後繼續看別的邊界。杯壁半腰破一個洞的時候，水還是被更高的杯壁圍著、
-         可以站在破口以上（只是一直漏），停在這裡不繼續 flood 的話，
-         整杯水會被誤判成「站不住」。
-         sill 是「水要爬過多高才到得了那裡」＝發現它的當下的水面高度，
-         也就是水最後會退到的高度。 */
-      if (!spill) { spill = c; sill = level; }
-      front.splice(k, 1);
-      continue;
+      /* 這一格比水面低 → 水從這裡流走，**水面就停在這個高度、不可能再高**。
+         v1.74 這裡是「記下來、把它拿掉、繼續往更高的邊界長」，於是水會為了追一面
+         更高的牆而爬過漏口——倒在一條窄檐上就長出一道十幾格高的水牆（使用者截圖）。
+         sill ＝ 發現漏口當下的水面高度，也就是這團水最後會退到的高度。 */
+      spill = c; sill = level;
+      break;
     }
     const need = region.length * (c.base - level);
     // 同高度的鄰居吸進來不用水，但攤太薄就停手——不然一灘水會鋪滿整片草地
@@ -3581,9 +3577,8 @@ function solveBody(b) {
     if (region.length >= COL_MAX) { level += vol / region.length; break; }
   }
   b.level = level; b.cols = region; b.spill = spill; b.sill = sill; b.dirty = 0;
-  /* 這個水面裝得下多少水。b.vol 超過它的部分是「站不住的水」——
-     倒進一個已經滿出來的杯子時，多的水應該當場從杯口流掉，
-     不是把水面往上抬（v1.73 就是這樣抬出一片懸在半空的水牆）。 */
+  /* 這個水面裝得下多少水（到漏口為止）。b.vol 超過它的那一部分就是**正在往外流的水**：
+     倒進一個滿出來的杯子、或倒在一條窄檐上，多的水都該流掉，不是把水面往上抬。 */
   let cap = 0;
   for (const c of region) cap += Math.max(0, level - c.base);
   b.cap = cap;
@@ -3598,36 +3593,39 @@ function stepBodies(dt) {
   for (let i = W.bodies.length - 1; i >= 0; i--) {
     const b = W.bodies[i];
     if (b.dirty || redo) solveBody(b);           // 新開的、或時間到了就重算一次
-    /* 水往外走有兩種：
-       ① **滿出來的**（b.vol 超過這個水面裝得下的量）：站不住，當場流掉——
-          往一個已經滿的杯子裡倒水，多的就是從杯口一直流出去，水面停在杯口。
-       ② **站在門檻以上的**（杯壁半腰有破口）：水是被圍著的，照托里切利慢慢洩，
-          水面看得見一路降到破口的高度。 */
+    /* 從漏口流出去。水面（shown）與水量是綁在一起降的：流掉多少，水面就降多少——
+       這樣「看到的水」跟「還有多少水」永遠對得起來。兩種速度：
+       ① **水面還在漏口以上**（剛敲破杯壁）：照托里切利 `LEAK_K×√水頭`，
+          水面看得見一路降到破口的高度。
+       ② **水面已經在漏口上、但還有水一直進來**（倒進滿的杯子、倒在窄檐上）：
+          那些水站不住，當場流掉。 */
     const over = b.vol - (b.cap || 0);
-    const head = b.spill ? Math.max(0, b.level - b.sill) : 0;
-    if (b.spill && (over > 0.01 || head > 0.02)) {
-      const rate = over > 0.01 ? Math.max(over * 4, LEAK_K) : LEAK_K * Math.sqrt(head);
-      const out = Math.min(b.vol, rate * dt);
+    const head = b.spill ? b.shown - b.sill : 0;
+    if (b.spill && head > 0.02 && over > 0.01) {
+      const out = Math.min(over, LEAK_K * Math.sqrt(head) * dt);
       b.vol -= out;
-      if (over <= 0.01 && b.cols.length) b.level -= out / b.cols.length;
-      jetFx(b, Math.max(head, 0.4), dt);
+      if (b.cols.length) b.shown -= out / b.cols.length;
+      jetFx(b, head, dt);
       b.bank += out;
-      if (b.bank >= WB_VOL && W.drops.length < WB_MAX) {   // 噴出去的水本身也要落地
-        const p = spillPos(b, head);
-        const d = newDrop(p.x, p.y, p.z, b.bank);
-        d.vx = p.dx * p.sp; d.vz = p.dz * p.sp; d.vy = 0;
-        W.drops.push(d);
-        b.bank = 0;
-      }
+      leakDrop(b, head);
+    } else if (b.spill && over > 0.01) {
+      const out = Math.min(over, over * 5 * dt);
+      b.vol -= out;
+      jetFx(b, 0.5, dt);
+      b.bank += out;
+      leakDrop(b, 0.5);
     }
     // 滲：地面滲得快、積在建築上的從積木縫隙慢慢漏，兩個都跟「攤多大」成正比
     const seep = (b.ground ? SEEP_G : SEEP_B) * b.cols.length * dt;
     b.vol -= seep;
     if (b.cols.length) b.level -= seep / b.cols.length;
     if (b.vol <= 0) { W.bodies.splice(i, 1); continue; }   // 滲光了
-    // 畫面上的水面用追的：一下倒 2300 格，水位若是瞬間到位就看不到「裝滿」的過程
+    /* 畫面上的水面：**往上**用追的（一下倒 2300 格，瞬間到位就看不到「裝滿」的過程），
+       **往下**只有兩種情況會動——沒有漏口時跟著水量降（滲掉），
+       有漏口時由上面那段「流出去多少就降多少」自己降。 */
     const step = RISE * dt;
-    b.shown += clamp(b.level - b.shown, -step, step);
+    if (b.shown < b.level) b.shown = Math.min(b.level, b.shown + step);
+    else if (!b.spill) b.shown = Math.max(b.level, b.shown - step);
   }
   /* 柱子 → 水體的反查表（每幀重建：水體會長大、縮小、消失）。
      順便併團：兩團水蓋到同一根柱子，那就是同一團水（各自倒在盆地兩端會這樣）。 */
@@ -3642,6 +3640,16 @@ function stepBodies(dt) {
     if (host) { host.vol += b.vol; host.dirty = 1; W.bodies.splice(i--, 1); continue; }
     for (const c of b.cols) W.cols.set(c.gx + ':' + c.gz, { body: b, base: c.base });
   }
+}
+/* 從漏口流出去的水本身也要落地：攢到一團的量就丟一團出去 */
+function leakDrop(b, head) {
+  const W = water;
+  if (b.bank < WB_VOL || W.drops.length >= WB_MAX) return;
+  const p = spillPos(b, head);
+  const d = newDrop(p.x, p.y, p.z, b.bank);
+  d.vx = p.dx * p.sp; d.vz = p.dz * p.sp; d.vy = 0;
+  W.drops.push(d);
+  b.bank = 0;
 }
 /* 破口在世界座標的哪裡、水往哪個方向噴、噴多快 */
 function spillPos(b, head) {
