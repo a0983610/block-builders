@@ -104,7 +104,7 @@ const installClean = page => page.evaluate(() => {
     nukes = null; ENG.putNukes([]);
     magics = null;
     trucks = null;
-    water = null;
+    water = null; pourJet = null;
     fworks = null; fwSparks = null; fwWait = null;
     dangers = []; quake = null;
     clearFires();
@@ -5184,6 +5184,110 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '倒水前草地那半有 ' + wbPix.dry + ' 個偏藍的像素 → 倒了三桶之後 ' + wbPix.wet +
      '（' + wbPix.pools + ' 攤）');
 
+
+  /* ── 按住不放就一直倒（v1.70） ──────────────────────────
+     使用者：「裝水的速度太慢了 能不能按住就一直流水進去 然後水量大一點」。
+     這幾條用**真的滑鼠事件**，因為要驗的就是輸入層有沒有接上。 */
+  await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 6 });
+  await fillAll(page);
+  const wbTop = await toScreen(page,
+    '(() => { let t = null; for (const b of blocks) if (b.st === 3 && (!t || b.y > t.y)) t = b; return t; })()');
+  await page.evaluate(() => { cleanTools(); tool = 'bucket'; });
+  await page.mouse.move(wbTop.x, wbTop.y);
+  await page.mouse.down();
+  const holdA = await page.evaluate(() => {
+    for (let i = 0; i < 60; i++) step(1 / 60);            // 按住第一秒
+    return { jet: !!pourJet, out: pourJet ? pourJet.out : 0,
+             drops: water ? water.drops.length : 0, rate: WB_RATE };
+  });
+  const holdB = await page.evaluate(() => {
+    for (let i = 0; i < 60; i++) step(1 / 60);            // 按住第二秒
+    return { out: pourJet ? pourJet.out : 0, drops: water ? water.drops.length : 0 };
+  });
+  await page.mouse.up();
+  const holdC = await page.evaluate(() => {
+    const jet = !!pourJet, out = 0;
+    const n0 = water ? water.drops.length : 0;
+    for (let i = 0; i < 30; i++) step(1 / 60);            // 放開之後半秒
+    return { jet, n0, spawned: 0, pours: water ? water.pours.length : 0 };
+  });
+  ok('按住不放就一直倒，放開就停',
+     holdA.jet === true && holdB.out > holdA.out * 1.7 &&
+     Math.abs(holdA.out - holdA.rate) < holdA.rate * 0.25 &&
+     holdC.jet === false && holdC.pours === 0,
+     '按住一秒倒了 ' + holdA.out + ' 團（設定每秒 ' + holdA.rate + '）、兩秒 ' +
+     holdB.out + ' 團，放開後水柱收掉 ' + (holdC.jet === false));
+  ok('按住的時候場上真的有一大片水在流',
+     holdA.drops > holdA.rate * 0.5 && holdB.drops > holdA.drops,
+     '一秒後 ' + holdA.drops + ' 團在流 → 兩秒後 ' + holdB.drops + ' 團');
+
+  // 點一下就放開的不吃虧：倒不滿一桶的會補到一桶
+  const tapPour = await page.evaluate(() => { cleanTools(); tool = 'bucket'; return 1; });
+  await page.mouse.down();
+  await page.mouse.up();
+  const tapR = await page.evaluate(() => {
+    const jet = !!pourJet;
+    const queued = (water ? water.pours : []).reduce((a, p) => a + (p.n - p.out), 0);
+    const made = water ? water.drops.length : 0;
+    return { jet, total: queued + made, want: WB_DROPS };
+  });
+  ok('點一下就放開還是一整桶（不滿一桶的放開時補滿）',
+     tapR.jet === false && tapR.total >= tapR.want - 1 && tapR.total <= tapR.want + 2,
+     '點一下共 ' + tapR.total + ' 團（一桶是 ' + tapR.want + ' 團）');
+
+  // 拿水桶拖曳是「把水澆過去」，不是轉視角
+  await page.evaluate(() => { cleanTools(); tool = 'bucket'; });
+  const wbYaw0 = await page.evaluate(() => +ENG.cam.yaw.toFixed(4));
+  await page.mouse.move(wbTop.x, wbTop.y);
+  await page.mouse.down();
+  const jet0 = await page.evaluate(() => pourJet ? { x: +pourJet.x.toFixed(2), z: +pourJet.z.toFixed(2) } : null);
+  await page.mouse.move(wbTop.x + 130, wbTop.y + 50, { steps: 6 });
+  await page.waitForTimeout(120);                          // 落點是節流的（WB_PICK_MS）
+  await page.mouse.move(wbTop.x + 150, wbTop.y + 60, { steps: 2 });
+  const jet1 = await page.evaluate(() => pourJet ? { x: +pourJet.x.toFixed(2), z: +pourJet.z.toFixed(2) } : null);
+  const wbYaw1 = await page.evaluate(() => +ENG.cam.yaw.toFixed(4));
+  await page.mouse.up();
+  ok('拖著倒：水柱跟著游標走，而且這一下不轉視角',
+     jet0 && jet1 && Math.hypot(jet1.x - jet0.x, jet1.z - jet0.z) > 1 && wbYaw1 === wbYaw0,
+     '落點 (' + jet0.x + ',' + jet0.z + ') → (' + jet1.x + ',' + jet1.z + ')，yaw ' +
+     wbYaw0 + ' → ' + wbYaw1);
+
+  /* 一格滿了之後倒進去的水要往上抬，不能憑空不見。
+     v1.69 的漏洞就在這裡：繞不出去的那條路是 addPool 完就直接把那一團丟掉，
+     所以那一格滿了之後再怎麼倒都裝不進去（使用者：「裝水的速度太慢」）。
+     實測當時聖家堂塔上按住三秒，200 團裡有 198 團是這樣不見的。 */
+  const wbKeep = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '聖家堂');
+    startBuild(true); completeNow();
+    let cell = null;
+    for (const s of bp.slots) {
+      const gx = s.gx, gy = s.gy + 1, gz = s.gz;
+      if (!s.filled || solidAt(gx, gy, gz)) continue;
+      if (solidAt(gx + 1, gy, gz) && solidAt(gx - 1, gy, gz) &&
+          solidAt(gx, gy, gz + 1) && solidAt(gx, gy, gz - 1)) { cell = { gx, gy, gz }; break; }
+    }
+    pourStart(wldX(cell.gx), cell.gy + 1.5, wldZ(cell.gz));
+    for (let i = 0; i < 180; i++) step(1 / 60);            // 對著同一個凹格按住三秒
+    const poured = pourJet.out;
+    pourJet = null;                                       // 直接收掉，不要補那一桶
+    let t = 0;
+    while (water && (water.drops.length || water.pours.length) && t < 25) { step(1 / 60); t += 1 / 60; }
+    const pools = water ? [...water.map.values()] : [];
+    const r = { poured, t: +t.toFixed(1), pools: pools.length,
+                vol: +pools.reduce((a, p) => a + p.vol, 0).toFixed(0),
+                up: pools.filter(p => p.gy > 0).length,
+                ground: pools.filter(p => p.gy <= 0).length };
+    cleanTools();
+    return r;
+  });
+  ok('一格裝滿之後的水會往上抬、或滿出去流到地面，不會憑空不見',
+     wbKeep.vol > wbKeep.poured * 0.8 && wbKeep.up > 0 && wbKeep.ground > 0,
+     '倒了 ' + wbKeep.poured + ' 團 → 最後還有 ' + wbKeep.vol + ' 團在場上（' +
+     wbKeep.up + ' 攤積在建築上、' + wbKeep.ground + ' 攤滿出去流到地面）');
+  await page.evaluate(() => { tool = 'hammer'; });         // 別把水桶留給後面的測試
+
   head('煙火');
   await reset(page, { shape: '新天鵝堡', cnt: 2000, workers: 4 });
   const fw = await page.evaluate(() => {
@@ -7980,7 +8084,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   head('視角操作');
   await reset(page, { shape: '艾菲爾鐵塔', cnt: 900, workers: 6 });
   await fillAll(page);
-  const camBefore = await page.evaluate(() => ({ yaw: ENG.cam.yaw, pitch: ENG.cam.pitch, dist: ENG.cam.dist }));
+  // v1.70 起拖曳的意義跟手上拿什麼有關（水桶是把水澆過去），所以先釘住工具
+  const camBefore = await page.evaluate(() => { tool = 'hammer'; return { yaw: ENG.cam.yaw, pitch: ENG.cam.pitch, dist: ENG.cam.dist }; });
   await page.mouse.move(640, 400);
   await page.mouse.down();
   await page.mouse.move(820, 330, { steps: 8 });
@@ -8366,6 +8471,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.screenshot({ path: path.join(OUT, '06-手機版.png') });
 
   const touch = await page.evaluate(() => {
+    tool = 'hammer';                     // 同上：拿水桶拖曳是澆水，不是轉視角
     const y0 = ENG.cam.yaw;
     const cv = document.getElementById('cv');
     const mk = (t, x, y) => { const e = new Event(t, { bubbles: true, cancelable: true }); e.touches = [{ clientX: x, clientY: y }]; return e; };

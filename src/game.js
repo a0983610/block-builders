@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.69.0';
+const VERSION = '1.70.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2194,7 +2194,7 @@ function resetSave() {
 const TOOLS = [
   { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
   { id: 'bucket', n: '水桶', k: '🪣',
-    tip: '點一下：往那裡倒一桶水。水會沿著表面往下流、積在凹處、流到地面慢慢滲掉；淋到的積木與小人濕 5 秒，點不著',
+    tip: '按住不放就一直倒（拖著走水柱跟著跑，這把不轉視角）。水沿著表面往下流、積在凹處、流到地面慢慢滲掉；淋到的積木與小人濕 5 秒，點不著',
     lock: null },
   { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：只敲地板，建築不受影響',
     lock: null },
@@ -3329,17 +3329,26 @@ function stepTrucks(dt) {
 
    座標約定：一團水待在**空的**那一格，d.gy 是自己那一格的層數，
    腳下的積木在 d.gy − 1、擋路的牆在 d.gy。積水也記在「水占的那一格」上。 */
-const WB_DROPS = 22;                // 一桶倒幾團水
-const WB_POUR = 0.7;                // 倒完要幾秒：一次全出來是「潑」，不是「倒」
+const WB_DROPS = 22;                // 點一下（不按住）倒幾團水
+const WB_POUR = 0.7;                // 那一桶倒完要幾秒：一次全出來是「潑」，不是「倒」
+/* 按住不放時的流量（v1.70，使用者：「裝水的速度太慢了…水量大一點」）。
+   點一下那一桶換算起來是每秒 31 團，這裡開到 70——按住是「開水龍頭」，
+   跟「潑一桶」本來就該差一級。 */
+const WB_RATE = 70;
+const WB_SND = 0.45;                // 按住時每隔多久再補一次水聲
 const WB_FLOW = 6.5;                // 沿表面流的速度
 const WB_FALL = 13;                 // 落下的速度上限
 const WB_LIFE = 22;                 // 一團水最多活幾秒（保險絲：繞不出去的自己消失）
-const WB_MAX = 120;                 // 同時最多幾團（連按十下也不會把粒子池吃光）
+const WB_MAX = 200;                 // 同時最多幾團（按住不放時真的會塞滿，見 dripFx 的粒子上限）
 const WB_TRAIL = 20;                // 一團水一秒灑幾顆水珠——畫面上看到的水就是這些
+/* 水珠的總配額。跟火苗同一個道理（整棟在燒時每塊都全速噴會把粒子池吃光）：
+   按住不放時同時有兩百團水在流，每團都照 WB_TRAIL 灑的話，額度全被源頭那幾團吃光，
+   畫面上就只剩源頭一坨白、看不到水沿著牆流下來。所以配額按團數攤掉。 */
+const WB_DUST = 460;                // 水珠同時最多幾顆（塵霧池共 720，留一截給煙）
 const WB_STUCK = 12;                // 同一層平地連走幾格還下不去，就當它在盆地裡，就地積起來
 const WB_WET = 0.12;                // 每隔多久把身邊那幾格淋濕一次
 const WB_UP = 0.55;                 // 倒水口比點到的地方高多少
-const POOL_MAX = 48;                // 同時最多幾攤，跟畫面那邊的 MAXPOOL 綁在一起
+const POOL_MAX = 96;                // 同時最多幾攤，跟畫面那邊的 MAXPOOL 綁在一起
 const POOL_FILL = 4;                // 建築上一格積滿要幾團，滿了之後水位往上抬一層
 const POOL_SEEP = 0.55;             // 地面水窪每秒滲掉多少（單位：團）——一桶水攤在地上約 30 秒滲光
 const POOL_DRIP = 0.1;              // 積在建築上的漏得慢（從積木縫隙一點一點漏）
@@ -3359,12 +3368,46 @@ const poolAt = (gx, gy, gz) => water ? water.map.get(gx + ':' + gy + ':' + gz) :
 // 這一格底下踩得住嗎：積木或已經積滿的水都算（水面上還能再積一層）
 const floorAt = (gx, gy, gz) => solidAt(gx, gy, gz) || poolAt(gx, gy, gz) !== undefined;
 
-/* 倒一桶。倒水口比點到的地方高一點，才看得出來是「從上面倒下去」的。 */
-function pourWater(hit) {
+function newWater() {
   if (!water) water = { pours: [], drops: [], map: new Map(), wt: 0 };
-  water.pours.push({ x: hit.point.x, y: hit.point.y + WB_UP, z: hit.point.z,
-                     n: WB_DROPS, out: 0, t: 0 });
+  return water;
+}
+// 倒水口比點到的地方高一點，才看得出來是「從上面倒下去」的
+function pourBucket(x, y, z, n) {
+  newWater().pours.push({ x, y, z, n, out: 0, t: 0 });
+}
+/* 倒一桶（點一下就放開、或程式直接呼叫時走這條）。 */
+function pourWater(hit) {
+  pourBucket(hit.point.x, hit.point.y + WB_UP, hit.point.z, WB_DROPS);
   sndWater();
+}
+
+/* ── 按住不放：一直倒 ───────────────────────────────────
+   使用者要的是「按住就一直流水進去」，所以水桶按下去那一刻就開始倒、放開才停，
+   中間拖到哪水就澆到哪（拿著水桶拖曳因此不轉視角——鏡頭還有 QE／WASD／滾輪）。
+   點一下就放開的也不吃虧：放開時倒不滿一桶的會補到一桶，見 pourEnd。 */
+let pourJet = null;                 // { x, y, z, out 已經倒了幾團, em, snd }
+function pourStart(x, y, z) { pourJet = { x, y, z, out: 0, em: 0, snd: 0 }; }
+function pourAim(x, y, z) { if (pourJet) { pourJet.x = x; pourJet.y = y; pourJet.z = z; } }
+function pourEnd() {
+  if (!pourJet) return;
+  const left = WB_DROPS - pourJet.out;
+  if (left > 0) pourBucket(pourJet.x, pourJet.y, pourJet.z, left);
+  pourJet = null;
+}
+function pourFlow(dt) {
+  const j = pourJet;
+  newWater();
+  j.snd -= dt;
+  if (j.snd <= 0) { j.snd = WB_SND; sndWater(); }      // 一直按著就一直有水聲
+  j.em += dt * WB_RATE;
+  while (j.em >= 1) {
+    j.em--;
+    j.out++;                        // 額度滿了也算倒過（放開時才不會又補一桶）
+    // 按住的水柱比單獨一桶粗（散開 ±0.5 格）：同一點灌七十團／秒會擠成一坨
+    if (water.drops.length < WB_MAX)
+      water.drops.push(newDrop(j.x + rr(-0.5, 0.5), j.y, j.z + rr(-0.5, 0.5)));
+  }
 }
 function newDrop(x, y, z) {
   return { x, y, z, vx: rr(-0.5, 0.5), vy: 0, vz: rr(-0.5, 0.5),
@@ -3373,6 +3416,7 @@ function newDrop(x, y, z) {
 }
 
 function stepWater(dt) {
+  if (pourJet) pourFlow(dt);        // 按著不放：這一幀先把水加進來（需要時自己開 water）
   if (!water) return;
   const W = water;
   // 一桶水分 WB_POUR 秒倒完，不是一幀全部出現
@@ -3388,20 +3432,22 @@ function stepWater(dt) {
     if (p.out >= p.n) W.pours.splice(i, 1);
   }
   if (W.drops.length && bp) buildSlotOwner();    // 流過去要把碰到的積木淋濕，得從格子反查
+  // 水珠的配額分給這一幀還在流的每一團（0.42 是一顆水珠的平均壽命）
+  const trail = Math.min(WB_TRAIL, WB_DUST / Math.max(1, W.drops.length * 0.42));
   for (let i = W.drops.length - 1; i >= 0; i--) {
     const d = W.drops[i];
     d.t += dt;
     // 保險絲：卡在平台上繞不出去的、被爆炸掃出場外的，時間到就當它滲掉了
     if (d.t > WB_LIFE || Math.hypot(d.x, d.z) > arenaR + 8) { W.drops.splice(i, 1); continue; }
     if (!stepDrop(d, dt)) { W.drops.splice(i, 1); continue; }
-    dripFx(d, dt);
+    dripFx(d, dt, trail);
     d.wt -= dt;
     if (d.wt <= 0) { d.wt = WB_WET; wetAround(d); }
   }
   stepPools(dt);
   W.wt -= dt;
   if (W.wt <= 0) { W.wt = POOL_WET; wetPools(); }
-  if (!W.pours.length && !W.drops.length && !W.map.size) water = null;
+  if (!pourJet && !W.pours.length && !W.drops.length && !W.map.size) water = null;
 }
 
 /* 一團水走一步。回傳 false 代表它結束了（併進某一攤水裡）。 */
@@ -3441,8 +3487,8 @@ function land(d, g) {
   return nextCell(d, 0);
 }
 /* 挑下一格。優先往「腳下是空的」那一格走（水往低處流），其次是平的，回頭路留到最後
-   ——不然兩格之間會來回彈。四面都是牆就是凹處：就地積起來；
-   那一格已經積滿了就把水位往上抬一層，再從上面找一次路（杯子就是這樣一層一層滿上來的）。 */
+   ——不然兩格之間會來回彈。走不掉就地積起來；那一格已經積滿了就把水位往上抬一層，
+   再從上面找一次路——杯子就是這樣一層一層滿上來的。 */
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 function nextCell(d, up) {
   const cx = cellX(d.x), cz = cellZ(d.z);
@@ -3461,18 +3507,23 @@ function nextCell(d, up) {
     if (v[0] === cx - d.px && v[1] === cz - d.pz) straight = v;
     else if (!flat) flat = v;
   }
-  const v = down || straight || flat || back;
-  if (!v) {                                    // 四面都是牆
+  let v = down || straight || flat || back;
+  // 同一層平地上繞了 WB_STUCK 格還下不去 = 在盆地裡，別再找出口了，就地積起來
+  if (v && !down && d.stuck >= WB_STUCK) v = null;
+  if (!v) {
     if (addPool(cx, d.gy, cz)) return false;   // 還裝得下：併進去
     if (up >= 6) return false;                 // 疊六層還出不去就當它滲掉了（保險絲）
-    d.gy++; d.y = topY(d.gy - 1);              // 這一格滿了：水位往上抬一層再找路
-    d.px = 1e9; d.pz = 1e9;
+    /* 這一格滿了：水位往上抬一層，從上面再找一次路。
+       v1.69 這裡只有「四面都是牆」才抬水位，繞不出去的那條是 addPool 完就直接把
+       那一團丟掉——一格滿了之後倒再多水也進不去（使用者：「裝水的速度太慢」）。
+       實測聖家堂塔上按住倒三秒：200 團裡有 198 團是這樣不見的。 */
+    d.gy++; d.y = topY(d.gy - 1);
+    d.px = 1e9; d.pz = 1e9; d.stuck = 0;
     return nextCell(d, up + 1);
   }
   d.px = cx; d.pz = cz;
   d.tx = wldX(cx + v[0]); d.tz = wldZ(cz + v[1]);
   d.stuck = down ? 0 : d.stuck + 1;
-  if (d.stuck > WB_STUCK) { addPool(cx, d.gy, cz); return false; }   // 在盆地裡繞不出去
   return true;
 }
 /* 把一團水併進 (gx,gy,gz) 那一格。那一格還沒水就開一攤；回傳 false 代表已經滿了。
@@ -3560,8 +3611,8 @@ function wetPools() {
 }
 /* 畫面上的水就是這些水珠：一團水沿路灑，灑出去就停在原地淡掉（g: 0、fade），
    連起來就是一條貼著牆流下來的水痕。走現成的塵霧粒子池，0 個新 draw call。 */
-function dripFx(d, dt) {
-  d.em += dt * WB_TRAIL;
+function dripFx(d, dt, rate) {
+  d.em += dt * rate;
   while (d.em >= 1) {
     d.em--;
     if (dust.length > 600) break;                // 留一截給煙塵
@@ -4840,9 +4891,13 @@ function boltList() {
 }
 
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
+/* 記下「這一把用過了」。成就〈工具箱清空〉要的是每一種都試過，
+   而水桶按住不放那條路不經過 useTool（見 startPourAt），所以抽成一支共用。 */
+function markTool(id) {
+  if (stats.tools.indexOf(id) < 0) { stats.tools.push(id); checkBadges(); }
+}
 function useTool(hit) {
-  // 記在最前面：手指也算一種道具，成就要的是「每一種都試過」
-  if (stats.tools.indexOf(tool) < 0) { stats.tools.push(tool); checkBadges(); }
+  markTool(tool);                     // 手指也算一種道具
   if (tool === 'finger') return 0;                 // 手指什麼都不破壞，只有戳小人有效
   const onGround = hit.kind === 'ground';
   if (tool === 'hammer') { launchHammer(hit.point, hit.dir, false, onGround); return 0; }
@@ -5144,8 +5199,36 @@ function onDown(e) {
   else if (performance.now() - lastTouch < GHOST_MS) return;
   const p = e.touches ? e.touches[0] : e;
   drag = { x: p.clientX, y: p.clientY, x0: p.clientX, y0: p.clientY, moved: 0, t: performance.now(), n: e.touches ? e.touches.length : 1, pinch: 0 };
-  if (e.touches && e.touches.length === 2)
+  if (e.touches && e.touches.length === 2) {
     drag.pinch = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    return;                          // 兩指是縮放，不是倒水
+  }
+  if (tool === 'bucket') startPourAt(drag.x0, drag.y0);
+}
+/* 水桶按下去：點到小人就是澆他一身水（跟原本點一下一樣），其餘就地開一道水柱。 */
+function startPourAt(px, py) {
+  audio();                                       // 使用者互動後才允許出聲
+  const hit = ENG.pick(px, py, '');
+  if (!hit) return;
+  markTool('bucket');
+  if (hit.kind === 'worker') {
+    const w = workers[hit.idx];
+    if (w && !w.air) { wetWorker(w); splashFx(w.x, w.y + 1.4, w.z); sndWater(); }
+    return;                                      // 澆人不開水柱：人會走掉，水柱會跟丟
+  }
+  pourStart(hit.point.x, hit.point.y + WB_UP, hit.point.z);
+  drag.pour = 1;
+}
+/* 拖著倒：落點跟著游標走。picking 要拿射線去打三千塊積木，
+   所以不是每個 mousemove 都算——隔 WB_PICK_MS 才重算一次，中間水柱留在原地。 */
+const WB_PICK_MS = 60;
+let pourPickT = 0;
+function aimPour(px, py) {
+  const now = performance.now();
+  if (now - pourPickT < WB_PICK_MS) return;
+  pourPickT = now;
+  const hit = ENG.pick(px, py, 'skip');          // 拖過去的時候不理小人，要的是落點
+  if (hit) pourAim(hit.point.x, hit.point.y + WB_UP, hit.point.z);
 }
 function onMove(e) {
   if (!drag) return;
@@ -5158,6 +5241,8 @@ function onMove(e) {
   const dx = p.clientX - drag.x, dy = p.clientY - drag.y;
   drag.x = p.clientX; drag.y = p.clientY;
   drag.moved += Math.abs(dx) + Math.abs(dy);
+  // 拿水桶按著的時候，拖曳是「把水澆過去」，不是轉視角
+  if (drag.pour) { aimPour(p.clientX, p.clientY); if (e.touches) e.preventDefault(); return; }
   if (drag.moved > 6) ENG.orbit(dx, dy);
   if (e.touches) e.preventDefault();
 }
@@ -5166,6 +5251,8 @@ function onUp(e) {
   if (e.touches) lastTouch = performance.now();
   else if (performance.now() - lastTouch < GHOST_MS) { drag = null; return; }
   if (!drag) return;
+  // 水桶：按下去那一刻就在倒了，放開就停（不滿一桶的會在 pourEnd 補滿）
+  if (drag.pour) { pourEnd(); drag = null; return; }
   const isClick = drag.moved < 8 && performance.now() - drag.t < 650;
   const x = drag.x0, y = drag.y0;
   drag = null;
@@ -5561,11 +5648,13 @@ function boot() {
   cv.addEventListener('touchstart', onDown, { passive: false });
   cv.addEventListener('touchmove', onMove, { passive: false });
   cv.addEventListener('touchend', onUp);
+  cv.addEventListener('touchcancel', onUp);      // 被系統打斷（來電、多工）也要把水關掉
   cv.addEventListener('wheel', e => { ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9); e.preventDefault(); }, { passive: false });
   cv.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKey);
-  window.addEventListener('blur', clearKeys);
+  // 切到別的視窗時鬆手事件收不到，水會一直倒下去，所以這裡一起關掉
+  window.addEventListener('blur', () => { clearKeys(); pourEnd(); });
 
   /* 上次匯進來的藍圖要在建選單之前進 SHAPES，不然這一輪選單裡沒有它們 */
   loadImports();

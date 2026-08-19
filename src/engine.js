@@ -52,7 +52,7 @@ const ENG = (function () {
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXTRUCK = 2, TRK_PARTS = 11;       // 消防車：最多兩台，一台 11 個部位
-  const MAXPOOL = 48;                       // 水窪：同時最多幾攤（規則那邊的 POOL_MAX 跟它綁在一起）
+  const MAXPOOL = 96;                       // 水窪：同時最多幾攤（規則那邊的 POOL_MAX 跟它綁在一起）
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
