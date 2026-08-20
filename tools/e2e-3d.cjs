@@ -4449,6 +4449,83 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('槌子這種單次撞擊仍然會震一下', hitShake > 0.2, '震動峰值 ' + hitShake.toFixed(2));
 
+  /* 落點要用格子重驗一次（fixHit，v1.85）。`pick` 是對**畫出來的積木**做射線判定，
+     而積木畫出來只有 0.94 格寬（BS），上下左右都留 0.06 格的縫——射線正對著縫或很擦邊
+     地飛過去時真的鑽得過去，於是回報打到牆**後面**的東西。使用者先在水桶上看到
+     （「點杯壁內側，出水點卻穿過建築，變成在背後的地面出水」），其他工具同一條路：
+     明明敲在牆上，卻是後面那一塊、或後面的地板受害。 */
+  const fixT = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    const mx = cellX(0), mz = cellZ(0);
+    const y0 = 12;
+    let wall = 0;
+    while (wall < 14 && !solidAt(mx + wall, y0, mz)) wall++;   // 杯壁從第幾格開始
+    const far = wall + 9;                                     // 牆外面很遠的地上
+    const out = { wall, far };
+
+    /* ① 穿牆的那一下：pick 說打到牆外 far 格的地板上。重驗之後應該變成
+       「打在牆的內側」——kind 從 ground 變 block，落點退回牆這一側。 */
+    const bad = { kind: 'ground', idx: -1, point: { x: wldX(mx + far), y: 0, z: wldZ(mz) },
+                  dir: { x: 0.55, y: -0.83, z: 0 }, dist: 21 };
+    const f = fixHit(bad);
+    out.fixed = { kind: f.kind, r: +(cellX(f.point.x) - mx + 0).toFixed(1),
+                  y: +f.point.y.toFixed(1) };
+    /* 真的用槌子砸下去（跟 onUp 同一條路：fixHit → useTool）：
+       這一下要是砸在牆上（不是砸空地），而且真的敲掉積木。 */
+    tool = 'hammer';
+    const n0 = placedCnt;
+    useTool(f);
+    out.swing = swing ? { ground: !!swing.ground, r: cellX(swing.px) - mx } : null;
+    for (let i = 0; i < 90; i++) step(1 / 60);
+    out.broke = n0 - placedCnt;
+    /* 對照組：不重驗就照著 pick 給的落點砸下去（v1.85 之前的行為）
+       ——砸的是牆後面的**地板**，牆一塊都不會掉。 */
+    cleanTools(); startBuild(true); completeNow();
+    tool = 'hammer';
+    const m0 = placedCnt;
+    useTool(bad);
+    out.raw = swing ? { ground: !!swing.ground, r: cellX(swing.px) - mx } : null;
+    for (let i = 0; i < 90; i++) step(1 / 60);
+    out.rawBroke = m0 - placedCnt;
+
+    /* ② 正常的那一下**不能被動到**：從天上直直砸最高那一塊的頂面，
+       射線一路都是空的，fixHit 要原封不動把同一個物件回傳。 */
+    cleanTools(); startBuild(true); completeNow();
+    let top = null;
+    for (const b of blocks) if (b.st === 3 && (!top || b.y > top.y)) top = b;
+    const good = { kind: 'block', idx: blocks.indexOf(top),
+                   point: { x: top.x, y: top.y + HB, z: top.z },
+                   dir: { x: 0, y: -1, z: 0 }, dist: 20 };
+    out.same = fixHit(good) === good;
+    // ③ 點空地也不能被動到（射線上沒有任何積木）
+    const grass = { kind: 'ground', idx: -1,
+                    point: { x: siteR + 12, y: 0, z: siteR + 12 },
+                    dir: { x: 0.3, y: -0.9, z: 0.3 }, dist: 30 };
+    out.sameGround = fixHit(grass) === grass;
+    cleanTools();
+    return out;
+  });
+  ok('射線鑽過積木縫的那一下，會被拉回真正擋在前面的那面牆',
+     fixT.fixed.kind === 'block' && fixT.fixed.r < fixT.wall && fixT.fixed.r > 0,
+     '餵一個「穿過牆、打到牆外 ' + fixT.far + ' 格地板」的 hit（牆從第 ' + fixT.wall +
+     ' 格開始）：重驗成 ' + fixT.fixed.kind + '、落點退到離軸心 ' + fixT.fixed.r +
+     ' 格、第 ' + fixT.fixed.y + ' 層高');
+  ok('所以槌子砸的是那面牆，不是牆後面的地板',
+     fixT.swing && fixT.swing.ground === false && fixT.swing.r < fixT.wall &&
+     fixT.broke > 0 && fixT.raw && fixT.raw.ground === true &&
+     fixT.raw.r > fixT.wall && fixT.rawBroke === 0,
+     '重驗過：落在離軸心 ' + (fixT.swing ? fixT.swing.r : '—') + ' 格、砸空地 ' +
+     (fixT.swing ? fixT.swing.ground : '—') + '，敲掉 ' + fixT.broke +
+     ' 塊；照著 pick 給的落點砸：離軸心 ' + (fixT.raw ? fixT.raw.r : '—') +
+     ' 格、砸空地 ' + (fixT.raw ? fixT.raw.ground : '—') + '，敲掉 ' +
+     fixT.rawBroke + ' 塊');
+  ok('正常的那一下不會被改到（打到積木、點空地都原封不動）',
+     fixT.same && fixT.sameGround,
+     '從天上砸最高那一塊 ' + fixT.same + '、點遠處空地 ' + fixT.sameGround);
+
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
      「燒完那塊有沒有變黑掉下來」。用大建築測：小的燒到剩 25% 就整棟垮掉換場，

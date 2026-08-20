@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.85.0';
+const VERSION = '1.86.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -5017,6 +5017,41 @@ function boltList() {
 function markTool(id) {
   if (stats.tools.indexOf(id) < 0) { stats.tools.push(id); checkBadges(); }
 }
+/* 拿格子把 pick 的結果重驗一次。
+
+   `pick` 是對**畫出來的積木**做射線判定，而積木畫出來只有 0.94 格寬（BS），上下左右都
+   留 0.06 格的縫。射線正對著縫、或很擦邊地飛過去時真的會鑽過去，於是回報打到牆**後面**
+   的東西——使用者最先是在水桶上看到的（「點杯壁內側，實際出水的點好像判定穿過建築了，
+   變成在背後（就像沒建築）的地面出水」），其他工具也一樣：明明敲在牆上，破壞卻發生在
+   後面那一塊、或是後面的地上。
+
+   所以沿著同一條射線**從鏡頭那頭往落點走**（`hit.dist` ＝ 射線飛了多遠），一步 0.3 格
+   （＜半格，不會跳過中間那一格）。真的有一格實心擋在前面、而且明顯比 pick 給的近
+   （> 0.6 格）時，就把這一下改成「打在那面牆的外側」——那才是玩家看到、也真的點到的面。
+   差不到 0.6 格就當它是同一塊，原封不動回傳（正常的點擊一律不動，風險就限在這一種情形）。
+
+   **小人的那一下不驗**：手指本來就設計成「人排第一」，隔著建築也戳得到（見 onUp）。
+   改出來的 hit 不帶 idx（那是引擎的 instance 編號）：只有 torch 在用它，而它本來就有
+   「找落點附近最近的一塊建築」的後路，落點退到牆前面之後找到的就是那面牆。 */
+function fixHit(hit) {
+  if (!hit || hit.kind === 'worker' || !hit.dir || !(hit.dist > 0)) return hit;
+  const d = hit.dir, p = hit.point;
+  let fx = p.x, fy = p.y, fz = p.z, wall = -1, got = false;
+  for (let t = Math.min(hit.dist, 60); t >= 0; t -= 0.3) {
+    const qx = p.x - d.x * t, qy = p.y - d.y * t, qz = p.z - d.z * t;
+    /* 這裡要的是「這個點在不在積木裡」，所以 y 用 round(y − HB)：
+       第 g 層的積木占 y ∈ [g, g+BS]，中心在 g+HB。 */
+    if (solidAt(cellX(qx), Math.round(qy - HB), cellZ(qz))) {
+      if (got) { wall = t; break; }               // 擋在前面的那面牆
+      continue;                                   // 鏡頭本身在積木裡：跳過
+    }
+    fx = qx; fy = qy; fz = qz; got = true;
+  }
+  if (wall < 0.6) return hit;                     // 沒有東西擋在前面（或就是同一塊）
+  return { kind: 'block', idx: -1, dir: d, dist: hit.dist - wall,
+           point: { x: fx, y: fy, z: fz } };
+}
+
 function useTool(hit) {
   markTool(tool);                     // 手指也算一種道具
   if (tool === 'finger') return 0;                 // 手指什麼都不破壞，只有戳小人有效
@@ -5350,8 +5385,10 @@ function onUp(e) {
   /* 拿哪一把決定「小人算不算被點到」（v1.60）：
      手指只戳人，人排第一（不然站在建築前面的戳不到）；火把兩種用途都有，照舊；
      其餘破壞道具**一律不理小人**——那些是對著建築用的，被路過的人擋掉那一下就白點了。 */
-  const hit = ENG.pick(x, y, tool === 'finger' ? 'man'
-                            : tool === 'fire' || tool === 'bucket' ? '' : 'skip');
+  /* pick 的結果要用格子重驗一次（見 fixHit）：射線鑽得過積木之間的縫，
+     不驗的話這一下會落在牆後面那一塊、或牆後面的地上。 */
+  const hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man'
+                                  : tool === 'fire' || tool === 'bucket' ? '' : 'skip'));
   if (!hit) return;
   if (hit.kind === 'worker') {            // 戳小人：跌倒、手上的積木掉下來
     const w = workers[hit.idx];
