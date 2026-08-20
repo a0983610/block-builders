@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.84.0';
+const VERSION = '1.85.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3420,12 +3420,14 @@ function addWater(gx, gy, gz, v) {
    塞不下的留在 pour 裡等下一幀，水量不會憑空少。 */
 function injectWater(gx, gy, gz, amount) {
   let left = amount;
-  // 保險：落點還是實心的話，往上、往旁邊找一格空的當起點（不然一滴都倒不出來）
+  /* 保險：落點還是實心的話，**往上**找第一格空的當起點（不然一滴都倒不出來）。
+     只往上、不往旁邊：旁邊那一格可能在牆的另一邊，那樣水會倒到建築背面的地上去
+     （使用者：「點杯壁內側，實際出水的點卻穿過建築，變成在背後的地面出水」）。
+     往上倒最多就是從屋頂淋下來，看起來還說得過去。 */
   if (solidAt(gx, gy, gz)) {
     let ok = false;
-    for (let up = 1; up <= 3 && !ok; up++) if (!solidAt(gx, gy + up, gz)) { gy += up; ok = true; }
-    if (!ok) for (const d of DIR4)
-      if (!solidAt(gx + d[0], gy, gz + d[1])) { gx += d[0]; gz += d[1]; ok = true; break; }
+    for (let up = 1; up <= WT_HIGH && !ok; up++)
+      if (!solidAt(gx, gy + up, gz)) { gy += up; ok = true; }
     if (!ok) return 0;
   }
   /* 桶口泡在水裡：往上找到水面那一格（那一格還有空間，倒得進去）。
@@ -3484,14 +3486,34 @@ function pourBucket(x, y, z, n, vol) {
   newWater().pours.push({ gx: cellX(x), gy: Math.max(0, Math.round(y)), gz: cellZ(z),
                           x, y, z, left: total, rate: total / WB_POUR });
 }
-/* 點下去倒一桶。**落點要退出積木**：射線打到的是積木的表面，那個點常常算進積木自己
-   那一格（尤其瞄杯壁內側時）。落點在實心格裡的話 injectWater 的 BFS 一開始就走不動，
-   一滴水都倒不出來（使用者：「點在杯壁內側也不會流水進杯子中，可能是出水點卡在積木內」）。
-   沿著射線往回退半格 ＝ 退到「玩家看得到的那一面」外側，也就是他想倒的地方。 */
+/* 點下去倒一桶。出水點**要用格子把射線重走一次**，不能直接拿 pick 給的落點：
+
+   ① **落點本身是積木的表面**，那個點算起來還在積木自己那一格。在實心格裡的話
+      injectWater 一開始就走不動，一滴都倒不出來（v1.82 踩過）。
+   ② **射線鑽得過積木之間的縫**：積木畫出來只有 0.94 格寬（BS），上下左右都留 0.06 格的
+      縫。射線正對著縫或很擦邊地飛過去時真的會穿過去，pick 就回報打到牆**後面**的東西
+      ——使用者：「我點杯壁內側，看起來實際出水的點好像判定穿過建築了，變成在背後
+      （就像沒建築）的地面出水」。很陡的射線也會從**橫縫**鑽進去、打到下面那一塊的頂面
+      （對玩家來說那就是杯壁內側），那種落點本身就在牆裡。
+
+   所以沿著射線**從鏡頭那頭往落點走**（`hit.dist` ＝ 射線飛了多遠），碰到第一個實心格
+   就停在它前面。停下來的位置一定在玩家看得到的那一面外側、而且一定不是實心格。
+   一步 0.3 格（＜半格，不會跳過中間那一格）。
+   **不能改成「往旁邊找一格空的」**（v1.84 的做法）：旁邊那一格可能在牆的另一邊，
+   水就倒到建築背面的地上去了。 */
 function pourWater(hit) {
   const d = hit.dir || { x: 0, y: -1, z: 0 };
-  pourBucket(hit.point.x - d.x * 0.5, hit.point.y - d.y * 0.5 + WB_UP, hit.point.z - d.z * 0.5,
-             WB_DROPS);
+  const solidHere = (x, y, z) => solidAt(cellX(x), Math.max(0, Math.round(y)), cellZ(z));
+  let x = hit.point.x, y = hit.point.y, z = hit.point.z, got = false;
+  /* 沒有 dist 的呼叫端（測試用的假 hit）就只往回走 2 格——不知道鏡頭在哪的話走遠了
+     會走到鏡頭後面的積木裡去。 */
+  for (let t = Math.min(hit.dist || 2, 60); t >= 0; t -= 0.3) {
+    const qx = hit.point.x - d.x * t, qy = hit.point.y - d.y * t, qz = hit.point.z - d.z * t;
+    if (solidHere(qx, qy, qz)) { if (got) break; continue; }   // 鏡頭本身在積木裡：跳過
+    x = qx; y = qy; z = qz; got = true;
+  }
+  if (!solidHere(x, y + WB_UP, z)) y += WB_UP;     // 出水口比落點高一點（上面是積木就不抬）
+  pourBucket(x, y, z, WB_DROPS);
   sndWater();
 }
 

@@ -5583,6 +5583,113 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wbFive.draw.got + ' 個三角形（＝' + (wbFive.draw.got / 2) +
      ' 面；上限 4000 格的時候整條水柱會被丟掉）');
 
+  /* v1.85：出水點不會穿到牆的另一邊。使用者回報「點杯壁內側，實際出水的點好像判定
+     穿過建築了，變成在背後（就像沒建築）的地面出水」——兩個原因各驗一條。 */
+  const wbSix = await page.evaluate(() => {
+    const build = () => {
+      cleanTools();
+      targetCnt = 3000;
+      shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+      startBuild(true); completeNow();
+      const mx = cellX(0), mz = cellZ(0);
+      let rim = 0;
+      for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+      let floor = 0;
+      while (solidAt(mx, floor, mz)) floor++;
+      /* 每一層「杯子裡面」是哪些格：從軸心 flood fill，碰到實心就停。
+         漫到 14 格外還沒被圍住的就當它不是杯內（那一層是杯口以上的開放空間）。 */
+      const inside = [];
+      for (let gy = 0; gy <= rim + 2; gy++) {
+        const set = new Set();
+        if (!solidAt(mx, gy, mz)) {
+          const q = [mx, mz]; set.add(mx + ':' + mz);
+          for (let i = 0; i < q.length && set.size < 900; i += 2) {
+            const x = q[i], z = q[i + 1];
+            for (const d of DIR4) {
+              const nx = x + d[0], nz = z + d[1], k = nx + ':' + nz;
+              if (set.has(k) || solidAt(nx, gy, nz)) continue;
+              if (Math.hypot(nx - mx, nz - mz) > 14) { set.add('OPEN'); continue; }
+              set.add(k); q.push(nx, nz);
+            }
+          }
+        }
+        inside[gy] = set;
+      }
+      const inCup = (gx, gy, gz) => gy >= 0 && gy < inside.length &&
+                                    inside[gy].has(gx + ':' + gz) && !inside[gy].has('OPEN');
+      return { rim, mx, mz, floor, inside, inCup };
+    };
+    /* 倒完之後：杯子裡有多少水、杯子外面（裙邊、地面）有多少水。
+       杯內地板在第 floor 層，所以比它低的一定是漏到外面去的。 */
+    const split = (g) => {
+      let inside = 0, outside = 0;
+      for (const c of (water ? water.cells.values() : []))
+        if (c.gy < g.floor) outside += c.v; else inside += c.v;
+      return { inside: Math.round(inside), outside: Math.round(outside) };
+    };
+    const out = {};
+
+    /* ① 直接餵一個「從積木之間的縫看到的頂面」的 hit。積木畫出來上下也差 0.06 格，
+       很陡的射線會從那道橫縫鑽進去、打到下面那一塊的頂面——對玩家來說那就是杯壁內側。
+       這種落點本身就在牆裡，而且上面幾層也都是牆（往上找不到空格）。改版前 injectWater
+       會「往旁邊找一格空的」，而旁邊那一格可能就在牆的另一邊——水於是倒到杯子外面、
+       沿著外牆流到地上。 */
+    let g = build();
+    let led = null;                                  // 貼著杯內的一根牆（上面幾層都是實心）
+    for (let gy = g.floor + 2; gy < g.rim - 4 && !led; gy++)
+      for (const k of g.inside[gy + 1]) {
+        if (k === 'OPEN') continue;
+        const [ix, iz] = k.split(':').map(Number);
+        for (const d of DIR4) {
+          const gx = ix + d[0], gz = iz + d[1];
+          if (solidAt(gx, gy, gz) && solidAt(gx, gy + 1, gz) &&
+              solidAt(gx, gy + 2, gz) && solidAt(gx, gy + 3, gz)) { led = { gy, gx, gz }; break; }
+        }
+        if (led) break;
+      }
+    // 從杯子裡面斜斜往下看那一塊的頂面：往外（離開軸心）0.64、往下 0.77
+    const ux = led.gx - g.mx, uz = led.gz - g.mz, un = Math.hypot(ux, uz) || 1;
+    pourWater({ point: { x: wldX(led.gx), y: led.gy + HB * 2, z: wldZ(led.gz) },
+                dir: { x: ux / un * 0.64, y: -0.77, z: uz / un * 0.64 },
+                dist: 2, kind: 'block' });
+    const p1 = water.pours[0];
+    out.ledge = { gy: led.gy, r: +Math.hypot(ux, uz).toFixed(1),
+                  mouth: [p1.gx - g.mx, p1.gy, p1.gz - g.mz],
+                  inCup: g.inCup(p1.gx, p1.gy, p1.gz) || p1.gy > g.rim };
+    for (let i = 0; i < 60 * 14; i++) step(1 / 60);
+    Object.assign(out.ledge, split(g));
+
+    /* ② 積木畫出來只有 0.94 格寬，彼此之間有 0.06 格的縫——射線正對著縫時真的鑽得過去，
+       pick 就回報打到牆後面的東西。這裡直接餵一個「穿過杯壁、打到外面地上」的 hit：
+       出水點要退回牆的這一側（杯子裡），不是照著那個落點倒在地上。 */
+    g = build();
+    const y0 = 12;                                   // 杯內某個高度
+    let wall = 0;
+    while (wall < 14 && !solidAt(g.mx + wall, y0, g.mz)) wall++;   // 牆從第幾格開始
+    const far = wall + 9;                            // 牆外面很遠的地上
+    pourWater({ point: { x: wldX(g.mx + far), y: 0, z: wldZ(g.mz) },
+                dir: { x: 0.55, y: -0.83, z: 0 }, dist: 21, kind: 'ground' });
+    const p2 = water.pours[0];
+    out.slip = { wall, far, mouthR: p2.gx - g.mx, mouthY: p2.gy,
+                 inCup: g.inCup(p2.gx, p2.gy, p2.gz) };
+    for (let i = 0; i < 60 * 14; i++) step(1 / 60);
+    Object.assign(out.slip, split(g));
+    cleanTools();
+    return out;
+  });
+  ok('點在杯壁內側、落點卡在牆裡：出水點退到杯子這一側，不會跑到牆外面',
+     wbSix.ledge.inCup && wbSix.ledge.inside > 1500 && wbSix.ledge.outside < 60,
+     '點第 ' + wbSix.ledge.gy + ' 層、離軸心 ' + wbSix.ledge.r +
+     ' 格那一塊的頂面：出水口落在 (離軸心 ' + wbSix.ledge.mouth[0] + '、第 ' +
+     wbSix.ledge.mouth[1] + ' 層)，在杯子裡 ' + wbSix.ledge.inCup +
+     ' → 杯內 ' + wbSix.ledge.inside + ' 格、杯外 ' + wbSix.ledge.outside + ' 格');
+  ok('射線從積木縫鑽過去時，出水點退回牆的這一側（不會在建築背後出水）',
+     wbSix.slip.inCup && wbSix.slip.inside > 1500 && wbSix.slip.outside < 60,
+     '餵一個「穿過牆、打到牆外 ' + wbSix.slip.far + ' 格地上」的 hit（牆從第 ' +
+     wbSix.slip.wall + ' 格開始）：出水口落在離軸心 ' + wbSix.slip.mouthR + ' 格（第 ' +
+     wbSix.slip.mouthY + ' 層）→ 杯內 ' + wbSix.slip.inside + ' 格、杯外 ' +
+     wbSix.slip.outside + ' 格');
+
   /* ── 水桶就是一般工具：點一下用一次、拖曳轉視角（v1.74 改回來） ──────
      v1.70～1.73 曾經是「按住不放就一直倒、這把工具下拖曳不轉視角」，
      使用者要求改回一致：一把工具一種操作，不該只有水桶特別。 */

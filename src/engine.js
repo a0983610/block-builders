@@ -1488,7 +1488,9 @@ const ENG = (function () {
         kind: kind,
         idx: kind === 'block' ? h.instanceId
            : kind === 'worker' ? Math.floor(h.instanceId / WPARTS) : -1,
-        point: h.point, dir: raycaster.ray.direction.clone()
+        /* dist ＝ 射線飛了多遠才打到。規則那邊要拿它沿著射線往回走
+           （水桶就靠這個把出水點退到牆的正確那一側，見 pourWater）。 */
+        point: h.point, dir: raycaster.ray.direction.clone(), dist: h.distance
       };
       if (rank === 0) break;                    // 已經是這一把的最優先，不必再看了
     }
