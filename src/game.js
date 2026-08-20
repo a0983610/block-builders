@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.82.0';
+const VERSION = '1.83.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3406,6 +3406,14 @@ function addWater(gx, gy, gz, v) {
    塞不下的留在 pour 裡等下一幀，水量不會憑空少。 */
 function injectWater(gx, gy, gz, amount) {
   let left = amount;
+  // 保險：落點還是實心的話，往上、往旁邊找一格空的當起點（不然一滴都倒不出來）
+  if (solidAt(gx, gy, gz)) {
+    let ok = false;
+    for (let up = 1; up <= 3 && !ok; up++) if (!solidAt(gx, gy + up, gz)) { gy += up; ok = true; }
+    if (!ok) for (const d of DIR4)
+      if (!solidAt(gx + d[0], gy, gz + d[1])) { gx += d[0]; gz += d[1]; ok = true; break; }
+    if (!ok) return 0;
+  }
   const seen = new Set([wkey(gx, gy, gz)]);
   const q = [gx, gy, gz];                          // 攤平存 x,y,z（少配置物件）
   for (let i = 0; i < q.length && left > 1e-4 && i < WT_POUR_N * 3; i += 3) {
@@ -3427,8 +3435,14 @@ function pourBucket(x, y, z, n, vol) {
   newWater().pours.push({ gx: cellX(x), gy: Math.max(0, Math.round(y)), gz: cellZ(z),
                           x, y, z, left: total, rate: total / WB_POUR });
 }
+/* 點下去倒一桶。**落點要退出積木**：射線打到的是積木的表面，那個點常常算進積木自己
+   那一格（尤其瞄杯壁內側時）。落點在實心格裡的話 injectWater 的 BFS 一開始就走不動，
+   一滴水都倒不出來（使用者：「點在杯壁內側也不會流水進杯子中，可能是出水點卡在積木內」）。
+   沿著射線往回退半格 ＝ 退到「玩家看得到的那一面」外側，也就是他想倒的地方。 */
 function pourWater(hit) {
-  pourBucket(hit.point.x, hit.point.y + WB_UP, hit.point.z, WB_DROPS);
+  const d = hit.dir || { x: 0, y: -1, z: 0 };
+  pourBucket(hit.point.x - d.x * 0.5, hit.point.y - d.y * 0.5 + WB_UP, hit.point.z - d.z * 0.5,
+             WB_DROPS);
   sndWater();
 }
 
@@ -3469,7 +3483,13 @@ function waterTick() {
     const k = c.gx + ':' + c.gz, t = c.gy + c.v;
     if (!(colTop.get(k) >= t)) colTop.set(k, t);
   }
-  for (const c of list) c.hd = Math.max(0, colTop.get(c.gx + ':' + c.gz) - (c.gy + c.v));
+  for (const c of list) {
+    const own = Math.max(0, colTop.get(c.gx + ':' + c.gz) - (c.gy + c.v));
+    /* 取「自己頭上壓的水」與「上一拍從水缸那邊傳過來的壓力（每拍衰減 1）」的大的那個。
+       只用自己頭上的水的話，破口出口那一格每一拍都被歸零——傳過來的壓力還沒用到就沒了，
+       噴不出去（實測只甩得到 2 格）。 */
+    c.hd = Math.max(own, (c.hd || 0) - 1);
+  }
 
   for (const c of list) {                          // ① 往下掉
     if (c.v <= 0) continue;
@@ -3487,10 +3507,7 @@ function waterTick() {
     if (move > 0.25) sprayAt(wldX(c.gx), c.gy, wldZ(c.gz), WT_SPRAY);
   }
   for (const c of list) {                          // ② 往旁邊攤（只有掉不下去的才攤）
-    /* 薄薄一層就不再往外攤了：一格 0.05 的水還往外分的話，分出去的那幾格馬上又乾掉、
-       又往外分——實測地面上每一幀有九百格生出來、九百格消失，畫面上就是整片水在閃
-       （使用者：「水流到地面水會一閃一閃的」）。攤不動的水就地滲掉才對。 */
-    if (c.v < WT_STILL || !c.rest) continue;
+    if (c.v <= WT_MIN || !c.rest) continue;
     for (const d of DIR4) {
       const nx = c.gx + d[0], nz = c.gz + d[1];
       if (solidAt(nx, c.gy, nz)) continue;
@@ -3498,30 +3515,53 @@ function waterTick() {
       const diff = c.v - nv;
       if (diff <= WT_LEVEL) continue;
       let move = Math.min(diff * WT_FLOW, c.v, 1 - nv);
-      /* 攤到一格新的水上去，至少要給 WT_SEED 這麼多。給太少的話那一格馬上又滲乾，
-         畫面上就是邊緣一格一格快速地出現又消失（使用者：「水會一閃一閃的」）。 */
-      if (nv <= WT_MIN && move < WT_SEED) { if (c.v < WT_SEED) continue; move = WT_SEED; }
+      /* **開一格新的水**才有門檻：薄薄一層還往外開新格的話，開出來的馬上又乾掉、
+         又往外開——實測地面上每一幀有九百格生出來、九百格消失，整片水在閃。
+         但「跟已經有水的鄰居互相平衡」不設門檻：設了的話薄水會卡成互不相讓，
+         中間乾掉的那幾格補不回來，畫面上就是水裡有幾個會閃的洞（使用者第二次回報）。 */
+      if (nv <= WT_MIN) {
+        if (c.v < WT_STILL) continue;
+        if (move < WT_SEED) move = Math.min(WT_SEED, c.v);
+      }
       if (move <= 1e-4) continue;
       /* **水壓**：這一格頭上壓了幾格水，往外就甩幾格遠。
          往外那一格腳下是空的（＝破口、屋簷邊）才算——那才是「噴出去」。
          不然水只會滴在破口正下方（使用者：「應該會有一定水壓，噴遠一點」）。 */
-      let tx = nx, tz = nz;
-      if (watAt(nx, c.gy - 1, nz) <= WT_MIN && !solidAt(nx, c.gy - 1, nz)) {
-        const reach = Math.min(WT_JET, Math.floor(c.hd * WT_JET_K));
-        for (let k = 1; k <= reach; k++) {
-          const ax = c.gx + d[0] * (k + 1), az = c.gz + d[1] * (k + 1);
-          if (solidAt(ax, c.gy, az) || watAt(ax, c.gy, az) > 1 - WT_LEVEL) break;
-          tx = ax; tz = az;
-        }
-        if (tx !== nx || tz !== nz) sprayAt(wldX(tx), c.gy, wldZ(tz), 0.5);
-      }
+      /* 往外那一格腳下是空的（＝破口、屋簷邊）＋ 有水壓 → **噴出去**。
+         這一份水沿著一條拋物線鋪出去（往外 k 格、往下 k²/2r 格），不是傳送到最遠
+         那一格。只放最遠那一格的話，水會憑空出現在遠處再往下掉，看起來就不像噴的
+         （使用者：「噴出去立刻就往下落，導致看起來沒有噴出來」）。 */
+      /* 什麼算「往外噴」：**鄰居那一柱的水面比我低很多**，而且它腳下不是實心
+         （＝這裡是破口、屋簷邊，水要越過邊緣落下去）。
+         不能只判斷「鄰居腳下沒水」：破口一開始流，腳下馬上就有那道水流，
+         判斷就失效了、噴不出去（實測甩不到 2 格）。
+         也不能只判斷「腳下不是實心」：杯子裡每一格腳下都是水，那樣杯內的水會互相亂甩。 */
+      const nTop = colTop.get(nx + ':' + nz) || 0;
+      const spill = nTop < c.gy + c.v - 0.5 && !solidAt(nx, c.gy - 1, nz);
+      const reach = spill ? Math.min(WT_JET, Math.floor(c.hd * WT_JET_K)) : 0;
       c.v -= move;
-      const put = addWater(tx, c.gy, tz, move);
-      if (put < move) c.v += move - put;           // 頂到上限：水留在原地，不吃掉
-      /* 水壓跟著水一起往外傳，每走一格掉 1：破口出口那一格頭上沒有水，
-         壓力是水缸給的。不傳的話出口只會滴在腳邊（實測甩不到 2 格）。 */
-      const tc = water.cells.get(wkey(tx, c.gy, tz));
-      if (tc && c.hd - 1 > (tc.hd || 0)) tc.hd = c.hd - 1;
+      let left = move;
+      if (reach > 0) {
+        const n = reach + 1;
+        for (let k = 1; k <= n && left > 1e-5; k++) {
+          const ax = c.gx + d[0] * k, az = c.gz + d[1] * k;
+          const ay = c.gy - Math.floor(k * k / (2 * n));       // 拋物線：越遠越低
+          if (ay < 0 || solidAt(ax, ay, az)) break;
+          const share = Math.min(left, move / n);
+          const put = addWater(ax, ay, az, share);
+          left -= put;
+          const tc = water.cells.get(wkey(ax, ay, az));
+          /* 水壓跟著水一起往外傳，每走一格掉 1：出口那一格頭上沒有水，壓力是水缸給的。
+             不傳的話出口只會滴在腳邊（實測甩不到 2 格，傳了之後 4 格）。 */
+          if (tc && c.hd - k > (tc.hd || 0)) tc.hd = c.hd - k;
+          if (k > 1) sprayAt(wldX(ax), ay, wldZ(az), 0.35);
+        }
+      } else {
+        left -= addWater(nx, c.gy, nz, move);
+        const tc = water.cells.get(wkey(nx, c.gy, nz));
+        if (tc && c.hd - 1 > (tc.hd || 0)) tc.hd = c.hd - 1;
+      }
+      c.v += left;                                 // 放不下的水留在原地，不吃掉
     }
   }
   /* ③ 滲掉、收掉乾了的。只有**貼著地面／積木**的那一格會滲（一疊水的最底下那一格），

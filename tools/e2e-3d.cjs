@@ -5341,7 +5341,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let g = build();
     let wall = null;
     for (let d = 1; d < 25 && wall == null; d++) if (solidAt(g.mx, 12, g.mz - d)) wall = g.mz - d;
-    pourBucket(wldX(g.mx), 14, wldZ(wall + 1), WB_DROPS);      // 貼著內壁倒
+    /* 用**真的 pourWater** ＋ 射線打在內壁那一面（點就落在牆那一格裡）：
+       這才守得住兩件事——落點要退出積木（不然一滴都倒不出來），
+       而且倒水口不能穿牆（不然杯外也有水）。 */
+    pourWater({ point: { x: wldX(g.mx), y: 12, z: wldZ(wall) + 0.47 },
+                dir: { x: 0, y: -0.45, z: -0.89 }, kind: 'block' });
     for (let i = 0; i < 60 * 18; i++) step(1 / 60);
     let outside = 0, inside = 0;
     for (const c of (water ? water.cells.values() : []))
@@ -5352,8 +5356,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        水壓 ＝ 這一柱的水面 − 這一格，而且會沿著水流往外傳（每走一格掉 1）——
        出口那一格頭上其實沒有水，壓力是水缸給的。 */
     g = build();
-    pourBucket(0, g.rim + 2, 0, WB_DROPS);
-    for (let i = 0; i < 60 * 20; i++) step(1 / 60);
+    // 倒兩下（水裝得比較滿）：水壓就是水面到破口的高度差，裝半杯敲低處的洞壓力只有 5 格
+    for (let k = 0; k < 2; k++) {
+      pourBucket(0, g.rim + 2, 0, WB_DROPS);
+      for (let i = 0; i < 60 * 11; i++) step(1 / 60);
+    }
     buildSlotOwner();
     const hy = 6;
     let wz = null;
@@ -5365,15 +5372,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           const bl = blockOn(gx, yy, gz);
           if (bl) { breakBlock(bl, 0, 1, 3); broke++; }
         }
+    /* 量的是**噴出去的形狀**：牆外每一格，同高度最高的水在第幾層。
+       有水壓＋走拋物線的話這串數字會「越遠越低」；只丟到最遠那一格再往下掉的話，
+       中間幾格根本沒有水（使用者：「噴出去立刻就往下落，看起來沒有噴出來」）。 */
+    const arc = {};
     let far = 0, hd = 0;
     for (let i = 0; i < 60 * 6; i++) {
       step(1 / 60);
       for (const c of (water ? water.cells.values() : [])) {
-        if (c.gy >= hy - 1 && c.gz > wz) far = Math.max(far, c.gz - wz);
-        if (c.gz >= wz) hd = Math.max(hd, c.hd || 0);
+        if (c.gx !== g.mx || c.gz <= wz || c.v < 0.05) continue;
+        const k = c.gz - wz;
+        if (c.gy >= hy - 4) { arc[k] = Math.max(arc[k] || 0, c.gy); far = Math.max(far, k); }
+        hd = Math.max(hd, c.hd || 0);
       }
     }
-    out.jet = { hy, broke, far, hd: Math.round(hd) };
+    // 一路往外走，高度不會往上（＝拋物線），而且至少掉了 2 層
+    let mono = true, drop = 0;
+    for (let k = 2; k <= far; k++) {
+      if (arc[k] == null || arc[k - 1] == null) continue;
+      if (arc[k] > arc[k - 1]) mono = false;
+      drop = Math.max(drop, arc[1] - arc[k]);
+    }
+    out.jet = { hy, broke, far, hd: Math.round(hd), mono, drop,
+                arc: Object.keys(arc).map(k => k + ':' + arc[k]).join(' ') };
 
     /* ③ 裝到滿出來：一直倒，水面要能升過杯口、從杯口流下去。
        改版前格數上限訂 4000（杯子裝滿要 4632 格），所以水位到一半就再也上不去了
@@ -5397,7 +5418,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     g = build();
     pourBucket(wldX(g.mx) + 22, 3, wldZ(g.mz), WB_DROPS);
     let born = 0, died = 0, frames = 0, prev = new Set();
-    for (let i = 0; i < 60 * 10; i++) {
+    for (let i = 0; i < 60 * 5; i++) {
       step(1 / 60);
       const now = new Set();
       for (const c of (water ? water.cells.values() : []))
@@ -5409,28 +5430,48 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       prev = now;
     }
-    out.flick = { born: +(born / frames).toFixed(1), died: +(died / frames).toFixed(1) };
+    // 水裡有沒有「四周都有水、自己沒水」的洞（那種洞會一格一格閃）
+    const g0 = new Set();
+    for (const c of (water ? water.cells.values() : []))
+      if (c.gy === 0 && c.vis) g0.add(c.gx + ':' + c.gz);
+    let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9, holes = 0;
+    for (const k of g0) {
+      const [x, z] = k.split(':').map(Number);
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+    }
+    for (let x = x0 + 1; x < x1; x++)
+      for (let z = z0 + 1; z < z1; z++) {
+        if (g0.has(x + ':' + z)) continue;
+        let n = 0;
+        for (const d of DIR4) if (g0.has((x + d[0]) + ':' + (z + d[1]))) n++;
+        if (n === 4) holes++;
+      }
+    out.flick = { born: +(born / frames).toFixed(1), died: +(died / frames).toFixed(1),
+                  holes, sheet: g0.size };
     cleanTools();
     return out;
   });
-  ok('倒在杯子內側，杯子外面不會有水（倒水口不會穿牆）',
-     wbFour.inner.outside < 30 && wbFour.inner.inside > 1500,
-     '貼著內壁倒一下：杯內 ' + wbFour.inner.inside + ' 格、杯外 ' +
-     wbFour.inner.outside + ' 格（改版前杯外會鋪一大片）');
-  ok('有水壓：破口把水噴出去，不是滴在腳邊',
-     wbFour.jet.broke >= 6 && wbFour.jet.far >= 3,
-     '破口在第 ' + wbFour.jet.hy + ' 層：牆外 ' + wbFour.jet.far +
-     ' 格還有同高度的水（水壓最大 ' + wbFour.jet.hd + ' 格；不傳水壓時只有 2 格）');
+  ok('點在杯壁內側：水進得去杯子，杯子外面不會有水',
+     wbFour.inner.inside > 1500 && wbFour.inner.outside < 30,
+     '射線打在內壁面上倒一下：杯內 ' + wbFour.inner.inside + ' 格、杯外 ' +
+     wbFour.inner.outside +
+     ' 格（v1.81 杯外會鋪一大片；v1.82 反過來一滴都倒不出來——落點卡在積木裡）');
+  ok('有水壓：破口把水噴出去，而且走的是一條往外往下的拋物線',
+     wbFour.jet.broke >= 6 && wbFour.jet.far >= 4 && wbFour.jet.mono && wbFour.jet.drop >= 2,
+     '破口在第 ' + wbFour.jet.hy + ' 層、水壓最大 ' + wbFour.jet.hd +
+     ' 格：噴到牆外 ' + wbFour.jet.far + ' 格、一路掉了 ' + wbFour.jet.drop +
+     ' 層（牆外第幾格:最高第幾層 = ' + wbFour.jet.arc + '）');
   ok('一直倒會從杯口滿出來，水位不會卡住',
      wbFour.fill.top > wbFour.fill.rim && wbFour.fill.over > 10 &&
      wbFour.fill.cells < wbFour.fill.cap,
      '倒三下：水面到第 ' + wbFour.fill.top + ' 層（杯口 ' + wbFour.fill.rim +
      '），溢出去 ' + wbFour.fill.over + ' 格；' + wbFour.fill.cells +
      ' 格水（上限 ' + wbFour.fill.cap + '）');
-  ok('地面的水不會一閃一閃',
-     wbFour.flick.born < 40 && wbFour.flick.died < 40,
+  ok('地面的水不會一閃一閃，水裡也不會有會閃的洞',
+     wbFour.flick.born < 40 && wbFour.flick.died < 40 && wbFour.flick.holes <= 2,
      '每一幀生出來 ' + wbFour.flick.born + ' 格、消失 ' + wbFour.flick.died +
-     ' 格（改版前是 901 / 899）');
+     ' 格（v1.81 是 901 / 899）；' + wbFour.flick.sheet + ' 格的水裡有 ' +
+     wbFour.flick.holes + ' 個洞');
 
   /* ── 水桶就是一般工具：點一下用一次、拖曳轉視角（v1.74 改回來） ──────
      v1.70～1.73 曾經是「按住不放就一直倒、這把工具下拖曳不轉視角」，
