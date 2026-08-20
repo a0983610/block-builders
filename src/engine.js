@@ -16,6 +16,8 @@ const ENG = (function () {
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh, poolMesh;
   let poolGeo, poolPos;
+  let markMesh, markGeo, markPos, markCol;
+  let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
@@ -58,6 +60,11 @@ const ENG = (function () {
      可是看不到水柱」：一個裝滿的馬克杯已經 4463 格，超過舊的 4000 格上限。 */
   const MAXPOOL = 9000;
   const MAXPOOLV = 150000;                  // 水的頂點上限（一格最多 6 面 × 6 頂點）
+  /* 地面痕跡（焦黑／坑洞）：同時最多幾塊、一塊切幾片、一塊最多幾圈。
+     一塊痕跡是幾個同心圈疊出來的，圈與圈之間鋪一圈四邊形，
+     所以頂點上限＝塊數 × 片數 × (圈數−1) × 6。 */
+  const MARK_MAX = 24, MARK_SEG = 18, MARK_RING = 5;
+  const MARKV = MARK_MAX * MARK_SEG * (MARK_RING - 1) * 6;
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
@@ -365,6 +372,34 @@ const ENG = (function () {
     }));
     poolMesh.frustumCulled = false; poolMesh.visible = false;
     scene.add(poolMesh);
+
+    /* 地面痕跡（v1.88）：炸過的地方一塊焦黑、隕石一個坑，都會漸漸淡掉。
+       跟水那顆網格同一套做法——**每幀重組一份三角形**，不是一塊痕跡一顆網格：
+       一顆網格就是一個 draw call，二十幾塊痕跡等於二十幾個；合成一份之後
+       不管幾塊都只吃 1 個，沒痕跡時 visible=false 一個都不吃。
+       濃淡與柔邊都靠**逐頂點的 RGBA**（外圈 alpha 給 0，邊就是糊的）——
+       這一版整支程式沒有任何貼圖，柔邊只能這樣做。
+       材質用 Lambert 不用 Basic：草地是 Lambert，兩邊吃同一顆太陽，
+       痕跡才不會在建築的陰影裡變成一塊比草地還亮的補丁。 */
+    markGeo = new T.BufferGeometry();
+    markPos = new Float32Array(MARKV * 3);
+    markCol = new Float32Array(MARKV * 4);          // RGBA：alpha 就是「淡到什麼程度」
+    const markNrm = new Float32Array(MARKV * 3);
+    for (let i = 0; i < MARKV; i++) markNrm[i * 3 + 1] = 1;   // 全部朝上，開場填一次就好
+    const markPosAttr = new T.BufferAttribute(markPos, 3);
+    const markColAttr = new T.BufferAttribute(markCol, 4);
+    markPosAttr.setUsage(T.DynamicDrawUsage);
+    markColAttr.setUsage(T.DynamicDrawUsage);
+    markGeo.setAttribute('position', markPosAttr);
+    markGeo.setAttribute('color', markColAttr);
+    markGeo.setAttribute('normal', new T.BufferAttribute(markNrm, 3));
+    markGeo.setDrawRange(0, 0);
+    markMesh = new T.Mesh(markGeo, new T.MeshLambertMaterial({
+      vertexColors: true, transparent: true, depthWrite: false
+    }));
+    markMesh.receiveShadow = true;
+    markMesh.frustumCulled = false; markMesh.visible = false;
+    scene.add(markMesh);
 
     /* 定時炸彈：可以同時放好幾顆，走 instancing。
        新道具的網格一律「沒在用就 visible=false」——InstancedMesh 就算 count=0
@@ -731,6 +766,85 @@ const ENG = (function () {
     else if (at.updateRange) { at.updateRange.offset = 0; at.updateRange.count = v; }
     at.needsUpdate = true;
   }
+  /* 一塊痕跡＝幾個同心圈，圈與圈之間鋪一圈四邊形；每一圈有自己的顏色與 alpha
+     （最外圈 alpha 給 0，邊緣就糊掉了）。r 是半徑倍率、c 顏色、
+     a 濃度倍率（還要再乘上這塊自己淡到剩幾成）。
+     顏色開場就換算成 rgb 存著：每個頂點都 setHex 一次的話，
+     二十幾塊痕跡每幀要換算一萬次色，白花的。 */
+  const markPrep = t => t.map(o => {
+    const c = new T.Color(o.c);
+    return { r: o.r, a: o.a, cr: c.r, cg: c.g, cb: c.b };
+  });
+  /* 焦黑：中心接近黑（真的被燒過的地），往外一圈煙燻過的土色，最後 8% 才收掉。
+     中心不夠黑會跟樹影長得太像（分不出是影子還是燒過的地）；
+     收邊那一截也不能太寬——整支程式都是硬邊的方塊，一團糊開的霧看起來像貼歪的貼圖。 */
+  const MARK_SCORCH = markPrep([
+    { r: 0, c: 0x141009, a: 0.92 },
+    { r: 0.5, c: 0x181309, a: 0.9 },
+    { r: 0.8, c: 0x241d13, a: 0.82 },
+    { r: 0.92, c: 0x30281b, a: 0.5 },
+    { r: 1, c: 0x3a3122, a: 0 }
+  ]);
+  /* 坑洞：坑底最深 → 坑壁開始有土色 → 一圈翻出來的土（最亮）→ 收邊。
+     那一圈亮的是關鍵：少了它就只是一塊深色的斑，有了才讀得出「地被砸凹了」。
+     土色刻意偏灰褐，不要太橘——太陽是暖色的（0xfff3dd），橘褐色照下去會像在燒。 */
+  const MARK_CRATER = markPrep([
+    { r: 0, c: 0x0f0a05, a: 0.96 },
+    { r: 0.5, c: 0x150e07, a: 0.95 },
+    { r: 0.75, c: 0x3a2c1c, a: 0.93 },
+    { r: 0.9, c: 0x6b573d, a: 0.9 },
+    { r: 1, c: 0x6b573d, a: 0 }
+  ]);
+  const MARK_Y = 0.04;              // 離地一點點：貼在 0 會跟草皮頂面搶深度，糊成一片
+  /* list 每一項 {x, z, r 半徑, a 濃度 0–1, crater 是不是坑洞,
+     j 每一片的半徑倍率（生的時候抽好存著——每幀重抽輪廓會一直抖）}。 */
+  function putMarks(list) {
+    const n = Math.min(list.length, MARK_MAX);
+    const P = markPos, C = markCol;
+    let v = 0;                                     // 已經寫到第幾個頂點
+    /* 夾在草皮裡面：痕跡是浮在地面上方 MARK_Y 的一片三角形，超出草皮邊緣的部分
+       底下什麼都沒有，會變成一塊飄在天空上的黑影（實測核彈炸在邊緣、或換到小建築
+       之後草地縮小，就會看到）。夾住之後多出來的部分會擠在邊上收成一條直邊，
+       看起來就是「燒到邊就沒了」。 */
+    const lim = groundHalf - 0.4;
+    const put = (m, ring, ang, jj) => {
+      const rad = m.r * ring.r * jj;
+      P[v * 3] = Math.max(-lim, Math.min(lim, m.x + Math.cos(ang) * rad));
+      P[v * 3 + 1] = MARK_Y;
+      P[v * 3 + 2] = Math.max(-lim, Math.min(lim, m.z + Math.sin(ang) * rad));
+      C[v * 4] = ring.cr; C[v * 4 + 1] = ring.cg; C[v * 4 + 2] = ring.cb;
+      C[v * 4 + 3] = ring.a * m.a;
+      v++;
+    };
+    for (let i = 0; i < n; i++) {
+      const m = list[i];
+      const rings = m.crater ? MARK_CRATER : MARK_SCORCH;
+      for (let s = 0; s < MARK_SEG; s++) {
+        const a0 = s / MARK_SEG * Math.PI * 2, a1 = (s + 1) / MARK_SEG * Math.PI * 2;
+        const j0 = m.j[s], j1 = m.j[(s + 1) % MARK_SEG];
+        for (let k = 0; k + 1 < rings.length; k++) {
+          if ((v + 6) * 3 > P.length) break;
+          const A = rings[k], B = rings[k + 1];
+          /* 這兩個三角形的頂點順序算出來的法線是朝上的（+Y）。順序寫反的話面朝下，
+             從上面看就只看到背面——Lambert 會拿翻過來的法線算光，畫成一團黑。 */
+          put(m, A, a0, j0); put(m, A, a1, j1); put(m, B, a1, j1);
+          put(m, A, a0, j0); put(m, B, a1, j1); put(m, B, a0, j0);
+        }
+      }
+    }
+    markMesh.visible = v > 0;
+    markGeo.setDrawRange(0, v);
+    const pa = markGeo.attributes.position, ca = markGeo.attributes.color;
+    // 只上傳真的用到的那一段（跟水那顆同一個理由）
+    if (pa.clearUpdateRanges) {
+      pa.clearUpdateRanges(); pa.addUpdateRange(0, v * 3);
+      ca.clearUpdateRanges(); ca.addUpdateRange(0, v * 4);
+    } else if (pa.updateRange) {
+      pa.updateRange.offset = 0; pa.updateRange.count = v * 3;
+      ca.updateRange.offset = 0; ca.updateRange.count = v * 4;
+    }
+    pa.needsUpdate = true; ca.needsUpdate = true;
+  }
   function putRocks(list) {
     const n = Math.min(list.length, MAXROCK);
     rockMesh.count = n;
@@ -1034,6 +1148,7 @@ const ENG = (function () {
 
   /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
   function setGroundSize(r) {
+    groundHalf = r;                    // 地面痕跡要拿它把自己夾在草皮上（見 putMarks）
     ground.scale.set(r * 2, 1.2, r * 2);
     ground.position.set(0, -0.6, 0);
     grassRim.scale.set(r * 1.985, 1.1, r * 1.985);
@@ -1507,9 +1622,12 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
     setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
-    putStars, putBolts,
+    putStars, putBolts, putMarks,
     fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP,
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh }; }
+    MARK_SEG,
+    /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
+       比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh }; }
   };
 })();

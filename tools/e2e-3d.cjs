@@ -109,6 +109,7 @@ const installClean = page => page.evaluate(() => {
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
     dangers = []; quake = null;
+    marks.length = 0;                 // 地上的焦黑／坑洞：留著會多吃一個 draw call
     clearFires();
     // 弄乾：濕的積木點不著，留給下一條測試會讓它「放火放不起來」（踩過）
     for (const b of blocks) b.wet = 0;
@@ -3924,8 +3925,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '%，下半部 ' + quakeT.big.lo + ' 塊、上半部 ' + quakeT.big.hi + ' 塊');
   /* 允許一點餘波：震掉的那批本來就是分批落下的（fallIn 按高度錯開），
      最後一兩塊落地時抽掉鄰居的支撐，連帶再掉一塊是對的物理。
-     要擋的是「一直掉」不是「完全不掉」——實測十二輪 0～2 塊（門檻 0 會有三成機率誤判）。 */
-  ok('震完就停，不會一直掉', quakeT.big.after <= 3,
+     要擋的是「一直掉」不是「完全不掉」（一直掉會是幾十塊）。
+     門檻是實測訂的：同一個場景（新天鵝堡 2000 塊、大槌砸建築外空地）跑十五輪，
+     餘波是 0 0 0 2 0 2 1 3 0 3 0 1 3 1 1（最大 3、平均 1.1），所以放到 6
+     ——舊門檻 3 剛好壓在分布的邊上，量到 4 就誤判成「一直掉」（實際遇到過）。 */
+  ok('震完就停，不會一直掉', quakeT.big.after <= 6,
      '地震結束後 2 秒又掉了 ' + quakeT.big.after + ' 塊');
   /* 小槌瞄邊角時很容易擦過去點到地面，那一下震掉 5% 等於每失手一次就賠掉一大片 */
   ok('小槌砸空地不會地震，建築一塊都不掉',
@@ -4346,7 +4350,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 積木限兩成，碎料不限：地上的碎塊照樣全部捲上天，
      不然「龍捲風」看起來會像只在建築上戳幾個洞。 */
   const twDebris = await page.evaluate(() => {
-    cleanTools(); startBuild(true); completeNow();
+    /* 藍圖要指定：素材是「落點附近 4 單位內還站著的積木」，隨機藍圖抽到那一帶
+       本來就是空的（金門大橋、巨石陣）就一塊都撈不到，量到的是 0 塊捲起 0 塊。 */
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
+    targetCnt = 3000; startBuild(true); completeNow();
+    shapePick = -1;
     const at = { x: siteR * 0.35, z: 0 };
     // 就地灑一圈碎料：拿範圍內的積木打下來當素材，位置不動（st 0 = FREE）
     const junk = blocks.filter(b => b.st === 3 &&
@@ -7973,6 +7982,123 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('半路撞到建築就當場砸開，不會穿進去',
      metSweep.fy > 5,
      '落點指在 y=0.6，實際砸在 y=' + metSweep.fy + '（塔高 ' + metSweep.h + '）');
+
+  /* ══════════ 地面痕跡 ══════════ */
+  head('地面痕跡');
+
+  /* 使用者指定：「爆炸地面留下焦黑、隕石留下坑洞、會漸漸消失」。
+     炸彈與隕石各放一發，看地上留下什麼——兩種痕跡的差別在 crater 這個旗標
+     （引擎照它挑一組同心圈的顏色：焦黑全暗，坑洞多一圈翻出來的土）。 */
+  const mkKind = await page.evaluate(() => {
+    cleanTools(); targetCnt = 800; startBuild(true); completeNow();
+    placeBomb({ x: siteR * 0.8, y: 0.5, z: 0 });
+    let g = 0;
+    while (bombs && g++ < 200) step(0.05);            // 引信 3 秒 + 爆完
+    const bomb = marks.map(m => ({ crater: m.crater, r: +m.r.toFixed(1) }));
+    callMeteor({ x: -siteR * 0.8, y: 0.5, z: siteR * 0.5 });
+    g = 0;
+    while (meteors && g++ < 400) step(0.05);
+    const all = marks.map(m => ({ crater: m.crater, r: +m.r.toFixed(1) }));
+    return { bomb, all, bombR: BOMB_R, metR: MET_R,
+             scorch: MARK_SCORCH_R, crat: MARK_CRATER_R };
+  });
+  ok('炸彈炸過的地上留一塊焦黑',
+     mkKind.bomb.length === 1 && mkKind.bomb[0].crater === 0 &&
+     Math.abs(mkKind.bomb[0].r - mkKind.bombR * mkKind.scorch) < 0.1,
+     '一塊焦黑，半徑 ' + mkKind.bomb[0].r + '（爆炸半徑 ' + mkKind.bombR + ' × ' +
+     mkKind.scorch + '）');
+  ok('隕石留下的是坑洞，不是焦黑',
+     mkKind.all.length === 2 && mkKind.all[1].crater === 1 &&
+     Math.abs(mkKind.all[1].r - mkKind.metR * mkKind.crat) < 0.1,
+     '第二塊是坑洞，半徑 ' + mkKind.all[1].r + '（隕石半徑 ' + mkKind.metR + ' × ' +
+     mkKind.crat + '）');
+
+  /* 「會漸漸消失」：前面那一段維持全濃，最後 MARK_FADE 秒才淡，時間到整塊收掉、
+     那顆網格也要跟著 visible=false（不然沒痕跡還在吃一個 draw call）。 */
+  const mkFade = await page.evaluate(() => {
+    cleanTools(); targetCnt = 400; startBuild(true); completeNow();
+    spawnMark({ x: 0, y: 0.5, z: 0 }, 20, false);
+    const life = MARK_LIFE, fade = MARK_FADE;
+    const hold = Math.round((life - fade - 1) / 0.05);
+    for (let i = 0; i < hold; i++) step(0.05);         // 淡之前
+    draw();
+    const a0 = marks[0].a, vis0 = ENG.three.markMesh.visible;
+    for (let i = 0; i < Math.round(fade * 0.6 / 0.05); i++) step(0.05);
+    const a1 = marks[0].a;
+    for (let i = 0; i < Math.round((fade * 0.4 + 1.5) / 0.05); i++) step(0.05);
+    draw();
+    return { life, fade, a0: +a0.toFixed(2), a1: +a1.toFixed(2), vis0,
+             left: marks.length, vis1: ENG.three.markMesh.visible };
+  });
+  ok('痕跡會漸漸淡掉，時間到自己收乾淨',
+     mkFade.a0 === 1 && mkFade.a1 < 0.55 && mkFade.a1 > 0.2 && mkFade.vis0 &&
+     mkFade.left === 0 && !mkFade.vis1,
+     '前 ' + (mkFade.life - mkFade.fade) + ' 秒維持全濃（' + mkFade.a0 + '），' +
+     '淡到剩 ' + mkFade.a1 + '，' + mkFade.life + ' 秒後場上 ' + mkFade.left +
+     ' 塊、網格 visible=' + mkFade.vis1);
+
+  /* 炸在半空中（放在屋頂上的炸彈）不留痕跡：地面沒被燒到。
+     門檻是「爆點比自己的爆炸半徑還高」，所以魔法陣（火球半徑 30、陣心 12.1）照樣留。 */
+  const mkAir = await page.evaluate(() => {
+    cleanTools(); targetCnt = 800; startBuild(true); completeNow();
+    explode({ x: 0, y: BOMB_R + 4, z: 0 }, BOMB_R, BOMB_POW);
+    const air = marks.length;
+    explode({ x: 0, y: 0.6, z: 0 }, BOMB_R, BOMB_POW);
+    const low = marks.length;
+    magics = null;
+    castMagic({ x: 0, z: 0 });
+    let g = 0;
+    while (magics && g++ < 200) step(0.05);
+    return { air, low, mag: marks.length, coreY: +MAG_CORE_Y.toFixed(1), magR: MAG_R };
+  });
+  ok('炸在半空中不留痕跡，貼著地面炸才留',
+     mkAir.air === 0 && mkAir.low === 1,
+     '炸在 y=' + (11 + 4) + '（半徑 11）→ ' + mkAir.air + ' 塊；炸在 y=0.6 → ' +
+     mkAir.low + ' 塊');
+  ok('魔法陣飄在半空還是會燒到地面',
+     mkAir.mag === 2,
+     '陣心 y=' + mkAir.coreY + '、火球半徑 ' + mkAir.magR + ' → 地上多了 ' +
+     (mkAir.mag - mkAir.low) + ' 塊');
+
+  /* 痕跡是浮在地面上方一點的一片三角形，超出草皮的部分底下什麼都沒有，
+     會變成一塊飄在天空上的黑影（改之前實測就是這樣：核彈炸在邊緣、或換到小建築
+     之後草地縮小都會看到）。所以引擎要把每個頂點夾在草皮裡面。
+     這條直接讀真的送進 GPU 的頂點，不是讀規則那邊的狀態。 */
+  const mkEdge = await page.evaluate(() => {
+    cleanTools(); targetCnt = 400; startBuild(true); completeNow();
+    const half = ENG.three.ground.scale.x / 2;        // 草地島是方的，這是半邊長
+    const R = 60;                                     // 痕跡半徑 33：一大半在草皮外
+    const far = () => {
+      draw();
+      const g = ENG.three.markMesh.geometry;
+      const pos = g.attributes.position.array, n = g.drawRange.count;
+      let d = 0;
+      for (let i = 0; i < n; i++)
+        d = Math.max(d, Math.abs(pos[i * 3]), Math.abs(pos[i * 3 + 2]));
+      return { d, n, room: pos.length / 3 };
+    };
+    /* 邊緣那條要**先量**：下面測上限時會把它擠掉（先擠最舊的），
+       量到的就變成別塊，那條就永遠是綠的（踩過一次）。 */
+    spawnMark({ x: half - 2, y: 0.5, z: half - 2 }, R, false);
+    const edge = far();
+    for (let i = 0; i < MARK_MAX + 6; i++) spawnMark({ x: 0, y: 0.5, z: 0 }, 12, i % 2 === 0);
+    const full = far();
+    return { half: +half.toFixed(1), verts: edge.n, room: edge.room,
+             far: +edge.d.toFixed(1), cap: MARK_MAX, kept: marks.length,
+             fullVerts: full.n,
+             would: +(half - 2 + R * MARK_SCORCH_R * 1.26).toFixed(1) };
+  });
+  ok('痕跡不會畫到草皮外面（每個頂點都夾在島上）',
+     mkEdge.verts > 0 && mkEdge.far <= mkEdge.half && mkEdge.far > mkEdge.half - 1,
+     '草皮半邊長 ' + mkEdge.half + '，最遠的頂點 ' + mkEdge.far +
+     '（沒夾的話會到 ' + mkEdge.would + '）');
+  /* 滿的時候頂點要**剛好用完整個緩衝區**：規則那邊的上限（MARK_MAX）比引擎那邊大的話，
+     多出來的痕跡會被默默丟掉——水那顆網格就是這樣被抓到的（MAXPOOL 4000 < WT_CELLS，
+     破口在流水卻看不到水柱）。所以這裡用 === 不用 <=。 */
+  ok('痕跡有上限，滿了擠掉最舊那塊（而且每一塊都畫得出來）',
+     mkEdge.kept === mkEdge.cap && mkEdge.fullVerts === mkEdge.room,
+     '丟 ' + (mkEdge.cap + 7) + ' 塊進去 → 留 ' + mkEdge.kept + ' 塊（上限 ' +
+     mkEdge.cap + '），畫出 ' + mkEdge.fullVerts + ' 個頂點（緩衝區 ' + mkEdge.room + '）');
 
   /* ══════════ 人力金額 ══════════ */
   head('人力金額');

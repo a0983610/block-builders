@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.87.0';
+const VERSION = '1.88.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2986,6 +2986,8 @@ function explode(point, R, power, magic, wind, crash) {
   igniteAround(point, R * 1.5, Math.round(R * 0.8), SET);
   // 火球與衝擊環是「爆炸」的長相，crash 那條只留下被砸飛的積木與揚起來的塵土
   if (!crash) { spawnBlast(point, R, magic); spawnRing(point, R); }
+  // 地上留一塊痕跡：一般爆炸是焦黑，砸下來的（隕石）是坑洞
+  spawnMark(point, R, crash);
   spawnDust(point, R, n);
   // 風壓排在最後：它吃的塵霧配額比較兇，先讓爆炸本身那些拿到自己的份
   if (wind) spawnWind(point, R, magic);
@@ -4852,6 +4854,51 @@ function stepFxRings(dt) {
   }
 }
 
+/* ── 地面痕跡 ─────────────────────────────────────────────
+   炸過的地方留一塊焦黑、隕石留一個坑，兩種都會漸漸淡掉（v1.88，使用者指定）。
+
+   **為什麼是畫上去的，不是真的挖一個洞**：草地是一整塊 scale 出來的方塊
+   （見引擎 setGroundSize），要挖洞得把那塊網格切開重建、洞口的側壁還要自己補。
+   所以坑用**同心圈**畫：中間深、外面一圈翻出來的土（亮的），俯視角就讀得出是個坑。
+   焦黑同一套，只是全部都是深色、也不需要那圈土。
+
+   輪廓在生的時候就抽好（每片一個半徑倍率）：不抽是正圓，一眼看出是貼上去的；
+   每幀重抽的話輪廓會一直抖。 */
+const MARK_MAX = 24;          // 同時最多幾塊（滿了擠掉最舊那塊；引擎那邊的上限要一樣大）
+const MARK_LIFE = 26;         // 一塊活幾秒
+/* 最後幾秒才開始淡。整段線性淡的話，剛炸出來的那一塊就已經是半透明的，
+   看起來像「痕跡本來就很淡」而不是「痕跡在消失」。 */
+const MARK_FADE = 9;
+const MARK_SCORCH_R = 0.55;   // 焦黑的半徑＝爆炸半徑的幾成
+const MARK_CRATER_R = 0.5;    // 坑小一點：坑是砸出來的，不是燒開的
+const MARK_JIT = 0.26;        // 輪廓抖動 ±幾成
+const marks = [];
+function spawnMark(point, R, crater) {
+  /* 爆點比自己的半徑還高就不留：那是炸在屋頂上的那一發，地面沒被燒到。
+     （魔法陣照樣留——火球半徑 30、陣心才 12.1，地面在火球裡面。） */
+  if (point.y > R) return;
+  if (marks.length >= MARK_MAX) marks.shift();
+  /* 輪廓：兩道正弦疊起來，不是每片各抽一個亂數——各抽的話相鄰兩片沒有關聯，
+     邊緣會長出一根一根的尖刺（實測就是一顆海星）。兩道諧波疊出來是圓潤的幾瓣，
+     像燒開的一塊地。次數取整數圈才接得回起點。 */
+  const j = [];
+  const p1 = rr(0, 6.28), p2 = rr(0, 6.28), h = Math.random() < 0.5 ? 3 : 4;
+  for (let i = 0; i < ENG.MARK_SEG; i++) {
+    const a = i / ENG.MARK_SEG * Math.PI * 2;
+    j.push(1 + MARK_JIT * (Math.sin(a * 2 + p1) * 0.6 + Math.sin(a * h + p2) * 0.4));
+  }
+  marks.push({ x: point.x, z: point.z, j, crater: crater ? 1 : 0, t: MARK_LIFE, a: 1,
+               r: R * (crater ? MARK_CRATER_R : MARK_SCORCH_R) });
+}
+function stepMarks(dt) {
+  for (let i = marks.length - 1; i >= 0; i--) {
+    const m = marks[i];
+    m.t -= dt;
+    if (m.t <= 0) { marks.splice(i, 1); continue; }
+    m.a = Math.min(1, m.t / MARK_FADE);
+  }
+}
+
 /* ── 十字星光 ─────────────────────────────────────────────
    魔法陣每長出一層就在那一圈上撒一把四角星，之後**整個施法期間一直撒**，
    每次隨機挑一層（機率一樣 → 平均分在每一層）。星芒是平面的、每幀正對鏡頭
@@ -5214,6 +5261,7 @@ function step(dt) {
   stepHot(dt);
   stepFlash(dt);
   stepFxRings(dt);
+  stepMarks(dt);
   stepStars(dt);
   stepArcs(dt);
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
@@ -5318,6 +5366,7 @@ function draw() {
   if (dozers) ENG.putDozers(dozRender(dozers));
   ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
   ENG.putPools(water ? poolList() : EMPTY);         // 水窪同理
+  ENG.putMarks(marks);                              // 地上的焦黑與坑洞（沒有就 visible=false）
 }
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石
