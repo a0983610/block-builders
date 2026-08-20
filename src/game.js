@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.86.0';
+const VERSION = '1.87.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2206,7 +2206,7 @@ const TOOLS = [
   { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭',
     lock: { txt: '累計擊飛 6,000 塊解鎖', ok: () => stats.smashed >= 6000 } },
   { id: 'tornado', n: '龍捲風', k: '🌪',
-    tip: '點兩下：先點龍捲風出現的地方，再點要掃過去的方向（會一路亂竄 10 秒，掃到的建築吸走兩成）',
+    tip: '點兩下：先點龍捲風出現的地方，再點要掃過去的方向（會一路亂竄 10 秒，罩到的建築每秒吸走兩成）',
     lock: { txt: '拆掉 4 座建築解鎖', ok: () => stats.destroyed >= 4 } },
   { id: 'fw', n: '煙火', k: '🎆', tip: '點地面：一次射三發煙火，落下來的火星會把建築點著',
     lock: { txt: '累計擊飛 11,000 塊解鎖', ok: () => stats.smashed >= 11000 } },
@@ -2794,13 +2794,16 @@ function stepBall(dt) {
    可以同時存在好幾道——畫面成本跟道數無關（引擎那邊一層一顆 InstancedMesh），
    真正的上限是塵霧配額，所以卡在 TW_MAX 道。 */
 /* 壽命 10 秒（v1.62，本來 5）：改成「路過不再把建築整段吸光」之後，
-   一趟只咬得走兩成，掃過去的那幾秒不夠看出它在幹什麼——時間還回去讓它多掃幾趟。
+   掃過去的那幾秒不夠看出它在幹什麼——時間還回去讓它多掃幾趟。
    （v1.58 曾從 7 收到 5，理由是尾巴那兩秒它早就亂竄到別處；現在那反而是好事：
-   同一棟被咬過的地方它不會再咬第二次，亂竄過去的下一段才有東西吸。） */
+   停在同一個地方會一路啃到見底，竄到別處反而讓破壞散得開。） */
 const TW_MAX = 4, TW_LIFE = 10, TW_R = 6, TW_H = 34;
-/* 路過一棟建築帶走幾成（v1.62）。本來範圍內的積木**全部**當場脫離，一道掃過去
-   等於把沿路的建築整條刨掉；使用者要的是「吸走碎料，加上隨機兩成的積木」——
-   建築被啃出缺口、但不會整段消失。碎料（FREE／FLY）不受這條限制，照樣全部捲走。 */
+/* **每秒**啃掉範圍內的幾成（v1.87，使用者指定「吸走破壞是持續性的」）。
+   v1.62～v1.86 是「同一道對同一塊只抽一次」：停在建築上也只啃那一口就沒事了，
+   看起來像路過蹭一下。現在改成一路啃——罩著多久就啃多久（撐得住的話一秒剩八成、
+   十秒剩 0.8¹⁰ ≈ 一成），這樣「吸走」才是持續發生的事。
+   每幀的機率是 1−(1−這個數)^dt，所以啃掉幾成跟幀率無關（見 stepTwist）。
+   碎料（FREE／FLY）不受這條限制，照樣全部捲走。 */
 const TW_TAKE = 0.2;
 /* 走多快（單位／秒）：出發時 TW_SPD0，之後每幀被亂數推一下，夾在 MIN～MAX 之間。
    v1.62.2 整組乘 1.6（3.2／2.2／6 → 5.2／3.6／9.6，使用者指定「提升移動速度」）：
@@ -2812,10 +2815,6 @@ const TW_SPD0 = 5.2, TW_SPD_MIN = 3.6, TW_SPD_MAX = 9.6;
    接起來才是「一直在吹」而不是「呼、呼、呼」三聲分開的；
    最後 WIND_TAIL 秒不再補新的，不然漏斗都散了風還在吹。 */
 const WIND_DUR = 1.9, WIND_GAP = 1.4, WIND_TAIL = 0.9;
-/* 每一道自己的編號：某一塊被抽中「這道不吸」之後要記著，不然下一幀重抽一次，
-   十秒的壽命裡同一塊會被抽 300 次，兩成的機率照樣把整棟吸光。
-   抽中要吸的不必記——當場就脫離了，不再是 SET，下一幀不會再被算一次。 */
-let twSeq = 0;
 const TW_SPREAD = 0.12;             // 方向偏差 ±rad（約 ±7°），跟保齡球同一個用意
 const TW_SWAY = 0.85;               // 轉向角的擺幅（rad/s）：一路歪來歪去用的
 /* 點兩下：第一點是龍捲風出現的地方，第二點決定往哪邊掃（跟保齡球同一套操作）。
@@ -2831,7 +2830,7 @@ function launchTornado(from, toward) {
   if (!twists) twists = [];
   if (twists.length >= TW_MAX) twists.shift();     // 放太多道就把最早那道擠掉
   twists.push({
-    x: from.x, z: from.z, r: TW_R, h: TW_H, life: TW_LIFE, id: ++twSeq,
+    x: from.x, z: from.z, r: TW_R, h: TW_H, life: TW_LIFE,
     /* 起始角度隨機：漏斗的扭曲完全是 spin 的函數，都從 0 開始的話
        同時在場的幾道會擺出一模一樣的姿勢，看起來像複製貼上。 */
     spin: rr(0, 6.28), vx: Math.cos(a) * TW_SPD0, vz: Math.sin(a) * TW_SPD0, hit: 0,
@@ -2868,6 +2867,9 @@ function stepTwist(dt) {
     if (Math.hypot(w.x, w.z) > arenaR) { w.vx *= -1; w.vz *= -1; }
 
     const R = w.r, R2 = R * R;
+    /* 這一幀啃掉幾成：一秒 TW_TAKE 成換算成這一幀的機率（見 TW_TAKE）。
+       直接每幀抽 TW_TAKE 的話，一秒 33 幀就等於全部啃光。 */
+    const take = 1 - Math.pow(1 - TW_TAKE, dt);
     let n = 0;
     for (const b of blocks) {
       if (b.st === CARRY || b.st === TOSS) continue;
@@ -2878,11 +2880,11 @@ function stepTwist(dt) {
       // 切線方向繞圈 + 往內吸 + 往上捲
       const tx = -dz / d, tz = dx / d;
       const pull = (1 - d / R);
-      /* 還站著的積木：這一道只咬得走兩成，其餘的原地留著（連力都不加——
-         SET 的積木本來就不吃速度，加了只是等它下次被算到時帶著一組舊的速度脫離）。 */
+      /* 還站著的積木：這一幀只啃得走一小部分，這次沒抽中的原地留著
+         （連力都不加——SET 的積木本來就不吃速度，加了只是等它下次被算到時
+         帶著一組舊的速度脫離）。下一幀重新抽，所以罩著不走就會一路啃下去。 */
       if (b.st === SET) {
-        if (b.twSkip === w.id) continue;                 // 這道已經放過它了
-        if (Math.random() >= TW_TAKE) { b.twSkip = w.id; continue; }
+        if (Math.random() >= take) continue;
         breakBlock(b, 0, 0, 0); n++;
       }
       if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
@@ -4462,7 +4464,7 @@ function stepOneMagic(magic, dt) {
 
 /* ── 往陣心捲進去的魔力粒子 ───────────────────────────────
    施法一開始就有，一路捲到爆炸：小、快、密，從陣外一路螺旋進陣心
-   （就是等一下的爆點）。最後 0.3 秒真的把整棟捲進去的是 crushIn，
+   （就是等一下的爆點）。真的把牆一片片剝下來捲進去的是 implode，
    這些光點是那件事的前奏——六秒裡一直在說「能量正往那一點集中」。
    v1.47 之前這裡是一道從陣心往上衝的光柱，看起來像中心在冒煙：方向反了，
    陣是在吸不是在噴，所以整個掉頭。 */
@@ -4498,56 +4500,35 @@ function magSuck(m, dt) {
    爆炸前的最後幾秒，把周圍的東西往陣心捲進去（內吸 + 切線 = 螺旋），
    再撒一些往中心捲的魔力光點。先收縮、後爆發，張力才拉得起來——
    這是它跟核彈最大的差別：核彈是「一下打平」，魔法是「先聚成一團再炸開」。 */
-const IMP_TIME = 4.5;               // 倒數剩幾秒開始吸碎料
-/* 「脫離 → 收攏 → 炸開」全部擠進最後 0.3 秒，而且是**一次**扯下來、
-   速度算成「剛好在爆炸那一刻抵達陣心」——分好幾幀慢慢扯的話，
-   最後被扯下來的還在半路上就被炸開了，看起來就是三段各做各的、對不起來。 */
-const CRUSH_AT = 0.3;               // 倒數剩幾秒把範圍內的東西整個扯下來砸向陣心
-const CRUSH_BALL = 3;               // 收攏成一顆這麼大的球，不是收成一個點
-/* 扯得動幾成還站著的積木（v1.62）。本來範圍內**全部**一次扯下來，整棟在爆炸前
-   0.3 秒就先消失；使用者要的是「只吸碎料，加上範圍內隨機兩成的積木」——
-   看到的是碎料與幾片牆被捲進陣心，建築本體留到火球那一下才散。
-   碎料不受這條限制：它們本來就是散的，全部捲進去才有「收攏成一團」可看。 */
-const CRUSH_TAKE = 0.2;
-function crushIn(m) {
-  const T = Math.max(0.08, m.t);    // 距離爆炸還有多久：速度就照這個算
-  const R2 = MAG_R * MAG_R;
+const IMP_TIME = 4.5;               // 倒數剩幾秒開始吸
+/* 吸的這一整段路，總共剝得走幾成還站著的積木（v1.87，使用者指定
+   「吸的過程共破壞兩成」）。v1.62～v1.86 是「倒數剩 0.3 秒，一幀之內抽兩成扯下來、
+   速度算成剛好在爆炸那一刻抵達陣心」（crushIn）：吸的那四秒半建築完全沒事，
+   然後忽然少兩成、緊接著就炸開——使用者看到的就是「忽然吸兩成然後爆炸飛出去」。
+   現在整段吸的過程一直在剝，剝下來的跟碎料吃同一組力被捲進陣心，
+   所以「先收縮、後爆發」是一件連續發生的事，不是兩件事接在一起。
+   每幀的機率是 1−(1−這個數)^(dt/IMP_TIME)：整段加起來剛好兩成，而且跟幀率無關。 */
+const MAG_TAKE = 0.2;
+function implode(m, dt) {
+  const k = Math.min(1, (IMP_TIME - m.t) / IMP_TIME);   // 0 → 1，越接近爆炸吸得越猛
+  if (k <= 0) return;
+  const R = MAG_R, R2 = R * R;
+  // 這一幀從還站著的積木裡剝走幾成（見 MAG_TAKE）
+  const take = 1 - Math.pow(1 - MAG_TAKE, dt / IMP_TIME);
   let n = 0;
   for (const b of blocks) {
     if (b.st === CARRY || b.st === TOSS) continue;      // 小人手上的不動
     const dx = b.x - m.x, dz = b.z - m.z;
-    if (dx * dx + dz * dz > R2) continue;
-    const wasSet = b.st === SET;
-    // 只跑一次（m.crush 擋著），所以這裡當場抽就夠，不必像龍捲風那樣記住抽過的結果
-    if (wasSet && Math.random() >= CRUSH_TAKE) continue;
-    /* 每塊各瞄陣心附近的一個隨機點。全部瞄同一個點的話，最後 0.1 秒整棟會疊成
-       一顆積木大小的小點，看起來像憑空消失；散一顆球才看得到那團被壓縮的東西。 */
-    const tx = m.x + rr(-CRUSH_BALL, CRUSH_BALL);
-    const ty = MAG_CORE_Y + rr(-CRUSH_BALL * 0.8, CRUSH_BALL * 0.8);
-    const tz = m.z + rr(-CRUSH_BALL, CRUSH_BALL);
-    /* 水平：距離除以剩餘時間，遠的近的同時到。
-       垂直：除了補上高度差，還要加回這段時間會被重力吃掉的 GRAV×T/2，
-       不然整團會在半路往下沉，收攏的位置就不在爆點上。 */
-    breakBlock(b, (tx - b.x) / T, (ty - b.y) / T + GRAV * T / 2, (tz - b.z) / T);
-    if (wasSet) n++;
-  }
-  /* 記帳：計數、嚇小人、標記垮塌重算。半徑給 6（陣心那一圈）而不是 30，
-     不然整個工地的小人都會被掀倒。 */
-  if (n) afterHit(n, { x: m.x, y: MAG_CORE_Y, z: m.z }, 6);
-}
-function implode(m, dt) {
-  const k = Math.min(1, (IMP_TIME - m.t) / IMP_TIME);   // 0 → 1，越接近爆炸吸得越猛
-  if (k <= 0) return;
-  if (!m.crush && m.t <= CRUSH_AT) { m.crush = 1; crushIn(m); }
-  const R = MAG_R, R2 = R * R;
-  /* 收攏開始之後就不再加吸力：那些積木已經在算好的彈道上，再推一把就會提早對穿過去。
-     這一段只負責收攏之前那幾秒，把散落的碎料慢慢捲過來。 */
-  for (const b of blocks) {
-    if (m.crush) break;
-    if (b.st !== FREE && b.st !== FLY) continue;        // 只吸碎料；還站著的等 crushIn 抽兩成
-    const dx = b.x - m.x, dz = b.z - m.z;
     const d2 = dx * dx + dz * dz;
     if (d2 > R2) continue;
+    /* 還站著的積木：這一幀抽中的當場剝下來，剝完就是碎料，下面那組吸力馬上吃得到；
+       沒抽中的原地留著、連力都不加（SET 不吃速度，加了只是留一組舊速度給下次）。
+       剝下來之後**不另外算彈道**：離爆炸還有好幾秒，光靠內吸就會被捲到陣心，
+       而且看起來是「被吸過去」而不是「被丟過去」。 */
+    if (b.st === SET) {
+      if (Math.random() >= take) continue;
+      breakBlock(b, 0, 0, 0); n++;
+    }
     if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
     const d = Math.sqrt(d2);
     const pull = (0.35 + 0.65 * (1 - d / R)) * k * dt * 3;
@@ -4569,6 +4550,9 @@ function implode(m, dt) {
     b.vx += (-nx * 30 - nz * 11) * pull;
     b.vz += (-nz * 30 + nx * 11) * pull;
   }
+  /* 記帳：計數、嚇小人、標記垮塌重算。半徑給 6（陣心那一圈）而不是 30，
+     不然整個工地的小人都會被掀倒。 */
+  if (n) afterHit(n, { x: m.x, y: MAG_CORE_Y, z: m.z }, 6);
   /* 魔力光點：從陣的外圈生出來，靠 pull 一路捲進中心。
      三成給青藍色——參考圖裡捲上來的能量流是冷色的，跟紅陣對比才看得出「被吸進去」。 */
   m.motes = (m.motes || 0) + dt * (10 + 46 * k);
@@ -5198,7 +5182,7 @@ function step(dt) {
      現在道具換場不收了，但這條還是留著——那一發是衝著**這一座**來的，就該讓它炸完，
      換到一半的話玩家看到的是建築憑空消失。
      （v1.62 之前是「陣一定會先把整棟扯下來捲進陣心，所以一定會跌破這條線」；
-     現在它只扯得走兩成，跌破多半是玩家在那六秒裡又補了幾發，但要擋的事情一樣。）
+     現在整段吸下來只剝得走兩成，跌破多半是玩家在那六秒裡又補了幾發，但要擋的事情一樣。）
      （等待中途離開 wreck——按了「立刻建成」之類——就把秒數丟掉重算） */
   if (phase !== 'wreck') swapWait = 0;
   else if (!magics && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {

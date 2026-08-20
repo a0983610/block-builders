@@ -4262,43 +4262,86 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('龍捲風會生出來', twR.born === 1);
   ok('龍捲風會把積木捲上天', twR.lifted > 20, '同時在空中最多 ' + twR.lifted + ' 塊');
   /* v1.62（使用者指定）：掃過去要吸走一些，但**不能把建築整段刨掉**。
-     上限那一邊看的是垮塌之後的結果（吸走的那兩成撐著上層時，上層會跟著垮），
+     上限那一邊看的是垮塌之後的結果（吸走的那些撐著上層時，上層會跟著垮），
      所以不是「剩八成」而是抓一條寬一點的線；下限是「真的有在吸」。
-     改之前這一條是 after < before × 0.6（一道掃過去沿路整條不見）。 */
+     改之前這一條是 after < before × 0.6（一道掃過去沿路整條不見）。
+     v1.87 改成持續破壞之後這條更該守著：漏斗自己一路亂竄，罩過同一塊地的時間
+     只有一秒多，所以整趟仍然是「啃出缺口」——實測八種藍圖少 11～24%。 */
   ok('龍捲風掃過會吸走一部分，但不會把建築整段刨掉',
      twR.after < twR.before * 0.97 && twR.after > twR.before * 0.5,
      'SET ' + twR.before + ' → ' + twR.after +
      '（少了 ' + ((1 - twR.after / twR.before) * 100).toFixed(0) + '%）');
   ok('龍捲風結束後積木都會落地', twR.gone && twR.flying === 0, '還在飛 ' + twR.flying + ' 塊');
 
-  /* 「隨機兩成」要靠得住的關鍵：某一塊被抽中「這道不吸」之後要**記著**。
-     不記的話每幀重抽一次，十秒 300 幀下來兩成的機率照樣把整棟吸光——
-     所以這裡把一道龍捲風釘在建築上不讓它走，量它整段壽命下來到底咬走幾成。
-     釘的方式是每幀把座標推回去（stepTwist 每幀都會重算速度，改速度沒用）。 */
+  /* 「吸走破壞是持續性的」（v1.87，使用者指定）：罩著不走就一路啃下去，每秒兩成。
+     v1.62～v1.86 是「同一道對同一塊只抽一次」（抽過就用 b.twSkip 記著），所以停在
+     建築上啃完那一口就再也不動它——那時候量到的是「整段壽命下來就是兩成」。
+     這裡把一道釘在建築上不讓它走，看每一秒累計吸走幾成：要一路往上長，
+     而且貼著 1−0.8^t（一秒 0.200、兩秒 0.360、三秒 0.488）。
+     釘的方式是每幀把座標推回去（stepTwist 每幀都會重算速度，改速度沒用）。
+     藍圖指定新天鵝堡：分母要夠大抽樣誤差才壓得下去，隨機藍圖抽到中央是空的
+     （金門大橋）會一塊都選不到，量到的就是 0/0。 */
   const twTake = await page.evaluate(() => {
-    cleanTools(); startBuild(true); completeNow();
-    const at = { x: siteR * 0.35, z: 0 };
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
+    targetCnt = 3000; startBuild(true); completeNow();
+    shapePick = -1;
+    const at = { x: siteR * 0.3, z: 0 };
     launchTornado(at);
     const w = twists[0];
     // 一開始就在漏斗範圍內、而且還站著的那些：分母只算這批
     const near = blocks.filter(b => b.st === 3 &&
                                     Math.hypot(b.x - at.x, b.z - at.z) < w.r && b.y < w.h);
+    const got = [], want = [];
     let secs = 0;
-    while (twists && secs < 13) {
+    while (twists && secs < 3.1) {
       step(0.03); secs += 0.03;
       if (twists) { twists[0].x = at.x; twists[0].z = at.z; }   // 釘住不讓它飄走
+      if (got.length < 3 && secs >= got.length + 1) {
+        got.push(+(near.filter(b => b.st !== 3).length / near.length).toFixed(3));
+        want.push(+(1 - Math.pow(1 - TW_TAKE, got.length)).toFixed(3));
+      }
     }
-    const took = near.filter(b => b.st !== 3).length;
-    return { n: near.length, took, secs: +secs.toFixed(1), want: TW_TAKE };
+    return { n: near.length, got, want };
   });
-  /* 容許 ±8%：分母只有一百多塊（抽樣誤差本來就有幾個百分點），而且被吸走的那些
-     一撐不住上面就會連帶垮下來，垮的那些也算在 took 裡，所以真實值會略高於兩成。 */
-  ok('同一道十秒下來只咬得走兩成，不會把腳下那塊地啃光',
-     twTake.took > twTake.n * (twTake.want - 0.08) &&
-     twTake.took < twTake.n * (twTake.want + 0.08),
-     '釘在原地 ' + twTake.secs + ' 秒：範圍內 ' + twTake.n + ' 塊 → 吸走 ' + twTake.took +
-     ' 塊（' + (twTake.took / twTake.n * 100).toFixed(0) + '%，設定 ' +
-     (twTake.want * 100) + '%）');
+  /* 容許下緣 −0.06、上緣 +0.10：分母幾百塊，抽樣誤差本來就有兩三個百分點；
+     而且被吸走的那些一撐不住上面就會連帶垮下來，垮的也算在分子裡——
+     連帶的部分只會往上加，所以兩邊不對稱。 */
+  ok('龍捲風罩著不走就一路啃下去，每秒吸走兩成',
+     twTake.n > 200 && twTake.got.length === 3 &&
+     twTake.got.every((v, i) => v > twTake.want[i] - 0.06 && v < twTake.want[i] + 0.10),
+     '釘在原地：範圍內 ' + twTake.n + ' 塊，每秒累計吸走 ' +
+     twTake.got.map((v, i) => (v * 100).toFixed(0) + '%（理論 ' +
+     (twTake.want[i] * 100).toFixed(0) + '%）').join('、'));
+
+  /* 每幀的機率是 1−(1−兩成)^dt 換算出來的，不是每幀直接抽兩成——後者一秒 33 幀
+     等於當場啃光。所以同樣三秒，幀率差六倍也要啃掉一樣多。 */
+  const twRate = await page.evaluate(() => {
+    const run = dt => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
+      targetCnt = 3000; startBuild(true); completeNow();
+      shapePick = -1;
+      const at = { x: siteR * 0.3, z: 0 };
+      launchTornado(at);
+      const w = twists[0];
+      const near = blocks.filter(b => b.st === 3 &&
+                                      Math.hypot(b.x - at.x, b.z - at.z) < w.r && b.y < w.h);
+      let t = 0;
+      while (twists && t < 3) {
+        step(dt); t += dt;
+        if (twists) { twists[0].x = at.x; twists[0].z = at.z; }
+      }
+      return +(near.filter(b => b.st !== 3).length / near.length).toFixed(3);
+    };
+    return { fine: run(0.016), coarse: run(0.1), want: +(1 - Math.pow(1 - TW_TAKE, 3)).toFixed(3) };
+  });
+  ok('啃掉幾成跟幀率無關（每幀的機率是換算出來的）',
+     twRate.fine > twRate.want - 0.06 && twRate.fine < twRate.want + 0.10 &&
+     twRate.coarse > twRate.want - 0.06 && twRate.coarse < twRate.want + 0.10 &&
+     Math.abs(twRate.fine - twRate.coarse) < 0.10,
+     '同樣三秒：dt 0.016 吸走 ' + (twRate.fine * 100).toFixed(0) + '%、dt 0.1 吸走 ' +
+     (twRate.coarse * 100).toFixed(0) + '%（理論 ' + (twRate.want * 100).toFixed(0) + '%）');
 
   /* 積木限兩成，碎料不限：地上的碎塊照樣全部捲上天，
      不然「龍捲風」看起來會像只在建築上戳幾個洞。 */
@@ -6605,51 +6648,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     castMagic({ x: 0, z: 0 });
     const set0 = blocks.filter(b => b.st === 3).length;
     const seq = [];
-    /* v1.62 起收攏只扯得走「碎料 ＋ 範圍內隨機兩成的積木」，不再是整棟一次脫離。
-       所以追的那一批要**收攏當下真的被扯走的那些**（原本是施法時離陣心最遠那 40 塊，
-       現在那 40 塊有八成根本不會動，量到的會是「沒被吸的東西沒被吸過去」）。
-       收攏前一刻先把還站著的與各自的半徑存起來，那一幀再挑出「不再是 SET」的。 */
-    let standing = null, standD = null, coh = null, minD = null, cohD0 = 0, inR = 0;
-    let calm = -1, full = -1, preCrush = -1, crush = null;
+    /* v1.87 起吸的那一整段（倒數剩 IMP_TIME 開始）一路都在剝牆，所以這一組只驗
+       「吸力開始前建築完好」＋長層與爆炸那些事；剝了幾成、剝得夠不夠均勻、
+       剝下來的有沒有被捲到陣心，交給下面 mgTake 那組去量。 */
+    let calm = -1, full = -1, suck = -1;
     for (let i = 0; i < 119; i++) {                     // 5.95 秒
+      // 吸力還沒開始的那些幀：建築該一塊都沒少（記最後一幀的值）
+      if (magics && magics[0].t > IMP_TIME) {
+        calm = blocks.filter(b => b.st === 3).length;
+        suck = +(i * 0.05).toFixed(2);
+      }
       step(0.05);
       if (i % 16 === 0) seq.push(magics ? magics[0].shown : -1);   // 每 0.8 秒取樣
       if (full < 0 && magics && magics[0].shown === 6) full = +((i + 1) * 0.05).toFixed(2);
-      if (i === 89) calm = blocks.filter(b => b.st === 3).length;   // 4.5 秒：還沒開始扯
-      if (i === 112) {                                             // 5.65 秒：收攏前一刻
-        standing = blocks.filter(b => b.st === 3);
-        preCrush = standing.length;
-        standD = standing.map(b => Math.hypot(b.x, b.z));
-        // 「兩成」是**範圍內**的兩成：城堡有一截伸出半徑 30 外，那些本來就不算
-        inR = standD.filter(d => d <= MAG_R).length;
-      }
-      // 收攏是一次做完的，抓它發生的那一幀
-      if (magics && magics[0].crush && !crush) {
-        const took = standing.map((b, j) => j).filter(j => standing[j].st !== 3);
-        // 被扯走的那些裡挑離陣心最遠的 40 塊：近的本來就在中間，證明不了「被吸過來」
-        took.sort((a, b) => standD[b] - standD[a]);
-        const pick = took.slice(0, 40);
-        coh = pick.map(j => standing[j]);
-        cohD0 = pick.reduce((s, j) => s + standD[j], 0) / pick.length;
-        minD = coh.map(() => Infinity);      // 這批各自「最靠近陣心」到什麼程度
-        crush = { left: +magics[0].t.toFixed(2), set: blocks.filter(b => b.st === 3).length,
-                  took: took.length, stood: standing.length, inR };
-      }
-      /* 收攏得看「最靠近時到哪」，不能只看爆炸前那一瞬間：扯是隨機的，
-         最後幾幀才被扯下來的那幾塊還在半路上，會把當下的平均值整個拉高。 */
-      if (coh) coh.forEach((b, j) => {
-        const d = Math.hypot(b.x, b.z);
-        if (d < minD[j]) minD[j] = d;
-      });
     }
-    const pulled = minD.reduce((s, v) => s + v, 0) / minD.length;
-    const before = blocks.filter(b => b.st === 3).length, alive = !!magics;
-    /* 爆炸前那一刻被扯走的那批擠在哪：陣把它們捲進陣心，所以這時候該全部聚在中間。
-       跟收攏前一刻它們自己的半徑比，才知道是「被吸過來」不是「本來就在那」。 */
+    const alive = !!magics;
     const meanOf = f => { const a = blocks.filter(f); return a.length
       ? a.reduce((s, b) => s + Math.hypot(b.x, b.z), 0) / a.length : 0; };
-    const gathered = coh.reduce((s, b) => s + Math.hypot(b.x, b.z), 0) / coh.length;
-    const gatherY = coh.reduce((s, b) => s + b.y, 0) / coh.length;
     /* 推到真的爆開那一幀為止。寫死步數會踩到浮點邊界：0.05 累加 120 次不會剛好是 6，
        差一點點就變成「還沒爆」，後面量到的火球是空的。 */
     let g = 0;
@@ -6667,9 +6682,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* v1.48 起魔法的雲跟核彈同一種：灰白煙（不給 cr，引擎就走預設的灰）。
        以前整朵染紅、雲裡還撒粉白星光，使用者要的是同一種雲。 */
     const tinted = dust.filter(d => d.fade >= 3 && d.cr !== undefined).length;
-    return { set0, cohD0, calm, seq, full, magTime: MAG_TIME, coreY: MAG_CORE_Y,
-             preCrush, crush, crushAt: CRUSH_AT, take: CRUSH_TAKE,
-             before, alive, gathered, gatherY, pulled, flashY, flew, flew1,
+    return { set0, calm, suck, seq, full, magTime: MAG_TIME, coreY: MAG_CORE_Y,
+             alive, flashY, flew, flew1,
              set1: blocks.filter(b => b.st === 3).length,
              hitMax, after: !!magics, fire, cloud, tinted };
   });
@@ -6682,34 +6696,96 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('六層很快長齊，之後有一大段時間都是滿的',
      mg.full > 0 && mg.full < 2 && mg.magTime - mg.full > 4,
      mg.full + ' 秒就六層都在，滿陣狀態持續 ' + (mg.magTime - mg.full).toFixed(1) + ' 秒');
-  /* 前四秒半只長陣、不動建築；最後一秒多才開始扯。兩段都要驗：
-     只驗「六秒內沒爆」的話，第一秒就把建築拆光也會過。 */
-  ok('前四秒半只長陣，不動建築', mg.calm === mg.set0 && mg.alive,
-     '4.5 秒時 ' + mg.set0 + ' → ' + mg.calm + ' 塊');
-  /* 收攏是**一幀之內一次做完**的，不是分好幾幀慢慢扯：分著扯的話，最後被扯下來的
-     還在半路上就被炸開了——「脫離 → 收攏 → 炸開」對不起來就是這樣來的。 */
-  ok('最後 0.3 秒才動手，而且是一幀之內一次扯完',
-     mg.preCrush === mg.set0 && !!mg.crush &&
-     mg.crush.left <= mg.crushAt && mg.crush.left > mg.crushAt - 0.06 && mg.crush.took > 0,
-     '剩 0.35 秒時還是完好的 ' + mg.preCrush + ' 塊；剩 ' + (mg.crush ? mg.crush.left : '?') +
-     ' 秒那一幀扯走 ' + (mg.crush ? mg.crush.took : '?') + ' 塊');
-  /* v1.62（使用者指定）：只吸碎料與範圍內隨機兩成的積木，不再整棟一次扯下來。
-     兩邊都要驗——扯得太少就沒有「被捲進去」可看，扯光了就是改之前那個樣子。
-     分母是**範圍內**還站著的塊數：城堡有一截伸出半徑 30 外，那些本來就不該動。 */
-  ok('收攏只扯走碎料與範圍內兩成的積木，建築本體留到爆炸',
-     !!mg.crush && mg.crush.took > mg.crush.inR * (mg.take - 0.05) &&
-     mg.crush.took < mg.crush.inR * (mg.take + 0.05) &&
-     mg.crush.set > mg.crush.stood * 0.7,
-     '範圍內 ' + (mg.crush ? mg.crush.inR : '?') + ' 塊 → 扯走 ' +
-     (mg.crush ? mg.crush.took : '?') + ' 塊（' +
-     (mg.crush ? (mg.crush.took / mg.crush.inR * 100).toFixed(1) : '?') + '%，設定 ' +
-     (mg.take * 100) + '%），還有 ' + (mg.crush ? mg.crush.set : '?') + ' 塊站著');
-  ok('被扯走的那些剛好在爆炸那一刻到位（就在爆點上）',
-     mg.pulled < mg.cohD0 * 0.35 && mg.gathered < 5 &&
-     Math.abs(mg.gatherY - mg.coreY) < 2,
-     '被扯走的那批裡最外圈那 40 塊原本離陣心 ' + mg.cohD0.toFixed(1) + '，爆炸當下 ' +
-     mg.gathered.toFixed(1) + '（最靠近 ' + mg.pulled.toFixed(1) + '），高度 ' +
-     mg.gatherY.toFixed(1) + '（爆點 ' + mg.coreY.toFixed(1) + '）');
+  /* 陣長出來的那一秒半只長陣、不動建築，吸力開始（倒數剩 IMP_TIME）之後才剝。
+     兩段都要驗：只驗「六秒內沒爆」的話，第一秒就把建築拆光也會過。 */
+  ok('陣長出來的那一秒半不動建築', mg.calm === mg.set0 && mg.alive,
+     '吸力開始前（第 ' + mg.suck + ' 秒）' + mg.set0 + ' → ' + mg.calm + ' 塊');
+
+  /* 「吸的過程共破壞兩成」（v1.87，使用者指定）。v1.62～v1.86 是倒數剩 0.3 秒
+     那一幀抽兩成扯下來（crushIn）：前面四秒半建築完全沒事，然後忽然少兩成、
+     緊接著就炸開——使用者看到的就是「忽然吸兩成然後爆炸飛出去」。
+     現在整段吸的過程一直在剝，所以要驗三件事：一路剝（沒有哪一幀忽然少一大塊）、
+     整段加起來剛好兩成、剝下來的真的有被捲到陣心。
+     分子用**攔 afterHit** 數，不用塊數差：連帶垮塌的也是 SET 變 FLY，數塊數分不出來，
+     而 implode 記帳時半徑給 6、位置在陣心（見 game.js），跟別人撞不到號。
+     藍圖指定新天鵝堡、3000 塊：分母要夠大，抽樣誤差才壓得下去。 */
+  const mgTake = await page.evaluate(() => {
+    cleanTools(); magics = null;
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
+    targetCnt = 3000; startBuild(true); completeNow();
+    shapePick = -1;
+    const orig = afterHit;
+    let torn = 0;                        // implode 直接剝下來的（不含連帶垮塌）
+    afterHit = (n, p, R) => {
+      if (R === 6 && Math.abs(p.y - MAG_CORE_Y) < 0.01) torn += n;
+      return orig(n, p, R);
+    };
+    castMagic({ x: 0, z: 0 });
+    let stood = -1, inR = 0, suckAt = -1, prev = 0, maxDrop = 0, dropFrames = 0, preSet = 0;
+    let wall = null, wallD = null, pick = null, pickD0 = 0, minD = null;
+    let gathered = 0, gatherY = 0;
+    for (let i = 0; i < 200 && magics; i++) {
+      const m = magics[0];
+      if (stood < 0 && m.t <= IMP_TIME) {            // 吸力開始的那一幀：把分母記下來
+        wall = blocks.filter(b => b.st === 3);
+        wallD = wall.map(b => Math.hypot(b.x, b.z));
+        stood = wall.length; prev = stood;
+        // 「兩成」是**範圍內**的兩成：城堡有一截伸出半徑 30 外，那些本來就不該動
+        inR = wallD.filter(v => v <= MAG_R).length;
+        suckAt = +(MAG_TIME - m.t).toFixed(2);
+      }
+      /* 吸了兩秒時，把「已經被剝下來」的那批裡最外圈那 40 塊挑出來：它們還有
+         兩秒半可以被捲進去，爆炸時該就在陣心。（最後幾幀才剝下來的本來就還在
+         半路上，混進來只會糊掉這一條；近的本來就在中間，證明不了「被吸過來」。） */
+      if (!pick && wall && m.t <= IMP_TIME - 2) {
+        const idx = wall.map((b, j) => j).filter(j => wall[j].st !== 3 && wallD[j] <= MAG_R);
+        idx.sort((a, b) => wallD[b] - wallD[a]);
+        const top = idx.slice(0, 40);
+        pick = top.map(j => wall[j]);
+        pickD0 = top.reduce((s, j) => s + wallD[j], 0) / Math.max(1, top.length);
+        minD = pick.map(() => Infinity);             // 這批各自「最靠近陣心」到什麼程度
+      }
+      if (pick) pick.forEach((b, j) => {
+        const d = Math.hypot(b.x, b.z);
+        if (d < minD[j]) minD[j] = d;
+      });
+      if (m.t <= 0.06) {                             // 爆炸前最後一幀
+        preSet = blocks.filter(b => b.st === 3).length;
+        gathered = pick.reduce((s, b) => s + Math.hypot(b.x, b.z), 0) / pick.length;
+        gatherY = pick.reduce((s, b) => s + b.y, 0) / pick.length;
+      }
+      const alive = m.t > 0.06;         // 爆炸那一幀不算：一次噴光是火球的事，不是吸的事
+      step(0.05);
+      if (stood >= 0 && alive) {
+        const now = blocks.filter(b => b.st === 3).length;
+        if (prev - now > 0) { dropFrames++; if (prev - now > maxDrop) maxDrop = prev - now; }
+        prev = now;
+      }
+    }
+    afterHit = orig;
+    return { stood, inR, suckAt, torn, take: MAG_TAKE, impTime: IMP_TIME,
+             maxDrop, dropFrames, preSet, n: pick ? pick.length : 0,
+             pickD0: +pickD0.toFixed(1), gathered: +gathered.toFixed(1),
+             gatherY: +gatherY.toFixed(1), coreY: +MAG_CORE_Y.toFixed(1),
+             pulled: +(minD ? minD.reduce((s, v) => s + v, 0) / minD.length : -1).toFixed(1) };
+  });
+  ok('吸的過程一路在剝牆，不是某一幀忽然少一大塊',
+     mgTake.dropFrames > 50 && mgTake.torn > 0 && mgTake.maxDrop < mgTake.torn * 0.1,
+     '吸的 ' + mgTake.impTime + ' 秒裡有 ' + mgTake.dropFrames + ' 幀在掉，單幀最多少 ' +
+     mgTake.maxDrop + ' 塊（整段共剝 ' + mgTake.torn + ' 塊）');
+  ok('吸的整段加起來剝走範圍內兩成，其餘留到爆炸',
+     mgTake.torn > mgTake.inR * (mgTake.take - 0.05) &&
+     mgTake.torn < mgTake.inR * (mgTake.take + 0.05) &&
+     mgTake.preSet > mgTake.stood * 0.7,
+     '吸力從第 ' + mgTake.suckAt + ' 秒起，範圍內 ' + mgTake.inR + ' 塊 → 剝走 ' +
+     mgTake.torn + ' 塊（' + (mgTake.torn / mgTake.inR * 100).toFixed(1) + '%，設定 ' +
+     (mgTake.take * 100) + '%），爆炸前還有 ' + mgTake.preSet + ' 塊站著');
+  ok('剝下來的會被捲到陣心，爆炸那一刻就在爆點上',
+     mgTake.pulled < mgTake.pickD0 * 0.35 && mgTake.gathered < 5 &&
+     Math.abs(mgTake.gatherY - mgTake.coreY) < 3.5,
+     '早期剝下來那批裡最外圈 ' + mgTake.n + ' 塊原本離陣心 ' + mgTake.pickD0 +
+     '，爆炸當下 ' + mgTake.gathered + '（最靠近 ' + mgTake.pulled + '），高度 ' +
+     mgTake.gatherY + '（爆點 ' + mgTake.coreY + '）');
   /* 爆點要在最低那層的圓心上，不是地面：碎料被吸到那個高度，火球就該從那裡炸開。
      火球本體再往上抬 R×0.22（免得被自己炸出來的碎料堆埋掉），所以對得上 12.1 + 6.6。 */
   ok('爆點在最低層魔法陣的圓心上',
@@ -7453,7 +7529,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 陣還在充能時跌破「剩不到 25% 就換下一座」那條線，也不能換：那一發是衝著這一座
      來的，換掉的話玩家看到的是建築憑空消失（v1.59 之前還會連陣一起收掉）。
-     v1.62 起陣自己只扯得走兩成，光靠它跌不破那條線了，所以這裡**手動**把建築打到
+     v1.62 起陣自己只剝得走兩成，光靠它跌不破那條線了，所以這裡**手動**把建築打到
      剩不到 25%（等同玩家在充能那六秒又補了幾發）——要驗的規則沒變，只是換個方式把
      場面推到那個狀態。phase 也要一起推到 wreck：那條分支只在拆除中才會走到。 */
   const mgHold = await page.evaluate(() => {
