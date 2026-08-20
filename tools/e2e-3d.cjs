@@ -5111,31 +5111,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const w of workers) releaseWorker(w);
     pourWater({ point: { x: siteR + 6, y: 0, z: 0 }, kind: 'ground' });
     let t = 0, wide = 0, cells = 0;
-    while (t < 8 && water) {
+    while (t < 3 && water) {                       // 先攤開（還在最大的時候量寬度）
       step(1 / 60); t += 1 / 60;
       const xs = [...water.cells.values()].map(c => c.gx);
       if (xs.length) wide = Math.max(wide, Math.max.apply(null, xs) - Math.min.apply(null, xs) + 1);
       cells = Math.max(cells, water.cells.size);
     }
     const spread = { cells, wide };
-    // 丟一塊碎料進水裡，看它會不會一直濕著、點不著
+    /* 丟一塊碎料進水裡，看它會不會一直濕著、點不著。
+       這一段要趁**水還在**的時候做：地面滲得快（每格每秒 0.6），
+       等水攤完再丟就常常已經滲光了（改版前這裡量到 0 秒就沒水）。 */
     const k = blocks.find(x => x.st === 0);
     if (k.cell) gridDel(k);                       // 搬位置前先從空間雜湊拿掉（跟 fillAll 同一招）
-    const any = [...water.cells.values()][0];
+    const any = [...water.cells.values()].sort((a, b) => b.v - a.v)[0];
     k.x = wldX(any.gx); k.z = wldZ(any.gz); k.y = HB; k.wet = 0;
-    for (let i = 0; i < 30; i++) step(1 / 60);
+    for (let i = 0; i < 20; i++) step(1 / 60);
     const soaked = k.wet > 0, lit = igniteBlock(k);
-    let dry = 0;
-    while (water && dry < 60) { step(1 / 60); dry += 1 / 60; }
-    const r = { spread, soaked, lit, dry: +dry.toFixed(1), gone: !water, want: WB_CLICK };
+    while (water && t < 60) { step(1 / 60); t += 1 / 60; }
+    const r = { spread, soaked, lit, dry: +t.toFixed(1), gone: !water, want: WB_CLICK };
     cleanTools();
     return r;
   });
   ok('倒在草地上鋪成一大片，然後很快滲進地底',
      wbPool.spread.cells > 300 && wbPool.spread.wide > 18 && wbPool.gone &&
-     wbPool.dry > 0.3 && wbPool.dry < 25,
+     wbPool.dry > 1 && wbPool.dry < 30,
      '點一下（' + wbPool.want + ' 格的水）鋪開 ' + wbPool.spread.cells + ' 格、' +
-     wbPool.spread.wide + ' 格寬，' + wbPool.dry + ' 秒就滲光');
+     wbPool.spread.wide + ' 格寬，倒下去 ' + wbPool.dry + ' 秒後滲光');
   ok('泡在水裡的積木一直是濕的，點不著',
      wbPool.soaked === true && wbPool.lit === false,
      '泡進去 0.5 秒後 wet>0 ' + wbPool.soaked + '、igniteBlock ' + wbPool.lit);
@@ -5317,6 +5318,119 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wbPix.after > wbPix.before + 3000,
      '倒水前草地那半有 ' + wbPix.before + ' 個偏藍的像素 → 倒了三下之後 ' +
      wbPix.after + '（' + wbPix.cells + ' 格水）');
+
+  /* 這四條是使用者拿 v1.81 玩過之後回報的四件事，各自守一件。 */
+  const wbFour = await page.evaluate(() => {
+    const build = () => {
+      cleanTools();
+      targetCnt = 3000;
+      shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+      startBuild(true); completeNow();
+      let rim = 0;
+      for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+      const mx = cellX(0), mz = cellZ(0);
+      let floor = 0;
+      while (solidAt(mx, floor, mz)) floor++;
+      return { rim, mx, mz, floor };
+    };
+    const out = {};
+
+    /* ① 倒在杯子**內側**，杯子外面不該有水。
+       倒水口一格裝不下一拍的量，要往旁邊找位置——一圈一圈掃座標的話會穿牆
+       （使用者：「我是點在杯子內側，結果外側也有水」）。現在是從落點做 BFS。 */
+    let g = build();
+    let wall = null;
+    for (let d = 1; d < 25 && wall == null; d++) if (solidAt(g.mx, 12, g.mz - d)) wall = g.mz - d;
+    pourBucket(wldX(g.mx), 14, wldZ(wall + 1), WB_DROPS);      // 貼著內壁倒
+    for (let i = 0; i < 60 * 18; i++) step(1 / 60);
+    let outside = 0, inside = 0;
+    for (const c of (water ? water.cells.values() : []))
+      if (c.gy < g.floor) outside += c.v; else inside += c.v;
+    out.inner = { outside: Math.round(outside), inside: Math.round(inside) };
+
+    /* ② 有水壓：破口噴得出去，不是滴在腳邊。
+       水壓 ＝ 這一柱的水面 − 這一格，而且會沿著水流往外傳（每走一格掉 1）——
+       出口那一格頭上其實沒有水，壓力是水缸給的。 */
+    g = build();
+    pourBucket(0, g.rim + 2, 0, WB_DROPS);
+    for (let i = 0; i < 60 * 20; i++) step(1 / 60);
+    buildSlotOwner();
+    const hy = 6;
+    let wz = null;
+    for (let d = 1; d < 25 && wz == null; d++) if (solidAt(g.mx, hy, g.mz + d)) wz = g.mz + d;
+    let broke = 0;
+    for (let gx = g.mx - 1; gx <= g.mx + 1; gx++)
+      for (let yy = hy; yy < hy + 3; yy++)
+        for (let gz = g.mz; gz < g.mz + 40; gz++) {
+          const bl = blockOn(gx, yy, gz);
+          if (bl) { breakBlock(bl, 0, 1, 3); broke++; }
+        }
+    let far = 0, hd = 0;
+    for (let i = 0; i < 60 * 6; i++) {
+      step(1 / 60);
+      for (const c of (water ? water.cells.values() : [])) {
+        if (c.gy >= hy - 1 && c.gz > wz) far = Math.max(far, c.gz - wz);
+        if (c.gz >= wz) hd = Math.max(hd, c.hd || 0);
+      }
+    }
+    out.jet = { hy, broke, far, hd: Math.round(hd) };
+
+    /* ③ 裝到滿出來：一直倒，水面要能升過杯口、從杯口流下去。
+       改版前格數上限訂 4000（杯子裝滿要 4632 格），所以水位到一半就再也上不去了
+       （使用者：「水杯裝到一定程度水位不會再上升，沒辦法滿出來」）。 */
+    g = build();
+    for (let k = 0; k < 3; k++) {
+      pourBucket(0, g.rim + 2, 0, WB_DROPS);
+      for (let i = 0; i < 60 * 10; i++) step(1 / 60);
+    }
+    let top = -1, over = 0;
+    for (const c of (water ? water.cells.values() : [])) {
+      top = Math.max(top, c.gy + c.v);
+      if (c.gy < g.floor) over += c.v;                        // 溢到裙邊、地上的
+    }
+    out.fill = { rim: g.rim, top: +top.toFixed(1), over: Math.round(over),
+                 cells: water ? water.cells.size : 0, cap: WT_CELLS };
+
+    /* ④ 地面的水不會一閃一閃：每一幀「生出來」與「消失」的格子要很少。
+       薄薄一層還往外分的話，分出去的馬上又乾掉、又往外分——實測改版前每一幀
+       有九百格生出來、九百格消失（使用者：「水流到地面水會一閃一閃的」）。 */
+    g = build();
+    pourBucket(wldX(g.mx) + 22, 3, wldZ(g.mz), WB_DROPS);
+    let born = 0, died = 0, frames = 0, prev = new Set();
+    for (let i = 0; i < 60 * 10; i++) {
+      step(1 / 60);
+      const now = new Set();
+      for (const c of (water ? water.cells.values() : []))
+        if (c.vis) now.add(c.gx + ':' + c.gy + ':' + c.gz);
+      if (i > 60) {                                           // 前一秒還在倒，不算
+        for (const k of now) if (!prev.has(k)) born++;
+        for (const k of prev) if (!now.has(k)) died++;
+        frames++;
+      }
+      prev = now;
+    }
+    out.flick = { born: +(born / frames).toFixed(1), died: +(died / frames).toFixed(1) };
+    cleanTools();
+    return out;
+  });
+  ok('倒在杯子內側，杯子外面不會有水（倒水口不會穿牆）',
+     wbFour.inner.outside < 30 && wbFour.inner.inside > 1500,
+     '貼著內壁倒一下：杯內 ' + wbFour.inner.inside + ' 格、杯外 ' +
+     wbFour.inner.outside + ' 格（改版前杯外會鋪一大片）');
+  ok('有水壓：破口把水噴出去，不是滴在腳邊',
+     wbFour.jet.broke >= 6 && wbFour.jet.far >= 3,
+     '破口在第 ' + wbFour.jet.hy + ' 層：牆外 ' + wbFour.jet.far +
+     ' 格還有同高度的水（水壓最大 ' + wbFour.jet.hd + ' 格；不傳水壓時只有 2 格）');
+  ok('一直倒會從杯口滿出來，水位不會卡住',
+     wbFour.fill.top > wbFour.fill.rim && wbFour.fill.over > 10 &&
+     wbFour.fill.cells < wbFour.fill.cap,
+     '倒三下：水面到第 ' + wbFour.fill.top + ' 層（杯口 ' + wbFour.fill.rim +
+     '），溢出去 ' + wbFour.fill.over + ' 格；' + wbFour.fill.cells +
+     ' 格水（上限 ' + wbFour.fill.cap + '）');
+  ok('地面的水不會一閃一閃',
+     wbFour.flick.born < 40 && wbFour.flick.died < 40,
+     '每一幀生出來 ' + wbFour.flick.born + ' 格、消失 ' + wbFour.flick.died +
+     ' 格（改版前是 901 / 899）');
 
   /* ── 水桶就是一般工具：點一下用一次、拖曳轉視角（v1.74 改回來） ──────
      v1.70～1.73 曾經是「按住不放就一直倒、這把工具下拖曳不轉視角」，
