@@ -766,6 +766,10 @@ const ENG = (function () {
     else if (at.updateRange) { at.updateRange.offset = 0; at.updateRange.count = v; }
     at.needsUpdate = true;
   }
+  /* 整組濃度的旋鈕（v1.88.1，使用者回饋「都淡淡的就好，太深原本的煙都看不清楚了」）。
+     表裡的 a 維持原來的相對比例（中心深、外圈淡），統一乘這個數字調濃淡——
+     一格一格改的話下次要再調就得動十行。 */
+  const MARK_INK = 0.45;
   /* 一塊痕跡＝幾個同心圈，圈與圈之間鋪一圈四邊形；每一圈有自己的顏色與 alpha
      （最外圈 alpha 給 0，邊緣就糊掉了）。r 是半徑倍率、c 顏色、
      a 濃度倍率（還要再乘上這塊自己淡到剩幾成）。
@@ -773,7 +777,7 @@ const ENG = (function () {
      二十幾塊痕跡每幀要換算一萬次色，白花的。 */
   const markPrep = t => t.map(o => {
     const c = new T.Color(o.c);
-    return { r: o.r, a: o.a, cr: c.r, cg: c.g, cb: c.b };
+    return { r: o.r, a: o.a * MARK_INK, cr: c.r, cg: c.g, cb: c.b };
   });
   /* 焦黑：中心接近黑（真的被燒過的地），往外一圈煙燻過的土色，最後 8% 才收掉。
      中心不夠黑會跟樹影長得太像（分不出是影子還是燒過的地）；

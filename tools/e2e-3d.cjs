@@ -7990,16 +7990,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      炸彈與隕石各放一發，看地上留下什麼——兩種痕跡的差別在 crater 這個旗標
      （引擎照它挑一組同心圈的顏色：焦黑全暗，坑洞多一圈翻出來的土）。 */
   const mkKind = await page.evaluate(() => {
-    cleanTools(); targetCnt = 800; startBuild(true); completeNow();
-    placeBomb({ x: siteR * 0.8, y: 0.5, z: 0 });
-    let g = 0;
-    while (bombs && g++ < 200) step(0.05);            // 引信 3 秒 + 爆完
-    const bomb = marks.map(m => ({ crater: m.crater, r: +m.r.toFixed(1) }));
-    callMeteor({ x: -siteR * 0.8, y: 0.5, z: siteR * 0.5 });
-    g = 0;
-    while (meteors && g++ < 400) step(0.05);
-    const all = marks.map(m => ({ crater: m.crater, r: +m.r.toFixed(1) }));
-    return { bomb, all, bombR: BOMB_R, metR: MET_R,
+    /* 兩發要**各自量**：痕跡只活 MARK_LIFE 秒（3 秒），等隕石倒數完落地時，
+       炸彈留下的那一塊早就淡掉不見了——一起量會變成「只找到一塊」。 */
+    const one = fire => {
+      cleanTools(); targetCnt = 800; startBuild(true); completeNow();
+      fire();
+      return marks.map(m => ({ crater: m.crater, r: +m.r.toFixed(1) }));
+    };
+    const bomb = one(() => {
+      placeBomb({ x: siteR * 0.8, y: 0.5, z: 0 });
+      let g = 0;
+      while (bombs && g++ < 200) step(0.05);          // 引信 3 秒 + 爆完
+    });
+    const met = one(() => {
+      callMeteor({ x: -siteR * 0.8, y: 0.5, z: siteR * 0.5 });
+      let g = 0;
+      while (meteors && g++ < 400) step(0.05);
+    });
+    return { bomb, met, bombR: BOMB_R, metR: MET_R,
              scorch: MARK_SCORCH_R, crat: MARK_CRATER_R };
   });
   ok('炸彈炸過的地上留一塊焦黑',
@@ -8008,9 +8016,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '一塊焦黑，半徑 ' + mkKind.bomb[0].r + '（爆炸半徑 ' + mkKind.bombR + ' × ' +
      mkKind.scorch + '）');
   ok('隕石留下的是坑洞，不是焦黑',
-     mkKind.all.length === 2 && mkKind.all[1].crater === 1 &&
-     Math.abs(mkKind.all[1].r - mkKind.metR * mkKind.crat) < 0.1,
-     '第二塊是坑洞，半徑 ' + mkKind.all[1].r + '（隕石半徑 ' + mkKind.metR + ' × ' +
+     mkKind.met.length === 1 && mkKind.met[0].crater === 1 &&
+     Math.abs(mkKind.met[0].r - mkKind.metR * mkKind.crat) < 0.1,
+     '一個坑洞，半徑 ' + mkKind.met[0].r + '（隕石半徑 ' + mkKind.metR + ' × ' +
      mkKind.crat + '）');
 
   /* 「會漸漸消失」：前面那一段維持全濃，最後 MARK_FADE 秒才淡，時間到整塊收掉、
@@ -8019,19 +8027,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools(); targetCnt = 400; startBuild(true); completeNow();
     spawnMark({ x: 0, y: 0.5, z: 0 }, 20, false);
     const life = MARK_LIFE, fade = MARK_FADE;
-    const hold = Math.round((life - fade - 1) / 0.05);
-    for (let i = 0; i < hold; i++) step(0.05);         // 淡之前
+    const run = secs => { for (let i = 0; i < Math.round(secs / 0.05); i++) step(0.05); };
+    run((life - fade) * 0.5);                         // 還在維持全濃的那一段
     draw();
     const a0 = marks[0].a, vis0 = ENG.three.markMesh.visible;
-    for (let i = 0; i < Math.round(fade * 0.6 / 0.05); i++) step(0.05);
+    run((life - fade) * 0.5 + fade * 0.6);            // 淡掉六成
     const a1 = marks[0].a;
-    for (let i = 0; i < Math.round((fade * 0.4 + 1.5) / 0.05); i++) step(0.05);
+    run(fade * 0.4 + 0.5);                            // 過完整段壽命
     draw();
     return { life, fade, a0: +a0.toFixed(2), a1: +a1.toFixed(2), vis0,
              left: marks.length, vis1: ENG.three.markMesh.visible };
   });
   ok('痕跡會漸漸淡掉，時間到自己收乾淨',
-     mkFade.a0 === 1 && mkFade.a1 < 0.55 && mkFade.a1 > 0.2 && mkFade.vis0 &&
+     mkFade.a0 === 1 && mkFade.a1 < 0.55 && mkFade.a1 > 0.25 && mkFade.vis0 &&
      mkFade.left === 0 && !mkFade.vis1,
      '前 ' + (mkFade.life - mkFade.fade) + ' 秒維持全濃（' + mkFade.a0 + '），' +
      '淡到剩 ' + mkFade.a1 + '，' + mkFade.life + ' 秒後場上 ' + mkFade.left +
@@ -8045,20 +8053,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const air = marks.length;
     explode({ x: 0, y: 0.6, z: 0 }, BOMB_R, BOMB_POW);
     const low = marks.length;
-    magics = null;
+    // 魔法陣要六秒才爆，中間那兩塊會先淡掉，所以清乾淨再單獨量它
+    marks.length = 0; magics = null;
     castMagic({ x: 0, z: 0 });
     let g = 0;
     while (magics && g++ < 200) step(0.05);
-    return { air, low, mag: marks.length, coreY: +MAG_CORE_Y.toFixed(1), magR: MAG_R };
+    return { air, low, mag: marks.length, airY: BOMB_R + 4, bombR: BOMB_R,
+             coreY: +MAG_CORE_Y.toFixed(1), magR: MAG_R };
   });
   ok('炸在半空中不留痕跡，貼著地面炸才留',
      mkAir.air === 0 && mkAir.low === 1,
-     '炸在 y=' + (11 + 4) + '（半徑 11）→ ' + mkAir.air + ' 塊；炸在 y=0.6 → ' +
-     mkAir.low + ' 塊');
+     '炸在 y=' + mkAir.airY + '（半徑 ' + mkAir.bombR + '）→ ' + mkAir.air +
+     ' 塊；炸在 y=0.6 → ' + mkAir.low + ' 塊');
   ok('魔法陣飄在半空還是會燒到地面',
-     mkAir.mag === 2,
-     '陣心 y=' + mkAir.coreY + '、火球半徑 ' + mkAir.magR + ' → 地上多了 ' +
-     (mkAir.mag - mkAir.low) + ' 塊');
+     mkAir.mag === 1,
+     '陣心 y=' + mkAir.coreY + '、火球半徑 ' + mkAir.magR + ' → 地上留了 ' +
+     mkAir.mag + ' 塊');
 
   /* 痕跡是浮在地面上方一點的一片三角形，超出草皮的部分底下什麼都沒有，
      會變成一塊飄在天空上的黑影（改之前實測就是這樣：核彈炸在邊緣、或換到小建築
@@ -8072,10 +8082,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       draw();
       const g = ENG.three.markMesh.geometry;
       const pos = g.attributes.position.array, n = g.drawRange.count;
-      let d = 0;
-      for (let i = 0; i < n; i++)
+      const col = g.attributes.color.array;
+      let d = 0, a = 0;
+      for (let i = 0; i < n; i++) {
         d = Math.max(d, Math.abs(pos[i * 3]), Math.abs(pos[i * 3 + 2]));
-      return { d, n, room: pos.length / 3 };
+        a = Math.max(a, col[i * 4 + 3]);
+      }
+      return { d, a, n, room: pos.length / 3 };
     };
     /* 邊緣那條要**先量**：下面測上限時會把它擠掉（先擠最舊的），
        量到的就變成別塊，那條就永遠是綠的（踩過一次）。 */
@@ -8085,7 +8098,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const full = far();
     return { half: +half.toFixed(1), verts: edge.n, room: edge.room,
              far: +edge.d.toFixed(1), cap: MARK_MAX, kept: marks.length,
-             fullVerts: full.n,
+             fullVerts: full.n, ink: +full.a.toFixed(2),
              would: +(half - 2 + R * MARK_SCORCH_R * 1.26).toFixed(1) };
   });
   ok('痕跡不會畫到草皮外面（每個頂點都夾在島上）',
@@ -8099,6 +8112,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mkEdge.kept === mkEdge.cap && mkEdge.fullVerts === mkEdge.room,
      '丟 ' + (mkEdge.cap + 7) + ' 塊進去 → 留 ' + mkEdge.kept + ' 塊（上限 ' +
      mkEdge.cap + '），畫出 ' + mkEdge.fullVerts + ' 個頂點（緩衝區 ' + mkEdge.room + '）');
+
+  /* 痕跡要維持「淡淡的」（v1.88.1 使用者指定）。這條看的是真的送進 GPU 的 alpha：
+     塵霧是半透明的灰，鋪在近黑的地面上會整片看不見（灰疊黑），爆炸最好看的那一秒
+     就被自己的痕跡吃掉——所以最濃的那個頂點也不該超過半透明。 */
+  ok('痕跡是淡的，不會把煙塵蓋掉',
+     mkEdge.ink > 0.15 && mkEdge.ink <= 0.5,
+     '最濃的頂點 alpha = ' + mkEdge.ink + '（改之前是 0.96）');
 
   /* ══════════ 人力金額 ══════════ */
   head('人力金額');
