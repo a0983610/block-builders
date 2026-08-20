@@ -53,8 +53,11 @@ const ENG = (function () {
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXTRUCK = 2, TRK_PARTS = 11;       // 消防車：最多兩台，一台 11 個部位
-  const MAXPOOL = 4000;                     // 水：同時最多幾格（規則那邊的 WT_CELLS 跟它綁在一起）
-  const MAXPOOLV = 90000;                   // 水的頂點上限（一格最多 6 面 × 6 頂點）
+  /* 水：同時最多幾格。**要跟規則那邊的 WT_CELLS 一樣大**——小於它的話多出來的格子
+     整格不會被畫（而且被丟掉的是清單後面那些＝最新的水），實測就是「破口在流水，
+     可是看不到水柱」：一個裝滿的馬克杯已經 4463 格，超過舊的 4000 格上限。 */
+  const MAXPOOL = 9000;
+  const MAXPOOLV = 150000;                  // 水的頂點上限（一格最多 6 面 × 6 頂點）
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.83.0';
+const VERSION = '1.84.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3339,8 +3339,9 @@ const WB_WET = 0.12;                // 每隔多久把碰到水的積木與小�
 const WB_DUST = 640;                // 水花最多用到塵霧池的第幾顆（池子共 720，留一截給煙）
 
 const WT_TICK = 1 / 30;             // 水一秒算幾拍（也決定落下速度：一拍掉一格）
-const WT_FALL = 1;                  // 一拍最多往下送幾格的量（＝落下 20 格/秒，看得見）
-const WT_FLOW = 0.5;                // 往旁邊攤：一次搬走高低差的幾成（太小的話破口流得比滴水還慢）
+const WT_FALL = 1;                  // 一拍最多往下送幾格的量（一格就是上限，＝落下 30 格/秒）
+const WT_FLOW = 0.5;                // 水面找平：一次搬走高低差的幾成（0.5 ＝ 兩格平分，剛好不會來回盪）
+const WT_ORI = 2;                   // 水壓推力：頭上壓 h 格水 → 一格出口一拍推得出 √h × 這個數
 const WT_LEVEL = 0.02;              // 高低差小於這個就當它平了
 const WT_MIN = 0.02;                // 一格少於這個就當它乾了
 const WT_CELLS = 9000;              // 同時最多幾格水（馬克杯裝滿是 4632 格，要裝得下、滿得出來）
@@ -3350,6 +3351,8 @@ const WT_SHOW = 0.05;               // 少於這麼多就不畫（配合 c.vis �
 const WT_STILL = 0.15;              // 少於這麼多水就不再往旁邊攤（薄薄一層就地滲掉，不然邊緣會一直生生滅滅）
 const WT_JET = 6;                   // 有水壓時最多把水甩出去幾格
 const WT_JET_K = 0.5;               // 頭上壓幾格水 → 甩出去幾格
+const WT_STREAM = 0.5;              // 桶口倒出來的那道水，一格裝多少（自由落下的水柱就是這個值）
+const WT_AIR = 2;                   // 半空中的水畫成幾倍高（上限一格）——見 faceMask
 const WT_HIGH = 60;                 // 找「這一柱的水面」時最多往上看幾層
 const WT_SPRAY = 0.22;              // 正在往下流的水，每一格每一拍灑水花的機率
 const SEEP_G = 0.6;                 // 貼在草地上的那一格每秒滲掉多少（一格約 1.7 秒）
@@ -3393,14 +3396,25 @@ function addWater(gx, gy, gz, v) {
   if (c) { const put = Math.min(v, 1 - c.v); c.v += put; return put; }
   if (W.cells.size >= WT_CELLS) return 0;          // 保險絲：不會無限長
   const put = Math.min(1, v);
-  W.cells.set(k, { gx, gy, gz, v: put, f: 63, rest: 0, hd: 0, vis: put > WT_SHOW ? 1 : 0 });
+  W.cells.set(k, { gx, gy, gz, v: put, f: 63, sup: 0, hd: 0, h: put,
+                   vis: put > WT_SHOW ? 1 : 0 });
   return put;
 }
 /* 把 amount 格的水倒進落點附近，回傳真的倒進去多少。
-   一格只裝得下 1 格的水，而點一下是 2300 格分 2.5 秒倒完 ＝ 一拍要塞 46 格——
-   全塞一格是塞不下的（倒水口本來也不是一個點），所以要往旁邊、往上找位置。
 
-   **一定要用 BFS 從落點走出去，不能一圈一圈掃座標**：掃座標會穿牆——
+   **形狀比總量重要。** 一格只裝得下 1 格的水，一柱水（不管幾格高）一拍也只送得走
+   一格的量——所以「一拍要塞 46 格」如果就近硬塞，會鋪成一片 12×11 格的水牆往下砸
+   （實測；使用者：「點在杯子內壁看起來瞬間出水量太大」）。分兩段倒：
+
+   ① **一道水流**：從桶口往下灌，一格灌到半格（見 WT_STREAM）再往下一格，直到踩到
+      水面或地板——看得見的那股水就是這一柱，一格寬，就是從桶口倒出來的樣子。
+   ② **剩下的從落地那一格灌進去**：那裡是水面下／地板上，畫面上就只是水位在漲，
+      不會有一大片水憑空出現在半空中。
+
+   桶口泡在滿的水裡要先往上找到水面，不然 BFS 只能在滿的水裡繞、繞不出去就一滴也
+   倒不進去（點在杯壁內側、或杯子越裝越滿都會遇到）。
+
+   ②那段 **一定要用 BFS 走出去，不能一圈一圈掃座標**：掃座標會穿牆——
    使用者實測「點在杯子內側，杯子外面也有水」，就是那一圈掃過了杯壁、
    把水倒在牆外面的空氣裡。BFS 碰到實心就不再往那邊擴，水只會進得去走得到的地方。
    塞不下的留在 pour 裡等下一幀，水量不會憑空少。 */
@@ -3414,18 +3428,53 @@ function injectWater(gx, gy, gz, amount) {
       if (!solidAt(gx + d[0], gy, gz + d[1])) { gx += d[0]; gz += d[1]; ok = true; break; }
     if (!ok) return 0;
   }
-  const seen = new Set([wkey(gx, gy, gz)]);
-  const q = [gx, gy, gz];                          // 攤平存 x,y,z（少配置物件）
-  for (let i = 0; i < q.length && left > 1e-4 && i < WT_POUR_N * 3; i += 3) {
-    const x = q[i], y = q[i + 1], z = q[i + 2];
-    if (y < 0 || solidAt(x, y, z)) continue;       // 實心：不倒、也不從這裡往外走
-    if (left > 1e-4) left -= addWater(x, y, z, Math.min(left, 1 - watAt(x, y, z)));
-    for (const d of DIR4) {                        // 先往旁邊
-      const k = wkey(x + d[0], y, z + d[1]);
-      if (!seen.has(k)) { seen.add(k); q.push(x + d[0], y, z + d[1]); }
+  /* 桶口泡在水裡：往上找到水面那一格（那一格還有空間，倒得進去）。
+     只能穿過**站住的滿水**（c.sup）：不加這個條件的話，桶口會踩著自己上一幀倒出來的
+     那道水流一路往上爬，倒個幾秒就爬到天上去了（實測從第 20 層爬到第 66 層）。 */
+  for (let k = 0; k < WT_HIGH; k++) {
+    const wc = water && water.cells.get(wkey(gx, gy, gz));
+    if (!wc || !wc.sup || wc.v < 1 - WT_LEVEL) break;
+    if (solidAt(gx, gy + 1, gz)) break;
+    gy++;
+  }
+  /* ① 往下灌成一道水流。一格只灌到 WT_STREAM（半格），**不能灌滿**：
+     灌滿的一柱水彼此讓不出空間（腳下那一格是滿的就掉不下去），踩到地面之後整柱都算
+     「站住了」，於是在半空中往旁邊塌下來——實測就是一大塊 8×7 格的水牆。
+     半格正好是自由落下的平衡點（一拍掉一格，要讓出多少就得空出多少），
+     一直接得上、一直往下掉；畫出來接不接得起來是 WT_AIR 那邊的事。 */
+  for (let k = 0; k < WT_HIGH && left > 1e-4; k++) {
+    const room = WT_STREAM - watAt(gx, gy, gz);
+    if (room > 0) left -= addWater(gx, gy, gz, Math.min(left, room));
+    if (gy <= 0 || solidAt(gx, gy - 1, gz)) break;          // 踩到地板
+    /* 踩到水面：剩下的從水面下灌。只算**站住的水**（c.sup）——
+       不加這個條件的話，下一拍會把自己上一拍倒出來的那道水流當成水面，
+       就在半空中那一層往旁邊鋪開來（實測平地倒一桶會疊出 8×7 格的水塊）。 */
+    const bc = water && water.cells.get(wkey(gx, gy - 1, gz));
+    if (bc && bc.sup && bc.v > WT_MIN) { gy--; break; }
+    gy--;
+  }
+  /* ② 剩下的從落地那一格走出去：**一層一層填**，這一層走得到的地方填滿了才往上一層。
+     一個佇列混著往旁邊也往上走的話（一般的 BFS），填出來會是一顆立體的水球——
+     實測平地倒一桶會在半空中疊出 8×7 格、二十層高的水塊，那正是使用者說的
+     「瞬間出水量太大」。一層一層填的話，畫面上就只是水位一層一層漲上來。 */
+  let cur = [gx, gz];                              // 這一層要走的欄位（攤平存 x,z）
+  let nodes = 0;
+  for (let lv = 0; lv < WT_HIGH && left > 1e-4 && nodes < WT_POUR_N * 2; lv++, gy++) {
+    const seen = new Set();
+    for (let i = 0; i < cur.length; i += 2) seen.add(cur[i] + ':' + cur[i + 1]);
+    const up = [];                                 // 這一層倒得進去的欄位＝上一層的起點
+    for (let i = 0; i < cur.length && left > 1e-4 && nodes < WT_POUR_N * 2; i += 2, nodes++) {
+      const x = cur[i], z = cur[i + 1];
+      if (solidAt(x, gy, z)) continue;             // 實心：不倒、也不從這裡往外走
+      left -= addWater(x, gy, z, Math.min(left, 1 - watAt(x, gy, z)));
+      up.push(x, z);
+      for (const d of DIR4) {
+        const nx = x + d[0], nz = z + d[1], k = nx + ':' + nz;
+        if (!seen.has(k)) { seen.add(k); cur.push(nx, nz); }
+      }
     }
-    const ku = wkey(x, y + 1, z);                  // 這一層滿了才往上堆
-    if (!seen.has(ku)) { seen.add(ku); q.push(x, y + 1, z); }
+    if (!up.length) break;                         // 這一層一格都倒不進去：上面也不用試
+    cur = up;
   }
   return amount - left;
 }
@@ -3494,27 +3543,48 @@ function waterTick() {
   for (const c of list) {                          // ① 往下掉
     if (c.v <= 0) continue;
     const gy = c.gy - 1;
-    if (gy < 0 || solidAt(c.gx, gy, c.gz)) { c.rest = 1; continue; }
-    const move = Math.min(c.v, 1 - watAt(c.gx, gy, c.gz), WT_FALL);
-    /* 只挪得動一點點就當它**停住了**（下一段才會往旁邊攤）。
+    if (gy < 0 || solidAt(c.gx, gy, c.gz)) { c.sup = 1; continue; }   // 站在地面／積木上
+    const bl = cs.get(wkey(c.gx, gy, c.gz));
+    const move = Math.min(c.v, 1 - (bl ? bl.v : 0), WT_FALL);
+    /* 只挪得動一點點就當它**站住了**（下一段才會往旁邊攤）。
        這裡不能只判斷「腳下滿了沒有」：腳下那一格是 0.997 這種數字時 room 還有 0.003，
-       水就會一直往下滴 0.003、永遠不算停住、也就永遠不往旁邊攤——
-       實測倒進馬克杯的水會變成一根 26 格高的細柱站在杯子裡不肯攤平。 */
-    if (move <= WT_LEVEL) { c.rest = 1; continue; }
+       水就會一直往下滴 0.003、永遠不算站住、也就永遠不往旁邊攤——
+       實測倒進馬克杯的水會變成一根 26 格高的細柱站在杯子裡不肯攤平。
+
+       **c.sup ＝ 腳下那一疊水一路撐到地面／積木**（由下往上算，所以下面那格已經算好了）。
+       半空中的水不算站住：往下掉的水不會往旁邊散開，一柱水掉下去就是一柱
+       （不分這件事的話，一股水掉個十幾格就散成一大片薄薄的水簾——
+       使用者：「往下流的水體只有頂部一層的感覺」）。 */
+    if (move <= WT_LEVEL) { c.sup = bl && bl.sup && bl.v >= 1 - WT_LEVEL ? 1 : 0; continue; }
     c.v -= move;
     addWater(c.gx, gy, c.gz, move);
-    c.rest = 0;
+    c.sup = 0;
     if (move > 0.25) sprayAt(wldX(c.gx), c.gy, wldZ(c.gz), WT_SPRAY);
   }
-  for (const c of list) {                          // ② 往旁邊攤（只有掉不下去的才攤）
-    if (c.v <= WT_MIN || !c.rest) continue;
+  for (const c of list) {                          // ② 往旁邊攤（只有站在東西上的才攤）
+    if (c.v <= WT_MIN || !c.sup) continue;
     for (const d of DIR4) {
       const nx = c.gx + d[0], nz = c.gz + d[1];
       if (solidAt(nx, c.gy, nz)) continue;
       const nv = watAt(nx, c.gy, nz);
       const diff = c.v - nv;
       if (diff <= WT_LEVEL) continue;
-      let move = Math.min(diff * WT_FLOW, c.v, 1 - nv);
+      /* 什麼算「往外流」：**倒過去的水會自己掉走**——鄰居腳下不是實心，而且腳下那一格
+         還有空間。破口、屋簷邊就是這樣；杯子裡不是（每一格腳下都是滿的水），所以杯內
+         的水只會慢慢找平，不會互相亂甩。
+         這個判斷只看鄰居腳下，不看「鄰居那一柱的水面高不高」：看水面的話，破口一開始
+         流，外面那一柱馬上就被自己流出去的水填起來，判斷就失效了（v1.83 踩過）。
+         **地面那一層（gy 0）不算往外流**：地底下沒有東西擋著，不排除的話整片地面水
+         每一格都以為自己在瀑布邊，一路往外飆——實測一下的水會鋪成 183 格寬。 */
+      const spill = c.gy > 0 && !solidAt(nx, c.gy - 1, nz) &&
+                    watAt(nx, c.gy - 1, nz) < 1 - WT_LEVEL;
+      /* 往外流多少看**水壓**：頭上壓 h 格水，一格出口一拍推得出 √h × WT_ORI 格的水
+         （托里切利：出口流速 ∝ √h）。只按高低差搬一半的話，破口內外一樣滿、差值幾乎是
+         零，整杯水一秒只漏 56 格，看起來像在滴水（使用者：「先裝水然後打破側面出水，
+         應該更大量更快速湧出才正常」）。
+         推力再大也搬不走比一格多的水（1 − nv）——真正的上限是外面那一柱掉得多快。 */
+      let move = spill ? Math.min(c.v, 1 - nv, diff + WT_ORI * Math.sqrt(c.hd))
+                       : Math.min(c.v, 1 - nv, diff * WT_FLOW);
       /* **開一格新的水**才有門檻：薄薄一層還往外開新格的話，開出來的馬上又乾掉、
          又往外開——實測地面上每一幀有九百格生出來、九百格消失，整片水在閃。
          但「跟已經有水的鄰居互相平衡」不設門檻：設了的話薄水會卡成互不相讓，
@@ -3531,13 +3601,6 @@ function waterTick() {
          這一份水沿著一條拋物線鋪出去（往外 k 格、往下 k²/2r 格），不是傳送到最遠
          那一格。只放最遠那一格的話，水會憑空出現在遠處再往下掉，看起來就不像噴的
          （使用者：「噴出去立刻就往下落，導致看起來沒有噴出來」）。 */
-      /* 什麼算「往外噴」：**鄰居那一柱的水面比我低很多**，而且它腳下不是實心
-         （＝這裡是破口、屋簷邊，水要越過邊緣落下去）。
-         不能只判斷「鄰居腳下沒水」：破口一開始流，腳下馬上就有那道水流，
-         判斷就失效了、噴不出去（實測甩不到 2 格）。
-         也不能只判斷「腳下不是實心」：杯子裡每一格腳下都是水，那樣杯內的水會互相亂甩。 */
-      const nTop = colTop.get(nx + ':' + nz) || 0;
-      const spill = nTop < c.gy + c.v - 0.5 && !solidAt(nx, c.gy - 1, nz);
       const reach = spill ? Math.min(WT_JET, Math.floor(c.hd * WT_JET_K)) : 0;
       c.v -= move;
       let left = move;
@@ -3574,18 +3637,35 @@ function waterTick() {
   faceMask();
 }
 
-/* 每一格哪幾面看得到（每拍算一次就夠，畫的時候直接用）。
+/* 每一格**畫出來多高**（c.h），以及哪幾面看得到（c.f）。每拍算一次，畫的時候直接用。
+
+   高度：站住的水就是水量本身——那才是水面。**半空中的水要拉高**（WT_AIR 倍、上限一格）：
+   一柱自由落下的水每格最多只裝得到 0.5 格（一拍掉一格，這一格要讓出多少、下一格就
+   得空出多少，平衡點就在一半），照著 0.5 畫的話每一格中間都空半格，畫出來是一疊薄片
+   ——使用者：「往下流的水體只有頂部一層的感覺」。一拍掉一格的水本來就掃過整格，
+   拉到滿格才接得成一股水；水量本身沒有變，只有畫出來的高度。
+
    位元：1=+x　2=−x　4=+z　8=−z　16=底面　32=頂面（對應引擎的 putPools）。
-   旁邊那一格的水比自己低（或是積木、或是空的）→ 那一面就看得到；
-   一樣高就不畫——被水包住的面根本不存在，一大片水才不會疊出方格紋。 */
+   旁邊那一格比自己低（或是積木、或是空的）→ 那一面就看得到；一樣高就不畫——
+   被水包住的面根本不存在，一大片水才不會疊出方格紋。
+   頂面／底面比的是「滿不滿」：半滿的那一格上面就是空氣，看得到水面。 */
 function faceMask() {
-  for (const c of water.cells.values()) {
+  const cs = water.cells;
+  for (const c of cs.values()) c.h = c.sup ? c.v : Math.min(1, c.v * WT_AIR);
+  for (const c of cs.values()) {
     let f = 0;
-    for (let k = 0; k < 4; k++)
-      if (watAt(c.gx + DIR4[k][0], c.gy, c.gz + DIR4[k][1]) < c.v - 1e-3) f |= 1 << k;
-    if (c.gy > 0 && watAt(c.gx, c.gy - 1, c.gz) <= WT_MIN &&
-        !solidAt(c.gx, c.gy - 1, c.gz)) f |= 16;   // 懸空（正在落下）→ 看得到底面
-    if (watAt(c.gx, c.gy + 1, c.gz) <= WT_MIN) f |= 32;
+    for (let k = 0; k < 4; k++) {
+      /* 差 WT_SHOW 以上才畫側面：一片水深淺差個 0.03 格的話，那道側面是看不見的細絲，
+         但一格會多算一面——實測一片 2000 格的地面水會多出四千多面，把引擎的頂點上限
+         吃掉，後面的水就整格畫不出來（破口的水柱就是這樣被丟掉的）。 */
+      const n = cs.get(wkey(c.gx + DIR4[k][0], c.gy, c.gz + DIR4[k][1]));
+      if (!n || n.h < c.h - WT_SHOW) f |= 1 << k;
+    }
+    const bl = cs.get(wkey(c.gx, c.gy - 1, c.gz));
+    if (c.gy > 0 && (!bl || bl.h < 1 - WT_LEVEL) &&
+        !solidAt(c.gx, c.gy - 1, c.gz)) f |= 16;   // 腳下沒接滿 → 看得到底面
+    const up = cs.get(wkey(c.gx, c.gy + 1, c.gz));
+    if (c.h < 1 - WT_LEVEL || !up || up.h <= WT_MIN) f |= 32;
     c.f = f;
   }
 }
@@ -3594,15 +3674,21 @@ function faceMask() {
 const poolBuf = [];
 function poolList() {
   poolBuf.length = 0;
-  for (const c of water.cells.values()) {
-    /* 遲滯：水多過 WT_SHOW 才開始畫，少到 WT_MIN 才停——
-       只用一個門檻的話，滲到門檻附近的那一格會一幀有一幀沒有地閃。 */
-    if (c.v > WT_SHOW) c.vis = 1;
-    else if (c.v <= WT_MIN) c.vis = 0;
-    if (!c.vis) continue;
-    poolBuf.push({ x: wldX(c.gx), z: wldZ(c.gz), y0: c.gy, y1: c.gy + Math.max(c.v, WT_SHOW), f: c.f });
-    if (poolBuf.length >= WT_CELLS) break;
-  }
+  /* 跑兩趟：**先交半空中的水**（正在流的那幾格），再交站住的水。
+     頂到引擎的格數／頂點上限時，被丟掉的是清單後面那些——眼睛在看的就是正在流的那股水，
+     不能讓它排在一整杯靜水後面被丟掉（那正是「破口在流水卻看不到水柱」的原因）。 */
+  for (let pass = 0; pass < 2; pass++)
+    for (const c of water.cells.values()) {
+      if ((pass === 0) === !!c.sup) continue;
+      /* 遲滯：水多過 WT_SHOW 才開始畫，少到 WT_MIN 才停——
+         只用一個門檻的話，滲到門檻附近的那一格會一幀有一幀沒有地閃。 */
+      if (c.v > WT_SHOW) c.vis = 1;
+      else if (c.v <= WT_MIN) c.vis = 0;
+      if (!c.vis) continue;
+      poolBuf.push({ x: wldX(c.gx), z: wldZ(c.gz), y0: c.gy,
+                     y1: c.gy + Math.max(c.h, WT_SHOW), f: c.f });
+      if (poolBuf.length >= WT_CELLS) return poolBuf;
+    }
   return poolBuf;
 }
 

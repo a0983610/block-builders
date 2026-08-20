@@ -5473,6 +5473,116 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 格（v1.81 是 901 / 899）；' + wbFour.flick.sheet + ' 格的水裡有 ' +
      wbFour.flick.holes + ' 個洞');
 
+  /* 這三條是使用者拿 v1.83 玩過之後回報的三件事，各自守一件。 */
+  const wbFive = await page.evaluate(() => {
+    const build = () => {
+      cleanTools();
+      targetCnt = 3000;
+      shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+      startBuild(true); completeNow();
+      let rim = 0;
+      for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+      const mx = cellX(0), mz = cellZ(0);
+      let floor = 0;
+      while (solidAt(mx, floor, mz)) floor++;
+      return { rim, mx, mz, floor };
+    };
+    const out = {};
+
+    /* ① 桶口倒出來的是**一道水流**，不是一片水牆。
+       一格只裝得下一格的水，一柱水一拍也只送得走一格的量——所以「一拍要塞 46 格」
+       如果就近硬塞，會在半空中鋪成一片十幾格寬的水牆往下砸（實測 12×11 格、二十層高；
+       使用者：「點在杯子內壁看起來瞬間出水量太大」）。
+       量的是**半空中那一段每一層幾格**：一道水流的話每層就一格。 */
+    let g = build();
+    pourBucket(wldX(g.mx) + 26, 20, wldZ(g.mz), WB_DROPS);
+    for (let i = 0; i < 90; i++) step(1 / 60);
+    let top = 0;
+    for (const c of water.cells.values()) if (c.v > WT_SHOW) top = Math.max(top, c.gy);
+    const per = new Map();
+    for (const c of water.cells.values())
+      if (c.v > WT_SHOW && c.gy > top - 10) per.set(c.gy, (per.get(c.gy) || 0) + 1);
+    out.pour = { top, levels: per.size, wide: Math.max(...per.values()) };
+
+    /* ② 破口要**湧出來**，而且外面那道水柱要接得起來。
+       流量看**水壓**（托里切利：出口流速 ∝ √h）。改版前只按高低差搬一半——破口內外
+       一樣滿、差值幾乎是零，整杯水一秒只漏 56 格，看起來像在滴水（使用者：「先裝水
+       然後打破側面出水，應該更大量更快速湧出才正常」）；而且外面每格只裝 0.27 格水，
+       一拍掉一格接不起來，畫出來是一疊薄片（使用者：「往下流的水體只有頂部一層」）。 */
+    g = build();
+    for (let k = 0; k < 2; k++) {                    // 裝兩下：水面高、破口才有水壓
+      pourBucket(0, g.rim + 2, 0, WB_DROPS);
+      for (let i = 0; i < 60 * 11; i++) step(1 / 60);
+    }
+    buildSlotOwner();
+    const hy = 14;                                   // 半腰敲一個 5 寬 × 4 高的窗
+    let wz = null;
+    for (let d = 1; d < 25 && wz == null; d++) if (solidAt(g.mx, hy, g.mz + d)) wz = g.mz + d;
+    let broke = 0;
+    for (let gx = g.mx - 2; gx <= g.mx + 2; gx++)
+      for (let yy = hy; yy < hy + 4; yy++)
+        for (let gz = g.mz; gz < g.mz + 40; gz++) {
+          const bl = blockOn(gx, yy, gz);
+          if (bl) { breakBlock(bl, 0, 1, 3); broke++; }
+        }
+    const cup = () => {
+      let v = 0;
+      for (const c of (water ? water.cells.values() : [])) if (c.gz <= wz) v += c.v;
+      return v;
+    };
+    const v0 = cup();
+    for (let i = 0; i < 60; i++) step(1 / 60);
+    const drain = Math.round(v0 - cup());
+    // 牆外那道水柱：每一層幾格、每格裝多少水（畫出來多高是 WT_AIR 那邊的事）
+    const lv = new Map();
+    for (const c of water.cells.values()) {
+      if (c.gz <= wz || c.gy >= hy || c.gy < 3 || c.v <= WT_SHOW) continue;
+      let e = lv.get(c.gy);
+      if (!e) lv.set(c.gy, e = { n: 0, v: 0 });
+      e.n++; e.v += c.v;
+    }
+    const rows = [...lv.values()];
+    out.jet = { broke, drain, levels: rows.length,
+                wide: rows.length
+                  ? +(rows.reduce((a, e) => a + e.n, 0) / rows.length).toFixed(1) : 0,
+                vol: rows.length
+                  ? +(rows.reduce((a, e) => a + e.v, 0) / rows.reduce((a, e) => a + e.n, 0)).toFixed(2)
+                  : 0 };
+
+    /* ③ 規則交出去的水，**每一格都要畫得出來**：引擎那邊的格數上限得跟 WT_CELLS 一樣大。
+       一個裝滿的馬克杯就有 4463 格，引擎舊的上限是 4000 格——多出來的整格不畫，而且被
+       丟掉的是清單後面那些＝最新的水，所以畫面上就是「破口在流水，可是看不到水柱」。
+       用引擎真的畫了幾個三角形來比：水想畫幾面 × 2 就是它該畫幾個三角形。 */
+    let want = 0;
+    const L = poolList();
+    for (const p of L)
+      for (let bit = 0; bit < 6; bit++) if (p.f & (1 << bit)) want++;
+    draw(); ENG.render();
+    const withW = ENG.info().tris;
+    const keep = water; water = null;
+    draw(); ENG.render();
+    const without = ENG.info().tris;
+    water = keep;
+    out.draw = { cells: L.length, want, got: withW - without };
+    cleanTools();
+    return out;
+  });
+  ok('倒水倒出來的是一道水流，不是半空中一大片水牆',
+     wbFive.pour.wide <= 2 && wbFive.pour.levels >= 8,
+     '桶口在第 ' + wbFive.pour.top + ' 層：半空中那 ' + wbFive.pour.levels +
+     ' 層每層最多 ' + wbFive.pour.wide + ' 格（改版前是 12×11 格、二十層高的水塊）');
+  ok('有水壓：破口一秒漏得掉一大股水，外面那道水柱也接得起來',
+     wbFive.jet.drain >= 75 && wbFive.jet.wide >= 3.5 && wbFive.jet.vol >= 0.4 &&
+     wbFive.jet.levels >= 8,
+     '敲掉 ' + wbFive.jet.broke + ' 塊：第一秒漏掉 ' + wbFive.jet.drain +
+     ' 格（改版前 56 格），牆外水柱 ' + wbFive.jet.levels + ' 層、平均 ' +
+     wbFive.jet.wide + ' 格寬、每格 ' + wbFive.jet.vol + ' 格水（改版前 0.27）');
+  ok('規則交出去的水每一格都畫得出來（引擎的格數上限夠大）',
+     wbFive.draw.got === wbFive.draw.want * 2 && wbFive.draw.cells > 4000,
+     wbFive.draw.cells + ' 格水要畫 ' + wbFive.draw.want + ' 面，引擎畫了 ' +
+     wbFive.draw.got + ' 個三角形（＝' + (wbFive.draw.got / 2) +
+     ' 面；上限 4000 格的時候整條水柱會被丟掉）');
+
   /* ── 水桶就是一般工具：點一下用一次、拖曳轉視角（v1.74 改回來） ──────
      v1.70～1.73 曾經是「按住不放就一直倒、這把工具下拖曳不轉視角」，
      使用者要求改回一致：一把工具一種操作，不該只有水桶特別。 */
