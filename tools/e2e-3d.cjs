@@ -2072,25 +2072,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     ok('打掉底座，' + c.nm + ' 的懸空部件跟著垮', c.left < c.n0 * 0.05,
        c.n0 + ' −底座' + c.cleared + ' → 剩 ' + c.left + '（' + c.g + ' 組懸空部件）');
 
-  /* v1.91：豁免的判準從「一組超過 2000 格」換成「完好時就撐不住」。
-     吳哥窟是三檔建材數都要量的那一座——它的三層方台彼此沒接上（差 1～4 格），
-     所以懸空比例本來就高，而且**同一座在不同尺寸下結構不一樣**：
-     · 1800：三層台接得上，整座都連到地面，沒有懸空組
-     · 3000：anchor → 第二層台 → 上面那一大團（2176 格）的正常鏈 → 打掉底座整座垮。
-       舊規則這一團剛好超過 2000 格被永久豁免，敲掉底下三層「一塊都不掉」（使用者報的就是這個）
-     · 9000：兩團塔互相當對方的靠山、兩團都碰不到地面（第三層台在 4 格外）→ 只能豁免。
-       但完好時不准自己掉：拿掉 2000 那條之後若不判這一關，完好的建築會自己掉 7084 塊。 */
+  /* 吳哥窟：使用者報「底部拆掉卻不崩」的那一座，三檔建材數都量。
+     v1.91 修規則（豁免的判準從「一組超過 2000 格」換成「完好時就撐不住」）、
+     v1.92 修藍圖（三層方台的牆厚跟著層距算，彼此真的接上）。兩版之前的狀況是：
+     · 3000：三層台差 1 格沒接上 → 3012 格裡只有 516 格連到地面，上面整團 2176 格
+       剛好超過 2000 被永久豁免 → 敲掉底下三層「一塊都不掉」
+     · 9000：差 4 格，兩團塔互相當對方的靠山、都碰不到地面 → 只能豁免（塔懸在半空）
+     現在三檔都是 100% 連到地面、沒有懸空組，打掉底座就整座垮。 */
   const angkor = await page.evaluate(() => {
     const out = [];
     for (const cnt of [1800, 3000, 9000]) {
       shapePick = SHAPES.findIndex(s => s.n === '吳哥窟');
       targetCnt = cnt; setWorkerCount(1); startBuild(true); completeNow();
       const n0 = placedCnt;
-      const sizes = bp.floats.map(g => g.cells.length);
-      const big = Math.max.apply(null, sizes.concat(0));
-      const bigProps = bp.floats.reduce((m, g) => g.cells.length === big ? g.props.length : m, 0);
-      const exempt = bp.floats.filter(g => !g.props.length)
-                              .reduce((n, g) => n + g.cells.length, 0);
+      const floatCells = bp.floats.reduce((n, g) => n + g.cells.length, 0);
+      const anchor = bp.slots.filter(s => s.anchor).length;
       markSupportDirty(0);
       for (let k = 0; k < 80; k++) step(0.05);      // 沒人動它
       const idle = placedCnt;
@@ -2099,22 +2095,39 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       afterHit(hit, { x: 0, y: 1, z: 0 }, 6);
       for (let k = 0; k < 200; k++) step(0.05);
       out.push({ cnt, n0, idle, hit, left: placedCnt, groups: bp.floats.length,
-                 big, bigProps, exempt });
+                 floatCells, anchor, total: bp.slots.length });
     }
     return out;
   });
-  const ang = c => angkor.find(o => o.cnt === c);
   ok('完好的吳哥窟不會自己掉（三檔建材數都驗）',
      angkor.every(o => o.idle === o.n0),
      angkor.map(o => o.cnt + '：' + o.n0 + '→' + o.idle).join('　'));
-  ok('吳哥窟打掉底座會垮，不會因為那一團「太大」就無敵',
-     ang(3000).big > 2000 && ang(3000).bigProps > 0 && ang(3000).left < ang(3000).n0 * 0.05,
-     '3000 那一檔最大一組 ' + ang(3000).big + ' 格（靠山 ' + ang(3000).bigProps +
-     ' 格，舊規則超過 2000 就 0）→ 敲底座 ' + ang(3000).hit + ' 塊後剩 ' + ang(3000).left);
-  ok('完好時就撐不住的那幾組才豁免（吳哥窟 9000 的兩團塔）',
-     ang(9000).exempt > 6000 && ang(1800).exempt === 0 && ang(3000).exempt === 0,
-     '豁免的格數：1800 → ' + ang(1800).exempt + '、3000 → ' + ang(3000).exempt +
-     '、9000 → ' + ang(9000).exempt + '（那兩團互相當靠山，腳下 4 格外才有東西）');
+  ok('吳哥窟打掉底座就整座垮（三檔建材數都驗）',
+     angkor.every(o => o.left < o.n0 * 0.05),
+     angkor.map(o => o.cnt + '：' + o.n0 + ' −底座' + o.hit + ' → 剩 ' + o.left).join('　'));
+  /* 根因那一條：三層方台要真的疊在一起。v1.92 之前 3000 那檔懸空 2496 格、9000 懸空 7876 格
+     （牆固定 2 格厚，而層與層的外緣落差是 round(s×0.32)/2，尺寸一大就拉開）。 */
+  ok('吳哥窟三層方台彼此接上，整座都連到地面',
+     angkor.every(o => o.floatCells === 0 && o.anchor === o.total),
+     angkor.map(o => o.cnt + '：連到地面 ' + o.anchor + '/' + o.total + '、懸空 ' +
+                     o.floatCells).join('　'));
+
+  /* 常設哨兵：有一組懸空部件超過 2000 格卻一個靠山都沒有，就是「那一團怎麼打都不會垮」。
+     可能是藍圖沒接上（吳哥窟就是這樣被抓到的），也可能真的是故意畫的巨大懸空件——
+     兩種都要人來看一眼，所以在這裡卡住。48 座 × 兩檔只算藍圖、不畫圖，成本約 6 秒。 */
+  const noBig = await page.evaluate(() => {
+    const bad = [];
+    for (let i = 0; i < SHAPES.length; i++)
+      for (const cnt of [3000, 9000]) {
+        const b = makeBlueprint(i, cnt);
+        for (const g of b.floats)
+          if (g.cells.length > 2000 && !g.props.length)
+            bad.push(b.name + ' @' + cnt + ' 有一組 ' + g.cells.length + ' 格沒有靠山');
+      }
+    return bad;
+  });
+  ok('沒有哪一座是靠「那一團太大」才不垮的', noBig.length === 0,
+     noBig.join('　') || '48 座 × 3000／9000 兩檔都沒有');
 
   const supCost = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '艾菲爾鐵塔');
