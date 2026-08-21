@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.94.2';
+const VERSION = '1.95.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -945,8 +945,8 @@ function newWorker(i) {
     bem: 0, bx: 0, bz: 0, br: 0, ba: 0,
     /* 工程師（eng）：拿藍圖 plan、站的角度 eang、下一個動作倒數 et、指揮動作剩幾秒 point。
        聊天：剩幾秒 chat、對象編號 cw、輪到誰講 side、講完多久才會再聊 chatCd、
-       泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手。 */
-    eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0,
+       泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手，crun 是進場那一趟的腳程（見 CHEER_IN）。 */
+    eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0, crun: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
     /* 魔法師（mage，v1.64）：不搬積木，站在建材堆旁邊隔空把建材拋上去。
        cast 是舉杖的深淺 0～1（畫杖與寶珠用），ct 是這一發還要蓄幾秒，
@@ -1401,14 +1401,17 @@ function stepFlee(w, dt) {
    不改成「半徑先走完再轉角度」是因為那樣繞遠路：慶祝進場實測會慢一秒。
    「從建築裡走出來」那條路不受影響——它傳進來的目標角度就是人自己現在的角度
    （dA = 0），整份腳程本來就全給徑向。 */
-function ringWalk(w, ta, rad, dt) {
+/* spd 給了就用那個腳程（單位／秒），沒給就照平常走。慶祝進場會給——
+   遠的人要跑（見 CHEER_IN）。 */
+function ringWalk(w, ta, rad, dt, spd) {
   const cr = Math.hypot(w.x, w.z);
   const ca = cr < 0.001 ? ta : Math.atan2(w.z, w.x);
   const TAU = Math.PI * 2;
   // 取最短那一邊繞。ta 可能是累加出來的（工程師換位置一次加一點），先折回 ±π
   const dA = ((((ta - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
   const dr = rad - cr;
-  const budget = WALK * dt;
+  const sp = spd || WALK;
+  const budget = sp * dt;
   const left = Math.hypot(dA * cr, dr);               // 還差多遠（弧長 + 徑向）
   const arrive = left <= budget;
   const k = arrive ? 1 : budget / left;
@@ -1418,7 +1421,7 @@ function ringWalk(w, ta, rad, dt) {
   const mx = w.x - px, mz = w.z - pz;
   if (Math.hypot(mx, mz) > 1e-4) {
     w.a = Math.atan2(mx, mz);
-    w.ph += dt * 11;
+    w.ph += dt * 11 * sp / WALK;                      // 跑起來腳步也要快（同 FLEE_STEP 的道理）
     w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
   }
   return arrive;
@@ -1435,6 +1438,11 @@ const JUMP_H = 0.55;                // 跳多高
    半徑本來寫死 siteR + 2.6：最小的建築 siteR 只有 7，圈長 60 格分給 60 個人
    等於每人 1 格——放大之後整圈的人會互相插在一起。 */
 const CHEER_GAP = 1.9;
+/* 幾秒內要就位。離得遠的人自己加速——v1.95 起魔法師會跟著料走到碎料場外緣，
+   實測蓋完那一刻四個人都站在半徑 63，用平常的腳程要走六秒半，慶祝總共只有七秒
+   （趕到就散場，四個人整段都在路上）。腳程在 assignSpots 那裡照距離算一次就固定：
+   每幀用「剩下的距離 ÷ 秒數」重算會越走越慢，永遠差最後一點。 */
+const CHEER_IN = 2.5;
 function cheerR() {
   return Math.max(siteR + 2.6, workers.length * CHEER_GAP / (Math.PI * 2));
 }
@@ -1457,7 +1465,17 @@ function assignSpots() {
     sx += Math.cos(d); sz += Math.sin(d);
   }
   const base = Math.atan2(sz, sx);
-  for (let k = 0; k < n; k++) workers[ord[k]].spot = base + k * gap;
+  const R = cheerR();
+  for (let k = 0; k < n; k++) {
+    const w = workers[ord[k]];
+    w.spot = base + k * gap;
+    /* 這一趟要用多快才 CHEER_IN 秒內進得了圈。距離用 ringWalk 的同一份算法
+       （弧長 + 徑向），不然遠的人會算短、還是趕不到。 */
+    const cr = Math.hypot(w.x, w.z);
+    const ca = cr < 0.001 ? w.spot : Math.atan2(w.z, w.x);
+    const dA = ((((w.spot - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
+    w.crun = Math.max(WALK, Math.hypot(dA * cr, R - cr) / CHEER_IN);
+  }
 }
 
 function updWorker(w, wi, dt) {
@@ -1544,7 +1562,7 @@ function updWorker(w, wi, dt) {
       /* 先各自跑到自己那一格（等分一圈，所以站得開），到位就轉身面向建築
          原地跳。跳的相位照編號錯開 0.09 秒，一圈看過去是一道波浪，
          不是全場同手同腳。 */
-      if (ringWalk(w, w.spot, cheerR(), dt)) {
+      if (ringWalk(w, w.spot, cheerR(), dt, w.crun)) {
         w.a = Math.atan2(-w.x, -w.z);                 // 面向建築
         w.gait += (0 - w.gait) * Math.min(1, dt * 8);
         w.ph += dt * 9;                               // 舉起來的手跟著擺
@@ -1829,13 +1847,13 @@ const MAGE_KEEP = 5.5;              // 站得離工地外圍至少多遠（工�
    所以他站的位置不再是「工地外圈的一個角度」（v1.64～v1.88 是釘死的），而是自己找一坨料
    站過去：塊數多的優先、路程遠的折價，跟推土機挑碎料堆同一套算法（見 pickHeap）。 */
 const MAGE_REACH = 11;              // 搆得到多遠的建材
-/* 站的位置離工地外圍最遠多少。沒有這條的話他會一路追著料往外走：實測蓋完那一刻
-   兩個魔法師站在半徑 62（碎料場外緣 63.7），而一般工人都還在 26 以內。兩個後果都不能要——
-   相機取的是建築那一帶，那麼遠的人根本不在畫面上（使用者要的是「看得出來是他在施法搬運」）；
-   而且蓋完要圍圈慶祝時他得從場外走回來，全員就位從 1.5 秒變成 6.5 秒（慶祝總共只有 7 秒）。
-   16 是換算出來的：走回慶祝圈約 (16 − 2.6) ÷ 6.8 ≒ 2 秒。
-   站在這條線上還是搆得到 siteR + 27 那一圈的料（見 MAGE_REACH）。 */
-const MAGE_ROAM = 16;
+/* 走多遠不設上限（v1.95）。v1.89～v1.94 綁在工地外圍 16 格內（MAGE_ROAM），
+   理由是「不設的話他會一路追著料往外走，跑出鏡頭、蓋完還得從場外走回來慶祝」。
+   但 v1.89 同時把他改成「走到料旁邊才搬得動」——兩條加起來就變成：料一旦被轟到
+   16 格外，他整座建築都站著不動。實測玩家丟一發核彈把碎料炸到半徑 30～60 之後，
+   接下來那一座他 300 秒發 0 塊（工人不受影響，他們本來就走到哪撿到哪）。
+   既然要他走到料旁邊，那就跟一般工人一樣：料在哪就走到哪，不再有上限。
+   下限（MAGE_KEEP）保留——那不是行動範圍，是「不能站進建築裡伸手」。 */
 const MAGE_CELL = 9;                // 數料堆用的粗格邊長。要小於 MAGE_REACH，站在中心才整格都搆得到
 const MAGE_TRIP = 0.06;             // 路程折價：每遠一格，那一坨的吸引力打幾折
 const MAGE_APART = 9;               // 別的魔法師已經站在這麼近就換一坨，不然幾個人會疊在同一堆上
@@ -1898,8 +1916,7 @@ function pickMageSpot(w) {
   let bx = 0, bz = 0, bn = 0, best = -1;
   for (const h of heaps) {
     const hr = Math.hypot(h.x, h.z);
-    const r = Math.max(siteR + MAGE_KEEP, hr);
-    if (r > siteR + MAGE_ROAM) continue;              // 太外面的那一坨不去（見 MAGE_ROAM）
+    const r = Math.max(siteR + MAGE_KEEP, hr);        // 多遠都去，只是不站進工地裡（v1.95）
     const a = hr < 0.001 ? w.mang : Math.atan2(h.z, h.x);
     const sx = Math.cos(a) * r, sz = Math.sin(a) * r;
     // 站定之後那一坨的中心要在搆得到的範圍內，不然走過去也是白站
@@ -1937,10 +1954,9 @@ function updMage(w, wi, dt) {
       w.trail = MAGE_TRAIL;
     }
   }
-  /* 站位一律夾在工地外圈與 MAGE_ROAM 之間。換一座建築時 siteR 會變，上一輪挑的那個半徑
-     可能落在新工地裡面（他會站進牆裡）或落在很遠的場外，所以每幀夾一次。 */
+  /* 站位只夾下限：換一座建築時 siteR 會變，上一輪挑的那個半徑可能落在新工地裡面
+     （他會站進牆裡），所以每幀夾一次。上限 v1.95 拿掉了（見 MAGE_KEEP 上面那段）。 */
   if (w.mrad < siteR + MAGE_KEEP) w.mrad = siteR + MAGE_KEEP;
-  else if (w.mrad > siteR + MAGE_ROAM) w.mrad = siteR + MAGE_ROAM;
   // 一幀只能走這一次（ringWalk 會真的移動人）；下面「站定了嗎」全部看這一個值
   const stand = ringWalk(w, w.mang, w.mrad, dt);
   if (!w.load.length) {

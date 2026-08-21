@@ -2425,8 +2425,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ══════════ 完工慶祝 ══════════ */
   head('完工慶祝');
   /* 要讓它自己蓋到完工，不能用 completeNow：上一段測試把人放到地圖邊緣去遊蕩了，
-     從 60 單位外走回工地本來就要七秒，量到的會是「走回來多久」而不是「圍圈多快」。
-     真的蓋完的那一刻，人都還站在工地邊上——那才是這段要量的起點。 */
+     量到的會是「走回來多久」而不是「圍圈多快」。
+     真的蓋完的那一刻，人都還站在工地邊上——那才是這段要量的起點。
+     （從場外走回來那個場景自己有一條，在這一段的最後面） */
   const cheer = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 300; setWorkerCount(20); startBuild(true);
@@ -2478,9 +2479,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              after, spread, siteR: +siteR.toFixed(1) };
   });
   /* 門檻 3.2 秒（v1.89 從 2.5 放寬）：這條原本假設「蓋完那一刻所有人都還在工地邊上」，
-     而魔法師現在站在建材堆裡（最遠 siteR + 16，見 MAGE_ROAM），走回圈上就要兩秒。
+     而魔法師現在站在建材堆裡（v1.95 起料在多遠就走多遠），走回圈上要兩秒。
      實測 1.9～3.1 秒，慶祝總共 7 秒——他還跳得到四秒以上。
-     再放寬就沒有意義了：那表示有人是趕到才散場（v1.89 之前追著料往外走的版本就是 6.5 秒）。 */
+     再放寬就沒有意義了：那表示有人是趕到才散場。真的從碎料場外緣走回來那個場景
+     由下面「蓋完時站在場外的人也趕得回慶祝圈」守（v1.95 起遠的人會跑，見 CHEER_IN）。 */
   ok('蓋完後很快就圍成一圈', cheer.allAt > 0 && cheer.allAt < 3.2,
      cheer.allAt + ' 秒全員就位（照現況分配位置，不是照編號硬分）；最後到的那個蓋完時站在 ' +
      cheer.slow.d + '（' + (cheer.slow.mage ? '魔法師' : '工人') + '），全場最遠 ' +
@@ -2497,6 +2499,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      cheer.maxY > 0.4 && cheer.drift === 0,
      '慶祝的六秒半裡跳 ' + cheer.jumps + ' 次、落地 ' + cheer.landed + ' 次，最高 ' +
      cheer.maxY + '；就位後還在水平移動的人次 ' + cheer.drift);
+  /* 蓋完那一刻站在場外的人也要趕得回圈上（v1.95）。魔法師現在會跟著料走到碎料場外緣
+     （實測半徑 63），用平常的腳程 6.8 要走六秒半，而慶祝總共只有七秒——v1.94 之前
+     在這個場景是「十秒內從來沒有全員到齊」，四個人整段都在路上。
+     修法是進場那一趟照距離算腳程（CHEER_IN），遠的人跑回來。 */
+  const cheerFar = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    for (let i = 0; i < 40; i++) step(0.05);
+    const R = arenaR;                                // 全員先放到碎料場外緣
+    workers.forEach((w, i) => {
+      const a = i / workers.length * Math.PI * 2;
+      w.x = Math.cos(a) * R; w.z = Math.sin(a) * R;
+      releaseWorker(w); w.cheer = 0; w.st = 'idle'; w.mang = a; w.mrad = R;
+    });
+    const from = Math.max.apply(null, workers.map(w => Math.hypot(w.x, w.z)));
+    completeNow();                                   // 「立刻建成」→ 進慶祝
+    let allAt = -1, jumps = 0, up = false;
+    for (let i = 0; i < 200; i++) {
+      step(0.05);
+      if (allAt < 0 && workers.every(w => w.hail)) allAt = +(i * 0.05).toFixed(2);
+      const w0 = workers[0];
+      if (w0.y > 0.02 && !up) jumps++;
+      up = w0.y > 0.02;
+    }
+    return { allAt, jumps, from: +from.toFixed(1), ring: +cheerR().toFixed(1),
+             fast: +Math.max.apply(null, workers.map(w => w.crun)).toFixed(1), walk: WALK };
+  });
+  ok('蓋完時站在場外的人也趕得回慶祝圈',
+     cheerFar.allAt > 0 && cheerFar.allAt < 3.2 && cheerFar.jumps >= 4,
+     '從半徑 ' + cheerFar.from + ' 走回半徑 ' + cheerFar.ring + ' 的圈上花 ' +
+     cheerFar.allAt + ' 秒（最快的人腳程 ' + cheerFar.fast + '，平常走路是 ' +
+     cheerFar.walk + '），第一個人在慶祝的十秒裡跳了 ' + cheerFar.jumps + ' 次');
   ok('慶祝完就散開去閒晃', cheer.after === 0 && cheer.spread > cheer.rad.hi + 3,
      '還在舉手的 ' + cheer.after + ' 人，最遠走到 ' + cheer.spread);
 
@@ -2722,8 +2756,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '），那塊料飛過去的水平距離 ' + wz.arc + ' 格');
   /* 腳邊那一圈搬空了就換一坨：看整段走了多遠。v1.88 之前他釘在工地外圈的一個角度上，
      暖機走到位之後就再也不動（走 0 格），所以這條同時是那一版的紅檢。
-     實測 110 秒走 11～88 格（走的範圍被 MAGE_ROAM 綁在工地外圍 16 格內，是沿著那條帶子
-     挪，不是滿場跑）。「發過料的地點」只放進說明不當門檻——他常常在同一個 6 格方格裡
+     實測 110 秒走 11～88 格（開場的料是從工地邊緣往外鋪的，所以他多半在外圈那一帶
+     挪，不是滿場跑；料被轟遠時他會走過去，見下面那條）。「發過料的地點」只放進說明不當門檻——他常常在同一個 6 格方格裡
      挪好幾次，量到 1 也不代表他沒換過地方。 */
   ok('腳邊的料搬完就走去下一堆', wz.walked > 6,
      '整段走了 ' + wz.walked + ' 格、在 ' + wz.spots + ' 個 6 格方格裡發過料');
@@ -2786,6 +2820,62 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('兩堆料一樣遠就站到塊數多的那一堆', wzPick.big < wzPick.small && wzPick.secs < 30,
      wzPick.secs + ' 秒後離 60 塊那堆 ' + wzPick.big + ' 格、離 12 塊那堆 ' +
      wzPick.small + ' 格（兩堆都在半徑 ' + wzPick.R + '，他從等距的地方出發）');
+
+  /* v1.95：碎料被轟到場外的時候，他還是會走過去發料。
+     這個分布是實測「玩家丟一發核彈」之後的樣子——2978 塊裡有 2880 塊落在 siteR + 27 之外，
+     而推土機只清工地內（siteClearR = siteR + 1.4），不會把場外的料收回來。
+     v1.89～v1.94 他的站位被綁在工地外圍 16 格內（MAGE_ROAM），那一版在這個場景整座建築
+     發 0 塊、100% 的幀站在原地面向建築——這條就是那一版的紅檢。 */
+  const wzFar = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    for (let i = 0; i < 160; i++) step(0.05);        // 先讓上一輪的碎料全部落定
+    /* 全部的料鋪到碎料場的外圈——每一坨的中心都在 siteR + 16 之外，
+       所以舊版的 pickMageSpot 會把它們整批刷掉（那一版就是發 0 塊的原因）。
+       這裡用 900 塊的小場（碎料場半徑約 41）重現核彈那個形狀：
+       實測核彈是 2978 塊裡 2880 塊落在 siteR + 27 之外。 */
+    const far = Math.max(siteR + 20, arenaR - 12);
+    for (const b of blocks) {
+      if (b.st !== 0) continue;
+      if (b.cell) gridDel(b);
+      const a = Math.random() * Math.PI * 2;
+      const rad = far + Math.random() * Math.max(4, arenaR - far);
+      b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad; b.y = HB;
+      b.vx = b.vy = b.vz = 0; b.rest = true; b.snap = 0; b.holder = -1; b.slot = -1;
+      separate(b); gridAdd(b);
+    }
+    for (const w of workers) releaseWorker(w);
+    const mi = workers.map((w, i) => w.mage ? i : -1).filter(i => i >= 0);
+    const seen = new Set();
+    let frames = 0, idle = 0, rMax = 0, rMin = Infinity;
+    for (let i = 0; i < 1600 && phase === 'build'; i++) {
+      step(0.05);
+      for (const k of mi) {
+        const w = workers[k];
+        frames++;
+        const d = Math.hypot(w.x, w.z);
+        if (d > rMax) rMax = d;
+        if (d < rMin) rMin = d;
+        // 站著沒事做：手上沒料、也沒在走去下一坨（走位途中不算閒著）
+        const sp = { x: Math.cos(w.mang) * w.mrad, z: Math.sin(w.mang) * w.mrad };
+        if (!w.load.length && Math.hypot(sp.x - w.x, sp.z - w.z) < 0.3) idle++;
+      }
+      // 隔空拋的那些拋物線（arc.mage）數不重複的，就是他們一共發了幾塊
+      for (let k = 0; k < blocks.length; k++) {
+        const b = blocks[k];
+        if (b.st === 2 && b.arc && b.arc.mage) seen.add(k + ':' + b.slot);
+      }
+    }
+    return { launches: seen.size, frames, idlePct: +(idle / (frames || 1)).toFixed(2),
+             rMax: +rMax.toFixed(1), rMin: +rMin.toFixed(1), far: +far.toFixed(1),
+             siteR: +siteR.toFixed(1), arenaR: +arenaR.toFixed(1), n: mi.length };
+  });
+  ok('料被轟到場外，魔法師照樣走過去發料（不是站在工地邊等）',
+     wzFar.launches > 20 && wzFar.rMax > wzFar.siteR + 17 && wzFar.idlePct < 0.4,
+     wzFar.n + ' 個魔法師發了 ' + wzFar.launches + ' 塊，站的半徑 ' + wzFar.rMin + '～' +
+     wzFar.rMax + '（料全在 ' + wzFar.far + ' 之外、碎料場外緣 ' + wzFar.arenaR +
+     '，舊上限是 siteR+16=' + (wzFar.siteR + 16).toFixed(1) + '），沒事做的幀占 ' +
+     (wzFar.idlePct * 100).toFixed(0) + '%');
 
   const wzN = await page.evaluate(() => {
     const out = {};
