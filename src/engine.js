@@ -231,6 +231,22 @@ const ENG = (function () {
     return tx;
   }
 
+  /* shader 注入的小工具。注入的做法是對 three 的 chunk 名字做字串取代，而
+     **取代不到是靜默的**：哪天 three 把某個 chunk 改名（`output_fragment` →
+     `opaque_fragment` 就發生過），那一刀什麼都不會發生、也不會報錯，畫面默默退回
+     沒注入的樣子（積木沒有深色邊、水變回死板的藍）。所以每一刀都記一筆有沒有真的換到，
+     材質把數字放在 userData.cuts，測試盯著它。 */
+  function injector() {
+    let n = 0;
+    const cut = (src, anchor, add) => {
+      const out = src.replace(anchor, anchor + add);
+      if (out !== src) n++;
+      return out;
+    };
+    cut.count = () => n;
+    return cut;
+  }
+
   /* ── 材質：在 Lambert 上加一圈深色邊，voxel 才有實體感 ──
      邊緣判定不靠 uv（不同 three 版本 uv attribute 有沒有宣告不一定），
      改用 local position：單位方塊的座標是 ±0.5，
@@ -238,12 +254,11 @@ const ENG = (function () {
   function voxelMaterial(opt) {
     const m = new T.MeshLambertMaterial(opt);
     m.onBeforeCompile = sh => {
-      sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vLocalPos;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLocalPos = position;');
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vLocalPos;')
-        .replace('#include <color_fragment>', `#include <color_fragment>
+      const cut = injector();
+      sh.vertexShader = cut(sh.vertexShader, '#include <common>', '\nvarying vec3 vLocalPos;');
+      sh.vertexShader = cut(sh.vertexShader, '#include <begin_vertex>', '\nvLocalPos = position;');
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <common>', '\nvarying vec3 vLocalPos;');
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <color_fragment>', `
           vec3 ap = abs(vLocalPos);
           float mx = max(ap.x, max(ap.y, ap.z));
           float mn = min(ap.x, min(ap.y, ap.z));
@@ -251,6 +266,7 @@ const ENG = (function () {
           float edge = smoothstep(0.0, 0.055, 0.5 - second);
           diffuseColor.rgb *= mix(0.62, 1.0, edge);
         `);
+      m.userData.cuts = cut.count();               // 給測試看：四刀都換到了嗎
     };
     m.customProgramCacheKey = () => 'voxel-edge';
     return m;
@@ -270,10 +286,20 @@ const ENG = (function () {
      這顆網格全都是軸對齊的平面，微分算出來的就是那個面真正的法線，一毛頂點成本都沒加。 */
   function poolMaterial() {
     const m = new T.MeshPhongMaterial({
-      /* 底色比 Basic 那版亮一階（0x4aa6de → 這個）：Phong 是「底色 × 光」，
-         同一個底色吃光之後**只有 0.73 倍亮**（同一座建築同一個機位實測，
-         亮度加權 104.7 vs 144），不補回來整片水會變暗。 */
-      color: 0x5cb4e8, specular: 0x9ad9f6, shininess: 130, flatShading: true,
+      /* 光分成「常數底（emissive）＋ 較弱的漫射（color）」，不是全部走漫射（v1.94.1）。
+         為什麼要這樣拆：水面是一格一個水位、每一拍都在改的東西，**頂面與側壁的亮度差
+         越大，那些一格一格的變化就越搶眼**。使用者回報「水面會一跳一跳」，實測
+         （同一份水面狀態、同一個機位，連續 12 幀變動的像素）：
+           全走漫射　　　　平均 4805、最高 15286
+           常數底 ＋ 半漫射 平均 3080、最高 10504　← 這一版
+           v1.93 不吃光　　平均 1625、最高　6013
+         動的一直都在動（幾何完全相同），差別只在看不看得出來；拆成常數底之後
+         少掉四成，而**高光、波紋、泡沫、菲涅耳全部留著**——那些才是「像水」的來源，
+         頂／側分色只是附帶的。要完全回到 v1.93 那麼平靜只能不吃光，那就整片死藍了。
+         這兩個數字是配著調的：0x2e5a74 是 0x5cb4e8 的一半、0x336380 是它的 0.55，
+         加起來的亮度跟全走漫射時差不多（實測 112 vs 123.8，v1.93 是 141.4）。 */
+      color: 0x2e5a74, emissive: 0x336380,
+      specular: 0x9ad9f6, shininess: 130, flatShading: true,
       /* 透明度從 0.62 降到這裡：有了光照與高光，水面看得出來是水面，
          就不必靠「濃」來讓人看見它了——淡一點反而通透（水底的草看得到）。
          底色補亮＋這裡調淡之後，跟 v1.93 比是 0.81 倍亮（同上實測 116.1 vs 144）。 */
@@ -286,18 +312,10 @@ const ENG = (function () {
     m.onBeforeCompile = sh => {
       poolUni = sh.uniforms;
       sh.uniforms.uWTime = { value: 0 };
-      /* 注入的做法是對 three 的 shader chunk 做字串取代，而**取代不到是靜默的**：
-         哪天 three 把某個 chunk 改名（`output_fragment` → `opaque_fragment` 就發生過），
-         這裡什麼都不會發生、也不會報錯，水就默默變回死板的藍。
-         所以每一刀都記一筆「有沒有真的換到」，測試盯 userData.cuts 這個數字——
-         畫面像素那條哨兵擋不住單一注入點失效（實測只死掉波紋那一刀，
-         泡沫那道波還在動，變的像素只從 8% 掉到 5%，門檻抓不到）。 */
-      let cuts = 0;
-      const cut = (src, anchor, add) => {
-        const out = src.replace(anchor, anchor + add);
-        if (out !== src) cuts++;
-        return out;
-      };
+      /* 六刀，一刀都不能靜默失效——見 injector 那段。畫面像素那條哨兵擋不住
+         單一注入點失效（實測只死掉波紋那一刀，泡沫那道波還在動，變的像素只從
+         8% 掉到 5%，門檻抓不到），所以直接數刀數。 */
+      const cut = injector();
       /* position 存的就是**世界座標**（putPools 直接填世界座標、這顆網格沒有位移），
          所以世界座標的波紋不用乘任何矩陣，vWPos = position 就是了。 */
       sh.vertexShader = cut(sh.vertexShader, '#include <common>', `
@@ -350,7 +368,7 @@ const ENG = (function () {
           }`);
       sh.fragmentShader = cut(sh.fragmentShader, '#include <dithering_fragment>', `
           gl_FragColor.a = min(1.0, gl_FragColor.a + wFres * 0.30);`);
-      m.userData.cuts = cuts;                      // 給測試看：六刀都換到了嗎
+      m.userData.cuts = cut.count();               // 給測試看：六刀都換到了嗎
     };
     m.customProgramCacheKey = () => 'pool-wave';
     return m;
@@ -886,10 +904,15 @@ const ENG = (function () {
     trkMesh.instanceMatrix.needsUpdate = true;
     if (trkMesh.instanceColor) trkMesh.instanceColor.needsUpdate = true;
   }
-  /* 一格水：p = {x, z 那一格的中心, y0 水底, y1 水面, f 哪幾面要畫（位元）}。
+  /* 一格水：p = {x, z 那一格的中心, y0 水底, y1 水面, f 哪幾面要畫（位元）,
+     sb 四道側面各自從多高開始畫（相對格底）, rim 是不是水體外緣}。
      只畫規則那邊標出來「旁邊不是水」的那幾面——被水包住的面根本不存在，
      一大片水才不會疊出方格紋（見上面 poolGeo 那段）。
-     位元跟規則那邊的 DIR4 同順序：1=+x　2=−x　4=+z　8=−z，再加 16=底面　32=頂面。 */
+     位元跟規則那邊的 DIR4 同順序：1=+x　2=−x　4=+z　8=−z，再加 16=底面　32=頂面。
+     **側面不見得從格底畫起**：旁邊也是水的時候只畫「它的水面到我的水面」那一段
+     （低於它水面的部分在它的水體裡面）。規則那邊算 sb 用的是那一拍的高度，
+     這裡的 y1 是每幀補過的高度，兩者差一個補間的量——所以要夾住，
+     不然差反了會畫出上下顛倒的面。 */
   function putPools(list, wt) {
     const n = Math.min(list.length, MAXPOOL);
     const P = poolPos, F = poolFoam;
@@ -913,10 +936,12 @@ const ENG = (function () {
       if (p.f & 32) { tri(x0, yb, z0, x1, yb, z0, x1, yb, z1); tri(x0, yb, z0, x1, yb, z1, x0, yb, z1); }
       fm = 0;                                      // 底面與側壁不刷白（那是水體內部與水下）
       if (p.f & 16) { tri(x0, ya, z0, x1, ya, z0, x1, ya, z1); tri(x0, ya, z0, x1, ya, z1, x0, ya, z1); }
-      if (p.f & 1) { tri(x1, ya, z0, x1, yb, z0, x1, yb, z1); tri(x1, ya, z0, x1, yb, z1, x1, ya, z1); }
-      if (p.f & 2) { tri(x0, ya, z0, x0, yb, z0, x0, yb, z1); tri(x0, ya, z0, x0, yb, z1, x0, ya, z1); }
-      if (p.f & 4) { tri(x0, ya, z1, x0, yb, z1, x1, yb, z1); tri(x0, ya, z1, x1, yb, z1, x1, ya, z1); }
-      if (p.f & 8) { tri(x0, ya, z0, x0, yb, z0, x1, yb, z0); tri(x0, ya, z0, x1, yb, z0, x1, ya, z0); }
+      const sb = p.sb;
+      const base = k => (sb ? Math.min(ya + sb[k], yb) : ya);
+      if (p.f & 1) { const s = base(0); tri(x1, s, z0, x1, yb, z0, x1, yb, z1); tri(x1, s, z0, x1, yb, z1, x1, s, z1); }
+      if (p.f & 2) { const s = base(1); tri(x0, s, z0, x0, yb, z0, x0, yb, z1); tri(x0, s, z0, x0, yb, z1, x0, s, z1); }
+      if (p.f & 4) { const s = base(2); tri(x0, s, z1, x0, yb, z1, x1, yb, z1); tri(x0, s, z1, x1, yb, z1, x1, s, z1); }
+      if (p.f & 8) { const s = base(3); tri(x0, s, z0, x0, yb, z0, x1, yb, z0); tri(x0, s, z0, x1, yb, z0, x1, s, z0); }
     }
     poolMesh.visible = v > 0;
     poolGeo.setDrawRange(0, v / 3);

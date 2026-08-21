@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.94.0';
+const VERSION = '1.94.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3452,6 +3452,8 @@ const WT_STREAM = 0.5;              // 桶口倒出來的那道水，一格裝�
 const WT_AIR = 2;                   // 半空中的水畫成幾倍高（上限一格）——見 faceMask
 const WT_HIGH = 60;                 // 找「這一柱的水面」時最多往上看幾層
 const WT_SPRAY = 0.22;              // 正在往下流的水，每一格每一拍灑水花的機率
+const WT_EASE = 0.1;                // 站住的水：畫出來的水面追上實際水位的時間常數（秒）
+const WT_EASE_AIR = 0.02;           // 半空中的水：幾乎不延遲（落下的水一拍就該掉一格）
 const SEEP_G = 0.6;                 // 貼在草地上的那一格每秒滲掉多少（一格約 1.7 秒）
 const SEEP_B = 0.02;                // 貼在積木上的那一格每秒漏多少（縫隙，慢——太快的話水還沒流到地面就乾了）
 let water = null;                   // { cells: Map, pours: [], acc, wt, wave }
@@ -3493,8 +3495,8 @@ function addWater(gx, gy, gz, v) {
   if (c) { const put = Math.min(v, 1 - c.v); c.v += put; return put; }
   if (W.cells.size >= WT_CELLS) return 0;          // 保險絲：不會無限長
   const put = Math.min(1, v);
-  W.cells.set(k, { gx, gy, gz, v: put, f: 63, rim: 0, sup: 0, hd: 0, h: put,
-                   vis: put > WT_SHOW ? 1 : 0 });
+  W.cells.set(k, { gx, gy, gz, v: put, f: 63, rim: 0, sub: 0, sup: 0, hd: 0,
+                   h: put, hv: put, sb: [0, 0, 0, 0], vis: put > WT_SHOW ? 1 : 0 });
   return put;
 }
 /* 把 amount 格的水倒進落點附近，回傳真的倒進去多少。
@@ -3631,6 +3633,20 @@ function stepWater(dt) {
   W.wave += dt;                                    // 水面波紋的相位（畫面那邊用）
   for (let k = 0; k < 4 && W.acc >= WT_TICK; k++) { waterTick(); W.acc -= WT_TICK; }
   if (W.acc > WT_TICK) W.acc = WT_TICK;
+  /* 畫出來的水面**追**實際水位，不是直接等於它（v1.94.1）。兩個毛病一起治：
+     ① 水一秒只算 30 拍（WT_TICK）而畫面跑 60 幀，直接畫 c.h 的話水面兩幀才動一次——
+        實測只推水、連續 16 幀，變動的像素是 0／18801／0／14500／0…完全交替。
+     ② 一拍之內一格的水位可以改 0.3 格以上（WT_FLOW 一次搬走半個差額），
+        於是每幀有十幾格整格跳一下——那是「一跳一跳」看到的東西。
+     v1.93 也是這樣跳（0／8867／0…），只是那時候水是一片均勻的死藍：同一份幾何
+     只換材質實測，不吃光每幀變動 1199 個像素、吃光 6121 個（5 倍）——**動的一直都在動，
+     是吃光之後才看得出來**。
+     用時間常數（不是每幀固定比例）才跟幀率無關：1 - e^(-dt/τ)。站住的水給 0.1 秒，
+     看起來像水面有慣性；**半空中的水幾乎不延遲**——落下的水一拍本來就該掉一格，
+     那個要延遲的話水柱會斷成一節一節。
+     面（c.f）不追——那是每一拍算好的，這裡只動高度。 */
+  const kS = 1 - Math.exp(-dt / WT_EASE), kA = 1 - Math.exp(-dt / WT_EASE_AIR);
+  for (const c of W.cells.values()) c.hv += (c.h - c.hv) * (c.sup ? kS : kA);
   W.wt -= dt;
   if (W.wt <= 0) { W.wt = WB_WET; wetByWater(); }
   if (!W.cells.size && !W.pours.length) water = null;
@@ -3771,28 +3787,62 @@ function waterTick() {
    頂面／底面比的是「滿不滿」：半滿的那一格上面就是空氣，看得到水面。 */
 function faceMask() {
   const cs = water.cells;
-  for (const c of cs.values()) c.h = c.sup ? c.v : Math.min(1, c.v * WT_AIR);
+  for (const c of cs.values()) {
+    const up = cs.get(wkey(c.gx, c.gy + 1, c.gz));
+    c.sub = up && up.v > WT_SHOW ? 1 : 0;          // 頭上有水＝泡在水裡
+  }
+  for (const c of cs.values()) {
+    /* **泡在水裡的格子一律畫成滿格。** 它裡面不可能有空氣——頭上壓著一整格水。
+       照著 c.v 畫的話那 0.97、0.98 的零頭會讓它的側面矮一點點，而水一直在流動，
+       那個零頭每一拍都在改：實測滿杯 5383 格裡有 4651 格泡在水裡，於是幾千道側面
+       每兩幀抖一次。畫成滿格之後只有**真正的水面**那一層在動（732 格），
+       而那一層本來就該動。水量 c.v 一滴都沒變，只有畫出來的高度。 */
+    c.h = c.sub ? 1 : (c.sup ? c.v : Math.min(1, c.v * WT_AIR));
+  }
+  /* 先標出「頭上有水」的格（v1.94.1）。這是「被水包住的面根本不存在」缺的那一半：
+     原本頂面只看自己滿不滿（`c.h < 1 - WT_LEVEL`），所以一格 0.97 滿、頭上還壓著一整格水，
+     照樣畫一片水面出來——那是**水體內部**的面，疊在別的面後面只是讓水變濃，
+     而且水在流動時每一拍都在生生滅滅。實測滿杯（5383 格）：真正的水面只有 193 格，
+     卻畫了 749～1135 片，一幀最多 513 格在改自己的面——那就是使用者看到的「一跳一跳」。
+     用 v（真實水量）而不是 h（畫出來的高度）判斷「頭上有沒有水」，門檻取跟畫不畫
+     同一個 WT_SHOW：門檻不一致的話會出現「上面那格沒畫、下面那格又不畫頂面」的破洞。 */
   for (const c of cs.values()) {
     let f = 0, rim = 0;
     for (let k = 0; k < 4; k++) {
       /* 差 WT_SHOW 以上才畫側面：一片水深淺差個 0.03 格的話，那道側面是看不見的細絲，
          但一格會多算一面——實測一片 2000 格的地面水會多出四千多面，把引擎的頂點上限
-         吃掉，後面的水就整格畫不出來（破口的水柱就是這樣被丟掉的）。 */
+         吃掉，後面的水就整格畫不出來（破口的水柱就是這樣被丟掉的）。
+         **兩邊都泡在水裡的那道台階不畫**：它在水體內部。旁邊那格自己的水面露在外面時
+         要畫，不然會從那個台階看穿進水體裡。旁邊根本沒有水（積木、杯壁、空氣）
+         一律要畫——破口噴出來的那股水就是這樣才有側面。 */
       const n = cs.get(wkey(c.gx + DIR4[k][0], c.gy, c.gz + DIR4[k][1]));
-      if (!n || n.h < c.h - WT_SHOW) f |= 1 << k;
+      /* 遲滯（v1.94.1）：**已經在畫的**維持原門檻，**還沒畫的**要差兩倍才生出來。
+         單一門檻時，深淺剛好在門檻附近的兩格會一拍畫一拍不畫——實測一幀有三十幾格
+         在翻面，那是補間之後還剩下的抖動來源。消失門檻不放寬（維持 WT_SHOW），
+         所以面數只會比原本少，不會多吃頂點上限。 */
+      const on = (c.f & (1 << k)) !== 0;
+      if (!n || (n.h < c.h - (on ? WT_SHOW : WT_SHOW * 2) && !(c.sub && n.sub))) f |= 1 << k;
+      /* 那道側面**從哪裡開始畫**（v1.94.1）。旁邊也是水的話，低於它水面的那一段
+         在它的水體裡面，畫出來只是多疊一層——所以只畫「它的水面到我的水面」這一段。
+         這件事是這次最關鍵的一刀：原本一律從格底畫到格頂，於是**0.05 格的高低差
+         會讓一整片全格高的面出現或消失**，水一流動每拍有兩百多道在生滅，
+         那就是「一跳一跳」看起來最重的來源。改成只畫露出來的那一小段之後，
+         同一次生滅只換掉幾個像素。旁邊沒有水（積木、杯壁、空氣）還是整格畫。 */
+      c.sb[k] = n ? Math.min(n.h, c.h) : 0;
       /* 外緣（v1.94，給畫面那邊的泡沫用）：旁邊那格**根本沒有水**——水體到這裡就結束了，
          或者旁邊是積木／杯壁。不能用上面那個「有側面」來判斷：一片還在攤開的水，
          每格深淺差個 0.1 格就會標出側面，那樣幾乎每一格都算外緣，畫出來是一片白磁磚（踩過）。 */
       if (!n || n.v <= WT_SHOW) rim = 1;
     }
     const bl = cs.get(wkey(c.gx, c.gy - 1, c.gz));
-    if (c.gy > 0 && (!bl || bl.h < 1 - WT_LEVEL) &&
-        !solidAt(c.gx, c.gy - 1, c.gz)) f |= 16;   // 腳下沒接滿 → 看得到底面
-    const up = cs.get(wkey(c.gx, c.gy + 1, c.gz));
-    if (c.h < 1 - WT_LEVEL || !up || up.h <= WT_MIN) f |= 32;
+    /* 腳下沒接滿 → 看得到底面。但「自己泡在水裡、腳下那格也有水」的話，那個縫是
+       水體內部的氣泡，不畫。**腳下根本沒有水就一定要畫**——正在落下的那股水，
+       下緣就是靠這一面（見上面 WT_AIR 那段）。 */
+    if (c.gy > 0 && (!bl || bl.h < 1 - WT_LEVEL) && !(c.sub && bl && bl.v > WT_SHOW) &&
+        !solidAt(c.gx, c.gy - 1, c.gz)) f |= 16;
+    if (!c.sub) f |= 32;                           // 頭上沒水才有水面
     c.f = f;
-    /* 上面還有水的話這一格不是水面，泡沫不該長在水裡面 */
-    c.rim = rim && (!up || up.v <= WT_SHOW) ? 1 : 0;
+    c.rim = rim && !c.sub ? 1 : 0;                 // 泡沫不長在水裡面
   }
 }
 
@@ -3812,7 +3862,7 @@ function poolList() {
       else if (c.v <= WT_MIN) c.vis = 0;
       if (!c.vis) continue;
       poolBuf.push({ x: wldX(c.gx), z: wldZ(c.gz), y0: c.gy,
-                     y1: c.gy + Math.max(c.h, WT_SHOW), f: c.f, rim: c.rim });
+                     y1: c.gy + Math.max(c.hv, WT_SHOW), f: c.f, rim: c.rim, sb: c.sb });
       if (poolBuf.length >= WT_CELLS) return poolBuf;
     }
   return poolBuf;

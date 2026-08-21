@@ -357,6 +357,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('有陰影／暗面', p1.dark > 0.005, (p1.dark * 100).toFixed(1) + '%');
   ok('draw call 維持在個位數', p1.calls > 0 && p1.calls <= 12,
      p1.calls + ' 個（幾百到幾千塊積木共用 1 個 InstancedMesh）');
+  /* 積木的深色邊是在 Lambert 的 shader 上注入四刀做出來的（voxelMaterial），
+     跟水面那六刀同一個風險：對 three 的 chunk 名字做字串取代，**取代不到不會報錯**，
+     積木會默默變成扁平的色塊而測試全綠。所以一樣數刀數。 */
+  const edgeCuts = await page.evaluate(() => ENG.three.blockMesh.material.userData.cuts);
+  ok('積木深色邊的 shader 四個注入點都真的換到了', edgeCuts === 4, edgeCuts + ' / 4 刀');
   ok('三角形數與積木數相稱', p1.tris > 5000, p1.tris + ' 個');
   await page.screenshot({ path: path.join(OUT, '01-金字塔.png') });
 
@@ -5621,6 +5626,132 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wbWave.moved + ' 個變了（' + Math.round(wbWave.moved / wbWave.px * 100) +
      '%）；什麼都不動連拍兩張只差 ' + wbWave.still +
      ' 個（相位是規則的 dt 累出來的，3 秒就是 3.00）');
+
+  /* ══════════ 水面不再一跳一跳（v1.94.1）══════════
+     使用者：「目前水面會有一跳一跳的情況，之前沒有」。查出來是兩件事疊在一起：
+     ① 水一秒只算 30 拍（WT_TICK）而畫面跑 60 幀，所以**畫出來的水面兩幀才動一次**；
+     ② 水面吃光之後，同一份幾何的變動看起來重了三倍（實測同一份水面狀態、同一個機位，
+        連續 12 幀變動的像素：不吃光 1625、吃光 4805）——動的一直都在動，是看得出來了。
+     所以 v1.93 其實也在跳，只是看不出來。 */
+  const wbEase = await page.evaluate(() => {
+    cleanTools();
+    const keep = shapePick;
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    pourBucket(0, rim + 2, 0, WB_DROPS);
+    for (let i = 0; i < 60 * 4; i++) step(1 / 60);      // 還在往下沉、水面還在動
+    /* 只推水（stepWater）不推別的：小人每幀都在走，混進來就看不出水的節奏了。
+       量的是「畫出來的高度」c.hv 有幾格變了——這是規則交給引擎的那個數字。 */
+    const snap = () => {
+      const m = new Map();
+      for (const c of water.cells.values()) m.set(c.gx + ':' + c.gy + ':' + c.gz, c.hv);
+      return m;
+    };
+    let prev = snap();
+    const seq = [];
+    for (let k = 0; k < 16; k++) {
+      stepWater(1 / 60);
+      const cur = snap();
+      let n = 0;
+      for (const [key, v] of cur) {
+        const o = prev.get(key);
+        if (o !== undefined && Math.abs(o - v) > 1e-6) n++;
+      }
+      seq.push(n); prev = cur;
+    }
+    shapePick = keep;
+    return { cells: water.cells.size, seq, min: Math.min(...seq),
+             zeros: seq.filter(x => x === 0).length };
+  });
+  /* 這一條就是「一跳一跳」的哨兵：**每一幀都要有水面在動**。
+     改版前非拍的那幾幀是原封不動的（實測 16 幀裡有 7～8 幀變動 0 個像素），
+     現在畫出來的高度是用時間常數追實際水位的（WT_EASE），所以每一幀都在動。 */
+  ok('畫出來的水面每一幀都在動，不是兩幀才動一次',
+     wbEase.zeros === 0 && wbEase.min > 50,
+     wbEase.cells + ' 格水，連續 16 幀各有 ' + wbEase.seq.slice(0, 6).join('／') +
+     '… 格的高度在動（最少 ' + wbEase.min + ' 格、0 格的幀 ' + wbEase.zeros +
+     ' 次）；水一秒只算 30 拍、畫面 60 幀，不追的話一半的幀會是 0');
+
+  /* 水體內部的面：頭上有水的格子，它的水面與底面都在水裡面，畫出來只是多疊一層，
+     而且水一流動就每一拍生生滅滅。原本的規則只看「自己滿不滿」（0.97 滿也算沒滿），
+     所以一格 0.97 滿、頭上還壓著一整格水，照樣畫一片水面出來。
+     同一個場景（滿到溢出杯口的馬克杯）改版前後實測，每 30 幀的翻面次數：
+     頂面 395 → 23、底面 386 → 8、四道側面合計 913 → 586。 */
+  const wbInner = await page.evaluate(() => {
+    cleanTools();
+    const keep = shapePick;
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    for (let k = 0; k < 3; k++) pourBucket(0, rim + 2, 0, WB_DROPS);   // 倒到溢出杯口
+    for (let i = 0; i < 60 * 8; i++) step(1 / 60);
+    const snap = () => {
+      const m = new Map();
+      for (const c of water.cells.values())
+        m.set(c.gx + ':' + c.gy + ':' + c.gz, c.f);
+      return m;
+    };
+    let prev = snap();
+    let topFlip = 0, botFlip = 0, sideFlip = 0, badTop = 0, sub = 0;
+    for (let k = 0; k < 30; k++) {
+      step(1 / 60);
+      const cur = snap();
+      for (const [key, f] of cur) {
+        const o = prev.get(key);
+        if (o === undefined) continue;
+        if ((o & 32) !== (f & 32)) topFlip++;
+        if ((o & 16) !== (f & 16)) botFlip++;
+        for (const b of [1, 2, 4, 8]) if ((o & b) !== (f & b)) sideFlip++;
+      }
+      prev = cur;
+    }
+    // 收尾檢查：泡在水裡的格子一片水面都不該有
+    for (const c of water.cells.values()) {
+      if (!c.sub) continue;
+      sub++;
+      if (c.f & 32) badTop++;
+    }
+    const cells = water.cells.size;
+    shapePick = keep;
+    return { cells, sub, topFlip, botFlip, sideFlip, badTop };
+  });
+  ok('泡在水裡的格子不畫水面（那些面在水體內部）',
+     wbInner.badTop === 0 && wbInner.sub > 3000,
+     wbInner.cells + ' 格水裡有 ' + wbInner.sub + ' 格泡在水裡，其中 ' +
+     wbInner.badTop + ' 格畫了水面');
+  ok('水面與底面不再每一拍生生滅滅',
+     wbInner.topFlip < 150 && wbInner.botFlip < 100 && wbInner.sideFlip < 700,
+     '30 幀內翻面：頂面 ' + wbInner.topFlip + '（v1.94.0 是 395）、底面 ' +
+     wbInner.botFlip + '（386）、四道側面合計 ' + wbInner.sideFlip + '（913）');
+
+  /* 側面只畫「露出來的那一段」：旁邊也是水的話，低於它水面的那一段在它的水體裡面。
+     原本一律從格底畫到格頂，於是 0.05 格的高低差會讓一整片全格高的面出現或消失。
+     量的是「該畫的高度總和」佔「整格高度總和」幾成。 */
+  const wbSlice = await page.evaluate(() => {
+    cleanTools();
+    const keep = shapePick;
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '京都五重塔');
+    startBuild(true); completeNow();
+    pourBucket(26, 5, 2, WB_DROPS);                  // 攤在草地上：格與格之間才有台階
+    for (let i = 0; i < 60 * 3; i++) step(1 / 60);
+    const L = poolList();
+    let expo = 0, full = 0, n = 0;
+    for (const p of L)
+      for (let k = 0; k < 4; k++) {
+        if (!(p.f & (1 << k))) continue;
+        const tall = p.y1 - p.y0;
+        expo += Math.max(0, tall - p.sb[k]); full += tall; n++;
+      }
+    shapePick = keep;
+    return { faces: n, expo: +expo.toFixed(1), full: +full.toFixed(1) };
+  });
+  ok('側面只畫露出來的那一段，不是整格高',
+     wbSlice.faces > 500 && wbSlice.expo < wbSlice.full * 0.8,
+     wbSlice.faces + ' 道側面：該畫的高度合計 ' + wbSlice.expo + ' 格，整格畫的話是 ' +
+     wbSlice.full + ' 格（' + Math.round(wbSlice.expo / wbSlice.full * 100) + '%）');
 
   // 一杯水在場時每幀的成本
   const wbCost = await page.evaluate(() => {
