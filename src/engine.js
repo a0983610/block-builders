@@ -590,12 +590,13 @@ const ENG = (function () {
       magDiscs.push(d); ringGroup.add(d);
     }
 
-    /* 紋路走亮黃白（v1.62.1，原本 #ffc83c 偏金）：參考圖裡盤是桃紅的場，
-       線條與邊上的筆觸是**接近白的黃**——黃得不夠就跟盤糊在一起。
+    /* 紋路走亮黃（v1.93 起 #fcf534，使用者從參考圖挑的那個黃；v1.62.1～v1.92 是
+       接近白的 #ffe9a0）：線條要靠「比盤黃」跟盤分開，盤 v1.93 起是暗紅的 #cb2306，
+       換成飽和的亮黃分得更開，也才是參考圖裡那些捲進去的線條的顏色。
        濃度 0.3 → 0.42：邊上那幾道筆觸是整座陣最亮的東西，0.3 在大白天的綠地上壓不住。
        中心那顆亮核也是這些臂的內端加法混色疊出來的，越黃越像燒白的核。 */
     magSpokeMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
-      color: 0xffe9a0, transparent: true, opacity: 0.42,
+      color: 0xfcf534, transparent: true, opacity: 0.42,
       depthWrite: false, blending: T.AdditiveBlending
     }), MAG_SP_RINGS * MAG_SPOKE);
     magSpokeMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);

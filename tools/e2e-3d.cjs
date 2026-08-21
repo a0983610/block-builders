@@ -6949,6 +6949,61 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '早期剝下來那批裡最外圈 ' + mgTake.n + ' 塊原本離陣心 ' + mgTake.pickD0 +
      '，爆炸當下 ' + mgTake.gathered + '（最靠近 ' + mgTake.pulled + '），高度 ' +
      mgTake.gatherY + '（爆點 ' + mgTake.coreY + '）');
+  /* 兩段吸（v1.93，使用者指定「緩慢吸部分積木 → 爆炸前快速吸往爆炸中心 → 爆炸」）：
+     量的是碎料**往陣心靠近的速度**（徑向速度，往內是正的）——慢吸那一段是靠 pull
+     一點一點加速度捲進來，最後 CRUSH_AT 秒改走「剛好在爆炸那一刻抵達陣心」的彈道，
+     速度整個跳一級。
+     為什麼不量位置：位置到後段本來就會收攏（v1.92 也會），只驗位置分不出「一路等速捲」
+     跟「最後衝一段」。
+     取樣範圍要挑對，不然量不出來：
+     ① 慢吸那邊只取**緊接在快吸前、一樣長的那 CRUSH_AT 秒**。慢吸的徑向速度是
+        **一路遞減**的（實測從 3.4 掉到 1.2：先被吸進去的都已經在陣心那一團裡，
+        剩下的離陣心近、徑向速度本來就小），取的窗一拉長就把前面較快的那幾幀平均進來，
+        比出來的倍數會偏小（取一秒半時是 3.9 → 8.1，只有 2.1 倍）。
+        兩段等長又相鄰，比的才是「同一批碎料在交界前後的速度」。
+     ② 離陣心 2 格內的不算：已經到陣心的那些徑向速度沒有意義。
+        （曾經改成「只看 10 格外的」想放大差距，結果那個族群只剩 1～5 塊，
+        數字會隨機跳——樣本要夠多，這裡是 120～175 塊。）
+     實測 2.4 → 7.8／秒（3.2 倍），門檻訂 2.5 倍留一點抽樣餘裕。
+     紅檢（把 implode 裡的 fast 關成 false，等於退回 v1.92）：3.2 → 0.7／秒（0.22 倍），
+     最後那 0.6 秒反而是整段最慢的——慢吸一路遞減，不會自己冒出一段衝刺。 */
+  const mgFast = await page.evaluate(() => {
+    cleanTools(); magics = null;
+    shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
+    targetCnt = 3000; startBuild(true); completeNow();
+    shapePick = -1;
+    castMagic({ x: 0, z: 0 });
+    const inward = () => {
+      let s = 0, n = 0;
+      for (const b of blocks) {
+        if (b.st !== 4) continue;
+        const d = Math.hypot(b.x, b.z);
+        if (d > MAG_R || d < 2) continue;
+        s += -(b.vx * b.x + b.vz * b.z) / d; n++;
+      }
+      return n ? { v: s / n, n } : null;
+    };
+    let slow = 0, sn = 0, fast = 0, fn = 0, slowN = 0, fastN = 0;
+    for (let i = 0; i < 200 && magics; i++) {
+      const m = magics[0];
+      const r = m.t <= IMP_TIME && m.t > 0.06 ? inward() : null;
+      if (r) {
+        if (m.t > CRUSH_AT) {
+          if (m.t <= CRUSH_AT * 2) { slow += r.v; sn++; slowN = r.n; }
+        } else { fast += r.v; fn++; fastN = r.n; }
+      }
+      step(0.05);
+    }
+    return { slow: +(slow / Math.max(1, sn)).toFixed(1),
+             fast: +(fast / Math.max(1, fn)).toFixed(1),
+             sn, fn, slowN, fastN, at: CRUSH_AT };
+  });
+  ok('最後那一段改成快速往內吸，不是一路等速捲進來',
+     mgFast.fn > 5 && mgFast.slow > 0 && mgFast.fast > mgFast.slow * 2.5,
+     '快吸前那 ' + mgFast.at + ' 秒 ' + mgFast.sn + ' 幀：碎料平均往內 ' + mgFast.slow + ' ／秒（' +
+     mgFast.slowN + ' 塊）→ 最後 ' + mgFast.at + ' 秒 ' + mgFast.fn + ' 幀：' +
+     mgFast.fast + ' ／秒（' + mgFast.fastN + ' 塊）');
+
   /* 爆點要在最低那層的圓心上，不是地面：碎料被吸到那個高度，火球就該從那裡炸開。
      火球本體再往上抬 R×0.22（免得被自己炸出來的碎料堆埋掉），所以對得上 12.1 + 6.6。 */
   ok('爆點在最低層魔法陣的圓心上',
@@ -6975,15 +7030,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const halo = all.filter(o => o.add);
     return { n: core.length, halo: halo.length, rings: core,
              rising: core.every((o, i) => i === 0 || o.y > core[i - 1].y),
-             /* v1.62.1 照參考圖：那一圈本身是亮黃的鑲邊，桃紅的場在 fc（盤）上。
+             /* 照參考圖：那一圈本身是亮黃的鑲邊，場的顏色在 fc（盤）上。
                 只驗 c 會漏掉「盤跟著芯一起變黃、整片糊成一大片」那種改壞法。
-                v1.67 兩個色碼各往橘黃挪一點點（金黃的鑲邊 + 偏紅橘的桃紅場）。 */
-             red: core.every(o => o.c === 0xffd33f && o.fc === 0xf33658),
+                v1.93 換成使用者從新參考圖挑的兩色：亮黃的鑲邊 #fcf534 ＋ 紅橘的場 #cb2306
+                （v1.62.1～v1.92 是亮黃／金黃的鑲邊配桃紅的場）。 */
+             red: core.every(o => o.c === 0xfcf534 && o.fc === 0xcb2306),
              ground: core[0] ? core[0].r : 0,
              // 每層都要有填滿的盤與放射紋路，只有環的話看起來是「地上畫了一個圈」
              solid: all.filter(o => o.fill).length, lace: all.filter(o => o.sp).length };
   });
-  ok('魔法陣是金黃鑲邊配偏橘的桃紅場，而且一層一層往上疊',
+  ok('魔法陣是亮黃鑲邊配紅橘的場，而且一層一層往上疊',
      mgRing.n === 6 && mgRing.halo === 6 && mgRing.rising && mgRing.red,
      mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、') + '，外圈暈 ' + mgRing.halo + ' 個');
   ok('每一層都是填滿的盤加螺旋紋路，不只是一個圈',
@@ -7446,17 +7502,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('最下層浮在半空，也沒有大到蓋滿爆炸範圍',
      mgRing.rings[0].y > 8 && mgRing.ground < 30 * 0.8,
      '最下層離地 ' + mgRing.rings[0].y + '、半徑 ' + mgRing.ground + '（爆炸範圍 30）');
-  /* 整疊要夠高。最寬那圈直徑就有 37，疊得矮的話遠看是一疊盤子不是一座法陣——
-     這條線是使用者反映「太扁平」之後訂的。 */
+  /* 整疊要夠高。最寬那圈直徑就有 46.8，疊得矮的話遠看是一疊盤子不是一座法陣——
+     這條線是使用者反映「太扁平」之後訂的（撐寬是 v1.93 照參考圖做的，高度沒動）。 */
   ok('整疊夠高，不是扁扁的一疊',
      mgRing.rings[5].y - mgRing.rings[0].y > 20,
      '最下層 ' + mgRing.rings[0].y + ' → 最上層 ' + mgRing.rings[5].y +
      '（高 ' + (mgRing.rings[5].y - mgRing.rings[0].y).toFixed(1) + '，最寬半徑 ' +
      Math.max(...mgRing.rings.map(o => o.r)).toFixed(1) + '）');
 
-  /* 形狀（v1.54）：高度不動、半徑收一圈（最寬 0.62 → 0.56R），而且改成**上下大、中間細**。
-     「通常」是抖動的功勞——每層各乘 0.82～1.18，偶爾會讓中間那層鼓過頭，
-     所以這裡量的是比例不是「每次都成立」（只驗一次施法等於在賭骰子）。 */
+  /* 形狀（v1.93）：**上下大、中間細**的沙漏，而且照參考圖撐寬到最寬 0.78R——
+     最上那圈直徑 46.8，超過整疊高度（22.5）的兩倍，遠看才是參考圖那個「寬而扁」的輪廓。
+     每層各乘 0.82～1.18 的抖動（使用者要的「半徑保持有點隨機性」），所以「最寬的落在
+     最上或最下」量的是比例不是「每次都成立」（只驗一次施法等於在賭骰子）——
+     最下那圈 0.62×1.18 ＝ 0.73 大過最上那圈的下限 0.78×0.82 ＝ 0.64，
+     實測 300 次是最上 285、最下 15。 */
   const mgShape = await page.evaluate(() => {
     const base = MAG_LAYER.map(L => L.r);
     const hist = [0, 0, 0, 0, 0, 0];
@@ -7476,19 +7535,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { base, hist, ends2, N, wide: Math.max(...base),
              mid: Math.max(...base.slice(1, 5)) };
   });
-  ok('上下兩層最寬、中間收窄，整疊比以前瘦',
-     mgShape.base[0] > mgShape.mid && mgShape.base[5] > mgShape.mid && mgShape.wide <= 0.56,
+  ok('上下兩層最寬、中間收窄，而且整疊寬過它的高度',
+     mgShape.base[0] > mgShape.mid && mgShape.base[5] > mgShape.mid &&
+     mgShape.wide > 0.7 && mgShape.wide <= 0.8,
      '各層 ' + mgShape.base.join('／') + 'R（中間最寬的一層 ' + mgShape.mid +
-     'R，v1.53 最寬是 0.62R）');
+     'R；最寬那圈直徑 ' + (mgShape.wide * 60).toFixed(1) + '，整疊高 22.5）');
   ok('最寬的一圈「通常」落在最上或最下',
      (mgShape.hist[0] + mgShape.hist[5]) / mgShape.N > 0.9 &&
      mgShape.ends2 / mgShape.N > 0.8 && mgShape.ends2 < mgShape.N,
      mgShape.N + ' 次施法：最寬落在第 ' + mgShape.hist.map((v, i) => i + '層' + v).join('／') +
      '，最上最下同時是前二寬的有 ' + (mgShape.ends2 / mgShape.N * 100).toFixed(0) + '%');
 
-  /* 配色（v1.62.1，照使用者給的參考圖重排）：**桃紅的場 + 亮黃的鑲邊與線條**，
-     外圈再暈一圈紅粉。v1.54 那組是「深紅的盤 + 金黃的暈」，整疊偏紅橘，
-     使用者說「顏色也不對」。
+  /* 配色（v1.93，照使用者新給的參考圖）：**紅橘的場 #cb2306 + 亮黃的鑲邊與線條
+     #fcf534**，外圈再暈一圈同色相、明度推滿的 #ff2e0a（暗紅拿去加法混色會被綠地吃掉）。
+     v1.62.1～v1.92 是桃紅的場配金黃的鑲邊，那是另一張參考圖。
      盤是引擎那邊發的，所以直接去場上抓那幾片盤的材質顏色——只驗 game.js 裡的色碼
      會漏掉「盤沒吃到 fc、跟著芯一起變黃」的情況（那會讓整片糊成一大片黃，鑲邊就不見了）。
      v1.62 起火種不墊盤（參考圖裡那個火圈中間是空的），所以盤只剩六片，
@@ -7514,9 +7574,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              spoke: grp.children.find(o => o.isInstancedMesh).material.color.getHex() };
   });
   const hex = c => '#' + c.toString(16).padStart(6, '0');
-  ok('陣是偏橘的桃紅場配金黃的鑲邊、亮黃白的紋路，火圈是亮黃到紅粉',
-     mgHue.core === 0xffd33f && mgHue.fc === 0xf33658 && mgHue.halo === 0xff4a5a &&
-     mgHue.spoke === 0xffe9a0 &&
+  ok('陣是紅橘的場配亮黃的鑲邊與紋路，火圈是亮黃到紅粉',
+     mgHue.core === 0xfcf534 && mgHue.fc === 0xcb2306 && mgHue.halo === 0xff2e0a &&
+     mgHue.spoke === 0xfcf534 &&
      mgHue.discs.length === 6 && mgHue.discs.every(c => c === mgHue.fc) &&
      mgHue.seed.join() === [0xfff3c4, 0xff8a3c, 0xff2f6b].join(),
      '鑲邊 ' + hex(mgHue.core) + '、盤 ' + hex(mgHue.fc) + '（' + mgHue.discs.length +
