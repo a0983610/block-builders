@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.95.0';
+const VERSION = '1.96.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -945,8 +945,9 @@ function newWorker(i) {
     bem: 0, bx: 0, bz: 0, br: 0, ba: 0,
     /* 工程師（eng）：拿藍圖 plan、站的角度 eang、下一個動作倒數 et、指揮動作剩幾秒 point。
        聊天：剩幾秒 chat、對象編號 cw、輪到誰講 side、講完多久才會再聊 chatCd、
-       泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手，crun 是進場那一趟的腳程（見 CHEER_IN）。 */
-    eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0, crun: 0,
+       泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手，crun 是進場那一趟的腳程（見 CHEER_IN），
+       cout 是散場錯開多久（見 CHEER_OUT），cft 是下一束彩帶還有幾秒（見 CONF_GAP）。 */
+    eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0, crun: 0, cout: 0, cft: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
     /* 魔法師（mage，v1.64）：不搬積木，站在建材堆旁邊隔空把建材拋上去。
        cast 是舉杖的深淺 0～1（畫杖與寶珠用），ct 是這一發還要蓄幾秒，
@@ -1327,29 +1328,18 @@ const FLEE_RUN = [16, 34];
 const FLEE_SKEW = 0.5;
 const FLEE_TAIL = 0.6;              // 爆炸之後再多警戒幾秒，不要炸完立刻回頭上工
 const FLEE_REACT = [0.15, 0.55];    // 反應時間。全員同一幀起跑像一群機器人
-/* 預告中的爆炸範圍。放成清單是因為兩發可以疊著預告（先開魔法陣再叫核彈），
-   只留一個的話後叫的會蓋掉前一個，前一個剩下的時間就沒人在盯了。 */
-let dangers = [];
-function alertFlee(point, R, t) {
-  dangers.push({ x: point.x, z: point.z, r: R, t });
-  scareIn();
-}
-/* 每幀掃一次：站進預告範圍裡、又還沒在逃的，當場開始逃。
-   只在下令那一刻掃一次是不夠的——當時離爆心遠的小人照樣會走進來
-   （工地就在爆心上，他去撿料、去放積木都是往裡面走），走到一半被炸飛看起來像沒在反應。 */
-function scareIn() {
-  for (const d of dangers)
-    for (const w of workers) {
-      if (w.flee > 0 || w.air || w.burn > 0) continue;   // 已經在逃／在飛／在燒的不用再喊
-      if ((w.x - d.x) ** 2 + (w.z - d.z) ** 2 > d.r * d.r) continue;
-      startFlee(w, d);
-    }
-}
-function stepDanger(dt) {
-  if (!dangers.length) return;
-  for (const d of dangers) d.t -= dt;
-  dangers = dangers.filter(d => d.t > 0);
-  scareIn();
+/* 預告一出現，**全場**都逃（v1.96，使用者指定「不用每幀掃，全場都逃命就可以了」）。
+   v1.59～v1.95 是「只喊範圍內的人」＋每幀重掃一次預告範圍——後者是必要的補丁，
+   因為工地就在爆心上，下令時站在圈外的人照樣會往裡面走（去撿料、去放積木），
+   走到一半被炸飛看起來像完全沒在反應。全場都逃就不需要那個補丁了：
+   誰都不會「還沒被喊到」，預告範圍也不必留著給下一幀掃，一起拿掉。
+   跑不跑得掉照舊完全交給位置決定（腳程只有 1.2 倍，見 FLEE_SPD）——
+   遠處的人本來就跑得掉，喊他一起跑只是讓整場一起動起來。 */
+function alertFlee(point, t) {
+  for (const w of workers) {
+    if (w.air || w.burn > 0) continue;              // 在飛／在燒的動不了，不用喊
+    startFlee(w, { x: point.x, z: point.z, t });
+  }
 }
 function startFlee(w, d) {
   releaseWorker(w);                               // 手上的積木一律扔下（也會放掉認領的格子）
@@ -1443,8 +1433,60 @@ const CHEER_GAP = 1.9;
    （趕到就散場，四個人整段都在路上）。腳程在 assignSpots 那裡照距離算一次就固定：
    每幀用「剩下的距離 ÷ 秒數」重算會越走越慢，永遠差最後一點。 */
 const CHEER_IN = 2.5;
+/* 散場時間每個人各抽 0～這麼多秒的延遲（v1.96）。w.cheer 是每個人各自從 0 累加的，
+   完工那一刻全員歸零，所以七秒是**同一幀**到期：實測 20 個人第一次動起來全落在
+   散場後第 5 幀，一圈人整齊往外走（使用者回報）。抽個延遲就散得開了。
+   為什麼不是把 CHEER_T 本身改成隨機：那個是慶祝長度，跳幾下、什麼時候可以聊天
+   都掛在它上面；這裡要動的只有「什麼時候起腳走人」。 */
+const CHEER_OUT = 1.6;
+/* 這個人還在慶祝嗎。三個地方要用同一個判準（跳與不跳、聊天冷卻、可不可以聊），
+   拿 CHEER_T 直接比的話，先散場的那幾個會被當成「還在慶祝」不准聊。 */
+const cheerOn = w => w.cheer < CHEER_T + w.cout;
 function cheerR() {
   return Math.max(siteR + 2.6, workers.length * CHEER_GAP / (Math.PI * 2));
+}
+
+/* ── 彩帶（v1.96）─────────────────────────────────────────
+   圍成一圈跳的時候一束一束往上噴。紙片是塵霧那個池子畫的（instanced cube 給非等比
+   的縮放就是一張薄紙片），所以 0 個新 draw call；代價是共用同一份材質，
+   透明度跟煙塵一樣是 0.62——紙片會偏淡，像淡彩色的紙屑，不是不透明的緞帶。
+   往上噴、稍微往建築那邊斜：往外噴的話紙片全落在圈外，圈裡反而是空的。
+   落地那一下由 stepDust 接手（y 到 0.1 就停住），所以草地上會留一層紙屑到淡出為止。 */
+const CONF_GAP = 1.4;               // 一個人每隔幾秒噴一束
+const CONF_N = 11;                  // 一束幾片
+/* 塵霧池總共 720 顆，留這麼多給彩帶。慶祝時本來沒別的東西在噴煙，
+   但玩家隨時可以在慶祝中丟一發核彈——那朵蘑菇雲要有位子站。 */
+const CONF_MAX = 380;
+const CONF_LIFE = [2.1, 3.3];
+const CONF_G = 3.4;                 // 落得比煙塵慢（預設 7），紙才會飄
+/* 水平阻力比煙塵（0.94）鬆很多：0.94 那個是「爆起來一團、就地停住」的煙，
+   套在紙片上的話横向只飛得動 0.7 格（實測整束紙片都落在圈上±1 格內），
+   看起來是直上直下不是噴出去。 */
+const CONF_KEEP = 0.982;
+const CONF_L = 0.34, CONF_W = 0.17, CONF_TH = 0.035;   // 一片紙的長、寬、厚
+const CONF_COL = [[1, 0.36, 0.48], [1, 0.82, 0.25], [0.31, 0.76, 0.97],
+                  [0.48, 0.85, 0.56], [1, 1, 1], [0.78, 0.57, 0.92]];
+function spawnConfetti(w) {
+  const inx = -w.x, inz = -w.z;                        // 往建築的方向
+  const d = Math.hypot(inx, inz) || 1;
+  const ux = inx / d, uz = inz / d;
+  for (let i = 0; i < CONF_N; i++) {
+    if (dust.length > CONF_MAX) break;
+    const c = CONF_COL[Math.floor(Math.random() * CONF_COL.length)];
+    const a = Math.random() * Math.PI * 2, sp = rr(1.2, 4.2);
+    dust.push({
+      // 從舉起來的手那個高度噴（模型連手臂大約 1.5 格高，再乘上這個人的身高）
+      x: w.x + rr(-0.2, 0.2), y: w.y + 1.5 * w.scale, z: w.z + rr(-0.2, 0.2),
+      vx: Math.cos(a) * sp + ux * rr(1, 3),
+      vy: rr(3.6, 5.8),
+      vz: Math.sin(a) * sp + uz * rr(1, 3),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(CONF_LIFE[0], CONF_LIFE[1]),
+      s: CONF_L, sy: CONF_TH, sz: CONF_W,
+      g: CONF_G, keep: CONF_KEEP,
+      cr: c[0], cg: c[1], cb: c[2]
+    });
+  }
 }
 
 /* 圈上的位置照「開始慶祝那一刻各自站的角度」分，不是照編號硬分——
@@ -1475,6 +1517,10 @@ function assignSpots() {
     const ca = cr < 0.001 ? w.spot : Math.atan2(w.z, w.x);
     const dA = ((((w.spot - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
     w.crun = Math.max(WALK, Math.hypot(dA * cr, R - cr) / CHEER_IN);
+    w.cout = rr(0, CHEER_OUT);       // 散場錯開多久（見 CHEER_OUT）
+    /* 彩帶的節拍要錯開，不然一圈人同一幀噴（第一束是「站定那一刻」，
+       而近的人幾乎同時站定）。第一束隨機提前一點，之後每 CONF_GAP 秒一束。 */
+    w.cft = rr(0, CONF_GAP * 0.8);
   }
 }
 
@@ -1490,7 +1536,7 @@ function updWorker(w, wi, dt) {
   /* 被吹飛／點著／推倒／要逃命，或是換場要清工地了——聊天一律中斷。
      蓋完的那一刻也中斷：慶祝要全員到齊，不然聊到一半的那兩個會晚五秒才入圈。 */
   if (w.chat > 0 && (w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
-      (phase !== 'build' && phase !== 'done') || (phase === 'done' && w.cheer < CHEER_T)))
+      (phase !== 'build' && phase !== 'done') || (phase === 'done' && cheerOn(w))))
     endChat(w);
   if (w.burn > 0) {
     w.burn -= dt;
@@ -1558,7 +1604,7 @@ function updWorker(w, wi, dt) {
   if (phase === 'done') {                             // 蓋完了，圍成一圈慶祝
     const was = w.cheer;
     w.cheer += dt;
-    if (w.cheer < CHEER_T) {
+    if (cheerOn(w)) {
       /* 先各自跑到自己那一格（等分一圈，所以站得開），到位就轉身面向建築
          原地跳。跳的相位照編號錯開 0.09 秒，一圈看過去是一道波浪，
          不是全場同手同腳。 */
@@ -1567,6 +1613,8 @@ function updWorker(w, wi, dt) {
         w.gait += (0 - w.gait) * Math.min(1, dt * 8);
         w.ph += dt * 9;                               // 舉起來的手跟著擺
         w.hail = 1;
+        w.cft -= dt;
+        if (w.cft <= 0) { w.cft = CONF_GAP; spawnConfetti(w); }
         const u = (w.cheer + wi * 0.09) % JUMP_T / JUMP_T;
         /* 落地要有停頓才看得出是「跳」：|sin| 那種連續起伏只會像在漂浮。 */
         w.y = u < JUMP_AIR ? Math.sin(u / JUMP_AIR * Math.PI) * JUMP_H : 0;
@@ -1577,18 +1625,16 @@ function updWorker(w, wi, dt) {
       /* 慶祝完的那一刻，交談先進冷卻（v1.60）。圈上兩個人只隔 CHEER_GAP 1.9 格，
          比「多近才聊得起來」的 2.6 還近——不推冷卻的話散場那一瞬間整圈人同時配對，
          剛跳完就變成一圈人兩兩站著講話。 */
-      if (was < CHEER_T) w.chatCd = rr(CHAT_CD, CHAT_CD * 2);
-      // 慶祝完就整張草地隨便晃。地圖是方的，目標點也用方形分布
-      w.y += (0 - w.y) * Math.min(1, dt * 6);
-      if (w.pause > 0) {
-        // 到了定點站著發呆一下。全部人一路走不停的話，看起來像一群螞蟻在竄
-        w.pause -= dt;
-        w.gait += (0 - w.gait) * Math.min(1, dt * 8);
-      } else if (strollTo(w, dt)) {
-        strollPause(w);
-        const R = arenaR + 20;
-        w.tx = rr(-R, R); w.tz = rr(-R, R);
+      if (was < CHEER_T + w.cout) {
+        w.chatCd = rr(CHAT_CD, CHAT_CD * 2);
+        /* 起腳那一刻就先挑好下一個閒晃點（v1.96）。不挑的話沿用的是上一輪留下的
+           目標——完工時那個是 (0, 0)，strollTo 會把落在建築裡的目標推到外圈，
+           於是整圈人先一起往內走 1.1 格、同時抵達、再同時往外散（實測 20/20）。 */
+        idleSpot(w);
       }
+      // 慶祝完就在建築外圈那一環閒晃，跟施工中沒工作的人同一份（見 wander）
+      w.y += (0 - w.y) * Math.min(1, dt * 6);
+      wander(w, dt);
     }
     return;
   }
@@ -1751,6 +1797,9 @@ function carryPose(w) {
    把建築當成以工地中心為圓心、半徑 siteR 的一根柱子繞過去就好——
    要的是「不要從建築中間穿過去」，不是貼著每一塊積木算精確的邊。 */
 const KEEP = 1.5;                   // 閒晃時跟建築外圍保持的距離
+/* 閒晃的目標點取在工地外圍這一環裡（見 idleSpot）。外緣給到 9 格是為了讓人散得開，
+   又還在「建築周圍」——鏡頭取的是建築那一帶，走到碎料場外緣就等於走出畫面。 */
+const IDLE_NEAR = 2, IDLE_FAR = 9;
 
 /* 走到定點就站一會兒。站的時間跟**剛走完**那段路成比例——
    寫死秒數的話，換一座大的（工地大、走得久）站著的人就變少，比例會跟著建築跑掉；
@@ -1796,13 +1845,18 @@ function strollTo(w, dt) {
   return false;
 }
 
+/* 下一個閒晃點：建築外圈那一環裡隨便挑（v1.96 起慶祝散場後也用這個）。
+   範圍只有這一環，不是整片草地——使用者要的是「不要讓建築一圈都沒人」：
+   散場後改成整片草地亂挑（v1.60 那版）的話，實測目標半徑中位數 46，
+   人站在半徑 14.9 上，於是每個人的第一段路都朝外，一圈人整齊往外走。
+   下限（strollTo 的 KEEP）保證他不會穿進建築裡。 */
+function idleSpot(w) {
+  const a = Math.random() * Math.PI * 2, d = siteR + rr(IDLE_NEAR, IDLE_FAR);
+  w.tx = Math.cos(a) * d; w.tz = Math.sin(a) * d;
+}
 function wander(w, dt) {
   if (w.pause > 0) { w.pause -= dt; w.gait += (0 - w.gait) * Math.min(1, dt * 8); return; }
-  if (strollTo(w, dt)) {
-    strollPause(w);
-    const a = Math.random() * Math.PI * 2, d = siteR + rr(2, 9);
-    w.tx = Math.cos(a) * d; w.tz = Math.sin(a) * d;
-  }
+  if (strollTo(w, dt)) { strollPause(w); idleSpot(w); }
 }
 
 /* ── 工程師 ───────────────────────────────────────────────
@@ -2040,7 +2094,7 @@ function endChat(w) {
 function chatFree(w) {
   if (w.chat > 0 || w.chatCd > 0 || w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
       w.carry) return false;
-  if (phase === 'done') return w.cheer >= CHEER_T;
+  if (phase === 'done') return !cheerOn(w);
   return phase === 'build' && w.st === 'idle' && !w.eng;
 }
 function pairChat() {
@@ -4414,8 +4468,8 @@ function callNuke(point) {
   if (nukes.length >= NUKE_MAX) nukes.shift();     // 放太多顆就把最早那顆擠掉
   nukes.push({ x: point.x, y: NUKE_TOP + 3, z: point.z, s: NUKE_NOSE,
                t: NUKE_WAIT + NUKE_FALL, mark: 0, spin: 0 });
-  // 警報一響，準心範圍內的人就開始跑。倒數多久就給他們跑多久
-  alertFlee(point, NUKE_R, NUKE_WAIT + NUKE_FALL);
+  // 警報一響，全場都開始跑（v1.96）。倒數多久就給他們跑多久
+  alertFlee(point, NUKE_WAIT + NUKE_FALL);
   sndSiren();
 }
 function nukeHit(p) {
@@ -4535,7 +4589,7 @@ function castMagic(point) {
      跟龍捲風、蘑菇雲同一套：施法期間鏡頭退到整疊進得了畫面的距離，
      爆完那朵雲會再接手撐住這個距離。 */
   ENG.holdWide(MAG_TOP, MAG_WIDE);
-  alertFlee(point, MAG_R, MAG_TIME);      // 魔法陣一亮，站在陣裡的人就往外跑
+  alertFlee(point, MAG_TIME);             // 魔法陣一亮，全場就往外跑（v1.96）
 }
 function stepMagic(dt) {
   if (!magics) return;
@@ -5489,7 +5543,6 @@ function step(dt) {
   stepFire(dt);
   stepNuke(dt);
   stepMagic(dt);
-  stepDanger(dt);
   stepClouds(dt);
   stepHot(dt);
   stepFlash(dt);

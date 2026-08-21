@@ -108,7 +108,7 @@ const installClean = page => page.evaluate(() => {
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
-    dangers = []; quake = null;
+    quake = null;
     marks.length = 0;                 // 地上的焦黑／坑洞：留著會多吃一個 draw call
     clearFires();
     // 弄乾：濕的積木點不著，留給下一條測試會讓它「放火放不起來」（踩過）
@@ -2372,11 +2372,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (d > lim) out++;
       }
     }
-    return { far, out, worst, a0, ph0, arenaR, siteR, phase, name: bp.name, lim: arenaR + 26, pre };
+    return { far, out, worst, a0, ph0, arenaR, siteR, phase, name: bp.name, lim: arenaR + 26, pre,
+             band: IDLE_FAR };
   });
-  ok('完工後小人會逛遍整張地圖', roam.far > roam.a0 + 8,
-     '最遠走到 ' + roam.far.toFixed(0) + '（建築半徑 ' + roam.siteR.toFixed(0) +
-     '、工地半徑 ' + roam.a0.toFixed(0) + '）');
+  /* v1.60～v1.95 是「完工後逛遍整張地圖」（目標點取 arenaR + 20 的方形亂數）。
+     v1.96 起收回工地外圈那一環（使用者指定「不要讓建築一圈都沒人，看起來會有點明顯」），
+     所以這條反過來守上限：150 秒都不該有人走到碎料場那邊去。
+     下限與「一圈有沒有人」由「閒晃」那一段的兩條守。 */
+  ok('完工後在建築周圍閒晃，不會走到碎料場外',
+     roam.far < roam.siteR + roam.band + 2,
+     '150 秒最遠走到 ' + roam.far.toFixed(0) + '（環外緣 ' +
+     (roam.siteR + roam.band).toFixed(0) + '、建築半徑 ' + roam.siteR.toFixed(0) +
+     '、碎料場半徑 ' + roam.a0.toFixed(0) + '）');
   ok('但不會走出草地', roam.out === 0,
      '越界 ' + roam.out + ' 次；草地半邊長 ' + roam.lim.toFixed(0) +
      '；進場時最遠的三個小人 ' + JSON.stringify(roam.pre) +
@@ -2391,9 +2398,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 200; i++) step(0.05);          // 先把七秒的繞圈慶祝跑完
     const run = workers.map(() => 0), best = workers.map(() => 0);
     const px = workers.map(w => w.x), pz = workers.map(w => w.z);
-    let moved = 0, samples = 0, near = Infinity;
+    let moved = 0, samples = 0, near = Infinity, far = 0, empty = 0, frames = 0;
     for (let i = 0; i < 1200; i++) {
-      step(0.05);
+      step(0.05); frames++;
       for (let k = 0; k < workers.length; k++) {
         const w = workers[k];
         const d = Math.hypot(w.x - px[k], w.z - pz[k]);
@@ -2402,13 +2409,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         else { run[k] = 0; moved++; }
         const r = Math.hypot(w.x, w.z);         // 離工地中心多遠——閒晃不該踩進建築裡
         if (r < near) near = r;
+        if (r > far) far = r;
       }
+      // 這一幀建築周圍有沒有人（見下面那條：一圈都沒人的話畫面很明顯）
+      if (!workers.some(w => Math.hypot(w.x, w.z) < siteR + IDLE_FAR)) empty++;
     }
     best.sort((a, b) => b - a);
     return { longest: +best[0].toFixed(2), median: +best[best.length >> 1].toFixed(2),
              least: +best[best.length - 1].toFixed(2),
              movingFrac: +(moved / samples).toFixed(2), n: workers.length,
-             near: +near.toFixed(2), siteR: +siteR.toFixed(2) };
+             near: +near.toFixed(2), siteR: +siteR.toFixed(2),
+             far: +far.toFixed(2), empty, frames, arenaR: +arenaR.toFixed(1),
+             band: IDLE_FAR };
   });
   ok('遊蕩時會不時停下來站一會兒', idle.median >= 1.1,
      idle.n + ' 人在 60 秒裡最長站定：中位數 ' + idle.median + ' 秒、最久 ' +
@@ -2421,6 +2433,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      所以最近距離會停在建築外圈；踩進去的話這個數字會小於建築半徑。 */
   ok('閒晃不會穿過建築', idle.near >= idle.siteR,
      '最近只走到離工地中心 ' + idle.near + '（建築半徑 ' + idle.siteR + '）');
+  /* 上限（v1.96，使用者指定「盡量不要讓建築一圈都沒人，看起來會有點明顯」）。
+     v1.60～v1.95 的散場後是整片草地亂挑目標（arenaR + 20 的方形），人會一路走到
+     碎料場外緣去——鏡頭取的是建築那一帶，那等於走出畫面，建築周圍空掉。
+     現在閒晃目標一律取在工地外圈 IDLE_NEAR～IDLE_FAR 這一環裡。 */
+  ok('閒晃不會走到建築周圍以外，一圈也不會沒人',
+     idle.far < idle.siteR + idle.band + 1.5 && idle.empty === 0,
+     '最遠走到 ' + idle.far + '（環的外緣是 ' + (idle.siteR + idle.band).toFixed(1) +
+     '，碎料場外緣 ' + idle.arenaR + '）；60 秒 ' + idle.frames + ' 幀裡「建築周圍一個人都沒有」 ' +
+     idle.empty + ' 幀');
 
   /* ══════════ 完工慶祝 ══════════ */
   head('完工慶祝');
@@ -2534,6 +2555,105 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('慶祝完就散開去閒晃', cheer.after === 0 && cheer.spread > cheer.rad.hi + 3,
      '還在舉手的 ' + cheer.after + ' 人，最遠走到 ' + cheer.spread);
 
+  /* 使用者回報「慶祝散場有時候一圈的小人都整齊往外走」。量出來的成因有三個，
+     形狀都是同一個：
+       · w.cheer 是各自從 0 累加的，完工那一刻全員歸零 → 七秒同一幀到期
+         （實測 20 個人第一次動起來全落在散場後第 5 幀）
+       · 散場後的目標點取整片草地（arenaR + 20 的方形，實測目標半徑中位數 46），
+         而人站在半徑 14.9 的圈上 → 每個人的第一段路都朝外，
+         平均徑向分量 +0.25～+0.42、2.8 秒內平均半徑 14.9 → 19.9
+       · 第一段還會先一起往內縮 1.1 格：沿用的是完工時留下的目標點 (0, 0)，
+         strollTo 把它推到工地外圈，於是整圈人同時往內、同時抵達、再同時往外
+     v1.96 三個一起修（散場時間各抽延遲 CHEER_OUT、閒晃收回外圈那一環、
+     起腳那一刻重新挑目標），這條守的是「不整齊」本身。 */
+  const scatter = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true); completeNow();
+    const dt = 1 / 60;
+    let t = 0;
+    while (t < CHEER_T - 0.1) { step(dt); t += dt; }      // 跑到散場前一刻
+    const n = workers.length;
+    const first = workers.map(() => -1);
+    const cnt = new Map();
+    let mov = 0, radial = 0;
+    let prev = workers.map(w => ({ x: w.x, z: w.z }));
+    for (let i = 0; i < 240; i++) {                       // 散場後四秒
+      step(dt);
+      for (let k = 0; k < n; k++) {
+        const w = workers[k];
+        const mx = w.x - prev[k].x, mz = w.z - prev[k].z;
+        const m = Math.hypot(mx, mz);
+        prev[k] = { x: w.x, z: w.z };
+        if (m <= 1e-4) continue;
+        if (first[k] < 0) { first[k] = i; cnt.set(i, (cnt.get(i) || 0) + 1); }
+        const r = Math.hypot(w.x, w.z) || 1e-9;
+        radial += (mx * w.x / r + mz * w.z / r) / m;       // +1 = 正往外走
+        mov++;
+      }
+    }
+    for (let i = 0; i < 200; i++) step(0.05);             // 再閒晃十秒
+    const rad = workers.map(w => Math.hypot(w.x, w.z));
+    const started = first.filter(f => f >= 0);
+    return { n, sync: Math.max(...cnt.values()), started: started.length,
+             spread: +((Math.max(...started) - Math.min(...started)) * dt).toFixed(2),
+             radial: +(radial / mov).toFixed(2),
+             far: +Math.max(...rad).toFixed(1), siteR: +siteR.toFixed(1),
+             band: IDLE_FAR, arenaR: +arenaR.toFixed(1) };
+  });
+  ok('散場不會整圈一起往外走',
+     scatter.started === scatter.n && scatter.sync <= 5 && scatter.spread > 0.5 &&
+     Math.abs(scatter.radial) < 0.2 && scatter.far < scatter.siteR + scatter.band + 1.5,
+     scatter.n + ' 人裡最多 ' + scatter.sync + ' 人同一幀起步（改之前是 20 人全在同一幀），' +
+     '起步時間前後差 ' + scatter.spread + ' 秒；平均徑向分量 ' + scatter.radial +
+     '（改之前 +0.25～+0.42），十秒後最遠走到 ' + scatter.far +
+     '（環外緣 ' + (scatter.siteR + scatter.band).toFixed(1) + '，碎料場外緣 ' + scatter.arenaR + '）');
+
+  /* 彩帶（v1.96，使用者要的）。紙片借塵霧那個池子畫（給非等比縮放就是一張薄紙片），
+     所以判斷「這顆是彩帶」看有沒有 sy。四件事要成立：真的有噴、飛得起來、
+     多數往建築那邊噴（往外噴的話紙片全落在圈外，圈裡反而是空的）、
+     而且不會把塵霧池吃光——玩家隨時可以在慶祝中丟一發核彈，那朵蘑菇雲要有位子站。 */
+  const conf = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(20); startBuild(true);
+    dust.length = 0;
+    const isC = d => d.sy !== undefined;
+    let build = 0;
+    for (let i = 0; i < 100; i++) { step(0.05); build += dust.filter(isC).length; }
+    completeNow();
+    let peak = 0, ever = 0, maxY = 0, inward = 0, outward = 0, all = 0, rest = 0;
+    for (let i = 0; i < 200; i++) {
+      const was = new Set(dust.filter(isC));
+      step(0.05);
+      const c = dust.filter(isC);
+      for (const d of c) if (!was.has(d)) {
+        ever++;
+        const r = Math.hypot(d.x, d.z) || 1;
+        if (d.vx * d.x / r + d.vz * d.z / r < 0) inward++; else outward++;
+      }
+      peak = Math.max(peak, c.length);
+      all = Math.max(all, dust.length);
+      rest = Math.max(rest, c.filter(d => d.y <= 0.11).length);
+      for (const d of c) maxY = Math.max(maxY, d.y);
+    }
+    /* 散場之後不該再**噴**（慶祝完就沒有彩帶了）。數的是「這一幀新生出來的」——
+       數「還在的」會把上一束還飄在半空、還躺在草地上的紙片算進來（實測 729）。 */
+    let late = 0;
+    for (let i = 0; i < 120; i++) {
+      const was = new Set(dust.filter(isC));
+      step(0.05);
+      for (const d of dust.filter(isC)) if (!was.has(d)) late++;
+    }
+    dust.length = 0;
+    return { build, ever, peak, all, maxY: +maxY.toFixed(1), inward, outward, rest, late };
+  });
+  ok('圍圈慶祝時會噴彩帶，施工中不會',
+     conf.build === 0 && conf.ever > 300 && conf.peak > 100 && conf.maxY > 4 &&
+     conf.inward > conf.outward * 2 && conf.rest > 0 && conf.all <= 720 && conf.late === 0,
+     '慶祝的十秒噴了 ' + conf.ever + ' 片（同時最多 ' + conf.peak + ' 片，最高飛到 ' +
+     conf.maxY + '，往建築那邊的 ' + conf.inward + ' 片、往外的 ' + conf.outward +
+     ' 片，落地停住的最多 ' + conf.rest + ' 片）；塵霧池同時最多 ' + conf.all +
+     ' 顆（上限 720），施工中噴了 ' + conf.build + ' 片、散場後 ' + conf.late + ' 片');
+
   /* 慶祝完交談先進冷卻（v1.60）。圈上兩個人只隔 CHEER_GAP 1.9 格，比「多近才聊得起來」
      的 CHAT_D 2.6 還近——不推冷卻的話散場那一瞬間整圈人同時配對，
      剛跳完就變成一圈人兩兩站著講話。冷卻是「先不要」不是「不准」，過一陣子要聊得起來。 */
@@ -2548,8 +2668,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       w.chat = 0; w.chatCd = 0;
     }
     completeNow();
+    /* 等到**每個人都散場**。v1.96 起散場時間各抽 0～CHEER_OUT 秒的延遲，
+       拿 CHEER_T 直接比的話會停在「還有人在跳」那一刻，那些人的冷卻還沒推下去。 */
     let guard = 0;
-    while (guard++ < 400 && !workers.every(w => w.cheer >= CHEER_T)) step(0.05);
+    while (guard++ < 400 && workers.some(w => cheerOn(w))) step(0.05);
     // 散場那一刻的狀態：全員該進冷卻，而且真的有很多對站在聊得起來的距離內
     const cd = workers.filter(w => w.chatCd > 0).length;
     const lo = +Math.min(...workers.map(w => w.chatCd)).toFixed(1);
@@ -2567,12 +2689,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       step(0.05);
       later = Math.max(later, workers.filter(w => w.chat > 0).length);
     }
-    return { cd, lo, near, chats, later, n: workers.length, cdMin: CHAT_CD };
+    return { cd, lo, near, chats, later, n: workers.length, cdMin: CHAT_CD, out: CHEER_OUT };
   });
+  /* 「最短還剩多久」的門檻要扣掉散場的錯開（v1.96）：先散場的那個人，冷卻已經比
+     最後散場的那個多跑了 CHEER_OUT 秒（實測 60 人裡最短剩 7.6 秒，冷卻是 9 秒起跳）。 */
   ok('慶祝完交談進入冷卻，不會剛跳完就整圈聊起來',
-     coolChat.cd === coolChat.n && coolChat.lo > coolChat.cdMin * 0.9 &&
+     coolChat.cd === coolChat.n && coolChat.lo > coolChat.cdMin - coolChat.out - 0.3 &&
      coolChat.near > 5 && coolChat.chats === 0,
-     coolChat.n + ' 人全部進冷卻（最短還剩 ' + coolChat.lo + ' 秒），散場那一刻站在 2.6 格內的有 ' +
+     coolChat.cd + '/' + coolChat.n + ' 人全部進冷卻（最短還剩 ' + coolChat.lo +
+     ' 秒，冷卻 ' + coolChat.cdMin + ' 秒起跳、散場錯開最多 ' + coolChat.out +
+     ' 秒），散場那一刻站在 2.6 格內的有 ' +
      coolChat.near + ' 對，之後 7.5 秒聊起來的 ' + coolChat.chats + ' 人');
   ok('冷卻過了照樣會聊天', coolChat.later > 0, '之後有 ' + coolChat.later + ' 人在聊');
   /* 圈的半徑本來寫死 siteR + 2.6。最小的建築 siteR 只有 7，那一圈長 60 格，
@@ -3444,6 +3570,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const moved = probes.map(p => +((p.b.x - p.x0) * p.fx + (p.b.z - p.z0) * p.fz).toFixed(2));
     // 碎料應該跟車子走一樣的距離——是被推著，不是被拉扯
     const drove = dozers ? dozers.list.map((m, i) => +Math.hypot(m.x - view[i].x, m.z - view[i].z).toFixed(2)) : [];
+    /* 上面那個 completeNow 讓小人慶祝了一輪，彩帶（v1.96）還飄在半空。
+       塵霧那個池子只要非空就多一個 draw call，而這一條量的是推土機。 */
+    dust.length = 0;
     draw(); ENG.render();
     return { n: view.length, moved, drove, min: Math.min(...moved),
              slip: Math.max(...moved.map((v, i) => Math.abs(v - drove[i]))), calls: ENG.info().calls };
@@ -3746,57 +3875,47 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('炸完會回去工作，不會卡在逃命狀態',
      flee.on.stuckFlee === 0 && flee.on.busy > 0,
      '還在逃的 ' + flee.on.stuckFlee + ' 人，回去工作的 ' + flee.on.busy + ' 人');
-  /* 下令那一刻在圈外的人不會被標記，但工地就在爆心上——他去撿料、去放積木都是往裡面走。
-     只在下令那一刻掃一次的話，那些人會一路走進範圍裡被炸飛，看起來像完全沒在反應。
-     所以預告範圍要留著，每幀掃：踏進來的當場開始逃。 */
-  const walkIn = await page.evaluate(() => {
+  /* v1.96 起是「下令那一刻全場都逃」（使用者指定「不用每幀掃，全場都逃命就可以了」）。
+     所以連站在預告圈外一大段的人也要起跑。v1.59～v1.95 是「只喊範圍內的人」＋每幀
+     重掃預告範圍，因為工地就在爆心上，下令時在圈外的人照樣會往裡面走（去撿料、去放
+     積木），走到一半被炸飛看起來像完全沒在反應；全場都逃就不需要那個補丁了。
+     這條守的是那個新規則：擺一半的人到圈外 12 格，下令那一刻他們就該全部在逃。 */
+  const allFlee = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 900; setWorkerCount(24); startBuild(true);
     for (let i = 0; i < 200; i++) step(0.05);
-    // 全部擺到圈外（下令時不會被標記），施法之後再一步一步推進去
-    const plant = workers.slice(0, 10);
-    const ang = plant.map((w, i) => i / plant.length * Math.PI * 2);
-    plant.forEach((w, i) => {
+    // 擺到預告圈外很遠的地方：下令那一刻他們明明是安全的
+    const outs = workers.slice(0, 12);
+    outs.forEach((w, i) => {
       releaseWorker(w);
-      w.x = Math.cos(ang[i]) * (MAG_R + 3.75); w.z = Math.sin(ang[i]) * (MAG_R + 3.75); w.y = 0;
+      const a = i / outs.length * Math.PI * 2;
+      w.x = Math.cos(a) * (MAG_R + 12); w.z = Math.sin(a) * (MAG_R + 12); w.y = 0;
     });
+    const d0 = outs.map(w => Math.hypot(w.x, w.z));
     castMagic({ x: 0, z: 0 });
-    const tagged0 = plant.filter(w => w.flee > 0).length;   // 下令當下應該一個都沒有
-    let frames = 0; const who = new Set();
-    for (let i = 0; i < 120 && magics; i++) {
-      step(0.05);
-      plant.forEach((w, k) => {
-        /* 還沒開始逃的，直接把他擺到更靠內的位置——模擬「去撿料、去放積木都是
-           往裡面走」。用擺的不用推的：施工中的小人自己會往料堆（外圈）跑，
-           推的力道跟他自己的腳程同級的話，會有一半的人根本走不進來。 */
-        if (w.flee <= 0 && !w.air && w.burn <= 0) {
-          /* 每一格都要明確在圈內或圈外：正好停在半徑上的話，浮點誤差會讓
-             scareIn 判「在裡面」而這裡的 < 判「在外面」，一半的人就對不起來 */
-          const r = Math.max(3, MAG_R + 3.75 - i * 0.5);
-          w.x = Math.cos(ang[k]) * r; w.z = Math.sin(ang[k]) * r; w.y = 0;
-        }
-        if (w.air || w.burn > 0 || w.flee > 0) return;
-        if (Math.hypot(w.x, w.z) < MAG_R) { frames++; who.add(k); }
-      });
-    }
-    for (let i = 0; i < 4; i++) step(0.05);
-    const r = { tagged0, frames, who: who.size, n: plant.length,
-                tossed: plant.filter(w => w.air).length };
-    /* 這一段真的炸了一次魔法陣，留下的煙雲、火星、光環會飄到後面幾段的畫面裡去
-       （量到火球那段的過曝白像素從 0.38% 被壓到 0.23%）。自己收乾淨再走。 */
+    const tagged = outs.filter(w => w.flee > 0).length;
+    const all = workers.filter(w => w.flee > 0).length;
+    // 逃命一律先脫手（startFlee 的 releaseWorker），這裡順便驗圈外那些人也一樣
+    const carry = workers.filter(w => w.carry || w.load.length).length;
+    for (let i = 0; i < 130 && magics; i++) step(0.05);
+    const gained = outs.reduce((t, w, k) => t + Math.hypot(w.x, w.z) - d0[k], 0) / outs.length;
+    for (let i = 0; i < 200; i++) step(0.05);
+    const r = { tagged, n: outs.length, all, crew: workers.length, carry,
+                gained: +gained.toFixed(1), stuck: workers.filter(w => w.flee > 0).length };
+    /* 這一段真的炸了一次魔法陣，留下的煙雲、火星、光環會飄到後面幾段的畫面裡去。
+       自己收乾淨再走。 */
     clouds.length = 0; dust.length = 0; hot.length = 0;
     flashes.length = 0; fxRings.length = 0;
     clearFires();
     return r;
   });
-  /* 每個踏進來的人最多只會被抓到一幀（掃描排在小人移動之前，所以是下一幀才喊）。
-     自然情境下的同一份量測：改之前 428～660 幀、4～8 人被炸飛；改之後 3～6 幀、0 人。 */
-  ok('預告期間走進範圍的人會當場開始逃',
-     walkIn.tagged0 === 0 && walkIn.who === walkIn.n &&
-     walkIn.frames <= walkIn.who && walkIn.tossed === 0,
-     '下令時在圈外的 ' + walkIn.n + ' 人（標記到 ' + walkIn.tagged0 + ' 人），期間踏進範圍的 ' +
-     walkIn.who + ' 人共被抓到 ' + walkIn.frames + ' 幀（每人最多一幀），最後被炸飛 ' +
-     walkIn.tossed + ' 人');
+  ok('預告一出現，連站在範圍外的人也一起逃',
+     allFlee.tagged === allFlee.n && allFlee.all === allFlee.crew &&
+     allFlee.carry === 0 && allFlee.gained > 8 && allFlee.stuck === 0,
+     '站在預告圈外 12 格的 ' + allFlee.n + ' 人全部起跑（' + allFlee.tagged + ' 人），全場 ' +
+     allFlee.crew + ' 人都在逃（' + allFlee.all + ' 人），還搬著積木的 ' + allFlee.carry +
+     ' 人；圈外那些人又往外跑了 ' + allFlee.gained + ' 單位，最後卡在逃命狀態的 ' +
+     allFlee.stuck + ' 人');
 
   /* 「跑得出去」本來就不是保證：每個人是自己抽 16～34 單位跑完就停（下一條測這件事），
      所以站在陣心附近又抽到短距離的人跑不出半徑 30 是設計如此，不是 bug。
@@ -7950,7 +8069,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let k = 0; k < N; k++) {
       castMagic({ x: 0, z: 0 });
       const rs = MAG_LAYER.map((L, i) => L.r * magics[0].rj[i]);
-      magics = null; dangers.length = 0;      // 每次只要那組抖動，別讓預告與逃命累積下去
+      magics = null;                          // 每次只要那組抖動，別讓那些魔法陣累積下去
       let mi = 0;
       rs.forEach((v, i) => { if (v > rs[mi]) mi = i; });
       hist[mi]++;

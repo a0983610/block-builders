@@ -1627,7 +1627,11 @@ const ENG = (function () {
       const p = parts[i];
       scratch.position.set(p.x, p.y, p.z);
       scratch.rotation.set(p.rx, p.ry, 0);
-      scratch.scale.setScalar(p.s);
+      /* sy 給了就是非等比：彩帶那種薄紙片（v1.96，見 game.js 的 spawnConfetti）。
+         紙片借塵霧這個池子畫，不另開一個 InstancedMesh——多一個池子就多一個
+         draw call，而彩帶只在完工那七秒出現。 */
+      if (p.sy === undefined) scratch.scale.setScalar(p.s);
+      else scratch.scale.set(p.s, p.sy, p.sz);
       scratch.updateMatrix();
       dustMesh.setMatrixAt(i, scratch.matrix);
       // 預設是灰白煙塵；火球那種要自己指定顏色的才給 cr/cg/cb
