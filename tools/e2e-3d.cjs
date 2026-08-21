@@ -6959,14 +6959,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ① 慢吸那邊只取**緊接在快吸前、一樣長的那 CRUSH_AT 秒**。慢吸的徑向速度是
         **一路遞減**的（實測從 3.4 掉到 1.2：先被吸進去的都已經在陣心那一團裡，
         剩下的離陣心近、徑向速度本來就小），取的窗一拉長就把前面較快的那幾幀平均進來，
-        比出來的倍數會偏小（取一秒半時是 3.9 → 8.1，只有 2.1 倍）。
+        比出來的倍數會偏小（CRUSH_AT 0.6 那版取一秒半時是 3.9 → 8.1，只有 2.1 倍）。
         兩段等長又相鄰，比的才是「同一批碎料在交界前後的速度」。
      ② 離陣心 2 格內的不算：已經到陣心的那些徑向速度沒有意義。
         （曾經改成「只看 10 格外的」想放大差距，結果那個族群只剩 1～5 塊，
         數字會隨機跳——樣本要夠多，這裡是 120～175 塊。）
-     實測 2.4 → 7.8／秒（3.2 倍），門檻訂 2.5 倍留一點抽樣餘裕。
-     紅檢（把 implode 裡的 fast 關成 false，等於退回 v1.92）：3.2 → 0.7／秒（0.22 倍），
-     最後那 0.6 秒反而是整段最慢的——慢吸一路遞減，不會自己冒出一段衝刺。 */
+     實測（v1.93.1，CRUSH_AT 0.3）：0.7～0.9 → 13.6～15.3／秒，**16～19 倍**。
+     門檻只訂 2.5 倍：CRUSH_AT 一改倍數就跳很多（0.6 那版是 2.4 → 7.8 ＝ 3.2 倍），
+     這一條守的是「那一段在不在」，不是「剛好幾倍」。
+     紅檢（把 implode 裡的 fast 關成 false，等於退回 v1.92）：2 → 1／秒（0.5 倍），
+     最後那一段反而是整段最慢的——慢吸一路遞減，不會自己冒出一段衝刺。
+     幀數門檻抓 fn > 2：0.3 秒在 dt 0.05 下只有 4～5 幀（0.6 秒那版有 10 幀）。 */
   const mgFast = await page.evaluate(() => {
     cleanTools(); magics = null;
     shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
@@ -6999,7 +7002,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              sn, fn, slowN, fastN, at: CRUSH_AT };
   });
   ok('最後那一段改成快速往內吸，不是一路等速捲進來',
-     mgFast.fn > 5 && mgFast.slow > 0 && mgFast.fast > mgFast.slow * 2.5,
+     mgFast.fn > 2 && mgFast.slow > 0 && mgFast.fast > mgFast.slow * 2.5,
      '快吸前那 ' + mgFast.at + ' 秒 ' + mgFast.sn + ' 幀：碎料平均往內 ' + mgFast.slow + ' ／秒（' +
      mgFast.slowN + ' 塊）→ 最後 ' + mgFast.at + ' 秒 ' + mgFast.fn + ' 幀：' +
      mgFast.fast + ' ／秒（' + mgFast.fastN + ' 塊）');
@@ -7512,10 +7515,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 形狀（v1.93）：**上下大、中間細**的沙漏，而且照參考圖撐寬到最寬 0.78R——
      最上那圈直徑 46.8，超過整疊高度（22.5）的兩倍，遠看才是參考圖那個「寬而扁」的輪廓。
-     每層各乘 0.82～1.18 的抖動（使用者要的「半徑保持有點隨機性」），所以「最寬的落在
-     最上或最下」量的是比例不是「每次都成立」（只驗一次施法等於在賭骰子）——
-     最下那圈 0.62×1.18 ＝ 0.73 大過最上那圈的下限 0.78×0.82 ＝ 0.64，
-     實測 300 次是最上 285、最下 15。 */
+     每層各乘 0.82～1.18 的抖動（使用者要的「半徑保持有點隨機性」）。這裡守兩件事：
+     ① 最寬的**一定**落在兩端（中間那幾層的上限 0.46×1.18 ＝ 0.54 搶不到）；
+     ② **兩端都會輪到**——最下那圈的上限 0.62×1.18 ＝ 0.73 大過最上那圈的下限
+        0.78×0.82 ＝ 0.64，所以偶爾會反過來，實測 300 次是最上 278～287、最下 13～22。
+     不驗「最上最下同時是前二寬**不是每次**」：撐寬之後那句話幾乎每次都成立（實測
+     98～100%），寫成 ends2 < N 等於在賭 300 次裡有沒有例外——v1.93.1 那輪就抽到 0 次
+     例外而 FAIL。會變成這樣是因為抖動的隨機性搬家了：v1.54 那組上下兩層跟中間差得少，
+     隨機性表現在「誰最寬」；現在表現在「兩端誰贏」。 */
   const mgShape = await page.evaluate(() => {
     const base = MAG_LAYER.map(L => L.r);
     const hist = [0, 0, 0, 0, 0, 0];
@@ -7540,9 +7547,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mgShape.wide > 0.7 && mgShape.wide <= 0.8,
      '各層 ' + mgShape.base.join('／') + 'R（中間最寬的一層 ' + mgShape.mid +
      'R；最寬那圈直徑 ' + (mgShape.wide * 60).toFixed(1) + '，整疊高 22.5）');
-  ok('最寬的一圈「通常」落在最上或最下',
-     (mgShape.hist[0] + mgShape.hist[5]) / mgShape.N > 0.9 &&
-     mgShape.ends2 / mgShape.N > 0.8 && mgShape.ends2 < mgShape.N,
+  ok('最寬的一圈一定落在最上或最下，而且兩端都會輪到',
+     mgShape.hist[0] + mgShape.hist[5] === mgShape.N &&
+     mgShape.hist[0] > 0 && mgShape.hist[5] > 0 && mgShape.ends2 / mgShape.N > 0.95,
      mgShape.N + ' 次施法：最寬落在第 ' + mgShape.hist.map((v, i) => i + '層' + v).join('／') +
      '，最上最下同時是前二寬的有 ' + (mgShape.ends2 / mgShape.N * 100).toFixed(0) + '%');
 
@@ -8202,7 +8209,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 使用者指定：「爆炸地面留下焦黑、隕石留下坑洞、會漸漸消失」。
      炸彈與隕石各放一發，看地上留下什麼——兩種痕跡的差別在 crater 這個旗標
-     （引擎照它挑一組同心圈的顏色：焦黑全暗，坑洞多一圈翻出來的土）。 */
+     （引擎照它挑一組同心圈的顏色：焦黑全暗，坑洞多一圈翻出來的土）。
+     下面兩條的**細節字串要防空陣列**：斷言那邊有 length === 1 擋著（&& 會短路），
+     但細節字串是無論過不過都會算的——marks 空的時候 [0].r 會讓**整支腳本 TypeError
+     中止**，而不是那一條 FAIL。實際踩到過一次（v1.93 那輪，重跑就過），
+     偶發的斷言至少要留得住後面幾百條。 */
   const mkKind = await page.evaluate(() => {
     /* 兩發要**各自量**：痕跡只活 MARK_LIFE 秒（3 秒），等隕石倒數完落地時，
        炸彈留下的那一塊早就淡掉不見了——一起量會變成「只找到一塊」。 */
@@ -8227,13 +8238,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('炸彈炸過的地上留一塊焦黑',
      mkKind.bomb.length === 1 && mkKind.bomb[0].crater === 0 &&
      Math.abs(mkKind.bomb[0].r - mkKind.bombR * mkKind.scorch) < 0.1,
-     '一塊焦黑，半徑 ' + mkKind.bomb[0].r + '（爆炸半徑 ' + mkKind.bombR + ' × ' +
-     mkKind.scorch + '）');
+     '一塊焦黑，半徑 ' + (mkKind.bomb[0] ? mkKind.bomb[0].r : '—') +
+     '（爆炸半徑 ' + mkKind.bombR + ' × ' + mkKind.scorch + '）');
   ok('隕石留下的是坑洞，不是焦黑',
      mkKind.met.length === 1 && mkKind.met[0].crater === 1 &&
      Math.abs(mkKind.met[0].r - mkKind.metR * mkKind.crat) < 0.1,
-     '一個坑洞，半徑 ' + mkKind.met[0].r + '（隕石半徑 ' + mkKind.metR + ' × ' +
-     mkKind.crat + '）');
+     '一個坑洞，半徑 ' + (mkKind.met[0] ? mkKind.met[0].r : '—') +
+     '（隕石半徑 ' + mkKind.metR + ' × ' + mkKind.crat + '）');
 
   /* 「會漸漸消失」：前面那一段維持全濃，最後 MARK_FADE 秒才淡，時間到整塊收掉、
      那顆網格也要跟著 visible=false（不然沒痕跡還在吃一個 draw call）。 */
