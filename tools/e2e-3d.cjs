@@ -2055,9 +2055,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 懸空部件不是無敵的：撐著它的結構被打掉，它也要跟著掉，而且要一路連鎖 */
   const chain = await page.evaluate(() => {
     const out = [];
-    for (const nm of ['台北 101', '倫敦眼摩天輪', '京都五重塔', '嚴島神社鳥居']) {
+    // 建材數釘 3000（預設那一檔）：吳哥窟的懸空結構會隨尺寸變，不釘住量到的東西每次不同
+    for (const nm of ['台北 101', '倫敦眼摩天輪', '京都五重塔', '嚴島神社鳥居', '吳哥窟']) {
       shapePick = SHAPES.findIndex(s => s.n === nm);
-      startBuild(true); setWorkerCount(1); completeNow();
+      targetCnt = 3000; startBuild(true); setWorkerCount(1); completeNow();
       const n0 = placedCnt, g = bp.floats.length;
       let cleared = 0;
       for (const b of blocks) if (b.st === 3 && b.y < 3.2) { breakBlock(b, 0, 0, 0); cleared++; }
@@ -2070,6 +2071,50 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   for (const c of chain)
     ok('打掉底座，' + c.nm + ' 的懸空部件跟著垮', c.left < c.n0 * 0.05,
        c.n0 + ' −底座' + c.cleared + ' → 剩 ' + c.left + '（' + c.g + ' 組懸空部件）');
+
+  /* v1.91：豁免的判準從「一組超過 2000 格」換成「完好時就撐不住」。
+     吳哥窟是三檔建材數都要量的那一座——它的三層方台彼此沒接上（差 1～4 格），
+     所以懸空比例本來就高，而且**同一座在不同尺寸下結構不一樣**：
+     · 1800：三層台接得上，整座都連到地面，沒有懸空組
+     · 3000：anchor → 第二層台 → 上面那一大團（2176 格）的正常鏈 → 打掉底座整座垮。
+       舊規則這一團剛好超過 2000 格被永久豁免，敲掉底下三層「一塊都不掉」（使用者報的就是這個）
+     · 9000：兩團塔互相當對方的靠山、兩團都碰不到地面（第三層台在 4 格外）→ 只能豁免。
+       但完好時不准自己掉：拿掉 2000 那條之後若不判這一關，完好的建築會自己掉 7084 塊。 */
+  const angkor = await page.evaluate(() => {
+    const out = [];
+    for (const cnt of [1800, 3000, 9000]) {
+      shapePick = SHAPES.findIndex(s => s.n === '吳哥窟');
+      targetCnt = cnt; setWorkerCount(1); startBuild(true); completeNow();
+      const n0 = placedCnt;
+      const sizes = bp.floats.map(g => g.cells.length);
+      const big = Math.max.apply(null, sizes.concat(0));
+      const bigProps = bp.floats.reduce((m, g) => g.cells.length === big ? g.props.length : m, 0);
+      const exempt = bp.floats.filter(g => !g.props.length)
+                              .reduce((n, g) => n + g.cells.length, 0);
+      markSupportDirty(0);
+      for (let k = 0; k < 80; k++) step(0.05);      // 沒人動它
+      const idle = placedCnt;
+      let hit = 0;
+      for (const b of blocks) if (b.st === 3 && b.y < 3.2) { breakBlock(b, 0, 0, 0); hit++; }
+      afterHit(hit, { x: 0, y: 1, z: 0 }, 6);
+      for (let k = 0; k < 200; k++) step(0.05);
+      out.push({ cnt, n0, idle, hit, left: placedCnt, groups: bp.floats.length,
+                 big, bigProps, exempt });
+    }
+    return out;
+  });
+  const ang = c => angkor.find(o => o.cnt === c);
+  ok('完好的吳哥窟不會自己掉（三檔建材數都驗）',
+     angkor.every(o => o.idle === o.n0),
+     angkor.map(o => o.cnt + '：' + o.n0 + '→' + o.idle).join('　'));
+  ok('吳哥窟打掉底座會垮，不會因為那一團「太大」就無敵',
+     ang(3000).big > 2000 && ang(3000).bigProps > 0 && ang(3000).left < ang(3000).n0 * 0.05,
+     '3000 那一檔最大一組 ' + ang(3000).big + ' 格（靠山 ' + ang(3000).bigProps +
+     ' 格，舊規則超過 2000 就 0）→ 敲底座 ' + ang(3000).hit + ' 塊後剩 ' + ang(3000).left);
+  ok('完好時就撐不住的那幾組才豁免（吳哥窟 9000 的兩團塔）',
+     ang(9000).exempt > 6000 && ang(1800).exempt === 0 && ang(3000).exempt === 0,
+     '豁免的格數：1800 → ' + ang(1800).exempt + '、3000 → ' + ang(3000).exempt +
+     '、9000 → ' + ang(9000).exempt + '（那兩團互相當靠山，腳下 4 格外才有東西）');
 
   const supCost = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '艾菲爾鐵塔');
@@ -2657,11 +2702,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wz.reachMax <= wz.REACH + 0.01 && wz.reach < wz.REACH * 0.8 && wz.arc > wz.REACH * 1.5,
      '出手時那塊料離他 ' + wz.reach + ' 格（最遠 ' + wz.reachMax + '，上限 ' + wz.REACH +
      '），那塊料飛過去的水平距離 ' + wz.arc + ' 格');
-  /* 腳邊那一圈搬空了就換一坨：整段路程與「發過料的地點」都要看得出他在移動。
-     實測 110 秒走 15～88 格、在 2 個地方發過料（走的範圍被 MAGE_ROAM 綁在工地外圍
-     16 格內，所以是沿著那條帶子挪，不是滿場跑）。 */
-  ok('腳邊的料搬完就走去下一堆', wz.walked > 10 && wz.spots >= 2,
-     '整段走了 ' + wz.walked + ' 格、在 ' + wz.spots + ' 個地方發過料');
+  /* 腳邊那一圈搬空了就換一坨：看整段走了多遠。v1.88 之前他釘在工地外圈的一個角度上，
+     暖機走到位之後就再也不動（走 0 格），所以這條同時是那一版的紅檢。
+     實測 110 秒走 11～88 格（走的範圍被 MAGE_ROAM 綁在工地外圍 16 格內，是沿著那條帶子
+     挪，不是滿場跑）。「發過料的地點」只放進說明不當門檻——他常常在同一個 6 格方格裡
+     挪好幾次，量到 1 也不代表他沒換過地方。 */
+  ok('腳邊的料搬完就走去下一堆', wz.walked > 6,
+     '整段走了 ' + wz.walked + ' 格、在 ' + wz.spots + ' 個 6 格方格裡發過料');
   ok('飛得比工人丟的慢一倍以上', wz.mDur > 1.2 && wz.mDur > wz.wDur * 2,
      '魔法師 ' + wz.mDur + ' 秒／塊，工人 ' + wz.wDur + ' 秒／塊（都取中位數）');
   /* v1.64.1：上一塊還在半空就送下一塊。發的間隔要明顯短於一塊飛完的時間，

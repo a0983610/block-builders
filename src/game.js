@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.90.0';
+const VERSION = '1.91.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2404,7 +2404,7 @@ function computeSupport() {
       if (!g.props.length) { supStand[gi] = 1; changed = true; continue; }  // 找不到靠山的永遠豁免
       let alive = 0;
       for (let k = 0; k < g.props.length; k++) if (supported(g.props[k])) alive++;
-      if (alive > g.props.length * 0.25) { supStand[gi] = 1; changed = true; }
+      if (alive > g.props.length * PROP_ALIVE) { supStand[gi] = 1; changed = true; }
     }
   }
 }

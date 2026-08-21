@@ -3026,6 +3026,9 @@ for (let dx = -1; dx <= 1; dx++)
 /* 只有六個面的鄰居。**不是拿來當一般支撐判定用的**（那樣艾菲爾鐵塔會自己解體），
    只用來偵測「本來好好疊著、現在只剩對角勾著」這種退化——見 slots[i].f6。 */
 const NBR6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+/* 一組懸空部件要留幾成的靠山才撐得住。規則那邊的 computeSupport 與這裡的「完好時撐不住
+   就豁免」共用同一個數字——兩邊各寫一份的話，改了一邊就會出現「這邊說垮、那邊照蓋」。 */
+const PROP_ALIVE = 0.25;
 
 /* 鄰居查表用的數值鍵。+1 是為了讓 −1 的鄰居也落在非負範圍，
    不然 gx=-1 會跟 (1023, gy-1, gz) 撞在同一個鍵上。 */
@@ -3111,8 +3114,16 @@ function makeBlueprint(idx, target) {
   }
 
   /* 懸空部件（扇葉、車廂、吊索）不連到地面，但也不是憑空浮著——
-     它們靠旁邊的結構撐著。把每一組懸空部件、以及附近撐著它的格子記下來，
-     旁邊被打掉之後這一組就會整組掉，而不是一律豁免、怎麼打都不動。 */
+     它們靠旁邊的結構撐著。把每一組懸空部件、以及附近撐著它的格子（props）記下來，
+     旁邊被打掉之後這一組就會整組掉，而不是一律豁免、怎麼打都不動。
+
+     v1.91 之前這裡有一條「一組超過 2000 格就不算，props 留空 ＝ 永遠不掉」，
+     等於「大到一定程度就無敵」：吳哥窟 3000 塊那一檔的第三層台加五座塔是一整團 2176 格
+     （整座的 72%——三層方台彼此差 1 格沒接上，所以它們從一開始就是懸空的），剛好落在
+     這一條裡，於是把底下三層 676 塊全部敲掉，站著的 2336 塊六秒後還是 2336 塊，
+     一塊都不垮（實測）。現在不看大小，一律算 props；「該不該豁免」改由下面那一關判。
+     成本量過：48 座 @9000 全部產一遍 3510 ms → 3546 ms（最慢的巨型骰子 414 ms
+     根本沒有懸空部件，這一段不是瓶頸）。 */
   const comp = new Int32Array(slots.length).fill(-1);
   let nComp = 0;
   for (let i = 0; i < slots.length; i++) {
@@ -3137,7 +3148,6 @@ function makeBlueprint(idx, target) {
     g.cells.push(i);
   }
   for (const g of groups.values()) {
-    if (g.cells.length > 2000) continue;           // 太大就不算，props 留空 = 永遠不掉
     const set = new Set();
     // 先找半徑 2 以內的鄰居；真的找不到再放寬到 3
     for (let r = 2; r <= 3 && set.size === 0; r++) {
@@ -3157,6 +3167,31 @@ function makeBlueprint(idx, target) {
   const floats = [...groups.values()];
   for (let gi = 0; gi < floats.length; gi++)
     for (const i of floats[gi].cells) slots[i].fg = gi;   // 反查：這格屬於哪一組懸空部件
+
+  /* 哪幾組「完好時就撐不住」——那是作者畫的自由懸空件（整份藍圖都在也找不到通到地面的
+     路徑），永遠豁免，props 清空。判準與遊戲裡的 computeSupport 一字不差：同一個
+     PROP_ALIVE 門檻、同樣從「全部先當作沒支撐」往上長，只是拿「整份藍圖都在」算一次。
+
+     為什麼一定要有這一關：v1.91 拿掉「超過 2000 格就豁免」之後，吳哥窟 9000 那一檔的
+     兩團塔會互相當對方的靠山，而兩團都碰不到地面（第三層台在 4 格外，本來就沒有東西
+     撐著它們），於是**完好的建築自己掉了** 7084 塊（實測 9044 → 1960）。
+     那種造型只能豁免——地面上本來就沒有東西撐著它。
+     反過來，吳哥窟 3000 那一檔是 anchor → 第二層台 → 上面那一大團的正常鏈，
+     所以不會被這一關豁免，底座打掉就會垮（這才是這一版要修的那個症狀）。 */
+  const standOk = new Uint8Array(floats.length);
+  for (let ch = true; ch;) {
+    ch = false;
+    for (let gi = 0; gi < floats.length; gi++) {
+      if (standOk[gi]) continue;
+      const g = floats[gi];
+      if (!g.props.length) { standOk[gi] = 1; ch = true; continue; }
+      let alive = 0;
+      for (const j of g.props)
+        if (slots[j].anchor || (slots[j].fg >= 0 && standOk[slots[j].fg])) alive++;
+      if (alive > g.props.length * PROP_ALIVE) { standOk[gi] = 1; ch = true; }
+    }
+  }
+  for (let gi = 0; gi < floats.length; gi++) if (!standOk[gi]) floats[gi].props = [];
 
   let radius = 0;
   for (const s of slots) radius = Math.max(radius, Math.hypot(s.x, s.z));
@@ -3524,6 +3559,7 @@ function checkBlueprint(which, opt) {
 /* node 也要能 require 這支檔來單獨測藍圖 */
 if (typeof module !== 'undefined' && module.exports)
   module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NBR, gkeyOf, customBlueprint,
+                     PROP_ALIVE,
                      checkBlueprint, bpIndexOf, BP_TARGETS,
                      cleanPaste, bpFileName, importBlueprint,
                      dim, ringOf, mirrorX, mirrorZ, arch, archRow, stairs, hipRoof,
