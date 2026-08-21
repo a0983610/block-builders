@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.93.1';
+const VERSION = '1.94.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3454,7 +3454,7 @@ const WT_HIGH = 60;                 // 找「這一柱的水面」時最多往�
 const WT_SPRAY = 0.22;              // 正在往下流的水，每一格每一拍灑水花的機率
 const SEEP_G = 0.6;                 // 貼在草地上的那一格每秒滲掉多少（一格約 1.7 秒）
 const SEEP_B = 0.02;                // 貼在積木上的那一格每秒漏多少（縫隙，慢——太快的話水還沒流到地面就乾了）
-let water = null;                   // { cells: Map, pours: [], acc, wt }
+let water = null;                   // { cells: Map, pours: [], acc, wt, wave }
 
 /* 世界座標 ↔ 格子座標。gOffX/gOffZ 是藍圖角落的偏移。 */
 const cellX = x => Math.round(x - gOffX);
@@ -3466,7 +3466,7 @@ const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const wkey = (gx, gy, gz) => gx + ':' + gy + ':' + gz;
 
 function newWater() {
-  if (!water) water = { cells: new Map(), pours: [], acc: 0, wt: 0 };
+  if (!water) water = { cells: new Map(), pours: [], acc: 0, wt: 0, wave: 0 };
   return water;
 }
 /* 這一格有多少水（0～1） */
@@ -3493,7 +3493,7 @@ function addWater(gx, gy, gz, v) {
   if (c) { const put = Math.min(v, 1 - c.v); c.v += put; return put; }
   if (W.cells.size >= WT_CELLS) return 0;          // 保險絲：不會無限長
   const put = Math.min(1, v);
-  W.cells.set(k, { gx, gy, gz, v: put, f: 63, sup: 0, hd: 0, h: put,
+  W.cells.set(k, { gx, gy, gz, v: put, f: 63, rim: 0, sup: 0, hd: 0, h: put,
                    vis: put > WT_SHOW ? 1 : 0 });
   return put;
 }
@@ -3628,6 +3628,7 @@ function stepWater(dt) {
   /* 水用固定的拍子算（跟畫面幀率無關，4× 速也不會算出不一樣的結果）。
      一幀最多追 4 拍：追不上就不追，不然卡一下之後會爆一長串。 */
   W.acc += dt;
+  W.wave += dt;                                    // 水面波紋的相位（畫面那邊用）
   for (let k = 0; k < 4 && W.acc >= WT_TICK; k++) { waterTick(); W.acc -= WT_TICK; }
   if (W.acc > WT_TICK) W.acc = WT_TICK;
   W.wt -= dt;
@@ -3772,13 +3773,17 @@ function faceMask() {
   const cs = water.cells;
   for (const c of cs.values()) c.h = c.sup ? c.v : Math.min(1, c.v * WT_AIR);
   for (const c of cs.values()) {
-    let f = 0;
+    let f = 0, rim = 0;
     for (let k = 0; k < 4; k++) {
       /* 差 WT_SHOW 以上才畫側面：一片水深淺差個 0.03 格的話，那道側面是看不見的細絲，
          但一格會多算一面——實測一片 2000 格的地面水會多出四千多面，把引擎的頂點上限
          吃掉，後面的水就整格畫不出來（破口的水柱就是這樣被丟掉的）。 */
       const n = cs.get(wkey(c.gx + DIR4[k][0], c.gy, c.gz + DIR4[k][1]));
       if (!n || n.h < c.h - WT_SHOW) f |= 1 << k;
+      /* 外緣（v1.94，給畫面那邊的泡沫用）：旁邊那格**根本沒有水**——水體到這裡就結束了，
+         或者旁邊是積木／杯壁。不能用上面那個「有側面」來判斷：一片還在攤開的水，
+         每格深淺差個 0.1 格就會標出側面，那樣幾乎每一格都算外緣，畫出來是一片白磁磚（踩過）。 */
+      if (!n || n.v <= WT_SHOW) rim = 1;
     }
     const bl = cs.get(wkey(c.gx, c.gy - 1, c.gz));
     if (c.gy > 0 && (!bl || bl.h < 1 - WT_LEVEL) &&
@@ -3786,6 +3791,8 @@ function faceMask() {
     const up = cs.get(wkey(c.gx, c.gy + 1, c.gz));
     if (c.h < 1 - WT_LEVEL || !up || up.h <= WT_MIN) f |= 32;
     c.f = f;
+    /* 上面還有水的話這一格不是水面，泡沫不該長在水裡面 */
+    c.rim = rim && (!up || up.v <= WT_SHOW) ? 1 : 0;
   }
 }
 
@@ -3805,7 +3812,7 @@ function poolList() {
       else if (c.v <= WT_MIN) c.vis = 0;
       if (!c.vis) continue;
       poolBuf.push({ x: wldX(c.gx), z: wldZ(c.gz), y0: c.gy,
-                     y1: c.gy + Math.max(c.h, WT_SHOW), f: c.f });
+                     y1: c.gy + Math.max(c.h, WT_SHOW), f: c.f, rim: c.rim });
       if (poolBuf.length >= WT_CELLS) return poolBuf;
     }
   return poolBuf;
@@ -5513,7 +5520,7 @@ function draw() {
   else ENG.hideRings();
   if (dozers) ENG.putDozers(dozRender(dozers));
   ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
-  ENG.putPools(water ? poolList() : EMPTY);         // 水窪同理
+  ENG.putPools(water ? poolList() : EMPTY, water ? water.wave : 0);   // 水窪同理
   ENG.putMarks(marks);                              // 地上的焦黑與坑洞（沒有就 visible=false）
 }
 const EMPTY = [];

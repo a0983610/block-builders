@@ -15,7 +15,7 @@ const ENG = (function () {
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh, poolMesh;
-  let poolGeo, poolPos;
+  let poolGeo, poolPos, poolFoam, poolUni;
   let markMesh, markGeo, markPos, markCol;
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
@@ -256,6 +256,106 @@ const ENG = (function () {
     return m;
   }
 
+  /* ── 水面材質（v1.94）──
+     v1.69～v1.93 用的是 MeshBasicMaterial：**不吃光**，所以不管從哪個角度看、
+     頂面還是側壁，都是同一片均勻的藍——使用者看到的是「藍色果凍／玻璃罩」。
+     換成 Phong 之後三件事同時解決：頂面吃到天光（HemisphereLight 的頂面本來就比側面亮）
+     ＋太陽的漫射，側壁自然暗一階（**頂／側分色不必自己刷色**）；再加上高光，
+     轉視角時水面會有一塊亮的移過去。
+
+     **flatShading 是這裡的關鍵**：這顆網格每幀重寫頂點，只有 position 一條 attribute，
+     多一條 normal 就多 3 個 float／頂點的上傳。three.js 的 flatShading 走的是
+     `normal_fragment_begin` 裡的 `cross(dFdx(vViewPosition), dFdy(vViewPosition))`
+     ——法線是 fragment 端從螢幕微分算出來的，**用不到 normal attribute**。
+     這顆網格全都是軸對齊的平面，微分算出來的就是那個面真正的法線，一毛頂點成本都沒加。 */
+  function poolMaterial() {
+    const m = new T.MeshPhongMaterial({
+      /* 底色比 Basic 那版亮一階（0x4aa6de → 這個）：Phong 是「底色 × 光」，
+         同一個底色吃光之後**只有 0.73 倍亮**（同一座建築同一個機位實測，
+         亮度加權 104.7 vs 144），不補回來整片水會變暗。 */
+      color: 0x5cb4e8, specular: 0x9ad9f6, shininess: 130, flatShading: true,
+      /* 透明度從 0.62 降到這裡：有了光照與高光，水面看得出來是水面，
+         就不必靠「濃」來讓人看見它了——淡一點反而通透（水底的草看得到）。
+         底色補亮＋這裡調淡之後，跟 v1.93 比是 0.81 倍亮（同上實測 116.1 vs 144）。 */
+      transparent: true, opacity: 0.52, depthWrite: false,
+      /* 兩面都畫（從水面下往上看也要看得到），但**要 forceSinglePass**：
+         three.js 對「透明 + DoubleSide」預設會拆成背面／正面兩趟畫，
+         那就變成 2 個 draw call（實測 11 → 13）。 */
+      side: T.DoubleSide, forceSinglePass: true
+    });
+    m.onBeforeCompile = sh => {
+      poolUni = sh.uniforms;
+      sh.uniforms.uWTime = { value: 0 };
+      /* 注入的做法是對 three 的 shader chunk 做字串取代，而**取代不到是靜默的**：
+         哪天 three 把某個 chunk 改名（`output_fragment` → `opaque_fragment` 就發生過），
+         這裡什麼都不會發生、也不會報錯，水就默默變回死板的藍。
+         所以每一刀都記一筆「有沒有真的換到」，測試盯 userData.cuts 這個數字——
+         畫面像素那條哨兵擋不住單一注入點失效（實測只死掉波紋那一刀，
+         泡沫那道波還在動，變的像素只從 8% 掉到 5%，門檻抓不到）。 */
+      let cuts = 0;
+      const cut = (src, anchor, add) => {
+        const out = src.replace(anchor, anchor + add);
+        if (out !== src) cuts++;
+        return out;
+      };
+      /* position 存的就是**世界座標**（putPools 直接填世界座標、這顆網格沒有位移），
+         所以世界座標的波紋不用乘任何矩陣，vWPos = position 就是了。 */
+      sh.vertexShader = cut(sh.vertexShader, '#include <common>', `
+          attribute float aFoam;
+          varying float vFoam;
+          varying vec3 vWPos;`);
+      sh.vertexShader = cut(sh.vertexShader, '#include <begin_vertex>', `
+          vFoam = aFoam;
+          vWPos = position;`);
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <common>', `
+          uniform float uWTime;
+          varying float vFoam;
+          varying vec3 vWPos;`);
+      /* 波紋：**不動頂點，只動法線**。
+         動頂點（把水面那幾個頂點上下推）的話，側壁的上緣不會跟著動——水面與側壁
+         之間就會裂開一條縫，而側壁只畫在水體外緣，那正是最顯眼的地方。
+         改成在 fragment 端擾動法線：幾何一格都沒變（三角形數量不變，
+         「水想畫幾面 × 2」那條測試才還成立），但高光會跟著波跑，看起來就是波光粼粼。
+         波高 h 是三道不同方向、不同波長的正弦疊起來（單一方向會看得出是一條一條在跑），
+         法線就是它的斜率：n = normalize(−∂h/∂x, 1, −∂h/∂z)。三道波往不同方向漂，
+         所以水面看起來是「在流」的，不必貼流動的法線貼圖（也就不必多一張圖與 uv）。 */
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <normal_fragment_begin>', `
+          /* 這裡的 normal 是 view space，所以「哪一面朝上」要拿世界的上方向去比 */
+          vec3 wUp = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+          float wFace = dot(normal, wUp);
+          float wFres = 0.0;
+          if (abs(wFace) > 0.5) {                       // 只有水面（頂面／底面）起波，側壁不起
+            vec2 q = vWPos.xz;
+            float a1 = dot(q, vec2( 1.9, 0.7)) + uWTime * 2.3;
+            float a2 = dot(q, vec2(-0.8, 2.4)) + uWTime * 1.7;
+            float a3 = dot(q, vec2( 4.3, 4.3)) - uWTime * 3.1;
+            float dx = 0.045 *  1.9 * cos(a1) + 0.040 * -0.8 * cos(a2) + 0.012 * 4.3 * cos(a3);
+            float dz = 0.045 *  0.7 * cos(a1) + 0.040 *  2.4 * cos(a2) + 0.012 * 4.3 * cos(a3);
+            vec3 wn = normalize(vec3(-dx, 1.0, -dz)) * (wFace > 0.0 ? 1.0 : -1.0);
+            normal = normalize((viewMatrix * vec4(wn, 0.0)).xyz);
+          }
+          /* 菲涅耳：越是斜著看，水面越反光也越不透。垂直往下看得到水底，
+             斜著看幾乎只看得到反光——這一項就是「水」跟「有顏色的玻璃」的差別。 */
+          wFres = pow(1.0 - clamp(abs(dot(normalize(vViewPosition), normal)), 0.0, 1.0), 3.0);`);
+      /* 泡沫：水體外緣那一圈的水面刷白，而且更不透明（真的泡沫是白的、不透光）。
+         一格一格的旗標會露出方格的直角，所以再乘一道波——邊界就變成會抖的、
+         有濃有淡的一條，不是描邊。 */
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <color_fragment>', `
+          if (vFoam > 0.0) {
+            float fw = 0.5 * sin(vWPos.x * 3.1 + uWTime * 2.2)
+                     + 0.5 * sin(vWPos.z * 2.7 - uWTime * 1.9);
+            float foam = clamp(vFoam * (0.16 + 0.48 * fw), 0.0, 0.55);
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.95, 1.0), foam);
+            diffuseColor.a = mix(diffuseColor.a, min(1.0, diffuseColor.a * 1.3), foam);
+          }`);
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <dithering_fragment>', `
+          gl_FragColor.a = min(1.0, gl_FragColor.a + wFres * 0.30);`);
+      m.userData.cuts = cuts;                      // 給測試看：六刀都換到了嗎
+    };
+    m.customProgramCacheKey = () => 'pool-wave';
+    return m;
+  }
+
   function init(cvs) {
     canvas = cvs;
     renderer = new T.WebGLRenderer({ canvas: cvs, antialias: true, alpha: true });
@@ -413,14 +513,14 @@ const ENG = (function () {
     const poolAttr = new T.BufferAttribute(poolPos, 3);
     poolAttr.setUsage(T.DynamicDrawUsage);
     poolGeo.setAttribute('position', poolAttr);
+    /* 泡沫旗標（v1.94）：每個頂點一個 0／1——「這一面是水體外緣的水面」。
+       一個 float 就夠，比法線（3 個）便宜；法線根本不用傳，見下面 flatShading。 */
+    poolFoam = new Float32Array(MAXPOOLV);
+    const foamAttr = new T.BufferAttribute(poolFoam, 1);
+    foamAttr.setUsage(T.DynamicDrawUsage);
+    poolGeo.setAttribute('aFoam', foamAttr);
     poolGeo.setDrawRange(0, 0);
-    poolMesh = new T.Mesh(poolGeo, new T.MeshBasicMaterial({
-      color: 0x4aa6de, transparent: true, opacity: 0.62, depthWrite: false,
-      /* 兩面都畫（從水面下往上看也要看得到），但**要 forceSinglePass**：
-         three.js 對「透明 + DoubleSide」預設會拆成背面／正面兩趟畫，
-         那就變成 2 個 draw call（實測 11 → 13）。 */
-      side: T.DoubleSide, forceSinglePass: true
-    }));
+    poolMesh = new T.Mesh(poolGeo, poolMaterial());
     poolMesh.frustumCulled = false; poolMesh.visible = false;
     scene.add(poolMesh);
 
@@ -790,11 +890,14 @@ const ENG = (function () {
      只畫規則那邊標出來「旁邊不是水」的那幾面——被水包住的面根本不存在，
      一大片水才不會疊出方格紋（見上面 poolGeo 那段）。
      位元跟規則那邊的 DIR4 同順序：1=+x　2=−x　4=+z　8=−z，再加 16=底面　32=頂面。 */
-  function putPools(list) {
+  function putPools(list, wt) {
     const n = Math.min(list.length, MAXPOOL);
-    const P = poolPos;
+    const P = poolPos, F = poolFoam;
     let v = 0;                                     // 已經寫到第幾個 float
+    let fm = 0;                                    // 這幾個三角形要不要泡沫
     const tri = (ax, ay, az, bx, by, bz, cx, cy, cz) => {
+      const q = v / 3;
+      F[q] = fm; F[q + 1] = fm; F[q + 2] = fm;
       P[v++] = ax; P[v++] = ay; P[v++] = az;
       P[v++] = bx; P[v++] = by; P[v++] = bz;
       P[v++] = cx; P[v++] = cy; P[v++] = cz;
@@ -803,7 +906,12 @@ const ENG = (function () {
       const p = list[i];
       if (v + 90 > P.length) break;                // 一格最多 5 面 × 2 三角形 × 9 float
       const x0 = p.x - 0.5, x1 = p.x + 0.5, z0 = p.z - 0.5, z1 = p.z + 0.5, ya = p.y0, yb = p.y1;
+      /* 泡沫只長在**水體外緣的水面**上（規則那邊算好的 rim：旁邊那格根本沒有水）。
+         這裡曾經拿「有側面」（f & 15）當外緣——側面只要旁邊比自己低就會標出來，
+         一片還在攤開的水幾乎每格都有，於是整片水變成一格一塊的白磁磚（踩過，見截圖）。 */
+      fm = p.rim ? 1 : 0;
       if (p.f & 32) { tri(x0, yb, z0, x1, yb, z0, x1, yb, z1); tri(x0, yb, z0, x1, yb, z1, x0, yb, z1); }
+      fm = 0;                                      // 底面與側壁不刷白（那是水體內部與水下）
       if (p.f & 16) { tri(x0, ya, z0, x1, ya, z0, x1, ya, z1); tri(x0, ya, z0, x1, ya, z1, x0, ya, z1); }
       if (p.f & 1) { tri(x1, ya, z0, x1, yb, z0, x1, yb, z1); tri(x1, ya, z0, x1, yb, z1, x1, ya, z1); }
       if (p.f & 2) { tri(x0, ya, z0, x0, yb, z0, x0, yb, z1); tri(x0, ya, z0, x0, yb, z1, x0, ya, z1); }
@@ -812,11 +920,17 @@ const ENG = (function () {
     }
     poolMesh.visible = v > 0;
     poolGeo.setDrawRange(0, v / 3);
+    // 波紋與泡沫的相位：規則那邊累出來的水時間（跟畫面幀率無關，4× 速也是同一支波）
+    if (poolUni) poolUni.uWTime.value = wt || 0;
     const at = poolGeo.attributes.position;
     // 只上傳真的有用到的那一段（整條 66000 頂點每幀傳一次太浪費）
     if (at.clearUpdateRanges) { at.clearUpdateRanges(); at.addUpdateRange(0, v); }
     else if (at.updateRange) { at.updateRange.offset = 0; at.updateRange.count = v; }
     at.needsUpdate = true;
+    const fa = poolGeo.attributes.aFoam;           // 泡沫那一條同理，只傳用到的頂點數
+    if (fa.clearUpdateRanges) { fa.clearUpdateRanges(); fa.addUpdateRange(0, v / 3); }
+    else if (fa.updateRange) { fa.updateRange.offset = 0; fa.updateRange.count = v / 3; }
+    fa.needsUpdate = true;
   }
   /* 整組濃度的旋鈕（v1.88.1，使用者回饋「都淡淡的就好，太深原本的煙都看不清楚了」）。
      表裡的 a 維持原來的相對比例（中心深、外圈淡），統一乘這個數字調濃淡——
@@ -1687,6 +1801,6 @@ const ENG = (function () {
     MARK_SEG,
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh, poolMesh }; }
   };
 })();

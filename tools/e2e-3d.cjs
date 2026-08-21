@@ -5486,6 +5486,142 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wbCalls.cells + ' 格水：' + wbCalls.before + ' → ' + wbCalls.on + ' → 收掉 ' + wbCalls.off +
      '（水花走現成的塵霧池，0 個新的）');
 
+  /* ══════════ 水面的樣子（v1.94）══════════
+     v1.69～v1.93 的水是 MeshBasicMaterial——不吃光，任何角度都是同一片均勻的藍
+     （使用者：「藍色果凍／玻璃罩」）。現在是會吃光的 Phong ＋ fragment 端的波紋法線
+     ＋ 外緣的泡沫。這一段守的是「加了這些不能反過來變貴」與「東西真的有生效」。 */
+  const wbSurf = await page.evaluate(() => {
+    /* 先讓水真的在場、真的畫過一次：材質的 onBeforeCompile 是 three 第一次編譯那顆
+       program 才跑的，水沒出場過的話 userData.cuts 還是 undefined（讀到 undefined
+       這幾條會 FAIL，方向是安全的，但不該靠前面某條測試的副作用）。 */
+    cleanTools(); startBuild(true); completeNow();
+    pourBucket(0, bp.height + 2, 0, WB_DROPS);
+    for (let i = 0; i < 60; i++) step(1 / 60);
+    draw(); ENG.render();
+    const m = ENG.three.poolMesh.material, g = ENG.three.poolMesh.geometry;
+    return { type: m.type, flat: m.flatShading, lit: !!m.specular, shin: m.shininess,
+             op: m.opacity, single: m.forceSinglePass, cuts: m.userData.cuts,
+             attrs: Object.keys(g.attributes).sort().join(','),
+             floats: Object.values(g.attributes).reduce((s, a) => s + a.itemSize, 0),
+             cells: water ? water.cells.size : 0 };
+  });
+  /* **有光，但一個頂點還是只傳 4 個 float**（座標 3 ＋ 泡沫 1）。
+     水的頂點每幀全部重寫，多一條 normal 就是每頂點多 3 個 float 的上傳（+75%）——
+     所以法線走 flatShading：three 在 `normal_fragment_begin` 用
+     cross(dFdx(vViewPosition), dFdy(vViewPosition)) 算，**用不到 normal attribute**。
+     這顆網格全是軸對齊的平面，微分算出來的就是那個面真正的法線。
+     哪天有人「順手」補一句 computeVertexNormals()，這一條會擋下來。 */
+  ok('水面吃光了，而且沒有為此多傳法線（一個頂點還是 4 個 float）',
+     wbSurf.type === 'MeshPhongMaterial' && wbSurf.flat === true && wbSurf.lit &&
+     wbSurf.single === true && wbSurf.attrs === 'aFoam,position' && wbSurf.floats === 4,
+     wbSurf.type + '（flatShading ' + wbSurf.flat + '、高光 ' + wbSurf.shin +
+     '、不透明度 ' + wbSurf.op + '）、attribute：' + wbSurf.attrs +
+     ' 共 ' + wbSurf.floats + ' 個 float／頂點');
+  /* shader 是靠「對 three 的 chunk 名字做字串取代」注進去的，**取代不到不會報錯**：
+     three 升版把 chunk 改個名字（`output_fragment` → `opaque_fragment` 真的發生過），
+     那一刀就默默沒生效。下面那條像素哨兵擋不住單一注入點失效——實測只讓波紋那一刀
+     失效（振幅歸零），變的像素只從 8% 掉到 5%，門檻抓不到。所以直接數刀數。 */
+  ok('水面 shader 的六個注入點都真的換到了（chunk 改名時這裡會靜默失效）',
+     wbSurf.cuts === 6 && wbSurf.cells > 0,
+     wbSurf.cuts + ' / 6 刀（' + wbSurf.cells + ' 格水在場、畫過一次）');
+
+  /* 泡沫長在哪：規則那邊的 rim ＝「旁邊那格**根本沒有水**」（水體到這裡結束，或旁邊是積木）。
+     這裡曾經拿「有側面」（f & 15）當外緣——側面只要旁邊比自己低就會標出來，
+     一片正在攤開的水每格深淺都差一點，於是三分之二的水面都被刷白，畫出來是一片白磁磚。
+     所以這一條同時量兩個數字：新訊號要是少數，舊訊號要是多數。 */
+  const wbFoam = await page.evaluate(() => {
+    cleanTools();
+    /* 藍圖要固定（水窪的形狀才每次一樣），**而且用完要還回去**：
+       後面的測試是 startBuild(true) 直接沿用當下的 shapePick，
+       留著不還的話等於偷偷替它們換了一座建築（踩過：「連倒二十下」那條的水
+       被五重塔的屋簷接住，200 秒排不掉）。 */
+    const keep = shapePick;
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '京都五重塔');
+    startBuild(true); completeNow();
+    pourBucket(26, 5, 2, WB_DROPS);                // 倒在建築外的草地上，攤成一片水窪
+    for (let i = 0; i < 60 * 3; i++) step(1 / 60);
+    const L = poolList();
+    let rim = 0, side = 0, want = 0, ground = 0;
+    for (const p of L) {
+      if (!(p.f & 32)) continue;                   // 只有畫得出水面的那些格算得上「刷不刷白」
+      if (p.rim) { rim++; want++; }
+      if (p.f & 15) side++;
+      if (p.y0 === 0) ground++;
+    }
+    const top = L.filter(p => p.f & 32).length;
+    draw();
+    const g = ENG.three.poolMesh.geometry, a = g.attributes.aFoam.array;
+    let hot = 0;
+    for (let i = 0; i < g.drawRange.count; i++) if (a[i] > 0) hot++;
+    shapePick = keep;
+    return { cells: L.length, top, rim, side, want, hot, ground };
+  });
+  ok('這一片水窪真的攤在地面上（下面幾條的前提）',
+     wbFoam.cells > 800 && wbFoam.ground > wbFoam.top * 0.7,
+     wbFoam.cells + ' 格水、其中 ' + wbFoam.top + ' 格畫得出水面，' +
+     wbFoam.ground + ' 格貼著地面');
+  ok('泡沫只長在水體外緣，不是三分之二的水面都刷白',
+     wbFoam.rim / wbFoam.top < 0.35 && wbFoam.side / wbFoam.top > 0.55 &&
+     wbFoam.side > wbFoam.rim * 2,
+     '畫得出水面的 ' + wbFoam.top + ' 格裡，外緣 ' + wbFoam.rim + ' 格（' +
+     Math.round(wbFoam.rim / wbFoam.top * 100) + '%）；換成舊的「有側面」會中 ' +
+     wbFoam.side + ' 格（' + Math.round(wbFoam.side / wbFoam.top * 100) + '%）');
+  ok('引擎只把泡沫寫在外緣那些格的水面上（每面 6 個頂點）',
+     wbFoam.hot === wbFoam.want * 6 && wbFoam.want > 0,
+     wbFoam.want + ' 個水面 × 6 ＝ ' + wbFoam.want * 6 + ' 個頂點，實際寫進 aFoam 的 ' +
+     wbFoam.hot + ' 個');
+
+  /* 波紋有沒有真的在動：**只把相位推 0.7 秒**（水一格都不動），再拍一張比像素。
+     這一條是 shader 注入的哨兵——onBeforeCompile 那幾個 replace 是靜默的，
+     哪天 three 換了 chunk 名字（`normal_fragment_begin` 之類）就會什麼都沒發生、
+     也不會報錯，畫面默默退回死板的藍。相位是規則那邊用 dt 累的（water.wave），
+     不是牆上時鐘：4× 速跟 1× 速是同一支波，測試也重現得出來。 */
+  const wbWave = await page.evaluate(() => {
+    cleanTools();
+    const keep = shapePick;                        // 同上，用完還回去
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '京都五重塔');
+    startBuild(true); completeNow();
+    pourBucket(26, 5, 2, WB_DROPS);
+    for (let i = 0; i < 60 * 3; i++) step(1 / 60);
+    const wave0 = water.wave;
+    const c = ENG.cam;                             // 貼著水面斜看：水面佔畫面最大的角度
+    c.tx = 26; c.tz = 2; c.ty = 0.3; c.dist = 13; c.yaw = 0.9; c.pitch = 0.22;
+    Object.assign(ENG.camTarget, { tx: c.tx, tz: c.tz, ty: c.ty, dist: c.dist });
+    for (let i = 0; i < 6; i++) ENG.updateCamera(1);
+    const shot = () => {
+      dust.length = 0; draw(); ENG.render();
+      const gl = ENG.three.renderer.getContext();
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return px;
+    };
+    /* 不能用顏色篩「像水的像素」當分母：天空也是淡藍的，一篩就把大半個畫面算進去，
+       比例被稀釋成個位數（踩過）。改成**數絕對值 ＋ A／A 對照**：
+       同一個狀態連拍兩張要一模一樣，推了相位才會變——變的就一定是波紋。 */
+    const diff = (x, y) => {
+      let n = 0;
+      for (let i = 0; i < x.length; i += 4)
+        if (Math.abs(x[i] - y[i]) + Math.abs(x[i + 1] - y[i + 1]) +
+            Math.abs(x[i + 2] - y[i + 2]) > 6) n++;
+      return n;
+    };
+    const a = shot();
+    const a2 = shot();                             // 什麼都沒動
+    water.wave += 0.7;                             // 只動相位，水本身一格都沒動
+    const b = shot();
+    shapePick = keep;
+    return { wave0: +wave0.toFixed(2), px: a.length / 4,
+             still: diff(a, a2), moved: diff(a, b) };
+  });
+  ok('水面會波光粼粼：只把波紋的相位推一下，水一格沒動，畫面就變了',
+     wbWave.moved > 20000 && wbWave.still < wbWave.moved / 50 &&
+     Math.abs(wbWave.wave0 - 3) < 0.1,
+     '相位 ' + wbWave.wave0 + ' → +0.7 秒：' + wbWave.px + ' 個像素裡 ' +
+     wbWave.moved + ' 個變了（' + Math.round(wbWave.moved / wbWave.px * 100) +
+     '%）；什麼都不動連拍兩張只差 ' + wbWave.still +
+     ' 個（相位是規則的 dt 累出來的，3 秒就是 3.00）');
+
   // 一杯水在場時每幀的成本
   const wbCost = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
