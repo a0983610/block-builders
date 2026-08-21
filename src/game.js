@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.96.0';
+const VERSION = '1.97.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -260,6 +260,10 @@ function newBlock() {
     rx: 0, ry: 0, rz: 0, ax: 0, ay: 0, az: 0,
     r: 0.78, g: 0.74, b: 0.66, tr: 0.78, tg: 0.74, tb: 0.66,
     slot: -1, holder: -1, rest: true, cell: '',
+    /* 這塊是「某一間小人的家」的第幾格（v1.97，見 homes）。−1＝不是。
+       家不進藍圖那套（slot 一律 −1），所以拆除、垮塌、計價那些看 slot 的地方
+       本來就會跳過它；反過來，破壞道具只看 st === SET，所以照樣打得掉。 */
+    hh: -1, hk: -1,
     scale: 1, snap: 0, snapFrom: null, arc: null, wob: 0, al: 1, fallIn: 0,
     burn: 0,                             // 1 = 正在燒（狀態本體在 fires 那筆裡）
     wet: 0                               // 還濕幾秒（>0 就點不著，顏色也壓深一點）
@@ -275,6 +279,14 @@ function halfY(b) {
 }
 
 function freeBlock(b) {
+  /* 家的那一塊被打掉了（v1.97）：那一格重新算成「還沒蓋」。
+     事件還在跑的話小人會自己補回去（h.left 加回來就是他們的工作清單）；
+     已經回去上工的話就是一間破了個洞的房子。 */
+  if (b.hh >= 0) {
+    const h = homes && homes.list[b.hh], sl = h && h.slots[b.hk];
+    if (sl) { sl.filled = false; sl.claimed = -1; h.left++; }
+    b.hh = -1; b.hk = -1;
+  }
   if (b.slot >= 0) {
     // 已就位的被打掉，進度要跟著退回去。
     // 只認 SET：TOSS 中的積木雖然也占著 slot，但還沒計進 placedCnt。
@@ -403,6 +415,7 @@ function pickShape() {
 }
 
 function startBuild(instant) {
+  stopIdleEvent();                   // 閒晃事件收掉，人叫回去上工（v1.97）
   /* 順序有講究：先把小人和舊建築解開（他們的 slot 指的是「舊」藍圖），
      再換 bp，最後才調整積木池——反過來做的話，
      reconcilePool 的 splice 會讓工作單（w.load）上的編號指到別塊積木上。 */
@@ -415,6 +428,8 @@ function startBuild(instant) {
     w.y = 0; w.tilt = 0; w.vx = w.vy = w.vz = 0;
   }
   for (const b of blocks) {
+    // 家的那些不解（v1.97）：房子留在場上（使用者指定），只有被新工地蓋到才拆（見下面）
+    if (b.hh >= 0) continue;
     if (b.st === SET || b.st === CARRY || b.st === TOSS) {
       b.slot = -1; b.holder = -1; b.arc = null; b.scale = 1; b.fallIn = 0;
       b.st = FLY; b.rest = false; b.snap = 0;
@@ -458,6 +473,7 @@ function startBuild(instant) {
   siteR = Math.max(7, bp.radius);
   // 建材散落區從工地邊緣往外鋪，面積跟積木數成正比 → 不管 300 塊還 3000 塊都一樣鬆
   arenaR = Math.sqrt((siteR + 2) ** 2 + SPREAD * bp.slots.length / Math.PI) + 8;
+  clearHomesInSite();                // 新工地蓋到誰家，那一間解成碎料（v1.97）
   reconcilePool();
 
   /* 上一輪的碎料躺在新工地上：叫幾台推土機開進來把範圍推乾淨，推完小人才開工。
@@ -867,16 +883,28 @@ function kickOut(b) {
    補的建材鋪成工地外圍一整圈，不集中成一堆料場——
    料場如果剛好在相機背後，玩家會覺得「建材呢？」（第一版就是這樣）。 */
 function reconcilePool() {
-  const need = Math.min(ENG.MAXB, bp.slots.length);
-  const add = need - blocks.length;
+  /* 家的那些積木不算在料池裡（v1.97）：它們是從地上挖出來的，不是這一座的建材。
+     算進去的話，池子看起來「太多了」，補料那一段會反過來把地上的碎料收掉——
+     等於小人蓋了幾間房子，下一座就少了那麼多建材。 */
+  let own = 0;
+  for (const b of blocks) if (b.hh < 0) own++;
+  const need = Math.min(ENG.MAXB - (blocks.length - own), bp.slots.length);
+  const add = need - own;
   if (add > 0) {
     const r0 = siteR + 2.5;
     for (let i = 0; i < add; i++) {
       const b = newBlock();
       const a = Math.random() * Math.PI * 2;
       // 半徑取平方根分布，密度才會均勻（直接均勻取半徑會全擠在內圈）
-      const rad = Math.sqrt(r0 * r0 + Math.random() * (arenaR * arenaR - r0 * r0));
+      let rad = Math.sqrt(r0 * r0 + Math.random() * (arenaR * arenaR - r0 * r0));
       b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad;
+      /* 別鋪到人家屋子裡（v1.97）：小人不撿屋子裡的料（見 findBlock），
+         鋪進去就等於這幾塊永遠沒人搬。 */
+      for (let t = 0; t < 6 && homeAt(b.x, b.z); t++) {
+        const a2 = Math.random() * Math.PI * 2;
+        rad = Math.sqrt(r0 * r0 + Math.random() * (arenaR * arenaR - r0 * r0));
+        b.x = Math.cos(a2) * rad; b.z = Math.sin(a2) * rad;
+      }
       b.y = HB; b.al = 0;
       b.ry = Math.floor(Math.random() * 4) * Math.PI / 2;
       const t = rr(0.72, 0.86);
@@ -956,6 +984,10 @@ function newWorker(i) {
        fly 是已經送出去、還在半空的那幾塊（連發，所以是一份清單），
        trail 是下一顆星還有多久。 */
     mage: 0, cast: 0, mang: 0, mrad: 0, mre: 0, ct: 0, fly: [], trail: 0,
+    /* 蓋自己的家（v1.97 的閒晃事件，見 homes）：hm 是哪一間（−1＝沒在蓋），
+       hk 是認走的那一格，hst 是這一趟在做什麼（dig／lay），
+       hdt 是還要挖幾秒，hp 是下一撮土花幾秒。 */
+    hm: -1, hk: -1, hst: '', hdt: 0, hp: 0,
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
@@ -1023,6 +1055,7 @@ function releaseWorker(w) {
     else if (b) b.holder = -1;
     freeClaim(j.s);
   }
+  homeUnclaim(w);                    // 家的那一格也要放掉（v1.97）
   w.load.length = 0; w.li = 0; w.carry = false; w.st = 'idle';
   /* 魔法師還在半空的那幾塊也從清單上劃掉。積木本身不管（它自己會落定），
      但編號要清掉——換藍圖時整池積木會重編，留著會指到別人的積木上。 */
@@ -1207,7 +1240,10 @@ function findBlock(wx, wz, maxD) {
     const b = blocks[i];
     if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
     const d = (b.x - wx) ** 2 + (b.z - wz) ** 2;
-    if (d < bd) { bd = d; best = i; }
+    /* 躺在人家屋子裡的料不撿（v1.97）：走過去會被 stepTo 推出屋外，
+       永遠抵達不了那一塊，那個人就卡在 pick 上。homeAt 只在「這塊是目前最近的」
+       時候才查，不是每塊都查一次。 */
+    if (d < bd) { if (homeAt(b.x, b.z)) continue; bd = d; best = i; }
   }
   return best;
 }
@@ -1239,9 +1275,12 @@ function walkTo(w, dt) { return stepTo(w, w.tx, w.tz, dt); }
 function stepTo(w, tx, tz, dt) {
   const dx = tx - w.x, dz = tz - w.z;
   const d = Math.hypot(dx, dz);
-  if (d < REACH) { w.gait += (0 - w.gait) * Math.min(1, dt * 8); return true; }
+  /* 抵達也要推一次（v1.97）：推只掛在「有移動」那條路徑上的話，
+     一個站在屋子裡不動的人永遠不會被推出來。 */
+  if (d < REACH) { pushOutHome(w); w.gait += (0 - w.gait) * Math.min(1, dt * 8); return true; }
   const sp = WALK * dt;
   w.x += dx / d * Math.min(sp, d); w.z += dz / d * Math.min(sp, d);
+  pushOutHome(w);
   w.a = Math.atan2(dx, dz);
   w.ph += dt * 11;
   w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
@@ -1632,9 +1671,10 @@ function updWorker(w, wi, dt) {
            於是整圈人先一起往內走 1.1 格、同時抵達、再同時往外散（實測 20/20）。 */
         idleSpot(w);
       }
-      // 慶祝完就在建築外圈那一環閒晃，跟施工中沒工作的人同一份（見 wander）
       w.y += (0 - w.y) * Math.min(1, dt * 6);
-      wander(w, dt);
+      // 離隊去蓋自己家的人走那條路（v1.97）；其餘的在建築外圈那一環閒晃
+      if (w.hm >= 0) updHome(w, wi, dt);
+      else wander(w, dt);
     }
     return;
   }
@@ -1817,7 +1857,7 @@ function strollTo(w, dt) {
     w.tx = Math.cos(a) * keep; w.tz = Math.sin(a) * keep;
   }
   const dx = w.tx - w.x, dz = w.tz - w.z, d = Math.hypot(dx, dz);
-  if (d < REACH) { w.gait += (0 - w.gait) * Math.min(1, dt * 8); return true; }
+  if (d < REACH) { pushOutHome(w); w.gait += (0 - w.gait) * Math.min(1, dt * 8); return true; }
 
   let ux = dx / d, uz = dz / d;
   const pr = Math.hypot(w.x, w.z);
@@ -1838,6 +1878,7 @@ function strollTo(w, dt) {
 
   const sp = Math.min(WALK * dt, d);
   w.x += ux * sp; w.z += uz * sp;
+  pushOutHome(w);
   w.leg += sp;                         // 這趟閒晃走了多遠，抵達後拿來算站多久
   w.a = Math.atan2(ux, uz);            // 面向真正在走的方向，不是目標方向
   w.ph += dt * 11;
@@ -1851,8 +1892,12 @@ function strollTo(w, dt) {
    人站在半徑 14.9 上，於是每個人的第一段路都朝外，一圈人整齊往外走。
    下限（strollTo 的 KEEP）保證他不會穿進建築裡。 */
 function idleSpot(w) {
-  const a = Math.random() * Math.PI * 2, d = siteR + rr(IDLE_NEAR, IDLE_FAR);
-  w.tx = Math.cos(a) * d; w.tz = Math.sin(a) * d;
+  for (let t = 0; t < 8; t++) {
+    const a = Math.random() * Math.PI * 2, d = siteR + rr(IDLE_NEAR, IDLE_FAR);
+    const x = Math.cos(a) * d, z = Math.sin(a) * d;
+    if (t < 7 && homeAt(x, z)) continue;      // 別挑在人家屋子裡（v1.97）
+    w.tx = x; w.tz = z; return;
+  }
 }
 function wander(w, dt) {
   if (w.pause > 0) { w.pause -= dt; w.gait += (0 - w.gait) * Math.min(1, dt * 8); return; }
@@ -1976,6 +2021,7 @@ function pickMageSpot(w) {
     // 站定之後那一坨的中心要在搆得到的範圍內，不然走過去也是白站
     if (Math.hypot(h.x - sx, h.z - sz) > MAGE_REACH * 0.6) continue;
     if (mageTaken(w, sx, sz)) continue;
+    if (homeAt(sx, sz)) continue;                     // 別站到人家屋子裡（v1.97）
     const s = h.n / (1 + Math.hypot(h.x - w.x, h.z - w.z) * MAGE_TRIP);
     if (s > best) { best = s; bx = a; bz = r; bn = h.n; }
   }
@@ -2094,6 +2140,8 @@ function endChat(w) {
 function chatFree(w) {
   if (w.chat > 0 || w.chatCd > 0 || w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
       w.carry) return false;
+  // 正在蓋自己的家的人不算閒（蓋完了在家附近走走的才算，v1.97）
+  if (w.hm >= 0 && homeBusy(w)) return false;
   if (phase === 'done') return !cheerOn(w);
   return phase === 'build' && w.st === 'idle' && !w.eng;
 }
@@ -2129,10 +2177,375 @@ function stepChat(w, wi, dt) {
   if (w.chat <= 0) {
     endChat(w);
     // 聊完就走：給一個新的閒晃目標，不然兩個人會杵在原地等發呆時間跑完
-    const a = Math.random() * Math.PI * 2, d = siteR + rr(2, 9);
-    w.tx = Math.cos(a) * d; w.tz = Math.sin(a) * d;
+    idleSpot(w);
     w.pause = 0;
   }
+}
+
+/* ── 閒晃事件 ─────────────────────────────────────────────
+   慶祝散完場、場上真的沒事幹的那段時間會發生一件事（v1.97，使用者要的，
+   而且指定「設計成可擴充」）。所以做成一張表：每一筆是
+     { id, p 機率, start(), step(dt) 或 null, stop() }
+   全員都散場那一刻照 p 擲一次骰子，中了就跑那一件；一開始建造（或建築被動到
+   進了拆除／整地）就收掉，直接回建造模式。
+   「收掉」只是把人叫回去上工——事件蓋出來的東西留在場上，那是它自己的事。
+   目前只有一筆（小人的家）。加第二筆就是往這張表再放一列。 */
+let idleEv = null;                  // 現在在跑的那一件（null＝純閒晃）
+let evArm = 1;                      // 這一輪還沒擲過骰子
+const IDLE_EVENTS = [
+  /* 小人的家：40%（使用者指定）。每個人的行為擺在 updHome（跟魔法師一樣是
+     「一條自己的路」），所以這裡不需要每幀的 step。 */
+  { id: 'home', p: 0.4, start: startHomes, step: null, stop: stopHomes }
+];
+function stopIdleEvent() {
+  const e = idleEv;
+  idleEv = null;
+  if (e) e.stop();
+}
+function stepIdleEvent(dt) {
+  if (phase !== 'done') { stopIdleEvent(); evArm = 1; return; }
+  if (evArm) {
+    /* 等到每個人都散場才擲：還在圈上跳的時候就開始蓋房子的話，
+       那幾個人會從圈上直接走掉（散場錯開最多 CHEER_OUT 秒，見那裡）。 */
+    if (workers.some(w => cheerOn(w))) return;
+    evArm = 0;
+    for (const e of IDLE_EVENTS)
+      if (Math.random() < e.p) { idleEv = e; e.start(); break; }
+  }
+  if (idleEv && idleEv.step) idleEv.step(dt);
+}
+
+/* ── 事件一：小人的家 ─────────────────────────────────────
+   使用者的規格：一半左右的人找個地方蓋自己的小房子（50 塊以內），積木就近從地上
+   挖出來，也可以跟附近的小人一起合蓋大一點的，蓋完就在自己家附近走走。
+
+   房子**不進藍圖那一套**（bp.slots／支撐／派工游標／placedCnt 全是「那一座地標」
+   專用的），它自己帶一份格子清單，積木用 hh／hk 記住是哪一間的哪一格。所以：
+     · 推土機碰不到它——那台只推工地內（siteR + 1.4）的 FREE 碎料
+     · 破壞道具照樣打得掉——那些只看 st === SET
+     · 打掉的那一格小人會補回來（freeBlock 把 h.left 加回去）
+     · 換場時「整棟解成碎料」那一段要跳過它（見 startBuild）
+     · 沒有支撐計算：底下被打掉上面不會垮，那是藍圖那套的功能
+   房子留在場上不收（使用者指定），唯一的例外是下一座工地正好蓋到它身上——
+   那一間解成碎料（見 clearHomesInSite）。 */
+let homes = null;                   // { list: [home] }。蓋好的房子不隨事件收掉
+const HOME_PART = 0.5;              // 大約幾成的人離隊去蓋（使用者選「一半左右」）
+const HOME_NEAR = 8, HOME_FAR = 22; // 蓋在工地外圈這一帶（使用者選的）
+const HOME_GAP = 10;                // 兩間的中心至少隔多遠
+const HOME_TREE = 3.5;              // 離樹至少多遠（樹種在碎料場外圍，通常碰不到）
+const HOME_TEAM = 3;                // 一間最多幾個人合蓋
+const HOME_NEARBY = 8;              // 多近算「附近的小人」，會被拉進同一組
+/* 一間的尺寸看幾個人合蓋。四面牆 ＋ 一個門洞 ＋ 平屋頂 ＋ 一根煙囪，
+   算下來 25 / 32 / 48 塊——使用者說「可能 50 塊積木內就能建成的」。
+   屋頂做平的不做斜的：斜屋頂要一層一層縮，同樣的塊數只蓋得起更小的房子。 */
+const HOME_SIZE = [{ w: 3, d: 3, h: 2 }, { w: 4, d: 3, h: 2 }, { w: 5, d: 4, h: 2 }];
+const HOME_PAL = [                  // 牆、屋頂、煙囪（每間隨機挑一組）
+  [[0.82, 0.70, 0.52], [0.72, 0.31, 0.26], [0.56, 0.53, 0.50]],
+  [[0.86, 0.83, 0.74], [0.38, 0.45, 0.58], [0.56, 0.53, 0.50]],
+  [[0.74, 0.60, 0.44], [0.36, 0.52, 0.36], [0.56, 0.53, 0.50]]
+];
+const DIG_T = 0.8;                  // 挖一塊要幾秒
+const DIG_NEAR = 3.5, DIG_FAR = 8;  // 挖料的地方離自己的房子多遠
+const DIG_PUFF = 0.16;              // 挖的時候每隔幾秒噴一撮土
+const DIG_MARK = 1.7;              // 土痕的大小（跟隕石坑同一套，3 秒淡掉）
+const LIVE_R = 6;                   // 蓋完在家附近多大範圍裡走
+/* 站位離地基邊緣多遠。要大於 REACH（0.9）＝「走到多近算抵達」，
+   不然他停下來的那一點可能還在屋子裡（停下來就不會再被 pushOutHome 推了）。 */
+const HOME_STAND = 1.4;
+
+/* 這個點在不在某一間房子的地基上。房子不在藍圖的格子表裡（footBlocked 查的是那個），
+   所以會走路的東西都得自己避開，不然人會從房子中間穿過去。 */
+function homeAt(x, z) {
+  if (!homes) return false;
+  for (const h of homes.list)
+    if ((h.x - x) ** 2 + (h.z - z) ** 2 < h.r * h.r) return true;
+  return false;
+}
+/* 走進房子裡就沿著「屋子中心 → 他」的方向推出去。煞停不行：貼著牆會原地發抖。
+   擺在每一種走法的位移之後（stepTo 與 strollTo 各一次）。 */
+function pushOutHome(w) {
+  if (!homes) return;
+  for (const h of homes.list) {
+    const dx = w.x - h.x, dz = w.z - h.z;
+    const d = Math.hypot(dx, dz);
+    if (d >= h.r) continue;
+    const out = h.r + 0.02;             // 推到邊界上的話，浮點誤差會讓 homeAt 判成還在裡面
+    if (d < 0.001) { w.x = h.x + out; continue; }
+    w.x = h.x + dx / d * out; w.z = h.z + dz / d * out;
+  }
+}
+/* 這個人是不是「還在蓋」（蓋完了在家附近走走的不算）。聊天要用這個判斷。 */
+function homeBusy(w) {
+  const h = homes && homes.list[w.hm];
+  return !!h && (h.left > 0 || w.load.length > 0);
+}
+/* 認走的那一格放掉。releaseWorker（逃命、被炸飛、換場、換人數）跟砌到一半出事
+   都會走到這裡。 */
+function homeUnclaim(w) {
+  if (w.hk < 0) return;
+  const h = homes && homes.list[w.hm], sl = h && h.slots[w.hk];
+  if (sl) sl.claimed = -1;
+  w.hk = -1;
+}
+/* 一間房子的格子清單。順序是牆一層一層往上、然後屋頂、最後煙囪——
+   照這個順序砌，看起來才是「蓋起來」的。
+   門開在**朝著大建築那一面**：背對著開的話，從鏡頭看過去就只是一面平牆。 */
+function homeSlots(hx, hz, s, pal) {
+  const out = [];
+  const ox = (s.w - 1) / 2, oz = (s.d - 1) / 2;
+  const at = (i, k) => ({ x: hx + i - ox, z: hz + k - oz });
+  const mid = { i: Math.floor((s.w - 1) / 2), k: Math.floor((s.d - 1) / 2) };
+  // 哪一面朝場中心：看房子中心相對場中心是 x 遠還是 z 遠
+  const door = Math.abs(hx) > Math.abs(hz)
+    ? { i: hx > 0 ? 0 : s.w - 1, k: mid.k }
+    : { i: mid.i, k: hz > 0 ? 0 : s.d - 1 };
+  for (let gy = 0; gy < s.h; gy++)
+    for (let i = 0; i < s.w; i++)
+      for (let k = 0; k < s.d; k++) {
+        if (i > 0 && i < s.w - 1 && k > 0 && k < s.d - 1) continue;   // 中間是屋內
+        if (gy === 0 && i === door.i && k === door.k) continue;       // 門洞
+        const q = at(i, k);
+        out.push({ x: q.x, y: gy + HB, z: q.z, c: pal[0], filled: false, claimed: -1 });
+      }
+  for (let i = 0; i < s.w; i++)
+    for (let k = 0; k < s.d; k++) {
+      const q = at(i, k);
+      out.push({ x: q.x, y: s.h + HB, z: q.z, c: pal[1], filled: false, claimed: -1 });
+    }
+  const c = at(0, 0);
+  out.push({ x: c.x, y: s.h + 1 + HB, z: c.z, c: pal[2], filled: false, claimed: -1 });
+  return out;
+}
+/* 找一塊空地：從這一組人現在站的方位往外找，避開已經蓋好的房子與樹。
+   找不到就回 null（那一組人就照常閒晃，不硬塞）。 */
+function pickHomeSite(cx, cz) {
+  const base = Math.atan2(cz, cx);
+  for (let t = 0; t < 40; t++) {
+    const a = base + rr(-0.9, 0.9), r = siteR + rr(HOME_NEAR, HOME_FAR);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    let ok = true;
+    for (const h of homes.list)
+      if ((h.x - x) ** 2 + (h.z - z) ** 2 < HOME_GAP * HOME_GAP) { ok = false; break; }
+    if (ok) for (const t2 of trees)
+      if ((t2.x - x) ** 2 + (t2.z - z) ** 2 < (HOME_TREE + t2.r) ** 2) { ok = false; break; }
+    if (ok) return { x, z };
+  }
+  return null;
+}
+function startHomes() {
+  if (!homes) homes = { list: [] };
+  /* 誰離隊：從站得穩的人裡抽大約一半。工程師與魔法師照樣抽得到——
+     沒在施工的時候他們就是普通人（圖跟法杖只在施工那條路上畫）。 */
+  const pool = [];
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    if (w.air || w.burn > 0 || w.flee > 0 || w.fall > 0) continue;
+    pool.push(i);
+  }
+  for (let i = pool.length - 1; i > 0; i--) {          // 洗牌
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+  }
+  const left = pool.slice(0, Math.max(1, Math.round(pool.length * HOME_PART)));
+  while (left.length) {
+    const lead = workers[left.shift()];
+    /* 附近的人一起蓋（使用者：「也可以跟附近的小人一起合蓋大一點的小房子」）。
+       比的是現在站的位置——慶祝剛散場，所以「附近」就是圈上的鄰居。 */
+    const crew = [lead];
+    for (let i = left.length - 1; i >= 0 && crew.length < HOME_TEAM; i--) {
+      const o = workers[left[i]];
+      if ((o.x - lead.x) ** 2 + (o.z - lead.z) ** 2 > HOME_NEARBY * HOME_NEARBY) continue;
+      crew.push(o); left.splice(i, 1);
+    }
+    let cx = 0, cz = 0;
+    for (const w of crew) { cx += w.x; cz += w.z; }
+    const at = pickHomeSite(cx / crew.length, cz / crew.length);
+    if (!at) continue;                                 // 沒空地了，這一組就照常閒晃
+    const s = HOME_SIZE[Math.min(crew.length, HOME_SIZE.length) - 1];
+    const pal = HOME_PAL[Math.floor(Math.random() * HOME_PAL.length)];
+    const slots = homeSlots(at.x, at.z, s, pal);
+    /* r 是「地基半徑」：閒晃的人要繞開這麼多。取對角的一半再加一點，
+       整棟房子都在圈裡（方的東西用圓框，寧可框大一點）。 */
+    const h = { x: at.x, z: at.z, r: Math.hypot(s.w, s.d) / 2 + 0.7,
+                slots, left: slots.length, n: crew.length };
+    homes.list.push(h);
+    const hi = homes.list.length - 1;
+    for (const w of crew) {
+      releaseWorker(w);                                // 手上的建材先放掉，這趟不是上工
+      w.hm = hi; w.hk = -1; w.hst = ''; w.pause = 0;
+    }
+  }
+}
+function stopHomes() {
+  for (const w of workers) {
+    if (w.hm < 0) continue;
+    releaseWorker(w);                 // 挖出來還在手上的那塊掉回地上，變成一般碎料
+    w.hm = -1; w.hst = '';
+  }
+}
+/* 新工地蓋到房子身上的話，那一間解成碎料。房子本來是留著不收的（使用者指定），
+   但下一座的 siteR 可能比這一間還遠——留著就會跟新建築長在同一個位置。
+   解成碎料剛好接回原本的流程：那些塊變成 FREE，整地的推土機把它們推出工地，
+   小人再撿去蓋新的那一座（等於「你家被徵收了」）。
+   索引會變，所以積木的 hh 跟小人的 hm 要一起重編。 */
+function clearHomesInSite() {
+  if (!homes || !homes.list.length) return;
+  const map = [], keep = [];
+  const r = siteR + KEEP;
+  for (const h of homes.list) {
+    const out = Math.hypot(h.x, h.z) - h.r > r;
+    map.push(out ? keep.length : -1);
+    if (out) keep.push(h);
+  }
+  if (keep.length === homes.list.length) return;
+  for (const b of blocks) {
+    if (b.hh < 0) continue;
+    const to = map[b.hh];
+    if (to >= 0) { b.hh = to; continue; }
+    b.hh = -1; b.hk = -1;
+    b.slot = -1; b.holder = -1; b.arc = null; b.scale = 1; b.fallIn = 0;
+    b.st = FLY; b.rest = false; b.snap = 0;
+    b.tr = 0.80; b.tg = 0.76; b.tb = 0.68;               // 變回一般建材的顏色
+    b.vx = rr(-3, 3); b.vy = rr(1, 4); b.vz = rr(-3, 3);
+    b.ax = rr(-5, 5); b.ay = rr(-5, 5); b.az = rr(-5, 5);
+  }
+  for (const w of workers) w.hm = w.hm >= 0 ? map[w.hm] : -1;
+  homes.list = keep;
+}
+/* 挖土那一撮塵。用塵霧那個池子（跟彩帶一樣），顏色調成土色。 */
+function digPuff(w) {
+  if (dust.length > 460) return;
+  const a = Math.random() * Math.PI * 2, sp = rr(0.8, 2.6);
+  dust.push({
+    x: w.x + rr(-0.3, 0.3), y: 0.2, z: w.z + rr(-0.3, 0.3),
+    vx: Math.cos(a) * sp, vy: rr(1.4, 3.4), vz: Math.sin(a) * sp,
+    rx: Math.random() * 6, ry: Math.random() * 6,
+    life: rr(0.35, 0.7), s: rr(0.14, 0.3),
+    cr: 0.52, cg: 0.40, cb: 0.28
+  });
+}
+/* 這一趟去哪裡挖。每一趟重挑：一直挖同一個坑的話，人會黏在那個點上不動。
+   不挖工地裡（那是別人的建材場，而且他會被 strollTo 推出來）、不挖在人家屋子裡。 */
+function digSpot(w, h) {
+  for (let t = 0; t < 20; t++) {
+    const a = rr(0, Math.PI * 2), d = rr(DIG_NEAR, DIG_FAR);
+    const x = h.x + Math.cos(a) * d, z = h.z + Math.sin(a) * d;
+    if (Math.hypot(x, z) < siteR + KEEP) continue;
+    if (homeAt(x, z)) continue;
+    w.tx = x; w.tz = z; w.hdt = DIG_T; return;
+  }
+  w.tx = h.x + DIG_NEAR; w.tz = h.z; w.hdt = DIG_T;
+}
+/* 挖出一塊來（就近從地面挖，使用者指定）。積木是**新生出來的**，不是從料池拿的——
+   完工那一刻場上通常一塊散料都沒有（料池 = 藍圖格數，見 reconcilePool），
+   從料池拿等於把下一座的建材偷走。它們也不算進料池（hh >= 0 的都跳過）。 */
+function digBlock(w, wi, h) {
+  let k = -1;
+  for (let i = 0; i < h.slots.length; i++)
+    if (!h.slots[i].filled && h.slots[i].claimed < 0) { k = i; break; }
+  if (k < 0 || blocks.length >= ENG.MAXB) { w.hst = ''; return; }   // 都被同組認走了／池子滿了
+  const b = newBlock();
+  b.x = w.x; b.z = w.z; b.y = HB;
+  b.st = CARRY; b.rest = false; b.holder = wi; b.hh = w.hm; b.hk = k;
+  const c = h.slots[k].c;
+  b.r = b.tr = c[0]; b.g = b.tg = c[1]; b.b = b.tb = c[2];
+  blocks.push(b);
+  h.slots[k].claimed = wi;
+  w.hk = k;
+  /* 借工作單那份欄位裝（s 給 −1＝不占藍圖的格子）：這樣「舉在手上的高度」
+     （carryPose）、逃命與被炸飛時的脫手（releaseWorker／dropJob）全部是現成的。 */
+  w.load.push({ b: blocks.length - 1, s: -1 });
+  w.carry = true;
+  w.hst = 'lay';
+  spawnMark({ x: w.x, y: 0, z: w.z }, DIG_MARK, 1);      // 挖過的土痕（跟隕石坑同一套）
+  digPuff(w); digPuff(w); digPuff(w);
+  ENG.setBlockCount(blocks.length);
+}
+/* 砌上去：跟工人丟積木同一套拋物線，只是落定走 landHome。 */
+function layHome(w, h) {
+  const j = w.load[0];
+  const b = j && blocks[j.b];
+  const sl = h.slots[w.hk];
+  if (!b || b.st !== CARRY || !sl) { if (j) dropJob(w, 0); homeUnclaim(w); w.hst = ''; return; }
+  w.a = Math.atan2(sl.x - w.x, sl.z - w.z);
+  b.st = TOSS; b.rest = false;
+  b.arc = {
+    t: 0, dur: 0.3 + Math.hypot(sl.x - b.x, sl.z - b.z) * 0.02 + sl.y * 0.012,
+    x0: b.x, y0: b.y, z0: b.z, x1: sl.x, y1: sl.y, z1: sl.z,
+    peak: Math.max(1.1, (sl.y - b.y) * 0.45 + 1.1),
+    hm: w.hm, hk: w.hk
+  };
+  b.holder = -1;
+  w.load.shift(); w.carry = false;
+  w.hk = -1; w.hst = '';
+}
+/* 家的那一塊落定。跟藍圖那條分開：沒有支撐計算、不動 placedCnt、不算進「累計搬運」
+   （那是幫地標搬的量）。 */
+function landHome(b, a) {
+  const h = homes && homes.list[a.hm];
+  const sl = h && h.slots[a.hk];
+  b.arc = null;
+  if (!sl) { freeBlock(b); b.vy = 1.5; return; }         // 那一間已經不在了
+  b.st = SET; b.rest = true;
+  b.x = a.x1; b.y = a.y1; b.z = a.z1;
+  b.rx = b.ry = b.rz = 0;
+  b.scale = 1.22;                                       // 落定彈一下
+  b.hh = a.hm; b.hk = a.hk;
+  sl.filled = true; sl.claimed = -1;
+  h.left--;
+  sndPlace();
+}
+/* 蓋完就在自己家附近走走（使用者的規格）。跟一般閒晃同一套（會發呆、走近了會聊天），
+   只是目標點以自己的房子為中心，不是以工地為中心。 */
+function liveSpot(w, h) {
+  for (let t = 0; t < 12; t++) {
+    const a = rr(0, Math.PI * 2), d = rr(h.r + HOME_STAND, h.r + LIVE_R);
+    const x = h.x + Math.cos(a) * d, z = h.z + Math.sin(a) * d;
+    if (t < 11 && homeAt(x, z)) continue;
+    w.tx = x; w.tz = z; return;
+  }
+}
+function liveHome(w, h, dt) {
+  /* 剛從「蓋」切到「住」的那一刻，目標點可能還是上一份工作留下的——挖料的坑，
+     或者（房子被同組的人蓋完、他一塊都沒搬到時）事件開始前的閒晃點，
+     那個可能在工地的另一邊（實測有人因此先走了 46 格才回家）。離家太遠就先重挑。 */
+  if (Math.hypot(w.tx - h.x, w.tz - h.z) > h.r + LIVE_R) liveSpot(w, h);
+  if (w.pause > 0) { w.pause -= dt; w.gait += (0 - w.gait) * Math.min(1, dt * 8); return; }
+  if (!strollTo(w, dt)) return;
+  strollPause(w);
+  liveSpot(w, h);
+}
+/* 這一幀的「蓋自己的家」。跟魔法師一樣是一條自己的路，不走 idle／pick／build 那套——
+   那一套的格子與建材全看 bp（findSlot／loadUp／standPos）。
+   一趟是「走去挖 → 挖 → 走回房子 → 砌上」，砌完再走下一趟。 */
+function updHome(w, wi, dt) {
+  const h = homes && homes.list[w.hm];
+  if (!h) { w.hm = -1; return; }                        // 那一間被徵收了：回去閒晃
+  if (w.load.length) {                                  // 手上有一塊：走回去砌
+    carryPose(w);
+    const sl = h.slots[w.hk];
+    if (!sl) { dropJob(w, 0); w.hst = ''; return; }
+    /* 站在格子外面丟（跟工人一樣不走進牆裡）：從屋子中心往那一格的方向推到地基外。
+       **屋頂正中央那一格 dx/dz 都是 0**（3×3 的房子就有一格在正中心），
+       那時候改用「他現在站的方向」——不然目標會落在屋子正中心，人一走進去就被
+       pushOutHome 推出來，永遠抵達不了，那一格也就永遠砌不上（實測 6 間有 2 間卡住）。
+       推的距離要大於「走到多近算抵達」（REACH 0.9），不然他站定的位置可能還在屋裡。 */
+    let dx = sl.x - h.x, dz = sl.z - h.z;
+    let d = Math.hypot(dx, dz);
+    if (d < 0.001) { dx = w.x - h.x; dz = w.z - h.z; d = Math.hypot(dx, dz) || 1; }
+    w.tx = h.x + dx / d * (h.r + HOME_STAND); w.tz = h.z + dz / d * (h.r + HOME_STAND);
+    if (strollTo(w, dt)) layHome(w, h);
+    return;
+  }
+  if (h.left <= 0) { liveHome(w, h, dt); return; }       // 蓋完了
+  if (w.hst !== 'dig') { digSpot(w, h); w.hst = 'dig'; }
+  if (!strollTo(w, dt)) return;                          // 還在走去挖的路上
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  w.a = Math.atan2(h.x - w.x, h.z - w.z);                // 面向自己的房子挖
+  w.hp -= dt;
+  if (w.hp <= 0) { w.hp = DIG_PUFF; digPuff(w); }
+  w.hdt -= dt;
+  if (w.hdt <= 0) digBlock(w, wi, h);
 }
 
 /* 拋物線飛向藍圖位置。到頂就定位，slot 標記填好 */
@@ -2145,6 +2558,7 @@ function stepToss(b, dt) {
   b.y = a.y0 + (a.y1 - a.y0) * t + Math.sin(t * Math.PI) * a.peak;
   b.rx += dt * 5; b.ry += dt * 3.5;
   if (t >= 1) {
+    if (a.hm !== undefined) { landHome(b, a); return; }   // 家的那一塊（v1.97）
     // 飛到一半底下被打掉的話就別擺上去了，直接當碎料掉下來
     freshSupport();
     if (!canPlace(b.slot)) {
@@ -5596,6 +6010,7 @@ function step(dt) {
   burningW = 0;
   for (const w of workers) if (w.burn > 0) burningW++;    // 火苗配額要照人數分
   mageHeapT -= dt;                                       // 料堆清單的重算計時（見 listMageHeaps）
+  stepIdleEvent(dt);                                     // 閒晃事件（v1.97）
   pairChat();                                            // 湊對要在更新之前，配到的當幀就停下來
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);

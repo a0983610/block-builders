@@ -96,7 +96,29 @@ async function reset(page, o = {}) {
    天上的核彈、還在滾的球會把這一條的建築拆掉，量到的就不是這一條在測的東西。
    裝成頁面上的一支函式，reset() 與那些直接呼叫 startBuild 的測試共用同一份。 */
 const installClean = page => page.evaluate(() => {
+  /* 閒晃事件（v1.97）預設關掉。慶祝散場後它有 40% 會自己發生，而發生了就會多出
+     幾間房子與幾百塊「從地上挖出來」的積木——量積木池、draw call、閒晃範圍、
+     畫面統計那些測試會被這些數字洗掉（實測「積木池沒有失控膨脹」就是這樣被撞到的）。
+     要測這件事本身的那一段自己把 stepIdleEvent 裝回去（見「閒晃事件：小人的家」）。 */
+  // 只抓第一次：installClean 每次 reset() 都會跑，第二次抓到的會是上一輪裝的空函式
+  if (!window.evStep) window.evStep = stepIdleEvent;
+  stepIdleEvent = () => {};
+  /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
+     清成一般碎料就好，下一次 startBuild 的 reconcilePool 會把多的收掉。 */
+  window.clearHomes = () => {
+    stopIdleEvent();
+    for (const b of blocks) {
+      if (b.hh < 0) continue;
+      b.hh = -1; b.hk = -1; b.slot = -1; b.holder = -1;
+      b.st = 0; b.rest = true; b.arc = null; b.snap = 0;
+      b.vx = b.vy = b.vz = 0;
+      if (!b.cell) gridAdd(b);
+    }
+    homes = null;
+    for (const w of workers) { w.hm = -1; w.hk = -1; w.hst = ''; }
+  };
   window.cleanTools = () => {
+    clearHomes();
     swing = null; ENG.hideHammer();
     ball = null; ENG.hideBall(); aim = null;
     twists = null; ENG.putTornados([]);
@@ -3177,6 +3199,223 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('手上有工作的人不會停下來聊天', busy.chatting === 0 && busy.working > 100,
      '搬運中聊天 ' + busy.chatting + ' 幀（同期有 ' + busy.working + ' 幀在搬運，蓋了 ' +
      busy.placed + ' 塊）');
+
+  /* ══════════ 閒晃事件：小人的家 ══════════ */
+  head('閒晃事件：小人的家');
+  // 這一段要測的就是它，把 installClean 關掉的那支裝回去
+  await page.evaluate(() => { stepIdleEvent = window.evStep; clearHomes(); });
+  /* 慶祝散完場、場上真的沒事幹的時候會發生一件事（v1.97，使用者指定「設計成可擴充」、
+     「事件 1 小人的家 40% 機率發生」）。機率用固定亂數驗門檻：0.39 該中、0.41 該不中。
+     還在跳的時候不該擲——那幾個人會從慶祝圈上直接走掉。 */
+  const evRoll = await page.evaluate(() => {
+    const orig = Math.random;
+    const out = {};
+    try {
+      const reset = () => {
+        shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+        targetCnt = 400; setWorkerCount(12); startBuild(true); completeNow();
+        stopIdleEvent(); evArm = 1;
+      };
+      // 還在慶祝：就算骰子一定中也不該開始
+      reset();
+      Math.random = () => 0;
+      for (let i = 0; i < 40; i++) step(0.05);          // 2 秒，慶祝是 7 秒
+      out.cheerStart = idleEv ? idleEv.id : null;
+      out.cheering = workers.filter(w => cheerOn(w)).length;
+      // 散場之後：0.39 < 0.4 該中
+      Math.random = orig;
+      reset();
+      let t = 0;
+      while (t < 12) { step(0.05); t += 0.05; }         // 慶祝七秒 + 散場錯開最多 1.6 秒
+      stopIdleEvent(); evArm = 1;
+      Math.random = () => 0.39;
+      step(0.05);
+      out.hit = idleEv ? idleEv.id : null;
+      // 0.41 > 0.4 該不中
+      stopIdleEvent(); evArm = 1;
+      Math.random = () => 0.41;
+      step(0.05);
+      out.miss = idleEv ? idleEv.id : null;
+      out.table = IDLE_EVENTS.map(e => e.id + ':' + e.p).join('、');
+    } finally { Math.random = orig; }
+    stopIdleEvent(); evArm = 1;
+    return out;
+  });
+  ok('慶祝還沒散場不會觸發事件，散場後照 40% 擲一次',
+     evRoll.cheerStart === null && evRoll.cheering > 0 &&
+     evRoll.hit === 'home' && evRoll.miss === null,
+     '事件表 [' + evRoll.table + ']；慶祝中（還有 ' + evRoll.cheering +
+     ' 人在跳）觸發的是 ' + evRoll.cheerStart + '，散場後骰 0.39 → ' + evRoll.hit +
+     '、骰 0.41 → ' + evRoll.miss);
+
+  /* 蓋家的完整一輪：離隊的人數、房子的位置與大小、真的蓋起來、積木是挖出來的。
+     這一段跑一次留著給後面幾條用（每條各跑一輪要一分多鐘）。 */
+  const home = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    let t = 0;
+    while (t < 12) { step(0.05); t += 0.05; }
+    /* 等散場那十二秒裡，事件本來就有 40% 會自己先發生一輪（這一段把它裝回去了）。
+       那一輪的房子要先清掉，不然下面那個 startHomes 是**第二批**：人會被改派到新的
+       那幾間，第一批就成了沒人蓋的空地基（實測 14 間裡有 190 格永遠補不上）。 */
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    idleEv = IDLE_EVENTS[0]; startHomes();          // 40% 的骰子另一條測，這裡直接開
+    const crew = workers.filter(w => w.hm >= 0).length;
+    const pool0 = blocks.filter(b => b.hh < 0).length;
+    const all0 = blocks.length;
+    /* 土痕跟塵霧要量「新增的」：慶祝的彩帶還飄在半空（也是塵霧那個池子），
+       前面幾條測試炸出來的焦黑也還在，拿總數比會被它們洗掉（實測塵霧 17 → 15）。
+       挖出來那一撮土是照顏色認的（見 digPuff）。 */
+    marks.length = 0; dust.length = 0;
+    const list = homes.list.map(h => ({ n: h.n, slots: h.slots.length,
+                                        rad: +Math.hypot(h.x, h.z).toFixed(1), r: h.r,
+                                        x: h.x, z: h.z }));
+    /* 挖的那一下要有土痕與土塵（使用者：「積木可以就近地面上挖一挖拿出來」——
+       看得出是挖出來的，不是憑空出現）。土痕跟隕石坑同一套，3 秒淡掉。 */
+    let marks1 = 0, dirt1 = 0, digs = 0;
+    for (let i = 0; i < 60; i++) {
+      step(0.05);
+      marks1 = Math.max(marks1, marks.length);
+      dirt1 = Math.max(dirt1, dust.filter(d => d.cr === 0.52).length);
+      digs = Math.max(digs, blocks.filter(b => b.hh >= 0).length);
+    }
+    // 蓋完
+    let secs = 3, inside = 0, near = 0;
+    while (secs < 180 && homes.list.some(h => h.left > 0)) {
+      step(0.05); secs += 0.05;
+      for (const w of workers) if (homeAt(w.x, w.z)) inside++;
+    }
+    const left = homes.list.reduce((n, h) => n + h.left, 0);
+    const homeSet = blocks.filter(b => b.hh >= 0 && b.st === 3).length;
+    const pool1 = blocks.filter(b => b.hh < 0).length;
+    // 蓋完在自己家附近走走
+    let far = 0, back = 0;
+    for (let i = 0; i < 400; i++) {
+      step(0.05);
+      for (const w of workers) {
+        if (w.hm < 0) continue;
+        const h = homes.list[w.hm];
+        far = Math.max(far, Math.hypot(w.x - h.x, w.z - h.z));
+        if (Math.hypot(w.x, w.z) < siteR + KEEP) back++;        // 走進工地裡了
+        if (homeAt(w.x, w.z)) inside++;
+      }
+    }
+    // 兩間之間的距離、離樹的距離
+    let gap = Infinity, tree = Infinity;
+    for (let i = 0; i < homes.list.length; i++) {
+      for (let j = i + 1; j < homes.list.length; j++)
+        gap = Math.min(gap, Math.hypot(homes.list[i].x - homes.list[j].x,
+                                       homes.list[i].z - homes.list[j].z));
+      for (const tr of trees)
+        tree = Math.min(tree, Math.hypot(homes.list[i].x - tr.x, homes.list[i].z - tr.z) - tr.r);
+    }
+    return { crew, n: workers.length, list, pool0, pool1, all0, all1: blocks.length,
+             homeSet, left, secs: +secs.toFixed(1), inside, far: +far.toFixed(1), back,
+             marks1, dirt1, digs,
+             gap: gap === Infinity ? -1 : +gap.toFixed(1),
+             tree: tree === Infinity ? -1 : +tree.toFixed(1),
+             siteR: +siteR.toFixed(1), live: LIVE_R, band: [HOME_NEAR, HOME_FAR] };
+  });
+  ok('一半左右的人離隊去蓋，附近的人合蓋大一點的',
+     home.crew >= home.n * 0.3 && home.crew <= home.n * 0.7 &&
+     home.list.length > 1 && home.list.every(h => h.n >= 1 && h.n <= 3) &&
+     home.list.some(h => h.n > 1),
+     home.n + ' 人裡 ' + home.crew + ' 人離隊，蓋 ' + home.list.length + ' 間（每間 ' +
+     home.list.map(h => h.n + ' 人 ' + h.slots + ' 塊').join('、') + '）');
+  /* 一間 50 塊以內（使用者：「可能 50 塊積木內就能建成的」）。 */
+  ok('一間房子 50 塊以內', home.list.every(h => h.slots <= 50 && h.slots >= 20),
+     '每間 ' + home.list.map(h => h.slots).join('／') + ' 塊');
+  /* 蓋在工地外圈那一帶（使用者選的），彼此不重疊、不壓到樹。 */
+  ok('蓋在工地外圈一帶，彼此不重疊也不壓到樹',
+     home.list.every(h => h.rad >= home.siteR + home.band[0] - 0.1 &&
+                          h.rad <= home.siteR + home.band[1] + 0.1) &&
+     home.gap > 9 && home.tree > 2,
+     '離工地中心 ' + home.list.map(h => h.rad).join('／') + '（工地半徑 ' + home.siteR +
+     '，該落在 +' + home.band[0] + '～+' + home.band[1] + '）；最近的兩間隔 ' + home.gap +
+     '、離樹最近 ' + home.tree);
+  /* 積木是**從地上挖出來的**，不是從料池借的。完工那一刻場上通常一塊散料都沒有
+     （料池 = 藍圖格數），從料池拿等於把下一座的建材偷走。 */
+  ok('房子真的蓋起來，而且積木是挖出來的（不是從料池拿的）',
+     home.left === 0 && home.homeSet > 60 && home.pool1 === home.pool0 &&
+     home.all1 === home.all0 + home.homeSet,
+     home.list.length + ' 間共 ' + home.homeSet + ' 塊，' + home.secs +
+     ' 秒蓋完（沒補上的 ' + home.left + ' 格）；料池 ' + home.pool0 + ' → ' + home.pool1 +
+     '、積木總數 ' + home.all0 + ' → ' + home.all1);
+  ok('挖的那一下有土痕與土塵',
+     home.marks1 > 0 && home.dirt1 > 0 && home.digs > 0,
+     '三秒內：地上的土痕最多 ' + home.marks1 + ' 塊、土色塵霧最多 ' + home.dirt1 +
+     ' 顆、挖出 ' + home.digs + ' 塊積木');
+  /* 蓋完就在自己家附近走走（使用者的規格），不會走回工地那一帶。 */
+  ok('蓋完就在自己家附近走走',
+     home.far < home.list[0].r + home.live + 1.5 && home.back === 0,
+     '離自己家最遠 ' + home.far + '（該在 ' + (home.list[0].r + home.live).toFixed(1) +
+     ' 以內），走進工地裡 ' + home.back + ' 幀');
+  /* 房子不在藍圖的格子表裡（footBlocked 查的是那個），所以每一種走法都得自己避開。
+     沒有這一條的話實測有 34% 的人次站在別人屋子裡（推的時機漏了「站定不動」那條路徑，
+     而且推到邊界上會被浮點誤差判成還在裡面）。 */
+  ok('沒有人從房子中間穿過去', home.inside === 0,
+     '腳踩在房子地基上 ' + home.inside + ' 人次（' + home.list.length + ' 間、量了 ' +
+     (home.secs + 20).toFixed(0) + ' 秒）');
+
+  /* 一開始建造就回去上工（使用者：「如果要再建造時 直接恢復進入建造模式」），
+     房子留在場上（使用者選的）。推土機只推工地內的 FREE 碎料，所以碰不到房子。 */
+  const homeSwap = await page.evaluate(() => {
+    const kept0 = homes.list.length;
+    const set0 = blocks.filter(b => b.hh >= 0 && b.st === 3).length;
+    /* 換一座 siteR 差不多的，房子才不會被新工地蓋到（那條另外測）。
+       用 instant = false 走整地那條路：推土機要真的開進來一趟——所以工地裡先要有
+       碎料（countDirty < 8 的話 startBuild 會直接跳過整地）。把上一座敲成碎料就有了。 */
+    for (const b of blocks) if (b.hh < 0 && b.st === 3) freeBlock(b);
+    for (let i = 0; i < 60; i++) step(0.05);         // 等它們落地：countDirty 只數躺著的
+    const dirty = countDirty();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    startBuild(false);
+    const onEvent = workers.filter(w => w.hm >= 0).length;
+    const ev = idleEv;
+    let clear = 0;
+    for (let i = 0; i < 400 && phase === 'clear'; i++) { step(0.05); clear++; }
+    const setAfterClear = blocks.filter(b => b.hh >= 0 && b.st === 3).length;
+    for (let i = 0; i < 600; i++) step(0.05);
+    return { kept0, set0, onEvent, ev: ev ? ev.id : null, clear, dirty,
+             kept1: homes.list.length, setAfterClear,
+             set1: blocks.filter(b => b.hh >= 0 && b.st === 3).length,
+             pool: blocks.filter(b => b.hh < 0).length, need: bp.slots.length,
+             placed: placedCnt, phase,
+             carrying: workers.filter(w => w.carry || w.load.length).length };
+  });
+  ok('一開始建造就回去上工，房子留在場上（整地推土機也不推它）',
+     homeSwap.onEvent === 0 && homeSwap.ev === null &&
+     homeSwap.kept1 === homeSwap.kept0 && homeSwap.setAfterClear === homeSwap.set0 &&
+     homeSwap.set1 === homeSwap.set0 && homeSwap.pool === homeSwap.need &&
+     homeSwap.placed > 100 && homeSwap.clear > 100,
+     '房子 ' + homeSwap.kept0 + ' 間 / ' + homeSwap.set0 + ' 塊 → 整地後 ' +
+     homeSwap.setAfterClear + ' 塊、蓋 30 秒後 ' + homeSwap.set1 + ' 塊（工地裡有 ' +
+     homeSwap.dirty + ' 塊碎料要清，整地跑了 ' + homeSwap.clear +
+     ' 幀）；還在跑事件的 ' + homeSwap.onEvent + ' 人，料池 ' +
+     homeSwap.pool + '／藍圖 ' + homeSwap.need + '，已蓋 ' + homeSwap.placed + ' 塊');
+
+  /* 唯一會拆房子的情況：下一座工地正好蓋到它身上。留著的話新建築會跟它長在同一個位置。
+     解成碎料剛好接回原本的流程——那些塊變成 FREE，推土機推出工地，小人撿去蓋新的那座。 */
+  const homeTaken = await page.evaluate(() => {
+    const n0 = homes.list.length;
+    const set0 = blocks.filter(b => b.hh >= 0).length;
+    const siteR0 = siteR;
+    siteR = 60;                          // 假裝下一座是超大的一座
+    clearHomesInSite();
+    const freed = blocks.filter(b => b.hh < 0 && b.st === 4).length;
+    siteR = siteR0;
+    return { n0, set0, n1: homes.list.length, freed,
+             still: blocks.filter(b => b.hh >= 0).length,
+             hm: workers.filter(w => w.hm >= 0).length };
+  });
+  ok('新工地蓋到誰家，那一間就解成碎料變建材',
+     homeTaken.n0 > 0 && homeTaken.n1 === 0 && homeTaken.still === 0 &&
+     homeTaken.freed >= homeTaken.set0 && homeTaken.hm === 0,
+     '工地半徑放大到 60 之後，' + homeTaken.n0 + ' 間全被徵收（' + homeTaken.set0 +
+     ' 塊變成碎料 ' + homeTaken.freed + ' 塊），還掛在房子上的積木 ' + homeTaken.still + ' 塊');
+  // 後面幾段不該再有房子與事件（見 installClean）
+  await page.evaluate(() => { clearHomes(); stepIdleEvent = () => {}; });
 
   ok('拆完之後小人開始蓋新的', rebuild.mid > 20 && rebuild.ph0 === 'build',
      '蓋到 ' + rebuild.mid + ' / ' + rebuild.total + '（' + rebuild.ph0 + '）');
@@ -10221,11 +10460,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { pool: blocks.length, total: bp.slots.length, bad,
              fly: blocks.filter(b => b.st === 4).length,
              orphanSlot: bp.slots.filter(s => s.claimed >= 0 && !workers[s.claimed]).length,
+             // 家的積木不算在池子裡（v1.97）：那些是從地上挖出來的，不是這一座的建材
+             pool2: blocks.filter(b => b.hh < 0).length,
              ghostCarry: blocks.filter(b => b.st === 1 && b.holder < 0).length };
   });
   ok('連換 12 座 + 邊蓋邊砸，沒有例外', errors.length === 0, errors.slice(0, 2).join(' | '));
-  ok('積木池沒有失控膨脹', stress.pool <= stress.total + 4,
-     '池 ' + stress.pool + '，藍圖需要 ' + stress.total);
+  ok('積木池沒有失控膨脹', stress.pool2 <= stress.total + 4,
+     '池 ' + stress.pool2 + '，藍圖需要 ' + stress.total +
+     (stress.pool === stress.pool2 ? '' : '（另有 ' + (stress.pool - stress.pool2) +
+      ' 塊是小人的家，不算在池子裡）'));
   ok('沒有座標變成 NaN', stress.bad === 0, stress.bad + ' 塊');
   ok('沒有無主的搬運中積木', stress.ghostCarry === 0, stress.ghostCarry + ' 塊');
   ok('沒有被幽靈小人占住的位置', stress.orphanSlot === 0, stress.orphanSlot + ' 個');
