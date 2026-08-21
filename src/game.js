@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.88.1';
+const VERSION = '1.89.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -948,11 +948,13 @@ function newWorker(i) {
        泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手。 */
     eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
-    /* 魔法師（mage，v1.64）：不搬積木，站在工地旁邊隔空把建材拋上去。
-       cast 是舉杖的深淺 0～1（畫杖與寶珠用），mang 是站的角度，ct 是這一發還要蓄幾秒，
+    /* 魔法師（mage，v1.64）：不搬積木，站在建材堆旁邊隔空把建材拋上去。
+       cast 是舉杖的深淺 0～1（畫杖與寶珠用），ct 是這一發還要蓄幾秒，
+       mang／mrad 是他要站的地方（極座標：角度與半徑；v1.89 起會跟著料堆跑），
+       mre 是還有多久重挑一坨料，
        fly 是已經送出去、還在半空的那幾塊（連發，所以是一份清單），
        trail 是下一顆星還有多久。 */
-    mage: 0, cast: 0, mang: 0, ct: 0, fly: [], trail: 0,
+    mage: 0, cast: 0, mang: 0, mrad: 0, mre: 0, ct: 0, fly: [], trail: 0,
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
@@ -996,7 +998,9 @@ function tagMage() {
     const mage = i % MAGE_EVERY === MAGE_AT ? 1 : 0;
     if (mage && !w.mage) {
       releaseWorker(w);                  // 手上還有貨就先放掉，魔法師不搬東西
-      w.mang = Math.atan2(w.z, w.x);     // 從他現在站的角度接手，不用先繞半圈
+      w.mang = Math.atan2(w.z, w.x);     // 從他現在站的位置接手，不用先繞半圈
+      w.mrad = Math.max(siteR + MAGE_KEEP, Math.hypot(w.x, w.z));
+      w.mre = 0;                         // 下一幀就挑一坨料站過去
       w.ct = 0;
     }
     if (!mage && w.mage) { releaseWorker(w); w.ct = 0; }
@@ -1196,8 +1200,8 @@ function findSlot(wx, wz) {
    想省掉繞路的成本，結果兩邊都更差：那個判準會挑到躺在建築腳邊的料，
    人為了撿它反而走進工地裡（實測台北 101 的「站在牆裡」從 0.35% 跳到 5.98%，
    同樣時間蓋的塊數也少了一成）。 */
-function findBlock(wx, wz) {
-  let best = -1, bd = Infinity;
+function findBlock(wx, wz, maxD) {
+  let best = -1, bd = maxD ? maxD * maxD : Infinity;   // 給了 maxD 就只找那麼遠以內的
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
@@ -1658,7 +1662,8 @@ function loadUp(w, wi, cap) {
   for (let k = 0; k < (cap || w.cap); k++) {
     const s = findSlot(w.x, w.z);    // 派離他現在站的地方最近的那一格
     if (s < 0) break;
-    const bi = findBlock(sx, sz);
+    // 魔法師只搆得到身邊那一圈的料（v1.89，見 MAGE_REACH）；工人是走過去撿，不限距離
+    const bi = findBlock(sx, sz, w.mage ? MAGE_REACH : 0);
     if (bi < 0) break;
     bp.slots[s].claimed = wi;        // 認領也算「這格有東西了」，會影響上面能不能蓋
     blocks[bi].holder = wi;
@@ -1807,16 +1812,35 @@ function updEng(w, dt) {
 }
 
 /* ── 魔法師 ───────────────────────────────────────────────
-   十個人有一個是魔法師：戴巫師帽、拿法杖，一塊積木都不搬。他站在工地旁邊，
-   把散在遠處的建材一塊接著一塊隔空拋到藍圖的位置上——整段路都是那條拋物線，
-   中途不經過任何人的手。單塊飛得比工人自己丟的慢一倍以上（看得出是飄過去的），
+   十個人有一個是魔法師：戴巫師帽、拿法杖，一塊積木都不搬。他走到建材堆旁邊
+   （v1.89，搆得到的只有腳邊那一圈，見 MAGE_REACH），把料一塊接著一塊隔空拋到藍圖的
+   位置上——整段路都是那條拋物線，中途不經過任何人的手。
+   單塊飛得比工人自己丟的慢一倍以上（看得出是飄過去的），
    但**上一塊還在半空就送下一塊**（v1.64.1）：他每 MAGE_GAP 秒發一塊，
    一塊要飛兩三秒，所以天上隨時掛著兩到五塊，連成一條往建築流過去的線。
    等一塊落定才動下一塊的話，那是「一塊一塊搬」，不是「一路把料吸過去」。
 
    施法特效刻意留得小（使用者要的是「一點點、看得出是他在施法」）：
    杖頭的寶珠亮起來、出手時腳下一圈淡光加杖頭一小撮星，飛行途中每隔一段撒一顆。 */
-const MAGE_KEEP = 5.5;              // 站得離工地外圍多遠（工程師 3.4、閒晃的人 1.5，他站最外面）
+const MAGE_KEEP = 5.5;              // 站得離工地外圍至少多遠（工程師 3.4、閒晃的人 1.5，他站最外面）
+/* 隔空拉得動的範圍（v1.89，使用者指定「只能搬運一定範圍的積木，所以變成要走到積木堆附近，
+   優先找積木多的地方」）。搆得到的只有身邊 MAGE_REACH 格內躺著的料，**拋出去那一段不受限**——
+   還是一條拋物線直接飛到藍圖上，中途不經過任何人的手。
+   所以他站的位置不再是「工地外圈的一個角度」（v1.64～v1.88 是釘死的），而是自己找一坨料
+   站過去：塊數多的優先、路程遠的折價，跟推土機挑碎料堆同一套算法（見 pickHeap）。 */
+const MAGE_REACH = 11;              // 搆得到多遠的建材
+/* 站的位置離工地外圍最遠多少。沒有這條的話他會一路追著料往外走：實測蓋完那一刻
+   兩個魔法師站在半徑 62（碎料場外緣 63.7），而一般工人都還在 26 以內。兩個後果都不能要——
+   相機取的是建築那一帶，那麼遠的人根本不在畫面上（使用者要的是「看得出來是他在施法搬運」）；
+   而且蓋完要圍圈慶祝時他得從場外走回來，全員就位從 1.5 秒變成 6.5 秒（慶祝總共只有 7 秒）。
+   16 是換算出來的：走回慶祝圈約 (16 − 2.6) ÷ 6.8 ≒ 2 秒。
+   站在這條線上還是搆得到 siteR + 27 那一圈的料（見 MAGE_REACH）。 */
+const MAGE_ROAM = 16;
+const MAGE_CELL = 9;                // 數料堆用的粗格邊長。要小於 MAGE_REACH，站在中心才整格都搆得到
+const MAGE_TRIP = 0.06;             // 路程折價：每遠一格，那一坨的吸引力打幾折
+const MAGE_APART = 9;               // 別的魔法師已經站在這麼近就換一坨，不然幾個人會疊在同一堆上
+const MAGE_REPICK = 1.2;            // 搆不到料時每隔幾秒重挑一次（走過去的路上料會被工人搬掉）
+const MAGE_HEAP_T = 0.4;            // 料堆清單重算的間隔，幾個魔法師共用一份
 const MAGE_GAP = 0.85;              // 每隔幾秒發一塊（也是「面向那塊料舉著杖」的時間）
 /* 飛行時間：起手 0.9 秒，再照水平距離與高度加。二十格外的建材大約飛兩秒——
    工人自己丟那一下是 0.34 秒起跳，慢到這個程度才看得出「這塊是飄過去的」。 */
@@ -1841,6 +1865,63 @@ function staffTip(w) {
            y: w.y + t[1] * s,
            z: w.z + (-t[0] * sa + t[2] * ca) * s };
 }
+/* ── 魔法師要站哪裡（v1.89）─────────────────────────────
+   場上還躺著的建材用粗格數一數，回傳每一坨的中心與塊數。
+   幾個魔法師共用一份、每 MAGE_HEAP_T 秒重算一次（計時在 step 裡扣）：一坨料不會在
+   半秒內跑掉，而每人每幀各掃一次 blocks（九千塊 × 六個人）純粹是白花的成本。 */
+let mageHeapT = 0, mageHeapList = null;
+function listMageHeaps() {
+  if (mageHeapList && mageHeapT > 0) return mageHeapList;
+  mageHeapT = MAGE_HEAP_T;
+  const cnt = new Map();
+  for (const b of blocks) {
+    if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
+    const key = Math.floor(b.x / MAGE_CELL) + ':' + Math.floor(b.z / MAGE_CELL);
+    let c = cnt.get(key);
+    if (!c) cnt.set(key, c = { n: 0, x: 0, z: 0 });
+    c.n++; c.x += b.x; c.z += b.z;
+  }
+  mageHeapList = [];
+  for (const c of cnt.values()) mageHeapList.push({ n: c.n, x: c.x / c.n, z: c.z / c.n });
+  return mageHeapList;
+}
+/* 他要站的那個點（極座標轉回世界座標）。站位一律在工地外圈以外——
+   一坨料躺在建築裡（玩家自己打出來的碎料）的時候，他要站在牆外面伸手，不能走進去。 */
+function mageSpot(w) {
+  return { x: Math.cos(w.mang) * w.mrad, z: Math.sin(w.mang) * w.mrad };
+}
+/* 挑一坨料站過去：塊數多的優先，路程遠的折價（跟 pickHeap 同一個判準）。
+   兩個條件會刷掉候選：站定之後整坨搆不到的（在建築裡的那種）、別的魔法師已經在那一帶的。
+   回傳 false = 沒有值得走過去的，站在原地等就好。 */
+function pickMageSpot(w) {
+  const heaps = listMageHeaps();
+  let bx = 0, bz = 0, bn = 0, best = -1;
+  for (const h of heaps) {
+    const hr = Math.hypot(h.x, h.z);
+    const r = Math.max(siteR + MAGE_KEEP, hr);
+    if (r > siteR + MAGE_ROAM) continue;              // 太外面的那一坨不去（見 MAGE_ROAM）
+    const a = hr < 0.001 ? w.mang : Math.atan2(h.z, h.x);
+    const sx = Math.cos(a) * r, sz = Math.sin(a) * r;
+    // 站定之後那一坨的中心要在搆得到的範圍內，不然走過去也是白站
+    if (Math.hypot(h.x - sx, h.z - sz) > MAGE_REACH * 0.6) continue;
+    if (mageTaken(w, sx, sz)) continue;
+    const s = h.n / (1 + Math.hypot(h.x - w.x, h.z - w.z) * MAGE_TRIP);
+    if (s > best) { best = s; bx = a; bz = r; bn = h.n; }
+  }
+  if (best < 0) return false;
+  w.mang = bx; w.mrad = bz;
+  return bn > 0;
+}
+/* 這一帶是不是已經有別的魔法師認走了。比的是**他們要站的點**不是現在的位置：
+   比現在的位置的話，兩個人會一路並肩走到同一坨料上才發現撞在一起。 */
+function mageTaken(w, sx, sz) {
+  for (const o of workers) {
+    if (o === w || !o.mage) continue;
+    const p = mageSpot(o);
+    if ((p.x - sx) ** 2 + (p.z - sz) ** 2 < MAGE_APART * MAGE_APART) return true;
+  }
+  return false;
+}
 function updMage(w, wi, dt) {
   /* 已經送出去的那幾塊：落定了（或半路被打掉）就從清單移掉。留著只為了兩件事——
      沿路撒星，以及「還有東西在飛就先別收杖」。 */
@@ -1856,15 +1937,27 @@ function updMage(w, wi, dt) {
       w.trail = MAGE_TRAIL;
     }
   }
+  /* 站位一律夾在工地外圈與 MAGE_ROAM 之間。換一座建築時 siteR 會變，上一輪挑的那個半徑
+     可能落在新工地裡面（他會站進牆裡）或落在很遠的場外，所以每幀夾一次。 */
+  if (w.mrad < siteR + MAGE_KEEP) w.mrad = siteR + MAGE_KEEP;
+  else if (w.mrad > siteR + MAGE_ROAM) w.mrad = siteR + MAGE_ROAM;
+  // 一幀只能走這一次（ringWalk 會真的移動人）；下面「站定了嗎」全部看這一個值
+  const stand = ringWalk(w, w.mang, w.mrad, dt);
   if (!w.load.length) {
-    loadUp(w, wi, 1);                                // 一次只領一格一塊
-    /* 沒格子可蓋或沒建材了：留在施法位站著等，不跟一般人一樣去閒晃。
-       閒晃那條路會沿用上一輪留下的目標點（慶祝散場時取的是整片草地），
-       他一沒工作就往四十幾格外走，蓋完要圍圈時得從場外跑回來。 */
+    // 站定了才認料：搆得到的範圍是以「他站的地方」算的，走位途中認的那塊會被拖著走
+    if (stand) loadUp(w, wi, 1);                     // 一次只領一格一塊
+    /* 沒格子可蓋、或身邊搆不到料：去找一坨料站過去（v1.89，見 pickMageSpot），
+       不跟一般人一樣去閒晃——閒晃那條路會沿用上一輪留下的目標點（慶祝散場時取的是
+       整片草地），他一沒工作就往四十幾格外走，蓋完要圍圈時得從場外跑回來。
+       換地方**只在搆不到料的時候**做：不管有沒有料每隔幾秒就重挑一次的話，腳邊還有
+       一整片料他也會被別處那坨大的拉走（實測他沿著外圈走十秒，路上最近的料只有 2.7 格）。
+       找不到值得走過去的一坨（料被搬光了、都被別人認走了）就站在原地等。 */
     if (!w.load.length) {
       w.st = 'idle';
       if (w.fly.length) castPose(w, dt, 1);          // 還有在飛的就先舉著杖送它們到定位
-      if (ringWalk(w, w.mang, siteR + MAGE_KEEP, dt)) {
+      w.mre -= dt;
+      if (w.mre <= 0) { w.mre = MAGE_REPICK; pickMageSpot(w); }
+      if (stand) {
         w.a = Math.atan2(-w.x, -w.z);                // 站定就面向建築等下一批
         w.gait += (0 - w.gait) * Math.min(1, dt * 8);
       }
@@ -1878,7 +1971,7 @@ function updMage(w, wi, dt) {
   const b = blocks[j.b];
   if (!b || b.st !== FREE || !b.rest) { dropJob(w, 0); return; }   // 認的那塊被搶走／被打飛了
   // 還在走位：蓄力從「站定」那一刻才開始算，不然半路被撞倒的人一站起來就發一塊
-  if (!ringWalk(w, w.mang, siteR + MAGE_KEEP, dt)) { w.ct = MAGE_GAP; return; }
+  if (!stand) { w.ct = MAGE_GAP; return; }
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
   w.a = Math.atan2(b.x - w.x, b.z - w.z);            // 面向要拉起來的那一塊
   castPose(w, dt, 1);
@@ -5310,6 +5403,7 @@ function step(dt) {
   }
   burningW = 0;
   for (const w of workers) if (w.burn > 0) burningW++;    // 火苗配額要照人數分
+  mageHeapT -= dt;                                       // 料堆清單的重算計時（見 listMageHeaps）
   pairChat();                                            // 湊對要在更新之前，配到的當幀就停下來
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);

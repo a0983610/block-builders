@@ -115,6 +115,26 @@ const installClean = page => page.evaluate(() => {
     for (const b of blocks) b.wet = 0;
     for (const w of workers) { w.wet = 0; w.wetK = 0; }
   };
+  /* 建材鋪回「開場那樣」：從工地邊緣往外均勻鋪滿整片碎料場（跟 reconcilePool 同一份分布）。
+     為什麼測試需要這個：startBuild(true) 會把上一輪的建築整棟解成碎料**原地**落下，
+     那一刻它們還在半空，startBuild 裡的 kickOutSite() 抓不到，於是幾千塊料全躺在工地
+     正中央（實測 3036 塊裡有 1971 塊落在半徑 10 以內）。真正的遊戲走的是整地那條路
+     ——推土機把碎料推出工地——所以那個分布只有測試才會遇到。
+     魔法師（v1.89）只搆得到腳邊一圈、又不進工地，料全在工地裡的話他會一直餓著
+     （實測發料速率剩三分之一、舉杖幀數從 84% 掉到 21%），量到的就不是他的行為。 */
+  window.scatterFree = () => {
+    const r0 = siteR + 2.5;
+    for (const b of blocks) {
+      if (b.st !== 0 && b.st !== 4) continue;      // 躺著的與還在飛的碎料都鋪回去
+      if (b.cell) gridDel(b);
+      const a = Math.random() * Math.PI * 2;
+      const rad = Math.sqrt(r0 * r0 + Math.random() * (arenaR * arenaR - r0 * r0));
+      b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad; b.y = HB;
+      b.st = 0; b.vx = b.vy = b.vz = 0; b.rest = true; b.snap = 0; b.holder = -1;
+      b.slot = -1; b.arc = null; b.scale = 1; b.al = 1;
+      separate(b); gridAdd(b);
+    }
+  };
 });
 
 /* 直接推模擬，不等 rAF——測試才能決定性重現 */
@@ -2394,7 +2414,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              gap: { lo: Math.min(...gaps), hi: Math.max(...gaps), want: +(360 / workers.length).toFixed(1) },
              after, spread, siteR: +siteR.toFixed(1) };
   });
-  ok('蓋完後很快就圍成一圈', cheer.allAt > 0 && cheer.allAt < 2.5,
+  /* 門檻 3.2 秒（v1.89 從 2.5 放寬）：這條原本假設「蓋完那一刻所有人都還在工地邊上」，
+     而魔法師現在站在建材堆裡（最遠 siteR + 16，見 MAGE_ROAM），走回圈上就要兩秒。
+     實測 1.9～3.1 秒，慶祝總共 7 秒——他還跳得到四秒以上。
+     再放寬就沒有意義了：那表示有人是趕到才散場（v1.89 之前追著料往外走的版本就是 6.5 秒）。 */
+  ok('蓋完後很快就圍成一圈', cheer.allAt > 0 && cheer.allAt < 3.2,
      cheer.allAt + ' 秒全員就位（照現況分配位置，不是照編號硬分）；最後到的那個蓋完時站在 ' +
      cheer.slow.d + '（' + (cheer.slow.mage ? '魔法師' : '工人') + '），全場最遠 ' +
      cheer.farD + '，圈半徑 ' + cheer.rad.want);
@@ -2549,24 +2573,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      這一段驗的是「他真的沒搬」——不是看畫面上有沒有巫師帽，而是看那些積木
      從躺著的地方直接進拋物線，中途沒有任何一幀是被人舉在手上的。
      工人自己丟的那些拿來當對照組：同一份資料裡兩種拋物線的長度、起點距離都量。 */
+  await installClean(page);            // scatterFree() 裝在這裡面
   const wz = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
+    scatterFree();                     // 建材鋪回工地外面（見 installClean 裡的說明）
     const mi = workers.map((w, i) => w.mage ? i : -1).filter(i => i >= 0);
     const m = workers[mi[0]];
     let carried = 0, loadMax = 0, flyMax = 0, cast = 0, near = Infinity, far = 0;
     let starMax = 0, inHand = 0, launches = 0, frames = 0, lastN = 0, lastAt = -1;
-    const mDur = [], wDur = [], mY0 = [], wY0 = [], reach = [], gaps = [];
+    let jobF = 0, castJob = 0, walked = 0;
+    const mDur = [], wDur = [], mY0 = [], wY0 = [], reach = [], gaps = [], arc = [];
+    const spots = new Set();
     const seen = new Set();
-    /* 先等他走到施法位再開始量：上一段測試可能把他丟在工地正中央，
-       那一段「走過來」會被算成「他站得多近」。 */
-    for (let i = 0; i < 400 &&
-         Math.abs(Math.hypot(m.x, m.z) - (siteR + MAGE_KEEP)) > 0.15; i++) step(0.05);
+    let px = m.x, pz = m.z;
+    /* 先等他走到料堆前站定再開始量：上一段測試可能把他丟在工地正中央，
+       那一段「走過來」會被算成「他站得多近」。
+       v1.89 起他站的位置跟著料堆跑，不再是工地外圈的固定半徑，所以等的是「開始施法」。 */
+    for (let i = 0; i < 400 && m.st !== 'cast'; i++) step(0.05);
     for (let i = 0; i < 3000 && phase === 'build'; i++) {
       step(0.05); frames++;
       if (m.carry) carried++;
       loadMax = Math.max(loadMax, m.load.length);
       if (m.cast > 0.5) cast++;
+      // 手上有料的那幾幀杖該是舉著的（沒料可搆時他會收杖，那是另一條測試的事）
+      if (m.load.length) { jobF++; if (m.cast > 0.5) castJob++; }
+      walked += Math.hypot(m.x - px, m.z - pz); px = m.x; pz = m.z;
       if (m.st === 'cast') {                        // 施工中站哪裡（閒著沒事去閒晃的不算）
         const d = Math.hypot(m.x, m.z);
         if (d < near) near = d;
@@ -2578,7 +2610,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (m.fly.length > lastN) {                   // 這一幀他又發了一塊
         launches++;
         const a = blocks[m.fly[m.fly.length - 1].b].arc;
-        if (a) reach.push(Math.hypot(a.x0 - m.x, a.z0 - m.z));   // 出手那一刻那塊料離他多遠
+        if (a) {
+          reach.push(Math.hypot(a.x0 - m.x, a.z0 - m.z));        // 出手那一刻那塊料離他多遠
+          arc.push(Math.hypot(a.x1 - a.x0, a.z1 - a.z0));        // 那塊料飛過去的水平距離
+          spots.add(Math.round(m.x / 6) + ':' + Math.round(m.z / 6));   // 他在幾個地方發過料
+        }
         if (lastAt >= 0) gaps.push((i - lastAt) * 0.05);         // 距離上一發幾秒
         lastAt = i;
       }
@@ -2598,19 +2634,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const med = a => a.length ? +a.slice().sort((x, y) => x - y)[a.length >> 1].toFixed(2) : -1;
     return { mi, carried, loadMax, flyMax, inHand, launches, frames, starMax,
              castPct: +(cast / frames).toFixed(2), near: +near.toFixed(1), far: +far.toFixed(1),
+             jobCast: +(castJob / (jobF || 1)).toFixed(3), jobF,
              siteR: +siteR.toFixed(1), mN: mDur.length, wN: wDur.length,
              mDur: med(mDur), wDur: med(wDur), mY0: med(mY0), wY0: med(wY0),
-             reach: med(reach), gap: med(gaps), placed: placedCnt };
+             reach: med(reach), reachMax: +Math.max.apply(null, reach.concat(0)).toFixed(2),
+             REACH: MAGE_REACH, arc: med(arc), walked: +walked.toFixed(0), spots: spots.size,
+             gap: med(gaps), placed: placedCnt };
   });
   ok('魔法師一塊積木都不搬', wz.carried === 0 && wz.inHand === 0 && wz.launches > 20,
      wz.frames + ' 幀裡他舉著積木 ' + wz.carried + ' 幀、名下有積木被舉在手上 ' +
      wz.inHand + ' 幀；同一段時間他發了 ' + wz.launches + ' 塊出去');
-  /* 「從遠處直接拋到位置上」拆成兩件可量的事：起飛高度證明它是從地上起飛的
-     （被人搬的話那一發是從頭頂丟出去的），出手距離證明那塊料本來就在遠處。 */
+  /* 「直接拋到位置上」看起飛高度：那一發是從地上起飛的（被人搬的話是從頭頂丟出去的）。 */
   ok('建材是從躺著的地方直接飛上去的，不是先搬到工地邊再丟',
-     wz.mN > 20 && wz.mY0 < 1 && wz.wY0 > 2 && wz.reach > 5,
-     '魔法師的 ' + wz.mN + ' 條拋物線從離地 ' + wz.mY0 + ' 格起飛、出手時那塊料離他 ' +
-     wz.reach + ' 格；工人自己丟的 ' + wz.wN + ' 條是從頭頂 ' + wz.wY0 + ' 格丟出去的');
+     wz.mN > 20 && wz.mY0 < 1 && wz.wY0 > 2,
+     '魔法師的 ' + wz.mN + ' 條拋物線從離地 ' + wz.mY0 +
+     ' 格起飛；工人自己丟的 ' + wz.wN + ' 條是從頭頂 ' + wz.wY0 + ' 格丟出去的');
+  /* v1.89（使用者指定「只能搬運一定範圍的積木……是為了讓他比較靠近積木堆，
+     看得出來是他在施法搬運」）：搆得到的只有腳邊 MAGE_REACH 格內的料，
+     **拋出去那一段不受限**——所以「出手距離」要小、「那條拋物線」要長。
+     這一條同時是 v1.88 的紅檢：那時他站在工地外圈、料在哪就吸哪，出手距離沒有上限。 */
+  ok('只拉得動腳邊那一圈的料，拋出去的那一段不受限',
+     wz.reachMax <= wz.REACH + 0.01 && wz.reach < wz.REACH * 0.8 && wz.arc > wz.REACH * 1.5,
+     '出手時那塊料離他 ' + wz.reach + ' 格（最遠 ' + wz.reachMax + '，上限 ' + wz.REACH +
+     '），那塊料飛過去的水平距離 ' + wz.arc + ' 格');
+  /* 腳邊那一圈搬空了就換一坨：整段路程與「發過料的地點」都要看得出他在移動。
+     實測 110 秒走 15～88 格、在 2 個地方發過料（走的範圍被 MAGE_ROAM 綁在工地外圍
+     16 格內，所以是沿著那條帶子挪，不是滿場跑）。 */
+  ok('腳邊的料搬完就走去下一堆', wz.walked > 10 && wz.spots >= 2,
+     '整段走了 ' + wz.walked + ' 格、在 ' + wz.spots + ' 個地方發過料');
   ok('飛得比工人丟的慢一倍以上', wz.mDur > 1.2 && wz.mDur > wz.wDur * 2,
      '魔法師 ' + wz.mDur + ' 秒／塊，工人 ' + wz.wDur + ' 秒／塊（都取中位數）');
   /* v1.64.1：上一塊還在半空就送下一塊。發的間隔要明顯短於一塊飛完的時間，
@@ -2621,13 +2672,55 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wz.flyMax + ' 塊（手上的工作單一次還是只有 ' + wz.loadMax + ' 格）');
   ok('站在工地旁邊施法，不走進工地', wz.near > wz.siteR + 2,
      '離工地中心 ' + wz.near + '–' + wz.far + '（建築半徑 ' + wz.siteR + '）');
-  /* 連發之後杖就一直舉著（v1.64.1）：每 0.85 秒發一塊，中間沒有「放下再舉起來」的空檔。 */
-  ok('施工中杖一直舉著', wz.castPct > 0.85,
-     '舉著杖的幀數占 ' + (wz.castPct * 100).toFixed(0) + '%');
+  /* 連發之後杖就一直舉著（v1.64.1）：每 0.85 秒發一塊，中間沒有「放下再舉起來」的空檔。
+     量的是「手上有料的那幾幀」而不是全部幀數（v1.89）：他現在會走去下一坨料、
+     也會在料被工人搬光時站著等，那兩段本來就該收杖，混進來量到的是「場上還有多少料」。 */
+  ok('手上有料就一直舉著杖', wz.jobCast > 0.95 && wz.jobF > 300,
+     '手上有料的 ' + wz.jobF + ' 幀裡舉著杖的占 ' + (wz.jobCast * 100).toFixed(1) +
+     '%（整段是 ' + (wz.castPct * 100).toFixed(0) + '%）');
   /* 使用者要的是「一點點、看得出是他在施法」，所以特效量也要驗：
      星星是跟魔法陣共用的那一池（上限 48），施工中同時亮著十來顆就是「一點點」。 */
   ok('施法特效留得小', wz.starMax > 0 && wz.starMax < 24,
      '整段最多同時 ' + wz.starMax + ' 顆星（池子上限 48）');
+
+  /* v1.89「優先找積木多的地方」：兩堆料一樣遠，一堆 60 塊一堆 12 塊，他該走去大的那一堆。
+     場景要自己鋪乾淨——場上原本的料（含上一輪還在半空的碎料）全部認走藏起來，
+     不藏的話工地正中央那一大坨會蓋掉這一條要量的東西。 */
+  const wzPick = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(6); startBuild(true);
+    for (let i = 0; i < 160; i++) step(0.05);        // 先讓上一輪的碎料全部落定
+    const m = workers.find(w => w.mage);
+    releaseWorker(m);
+    const free = blocks.filter(b => b.st === 0 && b.rest);
+    for (const b of blocks) b.holder = 0;            // 全部藏起來（誰都認不到）
+    const put = (list, cx, cz) => {
+      for (const b of list) {
+        if (b.cell) gridDel(b);
+        b.x = cx + rr(-2.5, 2.5); b.z = cz + rr(-2.5, 2.5); b.y = HB;
+        b.vx = b.vy = b.vz = 0; b.rest = true; b.snap = 0; b.holder = -1;
+        gridAdd(b);
+      }
+    };
+    const R = siteR + 12;
+    // 大堆在 0°、小堆在 180°，他站在 90°——跟兩堆一樣遠，只差塊數
+    m.x = 0; m.z = R; m.mang = Math.PI / 2; m.mrad = R; m.mre = 0;
+    m.fly.length = 0; m.st = 'idle';
+    put(free.slice(0, 60), R, 0);
+    put(free.slice(60, 72), -R, 0);
+    const lim = MAGE_REACH * 0.6;
+    let t = 0;
+    for (; t < 900; t++) {
+      step(0.05);
+      if (Math.hypot(m.x - R, m.z) < lim || Math.hypot(m.x + R, m.z) < lim) break;
+    }
+    return { secs: +(t * 0.05).toFixed(1), R: +R.toFixed(1),
+             big: +Math.hypot(m.x - R, m.z).toFixed(1),
+             small: +Math.hypot(m.x + R, m.z).toFixed(1) };
+  });
+  ok('兩堆料一樣遠就站到塊數多的那一堆', wzPick.big < wzPick.small && wzPick.secs < 30,
+     wzPick.secs + ' 秒後離 60 塊那堆 ' + wzPick.big + ' 格、離 12 塊那堆 ' +
+     wzPick.small + ' 格（兩堆都在半徑 ' + wzPick.R + '，他從等距的地方出發）');
 
   const wzN = await page.evaluate(() => {
     const out = {};
@@ -2701,10 +2794,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const wzWait = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
+    scatterFree();
     const m = workers.find(w => w.mage);
-    // 先等他走到施法位：上一段測試可能把他丟在工地正中央，那一段路會被算成「他移動了」
-    for (let i = 0; i < 400 &&
-         Math.abs(Math.hypot(m.x, m.z) - (siteR + MAGE_KEEP)) > 0.15; i++) step(0.05);
+    // 先等他站定開始施法：上一段測試可能把他丟在工地正中央，那一段路會被算成「他移動了」
+    for (let i = 0; i < 400 && m.st !== 'cast'; i++) step(0.05);
     for (let i = 0; i < 1200 && m.cast < 0.95; i++) step(0.05);
     const up = +m.cast.toFixed(2);
     for (const b of blocks) if (b.st === 0 && b.holder < 0) b.holder = 0;   // 建材全被認走
@@ -2724,6 +2817,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const wzDown = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
+    scatterFree();
     const m = workers.find(w => w.mage);
     let up = 0;
     for (let i = 0; i < 1200 && m.cast < 0.95; i++) step(0.05);
