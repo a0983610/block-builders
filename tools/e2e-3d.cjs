@@ -9152,10 +9152,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      與底下那層土（艾菲爾鐵塔打到島半徑的 2.07 倍）。島要跟著補大。
      測的是「下緣三條射線打到地面的落點還在島上」，不是抄公式。 */
   const isleFit = await page.evaluate(() => {
-    let isle = null;
-    ENG.three.scene.traverse(o => {
-      if (!isle && o.material && o.material.color && o.material.color.getHex() === 0x5f8f3e) isle = o;
-    });
+    /* 草皮那顆網格直接向引擎拿（ENG.three.ground）。本來是掃整個場景找「材質顏色是那片綠」
+       的那一顆——v1.90 草皮改成貼圖之後材質色變成白的，那樣找會找不到（踩過）。 */
+    const isle = ENG.three.ground;
     const out = [];
     for (const n of ['艾菲爾鐵塔', '倫敦眼摩天輪', '台北 101', '金門大橋']) {
       shapePick = SHAPES.findIndex(s => s.n === n);

@@ -181,6 +181,56 @@ const ENG = (function () {
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。 */
   const MAXDUST = 720;
 
+  /* ── 草皮的花紋（v1.90）─────────────────────────────────
+     使用者要「地面綠色增加草地感」。整片單色綠讀起來是一塊綠地板，不是草。
+     做法是程式現畫一張貼圖平鋪上去，不用外部圖檔——「雙擊 HTML 就能玩」的前提下
+     多一個要載入的資產就多一種載不到的失敗，而且 file:// 讀圖也會被 CORS 擋。
+     一格 GRASS_TILE 個世界單位，所以草的顆粒大小跟草地島多大無關
+     （島的邊長跟著建築走，見 setGroundSize）。
+     畫三層：底色 → 低頻的深淺斑塊（一塊一塊的草皮）→ 細碎的草葉。 */
+  const GRASS_TILE = 30;            // 一張貼圖鋪幾個世界單位
+  let grassTex = null;
+  function grassTexture() {
+    const S = 512, cv = document.createElement('canvas');
+    cv.width = cv.height = S;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#5f8f3e';        // 底色沿用 v1.89 之前那片純綠，整體色調不變
+    g.fillRect(0, 0, S, S);
+    /* 斑塊要畫九份（自己＋八個方向的鄰居）才接得起來：只畫一份的話，
+       平鋪之後每一格的邊緣都會出現一條硬邊，看起來像鋪了地磚。 */
+    const blotch = (x, y, r, c) => {
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        const cx = x + dx * S, cy = y + dy * S;
+        const grd = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+        grd.addColorStop(0, 'rgba(' + c + ',0.5)');
+        grd.addColorStop(1, 'rgba(' + c + ',0)');
+        g.fillStyle = grd;
+        g.fillRect(cx - r, cy - r, r * 2, r * 2);
+      }
+    };
+    for (let i = 0; i < 70; i++)
+      blotch(Math.random() * S, Math.random() * S, 30 + Math.random() * 70,
+             Math.random() < 0.5 ? '116,162,74' : '58,110,44');
+    for (let i = 0; i < 140; i++)
+      blotch(Math.random() * S, Math.random() * S, 8 + Math.random() * 22,
+             Math.random() < 0.5 ? '134,176,86' : '52,100,40');
+    /* 草葉：一到兩像素寬、兩到四像素高的短撇。密度是量出來的——
+       少於三千顆看起來像雜訊、多於一萬二會糊成一片深綠。 */
+    for (let i = 0; i < 9000; i++) {
+      const t = Math.random();
+      g.fillStyle = t < 0.45 ? 'rgba(124,170,84,0.55)'
+                  : t < 0.8 ? 'rgba(62,112,46,0.5)' : 'rgba(152,180,92,0.4)';
+      g.fillRect(Math.random() * S, Math.random() * S,
+                 1 + Math.random(), 2 + Math.random() * 2);
+    }
+    const tx = new T.CanvasTexture(cv);
+    tx.wrapS = tx.wrapT = T.RepeatWrapping;
+    // 草地是斜看過去的一大片，不開非等向過濾的話遠處會糊成一條一條的摩爾紋
+    tx.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    tx.colorSpace = T.SRGBColorSpace;
+    return tx;
+  }
+
   /* ── 材質：在 Lambert 上加一圈深色邊，voxel 才有實體感 ──
      邊緣判定不靠 uv（不同 three 版本 uv attribute 有沒有宣告不一定），
      改用 local position：單位方塊的座標是 ±0.5，
@@ -235,7 +285,8 @@ const ENG = (function () {
     const unitBox = new T.BoxGeometry(1, 1, 1);
     dirtPad = new T.Mesh(unitBox, new T.MeshLambertMaterial({ color: 0x6f5134 }));
     grassRim = new T.Mesh(unitBox, new T.MeshLambertMaterial({ color: 0x8a6b3f }));  // 草皮與土層之間的切邊
-    ground = new T.Mesh(unitBox, new T.MeshLambertMaterial({ color: 0x5f8f3e }));
+    grassTex = grassTexture();
+    ground = new T.Mesh(unitBox, new T.MeshLambertMaterial({ color: 0xffffff, map: grassTex }));
     ground.receiveShadow = true;
     scene.add(dirtPad, grassRim, ground);
     setGroundSize(120);
@@ -1155,6 +1206,9 @@ const ENG = (function () {
     groundHalf = r;                    // 地面痕跡要拿它把自己夾在草皮上（見 putMarks）
     ground.scale.set(r * 2, 1.2, r * 2);
     ground.position.set(0, -0.6, 0);
+    /* 草的顆粒要跟島一樣大小地長：貼圖鋪幾次＝島的邊長 ÷ 一格幾個單位（見 GRASS_TILE）。
+       固定 repeat 的話，小島的草會被放大成一坨一坨的斑點。 */
+    if (grassTex) grassTex.repeat.set(r * 2 / GRASS_TILE, r * 2 / GRASS_TILE);
     grassRim.scale.set(r * 1.985, 1.1, r * 1.985);
     grassRim.position.set(0, -1.65, 0);
     dirtPad.scale.set(r * 1.95, 7, r * 1.95);
