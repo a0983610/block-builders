@@ -5753,6 +5753,68 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wbSlice.faces + ' 道側面：該畫的高度合計 ' + wbSlice.expo + ' 格，整格畫的話是 ' +
      wbSlice.full + ' 格（' + Math.round(wbSlice.expo / wbSlice.full * 100) + '%）');
 
+  /* 靜止的水面不能忽高忽低（v1.94.2）。使用者：「我說的一跳一跳，就是靜止水面會高一下
+     高一下」。查出來是**畫出來的高度在 v 與 2v 之間翻**：半空中的水要畫成 WT_AIR 倍高
+     （不然落下的水柱是一疊互不相連的薄片），而「是不是半空中」原本直接用 c.sup 判斷，
+     sup 又要求腳下那一格 v ≥ 1 − WT_LEVEL（0.98）。杯子裡那層薄薄的水面坐在 0.97～1.00
+     的那一格上，0.97 那一拍 sup 就翻成 0，這一格立刻被畫成兩倍高，下一拍又翻回來。
+     實測靜止的馬克杯：有一格 v 一直是 0.231，h 卻在 0.231 ↔ 0.462 之間跳，
+     一次七八十格一起跳。這是 v1.81 就在的，v1.94.0 水面開始吃光才看得見。 */
+  const wbStill = await page.evaluate(() => {
+    cleanTools();
+    const keep = shapePick;
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    pourBucket(0, rim + 2, 0, WB_DROPS);
+    for (let i = 0; i < 60 * 20; i++) step(1 / 60);     // 等它完全靜下來
+    const snap = () => {
+      const m = new Map();
+      for (const c of water.cells.values()) m.set(c.gx + ':' + c.gy + ':' + c.gz, c.h);
+      return m;
+    };
+    /* 每一柱畫出來的水面（最上面那格的 gy + hv）平均起來。靜止的水只會因為滲水
+       慢慢降，**不該往上升**——升回去就是在脈動。 */
+    const level = () => {
+      const col = new Map();
+      for (const c of water.cells.values()) {
+        if (!c.vis) continue;
+        const k = c.gx + ':' + c.gz, top = c.gy + Math.max(c.hv, WT_SHOW);
+        if (!(col.get(k) >= top)) col.set(k, top);
+      }
+      let s = 0;
+      for (const t of col.values()) s += t;
+      return s / col.size;
+    };
+    let prev = snap(), lv = level(), rise = 0, jump = 0, worst = 0;
+    const seq = [];
+    for (let k = 0; k < 30; k++) {
+      step(1 / 60);
+      const cur = snap();
+      let n = 0;
+      for (const [key, h] of cur) {
+        const o = prev.get(key);
+        if (o === undefined) continue;
+        const d = Math.abs(o - h);
+        if (d > 0.1) n++;
+        if (d > worst) worst = d;
+      }
+      const now = level();
+      rise = Math.max(rise, now - lv);
+      lv = now;
+      jump += n; seq.push(n); prev = cur;
+    }
+    shapePick = keep;
+    return { cells: water.cells.size, jump, seq: seq.slice(0, 10),
+             worst: +worst.toFixed(3), rise: +rise.toFixed(4) };
+  });
+  ok('靜止的水面不會忽高忽低（畫出來的高度不在 v 與 2v 之間翻）',
+     wbStill.jump === 0 && wbStill.rise < 0.01,
+     wbStill.cells + ' 格水靜置 20 秒後，30 幀內高度跳超過 0.1 格的次數 ' + wbStill.jump +
+     '（改版前一次七八十格一起跳）、最大單格變化 ' + wbStill.worst +
+     ' 格；平均水面往上升最多 ' + wbStill.rise + ' 格（改版前 0.064，只該因為滲水往下降）');
+
   // 一杯水在場時每幀的成本
   const wbCost = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
