@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.103.0';
+const VERSION = '1.104.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -993,7 +993,7 @@ function newWorker(i) {
        hst 是這一趟在做什麼（dig／lay），hcap 是這一趟要挖幾塊，
        hdt 是還要挖幾秒（砌的時候是下一塊還有幾秒），hp 是下一撮土花幾秒。
        認走的是哪一格記在積木身上（b.hk），不記在人身上——一趟不只一塊。 */
-    hm: -1, hst: '', hcap: 0, hdt: 0, hp: 0,
+    hm: -1, hst: '', hcap: 0, hdt: 0, hp: 0, gb: -1,   // gb＝這一趟要去撿的那一塊（v1.104）
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
@@ -1166,6 +1166,9 @@ function flyWorker(w, dt) {
   if (Math.abs(w.z) > lim) { w.z = clamp(w.z, -lim, lim); w.vz *= -0.4; }
   if (w.y > 0) return;
   w.y = 0; w.air = 0; w.vx = w.vy = w.vz = 0;
+  /* 被炸飛剛好落在人家屋子裡：推出來（v1.104）。落地之後接著是躺平那幾秒
+     （w.fall，那條路徑完全不動），不推的話他就躺在人家的牆裡等時間跑完。 */
+  pushOutHome(w);
   // 落地這一刻才判定燒不燒：被爆炸掃到的（lit）一定燒，摔進火堆裡的也會被引燃
   const lit = w.lit || nearFire(w);
   w.lit = 0;
@@ -1197,7 +1200,12 @@ function burnMove(w, dt) {
     w.ba += dt * W_PANIC;
     w.x = clamp(w.bx + Math.cos(w.ba) * w.br, -lim, lim);
     w.z = clamp(w.bz + Math.sin(w.ba) * w.br, -lim, lim);
+    const cx0 = w.x, cz0 = w.z;
     pushOutHome(w);                                     // 圈圈跑到人家屋子裡就推出來
+    /* 推出來的位移也要加到**圈心**上（v1.104）：這裡的位置跟 ringWalk 一樣是每幀
+       重算的，只推人不推圈心的話下一幀又照原本的圈心算回房子裡，等於推一輩子。
+       加到圈心上，圈子會自己幾幀內滑出房子外面。 */
+    w.bx += w.x - cx0; w.bz += w.z - cz0;
     w.a = Math.atan2(-Math.sin(w.ba), Math.cos(w.ba));  // 面向切線＝繞著跑
     w.ph += dt * 22;                                    // 腳步比平常快一倍
     w.gait = 1;
@@ -1351,7 +1359,13 @@ function buildWalk(w, dt) {
     w.leg = leg;             // 這段是上工的路，不算進閒晃里程（那個是拿來算發呆多久的）
     return done;
   }
-  if (!aligned || pr > outer + 0.5) {               // 要進去：先繞到那條半徑的外圈
+  /* 要進去：先繞到那條半徑的外圈，對準了就直直走進去。
+     v1.104 起「對準了」就夠，不再要求先回到圈上（原本是 pr > outer + 0.5 才繞）。
+     對準之後那條路**就是同一條半徑線**，從 32 格外走進來跟從圈上走進來是同一條路
+     （standPos 保證的是「從那個站位往外到外圈沒有積木」），差別只在 walkTo 會閃房子、
+     ringWalk 的徑向不會。舊的寫法在「房子擋在他跟圈之間」時會一直想擠回圈上、
+     每幀被推回來（實測 5163 → 968 人-幀，換這一條之後 0）。 */
+  if (!aligned) {
     ringWalk(w, Math.atan2(w.tz, w.tx), outer, dt);
     return false;
   }
@@ -1451,29 +1465,98 @@ function stepFlee(w, dt) {
    （dA = 0），整份腳程本來就全給徑向。 */
 /* spd 給了就用那個腳程（單位／秒），沒給就照平常走。慶祝進場會給——
    遠的人要跑（見 CHEER_IN）。 */
+/* 繞外圈的路上有房子：往外鼓出去繞過它（v1.104）。
+   圈子的**內側是地標**，所以只能往外閃——往內閃會走進建築裡。
+   為什麼一定要在這裡算，光靠 pushOutHome 不行：ringWalk 每一幀是用極座標
+   **重算**位置的（w.x = cos(na) × nr），推出來的位移下一幀就被丟掉，於是人頂著房子
+   外框每幀被推一次、位移永遠是 0——實測換一座大的地標之後，離工地中心 16.4 的那一間
+   （走路的圈在 16.3）讓小人磨掉 **5163 幀**，全部貼在外框上（離框 0.02）。
+   鼓多遠是**算出來的**：從場中心朝那個方向的射線離開那個外框的距離，再加一點餘裕。
+   一步一步試的話，長條屋徑向擺的時候要試十幾次。 */
+const RING_OUT = 0.6;               // 鼓出去之後離外框留多少餘裕
+const RING_LOOK = 2.5;              // 往前看幾格（弧長）再決定這一步要鼓多外
+function ringClear(a, r) {
+  const cx = Math.cos(a), cz = Math.sin(a);
+  for (let n = 0; n < 4; n++) {                       // 最多連著閃過四間
+    const h = footHome(cx * r, cz * r);
+    if (!h) return r;
+    const tx = cx > 0 ? h.x1 / cx : cx < 0 ? h.x0 / cx : Infinity;
+    const tz = cz > 0 ? h.z1 / cz : cz < 0 ? h.z0 / cz : Infinity;
+    const out = Math.min(tx, tz);
+    if (!(out > r)) return r;                         // 算不出來就別鼓（保險）
+    r = out + RING_OUT;
+  }
+  return r;
+}
+/* 這一步的目標半徑：現在的角度、以及**往前看一段**的角度，兩個要的半徑取大的。
+   一定要往前看，不能等踩到了才往外挪——把算好的位置事後往外推是一次好幾格的傳送，
+   下一幀又被「半徑差」拉回來，等於原地震盪（實測 200 幀裡有 116 幀在原地）。
+   看的距離要大於一幀的步幅（0.34），不然還沒鼓到位就已經進去了。 */
+function ringGoal(ca, dA, rad, cr) {
+  const lookA = RING_LOOK / Math.max(1, cr);
+  const look = dA >= 0 ? Math.min(dA, lookA) : Math.max(dA, -lookA);
+  return Math.max(ringClear(ca, rad), ringClear(ca + look, rad));
+}
+/* 這一步實際能走到哪個半徑。想走到的那一點被房子占著時分兩種，順序很重要：
+   ① 房子在**我內側**（從外圈往工地走，房子擋在中間）→ 半徑不動，只沿著圈滑過去，
+      繞過那一間的角度範圍再往內收。往外鼓沒用（房子不在我這個半徑上），
+      照原樣往內收則是每幀被推回來（實測 600 人-幀貼在外框上磨）。
+   ② 連**現在的半徑**都被占著（房子壓在圈上）→ 往外鼓，一步最多一個步幅。
+   回傳值不等於 want 的時候呼叫端要把步幅整個重新分給角度——原本的 k 是「弧長 + 徑向」
+   一起算的，從 32 走到 16 的時候 k 只有 0.02，把徑向那份丟掉就等於原地不動。 */
+function ringHold(na, cr, want, budget) {
+  if (!footHome(Math.cos(na) * want, Math.sin(na) * want)) return want;
+  if (!footHome(Math.cos(na) * cr, Math.sin(na) * cr)) return cr;
+  return Math.min(ringClear(na, cr), cr + budget);
+}
 function ringWalk(w, ta, rad, dt, spd) {
   const cr = Math.hypot(w.x, w.z);
   const ca = cr < 0.001 ? ta : Math.atan2(w.z, w.x);
   const TAU = Math.PI * 2;
   // 取最短那一邊繞。ta 可能是累加出來的（工程師換位置一次加一點），先折回 ±π
   const dA = ((((ta - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
-  const dr = rad - cr;
   const sp = spd || WALK;
   const budget = sp * dt;
+  /* 這一步的目標半徑：現在的角度、以及**往前看一段**的角度，兩個要的半徑取大的。
+     一定要往前看，不能等踩到了才往外挪——把算好的位置事後往外推是一次好幾格的傳送，
+     下一幀又被「半徑差」拉回來，等於原地震盪（實測 200 幀裡有 116 幀在原地）。
+     看的距離要大於一幀的步幅（0.34），不然還沒鼓到位就已經進去了。 */
+  const rad2 = ringGoal(ca, dA, rad, cr);
+  const dr = rad2 - cr;
   const left = Math.hypot(dA * cr, dr);               // 還差多遠（弧長 + 徑向）
   const arrive = left <= budget;
   const k = arrive ? 1 : budget / left;
-  const na = ca + dA * k, nr = cr + dr * k;
+  let na = ca + dA * k;
+  const want = cr + dr * k;
   const px = w.x, pz = w.z;
+  /* 想走到的那一點被房子占著怎麼辦。分兩種，順序很重要：
+     ① 房子在**我內側**（從外圈往工地走，房子擋在中間）→ 這一步半徑不動，只沿著圈
+        滑過去，繞過那一間的角度範圍再往內收。往外鼓沒用（房子不在我這個半徑上），
+        照原樣往內收則是每幀被推回來（實測 600 人-幀貼在外框上磨）。
+        **步幅要整個重新分給角度**：原本的 k 是「弧長 + 徑向」一起算的，
+        從 32 走到 16 的時候 k 只有 0.02，把徑向那份丟掉就等於原地不動（實測 968 幀）。
+     ② 連**現在的半徑**都被占著（房子壓在圈上）→ 往外鼓，一步最多一個步幅。 */
+  let nr = ringHold(na, cr, want, budget);
+  if (nr !== want) {
+    const arc = Math.abs(dA) * cr;
+    na = ca + dA * (arc <= budget ? 1 : budget / arc);
+    nr = ringHold(na, cr, want, budget);              // 角度變了，再問一次
+  }
   w.x = Math.cos(na) * nr; w.z = Math.sin(na) * nr;
-  pushOutHome(w);                                     // 繞外圈的路上有房子就別踩進去
+  pushOutHome(w);                                     // 保險（房子剛好在這一幀長出來）
   const mx = w.x - px, mz = w.z - pz;
   if (Math.hypot(mx, mz) > 1e-4) {
     w.a = Math.atan2(mx, mz);
     w.ph += dt * 11 * sp / WALK;                      // 跑起來腳步也要快（同 FLEE_STEP 的道理）
     w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
+  } else {
+    // 沒在動就把腿收掉（v1.104）。不收的話站定之後腿還在原地擺——就是使用者說的那個樣子
+    w.gait += (0 - w.gait) * Math.min(1, dt * 8);
   }
-  return arrive;
+  /* 「到位」是照 rad2（鼓出去之後的目標半徑）算的。另外，目標那一點被房子占著時
+     （nr 沒能走到 want），角度到了就算到位——不然他會一直想擠進去。
+     慶祝入圈、工程師走位、魔法師站位都靠這個回傳值。 */
+  return arrive || (Math.abs(dA) * cr <= budget && nr !== want);
 }
 
 /* ── 完工慶祝 ─────────────────────────────────────────────
@@ -3008,11 +3091,19 @@ function updHome(w, wi, dt) {
     return;
   }
   if (w.mage) { castTrip(w, wi, h, dt); return; }         // 魔法師隔空蓋（v1.102）
+  if (w.hst === 'grab') { grabTrip(w, wi, h, dt); return; }
   if (w.hst === 'dig') { digTrip(w, wi, h, dt); return; }
   if (w.load.length) { layTrip(w, h, dt); return; }      // 手上有貨：走回去砌
-  digSpot(w, h);                                        // 開下一趟
+  w.hcap = Math.round(rr(HOME_CARRY[0], HOME_CARRY[1]));   // 這一趟要拿幾塊
+  startTrip(w, h);                                        // 開下一趟：先撿地上的，沒有才挖
+}
+/* 開一趟料。**地上的碎料優先**（v1.104，使用者指定）：房子蓋一半被拆掉會留下一地自己的
+   碎料，那些就該撿回去用，而不是視而不見再從地上挖新的。撿不到才挖。 */
+function startTrip(w, h) {
+  const i = freeNearHome(w, h);
+  if (i >= 0) { w.gb = i; w.hst = 'grab'; w.hdt = 0; return; }
+  digSpot(w, h);
   w.hst = 'dig';
-  w.hcap = Math.round(rr(HOME_CARRY[0], HOME_CARRY[1]));   // 這一趟要挖幾塊
 }
 /* 魔法師蓋自己的家（v1.102，使用者：「魔法師小人 要用魔法師的方式蓋小房子」）。
    他不挖也不搬：站在自己家旁邊舉著杖，把腳邊的地面拉出一塊、直接隔空拋到格子上，
@@ -3046,13 +3137,29 @@ function castTrip(w, wi, h, dt) {
 }
 /* 出手：從腳邊的地面拉一塊出來，直接進拋物線飛到那一格（不經過 CARRY）。 */
 function castHome(w, wi, h, k) {
-  if (blocks.length >= ENG.MAXB) return false;
   const sl = h.slots[k];
-  const a = rr(0, Math.PI * 2), d = rr(0.9, 1.9);
-  const b = newBlock();
-  b.x = w.x + Math.cos(a) * d; b.z = w.z + Math.sin(a) * d; b.y = HB;
-  b.hh = w.hm; b.hk = k;
-  b.r = b.tr = sl.c[0]; b.g = b.tg = sl.c[1]; b.b = b.tb = sl.c[2];
+  /* 地上的碎料優先（v1.104，同工人那條的規則）：搆得到就把現成的那一塊吸起來，
+     搆不到才從地面拉一塊新的出來。搆多遠沿用他在工地發料的那個範圍（MAGE_REACH）。 */
+  let bi = findBlock(w.x, w.z, MAGE_REACH);
+  let b;
+  if (bi >= 0) {
+    b = blocks[bi];
+    douse(b);
+    if (b.cell) gridDel(b);
+    b.tr = sl.c[0]; b.tg = sl.c[1]; b.tb = sl.c[2];     // 顏色慢慢變過去（撿回來重新用的料）
+    b.snap = 0; b.scale = 1; b.wet = 0;
+    b.hh = w.hm; b.hk = k;
+  } else {
+    if (blocks.length >= ENG.MAXB) return false;
+    const a = rr(0, Math.PI * 2), d = rr(0.9, 1.9);
+    b = newBlock();
+    b.x = w.x + Math.cos(a) * d; b.z = w.z + Math.sin(a) * d; b.y = HB;
+    b.hh = w.hm; b.hk = k;
+    b.r = b.tr = sl.c[0]; b.g = b.tg = sl.c[1]; b.b = b.tb = sl.c[2];
+    blocks.push(b);
+    bi = blocks.length - 1;
+    spawnMark({ x: b.x, y: 0, z: b.z }, DIG_MARK, 1);   // 地上留一個拉走積木的痕
+  }
   b.st = TOSS; b.rest = false;
   b.arc = {
     t: 0,
@@ -3061,10 +3168,8 @@ function castHome(w, wi, h, k) {
     peak: homePeak(b.x, b.y, b.z, sl, h) + MAGE_LIFT,
     mage: 1, hm: w.hm, hk: k
   };
-  blocks.push(b);
   sl.claimed = wi;                                      // 飛到之前先占著，別人不要再認
-  w.fly.push({ b: blocks.length - 1, s: -1 });          // s < 0＝家的那些（見 mageTrail）
-  spawnMark({ x: b.x, y: 0, z: b.z }, DIG_MARK, 1);     // 地上留一個拉走積木的痕
+  w.fly.push({ b: bi, s: -1 });                         // s < 0＝家的那些（見 mageTrail）
   digPuff(w); digPuff(w);
   const tip = staffTip(w);
   spawnStars(tip.x, tip.z, tip.y, 0.5, 2, MAGE_STAR);
@@ -3074,6 +3179,76 @@ function castHome(w, wi, h, k) {
   return true;
 }
 
+const GRAB_R = 12;                  // 找碎料的範圍：離自己家外框這麼遠以內
+/* 家附近地上躺著的碎料裡離他最近的那一塊（沒有就 −1，v1.104）。
+   條件跟工人撿料那條一樣（FREE、落定了、沒人拿），另外三個不撿：
+   躺在誰家占地上的（走過去會被推出來，永遠抵達不了）、在工地裡的（那是地標的料場，
+   而且要走進建築裡）、離自己家太遠的（走過去比挖還久）。 */
+function freeNearHome(w, h) {
+  let best = -1, bd = Infinity;
+  const lim = (h.r + GRAB_R) ** 2, site = (siteR + KEEP) ** 2;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
+    if ((b.x - h.x) ** 2 + (b.z - h.z) ** 2 > lim) continue;
+    if (b.x * b.x + b.z * b.z < site) continue;
+    const d = (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
+    if (d >= bd) continue;
+    if (homeAt(b.x, b.z)) continue;                     // 這一塊躺在誰家裡（同 findBlock）
+    bd = d; best = i;
+  }
+  return best;
+}
+/* 把地上這一塊收成「自己家的第 k 格」。跟 digBlock 的差別只有兩件事：
+   積木是現成的（不 newBlock、不留土痕、不噴土），而且顏色是**慢慢**變過去的
+   （只設目標色，讓它自己 lerp）——那是一塊撿回來重新用的料，不是憑空長出來的。 */
+function takeHomeBlock(w, wi, h, i) {
+  const b = blocks[i];
+  if (!b || b.st !== FREE || b.holder >= 0) return false;
+  const a0 = w.load.length ? blocks[w.load[0].b] : null;
+  const anchor = a0 && a0.hh === w.hm ? h.slots[a0.hk] : null;
+  const k = homeFree(h, anchor);
+  if (k < 0) return false;
+  douse(b);                                             // 還在燒的先熄掉（同工人撿料）
+  if (b.cell) gridDel(b);
+  b.st = CARRY; b.rest = false; b.holder = wi; b.hh = w.hm; b.hk = k;
+  b.snap = 0; b.arc = null; b.scale = 1; b.wet = 0;
+  const c = h.slots[k].c;
+  b.tr = c[0]; b.tg = c[1]; b.tb = c[2];
+  h.slots[k].claimed = wi;
+  w.load.push({ b: i, s: -1 });
+  w.carry = true;
+  return true;
+}
+/* 走去撿、撿到手上滿了。撿不到就改去挖。 */
+function grabTrip(w, wi, h, dt) {
+  if (w.load.length) carryPose(w);
+  /* 目標那一塊隨時可能被別人撿走、被推土機推走、被炸飛，所以每一幀重新確認。 */
+  let b = blocks[w.gb];
+  if (!b || b.st !== FREE || !b.rest || b.holder >= 0) {
+    const i = freeNearHome(w, h);
+    if (i < 0) { endTrip(w, h); return; }
+    w.gb = i; b = blocks[i];
+  }
+  w.tx = b.x; w.tz = b.z;
+  const leg = w.leg;                                     // 上工的路不算閒晃里程（同 digTrip）
+  const walking = !strollTo(w, dt);
+  w.leg = leg;
+  if (walking) return;
+  if (!takeHomeBlock(w, wi, h, w.gb) || w.load.length >= w.hcap) { endTrip(w, h); return; }
+  const i2 = freeNearHome(w, h);
+  if (i2 < 0) { endTrip(w, h); return; }
+  w.gb = i2;
+}
+/* 這一趟收工：手上有貨就去砌（hst 清掉，updHome 下一幀會走 layTrip），
+   空手就改去挖——地上沒料了還空手回去的話，那一格永遠沒人補。 */
+function endTrip(w, h) {
+  w.hst = '';
+  w.hdt = 0;                                             // 走到就丟第一塊（同 digTrip）
+  if (w.load.length) return;
+  digSpot(w, h);
+  w.hst = 'dig';
+}
 /* 走去挖、挖到手上滿了。挖的地方每一趟重挑（見 digSpot）。 */
 function digTrip(w, wi, h, dt) {
   if (w.load.length) carryPose(w);                       // 手上那疊要跟著手走

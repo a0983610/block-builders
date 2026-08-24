@@ -3433,12 +3433,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、最近的兩間隔 ' + home.gap + '、離樹最近 ' + home.tree);
   /* 積木是**從地上挖出來的**，不是從料池借的。完工那一刻場上通常一塊散料都沒有
      （料池 = 藍圖格數），從料池拿等於把下一座的建材偷走。 */
-  ok('房子真的蓋起來，而且積木是挖出來的（不是從料池拿的）',
-     home.left === 0 && home.homeSet > 60 && home.pool1 === home.pool0 &&
-     home.all1 === home.all0 + home.homeSet,
+  /* 積木是**新生出來的**，不是從料池借的——但地上躺著的碎料例外，那些優先撿（v1.104）。
+     所以驗的是這條帳：新增的積木數 ＝ 蓋掉的塊數 − 從地上撿走的塊數。
+     撿走幾塊就是料池少的那幾塊（pool0 − pool1）。 */
+  ok('房子真的蓋起來，積木是撿的加挖的（沒有從料池借）',
+     home.left === 0 && home.homeSet > 60 && home.pool1 <= home.pool0 &&
+     home.all1 === home.all0 + home.homeSet - (home.pool0 - home.pool1),
      home.list.length + ' 間共 ' + home.homeSet + ' 塊，' + home.secs +
-     ' 秒蓋完（沒補上的 ' + home.left + ' 格）；料池 ' + home.pool0 + ' → ' + home.pool1 +
-     '、積木總數 ' + home.all0 + ' → ' + home.all1);
+     ' 秒蓋完（沒補上的 ' + home.left + ' 格）；地上撿走 ' +
+     (home.pool0 - home.pool1) + ' 塊（料池 ' + home.pool0 + ' → ' + home.pool1 +
+     '）、其餘挖出來（積木總數 ' + home.all0 + ' → ' + home.all1 + '）');
   ok('挖的那一下有土痕與土塵',
      home.marks1 > 0 && home.dirt1 > 0 && home.digs > 0,
      '二十秒內：地上的土痕最多 ' + home.marks1 + ' 塊、土色塵霧最多 ' + home.dirt1 +
@@ -3747,12 +3751,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return homes.list[0];
     };
     const alive = () => blocks.filter(b => b.hh === 0 && b.st === 3).length;
-    const run = (id, fn, steps) => {
+    /* wait 給了就用它代替固定步數（給煙火那種「灑得中才算」的用，見下面）。 */
+    const run = (id, fn, steps, wait) => {
       const h = build();
       const n0 = alive();
       const top = Math.max(...h.slots.map(sl => sl.y));
       fn(h, { x: h.x, y: top - 1, z: h.z });
-      for (let i = 0; i < (steps || 200); i++) step(0.05);
+      if (wait) wait(h, n0);
+      else for (let i = 0; i < (steps || 200); i++) step(0.05);
       rows.push({ id, gone: n0 - alive(), n0 });
     };
     run('槌子', (h, p) => { launchHammer(p, { x: 0, y: -1, z: 0 }, false, false); resolveSwing(); });
@@ -3763,7 +3769,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     run('龍捲風', h => launchTornado({ x: h.x, z: h.z }), 400);
     /* 煙火放三發：火星是從高處隨機散下來的，一發打不中一間 7×5 的房子很正常
        （地標那邊也是同一回事，只是它大得多）。這裡要驗的是「打得到」，不是機率。 */
-    run('煙火', h => { for (let i = 0; i < 3; i++) launchFw({ x: h.x, z: h.z }); }, 700);
+    /* 煙火的火星是往四面八方灑的，一輪不一定灑得到屋頂上（實測六輪裡有一輪 −0）。
+       所以邊放邊看：每 2 秒補三發，打中了就停，最多 35 秒。要驗的是「打得到」，
+       不是「一定第一輪就中」。 */
+    run('煙火', h => { for (let i = 0; i < 3; i++) launchFw({ x: h.x, z: h.z }); }, 0,
+        (h, n0) => {
+          for (let r = 0; r < 8 && alive() === n0; r++) {
+            if (r) for (let i = 0; i < 3; i++) launchFw({ x: h.x, z: h.z });
+            for (let i = 0; i < 40; i++) step(0.05);
+          }
+        });
     run('放火', () => igniteBlock(blocks.find(b => b.hh === 0 && b.st === 3)), 800);
     run('炸彈', h => placeBomb({ x: h.x, y: 0.5, z: h.z }), 400);
     run('隕石', h => callMeteor({ x: h.x, y: 0, z: h.z }), 400);
@@ -3985,6 +4000,70 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      homeRepair.done + ' 塊（沒補上的 ' + homeRepair.left + ' 格、落定時放不上去的 ' +
      homeRepair.floating + ' 塊）');
 
+  /* 積木來源：**地上的碎料優先，沒有才挖**（v1.104，使用者指定）。
+     使用者觀察到的情境就是「小房子蓋一半拆掉會一堆碎料，然後小人繼續挖積木蓋」。
+     這一條把一間蓋好的房子砸爛，看那一組人補回去的時候是撿地上的還是挖新的。
+     躺在**任何一間房子占地上**的碎料不撿——那塊地走不進去（外框是實心的），
+     走過去只會被推出來、永遠抵達不了，所以那些還是得挖。 */
+  const homeGrab = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    let t = 0;
+    while (t < 12) { step(0.05); t += 0.05; }
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    idleEv = IDLE_EVENTS[0]; startHomes();
+    let s = 0;
+    while (s < 600 && homes.list.some(h => h.left > 0)) { step(0.05); s += 0.05; }
+    const hi = 0, h = homes.list[hi];
+    // 玩家拿大槌把整間砸爛
+    smash({ x: h.x, y: 2, z: h.z }, { x: 0, y: -1, z: 0 }, 13, 22);
+    for (let i = 0; i < 120; i++) step(0.05);           // 該垮的垮完、碎料落地
+    const hole = h.left;
+    const free = () => blocks.filter(b => b.hh < 0 && b.st === 0 && b.rest);
+    const rub = free();
+    const reach = rub.filter(b => !homeAt(b.x, b.z) &&
+                                  b.x * b.x + b.z * b.z >= (siteR + KEEP) ** 2 &&
+                                  (b.x - h.x) ** 2 + (b.z - h.z) ** 2 <= (h.r + 12) ** 2);
+    const all0 = blocks.length, pool0 = rub.length;
+    /* 派人回去補。這一輪不准開新的房子（把找空地那一支暫時關掉）——多出來的組去蓋新的
+       就要挖一兩百塊新料，帳就算不清了。要測的是「補舊的那些用什麼料」。 */
+    const origSite = pickHomeSite;
+    pickHomeSite = () => null;
+    stopIdleEvent(); idleEv = IDLE_EVENTS[0]; startHomes();
+    pickHomeSite = origSite;
+    let grab = 0, dig = 0, secs = 0;
+    while (secs < 600 && homes.list.some(q => q.left > 0)) {
+      step(0.05); secs += 0.05;
+      for (const w of workers) {
+        if (w.hm < 0) continue;
+        if (w.hst === 'grab') grab++;
+        else if (w.hst === 'dig') dig++;
+      }
+    }
+    const out = { hole, rubble: pool0, reach: reach.length, all0, pool0,
+                  all1: blocks.length, pool1: free().length, houses: homes.list.length,
+                  grab, dig, left: homes.list.reduce((n, q) => n + q.left, 0),
+                  secs: +secs.toFixed(0) };
+    cleanTools(); clearHomes();
+    return out;
+  });
+  /* 比的是**塊數**不是人-幀：撿的路程短（碎料就在旁邊）、挖的路程長，
+     所以人-幀反過來是正常的，拿它當判準會誤判（實測撿 167 塊只花 976 人-幀，
+     挖 56 塊卻花 1143 人-幀）。
+     也不去對「挖的塊數 = 洞 − 撿的塊數」這本帳：補的過程中還會繼續垮、
+     還會有新的碎料落地，那個等式本來就不成立。要成立的是兩件事：
+     撿得到的碎料**幾乎全部用掉**，而且撿的比新挖的多。 */
+  ok('房子的積木優先撿地上的碎料，撿不到才挖',
+     homeGrab.hole > 40 && homeGrab.reach > 20 && homeGrab.left === 0 &&
+     homeGrab.pool0 - homeGrab.pool1 >= homeGrab.reach * 0.9 &&
+     homeGrab.pool0 - homeGrab.pool1 > homeGrab.all1 - homeGrab.all0,
+     '砸爛之後 ' + homeGrab.hole + ' 格要補、地上 ' + homeGrab.rubble +
+     ' 塊碎料（撿得到的 ' + homeGrab.reach + ' 塊）：撿了 ' +
+     (homeGrab.pool0 - homeGrab.pool1) + ' 塊、新挖 ' +
+     (homeGrab.all1 - homeGrab.all0) + ' 塊（' + homeGrab.secs + ' 秒補完）；' +
+     '走去撿 ' + homeGrab.grab + ' 人-幀、走去挖 ' + homeGrab.dig + ' 人-幀');
+
   /* 蓋不完的、被砸出洞的，下一輪要有人接手（v1.103）。
      stopHomes 會把每個人的 hm 清掉（開下一座就是這樣），而 startHomes 以前一律開新的一間，
      所以「蓋一半換場」的房子永遠停在半棟、完工後被砸出洞的也永遠沒人修。
@@ -4050,8 +4129,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '蓋 45 秒停在 ' + homeResume.mid + ' 塊（' + homeResume.half + ' / ' +
      homeResume.n0 + ' 間沒蓋完）→ 換場後 ' + homeResume.orphan +
      ' 人還在蓋 → 下一輪接手 ' + homeResume.taken + ' 間、沒開新的（總間數 ' +
-     homeResume.n0 + ' → ' + homeResume.n1 + '），' + homeResume.secs + ' 秒蓋完；' +
-     '砸出 ' + homeResume.hole + ' 格的洞 → 有人來補（' + homeResume.s2 + ' 秒補完）');
+     homeResume.n0 + ' → ' + homeResume.n1 + '），' + homeResume.secs + ' 秒蓋完（還差 ' +
+     homeResume.left1 + ' 格）；砸出 ' + homeResume.hole + ' 格的洞 → 有人接手：' +
+     homeResume.fixer + '，' + homeResume.s2 + ' 秒後還差 ' + homeResume.fixed + ' 格');
 
   /* 目標在房子另一邊的時候要**繞過去**（v1.99）。使用者回報「小人會面向小房子原地走路」：
      v1.98 只有 pushOutHome 硬把人推出屋外，沒有「繞開」那一步，於是他直直走進房子、
@@ -4128,6 +4208,126 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '不繞（v1.98）：十秒' + (around.off.arrived < 0 ? '到不了' : '到了') +
      '、只走了 ' + around.off.walked + '，原地走 ' + around.off.stuck + ' 幀；' +
      '直線走法（stepTo）' + around.line.arrived + ' 秒到、原地走 ' + around.line.stuck + ' 幀');
+
+  /* 繞工地外圈那條路（ringWalk）也要繞開房子（v1.104，使用者回報「蓋地標建築的時候
+     有小人會被小房子卡住」）。它的位置是每一幀用極座標**重算**的，所以只靠 pushOutHome
+     推是沒用的——推出來的位移下一幀就被丟掉，人頂著房子外框磨到天亮。
+     實測換一座大的地標之後（舊房子留在場上、最近的一間離中心 16.4，而走路的圈在 16.3）
+     磨掉 5163 人-幀，改完 4 幀。
+     這一條把房子直接壓在圈上，人從一側繞到另一側；對照組把「往外鼓出去」關掉。 */
+  const ringHome = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(6); startBuild(true); completeNow();
+    stopIdleEvent(); clearHomes();
+    homes = { list: [] };
+    const kind = HOME_KIND[3];                         // 大屋 7×5×4
+    const R = siteR + KEEP;                            // 走路的圈就在這個半徑上
+    const slots = homeSlots(R, 0, kind, HOME_PAL[0]);
+    for (const sl of slots) sl.filled = true;
+    const map = new Map();
+    slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+    const h = { x: R, z: 0, r: homeR(kind), kind: kind.id, at: map,
+                ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                slots, left: 0, n: 1, done: true };
+    homeBox(h); markHomeF6(h);
+    homes.list.push(h);
+    const run = on => {
+      const o1 = ringGoal, o2 = ringHold;
+      if (!on) {                                       // ＝v1.103 的行為（只有硬推）
+        ringGoal = (ca, dA, rad) => rad;
+        ringHold = (na, cr, want) => want;
+      }
+      const w = workers[0];
+      releaseWorker(w);
+      w.hm = -1; w.flee = 0; w.air = 0; w.burn = 0; w.fall = 0; w.gait = 0; w.pause = 0;
+      const a0 = -1.0, a1 = 1.0;                       // 從房子這一側繞到那一側
+      w.x = Math.cos(a0) * R; w.z = Math.sin(a0) * R;
+      let arrived = -1, stuck = 0, inHome = 0, px = w.x, pz = w.z;
+      for (let i = 0; i < 200; i++) {
+        const done = ringWalk(w, a1, R, 0.05);
+        const mv = Math.hypot(w.x - px, w.z - pz);
+        px = w.x; pz = w.z;
+        if (mv <= 0.02 && w.gait > 0.6) stuck++;
+        if (footHome(w.x, w.z)) inHome++;
+        if (arrived < 0 && done) arrived = +((i + 1) * 0.05).toFixed(2);
+      }
+      ringGoal = o1; ringHold = o2;
+      return { arrived, stuck, inHome };
+    };
+    const on = run(true), off = run(false);
+    const out = { on, off, R: +R.toFixed(1) };
+    cleanTools(); clearHomes();
+    return out;
+  });
+  ok('繞工地外圈的路上有房子也會繞過去（不是頂著外框磨）',
+     ringHome.on.arrived > 0 && ringHome.on.arrived < 5 && ringHome.on.stuck < 10 &&
+     ringHome.on.inHome === 0 &&
+     ringHome.off.arrived < 0 && ringHome.off.stuck > 100,
+     '房子壓在半徑 ' + ringHome.R + ' 的圈上：會鼓出去繞 → ' + ringHome.on.arrived +
+     ' 秒到、原地走 ' + ringHome.on.stuck + ' 幀、踩進外框 ' + ringHome.on.inHome +
+     ' 幀；只有硬推（v1.103）→ 十秒' + (ringHome.off.arrived < 0 ? '到不了' : '到了') +
+     '、原地走 ' + ringHome.off.stuck + ' 幀');
+
+  /* 著火跑圈圈（burnMove）跟被炸飛落地（flyWorker）也要處理房子（v1.104）。
+     burnMove 的位置跟 ringWalk 一樣是每幀用圈心＋角度重算的，所以推人不推圈心的話
+     下一幀又算回房子裡；flyWorker 落地之後接著是躺平那幾秒（那條路徑完全不動），
+     落在人家牆裡就躺在牆裡等時間跑完。 */
+  const hitHome = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(6); startBuild(true); completeNow();
+    stopIdleEvent(); clearHomes();
+    homes = { list: [] };
+    const kind = HOME_KIND[3];
+    const cx = siteR + 14;
+    const slots = homeSlots(cx, 0, kind, HOME_PAL[0]);
+    for (const sl of slots) sl.filled = true;
+    const map = new Map();
+    slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+    const h = { x: cx, z: 0, r: homeR(kind), kind: kind.id, at: map,
+                ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                slots, left: 0, n: 1, done: true };
+    homeBox(h); markHomeF6(h);
+    homes.list.push(h);
+    for (const w of workers) { releaseWorker(w); w.hm = -1; w.x = 300; w.z = 300; }
+    // ① 著火：圈心擺在房子正中央，圈子整個壓在房子上
+    const w0 = workers[0];
+    w0.x = h.x; w0.z = h.z; w0.y = 0;
+    igniteWorker(w0, false);
+    w0.roll = 0;                                       // 逼他走「跑圈圈」那條，不是打滾
+    w0.bx = h.x; w0.bz = h.z;
+    let raw = 0, body = 0;
+    for (let i = 0; i < 200; i++) {
+      step(0.05);
+      if (w0.burn <= 0) break;
+      if (footHome(w0.bx + Math.cos(w0.ba) * w0.br, w0.bz + Math.sin(w0.ba) * w0.br)) raw++;
+      if (footHome(w0.x, w0.z)) body++;
+    }
+    const burn = { raw, body, moved: +Math.hypot(w0.bx - h.x, w0.bz - h.z).toFixed(1) };
+    // ② 被炸飛：往房子正中央丟過去
+    const w1 = workers[1];
+    w1.x = h.x - 12; w1.z = h.z; w1.y = 0;
+    tossWorker(w1, 12 / 0.9, 4.4, 0, false);           // 約 0.9 秒後落在屋子中央附近
+    let land = -1;
+    for (let i = 0; i < 200 && land < 0; i++) {
+      step(0.05);
+      if (!w1.air) land = i;
+    }
+    const fly = { land, inHome: !!footHome(w1.x, w1.z), fall: w1.fall > 0 || w1.burn > 0,
+                  d: +Math.hypot(w1.x - h.x, w1.z - h.z).toFixed(1) };
+    cleanTools(); clearHomes();
+    return { burn, fly, r: +h.r.toFixed(1) };
+  });
+  ok('著火跑圈圈會把圈子挪出房子，不是每幀被推一次',
+     hitHome.burn.raw < 40 && hitHome.burn.body === 0 && hitHome.burn.moved > 1,
+     '圈心從屋子正中央起跑：圈上的點還落在外框裡 ' + hitHome.burn.raw +
+     ' 幀（200 幀內）、人本身踩進外框 ' + hitHome.burn.body + ' 幀、圈心挪了 ' +
+     hitHome.burn.moved + ' 格');
+  ok('被炸飛剛好落在人家屋子裡會被推出來',
+     hitHome.fly.land >= 0 && !hitHome.fly.inHome,
+     '第 ' + hitHome.fly.land + ' 幀落地，落點在外框裡：' + hitHome.fly.inHome +
+     '（離屋子中心 ' + hitHome.fly.d + '、地基半徑 ' + hitHome.r + '）');
 
   // 後面幾段不該再有房子與事件（見 installClean）
   await page.evaluate(() => { clearHomes(); stepIdleEvent = () => {}; });
