@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.100.0';
+const VERSION = '1.101.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2212,12 +2212,25 @@ function stepChat(w, wi, dt) {
    「收掉」只是把人叫回去上工——事件蓋出來的東西留在場上，那是它自己的事。
    目前只有一筆（小人的家）。加第二筆就是往這張表再放一列。 */
 let idleEv = null;                  // 現在在跑的那一件（null＝純閒晃）
-let evArm = 1;                      // 這一輪還沒擲過骰子
+let evArm = 1;                      // 這一輪還沒挑過
+/* wt 是**相對權重，不是機率**（v1.101，使用者：「閒晃模式事件改為必定發生，
+   因為設計成可擴充，必定發生 隨機一種」）：散場之後一定會挑一件來跑，
+   wt 大的被挑到的機會多。v1.97～v1.100 是「每一筆各擲一次 40%」——只有一筆的時候，
+   六成的場次什麼事都不會發生。 */
 const IDLE_EVENTS = [
-  /* 小人的家：40%（使用者指定）。每個人的行為擺在 updHome（跟魔法師一樣是
-     「一條自己的路」），所以這裡不需要每幀的 step。 */
-  { id: 'home', p: 0.4, start: startHomes, step: null, stop: stopHomes }
+  /* 小人的家。每個人的行為擺在 updHome（跟魔法師一樣是「一條自己的路」），
+     所以這裡不需要每幀的 step。 */
+  { id: 'home', wt: 1, start: startHomes, step: null, stop: stopHomes }
 ];
+/* 照權重挑一件。回傳 null 只有一種情況：表是空的。 */
+function rollIdleEvent() {
+  let tot = 0;
+  for (const e of IDLE_EVENTS) tot += e.wt;
+  if (tot <= 0) return null;
+  let r = Math.random() * tot;
+  for (const e of IDLE_EVENTS) { r -= e.wt; if (r < 0) return e; }
+  return IDLE_EVENTS[IDLE_EVENTS.length - 1];      // 浮點誤差的保險
+}
 function stopIdleEvent() {
   const e = idleEv;
   idleEv = null;
@@ -2226,12 +2239,12 @@ function stopIdleEvent() {
 function stepIdleEvent(dt) {
   if (phase !== 'done') { stopIdleEvent(); evArm = 1; return; }
   if (evArm) {
-    /* 等到每個人都散場才擲：還在圈上跳的時候就開始蓋房子的話，
+    /* 等到每個人都散場才挑：還在圈上跳的時候就開始蓋房子的話，
        那幾個人會從圈上直接走掉（散場錯開最多 CHEER_OUT 秒，見那裡）。 */
     if (workers.some(w => cheerOn(w))) return;
     evArm = 0;
-    for (const e of IDLE_EVENTS)
-      if (Math.random() < e.p) { idleEv = e; e.start(); break; }
+    idleEv = rollIdleEvent();
+    if (idleEv) idleEv.start();
   }
   if (idleEv && idleEv.step) idleEv.step(dt);
 }

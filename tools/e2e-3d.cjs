@@ -3207,49 +3207,55 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   head('閒晃事件：小人的家');
   // 這一段要測的就是它，把 installClean 關掉的那支裝回去
   await page.evaluate(() => { stepIdleEvent = window.evStep; clearHomes(); });
-  /* 慶祝散完場、場上真的沒事幹的時候會發生一件事（v1.97，使用者指定「設計成可擴充」、
-     「事件 1 小人的家 40% 機率發生」）。機率用固定亂數驗門檻：0.39 該中、0.41 該不中。
-     還在跳的時候不該擲——那幾個人會從慶祝圈上直接走掉。 */
+  /* 慶祝散完場、場上真的沒事幹的時候**一定**會發生一件事（v1.101，使用者指定
+     「閒晃模式事件改為必定發生，因為設計成可擴充，必定發生 隨機一種」）。
+     v1.97～v1.100 是「每一筆各擲一次 40%」——只有一筆的時候六成的場次什麼都沒發生。
+     還在跳的時候不該挑：那幾個人會從慶祝圈上直接走掉。
+     權重那部分用一筆假的事件去驗（表上只有一筆的話，挑到哪一個永遠一樣，證不了東西）。 */
   const evRoll = await page.evaluate(() => {
-    const orig = Math.random;
     const out = {};
-    try {
-      const reset = () => {
-        shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
-        targetCnt = 400; setWorkerCount(12); startBuild(true); completeNow();
-        stopIdleEvent(); evArm = 1;
-      };
-      // 還在慶祝：就算骰子一定中也不該開始
-      reset();
-      Math.random = () => 0;
-      for (let i = 0; i < 40; i++) step(0.05);          // 2 秒，慶祝是 7 秒
-      out.cheerStart = idleEv ? idleEv.id : null;
-      out.cheering = workers.filter(w => cheerOn(w)).length;
-      // 散場之後：0.39 < 0.4 該中
-      Math.random = orig;
+    const reset = () => {
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 400; setWorkerCount(12); startBuild(true); completeNow();
+      stopIdleEvent(); evArm = 1;
+    };
+    // 還在慶祝：不該開始
+    reset();
+    for (let i = 0; i < 40; i++) step(0.05);            // 2 秒，慶祝是 7 秒
+    out.cheerStart = idleEv ? idleEv.id : null;
+    out.cheering = workers.filter(w => cheerOn(w)).length;
+    // 散場之後：連跑幾輪，每一輪都該挑到一件
+    out.started = 0;
+    for (let r = 0; r < 5; r++) {
       reset();
       let t = 0;
       while (t < 12) { step(0.05); t += 0.05; }         // 慶祝七秒 + 散場錯開最多 1.6 秒
-      stopIdleEvent(); evArm = 1;
-      Math.random = () => 0.39;
-      step(0.05);
-      out.hit = idleEv ? idleEv.id : null;
-      // 0.41 > 0.4 該不中
-      stopIdleEvent(); evArm = 1;
-      Math.random = () => 0.41;
-      step(0.05);
-      out.miss = idleEv ? idleEv.id : null;
-      out.table = IDLE_EVENTS.map(e => e.id + ':' + e.p).join('、');
-    } finally { Math.random = orig; }
+      if (idleEv) out.started++;
+      stopIdleEvent(); clearHomes();
+    }
+    /* 權重：塞一筆 wt 是三倍的假事件，抽 600 次看比例（1 : 3 → 25% / 75%）。
+       抽完一定要拿掉，不然後面幾段會跑到這一筆假的。 */
+    const fake = { id: '__wt3', wt: 3, start: () => {}, step: null, stop: () => {} };
+    IDLE_EVENTS.push(fake);
+    const cnt = {};
+    for (let i = 0; i < 600; i++) {
+      const e = rollIdleEvent();
+      cnt[e.id] = (cnt[e.id] || 0) + 1;
+    }
+    IDLE_EVENTS.pop();
+    out.table = IDLE_EVENTS.map(e => e.id + ':' + e.wt).join('、');
+    out.home = cnt.home || 0;
+    out.fake = cnt.__wt3 || 0;
+    out.left = IDLE_EVENTS.length;
     stopIdleEvent(); evArm = 1;
     return out;
   });
-  ok('慶祝還沒散場不會觸發事件，散場後照 40% 擲一次',
-     evRoll.cheerStart === null && evRoll.cheering > 0 &&
-     evRoll.hit === 'home' && evRoll.miss === null,
-     '事件表 [' + evRoll.table + ']；慶祝中（還有 ' + evRoll.cheering +
-     ' 人在跳）觸發的是 ' + evRoll.cheerStart + '，散場後骰 0.39 → ' + evRoll.hit +
-     '、骰 0.41 → ' + evRoll.miss);
+  ok('慶祝還沒散場不會觸發事件，散場後一定會發生一件，而且照權重挑',
+     evRoll.cheerStart === null && evRoll.cheering > 0 && evRoll.started === 5 &&
+     evRoll.left === 1 && evRoll.home > 600 * 0.25 * 0.7 && evRoll.home < 600 * 0.25 * 1.3,
+     '事件表 [' + evRoll.table + ']；慶祝中（還有 ' + evRoll.cheering + ' 人在跳）挑到的是 ' +
+     evRoll.cheerStart + '，散場後 5 輪挑到 ' + evRoll.started +
+     ' 次；權重 1:3 抽 600 次 → ' + evRoll.home + ' : ' + evRoll.fake);
 
   /* 蓋家的完整一輪：離隊的人數、房子的位置與大小、真的蓋起來、積木是挖出來的。
      這一段跑一次留著給後面幾條用（每條各跑一輪要一分多鐘）。 */
@@ -3263,7 +3269,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        那一輪的房子要先清掉，不然下面那個 startHomes 是**第二批**：人會被改派到新的
        那幾間，第一批就成了沒人蓋的空地基（實測 14 間裡有 190 格永遠補不上）。 */
     stopIdleEvent(); clearHomes(); evArm = 0;
-    idleEv = IDLE_EVENTS[0]; startHomes();          // 40% 的骰子另一條測，這裡直接開
+    idleEv = IDLE_EVENTS[0]; startHomes();          // 挑哪一件另一條測，這裡直接開
     const crew = workers.filter(w => w.hm >= 0).length;
     const pool0 = blocks.filter(b => b.hh < 0).length;
     const all0 = blocks.length;
