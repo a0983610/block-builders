@@ -3268,7 +3268,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        前面幾條測試炸出來的焦黑也還在，拿總數比會被它們洗掉（實測塵霧 17 → 15）。
        挖出來那一撮土是照顏色認的（見 digPuff）。 */
     marks.length = 0; dust.length = 0;
-    const list = homes.list.map(h => ({ n: h.n, slots: h.slots.length,
+    const list = homes.list.map(h => ({ n: h.n, slots: h.slots.length, kind: h.kind,
                                         rad: +Math.hypot(h.x, h.z).toFixed(1), r: h.r,
                                         x: h.x, z: h.z }));
     /* 挖的那一下要有土痕與土塵（使用者：「積木可以就近地面上挖一挖拿出來」——
@@ -3284,7 +3284,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     // 蓋完
     let secs = 20, inside = 0, near = 0;
-    while (secs < 180 && homes.list.some(h => h.left > 0)) {
+    /* 400 秒（v1.99 從 180 拉上來）：款式變多、最大一款 115 塊，
+       六間共 300 塊上下，實測 198 秒才全部蓋完。 */
+    while (secs < 400 && homes.list.some(h => h.left > 0)) {
       step(0.05); secs += 0.05;
       for (const w of workers) if (homeAt(w.x, w.z)) inside++;
     }
@@ -3298,7 +3300,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const w of workers) {
         if (w.hm < 0) continue;
         const h = homes.list[w.hm];
-        far = Math.max(far, Math.hypot(w.x - h.x, w.z - h.z));
+        far = Math.max(far, Math.hypot(w.x - h.x, w.z - h.z) - h.r);   // 超出自己家地基多遠
         if (Math.hypot(w.x, w.z) < siteR + KEEP) back++;        // 走進工地裡了
         if (homeAt(w.x, w.z)) inside++;
       }
@@ -3328,53 +3330,70 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      home.list.some(h => h.n > 1),
      home.n + ' 人裡 ' + home.crew + ' 人離隊，蓋 ' + home.list.length + ' 間（每間 ' +
      home.list.map(h => h.n + ' 人 ' + h.slots + ' 塊').join('、') + '）');
-  /* 一間 50 塊以內（使用者：「可能 50 塊積木內就能建成的」）。 */
-  ok('一間房子 50 塊以內', home.list.every(h => h.slots <= 50 && h.slots >= 20),
-     '每間 ' + home.list.map(h => h.slots).join('／') + ' 塊');
-  /* 外型要讀得出是房子（v1.98，使用者：「小房子外型不像房子要調整」）。
-     v1.97 是「四面牆＋一格高的洞＋平屋頂＋角落一根煙囪」＝開了小洞的方盒子。
-     這條驗五件事：兩格高的門、兩扇窗、屋頂縮一圈剩一道屋脊、煙囪站在屋脊上、
-     平面是長方形不是正方形（一個人的小屋除外，3×3 沒得長）。 */
+  /* 塊數（v1.99 放寬，使用者：「允許用更多一點的積木（2～3 倍 應該還可以）」）。
+     v1.98 是 25／33／41，現在 25～115——最大那款剛好是 2.8 倍。 */
+  ok('一間房子在 25～120 塊之間，人多的那組蓋得比較大',
+     home.list.every(h => h.slots <= 120 && h.slots >= 20) &&
+     Math.max(...home.list.filter(h => h.n === 1).map(h => h.slots).concat(0)) <=
+     Math.max(...home.list.map(h => h.slots)),
+     '每間 ' + home.list.map(h => h.kind + ' ' + h.n + ' 人 ' + h.slots + ' 塊').join('、'));
+  /* 外型（v1.98 重做、v1.99 加款式）。使用者先說「小房子外型不像房子要調整」，
+     再說「增加小房子種類 增加豐富性」。**掃過款式表裡的每一款**，不是只看這一輪剛好
+     蓋出來的那幾間——不然覆蓋率要靠運氣。每一款都要有：
+     兩格高的門、至少兩扇窗、屋頂縮一圈剩一道屋脊、站在屋脊上的煙囪、
+     以及該有的門廊／圍籬；而且同一個格子不能放兩塊。 */
   const shape = await page.evaluate(() => {
     const out = [];
-    for (const h of homes.list) {
-      const top = Math.max(...h.slots.map(sl => sl.gy));
-      const lay = {};
-      for (const sl of h.slots) lay[sl.gy] = (lay[sl.gy] || 0) + 1;
-      const wall = h.slots.filter(sl => sl.gy < top - 2);
-      const wi = new Set(wall.map(sl => sl.i)), wk = new Set(wall.map(sl => sl.k));
-      const w = Math.max(...wi) + 1, d = Math.max(...wk) + 1;
-      // 牆上少掉的格子＝門與窗（外圈本來該有幾格 × 幾層）
-      const ring = (w * d) - Math.max(0, (w - 2) * (d - 2));
-      const holes = ring * (top - 2) - wall.length;
-      // 門：同一個 (i,k) 兩層都不在
-      const has = new Set(wall.map(sl => sl.i + ':' + sl.k + ':' + sl.gy));
+    for (const k of HOME_KIND) {
+      const sl = homeSlots(0, -30, k, HOME_PAL[0]);          // 門朝場中心（+z）
+      const has = new Set(sl.map(q => q.i + ':' + q.k + ':' + q.gy));
       let door = 0, win = 0;
-      for (let i = 0; i < w; i++)
-        for (let k = 0; k < d; k++) {
-          if (i > 0 && i < w - 1 && k > 0 && k < d - 1) continue;
-          const lo = has.has(i + ':' + k + ':0'), hi2 = has.has(i + ':' + k + ':1');
-          if (!lo && !hi2) door++;
-          else if (lo && !hi2) win++;
+      for (let i = 0; i < k.w; i++)
+        for (let kk = 0; kk < k.d; kk++) {
+          if (i > 0 && i < k.w - 1 && kk > 0 && kk < k.d - 1) continue;
+          if (!has.has(i + ':' + kk + ':0') && !has.has(i + ':' + kk + ':1')) door++;
+          for (let gy = 1; gy < k.h; gy++)
+            if (has.has(i + ':' + kk + ':' + (gy - 1)) &&
+                !has.has(i + ':' + kk + ':' + gy)) win++;
         }
-      const roof = h.slots.filter(sl => sl.gy === top - 2).length;
-      const ridge = h.slots.filter(sl => sl.gy === top - 1).length;
-      const chim = h.slots.filter(sl => sl.gy === top);
-      const onRidge = chim.length === 1 &&
-        h.slots.some(sl => sl.gy === top - 1 && sl.i === chim[0].i && sl.k === chim[0].k);
-      out.push({ w, d, top, holes, door, win, roof, ridge, chim: chim.length, onRidge,
-                 n: h.n, slots: h.slots.length });
+      const inBox = q => q.i >= 0 && q.i < k.w && q.k >= 0 && q.k < k.d;
+      const roof = sl.filter(q => q.gy === k.h && inBox(q)).length;
+      const ridge = sl.filter(q => q.gy === k.h + 1 && inBox(q)).length;
+      const chim = sl.filter(q => q.gy === k.h + 2);
+      const onRidge = chim.length === 1 && sl.some(q =>
+        q.gy === k.h + 1 && q.i === chim[0].i && q.k === chim[0].k);
+      const ring = sl.filter(q => q.gy === 0 &&
+        (q.i === -2 || q.i === k.w + 1 || q.k === -2 || q.k === k.d + 1)).length;
+      const canopy = sl.filter(q => q.gy === 2 && !inBox(q)).length;
+      const seen = new Set();
+      let dup = 0;
+      for (const q of sl) {
+        const key = q.i + ':' + q.gy + ':' + q.k;
+        if (seen.has(key)) dup++;
+        seen.add(key);
+      }
+      out.push({ id: k.id, n: k.n, size: k.w + '×' + k.d + '×' + k.h, total: sl.length,
+                 door, win, roof, ridge, chim: chim.length, onRidge, ring, canopy, dup,
+                 wantFence: !!k.fence, wantPorch: !!k.porch });
     }
     return out;
   });
-  ok('房子有兩格高的門、兩扇窗、一道屋脊和站在屋脊上的煙囪',
-     shape.length > 1 &&
-     shape.every(o => o.door === 1 && o.win === 2 && o.ridge < o.roof && o.ridge > 0 &&
-                      o.chim === 1 && o.onRidge && o.top === 4) &&
-     shape.some(o => o.w !== o.d),
-     shape.map(o => o.n + ' 人 ' + o.w + '×' + o.d + '×' + o.top + '：門 ' + o.door +
-       '、窗 ' + o.win + '、屋頂 ' + o.roof + ' → 屋脊 ' + o.ridge + '、煙囪 ' + o.chim +
-       (o.onRidge ? '（在屋脊上）' : '（沒站在屋脊上）')).join('；'));
+  ok('每一款都有兩格高的門、窗、屋脊、屋脊上的煙囪，該有的門廊圍籬也在',
+     shape.length >= 9 &&
+     shape.every(o => o.door === 1 && o.win >= 2 && o.ridge > 0 && o.ridge < o.roof &&
+                      o.chim === 1 && o.onRidge && o.dup === 0 &&
+                      (o.wantFence ? o.ring > 8 : o.ring === 0) &&
+                      (o.wantPorch ? o.canopy === 3 : o.canopy === 0) &&
+                      o.total >= 20 && o.total <= 120),
+     shape.map(o => o.id + ' ' + o.size + ' ' + o.total + ' 塊（門 ' + o.door + '、窗 ' +
+       o.win + '、屋頂 ' + o.roof + '→屋脊 ' + o.ridge +
+       (o.wantPorch ? '、門廊 ' + o.canopy : '') +
+       (o.wantFence ? '、圍籬 ' + o.ring : '') + '）').join('；'));
+  /* 一輪裡真的會出現好幾款（不是每次都蓋同一種）。三個人數各三款，
+     隨機挑 → 六間至少該有三種不同的。 */
+  ok('一輪蓋出來的房子有好幾款',
+     new Set(home.list.map(h => h.kind)).size >= 3,
+     home.list.length + ' 間：' + home.list.map(h => h.kind).join('、'));
   /* 蓋在工地外圈那一帶（使用者選的），彼此不重疊、不壓到樹。 */
   /* 範圍是「地標建築範圍外～小樹圈內」（v1.98，使用者指定「應該分散一點」）。
      樹種在碎料場外圍（arenaR + 3～15），所以外緣就是 arenaR。
@@ -3400,8 +3419,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 顆、挖出 ' + home.digs + ' 塊積木');
   /* 蓋完就在自己家附近走走（使用者的規格），不會走回工地那一帶。 */
   ok('蓋完就在自己家附近走走',
-     home.far < home.list[0].r + home.live + 1.5 && home.back === 0,
-     '離自己家最遠 ' + home.far + '（該在 ' + (home.list[0].r + home.live).toFixed(1) +
+     home.far < home.live + 1.5 && home.back === 0,
+     '離自己家地基邊緣最遠 ' + home.far + '（該在 ' + home.live +
      ' 以內），走進工地裡 ' + home.back + ' 幀');
   /* 房子不在藍圖的格子表裡（footBlocked 查的是那個），所以每一種走法都得自己避開。
      沒有這一條的話實測有 34% 的人次站在別人屋子裡（推的時機漏了「站定不動」那條路徑，
@@ -3418,7 +3437,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const cam = ENG.three.camera, W = window.innerWidth, H = window.innerHeight;
     const v = new THREE.Vector3();
     const was = tool; tool = 'hammer';
-    let tries = 0, ground = 0, broke = 0, houses = 0;
+    let tries = 0, ground = 0, broke = 0, houses = 0, redirect = 0;
+    const miss = [];
     homes.list.forEach((h, hi) => {
       const mine = () => blocks.filter(b => b.hh === hi && b.st === 3);
       const shot = [];
@@ -3430,24 +3450,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         tries++;
         const raw = ENG.pick((v.x + 1) / 2 * W, (1 - v.y) / 2 * H);
         const fixed = raw && fixHit(raw);
-        if (!fixed || fixed.kind === 'ground') ground++; else shot.push(fixed);
+        if (!fixed || fixed.kind === 'ground') { ground++; continue; }
+        /* fixHit 把落點往前挪了＝射線是從地標的縫裡鑽過去打到後面這間房子的，
+           那一下本來就該打在地標上（v1.86 那條）。這種取樣不算「對著房子點」。 */
+        if (fixed !== raw) { redirect++; continue; }
+        shot.push(fixed);
       }
       if (!shot.length) return;
       houses++;
       // 真的砸一下（挑中間那一塊），這一間要掉塊
       const before = mine().length;
-      swing = null; useTool(shot[Math.floor(shot.length / 2)]); resolveSwing();
+      const use = shot[Math.floor(shot.length / 2)];
+      swing = null; useTool(use); resolveSwing();
       if (mine().length < before) broke++;
+      else miss.push({ kind: h.kind, before, r: +h.r.toFixed(1),
+                       hx: +h.x.toFixed(1), hz: +h.z.toFixed(1),
+                       px: +use.point.x.toFixed(1), py: +use.point.y.toFixed(1),
+                       pz: +use.point.z.toFixed(1),
+                       d: +Math.hypot(use.point.x - h.x, use.point.z - h.z).toFixed(1),
+                       n: shot.length });
     });
     tool = was;
     swing = null; ENG.hideHammer();
-    return { tries, ground, broke, houses };
+    return { tries, ground, broke, houses, miss, redirect };
   });
   ok('對著小房子砸下去，砸得到房子（不是打到地板）',
      homeHit.houses > 1 && homeHit.tries > 20 && homeHit.ground === 0 &&
      homeHit.broke === homeHit.houses,
      homeHit.houses + ' 間、對著 ' + homeHit.tries + ' 塊各點一下：判成地板 ' +
-     homeHit.ground + ' 下；每間真的砸一下，' + homeHit.broke + ' 間掉塊');
+     homeHit.ground + ' 下、被 fixHit 拉回地標 ' + homeHit.redirect +
+     ' 下；每間真的砸一下，' + homeHit.broke + ' 間掉塊' +
+     (homeHit.miss.length ? '（沒掉的：' + JSON.stringify(homeHit.miss) + '）' : ''));
 
   ok('沒有人從房子中間穿過去', home.inside === 0,
      '腳踩在房子地基上 ' + home.inside + ' 人次（' + home.list.length + ' 間、量了 ' +
@@ -3509,6 +3542,55 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      homeTaken.freed >= homeTaken.set0 && homeTaken.hm === 0,
      '工地半徑放大到 60 之後，' + homeTaken.n0 + ' 間全被徵收（' + homeTaken.set0 +
      ' 塊變成碎料 ' + homeTaken.freed + ' 塊），還掛在房子上的積木 ' + homeTaken.still + ' 塊');
+  /* 目標在房子另一邊的時候要**繞過去**（v1.99）。使用者回報「小人會面向小房子原地走路」：
+     v1.98 只有 pushOutHome 硬把人推出屋外，沒有「繞開」那一步，於是他直直走進房子、
+     每幀被推回來——腿一直在擺，人在原地。蓋完在家附近晃的人最常遇到，
+     因為那些目標點就環繞著自己家。
+     這條擺一間蓋好的房子，人站一側、目標放正對面，看他十秒內走不走得到；
+     對照組把 blockHome 換成空的（＝v1.98 的行為）。 */
+  const around = await page.evaluate(() => {
+    stopIdleEvent();
+    homes = { list: [] };
+    const kind = HOME_KIND[0];
+    const slots = homeSlots(0, 24, kind, HOME_PAL[0]);
+    for (const sl of slots) sl.filled = true;
+    homes.list.push({ x: 0, z: 24, r: homeR(kind), kind: kind.id,
+                      slots, left: 0, n: 1 });
+    const h = homes.list[0];
+    const run = on => {
+      const orig = blockHome;
+      if (!on) blockHome = () => null;
+      const w = workers[0];
+      releaseWorker(w);
+      w.hm = -1; w.flee = 0; w.air = 0; w.burn = 0; w.pause = 0; w.leg = 0; w.gait = 0;
+      w.x = h.x; w.z = h.z - (h.r + 1.6);
+      w.tx = h.x; w.tz = h.z + (h.r + 1.6);
+      let walked = 0, px = w.x, pz = w.z, arrived = -1, stuck = 0;
+      for (let i = 0; i < 200; i++) {
+        const d0 = Math.hypot(w.tx - w.x, w.tz - w.z);
+        strollTo(w, 0.05);
+        walked += Math.hypot(w.x - px, w.z - pz);
+        px = w.x; pz = w.z;
+        const d1 = Math.hypot(w.tx - w.x, w.tz - w.z);
+        if (w.gait > 0.6 && d1 > d0 - 0.02) stuck++;      // 腿在擺、卻沒靠近目標
+        if (arrived < 0 && d1 < REACH) arrived = +((i + 1) * 0.05).toFixed(2);
+      }
+      blockHome = orig;
+      return { arrived, walked: +walked.toFixed(1), stuck };
+    };
+    const on = run(true), off = run(false);
+    homes = null;
+    return { on, off, straight: +(2 * (h.r + 1.6)).toFixed(1) };
+  });
+  ok('目標在房子另一邊時會繞過去，不是頂著牆原地走',
+     around.on.arrived > 0 && around.on.arrived < 4 && around.on.stuck < 20 &&
+     around.on.walked > around.straight && around.on.walked < around.straight * 2 &&
+     around.off.arrived < 0 && around.off.stuck > 100,
+     '繞：' + around.on.arrived + ' 秒到（走了 ' + around.on.walked + '，直線 ' +
+     around.straight + '），腿在擺卻沒前進 ' + around.on.stuck + ' 幀；' +
+     '不繞（v1.98）：十秒' + (around.off.arrived < 0 ? '到不了' : '到了') +
+     '、只走了 ' + around.off.walked + '，原地走 ' + around.off.stuck + ' 幀');
+
   // 後面幾段不該再有房子與事件（見 installClean）
   await page.evaluate(() => { clearHomes(); stepIdleEvent = () => {}; });
 

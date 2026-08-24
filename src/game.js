@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.98.0';
+const VERSION = '1.99.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1873,6 +1873,20 @@ function strollTo(w, dt) {
     const k = (keep + 3 - pr) / 3;
     ux += (sx - ux) * k; uz += (sz - uz) * k;
   }
+  /* 房子擋路：同一套切線閃避，只是圓心是那間房子（v1.99）。
+     只有 pushOutHome 硬推是不夠的——目標在房子另一邊時，他會直直走進去、
+     每幀被推回來，看起來是「面向房子原地走路」（使用者回報）。
+     蓋完在家附近晃的人最常遇到：目標點環繞著自己家，有一半要繞過去才到得了。 */
+  const hb = blockHome(w, ux, uz);
+  if (hb) {
+    const bx = w.x - hb.x, bz = w.z - hb.z;
+    const bd = Math.hypot(bx, bz) || 1;
+    const mx = bx / bd, mz = bz / bd;               // 由房子中心往外
+    let sx = -mz, sz = mx;
+    if (ux * sx + uz * sz < 0) { sx = mz; sz = -mx; }
+    const k = Math.min(1, (hb.r + HOME_ROUND - bd) / HOME_ROUND);
+    ux += (sx - ux) * k; uz += (sz - uz) * k;
+  }
   const m = Math.hypot(ux, uz) || 1;
   ux /= m; uz /= m;
 
@@ -2241,23 +2255,59 @@ const HOME_GAP = 12;                // 兩間的中心至少隔多遠
 const HOME_TREE = 3.5;              // 離樹至少多遠（樹種在碎料場外圍，通常碰不到）
 const HOME_TEAM = 3;                // 一間最多幾個人合蓋
 const HOME_NEARBY = 8;              // 多近算「附近的小人」，會被拉進同一組
-/* 一間的尺寸看幾個人合蓋（深度固定 3：屋頂縮一圈之後剛好剩一道屋脊）。
-   四面牆 ＋ 兩格高的門 ＋ 兩扇窗 ＋ 兩層屋頂 ＋ 一根煙囪，
-   算下來 25 / 33 / 41 塊——使用者說「可能 50 塊積木內就能建成的」。 */
-const HOME_SIZE = [{ w: 3, d: 3, h: 2 }, { w: 4, d: 3, h: 2 }, { w: 5, d: 3, h: 2 }];
+/* 房子的款式（v1.99，使用者：「增加小房子種類 增加豐富性 允許用更多一點的積木
+   （2～3 倍 應該還可以）」）。v1.98 只有三個尺寸、同一個外型。
+   一款就是一組參數，全部走同一支 homeSlots：
+
+     w／d   平面。d 只給 3 或 4——屋頂縮一圈之後才剩得下一道屋脊
+     h      牆幾層高。4 以上會多開一排窗，看起來就是兩層樓
+     porch  門口一個小門廊：兩根兩格高的柱子 ＋ 上面一片雨遮
+     fence  外面一圈及膝的圍籬，門那一側留一個出入口
+
+   人多蓋大的：一個人 25～48 塊、兩個人 49～67、三個人 73～117
+   （v1.98 是 25／33／41，使用者說的「2～3 倍」就在這個範圍）。
+   房子大了，蓋的時間也跟著長——那段時間本來就是閒著的，不趕。 */
+const HOME_KIND = [
+  { n: 1, id: '小屋', w: 3, d: 3, h: 2 },
+  { n: 1, id: '塔屋', w: 3, d: 3, h: 5 },
+  { n: 1, id: '小院', w: 3, d: 3, h: 2, fence: 1 },
+  { n: 2, id: '門廊屋', w: 4, d: 3, h: 3, porch: 1 },
+  { n: 2, id: '長屋', w: 6, d: 3, h: 2 },
+  { n: 2, id: '兩層樓', w: 4, d: 4, h: 4 },
+  { n: 3, id: '大長屋', w: 7, d: 3, h: 3 },
+  { n: 3, id: '農舍', w: 5, d: 3, h: 2, fence: 1, porch: 1 },
+  { n: 3, id: '雙層大屋', w: 5, d: 4, h: 4, porch: 1, fence: 1 }
+];
+/* 幾個人合蓋就從那一組裡隨機挑一款。人數超過表上最多的那組就用最大那組。 */
+function pickHomeKind(n) {
+  const want = Math.min(n, HOME_KIND[HOME_KIND.length - 1].n);
+  const pool = HOME_KIND.filter(k => k.n === want);
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+/* 地基半徑：閒晃的人要繞開這麼多，圍籬也要圈進來（圍籬在外面兩格）。
+   取對角的一半再加一點——方的東西用圓框，寧可框大一點。 */
+function homeR(k) {
+  const pad = k.fence ? 4 : 0;
+  return Math.hypot(k.w + pad, k.d + pad) / 2 + 0.7;
+}
 const HOME_PAL = [                  // 牆、屋頂、煙囪（每間隨機挑一組）
   [[0.82, 0.70, 0.52], [0.72, 0.31, 0.26], [0.56, 0.53, 0.50]],
   [[0.86, 0.83, 0.74], [0.38, 0.45, 0.58], [0.56, 0.53, 0.50]],
   [[0.74, 0.60, 0.44], [0.36, 0.52, 0.36], [0.56, 0.53, 0.50]]
 ];
 const DIG_T = 0.8;                  // 挖一塊要幾秒
-const DIG_NEAR = 3.5, DIG_FAR = 8;  // 挖料的地方離自己的房子多遠
+/* 挖料的地方離自己家的**地基邊緘**多遠（v1.99 改成相對於 h.r）。
+   v1.98 是直接實測中心 3.5～8 格——平房小屋沒問題，但圓籬大屋的地基半徑就有 6.7，
+   那個範圍幾乎全在自己屋子裡，挖料點全被刷掉（掉到 fallback、而那一點也在屋子裡）。 */
+const DIG_NEAR = 1.5, DIG_FAR = 6;
 const DIG_PUFF = 0.16;              // 挖的時候每隔幾秒噴一撮土
 const DIG_MARK = 1.7;              // 土痕的大小（跟隕石坑同一套，3 秒淡掉）
 const LIVE_R = 6;                   // 蓋完在家附近多大範圍裡走
 /* 站位離地基邊緣多遠。要大於 REACH（0.9）＝「走到多近算抵達」，
    不然他停下來的那一點可能還在屋子裡（停下來就不會再被 pushOutHome 推了）。 */
 const HOME_STAND = 1.4;
+/* 離房子多近開始掰方向繞過去（見 strollTo 裡那段）。跟繞地標用的 3 同一個量級。 */
+const HOME_ROUND = 3;
 
 /* 這個點在不在某一間房子的地基上。房子不在藍圖的格子表裡（footBlocked 查的是那個），
    所以會走路的東西都得自己避開，不然人會從房子中間穿過去。 */
@@ -2280,6 +2330,21 @@ function pushOutHome(w) {
     w.x = h.x + dx / d * out; w.z = h.z + dz / d * out;
   }
 }
+/* 走在 (ux, uz) 這個方向上、快撞到的那一間房子（v1.99）。
+   條件是「離得夠近」而且「還朝著它的中心走」——已經在往外走的就不必再掰方向。
+   取最近的那一間：兩間隔至少 HOME_GAP 12，不會同時被兩間夾住。 */
+function blockHome(w, ux, uz) {
+  if (!homes) return null;
+  let best = null, bd = Infinity;
+  for (const h of homes.list) {
+    const dx = w.x - h.x, dz = w.z - h.z;
+    const d = Math.hypot(dx, dz);
+    if (d >= h.r + HOME_ROUND || d >= bd) continue;
+    if (ux * dx + uz * dz >= 0) continue;            // 正在往外走
+    bd = d; best = h;
+  }
+  return best;
+}
 /* 這個人是不是「還在蓋」（蓋完了在家附近走走的不算）。聊天要用這個判斷。 */
 function homeBusy(w) {
   const h = homes && homes.list[w.hm];
@@ -2293,58 +2358,89 @@ function homeUnclaim(w) {
   if (sl) sl.claimed = -1;
   w.hk = -1;
 }
-/* 一間房子的格子清單（v1.98 重做，使用者說「外型不像房子」）。
-   v1.97 是「四面牆 ＋ 一個一格高的洞 ＋ 平屋頂 ＋ 角落一根煙囪」——那就是一個開了小洞的
-   方盒子。現在有五樣東西讓它讀得出是房子：
+/* 一間房子的格子清單。v1.98 重做過外型（v1.97 那版是「開了小洞的方盒子」，
+   使用者說「外型不像房子」），v1.99 再加上款式（見 HOME_KIND）。
+   讀得出是房子靠這幾件事：
 
      · 兩層的斜屋頂：第一層鋪滿，第二層沿著短邊縮進一格，於是頂上剩一道屋脊
      · 屋脊上站一根煙囪（v1.97 是站在屋簷的角落上，看起來像多出來的一塊）
      · 兩格高的門（一格高的洞看起來是牆破了，不是門）
-     · 跟門垂直的那兩面牆各開一扇窗，離地第二格
+     · 跟門垂直的那兩面牆各開一扇窗，離地第二格；牆四層以上再多開一排（＝兩層樓）
      · 長方形的平面（5×3 而不是 5×4）：正方形＋平頂就是箱子
+     · 選配：門口的門廊、外面一圈圍籬
 
-   屋頂只做兩層階梯、不做一層一層縮的真斜頂：同樣的塊數（≤ 50，使用者指定）
+   屋頂只做兩層階梯、不做一層一層縮的真斜頂：同樣的塊數（使用者給的上限）
    只蓋得起更小的房子。
    門開在**朝著大建築那一面**：背對著開的話，從鏡頭看過去就只是一面平牆。
-   順序是牆一層一層往上 → 屋頂 → 屋脊 → 煙囪，照這個順序砌看起來才是「蓋起來」的。 */
-function homeSlots(hx, hz, s, pal) {
+   順序是牆一層一層往上 → 屋頂 → 屋脊 → 煙囪 → 門廊 → 圍籬，
+   照這個順序砌看起來才是「蓋起來」的（圍籬最後圍，不會擋住自己搬料的路）。 */
+function homeSlots(hx, hz, k, pal) {
   const out = [];
-  const ox = (s.w - 1) / 2, oz = (s.d - 1) / 2;
-  const put = (i, k, gy, c) =>
-    out.push({ x: hx + i - ox, y: gy + HB, z: hz + k - oz, c, i, k, gy,
+  const ox = (k.w - 1) / 2, oz = (k.d - 1) / 2;
+  const put = (i, kk, gy, c) =>
+    out.push({ x: hx + i - ox, y: gy + HB, z: hz + kk - oz, c, i, k: kk, gy,
                filled: false, claimed: -1 });
-  const mi = Math.floor((s.w - 1) / 2), mk = Math.floor((s.d - 1) / 2);
+  const mi = Math.floor((k.w - 1) / 2), mk = Math.floor((k.d - 1) / 2);
   // 哪一面朝場中心：看房子中心相對場中心是 x 遠還是 z 遠
   const xFace = Math.abs(hx) > Math.abs(hz);
-  const door = xFace ? { i: hx > 0 ? 0 : s.w - 1, k: mk }
-                     : { i: mi, k: hz > 0 ? 0 : s.d - 1 };
-  const win = xFace ? [{ i: mi, k: 0 }, { i: mi, k: s.d - 1 }]
-                    : [{ i: 0, k: mk }, { i: s.w - 1, k: mk }];
-  for (let gy = 0; gy < s.h; gy++)
-    for (let i = 0; i < s.w; i++)
-      for (let k = 0; k < s.d; k++) {
-        if (i > 0 && i < s.w - 1 && k > 0 && k < s.d - 1) continue;      // 中間是屋內
-        if (i === door.i && k === door.k) continue;                      // 門（整面兩格高）
-        if (gy === s.h - 1 && win.some(q => q.i === i && q.k === k)) continue;   // 窗
-        put(i, k, gy, pal[0]);
+  const door = xFace ? { i: hx > 0 ? 0 : k.w - 1, k: mk }
+                     : { i: mi, k: hz > 0 ? 0 : k.d - 1 };
+  const win = xFace ? [{ i: mi, k: 0 }, { i: mi, k: k.d - 1 }]
+                    : [{ i: 0, k: mk }, { i: k.w - 1, k: mk }];
+  const isWin = (i, kk, gy) =>
+    (gy === k.h - 1 || (k.h >= 4 && gy === 1)) && win.some(q => q.i === i && q.k === kk);
+  for (let gy = 0; gy < k.h; gy++)
+    for (let i = 0; i < k.w; i++)
+      for (let kk = 0; kk < k.d; kk++) {
+        if (i > 0 && i < k.w - 1 && kk > 0 && kk < k.d - 1) continue;     // 中間是屋內
+        if (i === door.i && kk === door.k) continue;                      // 門（整面兩格高）
+        if (isWin(i, kk, gy)) continue;                                   // 窗
+        put(i, kk, gy, pal[0]);
       }
-  for (let i = 0; i < s.w; i++)
-    for (let k = 0; k < s.d; k++) put(i, k, s.h, pal[1]);                // 屋頂第一層
-  for (let i = 0; i < s.w; i++)
-    for (let k = 1; k < s.d - 1; k++) put(i, k, s.h + 1, pal[1]);        // 屋脊
-  put(0, mk, s.h + 2, pal[2]);                                           // 煙囪
+  for (let i = 0; i < k.w; i++)
+    for (let kk = 0; kk < k.d; kk++) put(i, kk, k.h, pal[1]);             // 屋頂第一層
+  for (let i = 0; i < k.w; i++)
+    for (let kk = 1; kk < k.d - 1; kk++) put(i, kk, k.h + 1, pal[1]);     // 屋脊
+  put(0, mk, k.h + 2, pal[2]);                                           // 煙囪
+  /* 門廊：門外那一格的左右兩根柱子（兩格高）＋ 上面一片三格的雨遮。
+     柱子不擺在門正前方——那樣就把門堵住了。 */
+  const oi = door.i === 0 ? -1 : door.i === k.w - 1 ? 1 : 0;
+  const ok = door.k === 0 ? -1 : door.k === k.d - 1 ? 1 : 0;
+  if (k.porch) {
+    const ai = ok ? 1 : 0, ak = oi ? 1 : 0;              // 沿著牆的方向
+    for (const sgn of [-1, 1]) {
+      put(door.i + oi + ai * sgn, door.k + ok + ak * sgn, 0, pal[0]);
+      put(door.i + oi + ai * sgn, door.k + ok + ak * sgn, 1, pal[0]);
+    }
+    for (const sgn of [-1, 0, 1])
+      put(door.i + oi + ai * sgn, door.k + ok + ak * sgn, 2, pal[1]);
+  }
+  /* 圍籬：外面兩格的一圈，只有一層高，門那一側留一格出入口。
+     用屋頂的顏色，看起來是同一戶人家的。 */
+  if (k.fence) {
+    for (let i = -2; i < k.w + 2; i++)
+      for (let kk = -2; kk < k.d + 2; kk++) {
+        const edge = i === -2 || i === k.w + 1 || kk === -2 || kk === k.d + 1;
+        if (!edge) continue;
+        if (i === door.i + oi * 2 && kk === door.k + ok * 2) continue;    // 出入口
+        put(i, kk, 0, pal[1]);
+      }
+  }
   return out;
 }
 /* 找一塊空地：從這一組人現在站的方位往外找，避開已經蓋好的房子與樹。
    找不到就回 null（那一組人就照常閒晃，不硬塞）。 */
-function pickHomeSite(cx, cz) {
+function pickHomeSite(cx, cz, rad) {
   const base = Math.atan2(cz, cx);
   for (let t = 0; t < 40; t++) {
     const a = base + rr(-HOME_ARC, HOME_ARC), r = rr(siteR + HOME_NEAR, homeOut());
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     let ok = true;
+    /* 隔多遠：至少 HOME_GAP，而且兩家的地基不能碰到（v1.99 起有圍籬大屋，
+       地基半徑 6.7——固定 12 的話兩間會疊在一起）。 */
     for (const h of homes.list)
-      if ((h.x - x) ** 2 + (h.z - z) ** 2 < HOME_GAP * HOME_GAP) { ok = false; break; }
+      if ((h.x - x) ** 2 + (h.z - z) ** 2 <
+          Math.max(HOME_GAP, h.r + rad + 3) ** 2) { ok = false; break; }
     if (ok) for (const t2 of trees)
       if ((t2.x - x) ** 2 + (t2.z - z) ** 2 < (HOME_TREE + t2.r) ** 2) { ok = false; break; }
     if (ok) return { x, z };
@@ -2378,14 +2474,13 @@ function startHomes() {
     }
     let cx = 0, cz = 0;
     for (const w of crew) { cx += w.x; cz += w.z; }
-    const at = pickHomeSite(cx / crew.length, cz / crew.length);
+    // 款式要先挑：間距看的是兩家地基的大小（見 pickHomeSite）
+    const kind = pickHomeKind(crew.length);
+    const at = pickHomeSite(cx / crew.length, cz / crew.length, homeR(kind));
     if (!at) continue;                                 // 沒空地了，這一組就照常閒晃
-    const s = HOME_SIZE[Math.min(crew.length, HOME_SIZE.length) - 1];
     const pal = HOME_PAL[Math.floor(Math.random() * HOME_PAL.length)];
-    const slots = homeSlots(at.x, at.z, s, pal);
-    /* r 是「地基半徑」：閒晃的人要繞開這麼多。取對角的一半再加一點，
-       整棟房子都在圈裡（方的東西用圓框，寧可框大一點）。 */
-    const h = { x: at.x, z: at.z, r: Math.hypot(s.w, s.d) / 2 + 0.7,
+    const slots = homeSlots(at.x, at.z, kind, pal);
+    const h = { x: at.x, z: at.z, r: homeR(kind), kind: kind.id,
                 slots, left: slots.length, n: crew.length };
     homes.list.push(h);
     const hi = homes.list.length - 1;
@@ -2447,13 +2542,13 @@ function digPuff(w) {
    不挖工地裡（那是別人的建材場，而且他會被 strollTo 推出來）、不挖在人家屋子裡。 */
 function digSpot(w, h) {
   for (let t = 0; t < 20; t++) {
-    const a = rr(0, Math.PI * 2), d = rr(DIG_NEAR, DIG_FAR);
+    const a = rr(0, Math.PI * 2), d = h.r + rr(DIG_NEAR, DIG_FAR);
     const x = h.x + Math.cos(a) * d, z = h.z + Math.sin(a) * d;
     if (Math.hypot(x, z) < siteR + KEEP) continue;
     if (homeAt(x, z)) continue;
     w.tx = x; w.tz = z; w.hdt = DIG_T; return;
   }
-  w.tx = h.x + DIG_NEAR; w.tz = h.z; w.hdt = DIG_T;
+  w.tx = h.x + h.r + DIG_NEAR; w.tz = h.z; w.hdt = DIG_T;
 }
 /* 挖出一塊來（就近從地面挖，使用者指定）。積木是**新生出來的**，不是從料池拿的——
    完工那一刻場上通常一塊散料都沒有（料池 = 藍圖格數，見 reconcilePool），
@@ -2553,12 +2648,21 @@ function updHome(w, wi, dt) {
     let d = Math.hypot(dx, dz);
     if (d < 0.001) { dx = w.x - h.x; dz = w.z - h.z; d = Math.hypot(dx, dz) || 1; }
     w.tx = h.x + dx / d * (h.r + HOME_STAND); w.tz = h.z + dz / d * (h.r + HOME_STAND);
-    if (strollTo(w, dt)) layHome(w, h);
+    /* 這一段是上工的路，不算進閒晃里程（那個是拿來算發呆多久的，見 strollPause）——
+       跟 buildWalk 對搬料那條路的處理一樣。不扣掉的話，蓋一間房子來回幾十趟的里程
+       全算在一起，蓋完第一次站定就會發呆好幾分鐘（實測抽到 147.8 秒）。 */
+    const leg = w.leg;
+    const done = strollTo(w, dt);
+    w.leg = leg;
+    if (done) layHome(w, h);
     return;
   }
   if (h.left <= 0) { liveHome(w, h, dt); return; }       // 蓋完了
   if (w.hst !== 'dig') { digSpot(w, h); w.hst = 'dig'; }
-  if (!strollTo(w, dt)) return;                          // 還在走去挖的路上
+  const leg = w.leg;                                     // 同上：上工的路不算里程
+  const walking = !strollTo(w, dt);
+  w.leg = leg;
+  if (walking) return;                                   // 還在走去挖的路上
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
   w.a = Math.atan2(h.x - w.x, h.z - w.z);                // 面向自己的房子挖
   w.hp -= dt;
