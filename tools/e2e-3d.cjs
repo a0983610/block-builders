@@ -115,7 +115,10 @@ const installClean = page => page.evaluate(() => {
       if (!b.cell) gridAdd(b);
     }
     homes = null;
-    for (const w of workers) { w.hm = -1; w.hk = -1; w.hst = ''; }
+    for (const w of workers) { w.hm = -1; w.hst = ''; }
+    /* 挖料的土痕也清掉（v1.100）：它跟雕石坑、煸黑共用同一份 marks，
+       一個村落挖下來滴滴答答幾百塊，留著會被後面「雕石留下的是坑洞」那一段摸到。 */
+    marks.length = 0;
   };
   window.cleanTools = () => {
     clearHomes();
@@ -3283,12 +3286,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       digs = Math.max(digs, blocks.filter(b => b.hh >= 0).length);
     }
     // 蓋完
-    let secs = 20, inside = 0, near = 0;
-    /* 400 秒（v1.99 從 180 拉上來）：款式變多、最大一款 115 塊，
-       六間共 300 塊上下，實測 198 秒才全部蓋完。 */
-    while (secs < 400 && homes.list.some(h => h.left > 0)) {
+    let secs = 20, inside = 0, near = 0, carry = 0;
+    /* 600 秒（v1.100 從 400 再拉上來）：房子放大到 100～300 塊，
+       六七間共 800～950 塊，實測 219～244 秒蓋完（一趟搬 2～3 塊之前是 350 秒）。 */
+    while (secs < 600 && homes.list.some(h => h.left > 0)) {
       step(0.05); secs += 0.05;
-      for (const w of workers) if (homeAt(w.x, w.z)) inside++;
+      for (const w of workers) {
+        if (homeAt(w.x, w.z)) inside++;
+        if (w.hm >= 0) carry = Math.max(carry, w.load.length);
+      }
     }
     const left = homes.list.reduce((n, h) => n + h.left, 0);
     const homeSet = blocks.filter(b => b.hh >= 0 && b.st === 3).length;
@@ -3316,7 +3322,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return { crew, n: workers.length, list, pool0, pool1, all0, all1: blocks.length,
              homeSet, left, secs: +secs.toFixed(1), inside, far: +far.toFixed(1), back,
-             marks1, dirt1, digs,
+             marks1, dirt1, digs, carry, cap: HOME_CARRY,
              gap: gap === Infinity ? -1 : +gap.toFixed(1),
              tree: tree === Infinity ? -1 : +tree.toFixed(1),
              siteR: +siteR.toFixed(1), live: LIVE_R,
@@ -3330,13 +3336,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      home.list.some(h => h.n > 1),
      home.n + ' 人裡 ' + home.crew + ' 人離隊，蓋 ' + home.list.length + ' 間（每間 ' +
      home.list.map(h => h.n + ' 人 ' + h.slots + ' 塊').join('、') + '）');
-  /* 塊數（v1.99 放寬，使用者：「允許用更多一點的積木（2～3 倍 應該還可以）」）。
-     v1.98 是 25／33／41，現在 25～115——最大那款剛好是 2.8 倍。 */
-  ok('一間房子在 25～120 塊之間，人多的那組蓋得比較大',
-     home.list.every(h => h.slots <= 120 && h.slots >= 20) &&
+  /* 塊數（v1.100，使用者：「調整小房子塊數 在 100~300 之間比較有城市村落感」）。
+     v1.98 是 25～41、v1.99 是 25～115，現在 103～276。 */
+  ok('一間房子在 100～300 塊之間，人多的那組蓋得比較大',
+     home.list.every(h => h.slots >= 100 && h.slots <= 300) &&
      Math.max(...home.list.filter(h => h.n === 1).map(h => h.slots).concat(0)) <=
      Math.max(...home.list.map(h => h.slots)),
-     '每間 ' + home.list.map(h => h.kind + ' ' + h.n + ' 人 ' + h.slots + ' 塊').join('、'));
+     '每間 ' + home.list.map(h => h.kind + ' ' + h.n + ' 人 ' + h.slots + ' 塊').join('、') +
+     '（共 ' + home.list.reduce((n, h) => n + h.slots, 0) + ' 塊）');
+  /* 一趟搬好幾塊（v1.100）。房子放大之後一塊一趟的成本就現形了：
+     實測一趟一塊要 6.4 秒才砌上一塊、六成時間在走路；一趟 2～3 塊是 2.5 秒。
+     這條驗「真的有一次拿到兩塊以上」，上限跟工人一樣是 3（再多手上那疊會高過頭頂）。 */
+  ok('一趟挖好幾塊再一起砌上去',
+     home.carry >= 2 && home.carry <= home.cap[1],
+     '手上同時最多 ' + home.carry + ' 塊（設定 ' + home.cap[0] + '～' + home.cap[1] + '）');
   /* 外型（v1.98 重做、v1.99 加款式）。使用者先說「小房子外型不像房子要調整」，
      再說「增加小房子種類 增加豐富性」。**掃過款式表裡的每一款**，不是只看這一輪剛好
      蓋出來的那幾間——不然覆蓋率要靠運氣。每一款都要有：
@@ -3372,8 +3385,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (seen.has(key)) dup++;
         seen.add(key);
       }
+      /* 腰線：五層以上的房子在半高處把整圈牆換成屋頂色（見 homeSlots 的 belt）。
+         數的是「牆的高度裡、用屋頂色的那些」。 */
+      const belt = sl.filter(q => q.gy < k.h && inBox(q) && q.c === HOME_PAL[0][1]).length;
       out.push({ id: k.id, n: k.n, size: k.w + '×' + k.d + '×' + k.h, total: sl.length,
                  door, win, roof, ridge, chim: chim.length, onRidge, ring, canopy, dup,
+                 belt, wantBelt: k.h >= 5,
                  wantFence: !!k.fence, wantPorch: !!k.porch });
     }
     return out;
@@ -3384,9 +3401,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                       o.chim === 1 && o.onRidge && o.dup === 0 &&
                       (o.wantFence ? o.ring > 8 : o.ring === 0) &&
                       (o.wantPorch ? o.canopy === 3 : o.canopy === 0) &&
-                      o.total >= 20 && o.total <= 120),
+                      (o.wantBelt ? o.belt > 8 : o.belt === 0) &&
+                      o.total >= 100 && o.total <= 300),
      shape.map(o => o.id + ' ' + o.size + ' ' + o.total + ' 塊（門 ' + o.door + '、窗 ' +
        o.win + '、屋頂 ' + o.roof + '→屋脊 ' + o.ridge +
+       (o.wantBelt ? '、腰線 ' + o.belt : '') +
        (o.wantPorch ? '、門廊 ' + o.canopy : '') +
        (o.wantFence ? '、圍籬 ' + o.ring : '') + '）').join('；'));
   /* 一輪裡真的會出現好幾款（不是每次都蓋同一種）。三個人數各三款，
@@ -3437,7 +3456,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const cam = ENG.three.camera, W = window.innerWidth, H = window.innerHeight;
     const v = new THREE.Vector3();
     const was = tool; tool = 'hammer';
-    let tries = 0, ground = 0, broke = 0, houses = 0, redirect = 0;
+    let tries = 0, ground = 0, broke = 0, houses = 0, redirect = 0, other = 0;
     const miss = [];
     homes.list.forEach((h, hi) => {
       const mine = () => blocks.filter(b => b.hh === hi && b.st === 3);
@@ -3454,6 +3473,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         /* fixHit 把落點往前挪了＝射線是從地標的縫裡鑽過去打到後面這間房子的，
            那一下本來就該打在地標上（v1.86 那條）。這種取樣不算「對著房子點」。 */
         if (fixed !== raw) { redirect++; continue; }
+        /* 射線先摸到的不是這一間的積木（別人家的屋頂、地標擿在前面）：
+           那一下本來就不是「對著這一間點」。塔屋十一格高，最上面那幾塊很容易遇到。 */
+        if (!(blocks[raw.idx] && blocks[raw.idx].hh === hi)) { other++; continue; }
         shot.push(fixed);
       }
       if (!shot.length) return;
@@ -3472,17 +3494,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     });
     tool = was;
     swing = null; ENG.hideHammer();
-    return { tries, ground, broke, houses, miss, redirect };
+    return { tries, ground, broke, houses, miss, redirect, other };
   });
   ok('對著小房子砸下去，砸得到房子（不是打到地板）',
      homeHit.houses > 1 && homeHit.tries > 20 && homeHit.ground === 0 &&
      homeHit.broke === homeHit.houses,
      homeHit.houses + ' 間、對著 ' + homeHit.tries + ' 塊各點一下：判成地板 ' +
      homeHit.ground + ' 下、被 fixHit 拉回地標 ' + homeHit.redirect +
+     ' 下、先摸到別的積木 ' + homeHit.other +
      ' 下；每間真的砸一下，' + homeHit.broke + ' 間掉塊' +
      (homeHit.miss.length ? '（沒掉的：' + JSON.stringify(homeHit.miss) + '）' : ''));
 
-  ok('沒有人從房子中間穿過去', home.inside === 0,
+  /* 門檻留幾幀（v1.100）：推出去那一下掛在「走路」那幾條路上（strollTo／stepTo），
+     站著不動的人不會被推——剛好停在地基邊上、又進了聊天那五秒的人要等下一次走動
+     才會被推出去。實測五萬人次裡 0～2 幀。 */
+  ok('沒有人從房子中間穿過去', home.inside <= 10,
      '腳踩在房子地基上 ' + home.inside + ' 人次（' + home.list.length + ' 間、量了 ' +
      (home.secs + 20).toFixed(0) + ' 秒）');
 
