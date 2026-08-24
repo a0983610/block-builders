@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.97.0';
+const VERSION = '1.98.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2230,15 +2230,21 @@ function stepIdleEvent(dt) {
    那一間解成碎料（見 clearHomesInSite）。 */
 let homes = null;                   // { list: [home] }。蓋好的房子不隨事件收掉
 const HOME_PART = 0.5;              // 大約幾成的人離隊去蓋（使用者選「一半左右」）
-const HOME_NEAR = 8, HOME_FAR = 22; // 蓋在工地外圈這一帶（使用者選的）
-const HOME_GAP = 10;                // 兩間的中心至少隔多遠
+/* 蓋在哪一帶（v1.98 放寬，使用者：「應該分散一點，地標建築範圍外到小樹圈內」）。
+   v1.97 是 siteR + 8～22 的窄環，幾間房子擠在同一圈上。現在內緣貼著地標外圍、
+   外緣就是碎料場外緣——樹種在那外面（makeTrees 是 arenaR + 3～15），
+   所以「小樹圈內」＝整片碎料場。範圍跟著建築大小走，大工地就散得更開。 */
+const HOME_NEAR = 5;
+const homeOut = () => Math.max(siteR + HOME_NEAR + 5, arenaR);
+const HOME_ARC = 1.6;               // 挑位置時偏離「這組人現在站的方位」多少弧度
+const HOME_GAP = 12;                // 兩間的中心至少隔多遠
 const HOME_TREE = 3.5;              // 離樹至少多遠（樹種在碎料場外圍，通常碰不到）
 const HOME_TEAM = 3;                // 一間最多幾個人合蓋
 const HOME_NEARBY = 8;              // 多近算「附近的小人」，會被拉進同一組
-/* 一間的尺寸看幾個人合蓋。四面牆 ＋ 一個門洞 ＋ 平屋頂 ＋ 一根煙囪，
-   算下來 25 / 32 / 48 塊——使用者說「可能 50 塊積木內就能建成的」。
-   屋頂做平的不做斜的：斜屋頂要一層一層縮，同樣的塊數只蓋得起更小的房子。 */
-const HOME_SIZE = [{ w: 3, d: 3, h: 2 }, { w: 4, d: 3, h: 2 }, { w: 5, d: 4, h: 2 }];
+/* 一間的尺寸看幾個人合蓋（深度固定 3：屋頂縮一圈之後剛好剩一道屋脊）。
+   四面牆 ＋ 兩格高的門 ＋ 兩扇窗 ＋ 兩層屋頂 ＋ 一根煙囪，
+   算下來 25 / 33 / 41 塊——使用者說「可能 50 塊積木內就能建成的」。 */
+const HOME_SIZE = [{ w: 3, d: 3, h: 2 }, { w: 4, d: 3, h: 2 }, { w: 5, d: 3, h: 2 }];
 const HOME_PAL = [                  // 牆、屋頂、煙囪（每間隨機挑一組）
   [[0.82, 0.70, 0.52], [0.72, 0.31, 0.26], [0.56, 0.53, 0.50]],
   [[0.86, 0.83, 0.74], [0.38, 0.45, 0.58], [0.56, 0.53, 0.50]],
@@ -2287,33 +2293,46 @@ function homeUnclaim(w) {
   if (sl) sl.claimed = -1;
   w.hk = -1;
 }
-/* 一間房子的格子清單。順序是牆一層一層往上、然後屋頂、最後煙囪——
-   照這個順序砌，看起來才是「蓋起來」的。
-   門開在**朝著大建築那一面**：背對著開的話，從鏡頭看過去就只是一面平牆。 */
+/* 一間房子的格子清單（v1.98 重做，使用者說「外型不像房子」）。
+   v1.97 是「四面牆 ＋ 一個一格高的洞 ＋ 平屋頂 ＋ 角落一根煙囪」——那就是一個開了小洞的
+   方盒子。現在有五樣東西讓它讀得出是房子：
+
+     · 兩層的斜屋頂：第一層鋪滿，第二層沿著短邊縮進一格，於是頂上剩一道屋脊
+     · 屋脊上站一根煙囪（v1.97 是站在屋簷的角落上，看起來像多出來的一塊）
+     · 兩格高的門（一格高的洞看起來是牆破了，不是門）
+     · 跟門垂直的那兩面牆各開一扇窗，離地第二格
+     · 長方形的平面（5×3 而不是 5×4）：正方形＋平頂就是箱子
+
+   屋頂只做兩層階梯、不做一層一層縮的真斜頂：同樣的塊數（≤ 50，使用者指定）
+   只蓋得起更小的房子。
+   門開在**朝著大建築那一面**：背對著開的話，從鏡頭看過去就只是一面平牆。
+   順序是牆一層一層往上 → 屋頂 → 屋脊 → 煙囪，照這個順序砌看起來才是「蓋起來」的。 */
 function homeSlots(hx, hz, s, pal) {
   const out = [];
   const ox = (s.w - 1) / 2, oz = (s.d - 1) / 2;
-  const at = (i, k) => ({ x: hx + i - ox, z: hz + k - oz });
-  const mid = { i: Math.floor((s.w - 1) / 2), k: Math.floor((s.d - 1) / 2) };
+  const put = (i, k, gy, c) =>
+    out.push({ x: hx + i - ox, y: gy + HB, z: hz + k - oz, c, i, k, gy,
+               filled: false, claimed: -1 });
+  const mi = Math.floor((s.w - 1) / 2), mk = Math.floor((s.d - 1) / 2);
   // 哪一面朝場中心：看房子中心相對場中心是 x 遠還是 z 遠
-  const door = Math.abs(hx) > Math.abs(hz)
-    ? { i: hx > 0 ? 0 : s.w - 1, k: mid.k }
-    : { i: mid.i, k: hz > 0 ? 0 : s.d - 1 };
+  const xFace = Math.abs(hx) > Math.abs(hz);
+  const door = xFace ? { i: hx > 0 ? 0 : s.w - 1, k: mk }
+                     : { i: mi, k: hz > 0 ? 0 : s.d - 1 };
+  const win = xFace ? [{ i: mi, k: 0 }, { i: mi, k: s.d - 1 }]
+                    : [{ i: 0, k: mk }, { i: s.w - 1, k: mk }];
   for (let gy = 0; gy < s.h; gy++)
     for (let i = 0; i < s.w; i++)
       for (let k = 0; k < s.d; k++) {
-        if (i > 0 && i < s.w - 1 && k > 0 && k < s.d - 1) continue;   // 中間是屋內
-        if (gy === 0 && i === door.i && k === door.k) continue;       // 門洞
-        const q = at(i, k);
-        out.push({ x: q.x, y: gy + HB, z: q.z, c: pal[0], filled: false, claimed: -1 });
+        if (i > 0 && i < s.w - 1 && k > 0 && k < s.d - 1) continue;      // 中間是屋內
+        if (i === door.i && k === door.k) continue;                      // 門（整面兩格高）
+        if (gy === s.h - 1 && win.some(q => q.i === i && q.k === k)) continue;   // 窗
+        put(i, k, gy, pal[0]);
       }
   for (let i = 0; i < s.w; i++)
-    for (let k = 0; k < s.d; k++) {
-      const q = at(i, k);
-      out.push({ x: q.x, y: s.h + HB, z: q.z, c: pal[1], filled: false, claimed: -1 });
-    }
-  const c = at(0, 0);
-  out.push({ x: c.x, y: s.h + 1 + HB, z: c.z, c: pal[2], filled: false, claimed: -1 });
+    for (let k = 0; k < s.d; k++) put(i, k, s.h, pal[1]);                // 屋頂第一層
+  for (let i = 0; i < s.w; i++)
+    for (let k = 1; k < s.d - 1; k++) put(i, k, s.h + 1, pal[1]);        // 屋脊
+  put(0, mk, s.h + 2, pal[2]);                                           // 煙囪
   return out;
 }
 /* 找一塊空地：從這一組人現在站的方位往外找，避開已經蓋好的房子與樹。
@@ -2321,7 +2340,7 @@ function homeSlots(hx, hz, s, pal) {
 function pickHomeSite(cx, cz) {
   const base = Math.atan2(cz, cx);
   for (let t = 0; t < 40; t++) {
-    const a = base + rr(-0.9, 0.9), r = siteR + rr(HOME_NEAR, HOME_FAR);
+    const a = base + rr(-HOME_ARC, HOME_ARC), r = rr(siteR + HOME_NEAR, homeOut());
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     let ok = true;
     for (const h of homes.list)

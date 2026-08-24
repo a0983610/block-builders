@@ -1368,6 +1368,19 @@ const ENG = (function () {
 
   /* ── 積木 ───────────────────────────────────────────── */
   function setBlockCount(n) { blockMesh.count = Math.min(n, MAXB); }
+  /* 每幀把 InstancedMesh 的包圍球丟掉（v1.98）。
+
+     three 的 InstancedMesh.raycast **第一件事是拿 this.boundingSphere 擋一次**，
+     而那顆球是第一次射線判定時算出來、之後就一直用同一顆——這一池的東西卻是一直在動的
+     （換一座建築、碎料被轟到場外、小人走到碎料場外緣、v1.97 起小人的家蓋在外圍一帶）。
+     於是「射線沒穿過那顆舊球」的方向整池都被跳過，點下去直接落到地板上。
+     實測：拿一塊積木擺到半徑 24／28／32／36／40，五個位置**全部**回報打到地板；
+     把球丟掉重算之後五個全部正常。使用者是在小房子上遇到的（「用槌子砸好像容易點到地板」）。
+
+     丟掉是 O(1)，重算是 O(n) 而且**只在真的做射線判定時才發生**（three 看到 null 才算），
+     也就是只有玩家點下去那一幀——不是每幀。畫面那邊不受影響：
+     這兩個 mesh 都 frustumCulled = false，本來就不靠包圍球決定畫不畫。 */
+  function dropSphere(m) { m.boundingSphere = null; }
 
   /* 遊戲層每幀對每塊積木呼叫一次。rot 是 THREE.Euler，s 是縮放（放置彈跳用） */
   function putBlock(i, x, y, z, rot, s, r, g, b) {
@@ -1382,6 +1395,7 @@ const ENG = (function () {
   function commitBlocks() {
     blockMesh.instanceMatrix.needsUpdate = true;
     if (blockMesh.instanceColor) blockMesh.instanceColor.needsUpdate = true;
+    dropSphere(blockMesh);
   }
 
   /* ── 小人 ───────────────────────────────────────────── */
@@ -1587,6 +1601,7 @@ const ENG = (function () {
   function commitWorkers() {
     workerMesh.instanceMatrix.needsUpdate = true;
     if (workerMesh.instanceColor) workerMesh.instanceColor.needsUpdate = true;
+    dropSphere(workerMesh);
   }
 
   /* ── 樹 ───────────────────────────────────────────── */

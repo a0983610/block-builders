@@ -3274,14 +3274,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 挖的那一下要有土痕與土塵（使用者：「積木可以就近地面上挖一挖拿出來」——
        看得出是挖出來的，不是憑空出現）。土痕跟隕石坑同一套，3 秒淡掉。 */
     let marks1 = 0, dirt1 = 0, digs = 0;
-    for (let i = 0; i < 60; i++) {
+    /* 二十秒，不是三秒（v1.98）：房子改成蓋在整片碎料場上（最遠到 arenaR），
+       前幾秒他們還在走過去的路上，一塊都還沒挖。 */
+    for (let i = 0; i < 400; i++) {
       step(0.05);
       marks1 = Math.max(marks1, marks.length);
       dirt1 = Math.max(dirt1, dust.filter(d => d.cr === 0.52).length);
       digs = Math.max(digs, blocks.filter(b => b.hh >= 0).length);
     }
     // 蓋完
-    let secs = 3, inside = 0, near = 0;
+    let secs = 20, inside = 0, near = 0;
     while (secs < 180 && homes.list.some(h => h.left > 0)) {
       step(0.05); secs += 0.05;
       for (const w of workers) if (homeAt(w.x, w.z)) inside++;
@@ -3315,7 +3317,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              marks1, dirt1, digs,
              gap: gap === Infinity ? -1 : +gap.toFixed(1),
              tree: tree === Infinity ? -1 : +tree.toFixed(1),
-             siteR: +siteR.toFixed(1), live: LIVE_R, band: [HOME_NEAR, HOME_FAR] };
+             siteR: +siteR.toFixed(1), live: LIVE_R,
+             band: [siteR + HOME_NEAR, homeOut()], arenaR: +arenaR.toFixed(1),
+             spread: +(Math.max(...homes.list.map(h => Math.hypot(h.x, h.z))) -
+                       Math.min(...homes.list.map(h => Math.hypot(h.x, h.z)))).toFixed(1) };
   });
   ok('一半左右的人離隊去蓋，附近的人合蓋大一點的',
      home.crew >= home.n * 0.3 && home.crew <= home.n * 0.7 &&
@@ -3326,14 +3331,61 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 一間 50 塊以內（使用者：「可能 50 塊積木內就能建成的」）。 */
   ok('一間房子 50 塊以內', home.list.every(h => h.slots <= 50 && h.slots >= 20),
      '每間 ' + home.list.map(h => h.slots).join('／') + ' 塊');
+  /* 外型要讀得出是房子（v1.98，使用者：「小房子外型不像房子要調整」）。
+     v1.97 是「四面牆＋一格高的洞＋平屋頂＋角落一根煙囪」＝開了小洞的方盒子。
+     這條驗五件事：兩格高的門、兩扇窗、屋頂縮一圈剩一道屋脊、煙囪站在屋脊上、
+     平面是長方形不是正方形（一個人的小屋除外，3×3 沒得長）。 */
+  const shape = await page.evaluate(() => {
+    const out = [];
+    for (const h of homes.list) {
+      const top = Math.max(...h.slots.map(sl => sl.gy));
+      const lay = {};
+      for (const sl of h.slots) lay[sl.gy] = (lay[sl.gy] || 0) + 1;
+      const wall = h.slots.filter(sl => sl.gy < top - 2);
+      const wi = new Set(wall.map(sl => sl.i)), wk = new Set(wall.map(sl => sl.k));
+      const w = Math.max(...wi) + 1, d = Math.max(...wk) + 1;
+      // 牆上少掉的格子＝門與窗（外圈本來該有幾格 × 幾層）
+      const ring = (w * d) - Math.max(0, (w - 2) * (d - 2));
+      const holes = ring * (top - 2) - wall.length;
+      // 門：同一個 (i,k) 兩層都不在
+      const has = new Set(wall.map(sl => sl.i + ':' + sl.k + ':' + sl.gy));
+      let door = 0, win = 0;
+      for (let i = 0; i < w; i++)
+        for (let k = 0; k < d; k++) {
+          if (i > 0 && i < w - 1 && k > 0 && k < d - 1) continue;
+          const lo = has.has(i + ':' + k + ':0'), hi2 = has.has(i + ':' + k + ':1');
+          if (!lo && !hi2) door++;
+          else if (lo && !hi2) win++;
+        }
+      const roof = h.slots.filter(sl => sl.gy === top - 2).length;
+      const ridge = h.slots.filter(sl => sl.gy === top - 1).length;
+      const chim = h.slots.filter(sl => sl.gy === top);
+      const onRidge = chim.length === 1 &&
+        h.slots.some(sl => sl.gy === top - 1 && sl.i === chim[0].i && sl.k === chim[0].k);
+      out.push({ w, d, top, holes, door, win, roof, ridge, chim: chim.length, onRidge,
+                 n: h.n, slots: h.slots.length });
+    }
+    return out;
+  });
+  ok('房子有兩格高的門、兩扇窗、一道屋脊和站在屋脊上的煙囪',
+     shape.length > 1 &&
+     shape.every(o => o.door === 1 && o.win === 2 && o.ridge < o.roof && o.ridge > 0 &&
+                      o.chim === 1 && o.onRidge && o.top === 4) &&
+     shape.some(o => o.w !== o.d),
+     shape.map(o => o.n + ' 人 ' + o.w + '×' + o.d + '×' + o.top + '：門 ' + o.door +
+       '、窗 ' + o.win + '、屋頂 ' + o.roof + ' → 屋脊 ' + o.ridge + '、煙囪 ' + o.chim +
+       (o.onRidge ? '（在屋脊上）' : '（沒站在屋脊上）')).join('；'));
   /* 蓋在工地外圈那一帶（使用者選的），彼此不重疊、不壓到樹。 */
-  ok('蓋在工地外圈一帶，彼此不重疊也不壓到樹',
-     home.list.every(h => h.rad >= home.siteR + home.band[0] - 0.1 &&
-                          h.rad <= home.siteR + home.band[1] + 0.1) &&
-     home.gap > 9 && home.tree > 2,
-     '離工地中心 ' + home.list.map(h => h.rad).join('／') + '（工地半徑 ' + home.siteR +
-     '，該落在 +' + home.band[0] + '～+' + home.band[1] + '）；最近的兩間隔 ' + home.gap +
-     '、離樹最近 ' + home.tree);
+  /* 範圍是「地標建築範圍外～小樹圈內」（v1.98，使用者指定「應該分散一點」）。
+     樹種在碎料場外圍（arenaR + 3～15），所以外緣就是 arenaR。
+     v1.97 是 siteR + 8～22 的窄環，幾間房子擠在同一圈上。 */
+  ok('蓋在地標外圍到碎料場外緣之間，散得開、不重疊也不壓到樹',
+     home.list.every(h => h.rad >= home.band[0] - 0.1 && h.rad <= home.band[1] + 0.1) &&
+     home.spread > 6 && home.gap > 11 && home.tree > 2,
+     '離工地中心 ' + home.list.map(h => h.rad).join('／') + '（該落在 ' +
+     home.band[0].toFixed(1) + '～' + home.band[1].toFixed(1) + '；工地半徑 ' + home.siteR +
+     '、碎料場外緣 ' + home.arenaR + '）；最遠與最近差 ' + home.spread +
+     '、最近的兩間隔 ' + home.gap + '、離樹最近 ' + home.tree);
   /* 積木是**從地上挖出來的**，不是從料池借的。完工那一刻場上通常一塊散料都沒有
      （料池 = 藍圖格數），從料池拿等於把下一座的建材偷走。 */
   ok('房子真的蓋起來，而且積木是挖出來的（不是從料池拿的）',
@@ -3344,7 +3396,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、積木總數 ' + home.all0 + ' → ' + home.all1);
   ok('挖的那一下有土痕與土塵',
      home.marks1 > 0 && home.dirt1 > 0 && home.digs > 0,
-     '三秒內：地上的土痕最多 ' + home.marks1 + ' 塊、土色塵霧最多 ' + home.dirt1 +
+     '二十秒內：地上的土痕最多 ' + home.marks1 + ' 塊、土色塵霧最多 ' + home.dirt1 +
      ' 顆、挖出 ' + home.digs + ' 塊積木');
   /* 蓋完就在自己家附近走走（使用者的規格），不會走回工地那一帶。 */
   ok('蓋完就在自己家附近走走',
@@ -3354,6 +3406,49 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 房子不在藍圖的格子表裡（footBlocked 查的是那個），所以每一種走法都得自己避開。
      沒有這一條的話實測有 34% 的人次站在別人屋子裡（推的時機漏了「站定不動」那條路徑，
      而且推到邊界上會被浮點誤差判成還在裡面）。 */
+  /* 使用者回報「小房子用槌子砸好像容易點到地板，而沒砸到房子」。
+     成因不在房子小，在上面那顆過期的包圍球：整池被跳過，射線直接穿到地板。
+     實測（改之前）6 間裡有 2 間**每一塊都點不到**（14/14、7/7 全判成地板、一塊都沒掉）。
+     這條照玩家那條路走一次：ENG.pick → fixHit → useTool（槌子）→ resolveSwing。 */
+  const homeHit = await page.evaluate(() => {
+    stopIdleEvent();
+    for (const w of workers) w.hm = -1;             // 別讓他們一邊補一邊測
+    for (let i = 0; i < 30; i++) ENG.updateCamera(1);
+    draw(); ENG.render();
+    const cam = ENG.three.camera, W = window.innerWidth, H = window.innerHeight;
+    const v = new THREE.Vector3();
+    const was = tool; tool = 'hammer';
+    let tries = 0, ground = 0, broke = 0, houses = 0;
+    homes.list.forEach((h, hi) => {
+      const mine = () => blocks.filter(b => b.hh === hi && b.st === 3);
+      const shot = [];
+      /* 先把這一間每一塊都點一次、只看判定（不砸）：槌子的範圍是 5.5，
+         一下就把整間端掉了，砸完再點剩下的等於在點空氣。 */
+      for (const b of mine()) {
+        v.set(b.x, b.y, b.z).project(cam);
+        if (v.x < -1 || v.x > 1 || v.y < -1 || v.y > 1) continue;
+        tries++;
+        const raw = ENG.pick((v.x + 1) / 2 * W, (1 - v.y) / 2 * H);
+        const fixed = raw && fixHit(raw);
+        if (!fixed || fixed.kind === 'ground') ground++; else shot.push(fixed);
+      }
+      if (!shot.length) return;
+      houses++;
+      // 真的砸一下（挑中間那一塊），這一間要掉塊
+      const before = mine().length;
+      swing = null; useTool(shot[Math.floor(shot.length / 2)]); resolveSwing();
+      if (mine().length < before) broke++;
+    });
+    tool = was;
+    swing = null; ENG.hideHammer();
+    return { tries, ground, broke, houses };
+  });
+  ok('對著小房子砸下去，砸得到房子（不是打到地板）',
+     homeHit.houses > 1 && homeHit.tries > 20 && homeHit.ground === 0 &&
+     homeHit.broke === homeHit.houses,
+     homeHit.houses + ' 間、對著 ' + homeHit.tries + ' 塊各點一下：判成地板 ' +
+     homeHit.ground + ' 下；每間真的砸一下，' + homeHit.broke + ' 間掉塊');
+
   ok('沒有人從房子中間穿過去', home.inside === 0,
      '腳踩在房子地基上 ' + home.inside + ' 人次（' + home.list.length + ' 間、量了 ' +
      (home.secs + 20).toFixed(0) + ' 秒）');
@@ -4836,6 +4931,51 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      pickOrder.man === 'worker' && pickOrder.manIdx === 0,
      '同一個位置：一般判定給 ' + pickOrder.blocked + '、手指判定給 ' + pickOrder.man +
      '（第 ' + pickOrder.manIdx + ' 個人）');
+
+  /* 離工地遠的東西也要點得到（v1.98）。three 的 InstancedMesh.raycast **第一件事是拿
+     this.boundingSphere 擋一次**，而那顆球是第一次射線判定時算出來、之後就一直用同一顆；
+     這一池的東西卻一直在動（換建築、碎料被轟到場外、v1.97 起小人的家蓋在整片碎料場上）。
+     過期的球擋掉之後，整池都被跳過，點下去直接落到地板——使用者是在小房子上遇到的
+     （「用槌子砸好像容易點到地板」）。修法是每幀把球丟掉（commitBlocks／commitWorkers），
+     three 看到 null 才重算，所以那個 O(n) 只發生在真的做射線判定的那一幀。
+     這條同時驗兩件事：現在遠處點得到；以及**球真的是那道關卡**（把它換成過期的就點不到）。 */
+  const farPick = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(6); startBuild(true); completeNow();
+    for (let i = 0; i < 40; i++) ENG.updateCamera(1);
+    const bm = ENG.three.blockMesh, cam = ENG.three.camera;
+    const W = window.innerWidth, H = window.innerHeight;
+    const v = new THREE.Vector3();
+    const b = blocks[blocks.length - 1];
+    const at = r => {
+      if (b.cell) gridDel(b);
+      b.x = 0; b.z = r; b.y = HB; b.st = 3;
+      draw(); ENG.render();                    // draw 會 commitBlocks（球在這裡被丟掉）
+      v.set(b.x, b.y, b.z).project(cam);
+      return { px: (v.x + 1) / 2 * W, py: (1 - v.y) / 2 * H };
+    };
+    const good = [];
+    for (const r of [16, 22, 28, 34, 40]) {
+      const q = at(r);
+      const hit = ENG.pick(q.px, q.py);
+      good.push(hit && hit.kind === 'block' ? 'block' : (hit ? hit.kind : 'none'));
+    }
+    // 對照：把球換成「上一座小建築」時算的那種（釘在工地中央、半徑 8）
+    const q = at(40);
+    bm.computeBoundingSphere();
+    bm.boundingSphere.center.set(0, 0, 0);
+    bm.boundingSphere.radius = 8;
+    const stale = ENG.pick(q.px, q.py);
+    bm.boundingSphere = null;
+    const fresh = ENG.pick(q.px, q.py);
+    return { good, stale: stale ? stale.kind : 'none', fresh: fresh ? fresh.kind : 'none' };
+  });
+  ok('離工地很遠的積木也點得到（包圍球不能快取住）',
+     farPick.good.every(k => k === 'block') &&
+     farPick.stale === 'ground' && farPick.fresh === 'block',
+     '半徑 16／22／28／34／40 各點一下：' + farPick.good.join('／') +
+     '；把包圍球換成過期的（工地中央、半徑 8）→ ' + farPick.stale + '，丟掉重算 → ' +
+     farPick.fresh);
 
   /* 滾多遠：把積木清空、場地放大，量到的就是摩擦與壽命本身（不含撞到東西的煞車）。
      v1.39 之前是 6 秒 ×每秒保留 0.82，量到 119.3；現在 7.5 秒 ×0.86，量到 152.7。 */
