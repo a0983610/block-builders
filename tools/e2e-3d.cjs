@@ -3637,9 +3637,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const slots = homeSlots(at.x, at.z, kind, HOME_PAL[0]);
       const map = new Map();
       slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
-      homes.list.push({ x: at.x, z: at.z, r: homeR(kind), kind: kind.id, at: map,
-                        ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
-                        slots, left: 0, n: kind.n });
+      /* done／f6／外框都要給齊（見「目標在房子另一邊」那條的說明）：
+         少給哪一項都不會報錯，只會靜靜地少驗一條規則。 */
+      const hh0 = { x: at.x, z: at.z, r: homeR(kind), kind: kind.id, at: map,
+                    ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                    slots, left: 0, n: kind.n, done: true };
+      homeBox(hh0); markHomeF6(hh0);
+      homes.list.push(hh0);
       for (let i = 0; i < slots.length; i++) {
         const sl = slots[i], b = newBlock();
         b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
@@ -3676,8 +3680,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     breakBlock(one, 0, 0, 0);
     for (let i = 0; i < 120; i++) step(0.05);
     const roof = { n0: r0, after: alive() };
+    /* 4) 只剩對角勾著的也要掉（v1.103）。26 鄰接的支撐判定角碰角就算連著，
+       所以「拆掉煙囪底下那一塊」的時候，煙囪還斜斜地勾在旁邊那幾塊屋脊上——
+       26 鄰接判它連得到地面，它就吊在半空。這一關（dropHungHome）專門收這種。
+       煙囪是最乾淨的案例：單獨一塊、六個面只有底下那一個鄰居。 */
+    h = build(0);
+    const c0 = alive();
+    const chim = h.slots.reduce((a, sl, i) => sl.gy > (a ? h.slots[a].gy : -1) ? i : a, 0);
+    const below = h.at.get(h.slots[chim].i + ':' + (h.slots[chim].gy - 1) + ':' +
+                           h.slots[chim].k);
+    const own = homeOwners();
+    breakBlock(blocks[own.get('0:' + below)], 0, 0, 0);
+    for (let i = 0; i < 120; i++) step(0.05);
+    const hang = { n0: c0, after: alive(),
+                   chimGone: !blocks.some(b => b.hh === 0 && b.st === 3 && b.hk === chim) };
     clearHomes();
-    return { whole, hammer, roof };
+    return { whole, hammer, roof, hang };
   });
   ok('房子底部拆掉，上面跟著垮（只拆屋頂一塊不會連坐）',
      homeFall.whole.after === 0 &&
@@ -3687,6 +3705,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      homeFall.whole.after + '；槌子砸底部 → ' + homeFall.hammer.n0 + ' 剩 ' +
      homeFall.hammer.after + '；只拆屋頂一塊 → ' + homeFall.roof.n0 + ' 剩 ' +
      homeFall.roof.after);
+  ok('只剩對角勾著的也會掉（煙囪底下那一塊被拆掉，煙囪不會吊在半空）',
+     homeFall.hang.chimGone && homeFall.hang.after === homeFall.hang.n0 - 2,
+     '拆掉煙囪底下那一塊 → ' + homeFall.hang.n0 + ' 剩 ' + homeFall.hang.after +
+     '（煙囪也掉了：' + homeFall.hang.chimGone + '）');
 
   /* 每一把破壞道具都要作用得到房子（v1.102，使用者指定）。
      兩把原本打不到：煙火的火星是用 blockAt（藍圖的格子表）判有沒有碰到東西，
@@ -3706,9 +3728,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const slots = homeSlots(at.x, at.z, kind, HOME_PAL[0]);
       const map = new Map();
       slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
-      homes.list.push({ x: at.x, z: at.z, r: homeR(kind), kind: kind.id, at: map,
-                        ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
-                        slots, left: 0, n: kind.n });
+      /* done／f6／外框都要給齊（見「目標在房子另一邊」那條的說明）：
+         少給哪一項都不會報錯，只會靜靜地少驗一條規則。 */
+      const hh0 = { x: at.x, z: at.z, r: homeR(kind), kind: kind.id, at: map,
+                    ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                    slots, left: 0, n: kind.n, done: true };
+      homeBox(hh0); markHomeF6(hh0);
+      homes.list.push(hh0);
       for (let i = 0; i < slots.length; i++) {
         const sl = slots[i], b = newBlock();
         b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
@@ -3750,6 +3776,156 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      homeTools.length === 12 && homeTools.every(r => r.gone > 0),
      homeTools.map(r => r.id + ' −' + r.gone).join('、') + '（一間 ' +
      homeTools[0].n0 + ' 塊；水桶不算——積水是照藍圖的格子流的）');
+
+  /* 水也要積在屋裡（v1.103，使用者：「破壞&塌毀&建造等物理行為&繞路 邏輯要一樣」）。
+     v1.102 之前水的固體判定只問藍圖那張格子表（solidAt → blockAt），房子不在裡面，
+     所以水從牆中間流過去、屋裡積不起來。這一條把水倒在屋子正中央，
+     看它有多少留在四面牆圍起來的那塊地上。 */
+  const homeWater = await page.evaluate(() => {
+    const mk = blind => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 500; setWorkerCount(6); startBuild(true); completeNow();
+      stopIdleEvent(); clearHomes();
+      homes = { list: [] };
+      const kind = HOME_KIND[8];                        // 農莊 9×6×4：屋內夠大，裝得住水
+      const at = { x: 0, z: siteR + 5 + homeR(kind) + 8 };
+      const slots = homeSlots(at.x, at.z, kind, HOME_PAL[0]);
+      const map = new Map();
+      slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { x: at.x, z: at.z, r: homeR(kind), kind: kind.id, at: map,
+                  ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                  slots, left: 0, n: kind.n, done: true };
+      homeBox(h); markHomeF6(h);
+      homes.list.push(h);
+      for (let i = 0; i < slots.length; i++) {
+        const sl = slots[i], b = newBlock();
+        b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
+        b.hh = 0; b.hk = i;
+        blocks.push(b); sl.filled = true;
+      }
+      ENG.setBlockCount(blocks.length);
+      for (const w of workers) { releaseWorker(w); w.hm = -1; w.x = 300; w.z = 300; }
+      /* 屋內的地板：牆圍起來、gy 0 沒有積木的那些格。量的是「這幾根柱子上站了多深的水」
+         ——不是數格數，同一根柱子疊好幾層水都算同一根。 */
+      const floor = new Set();
+      for (let i = 1; i < kind.w - 1; i++)
+        for (let k = 1; k < kind.d - 1; k++)
+          if (!map.has(i + ':0:' + k))
+            floor.add(cellX(h.x + i - h.ox) + ':' + cellZ(h.z + k - h.oz));
+      /* 對照組：讓水看不見房子（＝v1.102 的行為，solidAt 只問藍圖那張表）。
+         倒 40 格就好，不是一整桶 2300 格——屋內只有二十幾格地板，一整桶會直接漫過牆頭
+         淹掉整片草地，兩邊都測不出差別（實測一整桶時屋內只占全場水量的 3.8%）。 */
+      const orig = homeSolid;
+      if (blind) homeSolid = () => false;
+      pourBucket(h.x, 0, h.z, 1, 40);
+      for (let i = 0; i < 30; i++) step(0.05);          // 1.5 秒：夠攤平、還沒滲乾
+      let deep = 0, all = 0;
+      const col = new Map();
+      if (water) for (const q of water.cells.values()) {
+        if (q.v < 0.12) continue;
+        all += q.v;
+        const k = q.gx + ':' + q.gz;
+        if (!floor.has(k)) continue;
+        col.set(k, (col.get(k) || 0) + q.v);
+      }
+      for (const q of col.values()) deep += q;
+      homeSolid = orig;
+      return { deep: +deep.toFixed(1), all: +all.toFixed(1), cols: col.size,
+               floor: floor.size };
+    };
+    const green = mk(false), red = mk(true);
+    cleanTools(); clearHomes();
+    return { green, red };
+  });
+  ok('水會積在屋裡（牆擋得住水）',
+     homeWater.green.deep > homeWater.red.deep * 1.5 &&
+     homeWater.green.deep / Math.max(0.1, homeWater.green.all) > 0.8,
+     '倒 40 格在屋子正中央，1.5 秒後留在屋內地板（' + homeWater.green.floor +
+     ' 格）上的水量：現在 ' + homeWater.green.deep + '（全場 ' + homeWater.green.all +
+     '、蓋住 ' + homeWater.green.cols + ' 格）；水看不見房子時（v1.102）只有 ' +
+     homeWater.red.deep + '（全場 ' + homeWater.red.all + '、蓋住 ' +
+     homeWater.red.cols + ' 格）');
+
+  /* 往房子上丟的積木不能穿過自己的屋頂（v1.103）。地標那邊的拋物線會沿路算
+     「要多高才過得去」（tossPeak），房子那邊 v1.102 之前是固定公式、完全不看路上有什麼，
+     所以往屋子另一側那幾格丟的時候是從屋頂穿過去的。
+     同一批弧線用舊公式再算一次當對照組，紅綠在同一輪裡比。 */
+  const homeArc = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    let t = 0;
+    while (t < 12) { step(0.05); t += 0.05; }
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    idleEv = IDLE_EVENTS[0]; startHomes();
+    const seen = new Set();
+    let arcs = 0, hit = 0, hitOld = 0, up = 0, upHit = 0, upOld = 0;
+    const thru = (a, peak) => {
+      for (let k = 5; k < 37; k++) {          // 掐頭去尾：出手與落點本來就貼著積木
+        const u = k / 40;
+        const y = a.y0 + (a.y1 - a.y0) * u + Math.sin(u * Math.PI) * peak;
+        if (homeSolid(a.x0 + (a.x1 - a.x0) * u, y, a.z0 + (a.z1 - a.z0) * u)) return 1;
+      }
+      return 0;
+    };
+    for (let i = 0; i < 5000 && homes.list.some(h => h.left > 0); i++) {
+      step(0.05);
+      for (const b of blocks) {
+        if (b.st !== 2 || !b.arc || b.arc.hm === undefined || seen.has(b)) continue;
+        seen.add(b); arcs++;
+        const a = b.arc;
+        // v1.102 的固定公式（魔法師那條還要再加 MAGE_LIFT）
+        const old = Math.max(1.1, (a.y1 - a.y0) * 0.45 + 1.1) + (a.mage ? MAGE_LIFT : 0);
+        const n = thru(a, a.peak), o = thru(a, old);
+        hit += n; hitOld += o;
+        /* 大部分的拋擲是丟給旁邊那一格，路上本來就沒東西，兩個公式一樣高——
+           那些會把比例稀釋掉。所以另外單獨看「弧頂真的被墊高的那幾條」：
+           那才是這次改動作用得到的那些，舊公式在那裡本來就該幾乎全穿。 */
+        if (a.peak > old + 0.01) { up++; upHit += n; upOld += o; }
+      }
+    }
+    const pct = (a, b) => +(a / Math.max(1, b) * 100).toFixed(2);
+    const out = { arcs, hit: pct(hit, arcs), old: pct(hitOld, arcs), up,
+                  upHit: pct(upHit, up), upOld: pct(upOld, up),
+                  left: homes.list.reduce((n, h) => n + h.left, 0) };
+    cleanTools(); clearHomes();
+    return out;
+  });
+  /* 門檻抓 5%：跟地標那條（tossPeak，量到 0.86%／2.44%）同一個量法，但房子小又密，
+     而且 homeColTop 跟 colTop 一樣只算「從地面連續疊上來」的高度——挑出去的屋簷
+     是從底下穿過去的、不算，所以剩下的幾個百分點是這個近似的固有殘量，不是漏算。 */
+  ok('往房子上丟的積木不會從自己的屋頂穿過去',
+     /* 被墊高的條數看抽到哪幾款房子（高的多、矮的少），實測 16～40 條，門檻抓 10。 */
+     homeArc.arcs > 300 && homeArc.up >= 10 &&
+     homeArc.hit < 5 && homeArc.upHit < 12 &&
+     homeArc.upOld > 5 && homeArc.upOld > homeArc.upHit * 3,
+     homeArc.arcs + ' 條弧線裡有 ' + homeArc.up + ' 條被墊高：那幾條穿過屋頂的比例 ' +
+     homeArc.upHit + '%，用舊的固定公式是 ' + homeArc.upOld + '%（整批：' +
+     homeArc.hit + '% ← ' + homeArc.old + '%；沒補上的 ' + homeArc.left + ' 格）');
+
+  /* 占地外框（v1.103）：走路的擋路判定從「外接圓」換成「房子自己那份格子的外框」。
+     外接圓把方房子框起來，面積差一倍，看過去每間房子外面都空一圈——
+     使用者第一次提這個事件就講過「盡量不要讓建築一圈都沒人，看起來會有點明顯」。
+     長條屋差最多（大長屋 12×4 帶圍籬：外框 128、外接圓 292）。 */
+  const homeBoxes = await page.evaluate(() => HOME_KIND.map(k => {
+    const slots = homeSlots(0, 30, k, HOME_PAL[0]);
+    const map = new Map();
+    slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+    const h = { x: 0, z: 30, r: homeR(k), at: map, slots, left: 0, done: true,
+                ox: (k.w - 1) / 2, oz: (k.d - 1) / 2 };
+    homeBox(h);
+    const bw = h.x1 - h.x0, bd = h.z1 - h.z0;
+    return { id: k.id, box: +(bw * bd).toFixed(0), disc: +(Math.PI * h.r * h.r).toFixed(0),
+             size: bw + '×' + bd,
+             // 每一格都要在框裡（門廊與圍籬的負座標最容易漏掉）
+             covers: slots.every(sl => sl.x > h.x0 && sl.x < h.x1 &&
+                                       sl.z > h.z0 && sl.z < h.z1) };
+  }));
+  ok('擋路的是房子自己那份格子的外框，不是外接圓（含門廊與圍籬）',
+     homeBoxes.length === 9 && homeBoxes.every(r => r.covers && r.box < r.disc),
+     homeBoxes.map(r => r.id + ' ' + r.size + '＝' + r.box + '（外接圓 ' + r.disc + '）')
+       .join('、'));
 
   /* 建築中被打掉的那一格會補回來（使用者指定「同地標建築邏輯」）。
      地標那邊是「派工游標退回那個洞」，房子這邊是 h.left 加回去、認領清掉，
@@ -3809,6 +3985,74 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      homeRepair.done + ' 塊（沒補上的 ' + homeRepair.left + ' 格、落定時放不上去的 ' +
      homeRepair.floating + ' 塊）');
 
+  /* 蓋不完的、被砸出洞的，下一輪要有人接手（v1.103）。
+     stopHomes 會把每個人的 hm 清掉（開下一座就是這樣），而 startHomes 以前一律開新的一間，
+     所以「蓋一半換場」的房子永遠停在半棟、完工後被砸出洞的也永遠沒人修。
+     兩段一起驗：① 蓋一半 → 換場 → 下一輪閒晃，原本那幾間都要有人接手並蓋完
+     ② 全部蓋完 → 砸掉一間的一角 → 下一輪閒晃，那一間要補回去。 */
+  const homeResume = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    let t = 0;
+    while (t < 12) { step(0.05); t += 0.05; }
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    idleEv = IDLE_EVENTS[0]; startHomes();
+    for (let i = 0; i < 900; i++) step(0.05);          // 蓋 45 秒，都還沒蓋完
+    const n0 = homes.list.length;
+    const half = homes.list.filter(h => h.left > 0).length;
+    const mid = homes.list.reduce((n, h) => n + (h.slots.length - h.left), 0);
+    // 換場：大家回去上工，房子留在原地沒人管
+    stopIdleEvent();
+    const orphan = workers.filter(w => w.hm >= 0).length;
+    // 下一輪閒晃事件
+    idleEv = IDLE_EVENTS[0]; startHomes();
+    const mine = homes.list.map((h, i) => workers.some(w => w.hm === i));
+    // 只數「原本那幾間」有沒有被接手：組數比間數多的時候，多出來的那幾組會去開新的
+    const taken = mine.slice(0, n0).filter(Boolean).length;
+    const n1 = homes.list.length;
+    /* 只等「這一輪有人接手的那幾間」。組數看的是散場時大家站在哪（就近湊隊），
+       所以間數多的時候會有一兩間排到下一輪——那不是壞掉，是排隊。 */
+    let secs = 0;
+    while (secs < 600 && homes.list.some((h, i) => mine[i] && h.left > 0)) {
+      step(0.05); secs += 0.05;
+    }
+    const left1 = homes.list.reduce((n, h, i) => n + (mine[i] ? h.left : 0), 0);
+    // ② 拆掉一間的屋頂幾塊，看下一輪有沒有人來補
+    const hi = 0, h0 = homes.list[hi];
+    /* 直接打掉最上面那幾塊，不走 smash：smash 的落點得自己抓，抓在外接圓上時
+       牆不一定在那裡（實測有一輪一塊都沒打到、洞是 0 格）。這一條要驗的是
+       「有洞就有人來補」，洞怎麼來的不重要；挑最上面那幾塊也不會連坐整棟。 */
+    const tops = blocks.filter(b => b.hh === hi && b.st === 3)
+                       .sort((a, b) => h0.slots[b.hk].gy - h0.slots[a.hk].gy)
+                       .slice(0, 6);
+    for (const b of tops) breakBlock(b, 0, 0, 0);
+    for (let i = 0; i < 60; i++) step(0.05);           // 讓該垮的先垮完
+    const hole = h0.left;
+    stopIdleEvent();
+    idleEv = IDLE_EVENTS[0]; startHomes();
+    const fixer = workers.some(w => w.hm === hi);
+    let s2 = 0;
+    while (s2 < 400 && h0.left > 0) { step(0.05); s2 += 0.05; }
+    const fixed = h0.left;
+    cleanTools(); clearHomes();
+    return { n0, half, mid, orphan, taken, n1, left1, secs: +secs.toFixed(0),
+             hole, fixer, fixed, s2: +s2.toFixed(0) };
+  });
+  ok('蓋不完的房子下一輪有人接手，砸出洞的也有人來補',
+     homeResume.half > 0 && homeResume.orphan === 0 &&
+     /* 舊的還沒人接就不准開新的：要嘛間數沒變，要嘛原本沒蓋完的全都有人接手了
+        （組數比間數多的時候，多出來的那幾組才去開新的）。 */
+     homeResume.taken > 0 &&
+     (homeResume.n1 === homeResume.n0 || homeResume.taken === homeResume.half) &&
+     homeResume.left1 === 0 &&
+     homeResume.hole > 0 && homeResume.fixer && homeResume.fixed === 0,
+     '蓋 45 秒停在 ' + homeResume.mid + ' 塊（' + homeResume.half + ' / ' +
+     homeResume.n0 + ' 間沒蓋完）→ 換場後 ' + homeResume.orphan +
+     ' 人還在蓋 → 下一輪接手 ' + homeResume.taken + ' 間、沒開新的（總間數 ' +
+     homeResume.n0 + ' → ' + homeResume.n1 + '），' + homeResume.secs + ' 秒蓋完；' +
+     '砸出 ' + homeResume.hole + ' 格的洞 → 有人來補（' + homeResume.s2 + ' 秒補完）');
+
   /* 目標在房子另一邊的時候要**繞過去**（v1.99）。使用者回報「小人會面向小房子原地走路」：
      v1.98 只有 pushOutHome 硬把人推出屋外，沒有「繞開」那一步，於是他直直走進房子、
      每幀被推回來——腿一直在擺，人在原地。蓋完在家附近晃的人最常遇到，
@@ -3821,9 +4065,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const kind = HOME_KIND[0];
     const slots = homeSlots(0, 24, kind, HOME_PAL[0]);
     for (const sl of slots) sl.filled = true;
-    homes.list.push({ x: 0, z: 24, r: homeR(kind), kind: kind.id,
-                      slots, left: 0, n: 1 });
-    const h = homes.list[0];
+    /* 照 startHomes 那一份組起來，不要只給 x/z/r：擋路判定看的是格子外框
+       （x0/x1/z0/z1，見 footHome），垮塌與砌得上去看的是 at／f6／done。
+       少給哪一項都不會報錯，只會靜靜地變成「什麼都不擋」——這條測試就白測了。 */
+    const at = new Map();
+    slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+    const h = { x: 0, z: 24, r: homeR(kind), kind: kind.id, at,
+                ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                slots, left: 0, n: 1, done: true };
+    homeBox(h); markHomeF6(h);
+    homes.list.push(h);
     const run = on => {
       const orig = blockHome;
       if (!on) blockHome = () => null;

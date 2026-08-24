@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.102.0';
+const VERSION = '1.103.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1308,13 +1308,16 @@ function stepTo(w, tx, tz, dt) {
 
    最後那一段之所以是通的，是因為 standPos 挑的位置保證「從那裡往外到外圈沒有積木」。
    對得準不準用「離目標那條半徑線多遠」判斷，不用角度：站在中心附近時角度會亂跳。 */
-/* 從現在的位置直直走到目標，腳邊會不會撞到已經蓋好的部分 */
+/* 從現在的位置直直走到目標，腳邊會不會撞到已經蓋好的部分。
+   小人的家也算（v1.103）：不算的話這條路被判成「通的」，人就直直走進人家的牆，
+   全靠 dodgeHome 每幀反應式地掰方向；算進來的話 buildWalk 會直接改走繞外圈那條。 */
 function pathClear(w) {
   const dx = w.tx - w.x, dz = w.tz - w.z;
   const n = Math.ceil(Math.hypot(dx, dz) / 0.7);
   for (let i = 1; i <= n; i++) {
     const t = i / n;
-    if (footBlocked(w.x + dx * t, w.z + dz * t)) return false;
+    const px = w.x + dx * t, pz = w.z + dz * t;
+    if (footBlocked(px, pz) || homeFoot(px, pz)) return false;
   }
   return true;
 }
@@ -1328,7 +1331,8 @@ function buildWalk(w, dt) {
   w.chk -= dt;
   if (w.clear) {
     const dx = w.tx - w.x, dz = w.tz - w.z, d = Math.hypot(dx, dz);
-    if (d > REACH && footBlocked(w.x + dx / d * PATH_EYE, w.z + dz / d * PATH_EYE)) w.chk = 0;
+    const ex = w.x + dx / d * PATH_EYE, ez = w.z + dz / d * PATH_EYE;
+    if (d > REACH && (footBlocked(ex, ez) || homeFoot(ex, ez))) w.chk = 0;
   }
   if (w.chk <= 0) { w.chk = PATH_CHK; w.clear = pathClear(w) ? 1 : 0; }
   if (w.clear) return walkTo(w, dt);
@@ -1811,11 +1815,13 @@ function toSlot(w, stay) {
    所以沿路取樣，每一點都算「頂點要多高才過得去」，取最大的那個。
    擋路的高度用 colTop（從地面連續疊上來的那一段），挑出去的樓板不算——
    那些是從底下穿過去的。 */
-function tossPeak(x0, y0, z0, s) {
-  const y1 = s.y + HB;
-  const dx = s.x - x0, dz = s.z - z0;
-  const dist = Math.hypot(dx, dz);
-  let peak = Math.max(1.6, (y1 - y0) * 0.45 + 1.8);
+/* 拋物線的弧頂要多高才閃得過中間的東西。
+   x1／y1／z1 是落點（y1 已經是世界座標），base 是沒有障礙時的下限，
+   top(x, z) 回傳「那一根柱子從地面連續疊到第幾層」——
+   地標查藍圖（colTop）、小人的家查自己那一份格子表（homeColTop）。 */
+function arcPeak(x0, y0, z0, x1, y1, z1, top, base) {
+  const dx = x1 - x0, dz = z1 - z0;
+  let peak = base;
   /* 取樣點要密，而且不能只照距離給：出手後那一小段爬得最急，
      「要多高才過得去」在 t 很小的時候最大（分母 sin(πt) 趨近 0）。
      照距離每半格取一點的話，2 格的拋擲只有 6 點，t=0.13 那個尖峰整個漏掉——
@@ -1823,13 +1829,18 @@ function tossPeak(x0, y0, z0, s) {
   const n = 24;
   for (let i = 1; i < n; i++) {
     const t = i / n;
-    const cy = colTop(x0 + dx * t, z0 + dz * t);
+    const cy = top(x0 + dx * t, z0 + dz * t);
     if (cy < 0) continue;
     // 積木中心要比那格的中心高 1.1（一格是 1，剛好 1 是擦過去）
     const need = (cy + 1.1 - y0 - (y1 - y0) * t) / Math.sin(t * Math.PI);
     if (need > peak) peak = need;
   }
   return Math.min(peak, 26);
+}
+function tossPeak(x0, y0, z0, s) {
+  const y1 = s.y + HB;
+  return arcPeak(x0, y0, z0, s.x, y1, s.z, colTop,
+                 Math.max(1.6, (y1 - y0) * 0.45 + 1.8));
 }
 /* 搬運姿勢：建材舉在頭頂上方，隨腳步微幅晃動。
    一趟可以搬好幾塊（v1.60），所以頭上是一疊——間距用格距 1（跟建築上的疊法一樣，
@@ -1889,9 +1900,11 @@ function strollTo(w, dt) {
     const k = (keep + 3 - pr) / 3;
     ux += (sx - ux) * k; uz += (sz - uz) * k;
   }
-  // 房子擋路就繞過去（見 dodgeHome）
+  /* 房子擋路就繞過去（見 dodgeHome）。先正規化：dodgeHome 是照「往前探幾格」找牆的，
+     方向向量沒歸一的話探的距離會跟著放大（上面那兩段會把它拉到 2.5 倍長）。 */
   {
-    const g = dodgeHome(w, ux, uz);
+    const m0 = Math.hypot(ux, uz) || 1;
+    const g = dodgeHome(w, ux / m0, uz / m0);
     ux = g.x; uz = g.z;
   }
   const m = Math.hypot(ux, uz) || 1;
@@ -2266,7 +2279,9 @@ function stepIdleEvent(dt) {
      · 破壞道具照樣打得掉——那些只看 st === SET
      · 打掉的那一格小人會補回來（freeBlock 把 h.left 加回去）
      · 換場時「整棟解成碎料」那一段要跳過它（見 startBuild）
-     · 沒有支撐計算：底下被打掉上面不會垮，那是藍圖那套的功能
+   「物理上該有的東西」是各自實作、規則抄地標那一套（v1.102／v1.103）：
+   支撐與垮塌 collapseHome、只剩對角勾著的 dropHungHome、砌得上去嗎 canPlaceHome、
+   拋物線閃得過自己的屋頂 homePeak、腳邊三層擋路 homeFoot、水的固體判定 solidAt。
    房子留在場上不收（使用者指定），唯一的例外是下一座工地正好蓋到它身上——
    那一間解成碎料（見 clearHomesInSite）。 */
 let homes = null;                   // { list: [home] }。蓋好的房子不隨事件收掉
@@ -2341,8 +2356,6 @@ const LIVE_R = 6;                   // 蓋完在家附近多大範圍裡走
 /* 站位離地基邊緣多遠。要大於 REACH（0.9）＝「走到多近算抵達」，
    不然他停下來的那一點可能還在屋子裡（停下來就不會再被 pushOutHome 推了）。 */
 const HOME_STAND = 1.4;
-/* 離房子多近開始掰方向繞過去（見 strollTo 裡那段）。跟繞地標用的 3 同一個量級。 */
-const HOME_ROUND = 3;
 
 /* 「哪一間的哪一格 → 哪一塊積木」的反查表（v1.102）。垮塌判定與火勢蔓延都要它：
    積木記得自己在哪一格（b.hh／b.hk），但反過來查不到。
@@ -2374,17 +2387,76 @@ function homeSolid(x, y, z) {
   }
   return false;
 }
+/* 房子的這一根柱子從地面連續疊到第幾層（沒有就 −1）。中間斷掉就不再往上算，
+   跟 colTop 同一個道理：斷掉上面那些（門廊的雨遮）是從它底下穿過去的，不是翻過去。 */
+function homeColTop(h, x, z) {
+  const i = Math.round(x - h.x + h.ox), k = Math.round(z - h.z + h.oz);
+  let gy = -1;
+  for (;;) {
+    const j = h.at.get(i + ':' + (gy + 1) + ':' + k);
+    if (j === undefined || !h.slots[j].filled) return gy;
+    gy++;
+  }
+}
+/* 往房子上丟一塊要多高（v1.103）。跟地標的 tossPeak 同一套取樣，只是查自己那份格子表。
+   沒有這一段的話，往屋子**另一側**那幾格丟的時候，積木是從自己的屋頂穿過去的
+   （原本的弧頂是固定公式，完全不看路上有什麼）。
+   弧頂下限沿用房子原本那條（1.1，比地標的 1.8 低）：房子矮，抓一樣高會變成拋高球。 */
+function homePeak(x0, y0, z0, sl, h) {
+  return arcPeak(x0, y0, z0, sl.x, sl.y, sl.z,
+                 (x, z) => homeColTop(h, x, z),
+                 Math.max(1.1, (sl.y - y0) * 0.45 + 1.1));
+}
 /* 這一格的某個鄰居（26 鄰接，跟地標的支撐判定同一套）。回傳格子編號或 undefined。 */
 function homeNbr(h, s, d) {
   return h.at.get((s.i + d[0]) + ':' + (s.gy + d[1]) + ':' + (s.k + d[2]));
 }
+/* 占地的外框（v1.103）：把這一間所有格子的世界座標框起來，含門廊與圍籬。
+   走路的擋路判定看這個（見 footHome），一次算好放著——每格 ±0.5 是積木的半邊長。 */
+function homeBox(h) {
+  let i0 = Infinity, i1 = -Infinity, k0 = Infinity, k1 = -Infinity;
+  for (const sl of h.slots) {
+    if (sl.i < i0) i0 = sl.i;
+    if (sl.i > i1) i1 = sl.i;
+    if (sl.k < k0) k0 = sl.k;
+    if (sl.k > k1) k1 = sl.k;
+  }
+  h.x0 = h.x + i0 - h.ox - 0.5; h.x1 = h.x + i1 - h.ox + 0.5;
+  h.z0 = h.z + k0 - h.oz - 0.5; h.z1 = h.z + k1 - h.oz + 0.5;
+}
+/* 完好時「只靠六個面連不連得到地面」，蓋之前算一次（v1.103）。
+   跟藍圖那邊同名的 f6 同一個用途：那是退化偵測的**基準線**，不是支撐判定。
+   房子本來就有靠對角勾著的部件（屋脊往內縮一格、煙囪站在屋脊上、雨遮搭在柱子上），
+   那些不該因為「只剩對角」被判掉；只有本來六面疊得好好的，被打到剩對角勾著才該掉。 */
+function markHomeF6(h) {
+  const S = h.slots, st = [];
+  for (let i = 0; i < S.length; i++) {
+    S[i].f6 = false;
+    if (S[i].gy === 0) { S[i].f6 = true; st.push(i); }
+  }
+  while (st.length) {
+    const s = S[st.pop()];
+    for (const d of NBR6) {
+      const j = homeNbr(h, s, d);
+      if (j === undefined || S[j].f6) continue;
+      S[j].f6 = true; st.push(j);
+    }
+  }
+}
 /* 這一格現在放得上去嗎（v1.102）。地面那一層隨時可以，其他要有鄰居撐著——
    跟地標那邊的 canPlace 擋的是同一件事：建築中被打掉底下幾層時，
-   不擋的話小人會把積木砌在半空，下一幀就被垮塌判定打掉，看起來像在做白工。 */
+   不擋的話小人會把積木砌在半空，下一幀就被垮塌判定打掉，看起來像在做白工。
+
+   蓋好之後（h.done）改用六鄰接（v1.103）。理由是「砌得上去的尺」跟「會不會被判掉的尺」
+   必須是同一把：蓋好之後 dropHungHome 那一關開始生效，還用 26 鄰接的話，
+   補牆的人會把積木砌在只有對角勾著的位置、下一幀被打下來、那一格又加回工作清單，
+   於是他就在同一格上無限做白工。第一次蓋的時候不必嚴（那時 dropHungHome 不判），
+   而且完工那一刻整棟都填滿了，六面本來就通（見 markHomeF6）。 */
 function canPlaceHome(h, i) {
   const s = h.slots[i];
   if (s.gy === 0) return true;
-  for (const d of NBR) {
+  const N = h.done ? NBR6 : NBR;
+  for (const d of N) {
     const j = homeNbr(h, s, d);
     if (j !== undefined && h.slots[j].filled) return true;
   }
@@ -2410,28 +2482,49 @@ function collapseHome(hi) {
   const h = homes && homes.list[hi];
   if (!h) return 0;
   const S = h.slots, n = S.length;
+  const own = homeOwners();
+  const drop = i => {
+    const k = own.get(hi + ':' + i);
+    const b = k === undefined ? null : blocks[k];
+    if (!b || b.fallIn > 0) return 0;
+    b.fallIn = 0.02 + S[i].gy * 0.012 + Math.random() * 0.06;
+    return 1;
+  };
+  const seen = homeFlood(h, NBR);
+  let fell = 0;
+  for (let i = 0; i < n; i++) if (S[i].filled && !seen[i]) fell += drop(i);
+  return fell + dropHungHome(h, drop);
+}
+/* 從地面那一層往上，照 N 這組鄰接關係走過所有「已經砌上去」的格子。
+   26 鄰接（NBR）是支撐判定用的，六鄰接（NBR6）是退化偵測用的。 */
+function homeFlood(h, N) {
+  const S = h.slots, n = S.length;
   const seen = new Uint8Array(n);
   const stack = [];
   for (let i = 0; i < n; i++)
     if (S[i].filled && S[i].gy === 0) { seen[i] = 1; stack.push(i); }
   while (stack.length) {
     const s = S[stack.pop()];
-    for (const d of NBR) {
+    for (const d of N) {
       const j = homeNbr(h, s, d);
       if (j === undefined || seen[j] || !S[j].filled) continue;
       seen[j] = 1; stack.push(j);
     }
   }
-  const own = homeOwners();
+  return seen;
+}
+/* 只剩對角勾著的也要掉（v1.103）。26 鄰接的支撐判定放得很寬——角碰角就算連著，
+   所以打穿一面牆之後會留下用一個角吊在半空的積木（屋頂、雨遮最明顯）。
+   規則跟地標那邊的 dropHung 一模一樣：基準線是完好時的 f6、判的是整坨不是單塊
+   （六面相連的一群彼此黏著，整群都碰不到地面才整群掉）。
+   **第一次蓋的時候不判**（h.done 為假）：蓋到一半四處都是還沒補上的鄰居，
+   用這麼嚴的尺會把剛砌上去的屋脊一直打下來。 */
+function dropHungHome(h, drop) {
+  if (!h.done) return 0;
+  const S = h.slots, n = S.length;
+  const seen = homeFlood(h, NBR6);
   let fell = 0;
-  for (let i = 0; i < n; i++) {
-    if (!S[i].filled || seen[i]) continue;
-    const k = own.get(hi + ':' + i);
-    const b = k === undefined ? null : blocks[k];
-    if (!b || b.fallIn > 0) continue;
-    b.fallIn = 0.02 + S[i].gy * 0.012 + Math.random() * 0.06;
-    fell++;
-  }
+  for (let i = 0; i < n; i++) if (S[i].f6 && S[i].filled && !seen[i]) fell += drop(i);
   return fell;
 }
 /* 有房子被動到就排一次重算（跟 markSupportDirty 同一個道理：一次爆炸打掉幾十塊，
@@ -2450,23 +2543,42 @@ function stepHomeFall(dt) {
 /* 這個點在不在某一間房子的地基上。房子不在藍圖的格子表裡（footBlocked 查的是那個），
    所以會走路的東西都得自己避開，不然人會從房子中間穿過去。 */
 function homeAt(x, z) {
-  if (!homes) return false;
-  for (const h of homes.list)
-    if ((h.x - x) ** 2 + (h.z - z) ** 2 < h.r * h.r) return true;
-  return false;
+  return !!footHome(x, z);
 }
-/* 走進房子裡就沿著「屋子中心 → 他」的方向推出去。煞停不行：貼著牆會原地發抖。
-   擺在每一種走法的位移之後（stepTo 與 strollTo 各一次）。 */
-function pushOutHome(w) {
-  if (!homes) return;
+/* 走路擋不擋：這個位置踩在哪一間房子的占地上（沒有就 null，v1.103）。
+   擋的是**房子自己那份格子的外框**（x0/x1/z0/z1，含門廊與圍籬），不是外接圓。
+   為什麼是外框而不是「一格一格照牆擋」：牆與圍籬本來就把裡面圍成封閉區，
+   只有門口與圍籬缺口一格寬，走進去就出不來——實測改成照牆擋之後，六間房子有
+   十幾個人從門口走進屋裡／院子裡，目標在對面、切線閃避只讓他們繞著內牆打轉，
+   位移 0、手上抓著三塊石頭，整個村落停在 451／755 格（原本 240 秒蓋完）。
+   對走路的東西來說，封閉區就該是實心的，這才是對的形狀。
+   為什麼不是外接圓（v1.99～v1.102）：那個圓把方房子外接起來（小院 5×4 帶圍籬
+   半徑 6.72、實際半寬只有 4.5），面積差一倍，看過去每間房子外面都空一圈，
+   跟使用者要的「不要讓建築一圈都沒人」剛好相反。長條屋差更多（大長屋 128 → 292）。
+   一塊都還沒砌、或被拆平了的就不擋——那時候地上什麼都沒有。 */
+function footHome(x, z) {
+  if (!homes) return null;
   for (const h of homes.list) {
-    const dx = w.x - h.x, dz = w.z - h.z;
-    const d = Math.hypot(dx, dz);
-    if (d >= h.r) continue;
-    const out = h.r + 0.02;             // 推到邊界上的話，浮點誤差會讓 homeAt 判成還在裡面
-    if (d < 0.001) { w.x = h.x + out; continue; }
-    w.x = h.x + dx / d * out; w.z = h.z + dz / d * out;
+    if (h.left >= h.slots.length) continue;
+    if (x > h.x0 && x < h.x1 && z > h.z0 && z < h.z1) return h;
   }
+  return null;
+}
+const homeFoot = (x, z) => !!footHome(x, z);
+/* 踩進去就推出來。煞停不行：貼著邊會原地發抖。
+   從**最近的那一面**出去（四面裡穿透最少的那一個方向），所以退出去的路是單向的，
+   不會像「沿著屋子中心往外推」那樣把人從屋子另一頭推出去。
+   擺在每一種走法的位移之後。 */
+function pushOutHome(w) {
+  const h = footHome(w.x, w.z);
+  if (!h) return;
+  const e = 0.02;                    // 剛好推到邊上會被浮點誤差判成還在裡面
+  const xl = w.x - h.x0, xr = h.x1 - w.x, zl = w.z - h.z0, zr = h.z1 - w.z;
+  const m = Math.min(xl, xr, zl, zr);
+  if (m === xl) w.x = h.x0 - e;
+  else if (m === xr) w.x = h.x1 + e;
+  else if (m === zl) w.z = h.z0 - e;
+  else w.z = h.z1 + e;
 }
 /* 房子擋路就把方向掰到切線上（v1.99 只有閒晃在用，v1.102 抽出來給每一種走法用）。
    回傳的是同一個暫存物件（每幀每個人都會叫，不要每次配置一個新的）。
@@ -2483,26 +2595,26 @@ function dodgeHome(w, ux, uz) {
   const mx = bx / bd, mz = bz / bd;                  // 由房子中心往外
   let sx = -mz, sz = mx;
   if (ux * sx + uz * sz < 0) { sx = mz; sz = -mx; }  // 跟原方向同側的那一條切線
-  const k = Math.min(1, (h.r + HOME_ROUND - bd) / HOME_ROUND);   // 越近掰得越兇
+  const k = 1 - (_blk.d - DODGE_STEP) / DODGE_EYE;   // 牆越近掰得越兇
   let nx = ux + (sx - ux) * k, nz = uz + (sz - uz) * k;
   const m = Math.hypot(nx, nz) || 1;
   _dodge.x = nx / m; _dodge.z = nz / m;
   return _dodge;
 }
-/* 走在 (ux, uz) 這個方向上、快撞到的那一間房子（v1.99）。
-   條件是「離得夠近」而且「還朝著它的中心走」——已經在往外走的就不必再掰方向。
-   取最近的那一間：兩間隔至少 HOME_GAP 12，不會同時被兩間夾住。 */
+/* 走在 (ux, uz) 這個方向上、快撞到的那一間房子（v1.99；v1.103 改成往前探）。
+   沿著要走的方向往前探幾步，第一個踩進占地的那一間就是它——
+   以前判的是「進到 h.r + 3 這個圓裡而且還朝著中心走」，那個圓框住整棟房子，
+   所以人在離牆三四格外就開始被掰方向，繞出一個比房子大得多的弧。
+   探的距離要比一步大（WALK 6.8，一幀約 0.34），不然掰的時候已經踩進去了。 */
+const DODGE_EYE = 2.2, DODGE_STEP = 0.55;
+const _blk = { d: 0 };
 function blockHome(w, ux, uz) {
   if (!homes) return null;
-  let best = null, bd = Infinity;
-  for (const h of homes.list) {
-    const dx = w.x - h.x, dz = w.z - h.z;
-    const d = Math.hypot(dx, dz);
-    if (d >= h.r + HOME_ROUND || d >= bd) continue;
-    if (ux * dx + uz * dz >= 0) continue;            // 正在往外走
-    bd = d; best = h;
+  for (let d = DODGE_STEP; d <= DODGE_EYE + 1e-6; d += DODGE_STEP) {
+    const h = footHome(w.x + ux * d, w.z + uz * d);
+    if (h) { _blk.d = d; return h; }
   }
-  return best;
+  return null;
 }
 /* 這個人是不是「還在蓋」（蓋完了在家附近走走的不算）。聊天要用這個判斷。 */
 function homeBusy(w) {
@@ -2639,8 +2751,27 @@ function pickHomeSite(cx, cz, rad) {
   }
   return null;
 }
+/* 還沒蓋完的房子裡離這一組人最近的那一間（v1.103）。回傳 −1＝沒有可接手的。
+   h.left > 0 有兩種來源：上一輪蓋到一半就開下一座（stopHomes 把每個人的 hm 清掉了），
+   或是蓋好之後被砸出洞（freeBlock 把那一格加回 h.left）。以前這裡一律開新的一間，
+   所以這兩種都永遠沒人管——實測「蓋一半換場、下一輪再閒晃」的房子停在半棟不動。
+   taken 是這一次分派已經給人的，一間一組就好，其餘的人去開新的。
+   **不能改成「都有人了就疊到同一間」**：這一輪剛開的新房子也是「還沒蓋完」，
+   於是第二組之後全部併進第一間，一輪只蓋得出一間（實測 20 人 10 個離隊只蓋 1 間）。
+   間數比組數多的時候會有一兩間排到下一輪，那是排隊、不是沒人管。 */
+function pickUnfinished(cx, cz, taken) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < homes.list.length; i++) {
+    const h = homes.list[i];
+    if (h.left <= 0 || taken.has(i)) continue;
+    const d = (h.x - cx) ** 2 + (h.z - cz) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
 function startHomes() {
   if (!homes) homes = { list: [] };
+  const taken = new Set();
   /* 誰離隊：從站得穩的人裡抽大約一半。工程師與魔法師照樣抽得到——
      沒在施工的時候他們就是普通人（圖跟法杖只在施工那條路上畫）。 */
   const pool = [];
@@ -2666,21 +2797,34 @@ function startHomes() {
     }
     let cx = 0, cz = 0;
     for (const w of crew) { cx += w.x; cz += w.z; }
-    // 款式要先挑：間距看的是兩家地基的大小（見 pickHomeSite）
-    const kind = pickHomeKind(crew.length);
-    const spot = pickHomeSite(cx / crew.length, cz / crew.length, homeR(kind));
-    if (!spot) continue;                               // 沒空地了，這一組就照常閒晃
-    const pal = HOME_PAL[Math.floor(Math.random() * HOME_PAL.length)];
-    const slots = homeSlots(spot.x, spot.z, kind, pal);
-    /* at 是「格子座標 → 第幾格」的表，垮塌、火勢蔓延、放不放得上去都要查它。
-       鍵用房子自己的格座標（i／gy／k），所以圍籬與門廊那些負的座標也放得進去。 */
-    const at = new Map();
-    slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
-    const h = { x: spot.x, z: spot.z, r: homeR(kind), kind: kind.id, at,
-                ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,      // 見 homeSolid
-                slots, left: slots.length, n: crew.length };
-    homes.list.push(h);
-    const hi = homes.list.length - 1;
+    cx /= crew.length; cz /= crew.length;
+    // 有沒有蓋不完的／破了洞的可以接手（見 pickUnfinished）。先修舊的再蓋新的
+    let hi = pickUnfinished(cx, cz, taken);
+    if (hi >= 0) {
+      /* 上一批人留下的認領要清掉：他們的 hm 早就被 stopHomes 抹了，
+         那些格子沒人會去砌，留著的話 homeFree 會一直跳過它們，這間永遠差幾格。 */
+      for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;
+    } else {
+      // 款式要先挑：間距看的是兩家地基的大小（見 pickHomeSite）
+      const kind = pickHomeKind(crew.length);
+      const spot = pickHomeSite(cx, cz, homeR(kind));
+      if (!spot) continue;                             // 沒空地了，這一組就照常閒晃
+      const pal = HOME_PAL[Math.floor(Math.random() * HOME_PAL.length)];
+      const slots = homeSlots(spot.x, spot.z, kind, pal);
+      /* at 是「格子座標 → 第幾格」的表，垮塌、火勢蔓延、放不放得上去都要查它。
+         鍵用房子自己的格座標（i／gy／k），所以圍籬與門廊那些負的座標也放得進去。 */
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { x: spot.x, z: spot.z, r: homeR(kind), kind: kind.id, at,
+                  ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,    // 見 homeSolid
+                  slots, left: slots.length, n: crew.length,
+                  done: false };          // 蓋好過一次了嗎（見 dropHungHome）
+      homeBox(h);                          // 走路擋不擋看這個外框（見 footHome）
+      markHomeF6(h);                       // 退化偵測的基準線，趁完好時算
+      homes.list.push(h);
+      hi = homes.list.length - 1;
+    }
+    taken.add(hi);
     for (const w of crew) {
       releaseWorker(w);                                // 手上的建材先放掉，這趟不是上工
       w.hm = hi; w.hst = ''; w.pause = 0;
@@ -2795,7 +2939,7 @@ function layHome(w, h) {
   b.arc = {
     t: 0, dur: 0.3 + Math.hypot(sl.x - b.x, sl.z - b.z) * 0.02 + sl.y * 0.012,
     x0: b.x, y0: b.y, z0: b.z, x1: sl.x, y1: sl.y, z1: sl.z,
-    peak: Math.max(1.1, (sl.y - b.y) * 0.45 + 1.1),
+    peak: homePeak(b.x, b.y, b.z, sl, h),
     hm: w.hm, hk: b.hk
   };
   b.holder = -1;
@@ -2821,6 +2965,9 @@ function landHome(b, a) {
   b.hh = a.hm; b.hk = a.hk;
   sl.filled = true; sl.claimed = -1;
   h.left--;
+  /* 蓋好過一次了。這個旗標一旦立起來就不收回去（被砸出洞、補回去都還算「蓋好過」）：
+     它管的是「要不要用完好時的標準判退化」，見 dropHungHome 與 canPlaceHome。 */
+  if (h.left <= 0) h.done = true;
   sndPlace();
 }
 /* 蓋完就在自己家附近走走（使用者的規格）。跟一般閒晃同一套（會發呆、走近了會聊天），
@@ -2911,7 +3058,7 @@ function castHome(w, wi, h, k) {
     t: 0,
     dur: MAGE_DUR0 + Math.hypot(sl.x - b.x, sl.z - b.z) * MAGE_DUR_D + sl.y * MAGE_DUR_Y,
     x0: b.x, y0: b.y, z0: b.z, x1: sl.x, y1: sl.y, z1: sl.z,
-    peak: Math.max(1.2, (sl.y - b.y) * 0.45 + 1.2) + MAGE_LIFT,
+    peak: homePeak(b.x, b.y, b.z, sl, h) + MAGE_LIFT,
     mage: 1, hm: w.hm, hk: k
   };
   blocks.push(b);
@@ -4401,7 +4548,14 @@ const cellX = x => Math.round(x - gOffX);
 const cellZ = z => Math.round(z - gOffZ);
 const wldX = gx => gx + gOffX;
 const wldZ = gz => gz + gOffZ;
-const solidAt = (gx, gy, gz) => blockAt(wldX(gx), gy + HB, wldZ(gz));
+/* 水撞到的「固體」。藍圖的格子表問一次，小人的家再問一次（v1.103）——
+   不問的話水從房子中間流過去、不會積在屋裡、杯壁破洞也不會從破口噴出來。
+   兩邊的格線不同源（藍圖的原點隨每一座地標平移，房子各自有自己的原點），
+   所以拿世界座標分別問，對不齊的誤差最多半格。 */
+const solidAt = (gx, gy, gz) => {
+  const x = wldX(gx), y = gy + HB, z = wldZ(gz);
+  return blockAt(x, y, z) || homeSolid(x, y, z);
+};
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const wkey = (gx, gy, gz) => gx + ':' + gy + ':' + gz;
 
