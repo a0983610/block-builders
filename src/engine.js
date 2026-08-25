@@ -143,9 +143,15 @@ const ENG = (function () {
      還得多打包一份 ESM，而我們要的功能就這幾行） */
   const cam = { tx: 0, ty: 6, tz: 0, dist: 40, yaw: 0.9, pitch: 0.42, shake: 0, shakeT: 0 };
   const camTarget = { dist: 40, ty: 6, tx: 0, tz: 0 };
+  /* 開場的角度留一份給復位用（C）。只寫在 cam 那行一處，兩邊不會對不起來 */
+  const CAM0 = { yaw: cam.yaw, pitch: cam.pitch };
+  let camGo = null;                        // 復位中的角度過渡，見 resetCamera
   /* 平移速度跟目前視距成正比——拉遠之後還用同一個速度會像在爬。
      視距 60 時約每秒 36 單位，橫越整片工地約兩秒。 */
   const PAN_SPD = 0.6;
+  /* 升降（Z／X）比平移慢一半：上下要走的路本來就比橫越整片工地短得多。
+     視距 312（艾菲爾鐵塔的取景距離）時每秒 94 單位，整段上下界走完約 1.4 秒。 */
+  const LIFT_SPD = 0.3;
   /* 取景留白。1 = 建築剛好貼齊畫面邊，越大退越遠、四周留白越多。
      1.27 是量出來的：36 座 × 4 個角度掃過去，最擠的一座（3000 塊的美國國會大廈）
      佔畫面 0.80，一般的落在 0.74，上緣不會頂到工具列。 */
@@ -1749,6 +1755,19 @@ const ENG = (function () {
        那跟整座建築的半徑同一個量級，按下去會有一段明顯的空檔。8 大約落後 4.5 單位。 */
     cam.tx += (camTarget.tx - cam.tx) * Math.min(1, dt * 8);
     cam.tz += (camTarget.tz - cam.tz) * Math.min(1, dt * 8);
+    if (camGo) {                             // 復位中：角度也滑回去（見 resetCamera）
+      /* yaw 是一路累加下去的（轉三圈就是 +6π），差值要先折回 ±π 才會走近的那一邊 */
+      let d = (camGo.yaw - cam.yaw + Math.PI) % (Math.PI * 2);
+      if (d < 0) d += Math.PI * 2;
+      d -= Math.PI;
+      const dp = camGo.pitch - cam.pitch;
+      if (Math.abs(d) < 0.004 && Math.abs(dp) < 0.004) {
+        cam.yaw = camGo.yaw; cam.pitch = camGo.pitch; camGo = null;
+      } else {
+        const k = Math.min(1, dt * 5);
+        cam.yaw += d * k; cam.pitch += dp * k;
+      }
+    }
     cam.pitch = Math.max(0.06, Math.min(1.45, cam.pitch));
     const cp = Math.cos(cam.pitch);
     let x = cam.tx + Math.cos(cam.yaw) * cp * cam.dist;
@@ -1767,7 +1786,8 @@ const ENG = (function () {
     sun.target.updateMatrixWorld();
   }
 
-  function orbit(dx, dy) { cam.yaw -= dx * 0.006; cam.pitch += dy * 0.005; }
+  // 玩家自己轉視角＝接手，復位的角度過渡當場取消（不然會跟他搶）
+  function orbit(dx, dy) { camGo = null; cam.yaw -= dx * 0.006; cam.pitch += dy * 0.005; }
 
   /* 平移旋轉中心。fwd/side 是 −1..1，方向以**畫面**為準而不是世界軸——
      相機在旋轉中心的 (cos yaw, sin yaw) 方向上，所以畫面的「往前」是它的反向。
@@ -1784,6 +1804,34 @@ const ENG = (function () {
     if (d > lim) { x = x / d * lim; z = z / d * lim; }
     camTarget.tx = x; camTarget.tz = z;
   }
+  /* 上下升降視線（Z／X）。跟 pan 同一套：吃真實時間、速度跟視距成正比，
+     動的是**旋轉中心**——相機高度 = 視線高 + sin(pitch) × 視距，中心升上去相機也跟著升，
+     像搭電梯，不是抬頭。上下界跟著這一座建築走：上界是頂端再高一點（要能俯視屋頂），
+     下界只給高度的四分之一——視線落到地面以下之後看到的就只剩草地與天空，
+     不必跟上面一樣多。下界一定要是負的：桌機取景是「看建築底部」（ty = 0），
+     夾在 0 的話按 Z 會整個沒反應。 */
+  function liftRange() {
+    const h = lastFit ? lastFit.height : 40;
+    return [-(h * 0.25 + 4), h + 4];
+  }
+  function lift(dir, dt) {
+    const [lo, hi] = liftRange();
+    const y = camTarget.ty + dir * LIFT_SPD * cam.dist * dt;
+    /* 只夾住「往界外走」的那半邊：爆炸運鏡（holdWide）本來就會把視線抬到上界之上，
+       那時候按 X 不動、按 Z 照樣降得下來，不會被硬拉回界內閃一下。 */
+    camTarget.ty = dir > 0 ? Math.min(y, Math.max(hi, camTarget.ty))
+                           : Math.max(y, Math.min(lo, camTarget.ty));
+  }
+
+  /* 回到開場的鏡頭（C）。距離／視線高／中心交給 fitCamera 重算——跟開場走同一支，
+     所以換過建築就是回到「現在這一座」的取景，而不是回到上一座的舊數字。
+     角度另外處理：yaw／pitch 沒有 camTarget 可以慢慢追（拖曳要即時，多一層延遲就黏手），
+     所以開一個只在復位時用的過渡 camGo，每幀往開場角度靠，玩家一轉視角就取消。 */
+  function resetCamera() {
+    if (lastFit) fitCamera(lastFit.radius, lastFit.height, lastFit.arena, false, false);
+    camGo = { yaw: CAM0.yaw, pitch: CAM0.pitch };
+  }
+
   function zoom(f) { camTarget.dist = Math.max(6, Math.min(360, camTarget.dist * f)); }
   function shake(a) { cam.shake = Math.min(2.6, cam.shake + a); }
 
@@ -1840,7 +1888,7 @@ const ENG = (function () {
     setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks,
-    fitCamera, updateCamera, orbit, pan, zoom, shake, holdWide,
+    fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP,
     MARK_SEG,
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），

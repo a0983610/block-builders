@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.109.0';
+const VERSION = '1.110.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -7239,16 +7239,26 @@ const PAN_KEY = { KeyW: [1, 0], KeyS: [-1, 0], KeyA: [0, -1], KeyD: [0, 1] };
    「每秒相當於拖曳幾像素」——220 換算過來是 1.3 rad/s。E 對應「往右拖」，跟滑鼠同手感。 */
 const ORBIT_KEY = { KeyQ: -1, KeyE: 1 };
 const ORBIT_RATE = 220;
+/* Z／X 升降視線高度（Z 降、X 升），C 回到開場的鏡頭。實際的速度、上下界與復位
+   都在 engine 那邊（lift／resetCamera），這裡只負責把鍵接上去。 */
+const LIFT_KEY = { KeyZ: -1, KeyX: 1 };
+const RESET_KEY = 'KeyC';
 const keyDown = Object.create(null);
 
 function onKey(e) {
-  if (!PAN_KEY[e.code] && !ORBIT_KEY[e.code]) return;
+  if (!PAN_KEY[e.code] && !ORBIT_KEY[e.code] && !LIFT_KEY[e.code] && e.code !== RESET_KEY) return;
   /* 只擋下拉選單與輸入框：字母鍵在 select 上是拿來跳選項的，在「匯入建築」的
      貼上框裡是真的在打字（不擋的話貼一段藍圖進去，鏡頭會跟著 WASD 一路飄走）。
      面板的按鈕與核取方塊吃的是空白鍵／Enter，跟 WASD 不衝突，
      一起擋掉的話「剛按完設定就按不動鏡頭」反而莫名其妙。 */
   const tag = e.target && e.target.tagName;
   if (tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'INPUT') return;
+  /* C 是按一下就做完的事，不進 keyDown。Ctrl／⌘＋C 是複製，不能被當成復位；
+     按著不放時 keydown 會一直重送（e.repeat），也只復位一次。 */
+  if (e.code === RESET_KEY) {
+    if (e.type === 'keydown' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) ENG.resetCamera();
+    return;
+  }
   keyDown[e.code] = e.type === 'keydown';
 }
 // 按著 W 切去別的視窗，keyup 收不到，切回來鏡頭會自己一直飄
@@ -7259,6 +7269,9 @@ function panStep(dt) {
   let r = 0;
   for (const k in ORBIT_KEY) if (keyDown[k]) r += ORBIT_KEY[k];
   if (r) ENG.orbit(r * ORBIT_RATE * dt, 0);
+  let up = 0;
+  for (const k in LIFT_KEY) if (keyDown[k]) up += LIFT_KEY[k];
+  if (up) ENG.lift(up, dt);
   let f = 0, s = 0;
   for (const k in PAN_KEY) if (keyDown[k]) { f += PAN_KEY[k][0]; s += PAN_KEY[k][1]; }
   if (!f && !s) return;
@@ -7343,7 +7356,7 @@ function renderTools() {
       if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return; }
       tool = t.id; aim = null; renderTools();       // 換道具就把瞄一半的第一點收掉
       $('toolbox').classList.remove('open');       // 選好就收起來，不要一直擋著畫面
-      $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移　｜　滾輪縮放　｜　點小人會跌倒';
+      $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移、ZX 升降、C 復位　｜　滾輪縮放　｜　點小人會跌倒';
     });
     box.appendChild(b);
   }

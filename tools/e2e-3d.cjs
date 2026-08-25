@@ -6135,6 +6135,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '點開 ' + tapMenu.opened + '、點別處收起 ' + tapMenu.closed +
      '、選完收起 ' + tapMenu.afterPick);
   await page.evaluate(() => { stats = freshStats(); tool = 'hammer'; renderTools(); });
+  /* 滑鼠要移開小窗才算收工。Playwright 的 hover／click 會把指標留在原地，而選單是
+     `#toolbox:hover` 開的（不只是 .open 那個 class）——指標停在上面它就一直開著，
+     後面每一條「真的用滑鼠點畫面」的測試都會先打到選單。v1.110 把工具搬回上方中央
+     之後實際踩到：水桶那兩條點的是金字塔頂端（640,271），剛好落在展開的選單裡。 */
+  await page.mouse.move(900, 500);
 
   await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 4 });
   const hammerR2 = await page.evaluate(() => {
@@ -8514,6 +8519,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const wbTop = await toScreen(page,
     '(() => { let t = null; for (const b of blocks) if (b.st === 3 && (!t || b.y > t.y)) t = b; return t; })()');
   await page.evaluate(() => { cleanTools(); tool = 'bucket'; });
+  /* 點下去的座標、那一點打到哪個元素、當下的鏡頭，一起寫進訊息裡：這兩條要是壞了，
+     幾乎都是「投影跑到畫面外」或「點到 UI 上」（滑鼠事件就進不了畫布），
+     沒有這幾個數字只會看到「沒出水、也沒轉視角」，分不出是哪一種。
+     鏡頭角度是跨測試累積的（reset 只重新取景，不動 yaw／pitch）。 */
+  const wbAt = await page.evaluate(p => {
+    const el = document.elementFromPoint(Math.round(p.x), Math.round(p.y));
+    return { el: el ? (el.id || el.tagName) : null,
+             inside: p.x >= 0 && p.y >= 0 && p.x <= window.innerWidth && p.y <= window.innerHeight,
+             yaw: +ENG.cam.yaw.toFixed(2), pitch: +ENG.cam.pitch.toFixed(2),
+             dist: +ENG.cam.dist.toFixed(1), ty: +ENG.cam.ty.toFixed(1) };
+  }, wbTop);
+  const wbWhere = '；點 (' + Math.round(wbTop.x) + ',' + Math.round(wbTop.y) + ') 打到 ' +
+    wbAt.el + '、在畫面內 ' + wbAt.inside + '、鏡頭 yaw ' + wbAt.yaw + '／pitch ' + wbAt.pitch +
+    '／dist ' + wbAt.dist + '／視線高 ' + wbAt.ty;
   await page.mouse.move(wbTop.x, wbTop.y);
   await page.mouse.down();
   await page.waitForTimeout(250);
@@ -8524,7 +8543,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const wbClick = await page.evaluate(() => ({ cells: water ? water.cells.size : 0 }));
   ok('點一下倒一整下的量（放開才發動，跟其他工具一樣）',
      wbHold.cells === 0 && wbClick.cells > 20,
-     '按著的時候沒有水 ' + (wbHold.cells === 0) + '，放開後有 ' + wbClick.cells + ' 格水');
+     '按著的時候沒有水 ' + (wbHold.cells === 0) + '，放開後有 ' + wbClick.cells + ' 格水' + wbWhere);
 
   // 拿水桶拖曳＝轉視角（跟槌子一樣），而且拖完不會倒水
   const wbYaw0 = await page.evaluate(() => { water = null; return ENG.cam.yaw; });
@@ -8535,7 +8554,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const wbDrag = await page.evaluate(() => ({ yaw: ENG.cam.yaw, water: !!water }));
   ok('拿水桶拖曳是轉視角，不會倒出水來',
      Math.abs(wbDrag.yaw - wbYaw0) > 0.1 && wbDrag.water === false,
-     'yaw 轉了 ' + (wbDrag.yaw - wbYaw0).toFixed(2) + '，倒出水來了嗎 ' + wbDrag.water);
+     'yaw 轉了 ' + (wbDrag.yaw - wbYaw0).toFixed(2) + '，倒出水來了嗎 ' + wbDrag.water + wbWhere);
 
   await page.evaluate(() => { tool = 'hammer'; });         // 別把水桶留給後面的測試
 
@@ -11686,6 +11705,134 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('E 的方向跟滑鼠往右拖一致', Math.sign(qe.e) === Math.sign(qeDir),
      'E 是 ' + (qe.e > 0 ? '+' : '−') + '、往右拖是 ' + (qeDir > 0 ? '+' : '−'));
 
+  /* ── Z／X 升降視線、C 回到開場的鏡頭（v1.110） ── */
+  const liftBy = async (key, ms) => {
+    await page.evaluate(() => { ENG.camTarget.ty = 0; ENG.cam.ty = 0; });
+    await page.keyboard.down(key); await page.waitForTimeout(ms); await page.keyboard.up(key);
+    return page.evaluate(() => ENG.camTarget.ty);
+  };
+  const zxKey = { up: await liftBy('x', 300) };
+  zxKey.down = await liftBy('z', 300);
+  ok('Z／X 可以升降視線高度，兩顆方向相反', zxKey.up > 1 && zxKey.down < -1,
+     '按 X 300ms → 視線高 ' + zxKey.up.toFixed(1) + '，按 Z 300ms → ' + zxKey.down.toFixed(1));
+
+  /* 上下界跟著這一座建築走。下界一定要是負的：桌機取景看的是建築底部（ty = 0），
+     夾在 0 的話按 Z 整個沒反應。上面要能越過屋頂（才俯視得到），下面只給四分之一
+     （視線落到地面以下之後看到的就只剩草地與天空）。 */
+  const liftCap = await page.evaluate(() => {
+    ENG.camTarget.ty = 0;
+    for (let i = 0; i < 400; i++) ENG.lift(1, 0.05);
+    const hi = ENG.camTarget.ty;
+    for (let i = 0; i < 900; i++) ENG.lift(-1, 0.05);
+    return { hi: +hi.toFixed(1), lo: +ENG.camTarget.ty.toFixed(1), h: bp.height };
+  });
+  ok('升降推到底會停住：上界越過屋頂，下界只到地面下一小段',
+     liftCap.hi > liftCap.h && liftCap.hi < liftCap.h + 10 &&
+     liftCap.lo < -1 && liftCap.lo > -(liftCap.h * 0.35 + 6),
+     '建築高 ' + liftCap.h + '：一直按 X 停在 ' + liftCap.hi + '、一直按 Z 停在 ' + liftCap.lo);
+
+  /* 爆炸運鏡（holdWide）本來就會把視線抬到上界之上。那時候只夾「往界外走」那半邊，
+     不然按一下 Z 會先被拉回界內閃一下。 */
+  const liftOver = await page.evaluate(() => {
+    ENG.camTarget.ty = bp.height + 60;
+    const start = ENG.camTarget.ty;
+    ENG.lift(1, 0.2); const up = ENG.camTarget.ty;
+    ENG.lift(-1, 0.2); const down = ENG.camTarget.ty;
+    return { start, up, down };
+  });
+  ok('視線被爆炸運鏡抬到界外時，X 推不上去、Z 照樣降得下來',
+     liftOver.up === liftOver.start && liftOver.down < liftOver.start - 0.5,
+     '在 ' + liftOver.start.toFixed(0) + ' 按 X → ' + liftOver.up.toFixed(0) +
+     '，按 Z → ' + liftOver.down.toFixed(1));
+
+  /* C 復位。距離／視線高／中心是 fitCamera 重算的，所以按下去那一刻就到位
+     （之後只剩 cam 慢慢追過去），可以直接量 camTarget。 */
+  const camHome = await page.evaluate(() => {
+    startBuild(true);                                   // 開場取景＝要回去的那一組
+    const fit = { d: ENG.camTarget.dist, ty: ENG.camTarget.ty,
+                  tx: ENG.camTarget.tx, tz: ENG.camTarget.tz };
+    ENG.orbit(420, 150); ENG.zoom(0.35); ENG.pan(1, 0.6, 1.4); ENG.lift(1, 1.2);
+    return { fit, moved: { d: ENG.camTarget.dist, ty: ENG.camTarget.ty,
+                           tx: ENG.camTarget.tx, tz: ENG.camTarget.tz } };
+  });
+  await page.keyboard.press('c');
+  const camBack = await page.evaluate(() => ({ d: ENG.camTarget.dist, ty: ENG.camTarget.ty,
+                                               tx: ENG.camTarget.tx, tz: ENG.camTarget.tz }));
+  ok('按 C 回到開場的取景：距離、視線高、中心都回去',
+     Math.abs(camBack.d - camHome.fit.d) < 0.01 && Math.abs(camBack.ty - camHome.fit.ty) < 0.01 &&
+     Math.abs(camBack.tx) < 0.01 && Math.abs(camBack.tz) < 0.01 &&
+     Math.abs(camHome.moved.d - camHome.fit.d) > 1,
+     '亂動之後 dist ' + camHome.moved.d.toFixed(1) + '／視線高 ' + camHome.moved.ty.toFixed(1) +
+     '／中心 (' + camHome.moved.tx.toFixed(1) + ',' + camHome.moved.tz.toFixed(1) + ')' +
+     '　→　按 C 之後 dist ' + camBack.d.toFixed(1) + '／視線高 ' + camBack.ty.toFixed(1) +
+     '／中心 (' + camBack.tx.toFixed(1) + ',' + camBack.tz.toFixed(1) + ')');
+
+  /* 角度沒有 camTarget 可以慢慢追（拖曳要即時），是另外一支過渡在滑。
+     這裡自己餵 updateCamera 走完，不用等真的畫面。0.9／0.42 是 engine.js 裡
+     cam 的起始角度——開場看到的就是這個方向。 */
+  const camSpin = await page.evaluate(() => {
+    ENG.orbit(500, 200);
+    const was = { yaw: ENG.cam.yaw, pitch: ENG.cam.pitch };
+    ENG.resetCamera();
+    const mid = [];
+    for (let i = 0; i < 200; i++) { ENG.updateCamera(0.05); if (i < 3) mid.push(+ENG.cam.yaw.toFixed(2)); }
+    return { was, mid, yaw: ENG.cam.yaw, pitch: ENG.cam.pitch };
+  });
+  ok('C 也會把角度滑回開場的方向（不是瞬間扭過去）',
+     Math.abs(camSpin.yaw - 0.9) < 0.001 && Math.abs(camSpin.pitch - 0.42) < 0.001 &&
+     camSpin.mid.length === 3 && camSpin.mid[0] !== camSpin.mid[2],
+     '從 yaw ' + camSpin.was.yaw.toFixed(2) + '／pitch ' + camSpin.was.pitch.toFixed(2) +
+     ' 一路滑到 ' + camSpin.yaw.toFixed(3) + '／' + camSpin.pitch.toFixed(3) +
+     '（前三幀 ' + camSpin.mid.join('→') + '）');
+
+  const camGrab = await page.evaluate(() => {
+    ENG.orbit(500, 0);
+    ENG.resetCamera();
+    for (let i = 0; i < 3; i++) ENG.updateCamera(0.05);    // 滑到一半
+    ENG.orbit(-120, 0);                                    // 玩家自己轉＝接手
+    const mine = ENG.cam.yaw;
+    for (let i = 0; i < 60; i++) ENG.updateCamera(0.05);
+    return { mine, after: ENG.cam.yaw };
+  });
+  ok('復位滑到一半自己轉視角，鏡頭就讓給玩家', Math.abs(camGrab.after - camGrab.mine) < 1e-9,
+     '接手時 yaw ' + camGrab.mine.toFixed(3) + '，再跑 3 秒還是 ' + camGrab.after.toFixed(3));
+
+  /* Ctrl／⌘＋C 是複製。先把鏡頭拉離取景，復位才看得出來有沒有被誤觸 */
+  await page.evaluate(() => { ENG.zoom(0.5); ENG.orbit(260, 0); });
+  const ctrlCopy = await page.evaluate(() => ({ yaw: ENG.cam.yaw, d: ENG.camTarget.dist }));
+  await page.keyboard.down('Control');
+  await page.keyboard.press('c');
+  await page.keyboard.up('Control');
+  await page.waitForTimeout(200);
+  const ctrlAfter = await page.evaluate(() => ({ yaw: ENG.cam.yaw, d: ENG.camTarget.dist }));
+  ok('Ctrl＋C 是複製，不會被當成鏡頭復位',
+     Math.abs(ctrlAfter.d - ctrlCopy.d) < 0.01 && Math.abs(ctrlAfter.yaw - ctrlCopy.yaw) < 0.01,
+     '按之前 dist ' + ctrlCopy.d.toFixed(1) + '／yaw ' + ctrlCopy.yaw.toFixed(2) +
+     '，按之後 ' + ctrlAfter.d.toFixed(1) + '／' + ctrlAfter.yaw.toFixed(2));
+
+  /* 「匯入建築」的貼上框裡 Z／X／C 是真的在打字，不能拿去動鏡頭 */
+  const typeZX = await page.evaluate(() => {
+    document.getElementById('impBtn').click();
+    const ta = document.getElementById('impPaste');
+    ta.value = ''; ta.focus();
+    return { ty: ENG.camTarget.ty, d: ENG.camTarget.dist };
+  });
+  await page.keyboard.down('x'); await page.waitForTimeout(200); await page.keyboard.up('x');
+  await page.keyboard.press('c');
+  await page.waitForTimeout(150);
+  const typed = await page.evaluate(() => {
+    const ta = document.getElementById('impPaste');
+    const r = { ty: ENG.camTarget.ty, d: ENG.camTarget.dist, txt: ta.value };
+    ta.value = ''; ta.blur();
+    document.getElementById('impClose').click();
+    return r;
+  });
+  ok('在匯入建築的貼上框裡打 ZXC，鏡頭不動、字照樣進得去',
+     typed.txt === 'xc' && Math.abs(typed.ty - typeZX.ty) < 0.01 &&
+     Math.abs(typed.d - typeZX.d) < 0.01,
+     '打進去「' + typed.txt + '」，視線高 ' + typeZX.ty.toFixed(1) + ' → ' + typed.ty.toFixed(1) +
+     '、dist ' + typeZX.d.toFixed(1) + ' → ' + typed.d.toFixed(1));
+
   /* 換建築**不准**動鏡頭：玩家自己轉好、拉近、平移過的視角不該被搶走。
      只有開場那一次（instant）才取景。草地／陰影／霧還是要照新工地重算。 */
   const keepView = await page.evaluate(() => {
@@ -11878,8 +12025,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     stats.destroyed = 128; stats.smashed = 987654; stats.spent = 1234567; stats.wrecked = 9876543;
     renderTools(); hudLast = 0; hudTick(performance.now());
   });
-  // 1501 是斷點上緣的第一格：工具列還留在上面，剛好要閃過撐到最寬的資訊卡
-  const widths = [1600, 1520, 1501, 1400, 1280, 1100, 900, 700];
+  /* 1025／1024 是斷點兩側的第一格（v1.110 從 1500 降成 1024）：1025 起工具列回到上方中央，
+     而那裡剛好要閃過撐到最寬的資訊卡 */
+  const widths = [1600, 1440, 1366, 1280, 1100, 1025, 1024, 900, 700];
   const clash = [];
   let statTxt = '', barAt = [];
   for (const w of widths) {
@@ -11911,7 +12059,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('量的時候資訊卡確實是最寬的狀態', /累計\s*\$1,234,567/.test(statTxt), statTxt);
   ok('桌機縮視窗，工具列不會壓到資訊卡', clash.length === 0,
      clash.join(' / ') || '工具列位置：' + barAt.join('、'));
+  /* v1.110：以前是「窄於 1500 就把工具搬到下緣」，於是一般筆電（1920 開 125% 縮放是 1536、
+     150% 是 1280）看到的都是手機那一套版面。現在只有真的很窄才搬。 */
+  const barBad = widths.filter((w, i) => barAt[i].endsWith('上') !== (w > 1024));
+  ok('工具列只有窄視窗才在下緣，筆電寬度跟桌機一樣在上面', barBad.length === 0,
+     barAt.join('、'));
   await page.evaluate(() => { stats = freshStats(); renderTools(); hudLast = 0; hudTick(performance.now()); });
+
+  /* 平板橫放是 1180～1366px，寬度看起來跟筆電沒兩樣——那種要靠「沒有滑鼠」認出來
+     （hover:none + pointer:coarse），只看寬度的話工具列會跑到上面去。 */
+  const padPage = await browser.newPage({ viewport: { width: 1194, height: 834 }, hasTouch: true });
+  await padPage.goto(APP);
+  await padPage.waitForFunction(() => typeof ENG !== 'undefined' && typeof bp !== 'undefined' && bp);
+  const padUi = await padPage.evaluate(() => ({
+    hover: matchMedia('(hover:none)').matches, coarse: matchMedia('(pointer:coarse)').matches,
+    top: Math.round(document.getElementById('toolbox').getBoundingClientRect().top),
+    h: window.innerHeight,
+    panel: Math.round(document.getElementById('panelBtn').getBoundingClientRect().left),
+    ver: Math.round(document.getElementById('ver').getBoundingClientRect().left)
+  }));
+  await padPage.close();
+  ok('平板橫放（1194px、沒有滑鼠）工具列還是在下緣',
+     padUi.hover && padUi.coarse && padUi.top > padUi.h - 120 &&
+     padUi.panel > 1194 / 2 && padUi.ver < 100,
+     'hover:none ' + padUi.hover + '、pointer:coarse ' + padUi.coarse +
+     '、工具列 top ' + padUi.top + '（視窗高 ' + padUi.h + '）' +
+     '、設定鈕 left ' + padUi.panel + '、版本號 left ' + padUi.ver);
 
   /* ══════════ 手機版 ══════════ */
   head('手機版 · 觸控');
