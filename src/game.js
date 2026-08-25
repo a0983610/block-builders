@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.107.0';
+const VERSION = '1.108.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -998,6 +998,11 @@ function newWorker(i) {
        hdt 是還要挖幾秒（砌的時候是下一塊還有幾秒），hp 是下一撮土花幾秒。
        認走的是哪一格記在積木身上（b.hk），不記在人身上——一趟不只一塊。 */
     hm: -1, hst: '', hcap: 0, hdt: 0, hp: 0, gb: -1,   // gb＝這一趟要去撿的那一塊（v1.104）
+    /* 卡住脫困（v1.108）：sx/sz 是「上一次真的前進到的位置」（錨點），
+       stk 是「腿在擺卻沒離開那個錨點」累積幾秒，ghost 是還要穿透幾秒（見 stuckWatch）。
+       伸手拿（v1.108）：gbi 是正在走去撿的那一塊，gbd 是離它最近到過多少，
+       gbt 是「沒有再更近」幾秒了（見 nearGrab）。 */
+    sx: 0, sz: 0, stk: 0, ghost: 0, gbi: -1, gbd: 0, gbt: 0,
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
@@ -1260,6 +1265,27 @@ function pickSpot(b) {
   const h = footHome(b.x, b.z);
   return h ? grabStand(h, b.x, b.z) : b;
 }
+/* ── 搆不到就伸手拿 ─────────────────────────────────────
+   使用者：「撿不到的積木都能到最近能到的距離直接撿起來」。
+   走去撿的路上每幀記「離那塊料最近到過多少」；一直沒有再更近，就是走不過去了——
+   站位剛好被另一間房子壓住、料卡在兩間房子的外框夾縫裡、目標落在藍圖的牆裡都會這樣。
+   這時候只要還在 GRAB_FAR 以內就直接撿起來，不要卡在那條路上。
+
+   判準用「有沒有更近」而不是「站著不動」：走不過去的人多半還在繞（貼著外框滑過去、
+   繞外圈），位置一直在變，但離那塊料永遠差那麼一段。
+   換一塊料就重新開始算（gbi 記的是正在追哪一塊），不然上一塊的計時會被算進這一塊。 */
+const GRAB_WAIT = 1.5;              // 沒有再更近超過這麼久，就當作搆不到了
+const GRAB_FAR = 7;                 // 最遠伸手拿多遠。再遠就繼續走，不要隔半個場撿東西
+const GRAB_GAIN = 0.1;              // 近了這麼多才算「有進展」（浮點抖動不算）
+function nearGrab(w, bi, dt) {
+  const b = blocks[bi];
+  if (!b) return false;
+  if (w.gbi !== bi) { w.gbi = bi; w.gbd = Infinity; w.gbt = 0; }
+  const d = Math.hypot(b.x - w.x, b.z - w.z);
+  if (d < w.gbd - GRAB_GAIN) { w.gbd = d; w.gbt = 0; return false; }
+  w.gbt += dt;
+  return w.gbt >= GRAB_WAIT && d <= GRAB_FAR;
+}
 function findBlock(wx, wz, maxD) {
   let best = -1, bd = maxD ? maxD * maxD : Infinity;   // 給了 maxD 就只找那麼遠以內的
   for (let i = 0; i < blocks.length; i++) {
@@ -1335,6 +1361,7 @@ function stepTo(w, tx, tz, dt) {
    小人的家也算（v1.103）：不算的話這條路被判成「通的」，人就直直走進人家的牆，
    全靠 dodgeHome 每幀反應式地掰方向；算進來的話 buildWalk 會直接改走繞外圈那條。 */
 function pathClear(w) {
+  if (w.ghost > 0) return true;                    // 穿透中：什麼都擋不住他（見 stuckWatch）
   const dx = w.tx - w.x, dz = w.tz - w.z;
   const n = Math.ceil(Math.hypot(dx, dz) / 0.7);
   for (let i = 1; i <= n; i++) {
@@ -1385,6 +1412,57 @@ function buildWalk(w, dt) {
     return false;
   }
   return walkTo(w, dt);
+}
+
+/* ── 卡住了就脫困 ───────────────────────────────────────
+   使用者：「評估增加機制　小人走路狀態卻位置一樣　重新尋找路線或是能直接穿過所有障礙」。
+   這是**最後一道保險**，不是主要的繞路機制——繞路是 dodgeHome／ringWalk／pathClear 那一套，
+   這裡處理的是「那一套也解不開」的殘局：兩間房子的外框疊在一起把人夾在中間、
+   目標點被別的房子壓住、四面外框圍出一個走不出去的口袋。
+
+   判準是**腿在擺（gait > 0.6）卻沒前進**，而且「沒前進」是拿**一段時間**比的，
+   不是拿一幀比：實測卡住的人多半不是站著不動，而是在兩點之間來回——每一幀都走滿
+   一步（0.34），位置卻在 0.32 × 0.27 的框裡跳了幾百幀（目標點壓在人家的外框裡，
+   走過去就被推回來）。用「這一幀走了多少」判的話，那個人永遠不算卡住。
+   反過來，站著聊天、發呆、等下一塊、慶祝時站定都是合法的不動，腿沒在擺就不算。
+   （v1.107 追這件事時，第一版用「位置沒動超過 N 秒」，
+   結果卡最久的那個人其實是在聊天。）
+
+   兩段式，先便宜的再貴的：
+     ① 撐過 STUCK_T 秒 → 重新找路線（w.chk = 0，讓 buildWalk 下一幀重判直線通不通，
+        通常會從「直線」改成「繞外圈」）
+     ② 再撐 STUCK_T 秒還是沒動 → 穿透 GHOST_T 秒：這幾秒房子不擋他、也不推他出來
+        （pushOutHome／blockHome／pathClear／ringWalk 都認這個旗標）。
+   為什麼不一開始就穿透：穿牆很醒目，多數卡住重找一次路線就解了；
+   為什麼一定要有穿透這一段：使用者已經指定過「真的修不好的話，小房子就不要擋住小人了，
+   讓他直接穿越」（v1.105），而重找路線對「四面被圍住」那種殘局沒有用。 */
+const STUCK_R = 1.2;                // 這麼久之內還沒離開錨點這麼遠，就算沒前進
+const STUCK_T = 1.5;                // 每一段各撐多久（腳程 6.8，正常走 1.5 秒是 10 格）
+const GHOST_T = 3;                  // 穿透幾秒。要夠他走穿一間房子（最寬的約 10 格）
+function stuckWatch(w, dt) {
+  if (w.ghost > 0) {                                // 穿透中：計時凍住，結束才重新量
+    w.ghost -= dt;
+    if (w.ghost <= 0) w.ghost = 0;
+    w.sx = w.x; w.sz = w.z; w.stk = 0;
+    return;
+  }
+  /* 腿沒在擺就不算（站著聊天、發呆、等下一塊都是合法的不動）；
+     被炸飛與著火那兩條走的是自己的軌跡（彈道、打滾繞圈），不歸這裡管。 */
+  if (w.gait <= 0.6 || w.air || w.burn > 0) { w.sx = w.x; w.sz = w.z; w.stk = 0; return; }
+  if ((w.x - w.sx) ** 2 + (w.z - w.sz) ** 2 > STUCK_R * STUCK_R) {
+    w.sx = w.x; w.sz = w.z; w.stk = 0; return;      // 真的前進了：錨點跟上去
+  }
+  w.stk += dt;
+  if (w.stk < STUCK_T) return;
+  if (w.stk < STUCK_T * 2) {                        // ① 重新找路線
+    w.chk = 0;                                      // 直線／繞外圈重判一次
+    /* 目標點本身壓在人家的外框裡（閒晃的目標被推到外圈、剛好推進屋子裡就會這樣）：
+       挪到外框最近的那一面外邊。走得到的目標才有得走。 */
+    const h = footHome(w.tx, w.tz);
+    if (h) { const g = grabStand(h, w.tx, w.tz); w.tx = g.x; w.tz = g.z; }
+    return;
+  }
+  w.ghost = GHOST_T; w.chk = 0;                     // ② 穿透
 }
 
 /* ── 逃命 ─────────────────────────────────────────────────
@@ -1536,7 +1614,8 @@ function ringWalk(w, ta, rad, dt, spd) {
      一定要往前看，不能等踩到了才往外挪——把算好的位置事後往外推是一次好幾格的傳送，
      下一幀又被「半徑差」拉回來，等於原地震盪（實測 200 幀裡有 116 幀在原地）。
      看的距離要大於一幀的步幅（0.34），不然還沒鼓到位就已經進去了。 */
-  const rad2 = ringGoal(ca, dA, rad, cr);
+  const gh = w.ghost > 0;                             // 穿透中：不鼓、不擠、不推（見 stuckWatch）
+  const rad2 = gh ? rad : ringGoal(ca, dA, rad, cr);
   const dr = rad2 - cr;
   const left = Math.hypot(dA * cr, dr);               // 還差多遠（弧長 + 徑向）
   const arrive = left <= budget;
@@ -1551,7 +1630,7 @@ function ringWalk(w, ta, rad, dt, spd) {
         **步幅要整個重新分給角度**：原本的 k 是「弧長 + 徑向」一起算的，
         從 32 走到 16 的時候 k 只有 0.02，把徑向那份丟掉就等於原地不動（實測 968 幀）。
      ② 連**現在的半徑**都被占著（房子壓在圈上）→ 往外鼓，一步最多一個步幅。 */
-  let nr = ringHold(na, cr, want, budget);
+  let nr = gh ? want : ringHold(na, cr, want, budget);
   if (nr !== want) {
     const arc = Math.abs(dA) * cr;
     na = ca + dA * (arc <= budget ? 1 : budget / arc);
@@ -1685,6 +1764,7 @@ function updWorker(w, wi, dt) {
   /* 姿勢旗標每幀重算：跌倒、被炸飛、跑去躲的那幾條路徑都是 return 出去的，
      不歸零的話工程師被戳倒了還躺在地上舉著圖。 */
   w.hail = 0; w.plan = 0;
+  stuckWatch(w, dt);                 // 卡住了就脫困（v1.108）。擺在最前面：下面每一條分支都會 return
   /* 舉杖同理，只是它是漸進的（瞬間切 0/1 的話杖會用瞬移的抬起放下）：
      這裡每幀往下收，只有真的在施法那條路徑會用兩倍速把它撐回去（castPose）。
      被炸飛、跌倒、換場都是 return 出去的，不預設收的話那個人躺在地上還舉著杖。 */
@@ -1826,7 +1906,8 @@ function updWorker(w, wi, dt) {
         const p = pickSpot(b);                        // 躺在房子占地上的站到框外拿
         w.tx = p.x; w.tz = p.z;
       }
-      if (buildWalk(w, dt)) {
+      // 走不過去就在最近能到的距離伸手拿（v1.108，見 nearGrab）
+      if (buildWalk(w, dt) || nearGrab(w, j.b, dt)) {
         if (b.cell) gridDel(b);
         douse(b);                                     // 撿起來的碎料還在燒的話，先熄掉
         b.st = CARRY; b.rest = false; w.carry = true; stats.carried++;
@@ -2681,6 +2762,7 @@ const homeFoot = (x, z) => !!footHome(x, z);
    不會像「沿著屋子中心往外推」那樣把人從屋子另一頭推出去。
    擺在每一種走法的位移之後。 */
 function pushOutHome(w) {
+  if (w.ghost > 0) return;                            // 穿透中（見 stuckWatch）
   const h = footHome(w.x, w.z);
   if (!h) return;
   const e = 0.02;                    // 剛好推到邊上會被浮點誤差判成還在裡面
@@ -2720,7 +2802,7 @@ function dodgeHome(w, ux, uz) {
 const DODGE_EYE = 2.2, DODGE_STEP = 0.55;
 const _blk = { d: 0 };
 function blockHome(w, ux, uz) {
-  if (!homes) return null;
+  if (!homes || w.ghost > 0) return null;             // 穿透中（見 stuckWatch）
   for (let d = DODGE_STEP; d <= DODGE_EYE + 1e-6; d += DODGE_STEP) {
     const h = footHome(w.x + ux * d, w.z + uz * d);
     if (h) { _blk.d = d; return h; }
@@ -3331,7 +3413,7 @@ function grabTrip(w, wi, h, dt) {
   const leg = w.leg;                                     // 上工的路不算閒晃里程（同 digTrip）
   const walking = !strollTo(w, dt);
   w.leg = leg;
-  if (walking) return;
+  if (walking && !nearGrab(w, w.gb, dt)) return;         // 搆不到就伸手拿（v1.108）
   if (!takeHomeBlock(w, wi, h, w.gb) || w.load.length >= w.hcap) { endTrip(w, h); return; }
   const i2 = freeNearHome(w, h);
   if (i2 < 0) { endTrip(w, h); return; }

@@ -4488,14 +4488,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       ENG.setBlockCount(blocks.length);
       const all = inside.every(i => footHome(blocks[i].x, blocks[i].z));
-      const orig = pickSpot;
-      if (!on) pickSpot = b => b;                      // ＝v1.106（走到積木本身，走不進去）
+      /* 對照組＝v1.106：走到積木本身（走不進去），而且沒有「搆不到就伸手拿」。
+         v1.108 之後只關 pickSpot 是不夠的——伸手拿（nearGrab）會在原地把它撿起來、
+         卡住脫困（stuckWatch）會讓他穿牆走進去，兩個都會把對照組救起來，
+         紅綠就分不出來了（實測 150 秒照樣撿走 12 塊）。 */
+      const orig = pickSpot, orig2 = nearGrab;
+      if (!on) { pickSpot = b => b; nearGrab = () => false; }
       let secs = 0, got = 0;
       while (secs < 150 && got < inside.length) {
         step(0.05); secs += 0.05;
+        // 對照組連 v1.108 的脫困穿透一起關掉，不然那個也會把他救進屋裡（見下面那兩條）
+        if (!on) for (const q of workers) q.ghost = 0;
         got = inside.filter(i => blocks[i].st !== 0).length;
       }
-      pickSpot = orig;
+      pickSpot = orig; nearGrab = orig2;
       cleanTools(); clearHomes();
       return { n: inside.length, got, all, secs: +secs.toFixed(0) };
     };
@@ -4562,6 +4568,285 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（閒晃圈上限 ' + (noScare.siteR + 12).toFixed(1) + '、碎料場外緣 ' +
      noScare.arenaR + '，被趕到外圈的人-幀占 ' + noScare.outFrac +
      '）、建築 ' + noScare.placed0 + ' → ' + noScare.placed1 + ' 沒被偷偷修回去');
+
+  /* ══════════ 一整輪的生命週期（v1.108，使用者指定的四段） ══════════
+     ① 地標建造中被破壞　② 蓋完之後，小人蓋自己家的過程中小房子被破壞
+     ③ 小房子蓋好之後被破壞　④ 破壞地標到換下一座，蓋完小人又開始蓋家
+     為什麼要串成一輪跑，而不是四段各測各的：會出事的都在**接縫**上——
+     換場時沒放掉的認領、被廢棄那一間造成的索引位移、下一座蓋完之後事件還起不起得來。
+     順便量整輪有沒有人卡住（判準跟 stuckWatch 同一套，見下面那條）。 */
+  const lifeRun = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent(); evArm = 1;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 700; setWorkerCount(20); startBuild(true);
+    // 卡住：腿在擺（gait > 0.6）卻一直沒離開錨點 1.2 格。站著聊天／發呆不算
+    const anc = workers.map(w => ({ x: w.x, z: w.z })), hold = workers.map(() => 0);
+    let worst = 0, over4 = 0, ghost = 0, frames = 0;
+    const sample = dt => {
+      frames++;
+      for (let i = 0; i < workers.length; i++) {
+        const w = workers[i];
+        if (w.ghost > 0) ghost++;
+        if (w.gait <= 0.6 || w.air || w.burn > 0 ||
+            (w.x - anc[i].x) ** 2 + (w.z - anc[i].z) ** 2 > 1.2 * 1.2) {
+          anc[i].x = w.x; anc[i].z = w.z; hold[i] = 0; continue;
+        }
+        hold[i] += dt;
+        if (hold[i] > worst) worst = hold[i];
+        if (hold[i] > 4 && hold[i] - dt <= 4) over4++;
+      }
+    };
+    const go = (secs, done) => {
+      let t = 0;
+      while (t < secs && !(done && done())) { step(0.05); sample(0.05); t += 0.05; }
+      return +t.toFixed(1);
+    };
+    const smashOne = c => smash(new THREE.Vector3(c.x, c.y, c.z),
+      new THREE.Vector3(rr(-0.3, 0.3), -0.9, rr(-0.3, 0.3)).normalize(), 5.5, 20);
+    const pickOne = q => q.length ? q[Math.floor(Math.random() * q.length)] : null;
+    const setBlk = () => blocks.filter(b => b.st === 3 && b.hh < 0);
+    const homeBlk = h => blocks.filter(b => b.st === 3 && b.hh >= 0 && homes.list[b.hh] === h);
+
+    /* ── ① 地標蓋到一半被砸 ── */
+    go(40);
+    const s1built = placedCnt;
+    for (let k = 0; k < 6; k++) { const c = pickOne(setBlk()); if (c) smashOne(c); }
+    go(2);
+    const s1hurt = placedCnt;
+    const s1secs = go(500, () => phase !== 'build');
+    const s1 = { built: s1built, hurt: s1hurt, secs: s1secs,
+                 placed: placedCnt, total: bp.slots.length, phase };
+
+    /* ── ② 小房子蓋到一半被砸 ── */
+    const s2start = go(30, () => homes && homes.list.length > 0);
+    const need = () => homes.list.reduce((a, h) => a + h.slots.length, 0);
+    const got = () => homes.list.reduce((a, h) => a + (h.slots.length - h.left), 0);
+    go(400, () => got() > need() * 0.4);
+    const half = got(), need0 = need();
+    let hurt2 = 0;
+    for (const h of homes.list.slice()) {
+      if (hurt2 >= 2 || homeBlk(h).length < 8) continue;
+      for (let k = 0; k < 4; k++) { const c = pickOne(homeBlk(h)); if (c) smashOne(c); }
+      hurt2++;
+    }
+    go(2);
+    const s2hurt = got();
+    const s2secs = go(700, () => homes.list.every(h => h.left <= 0));
+    const s2 = { start: s2start, houses: homes.list.length, half, need0, hurt: s2hurt,
+                 secs: s2secs, got: got(), need: need(), hit: hurt2 };
+
+    /* ── ③ 蓋好的小房子被破壞：一間打到剩不到兩成五（該整間廢棄）、
+           另一間只敲屋頂（該被補回來）。用 breakBlock 一塊一塊打，量才穩定——
+           爆炸範圍換一間房子就是完全不同的破壞量（同「小房子打到剩兩成五」那條）。 ── */
+    const before3 = homes.list.length;
+    const tgt = homes.list.find(h => h.slots.length >= 40) || homes.list[0];
+    let other = null, od = -1;
+    for (const h of homes.list) {
+      if (h === tgt) continue;
+      const d = Math.hypot(h.x - tgt.x, h.z - tgt.z);
+      if (d > od) { od = d; other = h; }               // 挑離得最遠的：不會被同一發帶走
+    }
+    const tq = homeBlk(tgt), kill = Math.ceil(tq.length - tgt.slots.length * 0.2);
+    for (let i = 0; i < kill && i < tq.length; i++) breakBlock(tq[i], 0, 0, 0);
+    const oq = other ? homeBlk(other).sort((a, b) => b.y - a.y) : [];
+    for (let i = 0; i < 6 && i < oq.length; i++) breakBlock(oq[i], 0, 0, 0);   // 只敲屋頂
+    go(3);
+    const s3 = { before: before3, after: homes.list.length,
+                 gone: homes.list.indexOf(tgt) < 0,
+                 alive: !!other && homes.list.indexOf(other) >= 0,
+                 hurt: other ? other.left : -1, roof: Math.min(6, oq.length) };
+    s3.secs = go(500, () => homes.list.every(h => h.left <= 0));
+    s3.left = homes.list.reduce((a, h) => a + h.left, 0);
+
+    /* ── ④ 把地標打掉換下一座，蓋完小人又開始蓋自己的家 ── */
+    const d0 = stats.destroyed;
+    for (let k = 0; k < 600 && placedCnt > bp.slots.length * 0.2; k++) {
+      const c = pickOne(setBlk());
+      if (!c) break;
+      smashOne(c);
+    }
+    const swap = go(60, () => stats.destroyed > d0);
+    const hm0 = workers.filter(w => w.hm >= 0).length;
+    const build2 = go(400, () => phase === 'done' || phase === 'wreck');
+    const newHome = go(60, () => idleEv && workers.some(w => w.hm >= 0));
+    const s4 = { swap, destroyed: stats.destroyed - d0, name: bp.name, build: build2,
+                 placed: placedCnt, total: bp.slots.length, phase, hm0,
+                 crew: workers.filter(w => w.hm >= 0).length, newHome,
+                 houses: homes ? homes.list.length : 0 };
+
+    const out = { s1, s2, s3, s4,
+                  stuckWD: { worst: +worst.toFixed(1), over4, ghost, frames,
+                             men: workers.length } };
+    cleanTools(); clearHomes();
+    return out;
+  });
+  ok('① 地標蓋到一半被砸，小人補得回來、照樣蓋完',
+     lifeRun.s1.hurt < lifeRun.s1.built && lifeRun.s1.placed === lifeRun.s1.total &&
+     lifeRun.s1.phase === 'done',
+     '蓋到 ' + lifeRun.s1.built + ' → 砸剩 ' + lifeRun.s1.hurt + ' → ' + lifeRun.s1.secs +
+     ' 秒後 ' + lifeRun.s1.placed + '/' + lifeRun.s1.total + '（' + lifeRun.s1.phase + '）');
+  ok('② 小房子蓋到一半被砸，還是有人把每一間蓋完',
+     lifeRun.s2.houses >= 2 && lifeRun.s2.hit === 2 && lifeRun.s2.hurt < lifeRun.s2.half &&
+     lifeRun.s2.got === lifeRun.s2.need && lifeRun.s2.secs < 700,
+     '蓋完地標 ' + lifeRun.s2.start + ' 秒後起了 ' + lifeRun.s2.houses + ' 間：蓋到 ' +
+     lifeRun.s2.half + '/' + lifeRun.s2.need0 + ' 時砸 ' + lifeRun.s2.hit + ' 間 → 剩 ' +
+     lifeRun.s2.hurt + ' → ' + lifeRun.s2.secs + ' 秒後 ' + lifeRun.s2.got + '/' + lifeRun.s2.need);
+  ok('③ 蓋好的小房子被打爛：剩不到兩成五的整間廢棄，只破了洞的補回來',
+     lifeRun.s3.gone && lifeRun.s3.after === lifeRun.s3.before - 1 &&
+     lifeRun.s3.alive && lifeRun.s3.hurt > 0 && lifeRun.s3.left === 0,
+     '打到剩兩成的那一間廢棄了（' + lifeRun.s3.before + ' → ' + lifeRun.s3.after +
+     ' 間）；另一間敲掉 ' + lifeRun.s3.roof + ' 塊屋頂 → 缺 ' +
+     lifeRun.s3.hurt + ' 格，' + lifeRun.s3.secs + ' 秒後補完（全村還缺 ' + lifeRun.s3.left + ' 格）');
+  ok('④ 換下一座地標，蓋完小人又開始蓋自己的家',
+     lifeRun.s4.destroyed === 1 && lifeRun.s4.placed === lifeRun.s4.total &&
+     lifeRun.s4.hm0 === 0 && lifeRun.s4.crew > 0 && lifeRun.s4.newHome < 60,
+     '砸完 ' + lifeRun.s4.swap + ' 秒換場（拆掉 +' + lifeRun.s4.destroyed + '），' +
+     lifeRun.s4.name + ' 蓋了 ' + lifeRun.s4.build + ' 秒到 ' + lifeRun.s4.placed + '/' +
+     lifeRun.s4.total + '；換場當下有家的 ' + lifeRun.s4.hm0 + ' 人 → 慶祝散場 ' +
+     lifeRun.s4.newHome + ' 秒後 ' + lifeRun.s4.crew + ' 人離隊，全村 ' + lifeRun.s4.houses + ' 間');
+  /* 上限是機制自己給的：撐到 STUCK_T 重找路線、撐到 2×STUCK_T（3 秒）開始穿透，
+     穿出去還要走一小段才離開錨點，所以量到的最壞值會落在 3 秒多一點。
+     同一份量測在 v1.107 抓到過完全解不開的（下一座地標停在 678／680，900 秒沒動）。 */
+  ok('整輪下來沒有人腿在擺卻走不動超過四秒（卡住了會自己脫困）',
+     lifeRun.stuckWD.over4 === 0 && lifeRun.stuckWD.worst <= 4,
+     '整輪 ' + lifeRun.stuckWD.frames + ' 幀 × ' + lifeRun.stuckWD.men + ' 人：卡最久 ' +
+     lifeRun.stuckWD.worst + ' 秒（超過 4 秒的 ' + lifeRun.stuckWD.over4 +
+     ' 次；機制在 1.5 秒重找路線、3 秒開始穿透），脫困穿透共 ' +
+     lifeRun.stuckWD.ghost + ' 人-幀');
+
+  /* 走路狀態卻位置一樣 → 先重找路線，再直接穿過去（v1.108，使用者指定）。
+     這一段是**把條件做出來**驗合約：把人釘在原地（腿照樣在擺），量他幾秒後
+     重找路線、幾秒後開始穿透；旁邊擺一個站著發呆的當對照——那個不該被判成卡住。
+     為什麼判準要用「一段時間沒離開錨點」而不是「這一幀沒動」：實測真的卡住的人
+     多半不是站著不動，是在兩點之間來回，每一幀都走滿一步 0.34，
+     位置卻在 0.32 × 0.27 的框裡跳了幾百幀。 */
+  const stuckWD = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(2); startBuild(true); completeNow();
+    homes = null;
+    const w = workers[0], q = workers[1];
+    w.cheer = 1e9; q.cheer = 1e9; w.hm = -1; q.hm = -1;
+    w.x = 20; w.z = 0; w.sx = 20; w.sz = 0; w.tx = -20; w.tz = 0; w.stk = 0; w.ghost = 0;
+    q.x = 26; q.z = 0; q.gait = 0; q.stk = 0; q.ghost = 0;
+    let re = -1, gh = -1, idleGhost = 0;
+    for (let i = 0; i < 300; i++) {
+      w.chk = 99;                                    // 被重設成 0 ＝ 重找了路線
+      q.pause = 9; q.gait = 0;                       // 對照組：站著發呆（腿沒在擺）
+      step(0.05);
+      w.x = 20; w.z = 0;                             // 釘住：走路狀態卻位置一樣
+      q.x = 26; q.z = 0;
+      if (re < 0 && w.chk !== 99) re = +((i + 1) * 0.05).toFixed(2);
+      if (gh < 0 && w.ghost > 0) gh = +((i + 1) * 0.05).toFixed(2);
+      if (q.ghost > 0) idleGhost++;
+    }
+    const out = { re, gh, idleGhost, T: STUCK_T, R: STUCK_R, G: GHOST_T,
+                  gait: +w.gait.toFixed(2) };
+    cleanTools(); clearHomes();
+    return out;
+  });
+  ok('腿在擺卻走不動：先重找路線，再直接穿過去（站著不動的不算）',
+     stuckWD.re > 0 && Math.abs(stuckWD.re - stuckWD.T) < 0.2 &&
+     stuckWD.gh > 0 && Math.abs(stuckWD.gh - stuckWD.T * 2) < 0.2 && stuckWD.idleGhost === 0,
+     '釘住的那個（腿還在擺 ' + stuckWD.gait + '）：' + stuckWD.re + ' 秒重找路線、' +
+     stuckWD.gh + ' 秒開始穿透（門檻 ' + stuckWD.T + ' 秒 / 錨點 ' + stuckWD.R +
+     ' 格，穿 ' + stuckWD.G + ' 秒）；旁邊站著發呆的那個穿透 ' + stuckWD.idleGhost + ' 幀');
+
+  /* 穿透中，房子真的擋不住他。對照組是同一段路不穿透——他繞過去，
+     路程變長、而且一幀都沒踩進外框。 */
+  const ghostThru = await page.evaluate(() => {
+    const run = on => {
+      cleanTools(); clearHomes(); stopIdleEvent();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 300; setWorkerCount(1); startBuild(true); completeNow();
+      const w = workers[0];
+      w.cheer = 1e9; w.hm = -1;
+      // 一整塊外框橫在路中間（造型不重要，走路只看外框，見 footHome）
+      homes = { list: [{ x: 0, z: 25, r: 7, x0: -6, x1: 6, z0: 18, z1: 32,
+                         slots: [], left: 0, done: false, at: new Map() }] };
+      w.x = 0; w.z = 40; w.y = 0; w.sx = 0; w.sz = 40; w.stk = 0; w.ghost = 0;
+      let inBox = 0, arrive = -1, walked = 0, last = { x: w.x, z: w.z };
+      for (let i = 0; i < 400; i++) {
+        w.tx = 0; w.tz = 10; w.pause = 0;
+        if (on) w.ghost = 9;                         // 強制穿透中
+        step(0.05);
+        w.ghost = on ? 9 : 0;                        // 對照組：不准穿透
+        walked += Math.hypot(w.x - last.x, w.z - last.z); last = { x: w.x, z: w.z };
+        if (footHome(w.x, w.z)) inBox++;
+        if (arrive < 0 && Math.hypot(w.x, w.z - 10) < 1.2) arrive = +((i + 1) * 0.05).toFixed(1);
+      }
+      homes = null; cleanTools(); clearHomes();
+      return { inBox, arrive, walked: +walked.toFixed(1) };
+    };
+    return { on: run(true), off: run(false), straight: 30 };
+  });
+  ok('穿透中房子擋不住他（直線走過去，不繞）',
+     ghostThru.on.inBox > 0 && ghostThru.off.inBox === 0 &&
+     ghostThru.on.arrive > 0 && ghostThru.on.arrive < ghostThru.off.arrive &&
+     ghostThru.on.walked < ghostThru.off.walked,
+     '同一段路（直線 ' + ghostThru.straight + ' 格）：穿透 → 踩進外框 ' + ghostThru.on.inBox +
+     ' 幀、走了 ' + ghostThru.on.walked + ' 格、' + ghostThru.on.arrive + ' 秒到；' +
+     '不穿透 → 踩進外框 ' + ghostThru.off.inBox + ' 幀、繞了 ' + ghostThru.off.walked +
+     ' 格、' + ghostThru.off.arrive + ' 秒到');
+
+  /* 搆不到的積木，走到最近能到的距離就伸手拿（v1.108，使用者指定）。
+     造一個**真的走不到**的站位：A 屋外框裡躺著一塊料，grabStand 會挑 A 最近的
+     那一面（下緣）往外 1.4 格，而 B 屋的外框剛好壓在那個站位上，
+     而且壓得比「走到多近算抵達」（REACH 0.9）還深——所以他永遠抵達不了。
+     三組對照：
+       full  ＝ v1.108（伸手拿 + 卡住脫困）
+       ghost ＝ 只留卡住脫困（穿牆走進去撿，慢很多）
+       none  ＝ v1.107（兩個都沒有）——那個人一直卡在 pick 上，那塊料永遠回收不了 */
+  const farGrab = await page.evaluate(() => {
+    const box = (x0, x1, z0, z1) => ({ x: (x0 + x1) / 2, z: (z0 + z1) / 2,
+      r: Math.max(x1 - x0, z1 - z0) / 2, x0, x1, z0, z1,
+      slots: [], left: 0, done: false, at: new Map() });
+    const run = mode => {                                    // 2＝v1.108、1＝只有脫困、0＝v1.107
+      cleanTools(); clearHomes(); stopIdleEvent();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 300; setWorkerCount(1); startBuild(true);   // 施工中：走 pick 那條狀態機
+      const w = workers[0];
+      w.hm = -1; w.st = 'idle'; w.load.length = 0; w.li = 0;
+      homes = { list: [box(-5, 5, 20, 30), box(-5, 5, 13, 19.6)] };
+      // 場上只留一塊撿得到的碎料，就擺在 A 屋外框裡
+      const bi = 0;
+      for (let i = 1; i < blocks.length; i++) { blocks[i].rest = false; blocks[i].holder = -1; }
+      const b = blocks[bi];
+      if (b.cell) gridDel(b);
+      b.st = 0; b.rest = true; b.holder = -1; b.slot = -1; b.hh = -1; b.arc = null; b.snap = 0;
+      b.x = 0; b.z = 21; b.y = HB; b.vx = b.vy = b.vz = 0;
+      gridAdd(b);
+      const g = pickSpot(b);
+      const stand = { x: +g.x.toFixed(2), z: +g.z.toFixed(2), inB: !!footHome(g.x, g.z) };
+      const orig = nearGrab;
+      if (mode < 2) nearGrab = () => false;
+      w.x = 0; w.z = 5; w.y = 0; w.sx = 0; w.sz = 5; w.stk = 0; w.ghost = 0;
+      let got = -1, near = 99, gh = 0;
+      for (let i = 0; i < 1200; i++) {
+        // none 那一組要把計時也歸零，不然穿透一結束就又立刻重新觸發
+        if (mode < 1) { w.stk = 0; w.ghost = 0; }
+        step(0.05);
+        if (mode < 1) { w.stk = 0; w.ghost = 0; } else if (w.ghost > 0) gh++;
+        if (blocks[bi].st !== 0) { got = +((i + 1) * 0.05).toFixed(1); break; }
+        near = Math.min(near, Math.hypot(blocks[bi].x - w.x, blocks[bi].z - w.z));
+      }
+      nearGrab = orig;
+      homes = null; cleanTools(); clearHomes();
+      return { got, near: +near.toFixed(2), stand, ghost: gh,
+               far: GRAB_FAR, wait: GRAB_WAIT, R: REACH };
+    };
+    return { on: run(2), ghost: run(1), off: run(0) };
+  });
+  ok('搆不到的積木，走到最近能到的距離就伸手拿',
+     farGrab.on.stand.inB && farGrab.on.got > 0 && farGrab.on.got < 20 &&
+     farGrab.on.near > farGrab.on.R && farGrab.on.near <= farGrab.on.far &&
+     farGrab.off.got < 0 && farGrab.ghost.got > farGrab.on.got,
+     '站位 (' + farGrab.on.stand.x + ', ' + farGrab.on.stand.z + ') 壓在另一間的外框裡，' +
+     '最近只走得到離那塊料 ' + farGrab.on.near + ' 格（伸手範圍 ' + farGrab.on.far +
+     '、等 ' + farGrab.on.wait + ' 秒）：伸手拿 ' + farGrab.on.got +
+     ' 秒撿起來（用掉穿透 ' + farGrab.on.ghost + ' 幀）；只靠卡住脫困穿牆進去 ' +
+     farGrab.ghost.got + ' 秒（穿透 ' + farGrab.ghost.ghost +
+     ' 幀）；兩個都沒有（v1.107）→ 60 秒撿到的是 ' + farGrab.off.got + '（−1＝沒撿到）');
 
   // 後面幾段不該再有房子與事件（見 installClean）
   await page.evaluate(() => { clearHomes(); stepIdleEvent = () => {}; });
