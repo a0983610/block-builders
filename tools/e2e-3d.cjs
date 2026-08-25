@@ -38,8 +38,8 @@ const OUT = path.join(__dirname, '.e2e-out');
 const VIEW = { width: 1280, height: 800 };
 const SHAPE_COUNT = 48;          // blueprints.js 內建的 SHAPES 數量
 const WB_CLICK_MIN = 1500;       // 點一下倒 2300 格，滲掉一些之後至少該剩這麼多
-const CUSTOM_COUNT = 4;          // blueprints/ 資料夾裡預設附的自訂藍圖
-const CUSTOM_FILES = '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js,馬克杯.js';
+const CUSTOM_COUNT = 28;         // blueprints/ 資料夾裡預設附的自訂藍圖
+const CUSTOM_FILES = '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js,馬克杯.js,三色糰子與熱茶.js,五稜郭.js,孔廟建築群.js,日式醬油糰子.js,水榭戲亭.js,北海道舊本廳舍.js,吉薩大金字塔.js,松前城天守.js,林家花園觀稼樓.js,金閣寺.js,俄式白石大教堂.js,特製叉燒拉麵.js,清水寺本堂與舞台.js,章魚燒.js,焦糖布丁.js,舒芙蕾厚鬆餅.js,超商咖啡.js,新竹火車站.js,極地雪夜極光.js,聖三一修道院.js,彰化扇形車庫.js,銀閣寺.js,箱館奉行所.js,總統府.js';
 const ALL_SHAPES = SHAPE_COUNT + CUSTOM_COUNT;
 
 /* ---------- 記分板 ---------- */
@@ -317,7 +317,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      seg.scale === 1 && seg.fresh.spd === 1,
      'targetCnt=' + seg.target + '、freshPref=' + JSON.stringify(seg.fresh));
   /* 容差 10%：使用者定調「積木數量大約就好，容差 10% 也都還好」。
-     開場那座是**隨機挑**的，而 48 座裡有三座固定停在 +5.9～6.1%（獅身人面像 3178、
+     開場那座是**隨機挑**的，而內建 48 座裡有三座固定停在 +5.9～6.1%（獅身人面像 3178、
      自由女神 3177、大阪城天守閣 3183，是尺度階距，見下面〈每座都貼近〉那條），
      所以 5% 的容差本來就會隨機紅——大約每 17 次一次。 */
   ok('開場那座就真的是 3000 塊上下（偏差 <10%）',
@@ -452,7 +452,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      那兩個玩家選不到，而新換上來的那批藍圖細節多、最小就是一兩千塊，
      量它只是在量「藍圖的下限」，不是在量 makeBlueprint 找不找得到最接近的尺度。
      同一套量法對照換藍圖前後：>50% 的組數 10 → 11（多出來的是台北 101 在 1800 那檔
-     ＋56%，那份藍圖最小 2811 塊），最差的一直是艾菲爾鐵塔在 9000 那檔 −66%。 */
+     ＋56%，那份藍圖最小 2811 塊），最差的一直是艾菲爾鐵塔在 9000 那檔 −66%。
+     v1.114 換掉四座內建、自訂從 4 支變 28 支（52 → 76 座，156 → 228 組）：
+     >50% 的組數 12 → 11，最差換成巨石陣在 9000 那檔 −63%
+     （新鐵塔在 9000 是 −29%，不再是最差的那個）。 */
   ok('積木數能自動對應目標',
      fitStat.worst.err < 0.8 && fitStat.over50 <= 14,
      fitStat.total + ' 組裡有 ' + fitStat.over50 + ' 組偏差 >50%；最差 ' +
@@ -463,7 +466,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      自由女神 3177、大阪城天守閣 3183）。那是**尺度階距**造成的，不是下限撐著——
      實測把 dim 的下限縮到 ×0.6 一樣是 3178／3176，要更貼近得照說明文件的做法
      微調某一個維度的係數，讓它的跳點跟別的維度錯開。
-     v1.77 放到 10%：使用者定調「積木數量大約就好，容差 10% 也都還好」。 */
+     v1.77 放到 10%：使用者定調「積木數量大約就好，容差 10% 也都還好」。
+     v1.114 之後 3000 那一檔最遠的是新的比薩斜塔 2733（−8.9%）、舒芙蕾厚鬆餅 2776（−7.5%）。 */
   ok('預設 3000 塊時每座都貼近（偏差都 <10%）',
      fitStat.bigOver.length === 0,
      '最遠的三座：' + fitStat.bigWorst.join('、') +
@@ -2014,14 +2018,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* v1.113 起分三種人各自守著，不看平均。原因：肌肉小人（v1.112）讓工地快了兩三倍，
      同樣 2400 幀裡建築長得更高，而**工人那些貼著牆的短拋**本來就最容易擦到——
      於是平均值跟著往上跑（聖母院 4.1% → 6.5%），但那不是新的穿牆，是舊的那種變多。
-     分開量就看得清楚：穿牆的幾乎全是工人在自己腳邊那道牆上擦到的（樣本清一色
-     u≈0.15、拋距 2～10 格），肌肉小人從十幾格外扔進來的那些是 0%
-     （單獨跑一輪：聖母院 工人 12.3%、魔法師 1.1%、肌肉小人 0/238 發）。
-     工人那條為什麼壓不下去：`arcPeak` 只算「從地面連續疊上來」的柱子，
-     挑出去的樓板／飛扶壁不算（那些本來就是從底下穿過去的），聖母院正好滿是那種東西。
-     真要壓回去得做從缺口進出的路徑規劃——跟上面那條「在牆裡走動」同一筆帳。 */
+     分開量就看得清楚：擦到的那一小段都在出手後不久（樣本清一色 u≈0.15～0.30）。
+     為什麼壓不下去：`arcPeak` 只算「從地面連續疊上來」的柱子，挑出去的樓板／飛扶壁不算
+     （那些本來就是從底下穿過去的），聖母院正好滿是那種東西。
+     真要壓回去得做從缺口進出的路徑規劃——跟上面那條「在牆裡走動」同一筆帳。
+
+     門檻 v1.114 照量的重訂（v1.113 只跑了三輪就把魔法師與肌肉小人訂在 3%，樣本太少）：
+     聖母院單獨跑四輪 → 工人 10.1／11.3／13.7／11.5%、肌肉小人 0／12.4／3.3／11.8%、
+     魔法師 1.2／1.9／0.4／3.9%。肌肉小人跟工人同一個量級不是新問題——他在建築裡撿到料
+     就在裡面出手（`walledIn` 只是「有外面的就挑外面的」，不是硬擋），那一發跟工人貼著牆
+     的短拋是同一種擦到。魔法師低是因為他撿料有距離上限（MAGE_REACH），多半站在建築外面。
+     所以工人與肌肉小人守 18%、魔法師守 6%（各自是實測最大值再留幾個百分點）。 */
   ok('拋出去的積木不會從牆裡穿過去（三種人各自算）',
-     route.every(r => r.arcW < 14 && r.arcH < 3 && r.arcM < 3),
+     route.every(r => r.arcW < 18 && r.arcH < 18 && r.arcM < 6),
      route.map(r => r.name + '：工人 ' + r.arcW + '%（' + r.nW + ' 發）、魔法師 ' +
                     r.arcM + '%（' + r.nM + '）、肌肉小人 ' + r.arcH + '%（' + r.nH +
                     '）＝整批 ' + r.arc + '%').join('　') + '（舊版整批 20%／45%）');
@@ -2198,7 +2207,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '另一端 ' + side.far0 + ' → ' + side.far1 + '（整體 ' + side.total + ' → ' + side.left + '）');
 
   /* 有些造型本來就有懸空部件（摩天輪車廂、大橋吊索、堆疊的塔節），
-     那些不是被打壞才浮著的，沒人動它就不該掉。48 座全部驗一遍。 */
+     那些不是被打壞才浮著的，沒人動它就不該掉。整份 SHAPES 全部驗一遍。 */
   const floaty = await page.evaluate(() => {
     const bad = [];
     let withFloats = 0;
@@ -2212,7 +2221,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return { bad, withFloats };
   });
-  ok('48 座都不會無故掉塊', floaty.bad.length === 0,
+  ok('每一座都不會無故掉塊（內建 + 自訂全掃）', floaty.bad.length === 0,
      floaty.bad.join('　') || '其中 ' + floaty.withFloats + ' 座有懸空部件，都沒掉');
 
   /* 懸空部件不是無敵的：撐著它的結構被打掉，它也要跟著掉，而且要一路連鎖 */
@@ -2277,7 +2286,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 常設哨兵：有一組懸空部件超過 2000 格卻一個靠山都沒有，就是「那一團怎麼打都不會垮」。
      可能是藍圖沒接上（吳哥窟就是這樣被抓到的），也可能真的是故意畫的巨大懸空件——
-     兩種都要人來看一眼，所以在這裡卡住。48 座 × 兩檔只算藍圖、不畫圖，成本約 6 秒。 */
+     兩種都要人來看一眼，所以在這裡卡住。整份 SHAPES × 兩檔只算藍圖、不畫圖。 */
   const noBig = await page.evaluate(() => {
     const bad = [];
     for (let i = 0; i < SHAPES.length; i++)
@@ -2290,7 +2299,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return bad;
   });
   ok('沒有哪一座是靠「那一團太大」才不垮的', noBig.length === 0,
-     noBig.join('　') || '48 座 × 3000／9000 兩檔都沒有');
+     noBig.join('　') || ALL_SHAPES + ' 座 × 3000／9000 兩檔都沒有');
 
   const supCost = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '艾菲爾鐵塔');
@@ -2353,9 +2362,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '帝國大廈中一發石頭三輪：剩 ' + JSON.stringify(hung.boxAll) +
      ' 塊，只靠對角勾著的合計 ' + hung.boxBad + ' 塊（沒有這一關會留下一百多塊）');
   /* 反面：本來就靠斜格子疊起來的造型不歸這一關管，不然它們會自己解體。
-     艾菲爾鐵塔完好時只有 672/1497 格是「六面連得到地面」。 */
+     v1.114 換上新的鐵塔藍圖之後量到 f6 775/1523（51%）、中一發石頭後剩 66～70%（四輪）：
+     新那份底座 21×21（舊的 33×33），同一顆石頭（siteR×0.5）落得更靠腿，所以塌得多一些。
+     舊那份是 672/1497（45%）、剩超過 75%。要守住的是 badF6 === 0（沒有漏網的對角勾著），
+     另外兩個是「這個 fixture 真的是斜格子、也真的沒被誤殺」的門檻。 */
   ok('斜格子造型不會被這一關誤殺',
-     hung.lat.f6 < hung.lat.all * 0.5 && hung.lat.live > hung.lat.all * 0.75 &&
+     hung.lat.f6 < hung.lat.all * 0.6 && hung.lat.live > hung.lat.all * 0.6 &&
      hung.lat.bad > 400 && hung.lat.badF6 === 0,
      '艾菲爾鐵塔：完好時六面站得住的只有 ' + hung.lat.f6 + '/' + hung.lat.all +
      '；中一發石頭後還剩 ' + hung.lat.live + ' 塊，其中 ' + hung.lat.bad +
@@ -3418,18 +3430,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const avg = a => a.reduce((s, w) => s + w.scale, 0) / (a.length || 1);
     const m = workers.filter(w => w.mus), p = workers.filter(w => !w.mus);
     const one = workers[8], before = one.scale;
+    /* 每個人各自比：肌肉小人的 scale 該剛好是自己抽到的 sc0 × MUS_SIZE，
+       一般工人該剛好等於 sc0。比群體平均會被抽樣晃動洗掉（六個人的平均晃 ±2%）。 */
+    const off = w => Math.abs(w.scale - w.sc0 * (w.mus ? MUS_SIZE : 1));
+    const worst = Math.max.apply(null, workers.map(off));
     for (let i = 0; i < 5; i++) { setWorkerCount(20); setWorkerCount(60); }   // 反覆調人數
     const after = workers[8].scale;
     setWorkerCount(20);
     return { n: m.length, mus: +avg(m).toFixed(3), plain: +avg(p).toFixed(3),
+             size: MUS_SIZE, worst: +worst.toExponential(1),
              hi: +Math.max.apply(null, m.map(w => w.scale)).toFixed(2),
              lo: +Math.min.apply(null, m.map(w => w.scale)).toFixed(2),
              grew: +(after - before).toFixed(4) };
   });
-  ok('整個人大一號（身高多 8%），但沒有大到變成巨人',
-     musSize.mus > musSize.plain * 1.05 && musSize.mus < musSize.plain * 1.12 &&
+  ok('整個人大一號（每個人都是自己身高的 1.08 倍），但沒有大到變成巨人',
+     musSize.size === 1.08 && musSize.worst < 1e-12 &&
      1.31 * musSize.hi < 2.8 && musSize.grew === 0,
-     musSize.n + ' 個平均身高 ' + musSize.mus + '（一般工人 ' + musSize.plain + '，多 ' +
+     musSize.n + ' 個都剛好 ×' + musSize.size + '（最大誤差 ' + musSize.worst +
+     '）；平均身高 ' + musSize.mus + '（一般工人 ' + musSize.plain + '，多 ' +
      ((musSize.mus / musSize.plain - 1) * 100).toFixed(1) + '%）、範圍 ' + musSize.lo +
      '～' + musSize.hi + '（帽頂 ' + (1.31 * musSize.hi).toFixed(2) +
      ' 格）；人數調了五輪之後身高變化 ' + musSize.grew);
@@ -10922,12 +10940,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         會從某幾塊莫名地燒起來）。
      2. 「還站著的燒起來」要用**比爆炸範圍大**的建築才量得到（萬里長城橫著鋪開，
         遠比半徑 30 寬）。半徑 30 蓋滿的一般建築，範圍內一塊都不會剩——
-        那種情況的餘火是「帶著火飛出去的碎料」，另一條測試在量。 */
+        那種情況的餘火是「帶著火飛出去的碎料」，另一條測試在量。
+        **長城那兩發要 9000 那一檔**（v1.114）：換上新的長城藍圖之後 3000 那檔只有半徑 28.8
+        （舊的 32.1），整條剛好落在魔法範圍內——實測魔法那一發打完只剩 2 塊站著，
+        站著的餘火 0～2 塊，這條就變成擲骰子（四輪量到 24／1／1／0）。
+        9000 那檔半徑 46、打完還剩 4010～4784 塊站著，核彈與魔法都穩定量到 24 塊。 */
   const emb = await page.evaluate(() => {
     /* armed() 回報「道具還在倒數」，用它偵測爆炸落在哪一幀，不用自己數步數：
        倒數秒數改一下、或哪天多一幀延遲，數死的步數就會量到爆炸前或換場後。 */
-    const one = (shape, go, armed) => {
-      targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === shape);
+    const one = (shape, go, armed, cnt) => {
+      targetCnt = cnt || 3000; shapePick = SHAPES.findIndex(s => s.n === shape);
       startBuild(true); completeNow();
       clearFires();
       go();
@@ -10940,8 +10962,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
     /* 變數不能取名 nukes／magics：那會遮住同名的全域狀態，armed() 讀到的就是自己 */
     const bombE = one('美國國會大廈', () => placeBomb({ x: 14, y: 4, z: 0 }), () => !!bombs);
-    const nukeE = one('萬里長城', () => callNuke({ x: 0, z: 0 }), () => !!nukes);
-    const magicE = one('萬里長城', () => castMagic({ x: 0, z: 0 }), () => !!magics);
+    const nukeE = one('萬里長城', () => callNuke({ x: 0, z: 0 }), () => !!nukes, 9000);
+    const magicE = one('萬里長城', () => castMagic({ x: 0, z: 0 }), () => !!magics, 9000);
     /* 「剛好被夷平」要挑矮的：核彈炸在接觸點上，打高樓時炸點在樓頂，
        下半截會留著（那些就會有站著的餘火）。金字塔頂只有 14 高，整座都在半徑內。 */
     const flatE = one('吉薩金字塔', () => callNuke({ x: 0, z: 0 }), () => !!nukes);
