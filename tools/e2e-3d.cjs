@@ -1076,13 +1076,57 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('同名再貼一次是蓋掉，不會愈貼愈多',
      !pAgain.bad && pAgain.shapes === ALL_SHAPES + 1 && pAgain.name === '貼上來的小屋',
      '清單仍是 ' + pAgain.shapes + ' 座（內建 48 + 檔案 1 + 貼上 1）');
+  /* 撞到內建或 blueprints/ 的名字不再退回去叫人改（v1.111）：那個 name 是 AI 寫在程式裡的，
+     要改就得回頭翻那段程式。改成自動在後面加編號，內建那座不動。 */
   const pClash = await pasteInto(SAMPLE.replace("name: '貼上來的小屋'", "name: '吉薩金字塔'"));
-  ok('撞到內建或檔案裡的名字會被擋掉，而且說得出原因',
-     pClash.bad && pClash.msg.indexOf('撞號') > 0 && pClash.shapes === ALL_SHAPES + 1,
+  const pClashN = await vp.evaluate(() => ({
+    builtin: SHAPES.filter(s => s.n === '吉薩金字塔').length,
+    mine: SHAPES.filter(s => s.n === '吉薩金字塔2').length,
+    custom: (() => { const i = SHAPES.findIndex(s => s.n === '吉薩金字塔'); return !!SHAPES[i].custom; })()
+  }));
+  ok('撞到內建的名字會自動加編號（吉薩金字塔 → 吉薩金字塔2），內建那座不動',
+     !pClash.bad && pClash.name === '吉薩金字塔2' && pClash.shapes === ALL_SHAPES + 2 &&
+     pClash.msg.indexOf('原名') > 0 && pClashN.builtin === 1 && pClashN.mine === 1 &&
+     !pClashN.custom,
      pClash.msg);
+  /* 同一個 name 再貼一次要換掉那一份，不是再開一份——這一頁的節奏是「貼上→看→改→再貼」，
+     每一輪都多一座的話選單很快就爛掉（也是使用者不想手動清的那件事）。 */
+  const pClash2 = await pasteInto(SAMPLE.replace("name: '貼上來的小屋'", "name: '吉薩金字塔'")
+                                        .replace("'#4a5a68'", "'#3a6fc0'"));
+  ok('撞名的那一份改一版再貼，還是同一座（不會 2、3、4 一直長）',
+     !pClash2.bad && pClash2.name === '吉薩金字塔2' && pClash2.shapes === ALL_SHAPES + 2 &&
+     pClash2.picked.indexOf('吉薩金字塔2') > 0,
+     '清單仍是 ' + pClash2.shapes + ' 座，選的還是「' + pClash2.picked + '」');
+
+  /* 貼上框點一下就整段選起來（v1.111）：「再貼」是拿新的一份換掉框裡那一段，
+     每次都要自己 Ctrl+A 很煩。第二下要能正常移游標，不然想手改幾個字都改不了；
+     用鍵盤 focus 進來的也要選起來（那種人接著就是 Ctrl+V）。 */
+  await vp.click('#paste');
+  const selAll = await vp.evaluate(() => {
+    const t = document.getElementById('paste');
+    return { s: t.selectionStart, e: t.selectionEnd, len: t.value.length };
+  });
+  await vp.click('#paste');
+  const selAgain = await vp.evaluate(() => {
+    const t = document.getElementById('paste');
+    return { s: t.selectionStart, e: t.selectionEnd };
+  });
+  const selKey = await vp.evaluate(() => {
+    const t = document.getElementById('paste');
+    t.blur(); t.focus();
+    const r = { s: t.selectionStart, e: t.selectionEnd };
+    t.blur();
+    return r;
+  });
+  ok('點一下貼上框就整段選起來（再點一下是正常移游標）',
+     selAll.len > 20 && selAll.s === 0 && selAll.e === selAll.len &&
+     selAgain.s === selAgain.e && selKey.s === 0 && selKey.e === selAll.len,
+     '第一下選 ' + selAll.s + '～' + selAll.e + '（全長 ' + selAll.len + '）、第二下 ' +
+     selAgain.s + '～' + selAgain.e + '（收成游標）、用鍵盤 focus 選 ' +
+     selKey.s + '～' + selKey.e);
   const pSyntax = await pasteInto('customBlueprint({ name: "壞的", pal: ["#fff"], gen(v, s) { v.box(0,0,0 } });');
   ok('語法錯的貼上會講「語法錯誤」，不是靜靜地什麼都沒發生',
-     pSyntax.bad && pSyntax.msg.indexOf('語法錯誤') > 0 && pSyntax.shapes === ALL_SHAPES + 1,
+     pSyntax.bad && pSyntax.msg.indexOf('語法錯誤') > 0 && pSyntax.shapes === ALL_SHAPES + 2,
      pSyntax.msg);
   const pJunk = await pasteInto('console.log("hello")');
   ok('貼到不是藍圖的東西會講清楚要貼什麼',
@@ -1421,6 +1465,72 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      不然「指定要蓋的」會悄悄變成剛好遞補上來的別座。 */
   ok('刪掉正在指定的那一座，會退回「隨機」而不是指向別座',
      impDel.pick === -1, 'shapePick = ' + impDel.pick);
+
+  /* ── 撞名自動加編號（v1.111）──────────────────────────
+     以前撞到內建或 blueprints/ 的名字會被退回來、叫人「改個 name 再貼」，而那個 name 是
+     AI 寫在程式裡的，要改就得回頭翻那段程式。更麻煩的是開場載入：撞名的那一份會整份被
+     擋掉、只留一行 console.warn——「程式更新後多了同名的內建」就是這樣把人家匯進來的
+     那一座弄消失的。 */
+  const impRename = await gp.evaluate(src => {
+    document.getElementById('impPaste').value = src;
+    document.getElementById('impGo').click();
+    const i = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    return { msg: document.getElementById('impMsg').textContent,
+             good: document.getElementById('impMsg').className.indexOf('good') >= 0,
+             rows: [...document.querySelectorAll('#impList .it b')].map(b => b.textContent),
+             builtin: SHAPES.filter(s => s.n === '吉薩金字塔').length,
+             mine: SHAPES.filter(s => s.n === '吉薩金字塔2').length,
+             stillBuiltin: i >= 0 && !SHAPES[i].custom };
+  }, '// 檔名：我的金字塔.js\n' + SAMPLE.replace("name: '貼上來的小屋'", "name: '吉薩金字塔'"));
+  ok('匯入撞到內建名字的藍圖：自動加編號，內建那座不動',
+     impRename.good && impRename.builtin === 1 && impRename.mine === 1 &&
+     impRename.stillBuiltin && impRename.rows.join(',') === '吉薩金字塔2' &&
+     impRename.msg.indexOf('原名') > 0,
+     impRename.msg);
+
+  /* 改一版再匯一次。SHAPES 那邊是共用邏輯（預覽頁那段測過），但「清單一列一筆」與
+     存檔那份是遊戲自己的碼，也不能多一列——不然清單會有一列指到已經被蓋掉的那座。 */
+  const impRename2 = await gp.evaluate(src => {
+    document.getElementById('impPaste').value = src;
+    document.getElementById('impGo').click();
+    return { rows: [...document.querySelectorAll('#impList .it b')].map(b => b.textContent),
+             mine: SHAPES.filter(s => s.n === '吉薩金字塔2').length,
+             shapes: SHAPES.length,
+             saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]')
+                      .map(e => e.names.join('、')) };
+  }, '// 檔名：我的金字塔.js\n' +
+     SAMPLE.replace("name: '貼上來的小屋'", "name: '吉薩金字塔'").replace("'#4a5a68'", "'#3a6fc0'"));
+  ok('撞名的那一份改一版再匯一次：清單與存檔都還是一列',
+     impRename2.rows.join(',') === '吉薩金字塔2' && impRename2.mine === 1 &&
+     impRename2.shapes === impUi.shapes + 1 && impRename2.saved.join(',') === '吉薩金字塔2',
+     '清單 ' + impRename2.rows.length + ' 列（' + impRename2.rows.join('、') +
+     '）、存檔 ' + impRename2.saved.length + ' 筆（' + impRename2.saved.join('、') + '）');
+
+  /* 存檔裡存的是原始碼，name 還是「吉薩金字塔」（改名只發生在載入的那一刻，
+     不去動人家的程式），所以重開一次頁面就等於「更新後多了同名內建」那個情境。 */
+  await gp.reload();
+  await gp.waitForFunction(() => typeof bp !== 'undefined' && bp);
+  const impMigrate = await gp.evaluate(() => {
+    document.getElementById('impBtn').click();
+    return { rows: [...document.querySelectorAll('#impList .it b')].map(b => b.textContent),
+             builtin: SHAPES.filter(s => s.n === '吉薩金字塔').length,
+             mine: SHAPES.filter(s => s.n === '吉薩金字塔2').length,
+             shapes: SHAPES.length,
+             inMenu: [...document.getElementById('shape').options]
+                       .map(o => o.textContent).indexOf('吉薩金字塔2') };
+  });
+  ok('程式更新後多了同名的內建：匯進來的那一座改名留下來，不會整份消失',
+     impMigrate.rows.join(',') === '吉薩金字塔2' && impMigrate.builtin === 1 &&
+     impMigrate.mine === 1 && impMigrate.shapes === impUi.shapes + 1 &&
+     impMigrate.inMenu === 1 + CUSTOM_COUNT,
+     '清單「' + impMigrate.rows.join('、') + '」，下拉第 ' + impMigrate.inMenu +
+     ' 項，共 ' + impMigrate.shapes + ' 座');
+  // 收乾淨，不要留給後面「存檔搬家」那一段
+  await gp.evaluate(() => {
+    const del = document.querySelector('#impList [data-del="0"]');
+    if (del) del.click();
+    localStorage.removeItem('block-builders/bp1');
+  });
 
   /* ── 存檔搬家（v1.63）─────────────────────────────────
      紀錄平常只活在這台電腦的 localStorage 裡，換電腦就沒了。成就頁多了匯出／匯入：

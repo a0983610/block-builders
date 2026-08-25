@@ -3321,6 +3321,17 @@ function bpFileName(code, name) {
   const raw = m ? m[1] : name + '.js';
   return raw.replace(/[\\/:*?"<>|]/g, '').trim() || (name + '.js');
 }
+/* 找一個沒人用的名字：後面接編號。已經結尾有數字的就從那個數字往上加
+   （羅馬競技場 → 羅馬競技場2、馬克杯2 → 馬克杯3）。SHAPES 是有限的、每一圈都是
+   不同的候選名，所以一定會停。 */
+function freeBpName(name) {
+  const m = /^(.*?)(\d+)$/.exec(name);
+  const base = m ? m[1] : name;
+  let n = m ? +m[2] + 1 : 2;
+  while (SHAPES.some(s => s.n === base + n)) n++;
+  return base + n;
+}
+
 function importBlueprint(raw, own) {
   const code = cleanPaste(raw);
   if (!code) throw new Error('貼上的內容是空的。');
@@ -3341,14 +3352,28 @@ function importBlueprint(raw, own) {
   const added = [];
   for (const def of defs) {
     if (!def || !def.name) throw new Error('customBlueprint 少了 name。');
-    const old = SHAPES.findIndex(s => s.n === def.name);
-    if (old >= 0) {
-      if (!own.has(old))
-        throw new Error('名字「' + def.name + '」跟內建或 blueprints/ 裡的藍圖撞號，改個 name 再貼。');
+    /* 撞名怎麼處理（v1.111 改）：
+         撞到自己上一次貼的那份 → 蓋掉（「換一版」，貼上→看→改→再貼的節奏靠這個）
+         撞到內建或 blueprints/ 的名字 → **自動加編號**。以前是退回去叫人「改個 name
+           再貼」，但那個 name 是寫在 AI 給的程式裡的，要改就得回去翻那段程式。
+           順便也解掉「程式更新後多了同名的內建」：那一份以前會在開場載入時被擋掉、
+           整份消失（只留一行 console.warn），現在是改名留下來。
+       加編號的那條要先找「上一次同一個 name 進來時被改成的那一份」（name＋編號）並蓋掉它，
+       不然同一份改一版再貼一次就多一座，會 2、3、4 一直長。有好幾份符合就取最早貼進來的。 */
+    const src = def.name;
+    const hit = SHAPES.findIndex(s => s.n === def.name);
+    let take = -1;                       // 要蓋掉的「自己那一份」在 SHAPES 的位置
+    if (hit >= 0 && own.has(hit)) take = hit;
+    else if (hit >= 0) {
+      const pre = new RegExp('^' + src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\d+$');
+      for (const i of own) if (pre.test(SHAPES[i].n)) { take = i; break; }
+      def.name = take >= 0 ? SHAPES[take].n : freeBpName(src);
+    }
+    if (take >= 0) {
       /* 只蓋掉自己貼的那份。splice 會讓後面的索引往前挪一格，所以整組重算 */
-      SHAPES.splice(old, 1);
+      SHAPES.splice(take, 1);
       const moved = [];
-      for (const i of own) if (i !== old) moved.push(i > old ? i - 1 : i);
+      for (const i of own) if (i !== take) moved.push(i > take ? i - 1 : i);
       own.clear();
       for (const i of moved) own.add(i);
     }
@@ -3360,7 +3385,9 @@ function importBlueprint(raw, own) {
     try { idx = customBlueprint(def); } finally { console.warn = orig; }
     if (idx < 0) throw new Error(why || '這份藍圖被 customBlueprint 擋掉了。');
     own.add(idx);
-    added.push({ idx: idx, name: def.name, file: bpFileName(code, def.name), code: code });
+    // was：被改過名的才有值，兩邊的 UI 拿它講「原名撞號，自動加了編號」
+    added.push({ idx: idx, name: def.name, was: def.name === src ? '' : src,
+                 file: bpFileName(code, def.name), code: code });
   }
   return added;
 }

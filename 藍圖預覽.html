@@ -149,7 +149,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載 game.js（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.110.0';
+const VIEWER_VER = '1.111.0';
 
 const $ = id => document.getElementById(id);
 
@@ -327,8 +327,11 @@ $('load').addEventListener('click', () => {
     syncSave();
     renderList();                     // 貼進來的檔名也要進 list.js 的候選清單
     msg.className = 'on good';
+    const renamed = added.filter(a => a.was);
     msg.textContent = '✔ 已載入「' + added.map(a => a.name).join('、') + '」' +
-      (added.length > 1 ? '（' + added.length + ' 份，選的是最後一份）' : '') + '，下面是它的診斷。';
+      (added.length > 1 ? '（' + added.length + ' 份，選的是最後一份）' : '') + '，下面是它的診斷。' +
+      (renamed.length ? '（原名「' + renamed.map(a => a.was).join('、') +
+        '」跟內建或 blueprints/ 裡的撞號，自動加了編號）' : '');
     /* 載完不動貼上區（v1.50.1）：這一頁的節奏是「貼上 → 看 → 改 → 再貼」，
        每次都自動收起來的話，下一輪要先把它點開才改得到那段文字。
        要讓版面給報告的人自己點標題收起來就好——收起來的狀態也不會被這裡蓋回去。 */
@@ -337,6 +340,23 @@ $('load').addEventListener('click', () => {
     msg.textContent = '✘ ' + ((e && e.message) ? e.message : e);
   }
 });
+/* 貼上框點一下就整段選起來（v1.111）：這一頁的節奏是「貼上 → 看 → 改 → 再貼」，
+   而「再貼」是拿新的一份**換掉**框裡那一段，每次都要先自己 Ctrl+A 很煩。
+   只在「游標本來不在框裡」的那一下全選（focus，以及緊接著那一次 mouseup——
+   點一下會把游標放到某個字中間、順手把選取收掉，所以要在 mouseup 再選一次）；
+   之後再點就是正常移游標，不然想手改裡面幾個字會改不了。
+   自己拖出一段選取的也尊重他的選取，不蓋掉。 */
+const pasteTa = $('paste');
+let pasteFresh = false;
+pasteTa.addEventListener('focus', () => { pasteFresh = true; pasteTa.select(); });
+pasteTa.addEventListener('blur', () => { pasteFresh = false; });
+pasteTa.addEventListener('mouseup', () => {
+  if (!pasteFresh) return;
+  pasteFresh = false;
+  if (pasteTa.selectionStart !== pasteTa.selectionEnd) return;
+  pasteTa.select();
+});
+
 $('copy').addEventListener('click', copyReport);
 /* 沒放 src/bpdoc.js 的話這一頁照跑，只有這顆拿不到說明全文（跟遊戲那邊同一套處理） */
 if (typeof BP_DOC === 'string')

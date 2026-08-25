@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.110.0';
+const VERSION = '1.111.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -7477,8 +7477,12 @@ function doImport() {
     renderImports();
     $('impPaste').value = '';               // 免得手滑再按一次又匯一遍
     const who = added.map(a => a.name).join('、');
+    /* 被改過名的要講出來，不然使用者在清單裡找不到自己貼的那個名字（v1.111） */
+    const renamed = added.filter(a => a.was);
     msg.className = 'on good';
     msg.textContent = '✔ 匯入「' + who + '」，設定面板的下拉選單裡選得到了。' +
+      (renamed.length ? '（原名「' + renamed.map(a => a.was).join('、') +
+        '」跟內建或 blueprints/ 裡的撞號，自動加了編號）' : '') +
       (kept ? '' : '（存不下來：瀏覽器的儲存空間滿了，這一份關掉頁面就沒了）');
     toast('📥 ' + who, '匯入完成');
   } catch (e) {
