@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.108.0';
+const VERSION = '1.109.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -269,6 +269,7 @@ function newBlock() {
        本來就會跳過它；反過來，破壞道具只看 st === SET，所以照樣打得掉。 */
     hh: -1, hk: -1,
     scale: 1, snap: 0, snapFrom: null, arc: null, wob: 0, al: 1, fallIn: 0,
+    gone: 0,                             // >0＝完工後多餘的碎料正在淡出（v1.109，見 clearSpare）
     burn: 0,                             // 1 = 正在燒（狀態本體在 fires 那筆裡）
     wet: 0                               // 還濕幾秒（>0 就點不著，顏色也壓深一點）
   };
@@ -842,10 +843,18 @@ function stepDozers(dt) {
 /* 直接把整座蓋好。開場用——一進來就有一座完整的建築可以砸，
    不用先盯著小人搬十分鐘才有東西玩。設定面板的「立刻建成」也走這裡。 */
 function completeNow() {
-  for (let i = 0; i < bp.slots.length && i < blocks.length; i++) {
-    const s = bp.slots[i], b = blocks[i];
+  /* 房子的積木要跳過（v1.109）：那些不是這一座的料。以前是照編號硬取
+     blocks[0..格數)，編號更後面的一律壓成散料——場上有村落的時候按下「立刻建成」，
+     整村的積木就全變成地上的碎料（實測 6 間 876 塊全躺平），而 homes.list 還記著
+     「這幾間都蓋好了、一格都不缺」，於是村子憑空消失、也沒有人會去補。
+     跳過之後那些房子原封不動，散料也只剩真正多出來的那些（接著就淡出，見 clearSpare）。 */
+  let i = 0;
+  for (let k = 0; k < bp.slots.length; k++) {
+    while (i < blocks.length && blocks[i].hh >= 0) i++;
+    if (i >= blocks.length) break;
+    const s = bp.slots[k], b = blocks[i++];
     if (b.cell) gridDel(b);
-    b.st = SET; b.slot = i; b.x = s.x; b.y = s.y + HB; b.z = s.z;
+    b.st = SET; b.slot = k; b.x = s.x; b.y = s.y + HB; b.z = s.z;
     b.rx = b.ry = b.rz = 0; b.scale = 1; b.al = 1; b.holder = -1; b.snap = 0; b.fallIn = 0;
     b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
     const pal = bp.pal[s.c % bp.pal.length];
@@ -854,8 +863,9 @@ function completeNow() {
     b.b = b.tb = (pal & 255) / 255;
     s.filled = true; s.claimed = -1;
   }
-  for (let i = bp.slots.length; i < blocks.length; i++) {     // 多的積木壓成靜止的散料
+  for (; i < blocks.length; i++) {                           // 多的積木壓成靜止的散料
     const b = blocks[i];
+    if (b.hh >= 0) continue;                                 // 房子的不是多的（見上面）
     b.st = FREE; b.slot = -1; b.holder = -1; b.snap = 0; b.rest = true;
     b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
     if (!b.cell) gridAdd(b);
@@ -867,6 +877,7 @@ function completeNow() {
   dozers = null; ENG.putDozers([]);      // 建築直接長出來了，整地機沒戲唱
   placedCnt = bp.slots.length;
   phase = 'done';
+  clearSpare();                          // 用不到的碎料淡出（v1.109，同 stepToss 那條）
   assignSpots();                         // 慶祝要圍的那一圈
   /* 施工計時歸零：這一座不是小人蓋的，時間不算它的。順帶擋掉「奇蹟工程」——
      noteBuilt() 要 buildElapsed > 0 才給那個成就，按鈕就白拿不到。
@@ -933,6 +944,58 @@ function reconcilePool() {
     }
   }
   ENG.setBlockCount(blocks.length);
+}
+
+/* 把一批積木整個從池子裡拿掉（v1.109）。跟 reconcilePool 的收法差在**時機**：
+   那一支只在換場時跑，那時候每個人都 releaseWorker 過、沒有任何地方還記著積木編號；
+   這一支是遊戲進行中跑的，所以「記著編號」的那幾個地方要一起重編——
+   跟 dropHomes 重編 b.hh 是同一件事。哪幾個地方：
+     w.load[].b（認走的建材）· w.fly[].b（魔法師還在飛的）· w.gb／w.gbi（要去撿的那一塊）
+     · quake.list（地震點名的那份清單）
+   收掉的一定是沒人要的自由碎料（見 clearSpare），所以前三者指到的不會被收，
+   只是要換算新編號；w.gb／w.gbi 有可能指到被收掉的，換成 −1（下一幀自己會重挑）。 */
+function dropBlocks(kill) {
+  const map = new Array(blocks.length), list = [];
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (kill(b)) { map[i] = -1; if (b.cell) gridDel(b); continue; }
+    map[i] = list.length; list.push(b);
+  }
+  const gone = blocks.length - list.length;
+  if (!gone) return 0;
+  blocks = list;
+  const to = i => (i >= 0 && i < map.length ? map[i] : -1);
+  for (const w of workers) {
+    for (const j of w.load) j.b = to(j.b);
+    for (const f of w.fly) f.b = to(f.b);
+    w.gb = to(w.gb); w.gbi = to(w.gbi);
+  }
+  if (quake) for (let i = 0; i < quake.list.length; i++) quake.list[i] = to(quake.list[i]);
+  homeOwnAt = -1;                      // 那份「格子 → 積木編號」的快取這一幀作廢了
+  ENG.setBlockCount(blocks.length);
+  return gone;
+}
+/* ── 完工之後把多餘的碎料收掉（v1.109）─────────────────
+   使用者：「地標建築完工後 可以讓多餘的碎料消失」。
+   完工那一刻還躺在地上的自由碎料，這一座已經用不到了（料池本來就是照藍圖格數配的）。
+   多出來的幾乎都是小人的家帶進來的：家的積木是從地上**挖出來的新塊**，
+   那一間被打爛廢棄、或被下一座工地徵收之後就解成碎料留在場上，一輪一輪越積越多。
+   以前要等下一次 startBuild 的 reconcilePool 才收得掉，中間整片草地都是瓦礫。
+
+   收法是淡出，不是瞬間消失：離場中心越遠的越晚開始，看過去是一圈往外掃的波。
+   標記的當下就把 rest 清掉——每一條找料的路（findBlock／freeNearHome／listMageHeaps
+   ／mageBlock）都要求 rest，所以淡出中的不會被誰撿走。 */
+const SPARE_FADE = 0.5;             // 一塊淡出幾秒
+const SPARE_WAVE = 0.012;           // 每遠一格晚開始幾秒（0.012 × 40 格 ≈ 半秒的波）
+function clearSpare() {
+  let n = 0;
+  for (const b of blocks) {
+    if (b.st !== FREE || !b.rest || b.holder >= 0 || b.hh >= 0 || b.gone) continue;
+    b.gone = SPARE_FADE + Math.hypot(b.x, b.z) * SPARE_WAVE;
+    b.rest = false;
+    n++;
+  }
+  return n;
 }
 
 /* ── 小人 ───────────────────────────────────────────────── */
@@ -1003,6 +1066,10 @@ function newWorker(i) {
        伸手拿（v1.108）：gbi 是正在走去撿的那一塊，gbd 是離它最近到過多少，
        gbt 是「沒有再更近」幾秒了（見 nearGrab）。 */
     sx: 0, sz: 0, stk: 0, ghost: 0, gbi: -1, gbd: 0, gbt: 0,
+    /* 自己那間家的編號（v1.109）。−1＝還沒有家。這個**跨輪留著**（w.hm 每輪會被
+       stopHomes 清掉），下一次事件才知道誰已經有家、不必再蓋一間。
+       記 id 不記索引：索引會被 dropHomes 重編。 */
+    own: -1,
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
@@ -2472,6 +2539,9 @@ function stepIdleEvent(dt) {
    房子留在場上不收（使用者指定），唯一的例外是下一座工地正好蓋到它身上——
    那一間解成碎料（見 clearHomesInSite）。 */
 let homes = null;                   // { list: [home] }。蓋好的房子不隨事件收掉
+/* 每間房子一個不會變的編號（v1.109）。小人記「自己家是哪一間」記的是這個，
+   不是 homes.list 的索引——索引會被 dropHomes 重編。 */
+let homeSeq = 0;
 const HOME_PART = 0.5;              // 大約幾成的人離隊去蓋（使用者選「一半左右」）
 /* 蓋在哪一帶（v1.98 放寬，使用者：「應該分散一點，地標建築範圍外到小樹圈內」）。
    v1.97 是 siteR + 8～22 的窄環，幾間房子擠在同一圈上。現在內緣貼著地標外圍、
@@ -2965,12 +3035,34 @@ function pickUnfinished(cx, cz, taken) {
 function startHomes() {
   if (!homes) homes = { list: [] };
   const taken = new Set();
-  /* 誰離隊：從站得穩的人裡抽大約一半。工程師與魔法師照樣抽得到——
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  /* 已經有家的人不再蓋新的（v1.109，使用者：「已經有房子的小人不用再蓋小房子，
+     不然會越來越多間」）。不擋的話每一輪都有一半的人離隊開新的一間，
+     村子會一輪一輪長下去，最後整片草地都是房子。
+     家沒了才重新算成沒家——打爛到廢棄（wreckHomes）、被下一座工地徵收
+     （clearHomesInSite）之後那個 id 就不在清單上了，他可以再蓋一間。 */
+  const live = new Set();
+  for (const h of homes.list) live.add(h.id);
+  for (const w of workers) if (w.own >= 0 && !live.has(w.own)) w.own = -1;
+  /* 自己家還缺格子的先回去補（被砸出洞、上一輪沒蓋完），而且**標進 taken**：
+     那一間有主人在顧了，沒家的人就別再插一腳，去蓋自己的。
+     試過反過來（不標，讓沒家的人也來接手）：那些人變成現成房子的共同主人、
+     從此不再蓋新的，實測村子從 6 間一路縮到 3 間、20 個人全擠在那 3 間上，
+     再也不長了——使用者要的是「不要越來越多間」，不是「不要有新的」。 */
+  for (const w of workers) {
+    if (w.own < 0 || !steady(w)) continue;
+    const hi = homes.list.findIndex(h => h.id === w.own);
+    if (hi < 0 || homes.list[hi].left <= 0) continue;
+    releaseWorker(w);
+    w.hm = hi; w.hst = ''; w.pause = 0;
+    taken.add(hi);
+  }
+  /* 誰離隊：從**還沒有家**又站得穩的人裡抽大約一半。工程師與魔法師照樣抽得到——
      沒在施工的時候他們就是普通人（圖跟法杖只在施工那條路上畫）。 */
   const pool = [];
   for (let i = 0; i < workers.length; i++) {
     const w = workers[i];
-    if (w.air || w.burn > 0 || w.flee > 0 || w.fall > 0) continue;
+    if (!steady(w) || w.own >= 0) continue;
     pool.push(i);
   }
   for (let i = pool.length - 1; i > 0; i--) {          // 洗牌
@@ -3008,7 +3100,7 @@ function startHomes() {
          鍵用房子自己的格座標（i／gy／k），所以圍籬與門廊那些負的座標也放得進去。 */
       const at = new Map();
       slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
-      const h = { x: spot.x, z: spot.z, r: homeR(kind), kind: kind.id, at,
+      const h = { id: homeSeq++, x: spot.x, z: spot.z, r: homeR(kind), kind: kind.id, at,
                   ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,    // 見 homeSolid
                   slots, left: slots.length, n: crew.length,
                   done: false };          // 蓋好過一次了嗎（見 dropHungHome）
@@ -3021,6 +3113,7 @@ function startHomes() {
     for (const w of crew) {
       releaseWorker(w);                                // 手上的建材先放掉，這趟不是上工
       w.hm = hi; w.hst = ''; w.pause = 0;
+      w.own = homes.list[hi].id;                       // 從現在起這是他家（v1.109）
     }
   }
 }
@@ -3509,6 +3602,7 @@ function stepToss(b, dt) {
       for (const w of workers) { w.cheer = 0; w.pause = 0; }
       assignSpots();
       sndDone();
+      clearSpare();                     // 用不到的碎料淡出（v1.109）
       toast('🎉 ' + bp.name + ' 完工', fmtDur(buildElapsed) + '　人力 ' + money(spentThis));
       noteBuilt();
     }
@@ -6966,6 +7060,7 @@ function step(dt) {
   }
   stepHomeFall(dt);                    // 小人的家：撐不住的也要垮（v1.102）
 
+  let spareDead = false;              // 這一幀有沒有碎料淡完了（見 clearSpare）
   for (const b of blocks) {
     if (b.fallIn > 0) {                 // 已判定要垮，等它的鬆脫時間到
       b.fallIn -= dt;
@@ -6982,7 +7077,15 @@ function step(dt) {
     else if (b.st === TOSS) stepToss(b, dt);
     if (b.scale > 1) b.scale = Math.max(1, b.scale - dt * 1.6);
     if (b.wob > 0) b.wob = Math.max(0, b.wob - dt * 2.2);
-    if (b.al < 1) b.al = Math.min(1, b.al + dt * 2);
+    if (b.gone > 0) {
+      /* 淡出中（v1.109）。淡到一半被炸飛／被吸走的就取消——那一塊又變成場上的東西了。 */
+      if (b.st !== FREE) { b.gone = 0; b.al = 1; }
+      else {
+        b.gone -= dt;
+        b.al = Math.max(0, Math.min(1, b.gone / SPARE_FADE));
+        if (b.gone <= 0) { b.gone = -1; spareDead = true; }
+      }
+    } else if (b.al < 1) b.al = Math.min(1, b.al + dt * 2);
     /* 淋濕的積木顏色壓深一點點（v1.68）。做法是**只動這裡的目標值**，不去改 b.tr——
        b.tr 是「這塊積木自己的顏色」，被燒黑、被打成碎料、被砌進新建築都會改寫它，
        濕度若也寫進 b.tr，乾了要還原就得記一份原色、還要在那三條路上各補一次還原。
@@ -6993,6 +7096,7 @@ function step(dt) {
     b.g += (b.tg * wk - b.g) * Math.min(1, dt * 5);
     b.b += (b.tb * wk - b.b) * Math.min(1, dt * 5);
   }
+  if (spareDead) dropBlocks(b => b.gone < 0);            // 淡完的收掉（見 clearSpare）
   burningW = 0;
   for (const w of workers) if (w.burn > 0) burningW++;    // 火苗配額要照人數分
   mageHeapT -= dt;                                       // 料堆清單的重算計時（見 listMageHeaps）

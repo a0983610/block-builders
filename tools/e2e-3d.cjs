@@ -4728,6 +4728,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const w = workers[0], q = workers[1];
     w.cheer = 1e9; q.cheer = 1e9; w.hm = -1; q.hm = -1;
     w.x = 20; w.z = 0; w.sx = 20; w.sz = 0; w.tx = -20; w.tz = 0; w.stk = 0; w.ghost = 0;
+    /* 腿先擺起來：gait 是漸進的（0 → 0.66 要三幀），不先設的話量到的時間會晚個 0.15 秒 */
+    w.gait = 0.85;
     q.x = 26; q.z = 0; q.gait = 0; q.stk = 0; q.ghost = 0;
     let re = -1, gh = -1, idleGhost = 0;
     for (let i = 0; i < 300; i++) {
@@ -4746,8 +4748,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return out;
   });
   ok('腿在擺卻走不動：先重找路線，再直接穿過去（站著不動的不算）',
-     stuckWD.re > 0 && Math.abs(stuckWD.re - stuckWD.T) < 0.2 &&
-     stuckWD.gh > 0 && Math.abs(stuckWD.gh - stuckWD.T * 2) < 0.2 && stuckWD.idleGhost === 0,
+     /* 只能晚不能早：門檻沒到就介入才是錯的。晚幾幀是量測的解析度（一幀 0.05 秒）。 */
+     stuckWD.re >= stuckWD.T && stuckWD.re <= stuckWD.T + 0.25 &&
+     stuckWD.gh >= stuckWD.T * 2 && stuckWD.gh <= stuckWD.T * 2 + 0.25 &&
+     stuckWD.idleGhost === 0,
      '釘住的那個（腿還在擺 ' + stuckWD.gait + '）：' + stuckWD.re + ' 秒重找路線、' +
      stuckWD.gh + ' 秒開始穿透（門檻 ' + stuckWD.T + ' 秒 / 錨點 ' + stuckWD.R +
      ' 格，穿 ' + stuckWD.G + ' 秒）；旁邊站著發呆的那個穿透 ' + stuckWD.idleGhost + ' 幀');
@@ -4847,6 +4851,279 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 秒撿起來（用掉穿透 ' + farGrab.on.ghost + ' 幀）；只靠卡住脫困穿牆進去 ' +
      farGrab.ghost.got + ' 秒（穿透 ' + farGrab.ghost.ghost +
      ' 幀）；兩個都沒有（v1.107）→ 60 秒撿到的是 ' + farGrab.off.got + '（−1＝沒撿到）');
+
+  /* ══════════ 完工之後把多餘的碎料收掉（v1.109） ══════════
+     使用者：「地標建築完工後 可以讓多餘的碎料消失」。多出來的幾乎都是小人的家
+     帶進場的（家的積木是從地上挖出來的新塊，那一間被廢棄／被下一座工地徵收之後
+     就解成碎料留著），所以這一段擺在房子這一章。
+     這裡人為補 300 塊碎料當「上一輪留下的」，再讓小人自己把地標蓋完。 */
+  const spareGone = await page.evaluate(() => {
+    const run = on => {
+      cleanTools(); clearHomes(); stopIdleEvent();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 400; setWorkerCount(20); startBuild(true);
+      for (let i = 0; i < 300; i++) {                    // 補一批「多餘的」碎料
+        const b = newBlock();
+        const a = Math.random() * Math.PI * 2;
+        const rad = siteR + 3 + Math.random() * (arenaR - siteR - 3);
+        b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad; b.y = HB;
+        blocks.push(b); separate(b); gridAdd(b);
+      }
+      ENG.setBlockCount(blocks.length);
+      const orig = clearSpare;
+      if (!on) clearSpare = () => 0;                     // 對照＝v1.108（留在場上）
+      const free = () => blocks.filter(b => b.st === 0 && b.rest && b.holder < 0 && b.hh < 0).length;
+      const pool0 = blocks.length, slots = bp.slots.length;
+      let lastFree = free(), t = 0;
+      while (t < 600 && phase === 'build') { lastFree = free(); step(0.05); t += 0.05; }
+      // 完工那一刻：該是「淡出中」而不是瞬間消失
+      const fading = blocks.filter(b => b.gone > 0).length;
+      let fadeSecs = 0;
+      while (fadeSecs < 5 && blocks.some(b => b.gone > 0)) { step(0.05); fadeSecs += 0.05; }
+      clearSpare = orig;
+      const out = { slots, pool0, atDone: lastFree, fading, fadeSecs: +fadeSecs.toFixed(2),
+                    pool1: blocks.length, free1: free(), placed: placedCnt,
+                    /* 完工那一刻還在人手上／半空中的那幾塊不是「多餘的」，會留著 */
+                    inHand: blocks.filter(b => b.st !== 3).length,
+                    set: blocks.filter(b => b.st === 3).length,
+                    nan: blocks.filter(b => !isFinite(b.x) || !isFinite(b.z)).length,
+                    badLoad: workers.reduce((n, w) => n + w.load.filter(j => !blocks[j.b]).length, 0) };
+      cleanTools(); clearHomes();
+      return out;
+    };
+    return { on: run(true), off: run(false) };
+  });
+  ok('地標完工之後，多餘的碎料會淡出消失',
+     spareGone.on.atDone > 200 && spareGone.on.fading === spareGone.on.atDone &&
+     spareGone.on.fadeSecs > 0.4 && spareGone.on.fadeSecs < 3 &&
+     spareGone.on.free1 === 0 && spareGone.on.set === spareGone.on.slots &&
+     spareGone.on.placed === spareGone.on.slots &&
+     spareGone.on.pool1 === spareGone.on.slots + spareGone.on.inHand &&
+     spareGone.on.nan === 0 && spareGone.on.badLoad === 0 &&
+     spareGone.off.free1 === spareGone.off.atDone && spareGone.off.pool1 === spareGone.off.pool0,
+     '補 300 塊多餘的料（池 ' + spareGone.on.pool0 + '、藍圖 ' + spareGone.on.slots +
+     '）：完工那一刻地上還有 ' + spareGone.on.atDone + ' 塊 → 淡出 ' + spareGone.on.fading +
+     ' 塊、' + spareGone.on.fadeSecs + ' 秒收乾淨 → 池剩 ' + spareGone.on.pool1 +
+     '（已就位 ' + spareGone.on.set + ' ＋ 還在手上的 ' + spareGone.on.inHand +
+     '）；不收（v1.108）→ 地上留著 ' + spareGone.off.free1 + ' 塊、池 ' + spareGone.off.pool1);
+
+  /* 收掉的只能是「沒人要的」：房子的積木、手上搬著的、魔法師還在飛的都不算。
+     這一條同時驗**編號重編**——dropBlocks 會把積木從池子裡整個抽掉，
+     w.load／w.fly／quake.list 記的是編號，抽掉之後不重編就會指到別塊積木身上。 */
+  const spareKeepOK = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 400; setWorkerCount(6); startBuild(true);
+    // 一間假房子（外框成立就夠，這裡只在乎它的積木不會被收掉）
+    homes = { list: [] };
+    const kind = HOME_KIND[0];
+    const at = { x: 0, z: siteR + 6 + homeR(kind) };
+    const slots = homeSlots(at.x, at.z, kind, HOME_PAL[0]);
+    const map = new Map();
+    slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+    const h = { id: 9001, x: at.x, z: at.z, r: homeR(kind), kind: kind.id, at: map,
+                ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                slots, left: slots.length, n: 1, done: true };
+    markHomeF6(h); homes.list.push(h);
+    for (let i = 0; i < slots.length; i++) {
+      const sl = slots[i], b = newBlock();
+      b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
+      b.hh = 0; b.hk = i;
+      blocks.push(b); sl.filled = true; h.left--;
+    }
+    homeBox(h);
+    // 再補 200 塊真的多餘的
+    for (let i = 0; i < 200; i++) {
+      const b = newBlock();
+      const a = Math.random() * Math.PI * 2;
+      const rad = siteR + 3 + Math.random() * (arenaR - siteR - 3);
+      b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad; b.y = HB;
+      blocks.push(b); separate(b); gridAdd(b);
+    }
+    ENG.setBlockCount(blocks.length);
+    const homeN = slots.length;
+    // 一個人手上抓著一塊、一塊掛在魔法師的飛行清單上、一份地震點名清單
+    const w = workers.find(q => !q.eng && !q.mage) || workers[0];
+    const carry = blocks.findIndex(b => b.st === 0 && b.rest && b.hh < 0);
+    blocks[carry].st = 1; blocks[carry].rest = false; blocks[carry].holder = workers.indexOf(w);
+    w.load.push({ b: carry, s: 0 }); bp.slots[0].claimed = workers.indexOf(w);
+    const flyI = blocks.findIndex((b, i) => i !== carry && b.st === 0 && b.rest && b.hh < 0);
+    {
+      const fb = blocks[flyI];
+      if (fb.cell) gridDel(fb);
+      fb.st = 2; fb.rest = false; fb.slot = -1;
+      // 飛很久的一段弧：這一條測的是「編號重編」，不要讓它在中途落地
+      fb.arc = { t: 0, dur: 99, x0: fb.x, y0: fb.y, z0: fb.z,
+                 x1: fb.x, y1: fb.y + 2, z1: fb.z, peak: fb.y + 4 };
+    }
+    const mg = workers.find(q => q.mage) || workers[0];
+    mg.fly.push({ b: flyI, s: -1 });
+    const setI = [];
+    for (let i = 0; i < blocks.length && setI.length < 5; i++) if (blocks[i].hh >= 0) setI.push(i);
+    quake = { t: 9, next: 9, list: setI.slice(), cur: 0, x: 0, z: 0 };
+    const carryB = blocks[carry], flyB = blocks[flyI];
+    const quakeB = setI.map(i => blocks[i]);
+    /* 這兩個人整段躺著（fall），狀態機才不會把手上那塊丟掉——
+       這一條要驗的是「編號重編」，不是他們會不會把工作做完。 */
+    w.fall = 99; mg.fall = 99;
+    const pool0 = blocks.length;
+    const expect = blocks.filter(b => b.st === 0 && b.rest && b.holder < 0 && b.hh < 0).length;
+    const gone = clearSpare();
+    let t = 0;
+    while (t < 5 && blocks.some(b => b.gone > 0)) { step(0.05); t += 0.05; }
+    const out = {
+      pool0, gone, expect, pool1: blocks.length,
+      homeLeft: blocks.filter(b => b.hh >= 0 && b.st === 3).length, homeN,
+      carryOK: blocks[w.load[0] ? w.load[0].b : -1] === carryB,
+      flyOK: !!mg.fly.length && blocks[mg.fly[0].b] === flyB,
+      quakeOK: quake ? quake.list.every((v, i) => blocks[v] === quakeB[i]) : false,
+      quakeN: quake ? quake.list.length : -1
+    };
+    quake = null;
+    cleanTools(); clearHomes();
+    return out;
+  });
+  ok('只收沒人要的：房子的、手上搬的、還在飛的都留著（編號也跟著重編）',
+     spareKeepOK.gone > 100 && spareKeepOK.gone === spareKeepOK.expect &&
+     spareKeepOK.pool1 === spareKeepOK.pool0 - spareKeepOK.gone &&
+     spareKeepOK.homeLeft === spareKeepOK.homeN &&
+     spareKeepOK.carryOK && spareKeepOK.flyOK && spareKeepOK.quakeOK,
+     '池 ' + spareKeepOK.pool0 + ' → ' + spareKeepOK.pool1 + '（收掉 ' + spareKeepOK.gone +
+     '）：房子的 ' + spareKeepOK.homeLeft + '/' + spareKeepOK.homeN +
+     ' 塊都在；重編後手上那塊還對得上：' + spareKeepOK.carryOK +
+     '、飛行中那塊：' + spareKeepOK.flyOK +
+     '、地震點名的 ' + spareKeepOK.quakeN + ' 塊：' + spareKeepOK.quakeOK);
+
+  /* 已經有房子的小人不會再蓋一間（v1.109，使用者：「不然會越來越多間」）。
+     連跑幾輪事件：每一輪離隊的人裡，有家的只會回去補**自己那一間**，
+     不會被算進「開新房子」的名額；沒家的才抽籤離隊。 */
+  const ownHome = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    const ev = stepIdleEvent;
+    stepIdleEvent = () => {};                // 這一段自己控制輪次，別讓事件自己又開一輪
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(20); startBuild(true); completeNow();
+    homes = { list: [] };
+    const rows = [];
+    for (let r = 0; r < 4; r++) {
+      /* 家在上一輪被打爛廢棄的人，這一輪本來就算「沒家」——他可以再蓋一間。
+         所以「本來就有家」要對照**還活著的那幾間**，不是只看 w.own 有沒有值。 */
+      const liveId = new Set(homes.list.map(h => h.id));
+      const own0 = workers.map(w => (w.own >= 0 && liveId.has(w.own) ? w.own : -1));
+      const homeless = own0.filter(o => o < 0).length;
+      const n0 = homes.list.length;
+      startHomes();
+      const crew = workers.filter(w => w.hm >= 0);
+      /* 兩個判準都只看「本來就有家的那幾個」：
+         stray ＝ 被派去別人家；fresh ＝ 被派去這一輪新開的房子（hm >= n0）。
+         v1.108 的抽籤是不看有沒有家的，這兩個數字都會是一大票。 */
+      let stray = 0, fresh = 0;
+      for (const w of crew) {
+        const o = own0[workers.indexOf(w)];
+        if (o < 0) continue;
+        if (homes.list[w.hm].id !== o) stray++;
+        if (w.hm >= n0) fresh++;
+      }
+      rows.push({ n0, n1: homes.list.length, add: homes.list.length - n0,
+                  crew: crew.length, homeless, hadHome: crew.length - crew.filter(
+                    w => own0[workers.indexOf(w)] < 0).length,
+                  stray, fresh, owners: workers.filter(w => w.own >= 0).length });
+      let t = 0;
+      while (t < 600 && homes.list.some(h => h.left > 0)) { step(0.05); t += 0.05; }
+      const hb = blocks.filter(b => b.st === 3 && b.hh >= 0);
+      for (let i = 0; i < Math.floor(hb.length * 0.1); i++) breakBlock(hb[i], 0, 0, 0);
+      for (let i = 0; i < 60; i++) step(0.05);
+      stopHomes();
+    }
+    stepIdleEvent = ev;
+    const out = { rows, houses: homes.list.length,
+                  owners: workers.filter(w => w.own >= 0).length, men: workers.length };
+    cleanTools(); clearHomes();
+    return out;
+  });
+  ok('已經有房子的小人不會再蓋一間（只回去補自己那一間）',
+     ownHome.rows.every(r => r.stray === 0 && r.fresh === 0) &&
+     ownHome.rows.every(r => r.add <= r.homeless) &&
+     ownHome.rows[0].add > 0 && ownHome.rows[3].add < ownHome.rows[0].add &&
+     ownHome.rows[3].hadHome > 0 && ownHome.owners > ownHome.rows[0].crew,
+     '四輪的間數 ' + ownHome.rows.map(r => r.n0 + '→' + r.n1).join('、') +
+     '（每輪還沒有家的 ' + ownHome.rows.map(r => r.homeless).join('、') + ' 人）；' +
+     '本來就有家又被派工的共 ' + ownHome.rows.reduce((a, r) => a + r.hadHome, 0) +
+     ' 人次，其中被派去別人家 ' + ownHome.rows.reduce((a, r) => a + r.stray, 0) +
+     ' 人次、被派去新開的房子 ' + ownHome.rows.reduce((a, r) => a + r.fresh, 0) +
+     ' 人次；最後 ' + ownHome.men + ' 人裡 ' + ownHome.owners + ' 人有家、村子 ' +
+     ownHome.houses + ' 間');
+
+  /* 家沒了就重新算成沒家：打爛到廢棄（剩不到兩成五）之後，原主人可以再蓋一間。 */
+  const ownAgain = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(12); startBuild(true); completeNow();
+    homes = { list: [] };
+    startHomes();
+    let t = 0;
+    while (t < 600 && homes.list.some(h => h.left > 0)) { step(0.05); t += 0.05; }
+    stopHomes();
+    const tgt = homes.list[0];
+    const owners = workers.filter(w => w.own === tgt.id).length;
+    // 打到剩兩成 → 整間廢棄
+    const q = blocks.filter(b => b.st === 3 && b.hh === 0);
+    const kill = Math.ceil(q.length - tgt.slots.length * 0.2);
+    for (let i = 0; i < kill && i < q.length; i++) breakBlock(q[i], 0, 0, 0);
+    for (let i = 0; i < 80; i++) step(0.05);
+    const gone = homes.list.indexOf(tgt) < 0;
+    const n0 = homes.list.length;
+    startHomes();
+    const freed = workers.filter(w => w.own !== tgt.id).length;
+    const back = workers.filter(w => w.hm >= 0).length;
+    const out = { owners, gone, n0, n1: homes.list.length, freed, back, men: workers.length,
+                  stillTagged: workers.filter(w => w.own === tgt.id).length };
+    cleanTools(); clearHomes();
+    return out;
+  });
+  ok('家被打爛廢棄之後，原主人可以再蓋一間',
+     ownAgain.owners > 0 && ownAgain.gone && ownAgain.stillTagged === 0 &&
+     ownAgain.n1 > ownAgain.n0 && ownAgain.back > 0,
+     '那一間本來有 ' + ownAgain.owners + ' 個主人：打到剩兩成 → 整間廢棄（' +
+     ownAgain.gone + '），標記歸零的還剩 ' + ownAgain.stillTagged +
+     ' 人；下一輪村子 ' + ownAgain.n0 + ' → ' + ownAgain.n1 + ' 間、' +
+     ownAgain.back + ' 人離隊');
+
+  /* 按「立刻建成」不會把整村變成碎料（v1.109 修掉的舊坑）。
+     completeNow 以前是照編號硬取 blocks[0..格數) 當建材、編號更後面的一律壓成散料——
+     場上有村落的時候按下去，整村的積木全躺平，而 homes.list 還記著「都蓋好了」。 */
+  const instaVillage = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(12); startBuild(true); completeNow();
+    homes = { list: [] };
+    startHomes();
+    let t = 0;
+    while (t < 600 && homes.list.some(h => h.left > 0)) { step(0.05); t += 0.05; }
+    stopHomes();
+    const before = { houses: homes.list.length,
+                     set: blocks.filter(b => b.hh >= 0 && b.st === 3).length,
+                     left: homes.list.reduce((a, h) => a + h.left, 0) };
+    // 換一座、再按立刻建成
+    startBuild(false);
+    completeNow();
+    for (let i = 0; i < 60; i++) step(0.05);
+    const after = { houses: homes.list.length,
+                    set: blocks.filter(b => b.hh >= 0 && b.st === 3).length,
+                    loose: blocks.filter(b => b.hh >= 0 && b.st !== 3).length,
+                    dual: blocks.filter(b => b.hh >= 0 && b.slot >= 0).length,
+                    placed: placedCnt, slots: bp.slots.length };
+    cleanTools(); clearHomes();
+    return { before, after };
+  });
+  ok('按下「立刻建成」不會把整村的積木變成碎料',
+     instaVillage.before.set > 0 && instaVillage.after.set === instaVillage.before.set &&
+     instaVillage.after.loose === 0 && instaVillage.after.dual === 0 &&
+     instaVillage.after.placed === instaVillage.after.slots,
+     '村子 ' + instaVillage.before.houses + ' 間 / ' + instaVillage.before.set +
+     ' 塊：按下去之後還站著 ' + instaVillage.after.set + ' 塊（散掉 ' +
+     instaVillage.after.loose + ' 塊、同時被當成地標建材的 ' + instaVillage.after.dual +
+     ' 塊），地標 ' + instaVillage.after.placed + '/' + instaVillage.after.slots);
 
   // 後面幾段不該再有房子與事件（見 installClean）
   await page.evaluate(() => { clearHomes(); stepIdleEvent = () => {}; });
