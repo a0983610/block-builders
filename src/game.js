@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.105.0';
+const VERSION = '1.106.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -33,6 +33,10 @@ let slotCursor = 0;
 let siteR = 12;                     // 建築占地半徑
 let arenaR = 40;                    // 整片工地半徑（建材散落 + 碎塊飛行上限）
 let phase = 'build';                // clear（整地）| build | done | wreck
+/* 小人「沒有工地要顧」的兩個階段。拆除中（wreck）純粹是換場的記帳狀態：
+   拆到剩不到 WRECK_AT 就換下一座（見 step 尾巴）。v1.106 之前拆除中還會讓全場退場，
+   使用者：「敲一下持續驚嚇不合理」——現在拆除中小人照樣過自己的生活。 */
+const idlePhase = () => phase === 'done' || phase === 'wreck';
 let buildStart = 0, buildElapsed = 0;
 let timeScale = 1;
 /* 面板上的三檔。做成按鈕不是滑桿：這三檔就是「小場地／標準／大場面」，
@@ -1007,7 +1011,7 @@ function setWorkerCount(n) {
   workerCnt = n;
   tagEngineer();
   tagMage();
-  if (phase === 'done') assignSpots();      // 慶祝中加減人：圈要重新等分
+  if (idlePhase()) assignSpots();           // 慶祝中加減人：圈要重新等分
   ENG.setWorkerCount(workers.length);
 }
 /* 工地上派一個人當工程師：只看圖、只指揮，不搬積木。
@@ -1678,7 +1682,7 @@ function updWorker(w, wi, dt) {
   /* 被吹飛／點著／推倒／要逃命，或是換場要清工地了——聊天一律中斷。
      蓋完的那一刻也中斷：慶祝要全員到齊，不然聊到一半的那兩個會晚五秒才入圈。 */
   if (w.chat > 0 && (w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
-      (phase !== 'build' && phase !== 'done') || (phase === 'done' && cheerOn(w))))
+      (phase !== 'build' && !idlePhase()) || (idlePhase() && cheerOn(w))))
     endChat(w);
   if (w.burn > 0) {
     w.burn -= dt;
@@ -1724,9 +1728,14 @@ function updWorker(w, wi, dt) {
 
   if (w.chat > 0) { stepChat(w, wi, dt); return; }
 
-  if (phase === 'wreck' || phase === 'clear') {
-    /* 拆除中：不修、不蓋，躲遠一點看你拆。要等這座拆完換新藍圖才會回去工作。
-       整地中一樣退到旁邊等——推土機還在推，這時候進場只會被鏟到。 */
+  if (phase === 'clear') {
+    /* 整地中退到旁邊等——推土機還在推，這時候進場只會被鏟到。
+       **拆除中（wreck）v1.106 起不再退場**：使用者「敲一下持續驚嚇不合理」。
+       敲完工的建築一下就會把 phase 推進 wreck，而這條分支會讓全場二十個人立刻
+       往外跑、而且一直待在外圈不做事——實測敲一下之後 60 秒裡 24000/24000 人-幀
+       都停在這裡，平均半徑從 23.7 被推到 28.1，沒有人回去做自己的事。
+       現在拆除中照 `done` 那條走（閒晃、蓋自己的家、慶祝），玩家在拆、小人過自己的生活。
+       「不會偷偷把它修回去」還是成立——那條是 build 的狀態機，這裡走不到。 */
     w.cheer = 0;
     const d = Math.hypot(w.x, w.z);
     if (d < arenaR * 0.62) {
@@ -1743,7 +1752,7 @@ function updWorker(w, wi, dt) {
     return;
   }
 
-  if (phase === 'done') {                             // 蓋完了，圍成一圈慶祝
+  if (idlePhase()) {                                  // 蓋完了，圍成一圈慶祝
     const was = w.cheer;
     w.cheer += dt;
     if (cheerOn(w)) {
@@ -2262,11 +2271,11 @@ function chatFree(w) {
       w.carry) return false;
   // 正在蓋自己的家的人不算閒（蓋完了在家附近走走的才算，v1.97）
   if (w.hm >= 0 && homeBusy(w)) return false;
-  if (phase === 'done') return !cheerOn(w);
+  if (idlePhase()) return !cheerOn(w);
   return phase === 'build' && w.st === 'idle' && !w.eng;
 }
 function pairChat() {
-  if (phase !== 'build' && phase !== 'done') return;
+  if (phase !== 'build' && !idlePhase()) return;
   for (let i = 0; i < workers.length; i++) {
     const a = workers[i];
     if (!chatFree(a)) continue;
@@ -2340,7 +2349,7 @@ function stopIdleEvent() {
   if (e) e.stop();
 }
 function stepIdleEvent(dt) {
-  if (phase !== 'done') { stopIdleEvent(); evArm = 1; return; }
+  if (!idlePhase()) { stopIdleEvent(); evArm = 1; return; }
   if (evArm) {
     /* 等到每個人都散場才挑：還在圈上跳的時候就開始蓋房子的話，
        那幾個人會從圈上直接走掉（散場錯開最多 CHEER_OUT 秒，見那裡）。 */
@@ -3155,11 +3164,25 @@ function castTrip(w, wi, h, dt) {
     return;
   }
   const sl = h.slots[k];
-  /* 站位：從屋子中心往那一格的方向推到地基外（跟工人同一套，見 layTrip 的說明）。 */
-  let dx = sl.x - h.x, dz = sl.z - h.z;
-  let d = Math.hypot(dx, dz);
-  if (d < 0.001) { dx = w.x - h.x; dz = w.z - h.z; d = Math.hypot(dx, dz) || 1; }
-  w.tx = h.x + dx / d * (h.r + MAGE_HOME); w.tz = h.z + dz / d * (h.r + MAGE_HOME);
+  /* 這一發要用哪一塊料。**地上的碎料優先**（v1.106，跟工人同一條規則）：
+     認定一塊（w.gb）就不放，走到它旁邊再拋；地上沒有才從地面拉新的出來。
+     不認定、每幀重挑的話會來回震盪：走到搆得到的那一刻，目標又跳回屋子旁邊的站位，
+     於是他在兩點之間來回、永遠沒有「站定」那一刻，一發都拋不出去
+     （實測 600 秒只砌 1 塊）。不撿的話則是站在原地把新的變出來
+     （實測一間 75 格的破洞旁邊躺著 74 塊碎料，他一塊沒用、憑空生了 72 塊）。 */
+  let b = mageBlock(w);
+  if (!b) { w.gb = freeNearHome(w, h); b = mageBlock(w); }
+  if (b) {
+    // 倒在自己家占地裡的要站到框外（同 grabTrip），不然走進去只會被推出來
+    const g = footHome(b.x, b.z) === h ? grabStand(h, b.x, b.z) : b;
+    w.tx = g.x; w.tz = g.z;
+  } else {
+    /* 站位：從屋子中心往那一格的方向推到地基外（跟工人同一套，見 layTrip 的說明）。 */
+    let dx = sl.x - h.x, dz = sl.z - h.z;
+    let d = Math.hypot(dx, dz);
+    if (d < 0.001) { dx = w.x - h.x; dz = w.z - h.z; d = Math.hypot(dx, dz) || 1; }
+    w.tx = h.x + dx / d * (h.r + MAGE_HOME); w.tz = h.z + dz / d * (h.r + MAGE_HOME);
+  }
   const leg = w.leg;                                    // 上工的路不算閒晃里程
   const walking = !strollTo(w, dt);
   w.leg = leg;
@@ -3171,14 +3194,24 @@ function castTrip(w, wi, h, dt) {
   if (w.ct <= 0) { w.ct = MAGE_GAP; castHome(w, wi, h, k); }
 }
 /* 出手：從腳邊的地面拉一塊出來，直接進拋物線飛到那一格（不經過 CARRY）。 */
+/* 魔法師這一發認定的那一塊料還在不在（v1.106）：還躺在地上、沒被別人拿走。
+   挑是用工人那條同一份 freeNearHome（所以倒在自己家占地裡的也算），
+   認定之後就記在 w.gb 上不再重挑（見 castTrip）。 */
+function mageBlock(w) {
+  const b = w.gb >= 0 ? blocks[w.gb] : null;
+  return b && b.st === FREE && b.rest && b.holder < 0 ? b : null;
+}
 function castHome(w, wi, h, k) {
   const sl = h.slots[k];
-  /* 地上的碎料優先（v1.104，同工人那條的規則）：搆得到就把現成的那一塊吸起來，
-     搆不到才從地面拉一塊新的出來。搆多遠沿用他在工地發料的那個範圍（MAGE_REACH）。 */
-  let bi = findBlock(w.x, w.z, MAGE_REACH);
+  /* 地上的碎料優先（v1.104）：認定的那一塊搆得到就吸起來，搆不到才從地面拉新的出來。
+     搆多遠沿用他在工地發料的那個範圍（MAGE_REACH）。 */
+  const has = mageBlock(w);
+  let bi = has && (has.x - w.x) ** 2 + (has.z - w.z) ** 2 <= MAGE_REACH * MAGE_REACH
+           ? w.gb : -1;
   let b;
   if (bi >= 0) {
     b = blocks[bi];
+    w.gb = -1;                                          // 用掉了，下一發重挑
     douse(b);
     if (b.cell) gridDel(b);
     b.tr = sl.c[0]; b.tg = sl.c[1]; b.tb = sl.c[2];     // 顏色慢慢變過去（撿回來重新用的料）

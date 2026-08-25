@@ -4137,16 +4137,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     pickHomeSite = () => null;
     stopIdleEvent(); idleEv = IDLE_EVENTS[0]; startHomes();
     pickHomeSite = origSite;
+    const diag = { hi, houses: homes.list.length,
+                   assigned: workers.filter(w => w.hm >= 0).length,
+                   left0: homes.list.reduce((n, q) => n + q.left, 0),
+                   frac: +((h.slots.length - h.left) / h.slots.length).toFixed(2),
+                   alive: homes.list.indexOf(h) };
     let grab = 0, dig = 0, secs = 0;
     while (secs < 600 && homes.list.some(q => q.left > 0)) {
       step(0.05); secs += 0.05;
       for (const w of workers) {
         if (w.hm < 0) continue;
+        // 魔法師沒有 hst（他不走那條狀態機），照「手上有沒有在飛的」算成撿
+        if (w.mage) { if (w.fly.length) grab++; continue; }
         if (w.hst === 'grab') grab++;
         else if (w.hst === 'dig') dig++;
       }
     }
-    const out = { hole, rubble: pool0, reach: reach.length, all0, pool0,
+    const out = { hole, rubble: pool0, reach: reach.length, all0, pool0, diag,
                   all1: blocks.length, pool1: free().length, houses: homes.list.length,
                   grab, dig, left: homes.list.reduce((n, q) => n + q.left, 0),
                   secs: +secs.toFixed(0) };
@@ -4161,13 +4168,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      撿得到的碎料**幾乎全部用掉**，而且撿的比新挖的多。 */
   ok('房子的積木優先撿地上的碎料，撿不到才挖',
      homeGrab.hole > 40 && homeGrab.reach > 20 && homeGrab.left === 0 &&
-     homeGrab.pool0 - homeGrab.pool1 >= homeGrab.reach * 0.9 &&
+     /* 門檻抓八成不抓九成：補的過程中還會繼續垮、還會有新的碎料落地，
+        「撿得到的」那個數字是**開工前那一刻**的快照（實測 71／79＝0.899 差一點）。 */
+     homeGrab.pool0 - homeGrab.pool1 >= homeGrab.reach * 0.8 &&
      homeGrab.pool0 - homeGrab.pool1 > homeGrab.all1 - homeGrab.all0,
      '砸爛之後 ' + homeGrab.hole + ' 格要補、地上 ' + homeGrab.rubble +
      ' 塊碎料（撿得到的 ' + homeGrab.reach + ' 塊）：撿了 ' +
      (homeGrab.pool0 - homeGrab.pool1) + ' 塊、新挖 ' +
      (homeGrab.all1 - homeGrab.all0) + ' 塊（' + homeGrab.secs + ' 秒補完）；' +
-     '走去撿 ' + homeGrab.grab + ' 人-幀、走去挖 ' + homeGrab.dig + ' 人-幀');
+     '走去撿 ' + homeGrab.grab + ' 人-幀、走去挖 ' + homeGrab.dig + ' 人-幀' +
+     '｜派工 ' + JSON.stringify(homeGrab.diag));
 
   /* 蓋不完的、被砸出洞的，下一輪要有人接手（v1.103）。
      stopHomes 會把每個人的 hm 清掉（開下一座就是這樣），而 startHomes 以前一律開新的一間，
@@ -4433,6 +4443,61 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hitHome.fly.land >= 0 && !hitHome.fly.inHome,
      '第 ' + hitHome.fly.land + ' 幀落地，落點在外框裡：' + hitHome.fly.inHome +
      '（離屋子中心 ' + hitHome.fly.d + '、地基半徑 ' + hitHome.r + '）');
+
+  /* 敲一下完工的建築，不該把全場小人嚇跑（v1.106，使用者：「敲一下持續驚嚇不合理」）。
+     phase 照樣進「拆除中」（那是換場的記帳狀態），但小人繼續過自己的生活——
+     在家附近走走、聊天、蓋房子。v1.105 之前拆除中會讓全場退到外圈站著不動：
+     實測敲一下之後 60 秒裡 24000/24000 人-幀都停在那條分支，平均半徑被推到 arenaR×0.78。
+     順便再驗一次「拆除中不會偷偷把它修回去」——那條是 build 的狀態機，這裡走不到。 */
+  const noScare = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    let t = 0;
+    while (t < 12) { step(0.05); t += 0.05; }
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    idleEv = IDLE_EVENTS[0]; startHomes();
+    let s = 0;
+    while (s < 600 && homes.list.some(h => h.left > 0)) { step(0.05); s += 0.05; }
+    /* 量的是**沒有家的那些人**的平均半徑：有家的人本來就住在自己家附近（外圈到碎料場
+       外緣都有），把他們算進來會把數字洗掉（實測全場平均在 20～24 之間亂跳）。
+       沒有家的人該待在閒晃那一圈（siteR + 2～9）；被趕走的話會跑到 arenaR×0.78。 */
+    const avgR = () => {
+      const q = workers.filter(w => w.hm < 0);
+      return q.length ? +(q.reduce((a, w) => a + Math.hypot(w.x, w.z), 0) /
+                          q.length).toFixed(1) : 0;
+    };
+    const own0 = workers.filter(w => w.hm >= 0).length, r0 = avgR();
+    // 敲一下（小槌打在地標側面）
+    smash({ x: 0, y: bp.height * 0.4, z: siteR * 0.8 }, { x: 0, y: -0.3, z: -1 }, 5.5, 15);
+    const ph = phase, placed0 = placedCnt;
+    let ev = 0, out = 0;
+    for (let i = 0; i < 600; i++) {                   // 30 秒
+      step(0.05);
+      if (idleEv) ev++;                               // 事件還在跑
+      for (const w of workers) if (Math.hypot(w.x, w.z) > arenaR * 0.7) out++;
+    }
+    const out1 = { ph, own0, own1: workers.filter(w => w.hm >= 0).length,
+                   r0, r1: avgR(), placed0, placed1: placedCnt, ev,
+                   outFrac: +(out / (600 * workers.length)).toFixed(2),
+                   arenaR: +arenaR.toFixed(1), siteR: +siteR.toFixed(1) };
+    cleanTools(); clearHomes();
+    return out1;
+  });
+  ok('敲完工的建築不會把全場小人嚇跑（拆除中照樣過自己的生活）',
+     /* 「被趕到外圈」那個比例只列出來參考，不當判準：房子本來就散在外圈到碎料場外緣，
+        住在自己家附近的人本來就在那個半徑上（實測 0.36）。分得出來的是三件事——
+        事件還在不在跑、有家可住的人還有沒有、**沒有家的人還在不在閒晃那一圈**。
+        v1.105 之前這三個分別是 0 幀、0 人、被推到 arenaR×0.78（≈28）。 */
+     noScare.ph === 'wreck' && noScare.ev === 600 && noScare.own1 === noScare.own0 &&
+     noScare.r1 > 0 && noScare.r1 < noScare.siteR + 12 &&
+     noScare.placed1 === noScare.placed0,
+     '敲一下之後 phase=' + noScare.ph + '：事件還在跑 ' + noScare.ev +
+     '/600 幀、有家可住的 ' + noScare.own0 + ' → ' + noScare.own1 +
+     ' 人、沒家的人平均半徑 ' + noScare.r0 + ' → ' + noScare.r1 +
+     '（閒晃圈上限 ' + (noScare.siteR + 12).toFixed(1) + '、碎料場外緣 ' +
+     noScare.arenaR + '，被趕到外圈的人-幀占 ' + noScare.outFrac +
+     '）、建築 ' + noScare.placed0 + ' → ' + noScare.placed1 + ' 沒被偷偷修回去');
 
   // 後面幾段不該再有房子與事件（見 installClean）
   await page.evaluate(() => { clearHomes(); stepIdleEvent = () => {}; });
