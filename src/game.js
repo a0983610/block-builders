@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.104.0';
+const VERSION = '1.105.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2496,16 +2496,21 @@ function homeNbr(h, s, d) {
 }
 /* 占地的外框（v1.103）：把這一間所有格子的世界座標框起來，含門廊與圍籬。
    走路的擋路判定看這個（見 footHome），一次算好放著——每格 ±0.5 是積木的半邊長。 */
+/* 只框**還站著的**那些格子（v1.105）。一開始一塊都沒砌，框是空的（x0 > x1，
+   任何一點都不在裡面）——蓋起來一格一格長大（見 landHome 的就地擴框），
+   被打掉就跟著縮小。整份格子清單去框的話，打成廢墟的房子還是擋著一整塊地，
+   人繞著一片空地走（使用者：「換地標建築後小人依然會被破損的小房子卡住」）。 */
 function homeBox(h) {
-  let i0 = Infinity, i1 = -Infinity, k0 = Infinity, k1 = -Infinity;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const sl of h.slots) {
-    if (sl.i < i0) i0 = sl.i;
-    if (sl.i > i1) i1 = sl.i;
-    if (sl.k < k0) k0 = sl.k;
-    if (sl.k > k1) k1 = sl.k;
+    if (!sl.filled) continue;
+    if (sl.x < x0) x0 = sl.x;
+    if (sl.x > x1) x1 = sl.x;
+    if (sl.z < z0) z0 = sl.z;
+    if (sl.z > z1) z1 = sl.z;
   }
-  h.x0 = h.x + i0 - h.ox - 0.5; h.x1 = h.x + i1 - h.ox + 0.5;
-  h.z0 = h.z + k0 - h.oz - 0.5; h.z1 = h.z + k1 - h.oz + 0.5;
+  h.x0 = x0 - 0.5; h.x1 = x1 + 0.5;
+  h.z0 = z0 - 0.5; h.z1 = z1 + 0.5;
 }
 /* 完好時「只靠六個面連不連得到地面」，蓋之前算一次（v1.103）。
    跟藍圖那邊同名的 f6 同一個用途：那是退化偵測的**基準線**，不是支撐判定。
@@ -2621,6 +2626,8 @@ function stepHomeFall(dt) {
   homeDirty = 0;
   if (!homes) return;
   for (let i = 0; i < homes.list.length; i++) collapseHome(i);
+  for (const h of homes.list) homeBox(h);      // 擋路的外框跟著縮（見 homeBox）
+  wreckHomes();                                // 剩不到兩成五就整間廢棄
 }
 
 /* 這個點在不在某一間房子的地基上。房子不在藍圖的格子表裡（footBlocked 查的是那個），
@@ -2641,10 +2648,8 @@ function homeAt(x, z) {
    一塊都還沒砌、或被拆平了的就不擋——那時候地上什麼都沒有。 */
 function footHome(x, z) {
   if (!homes) return null;
-  for (const h of homes.list) {
-    if (h.left >= h.slots.length) continue;
+  for (const h of homes.list)
     if (x > h.x0 && x < h.x1 && z > h.z0 && z < h.z1) return h;
-  }
   return null;
 }
 const homeFoot = (x, z) => !!footHome(x, z);
@@ -2927,19 +2932,33 @@ function stopHomes() {
    小人再撿去蓋新的那一座（等於「你家被徵收了」）。
    索引會變，所以積木的 hh 跟小人的 hm 要一起重編。 */
 function clearHomesInSite() {
-  if (!homes || !homes.list.length) return;
-  const map = [], keep = [];
   const r = siteR + KEEP;
+  dropHomes(h => Math.hypot(h.x, h.z) - h.r > r);
+}
+/* 把不要的那幾間解成碎料，其餘重編索引。keep(h) 回傳 true 就留著，回傳解掉了幾間。
+   索引會變，所以積木的 hh、**還在飛的那些的 arc.hm**、以及小人的 hm 都要一起重編。
+   （v1.105 從 clearHomesInSite 抽出來共用：打成廢墟被廢棄的那些也走這條。
+   換場那條路上所有人早就 releaseWorker 過、arc 也清光了，所以以前不必管這兩樣。） */
+function dropHomes(keep) {
+  if (!homes || !homes.list.length) return 0;
+  const map = [], list = [];
   for (const h of homes.list) {
-    const out = Math.hypot(h.x, h.z) - h.r > r;
-    map.push(out ? keep.length : -1);
-    if (out) keep.push(h);
+    const ok = keep(h);
+    map.push(ok ? list.length : -1);
+    if (ok) list.push(h);
   }
-  if (keep.length === homes.list.length) return;
+  const gone = homes.list.length - list.length;
+  if (!gone) return 0;
+  // 手上還抓著那幾間的積木的人先放掉，不然那幾塊會在他手上變成碎料
+  for (const w of workers) if (w.hm >= 0 && map[w.hm] < 0) releaseWorker(w);
   for (const b of blocks) {
     if (b.hh < 0) continue;
     const to = map[b.hh];
-    if (to >= 0) { b.hh = to; continue; }
+    if (to >= 0) {
+      b.hh = to;
+      if (b.arc && b.arc.hm !== undefined) b.arc.hm = to;
+      continue;
+    }
     b.hh = -1; b.hk = -1;
     b.slot = -1; b.holder = -1; b.arc = null; b.scale = 1; b.fallIn = 0;
     b.st = FLY; b.rest = false; b.snap = 0;
@@ -2948,7 +2967,18 @@ function clearHomesInSite() {
     b.ax = rr(-5, 5); b.ay = rr(-5, 5); b.az = rr(-5, 5);
   }
   for (const w of workers) w.hm = w.hm >= 0 ? map[w.hm] : -1;
-  homes.list = keep;
+  homes.list = list;
+  return gone;
+}
+/* 打到剩不到兩成五就整間廢棄，解成碎料（v1.105，使用者：「小房子被破壞剩下 25%
+   比照地標建築直接被破壞廢棄」）。門檻用地標那條同一個 WRECK_AT。
+   只算**蓋好過一次的**（h.done）：第一次蓋本來就是從 0 長起來的，不然一開工就被廢棄。
+   廢棄的好處是連鎖的：那塊地不再擋路，倒在裡面撿不到的碎料也一起變成撿得到的料。 */
+const wrecked = h => h.done && h.slots.length - h.left < h.slots.length * WRECK_AT;
+function wreckHomes() {
+  if (!homes) return 0;
+  for (const h of homes.list) if (wrecked(h)) return dropHomes(q => !wrecked(q));
+  return 0;
 }
 /* 挖土那一撮塵。用塵霧那個池子（跟彩帶一樣），顏色調成土色。 */
 function digPuff(w) {
@@ -3048,6 +3078,11 @@ function landHome(b, a) {
   b.hh = a.hm; b.hk = a.hk;
   sl.filled = true; sl.claimed = -1;
   h.left--;
+  // 擋路的外框跟著長（見 homeBox）。就地擴一格就好，不必整份重算
+  if (sl.x - 0.5 < h.x0) h.x0 = sl.x - 0.5;
+  if (sl.x + 0.5 > h.x1) h.x1 = sl.x + 0.5;
+  if (sl.z - 0.5 < h.z0) h.z0 = sl.z - 0.5;
+  if (sl.z + 0.5 > h.z1) h.z1 = sl.z + 0.5;
   /* 蓋好過一次了。這個旗標一旦立起來就不收回去（被砸出洞、補回去都還算「蓋好過」）：
      它管的是「要不要用完好時的標準判退化」，見 dropHungHome 與 canPlaceHome。 */
   if (h.left <= 0) h.done = true;
@@ -3182,8 +3217,11 @@ function castHome(w, wi, h, k) {
 const GRAB_R = 12;                  // 找碎料的範圍：離自己家外框這麼遠以內
 /* 家附近地上躺著的碎料裡離他最近的那一塊（沒有就 −1，v1.104）。
    條件跟工人撿料那條一樣（FREE、落定了、沒人拿），另外三個不撿：
-   躺在誰家占地上的（走過去會被推出來，永遠抵達不了）、在工地裡的（那是地標的料場，
-   而且要走進建築裡）、離自己家太遠的（走過去比挖還久）。 */
+   躺在**別人家**占地上的（那塊地走不進去，走過去只會被推出來、永遠抵達不了）、
+   在工地裡的（那是地標的料場，而且要走進建築裡）、離自己家太遠的（走過去比挖還久）。
+   **倒在自己家占地裡的照撿**（v1.105）：站在外框旁邊伸手拿就好，跟 layTrip 站在
+   框外往裡丟是同一套。不撿的話，砸爛一間房子的碎料有將近四成躺在自己的地基上
+   （實測 458 塊裡 173 塊），使用者看到的就是「一地碎料還在挖新的」。 */
 function freeNearHome(w, h) {
   let best = -1, bd = Infinity;
   const lim = (h.r + GRAB_R) ** 2, site = (siteR + KEEP) ** 2;
@@ -3194,10 +3232,24 @@ function freeNearHome(w, h) {
     if (b.x * b.x + b.z * b.z < site) continue;
     const d = (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
     if (d >= bd) continue;
-    if (homeAt(b.x, b.z)) continue;                     // 這一塊躺在誰家裡（同 findBlock）
+    const hb = footHome(b.x, b.z);
+    if (hb && hb !== h) continue;                       // 躺在別人家裡（同 findBlock）
     bd = d; best = i;
   }
   return best;
+}
+/* 要去撿的那一塊躺在自己家的外框裡：站到**最近的那一面**外面伸手拿。
+   回傳同一個暫存物件（每幀都會叫）。 */
+const _gs = { x: 0, z: 0 };
+function grabStand(h, bx, bz) {
+  _gs.x = bx; _gs.z = bz;
+  const xl = bx - h.x0, xr = h.x1 - bx, zl = bz - h.z0, zr = h.z1 - bz;
+  const m = Math.min(xl, xr, zl, zr);
+  if (m === xl) _gs.x = h.x0 - HOME_STAND;
+  else if (m === xr) _gs.x = h.x1 + HOME_STAND;
+  else if (m === zl) _gs.z = h.z0 - HOME_STAND;
+  else _gs.z = h.z1 + HOME_STAND;
+  return _gs;
 }
 /* 把地上這一塊收成「自己家的第 k 格」。跟 digBlock 的差別只有兩件事：
    積木是現成的（不 newBlock、不留土痕、不噴土），而且顏色是**慢慢**變過去的
@@ -3230,7 +3282,9 @@ function grabTrip(w, wi, h, dt) {
     if (i < 0) { endTrip(w, h); return; }
     w.gb = i; b = blocks[i];
   }
-  w.tx = b.x; w.tz = b.z;
+  // 躺在自己家外框裡的，站到框外伸手拿（見 grabStand）
+  const g = footHome(b.x, b.z) === h ? grabStand(h, b.x, b.z) : b;
+  w.tx = g.x; w.tz = g.z;
   const leg = w.leg;                                     // 上工的路不算閒晃里程（同 digTrip）
   const walking = !strollTo(w, dt);
   w.leg = leg;

@@ -3925,6 +3925,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      長條屋差最多（大長屋 12×4 帶圍籬：外框 128、外接圓 292）。 */
   const homeBoxes = await page.evaluate(() => HOME_KIND.map(k => {
     const slots = homeSlots(0, 30, k, HOME_PAL[0]);
+    for (const sl of slots) sl.filled = true;          // 完好的一間（外框只框還站著的，見 homeBox）
     const map = new Map();
     slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
     const h = { x: 0, z: 30, r: homeR(k), at: map, slots, left: 0, done: true,
@@ -4000,6 +4001,97 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      homeRepair.done + ' 塊（沒補上的 ' + homeRepair.left + ' 格、落定時放不上去的 ' +
      homeRepair.floating + ' 塊）');
 
+  /* 打到剩不到兩成五就整間廢棄（v1.105，使用者：「小房子被破壞剩下 25% 比照地標建築
+     直接被破壞廢棄」）。門檻用地標那條同一個 WRECK_AT。廢棄的連鎖好處是那塊地不再擋路、
+     倒在裡面的碎料也一起變回一般建材。**蓋到一半的不算**——那時候本來就是從 0 長起來的。 */
+  const homeWreck = await page.evaluate(() => {
+    const mk = (fill, done) => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 500; setWorkerCount(6); startBuild(true); completeNow();
+      stopIdleEvent(); clearHomes();
+      homes = { list: [] };
+      const kind = HOME_KIND[3];                       // 大屋 7×5×4
+      const at = { x: 0, z: siteR + 5 + homeR(kind) + 8 };
+      const slots = homeSlots(at.x, at.z, kind, HOME_PAL[0]);
+      const map = new Map();
+      slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { x: at.x, z: at.z, r: homeR(kind), kind: kind.id, at: map,
+                  ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                  slots, left: slots.length, n: kind.n, done: done };
+      markHomeF6(h);
+      homes.list.push(h);
+      // 由下往上砌 fill 塊（照格子順序＝牆一層層往上）
+      for (let i = 0; i < slots.length && i < fill; i++) {
+        const sl = slots[i], b = newBlock();
+        b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
+        b.hh = 0; b.hk = i;
+        blocks.push(b); sl.filled = true; h.left--;
+      }
+      homeBox(h);
+      ENG.setBlockCount(blocks.length);
+      for (const w of workers) { releaseWorker(w); w.hm = -1; w.x = 300; w.z = 300; }
+      return h;
+    };
+    // ① 蓋好的一間打到剩兩成 → 廢棄
+    const h1 = mk(136, true);
+    const n1 = h1.slots.length;
+    const keepN = Math.round(n1 * 0.2);
+    let k = 0;
+    for (const b of blocks) {
+      if (b.hh !== 0 || b.st !== 3) continue;
+      if (k++ < keepN) continue;                       // 留下兩成
+      breakBlock(b, 0, 0, 0);
+    }
+    for (let i = 0; i < 60; i++) step(0.05);
+    const gone = { houses: homes.list.length,
+                   stillMine: blocks.filter(b => b.hh === 0).length,
+                   blocked: !!footHome(h1.x, h1.z),
+                   free: blocks.filter(b => b.st === 0 || b.st === 4).length };
+    // ② 蓋到一半（還沒蓋好過）的不算：一樣只有兩成，但不該被廢棄
+    const h2 = mk(28, false);
+    for (let i = 0; i < 60; i++) step(0.05);
+    markHomeDirty();
+    for (let i = 0; i < 10; i++) step(0.05);
+    const half = { houses: homes.list.length, frac: +((h2.slots.length - h2.left) /
+                                                      h2.slots.length).toFixed(2) };
+    // ③ 外框跟著損壞縮小：打掉一半（x 比較小的那半）
+    const h3 = mk(136, true);
+    const box0 = { x0: +h3.x0.toFixed(1), x1: +h3.x1.toFixed(1) };
+    const cut = h3.x + 0.5;
+    for (const b of blocks) {
+      if (b.hh !== 0 || b.st !== 3 || b.x > cut) continue;
+      breakBlock(b, 0, 0, 0);
+    }
+    for (let i = 0; i < 60; i++) step(0.05);
+    const shrink = { alive: homes.list.length > 0,
+                     box0, x0: +h3.x0.toFixed(1), x1: +h3.x1.toFixed(1),
+                     // 被打掉那一半的地面現在走得過去了（拿**原本**的左邊界去試）
+                     openLeft: !footHome(box0.x0 + 0.6, h3.z),
+                     stillRight: !!footHome(h3.x1 - 0.6, h3.z) };
+    cleanTools(); clearHomes();
+    return { gone, half, shrink, n1, keepN };
+  });
+  ok('小房子打到剩不到兩成五就整間廢棄（比照地標）',
+     homeWreck.gone.houses === 0 && homeWreck.gone.stillMine === 0 &&
+     !homeWreck.gone.blocked && homeWreck.gone.free > homeWreck.keepN,
+     '一間 ' + homeWreck.n1 + ' 塊只留兩成（' + homeWreck.keepN + ' 塊）→ 剩 ' +
+     homeWreck.gone.houses + ' 間、還掛在房子上的積木 ' + homeWreck.gone.stillMine +
+     ' 塊、原地還擋路：' + homeWreck.gone.blocked + '（場上碎料 ' +
+     homeWreck.gone.free + ' 塊）');
+  ok('蓋到一半的不算廢棄（那時候本來就是從零長起來的）',
+     homeWreck.half.houses === 1,
+     '只砌了 ' + homeWreck.half.frac + ' 就停手 → 還在清單上：' +
+     (homeWreck.half.houses === 1));
+  ok('擋路的外框跟著損壞縮小',
+     homeWreck.shrink.alive && homeWreck.shrink.x0 > homeWreck.shrink.box0.x0 + 1 &&
+     Math.abs(homeWreck.shrink.x1 - homeWreck.shrink.box0.x1) < 0.01 &&
+     homeWreck.shrink.openLeft && homeWreck.shrink.stillRight,
+     '打掉左半邊 → 外框 x 從 ' + homeWreck.shrink.box0.x0 + '～' +
+     homeWreck.shrink.box0.x1 + ' 縮成 ' + homeWreck.shrink.x0 + '～' +
+     homeWreck.shrink.x1 + '；打掉那半走得過去：' + homeWreck.shrink.openLeft +
+     '、沒打的那半還擋著：' + homeWreck.shrink.stillRight);
+
   /* 積木來源：**地上的碎料優先，沒有才挖**（v1.104，使用者指定）。
      使用者觀察到的情境就是「小房子蓋一半拆掉會一堆碎料，然後小人繼續挖積木蓋」。
      這一條把一間蓋好的房子砸爛，看那一組人補回去的時候是撿地上的還是挖新的。
@@ -4015,16 +4107,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     idleEv = IDLE_EVENTS[0]; startHomes();
     let s = 0;
     while (s < 600 && homes.list.some(h => h.left > 0)) { step(0.05); s += 0.05; }
-    const hi = 0, h = homes.list[hi];
-    // 玩家拿大槌把整間砸爛
-    smash({ x: h.x, y: 2, z: h.z }, { x: 0, y: -1, z: 0 }, 13, 22);
+    /* 挑最大的那一間，把靠左的三成五打掉。**不能整間砸爛**——剩不到兩成五會直接廢棄
+       （v1.105），那一間就從清單上消失、沒有「補回去」這回事了。
+       用 breakBlock 一塊一塊打（不走 smash）：爆炸範圍換一間房子就是完全不同的破壞量，
+       第一版用 smash 就是這樣一路砸到剩一成、整間被廢棄，量到的變成別間的帳。 */
+    let hi = 0;
+    homes.list.forEach((q, i) => { if (q.slots.length > homes.list[hi].slots.length) hi = i; });
+    const h = homes.list[hi];
+    const mine = blocks.filter(b => b.hh === hi && b.st === 3)
+                       .sort((a, b) => a.x - b.x);
+    for (let i = 0; i < Math.round(mine.length * 0.35); i++) breakBlock(mine[i], 0, 0, 0);
     for (let i = 0; i < 120; i++) step(0.05);           // 該垮的垮完、碎料落地
+    hi = homes.list.indexOf(h);                         // 別間被廢棄的話索引會變
     const hole = h.left;
     const free = () => blocks.filter(b => b.hh < 0 && b.st === 0 && b.rest);
     const rub = free();
-    const reach = rub.filter(b => !homeAt(b.x, b.z) &&
-                                  b.x * b.x + b.z * b.z >= (siteR + KEEP) ** 2 &&
-                                  (b.x - h.x) ** 2 + (b.z - h.z) ** 2 <= (h.r + 12) ** 2);
+    /* 撿得到的：不在**別人家**的地基上（自己家的照撿，v1.105 站在框外伸手拿）、
+       不在工地裡、離自己家夠近。 */
+    const reach = rub.filter(b => {
+      const hb = footHome(b.x, b.z);
+      return (!hb || hb === h) &&
+             b.x * b.x + b.z * b.z >= (siteR + KEEP) ** 2 &&
+             (b.x - h.x) ** 2 + (b.z - h.z) ** 2 <= (h.r + 12) ** 2;
+    });
     const all0 = blocks.length, pool0 = rub.length;
     /* 派人回去補。這一輪不准開新的房子（把找空地那一支暫時關掉）——多出來的組去蓋新的
        就要挖一兩百塊新料，帳就算不清了。要測的是「補舊的那些用什麼料」。 */
