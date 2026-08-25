@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.112.0';
+const VERSION = '1.113.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1064,6 +1064,10 @@ function newWorker(i) {
        hdt 是還要挖幾秒（砌的時候是下一塊還有幾秒），hp 是下一撮土花幾秒。
        認走的是哪一格記在積木身上（b.hk），不記在人身上——一趟不只一塊。 */
     hm: -1, hst: '', hcap: 0, hdt: 0, hp: 0, gb: -1,   // gb＝這一趟要去撿的那一塊（v1.104）
+    /* 抽到的身高（v1.113）。scale 是「實際畫多大」，肌肉小人要在它上面再乘 MUS_SIZE，
+       所以抽到的那個值要另外留一份：直接乘 scale 的話，setWorkerCount 每叫一次
+       tagMuscle 就再乘一次，人數調個幾輪他會長成一棟樓。 */
+    sc0: scale,
     /* 卡住脫困（v1.108）：sx/sz 是「上一次真的前進到的位置」（錨點），
        stk 是「腿在擺卻沒離開那個錨點」累積幾秒，ghost 是還要穿透幾秒（見 stuckWatch）。
        伸手拿（v1.108）：gbi 是正在走去撿的那一塊，gbd 是離它最近到過多少，
@@ -1131,12 +1135,18 @@ function tagMage() {
    身分其實不會中途換人（編號固定，而 workers 只從尾端增減），下面那一條是保險：
    停在 hurl 上的人如果變回一般工人，他會拿著那塊站在料堆那裡等一個不會來的出手。 */
 const MUS_EVERY = 10, MUS_AT = 8;
+/* 整個人再放大 8%（v1.113，使用者：「肌肉小人應該會長比較大隻一點點」）。
+   身高從 1.59–1.86 變成 1.72–2.01（帽頂 2.25–2.63 格，一般工人是 2.08–2.44）。
+   只放大這一成：肩寬本來就已經是別人的 1.38 倍（見引擎那五塊），再往上加會變巨人。
+   乘的是 sc0（抽到的身高）不是 scale，理由見 newWorker。 */
+const MUS_SIZE = 1.08;
 function tagMuscle() {
   for (let i = 0; i < workers.length; i++) {
     const w = workers[i];
     const mus = i % MUS_EVERY === MUS_AT ? 1 : 0;
     if (!mus && w.mus && w.st === 'hurl') releaseWorker(w);
     w.mus = mus;
+    w.scale = w.sc0 * (mus ? MUS_SIZE : 1);
   }
 }
 /* 放掉一個認領的格子。放掉也會改變支撐狀態，而且派工游標要退回去補這個洞 */
@@ -1370,8 +1380,22 @@ function nearGrab(w, bi, dt) {
   w.gbt += dt;
   return w.gbt >= GRAB_WAIT && d <= GRAB_FAR;
 }
-function findBlock(wx, wz, maxD) {
+/* 這個位置是不是被蓋好的部分圍住了（v1.113）：腳下就是牆，或者兩側各有一道牆
+   （躺在實心建築中間那個空柱子裡的料就是這樣——它自己的柱子是空的，但四周都填起來了）。
+   兩層以上才算牆：一層跨得過去。 */
+function walledIn(x, z) {
+  if (footBlocked(x, z)) return true;
+  return (colTop(x + 1, z) >= 2 && colTop(x - 1, z) >= 2) ||
+         (colTop(x, z + 1) >= 2 && colTop(x, z - 1) >= 2);
+}
+/* outside（v1.113）：優先挑「沒被蓋好的部分圍住」的料，肌肉小人專用。
+   他是就地扔的，站的地方就是出手點——挑到躺在實心建築裡的那些，他就得走進去撿，
+   然後手上那塊被埋住、只能退回去走回工地（實測吉薩金字塔有 17% 的時間在走那條）。
+   一律跳過**不行**：料被蓋進去之後就沒人撿得出來了，那是 v1.97～v1.106 踩過的坑
+   （見下面那段註解）。所以是「外面還有就挑外面的，只剩裡面的照撿」。 */
+function findBlock(wx, wz, maxD, outside) {
   let best = -1, bd = maxD ? maxD * maxD : Infinity;   // 給了 maxD 就只找那麼遠以內的
+  let out = -1, od = bd;
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
@@ -1384,8 +1408,10 @@ function findBlock(wx, wz, maxD) {
        （使用者：「小房子內的積木也撿不出來」），一半的料撿不到，
        於是一堆人領不到工作就在房子旁邊閒晃——看起來就是「卡住」。 */
     if (d < bd) { bd = d; best = i; }
+    // 牆裡那些只在「還有別的可挑」時才讓過（擺在距離判斷後面，不必每塊都查）
+    if (outside && d < od && !walledIn(b.x, b.z)) { od = d; out = i; }
   }
-  return best;
+  return outside && out >= 0 ? out : best;
 }
 /* ── 放置時小人站的位置 ─────────────────────────────────
    從格子往外推 STAND_OUT 格。但對「建築內部」的格子，往外推一格還是在牆裡面——
@@ -2078,7 +2104,7 @@ function loadUp(w, wi, cap) {
     const s = findSlot(w.x, w.z);    // 派離他現在站的地方最近的那一格
     if (s < 0) break;
     // 魔法師只搆得到身邊那一圈的料（v1.89，見 MAGE_REACH）；工人是走過去撿，不限距離
-    const bi = findBlock(sx, sz, w.mage ? MAGE_REACH : 0);
+    const bi = findBlock(sx, sz, w.mage ? MAGE_REACH : 0, w.mus ? 1 : 0);
     if (bi < 0) break;
     bp.slots[s].claimed = wi;        // 認領也算「這格有東西了」，會影響上面能不能蓋
     blocks[bi].holder = wi;
@@ -2147,7 +2173,9 @@ const MUS_WIND = 0.3;               // 撿起來之後掄多久才出手（看�
    弧頂就用 tossPeak（沒有魔法師那個 +1.6 的加高）：同樣的高度飛更遠，
    看過去就是一條平的、快的線。 */
 const MUS_DUR0 = 0.3, MUS_DUR_D = 0.016, MUS_DUR_Y = 0.01;
-const MUS_REST = 0.4;               // 扔完喘一下再去撿下一塊（一般工人丟完是 0.28）
+/* 扔完的停頓跟一般工人丟完那一下一樣（0.28）。v1.112 給 0.4「喘一下」，
+   但他沒有理由喘得比別人久——那多出來的 0.12 秒是每一塊都要付的（見〈他有比較快嗎〉）。 */
+const MUS_REST = 0.28;
 /* 出手：那一塊從他頭頂上（撿起來就舉在那裡）進入拋物線。跟一般工人丟的是同一套 arc，
    除了時間與 hurl 記號之外沒有第二套規則——半路被打掉、落不下去都由 stepToss 處理。 */
 function hurl(w, j, b) {

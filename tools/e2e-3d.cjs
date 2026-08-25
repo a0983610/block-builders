@@ -1672,6 +1672,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       // 其餘是疊在前一塊上面的，間距要剛好一格（跟建築上的疊法一樣）
       for (let k = 1; k < held.length; k++)
         if (Math.abs(held[k].y - held[k - 1].y - 1) > 1e-6) gap++;
+      // 肌肉小人不算進身高範圍：他整個人再乘 MUS_SIZE（v1.113），下面另外一條量他
+      if (w.mus) continue;
       if (w.scale < lo) lo = w.scale;
       if (w.scale > hi) hi = w.scale;
     }
@@ -1946,6 +1948,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       shapePick = SHAPES.findIndex(s => s.n === name);
       targetCnt = 3000; setWorkerCount(20); startBuild(true);
       let frames = 0, inWall = 0, arcs = 0, arcHit = 0, samples = 0, atOnce = 0;
+      // 分三種人各自算（v1.113）：平均值會把「誰在穿牆」藏起來，見下面那條 ok
+      const kn = { h: 0, m: 0, w: 0 }, kh = { h: 0, m: 0, w: 0 };
       const seen = new Set();
       for (let i = 0; i < 2400 && phase !== 'done'; i++) {
         step(0.05);
@@ -1964,17 +1968,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           if (b.st !== 2 || !b.arc || seen.has(b)) continue;
           seen.add(b); arcs++;
           const a = b.arc;
+          const kind = a.hurl ? 'h' : a.mage ? 'm' : 'w';
+          kn[kind]++;
           for (let k = 5; k < 37; k++) {          // 掐頭去尾：出手與落點本來就貼著積木
             const u = k / 40;
             const y = a.y0 + (a.y1 - a.y0) * u + Math.sin(u * Math.PI) * a.peak;
-            if (blockAt(a.x0 + (a.x1 - a.x0) * u, y, a.z0 + (a.z1 - a.z0) * u)) { arcHit++; break; }
+            if (blockAt(a.x0 + (a.x1 - a.x0) * u, y, a.z0 + (a.z1 - a.z0) * u)) {
+              arcHit++; kh[kind]++; break;
+            }
           }
         }
       }
+      const pct = k => +(kh[k] / Math.max(1, kn[k]) * 100).toFixed(2);
       return { name, placed: placedCnt, wk: workers.length,
                inWall: +(inWall / Math.max(1, frames) * 100).toFixed(2),
                atOnce: +(atOnce / Math.max(1, samples)).toFixed(2),
-               arc: +(arcHit / Math.max(1, arcs) * 100).toFixed(2) };
+               arc: +(arcHit / Math.max(1, arcs) * 100).toFixed(2),
+               arcH: pct('h'), arcM: pct('m'), arcW: pct('w'),
+               nH: kn.h, nM: kn.m, nW: kn.w };
     };
     return ['新天鵝堡', '巴黎聖母院'].map(run);
   });
@@ -2000,9 +2011,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      route.map(r => r.name + ' ' + r.inWall + '%（同時 ' + r.atOnce + ' 人／共 ' +
                     r.wk + ' 人、放上去 ' + r.placed + ' 塊）').join('、') +
      '（舊版 32%／42%）');
-  ok('拋出去的積木不會從牆裡穿過去',
-     route.every(r => r.arc < 6),
-     route.map(r => r.name + ' ' + r.arc + '%').join('、') + '（舊版 20%／45%）');
+  /* v1.113 起分三種人各自守著，不看平均。原因：肌肉小人（v1.112）讓工地快了兩三倍，
+     同樣 2400 幀裡建築長得更高，而**工人那些貼著牆的短拋**本來就最容易擦到——
+     於是平均值跟著往上跑（聖母院 4.1% → 6.5%），但那不是新的穿牆，是舊的那種變多。
+     分開量就看得清楚：穿牆的幾乎全是工人在自己腳邊那道牆上擦到的（樣本清一色
+     u≈0.15、拋距 2～10 格），肌肉小人從十幾格外扔進來的那些是 0%
+     （單獨跑一輪：聖母院 工人 12.3%、魔法師 1.1%、肌肉小人 0/238 發）。
+     工人那條為什麼壓不下去：`arcPeak` 只算「從地面連續疊上來」的柱子，
+     挑出去的樓板／飛扶壁不算（那些本來就是從底下穿過去的），聖母院正好滿是那種東西。
+     真要壓回去得做從缺口進出的路徑規劃——跟上面那條「在牆裡走動」同一筆帳。 */
+  ok('拋出去的積木不會從牆裡穿過去（三種人各自算）',
+     route.every(r => r.arcW < 14 && r.arcH < 3 && r.arcM < 3),
+     route.map(r => r.name + '：工人 ' + r.arcW + '%（' + r.nW + ' 發）、魔法師 ' +
+                    r.arcM + '%（' + r.nM + '）、肌肉小人 ' + r.arcH + '%（' + r.nH +
+                    '）＝整批 ' + r.arc + '%').join('　') + '（舊版整批 20%／45%）');
 
   /* 站位本身：拿蓋好的整座來算，每個格子的站位都不該落在積木裡。
      實心造型的正中央退到外緣要超過 TOSS_MAX 格，那種會退回原本的做法（見 standPos）。 */
@@ -3267,12 +3289,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const pickAt = {}, moved = { mus: [], plain: [] };
     const prev = {}, winds = [];
     const hf = {};
+    /* 誰送了幾塊（v1.113，使用者：「照理說他省了走路時間應該還是比一般小人蓋得快吧?」）。
+       一塊離手就是 load 少一筆，跟「原地連丟」那條測試同一個算法。
+       順便記每個人的狀態幀，才看得出退回去走回工地那條路占多少。 */
+    const del = workers.map(() => 0), was = workers.map(w => w.load.length);
+    const stAll = workers.map(() => ({}));
     let carryF = 0, buildF = 0, loadMax = 0, walked = 0, frames = 0;
     const last = idx.map(k => ({ x: workers[k].x, z: workers[k].z }));
     for (let i = 0; i < 4000 && phase === 'build'; i++) {
       step(0.05); frames++;
       for (let k = 0; k < workers.length; k++) {
         const w = workers[k];
+        stAll[k][w.st] = (stAll[k][w.st] || 0) + 1;
+        if (w.load.length === was[k] - 1) del[k]++;
+        was[k] = w.load.length;
         if (prev[k] === 'pick' && (w.st === 'hurl' || w.st === 'build'))
           pickAt[k] = { x: w.x, z: w.z };
         const done = prev[k] === 'hurl' || prev[k] === 'build';
@@ -3307,7 +3337,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                         y0: med(a.map(r => r.y0)), peak: med(a.map(r => r.peak)),
                         // 每飛一格花幾秒：距離不一樣的兩種弧要這樣才比得
                         spg: a.length ? +(med(a.map(r => r.dur)) / med(a.map(r => r.d))).toFixed(4) : -1 });
+    const grp = pick => {
+      const ks = workers.map((w, i) => i).filter(i => pick(workers[i]));
+      let d = 0, bf = 0, all = 0;
+      for (const k of ks) {
+        d += del[k];
+        for (const s in stAll[k]) { all += stAll[k][s]; if (s === 'build') bf += stAll[k][s]; }
+      }
+      return { n: ks.length, per: +(d / ks.length).toFixed(1),
+               buildPct: +(bf / (all || 1)).toFixed(3) };
+    };
     return { idx, frames, phase, placed: placedCnt, total: bp.slots.length,
+             pace: { mus: grp(w => w.mus), plain: grp(w => !w.mus && !w.mage && !w.eng) },
              stCnt, carryF, buildF, loadMax, walked: +walked.toFixed(0),
              wind: med(winds), windN: winds.length,
              movedMus: med(moved.mus), movedPlain: med(moved.plain),
@@ -3336,6 +3377,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mus.phase === 'done' && mus.placed === mus.total,
      mus.idx.length + ' 個（第 ' + mus.idx.join('、') + ' 號），' + mus.frames * 0.05 +
      ' 秒蓋完 ' + mus.placed + '/' + mus.total + ' 塊');
+  /* 使用者：「照理說他省了走路時間應該還是比一般小人蓋得快吧?」——會，而且要守住。
+     這一條量的是**最不利的那一座**：吉薩金字塔又矮又實心，碎料就散在它腳邊，
+     一般工人的回程本來就短（丟出去的中位距離只有 5.5 格），他省不到多少；
+     台北 101 那種高塔量到的是 2.9 倍。 */
+  ok('省下回程真的比較快：同樣時間送的塊數比一般工人多',
+     mus.pace.mus.per > mus.pace.plain.per * 1.3,
+     '每人送 ' + mus.pace.mus.per + ' 塊（' + mus.pace.mus.n + ' 個），一般工人 ' +
+     mus.pace.plain.per + ' 塊（' + mus.pace.plain.n + ' 個）＝' +
+     (mus.pace.mus.per / mus.pace.plain.per).toFixed(2) + ' 倍');
+  /* 他優先挑沒被牆圍住的料（v1.113 的 walledIn）。挑到牆裡那些的話他得走進實心建築中間，
+     手上那塊被埋住就只能退回去走回工地——那條路是 st 停在 build 的那些幀。
+     v1.112 沒有這個偏好時，這個比例在金字塔上是 17%。 */
+  ok('不為了牆裡的料走進實心建築（退回去走回工地那條很少用到）',
+     mus.pace.mus.buildPct < 0.1,
+     '停在「走回工地」那條路上的幀占他 ' + (mus.pace.mus.buildPct * 100).toFixed(1) +
+     '%（v1.112 沒有這個偏好時是 17%）');
 
   const musN = await page.evaluate(() => {
     const out = {};
@@ -3352,6 +3409,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      musN.out[40] === 4 && musN.out[60] === 6 && musN.both === 0,
      '5／9／10／20／40／60 人時各有 ' + [5, 9, 10, 20, 40, 60].map(n => musN.out[n]).join('／') +
      ' 個；20 人時是第 ' + musN.idx.join('、') + ' 號（工程師 0 號、魔法師 5、15 號）');
+
+  /* 大一號（v1.113，使用者：「肌肉小人應該會長比較大隻一點點」）。
+     乘的是「抽到的身高」sc0 而不是 scale——直接乘 scale 的話，setWorkerCount 每叫一次
+     tagMuscle 就再乘一次，人數調個幾輪他會長成一棟樓。所以這裡也驗反覆調人數的情況。 */
+  const musSize = await page.evaluate(() => {
+    setWorkerCount(60);
+    const avg = a => a.reduce((s, w) => s + w.scale, 0) / (a.length || 1);
+    const m = workers.filter(w => w.mus), p = workers.filter(w => !w.mus);
+    const one = workers[8], before = one.scale;
+    for (let i = 0; i < 5; i++) { setWorkerCount(20); setWorkerCount(60); }   // 反覆調人數
+    const after = workers[8].scale;
+    setWorkerCount(20);
+    return { n: m.length, mus: +avg(m).toFixed(3), plain: +avg(p).toFixed(3),
+             hi: +Math.max.apply(null, m.map(w => w.scale)).toFixed(2),
+             lo: +Math.min.apply(null, m.map(w => w.scale)).toFixed(2),
+             grew: +(after - before).toFixed(4) };
+  });
+  ok('整個人大一號（身高多 8%），但沒有大到變成巨人',
+     musSize.mus > musSize.plain * 1.05 && musSize.mus < musSize.plain * 1.12 &&
+     1.31 * musSize.hi < 2.8 && musSize.grew === 0,
+     musSize.n + ' 個平均身高 ' + musSize.mus + '（一般工人 ' + musSize.plain + '，多 ' +
+     ((musSize.mus / musSize.plain - 1) * 100).toFixed(1) + '%）、範圍 ' + musSize.lo +
+     '～' + musSize.hi + '（帽頂 ' + (1.31 * musSize.hi).toFixed(2) +
+     ' 格）；人數調了五輪之後身高變化 ' + musSize.grew);
 
   /* 手上那塊真的埋進牆裡就別硬扔（v1.112）。他撿料不限距離，所以會走進實心建築裡
      （金字塔那種）撿躺在裡面的碎料；在那裡出手的話，出手那一下整塊在牆裡。
