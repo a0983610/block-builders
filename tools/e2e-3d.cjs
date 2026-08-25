@@ -1769,10 +1769,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         stuck.delete(w);
       }
       /* 每一發拋擲都是一個新的 arc 物件，拿它當「這發看過了沒」的鑰匙。
-         魔法師隔空拋的那些（arc.mage）要濾掉：這一條量的是「工人原地連丟拋多遠」，
-         他那條本來就是從十幾格外的料堆直接飛過來的，混進來會把中位數整個拉高。 */
+         魔法師隔空拋的（arc.mage）與肌肉小人就地扔的（arc.hurl，v1.112）要濾掉：
+         這一條量的是「工人原地連丟拋多遠」，那兩種本來就是從料堆那裡直接飛過來的，
+         混進來會把中位數整個拉高。 */
       for (const b of blocks) {
-        if (b.st !== 2 || !b.arc || b.arc.mage || seenArc.has(b.arc)) continue;
+        if (b.st !== 2 || !b.arc || b.arc.mage || b.arc.hurl || seenArc.has(b.arc)) continue;
         seenArc.add(b.arc);
         dist.push(Math.hypot(b.arc.x1 - b.arc.x0, b.arc.z1 - b.arc.z0));
       }
@@ -2987,7 +2988,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         seen.add(key);
         // 起飛高度就是「這塊料當時在哪」：躺在地上是半格高，被舉在頭上是兩格多
         if (b.arc.mage) { mDur.push(b.arc.dur); mY0.push(b.arc.y0); }
-        else { wDur.push(b.arc.dur); wY0.push(b.arc.y0); }
+        else if (!b.arc.hurl) { wDur.push(b.arc.dur); wY0.push(b.arc.y0); }   // 肌肉小人那條另外量
       }
     }
     const med = a => a.length ? +a.slice().sort((x, y) => x - y)[a.length >> 1].toFixed(2) : -1;
@@ -3246,6 +3247,201 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('被戳倒的魔法師會把杖放下', wzDown.up > 0.9 && wzDown.after < 0.05,
      '倒下前舉杖 ' + wzDown.up + '，倒下半秒後 ' + wzDown.after +
      '（身體傾角 ' + wzDown.tilt + '）');
+
+  /* ══════════ 肌肉小人 ══════════ */
+  head('肌肉小人');
+  /* 使用者：「增加10%肌肉小人 大肌肉裸上半身」「類似法師小人 走到積木旁拿起來
+     直接就能丟到目的地」「跟法師小人比撿積木同普通小人 拋出去像法師小人
+     但是積木飛得比較快 因為是靠力量拋」。所以要驗的是三件事：
+     撿的那一段跟一般工人一樣（走過去、舉在頭上）、丟的那一段像魔法師（就地一發到位）、
+     而且那一發明顯比魔法師快。三種人的弧在同一份資料裡一起量，才比得出差別。 */
+  const mus = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    const idx = workers.map((w, i) => w.mus ? i : -1).filter(i => i >= 0);
+    const arcs = { h: [], m: [], w: [] };
+    const seen = new Set();
+    const stCnt = {};
+    /* 撿到手之後挪了多遠才出手：肌肉小人該是 0（就地扔），一般工人是走回工地那段路。
+       一趟丟好幾塊的人只算第一發（記錄用完就丟掉），不然第二、三發會把第一發的路程重算。 */
+    const pickAt = {}, moved = { mus: [], plain: [] };
+    const prev = {}, winds = [];
+    const hf = {};
+    let carryF = 0, buildF = 0, loadMax = 0, walked = 0, frames = 0;
+    const last = idx.map(k => ({ x: workers[k].x, z: workers[k].z }));
+    for (let i = 0; i < 4000 && phase === 'build'; i++) {
+      step(0.05); frames++;
+      for (let k = 0; k < workers.length; k++) {
+        const w = workers[k];
+        if (prev[k] === 'pick' && (w.st === 'hurl' || w.st === 'build'))
+          pickAt[k] = { x: w.x, z: w.z };
+        const done = prev[k] === 'hurl' || prev[k] === 'build';
+        if (done && w.st === 'wait' && pickAt[k]) {
+          const d = Math.hypot(w.x - pickAt[k].x, w.z - pickAt[k].z);
+          (w.mus ? moved.mus : moved.plain).push(d);
+          delete pickAt[k];
+        }
+        if (w.st === 'hurl') hf[k] = (prev[k] === 'hurl' ? hf[k] : 0) + 1;
+        if (prev[k] === 'hurl' && w.st === 'wait') winds.push(hf[k]);   // 掄了幾幀才出手
+        prev[k] = w.st;
+      }
+      idx.forEach((k, n) => {
+        const w = workers[k];
+        stCnt[w.st] = (stCnt[w.st] || 0) + 1;
+        if (w.carry) carryF++;
+        if (w.st === 'build') buildF++;
+        if (w.load.length > loadMax) loadMax = w.load.length;
+        walked += Math.hypot(w.x - last[n].x, w.z - last[n].z);
+        last[n].x = w.x; last[n].z = w.z;
+      });
+      for (const b of blocks) {
+        const a = b.arc;
+        if (b.st !== 2 || !a || seen.has(a)) continue;
+        seen.add(a);
+        (a.hurl ? arcs.h : a.mage ? arcs.m : arcs.w).push(
+          { dur: a.dur, d: Math.hypot(a.x1 - a.x0, a.z1 - a.z0), y0: a.y0, peak: a.peak });
+      }
+    }
+    const med = a => { const v = a.slice().sort((x, y) => x - y); return v.length ? +v[v.length >> 1].toFixed(2) : -1; };
+    const sum = a => ({ n: a.length, dur: med(a.map(r => r.dur)), d: med(a.map(r => r.d)),
+                        y0: med(a.map(r => r.y0)), peak: med(a.map(r => r.peak)),
+                        // 每飛一格花幾秒：距離不一樣的兩種弧要這樣才比得
+                        spg: a.length ? +(med(a.map(r => r.dur)) / med(a.map(r => r.d))).toFixed(4) : -1 });
+    return { idx, frames, phase, placed: placedCnt, total: bp.slots.length,
+             stCnt, carryF, buildF, loadMax, walked: +walked.toFixed(0),
+             wind: med(winds), windN: winds.length,
+             movedMus: med(moved.mus), movedPlain: med(moved.plain),
+             musN: moved.mus.length, plainN: moved.plain.length,
+             h: sum(arcs.h), m: sum(arcs.m), w: sum(arcs.w) };
+  });
+  ok('撿料跟一般工人一樣：自己走過去撿起來舉在頭上（不是隔空吸過來）',
+     mus.h.n > 20 && mus.h.y0 > 2 && mus.m.y0 < 1 && mus.carryF > 100 && mus.walked > 100,
+     '出手 ' + mus.h.n + ' 塊，起飛高度 ' + mus.h.y0 + '（舉在頭頂；魔法師是 ' +
+     mus.m.y0 + '，料躺在地上）；兩人手上有貨 ' + mus.carryF + ' 幀、走了 ' +
+     mus.walked + ' 格');
+  ok('一趟只領一塊：撿起來就扔，不先湊滿一疊',
+     mus.loadMax === 1, '手上同時最多 ' + mus.loadMax + ' 塊（一般工人是 1～3）');
+  ok('撿起來就地扔，不走回工地',
+     mus.musN > 10 && mus.movedMus < 0.5 && mus.movedPlain > 2,
+     '從撿到出手，他挪了 ' + mus.movedMus + ' 格（' + mus.musN + ' 趟）；' +
+     '一般工人同一段是 ' + mus.movedPlain + ' 格（' + mus.plainN + ' 趟，那是走回工地的路）');
+  ok('掄一下才出手，不是撿到的同一幀就飛出去',
+     mus.wind >= 6 && mus.wind <= 9 && mus.windN > 10,
+     mus.windN + ' 發，掄 ' + mus.wind + ' 幀（0.05 秒一幀，MUS_WIND 0.3 秒＝6 幀）');
+  ok('靠力氣扔的：同樣的距離比魔法師快三倍，弧也平',
+     mus.h.spg < mus.m.spg * 0.5 && mus.h.peak < mus.m.peak,
+     '每飛一格 ' + mus.h.spg + ' 秒（魔法師 ' + mus.m.spg + '、一般工人 ' + mus.w.spg +
+     '）；弧頂 ' + mus.h.peak + '（魔法師 ' + mus.m.peak + '）');
+  ok('場上有兩個肌肉小人，整座照樣蓋完',
+     mus.phase === 'done' && mus.placed === mus.total,
+     mus.idx.length + ' 個（第 ' + mus.idx.join('、') + ' 號），' + mus.frames * 0.05 +
+     ' 秒蓋完 ' + mus.placed + '/' + mus.total + ' 塊');
+
+  const musN = await page.evaluate(() => {
+    const out = {};
+    for (const n of [5, 8, 9, 10, 20, 40, 60]) {
+      setWorkerCount(n);
+      out[n] = workers.filter(w => w.mus).length;
+    }
+    setWorkerCount(20);
+    return { out, idx: workers.map((w, i) => w.mus ? i : -1).filter(i => i >= 0),
+             both: workers.filter(w => w.mus && (w.mage || w.eng)).length };
+  });
+  ok('十個人裡一個肌肉小人，不會跟工程師或魔法師撞在同一個人身上',
+     musN.out[5] === 0 && musN.out[9] === 1 && musN.out[10] === 1 && musN.out[20] === 2 &&
+     musN.out[40] === 4 && musN.out[60] === 6 && musN.both === 0,
+     '5／9／10／20／40／60 人時各有 ' + [5, 9, 10, 20, 40, 60].map(n => musN.out[n]).join('／') +
+     ' 個；20 人時是第 ' + musN.idx.join('、') + ' 號（工程師 0 號、魔法師 5、15 號）');
+
+  /* 手上那塊真的埋進牆裡就別硬扔（v1.112）。他撿料不限距離，所以會走進實心建築裡
+     （金字塔那種）撿躺在裡面的碎料；在那裡出手的話，出手那一下整塊在牆裡。
+     判準看的是**那塊積木**不是他的腳：積木舉在頭頂兩格半高，腳邊填起一兩層不影響它。 */
+  const musWall = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    const w = workers.find(q => q.mus);
+    for (let i = 0; i < 900 && phase === 'build'; i++) step(0.05);   // 先讓它長出幾層牆
+    let g = 0;
+    while (w.st !== 'hurl' && g++ < 3000 && phase === 'build') step(0.05);
+    if (w.st !== 'hurl') return { skip: 1 };
+    // 挑一個「頭頂那一格是實心」的位置站進去：已就位、離地兩格多的那些積木就在那種格子上
+    let spot = null;
+    for (const q of blocks) if (q.st === 3 && Math.abs(q.y - 2.5) < 0.3) { spot = q; break; }
+    if (!spot) return { skip: 2 };
+    const b = blocks[w.load[0].b];
+    w.x = spot.x; w.z = spot.z; w.ct = 0.3;
+    carryPose(w);                                  // 手上那塊跟著人走
+    const buried = blockAt(b.x, b.y, b.z) ? 1 : 0;
+    let hurled = 0;
+    for (let i = 0; i < 30 && w.st === 'hurl'; i++) {
+      step(0.05);
+      if (b.arc && b.arc.hurl && b.st === 2) hurled = 1;
+    }
+    return { buried, hurled, st: w.st, hold: b.st, at: [+spot.x.toFixed(1), +spot.z.toFixed(1)] };
+  });
+  ok('手上那塊被牆埋住就不硬扔，退回一般工人那條路（走到工地邊上再丟）',
+     musWall.skip ? false : (musWall.buried === 1 && !musWall.hurled &&
+       musWall.st === 'build' && musWall.hold === 1),
+     musWall.skip ? '（沒抓到掄到一半的人，skip=' + musWall.skip + '）'
+       : '站到 (' + musWall.at.join(', ') + ') 之後手上那塊在牆裡，他沒出手（st=' +
+         musWall.st + '，那塊還在手上）');
+
+  /* 外觀：裸上半身、上半身比別人大一圈，安全帽照戴（他是工人，不是魔法師）。
+     用「哪幾塊看得見」認部位——位置會隨姿勢跑，看得見／看不見不會。 */
+  const musLook = await page.evaluate(() => {
+    const read = i => {
+      const w = workers[i];
+      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         cast: 0, burnK: 0, wetK: 0 });
+      ENG.putWorker(i, w);
+      const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
+      const col = ENG.three.workerMesh.instanceColor.array;
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        const at = i * ENG.WPARTS + k;
+        ENG.three.workerMesh.getMatrixAt(at, M);
+        v.setFromMatrixPosition(M);
+        const e = M.elements;
+        out.push({ k, vis: !(e[0] === 0 && e[5] === 0),
+                   x: +(v.x / w.scale).toFixed(2), y: +(v.y / w.scale).toFixed(2),
+                   sx: +(Math.abs(e[0]) / w.scale).toFixed(2),
+                   sy: +(Math.abs(e[5]) / w.scale).toFixed(2),
+                   c: [0, 1, 2].map(j => Math.round(col[at * 3 + j] * 255)).join(',') });
+      }
+      const on = out.filter(p => p.vis);
+      return { all: out, n: on.length,
+               wide: +Math.max.apply(null, on.map(p => Math.abs(p.x) + p.sx / 2)).toFixed(2),
+               top: +Math.max.apply(null, on.map(p => p.y + p.sy / 2)).toFixed(2) };
+    };
+    setWorkerCount(20);
+    const mi = workers.findIndex(w => w.mus);
+    const pi = workers.findIndex((w, i) => !w.mus && !w.mage && !w.eng);
+    const m = read(mi), p = read(pi);
+    // 只有他有的那幾塊 vs 只有一般工人有的那幾塊（第 0 塊就是工作服）
+    const onlyMus = m.all.filter(q => q.vis && !p.all[q.k].vis).map(q => q.k);
+    const onlyPlain = p.all.filter(q => q.vis && !m.all[q.k].vis).map(q => q.k);
+    const skin = m.all[1].c;                       // 頭的顏色就是他的膚色
+    return { mi, pi, onlyMus, onlyPlain, skin,
+             bare: onlyMus.every(k => m.all[k].c === skin),
+             hat: m.all.filter(q => q.vis && q.c === m.all[2].c).length,
+             plainHat: p.all.filter(q => q.vis && q.c === p.all[2].c).length,
+             wide: m.wide, plainWide: p.wide, top: m.top, plainTop: p.top,
+             arm: m.all[6].sx, plainArm: p.all[6].sx,
+             armX: m.all[6].x, plainArmX: p.all[6].x };
+  });
+  ok('裸上半身：工作服那一塊收掉，換成膚色的胸膛、肩、胸肌五塊',
+     musLook.onlyMus.length === 5 && musLook.onlyPlain.length === 1 &&
+     musLook.onlyPlain[0] === 0 && musLook.bare,
+     '只有他有的 ' + musLook.onlyMus.length + ' 塊（第 ' + musLook.onlyMus.join('、') +
+     ' 塊，全是膚色 ' + musLook.skin + '）；只有一般工人有的是第 ' +
+     musLook.onlyPlain.join('、') + ' 塊（工作服）');
+  ok('上半身大一圈、手臂粗一圈，安全帽照戴、身高不變',
+     musLook.wide > musLook.plainWide * 1.25 && musLook.hat === 3 &&
+     musLook.plainHat === 3 && Math.abs(musLook.top - musLook.plainTop) < 0.01 &&
+     musLook.arm > musLook.plainArm * 1.4 && musLook.armX > musLook.plainArmX,
+     '最寬 ' + musLook.wide + '（一般工人 ' + musLook.plainWide + '）、手臂寬 ' +
+     musLook.arm + '（' + musLook.plainArm + '）、掛在 x=' + musLook.armX + '（' +
+     musLook.plainArmX + '）；安全帽 ' + musLook.hat + ' 塊，帽頂 ' + musLook.top);
 
   /* ══════════ 閒聊 ══════════ */
   head('閒聊');

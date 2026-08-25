@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.111.0';
+const VERSION = '1.112.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1056,6 +1056,9 @@ function newWorker(i) {
        fly 是已經送出去、還在半空的那幾塊（連發，所以是一份清單），
        trail 是下一顆星還有多久。 */
     mage: 0, cast: 0, mang: 0, mrad: 0, mre: 0, ct: 0, fly: [], trail: 0,
+    /* 肌肉小人（mus，v1.112）：撿料跟一般工人一樣走過去撿，撿起來就地掄起來扔
+       （見 updWorker 的 hurl）。掄的倒數借魔法師那個 ct——沒有人同時是兩種。 */
+    mus: 0,
     /* 蓋自己的家（v1.97 的閒晃事件，見 homes）：hm 是哪一間（−1＝沒在蓋），
        hst 是這一趟在做什麼（dig／lay），hcap 是這一趟要挖幾塊，
        hdt 是還要挖幾秒（砌的時候是下一塊還有幾秒），hp 是下一撮土花幾秒。
@@ -1083,6 +1086,7 @@ function setWorkerCount(n) {
   workerCnt = n;
   tagEngineer();
   tagMage();
+  tagMuscle();
   if (idlePhase()) assignSpots();           // 慶祝中加減人：圈要重新等分
   ENG.setWorkerCount(workers.length);
 }
@@ -1120,6 +1124,19 @@ function tagMage() {
     }
     if (!mage && w.mage) { releaseWorker(w); w.ct = 0; }
     w.mage = mage;
+  }
+}
+/* 十個人裡有一個是肌肉小人（v1.112）。跟工程師、魔法師同一套：照編號固定挑。
+   排在 8 號起算是為了跟 0 號的工程師、5 號的魔法師錯開——沒有人是兩種身分。
+   身分其實不會中途換人（編號固定，而 workers 只從尾端增減），下面那一條是保險：
+   停在 hurl 上的人如果變回一般工人，他會拿著那塊站在料堆那裡等一個不會來的出手。 */
+const MUS_EVERY = 10, MUS_AT = 8;
+function tagMuscle() {
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    const mus = i % MUS_EVERY === MUS_AT ? 1 : 0;
+    if (!mus && w.mus && w.st === 'hurl') releaseWorker(w);
+    w.mus = mus;
   }
 }
 /* 放掉一個認領的格子。放掉也會改變支撐狀態，而且派工游標要退回去補這個洞 */
@@ -1955,7 +1972,7 @@ function updWorker(w, wi, dt) {
 
   switch (w.st) {
     case 'idle': {
-      loadUp(w, wi);
+      loadUp(w, wi, w.mus ? 1 : 0);        // 肌肉小人一趟只領一塊（v1.112，見 MUS_WIND）
       if (!w.load.length) { wander(w, dt); return; }
       w.st = 'pick'; w.li = 0;
       w.leg = 0;                     // 接到工作就把閒晃里程歸零，別把它算進下次的發呆時間
@@ -1982,7 +1999,8 @@ function updWorker(w, wi, dt) {
         if (w.li < w.load.length) {                   // 還沒拿滿：直接去下一塊
           const p = pickSpot(blocks[w.load[w.li].b]);
           w.tx = p.x; w.tz = p.z; w.chk = 0;
-        } else { w.li = 0; toSlot(w); }               // 拿滿了才回工地
+        } else if (w.mus) { w.li = 0; w.st = 'hurl'; w.ct = MUS_WIND; }   // 就地扔（v1.112）
+        else { w.li = 0; toSlot(w); }                 // 拿滿了才回工地
       }
       carryPose(w);                                   // 立刻舉起來，不然有一幀還黏在地上
       break;
@@ -2020,6 +2038,25 @@ function updWorker(w, wi, dt) {
         carryPose(w);                                 // 剩下的那疊要馬上往下遞補一格
         w.st = 'wait'; w.wait = 0.28;
       }
+      break;
+    }
+    /* 肌肉小人撿起來之後就站在原地掄（v1.112）。不必先走位——他站的地方就是剛剛
+       那塊料躺著的地方，那裡本來就站得住（下面只擋一種情況，見出手前那一行）。 */
+    case 'hurl': {
+      const j = w.load[0];
+      const b = j && blocks[j.b];
+      if (!b || b.st !== CARRY) { dropJob(w, 0); break; }   // 手上那塊被打掉了
+      carryPose(w);
+      w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+      const s = bp.slots[j.s];
+      w.a = Math.atan2(s.x - w.x, s.z - w.z);         // 面向要扔到的那一格
+      w.ct -= dt;
+      /* 手上那塊真的被埋進牆裡才不出手（撿的時候還是空地，掄的這幾秒別人在他身上補了幾層）：
+         出手那一下整塊在牆裡。那就退回一般工人那條路，走到工地邊上再丟（build 那段本來就有
+         這條）。**看的是那塊積木、不是他的腳**（footBlocked 是腳邊三層）：積木舉在頭頂
+         兩格半高，腳邊填起來一兩層不影響它——實測拿 footBlocked 當條件的話，
+         金字塔那種實心底盤會讓四成的趟數退回去走回工地，那就不是「就地扔」了。 */
+      if (w.ct <= 0) { if (blockAt(b.x, b.y, b.z)) toSlot(w); else hurl(w, j, b); }
       break;
     }
     case 'wait':
@@ -2096,6 +2133,43 @@ function tossPeak(x0, y0, z0, s) {
   return arcPeak(x0, y0, z0, s.x, y1, s.z, colTop,
                  Math.max(1.6, (y1 - y0) * 0.45 + 1.8));
 }
+/* ── 肌肉小人（v1.112）─────────────────────────────────
+   十個人有一個是肌肉小人（8、18、28… 號，跟 0 號的工程師、5 號的魔法師錯開）：
+   裸著上半身，肩膀與手臂比別人粗一圈。**撿料跟一般工人一模一樣**——走過去撿、
+   多遠都去（不像魔法師只搆得到腳邊 11 格，也不像他一塊都不碰）；
+   差別在撿起來之後**不走回工地**：站在料堆那裡把那塊掄起來，直接扔到藍圖的位置上，
+   整段路是一條拋物線（跟魔法師一樣），中途不落地。
+   飛得比魔法師快得多、也比他平——那是靠力氣扔出去的，不是浮過去的。
+   所以他一趟只領一塊：「撿起來就扔」的節奏不允許先湊滿三塊再一起處理。 */
+const MUS_WIND = 0.3;               // 撿起來之後掄多久才出手（看得出是「掄」的最短時間）
+/* 飛行時間：起手 0.3 秒，再照水平距離與高度加。三十格外大約 0.8 秒——
+   魔法師同一段是 2.6 秒（他是飄的），一般工人在工地邊上那一下是 0.34 秒起跳。
+   弧頂就用 tossPeak（沒有魔法師那個 +1.6 的加高）：同樣的高度飛更遠，
+   看過去就是一條平的、快的線。 */
+const MUS_DUR0 = 0.3, MUS_DUR_D = 0.016, MUS_DUR_Y = 0.01;
+const MUS_REST = 0.4;               // 扔完喘一下再去撿下一塊（一般工人丟完是 0.28）
+/* 出手：那一塊從他頭頂上（撿起來就舉在那裡）進入拋物線。跟一般工人丟的是同一套 arc，
+   除了時間與 hurl 記號之外沒有第二套規則——半路被打掉、落不下去都由 stepToss 處理。 */
+function hurl(w, j, b) {
+  const s = bp.slots[j.s];
+  b.st = TOSS;
+  b.arc = {
+    t: 0,
+    dur: MUS_DUR0 + Math.hypot(s.x - b.x, s.z - b.z) * MUS_DUR_D + s.y * MUS_DUR_Y,
+    x0: b.x, y0: b.y, z0: b.z, x1: s.x, y1: s.y + HB, z1: s.z,
+    peak: tossPeak(b.x, b.y, b.z, s),
+    hurl: 1                    // 這條是從料堆那裡直接扔的，量「工人原地連丟拋多遠」要濾掉
+  };
+  const pal = bp.pal[s.c % bp.pal.length];
+  b.tr = ((pal >> 16) & 255) / 255; b.tg = ((pal >> 8) & 255) / 255; b.tb = (pal & 255) / 255;
+  b.slot = j.s;
+  b.holder = -1;                                     // 出手了就不再屬於任何人
+  w.load.shift();
+  w.carry = false;                                   // 一趟就一塊，出手就空手了
+  carryPose(w);
+  w.st = 'wait'; w.wait = MUS_REST;
+}
+
 /* 搬運姿勢：建材舉在頭頂上方，隨腳步微幅晃動。
    一趟可以搬好幾塊（v1.60），所以頭上是一疊——間距用格距 1（跟建築上的疊法一樣，
    看得出一塊一塊）。工作單裡已經在手上的才算，還沒撿的那幾塊還躺在地上。 */
