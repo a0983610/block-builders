@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.106.0';
+const VERSION = '1.107.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1253,16 +1253,27 @@ function findSlot(wx, wz) {
    想省掉繞路的成本，結果兩邊都更差：那個判準會挑到躺在建築腳邊的料，
    人為了撿它反而走進工地裡（實測台北 101 的「站在牆裡」從 0.35% 跳到 5.98%，
    同樣時間蓋的塊數也少了一成）。 */
+/* 走去撿這一塊要站在哪（v1.107）。躺在房子占地上的（那塊地走不進去）就站到外框
+   最近的那一面外面伸手拿——跟小人撿自己家的碎料同一套（grabStand）。
+   回傳的可能是那個共用暫存物件，取完 x/z 就別留著。 */
+function pickSpot(b) {
+  const h = footHome(b.x, b.z);
+  return h ? grabStand(h, b.x, b.z) : b;
+}
 function findBlock(wx, wz, maxD) {
   let best = -1, bd = maxD ? maxD * maxD : Infinity;   // 給了 maxD 就只找那麼遠以內的
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
     const d = (b.x - wx) ** 2 + (b.z - wz) ** 2;
-    /* 躺在人家屋子裡的料不撿（v1.97）：走過去會被 stepTo 推出屋外，
-       永遠抵達不了那一塊，那個人就卡在 pick 上。homeAt 只在「這塊是目前最近的」
-       時候才查，不是每塊都查一次。 */
-    if (d < bd) { if (homeAt(b.x, b.z)) continue; bd = d; best = i; }
+    /* 躺在房子占地上的照撿（v1.107）：站到外框旁邊伸手拿（見 pickSpot），
+       跟小人撿自己家的碎料同一套。
+       v1.97～v1.106 是一律跳過的，理由是「走過去會被推出屋外、永遠抵達不了，
+       那個人就卡在 pick 上」——那是真的，但代價是那些料**永遠回收不了**：
+       實測換一座地標之後，場上 730 塊自由碎料裡有 338 塊埋在房子的外框裡
+       （使用者：「小房子內的積木也撿不出來」），一半的料撿不到，
+       於是一堆人領不到工作就在房子旁邊閒晃——看起來就是「卡住」。 */
+    if (d < bd) { bd = d; best = i; }
   }
   return best;
 }
@@ -1801,8 +1812,8 @@ function updWorker(w, wi, dt) {
       if (!w.load.length) { wander(w, dt); return; }
       w.st = 'pick'; w.li = 0;
       w.leg = 0;                     // 接到工作就把閒晃里程歸零，別把它算進下次的發呆時間
-      const b = blocks[w.load[0].b];
-      w.tx = b.x; w.tz = b.z;
+      const p = pickSpot(blocks[w.load[0].b]);
+      w.tx = p.x; w.tz = p.z;
       break;
     }
     case 'pick': {
@@ -1811,15 +1822,18 @@ function updWorker(w, wi, dt) {
       const j = w.load[w.li];
       const b = j && blocks[j.b];
       if (!b || b.st !== FREE) { dropJob(w, w.li); break; }
-      w.tx = b.x; w.tz = b.z;
+      {
+        const p = pickSpot(b);                        // 躺在房子占地上的站到框外拿
+        w.tx = p.x; w.tz = p.z;
+      }
       if (buildWalk(w, dt)) {
         if (b.cell) gridDel(b);
         douse(b);                                     // 撿起來的碎料還在燒的話，先熄掉
         b.st = CARRY; b.rest = false; w.carry = true; stats.carried++;
         w.li++;
         if (w.li < w.load.length) {                   // 還沒拿滿：直接去下一塊
-          const nb = blocks[w.load[w.li].b];
-          w.tx = nb.x; w.tz = nb.z; w.chk = 0;
+          const p = pickSpot(blocks[w.load[w.li].b]);
+          w.tx = p.x; w.tz = p.z; w.chk = 0;
         } else { w.li = 0; toSlot(w); }               // 拿滿了才回工地
       }
       carryPose(w);                                   // 立刻舉起來，不然有一幀還黏在地上
@@ -3173,8 +3187,8 @@ function castTrip(w, wi, h, dt) {
   let b = mageBlock(w);
   if (!b) { w.gb = freeNearHome(w, h); b = mageBlock(w); }
   if (b) {
-    // 倒在自己家占地裡的要站到框外（同 grabTrip），不然走進去只會被推出來
-    const g = footHome(b.x, b.z) === h ? grabStand(h, b.x, b.z) : b;
+    // 倒在房子占地裡的要站到框外（同 grabTrip），不然走進去只會被推出來
+    const g = pickSpot(b);
     w.tx = g.x; w.tz = g.z;
   } else {
     /* 站位：從屋子中心往那一格的方向推到地基外（跟工人同一套，見 layTrip 的說明）。 */
@@ -3249,12 +3263,12 @@ function castHome(w, wi, h, k) {
 
 const GRAB_R = 12;                  // 找碎料的範圍：離自己家外框這麼遠以內
 /* 家附近地上躺著的碎料裡離他最近的那一塊（沒有就 −1，v1.104）。
-   條件跟工人撿料那條一樣（FREE、落定了、沒人拿），另外三個不撿：
-   躺在**別人家**占地上的（那塊地走不進去，走過去只會被推出來、永遠抵達不了）、
-   在工地裡的（那是地標的料場，而且要走進建築裡）、離自己家太遠的（走過去比挖還久）。
-   **倒在自己家占地裡的照撿**（v1.105）：站在外框旁邊伸手拿就好，跟 layTrip 站在
-   框外往裡丟是同一套。不撿的話，砸爛一間房子的碎料有將近四成躺在自己的地基上
-   （實測 458 塊裡 173 塊），使用者看到的就是「一地碎料還在挖新的」。 */
+   條件跟工人撿料那條一樣（FREE、落定了、沒人拿），兩個不撿：在工地裡的（那是地標的
+   料場，而且要走進建築裡）、離自己家太遠的（走過去比挖還久）。
+   **倒在房子占地裡的照撿**（v1.105 自己家、v1.107 連別人家）：站在外框旁邊伸手拿就好
+   （見 pickSpot／grabStand），跟 layTrip 站在框外往裡丟是同一套。
+   不撿的話，砸爛一間房子的碎料有將近四成躺在自己的地基上（實測 458 塊裡 173 塊），
+   使用者看到的就是「一地碎料還在挖新的」。 */
 function freeNearHome(w, h) {
   let best = -1, bd = Infinity;
   const lim = (h.r + GRAB_R) ** 2, site = (siteR + KEEP) ** 2;
@@ -3264,10 +3278,7 @@ function freeNearHome(w, h) {
     if ((b.x - h.x) ** 2 + (b.z - h.z) ** 2 > lim) continue;
     if (b.x * b.x + b.z * b.z < site) continue;
     const d = (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
-    if (d >= bd) continue;
-    const hb = footHome(b.x, b.z);
-    if (hb && hb !== h) continue;                       // 躺在別人家裡（同 findBlock）
-    bd = d; best = i;
+    if (d < bd) { bd = d; best = i; }
   }
   return best;
 }
@@ -3315,8 +3326,7 @@ function grabTrip(w, wi, h, dt) {
     if (i < 0) { endTrip(w, h); return; }
     w.gb = i; b = blocks[i];
   }
-  // 躺在自己家外框裡的，站到框外伸手拿（見 grabStand）
-  const g = footHome(b.x, b.z) === h ? grabStand(h, b.x, b.z) : b;
+  const g = pickSpot(b);            // 躺在房子外框裡的，站到框外伸手拿
   w.tx = g.x; w.tz = g.z;
   const leg = w.leg;                                     // 上工的路不算閒晃里程（同 digTrip）
   const walking = !strollTo(w, dt);

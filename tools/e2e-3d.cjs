@@ -4444,6 +4444,70 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '第 ' + hitHome.fly.land + ' 幀落地，落點在外框裡：' + hitHome.fly.inHome +
      '（離屋子中心 ' + hitHome.fly.d + '、地基半徑 ' + hitHome.r + '）');
 
+  /* 躺在房子外框裡的碎料也要撿得出來（v1.107，使用者：「小房子內的積木也撿不出來」）。
+     v1.97～v1.106 是**一律跳過**的，理由是「走過去會被推出屋外、永遠抵達不了，那個人就
+     卡在 pick 上」。那個理由是真的，但代價是那些料永遠回收不了——實測換一座地標之後，
+     場上 730 塊自由碎料裡有 338 塊埋在房子外框裡，一半的料撿不到，於是一堆人領不到工作
+     就在房子旁邊閒晃，看起來就是「卡住」。
+     現在站到外框最近的那一面外面伸手拿（pickSpot → grabStand）。
+     對照組把 pickSpot 換成「走到積木本身」＝v1.106 那個走不進去的版本。 */
+  const buried = await page.evaluate(() => {
+    const run = on => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 900; setWorkerCount(20); startBuild(true);
+      stopIdleEvent(); clearHomes();
+      homes = { list: [] };
+      const kind = HOME_KIND[3];                       // 大屋 7×5×4
+      const at = { x: 0, z: siteR + 4 + homeR(kind) };
+      const slots = homeSlots(at.x, at.z, kind, HOME_PAL[0]);
+      const map = new Map();
+      slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { x: at.x, z: at.z, r: homeR(kind), kind: kind.id, at: map,
+                  ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                  slots, left: slots.length, n: kind.n, done: true };
+      markHomeF6(h); homes.list.push(h);
+      // 只砌牆的第一層（外框就成立了），屋裡留空好擺碎料
+      for (let i = 0; i < slots.length; i++) {
+        if (slots[i].gy !== 0) continue;
+        const sl = slots[i], b = newBlock();
+        b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
+        b.hh = 0; b.hk = i;
+        blocks.push(b); sl.filled = true; h.left--;
+      }
+      homeBox(h);
+      // 把十二塊碎料搬進外框裡
+      const inside = [];
+      for (let i = 0; i < blocks.length && inside.length < 12; i++) {
+        const b = blocks[i];
+        if (b.st !== 0 || !b.rest || b.hh >= 0 || b.holder >= 0) continue;
+        if (b.cell) gridDel(b);
+        b.x = h.x + rr(-1.5, 1.5); b.z = h.z + rr(-1, 1); b.y = HB;
+        gridAdd(b);
+        inside.push(i);
+      }
+      ENG.setBlockCount(blocks.length);
+      const all = inside.every(i => footHome(blocks[i].x, blocks[i].z));
+      const orig = pickSpot;
+      if (!on) pickSpot = b => b;                      // ＝v1.106（走到積木本身，走不進去）
+      let secs = 0, got = 0;
+      while (secs < 150 && got < inside.length) {
+        step(0.05); secs += 0.05;
+        got = inside.filter(i => blocks[i].st !== 0).length;
+      }
+      pickSpot = orig;
+      cleanTools(); clearHomes();
+      return { n: inside.length, got, all, secs: +secs.toFixed(0) };
+    };
+    const on = run(true), off = run(false);
+    return { on, off };
+  });
+  ok('躺在房子外框裡的碎料撿得出來（站到框外伸手拿）',
+     buried.on.all && buried.on.n === 12 && buried.on.got === 12 &&
+     buried.off.got < 12,
+     '屋裡擺 ' + buried.on.n + ' 塊：站到框外拿 → ' + buried.on.secs + ' 秒撿走 ' +
+     buried.on.got + ' 塊；走到積木本身（v1.106）→ 150 秒只撿走 ' + buried.off.got + ' 塊');
+
   /* 敲一下完工的建築，不該把全場小人嚇跑（v1.106，使用者：「敲一下持續驚嚇不合理」）。
      phase 照樣進「拆除中」（那是換場的記帳狀態），但小人繼續過自己的生活——
      在家附近走走、聊天、蓋房子。v1.105 之前拆除中會讓全場退到外圈站著不動：
