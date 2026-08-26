@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.115.0';
+const VERSION = '1.116.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -3979,7 +3979,7 @@ let tool = 'hammer';
 
 let hammerR = 5.5, hammerPow = 15;
 let swing = null;     // 正在揮下去的槌子
-let ball = null;      // 飛行中的鐵球
+let balls = null;     // 在場的鐵球（可以同時好幾顆，v1.116）
 let twists = null;    // 作用中的龍捲風（可以同時好幾道）
 let bombs = null;     // 已放下、倒數中的定時炸彈
 let meteors = null;   // 已呼叫的隕石（倒數或下墜中，可以好幾顆）
@@ -4448,6 +4448,13 @@ const BALL_BOUNCE = 0.42;           // 落地回彈保留多少垂直速度
    兩個都放寬一點：6 秒 ×0.82 的衰減滾得到約 119 單位，7.5 秒 ×0.86 約 152。 */
 const BALL_LIFE = 7.5;              // 最多滾幾秒
 const BALL_ROLL = 0.86;             // 滾動阻力：每秒保留多少速度
+/* 最多同時幾顆（v1.116，使用者：「保齡球可以多顆（目前如果前一顆球還在滾，
+   再用一次保齡球，前一個會消失）」）。以前是一個 ball 變數，第二顆一出手就把第一顆
+   蓋掉——球還在滾就整顆憑空不見。現在跟龍捲風同一套：一份清單、滿了把最早那顆擠掉。
+   **要跟引擎那邊的 MAXBALL 一樣大**，小於它才不會有球算得到卻畫不出來。
+   6 顆的理由：每顆每幀都要掃一次整池積木（同龍捲風），實測 6 顆 ＋ 一萬五千塊
+   仍在每幀預算內（見 README〈保齡球可以同時好幾顆〉）。 */
+const BALL_MAX = 6;
 /* 已經點好、還在等第二點的那一點。保齡球與龍捲風共用（v1.58 起兩個都是點兩下）：
    {x, z, ph 光環的脈動相位, r 光環半徑, c 光環顏色}。 */
 let aim = null;
@@ -4474,11 +4481,15 @@ function aimBall(point) {
 }
 function launchBall(from, toward) {
   const a = aimDir(from, toward, BALL_SPREAD);
-  ball = {
+  if (!balls) balls = [];
+  if (balls.length >= BALL_MAX) balls.shift();     // 放太多顆就把最早那顆擠掉（同龍捲風）
+  balls.push({
     x: from.x, y: BALL_R + BALL_DROP, z: from.z,
     vx: Math.cos(a) * 34, vz: Math.sin(a) * 34, vy: rr(-3, -0.5),   // 是往下丟不是往上拋
-    r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 0
-  };
+    r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 0,
+    // 滾動軸（水平、垂直於前進方向）。畫的時候直接讀這兩個，見 ENG.putBalls
+    ax: Math.sin(a), az: -Math.cos(a)
+  });
   aim = null;
   sndSwing();
 }
@@ -4494,72 +4505,78 @@ function aimRings() {
                   spin: -aim.ph * 0.5, op: 0.35 + 0.5 * p, c: 0xffffff, add: 1 });
   return AIM_RING;
 }
+/* 每一顆各自跑（v1.116：以前只有一顆，第二顆一出手就把第一顆蓋掉——球還在滾就整顆
+   憑空不見，那正是使用者看到的）。每顆都要掃一次整池積木，所以顆數卡在 BALL_MAX。
+   畫在 draw() 那邊統一送出去（ENG.putBalls），跟龍捲風、炸彈那些清單型道具同一套。 */
 function stepBall(dt) {
-  if (!ball) return;
-  const o = ball;
-  o.life -= dt;
-  o.vy -= GRAV * dt;
-  o.x += o.vx * dt; o.z += o.vz * dt; o.y += o.vy * dt;
-  if (o.y <= o.r) {                              // 落地：彈一下，越彈越低
-    o.y = o.r;
-    if (o.vy < -2.5) {
-      o.vy = -o.vy * BALL_BOUNCE; o.hops++;
-      spawnDust({ x: o.x, y: 0.4, z: o.z }, 4, 6);
-      sndSmash();                                // 不震畫面（v1.58），理由同下面撞到積木那段
-    } else o.vy = 0;
-  }
-  let sp = Math.hypot(o.vx, o.vz);
-  o.ang += sp / o.r * dt;                        // 滾動角度：走多遠就轉多少
-  const R = o.r + 0.7, R2 = R * R;
-  let n = 0, own = 0;                 // own＝其中有幾塊是地標的（見 afterHit）
-  for (const b of blocks) {
-    if (b.st !== SET && b.st !== FREE) continue;
-    const dx = b.x - o.x, dy = b.y - o.y, dz = b.z - o.z;
-    const d2 = dx * dx + dy * dy + dz * dz;
-    if (d2 > R2) { if (b.st === SET && d2 < R2 * 2.6) b.wob = 0.4; continue; }
-    const d = Math.max(0.4, Math.sqrt(d2));
-    const wasSet = b.st === SET;
-    const wasOwn = b.hh < 0;                   // 同 smash：breakBlock 會把 hh 清掉
-    breakBlock(b,
-      o.vx * 0.5 + dx / d * 7 + rr(-2, 2),
-      Math.max(3, sp * 0.26) + dy / d * 3 + rr(1, 5),
-      o.vz * 0.5 + dz / d * 7 + rr(-2, 2));
-    if (wasSet) { n++; if (wasOwn) own++; }      // 地上的散料被撞開不算破壞
-  }
-  /* 擋在球路上的人被撞開：方向是「球的行進方向 ＋ 從球心往外推」，
-     所以正面被撞的往前飛，擦邊的往旁邊彈開。球不會點火，純粹是被推走。 */
-  for (const w of workers) {
-    if (w.air) continue;
-    // 高度也要算：球還在半空中飛過頭頂時不該把下面的人撞飛
-    const dx = w.x - o.x, dy = o.y - 0.9, dz = w.z - o.z;
-    const dd = dx * dx + dy * dy + dz * dz;
-    if (dd > (R + 0.8) * (R + 0.8)) continue;
-    const d = Math.max(0.4, Math.hypot(dx, dz));
-    tossWorker(w, o.vx * 0.6 + dx / d * 6, rr(4, 7), o.vz * 0.6 + dz / d * 6, false);
-  }
-  if (n) {
-    o.hit += n;
-    afterHit(n, { x: o.x, y: o.y, z: o.z }, R, own);
-    spawnDust({ x: o.x, y: o.y, z: o.z }, R, n);
-    /* 不震畫面（v1.58）：球一路滾過去是「每一幀都在撞」，每幀加一點震動的話
-       畫面從出手晃到停下，看久了很不舒服——跟龍捲風、投石機同一個道理。 */
-    if (Math.random() < 0.4) sndSmash();
-    const brake = Math.max(0.3, 1 - n * 0.006);  // 撞越多掉速越快
-    o.vx *= brake; o.vz *= brake;
-  }
-  const roll = Math.pow(BALL_ROLL, dt);          // 滾動阻力
-  o.vx *= roll; o.vz *= roll;
-  sp = Math.hypot(o.vx, o.vz);
+  if (!balls) return;
+  for (let i = balls.length - 1; i >= 0; i--) {
+    const o = balls[i];
+    o.life -= dt;
+    o.vy -= GRAV * dt;
+    o.x += o.vx * dt; o.z += o.vz * dt; o.y += o.vy * dt;
+    if (o.y <= o.r) {                              // 落地：彈一下，越彈越低
+      o.y = o.r;
+      if (o.vy < -2.5) {
+        o.vy = -o.vy * BALL_BOUNCE; o.hops++;
+        spawnDust({ x: o.x, y: 0.4, z: o.z }, 4, 6);
+        sndSmash();                                // 不震畫面（v1.58），理由同下面撞到積木那段
+      } else o.vy = 0;
+    }
+    let sp = Math.hypot(o.vx, o.vz);
+    o.ang += sp / o.r * dt;                        // 滾動角度：走多遠就轉多少
+    const R = o.r + 0.7, R2 = R * R;
+    let n = 0, own = 0;                 // own＝其中有幾塊是地標的（見 afterHit）
+    for (const b of blocks) {
+      if (b.st !== SET && b.st !== FREE) continue;
+      const dx = b.x - o.x, dy = b.y - o.y, dz = b.z - o.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > R2) { if (b.st === SET && d2 < R2 * 2.6) b.wob = 0.4; continue; }
+      const d = Math.max(0.4, Math.sqrt(d2));
+      const wasSet = b.st === SET;
+      const wasOwn = b.hh < 0;                   // 同 smash：breakBlock 會把 hh 清掉
+      breakBlock(b,
+        o.vx * 0.5 + dx / d * 7 + rr(-2, 2),
+        Math.max(3, sp * 0.26) + dy / d * 3 + rr(1, 5),
+        o.vz * 0.5 + dz / d * 7 + rr(-2, 2));
+      if (wasSet) { n++; if (wasOwn) own++; }      // 地上的散料被撞開不算破壞
+    }
+    /* 擋在球路上的人被撞開：方向是「球的行進方向 ＋ 從球心往外推」，
+       所以正面被撞的往前飛，擦邊的往旁邊彈開。球不會點火，純粹是被推走。 */
+    for (const w of workers) {
+      if (w.air) continue;
+      // 高度也要算：球還在半空中飛過頭頂時不該把下面的人撞飛
+      const dx = w.x - o.x, dy = o.y - 0.9, dz = w.z - o.z;
+      const dd = dx * dx + dy * dy + dz * dz;
+      if (dd > (R + 0.8) * (R + 0.8)) continue;
+      const d = Math.max(0.4, Math.hypot(dx, dz));
+      tossWorker(w, o.vx * 0.6 + dx / d * 6, rr(4, 7), o.vz * 0.6 + dz / d * 6, false);
+    }
+    if (n) {
+      o.hit += n;
+      afterHit(n, { x: o.x, y: o.y, z: o.z }, R, own);
+      spawnDust({ x: o.x, y: o.y, z: o.z }, R, n);
+      /* 不震畫面（v1.58）：球一路滾過去是「每一幀都在撞」，每幀加一點震動的話
+         畫面從出手晃到停下，看久了很不舒服——跟龍捲風、投石機同一個道理。 */
+      if (Math.random() < 0.4) sndSmash();
+      const brake = Math.max(0.3, 1 - n * 0.006);  // 撞越多掉速越快
+      o.vx *= brake; o.vz *= brake;
+    }
+    const roll = Math.pow(BALL_ROLL, dt);          // 滾動阻力
+    o.vx *= roll; o.vz *= roll;
+    sp = Math.hypot(o.vx, o.vz);
 
-  /* 停下來的條件。範圍放到草地邊緣（不是工地邊緣）：現在球是從玩家點的地方丟出來的，
-     點在場邊時起點本來就在工地外，用工地邊緣當界的話那一發出手就被收掉。 */
-  if (sp < 4.5 || o.life <= 0 || Math.hypot(o.x, o.z) > arenaR + 24) {
-    spawnRing({ x: o.x, y: 0, z: o.z }, 5);
-    ball = null; ENG.hideBall();
-  } else {
-    // 滾動軸：水平、垂直於前進方向。方向弄反的話球會像倒著滾
-    ENG.setBall(o.x, o.y, o.z, o.r, o.vz / sp, -o.vx / sp, o.ang);
+    /* 停下來的條件。範圍放到草地邊緣（不是工地邊緣）：現在球是從玩家點的地方丟出來的，
+       點在場邊時起點本來就在工地外，用工地邊緣當界的話那一發出手就被收掉。 */
+    if (sp < 4.5 || o.life <= 0 || Math.hypot(o.x, o.z) > arenaR + 24) {
+      spawnRing({ x: o.x, y: 0, z: o.z }, 5);
+      balls.splice(i, 1);
+    } else {
+      // 滾動軸：水平、垂直於前進方向。方向弄反的話球會像倒著滾
+      o.ax = o.vz / sp; o.az = -o.vx / sp;
+    }
   }
+  if (!balls.length) balls = null;
 }
 
 /* 龍捲風：在地面走一段路，把沿路的碎料與部分積木吸起來繞圈，最後隨機甩出去。
@@ -4572,17 +4589,23 @@ function stepBall(dt) {
 const TW_MAX = 4, TW_LIFE = 10, TW_R = 6, TW_H = 34;
 /* **每秒**啃掉範圍內的幾成（v1.87，使用者指定「吸走破壞是持續性的」）。
    v1.62～v1.86 是「同一道對同一塊只抽一次」：停在建築上也只啃那一口就沒事了，
-   看起來像路過蹭一下。現在改成一路啃——罩著多久就啃多久（撐得住的話一秒剩八成、
-   十秒剩 0.8¹⁰ ≈ 一成），這樣「吸走」才是持續發生的事。
+   看起來像路過蹭一下。現在改成一路啃——罩著多久就啃多久（撐得住的話一秒剩六成半、
+   十秒剩 0.65¹⁰ ≈ 千分之一），這樣「吸走」才是持續發生的事。
    每幀的機率是 1−(1−這個數)^dt，所以啃掉幾成跟幀率無關（見 stepTwist）。
-   碎料（FREE／FLY）不受這條限制，照樣全部捲走。 */
-const TW_TAKE = 0.2;
+   碎料（FREE／FLY）不受這條限制，照樣全部捲走。
+   **v1.116 從 0.2 拉到 0.35**（使用者：「提升龍捲風每單位時間的破壞積木百分比」）。
+   釘在建築上實測：一／二／三秒累計吸走 17／33／46% → 37／58／73%。
+   掃過去那一趟（新天鵝堡 3000 塊，12 輪）15.8～38.1%、平均 27.4%，
+   仍然是「啃出缺口」不是「整段刨掉」——那條是 v1.62 使用者指定的界線，測試守著。 */
+const TW_TAKE = 0.35;
 /* 走多快（單位／秒）：出發時 TW_SPD0，之後每幀被亂數推一下，夾在 MIN～MAX 之間。
    v1.62.2 整組乘 1.6（3.2／2.2／6 → 5.2／3.6／9.6，使用者指定「提升移動速度」）：
    漏斗半徑才 6，舊的速度連自己的直徑都要走 3.75 秒，看起來像在原地磨。
+   **v1.116 再乘 1.5**（→ 7.8／5.4／14.4，使用者再次指定「也提升它的移動速度」）：
+   八道實測的平均速度 5.2 → 7.9，整條壽命走的路 49 → 77 單位。
    轉向的擺幅（TW_SWAY）不跟著調——那是「每秒轉幾弧度」，跟走多快無關；
    跟著調的話走得快、轉得也快，等於原地繞圈，路線反而不會拉開。 */
-const TW_SPD0 = 5.2, TW_SPD_MIN = 3.6, TW_SPD_MAX = 9.6;
+const TW_SPD0 = 7.8, TW_SPD_MIN = 5.4, TW_SPD_MAX = 14.4;
 /* 風聲一段多長、每隔多久補一段（v1.62.3）。間隔比長度短，兩段有 0.5 秒重疊，
    接起來才是「一直在吹」而不是「呼、呼、呼」三聲分開的；
    最後 WIND_TAIL 秒不再補新的，不然漏斗都散了風還在吹。 */
@@ -7283,6 +7306,7 @@ function draw() {
   metFly.length = 0;
   if (meteors) for (const m of meteors) if (m.lit) metFly.push(m);
   ENG.putMeteors(metFly);
+  ENG.putBalls(balls || EMPTY);
   ENG.putTornados(twists || EMPTY);
   ENG.putFire(fireList());
   ENG.putFlash(flashes);

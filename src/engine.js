@@ -53,6 +53,9 @@ const ENG = (function () {
   const FLASH_MAX = 4;                     // 最多同時幾顆（好幾發一起炸）
   const FLASH_SQUASH = 0.82;               // 壓扁一點：貼地炸開的火球是扁的，不是正球
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
+  /* 鐵球最多同時幾顆（v1.116）。要跟規則那邊的 BALL_MAX 一樣大——
+     小於它的話多出來的球會整顆不見（規則還在算，畫面上沒有）。 */
+  const MAXBALL = 6;
   const MAXDOZ = 6, DOZ_PARTS = 10;
   const MAXTRUCK = 2, TRK_PARTS = 11;       // 消防車：最多兩台，一台 11 個部位
   /* 水：同時最多幾格。**要跟規則那邊的 WT_CELLS 一樣大**——小於它的話多出來的格子
@@ -462,10 +465,14 @@ const ENG = (function () {
     scene.add(dustMesh);
     dustMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
-    /* 破壞道具：鐵球與龍捲風。兩個都只有一顆，不用 instancing */
-    ballMesh = new T.Mesh(new T.SphereGeometry(1, 18, 14),
-      new T.MeshLambertMaterial({ color: 0x3a3f47 }));
-    ballMesh.castShadow = true; ballMesh.visible = false;
+    /* 破壞道具：鐵球。v1.116 起可以同時有好幾顆（使用者：「保齡球可以多顆」），
+       所以跟龍捲風一樣走 instancing——幾顆都是同一個 draw call；
+       沒球的時候 visible = false，一個 call 都不吃（見 README〈效能〉）。 */
+    ballMesh = new T.InstancedMesh(new T.SphereGeometry(1, 18, 14),
+      new T.MeshLambertMaterial({ color: 0x3a3f47 }), MAXBALL);
+    ballMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    ballMesh.castShadow = true; ballMesh.count = 0;
+    ballMesh.visible = false; ballMesh.frustumCulled = false;
     scene.add(ballMesh);
 
     /* 槌子：槌頭朝 local +Z，握把往 −Z 拖在後面。
@@ -743,17 +750,24 @@ const ENG = (function () {
   }
 
   /* ── 破壞道具 ───────────────────────────────────── */
-  /* (ax,az) 是滾動軸（水平、垂直於前進方向），ang 是已滾過的角度 */
-  function setBall(x, y, z, r, ax, az, ang) {
-    ballMesh.visible = true;
-    ballMesh.position.set(x, y, z);
-    ballMesh.scale.setScalar(r);
-    if (ax !== undefined) {
-      _axis.set(ax, 0, az);
-      if (_axis.lengthSq() > 1e-6) ballMesh.setRotationFromAxisAngle(_axis.normalize(), ang);
+  /* 鐵球。list 是規則那邊的球本體 {x, y, z, r, ax, az, ang}，一次可以給好幾顆
+     （v1.116）：(ax,az) 是滾動軸（水平、垂直於前進方向），ang 是已滾過的角度。 */
+  function putBalls(list) {
+    const n = Math.min(list.length, MAXBALL);
+    ballMesh.visible = n > 0;
+    ballMesh.count = n;
+    for (let i = 0; i < n; i++) {
+      const b = list[i];
+      _axis.set(b.ax, 0, b.az);
+      if (_axis.lengthSq() > 1e-6) scratch.quaternion.setFromAxisAngle(_axis.normalize(), b.ang);
+      else scratch.quaternion.identity();
+      scratch.position.set(b.x, b.y, b.z);
+      scratch.scale.setScalar(b.r);
+      scratch.updateMatrix();
+      ballMesh.setMatrixAt(i, scratch.matrix);
     }
+    ballMesh.instanceMatrix.needsUpdate = true;
   }
-  function hideBall() { ballMesh.visible = false; }
 
   /* 漏斗：越往上越粗，每一段各自轉、各自往旁邊偏一點，整條才會扭起來。
      list 是規則那邊的龍捲風本體 {x,z,r,h,spin}，一次可以給好幾道。 */
@@ -1922,7 +1936,7 @@ const ENG = (function () {
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers,
     putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
-    setBall, hideBall, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
+    putBalls, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide,
