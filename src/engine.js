@@ -1,7 +1,8 @@
 /* ============================================================
    繪製層：three.js 場景、光影、相機、InstancedMesh 積木池
    規則只有一條——這支檔案只管「怎麼畫」，不碰遊戲規則。
-   遊戲邏輯在 game.js，它把每個積木／小人的位置塞進這裡的 buffer。
+   遊戲邏輯在 src/game*.js 那五支（分工見 game.js 檔頭），它們把每個積木／小人的位置
+   塞進這裡的 buffer。
 
    效能關鍵：所有積木共用一個 BoxGeometry，走 InstancedMesh，
    不管畫 300 塊還是 3000 塊都只有 1 個 draw call。
@@ -177,7 +178,7 @@ const ENG = (function () {
        · 地標：面板最大那一檔是 9000，但 fitScale 挑的是「最接近目標」的那一階，
          可能落在目標之上——76 座裡最大的是萬里長城 9932（+10%）。
          池子不夠的話 reconcilePool 會夾住，那座就永遠少幾百塊、蓋不完。
-       · 村子：閒晃事件蓋的小房子（見 game.js 的 homes）是**從地上挖出來的新積木**，
+       · 村子：閒晃事件蓋的小房子（見 game-workers.js 的 homes）是**從地上挖出來的新積木**，
          不佔地標那一份。每個人最多一間，所以人數決定上限——實測 60 人跑到飽是
          43 間 5405 格（20 人是 12 間 1661 格）。
      11500（v1.42）只夠 9932 ＋ 1568，於是 9000 那一檔配 40／60 人時池子會撐滿：
@@ -1702,7 +1703,7 @@ const ENG = (function () {
       const p = parts[i];
       scratch.position.set(p.x, p.y, p.z);
       scratch.rotation.set(p.rx, p.ry, 0);
-      /* sy 給了就是非等比：彩帶那種薄紙片（v1.96，見 game.js 的 spawnConfetti）。
+      /* sy 給了就是非等比：彩帶那種薄紙片（v1.96，見 game-workers.js 的 spawnConfetti）。
          紙片借塵霧這個池子畫，不另開一個 InstancedMesh——多一個池子就多一個
          draw call，而彩帶只在完工那七秒出現。 */
       if (p.sy === undefined) scratch.scale.setScalar(p.s);

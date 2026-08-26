@@ -1,8 +1,15 @@
 /* ============================================================
    積木小人 · 世界地標工地 — 端對端回歸測試
    跑法：node tools/e2e-3d.cjs
+         node tools/e2e-3d.cjs --until 完工慶祝     ← 開發用：跑到那一段結束就收工
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
+
+   --until：改一行就要等整輪（828 條約八分鐘）太慢，這個讓它跑到指定段落就停。
+   只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
+   測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
+   所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
+   段名清單：grep "head('" tools/e2e-3d.cjs
 
    為什麼一定要用真瀏覽器：這支程式的坑幾乎都在「真實環境與假物件的差異」——
    ES module 走 file:// 會被 CORS 擋、canvas 是 replaced element、
@@ -42,10 +49,27 @@ const CUSTOM_COUNT = 28;         // blueprints/ 資料夾裡預設附的自訂�
 const CUSTOM_FILES = '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js,馬克杯.js,三色糰子與熱茶.js,五稜郭.js,孔廟建築群.js,日式醬油糰子.js,水榭戲亭.js,北海道舊本廳舍.js,吉薩大金字塔.js,松前城天守.js,林家花園觀稼樓.js,金閣寺.js,俄式白石大教堂.js,特製叉燒拉麵.js,清水寺本堂與舞台.js,章魚燒.js,焦糖布丁.js,舒芙蕾厚鬆餅.js,超商咖啡.js,新竹火車站.js,極地雪夜極光.js,聖三一修道院.js,彰化扇形車庫.js,銀閣寺.js,箱館奉行所.js,總統府.js';
 const ALL_SHAPES = SHAPE_COUNT + CUSTOM_COUNT;
 
+/* ---------- 只跑到某一段（--until，開發用，見檔頭） ---------- */
+const UNTIL = (() => {
+  const i = process.argv.indexOf('--until');
+  return i >= 0 ? (process.argv[i + 1] || '') : '';
+})();
+let untilHit = false;                       // 指定的那一段跑到了
+let BROWSER = null;                         // 收工時要關掉它（不關會留下 chrome-headless-shell）
+/* 收工用的哨兵。不用 process.exit 直接跳車：那樣瀏覽器會被留在背景。
+   丟出去讓最外層那個 catch 收（它認得 stopRun 這個記號），關瀏覽器、印總結、才離開。 */
+const stopRun = () => Object.assign(new Error('--until 收工'), { stopRun: true });
+
 /* ---------- 記分板 ---------- */
 const R = [];
 let section = '';
 const head = t => {
+  /* 指定的段落已經跑完，接著要開下一段了——收工。判斷用部分比對（含子字串就算），
+     打 --until 慶祝 也對得到「完工慶祝」。 */
+  if (UNTIL) {
+    if (untilHit && t.indexOf(UNTIL) < 0) throw stopRun();
+    if (t.indexOf(UNTIL) >= 0) untilHit = true;
+  }
   section = t;
   console.log('\n── ' + t + ' ' + '─'.repeat(Math.max(0, 46 - t.length * 2)));
 };
@@ -249,7 +273,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 /* ============================================================ */
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch();
+  const browser = BROWSER = await chromium.launch();
   const page = await browser.newPage({ viewport: VIEW });
 
   const errors = [];
@@ -371,9 +395,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('掛在 window.THREE 上', /window\.THREE\s*=/.test(libSrc));
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   ok('index.html 沒有用 type="module"', !/type\s*=\s*["']module["']/.test(html));
-  const srcAll = ['engine.js', 'game.js', 'blueprints.js']
-    .map(f => fs.readFileSync(path.join(ROOT, 'src', f), 'utf8')).join('\n');
-  ok('沒有寫入唯讀的 DOM 屬性', !/\.\s*client(Width|Height)\s*=/.test(srcAll));
+  /* 掃資料夾，不列檔名（v1.120.1 遊戲層拆成五支之後改的）：
+     列檔名的話下次再拆一支就默默漏檢，而漏檢的測試看起來跟通過一模一樣。 */
+  const srcFiles = fs.readdirSync(path.join(ROOT, 'src')).filter(f => f.endsWith('.js'));
+  const srcAll = srcFiles.map(f => fs.readFileSync(path.join(ROOT, 'src', f), 'utf8')).join('\n');
+  ok('沒有寫入唯讀的 DOM 屬性', !/\.\s*client(Width|Height)\s*=/.test(srcAll),
+     '掃了 src/ 底下 ' + srcFiles.length + ' 支：' + srcFiles.join('、'));
+  /* 拆出來的每一支都要自己寫 'use strict'（v1.120.1）：strict 是**每支 classic script
+     各自**的，漏寫的那支會回到非嚴格模式——打錯字的賦值不再報錯，會默默生出一個全域。 */
+  /* bpdoc.js 不算：它是產出物（build-bpdoc.cjs 把〈藍圖製作說明.md〉包成一個字串），
+     不是手寫的程式，也沒有賦值可以打錯。 */
+  const handSrc = srcFiles.filter(f => f !== 'bpdoc.js');
+  const noStrict = handSrc.filter(f => !/^\s*(\/\*[\s\S]*?\*\/\s*)*'use strict';/.test(
+    fs.readFileSync(path.join(ROOT, 'src', f), 'utf8')));
+  ok('src/ 底下每一支手寫的都有 use strict', noStrict.length === 0,
+     noStrict.join('、') || handSrc.length + ' 支都有：' + handSrc.join('、'));
 
   /* ══════════ 渲染 ══════════ */
   head('渲染');
@@ -854,7 +890,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ── 藍圖預覽頁（藍圖預覽.html）───────────────────────────
      做藍圖用的獨立進入點：看得到蓋起來的樣子、按一下產出可貼回給 AI 的報告。
-     它不載 game.js（那會把整個遊戲跑起來），所以引擎那些「還沒餵資料」的網格
+     它不載遊戲層那五支（那會把整個遊戲跑起來），所以引擎那些「還沒餵資料」的網格
      要自己清乾淨——不清的話原點會冒出 80 個小人。 */
   head('藍圖預覽頁');
   const vpErr = [];
@@ -956,7 +992,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      vpBig.blocks <= vpBig.maxb && vpBig.on === 1,
      '吉薩金字塔要 ' + vpBig.want + ' → ' + vpBig.blocks + ' 塊全上場（池子 ' + vpBig.maxb +
      '），產生 ' + vpBig.ms + 'ms');
-  // 兩頁的建材檔位要一樣：預覽頁不載 game.js，所以那三個數字是各留一份的
+  // 兩頁的建材檔位要一樣：預覽頁不載遊戲層，所以那三個數字是各留一份的
   const vpOpts = await vp.evaluate(() => CNT_OPTS);
   const gameOpts = await page.evaluate(() => CNT_OPTS);
   ok('預覽頁的建材三檔跟遊戲一致', String(vpOpts) === String(gameOpts),
@@ -3024,7 +3060,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return { n, carried, claimed, planPct: +(plan / n).toFixed(2), pointPct: +(point / n).toFixed(2),
              near: +near.toFixed(1), far: +far.toFixed(1), siteR: +siteR.toFixed(1),
-             moves: new Set(angs).size, others: workers.slice(1).filter(w => w.eng).length,
+             moves: new Set(angs).size, samples: angs.length,
+             others: workers.slice(1).filter(w => w.eng).length,
              placed: placedCnt, carriedAll: stats.carried };
   });
   ok('工程師只有一個，而且不搬積木', engr.others === 0 && engr.carried === 0 && engr.claimed === 0,
@@ -3033,10 +3070,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      engr.carriedAll + ' 趟）');
   ok('施工中一直拿著設計圖在看', engr.planPct === 1,
      '拿著圖的幀數占 ' + (engr.planPct * 100).toFixed(0) + '%');
+  /* 相異角度放寬到「2 個以上」（v1.120.1，本來要求 > 3）。這個數字被兩件事牽著走：
+     他多久換一次位置（每次決策 62% 抽到「指揮」、38% 才是換位置，換一次大約隔 8 秒），
+     以及這一輪蓋多久（量測迴圈蓋完就停）。實測單獨抽 12 輪是 6～9 個角度（82～119 秒），
+     但整輪跑的時候出現過 3 個（同樣 85 秒）——同一組隨機決策就是會有這種一輪。
+     這一條真正守得住的是「站在建築外面」（near／far 實測 14.0～14.3 對 siteR 10.9）
+     跟「他會換位置、不是釘在原地」。 */
   ok('站在建築外圍，會換位置但不會走進工地',
-     engr.near > engr.siteR && engr.far < engr.siteR + 4 && engr.moves > 3,
+     engr.near > engr.siteR && engr.far < engr.siteR + 4 && engr.moves >= 2,
      '離工地中心 ' + engr.near + '–' + engr.far + '（建築半徑 ' + engr.siteR +
-     '），換過 ' + engr.moves + ' 個角度');
+     '），' + engr.samples + ' 次取樣裡站過 ' + engr.moves + ' 個不同角度');
   ok('偶爾會做指揮動作', engr.pointPct > 0.03 && engr.pointPct < 0.5,
      '指揮的幀數占 ' + (engr.pointPct * 100).toFixed(0) + '%');
   /* 只有一個人的時候不能把他派去看圖，不然這座永遠蓋不起來 */
@@ -7233,7 +7276,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       step(0.05); t += 0.05;
       if (bolts.length > prev) { fired++; if (first < 0) first = +t.toFixed(2); }
       prev = bolts.length;
-      // 雲有自己一份粒子（不放進 dust，見 game.js 的 dustList）
+      // 雲有自己一份粒子（不放進 dust，見 game-tools.js 的 dustList）
       while (grow.length < 4 && t >= (grow.length + 1) * 0.4)
         grow.push(storms ? storms[0].puffs.length : 0);
     }
@@ -10426,7 +10469,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      現在整段吸的過程一直在剝，所以要驗三件事：一路剝（沒有哪一幀忽然少一大塊）、
      整段加起來剛好兩成、剝下來的真的有被捲到陣心。
      分子用**攔 afterHit** 數，不用塊數差：連帶垮塌的也是 SET 變 FLY，數塊數分不出來，
-     而 implode 記帳時半徑給 6、位置在陣心（見 game.js），跟別人撞不到號。
+     而 implode 記帳時半徑給 6、位置在陣心（見 game-tools.js），跟別人撞不到號。
      藍圖指定新天鵝堡、3000 塊：分母要夠大，抽樣誤差才壓得下去。 */
   const mgTake = await page.evaluate(() => {
     cleanTools(); magics = null;
@@ -11112,7 +11155,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 配色（v1.93，照使用者新給的參考圖）：**紅橘的場 #cb2306 + 亮黃的鑲邊與線條
      #fcf534**，外圈再暈一圈同色相、明度推滿的 #ff2e0a（暗紅拿去加法混色會被綠地吃掉）。
      v1.62.1～v1.92 是桃紅的場配金黃的鑲邊，那是另一張參考圖。
-     盤是引擎那邊發的，所以直接去場上抓那幾片盤的材質顏色——只驗 game.js 裡的色碼
+     盤是引擎那邊發的，所以直接去場上抓那幾片盤的材質顏色——只驗 game-tools.js 裡的色碼
      會漏掉「盤沒吃到 fc、跟著芯一起變黃」的情況（那會讓整片糊成一大片黃，鑲邊就不見了）。
      v1.62 起火種不墊盤（參考圖裡那個火圈中間是空的），所以盤只剩六片，
      火種的顏色改驗它自己那三圈。 */
@@ -13458,8 +13501,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const zipCase = await readFatal(brokenCase('只有index', () => {}));
   ok('只有 index.html：蓋出說明而不是一片空白', zipCase.shown && zipCase.onTop,
      zipCase.shown ? (zipCase.onTop ? '' : '有元素但被蓋住') : '完全沒有提示');
-  ok('四支相依檔全被列出來',
-     ['lib/three.min.js', 'src/blueprints.js', 'src/engine.js', 'src/game.js']
+  ok('八支相依檔全被列出來',
+     ['lib/three.min.js', 'src/blueprints.js', 'src/engine.js', 'src/game.js',
+      'src/game-workers.js', 'src/game-save.js', 'src/game-tools.js', 'src/game-ui.js']
        .every(f => zipCase.text.includes(f)),
      zipCase.text.replace(/\s+/g, ' ').slice(0, 90));
   ok('有講怎麼救（解壓縮後再開）',
@@ -13479,8 +13523,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 檔案齊、但初始化炸掉（對方的瀏覽器不支援 WebGL 就長這樣）：走另一條訊息 */
   const bootCase = await readFatal(brokenCase('啟動失敗', d => {
     copyInto('lib', d); copyInto('src', d); copyInto('blueprints', d);
-    fs.writeFileSync(path.join(d, 'src/game.js'),
-      'function boot() { throw new Error("測試用：假裝初始化失敗"); }\n');
+    /* boot 在 game-ui.js（v1.120.1 拆檔後）。這裡要的是「檔案齊、但初始化就炸」，
+       所以只換掉那一支：其他四支照舊在，防呆的檔案檢查會過，接著 boot() 才炸。 */
+    fs.writeFileSync(path.join(d, 'src/game-ui.js'),
+      '"use strict";\nfunction boot() { throw new Error("測試用：假裝初始化失敗"); }\n');
   }));
   ok('檔案齊但啟動失敗：走「啟動失敗」那條訊息',
      bootCase.shown && bootCase.onTop && bootCase.text.includes('啟動失敗') &&
@@ -13504,21 +13550,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.screenshot({ path: path.join(OUT, '07-結束畫面.png') });
 
   await browser.close();
-
-  /* ---------- 總結 ---------- */
-  const fail = R.filter(r => !r.pass);
-  console.log('\n' + '═'.repeat(52));
-  console.log('  ' + (R.length - fail.length) + ' / ' + R.length + ' 通過' +
-              (fail.length ? '，\x1b[31m' + fail.length + ' 項失敗\x1b[0m' : '  \x1b[32m全數通過\x1b[0m'));
-  if (fail.length) {
-    console.log('');
-    for (const f of fail) console.log('  \x1b[31m✗\x1b[0m [' + f.section + '] ' + f.name + (f.detail ? '  → ' + f.detail : ''));
+  report(false);
+})().catch(async e => {
+  /* --until 收工：不是出錯，關掉瀏覽器、照樣印總結（標成部分執行）。 */
+  if (e && e.stopRun) {
+    if (BROWSER) await BROWSER.close().catch(() => {});
+    report(true);
+    return;
   }
-  console.log('  截圖：' + path.relative(ROOT, OUT));
-  console.log('═'.repeat(52));
-  process.exit(fail.length ? 1 : 0);
-})().catch(e => {
   console.error('\n測試腳本自己爆了：\n' + (e && e.stack || e));
   process.exit(2);
 });
 
+/* ---------- 總結 ---------- */
+/* partial＝--until 收工的那一輪。**不能印「全數通過」**：後面幾百條根本沒跑，
+   那句話會被當成完整綠燈（自己回頭看紀錄時最容易誤判的就是這個）。 */
+function report(partial) {
+  const fail = R.filter(r => !r.pass);
+  console.log('\n' + '═'.repeat(52));
+  console.log('  ' + (R.length - fail.length) + ' / ' + R.length + ' 通過' +
+              (fail.length ? '，\x1b[31m' + fail.length + ' 項失敗\x1b[0m'
+               : partial ? '  \x1b[33m（--until 只跑到「' + section + '」為止，不是完整一輪）\x1b[0m'
+                         : '  \x1b[32m全數通過\x1b[0m'));
+  if (fail.length) {
+    console.log('');
+    for (const f of fail) console.log('  \x1b[31m✗\x1b[0m [' + f.section + '] ' + f.name + (f.detail ? '  → ' + f.detail : ''));
+    if (partial) console.log('  \x1b[33m（--until 只跑到「' + section + '」為止）\x1b[0m');
+  }
+  // 指定的段名打錯就整輪跑完了，要講一聲，不然會以為「跑得好快」
+  if (UNTIL && !untilHit) console.log('  \x1b[33m--until「' + UNTIL + '」沒對到任何段名，跑的是完整一輪\x1b[0m');
+  console.log('  截圖：' + path.relative(ROOT, OUT));
+  console.log('═'.repeat(52));
+  process.exit(fail.length ? 1 : 0);
+}

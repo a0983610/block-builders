@@ -369,7 +369,14 @@
     document.write('<script src="blueprints/' + encodeURI(BP_FILES[i]) + '"><\/script>');
 </script>
 <script src="src/engine.js"></script>
+<!-- 遊戲層拆成五支（見 src/game.js 檔頭那張表）。都是 classic script、共用同一份
+     全域 scope，所以拆檔跟寫在同一支檔裡完全等價。順序有兩個要求：核心那支要排在
+     引擎後面（它的頂層有 HB = ENG.BS / 2），啟動那支排最後（boot 在裡面）。 -->
 <script src="src/game.js"></script>
+<script src="src/game-workers.js"></script>
+<script src="src/game-save.js"></script>
+<script src="src/game-tools.js"></script>
+<script src="src/game-ui.js"></script>
 <script>
 /* 開場防呆：相依檔沒跟著複製過來時（最常見：直接在壓縮檔裡按兩下 index.html，
    Windows 只解出這一支），畫面會只剩 body 的漸層背景，看起來像遊戲壞了。
@@ -378,10 +385,17 @@
   /* ENG／SHAPES 是 const：那支檔執行到一半炸掉會卡在 TDZ，連 typeof 都噴 ReferenceError，
      所以每個都要包 try——抓到就等同「這支沒好」。 */
   var need = [
-    ['lib/three.min.js',  function () { return THREE; }],
-    ['src/blueprints.js', function () { return SHAPES; }],
-    ['src/engine.js',     function () { return ENG; }],
-    ['src/game.js',       function () { return boot; }]
+    ['lib/three.min.js',    function () { return THREE; }],
+    ['src/blueprints.js',   function () { return SHAPES; }],
+    ['src/engine.js',       function () { return ENG; }],
+    /* 遊戲層那五支各抓一個自己檔裡宣告的東西（v1.120.1 拆檔）。只驗 boot 是不夠的：
+       boot 在最後那支，前面四支任何一支沒載到，boot 照樣在，缺的東西要等它跑到
+       才炸——那就會走「啟動失敗」那條訊息，而真正的原因是檔案沒放齊。 */
+    ['src/game.js',         function () { return VERSION; }],
+    ['src/game-workers.js', function () { return updWorker; }],
+    ['src/game-save.js',    function () { return checkBadges; }],
+    ['src/game-tools.js',   function () { return useTool; }],
+    ['src/game-ui.js',      function () { return boot; }]
   ], miss = [], i;
   for (i = 0; i < need.length; i++) {
     try { if (!need[i][1]()) miss.push(need[i][0]); } catch (e) { miss.push(need[i][0]); }
