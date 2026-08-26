@@ -3463,13 +3463,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let g = 0;
     while (w.st !== 'hurl' && g++ < 3000 && phase === 'build') step(0.05);
     if (w.st !== 'hurl') return { skip: 1 };
-    // 挑一個「頭頂那一格是實心」的位置站進去：已就位、離地兩格多的那些積木就在那種格子上
-    let spot = null;
-    for (const q of blocks) if (q.st === 3 && Math.abs(q.y - 2.5) < 0.3) { spot = q; break; }
-    if (!spot) return { skip: 2 };
+    /* 挑一個「頭頂那一格是實心」的位置站進去。**要照他的身高挑**（v1.115）：積木舉在
+       頭頂，而身高是每個人各自抽的（v1.113，肌肉小人 1.72～2.01），同一格對矮的人是
+       「埋在牆裡」、對高的人已經高過牆頭了。原本固定挑「離地兩格多的那些積木」，
+       抽到高個子的那幾輪那一塊其實沒被埋住，他照扔——測到的就不是這條規則。
+       所以擺過去、擺好姿勢，真的量到那一塊在牆裡才算數。 */
     const b = blocks[w.load[0].b];
+    let spot = null;
+    for (const q of blocks) {
+      if (q.st !== 3) continue;
+      w.x = q.x; w.z = q.z;
+      carryPose(w);                                // 手上那塊跟著人走
+      if (blockAt(b.x, b.y, b.z)) { spot = q; break; }
+    }
+    if (!spot) return { skip: 2 };
     w.x = spot.x; w.z = spot.z; w.ct = 0.3;
-    carryPose(w);                                  // 手上那塊跟著人走
+    carryPose(w);
     const buried = blockAt(b.x, b.y, b.z) ? 1 : 0;
     let hurled = 0;
     for (let i = 0; i < 30 && w.st === 'hurl'; i++) {
@@ -4029,6 +4038,113 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mageHome.kind + '（' + mageHome.slots + ' 格、' + mageHome.crew + ' 人）' +
      mageHome.secs + ' 秒蓋完：隔空拋了 ' + mageHome.cast + ' 塊、手上搬過 ' +
      mageHome.carried + ' 幀、舉著杖 ' + mageHome.pose + ' 幀，砌好 ' + mageHome.built + ' 塊');
+
+  /* 肌肉小人蓋自己的家也要用肌肉小人的方式（v1.115，使用者：「肌肉小人蓋小房子時
+     也要用肌肉小人的方式蓋(小人建築都是依照他的種類去執行 不管是蓋什麼目標)」）。
+     他在工地是「撿料跟一般工人一模一樣，撿到手上就地掄出去」，回自己家就該是同一套：
+     料照撿照挖（所以跟魔法師不同，他手上會有貨），但**不走回房子**——站在料躺著的
+     那個地方扔到格子上。跟魔法師那條一樣手動塞一個進第一間（20 個人裡只有兩個
+     肌肉小人、又只抽一半的人離隊，靠運氣的測試不算測試）。 */
+  const musHome = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    let t = 0;
+    while (t < 12) { step(0.05); t += 0.05; }
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    idleEv = IDLE_EVENTS[0]; startHomes();
+    if (!workers.some(w => w.mus && w.hm >= 0)) {
+      const m = workers.find(w => w.mus);
+      releaseWorker(m); m.hm = 0; m.hst = ''; m.ct = 0;
+    }
+    const hi = workers.filter(w => w.mus && w.hm >= 0).map(w => w.hm)[0];
+    const slots = homes.list[hi].slots.length;
+    /* 出手的位置：離房子外框多遠。就地掄的話那是他挖到／撿到料的地方（框外好幾格，
+       見 DIG_NEAR～DIG_FAR 與 GRAB_R），走回去砌的話一律是 HOME_STAND（1.4）。
+       同一輪裡一般工人的數字就是對照組。 */
+    const away = { mus: [], lay: [] };
+    let carried = 0, secs = 0, musLay = 0;
+    const oHurl = hurlTrip, oLay = layHome;
+    hurlTrip = (w, h, dt) => {
+      const n = w.load.length;
+      const r = oHurl(w, h, dt);
+      if (w.load.length < n) away.mus.push(Math.hypot(w.x - h.x, w.z - h.z) - h.r);
+      return r;
+    };
+    layHome = (w, h) => {
+      const n = w.load.length;
+      const r = oLay(w, h);
+      if (w.load.length < n) {
+        if (w.mus) musLay++;                        // 肌肉小人不該走這條
+        else away.lay.push(Math.hypot(w.x - h.x, w.z - h.z) - h.r);
+      }
+      return r;
+    };
+    while (secs < 600 && homes.list[hi].left > 0) {
+      step(0.05); secs += 0.05;
+      for (const w of workers) if (w.mus && w.hm >= 0 && w.load.length) carried++;
+    }
+    hurlTrip = oHurl; layHome = oLay;
+    const avg = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
+    return { hurl: away.mus.length, musLay, carried, secs: +secs.toFixed(1), slots,
+             musD: +avg(away.mus).toFixed(2), layD: +avg(away.lay).toFixed(2),
+             layN: away.lay.length,
+             left: homes.list[hi].left, kind: homes.list[hi].kind,
+             built: blocks.filter(b => b.hh === hi && b.st === 3).length,
+             crew: workers.filter(w => w.hm === hi).length };
+  });
+  ok('肌肉小人用他自己的方式蓋家（料照撿，但站在原地掄出去）',
+     musHome.hurl > 15 && musHome.musLay === 0 && musHome.carried > 0 &&
+     musHome.musD > musHome.layD + 1 && musHome.left === 0 &&
+     musHome.built === musHome.slots,
+     musHome.kind + '（' + musHome.slots + ' 格、' + musHome.crew + ' 人）' +
+     musHome.secs + ' 秒蓋完：就地掄了 ' + musHome.hurl + ' 塊、走回去砌 ' +
+     musHome.musLay + ' 塊，出手時離外框 ' + musHome.musD +
+     ' 格（一般工人同一輪 ' + musHome.layN + ' 塊、' + musHome.layD + ' 格）');
+
+  /* 積木池要**同時**塞得下「最大的地標」與「最大的村子」（v1.115，使用者：
+     「有觀察到疑似積木有上限 蓋9000積木 小人蓋小房子 挖地挖不出積木」）。
+     兩份共用同一個 ENG.MAXB：地標最大的是萬里長城 9932（面板 9000 那一檔，
+     fitScale 挑的那一階會超額），村子最大的是 60 人蓋到飽的 43 間 5405 格。
+     v1.114 的 11500 只夠 9932 ＋ 1568，於是 digBlock 開頭的 blocks.length >= MAXB
+     一直回 false——小人照挖、土照噴，就是不出積木（實測 60 人第一座就失敗 7629 次、
+     第二座起每座 13000+ 次全部失敗，留下 41 間永遠蓋不完的空屋）。
+     所以這裡要驗的是「挖得出來」，不是「有上限」：上限本來就有，它得夠大。 */
+  const poolFit = await page.evaluate(() => {
+    let big = 0, bigN = '';
+    for (let i = 0; i < SHAPES.length; i++) {
+      const n = makeBlueprint(i, CNT_MAX).slots.length;
+      if (n > big) { big = n; bigN = SHAPES[i].n; }
+    }
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === bigN);
+    targetCnt = CNT_MAX; setWorkerCount(60); startBuild(true); completeNow();
+    let t = 0;
+    while (t < 12) { step(0.05); t += 0.05; }
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    const orig = digBlock;
+    let full = 0;
+    digBlock = (w, wi, h) => {
+      const f = blocks.length >= ENG.MAXB;
+      const r = orig(w, wi, h);
+      if (!r && f) full++;                          // 挖不出來，而且是因為池子滿了
+      return r;
+    };
+    idleEv = IDLE_EVENTS[0]; startHomes();
+    for (let i = 0; i < 8000; i++) step(0.05);      // 400 秒，夠一輪村子蓋完
+    digBlock = orig;
+    const hs = homes.list;
+    return { big, bigN, maxb: ENG.MAXB, pool: blocks.length, full,
+             placed: placedCnt, total: bp.slots.length,
+             homes: hs.length, slots: hs.reduce((a, h) => a + h.slots.length, 0),
+             left: hs.reduce((a, h) => a + h.left, 0) };
+  });
+  ok('積木池同時容得下最大的地標與整個村子（挖得出積木）',
+     poolFit.full === 0 && poolFit.left === 0 && poolFit.pool <= poolFit.maxb &&
+     poolFit.placed === poolFit.total && poolFit.maxb - poolFit.big >= 5405,
+     poolFit.bigN + ' ' + poolFit.big + ' 塊 ＋ 60 人的村子 ' + poolFit.homes + ' 間 ' +
+     poolFit.slots + ' 格 → 池子 ' + poolFit.pool + '／' + poolFit.maxb +
+     '，挖不出來 ' + poolFit.full + ' 次、還缺 ' + poolFit.left + ' 格');
 
   /* 房子也要「底部拆掉上面一起垮」（v1.102，使用者指定「同地標建築邏輯」）。
      規則跟 collapseUnsupported 一樣：26 鄰接、從地面那一層往上找連通，連不到的鬆脫。

@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.114.0';
+const VERSION = '1.115.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -2142,8 +2142,13 @@ function arcPeak(x0, y0, z0, x1, y1, z1, top, base) {
   /* 取樣點要密，而且不能只照距離給：出手後那一小段爬得最急，
      「要多高才過得去」在 t 很小的時候最大（分母 sin(πt) 趨近 0）。
      照距離每半格取一點的話，2 格的拋擲只有 6 點，t=0.13 那個尖峰整個漏掉——
-     實測台北 101 有 5.6% 的積木就是這樣從旁邊那道牆穿出去的。 */
-  const n = 24;
+     實測台北 101 有 5.6% 的積木就是這樣從旁邊那道牆穿出去的。
+     所以 24 點是**下限**，遠的再照距離加密（v1.115）：一格的東西要每 0.25 格看一次
+     才不會被整格跨過去。四五格的拋擲本來就是每 0.2 格一點，加了也沒變；
+     真正需要的是長程那些——肌肉小人回自己家是站在挖料的地方直接扔（見 hurlTrip），
+     一趟 12～16 格，固定 24 點等於每 0.65 格才看一次，比一格還粗：
+     實測 14 條穿過自己屋頂的弧線裡有 5 條就是這樣把牆頭整格跨過去的。 */
+  const n = Math.max(24, Math.ceil(Math.hypot(dx, dz) * 4));
   for (let i = 1; i < n; i++) {
     const t = i / n;
     const cy = top(x0 + dx * t, z0 + dz * t);
@@ -3412,7 +3417,9 @@ function liveHome(w, h, dt) {
    那一套的格子與建材全看 bp（findSlot／loadUp／standPos）。
    一趟是「走去挖 → 挖到手上滿了 → 走回房子 → 站定原地丟完」，丟完再走下一趟。
    **挖那一段要排在「手上有貨」前面**：反過來的話，挖到第一塊的下一幀就被叫去砌，
-   一趟永遠只搬一塊（實測 carryMax 卡在 1，等於白做）。 */
+   一趟永遠只搬一塊（實測 carryMax 卡在 1，等於白做）。
+   **每一種人都用自己的方式蓋**（使用者指定）：魔法師隔空拋（castTrip，v1.102）、
+   肌肉小人就地掄（hurlTrip，v1.115）；他們在工地是什麼樣子，回自己家就是什麼樣子。 */
 function updHome(w, wi, dt) {
   const h = homes && homes.list[w.hm];
   if (!h) { w.hm = -1; return; }                        // 那一間被徵收了：回去閒晃
@@ -3428,8 +3435,11 @@ function updHome(w, wi, dt) {
   if (w.mage) { castTrip(w, wi, h, dt); return; }         // 魔法師隔空蓋（v1.102）
   if (w.hst === 'grab') { grabTrip(w, wi, h, dt); return; }
   if (w.hst === 'dig') { digTrip(w, wi, h, dt); return; }
-  if (w.load.length) { layTrip(w, h, dt); return; }      // 手上有貨：走回去砌
-  w.hcap = Math.round(rr(HOME_CARRY[0], HOME_CARRY[1]));   // 這一趟要拿幾塊
+  // 手上有貨：一般工人走回去砌，肌肉小人站在原地掄（v1.115）
+  if (w.load.length) { (w.mus ? hurlTrip : layTrip)(w, h, dt); return; }
+  // 肌肉小人扔完喘那一下（同工地的 MUS_REST），喘完才開下一趟
+  if (w.mus && w.ct > 0) { w.ct -= dt; w.gait += (0 - w.gait) * Math.min(1, dt * 8); return; }
+  w.hcap = w.mus ? 1 : Math.round(rr(HOME_CARRY[0], HOME_CARRY[1]));   // 這一趟要拿幾塊
   startTrip(w, h);                                        // 開下一趟：先撿地上的，沒有才挖
 }
 /* 開一趟料。**地上的碎料優先**（v1.104，使用者指定）：房子蓋一半被拆掉會留下一地自己的
@@ -3619,6 +3629,7 @@ function grabTrip(w, wi, h, dt) {
 function endTrip(w, h) {
   w.hst = '';
   w.hdt = 0;                                             // 走到就丟第一塊（同 digTrip）
+  w.ct = MUS_WIND;                                       // 肌肉小人：就地掄的倒數（見 hurlTrip）
   if (w.load.length) return;
   digSpot(w, h);
   w.hst = 'dig';
@@ -3645,6 +3656,7 @@ function digTrip(w, wi, h, dt) {
      （等同組的人把格子放掉再看）。 */
   w.hst = '';
   w.hdt = 0;                                             // 走到就丟第一塊
+  w.ct = MUS_WIND;                                       // 肌肉小人：就地掄的倒數（見 hurlTrip）
 }
 /* 走回房子、站定原地把手上的丟完。 */
 function layTrip(w, h, dt) {
@@ -3668,6 +3680,42 @@ function layTrip(w, h, dt) {
   // 站定就原地把手上的丟完（跟工人一樣，見 toSlot 的 stay）：那幾格本來就在附近
   w.hdt -= dt;
   if (w.hdt <= 0) { layHome(w, h); w.hdt = LAY_GAP; }
+}
+/* 肌肉小人蓋自己的家（v1.115，使用者：「肌肉小人蓋小房子時也要用肌肉小人的方式蓋」）。
+   跟他在工地一模一樣（見 MUS_WIND 那一段）：撿料／挖料的路數跟一般工人相同，
+   差別在**撿到手上就不走回房子**——站在料躺著的地方掄起來，直接扔到那一格上。
+   所以一趟只認一塊（updHome 給 hcap = 1）：「撿起來就扔」的節拍不允許先湊滿三塊。
+   飛的那一段用工地那組 MUS_* 的時間（平、快），弧頂還是走房子自己的 homePeak——
+   他站在屋子外面，往另一側那幾格扔的時候要能閃過自己的屋頂（見 homePeak）。 */
+function hurlTrip(w, h, dt) {
+  carryPose(w);
+  const b = blocks[w.load[0].b];
+  const sl = b && b.hh === w.hm ? h.slots[b.hk] : null;
+  if (!sl) { dropJob(w, 0); return; }
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  w.a = Math.atan2(sl.x - w.x, sl.z - w.z);              // 面向要扔到的那一格
+  w.ct -= dt;
+  if (w.ct > 0) return;                                  // 還在掄
+  /* 手上那塊真的被埋起來了才不出手（掄的這幾秒同組的人在他身上砌了幾層、
+     或者旁邊又長出一間房子）：出手那一下整塊在牆裡。那就退回一般工人那條路——
+     往房子走，走到不被埋住的地方就扔，走到房子邊上都還埋著就照一般工人那樣砌。
+     **看的是那塊積木、不是他的腳**，理由同工地那條。 */
+  if (blockAt(b.x, b.y, b.z) || homeSolid(b.x, b.y, b.z)) { layTrip(w, h, dt); return; }
+  b.st = TOSS; b.rest = false;
+  b.arc = {
+    t: 0,
+    dur: MUS_DUR0 + Math.hypot(sl.x - b.x, sl.z - b.z) * MUS_DUR_D + sl.y * MUS_DUR_Y,
+    x0: b.x, y0: b.y, z0: b.z, x1: sl.x, y1: sl.y, z1: sl.z,
+    peak: homePeak(b.x, b.y, b.z, sl, h),
+    hm: w.hm, hk: b.hk
+  };
+  b.holder = -1;                                         // 出手了就不再屬於任何人
+  w.load.shift();
+  /* 一趟就一塊，出手照理就空手了。還是照 layHome 那樣判一次：調人數時 tagMuscle
+     會重新掛身分，手上還抱著三塊的一般工人可能在這一刻變成肌肉小人。 */
+  if (!w.load.length) w.carry = false;
+  carryPose(w);
+  w.ct = MUS_REST;                                       // 喘一下再開下一趟（見 updHome）
 }
 /* 拋物線飛向藍圖位置。到頂就定位，slot 標記填好 */
 function stepToss(b, dt) {
