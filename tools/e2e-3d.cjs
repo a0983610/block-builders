@@ -130,6 +130,9 @@ const installClean = page => page.evaluate(() => {
     meteors = null; ENG.putMeteors([]);
     nukes = null; ENG.putNukes([]);
     magics = null;
+    /* 烏雲（v1.117）與閃電。電要連 arcSrcs 一起收：只清 bolts 的話，
+       還在放電的那一處下一幀又補一批回來，等於沒清。 */
+    storms = null; arcSrcs = null; bolts.length = 0;
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
@@ -3840,9 +3843,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 範圍是「地標建築範圍外～小樹圈內」（v1.98，使用者指定「應該分散一點」）。
      樹種在碎料場外圍（arenaR + 3～15），所以外緣就是 arenaR。
      v1.97 是 siteR + 8～22 的窄環，幾間房子擠在同一圈上。 */
+  /* spread（最遠與最近的半徑差）的門檻從 6 放到 2.5（v1.119）。原本的 6 會**隨機失敗**：
+     同樣的條件抽 300 輪，spread 的分布是 min 2.7／5% 6.5／中位數 11.9／max 16.6，
+     有 15 輪（5%）落在 6 以下——一輪就是六七間房子各自抽一個半徑，全部落在同一段
+     窄環上本來就有那個機率，不是程式壞了。
+     「分散一點」真正守在另外兩條：每一間都落在整條環帶裡（band）、最近的兩間隔得開
+     （gap，同 300 輪的 min 是 12.1，門檻 11 還有餘裕）。這個數字留著只是為了擋住
+     「全部擺在同一個半徑上」那種退化。 */
   ok('蓋在地標外圍到碎料場外緣之間，散得開、不重疊也不壓到樹',
      home.list.every(h => h.rad >= home.band[0] - 0.1 && h.rad <= home.band[1] + 0.1) &&
-     home.spread > 6 && home.gap > 11 && home.tree > 2,
+     home.spread > 2.5 && home.gap > 11 && home.tree > 2,
      '離工地中心 ' + home.list.map(h => h.rad).join('／') + '（該落在 ' +
      home.band[0].toFixed(1) + '～' + home.band[1].toFixed(1) + '；工地半徑 ' + home.siteR +
      '、碎料場外緣 ' + home.arenaR + '）；最遠與最近差 ' + home.spread +
@@ -6422,13 +6432,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 解鎖狀態拼成一長串 true/false 很難讀（而且插進一種新道具就整排要重寫），
      所以照 id 來寫：「本來就開著的那幾種，加上這一關該開的」。
      手指與水桶不破壞任何東西，沒有鎖；破壞道具的階梯從槌子開始。 */
-  const NTOOL = 13;
+  const NTOOL = 15;
   const FREE = ['finger', 'bucket', 'hammer'];
   const isOpen = (id, ids) => FREE.indexOf(id) >= 0 || ids.indexOf(id) >= 0;
   const opened = (...ids) => lock0.ids.map(id => String(isOpen(id, ids))).join(',');
   const btnOpen = (...ids) => lock0.ids.map(id => isOpen(id, ids) ? 'open' : 'lock').join(',');
   const allOpen = () => Array(NTOOL).fill('true').join(',');
-  ok('工具共 13 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
+  ok('工具共 15 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
   ok('一開始只有手指、水桶跟槌子可用',
      lock0.ok.join(',') === opened(), lock0.ok.join(','));
   ok('鎖住的工具在畫面上也是鎖住的',
@@ -6450,7 +6460,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     at('destroyed', 8);
     at('smashed', 19000);
     at('destroyed', 10);
-    stats = freshStats(); stats.destroyed = 10; stats.smashed = 19000; renderTools();     // 全開
+    at('smashed', 23000);
+    at('destroyed', 12);
+    stats = freshStats(); stats.destroyed = 12; stats.smashed = 23000; renderTools();     // 全開
     step2.push(TOOLS.map(t => toolOk(t)).join(','));
     return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
@@ -6474,10 +6486,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      lock1.step2[8] === opened('bighammer', 'treb', 'fw', 'bomb', 'nuke'), lock1.step2[8]);
   ok('拆掉 10 座解鎖爆裂魔法',
      lock1.step2[9] === opened('ball', 'tornado', 'fire', 'meteor', 'magic'), lock1.step2[9]);
-  ok('兩邊都推到頂就全開', lock1.step2[10] === allOpen(), lock1.step2[10]);
+  ok('擊飛 23,000 塊解鎖打雷',
+     lock1.step2[10] === opened('bighammer', 'treb', 'fw', 'bomb', 'nuke', 'storm'),
+     lock1.step2[10]);
+  ok('拆掉 12 座解鎖天降鐵球',
+     lock1.step2[11] === opened('ball', 'tornado', 'fire', 'meteor', 'magic', 'drop'),
+     lock1.step2[11]);
+  ok('兩邊都推到頂就全開', lock1.step2[12] === allOpen(), lock1.step2[12]);
   ok('解鎖後畫面上的鎖頭消失',
      lock1.btn.join(',') === btnOpen('bighammer', 'ball', 'treb', 'tornado', 'fw',
-                                     'fire', 'bomb', 'meteor', 'nuke', 'magic'),
+                                     'fire', 'bomb', 'meteor', 'nuke', 'magic',
+                                     'storm', 'drop'),
      lock1.btn.join(','));
 
   /* 手指：什麼都不破壞，但戳得倒小人 */
@@ -6954,6 +6973,272 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ballCalls.n + ' 顆 ' + ballCalls.many + ' 個');
   ok('球收掉之後畫面成本回到原點', ballCalls.after === ballCalls.idle,
      ballCalls.after + ' 個');
+
+  /* ── 天降鐵球（v1.117）─────────────────────────────────
+     使用者：「點擊地面 與地面垂直 落下一顆鐵球（碰撞 參考保齡球 只是從天而降
+     不再移動後消失）」。「參考保齡球」在程式裡是字面意思——同一份 balls 清單、
+     同一支 stepBall、同一顆 InstancedMesh。所以這裡只驗那三件差異：真的垂直、
+     真的砸壞沿路的東西、停下來真的會自己收掉。
+     第三件事有個容易寫壞的地方：保齡球的收球條件是「滾不動就收」（水平速度 < 4.5），
+     直直掉下來的球從第一幀起水平速度就是 0，沿用那條的話它會在出手那一幀憑空消失
+     ——所以 alive1 也要驗。 */
+  await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 12 });
+  await page.evaluate(() => completeNow());
+  const dropOne = await page.evaluate(() => {
+    marks.length = 0;
+    const P = { x: 6, z: -4 };
+    tool = 'drop';
+    useTool({ point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) });
+    const born = { n: balls.length, y: +balls[0].y.toFixed(1),
+                   vx: balls[0].vx, vz: balls[0].vz };
+    const set0 = blocks.filter(b => b.st === 3).length;
+    let t = 0, drift = 0, air = 0, rise = 0, land = -1, gone = -1, alive1 = 0, pops = 0;
+    let lastY = balls[0].y;
+    while (t < 14) {
+      step(0.05); t += 0.05;
+      if (t < 0.11) alive1 = balls ? balls.length : 0;
+      if (!balls) { gone = +t.toFixed(2); break; }
+      const o = balls[0];
+      // 垂直那條只能驗「還沒碰到東西之前」：碰到之後它本來就該被彈開
+      if (!o.pops) drift = Math.max(drift, Math.hypot(o.x - P.x, o.z - P.z));
+      if (o.y > lastY + 0.01) rise++;
+      lastY = o.y;
+      pops = o.pops;
+      air = Math.max(air, Math.hypot(o.x - P.x, o.z - P.z));
+      if (land < 0 && o.y <= o.r + 1e-6) land = +t.toFixed(2);
+    }
+    const r = { born, set0, set1: blocks.filter(b => b.st === 3).length,
+                drift: +drift.toFixed(4), air: +air.toFixed(1), rise, pops,
+                land, gone, alive1, crater: marks.filter(m => m.crater).length };
+    cleanTools();
+    return r;
+  });
+  ok('天降鐵球從正上方直直掉，碰到東西之前一步都不歪',
+     dropOne.born.n === 1 && dropOne.born.vx === 0 && dropOne.born.vz === 0 &&
+     dropOne.drift < 0.001 && dropOne.alive1 === 1,
+     '從 ' + dropOne.born.y + ' 掉下來，撞到東西之前橫向偏移 ' + dropOne.drift);
+  /* 撞到東西要彈（v1.118，使用者：「少了鐵球撞到東西彈起來的感覺（目前就一路摧毀
+     直直落下 可以撞到破壞後彈起來一點撞到其他位置）」）。三件事一起驗：真的彈起來過、
+     落點真的換了地方、而且**不會被彈飛**——第一版照反射算，砸到屋頂就以幾十單位的
+     速度往旁邊噴，實測橫向跑 30～87 單位、只撞掉 10 塊就飛出去，反而不摧毀了。 */
+  ok('撞到東西會彈起來，落點跟著換地方（但不會被彈飛）',
+     dropOne.pops >= 1 && dropOne.rise > 0 &&
+     dropOne.air > 1 && dropOne.air < 40,
+     '在積木上彈了 ' + dropOne.pops + ' 次、有 ' + dropOne.rise +
+     ' 幀在往上走，最遠離出手點 ' + dropOne.air + ' 單位');
+  ok('砸爛沿路的積木，落地在地上留一個坑',
+     dropOne.set0 - dropOne.set1 > 20 && dropOne.crater === 1,
+     '打掉 ' + (dropOne.set0 - dropOne.set1) + ' 塊、留下 ' + dropOne.crater + ' 個坑洞');
+  ok('不再移動就自己收掉',
+     dropOne.land > 0 && dropOne.gone > dropOne.land && dropOne.gone - dropOne.land < 3,
+     '第 ' + dropOne.land + ' 秒落地、第 ' + dropOne.gone + ' 秒收掉');
+
+  /* 起點跟著建築走（v1.119，使用者：「天降鐵球 初始高度也能像烏雲一樣 根據建築高度
+     有些建築很高 導致鐵球在建築中間位置高度落下」）。固定 58 的時候，高一點的地標
+     （大笨鐘 9000 塊有 138 高）等於直接生在建築腰上，從裡面往外炸，完全沒有
+     「從天上砸下來」那一段。兩件事一起驗：起點真的在屋頂上方，而且出手那一刻
+     球心周圍一塊站著的積木都沒有（＝真的在建築外面）。
+     順便驗壽命：起點拉高之後掉那一段要外加，不然最高的地標落地就沒剩多少時間。 */
+  const dropHigh = await page.evaluate(() => {
+    const out = [];
+    for (const cfg of [['倫敦大笨鐘', 9000], ['羅馬競技場', 3000]]) {
+      shapePick = SHAPES.findIndex(s => s.n === cfg[0]);
+      targetCnt = cfg[1];
+      cleanTools(); startBuild(true); completeNow();
+      dropBall({ x: 0, y: 0, z: 0 });
+      const o = balls[0], R = o.r + 0.7;
+      // 起點要在跑之前先記下來：o 是球本身，跑完 o.y 就變成落地的高度了
+      const y0 = o.y;
+      const buried = blocks.filter(b => b.st === 3 &&
+        b.x * b.x + (b.y - y0) ** 2 + b.z * b.z < R * R).length;
+      let t = 0, land = -1, gone = -1;
+      while (t < 20) {
+        step(1 / 60); t += 1 / 60;
+        if (!balls) { gone = +t.toFixed(2); break; }
+        if (land < 0 && balls[0].y <= balls[0].r + 1e-6) land = +t.toFixed(2);
+      }
+      out.push({ shape: cfg[0], h: +bp.height.toFixed(0), y0: +y0.toFixed(0),
+                 buried, floor: DROP_TOP, up: DROP_UP, land, gone,
+                 crater: marks.filter(m => m.crater).length });
+      cleanTools();
+    }
+    return out;
+  });
+  ok('起點跟著建築高度走，不會生在建築腰上',
+     dropHigh.every(r => r.y0 === Math.max(r.floor, r.h + r.up) && r.buried === 0),
+     dropHigh.map(r => r.shape + '（高 ' + r.h + '）從 ' + r.y0 +
+                       ' 掉，球心周圍埋住 ' + r.buried + ' 塊').join('　·　'));
+  ok('不管從多高丟，落地之後都還有時間滾到停',
+     dropHigh.every(r => r.land > 0 && r.gone > r.land && r.crater === 1),
+     dropHigh.map(r => r.shape + ' 第 ' + r.land + ' 秒落地、第 ' + r.gone +
+                       ' 秒收掉').join('　·　'));
+
+  /* 跟保齡球共用同一份清單、同一顆 mesh：兩種球同時在場也還是那幾個 draw call，
+     顆數上限也是共用的那一份（BALL_MAX）。 */
+  const dropShare = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    draw(); ENG.render();
+    const idle = ENG.info().calls;
+    launchBall({ x: -45, z: 0 }, { x: 0, z: 0 });
+    for (let i = 0; i < 10; i++) step(0.02);
+    draw(); ENG.render();
+    const roll = ENG.info().calls;
+    dropBall({ x: 8, y: 0, z: 8 });
+    dropBall({ x: -8, y: 0, z: -8 });
+    for (let i = 0; i < 10; i++) step(0.02);
+    const kinds = balls.map(b => b.drop ? 'd' : 'r').join('');
+    draw(); ENG.render();
+    const both = ENG.info().calls;
+    // 兩種混著丟到滿：上限是共用的那一份
+    for (let k = 0; k < BALL_MAX; k++) {
+      dropBall({ x: k, y: 0, z: 0 });
+      launchBall({ x: -45, z: k }, { x: 0, z: 0 });
+    }
+    const capped = balls.length;
+    cleanTools();
+    return { idle, roll, both, kinds, capped, max: BALL_MAX };
+  });
+  ok('兩種球混在場上不會多吃 draw call',
+     dropShare.both === dropShare.roll && dropShare.roll > dropShare.idle &&
+     dropShare.kinds === 'rdd',
+     '沒球 ' + dropShare.idle + ' 個、只有保齡球 ' + dropShare.roll +
+     ' 個、再加兩顆鐵球 ' + dropShare.both + ' 個');
+  ok('顆數上限是兩種球共用的那一份',
+     dropShare.capped === dropShare.max,
+     '混著丟 ' + (dropShare.max * 2) + ' 顆 → 場上 ' + dropShare.capped +
+     ' 顆（上限 ' + dropShare.max + '）');
+
+  /* ── 打雷（v1.117）─────────────────────────────────────
+     使用者：「點擊地面 慢慢出現一朵烏雲 然後隨機打5~7道雷(閃電) 被雷打到的點造成
+     小破壞(可能就幾格積木) 附帶燃燒效果」。四件事各一條：雲是**慢慢**聚出來的、
+     聚滿了才開始劈、道數落在 5～7、一道雷只咬掉幾格但會燒起來。 */
+  await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 12 });
+  /* 用 completeNow 不用 fillAll：fillAll 不會收掉整地推土機，剛擺好的最底層
+     會被還在場上的推土機推散（實測前 0.25 秒掉 26 塊），那不是道具幹的。 */
+  await page.evaluate(() => completeNow());
+  const storm1 = await page.evaluate(() => {
+    marks.length = 0; dust.length = 0;
+    tool = 'storm';
+    useTool({ point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) });
+    const born = storms.length, want = storms[0].left;
+    /* 雲的高度要蓋過屋頂（v1.118）：固定 26 的時候整朵埋在高一點的建築裡，
+       電等於從樓層之間冒出來——使用者回報「看不太到電打在建築上」就是這件事。 */
+    const above = storms[0].y - bp.height;
+    const grow = [];
+    let t = 0, first = -1, fired = 0, prev = 0;
+    while (t < 16) {
+      step(0.05); t += 0.05;
+      if (bolts.length > prev) { fired++; if (first < 0) first = +t.toFixed(2); }
+      prev = bolts.length;
+      // 雲有自己一份粒子（不放進 dust，見 game.js 的 dustList）
+      while (grow.length < 4 && t >= (grow.length + 1) * 0.4)
+        grow.push(storms ? storms[0].puffs.length : 0);
+    }
+    const r = { born, want, fired, first, grow, full: STORM_GROW, above: +above.toFixed(0),
+                puff: STORM_PUFF, burn: fires ? fires.length : 0,
+                over: storms ? storms.length : 0 };
+    cleanTools();
+    return r;
+  });
+  ok('點下去先慢慢聚出一朵烏雲，不是一次生一整朵',
+     storm1.born === 1 && storm1.grow[0] > 0 &&
+     storm1.grow.every((n, i) => i === 0 || n >= storm1.grow[i - 1]) &&
+     storm1.grow[3] > storm1.grow[0] * 2 && storm1.grow[3] === storm1.puff,
+     '每 0.4 秒量一次：' + storm1.grow.join(' → ') + ' 團（滿朵 ' + storm1.puff + ' 團）');
+  ok('雲飄在屋頂上方，電才看得出打在建築上', storm1.above >= 10,
+     '雲底比屋頂高 ' + storm1.above + ' 單位');
+  ok('雲聚滿了才開始劈，劈完雲自己收掉',
+     storm1.first > storm1.full && storm1.over === 0,
+     '第一道雷在第 ' + storm1.first + ' 秒（雲要聚 ' + storm1.full + ' 秒）');
+  ok('這一朵說要劈幾道就劈幾道', storm1.fired === storm1.want,
+     '排了 ' + storm1.want + ' 道、實際劈了 ' + storm1.fired + ' 道');
+  ok('劈中的地方會燒起來，火再自己往鄰居蔓延', storm1.burn > 20,
+     '整趟劈完還有 ' + storm1.burn + ' 塊在燒');
+
+  /* 道數：使用者指定 7～15（v1.118，本來 5～7）。抽 900 朵，九個值都要出現、
+     也不能跑出範圍；順便驗頭尾兩個值沒有比中間少一半（用 rr 再四捨五入會有那個毛病）。 */
+  const stormN = await page.evaluate(() => {
+    const seen = {};
+    for (let k = 0; k < 900; k++) {
+      storms = null;
+      callStorm({ x: 0, z: 0 });
+      seen[storms[0].left] = (seen[storms[0].left] || 0) + 1;
+    }
+    cleanTools();
+    return { seen, lo: STORM_N[0], hi: STORM_N[1] };
+  });
+  const stormKeys = Object.keys(stormN.seen).map(Number).sort((a, b) => a - b);
+  const stormCnt = stormKeys.map(k => stormN.seen[k]);
+  ok('隨機劈 7～15 道，每個道數的機會一樣',
+     stormKeys.length === stormN.hi - stormN.lo + 1 &&
+     stormKeys[0] === stormN.lo && stormKeys[stormKeys.length - 1] === stormN.hi &&
+     Math.min(...stormCnt) > Math.max(...stormCnt) * 0.55,
+     '抽 900 朵：' + stormKeys.map(k => k + '道×' + stormN.seen[k]).join('、'));
+
+  /* 「小破壞（可能就幾格積木）」。格子間距是 1、判定半徑 1.3，所以最多是
+     「打中那一塊 ＋ 六個面鄰居」＝ 7 格，對角線（1.41）進不來。
+     垮塌要先擋掉：上面連不到地面而跟著垮的那些不是這一道雷打掉的。 */
+  const stormBite = await page.evaluate(() => {
+    const real = markSupportDirty;
+    markSupportDirty = () => {};
+    const per = [];
+    for (let k = 0; k < 40; k++) {
+      const before = blocks.filter(b => b.st === 3).length;
+      strike({ x: 0, z: 0, y: 40 });          // y 是雲底高度（v1.118 起跟著建築走）
+      per.push(before - blocks.filter(b => b.st === 3).length);
+      bolts.length = 0;
+    }
+    markSupportDirty = real;
+    per.sort((a, b) => a - b);
+    const r = { min: per[0], max: per[per.length - 1],
+                avg: +(per.reduce((a, b) => a + b, 0) / per.length).toFixed(1) };
+    cleanTools();
+    return r;
+  });
+  ok('一道雷只咬掉幾格積木',
+     stormBite.max <= 7 && stormBite.avg >= 1 && stormBite.avg < 6,
+     '劈 40 道：一道 ' + stormBite.min + '～' + stormBite.max +
+     ' 格、平均 ' + stormBite.avg + ' 格');
+
+  /* 劈在空地上：地上留焦黑（不是坑洞——雷是燒不是砸），旁邊的建築一塊都不能掉。 */
+  await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 12 });
+  await page.evaluate(() => completeNow());
+  const stormFar = await page.evaluate(() => {
+    marks.length = 0;
+    const set0 = blocks.filter(b => b.st === 3).length;
+    tool = 'storm';
+    useTool({ point: new THREE.Vector3(70, 0, 70), dir: new THREE.Vector3(0, -1, 0) });
+    let t = 0, peak = 0, crater = 0;
+    while (t < 16) {
+      step(0.05); t += 0.05;
+      peak = Math.max(peak, marks.length);
+      crater += marks.filter(m => m.crater).length;
+    }
+    const r = { set0, set1: blocks.filter(b => b.st === 3).length, peak, crater };
+    cleanTools();
+    return r;
+  });
+  ok('劈在空地上只留焦黑，不會傷到旁邊的建築',
+     stormFar.set0 === stormFar.set1 && stormFar.peak >= 4 && stormFar.crater === 0,
+     '建築 ' + stormFar.set1 + ' 塊原封不動，地上同時看得到 ' + stormFar.peak + ' 塊焦黑');
+
+  /* 同時最多幾朵：滿了把最早那朵擠掉（跟其他清單型道具同一套）。 */
+  const stormCap = await page.evaluate(() => {
+    cleanTools();
+    const seen = [];
+    for (let k = 0; k < STORM_MAX + 2; k++) {
+      callStorm({ x: k * 8 - 16, z: 0 });
+      seen.push(storms.length);
+    }
+    const oldest = storms.map(s => +s.x.toFixed(0));
+    cleanTools();
+    return { seen, oldest, max: STORM_MAX };
+  });
+  ok('同時最多幾朵，滿了把最早那朵擠掉',
+     stormCap.seen[stormCap.seen.length - 1] === stormCap.max &&
+     stormCap.oldest[0] !== -16,
+     '連點 ' + stormCap.seen.length + ' 次 → 場上 ' + stormCap.seen.join('、') +
+     ' 朵（上限 ' + stormCap.max + '）');
 
   /* 會「持續破壞」的那幾種不震畫面（v1.58）：球一路滾、投石機連丟好幾顆，
      每一下都震的話畫面從頭晃到尾，看久了很不舒服。震動留給槌子那種單次撞擊。 */
@@ -11702,7 +11987,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('用過哪些道具會記起來', toolRec.n === toolRec.total,
      toolRec.n + ' / ' + toolRec.total + '：' + toolRec.list.join(','));
-  ok('十三種道具都用過解鎖【工具箱清空】', toolRec.got);
+  ok('十五種道具都用過解鎖【工具箱清空】', toolRec.got);
 
   /* 存檔被改過時，不認得的道具 id 不該混進來 */
   const toolClean = await page.evaluate(() => {
@@ -11772,11 +12057,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'destroyed=' + persist.d + '、smashed=' + persist.s + '、成就 ' + persist.b + ' 個');
   /* 拆 4 座、擊飛 1234 塊 → 保齡球(2 座)、龍捲風(4 座) 開；
      大槌(擊飛 2,000)、投石機(6,000)、煙火(11,000)、放火(6 座)、炸彈(15,000)、
-     隕石(8 座)、核彈(19,000)、爆裂魔法(10 座) 還鎖著 */
+     隕石(8 座)、核彈(19,000)、爆裂魔法(10 座)、打雷(23,000)、天降鐵球(12 座)
+     還鎖著 */
   const unlockedAfterReload = await page.evaluate(() =>
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
   ok('重開後解鎖狀態跟著回來',
-     unlockedAfterReload === 'open,open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock',
+     unlockedAfterReload ===
+       'open,open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock,lock,lock',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數。

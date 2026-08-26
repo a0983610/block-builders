@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.116.0';
+const VERSION = '1.119.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -188,6 +188,14 @@ function sndTick() { tone(1250, 0.045, 'square', 0.045); }
    比爆炸本身早一步響，聽到就知道要閃了 */
 function sndMeteor() { noise(0.9, 0.22, 700); tone(340, 0.85, 'sawtooth', 0.07, 0.22); }
 function sndSiren() { tone(560, 1.1, 'sine', 0.05, 1.7); }
+/* 打雷：一記劈裂的爆音，後面拖一長串滾雷。
+   兩層噪音疊起來才像雷：切在 2200 的那支是「劈」（高頻、只有 0.22 秒），
+   切在 190 的那支是「滾」（低頻、拖 1.3 秒）。只有前者聽起來像折斷樹枝、
+   只有後者聽起來像遠處又炸了一發，兩件事同時發生才是雷。 */
+function sndThunder() {
+  noise(0.22, 0.3, 2200); noise(1.3, 0.2, 190);
+  tone(58, 1.1, 'sawtooth', 0.075, 0.32);
+}
 /* 魔法陣長層的音效（sndRune）拿掉了：六層一路響上去太吵，
    而且蓋掉了引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 還在。 */
 
@@ -3802,7 +3810,7 @@ const BADGES = [
   { id: 'smash50k', n: '粉塵滿天', d: '累計擊飛 50000 塊積木', chk: s => s.smashed >= 50000 },
   { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
   { id: 'wreck25', n: '都市更新', d: '拆掉 25 座建築', chk: s => s.destroyed >= 25 },
-  { id: 'allTools', n: '工具箱清空', d: '十三種道具都用過', chk: s => s.tools.length >= TOOLS.length },
+  { id: 'allTools', n: '工具箱清空', d: '十五種道具都用過', chk: s => s.tools.length >= TOOLS.length },
   { id: 'boss20', n: '工頭嚴厲', d: '戳倒小人 20 次', chk: s => s.poked >= 20 },
   { id: 'poke100', n: '工安黑名單', d: '戳倒小人 100 次', chk: s => s.poked >= 100 },
   { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 },
@@ -3937,6 +3945,8 @@ function resetSave() {
    （剩 WRECK_AT＝25% 就算拆完）至少會擊飛 2,250 塊，所以擊飛那一側就照
    1／3／5／7／9 座換算成 2,000／6,000／11,000／15,000／19,000，
    拆除那一側直接寫 2／4／6／8／10 座——十格走完大約就是十座。
+   v1.117 加的兩把照同一把尺往上接：擊飛那側 23,000（第 11 座），拆除那側 12 座，
+   十二格走完大約就是十二座。
    建材調小的話一座擊飛得少，擊飛那一側自然要多拆幾座才追得上（工作量差不多）。 */
 const TOOLS = [
   { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
@@ -3966,7 +3976,13 @@ const TOOLS = [
   { id: 'nuke', n: '核彈', k: '☢', tip: '點一下：2 秒後天上掉核彈下來',
     lock: { txt: '累計擊飛 19,000 塊解鎖', ok: () => stats.smashed >= 19000 } },
   { id: 'magic', n: '爆裂魔法', k: '💥', tip: '點一下：魔法陣一層層展開，6 秒後爆炸',
-    lock: { txt: '拆掉 10 座建築解鎖', ok: () => stats.destroyed >= 10 } }
+    lock: { txt: '拆掉 10 座建築解鎖', ok: () => stats.destroyed >= 10 } },
+  { id: 'storm', n: '打雷', k: '⚡',
+    tip: '點地面：那裡慢慢聚出一朵烏雲，接著隨機劈 5～7 道雷，劈中的地方炸出一個小缺口並燒起來',
+    lock: { txt: '累計擊飛 23,000 塊解鎖', ok: () => stats.smashed >= 23000 } },
+  { id: 'drop', n: '天降鐵球', k: '⚫',
+    tip: '點地面：一顆鐵球從正上方直直砸下來，撞爛沿路的積木，不再動就收掉',
+    lock: { txt: '拆掉 12 座建築解鎖', ok: () => stats.destroyed >= 12 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
@@ -3974,7 +3990,8 @@ const toolOk = t => !t.lock || t.lock.ok();
    大槌點空地是地震、保齡球點空地是從那裡把球丟出去，所以也在這裡。
    小槌點空地什麼都不會掉，但仍然留在這裡：拿掉的話那一下完全沒反應，看起來像點壞了。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
-                      bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1 };
+                      bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
+                      storm: 1, drop: 1 };
 let tool = 'hammer';
 
 let hammerR = 5.5, hammerPow = 15;
@@ -3985,6 +4002,7 @@ let bombs = null;     // 已放下、倒數中的定時炸彈
 let meteors = null;   // 已呼叫的隕石（倒數或下墜中，可以好幾顆）
 let nukes = null;     // 已呼叫的核彈（倒數或下墜中，可以好幾顆）
 let magics = null;    // 正在展開的魔法陣（可以好幾個）
+let storms = null;    // 正在打雷的烏雲（可以好幾朵）
 let fires = null;     // 正在燒的積木（還站著的會往鄰居蔓延，碎料的只燒自己）
 let nSpread = 0;      // fires 裡有幾筆是「還站著的建築」——碎料不占那個額度
 const hot = [];       // 火球粒子（走不透明那顆材質，才亮得起來）
@@ -4493,6 +4511,59 @@ function launchBall(from, toward) {
   aim = null;
   sndSwing();
 }
+/* 天降鐵球（v1.117，使用者：「點擊地面 與地面垂直 落下一顆鐵球（碰撞 參考保齡球
+   只是從天而降 不再移動後消失）」）。
+   「碰撞參考保齡球」就照字面做：跟保齡球共用同一份 balls 清單、同一支 stepBall
+   ——同一套掃描、同一組撞擊力、同一份顆數上限（BALL_MAX），畫面那邊也是同一顆
+   InstancedMesh，不必為它多開一種東西。差別只有兩點，都掛在 drop 這個旗標上：
+   ① 出手沒有水平速度，純自由落體（「與地面垂直」）；
+   ② 落地幾乎不彈——鐵球不是橡皮球，而且彈太久就不符合「不再移動後消失」。
+   一路上撞到的積木都算（球每幀移動 2.7 單位，小於它的判定半徑 3.8，不會整層穿過去）。 */
+/* 從多高開始掉。v1.119 起跟著建築走（同烏雲），使用者：「天降鐵球 初始高度也能像
+   烏雲一樣 根據建築高度 有些建築很高 導致鐵球在建築中間位置高度落下」——固定 58 的話，
+   高一點的地標（大笨鐘 9000 塊有 138 高）等於直接生在建築腰上，從裡面往外炸，
+   完全沒有「從天上砸下來」那一段。
+   高過屋頂 26：那段落差決定砸到屋頂時多快（36.8 單位／秒）也決定看得到它掉多久
+   （1.4 秒）。固定值而不是按比例，砸到屋頂的力道才不會因建築高矮而不同。
+   量過畫面上緣大約在建築高度的 1.3 倍，所以起點最多只高出畫面 9 單位
+   （帝國大廈 3000）、最高的大笨鐘 9000 反而整段都在畫面內；球掉得快，
+   進畫面只差那一瞬間，所以不像烏雲那樣需要把鏡頭退開。 */
+const DROP_TOP = 58;                // 矮建築的下限（維持 v1.117 的手感）
+const DROP_UP = 26;                 // 高過屋頂多少
+const DROP_BOUNCE = 0.22;           // 落地回彈保留多少垂直速度（保齡球是 0.42）
+/* 撞到東西要彈起來（v1.118，使用者：「少了鐵球撞到東西彈起來的感覺（目前就一路
+   摧毀直直落下 可以撞到破壞後彈起來一點撞到其他位置）」）。
+   門檻是「這一幀撞掉幾塊」：實測 60fps 直直落下時，帝國大廈那根天線一幀只碰到 1 塊、
+   真正的樓板是 10～27 塊（金字塔 12、競技場 12、凱旋門 12 都是中位數）。
+   收在 DROP_BITE＝10 就是「擦過細桿子不算，砸到一片實的才算」。
+   彈起來的高度**直接指定**、不照反射算：照反射算的話砸得越快彈得越高，
+   從 58 掉下來那一下會把球射出場外（第一版就是這樣，實測橫向跑了 30～87 單位、
+   只撞掉 10 塊就飛走了，反而不摧毀了）。 */
+const DROP_BITE = 10;               // 這一幀撞掉幾塊才算「砸到一片實的」
+const DROP_POP = 3.6;               // 第一下彈多高（換算成 v = √(2gh)）
+const DROP_AWAY = 5;                // 第一下往旁邊帶多少速度
+const DROP_DECAY = 0.62;            // 每彈一次高度與橫移各乘這個——彈幾次就沒力了
+/* 最多彈幾次。遞減到後面只剩十幾公分的碎跳，球會賴在屋頂上磨到壽命結束、
+   在半空中憑空消失，連落地那個坑都留不下（實測凱旋門八次裡有一次是這樣）。
+   彈滿這麼多次就不再彈，讓它一路鑿到地面收尾。 */
+const DROP_POPS = 4;
+function dropBall(point) {
+  if (!balls) balls = [];
+  if (balls.length >= BALL_MAX) balls.shift();     // 滿了把最早那顆擠掉（同保齡球）
+  const top = Math.max(DROP_TOP, (bp ? bp.height : 0) + DROP_UP);
+  balls.push({
+    x: point.x, y: top, z: point.z,
+    vx: 0, vz: 0, vy: 0,             // 純自由落體
+    /* 壽命要把「掉下來那一段」外加進去（v1.119）：起點跟著建築走之後，
+       最高的地標要掉 3.55 秒，那等於先吃掉 BALL_LIFE 的一半——實測大笨鐘 9000
+       落地才第 6.9 秒，剩不到 0.6 秒就被壽命收掉。外加之後不管從多高丟下來，
+       「落地之後還能滾多久」都是同一份預算。 */
+    r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE + Math.sqrt(2 * top / GRAV), hops: 0,
+    ax: 1, az: 0,                    // 直直掉不滾（ang 也不會動），軸給個定值就好
+    drop: 1, pops: 0                 // pops＝在積木上彈過幾次（跟落地的 hops 分開算）
+  });
+  sndSwing();
+}
 /* 等第二點的時候在第一點畫一圈會脈動的光環：沒有這個的話，
    第一下點下去畫面完全沒反應，看起來像點壞了。 */
 const AIM_RING = [];
@@ -4518,7 +4589,16 @@ function stepBall(dt) {
     if (o.y <= o.r) {                              // 落地：彈一下，越彈越低
       o.y = o.r;
       if (o.vy < -2.5) {
-        o.vy = -o.vy * BALL_BOUNCE; o.hops++;
+        /* 天降鐵球砸到地面的**第一下**：整個場震一下、地上留一個坑。
+           保齡球沒有這一段——它落地那兩下是「丟出去」的延續，不是撞擊。
+           只認 hops === 0：後面那幾下是越彈越小的餘波，每一下都震會抖個沒完
+           （持續破壞不震畫面，v1.58 那條）。 */
+        if (o.drop && !o.hops) {
+          spawnRing({ x: o.x, y: 0, z: o.z }, o.r * 2);
+          spawnMark({ x: o.x, y: 0, z: o.z }, o.r * 1.6, true);   // 坑洞，跟隕石同一種
+          ENG.shake(1.1); sndThud(o.r * 3);
+        }
+        o.vy = -o.vy * (o.drop ? DROP_BOUNCE : BALL_BOUNCE); o.hops++;
         spawnDust({ x: o.x, y: 0.4, z: o.z }, 4, 6);
         sndSmash();                                // 不震畫面（v1.58），理由同下面撞到積木那段
       } else o.vy = 0;
@@ -4527,12 +4607,14 @@ function stepBall(dt) {
     o.ang += sp / o.r * dt;                        // 滾動角度：走多遠就轉多少
     const R = o.r + 0.7, R2 = R * R;
     let n = 0, own = 0;                 // own＝其中有幾塊是地標的（見 afterHit）
+    let hx = 0, hz = 0;                 // 接觸法線的水平分量（撞到的積木指向球心）
     for (const b of blocks) {
       if (b.st !== SET && b.st !== FREE) continue;
       const dx = b.x - o.x, dy = b.y - o.y, dz = b.z - o.z;
       const d2 = dx * dx + dy * dy + dz * dz;
       if (d2 > R2) { if (b.st === SET && d2 < R2 * 2.6) b.wob = 0.4; continue; }
       const d = Math.max(0.4, Math.sqrt(d2));
+      hx -= dx / d; hz -= dz / d;                // 積木在哪一邊，球就被往反方向頂
       const wasSet = b.st === SET;
       const wasOwn = b.hh < 0;                   // 同 smash：breakBlock 會把 hh 清掉
       breakBlock(b,
@@ -4561,6 +4643,22 @@ function stepBall(dt) {
       if (Math.random() < 0.4) sndSmash();
       const brake = Math.max(0.3, 1 - n * 0.006);  // 撞越多掉速越快
       o.vx *= brake; o.vz *= brake;
+      /* 天降鐵球砸到一片實的就彈起來（v1.118，見 DROP_BITE 那一段的說明）。
+         每彈一次高度與橫移都乘 DROP_DECAY：前幾下跳得開、跳幾次之後就沒力了，
+         接著才一路鑿到地面——不遞減的話它會在屋頂上一路跳到壽命結束，
+         連落地那個坑都留不下。
+         偏的方向優先取接觸法線的水平分量：從屋簷邊緣砸下去會往外彈，那是對的方向感；
+         法線接近正上方（砸在平屋頂正中央）時沒有方向可用，才隨機抽一個。
+         保齡球不吃這一段：它貼著地面滾，n 常常上百，跟著跳起來就變成在打水漂。 */
+      if (o.drop && n >= DROP_BITE && o.vy < 0 && o.pops < DROP_POPS) {
+        const k = Math.pow(DROP_DECAY, o.pops++);
+        o.vy = Math.sqrt(2 * GRAV * DROP_POP * k);
+        const hxz = Math.hypot(hx, hz);
+        const a = hxz > 0.25 ? Math.atan2(hz, hx) + rr(-0.9, 0.9)
+                             : Math.random() * Math.PI * 2;
+        o.vx += Math.cos(a) * DROP_AWAY * k;
+        o.vz += Math.sin(a) * DROP_AWAY * k;
+      }
     }
     const roll = Math.pow(BALL_ROLL, dt);          // 滾動阻力
     o.vx *= roll; o.vz *= roll;
@@ -4568,7 +4666,12 @@ function stepBall(dt) {
 
     /* 停下來的條件。範圍放到草地邊緣（不是工地邊緣）：現在球是從玩家點的地方丟出來的，
        點在場邊時起點本來就在工地外，用工地邊緣當界的話那一發出手就被收掉。 */
-    if (sp < 4.5 || o.life <= 0 || Math.hypot(o.x, o.z) > arenaR + 24) {
+    /* 天降鐵球沒有水平速度，套保齡球那條（滾不動就收）的話出手第一幀就被收掉，
+       所以它自己一條：落到地上、垂直方向停了、而且也滾不動了，才算「不再移動」。
+       三個條件缺一不可——少了 vy 那條，彈起來的空檔會被當成停住；
+       少了 sp 那條，被積木彈到帶著水平速度落地時會在滑行途中憑空消失。 */
+    const done = o.drop ? (o.y <= o.r && o.vy === 0 && sp < 4.5) : sp < 4.5;
+    if (done || o.life <= 0 || Math.hypot(o.x, o.z) > arenaR + 24) {
       spawnRing({ x: o.x, y: 0, z: o.z }, 5);
       balls.splice(i, 1);
     } else {
@@ -6993,6 +7096,160 @@ function boltList() {
   return boltSegs;
 }
 
+/* ── 打雷 ───────────────────────────────────────────────
+   使用者指定的順序就是這支的骨架：點地面 → 慢慢出現一朵烏雲 → 隨機劈 5～7 道雷 →
+   被劈到的點小破壞（幾格積木）＋燒起來。
+
+   雲用塵霧粒子堆（跟蘑菇雲同一套，不另外開一種畫面物件）：一團一團地聚出來，
+   聚滿了才開始劈。一次生一整朵的話它會「啪」地整朵出現在半空，看起來像貼圖
+   不像雲聚過來——蘑菇雲那邊踩過同一個雷（見〈蘑菇雲〉）。
+
+   閃電重用爆裂魔法那套折線（boltPts／bolts）：一道雷是「一條主幹 ＋ 兩條從主幹
+   中段折出去、停在半空的分岔」。只畫主幹的話是一條光滑的折線，看起來像電線不像雷。
+   段數：主幹 11 ＋ 分岔 2×4 ＝ 19 段，三朵雲各自劈到最密也就 114 段，
+   加上三處爆裂魔法的餘電 126 段仍在引擎的 MAXBOLT（288）以內。 */
+const STORM_MAX = 3;             // 同時最多幾朵
+/* 雲底高度（v1.118 改成跟著建築走）。本來是固定 26，但地標最高到 138（大笨鐘 9000 塊）
+   ——雲整個埋在建築裡，電等於從樓層之間冒出來，看不出打在哪；使用者回報的就是這件事。
+   現在是「屋頂再上去 STORM_UP」，矮建築另外有個下限，不然雲會貼在屋簷上、電只剩一小截。 */
+const STORM_Y0 = 34;             // 最低就這麼高（矮建築用）
+const STORM_UP = 16;             // 高過屋頂多少
+const STORM_R = 12;              // 雲的半徑
+const STORM_TH = 3.4;            // 雲心的厚度（往邊緣收，見 puffAt）
+const STORM_GROW = 1.6;          // 雲要聚多久才聚滿（使用者：「慢慢出現」）
+/* 一朵雲幾團、一團多大。v1.117 是 44 團 × 3.4～6.4，使用者：「烏雲方塊太少 太大塊
+   看起來像一堆立方體」——量過就是這樣：半徑 11 的圓要用 44 顆邊長 5 的方塊鋪，
+   一顆一顆之間有縫，邊緣露出整齊的立方體側面。改成「多而小」（截圖比對 44／90／150／220
+   四種，150 團 × 1.4～3.0 最像雲，220 團反而在邊緣散成一堆小骰子）。 */
+const STORM_PUFF = 150;
+const STORM_S = [1.4, 3.0];
+const STORM_FADE = 0.45;         // 劈完之後整朵縮掉的半衰期
+const STORM_N = [7, 15];         // 劈幾道（使用者指定，v1.118 從 5～7 加到 7～15）
+const STORM_GAP = [0.22, 0.5];   // 兩道之間隔多久
+const STRIKE_R = 9;              // 雷打在雲心多遠以內
+const STRIKE_NEAR = 1.6;         // 找「這一點上方最高那塊」的水平容差
+/* 一道雷打掉的範圍。使用者指定「小破壞（可能就幾格積木）」，所以這個數是照著
+   「打中那一塊 ＋ 它的面鄰居」湊的：格子間距是 1，收在 1.3 的話對角線（1.41）就進不來，
+   一道雷最多七格、打在牆面上實際多半是三到五格。
+   第一版給 3.2（比槌子的 5.5 小就好）——實測六道劈掉 726 塊，那不是「幾格」是拆房子。
+   雷的重點跟隕石一樣不在威力在火，見下面的 BOLT_FIRE_*。 */
+const BOLT_R = 1.3;
+const BOLT_POW = 13;             // 力道（投石機的石頭 12、槌子 15）
+const BOLT_FIRE_R = 5;           // 點火的範圍（比破壞範圍大得多：燒才是它的主要傷害）
+const BOLT_FIRE_N = 5;           // 一道雷最多點著幾塊，其餘交給火自己蔓延
+const BOLT_MARK = 4;             // 地上那塊焦黑多大（劈在屋頂上就不留，見 spawnMark）
+function callStorm(p) {
+  if (!storms) storms = [];
+  if (storms.length >= STORM_MAX) storms.shift();   // 滿了把最早那朵擠掉（同其他清單型道具）
+  const y = Math.max(STORM_Y0, (bp ? bp.height : 0) + STORM_UP);
+  storms.push({
+    x: p.x, z: p.z, y, t: 0, out: 0, puffs: [],
+    // 均勻抽。用 rr 再四捨五入的話頭尾兩個值只有一半的機會，中間會偏多
+    left: STORM_N[0] + Math.floor(Math.random() * (STORM_N[1] - STORM_N[0] + 1)),
+    next: STORM_GROW + rr(0.1, 0.4)                 // 雲聚滿了才開始劈
+  });
+  /* 順手把鏡頭退到看得見整朵雲的距離（跟蘑菇雲共用 ENG.holdWide）。
+     量過：預設取景的「畫面上緣」差不多就在鏡頭自己的高度——矮建築（羅馬競技場 h=15）
+     只看得到 26 以下，雲擺在 34 就整朵在畫面外，點下去等於什麼都沒發生。
+     holdWide 只會把鏡頭往外／往上帶，不會搶走玩家自己拉近的視角。 */
+  ENG.holdWide(y + STORM_TH, Math.max(STORM_R, bp ? bp.radius : STORM_R));
+  sndTick();
+}
+/* 雲的一團。半徑往中心偏（0.7 次方；均勻鋪滿是 0.5），厚度再跟著半徑收——
+   整朵是中間厚、邊緣薄的透鏡，不是一塊等厚的圓餅。圓餅的邊緣會露出一排
+   一樣大的方塊側面，那正是「看起來像一堆立方體」的來源。 */
+function puffAt(s) {
+  const a = Math.random() * Math.PI * 2;
+  const k = Math.pow(Math.random(), 0.7);
+  const th = STORM_TH * (1 - 0.55 * k);
+  return {
+    x: s.x + Math.cos(a) * k * STORM_R, y: s.y + rr(-th, th),
+    z: s.z + Math.sin(a) * k * STORM_R,
+    vx: rr(-0.35, 0.35), vz: rr(-0.35, 0.35),
+    rx: Math.random() * 6, ry: Math.random() * 6,
+    // 壓到 0.1～0.22（一般揚塵 0.62～0.9、蘑菇雲 0.18～0.42）：這是雷雲不是煙
+    s: rr(STORM_S[0], STORM_S[1]), c: rr(0.1, 0.22)
+  };
+}
+/* 一道雷。落點是雲底下隨機一處：那一點上方有東西就打在最高那一塊上，沒有就打在地上。
+   固定瞄整棟最高點的話七道全劈在同一根避雷針上，看起來像鎖定不像天氣。 */
+function strike(s) {
+  const a = Math.random() * Math.PI * 2;
+  const rad = Math.sqrt(Math.random()) * STRIKE_R;   // 開根號：落點才會均勻鋪滿整個圓
+  const x = s.x + Math.cos(a) * rad, z = s.z + Math.sin(a) * rad;
+  /* 這裡掃整池積木而不是用 colTop：colTop 只認地標藍圖的格子表，小人的家不在裡面
+     （隕石的掃掠判定也有同一個限制）。一道雷掃一次、一朵雲最多七次，划得來。 */
+  let top = null;
+  for (const b of blocks) {
+    if (b.st !== SET) continue;
+    if (Math.abs(b.x - x) > STRIKE_NEAR || Math.abs(b.z - z) > STRIKE_NEAR) continue;
+    if (!top || b.y > top.y) top = b;
+  }
+  const p = top ? { x: top.x, y: top.y, z: top.z } : { x, y: 0.6, z };
+  const cx = s.x + rr(-STORM_R * 0.4, STORM_R * 0.4);
+  const cz = s.z + rr(-STORM_R * 0.4, STORM_R * 0.4);
+  const cy = s.y - rr(0.5, 2.5);
+  const life = rr(0.16, 0.26);
+  const main = boltPts(cx, cy, cz, p.x, p.y, p.z, 2.2, 11);
+  /* src 記著是哪一朵雲劈的。餘電那邊靠它算每一處的額度（boltsOf），雷不需要——
+     但 bolts 是共用的一份清單，每一筆都有 src 才不會讓走訪它的地方踩到 undefined。 */
+  bolts.push({ pts: main, t: 0, life, op: 1, w: rr(0.42, 0.6), src: s });
+  for (let k = 0; k < 2; k++) {
+    const q = main[3 + Math.floor(Math.random() * (main.length - 5))];
+    const b = Math.random() * Math.PI * 2, br = rr(2.5, 6);
+    bolts.push({
+      pts: boltPts(q.x, q.y, q.z, q.x + Math.cos(b) * br, Math.max(0.6, q.y - rr(3, 9)),
+                   q.z + Math.sin(b) * br, 1.2, 4),
+      t: 0, life: life * 0.75, op: 1, w: rr(0.18, 0.3), src: s
+    });
+  }
+  /* 小破壞（使用者：「可能就幾格積木」）：半徑比槌子還小的一次點狀衝擊。
+     quiet＝不震畫面，震動下面自己給——雷該震的是「一記」，不是槌子那條曲線。 */
+  smash(p, { x: 0, y: -1, z: 0 }, BOLT_R, BOLT_POW, true);
+  /* 附帶燃燒（使用者指定）：劈中那一帶還站著的積木點幾塊起來，火再自己往鄰居蔓延。
+     跟隕石共用同一支 igniteAround，差別只在半徑小得多——它是「劈出一個焦黑的小洞」。 */
+  igniteAround(p, BOLT_FIRE_R, BOLT_FIRE_N, SET);
+  spawnMark(p, BOLT_MARK, false);           // 焦黑不是坑洞：雷是燒不是砸（劈在屋頂就不留）
+  ENG.shake(0.8);
+  sndThunder();
+}
+function stepStorms(dt) {
+  if (!storms) return;
+  for (let i = storms.length - 1; i >= 0; i--) {
+    const s = storms[i];
+    s.t += dt;
+    /* 一團一團地聚出來。照時間算「現在該有幾團」而不是每幀累加固定的量：
+       累加的話 dt 一變（4 倍速、掉幀）聚雲的快慢就跟著跑。 */
+    const want = Math.min(STORM_PUFF, Math.round(STORM_PUFF * s.t / STORM_GROW));
+    while (s.puffs.length < want) s.puffs.push(puffAt(s));
+    for (const q of s.puffs) { q.x += q.vx * dt; q.z += q.vz * dt; q.ry += dt * 0.22; }
+    if (s.left > 0) {
+      s.next -= dt;
+      if (s.next <= 0) { strike(s); s.left--; s.next = rr(STORM_GAP[0], STORM_GAP[1]); }
+    } else {
+      /* 劈完了：整朵縮掉再收。直接 splice 的話一朵雲會「啪」地整團消失。 */
+      s.out += dt;
+      const k = Math.pow(0.5, dt / STORM_FADE);
+      for (const q of s.puffs) q.s *= k;
+      if (s.out > STORM_FADE * 3) storms.splice(i, 1);
+    }
+  }
+  if (!storms.length) storms = null;
+}
+/* 塵霧與烏雲共用同一顆 mesh（還是一個 draw call），但烏雲**不放進 dust 那一池**：
+   spawnDust／spawnRing／煙塵那些都拿 dust.length 當配額關卡（超過 400 就不再生），
+   一朵一百五十團的雲擠進去會把雷自己的揚塵整個擋掉。
+   接在後面而不是前面：真的滿到 MAXDUST 時，被切掉的該是雲的尾巴，不是打擊感。
+   重用同一個陣列，不要每幀配置一個新的。 */
+const dustAll = [];
+function dustList() {
+  if (!storms) return dust;
+  dustAll.length = 0;
+  for (const d of dust) dustAll.push(d);
+  for (const s of storms) for (const q of s.puffs) dustAll.push(q);
+  return dustAll;
+}
+
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
 /* 記下「這一把用過了」。成就〈工具箱清空〉要的是每一種都試過，
    而水桶按住不放那條路不經過 useTool（見 startPourAt），所以抽成一支共用。 */
@@ -7050,6 +7307,8 @@ function useTool(hit) {
   if (tool === 'meteor') { callMeteor(hit.point); return 0; }
   if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'storm') { callStorm({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'drop') { dropBall(hit.point); return 0; }
   return 0;
 }
 
@@ -7216,6 +7475,7 @@ function step(dt) {
   stepMarks(dt);
   stepStars(dt);
   stepArcs(dt);
+  stepStorms(dt);
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepDozers(dt);
   stepTrucks(dt);
@@ -7297,7 +7557,7 @@ function draw() {
   ENG.commitWorkers();
 
   ENG.putTrees(trees);
-  ENG.putDust(dust);
+  ENG.putDust(dustList());
   ENG.putTrebs(trebs ? trebs.list : EMPTY);
   ENG.putRocks(trebs ? trebs.rocks : EMPTY);
   ENG.putBombs(bombs || EMPTY);
