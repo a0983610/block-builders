@@ -1062,6 +1062,9 @@ function wetBlock(b) {
    （見 updWorker 裡 w.burn <= 0 那段），不然人會一直躺在地上打滾。 */
 function wetWorker(w) {
   if (!w) return false;
+  /* 表情（v1.121）：身上有火的是被救了（愛心），沒火的是被無故淋一身（生氣）。
+     一定要在下面把 burn 歸零**之前**判。 */
+  showEmo(w, w.burn > 0 ? 'heart' : 'anger');
   w.wet = WET_TIME;
   if (w.burn > 0) {
     w.burn = 0; w.roll = 0; w.tilt = 0; w.rspin = 0; w.rph = 0; w.gait = 0; w.st = 'idle';

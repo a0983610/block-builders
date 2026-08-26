@@ -56,6 +56,9 @@ function newWorker(i) {
        cout 是散場錯開多久（見 CHEER_OUT），cft 是下一束彩帶還有幾秒（見 CONF_GAP）。 */
     eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0, crun: 0, cout: 0, cft: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
+    /* 頭上的表情圖示（v1.121，見 showEmo）：emo 是哪一種（EMO_ART 的鍵，''＝沒有）、
+       emoT 是還要冒幾秒、emoK 是畫出來的大小 0～1。 */
+    emo: '', emoT: 0, emoK: 0,
     /* 魔法師（mage，v1.64）：不搬積木，站在建材堆旁邊隔空把建材拋上去。
        cast 是舉杖的深淺 0～1（畫杖與寶珠用），ct 是這一發還要蓄幾秒，
        mang／mrad 是他要站的地方（極座標：角度與半徑；v1.89 起會跟著料堆跑），
@@ -186,6 +189,9 @@ function dropJob(w, k) {
     const b = blocks[j.b];
     if (b && b.st !== CARRY) b.holder = -1;   // 還在手上的不動（那是 releaseWorker 的事）
     freeClaim(j.s);
+    /* 「我要搬的那塊不見了」：頭上冒個問號（v1.121）。這條路徑一律是被搶走、被打飛、
+       手上那塊被打掉——玩家砸一下就看得到幾個人愣在那裡，因果很清楚。 */
+    showEmo(w, 'quest');
     w.load.splice(k, 1);
     if (w.li > k) w.li--;
   }
@@ -575,6 +581,7 @@ function stuckWatch(w, dt) {
   if (w.stk < STUCK_T) return;
   if (w.stk < STUCK_T * 2) {                        // ① 重新找路線
     w.chk = 0;                                      // 直線／繞外圈重判一次
+    showEmo(w, 'quest');                            // 走不動了：頭上冒個問號（v1.121）
     /* 目標點本身壓在人家的外框裡（閒晃的目標被推到外圈、剛好推進屋子裡就會這樣）：
        挪到外框最近的那一面外邊。走得到的目標才有得走。 */
     const h = footHome(w.tx, w.tz);
@@ -623,6 +630,7 @@ function alertFlee(point, t) {
 }
 function startFlee(w, d) {
   releaseWorker(w);                               // 手上的積木一律扔下（也會放掉認領的格子）
+  showEmo(w, 'bang');                             // 嚇到了：頭上冒個驚嘆號（v1.121）
   w.flee = d.t + FLEE_TAIL;
   w.fdel = rr(FLEE_REACT[0], FLEE_REACT[1]);
   w.fex = d.x; w.fez = d.z;
@@ -900,6 +908,7 @@ function updWorker(w, wi, dt) {
      被炸飛、跌倒、換場都是 return 出去的，不預設收的話那個人躺在地上還舉著杖。 */
   if (w.cast > 0) w.cast = Math.max(0, w.cast - dt * CAST_DOWN);
   if (w.chatCd > 0) w.chatCd -= dt;
+  stepEmo(w, dt);                    // 表情圖示的鐘（v1.121）。同下面那段慶祝的鐘：擺在所有 return 之前
   /* 慶祝的鐘（v1.120）。擺在**所有 return 之前**：完工那一刻起就一直在走，被炸飛、
      被震倒、被嚇跑、被點著的那幾秒也照算——慶祝是「完工後那一段時間」，不是「站在圈上
      跳了七秒」（使用者：「慶祝應該只要完工後一次就好」）。以前是掛在下面那條慶祝分支裡
@@ -956,7 +965,13 @@ function updWorker(w, wi, dt) {
     w.fall -= dt;
     w.tilt += (-Math.PI * 0.5 - w.tilt) * Math.min(1, dt * 9);
     w.gait += (0 - w.gait) * Math.min(1, dt * 6);
-    if (w.fall <= 0) w.st = 'idle';
+    if (w.fall <= 0) {
+      w.st = 'idle';
+      /* 爬起來的那一刻生氣（v1.121）：被戳、被掀飛落地、被水柱打倒都走這裡。
+         **濕著爬起來的不生氣**——那是身上有火被水澆熄的人（見 wetWorker），
+         他頭上那顆愛心還在，不要蓋掉。 */
+      if (w.wet <= 0) showEmo(w, 'anger');
+    }
     return;
   }
   w.tilt += (0 - w.tilt) * Math.min(1, dt * 7);
@@ -1600,7 +1615,15 @@ function stepChat(w, wi, dt) {
   if (speak) w.ph += dt * 9;
   w.bub += ((speak ? 1 : 0) - w.bub) * Math.min(1, dt * 12);
   if (w.chat <= 0) {
+    /* 聊完了，兩個人各冒一顆愛心（v1.121）。**不能只顧自己**：兩邊的 chat 是同一幀
+       歸零的，先跑到的那個一 endChat，另一個進 stepChat 就走上面那條「對方被抓走了」
+       早退（那條是被炸飛、被抓去上工用的，不該冒愛心）。所以由先聊完的順手幫「還指著
+       自己」的那位也冒一個——被抓走的人 cw 已經被 endChat 清成 −1，不會誤中。
+       擺在 endChat 後面：endChat 會把泡泡收掉（w.bub = 0），圖示才不會跟泡泡疊著。 */
+    const mate = workers[w.cw];
     endChat(w);
+    showEmo(w, 'heart');
+    if (mate && mate.cw === wi) showEmo(mate, 'heart');
     /* 聊完就走：給一個新的閒晃目標，不然兩個人會杵在原地等發呆時間跑完。
        有自己家的人挑自己家附近（v1.100）：挑工地外圈那一環的話，他會先往工地走幾步，
        下一幀才被 liveHome 叫回來——而在那之前如果他還在挖料那條路上，
@@ -1609,6 +1632,38 @@ function stepChat(w, wi, dt) {
     if (h) liveSpot(w, h); else idleSpot(w);
     w.pause = 0;
   }
+}
+
+/* ── 頭上的表情圖示（v1.121）───────────────────────────────
+   使用者：「增加小人表達力，例如驚嘆號 愛心 問號 生氣（一個小圖示 像交談那樣在小人
+   旁邊表示 使用情境你決定就可以）」。圖示長什麼樣、擺多高是引擎那邊的事
+   （engine.js 的 EMO_ART），這裡定的是「什麼時候冒哪一個、冒多久」。
+
+   四種表情各挑**玩家看得出因果**的情境，不隨機冒——隨機的話那就只是頭上有東西在閃，
+   看不出小人在反應什麼：
+     驚嘆號 bang   預告一出現、丟下手上的東西開始逃命（startFlee）
+     問號   quest  ① 走不動要重找路線（stuckWatch）② 要搬的那塊被打飛／被搶走（dropJob）
+     愛心   heart  ① 聊完天各自走開（stepChat）② 身上的火被水澆熄（wetWorker）
+     生氣   anger  ① 跌倒爬起來那一刻（被戳、被掀飛、被水柱打倒）② 無故被水淋濕
+
+   冒多久：都是一兩秒。太短來不及看（鏡頭多半沒對著那個人），太長就會一直掛在頭上，
+   下一件事發生時反而看不出來是在反應新的那件。 */
+const EMO_T = { bang: 1.6, quest: 1.8, heart: 2.2, anger: 1.8 };
+const EMO_POP = 9;                  // 冒出來／收回去的快慢（聊天泡泡是 12，圖示慢一點才看得到它長出來）
+/* 冒一個圖示。同一種連著觸發只是把倒數推回去（工作單被抽掉三筆、卡住的那一秒半每幀都在
+   喊），不會重新彈一次——重彈的話那個圖會一直停在剛冒出來的大小。 */
+function showEmo(w, kind) {
+  w.emo = kind;
+  w.emoT = EMO_T[kind];
+}
+/* 圖示的鐘。擺在 updWorker **所有 return 之前**（同 v1.120 慶祝那個鐘的理由）：被炸飛、
+   倒在地上、在燒的那幾秒也要照算，不然人一被掀倒，那個圖就凍在他頭上等他站起來才開始退。
+   那幾秒只是**不顯示**（emoK 收回去）：圖示是掛在身體上的一組方塊，人翻過去圖也跟著翻。 */
+function stepEmo(w, dt) {
+  if (w.emoT > 0) w.emoT = Math.max(0, w.emoT - dt);
+  const want = w.emoT > 0 && !w.air && w.burn <= 0 && w.fall <= 0 ? 1 : 0;
+  w.emoK += (want - w.emoK) * Math.min(1, dt * EMO_POP);
+  if (!want && w.emoK < 0.02) { w.emoK = 0; if (!w.emoT) w.emo = ''; }
 }
 
 /* ── 閒晃事件 ─────────────────────────────────────────────

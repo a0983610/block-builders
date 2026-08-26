@@ -1940,7 +1940,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const pose = extra => {
       const w = workers[1];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
-                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0 }, extra);
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0, emo: '', emoK: 0 }, extra);
       ENG.putWorker(1, w);
       const m = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
       for (let k = 0; k < ENG.WPARTS; k++) {
@@ -3330,7 +3330,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const look = (i, extra) => {
       const w = workers[i];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
-                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0, emo: '', emoK: 0,
                          cast: 0 }, extra);
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -3637,7 +3637,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const read = i => {
       const w = workers[i];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
-                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0, emo: '', emoK: 0,
                          cast: 0, burnK: 0, wetK: 0 });
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -3754,6 +3754,198 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('手上有工作的人不會停下來聊天', busy.chatting === 0 && busy.working > 100,
      '搬運中聊天 ' + busy.chatting + ' 幀（同期有 ' + busy.working + ' 幀在搬運，蓋了 ' +
      busy.placed + ' 塊）');
+
+  /* ══════════ 表情圖示 ══════════ */
+  head('表情圖示');
+  /* 頭上的小圖示（v1.121）：驚嘆號／問號／愛心／生氣。五塊通用的方塊照圖樣表重擺，
+     所以這裡量三件事——① 四種都畫得出來、擺在頭上不在身上 ② 永遠正對鏡頭
+     ③ 該冒的那一刻真的冒了。
+     認圖示的方塊用**顏色**：圖示的顏色是照表情給的（EMO_ART），身上其他部位都是照
+     這個人的編號給的膚色／衣色，不會撞。 */
+  const emoDraw = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(8); startBuild(true);
+    ENG.cam.shake = 0; ENG.orbit(0, 0);            // 甩掉前面測試留下的震動與鏡頭動畫
+    const KINDS = ['bang', 'quest', 'heart', 'anger'];
+    const cols = KINDS.map(k => { const c = new THREE.Color().setHex(ENG.EMO_ART[k].c);
+                                  return [c.r, c.g, c.b]; });
+    const w = workers[0], M = new THREE.Matrix4(), v = new THREE.Vector3();
+    /* 擺一個姿勢，回傳「這一幀畫出來的圖示方塊」（相對小人原點、已經除掉身高）。
+       hy 是這一塊在世界 y 方向的半高（照旋轉後的三根軸算，斜的那幾塊也算得對）。 */
+    const read = (kind, extra) => {
+      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         air: 0, burn: 0, burnK: 0, wetK: 0, cast: 0,
+                         emo: kind, emoT: 1, emoK: 1 }, extra);
+      ENG.putWorker(0, w);
+      const col = ENG.three.workerMesh.instanceColor.array, s = w.scale, out = [];
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        ENG.three.workerMesh.getMatrixAt(k, M);
+        const e = M.elements;
+        if (Math.hypot(e[0], e[1], e[2]) < 1e-4) continue;      // 縮成 0 的（用不到的那幾塊）
+        const ci = cols.findIndex(c => Math.abs(col[k * 3] - c[0]) < 3e-3 &&
+                                       Math.abs(col[k * 3 + 1] - c[1]) < 3e-3 &&
+                                       Math.abs(col[k * 3 + 2] - c[2]) < 3e-3);
+        if (ci < 0) continue;                                   // 不是圖示的顏色：身體部位
+        v.setFromMatrixPosition(M);
+        out.push({ ci, x: v.x / s, y: v.y / s, z: v.z / s,
+                   hy: 0.5 * (Math.abs(e[1]) + Math.abs(e[5]) + Math.abs(e[9])) / s });
+      }
+      return out;
+    };
+    const box = g => ({ n: g.length,
+                        lo: +Math.min(...g.map(p => p.y - p.hy)).toFixed(2),
+                        hi: +Math.max(...g.map(p => p.y + p.hy)).toFixed(2),
+                        ci: g.every(p => p.ci === g[0].ci) ? g[0].ci : -1 });
+    const shot = KINDS.map(k => box(read(k)));
+    const none = read('', { emo: '', emoT: 0, emoK: 0 }).length;
+    /* 正對鏡頭：圖示的橫軸（分得最開的那兩塊）要垂直於「小人 → 鏡頭」的水平方向。
+       愛心上面兩瓣一左一右（±0.09），所以那個橫軸量得到。
+       故意連**小人自己的朝向**一起換：圖示是掛在身體上的，扣掉 w.a 那一項寫錯的話，
+       人一轉身圖就跟著轉走了。 */
+    const face = [];
+    for (const [yaw, a] of [[0, 0], [1.2, 0], [2.5, 0], [0.7, 1.4], [4.0, -2.2]]) {
+      ENG.cam.yaw = yaw; ENG.updateCamera(0.016);
+      const g = read('heart', { a });
+      const p = ENG.three.camera.position;
+      const dl = Math.hypot(p.x - w.x, p.z - w.z);
+      const dx = (p.x - w.x) / dl, dz = (p.z - w.z) / dl;
+      let bd = 0, ax = 0, az = 0;
+      for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+        const d = Math.hypot(g[i].x - g[j].x, g[i].z - g[j].z);
+        if (d > bd) { bd = d; ax = (g[i].x - g[j].x) / d; az = (g[i].z - g[j].z) / d; }
+      }
+      face.push({ span: +bd.toFixed(3), dot: +Math.abs(ax * dx + az * dz).toFixed(3) });
+    }
+    ENG.cam.yaw = 0.9; ENG.updateCamera(0.016);
+    // 從一個點長出來：emoK 減半，整組的偏移與大小都要跟著減半（不是原地縮放）
+    const full = read('heart'), half = read('heart', { emoK: 0.4 });
+    const spread = g => Math.max(...g.map(p => Math.abs(p.x))) ;
+    // 站不直的時候不畫（圖會跟著身體翻過去）
+    const flat = read('heart', { tilt: -Math.PI * 0.5, fall: 1 }).length;
+    const rolling = read('heart', { roll: 1, tilt: 0.4 }).length;
+    return { shot, none, face, flat, rolling,
+             fullSpread: +spread(full).toFixed(3), halfSpread: +spread(half).toFixed(3),
+             fullLo: +Math.min(...full.map(p => p.y - p.hy)).toFixed(3),
+             halfLo: +Math.min(...half.map(p => p.y - p.hy)).toFixed(3),
+             fullHi: +Math.max(...full.map(p => p.y + p.hy)).toFixed(3),
+             halfHi: +Math.max(...half.map(p => p.y + p.hy)).toFixed(3),
+             emoY: ENG.EMO_Y };
+  });
+  /* 一種圖示最多五塊（部位就開五塊）。塊數寫死在這裡是故意的：圖樣是手畫的，
+     少一塊問號就退化成「7」——改壞了要當場紅，不是「反正還是畫得出東西」。 */
+  ok('四種表情圖示都畫得出來，各自的顏色也對得上圖樣表',
+     emoDraw.shot.map(s => s.n).join(',') === '2,5,5,4' &&
+     emoDraw.shot.every((s, i) => s.ci === i) && emoDraw.none === 0,
+     '驚嘆號 ' + emoDraw.shot[0].n + ' 塊、問號 ' + emoDraw.shot[1].n +
+     '、愛心 ' + emoDraw.shot[2].n + '、生氣 ' + emoDraw.shot[3].n +
+     '（上限 5）；沒表情時 ' + emoDraw.none + ' 塊');
+  /* 浮在帽子上面：安全帽頂 1.31、巫師帽尖 1.75。低於 1.75 的話魔法師的圖示會插進帽子裡。 */
+  ok('圖示浮在帽子上面，而且只有一個圖示那麼大',
+     emoDraw.shot.every(s => s.lo >= 1.78 && s.hi <= 2.35),
+     '底邊 ' + emoDraw.shot.map(s => s.lo).join('／') + '、頂邊 ' +
+     emoDraw.shot.map(s => s.hi).join('／') + '（錨點 ' + emoDraw.emoY + '、巫師帽尖 1.75）');
+  ok('轉鏡頭、轉小人，圖示都正對著看的人',
+     emoDraw.face.every(f => f.span > 0.1 && f.dot < 0.03),
+     '五組角度：橫軸與視線的內積 ' + emoDraw.face.map(f => f.dot).join('、') +
+     '（0＝正對）、寬 ' + emoDraw.face.map(f => f.span).join('、'));
+  /* 從錨點長出來：emoK 減成 0.4，攤開的寬度與「頂邊離錨點多高」都要跟著變成 0.4 倍，
+     而底邊**不動**（錨點就是圖示的底邊，位置與大小同時乘 emoK 的必然結果）。
+     只驗大小的話，「原地放大」也會過——那種長法會讓整個圖示從錨點的上方冒出來。 */
+  ok('圖示是從錨點長出來的，不是原地放大',
+     Math.abs(emoDraw.halfSpread - emoDraw.fullSpread * 0.4) < 0.005 &&
+     Math.abs((emoDraw.halfHi - emoDraw.emoY) - (emoDraw.fullHi - emoDraw.emoY) * 0.4) < 0.005 &&
+     Math.abs(emoDraw.fullLo - emoDraw.emoY) < 0.005 &&
+     Math.abs(emoDraw.halfLo - emoDraw.emoY) < 0.005,
+     'emoK=1 時攤開 ' + emoDraw.fullSpread + '、頂邊高出錨點 ' +
+     (emoDraw.fullHi - emoDraw.emoY).toFixed(3) + '；emoK=0.4 時 ' + emoDraw.halfSpread +
+     '、' + (emoDraw.halfHi - emoDraw.emoY).toFixed(3) + '（底邊都停在錨點 ' +
+     emoDraw.fullLo + '／' + emoDraw.halfLo + '）');
+  ok('躺著、打滾的時候不畫圖示', emoDraw.flat === 0 && emoDraw.rolling === 0,
+     '躺平畫了 ' + emoDraw.flat + ' 塊、打滾 ' + emoDraw.rolling + ' 塊');
+
+  /* 情境：哪一刻冒哪一個。每一條都直接觸發那個入口（不是等它自己碰巧發生），
+     這樣紅了就知道是那個掛鉤斷了。 */
+  const emoWhen = await page.evaluate(() => {
+    const out = {};
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 400; setWorkerCount(8); startBuild(true);
+    for (let i = 0; i < 40; i++) step(0.05);
+    // ① 預告一出現：全場丟下東西就跑，頭上冒驚嘆號
+    const alive = workers.filter(w => !w.air && w.burn <= 0);
+    alertFlee({ x: 0, z: 0 }, 2);
+    out.bang = alive.filter(w => w.emo === 'bang' && w.emoT > 0).length;
+    out.aliveN = alive.length;
+    step(0.05);
+    out.bangK = alive.filter(w => w.emoK > 0).length;
+    // 下面幾條要用同一批人，把逃命收掉（startBuild 不管 flee）
+    for (const w of workers) { w.flee = 0; w.fdel = 0; w.emo = ''; w.emoT = 0; w.emoK = 0; }
+    // ② 要搬的那塊被打飛了：冒問號。freeBlock 就是破壞道具走的那條路
+    startBuild(true);
+    for (let i = 0; i < 80 && !workers.some(w => w.load.length); i++) step(0.05);
+    const wq = workers.find(w => w.load.length);
+    out.hasJob = !!wq;
+    if (wq) { wq.emo = ''; wq.emoT = 0; freeBlock(blocks[wq.load[0].b]); out.quest = wq.emo; }
+    // ③ 聊完天：兩個人各冒一顆愛心（倒數壓到剩一幀，不必等真的聊完五秒）
+    const a = workers[1], b2 = workers[2];
+    releaseWorker(a); releaseWorker(b2);
+    for (const w of [a, b2]) { w.air = 0; w.burn = 0; w.fall = 0; w.flee = 0;
+                              w.emo = ''; w.emoT = 0; w.emoK = 0; }
+    a.chat = 0.04; a.cw = 2; a.side = 0;
+    b2.chat = 0.04; b2.cw = 1; b2.side = 1;
+    step(0.05);
+    out.heart = [a.emo, b2.emo].join(',');
+    // ④ 跌倒爬起來那一刻生氣；濕著爬起來的不生氣（那是被水柱打倒的，愛心還在頭上）
+    const c = workers[3], d = workers[4];
+    for (const w of [c, d]) { releaseWorker(w); w.air = 0; w.burn = 0; w.emo = '';
+                              w.emoT = 0; w.emoK = 0; w.wet = 0; w.fall = 0.04; }
+    d.wet = 3;
+    step(0.05);
+    out.anger = c.emo; out.wetUp = d.emo;
+    // ⑤ 被水淋濕：沒火的是被無故淋一身（生氣），有火的是被救了（愛心）
+    const e1 = workers[5], f1 = workers[6];
+    for (const w of [e1, f1]) { releaseWorker(w); w.air = 0; w.burn = 0; w.wet = 0;
+                               w.emo = ''; w.emoT = 0; w.emoK = 0; w.fall = 0; }
+    wetWorker(e1);
+    out.wetMad = e1.emo;
+    igniteWorker(f1, 0);
+    wetWorker(f1);
+    out.doused = f1.emo;
+    /* ⑥ 鐘：彈出來 → 被戳倒的那幾秒只是不顯示、倒數照走 → 走完自己收掉。
+       直接跑 stepEmo（不是整個 step）：這一段要量的是鐘，不要讓他同時被派工、
+       被卡住那些事情插進來再冒一個。 */
+    const g1 = workers[7];
+    g1.air = 0; g1.burn = 0; g1.fall = 0; g1.emo = ''; g1.emoT = 0; g1.emoK = 0;
+    showEmo(g1, 'bang');
+    for (let i = 0; i < 6; i++) stepEmo(g1, 0.05);
+    out.upK = +g1.emoK.toFixed(2);
+    g1.fall = 1;
+    for (let i = 0; i < 6; i++) stepEmo(g1, 0.05);
+    out.downK = +g1.emoK.toFixed(2); out.downT = +g1.emoT.toFixed(2);
+    g1.fall = 0;
+    for (let i = 0; i < 40; i++) stepEmo(g1, 0.05);
+    out.gone = g1.emo === '' && g1.emoK === 0;
+    return out;
+  });
+  ok('預告一出現，全場都冒驚嘆號',
+     emoWhen.bang === emoWhen.aliveN && emoWhen.bangK === emoWhen.aliveN,
+     emoWhen.bang + '/' + emoWhen.aliveN + ' 個人冒了驚嘆號，下一幀 ' +
+     emoWhen.bangK + ' 個已經看得到');
+  ok('要搬的那塊被打飛，那個人冒問號',
+     emoWhen.hasJob && emoWhen.quest === 'quest',
+     emoWhen.hasJob ? '打掉他認的那塊 → ' + emoWhen.quest : '這輪沒有人領到工作單');
+  ok('聊完天兩個人各冒一顆愛心', emoWhen.heart === 'heart,heart',
+     '兩個人的圖示：' + emoWhen.heart + '（先聊完的那個要幫另一個也冒，見 stepChat）');
+  ok('跌倒爬起來會生氣，被水柱打倒的不會',
+     emoWhen.anger === 'anger' && emoWhen.wetUp === '',
+     '爬起來 → ' + emoWhen.anger + '；濕著爬起來 → ' + (emoWhen.wetUp || '沒有圖示'));
+  ok('被水淋濕會生氣，但身上的火被澆熄是冒愛心',
+     emoWhen.wetMad === 'anger' && emoWhen.doused === 'heart',
+     '無故被淋 → ' + emoWhen.wetMad + '、火被澆熄 → ' + emoWhen.doused);
+  ok('倒在地上的那幾秒圖示不顯示，但倒數照走，走完自己收掉',
+     emoWhen.upK > 0.9 && emoWhen.downK < 0.1 && emoWhen.downT > 0.8 && emoWhen.gone,
+     '站著 emoK ' + emoWhen.upK + ' → 倒下 0.3 秒後 ' + emoWhen.downK +
+     '（剩 ' + emoWhen.downT + ' 秒沒被凍住）；倒數走完收掉：' + (emoWhen.gone ? '是' : '否'));
 
   /* ══════════ 閒晃事件：小人的家 ══════════ */
   head('閒晃事件：小人的家');
@@ -9901,6 +10093,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const w = workers[0];
     w.x = 0; w.z = 0; w.y = 0; w.a = 0; w.gait = 0; w.carry = false;
     w.plan = 0; w.bub = 0; w.scale = 1.2; w.roll = 0; w.tilt = 0; w.rspin = 0;
+    w.emo = ''; w.emoK = 0;                             // 表情圖示會是最高的那一塊，量身高前先關掉
     const m = new THREE.Matrix4(), v = new THREE.Vector3();
     const pos = k => { ENG.three.workerMesh.getMatrixAt(k, m); v.setFromMatrixPosition(m); return v.clone(); };
     const read = () => {
