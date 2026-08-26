@@ -2909,6 +2909,95 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      crowd.hail + ' 人在圈上，半徑撐到 ' + crowd.r + '（寫死的話是 ' + crowd.tight +
      '），每人分到 ' + crowd.gap + ' 格');
 
+  /* 慶祝只有完工後那一次（v1.120，使用者：「有觀察到小人慶祝 被核彈嚇跑 然後又跑回去
+     慶祝，慶祝應該只要完工後一次就好」）。
+     ① 被嚇跑就算散場，跑回來不會再站一圈跳。改之前 startFlee 把 w.cheer 歸零，而核彈的
+        逃命只有 3.4 秒（NUKE_WAIT + NUKE_FALL + FLEE_TAIL）、魔法陣 6.6 秒，都比七秒的
+        慶祝短，所以人跑回來時窗口還開著，又站一圈跳滿七秒。
+        彩帶一起驗（散場後就不該再噴），順便驗他們是回到建築外圈那一環閒晃，
+        不是留在原地——startFlee 那裡先幫他們挑好了閒晃點。 */
+  const cheerFlee = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 3000; setWorkerCount(20); startBuild(true);
+    /* 圈上的位置是照「完工那一刻各自站的角度」分的，所以要在 completeNow() 之前
+       先把人擺回工地旁邊（同上一段 crowd 的理由），不然量到的是「走回來多久」。 */
+    for (const w of workers) {
+      const a = Math.random() * Math.PI * 2, d = siteR + rr(3, 9);
+      w.x = Math.cos(a) * d; w.z = Math.sin(a) * d;
+    }
+    completeNow();
+    for (let i = 0; i < 60; i++) step(0.05);           // 慶祝三秒：圈站起來了，正在跳
+    const jumping = workers.filter(w => w.hail).length;
+    dust.length = 0;
+    const isC = d => d.sy !== undefined;               // 彩帶＝給了非等比縮放的那些塵霧
+    callNuke({ x: 0, z: 0 });                          // 預告一出現全場就跑（v1.96）
+    const fled = workers.filter(w => w.flee > 0).length;
+    const still = workers.filter(w => cheerOn(w)).length;
+    let hail = 0, conf = 0, t = 0;
+    while (t < 20) {                                   // 逃命 3.4 秒 ＋ 走回來的時間
+      const was = new Set(dust.filter(isC));
+      step(0.05); t += 0.05;
+      /* 一發核彈就把 3000 塊的金字塔打到剩不足 WRECK_AT，再 SWAP_WAIT 秒就自動換
+         下一座（實測第 5.8 秒 phase 變 clear，人全被推到 arenaR×0.78 去等整地，
+         這一條就變成「量整地」而不是「量慶祝」了）。把換場的計時壓住，
+         讓場子留在 wreck：這一條要看的是嚇跑之後會不會回去跳。 */
+      swapWait = 0;
+      hail = Math.max(hail, workers.filter(w => w.hail).length);
+      for (const d of dust.filter(isC)) if (!was.has(d)) conf++;
+    }
+    const r = { jumping, fled, still, hail, conf, n: workers.length, ph: phase,
+                back: workers.filter(w => Math.hypot(w.x, w.z) < siteR + IDLE_FAR + 4).length,
+                far: +Math.max(...workers.map(w => Math.hypot(w.x, w.z))).toFixed(1) };
+    cleanTools(); dust.length = 0;
+    return r;
+  });
+  ok('慶祝中被核彈嚇跑就算散場，不會跑回去再跳一輪',
+     cheerFlee.jumping > 15 && cheerFlee.fled === cheerFlee.n &&
+     cheerFlee.still === 0 && cheerFlee.hail === 0 && cheerFlee.conf === 0 &&
+     (cheerFlee.ph === 'done' || cheerFlee.ph === 'wreck'),
+     '嚇跑前 ' + cheerFlee.jumping + '/' + cheerFlee.n + ' 人在跳；下令那一刻 ' +
+     cheerFlee.fled + ' 人起跑、' + cheerFlee.still + ' 人的慶祝窗口還開著；' +
+     '之後 20 秒最多 ' + cheerFlee.hail + ' 人舉手、彩帶噴了 ' + cheerFlee.conf + ' 片');
+  ok('嚇跑之後回建築外圈閒晃，不是留在跑出去的地方',
+     cheerFlee.back >= cheerFlee.n * 0.7,
+     cheerFlee.back + '/' + cheerFlee.n + ' 人回到外圈那一環（半徑 ' +
+     '建築 + 9 + 4 以內），最遠的還在 ' + cheerFlee.far);
+
+  /* ② 慶祝的鐘不會被中斷「暫停」：被炸飛的人落地後只補完剩下的那一段，不是重新開始
+     （改之前 tossWorker 也把 w.cheer 歸零，那個人會在別人都散場之後自己跳滿七秒）。
+     鐘擺在 updWorker 開頭、所有 return 之前就是為了這個：被炸飛、被震倒、在燒的那幾秒
+     照算，慶祝是「完工後那一段時間」不是「站在圈上跳了七秒」。 */
+  const cheerHit = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 3000; setWorkerCount(20); startBuild(true);
+    for (const w of workers) {
+      const a = Math.random() * Math.PI * 2, d = siteR + rr(3, 9);
+      w.x = Math.cos(a) * d; w.z = Math.sin(a) * d;
+    }
+    completeNow();
+    let t = 0;
+    for (let i = 0; i < 60; i++) { step(0.05); t += 0.05; }
+    const w0 = workers[0], w1 = workers[1];
+    tossWorker(w0, 7, 10, 0, 0);                       // 一個人被炸飛（不是被嚇跑）
+    let air = 0, last = -1;
+    const end = CHEER_T + CHEER_OUT + 8;
+    while (t < end) {
+      step(0.05); t += 0.05;
+      if (w0.air) air += 0.05;
+      if (workers.some(w => w.hail)) last = +t.toFixed(2);
+    }
+    const r = { air: +air.toFixed(2), gap: +(w1.cheer - w0.cheer).toFixed(3), last,
+                win: +(CHEER_T + CHEER_OUT).toFixed(1) };
+    cleanTools();
+    return r;
+  });
+  ok('被炸飛的人不會把慶祝重新開始，窗口過了全場都不再跳',
+     cheerHit.air > 0.5 && Math.abs(cheerHit.gap) < 0.06 &&
+     cheerHit.last > 0 && cheerHit.last <= cheerHit.win + 0.2,
+     '被炸飛的那個人在空中 ' + cheerHit.air + ' 秒，他的慶祝鐘跟沒被炸的差 ' +
+     cheerHit.gap + ' 秒（改之前是歸零重來）；最後一次有人舉手是完工後第 ' +
+     cheerHit.last + ' 秒（窗口 ' + cheerHit.win + ' 秒）');
+
   /* ══════════ 工程師 ══════════ */
   head('工程師');
   const engr = await page.evaluate(() => {
@@ -6233,14 +6322,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     const hands = held.filter(o => workers[o.w].load.length || workers[o.w].carry).length;
     for (let i = 0; i < 40; i++) step(0.05);
-    const landed = held.filter(o => blocks[o.b].st === 0).length;   // FREE＝回到散落佇列
-    return { n: held.length, stuck, holder, slot, hands, landed };
+    /* 兩秒後的下場。**「回到散落佇列」不等於「還躺在地上」**：這兩秒場上有 20 個人在
+       工作，掉在他們腳邊的積木很快就被撿走了——而撿得起來本身就是「真的變回散料」的
+       證據（認領走的一律是 FREE 的那些）。所以分兩堆數：躺在地上的，以及已經被重新
+       撿走／重新丟向格子的。
+       只驗「全部躺在地上」會紅得很隨機：同條件抽 20 輪（每輪 12～28 塊在手上），
+       全部躺著的只有 2 輪，最差的一輪只剩 6/13 躺著；而「躺著 ＋ 重新進了工序」
+       20 輪都是 100%（重新被撿走 62 塊、重新被丟向格子 8 塊，沒有第三種下場）。 */
+    const landed = held.filter(o => blocks[o.b].st === 0).length;   // FREE＝躺在地上的散料
+    const again = held.filter(o => {
+      const b = blocks[o.b];
+      if (b.st === 0) return false;
+      // 被人重新撿走了（在某個人的工作單上），或是已經被重新丟向某個格子
+      return workers.some(w => w.load.some(j => j.b === o.b)) || (b.st === 2 && b.slot >= 0);
+    }).length;
+    return { n: held.length, stuck, holder, slot, hands, landed, again };
   });
   ok('被炸到時手上的積木會脫手、掉回散落佇列',
      unpar.n > 0 && unpar.stuck === 0 && unpar.holder === 0 && unpar.slot === 0 &&
-     unpar.hands === 0 && unpar.landed === unpar.n,
+     unpar.hands === 0 && unpar.landed + unpar.again === unpar.n,
      unpar.n + ' 塊在手上：黏著不放的 ' + unpar.stuck + ' 塊、還記著持有人的 ' + unpar.holder +
-     ' 塊、還占著格子的 ' + unpar.slot + ' 塊；落地變回散料的 ' + unpar.landed + ' 塊');
+     ' 塊、還占著格子的 ' + unpar.slot + ' 塊；兩秒後躺在地上的 ' + unpar.landed +
+     ' 塊、被重新撿走／丟向格子的 ' + unpar.again + ' 塊');
 
   /* ══════════ 逃命 ══════════ */
   head('逃命');

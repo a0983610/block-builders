@@ -10,7 +10,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.119.0';
+const VERSION = '1.120.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1214,7 +1214,9 @@ function tossWorker(w, vx, vy, vz, lit) {
   releaseWorker(w);
   const sp = Math.hypot(vx, vz);
   if (sp > W_TOSS_MAX) { const k = W_TOSS_MAX / sp; vx *= k; vz *= k; }
-  w.air = 1; w.fall = 0; w.cheer = 0; w.pause = 0; w.gait = 0; w.flee = 0;
+  /* 慶祝的鐘不歸零（v1.120）：被炸飛的人落地後只補完剩下的那一段，
+     不是重新開始跳七秒（見 updWorker 開頭那段鐘）。 */
+  w.air = 1; w.fall = 0; w.pause = 0; w.gait = 0; w.flee = 0;
   w.vx = vx; w.vy = vy; w.vz = vz;
   w.spin = rr(5, 12) * (Math.random() < 0.5 ? -1 : 1);
   if (lit) w.lit = 1;
@@ -1630,7 +1632,15 @@ function startFlee(w, d) {
   // 剛好站在爆心正上方就隨便挑一邊
   const away = dx * dx + dz * dz < 1e-6 ? rr(0, Math.PI * 2) : Math.atan2(dx, dz);
   w.fdir = away + rr(-FLEE_SKEW, FLEE_SKEW);
-  w.cheer = 0; w.pause = 0;
+  /* 慶祝中被嚇跑就算散場了（v1.120，使用者：「有觀察到小人慶祝 被核彈嚇跑 然後又跑回去
+     慶祝，慶祝應該只要完工後一次就好」）。這裡本來是把 w.cheer 歸零，等於一發核彈把整場
+     慶祝**重新開始**：核彈的逃命只有 3.4 秒（NUKE_WAIT + NUKE_FALL + FLEE_TAIL）、
+     魔法陣 6.6 秒，兩個都比七秒的慶祝短，所以人跑回來時窗口還開著，又站一圈跳滿七秒。
+     現在改成把窗口直接推到底，並且先挑好回頭要去閒晃的點（同 v1.96 散場那一段的理由：
+     不挑的話沿用的是完工時留下的目標）。 */
+  if (idlePhase()) { w.cheer = CHEER_T + w.cout; idleSpot(w); }
+  else w.cheer = 0;
+  w.pause = 0;
 }
 /* 逃命這一幀。跑出安全距離就停下來面向爆心看——一路跑到地圖邊緣看起來像在鬧脾氣，
    而且六秒的魔法陣夠所有人跑出兩倍半徑那麼遠。 */
@@ -1871,7 +1881,10 @@ function assignSpots() {
     const ca = cr < 0.001 ? w.spot : Math.atan2(w.z, w.x);
     const dA = ((((w.spot - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
     w.crun = Math.max(WALK, Math.hypot(dA * cr, R - cr) / CHEER_IN);
-    w.cout = rr(0, CHEER_OUT);       // 散場錯開多久（見 CHEER_OUT）
+    /* 散場錯開多久（見 CHEER_OUT）。**已經散場的人不重抽**（v1.120）：這裡在慶祝中
+       加減人也會跑一次，抽到比較大的延遲就等於把已經關掉的窗口重新打開，那個人會
+       走回圈上再跳一下（同「慶祝只有完工後那一次」那條規則）。 */
+    if (cheerOn(w)) w.cout = rr(0, CHEER_OUT);
     /* 彩帶的節拍要錯開，不然一圈人同一幀噴（第一束是「站定那一刻」，
        而近的人幾乎同時站定）。第一束隨機提前一點，之後每 CONF_GAP 秒一束。 */
     w.cft = rr(0, CONF_GAP * 0.8);
@@ -1888,6 +1901,24 @@ function updWorker(w, wi, dt) {
      被炸飛、跌倒、換場都是 return 出去的，不預設收的話那個人躺在地上還舉著杖。 */
   if (w.cast > 0) w.cast = Math.max(0, w.cast - dt * CAST_DOWN);
   if (w.chatCd > 0) w.chatCd -= dt;
+  /* 慶祝的鐘（v1.120）。擺在**所有 return 之前**：完工那一刻起就一直在走，被炸飛、
+     被震倒、被嚇跑、被點著的那幾秒也照算——慶祝是「完工後那一段時間」，不是「站在圈上
+     跳了七秒」（使用者：「慶祝應該只要完工後一次就好」）。以前是掛在下面那條慶祝分支裡
+     加的，那幾條路徑一 return 出去鐘就停了：一個人被炸飛兩秒，就會在別人都散場之後
+     自己一個人補跳兩秒。 */
+  if (idlePhase()) {
+    const was = w.cheer;
+    w.cheer += dt;
+    /* 窗口到期的那一幀要做兩件事，人在逃命／在燒的時候到期也要做（那時候下面那條
+       慶祝分支走不到）：交談先進冷卻（v1.60：圈上兩個人只隔 CHEER_GAP 1.9 格，
+       不推冷卻的話散場那一瞬間整圈人同時配對），以及先挑好下一個閒晃點
+       （v1.96：不挑的話沿用的是完工時留下的 (0, 0)，strollTo 會把它推到外圈，
+       於是整圈人先一起往內走、同時抵達、再同時往外散）。 */
+    if (was < CHEER_T + w.cout && !cheerOn(w)) {
+      w.chatCd = rr(CHAT_CD, CHAT_CD * 2);
+      idleSpot(w);
+    }
+  }
   /* 被吹飛／點著／推倒／要逃命，或是換場要清工地了——聊天一律中斷。
      蓋完的那一刻也中斷：慶祝要全員到齊，不然聊到一半的那兩個會晚五秒才入圈。 */
   if (w.chat > 0 && (w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
@@ -1962,8 +1993,6 @@ function updWorker(w, wi, dt) {
   }
 
   if (idlePhase()) {                                  // 蓋完了，圍成一圈慶祝
-    const was = w.cheer;
-    w.cheer += dt;
     if (cheerOn(w)) {
       /* 先各自跑到自己那一格（等分一圈，所以站得開），到位就轉身面向建築
          原地跳。跳的相位照編號錯開 0.09 秒，一圈看過去是一道波浪，
@@ -1982,16 +2011,7 @@ function updWorker(w, wi, dt) {
         w.y += (0 - w.y) * Math.min(1, dt * 6);
       }
     } else {
-      /* 慶祝完的那一刻，交談先進冷卻（v1.60）。圈上兩個人只隔 CHEER_GAP 1.9 格，
-         比「多近才聊得起來」的 2.6 還近——不推冷卻的話散場那一瞬間整圈人同時配對，
-         剛跳完就變成一圈人兩兩站著講話。 */
-      if (was < CHEER_T + w.cout) {
-        w.chatCd = rr(CHAT_CD, CHAT_CD * 2);
-        /* 起腳那一刻就先挑好下一個閒晃點（v1.96）。不挑的話沿用的是上一輪留下的
-           目標——完工時那個是 (0, 0)，strollTo 會把落在建築裡的目標推到外圈，
-           於是整圈人先一起往內走 1.1 格、同時抵達、再同時往外散（實測 20/20）。 */
-        idleSpot(w);
-      }
+      // 到期那一幀要做的事（交談冷卻、挑閒晃點）在這個函式開頭那段鐘裡（v1.120）
       w.y += (0 - w.y) * Math.min(1, dt * 6);
       // 離隊去蓋自己家的人走那條路（v1.97）；其餘的在建築外圈那一環閒晃
       if (w.hm >= 0) updHome(w, wi, dt);
