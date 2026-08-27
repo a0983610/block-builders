@@ -7893,9 +7893,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      v1.116 把每秒啃掉的比例拉到 0.35、速度再乘 1.5 之後，同一趟少的比例往上跑：
      新天鵝堡 3000 塊跑 12 輪是 15.8～38.1%（平均 27.4%），另一組 3 輪抽到過 43.3%。
      所以下緣從 0.5 放到 0.45（＝最多啃掉 55%）：留 12 個百分點給那條隨機漫步的路線，
-     但「整段刨掉」（八成以上）還是會被抓出來。 */
+     但「整段刨掉」（八成以上）還是會被抓出來。
+     v1.123 拉到 0.46 之後，照這一條的參數（新天鵝堡 3000、起點 siteR×0.6）跑 16 輪是
+     13.4～58.0%、平均 31.9%——平均只多四個百分點，但尾巴那幾輪（漏斗賴在建築上沒竄開）
+     踩到 54.4／57.2／58.0，剛好把 55% 那條頂破。所以下緣再放到 0.35（＝最多啃掉 65%），
+     留 15 個百分點的餘裕；「整段刨掉」那條界線仍然守著。 */
   ok('龍捲風掃過會吸走一部分，但不會把建築整段刨掉',
-     twR.after < twR.before * 0.97 && twR.after > twR.before * 0.45,
+     twR.after < twR.before * 0.97 && twR.after > twR.before * 0.35,
      'SET ' + twR.before + ' → ' + twR.after +
      '（少了 ' + ((1 - twR.after / twR.before) * 100).toFixed(0) + '%）');
   ok('龍捲風結束後積木都會落地', twR.gone && twR.flying === 0, '還在飛 ' + twR.flying + ' 塊');
@@ -7904,8 +7908,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      v1.62～v1.86 是「同一道對同一塊只抽一次」（抽過就用 b.twSkip 記著），所以停在
      建築上啃完那一口就再也不動它——那時候量到的是「整段壽命下來就是兩成」。
      這裡把一道釘在建築上不讓它走，看每一秒累計吸走幾成：要一路往上長，
-     而且貼著 1−(1−TW_TAKE)^t（v1.116 的 0.35：一秒 0.350、兩秒 0.578、三秒 0.725；
-     v1.115 的 0.2 是 0.200／0.360／0.488）。
+     而且貼著 1−(1−TW_TAKE)^t（v1.123 的 0.46：一秒 0.460、兩秒 0.708、三秒 0.843；
+     v1.116 的 0.35 是 0.350／0.578／0.725、v1.115 的 0.2 是 0.200／0.360／0.488）。
      釘的方式是每幀把座標推回去（stepTwist 每幀都會重算速度，改速度沒用）。
      藍圖指定新天鵝堡：分母要夠大抽樣誤差才壓得下去，隨機藍圖抽到中央是空的
      （金門大橋）會一塊都選不到，量到的就是 0/0。 */
@@ -7943,7 +7947,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 容許 ±0.06：分母幾百塊，抽樣誤差本來就有兩三個百分點。v1.116 起垮塌在量的時候
      是關掉的（見上面），所以不必再為「連帶垮下來的」放寬上緣——實測三秒 74.8%／70.4%
      （理論 72.5%），兩個 dt 都在 ±0.03 以內。 */
-  ok('龍捲風罩著不走就一路啃下去，每秒吸走三成半',
+  ok('龍捲風罩著不走就一路啃下去，每秒吸走四成六',
      twTake.n > 200 && twTake.got.length === 3 &&
      twTake.got.every((v, i) => v > twTake.want[i] - 0.06 && v < twTake.want[i] + 0.10),
      '釘在原地：範圍內 ' + twTake.n + ' 塊，每秒累計吸走 ' +
@@ -12714,12 +12718,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         const v = Math.abs(d[i]); if (v > peak) peak = v; if (v >= 0.999) over++;
         s += d[i] * d[i];
       }
-      return { rms: Math.sqrt(s / d.length), peak, over };
+      /* 20 毫秒一格的包絡。有些音要驗的是「音量怎麼走」而不是總量——
+         風聲那條就是：舊版一開聲最大、之後一路弱下去（爆炸的包絡），
+         新版要先吹起來再撐著。單看 rms 兩者可以一樣大。 */
+      const W = Math.floor(SR * 0.02), env = [];
+      for (let i = 0; i + W <= d.length; i += W) {
+        let q = 0;
+        for (let j = 0; j < W; j++) q += d[i + j] * d[i + j];
+        env.push(Math.sqrt(q / W));
+      }
+      return { rms: Math.sqrt(s / d.length), peak, over, env };
     };
     const one = async fn => {
       const all = await render(fn), hi = await render(fn, 'hi'), body = await render(fn, 'body');
+      // 某一段時間內的平均音量（秒）
+      const win = (a, b) => {
+        const q = all.env.slice(Math.round(a / 0.02), Math.round(b / 0.02));
+        return q.reduce((x, y) => x + y, 0) / q.length;
+      };
       return { rms: +all.rms.toFixed(4), peak: +all.peak.toFixed(3), over: all.over,
-               hiPct: +(hi.rms / all.rms * 100).toFixed(1), body: +body.rms.toFixed(4) };
+               hiPct: +(hi.rms / all.rms * 100).toFixed(1), body: +body.rms.toFixed(4),
+               hold: +(win(0.55, 0.75) / win(0.02, 0.2)).toFixed(2) };
     };
     const r = { nuke: await one(() => sndBoom(30)), bomb: await one(() => sndBoom(BOMB_R)),
                 smash: await one(() => sndSmash()),
@@ -12733,7 +12752,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 placeOld: await one(() => tone(420, 0.06, 'square', 0.045)),
                 placeTop: await one(() => { placedCnt = bp.slots.length; sndPlace(); }),
                 placeOldTop: await one(() => tone(1040, 0.06, 'square', 0.045)),
-                wind: await one(() => sndWind()) };
+                wind: await one(() => sndWind()),
+                /* 舊的風聲就地重建當對照組（v1.62.3～v1.122 那一版）：
+                   「像不像風」是相對的，沒有對照組就只是在背一組絕對數字。 */
+                windOld: await one(() => {
+                  noise(WIND_DUR, 0.17, 520);
+                  tone(82, WIND_DUR * 0.9, 'sawtooth', 0.035, 0.75);
+                }) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
   });
@@ -12858,6 +12883,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      windLoop.last >= windLoop.tail && windLoop.dur - windLoop.last <= 1.1,
      '最後一段在還剩 ' + windLoop.last + ' 秒時起頭，所以它收乾淨的時間點在漏斗散掉後 ' +
      (windLoop.dur - windLoop.last).toFixed(2) + ' 秒（上限 1.1）');
+
+  /* 風聲的音色（v1.123，使用者：「龍捲風音效調整 目前沒有風聲的感覺」）。
+     兩件事分開驗，各拿舊版當對照：
+     ① **包絡**：舊版走的是 noise() 自帶的線性衰減——一開聲最大、之後一路弱下去，
+        那是「爆」的包絡不是「吹」的。新版先吹起來再撐著，所以中段要比起手大。
+     ② **頻段**：舊版低通切 520，八成能量悶在 250Hz 以下（小喇叭根本推不出來）；
+        風的呼嘯在 250～900 那一段。搬過去的同時不能變成嘶聲，所以高頻也要守著。
+     總音量刻意對齊舊版：能量搬到聽得見的那一段之後，同樣的 rms 會大不少。 */
+  const bodyShare = m => +(m.body / m.rms * 100).toFixed(0);
+  ok('風聲是「一直在吹」，不是「呼」一聲就散',
+     snd.wind.hold > 2 && snd.windOld.hold < 1,
+     '中段音量 ÷ 起手音量：舊版 ' + snd.windOld.hold + '（一路弱下去）→ 新版 ' +
+     snd.wind.hold + '（吹起來再撐著）');
+  ok('風聲從悶在低頻搬到呼嘯的那一段，也沒有變成嘶聲',
+     bodyShare(snd.wind) < bodyShare(snd.windOld) - 10 && snd.wind.hiPct < 22 &&
+     snd.wind.rms < snd.windOld.rms * 1.35,
+     '80–250Hz 占比 ' + bodyShare(snd.windOld) + '% → ' + bodyShare(snd.wind) +
+     '%、2kHz 以上 ' + snd.windOld.hiPct + '% → ' + snd.wind.hiPct +
+     '%、總 rms ' + snd.windOld.rms + ' → ' + snd.wind.rms);
 
   ok('核彈打在建築上那一幀不會破表',
      snd.nukeHit.peak < 0.25 && snd.nukeHit.over === 0,

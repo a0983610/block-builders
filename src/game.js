@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.123.0';
+const VERSION = '1.124.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -161,10 +161,56 @@ function sndDone() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => to
 function sndFall() { tone(rr(170, 245), 0.16, 'square', 0.05, 0.5, 'fall'); }
 function sndSwing() { tone(160, 0.3, 'sine', 0.06, 3.2); }
 /* 龍捲風的風聲。v1.62.3 之前只在出場放**一聲** 1.6 秒的噪音，而它現在活 10 秒——
-   使用者的說法是「好像沒有音效」，其實是響完之後有八秒多是靜的。
-   改成整段一直重放（見 stepTwist 的 w.snd），並且加一支低頻的呼嘯：
-   純噪音低通切在 480，小喇叭放出來很薄，配一支往下滑的鋸齒才聽得出是「一股風在轉」。 */
-function sndWind() { noise(WIND_DUR, 0.17, 520); tone(82, WIND_DUR * 0.9, 'sawtooth', 0.035, 0.75); }
+   使用者的說法是「好像沒有音效」，其實是響完之後有八秒多是靜的，
+   所以改成整段一直重放（見 stepTwist 的 w.snd）。
+
+   v1.123 換掉音色（使用者：「龍捲風音效調整 目前沒有風聲的感覺」）。
+   舊的是 `noise(1.9, 0.17, 520)` ＋ 一支往下滑的鋸齒，那是「呼」一聲的氣爆不是
+   一股在吹的風，三件事各差一層：
+   ① **包絡**：noise() 的取樣自帶 (1−i/n) 的線性衰減，一開聲就是最大、之後一路弱下去
+      ——那是爆炸的包絡。這裡自己配一份等幅的噪音，音量交給 gain 走
+      「吹起來 → 撐著 → 鬆掉」，整段才都在響。
+   ② **濾波**：低通只留下悶悶的一坨低頻。風的招牌是**一段頻帶在響**，所以換成帶通，
+      Q 拉到 WIND_Q（帶通要有峰值才聽得出「音高」，那就是呼嘯聲）。
+   ③ **會動**：中心頻率用一支 WIND_LFO Hz 的正弦上下掃 WIND_HZ±WIND_SWEEP。
+      風忽強忽弱不是音量在變，是那個峰在移動；少了這一層就只是一段固定的嘶聲。
+   ④ 帶通後面再補一支低通（WIND_CUT）：帶通的裙邊只有 6dB/oct，2kHz 以上還留著
+      一大截，量過占 25.2% 的能量——那是嘶不是呼嘯（舊版低通切 520，只有 14.5%）。
+   低頻那支留著——帶通之後 150Hz 以下幾乎沒了，小喇叭放出來會只剩嘶聲——
+   但不再往下滑：滑音是「東西從旁邊飛過去」的都卜勒，一直在原地轉的風不該有。 */
+const WIND_HZ = 430, WIND_SWEEP = 250, WIND_LFO = 0.55, WIND_Q = 4.5, WIND_CUT = 1500;
+/* 音量。舊版的能量八成在 250Hz 以下（小喇叭推不太出來），新版搬到 250～900 那一段，
+   同樣的 rms 聽起來會大不少——所以總 rms 對齊舊版（量到 0.0105），不是照著 gain 抄。 */
+const WIND_VOL = 0.33;
+function sndWind() {
+  const c = audio(); if (!c || muted) return;
+  if (!voiceOK('wind', c)) return;
+  const n = Math.floor(c.sampleRate * WIND_DUR);
+  const buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;    // 等幅：包絡交給下面的 gain
+  const src = c.createBufferSource(); src.buffer = buf;
+  const bq = c.createBiquadFilter();
+  bq.type = 'bandpass'; bq.frequency.value = WIND_HZ; bq.Q.value = WIND_Q;
+  const lfo = c.createOscillator(), amt = c.createGain();
+  lfo.type = 'sine'; lfo.frequency.value = WIND_LFO; amt.gain.value = WIND_SWEEP;
+  lfo.connect(amt).connect(bq.frequency);
+  const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = WIND_CUT;
+  /* 起音與收音各占「兩段重疊的那一截」（WIND_DUR − WIND_GAP，見 stepTwist 的 w.snd）：
+     前一段開始收的那一刻正好是下一段開始吹的那一刻，兩條斜線剛好交叉。
+     **一定要用線性斜坡不能用指數**：指數在前三分之一就掉掉九成，實測接縫處只剩
+     「撐著」時的 4%（0.0013 對 0.031），聽起來就是「呼、呼、呼」三聲分開的；
+     線性交叉最深只掉到 √½（−3dB），那個起伏本來就是風該有的陣。 */
+  const fade = Math.max(0.15, WIND_DUR - WIND_GAP);
+  const g = c.createGain(), t = c.currentTime;
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(WIND_VOL, t + fade);
+  g.gain.setValueAtTime(WIND_VOL, t + WIND_DUR - fade);
+  g.gain.linearRampToValueAtTime(0, t + WIND_DUR);
+  src.connect(bq).connect(lp).connect(g).connect(c.destination);
+  lfo.start(t); lfo.stop(t + WIND_DUR);
+  src.start(t); src.stop(t + WIND_DUR);
+  tone(74, WIND_DUR * 0.92, 'sawtooth', 0.03, 0, 'windLow', fade);
+}
 /* 點火：短促的「噗」一聲。只在點下去那一刻響，每塊都響會變成一片白噪音 */
 function sndFire() { noise(0.55, 0.16, 1600); tone(150, 0.4, 'sawtooth', 0.05, 2.4); }
 // 倒水：低通壓得比火低（水聲沒有火那種高頻的嘶），再墊一顆往下滑的低音當「灌下去」
