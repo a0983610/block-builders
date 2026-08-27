@@ -7214,6 +7214,65 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'SET ' + ballR.before + ' → ' + ballR.after + '，撞飛 ' + ballR.hit + ' 塊');
   ok('滾不動之後會停下消失', ballR.gone);
 
+  /* 撞完要偏一下方向（v1.123，使用者：「水平移動的碰撞參考 天降鐵球 也要計算碰撞後
+     偏移方向」）。用**吉薩金字塔 ＋ 自己組的球**量：金字塔對 z=0 左右對稱，
+     球也不走 launchBall（那條會加 ±BALL_SPREAD 的手感偏差），所以整組是可重現的
+     ——同一個位移丟四趟，轉出來的角度到小數點後一位都一樣。
+     三件事：
+     ① 擦到哪一邊就往**反邊**偏（法線是「撞到的積木指向球心」），左右兩組正負相反、
+        大小對稱。
+     ② **從正中央鑽過去不會歪**：球埋在實心裡的時候四周的積木是均勻的，
+        垂直於行進方向的那一半互相抵銷。這一條同時擋住「把整個法線加上去」那種寫法
+        ——那樣正面撞牆會被當成煞車，還會把球彈飛。
+     ③ 位移 4（還在塔身裡面）也一樣不歪：會不會偏看的是「有沒有擦到邊」，
+        不是「離中心多遠」。
+     金字塔 3000 塊的半寬是 12，所以 9 剛好擦在斜面上、13 只碰得到牆角。 */
+  const ballVeer = await page.evaluate(() => {
+    const shot = off => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+      // 自己組一顆：方向剛好是 +x，不吃 launchBall 的 ±BALL_SPREAD
+      balls = [{ x: -70, y: BALL_R, z: off, vx: 34, vz: 0, vy: 0,
+                 r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 2, ax: 1, az: 0 }];
+      let a = 0, hit = 0;
+      for (let i = 0; i < 500 && balls; i++) {
+        step(0.03);
+        if (!balls) break;
+        a = Math.atan2(balls[0].vz, balls[0].vx); hit = balls[0].hit;
+      }
+      return { turn: +(a * 180 / Math.PI).toFixed(1), hit };
+    };
+    const r = { mid: shot(0), in4: shot(4), right: shot(9), left: shot(-9),
+                half: Math.max(...bp.slots.map(q => Math.abs(q.z))),
+                veer: BALL_VEER, brake: BALL_BRAKE, min: BALL_BRAKE_MIN };
+    cleanTools();
+    return r;
+  });
+  ok('保齡球擦過建築側面會被推向外側，左右對稱',
+     ballVeer.right.turn > 5 && ballVeer.left.turn < -5 &&
+     Math.abs(ballVeer.right.turn + ballVeer.left.turn) < 3 &&
+     ballVeer.right.hit > 50,
+     '擦右邊轉 ' + ballVeer.right.turn + '°、擦左邊 ' + ballVeer.left.turn +
+     '°（各撞掉 ' + ballVeer.right.hit + '／' + ballVeer.left.hit +
+     ' 塊，塔身半寬 ' + ballVeer.half + '）');
+  ok('從實心裡面鑽過去不會被推歪',
+     Math.abs(ballVeer.mid.turn) < 1 && Math.abs(ballVeer.in4.turn) < 1 &&
+     ballVeer.mid.hit > 200,
+     '正中央轉 ' + ballVeer.mid.turn + '°、偏 4 格轉 ' + ballVeer.in4.turn +
+     '°（各撞掉 ' + ballVeer.mid.hit + '／' + ballVeer.in4.hit + ' 塊）');
+  /* 「稍微降低碰撞後動能減弱的幅度」（v1.123 使用者指定）。這一條直接比對兩條公式：
+     行為那一面已經被上面那幾趟與〈空場上滾得完整個工地那麼遠〉守著，
+     而「有沒有真的放鬆、又沒有放到停不下來」是這兩個常數自己的事。 */
+  const ballBrake = [10, 30, 60, 120].map(n => ({
+    n,
+    now: +Math.max(ballVeer.min, 1 - n * ballVeer.brake).toFixed(3),
+    old: +Math.max(0.3, 1 - n * 0.006).toFixed(3)
+  }));
+  ok('撞完掉的速度比以前少，但還是會停下來',
+     ballBrake.every(b => b.now > b.old && b.now < 1),
+     ballBrake.map(b => '撞 ' + b.n + ' 塊保留 ' + b.old + ' → ' + b.now).join('、'));
+
   /* 方向：第一點 → 第二點。八個不同的方向各丟一發，每一發都要對得上自己那個方向，
      而且只差在 ±BALL_SPREAD 的手感偏差裡（本來是「一律朝工地中心」）。 */
   const ballAim = await page.evaluate(() => {
