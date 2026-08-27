@@ -414,7 +414,13 @@ function renderTools() {
     b.addEventListener('click', () => {
       if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return; }
       tool = t.id; aim = null; renderTools();       // 換道具就把瞄一半的第一點收掉
-      $('toolbox').classList.remove('open');       // 選好就收起來，不要一直擋著畫面
+      /* 選好就收起來，不要一直擋著畫面。兩個 class 都要動（v1.123，使用者：
+         「選擇工具點擊後 就可以把工具清單收起來 目前要把滑鼠移開才會收」）：
+         只拿掉 .open 的話 CSS 那條 `#toolbox:hover` 還按著它——指標就停在剛點的
+         那顆按鈕上，選單原地不動，非得把滑鼠移開才收。.shut 就是「這次先別展開」，
+         等指標離開小窗再撤掉（見下面的 pointerleave）。 */
+      $('toolbox').classList.remove('open');
+      $('toolbox').classList.add('shut');
       $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移、ZX 升降、C 復位　｜　滾輪縮放　｜　點小人會跌倒';
     });
     box.appendChild(b);
@@ -712,6 +718,14 @@ function boot() {
   document.addEventListener('pointerdown', e => {
     if (!$('toolbox').contains(e.target)) $('toolbox').classList.remove('open');
   });
+  /* 選完之後掛上的 .shut（見 renderTools）要在「滑鼠再指回小窗」時撤掉，
+     不然指回來也叫不出選單。聽 pointerover（會冒泡）而不是 pointerleave／pointerenter：
+     選單是被 CSS 藏起來的，指標底下那顆按鈕當場消失，而 Chrome 這時只補一發
+     「進到畫布」的 pointerover，**不補** #toolbox 的 pointerleave——實測整段
+     只有 `pointerover target=canvas`，一個 leave 都沒有。少了那一發 leave，
+     它就一直記著「指標還在 #toolbox 裡」，之後再指回來連 pointerenter 也不會響。
+     pointerover 是每次越過元素邊界都補一發，所以指回小窗那一下一定收得到。 */
+  $('toolbox').addEventListener('pointerover', () => $('toolbox').classList.remove('shut'));
   $('badgeBtn').addEventListener('click', () => {
     renderBadges();
     $('saveMsg').className = '';              // 上一次匯入的結果不要留到下一次開啟

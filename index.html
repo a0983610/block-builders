@@ -95,14 +95,18 @@
   #toolNow .k{font-size:19px;line-height:1.1}
   #toolNow .n{font-size:12.5px;font-weight:700}
   #toolNow .c{font-size:9px;opacity:.4}
-  #toolbox:hover #toolNow,#toolbox.open #toolNow{border-color:var(--accent)}
+  #toolbox:hover:not(.shut) #toolNow,#toolbox.open #toolNow{border-color:var(--accent)}
   /* padding 那一段是刻意留的「橋」：小窗與選單之間不能有真空的縫，
      不然滑鼠往下移到縫上就 mouseleave，選單會在半路收掉。 */
   #toolMenu{
     position:absolute;top:100%;left:50%;transform:translateX(-50%);padding-top:8px;
     opacity:0;visibility:hidden;transition:opacity .12s;
   }
-  #toolbox:hover #toolMenu,#toolbox.open #toolMenu{opacity:1;visibility:visible}
+  /* .shut＝剛剛選好一把（v1.123，使用者：「選擇工具點擊後 就可以把工具清單收起來
+     目前要把滑鼠移開才會收」）。選完只把 .open 拿掉的話，:hover 還按著它——
+     指標本來就停在剛點的那顆按鈕上，選單等於原地不動。加一個「這次先別展開」的
+     旗標把 :hover 那條擋掉，滑鼠指回小窗時再撤掉（見 game-ui.js 的 pointerover）。 */
+  #toolbox:hover:not(.shut) #toolMenu,#toolbox.open #toolMenu{opacity:1;visibility:visible}
   /* 這裡不用 --panel（86% 半透明白）：選單底下常常剛好是操作提示那條深色藥丸，
      透上來會把字襯得看不清楚。其他卡片是靜態的所以透一點沒關係，這個是蓋在上面的選單。 */
   #tools{

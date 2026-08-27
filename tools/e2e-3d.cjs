@@ -7012,6 +7012,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   }));
   ok('選了哪把，小窗就換成哪把', picked.tool === 'tornado' && picked.cur === 'tornado' &&
      picked.label.indexOf('龍捲風') >= 0, '小窗寫著「' + picked.label + '」');
+  /* 選完就收，不必先把滑鼠移開（v1.123，使用者：「選擇工具點擊後 就可以把工具清單
+     收起來 目前要把滑鼠移開才會收」）。上面那一下 page.click 之後**指標還停在剛點的
+     那顆按鈕上**，這裡就在那個狀態下量：以前只拿掉 .open，CSS 的 `#toolbox:hover`
+     還按著選單，量到的會是 visible。
+     第二條是配套：收起來之後滑鼠指回小窗仍然要叫得出選單（.shut 沒被留著）。 */
+  const shutNow = await page.evaluate(() =>
+    getComputedStyle(document.getElementById('toolMenu')).visibility);
+  await page.mouse.move(900, 500);
+  await page.hover('#toolNow');
+  await page.waitForTimeout(200);
+  const reopen = await page.evaluate(() =>
+    getComputedStyle(document.getElementById('toolMenu')).visibility);
+  ok('選完工具，滑鼠不用移開選單就收起來', shutNow === 'hidden',
+     '點完那一瞬間選單是 ' + shutNow + '（指標還停在剛點的按鈕上）');
+  ok('收起來之後滑鼠再指回小窗還是叫得出選單', reopen === 'visible',
+     '移開再指回來：選單 ' + reopen);
 
   /* 觸控沒有 hover：小窗自己要能點開，點畫面別的地方要收起來 */
   const tapMenu = await page.evaluate(() => {
