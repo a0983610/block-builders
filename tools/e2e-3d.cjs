@@ -3439,10 +3439,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('施法時杖抬起來、杖頭往前傾、寶珠亮起來',
      wiz.orbUp > 0.25 && wiz.orbFwd > 0.1 && wiz.orbLum > 20,
      '寶珠抬高 ' + wiz.orbUp + '、往前 ' + wiz.orbFwd + ' 格，亮度 +' + wiz.orbLum);
-  /* ── 挖料的鏟子（v1.129，使用者：「先用鏟子挖出積木」）─────────────
+  /* ── 挖料的鏟子（v1.129，v1.130 照使用者給的照片重做）───────────────
      挖的那幾秒才拿在手上（w.dig > 0），其他時候那兩塊縮成 0，所以「多出來的部位」
-     剛好是柄與鏟面兩塊。鏟面要跟著那一鏟起落：插到底時鏟尖沒入地面、撬起來時抬高；
-     插到底那一下整個人往前傾（不傾的話是「舉著鏟子站著」，見 engine.js 的 DIG_LEAN）。 */
+     剛好是柄與鏟面兩塊。
+     照片上的用法是「人彎腰、柄近乎垂直、鏟面插在腳前面的地裡」，所以三件事一起驗：
+     鏟面**插到底時沒入地面**、撬起來時抬高、插到底那一下整個人往前傾；
+     而且鏟面要落在**腳前面一步以內**——v1.129 是把長柄舉在身體前方 1.18 格橫掃
+     （使用者：「鏟子的用法應該是這樣 動作調整一下」），那個距離現在是回歸。
+     這些值全是常數算出來的（沒有隨機），所以門檻抓得緊。 */
   const shovel = await page.evaluate(() => {
     const i = workers.findIndex(w => !w.mage && !w.mus);
     if (i < 0) return { skip: true };
@@ -3474,18 +3478,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              n0: off.filter(p => p.vis).length, n1: deep.filter(p => p.vis).length,
              panZ: pan < 0 ? -9 : deep[pan].z, panLo: pan < 0 ? 9 : deep[pan].lo,
              panUp: pan < 0 ? -9 : +(up[pan].y - deep[pan].y).toFixed(2),
-             lean: +(top(deep).z - top(off).z).toFixed(2) };
+             lean: +(top(deep).z - top(off).z).toFixed(2),
+             tip: +ENG.DIG_TIP[2].toFixed(2) };
   });
   ok('挖料時手上有鏟子，不挖的時候沒有',
      !shovel.skip && shovel.extra.length === 2 && shovel.n1 === shovel.n0 + 2 &&
-     shovel.pan >= 0 && shovel.panZ > 0.5,
+     shovel.pan >= 0,
      '沒在挖時畫 ' + shovel.n0 + ' 塊、挖的時候 ' + shovel.n1 +
-     ' 塊（多出柄與鏟面 ' + JSON.stringify(shovel.extra) + '）；鏟面在身體前方 ' +
-     shovel.panZ + ' 格');
-  ok('鏟面插到底時沒入地面、撬起來時抬高，整個人跟著往前傾',
-     !shovel.skip && shovel.panLo <= 0 && shovel.panUp > 0.25 && shovel.lean > 0.1,
-     '插到底：鏟面底在 y=' + shovel.panLo + '（0 是草皮）；撬起來抬高 ' +
-     shovel.panUp + ' 格；頭頂往前傾 ' + shovel.lean + ' 格');
+     ' 塊（多出柄與鏟面 ' + JSON.stringify(shovel.extra) + '）');
+  ok('鏟面插在腳前面一步以內的地裡，不是把柄舉在身體前方',
+     !shovel.skip && shovel.panZ > 0.3 && shovel.panZ < 0.8 && shovel.panLo <= 0 &&
+     Math.abs(shovel.tip - shovel.panZ) < 0.25,
+     '插到底時鏟面在腳前方 ' + shovel.panZ + ' 格（v1.129 是 1.18）、底面在 y=' +
+     shovel.panLo + '（0 是草皮）；規則那邊拿的鏟尖是 ' + shovel.tip + ' 格');
+  ok('鏟面撬起來時抬高，插到底那一下整個人往前傾',
+     !shovel.skip && shovel.panUp > 0.25 && shovel.lean > 0.1,
+     '撬起來抬高 ' + shovel.panUp + ' 格；頭頂往前傾 ' + shovel.lean + ' 格');
 
   /* 沒工可做就把杖收下來。連發之後這是唯一一種「站著卻沒在施法」的情況，
      所以要驗：把場上的建材全認走（等於沒料可搬），他該收杖站在原地等，不是舉著空杖。 */
@@ -4159,6 +4167,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        是土色的，而且是從地上蹦出去的（st === FLY，落地會自己轉正躺好，見 stepBlock）。 */
     const origDig = digBlock;
     let dug = 0, inHand = 0, notPop = 0, notDirt = 0;
+    /* 出土的位置要在**鏟尖插進去的那一點**，不是小人腳下（v1.130，使用者：
+       「積木出現的位置也要合理(目前看起來都固定在小人腳下)」）。
+       fwd 是沿著他面對的方向多遠、side 是左右偏多少（鏟子在正前方，所以該是 0）。
+       身高每個人不一樣（scale 1.3～1.8），鏟尖離腳底的距離跟著身高走，所以比的是比例。 */
+    let fwdMin = 9, fwdMax = -9, sideMax = 0;
     digBlock = (w, h) => {
       const r = origDig(w, h);
       if (r) {
@@ -4167,6 +4180,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (b.holder >= 0 || b.st === 1 || b.hh >= 0) inHand++;
         if (b.st !== 4 || b.rest) notPop++;
         if (Math.abs(b.tr - DIG_DIRT[0]) > 1e-9) notDirt++;
+        const dx = b.x - w.x, dz = b.z - w.z, k = ENG.DIG_TIP[2] * w.scale;
+        const fwd = (dx * Math.sin(w.a) + dz * Math.cos(w.a)) / k;
+        const side = (dx * Math.cos(w.a) - dz * Math.sin(w.a)) / k;
+        fwdMin = Math.min(fwdMin, fwd); fwdMax = Math.max(fwdMax, fwd);
+        sideMax = Math.max(sideMax, Math.abs(side));
       }
       return r;
     };
@@ -4257,6 +4275,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              far: +far.toFixed(1), back,
              marks1, dirt1, digs, carry, cap: HOME_CARRY,
              dug, inHand, notPop, notDirt, trip, toGrab, toIdle,
+             fwdMin: +fwdMin.toFixed(3), fwdMax: +fwdMax.toFixed(3),
+             sideMax: +sideMax.toFixed(3), tip: +ENG.DIG_TIP[2].toFixed(2),
              gap: gap === Infinity ? -1 : +gap.toFixed(1),
              tree: tree === Infinity ? -1 : +tree.toFixed(1),
              siteR: +siteR.toFixed(1), live: LIVE_R,
@@ -4292,6 +4312,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      home.dug > 100 && home.inHand === 0 && home.notPop === 0 && home.notDirt === 0,
      '挖了 ' + home.dug + ' 塊：直接到手上 ' + home.inHand + ' 塊、沒蹦出地面 ' +
      home.notPop + ' 塊、不是土色 ' + home.notDirt + ' 塊');
+  /* 出土的位置＝鏟尖插進去的那一點（v1.130）。每塊都要落在那裡：往前剛好一個
+     ENG.DIG_TIP（那是畫面那邊算鏟子姿勢時一起算出來的）、左右不偏。
+     v1.129 是寫死在 w.x／w.z（腳下），fwd 會是 0。 */
+  ok('挖出來的積木從鏟尖那一點冒出來，不是從腳下',
+     Math.abs(home.fwdMin - 1) < 0.01 && Math.abs(home.fwdMax - 1) < 0.01 &&
+     home.sideMax < 0.01,
+     '每一塊都在腳前方 ' + home.fwdMin + '～' + home.fwdMax +
+     ' 個鏟尖距離（鏟尖 ' + home.tip + ' × 身高）、左右偏 ' + home.sideMax);
   /* 一趟挖 1～3 塊、挖完走過去撿（使用者：「如果是普通小人要拿多個 可以挖1~3個再撿」）。
      trip 是「挖那一段結束時挖出了幾塊」的分布（實測 0:10／1:94／2:177／3:89）。
      0 塊與「挖完沒接上撿」都是少數、而且兩條都會退回重開一趟：

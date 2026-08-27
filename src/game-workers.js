@@ -2381,12 +2381,27 @@ function wreckHomes() {
   for (const h of homes.list) if (wrecked(h)) return dropHomes(q => !wrecked(q));
   return 0;
 }
-/* 挖土那一撮塵。用塵霧那個池子（跟彩帶一樣），顏色調成土色。 */
-function digPuff(w) {
+/* 鏟尖插進地面的那一點（v1.130，使用者：「積木出現的位置也要合理(目前看起來都固定在
+   小人腳下)」）。腳底往他面對的方向推 ENG.DIG_TIP 那麼遠——那個值是畫面那邊算鏟子姿勢
+   時一起算出來的（還沒乘身高，所以要乘 w.scale），跟法杖的 WAND_TIP 同一個做法：
+   兩邊各寫一份的話，鏟子插在腳前面、積木卻從腳底冒出來。
+   回傳同一個暫存物件（一鏟會叫好幾次）。 */
+const _dgp = { x: 0, z: 0 };
+function digPoint(w) {
+  const d = ENG.DIG_TIP[2] * (w.scale || 1);
+  _dgp.x = w.x + Math.sin(w.a) * d;
+  _dgp.z = w.z + Math.cos(w.a) * d;
+  return _dgp;
+}
+/* 挖土那一撮塵。用塵霧那個池子（跟彩帶一樣），顏色調成土色。
+   p 給了就從那一點噴（挖料是從鏟尖，見 digPoint），沒給就從腳下
+   （魔法師隔空把腳邊的地面拉出一塊，那一撮就該在他腳邊）。 */
+function digPuff(w, p) {
   if (dust.length > 460) return;
+  const px = p ? p.x : w.x, pz = p ? p.z : w.z;
   const a = Math.random() * Math.PI * 2, sp = rr(0.8, 2.6);
   dust.push({
-    x: w.x + rr(-0.3, 0.3), y: 0.2, z: w.z + rr(-0.3, 0.3),
+    x: px + rr(-0.3, 0.3), y: 0.2, z: pz + rr(-0.3, 0.3),
     vx: Math.cos(a) * sp, vy: rr(1.4, 3.4), vz: Math.sin(a) * sp,
     rx: Math.random() * 6, ry: Math.random() * 6,
     life: rr(0.35, 0.7), s: rr(0.14, 0.3),
@@ -2420,8 +2435,10 @@ function digSpot(w, h) {
    落地、彈跳、轉正都是碎料本來就有的那一套（stepBlock／stepSnap），這裡只給初速。 */
 function digBlock(w, h) {
   if (blocks.length >= ENG.MAXB) return false;           // 池子滿了（見 engine.js 的 MAXB）
+  const g = digPoint(w);                                 // 鏟尖插進地面的那一點
+  const gx = g.x, gz = g.z;
   const b = newBlock();
-  b.x = w.x; b.z = w.z; b.y = HB;
+  b.x = gx; b.z = gz; b.y = HB;
   b.r = b.tr = DIG_DIRT[0]; b.g = b.tg = DIG_DIRT[1]; b.b = b.tb = DIG_DIRT[2];
   /* 往**身體的側面**扔（w.a 是面向自己家的方向，± 90° 就是左右兩邊）：
      往前會扔進屋子的占地、往後會扔回工地那一側，那兩邊都可能撿不到；
@@ -2429,7 +2446,7 @@ function digBlock(w, h) {
      兩邊都試一次，挑落點不在別人家占地上的那一邊（落點是照初速估的，只用來挑邊）。 */
   let a = w.a + Math.PI / 2;
   for (let t = 0; t < 2; t++) {
-    const px = w.x + Math.sin(a) * DIG_TOSS, pz = w.z + Math.cos(a) * DIG_TOSS;
+    const px = gx + Math.sin(a) * DIG_TOSS, pz = gz + Math.cos(a) * DIG_TOSS;
     if (!homeAt(px, pz) && px * px + pz * pz >= (siteR + KEEP) ** 2) break;
     a -= Math.PI;
   }
@@ -2438,8 +2455,8 @@ function digBlock(w, h) {
   b.vx = Math.sin(a) * sp; b.vz = Math.cos(a) * sp; b.vy = rr(DIG_POP[0], DIG_POP[1]);
   b.ax = rr(-4, 4); b.ay = rr(-4, 4); b.az = rr(-4, 4);
   blocks.push(b);
-  spawnMark({ x: w.x, y: 0, z: w.z }, DIG_MARK, 1);      // 挖過的土痕（跟隕石坑同一套）
-  digPuff(w); digPuff(w); digPuff(w);
+  spawnMark({ x: gx, y: 0, z: gz }, DIG_MARK, 1);        // 挖過的土痕（跟隕石坑同一套）
+  digPuff(w, g); digPuff(w, g); digPuff(w, g);
   ENG.setBlockCount(blocks.length);
   return true;
 }
@@ -2789,7 +2806,7 @@ function digTrip(w, h, dt) {
   const wait = w.dug >= w.hcap;
   if (!wait) {
     w.hp -= dt;
-    if (w.hp <= 0) { w.hp = DIG_PUFF; digPuff(w); }
+    if (w.hp <= 0) { w.hp = DIG_PUFF; digPuff(w, digPoint(w)); }
   }
   w.hdt -= dt;
   /* 鏟子舉多高（畫面那邊照它擺，見 engine.js 的 DIG_GRIP_Y）：這一鏟挖到哪了 0～1。

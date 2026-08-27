@@ -1485,22 +1485,41 @@ const ENG = (function () {
      複製一份就得跟著維護兩份。往外挪是因為胸膛比工作服寬：半寬 0.35，
      原本的手掛在 0.34，不挪的話整隻手埋在胸膛裡。 */
   const MUS_ARM_X = 0.46, MUS_ARM = 1.5;
-  /* 挖料的鏟子（v1.129）。兩手握著的地方在 (0, DIG_GRIP_Y, DIG_GRIP_Z)＝柄的上端，
-     柄往前下方伸出去 DIG_LEN，鏟面（DIG_PAN 長）接在柄的下端、跟柄同一個方向。
-     柄跟垂直線的夾角是照「鏟面該在哪個高度」**反算**的，不是寫死的——
-     寫死的話柄一改長，鏟面就插進地裡或懸在半空。
-     w.dig（0～1，這一鏟挖到哪了）決定那個高度：插到底時鏟面貼著地面（DIG_DEEP，
-     鏟尖略低於地面），撬起來時抬到 DIG_UP。 */
-  const DIG_GRIP_Y = 0.80, DIG_GRIP_Z = 0.18;
-  const DIG_LEN = 1.02, DIG_PAN = 0.34;
-  const DIG_REACH = DIG_LEN + DIG_PAN * 0.5;      // 握把到鏟面中心
-  const DIG_DEEP = 0.14, DIG_UP = 0.50;           // 鏟面中心最低／撬起來離地多高
-  /* 插到底那一下整個人往前傾這麼多。不傾的話看起來是「舉著鏟子站著」，不是在挖。
-     鏟子是掛在身體上的，所以傾多少鏟面就跟著往下多少——DIG_DEEP 的 0.14 是配著
-     這個角度算的：傾 0.14 之後鏟面中心剛好落在地面高度，鏟尖插進地裡一點。 */
-  const DIG_LEAN = 0.14;
-  const digTilt = y => Math.acos(Math.max(-1, Math.min(1, (DIG_GRIP_Y - y) / DIG_REACH)));
-  const DIG_A0 = digTilt(DIG_UP), DIG_A1 = digTilt(DIG_DEEP);
+  /* 挖料的鏟子（v1.129，v1.130 照使用者給的照片重做動作）。
+     照片上的用法是：**人彎腰，兩手握在近乎垂直的柄上，鏟面插在腳前面的地裡**——
+     不是把長柄舉在身體前方橫掃（v1.129 就是那樣，鏟面落在身體前方 1.18 格）。
+     所以整支縮短（柄頭到鏟尖 DIG_OVER + DIG_REACH + DIG_PAN/2 = 1.15，
+     小人連帽子高 1.31，比例上約 1.5 公尺；v1.129 是 1.36）、手握的位置收到腰邊、
+     插到底那一下把身體壓下去 DIG_LEAN。
+
+     一鏟有兩個關鍵格，w.dig（0～1，這一鏟挖到哪了）在它們之間 lerp：
+       撬起來（dgS 0）：手在 DIG_GRIP_A、鏟面中心抬到 DIG_UP
+       插到底（dgS 1）：手在 DIG_GRIP_B、鏟面中心落到 DIG_DEEP（略低於地面）
+     柄的角度**不寫死**，照「手到鏟面的高度差」用 acos 反算——柄一改長角度自己跟著對。
+     而且要在**世界座標**算：地面在 y=0，而身體前傾會把整支鏟子帶著往下轉，
+     所以先把手的位置轉到世界座標、算完角度再轉回身體座標（見 putWorker 的 digA）。 */
+  const DIG_GRIP_A = [0.74, 0.04], DIG_GRIP_B = [0.62, 0.10];   // 手的位置（身體座標 y/z）
+  /* 柄要**伸出手的上方** DIG_OVER（照片上柄頭在胸口）：不伸出去的話柄從手掌開始，
+     整支被兩隻手臂的方塊蓋掉，畫面上只剩腳邊一小截 ＋ 一塊鐵（試過，看起來像鎯頭）。
+     所以柄長是「手上方那截 ＋ 手到鏟面」推出來的，鏟面自己接在柄的下端。 */
+  const DIG_OVER = 0.30, DIG_REACH = 0.66, DIG_PAN = 0.38;   // 伸出手上方／手到鏟面中心／鏟面長
+  const DIG_LEN = DIG_OVER + DIG_REACH - DIG_PAN * 0.5;      // 柄長
+  const DIG_ROD = (DIG_REACH - DIG_PAN * 0.5 - DIG_OVER) / 2;  // 柄中心離手多遠（沿著柄往下）
+  const DIG_DEEP = -0.06, DIG_UP = 0.24;          // 鏟面中心：插到底（埋一半）／撬起來
+  const DIG_LEAN = 0.30;                          // 插到底那一下整個人往前傾多少
+  const digClamp = v => Math.max(-1, Math.min(1, v));
+  /* 鏟尖插到最深時在哪（相對小人原點、還沒乘身高），跟法杖的 WAND_TIP 同一個用途：
+     規則那邊要拿它決定「積木從哪裡冒出來、土痕與土塵留在哪」。兩邊各寫一份的話，
+     鏟子插在腳前面、積木卻從腳底冒出來（v1.129 就是這樣，使用者：「積木出現的位置
+     也要合理(目前看起來都固定在小人腳下)」）。 */
+  const DIG_TIP = (() => {
+    const gy = DIG_GRIP_B[0], gz = DIG_GRIP_B[1];
+    const wy = gy * Math.cos(DIG_LEAN) - gz * Math.sin(DIG_LEAN);
+    const wz = gy * Math.sin(DIG_LEAN) + gz * Math.cos(DIG_LEAN);
+    const ang = Math.acos(digClamp((wy - DIG_DEEP) / DIG_REACH));
+    return [0, DIG_DEEP - Math.cos(ang) * DIG_PAN * 0.5,
+            wz + Math.sin(ang) * (DIG_REACH + DIG_PAN * 0.5)];
+  })();
   /* ── 頭上的表情圖示（v1.121，v1.122 從方塊換成貼圖）─────────────
      使用者：「增加小人表達力，例如驚嘆號 愛心 問號 生氣（一個小圖示 像交談那樣在
      小人旁邊表示）」。哪個情境冒哪一個是規則那邊決定的（見 game-workers.js 的 showEmo），
@@ -1646,8 +1665,8 @@ const ENG = (function () {
        只有在挖的那幾秒拿在手上（w.dig > 0），其他時候縮成 0。
        位置與角度在 putWorker 裡按那一鏟的深淺重算，這裡寫的是預設值。
        柄借法杖那個木色，鏟面借推土機那片鏟刃的鐵色——場上本來就有這兩種材質。 */
-    { p: [0, DIG_GRIP_Y, DIG_GRIP_Z], s: [0.07, DIG_LEN, 0.07], c: 'staff', dig: 1 },
-    { p: [0, DIG_GRIP_Y, DIG_GRIP_Z], s: [0.30, DIG_PAN, 0.11], c: 'blade', dig: 1, pan: 1 },
+    { p: [0, DIG_GRIP_A[0], DIG_GRIP_A[1]], s: [0.07, DIG_LEN, 0.07], c: 'staff', dig: 1 },
+    { p: [0, DIG_GRIP_A[0], DIG_GRIP_A[1]], s: [0.32, DIG_PAN, 0.05], c: 'blade', dig: 1, pan: 1 },
     /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
        巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
        只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
@@ -1680,7 +1699,7 @@ const ENG = (function () {
        所以帽子給深紫（安全帽的亮黃旁邊一眼認得出不是同一種人）、寶珠給金。 */
     wiz: [0x4a3b8c],
     staff: [0x6a4a30],
-    blade: [0x8a9098],      // 鏟面：跟推土機那片鏟刃同一種鐵（v1.129）
+    blade: [0x6f7780],      // 鏟面：鐵（v1.130 壓深一階，亮灰看起來像鎯頭）
     orb: [0xffd66b]
   };
   const ORB_LIT = new T.Color(0xffffff);   // 施法時寶珠往這個亮色靠（要跟金色差得夠開才看得出亮起來）
@@ -1705,7 +1724,7 @@ const ENG = (function () {
         hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1,
         mage 是不是魔法師（戴巫師帽、拿法杖）,cast 施法深淺 0～1（杖抬多高、寶珠多亮）,
         mus 是不是肌肉小人（裸上半身、肩臂粗一圈）,
-        dig 挖料的深淺（0＝沒拿鏟子，0～1＝這一鏟挖到哪了，見 DIG_GRIP_Y）,
+        dig 挖料的深淺（0＝沒拿鏟子，0～1＝這一鏟挖到哪了，見 DIG_GRIP_A）,
         emo 頭上的表情圖示是哪一種（EMO_KINDS 裡的字，空的就是沒有）,emoK 圖示大小 0～1
         ——這兩個是 putEmotes 在用的，putWorker 本身不畫圖示} */
   function putWorker(i, w) {
@@ -1713,6 +1732,19 @@ const ENG = (function () {
     /* 這一鏟的相位（v1.129）：一鏟的頭尾都是 0（鏟子撬起來）、中間是 1（插到底），
        所以一塊挖完接下一塊時是連續的。手、鏟子、身體前傾三處共用同一個值。 */
     const dgS = w.dig ? Math.sin(w.dig * Math.PI) : 0;
+    /* 鏟子這一鏟擺在哪（v1.130）。手的位置在兩個關鍵格之間 lerp；柄的角度照
+       「手到鏟面的高度差」反算，而且是在**世界座標**算的（地面在 y=0），
+       算完再加回身體前傾轉成身體座標——身體轉了 lean，同一支鏟子的世界角度就是
+       身體座標角度減掉 lean。 */
+    let digA = 0, digGy = 0, digGz = 0;
+    if (w.dig) {
+      const lean = DIG_LEAN * dgS;
+      digGy = DIG_GRIP_A[0] + (DIG_GRIP_B[0] - DIG_GRIP_A[0]) * dgS;
+      digGz = DIG_GRIP_A[1] + (DIG_GRIP_B[1] - DIG_GRIP_A[1]) * dgS;
+      const wy = digGy * Math.cos(lean) - digGz * Math.sin(lean);   // 手的世界高度
+      const by = DIG_UP + (DIG_DEEP - DIG_UP) * dgS;                // 鏟面該落在哪個高度
+      digA = Math.acos(digClamp((wy - by) / DIG_REACH)) + lean;
+    }
     /* 沒在打滾但身體是斜的（被戳倒、被震倒、飛在半空翻滾）也要抬——
        原點在腳底，倒到水平時整個身體剛好落在草皮那一層，半個身厚是埋在地裡的。
        抬 |sin(傾角)| × 半個身厚：站直時 0，躺平時剛好把人托在草地上（v1.60）。 */
@@ -1744,9 +1776,15 @@ const ENG = (function () {
         if (w.carry) {                      // 搬東西時雙手舉高
           scratchB.rotation.x = -2.5;
           scratchB.position.y = 0.85; scratchB.position.z = -0.16;
-        } else if (w.dig) {                 // 挖料：兩手握著鏟柄，跟著那一鏟起落（v1.129）
-          scratchB.rotation.x = -1.25 - 0.12 * dgS;
-          scratchB.position.y = 0.80 - 0.03 * dgS; scratchB.position.z = 0.10;
+        } else if (w.dig) {
+          /* 挖料（v1.130）：兩手握在鏟柄上，一隻握上端、另一隻往下握一截
+             （照使用者給的照片；兩隻手擺一樣的話看起來是抱著柄，不是握著）。
+             手掛在肩上、伸長只有 0.22，搆不到柄的最上端——所以柄的上端本來就
+             畫在腰邊（DIG_GRIP_A），兩隻手朝它斜下去就對得上。 */
+          const hi = b.arm > 0;
+          scratchB.rotation.x = (hi ? -0.45 : -0.80) - 0.20 * dgS;
+          scratchB.position.y = (hi ? 0.76 : 0.66) - 0.03 * dgS;
+          scratchB.position.z = hi ? 0.02 : 0.08;
         } else if (w.hail) {                // 慶祝：雙手舉高、跟著跳的節奏晃
           scratchB.rotation.x = -2.75 + Math.sin(w.ph) * 0.22;
           scratchB.rotation.z = b.arm * 0.30;
@@ -1798,17 +1836,15 @@ const ENG = (function () {
           scratchB.position.y = b.p[1] + Math.sin(w.ph * 2.6) * 0.05;
         }
       }
-      /* 鏟子（v1.129）：沒在挖的人縮成 0。柄與鏟面都掛在同一個握把上，
+      /* 鏟子（v1.129）：沒在挖的人縮成 0。柄與鏟面都掛在同一個握把上（digGy／digGz），
          沿著柄的方向各自往外挪自己的距離——所以只要一個角度就把兩塊擺好。
-         sin(w.dig × π)：一鏟的頭尾都是「撬起來」、中間是「插到底」，
-         所以一塊挖完接下一塊時角度是連續的（不會閃一下）。 */
+         角度與握把的位置在上面算（digA），這裡只負責擺。 */
       if (b.dig) {
         if (!w.dig) scratchB.scale.setScalar(0);
         else {
-          const ang = DIG_A0 + (DIG_A1 - DIG_A0) * dgS;
-          const d = b.pan ? DIG_REACH : DIG_LEN * 0.5;
-          scratchB.position.set(0, DIG_GRIP_Y - Math.cos(ang) * d, DIG_GRIP_Z + Math.sin(ang) * d);
-          scratchB.rotation.x = -ang;
+          const d = b.pan ? DIG_REACH : DIG_ROD;           // 鏟面在柄的下端、柄自己的中心偏下
+          scratchB.position.set(0, digGy - Math.cos(digA) * d, digGz + Math.sin(digA) * d);
+          scratchB.rotation.x = -digA;
         }
       }
       /* 魔法師戴巫師帽，安全帽那三塊收掉——兩頂疊在同一顆頭上會直接穿模。 */
@@ -2196,7 +2232,7 @@ const ENG = (function () {
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
-    cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP,
+    cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST,
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
