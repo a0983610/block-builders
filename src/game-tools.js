@@ -3341,9 +3341,24 @@ function callStorm(p) {
   /* 順手把鏡頭退到看得見整朵雲的距離（跟蘑菇雲共用 ENG.holdWide）。
      量過：預設取景的「畫面上緣」差不多就在鏡頭自己的高度——矮建築（羅馬競技場 h=15）
      只看得到 26 以下，雲擺在 34 就整朵在畫面外，點下去等於什麼都沒發生。
-     holdWide 只會把鏡頭往外／往上帶，不會搶走玩家自己拉近的視角。 */
-  ENG.holdWide(y + STORM_TH, Math.max(STORM_R, bp ? bp.radius : STORM_R));
+     holdWide 只會把鏡頭往外／往上帶，不會搶走玩家自己拉近的視角。
+     **這一發是「用完要還」的**（v1.128，使用者：「如果是會讓鏡頭往高的方向調整的運鏡
+     結束後高度要調回來」——一開始寫在天降鐵球底下，查證之後確認那支從頭到尾不動鏡頭，
+     真正會抬高又停在那裡的是這一支）。雲擺得比屋頂高，視線就跟著抬到雲的腰間：
+     矮建築抬到 18.7、台北 101 抬到 67——劈完雲散了，鏡頭卻還仰在那裡看空的天空。
+     第三個參數給 true，最後一朵散掉之後在 stormEnd() 還回去。
+     視距不還，只還高度：把建築推出畫面的是仰角不是距離（見 ENG.holdWide）。 */
+  stormHold++;
+  ENG.holdWide(y + STORM_TH, Math.max(STORM_R, bp ? bp.radius : STORM_R), true);
   sndTick();
+}
+/* 還欠幾次「把視線高度還回去」。同時最多三朵、還可以連點，所以要記次數——見 stormEnd()。 */
+let stormHold = 0;
+/* 雲全部收乾淨了就把高度還回去。stepStorms 的兩個出口都要叫：
+   上面那個 early return 是「場上沒有雲」的捷徑，而最後一朵縮完的下一幀走的正是它。 */
+function stormEnd() {
+  if (storms) return;
+  while (stormHold > 0) { stormHold--; ENG.releaseWide(); }
 }
 /* 整朵雲的「歸位點」，一次抽好、照離雲心的距離**由外往內**排（v1.123，
    使用者：「烏雲出現時細節 先在中心外圍慢慢出現 然後往中心聚攏」）。
@@ -3429,7 +3444,7 @@ function strike(s) {
   sndThunder();
 }
 function stepStorms(dt) {
-  if (!storms) return;
+  if (!storms) { stormEnd(); return; }
   for (let i = storms.length - 1; i >= 0; i--) {
     const s = storms[i];
     s.t += dt;
@@ -3459,6 +3474,7 @@ function stepStorms(dt) {
     }
   }
   if (!storms.length) storms = null;
+  stormEnd();
 }
 /* 塵霧與烏雲共用同一顆 mesh（還是一個 draw call），但烏雲**不放進 dust 那一池**：
    spawnDust／spawnRing／煙塵那些都拿 dust.length 當配額關卡（超過 400 就不再生），

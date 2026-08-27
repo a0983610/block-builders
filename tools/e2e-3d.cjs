@@ -7646,6 +7646,66 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '劈金字塔 20 道震了 ' + stormShake.hit + ' 次、劈場外空地 20 道震了 ' +
      stormShake.far + ' 次');
 
+  /* 劈完把視線高度還回去（v1.128，使用者：「如果是會讓鏡頭往高的方向調整的運鏡
+     結束後高度要調回來」——這句一開始寫在天降鐵球底下，查證之後確認那支從頭到尾
+     不動鏡頭（見〈煙火〉那一段的測試），使用者接著指出真正有運鏡的是打雷）。
+     雲擺得比屋頂高，holdWide 就把視線抬到雲的腰間，而且**建築越高抬得越多**：
+     羅馬競技場抬到 18.7、台北 101 抬到 67.2。劈完雲散了，鏡頭卻還仰在那裡看空的天空。
+     跟煙火同一套（`temp` ＋ `releaseWide`），所以驗的東西也一樣：
+     抬起來又還回去、**視距留著**、連放兩朵不會被第一朵散掉就壓回去。 */
+  const stormCam = await page.evaluate(() => {
+    const build = (name, cnt) => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === name);
+      targetCnt = cnt; startBuild(true); completeNow(); shapePick = -1;
+      for (let i = 0; i < 20; i++) step(0.05);
+    };
+    const wait = () => { let g = 0; while (storms && g++ < 900) step(0.05); step(0.05); };
+    const one = name => {
+      build(name, name === '台北 101' ? 9000 : 3000);
+      const ty0 = ENG.camTarget.ty, d0 = ENG.camTarget.dist;
+      callStorm({ x: 0, z: 0 });
+      const tyUp = ENG.camTarget.ty, dUp = ENG.camTarget.dist;
+      wait();
+      return { h: +bp.height.toFixed(0), ty0: +ty0.toFixed(1), tyUp: +tyUp.toFixed(1),
+               ty1: +ENG.camTarget.ty.toFixed(1), d0: +d0.toFixed(1),
+               dUp: +dUp.toFixed(1), d1: +ENG.camTarget.dist.toFixed(1) };
+    };
+    const low = one('羅馬競技場'), high = one('台北 101');
+    // 第二朵在第一朵還沒散完時點下去：第一朵收工不能把鏡頭壓回去
+    build('羅馬競技場', 3000);
+    const ty0 = ENG.camTarget.ty;
+    callStorm({ x: -20, z: 0 });
+    for (let i = 0; i < 60; i++) step(0.05);          // 3 秒後再點一朵
+    callStorm({ x: 20, z: 0 });
+    /* 只在「還有雲在場上」時取樣：最後一幀本來就已經還回去了 */
+    let mid = 1e9, g = 0;
+    while (storms && g++ < 900) { step(0.05); if (!storms) break; mid = Math.min(mid, ENG.camTarget.ty); }
+    step(0.05);
+    const two = { ty0: +ty0.toFixed(1), mid: +mid.toFixed(1), ty1: +ENG.camTarget.ty.toFixed(1) };
+    cleanTools();
+    return { low, high, two };
+  });
+  ok('打雷期間鏡頭抬起來，雲散了就把高度還回去',
+     stormCam.low.tyUp > stormCam.low.ty0 + 10 &&
+     Math.abs(stormCam.low.ty1 - stormCam.low.ty0) < 0.1 &&
+     Math.abs(stormCam.high.ty1 - stormCam.high.ty0) < 0.1,
+     '羅馬競技場（h=' + stormCam.low.h + '）視線高 ' + stormCam.low.ty0 + ' → ' +
+     stormCam.low.tyUp + ' → ' + stormCam.low.ty1 + '；台北 101（h=' +
+     stormCam.high.h + '）' + stormCam.high.ty0 + ' → ' + stormCam.high.tyUp +
+     ' → ' + stormCam.high.ty1);
+  ok('建築越高抬得越多，還回去的只有高度、視距留著',
+     stormCam.high.tyUp > stormCam.low.tyUp * 2 &&
+     stormCam.low.d1 === stormCam.low.dUp && stormCam.high.d1 === stormCam.high.dUp,
+     '抬到 ' + stormCam.low.tyUp + ' vs ' + stormCam.high.tyUp + '；視距 ' +
+     stormCam.low.d0 + '→' + stormCam.low.d1 + '、' + stormCam.high.d0 + '→' +
+     stormCam.high.d1);
+  ok('連放兩朵不會被第一朵散掉就壓回去',
+     stormCam.two.mid > stormCam.two.ty0 + 10 &&
+     Math.abs(stormCam.two.ty1 - stormCam.two.ty0) < 0.1,
+     '兩朵都在場時視線高最低只到 ' + stormCam.two.mid + '，全散完才回到 ' +
+     stormCam.two.ty1);
+
   /* 道數：使用者指定 15～20（v1.123，v1.118 是 7～15、更早是 5～7）。抽 900 朵，
      範圍內每個值都要出現、也不能跑出範圍；順便驗頭尾兩個值沒有比中間少一半
      （用 rr 再四捨五入會有那個毛病）。 */
@@ -12937,6 +12997,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       });
       audio = () => proxy; muted = false;
       fn();
+      /* fn() 一跑完就把 audio 換回真的（v1.128）。排程是同步做完的，但 startRendering()
+         是非同步的——中間任何一支**用 setTimeout 排的**音效（sndDone 與 sndBadge 各排
+         三聲）都會再呼叫一次 audio()，那時候還指著這顆離線 context 的話就會被錄進來。
+         `running = false` 擋得住遊戲迴圈，擋不住已經排在 setTimeout 裡的那幾聲。
+         實測踩過：對照組那一聲量到「前 2 毫秒只占 56%」而不是 100%，
+         而 56% 正好是 0.045（對照組音量）÷ 0.08（sndBadge 音量）——成就音混進來了。 */
+      audio = realAudio;
       const d = (await ctx.startRendering()).getChannelData(0);
       let s = 0, peak = 0, over = 0;
       for (let i = 0; i < d.length; i++) {
@@ -13071,6 +13138,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const ctx = new OfflineAudioContext(1, SR, SR);
       audio = () => ctx; muted = false;
       fn();
+      audio = realAudio;                    // 理由見上面 render() 那一段的註解
       const d = (await ctx.startRendering()).getChannelData(0);
       let early = 0, peak = 0;
       for (let i = 0; i < d.length; i++) {
