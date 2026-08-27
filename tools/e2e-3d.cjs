@@ -3072,16 +3072,75 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      engr.carriedAll + ' 趟）');
   ok('施工中一直拿著設計圖在看', engr.planPct === 1,
      '拿著圖的幀數占 ' + (engr.planPct * 100).toFixed(0) + '%');
-  /* 相異角度放寬到「2 個以上」（v1.120.1，本來要求 > 3）。這個數字被兩件事牽著走：
-     他多久換一次位置（每次決策 62% 抽到「指揮」、38% 才是換位置，換一次大約隔 8 秒），
-     以及這一輪蓋多久（量測迴圈蓋完就停）。實測單獨抽 12 輪是 6～9 個角度（82～119 秒），
-     但整輪跑的時候出現過 3 個（同樣 85 秒）——同一組隨機決策就是會有這種一輪。
-     這一條真正守得住的是「站在建築外面」（near／far 實測 14.0～14.3 對 siteR 10.9）
-     跟「他會換位置、不是釘在原地」。 */
-  ok('站在建築外圍，會換位置但不會走進工地',
-     engr.near > engr.siteR && engr.far < engr.siteR + 4 && engr.moves >= 2,
+  /* 「站在建築外面」是這一條真正守得住的東西：實測 near／far 是 14.0～14.3 對 siteR 10.9，
+     他貼著 siteR + ENG_KEEP 那一圈站，一步都不進工地。
+     **「他會換位置」那一半 v1.128 拆出去了**（見下一條）：本來是「取樣 8～12 次、
+     相異角度要 ≥ 2」，但那是在賭骰子——每次決策 ENG_POINT（62%）抽到「指揮」、
+     只有 38% 是換位置，整輪蓋 70 秒約 13 次決策，「一次都沒抽到換位置」的機率是
+     0.62¹³ ≈ 1/830。實測單獨跑 25 輪是 4～11 個角度（中位數 9），但整輪跑的時候
+     真的開出過 1 個。相異角度數留在訊息裡當參考，不再拿它當斷言。 */
+  ok('站在建築外圍，一步都不進工地',
+     engr.near > engr.siteR && engr.far < engr.siteR + 4,
      '離工地中心 ' + engr.near + '–' + engr.far + '（建築半徑 ' + engr.siteR +
      '），' + engr.samples + ' 次取樣裡站過 ' + engr.moves + ' 個不同角度');
+
+  /* 「換位置」改成**把骰子固定住**直接驗那一支邏輯（v1.128，理由見上一條）。
+     `Math.random` 回 0.99 → `Math.random() < ENG_POINT` 為假 → 一定走換位置那一支；
+     連 `rr(0.5, 1.5)` 也被固定成 1.49、左右那一抽固定成 +1，所以角度一定加 1.49 rad。
+     這樣還順便守住一件事：ENG_POINT 要是哪天被改成 1（＝永遠只指揮、不再換位置），
+     `0.99 < 1` 為真，角度不會變，這一條就會抓到。
+     固定亂數只包住「做決策」那一幀，走過去那 10 秒放回真的亂數——
+     要驗的是他真的走到新角度，不是走位途中也照著假骰子跑。 */
+  const engMove = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(12); startBuild(true);
+    shapePick = -1;
+    const e = workers[0];
+    /* **直接把他放到那一圈上**，不要「走到定位為止」。第一版是等
+       `|半徑 − (siteR + ENG_KEEP)| ≤ 0.1`，但建材一直在往上疊、`siteR` 跟著長，
+       那一圈本身是會動的——他等於一路追著跑，`ringWalk` 永遠回報「還沒到」，
+       於是 `updEng` 每幀提早 return，決策那一段根本跑不到（整輪跑的時候踩到過：
+       目標角度加了 0 rad）。放好之後 dA 與 dr 都是 0，`ringWalk` 當幀就回報到位。 */
+    const ring = siteR + ENG_KEEP;
+    e.x = Math.cos(e.eang) * ring; e.z = Math.sin(e.eang) * ring;
+    step(0.05);
+    const settled = Math.abs(Math.hypot(e.x, e.z) - (siteR + ENG_KEEP)) < 0.5;
+    const a0 = Math.atan2(e.z, e.x), eang0 = e.eang;
+    const real = Math.random;
+    Math.random = () => 0.99;
+    e.point = 0; e.et = 0;                      // 逼他這一幀就做決策
+    updEng(e, 0.05);
+    Math.random = real;
+    const dAng = e.eang - eang0;
+    /* 走過去這一段不讓他再做新決策：et 給一個大數，updEng 就只剩走位那一段。
+       不這樣的話途中還會抽兩三次籤，抽到往回走的話這一條又變成在賭骰子。 */
+    e.et = 999;
+    /* 「有沒有抄捷徑穿過工地」量的是**離那一圈有多遠**，不是絕對半徑：
+       建材一直在往上疊，siteR 會跟著長，拿固定的半徑當界線會被那件事帶著跑。 */
+    let devLo = Infinity, devHi = -Infinity, n = 0;
+    for (let i = 0; i < 400 && phase === 'build'; i++) {
+      step(0.05); n++;
+      const dev = Math.hypot(e.x, e.z) - (siteR + ENG_KEEP);
+      devLo = Math.min(devLo, dev); devHi = Math.max(devHi, dev);
+    }
+    let turned = Math.atan2(e.z, e.x) - a0;
+    turned = Math.atan2(Math.sin(turned), Math.cos(turned));
+    return { settled, eng: e.eng, dAng: +dAng.toFixed(2), n,
+             turned: Math.abs(Math.round(turned * 180 / Math.PI)),
+             devLo: +devLo.toFixed(2), devHi: +devHi.toFixed(2),
+             want: Math.round(Math.abs(dAng) * 180 / Math.PI), keep: ENG_KEEP,
+             pt: ENG_POINT };
+  });
+  ok('骰子指到「換位置」時，他真的換一個角度站',
+     engMove.settled && engMove.eng === 1 && engMove.dAng > 0.5 && engMove.dAng < 1.5 &&
+     engMove.n > 200 && engMove.turned > 25,
+     '把骰子固定成 0.99（＞ ENG_POINT ' + engMove.pt + '）→ 目標角度加了 ' +
+     engMove.dAng + ' rad（' + engMove.want + '°），' + (engMove.n * 0.05).toFixed(0) +
+     ' 秒後人真的轉了 ' + engMove.turned + '°');
+  ok('換位置的路上也是貼著外圈走，不會抄捷徑穿過工地',
+     engMove.devLo > -1 && engMove.devHi < 1,
+     '整段離「工地外圍 + ' + engMove.keep + '」那一圈 ' + engMove.devLo + ' ～ ' +
+     engMove.devHi + ' 單位');
   ok('偶爾會做指揮動作', engr.pointPct > 0.03 && engr.pointPct < 0.5,
      '指揮的幀數占 ' + (engr.pointPct * 100).toFixed(0) + '%');
   /* 只有一個人的時候不能把他派去看圖，不然這座永遠蓋不起來 */
@@ -3598,7 +3657,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
     const w = workers.find(q => q.mus);
-    for (let i = 0; i < 900 && phase === 'build'; i++) step(0.05);   // 先讓它長出幾層牆
+    /* 先讓它長出幾層牆。等「真的長到四層以上有二十塊」而不是固定 45 秒（v1.128.1
+       修間歇性失敗）：下面要找的是「站進去之後手上那塊會被埋住」的位置，而那塊舉在
+       頭頂兩格半高、身高又是每個人各自抽的（1.72～2.01）——牆不夠高就一個位置都找不到，
+       整條測試變成 skip=2 直接算失敗。實測整輪跑真的開出過一次。 */
+    const tall = () => blocks.filter(q => q.st === 3 && q.y > HB + 3.2).length;
+    for (let i = 0; i < 3000 && phase === 'build' && (i < 900 || tall() < 20); i++) step(0.05);
     let g = 0;
     while (w.st !== 'hurl' && g++ < 3000 && phase === 'build') step(0.05);
     if (w.st !== 'hurl') return { skip: 1 };
@@ -4050,14 +4114,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       digs = Math.max(digs, blocks.filter(b => b.hh >= 0).length);
     }
     // 蓋完
-    let secs = 20, inside = 0, near = 0, carry = 0;
+    let secs = 20, inside = 0, insideWalk = 0, near = 0, carry = 0;
+    /* 「穿過去」要只算**正在走路的人**（v1.128.1 修間歇性失敗）。
+       `pushOutHome` 掛在每一種走法的位移之後，所以在走的人同一幀就被推出來了——
+       那才是這條規則真正保證的事。**站著不動的人不會被推**（剛好停在地基邊上、
+       又進了聊天那五秒的，要等下一次走動才出去），飛在空中（被道具掀翻）
+       與穿透中（stuckWatch 的 ghost）也不吃這一條。
+       原本的計數把這些全算進去，而且算的是**幀數**不是人次：一個人在邊上站 1.2 秒
+       就是 25 幀，而門檻是 10 幀（0.5 秒）——等於在賭「沒人剛好停在那裡」，
+       整輪跑真的開出過 25 幀。
+       現在分兩個數：`inside`（任何狀態，留在訊息裡當參考）與 `insideWalk`
+       （走路中的人踩進去），斷言看後者。 */
+    const px = [], pz = [];
+    const snap = () => { for (let i = 0; i < workers.length; i++) { px[i] = workers[i].x; pz[i] = workers[i].z; } };
+    const walked = i => Math.hypot(workers[i].x - px[i], workers[i].z - pz[i]) > 0.01;
+    const tally = i => {
+      const w = workers[i];
+      if (!homeAt(w.x, w.z)) return;
+      inside++;
+      if (walked(i) && !w.air && !(w.ghost > 0)) insideWalk++;
+    };
     /* 600 秒（v1.100 從 400 再拉上來）：房子放大到 100～300 塊，
        六七間共 800～950 塊，實測 219～244 秒蓋完（一趟搬 2～3 塊之前是 350 秒）。 */
     while (secs < 600 && homes.list.some(h => h.left > 0)) {
+      snap();
       step(0.05); secs += 0.05;
-      for (const w of workers) {
-        if (homeAt(w.x, w.z)) inside++;
-        if (w.hm >= 0) carry = Math.max(carry, w.load.length);
+      for (let i = 0; i < workers.length; i++) {
+        tally(i);
+        if (workers[i].hm >= 0) carry = Math.max(carry, workers[i].load.length);
       }
     }
     const left = homes.list.reduce((n, h) => n + h.left, 0);
@@ -4065,14 +4149,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const pool1 = blocks.filter(b => b.hh < 0).length;
     // 蓋完在自己家附近走走
     let far = 0, back = 0;
-    for (let i = 0; i < 400; i++) {
+    for (let k = 0; k < 400; k++) {
+      snap();
       step(0.05);
-      for (const w of workers) {
+      for (let i = 0; i < workers.length; i++) {
+        const w = workers[i];
         if (w.hm < 0) continue;
         const h = homes.list[w.hm];
         far = Math.max(far, Math.hypot(w.x - h.x, w.z - h.z) - h.r);   // 超出自己家地基多遠
         if (Math.hypot(w.x, w.z) < siteR + KEEP) back++;        // 走進工地裡了
-        if (homeAt(w.x, w.z)) inside++;
+        tally(i);
       }
     }
     // 兩間之間的距離、離樹的距離
@@ -4085,7 +4171,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         tree = Math.min(tree, Math.hypot(homes.list[i].x - tr.x, homes.list[i].z - tr.z) - tr.r);
     }
     return { crew, n: workers.length, list, pool0, pool1, all0, all1: blocks.length,
-             homeSet, left, secs: +secs.toFixed(1), inside, far: +far.toFixed(1), back,
+             homeSet, left, secs: +secs.toFixed(1), inside, insideWalk,
+             far: +far.toFixed(1), back,
              marks1, dirt1, digs, carry, cap: HOME_CARRY,
              gap: gap === Infinity ? -1 : +gap.toFixed(1),
              tree: tree === Infinity ? -1 : +tree.toFixed(1),
@@ -4280,11 +4367,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 下；每間真的砸一下，' + homeHit.broke + ' 間掉塊' +
      (homeHit.miss.length ? '（沒掉的：' + JSON.stringify(homeHit.miss) + '）' : ''));
 
-  /* 門檻留幾幀（v1.100）：推出去那一下掛在「走路」那幾條路上（strollTo／stepTo），
-     站著不動的人不會被推——剛好停在地基邊上、又進了聊天那五秒的人要等下一次走動
-     才會被推出去。實測五萬人次裡 0～2 幀。 */
-  ok('沒有人從房子中間穿過去', home.inside <= 10,
-     '腳踩在房子地基上 ' + home.inside + ' 人次（' + home.list.length + ' 間、量了 ' +
+  /* 斷言只看「走路中的人」（v1.128.1，理由見上面 insideWalk 那段註解）：
+     推出去那一下掛在每一種走法的位移之後，所以在走的人同一幀就被推出來，這個數該是 0。
+     站著不動／飛在空中／穿透中的不吃這一條，那些留在訊息裡當參考。 */
+  ok('沒有人從房子中間穿過去', home.insideWalk === 0,
+     '走路中踩在房子地基上 ' + home.insideWalk + ' 幀（含站著不動與被掀飛的共 ' +
+     home.inside + ' 幀；' + home.list.length + ' 間、量了 ' +
      (home.secs + 20).toFixed(0) + ' 秒）');
 
   /* 一開始建造就回去上工（使用者：「如果要再建造時 直接恢復進入建造模式」），
@@ -5331,6 +5419,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
       targetCnt = 900; setWorkerCount(20); startBuild(true);
       stopIdleEvent(); clearHomes();
+      /* 先把碎料鋪回「躺在地上、散在工地外」（v1.128.1）。startBuild(true) 那一刻
+         上一輪的建築整棟解成碎料**原地落下**，那一瞬間全在半空（rest 是 false），
+         下面挑「十二塊躺著的」有可能一塊都挑不到——實測整輪跑時對照組出現過
+         `n = 0`，於是「撿走 0 塊 < 12」白白通過，等於根本沒有對照組。 */
+      scatterFree();
       homes = { list: [] };
       const kind = HOME_KIND[3];                       // 大屋 7×5×4
       const at = { x: 0, z: siteR + 4 + homeR(kind) };
@@ -5360,14 +5453,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         gridAdd(b);
         inside.push(i);
       }
+      /* 其餘自由碎料推到房子外圈以外（v1.128.1）：不這麼做的話工地旁邊那一圈料
+         比屋裡那十二塊近得多，工人輪不到去挑它們——實測正面那一趟要 69～112 秒才撿完，
+         離 150 秒的上限只差一點。現在屋裡那十二塊是**全場最近的料**，
+         兩邊都變成「一定會去挑它」，剩下的差別就只有「進不進得去」。 */
+      const keep = new Set(inside);
+      const far0 = Math.hypot(h.x, h.z) + h.r + 12;
+      for (let i = 0; i < blocks.length; i++) {
+        if (keep.has(i)) continue;
+        const bb = blocks[i];
+        if (bb.st !== 0 || !bb.rest || bb.hh >= 0 || bb.holder >= 0) continue;
+        if (bb.cell) gridDel(bb);
+        const a = Math.random() * Math.PI * 2;
+        const rad = far0 + Math.random() * Math.max(4, arenaR - far0);
+        bb.x = Math.cos(a) * rad; bb.z = Math.sin(a) * rad; bb.y = HB;
+        separate(bb); gridAdd(bb);
+      }
       ENG.setBlockCount(blocks.length);
       const all = inside.every(i => footHome(blocks[i].x, blocks[i].z));
       /* 對照組＝v1.106：走到積木本身（走不進去），而且沒有「搆不到就伸手拿」。
          v1.108 之後只關 pickSpot 是不夠的——伸手拿（nearGrab）會在原地把它撿起來、
          卡住脫困（stuckWatch）會讓他穿牆走進去，兩個都會把對照組救起來，
-         紅綠就分不出來了（實測 150 秒照樣撿走 12 塊）。 */
-      const orig = pickSpot, orig2 = nearGrab;
-      if (!on) { pickSpot = b => b; nearGrab = () => false; }
+         紅綠就分不出來了（實測 150 秒照樣撿走 12 塊）。
+         **v1.128.1 再補一個：魔法師**。他是隔空撿的——`findBlock(sx, sz, MAGE_REACH, …)`，
+         站在外框旁邊 11 格內就搆得到，整條路**完全不經過 pickSpot**，
+         而 findBlock 從 v1.107 起就不再跳過房子外框裡的料。20 個人裡有 2 個魔法師，
+         他們有沒有剛好在那 150 秒裡站到房子旁邊是隨機的——這一條的間歇性失敗就是
+         這麼來的（實測整輪跑開出過「對照組也撿走 12 塊」）。
+         所以對照組把 updMage 一起停掉（updWorker 對魔法師是整支委派給它，見那一行的
+         `if (w.mage) { updMage(...); return; }`，停掉就等於這 2 個人不動）。 */
+      const orig = pickSpot, orig2 = nearGrab, orig3 = updMage;
+      if (!on) { pickSpot = b => b; nearGrab = () => false; updMage = () => {}; }
       let secs = 0, got = 0;
       while (secs < 150 && got < inside.length) {
         step(0.05); secs += 0.05;
@@ -5375,18 +5491,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (!on) for (const q of workers) q.ghost = 0;
         got = inside.filter(i => blocks[i].st !== 0).length;
       }
-      pickSpot = orig; nearGrab = orig2;
+      pickSpot = orig; nearGrab = orig2; updMage = orig3;
       cleanTools(); clearHomes();
-      return { n: inside.length, got, all, secs: +secs.toFixed(0) };
+      return { n: inside.length, got, all, secs: +secs.toFixed(0),
+               mages: workers.filter(q => q.mage).length };
     };
     const on = run(true), off = run(false);
     return { on, off };
   });
   ok('躺在房子外框裡的碎料撿得出來（站到框外伸手拿）',
      buried.on.all && buried.on.n === 12 && buried.on.got === 12 &&
-     buried.off.got < 12,
+     buried.off.n === 12 && buried.off.got < 12,
      '屋裡擺 ' + buried.on.n + ' 塊：站到框外拿 → ' + buried.on.secs + ' 秒撿走 ' +
-     buried.on.got + ' 塊；走到積木本身（v1.106）→ 150 秒只撿走 ' + buried.off.got + ' 塊');
+     buried.on.got + ' 塊；走到積木本身（v1.106，連伸手拿／脫困穿透／' +
+     buried.off.mages + ' 個魔法師的隔空撿一起關掉）→ ' + buried.off.secs +
+     ' 秒只撿走 ' + buried.off.got + ' 塊');
 
   /* 敲一下完工的建築，不該把全場小人嚇跑（v1.106，使用者：「敲一下持續驚嚇不合理」）。
      phase 照樣進「拆除中」（那是換場的記帳狀態），但小人繼續過自己的生活——
@@ -5946,6 +6065,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < kill && i < q.length; i++) breakBlock(q[i], 0, 0, 0);
     for (let i = 0; i < 80; i++) step(0.05);
     const gone = homes.list.indexOf(tgt) < 0;
+    /* 其餘的房子先撤掉、積木還原成一般碎料（v1.128.1 修間歇性失敗）。
+       這一條要驗的是「家沒了就重新算成沒家（`w.own` 被清成 −1），原主人可以再蓋一間」，
+       但 startHomes 還有另一道跟這件事無關的關卡：`pickHomeSite` 找不到空地時
+       那一組就照常閒晃（程式註解自己寫著）。村子已經八間的時候常常就是這樣——
+       實測整輪跑開出過「8 → 8 間、0 人離隊」，那不是這條規則壞了，是沒地方蓋。
+       **不動 `w.own`**：那正是這一條要看的東西（startHomes 會把不在清單上的 id 清掉）。 */
+    for (const b of blocks) {
+      if (b.hh < 0) continue;
+      b.hh = -1; b.hk = -1; b.slot = -1; b.holder = -1;
+      b.st = 0; b.rest = true; b.arc = null; b.snap = 0;
+      b.vx = b.vy = b.vz = 0;
+      if (!b.cell) gridAdd(b);
+    }
+    homes.list.length = 0;
+    for (const w of workers) { w.hm = -1; w.hst = ''; }
     const n0 = homes.list.length;
     startHomes();
     const freed = workers.filter(w => w.own !== tgt.id).length;
@@ -8125,8 +8259,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const got = [], want = [];
     let secs = 0;
     while (twists && secs < 3.1) {
+      /* 釘住不讓它飄走。先釘再 step、連速度一起歸零（v1.128.1）：
+         stepTwist 啃的是「移動之後」的位置，理由見下一條 twRate 的註解。 */
+      twists[0].x = at.x; twists[0].z = at.z; twists[0].vx = 0; twists[0].vz = 0;
       step(0.03); secs += 0.03;
-      if (twists) { twists[0].x = at.x; twists[0].z = at.z; }   // 釘住不讓它飄走
       if (got.length < 3 && secs >= got.length + 1) {
         got.push(+(near.filter(b => b.st !== 3).length / near.length).toFixed(3));
         want.push(+(1 - Math.pow(1 - TW_TAKE, got.length)).toFixed(3));
@@ -8147,6 +8283,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 每幀的機率是 1−(1−兩成)^dt 換算出來的，不是每幀直接抽兩成——後者一秒 33 幀
      等於當場啃光。所以同樣三秒，幀率差六倍也要啃掉一樣多。 */
+  /* 釘的方式要「**先釘再 step**」，而且連速度一起歸零（v1.128.1 修間歇性失敗）。
+     stepTwist 是「先把漏斗往前移，再拿移完的位置去啃」——step 完才把座標推回來的話，
+     那一幀啃的是**偏掉的位置**，範圍邊緣那些積木當幀就不在半徑內。偏多少跟 dt 成正比：
+     dt 0.016 只偏 0.13，dt 0.1 偏到 0.9，於是粗 dt 系統性地少啃。
+     實測 8 趟：粗 dt 平均 0.814（理論 0.843，低 2.9 個百分點）、最低 0.803，
+     配上 ±0.06 的容許值就是壓在邊界上——這一條的間歇性失敗就是這麼來的。
+     先釘再 step 之後兩個 dt 都回到理論值上（細 0.843、粗 0.841）。
+     每個 dt 量兩趟取平均：抽樣標準差實測約 0.018，平均兩趟壓到 0.013，
+     ±0.06 就有 4.7 個標準差的餘裕。 */
   const twRate = await page.evaluate(() => {
     const run = dt => {
       cleanTools();
@@ -8162,13 +8307,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       markSupportDirty = () => {};        // 同上：連帶垮下來的不算（v1.116）
       let t = 0;
       while (twists && t < 3) {
+        // 先釘再 step：stepTwist 啃的是「移動之後」的位置，見上面那段註解
+        twists[0].x = at.x; twists[0].z = at.z; twists[0].vx = 0; twists[0].vz = 0;
         step(dt); t += dt;
-        if (twists) { twists[0].x = at.x; twists[0].z = at.z; }
       }
       markSupportDirty = origDirty;
-      return +(near.filter(b => b.st !== 3).length / near.length).toFixed(3);
+      return near.filter(b => b.st !== 3).length / near.length;
     };
-    return { fine: run(0.016), coarse: run(0.1), want: +(1 - Math.pow(1 - TW_TAKE, 3)).toFixed(3) };
+    const avg2 = dt => +((run(dt) + run(dt)) / 2).toFixed(3);
+    return { fine: avg2(0.016), coarse: avg2(0.1),
+             want: +(1 - Math.pow(1 - TW_TAKE, 3)).toFixed(3) };
   });
   ok('啃掉幾成跟幀率無關（每幀的機率是換算出來的）',
      twRate.fine > twRate.want - 0.06 && twRate.fine < twRate.want + 0.06 &&
@@ -11974,16 +12122,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       ENG.three.scene.traverse(o => { if (o.isInstancedMesh) a.push(o.count); });
       return a;
     };
+    /* 量 draw call 之前先把頭上的表情圖示清掉（v1.128 修間歇性失敗）。
+       核彈一叫下去，警報會讓附近的人開始逃命，逃命就會在頭上冒一個「！」
+       （v1.121 的 showEmo），而 emoMesh 是「有人在冒才顯示」——
+       它一出現整場就多 2 個 draw call。一顆核彈嚇到幾個人、三顆嚇到幾個人、
+       量的那一幀圖示還在不在，全是隨機的，於是 calls1／calls3 會在 14 與 16 之間跳。
+       實測 8 輪：兩種狀態各出現過，而且**唯一**的差別就是 emoMesh 在不在
+       （其餘 12 顆 mesh 完全一樣）。
+       這一條要驗的是「幾顆核彈都共用同一顆 InstancedMesh」，跟表情圖示無關，
+       所以量之前把它歸零——不是放寬門檻，是把不相干的變因拿掉。 */
+    const noEmo = () => { for (const w of workers) { w.emo = ''; w.emoT = 0; w.emoK = 0; } };
     const fall = () => { while (nukes && nukes[0].t > NUKE_FALL) step(0.02); step(0.02); };
     cleanTools(); startBuild(true); completeNow();
     callNuke({ x: 0, z: 0 });
-    fall(); draw(); ENG.render();
+    fall(); noEmo(); draw(); ENG.render();
     const c1 = counts(), calls1 = ENG.info().calls;
 
     cleanTools();
     for (let i = 0; i < 3; i++) callNuke({ x: (i - 1) * 24, z: 0 });
     const armed = nukes.length;
-    fall(); draw(); ENG.render();
+    fall(); noEmo(); draw(); ENG.render();
     const c3 = counts(), calls3 = ENG.info().calls;
     const flying = nukes ? nukes.length : 0;
     const hi = nukes ? Math.max(...nukes.map(n => n.y)) : -1;
@@ -12329,8 +12487,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const mkKind = await page.evaluate(() => {
     /* 兩發要**各自量**：痕跡只活 MARK_LIFE 秒（3 秒），等隕石倒數完落地時，
        炸彈留下的那一塊早就淡掉不見了——一起量會變成「只找到一塊」。 */
+    /* 藍圖要**指定**、隕石的落點要在建築**外面**（v1.128 修間歇性失敗）。
+       改之前這裡吃「上一段留下的隨機藍圖」，落點又擺在 hypot(siteR×0.8, siteR×0.5)
+       ＝ siteR×0.94，正好貼著工地邊緣。隕石是 45° 斜著進來的，掃到建築就當場砸開，
+       而 spawnMark 有一條「爆點比自己的半徑還高就不留」（那是炸在屋頂上的一發）——
+       砸在 y=11.1 而 MET_R 只有 9.2 的話，地上一塊痕跡都沒有。
+       實測 20 座隨機藍圖踩到 2 座（美國國會大廈 boomY=11.1、俄式白石大教堂 13.3），
+       那兩輪量到 0 塊，這一條的間歇性失敗就是這麼來的。
+       45° 進場的意思是「水平還要飛多遠 ＝ 現在還有多高」，所以落點離建築邊緣
+       22 單位時，飛過屋頂那一刻它還在 22 高——比這座塔（800 塊約 9 高）高得多，
+       不管從哪個方位進來都掃不到。 */
     const one = fire => {
-      cleanTools(); targetCnt = 800; startBuild(true); completeNow();
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 800; startBuild(true); completeNow();
+      shapePick = -1;
       fire();
       return marks.map(m => ({ crater: m.crater, r: +m.r.toFixed(1) }));
     };
@@ -12340,7 +12511,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       while (bombs && g++ < 200) step(0.05);          // 引信 3 秒 + 爆完
     });
     const met = one(() => {
-      callMeteor({ x: -siteR * 0.8, y: 0.5, z: siteR * 0.5 });
+      callMeteor({ x: 0, y: 0.5, z: siteR + 22 });
       let g = 0;
       while (meteors && g++ < 400) step(0.05);
     });
@@ -13222,10 +13393,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '1.2～1.8 秒的音量 ÷ 起頭 0.3 秒的音量：舊版 ' + snd.thunderOld.tail +
      '（早就沒聲了）→ 新版 ' + snd.thunder.tail);
 
+  /* 「破表」看的是 over（有幾個取樣打到 ±0.999）與 rms，peak 只放在訊息裡當參考
+     ——v1.128.1 修間歇性失敗。原本的門檻是 `peak < 0.25`，但這一發是
+     「爆炸的噪音 ＋ 三聲隨機音高的跌倒聲」（20 聲被 VOICE_MAX 擋成 3 聲），
+     噪音每次都是重新抽的取樣，峰值本來就會跳：實測算 25 次是 0.165～0.263、
+     中位數 0.204，**有 2 次超過 0.25**。同一批的 rms 是 0.0164～0.0184（只差 6%）、
+     over 永遠是 0。這正是這一段開頭那條註解說的「門檻用 rms 不用 peak」，
+     那條規則沒套到自己身上。
+     peak 的上界留 0.32（實測最大 0.263 再加兩成），只擋「真的往滿刻度衝」那種回歸。 */
   ok('核彈打在建築上那一幀不會破表',
-     snd.nukeHit.peak < 0.25 && snd.nukeHit.over === 0,
-     '爆炸＋20 人跌倒 peak ' + snd.nukeHit.peak + '、rms ' + snd.nukeHit.rms +
-     '（爆炸自己 ' + snd.nuke.peak + '）');
+     snd.nukeHit.over === 0 && snd.nukeHit.rms < 0.025 && snd.nukeHit.peak < 0.32,
+     '爆炸＋20 人跌倒 rms ' + snd.nukeHit.rms + '、peak ' + snd.nukeHit.peak +
+     '、打到滿刻度 ' + snd.nukeHit.over + ' 個取樣（爆炸自己 peak ' +
+     snd.nuke.peak + '）');
 
   /* ══════════ 視角操作 ══════════ */
   head('視角操作');
