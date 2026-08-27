@@ -3832,14 +3832,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              halfHi: +Math.max(...half.map(p => p.y + p.hy)).toFixed(3),
              emoY: ENG.EMO_Y };
   });
-  /* 一種圖示最多五塊（部位就開五塊）。塊數寫死在這裡是故意的：圖樣是手畫的，
-     少一塊問號就退化成「7」——改壞了要當場紅，不是「反正還是畫得出東西」。 */
+  /* 一種圖示最多八塊（部位就開八塊）。塊數寫死在這裡是故意的：圖樣是手排的，
+     少一塊問號就退化成「7」、愛心的尖會禿一截——改壞了要當場紅，
+     不是「反正還是畫得出東西」。 */
   ok('四種表情圖示都畫得出來，各自的顏色也對得上圖樣表',
-     emoDraw.shot.map(s => s.n).join(',') === '2,5,5,4' &&
+     emoDraw.shot.map(s => s.n).join(',') === '2,5,7,8' &&
      emoDraw.shot.every((s, i) => s.ci === i) && emoDraw.none === 0,
      '驚嘆號 ' + emoDraw.shot[0].n + ' 塊、問號 ' + emoDraw.shot[1].n +
      '、愛心 ' + emoDraw.shot[2].n + '、生氣 ' + emoDraw.shot[3].n +
-     '（上限 5）；沒表情時 ' + emoDraw.none + ' 塊');
+     '（上限 8）；沒表情時 ' + emoDraw.none + ' 塊');
   /* 浮在帽子上面：安全帽頂 1.31、巫師帽尖 1.75。低於 1.75 的話魔法師的圖示會插進帽子裡。 */
   ok('圖示浮在帽子上面，而且只有一個圖示那麼大',
      emoDraw.shot.every(s => s.lo >= 1.78 && s.hi <= 2.35),
