@@ -2856,15 +2856,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const d of dust.filter(isC)) if (!was.has(d)) late++;
     }
     dust.length = 0;
-    return { build, ever, peak, all, maxY: +maxY.toFixed(1), inward, outward, rest, late };
+    return { build, ever, peak, all, maxY: +maxY.toFixed(1), inward, outward, rest, late,
+             cap: ENG.MAXDUST };
   });
   ok('圍圈慶祝時會噴彩帶，施工中不會',
      conf.build === 0 && conf.ever > 300 && conf.peak > 100 && conf.maxY > 4 &&
-     conf.inward > conf.outward * 2 && conf.rest > 0 && conf.all <= 720 && conf.late === 0,
+     conf.inward > conf.outward * 2 && conf.rest > 0 && conf.all <= conf.cap && conf.late === 0,
      '慶祝的十秒噴了 ' + conf.ever + ' 片（同時最多 ' + conf.peak + ' 片，最高飛到 ' +
      conf.maxY + '，往建築那邊的 ' + conf.inward + ' 片、往外的 ' + conf.outward +
      ' 片，落地停住的最多 ' + conf.rest + ' 片）；塵霧池同時最多 ' + conf.all +
-     ' 顆（上限 720），施工中噴了 ' + conf.build + ' 片、散場後 ' + conf.late + ' 片');
+     ' 顆（引擎上限 ' + conf.cap + '），施工中噴了 ' + conf.build + ' 片、散場後 ' +
+     conf.late + ' 片');
 
   /* 慶祝完交談先進冷卻（v1.60）。圈上兩個人只隔 CHEER_GAP 1.9 格，比「多近才聊得起來」
      的 CHAT_D 2.6 還近——不推冷卻的話散場那一瞬間整圈人同時配對，
@@ -7491,13 +7493,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        電等於從樓層之間冒出來——使用者回報「看不太到電打在建築上」就是這件事。 */
     const above = storms[0].y - bp.height;
     const grow = [];
+    /* 18 秒：聚雲 2.6 ＋ 起手 0.4 ＋ 20 道 ×0.5 ＋ 收雲 1.35 ＝ 最壞 14.4 秒（v1.123
+       雲聚得比較久、道數也多了）。跑不完的話量到的會是「還沒劈完」。 */
     let t = 0, first = -1, fired = 0, prev = 0;
-    while (t < 16) {
+    while (t < 18) {
       step(0.05); t += 0.05;
       if (bolts.length > prev) { fired++; if (first < 0) first = +t.toFixed(2); }
       prev = bolts.length;
-      // 雲有自己一份粒子（不放進 dust，見 game-tools.js 的 dustList）
-      while (grow.length < 4 && t >= (grow.length + 1) * 0.4)
+      /* 雲有自己一份粒子（不放進 dust，見 game-tools.js 的 dustList）。
+         取樣間隔跟著 STORM_GROW 走（v1.123 從 1.6 拉到 2.6）：寫死 0.4 秒的話，
+         第四次取樣落在 1.6 秒——那時候只長到六成，最後一格就對不上滿朵。 */
+      while (grow.length < 4 && t >= (grow.length + 1) * (STORM_GROW / 3))
         grow.push(storms ? storms[0].puffs.length : 0);
     }
     const r = { born, want, fired, first, grow, full: STORM_GROW, above: +above.toFixed(0),
@@ -7510,7 +7516,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      storm1.born === 1 && storm1.grow[0] > 0 &&
      storm1.grow.every((n, i) => i === 0 || n >= storm1.grow[i - 1]) &&
      storm1.grow[3] > storm1.grow[0] * 2 && storm1.grow[3] === storm1.puff,
-     '每 0.4 秒量一次：' + storm1.grow.join(' → ') + ' 團（滿朵 ' + storm1.puff + ' 團）');
+     '每 ' + (storm1.full / 3).toFixed(2) + ' 秒量一次：' + storm1.grow.join(' → ') +
+     ' 團（滿朵 ' + storm1.puff + ' 團）');
   ok('雲飄在屋頂上方，電才看得出打在建築上', storm1.above >= 10,
      '雲底比屋頂高 ' + storm1.above + ' 單位');
   ok('雲聚滿了才開始劈，劈完雲自己收掉',
@@ -7521,8 +7528,68 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('劈中的地方會燒起來，火再自己往鄰居蔓延', storm1.burn > 20,
      '整趟劈完還有 ' + storm1.burn + ' 塊在燒');
 
-  /* 道數：使用者指定 7～15（v1.118，本來 5～7）。抽 900 朵，九個值都要出現、
-     也不能跑出範圍；順便驗頭尾兩個值沒有比中間少一半（用 rr 再四捨五入會有那個毛病）。 */
+  /* 怎麼聚（v1.123，使用者：「烏雲出現時細節 先在中心外圍慢慢出現 然後往中心聚攏」）。
+     兩件事要一起做，所以分兩條驗：只做出場順序的話整朵是「一圈一圈點亮」、沒有在動；
+     只做飄進來的話每一團各自從外面飛進來，但先出場的散在整朵各處，看不出方向。 */
+  const stormIn = await page.evaluate(() => {
+    cleanTools();
+    callStorm({ x: 0, z: 0 });
+    const s = storms[0];
+    const home = q => Math.hypot(q.hx - s.x, q.hz - s.z);      // 歸位點離雲心多遠
+    const now = q => Math.hypot(q.x - s.x, q.z - s.z);         // 現在離雲心多遠
+    const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
+    let t = 0;
+    while (t < 0.4) { step(0.05); t += 0.05; }
+    // 剛出場的這一批：都還在自己歸位點的外面（＝正在飄進來）
+    const fresh = s.puffs.length;
+    const outside = s.puffs.filter(q => now(q) > home(q) + 1).length / fresh;
+    while (t < STORM_GROW + 1.5) { step(0.05); t += 0.05; }
+    const n = s.puffs.length, m = Math.round(n * 0.2);
+    const r = { fresh, outside: +outside.toFixed(2), n,
+                early: +avg(s.puffs.slice(0, m).map(home)).toFixed(1),
+                late: +avg(s.puffs.slice(-m).map(home)).toFixed(1),
+                settled: +avg(s.puffs.map(q => Math.hypot(q.x - q.hx, q.z - q.hz))).toFixed(2),
+                R: STORM_R, puff: STORM_PUFF };
+    cleanTools();
+    return r;
+  });
+  ok('烏雲先在外圈出現，中心最後才補滿',
+     stormIn.n === stormIn.puff &&
+     stormIn.early > stormIn.R * 0.8 && stormIn.late < stormIn.R * 0.35,
+     '最先出場那兩成的位置離雲心 ' + stormIn.early + '、最後兩成 ' + stormIn.late +
+     '（雲半徑 ' + stormIn.R + '，滿朵 ' + stormIn.n + ' 團）');
+  ok('每一團都是從外面飄回自己的位置，不是原地長出來',
+     stormIn.outside > 0.9 && stormIn.settled < 1.2,
+     '剛冒出來的 ' + stormIn.fresh + ' 團裡有 ' + Math.round(stormIn.outside * 100) +
+     '% 還在自己位置的外面；聚滿之後平均離位 ' + stormIn.settled + ' 單位');
+
+  /* 「閃電打到地面不震動」（v1.123 使用者指定）。劈到建築才震——那一下真的有東西被打歪；
+     劈在空地上什麼都沒動，畫面跟著跳反而像打到了什麼。
+     一朵雲現在劈 15～20 道，每一道都震的話畫面會抖上七八秒。 */
+  const stormShake = await page.evaluate(() => {
+    cleanTools();
+    /* 重蓋一座實心的金字塔：上面那幾條已經在同一座上劈掉好幾百塊、還燒了一陣，
+       不重蓋的話「劈到建築」那一組可能真的劈到空的。 */
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+    const real = ENG.shake;
+    let n = 0;
+    ENG.shake = v => { n++; return real(v); };
+    const count = fn => { n = 0; fn(); bolts.length = 0; return n; };
+    const hit = count(() => { for (let k = 0; k < 20; k++) strike({ x: 0, z: 0, y: 40 }); });
+    const far = count(() => { for (let k = 0; k < 20; k++) strike({ x: 96, z: 96, y: 40 }); });
+    ENG.shake = real;
+    cleanTools();
+    return { hit, far };
+  });
+  ok('雷劈在空地上不震畫面，劈到建築才震',
+     stormShake.far === 0 && stormShake.hit >= 15,
+     '劈金字塔 20 道震了 ' + stormShake.hit + ' 次、劈場外空地 20 道震了 ' +
+     stormShake.far + ' 次');
+
+  /* 道數：使用者指定 15～20（v1.123，v1.118 是 7～15、更早是 5～7）。抽 900 朵，
+     範圍內每個值都要出現、也不能跑出範圍；順便驗頭尾兩個值沒有比中間少一半
+     （用 rr 再四捨五入會有那個毛病）。 */
   const stormN = await page.evaluate(() => {
     const seen = {};
     for (let k = 0; k < 900; k++) {
@@ -7535,14 +7602,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   const stormKeys = Object.keys(stormN.seen).map(Number).sort((a, b) => a - b);
   const stormCnt = stormKeys.map(k => stormN.seen[k]);
-  ok('隨機劈 7～15 道，每個道數的機會一樣',
+  ok('隨機劈 15～20 道，每個道數的機會一樣',
      stormKeys.length === stormN.hi - stormN.lo + 1 &&
      stormKeys[0] === stormN.lo && stormKeys[stormKeys.length - 1] === stormN.hi &&
      Math.min(...stormCnt) > Math.max(...stormCnt) * 0.55,
      '抽 900 朵：' + stormKeys.map(k => k + '道×' + stormN.seen[k]).join('、'));
 
-  /* 「小破壞（可能就幾格積木）」。格子間距是 1、判定半徑 1.3，所以最多是
-     「打中那一塊 ＋ 六個面鄰居」＝ 7 格，對角線（1.41）進不來。
+  /* 一道雷咬掉多大一片。v1.123 前是「小破壞（可能就幾格積木）」——判定半徑 1.3，
+     格子間距 1，所以最多是「打中那一塊 ＋ 六個面鄰居」＝ 7 格，對角線（1.41）進不來。
+     使用者：「閃電破壞面積 加大(2倍)」→ 半徑乘 √2 變 1.84（**面積**兩倍）。
+     跨過 1.73 之後 3×3×3 的角落也進得來，幾何上限因此變成 27 格。
+     實際咬到多少要看打在哪：金字塔上劈 60 道量到 1～23 格、平均 14.2
+     （半徑 1.3 時是 1～7、平均 3）。格數比面積多得多是因為它是球不是圓——
+     半徑乘 √2，體積就是 2.83 倍，再加上格子落點的零頭。
      垮塌要先擋掉：上面連不到地面而跟著垮的那些不是這一道雷打掉的。 */
   const stormBite = await page.evaluate(() => {
     const real = markSupportDirty;
@@ -7561,10 +7633,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return r;
   });
-  ok('一道雷只咬掉幾格積木',
-     stormBite.max <= 7 && stormBite.avg >= 1 && stormBite.avg < 6,
+  ok('一道雷咬掉的是「面積兩倍」那一片，不是整面牆',
+     stormBite.max <= 27 && stormBite.avg > 6 && stormBite.avg < 22,
      '劈 40 道：一道 ' + stormBite.min + '～' + stormBite.max +
-     ' 格、平均 ' + stormBite.avg + ' 格');
+     ' 格、平均 ' + stormBite.avg + ' 格（幾何上限 27 格；半徑 1.3 時是 1～7、平均 3）');
 
   /* 劈在空地上：地上留焦黑（不是坑洞——雷是燒不是砸），旁邊的建築一塊都不能掉。 */
   await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 12 });
@@ -7575,7 +7647,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     tool = 'storm';
     useTool({ point: new THREE.Vector3(70, 0, 70), dir: new THREE.Vector3(0, -1, 0) });
     let t = 0, peak = 0, crater = 0;
-    while (t < 16) {
+    while (t < 18) {
       step(0.05); t += 0.05;
       peak = Math.max(peak, marks.length);
       crater += marks.filter(m => m.crater).length;
@@ -8854,7 +8926,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       groundC = Math.max(groundC, gc);
     }
     const r = { topY: +top.y.toFixed(1), set0, set1: placedCnt, t: +t.toFixed(1),
-                maxCells, maxWet, maxDust, ground: Math.round(ground), groundC };
+                maxCells, maxWet, maxDust, ground: Math.round(ground), groundC,
+                cap: ENG.MAXDUST };
     cleanTools();
     return r;
   });
@@ -8868,7 +8941,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wbFlow.maxWet > 30 && wbFlow.set1 === wbFlow.set0,
      '同時最多 ' + wbFlow.maxWet + ' 塊是濕的；建築 ' + wbFlow.set0 + ' → ' + wbFlow.set1 + ' 塊');
   ok('水花沒把塵霧粒子池吃光', wbFlow.maxDust < 700,
-     '同時最多 ' + wbFlow.maxDust + ' 顆粒子（池子上限 720，煙塵要共用）');
+     '同時最多 ' + wbFlow.maxDust + ' 顆粒子（引擎上限 ' + wbFlow.cap + '，煙塵要共用）');
 
   /* 倒在草地上：攤成一大片，然後很快滲進地底（使用者指定「很快速滲入地下」）。
      泡在裡面的積木要一直是濕的——水還在、積木卻乾了又能點著，說不過去。 */
@@ -10463,8 +10536,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('火球會由亮黃冷成暗紅', nk.lit1 < nk.lit0 * 0.75,
      '同一批粒子的綠分量 0.6 秒內 ' + nk.lit0.toFixed(2) + ' → ' + nk.lit1.toFixed(2));
   /* 蘑菇雲是「長出來」的不是「跳出來」的：爆炸當下只有零星幾團，
-     一秒多之後柱子與傘蓋才長齊。一次生完的話這兩個數字會一樣大。 */
-  ok('蘑菇雲是隨時間長出來的', nk.cloud0 < 20 && nk.cloud1 > 90,
+     一秒多之後柱子與傘蓋才長齊。一次生完的話這兩個數字會一樣大。
+     用比例不用絕對值（v1.123）：柱子每秒生成量從 58 顆加到 160 顆之後，
+     「爆炸當下」那一幀本來就會多幾團（實測 33），寫死 20 會被那件事絆倒——
+     這一條要驗的是「差很多倍」，不是「當下少於幾團」。 */
+  ok('蘑菇雲是隨時間長出來的',
+     nk.cloud0 < nk.cloud1 * 0.1 && nk.cloud1 > 300,
      '爆炸當下 ' + nk.cloud0 + ' 團 → 1.2 秒後 ' + nk.cloud1 + ' 團');
   ok('蘑菇雲會往上飄', nk.peakY > nk.y1 + 2,
      '雲頂 ' + nk.y1.toFixed(0) + ' → ' + nk.peakY.toFixed(0));
@@ -12738,7 +12815,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       };
       return { rms: +all.rms.toFixed(4), peak: +all.peak.toFixed(3), over: all.over,
                hiPct: +(hi.rms / all.rms * 100).toFixed(1), body: +body.rms.toFixed(4),
-               hold: +(win(0.55, 0.75) / win(0.02, 0.2)).toFixed(2) };
+               hold: +(win(0.55, 0.75) / win(0.02, 0.2)).toFixed(2),
+               tail: +(win(1.2, 1.8) / win(0, 0.3)).toFixed(2) };
     };
     const r = { nuke: await one(() => sndBoom(30)), bomb: await one(() => sndBoom(BOMB_R)),
                 smash: await one(() => sndSmash()),
@@ -12758,7 +12836,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 windOld: await one(() => {
                   noise(WIND_DUR, 0.17, 520);
                   tone(82, WIND_DUR * 0.9, 'sawtooth', 0.035, 0.75);
-                }) };
+                }),
+                thunder: await one(() => sndThunder()),
+                /* 舊的雷聲（v1.117～v1.122）：一記切在 2200 的劈 ＋ 切在 190 的滾雷
+                   ＋ 一支往下滑的鋸齒。前後那兩層正好是 sndSmash／sndThud 的配方，
+                   使用者聽到的「像東西撞到建築」就是它們。 */
+                thunderOld: await one(() => {
+                  noise(0.22, 0.3, 2200); noise(1.3, 0.2, 190);
+                  tone(58, 1.1, 'sawtooth', 0.075, 0.32);
+                }),
+                thud: await one(() => sndThud(11)) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
   });
@@ -12902,6 +12989,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '80–250Hz 占比 ' + bodyShare(snd.windOld) + '% → ' + bodyShare(snd.wind) +
      '%、2kHz 以上 ' + snd.windOld.hiPct + '% → ' + snd.wind.hiPct +
      '%、總 rms ' + snd.windOld.rms + ' → ' + snd.wind.rms);
+
+  /* 雷聲（v1.123 重做，使用者：「音效應該是低頻轟轟聲(目前像是東西撞到建築那種音效)」）。
+     使用者聽到的沒錯——舊版前後兩層正好是 sndSmash／sndThud 的配方（切在 2200 的
+     高頻碎裂 ＋ 一支往下滑的音高），所以像有東西砸到建築。兩件事分開驗：
+     ① **整支壓到低頻**：拿 sndThud（隕石落地的悶響）當「該有多低」的參考點。
+     ② **滾得夠久**：舊版的滾雷只有 1.3 秒，1.2 秒之後就沒東西了；
+        新版 2.4 秒而且音量自己一波一波起伏（rumble()），那才是「轟轟」。 */
+  ok('雷聲整支壓到低頻，不再像東西砸到建築',
+     snd.thunder.hiPct < 20 && snd.thunderOld.hiPct > 50 &&
+     snd.thunder.hiPct < snd.thud.hiPct * 1.5,
+     '2kHz 以上 ' + snd.thunderOld.hiPct + '% → ' + snd.thunder.hiPct +
+     '%（隕石落地是 ' + snd.thud.hiPct + '%）');
+  ok('後面那串滾雷拖得住',
+     snd.thunder.tail > 0.06 && snd.thunderOld.tail < 0.02,
+     '1.2～1.8 秒的音量 ÷ 起頭 0.3 秒的音量：舊版 ' + snd.thunderOld.tail +
+     '（早就沒聲了）→ 新版 ' + snd.thunder.tail);
 
   ok('核彈打在建築上那一幀不會破表',
      snd.nukeHit.peak < 0.25 && snd.nukeHit.over === 0,
@@ -13616,6 +13719,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        r.step + r.draw < 4,
        'step ' + r.step.toFixed(2) + 'ms + draw ' + r.draw.toFixed(2) + 'ms = ' +
        (r.step + r.draw).toFixed(2) + 'ms（CPU 上限約 ' + Math.round(1000 / (r.step + r.draw)) + ' fps）');
+
+  /* 塵霧最壞的一幕（v1.123）：三朵烏雲（一朵 700 團）＋ 一發核彈的蘑菇雲與火苗煙。
+     兩件事一起驗——**都畫得出來**（MAXDUST 3400 是照這一幕訂的；砍在 2200 的話
+     第三朵烏雲會整朵不見，因為烏雲接在 dust 後面、被切掉的是清單尾巴），
+     以及**畫得起**（顆粒同時變小，覆蓋度沒怎麼動，所以變貴的只有 CPU 那一段）。 */
+  const perfDust = await page.evaluate(() => {
+    running = false;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 3000; setWorkerCount(20); startBuild(true); completeNow(); shapePick = -1;
+    for (let i = 0; i < 60; i++) step(0.016);
+    const bench = () => {
+      for (let i = 0; i < 20; i++) draw();
+      const t = performance.now();
+      for (let i = 0; i < 80; i++) draw();
+      return (performance.now() - t) / 80;
+    };
+    const idle = bench();
+    for (const p of [{ x: -20, z: 0 }, { x: 20, z: 0 }, { x: 0, z: 24 }]) callStorm(p);
+    startCloud({ x: 0, y: 0, z: 0 }, 30);
+    for (let i = 0; i < 200; i++) step(0.016);       // 聚滿三朵雲 ＋ 蘑菇撐開
+    const want = dustList().length;
+    const full = bench(), drawn = ENG.three.dustMesh.count;
+    cleanTools();
+    return { idle, full, want, drawn, cap: ENG.MAXDUST };
+  });
+  ok('三朵烏雲 ＋ 一發核彈，所有塵霧都畫得出來',
+     perfDust.want === perfDust.drawn && perfDust.want > 3000,
+     '要畫 ' + perfDust.want + ' 顆、實際畫 ' + perfDust.drawn +
+     ' 顆（上限 ' + perfDust.cap + '）');
+  ok('那一幕的 draw 仍然遠低於每幀預算', perfDust.full < 2,
+     '沒有塵霧 ' + perfDust.idle.toFixed(2) + 'ms → 這一幕 ' + perfDust.full.toFixed(2) +
+     'ms（每幀預算 4ms）');
 
   /* 建材開到一萬之後最貴的場面不是靜態，而是「拆到一半」：垮塌連鎖會一直把支撐
      標記成 dirty，於是每幀都要重算一次連通性（一萬塊時單次 4.1ms，三千塊時 1.4ms）。

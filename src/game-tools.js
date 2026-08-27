@@ -2829,6 +2829,21 @@ function stepFlash(dt) {
    火光在裡面燒約 0.8 秒再冷掉，那是參考圖裡雲心會發亮的來源。 */
 const CLOUD_GROW = 2.4;         // 整朵長完要多久
 const SKIRT_T = 1.7;            // 腳下那圈煙要往外鋪多久
+/* 多少顆、多大（v1.123 一起變細，使用者：「烏雲效果太過粗糙(核彈&爆裂魔法蘑菇雲一起
+   調整)」）。跟烏雲同一個做法：**顆數往上、單顆往下，總覆蓋度不動**——
+   邊長 5、6 的方塊擺在半徑 15 的傘蓋上，輪廓就是一顆一顆數得出來的骰子。
+     傘蓋 112 顆 × 3.4～6.2 → 440 顆 × 1.6～3.2（覆蓋度 3.75 → 3.72，幾乎一樣）
+     柱子 每秒 58 顆 × 1.7～3.4 → 160 顆 × 0.95～1.9
+     煙裙 每秒 62 顆 × 2.6～5.0 → 165 顆 × 1.45～2.7
+   傘蓋裡的火光也跟著（34 顆 × 1.6～3.2 → 60 顆 × 1.1～2.2）：煙細了之後，
+   兩三顆大的橘色方塊會從一團碎煙裡整個凸出來——顯眼的是**落差**不是絕對大小。
+   配額跟著抬：一朵雲自己要的從 345 顆變成約 1070 顆，兩個關卡（傘蓋與柱子共用的
+   CLOUD_CAP、煙裙的 CLOUD_SKIRT_CAP）本來就是「留一截給碎料的火苗煙」，
+   照原本的比例往上抬（680／590 → 1550／1350，引擎的 MAXDUST 同時 900 → 2200）。
+   煙裙那一關比較低的理由沒變：傘蓋是 0.45 秒一次要四百多顆的爆量，
+   煙裙要是先把配額吃光，蘑菇就會變成一根沒有頭的柱子。 */
+const CLOUD_TOP = 440, CLOUD_STEM = 160, CLOUD_SKIRT = 165;
+const CLOUD_CAP = 1550, CLOUD_SKIRT_CAP = 1350;
 /* 核彈與爆裂魔法共用同一朵。魔法版原本是紅的、還會撒星光，v1.48 併回來——
    使用者要的是同一種雲，兩套配色只是讓同一件事看起來像兩件事。 */
 function startCloud(p, R) {
@@ -2849,7 +2864,7 @@ function stepClouds(dt) {
        兩邊都從地面往上噴的話會混成一團胖雲，看不出蘑菇的頸子。 */
     const capY = R * 0.4 + Math.max(0, c.t - 0.45) * 8.5;
     if (c.t < 2.2) {                              // 柱子要一路補到傘蓋升上去為止
-      c.emit += dt * 58;
+      c.emit += dt * CLOUD_STEM;
       while (c.emit >= 1) {
         c.emit--;
         const a = Math.random() * Math.PI * 2, rad = rr(0.2, R * 0.07);
@@ -2861,29 +2876,32 @@ function stepClouds(dt) {
             s: rr(1, 2.2), life: rr(0.5, 1.1), g: 1.4, grow: 1.04, cool: rr(0.4, 0.8),
             cr: 1, cg: rr(0.62, 0.86), cb: rr(0.16, 0.4),
             to: [0.6, 0.16, 0.04] });
-        if (dust.length < 680)                       // 柱子的煙：沿著整根柱子生
+        if (dust.length < CLOUD_CAP)                 // 柱子的煙：沿著整根柱子生
           dust.push({ x, y: rr(0.6, capY * 0.92), z,
             vx: Math.cos(a) * rr(0.2, 1.2), vy: rr(0.8, 2.4), vz: Math.sin(a) * rr(0.2, 1.2),
             rx: Math.random() * 6, ry: Math.random() * 6,
-            life: rr(6, 8.5), s: rr(1.7, 3.4), c: rr(0.34, 0.56), g: 1.4, fade: 4 });
+            life: rr(6, 8.5), s: rr(0.95, 1.9), c: rr(0.34, 0.56), g: 1.4, fade: 4 });
       }
     }
     /* 傘蓋：0.45 秒時一次撐開，然後自己往上升。
        生在柱子上方、給比柱子快的初速，收尾就是「上面一團、下面一根」。 */
     if (t0 < 0.45 && c.t >= 0.45) {
       const H = R * 0.4;
-      for (let k = 0; k < 112; k++) {
-        if (dust.length >= 680) break;
+      for (let k = 0; k < CLOUD_TOP; k++) {
+        if (dust.length >= CLOUD_CAP) break;
         const a = Math.random() * Math.PI * 2;
         const rad = Math.sqrt(rr(0.03, 1)) * R * 0.5;
         dust.push({
           x: c.x + Math.cos(a) * rad, y: H + rr(-R * 0.06, R * 0.12), z: c.z + Math.sin(a) * rad,
           vx: Math.cos(a) * rr(0.4, 2), vy: rr(8, 10.5), vz: Math.sin(a) * rr(0.4, 2),
           rx: Math.random() * 6, ry: Math.random() * 6,
-          life: rr(6.5, 9), s: rr(3.4, 6.2), c: rr(0.18, 0.42), g: 1.8, fade: 4.5
+          life: rr(6.5, 9), s: rr(1.6, 3.2), c: rr(0.18, 0.42), g: 1.8, fade: 4.5
         });
       }
-      for (let k = 0; k < 34; k++) {                 // 傘蓋裡的火光，燒一下就冷掉
+      /* 傘蓋裡的火光，燒一下就冷掉。v1.123 跟著煙一起變細（60 顆 × 1.1～2.2，
+         本來是 34 顆 × 1.6～3.2）：煙細了之後，兩三顆大的橘色方塊會從一團碎煙裡
+         整個凸出來，反而更顯眼——量的不是絕對大小，是跟旁邊那些的落差。 */
+      for (let k = 0; k < 60; k++) {
         if (hot.length >= HOT_MAX) break;
         const a = Math.random() * Math.PI * 2;
         const rad = Math.sqrt(rr(0.02, 1)) * R * 0.34;
@@ -2891,7 +2909,7 @@ function stepClouds(dt) {
           x: c.x + Math.cos(a) * rad, y: H + rr(0, R * 0.06), z: c.z + Math.sin(a) * rad,
           vx: Math.cos(a) * rr(0.3, 1.5), vy: rr(8, 10.5), vz: Math.sin(a) * rr(0.3, 1.5),
           rx: Math.random() * 6, ry: Math.random() * 6,
-          s: rr(1.6, 3.2), life: rr(0.7, 1.5), g: 1.8, grow: 1.04, cool: rr(0.6, 1.1),
+          s: rr(1.1, 2.2), life: rr(0.7, 1.5), g: 1.8, grow: 1.04, cool: rr(0.6, 1.1),
           cr: 1, cg: rr(0.68, 0.9), cb: rr(0.2, 0.45),
           to: [0.55, 0.14, 0.04]
         });
@@ -2907,15 +2925,16 @@ function stepClouds(dt) {
        一顆頂多滾 3 個單位，鋪不出半徑 30 那麼寬。所以「生成半徑隨時間往外擴」，
        速度只負責近處的翻滾感；重力給大一點，噴起來就會壓回地面貼著滾。 */
     if (c.t < SKIRT_T) {
-      c.semit = (c.semit || 0) + dt * 62;
+      c.semit = (c.semit || 0) + dt * CLOUD_SKIRT;
       while (c.semit >= 1) {
         c.semit--;
-        /* 這裡的上限壓在 590，比柱子與傘蓋的 680 低：傘蓋是 0.45 秒一次要 112 顆的
-           爆量，煙裙要是先把配額吃光，蘑菇就會變成一根沒有頭的柱子。
-           兩個數字都比整朵雲自己要的（柱 128 + 傘 112 + 裙 105）高一截，是留給
-           碎料的火苗煙——核彈會點著整棟，那些煙先搶走兩百多格，配額不夠寬的話
+        /* 這裡的上限（CLOUD_SKIRT_CAP）壓得比柱子與傘蓋的 CLOUD_CAP 低：
+           傘蓋是 0.45 秒一次要兩百多顆的爆量，煙裙要是先把配額吃光，
+           蘑菇就會變成一根沒有頭的柱子。
+           兩個數字都比整朵雲自己要的（v1.123 起：柱 352 + 傘 440 + 裙 280）高一截，
+           是留給碎料的火苗煙——核彈會點著整棟，那些煙先搶走兩百多格，配額不夠寬的話
            煙裙就鋪不出來（量過：99 團 → 27 團，只剩柱子腳邊一小圈）。 */
-        if (dust.length > 590) break;
+        if (dust.length > CLOUD_SKIRT_CAP) break;
         const a = Math.random() * Math.PI * 2;
         const k = Math.min(1, c.t / (SKIRT_T * 0.8));
         const rad = R * (0.12 + 0.36 * k) * rr(0.75, 1.15);
@@ -2923,7 +2942,7 @@ function stepClouds(dt) {
           x: c.x + Math.cos(a) * rad, y: rr(0.3, R * 0.09), z: c.z + Math.sin(a) * rad,
           vx: Math.cos(a) * rr(1.2, 4), vy: rr(1, 3), vz: Math.sin(a) * rr(1.2, 4),
           rx: Math.random() * 6, ry: Math.random() * 6,
-          life: rr(5, 7.5), s: rr(2.6, 5), c: rr(0.26, 0.46), g: 3.2, fade: 3.4
+          life: rr(5, 7.5), s: rr(1.45, 2.7), c: rr(0.26, 0.46), g: 3.2, fade: 3.4
         });
       }
     }
@@ -3193,26 +3212,63 @@ const STORM_MAX = 3;             // 同時最多幾朵
    現在是「屋頂再上去 STORM_UP」，矮建築另外有個下限，不然雲會貼在屋簷上、電只剩一小截。 */
 const STORM_Y0 = 34;             // 最低就這麼高（矮建築用）
 const STORM_UP = 16;             // 高過屋頂多少
-const STORM_R = 12;              // 雲的半徑
-const STORM_TH = 3.4;            // 雲心的厚度（往邊緣收，見 puffAt）
-const STORM_GROW = 1.6;          // 雲要聚多久才聚滿（使用者：「慢慢出現」）
+/* 雲的半徑。v1.123 從 12 放到 17（使用者：「烏雲面積 閃電破壞面積 加大(2倍)」）——
+   照字面是**面積**兩倍，所以半徑乘 √2（12 × 1.414 = 16.97）。
+   厚度（STORM_TH）不跟著放：使用者指定的是面積，而且薄而寬本來就比較像一層雷雨雲。 */
+const STORM_R = 17;
+const STORM_TH = 3.4;            // 雲心的厚度（往邊緣收，見 stormSeeds）
+/* 雲要聚多久才聚滿（使用者：「慢慢出現」）。v1.123 從 1.6 拉到 2.6：
+   要看得出「先外圈、再往中心收」（見 stormSeeds），1.6 秒整朵就長完了，
+   那個順序一閃就過去。 */
+const STORM_GROW = 2.6;
 /* 一朵雲幾團、一團多大。v1.117 是 44 團 × 3.4～6.4，使用者：「烏雲方塊太少 太大塊
    看起來像一堆立方體」——量過就是這樣：半徑 11 的圓要用 44 顆邊長 5 的方塊鋪，
    一顆一顆之間有縫，邊緣露出整齊的立方體側面。改成「多而小」（截圖比對 44／90／150／220
-   四種，150 團 × 1.4～3.0 最像雲，220 團反而在邊緣散成一堆小骰子）。 */
-const STORM_PUFF = 150;
-const STORM_S = [1.4, 3.0];
+   四種，150 團 × 1.4～3.0 最像雲，220 團反而在邊緣散成一堆小骰子）。
+   **v1.123 再細一級**（使用者：「烏雲效果太過粗糙」）。第一版只把團數補到「面積放大
+   一倍之後密度不變」（150 → 380）就去截圖，結果還是一團看得出邊長的方塊——
+   關鍵不是密度而是**單顆多大**：一顆邊長 3 的方塊擺在半徑 17 的雲裡，
+   輪廓上就是一顆一顆數得出來的骰子。所以三件事一起做：
+   ① 團數 150 → 700、單顆 1.4～3.0 → **1.4～2.9 再乘 taper**（見 ②）。
+      覆蓋度（Σ 邊長² ÷ 面積）1.68 → 2.21：顆粒變小、疊得更厚，輪廓才連成一片。
+   ② 大小跟著「離雲心多遠」收（STORM_TAPER）：會露出立方體側面的地方永遠是輪廓，
+      中心那些本來就被別團擋住。邊緣的一團只有中心的 60%。
+   ③ 引擎的 MAXDUST 跟著 900 → 2200（三朵同時在場就是 2100 團）。
+      **顆數變多不等於變貴**：覆蓋度沒變多少，GPU 那邊的填色量就差不多；
+      CPU 那邊量過一顆約 0.06µs（draw() 0 顆 0.29ms、900 顆 0.347ms），
+      2200 顆也只多 0.08ms，每幀預算是 4ms。 */
+const STORM_PUFF = 700;
+const STORM_S = [1.4, 2.9];
+const STORM_TAPER = 0.4;        // 邊緣的一團縮到中心的 (1 − 這個)
+/* 怎麼聚（v1.123，使用者：「烏雲出現時細節 先在中心外圍慢慢出現 然後往中心聚攏」）。
+   ① 出場順序：整朵的位置先抽好、照離雲心的距離**由外往內**排（見 stormSeeds），
+      所以一定是外圈先亮、中心最後補滿。本來是每次現抽一個位置，抽到哪就長在哪，
+      整朵一起淡入，看不出方向。
+   ② 每一團生在自己歸位點的外側，再一路飄回去。偏移量是「歸位點離雲心的距離 × STORM_IN
+      ＋ STORM_OUT」：只乘比例的話，歸位點就在雲心的那幾團等於原地生出來，
+      中心那一塊就沒有聚攏可看，所以要再加一個固定量。
+   ③ 飄回去用指數逼近（每秒追上的比例由 STORM_PULL 決定）：出場那一下最快、
+      快到位時慢下來，看起來像被吸過去而不是等速平移。 */
+const STORM_IN = 1.45;
+const STORM_OUT = 7;
+const STORM_PULL = 2.4;
 const STORM_FADE = 0.45;         // 劈完之後整朵縮掉的半衰期
-const STORM_N = [7, 15];         // 劈幾道（使用者指定，v1.118 從 5～7 加到 7～15）
+const STORM_N = [15, 20];        // 劈幾道（使用者指定，v1.118 從 5～7 加到 7～15、v1.123 到 15～20）
 const STORM_GAP = [0.22, 0.5];   // 兩道之間隔多久
-const STRIKE_R = 9;              // 雷打在雲心多遠以內
+/* 雷打在雲心多遠以內。跟著雲一起放大（12 → 17 是乘 √2，這裡 9 → 13 也是）：
+   雲大了落點卻沒跟著散開的話，一朵三十四單位寬的雲只在正中央那一小圈劈，
+   看起來會像雲跟電是兩回事。 */
+const STRIKE_R = 13;
 const STRIKE_NEAR = 1.6;         // 找「這一點上方最高那塊」的水平容差
 /* 一道雷打掉的範圍。使用者指定「小破壞（可能就幾格積木）」，所以這個數是照著
    「打中那一塊 ＋ 它的面鄰居」湊的：格子間距是 1，收在 1.3 的話對角線（1.41）就進不來，
    一道雷最多七格、打在牆面上實際多半是三到五格。
    第一版給 3.2（比槌子的 5.5 小就好）——實測六道劈掉 726 塊，那不是「幾格」是拆房子。
    雷的重點跟隕石一樣不在威力在火，見下面的 BOLT_FIRE_*。 */
-const BOLT_R = 1.3;
+/* v1.123 從 1.3 放到 1.84（使用者：「閃電破壞面積 加大(2倍)」）——跟雲一樣照
+   **面積**兩倍算，半徑乘 √2。跨過 1.73 之後 3×3×3 的角落（√3）也進得來，
+   所以一道雷咬得到的上限從 7 格變成 27 格；打在牆面上實際咬到的還是少得多（見測試）。 */
+const BOLT_R = 1.84;
 const BOLT_POW = 13;             // 力道（投石機的石頭 12、槌子 15）
 const BOLT_FIRE_R = 5;           // 點火的範圍（比破壞範圍大得多：燒才是它的主要傷害）
 const BOLT_FIRE_N = 5;           // 一道雷最多點著幾塊，其餘交給火自己蔓延
@@ -3221,12 +3277,14 @@ function callStorm(p) {
   if (!storms) storms = [];
   if (storms.length >= STORM_MAX) storms.shift();   // 滿了把最早那朵擠掉（同其他清單型道具）
   const y = Math.max(STORM_Y0, (bp ? bp.height : 0) + STORM_UP);
-  storms.push({
-    x: p.x, z: p.z, y, t: 0, out: 0, puffs: [],
+  const s = {
+    x: p.x, z: p.z, y, t: 0, out: 0, puffs: [], seeds: null, seed: 0,
     // 均勻抽。用 rr 再四捨五入的話頭尾兩個值只有一半的機會，中間會偏多
     left: STORM_N[0] + Math.floor(Math.random() * (STORM_N[1] - STORM_N[0] + 1)),
     next: STORM_GROW + rr(0.1, 0.4)                 // 雲聚滿了才開始劈
-  });
+  };
+  s.seeds = stormSeeds(s);
+  storms.push(s);
   /* 順手把鏡頭退到看得見整朵雲的距離（跟蘑菇雲共用 ENG.holdWide）。
      量過：預設取景的「畫面上緣」差不多就在鏡頭自己的高度——矮建築（羅馬競技場 h=15）
      只看得到 26 以下，雲擺在 34 就整朵在畫面外，點下去等於什麼都沒發生。
@@ -3234,21 +3292,42 @@ function callStorm(p) {
   ENG.holdWide(y + STORM_TH, Math.max(STORM_R, bp ? bp.radius : STORM_R));
   sndTick();
 }
-/* 雲的一團。半徑往中心偏（0.7 次方；均勻鋪滿是 0.5），厚度再跟著半徑收——
+/* 整朵雲的「歸位點」，一次抽好、照離雲心的距離**由外往內**排（v1.123，
+   使用者：「烏雲出現時細節 先在中心外圍慢慢出現 然後往中心聚攏」）。
+   半徑往中心偏（0.7 次方；均勻鋪滿是 0.5），厚度再跟著半徑收——
    整朵是中間厚、邊緣薄的透鏡，不是一塊等厚的圓餅。圓餅的邊緣會露出一排
-   一樣大的方塊側面，那正是「看起來像一堆立方體」的來源。 */
-function puffAt(s) {
-  const a = Math.random() * Math.PI * 2;
-  const k = Math.pow(Math.random(), 0.7);
-  const th = STORM_TH * (1 - 0.55 * k);
-  return {
-    x: s.x + Math.cos(a) * k * STORM_R, y: s.y + rr(-th, th),
-    z: s.z + Math.sin(a) * k * STORM_R,
-    vx: rr(-0.35, 0.35), vz: rr(-0.35, 0.35),
-    rx: Math.random() * 6, ry: Math.random() * 6,
-    // 壓到 0.1～0.22（一般揚塵 0.62～0.9、蘑菇雲 0.18～0.42）：這是雷雲不是煙
-    s: rr(STORM_S[0], STORM_S[1]), c: rr(0.1, 0.22)
-  };
+   一樣大的方塊側面，那正是「看起來像一堆立方體」的來源。
+   排序放在這裡而不是每次現抽：現抽的話「外圈先出現」只能靠機率，
+   一定會有幾團中心的先冒出來，那個順序就看不出來了。 */
+function stormSeeds(s) {
+  const out = [];
+  for (let i = 0; i < STORM_PUFF; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const k = Math.pow(Math.random(), 0.7);
+    const th = STORM_TH * (1 - 0.55 * k);
+    out.push({
+      a, k,
+      hx: s.x + Math.cos(a) * k * STORM_R, hy: s.y + rr(-th, th),
+      hz: s.z + Math.sin(a) * k * STORM_R,
+      vx: rr(-0.35, 0.35), vz: rr(-0.35, 0.35),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      // 大小跟著離雲心多遠收：輪廓上那些變小，整朵的邊緣才不會是一排立方體側面
+      s: rr(STORM_S[0], STORM_S[1]) * (1 - STORM_TAPER * k),
+      // 壓到 0.1～0.22（一般揚塵 0.62～0.9、蘑菇雲 0.18～0.42）：這是雷雲不是煙
+      c: rr(0.1, 0.22)
+    });
+  }
+  out.sort((p, q) => q.k - p.k);            // 離雲心遠的排前面 ＝ 先出場
+  return out;
+}
+/* 讓下一團出場：生在自己歸位點的外側，之後每幀往歸位點飄（見 stepStorms）。 */
+function popPuff(s) {
+  const q = s.seeds[s.seed++];
+  const out = q.k * STORM_R * STORM_IN + STORM_OUT;
+  q.x = s.x + Math.cos(q.a) * out;
+  q.y = q.hy + rr(-0.6, 0.6);
+  q.z = s.z + Math.sin(q.a) * out;
+  return q;
 }
 /* 一道雷。落點是雲底下隨機一處：那一點上方有東西就打在最高那一塊上，沒有就打在地上。
    固定瞄整棟最高點的話七道全劈在同一根避雷針上，看起來像鎖定不像天氣。 */
@@ -3289,7 +3368,11 @@ function strike(s) {
      跟隕石共用同一支 igniteAround，差別只在半徑小得多——它是「劈出一個焦黑的小洞」。 */
   igniteAround(p, BOLT_FIRE_R, BOLT_FIRE_N, SET);
   spawnMark(p, BOLT_MARK, false);           // 焦黑不是坑洞：雷是燒不是砸（劈在屋頂就不留）
-  ENG.shake(0.8);
+  /* 只有劈到建築才震（v1.123，使用者：「閃電打到地面不震動」）。
+     `top` 是那一點上方最高的那塊積木，沒有就是劈在空地上——
+     那一下沒有東西被打歪，畫面跟著跳反而像是打到了什麼。
+     一朵雲現在劈 15～20 道，全部都震的話畫面會抖上七八秒。 */
+  if (top) ENG.shake(0.8);
   sndThunder();
 }
 function stepStorms(dt) {
@@ -3300,8 +3383,17 @@ function stepStorms(dt) {
     /* 一團一團地聚出來。照時間算「現在該有幾團」而不是每幀累加固定的量：
        累加的話 dt 一變（4 倍速、掉幀）聚雲的快慢就跟著跑。 */
     const want = Math.min(STORM_PUFF, Math.round(STORM_PUFF * s.t / STORM_GROW));
-    while (s.puffs.length < want) s.puffs.push(puffAt(s));
-    for (const q of s.puffs) { q.x += q.vx * dt; q.z += q.vz * dt; q.ry += dt * 0.22; }
+    while (s.puffs.length < want) s.puffs.push(popPuff(s));
+    /* 歸位點自己慢慢飄（本來就有的那股 churn），每一團再往自己的歸位點逼近。
+       指數逼近而不是等速：剛出場那一下最快，快到位時慢下來，像被吸過去。 */
+    const pull = 1 - Math.exp(-STORM_PULL * dt);
+    for (const q of s.puffs) {
+      q.hx += q.vx * dt; q.hz += q.vz * dt;
+      q.x += (q.hx - q.x) * pull;
+      q.y += (q.hy - q.y) * pull;
+      q.z += (q.hz - q.z) * pull;
+      q.ry += dt * 0.22;
+    }
     if (s.left > 0) {
       s.next -= dt;
       if (s.next <= 0) { strike(s); s.left--; s.next = rr(STORM_GAP[0], STORM_GAP[1]); }

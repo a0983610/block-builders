@@ -204,8 +204,16 @@ const ENG = (function () {
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。
      v1.118 從 720 加到 900：打雷的烏雲也借這顆 mesh 畫（一朵 150 團），
      三朵同時在場加上塵霧本身實測峰值 851 顆——留在 720 的話第三朵會被默默切掉三成。
-     成本只有容量（多 180 個 instance 的記憶體）：每幀的迴圈是照實際顆數跑的。 */
-  const MAXDUST = 900;
+     成本只有容量（多 180 個 instance 的記憶體）：每幀的迴圈是照實際顆數跑的。
+     v1.123 再加到 3400：烏雲一朵從 150 團變 700 團（面積放大一倍 ＋ 顆粒細一級，
+     見 STORM_PUFF），蘑菇雲也一起變細（傘蓋 112 → 440 顆、柱子與煙裙的每秒生成量
+     各加一倍多，見 CLOUD_TOP）。
+     3400 是照**最壞的一幕**訂的：三朵烏雲（2100 團）＋ 一發核彈的蘑菇雲與火苗煙
+     （1069 顆）＝ 3169 顆。這個數字非留不可——被切掉的是清單尾巴，而烏雲接在
+     dust 後面（見 game-tools.js 的 dustList），砍到 2200 的話第三朵會整朵不見。
+     顆數變多不等於變貴：兩邊的**覆蓋度**都幾乎沒動（顆粒同時變小），GPU 那邊的
+     填色量就差不多；CPU 那邊量過那一幕 draw() 0.29ms → 0.57ms（每幀預算 4ms）。 */
+  const MAXDUST = 3400;
 
   /* ── 草皮的花紋（v1.90）─────────────────────────────────
      使用者要「地面綠色增加草地感」。整片單色綠讀起來是一塊綠地板，不是草。
@@ -2117,9 +2125,9 @@ const ENG = (function () {
     putStars, putBolts, putMarks,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP,
-    MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE,
+    MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST,
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh, poolMesh, emoMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh, poolMesh, emoMesh, dustMesh }; }
   };
 })();

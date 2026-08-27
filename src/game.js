@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.124.0';
+const VERSION = '1.125.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -247,13 +247,47 @@ function sndTick() { tone(1250, 0.045, 'square', 0.045); }
    比爆炸本身早一步響，聽到就知道要閃了 */
 function sndMeteor() { noise(0.9, 0.22, 700); tone(340, 0.85, 'sawtooth', 0.07, 0.22); }
 function sndSiren() { tone(560, 1.1, 'sine', 0.05, 1.7); }
-/* 打雷：一記劈裂的爆音，後面拖一長串滾雷。
-   兩層噪音疊起來才像雷：切在 2200 的那支是「劈」（高頻、只有 0.22 秒），
-   切在 190 的那支是「滾」（低頻、拖 1.3 秒）。只有前者聽起來像折斷樹枝、
-   只有後者聽起來像遠處又炸了一發，兩件事同時發生才是雷。 */
+/* 一波一波的低頻噪音（滾雷用）。跟 noise() 的差別在包絡：
+   noise() 是 (1−i/n) 一路平順地弱下去，那聽起來是「一陣風」；
+   雷的招牌是「轟…轟…轟」——音量自己在起伏。這裡把整體衰減再乘上三支慢速正弦
+   （2.3／3.7／6.1 Hz）疊出來的起伏，一支的話是規律的顫音，三支不同週期疊起來才亂得像雷。
+   低通串兩級：一級只有 12 dB/oct，切在 120 也還留著一截中頻，聽起來仍然有「碎裂」感。 */
+function rumble(dur, vol, cut) {
+  const c = audio(); if (!c || muted) return;
+  if (!voiceOK('rumble' + cut, c)) return;
+  const n = Math.floor(c.sampleRate * dur);
+  const buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) {
+    const t = i / c.sampleRate;
+    const roll = 0.5 + 0.5 * (Math.sin(t * 14.5) * 0.5 + Math.sin(t * 23.2) * 0.3 +
+                              Math.sin(t * 38.3) * 0.2);
+    d[i] = (Math.random() * 2 - 1) * (1 - i / n) * roll;
+  }
+  const src = c.createBufferSource(); src.buffer = buf;
+  const f1 = c.createBiquadFilter(), f2 = c.createBiquadFilter();
+  f1.type = f2.type = 'lowpass'; f1.frequency.value = f2.frequency.value = cut;
+  const g = c.createGain(); g.gain.value = vol;
+  src.connect(f1).connect(f2).connect(g).connect(c.destination); src.start();
+}
+/* 打雷。v1.117～v1.122 是「切在 2200 的一記劈」＋「切在 190 的滾雷」＋一支
+   58Hz 往下滑的鋸齒。使用者：「音效應該是低頻轟轟聲(目前像是東西撞到建築那種音效)」
+   ——說得沒錯，那前後兩層正好是 sndSmash／sndThud 的配方（高頻的碎裂 ＋ 掉下去的音高），
+   所以聽起來像有東西砸到建築。v1.123 整支壓到低頻：
+   ① 起頭那一下切點 2200 → THUNDER_CRACK（700）、音量 0.3 → 0.16。
+      完全拿掉的話沒有起頭，一聲悶悶的氣音也不像雷，所以留一記悶的。
+   ② 滾雷 1.3 → THUNDER_ROLL 秒、低通 190 → THUNDER_CUT（120，而且串兩級），
+      並且改用 rumble()：它的音量會自己一波一波起伏，那就是「轟轟」。
+   ③ 低頻那支從 58Hz 往下滑的鋸齒換成 44Hz 不滑音——滑音是「東西掉下來」的都卜勒。
+      維持鋸齒不換三角，理由同 sndBoom（三角的泛音是 1/n²，小喇叭推不出那個基音）。 */
+const THUNDER_CRACK = 700, THUNDER_CUT = 120, THUNDER_ROLL = 2.4;
 function sndThunder() {
-  noise(0.22, 0.3, 2200); noise(1.3, 0.2, 190);
-  tone(58, 1.1, 'sawtooth', 0.075, 0.32);
+  /* 音量比舊版小（滾雷 0.34 → 0.26）：一朵雲現在劈 15～20 道、間隔 0.22～0.5 秒，
+     而滾雷拖 2.4 秒——同時疊著五六聲是常態。單獨一聲量到 rms 0.0110
+     （舊版 0.0148、隕石落地 sndThud 0.0097），六聲全疊在同一瞬間是 0.0286／峰值 0.271，
+     離破表還很遠；疊起來才會落在「一場雷雨」該有的份量。 */
+  noise(0.26, 0.16, THUNDER_CRACK);
+  rumble(THUNDER_ROLL, 0.26, THUNDER_CUT);
+  tone(44, THUNDER_ROLL * 0.8, 'sawtooth', 0.07, 0, 'thunder');
 }
 /* 魔法陣長層的音效（sndRune）拿掉了：六層一路響上去太吵，
    而且蓋掉了引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 還在。 */
