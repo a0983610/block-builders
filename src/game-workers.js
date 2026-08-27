@@ -56,7 +56,7 @@ function newWorker(i) {
        cout 是散場錯開多久（見 CHEER_OUT），cft 是下一束彩帶還有幾秒（見 CONF_GAP）。 */
     eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0, crun: 0, cout: 0, cft: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
-    /* 頭上的表情圖示（v1.121，見 showEmo）：emo 是哪一種（EMO_ART 的鍵，''＝沒有）、
+    /* 頭上的表情圖示（v1.121，見 showEmo）：emo 是哪一種（EMO_KINDS 裡的字，''＝沒有）、
        emoT 是還要冒幾秒、emoK 是畫出來的大小 0～1。 */
     emo: '', emoT: 0, emoK: 0,
     /* 魔法師（mage，v1.64）：不搬積木，站在建材堆旁邊隔空把建材拋上去。
@@ -1637,7 +1637,7 @@ function stepChat(w, wi, dt) {
 /* ── 頭上的表情圖示（v1.121）───────────────────────────────
    使用者：「增加小人表達力，例如驚嘆號 愛心 問號 生氣（一個小圖示 像交談那樣在小人
    旁邊表示 使用情境你決定就可以）」。圖示長什麼樣、擺多高是引擎那邊的事
-   （engine.js 的 EMO_ART），這裡定的是「什麼時候冒哪一個、冒多久」。
+   （engine.js 的 paintEmoAtlas／putEmotes），這裡定的是「什麼時候冒哪一個、冒多久」。
 
    四種表情各挑**玩家看得出因果**的情境，不隨機冒——隨機的話那就只是頭上有東西在閃，
    看不出小人在反應什麼：

@@ -179,6 +179,7 @@ function draw() {
   ENG.setWorkerCount(workers.length);
   for (let i = 0; i < workers.length; i++) ENG.putWorker(i, workers[i]);
   ENG.commitWorkers();
+  ENG.putEmotes(workers);            // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位）
 
   ENG.putTrees(trees);
   ENG.putDust(dustList());

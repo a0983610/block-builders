@@ -21,6 +21,7 @@ const ENG = (function () {
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
+  let emoMesh, emoGeo, emoPos, emoUv;      // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
      一顆七個部位，全部在同一顆 InstancedMesh 裡。 */
   const NUKE_MAX = 4;
@@ -140,6 +141,7 @@ const ENG = (function () {
   const scratchB = new T.Object3D();
   const tmpM = new T.Matrix4();
   const tmpC = new T.Color();
+  const _emoR = new T.Vector3(), _emoU = new T.Vector3();   // 鏡頭的右／上向量（表情圖示用）
   const raycaster = new T.Raycaster();
   const ndc = new T.Vector2();
 
@@ -194,10 +196,10 @@ const ENG = (function () {
      ＋ v1.51 補的七塊細節（帽頂、帽舌、兩顆眼睛、兩隻鞋、腰帶）
      ＋ v1.64 魔法師的五塊（巫師帽三塊、法杖、寶珠）
      ＋ v1.112 肌肉小人的五塊（胸膛、兩塊肩、兩塊胸肌）
-     ＋ v1.121 表情圖示的八塊（通用小方塊，照圖樣表重擺，見 EMO_ART）。
+     （v1.121 曾經有表情圖示的八塊，v1.122 換成貼圖之後收掉了，見 paintEmoAtlas）。
      道具沒拿的人整片縮到 0；全部共用同一個 InstancedMesh，不多一個 draw call。
      實測 60 個人擺一輪：10 塊時 0.106ms、17 塊時 0.150ms——每幀預算 4ms，加得起。 */
-  const WPARTS = 35;
+  const WPARTS = 27;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。
      v1.118 從 720 加到 900：打雷的烏雲也借這顆 mesh 畫（一朵 150 團），
@@ -691,6 +693,36 @@ const ENG = (function () {
     starMesh.count = 0; starMesh.frustumCulled = false; starMesh.visible = false;
     starMesh.setColorAt(0, tmpC.setHex(0xffffff));
     scene.add(starMesh);
+
+    /* 表情圖示（v1.122）：一片正對鏡頭的四邊形，貼上啟動時畫好的那張橫條圖。
+       頂點每幀重寫（跟水、地面痕跡同一套做法）所以是 DynamicDrawUsage；
+       沒有人在冒表情的時候 visible=false，一個 draw call 都不吃。
+       四種表情共用同一份材質（同一張圖的四格），所以在場時也只吃 1 個。
+       alphaTest 是把格子裡的空白**挖掉**：不挖的話那一整片透明區也會進混色，
+       跟後面的煙、水疊起來會看得出一塊方形的邊。 */
+    const emoTex = new T.CanvasTexture(paintEmoAtlas());
+    emoTex.colorSpace = T.SRGBColorSpace;    // 不設的話 canvas 畫的顏色會被當成線性值，整片偏亮
+    emoGeo = new T.BufferGeometry();
+    emoPos = new Float32Array(MAXW * 4 * 3);
+    emoUv = new Float32Array(MAXW * 4 * 2);
+    const emoPosAttr = new T.BufferAttribute(emoPos, 3);
+    const emoUvAttr = new T.BufferAttribute(emoUv, 2);
+    emoPosAttr.setUsage(T.DynamicDrawUsage);
+    emoUvAttr.setUsage(T.DynamicDrawUsage);
+    emoGeo.setAttribute('position', emoPosAttr);
+    emoGeo.setAttribute('uv', emoUvAttr);
+    const emoIdx = [];
+    for (let i = 0; i < MAXW; i++) {
+      const v = i * 4;
+      emoIdx.push(v, v + 3, v + 2, v, v + 2, v + 1);
+    }
+    emoGeo.setIndex(emoIdx);
+    emoGeo.setDrawRange(0, 0);
+    emoMesh = new T.Mesh(emoGeo, new T.MeshBasicMaterial({
+      map: emoTex, transparent: true, alphaTest: 0.1, depthWrite: false, side: T.DoubleSide
+    }));
+    emoMesh.frustumCulled = false; emoMesh.visible = false;
+    scene.add(emoMesh);
 
     /* 藍色閃電：每一段就是一根被拉長的細方塊。
        **不用加法混色**——理由跟魔法陣那幾層一樣：這片天空是白的、草地是亮綠的，
@@ -1444,61 +1476,95 @@ const ENG = (function () {
      複製一份就得跟著維護兩份。往外挪是因為胸膛比工作服寬：半寬 0.35，
      原本的手掛在 0.34，不挪的話整隻手埋在胸膛裡。 */
   const MUS_ARM_X = 0.46, MUS_ARM = 1.5;
-  /* ── 頭上的表情圖示（v1.121）─────────────────────────────────
+  /* ── 頭上的表情圖示（v1.121，v1.122 從方塊換成貼圖）─────────────
      使用者：「增加小人表達力，例如驚嘆號 愛心 問號 生氣（一個小圖示 像交談那樣在
      小人旁邊表示）」。哪個情境冒哪一個是規則那邊決定的（見 game-workers.js 的 showEmo），
      這裡只管「長什麼樣、擺哪裡」。
 
-     做法是**八塊通用的小方塊**（EMO_SLOT），位置／大小／顏色每幀照圖樣表重算——
-     不是一種表情一組部位。四種表情共用同一組，所以再加第五、第六種也不會多一塊部位
-     （一塊部位 = 80 個 instance）。一個圖樣最多八塊：v1.121 原本是五塊，使用者拿
-     ❤️ 與 💢 兩張圖來說「形狀調整一下」，那兩個形狀（圓一點的心、四道弧圍成的怒氣符號）
-     五塊排不出來；八塊夠了，成本是每個部位 80 個 instance、每幀多三次矩陣運算。
+     v1.121 是拿五～八塊小方塊排出形狀的（同小人的身體，共用那顆 InstancedMesh）。
+     排到第三版還是不像，使用者：「生氣符號不像 或是能用類似貼圖的方式去做?」——
+     方塊排不出弧線，而愛心與怒氣符號的形狀就是弧線，所以整個換掉：**一張程式畫出來的
+     貼圖 ＋ 一片永遠正對鏡頭的四邊形**。
 
-     每一筆是 [x, y, 寬, 高, 傾角]（傾角可省）：x 是離圖示中線多遠、y 是離 EMO_Y 多高，
-     所以整組乘上 w.emoK 就是「從錨點長出來」（k=0 時全部縮成錨點那一個點）。
-     擺在 EMO_Y 這麼高：巫師帽的帽尖頂到 1.75，再低就會插進帽子裡。 */
-  const EMO_SLOT = 8;
+     貼圖是啟動時用 canvas 現畫的，不是外部檔案：
+       · 這支遊戲要能 file:// 雙擊開（見檔頭），外部圖片在 file:// 下拿去當 WebGL 貼圖
+         會被當成跨來源而失敗；自己畫的 canvas 是同源的，一定能用。
+       · 也不必多帶一個檔案（「整個資料夾一起打包」那條就不會多一個踩雷點）。
+     四種畫在同一張橫條圖上（一格 EMO_CELL 像素），所以只有一份材質、一個 draw call。
+
+     畫的部分故意只用「平塗的路徑」：這個遊戲整個是平面著色的方塊，貼圖要是帶漸層
+     或描邊陰影，那一片會像貼了張別的遊戲的圖。 */
+  const EMO_KINDS = ['bang', 'quest', 'heart', 'anger'];   // 貼圖上的順序，規則那邊用這幾個字
+  const EMO_IDX = {};
+  EMO_KINDS.forEach((k, i) => { EMO_IDX[k] = i; });
+  const EMO_CELL = 128;              // 貼圖一格幾像素（圖示在畫面上最多四十幾像素，128 夠）
   const EMO_Y = 1.80;                // 圖示底邊的高度（帽頂 1.31、巫師帽尖 1.75）
-  const EMO_TH = 0.05;               // 圖示的厚度：正對鏡頭的一片薄板
+  const EMO_SIZE = 0.62;             // 那一片有多大（模型單位）。圖只占格子的八成，看起來約 0.5
   const EMO_BOB = 0.03;              // 上下浮多少（跟聊天泡泡一樣會呼吸）
-  const EMO_ART = {
-    /* 驚嘆號：一豎 ＋ 一點。黃色是「注意」，跟安全帽同一個色系但它飄在頭上，不會混。 */
-    bang: { c: 0xffd23c, r: [[0, 0.31, 0.15, 0.30], [0, 0.06, 0.15, 0.12]] },
-    /* 問號：上緣一橫 → 右邊往下 → 往左收回中線 → 一小截豎 → 一點。
-       五塊都用掉了，少一塊就會退化成「7」。 */
-    quest: { c: 0x54c7f0, r: [[0, 0.405, 0.26, 0.11], [0.105, 0.295, 0.11, 0.13],
-                              [0.02, 0.205, 0.20, 0.11], [-0.03, 0.13, 0.11, 0.09],
-                              [-0.03, 0.045, 0.11, 0.09]] },
-    /* 愛心（v1.121.1 照使用者給的 ❤️ 重排）：上面兩瓣，往下一階一階收成尖。
-       比第一版**矮而寬**（0.46 × 0.42，原本 0.41 × 0.50）——emoji 的心差不多是正方的，
-       高瘦的那版看起來像一顆水滴。七塊裡有五塊是在做「收下來」那條斜邊：
-       少一階就看得出是階梯，多一階在這個尺寸下看不出差別。
-       兩瓣中間**一定要留缺口**（各 0.17 寬、擺在 ±0.125，中間留 0.08）：兩瓣接起來就
-       只是一塊比較寬的方塊，整個圖示會讀成一個「T」（v1.121 第一版就是這樣，看圖看出來的）。 */
-    heart: { c: 0xff5f8a, r: [[-0.125, 0.375, 0.17, 0.09], [0.125, 0.375, 0.17, 0.09],
-                              [0, 0.285, 0.46, 0.09], [0, 0.195, 0.40, 0.09],
-                              [0, 0.115, 0.30, 0.07], [0, 0.055, 0.19, 0.05],
-                              [0, 0.015, 0.09, 0.03]] },
-    /* 生氣（v1.121.1 照使用者給的 💢 重排）：四道弧圍成一圈，缺口在四個斜角。
-       一道弧用兩塊斜方塊接成一個淺淺的尖（弧是圓的，方塊只能折），所以八塊都用掉了。
-       算法：半徑 0.185 的圓上，四道弧的中點分別在 0°／90°／180°／270°，各往兩邊張 36°
-       （所以缺口是 18° 的弧），每一塊就是那條 36° 弧的弦：長 2×0.185×sin18° = 0.114、
-       傾角 ±18°／±72°，圓心擺在 0.23 高（讓整組的底邊剛好落在錨點上）。
-       數字是照這個算出來的，不是一塊一塊試的——改半徑或張角要整組一起重算。
-       粗細與缺口是拍圖調的：弦要粗（0.095，約直徑的四分之一），細的話整圈讀成一個虛線
-       圓圈；缺口要留 18°，收到 10° 就變成一個實心的環，看不出是四道。
-       v1.121 原本畫的是「兩道怒眉 ＋ 兩顆眼睛」的皺眉臉（比過四版挑的），
-       使用者拿 💢 來指定形狀，所以換掉。 */
-    anger: { c: 0xe8342a, r: [[-0.054, 0.398, 0.114, 0.095, 0.314],
-                              [0.054, 0.398, 0.114, 0.095, -0.314],
-                              [0.167, 0.285, 0.114, 0.095, -1.257],
-                              [0.167, 0.176, 0.114, 0.095, 1.257],
-                              [0.054, 0.063, 0.114, 0.095, 0.314],
-                              [-0.054, 0.063, 0.114, 0.095, -0.314],
-                              [-0.167, 0.285, 0.114, 0.095, 1.257],
-                              [-0.167, 0.176, 0.114, 0.095, -1.257]] }
-  };
+  const EMO_COL = { bang: '#ffd23c', quest: '#54c7f0', heart: '#ff5f8a', anger: '#e8342a' };
+  /* 一格一格畫。座標都以「這一格的左上角」為原點，格子是 EMO_CELL 見方，
+     圖的實際範圍留在 14～114 之間（四邊各留一成的邊，縮放時才不會被鄰格切到）。 */
+  function paintEmo(g, kind, x0) {
+    const cx = x0 + EMO_CELL / 2, TAU = Math.PI * 2;
+    g.fillStyle = g.strokeStyle = EMO_COL[kind];
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    if (kind === 'bang') {
+      /* 驚嘆號：上寬下窄的一豎 ＋ 一點。梯形比方方正正的一條有精神，
+         而且上寬下窄看得出是「!」不是「l」。 */
+      g.beginPath();
+      g.moveTo(cx - 15, 16); g.lineTo(cx + 15, 16);
+      g.lineTo(cx + 9, 80); g.lineTo(cx - 9, 80);
+      g.closePath(); g.fill();
+      g.beginPath(); g.arc(cx, 102, 13, 0, TAU); g.fill();
+    } else if (kind === 'quest') {
+      /* 問號：一條粗線畫出「從左邊繞過上面、右邊轉下來、收回中線」的鉤，再點一點。
+         用畫的不用字型：字型在別台機器上不一定同一套，形狀會跟著跑。 */
+      g.lineWidth = 17;
+      g.beginPath();
+      g.arc(cx, 46, 23, Math.PI, Math.PI * 2 + 0.55, false);   // 左 → 上 → 右下
+      g.quadraticCurveTo(cx + 6, 72, cx, 84);                  // 收回中線
+      g.stroke();
+      g.beginPath(); g.arc(cx, 104, 10, 0, TAU); g.fill();
+    } else if (kind === 'heart') {
+      /* 愛心：兩條三次曲線接成的實心心形（使用者給的是 emoji 的實心心）。
+         上緣的凹在 (cx, 40)、下尖在 (cx, 108)，寬到 ±50——emoji 的心差不多是正方的。 */
+      g.beginPath();
+      g.moveTo(cx, 40);
+      g.bezierCurveTo(cx + 8, 22, cx + 26, 14, cx + 40, 20);
+      g.bezierCurveTo(cx + 58, 28, cx + 58, 54, cx + 44, 72);
+      g.bezierCurveTo(cx + 32, 87, cx + 12, 99, cx, 108);
+      g.bezierCurveTo(cx - 12, 99, cx - 32, 87, cx - 44, 72);
+      g.bezierCurveTo(cx - 58, 54, cx - 58, 28, cx - 40, 20);
+      g.bezierCurveTo(cx - 26, 14, cx - 8, 22, cx, 40);
+      g.fill();
+    } else {
+      /* 生氣：漫畫的怒氣符號（照使用者給的那張 💢 量的）——四道弧圍成一圈，
+         缺口在四個斜角。一道弧就是**一段畫粗了的圓弧**：圓心在正中央、半徑 R（中線）、
+         線寬 T、兩頭是圓的（lineCap round）。
+         三個數字都是從那張圖上量出來的比例：
+           · 線寬約半徑的三分之一（中間那個洞要占直徑的七成，洞小了就讀成一個實心的環）
+           · 一道張 ±31°，加上兩頭那半個圓頭大約各再多 9°，所以斜角還留得下缺口
+           · 兩頭要圓的：收成尖的話四道會讀成四片葉子（v1.122 畫過那一版）
+         v1.121 是拿小方塊排這個形狀的，排到第三版還是不像（太細讀成虛線圓圈、
+         太密讀成中空的菱形）——弧線本來就不是方塊排得出來的東西，所以整個換成貼圖。 */
+      const cy = 64, R = 47, T = 14, D = 0.55;
+      g.lineWidth = T;
+      for (let i = 0; i < 4; i++) {
+        const th = i * Math.PI / 2;
+        g.beginPath();
+        g.arc(cx, cy, R, th - D, th + D);
+        g.stroke();
+      }
+    }
+  }
+  function paintEmoAtlas() {
+    const cv = document.createElement('canvas');
+    cv.width = EMO_CELL * EMO_KINDS.length;
+    cv.height = EMO_CELL;
+    const g = cv.getContext('2d');
+    for (let i = 0; i < EMO_KINDS.length; i++) paintEmo(g, EMO_KINDS[i], i * EMO_CELL);
+    return cv;
+  }
   /* 身體各部位（相對小人原點）。x 會左右鏡射，所以只寫一半 */
   const BODY = [
     { p: [0, 0.60, 0], s: [0.50, 0.52, 0.34], c: 'suit' },   // 身體
@@ -1545,20 +1611,6 @@ const ENG = (function () {
     { p: [0.35, 0.82, 0], s: [0.28, 0.24, 0.42], c: 'skin', mus: 1 },     // 右肩
     { p: [-0.17, 0.78, 0.24], s: [0.30, 0.20, 0.10], c: 'skin', mus: 1 }, // 左胸肌（往前鼓 0.07）
     { p: [0.17, 0.78, 0.24], s: [0.30, 0.20, 0.10], c: 'skin', mus: 1 },  // 右胸肌
-    /* ── 表情圖示（v1.121）──────────────────────────────────────
-       五塊通用的小方塊，p／s 只是預設值——真正的位置、大小、顏色在 putWorker 裡照
-       EMO_ART 重算（沒表情的人縮到 0）。emo 是「第幾塊」，1 起算（0 是 falsy，
-       判不出來）；小人身上的 w.emo 是「哪一種表情」，兩個是不同的東西。
-       擺在魔法師那一段**前面**，理由同肌肉小人那一段：測試靠「BODY 最後一塊是寶珠」
-       認寶珠。 */
-    { p: [0, EMO_Y, 0], s: [0.15, 0.15, EMO_TH], c: 'emo', emo: 1 },
-    { p: [0, EMO_Y, 0], s: [0.15, 0.15, EMO_TH], c: 'emo', emo: 2 },
-    { p: [0, EMO_Y, 0], s: [0.15, 0.15, EMO_TH], c: 'emo', emo: 3 },
-    { p: [0, EMO_Y, 0], s: [0.15, 0.15, EMO_TH], c: 'emo', emo: 4 },
-    { p: [0, EMO_Y, 0], s: [0.15, 0.15, EMO_TH], c: 'emo', emo: 5 },
-    { p: [0, EMO_Y, 0], s: [0.15, 0.15, EMO_TH], c: 'emo', emo: 6 },
-    { p: [0, EMO_Y, 0], s: [0.15, 0.15, EMO_TH], c: 'emo', emo: 7 },
-    { p: [0, EMO_Y, 0], s: [0.15, 0.15, EMO_TH], c: 'emo', emo: 8 },
     /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
        巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
        只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
@@ -1584,9 +1636,6 @@ const ENG = (function () {
     hat: [0xf5e14b],
     plan: [0x2f6fd0],
     talk: [0xffffff],
-    /* 表情圖示的顏色是**照表情給的**（見 EMO_ART），不是照這個人的編號。
-       這裡還是要留一筆：BODY 每個 c 都要對得上一組色，漏一個整個 draw 會掛掉。 */
-    emo: [0xffffff],
     eye: [0x2a231d],
     shoe: [0x3b332c],
     belt: [0x4a4039],
@@ -1618,7 +1667,8 @@ const ENG = (function () {
         hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1,
         mage 是不是魔法師（戴巫師帽、拿法杖）,cast 施法深淺 0～1（杖抬多高、寶珠多亮）,
         mus 是不是肌肉小人（裸上半身、肩臂粗一圈）,
-        emo 頭上的表情圖示是哪一種（EMO_ART 的鍵，空的就是沒有）,emoK 圖示大小 0～1} */
+        emo 頭上的表情圖示是哪一種（EMO_KINDS 裡的字，空的就是沒有）,emoK 圖示大小 0～1
+        ——這兩個是 putEmotes 在用的，putWorker 本身不畫圖示} */
   function putWorker(i, w) {
     const piv = w.roll ? ROLL_PIVOT : 0;
     /* 沒在打滾但身體是斜的（被戳倒、被震倒、飛在半空翻滾）也要抬——
@@ -1632,22 +1682,10 @@ const ENG = (function () {
     scratch.rotation.set(w.tilt || 0, w.a, w.roll ? (w.rspin || 0) : 0, 'YZX');
     scratch.scale.setScalar(w.scale || 1);
     scratch.updateMatrix();
-    /* 這一幀要畫的表情圖樣，沒有就是 null（v1.121）。**身體不是站直的就不畫**：
-       圖示是掛在身體上的一組部位，躺著、打滾的人頭上那個圖會跟著翻過去。
-       規則那邊也會在被炸飛／著火／倒下時把 emoK 收掉（見 game-workers.js），
-       這裡再擋一次是因為「站不站得直」本來就是畫面上的事。 */
-    const art = w.emoK > 0.02 && !w.roll && Math.abs(w.tilt || 0) < 0.15
-                ? EMO_ART[w.emo] : null;
-    /* 圖示要正對鏡頭：拿「小人 → 鏡頭」的水平方位角，扣掉他自己的朝向（外層矩陣已經
-       轉過 w.a 了）。每個人算一次就好，不必每一塊都算。 */
-    const eface = art ? Math.atan2(camera.position.x - w.x, camera.position.z - w.z) - w.a : 0;
     for (let k = 0; k < WPARTS; k++) {
       const b = BODY[k];
       scratchB.position.set(b.p[0], b.p[1], b.p[2]);
-      /* 順序寫明 XYZ（就是預設值）：表情圖示那一段會改成 YZX，而 rotation.set 不給
-         order 是沿用上一次的——不寫死的話，下一個部位的手臂姿勢（同時給 x 與 z）
-         會被上一塊留下的順序改掉。 */
-      scratchB.rotation.set(0, 0, 0, 'XYZ');
+      scratchB.rotation.set(0, 0, 0);
       scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
       /* 走路時腿前後擺。擺的是「以髖關節為圓心」，所以往前挪多少要看這一塊離髖多遠——
          鞋子掛在腳底（離髖 0.36），照腿的 0.21 挪的話鞋會從腿上掉出來。 */
@@ -1714,22 +1752,6 @@ const ENG = (function () {
           scratchB.position.y = b.p[1] + Math.sin(w.ph * 2.6) * 0.05;
         }
       }
-      /* 表情圖示（v1.121）：五塊通用的方塊照圖樣表擺，永遠正對鏡頭。
-         位置與大小**都**乘上 emoK，所以是從錨點長出來的，不是原地放大。 */
-      if (b.emo) {
-        const r = art && art.r[b.emo - 1];
-        if (!r) scratchB.scale.setScalar(0);       // 沒表情，或這個圖樣用不到這一塊
-        else {
-          const k = w.emoK, ox = r[0] * k;
-          /* 連 x 方向的偏移都要跟著轉：只轉方塊自己的話，鏡頭一轉那幾塊會散成
-             前後排——看到的是圖示的側面，一條線。 */
-          scratchB.position.set(ox * Math.cos(eface),
-                                EMO_Y + r[1] * k + Math.sin(w.ph * 2.2) * EMO_BOB,
-                                -ox * Math.sin(eface));
-          scratchB.rotation.set(0, eface, r[4] || 0, 'YZX');   // R = Ry(正對鏡頭)·Rz(斜角)
-          scratchB.scale.set(r[2] * k, r[3] * k, EMO_TH * k);
-        }
-      }
       /* 魔法師戴巫師帽，安全帽那三塊收掉——兩頂疊在同一顆頭上會直接穿模。 */
       if (b.hard && w.mage) scratchB.scale.setScalar(0);
       /* 巫師帽與法杖只有魔法師有。杖與寶珠跟著施法深淺（w.cast 0～1）抬起來，
@@ -1758,10 +1780,6 @@ const ENG = (function () {
       if (w.burnK) tmpC.lerp(CHAR, w.burnK);
       // wetK：被水噴到之後整個人要乘的倍率（沒濕就不給）。深淺是規則那邊定的，不在這裡寫死
       if (w.wetK) tmpC.multiplyScalar(w.wetK);
-      /* 表情圖示的顏色照**表情**給（見 EMO_ART），不是照這個人的編號。擺在焦黑與潮濕
-         那兩個倍率後面：圖示是頭上的一個記號，不是身體的一部分——被燒過的人冒愛心，
-         那顆心不該是焦的。 */
-      if (b.emo && art) tmpC.setHex(art.c);
       workerMesh.setColorAt(i * WPARTS + k, tmpC);
     }
   }
@@ -1769,6 +1787,48 @@ const ENG = (function () {
     workerMesh.instanceMatrix.needsUpdate = true;
     if (workerMesh.instanceColor) workerMesh.instanceColor.needsUpdate = true;
     dropSphere(workerMesh);
+  }
+
+  /* ── 頭上的表情圖示（v1.122）───────────────────────────────
+     list 就是小人那個陣列（規則那邊直接丟 workers 進來），一個人最多畫一片。
+     每一片是四個頂點，位置直接用**鏡頭的右向量與上向量**拼出來——這樣它永遠正對鏡頭，
+     連俯角都跟著（十字星光是同一套，只是那邊用四元數轉整個 instance）。
+     用鏡頭的**四元數**不是 matrixWorld：矩陣要等 render() 才重算，
+     這裡是 render 之前跑的，拿到的會是上一幀的角度，轉鏡頭時圖示會慢一拍。 */
+  const EMO_SX = [-1, 1, 1, -1], EMO_SY = [1, 1, -1, -1];   // 左上、右上、右下、左下
+  function putEmotes(list) {
+    let n = 0;
+    _emoR.set(1, 0, 0).applyQuaternion(camera.quaternion);
+    _emoU.set(0, 1, 0).applyQuaternion(camera.quaternion);
+    for (let i = 0; i < list.length && n < MAXW; i++) {
+      const w = list[i];
+      const k = w.emoK || 0, cell = EMO_IDX[w.emo];
+      /* 身體不是站直的就不畫：圖示是「掛在頭上」的，人躺著、打滾的時候那一片還飄在
+         原處會很突兀。規則那邊也會在被炸飛／著火／倒下時把 emoK 收掉
+         （見 game-workers.js 的 stepEmo），這裡再擋一次是因為「站不站得直」
+         本來就是畫面上的事。 */
+      if (k < 0.02 || cell === undefined || w.roll || Math.abs(w.tilt || 0) > 0.15) continue;
+      /* 大小與高度**都**乘上 emoK：底邊固定在 EMO_Y，所以是從錨點長出來的，
+         不是原地放大（半高 = 中心高 − EMO_Y，兩個都乘 k 就永遠對得起來）。
+         整組再乘上這個人的身高——矮的人頭上那個圖也該小一點。 */
+      const s = w.scale || 1, hs = EMO_SIZE * 0.5 * k * s;
+      const cy = w.y + (EMO_Y + EMO_SIZE * 0.5 * k) * s + Math.sin(w.ph * 2.2) * EMO_BOB * s;
+      const u0 = cell / EMO_KINDS.length, u1 = (cell + 1) / EMO_KINDS.length;
+      const o = n * 12, t = n * 8;
+      for (let c = 0; c < 4; c++) {
+        const a = EMO_SX[c] * hs, b = EMO_SY[c] * hs;
+        emoPos[o + c * 3] = w.x + _emoR.x * a + _emoU.x * b;
+        emoPos[o + c * 3 + 1] = cy + _emoR.y * a + _emoU.y * b;
+        emoPos[o + c * 3 + 2] = w.z + _emoR.z * a + _emoU.z * b;
+        emoUv[t + c * 2] = c === 1 || c === 2 ? u1 : u0;
+        emoUv[t + c * 2 + 1] = c < 2 ? 1 : 0;      // canvas 的上緣是 v=1（貼圖預設 flipY）
+      }
+      n++;
+    }
+    emoGeo.setDrawRange(0, n * 6);
+    emoGeo.attributes.position.needsUpdate = true;
+    emoGeo.attributes.uv.needsUpdate = true;
+    emoMesh.visible = n > 0;
   }
 
   /* ── 樹 ───────────────────────────────────────────── */
@@ -2044,16 +2104,16 @@ const ENG = (function () {
   return {
     init, resize, render, info, pick,
     setBlockCount, putBlock, commitBlocks,
-    setWorkerCount, putWorker, commitWorkers,
+    setWorkerCount, putWorker, commitWorkers, putEmotes,
     putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
     putBalls, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP,
-    MARK_SEG, EMO_ART, EMO_Y,
+    MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE,
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh, poolMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh, poolMesh, emoMesh }; }
   };
 })();

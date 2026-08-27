@@ -1940,7 +1940,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const pose = extra => {
       const w = workers[1];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
-                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0, emo: '', emoK: 0 }, extra);
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0 }, extra);
       ENG.putWorker(1, w);
       const m = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
       for (let k = 0; k < ENG.WPARTS; k++) {
@@ -3330,7 +3330,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const look = (i, extra) => {
       const w = workers[i];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
-                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0, emo: '', emoK: 0,
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
                          cast: 0 }, extra);
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -3637,7 +3637,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const read = i => {
       const w = workers[i];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
-                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0, emo: '', emoK: 0,
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
                          cast: 0, burnK: 0, wetK: 0 });
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -3757,113 +3757,124 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 表情圖示 ══════════ */
   head('表情圖示');
-  /* 頭上的小圖示（v1.121）：驚嘆號／問號／愛心／生氣。五塊通用的方塊照圖樣表重擺，
-     所以這裡量三件事——① 四種都畫得出來、擺在頭上不在身上 ② 永遠正對鏡頭
-     ③ 該冒的那一刻真的冒了。
-     認圖示的方塊用**顏色**：圖示的顏色是照表情給的（EMO_ART），身上其他部位都是照
-     這個人的編號給的膚色／衣色，不會撞。 */
+  /* 頭上的小圖示（v1.121，v1.122 從方塊換成貼圖）：驚嘆號／問號／愛心／生氣。
+     現在是一片正對鏡頭的四邊形，貼上啟動時用 canvas 畫好的那張橫條圖，所以這裡量
+     三件事——① 貼圖畫出來了、四格各一種 ② 那一片擺在頭上、正對鏡頭、從錨點長出來
+     ③ 該冒的那一刻真的冒了。 */
   const emoDraw = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 300; setWorkerCount(8); startBuild(true);
     ENG.cam.shake = 0; ENG.orbit(0, 0);            // 甩掉前面測試留下的震動與鏡頭動畫
-    const KINDS = ['bang', 'quest', 'heart', 'anger'];
-    const cols = KINDS.map(k => { const c = new THREE.Color().setHex(ENG.EMO_ART[k].c);
-                                  return [c.r, c.g, c.b]; });
-    const w = workers[0], M = new THREE.Matrix4(), v = new THREE.Vector3();
-    /* 擺一個姿勢，回傳「這一幀畫出來的圖示方塊」（相對小人原點、已經除掉身高）。
-       hy 是這一塊在世界 y 方向的半高（照旋轉後的三根軸算，斜的那幾塊也算得對）。 */
-    const read = (kind, extra) => {
-      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
-                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
-                         air: 0, burn: 0, burnK: 0, wetK: 0, cast: 0,
-                         emo: kind, emoT: 1, emoK: 1 }, extra);
-      ENG.putWorker(0, w);
-      const col = ENG.three.workerMesh.instanceColor.array, s = w.scale, out = [];
-      for (let k = 0; k < ENG.WPARTS; k++) {
-        ENG.three.workerMesh.getMatrixAt(k, M);
-        const e = M.elements;
-        if (Math.hypot(e[0], e[1], e[2]) < 1e-4) continue;      // 縮成 0 的（用不到的那幾塊）
-        const ci = cols.findIndex(c => Math.abs(col[k * 3] - c[0]) < 3e-3 &&
-                                       Math.abs(col[k * 3 + 1] - c[1]) < 3e-3 &&
-                                       Math.abs(col[k * 3 + 2] - c[2]) < 3e-3);
-        if (ci < 0) continue;                                   // 不是圖示的顏色：身體部位
-        v.setFromMatrixPosition(M);
-        out.push({ ci, x: v.x / s, y: v.y / s, z: v.z / s,
-                   hy: 0.5 * (Math.abs(e[1]) + Math.abs(e[5]) + Math.abs(e[9])) / s });
+    const KINDS = ENG.EMO_KINDS, geo = ENG.three.emoMesh.geometry;
+    /* 貼圖：一張橫條圖，一格一種表情。這裡把每一格的像素撈出來看
+       ——有沒有畫東西、四格是不是四個顏色。 */
+    const cv = ENG.three.emoMesh.material.map.image;
+    const cell = cv.height, g2 = cv.getContext('2d');
+    const ink = [], hue = [];
+    for (let i = 0; i < KINDS.length; i++) {
+      const d = g2.getImageData(i * cell, 0, cell, cell).data;
+      let n = 0, r = 0, gg = 0, b = 0;
+      for (let j = 0; j < d.length; j += 4) {
+        if (d[j + 3] < 128) continue;              // 透明的不算
+        n++; r += d[j]; gg += d[j + 1]; b += d[j + 2];
       }
-      return out;
+      ink.push(+(n / (cell * cell)).toFixed(3));
+      hue.push(n ? [r, gg, b].map(v => Math.round(v / n)).join(',') : '');
+    }
+    /* 擺一個人、看那一片畫在哪裡。回傳的是「相對這個人的腳底、除掉身高」的四個角。 */
+    const pose = extra => {
+      const w = workers[0];
+      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, tilt: 0, roll: 0,
+                         emo: 'heart', emoT: 1, emoK: 1 }, extra);
+      ENG.putEmotes([w]);
+      const n = geo.drawRange.count / 6, p = geo.attributes.position.array;
+      const uv = geo.attributes.uv.array, s = w.scale;
+      const pt = i => ({ x: (p[i * 3] - w.x) / s, y: (p[i * 3 + 1] - w.y) / s,
+                         z: (p[i * 3 + 2] - w.z) / s });
+      return { n, vis: ENG.three.emoMesh.visible, corner: [0, 1, 2, 3].map(pt),
+               u0: +uv[0].toFixed(4), scale: s };
     };
-    const box = g => ({ n: g.length,
-                        lo: +Math.min(...g.map(p => p.y - p.hy)).toFixed(2),
-                        hi: +Math.max(...g.map(p => p.y + p.hy)).toFixed(2),
-                        ci: g.every(p => p.ci === g[0].ci) ? g[0].ci : -1 });
-    const shot = KINDS.map(k => box(read(k)));
-    const none = read('', { emo: '', emoT: 0, emoK: 0 }).length;
-    /* 正對鏡頭：圖示的橫軸（分得最開的那兩塊）要垂直於「小人 → 鏡頭」的水平方向。
-       愛心上面兩瓣一左一右（±0.09），所以那個橫軸量得到。
-       故意連**小人自己的朝向**一起換：圖示是掛在身體上的，扣掉 w.a 那一項寫錯的話，
-       人一轉身圖就跟著轉走了。 */
+    /* mid 是四個角的平均高度（＝那一片的中心）。**不看最低的那個角**：那一片是正對鏡頭的，
+       鏡頭有俯角時它跟著仰起來，最低的角自然會比錨點高一點（俯角 0.42 時高 0.027）。
+       「從錨點長出來」要看的是中心離錨點多高，那個才會乖乖跟著 emoK 走。 */
+    const box = c => ({ lo: +Math.min(...c.map(p => p.y)).toFixed(3),
+                        hi: +Math.max(...c.map(p => p.y)).toFixed(3),
+                        mid: +(c.reduce((a, p) => a + p.y, 0) / 4).toFixed(3),
+                        w: +Math.hypot(c[1].x - c[0].x, c[1].y - c[0].y, c[1].z - c[0].z).toFixed(3) });
+    const full = pose({});
+    const half = pose({ emoK: 0.4 });
+    const none = pose({ emo: '', emoT: 0, emoK: 0 });
+    const flat = pose({ tilt: -Math.PI * 0.5 });
+    const rolling = pose({ roll: 1, tilt: 0.4 });
+    // 四種表情各自吃貼圖的哪一格（u0 應該是 0、0.25、0.5、0.75）
+    const cells = KINDS.map(k => pose({ emo: k }).u0);
+    /* 正對鏡頭：那一片的法線要跟**鏡頭的正前方**平行（公告板就是這個定義——整片跟
+       近平面平行，不是每一片各自朝鏡頭的位置轉；偏離視軸的那幾片才不會歪來歪去）。
+       故意連小人自己的朝向一起換——一片掛在頭上的圖，不該跟著人轉。 */
     const face = [];
+    const fwd = new THREE.Vector3();
     for (const [yaw, a] of [[0, 0], [1.2, 0], [2.5, 0], [0.7, 1.4], [4.0, -2.2]]) {
       ENG.cam.yaw = yaw; ENG.updateCamera(0.016);
-      const g = read('heart', { a });
-      const p = ENG.three.camera.position;
-      const dl = Math.hypot(p.x - w.x, p.z - w.z);
-      const dx = (p.x - w.x) / dl, dz = (p.z - w.z) / dl;
-      let bd = 0, ax = 0, az = 0;
-      for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
-        const d = Math.hypot(g[i].x - g[j].x, g[i].z - g[j].z);
-        if (d > bd) { bd = d; ax = (g[i].x - g[j].x) / d; az = (g[i].z - g[j].z) / d; }
-      }
-      face.push({ span: +bd.toFixed(3), dot: +Math.abs(ax * dx + az * dz).toFixed(3) });
+      const c = pose({ a }).corner;
+      const e1 = [c[1].x - c[0].x, c[1].y - c[0].y, c[1].z - c[0].z];
+      const e2 = [c[3].x - c[0].x, c[3].y - c[0].y, c[3].z - c[0].z];
+      const nx = e1[1] * e2[2] - e1[2] * e2[1], ny = e1[2] * e2[0] - e1[0] * e2[2],
+            nz = e1[0] * e2[1] - e1[1] * e2[0];
+      const nl = Math.hypot(nx, ny, nz);
+      fwd.set(0, 0, -1).applyQuaternion(ENG.three.camera.quaternion);
+      face.push(+Math.abs((nx * fwd.x + ny * fwd.y + nz * fwd.z) / nl).toFixed(3));
     }
     ENG.cam.yaw = 0.9; ENG.updateCamera(0.016);
-    // 從一個點長出來：emoK 減半，整組的偏移與大小都要跟著減半（不是原地縮放）
-    const full = read('heart'), half = read('heart', { emoK: 0.4 });
-    const spread = g => Math.max(...g.map(p => Math.abs(p.x))) ;
-    // 站不直的時候不畫（圖會跟著身體翻過去）
-    const flat = read('heart', { tilt: -Math.PI * 0.5, fall: 1 }).length;
-    const rolling = read('heart', { roll: 1, tilt: 0.4 }).length;
-    return { shot, none, face, flat, rolling,
-             fullSpread: +spread(full).toFixed(3), halfSpread: +spread(half).toFixed(3),
-             fullLo: +Math.min(...full.map(p => p.y - p.hy)).toFixed(3),
-             halfLo: +Math.min(...half.map(p => p.y - p.hy)).toFixed(3),
-             fullHi: +Math.max(...full.map(p => p.y + p.hy)).toFixed(3),
-             halfHi: +Math.max(...half.map(p => p.y + p.hy)).toFixed(3),
-             emoY: ENG.EMO_Y };
+    // 八個人一起冒：一個人一片，沒表情的不畫
+    for (const w of workers) { w.emo = ''; w.emoT = 0; w.emoK = 0; w.tilt = 0; w.roll = 0; }
+    for (let i = 0; i < 3; i++) { workers[i].emo = 'bang'; workers[i].emoT = 1; workers[i].emoK = 1; }
+    ENG.putEmotes(workers);
+    const many = ENG.three.emoMesh.geometry.drawRange.count / 6;
+    return { ink, hue, cells, face, many, n: workers.length,
+             isCanvas: cv.tagName === 'CANVAS', texW: cv.width, texH: cv.height,
+             fullN: full.n, noneN: none.n, noneVis: none.vis, flatN: flat.n, rollN: rolling.n,
+             fullBox: box(full.corner), halfBox: box(half.corner),
+             emoY: ENG.EMO_Y, emoSize: ENG.EMO_SIZE };
   });
-  /* 一種圖示最多八塊（部位就開八塊）。塊數寫死在這裡是故意的：圖樣是手排的，
-     少一塊問號就退化成「7」、愛心的尖會禿一截——改壞了要當場紅，
-     不是「反正還是畫得出東西」。 */
-  ok('四種表情圖示都畫得出來，各自的顏色也對得上圖樣表',
-     emoDraw.shot.map(s => s.n).join(',') === '2,5,7,8' &&
-     emoDraw.shot.every((s, i) => s.ci === i) && emoDraw.none === 0,
-     '驚嘆號 ' + emoDraw.shot[0].n + ' 塊、問號 ' + emoDraw.shot[1].n +
-     '、愛心 ' + emoDraw.shot[2].n + '、生氣 ' + emoDraw.shot[3].n +
-     '（上限 8）；沒表情時 ' + emoDraw.none + ' 塊');
+  /* 貼圖是**啟動時用 canvas 現畫的**，不是外部檔案：file:// 下外部圖片拿去當 WebGL 貼圖
+     會被當成跨來源而失敗（這支遊戲要能雙擊開檔），而且不必多帶一個檔案。
+     四格要各自有東西、而且是四個顏色——畫壞成空白格的話，畫面上就是「什麼都沒冒」。 */
+  ok('四種表情圖示畫在同一張程式產生的貼圖上，四格都有圖、顏色各不相同',
+     emoDraw.isCanvas && emoDraw.texW === emoDraw.texH * 4 &&
+     emoDraw.ink.every(v => v > 0.03 && v < 0.5) &&
+     new Set(emoDraw.hue).size === 4,
+     (emoDraw.isCanvas ? 'canvas ' : '外部圖檔 ') + emoDraw.texW + '×' + emoDraw.texH +
+     '，各格著色比例 ' + emoDraw.ink.join('／') + '；顏色 ' + emoDraw.hue.join(' '));
+  ok('四種表情各自吃貼圖的一格',
+     emoDraw.cells.join(',') === '0,0.25,0.5,0.75',
+     'u 起點 ' + emoDraw.cells.join('、') + '（一格 0.25）');
+  /* 一個人最多一片，沒表情的人不占位子；全場都沒表情時整片關掉——
+     關掉才是 0 個 draw call，只把 count 設 0 的話那顆 mesh 還是會被送去畫。 */
+  ok('一個人一片，沒表情的不畫，全場都沒有就整片關掉',
+     emoDraw.fullN === 1 && emoDraw.noneN === 0 && emoDraw.noneVis === false &&
+     emoDraw.many === 3,
+     '一個人冒 → ' + emoDraw.fullN + ' 片；沒表情 → ' + emoDraw.noneN +
+     ' 片、visible=' + emoDraw.noneVis + '；八個人裡三個冒 → ' + emoDraw.many + ' 片');
   /* 浮在帽子上面：安全帽頂 1.31、巫師帽尖 1.75。低於 1.75 的話魔法師的圖示會插進帽子裡。 */
   ok('圖示浮在帽子上面，而且只有一個圖示那麼大',
-     emoDraw.shot.every(s => s.lo >= 1.78 && s.hi <= 2.35),
-     '底邊 ' + emoDraw.shot.map(s => s.lo).join('／') + '、頂邊 ' +
-     emoDraw.shot.map(s => s.hi).join('／') + '（錨點 ' + emoDraw.emoY + '、巫師帽尖 1.75）');
-  ok('轉鏡頭、轉小人，圖示都正對著看的人',
-     emoDraw.face.every(f => f.span > 0.1 && f.dot < 0.03),
-     '五組角度：橫軸與視線的內積 ' + emoDraw.face.map(f => f.dot).join('、') +
-     '（0＝正對）、寬 ' + emoDraw.face.map(f => f.span).join('、'));
-  /* 從錨點長出來：emoK 減成 0.4，攤開的寬度與「頂邊離錨點多高」都要跟著變成 0.4 倍，
-     而底邊**不動**（錨點就是圖示的底邊，位置與大小同時乘 emoK 的必然結果）。
-     只驗大小的話，「原地放大」也會過——那種長法會讓整個圖示從錨點的上方冒出來。 */
+     emoDraw.fullBox.lo >= 1.79 && emoDraw.fullBox.hi <= 2.45 &&
+     Math.abs(emoDraw.fullBox.w - emoDraw.emoSize) < 0.01,
+     '底邊 ' + emoDraw.fullBox.lo + '、頂邊 ' + emoDraw.fullBox.hi + '、邊長 ' +
+     emoDraw.fullBox.w + '（錨點 ' + emoDraw.emoY + '、巫師帽尖 1.75）');
+  /* 從錨點長出來：emoK 減成 0.4，那一片的邊長跟著變成 0.4 倍，而底邊**不動**
+     （錨點就是圖示的底邊）。只驗大小的話，「原地放大」也會過。 */
   ok('圖示是從錨點長出來的，不是原地放大',
-     Math.abs(emoDraw.halfSpread - emoDraw.fullSpread * 0.4) < 0.005 &&
-     Math.abs((emoDraw.halfHi - emoDraw.emoY) - (emoDraw.fullHi - emoDraw.emoY) * 0.4) < 0.005 &&
-     Math.abs(emoDraw.fullLo - emoDraw.emoY) < 0.005 &&
-     Math.abs(emoDraw.halfLo - emoDraw.emoY) < 0.005,
-     'emoK=1 時攤開 ' + emoDraw.fullSpread + '、頂邊高出錨點 ' +
-     (emoDraw.fullHi - emoDraw.emoY).toFixed(3) + '；emoK=0.4 時 ' + emoDraw.halfSpread +
-     '、' + (emoDraw.halfHi - emoDraw.emoY).toFixed(3) + '（底邊都停在錨點 ' +
-     emoDraw.fullLo + '／' + emoDraw.halfLo + '）');
-  ok('躺著、打滾的時候不畫圖示', emoDraw.flat === 0 && emoDraw.rolling === 0,
-     '躺平畫了 ' + emoDraw.flat + ' 塊、打滾 ' + emoDraw.rolling + ' 塊');
+     Math.abs(emoDraw.halfBox.w - emoDraw.fullBox.w * 0.4) < 0.005 &&
+     Math.abs((emoDraw.fullBox.mid - emoDraw.emoY) - emoDraw.emoSize / 2) < 0.005 &&
+     Math.abs((emoDraw.halfBox.mid - emoDraw.emoY) - emoDraw.emoSize / 2 * 0.4) < 0.005,
+     'emoK=1 時邊長 ' + emoDraw.fullBox.w + '、中心離錨點 ' +
+     (emoDraw.fullBox.mid - emoDraw.emoY).toFixed(3) + '；emoK=0.4 時 ' + emoDraw.halfBox.w +
+     '、' + (emoDraw.halfBox.mid - emoDraw.emoY).toFixed(3) + '（都是 0.4 倍）');
+  ok('轉鏡頭、轉小人，圖示都正對著看的人',
+     emoDraw.face.every(v => v > 0.999),
+     '五組角度：法線與鏡頭正前方的內積 ' + emoDraw.face.join('、') + '（1＝正對）');
+  ok('躺著、打滾的時候不畫圖示', emoDraw.flatN === 0 && emoDraw.rollN === 0,
+     '躺平 ' + emoDraw.flatN + ' 片、打滾 ' + emoDraw.rollN + ' 片');
 
   /* 情境：哪一刻冒哪一個。每一條都直接觸發那個入口（不是等它自己碰巧發生），
      這樣紅了就知道是那個掛鉤斷了。 */
@@ -10094,7 +10105,6 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const w = workers[0];
     w.x = 0; w.z = 0; w.y = 0; w.a = 0; w.gait = 0; w.carry = false;
     w.plan = 0; w.bub = 0; w.scale = 1.2; w.roll = 0; w.tilt = 0; w.rspin = 0;
-    w.emo = ''; w.emoK = 0;                             // 表情圖示會是最高的那一塊，量身高前先關掉
     const m = new THREE.Matrix4(), v = new THREE.Vector3();
     const pos = k => { ENG.three.workerMesh.getMatrixAt(k, m); v.setFromMatrixPosition(m); return v.clone(); };
     const read = () => {
