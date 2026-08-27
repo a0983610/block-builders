@@ -1925,6 +1925,10 @@ const ENG = (function () {
                                 (radius * 1.05 + 2) / Math.sin(halfH)) * FIT_MARGIN;
       camTarget.ty = atBase ? 0 : height * 0.44 + 1.5;
       camTarget.tx = camTarget.tz = 0;        // 取景時把鏡頭帶回工地中心
+      /* 重新取景就把「等一下要還的高度」作廢（見 holdWide 的 temp）。
+         換場不收道具（v1.59），所以煙火可能跨場繼續放——那時候記著的是**上一座**
+         的視線高，還回去等於拿舊建築的取景蓋掉新的。重新取景本來就蓋過一切。 */
+      tyHold = 0; tyBack = 0; tyTop = 0;
       if (instant) { cam.dist = camTarget.dist; cam.ty = camTarget.ty; cam.tx = cam.tz = 0; }
     }
     // 陰影相機要蓋住整片工地，不然大建築跟遠處碎料的影子會被裁掉
@@ -1973,14 +1977,37 @@ const ENG = (function () {
      只退不收：退開之後就停在那個視距，要拉回來是玩家自己滾輪的事。
      以前是幾秒後用最後一次取景的參數自己收回去，但那等於每放一發就把鏡頭搶走兩次
      （退開一次、收回一次），連放兩發還會在遠近之間來回跳。
-     只退不收也不會越退越遠：距離取的是「現在」與「這一發要的」之中的大者。 */
-  function holdWide(top, radius) {
+     只退不收也不會越退越遠：距離取的是「現在」與「這一發要的」之中的大者。
+
+     **temp＝true 的那些用完會把視線高度還回去**（v1.123，使用者：「如果是會讓鏡頭
+     往高的方向調整的運鏡 結束後高度要調回來（煙火一起調整）」）。只退不收對核彈
+     那種「炸完就換場」的很合理，但煙火放完只有幾秒，收工之後鏡頭卻一直仰著看天空
+     ——量過：羅馬競技場的取景視線高 0，放一發煙火之後變成 29，然後就停在那裡，
+     自己的建築被推到畫面下緣。
+     **只還高度不還視距**：退遠了本來就看得到全景，而且視距是玩家滾輪在管的
+     （見上面「只退不收」的理由）；會把建築推出畫面的是仰角不是距離。
+     用計數不用旗標：一次點下去就是三發煙火、連放兩次會有好幾個效果同時抬著，
+     每個結束都收的話第一發打完就把鏡頭壓回去了。
+     中途要是有「不還」的效果也抬高了（核彈的蘑菇雲），把落點一起抬上去，
+     免得煙火放完連核彈要的高度都一起壓掉。
+     最後，玩家自己按 Z／X 把視線抬得比我們更高的話就不要動它——那是他的視角。 */
+  let tyHold = 0, tyBack = 0, tyTop = 0;
+  function holdWide(top, radius, temp) {
     const halfV = camera.fov * Math.PI / 360;
     const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
     const need = Math.max(top * 0.5 / Math.sin(halfV), radius / Math.sin(halfH)) * HOLD_MARGIN;
     camTarget.dist = Math.max(camTarget.dist, need);
+    if (temp) { if (!tyHold) { tyBack = camTarget.ty; tyTop = 0; } tyHold++; }
+    else if (tyHold) tyBack = Math.max(tyBack, top * 0.5);
     camTarget.ty = Math.max(camTarget.ty, top * 0.5);
+    if (tyHold) tyTop = Math.max(tyTop, camTarget.ty);
     setFog();
+  }
+  /* 一個 temp 的效果結束了。最後一個結束時才真的把高度還回去。 */
+  function releaseWide() {
+    if (tyHold <= 0 || --tyHold > 0) return;
+    if (camTarget.ty <= tyTop + 0.01) camTarget.ty = Math.min(camTarget.ty, tyBack);
+    tyTop = 0;
   }
 
   function updateCamera(dt) {
@@ -2123,7 +2150,7 @@ const ENG = (function () {
     putBalls, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks,
-    fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide,
+    fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST,
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），

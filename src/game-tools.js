@@ -1881,8 +1881,24 @@ function launchFw(p) {
                   t: i * rr(FW_GAP[0], FW_GAP[1]) });
   }
   /* 跟龍捲風、蘑菇雲同一套：不退鏡頭的話整發都在畫面外。
-     量過：貼著中世紀城堡的取景，炸開那一刻火星的 NDC y 是 1.5（1 就已經出界了）。 */
-  ENG.holdWide(FW_HOLD_TOP, FW_HOLD_R);
+     量過：貼著中世紀城堡的取景，炸開那一刻火星的 NDC y 是 1.5（1 就已經出界了）。
+     **但這一發是「用完要還」的**（v1.123，使用者：「如果是會讓鏡頭往高的方向調整的
+     運鏡 結束後高度要調回來（煙火一起調整）」）：煙火十秒就放完了，鏡頭卻一直仰著
+     看天空——量過羅馬競技場是視線高 0 → 29，之後就停在那裡。
+     所以第三個參數給 true，火星全熄之後在 fwEnd() 還回去。
+     視距不還，只還高度：把建築推出畫面的是仰角不是距離（見 ENG.holdWide）。 */
+  fwHold++;
+  ENG.holdWide(FW_HOLD_TOP, FW_HOLD_R, true);
+}
+/* 還欠幾次「把視線高度還回去」。一次點下去是三發、還可以連點，
+   所以要記次數——見 fwEnd()。 */
+let fwHold = 0;
+/* 一輪煙火真的放完了（沒有待發、沒有在竄、沒有火星）就把高度還回去。
+   stepFw 的兩個出口都要叫：上面那個 early return 是「沒有火星要算」的捷徑，
+   而最後一顆火星熄掉的下一幀走的正是它。 */
+function fwEnd() {
+  if (fwWait || fworks || fwSparks) return;
+  while (fwHold > 0) { fwHold--; ENG.releaseWide(); }
 }
 /* 一發：抽兩個顏色（外層一個、芯一個），高度也各抽一個 */
 function fireShell(x, z) {
@@ -2031,7 +2047,7 @@ function stepFw(dt) {
     }
     if (!fworks.length) fworks = null;
   }
-  if (!fwSparks) return;
+  if (!fwSparks) { fwEnd(); return; }
   const drag = Math.pow(FW_DRAG, dt);
   for (let i = fwSparks.length - 1; i >= 0; i--) {
     const s = fwSparks[i];
@@ -2054,6 +2070,7 @@ function stepFw(dt) {
     if (blockAt(mx, my, mz) || homeSolid(mx, my, mz)) { igniteAt(mx, my, mz); fwSparks.splice(i, 1); }
   }
   if (!fwSparks.length) fwSparks = null;
+  fwEnd();
 }
 
 /* 爆炸的餘火：範圍內 st 這個狀態的積木隨機點幾塊起來。限量是必要的——

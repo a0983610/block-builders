@@ -10119,6 +10119,95 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fwLayer.crackers + ' 顆帶二次炸開（各炸 ' + fwLayer.crackN + ' 顆），火星數從 ' +
      fwLayer.n0 + ' 漲到 ' + fwLayer.peak);
 
+  /* 放完把視線高度還回去（v1.123，使用者：「如果是會讓鏡頭往高的方向調整的運鏡
+     結束後高度要調回來（煙火一起調整）」）。改之前量到：羅馬競技場的取景視線高 0，
+     放一發煙火變成 29，然後就停在那裡——收工之後鏡頭一直仰著看天空。
+     三件事一起驗：
+     ① 期間抬起來、放完還回去，而**視距留著**（退遠了本來就看得到全景，
+        會把建築推出畫面的是仰角；而且視距是玩家滾輪在管的）。
+     ② 連放兩輪不會被第一輪放完就壓回去（所以是計數不是旗標）。
+     ③ 玩家自己按 Z／X 抬得比我們更高的話就不要動它——那是他的視角。 */
+  const fwCam = await page.evaluate(() => {
+    const run = fn => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '羅馬競技場');
+      targetCnt = 2000; startBuild(true); completeNow(); shapePick = -1;
+      for (let i = 0; i < 20; i++) step(0.05);
+      return fn();
+    };
+    const wait = () => { let g = 0; while ((fworks || fwSparks || fwWait) && g++ < 900) step(0.05); };
+    const one = run(() => {
+      const ty0 = ENG.camTarget.ty, d0 = ENG.camTarget.dist;
+      launchFw({ x: 0, z: 0 });
+      const tyUp = ENG.camTarget.ty, dUp = ENG.camTarget.dist;
+      wait(); step(0.05);
+      return { ty0: +ty0.toFixed(1), tyUp: +tyUp.toFixed(1), ty1: +ENG.camTarget.ty.toFixed(1),
+               d0: +d0.toFixed(1), dUp: +dUp.toFixed(1), d1: +ENG.camTarget.dist.toFixed(1) };
+    });
+    // 第二輪在第一輪還沒放完時點下去：第一輪收工不能把鏡頭壓回去
+    const two = run(() => {
+      const ty0 = ENG.camTarget.ty;
+      launchFw({ x: 0, z: 0 });
+      for (let i = 0; i < 30; i++) step(0.05);        // 1.5 秒後再點一次
+      launchFw({ x: 8, z: 8 });
+      /* 只在「還有東西在天上」的時候取樣：最後一幀本來就已經還回去了，
+         把它算進去的話量到的一定是還原後的高度（第一版就是這樣自己絆倒的）。 */
+      let mid = 1e9, g = 0;
+      while ((fworks || fwSparks || fwWait) && g++ < 900) {
+        step(0.05);
+        if (!(fworks || fwSparks || fwWait)) break;
+        mid = Math.min(mid, ENG.camTarget.ty);
+      }
+      step(0.05);
+      return { ty0: +ty0.toFixed(1), mid: +mid.toFixed(1), ty1: +ENG.camTarget.ty.toFixed(1) };
+    });
+    // 玩家自己把視線抬得更高
+    const mine = run(() => {
+      launchFw({ x: 0, z: 0 });
+      ENG.camTarget.ty += 12;                          // 等同按著 X 往上抬
+      const want = ENG.camTarget.ty;
+      wait(); step(0.05);
+      return { want: +want.toFixed(1), ty1: +ENG.camTarget.ty.toFixed(1) };
+    });
+    cleanTools();
+    return { one, two, mine };
+  });
+  ok('煙火期間鏡頭抬起來，放完就把高度還回去',
+     fwCam.one.tyUp > fwCam.one.ty0 + 10 && Math.abs(fwCam.one.ty1 - fwCam.one.ty0) < 0.1,
+     '視線高 ' + fwCam.one.ty0 + ' → ' + fwCam.one.tyUp + ' → ' + fwCam.one.ty1);
+  ok('視距留在退開的位置，還回去的只有高度',
+     fwCam.one.dUp > fwCam.one.d0 + 5 && fwCam.one.d1 === fwCam.one.dUp,
+     '視距 ' + fwCam.one.d0 + ' → ' + fwCam.one.dUp + ' → ' + fwCam.one.d1);
+  ok('連放兩輪不會被第一輪放完就壓回去',
+     fwCam.two.mid > fwCam.two.ty0 + 10 && Math.abs(fwCam.two.ty1 - fwCam.two.ty0) < 0.1,
+     '兩輪都在場時視線高最低只到 ' + fwCam.two.mid + '，全放完才回到 ' + fwCam.two.ty1);
+  ok('玩家自己抬高的視線不會被還回去',
+     Math.abs(fwCam.mine.ty1 - fwCam.mine.want) < 0.1,
+     '自己抬到 ' + fwCam.mine.want + '，放完仍是 ' + fwCam.mine.ty1);
+
+  /* 天降鐵球**完全不動鏡頭**（v1.123 查證）。使用者把「結束後高度要調回來」寫在
+     天降鐵球底下，但量過它從頭到尾沒碰過 camTarget：球掉得快，進畫面只差那一瞬間，
+     所以當初就沒有像烏雲那樣退鏡頭（見 game-tools.js 的 DROP_TOP 那一段）。
+     這一條把那件事釘住——哪天它真的加了運鏡，就要一起決定收不收。 */
+  const dropCam = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '羅馬競技場');
+    targetCnt = 2000; startBuild(true); completeNow(); shapePick = -1;
+    for (let i = 0; i < 20; i++) step(0.05);
+    const ty0 = ENG.camTarget.ty, d0 = ENG.camTarget.dist;
+    dropBall({ x: 0, z: 0 });
+    let peak = ty0, g = 0;
+    while (balls && g++ < 400) { step(0.05); peak = Math.max(peak, ENG.camTarget.ty); }
+    const r = { ty0: +ty0.toFixed(1), peak: +peak.toFixed(1), d0: +d0.toFixed(1),
+                ty1: +ENG.camTarget.ty.toFixed(1), d1: +ENG.camTarget.dist.toFixed(1) };
+    cleanTools();
+    return r;
+  });
+  ok('天降鐵球從頭到尾不動鏡頭（所以也沒有高度要還）',
+     dropCam.peak === dropCam.ty0 && dropCam.ty1 === dropCam.ty0 && dropCam.d1 === dropCam.d0,
+     '視線高 ' + dropCam.ty0 + '（整段最高 ' + dropCam.peak + '）、視距 ' +
+     dropCam.d0 + ' → ' + dropCam.d1);
+
   /* ══════════ 小人也會被拆除工具波及 ══════════
      邏輯跟碎料同一套：吹飛／推走／炸飛走彈道，落地那一刻才判定要不要燒起來。
      每個案例都自己把人擺到定位再動手——照原本的分布，人多半在遠處撿貨，
