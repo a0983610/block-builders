@@ -1940,7 +1940,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const pose = extra => {
       const w = workers[1];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
-                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0 }, extra);
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         dig: 0 }, extra);
       ENG.putWorker(1, w);
       const m = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
       for (let k = 0; k < ENG.WPARTS; k++) {
@@ -3392,7 +3393,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const w = workers[i];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
                          bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
-                         cast: 0 }, extra);
+                         cast: 0, dig: 0 }, extra);
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
       const col = ENG.three.workerMesh.instanceColor.array;
@@ -3438,6 +3439,53 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('施法時杖抬起來、杖頭往前傾、寶珠亮起來',
      wiz.orbUp > 0.25 && wiz.orbFwd > 0.1 && wiz.orbLum > 20,
      '寶珠抬高 ' + wiz.orbUp + '、往前 ' + wiz.orbFwd + ' 格，亮度 +' + wiz.orbLum);
+  /* ── 挖料的鏟子（v1.129，使用者：「先用鏟子挖出積木」）─────────────
+     挖的那幾秒才拿在手上（w.dig > 0），其他時候那兩塊縮成 0，所以「多出來的部位」
+     剛好是柄與鏟面兩塊。鏟面要跟著那一鏟起落：插到底時鏟尖沒入地面、撬起來時抬高；
+     插到底那一下整個人往前傾（不傾的話是「舉著鏟子站著」，見 engine.js 的 DIG_LEAN）。 */
+  const shovel = await page.evaluate(() => {
+    const i = workers.findIndex(w => !w.mage && !w.mus);
+    if (i < 0) return { skip: true };
+    const look = dig => {
+      const w = workers[i];
+      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
+                         bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         cast: 0, burnK: 0, wetK: 0, dig });
+      ENG.putWorker(i, w);
+      const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        ENG.three.workerMesh.getMatrixAt(i * ENG.WPARTS + k, M);
+        v.setFromMatrixPosition(M);
+        const e = M.elements;
+        // 底面 = 中心 − 半高（半高照旋轉後的三根軸算，同「躺平沒埋進草地」那條）
+        const hy = 0.5 * (Math.abs(e[1]) + Math.abs(e[5]) + Math.abs(e[9]));
+        out.push({ k, vis: !(e[0] === 0 && e[5] === 0),
+                   y: +(v.y / w.scale).toFixed(2), z: +(v.z / w.scale).toFixed(2),
+                   lo: +((v.y - hy) / w.scale).toFixed(2) });
+      }
+      return out;
+    };
+    const off = look(0), deep = look(0.5), up = look(0.001);
+    const extra = off.filter(p => !p.vis && deep[p.k].vis).map(p => p.k);
+    const pan = extra.length === 2
+      ? (deep[extra[0]].z > deep[extra[1]].z ? extra[0] : extra[1]) : -1;   // 遠的那塊是鏟面
+    const top = p => p.reduce((a, q) => (q.vis && q.y > a.y ? q : a), { y: -9, z: 0 });
+    return { skip: false, extra, pan,
+             n0: off.filter(p => p.vis).length, n1: deep.filter(p => p.vis).length,
+             panZ: pan < 0 ? -9 : deep[pan].z, panLo: pan < 0 ? 9 : deep[pan].lo,
+             panUp: pan < 0 ? -9 : +(up[pan].y - deep[pan].y).toFixed(2),
+             lean: +(top(deep).z - top(off).z).toFixed(2) };
+  });
+  ok('挖料時手上有鏟子，不挖的時候沒有',
+     !shovel.skip && shovel.extra.length === 2 && shovel.n1 === shovel.n0 + 2 &&
+     shovel.pan >= 0 && shovel.panZ > 0.5,
+     '沒在挖時畫 ' + shovel.n0 + ' 塊、挖的時候 ' + shovel.n1 +
+     ' 塊（多出柄與鏟面 ' + JSON.stringify(shovel.extra) + '）；鏟面在身體前方 ' +
+     shovel.panZ + ' 格');
+  ok('鏟面插到底時沒入地面、撬起來時抬高，整個人跟著往前傾',
+     !shovel.skip && shovel.panLo <= 0 && shovel.panUp > 0.25 && shovel.lean > 0.1,
+     '插到底：鏟面底在 y=' + shovel.panLo + '（0 是草皮）；撬起來抬高 ' +
+     shovel.panUp + ' 格；頭頂往前傾 ' + shovel.lean + ' 格');
 
   /* 沒工可做就把杖收下來。連發之後這是唯一一種「站著卻沒在施法」的情況，
      所以要驗：把場上的建材全認走（等於沒料可搬），他該收杖站在原地等，不是舉著空杖。 */
@@ -3704,7 +3752,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const w = workers[i];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
                          bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
-                         cast: 0, burnK: 0, wetK: 0 });
+                         cast: 0, burnK: 0, wetK: 0, dig: 0 });
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
       const col = ENG.three.workerMesh.instanceColor.array;
@@ -4105,6 +4153,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 挖的那一下要有土痕與土塵（使用者：「積木可以就近地面上挖一挖拿出來」——
        看得出是挖出來的，不是憑空出現）。土痕跟隕石坑同一套，3 秒淡掉。 */
     let marks1 = 0, dirt1 = 0, digs = 0;
+    /* 挖出來的那一塊要「躺在地上」，不是直接到手上（v1.129，使用者：「先用鏟子挖出積木
+       動作完成後 積木在地面上（這樣就能去撿了）」）。出土的那一瞬間就攔下來看：
+       沒有主人（holder < 0）、不是搬運中（st !== CARRY）、還沒認格子（hh < 0）、
+       是土色的，而且是從地上蹦出去的（st === FLY，落地會自己轉正躺好，見 stepBlock）。 */
+    const origDig = digBlock;
+    let dug = 0, inHand = 0, notPop = 0, notDirt = 0;
+    digBlock = (w, h) => {
+      const r = origDig(w, h);
+      if (r) {
+        const b = blocks[blocks.length - 1];
+        dug++;
+        if (b.holder >= 0 || b.st === 1 || b.hh >= 0) inHand++;
+        if (b.st !== 4 || b.rest) notPop++;
+        if (Math.abs(b.tr - DIG_DIRT[0]) > 1e-9) notDirt++;
+      }
+      return r;
+    };
     /* 二十秒，不是三秒（v1.98）：房子改成蓋在整片碎料場上（最遠到 arenaR），
        前幾秒他們還在走過去的路上，一塊都還沒挖。 */
     for (let i = 0; i < 400; i++) {
@@ -4126,7 +4191,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        現在分兩個數：`inside`（任何狀態，留在訊息裡當參考）與 `insideWalk`
        （走路中的人踩進去），斷言看後者。 */
     const px = [], pz = [];
-    const snap = () => { for (let i = 0; i < workers.length; i++) { px[i] = workers[i].x; pz[i] = workers[i].z; } };
+    /* 一趟挖幾塊（v1.129）：挖那一段結束的那一幀，回頭看他挖出了幾塊、接著去做什麼。
+       hst0／dug0 是「這一幀之前」的值——挖完的那一幀 dug 已經歸零了。 */
+    const hst0 = [], dug0 = [], trip = {};
+    let toGrab = 0, toIdle = 0;
+    const snap = () => {
+      for (let i = 0; i < workers.length; i++) {
+        px[i] = workers[i].x; pz[i] = workers[i].z;
+        hst0[i] = workers[i].hst; dug0[i] = workers[i].dug;
+      }
+    };
+    const digTally = i => {
+      if (hst0[i] !== 'dig' || workers[i].hst === 'dig') return;
+      trip[dug0[i]] = (trip[dug0[i]] || 0) + 1;
+      if (workers[i].hst === 'grab') toGrab++; else toIdle++;
+    };
     const walked = i => Math.hypot(workers[i].x - px[i], workers[i].z - pz[i]) > 0.01;
     const tally = i => {
       const w = workers[i];
@@ -4135,15 +4214,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (walked(i) && !w.air && !(w.ghost > 0)) insideWalk++;
     };
     /* 600 秒（v1.100 從 400 再拉上來）：房子放大到 100～300 塊，
-       六七間共 800～950 塊，實測 219～244 秒蓋完（一趟搬 2～3 塊之前是 350 秒）。 */
+       六七間共 800～950 塊，實測 219～244 秒蓋完（一趟搬 2～3 塊之前是 350 秒）。
+       v1.129 起一趟多了「走過去撿」那一段、一趟的塊數下限也從 2 降到 1，
+       同一場景實測 269～396 秒（同一天量的舊流程是 199～223 秒，見 README）。 */
     while (secs < 600 && homes.list.some(h => h.left > 0)) {
       snap();
       step(0.05); secs += 0.05;
       for (let i = 0; i < workers.length; i++) {
-        tally(i);
+        tally(i); digTally(i);
         if (workers[i].hm >= 0) carry = Math.max(carry, workers[i].load.length);
       }
     }
+    digBlock = origDig;
     const left = homes.list.reduce((n, h) => n + h.left, 0);
     const homeSet = blocks.filter(b => b.hh >= 0 && b.st === 3).length;
     const pool1 = blocks.filter(b => b.hh < 0).length;
@@ -4174,6 +4256,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              homeSet, left, secs: +secs.toFixed(1), inside, insideWalk,
              far: +far.toFixed(1), back,
              marks1, dirt1, digs, carry, cap: HOME_CARRY,
+             dug, inHand, notPop, notDirt, trip, toGrab, toIdle,
              gap: gap === Infinity ? -1 : +gap.toFixed(1),
              tree: tree === Infinity ? -1 : +tree.toFixed(1),
              siteR: +siteR.toFixed(1), live: LIVE_R,
@@ -4201,6 +4284,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('一趟挖好幾塊再一起砌上去',
      home.carry >= 2 && home.carry <= home.cap[1],
      '手上同時最多 ' + home.carry + ' 塊（設定 ' + home.cap[0] + '～' + home.cap[1] + '）');
+  /* 挖出來的積木**先躺到地上**（v1.129，使用者：「先用鏟子挖出積木 動作完成後
+     積木在地面上（這樣就能去撿了）」）。出土的那一瞬間就攔下來看（見上面的 digBlock 掛勾）：
+     不在手上、還沒認格子、是土色的、而且是從地上蹦出去的——落地之後它就是一塊
+     普通的碎料，所以「地上的碎料優先」那條規則會自己把它撿起來，不必另開一條路。 */
+  ok('挖出來的積木先躺在地上，不是直接到手上',
+     home.dug > 100 && home.inHand === 0 && home.notPop === 0 && home.notDirt === 0,
+     '挖了 ' + home.dug + ' 塊：直接到手上 ' + home.inHand + ' 塊、沒蹦出地面 ' +
+     home.notPop + ' 塊、不是土色 ' + home.notDirt + ' 塊');
+  /* 一趟挖 1～3 塊、挖完走過去撿（使用者：「如果是普通小人要拿多個 可以挖1~3個再撿」）。
+     trip 是「挖那一段結束時挖出了幾塊」的分布（實測 0:10／1:94／2:177／3:89）。
+     0 塊與「挖完沒接上撿」都是少數、而且兩條都會退回重開一趟：
+     前者是那一間不缺料了（見 digNeed）或池子滿了，後者是最後一塊還在半空
+     （等 DIG_SET 還沒落定，實測 370 趟裡 12 趟）。 */
+  ok('一趟挖 1～3 塊，挖完就走過去撿',
+     Object.keys(home.trip).every(k => +k <= home.cap[1]) &&
+     home.trip[1] > 0 && home.trip[3] > 0 && home.toGrab > home.toIdle * 5,
+     '一趟挖幾塊 ' + JSON.stringify(home.trip) + '（設定 ' + home.cap[0] + '～' +
+     home.cap[1] + '）；挖完去撿 ' + home.toGrab + ' 趟、重開一趟 ' + home.toIdle + ' 趟');
   /* 外型（v1.98 重做、v1.99 加款式）。使用者先說「小房子外型不像房子要調整」，
      再說「增加小房子種類 增加豐富性」。**掃過款式表裡的每一款**，不是只看這一輪剛好
      蓋出來的那幾間——不然覆蓋率要靠運氣。每一款都要有：
@@ -4287,13 +4388,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 積木是**新生出來的**，不是從料池借的——但地上躺著的碎料例外，那些優先撿（v1.104）。
      所以驗的是這條帳：新增的積木數 ＝ 蓋掉的塊數 − 從地上撿走的塊數。
      撿走幾塊就是料池少的那幾塊（pool0 − pool1）。 */
+  /* 「料池不會變多」v1.129 起放寬到「最多多出三塊」，同時補上「挖出來的不超過用掉的」。
+     為什麼會多出來：挖出來的積木改成先躺在地上（出土到躺定 0.8 秒），這 0.8 秒裡
+     那一間的最後一格可能被同組的人用手上／憑空生的料補掉，那一塊就沒地方去了
+     ——房子蓋完就沒人再撿它。實測 6 輪（4462 鏟）出現 1 次、多 1 塊。
+     擋亂挖的主力是下面那條：挖之前會扣掉「地上已經有的料」（見 digNeed），
+     所以挖出來的總數不會超過用掉的。 */
   ok('房子真的蓋起來，積木是撿的加挖的（沒有從料池借）',
-     home.left === 0 && home.homeSet > 60 && home.pool1 <= home.pool0 &&
+     home.left === 0 && home.homeSet > 60 && home.pool1 - home.pool0 <= 3 &&
+     home.dug <= home.homeSet &&
      home.all1 === home.all0 + home.homeSet - (home.pool0 - home.pool1),
      home.list.length + ' 間共 ' + home.homeSet + ' 塊，' + home.secs +
      ' 秒蓋完（沒補上的 ' + home.left + ' 格）；地上撿走 ' +
      (home.pool0 - home.pool1) + ' 塊（料池 ' + home.pool0 + ' → ' + home.pool1 +
-     '）、其餘挖出來（積木總數 ' + home.all0 + ' → ' + home.all1 + '）');
+     '）、挖出來 ' + home.dug + ' 塊（積木總數 ' + home.all0 + ' → ' + home.all1 + '）');
   ok('挖的那一下有土痕與土塵',
      home.marks1 > 0 && home.dirt1 > 0 && home.digs > 0,
      '二十秒內：地上的土痕最多 ' + home.marks1 + ' 塊、土色塵霧最多 ' + home.dirt1 +
@@ -4562,9 +4670,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     stopIdleEvent(); clearHomes(); evArm = 0;
     const orig = digBlock;
     let full = 0;
-    digBlock = (w, wi, h) => {
+    digBlock = (w, h) => {
       const f = blocks.length >= ENG.MAXB;
-      const r = orig(w, wi, h);
+      const r = orig(w, h);
       if (!r && f) full++;                          // 挖不出來，而且是因為池子滿了
       return r;
     };
@@ -10553,7 +10661,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     const w = workers[0];
     w.x = 0; w.z = 0; w.y = 0; w.a = 0; w.gait = 0; w.carry = false;
-    w.plan = 0; w.bub = 0; w.scale = 1.2; w.roll = 0; w.tilt = 0; w.rspin = 0;
+    w.plan = 0; w.bub = 0; w.scale = 1.2; w.roll = 0; w.tilt = 0; w.rspin = 0; w.dig = 0;
     const m = new THREE.Matrix4(), v = new THREE.Vector3();
     const pos = k => { ENG.three.workerMesh.getMatrixAt(k, m); v.setFromMatrixPosition(m); return v.clone(); };
     const read = () => {

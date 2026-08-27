@@ -196,10 +196,11 @@ const ENG = (function () {
      ＋ v1.51 補的七塊細節（帽頂、帽舌、兩顆眼睛、兩隻鞋、腰帶）
      ＋ v1.64 魔法師的五塊（巫師帽三塊、法杖、寶珠）
      ＋ v1.112 肌肉小人的五塊（胸膛、兩塊肩、兩塊胸肌）
+     ＋ v1.129 挖料的鏟子兩塊（柄、鏟面）
      （v1.121 曾經有表情圖示的八塊，v1.122 換成貼圖之後收掉了，見 paintEmoAtlas）。
      道具沒拿的人整片縮到 0；全部共用同一個 InstancedMesh，不多一個 draw call。
      實測 60 個人擺一輪：10 塊時 0.106ms、17 塊時 0.150ms——每幀預算 4ms，加得起。 */
-  const WPARTS = 27;
+  const WPARTS = 29;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。
      v1.118 從 720 加到 900：打雷的烏雲也借這顆 mesh 畫（一朵 150 團），
@@ -1484,6 +1485,22 @@ const ENG = (function () {
      複製一份就得跟著維護兩份。往外挪是因為胸膛比工作服寬：半寬 0.35，
      原本的手掛在 0.34，不挪的話整隻手埋在胸膛裡。 */
   const MUS_ARM_X = 0.46, MUS_ARM = 1.5;
+  /* 挖料的鏟子（v1.129）。兩手握著的地方在 (0, DIG_GRIP_Y, DIG_GRIP_Z)＝柄的上端，
+     柄往前下方伸出去 DIG_LEN，鏟面（DIG_PAN 長）接在柄的下端、跟柄同一個方向。
+     柄跟垂直線的夾角是照「鏟面該在哪個高度」**反算**的，不是寫死的——
+     寫死的話柄一改長，鏟面就插進地裡或懸在半空。
+     w.dig（0～1，這一鏟挖到哪了）決定那個高度：插到底時鏟面貼著地面（DIG_DEEP，
+     鏟尖略低於地面），撬起來時抬到 DIG_UP。 */
+  const DIG_GRIP_Y = 0.80, DIG_GRIP_Z = 0.18;
+  const DIG_LEN = 1.02, DIG_PAN = 0.34;
+  const DIG_REACH = DIG_LEN + DIG_PAN * 0.5;      // 握把到鏟面中心
+  const DIG_DEEP = 0.14, DIG_UP = 0.50;           // 鏟面中心最低／撬起來離地多高
+  /* 插到底那一下整個人往前傾這麼多。不傾的話看起來是「舉著鏟子站著」，不是在挖。
+     鏟子是掛在身體上的，所以傾多少鏟面就跟著往下多少——DIG_DEEP 的 0.14 是配著
+     這個角度算的：傾 0.14 之後鏟面中心剛好落在地面高度，鏟尖插進地裡一點。 */
+  const DIG_LEAN = 0.14;
+  const digTilt = y => Math.acos(Math.max(-1, Math.min(1, (DIG_GRIP_Y - y) / DIG_REACH)));
+  const DIG_A0 = digTilt(DIG_UP), DIG_A1 = digTilt(DIG_DEEP);
   /* ── 頭上的表情圖示（v1.121，v1.122 從方塊換成貼圖）─────────────
      使用者：「增加小人表達力，例如驚嘆號 愛心 問號 生氣（一個小圖示 像交談那樣在
      小人旁邊表示）」。哪個情境冒哪一個是規則那邊決定的（見 game-workers.js 的 showEmo），
@@ -1625,6 +1642,12 @@ const ENG = (function () {
     { p: [0.35, 0.82, 0], s: [0.28, 0.24, 0.42], c: 'skin', mus: 1 },     // 右肩
     { p: [-0.17, 0.78, 0.24], s: [0.30, 0.20, 0.10], c: 'skin', mus: 1 }, // 左胸肌（往前鼓 0.07）
     { p: [0.17, 0.78, 0.24], s: [0.30, 0.20, 0.10], c: 'skin', mus: 1 },  // 右胸肌
+    /* ── 挖料的鏟子（v1.129，使用者：「先用鏟子挖出積木」）─────────
+       只有在挖的那幾秒拿在手上（w.dig > 0），其他時候縮成 0。
+       位置與角度在 putWorker 裡按那一鏟的深淺重算，這裡寫的是預設值。
+       柄借法杖那個木色，鏟面借推土機那片鏟刃的鐵色——場上本來就有這兩種材質。 */
+    { p: [0, DIG_GRIP_Y, DIG_GRIP_Z], s: [0.07, DIG_LEN, 0.07], c: 'staff', dig: 1 },
+    { p: [0, DIG_GRIP_Y, DIG_GRIP_Z], s: [0.30, DIG_PAN, 0.11], c: 'blade', dig: 1, pan: 1 },
     /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
        巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
        只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
@@ -1657,6 +1680,7 @@ const ENG = (function () {
        所以帽子給深紫（安全帽的亮黃旁邊一眼認得出不是同一種人）、寶珠給金。 */
     wiz: [0x4a3b8c],
     staff: [0x6a4a30],
+    blade: [0x8a9098],      // 鏟面：跟推土機那片鏟刃同一種鐵（v1.129）
     orb: [0xffd66b]
   };
   const ORB_LIT = new T.Color(0xffffff);   // 施法時寶珠往這個亮色靠（要跟金色差得夠開才看得出亮起來）
@@ -1681,10 +1705,14 @@ const ENG = (function () {
         hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1,
         mage 是不是魔法師（戴巫師帽、拿法杖）,cast 施法深淺 0～1（杖抬多高、寶珠多亮）,
         mus 是不是肌肉小人（裸上半身、肩臂粗一圈）,
+        dig 挖料的深淺（0＝沒拿鏟子，0～1＝這一鏟挖到哪了，見 DIG_GRIP_Y）,
         emo 頭上的表情圖示是哪一種（EMO_KINDS 裡的字，空的就是沒有）,emoK 圖示大小 0～1
         ——這兩個是 putEmotes 在用的，putWorker 本身不畫圖示} */
   function putWorker(i, w) {
     const piv = w.roll ? ROLL_PIVOT : 0;
+    /* 這一鏟的相位（v1.129）：一鏟的頭尾都是 0（鏟子撬起來）、中間是 1（插到底），
+       所以一塊挖完接下一塊時是連續的。手、鏟子、身體前傾三處共用同一個值。 */
+    const dgS = w.dig ? Math.sin(w.dig * Math.PI) : 0;
     /* 沒在打滾但身體是斜的（被戳倒、被震倒、飛在半空翻滾）也要抬——
        原點在腳底，倒到水平時整個身體剛好落在草皮那一層，半個身厚是埋在地裡的。
        抬 |sin(傾角)| × 半個身厚：站直時 0，躺平時剛好把人托在草地上（v1.60）。 */
@@ -1693,7 +1721,8 @@ const ENG = (function () {
     scratch.position.set(w.x, w.y + lift * (w.scale || 1), w.z);
     /* 順序用 YZX：R = Ry(朝向)·Rz(打滾)·Rx(躺平)。z 那一軸轉的是「躺平之後的身體長軸」，
        也就是滾木頭那個滾法。沒在打滾時 z 給 0，跟原本的 YXZ 完全等價。 */
-    scratch.rotation.set(w.tilt || 0, w.a, w.roll ? (w.rspin || 0) : 0, 'YZX');
+    scratch.rotation.set((w.tilt || 0) + DIG_LEAN * dgS, w.a,
+                         w.roll ? (w.rspin || 0) : 0, 'YZX');
     scratch.scale.setScalar(w.scale || 1);
     scratch.updateMatrix();
     for (let k = 0; k < WPARTS; k++) {
@@ -1715,6 +1744,9 @@ const ENG = (function () {
         if (w.carry) {                      // 搬東西時雙手舉高
           scratchB.rotation.x = -2.5;
           scratchB.position.y = 0.85; scratchB.position.z = -0.16;
+        } else if (w.dig) {                 // 挖料：兩手握著鏟柄，跟著那一鏟起落（v1.129）
+          scratchB.rotation.x = -1.25 - 0.12 * dgS;
+          scratchB.position.y = 0.80 - 0.03 * dgS; scratchB.position.z = 0.10;
         } else if (w.hail) {                // 慶祝：雙手舉高、跟著跳的節奏晃
           scratchB.rotation.x = -2.75 + Math.sin(w.ph) * 0.22;
           scratchB.rotation.z = b.arm * 0.30;
@@ -1764,6 +1796,19 @@ const ENG = (function () {
         else {
           scratchB.scale.set(b.s[0] * k, b.s[1] * k, b.s[2] * k);
           scratchB.position.y = b.p[1] + Math.sin(w.ph * 2.6) * 0.05;
+        }
+      }
+      /* 鏟子（v1.129）：沒在挖的人縮成 0。柄與鏟面都掛在同一個握把上，
+         沿著柄的方向各自往外挪自己的距離——所以只要一個角度就把兩塊擺好。
+         sin(w.dig × π)：一鏟的頭尾都是「撬起來」、中間是「插到底」，
+         所以一塊挖完接下一塊時角度是連續的（不會閃一下）。 */
+      if (b.dig) {
+        if (!w.dig) scratchB.scale.setScalar(0);
+        else {
+          const ang = DIG_A0 + (DIG_A1 - DIG_A0) * dgS;
+          const d = b.pan ? DIG_REACH : DIG_LEN * 0.5;
+          scratchB.position.set(0, DIG_GRIP_Y - Math.cos(ang) * d, DIG_GRIP_Z + Math.sin(ang) * d);
+          scratchB.rotation.x = -ang;
         }
       }
       /* 魔法師戴巫師帽，安全帽那三塊收掉——兩頂疊在同一顆頭上會直接穿模。 */

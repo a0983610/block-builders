@@ -74,6 +74,9 @@ function newWorker(i) {
        hdt 是還要挖幾秒（砌的時候是下一塊還有幾秒），hp 是下一撮土花幾秒。
        認走的是哪一格記在積木身上（b.hk），不記在人身上——一趟不只一塊。 */
     hm: -1, hst: '', hcap: 0, hdt: 0, hp: 0, gb: -1,   // gb＝這一趟要去撿的那一塊（v1.104）
+    /* 挖料（v1.129）：dig 是「這一鏟挖到哪了」0～1（畫鏟子用，0＝沒拿鏟子），
+       dug 是這一趟已經挖出幾塊躺在地上了（挖出來的不在手上，所以算在人身上）。 */
+    dig: 0, dug: 0,
     /* 抽到的身高（v1.113）。scale 是「實際畫多大」，肌肉小人要在它上面再乘 MUS_SIZE，
        所以抽到的那個值要另外留一份：直接乘 scale 的話，setWorkerCount 每叫一次
        tagMuscle 就再乘一次，人數調個幾輪他會長成一棟樓。 */
@@ -901,7 +904,7 @@ function assignSpots() {
 function updWorker(w, wi, dt) {
   /* 姿勢旗標每幀重算：跌倒、被炸飛、跑去躲的那幾條路徑都是 return 出去的，
      不歸零的話工程師被戳倒了還躺在地上舉著圖。 */
-  w.hail = 0; w.plan = 0;
+  w.hail = 0; w.plan = 0; w.dig = 0;   // dig：拿著鏟子挖料（v1.129，見 digTrip）
   stuckWatch(w, dt);                 // 卡住了就脫困（v1.108）。擺在最前面：下面每一條分支都會 return
   /* 舉杖同理，只是它是漸進的（瞬間切 0/1 的話杖會用瞬移的抬起放下）：
      這裡每幀往下收，只有真的在施法那條路徑會用兩倍速把它撐回去（castPose）。
@@ -1792,12 +1795,23 @@ const DIG_NEAR = 1.5, DIG_FAR = 6;
 const DIG_PUFF = 0.16;              // 挖的時候每隔幾秒噴一撮土
 /* 一趟挖幾塊（v1.100）。跟工人一趟搬 1～3 塊同一個道理：房子大了（100～300 塊），
    一塊一趟的話八成的時間在走路——實測一趟一塊要 6.4 秒才砌上一塊，
-   一趟三塊是 2 秒上下。上限跟工人一樣是 3，再多手上那疊會高過頭頂。 */
-const HOME_CARRY = [2, 3];
+   一趟三塊是 2 秒上下。上限跟工人一樣是 3，再多手上那疊會高過頭頂。
+   v1.129 下限從 2 改成 1（使用者：「如果是普通小人要拿多個 可以挖1~3個再撿」）。 */
+const HOME_CARRY = [1, 3];
 const LAY_GAP = 0.26;               // 站定之後每隔幾秒丟一塊（工人是 0.28）
-const HOME_REACH = 3;               // 同一趟認的格子最多隔多遠（見 digBlock）
+const HOME_REACH = 3;               // 同一趟認的格子最多隔多遠（見 takeHomeBlock）
 const DIG_ARC = 0.8;                // 挖料點偏離「他現在站的方位」多少弧度（見 digSpot）
 const DIG_MARK = 1.7;              // 土痕的大小（跟隕石坑同一套，3 秒淡掉）
+/* 挖出來那一塊怎麼蹦到地上（v1.129，使用者：「先用鏟子挖出積木 動作完成後
+   積木在地面上（這樣就能去撿了）」）。DIG_POP 是往上的初速、DIG_SIDE 是往旁邊的，
+   DIG_SET 是最後一塊挖完之後等它落定幾秒。0.8 秒上下是照物理算的（飛 0.32 秒、
+   彈一下、在地上滑幾幀煞停，再轉正 0.22 秒，見 stepBlock／stepSnap），
+   給 1 秒；實測 398 趟裡有 388 趟等到（剩下 10 趟退回重開一趟，下一趟自己會撿到）。
+   顏色是土色：剛從地裡挖出來的就該是土，撿起來之後才慢慢變成牆的顏色
+   （見 takeHomeBlock，那邊只設目標色、讓它自己 lerp）。 */
+const DIG_POP = [3.6, 4.8], DIG_SIDE = [2.2, 3.4], DIG_SET = 1;
+const DIG_DIRT = [0.56, 0.44, 0.31];
+const DIG_TOSS = 1.3;               // 估落點會落在多遠（挑往左還是往右扔用，見 digBlock）
 const LIVE_R = 6;                   // 蓋完在家附近多大範圍裡走
 /* 站位離地基邊緣多遠。要大於 REACH（0.9）＝「走到多近算抵達」，
    不然他停下來的那一點可能還在屋子裡（停下來就不會再被 pushOutHome 推了）。 */
@@ -1914,7 +1928,7 @@ function canPlaceHome(h, i) {
   return false;
 }
 /* 挑一格來蓋：還沒填、沒人認、而且放得上去。
-   anchor 給了就只找它附近（同一趟認的幾格要在一起，見 digBlock）。 */
+   anchor 給了就只找它附近（同一趟認的幾格要在一起，見 takeHomeBlock）。 */
 function homeFree(h, anchor) {
   for (let i = 0; i < h.slots.length; i++) {
     const sl = h.slots[i];
@@ -2396,32 +2410,34 @@ function digSpot(w, h) {
   }
   w.tx = h.x + h.r + DIG_NEAR; w.tz = h.z; w.hdt = DIG_T;
 }
-/* 挖出一塊來放到手上（就近從地面挖，使用者指定）。回傳「挖到了沒有」。
+/* 用鏟子挖出一塊來，讓它蹦到地上（v1.129，使用者：「先用鏟子挖出積木 動作完成後
+   積木在地面上（這樣就能去撿了）」）。回傳「挖到了沒有」。
+   跟 v1.128 的差別是**不直接放到手上、也不當場認格子**：出土之後它就是一塊躺在地上的
+   碎料，等他自己走過去撿（撿的那一下才認格子，見 takeHomeBlock）——所以「地上的碎料
+   優先」那條規則自然就把它撿起來了，不必另開一條路；一趟挖幾塊也就跟手上拿幾塊分開了。
    積木是**新生出來的**，不是從料池拿的——完工那一刻場上通常一塊散料都沒有
    （料池 = 藍圖格數，見 reconcilePool），從料池拿等於把下一座的建材偷走。
-   認的格子是清單上「還沒人認」的第一格，所以一趟認到的幾格是連號的——
-   而格子是照砌的順序生出來的（一層一層、一排一排），連號就等於彼此在旁邊，
-   站定之後從同一個位置丟得到（跟工人一趟領幾格是同一個道理）。 */
-function digBlock(w, wi, h) {
-  const a0 = w.load.length ? blocks[w.load[0].b] : null;
-  const anchor = a0 && a0.hh === w.hm ? h.slots[a0.hk] : null;
-  /* 同一趟認的幾格要在一起（隔不到 HOME_REACH，見 homeFree）。格子是照砌的順序生出來的
-     （一層一層、一排一排），所以連號多半就在旁邊——但一排的尾跟下一排的頭在房子兩頭。
-     不限的話，他會為了手上的第二塊再繞半圈房子（實測整體反而慢三成）。 */
-  const k = homeFree(h, anchor);
-  if (k < 0 || blocks.length >= ENG.MAXB) return false;   // 都被同組認走了／池子滿了
+   落地、彈跳、轉正都是碎料本來就有的那一套（stepBlock／stepSnap），這裡只給初速。 */
+function digBlock(w, h) {
+  if (blocks.length >= ENG.MAXB) return false;           // 池子滿了（見 engine.js 的 MAXB）
   const b = newBlock();
   b.x = w.x; b.z = w.z; b.y = HB;
-  b.st = CARRY; b.rest = false; b.holder = wi; b.hh = w.hm; b.hk = k;
-  const c = h.slots[k].c;
-  b.r = b.tr = c[0]; b.g = b.tg = c[1]; b.b = b.tb = c[2];
+  b.r = b.tr = DIG_DIRT[0]; b.g = b.tg = DIG_DIRT[1]; b.b = b.tb = DIG_DIRT[2];
+  /* 往**身體的側面**扔（w.a 是面向自己家的方向，± 90° 就是左右兩邊）：
+     往前會扔進屋子的占地、往後會扔回工地那一側，那兩邊都可能撿不到；
+     側面是切線方向，離工地中心的距離幾乎不變。
+     兩邊都試一次，挑落點不在別人家占地上的那一邊（落點是照初速估的，只用來挑邊）。 */
+  let a = w.a + Math.PI / 2;
+  for (let t = 0; t < 2; t++) {
+    const px = w.x + Math.sin(a) * DIG_TOSS, pz = w.z + Math.cos(a) * DIG_TOSS;
+    if (!homeAt(px, pz) && px * px + pz * pz >= (siteR + KEEP) ** 2) break;
+    a -= Math.PI;
+  }
+  const sp = rr(DIG_SIDE[0], DIG_SIDE[1]);
+  b.st = FLY; b.rest = false;
+  b.vx = Math.sin(a) * sp; b.vz = Math.cos(a) * sp; b.vy = rr(DIG_POP[0], DIG_POP[1]);
+  b.ax = rr(-4, 4); b.ay = rr(-4, 4); b.az = rr(-4, 4);
   blocks.push(b);
-  h.slots[k].claimed = wi;
-  /* 借工作單那份欄位裝（s 給 −1＝不占藍圖的格子）：這樣「舉在手上的高度」
-     （carryPose）、逃命與被炸飛時的脫手（releaseWorker／dropJob）全部是現成的。
-     是哪一間的哪一格記在積木自己身上（b.hh／b.hk），不必再開一份清單。 */
-  w.load.push({ b: blocks.length - 1, s: -1 });
-  w.carry = true;
   spawnMark({ x: w.x, y: 0, z: w.z }, DIG_MARK, 1);      // 挖過的土痕（跟隕石坑同一套）
   digPuff(w); digPuff(w); digPuff(w);
   ENG.setBlockCount(blocks.length);
@@ -2516,7 +2532,7 @@ function updHome(w, wi, dt) {
   }
   if (w.mage) { castTrip(w, wi, h, dt); return; }         // 魔法師隔空蓋（v1.102）
   if (w.hst === 'grab') { grabTrip(w, wi, h, dt); return; }
-  if (w.hst === 'dig') { digTrip(w, wi, h, dt); return; }
+  if (w.hst === 'dig') { digTrip(w, h, dt); return; }
   // 手上有貨：一般工人走回去砌，肌肉小人站在原地掄（v1.115）
   if (w.load.length) { (w.mus ? hurlTrip : layTrip)(w, h, dt); return; }
   // 肌肉小人扔完喘那一下（同工地的 MUS_REST），喘完才開下一趟
@@ -2530,7 +2546,7 @@ function startTrip(w, h) {
   const i = freeNearHome(w, h);
   if (i >= 0) { w.gb = i; w.hst = 'grab'; w.hdt = 0; return; }
   digSpot(w, h);
-  w.hst = 'dig';
+  w.hst = 'dig'; w.dug = 0;
 }
 /* 魔法師蓋自己的家（v1.102，使用者：「魔法師小人 要用魔法師的方式蓋小房子」）。
    他不挖也不搬：站在自己家旁邊舉著杖，把腳邊的地面拉出一塊、直接隔空拋到格子上，
@@ -2638,18 +2654,43 @@ const GRAB_R = 12;                  // 找碎料的範圍：離自己家外框�
    （見 pickSpot／grabStand），跟 layTrip 站在框外往裡丟是同一套。
    不撿的話，砸爛一間房子的碎料有將近四成躺在自己的地基上（實測 458 塊裡 173 塊），
    使用者看到的就是「一地碎料還在挖新的」。 */
+/* 「這一塊在這一間搆得到的範圍裡嗎」：離自己家外框 GRAB_R 以內、又不在工地裡。
+   freeNearHome（要撿哪一塊）與 digNeed（還缺幾塊）共用這一條——兩邊各寫一份的話，
+   算的時候看得到、撿的時候看不到，那一間就永遠挖不完（v1.129）。
+   「積木是什麼狀態才算」兩邊故意不同，各自寫在自己那邊。 */
+function homeNear(b, h) {
+  return (b.x - h.x) ** 2 + (b.z - h.z) ** 2 <= (h.r + GRAB_R) ** 2 &&
+         b.x * b.x + b.z * b.z >= (siteR + KEEP) ** 2;
+}
 function freeNearHome(w, h) {
   let best = -1, bd = Infinity;
-  const lim = (h.r + GRAB_R) ** 2, site = (siteR + KEEP) ** 2;
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
-    if ((b.x - h.x) ** 2 + (b.z - h.z) ** 2 > lim) continue;
-    if (b.x * b.x + b.z * b.z < site) continue;
+    if (!homeNear(b, h)) continue;
     const d = (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
     if (d < bd) { bd = d; best = i; }
   }
   return best;
+}
+/* 這一間還缺幾塊料（v1.129）。挖幾塊要照這個數字收斂，不然一趟挖三塊、格子只剩一格
+   的時候會多挖兩塊沒人要的料；而且同一間有兩三個人各挖一趟，每個人都會多挖。
+   算法：沒人認的空格 −「已經是這一間的料」。
+   已經是料的包括躺在地上撿得到的（跟 freeNearHome 認的是同一批，兩邊條件不一致的話
+   會出現「自己算的時候看得到、撿的時候看不到」→ 永遠挖不完），**還在半空的也算**：
+   剛挖出來那幾塊還沒落地（見 digBlock），不算的話同一間的另一個人會在它們落地前
+   再挖一輪。手上那幾塊不算——它們認走的格子也不算在空格裡，兩邊剛好對消。 */
+function digNeed(h) {
+  let n = 0;
+  for (const sl of h.slots) if (!sl.filled && sl.claimed < 0) n++;
+  if (n <= 0) return 0;                                  // 格子全被認走了：不必掃積木
+  for (const b of blocks) {
+    if (b.holder >= 0) continue;
+    if (b.st === FREE ? !b.rest : b.st !== FLY) continue;
+    if (!homeNear(b, h)) continue;
+    if (--n <= 0) return 0;
+  }
+  return n;
 }
 /* 要去撿的那一塊躺在自己家的外框裡：站到**最近的那一面**外面伸手拿。
    回傳同一個暫存物件（每幀都會叫）。 */
@@ -2664,9 +2705,16 @@ function grabStand(h, bx, bz) {
   else _gs.z = h.z1 + HOME_STAND;
   return _gs;
 }
-/* 把地上這一塊收成「自己家的第 k 格」。跟 digBlock 的差別只有兩件事：
-   積木是現成的（不 newBlock、不留土痕、不噴土），而且顏色是**慢慢**變過去的
-   （只設目標色，讓它自己 lerp）——那是一塊撿回來重新用的料，不是憑空長出來的。 */
+/* 把地上這一塊收成「自己家的第 k 格」。**認格子只在這裡**（v1.129 起連挖出來的那幾塊
+   也是走這條路撿起來的，見 digBlock），所以一趟認到哪幾格的規則就寫在這裡：
+   認的是清單上「還沒人認」的第一格，所以一趟認到的幾格是連號的——而格子是照砌的順序
+   生出來的（一層一層、一排一排），連號就等於彼此在旁邊，站定之後從同一個位置丟得到
+   （跟工人一趟領幾格是同一個道理）。隔太遠的不認（HOME_REACH，見 homeFree）：
+   一排的尾跟下一排的頭雖然連號，卻在房子的兩頭——不限的話他會為了手上的第二塊
+   再繞半圈房子（實測整體反而慢三成）。
+   顏色是**慢慢**變過去的（只設目標色，讓它自己 lerp，見 game-ui.js 的 b.r += …）：
+   剛從地裡挖出來的是土色、砸下來的碎料是原本那間房子的顏色，撿起來之後才慢慢
+   變成這一格該有的顏色。 */
 function takeHomeBlock(w, wi, h, i) {
   const b = blocks[i];
   if (!b || b.st !== FREE || b.holder >= 0) return false;
@@ -2681,6 +2729,9 @@ function takeHomeBlock(w, wi, h, i) {
   const c = h.slots[k].c;
   b.tr = c[0]; b.tg = c[1]; b.tb = c[2];
   h.slots[k].claimed = wi;
+  /* 借工作單那份欄位裝（s 給 −1＝不占藍圖的格子）：這樣「舉在手上的高度」（carryPose）、
+     逃命與被炸飛時的脫手（releaseWorker／dropJob）全部是現成的。
+     是哪一間的哪一格記在積木自己身上（b.hh／b.hk），不必再開一份清單。 */
   w.load.push({ b: i, s: -1 });
   w.carry = true;
   return true;
@@ -2714,11 +2765,15 @@ function endTrip(w, h) {
   w.ct = MUS_WIND;                                       // 肌肉小人：就地掄的倒數（見 hurlTrip）
   if (w.load.length) return;
   digSpot(w, h);
-  w.hst = 'dig';
+  w.hst = 'dig'; w.dug = 0;
 }
-/* 走去挖、挖到手上滿了。挖的地方每一趟重挑（見 digSpot）。 */
-function digTrip(w, wi, h, dt) {
-  if (w.load.length) carryPose(w);                       // 手上那疊要跟著手走
+/* 走去挖、挖出幾塊來，然後改去撿（v1.129，使用者：「先用鏟子挖出積木 動作完成後
+   積木在地面上（這樣就能去撿了）」「如果是普通小人要拿多個 可以挖1~3個再撿」）。
+   挖的地方每一趟重挑（見 digSpot）；一趟挖幾塊照 hcap（1～3，見 HOME_CARRY），
+   肌肉小人是 1（他撿起來就地扔，見 hurlTrip）。
+   挖完不直接去砌——挖出來那幾塊躺在腳邊，他改走「撿」那條路把它們撿起來。
+   進這條路的人手上一定是空的（startTrip／endTrip 都只在空手時開挖），所以不必顧搬的姿勢。 */
+function digTrip(w, h, dt) {
   /* 這一段是上工的路，不算進閒晃里程（那個是拿來算發呆多久的，見 strollPause）——
      跟 buildWalk 對搬料那條路的處理一樣。不扣掉的話，蓋一間房子來回幾十趟的里程
      全算在一起，蓋完第一次站定就會發呆好幾分鐘（實測抽到 147.8 秒）。 */
@@ -2728,17 +2783,35 @@ function digTrip(w, wi, h, dt) {
   if (walking) return;                                   // 還在走去挖的路上
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
   w.a = Math.atan2(h.x - w.x, h.z - w.z);                // 面向自己的房子挖
-  w.hp -= dt;
-  if (w.hp <= 0) { w.hp = DIG_PUFF; digPuff(w); }
+  /* 這一趟該挖的都挖完了，剩下的時間是在等最後那一塊落定（見 DIG_SET）——
+     那幾秒不是在挖：土不噴、鏟子停在撬起來那一格，不然他會對著已經挖好的洞
+     再揮一鏟（實測那一鏟整整揮完 0.8 秒才停）。 */
+  const wait = w.dug >= w.hcap;
+  if (!wait) {
+    w.hp -= dt;
+    if (w.hp <= 0) { w.hp = DIG_PUFF; digPuff(w); }
+  }
   w.hdt -= dt;
-  if (w.hdt > 0) return;
-  const got = digBlock(w, wi, h);
-  if (got && w.load.length < w.hcap) { w.hdt = DIG_T; return; }   // 還沒滿：繼續挖
-  /* 挖滿了、或格子都被同組的認完了就收工：手上有貨就去砌，空手就換個地方
-     （等同組的人把格子放掉再看）。 */
+  /* 鏟子舉多高（畫面那邊照它擺，見 engine.js 的 DIG_GRIP_Y）：這一鏟挖到哪了 0～1。
+     不給 0 是因為 0＝「沒拿鏟子」——一塊挖完換下一塊時歸零的話鏟子會閃一下；
+     0.001 就是「鏟子撬起來」那一格，跟一鏟結束的姿勢接得上
+     （見 engine.js：sin(dig × π) 頭尾都是 0）。 */
+  w.dig = wait ? 0.001 : Math.min(1, Math.max(0.001, 1 - Math.max(0, w.hdt) / DIG_T));
+  if (w.hdt > 0) return;                                 // 還在挖這一鏟／還在等土落定
+  /* 這一趟還要挖：塊數照 hcap，而且「這一間真的還缺」才挖（見 digNeed）。 */
+  if (w.dug < w.hcap && digNeed(h) > 0 && digBlock(w, h)) {
+    w.dug++;
+    w.hdt = w.dug < w.hcap ? DIG_T : DIG_SET;            // 挖下一鏟／等最後那一塊落定
+    return;
+  }
+  /* 挖完了：改去撿——挖出來那幾塊就在腳邊，freeNearHome 挑的是離自己最近的那一塊。
+     還沒落定（DIG_SET 不夠久）或一塊都挖不出來（池子滿了／格子都被同組的認完了）
+     就先收工，updHome 下一幀會重開一趟：那時候它們多半已經躺好了，
+     開的就是「撿」那一趟（見 startTrip：地上的碎料優先）。 */
+  w.dug = 0; w.hdt = 0;
+  const i = freeNearHome(w, h);
+  if (i >= 0) { w.gb = i; w.hst = 'grab'; return; }
   w.hst = '';
-  w.hdt = 0;                                             // 走到就丟第一塊
-  w.ct = MUS_WIND;                                       // 肌肉小人：就地掄的倒數（見 hurlTrip）
 }
 /* 走回房子、站定原地把手上的丟完。 */
 function layTrip(w, h, dt) {
