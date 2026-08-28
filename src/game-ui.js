@@ -100,6 +100,7 @@ function step(dt) {
   stepStars(dt);
   stepArcs(dt);
   stepStorms(dt);
+  stepGates(dt);
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepDozers(dt);
   stepTrucks(dt);
@@ -218,6 +219,10 @@ function draw() {
   ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
   ENG.putPools(water ? poolList() : EMPTY, water ? water.wave : 0);   // 水窪同理
   ENG.putMarks(marks);                              // 地上的焦黑與坑洞（沒有就 visible=false）
+  /* 王之財寶（v1.132）：門與兵器是兩份清單——門收掉之後兵器還在飛、還躺在地上慢慢淡，
+     所以兩邊各自判斷有沒有東西要畫。 */
+  ENG.putGates(gates ? gateList() : EMPTY);
+  ENG.putWeapons(weapons || EMPTY);
 }
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石

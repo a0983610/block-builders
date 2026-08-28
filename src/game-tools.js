@@ -49,7 +49,10 @@ const TOOLS = [
     lock: { txt: '累計擊飛 23,000 塊解鎖', ok: () => stats.smashed >= 23000 } },
   { id: 'drop', n: '天降鐵球', k: '⚫',
     tip: '點地面：一顆鐵球從正上方直直砸下來，撞爛沿路的積木，不再動就收掉',
-    lock: { txt: '拆掉 12 座建築解鎖', ok: () => stats.destroyed >= 12 } }
+    lock: { txt: '拆掉 12 座建築解鎖', ok: () => stats.destroyed >= 12 } },
+  { id: 'gate', n: '王之財寶', k: '🗡',
+    tip: '點地面：照鏡頭方向開出一整片金色的門，兵器從門裡伸出來、就位後停 3 秒，接著朝這邊連射 7 秒；打中的地方炸開一個小缺口（不起火），兵器掉在地上慢慢消失',
+    lock: { txt: '累計擊飛 27,000 塊解鎖', ok: () => stats.smashed >= 27000 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
@@ -58,7 +61,7 @@ const toolOk = t => !t.lock || t.lock.ok();
    小槌點空地什麼都不會掉，但仍然留在這裡：拿掉的話那一下完全沒反應，看起來像點壞了。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
-                      storm: 1, drop: 1 };
+                      storm: 1, drop: 1, gate: 1 };
 let tool = 'hammer';
 
 let hammerR = 5.5, hammerPow = 15;
@@ -70,6 +73,8 @@ let meteors = null;   // 已呼叫的隕石（倒數或下墜中，可以好幾�
 let nukes = null;     // 已呼叫的核彈（倒數或下墜中，可以好幾顆）
 let magics = null;    // 正在展開的魔法陣（可以好幾個）
 let storms = null;    // 正在打雷的烏雲（可以好幾朵）
+let gates = null;     // 正在發動的王之財寶（一次一發，見 castGate）
+let weapons = null;   // 場上所有兵器：門裡待發、飛行中、翻滾中、躺在地上的（v1.132）
 let fires = null;     // 正在燒的積木（還站著的會往鄰居蔓延，碎料的只燒自己）
 let nSpread = 0;      // fires 裡有幾筆是「還站著的建築」——碎料不占那個額度
 const hot = [];       // 火球粒子（走不透明那顆材質，才亮得起來）
@@ -250,7 +255,12 @@ function afterHit(n, point, R, own) {
    方向來自滑鼠射線，所以從上面砸跟從側面砸，塌的方式不一樣。 */
 /* quiet：不要震畫面。給投石機用的——它一台連丟好幾顆、還能架好幾台，
    每一顆都晃一下的話畫面會一路抖到它撤走（見 rockHit）。 */
-function smash(point, dir, R0, pow0, quiet) {
+/* hush＝這一下不出聲（v1.132 為王之財寶加的）。它七秒射一百九十幾發、其中九十幾發
+   打中建築，每一發都放 sndSmash 的話是一秒十幾聲爆裂噪音疊在一起；那一把自己有
+   一聲短促的金屬撞擊（sndClang），所以把這裡的聲音讓給它。
+   quiet 管的是**畫面震動**、hush 管的是**聲音**，兩件事分開給：
+   投石機與雷是「不震但要響」，王之財寶是兩個都不要。 */
+function smash(point, dir, R0, pow0, quiet, hush) {
   const R = R0 || hammerR, R2 = R * R;
   const power = pow0 || hammerPow;
   let hitN = 0, ownN = 0;                       // ownN＝其中有幾塊是地標的（見 afterHit）
@@ -280,7 +290,7 @@ function smash(point, dir, R0, pow0, quiet) {
   spawnDust(point, R, hitN);
   spawnRing(point, R);
   if (!quiet) ENG.shake(0.42 + Math.min(1.4, hitN * 0.02));
-  sndSmash();
+  if (!hush) sndSmash();
   return hitN;
 }
 
@@ -3494,6 +3504,497 @@ function dustList() {
   return dustAll;
 }
 
+/* ── 王之財寶（v1.132）─────────────────────────────────
+   使用者指定的順序就是這支的骨架：點地面 → **參考鏡頭方向**開出一整片金色的圓（由小而大）
+   → 冷兵器從圓心慢慢伸出來、一半留在圓外 → 全部就位後停 3 秒 → 對範圍內的隨機位置
+   連射 7 秒（不規則，不是一波一波）→ 射出去的那個圓縮小消失、換個位置再開 →
+   打中積木就炸開一個小缺口、兵器掉到地面，打空地就插在地上，最後都慢慢消失。
+   出自 Fate 系列的〈王之財寶〉。
+
+   四件事跟別的道具不一樣，寫在這裡免得日後看不懂：
+
+   ① **門是正對鏡頭的公告板**（畫在引擎的 putGates，跟十字星光同一套）。使用者指定
+      「參考鏡頭方向」——門陣鋪在「鏡頭看過去」那個方向的**橫斷面**上，整片再退到場心的
+      **另一側**（GATE_BACK），所以建築剛好站在門陣與鏡頭之間，兵器是朝著鏡頭、
+      往下射進工地（參考圖那個構圖；擺錯邊會怎樣見 GATE_BACK 那段）。
+      轉視角的話門會跟著轉正，不會變成一排薄片。
+      不能用魔法陣那組環：那組是**貼地**的（引擎裡 rotation.x 寫死 −π/2）。
+
+   ② **沒有燃燒效果**（使用者指定：「類似打雷 但是沒有燃燒效果」）。所以它只走槌子那條
+      smash()，不叫 igniteAround——這正是它跟打雷最大的差別（打雷的傷害其實在火不在力，
+      見 BOLT_FIRE_*）。
+
+   ③ **不震、不出聲（指 smash 那一聲）**。七秒射一百多發，每一發都震的話畫面會抖到結束
+      （見〈會「持續破壞」的不震畫面〉）；聲音同理，讓給它自己那聲短促的金屬撞擊。
+
+   ④ **門與兵器是兩份清單**。門收掉之後兵器還在飛、還躺在地上慢慢淡，所以 weapons
+      不掛在 gates 底下——一發打完 gates 變 null，weapons 得自己活到最後一把淡完。 */
+const GATE_N = 100;              // 一次開幾個門（使用者：「先預計 100 個」）
+/* 門陣的形狀。100 個門排成抖動格點——純隨機撒的話會擠出一塊塊空洞與疊死的堆，
+   參考圖裡那是**鋪得很勻但不整齊**的一片。
+
+   多寬多高**跟著建築走**（見 gateSpan）：寫死 62×32 的時候，打台北 101（高 65）
+   得把鏡頭退到看得下整棟的距離，那片門在畫面上只剩中間一小塊（截圖比對過）。
+   欄列數再從長寬比算回來，格子才會接近正方形；門的半徑是格子邊長的幾成，
+   所以不管建築是矮胖還是細高，門與門的疏密都一樣。 */
+/* 前後再抖多厚（門陣要有遠近，不是一片貼紙）。**只往離鏡頭遠的那一側抖**：
+   往兩側抖的話門陣的近面會落在 GATE_BACK − 5 ＝ 19，比打擊範圍 22 還近，
+   最遠那一圈落點就跑到門的後面去了，瞄過去的那幾把變成背對鏡頭飛
+   （實測 100 把裡漏 1 把）。單側抖之後近面就是 GATE_BACK 本身。 */
+const GATE_DEEP = 5;
+const GATE_RAD = [0.42, 0.62];   // 門的半徑是格子邊長的幾成
+/* 門陣擺在場心的**另一側**多遠（背對鏡頭那一側）——所以兵器是朝著鏡頭、
+   往下射進工地，建築剛好站在門陣與鏡頭之間（參考圖就是這個構圖）。
+
+   為什麼是這一側而不是鏡頭這一側（第一版擺錯邊，截圖比對才發現）：
+   門是一片正對鏡頭的公告板，它**不寫深度但會測深度**，所以「比門近的」畫在門上面、
+   「比門遠的」被門擋掉。兵器停在門心時剛好一半在門前、一半在門後——
+   要讓露出來的是**刃**而不是柄，刃就得朝著鏡頭；刃朝鏡頭 ＝ 它是朝鏡頭飛的 ＝
+   門陣在建築後面。擺在鏡頭這一側的話露出來的會是柄與劍柄頭，刃反而整支埋在門裡。
+
+   **這個數要大於打擊範圍的上限**（GATE_ZONE 22）：落點抽在場心 22 以內，門陣只退 18 的話，
+   最遠那一圈落點會落在門陣**後面**，瞄過去的那幾把就變成背對鏡頭飛——實測 100 把裡有
+   1～11 把是這樣，露出來的是柄。退到 24、而且前後的抖動只往遠處抖（見 GATE_DEEP）之後，
+   門陣的近面就是 24，每一把的落點都在門的前方。 */
+const GATE_BACK = 24;
+/* 門陣中心擺多高。建築越高擺越高，但不是「屋頂再往上」——高樓那樣擺會整片飄在
+   天上、跟建築脫節；0.6 倍樓高再加 20，門陣就罩在建築的上半段與它上方那一片。
+   下限 32 是量出來的：矮建築的門陣半高就是 13，中心擺在 32 的話最低那一排落在 19，
+   再低會有一整排門埋進草皮，看起來像散在地上的光斑而不是懸在半空的一面牆。 */
+const GATE_UP = 0.6, GATE_UP_ADD = 20;
+const GATE_Y0 = 32;              // 矮建築用的下限
+const GATE_GROW = 0.55;          // 一個門張開要多久（由小而大）
+const GATE_STAG = 1.5;           // 一百個門的出場錯開在這麼多秒裡
+const GATE_DRAW = 0.7;           // 兵器從門心伸出來要多久
+const GATE_HOLD = 3;             // 全部就位後停多久（使用者指定）
+const GATE_FIRE = 7;             // 連射多久（使用者指定）
+/* 連射的節奏：平均每秒幾發，還有兩發之間的間隔可以差幾倍。
+   **整發共用一個節奏器**，不是每個門各自抽自己的射擊時刻——後者做不出「從頭到尾
+   一樣密」：一開始一百個門把第一發鋪在七秒裡（每秒 14 發），但一個門射完換位置再開
+   只要兩秒多，於是後段是好幾輪疊起來的，密度一路往上爬（實測每半秒 5～9 發爬到
+   26～36 發，前段稀後段擠）。改成節奏器之後密度就是這裡寫的數字，
+   間隔再乘一個 0.4～1.6 的亂數 ＝ 忽快忽慢的不規則連射（使用者：「不要看起來像
+   一堆同時發射一波一波的」）。28 發/秒 × 7 秒 ≈ 196 發。 */
+const GATE_RATE = 28;
+const GATE_JIT = [0.4, 1.6];
+const GATE_SHUT = 0.3;           // 射完那個門縮掉要多久
+/* 打哪裡：場心這個半徑內的隨機位置——但**跟著建築的外接半徑收**（見 gateZone）。
+   固定 22 的話打細長的塔幾乎全落在空地上：實測台北 101（外接半徑 9.5）219 發只有
+   53 發碰得到建築，整趟只掉 88 塊（3%）；羅馬競技場（18.3）則是 160 發、323 塊（11%）。 */
+const GATE_ZONE = 22;
+const GATE_ZONE_MIN = 10;
+const GATE_SPD = 62;             // 兵器飛多快
+const GATE_HIT_R = 1.5;          // 打中的地方咬掉多大一片（雷是 1.84）
+const GATE_HIT_POW = 12;         // 力道（雷 13、投石機 12、槌子 15）
+/* 兵器全長是它那個門半徑的幾倍。**上限必須讓「半長 ≤ 門半徑」**（1.6 × 最大的
+   長度倍率 1.18 ＝ 1.89 倍半徑，半長 0.94 倍）：埋在門裡那一半是靠門那片圖擋住的，
+   半長超過門半徑的話，柄會從門的邊上戳出來——參考圖裡是看不到柄的。 */
+const GATE_LONG = [1.3, 1.6];
+/* 每一種兵器的長度倍率（造型表在引擎的 WEAP_KIND，那邊一律正規化成長度 1）。
+   順序：劍、大劍、刀、矛、戟、騎槍、短劍。 */
+const WEAP_SCALE = [1, 1.18, 1, 1.15, 1.12, 1.05, 0.72];
+const GATE_INTO = 0.4;           // 插在地上時刃尖沒入地面多深
+const GATE_LIE = [1.4, 2.8];     // 掉在地上／插在地上撐多久才開始淡
+const GATE_FADE = 1.6;           // 淡多久（縮成一點，再化成金色光塵）
+/* 場上最多幾把。要 **≤ 引擎的 WEAP_MAX（360）**——超過的會被 putWeapons 默默切掉，
+   而被切掉的是清單後面那些＝最新射出來的那幾把。
+   量過的峰值：門裡待發 100 ＋ 飛在半空約 15 ＋ 躺著還沒淡完的約 90。 */
+const WEAP_KEEP = 340;
+
+/* 點下去。一次一發（一發就是一百個門、連射七秒），還在跑的時候再點就換新的一發——
+   同其他清單型道具「滿了把最早那個擠掉」的規矩。舊那一發的門當場收掉，
+   但**已經射出去的兵器不收**：它們在 weapons 裡，會自己飛完、自己淡掉。 */
+function castGate(point) {
+  if (gates) closeGate();
+  /* 參考鏡頭方向（使用者指定）。相機在旋轉中心的 (cos yaw, sin yaw) 方向上，
+     所以「鏡頭看過去」是它的反向；畫面右是它繞 Y 轉 90°（跟 ENG.pan 同一套換算）。 */
+  const yaw = ENG.cam.yaw;
+  const fx = -Math.cos(yaw), fz = -Math.sin(yaw);
+  const ux = Math.sin(yaw), uz = -Math.cos(yaw);
+  const y = Math.max(GATE_Y0, (bp ? bp.height : 0) * GATE_UP + GATE_UP_ADD);
+  const sp = gateSpan();
+  const g = {
+    x: point.x, z: point.z, y, fx, fz, ux, uz,
+    cx: point.x + fx * GATE_BACK, cz: point.z + fz * GATE_BACK,
+    w: sp.w, h: sp.h, cols: sp.cols, rows: sp.rows,
+    ph: 'open', t: 0, fireT: 0, next: 0, ports: []
+  };
+  if (!weapons) weapons = [];
+  for (let i = 0; i < GATE_N; i++) g.ports.push(newPort(g, i, Math.random() * GATE_STAG));
+  gates = g;
+  /* 順手把鏡頭退到看得見整片門的距離（跟烏雲、蘑菇雲共用 ENG.holdWide）。
+     門陣飄在屋頂上方，矮建築的預設取景只看得到 26 以下——不退的話點下去
+     整片門都在畫面外。第三個參數 true ＝ **用完要還**（v1.128 使用者指定的那條規矩：
+     會把鏡頭往高處帶的運鏡，結束後高度要調回來），在 gateEnd() 還。 */
+  gateHold++;
+  ENG.holdWide(y + sp.h * 0.5, Math.max(sp.w * 0.5, bp ? bp.radius : sp.w * 0.5), true);
+  sndGate();
+}
+/* 還欠幾次「把視線高度還回去」。連點會換發，所以要記次數——同 stormHold。 */
+let gateHold = 0;
+function gateEnd() {
+  if (gates) return;
+  while (gateHold > 0) { gateHold--; ENG.releaseWide(); }
+}
+/* 把還開著的門收掉（換發、或連射時間到了）。門裡還沒射出去的那把兵器跟著撤掉：
+   它從來沒離開過門，留在地上會變成憑空掉下來的一把鐵。 */
+function closeGate() {
+  if (!gates) return;
+  for (const p of gates.ports) if (p.w) { dropWeapon(p.w); p.w = null; }
+  gates = null;
+}
+/* 門陣多寬多高、切幾欄幾列。寬跟著外接半徑、高跟著樓高，兩邊各自夾在一個區間裡
+   （太小的話一百個門會疊成一坨，太大的話鏡頭要退到門變成一片小點）。
+   欄數由長寬比算：cols × rows ≈ GATE_N 而且 cols/rows ≈ w/h，
+   解出來就是 cols = √(N × w ÷ h)，這樣格子才會接近正方形。 */
+function gateSpan() {
+  const R = bp ? bp.radius : 18, H = bp ? bp.height : 15;
+  const w = clamp(R * 2.6 + 24, 48, 110), h = clamp(H * 0.75 + 16, 26, 70);
+  const cols = Math.max(4, Math.round(Math.sqrt(GATE_N * w / h)));
+  return { w, h, cols, rows: Math.ceil(GATE_N / cols) };
+}
+/* 一個門的位置。抖動格點：每一格的中心再往四周抖四分之一格——
+   純隨機撒會擠出空洞與疊死的堆，參考圖那是「鋪得勻但不整齊」的一片。
+   i 給 −1 就是隨機挑一格（射完換位置時用，見 stepGates）。 */
+function portSpot(g, i) {
+  const n = i < 0 ? Math.floor(Math.random() * g.cols * g.rows) : i;
+  const col = n % g.cols, row = Math.floor(n / g.cols);
+  const cw = g.w / g.cols, ch = g.h / g.rows;
+  const u = ((col + 0.5) / g.cols - 0.5) * g.w + rr(-1, 1) * cw * 0.26;
+  const v = ((row + 0.5) / g.rows - 0.5) * g.h + rr(-1, 1) * ch * 0.26;
+  const d = rr(0, GATE_DEEP);
+  return { x: g.cx + g.ux * u + g.fx * d, y: g.y + v, z: g.cz + g.uz * u + g.fz * d,
+           r: Math.min(cw, ch) * rr(GATE_RAD[0], GATE_RAD[1]) };
+}
+/* 開一個門，並且在門裡放一把兵器。delay＝這個門晚幾秒才開始張開。 */
+function newPort(g, i, delay) {
+  const sp = portSpot(g, i);
+  const p = {
+    x: sp.x, y: sp.y, z: sp.z, r: sp.r,
+    rot: Math.random() * Math.PI * 2, spin: rr(0.35, 0.9) * (Math.random() < 0.5 ? -1 : 1),
+    ph0: Math.random() * Math.PI * 2,             // 亮度脈動的相位（每個門各自呼吸）
+    t: -delay, st: 'grow', k: 0, k0: 1, op: 0, w: null
+  };
+  p.w = newWeapon(g, p);
+  return p;
+}
+/* 這一發打得多開。上限是 GATE_ZONE，但細的建築要收進來——
+   1.25 倍外接半徑是「整棟都在範圍內、外面再留一圈」。 */
+function gateZone() {
+  return clamp((bp ? bp.radius : GATE_ZONE) * 1.25, GATE_ZONE_MIN, GATE_ZONE);
+}
+/* 這一把要射去哪：場心 gateZone() 半徑內的隨機一點（開根號才會均勻鋪滿整個圓，
+   同打雷的 strike）。回傳的是**指向**——兵器在門裡就照這個方向擺，
+   所以「伸出來的那一半」指的已經是它等一下要飛的方向。 */
+function aimGate(g, p) {
+  const a = Math.random() * Math.PI * 2;
+  const rad = Math.sqrt(Math.random()) * gateZone();
+  const dx = g.x + Math.cos(a) * rad - p.x;
+  const dy = rr(0.4, 1.4) - p.y;
+  const dz = g.z + Math.sin(a) * rad - p.z;
+  const L = Math.hypot(dx, dy, dz) || 1;
+  return { dx: dx / L, dy: dy / L, dz: dz / L };
+}
+function newWeapon(g, p) {
+  const k = Math.floor(Math.random() * WEAP_SCALE.length);
+  const len = p.r * rr(GATE_LONG[0], GATE_LONG[1]) * WEAP_SCALE[k];
+  const a = aimGate(g, p);
+  if (!weapons) weapons = [];
+  /* 額度滿了就把最早那把「已經躺在地上」的收掉。躺著的才收：飛在半空的收掉會
+     憑空消失，門裡那把收掉等於這個門啞了。 */
+  if (weapons.length >= WEAP_KEEP) {
+    const i = weapons.findIndex(w => w.st === 'lie');
+    if (i < 0) return null;
+    weapons.splice(i, 1);
+  }
+  /* len 從 0 起（不是 len0）：畫出來的長度歸 posInGate 管，而那一支要等這個門
+     真的輪到出場（p.t >= 0）才會被叫到。給 len0 的話，還沒開的那幾十個門裡的兵器
+     會先以全尺寸浮在半空——截圖比對時看到的就是「一片沒有門的刀劍飄在天上」。
+     s（掃掠判定的探長）照樣給全長：它跟畫多大無關。 */
+  const w = {
+    x: p.x, y: p.y, z: p.z, dx: a.dx, dy: a.dy, dz: a.dz,
+    roll: Math.random() * Math.PI * 2, len: 0, len0: len, k, s: len,
+    st: 'gate', out: 0, vx: 0, vy: 0, vz: 0,
+    ax: 0, ay: 0, az: 0, spin: 0, lie: 0, fade: 1, em: 0
+  };
+  weapons.push(w);
+  return w;
+}
+/* 撤掉一把（門裡那把沒射出去就被收走）。 */
+function dropWeapon(w) {
+  const i = weapons ? weapons.indexOf(w) : -1;
+  if (i >= 0) weapons.splice(i, 1);
+}
+/* 射出去。門跟著縮掉（使用者：「兵器射出後 黃色魔法縮小消失」）。 */
+function fireGate(g, p) {
+  const w = p.w;
+  p.w = null; p.st = 'shut'; p.t = 0; p.k0 = p.k;
+  if (!w) return;
+  w.st = 'fly';
+  w.vx = w.dx * GATE_SPD; w.vy = w.dy * GATE_SPD; w.vz = w.dz * GATE_SPD;
+  sndBlade();
+}
+/* 隨機挑一個已就位的門。從隨機一格起往後找，不 filter 出一個新陣列——
+   這是每秒要跑二十幾次的路徑。 */
+function pickReady(g) {
+  const n = g.ports.length, s0 = Math.floor(Math.random() * n);
+  for (let i = 0; i < n; i++) {
+    const p = g.ports[(s0 + i) % n];
+    if (p.st === 'ready') return p;
+  }
+  return null;
+}
+function stepGates(dt) {
+  stepWeapons(dt);                    // 兵器自己飛：門收掉了也要繼續
+  if (!gates) { gateEnd(); return; }
+  const g = gates;
+  g.t += dt;
+  let ready = 0;
+  for (const p of g.ports) {
+    p.t += dt;
+    if (p.t < 0) continue;            // 還沒輪到這個門出場
+    p.rot += p.spin * dt;
+    if (p.st === 'grow') {
+      /* 由小而大（使用者指定）。三次方的 ease-out ＋ 一點點過衝：
+         線性放大看起來像貼圖被拉開，過衝才像「撐開」一個洞。 */
+      const u = Math.min(1, p.t / GATE_GROW);
+      const e = 1 - Math.pow(1 - u, 3);
+      p.k = e * (1 + 0.10 * Math.sin(Math.PI * u));
+      if (u >= 1) { p.st = 'draw'; p.t = 0; p.k = 1; }
+    } else if (p.st === 'draw') {
+      const u = Math.min(1, p.t / GATE_DRAW);
+      if (u >= 1) { p.st = 'ready'; p.t = 0; }
+    } else if (p.st === 'shut') {
+      // 從「開始縮的那一刻有多大」縮起（k0）。一律從 1 縮的話，連射結束時
+      // 那幾個才張開到一半的門會先「啪」地跳到全開再縮
+      p.k = p.k0 * Math.max(0, 1 - p.t / GATE_SHUT);
+      if (p.t >= GATE_SHUT) {
+        /* 射完換個位置再開（使用者：「因為持續射擊 可以又在其他位置出現」）。
+           時間不夠再走完一輪「張開 → 伸出 → 射」的就直接熄掉，
+           不然連射結束的那一刻會有一排開到一半的門硬生生被切掉。 */
+        const need = GATE_GROW + GATE_DRAW + 0.25;
+        if (g.ph === 'fire' && g.fireT + need < GATE_FIRE) {
+          const sp = portSpot(g, -1);
+          p.x = sp.x; p.y = sp.y; p.z = sp.z; p.r = sp.r;
+          p.rot = Math.random() * Math.PI * 2;
+          p.st = 'grow'; p.t = 0; p.k = 0;
+          p.w = newWeapon(g, p);
+        } else { p.st = 'off'; p.k = 0; }
+      }
+    }
+    if (p.st === 'ready') ready++;
+    /* 亮度：張開／縮掉照 k 走，開著的時候自己呼吸。門與門的相位是錯開的
+       （ph0），整片才不會像同一顆燈泡在閃。 */
+    p.op = (p.st === 'off' ? 0 : p.k) * (0.82 + 0.18 * Math.sin(g.t * 3.1 + p.ph0));
+    // 門裡那把兵器：跟著門走，並且照 draw 的進度往外滑
+    if (p.w) posInGate(p);
+  }
+  if (g.ph === 'open') {
+    // 全部伸出、就定位了才開始數那三秒（使用者：「全部伸出就定位後 3秒」）
+    if (ready >= g.ports.length) { g.ph = 'hold'; g.t = 0; }
+  } else if (g.ph === 'hold') {
+    if (g.t >= GATE_HOLD) { g.ph = 'fire'; g.fireT = 0; g.next = rr(0.05, 0.2); }
+  } else if (g.ph === 'fire') {
+    g.fireT += dt;
+    /* 節奏器：時間到就隨機挑一個已就位的門射出去（見 GATE_RATE）。
+       while 不是 if——一幀 dt 大於一個間隔時（4 倍速、掉幀）要補射，
+       不然快轉時發數會憑空變少。 */
+    g.next -= dt;
+    while (g.next <= 0 && g.fireT < GATE_FIRE) {
+      const p = pickReady(g);
+      if (!p) break;                       // 全部都還在張開／伸出：這一發等下一幀
+      fireGate(g, p);
+      g.next += rr(GATE_JIT[0], GATE_JIT[1]) / GATE_RATE;
+    }
+    if (g.fireT >= GATE_FIRE) {
+      // 時間到：還開著的門一律收掉（縮完就熄，見上面的 shut）
+      for (const p of g.ports) {
+        if (p.st === 'off' || p.st === 'shut') continue;
+        if (p.w) { dropWeapon(p.w); p.w = null; }
+        p.st = 'shut'; p.t = 0; p.k0 = p.k;
+      }
+      g.ph = 'done';
+    }
+  } else if (g.ph === 'done') {
+    if (g.ports.every(p => p.st === 'off')) gates = null;
+  }
+  gateEnd();
+}
+/* 門裡那把兵器擺在哪。從「整把縮在門後面」滑到「正中間卡在門上」——
+   停在正中間，一半就在門外（使用者：「一半的長度在魔法圓形外面」）。
+   ease-out：出來那一下快、快到位時慢下來，像被推出來而不是等速平移。 */
+function posInGate(p) {
+  const w = p.w;
+  const u = p.st === 'draw' ? Math.min(1, p.t / GATE_DRAW) : (p.st === 'grow' ? 0 : 1);
+  const e = 1 - Math.pow(1 - u, 2.2);
+  const back = w.len0 * 0.5 + 0.6;              // 縮到門後面：整把都看不見
+  const off = -back * (1 - e);
+  w.x = p.x + w.dx * off; w.y = p.y + w.dy * off; w.z = p.z + w.dz * off;
+  w.len = w.len0 * p.k;                          // 門在放大時裡面那把跟著長出來
+}
+function stepWeapons(dt) {
+  if (!weapons) return;
+  for (let i = weapons.length - 1; i >= 0; i--) {
+    const w = weapons[i];
+    if (w.st === 'gate') continue;               // 位置由門那邊給（posInGate）
+    if (w.st === 'fly') {
+      const px = w.x, py = w.y, pz = w.z;
+      w.x += w.vx * dt; w.y += w.vy * dt; w.z += w.vz * dt;
+      goldTrail(w, px, py, pz, dt);
+      /* 半路撞到建築就在撞到的那一點停住，跟隕石／投石機／核彈共用同一套掃掠判定
+         （w.s ＝ 全長，sweepRock 會往前多探半個 s，探到的正好是刃尖）。
+         只在終點判定的話，斜插進來的兵器會從屋頂穿過去才算打到。 */
+      if (sweepRock(w, px, py, pz)) { hitWeapon(w); continue; }
+      // 刃尖碰到地面：插在地上（使用者指定）
+      if (w.y + w.dy * w.len * 0.5 <= 0) { stickWeapon(w); continue; }
+      if (w.y < -6) { weapons.splice(i, 1); }     // 保險：飛到地底下的直接收掉
+    } else if (w.st === 'fall') {
+      /* 被擋下來之後就是一塊會翻滾的鐵，落到地面為止。這一段**不再跟建築碰撞**：
+         打在高樓半腰的那一把會穿過樓層掉到地上。跟碎料（stepBlock）同一個取捨——
+         一趟有一百多把在掉，每一把每幀都做掃掠判定划不來，而且它已經不再造成破壞。 */
+      w.vy -= 26 * dt;
+      w.x += w.vx * dt; w.y += w.vy * dt; w.z += w.vz * dt;
+      tumbleWeapon(w, dt);
+      if (w.y <= 0.4) { lieWeapon(w); }
+    } else {
+      // 插著／躺著：撐一段時間再慢慢淡（使用者：「然後都慢慢消失」）
+      w.lie -= dt;
+      if (w.lie <= 0) {
+        w.fade -= dt / GATE_FADE;
+        w.len = w.len0 * Math.max(0, w.fade);
+        if (w.fade <= 0) { goldPuff(w); weapons.splice(i, 1); }
+      }
+    }
+  }
+  if (!weapons.length) weapons = null;
+}
+/* 打中積木：炸開一個小缺口，兵器被擋下來、掉到地面（使用者指定）。
+   quiet＋hush ＝ 不震畫面也不出 smash 那一聲，理由見檔頭那四點的第 ③ 點。
+   **不點火**（使用者：「沒有燃燒效果」），所以這裡沒有 igniteAround。 */
+function hitWeapon(w) {
+  /* 炸在**刃尖**不是重心。sweepRock 探到的是「刃尖再往前 半個全長」那一段
+     （它拿 r.s * 0.5 當探長，而這裡的 s 就是全長），可是它把物件停在**這一幀該到的
+     位置**——也就是刃尖有可能還差半把劍才碰到那塊積木。拿重心當爆點的話，
+     觸發這一下的那塊積木常常剛好落在半徑邊上，實測一發只咬掉 1.8 塊
+     （半徑 1.5 應該要有五、六塊）。改成刃尖之後才是「刺進去的那一點」。 */
+  const t = w.len * 0.5;
+  const p = { x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t };
+  smash(p, { x: w.dx, y: w.dy, z: w.dz }, GATE_HIT_R, GATE_HIT_POW, true, true);
+  sndClang();
+  w.st = 'fall';
+  // 被擋下來之後就是一塊會翻滾的鐵：往前的勁道剩一點點，剩下交給重力
+  w.vx = w.dx * rr(1, 5) + rr(-2.5, 2.5);
+  w.vy = rr(1, 5);
+  w.vz = w.dz * rr(1, 5) + rr(-2.5, 2.5);
+  const a = Math.random() * Math.PI * 2, b = rr(-1, 1);
+  const c = Math.sqrt(Math.max(0, 1 - b * b));
+  w.ax = Math.cos(a) * c; w.ay = b; w.az = Math.sin(a) * c;
+  w.spin = rr(6, 13) * (Math.random() < 0.5 ? -1 : 1);
+}
+/* 插在地上（使用者指定）：刃尖沒入地面一點點，柄還斜著露在外面。
+   沿著飛行方向把整把推到「刃尖剛好在 y = −GATE_INTO」那個位置，而不是用這一幀停下來的
+   地方——它一幀飛一格，直接用的話沒入多深全看那一幀剛好飛到哪。
+   幾乎水平飛過來、擦到地面的那種（dy 接近 0）算不出這個位移，就讓它躺在原地。 */
+function stickWeapon(w) {
+  const tipY = w.y + w.dy * w.len * 0.5;
+  const k = w.dy < -0.05 ? (-GATE_INTO - tipY) / w.dy : 0;
+  w.x = w.x + w.dx * k; w.y = w.y + w.dy * k; w.z = w.z + w.dz * k;
+  w.st = 'lie';
+  w.lie = rr(GATE_LIE[0], GATE_LIE[1]);
+  /* 插進去揚一小撮土。不用 spawnDust：那一支一次生二十幾顆（它是給爆炸用的），
+     而一趟有一百多把插在地上——整池 400 顆的額度會被它吃光，
+     打在建築上那些真正該有的煙塵就生不出來了。 */
+  for (let i = 0; i < 4; i++) {
+    if (dust.length > 380) break;
+    const a = Math.random() * Math.PI * 2, sp = rr(1.5, 4);
+    dust.push({
+      x: w.x + rr(-0.3, 0.3), y: 0.25, z: w.z + rr(-0.3, 0.3),
+      vx: Math.cos(a) * sp, vy: rr(1, 3), vz: Math.sin(a) * sp,
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(0.3, 0.6), s: rr(0.16, 0.34), c: rr(0.62, 0.86)
+    });
+  }
+  sndStab();
+}
+/* 掉到地面：躺平。方向取它落地時的水平分量，沒有的話隨便給一個角度。 */
+function lieWeapon(w) {
+  const h = Math.hypot(w.dx, w.dz);
+  if (h > 0.05) { w.dx /= h; w.dz /= h; } else { const a = Math.random() * Math.PI * 2; w.dx = Math.cos(a); w.dz = Math.sin(a); }
+  w.dy = 0;
+  w.y = w.len * 0.06 + 0.1;                     // 貼著地面躺著（刃面本來就薄）
+  w.st = 'lie';
+  w.lie = rr(GATE_LIE[0], GATE_LIE[1]);
+}
+/* 翻滾（掉下來那一段）：把指向繞著一根固定的轉軸轉，就是羅德里格旋轉公式。
+   只轉 roll 的話它會像根定住的針在原地自轉，看不出在翻。 */
+function tumbleWeapon(w, dt) {
+  const a = w.spin * dt, c = Math.cos(a), s = Math.sin(a);
+  const dot = w.ax * w.dx + w.ay * w.dy + w.az * w.dz;
+  const cx = w.ay * w.dz - w.az * w.dy;
+  const cy = w.az * w.dx - w.ax * w.dz;
+  const cz = w.ax * w.dy - w.ay * w.dx;
+  const nx = w.dx * c + cx * s + w.ax * dot * (1 - c);
+  const ny = w.dy * c + cy * s + w.ay * dot * (1 - c);
+  const nz = w.dz * c + cz * s + w.az * dot * (1 - c);
+  const L = Math.hypot(nx, ny, nz) || 1;
+  w.dx = nx / L; w.dy = ny / L; w.dz = nz / L;
+}
+/* 飛行時的金色光軌（gemini 的描述：「拖曳著筆直耀眼的金色光軌與粒子尾跡」）。
+   每一顆沿著飛行方向拉成一小段（ln，跟煙火往上竄那條尾巴同一招），首尾接起來
+   才是一條線而不是一串點。走 hot 那一池（不透明的亮材質），但額度留 40 顆給
+   還在燒的東西——這一把自己不點火，不該把別人的火吃光。 */
+function goldTrail(w, px, py, pz, dt) {
+  w.em += dt * 70;
+  const seg = { dx: w.dx, dy: w.dy, dz: w.dz, ln: GATE_SPD / 70 * 1.7 };
+  while (w.em >= 1) {
+    w.em--;
+    if (hot.length > HOT_MAX - 40) break;
+    const u = Math.random();
+    hot.push({
+      x: px + (w.x - px) * u, y: py + (w.y - py) * u, z: pz + (w.z - pz) * u,
+      vx: rr(-0.3, 0.3), vy: rr(-0.2, 0.5), vz: rr(-0.3, 0.3),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.09, 0.20), life: rr(0.08, 0.17), g: -0.9, grow: 0.95,
+      cool: rr(0.2, 0.5), cr: 1, cg: rr(0.80, 0.92), cb: rr(0.24, 0.48),
+      to: [1, 0.55, 0.06], dx: seg.dx, dy: seg.dy, dz: seg.dz, ln: seg.ln
+    });
+  }
+}
+/* 淡完那一刻化成一小撮金色光塵（gemini 的描述：「化為金色光塵消散」）。
+   只有幾顆：一百多把兵器陸續淡完，一把撒二十顆的話整片草地會亮成一團。 */
+function goldPuff(w) {
+  for (let i = 0; i < 4; i++) {
+    if (hot.length > HOT_MAX - 20) return;
+    hot.push({
+      x: w.x + rr(-0.3, 0.3), y: w.y + rr(0, 0.5), z: w.z + rr(-0.3, 0.3),
+      vx: rr(-0.6, 0.6), vy: rr(0.6, 1.8), vz: rr(-0.6, 0.6),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.12, 0.26), life: rr(0.3, 0.6), g: -1.4, grow: 0.94,
+      cool: rr(0.3, 0.6), cr: 1, cg: rr(0.88, 1), cb: rr(0.5, 0.75),
+      to: [1, 0.7, 0.2]
+    });
+  }
+}
+/* 畫面上要畫的那些門。一個門畫兩層：外圈的漣漪 ＋ 小一圈、反向轉的核——
+   兩層互相滑過去，疊出來的環才會一直在變（參考圖那是水面泛開的漣漪，
+   不是一張固定的圓貼紙）。重用同一個陣列，不要每幀配一個新的。 */
+/* 畫在哪：就是門心——**遮蔽是深度測試自己做的**。門這一片不寫深度、但會測深度，
+   所以兵器比門近的那一半（刃，朝著鏡頭）畫在門上面，比門遠的那一半（柄）被門擋掉。
+   兵器停在門心，於是「一半在門外、一半在門裡」在畫面上就成立了，
+   不必另外算要遮多少（見 GATE_BACK 上面那段：門陣擺哪一側決定了露出來的是哪一頭）。 */
+const gateDraw = [];
+function gateList() {
+  gateDraw.length = 0;
+  if (!gates) return gateDraw;
+  for (const p of gates.ports) {
+    if (p.op <= 0.002) continue;
+    const r = p.r * p.k;
+    gateDraw.push({ x: p.x, y: p.y, z: p.z, r, rot: p.rot, op: p.op });
+    gateDraw.push({ x: p.x, y: p.y, z: p.z, r: r * 0.62, rot: -p.rot * 1.7, op: p.op * 0.8 });
+  }
+  return gateDraw;
+}
+
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
 /* 記下「這一把用過了」。成就〈工具箱清空〉要的是每一種都試過，
    而水桶按住不放那條路不經過 useTool（見 startPourAt），所以抽成一支共用。 */
@@ -3553,6 +4054,7 @@ function useTool(hit) {
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'storm') { callStorm({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'drop') { dropBall(hit.point); return 0; }
+  if (tool === 'gate') { castGate({ x: hit.point.x, z: hit.point.z }); return 0; }
   return 0;
 }
 

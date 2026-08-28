@@ -157,6 +157,10 @@ const installClean = page => page.evaluate(() => {
     /* 烏雲（v1.117）與閃電。電要連 arcSrcs 一起收：只清 bolts 的話，
        還在放電的那一處下一幀又補一批回來，等於沒清。 */
     storms = null; arcSrcs = null; bolts.length = 0;
+    /* 王之財寶（v1.132）。門與兵器是兩份清單，兩份都要收；gateEnd() 是把
+       castGate 借去的鏡頭高度還回去（不還的話下一條測試量到的視線高是被它抬過的）。 */
+    gates = null; weapons = null; gateEnd();
+    ENG.putGates([]); ENG.putWeapons([]);
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
@@ -5015,16 +5019,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      「要多高才過得去」（tossPeak），房子那邊 v1.102 之前是固定公式、完全不看路上有什麼，
      所以往屋子另一側那幾格丟的時候是從屋頂穿過去的。
      同一批弧線用舊公式再算一次當對照組，紅綠在同一輪裡比。 */
+  /* **三輪，數字合起來算**（v1.132）：一輪只量得到三十幾條「弧頂真的被墊高的」，
+     一條就佔 3.3 個百分點——1/30 跟 5/30 都在正常範圍裡，門檻卻只有 16%。
+     實測就這樣紅過一次（16.67%，而訂門檻時那 22 輪的最大值是 10.2%）。
+     這不是程式壞了，是取樣太窄：三輪合起來約一百條，一條變成 1 個百分點。 */
   const homeArc = await page.evaluate(() => {
-    cleanTools();
-    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
-    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
-    let t = 0;
-    while (t < 12) { step(0.05); t += 0.05; }
-    stopIdleEvent(); clearHomes(); evArm = 0;
-    idleEv = IDLE_EVENTS[0]; startHomes();
-    const seen = new Set();
-    let arcs = 0, hit = 0, hitOld = 0, up = 0, upHit = 0, upOld = 0;
     const thru = (a, peak) => {
       for (let k = 5; k < 37; k++) {          // 掐頭去尾：出手與落點本來就貼著積木
         const u = k / 40;
@@ -5033,26 +5032,39 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       return 0;
     };
-    for (let i = 0; i < 5000 && homes.list.some(h => h.left > 0); i++) {
-      step(0.05);
-      for (const b of blocks) {
-        if (b.st !== 2 || !b.arc || b.arc.hm === undefined || seen.has(b)) continue;
-        seen.add(b); arcs++;
-        const a = b.arc;
-        // v1.102 的固定公式（魔法師那條還要再加 MAGE_LIFT）
-        const old = Math.max(1.1, (a.y1 - a.y0) * 0.45 + 1.1) + (a.mage ? MAGE_LIFT : 0);
-        const n = thru(a, a.peak), o = thru(a, old);
-        hit += n; hitOld += o;
-        /* 大部分的拋擲是丟給旁邊那一格，路上本來就沒東西，兩個公式一樣高——
-           那些會把比例稀釋掉。所以另外單獨看「弧頂真的被墊高的那幾條」：
-           那才是這次改動作用得到的那些，舊公式在那裡本來就該幾乎全穿。 */
-        if (a.peak > old + 0.01) { up++; upHit += n; upOld += o; }
+    const sum = { arcs: 0, hit: 0, hitOld: 0, up: 0, upHit: 0, upOld: 0, left: 0 };
+    for (let round = 0; round < 3; round++) {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+      let t = 0;
+      while (t < 12) { step(0.05); t += 0.05; }
+      stopIdleEvent(); clearHomes(); evArm = 0;
+      idleEv = IDLE_EVENTS[0]; startHomes();
+      const seen = new Set();
+      for (let i = 0; i < 5000 && homes.list.some(h => h.left > 0); i++) {
+        step(0.05);
+        for (const b of blocks) {
+          if (b.st !== 2 || !b.arc || b.arc.hm === undefined || seen.has(b)) continue;
+          seen.add(b); sum.arcs++;
+          const a = b.arc;
+          // v1.102 的固定公式（魔法師那條還要再加 MAGE_LIFT）
+          const old = Math.max(1.1, (a.y1 - a.y0) * 0.45 + 1.1) + (a.mage ? MAGE_LIFT : 0);
+          const n = thru(a, a.peak), o = thru(a, old);
+          sum.hit += n; sum.hitOld += o;
+          /* 大部分的拋擲是丟給旁邊那一格，路上本來就沒東西，兩個公式一樣高——
+             那些會把比例稀釋掉。所以另外單獨看「弧頂真的被墊高的那幾條」：
+             那才是這次改動作用得到的那些，舊公式在那裡本來就該幾乎全穿。 */
+          if (a.peak > old + 0.01) { sum.up++; sum.upHit += n; sum.upOld += o; }
+        }
       }
+      sum.left += homes.list.reduce((n, h) => n + h.left, 0);
     }
     const pct = (a, b) => +(a / Math.max(1, b) * 100).toFixed(2);
-    const out = { arcs, hit: pct(hit, arcs), old: pct(hitOld, arcs), up,
-                  upHit: pct(upHit, up), upOld: pct(upOld, up),
-                  left: homes.list.reduce((n, h) => n + h.left, 0) };
+    const out = { arcs: sum.arcs, hit: pct(sum.hit, sum.arcs),
+                  old: pct(sum.hitOld, sum.arcs), up: sum.up,
+                  upHit: pct(sum.upHit, sum.up), upOld: pct(sum.upOld, sum.up),
+                  left: sum.left };
     cleanTools(); clearHomes();
     return out;
   });
@@ -5062,9 +5074,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      門檻 v1.116 照量的重訂（v1.115 加了肌肉小人就地掄，他站得遠、擦到屋簷的機會多一些）：
      22 輪實測整批 0.95～5.24%、被墊高的那幾條 0～10.2%，所以守 8% 與 16%
      （各自是實測最大值再留幾個百分點，同〈不從蓋好的部分中間穿過去〉那組的訂法）。 */
-  ok('往房子上丟的積木不會從自己的屋頂穿過去',
-     /* 被墊高的條數看抽到哪幾款房子（高的多、矮的少），實測 16～40 條，門檻抓 10。 */
-     homeArc.arcs > 300 && homeArc.up >= 10 &&
+  ok('往房子上丟的積木不會從自己的屋頂穿過去（三輪合計）',
+     /* 被墊高的條數看抽到哪幾款房子（高的多、矮的少），一輪實測 16～40 條，
+        三輪合起來所以門檻抓 30。 */
+     homeArc.arcs > 900 && homeArc.up >= 30 &&
      homeArc.hit < 8 && homeArc.upHit < 16 &&
      homeArc.upOld > 5 && homeArc.upOld > homeArc.upHit * 3,
      homeArc.arcs + ' 條弧線裡有 ' + homeArc.up + ' 條被墊高：那幾條穿過屋頂的比例 ' +
@@ -7116,13 +7129,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 解鎖狀態拼成一長串 true/false 很難讀（而且插進一種新道具就整排要重寫），
      所以照 id 來寫：「本來就開著的那幾種，加上這一關該開的」。
      手指與水桶不破壞任何東西，沒有鎖；破壞道具的階梯從槌子開始。 */
-  const NTOOL = 15;
+  const NTOOL = 16;
   const FREE = ['finger', 'bucket', 'hammer'];
   const isOpen = (id, ids) => FREE.indexOf(id) >= 0 || ids.indexOf(id) >= 0;
   const opened = (...ids) => lock0.ids.map(id => String(isOpen(id, ids))).join(',');
   const btnOpen = (...ids) => lock0.ids.map(id => isOpen(id, ids) ? 'open' : 'lock').join(',');
   const allOpen = () => Array(NTOOL).fill('true').join(',');
-  ok('工具共 15 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
+  ok('工具共 16 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
   ok('一開始只有手指、水桶跟槌子可用',
      lock0.ok.join(',') === opened(), lock0.ok.join(','));
   ok('鎖住的工具在畫面上也是鎖住的',
@@ -7146,7 +7159,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     at('destroyed', 10);
     at('smashed', 23000);
     at('destroyed', 12);
-    stats = freshStats(); stats.destroyed = 12; stats.smashed = 23000; renderTools();     // 全開
+    at('smashed', 27000);
+    stats = freshStats(); stats.destroyed = 12; stats.smashed = 27000; renderTools();     // 全開
     step2.push(TOOLS.map(t => toolOk(t)).join(','));
     return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
@@ -7176,11 +7190,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('拆掉 12 座解鎖天降鐵球',
      lock1.step2[11] === opened('ball', 'tornado', 'fire', 'meteor', 'magic', 'drop'),
      lock1.step2[11]);
-  ok('兩邊都推到頂就全開', lock1.step2[12] === allOpen(), lock1.step2[12]);
+  ok('擊飛 27,000 塊解鎖王之財寶',
+     lock1.step2[12] === opened('bighammer', 'treb', 'fw', 'bomb', 'nuke', 'storm', 'gate'),
+     lock1.step2[12]);
+  ok('兩邊都推到頂就全開', lock1.step2[13] === allOpen(), lock1.step2[13]);
   ok('解鎖後畫面上的鎖頭消失',
      lock1.btn.join(',') === btnOpen('bighammer', 'ball', 'treb', 'tornado', 'fw',
                                      'fire', 'bomb', 'meteor', 'nuke', 'magic',
-                                     'storm', 'drop'),
+                                     'storm', 'drop', 'gate'),
      lock1.btn.join(','));
 
   /* 手指：什麼都不破壞，但戳得倒小人 */
@@ -8145,14 +8162,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       placeTreb({ x: 46, z: 0 });
       for (let i = 0; i < 400 && trebs; i++) step(0.05);
     });
+    /* 王之財寶（v1.132）：連射七秒、一趟一百九十幾發，同一個道理一次都不震。 */
+    const gateN = count(() => {
+      castGate({ x: 0, z: 0 });
+      for (let i = 0; i < 340 && gates; i++) step(0.05);
+      gates = null; weapons = null; gateEnd();
+    });
     // 對照組：槌子那一下還是要震，不然就是整套震動被我弄壞了
     const hamN = count(() => smash({ x: 0, y: 4, z: 0 }, { x: 0, y: -1, z: 0 }, 6, 15));
     ENG.shake = real;
-    return { ballN, trebN, hamN };
+    return { ballN, trebN, gateN, hamN };
   });
-  ok('保齡球滾一整趟、投石機打完一整輪，畫面一次都不震',
-     shakes.ballN === 0 && shakes.trebN === 0,
-     '保齡球 ' + shakes.ballN + ' 次、投石機 ' + shakes.trebN + ' 次');
+  ok('保齡球滾一整趟、投石機打完一整輪、王之財寶射完一整趟，畫面一次都不震',
+     shakes.ballN === 0 && shakes.trebN === 0 && shakes.gateN === 0,
+     '保齡球 ' + shakes.ballN + ' 次、投石機 ' + shakes.trebN + ' 次、王之財寶 ' +
+     shakes.gateN + ' 次');
   ok('槌子那種單次撞擊照樣震', shakes.hamN === 1, '敲一下震 ' + shakes.hamN + ' 次');
 
   /* 龍捲風改成跟保齡球同一套操作（v1.58）：第一點是它出現的地方，第二點是掃過去的方向。
@@ -8753,6 +8777,358 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('正常的那一下不會被改到（打到積木、點空地都原封不動）',
      fixT.same && fixT.sameGround,
      '從天上砸最高那一塊 ' + fixT.same + '、點遠處空地 ' + fixT.sameGround);
+
+  /* ══════════ 王之財寶（v1.132）══════════
+     使用者指定的順序就是這一段的骨架：點地面 → 參考鏡頭方向開出一整片金色的圓
+     （由小而大）→ 冷兵器從圓心慢慢伸出來、一半留在圓外 → 全部就位後停 3 秒 →
+     對範圍隨機位置連射 7 秒（不規則，不是一波一波）→ 射出去的圓縮小消失、
+     換個位置再開 → 打中積木造成破壞（**沒有燃燒效果**）、兵器掉到地面，
+     打中地面就插在地上 → 最後都慢慢消失。每一件事一條。 */
+  head('王之財寶');
+  await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 0 });
+  /* 用 completeNow 不用 fillAll：fillAll 不會收掉整地推土機，剛擺好的最底層
+     會被還在場上的推土機推散，那不是道具幹的（跟打雷那一段同一個理由）。 */
+  await page.evaluate(() => completeNow());
+  const gate1 = await page.evaluate(() => {
+    marks.length = 0; dust.length = 0; clearFires();
+    /* 每一發的時刻、打中什麼，都從真的那三支函式攔下來記——
+       讀狀態的話只看得到「現在」，看不出七秒裡的分布。 */
+    const shots = []; let hitB = 0, hitG = 0, stuck = null, fell = null;
+    const oFire = fireGate, oHit = hitWeapon, oStick = stickWeapon;
+    let T = 0;
+    fireGate = (g, p) => { if (p.st === 'ready') shots.push(+T.toFixed(3)); oFire(g, p); };
+    hitWeapon = w => {
+      hitB++; oHit(w);
+      // 打中積木的：當場轉成會翻滾的掉落物（使用者：「兵器掉到地面」）
+      if (!fell) fell = { st: w.st, vy: +w.vy.toFixed(2), spin: +Math.abs(w.spin).toFixed(1) };
+    };
+    stickWeapon = w => {
+      hitG++; oStick(w);
+      // 插在地上的：刃尖沒入地面、柄還斜著露在外面
+      if (!stuck) stuck = { st: w.st, tip: +(w.y + w.dy * w.len * 0.5).toFixed(2),
+                            y: +w.y.toFixed(2), lie: +w.lie.toFixed(2) };
+    };
+    /* 兵器離門心多遠、在指向的哪一邊。負的＝整把還縮在門後面，
+       0 ＝ 正中間卡在門上（＝一半在門外，使用者指定的就位姿勢）。 */
+    const off = p => {
+      const w = p.w;
+      return w ? (w.x - p.x) * w.dx + (w.y - p.y) * w.dy + (w.z - p.z) * w.dz : NaN;
+    };
+    tool = 'gate';
+    useTool({ point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) });
+    const born = gates.ports.length, n0 = placedCnt;
+    const grow = [];
+    let ready = -1, out0 = null, out1 = null, maxW = 0, maxG = 0, reopen = 0;
+    const fired = new Set();
+    /* 26 秒：開門 1.5+0.55+0.7 ＋ 停 3 ＋ 連射 7 ＋ 最後一把插在地上撐 2.8 再淡 1.6
+       ＝ 最壞 17.2 秒，留一倍餘裕。跑不完的話量到的會是「還沒收乾淨」。 */
+    while (T < 26) {
+      step(1 / 60); T += 1 / 60;
+      if (gates) {
+        // 剛開始伸的那一把：整把應該還在門後面
+        if (out0 === null) {
+          const p = gates.ports.find(q => q.st === 'draw');
+          if (p) out0 = +(off(p) / p.w.len0).toFixed(3);
+        }
+        // 全部就位那一刻：每一把都該正中間卡在門上
+        if (ready < 0 && gates.ph !== 'open') {
+          ready = +T.toFixed(2);
+          out1 = +(gates.ports.reduce((a, p) => a + off(p), 0) / gates.ports.length).toFixed(4);
+        }
+        // 射過又在別的位置重開的門（使用者：「可以又在其他位置出現」）
+        for (const p of gates.ports) {
+          if (p.st === 'shut') fired.add(p);
+          else if (p.st === 'grow' && fired.has(p)) { fired.delete(p); reopen++; }
+        }
+        maxG = Math.max(maxG, gateList().length);
+        while (grow.length < 6 && T >= (grow.length + 1) * 0.4)
+          grow.push(+(gates.ports.reduce((a, p) => a + p.k, 0) / gates.ports.length).toFixed(2));
+      }
+      if (weapons) maxW = Math.max(maxW, weapons.length);
+    }
+    fireGate = oFire; hitWeapon = oHit; stickWeapon = oStick;
+    // 每半秒幾發：不規則連射看的是「每一格都有、而且差不多多」
+    const t0 = shots[0], t1 = shots[shots.length - 1];
+    const buck = [];
+    for (const t of shots) {
+      const i = Math.floor((t - t0) / 0.5);
+      while (buck.length <= i) buck.push(0);
+      buck[i]++;
+    }
+    const r = {
+      born, want: GATE_N, grow, out0, out1, ready, reopen,
+      n: shots.length, first: +t0.toFixed(2), span: +(t1 - t0).toFixed(2),
+      gap: +(t0 - ready).toFixed(2), buck, lo: Math.min(...buck), hi: Math.max(...buck),
+      hitB, hitG, stuck, fell, broke: n0 - placedCnt, n0,
+      fires: fires ? fires.length : 0, burn: blocks.filter(b => b.burn > 0).length,
+      maxW, maxG, keep: WEAP_KEEP, wmax: ENG.WEAP_MAX, gmax: ENG.GATE_MAX,
+      left: (gates ? 1 : 0) + (weapons ? weapons.length : 0),
+      rate: GATE_RATE, fire: GATE_FIRE, hold: GATE_HOLD
+    };
+    cleanTools();
+    return r;
+  });
+  ok('點地面就開出一整片門，每一個都是由小而大張開的',
+     gate1.born === gate1.want && gate1.grow[0] < 0.3 &&
+     gate1.grow.every((k, i) => i === 0 || k >= gate1.grow[i - 1]) &&
+     gate1.grow[gate1.grow.length - 1] === 1,
+     '一次開 ' + gate1.born + ' 個門；每 0.4 秒量一次平均張開到幾成：' +
+     gate1.grow.join(' → '));
+  ok('兵器從門心伸出來，就位時一半在門外',
+     gate1.out0 < -0.4 && Math.abs(gate1.out1) < 0.001,
+     '剛開始伸的那一把整把縮在門後面（離門心 ' + gate1.out0 +
+     ' 個全長），就位後平均離門心 ' + gate1.out1 + ' 單位＝正中間卡在門上');
+  ok('全部就位後停 3 秒才開始射',
+     Math.abs(gate1.gap - gate1.hold) < 0.4,
+     '第 ' + gate1.ready + ' 秒全部就位，第 ' + gate1.first + ' 秒射出第一發（隔 ' +
+     gate1.gap + ' 秒，設定 ' + gate1.hold + ' 秒）');
+  ok('連射 7 秒，密度從頭到尾一樣、不是一波一波',
+     Math.abs(gate1.span - gate1.fire) < 0.6 &&
+     Math.abs(gate1.n - gate1.rate * gate1.fire) < gate1.rate * gate1.fire * 0.3 &&
+     gate1.lo > 0 && gate1.hi < gate1.lo * 2.6,
+     '射了 ' + gate1.n + ' 發、橫跨 ' + gate1.span + ' 秒（設定每秒 ' + gate1.rate +
+     ' 發 × ' + gate1.fire + ' 秒）；每半秒 ' + gate1.buck.join('／') + ' 發');
+  ok('射出去的門縮掉，再在別的位置開一個',
+     gate1.reopen > gate1.want * 0.5,
+     '一趟裡有 ' + gate1.reopen + ' 次「射完換位置重開」（門共 ' + gate1.want + ' 個）');
+  ok('打中積木造成破壞，兵器被擋下來掉到地面',
+     gate1.hitB > 50 && gate1.broke > 300 && gate1.fell &&
+     gate1.fell.st === 'fall' && gate1.fell.spin > 0,
+     gate1.hitB + ' 發打中建築、掉了 ' + gate1.broke + ' 塊（共 ' + gate1.n0 +
+     ' 塊）；被擋下來那一把轉成 ' + (gate1.fell ? gate1.fell.st : '—') + '、自轉 ' +
+     (gate1.fell ? gate1.fell.spin : '—') + ' rad/s');
+  ok('打中地面的插在地上：刃尖沒入地面、柄還露在外面',
+     gate1.hitG > 30 && gate1.stuck && gate1.stuck.tip <= 0 && gate1.stuck.y > 0,
+     gate1.hitG + ' 發插在地上；第一把的刃尖在 y=' +
+     (gate1.stuck ? gate1.stuck.tip : '—') + '（地面是 0），重心還在 y=' +
+     (gate1.stuck ? gate1.stuck.y : '—'));
+  /* 使用者指定「類似打雷 但是沒有燃燒效果」。打雷那一段量過同一件事的反面
+     （一朵雲劈完還有二十幾塊在燒），所以這條驗的是「一塊都沒有」。 */
+  ok('沒有燃燒效果：整趟打完一塊都沒燒起來',
+     gate1.fires === 0 && gate1.burn === 0,
+     '打完 ' + gate1.n + ' 發，還在燒的積木 ' + gate1.burn + ' 塊、火源清單 ' +
+     gate1.fires + ' 筆');
+  ok('兵器最後都慢慢消失，門與兵器都收乾淨',
+     gate1.left === 0 && gate1.maxW <= gate1.keep && gate1.maxW <= gate1.wmax &&
+     gate1.maxG <= gate1.gmax,
+     '結束後場上剩 ' + gate1.left + ' 個東西；峰值兵器 ' + gate1.maxW + ' 把（上限 ' +
+     gate1.keep + '、引擎 ' + gate1.wmax + '）、門 ' + gate1.maxG + ' 片（引擎 ' +
+     gate1.gmax + '）');
+
+  /* 「參考鏡頭方向」（使用者指定）。兩件事：門陣鋪在鏡頭看過去那個方向的橫斷面上、
+     而且擺在場心的**另一側**——所以兵器是朝著鏡頭往下射，露在門外的才是刃不是柄
+     （見 game-tools.js 的 GATE_BACK）。轉了視角就整片換一邊。 */
+  const gateCam = await page.evaluate(() => {
+    /* **轉完要轉回去**：ENG.cam.yaw 是全域的，留著會讓後面每一條看畫面的測試
+       都從別的角度拍。踩過——〈消防車與潮濕〉那條量「濕了是不是畫得比較深」的
+       在背光那一面量到金字塔亮度 165→142、像素數 78000→38000，
+       積木暗到掉出它的取樣條件，於是「變濕」反而量成變亮。 */
+    const yaw0 = ENG.cam.yaw;
+    const at = yaw => {
+      gates = null; weapons = null; gateEnd();
+      ENG.cam.yaw = yaw;
+      castGate({ x: 0, z: 0 });
+      const g = gates;
+      /* 鏡頭在旋轉中心的 (cos yaw, sin yaw) 方向上，所以「鏡頭 → 場心」是它的反向。
+         門陣中心要落在場心的另一側，也就是跟這個方向同向。 */
+      const cx = -Math.cos(yaw), cz = -Math.sin(yaw);
+      const d = Math.hypot(g.cx - g.x, g.cz - g.z);
+      return { d: +d.toFixed(1),
+               dot: +(((g.cx - g.x) * cx + (g.cz - g.z) * cz) / (d || 1)).toFixed(3),
+               // 門陣的橫向要跟視線垂直（畫面右）
+               perp: +Math.abs(g.ux * cx + g.uz * cz).toFixed(3),
+               // 兵器朝鏡頭：指向與「鏡頭 → 場心」相反
+               toward: g.ports.filter(p => p.w && p.w.dx * cx + p.w.dz * cz < 0).length };
+    };
+    const a = at(0.9), b = at(0.9 + Math.PI / 2), c = at(0.9 + Math.PI);
+    gates = null; weapons = null; gateEnd();
+    ENG.cam.yaw = yaw0;
+    return { a, b, c, back: GATE_BACK, n: GATE_N };
+  });
+  ok('門陣照鏡頭方向擺：立在視線的橫斷面上、退到場心的另一側',
+     [gateCam.a, gateCam.b, gateCam.c].every(r =>
+       Math.abs(r.d - gateCam.back) < 0.1 && r.dot > 0.999 && r.perp < 0.001),
+     '三個視角量到的：離場心 ' + [gateCam.a.d, gateCam.b.d, gateCam.c.d].join('／') +
+     '（設定 ' + gateCam.back + '）、與視線同向 ' +
+     [gateCam.a.dot, gateCam.b.dot, gateCam.c.dot].join('／') + '、橫向與視線的內積 ' +
+     [gateCam.a.perp, gateCam.b.perp, gateCam.c.perp].join('／'));
+  ok('所以兵器是朝著鏡頭射過來，露在門外的是刃不是柄',
+     [gateCam.a, gateCam.b, gateCam.c].every(r => r.toward === gateCam.n),
+     '三個視角各 ' + [gateCam.a.toward, gateCam.b.toward, gateCam.c.toward].join('／') +
+     ' 把朝著鏡頭（共 ' + gateCam.n + ' 把）');
+
+  /* 門是**正對鏡頭的公告板**（畫在引擎的 putGates，跟十字星光同一套）。
+     從真的畫出去的矩陣讀：那一片的法線（本地 +Z）要指著鏡頭。
+     讀狀態證明不了這件事——規則那邊只給位置與半徑，轉向整個是引擎做的。 */
+  const gateFace = await page.evaluate(() => {
+    gates = null; weapons = null; gateEnd();
+    castGate({ x: 0, z: 0 });
+    for (let i = 0; i < 40; i++) step(0.05);
+    draw();
+    const m = ENG.three.gateMesh, mat = new THREE.Matrix4(), q = new THREE.Quaternion();
+    const cam = ENG.three.camera;
+    const out = [];
+    for (let i = 0; i < 3; i++) {
+      m.getMatrixAt(i, mat);
+      const p = new THREE.Vector3(), sc = new THREE.Vector3();
+      mat.decompose(p, q, sc);
+      const nrm = new THREE.Vector3(0, 0, 1).applyQuaternion(q);      // 這一片的法線
+      const toCam = cam.position.clone().sub(p).normalize();
+      out.push(+nrm.dot(toCam).toFixed(3));
+    }
+    const r = { n: m.count, vis: m.visible, dot: out };
+    gates = null; weapons = null; gateEnd(); draw();
+    return { ...r, off: ENG.three.gateMesh.visible };
+  });
+  /* 內積不會是 1：公告板抄的是**鏡頭的朝向**（跟十字星光同一套），不是每一片各自
+     對準鏡頭的位置。門陣橫跨六十幾單位、鏡頭在一百出頭外，邊上那幾片的「指向鏡頭」
+     跟鏡頭的視軸本來就差十幾度（cos 0.93）。要驗的是「面向鏡頭而不是側著」，
+     所以門檻訂在 0.85（約 32 度以內）；擺錯的話——例如跟魔法陣一樣貼地——會是 0 左右。 */
+  ok('門是正對鏡頭的公告板，沒發動時整顆網格關掉',
+     gateFace.vis && gateFace.n > 0 && gateFace.dot.every(d => d > 0.85) &&
+     gateFace.off === false,
+     '場上 ' + gateFace.n + ' 片，法線與「指向鏡頭」的內積 ' + gateFace.dot.join('／') +
+     '（貼地的話會是 0 上下）；收掉之後 visible=' + gateFace.off);
+
+  /* 鏡頭：門陣飄在建築上方，不退開的話矮建築整片都在畫面外（跟打雷同一個問題）。
+     v1.128 使用者指定的那條規矩——會把鏡頭往高處帶的運鏡，結束後高度要調回來。 */
+  const gateCamHold = await page.evaluate(() => {
+    const build = (name, cnt) => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === name);
+      targetCnt = cnt; startBuild(true); completeNow(); shapePick = -1;
+      for (let i = 0; i < 20; i++) step(0.05);
+    };
+    const one = shape => {
+      build(shape, 3000);
+      const ty0 = ENG.camTarget.ty, d0 = ENG.camTarget.dist;
+      castGate({ x: 0, z: 0 });
+      const tyUp = ENG.camTarget.ty, dUp = ENG.camTarget.dist;
+      let g = 0;
+      while ((gates || weapons) && g++ < 900) step(0.05);
+      step(0.05);
+      return { h: +bp.height.toFixed(0), ty0: +ty0.toFixed(1), tyUp: +tyUp.toFixed(1),
+               ty1: +ENG.camTarget.ty.toFixed(1), d0: +d0.toFixed(1),
+               dUp: +dUp.toFixed(1), d1: +ENG.camTarget.dist.toFixed(1) };
+    };
+    const low = one('羅馬競技場'), high = one('台北 101');
+    cleanTools();
+    return { low, high };
+  });
+  ok('發動時鏡頭退開看得見整片門，收工後高度還回去',
+     gateCamHold.low.tyUp > gateCamHold.low.ty0 + 5 &&
+     Math.abs(gateCamHold.low.ty1 - gateCamHold.low.ty0) < 0.1 &&
+     Math.abs(gateCamHold.high.ty1 - gateCamHold.high.ty0) < 0.1 &&
+     gateCamHold.low.d1 === gateCamHold.low.dUp,
+     '羅馬競技場（h=' + gateCamHold.low.h + '）視線高 ' + gateCamHold.low.ty0 + ' → ' +
+     gateCamHold.low.tyUp + ' → ' + gateCamHold.low.ty1 + '；台北 101（h=' +
+     gateCamHold.high.h + '）' + gateCamHold.high.ty0 + ' → ' + gateCamHold.high.tyUp +
+     ' → ' + gateCamHold.high.ty1 + '（視距只進不退：' + gateCamHold.low.d0 + '→' +
+     gateCamHold.low.d1 + '）');
+
+  /* 一次一發：還在跑的時候再點就換新的一發（同其他清單型道具「擠掉最早那個」）。
+     已經射出去的兵器不收——它們在 weapons 裡，會自己飛完、自己淡掉。 */
+  const gateAgain = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+    for (let i = 0; i < 20; i++) step(0.05);
+    castGate({ x: 0, z: 0 });
+    let g = 0;
+    while (g++ < 260 && (!gates || gates.ph !== 'fire')) step(0.05);
+    for (let i = 0; i < 40; i++) step(0.05);            // 射出去一些
+    const flying = weapons.filter(w => w.st !== 'gate').length;
+    const cx0 = +gates.cx.toFixed(1);
+    castGate({ x: 30, z: 0 });                          // 換一發
+    const after = { casts: gates ? 1 : 0, cx: +gates.cx.toFixed(1),
+                    ph: gates.ph, inGate: weapons.filter(w => w.st === 'gate').length,
+                    kept: weapons.filter(w => w.st !== 'gate').length };
+    cleanTools();
+    return { flying, cx0, after, want: GATE_N };
+  });
+  ok('連點只會有一發，但已經射出去的兵器不會憑空消失',
+     gateAgain.after.casts === 1 && gateAgain.after.ph === 'open' &&
+     gateAgain.after.cx !== gateAgain.cx0 &&
+     gateAgain.after.inGate === gateAgain.want &&
+     gateAgain.after.kept >= gateAgain.flying * 0.9,
+     '第二發開在別的地方（門陣中心 ' + gateAgain.cx0 + ' → ' + gateAgain.after.cx +
+     '），門裡重新裝了 ' + gateAgain.after.inGate + ' 把；上一發已經射出去的 ' +
+     gateAgain.flying + ' 把留下 ' + gateAgain.after.kept + ' 把');
+
+  /* 連射最凶的那幾秒，每幀的成本。這一發同時在畫的東西比誰都多：200 片門
+     （100 個 × 兩層）＋ 兩百多把兵器 × 8 塊方塊，加上滿池的塵霧與金色光軌。
+     多開 instance 不多吃 draw call，但矩陣是每幀重算的，所以要量。 */
+  const gateCost = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+    castGate({ x: 0, z: 0 });
+    let g = 0;
+    while (g++ < 400 && (!gates || gates.ph !== 'fire')) { step(1 / 60); }
+    for (let i = 0; i < 60 * 3; i++) step(1 / 60);        // 射到一半、躺著的也堆起來了
+    const w = weapons ? weapons.length : 0, gt = gates ? gateList().length : 0;
+    let sum = 0, worst = 0;
+    for (let i = 0; i < 90; i++) {
+      const t0 = performance.now();
+      step(1 / 60); draw();
+      const d = performance.now() - t0;
+      sum += d; worst = Math.max(worst, d);
+    }
+    /* 門與兵器各自吃幾個 draw call：**同一幕畫三次**，一次一份地把清單抽掉。
+       跟「發動前」比是不準的——這一幕還有塵霧、金色光軌、命中的衝擊環與地面痕跡，
+       那些走的都是現成的池子，一起算進去會變成 +4，證明不了是誰花的。
+       另外 ENG.info() 讀的是 renderer **上一次 render** 的統計，所以每次都要真的畫過。 */
+    draw(); ENG.render();
+    const on = ENG.info().calls;
+    const g0 = gates, w0 = weapons;
+    gates = null; draw(); ENG.render();
+    const noGate = ENG.info().calls;
+    weapons = null; draw(); ENG.render();
+    const off = ENG.info().calls;
+    gates = g0; weapons = w0;
+    cleanTools();
+    return { w, gt, on, gate: on - noGate, weap: noGate - off,
+             avg: +(sum / 90).toFixed(2), worst: +worst.toFixed(2) };
+  });
+  /* 兵器是 2 個而不是 1 個：它會投影，陰影圖那一趟要再畫一次（積木、炸彈那些也一樣）。
+     門是 1 個——它是透明的雙面材質，沒開 forceSinglePass 的話 three 會分兩趟畫，
+     量到的就是 2（實測過）。 */
+  ok('連射最凶的那幾秒，每幀的成本在預算內；門與兵器加起來只多三個 draw call',
+     gateCost.avg < 4 && gateCost.gate === 1 && gateCost.weap === 2,
+     gateCost.gt + ' 片門 ＋ ' + gateCost.w + ' 把兵器：step + draw 平均 ' +
+     gateCost.avg + ' ms、最高 ' + gateCost.worst + ' ms（預算 4ms）；' +
+     '這一幕共 ' + gateCost.on + ' 個 draw call，門占 ' + gateCost.gate +
+     '、兵器占 ' + gateCost.weap + '（含陰影那一趟）');
+
+  /* 打得多開：範圍跟著建築的外接半徑收（見 gateZone）。固定 22 的話打細長的塔
+     幾乎全落在空地上——實測台北 101 只有 24% 的發數碰得到建築、整趟掉 3%。 */
+  const gateZoneT = await page.evaluate(() => {
+    const one = shape => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === shape);
+      targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+      for (let i = 0; i < 20; i++) step(0.05);
+      const n0 = placedCnt;
+      let hit = 0, all = 0;
+      const oHit = hitWeapon, oStick = stickWeapon;
+      hitWeapon = w => { hit++; all++; oHit(w); };
+      stickWeapon = w => { all++; oStick(w); };
+      castGate({ x: 0, z: 0 });
+      let g = 0;
+      while ((gates || weapons) && g++ < 900) step(0.05);
+      hitWeapon = oHit; stickWeapon = oStick;
+      const r = { s: shape, R: +bp.radius.toFixed(1), zone: +gateZone().toFixed(1),
+                  hit, all, pct: +((n0 - placedCnt) / n0 * 100).toFixed(1) };
+      cleanTools();
+      return r;
+    };
+    return [one('吉薩金字塔'), one('台北 101')];
+  });
+  ok('範圍跟著建築收，細長的塔也打得到',
+     gateZoneT.every(r => r.hit / r.all > 0.3 && r.pct > 10) &&
+     gateZoneT[1].zone < gateZoneT[0].zone,
+     gateZoneT.map(r => r.s + '（外接半徑 ' + r.R + '、範圍 ' + r.zone + '）：' +
+       r.hit + '/' + r.all + ' 發打中，掉了 ' + r.pct + '%').join('；'));
 
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
@@ -13003,6 +13379,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   dir: new THREE.Vector3(0.2, -0.95, 0.1).normalize() };
     for (const t of TOOLS) { tool = t.id; useTool(hit); for (let i = 0; i < 10; i++) step(0.05); }
     ballAim = null;                 // 保齡球那一輪只點了第一下，別把瞄準環留給後面的截圖
+    // 王之財寶那一發會開著十三秒，留著會把後面幾條的鏡頭高度與畫面都佔走
+    gates = null; weapons = null; gateEnd();
     const got = stats.badges.indexOf('allTools') >= 0;
     // 同一種道具用兩次不會重複記
     tool = 'hammer'; useTool(hit);
@@ -13011,7 +13389,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('用過哪些道具會記起來', toolRec.n === toolRec.total,
      toolRec.n + ' / ' + toolRec.total + '：' + toolRec.list.join(','));
-  ok('十五種道具都用過解鎖【工具箱清空】', toolRec.got);
+  ok('十六種道具都用過解鎖【工具箱清空】', toolRec.got);
 
   /* 存檔被改過時，不認得的道具 id 不該混進來 */
   const toolClean = await page.evaluate(() => {
@@ -13081,13 +13459,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'destroyed=' + persist.d + '、smashed=' + persist.s + '、成就 ' + persist.b + ' 個');
   /* 拆 4 座、擊飛 1234 塊 → 保齡球(2 座)、龍捲風(4 座) 開；
      大槌(擊飛 2,000)、投石機(6,000)、煙火(11,000)、放火(6 座)、炸彈(15,000)、
-     隕石(8 座)、核彈(19,000)、爆裂魔法(10 座)、打雷(23,000)、天降鐵球(12 座)
-     還鎖著 */
+     隕石(8 座)、核彈(19,000)、爆裂魔法(10 座)、打雷(23,000)、天降鐵球(12 座)、
+     王之財寶(27,000) 還鎖著 */
   const unlockedAfterReload = await page.evaluate(() =>
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
   ok('重開後解鎖狀態跟著回來',
      unlockedAfterReload ===
-       'open,open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock,lock,lock',
+       'open,open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock,lock,lock,lock',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數。
@@ -13468,7 +13846,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   src.connect(f1).connect(f2).connect(g).connect(c.destination); src.start();
                   tone(44, 2.4 * 0.8, 'sawtooth', 0.07, 0, 'thunder130');
                 }, 8),
-                thud: await one(() => sndThud(11)) };
+                thud: await one(() => sndThud(11)),
+                /* 王之財寶（v1.132）。它的音量要壓得比誰都低，因為**發數**：
+                   連射七秒、每秒 28 發，射出與命中各一聲。所以除了單獨一聲，
+                   還要量「一秒份全部疊在同一瞬間」的最壞情況。 */
+                blade: await one(() => sndBlade()),
+                clang: await one(() => sndClang()),
+                gate1s: await one(() => {
+                  for (let i = 0; i < GATE_RATE; i++) sndBlade();
+                  for (let i = 0; i < 13; i++) sndClang();
+                  for (let i = 0; i < 15; i++) sndStab();
+                }) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
   });
@@ -13489,6 +13877,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      snd.bomb.rms < snd.nuke.rms && Math.abs(snd.bomb.hiPct - snd.nuke.hiPct) < 3,
      '炸彈 rms ' + snd.bomb.rms + '、核彈 ' + snd.nuke.rms +
      '（高頻占比 ' + snd.bomb.hiPct + '% vs ' + snd.nuke.hiPct + '%）');
+
+  /* 王之財寶（v1.132）：一發破空聲是全場最輕的一聲（它一秒要響二十幾次），
+     而且一秒份全部疊在同一瞬間也不會打到滿刻度——靠的是同一支音效 0.06 秒內
+     最多疊 3 個那條規矩（跟一排小人同時被掀倒是同一個機制，見下一條）。 */
+  ok('王之財寶一發的破空聲比槌子輕得多',
+     snd.blade.rms < snd.smash.rms * 0.5 && snd.clang.rms < snd.smash.rms * 0.6,
+     '破空 rms ' + snd.blade.rms + '、命中 ' + snd.clang.rms +
+     '（槌子 ' + snd.smash.rms + '）');
+  /* 峰值用絕對門檻（跟「一排小人同時被掀倒」那條同一個 0.2 量級），不跟核彈比：
+     這一秒份是幾十個短促的金屬撞擊，峰值本來就會比一聲拖很長的低頻爆炸高，
+     真正要擋的是「疊到滿刻度」。總量（rms）才拿核彈當上限。 */
+  ok('連射一秒份全疊在同一瞬間也不會打到滿刻度',
+     snd.gate1s.over === 0 && snd.gate1s.peak < 0.25 &&
+     snd.gate1s.rms < snd.nuke.rms,
+     '一秒份 rms ' + snd.gate1s.rms + '／peak ' + snd.gate1s.peak + '／滿刻度 ' +
+     snd.gate1s.over + ' 個取樣（核彈 ' + snd.nuke.rms + '／' + snd.nuke.peak + '）');
 
   /* 「炸空地還好、炸到建築就刺耳」的根源不是爆炸，是被同一發掀倒的那一排小人：
      二十聲 sndFall 是二十個從相位 0 起跳的同頻方波，同相疊起來峰值 0.047 → 0.95

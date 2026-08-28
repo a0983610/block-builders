@@ -126,6 +126,85 @@ const ENG = (function () {
   const MAG_SPOKE = MAG_SWIRL.reduce((s, f) => s + f.arms * f.seg, 0) +
                     MAG_RIM.reduce((s, f) => s + f.arcs * f.seg, 0) + MAG_DASH;
   const MAG_SP_RINGS = 18;             // 最多幾層會帶紋路（六層 × 最多三個陣）
+  /* ── 王之財寶（v1.132）─────────────────────────────
+     金色的空間門：一片**正對鏡頭**的四邊形，貼上啟動時畫好的漣漪圖（見 paintGateTex）。
+     一個門畫兩層（外圈的漣漪 ＋ 內圈的核，兩層反向轉），所以上限是門數的兩倍多一點——
+     規則那邊一次開 GATE_N（100）個，240 留了一點餘裕。
+     不用魔法陣那組環：那組是**貼地**的（rotation.x 寫死 −π/2），而這個要立在半空正對鏡頭。 */
+  const GATE_MAX = 240;
+  const GATE_TEX = 256;                    // 貼圖幾像素見方
+  let gateMesh = null;
+  /* 兵器：一把最多 WEAP_PARTS 塊方塊，全部塞進同一顆 InstancedMesh（跟核彈同一個做法）。
+     360 把是「門裡待發的 100 ＋ 飛在半空的 ＋ 掉在地上還沒淡完的」的量（見規則那邊的
+     WEAP_KEEP）。造型表 WEAP_KIND 每一種的長度都正規化成 1、刃尖朝 +Y、原點在正中間，
+     所以規則那邊只要給「多長、指向哪」就好，等比縮放不會把比例弄歪。 */
+  const WEAP_MAX = 360, WEAP_PARTS = 8;
+  let weapMesh = null;
+  /* 這一格上次畫的是哪一種。顏色只在換種時重寫——每幀重寫 360×8 筆是白花的
+     （淡出走的是縮放不是顏色，見規則那邊的 fade）。 */
+  const weapSlotKind = new Int16Array(WEAP_MAX).fill(-1);
+  /* 一把兵器的組成。p 位移、s 尺寸（都相對於「全長 1」）、c 顏色、r 這一塊自己轉多少
+     （刀的弧度、戟的側刃靠它，沒給就是不轉）。
+     金色是主調（出自 Fate 系列的王之財寶），刃面壓成偏白的米黃、脊與護手是飽和的金、
+     握把是深色——三段分明，遠看才不會糊成一根金條。 */
+  /* 刃的寬度是**照參考圖量的**：那張圖裡一柄劍的刃寬約是全長的 6%（刃 6px／全長 100px）。
+     第一版憑感覺給 14%，截圖出來每一把都像一片木板不像刀劍——遠看只讀得到「一塊淺色
+     的長方形」。所以刃、脊、護手、柄一律收到原本的六成左右。
+     顏色分三段：刃是偏白的金（受光材質，白一點才有金屬的高光）、脊與護手是飽和的金、
+     柄是深色。三段分明，遠看才不會糊成一根金條。 */
+  const G_BLADE = 0xf6ecc6, G_SILV = 0xdfe3ea, G_GOLD = 0xe8c33c, G_DEEP = 0xc9922a,
+        G_GRIP = 0x6b3a1a, G_DARK = 0x2e2a26;
+  const WEAP_KIND = [
+    /* 長劍 */
+    [{ p: [0, 0.14, 0], s: [0.052, 0.60, 0.020], c: G_BLADE },
+     { p: [0, 0.475, 0], s: [0.028, 0.13, 0.017], c: G_BLADE },
+     { p: [0, 0.14, 0], s: [0.018, 0.58, 0.028], c: G_DEEP },
+     { p: [0, -0.185, 0], s: [0.22, 0.036, 0.042], c: G_GOLD },
+     { p: [0, -0.30, 0], s: [0.042, 0.20, 0.042], c: G_GRIP },
+     { p: [0, -0.425, 0], s: [0.075, 0.058, 0.062], c: G_GOLD }],
+    /* 大劍 */
+    [{ p: [0, 0.10, 0], s: [0.085, 0.66, 0.026], c: G_SILV },
+     { p: [0, 0.475, 0], s: [0.046, 0.15, 0.022], c: G_SILV },
+     { p: [0, 0.10, 0], s: [0.026, 0.64, 0.036], c: G_DEEP },
+     { p: [0, -0.25, 0], s: [0.26, 0.040, 0.046], c: G_GOLD },
+     { p: [0, -0.205, 0], s: [0.070, 0.048, 0.062], c: G_DEEP },
+     { p: [0, -0.36, 0], s: [0.046, 0.20, 0.046], c: G_GRIP },
+     { p: [0, -0.47, 0], s: [0.085, 0.055, 0.072], c: G_GOLD }],
+    /* 刀：刃切成三段、一段比一段斜，弧度就是這樣折出來的（單一塊方塊只會是直的） */
+    [{ p: [0.010, 0.05, 0], s: [0.048, 0.30, 0.020], c: G_BLADE, r: [0, 0, -0.06] },
+     { p: [0.046, 0.30, 0], s: [0.045, 0.26, 0.019], c: G_BLADE, r: [0, 0, -0.17] },
+     { p: [0.100, 0.465, 0], s: [0.032, 0.13, 0.017], c: G_BLADE, r: [0, 0, -0.32] },
+     { p: [0, -0.12, 0], s: [0.12, 0.028, 0.075], c: G_GOLD },
+     { p: [-0.02, -0.29, 0], s: [0.042, 0.28, 0.042], c: G_DARK, r: [0, 0, 0.05] },
+     { p: [-0.035, -0.45, 0], s: [0.055, 0.044, 0.048], c: G_GOLD }],
+    /* 矛 */
+    [{ p: [0, -0.16, 0], s: [0.034, 0.66, 0.034], c: G_GRIP },
+     { p: [0, 0.30, 0], s: [0.055, 0.24, 0.022], c: G_SILV },
+     { p: [0, 0.455, 0], s: [0.028, 0.12, 0.019], c: G_SILV },
+     { p: [0, 0.155, 0], s: [0.055, 0.040, 0.055], c: G_GOLD },
+     { p: [0, -0.475, 0], s: [0.045, 0.048, 0.045], c: G_GOLD }],
+    /* 戟：柄 ＋ 直刺 ＋ 側斧 ＋ 反鉤 */
+    [{ p: [0, -0.12, 0], s: [0.038, 0.74, 0.038], c: 0x5c3a20 },
+     { p: [0, 0.42, 0], s: [0.034, 0.22, 0.022], c: G_SILV },
+     { p: [0.105, 0.28, 0], s: [0.15, 0.17, 0.020], c: G_SILV, r: [0, 0, 0.12] },
+     { p: [-0.075, 0.24, 0], s: [0.10, 0.044, 0.019], c: G_GOLD },
+     { p: [0, 0.14, 0], s: [0.058, 0.040, 0.058], c: G_GOLD },
+     { p: [0, -0.47, 0], s: [0.048, 0.042, 0.048], c: G_GOLD }],
+    /* 騎槍：整支就是一根收尖的金柱，環一圈一圈往下變粗 */
+    [{ p: [0, 0.05, 0], s: [0.070, 0.62, 0.070], c: G_GOLD },
+     { p: [0, 0.44, 0], s: [0.032, 0.20, 0.032], c: G_BLADE },
+     { p: [0, 0.16, 0], s: [0.095, 0.036, 0.095], c: G_DEEP },
+     { p: [0, -0.02, 0], s: [0.110, 0.036, 0.110], c: G_DEEP },
+     { p: [0, -0.28, 0], s: [0.135, 0.048, 0.135], c: G_GOLD },
+     { p: [0, -0.40, 0], s: [0.046, 0.20, 0.046], c: G_GRIP }],
+    /* 雙刃短劍：一樣正規化成長度 1，規則那邊給它比較短的全長 */
+    [{ p: [0, 0.10, 0], s: [0.080, 0.56, 0.022], c: G_BLADE },
+     { p: [0, 0.46, 0], s: [0.042, 0.16, 0.019], c: G_BLADE },
+     { p: [0, 0.10, 0], s: [0.022, 0.54, 0.032], c: G_DEEP },
+     { p: [0, -0.22, 0], s: [0.185, 0.044, 0.052], c: G_GOLD },
+     { p: [0, -0.34, 0], s: [0.046, 0.20, 0.046], c: G_DARK },
+     { p: [0, -0.455, 0], s: [0.080, 0.055, 0.066], c: G_GOLD }]
+  ];
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
   const TW_SEG = 16;                // 龍捲風的分段數
@@ -134,6 +213,7 @@ const ENG = (function () {
   const _axis = new T.Vector3();
   const _xAxis = new T.Vector3(1, 0, 0);    // 閃電：每一段都是從 +X 轉過去的
   const _zAxis = new T.Vector3(0, 0, 1);    // 星光：公告板繞自己的法線自轉
+  const _yAxis = new T.Vector3(0, 1, 0);    // 兵器：造型是刃尖朝 +Y，轉到指向哪
   const _spin = new T.Quaternion();
   let W = 1, H = 1;
 
@@ -792,6 +872,41 @@ const ENG = (function () {
     ringGroup.visible = false;
     scene.add(ringGroup);
 
+    /* 王之財寶的門（v1.132）：一片正對鏡頭的四邊形，貼上啟動時畫好的金色漣漪。
+       ① **一般混色，不是加法**。第一版寫加法，截圖出來一百個門全是白色的漩渦——
+          這片天空是亮藍的、草地是亮綠的，加法混色把什麼顏色疊上去都會被推到過曝
+          （金 0.9/0.65/0.2 加天空 0.55/0.75/0.95 就是 1.45/1.4/1.15，三個通道一起打頂
+          ＝白）。魔法陣那幾層踩過同一個雷，理由寫在 setRings 上面。
+          改一般混色之後金色才留得住，而且**門會把身後的東西擋住**——參考圖裡
+          兵器留在門裡的那一半本來就看不見，加法版是整把透出來的。
+       ② **不寫深度**：一百個門互相重疊，寫深度的話先畫到的會把後面的整片切掉；
+          照樣**測**深度，所以真的擋在門前面的積木還是遮得住它。
+       ③ alphaTest 不設：這張圖的邊緣是化開的暈，硬挖一刀會留一圈方形的邊。 */
+    const gateTex = new T.CanvasTexture(paintGateTex());
+    gateTex.colorSpace = T.SRGBColorSpace;   // 不設的話 canvas 畫的顏色會被當成線性值，整片偏亮
+    /* forceSinglePass：透明的雙面材質，three 預設會分兩趟畫（先背面再正面），
+       draw call 直接翻倍——這是一片正對鏡頭的薄片，兩趟排序買不到任何東西
+       （魔法陣墊底那幾片圓盤也是為了這個開的）。測試量到過 2 個，開了之後 1 個。 */
+    gateMesh = new T.InstancedMesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({
+      map: gateTex, transparent: true, depthWrite: false,
+      side: T.DoubleSide, forceSinglePass: true
+    }), GATE_MAX);
+    gateMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    gateMesh.count = 0; gateMesh.frustumCulled = false; gateMesh.visible = false;
+    gateMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(gateMesh);
+
+    /* 兵器（v1.132）：一把 WEAP_PARTS 塊，全部在同一顆 InstancedMesh 裡。
+       走 voxelMaterial ＝ 跟積木、炸彈、核彈同一種受光的方塊材質，
+       金色要靠光影才立體（用 MeshBasicMaterial 的話整把是一片死板的黃）。 */
+    weapMesh = new T.InstancedMesh(unit, voxelMaterial({ color: 0xffffff }),
+                                   WEAP_MAX * WEAP_PARTS);
+    weapMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    weapMesh.castShadow = true;
+    weapMesh.count = 0; weapMesh.frustumCulled = false; weapMesh.visible = false;
+    weapMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(weapMesh);
+
     resize();
   }
 
@@ -1315,6 +1430,137 @@ const ENG = (function () {
     magSpokeMesh.instanceMatrix.needsUpdate = true;
   }
   function hideRings() { ringGroup.visible = false; }
+
+  /* 王之財寶的門長什麼樣（v1.132）。照使用者給的參考圖畫，三件事：
+     ① **中心是過曝的白**，不是黃——參考圖裡每個門的核都白到看不出顏色，
+        黃只出現在往外化開的那一圈。
+     ② **一圈一圈不等寬的亮環**，環與環之間留暗帶。等寬的話看起來像靶紙；
+        參考圖那是「水面泛起的漣漪」，一圈粗一圈細才對。
+     ③ **最外圈化開成一團暈，沒有硬邊**。門是虛空裂開的波紋，不是一片圓貼紙。
+     再加幾道**只掃過一段角度的弧**（不是整圈），對稱才會被打破——參考圖裡那些環
+     本來就是斷開、錯位的。亂數走自己的 LCG 而不是 Math.random：這張圖是開場畫一次
+     就固定的東西，每次開遊戲長得不一樣沒有好處，測試也會抓不住。 */
+  function paintGateTex() {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = GATE_TEX;
+    const g = cv.getContext('2d');
+    const C = GATE_TEX / 2, R = C * 0.98;
+    let seed = 20250828;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    /* 底：中心是**幾乎不透明的白**（兵器留在門裡的那一半就是被它擋住的），
+       往外一路轉成濃金、再化成透明。alpha 到 0.72 就掉到 0.1 以下——
+       門與門之間要留得出暗帶，糊成一片的話一百個門會變成一塊發亮的布。 */
+    const bg = g.createRadialGradient(C, C, 0, C, C, R);
+    bg.addColorStop(0, 'rgba(255,255,252,1)');
+    bg.addColorStop(0.20, 'rgba(255,250,222,0.99)');
+    bg.addColorStop(0.38, 'rgba(255,214,104,0.90)');
+    bg.addColorStop(0.56, 'rgba(248,170,32,0.58)');
+    bg.addColorStop(0.74, 'rgba(214,120,12,0.22)');
+    bg.addColorStop(0.89, 'rgba(168,84,6,0.055)');
+    bg.addColorStop(1, 'rgba(120,54,0,0)');
+    g.fillStyle = bg;
+    g.beginPath(); g.arc(C, C, R, 0, Math.PI * 2); g.fill();
+    // 漣漪：一圈粗一圈細，越外面越淡。每一圈畫兩趟（寬而淡的當光暈、細而亮的當芯）
+    const RING = [[0.30, 0.052, 0.85], [0.42, 0.026, 0.62], [0.52, 0.040, 0.52],
+                  [0.63, 0.020, 0.38], [0.73, 0.030, 0.28], [0.84, 0.016, 0.17],
+                  [0.93, 0.022, 0.10]];
+    for (const [rr0, w, a] of RING) {
+      g.strokeStyle = 'rgba(255,222,132,' + (a * 0.40).toFixed(3) + ')';
+      g.lineWidth = w * R * 2.6;
+      g.beginPath(); g.arc(C, C, rr0 * R, 0, Math.PI * 2); g.stroke();
+      g.strokeStyle = 'rgba(255,250,222,' + a.toFixed(3) + ')';
+      g.lineWidth = w * R;
+      g.beginPath(); g.arc(C, C, rr0 * R, 0, Math.PI * 2); g.stroke();
+    }
+    // 斷開、錯位的短弧：對稱一被打破，一百個門才不會每個長得一模一樣
+    for (let i = 0; i < 14; i++) {
+      const rad = (0.22 + rnd() * 0.72) * R;
+      const a0 = rnd() * Math.PI * 2, sp = 0.5 + rnd() * 1.9;
+      g.strokeStyle = 'rgba(255,243,196,' + (0.10 + rnd() * 0.26).toFixed(3) + ')';
+      g.lineWidth = (0.010 + rnd() * 0.028) * R;
+      g.beginPath(); g.arc(C, C, rad, a0, a0 + sp); g.stroke();
+    }
+    // 核：中間那一片實心的白，光才有「源頭」，兵器的後半段也才藏得住
+    const cr = g.createRadialGradient(C, C, 0, C, C, R * 0.46);
+    cr.addColorStop(0, 'rgba(255,255,255,1)');
+    cr.addColorStop(0.55, 'rgba(255,254,246,0.96)');
+    cr.addColorStop(0.82, 'rgba(255,243,196,0.55)');
+    cr.addColorStop(1, 'rgba(255,232,160,0)');
+    g.fillStyle = cr;
+    g.beginPath(); g.arc(C, C, R * 0.46, 0, Math.PI * 2); g.fill();
+    return cv;
+  }
+
+  /* 王之財寶的門。list 每一項 {x, y, z, r 半徑, rot 自轉角, op 亮度}。
+     公告板：抄鏡頭的旋轉、再繞自己的法線轉 rot——跟十字星光同一套（見 putStars），
+     所以不管玩家把視角轉到哪，看到的永遠是正圓的門而不是一排薄片。
+     加法混色下 instance color 就是亮度旋鈕（貼圖本身已經是金色的）。 */
+  function putGates(list) {
+    const n = Math.min(list.length, GATE_MAX);
+    gateMesh.visible = n > 0;
+    gateMesh.count = n;
+    if (!n) return;
+    for (let i = 0; i < n; i++) {
+      const p = list[i];
+      scratch.position.set(p.x, p.y, p.z);
+      scratch.quaternion.copy(camera.quaternion);
+      _spin.setFromAxisAngle(_zAxis, p.rot || 0);
+      scratch.quaternion.multiply(_spin);
+      scratch.scale.setScalar(p.r * 2);          // 給的是半徑，貼圖鋪滿的是直徑
+      scratch.updateMatrix();
+      gateMesh.setMatrixAt(i, scratch.matrix);
+      const o = p.op === undefined ? 1 : p.op;
+      gateMesh.setColorAt(i, tmpC.setRGB(o, o, o));
+    }
+    gateMesh.instanceMatrix.needsUpdate = true;
+    if (gateMesh.instanceColor) gateMesh.instanceColor.needsUpdate = true;
+  }
+
+  /* 兵器。list 每一項 {x, y, z, dx, dy, dz 刃尖指向（單位向量）, roll 繞自己轉多少,
+     len 全長, k 第幾種（WEAP_KIND）}。造型是刃尖朝 +Y、長度 1，所以這裡就是
+     「把 +Y 轉到指向、再等比放大到 len」——淡出走縮放（規則那邊把 len 乘掉），
+     不走顏色：這顆是受光材質，把顏色乘暗只會變成一把黑鐵，不是消失。 */
+  function putWeapons(list) {
+    const n = Math.min(list.length, WEAP_MAX);
+    weapMesh.visible = n > 0;
+    weapMesh.count = n * WEAP_PARTS;
+    if (!n) return;
+    let colDirty = false;
+    for (let i = 0; i < n; i++) {
+      const w = list[i];
+      const K = WEAP_KIND[w.k] || WEAP_KIND[0];
+      _axis.set(w.dx, w.dy, w.dz);
+      if (_axis.lengthSq() < 1e-9) _axis.set(0, -1, 0);
+      _axis.normalize();
+      scratch.position.set(w.x, w.y, w.z);
+      scratch.quaternion.setFromUnitVectors(_yAxis, _axis);
+      _spin.setFromAxisAngle(_yAxis, w.roll || 0);
+      scratch.quaternion.multiply(_spin);
+      scratch.scale.setScalar(w.len);
+      scratch.updateMatrix();
+      const fresh = weapSlotKind[i] !== w.k;
+      for (let j = 0; j < WEAP_PARTS; j++) {
+        const P = K[j];
+        if (P) {
+          scratchB.position.set(P.p[0], P.p[1], P.p[2]);
+          scratchB.rotation.set(P.r ? P.r[0] : 0, P.r ? P.r[1] : 0, P.r ? P.r[2] : 0);
+          scratchB.scale.set(P.s[0], P.s[1], P.s[2]);
+        } else {
+          // 這一種沒用到的塊：縮成一個點，畫不出東西（不足的部位一律這樣塞掉）
+          scratchB.position.set(0, 0, 0);
+          scratchB.rotation.set(0, 0, 0);
+          scratchB.scale.setScalar(0);
+        }
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        weapMesh.setMatrixAt(i * WEAP_PARTS + j, tmpM);
+        if (fresh) weapMesh.setColorAt(i * WEAP_PARTS + j, tmpC.setHex(P ? P.c : 0xffffff));
+      }
+      if (fresh) { weapSlotKind[i] = w.k; colDirty = true; }
+    }
+    weapMesh.instanceMatrix.needsUpdate = true;
+    if (colDirty && weapMesh.instanceColor) weapMesh.instanceColor.needsUpdate = true;
+  }
 
   /* 火球粒子。跟塵霧同一套資料格式，只是走那顆不透明的材質 */
   function putFire(parts) {
@@ -2230,12 +2476,12 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
     putBalls, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
-    putStars, putBolts, putMarks,
+    putStars, putBolts, putMarks, putGates, putWeapons,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
-    MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST,
+    MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh, poolMesh, emoMesh, dustMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh }; }
   };
 })();
