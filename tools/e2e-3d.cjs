@@ -1701,36 +1701,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      寫死一個高度的話，高個子的積木會陷進自己的安全帽裡——
      這裡驗「積木中心在帽子上方、底面又還碰得到帽子」，兩邊都要。
      1.31 是安全帽頂（engine.js 的 BODY：帽頂 p 1.25 + 高度 0.12 的一半）。 */
+  /* 量 60 幀，不是量一瞬間（v1.131 修間歇性失敗）。「此刻手上疊著兩塊」只在
+     撿完到砌完之間那一小段成立，只看一幀的話偶爾整場剛好每個人都只領到一塊
+     ——實測紅過一次（「最多一次搬 1 塊」）。其餘幾項（陷進頭裡、飄在半空、疊距）
+     本來就是每一幀都該成立的，多量幾幀只會更嚴，不會更鬆。 */
   const carry = await page.evaluate(() => {
     const HAT = 1.31;
     let n = 0, sunk = 0, float = 0, gap = 0, lo = Infinity, hi = -Infinity, most = 0;
-    for (const w of workers) {
-      if (!w.carry) continue;
-      // 一趟可以搬好幾塊（v1.60）：整疊由下往上檢查
-      const held = w.load.map(j => blocks[j.b]).filter(b => b && b.st === 1);
-      if (!held.length) continue;
-      const head = HAT * w.scale;
-      n++;
-      if (held.length > most) most = held.length;
-      if (held[0].y <= head) sunk++;                 // 最底下那塊陷進頭裡
-      if (held[0].y - HB > head) float++;            // 最底下那塊飄在半空
-      // 其餘是疊在前一塊上面的，間距要剛好一格（跟建築上的疊法一樣）
-      for (let k = 1; k < held.length; k++)
-        if (Math.abs(held[k].y - held[k - 1].y - 1) > 1e-6) gap++;
-      // 肌肉小人不算進身高範圍：他整個人再乘 MUS_SIZE（v1.113），下面另外一條量他
-      if (w.mus) continue;
-      if (w.scale < lo) lo = w.scale;
-      if (w.scale > hi) hi = w.scale;
+    for (let f = 0; f < 60; f++) {
+      for (const w of workers) {
+        if (!w.carry) continue;
+        // 一趟可以搬好幾塊（v1.60）：整疊由下往上檢查
+        const held = w.load.map(j => blocks[j.b]).filter(b => b && b.st === 1);
+        if (!held.length) continue;
+        const head = HAT * w.scale;
+        n++;
+        if (held.length > most) most = held.length;
+        if (held[0].y <= head) sunk++;                 // 最底下那塊陷進頭裡
+        if (held[0].y - HB > head) float++;            // 最底下那塊飄在半空
+        // 其餘是疊在前一塊上面的，間距要剛好一格（跟建築上的疊法一樣）
+        for (let k = 1; k < held.length; k++)
+          if (Math.abs(held[k].y - held[k - 1].y - 1) > 1e-6) gap++;
+        // 肌肉小人不算進身高範圍：他整個人再乘 MUS_SIZE（v1.113），下面另外一條量他
+        if (w.mus) continue;
+        if (w.scale < lo) lo = w.scale;
+        if (w.scale > hi) hi = w.scale;
+      }
+      step(0.05);
     }
     return { n, sunk, float, gap, most, lo: +lo.toFixed(2), hi: +hi.toFixed(2) };
   });
   ok('搬運中的積木架在頭頂上，不會陷進去也不會飄著',
      carry.n > 0 && carry.sunk === 0 && carry.float === 0,
-     carry.n + ' 人搬運中，陷入 ' + carry.sunk + '、飄浮 ' + carry.float +
+     '三秒內 ' + carry.n + ' 人-幀在搬運，陷入 ' + carry.sunk + '、飄浮 ' + carry.float +
      '；身高 ' + carry.lo + '–' + carry.hi);
   ok('搬好幾塊時是一疊，一格一格往上疊',
      carry.most > 1 && carry.gap === 0,
-     '最多一次搬 ' + carry.most + ' 塊，疊距不是 1 格的有 ' + carry.gap + ' 處');
+     '三秒內最多一次搬 ' + carry.most + ' 塊，疊距不是 1 格的有 ' + carry.gap + ' 處');
 
   /* ── 一趟搬幾塊（v1.60）────────────────────────────────
      以前一個人一次只搬一塊，四段路只換到一塊積木。現在一次領 1～3 塊，
@@ -2391,13 +2398,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (let i = 0; i < 300; i++) step(0.05);
       return { name, f6, all, ...face() };
     };
-    /* 帝國大廈打三輪：同一發石頭有時候會引發整棟連鎖崩塌，剩幾塊是浮動的
-       （實測八輪 0～641）。「還剩東西可驗」只要有一輪成立就夠，
-       「沒有漏網的對角勾著」則是每一輪都必須成立。 */
+    /* 兩座都打三輪：同一發石頭有時候會引發整棟連鎖崩塌，剩幾塊是浮動的
+       （帝國大廈實測八輪 0～641）。「還剩東西可驗」只要有一輪成立就夠，
+       「沒有漏網的對角勾著」則是每一輪都必須成立。
+       鐵塔本來只打一輪，v1.131 改成跟大廈一樣打三輪——它同樣會整座塌
+       （實測紅過一次：1523 塊只剩 153 塊，那一輪根本沒剩東西可驗）。 */
     const box = [run('帝國大廈'), run('帝國大廈'), run('帝國大廈')];
+    const lat = [run('艾菲爾鐵塔'), run('艾菲爾鐵塔'), run('艾菲爾鐵塔')];
+    const most = a => a.reduce((x, r) => r.live > x.live ? r : x);
     return { box: box[0], boxBad: box.reduce((s, r) => s + r.badF6, 0),
              boxLive: Math.max(...box.map(r => r.live)),
-             boxAll: box.map(r => r.live), lat: run('艾菲爾鐵塔') };
+             boxAll: box.map(r => r.live),
+             lat: most(lat), latBad: lat.reduce((s, r) => s + r.badF6, 0),
+             latAll: lat.map(r => r.live) };
   });
   ok('炸穿牆腳之後不會留下只靠對角勾著的積木',
      hung.boxBad === 0 && hung.boxLive > 100,
@@ -2407,13 +2420,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      v1.114 換上新的鐵塔藍圖之後量到 f6 775/1523（51%）、中一發石頭後剩 66～70%（四輪）：
      新那份底座 21×21（舊的 33×33），同一顆石頭（siteR×0.5）落得更靠腿，所以塌得多一些。
      舊那份是 672/1497（45%）、剩超過 75%。要守住的是 badF6 === 0（沒有漏網的對角勾著），
-     另外兩個是「這個 fixture 真的是斜格子、也真的沒被誤殺」的門檻。 */
+     另外兩個是「這個 fixture 真的是斜格子、也真的沒被誤殺」的門檻。
+     v1.131：那兩個門檻改看**剩最多的那一輪**——鐵塔跟大廈一樣會整座連鎖崩塌，
+     塌光的那一輪沒剩東西可驗，不是「被這一關誤殺」（誤殺看的是 badF6，三輪都要 0）。 */
   ok('斜格子造型不會被這一關誤殺',
      hung.lat.f6 < hung.lat.all * 0.6 && hung.lat.live > hung.lat.all * 0.6 &&
-     hung.lat.bad > 400 && hung.lat.badF6 === 0,
-     '艾菲爾鐵塔：完好時六面站得住的只有 ' + hung.lat.f6 + '/' + hung.lat.all +
-     '；中一發石頭後還剩 ' + hung.lat.live + ' 塊，其中 ' + hung.lat.bad +
-     ' 塊本來就是靠斜角連的（都還在）');
+     hung.lat.bad > 400 && hung.latBad === 0,
+     '艾菲爾鐵塔三輪剩 ' + JSON.stringify(hung.latAll) + ' 塊；完好時六面站得住的只有 ' +
+     hung.lat.f6 + '/' + hung.lat.all + '，剩最多那一輪的 ' + hung.lat.live +
+     ' 塊裡有 ' + hung.lat.bad + ' 塊本來就是靠斜角連的（都還在）');
 
   /* 蓋到一半把地基敲掉，小人不能繼續往上疊——那會蓋出一整片浮在半空的積木。
      量法：逐步比對「這一步新填上的格子」，看它填上去的當下連不連得到地面。
@@ -4680,8 +4695,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     hurlTrip = oHurl; layHome = oLay;
     const avg = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
+    /* 改量「有幾成掄得比走回去砌的還遠」，不再比平均（v1.131 修間歇性失敗）。
+       這把尺是「離房子中心多遠 − 外接半徑」，而**外接半徑會被房子大小放大**：
+       大房子（農莊 231 格）的半徑很誇張，站在長邊旁邊量出來甚至是負的（實測 −3.87）。
+       所以平均值高度取決於這一輪抽到哪一款房子——實測八輪的平均差是 0.35～2.11，
+       原本要求「差滿一格」紅過一次、改成差半格又紅一次，那不是取樣噪音是量錯東西。
+       比例受的影響小得多，而且可以**用同一把尺量走回去砌的那些當對照組**（layFar）：
+       萬一哪天肌肉小人改成走回去砌，量到的就會是那個數字。
+       實測 layFar 6～8%、肌肉小人 56～92%（九輪），門檻訂在「比對照組多三成」。 */
+    const layD0 = avg(away.lay);
+    const far = away.mus.filter(d => d > layD0 + 0.5).length;
+    // 同一把尺量走回去砌的那些：這就是「萬一他改走 layHome」會量到的比例（對照組）
+    const layFar = away.lay.filter(d => d > layD0 + 0.5).length;
     return { hurl: away.mus.length, musLay, carried, secs: +secs.toFixed(1), slots,
-             musD: +avg(away.mus).toFixed(2), layD: +avg(away.lay).toFixed(2),
+             musD: +avg(away.mus).toFixed(2), layD: +layD0.toFixed(2),
+             far, farPct: away.mus.length ? +(far / away.mus.length).toFixed(2) : 0,
+             layFar: away.lay.length ? +(layFar / away.lay.length).toFixed(2) : 0,
+             musMin: +Math.min(...away.mus).toFixed(2),
+             layMax: +Math.max(...away.lay).toFixed(2),
              layN: away.lay.length,
              left: homes.list[hi].left, kind: homes.list[hi].kind,
              built: blocks.filter(b => b.hh === hi && b.st === 3).length,
@@ -4689,12 +4720,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('肌肉小人用他自己的方式蓋家（料照撿，但站在原地掄出去）',
      musHome.hurl > 15 && musHome.musLay === 0 && musHome.carried > 0 &&
-     musHome.musD > musHome.layD + 1 && musHome.left === 0 &&
-     musHome.built === musHome.slots,
+     musHome.farPct > musHome.layFar + 0.3 &&
+     musHome.left === 0 && musHome.built === musHome.slots,
      musHome.kind + '（' + musHome.slots + ' 格、' + musHome.crew + ' 人）' +
      musHome.secs + ' 秒蓋完：就地掄了 ' + musHome.hurl + ' 塊、走回去砌 ' +
-     musHome.musLay + ' 塊，出手時離外框 ' + musHome.musD +
-     ' 格（一般工人同一輪 ' + musHome.layN + ' 塊、' + musHome.layD + ' 格）');
+     musHome.musLay + ' 塊，出手時離外框平均 ' + musHome.musD + ' 格、最近 ' +
+     musHome.musMin + ' 格，其中 ' + (musHome.farPct * 100).toFixed(0) +
+     '% 比走回去砌的遠半格以上（一般工人同一輪 ' + musHome.layN + ' 塊、平均 ' +
+     musHome.layD + ' 格、最遠 ' + musHome.layMax + ' 格，同一把尺只有 ' +
+     (musHome.layFar * 100).toFixed(0) + '% 落在遠處）');
 
   /* 積木池要**同時**塞得下「最大的地標」與「最大的村子」（v1.115，使用者：
      「有觀察到疑似積木有上限 蓋9000積木 小人蓋小房子 挖地挖不出積木」）。
@@ -5225,16 +5259,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     idleEv = IDLE_EVENTS[0]; startHomes();
     let s = 0;
     while (s < 600 && homes.list.some(h => h.left > 0)) { step(0.05); s += 0.05; }
-    /* 挑最大的那一間，把靠左的三成五打掉。**不能整間砸爛**——剩不到兩成五會直接廢棄
+    /* 挑最大的那一間，把靠左的一片打掉。**不能整間砸爛**——剩不到兩成五會直接廢棄
        （v1.105），那一間就從清單上消失、沒有「補回去」這回事了。
        用 breakBlock 一塊一塊打（不走 smash）：爆炸範圍換一間房子就是完全不同的破壞量，
-       第一版用 smash 就是這樣一路砸到剩一成、整間被廢棄，量到的變成別間的帳。 */
+       第一版用 smash 就是這樣一路砸到剩一成、整間被廢棄，量到的變成別間的帳。
+
+       砸多少：三成五，但**至少砸 50 塊**（v1.131 修間歇性失敗）。「最大的那一間」有多大
+       是看那一組幾個人（見 HOME_KIND：一人組的小院只有 104 格），全場剛好沒有三人組時
+       三成五只砸出 36～40 格的洞，下面那條「洞要 > 40 格」就會擦邊紅一次。
+       上限壓在五成：留一半才離「剩不到兩成五」有安全邊際。 */
     let hi = 0;
     homes.list.forEach((q, i) => { if (q.slots.length > homes.list[hi].slots.length) hi = i; });
     const h = homes.list[hi];
     const mine = blocks.filter(b => b.hh === hi && b.st === 3)
                        .sort((a, b) => a.x - b.x);
-    for (let i = 0; i < Math.round(mine.length * 0.35); i++) breakBlock(mine[i], 0, 0, 0);
+    const nBreak = Math.min(Math.round(mine.length * 0.5),
+                            Math.max(50, Math.round(mine.length * 0.35)));
+    for (let i = 0; i < nBreak; i++) breakBlock(mine[i], 0, 0, 0);
     for (let i = 0; i < 120; i++) step(0.05);           // 該垮的垮完、碎料落地
     hi = homes.list.indexOf(h);                         // 別間被廢棄的話索引會變
     const hole = h.left;
@@ -5255,7 +5296,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     pickHomeSite = () => null;
     stopIdleEvent(); idleEv = IDLE_EVENTS[0]; startHomes();
     pickHomeSite = origSite;
-    const diag = { hi, houses: homes.list.length,
+    const diag = { hi, houses: homes.list.length, kind: h.kind,
+                   slots: h.slots.length, broke: nBreak,
                    assigned: workers.filter(w => w.hm >= 0).length,
                    left0: homes.list.reduce((n, q) => n + q.left, 0),
                    frac: +((h.slots.length - h.left) / h.slots.length).toFixed(2),
