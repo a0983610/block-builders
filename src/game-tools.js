@@ -3513,12 +3513,18 @@ function dustList() {
 
    四件事跟別的道具不一樣，寫在這裡免得日後看不懂：
 
-   ① **門是正對鏡頭的公告板**（畫在引擎的 putGates，跟十字星光同一套）。使用者指定
-      「參考鏡頭方向」——門陣鋪在「鏡頭看過去」那個方向的**橫斷面**上，整片再退到場心的
-      **另一側**（GATE_BACK），所以建築剛好站在門陣與鏡頭之間，兵器是朝著鏡頭、
-      往下射進工地（參考圖那個構圖；擺錯邊會怎樣見 GATE_BACK 那段）。
-      轉視角的話門會跟著轉正，不會變成一排薄片。
+   ① **門的朝向就是兵器的朝向**（v1.132.1 改；v1.132.0 是一律正對鏡頭的公告板）。
+      門是虛空裂開的一個洞，兵器從洞裡垂直探出來，所以斜著看時它本來就該是橢圓
+      （使用者：「同心波紋 不一定是正對鏡頭的圓」）。而「參考鏡頭方向」指的是
+      **兵器往鏡頭的方向伸出來**——所以門陣鋪在「鏡頭看過去」那個方向的橫斷面上、
+      整片退到場心的**另一側**（GATE_BACK），建築剛好站在門陣與鏡頭之間，
+      兵器朝著鏡頭往下射進工地（參考圖那個構圖）。
       不能用魔法陣那組環：那組是**貼地**的（引擎裡 rotation.x 寫死 −π/2）。
+
+   ①' **還沒伸出來的那一段真的不畫**（v1.132.1，使用者回報）。每一把兵器帶一個
+      世界座標的切面（w.cut，面就是它那個門所在的平面），比那個面後面的片元在
+      shader 裡直接 discard。v1.132.0 是靠門那片圖去擋，只擋得住它蓋得到的地方——
+      斜著看的時候柄會從門的邊上露出來。
 
    ② **沒有燃燒效果**（使用者指定：「類似打雷 但是沒有燃燒效果」）。所以它只走槌子那條
       smash()，不叫 igniteAround——這正是它跟打雷最大的差別（打雷的傷害其實在火不在力，
@@ -3526,6 +3532,10 @@ function dustList() {
 
    ③ **不震、不出聲（指 smash 那一聲）**。七秒射一百多發，每一發都震的話畫面會抖到結束
       （見〈會「持續破壞」的不震畫面〉）；聲音同理，讓給它自己那聲短促的金屬撞擊。
+
+   ③' **插著／躺著的兵器是「慢慢變淡」消失**（v1.132.1，使用者回報：本來是縮小）。
+      走的是逐 instance 的不透明度（w.fade → 引擎的 aFade），不是把長度乘小——
+      縮小看起來像被吸走，不像化掉。
 
    ④ **門與兵器是兩份清單**。門收掉之後兵器還在飛、還躺在地上慢慢淡，所以 weapons
       不掛在 gates 底下——一發打完 gates 變 null，weapons 得自己活到最後一把淡完。 */
@@ -3536,13 +3546,20 @@ const GATE_N = 100;              // 一次開幾個門（使用者：「先預�
    多寬多高**跟著建築走**（見 gateSpan）：寫死 62×32 的時候，打台北 101（高 65）
    得把鏡頭退到看得下整棟的距離，那片門在畫面上只剩中間一小塊（截圖比對過）。
    欄列數再從長寬比算回來，格子才會接近正方形；門的半徑是格子邊長的幾成，
-   所以不管建築是矮胖還是細高，門與門的疏密都一樣。 */
+   所以不管建築是矮胖還是細高，門與門的疏密都一樣。
+
+   v1.132.1 整片**放寬、壓低**（使用者：「排列應該要偏向比較寬 上下高度比較低一點
+   ⋯⋯目前看起來像正方形」）：參考圖那是一道橫著鋪開的牆。細高的建築最明顯——
+   台北 101 本來算出來是 48.7 寬 × 64.8 高（直的），現在有一條「高不得超過寬的
+   1/GATE_FLAT」把它壓回橫的。單雙列再各自錯開半格、抖動放大到四分之一格，
+   才不會看得出是格點。 */
 /* 前後再抖多厚（門陣要有遠近，不是一片貼紙）。**只往離鏡頭遠的那一側抖**：
    往兩側抖的話門陣的近面會落在 GATE_BACK − 5 ＝ 19，比打擊範圍 22 還近，
    最遠那一圈落點就跑到門的後面去了，瞄過去的那幾把變成背對鏡頭飛
    （實測 100 把裡漏 1 把）。單側抖之後近面就是 GATE_BACK 本身。 */
 const GATE_DEEP = 5;
-const GATE_RAD = [0.42, 0.62];   // 門的半徑是格子邊長的幾成
+const GATE_RAD = [0.34, 0.56];   // 門的半徑是格子邊長的幾成（範圍拉開一點，比較不整齊）
+const GATE_FLAT = 2.2;           // 高最多是寬的幾分之一
 /* 門陣擺在場心的**另一側**多遠（背對鏡頭那一側）——所以兵器是朝著鏡頭、
    往下射進工地，建築剛好站在門陣與鏡頭之間（參考圖就是這個構圖）。
 
@@ -3557,12 +3574,14 @@ const GATE_RAD = [0.42, 0.62];   // 門的半徑是格子邊長的幾成
    1～11 把是這樣，露出來的是柄。退到 24、而且前後的抖動只往遠處抖（見 GATE_DEEP）之後，
    門陣的近面就是 24，每一把的落點都在門的前方。 */
 const GATE_BACK = 24;
-/* 門陣中心擺多高。建築越高擺越高，但不是「屋頂再往上」——高樓那樣擺會整片飄在
-   天上、跟建築脫節；0.6 倍樓高再加 20，門陣就罩在建築的上半段與它上方那一片。
-   下限 32 是量出來的：矮建築的門陣半高就是 13，中心擺在 32 的話最低那一排落在 19，
-   再低會有一整排門埋進草皮，看起來像散在地上的光斑而不是懸在半空的一面牆。 */
-const GATE_UP = 0.6, GATE_UP_ADD = 20;
-const GATE_Y0 = 32;              // 矮建築用的下限
+/* 門陣中心擺多高。**v1.132.1 整片壓低**（本來是 0.6 倍樓高 + 20、下限 32）：
+   使用者要的是「兵器往鏡頭的方向伸出來」，而門的朝向就是兵器的朝向——門陣擺太高的話
+   兵器是**朝下**射的，門於是變成幾乎側著看的一條扁橢圓（截圖比對過，像一片油漬）。
+   壓到 0.55 倍樓高 + 8、下限 20 之後，加上落點改瞄建築的身體（見 aimGate），
+   出手角度落在水平往下 20～30 度，門就轉回接近正圓、刃也變成朝著鏡頭的短樁
+   ——參考圖就是這個樣子。 */
+const GATE_UP = 0.5, GATE_UP_ADD = 6;
+const GATE_Y0 = 12;              // 矮建築用的下限
 const GATE_GROW = 0.55;          // 一個門張開要多久（由小而大）
 const GATE_STAG = 1.5;           // 一百個門的出場錯開在這麼多秒裡
 const GATE_DRAW = 0.7;           // 兵器從門心伸出來要多久
@@ -3583,19 +3602,44 @@ const GATE_SHUT = 0.3;           // 射完那個門縮掉要多久
    53 發碰得到建築，整趟只掉 88 塊（3%）；羅馬競技場（18.3）則是 160 發、323 塊（11%）。 */
 const GATE_ZONE = 22;
 const GATE_ZONE_MIN = 10;
+/* 出手方向最多能偏離「朝著鏡頭」這個軸幾弧度。
+
+   為什麼要管：**門的朝向就是兵器的朝向**，所以方向偏多少、門就側多少。各自瞄自己的
+   落點時，站在門陣邊上的那些要瞄到另一側，方向會偏到六七十度——那個門在畫面上就是
+   一條線（截圖比對過，整片像一片油漬）。
+   為什麼不能一律拉平：拉平就等於整片平行射出去，落點只剩門本身的位置在散，
+   打不打得到建築全看運氣（實測命中率從 47% 掉到 10%、破壞量剩四分之一）。
+
+   所以是**錐形夾角**：方向照樣各自瞄落點（會收斂到建築上），只有超出這個錐面的那些
+   才沿著大圓拉回錐面上。軸取「水平、朝著鏡頭」，0.72 rad ≈ 41 度。
+
+   為什麼是這一條軸、這個角度：兵器要打到建築就得往下飛，而鏡頭本身是**由上往下**
+   看的（俯角約 24 度），所以「往下飛的兵器」跟「視軸」天生就差 40～60 度——這是
+   幾何上跑不掉的，門本來就不會是正圓。能做的是別讓它更糟：把方向夾在水平軸附近
+   41 度內，門偏離視軸就落在 24～65 度、短軸 0.4 以上，讀得出是個圓；
+   而多數的門根本沒被拉到，所以還是各自瞄各自的落點（命中率保住）。 */
+const GATE_CONE = 0.72;
 const GATE_SPD = 62;             // 兵器飛多快
+const GATE_FLY_MAX = 5;          // 飛這麼久還沒碰到東西就收掉（保險，見 stepWeapons）
 const GATE_HIT_R = 1.5;          // 打中的地方咬掉多大一片（雷是 1.84）
 const GATE_HIT_POW = 12;         // 力道（雷 13、投石機 12、槌子 15）
-/* 兵器全長是它那個門半徑的幾倍。**上限必須讓「半長 ≤ 門半徑」**（1.6 × 最大的
-   長度倍率 1.18 ＝ 1.89 倍半徑，半長 0.94 倍）：埋在門裡那一半是靠門那片圖擋住的，
-   半長超過門半徑的話，柄會從門的邊上戳出來——參考圖裡是看不到柄的。 */
-const GATE_LONG = [1.3, 1.6];
+/* 兵器全長是它那個門半徑的幾倍。v1.132.0 卡在 1.3～1.6，因為那時候「埋在門裡那一半」
+   是靠門那片圖擋住的，半長超過門半徑柄就會從邊上戳出來。v1.132.1 改成 shader 切面之後
+   這條限制沒了（見檔頭 ①'），所以照參考圖的比例重訂：
+   刃是**斜對著鏡頭**探出來的（與視軸夾角中位數 38 度），所以畫面上看到的長度只有
+   半長的 sin38° ≈ 0.62 倍。要讓刃尖大約落在門的邊上，半長就得是門半徑的 1.6 倍左右
+   ——全長 2.8～3.6 倍半徑（再乘每一種自己的長度倍率 0.72～1.18）剛好跨在那個值兩邊，
+   於是有的收在門裡、有的探出邊緣，跟參考圖一樣。 */
+const GATE_LONG = [2.8, 3.6];
 /* 每一種兵器的長度倍率（造型表在引擎的 WEAP_KIND，那邊一律正規化成長度 1）。
    順序：劍、大劍、刀、矛、戟、騎槍、短劍。 */
 const WEAP_SCALE = [1, 1.18, 1, 1.15, 1.12, 1.05, 0.72];
-const GATE_INTO = 0.4;           // 插在地上時刃尖沒入地面多深
+/* 插在地上時刃尖沒入地面多深。**跟俯角成正比**（越斜插得越深，最淺三成）：
+   一律 0.4 的話，擦著地面進來的那些整把會埋在草皮下（實測重心到 y=−0.03）。 */
+const GATE_INTO = 0.4;
+const GATE_STICK_MIN = 0.12;     // 俯角的正弦要大於這個才插得住，不然是躺平（7 度）
 const GATE_LIE = [1.4, 2.8];     // 掉在地上／插在地上撐多久才開始淡
-const GATE_FADE = 1.6;           // 淡多久（縮成一點，再化成金色光塵）
+const GATE_FADE = 1.6;           // 淡多久（透明度歸零，再化成金色光塵）
 /* 場上最多幾把。要 **≤ 引擎的 WEAP_MAX（360）**——超過的會被 putWeapons 默默切掉，
    而被切掉的是清單後面那些＝最新射出來的那幾把。
    量過的峰值：門裡待發 100 ＋ 飛在半空約 15 ＋ 躺著還沒淡完的約 90。 */
@@ -3611,10 +3655,16 @@ function castGate(point) {
   const yaw = ENG.cam.yaw;
   const fx = -Math.cos(yaw), fz = -Math.sin(yaw);
   const ux = Math.sin(yaw), uz = -Math.cos(yaw);
+
   const y = Math.max(GATE_Y0, (bp ? bp.height : 0) * GATE_UP + GATE_UP_ADD);
   const sp = gateSpan();
   const g = {
     x: point.x, z: point.z, y, fx, fz, ux, uz,
+    /* 錐形夾角的軸：水平、朝著鏡頭（見 GATE_CONE）。**一定要在這裡就給值**——
+       下面那個迴圈開門時就會叫 aimGate 用到它，留到迴圈後面才設的話，整趟的錐形
+       夾角都是拿 (0,0,0) 當軸在算：夾角不會生效，而且回傳的方向長度變成 sin(錐角)
+       ＝ 0.659（不是單位向量），門的朝向、切面的法線、飛行速度全部跟著錯。 */
+    ax: -fx, ay: 0, az: -fz,
     cx: point.x + fx * GATE_BACK, cz: point.z + fz * GATE_BACK,
     w: sp.w, h: sp.h, cols: sp.cols, rows: sp.rows,
     ph: 'open', t: 0, fireT: 0, next: 0, ports: []
@@ -3649,19 +3699,23 @@ function closeGate() {
    解出來就是 cols = √(N × w ÷ h)，這樣格子才會接近正方形。 */
 function gateSpan() {
   const R = bp ? bp.radius : 18, H = bp ? bp.height : 15;
-  const w = clamp(R * 2.6 + 24, 48, 110), h = clamp(H * 0.75 + 16, 26, 70);
+  /* 寬度直接決定鏡頭要退多遠（holdWide 拿它當取景半徑），所以不能一味放寬——
+     放到 80 的時候整片門在畫面上反而變小、變遠。收到「外接半徑的兩倍多一點」，
+     鏡頭近了，門就大了。 */
+  const w = clamp(R * 2.2 + 20, 50, 100);
+  const h = Math.min(clamp(H * 0.5 + 14, 22, 46), w / GATE_FLAT);
   const cols = Math.max(4, Math.round(Math.sqrt(GATE_N * w / h)));
   return { w, h, cols, rows: Math.ceil(GATE_N / cols) };
 }
-/* 一個門的位置。抖動格點：每一格的中心再往四周抖四分之一格——
+/* 一個門的位置。抖動格點：單雙列各自錯開半格，每一格的中心再往四周抖四分之一格——
    純隨機撒會擠出空洞與疊死的堆，參考圖那是「鋪得勻但不整齊」的一片。
    i 給 −1 就是隨機挑一格（射完換位置時用，見 stepGates）。 */
 function portSpot(g, i) {
   const n = i < 0 ? Math.floor(Math.random() * g.cols * g.rows) : i;
   const col = n % g.cols, row = Math.floor(n / g.cols);
   const cw = g.w / g.cols, ch = g.h / g.rows;
-  const u = ((col + 0.5) / g.cols - 0.5) * g.w + rr(-1, 1) * cw * 0.26;
-  const v = ((row + 0.5) / g.rows - 0.5) * g.h + rr(-1, 1) * ch * 0.26;
+  const u = ((col + 0.5 + (row % 2 ? 0.5 : 0)) / g.cols - 0.5) * g.w + rr(-1, 1) * cw * 0.25;
+  const v = ((row + 0.5) / g.rows - 0.5) * g.h + rr(-1, 1) * ch * 0.25;
   const d = rr(0, GATE_DEEP);
   return { x: g.cx + g.ux * u + g.fx * d, y: g.y + v, z: g.cz + g.uz * u + g.fz * d,
            r: Math.min(cw, ch) * rr(GATE_RAD[0], GATE_RAD[1]) };
@@ -3673,6 +3727,9 @@ function newPort(g, i, delay) {
     x: sp.x, y: sp.y, z: sp.z, r: sp.r,
     rot: Math.random() * Math.PI * 2, spin: rr(0.35, 0.9) * (Math.random() < 0.5 ? -1 : 1),
     ph0: Math.random() * Math.PI * 2,             // 亮度脈動的相位（每個門各自呼吸）
+    /* 這個門的朝向 ＝ 從它探出來那一把的方向（見 newWeapon）。存在門身上是因為
+       射出去之後那個門還要縮 GATE_SHUT 秒，那時候 p.w 已經是 null 了。 */
+    dx: 0, dy: 0, dz: -1,
     t: -delay, st: 'grow', k: 0, k0: 1, op: 0, w: null
   };
   p.w = newWeapon(g, p);
@@ -3689,11 +3746,30 @@ function gateZone() {
 function aimGate(g, p) {
   const a = Math.random() * Math.PI * 2;
   const rad = Math.sqrt(Math.random()) * gateZone();
-  const dx = g.x + Math.cos(a) * rad - p.x;
-  const dy = rr(0.4, 1.4) - p.y;
-  const dz = g.z + Math.sin(a) * rad - p.z;
+  /* 瞄的高度**跟著建築的身體**，不是只瞄腳邊（v1.132.1）：只瞄地面的話出手角度會被
+     壓成一路往下，門跟著側過去（見 GATE_UP）。瞄整棟的高度之後角度平多了，
+     順帶命中率也高——反正打不中的自然會飛過去插在地上。 */
+  /* 落點一定要**比這個門低**（v1.132.1）：門陣壓低之後有近一半的門低於建築頂，
+     瞄上去的那些會斜著往上飛——飛行段沒有重力，它就永遠不落地了（實測一趟結束
+     還有 30 把掛在場上）。 */
+  const top = Math.min(Math.max(2, (bp ? bp.height : 12) * 0.9), Math.max(0.8, p.y - 1.5));
+  let dx = g.x + Math.cos(a) * rad - p.x;
+  let dy = rr(0.3, top) - p.y;
+  let dz = g.z + Math.sin(a) * rad - p.z;
   const L = Math.hypot(dx, dy, dz) || 1;
-  return { dx: dx / L, dy: dy / L, dz: dz / L };
+  dx /= L; dy /= L; dz /= L;
+  /* 夾進以「朝著鏡頭」為軸的錐面內（見 GATE_CONE）。超出去的沿著大圓拉回錐面上：
+     把方向拆成「軸向」與「垂直軸的那一截」，再照 cos／sin 重組——這是精確解，
+     不是逼近，而且錐內的方向原封不動。 */
+  const ax = g.ax, ay = g.ay, az = g.az;         // 朝著鏡頭（含俯角）
+  const dot = dx * ax + dy * ay + dz * az;
+  const cone = Math.cos(GATE_CONE);
+  if (dot >= cone) return { dx, dy, dz };
+  let px = dx - ax * dot, py = dy - ay * dot, pz = dz - az * dot;   // 垂直軸的那一截
+  const pl = Math.hypot(px, py, pz) || 1;
+  px /= pl; py /= pl; pz /= pl;
+  const sn = Math.sin(GATE_CONE);
+  return { dx: ax * cone + px * sn, dy: ay * cone + py * sn, dz: az * cone + pz * sn };
 }
 function newWeapon(g, p) {
   const k = Math.floor(Math.random() * WEAP_SCALE.length);
@@ -3707,16 +3783,18 @@ function newWeapon(g, p) {
     if (i < 0) return null;
     weapons.splice(i, 1);
   }
-  /* len 從 0 起（不是 len0）：畫出來的長度歸 posInGate 管，而那一支要等這個門
-     真的輪到出場（p.t >= 0）才會被叫到。給 len0 的話，還沒開的那幾十個門裡的兵器
-     會先以全尺寸浮在半空——截圖比對時看到的就是「一片沒有門的刀劍飄在天上」。
-     s（掃掠判定的探長）照樣給全長：它跟畫多大無關。 */
+  /* cut ＝ 這個門所在的平面（法線就是兵器的方向、面過門心）。比這個面後面的片元
+     在 shader 裡被 discard，所以「還沒伸出來的那一段」是真的不存在，不是被擋住。
+     順便：還沒輪到出場的門，兵器整把都在面後面，自然什麼都看不到
+     （v1.132.0 是靠「長度先給 0」擋的，那招在切面上位之後就不需要了）。 */
   const w = {
     x: p.x, y: p.y, z: p.z, dx: a.dx, dy: a.dy, dz: a.dz,
-    roll: Math.random() * Math.PI * 2, len: 0, len0: len, k, s: len,
+    roll: Math.random() * Math.PI * 2, len, k, s: len,
+    cut: [a.dx, a.dy, a.dz, a.dx * p.x + a.dy * p.y + a.dz * p.z],
     st: 'gate', out: 0, vx: 0, vy: 0, vz: 0,
-    ax: 0, ay: 0, az: 0, spin: 0, lie: 0, fade: 1, em: 0
+    ax: 0, ay: 0, az: 0, spin: 0, lie: 0, fade: 1, em: 0, age: 0
   };
+  p.dx = a.dx; p.dy = a.dy; p.dz = a.dz;         // 門跟著兵器擺（見 newPort）
   weapons.push(w);
   return w;
 }
@@ -3731,6 +3809,7 @@ function fireGate(g, p) {
   p.w = null; p.st = 'shut'; p.t = 0; p.k0 = p.k;
   if (!w) return;
   w.st = 'fly';
+  w.cut = null;                                  // 離開門了，整把都該看得見
   w.vx = w.dx * GATE_SPD; w.vy = w.dy * GATE_SPD; w.vz = w.dz * GATE_SPD;
   sndBlade();
 }
@@ -3827,10 +3906,10 @@ function posInGate(p) {
   const w = p.w;
   const u = p.st === 'draw' ? Math.min(1, p.t / GATE_DRAW) : (p.st === 'grow' ? 0 : 1);
   const e = 1 - Math.pow(1 - u, 2.2);
-  const back = w.len0 * 0.5 + 0.6;              // 縮到門後面：整把都看不見
-  const off = -back * (1 - e);
+  /* 從「刃尖剛好抵在門上」（整把都在切面後面，看不見）滑到「正中間卡在門上」
+     ＝ 一半在門外（使用者指定的就位姿勢）。 */
+  const off = -w.len * 0.5 * (1 - e);
   w.x = p.x + w.dx * off; w.y = p.y + w.dy * off; w.z = p.z + w.dz * off;
-  w.len = w.len0 * p.k;                          // 門在放大時裡面那把跟著長出來
 }
 function stepWeapons(dt) {
   if (!weapons) return;
@@ -3845,9 +3924,18 @@ function stepWeapons(dt) {
          （w.s ＝ 全長，sweepRock 會往前多探半個 s，探到的正好是刃尖）。
          只在終點判定的話，斜插進來的兵器會從屋頂穿過去才算打到。 */
       if (sweepRock(w, px, py, pz)) { hitWeapon(w); continue; }
-      // 刃尖碰到地面：插在地上（使用者指定）
-      if (w.y + w.dy * w.len * 0.5 <= 0) { stickWeapon(w); continue; }
-      if (w.y < -6) { weapons.splice(i, 1); }     // 保險：飛到地底下的直接收掉
+      /* 刃尖碰到地面：插在地上（使用者指定）。但**擦著地面進來的不插、改成躺平**——
+         幾乎水平飛進來的那些插進去之後整把會埋在地面下（實測重心到 y=−0.03），
+         看起來像陷進草皮。斜度不夠就當它是滑一下躺下來。 */
+      if (w.y + w.dy * w.len * 0.5 <= 0) {
+        if (-w.dy < GATE_STICK_MIN) lieWeapon(w); else stickWeapon(w);
+        continue;
+      }
+      /* 保險：飛到地底下、或飛太久還沒碰到任何東西的，直接收掉。
+         後者是給「錐形夾角把方向拉得太平、一路飛出場外」那種留的後路——
+         GATE_SPD × GATE_FLY_MAX ＝ 310 單位，比整片場地還長。 */
+      w.age += dt;
+      if (w.y < -6 || w.age > GATE_FLY_MAX) { weapons.splice(i, 1); }
     } else if (w.st === 'fall') {
       /* 被擋下來之後就是一塊會翻滾的鐵，落到地面為止。這一段**不再跟建築碰撞**：
          打在高樓半腰的那一把會穿過樓層掉到地上。跟碎料（stepBlock）同一個取捨——
@@ -3857,11 +3945,11 @@ function stepWeapons(dt) {
       tumbleWeapon(w, dt);
       if (w.y <= 0.4) { lieWeapon(w); }
     } else {
-      // 插著／躺著：撐一段時間再慢慢淡（使用者：「然後都慢慢消失」）
+      /* 插著／躺著：撐一段時間再**慢慢變淡**（v1.132.1 使用者回報；本來是縮小）。
+         fade 是逐 instance 的不透明度，長度一路不變。 */
       w.lie -= dt;
       if (w.lie <= 0) {
         w.fade -= dt / GATE_FADE;
-        w.len = w.len0 * Math.max(0, w.fade);
         if (w.fade <= 0) { goldPuff(w); weapons.splice(i, 1); }
       }
     }
@@ -3892,12 +3980,13 @@ function hitWeapon(w) {
   w.spin = rr(6, 13) * (Math.random() < 0.5 ? -1 : 1);
 }
 /* 插在地上（使用者指定）：刃尖沒入地面一點點，柄還斜著露在外面。
-   沿著飛行方向把整把推到「刃尖剛好在 y = −GATE_INTO」那個位置，而不是用這一幀停下來的
+   沿著飛行方向把整把推到「刃尖剛好沒入 into」那個位置，而不是用這一幀停下來的
    地方——它一幀飛一格，直接用的話沒入多深全看那一幀剛好飛到哪。
    幾乎水平飛過來、擦到地面的那種（dy 接近 0）算不出這個位移，就讓它躺在原地。 */
 function stickWeapon(w) {
+  const into = GATE_INTO * clamp(-w.dy / 0.7, 0.3, 1);
   const tipY = w.y + w.dy * w.len * 0.5;
-  const k = w.dy < -0.05 ? (-GATE_INTO - tipY) / w.dy : 0;
+  const k = w.dy < -0.05 ? (-into - tipY) / w.dy : 0;
   w.x = w.x + w.dx * k; w.y = w.y + w.dy * k; w.z = w.z + w.dz * k;
   w.st = 'lie';
   w.lie = rr(GATE_LIE[0], GATE_LIE[1]);
@@ -3978,10 +4067,9 @@ function goldPuff(w) {
 /* 畫面上要畫的那些門。一個門畫兩層：外圈的漣漪 ＋ 小一圈、反向轉的核——
    兩層互相滑過去，疊出來的環才會一直在變（參考圖那是水面泛開的漣漪，
    不是一張固定的圓貼紙）。重用同一個陣列，不要每幀配一個新的。 */
-/* 畫在哪：就是門心——**遮蔽是深度測試自己做的**。門這一片不寫深度、但會測深度，
-   所以兵器比門近的那一半（刃，朝著鏡頭）畫在門上面，比門遠的那一半（柄）被門擋掉。
-   兵器停在門心，於是「一半在門外、一半在門裡」在畫面上就成立了，
-   不必另外算要遮多少（見 GATE_BACK 上面那段：門陣擺哪一側決定了露出來的是哪一頭）。 */
+/* 畫在哪：就是門心，朝向就是兵器的方向（見引擎的 putGates）。
+   「一半在門外、一半在門裡」不是靠遮擋做的，是切面把後面那一段整個 discard 掉
+   （見檔頭 ①'）——所以這裡不必管誰畫在誰前面。 */
 const gateDraw = [];
 function gateList() {
   gateDraw.length = 0;
@@ -3989,8 +4077,9 @@ function gateList() {
   for (const p of gates.ports) {
     if (p.op <= 0.002) continue;
     const r = p.r * p.k;
-    gateDraw.push({ x: p.x, y: p.y, z: p.z, r, rot: p.rot, op: p.op });
-    gateDraw.push({ x: p.x, y: p.y, z: p.z, r: r * 0.62, rot: -p.rot * 1.7, op: p.op * 0.8 });
+    const d = { x: p.x, y: p.y, z: p.z, dx: p.dx, dy: p.dy, dz: p.dz };
+    gateDraw.push({ ...d, r, rot: p.rot, op: p.op });
+    gateDraw.push({ ...d, r: r * 0.62, rot: -p.rot * 1.7, op: p.op * 0.8 });
   }
   return gateDraw;
 }

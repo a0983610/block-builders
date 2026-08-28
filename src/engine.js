@@ -140,6 +140,15 @@ const ENG = (function () {
      所以規則那邊只要給「多長、指向哪」就好，等比縮放不會把比例弄歪。 */
   const WEAP_MAX = 360, WEAP_PARTS = 8;
   let weapMesh = null;
+  /* 兩個逐 instance 的屬性（v1.132.1）。
+     aCut＝一個**世界座標的切面** vec4(法線 xyz, 面上任一點與法線的內積)：
+       比這個面「後面」的片元直接 discard。兵器是從虛空的波紋裡探出來的，
+       還沒伸出來的那一段本來就不該看得見——靠門那片圖擋只擋得住它蓋得到的地方，
+       斜著看時柄還是會從邊上露出來（使用者回報的第一點）。
+       給 vec4(0,0,0,-1) 就是不切（dot=0，0 < −1 不成立）。
+     aFade＝這一把的不透明度。插在地上／躺著的要**慢慢變淡**消失（使用者回報的第五點），
+       不是縮小——縮小看起來像被吸走，不像化掉。 */
+  let weapCut = null, weapFade = null;
   /* 這一格上次畫的是哪一種。顏色只在換種時重寫——每幀重寫 360×8 筆是白花的
      （淡出走的是縮放不是顏色，見規則那邊的 fade）。 */
   const weapSlotKind = new Int16Array(WEAP_MAX).fill(-1);
@@ -366,7 +375,11 @@ const ENG = (function () {
      邊緣判定不靠 uv（不同 three 版本 uv attribute 有沒有宣告不一定），
      改用 local position：單位方塊的座標是 ±0.5，
      「離面內邊緣的距離」＝ 0.5 −（三軸絕對值的第二大者）。 */
-  function voxelMaterial(opt) {
+  /* extra：這一份材質要在四刀之外再注入什麼（v1.132.1 的兵器用）。
+     **加了 extra 就一定要換一把 program cache key**——同一把 key 的材質 three 只編一次
+     program 然後共用，沿用 'voxel-edge' 的話它會直接拿積木那份編好的來用，
+     這裡注入的東西會靜默消失（畫面看起來像沒寫過，也不會報錯）。 */
+  function voxelMaterial(opt, extra) {
     const m = new T.MeshLambertMaterial(opt);
     m.onBeforeCompile = sh => {
       const cut = injector();
@@ -381,9 +394,10 @@ const ENG = (function () {
           float edge = smoothstep(0.0, 0.055, 0.5 - second);
           diffuseColor.rgb *= mix(0.62, 1.0, edge);
         `);
+      if (extra) extra(sh, cut);
       m.userData.cuts = cut.count();               // 給測試看：四刀都換到了嗎
     };
-    m.customProgramCacheKey = () => 'voxel-edge';
+    m.customProgramCacheKey = () => (extra ? 'voxel-edge-weapon' : 'voxel-edge');
     return m;
   }
 
@@ -898,13 +912,55 @@ const ENG = (function () {
 
     /* 兵器（v1.132）：一把 WEAP_PARTS 塊，全部在同一顆 InstancedMesh 裡。
        走 voxelMaterial ＝ 跟積木、炸彈、核彈同一種受光的方塊材質，
-       金色要靠光影才立體（用 MeshBasicMaterial 的話整把是一片死板的黃）。 */
-    weapMesh = new T.InstancedMesh(unit, voxelMaterial({ color: 0xffffff }),
-                                   WEAP_MAX * WEAP_PARTS);
+       金色要靠光影才立體（用 MeshBasicMaterial 的話整把是一片死板的黃）。
+       **不能共用 unit 那顆幾何體**：aCut／aFade 是掛在幾何體上的 instanced attribute，
+       掛上去積木、炸彈那幾顆就跟著要求同一批屬性了。 */
+    const weapGeo = new T.BoxGeometry(1, 1, 1);
+    weapCut = new T.InstancedBufferAttribute(new Float32Array(WEAP_MAX * WEAP_PARTS * 4), 4);
+    weapFade = new T.InstancedBufferAttribute(new Float32Array(WEAP_MAX * WEAP_PARTS), 1);
+    weapCut.setUsage(T.DynamicDrawUsage);
+    weapFade.setUsage(T.DynamicDrawUsage);
+    weapGeo.setAttribute('aCut', weapCut);
+    weapGeo.setAttribute('aFade', weapFade);
+    const weapShader = (sh, cut) => {
+      sh.vertexShader = cut(sh.vertexShader, '#include <common>',
+        '\nattribute vec4 aCut;\nattribute float aFade;' +
+        '\nvarying vec4 vCut;\nvarying float vFade;\nvarying vec3 vWPos;');
+      sh.vertexShader = cut(sh.vertexShader, '#include <begin_vertex>',
+        '\nvCut = aCut; vFade = aFade;' +
+        '\nvWPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;');
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <common>',
+        '\nvarying vec4 vCut;\nvarying float vFade;\nvarying vec3 vWPos;');
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <color_fragment>',
+        '\nif (dot(vWPos, vCut.xyz) < vCut.w) discard;\ndiffuseColor.a *= vFade;');
+    };
+    weapMesh = new T.InstancedMesh(weapGeo,
+      voxelMaterial({ color: 0xffffff, transparent: true }, weapShader),
+      WEAP_MAX * WEAP_PARTS);
     weapMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     weapMesh.castShadow = true;
     weapMesh.count = 0; weapMesh.frustumCulled = false; weapMesh.visible = false;
     weapMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    /* 陰影那一趟走的是另一顆材質（three 內建的深度材質），它不知道 aCut／aFade——
+       不換掉的話「還埋在門裡那一段」跟「已經淡到快看不見的那幾把」照樣在地上投影。
+       淡到 45% 以下就整把不投影：再淡下去影子比本體還明顯。 */
+    const weapDepth = new T.MeshDepthMaterial({ depthPacking: T.RGBADepthPacking });
+    weapDepth.onBeforeCompile = sh => {
+      const cut = injector();
+      sh.vertexShader = cut(sh.vertexShader, '#include <common>',
+        '\nattribute vec4 aCut;\nattribute float aFade;' +
+        '\nvarying vec4 vCut;\nvarying float vFade;\nvarying vec3 vWPos;');
+      sh.vertexShader = cut(sh.vertexShader, '#include <begin_vertex>',
+        '\nvCut = aCut; vFade = aFade;' +
+        '\nvWPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;');
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <common>',
+        '\nvarying vec4 vCut;\nvarying float vFade;\nvarying vec3 vWPos;');
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <clipping_planes_fragment>',
+        '\nif (dot(vWPos, vCut.xyz) < vCut.w || vFade < 0.45) discard;');
+      weapDepth.userData.cuts = cut.count();       // 給測試看：四刀都換到了嗎
+    };
+    weapDepth.customProgramCacheKey = () => 'weapon-depth';
+    weapMesh.customDepthMaterial = weapDepth;
     scene.add(weapMesh);
 
     resize();
@@ -1447,23 +1503,25 @@ const ENG = (function () {
     const C = GATE_TEX / 2, R = C * 0.98;
     let seed = 20250828;
     const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-    /* 底：中心是**幾乎不透明的白**（兵器留在門裡的那一半就是被它擋住的），
-       往外一路轉成濃金、再化成透明。alpha 到 0.72 就掉到 0.1 以下——
-       門與門之間要留得出暗帶，糊成一片的話一百個門會變成一塊發亮的布。 */
+    /* 底：中心亮、往外一路轉成濃金、再化成透明。
+       **v1.132.1 把核放小、壓薄**：v1.132.0 的核是「幾乎不透明的白」，因為那時候
+       兵器留在門裡的那一半是靠它擋住的；現在那件事由 shader 的切面做（見 aCut），
+       核就不必再當遮板了——核一大一實，探出來的刃反而被自己的門洗白，
+       參考圖裡刃是清楚讀得出來的深色剪影。 */
     const bg = g.createRadialGradient(C, C, 0, C, C, R);
-    bg.addColorStop(0, 'rgba(255,255,252,1)');
-    bg.addColorStop(0.20, 'rgba(255,250,222,0.99)');
-    bg.addColorStop(0.38, 'rgba(255,214,104,0.90)');
-    bg.addColorStop(0.56, 'rgba(248,170,32,0.58)');
-    bg.addColorStop(0.74, 'rgba(214,120,12,0.22)');
-    bg.addColorStop(0.89, 'rgba(168,84,6,0.055)');
+    bg.addColorStop(0, 'rgba(255,252,232,0.86)');
+    bg.addColorStop(0.18, 'rgba(255,238,176,0.80)');
+    bg.addColorStop(0.38, 'rgba(255,206,88,0.74)');
+    bg.addColorStop(0.58, 'rgba(248,166,28,0.52)');
+    bg.addColorStop(0.76, 'rgba(214,118,12,0.22)');
+    bg.addColorStop(0.90, 'rgba(168,84,6,0.055)');
     bg.addColorStop(1, 'rgba(120,54,0,0)');
     g.fillStyle = bg;
     g.beginPath(); g.arc(C, C, R, 0, Math.PI * 2); g.fill();
     // 漣漪：一圈粗一圈細，越外面越淡。每一圈畫兩趟（寬而淡的當光暈、細而亮的當芯）
-    const RING = [[0.30, 0.052, 0.85], [0.42, 0.026, 0.62], [0.52, 0.040, 0.52],
-                  [0.63, 0.020, 0.38], [0.73, 0.030, 0.28], [0.84, 0.016, 0.17],
-                  [0.93, 0.022, 0.10]];
+    const RING = [[0.30, 0.052, 0.95], [0.42, 0.026, 0.72], [0.52, 0.040, 0.62],
+                  [0.63, 0.020, 0.46], [0.73, 0.030, 0.34], [0.84, 0.016, 0.21],
+                  [0.93, 0.022, 0.12]];
     for (const [rr0, w, a] of RING) {
       g.strokeStyle = 'rgba(255,222,132,' + (a * 0.40).toFixed(3) + ')';
       g.lineWidth = w * R * 2.6;
@@ -1480,21 +1538,24 @@ const ENG = (function () {
       g.lineWidth = (0.010 + rnd() * 0.028) * R;
       g.beginPath(); g.arc(C, C, rad, a0, a0 + sp); g.stroke();
     }
-    // 核：中間那一片實心的白，光才有「源頭」，兵器的後半段也才藏得住
-    const cr = g.createRadialGradient(C, C, 0, C, C, R * 0.46);
-    cr.addColorStop(0, 'rgba(255,255,255,1)');
-    cr.addColorStop(0.55, 'rgba(255,254,246,0.96)');
-    cr.addColorStop(0.82, 'rgba(255,243,196,0.55)');
-    cr.addColorStop(1, 'rgba(255,232,160,0)');
+    // 核：中間一小點亮，光才有「源頭」——小而不厚，蓋不掉從裡面探出來的刃
+    const cr = g.createRadialGradient(C, C, 0, C, C, R * 0.26);
+    cr.addColorStop(0, 'rgba(255,255,255,0.92)');
+    cr.addColorStop(0.5, 'rgba(255,252,236,0.70)');
+    cr.addColorStop(1, 'rgba(255,236,170,0)');
     g.fillStyle = cr;
-    g.beginPath(); g.arc(C, C, R * 0.46, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(C, C, R * 0.26, 0, Math.PI * 2); g.fill();
     return cv;
   }
 
-  /* 王之財寶的門。list 每一項 {x, y, z, r 半徑, rot 自轉角, op 亮度}。
-     公告板：抄鏡頭的旋轉、再繞自己的法線轉 rot——跟十字星光同一套（見 putStars），
-     所以不管玩家把視角轉到哪，看到的永遠是正圓的門而不是一排薄片。
-     加法混色下 instance color 就是亮度旋鈕（貼圖本身已經是金色的）。 */
+  /* 王之財寶的門。list 每一項 {x, y, z, r 半徑, rot 自轉角, op 亮度,
+     dx/dy/dz 兵器從這個門探出來的方向}。
+
+     **法線＝兵器的方向**（v1.132.1 改，本來是一律正對鏡頭的公告板）。門是虛空裂開的
+     一個洞，兵器從洞裡垂直探出來，所以洞的朝向就是兵器的朝向——斜著看的時候它本來
+     就該是個橢圓而不是正圓（使用者：「同心波紋 不一定是正對鏡頭的圓」，參考圖裡那些
+     也都是各種角度的橢圓）。兵器整體朝鏡頭飛，所以多數的門仍然大致面向玩家。
+     instance color 是亮度旋鈕（貼圖本身已經是金色的）。 */
   function putGates(list) {
     const n = Math.min(list.length, GATE_MAX);
     gateMesh.visible = n > 0;
@@ -1503,7 +1564,12 @@ const ENG = (function () {
     for (let i = 0; i < n; i++) {
       const p = list[i];
       scratch.position.set(p.x, p.y, p.z);
-      scratch.quaternion.copy(camera.quaternion);
+      /* 這片四邊形生在 XY 平面、法線是 +Z，所以把 +Z 轉到兵器的方向就對了；
+         再繞自己的法線轉 rot（那是每個門各自的自轉，順序不能反）。 */
+      _axis.set(p.dx || 0, p.dy || 0, p.dz || 0);
+      if (_axis.lengthSq() < 1e-9) _axis.set(0, 0, 1);
+      _axis.normalize();
+      scratch.quaternion.setFromUnitVectors(_zAxis, _axis);
       _spin.setFromAxisAngle(_zAxis, p.rot || 0);
       scratch.quaternion.multiply(_spin);
       scratch.scale.setScalar(p.r * 2);          // 給的是半徑，貼圖鋪滿的是直徑
@@ -1517,9 +1583,10 @@ const ENG = (function () {
   }
 
   /* 兵器。list 每一項 {x, y, z, dx, dy, dz 刃尖指向（單位向量）, roll 繞自己轉多少,
-     len 全長, k 第幾種（WEAP_KIND）}。造型是刃尖朝 +Y、長度 1，所以這裡就是
-     「把 +Y 轉到指向、再等比放大到 len」——淡出走縮放（規則那邊把 len 乘掉），
-     不走顏色：這顆是受光材質，把顏色乘暗只會變成一把黑鐵，不是消失。 */
+     len 全長, k 第幾種（WEAP_KIND）, fade 不透明度, cut 世界座標的切面 [nx,ny,nz,d]}。
+     造型是刃尖朝 +Y、長度 1，所以這裡就是「把 +Y 轉到指向、再等比放大到 len」。
+     淡出與切面都走逐 instance 的屬性（見 weapCut／weapFade 的說明），
+     不是靠縮放假裝——縮小看起來像被吸走，而且「埋在門裡那一段」根本不能用縮放表示。 */
   function putWeapons(list) {
     const n = Math.min(list.length, WEAP_MAX);
     weapMesh.visible = n > 0;
@@ -1539,6 +1606,10 @@ const ENG = (function () {
       scratch.scale.setScalar(w.len);
       scratch.updateMatrix();
       const fresh = weapSlotKind[i] !== w.k;
+      /* 切面與不透明度是「整把一個值」，但屬性是逐 instance（一把 WEAP_PARTS 個），
+         所以每一塊都要寫同一份。 */
+      const c = w.cut, fd = w.fade === undefined ? 1 : Math.max(0, Math.min(1, w.fade));
+      const cx = c ? c[0] : 0, cy = c ? c[1] : 0, cz = c ? c[2] : 0, cw = c ? c[3] : -1;
       for (let j = 0; j < WEAP_PARTS; j++) {
         const P = K[j];
         if (P) {
@@ -1553,12 +1624,17 @@ const ENG = (function () {
         }
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
-        weapMesh.setMatrixAt(i * WEAP_PARTS + j, tmpM);
-        if (fresh) weapMesh.setColorAt(i * WEAP_PARTS + j, tmpC.setHex(P ? P.c : 0xffffff));
+        const at = i * WEAP_PARTS + j;
+        weapMesh.setMatrixAt(at, tmpM);
+        weapCut.array[at * 4] = cx; weapCut.array[at * 4 + 1] = cy;
+        weapCut.array[at * 4 + 2] = cz; weapCut.array[at * 4 + 3] = cw;
+        weapFade.array[at] = fd;
+        if (fresh) weapMesh.setColorAt(at, tmpC.setHex(P ? P.c : 0xffffff));
       }
       if (fresh) { weapSlotKind[i] = w.k; colDirty = true; }
     }
     weapMesh.instanceMatrix.needsUpdate = true;
+    weapCut.needsUpdate = true; weapFade.needsUpdate = true;
     if (colDirty && weapMesh.instanceColor) weapMesh.instanceColor.needsUpdate = true;
   }
 

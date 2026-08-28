@@ -8828,7 +8828,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         // 剛開始伸的那一把：整把應該還在門後面
         if (out0 === null) {
           const p = gates.ports.find(q => q.st === 'draw');
-          if (p) out0 = +(off(p) / p.w.len0).toFixed(3);
+          if (p) out0 = +(off(p) / p.w.len).toFixed(3);
         }
         // 全部就位那一刻：每一把都該正中間卡在門上
         if (ready < 0 && gates.ph !== 'open') {
@@ -8908,6 +8908,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gate1.fires === 0 && gate1.burn === 0,
      '打完 ' + gate1.n + ' 發，還在燒的積木 ' + gate1.burn + ' 塊、火源清單 ' +
      gate1.fires + ' 筆');
+  /* 「慢慢變淡消失」（v1.132.1，使用者回報：本來是縮小）。同一把兵器一路追：
+     長度不能變，變的是送進 shader 的那個不透明度。 */
+  const gateFadeT = await page.evaluate(() => {
+    gates = null; weapons = null; gateEnd();
+    castGate({ x: 0, z: 0 });
+    let g = 0, w = null;
+    while (g++ < 900 && !w) { step(0.05); w = weapons && weapons.find(q => q.st === 'lie'); }
+    const len0 = w.len;
+    const seq = [];
+    const a = ENG.three.weapMesh.geometry.getAttribute('aFade');
+    for (let i = 0; i < 160; i++) {
+      step(0.05);
+      if (!weapons || weapons.indexOf(w) < 0) break;
+      draw();
+      seq.push([+w.fade.toFixed(2), +w.len.toFixed(2), +a.array[weapons.indexOf(w) * 8]]);
+    }
+    const r = { len0: +len0.toFixed(2), n: seq.length,
+                head: seq[0], mid: seq[Math.floor(seq.length * 0.75)], tail: seq[seq.length - 1],
+                lenSame: seq.every(q => Math.abs(q[1] - len0) < 0.01),
+                sameAsAttr: seq.every(q => Math.abs(q[0] - q[2]) < 0.01),
+                down: seq[seq.length - 1][0] < seq[0][0] - 0.5 };
+    gates = null; weapons = null; gateEnd();
+    return r;
+  });
+  ok('插著／躺著的是「慢慢變淡」消失，長度一路不變',
+     gateFadeT.lenSame && gateFadeT.down && gateFadeT.sameAsAttr && gateFadeT.tail[0] < 0.25,
+     '追一把 ' + gateFadeT.n + ' 幀：不透明度 ' + gateFadeT.head[0] + ' → ' +
+     gateFadeT.mid[0] + ' → ' + gateFadeT.tail[0] + '，長度一路 ' + gateFadeT.len0 +
+     '（送進 shader 的 aFade 跟規則那邊一致 ' + gateFadeT.sameAsAttr + '）');
+
   ok('兵器最後都慢慢消失，門與兵器都收乾淨',
      gate1.left === 0 && gate1.maxW <= gate1.keep && gate1.maxW <= gate1.wmax &&
      gate1.maxG <= gate1.gmax,
@@ -8957,9 +8987,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '三個視角各 ' + [gateCam.a.toward, gateCam.b.toward, gateCam.c.toward].join('／') +
      ' 把朝著鏡頭（共 ' + gateCam.n + ' 把）');
 
-  /* 門是**正對鏡頭的公告板**（畫在引擎的 putGates，跟十字星光同一套）。
-     從真的畫出去的矩陣讀：那一片的法線（本地 +Z）要指著鏡頭。
-     讀狀態證明不了這件事——規則那邊只給位置與半徑，轉向整個是引擎做的。 */
+  /* 門的**朝向就是那一把兵器的方向**（v1.132.1；v1.132.0 是一律正對鏡頭的公告板）。
+     門是虛空裂開的一個洞、兵器從洞裡垂直探出來，所以斜著看時它是橢圓不是正圓
+     （使用者：「同心波紋 不一定是正對鏡頭的圓」）。
+     從真的畫出去的矩陣讀那一片的法線（本地 +Z）——轉向整個是引擎做的，讀狀態驗不到。
+     一個門畫兩層（漣漪 ＋ 核），所以第 2i、2i+1 對應同一個門。 */
   const gateFace = await page.evaluate(() => {
     gates = null; weapons = null; gateEnd();
     castGate({ x: 0, z: 0 });
@@ -8967,28 +8999,81 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     draw();
     const m = ENG.three.gateMesh, mat = new THREE.Matrix4(), q = new THREE.Quaternion();
     const cam = ENG.three.camera;
-    const out = [];
-    for (let i = 0; i < 3; i++) {
+    const lit = gates.ports.filter(p => p.op > 0.002);      // gateList 送出去的順序
+    const dot = [], view = [];
+    const vd = new THREE.Vector3();
+    for (let i = 0; i < 6; i++) {
       m.getMatrixAt(i, mat);
       const p = new THREE.Vector3(), sc = new THREE.Vector3();
       mat.decompose(p, q, sc);
       const nrm = new THREE.Vector3(0, 0, 1).applyQuaternion(q);      // 這一片的法線
-      const toCam = cam.position.clone().sub(p).normalize();
-      out.push(+nrm.dot(toCam).toFixed(3));
+      const w = lit[i >> 1];
+      dot.push(+nrm.dot(new THREE.Vector3(w.dx, w.dy, w.dz)).toFixed(3));
+      // 順便量它有多斜：法線與「這一片指向鏡頭」的內積 ＝ 畫出來那個橢圓的短軸
+      vd.copy(cam.position).sub(p).normalize();
+      view.push(+Math.abs(nrm.dot(vd)).toFixed(2));
     }
-    const r = { n: m.count, vis: m.visible, dot: out };
+    const r = { n: m.count, vis: m.visible, dot, view };
     gates = null; weapons = null; gateEnd(); draw();
     return { ...r, off: ENG.three.gateMesh.visible };
   });
-  /* 內積不會是 1：公告板抄的是**鏡頭的朝向**（跟十字星光同一套），不是每一片各自
-     對準鏡頭的位置。門陣橫跨六十幾單位、鏡頭在一百出頭外，邊上那幾片的「指向鏡頭」
-     跟鏡頭的視軸本來就差十幾度（cos 0.93）。要驗的是「面向鏡頭而不是側著」，
-     所以門檻訂在 0.85（約 32 度以內）；擺錯的話——例如跟魔法陣一樣貼地——會是 0 左右。 */
-  ok('門是正對鏡頭的公告板，沒發動時整顆網格關掉',
-     gateFace.vis && gateFace.n > 0 && gateFace.dot.every(d => d > 0.85) &&
+  ok('門的朝向就是兵器的朝向（所以是各種角度的橢圓，不是一律正對鏡頭）',
+     gateFace.vis && gateFace.n > 0 && gateFace.dot.every(d => d > 0.999) &&
      gateFace.off === false,
-     '場上 ' + gateFace.n + ' 片，法線與「指向鏡頭」的內積 ' + gateFace.dot.join('／') +
-     '（貼地的話會是 0 上下）；收掉之後 visible=' + gateFace.off);
+     '場上 ' + gateFace.n + ' 片，法線與那一把兵器方向的內積 ' + gateFace.dot.join('／') +
+     '；收掉之後 visible=' + gateFace.off);
+  /* 但也不能斜到變成一條線：出手方向被夾在錐面內（GATE_CONE），所以短軸有下限。
+     0.4 ＝ 偏離視軸 66 度；沒有那個錐面的話實測會掉到 0.29。 */
+  ok('斜歸斜，門不會扁成一條線（出手方向夾在錐面內）',
+     gateFace.view.every(v => v > 0.4),
+     '畫出來那幾個橢圓的短軸 ' + gateFace.view.join('／') + '（1 ＝ 正圓）');
+
+  /* 「還沒伸出來的那一段看不見」（v1.132.1，使用者回報）。不是靠門那片圖擋——
+     是每一把帶一個世界座標的切面（就是它那個門所在的平面），比切面後面的片元在
+     shader 裡 discard。從**真的送進去的那個逐 instance 屬性**讀，不是讀規則的狀態。 */
+  const gateCut = await page.evaluate(() => {
+    gates = null; weapons = null; gateEnd();
+    castGate({ x: 0, z: 0 });
+    /* 要等**全部就位**（gates.ph 不再是 open）才量：還在伸的時候刃尖剛好貼在切面上，
+       量到的 tip 是 0 而不是「切面前面」。 */
+    let g0 = 0;
+    while (g0++ < 900 && gates.ph === 'open') step(0.05);
+    draw();
+    const a = ENG.three.weapMesh.geometry.getAttribute('aCut');
+    const w = weapons[0], p = gates.ports.find(q => q.w === w);
+    /* 這一把在清單裡的第幾個 ＝ 屬性的第幾組（一把 WEAP_PARTS 個 instance） */
+    const i = weapons.indexOf(w) * ENG.three.weapMesh.geometry.attributes.aCut.itemSize;
+    const n = [a.array[0], a.array[1], a.array[2]], d = a.array[3];
+    const dotDir = n[0] * w.dx + n[1] * w.dy + n[2] * w.dz;      // 法線＝出手方向
+    const onPort = n[0] * p.x + n[1] * p.y + n[2] * p.z - d;     // 面過門心 → 0
+    // 刃尖在切面前面（看得見）、柄在切面後面（被切掉）
+    const t = w.len * 0.5;
+    const tip = (w.x + w.dx * t) * n[0] + (w.y + w.dy * t) * n[1] + (w.z + w.dz * t) * n[2] - d;
+    const butt = (w.x - w.dx * t) * n[0] + (w.y - w.dy * t) * n[1] + (w.z - w.dz * t) * n[2] - d;
+    /* 射出去之後就不切了：找一把飛行中的，看它那一組屬性是不是「不切」的哨兵值
+       （法線 0、offset −1，dot 恆為 0，0 < −1 不成立 → 什麼都不 discard）。 */
+    let g = 0, fly = null, flyCut = null;
+    while (g++ < 900 && !fly) {
+      step(0.05);
+      fly = weapons && weapons.find(q => q.st === 'fly');
+    }
+    if (fly) { draw(); const j = weapons.indexOf(fly) * 8 * 4;
+               flyCut = [a.array[j], a.array[j + 1], a.array[j + 2], a.array[j + 3]]; }
+    const r = { dotDir: +dotDir.toFixed(3), onPort: +onPort.toFixed(3),
+                tip: +tip.toFixed(2), butt: +butt.toFixed(2),
+                flyCut: flyCut ? flyCut.map(v => +v.toFixed(1)) : null };
+    gates = null; weapons = null; gateEnd();
+    return r;
+  });
+  ok('埋在門裡的那一段是真的不畫：切面就是那個門所在的平面',
+     Math.abs(gateCut.dotDir - 1) < 0.002 && Math.abs(gateCut.onPort) < 0.01 &&
+     gateCut.tip > 0 && gateCut.butt < 0,
+     '切面法線與出手方向的內積 ' + gateCut.dotDir + '、門心到切面的距離 ' +
+     gateCut.onPort + '；刃尖在切面前 ' + gateCut.tip + '、柄在切面後 ' + gateCut.butt);
+  ok('射出去之後整把都看得見（切面收掉）',
+     gateCut.flyCut && gateCut.flyCut[0] === 0 && gateCut.flyCut[1] === 0 &&
+     gateCut.flyCut[2] === 0 && gateCut.flyCut[3] === -1,
+     '飛行中那一把的切面 ' + JSON.stringify(gateCut.flyCut) + '（法線 0、offset −1 ＝ 不切）');
 
   /* 鏡頭：門陣飄在建築上方，不退開的話矮建築整片都在畫面外（跟打雷同一個問題）。
      v1.128 使用者指定的那條規矩——會把鏡頭往高處帶的運鏡，結束後高度要調回來。 */
@@ -9099,6 +9184,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gateCost.avg + ' ms、最高 ' + gateCost.worst + ' ms（預算 4ms）；' +
      '這一幕共 ' + gateCost.on + ' 個 draw call，門占 ' + gateCost.gate +
      '、兵器占 ' + gateCost.weap + '（含陰影那一趟）');
+
+  /* 門陣要**偏寬、上下低**（v1.132.1，使用者：「目前看起來像正方形」）。
+     細高的建築最容易踩到：不夾的話台北 101 算出來是 48.7 寬 × 64.8 高（直的一片）。 */
+  const gateAspect = await page.evaluate(() => {
+    const one = shape => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === shape);
+      targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+      for (let i = 0; i < 20; i++) step(0.05);
+      const sp = gateSpan();
+      return { s: shape, w: +sp.w.toFixed(0), h: +sp.h.toFixed(0),
+               grid: sp.cols + '×' + sp.rows,
+               ratio: +(sp.w / sp.h).toFixed(2) };
+    };
+    const out = [one('吉薩金字塔'), one('台北 101'), one('羅馬競技場')];
+    cleanTools();
+    return { out, flat: GATE_FLAT, n: GATE_N };
+  });
+  ok('門陣是橫著鋪開的一片，不是正方形',
+     gateAspect.out.every(r => r.ratio >= gateAspect.flat - 0.01) &&
+     gateAspect.out.every(r => r.w >= 50),
+     gateAspect.out.map(r => r.s + ' ' + r.w + '×' + r.h + '（' + r.ratio + ' 比 1，' +
+       r.grid + ' 格）').join('；') + '——最扁也要 ' + gateAspect.flat + ' 比 1');
 
   /* 打得多開：範圍跟著建築的外接半徑收（見 gateZone）。固定 22 的話打細長的塔
      幾乎全落在空地上——實測台北 101 只有 24% 的發數碰得到建築、整趟掉 3%。 */
