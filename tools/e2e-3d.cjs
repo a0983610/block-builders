@@ -8795,15 +8795,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        讀狀態的話只看得到「現在」，看不出七秒裡的分布。 */
     const shots = []; let hitB = 0, hitG = 0, stuck = null, fell = null;
     const oFire = fireGate, oHit = hitWeapon, oStick = stickWeapon;
+    /* 落點離場心多遠（v1.132.2 使用者：「瞄準的方向太散了 要集中到點擊的附近」）。
+       三個收場都要記：打中積木停在半空的、插在地上的、躺在地上的。 */
+    const oLie = lieWeapon;
+    const land = [];
+    /* **一把只記一次**：打中積木的那一把會先進 hitWeapon（停在撞擊點）、掉到地上再進
+       lieWeapon，記兩次的話近的那些會被算兩遍，分布看起來比實際集中。 */
+    const mark = w => { if (!w.__mark) { w.__mark = 1; land.push(Math.hypot(w.x, w.z)); } };
+    lieWeapon = w => { mark(w); oLie(w); };
+    /* 出手方向背對鏡頭的（凹面鏡把邊上那排往前推之後要重驗，見 GATE_BOWL）。
+       攔 newWeapon 是因為方向在生出來那一刻就定了，之後讀不到「當初瞄哪」。 */
+    const oNew = newWeapon;
+    let back = 0, fat = 0;
+    newWeapon = (g, q) => {
+      const w = oNew(g, q);
+      if (w) {
+        if (w.dx * g.ax + w.dy * g.ay + w.dz * g.az <= 0) back++;
+        /* 這一把最粗的一塊有多粗（世界單位）。桿／環取「橫斷面兩邊都不小」的那一個
+           ＝ min(x, z)——護手與斧面的寬度是輪廓，不算粗細。在這裡量是因為
+           weapons 到最後會清空，事後撈不到。 */
+        for (const P of ENG.WEAP_KIND[w.k]) fat = Math.max(fat, Math.min(P.s[0], P.s[2]) * w.len);
+      }
+      return w;
+    };
     let T = 0;
     fireGate = (g, p) => { if (p.st === 'ready') shots.push(+T.toFixed(3)); oFire(g, p); };
     hitWeapon = w => {
-      hitB++; oHit(w);
+      hitB++; mark(w); oHit(w);
       // 打中積木的：當場轉成會翻滾的掉落物（使用者：「兵器掉到地面」）
       if (!fell) fell = { st: w.st, vy: +w.vy.toFixed(2), spin: +Math.abs(w.spin).toFixed(1) };
     };
     stickWeapon = w => {
-      hitG++; oStick(w);
+      hitG++; mark(w); oStick(w);
       // 插在地上的：刃尖沒入地面、柄還斜著露在外面
       if (!stuck) stuck = { st: w.st, tip: +(w.y + w.dy * w.len * 0.5).toFixed(2),
                             y: +w.y.toFixed(2), lie: +w.lie.toFixed(2) };
@@ -8817,14 +8840,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     tool = 'gate';
     useTool({ point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) });
     const born = gates.ports.length, n0 = placedCnt;
+    /* 門陣的弧度（使用者：「就位也可以加一點弧度（像凹面鏡）」）：每個門沿視軸離場心多遠。
+       中間最深、邊上最淺 ＝ 凹的。順便記近面（最淺的那個），它要遠大於落點能落到的深度。 */
+    const depth = gates.ports.map(q => ({
+      u: Math.abs((q.x - gates.cx) * gates.ux + (q.z - gates.cz) * gates.uz),
+      d: (q.x - gates.x) * gates.fx + (q.z - gates.z) * gates.fz
+    }));
+    const mid = depth.filter(q => q.u < 6), rim = depth.filter(q => q.u > 24);
+    const avg = a => a.reduce((x, q) => x + q.d, 0) / (a.length || 1);
+    const bowl = { mid: +avg(mid).toFixed(1), rim: +avg(rim).toFixed(1),
+                   near: +Math.min.apply(null, depth.map(q => q.d)).toFixed(1),
+                   nMid: mid.length, nRim: rim.length };
     const grow = [];
     let ready = -1, out0 = null, out1 = null, maxW = 0, maxG = 0, reopen = 0;
     const fired = new Set();
     /* 26 秒：開門 1.5+0.55+0.7 ＋ 停 3 ＋ 連射 7 ＋ 最後一把插在地上撐 2.8 再淡 1.6
        ＝ 最壞 17.2 秒，留一倍餘裕。跑不完的話量到的會是「還沒收乾淨」。 */
+    let preOut = -1, preN = 0;
     while (T < 26) {
       step(1 / 60); T += 1 / 60;
       if (gates) {
+        /* 開場 0.3 秒：還沒輪到出場的門（p.t < 0），裡面那把兵器整把都該在切面後面
+           ＝ 一點都看不見（使用者：「同心波紋先出現 然後武器才伸出來」）。
+           量的是「刃尖有沒有越過切面」，不是「有沒有這把兵器」。 */
+        if (preOut < 0 && T >= 0.3) {
+          preOut = 0;
+          for (const p of gates.ports) if (p.t < 0 && p.w) {
+            preN++;
+            if (off(p) + p.w.len * 0.5 > 0.001) preOut++;
+          }
+        }
         // 剛開始伸的那一把：整把應該還在門後面
         if (out0 === null) {
           const p = gates.ports.find(q => q.st === 'draw');
@@ -8847,6 +8892,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (weapons) maxW = Math.max(maxW, weapons.length);
     }
     fireGate = oFire; hitWeapon = oHit; stickWeapon = oStick;
+    lieWeapon = oLie; newWeapon = oNew;
     // 每半秒幾發：不規則連射看的是「每一格都有、而且差不多多」
     const t0 = shots[0], t1 = shots[shots.length - 1];
     const buck = [];
@@ -8863,7 +8909,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       fires: fires ? fires.length : 0, burn: blocks.filter(b => b.burn > 0).length,
       maxW, maxG, keep: WEAP_KEEP, wmax: ENG.WEAP_MAX, gmax: ENG.GATE_MAX,
       left: (gates ? 1 : 0) + (weapons ? weapons.length : 0),
-      rate: GATE_RATE, fire: GATE_FIRE, hold: GATE_HOLD
+      rate: GATE_RATE, fire: GATE_FIRE, hold: GATE_HOLD,
+      preOut, preN, back, bowl, zone: +gateZone().toFixed(1),
+      land: (() => {
+        const d = land.sort((a, b) => a - b), q = f => +d[Math.floor(d.length * f)].toFixed(1);
+        return { n: d.length, med: q(0.5), p75: q(0.75), p90: q(0.9), max: +d[d.length - 1].toFixed(1) };
+      })(),
+      fat: +fat.toFixed(2),
+      /* 比例尺：小人手上那根法杖的粗細（使用者指定拿它對照）。0.09 是法杖在
+         engine 的 BODY 裡的橫斷面，乘上身高倍率的上限 W_HI ＝ 最粗的那一根。 */
+      staff: +(0.09 * W_HI).toFixed(2)
     };
     cleanTools();
     return r;
@@ -8897,8 +8952,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gate1.hitB + ' 發打中建築、掉了 ' + gate1.broke + ' 塊（共 ' + gate1.n0 +
      ' 塊）；被擋下來那一把轉成 ' + (gate1.fell ? gate1.fell.st : '—') + '、自轉 ' +
      (gate1.fell ? gate1.fell.spin : '—') + ' rad/s');
+  /* 門檻從 30 降到 12（v1.132.2）：落點收攏之後打中建築的變多、落在空地上的就少了
+     （170 發打中建築、20 幾發插在地上）。這一條看的是「插得住」，不是「有多少發沒中」。 */
   ok('打中地面的插在地上：刃尖沒入地面、柄還露在外面',
-     gate1.hitG > 30 && gate1.stuck && gate1.stuck.tip <= 0 && gate1.stuck.y > 0,
+     gate1.hitG > 12 && gate1.stuck && gate1.stuck.tip <= 0 && gate1.stuck.y > 0,
      gate1.hitG + ' 發插在地上；第一把的刃尖在 y=' +
      (gate1.stuck ? gate1.stuck.tip : '—') + '（地面是 0），重心還在 y=' +
      (gate1.stuck ? gate1.stuck.y : '—'));
@@ -8944,6 +9001,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '結束後場上剩 ' + gate1.left + ' 個東西；峰值兵器 ' + gate1.maxW + ' 把（上限 ' +
      gate1.keep + '、引擎 ' + gate1.wmax + '）、門 ' + gate1.maxG + ' 片（引擎 ' +
      gate1.gmax + '）');
+
+  /* ── v1.132.2 使用者回饋的四件事 ─────────────────────────────
+     「同心波紋先出現 然後武器才伸出來」「瞄準太散 要集中到點擊附近」
+     「就位加一點弧度（像凹面鏡）」「部分兵器太粗（拿小人的兵器做對照）」 */
+  ok('波紋先出現，兵器才伸出來：還沒輪到出場的門，裡面那把一點都看不見',
+     gate1.preOut === 0 && gate1.preN > 30,
+     '開場 0.3 秒有 ' + gate1.preN + ' 個門還沒輪到出場，其中刃尖越過切面（＝看得見）的有 ' +
+     gate1.preOut + ' 個');
+  ok('齊射集中在點擊處附近，射歪的也不會歪到場外',
+     gate1.land.p90 <= gate1.zone && gate1.land.med <= gate1.zone * 0.7 &&
+     gate1.land.max <= 140,
+     gate1.land.n + ' 個落點離場心：中位 ' + gate1.land.med + '、四分之三位 ' +
+     gate1.land.p75 + '、九成位 ' + gate1.land.p90 + '、最遠 ' + gate1.land.max +
+     '（打擊範圍 ' + gate1.zone + '；v1.132.1 的瞄準規則量到的是 13.4／30／61／218）');
+  ok('門陣是凹的（像凹面鏡），而且沒有一把變成背對鏡頭飛',
+     gate1.bowl.rim < gate1.bowl.mid - 4 && gate1.bowl.near > 12 && gate1.back === 0,
+     '中間那圈 ' + gate1.bowl.nMid + ' 個門深 ' + gate1.bowl.mid + '、最外圈 ' +
+     gate1.bowl.nRim + ' 個深 ' + gate1.bowl.rim + '（越小＝越靠近鏡頭），近面 ' +
+     gate1.bowl.near + '；背對鏡頭飛的 ' + gate1.back + ' 把');
+  ok('兵器不比小人手上那根法杖粗太多',
+     gate1.fat > 0 && gate1.fat <= gate1.staff * 2.7,
+     '最粗的一塊 ' + gate1.fat + '，小人的法杖 ' + gate1.staff + '（' +
+     (gate1.fat / gate1.staff).toFixed(1) + ' 倍；v1.132.1 是騎槍的環 0.66 ＝ 4 倍）');
 
   /* 「參考鏡頭方向」（使用者指定）。兩件事：門陣鋪在鏡頭看過去那個方向的橫斷面上、
      而且擺在場心的**另一側**——所以兵器是朝著鏡頭往下射，露在門外的才是刃不是柄
@@ -13904,6 +13984,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                tail3: +(win(2.6, 3.4) / head).toFixed(3),
                last: +last.toFixed(2) };
     };
+    /* 同一發量好幾次取中位數。**噪音類的音效每次算出來都不一樣**——buffer 是當場用
+       Math.random() 填的，量到的頻段占比就跟著抖。雷聲那一條（現在 vs v1.130）就被這件事
+       咬過：門檻是「兩者相差 8 個百分點以上」，而同一份程式碼連量十次，單次量到的差距是
+       7.6～18.3——也就是說它**本來就會間歇失敗**，跟改了什麼無關。
+       取五次的中位數之後（連量六輪）：現在這一版 40.1～41.6、v1.130 那一版 51.0～55.7、
+       差距 10.2～15.4，離門檻 8 有兩個百分點以上的餘裕。
+       抖的主要是**對照組**：它的 250–800Hz 幾乎全來自開頭那 0.26 秒的劈裂聲，
+       短的噪音爆本來就抖；門檻沒動（放寬門檻不算修，見 README〈九條偶爾飄的測試〉）。
+       只有雷聲那兩發需要——其他音效不是噪音打底、就是門檻離實測值夠遠。 */
+    const many = async (fn, sec, reps) => {
+      const rows = [];
+      for (let i = 0; i < reps; i++) rows.push(await one(fn, sec));
+      const out = {};
+      for (const k of Object.keys(rows[0])) {
+        const v = rows.map(x => x[k]);
+        out[k] = typeof v[0] === 'number' ? v.sort((a, b) => a - b)[v.length >> 1] : v[0];
+      }
+      return out;
+    };
     const r = { nuke: await one(() => sndBoom(30)), bomb: await one(() => sndBoom(BOMB_R)),
                 smash: await one(() => sndSmash()),
                 fall1: await one(() => sndFall()),
@@ -13925,7 +14024,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 }),
                 /* 雷聲全部用 8 秒的視窗量：v1.131 的滾雷排了 5 秒，3 秒會把拖尾切掉。
                    三個版本都用同一個視窗，數字才比得下去。 */
-                thunder: await one(() => sndThunder(), 8),
+                thunder: await many(() => sndThunder(), 8, 5),
                 /* 舊的雷聲（v1.117～v1.122）：一記切在 2200 的劈 ＋ 切在 190 的滾雷
                    ＋ 一支往下滑的鋸齒。前後那兩層正好是 sndSmash／sndThud 的配方，
                    使用者聽到的「像東西撞到建築」就是它們。 */
@@ -13936,7 +14035,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 /* v1.123～v1.130 那一版就地復刻（v1.131 的對照組）：方向對，但每一項
                    都只做了一半——使用者：「打雷音效好像上次沒調好 應該是低頻比較長一點的
                    轟轟聲」。rumble() 現在的起伏放慢了一半，所以連那三支正弦一起復刻。 */
-                thunder130: await one(() => {
+                thunder130: await many(() => {
                   const c = audio();        // 這時候 audio 指著離線 context（見 render）
                   noise(0.26, 0.16, 700);
                   const n = Math.floor(c.sampleRate * 2.4);
@@ -13953,7 +14052,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   const g = c.createGain(); g.gain.value = 0.26;
                   src.connect(f1).connect(f2).connect(g).connect(c.destination); src.start();
                   tone(44, 2.4 * 0.8, 'sawtooth', 0.07, 0, 'thunder130');
-                }, 8),
+                }, 8, 5),
                 thud: await one(() => sndThud(11)),
                 /* 王之財寶（v1.132）。它的音量要壓得比誰都低，因為**發數**：
                    連射七秒、每秒 28 發，射出與命中各一聲。所以除了單獨一聲，
