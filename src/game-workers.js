@@ -1573,6 +1573,7 @@ const CHAT_T = 5;                   // 聊多久
 const CHAT_D = 2.6;                 // 多近才聊得起來
 const CHAT_CD = 9;                  // 聊完至少隔幾秒才會再聊（實際是 1～2 倍隨機）
 const CHAT_TURN = 1.15;             // 每個人一次講幾秒，輪流換
+const CHAT_MAD = 0.25;              // 幾成的對話是不歡而散（冒生氣，其餘冒愛心）
 
 function endChat(w) {
   if (w.chat > 0) w.chatCd = rr(CHAT_CD, CHAT_CD * 2);
@@ -1618,15 +1619,21 @@ function stepChat(w, wi, dt) {
   if (speak) w.ph += dt * 9;
   w.bub += ((speak ? 1 : 0) - w.bub) * Math.min(1, dt * 12);
   if (w.chat <= 0) {
-    /* 聊完了，兩個人各冒一顆愛心（v1.121）。**不能只顧自己**：兩邊的 chat 是同一幀
+    /* 聊完了，兩個人各冒一個表情（v1.121）。**不能只顧自己**：兩邊的 chat 是同一幀
        歸零的，先跑到的那個一 endChat，另一個進 stepChat 就走上面那條「對方被抓走了」
-       早退（那條是被炸飛、被抓去上工用的，不該冒愛心）。所以由先聊完的順手幫「還指著
+       早退（那條是被炸飛、被抓去上工用的，不該冒表情）。所以由先聊完的順手幫「還指著
        自己」的那位也冒一個——被抓走的人 cw 已經被 endChat 清成 −1，不會誤中。
-       擺在 endChat 後面：endChat 會把泡泡收掉（w.bub = 0），圖示才不會跟泡泡疊著。 */
+       擺在 endChat 後面：endChat 會把泡泡收掉（w.bub = 0），圖示才不會跟泡泡疊著。
+
+       冒哪一個：v1.121～v1.130 一律愛心，v1.131 改成聊得來冒愛心、談不攏冒生氣
+       （使用者：「小人交談後有生氣或是愛心(目前是都愛心)」）。**兩個人一定是同一個**
+       ——這是同一場對話的結果，一邊愛心一邊生氣看起來會像兩件不相干的事，
+       所以骰子在這裡只擲一次，兩個人共用。 */
     const mate = workers[w.cw];
     endChat(w);
-    showEmo(w, 'heart');
-    if (mate && mate.cw === wi) showEmo(mate, 'heart');
+    const emo = Math.random() < CHAT_MAD ? 'anger' : 'heart';
+    showEmo(w, emo);
+    if (mate && mate.cw === wi) showEmo(mate, emo);
     /* 聊完就走：給一個新的閒晃目標，不然兩個人會杵在原地等發呆時間跑完。
        有自己家的人挑自己家附近（v1.100）：挑工地外圈那一環的話，他會先往工地走幾步，
        下一幀才被 liveHome 叫回來——而在那之前如果他還在挖料那條路上，
@@ -1643,11 +1650,14 @@ function stepChat(w, wi, dt) {
    （engine.js 的 paintEmoAtlas／putEmotes），這裡定的是「什麼時候冒哪一個、冒多久」。
 
    四種表情各挑**玩家看得出因果**的情境，不隨機冒——隨機的話那就只是頭上有東西在閃，
-   看不出小人在反應什麼：
+   看不出小人在反應什麼（唯一擲骰子的是「聊完天冒哪一個」，見 CHAT_MAD：
+   因果還在——是那場對話的結果，只是聊得來聊不來玩家看不到）：
      驚嘆號 bang   預告一出現、丟下手上的東西開始逃命（startFlee）
      問號   quest  ① 走不動要重找路線（stuckWatch）② 要搬的那塊被打飛／被搶走（dropJob）
-     愛心   heart  ① 聊完天各自走開（stepChat）② 身上的火被水澆熄（wetWorker）
-     生氣   anger  ① 跌倒爬起來那一刻（被戳、被掀飛、被水柱打倒）② 無故被水淋濕
+     愛心   heart  ① 聊完天各自走開、而且聊得來（stepChat）② 身上的火被水澆熄（wetWorker）
+     生氣   anger  ① 跌倒爬起來那一刻（被戳、被掀飛、被水柱打倒）② 聊完天談不攏（stepChat）
+   v1.131 動了兩處（都是使用者指定）：碰到水不再生氣（見 wetWorker）、
+   聊完天不再一律愛心（四分之一是生氣，見 CHAT_MAD）。
 
    冒多久：都是一兩秒。太短來不及看（鏡頭多半沒對著那個人），太長就會一直掛在頭上，
    下一件事發生時反而看不出來是在反應新的那件。 */

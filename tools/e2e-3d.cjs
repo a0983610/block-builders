@@ -4020,15 +4020,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const wq = workers.find(w => w.load.length);
     out.hasJob = !!wq;
     if (wq) { wq.emo = ''; wq.emoT = 0; freeBlock(blocks[wq.load[0].b]); out.quest = wq.emo; }
-    // ③ 聊完天：兩個人各冒一顆愛心（倒數壓到剩一幀，不必等真的聊完五秒）
+    /* ③ 聊完天：兩個人冒同一個表情，多數愛心、四分之一生氣（v1.131）。
+       倒數壓到剩一幀，不必等它真的聊完五秒；直接跑 stepChat 不跑整個 step——
+       骰子是隨機的，要擲幾百次才看得出比例，而整個 step 跑幾百次太慢，
+       中間也可能有別的事情插進來給這兩位冒別的圖示。 */
     const a = workers[1], b2 = workers[2];
     releaseWorker(a); releaseWorker(b2);
-    for (const w of [a, b2]) { w.air = 0; w.burn = 0; w.fall = 0; w.flee = 0;
-                              w.emo = ''; w.emoT = 0; w.emoK = 0; }
-    a.chat = 0.04; a.cw = 2; a.side = 0;
-    b2.chat = 0.04; b2.cw = 1; b2.side = 1;
-    step(0.05);
-    out.heart = [a.emo, b2.emo].join(',');
+    for (const w of [a, b2]) { w.air = 0; w.burn = 0; w.fall = 0; w.flee = 0; }
+    const chatN = 600, tally = {};
+    let pairSame = 0;
+    for (let i = 0; i < chatN; i++) {
+      for (const w of [a, b2]) { w.emo = ''; w.emoT = 0; w.emoK = 0; }
+      a.chat = 0.04; a.cw = 2; a.side = 0;
+      b2.chat = 0.04; b2.cw = 1; b2.side = 1;
+      stepChat(a, 1, 0.05);
+      tally[a.emo || '沒有'] = (tally[a.emo || '沒有'] || 0) + 1;
+      if (a.emo && a.emo === b2.emo) pairSame++;
+    }
+    out.chatN = chatN; out.chatSame = pairSame; out.chatTally = tally;
     // ④ 跌倒爬起來那一刻生氣；濕著爬起來的不生氣（那是被水柱打倒的，愛心還在頭上）
     const c = workers[3], d = workers[4];
     for (const w of [c, d]) { releaseWorker(w); w.air = 0; w.burn = 0; w.emo = '';
@@ -4036,7 +4045,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     d.wet = 3;
     step(0.05);
     out.anger = c.emo; out.wetUp = d.emo;
-    // ⑤ 被水淋濕：沒火的是被無故淋一身（生氣），有火的是被救了（愛心）
+    // ⑤ 被水淋濕：碰到水不生氣（v1.131），只有身上的火被澆熄才冒愛心（被救了）
     const e1 = workers[5], f1 = workers[6];
     for (const w of [e1, f1]) { releaseWorker(w); w.air = 0; w.burn = 0; w.wet = 0;
                                w.emo = ''; w.emoT = 0; w.emoK = 0; w.fall = 0; }
@@ -4068,14 +4077,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('要搬的那塊被打飛，那個人冒問號',
      emoWhen.hasJob && emoWhen.quest === 'quest',
      emoWhen.hasJob ? '打掉他認的那塊 → ' + emoWhen.quest : '這輪沒有人領到工作單');
-  ok('聊完天兩個人各冒一顆愛心', emoWhen.heart === 'heart,heart',
-     '兩個人的圖示：' + emoWhen.heart + '（先聊完的那個要幫另一個也冒，見 stepChat）');
+  /* 聊完天冒哪一個（v1.131，使用者：「小人交談後有生氣或是愛心(目前是都愛心)」）。
+     三件事一起驗：兩種都要出現、比例對得上 CHAT_MAD（四分之一）、
+     而且**同一場對話的兩個人一定同一個**（一邊愛心一邊生氣會像兩件不相干的事）。
+     ±0.08 是 4.5 個標準差（n=600 時 σ=0.018），不會偶爾紅一次。 */
+  const chatMad = (emoWhen.chatTally.anger || 0) / emoWhen.chatN;
+  ok('聊完天兩個人冒同一個表情，多數愛心、四分之一生氣',
+     emoWhen.chatSame === emoWhen.chatN && (emoWhen.chatTally.heart || 0) > 0 &&
+     (emoWhen.chatTally.anger || 0) > 0 && Math.abs(chatMad - 0.25) < 0.08,
+     emoWhen.chatN + ' 場：' + JSON.stringify(emoWhen.chatTally) + '（生氣占 ' +
+     (chatMad * 100).toFixed(1) + '%，設定 25%）；兩個人一樣的 ' + emoWhen.chatSame + ' 場');
   ok('跌倒爬起來會生氣，被水柱打倒的不會',
      emoWhen.anger === 'anger' && emoWhen.wetUp === '',
      '爬起來 → ' + emoWhen.anger + '；濕著爬起來 → ' + (emoWhen.wetUp || '沒有圖示'));
-  ok('被水淋濕會生氣，但身上的火被澆熄是冒愛心',
-     emoWhen.wetMad === 'anger' && emoWhen.doused === 'heart',
-     '無故被淋 → ' + emoWhen.wetMad + '、火被澆熄 → ' + emoWhen.doused);
+  /* v1.131（使用者：「小人碰到水不生氣」）。以前沒火的被淋是冒生氣，但噴泉的水柱與
+     淹水每 0.2／0.5 秒就會把還站在水裡的人重新淋一次，那顆怒氣會一直掛著。 */
+  ok('碰到水不生氣，但身上的火被澆熄還是冒愛心',
+     emoWhen.wetMad === '' && emoWhen.doused === 'heart',
+     '沒火的被淋 → ' + (emoWhen.wetMad || '沒有圖示') + '（v1.130 是生氣）、火被澆熄 → ' +
+     emoWhen.doused);
   ok('倒在地上的那幾秒圖示不顯示，但倒數照走，走完自己收掉',
      emoWhen.upK > 0.9 && emoWhen.downK < 0.1 && emoWhen.downT > 0.8 && emoWhen.gone,
      '站著 emoK ' + emoWhen.upK + ' → 倒下 0.3 秒後 ' + emoWhen.downK +
@@ -13285,8 +13305,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        （擺積木、碎料落地…）就會一起錄進這個離線 context。
        第一版沒停，核彈的高頻占比量到 51.7%，其實是混進了槌子那種高頻音。 */
     running = false;
-    const render = async (fn, band) => {
-      const ctx = new OfflineAudioContext(1, SR * SEC, SR);
+    /* sec：算幾秒。預設 SEC（3 秒）夠長，只有雷聲不夠——它的滾雷排了 5 秒（v1.131），
+       用 3 秒的視窗量會把拖尾整段切掉。不改 SEC 是因為 rms 是「整段的平均」，
+       視窗一長所有音效的絕對值都會跟著縮，上面那些門檻全部要重訂。 */
+    const render = async (fn, band, sec) => {
+      const ctx = new OfflineAudioContext(1, SR * (sec || SEC), SR);
       let dest = ctx.destination;
       const mk = (type, f) => {
         const q = ctx.createBiquadFilter(); q.type = type; q.frequency.value = f; q.Q.value = 0.7; return q;
@@ -13294,6 +13317,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (band === 'hi') { const f = mk('highpass', 2000); f.connect(dest); dest = f; }
       if (band === 'body') {                       // 80–250Hz：小喇叭真正推得出來的那一段
         const lo = mk('highpass', 80), hi = mk('lowpass', 250);
+        hi.connect(dest); lo.connect(hi); dest = lo;
+      }
+      // 250–800Hz：「東西撞到建築」的碎裂感在這一段（v1.131 量雷聲用）
+      if (band === 'mid') {
+        const lo = mk('highpass', 250), hi = mk('lowpass', 800);
         hi.connect(dest); lo.connect(hi); dest = lo;
       }
       const proxy = new Proxy(ctx, {
@@ -13328,17 +13356,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       return { rms: Math.sqrt(s / d.length), peak, over, env };
     };
-    const one = async fn => {
-      const all = await render(fn), hi = await render(fn, 'hi'), body = await render(fn, 'body');
+    const one = async (fn, sec) => {
+      const all = await render(fn, '', sec), hi = await render(fn, 'hi', sec);
+      const body = await render(fn, 'body', sec), mid = await render(fn, 'mid', sec);
       // 某一段時間內的平均音量（秒）
       const win = (a, b) => {
         const q = all.env.slice(Math.round(a / 0.02), Math.round(b / 0.02));
         return q.reduce((x, y) => x + y, 0) / q.length;
       };
+      // 響到第幾秒：掉到起頭 0.3 秒的 5% 以下就算沒聲了
+      const head = win(0, 0.3);
+      let last = 0;
+      all.env.forEach((v, i) => { if (v > head * 0.05) last = (i + 1) * 0.02; });
       return { rms: +all.rms.toFixed(4), peak: +all.peak.toFixed(3), over: all.over,
                hiPct: +(hi.rms / all.rms * 100).toFixed(1), body: +body.rms.toFixed(4),
+               midPct: +(mid.rms / all.rms * 100).toFixed(1),
                hold: +(win(0.55, 0.75) / win(0.02, 0.2)).toFixed(2),
-               tail: +(win(1.2, 1.8) / win(0, 0.3)).toFixed(2) };
+               tail: +(win(1.2, 1.8) / head).toFixed(2),
+               tail3: +(win(2.6, 3.4) / head).toFixed(3),
+               last: +last.toFixed(2) };
     };
     const r = { nuke: await one(() => sndBoom(30)), bomb: await one(() => sndBoom(BOMB_R)),
                 smash: await one(() => sndSmash()),
@@ -13359,14 +13395,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   noise(WIND_DUR, 0.17, 520);
                   tone(82, WIND_DUR * 0.9, 'sawtooth', 0.035, 0.75);
                 }),
-                thunder: await one(() => sndThunder()),
+                /* 雷聲全部用 8 秒的視窗量：v1.131 的滾雷排了 5 秒，3 秒會把拖尾切掉。
+                   三個版本都用同一個視窗，數字才比得下去。 */
+                thunder: await one(() => sndThunder(), 8),
                 /* 舊的雷聲（v1.117～v1.122）：一記切在 2200 的劈 ＋ 切在 190 的滾雷
                    ＋ 一支往下滑的鋸齒。前後那兩層正好是 sndSmash／sndThud 的配方，
                    使用者聽到的「像東西撞到建築」就是它們。 */
                 thunderOld: await one(() => {
                   noise(0.22, 0.3, 2200); noise(1.3, 0.2, 190);
                   tone(58, 1.1, 'sawtooth', 0.075, 0.32);
-                }),
+                }, 8),
+                /* v1.123～v1.130 那一版就地復刻（v1.131 的對照組）：方向對，但每一項
+                   都只做了一半——使用者：「打雷音效好像上次沒調好 應該是低頻比較長一點的
+                   轟轟聲」。rumble() 現在的起伏放慢了一半，所以連那三支正弦一起復刻。 */
+                thunder130: await one(() => {
+                  const c = audio();        // 這時候 audio 指著離線 context（見 render）
+                  noise(0.26, 0.16, 700);
+                  const n = Math.floor(c.sampleRate * 2.4);
+                  const buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+                  for (let i = 0; i < n; i++) {
+                    const t = i / c.sampleRate;
+                    const roll = 0.5 + 0.5 * (Math.sin(t * 14.5) * 0.5 +
+                                              Math.sin(t * 23.2) * 0.3 + Math.sin(t * 38.3) * 0.2);
+                    d[i] = (Math.random() * 2 - 1) * (1 - i / n) * roll;
+                  }
+                  const src = c.createBufferSource(); src.buffer = buf;
+                  const f1 = c.createBiquadFilter(), f2 = c.createBiquadFilter();
+                  f1.type = f2.type = 'lowpass'; f1.frequency.value = f2.frequency.value = 120;
+                  const g = c.createGain(); g.gain.value = 0.26;
+                  src.connect(f1).connect(f2).connect(g).connect(c.destination); src.start();
+                  tone(44, 2.4 * 0.8, 'sawtooth', 0.07, 0, 'thunder130');
+                }, 8),
                 thud: await one(() => sndThud(11)) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
@@ -13513,21 +13572,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '%、2kHz 以上 ' + snd.windOld.hiPct + '% → ' + snd.wind.hiPct +
      '%、總 rms ' + snd.windOld.rms + ' → ' + snd.wind.rms);
 
-  /* 雷聲（v1.123 重做，使用者：「音效應該是低頻轟轟聲(目前像是東西撞到建築那種音效)」）。
-     使用者聽到的沒錯——舊版前後兩層正好是 sndSmash／sndThud 的配方（切在 2200 的
-     高頻碎裂 ＋ 一支往下滑的音高），所以像有東西砸到建築。兩件事分開驗：
-     ① **整支壓到低頻**：拿 sndThud（隕石落地的悶響）當「該有多低」的參考點。
-     ② **滾得夠久**：舊版的滾雷只有 1.3 秒，1.2 秒之後就沒東西了；
-        新版 2.4 秒而且音量自己一波一波起伏（rumble()），那才是「轟轟」。 */
+  /* 雷聲（v1.123 重做，v1.131 再壓一次）。使用者原本的說法是「音效應該是低頻轟轟聲
+     (目前像是東西撞到建築那種音效)」——沒錯，v1.122 前後兩層正好是 sndSmash／sndThud
+     的配方（切在 2200 的高頻碎裂 ＋ 一支往下滑的音高）。v1.123 照這個方向改完，使用者
+     再回一次：「打雷音效好像上次沒調好 應該是低頻比較長一點的轟轟聲」——量下去三件事
+     都還差著，所以這裡改成拿 **v1.130 那一版當對照組**，兩件事分開驗：
+     ① **夠低**：2kHz 以上比 v1.122 少一大截（拿 sndThud 隕石落地的悶響當參考點），
+        而且「撞到建築」真正在的那一段（250～800Hz）要比 v1.130 再低一截。
+     ② **夠久**：v1.130 的滾雷雖然排了 2.4 秒，但 rumble 的包絡是 (1−i/n)，
+        實際第 2 秒就沒聲了；v1.131 排 5 秒、響到第 4 秒，而且 2.6～3.4 秒那一段還有東西。 */
   ok('雷聲整支壓到低頻，不再像東西砸到建築',
      snd.thunder.hiPct < 20 && snd.thunderOld.hiPct > 50 &&
-     snd.thunder.hiPct < snd.thud.hiPct * 1.5,
+     snd.thunder.hiPct < snd.thud.hiPct * 1.5 &&
+     snd.thunder.midPct < snd.thunder130.midPct - 8 && snd.thunder.midPct < snd.thud.midPct,
      '2kHz 以上 ' + snd.thunderOld.hiPct + '% → ' + snd.thunder.hiPct +
-     '%（隕石落地是 ' + snd.thud.hiPct + '%）');
-  ok('後面那串滾雷拖得住',
-     snd.thunder.tail > 0.06 && snd.thunderOld.tail < 0.02,
-     '1.2～1.8 秒的音量 ÷ 起頭 0.3 秒的音量：舊版 ' + snd.thunderOld.tail +
-     '（早就沒聲了）→ 新版 ' + snd.thunder.tail);
+     '%（隕石落地是 ' + snd.thud.hiPct + '%）；250–800Hz（撞到建築的那一段）v1.130 ' +
+     snd.thunder130.midPct + '% → ' + snd.thunder.midPct + '%（隕石落地是 ' +
+     snd.thud.midPct + '%）');
+  ok('滾雷拖得夠久，三秒後還在轟',
+     snd.thunder.tail > 0.15 && snd.thunder.tail3 > 0.05 && snd.thunder.last > 3.5 &&
+     snd.thunderOld.tail < 0.02 && snd.thunder130.tail3 < 0.02,
+     '響到第幾秒：v1.122 ' + snd.thunderOld.last + '、v1.130 ' + snd.thunder130.last +
+     '、現在 ' + snd.thunder.last + '；2.6～3.4 秒 ÷ 起頭 0.3 秒：v1.130 ' +
+     snd.thunder130.tail3 + '（沒聲了）→ 現在 ' + snd.thunder.tail3 +
+     '（1.2～1.8 秒那一段是 ' + snd.thunder130.tail + ' → ' + snd.thunder.tail + '）');
 
   /* 「破表」看的是 over（有幾個取樣打到 ±0.999）與 rms，peak 只放在訊息裡當參考
      ——v1.128.1 修間歇性失敗。原本的門檻是 `peak < 0.25`，但這一發是

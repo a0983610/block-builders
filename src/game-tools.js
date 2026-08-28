@@ -1107,9 +1107,13 @@ function wetBlock(b) {
    （見 updWorker 裡 w.burn <= 0 那段），不然人會一直躺在地上打滾。 */
 function wetWorker(w) {
   if (!w) return false;
-  /* 表情（v1.121）：身上有火的是被救了（愛心），沒火的是被無故淋一身（生氣）。
+  /* 表情（v1.121，v1.131 拿掉生氣）：身上有火的被澆熄是「被救了」，冒愛心。
+     沒火的以前冒生氣（被無故淋一身），使用者：「小人碰到水不生氣」——現在什麼都不冒。
+     那顆怒氣本來就不只是「被水桶潑到那一下」：噴泉的水柱與淹水每 0.2／0.5 秒就會把
+     還站在水裡的人重新淋一次（見 wetSpray／wetByWater 那兩個 `w.wet > WET_TIME - …`
+     的門檻），而圖示只有 1.8 秒——人只要沒走開，那顆怒氣就一直掛在頭上。
      一定要在下面把 burn 歸零**之前**判。 */
-  showEmo(w, w.burn > 0 ? 'heart' : 'anger');
+  if (w.burn > 0) showEmo(w, 'heart');
   w.wet = WET_TIME;
   if (w.burn > 0) {
     w.burn = 0; w.roll = 0; w.tilt = 0; w.rspin = 0; w.rph = 0; w.gait = 0; w.st = 'idle';
