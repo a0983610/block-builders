@@ -8958,7 +8958,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       maxW, maxG, keep: WEAP_KEEP, wmax: ENG.WEAP_MAX, gmax: ENG.GATE_MAX,
       left: (gates ? 1 : 0) + (weapons ? weapons.length : 0),
       rate: GATE_RATE, fire: GATE_FIRE, hold: GATE_HOLD,
-      preOut, preN, back, bowl, zone: +gateZone().toFixed(1),
+      preOut, preN, back, bowl,
+      zone: +gateZone().toFixed(1), strikeR: STRIKE_R,
       land: (() => {
         const d = land.sort((a, b) => a - b), q = f => +d[Math.floor(d.length * f)].toFixed(1);
         return { n: d.length, med: q(0.5), p75: q(0.75), p90: q(0.9), max: +d[d.length - 1].toFixed(1) };
@@ -9000,16 +9001,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gate1.hitB + ' 發打中建築、掉了 ' + gate1.broke + ' 塊（共 ' + gate1.n0 +
      ' 塊）；被擋下來那一把轉成 ' + (gate1.fell ? gate1.fell.st : '—') + '、自轉 ' +
      (gate1.fell ? gate1.fell.spin : '—') + ' rad/s');
-  /* 門檻從 30 降到 6（v1.132.2 落點收攏之後打中建築的變多，v1.133 再降一次）。
-     這一條看的是**插得住**（刃尖沒入地面、重心還在地面上），不是「有多少發沒中」——
-     發數是落點分布的副產品，本來就會抖：同一份程式碼連跑六趟是 12／16／18／21／22／23
-     （其餘一百七十幾發不是打中建築就是擦著地面躺平）。
-     先前寫 12 剛好卡在最小值上，隔天就抽到 12 掛掉。 */
+  /* 插在地上的姿勢：刃尖沒入地面、重心還在地面上。
+     **樣本要自己生**（v1.133.1）：打建築那一發「插在地上」的發數是落點分布的副產品，
+     一路在縮——v1.132.1 三十幾發、v1.132.2 落點收攏之後 12～23、v1.133.1 對齊打雷的
+     範圍之後只剩 0～9 發（190 幾發裡 186 發直接打中建築）。門檻跟著降了兩次還是在賭骰子
+     （降到 6 之後照樣抽到 0 與 3）。所以改成**在場外空地開一發**：那裡一塊積木都沒有，
+     每一把都會落到地上，陡的插著、擦地的躺平，兩種樣本都必然拿得到。 */
+  const gateStick = await page.evaluate(() => {
+    cleanTools();
+    let stick = 0, lie = 0, first = null;
+    const oS = stickWeapon, oL = lieWeapon;
+    stickWeapon = w => {
+      oS(w);                                   // 先讓它算好落定的位置，再讀姿勢
+      stick++;
+      if (!first) first = { tip: +(w.y + w.dy * w.len * 0.5).toFixed(2), y: +w.y.toFixed(2),
+                            lie: +w.lie.toFixed(2), st: w.st };
+    };
+    lieWeapon = w => { lie++; oL(w); };
+    castGate({ x: 60, z: 0 });                 // 場外空地
+    let g = 0;
+    while ((gates || weapons) && g++ < 900) step(0.05);
+    stickWeapon = oS; lieWeapon = oL;
+    cleanTools();
+    return { stick, lie, first };
+  });
   ok('打中地面的插在地上：刃尖沒入地面、柄還露在外面',
-     gate1.hitG >= 6 && gate1.stuck && gate1.stuck.tip <= 0 && gate1.stuck.y > 0,
-     gate1.hitG + ' 發插在地上；第一把的刃尖在 y=' +
-     (gate1.stuck ? gate1.stuck.tip : '—') + '（地面是 0），重心還在 y=' +
-     (gate1.stuck ? gate1.stuck.y : '—'));
+     gateStick.stick > 20 && gateStick.first &&
+     gateStick.first.tip <= 0 && gateStick.first.y > 0 && gateStick.first.st === 'lie',
+     '空地上開一發：' + gateStick.stick + ' 發插在地上、' + gateStick.lie +
+     ' 發擦著地面躺平；第一把的刃尖在 y=' + gateStick.first.tip + '（地面是 0）、重心在 y=' +
+     gateStick.first.y + '（打建築那一發只有 ' + gate1.hitG + ' 發落到空地上）');
   /* 使用者指定「類似打雷 但是沒有燃燒效果」。打雷那一段量過同一件事的反面
      （一朵雲劈完還有二十幾塊在燒），所以這條驗的是「一塊都沒有」。 */
   ok('沒有燃燒效果：整趟打完一塊都沒燒起來',
@@ -9060,12 +9081,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gate1.preOut === 0 && gate1.preN > 30,
      '開場 0.3 秒有 ' + gate1.preN + ' 個門還沒輪到出場，其中刃尖越過切面（＝看得見）的有 ' +
      gate1.preOut + ' 個');
-  ok('齊射集中在點擊處附近，射歪的也不會歪到場外',
-     gate1.land.p90 <= gate1.zone && gate1.land.med <= gate1.zone * 0.7 &&
-     gate1.land.max <= 140,
+  /* 集中度對齊**打雷**（v1.133.1 使用者：「還是太分散了 目標範圍大約是打雷
+     然後有些歪出去沒關係」）。打雷的落點是硬邊界（半徑 STRIKE_R 的圓裡抽一點）：
+     實測中位 9～10.8、九成位 11.7～13。兵器做不到那麼齊——它是「瞄一點、沒打到就沿直線
+     滑到落地」，尾巴收不成硬邊界（試過「飛過落點就化成金光」，使用者要照舊讓它插在地上）。
+     所以驗的是**中位與九成位跟打雷同一個量級**，最遠只擋「有沒有滑出場外」。 */
+  ok('齊射集中在點擊處附近，範圍跟打雷同一個量級',
+     gate1.land.med <= gate1.zone && gate1.land.p90 <= gate1.zone * 1.25 &&
+     gate1.land.max <= gate1.zone * 2.2,
      gate1.land.n + ' 個落點離場心：中位 ' + gate1.land.med + '、四分之三位 ' +
      gate1.land.p75 + '、九成位 ' + gate1.land.p90 + '、最遠 ' + gate1.land.max +
-     '（打擊範圍 ' + gate1.zone + '；v1.132.1 的瞄準規則量到的是 13.4／30／61／218）');
+     '（打擊範圍 ' + gate1.zone + '、打雷是 ' + gate1.strikeR +
+     '；v1.132.1 的瞄準規則量到的是 13.4／30／61／218）');
   ok('門陣是凹的（像凹面鏡），而且沒有一把變成背對鏡頭飛',
      gate1.bowl.rim < gate1.bowl.mid - 4 && gate1.bowl.near > 12 && gate1.back === 0,
      '中間那圈 ' + gate1.bowl.nMid + ' 個門深 ' + gate1.bowl.mid + '、最外圈 ' +
