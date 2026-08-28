@@ -7014,10 +7014,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                straight: +Math.min(...straight).toFixed(3),
                spread: +(rad[rad.length - 1] - rad[0]).toFixed(1) };
     })();
-    // 魔法陣：六秒預告，圈內的人夠時間全部跑出去
+    /* 魔法陣：六秒預告，圈內的人夠時間全部跑出去。
+       **人要自己擺**（v1.133 修間歇性失敗）：本來是「那一輪剛好站在圈內的人」，
+       而跑不跑得出半徑 30 同時看兩個骰子——他站得多裡面、加上自己抽的 16～34 跑多遠。
+       門檻寫七成，實測就在邊上跳（16 人裡出去 11～13 人 ＝ 69%～81%），69% 那次就掛了。
+       改成全部擺在半徑 22：最短的一段 16 也跑得到 38，跑得出去變成**必然**，
+       而萬一六秒不夠跑完（這條真正要驗的事）就會馬上現形。
+       這是這一段本來就在用的招——爆炸那組的「遠近各擺十個人」同一個道理。 */
     shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
     for (let i = 0; i < 400; i++) step(0.05);
+    workers.forEach((w, i) => {
+      releaseWorker(w);
+      const a = i / workers.length * Math.PI * 2;
+      w.x = Math.cos(a) * 22; w.z = Math.sin(a) * 22; w.y = 0;
+    });
     const inRing = workers.filter(w => Math.hypot(w.x, w.z) < MAG_R);
     const ring0 = inRing.map(w => ({ x: w.x, z: w.z }));
     castMagic({ x: 0, z: 0 });
@@ -7100,15 +7111,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 人；圈外那些人又往外跑了 ' + allFlee.gained + ' 單位，最後卡在逃命狀態的 ' +
      allFlee.stuck + ' 人');
 
-  /* 「跑得出去」本來就不是保證：每個人是自己抽 16～34 單位跑完就停（下一條測這件事），
-     所以站在陣心附近又抽到短距離的人跑不出半徑 30 是設計如此，不是 bug。
-     這條要守的是「全部有起跑、而且大多數真的離開了圈子」——原本寫成「最多兩人沒出去」
-     其實是靠運氣過的（實測 16 人裡出去 13 人，81%）。 */
+  /* 人擺在半徑 22（見上面那段註解），所以「六秒夠不夠跑」是唯一的變數：
+     最短的一段 16 也跑得到 38，跑完的人一定在圈外，被時間切掉的一定還在圈內。 */
   ok('魔法陣六秒預告，圈內的人來得及跑',
-     flee.mag.n > 5 && flee.mag.fleeing >= flee.mag.n &&
-     flee.mag.out >= Math.ceil(flee.mag.n * 0.7),
+     flee.mag.n > 5 && flee.mag.fleeing >= flee.mag.n && flee.mag.out === flee.mag.n,
      '圈內 ' + flee.mag.n + ' 人全部起跑，跑出半徑 30 的有 ' + flee.mag.out +
-     ' 人（' + Math.round(flee.mag.out / flee.mag.n * 100) + '%，最遠 ' + flee.mag.far + '）');
+     ' 人（最遠 ' + flee.mag.far + '）');
   /* 小人不會知道這一發的威力範圍到哪裡，所以每個人是「自己抽一段距離跑完就停」，
      不是「跑到安全半徑」。驗的是那段距離真的因人而異、而且落在設定的區間裡。 */
   ok('每個人跑的距離不一樣，跟爆炸半徑無關',
@@ -7994,6 +8002,46 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      stormShake.far === 0 && stormShake.hit >= 15,
      '劈金字塔 20 道震了 ' + stormShake.hit + ' 次、劈場外空地 20 道震了 ' +
      stormShake.far + ' 次');
+
+  /* 劈到人（v1.133，使用者：「檢查一下 打雷 天降鐵球 王之財寶 是不是都沒對小人生效」
+     ——查下去確實是，指定「打倒 ＋ 燒起來」）。所有道具掀倒小人本來都靠共用的 afterHit，
+     而它**只在真的打掉積木時**才動人（`if (n <= 0) return`）：雷劈在空地上一塊積木都
+     沒掉，整段等於沒跑。這裡把人釘在落點正下方，量的是「這一發會不會動到人」。
+     小人要**凍住**（updWorker 換成空的）：不凍的話他們在雲聚滿之前就走掉了
+     （實測 16 秒走了 80 幾單位），量到的會是「沒打到」而不是「打不到」。 */
+  const stormMan = await page.evaluate(() => {
+    cleanTools();
+    setWorkerCount(12); targetCnt = 1800;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    startBuild(true); completeNow(); shapePick = -1;
+    for (let i = 0; i < 30; i++) step(1 / 60);
+    const P = { x: 60, z: 0 };                       // 場外空地：確定一塊積木都沒有
+    for (let i = 0; i < workers.length; i++) {
+      const w = workers[i], a = i / workers.length * Math.PI * 2;
+      w.x = P.x + Math.cos(a) * (i % 3) * 1.2; w.z = P.z + Math.sin(a) * (i % 3) * 1.2;
+      w.y = 0; w.st = 'idle'; w.fall = 0; w.air = 0; w.burn = 0; w.wet = 0; w.tilt = 0;
+    }
+    const oUpd = updWorker;
+    updWorker = () => {};
+    tool = 'storm';
+    useTool({ point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) });
+    const hit = workers.map(() => ({ burn: 0, fall: 0 }));
+    let T = 0;
+    while (T < 16) {
+      step(1 / 60); T += 1 / 60;
+      workers.forEach((w, i) => { if (w.burn > 0) hit[i].burn = 1; if (w.fall > 0) hit[i].fall = 1; });
+    }
+    updWorker = oUpd;
+    // 濕的人點不著，那一種只會被打倒——這一條沒有消防車，所以應該全部都是燒著的
+    const r = { n: workers.length, burn: hit.filter(h => h.burn).length,
+                any: hit.filter(h => h.burn || h.fall).length, R: BOLT_MAN_R };
+    cleanTools();
+    return r;
+  });
+  ok('雷劈到小人：打倒並且在地上燒起來',
+     stormMan.burn >= stormMan.n * 0.7 && stormMan.any === stormMan.n,
+     stormMan.n + ' 個人站在落點正下方（打到人的範圍 ' + stormMan.R + '）：' +
+     stormMan.any + ' 個有反應、其中 ' + stormMan.burn + ' 個燒起來（v1.132 是 0 個）');
 
   /* 劈完把視線高度還回去（v1.128，使用者：「如果是會讓鏡頭往高的方向調整的運鏡
      結束後高度要調回來」——這句一開始寫在天降鐵球底下，查證之後確認那支從頭到尾
@@ -8952,10 +9000,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gate1.hitB + ' 發打中建築、掉了 ' + gate1.broke + ' 塊（共 ' + gate1.n0 +
      ' 塊）；被擋下來那一把轉成 ' + (gate1.fell ? gate1.fell.st : '—') + '、自轉 ' +
      (gate1.fell ? gate1.fell.spin : '—') + ' rad/s');
-  /* 門檻從 30 降到 12（v1.132.2）：落點收攏之後打中建築的變多、落在空地上的就少了
-     （170 發打中建築、20 幾發插在地上）。這一條看的是「插得住」，不是「有多少發沒中」。 */
+  /* 門檻從 30 降到 6（v1.132.2 落點收攏之後打中建築的變多，v1.133 再降一次）。
+     這一條看的是**插得住**（刃尖沒入地面、重心還在地面上），不是「有多少發沒中」——
+     發數是落點分布的副產品，本來就會抖：同一份程式碼連跑六趟是 12／16／18／21／22／23
+     （其餘一百七十幾發不是打中建築就是擦著地面躺平）。
+     先前寫 12 剛好卡在最小值上，隔天就抽到 12 掛掉。 */
   ok('打中地面的插在地上：刃尖沒入地面、柄還露在外面',
-     gate1.hitG > 12 && gate1.stuck && gate1.stuck.tip <= 0 && gate1.stuck.y > 0,
+     gate1.hitG >= 6 && gate1.stuck && gate1.stuck.tip <= 0 && gate1.stuck.y > 0,
      gate1.hitG + ' 發插在地上；第一把的刃尖在 y=' +
      (gate1.stuck ? gate1.stuck.tip : '—') + '（地面是 0），重心還在 y=' +
      (gate1.stuck ? gate1.stuck.y : '—'));
@@ -9020,6 +9071,61 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '中間那圈 ' + gate1.bowl.nMid + ' 個門深 ' + gate1.bowl.mid + '、最外圈 ' +
      gate1.bowl.nRim + ' 個深 ' + gate1.bowl.rim + '（越小＝越靠近鏡頭），近面 ' +
      gate1.bowl.near + '；背對鏡頭飛的 ' + gate1.back + ' 把');
+  /* 射到小人（v1.133）與擊中的特效（v1.133，使用者：「王之財寶擊中時增加個打擊特效」）。
+     一發打在**場外空地**上：那裡一塊積木都沒有，所以「有反應」只可能來自兵器本身
+     （打在建築上的話分不清是兵器還是碎料砸到人）。小人一樣要凍住（見打雷那一段）。 */
+  const gateMan = await page.evaluate(() => {
+    cleanTools();
+    setWorkerCount(12); targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    startBuild(true); completeNow(); shapePick = -1;
+    for (let i = 0; i < 30; i++) step(1 / 60);
+    const P = { x: 60, z: 0 };
+    for (let i = 0; i < workers.length; i++) {
+      const w = workers[i], a = i / workers.length * Math.PI * 2;
+      w.x = P.x + Math.cos(a) * (i % 3) * 1.2; w.z = P.z + Math.sin(a) * (i % 3) * 1.2;
+      w.y = 0; w.st = 'idle'; w.fall = 0; w.air = 0; w.burn = 0; w.tilt = 0;
+    }
+    const oUpd = updWorker, oMan = manWeapon, oHit = hitWeapon;
+    updWorker = () => {};
+    /* 打擊特效：撞的那一瞬間 stars／hot 各多了幾顆。量「差值」不是「總量」——
+       拖尾也在往 hot 裡丟東西，總量看不出是誰加的。 */
+    let fx = null, man = 0, fell = 0, smashed = 0;
+    hitWeapon = w => { smashed++; oHit(w); };
+    manWeapon = (w, p) => {
+      man++;
+      const s0 = stars.length, h0 = hot.length, n0 = placedCnt;
+      oMan(w, p);
+      if (w.st === 'fall') fell++;
+      if (!fx) fx = { star: stars.length - s0, hot: hot.length - h0, blocks: n0 - placedCnt };
+    };
+    tool = 'gate';
+    useTool({ point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) });
+    const hit = workers.map(() => 0);
+    let T = 0;
+    while (T < 22) {
+      step(1 / 60); T += 1 / 60;
+      workers.forEach((w, i) => { if (w.air || w.fall > 0) hit[i] = 1; });
+    }
+    updWorker = oUpd; manWeapon = oMan; hitWeapon = oHit;
+    const r = { n: workers.length, man, fell, smashed, fx,
+                any: hit.filter(x => x).length, R: GATE_MAN_R };
+    cleanTools();
+    return r;
+  });
+  ok('兵器射到小人：人被撞飛，兵器自己被擋下來掉到地上',
+     gateMan.any >= gateMan.n * 0.7 && gateMan.man >= 8 && gateMan.fell === gateMan.man,
+     gateMan.n + ' 個人站在打擊範圍裡（判定半徑 ' + gateMan.R + '）：' + gateMan.any +
+     ' 個被撞飛（v1.132 是 0 個）；射中人的 ' + gateMan.man + ' 發全部轉成掉落物 ' +
+     gateMan.fell + ' 發');
+  ok('射到人不會順便把旁邊的積木炸開（打人不拆房子）',
+     gateMan.fx && gateMan.fx.blocks === 0,
+     '第一發射中人的當下，掉了 ' + (gateMan.fx ? gateMan.fx.blocks : -1) + ' 塊積木');
+  ok('擊中會迸出打擊特效：一顆金色星芒 ＋ 一叢往回濺的火花',
+     gateMan.fx && gateMan.fx.star === 1 && gateMan.fx.hot >= 6,
+     '撞的那一瞬間多了 ' + (gateMan.fx ? gateMan.fx.star : -1) + ' 顆星芒、' +
+     (gateMan.fx ? gateMan.fx.hot : -1) + ' 顆火花');
+
   ok('兵器不比小人手上那根法杖粗太多',
      gate1.fat > 0 && gate1.fat <= gate1.staff * 2.7,
      '最粗的一塊 ' + gate1.fat + '，小人的法杖 ' + gate1.staff + '（' +

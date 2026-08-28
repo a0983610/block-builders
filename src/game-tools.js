@@ -3339,6 +3339,14 @@ const BOLT_R = 1.84;
 const BOLT_POW = 13;             // 力道（投石機的石頭 12、槌子 15）
 const BOLT_FIRE_R = 5;           // 點火的範圍（比破壞範圍大得多：燒才是它的主要傷害）
 const BOLT_FIRE_N = 5;           // 一道雷最多點著幾塊，其餘交給火自己蔓延
+/* 劈到人的範圍（v1.133，使用者：「打雷⋯⋯沒對小人生效」，指定「打倒 ＋ 燒起來」）。
+   為什麼本來沒有：所有道具掀倒小人都靠共用的 afterHit，而它**只在真的打掉積木時**
+   才動人（第一行就是 `if (n <= 0) return`）——雷劈在空地上一塊積木都沒掉，
+   等於整段沒跑；就算劈在建築上，半徑也只有 BOLT_R × 1.7 ＝ 3.1。
+   實測：12 個人站在落點正下方，一整朵雲劈完 0 個有反應。
+   取 BOLT_FIRE_R（點火範圍 5）而不是 BOLT_R（破壞範圍 1.84）：這一下的主要傷害
+   本來就是燒，而不是砸——焦黑範圍內的人一起著火才對得上畫面。 */
+const BOLT_MAN_R = BOLT_FIRE_R;
 const BOLT_MARK = 4;             // 地上那塊焦黑多大（劈在屋頂上就不留，見 spawnMark）
 function callStorm(p) {
   if (!storms) storms = [];
@@ -3449,6 +3457,16 @@ function strike(s) {
   /* 附帶燃燒（使用者指定）：劈中那一帶還站著的積木點幾塊起來，火再自己往鄰居蔓延。
      跟隕石共用同一支 igniteAround，差別只在半徑小得多——它是「劈出一個焦黑的小洞」。 */
   igniteAround(p, BOLT_FIRE_R, BOLT_FIRE_N, SET);
+  /* 劈到的人：**打倒並且在地上燒**（使用者指定）。igniteWorker(w, 1) 就是「摔在地上燒」
+     那一種姿勢（roll=1，就地打滾）；剛被消防車噴濕的點不著，那就只打倒——
+     同小人被炸飛落地那一段的寫法（`if (!lit || !igniteWorker(w, true))`）。
+     只認水平距離：人站在地上，用三維距離的話劈在屋頂就打不到腳下的人（同 explode）。 */
+  for (const w of workers) {
+    if (w.air || w.burn > 0 || w.fall > 0) continue;
+    if (Math.hypot(w.x - p.x, w.z - p.z) > BOLT_MAN_R) continue;
+    if (!igniteWorker(w, 1)) { releaseWorker(w); w.tilt = 0; w.fall = rr(1.1, 2.3); }
+    sndFall();
+  }
   spawnMark(p, BOLT_MARK, false);           // 焦黑不是坑洞：雷是燒不是砸（劈在屋頂就不留）
   /* 只有劈到建築才震（v1.123，使用者：「閃電打到地面不震動」）。
      `top` 是那一點上方最高的那塊積木，沒有就是劈在空地上——
@@ -3972,6 +3990,8 @@ function stepWeapons(dt) {
          （w.s ＝ 全長，sweepRock 會往前多探半個 s，探到的正好是刃尖）。
          只在終點判定的話，斜插進來的兵器會從屋頂穿過去才算打到。 */
       if (sweepRock(w, px, py, pz)) { hitWeapon(w); continue; }
+      const man = weaponVsWorker(w, px, py, pz);
+      if (man) { manWeapon(w, man); continue; }
       /* 刃尖碰到地面：插在地上（使用者指定）。但**擦著地面進來的不插、改成躺平**——
          幾乎水平飛進來的那些插進去之後整把會埋在地面下（實測重心到 y=−0.03），
          看起來像陷進草皮。斜度不夠就當它是滑一下躺下來。 */
@@ -4016,9 +4036,14 @@ function hitWeapon(w) {
   const t = w.len * 0.5;
   const p = { x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t };
   smash(p, { x: w.dx, y: w.dy, z: w.dz }, GATE_HIT_R, GATE_HIT_POW, true, true);
+  weaponSpark(p, w);
   sndClang();
+  fallWeapon(w);
+}
+/* 被擋下來之後就是一塊會翻滾的鐵：往前的勁道剩一點點，剩下交給重力。
+   打到積木、射到小人都走這一段（v1.133 拆出來共用）。 */
+function fallWeapon(w) {
   w.st = 'fall';
-  // 被擋下來之後就是一塊會翻滾的鐵：往前的勁道剩一點點，剩下交給重力
   w.vx = w.dx * rr(1, 5) + rr(-2.5, 2.5);
   w.vy = rr(1, 5);
   w.vz = w.dz * rr(1, 5) + rr(-2.5, 2.5);
@@ -4026,6 +4051,42 @@ function hitWeapon(w) {
   const c = Math.sqrt(Math.max(0, 1 - b * b));
   w.ax = Math.cos(a) * c; w.ay = b; w.az = Math.sin(a) * c;
   w.spin = rr(6, 13) * (Math.random() < 0.5 ? -1 : 1);
+}
+/* 射到小人（v1.133，使用者：「王之財寶⋯⋯沒對小人生效」，指定「撞飛」）。
+   為什麼本來沒有：兵器只跟積木做掃掠判定（sweepRock），對人沒有任何判定——
+   實測 12 個人站在打擊範圍正中間，一整趟 190 幾發過去 0 個有反應。
+
+   判定用**刃尖走過的那一小段**（上一幀的刃尖 → 這一幀的刃尖）取三個點，不是只看
+   這一幀的位置：一幀飛 62 ÷ 60 ＝ 1.03 單位，而人的身體半寬才 0.35，只測端點會穿過去。
+   高度用「腳底到頭頂」那一段：兵器多半是斜著往下飛，從頭上飛過去的不該算中。 */
+const GATE_MAN_R = 0.75;         // 刃尖離人中心多近算射中（身體半寬 0.35 ＋ 一點寬容）
+function weaponVsWorker(w, px, py, pz) {
+  if (!workers.length) return null;
+  const t = w.len * 0.5;
+  const ax = px + w.dx * t, ay = py + w.dy * t, az = pz + w.dz * t;   // 上一幀的刃尖
+  const bx = w.x + w.dx * t, by = w.y + w.dy * t, bz = w.z + w.dz * t;
+  for (const p of workers) {
+    if (p.air || p.burn > 0 || p.fall > 0) continue;
+    const h = 1.5 * (p.scale || 1);              // 頭頂（同 burnFx 那邊的算法）
+    for (let k = 0; k <= 2; k++) {
+      const u = k / 2;
+      const y = ay + (by - ay) * u;
+      if (y < 0 || y > h) continue;
+      const dx = ax + (bx - ax) * u - p.x, dz = az + (bz - az) * u - p.z;
+      if (dx * dx + dz * dz <= GATE_MAN_R * GATE_MAN_R) return p;
+    }
+  }
+  return null;
+}
+/* 撞飛的力道：方向沿飛行方向（使用者指定），水平速度由 tossWorker 自己夾在
+   W_TOSS_MAX（22）。兵器本身跟打到積木一樣被擋下來、掉到地上——
+   **不叫 smash**：那會連旁邊的積木一起炸開，打到人不該拆房子。 */
+function manWeapon(w, p) {
+  const t = w.len * 0.5;
+  weaponSpark({ x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t }, w);
+  tossWorker(p, w.dx * 16 + rr(-2, 2), rr(5, 8), w.dz * 16 + rr(-2, 2), false);
+  sndFall();
+  fallWeapon(w);
 }
 /* 插在地上（使用者指定）：刃尖沒入地面一點點，柄還斜著露在外面。
    沿著飛行方向把整把推到「刃尖剛好沒入 into」那個位置，而不是用這一幀停下來的
@@ -4094,6 +4155,54 @@ function goldTrail(w, px, py, pz, dt) {
       s: rr(0.09, 0.20), life: rr(0.08, 0.17), g: -0.9, grow: 0.95,
       cool: rr(0.2, 0.5), cr: 1, cg: rr(0.80, 0.92), cb: rr(0.24, 0.48),
       to: [1, 0.55, 0.06], dx: seg.dx, dy: seg.dy, dz: seg.dz, ln: seg.ln
+    });
+  }
+}
+/* 擊中的那一下（v1.132.3，使用者：「王之財寶擊中時增加個打擊特效」）。
+   兩層疊起來：**一顆瞬間的金色星芒**（stars，撞擊點一閃，佔面積、遠看也讀得到）
+   ＋ **往回濺的金色火花**（hot，拉成短條，才像金屬撞上石頭迸出來的）。
+   火花一律**往回**濺（沿 −方向開一個錐面）：順著飛行方向噴的話看起來像穿過去了，
+   不像被擋下來。星芒的顏色寫死金黃，不走 spawnStars——那一支是粉紫金黃各半的
+   （魔法陣用的），粉的混進來會跟這一發的金色打架。
+
+   粒子額度：火花的門檻放在 HOT_MAX − 8，比拖尾的 −40 寬。兩者搶同一池的時候
+   **撞擊優先**：拖尾少幾顆看不出來，撞擊少一下就整個沒特效了。
+
+   整團要**沿著來的方向往回挪 SPARK_BACK**：hitWeapon 給的是刃尖，而刃尖那一刻常常
+   已經戳進積木裡了——生在那裡的話星芒與火花整團被積木擋住，畫面上什麼都看不到
+   （第一版就是這樣，對著撞擊點拍特寫只拍到一面牆）。挪到牆面外側才看得見。 */
+const SPARK_BACK = 0.7;
+function weaponSpark(pt, w) {
+  const p = { x: pt.x - w.dx * SPARK_BACK, y: pt.y - w.dy * SPARK_BACK,
+              z: pt.z - w.dz * SPARK_BACK };
+  if (stars.length < STAR_MAX) stars.push({
+    x: p.x, y: p.y, z: p.z, s0: rr(2.8, 3.8), s: 0,
+    rot: Math.random() * Math.PI * 2, spin: rr(-2.5, 2.5), vy: rr(0.3, 1.1),
+    t: 0, life: rr(0.18, 0.30), op: 0,
+    cr: 1, cg: rr(0.85, 0.97), cb: rr(0.42, 0.62)
+  });
+  /* 以「來的反方向」為軸開一個錐：先造一組垂直於它的基底（u、v），
+     再照 cos／sin 把方向轉出去——同 aimGate 那個錐面的算法。 */
+  const bx = -w.dx, by = -w.dy, bz = -w.dz;
+  let ux = -bz, uz = bx;                       // 垂直於軸的水平向量
+  const ul = Math.hypot(ux, uz) || 1;
+  ux /= ul; uz /= ul;
+  const vx = by * uz, vy = bz * ux - bx * uz, vz = -by * ux;      // 軸 × u
+  for (let i = 0; i < 11; i++) {
+    if (hot.length > HOT_MAX - 8) break;
+    const a = Math.random() * Math.PI * 2, th = rr(0.35, 1.15);
+    const cs = Math.cos(th), sn = Math.sin(th);
+    const dx = bx * cs + (ux * Math.cos(a) + vx * Math.sin(a)) * sn;
+    const dy = by * cs + (vy * Math.sin(a)) * sn;
+    const dz = bz * cs + (uz * Math.cos(a) + vz * Math.sin(a)) * sn;
+    const sp = rr(6, 15);
+    hot.push({
+      x: p.x, y: p.y, z: p.z,
+      vx: dx * sp, vy: dy * sp + rr(0.5, 2.5), vz: dz * sp,
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.13, 0.24), life: rr(0.13, 0.28), g: 6, grow: 0.9,
+      cool: rr(0.15, 0.45), cr: 1, cg: rr(0.86, 0.98), cb: rr(0.35, 0.62),
+      to: [1, 0.6, 0.1], dx: dx, dy: dy, dz: dz, ln: rr(0.7, 1.6)
     });
   }
 }
