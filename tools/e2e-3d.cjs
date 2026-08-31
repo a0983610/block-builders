@@ -5,7 +5,7 @@
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
-   --until：改一行就要等整輪（828 條約八分鐘）太慢，這個讓它跑到指定段落就停。
+   --until：改一行就要等整輪（911 條）太慢，這個讓它跑到指定段落就停。
    只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
    測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
@@ -127,6 +127,11 @@ const installClean = page => page.evaluate(() => {
   // 只抓第一次：installClean 每次 reset() 都會跑，第二次抓到的會是上一輪裝的空函式
   if (!window.evStep) window.evStep = stepIdleEvent;
   stepIdleEvent = () => {};
+  /* 偷懶（v1.134）也預設關掉。每座開工會抽一成的人不上工（見 rollLazy），那幾個人不搬料、
+     還會在旁邊蓋自己的家——量施工人數、完工時間、積木池、閒晃範圍的測試全都會被它洗掉。
+     要測這件事本身的那一段自己把它裝回去（見「偷懶」）。 */
+  if (!window.lazyRoll) window.lazyRoll = rollLazy;
+  rollLazy = () => { for (const w of workers) w.lazy = 0; };
   /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
      清成一般碎料就好，下一次 startBuild 的 reconcilePool 會把多的收掉。 */
   window.clearHomes = () => {
@@ -4763,10 +4768,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return r;
     };
     idleEv = IDLE_EVENTS[0]; startHomes();
-    for (let i = 0; i < 8000; i++) step(0.05);      // 400 秒，夠一輪村子蓋完
+    /* 跑到村子**不再有進展**為止，不是跑滿一個固定的秒數（v1.134）。這一條要驗的是
+       「池子夠大，挖得出積木」，不是「四百秒蓋得完」——一輪抽到的房子款式與間數每次都
+       不一樣（實測 16 間 2364 格～17 間 2600 格），拿固定秒數當終點的話，抽到大村子的
+       那幾輪會在還差幾十格的地方被截斷，紅的是「還沒蓋完」而不是「池子不夠」。
+       收工條件：蓋完了，或者連 30 秒一格都沒補上（那才是真的卡住，該紅）。 */
+    const leftNow = () => homes.list.reduce((a, h) => a + h.left, 0);
+    let secs = 0, prev = Infinity, stall = 0;
+    while (secs < 900) {
+      for (let i = 0; i < 200; i++) step(0.05);     // 10 秒看一次進度
+      secs += 10;
+      const n = leftNow();
+      if (!n) break;
+      if (n >= prev) { if (++stall >= 3) break; } else stall = 0;
+      prev = n;
+    }
     digBlock = orig;
     const hs = homes.list;
-    return { big, bigN, maxb: ENG.MAXB, pool: blocks.length, full,
+    return { big, bigN, maxb: ENG.MAXB, pool: blocks.length, full, secs,
              placed: placedCnt, total: bp.slots.length,
              homes: hs.length, slots: hs.reduce((a, h) => a + h.slots.length, 0),
              left: hs.reduce((a, h) => a + h.left, 0) };
@@ -4776,7 +4795,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      poolFit.placed === poolFit.total && poolFit.maxb - poolFit.big >= 5405,
      poolFit.bigN + ' ' + poolFit.big + ' 塊 ＋ 60 人的村子 ' + poolFit.homes + ' 間 ' +
      poolFit.slots + ' 格 → 池子 ' + poolFit.pool + '／' + poolFit.maxb +
-     '，挖不出來 ' + poolFit.full + ' 次、還缺 ' + poolFit.left + ' 格');
+     '，挖不出來 ' + poolFit.full + ' 次、蓋了 ' + poolFit.secs + ' 秒還缺 ' +
+     poolFit.left + ' 格');
 
   /* 房子也要「底部拆掉上面一起垮」（v1.102，使用者指定「同地標建築邏輯」）。
      規則跟 collapseUnsupported 一樣：26 鄰接、從地面那一層往上找連通，連不到的鬆脫。
@@ -6385,6 +6405,162 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      lag.phase !== 'wreck' && lag.gained === 1,
      '隔 ' + lag.gap + ' 秒（設定 ' + lag.wait + '）後 phase=' + lag.phase +
      '，拆掉座數 +' + lag.gained);
+
+  /* ══════════ 偷懶 ══════════ */
+  head('偷懶');
+  /* v1.134，使用者：「建築模式下 10% 小人不去蓋地標建築 繼續他的閒晃模式（閒晃模式的事件）」
+     「被工具攻擊倒地才會進入建築模式」。這一段要測的就是它，把 installClean 關掉的兩支裝回去。 */
+  await page.evaluate(() => { rollLazy = window.lazyRoll; stepIdleEvent = window.evStep; clearHomes(); });
+
+  /* 抽法是洗牌取前 n 個（不是每個人各擲一次點數），所以人數固定時抽到的**個數**也固定，
+     抽到的**是誰**每座都不一樣。三種人數各驗一次：20→2、5→1、2→0（一成不到一個人）。 */
+  const lazyRoll = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 400;
+    const draw = (wk, n) => {
+      setWorkerCount(wk);
+      const seen = new Set(), tally = {};
+      for (let i = 0; i < n; i++) {
+        startBuild(true);
+        const list = workers.map((w, k) => w.lazy ? k : -1).filter(k => k >= 0);
+        tally[list.length] = (tally[list.length] || 0) + 1;
+        for (const k of list) seen.add(k);
+      }
+      return { tally: Object.keys(tally).map(k => k + '×' + tally[k]).join('、'), who: seen.size };
+    };
+    return { w20: draw(20, 40), w5: draw(5, 10), w2: draw(2, 10) };
+  });
+  ok('每座開工重抽一成的人偷懶，人數固定、抽到的不是固定那幾個',
+     lazyRoll.w20.tally === '2×40' && lazyRoll.w5.tally === '1×10' &&
+     lazyRoll.w2.tally === '0×10' && lazyRoll.w20.who >= 15,
+     '20 人開工 40 次 → 每次偷懶 [' + lazyRoll.w20.tally + ']、輪到過 ' + lazyRoll.w20.who +
+     ' 個不同的人；5 人 [' + lazyRoll.w5.tally + ']；2 人 [' + lazyRoll.w2.tally + ']');
+
+  /* 施工中那一整段：偷懶的人在做什麼、其他人有沒有被拖累、地標蓋不蓋得完。
+     跑一輪留著給下面三條用（一輪要一分多鐘）。 */
+  const lazyRun = await page.evaluate(() => {
+    cleanTools(); clearHomes();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true);
+    /* 魔法師一定要在偷懶名單裡（人數維持 2，把名額跟別人換）：他蓋家的路數跟別人不同——
+       不拿鏟子，隔空從地面拉一塊新的出來（castHome）。那條路一開始漏掉「這是村子自己挖的」
+       記號，實測他蓋的 70 塊裡有 41 塊被當成從地標的料池撿走的。靠自然抽到他才驗得到的話，
+       這一條就是在賭骰子。 */
+    const mi = workers.findIndex(w => w.mage), k0 = workers.findIndex(w => w.lazy);
+    if (mi >= 0 && k0 >= 0 && !workers[mi].lazy) { workers[k0].lazy = 0; workers[mi].lazy = 1; }
+    const idx = workers.map((w, i) => w.lazy ? i : -1).filter(i => i >= 0);
+    const o = { n: idx.length, carried: 0, home: 0, wander: 0, ev: 0, frames: 0, busy: 0, others: 0,
+                mage: mi >= 0 && workers[mi].lazy ? 1 : 0 };
+    let t = 0;
+    while (phase === 'build' && t < 900) {
+      step(0.05); t += 0.05; o.frames++;
+      for (const i of idx) {
+        const w = workers[i];
+        if (!w.lazy) continue;
+        if (w.hm >= 0) o.home++; else o.wander++;
+        if (w.load.length && w.hm < 0) o.carried++;       // 手上有地標的料＝他跑去上工了
+      }
+      o.others += workers.filter(w => !w.lazy && w.hm >= 0).length;   // 沒偷懶的跑去蓋房子
+      o.busy += workers.filter(w => !w.lazy && (w.load.length || w.carry)).length;
+      if (idleEv) o.ev++;
+    }
+    o.dur = +t.toFixed(1); o.phase = phase; o.placed = placedCnt; o.total = bp.slots.length;
+    o.homes = homes ? homes.list.length : 0;
+    o.homeSet = blocks.filter(b => b.hh >= 0).length;
+    /* 村子用掉的料裡有幾塊不是自己挖的（見 homeMine）。這是「地標永遠差一格」的直接指標：
+       料池剛好只夠蓋完那一座，被撿走一塊就再也湊不齊。 */
+    o.stolen = blocks.filter(b => b.hh >= 0 && !b.dug).length;
+    o.busy = +(o.busy / Math.max(1, o.frames)).toFixed(1);
+    o.homePct = Math.round(o.home / Math.max(1, o.home + o.wander) * 100);
+    return o;
+  });
+  ok('施工中偷懶的人不搬地標的料，沒抽中的照常上工',
+     lazyRun.n === 2 && lazyRun.carried === 0 && lazyRun.others === 0 && lazyRun.busy > 5,
+     '20 人裡 ' + lazyRun.n + ' 個偷懶：手上出現地標建材 ' + lazyRun.carried + ' 幀；' +
+     '沒抽中的跑去蓋房子 ' + lazyRun.others + ' 幀，平均 ' + lazyRun.busy + ' 個人手上有貨');
+  ok('偷懶的人在施工中就跑閒晃事件（去蓋自己的家）',
+     lazyRun.ev >= lazyRun.frames - 2 && lazyRun.homes > 0 && lazyRun.homeSet > 20 &&
+     lazyRun.homePct > 50,
+     '施工 ' + lazyRun.dur + ' 秒裡事件開著 ' + lazyRun.ev + '/' + lazyRun.frames +
+     ' 幀，蓋出 ' + lazyRun.homes + ' 間（' + lazyRun.homeSet + ' 塊）；' +
+     '偷懶的人有 ' + lazyRun.homePct + '% 的時間在蓋自己的家，其餘在閒晃');
+  ok('村子不吃地標的建材，地標照樣蓋得完（魔法師隔空拉的那些也算村子自己的）',
+     lazyRun.stolen === 0 && lazyRun.mage === 1 && lazyRun.phase === 'done' &&
+     lazyRun.placed === lazyRun.total,
+     '村子那 ' + lazyRun.homeSet + ' 塊裡，不是自己挖的有 ' + lazyRun.stolen +
+     ' 塊（偷懶的那兩個裡有魔法師：' + (lazyRun.mage ? '是' : '否') + '）；地標 ' +
+     lazyRun.placed + '/' + lazyRun.total + '（' + lazyRun.phase + '）');
+
+  /* 被工具打倒才會收心上工。順便驗「倒地」的界線：站著被點著、抱頭跑圈圈的那種不算。 */
+  const lazyHit = await page.evaluate(() => {
+    cleanTools(); clearHomes();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    const idx = workers.map((w, i) => w.lazy ? i : -1).filter(i => i >= 0);
+    const o = { n: idx.length };
+    let t = 0;
+    while (t < 40) { step(0.05); t += 0.05; }          // 先讓事件把他們派去蓋房子
+    const a = workers[idx[0]], b = workers[idx[1]];
+    o.hm0 = a.hm >= 0 && b.hm >= 0;
+    a.fall = 1.8; releaseWorker(a);                    // 等同玩家戳一下（見 game-ui 的 poke）
+    step(0.05);
+    o.lazyA = a.lazy; o.hmA = a.hm; o.lazyB = b.lazy;
+    while (a.fall > 0) step(0.05);
+    /* 站著被點著（roll=0，抱頭跑圈圈）不算倒地：b 應該還在偷懶。
+       燒完之後再點一次、這次是躺在地上打滾（roll=1），那個才算。 */
+    igniteWorker(b, 0);
+    for (let k = 0; k < 10; k++) step(0.05);
+    o.lazyFire = b.lazy;
+    while (b.burn > 0) step(0.05);
+    igniteWorker(b, 1);
+    step(0.05);
+    o.lazyRoll = b.lazy;
+    let workA = 0, n = 0;
+    while (phase === 'build' && n < 1200) { step(0.05); n++; if (a.load.length || a.carry) workA++; }
+    o.workA = workA; o.frames = n; o.lazyA2 = a.lazy;
+    return o;
+  });
+  ok('被工具打倒才進建築模式：倒地那一幀就收心，爬起來真的去搬料',
+     lazyHit.hm0 && lazyHit.lazyA === 0 && lazyHit.hmA === -1 && lazyHit.lazyB === 1 &&
+     lazyHit.lazyA2 === 0 && lazyHit.workA > lazyHit.frames * 0.2,
+     '戳倒的那個：lazy ' + lazyHit.lazyA + '、蓋到一半的家放掉（hm=' + lazyHit.hmA +
+     '），起來之後 ' + lazyHit.workA + '/' + lazyHit.frames + ' 幀手上有貨；沒被戳的還在偷懶');
+  ok('站著被點著、抱頭跑圈圈的不算倒地，躺在地上打滾的才算',
+     lazyHit.lazyFire === 1 && lazyHit.lazyRoll === 0,
+     '跑圈圈時 lazy=' + lazyHit.lazyFire + '，打滾時 lazy=' + lazyHit.lazyRoll);
+
+  /* 完工之後那一輪照舊：事件重挑，全場都能參加（不是只有偷懶的那兩個）。
+     這一條擋的是「evArm 已經是 0，完工後再也不會挑」——那會讓 v1.97 的村子整個消失。 */
+  const lazyDone = await page.evaluate(() => {
+    cleanTools(); clearHomes();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 400; setWorkerCount(20); startBuild(true);
+    let t = 0, during = 0;
+    /* 施工中在蓋自己家的人數要**在施工中**取樣：完工那一幀事件就收掉了（見 stepIdleEvent
+       的換場合重挑），跑完再數一律是 0。 */
+    while (phase === 'build' && t < 900) {
+      step(0.05); t += 0.05;
+      during = Math.max(during, workers.filter(w => w.hm >= 0).length);
+    }
+    t = 0;
+    while (t < 30) { step(0.05); t += 0.05; }          // 慶祝七秒 + 散場 + 重新挑一件
+    return { during, crew: workers.filter(w => w.hm >= 0).length,
+             ev: idleEv ? idleEv.id : null, lazy: workers.filter(w => w.lazy).length,
+             homes: homes ? homes.list.length : 0 };
+  });
+  ok('完工之後事件重挑，全場都能參加（不只偷懶的那幾個）',
+     lazyDone.ev === 'home' && lazyDone.crew > lazyDone.during && lazyDone.crew > 4,
+     '施工中 ' + lazyDone.during + ' 個人在蓋自己的家（偷懶的 ' + lazyDone.lazy +
+     ' 個），慶祝散場後變成 ' + lazyDone.crew + ' 個、村子 ' + lazyDone.homes + ' 間');
+
+  // 後面幾段不該再有房子、事件與偷懶（見 installClean）
+  await page.evaluate(() => {
+    clearHomes();
+    stepIdleEvent = () => {};
+    rollLazy = () => { for (const w of workers) w.lazy = 0; };
+    rollLazy();
+  });
 
   /* ══════════ 整地推土機 ══════════ */
   head('整地推土機');
@@ -8006,23 +8182,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 劈到人（v1.133，使用者：「檢查一下 打雷 天降鐵球 王之財寶 是不是都沒對小人生效」
      ——查下去確實是，指定「打倒 ＋ 燒起來」）。所有道具掀倒小人本來都靠共用的 afterHit，
      而它**只在真的打掉積木時**才動人（`if (n <= 0) return`）：雷劈在空地上一塊積木都
-     沒掉，整段等於沒跑。這裡把人釘在落點正下方，量的是「這一發會不會動到人」。
+     沒掉，整段等於沒跑。
      小人要**凍住**（updWorker 換成空的）：不凍的話他們在雲聚滿之前就走掉了
-     （實測 16 秒走了 80 幾單位），量到的會是「沒打到」而不是「打不到」。 */
+     （實測 16 秒走了 80 幾單位），量到的會是「沒打到」而不是「打不到」。
+     量法在 v1.134 改過（見 README〈打雷劈到人那一條也在賭骰子〉）：人**鋪滿整個落點圓**，
+     而且驗的是「每個人離最近的落點多遠」——一道雷的落點是在半徑 STRIKE_R 的圓裡隨機挑的，
+     把人全擠在圓心的話，這一條就是在賭「這朵雲有沒有剛好劈到中間」。 */
   const stormMan = await page.evaluate(() => {
     cleanTools();
-    setWorkerCount(12); targetCnt = 1800;
+    setWorkerCount(16); targetCnt = 1800;
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     startBuild(true); completeNow(); shapePick = -1;
     for (let i = 0; i < 30; i++) step(1 / 60);
     const P = { x: 60, z: 0 };                       // 場外空地：確定一塊積木都沒有
+    /* 12 個鋪在落點圓裡（三圈 × 四個方位），4 個站在圓外 25 格當對照組——
+       落點最遠 13、打到人的範圍 5，那四個怎麼樣都碰不到。 */
+    const RING = [1, 6, 11];
     for (let i = 0; i < workers.length; i++) {
-      const w = workers[i], a = i / workers.length * Math.PI * 2;
-      w.x = P.x + Math.cos(a) * (i % 3) * 1.2; w.z = P.z + Math.sin(a) * (i % 3) * 1.2;
+      const w = workers[i], out = i >= 12;
+      const a = (i % 4) / 4 * Math.PI * 2 + (out ? 0.7 : 0);
+      const rad = out ? 25 : RING[Math.floor(i / 4)];
+      w.x = P.x + Math.cos(a) * rad; w.z = P.z + Math.sin(a) * rad;
       w.y = 0; w.st = 'idle'; w.fall = 0; w.air = 0; w.burn = 0; w.wet = 0; w.tilt = 0;
     }
     const oUpd = updWorker;
     updWorker = () => {};
+    /* 落點記在 smash 上：strike() 每一道雷都拿那一點打一次點狀衝擊（就在動人的那幾行
+       前面），所以攔它就拿得到「這一道雷劈在哪」。這一段只有雷在動，不會有別的來源。 */
+    const oSmash = smash, pts = [];
+    smash = (p, d, r, pow, quiet, hush) => { pts.push({ x: p.x, z: p.z }); return oSmash(p, d, r, pow, quiet, hush); };
     tool = 'storm';
     useTool({ point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) });
     const hit = workers.map(() => ({ burn: 0, fall: 0 }));
@@ -8031,17 +8219,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       step(1 / 60); T += 1 / 60;
       workers.forEach((w, i) => { if (w.burn > 0) hit[i].burn = 1; if (w.fall > 0) hit[i].fall = 1; });
     }
-    updWorker = oUpd;
-    // 濕的人點不著，那一種只會被打倒——這一條沒有消防車，所以應該全部都是燒著的
-    const r = { n: workers.length, burn: hit.filter(h => h.burn).length,
-                any: hit.filter(h => h.burn || h.fall).length, R: BOLT_MAN_R };
+    updWorker = oUpd; smash = oSmash;
+    /* 每個人離最近的那一道雷多遠：範圍內的一定要有反應（而且是燒著的——這一條沒有
+       消防車，濕的人才會只被打倒），範圍外的一個都不能動。邊界上那 ±0.3 格不算，
+       免得浮點誤差把人歸錯邊。 */
+    const r = { n: workers.length, R: BOLT_MAN_R, bolts: pts.length,
+                inN: 0, inHit: 0, inBurn: 0, outN: 0, outHit: 0 };
+    workers.forEach((w, i) => {
+      let d = Infinity;
+      for (const p of pts) d = Math.min(d, Math.hypot(w.x - p.x, w.z - p.z));
+      const any = hit[i].burn || hit[i].fall;
+      if (d <= BOLT_MAN_R - 0.3) { r.inN++; if (any) r.inHit++; if (hit[i].burn) r.inBurn++; }
+      else if (d > BOLT_MAN_R + 0.3) { r.outN++; if (any) r.outHit++; }
+    });
     cleanTools();
     return r;
   });
-  ok('雷劈到小人：打倒並且在地上燒起來',
-     stormMan.burn >= stormMan.n * 0.7 && stormMan.any === stormMan.n,
-     stormMan.n + ' 個人站在落點正下方（打到人的範圍 ' + stormMan.R + '）：' +
-     stormMan.any + ' 個有反應、其中 ' + stormMan.burn + ' 個燒起來（v1.132 是 0 個）');
+  ok('雷劈到小人：落點五格內的打倒並且在地上燒起來，範圍外的一個都沒事',
+     stormMan.inN >= 3 && stormMan.inHit === stormMan.inN && stormMan.inBurn === stormMan.inN &&
+     stormMan.outN >= 4 && stormMan.outHit === 0,
+     stormMan.n + ' 個人鋪在落點圓裡外，這朵雲劈了 ' + stormMan.bolts + ' 道：' +
+     '落點 ' + stormMan.R + ' 格內的 ' + stormMan.inN + ' 個 → ' + stormMan.inHit +
+     ' 個有反應、' + stormMan.inBurn + ' 個燒起來（v1.132 是 0 個）；' +
+     '範圍外的 ' + stormMan.outN + ' 個 → 動到 ' + stormMan.outHit + ' 個');
 
   /* 劈完把視線高度還回去（v1.128，使用者：「如果是會讓鏡頭往高的方向調整的運鏡
      結束後高度要調回來」——這句一開始寫在天降鐵球底下，查證之後確認那支從頭到尾

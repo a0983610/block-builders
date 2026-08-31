@@ -1,5 +1,5 @@
 /* ============================================================
-   遊戲層 · 小人：施工、逃命、慶祝、彩帶、閒晃、工程師、魔法師、閒聊、閒晃事件、村子
+   遊戲層 · 小人：施工、逃命、慶祝、彩帶、閒晃、工程師、魔法師、閒聊、閒晃事件、村子、偷懶
    從 game.js 拆出來的一段（v1.120.1）。classic script、共用同一份全域 scope，
    跟原本寫在同一支檔裡完全等價；五支的分工與載入順序見 src/game.js 檔頭。
    ============================================================ */
@@ -69,6 +69,9 @@ function newWorker(i) {
     /* 肌肉小人（mus，v1.112）：撿料跟一般工人一樣走過去撿，撿起來就地掄起來扔
        （見 updWorker 的 hurl）。掄的倒數借魔法師那個 ct——沒有人同時是兩種。 */
     mus: 0,
+    /* 偷懶（lazy，v1.134）：1＝這一輪不上工，繼續過閒晃模式的生活（見 LAZY_PART）。
+       被工具打倒就歸零，從此這一輪都在上工（見 quitLazy）。 */
+    lazy: 0,
     /* 蓋自己的家（v1.97 的閒晃事件，見 homes）：hm 是哪一間（−1＝沒在蓋），
        hst 是這一趟在做什麼（dig／lay），hcap 是這一趟要挖幾塊，
        hdt 是還要挖幾秒（砌的時候是下一塊還有幾秒），hp 是下一撮土花幾秒。
@@ -161,6 +164,40 @@ function tagMuscle() {
     w.mus = mus;
     w.scale = w.sc0 * (mus ? MUS_SIZE : 1);
   }
+}
+/* ── 偷懶 ─────────────────────────────────────────────────
+   使用者：「建築模式下 10% 小人不去蓋地標建築，繼續他的閒晃模式（閒晃模式的事件）；
+   被工具攻擊倒地才會進入建築模式」。三件事：
+     · 抽中的人施工中走閒晃那條路（見 updWorker），閒晃事件也照跑（見 stepIdleEvent）
+     · 名單**每座新建築開工時重抽**（使用者選的），所以只掛一個呼叫點：startBuild
+     · 工程師與魔法師照樣抽得到（使用者選「全部人都算」）——抽中的那一輪他不看圖也不發料
+   薪水不看他有沒有做事（見 game-ui.js 的 WAGE：按人頭按秒算），偷懶的照領。
+   人數改了不重抽（施工中也能加減人）：新來的就是即戰力，下一座才重新抽。
+   抽法是**洗牌取前 n 個**，不是每個人各擲一次點數：擲點數的話一口氣抽到一半、
+   或一個都沒抽到都有可能（20 人擲 10% 實測 0～6 人），「一成」就不成立了。 */
+const LAZY_PART = 0.1;              // 幾成的人會偷懶（使用者指定 10%）
+function rollLazy() {
+  const idx = [];
+  for (let i = 0; i < workers.length; i++) { workers[i].lazy = 0; idx.push(i); }
+  for (let i = idx.length - 1; i > 0; i--) {           // 洗牌
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+  }
+  const n = Math.round(workers.length * LAZY_PART);    // 20 人→2、5 人→1、2 人→0
+  for (let k = 0; k < n; k++) {
+    const w = workers[idx[k]];
+    w.lazy = 1;
+    /* 上一座認定的那一塊不算數：魔法師回自己家拋料時會先看 w.gb（見 castHome），
+       留著的話他會把地標的建材捲進自己家——料池剛好只夠蓋完那一座（見 homeMine）。 */
+    w.gb = -1;
+  }
+}
+/* 收心上工：蓋到一半的家先擱著（那一間留在場上，下一次事件有人會接手，見 pickUnfinished）。
+   releaseWorker 要在抹掉 w.hm **之前**叫：它靠 w.hm 才找得到要放掉的那幾格（homeUnclaim）。 */
+function quitLazy(w) {
+  w.lazy = 0;
+  if (w.hm >= 0) { releaseWorker(w); w.hm = -1; w.hst = ''; }
+  w.gb = -1;
 }
 /* 放掉一個認領的格子。放掉也會改變支撐狀態，而且派工游標要退回去補這個洞 */
 function freeClaim(s) {
@@ -957,6 +994,11 @@ function updWorker(w, wi, dt) {
     w.wetK += (1 - w.wetK) * Math.min(1, dt * 4);
     if (w.wetK > 0.99) w.wetK = 0;                  // 乾了歸零，引擎那邊整段跳過
   }
+  /* 被工具打倒就收心上工（v1.134，使用者：「被工具攻擊倒地才會進入建築模式」）。
+     擺在這裡才每一種都收得到——戳倒、水柱打倒、被掀飛落地、雷劈倒、被燒得在地上打滾，
+     全都會經過這一幀（w.fall 是倒地的倒數，w.roll 是燒起來趴在地上滾）。
+     站著被點燃、抱頭跑圈圈的那種不算：那個人沒有倒地，他照樣偷懶。 */
+  if (w.lazy && (w.fall > 0 || w.roll)) quitLazy(w);
   if (w.air) { flyWorker(w, dt); return; }            // 被吹飛／炸飛：走彈道
   if (w.burn > 0) { burnMove(w, dt); return; }        // 燒起來：打滾或跑圈圈
 
@@ -1038,6 +1080,14 @@ function updWorker(w, wi, dt) {
   }
   w.y += (0 - w.y) * Math.min(1, dt * 6);
   w.cheer = 0;
+  /* 偷懶的人不上工（v1.134）：走的是閒晃那一套，事件挑中他就去蓋自己的家。
+     擺在工程師與魔法師**前面**：這一輪抽中他，他就不看圖也不發料（使用者選「全部人都算」）。
+     回自己家那條路他還是用自己的方式蓋（updHome 自己分派：魔法師隔空拋、肌肉小人就地掄）。 */
+  if (w.lazy) {
+    if (w.hm >= 0) updHome(w, wi, dt);
+    else wander(w, dt);
+    return;
+  }
   if (w.eng) { updEng(w, dt); return; }      // 工程師只看圖、只指揮
   if (w.mage) { updMage(w, wi, dt); return; }   // 魔法師不搬，站在旁邊隔空拋
 
@@ -1153,6 +1203,7 @@ function loadUp(w, wi, cap) {
     if (bi < 0) break;
     bp.slots[s].claimed = wi;        // 認領也算「這格有東西了」，會影響上面能不能蓋
     blocks[bi].holder = wi;
+    blocks[bi].dug = 0;              // 進了地標的料池就不再是村子的料（v1.134，見 homeMine）
     w.load.push({ b: bi, s: s });
     sx = blocks[bi].x; sz = blocks[bi].z;
   }
@@ -1587,7 +1638,8 @@ function chatFree(w) {
   // 正在蓋自己的家的人不算閒（蓋完了在家附近走走的才算，v1.97）
   if (w.hm >= 0 && homeBusy(w)) return false;
   if (idlePhase()) return !cheerOn(w);
-  return phase === 'build' && w.st === 'idle' && !w.eng;
+  // 偷懶的工程師沒在看圖，算閒（v1.134）
+  return phase === 'build' && w.st === 'idle' && (w.lazy || !w.eng);
 }
 function pairChat() {
   if (phase !== 'build' && !idlePhase()) return;
@@ -1689,6 +1741,7 @@ function stepEmo(w, dt) {
    目前只有一筆（小人的家）。加第二筆就是往這張表再放一列。 */
 let idleEv = null;                  // 現在在跑的那一件（null＝純閒晃）
 let evArm = 1;                      // 這一輪還沒挑過
+let evPh = '';                      // 現在這一件是在哪個階段挑的（'build'／'idle'，見 stepIdleEvent）
 /* wt 是**相對權重，不是機率**（v1.101，使用者：「閒晃模式事件改為必定發生，
    因為設計成可擴充，必定發生 隨機一種」）：散場之後一定會挑一件來跑，
    wt 大的被挑到的機會多。v1.97～v1.100 是「每一筆各擲一次 40%」——只有一筆的時候，
@@ -1712,12 +1765,27 @@ function stopIdleEvent() {
   idleEv = null;
   if (e) e.stop();
 }
+/* 現在該不該有事件、是哪一種場合（v1.134）。'idle'＝蓋完了全場沒事幹（v1.97 那個），
+   'build'＝施工中而且場上有人偷懶（那幾個人的事件，誰參加在 startHomes 那邊擋）。
+   整地中（clear）兩個都不是：那時候全場都被推土機趕到外圈。 */
+function evPhase() {
+  if (idlePhase()) return 'idle';
+  if (phase === 'build' && workers.some(w => w.lazy)) return 'build';
+  return '';
+}
 function stepIdleEvent(dt) {
-  if (!idlePhase()) { stopIdleEvent(); evArm = 1; return; }
+  const ph = evPhase();
+  if (!ph) { stopIdleEvent(); evArm = 1; evPh = ''; return; }
+  /* 換場合就重挑（v1.134）。最要緊的是「施工中 → 蓋完了」那一刻：不重挑的話 evArm
+     早就是 0，完工散場後那一輪永遠不會開始，一半的人再也不會去蓋自己的家。
+     重挑會先 stopHomes（蓋到一半的先擱著），散場後照舊全員重新抽一件。 */
+  if (evPh && evPh !== ph) { stopIdleEvent(); evArm = 1; }
+  evPh = ph;
   if (evArm) {
     /* 等到每個人都散場才挑：還在圈上跳的時候就開始蓋房子的話，
-       那幾個人會從圈上直接走掉（散場錯開最多 CHEER_OUT 秒，見那裡）。 */
-    if (workers.some(w => cheerOn(w))) return;
+       那幾個人會從圈上直接走掉（散場錯開最多 CHEER_OUT 秒，見那裡）。
+       施工中沒有這個顧慮——偷懶的人本來就沒事幹，開工那一刻就可以開始。 */
+    if (ph === 'idle' && workers.some(w => cheerOn(w))) return;
     evArm = 0;
     idleEv = rollIdleEvent();
     if (idleEv) idleEv.start();
@@ -2249,6 +2317,9 @@ function startHomes() {
   if (!homes) homes = { list: [] };
   const taken = new Set();
   const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  /* 施工中只有偷懶的人參加（v1.134）：其他人在蓋地標。蓋完了（done／wreck）全場都算，
+     那時候沒有「上工」這回事——偷懶的旗標只在施工中有意義。 */
+  const joins = w => phase !== 'build' || w.lazy;
   /* 已經有家的人不再蓋新的（v1.109，使用者：「已經有房子的小人不用再蓋小房子，
      不然會越來越多間」）。不擋的話每一輪都有一半的人離隊開新的一間，
      村子會一輪一輪長下去，最後整片草地都是房子。
@@ -2263,7 +2334,7 @@ function startHomes() {
      從此不再蓋新的，實測村子從 6 間一路縮到 3 間、20 個人全擠在那 3 間上，
      再也不長了——使用者要的是「不要越來越多間」，不是「不要有新的」。 */
   for (const w of workers) {
-    if (w.own < 0 || !steady(w)) continue;
+    if (w.own < 0 || !steady(w) || !joins(w)) continue;
     const hi = homes.list.findIndex(h => h.id === w.own);
     if (hi < 0 || homes.list[hi].left <= 0) continue;
     releaseWorker(w);
@@ -2275,14 +2346,17 @@ function startHomes() {
   const pool = [];
   for (let i = 0; i < workers.length; i++) {
     const w = workers[i];
-    if (!steady(w) || w.own >= 0) continue;
+    if (!steady(w) || w.own >= 0 || !joins(w)) continue;
     pool.push(i);
   }
   for (let i = pool.length - 1; i > 0; i--) {          // 洗牌
     const j = Math.floor(Math.random() * (i + 1));
     const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
   }
-  const left = pool.slice(0, Math.max(1, Math.round(pool.length * HOME_PART)));
+  /* 施工中偷懶的人**全部**參加（v1.134）：本來就只有一成的人，再砍一半常常只剩一個，
+     那個事件就等於沒發生。蓋完了才照舊抽一半（HOME_PART 是使用者選的「一半左右」）。 */
+  const part = phase === 'build' ? 1 : HOME_PART;
+  const left = pool.slice(0, Math.max(1, Math.round(pool.length * part)));
   while (left.length) {
     const lead = workers[left.shift()];
     /* 附近的人一起蓋（使用者：「也可以跟附近的小人一起合蓋大一點的小房子」）。
@@ -2449,6 +2523,7 @@ function digBlock(w, h) {
   const gx = g.x, gz = g.z;
   const b = newBlock();
   b.x = gx; b.z = gz; b.y = HB;
+  b.dug = 1;                                             // 村子自己挖出來的（v1.134，見 homeMine）
   b.r = b.tr = DIG_DIRT[0]; b.g = b.tg = DIG_DIRT[1]; b.b = b.tb = DIG_DIRT[2];
   /* 往**身體的側面**扔（w.a 是面向自己家的方向，± 90° 就是左右兩邊）：
      往前會扔進屋子的占地、往後會扔回工地那一側，那兩邊都可能撿不到；
@@ -2648,6 +2723,10 @@ function castHome(w, wi, h, k) {
     const a = rr(0, Math.PI * 2), d = rr(0.9, 1.9);
     b = newBlock();
     b.x = w.x + Math.cos(a) * d; b.z = w.z + Math.sin(a) * d; b.y = HB;
+    /* 魔法師的「挖」就是隔空從地面拉一塊新的出來，跟 digBlock 一樣是憑空多出來的塊，
+       所以一樣蓋記號（v1.134，見 homeMine）：不蓋的話這一間被打爛之後，
+       那些碎料在下一座施工中就再也撿不回來（村子只認得自己的料）。 */
+    b.dug = 1;
     b.hh = w.hm; b.hk = k;
     b.r = b.tr = sl.c[0]; b.g = b.tg = sl.c[1]; b.b = b.tb = sl.c[2];
     blocks.push(b);
@@ -2685,6 +2764,13 @@ const GRAB_R = 12;                  // 找碎料的範圍：離自己家外框�
    freeNearHome（要撿哪一塊）與 digNeed（還缺幾塊）共用這一條——兩邊各寫一份的話，
    算的時候看得到、撿的時候看不到，那一間就永遠挖不完（v1.129）。
    「積木是什麼狀態才算」兩邊故意不同，各自寫在自己那邊。 */
+/* 這一塊算不算「村子自己的料」（v1.134）。**施工中只認自己挖出來的**：地上其他那些是
+   地標的建材，而料池剛好只夠蓋完那一座（reconcilePool 補到 bp.slots.length），
+   撿走一塊那座就永遠差一格、永遠不會完工。挖出來的是憑空多出來的新塊（見 digBlock），
+   拿去蓋房子不影響地標。蓋完了（done／wreck）沒有這個顧慮，照舊地上的優先
+   （v1.104 使用者指定）。
+   b.dug 在被地標認走時歸零（見 loadUp）：那一塊從此算地標的料池，村子不能再收回去。 */
+const homeMine = b => phase !== 'build' || b.dug;
 function homeNear(b, h) {
   return (b.x - h.x) ** 2 + (b.z - h.z) ** 2 <= (h.r + GRAB_R) ** 2 &&
          b.x * b.x + b.z * b.z >= (siteR + KEEP) ** 2;
@@ -2694,7 +2780,7 @@ function freeNearHome(w, h) {
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
-    if (!homeNear(b, h)) continue;
+    if (!homeNear(b, h) || !homeMine(b)) continue;
     const d = (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
     if (d < bd) { bd = d; best = i; }
   }
@@ -2714,7 +2800,7 @@ function digNeed(h) {
   for (const b of blocks) {
     if (b.holder >= 0) continue;
     if (b.st === FREE ? !b.rest : b.st !== FLY) continue;
-    if (!homeNear(b, h)) continue;
+    if (!homeNear(b, h) || !homeMine(b)) continue;
     if (--n <= 0) return 0;
   }
   return n;

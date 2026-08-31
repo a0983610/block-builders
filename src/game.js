@@ -10,7 +10,7 @@
    共用同一份全域 scope，所以拆檔跟原本寫在同一支檔裡**完全等價**——沒有 import／
    export，任何一支都看得到其他支的函式與變數。index.html 照這個順序載：
      src/game.js          ← 這支：版本、常數、狀態、音效、空間雜湊、積木、藍圖與積木池、整地推土機
-     src/game-workers.js  小人：施工、逃命、慶祝、彩帶、閒晃、工程師、魔法師、閒聊、閒晃事件、村子
+     src/game-workers.js  小人：施工、逃命、慶祝、彩帶、閒晃、工程師、魔法師、閒聊、閒晃事件、村子、偷懶
      src/game-save.js     紀錄、成就、存檔
      src/game-tools.js    破壞道具與各種特效
      src/game-ui.js       樹、主迴圈、輸入、HUD、面板、匯入建築、啟動（boot）
@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.133.1';
+const VERSION = '1.134.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -401,6 +401,9 @@ function newBlock() {
        家不進藍圖那套（slot 一律 −1），所以拆除、垮塌、計價那些看 slot 的地方
        本來就會跳過它；反過來，破壞道具只看 st === SET，所以照樣打得掉。 */
     hh: -1, hk: -1,
+    /* 這塊是村子自己從地上挖出來的嗎（v1.134，見 digBlock／homeMine）。施工中小人蓋自己的
+       家只撿得起這一種——地上其他那些是地標的建材，料池剛好只夠蓋完那一座。 */
+    dug: 0,
     scale: 1, snap: 0, snapFrom: null, arc: null, wob: 0, al: 1, fallIn: 0,
     gone: 0,                             // >0＝完工後多餘的碎料正在淡出（v1.109，見 clearSpare）
     burn: 0,                             // 1 = 正在燒（狀態本體在 fires 那筆裡）
@@ -571,6 +574,7 @@ function startBuild(instant) {
     w.emo = ''; w.emoT = 0; w.emoK = 0;   // 上一座留下的表情圖示不要跟著進新工地（v1.121）
     w.y = 0; w.tilt = 0; w.vx = w.vy = w.vz = 0;
   }
+  rollLazy();                        // 這一座誰偷懶重抽（v1.134，見 LAZY_PART）
   for (const b of blocks) {
     // 家的那些不解（v1.97）：房子留在場上（使用者指定），只有被新工地蓋到才拆（見下面）
     if (b.hh >= 0) continue;
