@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.141.0';
+const VERSION = '1.142.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -676,30 +676,30 @@ function startBuild(instant) {
 }
 
 /* ── 整地：推土機 ───────────────────────────────────────
-   換建築時上一輪的碎料還躺在工地上，而且不是平均鋪開的——只拿槌子敲的話，
-   碎料會全堆在挨打的那一區。所以推土機要做的是「去把堆起來的推散」，
-   不是把整片地毯式掃一遍。
+   換建築時上一輪的碎料還躺在工地上。做法是照**地標的寬度**排一排推土機出來，
+   從地圖邊緣並排開進去，一趟直線掃過整個工地、從另一頭出去，然後收工——
+   一次，不回頭（v1.142，使用者指定）。
 
-   每台機器自己找一坨最密的碎料，從現在的位置直接對準它切進去，一路推到工地
-   另一頭出去，再找下一坨。找不到值得推的堆就收工。剩下的零星碎塊在收尾時彈出去，
-   不為了那幾塊讓玩家多等好幾秒。
+   台數＝工地寬度 ÷ 一把鏟子的寬度，所以寬的地標派得多、窄的派得少，
+   相鄰兩台的間距一定 ≤ 鏟子寬度，整個寬度沒有縫（見下面 DOZ_CAP 與 startClear）。
+   鏟子放不放下來只看位置：進了工作範圍就放下開始推，離開範圍就抬起來（見 dozeMove）。
 
-   本來的做法是「先繞到那坨的內側，再朝外推」——推的距離短，聽起來省力，
-   但機器得先抬著鏟子穿過整個工地才站得到內側。實測那趟空跑吃掉三成到七成七的
-   機器時間，而且當時的時限（6.5 秒）只夠跑完一趟（中世紀城堡整段整地只派了三次工），
-   碎料有 65～100% 是時間到了直接彈掉的，不是真的被推出去的。
-   對穿就沒有這個問題：進了範圍鏟子就放下來，出範圍才抬起來。
+   v1.61～v1.141 是另一套：每台自己找一坨最密的碎料切進去，推出去再回頭找下一坨，
+   推滿 10 秒（DOZ_LIMIT）就收工。一般大小的工地清除率 82～87%，但大工地整個推不動
+   ——一趟對穿要 126 單位、十秒連一趟都跑不完，實測金門大橋 0%。並排掃一趟沒有這個
+   問題：整地的時間跟著寬度長，而不是拿一個固定時限去賭跑不跑得完。
 
-   車速是固定的，而且比小人走路快不了多少——推土機本來就該是慢的。
-   之前用「一趟固定跑幾秒」回推速度，大工地會飆到每秒 57 單位，看起來像在飛。 */
+   車速是固定的，而且比小人走路快不了多少——推土機本來就該是慢的（使用者指定
+   「依目前移動速度」）。之前用「一趟固定跑幾秒」回推速度，大工地會飆到每秒 57 單位，
+   看起來像在飛。 */
 // 鏟子的寬度與位置直接取畫面那邊的值，判定跟看到的才會是同一把鏟子
 const DOZ_W = ENG.DOZ_W, DOZ_FRONT = ENG.DOZ_FRONT;
-/* 派幾台看工地多大：地面每這麼多平方單位派一台。時限固定，一台在時限內大概只推得動
-   一條線那麼寬，所以工地一大就得靠台數補。固定三台的話大工地根本清不動
-   （實測 siteR 44 的工地，固定三台推出去 0 塊，1391 塊全靠收尾彈掉）。
-   上限 6 是畫面那邊 MAXDOZ 的容量。 */
-const DOZ_AREA = 160;
-const DOZ_MIN = 3, DOZ_MAX = 6;
+/* 台數＝把工地的寬度用鏟子鋪滿要幾把（v1.142，使用者：「按照地標建築寬度用推土機
+   並排推過去一次」）。一台的作用寬度是 2·DOZ_W、工地的寬度是 2·siteClearR()，
+   所以 n = ⌈siteClearR ÷ DOZ_W⌉，再把 n 條線平均鋪滿整個寬度——間距 2R/n 一定
+   ≤ 2·DOZ_W，鏟子與鏟子之間不會留縫。
+   上限是畫面那邊的容量（ENG.MAXDOZ）：最寬的金門大橋（9000 建材、半徑 89）要 29 台。 */
+const DOZ_CAP = ENG.MAXDOZ;
 const DOZ_MOVE = 9.5;               // 空鏟趕路的速度
 const DOZ_PUSH = 6.5;               // 鏟子上有料時的速度
 const DOZ_LOAD = 0.5;               // 鏟到料之後還維持慢速幾秒
@@ -707,33 +707,14 @@ const DOZ_TURN = 3.4;               // 轉向角速度（rad/s）
 /* 從地圖邊緣進場（v1.61）：以前是「在工地邊上憑空出現、原地怠速 1.3 秒等碎料落地」，
    換場那一下三到六台機器同時冒出來。現在從碎料場外緣開進來，那段路本身就是等碎料
    落地的時間，不必再站著等。
-   進場那一段不算進 DOZ_LIMIT——時限是給「推」的，不是給趕路的（見 stepDozers）。 */
+   進場那一段不算進時限——時限是給「推」的，不是給趕路的（見 stepDozers）。 */
 const DOZ_FAR = 6;                  // 進場點在碎料場外緣（arenaR）再外面幾格
 const DOZ_ENTER_MAX = 6;            // 進場最多算幾秒（保險絲，時限一定要開始跑）
-/* 每台走自己的一條弦，橫向錯開這麼多（乘上工地半徑）。全部對著場中心開的話，
-   幾台會在中間撞成一團、清的是同一個點，工地兩側反而沒人碰。 */
-const DOZ_LANE = 0.55;
-const DOZ_CELL = 5;                 // 找堆時的格子邊長
-const DOZ_HEAP = 12;                // 一格少於這麼多塊就不算「堆」，不值得專程去推
-/* 開始推之後最多推這麼久（進場那段路不算，見 stepDozers）。碎料鋪滿整片地時堆推不完，
-   但這是換場的空檔，不是關卡——時間到就收工，剩下的彈掉。堆推完了本來就會提早收工，
-   這只是上限。
-   v1.61.1 從 6.5 拉到 10（使用者指定）：6.5 秒扣掉進場之後，一台大概只推得完一趟半，
-   拉到 10 秒多的那一趟是實推。試過讓時限跟工地大小走則是另一回事，那個沒有採用
-   （金門大橋那種會拉到 11.7 秒，只換到 7～10% 清除率）。 */
-const DOZ_LIMIT = 10;
 /* 鏟面後方多深之內都算同一堆，一起往前帶。抓得越深一次帶越多，但也得推得更遠
    才能整堆送出範圍外——不然機器停下時，那一疊的尾巴還留在工地裡。 */
 const DOZ_PILE = 7;
-/* 派工的距離折價：一坨的分數是「塊數 ÷ (1 + 距離×DOZ_TRIP)」。以前是「最大的那坨先派」，
-   結果幾台會為了同一坨橫跨整個工地，路上鏟子還是抬著的——實測那趟空跑吃掉機器
-   三成到七成七的時間。就近推小坨的產出反而比較高。
-   用比值不用扣分：扣分要跟「塊數」同一個尺度，堆的大小一變就整個歪掉
-   （試過每單位扣 2.2 塊，結果所有堆都被扣成負分，機器有一半時間在空轉）。 */
-const DOZ_TRIP = 0.12;
-/* 兩台的目標離這麼近就算「在清同一個點」，後挑的那台改挑別坨（v1.61）。
-   一格是 DOZ_CELL=5，抓 1.6 格：隔壁格還可以，同一格與貼著的那幾格不行。 */
-const DOZ_APART = DOZ_CELL * 1.6;
+/* 保險絲的餘裕（見 passLimit）。一趟推完自然就結束，這個只在「推得異常慢」時才生效。 */
+const DOZ_SLACK = 3;
 let dozers = null;
 
 const siteClearR = () => siteR + 1.4;
@@ -756,134 +737,60 @@ function beginBuild() {
   phase = 'build';
   buildStart = performance.now();     // 施工計時從真正開工才起算，不含整地
 }
-/* 進場：從地圖邊緣直線開進來，一路穿過工地再從另一邊出去（v1.61）。
-   每台的方向不同（照台數等分一圈），而且各自的路線橫向錯開一段（DOZ_LANE），
-   所以第一趟就分頭掃過工地的不同地帶，不會全部擠到中央那一坨。
-   出發點、進場、穿過、出場全在同一條直線上——中間不用轉彎，
-   鏟子自己會在進入工作範圍時放下、離開時抬起（見 stepDozers 的 work）。 */
-function dozLane(ang, off) {
-  const ux = -Math.cos(ang), uz = -Math.sin(ang);      // 往場中心開
-  const px = -uz, pz = ux;                             // 這條弦的橫向
-  const out = dozOutR();
-  // 這條弦從進場到出場的另一端：|off·p + t·u| = 出場半徑 → t = √(out² − off²)
-  const half = Math.sqrt(Math.max(1, out * out - off * off));
-  const far = arenaR + DOZ_FAR;
-  return {
-    x: px * off - ux * far, z: pz * off - uz * far,     // 地圖邊緣的出發點
-    a: Math.atan2(ux, uz),                             // rotation.y = a 讓車頭指向 (sin a, cos a)
-    tx: px * off + ux * half, tz: pz * off + uz * half, // 直線穿到另一邊出去
-    hx: px * off, hz: pz * off                          // 這條弦掃的是工地的哪一帶
-  };
+/* 保險絲：這一趟最壞情況要跑多久（全程都用推料的慢速）。一趟推完本來就會自己結束，
+   這只是防呆的上限——不是「推這麼久就收工」（v1.61～v1.141 的 DOZ_LIMIT 是那種）。
+   進場那段路不算在內（見 stepDozers 的 D.on）。 */
+function passLimit() { return (2 * dozWorkR() + DOZ_PILE) / DOZ_PUSH + DOZ_SLACK; }
+/* 排隊進場：整排從地圖邊緣的同一側並排開進來，一趟直線掃過整個工地、從另一頭出去。
+   出發點、進場、穿過、出場全在同一條直線上——中間不用轉彎、不用掉頭，
+   鏟子自己會在進入工作範圍時放下、離開範圍時抬起（見 dozeMove 的 work）。
+   掃的方向見 sweepAngle()。 */
+/* 從哪個方向掃過去：取碎料分布的**短邊**推。
+   沿著長邊推的話，每一把鏟子要從頭到尾收整條線的料，鏟面前那一疊早就滿了，
+   後面的就從鏟子兩側與底下漏掉（實測金門大橋 9000 建材沿長邊推只送出 48%）。
+   長短邊看不出來（碎料鋪成一團圓的）就隨機挑一個方向，不然每次換場都從同一邊推。 */
+function sweepAngle() {
+  const r = siteClearR();
+  let n = 0, sx = 0, sz = 0, xx = 0, zz = 0, xz = 0;
+  for (const b of blocks) {
+    if (b.st !== FREE || Math.hypot(b.x, b.z) >= r) continue;
+    n++; sx += b.x; sz += b.z; xx += b.x * b.x; zz += b.z * b.z; xz += b.x * b.z;
+  }
+  const rnd = () => Math.random() * Math.PI * 2;
+  if (n < 8) return rnd();
+  const mx = sx / n, mz = sz / n;
+  const cxx = xx / n - mx * mx, czz = zz / n - mz * mz, cxz = xz / n - mx * mz;
+  // 2×2 共變異數矩陣的兩個特徵值差多少＝長短邊差多少；差太少就是圓的，方向沒差
+  const mid = (cxx + czz) / 2, d = Math.hypot((cxx - czz) / 2, cxz);
+  if (d < mid * 0.1) return rnd();
+  const major = 0.5 * Math.atan2(2 * cxz, cxx - czz);     // 長邊的方向
+  return major + Math.PI / 2 + (Math.random() < 0.5 ? 0 : Math.PI);
 }
 function startClear() {
-  const n = clamp(Math.round(Math.PI * siteClearR() ** 2 / DOZ_AREA), DOZ_MIN, DOZ_MAX);
-  const spin = Math.random() * Math.PI * 2;            // 整組進場方向每次隨機轉一下
+  const R = siteClearR();
+  const n = clamp(Math.ceil(R / DOZ_W), 1, DOZ_CAP);
+  const ang = sweepAngle();
+  const ux = -Math.cos(ang), uz = -Math.sin(ang);      // 行進方向（往場中心）
+  const px = -uz, pz = ux;                             // 橫向：並排就排在這條線上
+  const far = arenaR + DOZ_FAR;                        // 出發點：碎料場外緣再外面幾格
+  const out = dozOutR();                               // 軸向推到這裡就算穿出去了
+  const gap = 2 * R / n;                               // 相鄰兩台的間距（一定 ≤ 2·DOZ_W）
   dozers = {
-    t: 0, all: 0, on: false, done: false,
+    t: 0, all: 0, on: false, done: false, lim: passLimit(),
     list: Array.from({ length: n }, (_, k) => {
-      const off = ((k + 0.5) / n - 0.5) * 2 * DOZ_LANE * siteClearR();
-      /* 進場方向要**扣掉橫向錯開造成的偏角**（entry 的角度是 ang − asin(off/工作半徑)）：
-         不扣的話，錯開得多的那幾條線入口會被推到隔壁那台旁邊，等於白錯開了。
-         隨機只在自己那一格裡晃（±¼ 格），晃過頭一樣會把兩台湊到一起。 */
-      const slot = Math.PI * 2 / n;
-      const ang = spin + (k + rr(-0.25, 0.25)) * slot +
-                  Math.asin(clamp(off / dozWorkR(), -1, 1));
-      const p = dozLane(ang, off);
-      return { x: p.x, z: p.z, a: p.a, st: 'push', tx: p.tx, tz: p.tz,
-               bl: 1, load: 0, k, hx: p.hx, hz: p.hz };
+      const off = (k + 0.5) * gap - R;                  // 這台負責的那一條帶
+      /* 目標的軸向距離每台都一樣（out），整排才會維持一條線推過去。
+         各自算自己那條弦的出口的話，外側那幾台的弦短、會先到，整排就散了。 */
+      return { x: px * off - ux * far, z: pz * off - uz * far,
+               a: Math.atan2(ux, uz),                   // rotation.y = a 讓車頭指向 (sin a, cos a)
+               tx: px * off + ux * out, tz: pz * off + uz * out,
+               st: 'push', bl: 1, load: 0, k };
     })
   };
   phase = 'clear';
   sndDozer();
 }
 
-/* 把工地上的碎料用粗格子數一數，回傳夠格稱為「堆」的那些，多的排前面。
-   一幀算一次三台共用，不要每台各掃一次 blocks。 */
-function listHeaps() {
-  const r = siteClearR(), cnt = new Map();
-  for (const b of blocks) {
-    if (b.st !== FREE || Math.hypot(b.x, b.z) >= r) continue;
-    const key = Math.floor(b.x / DOZ_CELL) + ':' + Math.floor(b.z / DOZ_CELL);
-    let c = cnt.get(key);
-    if (!c) cnt.set(key, c = { n: 0, x: 0, z: 0 });
-    c.n++; c.x += b.x; c.z += b.z;
-  }
-  const out = [];
-  for (const c of cnt.values())
-    if (c.n >= DOZ_HEAP) out.push({ n: c.n, x: c.x / c.n, z: c.z / c.n });
-  out.sort((a, b) => b.n - a.n);
-  return out;
-}
-/* 一趟的路線：從機器現在的位置對準那一坨，穿過去、繼續往前直到出了工作範圍。
-   整趟就是一條直線，中間不用掉頭也不用繞路。
-   機器剛好站在那一坨上時（幾乎不會發生）就照現在的車頭方向推。 */
-function dozPath(m, h) {
-  const dx = h.x - m.x, dz = h.z - m.z;
-  const d = Math.hypot(dx, dz);
-  const fx = d < 0.5 ? Math.sin(m.a) : dx / d;
-  const fz = d < 0.5 ? Math.cos(m.a) : dz / d;
-  /* 解 |h + f·t| = out，取正根：沿著行進方向從那一坨再往前多遠才出得了工地。 */
-  const out = dozOutR();
-  const b = h.x * fx + h.z * fz;
-  const t = Math.sqrt(Math.max(0, b * b + out * out - h.x * h.x - h.z * h.z)) - b;
-  return { tx: h.x + fx * t, tz: h.z + fz * t, len: d + t };
-}
-/* 挑一坨給這台推：塊數多的優先，但整趟路線越長折價越多。挑走的從清單移除，
-   幾台機器才不會擠在同一坨上。回傳 null 表示沒有值得專程去推的了。
-
-   折的是「整趟路線」不是「到那一坨的距離」，而且剩下的時間跑不完的那趟直接當成
-   沒價值——跑不完等於把鏟子前面那一疊丟在工地中間，比不推還糟。
-   大工地最明顯：不看這條的話，六台會全部挑正中央那一坨最大的（實測路線 81～97 單位、
-   時限內連一趟都跑不完），整段下來送出工地的是 0 塊。邊上的小坨雖然只有十幾塊，
-   但一趟二十幾單位跑得完，真的送得出去。 */
-function pickHeap(m, heaps, tLeft) {
-  let bi = -1, best = -1, bestP = null;
-  for (let i = 0; i < heaps.length; i++) {
-    const h = heaps[i];
-    if (dozTaken(m, h)) continue;               // 別台已經在清那一帶了
-    const p = dozPath(m, h);
-    // 樂觀估：整趟都用空鏟的速度跑。連這樣都來不及的就是真的來不及
-    const fit = p.len / DOZ_MOVE <= tLeft ? 1 : 0.05;
-    const s = h.n / (1 + p.len * DOZ_TRIP) * fit;
-    if (s > best) { best = s; bi = i; bestP = p; bestP.hx = h.x; bestP.hz = h.z; }
-  }
-  if (bi < 0) return null;
-  heaps.splice(bi, 1);
-  return bestP;
-}
-/* 這一坨是不是已經有別台在清了（v1.61）。heaps 每幀重算、幾台又不是同一幀改派，
-   光靠「挑走就從清單移除」擋不住：A 這一幀挑了中央那坨，B 下一幀看到的是新的清單，
-   照樣挑得到同一坨。所以直接比對「別台正在清的那一點」。 */
-function dozTaken(m, h) {
-  for (const o of dozers.list) {
-    if (o === m || o.st !== 'push') continue;
-    if ((o.hx - h.x) ** 2 + (o.hz - h.z) ** 2 < DOZ_APART * DOZ_APART) return true;
-  }
-  return false;
-}
-/* 還有碎料、但夠格的那幾坨都有人在清了：自己換一條線再穿一趟（v1.61）。
-   停在原地等一樣是浪費時限，畫面上還像機器卡住了。
-   路線是「從現在的位置對穿到另一邊」，橫向錯開一段——五個檔位裡挑離別台正在清的
-   那一帶最遠的那一條，這樣兩台不會又走成同一條線。 */
-const LANE_OPT = [-0.6, -0.3, 0, 0.3, 0.6];
-function lanePass(m) {
-  const d = Math.hypot(m.x, m.z) || 1;
-  const ux = -m.x / d, uz = -m.z / d;                 // 對著場中心
-  const px = -uz, pz = ux;
-  const out = dozOutR();
-  let best = null, bestGap = -1;
-  for (const f of LANE_OPT) {
-    const off = f * siteClearR();
-    const hx = px * off, hz = pz * off;               // 這條弦掃過的是哪一帶
-    let gap = Infinity;
-    for (const o of dozers.list)
-      if (o !== m && o.st === 'push') gap = Math.min(gap, Math.hypot(o.hx - hx, o.hz - hz));
-    if (gap > bestGap) { bestGap = gap; best = { off, hx, hz }; }
-  }
-  const half = Math.sqrt(Math.max(1, out * out - best.off * best.off));
-  m.tx = best.hx + ux * half; m.tz = best.hz + uz * half;
-  m.hx = best.hx; m.hz = best.hz; m.st = 'push';
-}
 /* 開向目標點。回傳是否已抵達。轉向不是瞬間的，車頭要轉過去才走得順。 */
 function driveTo(m, dt, spd) {
   const dx = m.tx - m.x, dz = m.tz - m.z;
@@ -949,17 +856,16 @@ function pushWithBlade(m, mvx, mvz) {
 function finishClear() {
   kickOutSite();                     // 剩下的零星碎塊直接彈出去收尾
   dozers.done = true;                // 交給小人，機器自己開出場
-  for (const m of dozers.list) {
-    m.st = 'leave';
-    m.a = Math.atan2(m.x, m.z);      // 車頭轉朝外，不要再穿過工地
-  }
+  /* 車頭**不**轉（v1.142）：一趟是直線，繼續往前開就是最短的出場路徑，
+     還在工地裡的那一段照樣推（見下面 done 那一段）。轉朝外會讓外側那幾台斜切回工地。 */
+  for (const m of dozers.list) m.st = 'leave';
   beginBuild();
 }
 /* 開一步。鏟子放不放下來、推不推料**只看位置**，不看在跑哪一段（v1.64.2）：
    進了工作範圍就放下來推，出了範圍才抬起來。速度看鏟子上有沒有料——空鏟就開快的，
    工地大半是空地，整趟都用推料的慢速跑等於把時限花在沒東西可推的地方
    （中世紀城堡實測有 2 秒多是這樣耗掉的）。
-   怎麼開由呼叫端給：推的時候是 driveTo 追目標，離場是直線往外。 */
+   怎麼開由呼叫端給：推的時候是 driveTo 追目標，穿出去之後與離場都是照車頭直線開。 */
 function dozeMove(m, dt, move) {
   const work = Math.hypot(m.x, m.z) < dozWorkR();
   m.bl += ((work ? 0 : 1) - m.bl) * Math.min(1, dt * (work ? 8 : 6));
@@ -997,22 +903,20 @@ function stepDozers(dt) {
     if (!alive) { dozers = null; ENG.putDozers([]); }
     return;
   }
-  const heaps = listHeaps();
-  let idle = 0;
+  /* 一趟直線推過去，穿出另一頭就沒事了——不回頭找料（v1.142）。
+     整排都出去了就收工；拖太久（lim）也收工，那時還在工地裡的照樣一路推著出去。 */
+  let outn = 0;
   for (const m of D.list) {
     if (m.st === 'push') {
-      if (dozeMove(m, dt, sp => driveTo(m, dt, sp))) m.st = 'seek';
+      if (dozeMove(m, dt, sp => driveTo(m, dt, sp))) m.st = 'out';
+    } else {
+      /* 先穿出去的不要停在原地等（外側那幾條帶碎料少、空鏟跑得快）：照原方向繼續開。
+         停下來等的話整排會斷成一截一截的，而且停的位置剛好在工地邊上。 */
+      dozeMove(m, dt, sp => { m.x += Math.sin(m.a) * sp * dt; m.z += Math.cos(m.a) * sp * dt; });
     }
-    if (m.st === 'seek') {
-      // 出了工地還有很多碎料就轉個彎再直線推一趟，挑的是別台沒在清的那一坨
-      const p = pickHeap(m, heaps, DOZ_LIMIT - D.t);
-      if (p) { m.tx = p.tx; m.tz = p.tz; m.hx = p.hx; m.hz = p.hz; m.st = 'push'; }
-      else if (heaps.length) lanePass(m);      // 還有碎料，只是都被別台認走了
-      else idle++;
-    }
+    if (m.st === 'out') outn++;
   }
-  // 全部都找不到值得推的堆了，或是拖太久，就收工——不為了零星幾塊讓玩家乾等
-  if (idle >= D.list.length || D.t > DOZ_LIMIT) finishClear();
+  if (outn >= D.list.length || D.t > D.lim) finishClear();
 }
 
 /* 直接把整座蓋好。開場用——一進來就有一座完整的建築可以砸，

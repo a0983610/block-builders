@@ -5,7 +5,7 @@
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
-   --until：改一行就要等整輪（964 條）太慢，這個讓它跑到指定段落就停。
+   --until：改一行就要等整輪（965 條）太慢，這個讓它跑到指定段落就停。
    只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
    測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
@@ -6798,14 +6798,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        二十個人搶的是「幾個蓋得起來又沒人認的格子」，抽到誰都可能整段站在旁邊沒事做——
        量到的就不是「他有沒有回去上工」。 */
     scatterFree();
-    /* 會搬料的那種排前面（v1.141）：這一條驗的是「爬起來真的去搬料」，而魔法師一塊都
-       不搬（他站在旁邊隔空拋，見 updMage）——抽到他當 a 的話量到的是「幾乎 0 幀手上
-       有貨」，那不是他沒上工。他收心之後照樣上工，由魔法師那一段自己守。
-       （v1.141 之前這個抽法也會抽到他，只是那時場上一直有料、他認到料就算「手上有貨」，
-       比例剛好過得了門檻；缺料要自己拉之後就過不了了。） */
+    /* 會搬料的那種排前面（v1.141 挑掉魔法師、v1.142 再挑掉工程師）：這一條驗的是
+       「爬起來真的去搬料」，而這兩種人**本來就不搬**——魔法師站在旁邊隔空拋
+       （見 updMage）、工程師只看圖只指揮（見 updEng，而且固定是 0 號，rollLazy 抽到
+       0 號的機率是 2/20＝10%）。抽到他們當 a，量到的是「0 幀手上有貨」，那不是他沒上工。
+       他們收心之後照樣做自己那份工，由各自那一段守。
+       （實測就是這樣飄的：同一份測試前一輪 1151/1200 幀有貨，下一輪抽到工程師 0/1200。） */
     const lz = i => i >= 0;
-    const idx = workers.map((w, i) => w.lazy && !w.mage ? i : -1).filter(lz)
-      .concat(workers.map((w, i) => w.lazy && w.mage ? i : -1).filter(lz));
+    const pick = f => workers.map((w, i) => w.lazy && f(w) ? i : -1).filter(lz);
+    const idx = pick(w => !w.mage && !w.eng).concat(pick(w => w.mage || w.eng));
     const o = { n: idx.length };
     let t = 0;
     while (t < 40) { step(0.05); t += 0.05; }          // 先讓事件把他們派去蓋房子
@@ -6892,7 +6893,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const born = dozers ? dozers.list.length : 0;
     const drawn = dozers ? dozRender(dozers).length : 0;
     const R = siteR + 1.4;
-    const wantN = Math.max(3, Math.min(6, Math.round(Math.PI * R * R / 160)));
+    const wantN = Math.min(Math.ceil(R / ENG.DOZ_W), ENG.MAXDOZ);
+    /* 並排的檔位：把每台的位置投影到「橫向」那條軸上（行進方向是 (sin a, cos a)，
+       橫向就是 (cos a, -sin a)）。相鄰兩台的間距要 ≤ 一把鏟子的寬度（2·DOZ_W），
+       最外側那兩台的鏟子邊緣要碰到工地邊界——兩件都成立才叫「鋪滿整個寬度」。 */
+    const a0 = dozers ? dozers.list[0].a : 0;
+    const lats = (dozers ? dozers.list : []).map(m => m.x * Math.cos(a0) - m.z * Math.sin(a0))
+                                            .sort((p, q) => p - q);
+    let lane = 0;
+    for (let i = 1; i < lats.length; i++) lane = Math.max(lane, lats[i] - lats[i - 1]);
+    const edge = lats.length ? R - Math.max(-lats[0], lats[lats.length - 1]) : 99;
     const dirtyOf = () => blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R).length;
     // 最密的一格有幾塊——推土機的工作就是把這個數字壓下來
     const heapOf = () => {
@@ -6965,14 +6975,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              cohort: cohort.length, pushedOut, kicked, outFrames, outDown, outPush,
              heapEnd: trail.length ? trail[trail.length - 1] : 0,
              sawPush, wantN, inSite, blDown, mFrames, maxSpd: +maxSpd.toFixed(1),
+             lane: +lane.toFixed(2), edge: +edge.toFixed(2), dw: ENG.DOZ_W,
+             lats: lats.map(v => +v.toFixed(1)),
              lastIn: +(lastIn * 0.05).toFixed(1),
              gone: !dozers, phase, drove: +(g2 * 0.05).toFixed(1) };
   });
-  /* 台數跟工地面積走：小工地 3 台就夠，大工地固定三台根本清不動
-     （實測 siteR 44 的工地六秒半推出去 0 塊，全靠收尾彈掉）。上限 6 是畫面的容量。 */
-  ok('推土機台數跟著工地大小走', doze.born === doze.wantN && doze.drawn === doze.born &&
-     doze.born >= 3 && doze.born <= 6,
-     doze.born + ' 台（面積換算要 ' + doze.wantN + ' 台），畫面上放了 ' + doze.drawn + ' 台');
+  /* 台數照**地標寬度**算（v1.142，使用者指定）：工地寬度 ÷ 一把鏟子的寬度。
+     v1.61～v1.141 是照面積算、上限 6 台，大工地根本清不動（實測金門大橋推出去 0 塊，
+     全靠收尾彈掉）。這一條同時驗「並排鋪滿寬度」：間距 ≤ 鏟子寬、最外側碰到邊界。 */
+  ok('推土機台數照地標寬度算，並排鋪滿整個工地',
+     doze.born === doze.wantN && doze.drawn === doze.born &&
+     doze.lane <= doze.dw * 2 + 0.01 && doze.edge <= doze.dw + 0.01 && doze.edge > 0,
+     doze.born + ' 台（寬度換算要 ' + doze.wantN + ' 台），畫面上放了 ' + doze.drawn +
+     ' 台；橫向檔位 ' + JSON.stringify(doze.lats) + '，相鄰最寬 ' + doze.lane +
+     '（一把鏟子 ' + (doze.dw * 2) + '），最外側離邊界 ' + doze.edge + '（≤ 半把鏟子 ' +
+     doze.dw + ' 才叫掃得到邊）');
   /* 以前是「趕路抬鏟、到位才放下」，機器抬著鏟子橫越工地那一段完全沒產出——
      實測吃掉三成到七成七的機器時間。現在鏟子只看位置：進了範圍就放下。 */
   /* 扣掉的那幾幀是鏟子放下來的緩降動畫（進場那一下 bl 從 1 降到 0 要幾幀），
@@ -6989,8 +7006,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      doze.lastIn + ' 秒／共 ' + doze.secs + ' 秒），期間蓋了 ' + doze.built + ' 塊');
   /* 清得掉多少很看堆的位置，但門檻要有意義：繞內側那版是平均 27～33%
      （中世紀城堡（v1.66 換掉的那份）四輪 15/18/32/43%），對穿之後 51～69%，時限拉到 10 秒（v1.61.1）
-     之後是 82～87%。門檻放六成，擋的是退步不是抖動。 */
-  ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > doze.cohort * 0.6,
+     之後是 82～87%，v1.142 照寬度並排掃一趟之後是 92%（同一份藍圖同一支測試；
+     另外六個場景 93/98/94/100/95/95%，見 README〈整地〉）。門檻跟著拉到八成，
+     擋的是退步不是抖動。 */
+  ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > doze.cohort * 0.8,
      doze.cohort + ' 塊裡有 ' + doze.pushedOut + ' 塊被鏟出範圍（' +
      (doze.pushedOut / doze.cohort * 100).toFixed(0) + '%），收尾彈掉 ' + doze.kicked +
      ' 塊；最密的一格 ' + JSON.stringify(doze.trail.slice(0, 12)));
@@ -6999,16 +7018,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('整完會自己開出場', doze.gone && doze.phase === 'build',
      doze.drove + ' 秒後開走，phase=' + doze.phase);
   /* v1.64.2：以前時限一到就 `m.bl = 1`（鏟子當場抬起來）再直線開出去，
-     最後那一趟等於白跑——而且畫面上是抬著鏟子從料堆中間穿過去。 */
-  ok('時限到離場的路上，還在工地裡就繼續推',
-     doze.outFrames > 10 && doze.outDown === doze.outFrames && doze.outPush > 200,
-     '離場那 ' + doze.drove + ' 秒裡，車子在工作範圍內 ' + doze.outFrames +
-     ' 幀、鏟子放著的有 ' + doze.outDown + ' 幀，順路又推了 ' + doze.outPush + ' 塊次');
+     最後那一趟等於白跑——而且畫面上是抬著鏟子從料堆中間穿過去。
+     v1.142 起收工的時機是「整排都掃出另一頭了」，那一刻機器剛好落在 dozOutR 與
+     dozWorkR 之間（只差 1 格），所以每台還有一兩幀在範圍內——那幾幀鏟子必須還放著，
+     而且那一疊要跟著推出去（實測 4 台 6 幀、順路 2650 塊次）。 */
+  ok('收工開出去的路上，還在範圍內就繼續推',
+     doze.outFrames >= doze.born && doze.outDown === doze.outFrames && doze.outPush > 200,
+     '開出去那 ' + doze.drove + ' 秒裡，車子在工作範圍內 ' + doze.outFrames +
+     ' 幀（' + doze.born + ' 台）、鏟子放著的有 ' + doze.outDown + ' 幀，順路又推了 ' +
+     doze.outPush + ' 塊次');
   await page.screenshot({ path: path.join(OUT, '04-整地.png') });
 
-  /* ── 從地圖邊緣進場、分頭走不同的路（v1.61）──────────────────
-     以前是「在工地邊上憑空出現、原地怠速 1.3 秒」，而且幾台可能對著同一坨開。
-     現在從碎料場外緣開進來，每台走自己的一條弦，第一趟就分頭掃過工地的不同地帶。 */
+  /* ── 從地圖邊緣並排進場，一趟掃過去（v1.61 進場、v1.142 並排）─────────
+     v1.61 之前是「在工地邊上憑空出現、原地怠速 1.3 秒」；v1.61～v1.141 是每台走自己的
+     一條弦、各自找料；v1.142 起整排從同一側並排開進來，一趟直線掃完就收工。 */
   const dozIn = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1200; setWorkerCount(4); startBuild(true); completeNow();
@@ -7016,6 +7039,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 120; i++) step(0.05);
     startClear();
     const spawnR = dozers.list.map(m => +Math.hypot(m.x, m.z).toFixed(1));
+    /* 整排共用一個行進方向 a0：軸向 = (sin a0, cos a0)、橫向 = (cos a0, -sin a0)。
+       「並排」＝每台的橫向座標各自一條帶、軸向座標同一側。 */
+    const a0 = dozers.list[0].a;
+    const axOf = p => p.x * Math.sin(a0) + p.z * Math.cos(a0);
+    const latOf = p => p.x * Math.cos(a0) - p.z * Math.sin(a0);
+    const lat0 = dozers.list.map(latOf);
+    let drift = 0;
     const outsideAtBirth = dozers.list.filter(m => Math.hypot(m.x, m.z) > arenaR).length;
     const entry = new Map();
     let outFrames = 0, outUp = 0, inFrames = 0, inDown = 0, passes = 0;
@@ -7036,6 +7066,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         const key = m.tx.toFixed(2) + ',' + m.tz.toFixed(2);
         if (wasSt.has(m) && wasSt.get(m) !== key) passes++;
         wasSt.set(m, key);
+        // 走的是不是一條直線：橫向座標不該偏離自己出發的那一條帶
+        drift = Math.max(drift, Math.abs(latOf(m) - lat0[dozers.list.indexOf(m)]));
       }
     }
     // 各自踏進工地的入口點：分散進場的話這些點會散在工地外圍，不會擠在一起
@@ -7044,55 +7076,138 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let a = 0; a < es.length; a++)
       for (let b = a + 1; b < es.length; b++)
         minEntry = Math.min(minEntry, Math.hypot(es[a].x - es[b].x, es[a].z - es[b].z));
+    // 入口都在同一側（軸向為負＝還沒過場中心），而且橫向一台一條帶、間距 ≤ 一把鏟子
+    const sameSide = es.filter(p => axOf(p) < 0).length;
+    const eLat = es.map(latOf).sort((p, q) => p - q);
+    let eGapMax = 0, eGapMin = Infinity;
+    for (let i = 1; i < eLat.length; i++) {
+      eGapMax = Math.max(eGapMax, eLat[i] - eLat[i - 1]);
+      eGapMin = Math.min(eGapMin, eLat[i] - eLat[i - 1]);
+    }
     return { n: dozers ? dozers.list.length : 0, spawnR, outsideAtBirth,
              arena: +arenaR.toFixed(1), work: +dozWorkR().toFixed(1),
              entered: es.length, minEntry: +minEntry.toFixed(1),
+             sameSide, eGapMax: +eGapMax.toFixed(2), eGapMin: +eGapMin.toFixed(2),
+             blade: ENG.DOZ_W * 2, drift: +drift.toFixed(3),
              outFrames, outUp, inFrames, inDown, passes, secs: +(g * 0.05).toFixed(1) };
   });
   ok('推土機從地圖邊緣進場，不是在工地邊上憑空出現',
      dozIn.outsideAtBirth === dozIn.n && Math.min(...dozIn.spawnR) > dozIn.arena,
      dozIn.n + ' 台的出發點都在半徑 ' + dozIn.spawnR.join('／') + '（碎料場外緣是 ' +
      dozIn.arena + '、工作範圍是 ' + dozIn.work + '）');
-  ok('多台分頭進場，不會擠在同一條路上',
-     dozIn.entered === dozIn.n && dozIn.minEntry > 6,
-     dozIn.n + ' 台都開進了工地，兩兩之間最近的入口相隔 ' + dozIn.minEntry + ' 格');
+  ok('整排從同一側並排開進來，一台一條帶',
+     dozIn.entered === dozIn.n && dozIn.sameSide === dozIn.n &&
+     dozIn.eGapMax <= dozIn.blade + 0.01 && dozIn.eGapMin > 0.5,
+     dozIn.n + ' 台都開進了工地、入口都在同一側；橫向間距 ' + dozIn.eGapMin + '～' +
+     dozIn.eGapMax + '（一把鏟子 ' + dozIn.blade + '），兩兩最近的入口相隔 ' +
+     dozIn.minEntry + ' 格');
   // 每台留 3 幀給放鏟／抬鏟的漸變動畫（bl 是 lerp 過去的，不是瞬間切換）
   ok('進了建築範圍才放鏟，離開就抬起來',
      dozIn.inDown >= dozIn.inFrames - dozIn.n * 3 && dozIn.outUp >= dozIn.outFrames - dozIn.n * 3 &&
      dozIn.inFrames > 50 && dozIn.outFrames > 50,
      '範圍內 ' + dozIn.inFrames + ' 幀裡放著鏟的 ' + dozIn.inDown + '、範圍外 ' +
      dozIn.outFrames + ' 幀裡抬著的 ' + dozIn.outUp + '（差的是漸變那幾幀）');
-  /* 一趟含進場（約 2.5 秒）加穿過工地（約 4 秒），所以只要求「真的有人轉彎再推」，
-     不要求每台都轉同樣的次數。 */
-  ok('第一趟穿出去之後會轉彎再推一趟', dozIn.passes >= 2,
-     dozIn.n + ' 台在 ' + dozIn.secs + ' 秒裡總共又轉彎推了 ' + dozIn.passes + ' 趟');
+  /* v1.142：一次，不回頭。目標從出發就沒再變過（passes 0），而且整趟是一條直線——
+     橫向座標不偏離自己出發的那一條帶，不然並排就會歪掉、兩台擠到同一條線上。
+     v1.61～v1.141 的行為剛好相反（推完一趟就回頭再挑一坨，那時要求 passes ≥ 2）。 */
+  ok('一趟直線掃完就收工，不會再回頭找料',
+     dozIn.passes === 0 && dozIn.drift < 0.05,
+     dozIn.n + ' 台在 ' + dozIn.secs + ' 秒裡改派 ' + dozIn.passes +
+     ' 次，橫向最多偏離自己那條帶 ' + dozIn.drift + ' 格');
 
-  /* 「避免都清同一個點」的規則本身：A 已經在清某一坨時，B 就不該再挑那一坨。
-     光靠「挑走就從清單移除」擋不住——heaps 每幀重算，兩台改派的時機又不同。 */
-  const dozApart = await page.evaluate(() => {
+  /* 掃的方向：碎料鋪成長條的時候要**從短邊推**。沿著長邊推的話，一把鏟子得從頭到尾
+     收整條線的料，鏟面前那一疊早就滿了，後面的就從兩側漏掉——實測金門大橋 9000 建材
+     沿長邊推只送出 48%，改成推短邊 95%（萬里長城 3000 是 61% → 100%）。 */
+  const dozAxis = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '萬里長城');
+    targetCnt = 3000; setWorkerCount(6); startBuild(true); completeNow();
+    for (const b of blocks) if (b.st === 3) freeBlock(b);
+    for (let i = 0; i < 140; i++) step(0.05);
+    // 碎料分布的長邊（共變異數矩陣的主軸）。這裡自己算一份，不呼叫 sweepAngle
+    const r = siteClearR();
+    let n = 0, sx = 0, sz = 0, xx = 0, zz = 0, xz = 0;
+    for (const b of blocks) {
+      if (b.st !== 0 || Math.hypot(b.x, b.z) >= r) continue;
+      n++; sx += b.x; sz += b.z; xx += b.x * b.x; zz += b.z * b.z; xz += b.x * b.z;
+    }
+    const mx = sx / n, mz = sz / n;
+    const cxx = xx / n - mx * mx, czz = zz / n - mz * mz, cxz = xz / n - mx * mz;
+    const major = 0.5 * Math.atan2(2 * cxz, cxx - czz);      // 長邊的方向
+    const mid = (cxx + czz) / 2, d = Math.hypot((cxx - czz) / 2, cxz);
+    const ratio = (mid - d) / (mid + d);        // 短邊 ÷ 長邊的變異數比，越小越細長
+    /* 每次 startClear 都重挑一次方向（左右哪一邊是隨機的），十二次都該垂直於長邊。
+       角度只看 mod 180°：從左邊推還是從右邊推都算「推短邊」。 */
+    let worst = 0;
+    const dirs = [];
+    for (let t = 0; t < 12; t++) {
+      startClear();
+      const a = dozers.list[0].a;                            // 車頭＝行進方向 (sin a, cos a)
+      const dir = Math.atan2(Math.cos(a), Math.sin(a));      // 換成跟 major 同一套 atan2(z, x)
+      let diff = Math.abs(dir - major) % Math.PI;
+      if (diff > Math.PI / 2) diff = Math.PI - diff;
+      const deg = diff / Math.PI * 180;
+      dirs.push(+deg.toFixed(1));
+      worst = Math.max(worst, Math.abs(deg - 90));
+    }
+    dozers = null; phase = 'build';
+    return { n, ratio: +ratio.toFixed(3), worst: +worst.toFixed(1), dirs };
+  });
+  ok('碎料鋪成長條的時候，從短邊推過去（不是沿著長邊推）',
+     dozAxis.ratio < 0.5 && dozAxis.worst < 5,
+     '萬里長城的碎料短邊÷長邊 = ' + dozAxis.ratio + '（越小越細長，' + dozAxis.n +
+     ' 塊）；十二次挑的方向與長邊夾角 ' + JSON.stringify(dozAxis.dirs) + '（90° 才是推短邊）');
+
+  /* 「並排鋪滿寬度」的實證（v1.142）：把測試用的碎料橫著排滿整個工地寬度，一格一塊，
+     看整排掃過去之後有沒有哪一塊沒動。鏟子之間留了縫的話，縫的位置就會剩下沒被推走的。
+     只驗座標算得對是不夠的——要真的被那把鏟子推到。 */
+  const dozGap = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     targetCnt = 1200; setWorkerCount(4); startBuild(true); completeNow();
     for (const b of blocks) if (b.st === 3) freeBlock(b);
-    for (let i = 0; i < 120; i++) step(0.05);
+    for (let i = 0; i < 140; i++) step(0.05);
     startClear();
-    const heaps = listHeaps();
-    if (heaps.length < 2) return { skip: true };
-    for (const m of dozers.list) m.st = 'seek';        // 先讓所有人都空著，只留 A、B 互動
-    const A = dozers.list[0], B = dozers.list[1];
-    // 沒人在清的時候 B 會挑哪一坨
-    const first = pickHeap(B, heaps.slice(), 99);
-    if (!first) return { skip: true };
-    // 換 A 去清那一坨，B 就該改挑別的
-    A.st = 'push'; A.hx = first.hx; A.hz = first.hz;
-    const second = pickHeap(B, heaps.slice(), 99);
-    const d = second ? Math.hypot(second.hx - first.hx, second.hz - first.hz) : -1;
-    return { skip: false, heaps: heaps.length, d: +d.toFixed(1), apart: DOZ_APART };
+    const a = dozers.list[0].a;
+    const ux = Math.sin(a), uz = Math.cos(a);                // 行進方向
+    const px = Math.cos(a), pz = -Math.sin(a);               // 橫向
+    const R = siteClearR();
+    /* 場上其他碎料先挪到場邊（連空間雜湊一起搬）：留著的話，量到的位移會混進
+       「碎料互相擠開」的成分，而這裡要測的是那個橫向位置有沒有被鏟子掃到。 */
+    for (const b of blocks) {
+      if (b.st !== 0) continue;
+      if (b.cell) gridDel(b);
+      b.x = arenaR * 0.98; b.z = arenaR * 0.98; b.y = 0.47; b.rest = true;
+      gridAdd(b);
+    }
+    // 橫向一格一塊排滿整個寬度，擺在工地中線上（軸向 0）——整排一定會壓過去
+    const probes = [];
+    for (let lat = -R + 0.3; lat <= R - 0.3; lat += 1) {
+      const b = blocks.find(x => x.st === 0 && !x.probe);
+      if (!b) break;
+      b.probe = 1;
+      if (b.cell) gridDel(b);
+      b.x = px * lat; b.z = pz * lat; b.y = 0.47; b.rest = true;
+      gridAdd(b);
+      probes.push({ b, lat: +lat.toFixed(1), x0: b.x, z0: b.z });
+    }
+    /* 收尾的 kickOut 會把還留在工地裡的彈出去，所以位移要看**收工前**那一幀，
+       不然「沒被推走的」會被彈飛的位移蓋掉。 */
+    let snap = probes.map(p => ({ x: p.b.x, z: p.b.z }));
+    let g = 0;
+    while (phase === 'clear' && g++ < 900) {
+      step(0.05);
+      if (dozers && !dozers.done) snap = probes.map(p => ({ x: p.b.x, z: p.b.z }));
+    }
+    const moved = probes.map((p, k) => (snap[k].x - p.x0) * ux + (snap[k].z - p.z0) * uz);
+    return { n: probes.length, R: +R.toFixed(1), secs: +(g * 0.05).toFixed(1),
+             lanes: dozers ? dozers.list.length : 0,
+             stuck: probes.filter((p, k) => moved[k] < 1).map(p => p.lat),
+             minMove: +Math.min(...moved).toFixed(2), maxMove: +Math.max(...moved).toFixed(2) };
   });
-  ok('別台已經在清的那一坨，不會再派第二台過去',
-     dozApart.skip || dozApart.d >= dozApart.apart,
-     dozApart.skip ? '（這輪堆不夠多，略過）'
-       : dozApart.heaps + ' 坨：同一台原本挑的那一坨被別人接手之後，改挑了 ' +
-         dozApart.d + ' 格外的另一坨（門檻 ' + dozApart.apart + '）');
+  ok('整個寬度都掃得到，鏟子與鏟子之間沒有縫',
+     dozGap.n > 25 && dozGap.stuck.length === 0,
+     '半徑 ' + dozGap.R + ' 的工地橫向排了 ' + dozGap.n + ' 塊、' + dozGap.lanes +
+     ' 台掃過去，沒被推走的：' + (dozGap.stuck.length ? JSON.stringify(dozGap.stuck) : '無') +
+     '（推得最少的一塊往前 ' + dozGap.minMove + '、最多 ' + dozGap.maxMove + '）');
 
   /* 只拿槌子敲的話碎料會全堆在挨打的那一區——這才是推土機真正要處理的情況 */
   const dozeHeap = await page.evaluate(() => {
@@ -7171,15 +7286,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
     }
     return { dirty0, secs: +(g * 0.05).toFixed(1), phase, siteR: +siteR.toFixed(0),
-             maxSpd: +maxSpd.toFixed(1),
+             maxSpd: +maxSpd.toFixed(1), n: dozers ? dozers.list.length : 0,
+             lim: +passLimit().toFixed(1),
              dirty1: blocks.filter(b => b.st === 0 && Math.hypot(b.x, b.z) < R).length };
   });
   ok('大工地的車速跟小工地一樣，不會為了趕時間飆起來', dozeBig.maxSpd < 12,
      '半徑 ' + dozeBig.siteR + ' 的工地，最快 ' + dozeBig.maxSpd + ' 單位／秒');
-  /* 上限 15 秒＝進場（從地圖邊緣開到工地，v1.61 起大約 1.8–2.5 秒）＋ DOZ_LIMIT 10 秒
-     ＋ 收尾（實測 12.7 秒）。守的是「不會沒完沒了」，不是把數字釘在某一次量到的值上。 */
-  ok('大工地不會沒完沒了，收尾照樣清乾淨', dozeBig.dirty1 === 0 && dozeBig.secs < 15,
-     dozeBig.dirty0 + ' 塊 → ' + dozeBig.dirty1 + ' 塊，花 ' + dozeBig.secs + ' 秒');
+  /* 秒數上限跟 passLimit() 綁（半徑 60 的工地是 23.9 秒）＋ 進場那段路的餘裕，
+     不要釘死某一次量到的數字。守的是「不會沒完沒了」。
+     v1.142 之前這裡是 15 秒（DOZ_LIMIT 10 ＋ 進場 ＋ 收尾，實測 12.7 秒），但那時
+     一趟連對穿都跑不完、推出去 0 塊；現在 20 台真的並排掃完整個 123 格寬（實測 19.8 秒
+     推出去 95%）——時間是跟著寬度長的，這是使用者指定「依目前移動速度」的必然。 */
+  ok('大工地不會沒完沒了，收尾照樣清乾淨',
+     dozeBig.dirty1 === 0 && dozeBig.secs < dozeBig.lim + 6,
+     dozeBig.dirty0 + ' 塊 → ' + dozeBig.dirty1 + ' 塊，' + dozeBig.n + ' 台花 ' +
+     dozeBig.secs + ' 秒（上限 ' + (dozeBig.lim + 6).toFixed(1) + '＝一趟 ' +
+     dozeBig.lim + ' ＋ 進場餘裕 6）');
 
   /* 畫面上的鏟子跟判定用的鏟子要是同一把。
      在每台機器的鏟面正前方各擺一塊碎料，看它會不會被往前推——
@@ -8152,9 +8274,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const first = { aim: !!aim, ball: !!balls, rings: aim ? aimRings().length : 0 };
     useTool({ kind: 'ground', point: { x: -40, y: 0, z: 20 } });
     // 第二點在第一點的 +z 方向 → 角度應該是 π/2
+    /* 角度要比**沒有四捨五入**的那個值：出手方向本來就帶 ±BALL_SPREAD 的隨機偏差
+       （`aimDir` 的 `rr(-spread, spread)`），抽到貼著上限的那一發，先 toFixed(3) 再比
+       會被進位推出界（實測 1.651 對上限 1.5708+0.08，真值其實在界內）——約 0.6% 的
+       跑次會這樣假失敗。印出來的還是四捨五入過的，好讀。 */
     const second = { aim: !!aim, ball: !!balls,
                      x: balls ? +balls[0].x.toFixed(2) : null, z: balls ? +balls[0].z.toFixed(2) : null,
-                     ang: balls ? +Math.atan2(balls[0].vz, balls[0].vx).toFixed(3) : null };
+                     ang: balls ? +Math.atan2(balls[0].vz, balls[0].vx).toFixed(3) : null,
+                     raw: balls ? Math.atan2(balls[0].vz, balls[0].vx) : null };
     balls = null; ENG.putBalls([]);
     useTool({ kind: 'ground', point: { x: 9, y: 0, z: 9 } });   // 瞄一半就換建築
     const aimed = !!aim;
@@ -8170,7 +8297,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('第二下從第一點出手、往第二點滾',
      ballClick.second.ball && !ballClick.second.aim &&
      ballClick.second.x === -40 && ballClick.second.z === 0 &&
-     Math.abs(ballClick.second.ang - Math.PI / 2) <= ballClick.lim,
+     Math.abs(ballClick.second.raw - Math.PI / 2) <= ballClick.lim,
      '球生在 (' + ballClick.second.x + ', ' + ballClick.second.z + ')，角度 ' +
      ballClick.second.ang + '（要 ' + (Math.PI / 2).toFixed(3) + ' ±' + ballClick.lim + '）');
   /* v1.59：換建築不再收掉正在作用的道具，瞄到一半的第一點也一樣留著
@@ -15065,12 +15192,33 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 三檔按鈕：點下去要真的生效。用真的 click，才連 listener 有沒有接上都一起測到。 */
   const hitSeg = (id, v) => page.evaluate(([id, v]) =>
     [...document.getElementById(id).children].find(b => +b.dataset.v === v).click(), [id, v]);
+  /* 先把料池灌到比藍圖多，下面那一條才量得到「池子跟著藍圖走」：v1.141 起料池是
+     **多的收掉、少了不補**（缺料的人自己挖），池子本來就比藍圖小的時候，點下去它是
+     不會變的。不灌的話量到的是上一段留下來的池子——上一座是**隨機**藍圖，1800 建材下
+     各座 1750～1800 格不等，比倫敦眼摩天輪的 1781 少的時候這一條就假失敗
+     （實測進這一段時池子 1772／雙子星塔，於是 1772 vs 1781）。 */
+  const poolBig = await page.evaluate(() => {
+    /* 灌到比藍圖多 300 塊，點下去才有東西可以收。位置鋪在工地外圍那一圈（跟開場一樣），
+       全疊在原點的話下一幀會被 separate 炸開。
+       （這裡不用 installClean 裝的 scatterFree：前面幾段重載過頁面，那支已經沒了。） */
+    const want = bp.slots.length + 300;
+    while (blocks.length < want) {
+      const b = newBlock();
+      const a = Math.random() * Math.PI * 2;
+      const rad = siteR + 3 + Math.random() * (arenaR - siteR - 3);
+      b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad; b.y = HB;
+      blocks.push(b); separate(b); gridAdd(b);
+    }
+    ENG.setBlockCount(blocks.length);
+    return blocks.length;
+  });
   await hitSeg('cnt', 1800);
   await page.waitForTimeout(500);
   const cntS = await st(page);
   ok('建材按鈕會改變積木數', cntS.target === 1800 && cntS.total > 1200,
      '目標 ' + cntS.target + '，實得 ' + cntS.total + ' 塊');
-  ok('積木池跟著藍圖走', Math.abs(cntS.pool - cntS.total) <= 2, cntS.pool + ' vs ' + cntS.total);
+  ok('積木池跟著藍圖走（多的會被收掉）', Math.abs(cntS.pool - cntS.total) <= 2,
+     '先灌到 ' + poolBig + ' 塊，點下去之後池 ' + cntS.pool + '、藍圖 ' + cntS.total + ' 格');
 
   await hitSeg('wk', 60);
   ok('小人按鈕會改變人數', (await st(page)).workers === 60, (await st(page)).workers + ' 人');

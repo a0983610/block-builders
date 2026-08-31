@@ -58,7 +58,13 @@ const ENG = (function () {
   /* 鐵球最多同時幾顆（v1.116）。要跟規則那邊的 BALL_MAX 一樣大——
      小於它的話多出來的球會整顆不見（規則還在算，畫面上沒有）。 */
   const MAXBALL = 6;
-  const MAXDOZ = 6, DOZ_PARTS = 10;
+  /* 推土機最多同時幾台（v1.142 從 6 拉到 30）。整地改成「照地標寬度排一排、一趟掃過去」，
+     台數就跟工地寬度走：實測一般的地標 4～6 台、萬里長城 3000 建材 10 台，
+     最寬的金門大橋（9000 建材、半徑 89）要 29 台。
+     規則那邊用 ENG.MAXDOZ 當上限（DOZ_CAP），兩邊不會不一致。
+     成本是一次性的 instance 配置（30×10＝300 個），畫的還是同一個 InstancedMesh，
+     draw call 不變；每幀只有真的在場的那幾台要算矩陣。 */
+  const MAXDOZ = 30, DOZ_PARTS = 10;
   const MAXTRUCK = 2, TRK_PARTS = 11;       // 消防車：最多兩台，一台 11 個部位
   /* 水：同時最多幾格。**要跟規則那邊的 WT_CELLS 一樣大**——小於它的話多出來的格子
      整格不會被畫（而且被丟掉的是清單後面那些＝最新的水），實測就是「破口在流水，
@@ -2922,7 +2928,7 @@ const ENG = (function () {
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks, putGates, putWeapons, putBeasts,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
-    cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
+    cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
     MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
