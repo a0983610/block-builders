@@ -5,7 +5,7 @@
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
-   --until：改一行就要等整輪（911 條）太慢，這個讓它跑到指定段落就停。
+   --until：改一行就要等整輪（913 條）太慢，這個讓它跑到指定段落就停。
    只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
    測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
@@ -148,6 +148,14 @@ const installClean = page => page.evaluate(() => {
     /* 挖料的土痕也清掉（v1.100）：它跟隕石坑、焦黑共用同一份 marks，
        一個村落挖下來滴滴答答幾百塊，留著會被後面「隕石留下的是坑洞」那一段摸到。 */
     marks.length = 0;
+  };
+  /* 王之財寶從 v1.135 起是兩段點擊（第一下門陣、第二下目標），castGate 也跟著吃兩個點。
+     多數測試只在意「朝這個目標開一發」，所以這支照 v1.135 之前的取景擺門陣：
+     目標的另一側、鏡頭方向 GATE_BACK 遠——跟那時候 castGate 自己算出來的位置一模一樣，
+     量到的落點、集中度、打擊數才跟舊的紀錄可比。 */
+  window.gateAt = t => {
+    const yaw = ENG.cam.yaw;
+    castGate({ x: t.x - Math.cos(yaw) * GATE_BACK, z: t.z - Math.sin(yaw) * GATE_BACK }, t);
   };
   window.cleanTools = () => {
     clearHomes();
@@ -8412,7 +8420,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     });
     /* 王之財寶（v1.132）：連射七秒、一趟一百九十幾發，同一個道理一次都不震。 */
     const gateN = count(() => {
-      castGate({ x: 0, z: 0 });
+      gateAt({ x: 0, z: 0 });
       for (let i = 0; i < 340 && gates; i++) step(0.05);
       gates = null; weapons = null; gateEnd();
     });
@@ -9086,6 +9094,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return w ? (w.x - p.x) * w.dx + (w.y - p.y) * w.dy + (w.z - p.z) * w.dz : NaN;
     };
     tool = 'gate';
+    /* 兩段點擊（v1.135）：第一下門陣、第二下目標。門陣點在 v1.135 之前那個取景
+       （鏡頭方向、目標的另一側 GATE_BACK 遠，同 installClean 的 gateAt），這一段量到的
+       落點分布、集中度、打擊數才跟 v1.132～v1.134 的紀錄可比。 */
+    const gyaw = ENG.cam.yaw;
+    useTool({ point: new THREE.Vector3(-Math.cos(gyaw) * GATE_BACK, 0, -Math.sin(gyaw) * GATE_BACK),
+              dir: new THREE.Vector3(0, -1, 0) });
     useTool({ point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) });
     const born = gates.ports.length, n0 = placedCnt;
     /* 門陣的弧度（使用者：「就位也可以加一點弧度（像凹面鏡）」）：每個門沿視軸離場心多遠。
@@ -9218,7 +9232,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                             lie: +w.lie.toFixed(2), st: w.st };
     };
     lieWeapon = w => { lie++; oL(w); };
-    castGate({ x: 60, z: 0 });                 // 場外空地
+    gateAt({ x: 60, z: 0 });                 // 場外空地
     let g = 0;
     while ((gates || weapons) && g++ < 900) step(0.05);
     stickWeapon = oS; lieWeapon = oL;
@@ -9241,7 +9255,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      長度不能變，變的是送進 shader 的那個不透明度。 */
   const gateFadeT = await page.evaluate(() => {
     gates = null; weapons = null; gateEnd();
-    castGate({ x: 0, z: 0 });
+    gateAt({ x: 0, z: 0 });
     let g = 0, w = null;
     while (g++ < 900 && !w) { step(0.05); w = weapons && weapons.find(q => q.st === 'lie'); }
     const len0 = w.len;
@@ -9327,6 +9341,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (!fx) fx = { star: stars.length - s0, hot: hot.length - h0, blocks: n0 - placedCnt };
     };
     tool = 'gate';
+    /* 兩段點擊（v1.135）：第一下門陣、第二下目標。門陣點在 v1.135 之前那個取景
+       （鏡頭方向、目標的另一側 GATE_BACK 遠，同 installClean 的 gateAt），這一段量到的
+       落點分布、集中度、打擊數才跟 v1.132～v1.134 的紀錄可比。 */
+    const gyaw = ENG.cam.yaw;
+    useTool({ point: new THREE.Vector3(P.x - Math.cos(gyaw) * GATE_BACK, 0,
+                                       P.z - Math.sin(gyaw) * GATE_BACK),
+              dir: new THREE.Vector3(0, -1, 0) });
     useTool({ point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) });
     const hit = workers.map(() => 0);
     let T = 0;
@@ -9358,47 +9379,74 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '最粗的一塊 ' + gate1.fat + '，小人的法杖 ' + gate1.staff + '（' +
      (gate1.fat / gate1.staff).toFixed(1) + ' 倍；v1.132.1 是騎槍的環 0.66 ＝ 4 倍）');
 
-  /* 「參考鏡頭方向」（使用者指定）。兩件事：門陣鋪在鏡頭看過去那個方向的橫斷面上、
-     而且擺在場心的**另一側**——所以兵器是朝著鏡頭往下射，露在門外的才是刃不是柄
-     （見 game-tools.js 的 GATE_BACK）。轉了視角就整片換一邊。 */
-  const gateCam = await page.evaluate(() => {
-    /* **轉完要轉回去**：ENG.cam.yaw 是全域的，留著會讓後面每一條看畫面的測試
-       都從別的角度拍。踩過——〈消防車與潮濕〉那條量「濕了是不是畫得比較深」的
-       在背光那一面量到金字塔亮度 165→142、像素數 78000→38000，
-       積木暗到掉出它的取樣條件，於是「變濕」反而量成變亮。 */
+  /* 兩段點擊（v1.135，使用者：「操作方式調整 第一下地面點擊決定 出現門陣的位置
+     第二下地面點擊決定攻擊目標位置」）。v1.134 以前是一下就開：目標由那一下決定，
+     門陣自己退到「鏡頭方向的另一側 GATE_BACK 遠」。
+     所以這裡驗三件事：兩下的分工、門陣真的立在第一下那個點上、兵器朝第二下那個點飛，
+     而且**跟鏡頭無關**（同一組點在三個視角下量到的要一模一樣）。 */
+  const gateTwo = await page.evaluate(() => {
     const yaw0 = ENG.cam.yaw;
-    const at = yaw => {
-      gates = null; weapons = null; gateEnd();
+    const reset = () => { gates = null; weapons = null; gateEnd(); aim = null; };
+    // ① 兩段點擊：第一下只留光環不開門，第二下才開
+    reset();
+    tool = 'gate';
+    useTool({ kind: 'ground', point: new THREE.Vector3(-40, 0, 0) });
+    const one = { gates: !!gates, aim: aim ? { x: aim.x, z: aim.z } : null };
+    useTool({ kind: 'ground', point: new THREE.Vector3(0, 0, 25) });
+    const two = { gates: !!gates, aim: aim,
+                  cx: gates && +gates.cx.toFixed(2), cz: gates && +gates.cz.toFixed(2),
+                  tx: gates && +gates.x.toFixed(2), tz: gates && +gates.z.toFixed(2) };
+    // ② 幾何：門陣在第一下、兵器朝第二下，換三個視角量到的都一樣
+    const at = (yaw, from, to) => {
+      reset();
       ENG.cam.yaw = yaw;
-      castGate({ x: 0, z: 0 });
+      castGate(from, to);
       const g = gates;
-      /* 鏡頭在旋轉中心的 (cos yaw, sin yaw) 方向上，所以「鏡頭 → 場心」是它的反向。
-         門陣中心要落在場心的另一側，也就是跟這個方向同向。 */
-      const cx = -Math.cos(yaw), cz = -Math.sin(yaw);
-      const d = Math.hypot(g.cx - g.x, g.cz - g.z);
-      return { d: +d.toFixed(1),
-               dot: +(((g.cx - g.x) * cx + (g.cz - g.z) * cz) / (d || 1)).toFixed(3),
-               // 門陣的橫向要跟視線垂直（畫面右）
-               perp: +Math.abs(g.ux * cx + g.uz * cz).toFixed(3),
-               // 兵器朝鏡頭：指向與「鏡頭 → 場心」相反
-               toward: g.ports.filter(p => p.w && p.w.dx * cx + p.w.dz * cz < 0).length };
+      let ax = to.x - from.x, az = to.z - from.z;
+      const d = Math.hypot(ax, az); ax /= d; az /= d;
+      return { off: +Math.hypot(g.cx - from.x, g.cz - from.z).toFixed(3),   // 門陣離第一下多遠
+               d: +Math.hypot(g.cx - g.x, g.cz - g.z).toFixed(1),           // 門陣離目標多遠
+               back: +g.back.toFixed(1),
+               dot: +(g.ax * ax + g.az * az).toFixed(3),                    // 兵器方向 vs 門→目標
+               perp: +Math.abs(g.ux * ax + g.uz * az).toFixed(3),           // 橫向要垂直
+               toward: g.ports.filter(p => p.w && p.w.dx * ax + p.w.dz * az > 0).length };
     };
-    const a = at(0.9), b = at(0.9 + Math.PI / 2), c = at(0.9 + Math.PI);
-    gates = null; weapons = null; gateEnd();
+    const F = { x: -30, z: -30 }, T = { x: 6, z: 4 };
+    const a = at(0.9, F, T), b = at(0.9 + Math.PI / 2, F, T), c = at(0.9 + Math.PI, F, T);
+    // ③ 兩下點在同一個地方：退回舊取景（鏡頭方向、GATE_BACK 遠），不會變成除以零
+    reset();
+    ENG.cam.yaw = 0.9;
+    castGate({ x: 0, z: 0 }, { x: 0, z: 0 });
+    const same = { back: +gates.back.toFixed(1),
+                   d: +Math.hypot(gates.cx - gates.x, gates.cz - gates.z).toFixed(1),
+                   nan: !isFinite(gates.cx) || !isFinite(gates.fx) };
+    reset();
     ENG.cam.yaw = yaw0;
-    return { a, b, c, back: GATE_BACK, n: GATE_N };
+    tool = 'hammer';
+    return { one, two, a, b, c, same, from: F, to: T,
+             dist: +Math.hypot(T.x - F.x, T.z - F.z).toFixed(1), back: GATE_BACK, n: GATE_N };
   });
-  ok('門陣照鏡頭方向擺：立在視線的橫斷面上、退到場心的另一側',
-     [gateCam.a, gateCam.b, gateCam.c].every(r =>
-       Math.abs(r.d - gateCam.back) < 0.1 && r.dot > 0.999 && r.perp < 0.001),
-     '三個視角量到的：離場心 ' + [gateCam.a.d, gateCam.b.d, gateCam.c.d].join('／') +
-     '（設定 ' + gateCam.back + '）、與視線同向 ' +
-     [gateCam.a.dot, gateCam.b.dot, gateCam.c.dot].join('／') + '、橫向與視線的內積 ' +
-     [gateCam.a.perp, gateCam.b.perp, gateCam.c.perp].join('／'));
-  ok('所以兵器是朝著鏡頭射過來，露在門外的是刃不是柄',
-     [gateCam.a, gateCam.b, gateCam.c].every(r => r.toward === gateCam.n),
-     '三個視角各 ' + [gateCam.a.toward, gateCam.b.toward, gateCam.c.toward].join('／') +
-     ' 把朝著鏡頭（共 ' + gateCam.n + ' 把）');
+  ok('兩段點擊：第一下只在地上畫一圈光環，第二下才開門',
+     gateTwo.one.gates === false && gateTwo.one.aim &&
+     Math.abs(gateTwo.one.aim.x + 40) < 0.01 && gateTwo.two.gates === true &&
+     gateTwo.two.aim === null,
+     '第一下 (-40, 0)：門陣 ' + (gateTwo.one.gates ? '開了' : '還沒開') + '、光環在 (' +
+     gateTwo.one.aim.x + ', ' + gateTwo.one.aim.z + ')；第二下 (0, 25)：門陣開在 (' +
+     gateTwo.two.cx + ', ' + gateTwo.two.cz + ')、目標 (' + gateTwo.two.tx + ', ' +
+     gateTwo.two.tz + ')，光環收掉');
+  ok('門陣立在第一下那個點上，兵器朝第二下那個點飛（跟鏡頭無關）',
+     [gateTwo.a, gateTwo.b, gateTwo.c].every(r =>
+       r.off < 0.001 && Math.abs(r.back - gateTwo.dist) < 0.1 && r.dot > 0.999 &&
+       r.perp < 0.001 && r.toward === gateTwo.n),
+     '第一下 (-30, -30) → 第二下 (6, 4)，相距 ' + gateTwo.dist + '：三個視角量到的門陣偏移 ' +
+     [gateTwo.a.off, gateTwo.b.off, gateTwo.c.off].join('／') + '、飛行方向與「門→目標」的內積 ' +
+     [gateTwo.a.dot, gateTwo.b.dot, gateTwo.c.dot].join('／') + '、朝目標的兵器 ' +
+     [gateTwo.a.toward, gateTwo.b.toward, gateTwo.c.toward].join('／') + '/' + gateTwo.n + ' 把');
+  ok('兩下點在同一個地方就退回舊取景，不會除以零',
+     gateTwo.same.nan === false && Math.abs(gateTwo.same.back - gateTwo.back) < 0.1 &&
+     Math.abs(gateTwo.same.d - gateTwo.back) < 0.1,
+     '同一點連點兩下：門陣退到離目標 ' + gateTwo.same.d + '（設定 ' + gateTwo.back +
+     '）、back=' + gateTwo.same.back + '、有 NaN：' + gateTwo.same.nan);
 
   /* 門的**朝向就是那一把兵器的方向**（v1.132.1；v1.132.0 是一律正對鏡頭的公告板）。
      門是虛空裂開的一個洞、兵器從洞裡垂直探出來，所以斜著看時它是橢圓不是正圓
@@ -9407,7 +9455,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      一個門畫兩層（漣漪 ＋ 核），所以第 2i、2i+1 對應同一個門。 */
   const gateFace = await page.evaluate(() => {
     gates = null; weapons = null; gateEnd();
-    castGate({ x: 0, z: 0 });
+    gateAt({ x: 0, z: 0 });
     for (let i = 0; i < 40; i++) step(0.05);
     draw();
     const m = ENG.three.gateMesh, mat = new THREE.Matrix4(), q = new THREE.Quaternion();
@@ -9446,7 +9494,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      shader 裡 discard。從**真的送進去的那個逐 instance 屬性**讀，不是讀規則的狀態。 */
   const gateCut = await page.evaluate(() => {
     gates = null; weapons = null; gateEnd();
-    castGate({ x: 0, z: 0 });
+    gateAt({ x: 0, z: 0 });
     /* 要等**全部就位**（gates.ph 不再是 open）才量：還在伸的時候刃尖剛好貼在切面上，
        量到的 tip 是 0 而不是「切面前面」。 */
     let g0 = 0;
@@ -9500,7 +9548,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const one = shape => {
       build(shape, 3000);
       const ty0 = ENG.camTarget.ty, d0 = ENG.camTarget.dist;
-      castGate({ x: 0, z: 0 });
+      gateAt({ x: 0, z: 0 });
       const tyUp = ENG.camTarget.ty, dUp = ENG.camTarget.dist;
       let g = 0;
       while ((gates || weapons) && g++ < 900) step(0.05);
@@ -9531,13 +9579,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
     for (let i = 0; i < 20; i++) step(0.05);
-    castGate({ x: 0, z: 0 });
+    gateAt({ x: 0, z: 0 });
     let g = 0;
     while (g++ < 260 && (!gates || gates.ph !== 'fire')) step(0.05);
     for (let i = 0; i < 40; i++) step(0.05);            // 射出去一些
     const flying = weapons.filter(w => w.st !== 'gate').length;
     const cx0 = +gates.cx.toFixed(1);
-    castGate({ x: 30, z: 0 });                          // 換一發
+    gateAt({ x: 30, z: 0 });                          // 換一發
     const after = { casts: gates ? 1 : 0, cx: +gates.cx.toFixed(1),
                     ph: gates.ph, inGate: weapons.filter(w => w.st === 'gate').length,
                     kept: weapons.filter(w => w.st !== 'gate').length };
@@ -9560,7 +9608,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
-    castGate({ x: 0, z: 0 });
+    gateAt({ x: 0, z: 0 });
     let g = 0;
     while (g++ < 400 && (!gates || gates.ph !== 'fire')) { step(1 / 60); }
     for (let i = 0; i < 60 * 3; i++) step(1 / 60);        // 射到一半、躺著的也堆起來了
@@ -9634,7 +9682,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const oHit = hitWeapon, oStick = stickWeapon;
       hitWeapon = w => { hit++; all++; oHit(w); };
       stickWeapon = w => { all++; oStick(w); };
-      castGate({ x: 0, z: 0 });
+      gateAt({ x: 0, z: 0 });
       let g = 0;
       while ((gates || weapons) && g++ < 900) step(0.05);
       hitWeapon = oHit; stickWeapon = oStick;
@@ -9650,6 +9698,69 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gateZoneT[1].zone < gateZoneT[0].zone,
      gateZoneT.map(r => r.s + '（外接半徑 ' + r.R + '、範圍 ' + r.zone + '）：' +
        r.hit + '/' + r.all + ' 發打中，掉了 ' + r.pct + '%').join('；'));
+
+  /* 打得爛小人的家（v1.135，使用者回報「王之財寶⋯⋯對小人房子無效」）。
+     兵器的掃掠判定本來只問地標藍圖的格子表（blockAt），房子不在裡面（它自己帶一份格子
+     清單）——所以兵器整把從屋頂穿過去、插在屋子後面的地上。破壞那一半本來就成立
+     （smash 只看 st === SET），缺的只有「撞到了沒」。
+     對照組直接把 homeSolid 換成「永遠不是固體」＝ 舊行為，兩邊同一間房子、同一發。 */
+  const gateHome = await page.evaluate(() => {
+    const build = () => {
+      cleanTools(); clearHomes();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 400; setWorkerCount(6); startBuild(true); completeNow();
+      stopIdleEvent(); clearHomes();
+      homes = { list: [] };
+      const kind = HOME_KIND[6];                     // 三層樓：最高的一款
+      const at = { x: 70, z: 0 };                    // 場外空地：地標的積木擋不到
+      const slots = homeSlots(at.x, at.z, kind, HOME_PAL[0]);
+      const map = new Map();
+      slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { x: at.x, z: at.z, r: homeR(kind), kind: kind.id, at: map,
+                  ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                  slots, left: 0, n: kind.n, done: true };
+      homeBox(h); markHomeF6(h);
+      homes.list.push(h);
+      for (let i = 0; i < slots.length; i++) {
+        const sl = slots[i], b = newBlock();
+        b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
+        b.hh = 0; b.hk = i;
+        b.r = b.tr = sl.c[0]; b.g = b.tg = sl.c[1]; b.b = b.tb = sl.c[2];
+        blocks.push(b); sl.filled = true;
+      }
+      ENG.setBlockCount(blocks.length);
+      // 小人擺到天邊去：這一條要驗的是房子，不是撞飛小人
+      for (const w of workers) { releaseWorker(w); w.hm = -1; w.x = 300; w.z = 300; }
+      return h;
+    };
+    const alive = () => blocks.filter(b => b.hh === 0 && b.st === 3).length;
+    const run = () => {
+      const h = build();
+      const n0 = alive();
+      /* 打中的那一下才算數：hitWeapon 是「撞到固體」那條路，插地面走的是 stickWeapon。 */
+      const oHit = hitWeapon;
+      let hits = 0;
+      hitWeapon = w => { hits++; oHit(w); };
+      gateAt({ x: h.x, z: h.z });
+      let g = 0;
+      while ((gates || weapons) && g++ < 900) step(0.05);
+      hitWeapon = oHit;
+      return { n0, left: alive(), lost: n0 - alive(), hits };
+    };
+    const oHS = homeSolid;
+    homeSolid = () => false;                         // v1.134 的行為：房子不算固體
+    const before = run();
+    homeSolid = oHS;
+    const after = run();
+    cleanTools(); clearHomes();
+    return { before, after };
+  });
+  ok('王之財寶打得爛小人的家（v1.134 是整把穿過去）',
+     gateHome.before.lost === 0 && gateHome.before.hits === 0 &&
+     gateHome.after.lost > 20 && gateHome.after.hits > 10,
+     '同一間三層樓（' + gateHome.after.n0 + ' 塊）挨同一發：舊行為打掉 ' +
+     gateHome.before.lost + ' 塊（撞到 ' + gateHome.before.hits + ' 次）→ 現在打掉 ' +
+     gateHome.after.lost + ' 塊（撞到 ' + gateHome.after.hits + ' 次）');
 
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與

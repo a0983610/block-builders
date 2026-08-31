@@ -51,7 +51,7 @@ const TOOLS = [
     tip: '點地面：一顆鐵球從正上方直直砸下來，撞爛沿路的積木，不再動就收掉',
     lock: { txt: '拆掉 12 座建築解鎖', ok: () => stats.destroyed >= 12 } },
   { id: 'gate', n: '王之財寶', k: '🗡',
-    tip: '點地面：照鏡頭方向開出一整片金色的門，兵器從門裡伸出來、就位後停 3 秒，接著朝這邊連射 7 秒；打中的地方炸開一個小缺口（不起火），兵器掉在地上慢慢消失',
+    tip: '點兩下地面：第一下決定門陣開在哪、第二下決定打哪裡。兵器從門裡伸出來、就位後停 3 秒，接著朝目標連射 7 秒；打中的地方炸開一個小缺口（不起火），兵器掉在地上慢慢消失',
     lock: { txt: '累計擊飛 27,000 塊解鎖', ok: () => stats.smashed >= 27000 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
@@ -466,8 +466,16 @@ function fireRock(m) {
    只在終點判定的話，弧線會從屋頂、外牆直接穿過去——畫面上明明砸中了卻什麼事都沒有。
    一幀最多前進一格出頭，所以沿著這一幀走過的線段取樣，不能只測終點位置。 */
 const ROCK_STEP = 0.4;              // 掃掠取樣間距，要小於一格才不會整格跳過去
-function sweepRock(r, px, py, pz) {
-  if (blockAt(r.x, r.y, r.z)) return true;      // 這一幀停的位置本身就埋在積木裡
+/* 連小人的家也算固體（v1.135）。blockAt 只認地標藍圖的格子表，房子不在裡面
+   （房子自己帶一份格子清單，見 game-workers.js 的 homes）——水那條路 v1.103 已經踩過同一件事
+   （見 solidAt）。破壞本身本來就打得到：smash 只看 st === SET，房子的積木照樣敲得掉，
+   缺的只有「撞到了沒」這一半。 */
+const hardAt = (x, y, z) => blockAt(x, y, z) || homeSolid(x, y, z);
+/* 掃掠判定用的「固體」。預設只認地標藍圖的格子表（blockAt），要連小人的家一起認的
+   自己傳一支進來（見 hardAt）。 */
+function sweepRock(r, px, py, pz, solid) {
+  const at = solid || blockAt;
+  if (at(r.x, r.y, r.z)) return true;           // 這一幀停的位置本身就埋在積木裡
   const dx = r.x - px, dy = r.y - py, dz = r.z - pz;
   const len = Math.hypot(dx, dy, dz);
   if (len < 1e-5) return false;
@@ -478,7 +486,7 @@ function sweepRock(r, px, py, pz) {
   const ux = dx / len, uy = dy / len, uz = dz / len;
   for (let k = 1; k <= n; k++) {
     const t = total * k / n;
-    if (blockAt(px + ux * t, py + uy * t, pz + uz * t)) {
+    if (at(px + ux * t, py + uy * t, pz + uz * t)) {
       const c = Math.min(t, len);                // 停在撞擊點，但別飛過這一幀該到的位置
       r.x = px + ux * c; r.y = py + uy * c; r.z = pz + uz * c;
       return true;
@@ -3600,6 +3608,10 @@ const GATE_FLAT = 2.2;           // 高最多是寬的幾分之一
    剛好壓在 24。v1.132.2 之後落點沿視軸只抖 ±6.6（GATE_SPRAY × 打擊範圍），而凹面鏡
    最多把邊上那一排往前推 8（見 GATE_BOWL）＝ 近面 16.6，離 6.6 還有一大截。 */
 const GATE_BACK = 24;
+/* 兩下點得比這近就退回舊取景（見 castGate）。門陣的凹面自己就有 8 格深。 */
+const GATE_NEAR = 10;
+const GATE_AIM_R = 6;               // 第一下在地上畫的那圈光環多大
+const GATE_AIM_C = 0xffd24a;        // 金色（同門陣）
 /* 門陣中心擺多高。**v1.132.1 整片壓低**（本來是 0.6 倍樓高 + 20、下限 32）：
    使用者要的是「兵器往鏡頭的方向伸出來」，而門的朝向就是兵器的朝向——門陣擺太高的話
    兵器是**朝下**射的，門於是變成幾乎側著看的一條扁橢圓（截圖比對過，像一片油漬）。
@@ -3701,24 +3713,41 @@ const WEAP_KEEP = 340;
 /* 點下去。一次一發（一發就是一百個門、連射七秒），還在跑的時候再點就換新的一發——
    同其他清單型道具「滿了把最早那個擠掉」的規矩。舊那一發的門當場收掉，
    但**已經射出去的兵器不收**：它們在 weapons 裡，會自己飛完、自己淡掉。 */
-function castGate(point) {
+/* 第一下決定門陣開在哪，第二下決定打哪裡（v1.135，使用者指定）。
+   跟保齡球、龍捲風共用同一套兩段點擊（aimFirst ＋ 地面那圈光環，見 AIM_RING）。 */
+function pickGate(point) {
+  if (!aim) { aimFirst(point, GATE_AIM_R, GATE_AIM_C); return; }
+  castGate(aim, point);
+}
+/* from＝門陣開在哪（第一下），toward＝打哪裡（第二下）。
+   v1.135 之前是一個點：目標由點擊決定，門陣自己退到「鏡頭方向的另一側 GATE_BACK 遠」。 */
+function castGate(from, toward) {
   if (gates) closeGate();
-  /* 參考鏡頭方向（使用者指定）。相機在旋轉中心的 (cos yaw, sin yaw) 方向上，
-     所以「鏡頭看過去」是它的反向；畫面右是它繞 Y 轉 90°（跟 ENG.pan 同一套換算）。 */
-  const yaw = ENG.cam.yaw;
-  const fx = -Math.cos(yaw), fz = -Math.sin(yaw);
-  const ux = Math.sin(yaw), uz = -Math.cos(yaw);
+  aim = null;
+  /* f＝從目標看回門陣（門陣的深度方向），a＝兵器飛出去的方向，u＝門陣的橫向。
+     兩點太近就退回 v1.135 之前的取景（照鏡頭方向、退到另一側 GATE_BACK 遠）：
+     門陣自己的凹面就有 8 格深（GATE_BOWL 的 sagitta），目標比 GATE_NEAR 還近的話
+     它整個落在門陣裡面，兵器等於從目標背後往回射。 */
+  let dx = from.x - toward.x, dz = from.z - toward.z;
+  let d = Math.hypot(dx, dz);
+  if (d < GATE_NEAR) {
+    const yaw = ENG.cam.yaw;
+    dx = -Math.cos(yaw) * GATE_BACK; dz = -Math.sin(yaw) * GATE_BACK; d = GATE_BACK;
+    from = { x: toward.x + dx, z: toward.z + dz };
+  }
+  const fx = dx / d, fz = dz / d;
+  const ux = -fz, uz = fx;
 
   const y = Math.max(GATE_Y0, (bp ? bp.height : 0) * GATE_UP + GATE_UP_ADD);
   const sp = gateSpan();
   const g = {
-    x: point.x, z: point.z, y, fx, fz, ux, uz,
+    x: toward.x, z: toward.z, y, fx, fz, ux, uz,
     /* 錐形夾角的軸：水平、朝著鏡頭（見 GATE_CONE）。**一定要在這裡就給值**——
        下面那個迴圈開門時就會叫 aimGate 用到它，留到迴圈後面才設的話，整趟的錐形
        夾角都是拿 (0,0,0) 當軸在算：夾角不會生效，而且回傳的方向長度變成 sin(錐角)
        ＝ 0.659（不是單位向量），門的朝向、切面的法線、飛行速度全部跟著錯。 */
     ax: -fx, ay: 0, az: -fz,
-    cx: point.x + fx * GATE_BACK, cz: point.z + fz * GATE_BACK,
+    cx: from.x, cz: from.z, back: d,          // back＝門陣離目標多遠（aimGate 的錐面下限要用）
     w: sp.w, h: sp.h, cols: sp.cols, rows: sp.rows,
     ph: 'open', t: 0, fireT: 0, next: 0, ports: []
   };
@@ -3824,7 +3853,7 @@ function aimGate(g, p) {
      落點落在目標外 33（實測九成位 32.4）。所以下限取「錐面剛好夠得到的那個高度」
      ＝ 門高 − tan(錐角) × 水平距離：瞄得到的地方才瞄，這一把就真的會落在範圍裡。
      矮建築（門陣本來就低）算出來是負的，等於沒有這條限制。 */
-  const lo = Math.max(0.3, p.y - Math.tan(GATE_CONE) * GATE_BACK);
+  const lo = Math.max(0.3, p.y - Math.tan(GATE_CONE) * (g.back || GATE_BACK));
   const top = Math.max(lo + 0.5,
     Math.min(Math.max(2, (bp ? bp.height : 12) * 0.9), Math.max(0.8, p.y * GATE_AIM_K)));
   let dx = g.x + g.ux * lat + g.fx * dep - p.x;
@@ -3997,7 +4026,7 @@ function stepWeapons(dt) {
       /* 半路撞到建築就在撞到的那一點停住，跟隕石／投石機／核彈共用同一套掃掠判定
          （w.s ＝ 全長，sweepRock 會往前多探半個 s，探到的正好是刃尖）。
          只在終點判定的話，斜插進來的兵器會從屋頂穿過去才算打到。 */
-      if (sweepRock(w, px, py, pz)) { hitWeapon(w); continue; }
+      if (sweepRock(w, px, py, pz, hardAt)) { hitWeapon(w); continue; }
       const man = weaponVsWorker(w, px, py, pz);
       if (man) { manWeapon(w, man); continue; }
       /* 刃尖碰到地面：插在地上（使用者指定）。但**擦著地面進來的不插、改成躺平**——
@@ -4310,7 +4339,7 @@ function useTool(hit) {
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'storm') { callStorm({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'drop') { dropBall(hit.point); return 0; }
-  if (tool === 'gate') { castGate({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'gate') { pickGate({ x: hit.point.x, z: hit.point.z }); return 0; }
   return 0;
 }
 
