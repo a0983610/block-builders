@@ -675,6 +675,29 @@ function copyText(text, btn, back) {
   legacy();
 }
 
+/* 從剪貼簿倒進框裡（v1.140）。讀剪貼簿要瀏覽器同意，file:// 給不給
+   要看政策（跟上面 copyText 同一個問題），不給就退回「自己按 Ctrl+V」。
+   退路要先把游標放進框裡、整段選起來，Ctrl+V 才是「換掉舊那段」
+   而不是插在游標處。 */
+function pasteText(ta, btn, back) {
+  const flash = t => { btn.textContent = t; setTimeout(() => { btn.textContent = back; }, 1600); };
+  const manual = () => {
+    ta.focus();
+    ta.select();
+    btn.textContent = '請按 Ctrl+V';
+    setTimeout(() => { btn.textContent = back; }, 2200);
+  };
+  let p = null;
+  try {
+    if (navigator.clipboard && navigator.clipboard.readText) p = navigator.clipboard.readText();
+  } catch (e) { p = null; }
+  if (!p) { manual(); return; }
+  /* 空的就別動框裡那段：剪貼簿是空的多半是「以為複製到了其實沒有」，
+     這時把已經貼好的一段洗掉最惱人。 */
+  p.then(t => { if (!t) { flash('剪貼簿是空的'); return; }
+                ta.value = t; flash('已貼上 ✓'); }, manual);
+}
+
 /* ── 啟動 ───────────────────────────────────────────────── */
 function boot() {
   $('ver').textContent = 'v' + VERSION;
@@ -763,6 +786,9 @@ function boot() {
     if (e.target.id === 'impWrap' || e.target.id === 'impClose') $('impWrap').classList.remove('on');
   });
   $('impGo').addEventListener('click', doImport);
+  /* 貼上（v1.140）：只倒進框裡，不順手匯入——貼完先看一眼才按匯入是對的順序 */
+  $('impPasteBtn').addEventListener('click',
+    () => pasteText($('impPaste'), $('impPasteBtn'), '📋 貼上'));
   /* ⓘ：整條路怎麼走。收在按鈕後面而不是攤在面板上——知道怎麼用的人不必每次讀一遍 */
   $('impInfo').addEventListener('click', () => {
     const on = $('impHelp').classList.toggle('on');

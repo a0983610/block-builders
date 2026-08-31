@@ -5,7 +5,7 @@
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
-   --until：改一行就要等整輪（951 條）太慢，這個讓它跑到指定段落就停。
+   --until：改一行就要等整輪（957 條）太慢，這個讓它跑到指定段落就停。
    只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
    測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
@@ -1060,6 +1060,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      /已複製|Ctrl\+C/.test(vpDoc.btn) && vpDoc.clip.replace(/\r\n/g, '\n') === vpMd,
      '按鈕變成「' + vpDoc.btn + '」，剪貼簿 ' + vpDoc.clip.length + ' 字');
 
+
+  /* 📋 貼上（v1.140）：跟遊戲那顆同一件事。這一頁那一列變成三顆，所以順手驗版面——
+     平分寬度的話「📋 取得 prompt」會被壓到換行，那一列就變兩層高。 */
+  const vpRow = await vp.evaluate(() => {
+    const b = ['doc', 'pasteBtn', 'load'].map(i => document.getElementById(i));
+    const r = b.map(x => x.getBoundingClientRect());
+    return { txt: b.map(x => x.textContent), h: r.map(x => Math.round(x.height)),
+             oneRow: r.every(x => Math.round(x.top) === Math.round(r[0].top)),
+             inBox: r[2].right <=
+               document.getElementById('pasteBox').getBoundingClientRect().right };
+  });
+  ok('貼上框那一列排得下三顆：取得 prompt → 貼上 → 貼上並預覽',
+     vpRow.txt[1] === '📋 貼上' && vpRow.oneRow && vpRow.inBox &&
+     vpRow.h.every(h => h === vpRow.h[0]) && vpRow.h[0] < 46,
+     vpRow.txt.join('／') + '，每顆高 ' + vpRow.h[0] + 'px');
+
+  const vpPaste = await vp.evaluate(async () => {
+    await navigator.clipboard.writeText('customBlueprint({ 剪貼簿裡這一段 })');
+    document.getElementById('paste').value = '';
+    document.getElementById('pasteBtn').click();
+    await new Promise(r => setTimeout(r, 150));
+    return { v: document.getElementById('paste').value,
+             btn: document.getElementById('pasteBtn').textContent,
+             opts: document.getElementById('shape').options.length,
+             msg: document.getElementById('pasteMsg').textContent };
+  });
+  /* 不順手預覽：這一頁的節奏是「貼上 → 看 → 改 → 再貼」，倒進來常常還要自己改幾個字 */
+  ok('預覽頁按「貼上」也是倒進框裡就好，不會自己載入預覽',
+     vpPaste.v === 'customBlueprint({ 剪貼簿裡這一段 })' && vpPaste.btn === '已貼上 ✓' &&
+     vpPaste.opts === ALL_SHAPES && vpPaste.msg === '',
+     '框裡「' + vpPaste.v + '」，選單還是 ' + vpPaste.opts + ' 項、沒有載入訊息');
+
   const vpWire = await vp.evaluate(() => {
     const w = document.getElementById('wire');
     w.checked = true; w.dispatchEvent(new Event('change'));
@@ -1387,6 +1419,69 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('按「取得 prompt」整份說明真的進了剪貼簿',
      impDoc.btn === '已複製 ✓' && impDoc.clip.replace(/\r\n/g, '\n') === mdText,
      '按鈕變成「' + impDoc.btn + '」，剪貼簿 ' + impDoc.clip.length + ' 字');
+
+
+  /* 📋 貼上（v1.140）：懶得按 Ctrl+C／Ctrl+V 的人按這顆，把剪貼簿倒進框裡。
+     讀剪貼簿要瀏覽器同意，不給就退回「自己按 Ctrl+V」，所以三種結局都要驗。 */
+  const impPos = await gp.evaluate(() => {
+    const b = document.getElementById('impPasteBtn'), g = document.getElementById('impGo');
+    const rb = b.getBoundingClientRect(), rg = g.getBoundingClientRect();
+    return { txt: b.textContent, before: rb.right <= rg.left,
+             sameRow: Math.round(rb.top) === Math.round(rg.top), w: Math.round(rb.width) };
+  });
+  ok('匯入面板多一顆「📋 貼上」，跟「匯入」同一列、排在它前面',
+     impPos.txt === '📋 貼上' && impPos.before && impPos.sameRow && impPos.w > 60,
+     '「' + impPos.txt + '」寬 ' + impPos.w + 'px，在「匯入」左邊');
+
+  const impGot = await gp.evaluate(async () => {
+    await navigator.clipboard.writeText('customBlueprint({ 剪貼簿裡這一段 })');
+    document.getElementById('impPaste').value = '';
+    document.getElementById('impPasteBtn').click();
+    await new Promise(r => setTimeout(r, 150));
+    return { v: document.getElementById('impPaste').value, shapes: SHAPES.length,
+             btn: document.getElementById('impPasteBtn').textContent };
+  });
+  /* 只倒進框裡、不順手匯入：貼完先看一眼再按「匯入」才是對的順序（SHAPES 沒變＝沒匯） */
+  ok('按「貼上」剪貼簿那段直接進框，而且不會順手匯入',
+     impGot.v === 'customBlueprint({ 剪貼簿裡這一段 })' && impGot.btn === '已貼上 ✓' &&
+     impGot.shapes === impUi.shapes,
+     '框裡「' + impGot.v + '」，按鈕變成「' + impGot.btn + '」');
+
+  const impNone = await gp.evaluate(async () => {
+    await navigator.clipboard.writeText('');
+    document.getElementById('impPaste').value = '手上這一段還在改';
+    document.getElementById('impPasteBtn').click();
+    await new Promise(r => setTimeout(r, 150));
+    return { v: document.getElementById('impPaste').value,
+             btn: document.getElementById('impPasteBtn').textContent };
+  });
+  ok('剪貼簿是空的就講一聲，不把框裡原本那段洗掉',
+     impNone.v === '手上這一段還在改' && impNone.btn === '剪貼簿是空的',
+     '按鈕變成「' + impNone.btn + '」，框裡還是「' + impNone.v + '」');
+
+  const impDeny = await gp.evaluate(async () => {
+    /* 借過一下：把 readText 換成一定失敗的，驗「瀏覽器不給讀」那條退路，驗完還回去。
+       file:// 上真的會不給（跟複製那顆同一個問題），退路不能只是「什麼都沒發生」。 */
+    Object.defineProperty(navigator.clipboard, 'readText',
+      { configurable: true, value: () => Promise.reject(new Error('denied')) });
+    const ta = document.getElementById('impPaste');
+    ta.value = '原本這一段';
+    ta.blur();
+    document.getElementById('impPasteBtn').click();
+    await new Promise(r => setTimeout(r, 150));
+    const got = { btn: document.getElementById('impPasteBtn').textContent,
+                  focus: document.activeElement.id, v: ta.value,
+                  sel: ta.selectionEnd - ta.selectionStart };
+    delete navigator.clipboard.readText;
+    got.back = typeof navigator.clipboard.readText === 'function';
+    return got;
+  });
+  /* 游標要先進框裡、整段選起來，Ctrl+V 才是「換掉舊那段」而不是插在游標處 */
+  ok('瀏覽器不給讀剪貼簿時退回「請按 Ctrl+V」，游標先放進框裡並整段選起來',
+     impDeny.btn === '請按 Ctrl+V' && impDeny.focus === 'impPaste' &&
+     impDeny.v === '原本這一段' && impDeny.sel === impDeny.v.length && impDeny.back,
+     '按鈕變成「' + impDeny.btn + '」，游標在 #' + impDeny.focus + '、選了 ' +
+     impDeny.sel + ' 個字');
 
   const impBad = await gp.evaluate(() => {
     document.getElementById('impPaste').value = 'console.log("哈囉")';

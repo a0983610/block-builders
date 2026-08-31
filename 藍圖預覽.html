@@ -60,6 +60,8 @@
   #paste{width:100%;height:230px;margin:7px 0;resize:vertical;
     font:11.5px/1.45 ui-monospace,Consolas,monospace;
     border:1px solid var(--line);border-radius:8px;padding:7px 8px}
+  /* 貼上那顆只占自己的寬度：這一列有三顆，平分的話「📋 取得 prompt」會被壓到換行 */
+  #pasteBtn{flex:0 0 auto}
   #pasteMsg{font-size:11.5px;margin-top:6px;display:none}
   #pasteMsg.on{display:block}
   #pasteMsg.bad{color:#c0483c}
@@ -101,6 +103,7 @@
          按鈕的順序就照那個順序排。跟遊戲裡「匯入建築」那顆是同一份說明、同一支 BP_DOC。 -->
     <div class="btns">
       <button id="doc">📋 取得 prompt</button>
+      <button id="pasteBtn">📋 貼上</button>
       <button id="load">貼上並預覽</button>
     </div>
   </details>
@@ -149,7 +152,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載遊戲層那五支（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.139.0';
+const VIEWER_VER = '1.140.0';
 
 const $ = id => document.getElementById(id);
 
@@ -304,6 +307,30 @@ function copyText(text, btn, back) {
   } catch (e) { /* 往下走舊路 */ }
   legacy();
 }
+
+/* 從剪貼簿倒進框裡（v1.140）。讀剪貼簿要瀏覽器同意，file:// 給不給
+   要看政策（跟上面 copyText 同一個問題），不給就退回「自己按 Ctrl+V」。
+   退路要先把游標放進框裡、整段選起來，Ctrl+V 才是「換掉舊那段」
+   而不是插在游標處。 */
+function pasteText(ta, btn, back) {
+  const flash = t => { btn.textContent = t; setTimeout(() => { btn.textContent = back; }, 1600); };
+  const manual = () => {
+    ta.focus();
+    ta.select();
+    btn.textContent = '請按 Ctrl+V';
+    setTimeout(() => { btn.textContent = back; }, 2200);
+  };
+  let p = null;
+  try {
+    if (navigator.clipboard && navigator.clipboard.readText) p = navigator.clipboard.readText();
+  } catch (e) { p = null; }
+  if (!p) { manual(); return; }
+  /* 空的就別動框裡那段：剪貼簿是空的多半是「以為複製到了其實沒有」，
+     這時把已經貼好的一段洗掉最惱人。 */
+  p.then(t => { if (!t) { flash('剪貼簿是空的'); return; }
+                ta.value = t; flash('已貼上 ✓'); }, manual);
+}
+
 function copyReport() {
   const ta = $('rep');
   if (!ta.value) { ta.value = diagnose().text; }
@@ -356,6 +383,10 @@ pasteTa.addEventListener('mouseup', () => {
   if (pasteTa.selectionStart !== pasteTa.selectionEnd) return;
   pasteTa.select();
 });
+
+/* 貼上（v1.140）：剪貼簿那段直接倒進上面那個框。只倒進去、不順手預覽——
+   這一頁的節奏是「貼上 → 看 → 改 → 再貼」，倒進來之後常常還要自己改幾個字。 */
+$('pasteBtn').addEventListener('click', () => pasteText(pasteTa, $('pasteBtn'), '📋 貼上'));
 
 $('copy').addEventListener('click', copyReport);
 /* 沒放 src/bpdoc.js 的話這一頁照跑，只有這顆拿不到說明全文（跟遊戲那邊同一套處理） */

@@ -333,7 +333,8 @@
           要指定蓋什麼就補一句「請做一座 ○○○」，附一張參考圖會更像。</li>
       <li>AI 會回一段 <code>```js</code> 開頭的程式碼，<b>整段複製</b>起來
           （圍籬跟「檔名：」那幾行不用清掉，貼進來會自動忽略）。</li>
-      <li>貼進下面那個框，按 <b>匯入</b>。名字撞到現有藍圖會被擋下來，回去請 AI 改個 name。</li>
+      <li>貼進下面那個框（懶得按 Ctrl+V 就按 <b>📋 貼上</b>，剪貼簿裡那段直接倒進框裡），
+          按 <b>匯入</b>。名字撞到現有藍圖會被擋下來，回去請 AI 改個 name。</li>
       <li>匯完它就在<b>設定面板的下拉選單</b>裡（自訂的排在最前面），選了就開始蓋。</li>
       <li>匯進來的<b>會存著</b>，關掉再開還在。清單那一列可以 <b>匯出</b> 成 .js 傳給別人，
           或 <b>刪除</b>。</li>
@@ -350,7 +351,9 @@
     <textarea id="impPaste" spellcheck="false"
       placeholder="把 AI 給的整段貼進來（就是 customBlueprint({...}) 那種內容）。```js 圍籬與「檔名：xxx.js」那行會自動忽略。"></textarea>
     <!-- 匯出在下面每一列各自一顆：分享的單位是「一座建築」，不是整包 -->
-    <div class="row"><button class="primary" id="impGo">匯入</button></div>
+    <!-- 貼上排在匯入前面：那就是這一步的順序（先把 AI 給的倒進框裡、再匯入）。
+         不是主鍵：會按 Ctrl+V 的人根本不需要它 -->
+    <div class="row"><button id="impPasteBtn">📋 貼上</button><button class="primary" id="impGo">匯入</button></div>
     <div id="impMsg"></div>
     <div id="impList"></div>
     <div class="row"><button id="impClose">關閉</button></div>
