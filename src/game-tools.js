@@ -32,7 +32,8 @@ const TOOLS = [
   { id: 'tornado', n: '龍捲風', k: '🌪',
     tip: '點兩下：先點龍捲風出現的地方，再點要掃過去的方向（會一路亂竄 10 秒，罩到的建築每秒吸走兩成）',
     lock: { txt: '拆掉 4 座建築解鎖', ok: () => stats.destroyed >= 4 } },
-  { id: 'fw', n: '煙火', k: '🎆', tip: '點地面：一次射三發煙火，落下來的火星會把建築點著',
+  { id: 'fw', n: '煙火', k: '🎆',
+    tip: '點地面：一次射三發煙火，落下來的火星會把建築點著；點在建築上就從那一點射上去',
     lock: { txt: '累計擊飛 11,000 塊解鎖', ok: () => stats.smashed >= 11000 } },
   { id: 'fire', n: '放火', k: '🔥', tip: '點建築：從那一塊燒起來，火會往旁邊蔓延',
     lock: { txt: '拆掉 6 座建築解鎖', ok: () => stats.destroyed >= 6 } },
@@ -1890,6 +1891,11 @@ const FW_RISE = 32;                 // 上升速度
 const FW_HOLD_TOP = 58, FW_HOLD_R = 23;
 /* 一次點下去放三發：一發就是一朵花，三發錯開時間、錯開落點、錯開高度才叫「一場煙火」。
    後面兩發各晚 0.2～0.5 秒 ×序號出膛，落點在點擊處周圍 3～7 單位。 */
+/* 出膛高度：地面是這個，點在建築上就是「點到的那一點再高這麼多」（v1.137）。 */
+const FW_Y0 = 0.8;
+/* 點在建築上時，出膛點往鏡頭方向退多少（v1.137）。hit.point 正好落在積木表面上，
+   不退的話尾巴有一半埋在那塊裡面。 */
+const FW_OUT = 0.6;
 const FW_SHOT = 3;
 const FW_GAP = [0.2, 0.5];
 const FW_OFF = 7;
@@ -1930,12 +1936,17 @@ let fworks = null;                  // 正在往上竄的
 let fwSparks = null;                // 炸開後落下的火星
 let fwWait = null;                  // 已經點下去、還沒出膛的那幾發（齊射的第二、三發）
 
+/* p.y＝從多高射上去（v1.137，使用者：「如果點擊在建築上 則從建築位置發射煙火」）。
+   不給就是地面。齊射的三發**共用同一個高度**：點在屋頂上就是三發都從屋頂那一帶射，
+   各自照 FW_OFF 散開——散出去那兩發可能落在建築外緣的半空中，那看起來就是
+   「從屋頂那一區放的一輪」，比「一發從屋頂、兩發從地面」讀得懂。 */
 function launchFw(p) {
-  fireShell(p.x, p.z);
+  const y = (p.y || 0) + FW_Y0;
+  fireShell(p.x, p.z, y);
   for (let i = 1; i < FW_SHOT; i++) {
     if (!fwWait) fwWait = [];
     const a = rr(0, Math.PI * 2), d = rr(FW_OFF * 0.4, FW_OFF);
-    fwWait.push({ x: p.x + Math.cos(a) * d, z: p.z + Math.sin(a) * d,
+    fwWait.push({ x: p.x + Math.cos(a) * d, z: p.z + Math.sin(a) * d, y,
                   t: i * rr(FW_GAP[0], FW_GAP[1]) });
   }
   /* 跟龍捲風、蘑菇雲同一套：不退鏡頭的話整發都在畫面外。
@@ -1946,7 +1957,9 @@ function launchFw(p) {
      所以第三個參數給 true，火星全熄之後在 fwEnd() 還回去。
      視距不還，只還高度：把建築推出畫面的是仰角不是距離（見 ENG.holdWide）。 */
   fwHold++;
-  ENG.holdWide(FW_HOLD_TOP, FW_HOLD_R, true);
+  /* 取景要**連出膛高度一起算**（v1.137）：從屋頂射上去的話炸開的位置就高了那一截
+     （台北 101 的屋頂 65 ＋ 竄高 42 ＋ 火星自己再往上十幾單位），不加的話整發在畫面外。 */
+  ENG.holdWide(FW_HOLD_TOP + y - FW_Y0, FW_HOLD_R, true);
 }
 /* 還欠幾次「把視線高度還回去」。一次點下去是三發、還可以連點，
    所以要記次數——見 fwEnd()。 */
@@ -1958,15 +1971,18 @@ function fwEnd() {
   if (fwWait || fworks || fwSparks) return;
   while (fwHold > 0) { fwHold--; ENG.releaseWide(); }
 }
-/* 一發：抽兩個顏色（外層一個、芯一個），高度也各抽一個 */
-function fireShell(x, z) {
+/* 一發：抽兩個顏色（外層一個、芯一個），高度也各抽一個。
+   y0＝從多高出膛（不給就是地面）。**炸開的高度是相對的**（v1.137）：寫死絕對高度的話，
+   從台北 101 的屋頂（65）射上去會「還沒竄就已經超過 42」，當場在腳邊炸開。 */
+function fireShell(x, z, y0) {
   if (!fworks) fworks = [];
   if (fworks.length >= FW_MAX) fworks.shift();
   const i = Math.floor(Math.random() * FW_COL.length);
   let j = Math.floor(Math.random() * (FW_COL.length - 1));
   if (j >= i) j++;                                  // 芯一定跟外層不同色
-  fworks.push({ x, y: 0.8, z, vx: rr(-1.6, 1.6), vz: rr(-1.6, 1.6),
-                top: FW_TOP * rr(0.8, 1.2), em: 0, c: FW_COL[i], c2: FW_COL[j] });
+  const y = y0 || FW_Y0;
+  fworks.push({ x, y, z, vx: rr(-1.6, 1.6), vz: rr(-1.6, 1.6),
+                top: y + FW_TOP * rr(0.8, 1.2), em: 0, c: FW_COL[i], c2: FW_COL[j] });
   sndFwUp();
 }
 /* 火星／尾巴共用的粒子。s 小、命短：大顆長命的話整發會糊成一團橘色方塊。
@@ -2083,7 +2099,7 @@ function stepFw(dt) {
     for (let i = fwWait.length - 1; i >= 0; i--) {
       const w = fwWait[i];
       w.t -= dt;
-      if (w.t <= 0) { fireShell(w.x, w.z); fwWait.splice(i, 1); }
+      if (w.t <= 0) { fireShell(w.x, w.z, w.y); fwWait.splice(i, 1); }
     }
     if (!fwWait.length) fwWait = null;
   }
@@ -4355,7 +4371,15 @@ function useTool(hit) {
   if (tool === 'ball') { aimBall(hit.point); return 0; }
   if (tool === 'treb') { placeTreb({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'tornado') { aimTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
-  if (tool === 'fw') { launchFw({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'fw') {
+    /* 點在建築上就從那一點射上去（v1.137，使用者指定）；點地面照舊從地面。
+       往鏡頭方向退 FW_OUT 才不會有一半的尾巴埋在那塊積木裡。 */
+    const q = hit.point, d = hit.dir;
+    launchFw(hit.kind === 'block' && d
+      ? { x: q.x - d.x * FW_OUT, y: Math.max(0, q.y - d.y * FW_OUT), z: q.z - d.z * FW_OUT }
+      : { x: q.x, z: q.z });
+    return 0;
+  }
   if (tool === 'fire') { torch(hit); return 0; }
   if (tool === 'bucket') { pourWater(hit); return 0; }
   if (tool === 'bomb') { placeBomb(hit.point); return 0; }

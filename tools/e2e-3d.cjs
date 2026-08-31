@@ -5,7 +5,7 @@
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
-   --until：改一行就要等整輪（917 條）太慢，這個讓它跑到指定段落就停。
+   --until：改一行就要等整輪（920 條）太慢，這個讓它跑到指定段落就停。
    只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
    測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
@@ -11735,6 +11735,68 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('玩家自己抬高的視線不會被還回去',
      Math.abs(fwCam.mine.ty1 - fwCam.mine.want) < 0.1,
      '自己抬到 ' + fwCam.mine.want + '，放完仍是 ' + fwCam.mine.ty1);
+
+  /* 點在建築上就從那一點射上去（v1.137，使用者：「如果點擊在建築上 則從建築位置發射煙火」）。
+     三件事一起驗：出膛高度跟著點到的那一點、**炸開的高度是相對的**、取景也跟著抬。
+     中間那件最要緊——`top` 本來是寫死的絕對高度（FW_TOP 42 上下），從台北 101 的屋頂
+     （65）射上去的話「還沒竄就已經超過 42」，當場在腳邊炸開。 */
+  const fwOnTop = await page.evaluate(() => {
+    cleanTools(); clearFires();
+    shapePick = SHAPES.findIndex(s => s.n === '台北 101');
+    targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+    for (let i = 0; i < 20; i++) step(0.05);
+    // 最高的那一塊：拿它當「點在建築上」的落點
+    let top = null;
+    for (const b of blocks) if (b.st === 3 && (!top || b.y > top.y)) top = b;
+    const one = hit => {
+      fworks = null; fwWait = null; fwSparks = null; fwEnd();
+      const ty0 = ENG.camTarget.ty;
+      /* 三發的出膛高度都要看（齊射的後兩發是排在 fwWait 裡的），所以攔 fireShell。 */
+      const oShell = fireShell, born = [];
+      fireShell = (x, z, y) => {
+        oShell(x, z, y);
+        const f = fworks[fworks.length - 1];
+        born.push({ y: +f.y.toFixed(2), rise: +(f.top - f.y).toFixed(1) });
+      };
+      tool = 'fw';
+      useTool(hit);
+      let g = 0;
+      while ((fwWait || fworks) && g++ < 400) step(1 / 60);   // 等三發都出膛、炸完
+      fireShell = oShell;
+      const r = { born, ty0: +ty0.toFixed(1), ty: +ENG.camTarget.ty.toFixed(1) };
+      let n = 0;
+      while ((fwSparks || fworks || fwWait) && n++ < 600) step(1 / 60);
+      r.back = +ENG.camTarget.ty.toFixed(1);                  // 放完要還回去
+      return r;
+    };
+    const P = { x: top.x, y: top.y + 0.5, z: top.z };
+    const hi = one({ kind: 'block', idx: -1, dist: 20,
+                     point: new THREE.Vector3(P.x, P.y, P.z),
+                     dir: new THREE.Vector3(0, -0.3, -1).normalize() });
+    const lo = one({ kind: 'ground', dist: 20,
+                     point: new THREE.Vector3(40, 0, 0),
+                     dir: new THREE.Vector3(0, -1, 0) });
+    cleanTools(); clearFires();
+    return { hi, lo, at: +P.y.toFixed(1), y0: FW_Y0, fwTop: FW_TOP, shot: FW_SHOT };
+  });
+  ok('點在建築上：三發都從那一點射上去，不是從地面',
+     fwOnTop.hi.born.length === fwOnTop.shot &&
+     fwOnTop.hi.born.every(b => Math.abs(b.y - (fwOnTop.at + fwOnTop.y0)) < 1) &&
+     fwOnTop.lo.born.every(b => Math.abs(b.y - fwOnTop.y0) < 0.01),
+     '點在台北 101 最高那一塊（y=' + fwOnTop.at + '）：三發出膛高度 ' +
+     fwOnTop.hi.born.map(b => b.y).join('／') + '（地面出膛是 ' + fwOnTop.y0 +
+     '）；點地面那一發 ' + fwOnTop.lo.born.map(b => b.y).join('／'));
+  ok('炸開的高度是「再竄多高」，不是寫死的絕對高度',
+     fwOnTop.hi.born.every(b => b.rise > fwOnTop.fwTop * 0.75 && b.rise < fwOnTop.fwTop * 1.25) &&
+     fwOnTop.lo.born.every(b => b.rise > fwOnTop.fwTop * 0.75),
+     '從 ' + fwOnTop.at + ' 射上去，三發各再竄 ' + fwOnTop.hi.born.map(b => b.rise).join('／') +
+     '（設定 ' + fwOnTop.fwTop + ' ±20%）；從地面那一發竄 ' +
+     fwOnTop.lo.born.map(b => b.rise).join('／'));
+  ok('取景跟著出膛高度抬，放完照樣還回去',
+     fwOnTop.hi.ty > fwOnTop.lo.ty + 20 && fwOnTop.hi.back === fwOnTop.hi.ty0 &&
+     fwOnTop.lo.back === fwOnTop.lo.ty0,
+     '點屋頂視線高抬到 ' + fwOnTop.hi.ty + '、點地面抬到 ' + fwOnTop.lo.ty +
+     '；放完各自回到 ' + fwOnTop.hi.back + '／' + fwOnTop.lo.back);
 
   /* 天降鐵球**完全不動鏡頭**（v1.123 查證）。使用者把「結束後高度要調回來」寫在
      天降鐵球底下，但量過它從頭到尾沒碰過 camTarget：球掉得快，進畫面只差那一瞬間，
