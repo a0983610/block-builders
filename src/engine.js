@@ -14,7 +14,7 @@ const ENG = (function () {
   const T = THREE;
 
   let renderer, scene, camera, canvas;
-  let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, trunkMesh, leafMesh, dustMesh;
+  let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, beastMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh, poolMesh;
   let poolGeo, poolPos, poolFoam, poolUni;
   let markMesh, markGeo, markPos, markCol;
@@ -583,6 +583,16 @@ const ENG = (function () {
     workerMesh.frustumCulled = false;
     scene.add(workerMesh);
     workerMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
+    /* 天災那幾隻（v1.138）。跟小人同一個做法：一隻一疊方塊，全部塞進同一顆
+       InstancedMesh。場上同時最多 MAXBEAST 個（含飛在半空的香蕉炸彈）。 */
+    beastMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXBEAST * BEAST_PARTS);
+    beastMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    beastMesh.castShadow = true;
+    beastMesh.count = 0;
+    beastMesh.frustumCulled = false;
+    scene.add(beastMesh);
+    beastMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
     trunkMesh = new T.InstancedMesh(unit, voxelMaterial({ color: 0x6b4a2f }), 64);
     leafMesh = new T.InstancedMesh(unit, voxelMaterial({}), 64 * 3);
@@ -2275,6 +2285,210 @@ const ENG = (function () {
     emoMesh.visible = n > 0;
   }
 
+  /* ── 天災的生物（v1.138）───────────────────────
+     地標蓋完之後會有東西從場邊走進來砸場（什麼時候來、來了做什麼是規則那邊的事，
+     見 game-tools.js 的 DOOMS）。這裡只管「長什麼樣、怎麼擺」。
+
+     部位表的欄位跟小人的 BODY 幾乎一樣，差在兩處：
+       · c 直接寫色碼。小人的 c 是色組名，因為每個人的膚色衣色不同；
+         這幾隻沒有個體差異，多一層查表只是多一個要維護的地方。
+       · 擺動改成「繞關節轉」：sw 是腰下那兩條、am 是手，pv 是那個關節的高度。
+         小人的手腳各只有一塊，繞自己中心轉看不太出來；這幾隻的手腳是三塊接起來的
+         （上臂／前臂／手），各轉各的中心會散開成三截，所以要指定關節。
+     右手（am > 0）還會跟著 m.arm 抬起來 m.raise 那麼多：黑獸獵把火把送到牆邊、
+     白猴子把香蕉舉過頭。這一段平常是 0，只有站定要動手那兩秒才有值。 */
+  const JOINT_Z = 0.03;                    // 關節的 z（肩與髖都在身體中線附近）
+  /* 左右對稱的部位只寫右半邊（x 為正），左半邊鏡射出來：
+     x 取負、繞 Y／Z 的角度取負、手腳擺動的正負號也跟著翻。 */
+  function bmir(list) {
+    const out = [];
+    for (const b of list) {
+      out.push(b);
+      const m = Object.assign({}, b, { p: [-b.p[0], b.p[1], b.p[2]] });
+      if (b.r) m.r = [b.r[0], -b.r[1], -b.r[2]];
+      if (b.sw) m.sw = -b.sw;
+      if (b.am) m.am = -b.am;
+      out.push(m);
+    }
+    return out;
+  }
+  /* 把一組部位掛到別的地方去（白猴子手上那根香蕉炋彈）。位置、大小、角度
+     在載入時就先乘進去，畫的時候就不必多一層矩陣。掛上去的轉法只有 Y 與 Z、
+     部位自己的轉法只有 Z，而預設的 XYZ 順序就是 R = Rx·Ry·Rz——
+     所以兩個 Z 相加、x 那一格留給擺動，合起來剛好是「先掛上去、再跟著手擺」。 */
+  function attach(list, o) {
+    const cy = Math.cos(o.ry), sy = Math.sin(o.ry);
+    const cz = Math.cos(o.rz || 0), sz = Math.sin(o.rz || 0);
+    return list.map(b => {
+      const x = b.p[0] * o.sc, y = b.p[1] * o.sc, z = b.p[2] * o.sc;
+      const x1 = x * cz - y * sz, y1 = x * sz + y * cz;        // Rz
+      const x2 = x1 * cy + z * sy, z2 = -x1 * sy + z * cy;     // Ry
+      return { p: [o.x + x2, o.y + y1, o.z + z2],
+               s: [b.s[0] * o.sc, b.s[1] * o.sc, b.s[2] * o.sc],
+               c: b.c, r: [0, o.ry, (o.rz || 0) + (b.r ? b.r[2] : 0)],
+               am: o.am, hold: o.hold, pv: o.pv, bomb: o.bomb };
+    });
+  }
+
+  /* 香蕉形狀的炋彈。方塊排不出弧線，所以是六塊沿著半徑 NANA_ARC 的弧
+     各自轉到那一點的切線方向：兩頭翘、中間低。純黃的香蕉在場上只是一根水果，
+     所以綁兩圈紅膠帶、蒂頭上接一截冒火花的引信——一眼要看得出是炋彈。 */
+  const NANA_ARC = 0.42;
+  const NANA = (() => {
+    const TH = [-0.90, -0.54, -0.18, 0.18, 0.54, 0.90];
+    const W = [0.13, 0.16, 0.17, 0.17, 0.16, 0.13];
+    const at = t => [Math.sin(t) * NANA_ARC, 0.34 - Math.cos(t) * NANA_ARC];
+    const out = [];
+    for (let i = 0; i < TH.length; i++) {
+      const q = at(TH[i]);
+      out.push({ p: [q[0], q[1], 0], s: [0.17, W[i], W[i]], c: 0xf0c53a, r: [0, 0, TH[i]] });
+    }
+    const a = at(-1.08), b = at(1.08), t1 = at(-0.18), t2 = at(0.18);
+    out.push({ p: [a[0], a[1], 0], s: [0.11, 0.085, 0.085], c: 0x6b4a22, r: [0, 0, -1.08] });
+    out.push({ p: [b[0], b[1], 0], s: [0.10, 0.09, 0.09], c: 0x3a2a18, r: [0, 0, 1.08] });
+    out.push({ p: [t1[0], t1[1], 0], s: [0.05, 0.185, 0.185], c: 0xc8322a, r: [0, 0, -0.18] });
+    out.push({ p: [t2[0], t2[1], 0], s: [0.05, 0.185, 0.185], c: 0xc8322a, r: [0, 0, 0.18] });
+    out.push({ p: [-0.46, 0.30, 0], s: [0.038, 0.22, 0.038], c: 0x2c2620, r: [0, 0, -0.42] });
+    out.push({ p: [-0.545, 0.43, 0], s: [0.10, 0.10, 0.10], c: 0xff8a24 });
+    out.push({ p: [-0.585, 0.51, 0], s: [0.06, 0.06, 0.06], c: 0xffe98a });
+    return out;
+  })();
+
+  /* 黑獸獵：頭頂 1.31——跟小人連安全帽一樣高（使用者：「小人大小」）。
+     跟小人區隔靠的是剪影不是顏色：駝背前傾、手垂過膝、頭頂一撮冠毛、一條翘起來的尾巴。 */
+  const APE_SH = 0.90, APE_HIP = 0.51;          // 肩／髀的高度
+  const FUR = 0x24242a, FUR2 = 0x33333c, PAW = 0x17171b, FACE = 0xc0625c;
+  const APE = [
+    { p: [0, 0.66, 0.02], s: [0.44, 0.46, 0.36], c: FUR, r: [0.20, 0, 0] },      // 軀幹（前傾）
+    { p: [0, 0.62, 0.21], s: [0.26, 0.32, 0.05], c: 0x3d3a42, r: [0.20, 0, 0] }, // 胸腹淡毛
+    { p: [0, 0.90, 0], s: [0.40, 0.18, 0.30], c: FUR },                          // 肩背
+    { p: [0, 1.06, 0.10], s: [0.34, 0.32, 0.32], c: FUR },                       // 頭
+    { p: [0, 1.245, 0.08], s: [0.11, 0.13, 0.22], c: FUR2 },                     // 冠毛（頂到 1.31）
+    { p: [0, 1.04, 0.265], s: [0.26, 0.24, 0.04], c: FACE },                     // 臉盤（紅的）
+    { p: [0, 0.985, 0.315], s: [0.18, 0.13, 0.10], c: 0xd08a7e },                // 吻部
+    { p: [0, 0.945, 0.365], s: [0.10, 0.03, 0.02], c: 0x8a4a44 },                // 嘴縫
+    { p: [0, 1.15, 0.27], s: [0.28, 0.05, 0.07], c: FUR2 },                      // 眉脊
+    { p: [0, 0.74, -0.24], s: [0.11, 0.11, 0.16], c: FUR },                      // 尾巴四節
+    { p: [0, 0.86, -0.31], s: [0.09, 0.17, 0.10], c: FUR },
+    { p: [0, 1.00, -0.32], s: [0.08, 0.15, 0.09], c: FUR },
+    { p: [0, 1.10, -0.26], s: [0.07, 0.08, 0.13], c: FUR2 }
+  ].concat(bmir([
+    { p: [0.07, 1.09, 0.285], s: [0.06, 0.07, 0.03], c: 0x140f0d },                   // 眼
+    { p: [0.185, 1.07, 0.08], s: [0.05, 0.11, 0.10], c: FACE },                       // 耳
+    { p: [0.27, 0.72, 0.02], s: [0.13, 0.36, 0.16], c: FUR, am: 1, pv: APE_SH },      // 上臂
+    { p: [0.29, 0.44, 0.06], s: [0.12, 0.30, 0.14], c: FUR2, am: 1, pv: APE_SH },     // 前臂
+    { p: [0.29, 0.245, 0.08], s: [0.13, 0.11, 0.17], c: PAW, am: 1, pv: APE_SH },     // 手（垂過膝）
+    { p: [0.15, 0.36, -0.02], s: [0.19, 0.30, 0.22], c: FUR, sw: 1, pv: APE_HIP },    // 大腿
+    { p: [0.15, 0.15, 0.02], s: [0.16, 0.22, 0.19], c: FUR, sw: 1, pv: APE_HIP },     // 小腿
+    { p: [0.15, 0.05, 0.08], s: [0.17, 0.10, 0.26], c: PAW, sw: 1, pv: APE_HIP }      // 腳
+  ])).concat([
+    /* 手上那支火把（「對地標點火」總要有個火源）。掛在右手上，
+       所以跟那隻手一起擺、一起抬。 */
+    { p: [0.29, 0.44, 0.14], s: [0.05, 0.52, 0.05], c: 0x6a4a30, r: [0.30, 0, 0], am: 1, pv: APE_SH },
+    { p: [0.29, 0.63, 0.20], s: [0.09, 0.09, 0.09], c: 0x5a3a22, am: 1, pv: APE_SH },
+    { p: [0.29, 0.75, 0.24], s: [0.13, 0.14, 0.13], c: 0xff7a1e, am: 1, pv: APE_SH },
+    { p: [0.29, 0.85, 0.25], s: [0.08, 0.10, 0.08], c: 0xffd24a, am: 1, pv: APE_SH }
+  ]);
+
+  /* 白猴子：頭頂 1.45（黑獸獵 ×1.11，使用者：「比黑獸獵略大」）。
+     **毛一樣是黑的**，白的是皮膚——臉、耳、手、腳（使用者指定）。
+     所以兩隻的分野不在毛色，在「白臉配深眼 vs 紅臉」、「白手白腳 vs 黑手黑腳」，
+     再加上頸圈長毛（黑獸獵沒有）、頭頂是平的沒冠毛、尾巴長一截。
+     拿炋彈的那隻手不跟著走路擺（沒有 am）：手上有東西的人本來就不會甲手。 */
+  const SNOW_SH = 1.00, SNOW_HIP = 0.55;
+  const B1 = 0x22222a, B2 = 0x3c3c46, SK = 0xf2ece0, SK2 = 0xe3d8c6;
+  const SNOW = [
+    { p: [0, 0.74, 0.02], s: [0.50, 0.52, 0.40], c: B1, r: [0.16, 0, 0] },
+    { p: [0, 0.70, 0.23], s: [0.30, 0.36, 0.05], c: B2, r: [0.16, 0, 0] },
+    { p: [0, 1.00, 0], s: [0.46, 0.20, 0.34], c: B1 },
+    { p: [0, 1.06, 0.05], s: [0.58, 0.16, 0.50], c: B2 },      // 頸圈長毛
+    { p: [0, 1.24, 0.10], s: [0.36, 0.34, 0.34], c: B1 },      // 頭
+    { p: [0, 1.42, 0.09], s: [0.32, 0.06, 0.30], c: B2 },      // 頭頂平毛（頂到 1.45）
+    { p: [0, 1.22, 0.285], s: [0.28, 0.26, 0.04], c: SK },     // 白臉
+    { p: [0, 1.15, 0.335], s: [0.19, 0.13, 0.10], c: SK2 },    // 吻部
+    { p: [0, 1.11, 0.385], s: [0.11, 0.03, 0.02], c: 0x5a4c42 },
+    { p: [0, 1.335, 0.29], s: [0.30, 0.05, 0.07], c: B2 },     // 眉脊（黑毛壓在白臉上緣）
+    { p: [0, 0.82, -0.30], s: [0.12, 0.12, 0.18], c: B1 },     // 尾巴五節
+    { p: [0, 0.96, -0.39], s: [0.10, 0.18, 0.11], c: B1 },
+    { p: [0, 1.14, -0.41], s: [0.09, 0.19, 0.10], c: B1 },
+    { p: [0, 1.30, -0.36], s: [0.08, 0.11, 0.14], c: B2 },
+    { p: [0, 1.36, -0.24], s: [0.07, 0.09, 0.13], c: B2 },
+    /* 左手（空的）跟著走路擺；右手拿炋彈，不擺，但要能抬——
+       所以還是給 am，只是加上 hold（只抬不擺，見 putBeasts）。 */
+    { p: [-0.31, 0.80, 0.02], s: [0.14, 0.40, 0.17], c: B1, am: -1, pv: SNOW_SH },
+    { p: [-0.33, 0.47, 0.06], s: [0.13, 0.34, 0.15], c: B2, am: -1, pv: SNOW_SH },
+    { p: [-0.33, 0.25, 0.08], s: [0.14, 0.11, 0.18], c: SK2, am: -1, pv: SNOW_SH },
+    { p: [0.31, 0.80, 0.02], s: [0.14, 0.40, 0.17], c: B1, am: 1, hold: 1, pv: SNOW_SH },
+    { p: [0.33, 0.47, 0.06], s: [0.13, 0.34, 0.15], c: B2, am: 1, hold: 1, pv: SNOW_SH },
+    { p: [0.33, 0.25, 0.08], s: [0.14, 0.11, 0.18], c: SK2, am: 1, hold: 1, pv: SNOW_SH }
+  ].concat(bmir([
+    { p: [0.075, 1.27, 0.305], s: [0.06, 0.07, 0.03], c: 0x1a1620 },                  // 眼（白臉上要深眼）
+    { p: [0.20, 1.25, 0.08], s: [0.05, 0.12, 0.11], c: SK },                          // 耳（皮膚）
+    { p: [0.17, 0.39, -0.02], s: [0.21, 0.32, 0.24], c: B1, sw: 1, pv: SNOW_HIP },
+    { p: [0.17, 0.16, 0.02], s: [0.18, 0.24, 0.20], c: B1, sw: 1, pv: SNOW_HIP },
+    { p: [0.17, 0.05, 0.09], s: [0.19, 0.10, 0.28], c: SK2, sw: 1, pv: SNOW_HIP }     // 腳（皮膚）
+  ])).concat(attach(NANA, { x: 0.40, y: 0.20, z: 0.13, sc: 0.62, ry: 1.15, rz: 0.2,
+                            am: 1, hold: 1, pv: SNOW_SH, bomb: 1 }));
+
+  const BEASTS = { ape: APE, snow: SNOW, nana: NANA };
+  const MAXBEAST = 6;
+  const BEAST_PARTS = Math.max(APE.length, SNOW.length, NANA.length);
+  const BEAST_RAISE = 2.6;                 // 右手抬到底是幾度（規則那邊給 0～1 的 m.arm）
+
+  /* m：{kind 哪一種（BEASTS 的 key）, x, y, z, a 朝向, ph 步伐相位,
+        gait 走得多快（0＝站著）, sc 放多大, arm 右手抬多高（0～1）,
+        raise 抬到底是幾度（省略就用 BEAST_RAISE）, spin 翻滾角（飛在半空的香蕉才有）} */
+  function putBeasts(list) {
+    const n = Math.min(list.length, MAXBEAST);
+    beastMesh.count = n * BEAST_PARTS;
+    for (let i = 0; i < n; i++) {
+      const m = list[i], parts = BEASTS[m.kind];
+      scratch.position.set(m.x, m.y || 0, m.z);
+      /* 順序跟小人一樣用 YZX：R = Ry(朝向)·Rz(0)·Rx(翻滾)。
+         香蕉飛出去時是繞自己橫軸翻，所以翻滾放 x。 */
+      scratch.rotation.set(m.spin || 0, m.a || 0, 0, 'YZX');
+      scratch.scale.setScalar(m.sc || 1);
+      scratch.updateMatrix();
+      for (let k = 0; k < BEAST_PARTS; k++) {
+        const b = parts[k];
+        /* 這一種沒那麼多塊，或者手上那根香蕉已經丟出去了（m.bomb 收掉）：
+           縮成一點，畫不出東西 */
+        if (!b || (b.bomb && !m.bomb)) {
+          scratchB.scale.setScalar(0);
+          scratchB.updateMatrix();
+          tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+          beastMesh.setMatrixAt(i * BEAST_PARTS + k, tmpM);
+          continue;
+        }
+        scratchB.position.set(b.p[0], b.p[1], b.p[2]);
+        scratchB.rotation.set(b.r ? b.r[0] : 0, b.r ? b.r[1] : 0, b.r ? b.r[2] : 0);
+        scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
+        /* 腰下那兩條前後擺、手反相擺（跟小人同一個式子），右手再加上抬起來那一段。
+           轉完要把位置也繞著關節轉過去，不然三塊手臂各自繞自己中心轉會散開。 */
+        let ang = 0;
+        if (b.sw) ang = Math.sin(m.ph || 0) * b.sw * (m.gait || 0);
+        else if (b.am) {
+          if (!b.hold) ang = -Math.sin(m.ph || 0) * b.am * (m.gait || 0) * 0.8;
+          if (b.am > 0 && m.arm) ang -= (m.raise === undefined ? BEAST_RAISE : m.raise) * m.arm;
+        }
+        if (ang) {
+          const dy = b.p[1] - b.pv, dz = b.p[2] - JOINT_Z;
+          const c = Math.cos(ang), s2 = Math.sin(ang);
+          scratchB.position.y = b.pv + dy * c - dz * s2;
+          scratchB.position.z = JOINT_Z + dy * s2 + dz * c;
+          scratchB.rotation.x = (b.r ? b.r[0] : 0) + ang;
+        }
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        beastMesh.setMatrixAt(i * BEAST_PARTS + k, tmpM);
+        beastMesh.setColorAt(i * BEAST_PARTS + k, tmpC.setHex(b.c));
+      }
+    }
+    beastMesh.instanceMatrix.needsUpdate = true;
+    if (beastMesh.instanceColor) beastMesh.instanceColor.needsUpdate = true;
+    dropSphere(beastMesh);
+  }
+
   /* ── 樹 ───────────────────────────────────────────── */
   const LEAF = [0x4e8a3c, 0x5fa04a, 0x3f7a34, 0x6cae52];
   function putTrees(trees) {
@@ -2579,12 +2793,13 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
     putBalls, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
-    putStars, putBolts, putMarks, putGates, putWeapons,
+    putStars, putBolts, putMarks, putGates, putWeapons, putBeasts,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
+    MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh }; }
   };
 })();

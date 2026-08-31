@@ -159,6 +159,7 @@ function step(dt) {
   for (const w of workers) if (w.burn > 0) burningW++;    // 火苗配額要照人數分
   mageHeapT -= dt;                                       // 料堆清單的重算計時（見 listMageHeaps）
   stepIdleEvent(dt);                                     // 閒晃事件（v1.97）
+  stepDoom(dt);                                          // 天災（v1.138）
   pairChat();                                            // 湊對要在更新之前，配到的當幀就停下來
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);
@@ -181,6 +182,7 @@ function draw() {
   for (let i = 0; i < workers.length; i++) ENG.putWorker(i, workers[i]);
   ENG.commitWorkers();
   ENG.putEmotes(workers);            // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位）
+  ENG.putBeasts(beastList());        // 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）
 
   ENG.putTrees(trees);
   ENG.putDust(dustList());

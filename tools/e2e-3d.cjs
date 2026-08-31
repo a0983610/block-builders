@@ -5,7 +5,7 @@
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
-   --until：改一行就要等整輪（920 條）太慢，這個讓它跑到指定段落就停。
+   --until：改一行就要等整輪（939 條）太慢，這個讓它跑到指定段落就停。
    只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
    測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
@@ -132,6 +132,11 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那一段自己把它裝回去（見「偷懶」）。 */
   if (!window.lazyRoll) window.lazyRoll = rollLazy;
   rollLazy = () => { for (const w of workers) w.lazy = 0; };
+  /* 天災（v1.138）也預設關掉。地標蓋完之後 10~15 分鐘會有猴子從場邊走進來放火／丟炸彈，
+     量完工、閒晃、道具、效能那些「跑很久」的測試會被它整個洗掉。
+     要測這件事本身的那一段自己把它裝回去（見「天災」）。 */
+  if (!window.doomStep) window.doomStep = stepDoom;
+  stepDoom = () => {};
   /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
      清成一般碎料就好，下一次 startBuild 的 reconcilePool 會把多的收掉。 */
   window.clearHomes = () => {
@@ -174,6 +179,10 @@ const installClean = page => page.evaluate(() => {
        castGate 借去的鏡頭高度還回去（不還的話下一條測試量到的視線高是被它抬過的）。 */
     gates = null; weapons = null; gateEnd();
     ENG.putGates([]); ENG.putWeapons([]);
+    /* 天災（v1.138）：場上那幾隻與飛在半空的香蕉。倒數也要歸零——
+       不歸零的話下一條測試一進 done 就繼承上一條數到一半的秒數。 */
+    beasts = null; nanas = null; doomT = -1;
+    ENG.putBeasts([]);
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
@@ -13652,6 +13661,271 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('炸彈與魔法陣在場上才多吃 draw call', dc.busy > dc.idle && dc.busy <= 40,
      '放了炸彈與六層魔法陣時 ' + dc.busy + ' 個');
 
+  /* ══════════ 天災 ══════════ */
+  /* v1.138。使用者：「自動天災事件設計成可擴充多種／地標建築完成後 計時 10~15 分鐘
+     之間啟動／事件一 一隻小人大小的黑獼猴慢慢從邊緣走過來 對地標點火／事件二 一隻
+     小人大小的白猴子(比黑獼猴略大)慢慢從邊緣走過來 對地標丟出香蕉形狀炸彈」，
+     後續追加「可以按照小人行走邏輯 不要穿越地標建築&小房子」。
+     造型是先做成預覽給使用者看過才落地的（白猴子改成「毛依然是黑的，只有皮膚比較白」）。 */
+  head('天災：猴子來砸場');
+  await reset(page, { shape: '吉薩大金字塔', cnt: 2600, workers: 12 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
+
+  /* ── 造型（讀引擎那份部位表，跟核可過的造型稿對得起來）── */
+  const bfig = await page.evaluate(() => {
+    const B = ENG.BEASTS;
+    const top = k => Math.max(...B[k].map(b => b.p[1] + b.s[1] / 2));
+    const has = (k, c) => B[k].some(b => b.c === c);
+    return {
+      apeTop: +top('ape').toFixed(3), snowTop: +top('snow').toFixed(3),
+      apeFace: has('ape', 0xc0625c), apePaw: has('ape', 0x17171b), apeTorch: has('ape', 0xff7a1e),
+      snowBody: B.snow[0].c,
+      snowSkin: B.snow.filter(b => b.c === 0xf2ece0 || b.c === 0xe3d8c6).length,
+      snowFace: has('snow', 0xf2ece0), snowPaw: has('snow', 0xe3d8c6),
+      nanaSeg: B.nana.filter(b => b.c === 0xf0c53a).length,
+      tape: B.nana.filter(b => b.c === 0xc8322a).length,
+      fuse: has('nana', 0x2c2620), spark: has('nana', 0xff8a24),
+      bent: B.nana.filter(b => b.r && b.r[2]).length
+    };
+  });
+  /* 「小人大小」：小人連安全帽是 1.31（engine.js 的 BODY），黑獼猴照這個數字畫，
+     白猴子「略大」抓 +11%。兩隻在場上乘的是同一個身高倍率（DOOM_SC），
+     所以模型高的比例就是場上的比例。 */
+  ok('黑獼猴跟小人一樣高、白猴子高一成',
+     bfig.apeTop === 1.31 && Math.abs(bfig.snowTop / bfig.apeTop - 1.11) < 0.01,
+     '黑 ' + bfig.apeTop + '／白 ' + bfig.snowTop);
+  /* 使用者第二版指定：「毛色依然是黑的 只是皮膚的地方比較白」。
+     所以白的只有八塊：臉、兩隻耳朵、吻部、兩隻手、兩隻腳。 */
+  ok('白猴子的毛是黑的，白的只有皮膚那幾塊',
+     bfig.snowBody === 0x22222a && bfig.snowSkin === 8 && bfig.snowFace && bfig.snowPaw,
+     '軀幹 ' + bfig.snowBody.toString(16) + '／淺色 ' + bfig.snowSkin + ' 塊');
+  ok('黑獼猴是紅臉黑手腳、手上有火把',
+     bfig.apeFace && bfig.apePaw && bfig.apeTorch);
+  /* 純黃的香蕉在場上只是一根水果，所以要有膠帶與引信才讀得出是炸彈。
+     弧線是六塊各自轉一個角度排出來的——方塊排不出弧線，只能這樣排。 */
+  ok('香蕉炸彈：六節弧 ＋ 兩圈紅膠帶 ＋ 引信與火花',
+     bfig.nanaSeg === 6 && bfig.tape === 2 && bfig.fuse && bfig.spark && bfig.bent >= 8,
+     bfig.nanaSeg + ' 節／' + bfig.tape + ' 圈膠帶／轉過角度的 ' + bfig.bent + ' 塊');
+
+  /* ── 畫出來 ── */
+  const bdraw = await page.evaluate(() => {
+    beasts = null; nanas = null;
+    const a = spawnBeast('ape'), b = spawnBeast('snow');
+    a.x = 30; a.z = 0; a.gait = 0; a.ph = 0;
+    b.x = -30; b.z = 0; b.gait = 0; b.ph = 0;
+    draw();
+    const mesh = ENG.three.beastMesh, P = ENG.BEAST_PARTS;
+    const tmp = new THREE.Matrix4(), v = new THREE.Vector3(), sc = new THREE.Vector3();
+    let low = 99;
+    for (let k = 0; k < ENG.BEASTS.ape.length; k++) {
+      mesh.getMatrixAt(k, tmp);
+      v.setFromMatrixPosition(tmp); sc.setFromMatrixScale(tmp);
+      low = Math.min(low, v.y - sc.y / 2);
+    }
+    /* 手上那根香蕉要跟著手走：走路擺了一輪，手與炸彈的距離不能變
+       （會變就表示那根是自己在擺，畫面上會脫手）。 */
+    const hand = ENG.BEASTS.snow.findIndex(x => x.c === 0xe3d8c6 && x.p[0] > 0 && x.p[1] < 0.3);
+    const bomb = ENG.BEASTS.snow.length - 1;
+    const gaps = [];
+    const p1 = new THREE.Vector3(), p2 = new THREE.Vector3();
+    for (let i = 0; i < 12; i++) {
+      b.gait = 0.85; b.ph = i * 0.5; draw();
+      mesh.getMatrixAt(P + hand, tmp); p1.setFromMatrixPosition(tmp);
+      mesh.getMatrixAt(P + bomb, tmp); p2.setFromMatrixPosition(tmp);
+      gaps.push(p1.distanceTo(p2));
+    }
+    mesh.getMatrixAt(P + bomb, tmp);
+    const held = new THREE.Vector3().setFromMatrixScale(tmp).x;
+    b.bomb = 0; draw();
+    mesh.getMatrixAt(P + bomb, tmp);
+    const gone = new THREE.Vector3().setFromMatrixScale(tmp).x;
+    const cnt = mesh.count;
+    beasts = null; draw();
+    return { cnt, parts: P, low: +low.toFixed(3), empty: mesh.count,
+             gap: +(Math.max(...gaps) - Math.min(...gaps)).toFixed(4),
+             held: +held.toFixed(3), gone: +gone.toFixed(4) };
+  });
+  ok('兩隻都畫得出來，腳踩在草皮上（沒埋進地裡）',
+     bdraw.cnt === bdraw.parts * 2 && Math.abs(bdraw.low) < 0.01 && bdraw.empty === 0,
+     bdraw.cnt + ' 個 instance／最低點 ' + bdraw.low);
+  ok('手上那根香蕉跟著手走，不會自己擺',
+     bdraw.gap < 0.001, '走一輪的距離變化 ' + bdraw.gap);
+  ok('丟出去之後手上那根就不見了',
+     bdraw.held > 0.03 && bdraw.gone === 0,
+     '拿著 ' + bdraw.held + ' → 丟了 ' + bdraw.gone);
+
+  /* ── 倒數 ── */
+  const btime = await page.evaluate(() => {
+    completeNow();
+    for (let i = 0; i < 40; i++) step(0.05);          // 散場
+    beasts = null; nanas = null; doomT = -1;
+    phase = 'build'; stepDoom(0.05);
+    const inBuild = doomT;
+    phase = 'done'; stepDoom(0.05);
+    const armed = doomT;
+    for (let i = 0; i < 20; i++) stepDoom(0.5);       // 數了 10 秒
+    const ticked = armed - doomT;
+    const rolls = [];
+    for (let i = 0; i < 300; i++) { doomT = -1; stepDoom(0.05); rolls.push(doomT); }
+    /* 場上有東西在演的時候不再數（一次一件）；走了才重抽。 */
+    doomT = -1;
+    const m = spawnBeast('ape');
+    stepDoom(0.05);
+    const busy = doomT;
+    beasts = null; stepDoom(0.05);
+    const rearm = doomT;
+    return { inBuild, armed: +armed.toFixed(1), ticked: +ticked.toFixed(2),
+             lo: Math.min(...rolls), hi: Math.max(...rolls), busy, rearm };
+  });
+  ok('只有地標蓋完（done）才開始倒數，施工中不數',
+     btime.inBuild === -1 && btime.armed > 0, '施工中 ' + btime.inBuild);
+  ok('倒數的長度落在 10~15 分鐘',
+     btime.lo >= 600 && btime.hi <= 900 && btime.hi - btime.lo > 200,
+     '300 次抽樣：' + btime.lo.toFixed(0) + '～' + btime.hi.toFixed(0) + ' 秒');
+  ok('倒數照模擬時間走，而且一次只來一件',
+     Math.abs(btime.ticked - 10) < 0.01 && btime.busy === -1 && btime.rearm > 600,
+     '10 秒扣掉 ' + btime.ticked + '／場上有東西時 ' + btime.busy);
+  /* 「設計成可擴充多種」：加第三種天災＝往 DOOMS 再放一列，別處不必動。 */
+  const bpick = await page.evaluate(() => {
+    const cnt = {};
+    for (let i = 0; i < 600; i++) { const d = rollDoom(); cnt[d.id] = (cnt[d.id] || 0) + 1; }
+    DOOMS.push({ id: 'test', wt: 2, start: () => {} });
+    const cnt2 = {};
+    for (let i = 0; i < 600; i++) { const d = rollDoom(); cnt2[d.id] = (cnt2[d.id] || 0) + 1; }
+    DOOMS.pop();
+    return { ids: DOOMS.map(d => d.id), cnt, cnt2 };
+  });
+  ok('事件表可擴充：兩種都抽得到，加第三種也照權重抽得到',
+     bpick.ids.length === 2 && bpick.cnt.ape > 200 && bpick.cnt.snow > 200 &&
+     bpick.cnt2.test > 250 && bpick.cnt2.ape > 100,
+     '兩種 ' + JSON.stringify(bpick.cnt) + '／加一種 ' + JSON.stringify(bpick.cnt2));
+
+  /* ── 走過來（使用者：「按照小人行走邏輯 不要穿越地標建築&小房子」）── */
+  await fillAll(page);
+  const bwalk = await page.evaluate(() => {
+    beasts = null; nanas = null;
+    const m = spawnBeast('ape');
+    const r0 = Math.hypot(m.x, m.z);
+    let inSite = 0, frames = 0, dist = 0;
+    let px = m.x, pz = m.z;
+    while (m.st === 'come' && frames < 3000) {
+      stepDoom(0.05); frames++;
+      if (footBlocked(m.x, m.z)) inSite++;
+      dist += Math.hypot(m.x - px, m.z - pz); px = m.x; pz = m.z;
+    }
+    const walked = frames * 0.05;
+    let near = 0;
+    while (m.st !== 'act' && frames < 3600) { stepDoom(0.05); frames++; near++;
+      if (footBlocked(m.x, m.z)) inSite++; }
+    return { r0: +r0.toFixed(1), arena: +arenaR.toFixed(1), siteR: +siteR.toFixed(1),
+             inSite, secs: +walked.toFixed(1), spd: +(dist / walked).toFixed(2),
+             stand: +Math.hypot(m.x, m.z).toFixed(1), near: +(near * 0.05).toFixed(1),
+             reach: +(() => { const b = nearSet(m.x, m.z);
+                              return Math.hypot(b.x - m.x, b.z - m.z); })().toFixed(2) };
+  });
+  ok('從碎料場外緣慢慢走進來（速度約小人的三分之一）',
+     bwalk.r0 > bwalk.arena && bwalk.spd > 1.8 && bwalk.spd < 2.6,
+     '出現在半徑 ' + bwalk.r0 + '（場地 ' + bwalk.arena + '）、' +
+     bwalk.spd + '／秒、走了 ' + bwalk.secs + ' 秒');
+  ok('全程沒有一幀站在地標的格子裡',
+     bwalk.inSite === 0 && bwalk.reach < 4,
+     '踩進去 ' + bwalk.inSite + ' 幀，停在離最近那塊 ' + bwalk.reach + ' 格');
+  /* 房子擋在正前方：走法是借小人那一套（strollTo → dodgeHome／pushOutHome），
+     所以牠會繞過去，不會直直穿過人家的屋子。 */
+  const bhome = await page.evaluate(() => {
+    beasts = null; nanas = null;
+    const m = spawnBeast('ape');
+    const a = Math.atan2(m.z, m.x);
+    // 擋在牠回工地那條直線的中段
+    const hx = Math.cos(a) * (arenaR * 0.55), hz = Math.sin(a) * (arenaR * 0.55);
+    homes = { list: [{ x: hx, z: hz, r: 4, x0: hx - 4, x1: hx + 4, z0: hz - 4, z1: hz + 4 }] };
+    let inHome = 0, off = 0, frames = 0;
+    while (m.st === 'come' && frames < 3000) {
+      stepDoom(0.05); frames++;
+      if (homeFoot(m.x, m.z)) inHome++;
+      // 離「出發點到工地」那條直線多遠
+      off = Math.max(off, Math.abs(-Math.sin(a) * m.x + Math.cos(a) * m.z));
+    }
+    homes = null;
+    return { inHome, off: +off.toFixed(2), got: m.st !== 'come' };
+  });
+  ok('房子擋路就繞開，不從人家屋子裡穿過去',
+     bhome.inHome === 0 && bhome.off > 1 && bhome.got,
+     '踩進去 ' + bhome.inHome + ' 幀，最多繞出去 ' + bhome.off + ' 格');
+
+  /* ── 事件一：點火 ── */
+  await fillAll(page);
+  const bfire = await page.evaluate(() => {
+    clearFires();
+    for (const b of blocks) b.wet = 0;
+    beasts = null; nanas = null;
+    const m = spawnBeast('ape');
+    let frames = 0;
+    while (m.st !== 'act' && frames < 3600) { stepDoom(0.05); frames++; }
+    const ph0 = phase;
+    while (m.st === 'act' && frames < 3800) { stepDoom(0.05); frames++; }
+    const lit = blocks.filter(b => b.burn > 0).length;
+    const set0 = blocks.filter(b => b.st === SET).length;
+    for (let i = 0; i < 200; i++) step(0.05);        // 10 秒讓火自己蔓延
+    return { ph0, lit, phase, set0, spread: blocks.filter(b => b.burn > 0).length,
+             set1: blocks.filter(b => b.st === SET).length };
+  });
+  ok('黑獼猴走到就點火，地標燒起來',
+     bfire.ph0 === 'done' && bfire.lit >= 3 && bfire.phase === 'wreck',
+     '點著 ' + bfire.lit + ' 塊，phase ' + bfire.ph0 + ' → ' + bfire.phase);
+  ok('火會自己往鄰居蔓延（10 秒後燒得更兇）',
+     bfire.spread > bfire.lit * 3 && bfire.set1 < bfire.set0,
+     bfire.lit + ' 塊 → ' + bfire.spread + ' 塊，還站著的 ' +
+     bfire.set0 + ' → ' + bfire.set1);
+
+  /* ── 事件二：香蕉炸彈 ── */
+  await fillAll(page);
+  const bnana = await page.evaluate(() => {
+    clearFires();
+    beasts = null; nanas = null;
+    const m = spawnBeast('snow');
+    let frames = 0, flew = 0, top = 0;
+    while (m.st !== 'act' && frames < 3600) { stepDoom(0.05); frames++; }
+    const hold0 = m.bomb;
+    while (m.st === 'act' && frames < 3800) { stepDoom(0.05); frames++; }
+    const set0 = blocks.filter(b => b.st === SET).length;
+    let hit = null;
+    while (nanas && frames < 3900) {
+      flew++; top = Math.max(top, nanas[0].y);
+      hit = { x: nanas[0].x, y: nanas[0].y, z: nanas[0].z };
+      stepDoom(0.02); frames++;
+    }
+    const set1 = blocks.filter(b => b.st === SET).length;
+    return { hold0, hold1: m.bomb, flew, top: +top.toFixed(1),
+             hy: hit ? +hit.y.toFixed(1) : -1,
+             hr: hit ? +Math.hypot(hit.x, hit.z).toFixed(1) : -1,
+             smashed: set0 - set1, set0 };
+  });
+  ok('白猴子把香蕉炸彈拋到建築上（手上那根跟著不見）',
+     bnana.hold0 === 1 && bnana.hold1 === 0 && bnana.flew > 5 &&
+     bnana.hy > 0.4 && bnana.hr < 30,
+     '飛了 ' + bnana.flew + ' 幀、最高 ' + bnana.top + '，炸在高度 ' +
+     bnana.hy + '、離中心 ' + bnana.hr);
+  ok('一根香蕉炸掉的量在投石機的石頭與定時炸彈之間',
+     bnana.smashed > 100, bnana.smashed + ' 塊（全座 ' + bnana.set0 + '）');
+  /* 同一座、同一點各炸一次，比三發的量級。每一發都先把建築補回來。 */
+  const bpow = {};
+  for (const kind of ['rock', 'nana', 'bomb']) {
+    await fillAll(page);
+    bpow[kind] = await page.evaluate(k => {
+      const C = { rock: [ROCK_R, ROCK_POW], nana: [NANA_R, NANA_POW],
+                  bomb: [BOMB_R, BOMB_POW] }[k];
+      const n0 = blocks.filter(b => b.st === SET).length;
+      explode({ x: 3, y: 6, z: 3 }, C[0], C[1]);
+      return n0 - blocks.filter(b => b.st === SET).length;
+    }, kind);
+  }
+  ok('同一點比一次：石頭 < 香蕉 < 定時炸彈',
+     bpow.rock < bpow.nana && bpow.nana < bpow.bomb,
+     '石頭 ' + bpow.rock + '／香蕉 ' + bpow.nana + '／炸彈 ' + bpow.bomb + ' 塊');
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+
   /* ══════════ 隕石 ══════════ */
   head('隕石');
   await reset(page, { shape: '新天鵝堡', cnt: 3000, workers: 4 });
@@ -14650,19 +14924,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   noise(0.07, 0.035, 5200);
                 }),
                 clang: await one(() => sndClang()),
-                gate1s: await one(() => {
+                /* 五次取中位數（同雷聲那兩發，見 many）：**peak 是一堆隨機噪音疊起來的
+                   最大值**，單次量的話本來就會抖。同一份程式碼連量十五次，一組一秒份量到
+                   0.165～0.268、三組 0.169～0.251——門檻 0.25 兩邊都會偶爾踩到，
+                   跟改了什麼無關。取五次的中位數之後（連量六輪）落在 0.183～0.208，
+                   離門檻有三成餘裕。門檻沒動（放寬門檻不算修，見 README〈九條偶爾飄的測試〉）。 */
+                gate1s: await many(() => {
                   for (let i = 0; i < GATE_RATE; i++) sndBlade();
                   for (let i = 0; i < 13; i++) sndClang();
                   for (let i = 0; i < 15; i++) sndStab();
-                }),
+                }, 3, 5),
                 /* 三組同時在射（v1.136）：發數三倍。撐住這件事的還是「同一支音效
                    0.06 秒內最多疊 3 個」那條規矩，所以量到的該跟一組差不多——
                    這一條就是在驗那件事。 */
-                gate3s: await one(() => {
+                gate3s: await many(() => {
                   for (let i = 0; i < GATE_RATE * 3; i++) sndBlade();
                   for (let i = 0; i < 39; i++) sndClang();
                   for (let i = 0; i < 45; i++) sndStab();
-                }) };
+                }, 3, 5) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
   });

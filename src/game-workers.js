@@ -1331,7 +1331,10 @@ const IDLE_NEAR = 2, IDLE_FAR = 9;
    2.4 倍是量出來的：任一瞬間大約七成的人站著不動。 */
 function strollPause(w) { w.pause = w.leg / WALK * rr(1.7, 3.1); w.leg = 0; }
 
-function strollTo(w, dt) {
+/* spd 給了就照它走，不給就是小人的走路速度（WALK）。
+   天災那幾隻走得比人慢得多，但「怎麼繞開建築與房子」要跟小人一模一樣，
+   所以是借這一支、只換速度，不是另外刻一份（見 game-tools.js 的 DOOM_WALK）。 */
+function strollTo(w, dt, spd) {
   const keep = siteR + KEEP;
   /* 目標點落在建築裡就先推到外圈。不推的話他會繞著建築打轉永遠抵達不了，
      也就永遠不換下一個目標，等於卡死在那一圈上。 */
@@ -1367,7 +1370,7 @@ function strollTo(w, dt) {
   const m = Math.hypot(ux, uz) || 1;
   ux /= m; uz /= m;
 
-  const sp = Math.min(WALK * dt, d);
+  const sp = Math.min((spd || WALK) * dt, d);
   w.x += ux * sp; w.z += uz * sp;
   pushOutHome(w);
   w.leg += sp;                         // 這趟閒晃走了多遠，抵達後拿來算站多久

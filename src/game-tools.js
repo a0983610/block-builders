@@ -4461,3 +4461,224 @@ function stepDust(dt) {
   }
 }
 
+
+/* ── 天災（v1.138）─────────────────────────────────────
+   地標蓋完之後過一陣子，會有東西從場邊慢慢走進來砸場（使用者：「自動天災事件
+   設計成可擴充多種／地標建築完成後 計時 10~15 分鐘之間啟動」）。
+
+   跟閒晃事件（game-workers.js 的 IDLE_EVENTS）同一個做法：一張表，每一筆是
+   { id, wt 相對權重, start() }。加第三種天災就是往這張表再放一列，別處一個字都不必動。
+
+   倒數只在 phase === 'done' 走——那才是「地標蓋完、還好端端站著」。開工（build）、
+   整地（clear）、已經在拆了（wreck）都不數：那幾個階段沒有一座完好的地標可以砸。
+   場上還有東西在演的時候也不數（一次一件）；等牠走了、地標還在，才重抽一次時間再數。 */
+const DOOM_LO = 600, DOOM_HI = 900;   // 10~15 分鐘。照模擬時間走，所以開 4 倍速就快 4 倍
+/* 「小人大小」＝照小人身高倍率的中間值放大。兩隻的模型高（黑獼猴 1.31、白猴子 1.45）
+   本來就是拿小人連安全帽的 1.31 當尺畫的，所以乘同一個倍率，站在一起就是那個比例。 */
+const DOOM_SC = (W_LO + W_HI) / 2;
+const DOOM_WALK = 2.2;                // 「慢慢走過來」：小人走路是 WALK 6.8，這是三分之一
+const DOOM_OUT = 3;                   // 從碎料場外緣再往外幾格出現／退場
+const DOOM_AIM = 1.1;                 // 站定到動手之間停幾秒（看得出牠在瞄）
+const DOOM_ARM = 4;                   // 抬手的快慢
+const DOOM_NEAR = 3.2;                // 走到離目標這麼近就夠了（火把搆得到）
+const DOOM_RAISE = { ape: 1.5, snow: 2.6 };   // 右手抬到底幾度：送火把 vs 舉過頭要丟
+let beasts = null;                    // 場上那幾隻
+let nanas = null;                     // 飛在半空的香蕉炸彈
+let doomT = -1;                       // 倒數（−1＝沒在數）
+
+const DOOMS = [
+  /* 事件一：黑獼猴，拿手上的火把把地標點著。火會自己往鄰居蔓延（見 spreadFire），
+     所以牠只要點著腳邊那幾塊就可以走了。 */
+  { id: 'ape', wt: 1, start: () => spawnBeast('ape') },
+  /* 事件二：白猴子，把香蕉形狀的炸彈拋到地標上。 */
+  { id: 'snow', wt: 1, start: () => spawnBeast('snow') }
+];
+/* 照權重挑一件。回傳 null 只有一種情況：表是空的。（同 rollIdleEvent） */
+function rollDoom() {
+  let tot = 0;
+  for (const d of DOOMS) tot += d.wt;
+  if (tot <= 0) return null;
+  let r = Math.random() * tot;
+  for (const d of DOOMS) { r -= d.wt; if (r < 0) return d; }
+  return DOOMS[DOOMS.length - 1];      // 浮點誤差的保險
+}
+/* 誰來了就做什麼。表在上面、動作在下面，加新的天災時兩邊各加一列，互不干擾。 */
+const DOOM_ACT = { ape: apeStrike, snow: nanaThrow };
+
+/* 從場邊放一隻進來。方位隨機——固定一邊的話，鏡頭剛好對著另一邊就永遠看不到牠走過來。 */
+function spawnBeast(kind) {
+  const a = Math.random() * Math.PI * 2, d = arenaR + DOOM_OUT;
+  const m = {
+    kind, x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d,
+    a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就面向工地
+    ph: 0, gait: 0, leg: 0, tx: 0, tz: 0, ghost: 0, pause: 0,
+    sc: DOOM_SC, arm: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0
+  };
+  if (!beasts) beasts = [];
+  beasts.push(m);
+  sndBeast(kind === 'snow');
+  toast(kind === 'ape' ? '🐒 黑獼猴朝工地過來了' : '🐵 白猴子朝工地過來了',
+        kind === 'ape' ? '牠手上有一支火把' : '牠手上有一根綁著膠帶的香蕉');
+  return m;
+}
+/* 離這個位置最近的那一塊地標（還站著的）。天災那幾隻拿它當「要砸哪裡」。
+   小人的家不算：使用者指定的是「對地標」動手。 */
+function nearSet(x, z) {
+  let best = null, bd = Infinity;
+  for (const b of blocks) {
+    if (b.st !== SET || b.hh >= 0) continue;
+    const d = (b.x - x) ** 2 + (b.z - z) ** 2;
+    if (d < bd) { bd = d; best = b; }
+  }
+  return best;
+}
+function leaveBeast(m) {
+  m.st = 'go';
+  const d = Math.hypot(m.x, m.z) || 1;
+  m.tx = m.x / d * (arenaR + DOOM_OUT);
+  m.tz = m.z / d * (arenaR + DOOM_OUT);
+}
+/* 一隻的一幀。回傳 true＝走出場外了，收掉。
+
+   走法**借小人那一套**（使用者：「可以按照小人行走邏輯 不要穿越地標建築&小房子」）：
+     come  strollTo：它會把「工地中心」這個目標推到建築外圈那一環上，所以牠停在
+           建築邊上不會走進去；路上有小人的家也是它繞開的（dodgeHome／pushOutHome）。
+     near  那一環是照 siteR 畫的圓，而 siteR 有 7 的下限，小一點的地標離環還有幾格。
+           所以再往最近那一塊走幾步——但**下一步會踩進建築或房子的格子就停**，
+           「不要穿越」在這裡是硬條件，不是靠繞路碰運氣。
+     act   站定、轉向、抬手，停 DOOM_AIM 秒才動手（看得出牠在瞄）。
+     go    原路走回場外。 */
+function stepBeast(m, dt) {
+  /* 開工／整地就放棄走人：天災是衝著「蓋好的那一座」來的，半成品不在它的守備範圍
+     （也免得牠站在推土機的路線上）。 */
+  if ((phase === 'build' || phase === 'clear') && m.st !== 'go') leaveBeast(m);
+  m.arm += ((m.st === 'act' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
+  if (m.st === 'come') {
+    m.tx = 0; m.tz = 0;
+    if (strollTo(m, dt, DOOM_WALK)) m.st = 'near';
+    return false;
+  }
+  if (m.st === 'near') {
+    const b = nearSet(m.x, m.z);
+    if (!b) { leaveBeast(m); return false; }          // 沒東西可砸了（都被拆光）
+    const dx = b.x - m.x, dz = b.z - m.z, d = Math.hypot(dx, dz) || 1;
+    m.a = Math.atan2(dx, dz);
+    /* 還想再走多遠。**要留一格浮點的餘裕**：走到剩下剛好 DOOM_NEAR 時，
+       d 會是 3.2000000000000006 這種數，`d <= DOOM_NEAR` 永遠不成立，
+       而該走的距離已經是 0——牠就會站在那裡不動、也不動手（實測 12 次卡住 2 次）。 */
+    const adv = Math.max(0, d - DOOM_NEAR);
+    // 往前探半格：等踩進去才判斷的話，這一幀已經站在牆裡面了
+    const ex = m.x + dx / d * (adv + 0.5), ez = m.z + dz / d * (adv + 0.5);
+    if (adv < 0.05 || footBlocked(ex, ez) || homeFoot(ex, ez)) {
+      m.st = 'act'; m.t = DOOM_AIM;
+      return false;
+    }
+    const sp = Math.min(DOOM_WALK * dt, adv);
+    m.x += dx / d * sp; m.z += dz / d * sp;
+    pushOutHome(m);
+    m.ph += dt * 11;
+    m.gait += (0.85 - m.gait) * Math.min(1, dt * 8);
+    return false;
+  }
+  if (m.st === 'act') {
+    m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+    m.t -= dt;
+    if (m.t > 0) return false;
+    DOOM_ACT[m.kind](m);
+    leaveBeast(m);
+    return false;
+  }
+  return strollTo(m, dt, DOOM_WALK);
+}
+
+/* ── 事件一：黑獼猴放火 ─────────────────────────────────
+   點的是離牠最近的那一塊地標——牠就站在旁邊，那一塊正在火把底下。
+   再照餘火那套往周圍撒幾塊（igniteAround），剩下的交給火自己蔓延。
+   igniteAt 會順手把 phase 從 done 推到 wreck（那是「地標開始垮了」的記號）。 */
+const DOOM_FIRE_R = 4, DOOM_FIRE_N = 5;
+function apeStrike(m) {
+  const b = nearSet(m.x, m.z);
+  if (!b) return 0;
+  const p = { x: b.x, y: b.y, z: b.z };
+  let n = igniteAt(p.x, p.y, p.z) ? 1 : 0;
+  n += igniteAround(p, DOOM_FIRE_R, DOOM_FIRE_N, SET);
+  sndFire();
+  return n;
+}
+
+/* ── 事件二：白猴子丟香蕉炸彈 ───────────────────────────
+   落點與拋物線跟投石機的石頭同一套（見 fireRock）：地標中心一帶隨機取一點、
+   高度取那附近最高的一塊，湊出剛好 NANA_T 秒抵達的初速。 */
+const NANA_R = 9, NANA_POW = 14;      // 威力在投石機的石頭（12）與定時炸彈（17）之間
+const NANA_T = 1.15;                  // 飛多久
+const NANA_HAND = 1.55;               // 出手高度（模型單位，舉過頭的那隻手）
+const NANA_SPIN = 9;                  // 飛的時候翻多快
+function nanaThrow(m) {
+  const a = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * siteR * 0.7;
+  const tx = Math.cos(a) * rad, tz = Math.sin(a) * rad;
+  let ty = 0;
+  for (const b of blocks) {
+    if (b.st !== SET) continue;
+    if (Math.abs(b.x - tx) > 1.8 || Math.abs(b.z - tz) > 1.8) continue;
+    if (b.y > ty) ty = b.y;
+  }
+  const sy = NANA_HAND * DOOM_SC;
+  const n = {
+    kind: 'nana', x: m.x, y: sy, z: m.z,
+    s: 0.7 * DOOM_SC,                                  // sweepRock 拿它當碰撞半徑
+    sc: DOOM_SC, a: Math.atan2(tx - m.x, tz - m.z), spin: 0, t: 0,
+    vx: (tx - m.x) / NANA_T, vz: (tz - m.z) / NANA_T,
+    vy: (ty + 0.6 - sy) / NANA_T + 0.5 * GRAV * NANA_T   // 解拋物線：湊出剛好 NANA_T 秒抵達
+  };
+  if (!nanas) nanas = [];
+  nanas.push(n);
+  m.bomb = 0;                         // 手上那根跟著不見（見引擎的 putBeasts）
+  sndSwing();
+  return n;
+}
+function stepNanas(dt) {
+  if (!nanas) return;
+  for (let i = nanas.length - 1; i >= 0; i--) {
+    const n = nanas[i];
+    const px = n.x, py = n.y, pz = n.z;
+    n.t += dt;
+    n.vy -= GRAV * dt;
+    n.x += n.vx * dt; n.y += n.vy * dt; n.z += n.vz * dt;
+    n.spin += dt * NANA_SPIN;
+    /* 撞到就當場炸。小人的家也算固體（hardAt）：blockAt 只認地標的格子表，
+       不算的話香蕉會從人家屋頂穿過去（v1.135 那條的同一個坑）。
+       飛過頭或落地也炸——不然丟歪的那一根會一路飛出場外。 */
+    if (sweepRock(n, px, py, pz, hardAt) || n.t > NANA_T * 2.5 || n.y <= 0.4) {
+      nanas.splice(i, 1);
+      explode({ x: n.x, y: Math.max(0.5, n.y), z: n.z }, NANA_R, NANA_POW);
+    }
+  }
+  if (!nanas.length) nanas = null;
+}
+
+/* 天災的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）。 */
+function stepDoom(dt) {
+  stepNanas(dt);
+  if (beasts) {
+    for (let i = beasts.length - 1; i >= 0; i--)
+      if (stepBeast(beasts[i], dt)) beasts.splice(i, 1);
+    if (!beasts.length) beasts = null;
+  }
+  if (phase !== 'done') { doomT = -1; return; }     // 沒有一座完好的地標可砸
+  if (beasts || nanas) return;                      // 一次一件，等這一件演完
+  if (doomT < 0) { doomT = rr(DOOM_LO, DOOM_HI); return; }
+  doomT -= dt;
+  if (doomT > 0) return;
+  doomT = -1;
+  const d = rollDoom();
+  if (d) d.start();
+}
+/* 要畫的清單：場上那幾隻 ＋ 飛在半空的香蕉，引擎那邊一顆網格畫完。
+   重用同一個陣列，不要每幀配置一個新的。 */
+const _beasts = [];
+function beastList() {
+  _beasts.length = 0;
+  if (beasts) for (const m of beasts) _beasts.push(m);
+  if (nanas) for (const n of nanas) _beasts.push(n);
+  return _beasts;
+}
