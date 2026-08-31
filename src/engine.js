@@ -2430,9 +2430,108 @@ const ENG = (function () {
   ])).concat(attach(NANA, { x: 0.40, y: 0.20, z: 0.13, sc: 0.62, ry: 1.15, rz: 0.2,
                             am: 1, hold: 1, pv: SNOW_SH, bomb: 1 }));
 
-  const BEASTS = { ape: APE, snow: SNOW, nana: NANA };
-  const MAXBEAST = 6;
-  const BEAST_PARTS = Math.max(APE.length, SNOW.length, NANA.length);
+
+  /* ── 飛龍（v1.139）───────────────────────────────────────
+     使用者給了一張參考圖：緋紅的身體、深色的棘刺與爪、大片翼膜、頭上一叢冠刺、
+     背脊一排刺、尾巴末端一片扇。造型是先做成 3D 預覽給使用者看過才落地的。
+
+     **翅膀是一條骨架鏈，不是一片繞翼根轉的硬板**（使用者第一版回饋：「飛的翅膀跟身體
+     太過僵硬」）。每一幀先沿著翼展把方向角積分成一條弧線（wingArc），每一塊再照
+     自己離翼根多遠掛上去——所以拍下去時翼面是彎的，翼尖還會甩在後面。
+     中間試過「每一塊各自繞翼根轉不同角度」：角度一差開，相鄰兩段就在關節處裂開
+     （翼尖那一段整個斷掉），所以才改成沿弧線走——每一段本來就接在前一段的末端。 */
+  const WING_PX = 0.30, WING_PY = 0.46, WING_TIP = 4.85;   // 翼根 x／y、翼尖 x
+  const FLAP_MID = 0.18, FLAP_A = 0.62, FLAP_LAG = 1.05;   // 中位角、擺幅、翼尖落後多少
+  const TAIL_SW = 0.60, TAIL_K = 0.52, TAIL_W = 0.62;      // 尾巴：擺幅、波長、比翅膀慢幾成
+  const NECK_SW = 0.22, NECK_W = 0.45;                     // 脖子：擺幅、快慢
+  const ARC_N = 14, WING_L = WING_TIP - WING_PX;
+  const arcX = new Float64Array(ARC_N + 1), arcY = new Float64Array(ARC_N + 1),
+        arcA = new Float64Array(ARC_N + 1);
+  const wingAng = (u, ph) => FLAP_MID + FLAP_A * Math.sin(ph - FLAP_LAG * u);
+  /* 這一幀的翼弧。積分出來的是「右半邊」，左半邊照 wg 的正負號鏡射。 */
+  function wingArc(ph) {
+    const ds = WING_L / ARC_N;
+    let x = WING_PX, y = WING_PY;
+    arcX[0] = x; arcY[0] = y; arcA[0] = wingAng(0, ph);
+    for (let i = 1; i <= ARC_N; i++) {
+      const a = wingAng((i - 0.5) / ARC_N, ph);
+      x += Math.cos(a) * ds; y += Math.sin(a) * ds;
+      arcX[i] = x; arcY[i] = y; arcA[i] = wingAng(i / ARC_N, ph);
+    }
+  }
+  /* 翼上那幾塊：掛 wg（左右）與 u（離翼根多遠，0 肩 1 翼尖，拍翅的相位落後照它算）。 */
+  function wing(list) {
+    return list.map(b => Object.assign({}, b, { wg: 1,
+      u: Math.min(1, Math.max(0, (Math.abs(b.p[0]) - WING_PX) / WING_L)) }));
+  }
+  const D_RED = 0xb8443c, D_RED2 = 0x8e2c2a, D_BELLY = 0xcf7a52,
+        D_SPIKE = 0x3c2b28, D_DK = 0x2a201e, D_MEMB = 0xd4685a,
+        D_EYE = 0xf2c14a, D_CLAW = 0x241c1a;
+  /* 翼膜：五條各有各的前後緣（zf/zr）的薄片接起來，所以前緣是掃過去的、後緣自然是
+     鋸齒的。**五條共平面**（y 全是 0.40）：上反角完全交給拍翅角度，
+     自己先帶角度的話一拍就散成五層樓梯。 */
+  const D_WING = [[0.95, 1.05, 0.78, -1.60], [1.95, 1.05, 0.88, -2.00],
+                  [2.95, 1.05, 0.78, -1.62], [3.80, 0.85, 0.58, -0.98],
+                  [4.50, 0.70, 0.32, -0.36]].map(q =>
+    ({ p: [q[0], 0.40, (q[2] + q[3]) / 2], s: [q[1], 0.10, q[2] - q[3]], c: D_MEMB }));
+  const DRAGON = [
+    { p: [0, 0, 0.65], s: [1.10, 0.95, 1.35], c: D_RED },            // 胸
+    { p: [0, -0.03, -0.45], s: [0.92, 0.82, 1.25], c: D_RED },       // 腹
+    { p: [0, -0.02, -1.25], s: [0.66, 0.60, 0.80], c: D_RED2 },      // 腰
+    /* 腹甲給暖銅色不給米白：從下面看只吃得到草地的反光（天光的地面色是草綠），
+       米白會被染成橄欖綠——而玩家看這條龍多半是從下往上看。 */
+    { p: [0, -0.40, 0.55], s: [0.72, 0.18, 1.70], c: D_BELLY },
+    { p: [0, 0.36, 1.35], s: [0.66, 0.66, 0.75], c: D_RED, nk: 1 },  // 頸 ×2
+    { p: [0, 0.66, 1.92], s: [0.58, 0.60, 0.68], c: D_RED, nk: 1 },
+    { p: [0, 0.86, 2.48], s: [0.76, 0.62, 0.92], c: D_RED, nk: 1 },  // 頭
+    { p: [0, 0.76, 3.10], s: [0.50, 0.38, 0.52], c: D_RED2, nk: 1 }, // 吻
+    { p: [0, 0.58, 3.00], s: [0.42, 0.18, 0.60], c: D_DK, nk: 1 },   // 下顎
+    { p: [0, 0.82, 3.36], s: [0.20, 0.14, 0.18], c: D_DK, nk: 1 },   // 鼻尖
+    { p: [0, 1.34, 2.20], s: [0.17, 0.72, 0.20], c: D_SPIKE, r: [-0.50, 0, 0], nk: 1 },  // 冠刺（中）
+    { p: [0, 1.12, 2.66], s: [0.52, 0.14, 0.34], c: D_DK, nk: 1 },   // 眉脊
+    { p: [0, 0.76, 0.95], s: [0.19, 0.62, 0.24], c: D_SPIKE, r: [-0.30, 0, 0] },   // 背脊五刺
+    { p: [0, 0.74, 0.35], s: [0.19, 0.70, 0.24], c: D_SPIKE, r: [-0.26, 0, 0] },
+    { p: [0, 0.66, -0.25], s: [0.17, 0.62, 0.22], c: D_SPIKE, r: [-0.22, 0, 0] },
+    { p: [0, 0.54, -0.80], s: [0.15, 0.48, 0.20], c: D_SPIKE, r: [-0.20, 0, 0] },
+    { p: [0, 0.44, -1.30], s: [0.13, 0.38, 0.18], c: D_SPIKE, r: [-0.18, 0, 0] },
+    { p: [0, -0.02, -1.85], s: [0.58, 0.56, 0.75], c: D_RED, tl: 1 },    // 尾四節
+    { p: [0, 0.02, -2.55], s: [0.48, 0.46, 0.72], c: D_RED, tl: 1 },
+    { p: [0, 0.08, -3.22], s: [0.38, 0.36, 0.68], c: D_RED2, tl: 1 },
+    { p: [0, 0.16, -3.82], s: [0.30, 0.28, 0.56], c: D_RED2, tl: 1 },
+    { p: [0, 0.24, -4.34], s: [0.78, 0.12, 0.72], c: D_SPIKE, tl: 1 },   // 尾扇
+    { p: [0, 0.26, -4.86], s: [0.46, 0.10, 0.50], c: D_SPIKE, tl: 1 },
+    { p: [0, 0.44, -4.10], s: [0.18, 0.38, 0.34], c: D_SPIKE, tl: 1 }
+  ].concat(bmir([
+    { p: [0.40, 0.98, 2.74], s: [0.11, 0.14, 0.13], c: D_EYE, nk: 1 },                       // 眼
+    { p: [0.38, 0.90, 2.44], s: [0.14, 0.14, 0.46], c: D_DK, r: [0, -0.35, 0], nk: 1 },      // 頰角
+    { p: [0.28, 1.26, 2.16], s: [0.14, 0.58, 0.17], c: D_SPIKE, r: [-0.50, 0, 0.26], nk: 1 },
+    { p: [0.50, 1.12, 2.06], s: [0.12, 0.44, 0.15], c: D_SPIKE, r: [-0.50, 0, 0.46], nk: 1 }
+  ])).concat(bmir(wing(D_WING))).concat(bmir(wing([
+    { p: [0.80, 0.42, 0.74], s: [1.10, 0.30, 0.38], c: D_RED2 },                  // 上臂
+    { p: [1.95, 0.46, 0.84], s: [1.30, 0.26, 0.32], c: D_RED2 },                  // 前臂
+    { p: [3.30, 0.48, 0.60], s: [1.60, 0.18, 0.24], c: D_DK },                    // 翼指
+    { p: [4.55, 0.48, 0.34], s: [0.30, 0.20, 0.38], c: D_CLAW },                  // 翼爪
+    { p: [2.20, 0.47, -0.55], s: [2.20, 0.09, 0.13], c: D_DK, r: [0, 0.42, 0] },  // 膜上的指骨
+    { p: [1.90, 0.47, -1.25], s: [1.80, 0.08, 0.12], c: D_DK, r: [0, 0.72, 0] }
+  ]))).concat(bmir([
+    { p: [0.46, -0.42, -0.55], s: [0.36, 0.52, 0.46], c: D_RED, r: [0.50, 0, 0] },   // 後腿
+    { p: [0.50, -0.78, -0.14], s: [0.28, 0.44, 0.32], c: D_RED2, r: [-0.55, 0, 0] },
+    { p: [0.52, -0.98, 0.22], s: [0.30, 0.20, 0.44], c: D_CLAW }
+  ]));
+  /* 火球：亮芯 ＋ 外焰 ＋ 兩節尾焰。大小比照隕石（使用者指定）。 */
+  const FBALL = [
+    { p: [0, 0, 0], s: [0.62, 0.62, 0.62], c: 0xff7a1e },
+    { p: [0.26, 0.16, -0.10], s: [0.34, 0.34, 0.34], c: 0xff9a2e },
+    { p: [-0.22, -0.14, -0.16], s: [0.36, 0.36, 0.36], c: 0xff5a12 },
+    { p: [0.05, 0.28, -0.20], s: [0.30, 0.30, 0.30], c: 0xffb340 },
+    { p: [0, 0, 0.06], s: [0.36, 0.36, 0.36], c: 0xffe08a },
+    { p: [0, -0.04, -0.55], s: [0.30, 0.30, 0.34], c: 0xff6a12 },
+    { p: [0, -0.08, -0.88], s: [0.18, 0.18, 0.26], c: 0xd8451a }
+  ];
+
+  const BEASTS = { ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL };
+  const MAXBEAST = 8;
+  const BEAST_PARTS = Math.max(APE.length, SNOW.length, NANA.length, DRAGON.length);
   const BEAST_RAISE = 2.6;                 // 右手抬到底是幾度（規則那邊給 0～1 的 m.arm）
 
   /* m：{kind 哪一種（BEASTS 的 key）, x, y, z, a 朝向, ph 步伐相位,
@@ -2444,11 +2543,13 @@ const ENG = (function () {
     for (let i = 0; i < n; i++) {
       const m = list[i], parts = BEASTS[m.kind];
       scratch.position.set(m.x, m.y || 0, m.z);
-      /* 順序跟小人一樣用 YZX：R = Ry(朝向)·Rz(0)·Rx(翻滾)。
-         香蕉飛出去時是繞自己橫軸翻，所以翻滾放 x。 */
-      scratch.rotation.set(m.spin || 0, m.a || 0, 0, 'YZX');
+      /* 順序跟小人一樣用 YZX：R = Ry(朝向)·Rz(側傾)·Rx(俯仰／翻滾)。
+         香蕉飛出去時是繞自己橫軸翻，所以翻滾放 x；飛龍的俯仰也放 x、
+         轉彎往內側傾斜放 z（那兩個值是規則那邊算的，見 game-tools.js 的 stepDragon）。 */
+      scratch.rotation.set(m.spin || 0, m.a || 0, m.roll || 0, 'YZX');
       scratch.scale.setScalar(m.sc || 1);
       scratch.updateMatrix();
+      if (m.kind === 'dragon') wingArc(m.ph || 0);      // 這一幀的翼弧，整條龍共用
       for (let k = 0; k < BEAST_PARTS; k++) {
         const b = parts[k];
         /* 這一種沒那麼多塊，或者手上那根香蕉已經丟出去了（m.bomb 收掉）：
@@ -2465,6 +2566,32 @@ const ENG = (function () {
         scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
         /* 腰下那兩條前後擺、手反相擺（跟小人同一個式子），右手再加上抬起來那一段。
            轉完要把位置也繞著關節轉過去，不然三塊手臂各自繞自己中心轉會散開。 */
+        /* 飛龍那三種擺動（見上面 wingArc）。翼上那幾塊掛在弧線上、尾巴與脖子
+           各走一道自己的行進波——尾巴越往末端擺幅越大（S 形，不是整條硬甩）。 */
+        if (b.wg) {
+          const t = b.u * ARC_N, kk = Math.min(ARC_N - 1, Math.floor(t)), f = t - kk;
+          const ax = arcX[kk] + (arcX[kk + 1] - arcX[kk]) * f;
+          const ay = arcY[kk] + (arcY[kk + 1] - arcY[kk]) * f;
+          const aa = arcA[kk] + (arcA[kk + 1] - arcA[kk]) * f;
+          const off = b.p[1] - WING_PY;               // 這一塊原本離翼面多高，沿法線掛回去
+          scratchB.position.x = (ax - Math.sin(aa) * off) * b.wg;
+          scratchB.position.y = ay + Math.cos(aa) * off;
+          scratchB.rotation.z = ((b.r ? b.r[2] : 0) + aa) * b.wg;
+          scratchB.updateMatrix();
+          tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+          beastMesh.setMatrixAt(i * BEAST_PARTS + k, tmpM);
+          beastMesh.setColorAt(i * BEAST_PARTS + k, tmpC.setHex(b.c));
+          continue;
+        }
+        if (b.tl || b.nk) {
+          const z = b.p[2];
+          const amp = b.tl ? TAIL_SW * Math.max(0, (-z - 1.2) / 3.6)
+                           : NECK_SW * Math.max(0, (z - 1.0) / 2.4);
+          const th = b.tl ? (m.ph || 0) * TAIL_W + TAIL_K * z : (m.ph || 0) * NECK_W + 1.2;
+          scratchB.position.x = b.p[0] + amp * Math.sin(th);
+          scratchB.rotation.y = (b.r ? b.r[1] : 0) -
+                                amp * (b.tl ? TAIL_K * 1.6 : 0.9) * Math.cos(th);
+        }
         let ang = 0;
         if (b.sw) ang = Math.sin(m.ph || 0) * b.sw * (m.gait || 0);
         else if (b.am) {

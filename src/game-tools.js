@@ -4491,7 +4491,9 @@ const DOOMS = [
      所以牠只要點著腳邊那幾塊就可以走了。 */
   { id: 'ape', wt: 1, start: () => spawnBeast('ape') },
   /* 事件二：白猴子，把香蕉形狀的炸彈拋到地標上。 */
-  { id: 'snow', wt: 1, start: () => spawnBeast('snow') }
+  { id: 'snow', wt: 1, start: () => spawnBeast('snow') },
+  /* 事件三：飛龍，從場外飛進來、在工地上空盤旋一圈多，中途吐幾顆火球。 */
+  { id: 'dragon', wt: 1, start: spawnDragon }
 ];
 /* 照權重挑一件。回傳 null 只有一種情況：表是空的。（同 rollIdleEvent） */
 function rollDoom() {
@@ -4549,6 +4551,7 @@ function leaveBeast(m) {
      act   站定、轉向、抬手，停 DOOM_AIM 秒才動手（看得出牠在瞄）。
      go    原路走回場外。 */
 function stepBeast(m, dt) {
+  if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   /* 開工／整地就放棄走人：天災是衝著「蓋好的那一座」來的，半成品不在它的守備範圍
      （也免得牠站在推土機的路線上）。 */
   if ((phase === 'build' || phase === 'clear') && m.st !== 'go') leaveBeast(m);
@@ -4659,13 +4662,14 @@ function stepNanas(dt) {
 /* 天災的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）。 */
 function stepDoom(dt) {
   stepNanas(dt);
+  stepFballs(dt);
   if (beasts) {
     for (let i = beasts.length - 1; i >= 0; i--)
       if (stepBeast(beasts[i], dt)) beasts.splice(i, 1);
     if (!beasts.length) beasts = null;
   }
   if (phase !== 'done') { doomT = -1; return; }     // 沒有一座完好的地標可砸
-  if (beasts || nanas) return;                      // 一次一件，等這一件演完
+  if (beasts || nanas || fballs) return;            // 一次一件，等這一件演完
   if (doomT < 0) { doomT = rr(DOOM_LO, DOOM_HI); return; }
   doomT -= dt;
   if (doomT > 0) return;
@@ -4680,5 +4684,169 @@ function beastList() {
   _beasts.length = 0;
   if (beasts) for (const m of beasts) _beasts.push(m);
   if (nanas) for (const n of nanas) _beasts.push(n);
+  if (fballs) for (const f of fballs) _beasts.push(f);
   return _beasts;
+}
+
+/* ── 事件三：飛龍（v1.139）───────────────────────────────
+   使用者：「一隻飛龍從空中飛過 隨機對目標噴出火球」，並附了一張參考圖；
+   看過造型之後追加：「飛的翅膀跟身體太過僵硬／火球大約隕石那樣大 不要連噴／
+   從場外飛進工地稍微盤旋一下 中途吐幾顆火球」。
+
+   航線是**用轉向速度開出來的**，不是照圓的參數式擺位置：
+     in    朝工地中心飛
+     ring  沿切線飛（同時把半徑誤差修回來），繞滿 DRA_RING 圈
+     out   照當下的朝向直直飛出場外
+   每一幀只准轉 DRA_TURN，所以圓弧是「轉出來的」——半徑 ≒ 速度 ÷ 轉向速度。
+   這樣做的好處是**轉多急就側傾多少**（roll 直接拿轉向速率算），不必另外編動畫；
+   照參數式擺位置的話，進場那一刻朝向會瞬間跳到切線上，看起來像瞬移。 */
+const DRA_SC = 2.1;                  // 模型翼展 9.7 → 場上 20.4 格
+const DRA_SPD = 15;                  // 飛多快（格／秒）
+const DRA_TURN = 0.62;               // 每秒最多轉幾弧度 → 盤旋半徑 ≒ 15 ÷ 0.62 = 24 格
+const DRA_UP = 12;                   // 飛在建築頂上多高
+const DRA_MIN = 30;                  // 最低飛行高度（矮建築也要飛得夠高才像在天上）
+const DRA_RING = 1.35;               // 在工地上空繞幾圈（「稍微盤旋一下」）
+const DRA_ROLL = 0.42;               // 轉到最急時往內側傾斜幾弧度
+const DRA_FLAP = 3.1;                // 拍翅的快慢（弧度／秒）
+const DRA_PITCH = 0.11, DRA_BOB = 0.32;   // 身體跟著拍翅俯仰／上下浮（相位比翅膀晚一點）
+const DRA_OUT = 14;                  // 從場外多遠進來／飛到多遠收掉
+const DRA_SHOT = [3, 5];             // 一趟吐幾顆
+const DRA_GAP = [1.1, 2.2];          // 兩顆之間隔幾秒（「不要連噴」）
+let fballs = null;                   // 飛在半空的火球
+
+/* 放一條龍進來。方位隨機，順時針逆時針也隨機——固定的話每次看到的都一樣。 */
+function spawnDragon() {
+  const a = Math.random() * Math.PI * 2, d = arenaR + DRA_OUT;
+  const m = {
+    kind: 'dragon', x: Math.cos(a) * d, z: Math.sin(a) * d,
+    y: Math.max(DRA_MIN, (bp ? bp.height : 20) + DRA_UP),
+    a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就朝著工地
+    ph: 0, roll: 0, spin: 0, sc: DRA_SC, gait: 0,
+    st: 'in', rc: Math.min(arenaR - 6, siteR + 12), dir: Math.random() < 0.5 ? 1 : -1,
+    turned: 0, left: Math.round(rr(DRA_SHOT[0], DRA_SHOT[1])), gap: rr(0.4, 1.2)
+  };
+  if (!beasts) beasts = [];
+  beasts.push(m);
+  sndRoar();
+  toast('🐉 一條龍朝工地飛過來了', '牠會在上空繞一圈，邊繞邊吐火球');
+  return m;
+}
+/* 一條龍的一幀。回傳 true＝飛出場外了，收掉。 */
+function stepDragon(m, dt) {
+  m.ph += dt * DRA_FLAP;
+  const r = Math.hypot(m.x, m.z) || 1;
+  let want = m.a;
+  if (m.st === 'in') {
+    /* 朝**圓的切點**飛，不是朝中心飛：朝中心飛的話，到了圓上還得再轉 90 度才轉得到
+       切線方向，而每秒只准轉 DRA_TURN——那 2.5 秒牠已經衝進圈內去了
+       （實測盤旋半徑在 18~39 之間晃，圈整個偏掉）。偏開 asin(rc / 距離) 這個角度
+       就會擦著圓進去，到圓上時朝向剛好就是切線。 */
+    const off = Math.asin(Math.min(1, m.rc / r));
+    want = Math.atan2(-m.x, -m.z) + m.dir * off;
+    if (r <= m.rc * 1.04) m.st = 'ring';
+  } else if (m.st === 'ring') {
+    /* 切線方向 ＋ 半徑誤差修正：飛太遠就往內偏、太近就往外偏。
+       只給切線的話，進場時半徑差多少就一直差多少，繞出來的是一個偏心的圈。 */
+    const nx = m.x / r, nz = m.z / r;
+    const err = Math.max(-1, Math.min(1, (r - m.rc) / (m.rc * 0.5)));
+    want = Math.atan2(-nz * m.dir - nx * err, nx * m.dir - nz * err);
+    m.turned += dt * DRA_SPD / m.rc;
+    if (m.turned >= DRA_RING * Math.PI * 2) m.st = 'out';
+    /* 邊繞邊吐（「中途吐幾顆火球」）。隔開來吐，不連噴。 */
+    m.gap -= dt;
+    if (m.gap <= 0 && m.left > 0) { spitFire(m); m.left--; m.gap = rr(DRA_GAP[0], DRA_GAP[1]); }
+  }
+  /* 轉向限速——圓弧是這樣轉出來的。轉多急就側傾多少（往內側倒）。 */
+  let d = want - m.a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  const rate = Math.max(-DRA_TURN, Math.min(DRA_TURN, d / Math.max(dt, 1e-4)));
+  m.a += rate * dt;
+  m.roll += (-rate / DRA_TURN * DRA_ROLL - m.roll) * Math.min(1, dt * 3);
+  m.x += Math.sin(m.a) * DRA_SPD * dt;
+  m.z += Math.cos(m.a) * DRA_SPD * dt;
+  /* 身體跟著拍翅俯仰與上下浮，相位比翅膀晚一點——先拍翅，身體才被抬起來。 */
+  m.spin = DRA_PITCH * Math.sin(m.ph + 0.8);
+  m.y = Math.max(DRA_MIN, (bp ? bp.height : 20) + DRA_UP) + DRA_BOB * Math.sin(m.ph - 1.0);
+  return m.st === 'out' && Math.hypot(m.x, m.z) > arenaR + DRA_OUT;
+}
+
+/* ── 火球 ───────────────────────────────────────────────
+   大小與威力比照隕石（使用者：「火球大約隕石那樣大」）：範圍 MET_R、威力 MET_POW，
+   落點一帶再多點幾塊起來——重點在火不在爆炸，剩下的交給火自己蔓延。 */
+const FB_R = MET_R, FB_POW = MET_POW;
+const FB_SC = 2.6;                   // 畫多大：模型的芯 0.62 → 場上 1.6 格（隕石的石身是 2）
+const FB_SPD = 30;                   // 吐出去多快
+const FB_MOUTH = 3.3, FB_JAW = 0.7;  // 嘴巴在模型的哪裡（往前 3.3、往上 0.7）
+function spitFire(m) {
+  /* 隨機挑一個目標：地標中心一帶取一點，高度取那附近最高的一塊——
+     不取高度的話火球會穿過屋頂才炸。 */
+  const a = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * siteR * 0.8;
+  const tx = Math.cos(a) * rad, tz = Math.sin(a) * rad;
+  let ty = 0;
+  for (const b of blocks) {
+    if (b.st !== SET) continue;
+    if (Math.abs(b.x - tx) > 1.8 || Math.abs(b.z - tz) > 1.8) continue;
+    if (b.y > ty) ty = b.y;
+  }
+  const sx = m.x + Math.sin(m.a) * FB_MOUTH * DRA_SC;
+  const sz = m.z + Math.cos(m.a) * FB_MOUTH * DRA_SC;
+  const sy = m.y + FB_JAW * DRA_SC;
+  const dist = Math.hypot(tx - sx, ty - sy, tz - sz);
+  const T = Math.max(0.35, dist / FB_SPD);
+  const f = {
+    kind: 'fball', x: sx, y: sy, z: sz, sc: FB_SC, s: 1.1,   // s 是 sweepRock 的碰撞半徑
+    a: Math.atan2(tx - sx, tz - sz), spin: 0, em: 0, t: 0, T,
+    vx: (tx - sx) / T, vz: (tz - sz) / T,
+    vy: (ty + 0.5 - sy) / T + 0.5 * GRAV * T          // 解拋物線：湊出剛好 T 秒抵達
+  };
+  if (!fballs) fballs = [];
+  fballs.push(f);
+  sndSpit();
+}
+function stepFballs(dt) {
+  if (!fballs) return;
+  for (let i = fballs.length - 1; i >= 0; i--) {
+    const f = fballs[i];
+    const px = f.x, py = f.y, pz = f.z;
+    f.t += dt;
+    f.vy -= GRAV * dt;
+    f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;
+    f.spin += dt * 6;
+    /* 拖著火：沿著這一幀走過的線段補火苗（同隕石那一套，見 stepMeteors）。
+       只在端點生的話，尾巴會斷成一節一節的。 */
+    f.em += dt * 90;
+    while (f.em >= 1) {
+      f.em--;
+      if (hot.length > HOT_MAX - 40) break;
+      const head = Math.random() < 0.34;
+      const u = head ? 1 : Math.random();
+      const j = head ? 1.1 : 0.28;
+      hot.push({
+        x: px + (f.x - px) * u + rr(-j, j),
+        y: py + (f.y - py) * u + rr(-j, j),
+        z: pz + (f.z - pz) * u + rr(-j, j),
+        vx: rr(-0.7, 0.7), vy: rr(0.5, 1.9), vz: rr(-0.7, 0.7),
+        rx: Math.random() * 6, ry: Math.random() * 6,
+        s: head ? rr(0.8, 1.5) : rr(0.22, 0.55),
+        life: head ? rr(0.1, 0.2) : rr(0.14, 0.36),
+        g: -1.6, grow: head ? 1.1 : 1.04, cool: rr(0.2, 0.42),
+        cr: 1, cg: rr(0.5, 0.84), cb: rr(0.06, 0.22), to: [0.55, 0.1, 0.02]
+      });
+    }
+    /* 撞到就炸。小人的家也算固體（hardAt）：blockAt 只認地標的格子表。
+       飛過頭或落地也炸——不然吐歪的那一顆會一路飛出場外。 */
+    if (sweepRock(f, px, py, pz, hardAt) || f.t > f.T * 2 || f.y <= 0.5) {
+      fballs.splice(i, 1);
+      fballHit(f);
+    }
+  }
+  if (!fballs.length) fballs = null;
+}
+function fballHit(f) {
+  const p = { x: f.x, y: Math.max(0.8, f.y), z: f.z };
+  explode(p, FB_R, FB_POW);
+  /* 爆炸本身帶一點餘火，但這是火球——落點一帶再多點幾塊起來，
+     這是它跟同尺寸的普通爆炸最明顯的差別（同隕石）。 */
+  igniteAround(p, FB_R * 1.6, Math.round(FB_R * 1.6), SET);
 }
