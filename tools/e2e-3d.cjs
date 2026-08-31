@@ -5,7 +5,7 @@
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
-   --until：改一行就要等整輪（957 條）太慢，這個讓它跑到指定段落就停。
+   --until：改一行就要等整輪（964 條）太慢，這個讓它跑到指定段落就停。
    只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
    測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
@@ -201,6 +201,15 @@ const installClean = page => page.evaluate(() => {
      魔法師（v1.89）只搆得到腳邊一圈、又不進工地，料全在工地裡的話他會一直餓著
      （實測發料速率剩三分之一、舉杖幀數從 84% 掉到 21%），量到的就不是他的行為。 */
   window.scatterFree = () => {
+    /* 先補到「剛好夠蓋完這一座」（v1.141）：料池從此是「小人挖多少就有多少」
+       （reconcilePool 少了不補），而這一支是「開場那樣」的夾具——遊戲的開場是一座
+       憑空建成的建築（completeNow），砸掉之後地上就有整整一座的料。不補的話
+       用到這支的測試會落在「小人邊挖邊蓋」的中間狀態上，量到的不是它們要量的東西。 */
+    let own = 0;
+    for (const b of blocks) if (b.hh < 0) own++;
+    const want = Math.min(ENG.MAXB - (blocks.length - own), bp.slots.length);
+    for (let i = own; i < want; i++) blocks.push(newBlock());
+    ENG.setBlockCount(blocks.length);
     const r0 = siteR + 2.5;
     for (const b of blocks) {
       if (b.st !== 0 && b.st !== 4) continue;      // 躺著的與還在飛的碎料都鋪回去
@@ -221,6 +230,10 @@ const sim = (page, steps, dt = 0.05) =>
 
 /* 把整座建築瞬間蓋好（測破壞時不想等小人搬十分鐘） */
 const fillAll = page => page.evaluate(() => {
+  /* 池子不夠就補到夠（v1.141）：料池從此是「小人挖多少就有多少」，開場是 0 塊。
+     這一支是「瞬間蓋好」的夾具，跟遊戲裡的 completeNow 一樣得自己生得出積木。 */
+  while (blocks.length < bp.slots.length && blocks.length < ENG.MAXB) blocks.push(newBlock());
+  ENG.setBlockCount(blocks.length);
   for (let i = 0; i < bp.slots.length && i < blocks.length; i++) {
     const s = bp.slots[i], b = blocks[i];
     if (b.cell) gridDel(b);
@@ -1522,11 +1535,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const sel = document.getElementById('shape');
     sel.value = String(SHAPES.findIndex(s => s.n === '貼上來的小屋'));
     sel.dispatchEvent(new Event('change'));
-    return { name: bp.name, blocks: bp.slots.length, drawn: ENG.three.blockMesh.count };
+    /* 「真的蓋得出來」＝每一格都填得滿。v1.141 起料池不再預先補滿（缺料的人自己挖，
+       見 reconcilePool），所以不能再拿「池子＝格數」當證據——改走憑空建成那條路，
+       它會把不夠的當場生出來（開場那一座、⚡ 立刻完工都是這條）。 */
+    completeNow();
+    return { name: bp.name, blocks: bp.slots.length, pool: blocks.length,
+             set: blocks.filter(b => b.st === 3).length, drawn: ENG.three.blockMesh.count };
   });
   ok('匯進來的藍圖選得到，也真的蓋得出來',
-     impBuild.name === '貼上來的小屋' && impBuild.blocks > 100 && impBuild.drawn === impBuild.blocks,
-     impBuild.name + '　' + impBuild.blocks + ' 塊全上場');
+     impBuild.name === '貼上來的小屋' && impBuild.blocks > 100 &&
+     impBuild.set === impBuild.blocks && impBuild.drawn === impBuild.pool,
+     impBuild.name + '　' + impBuild.blocks + ' 格全部就位（池 ' + impBuild.pool + ' 塊）');
 
   /* 關掉再開還要在：預覽頁的貼上是「F5 就沒了」（那是工作台），
      遊戲這邊是拿來玩的，存下來才有意義。 */
@@ -2253,6 +2272,135 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.screenshot({ path: path.join(OUT, '02-完工.png') });
 
   await probeWorkers(page, '小人施工後');
+
+  /* ══════════ 缺料就自己挖 ══════════ */
+  head('缺料就自己挖');
+  /* v1.141（使用者：「目前更換建築會自動在場上灑上積木，改成材料不夠小人自己挖」
+     「也為以後不用考慮積木夠不夠的問題，需要積木又沒得撿的時候用挖的就能產生」）。
+     兩件事要一起成立：換場不再無中生有一整圈建材（reconcilePool 少了不補），
+     而缺料的人自己走幾步、拿鏟子挖出來（digSite）——挖出來的躺在地上，
+     再照原本那條「撿起來搬過去」的路走，不另開搬運路。 */
+  await reset(page, { shape: '吉薩金字塔', cnt: 400, workers: 16 });
+  const digNo = await page.evaluate(() => {
+    dropBlocks(b => b.hh < 0);              // 池子清空（房子的不算料池，見 reconcilePool）
+    const p0 = blocks.length;
+    startBuild(true);                       // 以前這裡會補到「剛好夠蓋完這一座」
+    return { p0, p1: blocks.length, slots: bp.slots.length, drawn: ENG.three.blockMesh.count };
+  });
+  ok('換建築不再自動在場上灑一整圈建材',
+     digNo.p0 === 0 && digNo.p1 === 0 && digNo.slots > 100 && digNo.drawn === 0,
+     '藍圖 ' + digNo.slots + ' 格，清空之後換一次場，池子還是 ' + digNo.p1 + ' 塊');
+
+  const digGo = await page.evaluate(() => {
+    const m0 = marks.length;
+    let shovel = 0, digSt = 0, air = 0;
+    for (let i = 0; i < 600; i++) {                    // 30 秒
+      step(0.05);
+      if (workers.some(w => w.dig > 0)) shovel++;      // 手上真的拿著鏟子在揮
+      if (workers.some(w => w.st === 'dig')) digSt++;
+      if (blocks.some(b => b.st === 4)) air++;         // 挖出來那一塊蹦到地上的那幾幀
+    }
+    let inSite = 0, inHome = 0, minR = 1e9;
+    for (const b of blocks) {
+      if (b.st !== 0) continue;
+      const r = Math.hypot(b.x, b.z);
+      if (r < minR) minR = r;
+      if (r < siteR) inSite++;
+      if (homeAt(b.x, b.z)) inHome++;
+    }
+    return { pool: blocks.length, free: blocks.filter(b => b.st === 0).length,
+             set: blocks.filter(b => b.st === 3).length, carried: stats.carried,
+             mine: blocks.filter(b => b.dug).length, shovel, digSt, air,
+             /* 土痕會淡掉（3 秒，跟隕石坑同一套），所以這是「此刻還看得到幾個」，
+                不是「總共挖了幾個坑」。要驗的是沒有一個落在工地裡。 */
+             marks: marks.length - m0,
+             markIn: marks.filter(k => Math.hypot(k.x, k.z) < siteR).length,
+             inSite, inHome, minR: +minR.toFixed(1), siteR: +siteR.toFixed(1) };
+  });
+  ok('空地上小人自己挖出建材，一邊挖一邊蓋',
+     digGo.pool > 40 && digGo.set > 15 && digGo.shovel > 100 && digGo.digSt > 100,
+     '三十秒挖出 ' + digGo.pool + ' 塊、擺上去 ' + digGo.set +
+     ' 塊（600 幀裡有 ' + digGo.digSt + ' 幀有人在挖、' + digGo.shovel + ' 幀鏟子在動）');
+  /* 挖出來的**躺在地上**，不是直接進手裡（v1.129 在小人蓋自己家那邊定的規矩）：
+     所以會看到它蹦起來（st=4）、然後被人撿走（stats.carried 有在跑）。 */
+  ok('挖出來的先蹦到地上，再照原本那條路撿起來搬走',
+     digGo.air > 20 && digGo.carried > 10 && digGo.free > 0,
+     '有 ' + digGo.air + ' 幀看得到剛挖出來還在空中的、期間撿走了 ' +
+     digGo.carried + ' 塊，地上還躺著 ' + digGo.free + ' 塊');
+  ok('挖的地方在工地外面，也不挖到人家屋子裡',
+     digGo.inSite === 0 && digGo.inHome === 0 && digGo.minR >= digGo.siteR &&
+     digGo.marks > 0 && digGo.markIn === 0,
+     '地上的料最近的離場中心 ' + digGo.minR + ' 格（工地半徑 ' + digGo.siteR +
+     '）、屋子裡 ' + digGo.inHome + ' 塊；此刻看得到 ' + digGo.marks + ' 個土痕，' +
+     digGo.markIn + ' 個在工地裡');
+  /* 挖出來的是**這一座的建材**，不蓋「村子的料」記號（v1.134 的 homeMine）：
+     蓋上記號的話，施工中小人蓋自己家會把地標的建材收去用。 */
+  ok('挖出來的算這一座的建材，村子不能收回去蓋房子',
+     digGo.mine === 0,
+     '場上帶著「村子自己挖的」記號的積木 ' + digGo.mine + ' 塊');
+
+  /* 地上有料就不該有人挖（「需要積木又沒得撿的時候」才挖）。
+     scatterFree 會把料補到剛好夠蓋完並鋪到工地外面，等於舊版換場那一刻的場面。 */
+  const digNot = await page.evaluate(() => {
+    scatterFree();
+    /* 再多鋪 200 塊：只鋪「剛好夠」的話，中途會有「所有沒人認的料都剛好被認走」的
+       瞬間，魔法師遇到那一瞬就會自己拉一塊（那是對的，見他那一段）——這一條要抓的是
+       「地上明明有料還有人去挖」，所以把場子鋪成不可能缺料。 */
+    for (let i = 0; i < 200; i++) {
+      const b = newBlock();
+      const a = Math.random() * Math.PI * 2;
+      const rad = siteR + 3 + Math.random() * (arenaR - siteR - 3);
+      b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad; b.y = HB;
+      blocks.push(b); separate(b); gridAdd(b);
+    }
+    ENG.setBlockCount(blocks.length);
+    const p0 = blocks.length;
+    /* 攔的是「決定去挖」那一刻（startSiteDig），不是「挖出一塊」（digBlock）：
+       鋪料之前就已經出發的那幾趟會把手上這一趟做完（挖到 cap 塊才收工），
+       那不算「地上有料還去挖」——他決定的時候地上確實沒料。
+       攔函式也比每幀看誰的 st 是 'dig' 準：那是取樣，短的一趟會被漏掉。 */
+    const origStart = startSiteDig;
+    let picked = 0, minOk = 1e9;
+    startSiteDig = w => {
+      picked++;
+      let ok = 0;
+      for (const b of blocks) if (b.st === 0 && b.rest && b.holder < 0) ok++;
+      minOk = Math.min(minOk, ok);
+      origStart(w);
+    };
+    for (let i = 0; i < 600; i++) step(0.05);
+    startSiteDig = origStart;
+    return { p0, p1: blocks.length, picked, minOk: minOk === 1e9 ? -1 : minOk,
+             tail: workers.length * 3, slots: bp.slots.length,
+             set: blocks.filter(b => b.st === 3).length };
+  });
+  /* 池子多出來的那幾塊是「鋪料前就出發的那幾趟」挖完的，所以上限是
+     「所有人各挖滿一趟」＝人數 × 一趟最多三塊（實測只多 4～5 塊）。 */
+  ok('地上還有料的時候不會有人跑去挖',
+     digNot.picked === 0 && digNot.set > 60 && digNot.p1 - digNot.p0 <= digNot.tail,
+     '鋪好 ' + digNot.p0 + ' 塊料再跑三十秒：0 個人決定去挖（鋪料前就出發的那幾趟做完，' +
+     '池子多了 ' + (digNot.p1 - digNot.p0) + ' 塊，上限 ' + digNot.tail +
+     '），擺上去 ' + digNot.set + ' 塊');
+
+  /* 從一塊料都沒有蓋到完工：料夠不夠不再是換場那一刻要保證的事（使用者：
+     「以後不用考慮積木夠不夠的問題」），所以這一條驗的是那個保證真的成立。
+     順便看有沒有挖過頭——只要場上還有一塊沒人認的料，findBlock 就會挑它，
+     所以挖出來的總數該貼著藍圖格數（實測 3177 格的自由女神剛好 3177 塊）。 */
+  await reset(page, { shape: '吉薩金字塔', cnt: 400, workers: 40, scale: 3 });
+  const digDone = await page.evaluate(() => {
+    dropBlocks(b => b.hh < 0);
+    const p0 = blocks.length;
+    for (let i = 0; i < 12000; i++) { step(0.05); if (phase === 'done') break; }
+    return { p0, phase, placed: placedCnt, slots: bp.slots.length, pool: blocks.length,
+             free: blocks.filter(b => b.st === 0).length,
+             set: blocks.filter(b => b.st === 3).length };
+  });
+  ok('空地也蓋得完，而且不會挖過頭',
+     digDone.p0 === 0 && digDone.phase === 'done' && digDone.placed === digDone.slots &&
+     digDone.set === digDone.slots && digDone.pool <= digDone.slots * 1.1,
+     '從 0 塊料開始：擺上 ' + digDone.set + ' / ' + digDone.slots +
+     ' 格（phase=' + digDone.phase + '），總共挖出 ' + digDone.pool + ' 塊、地上剩 ' +
+     digDone.free + ' 塊');
 
   /* ══════════ 破壞（局部） ══════════ */
   head('破壞：只壞被打到的地方');
@@ -3631,8 +3779,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      !shovel.skip && shovel.panUp > 0.25 && shovel.lean > 0.1,
      '撬起來抬高 ' + shovel.panUp + ' 格；頭頂往前傾 ' + shovel.lean + ' 格');
 
-  /* 沒工可做就把杖收下來。連發之後這是唯一一種「站著卻沒在施法」的情況，
-     所以要驗：把場上的建材全認走（等於沒料可搬），他該收杖站在原地等，不是舉著空杖。 */
+  /* 沒建材可發的時候（v1.141 之前是「收杖站在原地等」）。
+     現在場上一塊料都撿不到的話，他自己從地面拉一塊出來——跟工人拿鏟子挖是同一件事
+     （使用者：「需要積木又沒得撿的時候，用挖的就能產生」），所以驗的是：
+     池子真的長出新的、他還舉著杖在施法、而且沒有為了找料跑掉。 */
   const wzWait = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
@@ -3643,16 +3793,47 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 1200 && m.cast < 0.95; i++) step(0.05);
     const up = +m.cast.toFixed(2);
     for (const b of blocks) if (b.st === 0 && b.holder < 0) b.holder = 0;   // 建材全被認走
+    /* 工人先別挖（v1.141）：他們一挖，場上就又有料了，而「場上還有料」的時候
+       魔法師本來就該走過去撿（pickMageSpot），不是自己拉——那條是上面那幾條在驗的。
+       這一條要的是「整個場子真的一塊都沒有」，所以把工人那條挖料的路暫時擋掉。 */
+    const origDig = startSiteDig;
+    startSiteDig = () => {};
+    /* 分兩段量：先等他站定（斷料的那一刻他可能還在走位——上一段場上到處是料，
+       他挑的那個位置可能在幾十格外，那一段路不是「為了找料跑掉」）。
+       站定＝位置連二十幀沒變。 */
+    let still = 0, sx = m.x, sz = m.z;
+    for (let i = 0; i < 800 && still < 20; i++) {
+      step(0.05);
+      still = Math.hypot(m.x - sx, m.z - sz) < 0.01 ? still + 1 : 0;
+      sx = m.x; sz = m.z;
+    }
+    const settled = still >= 20;
     const d0 = +Math.hypot(m.x, m.z).toFixed(1);
-    for (let i = 0; i < 120; i++) step(0.05);        // 手上那一塊飛完（最久 3.5 秒）就沒得發了
-    return { up, after: +m.cast.toFixed(2), st: m.st, fly: m.fly.length,
+    const pool0 = blocks.length;
+    /* 後六秒才是要驗的：他在原地拉料。只認他自己拉上去的那幾塊（arc.mage）——
+       同一場的工人也在挖，拿「池子多了幾塊」當證據會把他們的算進來。 */
+    const seen = new Set();
+    let up2 = 0;
+    for (let i = 0; i < 120; i++) {
+      step(0.05);
+      up2 = Math.max(up2, m.cast);
+      for (let k = 0; k < blocks.length; k++) {
+        const b = blocks[k];
+        if (b.st === 2 && b.arc && b.arc.mage) seen.add(k + ':' + b.slot);
+      }
+    }
+    startSiteDig = origDig;
+    /* 他拉出來的那些 dug 記號是 0（那是這一座的建材，不是村子的料，見 homeMine） */
+    return { up, after: +up2.toFixed(2), st: m.st, launched: seen.size, settled,
+             made: blocks.length - pool0, mine: blocks.filter(b => b.dug).length,
              moved: +(Math.hypot(m.x, m.z) - d0).toFixed(1) };
   });
-  ok('沒建材可發就把杖收下來，站在原地等',
-     wzWait.up > 0.9 && wzWait.after < 0.05 && wzWait.st === 'idle' &&
-     Math.abs(wzWait.moved) < 1,
-     '斷料前舉杖 ' + wzWait.up + '，六秒後 ' + wzWait.after + '（狀態 ' + wzWait.st +
-     '、還在飛 ' + wzWait.fly + ' 塊、站的位置挪了 ' + wzWait.moved + ' 格）');
+  ok('沒建材可發就自己從地面拉一塊出來，不會舉著空杖站著等',
+     wzWait.up > 0.9 && wzWait.settled && wzWait.launched > 2 && wzWait.made > 2 &&
+     wzWait.after > 0.9 && wzWait.mine === 0 && Math.abs(wzWait.moved) < 1,
+     '站定之後那六秒他發上去 ' + wzWait.launched + ' 塊（場上多出 ' + wzWait.made +
+     ' 塊、村子的料 ' + wzWait.mine + ' 塊）、杖舉到 ' + wzWait.after +
+     '、站的位置挪了 ' + wzWait.moved + ' 格');
 
   /* 舉杖是每幀預設往下收、只有施法那條路徑撐得住的——被戳倒那一路是 return 出去的，
      不收的話那個人躺在地上還把杖舉著。 */
@@ -6198,6 +6379,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       cleanTools(); clearHomes(); stopIdleEvent();
       shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
       targetCnt = 400; setWorkerCount(20); startBuild(true);
+      /* 先把建材補齊（v1.141）：料池少了不補之後，這裡的池子可能比藍圖還少
+         （上一條測試留下什麼就是什麼），那下面補的 300 塊會被當成建材蓋掉，
+         完工時剩不到「多餘的」可以驗（實測只剩 122 塊）。 */
+      scatterFree();
       for (let i = 0; i < 300; i++) {                    // 補一批「多餘的」碎料
         const b = newBlock();
         const a = Math.random() * Math.PI * 2;
@@ -6609,7 +6794,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools(); clearHomes();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
-    const idx = workers.map((w, i) => w.lazy ? i : -1).filter(i => i >= 0);
+    /* 建材鋪回開場那樣（v1.141）：這一段前面的測試會把料池吃到比藍圖還少，那時候
+       二十個人搶的是「幾個蓋得起來又沒人認的格子」，抽到誰都可能整段站在旁邊沒事做——
+       量到的就不是「他有沒有回去上工」。 */
+    scatterFree();
+    /* 會搬料的那種排前面（v1.141）：這一條驗的是「爬起來真的去搬料」，而魔法師一塊都
+       不搬（他站在旁邊隔空拋，見 updMage）——抽到他當 a 的話量到的是「幾乎 0 幀手上
+       有貨」，那不是他沒上工。他收心之後照樣上工，由魔法師那一段自己守。
+       （v1.141 之前這個抽法也會抽到他，只是那時場上一直有料、他認到料就算「手上有貨」，
+       比例剛好過得了門檻；缺料要自己拉之後就過不了了。） */
+    const lz = i => i >= 0;
+    const idx = workers.map((w, i) => w.lazy && !w.mage ? i : -1).filter(lz)
+      .concat(workers.map((w, i) => w.lazy && w.mage ? i : -1).filter(lz));
     const o = { n: idx.length };
     let t = 0;
     while (t < 40) { step(0.05); t += 0.05; }          // 先讓事件把他們派去蓋房子

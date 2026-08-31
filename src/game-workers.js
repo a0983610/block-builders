@@ -1093,14 +1093,20 @@ function updWorker(w, wi, dt) {
 
   switch (w.st) {
     case 'idle': {
-      loadUp(w, wi, w.mus ? 1 : 0);        // 肌肉小人一趟只領一塊（v1.112，見 MUS_WIND）
-      if (!w.load.length) { wander(w, dt); return; }
+      // 肌肉小人一趟只領一塊（v1.112，見 MUS_WIND）
+      const short = loadUp(w, wi, w.mus ? 1 : 0);
+      if (!w.load.length) {
+        // 有格子要蓋卻沒料可撿：自己挖（v1.141，見 digSite）。沒格子可蓋才是閒晃
+        if (short) { startSiteDig(w); break; }
+        wander(w, dt); return;
+      }
       w.st = 'pick'; w.li = 0;
       w.leg = 0;                     // 接到工作就把閒晃里程歸零，別把它算進下次的發呆時間
       const p = pickSpot(blocks[w.load[0].b]);
       w.tx = p.x; w.tz = p.z;
       break;
     }
+    case 'dig': digSite(w, dt); break;      // 缺料：走幾步挖出來（v1.141）
     case 'pick': {
       // 要撿的那幾塊中途被抽掉，剩下的已經都在手上了：直接回工地
       if (w.li >= w.load.length) { w.li = 0; toSlot(w); break; }
@@ -1195,12 +1201,15 @@ function updWorker(w, wi, dt) {
    撿完第一塊人就站在那裡了，一直用人的位置算會挑到同一個方向的料。 */
 function loadUp(w, wi, cap) {
   let sx = w.x, sz = w.z;
+  /* 回傳「有格子要蓋、但地上一塊料都撿不到」（v1.141）：領不到工作單有兩種原因，
+     這一趟該去挖還是去閒晃就看它（見 startSiteDig）。 */
+  let short = 0;
   for (let k = 0; k < (cap || w.cap); k++) {
     const s = findSlot(w.x, w.z);    // 派離他現在站的地方最近的那一格
     if (s < 0) break;
     // 魔法師只搆得到身邊那一圈的料（v1.89，見 MAGE_REACH）；工人是走過去撿，不限距離
     const bi = findBlock(sx, sz, w.mage ? MAGE_REACH : 0, w.mus ? 1 : 0);
-    if (bi < 0) break;
+    if (bi < 0) { short = 1; break; }
     bp.slots[s].claimed = wi;        // 認領也算「這格有東西了」，會影響上面能不能蓋
     blocks[bi].holder = wi;
     blocks[bi].dug = 0;              // 進了地標的料池就不再是村子的料（v1.134，見 homeMine）
@@ -1208,6 +1217,76 @@ function loadUp(w, wi, cap) {
     sx = blocks[bi].x; sz = blocks[bi].z;
   }
   if (w.load.length) markSupportDirty(0.05);
+  return short;
+}
+
+/* ── 缺料就自己挖（v1.141）─────────────────────────────
+   使用者：「改成材料不夠小人自己挖」「也為以後不用考慮積木夠不夠的問題，
+   需要積木又沒得撿的時候用挖的就能產生」。
+   跟小人蓋自己家那條挖料是**同一套**（digSpot／digBlock／DIG_*，v1.129），差兩件事：
+     · 挖的地方取在「他現在站的附近」，不是「自己家旁邊」（他沒有家，見 siteDigSpot）
+     · 挖出來的不蓋「村子的料」記號（digBlock 的 own = 0）：那是這一座的建材，
+       施工中村子不能收回去蓋房子（見 homeMine）
+   挖完**不直接放到手上**：出土之後就是一塊躺在地上的碎料，回 idle 讓 loadUp 照常認領。
+   於是「地上有料就撿、撿不到才挖」自然成立，不必另開一條搬運路——而且只要場上還有
+   一塊沒人認的料，findBlock 就會挑它，沒有人會白挖。 */
+function siteDigSpot(w) {
+  /* 每一趟重挑：一直挖同一個坑的話，人會黏在那個點上不動（v1.100 在自己家那邊踩過）。
+     三種地方不挖：工地裡（那是要蓋上去的地方，而且他會被 strollTo 推出來）、
+     人家屋子裡、碎料場外面（走出去離工地太遠，搬回來的路比挖的時間還長）。 */
+  for (let t = 0; t < 20; t++) {
+    const a = rr(0, Math.PI * 2), d = rr(DIG_NEAR, DIG_FAR);
+    const x = w.x + Math.cos(a) * d, z = w.z + Math.sin(a) * d;
+    const r = Math.hypot(x, z);
+    if (r < siteR + KEEP + SDIG_OUT || r > arenaR) continue;
+    if (homeAt(x, z)) continue;
+    w.tx = x; w.tz = z; w.hdt = DIG_T; return;
+  }
+  // 挑不到（站在工地邊上、四周都是屋子）：往外推到工地外圍那一圈
+  const d0 = Math.hypot(w.x, w.z) || 1;
+  const r = siteR + KEEP + SDIG_OUT;
+  w.tx = w.x / d0 * r; w.tz = w.z / d0 * r; w.hdt = DIG_T;
+}
+/* 挖的地方離工地外圍至少多遠。要大於「鏟尖伸出去多遠」（見 digPoint，約 1.2 格），
+   不然人站在環上、鏟子插進工地裡，土痕會留在建材該落的地方。 */
+const SDIG_OUT = 1.6;
+function startSiteDig(w) {
+  siteDigSpot(w);                    // 也順手把這一鏟的倒數設好（w.hdt = DIG_T）
+  w.st = 'dig'; w.dug = 0; w.hp = 0;
+  w.leg = 0;                         // 挖料也是上工，把閒晃里程歸零（同 idle 領到工作單）
+}
+/* 走去挖、挖幾塊出來，然後回 idle 去撿。
+   一趟挖幾塊＝他一趟搬得動幾塊（w.cap 1～3，肌肉小人 1：他撿起來就地扔）。
+   借的欄位跟自己家那條同一組（hdt 這一鏟還有幾秒、dug 這一趟挖出幾塊、hp 下一撮土、
+   dig 鏟子舉多高）——施工中的人 hm 一定是 −1（蓋自己家的走 updHome），不會兩邊搶著用。 */
+function digSite(w, dt) {
+  /* 走去挖的路不算閒晃里程（那是拿來算發呆多久的，見 strollPause）——同 digTrip。
+     不扣掉的話，一座地標挖上百趟的里程全算在一起，蓋完站定就發呆好幾分鐘。 */
+  const leg = w.leg;
+  const walking = !strollTo(w, dt);
+  w.leg = leg;
+  if (walking) return;
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  w.a = Math.atan2(-w.x, -w.z);            // 面向工地挖（挖出來那塊往側面扔，見 digBlock）
+  const cap = w.mus ? 1 : w.cap;
+  /* 該挖的都挖完了，剩下的時間是在等最後那塊落定（DIG_SET）——那幾秒不是在挖：
+     土不噴、鏟子停在撬起來那一格，不然他會對著挖好的洞再揮一鏟（同 digTrip）。 */
+  const wait = w.dug >= cap;
+  if (!wait) {
+    w.hp -= dt;
+    if (w.hp <= 0) { w.hp = DIG_PUFF; digPuff(w, digPoint(w)); }
+  }
+  w.hdt -= dt;
+  w.dig = wait ? 0.001 : Math.min(1, Math.max(0.001, 1 - Math.max(0, w.hdt) / DIG_T));
+  if (w.hdt > 0) return;                   // 還在挖這一鏟／還在等土落定
+  /* 還缺格子才繼續挖：挖到一半剩下的格子被別人補完了就別再挖（同 digTrip 的 digNeed）。
+     池子滿了 digBlock 會回 false，那就當這一趟挖完了（回 idle，領不到就去閒晃）。 */
+  if (w.dug < cap && findSlot(w.x, w.z) >= 0 && digBlock(w, 0)) {
+    w.dug++;
+    w.hdt = w.dug < cap ? DIG_T : DIG_SET;
+    return;
+  }
+  w.dug = 0; w.hdt = 0; w.st = 'idle';     // 回去領工作單：挖出來那幾塊就躺在腳邊
 }
 /* 去丟手上第一塊。stay = 已經站在工地邊上了（剛丟完前一塊）：
    **原地繼續丟**，不必走去下一格的站位（v1.60.1）——一趟三塊卻要跑三趟站位的話，
@@ -1558,7 +1637,7 @@ function updMage(w, wi, dt) {
   const stand = ringWalk(w, w.mang, w.mrad, dt);
   if (!w.load.length) {
     // 站定了才認料：搆得到的範圍是以「他站的地方」算的，走位途中認的那塊會被拖著走
-    if (stand) loadUp(w, wi, 1);                     // 一次只領一格一塊
+    const short = stand ? loadUp(w, wi, 1) : 0;      // 一次只領一格一塊
     /* 沒格子可蓋、或身邊搆不到料：去找一坨料站過去（v1.89，見 pickMageSpot），
        不跟一般人一樣去閒晃——閒晃那條路會沿用上一輪留下的目標點（慶祝散場時取的是
        整片草地），他一沒工作就往四十幾格外走，蓋完要圍圈時得從場外跑回來。
@@ -1567,6 +1646,31 @@ function updMage(w, wi, dt) {
        找不到值得走過去的一坨（料被搬光了、都被別人認走了）就站在原地等。 */
     if (!w.load.length) {
       w.st = 'idle';
+      /* 場上一塊料都撿不到了：自己從地面拉一塊出來（v1.141）。他不拿鏟子——蓋自己家
+         那條路本來就是「隔空從地面拉一塊」（見 castHome），這裡走的是同一件事，
+         只是拉出來的先躺在腳邊、下一幀照常認領。
+         **擺在 pickMageSpot 前面**：那一支是「走去別處那坨料」，場上一塊料都沒有的時候
+         他會沿著外圈一直走。
+         loadUp 的 short 只說「他搆得到的那一圈（MAGE_REACH）裡沒有」，所以要再確認一次
+         「整個場子真的一塊都沒有」——不確認的話，他站的地方附近剛好沒料就拉一塊新的
+         （實測鋪滿 3177 塊的場子裡他照樣拉出 555 塊），而那不是沒得撿，是該走過去撿。
+         **界線不能收成「走一小段以內」**：試過只認搆得到的兩倍（22 格），結果 34 格外
+         那一大堆料他也不去了（v1.95 起「多遠都去」是他的行為），量到的是他站在原地
+         自己拉。所以維持「整個場子」——遠料照舊走過去，那才是他的樣子。 */
+      if (short && findBlock(w.x, w.z, 0, 0) < 0) {
+        w.a = Math.atan2(-w.x, -w.z);                // 面向工地（拉出來那塊往側面落）
+        w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+        castPose(w, dt, 1);
+        w.ct -= dt;
+        if (w.ct <= 0) {
+          w.ct = MAGE_GAP;
+          if (digBlock(w, 0)) {
+            const tip = staffTip(w);
+            spawnStars(tip.x, tip.z, tip.y, 0.5, 2, MAGE_STAR);
+          }
+        }
+        return;
+      }
       if (w.fly.length) castPose(w, dt, 1);          // 還有在飛的就先舉著杖送它們到定位
       w.mre -= dt;
       if (w.mre <= 0) { w.mre = MAGE_REPICK; pickMageSpot(w); }
@@ -2519,14 +2623,16 @@ function digSpot(w, h) {
    優先」那條規則自然就把它撿起來了，不必另開一條路；一趟挖幾塊也就跟手上拿幾塊分開了。
    積木是**新生出來的**，不是從料池拿的——完工那一刻場上通常一塊散料都沒有
    （料池 = 藍圖格數，見 reconcilePool），從料池拿等於把下一座的建材偷走。
-   落地、彈跳、轉正都是碎料本來就有的那一套（stepBlock／stepSnap），這裡只給初速。 */
-function digBlock(w, h) {
+   落地、彈跳、轉正都是碎料本來就有的那一套（stepBlock／stepSnap），這裡只給初速。
+   own（v1.141）：1＝村子自己挖的（蓋房子用的料，見 homeMine），0＝工地缺料挖的
+   （那是這一座的建材，施工中村子不能收回去蓋房子，見 digSite）。 */
+function digBlock(w, own) {
   if (blocks.length >= ENG.MAXB) return false;           // 池子滿了（見 engine.js 的 MAXB）
   const g = digPoint(w);                                 // 鏟尖插進地面的那一點
   const gx = g.x, gz = g.z;
   const b = newBlock();
   b.x = gx; b.z = gz; b.y = HB;
-  b.dug = 1;                                             // 村子自己挖出來的（v1.134，見 homeMine）
+  b.dug = own;                                           // 村子自己挖的？（v1.134，見 homeMine）
   b.r = b.tr = DIG_DIRT[0]; b.g = b.tg = DIG_DIRT[1]; b.b = b.tb = DIG_DIRT[2];
   /* 往**身體的側面**扔（w.a 是面向自己家的方向，± 90° 就是左右兩邊）：
      往前會扔進屋子的占地、往後會扔回工地那一側，那兩邊都可能撿不到；
@@ -2915,7 +3021,7 @@ function digTrip(w, h, dt) {
   w.dig = wait ? 0.001 : Math.min(1, Math.max(0.001, 1 - Math.max(0, w.hdt) / DIG_T));
   if (w.hdt > 0) return;                                 // 還在挖這一鏟／還在等土落定
   /* 這一趟還要挖：塊數照 hcap，而且「這一間真的還缺」才挖（見 digNeed）。 */
-  if (w.dug < w.hcap && digNeed(h) > 0 && digBlock(w, h)) {
+  if (w.dug < w.hcap && digNeed(h) > 0 && digBlock(w, 1)) {
     w.dug++;
     w.hdt = w.dug < w.hcap ? DIG_T : DIG_SET;            // 挖下一鏟／等最後那一塊落定
     return;

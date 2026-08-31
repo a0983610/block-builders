@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.140.0';
+const VERSION = '1.141.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1026,7 +1026,15 @@ function completeNow() {
   let i = 0;
   for (let k = 0; k < bp.slots.length; k++) {
     while (i < blocks.length && blocks[i].hh >= 0) i++;
-    if (i >= blocks.length) break;
+    /* 池子不夠就當場生一塊（v1.141）：料池從此是「小人挖出多少就有多少」
+       （見 reconcilePool），而這條路是**憑空建成**——開場那一座、⚡ 立刻完工都走這裡，
+       不生的話那一座是空的（實測開場整片草地一塊積木都沒有）。
+       生出來的直接就位，不經過「躺在地上等人搬」那一段。 */
+    if (i >= blocks.length) {
+      if (blocks.length >= ENG.MAXB) break;          // 池子頂到上限（見 engine.js 的 MAXB）
+      blocks.push(newBlock());
+      i = blocks.length - 1;
+    }
     const s = bp.slots[k], b = blocks[i++];
     if (b.cell) gridDel(b);
     b.st = SET; b.slot = k; b.x = s.x; b.y = s.y + HB; b.z = s.z;
@@ -1045,6 +1053,7 @@ function completeNow() {
     b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
     if (!b.cell) gridAdd(b);
   }
+  ENG.setBlockCount(blocks.length);       // 上面可能生了新的（見那一段）
   /* 慶祝計時要跟著歸零，跟「小人自己蓋完」那條路徑一致（見 stepToss）。
      不歸零的話，上一座已經慶祝完、正在閒晃的人 cheer 還停在 7 秒以上，
      這一座蓋好的瞬間他們就直接跳過慶祝——一圈只站得到剛加入的那幾個。 */
@@ -1074,40 +1083,21 @@ function kickOut(b) {
   b.ax = rr(-4, 4); b.ay = rr(-4, 4); b.az = rr(-4, 4);
 }
 
-/* 積木不夠就補、太多就收掉。
-   補的建材鋪成工地外圍一整圈，不集中成一堆料場——
-   料場如果剛好在相機背後，玩家會覺得「建材呢？」（第一版就是這樣）。 */
+/* 積木太多就收掉，**少了不補**（v1.141，使用者：「改成材料不夠小人自己挖」）。
+   以前這裡會在工地外圍鋪一整圈建材，補到剛好夠蓋完這一座——換一次建築就自動長出
+   幾千塊。現在缺料的人自己走幾步、拿鏟子挖出來（見 game-workers.js 的 digSite）：
+   「需要積木又沒得撿的時候，用挖的就能產生」，所以「料夠不夠」不再是這裡要保證的事。
+   多的還是要收：從九千塊那一檔換到一千八，上一棟解出來的幾千塊碎料留著只是白吃
+   畫面成本（完工那一刻本來也會把多餘的清掉，見 clearSpare）。 */
 function reconcilePool() {
   /* 家的那些積木不算在料池裡（v1.97）：它們是從地上挖出來的，不是這一座的建材。
-     算進去的話，池子看起來「太多了」，補料那一段會反過來把地上的碎料收掉——
+     算進去的話，池子看起來「太多了」，下面那段會反過來把地上的碎料收掉——
      等於小人蓋了幾間房子，下一座就少了那麼多建材。 */
   let own = 0;
   for (const b of blocks) if (b.hh < 0) own++;
   const need = Math.min(ENG.MAXB - (blocks.length - own), bp.slots.length);
   const add = need - own;
-  if (add > 0) {
-    const r0 = siteR + 2.5;
-    for (let i = 0; i < add; i++) {
-      const b = newBlock();
-      const a = Math.random() * Math.PI * 2;
-      // 半徑取平方根分布，密度才會均勻（直接均勻取半徑會全擠在內圈）
-      let rad = Math.sqrt(r0 * r0 + Math.random() * (arenaR * arenaR - r0 * r0));
-      b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad;
-      /* 別鋪到人家屋子裡（v1.97）：小人不撿屋子裡的料（見 findBlock），
-         鋪進去就等於這幾塊永遠沒人搬。 */
-      for (let t = 0; t < 6 && homeAt(b.x, b.z); t++) {
-        const a2 = Math.random() * Math.PI * 2;
-        rad = Math.sqrt(r0 * r0 + Math.random() * (arenaR * arenaR - r0 * r0));
-        b.x = Math.cos(a2) * rad; b.z = Math.sin(a2) * rad;
-      }
-      b.y = HB; b.al = 0;
-      b.ry = Math.floor(Math.random() * 4) * Math.PI / 2;
-      const t = rr(0.72, 0.86);
-      b.r = b.tr = t; b.g = b.tg = t * 0.95; b.b = b.tb = t * 0.86;
-      blocks.push(b);
-      separate(b); gridAdd(b);
-    }
-  } else if (add < 0) {
+  if (add < 0) {
     let drop = -add;
     for (let i = blocks.length - 1; i >= 0 && drop > 0; i--) {
       const b = blocks[i];
