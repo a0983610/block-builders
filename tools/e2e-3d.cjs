@@ -5,7 +5,7 @@
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
-   --until：改一行就要等整輪（913 條）太慢，這個讓它跑到指定段落就停。
+   --until：改一行就要等整輪（917 條）太慢，這個讓它跑到指定段落就停。
    只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
    測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
@@ -9075,7 +9075,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return w;
     };
     let T = 0;
-    fireGate = (g, p) => { if (p.st === 'ready') shots.push(+T.toFixed(3)); oFire(g, p); };
+    /* 連射時間到之後還有**收尾**那一段（v1.136，使用者：「結束的時候繼續把還有武器的
+       門射完」）：不再開新的門，把還裝著兵器的門射完才收。所以每一發要記是哪一段射的。
+       順便攔 dropWeapon：v1.135 之前時間一到就把還裝著的兵器整批撤掉（憑空消失），
+       現在那個數字該是 0。 */
+    const oDropW = dropWeapon;
+    let dropped = 0;
+    dropWeapon = w => { dropped++; oDropW(w); };
+    fireGate = (g, p) => { if (p.st === 'ready') shots.push({ t: +T.toFixed(3), ph: g.ph }); oFire(g, p); };
     hitWeapon = w => {
       hitB++; mark(w); oHit(w);
       // 打中積木的：當場轉成會翻滾的掉落物（使用者：「兵器掉到地面」）
@@ -9101,12 +9108,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     useTool({ point: new THREE.Vector3(-Math.cos(gyaw) * GATE_BACK, 0, -Math.sin(gyaw) * GATE_BACK),
               dir: new THREE.Vector3(0, -1, 0) });
     useTool({ point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) });
-    const born = gates.ports.length, n0 = placedCnt;
+    const born = gates[0].ports.length, n0 = placedCnt;
     /* 門陣的弧度（使用者：「就位也可以加一點弧度（像凹面鏡）」）：每個門沿視軸離場心多遠。
        中間最深、邊上最淺 ＝ 凹的。順便記近面（最淺的那個），它要遠大於落點能落到的深度。 */
-    const depth = gates.ports.map(q => ({
-      u: Math.abs((q.x - gates.cx) * gates.ux + (q.z - gates.cz) * gates.uz),
-      d: (q.x - gates.x) * gates.fx + (q.z - gates.z) * gates.fz
+    const depth = gates[0].ports.map(q => ({
+      u: Math.abs((q.x - gates[0].cx) * gates[0].ux + (q.z - gates[0].cz) * gates[0].uz),
+      d: (q.x - gates[0].x) * gates[0].fx + (q.z - gates[0].z) * gates[0].fz
     }));
     const mid = depth.filter(q => q.u < 6), rim = depth.filter(q => q.u > 24);
     const avg = a => a.reduce((x, q) => x + q.d, 0) / (a.length || 1);
@@ -9116,8 +9123,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const grow = [];
     let ready = -1, out0 = null, out1 = null, maxW = 0, maxG = 0, reopen = 0;
     const fired = new Set();
-    /* 26 秒：開門 1.5+0.55+0.7 ＋ 停 3 ＋ 連射 7 ＋ 最後一把插在地上撐 2.8 再淡 1.6
-       ＝ 最壞 17.2 秒，留一倍餘裕。跑不完的話量到的會是「還沒收乾淨」。 */
+    /* 26 秒：開門 1.5+0.55+0.7 ＋ 停 2 ＋ 連射 7 ＋ 收尾約 2.5（v1.136）＋ 最後一把
+       插在地上撐 2.8 再淡 1.6 ＝ 最壞 18.7 秒，留一點餘裕。
+       跑不完的話量到的會是「還沒收乾淨」。 */
     let preOut = -1, preN = 0;
     while (T < 26) {
       step(1 / 60); T += 1 / 60;
@@ -9127,45 +9135,50 @@ const toScreen = (page, sel) => page.evaluate(sel => {
            量的是「刃尖有沒有越過切面」，不是「有沒有這把兵器」。 */
         if (preOut < 0 && T >= 0.3) {
           preOut = 0;
-          for (const p of gates.ports) if (p.t < 0 && p.w) {
+          for (const p of gates[0].ports) if (p.t < 0 && p.w) {
             preN++;
             if (off(p) + p.w.len * 0.5 > 0.001) preOut++;
           }
         }
         // 剛開始伸的那一把：整把應該還在門後面
         if (out0 === null) {
-          const p = gates.ports.find(q => q.st === 'draw');
+          const p = gates[0].ports.find(q => q.st === 'draw');
           if (p) out0 = +(off(p) / p.w.len).toFixed(3);
         }
         // 全部就位那一刻：每一把都該正中間卡在門上
-        if (ready < 0 && gates.ph !== 'open') {
+        if (ready < 0 && gates[0].ph !== 'open') {
           ready = +T.toFixed(2);
-          out1 = +(gates.ports.reduce((a, p) => a + off(p), 0) / gates.ports.length).toFixed(4);
+          out1 = +(gates[0].ports.reduce((a, p) => a + off(p), 0) / gates[0].ports.length).toFixed(4);
         }
         // 射過又在別的位置重開的門（使用者：「可以又在其他位置出現」）
-        for (const p of gates.ports) {
+        for (const p of gates[0].ports) {
           if (p.st === 'shut') fired.add(p);
           else if (p.st === 'grow' && fired.has(p)) { fired.delete(p); reopen++; }
         }
         maxG = Math.max(maxG, gateList().length);
         while (grow.length < 6 && T >= (grow.length + 1) * 0.4)
-          grow.push(+(gates.ports.reduce((a, p) => a + p.k, 0) / gates.ports.length).toFixed(2));
+          grow.push(+(gates[0].ports.reduce((a, p) => a + p.k, 0) / gates[0].ports.length).toFixed(2));
       }
       if (weapons) maxW = Math.max(maxW, weapons.length);
     }
     fireGate = oFire; hitWeapon = oHit; stickWeapon = oStick;
-    lieWeapon = oLie; newWeapon = oNew;
+    lieWeapon = oLie; newWeapon = oNew; dropWeapon = oDropW;
+    // 連射那七秒與收尾分開算（見上面的說明）
+    const fireS = shots.filter(q => q.ph === 'fire').map(q => q.t);
+    const drainS = shots.filter(q => q.ph === 'drain').map(q => q.t);
     // 每半秒幾發：不規則連射看的是「每一格都有、而且差不多多」
-    const t0 = shots[0], t1 = shots[shots.length - 1];
+    const t0 = fireS[0], t1 = fireS[fireS.length - 1];
     const buck = [];
-    for (const t of shots) {
+    for (const t of fireS) {
       const i = Math.floor((t - t0) / 0.5);
       while (buck.length <= i) buck.push(0);
       buck[i]++;
     }
     const r = {
       born, want: GATE_N, grow, out0, out1, ready, reopen,
-      n: shots.length, first: +t0.toFixed(2), span: +(t1 - t0).toFixed(2),
+      n: fireS.length, nDrain: drainS.length, dropped,
+      tail: drainS.length ? +(drainS[drainS.length - 1] - t1).toFixed(2) : 0,
+      first: +t0.toFixed(2), span: +(t1 - t0).toFixed(2),
       gap: +(t0 - ready).toFixed(2), buck, lo: Math.min(...buck), hi: Math.max(...buck),
       hitB, hitG, stuck, fell, broke: n0 - placedCnt, n0,
       fires: fires ? fires.length : 0, burn: blocks.filter(b => b.burn > 0).length,
@@ -9196,7 +9209,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gate1.out0 < -0.4 && Math.abs(gate1.out1) < 0.001,
      '剛開始伸的那一把整把縮在門後面（離門心 ' + gate1.out0 +
      ' 個全長），就位後平均離門心 ' + gate1.out1 + ' 單位＝正中間卡在門上');
-  ok('全部就位後停 3 秒才開始射',
+  ok('全部就位後停兩秒才開始射（v1.136 從 3 秒收短）',
      Math.abs(gate1.gap - gate1.hold) < 0.4,
      '第 ' + gate1.ready + ' 秒全部就位，第 ' + gate1.first + ' 秒射出第一發（隔 ' +
      gate1.gap + ' 秒，設定 ' + gate1.hold + ' 秒）');
@@ -9206,6 +9219,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gate1.lo > 0 && gate1.hi < gate1.lo * 2.6,
      '射了 ' + gate1.n + ' 發、橫跨 ' + gate1.span + ' 秒（設定每秒 ' + gate1.rate +
      ' 發 × ' + gate1.fire + ' 秒）；每半秒 ' + gate1.buck.join('／') + ' 發');
+  ok('連射時間到，還裝著兵器的門會射完才收（兵器不會憑空消失）',
+     gate1.nDrain > 20 && gate1.dropped === 0,
+     '連射的 ' + gate1.fire + ' 秒射了 ' + gate1.n + ' 發，收尾再射 ' + gate1.nDrain +
+     ' 發、多花 ' + gate1.tail + ' 秒（v1.135 是把那些門連兵器一起撤掉）；' +
+     '整趟被撤掉的兵器 ' + gate1.dropped + ' 把');
   ok('射出去的門縮掉，再在別的位置開一個',
      gate1.reopen > gate1.want * 0.5,
      '一趟裡有 ' + gate1.reopen + ' 次「射完換位置重開」（門共 ' + gate1.want + ' 個）');
@@ -9394,14 +9412,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const one = { gates: !!gates, aim: aim ? { x: aim.x, z: aim.z } : null };
     useTool({ kind: 'ground', point: new THREE.Vector3(0, 0, 25) });
     const two = { gates: !!gates, aim: aim,
-                  cx: gates && +gates.cx.toFixed(2), cz: gates && +gates.cz.toFixed(2),
-                  tx: gates && +gates.x.toFixed(2), tz: gates && +gates.z.toFixed(2) };
+                  cx: gates && +gates[0].cx.toFixed(2), cz: gates && +gates[0].cz.toFixed(2),
+                  tx: gates && +gates[0].x.toFixed(2), tz: gates && +gates[0].z.toFixed(2) };
     // ② 幾何：門陣在第一下、兵器朝第二下，換三個視角量到的都一樣
     const at = (yaw, from, to) => {
       reset();
       ENG.cam.yaw = yaw;
       castGate(from, to);
-      const g = gates;
+      const g = gates[0];
       let ax = to.x - from.x, az = to.z - from.z;
       const d = Math.hypot(ax, az); ax /= d; az /= d;
       return { off: +Math.hypot(g.cx - from.x, g.cz - from.z).toFixed(3),   // 門陣離第一下多遠
@@ -9417,9 +9435,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     reset();
     ENG.cam.yaw = 0.9;
     castGate({ x: 0, z: 0 }, { x: 0, z: 0 });
-    const same = { back: +gates.back.toFixed(1),
-                   d: +Math.hypot(gates.cx - gates.x, gates.cz - gates.z).toFixed(1),
-                   nan: !isFinite(gates.cx) || !isFinite(gates.fx) };
+    const same = { back: +gates[0].back.toFixed(1),
+                   d: +Math.hypot(gates[0].cx - gates[0].x, gates[0].cz - gates[0].z).toFixed(1),
+                   nan: !isFinite(gates[0].cx) || !isFinite(gates[0].fx) };
     reset();
     ENG.cam.yaw = yaw0;
     tool = 'hammer';
@@ -9460,7 +9478,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     draw();
     const m = ENG.three.gateMesh, mat = new THREE.Matrix4(), q = new THREE.Quaternion();
     const cam = ENG.three.camera;
-    const lit = gates.ports.filter(p => p.op > 0.002);      // gateList 送出去的順序
+    const lit = gates[0].ports.filter(p => p.op > 0.002);      // gateList 送出去的順序
     const dot = [], view = [];
     const vd = new THREE.Vector3();
     for (let i = 0; i < 6; i++) {
@@ -9495,13 +9513,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const gateCut = await page.evaluate(() => {
     gates = null; weapons = null; gateEnd();
     gateAt({ x: 0, z: 0 });
-    /* 要等**全部就位**（gates.ph 不再是 open）才量：還在伸的時候刃尖剛好貼在切面上，
+    /* 要等**全部就位**（gates[0].ph 不再是 open）才量：還在伸的時候刃尖剛好貼在切面上，
        量到的 tip 是 0 而不是「切面前面」。 */
     let g0 = 0;
-    while (g0++ < 900 && gates.ph === 'open') step(0.05);
+    while (g0++ < 900 && gates[0].ph === 'open') step(0.05);
     draw();
     const a = ENG.three.weapMesh.geometry.getAttribute('aCut');
-    const w = weapons[0], p = gates.ports.find(q => q.w === w);
+    const w = weapons[0], p = gates[0].ports.find(q => q.w === w);
     /* 這一把在清單裡的第幾個 ＝ 屬性的第幾組（一把 WEAP_PARTS 個 instance） */
     const i = weapons.indexOf(w) * ENG.three.weapMesh.geometry.attributes.aCut.itemSize;
     const n = [a.array[0], a.array[1], a.array[2]], d = a.array[3];
@@ -9572,36 +9590,78 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' → ' + gateCamHold.high.ty1 + '（視距只進不退：' + gateCamHold.low.d0 + '→' +
      gateCamHold.low.d1 + '）');
 
-  /* 一次一發：還在跑的時候再點就換新的一發（同其他清單型道具「擠掉最早那個」）。
-     已經射出去的兵器不收——它們在 weapons 裡，會自己飛完、自己淡掉。 */
-  const gateAgain = await page.evaluate(() => {
+  /* 同時最多三組（v1.136，使用者：「可以同時存在多組(3組)」）。第四發把最早那一組推進
+     收尾——它不再開新的門，把還裝著兵器的門射完才收（使用者：「結束的時候繼續把還有
+     武器的門射完」），所以那一刻**一把兵器都不該被撤掉**。
+     v1.135 以前是「一次一發，再點就把上一發連門帶兵器收掉」。 */
+  const gateSets = await page.evaluate(() => {
     cleanTools();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
     for (let i = 0; i < 20; i++) step(0.05);
+    const o = { sets: GATE_SETS, keep: GATE_KEEP, want: GATE_N };
     gateAt({ x: 0, z: 0 });
     let g = 0;
-    while (g++ < 260 && (!gates || gates.ph !== 'fire')) step(0.05);
-    for (let i = 0; i < 40; i++) step(0.05);            // 射出去一些
-    const flying = weapons.filter(w => w.st !== 'gate').length;
-    const cx0 = +gates.cx.toFixed(1);
-    gateAt({ x: 30, z: 0 });                          // 換一發
-    const after = { casts: gates ? 1 : 0, cx: +gates.cx.toFixed(1),
-                    ph: gates.ph, inGate: weapons.filter(w => w.st === 'gate').length,
-                    kept: weapons.filter(w => w.st !== 'gate').length };
+    while (g++ < 400 && gates[0].ph !== 'fire') step(0.05);
+    gateAt({ x: 30, z: 0 });
+    for (let i = 0; i < 20; i++) step(0.05);
+    gateAt({ x: -30, z: 0 });
+    for (let i = 0; i < 20; i++) step(0.05);
+    o.n3 = gates.length;
+    o.cx3 = gates.map(q => +q.cx.toFixed(1));
+    /* 每一組都有自己的一百個門（門數才是不變量）。門裡待發的把數只能要求「差不多滿」
+       ——已經在射的那一組會有幾個門剛射完、正在縮掉換位置（實測 93/100）。 */
+    o.ports3 = gates.map(q => q.ports.length);
+    o.load3 = gates.map(q => q.ports.filter(p => p.w).length);
+    o.flying = weapons.filter(w => w.st !== 'gate').length;
+    /* 第四發：最早那一組進收尾（不再開新門），而且一把兵器都沒被撤掉。 */
+    const oDrop = dropWeapon;
+    let dropped = 0;
+    dropWeapon = w => { dropped++; oDrop(w); };
+    const first = gates[0];
+    gateAt({ x: 0, z: 45 });
+    dropWeapon = oDrop;
+    o.n4 = gates.length;
+    o.firstPh = first.ph;
+    o.live4 = gates.filter(q => q.ph !== 'drain').length;
+    o.dropped = dropped;
+    o.load4 = first.ports.filter(p => p.w).length;      // 收尾中的那一組手上還有貨
+    /* 收尾中的那一組最後真的會自己收掉，而且是把手上的射完（不是憑空消失）。 */
+    const oFire = fireGate;
+    let fired = 0;
+    fireGate = (q, p) => { if (q === first) fired++; oFire(q, p); };
+    let d = 0;
+    dropWeapon = w => { dropped++; oDrop(w); };
+    while (d++ < 900 && gates && gates.indexOf(first) >= 0) step(1 / 60);
+    fireGate = oFire; dropWeapon = oDrop;
+    o.drainFired = fired;
+    o.droppedAll = dropped;
+    o.gone = !gates || gates.indexOf(first) < 0;
     cleanTools();
-    return { flying, cx0, after, want: GATE_N };
+    return o;
   });
-  ok('連點只會有一發，但已經射出去的兵器不會憑空消失',
-     gateAgain.after.casts === 1 && gateAgain.after.ph === 'open' &&
-     gateAgain.after.cx !== gateAgain.cx0 &&
-     gateAgain.after.inGate === gateAgain.want &&
-     gateAgain.after.kept >= gateAgain.flying * 0.9,
-     '第二發開在別的地方（門陣中心 ' + gateAgain.cx0 + ' → ' + gateAgain.after.cx +
-     '），門裡重新裝了 ' + gateAgain.after.inGate + ' 把；上一發已經射出去的 ' +
-     gateAgain.flying + ' 把留下 ' + gateAgain.after.kept + ' 把');
+  ok('同時最多三組，每一組各自帶自己的一百個門',
+     gateSets.n3 === 3 && gateSets.sets === 3 &&
+     gateSets.ports3.every(n => n === gateSets.want) &&
+     gateSets.load3.every(n => n >= gateSets.want * 0.8) &&
+     new Set(gateSets.cx3).size === 3,
+     '連開三發 → 場上 ' + gateSets.n3 + ' 組（上限 ' + gateSets.sets +
+     '），門陣中心 ' + gateSets.cx3.join('／') + '，各 ' +
+     gateSets.ports3.join('／') + ' 個門、門裡待發 ' +
+     gateSets.load3.join('／') + ' 把（已經在射的那一組會有幾個正在換位置）');
+  ok('第四發把最早那一組推進收尾，不是把它連兵器一起撤掉',
+     gateSets.firstPh === 'drain' && gateSets.live4 === 3 && gateSets.n4 === 4 &&
+     gateSets.dropped === 0 && gateSets.load4 > 20,
+     '第四發之後：場上 ' + gateSets.n4 + ' 組（還在開新門的 ' + gateSets.live4 +
+     ' 組），最早那一組轉成 ' + gateSets.firstPh + '、門裡還有 ' + gateSets.load4 +
+     ' 把待發；當場被撤掉的兵器 ' + gateSets.dropped + ' 把');
+  ok('收尾那一組會把手上的射完才收（整趟沒有兵器憑空消失）',
+     gateSets.gone && gateSets.drainFired > 20 && gateSets.droppedAll === 0,
+     '收尾中又射了 ' + gateSets.drainFired + ' 發才收掉（收乾淨 ' +
+     (gateSets.gone ? '是' : '否') + '）；從第四發到收乾淨，被撤掉的兵器 ' +
+     gateSets.droppedAll + ' 把');
 
-  /* 連射最凶的那幾秒，每幀的成本。這一發同時在畫的東西比誰都多：200 片門
+  /* 連射最凶的那幾秒，每幀的成本。**三組同時在射**才是 v1.136 的最壞情況：600 片門
      （100 個 × 兩層）＋ 兩百多把兵器 × 8 塊方塊，加上滿池的塵霧與金色光軌。
      多開 instance 不多吃 draw call，但矩陣是每幀重算的，所以要量。 */
   const gateCost = await page.evaluate(() => {
@@ -9610,9 +9670,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
     gateAt({ x: 0, z: 0 });
     let g = 0;
-    while (g++ < 400 && (!gates || gates.ph !== 'fire')) { step(1 / 60); }
-    for (let i = 0; i < 60 * 3; i++) step(1 / 60);        // 射到一半、躺著的也堆起來了
+    for (let i = 0; i < 18; i++) step(1 / 60);
+    gateAt({ x: 26, z: 10 });
+    for (let i = 0; i < 18; i++) step(1 / 60);
+    gateAt({ x: -22, z: -14 });
+    while (g++ < 800 && gates.some(q => q.ph !== 'fire' && q.ph !== 'drain')) step(1 / 60);
+    for (let i = 0; i < 60 * 2; i++) step(1 / 60);        // 射到一半、躺著的也堆起來了
     const w = weapons ? weapons.length : 0, gt = gates ? gateList().length : 0;
+    const sets = gates ? gates.length : 0;
     let sum = 0, worst = 0;
     for (let i = 0; i < 90; i++) {
       const t0 = performance.now();
@@ -9633,15 +9698,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const off = ENG.info().calls;
     gates = g0; weapons = w0;
     cleanTools();
-    return { w, gt, on, gate: on - noGate, weap: noGate - off,
+    return { w, gt, on, sets, gate: on - noGate, weap: noGate - off,
+             keep: WEAP_KEEP, wmax: ENG.WEAP_MAX, gmax: ENG.GATE_MAX,
              avg: +(sum / 90).toFixed(2), worst: +worst.toFixed(2) };
   });
   /* 兵器是 2 個而不是 1 個：它會投影，陰影圖那一趟要再畫一次（積木、炸彈那些也一樣）。
      門是 1 個——它是透明的雙面材質，沒開 forceSinglePass 的話 three 會分兩趟畫，
      量到的就是 2（實測過）。 */
-  ok('連射最凶的那幾秒，每幀的成本在預算內；門與兵器加起來只多三個 draw call',
-     gateCost.avg < 4 && gateCost.gate === 1 && gateCost.weap === 2,
-     gateCost.gt + ' 片門 ＋ ' + gateCost.w + ' 把兵器：step + draw 平均 ' +
+  ok('三組同時連射最凶的那幾秒，每幀的成本在預算內；門與兵器加起來只多三個 draw call',
+     gateCost.avg < 4 && gateCost.gate === 1 && gateCost.weap === 2 &&
+     gateCost.sets === 3 && gateCost.gt <= gateCost.gmax && gateCost.w <= gateCost.keep &&
+     gateCost.w <= gateCost.wmax,
+     gateCost.sets + ' 組同時在射：' + gateCost.gt + ' 片門（引擎 ' + gateCost.gmax +
+     '）＋ ' + gateCost.w + ' 把兵器（上限 ' + gateCost.keep + '、引擎 ' + gateCost.wmax +
+     '）：step + draw 平均 ' +
      gateCost.avg + ' ms、最高 ' + gateCost.worst + ' ms（預算 4ms）；' +
      '這一幕共 ' + gateCost.on + ' 個 draw call，門占 ' + gateCost.gate +
      '、兵器占 ' + gateCost.weap + '（含陰影那一趟）');
@@ -9678,16 +9748,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
       for (let i = 0; i < 20; i++) step(0.05);
       const n0 = placedCnt;
+      /* 尺寸跟範圍要**先量**（v1.136）：收尾那一段多射五十發之後，細高的塔
+         有時會整棟垒完（實測台北 101 掉 100%）——那會踩到「拆到剩不到一成就換下一座」，
+         事後再讀 bp.radius 讀到的是**下一座**（實測 9.5 → 12.2，範圍跟著變 11.9 → 13，
+         於是「細塔的範圍比金字塔小」這件事量不出來）。 */
+      const R = +bp.radius.toFixed(1), zone = +gateZone().toFixed(1);
       let hit = 0, all = 0;
       const oHit = hitWeapon, oStick = stickWeapon;
       hitWeapon = w => { hit++; all++; oHit(w); };
       stickWeapon = w => { all++; oStick(w); };
       gateAt({ x: 0, z: 0 });
-      let g = 0;
-      while ((gates || weapons) && g++ < 900) step(0.05);
+      let g = 0, lost = 0;
+      while ((gates || weapons) && g++ < 900) {
+        step(0.05);
+        if (phase !== 'done' && phase !== 'wreck') break;    // 已經在換場了：再量就是量別棟
+        lost = n0 - placedCnt;
+      }
       hitWeapon = oHit; stickWeapon = oStick;
-      const r = { s: shape, R: +bp.radius.toFixed(1), zone: +gateZone().toFixed(1),
-                  hit, all, pct: +((n0 - placedCnt) / n0 * 100).toFixed(1) };
+      const r = { s: shape, R, zone, hit, all, pct: +(lost / n0 * 100).toFixed(1) };
       cleanTools();
       return r;
     };
@@ -14502,11 +14580,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                    連射七秒、每秒 28 發，射出與命中各一聲。所以除了單獨一聲，
                    還要量「一秒份全部疊在同一瞬間」的最壞情況。 */
                 blade: await one(() => sndBlade()),
+                /* v1.135 那一版的破空聲（就地復刻當對照組）：2100Hz 往下滑的鋸齒
+                   ＋ 切在 5200 的短噪音——使用者說那「像是弓箭聲」，量下去也真的是
+                   高頻占了九成幾。 */
+                bladeOld: await one(() => {
+                  tone(2100, 0.09, 'sawtooth', 0.018, 0.32, 'bladeOld');
+                  noise(0.07, 0.035, 5200);
+                }),
                 clang: await one(() => sndClang()),
                 gate1s: await one(() => {
                   for (let i = 0; i < GATE_RATE; i++) sndBlade();
                   for (let i = 0; i < 13; i++) sndClang();
                   for (let i = 0; i < 15; i++) sndStab();
+                }),
+                /* 三組同時在射（v1.136）：發數三倍。撐住這件事的還是「同一支音效
+                   0.06 秒內最多疊 3 個」那條規矩，所以量到的該跟一組差不多——
+                   這一條就是在驗那件事。 */
+                gate3s: await one(() => {
+                  for (let i = 0; i < GATE_RATE * 3; i++) sndBlade();
+                  for (let i = 0; i < 39; i++) sndClang();
+                  for (let i = 0; i < 45; i++) sndStab();
                 }) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
@@ -14532,6 +14625,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 王之財寶（v1.132）：一發破空聲是全場最輕的一聲（它一秒要響二十幾次），
      而且一秒份全部疊在同一瞬間也不會打到滿刻度——靠的是同一支音效 0.06 秒內
      最多疊 3 個那條規矩（跟一排小人同時被掀倒是同一個機制，見下一條）。 */
+  /* 射出去那一聲要「霸氣」不要「弓箭」（v1.136，使用者：「調整射擊音效 應該是更霸氣
+     (目前像是弓箭聲)」）。弓箭＝高頻的咻，霸氣＝低頻的破空，所以拿舊版當對照組
+     量兩件事：2kHz 以上要掉下來、80–250Hz 要撐起來。音量可以重一點，但仍要遠低於槌子。 */
+  ok('射擊聲從高頻的「咻」換成低頻的破空（不再像弓箭）',
+     snd.blade.hiPct < snd.bladeOld.hiPct * 0.4 &&
+     snd.blade.body > snd.bladeOld.body * 2 && snd.blade.rms > snd.bladeOld.rms,
+     '2kHz 以上 ' + snd.bladeOld.hiPct + '% → ' + snd.blade.hiPct +
+     '%；80–250Hz ' + snd.bladeOld.body + ' → ' + snd.blade.body +
+     '；單聲 rms ' + snd.bladeOld.rms + ' → ' + snd.blade.rms);
   ok('王之財寶一發的破空聲比槌子輕得多',
      snd.blade.rms < snd.smash.rms * 0.5 && snd.clang.rms < snd.smash.rms * 0.6,
      '破空 rms ' + snd.blade.rms + '、命中 ' + snd.clang.rms +
@@ -14539,11 +14641,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 峰值用絕對門檻（跟「一排小人同時被掀倒」那條同一個 0.2 量級），不跟核彈比：
      這一秒份是幾十個短促的金屬撞擊，峰值本來就會比一聲拖很長的低頻爆炸高，
      真正要擋的是「疊到滿刻度」。總量（rms）才拿核彈當上限。 */
-  ok('連射一秒份全疊在同一瞬間也不會打到滿刻度',
+  ok('連射一秒份全疊在同一瞬間也不會打到滿刻度，三組同時射也不會吵三倍',
      snd.gate1s.over === 0 && snd.gate1s.peak < 0.25 &&
-     snd.gate1s.rms < snd.nuke.rms,
-     '一秒份 rms ' + snd.gate1s.rms + '／peak ' + snd.gate1s.peak + '／滿刻度 ' +
-     snd.gate1s.over + ' 個取樣（核彈 ' + snd.nuke.rms + '／' + snd.nuke.peak + '）');
+     snd.gate1s.rms < snd.nuke.rms &&
+     snd.gate3s.over === 0 && snd.gate3s.peak < 0.25 &&
+     snd.gate3s.rms < snd.gate1s.rms * 1.25,
+     '一組一秒份 rms ' + snd.gate1s.rms + '／peak ' + snd.gate1s.peak +
+     '；三組 rms ' + snd.gate3s.rms + '／peak ' + snd.gate3s.peak +
+     '（發數三倍、量幾乎不變：同一支 0.06 秒內最多疊 3 個）；滿刻度 ' +
+     (snd.gate1s.over + snd.gate3s.over) + ' 個取樣（核彈 ' + snd.nuke.rms +
+     '／' + snd.nuke.peak + '）');
 
   /* 「炸空地還好、炸到建築就刺耳」的根源不是爆炸，是被同一發掀倒的那一排小人：
      二十聲 sndFall 是二十個從相位 0 起跳的同頻方波，同相疊起來峰值 0.047 → 0.95

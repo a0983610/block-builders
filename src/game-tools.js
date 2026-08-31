@@ -73,7 +73,7 @@ let meteors = null;   // 已呼叫的隕石（倒數或下墜中，可以好幾�
 let nukes = null;     // 已呼叫的核彈（倒數或下墜中，可以好幾顆）
 let magics = null;    // 正在展開的魔法陣（可以好幾個）
 let storms = null;    // 正在打雷的烏雲（可以好幾朵）
-let gates = null;     // 正在發動的王之財寶（一次一發，見 castGate）
+let gates = null;     // 正在發動的王之財寶（同時最多三組，見 castGate）
 let weapons = null;   // 場上所有兵器：門裡待發、飛行中、翻滾中、躺在地上的（v1.132）
 let fires = null;     // 正在燒的積木（還站著的會往鄰居蔓延，碎料的只燒自己）
 let nSpread = 0;      // fires 裡有幾筆是「還站著的建築」——碎料不占那個額度
@@ -3623,7 +3623,7 @@ const GATE_Y0 = 12;              // 矮建築用的下限
 const GATE_GROW = 0.55;          // 一個門張開要多久（由小而大）
 const GATE_STAG = 1.5;           // 一百個門的出場錯開在這麼多秒裡
 const GATE_DRAW = 0.7;           // 兵器從門心伸出來要多久
-const GATE_HOLD = 3;             // 全部就位後停多久（使用者指定）
+const GATE_HOLD = 2;             // 全部就位後停幾秒（v1.136 使用者：3 秒「停頓太久」）             // 全部就位後停多久（使用者指定）
 const GATE_FIRE = 7;             // 連射多久（使用者指定）
 /* 連射的節奏：平均每秒幾發，還有兩發之間的間隔可以差幾倍。
    **整發共用一個節奏器**，不是每個門各自抽自己的射擊時刻——後者做不出「從頭到尾
@@ -3708,7 +3708,13 @@ const GATE_FADE = 1.6;           // 淡多久（透明度歸零，再化成金�
 /* 場上最多幾把。要 **≤ 引擎的 WEAP_MAX（360）**——超過的會被 putWeapons 默默切掉，
    而被切掉的是清單後面那些＝最新射出來的那幾把。
    量過的峰值：門裡待發 100 ＋ 飛在半空約 15 ＋ 躺著還沒淡完的約 90。 */
-const WEAP_KEEP = 340;
+const WEAP_KEEP = 560;
+/* 同時最多幾組（v1.136，使用者：「可以同時存在多組(3組)」）。算的是「還在開新門」的組——
+   推進收尾的那些不占名額（它們不再開新門，只是把手上的射完，見 drainGate）。 */
+const GATE_SETS = 3;
+/* 連收尾中的一起算的硬上限。收尾要三秒多，一直點下去還是會疊上去；
+   超過就把最早那一組直接撤掉——不擋的話門與兵器沒有上限，每幀成本與 WEAP_KEEP 都撐不住。 */
+const GATE_KEEP = 5;
 
 /* 點下去。一次一發（一發就是一百個門、連射七秒），還在跑的時候再點就換新的一發——
    同其他清單型道具「滿了把最早那個擠掉」的規矩。舊那一發的門當場收掉，
@@ -3722,8 +3728,14 @@ function pickGate(point) {
 /* from＝門陣開在哪（第一下），toward＝打哪裡（第二下）。
    v1.135 之前是一個點：目標由點擊決定，門陣自己退到「鏡頭方向的另一側 GATE_BACK 遠」。 */
 function castGate(from, toward) {
-  if (gates) closeGate();
   aim = null;
+  if (!gates) gates = [];
+  /* 名額（v1.136）。滿了就把最早那一組推進收尾：它不再開新的門，把還裝著兵器的門
+     射完就收（使用者：「結束的時候繼續把還有武器的門射完」）——v1.135 之前是連門帶
+     兵器一起撤掉，等於一發有一百把兵器憑空消失。 */
+  const live = gates.filter(q => q.ph !== 'drain');
+  for (let i = 0; i <= live.length - GATE_SETS; i++) drainGate(live[i]);
+  while (gates.length >= GATE_KEEP) closeGate(gates[0]);
   /* f＝從目標看回門陣（門陣的深度方向），a＝兵器飛出去的方向，u＝門陣的橫向。
      兩點太近就退回 v1.135 之前的取景（照鏡頭方向、退到另一側 GATE_BACK 遠）：
      門陣自己的凹面就有 8 格深（GATE_BOWL 的 sagitta），目標比 GATE_NEAR 還近的話
@@ -3753,7 +3765,7 @@ function castGate(from, toward) {
   };
   if (!weapons) weapons = [];
   for (let i = 0; i < GATE_N; i++) g.ports.push(newPort(g, i, Math.random() * GATE_STAG));
-  gates = g;
+  gates.push(g);
   /* 順手把鏡頭退到看得見整片門的距離（跟烏雲、蘑菇雲共用 ENG.holdWide）。
      門陣飄在屋頂上方，矮建築的預設取景只看得到 26 以下——不退的話點下去
      整片門都在畫面外。第三個參數 true ＝ **用完要還**（v1.128 使用者指定的那條規矩：
@@ -3768,12 +3780,25 @@ function gateEnd() {
   if (gates) return;
   while (gateHold > 0) { gateHold--; ENG.releaseWide(); }
 }
-/* 把還開著的門收掉（換發、或連射時間到了）。門裡還沒射出去的那把兵器跟著撤掉：
-   它從來沒離開過門，留在地上會變成憑空掉下來的一把鐵。 */
-function closeGate() {
+/* 把一組門收掉。門裡還沒射出去的那把兵器跟著撤掉：它從來沒離開過門，
+   留在地上會變成憑空掉下來的一把鐵。
+   正常收場是走 drainGate（射完才收），這裡只剩兩種：收尾跑完了（那時候門都空了），
+   以及硬上限踢掉最早那一組。 */
+function closeGate(g) {
   if (!gates) return;
-  for (const p of gates.ports) if (p.w) { dropWeapon(p.w); p.w = null; }
-  gates = null;
+  const i = gates.indexOf(g);
+  if (i < 0) return;
+  for (const p of g.ports) if (p.w) { dropWeapon(p.w); p.w = null; }
+  gates.splice(i, 1);
+  if (!gates.length) gates = null;
+}
+/* 收尾（v1.136，使用者：「結束的時候繼續把還有武器的門射完」）：不再開新的門，
+   照原本的節奏把還裝著兵器的門射完，全部熄掉才收。
+   不必在這裡做別的事——「射完換個位置再開」那一段的條件是 ph === 'fire'，
+   改成 drain 之後射完的門自然就熄掉不再生；還在張開／伸出的那些照樣會走到 ready，
+   然後被這一輪節奏器射出去。 */
+function drainGate(g) {
+  if (g.ph === 'open' || g.ph === 'hold' || g.ph === 'fire') g.ph = 'drain';
 }
 /* 門陣多寬多高、切幾欄幾列。寬跟著外接半徑、高跟著樓高，兩邊各自夾在一個區間裡
    （太小的話一百個門會疊成一坨，太大的話鏡頭要退到門變成一片小點）。
@@ -3929,7 +3954,11 @@ function pickReady(g) {
 function stepGates(dt) {
   stepWeapons(dt);                    // 兵器自己飛：門收掉了也要繼續
   if (!gates) { gateEnd(); return; }
-  const g = gates;
+  // 倒著跑：收工的那一組會就地從清單上拿掉（closeGate）
+  for (let i = gates.length - 1; i >= 0; i--) stepGate(gates[i], dt);
+  gateEnd();
+}
+function stepGate(g, dt) {
   g.t += dt;
   let ready = 0;
   for (const p of g.ports) {
@@ -3976,31 +4005,27 @@ function stepGates(dt) {
     if (ready >= g.ports.length) { g.ph = 'hold'; g.t = 0; }
   } else if (g.ph === 'hold') {
     if (g.t >= GATE_HOLD) { g.ph = 'fire'; g.fireT = 0; g.next = rr(0.05, 0.2); }
-  } else if (g.ph === 'fire') {
-    g.fireT += dt;
+  } else if (g.ph === 'fire' || g.ph === 'drain') {
+    if (g.ph === 'fire') {
+      g.fireT += dt;
+      // 連射時間到：不再開新的門，剩下的照原本的節奏射完（v1.136，見 drainGate）
+      if (g.fireT >= GATE_FIRE) g.ph = 'drain';
+    }
     /* 節奏器：時間到就隨機挑一個已就位的門射出去（見 GATE_RATE）。
        while 不是 if——一幀 dt 大於一個間隔時（4 倍速、掉幀）要補射，
        不然快轉時發數會憑空變少。 */
     g.next -= dt;
-    while (g.next <= 0 && g.fireT < GATE_FIRE) {
+    while (g.next <= 0) {
       const p = pickReady(g);
       if (!p) break;                       // 全部都還在張開／伸出：這一發等下一幀
       fireGate(g, p);
       g.next += rr(GATE_JIT[0], GATE_JIT[1]) / GATE_RATE;
     }
-    if (g.fireT >= GATE_FIRE) {
-      // 時間到：還開著的門一律收掉（縮完就熄，見上面的 shut）
-      for (const p of g.ports) {
-        if (p.st === 'off' || p.st === 'shut') continue;
-        if (p.w) { dropWeapon(p.w); p.w = null; }
-        p.st = 'shut'; p.t = 0; p.k0 = p.k;
-      }
-      g.ph = 'done';
-    }
-  } else if (g.ph === 'done') {
-    if (g.ports.every(p => p.st === 'off')) gates = null;
+    /* 沒門可射的那幾幀別讓它一路欠下去：不夾住的話收尾剛開始（門都還在縮）欠了幾秒，
+       等門一開就會在同一幀把好幾發一次噴出來。 */
+    if (g.next < -1 / GATE_RATE) g.next = -1 / GATE_RATE;
+    if (g.ph === 'drain' && g.ports.every(p => p.st === 'off')) closeGate(g);
   }
-  gateEnd();
 }
 /* 門裡那把兵器擺在哪。從「整把縮在門後面」滑到「正中間卡在門上」——
    停在正中間，一半就在門外（使用者：「一半的長度在魔法圓形外面」）。
@@ -4270,7 +4295,7 @@ const gateDraw = [];
 function gateList() {
   gateDraw.length = 0;
   if (!gates) return gateDraw;
-  for (const p of gates.ports) {
+  for (const g of gates) for (const p of g.ports) {
     if (p.op <= 0.002) continue;
     const r = p.r * p.k;
     const d = { x: p.x, y: p.y, z: p.z, dx: p.dx, dy: p.dy, dz: p.dz };
