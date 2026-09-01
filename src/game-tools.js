@@ -2961,15 +2961,18 @@ function spawnWind(p, R, magic) {
 }
 
 /* 火球：先一瞬間衝到大半個尺寸，之後慢慢撐開；亮度收得比半徑快。
-   兩者同速的話它會像顆縮回去的氣球，火球是「膨脹的同時燒完冷掉」。 */
+   兩者同速的話它會像顆縮回去的氣球，火球是「膨脹的同時燒完冷掉」。
+   life／hold 沒給就走上面那兩個常數（爆炸類一律用預設）；王之財寶那顆小火球
+   自己帶一份短的，理由見 weaponBoom。 */
 function stepFlash(dt) {
   for (let i = flashes.length - 1; i >= 0; i--) {
     const f = flashes[i];
     f.t += dt;
-    const k = f.t / FLASH_LIFE;
+    const life = f.life || FLASH_LIFE, hold = f.hold === undefined ? FLASH_HOLD : f.hold;
+    const k = f.t / life;
     if (k >= 1) { flashes.splice(i, 1); continue; }
     f.r = f.R * (0.34 + 0.72 * Math.sqrt(k));       // sqrt：一開始猛、後面慢
-    const fade = f.t < FLASH_HOLD ? 1 : 1 - (f.t - FLASH_HOLD) / (FLASH_LIFE - FLASH_HOLD);
+    const fade = f.t < hold ? 1 : 1 - (f.t - hold) / (life - hold);
     f.op = fade * fade;                             // 平方：亮的時間長、最後幾幀掉得乾脆
   }
 }
@@ -3790,6 +3793,9 @@ const GATE_INTO = 0.4;
 const GATE_STICK_MIN = 0.12;     // 俯角的正弦要大於這個才插得住，不然是躺平（7 度）
 const GATE_LIE = [1.4, 2.8];     // 掉在地上／插在地上撐多久才開始淡
 const GATE_FADE = 1.6;           // 淡多久（透明度歸零，再化成金色光塵）
+/* 化成金光的速度是淡出的幾倍（v1.148）。1.8 ＝ 不透明度掉到 0.45 時金光已經滿格，
+   剩下那 0.45 是「一團完整的金色形體慢慢消失」的那一段。 */
+const GATE_GLOW_K = 1.8;
 /* 場上最多幾把。要 **≤ 引擎的 WEAP_MAX（360）**——超過的會被 putWeapons 默默切掉，
    而被切掉的是清單後面那些＝最新射出來的那幾把。
    量過的峰值：門裡待發 100 ＋ 飛在半空約 15 ＋ 躺著還沒淡完的約 90。 */
@@ -4005,7 +4011,7 @@ function newWeapon(g, p) {
     roll: Math.random() * Math.PI * 2, len, k, s: len,
     cut: [a.dx, a.dy, a.dz, a.dx * p.x + a.dy * p.y + a.dz * p.z],
     st: 'gate', out: 0, vx: 0, vy: 0, vz: 0,
-    ax: 0, ay: 0, az: 0, spin: 0, lie: 0, fade: 1, em: 0, age: 0
+    ax: 0, ay: 0, az: 0, spin: 0, lie: 0, fade: 1, glow: 0, em: 0, age: 0
   };
   p.dx = a.dx; p.dy = a.dy; p.dz = a.dz;         // 門跟著兵器擺（見 newPort）
   weapons.push(w);
@@ -4167,10 +4173,15 @@ function stepWeapons(dt) {
       if (w.y <= 0.4) { lieWeapon(w); }
     } else {
       /* 插著／躺著：撐一段時間再**慢慢變淡**（v1.132.1 使用者回報；本來是縮小）。
-         fade 是逐 instance 的不透明度，長度一路不變。 */
+         fade 是逐 instance 的不透明度，長度一路不變。
+         淡的同時整把化成金光（v1.148，使用者：「兵器消失時 兵器整體金色光芒的形體
+         慢慢消失」）：glow 爬得比 fade 掉得快（GATE_GLOW_K），所以還有四成多不透明度
+         的時候就已經是一團完整的金色形體，之後才連光一起淡掉——
+         兩者同速的話金色最亮的那一刻剛好也快看不見了，等於沒有這一段。 */
       w.lie -= dt;
       if (w.lie <= 0) {
         w.fade -= dt / GATE_FADE;
+        w.glow = Math.min(1, (1 - w.fade) * GATE_GLOW_K);
         if (w.fade <= 0) { goldPuff(w); weapons.splice(i, 1); }
       }
     }
@@ -4190,6 +4201,7 @@ function hitWeapon(w) {
   const p = { x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t };
   smash(p, { x: w.dx, y: w.dy, z: w.dz }, GATE_HIT_R, GATE_HIT_POW, true, true);
   weaponSpark(p, w);
+  weaponBoom(p, w);
   sndClang();
   fallWeapon(w);
 }
@@ -4232,12 +4244,20 @@ function weaponVsWorker(w, px, py, pz) {
   return null;
 }
 /* 撞飛的力道：方向沿飛行方向（使用者指定），水平速度由 tossWorker 自己夾在
-   W_TOSS_MAX（22）。兵器本身跟打到積木一樣被擋下來、掉到地上——
-   **不叫 smash**：那會連旁邊的積木一起炸開，打到人不該拆房子。 */
+   W_TOSS_MAX（22）。兵器本身跟打到積木一樣被擋下來、掉到地上。
+
+   v1.132～v1.147 這裡**不叫 smash**（原註解：「那會連旁邊的積木一起炸開，
+   打到人不該拆房子」）。v1.148 使用者要「擊中小人或吉祥物時增加小小爆炸火球特效
+   （把 3～4 塊積木炸飛的程度）」，並確認火球本身要有破壞力——所以那個取捨翻掉了，
+   改成炸一小片（GATE_BLAST_R，比打積木那一發小一號，見那邊的實測表）。
+   撞飛排在爆破**前面**：smash 收尾的 afterHit 會把附近還站著的人掀倒，
+   而它不動已經飛起來的人——順序反了的話被射中那一個會變成「原地倒下」而不是被撞飛。 */
 function manWeapon(w, p) {
   const t = w.len * 0.5;
-  weaponSpark({ x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t }, w);
+  const pt = { x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t };
+  weaponSpark(pt, w);
   tossWorker(p, w.dx * 16 + rr(-2, 2), rr(5, 8), w.dz * 16 + rr(-2, 2), false);
+  weaponBlast(pt, w);
   sndFall();
   fallWeapon(w);
 }
@@ -4358,6 +4378,74 @@ function weaponSpark(pt, w) {
       to: [1, 0.6, 0.1], dx: dx, dy: dy, dz: dz, ln: rr(0.7, 1.6)
     });
   }
+}
+/* 擊中那一下的小爆炸火球（v1.148，使用者：「兵器擊中積木或小人或吉祥物時
+   (如果是地面就跟現在一樣插著就好) 增加小小爆炸火球特效(把 3~4 塊積木炸飛的程度)」）。
+   打在地面的**不給**——那一發照舊插在地上（使用者指定）。
+   疊在原本的金色星芒＋往回濺的火花上面：那兩層是「金屬撞上石頭」，這一層是「炸開」。
+
+   為什麼不直接叫 spawnBlast（爆炸那一套的火球）：
+   ① 它會在**地面**鋪兩圈貼地光環（y ≈ 0.16）。兵器多半打在半空的牆上，
+      光環會出現在腳下十幾格外的草地上，看起來是另一件事。
+   ② 它那顆火球的壽命是核彈的 0.65 秒。這一把一秒炸十幾下，FLASH_MAX 個位置
+      會被最早那幾顆卡死，多數的擊中根本排不到火球——所以自己帶一份短的。
+   ③ 額度**不搶**：滿了就這一發沒有火球（spawnBlast 是把最早那顆擠掉）。
+      核彈那顆大火球不該被一把劍擠掉，反過來則照舊（大爆炸擠得掉這幾顆小的）。
+   一律不點火、不震畫面：這一把從 v1.132 起就是「不起火、不震畫面」的（使用者指定）。 */
+const GATE_BOOM_R = 1.7;         // 火球撐開到多大（外殼到 1.1 倍 ≈ 兩格，四塊積木寬）
+const GATE_BOOM_LIFE = 0.24;     // 亮多久（爆炸那顆是 0.65）
+const GATE_BOOM_HOLD = 0.05;     // 前這麼久維持全亮
+const GATE_BOOM_N = 9;           // 從球面往外噴幾顆火星
+function weaponBoom(pt, w) {
+  /* 跟星芒一樣要沿著來的方向往回挪：刃尖那一刻常常已經戳進積木裡，
+     生在那裡的話整顆球被牆擋住（見 weaponSpark 的 SPARK_BACK）。 */
+  const p = { x: pt.x - w.dx * SPARK_BACK, y: pt.y - w.dy * SPARK_BACK,
+              z: pt.z - w.dz * SPARK_BACK };
+  if (flashes.length < FLASH_MAX)
+    flashes.push({ x: p.x, y: p.y, z: p.z, R: GATE_BOOM_R, magic: false,
+                   t: 0, r: GATE_BOOM_R * 0.34, op: 1,
+                   life: GATE_BOOM_LIFE, hold: GATE_BOOM_HOLD });
+  /* 從球面往外噴的火星。跟爆炸那一套同一個道理：生在球心的話這些幾乎不透明的
+     方塊會糊在球的正面，把最亮的核心遮掉。額度用 HOT_MAX − 8（跟星芒同一級，
+     比拖尾的 −40 寬）——拖尾少幾顆看不出來，擊中少一下就整個沒特效了。 */
+  for (let i = 0; i < GATE_BOOM_N; i++) {
+    if (hot.length > HOT_MAX - 8) break;
+    const a = Math.random() * Math.PI * 2, u = Math.pow(Math.random(), 0.6);
+    const rad = GATE_BOOM_R * (0.52 + 0.46 * u);
+    const core = u < 0.35;
+    hot.push({
+      x: p.x + Math.cos(a) * rad, y: p.y + rr(-0.2, 0.5), z: p.z + Math.sin(a) * rad,
+      vx: Math.cos(a) * rad * 3.2, vy: rr(1.4, 4.2), vz: Math.sin(a) * rad * 3.2,
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.26, 0.48), life: rr(0.16, 0.34), g: -1.2, grow: 1.22,
+      cool: rr(0.5, 0.9),
+      cr: 1, cg: core ? rr(0.80, 0.94) : rr(0.40, 0.56), cb: core ? rr(0.34, 0.54) : rr(0.06, 0.16),
+      to: [0.6, 0.14, 0.03]
+    });
+  }
+}
+/* 打到小人／吉祥物那一下的火球＋那一小片爆破（v1.148）。
+   quiet＋hush 照舊：這一把不震畫面、爆裂聲讓給它自己那一聲 sndClang／sndFall。
+   打積木那一發不走這裡——它本來就有 smash（GATE_HIT_R 1.5），不該疊第二發。
+
+   半徑是量出來的，不是估的。使用者要「把 3～4 塊積木炸飛的程度」，而這一發的爆點
+   是「刃尖停在人身上」那一點——人站在牆外，離最近那排積木還有一格多，所以同一個
+   半徑在這裡咬掉的比打在積木上少得多。實測（射中站在牆邊的小人，每次換一座隨機建築、
+   發射距離也隨機，各 48 發，量的是當場被打散的 SET 塊數）：
+     1.2 → 平均 1.2（中位 1）      1.3 → 平均 2.1（中位 2）
+     1.4 → 平均 3.5（中位 3）      1.5 → 平均 3.5（中位 3）
+   1.4 就是使用者說的「3～4 塊」。1.5 量到一樣，但那已經等於打積木那一發的半徑，
+   這一發該比它小，所以取 **1.4**。
+
+   量的時候踩到一個坑，記在這裡：**發射距離不能固定**。刃尖一幀飛 1.03 格，停在哪要看
+   「到達的相位」——同一個半徑 1.3，發射距離 3.4 量到平均 4.3 塊、距離 5.0 量到 1.6 塊
+   （差半格，最近那一排就整排進出半徑）。真實遊戲裡相位是隨機的，夾具也得隨機，
+   不然量到的是那一個相位，不是這一發的力道。 */
+const GATE_BLAST_R = 1.4;
+const GATE_BLAST_POW = 10;
+function weaponBlast(pt, w) {
+  smash(pt, { x: w.dx, y: w.dy, z: w.dz }, GATE_BLAST_R, GATE_BLAST_POW, true, true);
+  weaponBoom(pt, w);
 }
 /* 淡完那一刻化成一小撮金色光塵（gemini 的描述：「化為金色光塵消散」）。
    只有幾顆：一百多把兵器陸續淡完，一把撒二十顆的話整片草地會亮成一團。 */
@@ -5334,12 +5422,15 @@ function weaponVsBeast(w, px, py, pz) {
   }
   return null;
 }
-/* 撞飛的力道跟打到小人同一條（方向沿飛行方向），力道打個折；兵器自己照樣掉在地上。 */
+/* 撞飛的力道跟打到小人同一條（方向沿飛行方向），力道打個折；兵器自己照樣掉在地上。
+   火球與那一小片爆破也跟打到小人同一條（v1.148，使用者：「小人或吉祥物」）。 */
 function beastWeapon(w, m) {
   const t = w.len * 0.5;
-  weaponSpark({ x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t }, w);
+  const pt = { x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t };
+  weaponSpark(pt, w);
   tossBeast(m, w.dx * 16 * B_BLOW + rr(-2, 2), rr(5, 8),
             w.dz * 16 * B_BLOW + rr(-2, 2), false);
+  weaponBlast(pt, w);
   sndFall();
   fallWeapon(w);
 }

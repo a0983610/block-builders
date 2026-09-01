@@ -147,15 +147,20 @@ const ENG = (function () {
      所以規則那邊只要給「多長、指向哪」就好，等比縮放不會把比例弄歪。 */
   const WEAP_MAX = 600, WEAP_PARTS = 8;
   let weapMesh = null;
-  /* 兩個逐 instance 的屬性（v1.132.1）。
+  /* 三個逐 instance 的屬性（v1.132.1、aGlow 是 v1.148）。
      aCut＝一個**世界座標的切面** vec4(法線 xyz, 面上任一點與法線的內積)：
        比這個面「後面」的片元直接 discard。兵器是從虛空的波紋裡探出來的，
        還沒伸出來的那一段本來就不該看得見——靠門那片圖擋只擋得住它蓋得到的地方，
        斜著看時柄還是會從邊上露出來（使用者回報的第一點）。
        給 vec4(0,0,0,-1) 就是不切（dot=0，0 < −1 不成立）。
      aFade＝這一把的不透明度。插在地上／躺著的要**慢慢變淡**消失（使用者回報的第五點），
-       不是縮小——縮小看起來像被吸走，不像化掉。 */
-  let weapCut = null, weapFade = null;
+       不是縮小——縮小看起來像被吸走，不像化掉。
+     aGlow＝這一把化成金光的程度（0 平常、1 整把是一團金色的光，v1.148，使用者：
+       「兵器消失時 兵器整體金色光芒的形體慢慢消失」）。刃面偏白、握把是深棕，
+       只把不透明度收掉的話最後看到的是一把**變透明的鐵器**，不是一團金光；
+       所以淡出的同時把顏色一起推向金色、並且加一份自發光（見 weapShader）。
+       **形體不動**：位置、指向、長度一路不變，變的只有顏色與亮度。 */
+  let weapCut = null, weapFade = null, weapGlow = null;
   /* 這一格上次畫的是哪一種。顏色只在換種時重寫——每幀重寫 360×8 筆是白花的
      （淡出走的是縮放不是顏色，見規則那邊的 fade）。 */
   const weapSlotKind = new Int16Array(WEAP_MAX).fill(-1);
@@ -961,21 +966,37 @@ const ENG = (function () {
     const weapGeo = new T.BoxGeometry(1, 1, 1);
     weapCut = new T.InstancedBufferAttribute(new Float32Array(WEAP_MAX * WEAP_PARTS * 4), 4);
     weapFade = new T.InstancedBufferAttribute(new Float32Array(WEAP_MAX * WEAP_PARTS), 1);
+    weapGlow = new T.InstancedBufferAttribute(new Float32Array(WEAP_MAX * WEAP_PARTS), 1);
     weapCut.setUsage(T.DynamicDrawUsage);
     weapFade.setUsage(T.DynamicDrawUsage);
+    weapGlow.setUsage(T.DynamicDrawUsage);
     weapGeo.setAttribute('aCut', weapCut);
     weapGeo.setAttribute('aFade', weapFade);
+    weapGeo.setAttribute('aGlow', weapGlow);
+    /* 化成金光那一份（v1.148）。做法是**把顏色的來源從「受光的 diffuse」換成
+       「自發光」**，不是在原本的顏色上加亮：
+       ① diffuse 隨 vGlow 收到接近黑——這一把就幾乎不吃光了。不收的話刃面（偏白的
+          米黃）本來就亮，再加一份自發光會頂到 1 而整把發白（實測就是一片奶油色，
+          看不出是金的）。
+       ② 顏色全交給 totalEmissiveRadiance 的那一份金色。好處是**跟光無關**：
+          背光面、影子裡、正對太陽那一面都是同一個金色，才是「一整團金光的形體」
+          而不是「被聚光燈打到的鐵器」。
+       注入點選 <emissivemap_fragment>：它排在 <lights_lambert_fragment> 前面，
+       是 totalEmissiveRadiance 唯一還來得及被加料的位置。 */
     const weapShader = (sh, cut) => {
       sh.vertexShader = cut(sh.vertexShader, '#include <common>',
-        '\nattribute vec4 aCut;\nattribute float aFade;' +
-        '\nvarying vec4 vCut;\nvarying float vFade;\nvarying vec3 vWPos;');
+        '\nattribute vec4 aCut;\nattribute float aFade;\nattribute float aGlow;' +
+        '\nvarying vec4 vCut;\nvarying float vFade;\nvarying float vGlow;\nvarying vec3 vWPos;');
       sh.vertexShader = cut(sh.vertexShader, '#include <begin_vertex>',
-        '\nvCut = aCut; vFade = aFade;' +
+        '\nvCut = aCut; vFade = aFade; vGlow = aGlow;' +
         '\nvWPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;');
       sh.fragmentShader = cut(sh.fragmentShader, '#include <common>',
-        '\nvarying vec4 vCut;\nvarying float vFade;\nvarying vec3 vWPos;');
+        '\nvarying vec4 vCut;\nvarying float vFade;\nvarying float vGlow;\nvarying vec3 vWPos;');
       sh.fragmentShader = cut(sh.fragmentShader, '#include <color_fragment>',
-        '\nif (dot(vWPos, vCut.xyz) < vCut.w) discard;\ndiffuseColor.a *= vFade;');
+        '\nif (dot(vWPos, vCut.xyz) < vCut.w) discard;\ndiffuseColor.a *= vFade;' +
+        '\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.12, 0.07, 0.01), vGlow);');
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <emissivemap_fragment>',
+        '\ntotalEmissiveRadiance += vec3(1.0, 0.68, 0.18) * vGlow;');
     };
     weapMesh = new T.InstancedMesh(weapGeo,
       voxelMaterial({ color: 0xffffff, transparent: true }, weapShader),
@@ -1649,9 +1670,10 @@ const ENG = (function () {
       scratch.scale.setScalar(w.len);
       scratch.updateMatrix();
       const fresh = weapSlotKind[i] !== w.k;
-      /* 切面與不透明度是「整把一個值」，但屬性是逐 instance（一把 WEAP_PARTS 個），
+      /* 切面、不透明度、金光都是「整把一個值」，但屬性是逐 instance（一把 WEAP_PARTS 個），
          所以每一塊都要寫同一份。 */
       const c = w.cut, fd = w.fade === undefined ? 1 : Math.max(0, Math.min(1, w.fade));
+      const gl = w.glow === undefined ? 0 : Math.max(0, Math.min(1, w.glow));
       const cx = c ? c[0] : 0, cy = c ? c[1] : 0, cz = c ? c[2] : 0, cw = c ? c[3] : -1;
       for (let j = 0; j < WEAP_PARTS; j++) {
         const P = K[j];
@@ -1672,12 +1694,13 @@ const ENG = (function () {
         weapCut.array[at * 4] = cx; weapCut.array[at * 4 + 1] = cy;
         weapCut.array[at * 4 + 2] = cz; weapCut.array[at * 4 + 3] = cw;
         weapFade.array[at] = fd;
+        weapGlow.array[at] = gl;
         if (fresh) weapMesh.setColorAt(at, tmpC.setHex(P ? P.c : 0xffffff));
       }
       if (fresh) { weapSlotKind[i] = w.k; colDirty = true; }
     }
     weapMesh.instanceMatrix.needsUpdate = true;
-    weapCut.needsUpdate = true; weapFade.needsUpdate = true;
+    weapCut.needsUpdate = true; weapFade.needsUpdate = true; weapGlow.needsUpdate = true;
     if (colDirty && weapMesh.instanceColor) weapMesh.instanceColor.needsUpdate = true;
   }
 
