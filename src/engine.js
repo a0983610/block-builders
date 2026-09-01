@@ -2083,6 +2083,13 @@ const ENG = (function () {
   /* 仰躺時最深的那一塊是安全帽的帽緣（0.54 深的一片，半深 0.27）。
      抬這麼多，整個人剛好躺在草皮上，一塊都不埋（v1.60）。 */
   const FLAT_LIFT = 0.27;
+  /* 被吹飛時在半空翻滾的旋轉中心（v1.146，使用者：「修正小人被吹飛的旋轉軸
+     (目前似乎在腳底 看起來很奇怪)」）。跟打滾同一個高度——身體中段——但**是真的當旋轉
+     中心用**，不是拿來抬高：飛在半空沒有地面要閃，繞腳底轉的話人像被釘在腳尖上甩，
+     腳幾乎不動、頭畫一個大圓。倒下去（fall）與打滾（roll）維持繞腳底，那兩種人本來
+     就是以腳為支點倒的。 */
+  const AIR_PIVOT = 0.65;
+  const _piv = new T.Vector3();
   const HIP = 0.41;                          // 髖關節高度（腿的上緣），走路擺動的圓心
   /* w：{x,y,z,a 朝向,ph 步伐相位,carry 是否舉手,tilt 跌倒角度,tone 膚色/衣色編號,
         burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）,roll 正在打滾,
@@ -2113,14 +2120,25 @@ const ENG = (function () {
     /* 沒在打滾但身體是斜的（被戳倒、被震倒、飛在半空翻滾）也要抬——
        原點在腳底，倒到水平時整個身體剛好落在草皮那一層，半個身厚是埋在地裡的。
        抬 |sin(傾角)| × 半個身厚：站直時 0，躺平時剛好把人托在草地上（v1.60）。 */
-    const lift = piv ? (ROLL_FLAT + (ROLL_PIVOT - ROLL_FLAT) * Math.abs(Math.cos(w.tilt || 0)))
+    /* 飛在半空的不抬：下面改成繞身體中段轉，本來就不會陷進地裡（v1.146）。 */
+    const lift = w.air ? 0
+               : piv ? (ROLL_FLAT + (ROLL_PIVOT - ROLL_FLAT) * Math.abs(Math.cos(w.tilt || 0)))
                      : FLAT_LIFT * Math.abs(Math.sin(w.tilt || 0));
-    scratch.position.set(w.x, w.y + lift * (w.scale || 1), w.z);
     /* 順序用 YZX：R = Ry(朝向)·Rz(打滾)·Rx(躺平)。z 那一軸轉的是「躺平之後的身體長軸」，
        也就是滾木頭那個滾法。沒在打滾時 z 給 0，跟原本的 YXZ 完全等價。 */
     scratch.rotation.set((w.tilt || 0) + DIG_LEAN * dgS, w.a,
                          w.roll ? (w.rspin || 0) : 0, 'YZX');
-    scratch.scale.setScalar(w.scale || 1);
+    const wsc = w.scale || 1;
+    scratch.position.set(w.x, w.y + lift * wsc, w.z);
+    /* 繞局部點 p 轉 ＝ 把位置補上 (p − R·p)（見 AIR_PIVOT）。站直時 R·p 就是 p，
+       補的是 0——所以起飛那一刻與落地那一刻都不會跳。 */
+    if (w.air) {
+      _piv.set(0, AIR_PIVOT, 0).applyEuler(scratch.rotation);
+      scratch.position.x -= _piv.x * wsc;
+      scratch.position.y += (AIR_PIVOT - _piv.y) * wsc;
+      scratch.position.z -= _piv.z * wsc;
+    }
+    scratch.scale.setScalar(wsc);
     scratch.updateMatrix();
     for (let k = 0; k < WPARTS; k++) {
       const b = BODY[k];
@@ -2536,6 +2554,26 @@ const ENG = (function () {
   ];
 
   const BEASTS = { ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL };
+  /* 每一種的模型範圍。破壞工具打得到牠們之後（v1.146），規則那邊要拿這三個數字擺姿勢，
+     所以照造型表算出來、不寫死——改造型時不必記得回來改常數。
+       floor 原點要離地多高，最低的那一塊才剛好貼著草皮（猴子的原點在腳底，所以是 0；
+             飛龍的原點在身體中段，肚子在原點下面，摔在地上要用這個把牠墊起來）
+       mid   身體中段，飛在半空翻滾時繞它轉（同小人的 AIR_PIVOT）
+       lift  仰躺（繞 x 轉 −90°）時世界高度就是模型的 z，所以要抬「z 最伸出去的那一塊」
+             那麼多，整隻才剛好躺在草皮上（同小人的 FLAT_LIFT） */
+  const BEAST_FLOOR = {}, BEAST_MID = {}, BEAST_LIFT = {};
+  for (const k in BEASTS) {
+    let ylo = Infinity, yhi = -Infinity, zlo = 0;
+    for (const b of BEASTS[k]) {
+      if (!b) continue;
+      ylo = Math.min(ylo, b.p[1] - b.s[1] / 2);
+      yhi = Math.max(yhi, b.p[1] + b.s[1] / 2);
+      zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
+    }
+    BEAST_FLOOR[k] = Math.max(0, -ylo);
+    BEAST_MID[k] = (ylo + yhi) / 2;
+    BEAST_LIFT[k] = -zlo;
+  }
   /* 場上同時畫得下幾個（含飛在半空的香蕉與火球）。v1.144 從 8 加到 12：吉祥物那三隻
      可以跟天災那一件同時在場（最多 4 隻），再加上龍嘴裡連著吐的火球，8 個會不夠——
      超出的那幾個是**靜靜地不畫**，不會報錯，所以留點餘裕。 */
@@ -2551,12 +2589,27 @@ const ENG = (function () {
     beastMesh.count = n * BEAST_PARTS;
     for (let i = 0; i < n; i++) {
       const m = list[i], parts = BEASTS[m.kind];
-      scratch.position.set(m.x, m.y || 0, m.z);
       /* 順序跟小人一樣用 YZX：R = Ry(朝向)·Rz(側傾)·Rx(俯仰／翻滾)。
          香蕉飛出去時是繞自己橫軸翻，所以翻滾放 x；飛龍的俯仰也放 x、
-         轉彎往內側傾斜放 z（那兩個值是規則那邊算的，見 game-tools.js 的 stepDragon）。 */
+         轉彎往內側傾斜放 z（那兩個值是規則那邊算的，見 game-tools.js 的 stepDragon）。
+         被工具打倒之後（v1.146）這兩個角度就是猴子的「躺平角」與「打滾角」——
+         跟小人的 tilt／rspin 是同一回事，只是欄位名照這裡原本的叫法。 */
       scratch.rotation.set(m.spin || 0, m.a || 0, m.roll || 0, 'YZX');
-      scratch.scale.setScalar(m.sc || 1);
+      const msc = m.sc || 1;
+      /* 躺在草皮上的要照傾角抬起半個身厚，同小人那一套（見 putWorker 的 lift）。
+         m.lie 是**倍率**不是旗標（0＝沒躺）：躺著不動時是 1（實測最低點剛好 0），
+         沿長軸打滾時側面轉下去要抬多一點，規則那邊給 B_ROLL_LIFT——
+         跟小人拿 ROLL_FLAT 蓋掉 FLAT_LIFT 是同一個做法。 */
+      const mlift = m.lie ? BEAST_LIFT[m.kind] * m.lie * Math.abs(Math.sin(m.spin || 0)) : 0;
+      scratch.position.set(m.x, (m.y || 0) + mlift * msc, m.z);
+      /* 被吹飛的在半空翻滾：繞身體中段轉，不是繞腳底（同 putWorker 的 AIR_PIVOT）。 */
+      if (m.air) {
+        _piv.set(0, BEAST_MID[m.kind], 0).applyEuler(scratch.rotation);
+        scratch.position.x -= _piv.x * msc;
+        scratch.position.y += (BEAST_MID[m.kind] - _piv.y) * msc;
+        scratch.position.z -= _piv.z * msc;
+      }
+      scratch.scale.setScalar(msc);
       scratch.updateMatrix();
       if (m.kind === 'dragon') wingArc(m.ph || 0);      // 這一幀的翼弧，整條龍共用
       for (let k = 0; k < BEAST_PARTS; k++) {
@@ -2890,26 +2943,31 @@ const ENG = (function () {
      從側面點建築的下緣時，射線常常先擦過建築前面那片草地。
      反過來，v1.58 把小人排在建築後面之後，「站在建築正前方的小人戳不到」——
      手指改成小人優先就解決了：那把工具本來就只有戳人一種用途。 */
-  const PICK_RANK = { block: 0, worker: 1, ground: 2 };
-  const PICK_MAN = { worker: 0, block: 1, ground: 2 };
+  /* beast 跟 worker 同一級（v1.146：破壞工具也打得到牠們）：'man' 這一把是手指／火把／
+     水桶用的，會先挑活的東西；'skip' 是其餘破壞道具用的，那些一律不理活的，
+     所以表裡照舊沒有 beast——被路過的猴子擋掉那一下就白點了。 */
+  const PICK_RANK = { block: 0, worker: 1, beast: 1, ground: 2 };
+  const PICK_MAN = { worker: 0, beast: 0, block: 1, ground: 2 };
   const PICK_SKIP = { block: 0, ground: 1 };
   function pick(px, py, mode) {
     const rankOf = mode === 'man' ? PICK_MAN : mode === 'skip' ? PICK_SKIP : PICK_RANK;
     ndc.set(px / W * 2 - 1, -(py / H * 2 - 1));
     raycaster.setFromCamera(ndc, camera);
     // intersectObjects 是照距離排好的，所以同一種裡先遇到的就是最近的那個
-    const hits = raycaster.intersectObjects([blockMesh, workerMesh, ground], false);
+    const hits = raycaster.intersectObjects([blockMesh, workerMesh, beastMesh, ground], false);
     let best = null, rank = 9;
     for (const h of hits) {
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
+                 : h.object === beastMesh ? 'beast'
                  : h.object === ground ? 'ground' : null;
-      if (kind === null || !(rankOf[kind] < rank)) continue;
+      if (kind === null || rankOf[kind] === undefined || !(rankOf[kind] < rank)) continue;
       rank = rankOf[kind];
       best = {
         kind: kind,
         idx: kind === 'block' ? h.instanceId
-           : kind === 'worker' ? Math.floor(h.instanceId / WPARTS) : -1,
+           : kind === 'worker' ? Math.floor(h.instanceId / WPARTS)
+           : kind === 'beast' ? Math.floor(h.instanceId / BEAST_PARTS) : -1,
         /* dist ＝ 射線飛了多遠才打到。規則那邊要拿它沿著射線往回走
            （水桶就靠這個把出水點退到牆的正確那一側，見 pourWater）。 */
         point: h.point, dir: raycaster.ray.direction.clone(), dist: h.distance
@@ -2934,6 +2992,7 @@ const ENG = (function () {
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
     MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
+    BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
     get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh }; }

@@ -14848,6 +14848,394 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
 
+  /* ══════════ 破壞工具打得到那幾隻 ══════════ */
+  /* v1.146。使用者：「破壞工具也能對吉祥物生效(著火或是被吹飛或是倒地)／所以飛龍會需要
+     倒地起飛的動作(可以先做給我看過再完整測試)／黑獼猴 白猴子可以同小人的方式製作／
+     修正小人被吹飛的旋轉軸(目前似乎在腳底 看起來很奇怪)」。
+     倒地起飛那一段是先出預覽圖給使用者看過才落地的（同天災那幾隻的造型）。
+     這一段驗的是「規則跟小人一樣」與「姿勢擺得對」，不重驗小人自己那一套。 */
+  head('破壞工具打得到那幾隻');
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 8 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });
+  await fillAll(page);
+
+  /* ── 猴子：被炸飛 → 落地躺一下 → 爬起來繼續逛 ── */
+  const hFly = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const m = spawnBeast('ape', 1);
+    m.x = 26; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999;
+    const hit = tossBeast(m, 9, 11, 0, false);
+    const twice = tossBeast(m, 9, 11, 0, false);        // 已經在飛的不重複掀
+    const seen = [];
+    let top = 0, spun = 0;
+    for (let i = 0; i < 800 && beasts && beasts.indexOf(m) >= 0; i++) {
+      stepDoom(0.05);
+      seen.push(m.air ? 'air' : m.burn > 0 ? 'burn' : m.fall > 0 ? 'fall' : m.st);
+      top = Math.max(top, m.y);
+      if (m.air) spun = Math.max(spun, Math.abs(m.spin));
+      if (seen.length > 4 && !m.air && m.fall <= 0) break;
+    }
+    return { hit, twice, path: [...new Set(seen)].join('>'), top: +top.toFixed(1),
+             spun: +spun.toFixed(2), y: +m.y.toFixed(2), lie: m.lie,
+             r: +Math.hypot(m.x, m.z).toFixed(1), lim: +(arenaR + 22).toFixed(1) };
+  });
+  /* 飛多高照拋物線算就好：初速 11、重力 26 → 頂點 11² ÷ (2×26) ＝ 2.33 格，
+     一幀 0.05 秒抽樣抓到的會略低一點。寫 3 是我一開始沒算就填的數字。 */
+  ok('猴子被炸飛：飛上去翻滾 → 落地躺一下 → 爬起來繼續逛（同小人那一套）',
+     hFly.hit && !hFly.twice && hFly.path === 'air>fall>fun' &&
+     hFly.top > 1.8 && hFly.top < 2.4 && hFly.spun > 1 &&
+     hFly.y === 0 && hFly.lie === 0 && hFly.r < hFly.lim,
+     '飛到 ' + hFly.top + ' 格高、翻了 ' + hFly.spun + ' 弧度 → ' + hFly.path +
+     '，落在半徑 ' + hFly.r + '（邊界 ' + hFly.lim + '）');
+
+  /* ── 猴子：兩種著火演法（同小人：躺著滾 / 站著抱頭跑圈圈）── */
+  const hBurn = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const roll = spawnBeast('ape', 1);
+    roll.x = 26; roll.z = 6; roll.st = 'fun'; roll.stay = 999;
+    const run = spawnBeast('snow', 1);
+    run.x = 26; run.z = -6; run.st = 'fun'; run.stay = 999;
+    const a = igniteBeast(roll, 1), b = igniteBeast(run, 0);
+    const twice = igniteBeast(roll, 1);                 // 已經在燒的不會再點一次
+    /* 火苗池要先清乾淨才量得到「牠有沒有在冒火」：那一池是全場共用、上限 HOT_MAX，
+       滿到剩 40 格以內就不再生（burnBeastFx 的 break，同小人）。而池子只有在
+       完整的 step 才會老化，這裡只走 stepDoom——前面幾段留下來的火苗會一直卡在池子裡。 */
+    hot.length = 0;
+    const hot0 = hot.length;
+    const rx = roll.x, rz = roll.z;
+    let rollMove = 0, runR = 0;
+    for (let i = 0; i < 60; i++) {
+      stepDoom(0.05);
+      rollMove = Math.max(rollMove, Math.hypot(roll.x - rx, roll.z - rz));
+      runR = Math.max(runR, Math.hypot(run.x - run.bx, run.z - run.bz));
+    }
+    const mid = { rollSpin: +roll.spin.toFixed(2), rollLie: +roll.lie.toFixed(2),
+                  runLie: run.lie, runGait: +run.gait.toFixed(2), fx: hot.length > hot0 };
+    for (let i = 0; i < 200; i++) stepDoom(0.05);       // 燒完
+    return { a, b, twice, mid, rollMove: +rollMove.toFixed(1), runR: +runR.toFixed(1),
+             burnT: B_BURN,
+             after: { burn: roll.burn, lie: roll.lie, spin: +roll.spin.toFixed(2) } };
+  });
+  ok('點得著，而且分躺著滾與站著跑圈圈兩種（已經在燒的不會再點一次）',
+     hBurn.a && hBurn.b && !hBurn.twice && hBurn.mid.fx &&
+     Math.abs(hBurn.mid.rollSpin - 1.57) < 0.05 && hBurn.mid.rollLie > 1 &&
+     hBurn.mid.runLie === 0 && hBurn.mid.runGait > 0.9,
+     '點著 ' + hBurn.a + '/' + hBurn.b + '、再點一次 ' + hBurn.twice + '、火苗 ' +
+     hBurn.mid.fx + '；躺著滾：躺平角 ' + hBurn.mid.rollSpin + '、抬升 ' +
+     hBurn.mid.rollLie + ' 倍、就地翻 ' + hBurn.rollMove + ' 格；跑圈圈：躺著＝' +
+     hBurn.mid.runLie + '、腳步 ' + hBurn.mid.runGait + '、繞著定點 ' + hBurn.runR + ' 格');
+  ok('燒完自己拍拍灰站起來',
+     hBurn.after.burn === 0 && hBurn.after.lie === 0 && Math.abs(hBurn.after.spin) < 0.05,
+     '燒 ' + hBurn.burnT + ' 秒之後：burn ' + hBurn.after.burn + '、躺平角 ' +
+     hBurn.after.spin);
+
+  /* ── 水澆得熄，濕的當下點不著（同小人） ── */
+  const hWet = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('ape', 1);
+    m.x = 26; m.z = 0; m.st = 'fun'; m.stay = 999;
+    igniteBeast(m, 1);
+    const was = m.burn > 0;
+    wetBeast(m);
+    const out = { burn: m.burn, wet: +m.wet.toFixed(1), fall: m.fall > 0, lie: m.lie };
+    const again = igniteBeast(m, 1);
+    return { was, out, again, WET: WET_TIME };
+  });
+  ok('水澆得熄牠身上的火，濕的當下點不著（同小人）',
+     hWet.was && hWet.out.burn === 0 && hWet.out.wet === hWet.WET &&
+     hWet.out.fall && !hWet.again,
+     '澆完 burn ' + hWet.out.burn + '、濕 ' + hWet.out.wet + ' 秒、蹲著起不來＝' +
+     hWet.out.fall + '；再點一次 ' + hWet.again);
+
+  /* ── 閃電：劈到猴子＝點著並打倒；劈到飛龍＝把牠打下來（牠點不著） ── */
+  await fillAll(page);
+  const hBolt = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const m = spawnBeast('ape', 1);
+    m.x = 40; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999;
+    /* 落點是雲底半徑 STRIKE_R 內隨機的，所以打到中就停；
+       一道打不中的機率是 1−(5÷13)²，150 道全都沒中約等於 0。 */
+    let n = 0;
+    for (; n < 150 && m.burn <= 0 && m.fall <= 0; n++) strike({ x: m.x, z: m.z, y: 40 });
+    const ape = { n, burn: m.burn > 0, lie: m.lie, spin: +m.spin.toFixed(2) };
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const d = spawnDragon(1);
+    d.x = 40; d.z = 0; d.st = 'ring'; d.y = 30;        // 巡航高度：雷認的是水平距離
+    let k = 0;
+    for (; k < 150 && d.st === 'ring'; k++) strike({ x: d.x, z: d.z, y: 40 });
+    return { ape, dra: { k, st: d.st, burn: d.burn || 0 } };
+  });
+  ok('雷劈到猴子＝當場點著並打倒（同小人）',
+     hBolt.ape.burn && hBolt.ape.lie > 0,
+     '第 ' + hBolt.ape.n + ' 道劈中：身上有火 ' + hBolt.ape.burn + '、躺平角 ' +
+     hBolt.ape.spin);
+  ok('雷劈到飛龍是把牠打下來，不是點著牠（牠自己就是噴火的）',
+     hBolt.dra.st === 'crash' && hBolt.dra.burn === 0,
+     '第 ' + hBolt.dra.k + ' 道劈中 → ' + hBolt.dra.st + '，身上的火 ' + hBolt.dra.burn);
+
+  /* ── 飛龍：摔 → 趴 → 起飛 → 歸隊 ── */
+  await fillAll(page);
+  const hDra = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnDragon(1);
+    for (let i = 0; i < 600 && m.st !== 'ring'; i++) stepDoom(0.05);
+    const before = m.st;
+    m.left = 4;                                        // 假裝牠是天災版、還有火球配額
+    for (let i = 0; i < 40; i++) stepDoom(0.05);       // 先繞一段，turned 已經推進了
+    const turned0 = +m.turned.toFixed(2);
+    const hit = crashDragon(m), twice = crashDragon(m);
+    /* 摔下去之前那 40 幀牠還在盤旋、配額也還在，本來就會吐一顆出來。這裡要驗的是
+       「摔了之後不再吐」，所以把已經在飛的那一顆清掉再開始數——量「場上同時有幾顆」
+       會變成看那一顆有沒有剛好還在飛（實測跑兩輪就飄掉一次）。 */
+    fballs = null;
+    const path = [];
+    let downY = 0, downT = 0, riseT = 0, fb = 0;
+    for (let i = 0; i < 1500 && beasts && beasts.indexOf(m) >= 0; i++) {
+      stepDoom(0.05);
+      path.push(m.st);
+      if (m.st === 'down') { downY = m.y; downT++; }
+      if (m.st === 'rise') riseT++;
+      fb = Math.max(fb, fballs ? fballs.length : 0);
+      if (m.st === 'in' || m.st === 'ring' || m.st === 'out') break;
+    }
+    return { before, hit, twice, left: m.left, turned0, turned: +m.turned.toFixed(2),
+             path: [...new Set(path)].join('>'), fb,
+             downY: +downY.toFixed(2), gnd: +draGround().toFixed(2),
+             downT: +(downT * 0.05).toFixed(1), riseT: +(riseT * 0.05).toFixed(1),
+             back: m.st, y: +m.y.toFixed(1),
+             cruise: +Math.max(DRA_MIN, (bp ? bp.height : 20) + DRA_UP).toFixed(1) };
+  });
+  ok('飛龍被打下來：摔 → 趴 → 拍翅起飛 → 爬回巡航高度歸隊',
+     hDra.hit && !hDra.twice && hDra.path === 'crash>down>rise>in' &&
+     hDra.back === 'in' && Math.abs(hDra.y - hDra.cruise) < 0.5,
+     hDra.before + ' → ' + hDra.path + ' → ' + hDra.back + '；趴了 ' + hDra.downT +
+     ' 秒、爬升 ' + hDra.riseT + ' 秒回到 ' + hDra.y + ' 格（巡航 ' + hDra.cruise + '）');
+  ok('趴著的高度剛好貼草皮，盤旋進度不歸零，而且摔了就不吐火球',
+     Math.abs(hDra.downY - hDra.gnd) < 0.01 && hDra.turned >= hDra.turned0 &&
+     hDra.left === 0 && hDra.fb === 0,
+     '趴在 y=' + hDra.downY + '（地面 ' + hDra.gnd + '）、繞了 ' + hDra.turned0 +
+     ' 弧度沒被歸零、火球配額 4 → ' + hDra.left);
+
+  /* 本來就要飛出場的，起飛之後不該又繞一圈回來。 */
+  const hBack = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnDragon(1);
+    m.st = 'out'; m.x = 30; m.z = 0; m.a = 0;
+    crashDragon(m);
+    for (let i = 0; i < 1500 && (m.st === 'crash' || m.st === 'down' || m.st === 'rise'); i++)
+      stepDoom(0.05);
+    return { was: m.was, back: m.st };
+  });
+  ok('被打下來時本來要飛出場的，起飛之後接回原本那一段',
+     hBack.was === 'out' && hBack.back === 'out', hBack.was + ' → ' + hBack.back);
+
+  /* ── 爆炸對飛龍算三維距離：地面一顆小炸彈打不到天上的牠 ── */
+  await fillAll(page);
+  const hAir = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnDragon(1);
+    m.x = 0; m.z = 0; m.st = 'ring'; m.y = 30;
+    explode({ x: 0, y: 1, z: 0 }, 6, 12);
+    const small = m.st;
+    explode({ x: 0, y: 1, z: 0 }, 40, 30);
+    return { small, big: m.st };
+  });
+  ok('地面一顆小炸彈打不到 30 格高的飛龍，核彈那種大的打得下來',
+     hAir.small === 'ring' && hAir.big === 'crash',
+     '半徑 6 → ' + hAir.small + '；半徑 40 → ' + hAir.big);
+
+  /* ── 龍捲風捲得走猴子，捲不走飛龍 ── */
+  await fillAll(page);
+  const hTw = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('ape', 1);
+    m.x = -30; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999;
+    const d = spawnDragon(1);
+    d.x = -30; d.z = 0; d.st = 'ring'; d.y = 30;
+    twists = null;
+    launchTornado({ x: -30, z: 0 }, { x: -30, z: 6 });
+    let up = 0;
+    for (let i = 0; i < 60; i++) { step(0.05); up = Math.max(up, m.y); }
+    return { up: +up.toFixed(1), air: m.air, dra: d.st, dy: +d.y.toFixed(0) };
+  });
+  ok('龍捲風捲得走猴子，捲不走天上的飛龍',
+     hTw.up > 2 && hTw.air === 1 && hTw.dra !== 'crash',
+     '猴子被捲到 ' + hTw.up + ' 格高；飛龍還在 ' + hTw.dra + '（y=' + hTw.dy + '）');
+
+  /* ── 王之財寶的兵器射得中 ── */
+  const hWeap = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('snow', 1);
+    m.x = 26; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999;
+    /* 一把正朝著牠飛過去的兵器（只驗命中判定，不必真的召喚門陣） */
+    const w = { x: m.x, y: 1.0, z: m.z - 1, dx: 0, dy: 0, dz: 1, len: 2 };
+    const on = weaponVsBeast(w, m.x, 1.0, m.z - 2) === m;
+    const high = { x: m.x, y: 40, z: m.z - 1, dx: 0, dy: 0, dz: 1, len: 2 };
+    const over = weaponVsBeast(high, m.x, 40, m.z - 2);        // 從頭上飛過去的不算中
+    return { on, over: over === null };
+  });
+  ok('兵器射得中牠，從頭上飛過去的不算中（同打小人那一套）',
+     hWeap.on && hWeap.over, '正面 ' + hWeap.on + '／頭上飛過 ' + hWeap.over);
+
+  /* ── 天災那幾隻也打得到，不是只有吉祥物 ── */
+  const hDoomHit = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const bad = spawnBeast('ape');                     // 天災版（fun 沒給）
+    bad.x = 26; bad.z = 0; bad.y = 0;
+    const fell = fellBeast(bad, 2);
+    const st = { fun: bad.fun, fall: bad.fall > 0, lie: bad.lie };
+    for (let i = 0; i < 80; i++) stepDoom(0.05);       // 躺完會爬起來繼續走
+    return { fell, st, after: { fall: bad.fall, lie: bad.lie, st: bad.st } };
+  });
+  ok('天災那幾隻同樣打得倒（同一種生物、同一份程式），躺完會爬起來繼續走',
+     hDoomHit.fell && hDoomHit.st.fun === 0 && hDoomHit.st.fall &&
+     hDoomHit.after.fall === 0 && hDoomHit.after.lie === 0,
+     '打倒天災版的黑獼猴：躺著 ' + hDoomHit.st.fall + ' → 爬起來回到 ' +
+     hDoomHit.after.st);
+
+  /* ── 每一種姿勢都貼著草皮，不會陷進去也不會浮起來 ── */
+  const hGround = await page.evaluate(() => {
+    /* 一塊轉過的方塊在世界 Y 上的半高 ＝ 把它的 OBB 投影到 Y 軸。
+       用最長邊當半高會高估，站著的猴子都會被算成陷進地裡。 */
+    const low = () => {
+      const mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4();
+      let lo = 1e9;
+      for (let i = 0; i < mesh.count; i++) {
+        mesh.getMatrixAt(i, m4);
+        const a = m4.elements;
+        if (Math.hypot(a[0], a[1], a[2]) < 1e-4 || Math.hypot(a[4], a[5], a[6]) < 1e-4 ||
+            Math.hypot(a[8], a[9], a[10]) < 1e-4) continue;
+        lo = Math.min(lo, a[13] - 0.5 * (Math.abs(a[1]) + Math.abs(a[5]) + Math.abs(a[9])));
+      }
+      return +lo.toFixed(3);
+    };
+    const one = (kind, setup) => {
+      cleanTools(); phase = 'done'; doomT = 1e9;
+      const m = spawnBeast(kind, 1);
+      m.x = 26; m.z = 0; m.a = 0; m.st = 'fun'; m.stay = 999;
+      setup(m);
+      draw();
+      return low();
+    };
+    const out = {};
+    out.stand = one('ape', () => {});
+    out.lie = one('snow', m => { fellBeast(m, 6); for (let i = 0; i < 30; i++) stepDoom(0.05); });
+    /* 打滾滾到最側面時最容易陷下去，掃一整圈取最低 */
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const r = spawnBeast('ape', 1);
+    r.x = 26; r.z = 0; r.a = 0; r.st = 'fun'; r.stay = 999;
+    igniteBeast(r, 1);
+    let worst = 1e9;
+    for (let k = 0; k < 40; k++) {
+      r.rph = k / 40 * Math.PI * 2;
+      r.roll = B_ROLL_AMP * Math.sin(r.rph);
+      r.spin = Math.PI / 2;
+      draw();
+      worst = Math.min(worst, low());
+    }
+    out.roll = +worst.toFixed(3);
+    /* 飛龍趴著：翅膀是每一幀照翼弧重擺的，所以翼相位也掃一圈 */
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const d = spawnDragon(1);
+    d.x = 26; d.z = 0; d.a = 0;
+    crashDragon(d);
+    for (let i = 0; i < 1200 && d.st !== 'down'; i++) stepDoom(0.05);
+    let dw = 1e9;
+    for (let k = 0; k < 40; k++) {
+      d.ph = DRA_DOWN_PH + 0.10 * Math.sin(k / 40 * Math.PI * 2);
+      draw();
+      dw = Math.min(dw, low());
+    }
+    out.dragon = +dw.toFixed(3);
+    cleanTools();
+    return out;
+  });
+  ok('站著／躺著／打滾／飛龍趴著，四種姿勢都貼著草皮（不陷進去也不浮起來）',
+     hGround.stand >= -0.02 && hGround.stand < 0.05 &&
+     hGround.lie >= -0.02 && hGround.lie < 0.10 &&
+     hGround.roll >= -0.02 && hGround.roll < 0.25 &&
+     hGround.dragon >= -0.02 && hGround.dragon < 0.35,
+     '最低點：站 ' + hGround.stand + '／躺 ' + hGround.lie + '／滾 ' + hGround.roll +
+     '／龍趴著 ' + hGround.dragon);
+
+  /* ── 小人被吹飛的旋轉軸（使用者：「目前似乎在腳底 看起來很奇怪」）── */
+  const hPivot = await page.evaluate(() => {
+    cleanTools();
+    const w = workers[0];
+    const box = () => {
+      const mesh = ENG.three.workerMesh, m4 = new THREE.Matrix4();
+      const lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        mesh.getMatrixAt(k, m4);
+        const a = m4.elements;
+        if (Math.hypot(a[0], a[1], a[2]) < 1e-4 || Math.hypot(a[4], a[5], a[6]) < 1e-4 ||
+            Math.hypot(a[8], a[9], a[10]) < 1e-4) continue;
+        for (let ax = 0; ax < 3; ax++) {
+          const half = 0.5 * (Math.abs(a[ax]) + Math.abs(a[4 + ax]) + Math.abs(a[8 + ax]));
+          lo[ax] = Math.min(lo[ax], a[12 + ax] - half);
+          hi[ax] = Math.max(hi[ax], a[12 + ax] + half);
+        }
+      }
+      return [0, 1, 2].map(i => (lo[i] + hi[i]) / 2);
+    };
+    for (const q of workers) { q.air = 0; q.fall = 0; q.burn = 0; q.tilt = 0; q.roll = 0; }
+    const w0 = workers[0];
+    w0.x = 34; w0.z = 34; w0.y = 3; w0.a = 0; w0.carry = false; w0.dig = 0; w0.plan = 0;
+    w0.hail = 0; w0.gait = 0; w0.talk = 0; w0.point = 0;
+    const grab = (air, tilt) => { w0.air = air; w0.tilt = tilt; draw(); return box(); };
+    const spread = cs => {
+      let d = 0;
+      for (const a of cs) for (const b of cs)
+        d = Math.max(d, Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]));
+      return +d.toFixed(2);
+    };
+    const tilts = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+    const now = tilts.map(t => grab(1, t));
+    const was = tilts.map(t => grab(0, t));            // air=0 ＝ 改版前那條路（繞腳底）
+    w0.air = 0; w0.tilt = 0; w0.y = 0; draw();
+    return { now: spread(now), was: spread(was) };
+  });
+  /* 量的是「畫出去那 29 塊的包圍盒中心」，而中心不剛好落在旋轉軸（0.65）上——
+     安全帽與手上的道具讓它偏一點，所以新的也不會剛好是 0。門檻照量到的訂：
+     新 0.27 是那個偏量，舊 2.33 是真的被甩出去，差 8.6 倍。 */
+  ok('小人被吹飛時繞身體中段翻，不是繞腳底（身體中心留在原地）',
+     hPivot.now < 0.4 && hPivot.was > 1.5 && hPivot.was > hPivot.now * 5,
+     '四個翻滾角下身體中心跑掉多少：新 ' + hPivot.now + ' 格、繞腳底 ' + hPivot.was + ' 格');
+
+  /* ── 畫面點得到牠們（手指／火把／水桶那一把） ── */
+  const hPick = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('ape', 1);
+    m.x = 0; m.z = 38; m.y = 0; m.a = 0; m.st = 'fun'; m.stay = 999;
+    ENG.cam.yaw = Math.PI / 2; ENG.cam.pitch = 0.05; ENG.cam.dist = 12;
+    ENG.cam.tx = m.x; ENG.cam.ty = 1.1; ENG.cam.tz = m.z;
+    ENG.camTarget.tx = m.x; ENG.camTarget.ty = 1.1; ENG.camTarget.tz = m.z;
+    /* 一定要真的 render 過再投影：draw() 只是把矩陣塞進 InstancedMesh，
+       相機的 matrixWorld／matrixWorldInverse 是 render 才更新的，
+       拿沒更新過的去 project 會投到別的地方（實測整個點空、連地面都沒點到）。 */
+    ENG.updateCamera(0.001); draw(); ENG.render();
+    /* 把牠的胸口投影成畫面座標再點下去，不要靠鏡頭角度湊「牠應該在正中央」 */
+    const cv = ENG.three.renderer.domElement;
+    const v = new THREE.Vector3(m.x, 1.1, m.z).project(ENG.three.camera);
+    const px = (v.x * 0.5 + 0.5) * cv.clientWidth, py = (-v.y * 0.5 + 0.5) * cv.clientHeight;
+    const hit = ENG.pick(px, py, 'man');
+    const same = !!hit && hit.kind === 'beast' && beastAt(hit.idx) === m;
+    /* 其餘破壞道具那一把（skip）一律不理活的東西——被路過的猴子擋掉那一下就白點了 */
+    const skip = ENG.pick(px, py, 'skip');
+    const poked = fellBeast(m, 2);
+    return { kind: hit ? hit.kind : null, same, skip: skip ? skip.kind : null,
+             poked, fall: m.fall > 0 };
+  });
+  ok('手指那一把點得到牠（其餘破壞道具照舊不理活的東西）',
+     hPick.same && hPick.kind === 'beast' && hPick.skip !== 'beast' &&
+     hPick.poked && hPick.fall,
+     '手指點到 ' + hPick.kind + '（同一隻＝' + hPick.same + '）、破壞道具那一把點到 ' +
+     hPick.skip);
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+
   /* ══════════ 隕石 ══════════ */
   head('隕石');
   await reset(page, { shape: '新天鵝堡', cnt: 3000, workers: 4 });

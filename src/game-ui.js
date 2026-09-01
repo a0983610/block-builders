@@ -157,6 +157,7 @@ function step(dt) {
   if (spareDead) dropBlocks(b => b.gone < 0);            // 淡完的收掉（見 clearSpare）
   burningW = 0;
   for (const w of workers) if (w.burn > 0) burningW++;    // 火苗配額要照人數分
+  if (beasts) for (const m of beasts) if (m.burn > 0) burningW++;   // 燒起來的猴子也算（v1.146）
   mageHeapT -= dt;                                       // 料堆清單的重算計時（見 listMageHeaps）
   stepIdleEvent(dt);                                     // 閒晃事件（v1.97）
   stepDoom(dt);                                          // 天災（v1.138）
@@ -293,6 +294,27 @@ function onUp(e) {
       w.fall = rr(1.2, 2.4); releaseWorker(w); sndFall();
       stats.poked++; checkBadges();
     }
+    return;
+  }
+  /* 戳／點／澆那幾隻生物（v1.146）：跟戳小人同一套。**不算 stats.poked**——
+     那個是「戳倒幾個小人」的成就，猴子不是小人。 */
+  if (hit.kind === 'beast') {
+    const m = beastAt(hit.idx);
+    if (!m || m.air) return;
+    // 拿著火把點牠：站著被點著的會抱頭跑圈圈。飛龍點不著（牠自己就是噴火的），改成打下來
+    if (tool === 'fire') {
+      if (igniteBeast(m, 0)) sndFire();
+      else if (m.kind === 'dragon') crashDragon(m);
+      return;
+    }
+    // 拿水桶澆牠：濕 5 秒（身上有火的當場熄），不會把牠打倒
+    if (tool === 'bucket') {
+      wetBeast(m);
+      splashFx(m.x, (m.y || 0) + 1.4 * (m.sc || 1), m.z);
+      sndWater();
+      return;
+    }
+    if (fellBeast(m, rr(1.2, 2.4))) sndFall();
     return;
   }
   // 這幾種點空地也算（本來就是「選一個地點」）；其他工具要點到建築
