@@ -4707,7 +4707,10 @@ function stepDoom(dt) {
   if (doomT > 0) return;
   doomT = -1;
   const d = rollDoom();
-  if (d) d.start();
+  if (!d) return;
+  /* 抽到的剛好是場上那隻吉祥物的同一種：讓牠**就地翻臉**，不要再從場外放一隻同款的
+     進來（不然畫面上會是兩隻一模一樣的猴子，一隻在放火、一隻在散步）。見 turnBad。 */
+  if (!turnBad(d.id)) d.start();
 }
 /* 要畫的清單：場上那幾隻 ＋ 飛在半空的香蕉，引擎那邊一顆網格畫完。
    重用同一個陣列，不要每幀配置一個新的。 */
@@ -4929,4 +4932,42 @@ function stepMascot(dt) {
     mascT[i] = -1;
     k.spawn();
   }
+}
+/* 把場上那隻吉祥物就地轉成天災（v1.145，使用者：「如果吉祥物進來剛好抽到天災
+   能直接把行為轉換成天災嗎」）。轉得成回傳 true，stepDoom 就不再放新的進來。
+
+   只轉**同一種**：DOOMS 抽的是「哪一件天災」，而那一件本來就綁定哪一隻動物
+   （id 跟 m.kind 是同一組字），場上是白猴子卻抽到黑獼猴那件，還是得放黑獼猴進來。
+   **已經在往場外走的那一隻不轉**：牠都走到一半了又掉頭回來很怪，那種情況照舊
+   從場外放一隻新的。 */
+function turnBad(id) {
+  if (!beasts) return false;
+  for (const m of beasts) {
+    if (m.kind !== id || !m.fun) continue;
+    if (m.kind === 'dragon') {
+      if (m.st === 'out') continue;             // 已經在飛出場了
+      m.left = Math.round(rr(DRA_SHOT[0], DRA_SHOT[1]));
+      /* 繞的圈數歸零＝再繞一圈，這一圈是來吐火球的。不歸零的話牠可能只差幾度就繞滿了，
+         配額給了也吐不完就飛走。gap 也要重給：吉祥物那一路 left 是 0，
+         gap 早就一直減成負的，不重給的話下一幀就噴，看不出「牠繞回來了」。 */
+      m.turned = 0;
+      m.gap = rr(0.4, 1.2);
+      sndRoar();
+      toast('🐉 那條龍又繞回來了', '這一圈牠是來吐火球的');
+    } else {
+      if (m.st === 'go') continue;              // 已經在走回場外了
+      /* 逛到一半就地轉頭去找最近的那一塊。fun 那一段沒有通往 near／act 的路，
+         所以狀態要一起推過去；還在 come 的不用動，fun 一拿掉牠到了自己就會進 near。 */
+      if (m.st === 'fun') m.st = 'near';
+      sndBeast(m.kind === 'snow');
+      toast(m.kind === 'ape' ? '🐒 黑獼猴不逛了' : '🐵 白猴子不逛了',
+            m.kind === 'ape' ? '牠舉起手上那支火把，朝地標走過去'
+                             : '牠舉起手上那根香蕉，朝地標走過去');
+    }
+    /* 最後才拿掉旗標：上面那幾行還要靠它分辨「牠原本是來逛的」。
+       拿掉之後牠就算天災那一件了——stepDoom 的「一次一件」跟著擋住下一件。 */
+    m.fun = 0;
+    return true;
+  }
+  return false;
 }

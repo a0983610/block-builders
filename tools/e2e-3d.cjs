@@ -6811,6 +6811,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        他們收心之後照樣做自己那份工，由各自那一段守。
        （實測就是這樣飄的：同一份測試前一輪 1151/1200 幀有貨，下一輪抽到工程師 0/1200。） */
     const lz = i => i >= 0;
+    /* 排序救不了「一個會搬料的都沒抽到」：20 人裡不搬料的是 0 號工程師與 5／15 號魔法師
+       三個人，偷懶抽兩個，兩個都落在那三個裡的機率實測 1.32%（4000 次抽樣 53 次）。
+       撞到的那一輪 idx[0] 一定是不搬料的，量到的就是「0 幀手上有貨」——那不是他沒上工
+       （v1.145 補：五輪整輪測試撞到一次）。所以先重抽到至少有一個會搬料的為止。 */
+    for (let k = 0; k < 50 && !workers.some(w => w.lazy && !w.mage && !w.eng); k++) rollLazy();
     const pick = f => workers.map((w, i) => w.lazy && f(w) ? i : -1).filter(lz);
     const idx = pick(w => !w.mage && !w.eng).concat(pick(w => w.mage || w.eng));
     const o = { n: idx.length };
@@ -14737,6 +14742,109 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('吉祥物不擋天災的鐘，只有天災自己會擋（一次一件）',
      Math.abs(mdoom.withFun - 10) < 0.01 && mdoom.withDoom === 0,
      '場上有吉祥物時 10 秒扣掉 ' + mdoom.withFun + '，有天災時扣掉 ' + mdoom.withDoom);
+
+  /* ── 剛好抽到同一種天災就地翻臉（v1.145）── */
+  /* 使用者：「如果吉祥物進來剛好抽到天災 能直接把行為轉換成天災嗎」。
+     要驗的是「不會多一隻」＋「翻臉之後真的會動手」，還有三種**不該**轉的情況。 */
+  await fillAll(page);
+  const mturn = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const set0 = blocks.filter(b => b.st === SET).length;
+    const m = spawnBeast('ape', 1);                   // 先讓牠走到工地邊開始逛
+    let n = 0;
+    while (m.st !== 'fun' && n < 2000) { stepDoom(0.05); n++; }
+    const roaming = m.st, n0 = beasts.length;
+    const turned = turnBad('ape');                    // 天災的鐘到了，抽到的就是黑獼猴那件
+    const flip = { n: beasts.length, same: beasts[0] === m, fun: m.fun, st: m.st };
+    /* 翻臉之後照天災那條路走完：走到最近那一塊 → 站定瞄 → 放火 → 走人。
+       這一段要走完整的 step，不能只走 stepDoom：點著只是把 b.burn 設起來，
+       真的吃掉積木的是火自己蔓延（spreadFire）那一段，它掛在主迴圈上。 */
+    let burn = 0, acted = 0, lowSet = set0;
+    for (let i = 0; i < 3000 && m.st !== 'go'; i++) {
+      step(0.05);
+      if (m.st === 'act') acted++;
+      burn = Math.max(burn, blocks.filter(b => b.burn > 0).length);
+    }
+    const phAct = phase;                              // 動完手那一刻（igniteAt 推的）
+    /* 塊數要**邊燒邊量**：這一把火會把整座吃光，燒到跌破門檻就換場了，
+       等最後才量的話量到的是換場之後的新場面（同〈火球打中會燒起來〉那條的坑）。 */
+    for (let i = 0; i < 600; i++) {
+      step(0.05);
+      burn = Math.max(burn, blocks.filter(b => b.burn > 0).length);
+      lowSet = Math.min(lowSet, blocks.filter(b => b.st === SET).length);
+      if (phase === 'clear' || phase === 'build') break;
+    }
+    return { roaming, turned, n0, flip, burn, acted, phAct, set0, lowSet };
+  });
+  ok('抽到同一種天災時，場上那隻吉祥物就地翻臉，不會再多一隻走進來',
+     mturn.roaming === 'fun' && mturn.turned && mturn.flip.n === mturn.n0 &&
+     mturn.flip.n === 1 && mturn.flip.same && mturn.flip.fun === 0 &&
+     mturn.flip.st === 'near',
+     '逛到一半（' + mturn.roaming + '）→ 翻臉後場上還是 ' + mturn.flip.n +
+     ' 隻、同一個物件、狀態轉成 ' + mturn.flip.st);
+  ok('翻臉之後牠真的動手：走過去放火，地標開始垮',
+     mturn.acted > 0 && mturn.burn > 0 && mturn.lowSet < mturn.set0 &&
+     mturn.phAct === 'wreck',
+     '站定瞄了 ' + (mturn.acted * 0.05).toFixed(2) + ' 秒、最多同時燒 ' + mturn.burn +
+     ' 塊，還站著的 ' + mturn.set0 + ' → ' + mturn.lowSet +
+     ' 塊（放完火那一刻 phase ' + mturn.phAct + '）');
+
+  /* 三種不該轉的：別種、已經在走回場外的、本來就是天災那一隻。 */
+  const mkeep = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const s = spawnBeast('snow', 1);                  // ① 場上是白猴子，抽到黑獼猴那件
+    const other = turnBad('ape');
+    const snowFun = s.fun;
+    cleanTools();
+    const g = spawnBeast('ape', 1);                   // ② 已經在走回場外了
+    leaveBeast(g);
+    const going = turnBad('ape'), goFun = g.fun;
+    cleanTools();
+    spawnBeast('ape');                                // ③ 本來就是天災那一隻
+    const already = turnBad('ape');
+    cleanTools();
+    return { other, snowFun, going, goFun, already };
+  });
+  ok('只轉同一種、不轉已經在走回場外的、也不會把天災那隻再轉一次',
+     mkeep.other === false && mkeep.snowFun === 1 &&
+     mkeep.going === false && mkeep.goFun === 1 && mkeep.already === false,
+     '別種 ' + mkeep.other + '／走人中 ' + mkeep.going + '／本來就是天災 ' + mkeep.already +
+     '（都是 false ＝ stepDoom 照舊從場外放一隻新的進來）');
+
+  /* 飛龍那一版：翻臉＝補一圈回來吐火球（配額給了但圈數不補的話，牠可能只差幾度
+     就繞滿了，火球一顆都吐不出來就飛走）。 */
+  await fillAll(page);
+  const mtdra = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const set0 = blocks.filter(b => b.st === SET).length;
+    const m = spawnDragon(1);
+    let n = 0;
+    while (m.st !== 'ring' && n < 2000) { stepDoom(0.05); n++; }
+    for (let i = 0; i < 200; i++) stepDoom(0.05);     // 先繞一段，turned 已經推進了
+    const t0 = +m.turned.toFixed(2), left0 = m.left;
+    const turned = turnBad('dragon');
+    const flip = { left: m.left, turned: m.turned, gap: m.gap > 0, fun: m.fun,
+                   n: beasts.length };
+    let fb = 0, shots = 0, was = 0;
+    for (let i = 0; i < 4000 && beasts && beasts.indexOf(m) >= 0; i++) {
+      stepDoom(0.05);
+      const cur = fballs ? fballs.length : 0;
+      if (cur > was) shots++;
+      was = cur;
+      fb = Math.max(fb, cur);
+    }
+    return { t0, left0, turned, flip, shots, fb, set0,
+             set: blocks.filter(b => b.st === SET).length };
+  });
+  ok('飛龍翻臉：圈數歸零補一圈回來，火球配額也補上',
+     mtdra.turned && mtdra.left0 === 0 && mtdra.flip.left >= 3 && mtdra.flip.left <= 5 &&
+     mtdra.t0 > 1 && mtdra.flip.turned === 0 && mtdra.flip.gap && mtdra.flip.n === 1,
+     '繞了 ' + mtdra.t0 + ' 弧度 → 歸零重繞，配額 ' + mtdra.left0 + ' → ' + mtdra.flip.left);
+  ok('補的那一圈真的吐得出火球，地標跟著垮',
+     mtdra.shots >= 3 && mtdra.fb > 0 && mtdra.set < mtdra.set0,
+     '吐了 ' + mtdra.shots + ' 顆，還站著的 ' + mtdra.set0 + ' → ' + mtdra.set + ' 塊');
 
   await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
 
