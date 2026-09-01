@@ -225,6 +225,13 @@ const installClean = page => page.evaluate(() => {
       b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad; b.y = HB;
       b.st = 0; b.vx = b.vy = b.vz = 0; b.rest = true; b.snap = 0; b.holder = -1;
       b.slot = -1; b.arc = null; b.scale = 1; b.al = 1;
+      /* 淡出的倒數也要清。上一座完工時 clearSpare 把多餘的碎料標成「正在淡出」
+         （`gone > 0`、`rest = false`），而這一行把 `rest` 打回 true：不清 `gone` 的話
+         就造出一種現實不存在的料——**認得到，但死亡倒數還在跑**。實測這樣的
+         有 232 塊；小人把它排進工作單第二筆、它在途中淡完被 `dropBlocks` 收掉，
+         編號就變成 −1，`updWorker` 接下一塊那行會讀到 `blocks[-1]`（整輪測試
+         五輪撞到一次，v1.146.1）。`al` 是淡出的結果、`gone` 是計時器，兩個要一起清。 */
+      b.gone = 0;
       separate(b); gridAdd(b);
     }
   };
@@ -14437,6 +14444,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('翅膀不是硬板：拍下去的時候翼面是彎的',
      dwing.bend > 0.25, '翼面最彎的時候偏離直線 ' + dwing.bend + ' 格');
 
+  /* v1.146.1 使用者回報「飛龍一個翅膀不見了」。翼上那幾塊的位置是照 wg 的正負號
+     從右半邊那條翼弧鏡射的，而 bmir 只翻了 p[0]／r／sw／am，漏了 wg——左翼整片
+     疊在右翼上（實測 22 塊全落在 x ＝ +1.52～+8.68）。這一條驗兩邊真的一邊一片。 */
+  const dsym = await page.evaluate(() => {
+    beasts = null; nanas = null; fballs = null;
+    const m = spawnDragon();
+    m.x = 0; m.z = 0; m.y = 30; m.a = 0; m.roll = 0; m.spin = 0; m.ph = 1.1;
+    draw();
+    const D = ENG.BEASTS.dragon, mesh = ENG.three.beastMesh;
+    const tmp = new THREE.Matrix4(), v = new THREE.Vector3();
+    let lo = 0, hi = 0, l = 0, r = 0;
+    for (let i = 0; i < D.length; i++) {
+      if (!D[i].wg) continue;
+      mesh.getMatrixAt(i, tmp); v.setFromMatrixPosition(tmp);
+      const x = v.x - m.x;
+      if (x < -1) l++; else if (x > 1) r++;
+      lo = Math.min(lo, x); hi = Math.max(hi, x);
+    }
+    beasts = null; draw();
+    return { l, r, lo: +lo.toFixed(2), hi: +hi.toFixed(2) };
+  });
+  ok('兩片翅膀一邊一片（不是左翼疊在右翼上）',
+     dsym.l === dsym.r && dsym.l >= 11 && Math.abs(dsym.lo + dsym.hi) < 0.01,
+     '左 ' + dsym.l + ' 塊到 ' + dsym.lo + ' 格／右 ' + dsym.r + ' 塊到 ' + dsym.hi + ' 格');
+
   /* 航線（使用者：「從場外飛進工地稍微盤旋一下 中途吐幾顆火球」）。
      圓弧是用轉向速度轉出來的，所以要驗「盤旋那一段半徑真的穩」——
      第一版朝著中心飛，到了圓上還得再轉 90 度，實測半徑在 18~39 之間晃。 */
@@ -15212,6 +15244,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     ENG.cam.yaw = Math.PI / 2; ENG.cam.pitch = 0.05; ENG.cam.dist = 12;
     ENG.cam.tx = m.x; ENG.cam.ty = 1.1; ENG.cam.tz = m.z;
     ENG.camTarget.tx = m.x; ENG.camTarget.ty = 1.1; ENG.camTarget.tz = m.z;
+    /* 先把小人請到場外，量完再放回來。閒晃圈是 `siteR + 2~9`，而這隻猴子就站在
+       z＝38：有人剛好滾到鏡頭跟猴子中間的話，`man` 那一把人跟獸同級（見 PICK_MAN），
+       點到的就是他——實測整輪測試撞過一次。 */
+    const stash = workers.map(w => [w.x, w.z]);
+    for (const w of workers) { w.x = 400; w.z = 400; }
     /* 一定要真的 render 過再投影：draw() 只是把矩陣塞進 InstancedMesh，
        相機的 matrixWorld／matrixWorldInverse 是 render 才更新的，
        拿沒更新過的去 project 會投到別的地方（實測整個點空、連地面都沒點到）。 */
@@ -15224,6 +15261,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const same = !!hit && hit.kind === 'beast' && beastAt(hit.idx) === m;
     /* 其餘破壞道具那一把（skip）一律不理活的東西——被路過的猴子擋掉那一下就白點了 */
     const skip = ENG.pick(px, py, 'skip');
+    workers.forEach((w, i) => { w.x = stash[i][0]; w.z = stash[i][1]; });
     const poked = fellBeast(m, 2);
     return { kind: hit ? hit.kind : null, same, skip: skip ? skip.kind : null,
              poked, fall: m.fall > 0 };

@@ -2332,6 +2332,10 @@ const ENG = (function () {
       if (b.r) m.r = [b.r[0], -b.r[1], -b.r[2]];
       if (b.sw) m.sw = -b.sw;
       if (b.am) m.am = -b.am;
+      /* 翅膀那幾塊要跟著翻邊：翼上那幾塊的位置與 z 轉角是照 wg 的正負號
+         從「右半邊」那條翼弧鏡射出來的（見 putBeasts），漏掉這一行的話
+         左翼會整片重疊在右翼上——看起來就是少了一邊。 */
+      if (b.wg) m.wg = -b.wg;
       out.push(m);
     }
     return out;
