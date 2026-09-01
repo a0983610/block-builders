@@ -2286,6 +2286,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await probeWorkers(page, '小人施工後');
 
+  /* 工作單第二筆中途被收掉（v1.146.2）。`case 'pick'` 開頭那道 `!b`
+     只看得到「這一幀 w.li 指到的那一筆」，而第二筆是他走去撿第一塊的那段路上
+     才被 `dropBlocks` 收掉的（編號換成 −1）。修之前實測就是撿到第一塊那一幀
+     `step()` 當場丟「Cannot read properties of undefined (reading 'x')」（`pickSpot`
+     讀 `b.x`）。這條直接把第二筆的編號打成 −1，驗它變成「跟被搶走一樣處理」。 */
+  await reset(page, { shape: '吉薩金字塔', cnt: 400, workers: 16, scale: 1 });
+  const gap = await page.evaluate(() => {
+    let w = null;
+    for (let i = 0; i < 600 && !w; i++) {
+      step(0.05);
+      w = workers.find(x => x.st === 'pick' && x.load.length >= 2 && x.li === 0);
+    }
+    if (!w) return { found: false };
+    const n0 = w.load.length;
+    w.load[1].b = -1;                    // 第二筆那塊「不在了」（dropBlocks 收掉就是這個值）
+    let err = '';
+    try { for (let i = 0; i < 600 && w.load.length === n0; i++) step(0.05); }
+    catch (e) { err = String(e && e.message || e); }
+    return { found: true, n0, err, len: w.load.length, carry: !!w.carry, emo: w.emo };
+  });
+  ok('工作單第二筆中途不見了，小人不會當掉',
+     gap.found && !gap.err && gap.len === gap.n0 - 1 && gap.carry,
+     gap.found ? '第一塊照樣撿到手（carry=' + gap.carry +
+                 '）、死掉那筆被抽掉（' + gap.n0 + ' → ' + gap.len +
+                 '）、頭上表情「' + (gap.emo || '無') +
+                 '」、例外「' + (gap.err || '無') + '」'
+               : '沒抓到「工作單有兩筆」的人');
+
   /* ══════════ 缺料就自己挖 ══════════ */
   head('缺料就自己挖');
   /* v1.141（使用者：「目前更換建築會自動在場上灑上積木，改成材料不夠小人自己挖」

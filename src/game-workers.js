@@ -1124,8 +1124,14 @@ function updWorker(w, wi, dt) {
         b.st = CARRY; b.rest = false; w.carry = true; stats.carried++;
         w.li++;
         if (w.li < w.load.length) {                   // 還沒拿滿：直接去下一塊
-          const p = pickSpot(blocks[w.load[w.li].b]);
-          w.tx = p.x; w.tz = p.z; w.chk = 0;
+          /* 下一塊可能已經不在了（v1.146.2）：上面那道 `!b` 只看得到
+             「這一幀 w.li 指到的那一筆」，而第二筆是他走去撿第一塊的那段路上
+             才被收掉的（`dropBlocks` 把編號換成 −1）。不接住的話這一行會把
+             `undefined` 送進 `pickSpot`，整個 `step()` 當場丟例外。
+             不見了就什麼都不做：下一幀開頭那道 `!b` 會自己 `dropJob`，
+             跟「被搶走」走同一條路（頭上冒問號、其餘照搬）。 */
+          const nb = blocks[w.load[w.li].b];
+          if (nb) { const p = pickSpot(nb); w.tx = p.x; w.tz = p.z; w.chk = 0; }
         } else if (w.mus) { w.li = 0; w.st = 'hurl'; w.ct = MUS_WIND; }   // 就地扔（v1.112）
         else { w.li = 0; toSlot(w); }                 // 拿滿了才回工地
       }
