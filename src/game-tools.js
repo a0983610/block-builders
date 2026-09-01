@@ -241,9 +241,14 @@ function afterHit(n, point, R, own) {
   stats.smashed += n;
   if (n > stats.bestHit) stats.bestHit = n;
   if ((own === undefined ? n : own) > 0 && phase === 'done') phase = 'wreck';
+  /* 震倒的判定高度也要算（v1.147，使用者：「炸彈炸在屋頂、槌子砸在高處，
+     下面的人不被震倒」）。以前只取水平距離，所以天降鐵球還在四十層樓高
+     鑿樓板的時候，地面那一圈人就先倒了（實測球還在 44.2 高，落地是 0.85 秒後）。
+     0.9 是胸口高度，同 stepBall 那段。 */
   for (const w of workers) {
     if (w.air || w.burn > 0) continue;                // 正在飛／正在燒的不用再掀一次
-    if (Math.hypot(w.x - point.x, w.z - point.z) < R * 1.7 && w.fall <= 0) {
+    const dy = (point.y || 0) - (w.y || 0) - 0.9;     // 衝擊點在他胸口上方多高
+    if (Math.hypot(w.x - point.x, dy, w.z - point.z) < R * 1.7 && w.fall <= 0) {
       w.fall = rr(1.1, 2.3); releaseWorker(w); sndFall();
     }
   }
@@ -1024,17 +1029,22 @@ function explode(point, R, power, magic, wind, crash) {
   /* 站在火球裡的人跟碎料同一套：吃同一條衝擊力公式、被炸飛出去，而且一律點著
      （落地才開始燒）。圈外那一帶不吹飛，交給 afterHit 把他們掀倒就好。
      這段要排在 afterHit 前面：afterHit 不會再去動已經飛起來的人。
-     這裡只取水平距離——人站在地上，用三維距離的話炸點抬高一點就打不到人了。 */
+     距離算三維（v1.147，使用者：「炸彈炸在屋頂、槌子砸在高處，下面的人
+     不被震倒」）——跟上面掃積木那個迴圈同一個算法。以前這裡只取水平距離，
+     炸在屋頂時地面那一圈人照樣被炸飛。**方向仍然取水平單位向量**：
+     人是被往外推，不是被往地裡壓。 */
   for (const w of workers) {
     if (w.air) continue;
     const dx = w.x - point.x, dz = w.z - point.z;
-    const d = Math.hypot(dx, dz);
+    const dy = (point.y || 0) - (w.y || 0) - 0.9;              // 炸點在他胸口上方多高
+    const hd = Math.hypot(dx, dz);                             // 水平距離（只用來決方向）
+    const d = Math.hypot(dx, dy, dz);
     if (d > R) continue;
     const f = Math.pow(1 - d / R, 0.55) * power;
     const lift = f * Y_BOOST * (0.35 + 0.65 * (1 - d / R));   // 抬升的算法跟積木同一條
-    const ol = Math.max(0.6, d);
+    const ol = Math.max(0.6, hd);
     let nx = dx / ol, nz = dz / ol;
-    if (d < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
+    if (hd < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
     tossWorker(w, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true);
   }
   /* 生物也一起掀（v1.146）。同一條公式，只是力道打個折——牠們比人重一些。 */
@@ -1042,9 +1052,10 @@ function explode(point, R, power, magic, wind, crash) {
     if (m.air) return;
     const f = Math.pow(1 - d / R, 0.55) * power * B_BLOW;
     const lift = f * Y_BOOST * (0.35 + 0.65 * (1 - d / R));
-    const ol = Math.max(0.6, d);
+    const hd = Math.hypot(m.x - point.x, m.z - point.z);   // 方向取水平的，同上面那段
+    const ol = Math.max(0.6, hd);
     let nx = (m.x - point.x) / ol, nz = (m.z - point.z) / ol;
-    if (d < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
+    if (hd < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
     tossBeast(m, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true);
   });
   afterHit(n, point, R, ownN);
@@ -5278,14 +5289,18 @@ function fallenDragon(m, dt) {
 }
 
 /* 一發範圍傷害掃過場上那幾隻。cb 收到「這一隻」與「離爆心多遠」。
-   飛龍算**三維**距離——牠在天上，不算高度的話地面上一顆小炸彈也能把牠打下來；
-   走地上的那幾隻算水平距離（同小人：炸點抬高一點就打不到人了）。 */
+   一律算**三維**距離（v1.147，使用者：「炸彈炸在屋頂、槌子砸在高處，下面的人
+   不被震倒」）。飛龍本來就是三維（牠在天上，不算高度的話地面上一顆小炸彈也能
+   把牠打下來），現在走地上的那幾隻也一樣。這是比照積木那邊來的：
+   `explode`、`smash` 掃積木一向都是三維，只有活的那幾個迴圈是水平的。
+   `flat`：這一發本身就是一條從雲底到地面的線（雷），或者呼叫端已經自己
+   把高度算進去了，才要水平。 */
 function eachBeastNear(point, R, cb, flat) {
   if (!beasts) return;
   for (const m of beasts) {
-    const d = m.kind === 'dragon' && !flat
-      ? Math.hypot(m.x - point.x, (m.y || 0) - (point.y || 0), m.z - point.z)
-      : Math.hypot(m.x - point.x, m.z - point.z);
+    const d = flat
+      ? Math.hypot(m.x - point.x, m.z - point.z)
+      : Math.hypot(m.x - point.x, (m.y || 0) - (point.y || 0), m.z - point.z);
     if (d <= R) cb(m, d);
   }
 }

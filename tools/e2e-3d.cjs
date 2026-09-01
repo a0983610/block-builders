@@ -12378,6 +12378,112 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('炸得再遠也不會被轟出草地', blown.land.out === 0,
      '越界 ' + blown.land.out + ' 人（邊界＝工地半徑 + 22）');
 
+  /* 高處那一發打不到地面的人與吉祥物（v1.147，使用者：「炸彈炸在屋頂、槌子砸在高處，
+     下面的人不被震倒」）。以前震倒（afterHit）與吹飛（explode 那個迴圈）都只取水平距離，
+     所以定時炸彈炸在台北 101 的屋頂（65 高）時，地面那一圈八個人全部被炸飛、還被點著。
+     交叉案例：同一發、同一圈人、同一座建築，只差衝擊點的高度。 */
+  const high = await page.evaluate(() => {
+    const put = () => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '台北 101');
+      targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+      const ws = workers.slice(0, 8);
+      ws.forEach((w, i) => {
+        const a = i / 8 * Math.PI * 2;
+        w.x = 8 * Math.cos(a); w.z = 8 * Math.sin(a); w.y = 0;
+        w.air = 0; w.burn = 0; w.fall = 0; w.lit = 0; w.roll = 0;
+      });
+      beasts = null;
+      const m = spawnBeast('ape', 1);
+      m.x = 7; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999; m.fall = 0;
+      return { ws, m };
+    };
+    const hurt = s => ({ fall: s.ws.filter(w => w.fall > 0).length,
+                         air: s.ws.filter(w => w.air).length,
+                         beast: (s.m.fall > 0 || s.m.air) ? 1 : 0 });
+    let s = put();
+    const roof = bp.height;
+    explode({ x: 0, y: roof, z: 0 }, BOMB_R, BOMB_POW);
+    const bombHigh = hurt(s);
+    s = put(); explode({ x: 0, y: 1, z: 0 }, BOMB_R, BOMB_POW);
+    const bombLow = hurt(s);
+    s = put(); smash({ x: 0, y: 30, z: 0 }, { x: 0, y: -1, z: 0 }, hammerR, hammerPow);
+    const hamHigh = hurt(s);
+    s = put(); smash({ x: 0, y: 1, z: 0 }, { x: 0, y: -1, z: 0 }, hammerR, hammerPow);
+    const hamLow = hurt(s);
+    cleanTools(); beasts = null;
+    return { roof: +roof.toFixed(1), bombHigh, bombLow, hamHigh, hamLow };
+  });
+  ok('炸在屋頂、砸在高處，地面的人與吉祥物都不受影響',
+     high.bombHigh.fall + high.bombHigh.air + high.bombHigh.beast === 0 &&
+     high.hamHigh.fall + high.hamHigh.air + high.hamHigh.beast === 0,
+     '炸彈炸在 ' + high.roof + ' 高的屋頂：倒 ' + high.bombHigh.fall + '、飛 ' +
+     high.bombHigh.air + '、吉祥物 ' + high.bombHigh.beast + '；槌子砸 30 高：倒 ' +
+     high.hamHigh.fall + '、飛 ' + high.hamHigh.air + '、吉祥物 ' + high.hamHigh.beast +
+     '（八個人站在水平 8，炸彈半徑 11、震倒 18.7）');
+  ok('同一發打在地面照舊全掀（上面那條不是「本來就打不到」）',
+     high.bombLow.air === 8 && high.bombLow.beast === 1 &&
+     high.hamLow.fall === 8 && high.hamLow.beast === 1,
+     '炸彈炸在地面：飛 ' + high.bombLow.air + '/8 人、吉祥物 ' + high.bombLow.beast +
+     '；槌子砸地面：倒 ' + high.hamLow.fall + '/8 人、吉祥物 ' + high.hamLow.beast);
+
+  /* 天降鐵球要落地那一刻才掀人（v1.147，使用者回報：「天降鐵球落下前 小人&吉祥物
+     就先倒下」）。吉祥物那一段是 v1.146 漏的：它走 eachBeastNear，而那支對走地上的
+     算水平距離，所以球一出手、正下方那隻就被掀了。
+     這一條把球丟在工地外的空地上（沿路沒有積木可撞，落點不會被彈歪），量的是
+     「第一個被打到的那一刻，球在多高」。門檻 8：震倒半徑是 (r+0.7)×1.7 ＝ 6.46，
+     加上胸口 0.9 就是 7.4，再加一幀的落差（0.05 秒掉 1.9）——超過 8 就一定是提早。
+     對照組把 eachBeastNear 強制走舊規則（水平距離），量完就換回來。 */
+  const dropEarly = await page.evaluate(() => {
+    const run = () => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '台北 101');
+      targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+      const ws = workers.slice(0, 6);
+      ws.forEach((w, i) => {
+        const a = i / 6 * Math.PI * 2;
+        w.x = 45 + 3 * Math.cos(a); w.z = 3 * Math.sin(a); w.y = 0;
+        w.air = 0; w.burn = 0; w.fall = 0; w.lit = 0; w.roll = 0;
+      });
+      beasts = null; balls = null;
+      const m = spawnBeast('ape', 1);
+      m.x = 46.3; m.z = 0.7; m.y = 0; m.st = 'fun'; m.stay = 999; m.fall = 0;
+      dropBall({ x: 45, y: 0, z: 0 });
+      const top = balls[0].y;
+      const pin = ws.map(w => [w.x, w.z]);
+      let fw = 0, fb = 0, land = 0, g = 0;
+      while (balls && g++ < 400) {
+        const y0 = balls[0].y;
+        /* 每幀釘回原位：完工慶祝中他們會走開，吉祥物也會自己去晃 */
+        ws.forEach((w, i) => { if (!w.air && w.fall <= 0) { w.x = pin[i][0]; w.z = pin[i][1]; } });
+        if (!m.air && m.fall <= 0) { m.x = 46.3; m.z = 0.7; }
+        step(0.05);
+        if (!fw && ws.some(w => w.air || w.fall > 0)) fw = y0;
+        if (!fb && (m.air || m.fall > 0)) fb = y0;
+        if (!land && balls && balls[0].y <= balls[0].r + 0.01) land = g;
+      }
+      return { top: +top.toFixed(1), fw: +fw.toFixed(1), fb: +fb.toFixed(1), land };
+    };
+    const now = run();
+    const orig = eachBeastNear;
+    eachBeastNear = (p, R, cb) => orig(p, R, cb, true);      // 舊規則：只算水平距離
+    const was = run();
+    eachBeastNear = orig;
+    cleanTools(); beasts = null;
+    return { now, was };
+  });
+  ok('天降鐵球落地那一刻才掀人與吉祥物，不是落下前就先倒',
+     dropEarly.now.fw > 0 && dropEarly.now.fw < 8 &&
+     dropEarly.now.fb > 0 && dropEarly.now.fb < 8,
+     '球從 ' + dropEarly.now.top + ' 掉下來：小人在球 ' + dropEarly.now.fw +
+     ' 高時被掀、吉祥物在 ' + dropEarly.now.fb + ' 高（第 ' + dropEarly.now.land +
+     ' 幀落地）；走舊規則的話吉祥物在 ' + dropEarly.was.fb + ' 高就倒了');
+  ok('對照組：舊規則下吉祥物早在球出手那一刻就倒（所以上面那條有在守東西）',
+     dropEarly.was.fb > 40 && dropEarly.was.fw === dropEarly.now.fw,
+     '舊規則：吉祥物 ' + dropEarly.was.fb + ' 高就倒（小人 ' + dropEarly.was.fw +
+     ' 高，跟修好後一樣——小人那段本來就算高度）');
+
+
   /* 「停、躺、滾」：人是躺平之後**沿著身體長軸**滾（像滾木頭），不是頭上腳下翻筋斗。
      兩個轉軸都要驗，兩個都踩過雷：
      - 繞小人的原點（腳底）轉 → 傾角一過水平整個人插進地面下，最低到 y=-1.3，
