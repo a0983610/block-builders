@@ -12622,6 +12622,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 4; i++) step(0.05);             // 2.15 秒：下墜中，還沒碰到樓頂
     const falling = blocks.filter(b => b.st === 3).length, inAir = !!nukes;
     const fallY = nukes ? nukes[0].y : -1, roof = bp.height;
+    /* 炸點要對照的是「彈頭那條線真的碰得到的第一塊」，不是整座的最高點：核彈是照
+       blockAt 一條直線往下探的（sweepRock 走的是點，不是球），碰到中空的圓頂時，
+       正中央那條線最高的一塊會比屋脊矮一截——v1.143 換上的美國國會大廈就是這樣，
+       整座 23 格、正中央那條線只有 17，彈頭是從圓頂的洞掉進去撞到鼓座才炸的。 */
+    let roofAt = 0;
+    for (let y = roof + 3; y >= 0; y -= 0.1) if (blockAt(0, y, 0)) { roofAt = y; break; }
     /* 掉到碰著建築才炸，所以不能數死步數。下墜末段一幀就掉快十單位，
        這裡把步長縮到 0.005 秒再逼近，記下的最後高度才等於接觸點。 */
     let boomY = -1, g = 0;
@@ -12658,7 +12664,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mid = cloudy();
     const midSize = mid.reduce((a, d) => a + d.s, 0) / Math.max(1, mid.length);
     for (let i = 0; i < 200; i++) step(0.05);           // 再 10 秒
-    return { set0, wait, falling, inAir, fallY, roof, boomY, set1, hitMax, fire0, ring0, lit0, lit1,
+    return { set0, wait, falling, inAir, fallY, roof, roofAt, boomY, set1, hitMax, fire0, ring0, lit0, lit1,
              cloud0, cloud1, y1, peakY, peak, midSize,
              gone: cloudy().length, fireGone: hot.length,
              ringGone: fxRings.length, alive: !!nukes };
@@ -12670,8 +12676,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 炸點跟著接觸點走，不是固定在地面：打高樓時固定炸地面的話，上半截等於沒被炸到。
      這裡驗「炸在樓頂那一帶」——彈頭比模型原點再往前探一點，所以會比樓頂略高。 */
   ok('碰到建築的那一點就炸，不是穿到地面才炸',
-     nk.boomY > nk.roof && nk.boomY < nk.roof + 5,
-     '樓頂 ' + nk.roof + ' → 炸在 y=' + nk.boomY.toFixed(1));
+     nk.roofAt > 10 && nk.boomY > nk.roofAt && nk.boomY < nk.roofAt + 5,
+     '正中央那條線最高 ' + nk.roofAt.toFixed(1) + '（整座 ' + nk.roof + ' 格）→ 炸在 y=' +
+     nk.boomY.toFixed(1));
   ok('炸開就是一大片，範圍約 30', nk.set1 < nk.set0 * 0.2 && nk.hitMax > 20 && nk.hitMax <= 31,
      'SET ' + nk.set0 + ' → ' + nk.set1 + '，最遠打飛到 ' + nk.hitMax.toFixed(1));
   ok('爆炸當下有火球與衝擊環', nk.fire0 > 50 && nk.ring0 >= 2,
