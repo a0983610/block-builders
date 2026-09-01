@@ -137,6 +137,11 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那一段自己把它裝回去（見「天災」）。 */
   if (!window.doomStep) window.doomStep = stepDoom;
   stepDoom = () => {};
+  /* 吉祥物（v1.144）也預設關掉。三隻各自 3~6 分鐘就會來工地逛一圈，牠們不搞破壞，
+     但會走進閒晃範圍、吃掉 beastMesh 的名額，量閒晃分布與畫面統計的測試會被它洗掉。
+     要測這件事本身的那一段自己把它裝回去（見「吉祥物」）。 */
+  if (!window.mascStep) window.mascStep = stepMascot;
+  stepMascot = () => {};
   /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
      清成一般碎料就好，下一次 startBuild 的 reconcilePool 會把多的收掉。 */
   window.clearHomes = () => {
@@ -182,6 +187,7 @@ const installClean = page => page.evaluate(() => {
     /* 天災（v1.138）：場上那幾隻與飛在半空的香蕉。倒數也要歸零——
        不歸零的話下一條測試一進 done 就繼承上一條數到一半的秒數。 */
     beasts = null; nanas = null; fballs = null; doomT = -1;
+    mascT.fill(-1);                   // 吉祥物那三個鐘（v1.144）也要歸零，同上
     ENG.putBeasts([]);
     trucks = null;
     water = null;
@@ -14526,6 +14532,213 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      JSON.stringify(dpick.cnt));
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+
+  /* ══════════ 吉祥物 ══════════ */
+  /* v1.144。使用者：「黑獼猴 白猴子 飛龍 列為吉祥物／吉祥物一段時間就會出來刷存在感
+     (不搞破壞 只是出現逛一逛 一段時間又走了)／各吉祥物出來刷存在感的事件各自獨立
+     (所以有機會一起出沒)」。出沒時機與間隔是問過使用者的：「任何時候都可能」「各自 3~6 分鐘」。
+     跟天災共用同一批動物與同一套走路，所以這一段驗的是**差在哪裡**，不重驗造型。
+     兩支鐘都要裝回去：走路那一段是 stepDoom 在跑（beasts 的迴圈在它裡面）。 */
+  head('吉祥物：來逛一圈就走');
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; stepMascot = window.mascStep; });
+  await fillAll(page);
+
+  /* ── 三個鐘 ── */
+  const mtime = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;        // 這一段不要讓天災插進來
+    stepMascot(0.05);
+    const armed = mascT.slice();
+    for (let i = 0; i < 20; i++) stepMascot(0.5);     // 數了 10 秒
+    const ticked = armed.map((v, i) => +(v - mascT[i]).toFixed(2));
+    const rolls = [];
+    for (let i = 0; i < 300; i++) { mascT.fill(-1); stepMascot(0.05); rolls.push(mascT[0]); }
+    return { n: mascT.length, ids: MASCOTS.map(k => k.id), ticked,
+             armed: armed.map(v => +v.toFixed(1)),
+             lo: Math.min(...rolls), hi: Math.max(...rolls) };
+  });
+  ok('三隻各有各的鐘，不是天災那個共用的倒數',
+     mtime.n === 3 && mtime.ids.join() === 'ape,snow,dragon',
+     mtime.ids.join('／') + '，這一輪各抽到 ' + mtime.armed.join('／') + ' 秒');
+  ok('間隔落在 3~6 分鐘，而且三個鐘都照模擬時間走',
+     mtime.lo >= 180 && mtime.hi <= 360 && mtime.hi - mtime.lo > 60 &&
+     mtime.ticked.every(v => Math.abs(v - 10) < 0.01),
+     '300 次抽樣 ' + mtime.lo.toFixed(0) + '～' + mtime.hi.toFixed(0) +
+     ' 秒；過了 10 秒各扣掉 ' + mtime.ticked.join('／'));
+
+  /* 「各自獨立」：一隻在場上的時候，只有牠自己的鐘停下來等牠走。 */
+  const mind = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    stepMascot(0.05);                                 // 三個鐘都抽好
+    mascT[0] = 0.01;                                  // 黑獼猴那個先到
+    stepMascot(0.05);
+    const came = beasts ? beasts.map(m => m.kind) : [];
+    const fun = beasts ? beasts[0].fun : -1;
+    const before = [mascT[1], mascT[2]];
+    for (let i = 0; i < 20; i++) stepMascot(0.5);     // 又過了 10 秒
+    const moved = before.map((v, i) => +(v - mascT[i + 1]).toFixed(2));
+    const apeClock = mascT[0];
+    cleanTools();
+    return { came, fun, moved, apeClock };
+  });
+  ok('鐘到了就自己出場，而且出場的是吉祥物那一版（fun）',
+     mind.came.join() === 'ape' && mind.fun === 1, '出場的是 ' + mind.came.join('／'));
+  ok('一隻在場上時只有牠自己的鐘停著，另外兩隻照數',
+     mind.apeClock === -1 && mind.moved.every(v => Math.abs(v - 10) < 0.01),
+     '黑獼猴 ' + mind.apeClock + '（＝等牠走了再重抽）／另外兩隻各扣掉 ' + mind.moved.join('／'));
+
+  /* 「所以有機會一起出沒」：三個鐘同時到就三隻同時在場上。
+     順便驗畫得下——beastMesh 有 MAXBEAST 這個上限，超出的是靜靜地不畫。 */
+  const mall = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    stepMascot(0.05);
+    mascT.fill(0.01);
+    stepMascot(0.05);
+    const kinds = beasts ? beasts.map(m => m.kind).sort().join() : '';
+    const allFun = beasts ? beasts.every(m => m.fun === 1) : false;
+    spawnBeast('ape');                                // 再加一件天災（fun 沒給）
+    draw();
+    const drawn = ENG.three.beastMesh.count / ENG.BEAST_PARTS;
+    const n = beasts.length;
+    cleanTools();
+    return { kinds, allFun, n, drawn, max: ENG.MAXBEAST };
+  });
+  ok('三隻有機會一起出沒', mall.kinds === 'ape,dragon,snow' && mall.allFun, mall.kinds);
+  ok('三隻吉祥物 ＋ 一件天災同場，四隻都畫得出來',
+     mall.n === 4 && mall.drawn === 4 && mall.max >= 4,
+     '場上 ' + mall.n + ' 隻、畫出 ' + mall.drawn + ' 隻（上限 ' + mall.max + '）');
+
+  /* ── 猴子：走進來、逛一逛、走了，全程不動手 ── */
+  await fillAll(page);
+  const mwalk = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const set0 = blocks.filter(b => b.st === SET).length;
+    const m = spawnBeast('ape', 1);
+    const stay0 = +m.stay.toFixed(2);                 // 這一趟抽到要逛幾秒
+    let n = 0, come = 0, roam = 0, go = 0, inSite = 0, moved = 0;
+    let burn = 0, nana = 0, fb = 0, minSet = set0, rMin = 1e9, rMax = 0;
+    let px = m.x, pz = m.z;
+    while (n < 5000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.05); n++;
+      if (m.st === 'come') come++;
+      else if (m.st === 'fun') {
+        roam++;
+        moved += Math.hypot(m.x - px, m.z - pz);
+        const r = Math.hypot(m.x, m.z);
+        rMin = Math.min(rMin, r); rMax = Math.max(rMax, r);
+      } else if (m.st === 'go') go++;
+      px = m.x; pz = m.z;
+      if (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)) inSite++;
+      burn = Math.max(burn, blocks.filter(b => b.burn > 0).length);
+      nana = Math.max(nana, nanas ? nanas.length : 0);
+      fb = Math.max(fb, fballs ? fballs.length : 0);
+      minSet = Math.min(minSet, blocks.filter(b => b.st === SET).length);
+    }
+    return { gone: !beasts || beasts.indexOf(m) < 0, secs: +(n * 0.05).toFixed(1), stay0,
+             come: +(come * 0.05).toFixed(1), roam: +(roam * 0.05).toFixed(1),
+             go: +(go * 0.05).toFixed(1), moved: +moved.toFixed(1), inSite,
+             rMin: +rMin.toFixed(1), rMax: +rMax.toFixed(1),
+             siteR: +siteR.toFixed(1), arena: +arenaR.toFixed(1),
+             burn, nana, fb, set0, minSet, ph: phase };
+  });
+  /* 逛的秒數直接跟「這一趟抽到的 m.stay」對，不是對 25~45 那個範圍的邊界：
+     秒數是一幀一幀（0.05）數出來的，剛好抽到 45 的那一趟會量到 45.05，
+     拿邊界當門檻等於埋一顆偶爾才爆的雷。 */
+  ok('走進來 → 逛一逛 → 走人，逛的長度就是這一趟抽到的 MASC_STAY',
+     mwalk.gone && mwalk.come > 5 && mwalk.go > 5 &&
+     mwalk.stay0 >= 25 && mwalk.stay0 <= 45 && Math.abs(mwalk.roam - mwalk.stay0) < 0.2,
+     '走進來 ' + mwalk.come + ' 秒、逛了 ' + mwalk.roam + ' 秒（抽到 ' + mwalk.stay0 +
+     '）、走回去 ' + mwalk.go + ' 秒（全程 ' + mwalk.secs + ' 秒）');
+  ok('逛的時候真的在走，而且繞著建築外圈（沒有站著發呆一整段）',
+     mwalk.moved > 20 && mwalk.rMin >= mwalk.siteR && mwalk.rMax < mwalk.arena,
+     '走了 ' + mwalk.moved + ' 格，半徑 ' + mwalk.rMin + '～' + mwalk.rMax +
+     '（建築 ' + mwalk.siteR + '、場地 ' + mwalk.arena + '）');
+  ok('不搞破壞：一塊都沒少、沒有火、沒丟香蕉，地標還是 done',
+     mwalk.minSet === mwalk.set0 && mwalk.burn === 0 && mwalk.nana === 0 &&
+     mwalk.fb === 0 && mwalk.ph === 'done',
+     '還站著的 ' + mwalk.set0 + ' 塊（最低 ' + mwalk.minSet + '）、燒起來 ' +
+     mwalk.burn + ' 塊、香蕉 ' + mwalk.nana + ' 根');
+  ok('全程不穿越地標建築與小房子（跟天災那幾隻同一套走法）',
+     mwalk.inSite === 0, '踩進去 ' + mwalk.inSite + ' 幀');
+
+  /* ── 飛龍：航線照舊，一顆火球都不吐 ── */
+  await fillAll(page);
+  const mdra = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const set0 = blocks.filter(b => b.st === SET).length;
+    const m = spawnDragon(1);
+    const shots = m.left;
+    let n = 0, fb = 0, burn = 0, ring = 0;
+    while (n < 5000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.05); n++;
+      if (m.st === 'ring') ring++;
+      fb = Math.max(fb, fballs ? fballs.length : 0);
+      burn = Math.max(burn, blocks.filter(b => b.burn > 0).length);
+    }
+    return { gone: !beasts || beasts.indexOf(m) < 0, secs: +(n * 0.05).toFixed(1),
+             ring: +(ring * 0.05).toFixed(1), shots, fb, burn, set0,
+             set: blocks.filter(b => b.st === SET).length, ph: phase };
+  });
+  ok('飛龍吉祥物照樣繞一圈就飛走',
+     mdra.gone && mdra.ring > 8, '盤旋 ' + mdra.ring + ' 秒（全程 ' + mdra.secs + ' 秒）');
+  ok('牠一顆火球都不吐，地標一塊都沒少',
+     mdra.shots === 0 && mdra.fb === 0 && mdra.burn === 0 &&
+     mdra.set === mdra.set0 && mdra.ph === 'done',
+     '配額 ' + mdra.shots + ' 顆、場上最多 ' + mdra.fb + ' 顆；' +
+     mdra.set0 + ' → ' + mdra.set + ' 塊');
+
+  /* ── 不挑階段（使用者選的「任何時候都可能」）── */
+  const mph = await page.evaluate(() => {
+    const out = {};
+    for (const ph of ['build', 'done', 'wreck', 'clear']) {
+      cleanTools(); phase = ph; doomT = 1e9;
+      const fun = spawnBeast('ape', 1);
+      const doom = spawnBeast('snow');                // 對照組：天災那一版
+      for (let i = 0; i < 4; i++) stepDoom(0.05);
+      out[ph] = fun.st + '/' + doom.st;
+    }
+    /* 整地那一段連放都不放走路的進來（鐘也停著），龍在天上不受影響。 */
+    cleanTools(); phase = 'clear'; doomT = 1e9;
+    stepMascot(0.05);
+    mascT.fill(0.01);
+    stepMascot(0.05);
+    const inClear = beasts ? beasts.map(m => m.kind).sort().join() : '';
+    const held = mascT[0] === 0.01 && mascT[1] === 0.01;
+    cleanTools();
+    return { out, inClear, held };
+  });
+  ok('施工中天災那隻會走人，吉祥物照樣留下來逛',
+     mph.out.build === 'come/go' && mph.out.done === 'come/come' &&
+     mph.out.wreck === 'come/come',
+     Object.keys(mph.out).map(k => k + ' ' + mph.out[k]).join('，'));
+  ok('整地中走路的先讓開（鐘也停著），飛龍照樣飛得進來',
+     mph.out.clear === 'go/go' && mph.inClear === 'dragon' && mph.held,
+     '整地中放進來的是 ' + (mph.inClear || '（沒有）') + '，兩個走路的鐘停在原地 ' + mph.held);
+
+  /* ── 兩條線互不擋 ── */
+  const mdoom = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    stepDoom(0.05);                                   // 場上沒東西 → 抽一個倒數
+    const armed = doomT;
+    spawnBeast('ape', 1);                             // 吉祥物在場上逛
+    for (let i = 0; i < 20; i++) stepDoom(0.5);
+    const withFun = +(armed - doomT).toFixed(2);
+    cleanTools(); phase = 'done';
+    stepDoom(0.05);
+    const armed2 = doomT;
+    spawnBeast('ape');                                // 換成天災在場上
+    for (let i = 0; i < 20; i++) stepDoom(0.5);
+    const withDoom = +(armed2 - doomT).toFixed(2);
+    cleanTools();
+    return { withFun, withDoom };
+  });
+  ok('吉祥物不擋天災的鐘，只有天災自己會擋（一次一件）',
+     Math.abs(mdoom.withFun - 10) < 0.01 && mdoom.withDoom === 0,
+     '場上有吉祥物時 10 秒扣掉 ' + mdoom.withFun + '，有天災時扣掉 ' + mdoom.withDoom);
+
+  await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
 
   /* ══════════ 隕石 ══════════ */
   head('隕石');

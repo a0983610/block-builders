@@ -4482,7 +4482,7 @@ const DOOM_AIM = 1.1;                 // 站定到動手之間停幾秒（看得
 const DOOM_ARM = 4;                   // 抬手的快慢
 const DOOM_NEAR = 3.2;                // 走到離目標這麼近就夠了（火把搆得到）
 const DOOM_RAISE = { ape: 1.5, snow: 2.6 };   // 右手抬到底幾度：送火把 vs 舉過頭要丟
-let beasts = null;                    // 場上那幾隻
+let beasts = null;                    // 場上那幾隻（天災來的 ＋ 吉祥物，差在 m.fun）
 let nanas = null;                     // 飛在半空的香蕉炸彈
 let doomT = -1;                       // 倒數（−1＝沒在數）
 
@@ -4493,7 +4493,9 @@ const DOOMS = [
   /* 事件二：白猴子，把香蕉形狀的炸彈拋到地標上。 */
   { id: 'snow', wt: 1, start: () => spawnBeast('snow') },
   /* 事件三：飛龍，從場外飛進來、在工地上空盤旋一圈多，中途吐幾顆火球。 */
-  { id: 'dragon', wt: 1, start: spawnDragon }
+  /* 包一層再叫，不要直接把 spawnDragon 掛上去：牠從 v1.144 起吃一個 fun 參數，
+     哪天有人改成 start(i) 之類的，天災那條龍就會變成吉祥物版（不吐火球）。 */
+  { id: 'dragon', wt: 1, start: () => spawnDragon() }
 ];
 /* 照權重挑一件。回傳 null 只有一種情況：表是空的。（同 rollIdleEvent） */
 function rollDoom() {
@@ -4507,20 +4509,24 @@ function rollDoom() {
 /* 誰來了就做什麼。表在上面、動作在下面，加新的天災時兩邊各加一列，互不干擾。 */
 const DOOM_ACT = { ape: apeStrike, snow: nanaThrow };
 
-/* 從場邊放一隻進來。方位隨機——固定一邊的話，鏡頭剛好對著另一邊就永遠看不到牠走過來。 */
-function spawnBeast(kind) {
+/* 從場邊放一隻進來。方位隨機——固定一邊的話，鏡頭剛好對著另一邊就永遠看不到牠走過來。
+   fun＝這一隻是吉祥物（v1.144）：同一份造型、同一套走路，只是不動手（見檔案最後那一節）。 */
+function spawnBeast(kind, fun) {
   const a = Math.random() * Math.PI * 2, d = arenaR + DOOM_OUT;
   const m = {
     kind, x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d,
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就面向工地
     ph: 0, gait: 0, leg: 0, tx: 0, tz: 0, ghost: 0, pause: 0,
-    sc: DOOM_SC, arm: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0
+    sc: DOOM_SC, arm: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,
+    fun: fun ? 1 : 0, stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0
   };
   if (!beasts) beasts = [];
   beasts.push(m);
   sndBeast(kind === 'snow');
-  toast(kind === 'ape' ? '🐒 黑獼猴朝工地過來了' : '🐵 白猴子朝工地過來了',
-        kind === 'ape' ? '牠手上有一支火把' : '牠手上有一根綁著膠帶的香蕉');
+  const nm = kind === 'ape' ? '🐒 黑獼猴' : '🐵 白猴子';
+  if (fun) toast(nm + '來工地逛逛', '牠不會動手，晃一圈就走');
+  else toast(nm + '朝工地過來了',
+             kind === 'ape' ? '牠手上有一支火把' : '牠手上有一根綁著膠帶的香蕉');
   return m;
 }
 /* 離這個位置最近的那一塊地標（還站著的）。天災那幾隻拿它當「要砸哪裡」。
@@ -4553,12 +4559,36 @@ function leaveBeast(m) {
 function stepBeast(m, dt) {
   if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   /* 開工／整地就放棄走人：天災是衝著「蓋好的那一座」來的，半成品不在它的守備範圍
-     （也免得牠站在推土機的路線上）。 */
-  if ((phase === 'build' || phase === 'clear') && m.st !== 'go') leaveBeast(m);
+     （也免得牠站在推土機的路線上）。
+     吉祥物只避整地（v1.144）：牠不挑地標的狀態，施工中照樣可以來逛（使用者選的），
+     但整地那一段推土機會把整片工地掃過去，走路的先讓開。 */
+  const away = m.fun ? phase === 'clear' : (phase === 'build' || phase === 'clear');
+  if (away && m.st !== 'go') leaveBeast(m);
   m.arm += ((m.st === 'act' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
   if (m.st === 'come') {
     m.tx = 0; m.tz = 0;
-    if (strollTo(m, dt, DOOM_WALK)) m.st = 'near';
+    if (strollTo(m, dt, DOOM_WALK)) {
+      /* 吉祥物走到建築外圈就開始逛，不進 near／act——那兩段是要動手的人才走的。 */
+      m.st = m.fun ? 'fun' : 'near';
+      /* 進場那一段路不算進「站多久」：strollPause 是照剛走完那段路算的，
+         不歸零的話牠一到工地就會照著「從場外走進來的那五十幾格」站著發呆十幾秒。 */
+      m.leg = 0;
+    }
+    return false;
+  }
+  /* 吉祥物：在建築外圈那一環上晃，晃夠 m.stay 秒就走人（使用者：「只是出現逛一逛
+     一段時間又走了」）。逛的點跟小人閒晃借同一支 idleSpot——那一環本來就是
+     「繞著建築、又還在鏡頭裡」的範圍，也已經會避開小人的家；站多久也照小人那套
+     （strollPause，跟剛走完那段路成比例）。 */
+  if (m.st === 'fun') {
+    m.stay -= dt;
+    if (m.stay <= 0) { leaveBeast(m); return false; }
+    if (m.pause > 0) {
+      m.pause -= dt;
+      m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+      return false;
+    }
+    if (strollTo(m, dt, DOOM_WALK)) { strollPause(m); idleSpot(m); }
     return false;
   }
   if (m.st === 'near') {
@@ -4669,7 +4699,9 @@ function stepDoom(dt) {
     if (!beasts.length) beasts = null;
   }
   if (phase !== 'done') { doomT = -1; return; }     // 沒有一座完好的地標可砸
-  if (beasts || nanas || fballs) return;            // 一次一件，等這一件演完
+  /* 一次一件，等這一件演完。**吉祥物不算**（v1.144）：那是另一條線，場上有牠在逛的
+     時候天災的鐘照數——不排除的話，三隻輪流來逛就等於把天災關掉了。 */
+  if (nanas || fballs || (beasts && beasts.some(m => !m.fun))) return;
   if (doomT < 0) { doomT = rr(DOOM_LO, DOOM_HI); return; }
   doomT -= dt;
   if (doomT > 0) return;
@@ -4714,8 +4746,9 @@ const DRA_SHOT = [3, 5];             // 一趟吐幾顆
 const DRA_GAP = [1.1, 2.2];          // 兩顆之間隔幾秒（「不要連噴」）
 let fballs = null;                   // 飛在半空的火球
 
-/* 放一條龍進來。方位隨機，順時針逆時針也隨機——固定的話每次看到的都一樣。 */
-function spawnDragon() {
+/* 放一條龍進來。方位隨機，順時針逆時針也隨機——固定的話每次看到的都一樣。
+   fun＝吉祥物那一版（v1.144）：航線一模一樣，只是 left 給 0，一顆火球都不吐。 */
+function spawnDragon(fun) {
   const a = Math.random() * Math.PI * 2, d = arenaR + DRA_OUT;
   const m = {
     kind: 'dragon', x: Math.cos(a) * d, z: Math.sin(a) * d,
@@ -4723,12 +4756,14 @@ function spawnDragon() {
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就朝著工地
     ph: 0, roll: 0, spin: 0, sc: DRA_SC, gait: 0,
     st: 'in', rc: Math.min(arenaR - 6, siteR + 12), dir: Math.random() < 0.5 ? 1 : -1,
-    turned: 0, left: Math.round(rr(DRA_SHOT[0], DRA_SHOT[1])), gap: rr(0.4, 1.2)
+    turned: 0, left: fun ? 0 : Math.round(rr(DRA_SHOT[0], DRA_SHOT[1])), gap: rr(0.4, 1.2),
+    fun: fun ? 1 : 0
   };
   if (!beasts) beasts = [];
   beasts.push(m);
   sndRoar();
-  toast('🐉 一條龍朝工地飛過來了', '牠會在上空繞一圈，邊繞邊吐火球');
+  if (fun) toast('🐉 一條龍飛過工地上空', '牠只是繞一圈就走，不會吐火球');
+  else toast('🐉 一條龍朝工地飛過來了', '牠會在上空繞一圈，邊繞邊吐火球');
   return m;
 }
 /* 一條龍的一幀。回傳 true＝飛出場外了，收掉。 */
@@ -4849,4 +4884,49 @@ function fballHit(f) {
   /* 爆炸本身帶一點餘火，但這是火球——落點一帶再多點幾塊起來，
      這是它跟同尺寸的普通爆炸最明顯的差別（同隕石）。 */
   igniteAround(p, FB_R * 1.6, Math.round(FB_R * 1.6), SET);
+}
+
+/* ── 吉祥物（v1.144）─────────────────────────────────────
+   使用者：「黑獼猴 白猴子 飛龍 列為吉祥物／吉祥物一段時間就會出來刷存在感
+   （不搞破壞 只是出現逛一逛 一段時間又走了）／各吉祥物出來刷存在感的事件各自獨立
+   （所以有機會一起出沒）」。
+
+   跟天災是同一批動物、同一份造型、同一套走路（spawnBeast／spawnDragon 多吃一個 fun
+   旗標就是了），差在三件事：
+     · **各自一個鐘**：不是天災那個共用的 doomT，一隻一個倒數，所以三隻有機會一起在場上。
+     · **不動手**：猴子走到建築外圈就開始逛，不進 near／act 那兩段，DOOM_ACT 根本不會被
+       叫到（不點火、不丟香蕉）；龍的 left 給 0，一顆火球都不吐。
+     · **不挑階段**：施工中、蓋好、拆除中都會來（使用者選的「任何時候都可能」）。天災那條
+       phase === 'done' 是因為「要有一座完好的地標可以砸」，吉祥物沒有這個需求；只有整地
+       那一段走路的先不放進來（推土機會把整片工地掃過去，見 stepBeast 的 away）。
+   兩條線互不擋：吉祥物在場上時天災的鐘照數（見 stepDoom），反過來也一樣。 */
+const MASC_LO = 180, MASC_HI = 360;   // 3~6 分鐘。跟天災一樣照模擬時間走，開 4 倍速就快 4 倍
+const MASC_STAY = [25, 45];           // 走到工地邊之後逛幾秒才走人（「一段時間又走了」）
+/* 一隻一列。加第四隻吉祥物＝往這張表再放一列，別處一個字都不必動（同 DOOMS）。
+   ground＝用走的，整地那一段先不放進來；龍在天上，推土機碰不到牠，照樣可以來。 */
+const MASCOTS = [
+  { id: 'ape', ground: 1, spawn: () => spawnBeast('ape', 1) },
+  { id: 'snow', ground: 1, spawn: () => spawnBeast('snow', 1) },
+  { id: 'dragon', ground: 0, spawn: () => spawnDragon(1) }
+];
+const mascT = MASCOTS.map(() => -1);  // 每隻各自的倒數（−1＝還沒抽），跟 MASCOTS 同索引
+/* 這一種現在在不在場上。**不分吉祥物還是天災**：同款的已經在場上了就別再放一隻進來，
+   不然會看到兩隻一模一樣的猴子並排走過去。 */
+function beastOn(id) {
+  if (!beasts) return false;
+  for (const m of beasts) if (m.kind === id) return true;
+  return false;
+}
+/* 吉祥物的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step），三隻各數各的、互不干擾。 */
+function stepMascot(dt) {
+  for (let i = 0; i < MASCOTS.length; i++) {
+    const k = MASCOTS[i];
+    if (beastOn(k.id)) { mascT[i] = -1; continue; }   // 還在場上，等牠走了再重抽下一次
+    if (k.ground && phase === 'clear') continue;      // 整地中：鐘先停著，不推進也不放人
+    if (mascT[i] < 0) { mascT[i] = rr(MASC_LO, MASC_HI); continue; }
+    mascT[i] -= dt;
+    if (mascT[i] > 0) continue;
+    mascT[i] = -1;
+    k.spawn();
+  }
 }

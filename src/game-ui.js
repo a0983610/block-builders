@@ -160,6 +160,7 @@ function step(dt) {
   mageHeapT -= dt;                                       // 料堆清單的重算計時（見 listMageHeaps）
   stepIdleEvent(dt);                                     // 閒晃事件（v1.97）
   stepDoom(dt);                                          // 天災（v1.138）
+  stepMascot(dt);                                        // 吉祥物（v1.144，三隻各數各的鐘）
   pairChat();                                            // 湊對要在更新之前，配到的當幀就停下來
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);

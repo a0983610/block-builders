@@ -2536,7 +2536,10 @@ const ENG = (function () {
   ];
 
   const BEASTS = { ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL };
-  const MAXBEAST = 8;
+  /* 場上同時畫得下幾個（含飛在半空的香蕉與火球）。v1.144 從 8 加到 12：吉祥物那三隻
+     可以跟天災那一件同時在場（最多 4 隻），再加上龍嘴裡連著吐的火球，8 個會不夠——
+     超出的那幾個是**靜靜地不畫**，不會報錯，所以留點餘裕。 */
+  const MAXBEAST = 12;
   const BEAST_PARTS = Math.max(APE.length, SNOW.length, NANA.length, DRAGON.length);
   const BEAST_RAISE = 2.6;                 // 右手抬到底是幾度（規則那邊給 0～1 的 m.arm）
 
