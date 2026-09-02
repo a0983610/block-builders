@@ -52,7 +52,13 @@ const ENG = (function () {
     { r: 0.92, op: 0.15, c: 0xff9a22, mc: 0xff4f86 },
     { r: 1.10, op: 0.09, c: 0xff6d12, mc: 0xe22f6e }
   ];
-  const FLASH_MAX = 4;                     // 最多同時幾顆（好幾發一起炸）
+  /* 最多同時幾顆。**要跟規則那邊的 FLASH_MAX 一樣大**——小於它的話多出來的整顆不見。
+     v1.132～v1.148.0 是 4（那時候只有爆炸類在用，同時炸四發已經很多了）。
+     v1.148.1 拉到 24：王之財寶的擊中小火球跟爆炸共用這一池，而它一秒炸十幾下，
+     4 個位置卡住了一半以上的擊中（實測一組只有 56% 拿得到火球、三組 32%）。
+     幾顆都只吃 FLASH_SHELL.length 個 draw call（每層一顆 InstancedMesh），
+     實測 4 → 24 的 step + draw 差在雜訊內（1.87 → 1.70 ms）。 */
+  const FLASH_MAX = 24;
   const FLASH_SQUASH = 0.82;               // 壓扁一點：貼地炸開的火球是扁的，不是正球
   const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
   /* 鐵球最多同時幾顆（v1.116）。要跟規則那邊的 BALL_MAX 一樣大——

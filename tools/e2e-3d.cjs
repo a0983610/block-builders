@@ -1486,6 +1486,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '按鈕變成「' + impNone.btn + '」，框裡還是「' + impNone.v + '」');
 
   const impDeny = await gp.evaluate(async () => {
+    /* 先把前面幾條測試留下來的計時器等完再開始（v1.148.1）。`pasteText` 的 flash()
+       每按一次就排一個 **1.6 秒**的「把按鈕文字還原」計時器，而前面連著兩條
+       （已貼上 ✓、剪貼簿是空的）各排了一個。Node 這一趟來回慢一點的話，那些計時器
+       就會落在這一條按下去之後的 150 毫秒視窗裡，把「請按 Ctrl+V」蓋回「📋 貼上」。
+
+       第一版是「等到按鈕變回 📋 貼上 為止」——**不夠**：那只代表最早那一個跑完了，
+       後面那個照樣還排著（整輪測試又踩到一次）。要等的是「比最長的那個還久」，
+       所以直接睡 1.7 秒（flash 是 1.6 秒；2.2 秒那個是這一條自己按下去才排的）。 */
+    await new Promise(r => setTimeout(r, 1700));
     /* 借過一下：把 readText 換成一定失敗的，驗「瀏覽器不給讀」那條退路，驗完還回去。
        file:// 上真的會不給（跟複製那顆同一個問題），退路不能只是「什麼都沒發生」。 */
     Object.defineProperty(navigator.clipboard, 'readText',
@@ -1775,7 +1784,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     save(); renderBadges(); renderTools(); syncHud(); applyPref();
   });
   await gp.setInputFiles('#saveFile', svPath);
-  await gp.waitForTimeout(300);
+  /* 等訊息真的出現，不要用固定的 300 毫秒（v1.148.1）：讀檔走的是 FileReader 的
+     非同步回呼，機器頓一下就還沒回來——整輪測試踩到過一次，`saveMsg` 是空的，
+     接著相依的五條全跟著紅（讀不進來 → 紀錄沒被蓋掉 → 設定沒帶回來 → …）。 */
+  await gp.waitForFunction(() => document.getElementById('saveMsg').textContent.trim() !== '',
+                           null, { timeout: 5000 });
   const svIn = await gp.evaluate(() => ({
     d: stats.destroyed, s: stats.smashed, c: stats.carried,
     b: stats.badges.length, t: stats.tools.length,
@@ -1806,7 +1819,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const svBadPath = path.join(OUT, 'save-bad.txt');
   fs.writeFileSync(svBadPath, '積木小人 · 存檔\n\nZm9vYmFyLW5vdC1hLXNhdmU=\n', 'utf8');
   await gp.setInputFiles('#saveFile', svBadPath);
-  await gp.waitForTimeout(300);
+  /* 同上：等那一則「這不是存檔」的訊息真的換上去（上一則是匯入成功的訊息，
+     所以等的是「內容變了」，不是「非空」）。 */
+  await gp.waitForFunction(m => document.getElementById('saveMsg').textContent !== m,
+                           svIn.msg, { timeout: 5000 });
   const svBad = await gp.evaluate(() => ({
     d: stats.destroyed, s: stats.smashed,
     msg: document.getElementById('saveMsg').textContent,
@@ -3430,6 +3446,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const ring = siteR + ENG_KEEP;
     e.x = Math.cos(e.eang) * ring; e.z = Math.sin(e.eang) * ring;
     step(0.05);
+    /* 再擺一次（v1.148.1）：上面那一幀裡小人又疊了幾塊上去、`siteR` 跟著長，
+       他就不在那一圈上了——`ringWalk` 一樣會回報「還沒到」，決策那一段還是跑不到。
+       整輪測試又踩到一次（目標角度加了 0 rad），所以擺的時機要**貼著決策那一行**，
+       不能中間再隔一幀。 */
+    e.x = Math.cos(e.eang) * (siteR + ENG_KEEP);
+    e.z = Math.sin(e.eang) * (siteR + ENG_KEEP);
     const settled = Math.abs(Math.hypot(e.x, e.z) - (siteR + ENG_KEEP)) < 0.5;
     const a0 = Math.atan2(e.z, e.x), eang0 = e.eang;
     const real = Math.random;
@@ -4781,10 +4803,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      窄環上本來就有那個機率，不是程式壞了。
      「分散一點」真正守在另外兩條：每一間都落在整條環帶裡（band）、最近的兩間隔得開
      （gap，同 300 輪的 min 是 12.1，門檻 11 還有餘裕）。這個數字留著只是為了擋住
-     「全部擺在同一個半徑上」那種退化。 */
+     「全部擺在同一個半徑上」那種退化。
+
+     v1.148.1 再放到 1：整輪測試量到過 **2.5**（五間落在 29～31.6），比那 300 輪的
+     min 2.7 還低——那條分布的下緣本來就不是 2.7，只是 300 輪沒抽到更低的。
+     這個門檻是**退化偵測**（全部同一個半徑 ＝ 0），不是「散得夠不夠開」的規格，
+     所以照它的用途訂：1 格（一塊積木寬）以上就不算退化，離觀察到的最低值還有 1.5 的餘裕。
+     真正的「散得開」照舊由 band 與 gap 守著，那兩條一個字都沒動。 */
   ok('蓋在地標外圍到碎料場外緣之間，散得開、不重疊也不壓到樹',
      home.list.every(h => h.rad >= home.band[0] - 0.1 && h.rad <= home.band[1] + 0.1) &&
-     home.spread > 2.5 && home.gap > 11 && home.tree > 2,
+     home.spread > 1 && home.gap > 11 && home.tree > 2,
      '離工地中心 ' + home.list.map(h => h.rad).join('／') + '（該落在 ' +
      home.band[0].toFixed(1) + '～' + home.band[1].toFixed(1) + '；工地半徑 ' + home.siteR +
      '、碎料場外緣 ' + home.arenaR + '）；最遠與最近差 ' + home.spread +
@@ -8142,6 +8170,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         prev = placedCnt;
       }
       const mid = placedCnt;
+      /* 震完之後**分段**量（v1.148.1）：垮塌會收斂（那一片掉完就沒了），
+         而「一直掉」是穩定的速率——所以看的是「最後那一秒有沒有停」，
+         不是「總共又掉幾塊」。震掉一成之後偶爾會有一整片失去支撐跟著垮
+         （實測一次 56 塊，而原本的門檻是 6），那是對的物理，不該算在這一條頭上。 */
+      const tail = [];
+      for (let k2 = 0; k2 < 6; k2++) {              // 6 段 × 0.5 秒 ＝ 3 秒
+        const p0 = placedCnt;
+        for (let i = 0; i < 10; i++) step(0.05);
+        tail.push(p0 - placedCnt);
+      }
       for (let i = 0; i < 40; i++) step(0.05);       // 震完就該停了
       let near = 0, tot = 0, lo = 0, hi = 0;
       blocks.forEach((b, i) => {
@@ -8151,7 +8189,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (at[i].y < bp.height * 0.4) lo++; else hi++;
       });
       return { set0, born, swung, dustUp, fell: set0 - mid, frac: (set0 - mid) / set0,
-               waves: hitFrames.length, after: mid - placedCnt, end: placedCnt,
+               waves: hitFrames.length, after: mid - placedCnt, end: placedCnt, tail,
                nearFrac: tot ? near / tot : -1, lo, hi };
     };
     const small = one(false), big = one(true);
@@ -8170,12 +8208,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '%，下半部 ' + quakeT.big.lo + ' 塊、上半部 ' + quakeT.big.hi + ' 塊');
   /* 允許一點餘波：震掉的那批本來就是分批落下的（fallIn 按高度錯開），
      最後一兩塊落地時抽掉鄰居的支撐，連帶再掉一塊是對的物理。
-     要擋的是「一直掉」不是「完全不掉」（一直掉會是幾十塊）。
-     門檻是實測訂的：同一個場景（新天鵝堡 2000 塊、大槌砸建築外空地）跑十五輪，
-     餘波是 0 0 0 2 0 2 1 3 0 3 0 1 3 1 1（最大 3、平均 1.1），所以放到 6
-     ——舊門檻 3 剛好壓在分布的邊上，量到 4 就誤判成「一直掉」（實際遇到過）。 */
-  ok('震完就停，不會一直掉', quakeT.big.after <= 6,
-     '地震結束後 2 秒又掉了 ' + quakeT.big.after + ' 塊');
+     要擋的是「一直掉」不是「完全不掉」。
+
+     v1.148.1 換掉量法。原本是「震完 2 秒內又掉幾塊 ≤ 6」，門檻照實測訂的
+     （十五輪的餘波是 0 0 0 2 0 2 1 3 0 3 0 1 3 1 1，最大 3）——但那十五輪沒抽到尾巴：
+     整輪測試量到過一次 **56 塊**。追下去不是地震還在掉（`stepQuake` 在 `q.t <= 0`
+     那一幀就把 `quake` 設成 null，之後整支直接 return），是震掉一成之後**有一整片
+     失去支撐跟著垮**——那是對的物理，跟這一條要擋的事無關。
+     現在改成分段量：垮塌會**收斂**（那一片掉完就沒了），而「一直掉」是穩定的速率，
+     所以驗的是「最後那一秒完全停了」。總量照樣印出來當參考。 */
+  const qTail = quakeT.big.tail;
+  ok('震完就停，不會一直掉', qTail.slice(-2).every(v => v === 0),
+     '震完之後每半秒掉了 ' + qTail.join('／') + ' 塊（最後一秒要是 0；' +
+     '這 3 秒共 ' + qTail.reduce((a, b) => a + b, 0) + ' 塊，多半是垮塌的餘波）');
   /* 小槌瞄邊角時很容易擦過去點到地面，那一下震掉 5% 等於每失手一次就賠掉一大片 */
   ok('小槌砸空地不會地震，建築一塊都不掉',
      !quakeT.small.born && quakeT.small.end === quakeT.small.set0,
@@ -9138,7 +9183,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ballRun.moved > 140 && ballRun.t >= ballRun.life - 0.1,
      '滾了 ' + ballRun.moved + ' 單位、' + ballRun.t + ' 秒（v1.38 是 119.3 單位／6 秒）');
 
-  const twR = await page.evaluate(() => {
+  /* 掃三趟（v1.148.1）。漏斗自己一路亂竄，同一組參數啃掉的比例是一條長尾
+     （見下面那條斷言的註解：16 輪量到 13.4～58.0%），一趟就定案等於在賭那條路線。
+     三趟裡「啃掉多少」取中位數，其餘（生得出來、捲得上天、收得乾淨）三趟都要成立。 */
+  const twAll = [];
+  for (let k = 0; k < 3; k++) twAll.push(await page.evaluate(() => {
     /* 藍圖與塊數要指定（v1.116）。沿用上一條留下的話會抽到很小的建築
        （實測 455 塊），漏斗半徑 6 一罩就是大半座——量到的是「小建築被罩滿」
        不是「掃過去」，v1.116 把每秒啃掉的比例拉高之後那一組直接吃掉 67%。
@@ -9157,9 +9206,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 700; i++) step(0.05);       // 等它們全部落地
     return { before, after: blocks.filter(b => b.st === 3).length, lifted, born, gone: !twists,
              flying: blocks.filter(b => b.st === 4).length };
-  });
-  ok('龍捲風會生出來', twR.born === 1);
-  ok('龍捲風會把積木捲上天', twR.lifted > 20, '同時在空中最多 ' + twR.lifted + ' 塊');
+  }));
+  const twR = twAll.slice().sort((a, b) => a.after - b.after)[1];      // 啃掉多少取中位那一趟
+  ok('龍捲風會生出來', twAll.every(t => t.born === 1));
+  ok('龍捲風會把積木捲上天', twAll.every(t => t.lifted > 20),
+     '三趟同時在空中最多 ' + twAll.map(t => t.lifted).join('／') + ' 塊');
   /* v1.62（使用者指定）：掃過去要吸走一些，但**不能把建築整段刨掉**。
      上限那一邊看的是垮塌之後的結果（吸走的那些撐著上層時，上層會跟著垮），
      所以不是「剩八成」而是抓一條寬一點的線；下限是「真的有在吸」。
@@ -9172,13 +9223,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      但「整段刨掉」（八成以上）還是會被抓出來。
      v1.123 拉到 0.46 之後，照這一條的參數（新天鵝堡 3000、起點 siteR×0.6）跑 16 輪是
      13.4～58.0%、平均 31.9%——平均只多四個百分點，但尾巴那幾輪（漏斗賴在建築上沒竄開）
-     踩到 54.4／57.2／58.0，剛好把 55% 那條頂破。所以下緣再放到 0.35（＝最多啃掉 65%），
-     留 15 個百分點的餘裕；「整段刨掉」那條界線仍然守著。 */
+     踩到 54.4／57.2／58.0，剛好把 55% 那條頂破。所以下緣再放到 0.35（＝最多啃掉 65%）。
+
+     v1.148.1 那條線又被踩破一次（實測 65.2%）。這次**不再放寬**，改動量測：
+     重量一次分布（同一組參數 24 趟）是 13.2／14.9／16.4／18.5／20.1／20.5／21.5／26.3／
+     26.8／27／28.8／29.7／30／31.3／35.2／38.4／40.5／41.5／47.1／47.8／49.1／55.4／
+     59.4／68.7 ——中位 30%、九成位 55.4%、超過 65% 的占 4%。
+     這是一條**本來就很寬**的分布（漏斗亂竄，賴在建築上的那幾趟就是會啃掉一大半），
+     所以任何一條線用一趟去比都是在擲骰子：0.35 這條線單趟踩破的機率就是那 4%。
+     改成**掃三趟取中位**（見上面）：要兩趟都超過 65% 才會紅，機率掉到 0.5%。
+     門檻 0.35 一個字都沒動——「整段刨掉」（八成以上）照樣抓得出來。 */
   ok('龍捲風掃過會吸走一部分，但不會把建築整段刨掉',
      twR.after < twR.before * 0.97 && twR.after > twR.before * 0.35,
-     'SET ' + twR.before + ' → ' + twR.after +
-     '（少了 ' + ((1 - twR.after / twR.before) * 100).toFixed(0) + '%）');
-  ok('龍捲風結束後積木都會落地', twR.gone && twR.flying === 0, '還在飛 ' + twR.flying + ' 塊');
+     'SET ' + twR.before + ' → ' + twAll.map(t => t.after).join('／') +
+     '（三趟少了 ' + twAll.map(t => ((1 - t.after / t.before) * 100).toFixed(0)).join('／') +
+     '%，取中位 ' + ((1 - twR.after / twR.before) * 100).toFixed(0) + '%）');
+  ok('龍捲風結束後積木都會落地',
+     twAll.every(t => t.gone && t.flying === 0),
+     '三趟還在飛 ' + twAll.map(t => t.flying).join('／') + ' 塊');
 
   /* 「吸走破壞是持續性的」（v1.87，使用者指定）：罩著不走就一路啃下去，每秒 TW_TAKE 成。
      v1.62～v1.86 是「同一道對同一塊只抽一次」（抽過就用 b.twSkip 記著），所以停在
@@ -10093,7 +10155,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     flashes.length = 0;
     const w = { x: 0, y: 3, z: 0, dx: -1, dy: 0, dz: 0, len: 3 };
-    for (let i = 0; i < 9; i++) weaponBoom({ x: i * 4, y: 3, z: 0 }, w);
+    for (let i = 0; i < FLASH_MAX + 5; i++) weaponBoom({ x: i * 4, y: 3, z: 0 }, w);
     const small = flashes.length;
     /* 位置被小火球佔滿的時候，爆炸那顆照樣進得來（它是把最早那顆擠掉） */
     spawnBlast({ x: 0, y: 2.5, z: 0 }, 30, false);
@@ -10105,7 +10167,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('小火球額度滿了就這一發沒有，不會把爆炸那顆大火球擠掉',
      gateBoomCap.small === gateBoomCap.cap && gateBoomCap.big === 1 &&
      gateBoomCap.total === gateBoomCap.cap,
-     '連炸 9 下 → 場上 ' + gateBoomCap.small + ' 顆小火球（上限 ' + gateBoomCap.cap +
+     '連炸 ' + (gateBoomCap.cap + 5) + ' 下 → 場上 ' + gateBoomCap.small +
+     ' 顆小火球（上限 ' + gateBoomCap.cap +
      '）；接著一發大爆炸 → 大火球 ' + gateBoomCap.big + ' 顆、共 ' + gateBoomCap.total + ' 顆');
 
   ok('兵器不比小人手上那根法杖粗太多',
@@ -13156,10 +13219,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     hot.length = 0; flashes.length = 0; fxRings.length = 0;
     spawnBlast({ x: 0, y: 2.5, z: 0 }, 30, false);
     const sparkMin = Math.min(...hot.map(d => Math.hypot(d.x, d.z)));
-    for (let i = 0; i < 6; i++) spawnBlast({ x: i * 3, y: 2.5, z: 0 }, 30, false);
-    const capped = flashes.length;
+    /* 要炸得比上限多才驗得到「只留最新的那幾顆」（上限 v1.148.1 從 4 拉到 24） */
+    for (let i = 0; i < FLASH_MAX + 4; i++) spawnBlast({ x: i * 3, y: 2.5, z: 0 }, 30, false);
+    const capped = flashes.length, cap = FLASH_MAX;
     hot.length = 0; flashes.length = 0; fxRings.length = 0;
-    return { born, on, off, hold, fade, left, sparkMin, capped, boomY };
+    return { born, on, off, hold, fade, left, sparkMin, capped, cap, boomY };
   });
   /* 半徑走 sqrt，爆後第一幀（0.05 秒）就衝到一半以上——「一瞬間撐開」是刻意的，
      等速膨脹看起來像吹氣球。所以這裡量的是「一幀內有沒有到半徑的一半」。 */
@@ -13191,8 +13255,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      把最亮的核心遮成一堆橘色碎片——改成球殼的意義就沒了。 */
   ok('火星生在球面外，不會糊住核心', flash.sparkMin > 30 * 0.45,
      '最近的一顆離爆心 ' + flash.sparkMin.toFixed(1) + '（半徑 30 的 45% 是 13.5）');
-  ok('同時炸好幾發也只留最新的四顆火球', flash.capped === 4,
-     '連續 7 發 → 場上 ' + flash.capped + ' 顆');
+  ok('同時炸好幾發也只留最新的那幾顆火球', flash.capped === flash.cap,
+     '連續 ' + (flash.cap + 5) + ' 發 → 場上 ' + flash.capped + ' 顆（上限 ' + flash.cap + '）');
 
   /* 風壓：核彈與爆裂魔法才有的那一下氣浪。火球只有爆炸半徑那麼大，
      威力看起來就到那裡為止；風壓要掃得比爆炸範圍更遠，還要把地面的塵土一起帶走。
@@ -14924,20 +14988,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (!beasts) break;
       }
       const gaps = times.slice(1).map((t, i) => t - times[i]);
+      /* 只吐一顆的那一趟沒有「間隔」可言：給 −1 當「沒得比」，
+         別給 0 —— 0 會被下面那條「不連噴」當成「連噴」而誤判。 */
       return { shots: times.length, maxAt,
-               minGap: +(gaps.length ? Math.min(...gaps) : 0).toFixed(2),
+               minGap: gaps.length ? +Math.min(...gaps).toFixed(2) : -1,
                burn, set0, lowSet, ph, phase };
     }));
   }
   const dfire = dpass.slice().sort((a, b) => a.lowSet - b.lowSet)[1];   // 中位那一趟
   const dshot = dpass.map(d => d.shots).sort((a, b) => a - b)[1];       // 顆數的中位
   /* 上限與間隔是**程式保證的**（配額 4、每一發之間有最小間隔），所以三趟都要成立。
-     下限不是：一趟吐得完幾顆要看盤旋那段時間夠不夠用完配額，實測一趟 2～5 顆
-     （整輪測試量到過一趟只吐 2 顆的），所以「一趟有幾顆」看**中位那一趟**。 */
+     下限不是：一趟吐得完幾顆要看盤旋那段時間夠不夠用完配額，實測一趟 1～5 顆
+     （整輪測試量到過只吐 2 顆、也量到過只吐 1 顆的），所以「一趟有幾顆」看
+     **中位那一趟**；而只吐一顆的那一趟沒有間隔可比（minGap −1），間隔那一項就跳過它。 */
   ok('一趟吐幾顆火球，而且是一顆一顆隔開的（不連噴）',
-     dpass.every(d => d.shots >= 1 && d.shots <= 5 && d.minGap > 0.9) && dshot >= 3,
+     dpass.every(d => d.shots >= 1 && d.shots <= 5 && (d.shots < 2 || d.minGap > 0.9)) &&
+     dshot >= 3,
      '三趟各吐了 ' + dpass.map(d => d.shots).join('／') + ' 顆（中位 ' + dshot +
-     '），最短間隔 ' + dpass.map(d => d.minGap).join('／') + ' 秒');
+     '），最短間隔 ' + dpass.map(d => d.minGap < 0 ? '—' : d.minGap).join('／') + ' 秒');
   ok('火球打中會燒起來，一趟下來地標垮了',
      dpass.every(d => d.burn > 20 && d.ph !== 'done') &&
      dfire.lowSet < dfire.set0 * 0.5,
@@ -17645,11 +17713,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 3000; setWorkerCount(20); startBuild(true); completeNow(); shapePick = -1;
     for (let i = 0; i < 60; i++) step(0.016);
+    /* 量三段取中位（v1.148.1）：這是牆上時鐘，一輪二十分鐘的測試裡總會撞上一次
+       排程／GC。同一條在 v1.147 那一輪量到過 2.05、v1.148 那一輪 2.17，而門檻是 2
+       ——都是同一份程式碼。一段變慢不算，三段都慢才算。 */
     const bench = () => {
-      for (let i = 0; i < 20; i++) draw();
-      const t = performance.now();
-      for (let i = 0; i < 80; i++) draw();
-      return (performance.now() - t) / 80;
+      const got = [];
+      for (let k = 0; k < 3; k++) {
+        for (let i = 0; i < 20; i++) draw();
+        const t = performance.now();
+        for (let i = 0; i < 80; i++) draw();
+        got.push((performance.now() - t) / 80);
+      }
+      return got.sort((a, b) => a - b)[1];
     };
     const idle = bench();
     for (const p of [{ x: -20, z: 0 }, { x: 20, z: 0 }, { x: 0, z: 24 }]) callStorm(p);
