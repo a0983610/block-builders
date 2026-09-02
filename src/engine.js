@@ -3026,6 +3026,16 @@ const ENG = (function () {
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
     MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
+    /* 全部造型表（v1.149）：測試把這一份整個存成基準檔（tools/model-baseline.json），
+       之後有人改到任何一個模型就會紅。為什麼需要：飛龍少一片翅膀（v1.146.1，bmir 漏了 wg）
+       從 v1.139 一路活到 v1.146——那七版整輪測試每次都全綠，因為翅膀那兩條驗的是
+       「有沒有在拍」「彎不彎」，兩片疊在一起照樣過。行為對、外觀壞，本來完全沒人守。
+       NUKE_PARTS 是 init 時才填的，所以整份用 getter 取，不能在建物件那一刻就取值。 */
+    get MODELS() {
+      return { man: BODY, treb: TREB_PART, doz: DOZ_PART, truck: TRK_PART,
+               bomb: BOMB_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS,
+               ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL };
+    },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
     get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh }; }

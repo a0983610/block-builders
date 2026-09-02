@@ -11,6 +11,17 @@
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
    段名清單：grep "head('" tools/e2e-3d.cjs
 
+   --seed：整輪的亂數種子。不給就每輪自己抽一個，印在最上面與總結裡；
+   紅了照那個數字重跑（--seed 12345）就是同一副骰子——這套測試有三分之一的條目
+   每輪數字都不一樣（實測 1013 條裡 336 條），沒有種子的話「紅了重跑」等於換一副骰子，
+   分不出是程式壞了還是這條測試在賭。
+   種子在**每一段開頭重新下**（種子 ^ 段名的雜湊），所以在某一段加測試不會位移別段的骰子。
+   沒有這一層的話會這樣：three.js 的 generateUUID 每建一個物件抽四發 Math.random()，
+   引擎多一顆網格就把整條序列往後推，幾百條之後某條不相干的測試就換了骰子（見 README）。
+   --json <檔>：把每一條的結果寫成 JSON。給「跑十輪不同種子把偶發挖出來」用。
+   --update-models：把現在的造型重新存成基準檔（tools/model-baseline.json）。
+   故意改造型時才用，改完看 git diff 確認變的就是你要改的那幾塊。見〈造型基準〉那一段。
+
    為什麼一定要用真瀏覽器：這支程式的坑幾乎都在「真實環境與假物件的差異」——
    ES module 走 file:// 會被 CORS 擋、canvas 是 replaced element、
    WebGL 的 drawingBuffer 合成後就被清空。自己刻的假物件一定比真的寬鬆。
@@ -60,10 +71,34 @@ let BROWSER = null;                         // 收工時要關掉它（不關會
    丟出去讓最外層那個 catch 收（它認得 stopRun 這個記號），關瀏覽器、印總結、才離開。 */
 const stopRun = () => Object.assign(new Error('--until 收工'), { stopRun: true });
 
+/* ---------- 亂數種子（--seed，見檔頭） ---------- */
+const argOf = f => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] || '') : ''; };
+const SEED = (() => {
+  const v = parseInt(argOf('--seed'), 10);
+  return Number.isFinite(v) ? v >>> 0 : (Math.random() * 0xffffffff) >>> 0;
+})();
+const JSON_OUT = argOf('--json');
+const UPDATE_MODELS = process.argv.indexOf('--update-models') >= 0;
+/* mulberry32：32 位元狀態、週期 2^32，統計品質對這裡夠用，而且短到可以整支塞進 initScript。 */
+const MULBERRY = 'function(a){return function(){a|=0;a=a+0x6D2B79F5|0;' +
+  'var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;' +
+  'return((t^t>>>14)>>>0)/4294967296}}';
+const mulberry32 = eval('(' + MULBERRY + ')');
+/* 段名 → 一個穩定的數（FNV-1a）。段名沒改，那一段的骰子就沒變。 */
+const hashStr = t => { let h = 2166136261 >>> 0; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h; };
+const seedOf = t => (SEED ^ hashStr(t)) >>> 0;
+/* 頁面端：addInitScript 每次載入都會跑，所以重新整理過的頁面也照樣是種子亂數。
+   遊戲、three.js（generateUUID）與測試自己在 evaluate 裡抽的籤全部走這一支。 */
+const INIT_SEED = 'window.__seed=function(n){Math.random=(' + MULBERRY + ')(n>>>0)};window.__seed(' + SEED + ');';
+Math.random = mulberry32(SEED);            // Node 端（測試自己在 node 這一側抽的籤）
+let PAGE = null;                           // 主頁面，head() 換段時要對它重下種子
+/* 開頁面一律走這支：新的 page 各自是一個 context，addInitScript 不會自己跟過去。 */
+const newPage = async o => { const p = await BROWSER.newPage(o); await p.addInitScript(INIT_SEED); return p; };
+
 /* ---------- 記分板 ---------- */
 const R = [];
 let section = '';
-const head = t => {
+const head = async t => {
   /* 指定的段落已經跑完，接著要開下一段了——收工。判斷用部分比對（含子字串就算），
      打 --until 慶祝 也對得到「完工慶祝」。 */
   if (UNTIL) {
@@ -71,6 +106,11 @@ const head = t => {
     if (t.indexOf(UNTIL) >= 0) untilHit = true;
   }
   section = t;
+  /* 每一段重下種子：那一段抽到什麼只跟「種子 + 段名」有關，跟前面跑過幾條無關，
+     所以在別段加測試不會位移這一段的骰子（generateUUID 抽掉的四發就是這樣推移整條序列的）。
+     啟動那一段還沒 goto，頁面上還沒有 __seed，吞掉就好——它的骰子由 initScript 下的整輪種子決定。 */
+  Math.random = mulberry32(seedOf(t));
+  if (PAGE) await PAGE.evaluate(n => window.__seed(n), seedOf(t)).catch(() => {});
   console.log('\n── ' + t + ' ' + '─'.repeat(Math.max(0, 46 - t.length * 2)));
 };
 const ok = (name, pass, detail) => {
@@ -326,14 +366,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   const browser = BROWSER = await chromium.launch();
-  const page = await browser.newPage({ viewport: VIEW });
+  console.log('種子 --seed ' + SEED + '（紅了照這個數字重跑就是同一副骰子）');
+  const page = PAGE = await newPage({ viewport: VIEW });
 
   const errors = [];
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
   page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text().split('\n')[0]); });
 
   /* ══════════ 啟動 ══════════ */
-  head('啟動');
+  await head('啟動');
   await page.goto(APP);
   await page.waitForTimeout(1200);
   await installClean(page);
@@ -439,7 +480,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('README 的版本號跟程式一致', readme.indexOf('v' + ver.v) >= 0, '找 v' + ver.v);
 
   /* ══════════ 打包出來的 three ══════════ */
-  head('three.js 打包');
+  await head('three.js 打包');
   const libSrc = fs.readFileSync(path.join(ROOT, 'lib', 'three.min.js'), 'utf8');
   ok('lib/three.min.js 存在且夠大', libSrc.length > 300000, Math.round(libSrc.length / 1024) + ' KB');
   ok('沒有殘留 ES module 語法', !/(^|[;\n{}])\s*(import|export)\s*[{*]/.test(libSrc),
@@ -464,7 +505,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      noStrict.join('、') || handSrc.length + ' 支都有：' + handSrc.join('、'));
 
   /* ══════════ 渲染 ══════════ */
-  head('渲染');
+  await head('渲染');
   await reset(page, { shape: '吉薩金字塔', cnt: 800, workers: 8 });
   await fillAll(page);
   const p1 = await pix(page);
@@ -497,7 +538,79 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      oneCall.blocks + ' 塊積木，主畫面 ' + oneCall.noShadow + ' 個 call（含陰影 ' + oneCall.withShadow + '）');
 
   /* ══════════ 藍圖 ══════════ */
-  head('藍圖');
+  /* ══════════ 造型基準 ══════════ */
+  await head('造型基準');
+  /* 使用者要的是「確認有沒有改壞就可以了……以後如果發現變了就要知道被改壞了」，
+     所以這一段不訂任何美學門檻：把現在的造型整份存成基準，以後對不上就紅，
+     再由人判斷「這是我故意改的」還是「改壞了」。
+     故意改造型時重產基準：node tools/e2e-3d.cjs --update-models --until 造型基準
+     然後看 git diff——變的應該剛好就是你要改的那幾塊，多出來的就是改壞的。
+
+     為什麼要有這一段：飛龍從 v1.139 出場起就只有一片翅膀（bmir 鏡射時漏了 wg，
+     左翼整片疊在右翼上），一路活到 v1.146.1 才被使用者用眼睛發現。那七版之間
+     整輪測試每次都全綠——翅膀那兩條驗的是「有沒有在拍」「彎不彎」，兩片疊在一起
+     照樣過。**行為對、外觀壞**，是這套測試原本完全沒有守的一塊。 */
+  const modelNow = await page.evaluate(() => {
+    const rnd = v => Math.round(v * 1e3) / 1e3;
+    /* 一、造型表本身：每一塊的位移／尺寸／配色／旗標。 */
+    const parts = {}, M = ENG.MODELS;
+    for (const k in M) parts[k] = JSON.parse(JSON.stringify(M[k]));
+    /* 二、真的畫出去的那一幀：把造型表換算成矩陣的那段數學（擺動、翼弧、鏡射）
+       也一起守住。姿勢每一個欄位都釘死才可比；putBeasts 吃的是純物件，
+       不必動到遊戲狀態，所以這一段完全不吃亂數。 */
+    const pose = {}, mesh = ENG.three.beastMesh;
+    const tmp = new THREE.Matrix4(), v = new THREE.Vector3();
+    const q = new THREE.Quaternion(), sc = new THREE.Vector3();
+    for (const kind in ENG.BEASTS) {
+      ENG.putBeasts([{ kind, x: 0, y: 20, z: 0, a: 0, ph: 1.1, gait: 1, sc: 1,
+                       arm: 0.5, spin: 0.3, roll: 0.2, lie: 0, air: 0, bomb: 1 }]);
+      const rows = [];
+      for (let i = 0; i < ENG.BEAST_PARTS; i++) {
+        mesh.getMatrixAt(i, tmp); tmp.decompose(v, q, sc);
+        rows.push([rnd(v.x), rnd(v.y), rnd(v.z), rnd(sc.x), rnd(sc.y), rnd(sc.z)]);
+      }
+      pose[kind] = rows;
+    }
+    ENG.putBeasts([]);      // 動過的狀態還回去（見 README〈測試動過的全域狀態要還回去〉）
+    return { parts, pose };
+  });
+  const BASE = path.join(__dirname, 'model-baseline.json');
+  /* 紅的時候要指得出「哪一個造型的哪一塊變了」，不能只說「對不上」。 */
+  const clip = t => t.length > 100 ? t.slice(0, 100) + '…' : t;
+  const oneDiff = (a, b) => {
+    const na = Array.isArray(a) ? a.length : -1, nb = Array.isArray(b) ? b.length : -1;
+    if (na !== nb) return '塊數 ' + na + ' → ' + nb;
+    for (let i = 0; i < nb; i++)
+      if (JSON.stringify(a[i]) !== JSON.stringify(b[i]))
+        return '第 ' + i + ' 塊 ' + clip(JSON.stringify(a[i])) + ' → ' + clip(JSON.stringify(b[i]));
+    return '內容有變';
+  };
+  const cmpSet = (base, now, what) => {
+    const names = Array.from(new Set(Object.keys(base).concat(Object.keys(now))));
+    const bad = names.filter(k => JSON.stringify(base[k]) !== JSON.stringify(now[k]));
+    let n = 0;
+    for (const k in now) n += Array.isArray(now[k]) ? now[k].length : 0;
+    return { bad, msg: bad.length
+      ? '變了：' + bad.map(k => k + '（' + oneDiff(base[k] || [], now[k] || []) + '）').join('；') +
+        '　故意改的話跑 --update-models 重產基準'
+      : names.length + ' 個造型、' + n + ' 塊' + what + '都對得上' };
+  };
+  if (UPDATE_MODELS) {
+    fs.writeFileSync(BASE, JSON.stringify(modelNow, null, 1));
+    ok('（--update-models）造型基準重新產好了', true,
+       path.relative(ROOT, BASE) + '　→ 看 git diff 確認變的就是你要改的那幾塊');
+  } else if (!fs.existsSync(BASE)) {
+    ok('造型基準檔在', false, '找不到 ' + path.relative(ROOT, BASE) + '，用 --update-models 產一份');
+  } else {
+    const base = JSON.parse(fs.readFileSync(BASE, 'utf8'));
+    const rp = cmpSet(base.parts, modelNow.parts, '');
+    ok('每一個造型的部位表都跟基準一模一樣（位移、尺寸、配色、旗標）', rp.bad.length === 0, rp.msg);
+    const rq = cmpSet(base.pose, modelNow.pose, '畫出來的位置');
+    ok('固定姿勢畫出來的每一塊也都跟基準一模一樣（擺動、翼弧、左右鏡射的數學）',
+       rq.bad.length === 0, rq.msg);
+  }
+
+  await head('藍圖');
   const bpAll = await page.evaluate(cnt => {
     const out = [];
     for (let i = 0; i < SHAPES.length; i++) {
@@ -700,7 +813,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      所以（1）組合工具要能讓它少寫樣板、少犯下限與奇偶的錯，
      （2）checkBlueprint() 要吐出一段能整段複製、貼回去給 AI 的純文字報告。
      遊戲裡的按鈕與 tools/check-bp.cjs 共用同一支，最後一條測試守著這件事。 */
-  head('藍圖工具與體檢');
+  await head('藍圖工具與體檢');
   const bpTool = await page.evaluate(() => {
     /* function 宣告會掛上 window，所以自訂藍圖檔（<script> 載進來的）叫得到 */
     const names = ['dim', 'ringOf', 'mirrorX', 'mirrorZ', 'arch', 'archRow', 'stairs',
@@ -944,11 +1057,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      做藍圖用的獨立進入點：看得到蓋起來的樣子、按一下產出可貼回給 AI 的報告。
      它不載遊戲層那五支（那會把整個遊戲跑起來），所以引擎那些「還沒餵資料」的網格
      要自己清乾淨——不清的話原點會冒出 80 個小人。 */
-  head('藍圖預覽頁');
+  await head('藍圖預覽頁');
   const vpErr = [];
   // acceptDownloads：那一頁的「下載畫面」要真的存得出檔案才驗得到
   // clipboard：v1.63 起這一頁也有「取得 prompt」，要能讀回剪貼簿才驗得到內容
-  const vp = await browser.newPage({ viewport: VIEW, acceptDownloads: true,
+  const vp = await newPage({ viewport: VIEW, acceptDownloads: true,
                                      permissions: ['clipboard-read', 'clipboard-write'] });
   vp.on('pageerror', e => vpErr.push('pageerror: ' + e.message));
   vp.on('console', m => { if (m.type() === 'error') vpErr.push('console: ' + m.text()); });
@@ -1357,9 +1470,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
      開一個獨立的分頁跑：匯入會動到 SHAPES、還會寫 localStorage，
      混進主分頁那條長長的流程裡會影響後面每一條測試。 */
-  head('匯入建築');
+  await head('匯入建築');
   const impErr = [];
-  const gp = await browser.newPage({ viewport: VIEW, acceptDownloads: true,
+  const gp = await newPage({ viewport: VIEW, acceptDownloads: true,
                                      permissions: ['clipboard-read', 'clipboard-write'] });
   gp.on('pageerror', e => impErr.push('pageerror: ' + e.message));
   gp.on('console', m => { if (m.type() === 'error') impErr.push('console: ' + m.text().split('\n')[0]); });
@@ -1858,7 +1971,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('隨機換建築不會一直重複', variety.uniq >= 9, '連續 12 次出現 ' + variety.uniq + ' 種');
 
   /* ══════════ 小人施工 ══════════ */
-  head('小人施工');
+  await head('小人施工');
   await reset(page, { shape: '吉薩金字塔', cnt: 400, workers: 16, scale: 1 });
   const b0 = await st(page);
   await sim(page, 200);
@@ -2331,7 +2444,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                : '沒抓到「工作單有兩筆」的人');
 
   /* ══════════ 缺料就自己挖 ══════════ */
-  head('缺料就自己挖');
+  await head('缺料就自己挖');
   /* v1.141（使用者：「目前更換建築會自動在場上灑上積木，改成材料不夠小人自己挖」
      「也為以後不用考慮積木夠不夠的問題，需要積木又沒得撿的時候用挖的就能產生」）。
      兩件事要一起成立：換場不再無中生有一整圈建材（reconcilePool 少了不補），
@@ -2460,7 +2573,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      digDone.free + ' 塊');
 
   /* ══════════ 破壞（局部） ══════════ */
-  head('破壞：只壞被打到的地方');
+  await head('破壞：只壞被打到的地方');
   await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 4 });
   await fillAll(page);
   const smash1 = await page.evaluate(() => {
@@ -2548,7 +2661,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await probeWorkers(page, '破壞後');
 
   /* ══════════ 垮塌 ══════════ */
-  head('垮塌：下面沒了上面跟著垮');
+  await head('垮塌：下面沒了上面跟著垮');
   await reset(page, { shape: '倫敦大笨鐘', cnt: 900, workers: 1 });
   const tower = await page.evaluate(() => {
     completeNow();
@@ -2848,7 +2961,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await probeWorkers(page, '垮塌後');
 
   /* ══════════ 遊戲流程：蓋好 → 拆掉 → 蓋下一座 ══════════ */
-  head('流程：蓋好 → 拆掉 → 蓋下一座');
+  await head('流程：蓋好 → 拆掉 → 蓋下一座');
   await reset(page, { shape: '吉薩金字塔', cnt: 700, workers: 12 });
   const flow = await page.evaluate(() => {
     completeNow();
@@ -2997,7 +3110,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      idle.empty + ' 幀');
 
   /* ══════════ 完工慶祝 ══════════ */
-  head('完工慶祝');
+  await head('完工慶祝');
   /* 要讓它自己蓋到完工，不能用 completeNow：上一段測試把人放到地圖邊緣去遊蕩了，
      量到的會是「走回來多久」而不是「圍圈多快」。
      真的蓋完的那一刻，人都還站在工地邊上——那才是這段要量的起點。
@@ -3379,7 +3492,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      cheerHit.last + ' 秒（窗口 ' + cheerHit.win + ' 秒）');
 
   /* ══════════ 工程師 ══════════ */
-  head('工程師');
+  await head('工程師');
   const engr = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 600; setWorkerCount(12); startBuild(true);
@@ -3508,7 +3621,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      solo.idx + ' 號接任');
 
   /* ══════════ 魔法師 ══════════ */
-  head('魔法師');
+  await head('魔法師');
   /* v1.64：十個人有一個是魔法師，站在工地旁邊隔空把建材拋上去。
      這一段驗的是「他真的沒搬」——不是看畫面上有沒有巫師帽，而是看那些積木
      從躺著的地方直接進拋物線，中途沒有任何一幀是被人舉在手上的。
@@ -3917,7 +4030,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（身體傾角 ' + wzDown.tilt + '）');
 
   /* ══════════ 肌肉小人 ══════════ */
-  head('肌肉小人');
+  await head('肌肉小人');
   /* 使用者：「增加10%肌肉小人 大肌肉裸上半身」「類似法師小人 走到積木旁拿起來
      直接就能丟到目的地」「跟法師小人比撿積木同普通小人 拋出去像法師小人
      但是積木飛得比較快 因為是靠力量拋」。所以要驗的是三件事：
@@ -4191,7 +4304,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      musLook.plainArmX + '）；安全帽 ' + musLook.hat + ' 塊，帽頂 ' + musLook.top);
 
   /* ══════════ 閒聊 ══════════ */
-  head('閒聊');
+  await head('閒聊');
   const chat = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 500; setWorkerCount(20); startBuild(true); completeNow();
@@ -4258,7 +4371,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      busy.placed + ' 塊）');
 
   /* ══════════ 表情圖示 ══════════ */
-  head('表情圖示');
+  await head('表情圖示');
   /* 頭上的小圖示（v1.121，v1.122 從方塊換成貼圖）：驚嘆號／問號／愛心／生氣。
      現在是一片正對鏡頭的四邊形，貼上啟動時用 canvas 畫好的那張橫條圖，所以這裡量
      三件事——① 貼圖畫出來了、四格各一種 ② 那一片擺在頭上、正對鏡頭、從錨點長出來
@@ -4482,7 +4595,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（剩 ' + emoWhen.downT + ' 秒沒被凍住）；倒數走完收掉：' + (emoWhen.gone ? '是' : '否'));
 
   /* ══════════ 閒晃事件：小人的家 ══════════ */
-  head('閒晃事件：小人的家');
+  await head('閒晃事件：小人的家');
   // 這一段要測的就是它，把 installClean 關掉的那支裝回去
   await page.evaluate(() => { stepIdleEvent = window.evStep; clearHomes(); });
   /* 慶祝散完場、場上真的沒事幹的時候**一定**會發生一件事（v1.101，使用者指定
@@ -6773,7 +6886,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '，拆掉座數 +' + lag.gained);
 
   /* ══════════ 偷懶 ══════════ */
-  head('偷懶');
+  await head('偷懶');
   /* v1.134，使用者：「建築模式下 10% 小人不去蓋地標建築 繼續他的閒晃模式（閒晃模式的事件）」
      「被工具攻擊倒地才會進入建築模式」。這一段要測的就是它，把 installClean 關掉的兩支裝回去。 */
   await page.evaluate(() => { rollLazy = window.lazyRoll; stepIdleEvent = window.evStep; clearHomes(); });
@@ -6946,7 +7059,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
 
   /* ══════════ 整地推土機 ══════════ */
-  head('整地推土機');
+  await head('整地推土機');
   /* 這一段的門檻是照「1400 塊上下的工地」量出來的。v1.66 把城堡換成新天鵝堡之後，
      那一格最小就是 4450 塊（dim 的下限撐著，調 lo 沒用），工地大了三倍、10 秒的時限
      本來就清不完（實測清除率掉到 50%）。改用尺寸最接近舊城堡的泰姬瑪哈陵：
@@ -7477,7 +7590,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'phase=' + dozeSkip.phase + '、推土機 ' + (dozeSkip.doz ? '有' : '沒有'));
 
   /* ══════════ 小人反應 ══════════ */
-  head('小人反應');
+  await head('小人反應');
   await reset(page, { shape: '吉薩金字塔', cnt: 500, workers: 20 });
   await sim(page, 400);
   const scare = await page.evaluate(() => {
@@ -7620,7 +7733,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 塊、被重新撿走／丟向格子的 ' + unpar.again + ' 塊');
 
   /* ══════════ 逃命 ══════════ */
-  head('逃命');
+  await head('逃命');
   /* 核彈有 2.8 秒倒數、魔法陣有 6 秒——預告一出現，範圍內的人就該丟下東西往外跑。
      對照組把 alertFlee 換成空的，量「沒這個機制會被炸飛幾個」。 */
   const flee = await page.evaluate(() => {
@@ -7805,7 +7918,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '圈內的人各跑了 ' + flee.mag.runMin + '～' + flee.mag.runMax + ' 單位（設定 16～34）');
 
   /* ══════════ 破壞道具與解鎖 ══════════ */
-  head('破壞道具與解鎖');
+  await head('破壞道具與解鎖');
   const lock0 = await page.evaluate(() => {
     stats = freshStats(); renderTools();
     return {
@@ -9575,7 +9688,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      對範圍隨機位置連射 7 秒（不規則，不是一波一波）→ 射出去的圓縮小消失、
      換個位置再開 → 打中積木造成破壞（**沒有燃燒效果**）、兵器掉到地面，
      打中地面就插在地上 → 最後都慢慢消失。每一件事一條。 */
-  head('王之財寶');
+  await head('王之財寶');
   await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 0 });
   /* 用 completeNow 不用 fillAll：fillAll 不會收掉整地推土機，剛擺好的最底層
      會被還在場上的推土機推散，那不是道具幹的（跟打雷那一段同一個理由）。 */
@@ -9691,7 +9804,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           else if (p.st === 'grow' && fired.has(p)) { fired.delete(p); reopen++; }
         }
         maxG = Math.max(maxG, gateList().length);
-        while (grow.length < 6 && T >= (grow.length + 1) * 0.4)
+        /* 第一個取樣點從 0.2 秒起（原本是 0.4 秒）。這一條要驗的是「由小而大張開」，
+           而門檻 grow[0] < 0.3 是「才剛開始張」的守門值——問題是 0.4 秒那一刻的平均
+           本身在 0.13～0.27 之間晃（每一個門的起始錯開是隨機的），**分布的上緣就壓在
+           門檻上**，實測 --seed 3377532606 抽到剛好 0.30 就紅了。取樣點往前挪到 0.2 秒，
+           量到的是 0.06～0.15，離門檻有兩倍餘裕；門檻一個字都沒動。 */
+        while (grow.length < 6 && T >= 0.2 + grow.length * 0.4)
           grow.push(+(gates[0].ports.reduce((a, p) => a + p.k, 0) / gates[0].ports.length).toFixed(2));
       }
       if (weapons) maxW = Math.max(maxW, weapons.length);
@@ -9738,11 +9856,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return r;
   });
+  /* 「一路遞增」那個斷言原本就跟程式牴觸，只是舊的取樣格線剛好跨過去沒量到：
+     門是「三次方 ease-out ＋ 10% 過衝」張開的（stepGate 裡
+     `p.k = e * (1 + 0.10 * sin(PI * u))`，註解寫著線性放大看起來像貼圖被拉開、
+     過衝才像撐開一個洞）。取樣點往前挪之後 1.8 秒那一刻量到平均 1.01，
+     於是「後面不能比前面小」當場紅——**紅的是斷言寫錯，不是程式**。
+     改成照設計驗：峰值以前一路往上、過衝不超過設計的 +10%、峰值之後只會落回
+     而且不掉到 1 以下、最後停在整整 1。 */
+  const gGrow = gate1.grow, gPeak = gGrow.indexOf(Math.max(...gGrow));
   ok('點地面就開出一整片門，每一個都是由小而大張開的',
-     gate1.born === gate1.want && gate1.grow[0] < 0.3 &&
-     gate1.grow.every((k, i) => i === 0 || k >= gate1.grow[i - 1]) &&
-     gate1.grow[gate1.grow.length - 1] === 1,
-     '一次開 ' + gate1.born + ' 個門；每 0.4 秒量一次平均張開到幾成：' +
+     gate1.born === gate1.want && gGrow[0] < 0.3 &&
+     gGrow.every((k, i) => i === 0 || i > gPeak || k >= gGrow[i - 1]) &&
+     gGrow.every((k, i) => i <= gPeak || k >= 1) &&
+     Math.max(...gGrow) <= 1.1 &&
+     gGrow[gGrow.length - 1] === 1,
+     '一次開 ' + gate1.born + ' 個門；0.2 秒起每 0.4 秒量一次平均張開到幾成：' +
      gate1.grow.join(' → '));
   ok('兵器從門心伸出來，就位時一半在門外',
      gate1.out0 < -0.4 && Math.abs(gate1.out1) < 0.001,
@@ -10066,16 +10194,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 人與吉祥物各射十發。**每發換一座隨機建築**：吉薩金字塔的 +x 面是階梯狀的斜坡，
        站在最外那一塊旁邊的人身邊本來就沒幾塊積木（實測平均只 1.7 塊），量到的是那一座
        的形狀不是這一發的力道。 */
+    /* **射到湊滿十發真的打到目標為止**，不是「射十發、走對路徑的有幾發算幾發」。
+       一發會打到目標身上還是先撞到牆，本身就是隨機的（挑到哪一塊牆、刃尖停下的相位），
+       實測十發裡走到 manWeapon 的是 3～9 發——於是樣本數自己在擲骰子，
+       下面那兩條的樣本數門檻（≥ 4、≥ 6）就變成在賭。十輪不同種子的掃描裡
+       seed 5 抽到 3 發，兩條一起紅（那一版一行王之財寶的程式碼都沒動）。
+       改成湊滿固定的十發，門檻一個字都沒動。 */
     for (const kind of ['man', 'masc']) {
       const rows = [];
-      for (let i = 0; i < 10; i++) {
+      let tries = 0;
+      while (rows.length < 10 && tries < 60) {
+        tries++;
         build(true);
         const f = faces();
         if (!f.length) continue;
-        rows.push(shoot(kind, pickFace(f)));
+        const r = shoot(kind, pickFace(f));
+        if (r.via === kind) rows.push(r);
       }
-      out[kind] = rows.filter(r => r.via === kind);
-      out[kind + 'N'] = rows.length;
+      out[kind] = rows;
+      out[kind + 'N'] = tries;
     }
     /* 這一發爆破本身有多大：直接對著積木堆叫 weaponBlast（打到人／吉祥物走的就是它），
        跟「打到積木那一發」擺在一起比。爆點取現有積木的位置＝周圍都是積木，
@@ -10623,7 +10760,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
      「燒完那塊有沒有變黑掉下來」。用大建築測：小的燒到剩 25% 就整棟垮掉換場，
      量到的會是換場規則不是火。 */
-  head('放火');
+  await head('放火');
   await reset(page, { shape: '新天鵝堡', cnt: 2400, workers: 6 });
   const fire = await page.evaluate(() => {
     completeNow();
@@ -10711,7 +10848,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ══════════ 碎料燃燒 ══════════
      爆炸打出來的碎料會帶著火飛出去，燒滿 3 秒變成一塊焦炭。
      一律拿大城堡的邊角開炸：塌不到 25%，量到一半才不會被「拆完換下一座」洗掉狀態。 */
-  head('碎料燃燒');
+  await head('碎料燃燒');
   const emb2 = await page.evaluate(() => {
     running = false;
     const setup = () => {
@@ -10863,7 +11000,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      建造中失火本來會卡死（沒有消防車的量測見 README）：小人把積木補回火場旁邊，
      新放上去的又被蔓延點著。v1.68 加了「被水噴到就濕 5 秒、濕的點不著」，
      以及建造中會從地圖邊緣開進來的消防車。 */
-  head('消防車與潮濕');
+  await head('消防車與潮濕');
 
   const wetOne = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
@@ -11107,7 +11244,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      往下掉 → 往旁邊攤 → 貼著地面／積木的那一格慢慢滲。
      這一節驗的就是「看得出體積」、「會往下流」、「最後滲進地面」這三件事，
      外加「一下要裝半個馬克杯」這個量的基準。 */
-  head('水桶');
+  await head('水桶');
 
   // 讀水的狀態：幾格水、總水量、最高／最低、每一層有幾格
   const wat = () => page.evaluate(() => {
@@ -12256,7 +12393,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { tool = 'hammer'; });         // 別把水桶留給後面的測試
 
-  head('煙火');
+  await head('煙火');
   await reset(page, { shape: '新天鵝堡', cnt: 2000, workers: 4 });
   const fw = await page.evaluate(() => {
     completeNow();
@@ -12628,7 +12765,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      邏輯跟碎料同一套：吹飛／推走／炸飛走彈道，落地那一刻才判定要不要燒起來。
      每個案例都自己把人擺到定位再動手——照原本的分布，人多半在遠處撿貨，
      量到的會是「沒打到」而不是「打到了沒反應」。 */
-  head('小人被工具波及');
+  await head('小人被工具波及');
   await reset(page, { shape: '新天鵝堡', cnt: 900, workers: 20 });
   // 把人排在工地上，炸點就在他們中間
   const blown = await page.evaluate(() => {
@@ -13037,7 +13174,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      三個的共通點是「點下去不會馬上炸」。全部拿大建築來測：
      小建築被炸掉七成五就整棟垮掉換下一座，數字會被那條規則洗掉，
      量到的就不是這個道具自己的範圍。 */
-  head('倒數型道具');
+  await head('倒數型道具');
   await reset(page, { shape: '美國國會大廈', cnt: 3000, workers: 6 });
   const bomb = await page.evaluate(() => {
     completeNow();
@@ -14575,7 +14712,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      小人大小的白猴子(比黑獼猴略大)慢慢從邊緣走過來 對地標丟出香蕉形狀炸彈」，
      後續追加「可以按照小人行走邏輯 不要穿越地標建築&小房子」。
      造型是先做成預覽給使用者看過才落地的（白猴子改成「毛依然是黑的，只有皮膚比較白」）。 */
-  head('天災：猴子與飛龍');
+  await head('天災：猴子與飛龍');
   await reset(page, { shape: '吉薩大金字塔', cnt: 2600, workers: 12 });
   await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
 
@@ -14813,8 +14950,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      bnana.hy > 0.4 && bnana.hr < 30,
      '飛了 ' + bnana.flew + ' 幀、最高 ' + bnana.top + '，炸在高度 ' +
      bnana.hy + '、離中心 ' + bnana.hr);
-  ok('一根香蕉炸掉的量在投石機的石頭與定時炸彈之間',
-     bnana.smashed > 100, bnana.smashed + ' 塊（全座 ' + bnana.set0 + '）');
+  /* 使用者定的規則：「測試炸彈重點在是否正常作用，因為隨機位置而炸掉幾塊，
+     炸了幾塊完全不重要」。這一條原本是 smashed > 100——而香蕉是白猴子往地標中心
+     一帶**隨機**拋的，炸掉幾塊全看落在哪：十個種子量到 277～966 塊，不給種子那一輪
+     量到過 88 塊（門檻 100，紅）。門檻正好卡在分布中間，跟飛龍火球是同一個病。
+     量級本來就有下面那條在守（同一座、同一點，石頭／香蕉／炸彈各炸一次比），
+     所以這裡只驗「有沒有正常作用」：炸在建築上就該有東西掉下來。塊數照樣印出來當參考。 */
+  ok('香蕉炸在建築上真的炸得開（炸掉幾塊看落點，不當門檻）',
+     bnana.smashed > 0, bnana.smashed + ' 塊（全座 ' + bnana.set0 +
+     '；落點隨機，這個數字只是參考——量級看下面那條同一點的對照）');
   /* 同一座、同一點各炸一次，比三發的量級。每一發都先把建築補回來。 */
   const bpow = {};
   for (const kind of ['rock', 'nana', 'bomb']) {
@@ -15046,7 +15190,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (所以有機會一起出沒)」。出沒時機與間隔是問過使用者的：「任何時候都可能」「各自 3~6 分鐘」。
      跟天災共用同一批動物與同一套走路，所以這一段驗的是**差在哪裡**，不重驗造型。
      兩支鐘都要裝回去：走路那一段是 stepDoom 在跑（beasts 的迴圈在它裡面）。 */
-  head('吉祥物：來逛一圈就走');
+  await head('吉祥物：來逛一圈就走');
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; stepMascot = window.mascStep; });
   await fillAll(page);
@@ -15356,7 +15500,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      修正小人被吹飛的旋轉軸(目前似乎在腳底 看起來很奇怪)」。
      倒地起飛那一段是先出預覽圖給使用者看過才落地的（同天災那幾隻的造型）。
      這一段驗的是「規則跟小人一樣」與「姿勢擺得對」，不重驗小人自己那一套。 */
-  head('破壞工具打得到那幾隻');
+  await head('破壞工具打得到那幾隻');
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 8 });
   await page.evaluate(() => { stepDoom = window.doomStep; });
   await fillAll(page);
@@ -15745,7 +15889,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 
   /* ══════════ 隕石 ══════════ */
-  head('隕石');
+  await head('隕石');
   await reset(page, { shape: '新天鵝堡', cnt: 3000, workers: 4 });
   const met = await page.evaluate(() => {
     completeNow();
@@ -15913,7 +16057,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '落點指在 y=0.6，實際砸在 y=' + metSweep.fy + '（塔高 ' + metSweep.h + '）');
 
   /* ══════════ 地面痕跡 ══════════ */
-  head('地面痕跡');
+  await head('地面痕跡');
 
   /* 使用者指定：「爆炸地面留下焦黑、隕石留下坑洞、會漸漸消失」。
      炸彈與隕石各放一發，看地上留下什麼——兩種痕跡的差別在 crater 這個旗標
@@ -16067,7 +16211,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '最濃的頂點 alpha = ' + mkEdge.ink + '（改之前是 0.96）');
 
   /* ══════════ 人力金額 ══════════ */
-  head('人力金額');
+  await head('人力金額');
   const cost = await page.evaluate(() => {
     stats = freshStats();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
@@ -16090,7 +16234,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('完工之後不再計費', Math.abs(cost.d - cost.c) < 0.001, cost.c.toFixed(0) + ' → ' + cost.d.toFixed(0));
 
   /* ══════════ 破壞造成的損失 ══════════ */
-  head('破壞損失');
+  await head('破壞損失');
   const loss = await page.evaluate(() => {
     stats = freshStats();
     shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
@@ -16157,7 +16301,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('成就面板寫出累計損失', lossBadge.dom === '$2,000,000', lossBadge.dom);
 
   /* ══════════ 成就 ══════════ */
-  head('成就');
+  await head('成就');
   const badge = await page.evaluate(() => {
     stats = freshStats(); renderBadges();
     const n0 = stats.badges.length;
@@ -16282,7 +16426,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('成就面板關得掉', !(await page.evaluate(() => document.getElementById('badgeWrap').classList.contains('on'))));
 
   /* ══════════ 存檔 ══════════ */
-  head('自動存檔');
+  await head('自動存檔');
   const saveR = await page.evaluate(() => {
     localStorage.removeItem('block-builders/save1');
     stats = freshStats();
@@ -16406,7 +16550,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   errors.length = 0;
 
   /* ══════════ 控制項 ══════════ */
-  head('控制項');
+  await head('控制項');
   await page.evaluate(() => { running = false; muted = true; });
   await page.evaluate(() => { running = true; });
   await page.selectOption('#shape', String(await page.evaluate(() => SHAPES.findIndex(s => s.n === '倫敦眼摩天輪'))));
@@ -16603,7 +16747,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      音效全是即時合成的（沒有音檔），所以可以用 OfflineAudioContext 把波形算出來直接量，
      不必真的發出聲音。tone()／noise() 都是先叫 audio() 拿 context，
      把 audio 換掉就能把整段導到離線 context；量完要把 audio 與 muted 放回去。 */
-  head('音效');
+  await head('音效');
   const snd = await page.evaluate(async () => {
     const SR = 44100, SEC = 3, realAudio = audio, wasMuted = muted, wasRunning = running;
     /* 量的時候一定要把遊戲停下來：算圖是非同步的，中間遊戲迴圈只要放了任何一聲
@@ -16996,7 +17140,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      snd.nuke.peak + '）');
 
   /* ══════════ 視角操作 ══════════ */
-  head('視角操作');
+  await head('視角操作');
   await reset(page, { shape: '艾菲爾鐵塔', cnt: 900, workers: 6 });
   await fillAll(page);
   // v1.70 起拖曳的意義跟手上拿什麼有關（水桶是把水澆過去），所以先釘住工具
@@ -17394,7 +17538,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      isleFit.map(o => o.n + ' 島半徑 ' + o.half + '、下緣打到 ' + o.worst + ' 倍').join('、'));
 
   /* ══════════ 視窗縮放 ══════════ */
-  head('視窗縮放');
+  await head('視窗縮放');
   await page.setViewportSize({ width: 900, height: 620 });
   await page.waitForTimeout(300);
   const rs = await page.evaluate(() => ({
@@ -17472,7 +17616,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 平板橫放是 1180～1366px，寬度看起來跟筆電沒兩樣——那種要靠「沒有滑鼠」認出來
      （hover:none + pointer:coarse），只看寬度的話工具列會跑到上面去。 */
-  const padPage = await browser.newPage({ viewport: { width: 1194, height: 834 }, hasTouch: true });
+  const padPage = await newPage({ viewport: { width: 1194, height: 834 }, hasTouch: true });
   await padPage.goto(APP);
   await padPage.waitForFunction(() => typeof ENG !== 'undefined' && typeof bp !== 'undefined' && bp);
   const padUi = await padPage.evaluate(() => ({
@@ -17491,7 +17635,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、設定鈕 left ' + padUi.panel + '、版本號 left ' + padUi.ver);
 
   /* ══════════ 手機版 ══════════ */
-  head('手機版 · 觸控');
+  await head('手機版 · 觸控');
   await page.setViewportSize({ width: 390, height: 780 });
   await page.waitForTimeout(300);
   const mob = await page.evaluate(() => {
@@ -17681,7 +17825,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.waitForTimeout(200);
 
   /* ══════════ 效能（CPU 端） ══════════ */
-  head('效能');
+  await head('效能');
   const perf = await page.evaluate(() => {
     running = false;
     const rows = [];
@@ -17808,7 +17952,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      bpTime.name + ' ' + bpTime.worst.toFixed(0) + 'ms');
 
   /* ══════════ 連續操作壓力 ══════════ */
-  head('連續操作壓力');
+  await head('連續操作壓力');
   errors.length = 0;
   const stress = await page.evaluate(() => {
     running = false;
@@ -17854,7 +17998,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      memGrow.before + ' → ' + memGrow.after);
 
   /* ══════════ 檔案沒放齊的防呆 ══════════ */
-  head('檔案沒放齊的防呆');
+  await head('檔案沒放齊的防呆');
   /* 把遊戲寄給別人，對方直接在壓縮檔裡按兩下 index.html——Windows 只解出那一支檔，
      旁邊的 lib／src 都不在，畫面就只剩 body 的漸層背景，看起來像遊戲自己壞了。
      這裡真的做殘缺的複本去開，驗證會蓋出說明而不是一片空白。 */
@@ -17874,7 +18018,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return 'file:///' + path.join(d, 'index.html').replace(/\\/g, '/');
   };
   const readFatal = async url => {
-    const p = await browser.newPage({ viewport: VIEW });
+    const p = await newPage({ viewport: VIEW });
     await p.goto(url);
     await p.waitForTimeout(700);
     const r = await p.evaluate(() => {
@@ -17930,7 +18074,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      await page.evaluate(() => !document.getElementById('fatal')));
 
   /* ══════════ 整體 ══════════ */
-  head('整體');
+  await head('整體');
   await page.evaluate(() => { running = true; timeScale = 1; setWorkerCount(20); });
   await reset(page, { shape: '莫斯科克里姆林塔', cnt: 900, workers: 20 });
   await page.evaluate(() => { running = true; });
@@ -17969,7 +18113,13 @@ function report(partial) {
   }
   // 指定的段名打錯就整輪跑完了，要講一聲，不然會以為「跑得好快」
   if (UNTIL && !untilHit) console.log('  \x1b[33m--until「' + UNTIL + '」沒對到任何段名，跑的是完整一輪\x1b[0m');
+  /* 種子一定要印：這一輪紅的那幾條，照這個數字重跑才是同一副骰子。 */
+  console.log('  種子：--seed ' + SEED);
   console.log('  截圖：' + path.relative(ROOT, OUT));
+  if (JSON_OUT) {
+    fs.writeFileSync(JSON_OUT, JSON.stringify({ seed: SEED, partial, results: R }, null, 1));
+    console.log('  結果：' + JSON_OUT);
+  }
   console.log('═'.repeat(52));
   process.exit(fail.length ? 1 : 0);
 }
