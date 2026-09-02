@@ -1243,8 +1243,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('預覽頁的版本號跟 src/game.js 一致', vpBoot.ver === await page.evaluate(() => VERSION),
      '預覽頁 v' + vpBoot.ver);
 
-  /* v1.49 的版面：貼上框是這一頁的主角（AI 給的藍圖動輒上百行），
-     報告是拿來複製的不是拿來讀完的，所以它比貼上框矮。 */
+  /* v1.150 的版面：報告**一格都不佔**（使用者：「檢查報告框太大，那只需要複製給 AI 看
+     就好」），畫面上只留一行結論；貼上框還是這一頁的主角。
+     順便守住「整張卡片放得進畫面」——v1.150 之前內容 922px 比 800 高的畫面還高，
+     最下面那排按鈕跟說明是被切掉的（1366×768 的筆電更慘）。 */
   const vpBox = await vp.evaluate(() => {
     const h = id => Math.round(document.getElementById(id).getBoundingClientRect().height);
     const side = document.getElementById('side');
@@ -1261,10 +1263,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   /* 卡片高度跟著內容走：貼上區收起來就該跟著變矮，而且外框要剛好等於內容
      （以前是 top/bottom 都釘住，報告縮小之後下面會留一塊空白）。 */
-  ok('貼上框比報告框大，卡片高度跟著內容走',
-     vpBox.paste > vpBox.rep * 1.4 && vpBox.paste > 180 &&
+  ok('報告不佔版面、貼上框仍是主角，整張卡片放得進畫面',
+     vpBox.rep < 10 && vpBox.paste > 180 &&
      vpBox.shut < vpBox.open - 200 && Math.abs(vpBox.fits - vpBox.shut) <= 1 &&
-     vpBox.shut < vpBox.view - 150,
+     vpBox.open <= vpBox.view - 28,
      '貼上框 ' + vpBox.paste + 'px、報告 ' + vpBox.rep + 'px；內容展開 ' + vpBox.open +
      'px、收起 ' + vpBox.shut + 'px（外框 ' + vpBox.fits + '，畫面高 ' + vpBox.view + '）');
 
@@ -1459,6 +1461,73 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('本來就在 list.js 裡的排前面，新掃到的接在後面',
      vpPaths.order.join(',') === '範例-小教堂.js,AA.js,ZZ.js',
      vpPaths.order.join(' → '));
+
+  /* 報告收進去之後，「按了檢查有沒有回饋」就全靠這一行結論（v1.150）。
+     順便守住兩件事：換藍圖會把上一份結論清掉（不清的話畫面上會留著別座的診斷），
+     以及報告全文照樣在 #rep.value 裡——那才是要複製給 AI 的東西。 */
+  const vpVerdict = await vp.evaluate(() => {
+    document.getElementById('shape').dispatchEvent(new Event('change'));
+    const v = document.getElementById('verdict');
+    const idle = { t: v.textContent.slice(0, 6), cls: v.className };
+    document.getElementById('chk').click();
+    return { idle, t: v.textContent, cls: v.className,
+             h: Math.round(v.getBoundingClientRect().height),
+             rep: document.getElementById('rep').value.length,
+             repH: Math.round(document.getElementById('rep').getBoundingClientRect().height) };
+  });
+  ok('報告收起來之後，按「檢查藍圖」畫面上仍看得到結論',
+     vpVerdict.idle.cls === 'idle' && '✔⚠✘'.indexOf(vpVerdict.t[0]) >= 0 &&
+     ['ok', 'warn', 'bad'].indexOf(vpVerdict.cls) >= 0 && vpVerdict.h > 12 &&
+     vpVerdict.rep > 300 && vpVerdict.repH < 10,
+     '換藍圖後回到「' + vpVerdict.idle.t + '…」，按檢查變成「' +
+     vpVerdict.t.split('\n')[0] + '」（' + vpVerdict.cls + '、' + vpVerdict.h +
+     'px）；報告全文 ' + vpVerdict.rep + ' 字還在，畫面上佔 ' + vpVerdict.repH + 'px');
+
+  /* 收合鈕（v1.150）：手機上這張卡片蓋掉大半個畫面，而這一頁的重點是看藍圖。 */
+  const vpFold = await vp.evaluate(() => {
+    const sd = document.getElementById('side'), fb = document.getElementById('fold');
+    const full = Math.round(sd.getBoundingClientRect().height);
+    fb.click();
+    const shut = Math.round(sd.getBoundingClientRect().height);
+    const gone = [...sd.children].filter(el => el.className !== 'head' &&
+      getComputedStyle(el).display === 'none').length;
+    const btn = fb.textContent;
+    fb.click();
+    return { full, shut, gone, btn, kids: sd.children.length,
+             back: Math.round(sd.getBoundingClientRect().height) };
+  });
+  ok('收合鈕把面板收成只剩標題列，再按一次回來',
+     vpFold.shut < 70 && vpFold.shut < vpFold.full - 300 && vpFold.btn === '▼' &&
+     vpFold.gone === vpFold.kids - 1 && vpFold.back === vpFold.full,
+     '面板 ' + vpFold.full + ' → ' + vpFold.shut + 'px（收掉 ' + vpFold.gone + '／' +
+     vpFold.kids + ' 格，鈕變「' + vpFold.btn + '」），再按一次回到 ' + vpFold.back + 'px');
+
+  /* 使用者回報「按鈕文字折行」：390px 的手機上那三顆各自折成兩行、還被卡片下緣切掉。
+     窄畫面的修法是**整顆換列**而不是把字折斷，所以這一條數的是「每顆幾行字」。
+     量完要把視窗還回去（見 README〈測試動過的全域狀態要還回去〉）。 */
+  await vp.setViewportSize({ width: 390, height: 844 });
+  await vp.waitForTimeout(200);
+  const vpNarrow = await vp.evaluate(() => {
+    const lines = ids => ids.map(i => {
+      const el = document.getElementById(i), cs = getComputedStyle(el);
+      const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
+      const inner = el.getBoundingClientRect().height - parseFloat(cs.paddingTop) -
+        parseFloat(cs.paddingBottom) - parseFloat(cs.borderTopWidth) * 2;
+      return Math.round(inner / lh);
+    });
+    const sd = document.getElementById('side');
+    return { paste: lines(['doc', 'pasteBtn', 'load']), rep: lines(['copy', 'shot', 'save']),
+             wide: sd.scrollWidth > sd.clientWidth,
+             card: Math.round(sd.getBoundingClientRect().height), view: window.innerHeight };
+  });
+  await vp.setViewportSize(VIEW);
+  await vp.waitForTimeout(200);
+  ok('390px 手機：按鈕一律一行字（排不下就整顆換列），卡片也不蓋住整個畫面',
+     vpNarrow.paste.every(n => n === 1) && vpNarrow.rep.every(n => n === 1) &&
+     !vpNarrow.wide && vpNarrow.card < vpNarrow.view * 0.6,
+     '貼上那列每顆 ' + vpNarrow.paste.join('／') + ' 行、報告那列 ' +
+     vpNarrow.rep.join('／') + ' 行；卡片 ' + vpNarrow.card + 'px／畫面 ' +
+     vpNarrow.view + 'px' + (vpNarrow.wide ? '（橫向溢出！）' : ''));
 
   ok('預覽頁整段跑完沒有 console 錯誤', vpErr.length === 0, vpErr.join(' / ') || '乾淨');
   await vp.close();

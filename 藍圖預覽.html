@@ -21,20 +21,34 @@
      不會在下面留一塊空白。內容真的比畫面高時才捲動。 */
   #side{position:fixed;left:14px;top:14px;width:388px;z-index:3;
     max-height:calc(100% - 28px);overflow:auto;
-    display:flex;flex-direction:column;gap:9px;
-    background:var(--card);border-radius:16px;padding:14px 16px;
+    display:flex;flex-direction:column;gap:7px;
+    background:var(--card);border-radius:16px;padding:12px 14px;
     box-shadow:0 8px 26px rgba(20,30,40,.18);backdrop-filter:blur(3px)}
+  /* 卡片放不下時，孩子要**溢出去讓卡片捲動**，不是被壓扁。flex 直欄預設 shrink:1，
+     手機上實測結論那行被擠成 7px 高、字整個看不見（原本只有 #rep 自己寫了 flex:0 0 auto
+     擋住這件事，新加一格就會再踩一次，所以訂成整片面板的通則）。 */
+  #side > *{flex:0 0 auto}
+  /* 收起來只剩標題列。手機上這張卡片會蓋掉大半個畫面，而這一頁的重點是**看藍圖**——
+     收合鈕讓整片畫面還得回來。桌機也能用，只是比較少需要。 */
+  #side.fold > *:not(.head){display:none}
+  #side.fold .sub{display:none}
+  .head{display:flex;align-items:center;gap:8px}
+  .head > div{flex:1;min-width:0}
+  #fold{flex:0 0 auto;width:34px;padding:5px 0;font-size:12px;line-height:1.2}
   h1{margin:0;font-size:17px}
-  .sub{font-size:12px;opacity:.62;margin-top:-4px}
+  .sub{font-size:12px;opacity:.62;margin-top:2px}
   .r{display:flex;align-items:center;gap:8px}
   .r label{flex:0 0 44px;font-size:12px;opacity:.78}
   .seg{display:flex;flex:1;gap:5px;min-width:0}
   .seg button{flex:1;min-width:0;padding:5px 2px;font-size:12.5px;font-variant-numeric:tabular-nums}
   .seg button.on{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
   select{flex:1;min-width:0;padding:5px 6px;border:1px solid var(--line);border-radius:8px;background:#fff;font:inherit}
-  .btns{display:flex;gap:7px}
+  /* 排不下就**整顆掉到下一列**，不要把字折成兩行（實測 390px 手機上「📋 取得 prompt」
+     「📋 貼上」「貼上並預覽」三顆都變成兩層高，還被卡片下緣切掉）。
+     nowrap 讓 flex 的 min-content 等於整串文字，配上 wrap 就會整顆換列。 */
+  .btns{display:flex;gap:7px;flex-wrap:wrap}
   button{flex:1;padding:7px 10px;border:1px solid var(--line);border-radius:9px;
-    background:#fff;font:inherit;cursor:pointer}
+    background:#fff;font:inherit;cursor:pointer;white-space:nowrap}
   button:hover{background:#f4efe7}
   button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
   button:disabled{opacity:.42;cursor:default}
@@ -42,11 +56,18 @@
   #stat{font-size:12px;line-height:1.7;font-variant-numeric:tabular-nums;
     border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:7px 0}
   #stat b{font-weight:700}
-  /* 報告只留讀得到「結論」那幾行的高度：它是拿來複製的，不是拿來讀完的。
-     真要細看可以捲動或複製出去。貼上框才是這一頁要給空間的地方。 */
-  #rep{flex:0 0 auto;height:132px;width:100%;resize:vertical;
-    font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre;
-    border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:#fff}
+  /* 報告整個不佔版面（使用者：「檢查報告框太大，那只需要複製給 AI 看就好」）。
+     它留在 DOM 裡，因為「複製報告」與測試都讀它的 value——但畫面上一格都不給，
+     改成下面那行結論。原本 132px 的框八成的時間是空的，還把卡片撐到滿版。 */
+  #rep{position:absolute;width:1px;height:1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%)}
+  /* 結論：✔／⚠／✘ 加上每一項的短句。按了檢查總要有回饋，全文才交給「複製報告」。
+     只給四行左右，超過在自己框裡捲，不會再把卡片撐長。 */
+  #verdict{font-size:12px;line-height:1.55;max-height:76px;overflow:auto;
+    white-space:pre-wrap;border-top:1px solid var(--line);padding-top:6px}
+  #verdict.idle{opacity:.55}
+  #verdict.ok{color:#3f7a34}
+  #verdict.warn{color:#a5641c}
+  #verdict.bad{color:#c0483c}
   #pasteBox,#listBox{border:1px solid var(--line);border-radius:10px;padding:7px 9px;background:#fff}
   #pasteBox summary,#listBox summary{cursor:pointer;font-size:12.5px;font-weight:700}
   #listBox .btns{margin-top:7px}
@@ -56,8 +77,9 @@
   #files label{display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer}
   #files label span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #files em{flex:0 0 auto;font-style:normal;font-size:11px;opacity:.55}
-  /* AI 給的藍圖動輒上百行，92px 一次只看得到五六行，貼錯了也看不出來 */
-  #paste{width:100%;height:230px;margin:7px 0;resize:vertical;
+  /* AI 給的藍圖動輒上百行，92px 一次只看得到五六行，貼錯了也看不出來。
+     190px 大約看得到十二行，同時讓整張卡片在 800 高的畫面上不必捲動。 */
+  #paste{width:100%;height:190px;margin:7px 0;resize:vertical;
     font:11.5px/1.45 ui-monospace,Consolas,monospace;
     border:1px solid var(--line);border-radius:8px;padding:7px 8px}
   /* 貼上那顆只占自己的寬度：這一列有三顆，平分的話「📋 取得 prompt」會被壓到換行 */
@@ -72,7 +94,12 @@
     background:#f4efe7;font-size:15px;line-height:1.8}
   #err.on{display:grid}
   @media (max-width:760px){
-    #side{left:8px;right:8px;top:8px;bottom:auto;width:auto;max-height:64vh}
+    /* 卡片壓到半個畫面以下，下半截留給藍圖本身；貼上框與檔案清單也跟著縮。
+       要看整座就按標題列那顆收合鈕。 */
+    #side{left:8px;right:8px;top:8px;bottom:auto;width:auto;max-height:52vh}
+    #paste{height:130px}
+    #files{max-height:96px}
+    .hint{font-size:11px}
   }
 </style>
 </head>
@@ -80,8 +107,14 @@
 <canvas id="cv"></canvas>
 
 <div id="side">
-  <h1>藍圖預覽</h1>
-  <div class="sub">看藍圖蓋起來的樣子，並產出貼得回去給 AI 的體檢報告</div>
+  <div class="head">
+    <div>
+      <h1>藍圖預覽</h1>
+      <div class="sub">看藍圖蓋起來的樣子，並產出貼得回去給 AI 的體檢報告</div>
+    </div>
+    <!-- 收合：手機上卡片會蓋掉大半個畫面，而這一頁的重點是看藍圖 -->
+    <button id="fold" title="收合面板">▲</button>
+  </div>
   <div class="r"><label>藍圖</label><select id="shape"></select></div>
   <!-- 三檔按鈕，跟遊戲的設定面板同一組數字（e2e 有一條測試守著兩邊一致） -->
   <div class="r"><label>建材</label><div class="seg" id="cnt"></div></div>
@@ -109,7 +142,9 @@
   </details>
   <div id="pasteMsg"></div>
   <div id="stat"></div>
-  <textarea id="rep" readonly spellcheck="false" placeholder="按「🔍 檢查藍圖」產出報告，整段複製貼回給產出這份藍圖的 AI。"></textarea>
+  <div id="verdict" class="idle">按「🔍 檢查藍圖」跑體檢，結論會顯示在這裡；報告全文按「複製報告」整段帶走。</div>
+  <!-- tabindex=-1：它已經不在畫面上了，留著會變成一個看不見的 Tab 停靠點（按 Tab 焦點會憑空消失一格） -->
+  <textarea id="rep" readonly tabindex="-1" spellcheck="false" placeholder="按「🔍 檢查藍圖」產出報告，整段複製貼回給產出這份藍圖的 AI。"></textarea>
   <div class="btns">
     <button id="copy">複製報告</button>
     <button id="shot">下載畫面</button>
@@ -130,7 +165,8 @@
     <!-- webkitdirectory 是瀏覽器唯一肯交出「資料夾裡有哪些檔案」的路，選了不會上傳任何東西 -->
     <input type="file" id="dir" webkitdirectory multiple hidden>
   </details>
-  <div class="hint">拖曳轉視角　·　滾輪縮放　·　貼上的藍圖只活在這一頁（滿意了就按「下載 .js」存進 <code>blueprints/</code>，再用上面的「產生 list.js」把檔名補進清單）</div>
+  <!-- 收成兩行：三行的話 1366×768 的筆電就得捲那 9px -->
+  <div class="hint">拖曳轉視角　·　滾輪縮放　·　貼上的藍圖只活在這一頁：按「下載 .js」存進 <code>blueprints/</code>，再用「產生 list.js」補進清單</div>
 </div>
 
 <div id="err"></div>
@@ -152,7 +188,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載遊戲層那五支（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.149.0';
+const VIEWER_VER = '1.150.0';
 
 const $ = id => document.getElementById(id);
 
@@ -273,9 +309,27 @@ function pasteBlueprint(raw) {
 }
 
 /* ── 體檢報告 ───────────────────────────────────────────── */
+const VERDICT_IDLE = '按「🔍 檢查藍圖」跑體檢，結論會顯示在這裡；報告全文按「複製報告」整段帶走。';
+/* 報告不顯示在畫面上了，所以「結論」要自己挑出來寫成幾行——不然按下檢查會完全沒有回饋。
+   全文照樣在 #rep.value 裡等著被複製走。 */
+function showVerdict(r) {
+  const v = $('verdict'), item = m => '· ' + m;
+  if (r.fails.length) {
+    v.className = 'bad';
+    v.textContent = ['✘ ' + r.fails.length + ' 項要修'].concat(r.fails.map(item)).join('\n');
+  } else if (r.warns.length) {
+    v.className = 'warn';
+    v.textContent = ['⚠ ' + r.warns.length + ' 項提醒'].concat(r.warns.map(item)).join('\n');
+  } else {
+    v.className = 'ok';
+    v.textContent = '✔ 沒有查到問題（' + r.name + '）';
+  }
+}
+function clearVerdict() { $('verdict').className = 'idle'; $('verdict').textContent = VERDICT_IDLE; }
 function diagnose() {
   const r = checkBlueprint(+$('shape').value, { ver: VIEWER_VER });
   $('rep').value = r.text;
+  showVerdict(r);
   return r;
 }
 
@@ -338,7 +392,13 @@ function copyReport() {
 }
 
 /* ── 操作 ───────────────────────────────────────────────── */
-$('shape').addEventListener('change', () => { build(); $('rep').value = ''; syncSave(); });
+$('shape').addEventListener('change', () => { build(); $('rep').value = ''; clearVerdict(); syncSave(); });
+/* 收合面板：手機上卡片蓋掉大半個畫面，看不到正在預覽的那一座。 */
+$('fold').addEventListener('click', () => {
+  const on = $('side').classList.toggle('fold');
+  $('fold').textContent = on ? '▼' : '▲';
+  $('fold').title = on ? '展開面板' : '收合面板';
+});
 $('go').addEventListener('click', build);
 $('chk').addEventListener('click', diagnose);
 /* 貼上 → 進清單 → 選起來 → 畫出來 → 順手把診斷也跑掉。
