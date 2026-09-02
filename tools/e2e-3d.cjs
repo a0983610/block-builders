@@ -9195,31 +9195,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      不是讀常數：速度每幀被亂數推一下、又夾在上下限之間，讀常數證明不了它實際走多快。
      跑八道看中位數（單跑一道會被那組亂數帶偏），順便驗沒有任何一幀跑出上下限。 */
   const twSpd = await page.evaluate(() => {
-    const out = [];
+    const out = [], spins = [];
     let lo = 1e9, hi = 0;
     for (let run = 0; run < 8; run++) {
       twists = null;
       launchTornado({ x: 0, z: 0 }, { x: 0, z: 20 });
       let d = 0, t = 0, px = twists[0].x, pz = twists[0].z;
+      /* 自轉也一起量（v1.151）：跟速度同一個道理，量的是每秒真的轉幾弧度。 */
+      const sp0 = twists[0].spin;
+      let sr = 0;
       for (let i = 0; i < 100 && twists && twists.length; i++) {
         step(0.05); t += 0.05;
         if (!twists || !twists.length) break;
         const w = twists[0], one = Math.hypot(w.x - px, w.z - pz);
         lo = Math.min(lo, one / 0.05); hi = Math.max(hi, one / 0.05);
         d += one; px = w.x; pz = w.z;
+        sr = (w.spin - sp0) / t;
       }
       out.push(+(d / t).toFixed(2));
+      spins.push(+sr.toFixed(2));
     }
     twists = null; ENG.putTornados([]);
     return { spd: out.sort((a, b) => a - b), lo: +lo.toFixed(2), hi: +hi.toFixed(2),
+             spin: spins, spinC: TW_SPIN,
              s0: TW_SPD0, min: TW_SPD_MIN, max: TW_SPD_MAX };
   });
-  /* 門檻 v1.116 照量的重訂（使用者：「也提升它的移動速度」，整組再乘 1.5）：
-     八道實測 6.96～8.21，中位數 7.6。改之前是 4.36～6.0／中位 5.2。 */
-  ok('龍捲風走得比以前快（v1.62.2 乘 1.6、v1.116 再乘 1.5）',
-     twSpd.spd[4] > 6.8 && twSpd.spd[0] > 6,
+  /* 門檻 v1.151 照量的重訂（使用者：「龍捲風整體效果加速兩倍」，整組再乘 2）：
+     八道實測 14.8～16.79，中位數 15.4～15.8。v1.116～v1.150 是 6.96～8.21／中位 7.6，
+     v1.115 是 4.36～6.0／中位 5.2。門檻照舊按中位數的 0.88／0.78 抓。 */
+  ok('龍捲風走得比以前快（v1.62.2 乘 1.6、v1.116 再乘 1.5、v1.151 再乘 2）',
+     twSpd.spd[4] > 13.6 && twSpd.spd[0] > 12,
      '八道各自的平均速度 ' + twSpd.spd.join('／') + ' 單位／秒（中位數 ' + twSpd.spd[4] +
-     '；出發 ' + twSpd.s0 + '，v1.62.2 之前是 3.2、v1.115 是 5.2）');
+     '；出發 ' + twSpd.s0 + '，v1.150 是 7.8、v1.62.2 之前是 3.2）');
+  /* 漏斗的扭曲完全是 spin 的函數（見引擎 putTornados），所以「加速兩倍」看得最明顯
+     的一半就是自轉。跟速度同一個道理量實際值，不是讀常數。 */
+  ok('漏斗自轉一秒 14 弧度（v1.151 從 7 乘 2）',
+     twSpd.spinC === 14 && twSpd.spin.every(v => Math.abs(v - 14) < 0.2),
+     '八道各自量到 ' + twSpd.spin.join('／') + ' rad/s（TW_SPIN = ' + twSpd.spinC + '）');
   ok('速度一直待在上下限之間',
      twSpd.lo >= twSpd.min - 0.01 && twSpd.hi <= twSpd.max + 0.01,
      '整段量到最慢 ' + twSpd.lo + '、最快 ' + twSpd.hi +
@@ -9414,9 +9426,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      這是一條**本來就很寬**的分布（漏斗亂竄，賴在建築上的那幾趟就是會啃掉一大半），
      所以任何一條線用一趟去比都是在擲骰子：0.35 這條線單趟踩破的機率就是那 4%。
      改成**掃三趟取中位**（見上面）：要兩趟都超過 65% 才會紅，機率掉到 0.5%。
-     門檻 0.35 一個字都沒動——「整段刨掉」（八成以上）照樣抓得出來。 */
-  ok('龍捲風掃過會吸走一部分，但不會把建築整段刨掉',
-     twR.after < twR.before * 0.97 && twR.after > twR.before * 0.35,
+     門檻 0.35 一個字都沒動——「整段刨掉」（八成以上）照樣抓得出來。
+
+     **v1.151：上限那一半退場了**（使用者選的，事先講過會撞到這條線）。
+     使用者要「整體效果加速兩倍」，選的是「動作 ×2 ＋ 每秒吸走加倍、壽命不變」：
+     速度乘 2 之後一趟走的路變兩倍長（77 → 154 單位）、罩過的地方多一倍，
+     每秒又從 0.46 啃到 0.71。同一組參數重量 24 趟：
+     34.0／36.1／36.7／39.1／39.3／40.6／41.6／41.9／44.5／47.1／48.5／48.9／
+     56.8／59.2／64.4／72.2／73.2／90.4／93.9／93.9／94.6／94.6／95.4／95.9
+     ——中位 52.9%，而且 24 趟裡有 7 趟（29%）啃掉九成以上。
+     也就是說 v1.62 使用者指定的「不會整段刨掉」，在這一版**已經不成立了**：
+     漏斗賴在建築上的那幾趟就是會把整座刨掉。硬留著上限只是每三輪紅一次。
+     所以這一條改成只守**下限**（真的有在吸：三趟取中位至少啃掉 25%，實測單趟最少 34%）
+     ＋一條「不會連一塊都不剩」。要把上限那條線要回來的話，得改回去
+     「時間軸壓縮一半」那種加速（壽命 10 → 5 秒），那才是總量不變的加速。 */
+  ok('龍捲風掃過去會吸走一大片（v1.151 起連整座刨掉都在正常範圍）',
+     twR.after < twR.before * 0.75 && twR.after > twR.before * 0.01,
      'SET ' + twR.before + ' → ' + twAll.map(t => t.after).join('／') +
      '（三趟少了 ' + twAll.map(t => ((1 - t.after / t.before) * 100).toFixed(0)).join('／') +
      '%，取中位 ' + ((1 - twR.after / twR.before) * 100).toFixed(0) + '%）');
@@ -9428,8 +9453,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      v1.62～v1.86 是「同一道對同一塊只抽一次」（抽過就用 b.twSkip 記著），所以停在
      建築上啃完那一口就再也不動它——那時候量到的是「整段壽命下來就是兩成」。
      這裡把一道釘在建築上不讓它走，看每一秒累計吸走幾成：要一路往上長，
-     而且貼著 1−(1−TW_TAKE)^t（v1.123 的 0.46：一秒 0.460、兩秒 0.708、三秒 0.843；
-     v1.116 的 0.35 是 0.350／0.578／0.725、v1.115 的 0.2 是 0.200／0.360／0.488）。
+     而且貼著 1−(1−TW_TAKE)^t（v1.151 的 0.71：一秒 0.710、兩秒 0.916、三秒 0.976；
+     v1.123 的 0.46 是 0.460／0.708／0.843、v1.116 的 0.35 是 0.350／0.578／0.725、
+     v1.115 的 0.2 是 0.200／0.360／0.488）。實測 0.708／0.919／0.978。
      釘的方式是每幀把座標推回去（stepTwist 每幀都會重算速度，改速度沒用）。
      藍圖指定新天鵝堡：分母要夠大抽樣誤差才壓得下去，隨機藍圖抽到中央是空的
      （金門大橋）會一塊都選不到，量到的就是 0/0。 */
@@ -9469,7 +9495,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 容許 ±0.06：分母幾百塊，抽樣誤差本來就有兩三個百分點。v1.116 起垮塌在量的時候
      是關掉的（見上面），所以不必再為「連帶垮下來的」放寬上緣——實測三秒 74.8%／70.4%
      （理論 72.5%），兩個 dt 都在 ±0.03 以內。 */
-  ok('龍捲風罩著不走就一路啃下去，每秒吸走四成六',
+  ok('龍捲風罩著不走就一路啃下去，每秒吸走七成一',
      twTake.n > 200 && twTake.got.length === 3 &&
      twTake.got.every((v, i) => v > twTake.want[i] - 0.06 && v < twTake.want[i] + 0.10),
      '釘在原地：範圍內 ' + twTake.n + ' 塊，每秒累計吸走 ' +
@@ -9576,7 +9602,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const born = twists.length;
     const spins = twists.map(w => +w.spin.toFixed(2));
     const spinsRaw = twists.map(w => w.spin);
-    for (let i = 0; i < 60; i++) step(0.02);       // 1.2 秒後看它們有沒有黏在一起
+    /* 0.6 秒（v1.151，本來 1.2 秒）。**量測點跟著速度換算，門檻沒動**：
+       只給一個點的 launchTornado 是「朝工地中心掃」，四道從半徑 23 的圓上出發
+       等於四道對衝，最近距離本來就會一路收窄——實測每 0.1 秒是
+       28.9／26.8／24.8／22.8／20.5／17.8／15.0／12.3／9.6／7.2／5.2／4.6。
+       v1.151 速度乘 2 之後，1.2 秒剛好落在交會點上（4.6），而 0.6 秒（15.0）
+       走的路 9.4 單位跟舊版 1.2 秒完全一樣——同一個幾何時刻，同一條門檻。
+       這一條要驗的是「各走各的，不是黏成一團同步移動」，不是「永遠不交會」。 */
+    for (let i = 0; i < 30; i++) step(0.02);
     const alive = twists ? twists.length : 0;
     let gap = 1e9;
     for (let i = 0; i < alive; i++)
@@ -9592,7 +9625,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('每一道各轉各的', twMany.same === twMany.born,
      '起始角度 ' + JSON.stringify(twMany.spins) + '（都一樣的話幾道會擺出同一個姿勢）');
   ok('幾道不會疊在同一點', twMany.gap > 6,
-     '1.2 秒後最近的兩道相距 ' + twMany.gap + ' 單位');
+     '0.6 秒後最近的兩道相距 ' + twMany.gap + ' 單位（v1.150 之前是量 1.2 秒，' +
+     '那時候的速度走一樣的路）');
 
   /* 一道跟四道畫起來一樣貴：每一層是一顆 InstancedMesh，場上幾道只是多幾個 instance */
   const twCalls = await page.evaluate(() => {
@@ -15226,7 +15260,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dfire.set0 + ' → ' + dpass.map(d => d.lowSet).join('／') +
      ' 塊（取中位 ' + dfire.lowSet + '，門檻 ' + Math.round(dfire.set0 * 0.5) +
      '），phase ' + dpass.map(d => d.ph).join('／'));
-  /* 「大約隕石那樣大」＝同一組數字（範圍 9.2、威力 16），所以同一點炸下去要一樣。 */
+  /* 「大約隕石那樣大」＝範圍 9.2、威力 16，那是**使用者說那句話時**（v1.146）的隕石。
+     v1.151 使用者把隕石指定放大 5 倍（範圍 46，比核彈的 30 還大一圈），火球
+     **沒有跟著放大**——一隻飛龍吐出比核彈還大的火球不是使用者要的東西，
+     所以 FB_R／FB_POW 從那一版起自己一組數字，不再寫成 MET_R／MET_POW。
+     這一條因此從「跟隕石一樣」改成守「還是 v1.146 那一組」：常數要對，
+     而且同一點炸下去打掉的要明顯比現在的隕石少（實測 753 對 2931 塊）。 */
   const dpow = {};
   for (const kind of ['fball', 'meteor']) {
     await fillAll(page);
@@ -15239,8 +15278,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return n0 - blocks.filter(b => b.st === SET).length;
     }, kind);
   }
-  ok('火球的大小與威力就是隕石那一組', dpow.fball === dpow.meteor,
-     '同一點炸下去：火球 ' + dpow.fball + ' 塊、隕石 ' + dpow.meteor + ' 塊');
+  const dnum = await page.evaluate(() => ({ r: FB_R, pow: FB_POW, mr: MET_R, mpow: MET_POW }));
+  ok('火球維持 v1.146 那一組數字，沒被放大 5 倍的隕石帶著走',
+     dnum.r === 9.2 && dnum.pow === 16 && dnum.mr > dnum.r * 4 &&
+     dpow.fball < dpow.meteor * 0.6,
+     '火球 範圍 ' + dnum.r + '／威力 ' + dnum.pow + '，隕石 ' + dnum.mr + '／' + dnum.mpow +
+     '；同一點炸下去 火球 ' + dpow.fball + ' 塊、隕石 ' + dpow.meteor + ' 塊');
 
   const dpick = await page.evaluate(() => {
     const cnt = {};
@@ -15771,13 +15814,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     d.x = -30; d.z = 0; d.st = 'ring'; d.y = 30;
     twists = null;
     launchTornado({ x: -30, z: 0 }, { x: -30, z: 6 });
-    let up = 0;
-    for (let i = 0; i < 60; i++) { step(0.05); up = Math.max(up, m.y); }
-    return { up: +up.toFixed(1), air: m.air, dra: d.st, dy: +d.y.toFixed(0) };
+    let up = 0, air = 0;
+    /* 「離過地」要取整段的最大值，不能只看最後一刻（v1.151）：漏斗 v1.151 起
+       走 15.6 單位／秒，三秒就竄到四十幾單位外，猴子被捲上去之後**會落地**——
+       結尾那一刻的 m.air 是 0，但它確實被捲走了。這一條驗的是「捲得走」。 */
+    for (let i = 0; i < 60; i++) {
+      step(0.05);
+      up = Math.max(up, m.y); air = Math.max(air, m.air ? 1 : 0);
+    }
+    return { up: +up.toFixed(1), air, airEnd: m.air ? 1 : 0, dra: d.st, dy: +d.y.toFixed(0) };
   });
   ok('龍捲風捲得走猴子，捲不走天上的飛龍',
      hTw.up > 2 && hTw.air === 1 && hTw.dra !== 'crash',
-     '猴子被捲到 ' + hTw.up + ' 格高；飛龍還在 ' + hTw.dra + '（y=' + hTw.dy + '）');
+     '猴子被捲到 ' + hTw.up + ' 格高（三秒後落回地面＝' + (hTw.airEnd ? '還沒' : '已經') +
+     '）；飛龍還在 ' + hTw.dra + '（y=' + hTw.dy + '）');
 
   /* ── 王之財寶的兵器射得中 ── */
   const hWeap = await page.evaluate(() => {
@@ -15959,13 +16009,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 隕石 ══════════ */
   await head('隕石');
-  await reset(page, { shape: '新天鵝堡', cnt: 3000, workers: 4 });
+  /* 靶要**比爆炸範圍大**（v1.151，本來是新天鵝堡 3000）：隕石放大 5 倍之後範圍是 46，
+     而新天鵝堡 3000 塊的 siteR 只有 17——一顆下去整座 3036 塊全部掃平（實測 set 歸 0），
+     於是「還站著又燒起來幾塊」結構上必然是 0，「兩秒後蔓延開」也就無從發生。
+     換成萬里長城（x 跨 −27～27）並把落點壓在一端：遠端那一截在 46 之外活得下來、
+     又落在 igniteAround 的 73.6 裡面，所以照樣被點著、照樣蔓延
+     （兩輪實測 46 之外還站著 145／152 塊、當場燒 71／82 塊 → 兩秒後 111／114 塊）。 */
+  await reset(page, { shape: '萬里長城', cnt: 3000, workers: 4 });
   const met = await page.evaluate(() => {
     completeNow();
     clearFires();
     hot.length = 0; flashes.length = 0; dust.length = 0;
     const dust0 = dust.length;
-    callMeteor({ x: 0, y: 4, z: 0 });
+    callMeteor({ x: -siteR * 0.75, y: 4, z: 0 });
     const m = meteors[0];
     const aim = { x: m.tx, y: m.ty, z: m.tz };
     for (let i = 0; i < 40; i++) step(0.05);          // 2 秒：還在倒數
@@ -16000,11 +16056,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 只數「還站著又燒起來」的：碎料的火另外算（爆炸一次就上千塊），
        混在一起的話這裡量到的是碎料的量，不是火有沒有蔓延。 */
     const nSet = () => fires ? fires.filter(f => f.sp).length : 0;
-    const hit = { fires: nSet(), flash: flashes.length,
+    const hit = { fires: nSet(), flash: flashes.length, set: blocks.filter(b => b.st === 3).length,
                   fy: flashes.length ? +flashes[0].y.toFixed(1) : -1, smashed: stats.smashed };
     for (let i = 0; i < 40; i++) step(0.05);          // 兩秒後火該蔓延開了
     const spread = nSet();
-    return { wait, enter, ang, flying, hit, spread, R: MET_R, rockR: ROCK_R, fall: MET_FALL };
+    return { wait, enter, ang, flying, hit, spread,
+             R: MET_R, rockR: ROCK_R, sz: MET_S, fall: MET_FALL };
   });
   ok('點下去先倒數，天上還沒東西',
      met.wait.n === 1 && met.wait.lit === 0 && met.wait.mark > 20,
@@ -16029,7 +16086,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('落地不炸出火球，但會燒起來',
      met.hit.flash === 0 && met.hit.fires > 0 && met.spread > met.hit.fires,
      '火球 ' + met.hit.flash + ' 顆、當場點著 ' + met.hit.fires +
-     ' 塊，兩秒後蔓延到 ' + met.spread + ' 塊');
+     ' 塊，兩秒後蔓延到 ' + met.spread + ' 塊（半徑 46 之外還站著 ' + met.hit.set + ' 塊）');
   /* 拿掉的只有「爆炸的長相」：火球、噴出來的火星、貼地光環、衝擊環。
      衝擊波本身留著（積木照樣被砸飛），塵土與震動也留著。
      直接叫 meteorHit 量：這樣不會混到倒數期間那些地面預告環。 */
@@ -16059,8 +16116,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      metLook.mine.shake > 0.3 && metLook.mine.fires > 0,
      '砸飛 ' + metLook.mine.smashed + ' 塊、揚塵 ' + metLook.mine.dust +
      ' 團、震動 ' + metLook.mine.shake + '、點著 ' + metLook.mine.fires + ' 塊');
-  ok('範圍是投石機石頭的兩倍', Math.abs(met.R - met.rockR * 2) < 1e-6,
-     '石頭 ' + met.rockR + ' → 隕石 ' + met.R);
+  /* v1.151（使用者：「隕石大幅提高大小 約5倍(包含隕石本體&破壞範圍)」）。
+     兩件事寫成一條，因為使用者要的是同一件事：這顆東西整體大 5 倍。
+     v1.150 之前是「範圍＝投石機石頭的兩倍」（9.2）、石身 2 格。 */
+  ok('本體與破壞範圍都放大 5 倍（v1.151）',
+     met.sz === 10 && Math.abs(met.R - met.rockR * 10) < 1e-6,
+     '石身 ' + met.sz + ' 格（v1.150 是 2）、範圍 ' + met.R +
+     '＝投石機石頭 ' + met.rockR + ' 的十倍（v1.150 是兩倍 9.2；核彈是 30）');
 
   /* 威力：同一座建築、同一個落點，隕石打掉的要明顯比投石機的石頭多。
      只比常數不算驗證——要驗的是那個半徑真的有作用到積木上。 */
