@@ -10915,12 +10915,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '台北 101（高 ' + gateHi.H + '）點在 ' + gateHi.ty + ' 高：打中 ' + gateHi.blk.hits +
      ' 發、高度中位數 ' + gateHi.blk.mid + '（點空地是 ' + gateHi.gnd.hits + ' 發、' +
      gateHi.gnd.mid + '）；吸得到的積木 ' + gateHi.blk.spots + ' 塊');
-  /* 落空的那一把要跟點空地同一個量級。實測 block 九成位 18.2、最遠 42.6；
-     ground 九成位 31.7、最遠 46.2——**反而比點空地近**。
-     絕對門檻 70 是「還在草皮上」；相對門檻 1.5 倍擋的是回歸：拿掉 stepWeapons 那條
-     w.aimY，同一座塔的九成位會衝到 175～198、最遠 248（畫面上是一條刀劍拖出去的尾巴）。 */
-  ok('瞄高了，落空的兵器也沒有因此飛出場外',
-     gateHi.blk.farMax < 70 && gateHi.blk.far9 < gateHi.gnd.far9 * 1.5,
+  /* 落空的那一把走**拋物線**落地（v1.152.1，使用者：v1.152.0 那個「穿過去 1.5 格
+     然後扭一扭直直往下落」看起來很怪，「應該是變成拋物線才對」）。所以它落得比點空地遠
+     ——那是拋物線本來就會有的事，要擋的是「一路滑出場外」不是「比點空地遠」。
+     實測（四趟）：block 九成位 56～59、最遠 62～66；ground 九成位 28.6～29、最遠 37～42。
+     兩條門檻各擋一種回歸：
+     ① 絕對 85 擋「阻力沒了」——純拋物線（GATE_DRAG ＝ 0）同一座塔是九成位 87、最遠 97；
+     ② 相對 2.5 倍擋「整條規則沒了」——拿掉 stepWeapons 那條 w.aimY 是九成位 175～198、
+        最遠 248（畫面上是一條刀劍拖出去的尾巴橫過整片草地）。
+     實測的比值 1.97～2.05，離 2.5 有兩成餘裕。 */
+  ok('落空的那一把是拋物線落地，不是一路滑出場外',
+     gateHi.blk.farMax < 85 && gateHi.blk.far9 < gateHi.gnd.far9 * 2.5,
      '插／躺在地上的距離：點建築 九成位 ' + gateHi.blk.far9 + '、最遠 ' + gateHi.blk.farMax +
      '（' + gateHi.blk.lie + ' 把）；點空地 九成位 ' + gateHi.gnd.far9 + '、最遠 ' +
      gateHi.gnd.farMax + '（' + gateHi.gnd.lie + ' 把）');
