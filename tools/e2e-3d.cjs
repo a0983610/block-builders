@@ -13150,6 +13150,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       peak = Math.max(peak, ...workers.map(w => w.y));
       air = Math.max(air, workers.filter(w => w.air).length);
     }
+    /* 收掉自己召出來的那道（v1.151.1）：漏斗活 10 秒，這裡只跑 6 秒——
+       剩下那 4 秒會漏進下面兩條，而它們把人排在自己指定的位置上，
+       正好會被路過的漏斗掃走。v1.151 速度乘 2 之後漏得更遠，下面那條
+       〈抱頭跑圈圈〉當場紅了（2.8 秒跑了 55 單位、離原地 27.8，而門檻是 6）；
+       保齡球那條也早就在量錯東西——20 個人全被「撞飛」40.8 單位，那不是球做的。 */
+    twists = null; ENG.putTornados([]);
     return { peak: +peak.toFixed(1), air, burn: workers.filter(w => w.burn > 0).length };
   });
   ok('龍捲風會把小人一起捲上天', twisted.air > 0 && twisted.peak > 15,
@@ -13186,6 +13192,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     // 只看真的被撞飛的那些飛了多遠——沒被撞到的人自己也會走，混進來就不是這個數字
     const push = [...flew].map(k => top[k] - p0[k]).sort((a, b) => b - a);
+    balls = null; ENG.putBalls([]);      // 同上：球還在滾，下一條的人就站在它的路上
     return { air, flew: flew.size, best: +(push[0] || 0).toFixed(1),
              burn: workers.filter(w => w.burn > 0).length };
   });
@@ -15261,11 +15268,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 塊（取中位 ' + dfire.lowSet + '，門檻 ' + Math.round(dfire.set0 * 0.5) +
      '），phase ' + dpass.map(d => d.ph).join('／'));
   /* 「大約隕石那樣大」＝範圍 9.2、威力 16，那是**使用者說那句話時**（v1.146）的隕石。
-     v1.151 使用者把隕石指定放大 5 倍（範圍 46，比核彈的 30 還大一圈），火球
-     **沒有跟著放大**——一隻飛龍吐出比核彈還大的火球不是使用者要的東西，
+     v1.151 使用者把隕石指定放大（v1.151.1 定案是半徑 ×2、範圍 18.4），火球
+     **沒有跟著放大**——那是另一把道具，不該被隕石的每一次調整帶著跑，
      所以 FB_R／FB_POW 從那一版起自己一組數字，不再寫成 MET_R／MET_POW。
      這一條因此從「跟隕石一樣」改成守「還是 v1.146 那一組」：常數要對，
-     而且同一點炸下去打掉的要明顯比現在的隕石少（實測 753 對 2931 塊）。 */
+     而且同一點炸下去打掉的要明顯比現在的隕石少（實測 799 對 2487 塊）。 */
   const dpow = {};
   for (const kind of ['fball', 'meteor']) {
     await fillAll(page);
@@ -15279,8 +15286,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }, kind);
   }
   const dnum = await page.evaluate(() => ({ r: FB_R, pow: FB_POW, mr: MET_R, mpow: MET_POW }));
-  ok('火球維持 v1.146 那一組數字，沒被放大 5 倍的隕石帶著走',
-     dnum.r === 9.2 && dnum.pow === 16 && dnum.mr > dnum.r * 4 &&
+  ok('火球維持 v1.146 那一組數字，沒被放大的隕石帶著走',
+     dnum.r === 9.2 && dnum.pow === 16 && dnum.mr > dnum.r * 1.5 &&
      dpow.fball < dpow.meteor * 0.6,
      '火球 範圍 ' + dnum.r + '／威力 ' + dnum.pow + '，隕石 ' + dnum.mr + '／' + dnum.mpow +
      '；同一點炸下去 火球 ' + dpow.fball + ' 塊、隕石 ' + dpow.meteor + ' 塊');
@@ -16009,12 +16016,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 隕石 ══════════ */
   await head('隕石');
-  /* 靶要**比爆炸範圍大**（v1.151，本來是新天鵝堡 3000）：隕石放大 5 倍之後範圍是 46，
-     而新天鵝堡 3000 塊的 siteR 只有 17——一顆下去整座 3036 塊全部掃平（實測 set 歸 0），
-     於是「還站著又燒起來幾塊」結構上必然是 0，「兩秒後蔓延開」也就無從發生。
-     換成萬里長城（x 跨 −27～27）並把落點壓在一端：遠端那一截在 46 之外活得下來、
-     又落在 igniteAround 的 73.6 裡面，所以照樣被點著、照樣蔓延
-     （兩輪實測 46 之外還站著 145／152 塊、當場燒 71／82 塊 → 兩秒後 111／114 塊）。 */
+  /* 靶要**比爆炸範圍大**（v1.151，本來是新天鵝堡 3000）。新天鵝堡的 siteR 只有 17，
+     而 v1.151.1 的隕石半徑是 18.4：一顆下去多半整座掃平，爆炸半徑外常常只剩幾十塊
+     ——那幾十塊當場點著之後 2.2 秒就燒完脫落，於是「兩秒後蔓延開」反而變少。
+     同一組參數各跑 10 趟：**新天鵝堡 5 趟不合格**（半徑外剩 77／1815／71／582／68／252／
+     76／641／106／1174 塊，當場燒 32～44、兩秒後 20～149），**萬里長城 10 趟全過**
+     （半徑外剩 1621～2039、當場燒一律 44、兩秒後 137～150）。所以改打萬里長城
+     （x 跨 −27～27）並把落點壓在一端：遠端那一截在 18.4 之外活得下來、
+     又落在 igniteAround 的 29.4 裡面，所以照樣被點著、照樣蔓延。 */
   await reset(page, { shape: '萬里長城', cnt: 3000, workers: 4 });
   const met = await page.evaluate(() => {
     completeNow();
@@ -16086,7 +16095,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('落地不炸出火球，但會燒起來',
      met.hit.flash === 0 && met.hit.fires > 0 && met.spread > met.hit.fires,
      '火球 ' + met.hit.flash + ' 顆、當場點著 ' + met.hit.fires +
-     ' 塊，兩秒後蔓延到 ' + met.spread + ' 塊（半徑 46 之外還站著 ' + met.hit.set + ' 塊）');
+     ' 塊，兩秒後蔓延到 ' + met.spread + ' 塊（爆炸半徑外還站著 ' + met.hit.set + ' 塊）');
   /* 拿掉的只有「爆炸的長相」：火球、噴出來的火星、貼地光環、衝擊環。
      衝擊波本身留著（積木照樣被砸飛），塵土與震動也留著。
      直接叫 meteorHit 量：這樣不會混到倒數期間那些地面預告環。 */
@@ -16116,13 +16125,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      metLook.mine.shake > 0.3 && metLook.mine.fires > 0,
      '砸飛 ' + metLook.mine.smashed + ' 塊、揚塵 ' + metLook.mine.dust +
      ' 團、震動 ' + metLook.mine.shake + '、點著 ' + metLook.mine.fires + ' 塊');
-  /* v1.151（使用者：「隕石大幅提高大小 約5倍(包含隕石本體&破壞範圍)」）。
-     兩件事寫成一條，因為使用者要的是同一件事：這顆東西整體大 5 倍。
+  /* 使用者：「隕石大幅提高大小 約5倍(包含隕石本體&破壞範圍)」。
+     兩件事寫成一條，因為使用者要的是同一件事：這顆東西整體變大。
+     **5 倍講的是體積，不是半徑**（v1.151.1，使用者：「隕石現在有點過大了 因為你是
+     半徑變為五倍 體積就會變 5^3 如果是這樣大概半徑接近兩倍的程度」）：v1.151 照半徑 ×5
+     做出來的範圍是 46（體積 ×125、比核彈的 30 還大一圈），一顆就把 3000 塊的地標
+     整個掃成瓦礫。現在是半徑 ×2（體積 ×8，使用者說的「接近兩倍」）。
      v1.150 之前是「範圍＝投石機石頭的兩倍」（9.2）、石身 2 格。 */
-  ok('本體與破壞範圍都放大 5 倍（v1.151）',
-     met.sz === 10 && Math.abs(met.R - met.rockR * 10) < 1e-6,
+  ok('本體與破壞範圍都放大 2 倍（v1.151.1：5 倍講的是體積）',
+     met.sz === 4 && Math.abs(met.R - met.rockR * 4) < 1e-6,
      '石身 ' + met.sz + ' 格（v1.150 是 2）、範圍 ' + met.R +
-     '＝投石機石頭 ' + met.rockR + ' 的十倍（v1.150 是兩倍 9.2；核彈是 30）');
+     '＝投石機石頭 ' + met.rockR + ' 的四倍（v1.150 是兩倍 9.2；核彈是 30）');
 
   /* 威力：同一座建築、同一個落點，隕石打掉的要明顯比投石機的石頭多。
      只比常數不算驗證——要驗的是那個半徑真的有作用到積木上。 */
