@@ -1474,6 +1474,10 @@ const WT_EASE = 0.1;                // 站住的水：畫出來的水面追上�
 const WT_EASE_AIR = 0.02;           // 半空中的水：幾乎不延遲（落下的水一拍就該掉一格）
 const SEEP_G = 0.6;                 // 貼在草地上的那一格每秒滲掉多少（一格約 1.7 秒）
 const SEEP_B = 0.02;                // 貼在積木上的那一格每秒漏多少（縫隙，慢——太快的話水還沒流到地面就乾了）
+/* 一拍讓下去的量不到這個，就當它是「跟著滲水往下坐」、不算在往下掉（見①的 c.grd）。
+   ＝草地一拍滲掉的量（0.6 ÷ 30 ＝ 0.02 格）再留五成餘裕。跟著 SEEP_G 走，
+   哪天滲快一點也不用回來改這個數字。 */
+const WT_SINK = SEEP_G * WT_TICK * 1.5;
 let water = null;                   // { cells: Map, pours: [], acc, wt, wave }
 
 /* 世界座標 ↔ 格子座標。gOffX/gOffZ 是藍圖角落的偏移。 */
@@ -1520,7 +1524,7 @@ function addWater(gx, gy, gz, v) {
   if (c) { const put = Math.min(v, 1 - c.v); c.v += put; return put; }
   if (W.cells.size >= WT_CELLS) return 0;          // 保險絲：不會無限長
   const put = Math.min(1, v);
-  W.cells.set(k, { gx, gy, gz, v: put, f: 63, rim: 0, sub: 0, sup: 0, hd: 0,
+  W.cells.set(k, { gx, gy, gz, v: put, f: 63, rim: 0, sub: 0, sup: 0, grd: 0, hd: 0,
                    h: put, hv: put, sb: [0, 0, 0, 0], vis: put > WT_SHOW ? 1 : 0 });
   return put;
 }
@@ -1704,7 +1708,7 @@ function waterTick() {
   for (const c of list) {                          // ① 往下掉
     if (c.v <= 0) continue;
     const gy = c.gy - 1;
-    if (gy < 0 || solidAt(c.gx, gy, c.gz)) { c.sup = 1; continue; }   // 站在地面／積木上
+    if (gy < 0 || solidAt(c.gx, gy, c.gz)) { c.sup = c.grd = 1; continue; }  // 站在地面／積木上
     const bl = cs.get(wkey(c.gx, gy, c.gz));
     const move = Math.min(c.v, 1 - (bl ? bl.v : 0), WT_FALL);
     /* 只挪得動一點點就當它**站住了**（下一段才會往旁邊攤）。
@@ -1712,18 +1716,51 @@ function waterTick() {
        水就會一直往下滴 0.003、永遠不算站住、也就永遠不往旁邊攤——
        實測倒進馬克杯的水會變成一根 26 格高的細柱站在杯子裡不肯攤平。
 
-       **c.sup ＝ 腳下那一疊水一路撐到地面／積木**（由下往上算，所以下面那格已經算好了）。
-       半空中的水不算站住：往下掉的水不會往旁邊散開，一柱水掉下去就是一柱
+       **兩個旗標都是「腳下那一疊水一路撐到地面／積木」**（由下往上算，所以下面那格
+       已經算好了），差在對「這一拍讓了多少水下去」的容忍度：
+       　c.sup＝**定下來的水**（桶口找水面、畫面那邊在讀）——這一拍讓了水下去就不算。
+       　c.grd＝**腳下撐得住**（②往旁邊攤在讀）——只讓下去一拍滲掉的量還是算，見下面。
+       半空中的水兩個都不是：往下掉的水不會往旁邊散開，一柱水掉下去就是一柱
        （不分這件事的話，一股水掉個十幾格就散成一大片薄薄的水簾——
        使用者：「往下流的水體只有頂部一層的感覺」）。 */
-    if (move <= WT_LEVEL) { c.sup = bl && bl.sup && bl.v >= 1 - WT_LEVEL ? 1 : 0; continue; }
+    if (move <= WT_LEVEL) {
+      c.sup = bl && bl.sup && bl.v >= 1 - WT_LEVEL ? 1 : 0;
+      c.grd = bl && bl.grd && bl.v >= 1 - WT_LEVEL ? 1 : 0;
+      continue;
+    }
     c.v -= move;
     addWater(c.gx, gy, c.gz, move);
     c.sup = 0;
+    /* **讓下去的量只有「一拍滲掉的那一點」的，腳下照樣算撐到地面**（c.grd，v1.155）。
+       那不是在往下掉，是跟著草地滲水往下坐；②往旁邊攤認的就是這個旗標。
+
+       不分這件事的話，草地上那一柱水永遠塌不下來：貼著草地的那一格每一拍滲掉
+       0.02 格（SEEP_G 0.6 ÷ 30 拍），剛好開出一個比 WT_LEVEL 大一絲的洞，於是整柱水
+       每一拍往下滴 0.02 格、每一格都被記成「在半空中」——而②只有站著的才攤，所以
+       誰都不攤。實測（裝滿的馬克杯，杯子瞬間消失）：2181 格水裡有 1863 格自認在
+       半空中，水面 5.8 秒只降 3.6 格（0.6 格/秒，剛好就是滲水的速度）、重心 6 秒不動。
+       使用者：「杯子瞬間消失…流下的速度很慢，現實中會類似自由落體快速流下」。
+       杯子裡的水沒這毛病：它坐在積木上，SEEP_B 一拍只滲 0.0007 格，開不出那個洞。
+
+       門檻用 WT_SINK（滲一拍的量），不能用「腳下填滿了沒有」：桶口倒出來的那道水流
+       每一格都是先把自己的半格全部讓下去、再從上面接半格回來（讓下去的是 0.5），
+       只看「腳下填滿了」的話它也會算站著，一道水流就往旁邊攤成一片水簾
+       （實測半空中每層 12 格，該是 1 格）。
+
+       **還要看自己是不是滿的**（c.v）：算是水體的是「一整塊靜止的水」，正在流的不算。
+       少了這個條件，破口外面那道水柱會攤開來——實測平均 4.8 → 9.1 格寬、每格
+       0.59 → 0.28 格水，那正是 v1.84 修掉的「往下流的水體只有頂部一層的感覺」。
+
+       **為什麼另開一個旗標、不直接放寬 c.sup**：c.sup 還有別的讀者——桶口找水面
+       （injectWater）跟畫面那邊。把草地上那一疊算成 sup 的話，桶口會停在水堆頂上倒，
+       而那一層的旁邊是空氣，BFS 就往半空中鋪開來：實測平地倒一桶會長成一座
+       10×10×14 格的水塔（本來是灌到地面那一層、攤成一大片 51 格寬的水窪）。 */
+    c.grd = move <= WT_SINK && c.v >= 1 - WT_SINK &&
+            bl && bl.grd && bl.v >= 1 - WT_LEVEL ? 1 : 0;
     if (move > 0.25) sprayAt(wldX(c.gx), c.gy, wldZ(c.gz), WT_SPRAY);
   }
   for (const c of list) {                          // ② 往旁邊攤（只有站在東西上的才攤）
-    if (c.v <= WT_MIN || !c.sup) continue;
+    if (c.v <= WT_MIN || !c.grd) continue;
     for (const d of DIR4) {
       const nx = c.gx + d[0], nz = c.gz + d[1];
       if (solidAt(nx, c.gy, nz)) continue;

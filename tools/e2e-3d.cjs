@@ -11786,6 +11786,91 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '杯內水面 ' + wbHole.before.surf + ' → ' + wbHole.after +
      ' 層（破口下緣 ' + wbHole.hy + '）');
 
+  /* 杯子瞬間消失：那一柱水要**塌下來**，不是站在原地慢慢往下坐（v1.155）。
+     使用者：「把水裝在杯子中、杯子瞬間消失，一顆水柱的情況下流下的速度很慢，
+     現實中會類似自由落體快速流下」。
+
+     成因不在「落下速度」那個常數（一拍掉一格 ＝ 30 格/秒，本來就比自由落體快）：
+     貼著草地的那一格每一拍滲掉 0.02 格（SEEP_G 0.6 ÷ 30 拍），剛好開出一個比
+     WT_LEVEL 大一絲的洞，於是整柱水每一拍往下滴 0.02 格、每一格都把自己記成
+     「在半空中」——而②往旁邊攤那段只有站住的水才攤，所以誰都不攤，水柱只能跟著
+     滲水的速度往下坐。實測改版前：水面 5.8 秒只降 3.6 格（0.6 格/秒，剛好是滲水
+     的速度）、重心 6 秒不動、2181 格水裡有 1863 格自認在半空中。
+     杯子裡的水沒這毛病：坐在積木上，SEEP_B 一拍只滲 0.0007 格，開不出那個洞。 */
+  const wbFall = await page.evaluate(() => {
+    cleanTools();
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    const mx = cellX(0), mz = cellZ(0);
+    pourBucket(0, rim + 2, 0, WB_DROPS);
+    for (let i = 0; i < 60 * 22; i++) step(1 / 60);          // 裝水、等它靜下來
+    /* 「這一塊水的頂」取**有 50 格以上水的最高那一層**：只看最高的那一格會被
+       噴出去的零星水花帶著跑（那幾格飛在半空，跟水柱塌不塌無關）。 */
+    const prof = () => {
+      const byY = new Map();
+      let vol = 0, cy = 0;
+      for (const c of water.cells.values()) {
+        byY.set(c.gy, (byY.get(c.gy) || 0) + c.v);
+        vol += c.v; cy += c.v * (c.gy + c.v / 2);
+      }
+      let bulk = -1;
+      for (const [y, v] of byY) if (v > 50 && y > bulk) bulk = y;
+      return { bulk, com: +(cy / vol).toFixed(2), vol: Math.round(vol) };
+    };
+    // 中央那一柱：滿的格子裡，有幾格的腳下不算撐到地面（＝塌不下來的那種格子）
+    const midAir = () => {
+      let full = 0, air = 0;
+      for (let gy = 0; gy < 40; gy++) {
+        const c = water.cells.get(wkey(mx, gy, mz));
+        if (!c || c.v <= 0.9) continue;
+        full++; if (!c.grd) air++;
+      }
+      return { full, air };
+    };
+    const a = prof();
+    // 杯子瞬間消失：已就位的積木全部原地解成碎料（bp.slots 的 filled 跟著變 false）
+    let gone = 0;
+    for (const b of blocks) if (b.slot >= 0) { freeBlock(b); gone++; }
+    const at = {};
+    let t = 0, half = -1;
+    while (t < 3 && water) {
+      step(1 / 60); t += 1 / 60;
+      const p = prof();
+      if (half < 0 && p.com <= a.com / 2) half = t;
+      const k = Math.round(t * 60);
+      /* 「每一格都撐得住」在**杯子剛沒的時候**量（0.3 秒）：那正是改版前卡住的狀態
+         （整柱水都記著「我在半空中」、誰都不往旁邊攤）。等到塌到一半再量就沒意義了
+         ——那時候柱子中段真的在往下掉，本來就不該算站著（實測 1 秒時 10 格裡有 3 格）。 */
+      if (k === 18) at.air03 = midAir();
+      if (k === 60) at.s10 = p;
+      if (k === 180) at.s30 = p;
+    }
+    const r = { rim, gone, a, at, half: +half.toFixed(2),
+                ff: +Math.sqrt(2 * (a.com / 2) / GRAV).toFixed(2),
+                seep: +(a.com / 2 / SEEP_G).toFixed(1) };
+    cleanTools();
+    return r;
+  });
+  /* 「跟著滲水往下坐」與「塌下來」差了一個量級，所以量重心掉一半要幾秒，
+     兩邊各給一個對照：自由落體 0.5 秒上下、跟著滲水要 4.7 秒。
+     門檻的位置：改版前實測 1 秒後水面還在第 10 層、3 秒後第 9 層、重心 6 秒不動
+     （壓根沒掉到一半），改版後是第 7 層／第 4 層／1.5 秒。 */
+  ok('杯子瞬間消失，那一柱水會塌下來（不是跟著滲水慢慢往下坐）',
+     wbFall.at.s10.bulk <= wbFall.a.bulk - 4 && wbFall.at.s30.bulk <= wbFall.a.bulk - 7 &&
+     wbFall.half > 0 && wbFall.half < 2.5,
+     '水面第 ' + wbFall.a.bulk + ' 層 → 1 秒後第 ' + wbFall.at.s10.bulk +
+     ' → 3 秒後第 ' + wbFall.at.s30.bulk + ' 層；重心 ' + wbFall.a.com + ' → 掉一半花 ' +
+     wbFall.half + ' 秒（自由落體 ' + wbFall.ff + ' 秒、跟著滲水要 ' + wbFall.seep +
+     ' 秒；改版前 3 秒只降 4 層、重心 6 秒不動）');
+  /* 成因那一層自己守一條：整柱水的腳下都算撐到地面，才輪得到②往旁邊攤。 */
+  ok('站在草地上的那一柱水，每一格都知道腳下撐得住',
+     wbFall.at.air03.full >= 8 && wbFall.at.air03.air === 0,
+     '杯子沒了 0.3 秒後，中央那一柱有 ' + wbFall.at.air03.full + ' 格是滿的，其中 ' +
+     wbFall.at.air03.air + ' 格自認在半空中（改版前是 11 格裡 10 格）');
+
   // 一下的水從屋頂一路流到地面，沿路把積木淋濕，但一塊都不會掉
   const wbFlow = await page.evaluate(() => {
     cleanTools();
