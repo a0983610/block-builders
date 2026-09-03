@@ -2355,6 +2355,9 @@ const ENG = (function () {
      右手（am > 0）還會跟著 m.arm 抬起來 m.raise 那麼多：黑獸獵把火把送到牆邊、
      白猴子把香蕉舉過頭。這一段平常是 0，只有站定要動手那兩秒才有值。 */
   const JOINT_Z = 0.03;                    // 關節的 z（肩與髖都在身體中線附近）
+  /* 四條腿的（牛、羊，v1.154）：前腳的肩在身體前段、後腳的髖在後段，兩個關節差了大半個
+     身長，共用 JOINT_Z 的話前腳會繞著肚子中間轉——擺起來是整條腿前後平移，不是踏步。
+     所以那幾塊各自帶一個 pz（這個關節的 z），沒寫的照舊用 JOINT_Z。 */
   /* 左右對稱的部位只寫右半邊（x 為正），左半邊鏡射出來：
      x 取負、繞 Y／Z 的角度取負、手腳擺動的正負號也跟著翻。 */
   function bmir(list) {
@@ -2590,32 +2593,144 @@ const ENG = (function () {
     { p: [0, -0.08, -0.88], s: [0.18, 0.18, 0.26], c: 0xd8451a }
   ];
 
-  const BEASTS = { ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL };
+  /* ── 閒逛的牛羊（v1.154）─────────────────────────────────
+     使用者：「增加場上幾隻閒逛的動物（會被破壞工具作用 也會著火類似小人）／牛羊 2~3 隻
+     依照小人行走邏輯不要走進建物裡面」。
+
+     跟猴子那兩隻的差別在**四條腿**：前腳的肩與後腳的髖差了大半個身長，所以那八塊
+     各自帶 pz（見上面 JOINT_Z）。對角同步：右前跟左後同相、左前跟右後同相——
+     所以右半邊寫 sw:1（前）與 sw:-1（後），bmir 會把左半邊翻成 −1 與 1。 */
+  /* 一種一張表會變成四份幾乎一樣的座標（使用者：「牛羊多種造型隨機出現」），
+     所以牛與羊各一支「照配色與零件開表」的函式：骨架共用，換的是毛色、臉色、
+     有沒有斑／乳房／肩峰、角多長。加第五款＝再叫一次，不必再抄一次座標。 */
+  const COW_SH = 0.58, COW_HIP = 0.58;               // 前肩／後髖的高度（腿的上緣）
+  const CW_EY = 0x17120f;
+  function cowParts(o) {
+    const mid = [
+      { p: [0, 0.71, -0.02], s: [0.60, 0.58, 1.04], c: o.hide },      // 軀幹（背頂 1.00）
+      { p: [0, 0.78, 0.34], s: [0.56, 0.42, 0.40], c: o.hide },       // 肩隆
+      { p: [0, 0.70, -0.54], s: [0.54, 0.52, 0.26], c: o.hide },      // 臀
+      { p: [0, 0.84, 0.60], s: [0.34, 0.36, 0.26], c: o.hide },       // 頸
+      /* 臉不要跟眼睛一樣深：黑頭配黑眼睛的話，正面看過去整顆是一團黑，
+         看不出牠在看哪邊（乳牛第一版就是這樣）。 */
+      { p: [0, 0.88, 0.84], s: [0.34, 0.34, 0.30], c: o.face },       // 頭
+      { p: [0, 0.78, 1.02], s: [0.28, 0.22, 0.14], c: o.muzzle },     // 吻
+      { p: [0, 0.80, -0.72], s: [0.07, 0.30, 0.08], c: o.hide, r: [0.22, 0, 0] },  // 尾
+      { p: [0, 0.58, -0.79], s: [0.09, 0.16, 0.09], c: o.tuft }       // 尾毛
+    ];
+    /* 黑白斑：背上一塊、頭頂一塊、肩上與側腹各一塊。乳牛的辨識度幾乎全靠這幾塊——
+       純白的身體遠看只是一個淺色方塊，跟綿羊分不開。 */
+    if (o.spots) mid.push(
+      { p: [0, 0.94, 0.02], s: [0.46, 0.20, 0.36], c: o.spot },
+      { p: [0, 1.00, 0.83], s: [0.35, 0.12, 0.28], c: o.spot });
+    if (o.udder) mid.push({ p: [0, 0.46, -0.28], s: [0.24, 0.16, 0.26], c: o.muzzle });
+    if (o.hump) mid.push({ p: [0, 0.96, 0.32], s: [0.40, 0.16, 0.32], c: o.spot });  // 肩峰
+    const side = [
+      { p: [0.07, 0.80, 1.10], s: [0.05, 0.05, 0.03], c: o.nose },    // 鼻孔
+      { p: [0.12, 0.94, 0.98], s: [0.07, 0.07, 0.04], c: CW_EY },     // 眼
+      { p: [0.23, 0.95, 0.80], s: [0.14, 0.07, 0.11], c: o.ear },     // 耳
+      { p: [0.12, 1.04, 0.86], s: [0.08, 0.12, 0.09], c: o.horn },    // 角（頂到 1.12）
+      { p: [0.18 + o.hornL, 1.09, 0.86], s: [0.09 + o.hornL * 2, 0.07, 0.08], c: o.horn },
+      /* 四條腿。前腳掛肩、後腳掛髖，pz 各自指到那個關節的 z。
+         擺幅只給 0.5（猴子那兩隻是 1）：四條腿各甩快 50 度的話那是奔跑不是散步。 */
+      { p: [0.20, 0.36, 0.36], s: [0.15, 0.42, 0.17], c: o.hide, sw: 0.5, pv: COW_SH, pz: 0.36 },
+      { p: [0.20, 0.09, 0.38], s: [0.16, 0.18, 0.19], c: o.hoof, sw: 0.5, pv: COW_SH, pz: 0.36 },
+      { p: [0.20, 0.36, -0.44], s: [0.16, 0.42, 0.18], c: o.hide, sw: -0.5, pv: COW_HIP, pz: -0.44 },
+      { p: [0.20, 0.09, -0.44], s: [0.17, 0.18, 0.19], c: o.hoof, sw: -0.5, pv: COW_HIP, pz: -0.44 }
+    ];
+    if (o.spots) side.push(
+      { p: [0.31, 0.62, -0.20], s: [0.05, 0.26, 0.30], c: o.spot },   // 側腹的斑
+      { p: [0.29, 0.84, 0.22], s: [0.05, 0.16, 0.18], c: o.spot });   // 肩上的斑
+    return mid.concat(bmir(side));
+  }
+  const COW = cowParts({                                  // 乳牛：白底黑斑
+    hide: 0xf1ede2, face: 0xf1ede2, spot: 0x2c2824, ear: 0x2c2824, tuft: 0x2c2824,
+    muzzle: 0xd99a92, nose: 0x8f5f5c, horn: 0xe6d9bb, hoof: 0x3a332e,
+    spots: 1, udder: 1, hump: 0, hornL: 0
+  });
+  const OX = cowParts({                                   // 黃牛：一身土黃、肩峰、角開得大
+    hide: 0xb5813f, face: 0xa8752f, spot: 0x8a5d2a, ear: 0xa8752f, tuft: 0x5b3d1c,
+    muzzle: 0xdfc9a8, nose: 0x6b4b34, horn: 0xd9cba8, hoof: 0x2e2823,
+    spots: 0, udder: 0, hump: 1, hornL: 0.07
+  });
+
+  /* 羊：剪影跟牛完全相反——一團凹凸的毛、深色的小臉小腿，矮一截、腿短一截。
+     毛**要分成好幾球**、大小錯開：第一版用三塊差不多大的方塊疊，接縫全被吃掉，
+     整隻看起來是一台淺色冰箱。 */
+  const SHP_SH = 0.40, SHP_HIP = 0.40;
+  function sheepParts(o) {
+    return [
+      { p: [0, 0.50, -0.02], s: [0.46, 0.40, 0.58], c: o.wool },      // 毛團：主體
+      { p: [0, 0.64, 0.08], s: [0.44, 0.28, 0.34], c: o.wool2 },      // 肩上那球（背頂 0.78）
+      { p: [0, 0.60, -0.24], s: [0.46, 0.30, 0.30], c: o.wool },      // 腰上那球
+      { p: [0, 0.50, 0.22], s: [0.38, 0.30, 0.22], c: o.wool2 },      // 前胸
+      { p: [0, 0.48, -0.36], s: [0.36, 0.32, 0.20], c: o.wool2 },     // 屁股
+      /* 頭要**探出毛團外面**、位置比背略低就好：埋在毛裡的話正面看過去只有一團毛，
+         看不出頭在哪邊（第二版就是這樣）。 */
+      { p: [0, 0.60, 0.34], s: [0.20, 0.22, 0.22], c: o.face },       // 頸
+      { p: [0, 0.64, 0.54], s: [0.24, 0.26, 0.26], c: o.face },       // 頭
+      { p: [0, 0.76, 0.48], s: [0.26, 0.12, 0.22], c: o.wool },       // 額前那撮毛（頂到 0.82）
+      { p: [0, 0.57, 0.70], s: [0.15, 0.13, 0.10], c: o.muzzle },     // 吻
+      { p: [0, 0.53, -0.46], s: [0.12, 0.14, 0.10], c: o.wool }       // 尾
+    ].concat(bmir([
+      { p: [0.26, 0.50, -0.02], s: [0.18, 0.34, 0.40], c: o.wool },   // 兩側各一球（剪影才凸）
+      { p: [0.10, 0.68, 0.66], s: [0.05, 0.05, 0.03], c: 0x14100e },  // 眼
+      { p: [0.16, 0.65, 0.50], s: [0.13, 0.06, 0.09], c: o.face },    // 耳
+      { p: [0.12, 0.74, 0.48], s: [0.08, 0.09, 0.10], c: o.horn },    // 捲角兩節
+      { p: [0.17 + o.hornL, 0.69, 0.54], s: [0.08 + o.hornL * 2, 0.08, 0.09], c: o.horn },
+      { p: [0.15, 0.24, 0.20], s: [0.10, 0.30, 0.11], c: o.face, sw: 0.45, pv: SHP_SH, pz: 0.20 },
+      { p: [0.15, 0.06, 0.21], s: [0.11, 0.12, 0.13], c: o.hoof, sw: 0.45, pv: SHP_SH, pz: 0.20 },
+      { p: [0.15, 0.24, -0.24], s: [0.10, 0.30, 0.11], c: o.face, sw: -0.45, pv: SHP_HIP, pz: -0.24 },
+      { p: [0.15, 0.06, -0.24], s: [0.11, 0.12, 0.13], c: o.hoof, sw: -0.45, pv: SHP_HIP, pz: -0.24 }
+    ]));
+  }
+  const SHEEP = sheepParts({                              // 綿羊：米白的毛、深褐的臉
+    wool: 0xf3ece0, wool2: 0xd6cbb4, face: 0x4b423a, muzzle: 0x5d5249,
+    horn: 0xc9b48e, hoof: 0x2e2823, hornL: 0
+  });
+  /* 黑面羊的毛要**明顯偏灰**：只差一階的話，兩隻羊站在草地上遠看是同一隻
+     （臉黑一點在那個距離看不出來）。 */
+  const RAM = sheepParts({                                // 黑面羊：灰毛、臉腳全黑、角大一圈
+    wool: 0xd6d1c2, wool2: 0xb8b1a0, face: 0x2b2723, muzzle: 0x3a342e,
+    horn: 0xb9a37c, hoof: 0x1f1b18, hornL: 0.05
+  });
+
+  const BEASTS = { ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
+                   cow: COW, ox: OX, sheep: SHEEP, ram: RAM };
   /* 每一種的模型範圍。破壞工具打得到牠們之後（v1.146），規則那邊要拿這三個數字擺姿勢，
      所以照造型表算出來、不寫死——改造型時不必記得回來改常數。
        floor 原點要離地多高，最低的那一塊才剛好貼著草皮（猴子的原點在腳底，所以是 0；
              飛龍的原點在身體中段，肚子在原點下面，摔在地上要用這個把牠墊起來）
        mid   身體中段，飛在半空翻滾時繞它轉（同小人的 AIR_PIVOT）
        lift  仰躺（繞 x 轉 −90°）時世界高度就是模型的 z，所以要抬「z 最伸出去的那一塊」
-             那麼多，整隻才剛好躺在草皮上（同小人的 FLAT_LIFT） */
-  const BEAST_FLOOR = {}, BEAST_MID = {}, BEAST_LIFT = {};
+             那麼多，整隻才剛好躺在草皮上（同小人的 FLAT_LIFT）
+       side  側躺（繞 z 轉 ±90°）時世界高度變成模型的 x，所以要抬的是「最寬的那一塊」
+             （v1.154，四條腿的那幾隻在用——牛往後仰躺會變成用尾巴站著，見 m.side） */
+  const BEAST_FLOOR = {}, BEAST_MID = {}, BEAST_LIFT = {}, BEAST_SIDE = {};
   for (const k in BEASTS) {
-    let ylo = Infinity, yhi = -Infinity, zlo = 0;
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
     for (const b of BEASTS[k]) {
       if (!b) continue;
       ylo = Math.min(ylo, b.p[1] - b.s[1] / 2);
       yhi = Math.max(yhi, b.p[1] + b.s[1] / 2);
       zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
+      xhi = Math.max(xhi, Math.abs(b.p[0]) + b.s[0] / 2);
     }
     BEAST_FLOOR[k] = Math.max(0, -ylo);
     BEAST_MID[k] = (ylo + yhi) / 2;
     BEAST_LIFT[k] = -zlo;
+    BEAST_SIDE[k] = xhi;
   }
   /* 場上同時畫得下幾個（含飛在半空的香蕉與火球）。v1.144 從 8 加到 12：吉祥物那三隻
      可以跟天災那一件同時在場（最多 4 隻），再加上龍嘴裡連著吐的火球，8 個會不夠——
-     超出的那幾個是**靜靜地不畫**，不會報錯，所以留點餘裕。 */
-  const MAXBEAST = 12;
-  const BEAST_PARTS = Math.max(APE.length, SNOW.length, NANA.length, DRAGON.length);
+     超出的那幾個是**靜靜地不畫**，不會報錯，所以留點餘裕。
+     v1.154 再加到 16：場上多了 2～3 隻常駐的牛羊（HERD_N），牠們是一直在的，
+     等於把上面那筆預算整個往上墊。 */
+  const MAXBEAST = 16;
+  /* 一隻最多幾塊。**照 BEASTS 整份算**（v1.154）：本來是把幾種列出來取 max，
+     加新的一種時漏掉那一列的話，多出來的部位會被靜靜地切掉（畫不出來也不報錯）。 */
+  let BEAST_PARTS = 0;
+  for (const k in BEASTS) BEAST_PARTS = Math.max(BEAST_PARTS, BEASTS[k].length);
   const BEAST_RAISE = 2.6;                 // 右手抬到底是幾度（規則那邊給 0～1 的 m.arm）
 
   /* m：{kind 哪一種（BEASTS 的 key）, x, y, z, a 朝向, ph 步伐相位,
@@ -2636,8 +2751,12 @@ const ENG = (function () {
       /* 躺在草皮上的要照傾角抬起半個身厚，同小人那一套（見 putWorker 的 lift）。
          m.lie 是**倍率**不是旗標（0＝沒躺）：躺著不動時是 1（實測最低點剛好 0），
          沿長軸打滾時側面轉下去要抬多一點，規則那邊給 B_ROLL_LIFT——
-         跟小人拿 ROLL_FLAT 蓋掉 FLAT_LIFT 是同一個做法。 */
-      const mlift = m.lie ? BEAST_LIFT[m.kind] * m.lie * Math.abs(Math.sin(m.spin || 0)) : 0;
+         跟小人拿 ROLL_FLAT 蓋掉 FLAT_LIFT 是同一個做法。
+         m.side＝這一隻是**側躺**的（v1.154，四條腿的牛羊）：倒下來轉的是 roll 不是 spin，
+         所以抬的高度也要換成照 roll 與最寬那一塊算。 */
+      const mlift = !m.lie ? 0
+        : m.side ? BEAST_SIDE[m.kind] * m.lie * Math.abs(Math.sin(m.roll || 0))
+                 : BEAST_LIFT[m.kind] * m.lie * Math.abs(Math.sin(m.spin || 0));
       scratch.position.set(m.x, (m.y || 0) + mlift * msc, m.z);
       /* 被吹飛的在半空翻滾：繞身體中段轉，不是繞腳底（同 putWorker 的 AIR_PIVOT）。 */
       if (m.air) {
@@ -2698,10 +2817,11 @@ const ENG = (function () {
           if (b.am > 0 && m.arm) ang -= (m.raise === undefined ? BEAST_RAISE : m.raise) * m.arm;
         }
         if (ang) {
-          const dy = b.p[1] - b.pv, dz = b.p[2] - JOINT_Z;
+          const jz = b.pz === undefined ? JOINT_Z : b.pz;
+          const dy = b.p[1] - b.pv, dz = b.p[2] - jz;
           const c = Math.cos(ang), s2 = Math.sin(ang);
           scratchB.position.y = b.pv + dy * c - dz * s2;
-          scratchB.position.z = JOINT_Z + dy * s2 + dz * c;
+          scratchB.position.z = jz + dy * s2 + dz * c;
           scratchB.rotation.x = (b.r ? b.r[0] : 0) + ang;
         }
         scratchB.updateMatrix();
@@ -3030,6 +3150,7 @@ const ENG = (function () {
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
     MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
+    BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
     /* 全部造型表（v1.149）：測試把這一份整個存成基準檔（tools/model-baseline.json），
        之後有人改到任何一個模型就會紅。為什麼需要：飛龍少一片翅膀（v1.146.1，bmir 漏了 wg）
        從 v1.139 一路活到 v1.146——那七版整輪測試每次都全綠，因為翅膀那兩條驗的是
@@ -3038,7 +3159,8 @@ const ENG = (function () {
     get MODELS() {
       return { man: BODY, treb: TREB_PART, doz: DOZ_PART, truck: TRK_PART,
                bomb: BOMB_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS,
-               ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL };
+               ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
+               cow: COW, ox: OX, sheep: SHEEP, ram: RAM };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */

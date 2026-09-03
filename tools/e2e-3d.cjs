@@ -182,6 +182,11 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那一段自己把它裝回去（見「吉祥物」）。 */
   if (!window.mascStep) window.mascStep = stepMascot;
   stepMascot = () => {};
+  /* 閒逛的牛羊（v1.154）同理，而且更該關掉：牠們是**常駐**的（2~3 隻一直在場上），
+     天災與吉祥物那兩整段都在數 beasts（「場上幾隻」「beasts[0] 是不是牠」），
+     多兩隻牛在裡面全部會歪。要測這件事本身的那一段自己裝回去（見「閒逛的牛羊」）。 */
+  if (!window.herdStep) window.herdStep = stepHerd;
+  stepHerd = () => {};
   /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
      清成一般碎料就好，下一次 startBuild 的 reconcilePool 會把多的收掉。 */
   window.clearHomes = () => {
@@ -6819,20 +6824,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const liveId = new Set(homes.list.map(h => h.id));
       const own0 = workers.map(w => (w.own >= 0 && liveId.has(w.own) ? w.own : -1));
       const homeless = own0.filter(o => o < 0).length;
-      const n0 = homes.list.length;
+      /* **只算房子**（v1.153 起同一份 homes.list 裡也有樹，這是 v1.154 補的）：這一條驗的
+         是「有家的不會再蓋一間新家」，而樹不是家——種樹的人 w.hm 一樣 >= 0，混進來的話
+         crew 會多算幾個（`owners > rows[0].crew` 那個邊界就會掛），「被派去別人家」
+         也會把「去種樹」誤判成一次。實測就是這樣紅的。 */
+      const houses0 = new Set(homes.list.filter(h => !h.tree).map(h => h.id));
+      const n0 = houses0.size;
       startHomes();
-      const crew = workers.filter(w => w.hm >= 0);
+      const crew = workers.filter(w => w.hm >= 0 && !homes.list[w.hm].tree);
       /* 兩個判準都只看「本來就有家的那幾個」：
-         stray ＝ 被派去別人家；fresh ＝ 被派去這一輪新開的房子（hm >= n0）。
+         stray ＝ 被派去別人家；fresh ＝ 被派去這一輪新開的房子。
          v1.108 的抽籤是不看有沒有家的，這兩個數字都會是一大票。 */
       let stray = 0, fresh = 0;
       for (const w of crew) {
         const o = own0[workers.indexOf(w)];
         if (o < 0) continue;
-        if (homes.list[w.hm].id !== o) stray++;
-        if (w.hm >= n0) fresh++;
+        const h = homes.list[w.hm];
+        if (h.id !== o) stray++;
+        if (!houses0.has(h.id)) fresh++;
       }
-      rows.push({ n0, n1: homes.list.length, add: homes.list.length - n0,
+      const n1 = homes.list.filter(h => !h.tree).length;
+      rows.push({ n0, n1, add: n1 - n0,
                   crew: crew.length, homeless, hadHome: crew.length - crew.filter(
                     w => own0[workers.indexOf(w)] < 0).length,
                   stray, fresh, owners: workers.filter(w => w.own >= 0).length });
@@ -6844,7 +6856,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       stopHomes();
     }
     stepIdleEvent = ev;
-    const out = { rows, houses: homes.list.length,
+    const out = { rows, houses: homes.list.filter(h => !h.tree).length,
+                  trees: homes.list.filter(h => h.tree).length,
                   owners: workers.filter(w => w.own >= 0).length, men: workers.length };
     cleanTools(); clearHomes();
     return out;
@@ -6860,7 +6873,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 人次，其中被派去別人家 ' + ownHome.rows.reduce((a, r) => a + r.stray, 0) +
      ' 人次、被派去新開的房子 ' + ownHome.rows.reduce((a, r) => a + r.fresh, 0) +
      ' 人次；最後 ' + ownHome.men + ' 人裡 ' + ownHome.owners + ' 人有家、村子 ' +
-     ownHome.houses + ' 間');
+     ownHome.houses + ' 間（另有 ' + ownHome.trees + ' 棵樹，不算家）');
 
   /* 家沒了就重新算成沒家：打爛到廢棄（剩不到兩成五）之後，原主人可以再蓋一間。 */
   const ownAgain = await page.evaluate(() => {
@@ -15896,6 +15909,329 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
 
+  /* ══════════ 閒逛的牛羊 ══════════ */
+  /* v1.154。使用者：「增加場上幾隻閒逛的動物(會被破壞工具作用 也會著火類似小人)／
+     牛羊2~3隻 依照小人行走邏輯不要走進建物裡面」，看過造型之後追加「也可以牛羊多種造型
+     隨機出現」（四款：乳牛、黃牛、綿羊、黑面羊）。
+     整套借吉祥物那條路（同一份 beasts 清單、同一套走路、同一套被打到的反應），
+     所以這一段驗的是**差在哪裡**：不走人、不挑階段、不佔天災的名額、四條腿繞自己的關節轉。 */
+  await head('閒逛的牛羊');
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; stepHerd = window.herdStep; });
+  await fillAll(page);
+
+  /* ── 場上養幾隻、四款都抽得到 ── */
+  const cnum = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    herdN = 0;                                        // 重抽這一場要養幾隻
+    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    const n = beasts ? beasts.length : 0;
+    const allHerd = beasts ? beasts.every(m => m.herd === 1 && m.st === 'fun') : false;
+    const onRing = beasts ? beasts.every(m => Math.hypot(m.x, m.z) > siteR + KEEP) : false;
+    const more = (() => { for (let i = 0; i < 20; i++) stepHerd(0.05); return beasts.length; })();
+    /* 抽 400 隻看四款都出得來、大小也不是每一隻都一樣 */
+    const kinds = {}, sc = [];
+    for (let i = 0; i < 400; i++) {
+      beasts = null;
+      const m = spawnCattle();
+      kinds[m.kind] = (kinds[m.kind] || 0) + 1;
+      sc.push(+m.sc.toFixed(3));
+    }
+    const ns = [];
+    for (let i = 0; i < 200; i++) { herdN = 0; beasts = null; stepHerd(0.05); ns.push(herdN); }
+    cleanTools();
+    return { n, more, allHerd, onRing, kinds, ids: HERD_KIND.slice(),
+             lo: Math.min(...sc), hi: Math.max(...sc),
+             nLo: Math.min(...ns), nHi: Math.max(...ns),
+             want: HERD_N.slice(), base: DOOM_SC, k: HERD_SC.slice() };
+  });
+  ok('開場就有 2~3 隻站在建築外圈那一環上（不像猴子從場外走進來），補滿就不再補',
+     cnum.n >= cnum.want[0] && cnum.n <= cnum.want[1] && cnum.more === cnum.n &&
+     cnum.allHerd && cnum.onRing &&
+     cnum.nLo === cnum.want[0] && cnum.nHi === cnum.want[1],
+     '這一輪 ' + cnum.n + ' 隻（再數 1 秒還是 ' + cnum.more + ' 隻）；200 次抽樣 ' +
+     cnum.nLo + '～' + cnum.nHi + ' 隻');
+  ok('牛羊四款都抽得到，每一隻的大小還各抽一個',
+     cnum.ids.length === 4 && Object.keys(cnum.kinds).length === 4 &&
+     Math.min(...cnum.ids.map(k => cnum.kinds[k])) > 60 &&
+     cnum.lo >= cnum.base * cnum.k[0] - 1e-6 && cnum.hi <= cnum.base * cnum.k[1] + 1e-6 &&
+     cnum.hi - cnum.lo > 0.1,
+     '400 隻裡 ' + cnum.ids.map(k => k + ' ' + cnum.kinds[k]).join('／') +
+     '；放大倍率 ' + cnum.lo.toFixed(2) + '～' + cnum.hi.toFixed(2));
+  const HERD_KINDS = cnum.ids;            // 下面幾條照這份掃過每一款
+
+  /* ── 走路：借的是小人那一套，所以不會走進建築，也會停下來吃草 ── */
+  const cwalk = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    herdN = 0;
+    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    const herd = beasts.slice();
+    for (const m of herd) m.pause = 0;
+    let inside = 0, moved = 0, rMin = 1e9, rMax = 0, gait = 0, grazed = 0, frames = 0;
+    const px = herd.map(m => [m.x, m.z]);
+    for (let i = 0; i < 1200; i++) {
+      step(0.05);
+      herd.forEach((m, k) => {
+        frames++;
+        if (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)) inside++;
+        const r = Math.hypot(m.x, m.z);
+        rMin = Math.min(rMin, r); rMax = Math.max(rMax, r);
+        moved += Math.hypot(m.x - px[k][0], m.z - px[k][1]);
+        px[k] = [m.x, m.z];
+        gait = Math.max(gait, m.gait);
+        if (m.pause > 0) grazed++;
+      });
+    }
+    const out = { frames, inside, moved: +moved.toFixed(1), gait: +gait.toFixed(2),
+                  graze: +(grazed / frames).toFixed(2),
+                  rMin: +rMin.toFixed(1), rMax: +rMax.toFixed(1),
+                  keep: +(siteR + KEEP).toFixed(1), far: +(siteR + IDLE_FAR).toFixed(1),
+                  walk: HERD_WALK, secs: 60 };
+    cleanTools();
+    return out;
+  });
+  ok('牛羊照小人那套走路：一格都沒踩進建築與小房子，範圍就是閒晃那一環',
+     cwalk.inside === 0 && cwalk.rMin > cwalk.keep - 0.5 && cwalk.rMax < cwalk.far + 3,
+     cwalk.frames + ' 個取樣 ' + cwalk.inside + ' 次踩進去；半徑 ' + cwalk.rMin + '～' +
+     cwalk.rMax + '（外圈 ' + cwalk.keep + '、閒晃上限 ' + cwalk.far + '）');
+  /* 站著吃草的比例不設下限太緊：一趟路可能長到二十幾秒（目標是那一環上隨機挑的），
+     60 秒裡只停一次是正常的。要驗的是「會停」不是「停多久」。 */
+  ok('走一段停一段：60 秒裡走走停停，腳步跟得上速度',
+     cwalk.moved > 20 && cwalk.gait > 0.8 && cwalk.graze > 0 && cwalk.graze < 0.9,
+     '60 秒走了 ' + cwalk.moved + ' 格（速度 ' + cwalk.walk + '）、' +
+     Math.round(cwalk.graze * 100) + '% 的時間站著吃草');
+
+  /* 「不要走進建物裡面」是硬條件，不是靠繞路碰運氣：每一幀把目標壓回工地正中央。 */
+  const cin = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    herdN = 0;
+    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    const m = beasts[0];
+    let inside = 0, rMin = 1e9;
+    for (let i = 0; i < 600; i++) {
+      m.tx = 0; m.tz = 0; m.pause = 0;               // 目標＝地標正中央
+      step(0.05);
+      if (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)) inside++;
+      rMin = Math.min(rMin, Math.hypot(m.x, m.z));
+    }
+    const out = { inside, rMin: +rMin.toFixed(1), keep: +(siteR + KEEP).toFixed(1) };
+    cleanTools();
+    return out;
+  });
+  ok('硬把目標壓在地標正中央，牠還是停在建築外圈上（同猴子那一套）',
+     cin.inside === 0 && cin.rMin > cin.keep - 0.5,
+     '30 秒 ' + cin.inside + ' 次踩進去，最近只到半徑 ' + cin.rMin +
+     '（外圈 ' + cin.keep + '）');
+
+  /* ── 不走人、哪一段都在（吉祥物會走人，當對照組） ── */
+  const cstay = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    herdN = 0;
+    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    const herd = beasts.slice(), n0 = herd.length;
+    const live = () => herd.every(m => beasts && beasts.indexOf(m) >= 0 && m.st !== 'go');
+    for (let i = 0; i < 2000; i++) { stepDoom(0.05); stepHerd(0.05); }   // 100 秒
+    const done = live() && beasts.length === n0;
+    phase = 'clear';
+    for (let i = 0; i < 400; i++) { stepDoom(0.05); stepHerd(0.05); }
+    const clear = live();
+    phase = 'build';
+    for (let i = 0; i < 400; i++) { stepDoom(0.05); stepHerd(0.05); }
+    const build = live();
+    /* 對照組：同一段路上的吉祥物，整地那一段就會走人 */
+    phase = 'clear';
+    const ape = spawnBeast('ape', 1);
+    ape.st = 'fun'; ape.stay = 999;
+    stepDoom(0.05);
+    const apeGo = ape.st === 'go';
+    phase = 'done';
+    cleanTools();
+    return { n0, done, clear, build, apeGo };
+  });
+  ok('牛羊不會逛完就走人，蓋好、整地、施工三段都在（吉祥物整地那段會走人）',
+     cstay.done && cstay.clear && cstay.build && cstay.apeGo,
+     '100 秒後 ' + cstay.n0 + ' 隻都還在（done ' + cstay.done + '／clear ' + cstay.clear +
+     '／build ' + cstay.build + '），同一段路的吉祥物整地時走人＝' + cstay.apeGo);
+
+  const cdoom = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    herdN = 0;
+    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    const n0 = beasts.length;
+    doomT = -1; stepDoom(0.05);                      // 場上有牛羊，天災的鐘照樣起跳
+    const armed = doomT > 0;
+    doomT = 0.01; stepDoom(0.05);
+    const bad = beasts.filter(m => !m.herd && !m.fun).length;
+    cleanTools();
+    return { n0, armed, bad };
+  });
+  ok('牛羊不佔天災「一次一件」那個名額：場上一直有牠們，天災照樣來',
+     cdoom.armed && cdoom.bad === 1,
+     '場上 ' + cdoom.n0 + ' 隻牛羊，天災的鐘照樣起跳＝' + cdoom.armed +
+     '，時間到放進來 ' + cdoom.bad + ' 件');
+
+  /* ── 被破壞工具打到那一整套：跟猴子同一份程式 ── */
+  await fillAll(page);
+  const chit = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const put = (kind, x, z) => {
+      const m = spawnCattle();
+      m.kind = kind; m.x = x; m.z = z; m.y = 0; m.st = 'fun'; m.pause = 0; m.tx = x; m.tz = z;
+      return m;
+    };
+    /* 炸飛 → 落地躺一下 → 爬起來繼續逛 */
+    const fly = put('cow', 26, 0);
+    const hit = tossBeast(fly, 9, 11, 0, false);
+    const seen = [];
+    for (let i = 0; i < 800 && beasts.indexOf(fly) >= 0; i++) {
+      stepDoom(0.05);
+      seen.push(fly.air ? 'air' : fly.burn > 0 ? 'burn' : fly.fall > 0 ? 'fall' : fly.st);
+      if (seen.length > 4 && !fly.air && fly.fall <= 0) break;
+    }
+    const path = [...new Set(seen)].join('>');
+    /* 兩種著火演法（同小人）：躺著滾 vs 站著繞圈跑 */
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    hot.length = 0;
+    const roll = put('ox', 26, 6), run = put('sheep', 26, -6);
+    const a = igniteBeast(roll, 1), b = igniteBeast(run, 0);
+    const twice = igniteBeast(roll, 1);
+    for (let i = 0; i < 60; i++) stepDoom(0.05);
+    /* 躺著燒的那一隻是**側躺**（四條腿的，見 lieAng）：躺平角在 roll 不在 spin。 */
+    const burn = { spin: +roll.spin.toFixed(2), roll: +Math.abs(roll.roll).toFixed(2),
+                   lie: +roll.lie.toFixed(2), rock: B_SIDE_ROCK,
+                   runLie: run.lie, runGait: +run.gait.toFixed(2), fx: hot.length > 0,
+                   runR: +Math.hypot(run.x - run.bx, run.z - run.bz).toFixed(1) };
+    /* 澆得熄 */
+    const wet = wetBeast(run);
+    const doused = { burn: run.burn, wet: +run.wet.toFixed(1), again: igniteBeast(run, 0) };
+    for (let i = 0; i < 200; i++) stepDoom(0.05);     // 燒完站起來
+    const after = { burn: roll.burn, lie: roll.lie, spin: +roll.spin.toFixed(2),
+                    roll: +roll.roll.toFixed(2), st: roll.st };
+    /* 兵器射得中、戳得倒。**順序不能顛倒**：`weaponVsBeast` 會跳過躺著的
+       （`m.fall > 0`），先戳倒就永遠射不中了。 */
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const ram = put('ram', 26, 0);
+    const w = { x: ram.x, y: 0.6, z: ram.z - 1, dx: 0, dy: 0, dz: 1, len: 2 };
+    const weap = weaponVsBeast(w, ram.x, 0.6, ram.z - 2);
+    const fell = fellBeast(ram, 2);
+    cleanTools();
+    return { hit, path, a, b, twice, burn, wet, doused, after, fell,
+             weap: weap === null ? 'null' : weap.kind, burnT: B_BURN };
+  });
+  ok('牛羊被炸飛：飛上去翻滾 → 落地躺一下 → 爬起來繼續逛（同猴子、同小人）',
+     chit.hit && chit.path === 'air>fall>fun', chit.path);
+  ok('牛羊點得著，也分側躺著壓火與站著繞圈跑兩種，燒完自己站起來',
+     chit.a && chit.b && !chit.twice && chit.burn.fx &&
+     Math.abs(chit.burn.spin) < 0.05 &&
+     Math.abs(chit.burn.roll - 1.57) <= chit.burn.rock + 0.01 &&
+     chit.burn.lie >= 1 && chit.burn.lie < 2 &&
+     chit.burn.runLie === 0 && chit.burn.runGait > 0.9 && chit.burn.runR > 1 &&
+     chit.after.burn === 0 && chit.after.lie === 0 && Math.abs(chit.after.roll) < 0.05,
+     '側躺壓火：側傾 ' + chit.burn.roll + '（前後晃 ±' + chit.burn.rock +
+     '、抬升 ' + chit.burn.lie + ' 倍）、仰角 ' + chit.burn.spin + '；繞圈跑：腳步 ' +
+     chit.burn.runGait + '、繞著定點 ' + chit.burn.runR + ' 格；燒 ' + chit.burnT +
+     ' 秒之後回到 ' + chit.after.st);
+  ok('水澆得熄牛羊身上的火（濕的當下點不著），戳得倒，兵器也射得中',
+     chit.wet && chit.doused.burn === 0 && chit.doused.wet === 5 && !chit.doused.again &&
+     chit.fell && chit.weap === 'ram',
+     '澆完 burn ' + chit.doused.burn + '、濕 ' + chit.doused.wet + ' 秒、再點一次 ' +
+     chit.doused.again + '；兵器射中 ' + chit.weap);
+
+  /* ── 四款站著與躺著都貼著草皮 ── */
+  const cgnd = await page.evaluate(() => {
+    const low = () => {
+      const mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4();
+      let lo = 1e9;
+      for (let i = 0; i < mesh.count; i++) {
+        mesh.getMatrixAt(i, m4);
+        const a = m4.elements;
+        if (Math.hypot(a[0], a[1], a[2]) < 1e-4 || Math.hypot(a[4], a[5], a[6]) < 1e-4 ||
+            Math.hypot(a[8], a[9], a[10]) < 1e-4) continue;
+        lo = Math.min(lo, a[13] - 0.5 * (Math.abs(a[1]) + Math.abs(a[5]) + Math.abs(a[9])));
+      }
+      return +lo.toFixed(3);
+    };
+    const out = {};
+    for (const kind of HERD_KIND) {
+      cleanTools(); phase = 'done'; doomT = 1e9;
+      const m = spawnCattle();
+      m.kind = kind; m.x = 26; m.z = 0; m.y = 0; m.a = 0; m.st = 'fun'; m.pause = 999;
+      draw();
+      const stand = low();
+      /* 側躺（四條腿的倒下來是往側邊倒，不是往後仰）：躺到底那一刻 */
+      fellBeast(m, 6);
+      for (let i = 0; i < 30; i++) stepDoom(0.05);
+      draw();
+      const lie = low();
+      const roll = m.roll;
+      /* 躺著壓火：前後晃一整圈，取最低的那一刻 */
+      m.fall = 0;
+      igniteBeast(m, 1);
+      let worst = 1e9;
+      for (let k = 0; k < 40; k++) {
+        m.rph = k / 40 * Math.PI * 2;
+        m.roll = m.sdir * (Math.PI * 0.5 + B_SIDE_ROCK * Math.sin(m.rph));
+        m.lie = sideLift(m);                       // 晃開 90° 就要多抬一點（同 burnBeast）
+        draw();
+        worst = Math.min(worst, low());
+      }
+      out[kind] = [stand, lie, +worst.toFixed(3), +Math.abs(roll).toFixed(2)];
+    }
+    cleanTools();
+    return out;
+  });
+  ok('四款牛羊站著、側躺、躺著壓火都貼著草皮（不陷進去也不浮起來）',
+     HERD_KINDS.every(k => cgnd[k][0] >= -0.02 && cgnd[k][0] < 0.05 &&
+                           cgnd[k][1] >= -0.02 && cgnd[k][1] < 0.10 &&
+                           cgnd[k][2] >= -0.02 && cgnd[k][2] < 0.25 &&
+                           Math.abs(cgnd[k][3] - 1.57) < 0.05),
+     HERD_KINDS.map(k => k + ' 站 ' + cgnd[k][0] + '／側躺 ' + cgnd[k][1] +
+                    '（側傾 ' + cgnd[k][3] + '）／壓火 ' + cgnd[k][2]).join('；'));
+
+  /* ── 四條腿：對角同步，而且各繞自己那個關節轉 ── */
+  const clegs = await page.evaluate(() => {
+    const out = {};
+    const mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4(), v = new THREE.Vector3();
+    for (const kind of HERD_KIND) {
+      const parts = ENG.MODELS[kind];
+      const legs = [];
+      parts.forEach((b, i) => { if (b.sw) legs.push({ b, i }); });
+      const front = legs.filter(o => o.b.pz > 0), back = legs.filter(o => o.b.pz < 0);
+      /* 對角同步：右前（x>0）跟左後（x<0）同號，左前跟右後同號 */
+      const diag = front.every(o => (o.b.p[0] > 0) === (o.b.sw > 0)) &&
+                   back.every(o => (o.b.p[0] > 0) === (o.b.sw < 0));
+      const pzOk = legs.every(o => Math.abs(o.b.pz - o.b.p[2]) < 0.06);
+      const amp = Math.max(...legs.map(o => Math.abs(o.b.sw)));
+      /* 「繞自己的肩」＝那一點在任何步伐相位下都待在同一個世界點。
+         照 JOINT_Z 轉的話它會跑掉 2·sin(擺幅/2)·|pz − JOINT_Z|（下面的 ctrl）。 */
+      const o = front[0], b = o.b;
+      const at = ph => {
+        ENG.putBeasts([{ kind, x: 0, y: 0, z: 0, a: 0, ph, gait: 1, sc: 1 }]);
+        mesh.getMatrixAt(o.i, m4);
+        return v.set(0, (b.pv - b.p[1]) / b.s[1], (b.pz - b.p[2]) / b.s[2])
+                .applyMatrix4(m4).clone();
+      };
+      const p0 = at(0), p1 = at(Math.PI / 2), p2 = at(-Math.PI / 2);
+      out[kind] = { n: legs.length, diag, pzOk, amp: +amp.toFixed(2),
+                    piv: +Math.max(p1.distanceTo(p0), p2.distanceTo(p0)).toFixed(3),
+                    ctrl: +(2 * Math.sin(amp / 2) * Math.abs(b.pz - 0.03)).toFixed(3) };
+    }
+    ENG.putBeasts([]);
+    return out;
+  });
+  ok('四條腿是對角同步的，擺幅比猴子小一半',
+     HERD_KINDS.every(k => clegs[k].n === 8 && clegs[k].diag && clegs[k].amp <= 0.55),
+     HERD_KINDS.map(k => k + ' ' + clegs[k].n + ' 塊／擺幅 ' + clegs[k].amp).join('；'));
+  /* ctrl 是「照 JOINT_Z 轉的話那個關節會跑掉多少」＝ 2·sin(擺幅/2)·|pz − JOINT_Z|：
+     牛 0.163、羊 0.076（羊的腳離身體中線比較近、擺幅也小一點）。 */
+  ok('前腳繞自己的肩、後腳繞自己的髖（pz），不是全部繞肚子中線',
+     HERD_KINDS.every(k => clegs[k].pzOk && clegs[k].piv < 0.01 &&
+                           clegs[k].ctrl > clegs[k].piv + 0.05),
+     HERD_KINDS.map(k => k + ' 關節跑掉 ' + clegs[k].piv + '（照 JOINT_Z 會跑掉 ' +
+                    clegs[k].ctrl + '）').join('；'));
+
+  await page.evaluate(() => { stepDoom = () => {}; stepHerd = () => {}; cleanTools(); });
+
   /* ══════════ 破壞工具打得到那幾隻 ══════════ */
   /* v1.146。使用者：「破壞工具也能對吉祥物生效(著火或是被吹飛或是倒地)／所以飛龍會需要
      倒地起飛的動作(可以先做給我看過再完整測試)／黑獼猴 白猴子可以同小人的方式製作／
@@ -15996,7 +16332,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '澆完 burn ' + hWet.out.burn + '、濕 ' + hWet.out.wet + ' 秒、蹲著起不來＝' +
      hWet.out.fall + '；再點一次 ' + hWet.again);
 
-  /* ── 閃電：劈到猴子＝點著並打倒；劈到飛龍＝把牠打下來（牠點不著） ── */
+  /* ── 閃電：劈到猴子＝點著並打倒；劈到飛龍＝點著牠（v1.154 起牠也著得了火） ── */
   await fillAll(page);
   const hBolt = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
@@ -16019,9 +16355,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hBolt.ape.burn && hBolt.ape.lie > 0,
      '第 ' + hBolt.ape.n + ' 道劈中：身上有火 ' + hBolt.ape.burn + '、躺平角 ' +
      hBolt.ape.spin);
-  ok('雷劈到飛龍是把牠打下來，不是點著牠（牠自己就是噴火的）',
-     hBolt.dra.st === 'crash' && hBolt.dra.burn === 0,
-     '第 ' + hBolt.dra.k + ' 道劈中 → ' + hBolt.dra.st + '，身上的火 ' + hBolt.dra.burn);
+  /* v1.153 以前這一條驗的是「點不著，改成把牠打下來」。使用者：「飛龍也要做著火狀態
+     反應」——現在劈中就是點著牠，摔下來變成著火那一趟裡的一段（見下面）。 */
+  ok('雷劈到飛龍＝點著牠，牠拖著火飛一段才摔下來',
+     hBolt.dra.st === 'ablaze' && hBolt.dra.burn > 0,
+     '第 ' + hBolt.dra.k + ' 道劈中 → ' + hBolt.dra.st + '，身上的火 ' +
+     hBolt.dra.burn.toFixed(1) + ' 秒');
 
   /* ── 飛龍：摔 → 趴 → 起飛 → 歸隊 ── */
   await fillAll(page);
@@ -16079,6 +16418,109 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('被打下來時本來要飛出場的，起飛之後接回原本那一段',
      hBack.was === 'out' && hBack.back === 'out', hBack.was + ' → ' + hBack.back);
 
+  /* ── 飛龍著火（v1.154）── */
+  /* 使用者：「飛龍也要做著火狀態反應」，形態選的是「空中拖火 → 墜地 → 燒完 → 起飛」。
+     後兩段就是上面那套倒地起飛，所以這裡驗的是新的那兩段與接縫。 */
+  await fillAll(page);
+  const hFire = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    hot.length = 0;
+    const m = spawnDragon();                           // 天災版：本來有火球配額
+    for (let i = 0; i < 600 && m.st !== 'ring'; i++) stepDoom(0.05);
+    const left0 = m.left, y0 = m.y;
+    const lit = igniteBeast(m, 1);
+    const twice = igniteBeast(m, 1);                   // 已經在燒的不會再點一次
+    const st0 = m.st, burn0 = +m.burn.toFixed(1);
+    fballs = null;                                     // 摔之前吐出去的那幾顆不算
+    const path = [];
+    let abl = 0, drop = 0, downBurn = 0, riseB = 0, fb = 0, fx = false;
+    let yPrev = m.y;
+    for (let i = 0; i < 3000 && beasts && beasts.indexOf(m) >= 0; i++) {
+      stepDoom(0.05);
+      path.push(m.st);
+      if (m.st === 'ablaze') { abl++; drop += Math.max(0, yPrev - m.y); fx = fx || hot.length > 0; }
+      if (m.st === 'down' && m.burn > 0) downBurn++;
+      if (m.st === 'rise' && m.burn > 0) riseB++;
+      fb = Math.max(fb, fballs ? fballs.length : 0);
+      yPrev = m.y;
+      if (m.st === 'in' || m.st === 'ring' || m.st === 'out') break;
+    }
+    return { lit, twice, st0, burn0, left0, left: m.left, y0: +y0.toFixed(1),
+             path: [...new Set(path)].join('>'), abl: +(abl * 0.05).toFixed(1),
+             drop: +drop.toFixed(1), fx, fb, riseB,
+             downBurn: +(downBurn * 0.05).toFixed(1), back: m.st,
+             burnT: DRA_BURN, ablT: DRA_ABLAZE.slice() };
+  });
+  ok('飛龍著火：拖著火飛一段 → 摔下來 → 在地上燒完才拍翅起飛（已經在燒的不會再點一次）',
+     hFire.lit && !hFire.twice && hFire.st0 === 'ablaze' && hFire.burn0 === hFire.burnT &&
+     hFire.path === 'ablaze>crash>down>rise>in' && hFire.back === 'in' &&
+     hFire.abl >= hFire.ablT[0] - 0.1 && hFire.abl <= hFire.ablT[1] + 0.1 &&
+     hFire.downBurn > 0.3 && hFire.riseB === 0,
+     hFire.path + '；拖著火飛了 ' + hFire.abl + ' 秒（抽樣範圍 ' + hFire.ablT.join('～') +
+     '）、在地上又燒了 ' + hFire.downBurn + ' 秒，起飛時身上還有火的幀數 ' + hFire.riseB);
+  ok('拖火那一段是一路往下沉的，身上會冒火苗，而且著火就不吐火球了',
+     hFire.drop > 5 && hFire.fx && hFire.left0 >= 3 && hFire.left === 0 && hFire.fb === 0,
+     '從 ' + hFire.y0 + ' 格往下沉了 ' + hFire.drop + ' 格、火苗 ' + hFire.fx +
+     '、火球配額 ' + hFire.left0 + ' → ' + hFire.left + '（這一趟吐了 ' + hFire.fb + ' 顆）');
+
+  const hDouse = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const air = spawnDragon(1);
+    for (let i = 0; i < 600 && air.st !== 'ring'; i++) stepDoom(0.05);
+    igniteBeast(air, 1);
+    const was = air.st;
+    const wet = wetBeast(air);
+    const inAir = { burn: air.burn, st: air.st, wet: +air.wet.toFixed(1) };
+    const again = igniteBeast(air, 1);                 // 濕的當下點不著
+    for (let i = 0; i < 200; i++) stepDoom(0.05);      // 濕度自己會退（stepDragon 在減）
+    const dry = +air.wet.toFixed(1);
+    /* 已經摔在地上、身上還在燒的那一隻：澆熄之後照原本的節奏爬起來飛走 */
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const gnd = spawnDragon(1);
+    for (let i = 0; i < 600 && gnd.st !== 'ring'; i++) stepDoom(0.05);
+    igniteBeast(gnd, 1);
+    for (let i = 0; i < 2000 && gnd.st !== 'down'; i++) stepDoom(0.05);
+    const burning = gnd.burn > 0;
+    wetBeast(gnd);
+    let rose = 0;
+    for (let i = 0; i < 2000; i++) {
+      stepDoom(0.05);
+      if (gnd.st === 'in' || gnd.st === 'ring' || gnd.st === 'out') { rose = 1; break; }
+    }
+    cleanTools();
+    return { was, inAir, again, dry, burning, rose, WET: WET_TIME };
+  });
+  ok('著火的龍澆得熄：在天上的直接回航線，趴在地上的照原本節奏爬起來飛走',
+     hDouse.was === 'ablaze' && hDouse.inAir.burn === 0 && hDouse.inAir.st === 'in' &&
+     hDouse.inAir.wet === hDouse.WET && !hDouse.again && hDouse.dry === 0 &&
+     hDouse.burning && hDouse.rose === 1,
+     '天上：' + hDouse.was + ' → ' + hDouse.inAir.st + '（burn ' + hDouse.inAir.burn +
+     '、濕 ' + hDouse.inAir.wet + ' 秒、再點一次 ' + hDouse.again + '、10 秒後濕度 ' +
+     hDouse.dry + '）；地上：燒著的澆熄後爬起來＝' + hDouse.rose);
+
+  const hDownFire = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnDragon(1);
+    for (let i = 0; i < 600 && m.st !== 'ring'; i++) stepDoom(0.05);
+    crashDragon(m);
+    for (let i = 0; i < 2000 && m.st !== 'down'; i++) stepDoom(0.05);
+    const t0 = +m.t.toFixed(2);
+    const lit = igniteBeast(m, 1);
+    const st = m.st;                                   // 就地燒，不會再摔一次
+    let waited = 0;
+    for (let i = 0; i < 3000; i++) { stepDoom(0.05); if (m.st !== 'down') break; waited++; }
+    const after = m.st;
+    cleanTools();
+    return { t0, lit, st, waited: +(waited * 0.05).toFixed(1), after, burnT: DRA_BURN };
+  });
+  ok('趴在地上被點著的龍會先把火壓掉才飛得起來（不會再摔一次）',
+     hDownFire.lit && hDownFire.st === 'down' && hDownFire.after === 'rise' &&
+     hDownFire.waited > hDownFire.t0 + 0.5 &&
+     Math.abs(hDownFire.waited - hDownFire.burnT) < 1,
+     '趴著還剩 ' + hDownFire.t0 + ' 秒就被點著 → 又趴了 ' + hDownFire.waited +
+     ' 秒（火燒 ' + hDownFire.burnT + ' 秒）才進 ' + hDownFire.after);
+
   /* ── 爆炸對飛龍算三維距離：地面一顆小炸彈打不到天上的牠 ── */
   await fillAll(page);
   const hAir = await page.evaluate(() => {
@@ -16090,8 +16532,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     explode({ x: 0, y: 1, z: 0 }, 40, 30);
     return { small, big: m.st };
   });
-  ok('地面一顆小炸彈打不到 30 格高的飛龍，核彈那種大的打得下來',
-     hAir.small === 'ring' && hAir.big === 'crash',
+  /* 打得到那一發是帶火的（爆炸一律 lit＝true），所以 v1.154 起牠是**先著火**
+     （ablaze）再摔——不是直接進 crash。這一條驗的是「小的打不到、大的打得到」。 */
+  ok('地面一顆小炸彈打不到 30 格高的飛龍，核彈那種大的打得到',
+     hAir.small === 'ring' && hAir.big === 'ablaze',
      '半徑 6 → ' + hAir.small + '；半徑 40 → ' + hAir.big);
 
   /* ── 龍捲風捲得走猴子，捲不走飛龍 ── */

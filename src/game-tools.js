@@ -1361,9 +1361,11 @@ function wetSpray() {
       if ((w.x - m.jx) ** 2 + (w.z - m.jz) ** 2 < r2 &&
           Math.abs(m.jy - w.y) < FT_WET_R + 1.5) { wetWorker(w); break; }
   }
-  /* 燒起來的猴子也澆得熄（v1.146）：牠身上的火跟小人是同一套，救的路徑也該是同一條。 */
+  /* 燒起來的生物也澆得熄（v1.146）：牠身上的火跟小人是同一套，救的路徑也該是同一條。
+     v1.154 起飛龍也在裡面（牠身上會有火了）——在天上那條龍不必另外擋，
+     下面那條高度判斷本來就搆不到牠。 */
   if (beasts) for (const p of beasts) {
-    if (p.kind === 'dragon' || p.wet > WET_TIME - 0.2) continue;
+    if (p.wet > WET_TIME - 0.2) continue;
     for (const m of jets)
       if ((p.x - m.jx) ** 2 + (p.z - m.jz) ** 2 < r2 &&
           Math.abs(m.jy - p.y) < FT_WET_R + 1.5) { wetBeast(p); break; }
@@ -1930,8 +1932,8 @@ function wetByWater() {
     const e = col.get(cellX(w.x) + ':' + cellZ(w.z));
     if (soaked(e, Math.max(0, Math.round(w.y)))) wetWorker(w);
   }
-  if (beasts) for (const m of beasts) {            // 站在水裡的猴子同理（v1.146）
-    if (m.kind === 'dragon' || m.wet > WET_TIME - 0.5) continue;
+  if (beasts) for (const m of beasts) {            // 站在水裡的生物同理（v1.146）
+    if (m.wet > WET_TIME - 0.5) continue;
     const e = col.get(cellX(m.x) + ':' + cellZ(m.z));
     if (soaked(e, Math.max(0, Math.round(m.y)))) wetBeast(m);
   }
@@ -3593,8 +3595,9 @@ function strike(s) {
     if (!igniteWorker(w, 1)) { releaseWorker(w); w.tilt = 0; w.fall = rr(1.1, 2.3); }
     sndFall();
   }
-  /* 劈到的生物同理（v1.146）。飛龍點不著（igniteBeast 回 false），那就走「只打倒」
-     這條——對牠來說就是被劈下來（crashDragon）。
+  /* 劈到的生物同理（v1.146）。**飛龍 v1.154 起劈得著火**（igniteBeast 走 burnDragon）：
+     牠會拖著火飛一段再摔下來；已經在燒或剛被澆濕的回 false，那就走「只打倒」這條——
+     對牠來說就是被劈下來（crashDragon）。
      **這裡只認水平距離**（flat）：雷是從雲底一路劈到地面的一條線，天上那條龍就在
      這條線上。照三維距離算的話牠飛在 30 格高、雷的判定半徑才 5 格，等於永遠劈不到。 */
   eachBeastNear(p, BOLT_MAN_R, m => {
@@ -4876,16 +4879,20 @@ function stepBeast(m, dt) {
   if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   /* 被破壞工具打到了（v1.146）：飛、躺、燒那幾段自己一套，這一幀底下整段跳過（同小人）。 */
   if (hurtBeast(m, dt)) return false;
+  const spd = m.herd ? HERD_WALK : DOOM_WALK;             // 牛羊散步，比猴子再慢一截
   /* 開工／整地就放棄走人：天災是衝著「蓋好的那一座」來的，半成品不在它的守備範圍
      （也免得牠站在推土機的路線上）。
      吉祥物只避整地（v1.144）：牠不挑地標的狀態，施工中照樣可以來逛（使用者選的），
-     但整地那一段推土機會把整片工地掃過去，走路的先讓開。 */
-  const away = m.fun ? phase === 'clear' : (phase === 'build' || phase === 'clear');
+     但整地那一段推土機會把整片工地掃過去，走路的先讓開。
+     牛羊哪一段都不避（v1.154）：牠們住在這裡，沒有「走人」這件事——而且本來就只在
+     建築外圈那一環上晃（strollTo 會把目標推到圈外），推土機掃的是圈內。 */
+  const away = m.herd ? false
+             : m.fun ? phase === 'clear' : (phase === 'build' || phase === 'clear');
   if (away && m.st !== 'go') leaveBeast(m);
   m.arm += ((m.st === 'act' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
   if (m.st === 'come') {
     m.tx = 0; m.tz = 0;
-    if (strollTo(m, dt, DOOM_WALK)) {
+    if (strollTo(m, dt, spd, m.herd ? HERD_STEP : 0)) {
       /* 吉祥物走到建築外圈就開始逛，不進 near／act——那兩段是要動手的人才走的。 */
       m.st = m.fun ? 'fun' : 'near';
       /* 進場那一段路不算進「站多久」：strollPause 是照剛走完那段路算的，
@@ -4899,14 +4906,23 @@ function stepBeast(m, dt) {
      「繞著建築、又還在鏡頭裡」的範圍，也已經會避開小人的家；站多久也照小人那套
      （strollPause，跟剛走完那段路成比例）。 */
   if (m.st === 'fun') {
-    m.stay -= dt;
-    if (m.stay <= 0) { leaveBeast(m); return false; }
+    /* 牛羊沒有這個倒數（v1.154）：逛完不走人，這一段就是牠們的日常。 */
+    if (!m.herd) {
+      m.stay -= dt;
+      if (m.stay <= 0) { leaveBeast(m); return false; }
+    }
     if (m.pause > 0) {
       m.pause -= dt;
       m.gait += (0 - m.gait) * Math.min(1, dt * 8);
       return false;
     }
-    if (strollTo(m, dt, DOOM_WALK)) { strollPause(m); idleSpot(m); }
+    if (strollTo(m, dt, spd, m.herd ? HERD_STEP : 0)) {
+      /* 站多久：猴子照剛走完那段路算（strollPause），牛羊改成固定抽——
+         牠們一趟只走幾格，照比例算的話停不到一秒，看起來是一直在繞圈。 */
+      if (m.herd) { m.pause = rr(HERD_STAY[0], HERD_STAY[1]); m.leg = 0; }
+      else strollPause(m);
+      idleSpot(m);
+    }
     return false;
   }
   if (m.st === 'near') {
@@ -5019,7 +5035,7 @@ function stepDoom(dt) {
   if (phase !== 'done') { doomT = -1; return; }     // 沒有一座完好的地標可砸
   /* 一次一件，等這一件演完。**吉祥物不算**（v1.144）：那是另一條線，場上有牠在逛的
      時候天災的鐘照數——不排除的話，三隻輪流來逛就等於把天災關掉了。 */
-  if (nanas || fballs || (beasts && beasts.some(m => !m.fun))) return;
+  if (nanas || fballs || (beasts && beasts.some(m => !m.fun && !m.herd))) return;
   if (doomT < 0) { doomT = rr(DOOM_LO, DOOM_HI); return; }
   doomT -= dt;
   if (doomT > 0) return;
@@ -5092,8 +5108,11 @@ function spawnDragon(fun) {
 }
 /* 一條龍的一幀。回傳 true＝飛出場外了，收掉。 */
 function stepDragon(m, dt) {
+  /* 濕度自己在這裡遞減：走地上的那幾隻是 hurtBeast 在減，而牠不走那一支（v1.154）。 */
+  if (m.wet > 0) m.wet = Math.max(0, m.wet - dt);
   /* 被打下來了（v1.146）：摔 → 趴 → 拍翅起飛，那三段自己一套（見 fallenDragon）。 */
   if (m.st === 'crash' || m.st === 'down' || m.st === 'rise') return fallenDragon(m, dt);
+  if (m.st === 'ablaze') return ablazeDragon(m, dt);      // 身上著火（v1.154，見 burnDragon）
   m.ph += dt * DRA_FLAP;
   const r = Math.hypot(m.x, m.z) || 1;
   let want = m.a;
@@ -5298,6 +5317,61 @@ function turnBad(id) {
   return false;
 }
 
+/* ── 閒逛的牛羊（v1.154）──────────────────────────────────
+   使用者：「增加場上幾隻閒逛的動物（會被破壞工具作用 也會著火類似小人）／
+   牛羊 2~3 隻 依照小人行走邏輯不要走進建物裡面」，看過造型之後追加
+   「也可以牛羊多種造型隨機出現」（四款：乳牛、黃牛、綿羊、黑面羊）。
+
+   **整套借吉祥物那條路**：同一份 beasts 清單、同一套走路（strollTo／idleSpot，
+   所以「不走進建築與小房子」是同一份程式在管）、同一套被打到的反應。差三件事：
+     · **不走**：沒有 stay 倒數、也不會 leaveBeast；場上少了就補到滿（stepHerd）。
+     · **不挑階段**：整地、施工、拆除都在（牠們只在建築外圈那一環上晃）。
+     · **不算天災的「一次一件」**：牠們永遠在場上，算進去的話天災就再也不會來
+       （見 stepDoom 的 m.herd）。
+   被吹飛、被點著、被水澆熄、被兵器打到那一整套是白吃的——牠們就在 beasts 裡，
+   eachBeastNear／tossBeast／igniteBeast／fellBeast／weaponVsBeast 一個字都不必改。 */
+const HERD_N = [2, 3];               // 場上養幾隻（使用者：「牛羊2~3隻」）
+const HERD_KIND = ['cow', 'ox', 'sheep', 'ram'];
+const HERD_WALK = 1.5;               // 走多快（小人 6.8、猴子 2.2；牛羊是散步）
+const HERD_STEP = 0.62;              // 腿擺多快（倍率，見 strollTo 的 step）
+const HERD_SC = [0.90, 1.08];        // 每一隻的大小抽一個倍率，同一款也不會一模一樣
+const HERD_STAY = [3.5, 9];          // 走到了站著吃草幾秒
+let herdN = 0;                       // 這一場養幾隻（第一次叫 stepHerd 時抽）
+
+/* 放一隻進來。**直接站在建築外圈那一環上**，不像猴子那樣從場外走進來：
+   牠們是這片草地的住戶不是訪客，而且走那麼慢（1.5）的話，從碎料場外緣走到工地
+   要半分鐘——開場那半分鐘場上一隻動物都沒有。落腳點借 idleSpot 挑（那一支本來就
+   會避開小人的家），先挑一個站著、再挑一個當第一個目標。 */
+function spawnCattle() {
+  const kind = HERD_KIND[Math.floor(Math.random() * HERD_KIND.length)];
+  const m = {
+    kind, x: 0, y: 0, z: 0, a: Math.random() * Math.PI * 2,
+    ph: 0, gait: 0, leg: 0, tx: 0, tz: 0, ghost: 0,
+    pause: rr(0, HERD_STAY[1]),                    // 錯開，不然幾隻同時起步同時停
+    sc: DOOM_SC * rr(HERD_SC[0], HERD_SC[1]), arm: 0, bomb: 0, st: 'fun', t: 0,
+    /* fun 是「在外圈那一環上逛、不動手」那條路（見 stepBeast）；herd 才是牛羊自己的記號。
+       side＝四條腿的，倒下來是往側邊倒（見 lieAng／engine 的 BEAST_SIDE）。 */
+    fun: 1, herd: 1, stay: 0, side: 1, sdir: 1,
+    spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
+    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0
+  };
+  idleSpot(m);
+  m.x = m.tx; m.z = m.tz;
+  pushOutHome(m);                                  // 剛好挑在人家屋子裡：推出來
+  idleSpot(m);
+  if (!beasts) beasts = [];
+  beasts.push(m);
+  return m;
+}
+/* 牛羊的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）：場上不足就補一隻進來。
+   平常這一支什麼都不做——牛羊不會走人，所以只有開場那幾幀真的放人。 */
+function stepHerd(dt) {
+  if (!herdN) herdN = Math.round(rr(HERD_N[0], HERD_N[1]));
+  let n = 0;
+  if (beasts) for (const m of beasts) if (m.herd) n++;
+  if (n < herdN) spawnCattle();
+}
+
 /* ── 破壞工具打得到那幾隻（v1.146）────────────────────────
    使用者：「破壞工具也能對吉祥物生效(著火或是被吹飛或是倒地)／黑獼猴 白猴子可以同小人
    的方式製作／飛龍會需要倒地起飛的動作」。
@@ -5322,14 +5396,37 @@ const B_BLOW = 0.75;                 // 爆炸掀飛的力道打幾折（牠們�
    換算回模型是 0.103 ÷ 半身厚 0.365 ＝ 多 28%，所以取 1.3。 */
 const B_ROLL_LIFT = 1.3;
 const B_PANIC = 2.6;                 // 抱頭跑圈圈的角速度（小人 W_PANIC 是 3.4）
+/* 四條腿的那幾隻**側躺**（v1.154，見 engine 的 BEAST_SIDE）：兩條腿的往後仰躺
+   （繞 x 轉 −90°），牛羊照這樣躺會變成用尾巴站著、鼻子朝天——牠們要往側邊倒
+   （繞 z 轉 ±90°）。躺著壓火的時候只小幅度前後晃：擺幅大的話抬升的補正
+   （SIDE·|sin(roll)|）在 90° 之外就對不準，整隻會浮起來。 */
+const B_SIDE_ROCK = 0.14;
+/* 往哪一邊倒，每次隨機。兩條腿的沒有這回事（牠們只往後仰）。 */
+function lieSide(m) { if (m.side) m.sdir = Math.random() < 0.5 ? 1 : -1; }
+/* 這一隻躺平時的角度：側躺的是 roll、仰躺的是 spin。 */
+function lieAng(m) { return m.side ? m.sdir * Math.PI * 0.5 : -Math.PI * 0.5; }
+/* 側躺著晃的時候 m.lie 要給多少（倍率）。躺平在 90° 時剛好是 1，引擎那邊抬的
+   `SIDE·|sin(roll)|` 正好等於半個身寬；偏開 δ 之後**本來朝上那一側會轉到地面下**，
+   要多抬 (身高 ÷ 身寬)·tan δ 那麼多。取「最寬 × 最高」那個角來算，所以是寧可
+   浮一點點也不陷進去（實測浮 0.09 格，而不補的話陷 0.15~0.25 格）。 */
+function sideLift(m) {
+  const d = Math.min(0.5, Math.abs(m.roll - lieAng(m)));
+  return 1 + ENG.BEAST_MID[m.kind] * 2 / (ENG.BEAST_SIDE[m.kind] || 0.01) * Math.tan(d);
+}
 
-/* 被吹飛／炸飛。回傳 true＝真的打到了。飛龍改成摔下來（牠本來就在天上）。 */
+/* 被吹飛／炸飛。回傳 true＝真的打到了。飛龍改成摔下來（牠本來就在天上）。
+   帶火的那一下（爆炸都是 lit＝true）v1.154 起會點著牠：跟走地上的那幾隻同一條規則
+   （牠們是 m.lit 記著、落地那一刻才燒），只是龍在天上，當場就開始拖火。
+   點不著（已經在燒／剛被澆濕）就照舊只把牠打下來。 */
 function tossBeast(m, vx, vy, vz, lit) {
-  if (m.kind === 'dragon') return crashDragon(m);
+  if (m.kind === 'dragon') return (lit && igniteBeast(m, 1)) || crashDragon(m);
   if (m.air) return false;                           // 已經在飛了，不用再掀一次
   const sp = Math.hypot(vx, vz);
   if (sp > B_TOSS_MAX) { const k = B_TOSS_MAX / sp; vx *= k; vz *= k; }
+  /* roll 也歸零：那是躺平／打滾留下的角度，飛在半空沒有意義——不清的話
+     側躺中被炸飛的牛會維持著 90° 側傾在天上翻（v1.154）。 */
   m.air = 1; m.fall = 0; m.lie = 0; m.burn = 0; m.brl = 0; m.pause = 0; m.gait = 0;
+  m.roll = 0;
   m.vx = vx; m.vy = vy; m.vz = vz;
   m.tsp = rr(4, 9) * (Math.random() < 0.5 ? -1 : 1);   // 翻滾的角速度
   if (lit) m.lit = 1;
@@ -5337,15 +5434,23 @@ function tossBeast(m, vx, vy, vz, lit) {
   return true;
 }
 /* 點著。roll=1 是摔在地上燒（就地打滾），roll=0 是站著被點著（抱頭跑圈圈）——同小人。
-   **飛龍點不著**：牠自己就是噴火的。回 false 讓呼叫端走「沒著火」那條（＝改成打倒牠），
-   跟小人那邊 `if (!lit || !igniteWorker(...))` 是同一個寫法。 */
+   飛龍自己一套（v1.154，見 burnDragon）：牠在天上，著火是「拖著火飛一段 → 墜地 →
+   在地上燒完 → 拍翅起飛」。v1.153 以前牠是完全點不著的（回 false ＝ 改成打倒牠）。 */
 function igniteBeast(m, roll) {
-  if (m.kind === 'dragon' || m.burn > 0 || m.wet > 0) return false;
+  if (m.burn > 0 || m.wet > 0) return false;
+  if (m.kind === 'dragon') return burnDragon(m);
   m.burn = B_BURN; m.brl = roll ? 1 : 0; m.bem = Math.random(); m.fall = 0;
   m.gait = 0; m.pause = 0;
   if (roll) {                                        // 躺平角直接就位（本來就是摔著才點著的）
-    m.spin = Math.PI * 0.5; m.rph = rr(0, Math.PI * 2);
-    m.roll = B_ROLL_AMP * Math.sin(m.rph); m.lie = B_ROLL_LIFT;
+    m.rph = rr(0, Math.PI * 2);
+    if (m.side) {                                    // 四條腿的：側躺著前後晃（v1.154）
+      lieSide(m);
+      m.spin = 0; m.roll = lieAng(m) + m.sdir * B_SIDE_ROCK * Math.sin(m.rph);
+      m.lie = sideLift(m);
+    } else {
+      m.spin = Math.PI * 0.5;
+      m.roll = B_ROLL_AMP * Math.sin(m.rph); m.lie = B_ROLL_LIFT;
+    }
   } else {
     m.lie = 0; m.spin = 0; m.roll = 0;
   }
@@ -5357,16 +5462,29 @@ function igniteBeast(m, roll) {
 function fellBeast(m, t) {
   if (m.kind === 'dragon') return crashDragon(m);
   if (m.air || m.burn > 0 || m.fall > 0) return false;
-  m.fall = t; m.lie = 1; m.gait = 0; m.pause = 0; m.roll = 0;
+  m.fall = t; m.lie = 1; m.gait = 0; m.pause = 0;
+  if (!m.side) m.roll = 0;                           // 側躺的那個角度就是 roll，別歸零
+  lieSide(m);
   reaim(m);
   return true;
 }
-/* 淋濕：身上的火當場熄掉，再蹲一下才起來（同 wetWorker）。 */
+/* 淋濕：身上的火當場熄掉，再蹲一下才起來（同 wetWorker）。
+   飛龍也澆得到了（v1.154，牠身上會有火了）：火滅掉、在天上燒的那一段直接回航線；
+   已經摔在地上的就讓牠燒完那段結束、照原本的節奏爬起來飛走。 */
 function wetBeast(m) {
-  if (!m || m.kind === 'dragon') return false;
+  if (!m) return false;
+  if (m.kind === 'dragon') {
+    m.wet = WET_TIME;
+    if (m.burn > 0) {
+      m.burn = 0;
+      if (m.st === 'ablaze') { m.st = m.was === 'out' ? 'out' : 'in'; m.spin = 0; }
+    }
+    return true;
+  }
   m.wet = WET_TIME;
   if (m.burn > 0) {
-    m.burn = 0; m.brl = 0; m.spin = 0; m.roll = 0; m.rph = 0; m.gait = 0;
+    m.burn = 0; m.brl = 0; m.spin = 0; m.rph = 0; m.gait = 0;
+    if (!m.side) m.roll = 0;             // 側躺的那個角度就是 roll，歸零的話牠會先站起來再倒下去
     m.fall = rr(0.5, 1.1); m.lie = 1;
   }
   return true;
@@ -5382,14 +5500,18 @@ function hurtBeast(m, dt) {
   if (m.air) { flyBeast(m, dt); return true; }
   if (m.burn > 0) { burnBeast(m, dt); return true; }
   if (m.fall > 0) {
-    /* 躺平就是躺平，而且往後仰躺（負角）——同小人：往前趴的話臉那幾塊會插進草地裡。 */
+    /* 躺平就是躺平：兩條腿的往後仰躺（負角）——同小人，往前趴的話臉那幾塊會插進草地裡；
+       四條腿的往側邊倒（見 lieAng）。 */
     m.fall -= dt;
-    m.spin += (-Math.PI * 0.5 - m.spin) * Math.min(1, dt * 9);
+    if (m.side) m.roll += (lieAng(m) - m.roll) * Math.min(1, dt * 9);
+    else m.spin += (lieAng(m) - m.spin) * Math.min(1, dt * 9);
     m.gait += (0 - m.gait) * Math.min(1, dt * 6);
     if (m.fall <= 0) { m.fall = 0; m.lie = 0; }
     return true;
   }
-  if (m.spin) m.spin += (0 - m.spin) * Math.min(1, dt * 7);   // 爬起來，躺平角收回去
+  // 爬起來，躺平角收回去（側躺的收 roll，仰躺的收 spin）
+  if (m.spin) m.spin += (0 - m.spin) * Math.min(1, dt * 7);
+  if (m.roll) m.roll += (0 - m.roll) * Math.min(1, dt * 7);
   return false;
 }
 /* 飛在半空：走彈道、一路翻滾，撞到草地邊緣就彈回來（同 flyWorker）。 */
@@ -5406,7 +5528,10 @@ function flyBeast(m, dt) {
   pushOutHome(m);                                    // 剛好摔進人家屋子裡：推出來
   const lit = m.lit || nearFire(m);                  // 落地這一刻才判定燒不燒
   m.lit = 0;
-  if (!lit || !igniteBeast(m, 1)) { m.spin = 0; m.fall = rr(B_FALL[0], B_FALL[1]); m.lie = 1; }
+  if (!lit || !igniteBeast(m, 1)) {
+    m.spin = 0; m.fall = rr(B_FALL[0], B_FALL[1]); m.lie = 1;
+    lieSide(m);
+  }
   sndFall();
 }
 /* 身上著火的兩種演法（同 burnMove）：躺著沿身體長軸滾，或站著繞定點跑圈圈。 */
@@ -5419,15 +5544,23 @@ function burnBeast(m, dt) {
   }
   const lim = arenaR + 22;
   if (m.brl) {
-    m.spin += (Math.PI * 0.5 - m.spin) * Math.min(1, dt * 12);
     m.rph += dt * B_ROLL_HZ * Math.PI * 2;
     const was = m.roll;
-    m.roll = B_ROLL_AMP * Math.sin(m.rph);
+    if (m.side) {
+      /* 四條腿的：側躺著前後晃（v1.154），幅度小、留在原地。 */
+      m.spin += (0 - m.spin) * Math.min(1, dt * 12);
+      m.roll = lieAng(m) + m.sdir * B_SIDE_ROCK * Math.sin(m.rph);
+      m.lie = sideLift(m);
+    } else {
+      m.spin += (Math.PI * 0.5 - m.spin) * Math.min(1, dt * 12);
+      m.roll = B_ROLL_AMP * Math.sin(m.rph);
+      m.lie = B_ROLL_LIFT;
+    }
     /* 沿長軸滾＝往身體的**側向**移動，位移跟著這一幀的轉角走，所以來回滾就留在原地翻。 */
     const v = (m.roll - was) * B_ROLL_R * (m.sc || 1);
     m.x = clamp(m.x - Math.cos(m.a) * v, -lim, lim);
     m.z = clamp(m.z + Math.sin(m.a) * v, -lim, lim);
-    m.gait = 0; m.lie = B_ROLL_LIFT;
+    m.gait = 0;
   } else {
     m.ba += dt * B_PANIC;
     m.x = clamp(m.bx + Math.cos(m.ba) * m.br, -lim, lim);
@@ -5471,15 +5604,20 @@ const DRA_DOWN_PITCH = 0.10, DRA_DOWN_ROLL = 0.18;   // 趴著的俯仰與側傾
 const DRA_RISE_PITCH = -0.30;        // 起飛時鼻子抬起來
 const DRA_RISE_FLAP = 2.2;           // 起飛拍翅比巡航用力幾倍
 const DRA_RISE_UP = 14;              // 爬升速度（格／秒）
+/* 摔下去的初速。vy 是垂直那一下（挨打是往上彈一點點，失速就是 0）；
+   水平保留一點前衝——原地直落看起來不像摔，像電梯。翻滾方向隨機。 */
+function draDive(m, vy) {
+  m.st = 'crash';
+  m.vy = vy;
+  m.vx = Math.sin(m.a) * DRA_SPD * 0.35;
+  m.vz = Math.cos(m.a) * DRA_SPD * 0.35;
+  m.tsp = rr(1.2, 2.6) * (Math.random() < 0.5 ? -1 : 1);
+}
 /* 把牠打下來。回傳 true＝真的打到了（已經在摔的不重複觸發）。 */
 function crashDragon(m) {
   if (m.st === 'crash' || m.st === 'down' || m.st === 'rise') return false;
   m.was = m.st;
-  m.st = 'crash';
-  m.vy = rr(-2, 1.5);                                // 挨那一下先往上彈一點點
-  m.vx = Math.sin(m.a) * DRA_SPD * 0.35;             // 保留一點前衝，不是原地直落
-  m.vz = Math.cos(m.a) * DRA_SPD * 0.35;
-  m.tsp = rr(1.2, 2.6) * (Math.random() < 0.5 ? -1 : 1);
+  draDive(m, rr(-2, 1.5));
   m.left = 0;                                        // 摔下去就不吐火球了
   sndRoar();
   toast('🐉 那條龍被打下來了', '牠在地上趴一下就會再飛起來');
@@ -5492,6 +5630,7 @@ const DRA_DOWN_PAD = 0.15;
 function draGround() { return (ENG.BEAST_FLOOR.dragon + DRA_DOWN_PAD) * DRA_SC; }
 function fallenDragon(m, dt) {
   const gnd = draGround();
+  if (m.burn > 0) draBurn(m, dt);                    // 著火摔下來的，火還在燒（v1.154）
   if (m.st === 'crash') {
     m.vy -= GRAV * dt;
     m.x += m.vx * dt; m.y += m.vy * dt; m.z += m.vz * dt;
@@ -5511,6 +5650,13 @@ function fallenDragon(m, dt) {
     m.t -= dt;
     m.ph = DRA_DOWN_PH + 0.10 * Math.sin(m.t * 3.4);
     m.y += (gnd - m.y) * Math.min(1, dt * 8);
+    /* 身上還在燒就先不起飛（v1.154）：趴在地上左右翻著把火壓掉，燒完才拍翅。
+       翻的是側傾（roll），跟猴子在地上打滾同一個意思，只是牠這麼大隻不真的滾起來。 */
+    if (m.burn > 0) {
+      m.roll = DRA_DOWN_ROLL + DRA_BURN_ROLL * Math.sin(m.burn * DRA_BURN_HZ * Math.PI * 2);
+      return false;
+    }
+    m.roll += (DRA_DOWN_ROLL - m.roll) * Math.min(1, dt * 6);
     if (m.t <= 0) { m.st = 'rise'; sndRoar(); }
     return false;
   }
@@ -5527,6 +5673,69 @@ function fallenDragon(m, dt) {
   if (m.y < top) return false;
   m.y = top; m.spin = 0;
   m.st = m.was === 'out' ? 'out' : 'in';             // 歸隊，接回原本那一段
+  return false;
+}
+
+/* ── 飛龍：著火（v1.154）─────────────────────────────────
+   使用者：「飛龍也要做著火狀態反應」，形態選的是「空中拖火 → 墜地 → 燒完 → 起飛」。
+
+   前兩段是新的（ablaze），後兩段就是 v1.146 那套倒地起飛（crash／down／rise），
+   只是「趴著」那一段多了一條「還在燒就先不起飛」。所以牠著火的完整一趟是：
+     ablaze 身上竄火，航向不修了、左右晃、一路掉高度（撐 DRA_ABLAZE 秒）
+     crash  失速摔下去（跟被打下來同一段）
+     down   趴在草皮上左右翻著壓火，燒完才進 rise
+     rise   拍翅起飛，歸隊接回原本那一段
+   火可以澆熄（wetBeast）：在天上就直接回航線，在地上就照原本的節奏爬起來。 */
+const DRA_BURN = 7;                  // 身上的火燒幾秒（猴子 B_BURN 4.5、小人 W_BURN 3）
+const DRA_ABLAZE = [1.6, 2.8];       // 拖著火還能飛幾秒
+const DRA_ABL_SINK = 6.5;            // 這段每秒掉幾格（看得出牠在往下沉）
+const DRA_ABL_YAW = 0.55, DRA_ABL_ROLL = 0.5;   // 失控的偏航與側傾擺幅
+const DRA_ABL_PITCH = 0.18;          // 鼻子往下垂
+const DRA_BURN_ROLL = 0.3, DRA_BURN_HZ = 0.55;  // 趴在地上壓火時左右翻的幅度與快慢
+/* 點著牠。回傳 true＝真的點著了（呼叫端那條 `if (!lit || !igniteBeast(...))` 靠它分岔）。 */
+function burnDragon(m) {
+  m.burn = DRA_BURN;
+  m.bem = Math.random();
+  m.left = 0;                                    // 著火就不吐火球了（同被打下來）
+  sndRoar();
+  /* 摔下去／趴著的那兩段：就地燒，不必再摔一次。 */
+  if (m.st === 'crash' || m.st === 'down') {
+    toast('🐉 趴在地上那條龍被點著了', '牠會先把火壓掉才飛得起來');
+    return true;
+  }
+  /* 才剛拍翅爬到一半又被點著：再摔一次（走同一段 crash）。 */
+  if (m.st === 'rise') {
+    draDive(m, 0);
+    toast('🐉 那條龍剛飛起來又被點著了', '牠會再摔一次，在地上把火燒完');
+    return true;
+  }
+  m.was = m.st === 'out' ? 'out' : 'in';         // 火滅了要接回原本那一段
+  m.st = 'ablaze';
+  m.t = rr(DRA_ABLAZE[0], DRA_ABLAZE[1]);
+  toast('🐉 那條龍身上著火了', '牠撐不了多久，會摔下來在地上把火滅掉');
+  return true;
+}
+/* 身上的火：倒數 ＋ 冒火苗（跟燒積木、燒小人、燒猴子共用同一個粒子池與配額）。 */
+function draBurn(m, dt) {
+  m.burn -= dt;
+  burnBeastFx(m, dt);
+  if (m.burn <= 0) m.burn = 0;
+}
+/* 拖著火在天上的那一段。回傳 true＝飛出場外了（跟 stepDragon 同一個約定）。 */
+function ablazeDragon(m, dt) {
+  draBurn(m, dt);
+  m.t -= dt;
+  m.ph += dt * DRA_FLAP * 1.35;                  // 翅膀拍得又快又亂
+  /* 不修航向了：照當下的朝向往前飄，左右晃、鼻子往下垂、一路掉高度。 */
+  m.a += Math.sin(m.t * 5.2) * DRA_ABL_YAW * dt;
+  m.roll += (Math.sin(m.t * 3.7) * DRA_ABL_ROLL - m.roll) * Math.min(1, dt * 4);
+  m.spin += (DRA_ABL_PITCH - m.spin) * Math.min(1, dt * 3);
+  m.x += Math.sin(m.a) * DRA_SPD * 0.8 * dt;
+  m.z += Math.cos(m.a) * DRA_SPD * 0.8 * dt;
+  m.y = Math.max(draGround(), m.y - DRA_ABL_SINK * dt);
+  /* 火被澆熄了（wetBeast 會把 st 推回航線），或撐到底了就摔下去。 */
+  if (m.t > 0 && m.burn > 0) return false;
+  draDive(m, 0);                                 // 不是被打的那一下，所以沒有往上彈
   return false;
 }
 

@@ -157,11 +157,12 @@ function step(dt) {
   if (spareDead) dropBlocks(b => b.gone < 0);            // 淡完的收掉（見 clearSpare）
   burningW = 0;
   for (const w of workers) if (w.burn > 0) burningW++;    // 火苗配額要照人數分
-  if (beasts) for (const m of beasts) if (m.burn > 0) burningW++;   // 燒起來的猴子也算（v1.146）
+  if (beasts) for (const m of beasts) if (m.burn > 0) burningW++;   // 燒起來的生物也算（v1.146）
   mageHeapT -= dt;                                       // 料堆清單的重算計時（見 listMageHeaps）
   stepIdleEvent(dt);                                     // 閒晃事件（v1.97）
   stepDoom(dt);                                          // 天災（v1.138）
   stepMascot(dt);                                        // 吉祥物（v1.144，三隻各數各的鐘）
+  stepHerd(dt);                                          // 閒逛的牛羊（v1.154，場上少了就補）
   pairChat();                                            // 湊對要在更新之前，配到的當幀就停下來
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);
@@ -301,7 +302,8 @@ function onUp(e) {
   if (hit.kind === 'beast') {
     const m = beastAt(hit.idx);
     if (!m || m.air) return;
-    // 拿著火把點牠：站著被點著的會抱頭跑圈圈。飛龍點不著（牠自己就是噴火的），改成打下來
+    /* 拿著火把點牠：站著被點著的會抱頭跑圈圈；飛龍是拖著火飛一段再摔下來
+       （v1.154，見 burnDragon）。已經在燒或剛被澆濕的點不著，那就改成打倒／打下來。 */
     if (tool === 'fire') {
       if (igniteBeast(m, 0)) sndFire();
       else if (m.kind === 'dragon') crashDragon(m);

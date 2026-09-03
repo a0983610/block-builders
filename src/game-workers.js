@@ -1418,8 +1418,10 @@ function strollPause(w) { w.pause = w.leg / WALK * rr(1.7, 3.1); w.leg = 0; }
 
 /* spd 給了就照它走，不給就是小人的走路速度（WALK）。
    天災那幾隻走得比人慢得多，但「怎麼繞開建築與房子」要跟小人一模一樣，
-   所以是借這一支、只換速度，不是另外刻一份（見 game-tools.js 的 DOOM_WALK）。 */
-function strollTo(w, dt, spd) {
+   所以是借這一支、只換速度，不是另外刻一份（見 game-tools.js 的 DOOM_WALK）。
+   step 是腿擺多快的倍率（v1.154）：走得慢的還照原速擺腿的話，腳在原地空踩——
+   牛羊只有猴子的三分之二速度，那四條腿看起來就是滑步（見 HERD_STEP）。 */
+function strollTo(w, dt, spd, step) {
   const keep = siteR + KEEP;
   /* 目標點落在建築裡就先推到外圈。不推的話他會繞著建築打轉永遠抵達不了，
      也就永遠不換下一個目標，等於卡死在那一圈上。 */
@@ -1460,7 +1462,7 @@ function strollTo(w, dt, spd) {
   pushOutHome(w);
   w.leg += sp;                         // 這趟閒晃走了多遠，抵達後拿來算站多久
   w.a = Math.atan2(ux, uz);            // 面向真正在走的方向，不是目標方向
-  w.ph += dt * 11;
+  w.ph += dt * 11 * (step || 1);
   w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
   return false;
 }
