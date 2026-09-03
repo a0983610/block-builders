@@ -4730,7 +4730,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        那幾間，第一批就成了沒人蓋的空地基（實測 14 間裡有 190 格永遠補不上）。 */
     stopIdleEvent(); clearHomes(); evArm = 0;
     idleEv = IDLE_EVENTS[0]; startHomes();          // 挑哪一件另一條測，這裡直接開
-    const crew = workers.filter(w => w.hm >= 0).length;
+    /* 房子跟樹都在 homes.list 上（v1.153），所以人數也要分開算：
+       蓋房子的是「一半左右的人離隊」那條，種樹的是「沒事的人再抽幾個」那條。 */
+    const crew = workers.filter(w => w.hm >= 0 && !homes.list[w.hm].tree).length;
+    const crewT = workers.filter(w => w.hm >= 0 && homes.list[w.hm].tree).length;
     const pool0 = blocks.filter(b => b.hh < 0).length;
     const all0 = blocks.length;
     /* 土痕跟塵霧要量「新增的」：慶祝的彩帶還飄在半空（也是塵霧那個池子），
@@ -4739,7 +4742,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     marks.length = 0; dust.length = 0;
     const list = homes.list.map(h => ({ n: h.n, slots: h.slots.length, kind: h.kind,
                                         rad: +Math.hypot(h.x, h.z).toFixed(1), r: h.r,
-                                        x: h.x, z: h.z }));
+                                        x: h.x, z: h.z, tree: h.tree ? 1 : 0 }));
     /* 挖的那一下要有土痕與土塵（使用者：「積木可以就近地面上挖一挖拿出來」——
        看得出是挖出來的，不是憑空出現）。土痕跟隕石坑同一套，3 秒淡掉。 */
     let marks1 = 0, dirt1 = 0, digs = 0;
@@ -4852,7 +4855,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const tr of trees)
         tree = Math.min(tree, Math.hypot(homes.list[i].x - tr.x, homes.list[i].z - tr.z) - tr.r);
     }
-    return { crew, n: workers.length, list, pool0, pool1, all0, all1: blocks.length,
+    return { crew, crewT, n: workers.length, list, pool0, pool1, all0, all1: blocks.length,
              homeSet, left, secs: +secs.toFixed(1), inside, insideWalk,
              far: +far.toFixed(1), back,
              marks1, dirt1, digs, carry, cap: HOME_CARRY,
@@ -4866,20 +4869,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              spread: +(Math.max(...homes.list.map(h => Math.hypot(h.x, h.z))) -
                        Math.min(...homes.list.map(h => Math.hypot(h.x, h.z)))).toFixed(1) };
   });
+  const houses = home.list.filter(h => !h.tree);
+  const grove = home.list.filter(h => h.tree);
   ok('一半左右的人離隊去蓋，附近的人合蓋大一點的',
      home.crew >= home.n * 0.3 && home.crew <= home.n * 0.7 &&
-     home.list.length > 1 && home.list.every(h => h.n >= 1 && h.n <= 3) &&
-     home.list.some(h => h.n > 1),
-     home.n + ' 人裡 ' + home.crew + ' 人離隊，蓋 ' + home.list.length + ' 間（每間 ' +
-     home.list.map(h => h.n + ' 人 ' + h.slots + ' 塊').join('、') + '）');
+     houses.length > 1 && houses.every(h => h.n >= 1 && h.n <= 3) &&
+     houses.some(h => h.n > 1),
+     home.n + ' 人裡 ' + home.crew + ' 人離隊，蓋 ' + houses.length + ' 間（每間 ' +
+     houses.map(h => h.n + ' 人 ' + h.slots + ' 塊').join('、') + '）');
   /* 塊數（v1.100，使用者：「調整小房子塊數 在 100~300 之間比較有城市村落感」）。
      v1.98 是 25～41、v1.99 是 25～115，現在 103～276。 */
   ok('一間房子在 100～300 塊之間，人多的那組蓋得比較大',
-     home.list.every(h => h.slots >= 100 && h.slots <= 300) &&
-     Math.max(...home.list.filter(h => h.n === 1).map(h => h.slots).concat(0)) <=
-     Math.max(...home.list.map(h => h.slots)),
-     '每間 ' + home.list.map(h => h.kind + ' ' + h.n + ' 人 ' + h.slots + ' 塊').join('、') +
-     '（共 ' + home.list.reduce((n, h) => n + h.slots, 0) + ' 塊）');
+     houses.every(h => h.slots >= 100 && h.slots <= 300) &&
+     Math.max(...houses.filter(h => h.n === 1).map(h => h.slots).concat(0)) <=
+     Math.max(...houses.map(h => h.slots)),
+     '每間 ' + houses.map(h => h.kind + ' ' + h.n + ' 人 ' + h.slots + ' 塊').join('、') +
+     '（共 ' + houses.reduce((n, h) => n + h.slots, 0) + ' 塊）');
+  /* 同一輪裡，房子分完之後**剩下沒事的人**再抽幾個去種樹（v1.153，使用者：
+     「閒置的小人有點多 增加一些小人去蓋樹」、「抽幾個沒事的人去蓋樹」）。
+     要驗的是三件事：真的有人去種、種的是樹（塊數落在樹的區間，比房子小）、
+     而且**沒有人同時被派兩份工**（一個人只會在一棵樹或一間房子上）。 */
+  ok('房子分完之後，沒事的人再抽幾個去種樹',
+     home.crewT > 0 && home.crewT <= home.n - home.crew && grove.length > 0 &&
+     grove.every(h => h.slots >= 31 && h.slots <= 220 && h.n >= 1 && h.n <= 3),
+     home.n + ' 人裡 ' + home.crew + ' 人蓋房子、另外 ' + home.crewT + ' 人種樹：' +
+     grove.map(h => h.kind + ' ' + h.n + ' 人 ' + h.slots + ' 塊').join('、') +
+     '（共 ' + grove.reduce((n, h) => n + h.slots, 0) + ' 塊）');
   /* 一趟搬好幾塊（v1.100）。房子放大之後一塊一趟的成本就現形了：
      實測一趟一塊要 6.4 秒才砌上一塊、六成時間在走路；一趟 2～3 塊是 2.5 秒。
      這條驗「真的有一次拿到兩塊以上」，上限跟工人一樣是 3（再多手上那疊會高過頭頂）。 */
@@ -4973,8 +4988,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 一輪裡真的會出現好幾款（不是每次都蓋同一種）。三個人數各三款，
      隨機挑 → 六間至少該有三種不同的。 */
   ok('一輪蓋出來的房子有好幾款',
-     new Set(home.list.map(h => h.kind)).size >= 3,
-     home.list.length + ' 間：' + home.list.map(h => h.kind).join('、'));
+     new Set(houses.map(h => h.kind)).size >= 3,
+     houses.length + ' 間：' + houses.map(h => h.kind).join('、') +
+     (grove.length ? '；樹 ' + grove.map(h => h.kind).join('、') : ''));
   /* 蓋在工地外圈那一帶（使用者選的），彼此不重疊、不壓到樹。 */
   /* 範圍是「地標建築範圍外～小樹圈內」（v1.98，使用者指定「應該分散一點」）。
      樹種在碎料場外圍（arenaR + 3～15），所以外緣就是 arenaR。
@@ -5329,16 +5345,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     digBlock = orig;
     const hs = homes.list;
+    const sum = f => hs.filter(f).reduce((a, h) => a + h.slots.length, 0);
     return { big, bigN, maxb: ENG.MAXB, pool: blocks.length, full, secs,
              placed: placedCnt, total: bp.slots.length,
-             homes: hs.length, slots: hs.reduce((a, h) => a + h.slots.length, 0),
+             homes: hs.filter(h => !h.tree).length, slots: sum(h => !h.tree),
+             trees: hs.filter(h => h.tree).length, treeSlots: sum(h => h.tree),
+             budget: TREE_BUDGET,
              left: hs.reduce((a, h) => a + h.left, 0) };
   });
+  /* 門檻 v1.153 加上樹那一份：村子現在是「最多 43 間 5405 格的房子 ＋ 最多
+     TREE_BUDGET 塊的樹」，兩者都是硬上限（房子靠一人一間、樹靠塊數），
+     所以池子要留得下 5405 ＋ 1800。 */
   ok('積木池同時容得下最大的地標與整個村子（挖得出積木）',
      poolFit.full === 0 && poolFit.left === 0 && poolFit.pool <= poolFit.maxb &&
-     poolFit.placed === poolFit.total && poolFit.maxb - poolFit.big >= 5405,
+     poolFit.placed === poolFit.total &&
+     poolFit.maxb - poolFit.big >= 5405 + poolFit.budget &&
+     poolFit.treeSlots <= poolFit.budget,
      poolFit.bigN + ' ' + poolFit.big + ' 塊 ＋ 60 人的村子 ' + poolFit.homes + ' 間 ' +
-     poolFit.slots + ' 格 → 池子 ' + poolFit.pool + '／' + poolFit.maxb +
+     poolFit.slots + ' 格 ＋ 樹 ' + poolFit.trees + ' 棵 ' + poolFit.treeSlots +
+     ' 格（上限 ' + poolFit.budget + '）→ 池子 ' + poolFit.pool + '／' + poolFit.maxb +
      '，挖不出來 ' + poolFit.full + ' 次、蓋了 ' + poolFit.secs + ' 秒還缺 ' +
      poolFit.left + ' 格');
 
@@ -5685,9 +5710,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     while (t < 12) { step(0.05); t += 0.05; }
     stopIdleEvent(); clearHomes(); evArm = 0;
     idleEv = IDLE_EVENTS[0]; startHomes();
-    // 挑一間人最多的來測
-    let hi = 0;
-    homes.list.forEach((h, i) => { if (h.n > homes.list[hi].n) hi = i; });
+    // 挑一間人最多的**房子**來測（樹也在同一份清單上，但這條驗的是「回自己家」）
+    let hi = homes.list.findIndex(h => !h.tree);
+    homes.list.forEach((h, i) => { if (!h.tree && h.n > homes.list[hi].n) hi = i; });
     const h = homes.list[hi];
     // 先蓋一陣子
     let secs = 0;
@@ -5930,8 +5955,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     stopIdleEvent(); clearHomes(); evArm = 0;
     idleEv = IDLE_EVENTS[0]; startHomes();
     for (let i = 0; i < 900; i++) step(0.05);          // 蓋 45 秒，都還沒蓋完
-    const n0 = homes.list.length;
-    const half = homes.list.filter(h => h.left > 0).length;
+    /* 房子與樹分開數（v1.153）：蓋房子的那批人只接得了沒蓋完的房子、種樹的那批只接得了
+       沒種完的樹（見 pickUnfinished 的 tree 參數），所以「舊的沒人接就不准開新的」
+       這條不變式要各自成立——混在一起算的話，樹那邊開新的會被記到房子頭上。 */
+    const cnt = f => homes.list.filter(f).length;
+    const n0 = cnt(h => !h.tree), n0T = cnt(h => h.tree);
+    const half = cnt(h => h.left > 0 && !h.tree), halfT = cnt(h => h.left > 0 && h.tree);
+    const all0 = homes.list.length;
     const mid = homes.list.reduce((n, h) => n + (h.slots.length - h.left), 0);
     // 換場：大家回去上工，房子留在原地沒人管
     stopIdleEvent();
@@ -5940,8 +5970,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     idleEv = IDLE_EVENTS[0]; startHomes();
     const mine = homes.list.map((h, i) => workers.some(w => w.hm === i));
     // 只數「原本那幾間」有沒有被接手：組數比間數多的時候，多出來的那幾組會去開新的
-    const taken = mine.slice(0, n0).filter(Boolean).length;
-    const n1 = homes.list.length;
+    const took = f => homes.list.filter((h, i) => i < all0 && mine[i] && f(h)).length;
+    const taken = took(h => !h.tree), takenT = took(h => h.tree);
+    const n1 = cnt(h => !h.tree), n1T = cnt(h => h.tree);
     /* 只等「這一輪有人接手的那幾間」。組數看的是散場時大家站在哪（就近湊隊），
        所以間數多的時候會有一兩間排到下一輪——那不是壞掉，是排隊。 */
     let secs = 0;
@@ -5968,21 +5999,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const fixed = h0.left;
     cleanTools(); clearHomes();
     return { n0, half, mid, orphan, taken, n1, left1, secs: +secs.toFixed(0),
+             n0T, halfT, takenT, n1T,
              hole, fixer, fixed, s2: +s2.toFixed(0) };
   });
-  ok('蓋不完的房子下一輪有人接手，砸出洞的也有人來補',
+  ok('蓋不完的房子與樹下一輪有人接手，砸出洞的也有人來補',
      homeResume.half > 0 && homeResume.orphan === 0 &&
-     /* 舊的還沒人接就不准開新的：要嘛間數沒變，要嘛原本沒蓋完的全都有人接手了
-        （組數比間數多的時候，多出來的那幾組才去開新的）。 */
+     /* 舊的還沒人接就不准開新的：要嘛數量沒變，要嘛原本沒蓋完的全都有人接手了
+        （組數比間數多的時候，多出來的那幾組才去開新的）。房子與樹各自成立。 */
      homeResume.taken > 0 &&
      (homeResume.n1 === homeResume.n0 || homeResume.taken === homeResume.half) &&
+     (homeResume.n1T === homeResume.n0T || homeResume.takenT === homeResume.halfT) &&
      homeResume.left1 === 0 &&
      homeResume.hole > 0 && homeResume.fixer && homeResume.fixed === 0,
-     '蓋 45 秒停在 ' + homeResume.mid + ' 塊（' + homeResume.half + ' / ' +
-     homeResume.n0 + ' 間沒蓋完）→ 換場後 ' + homeResume.orphan +
-     ' 人還在蓋 → 下一輪接手 ' + homeResume.taken + ' 間、沒開新的（總間數 ' +
-     homeResume.n0 + ' → ' + homeResume.n1 + '），' + homeResume.secs + ' 秒蓋完（還差 ' +
-     homeResume.left1 + ' 格）；砸出 ' + homeResume.hole + ' 格的洞 → 有人接手：' +
+     '蓋 45 秒停在 ' + homeResume.mid + ' 塊（房子 ' + homeResume.half + ' / ' +
+     homeResume.n0 + ' 間、樹 ' + homeResume.halfT + ' / ' + homeResume.n0T +
+     ' 棵沒蓋完）→ 換場後 ' + homeResume.orphan +
+     ' 人還在蓋 → 下一輪接手 ' + homeResume.taken + ' 間 ＋ ' + homeResume.takenT +
+     ' 棵（房子 ' + homeResume.n0 + ' → ' + homeResume.n1 + ' 間、樹 ' +
+     homeResume.n0T + ' → ' + homeResume.n1T + ' 棵），' + homeResume.secs +
+     ' 秒蓋完（還差 ' + homeResume.left1 +
+     ' 格）；砸出 ' + homeResume.hole + ' 格的洞 → 有人接手：' +
      homeResume.fixer + '，' + homeResume.s2 + ' 秒後還差 ' + homeResume.fixed + ' 格');
 
   /* 目標在房子另一邊的時候要**繞過去**（v1.99）。使用者回報「小人會面向小房子原地走路」：
@@ -6911,6 +6947,175 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 塊：按下去之後還站著 ' + instaVillage.after.set + ' 塊（散掉 ' +
      instaVillage.after.loose + ' 塊、同時被當成地標建材的 ' + instaVillage.after.dual +
      ' 塊），地標 ' + instaVillage.after.placed + '/' + instaVillage.after.slots);
+
+  /* ── 樹（v1.153）──────────────────────────────────────────
+     外型掃過 TREE_KIND 每一款，不是只看這一輪剛好種出來的那幾棵（同房子那條的理由：
+     不然覆蓋率要靠運氣）。每一款都要成立四件事：
+       ① 塊數在 31～220（有大有小，一個人蓋的那三款要小到一輪蓋得完）
+       ② 每一格都六面連得回地面——這是 markHomeF6 的基準線，連不到的葉子完好時
+          f6 就是 false，之後永遠不會被垮塌判定收掉，會一直吊在半空
+       ③ 照 canPlaceHome 那把尺**砌得完**（沒有「這一格永遠放不上去」的死結）
+       ④ 樹幹站在地面上、而且不從樹冠頂上冒出來（冒出來看起來是根電線桿）
+     另外整張表要三種樹冠都有，果樹要真的掛得出果子。 */
+  const treeShape = await page.evaluate(() => {
+    const N26 = NBR, N6 = NBR6;
+    return TREE_KIND.map(k => {
+      const sl = treeSlots(0, 0, k, TREE_PAL[0]);
+      const at = new Map();
+      sl.forEach((s, i) => at.set(s.i + ':' + s.gy + ':' + s.k, i));
+      const nb = (s, d) => at.get((s.i + d[0]) + ':' + (s.gy + d[1]) + ':' + (s.k + d[2]));
+      // ② 六面連通
+      const seen = new Set(), st = [];
+      sl.forEach((s, i) => { if (s.gy === 0) { seen.add(i); st.push(i); } });
+      while (st.length) {
+        const s = sl[st.pop()];
+        for (const d of N6) {
+          const j = nb(s, d);
+          if (j === undefined || seen.has(j)) continue;
+          seen.add(j); st.push(j);
+        }
+      }
+      // ③ 照「第一個放得上去的」一直挑，看填不填得滿
+      const fill = new Array(sl.length).fill(false);
+      let laid = 0;
+      for (;;) {
+        let pick = -1;
+        for (let i = 0; i < sl.length && pick < 0; i++) {
+          if (fill[i]) continue;
+          if (sl[i].gy === 0) { pick = i; break; }
+          for (const d of N26) { const j = nb(sl[i], d); if (j !== undefined && fill[j]) { pick = i; break; } }
+        }
+        if (pick < 0) break;
+        fill[pick] = true; laid++;
+      }
+      // ④ 樹幹：顏色等於 pal[0] 的那些
+      const trunk = sl.filter(s => s.c === TREE_PAL[0][0]);
+      const top = Math.max(...sl.map(s => s.gy));
+      const leafAbove = trunk.length ? sl.some(s => s.c !== TREE_PAL[0][0] &&
+                        s.gy > Math.max(...trunk.map(q => q.gy))) : false;
+      // 連號兩格跳多遠（小人是照順序認格子的，跳來跳去就是在走路）
+      let jump = 0;
+      for (let i = 1; i < sl.length; i++)
+        jump += Math.hypot(sl[i].x - sl[i - 1].x, sl[i].y - sl[i - 1].y, sl[i].z - sl[i - 1].z);
+      return { id: k.id, form: k.form, n: k.n, total: sl.length, f6: seen.size, laid,
+               trunk: trunk.length, ground: trunk.filter(s => s.gy === 0).length,
+               leafAbove, top: top + 1,
+               fruit: sl.filter(s => s.c === TREE_PAL[0][3]).length,
+               jump: +(jump / sl.length).toFixed(2) };
+    });
+  });
+  ok('每一款樹都連得回地面、砌得完，樹幹不從樹冠頂上冒出來',
+     treeShape.every(t => t.total >= 31 && t.total <= 220 && t.f6 === t.total &&
+                          t.laid === t.total && t.ground > 0 && t.leafAbove &&
+                          t.jump < 2.6) &&
+     new Set(treeShape.map(t => t.form)).size === 3 &&
+     treeShape.filter(t => t.fruit > 0).length === 1,
+     treeShape.map(t => t.id + ' ' + t.n + ' 人 ' + t.total + ' 塊／' + t.top + ' 層高（' +
+       t.form + '；六面連通 ' + t.f6 + '、砌得完 ' + t.laid + '、樹幹 ' + t.trunk +
+       (t.fruit ? '、果子 ' + t.fruit : '') + '、連號跳 ' + t.jump + '）').join('；'));
+  /* 樹冠走得過去、樹幹擋路（v1.153）。走路的擋路判定看的是外框（見 footHome），
+     整棵去框的話一棵大樹就是一片 10×10 的隱形牆，小人繞著空氣走——所以外框只框
+     TREE_DUCK 層以下（小人帽頂最高 2.63 格，第 3 層的積木底面在 3.00）。
+     房子不受影響：那邊本來就是整棟擋，這條也一起驗。 */
+  const treeBox = await page.evaluate(() => {
+    const box = h => { homeBox(h); return +((h.x1 - h.x0) * (h.z1 - h.z0)).toFixed(0); };
+    const out = TREE_KIND.map(k => {
+      const slots = treeSlots(0, 0, k, TREE_PAL[0]);
+      for (const s of slots) s.filled = true;
+      let wide = 0;
+      for (const s of slots) wide = Math.max(wide, Math.abs(s.x) * 2 + 1, Math.abs(s.z) * 2 + 1);
+      return { id: k.id, th: k.th, trunk: k.tw * k.tw,
+               box: box({ x: 0, z: 0, tree: 1, slots, left: 0, done: true }),
+               all: +(wide * wide).toFixed(0) };
+    });
+    // 房子照舊整棟擋（拿最小的那款比就夠）
+    const hk = HOME_KIND[0], hs = homeSlots(0, 0, hk, HOME_PAL[0]);
+    for (const s of hs) s.filled = true;
+    return { out, duck: TREE_DUCK,
+             house: box({ x: 0, z: 0, slots: hs, left: 0, done: true }),
+             houseAll: hk.w * hk.d };
+  });
+  ok('樹冠走得過去，擋路的只有樹幹（房子照舊整棟擋）',
+     /* 樹幹露 3 層以上的（帽頂 2.63 格搆不到第 3 層）：外框剛好就是樹幹那幾格。
+        灌木與松樹的樹冠壓在頭頂高度以下，那就該照樹冠擋——不能一律「只擋樹幹」，
+        不然人會從樹叢中間穿過去。 */
+     treeBox.out.every(t => t.th >= 3 ? t.box === t.trunk : t.box > t.trunk) &&
+     treeBox.out.some(t => t.all >= t.box * 20) &&
+     treeBox.house >= treeBox.houseAll,
+     '擋路外框／整棵：' +
+     treeBox.out.map(t => t.id + ' ' + t.box + '／' + t.all).join('、') +
+     '（樹幹露 ' + treeBox.duck + ' 層以上才擋）；小屋 ' + treeBox.house +
+     '（平面 ' + treeBox.houseAll + '）');
+  /* 棵數的上限（v1.153）：房子靠「一人一間」擋住無限增生，樹沒有那條——所以用塊數擋。
+     連跑十輪事件（每輪都把人放回閒晃），樹的總塊數不該超過 TREE_BUDGET，
+     而且要真的**停下來**（後幾輪不再開新的），不是一路長下去。
+     順便驗兩件事：種樹的人不算「有家」（w.own 沒被設，不然他從此不再蓋房子，
+     村子就不長了），以及每一輪都真的有人去種。 */
+  const treeCap = await page.evaluate(() => {
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    let t = 0;
+    while (t < 12) { step(0.05); t += 0.05; }
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    /* 十輪要驗的是「開新的那條規則」，不是「蓋得完」（那另有測試）。真的蓋滿十輪
+       要一小時的模擬，所以每輪走 10 秒讓大家散開站定，再把場上的**當成蓋好了**
+       （slots 全部 filled、left 歸零）——沒蓋完的話 pickUnfinished 會一直把同一批
+       半成品發下去，永遠開不了新的，量到的就不是上限而是「蓋得慢」。 */
+    const rounds = [];
+    let ownTree = 0;
+    for (let r = 0; r < 10; r++) {
+      idleEv = IDLE_EVENTS[0]; startHomes();
+      // 種樹的人身上不該多出「這是我家」的記號
+      for (const w of workers)
+        if (w.hm >= 0 && homes.list[w.hm].tree && w.own === homes.list[w.hm].id) ownTree++;
+      const tr = homes.list.filter(h => h.tree);
+      rounds.push({ trees: tr.length, slots: tr.reduce((a, h) => a + h.slots.length, 0),
+                    houses: homes.list.length - tr.length,
+                    crew: workers.filter(w => w.hm >= 0 && homes.list[w.hm].tree).length });
+      for (let i = 0; i < 200; i++) step(0.05);         // 10 秒：走開、站定
+      for (const h of homes.list) {
+        for (const s of h.slots) { s.filled = true; s.claimed = -1; }
+        h.left = 0; h.done = true;
+      }
+      stopIdleEvent();
+    }
+    const last = rounds[rounds.length - 1];
+    /* 預算那條規則要單獨驗：十輪跑下來真正先卡住的是**空地**（那一圈擺不下更多了，
+       見 pickHomeSite），塊數還離上限很遠。所以把村子清空重來，只塞一筆「已經把預算
+       吃光」的假樹（擺在一萬格外，不占位置）——這一輪房子照舊該蓋，樹一棵都不該多。 */
+    clearHomes();
+    for (const w of workers) w.own = -1;            // 清空之後每個人都算「還沒有家」
+    homes = { list: [{ id: homeSeq++, x: 1e4, z: 1e4, r: 1, kind: '假樹', at: new Map(),
+                       ox: 0, oz: 0, n: 1, tree: 1, done: true, left: 0,
+                       x0: 1e4, x1: 1e4, z0: 1e4, z1: 1e4,
+                       slots: Array.from({ length: TREE_BUDGET }, () =>
+                         ({ x: 1e4, y: 0.47, z: 1e4, i: 0, k: 0,
+                            gy: 0, filled: true, claimed: -1 })) }] };
+    for (let i = 0; i < 40; i++) step(0.05);        // 站定（clearHomes 把大家的工作清掉了）
+    idleEv = IDLE_EVENTS[0]; startHomes();
+    const spent = { trees: homes.list.filter(h => h.tree).length - 1,
+                    houses: homes.list.filter(h => !h.tree).length };
+    stopIdleEvent();
+    const out = { rounds, ownTree, budget: TREE_BUDGET, last, spent,
+                  houses: last.houses,
+                  grew: rounds.filter((q, i) => i && q.trees > rounds[i - 1].trees).length };
+    cleanTools(); clearHomes();
+    return out;
+  });
+  /* 「十輪之後最多 20 棵」是**退化偵測**，不是規格（同〈散得開〉那條 spread 的訂法）：
+     實測十輪停在 9 棵 643 塊，一路長下去的話十輪早就三十棵了。 */
+  ok('樹不會一輪一輪長下去，塊數也不超過上限；種樹的人不算「有家」',
+     treeCap.last.slots <= treeCap.budget && treeCap.last.trees <= 20 &&
+     treeCap.grew >= 1 && treeCap.ownTree === 0 &&
+     treeCap.rounds[0].crew > 0 && treeCap.houses > 0 &&
+     treeCap.spent.trees === 0 && treeCap.spent.houses > 0,
+     '十輪的棵數 ' + treeCap.rounds.map(q => q.trees).join('→') + '，塊數 ' +
+     treeCap.rounds.map(q => q.slots).join('→') + '（上限 ' + treeCap.budget +
+     '，先卡住的其實是空地）；有長的輪次 ' + treeCap.grew +
+     '／9，種樹被記成自己家的 ' + treeCap.ownTree + ' 人次，最後 ' +
+     treeCap.houses + ' 間房子；把預算吃光再開一輪 → 多了 ' + treeCap.spent.trees +
+     ' 棵樹、' + treeCap.spent.houses + ' 間房子');
 
   // 後面幾段不該再有房子與事件（見 installClean）
   await page.evaluate(() => { clearHomes(); stepIdleEvent = () => {}; });

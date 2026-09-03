@@ -1962,10 +1962,11 @@ const HOME_KIND = [
   { n: 3, id: '大長屋', w: 12, d: 4, h: 4, porch: 1, fence: 1 },
   { n: 3, id: '農莊', w: 9, d: 6, h: 4, porch: 1, fence: 1 }
 ];
-/* 幾個人合蓋就從那一組裡隨機挑一款。人數超過表上最多的那組就用最大那組。 */
-function pickHomeKind(n) {
-  const want = Math.min(n, HOME_KIND[HOME_KIND.length - 1].n);
-  const pool = HOME_KIND.filter(k => k.n === want);
+/* 幾個人合蓋就從那一組裡隨機挑一款（房子與樹共用，兩張表都照 n 分組）。
+   人數超過表上最多的那組就用最大那組。 */
+function pickKind(tab, n) {
+  const want = Math.min(n, tab[tab.length - 1].n);
+  const pool = tab.filter(k => k.n === want);
   return pool[Math.floor(Math.random() * pool.length)];
 }
 /* 地基半徑：閒晃的人要繞開這麼多，圍籬也要圈進來（圍籬在外面兩格）。
@@ -1979,6 +1980,57 @@ const HOME_PAL = [                  // 牆、屋頂、煙囪（每間隨機挑�
   [[0.86, 0.83, 0.74], [0.38, 0.45, 0.58], [0.56, 0.53, 0.50]],
   [[0.74, 0.60, 0.44], [0.36, 0.52, 0.36], [0.56, 0.53, 0.50]]
 ];
+/* ── 樹（v1.153）─────────────────────────────────────────
+   使用者：「閒置的小人有點多 增加一些小人去蓋樹（積木組成版本 可以多種造型有大有小
+   邏輯同小房子 只是他是樹）」、「抽幾個沒事的人去蓋樹」。
+   「邏輯同小房子」是照字面做的：樹跟房子放在**同一份 homes.list**（多一個 h.tree 記號），
+   於是支撐、垮塌、被砸出洞補回來、剩不到兩成五廢棄、被新工地徵收那一整套完全不必再寫。
+   只有三處不一樣：誰去蓋（見 startHomes 末尾）、外型（treeSlots）、
+   擋路只擋樹幹那幾層（見 homeBox 的 TREE_DUCK）。
+
+     tw    樹幹幾格粗（1 或 2）
+     th    樹幹露在樹冠底下幾層——夠高小人才走得過樹下
+     form  樹冠形狀：ball 圓冠／cone 針葉塔／tier 分層傘
+     rx    樹冠半徑（格）
+     ry    ball＝樹冠的半高；cone／tier＝樹冠總共幾層
+     fruit 樹冠外圈掛果子（果樹）
+
+   塊數 31～220（小房子是 100～300）：一個人蓋的那三款要小到一輪蓋得完，
+   三個人合蓋的才跟房子同級。 */
+const TREE_KIND = [
+  { n: 1, id: '灌木',   tw: 1, th: 1, form: 'ball', rx: 1.9, ry: 1.5 },
+  { n: 1, id: '小樹',   tw: 1, th: 3, form: 'ball', rx: 2.3, ry: 2.0 },
+  { n: 1, id: '松樹',   tw: 1, th: 2, form: 'cone', rx: 2.3, ry: 7 },
+  { n: 2, id: '果樹',   tw: 1, th: 3, form: 'ball', rx: 2.7, ry: 2.2, fruit: 1 },
+  { n: 2, id: '闊葉樹', tw: 1, th: 4, form: 'ball', rx: 3.0, ry: 2.6 },
+  { n: 2, id: '杉樹',   tw: 1, th: 3, form: 'cone', rx: 3.0, ry: 10 },
+  { n: 3, id: '大樹',   tw: 2, th: 5, form: 'ball', rx: 3.8, ry: 3.2 },
+  { n: 3, id: '老榕',   tw: 2, th: 4, form: 'tier', rx: 4.4, ry: 9 }
+];
+/* 樹幹、深葉、淺葉、果子（每棵隨機挑一組，同 HOME_PAL）。
+   綠色取自 engine.js 那組草地小樹的 LEAF（0x4e8a3c～0x6cae52）、樹幹取自 trunkMesh
+   的 0x6b4a2f——蓋出來的樹跟場邊那圈本來就有的樹是同一個色系。 */
+const TREE_PAL = [
+  [[0.42, 0.29, 0.18], [0.28, 0.50, 0.21], [0.40, 0.66, 0.30], [0.78, 0.20, 0.16]],  // 常綠
+  [[0.47, 0.34, 0.22], [0.37, 0.60, 0.25], [0.54, 0.74, 0.34], [0.90, 0.72, 0.22]],  // 嫩綠
+  [[0.38, 0.26, 0.18], [0.66, 0.28, 0.12], [0.85, 0.47, 0.14], [0.74, 0.16, 0.14]]   // 秋
+];
+/* 地基半徑：樹冠最寬那一圈再加一點（同 homeR，方的東西用圓框寧可框大一點）。
+   兩棵樹、樹與房子隔多遠都看它（見 pickHomeSite）。 */
+function treeR(k) { return k.rx + 1.2; }
+/* 這一輪抽幾成的閒人去種樹（使用者：「抽幾個沒事的人去蓋樹」）。
+   房子那邊是「還沒有家的人抽一半」，這邊抽的是「這一輪沒被派到房子的人」。 */
+const TREE_PART = 0.35;
+/* 樹加起來最多幾塊（v1.153）。房子靠「一人一間」擋住無限增生（見 startHomes），
+   樹沒有那條——不擋的話每一輪都再長一批，而村子跟地標**共用同一個積木池**
+   （engine.js 的 MAXB）：池子滿了 digBlock 就再也挖不出東西，房子跟樹一起停在半棟。
+   所以直接用塊數擋，擋在最要緊的那個地方。1800 塊大約是 8～15 棵，
+   跟 60 人蓋到飽的村子（43 間 5405 格）加起來還在池子裡。 */
+const TREE_BUDGET = 1800;
+/* 樹擋路只擋到第幾層（v1.153）。小人的帽頂最高 2.63 格（肌肉小人 1.86×1.41），
+   第 2 層的積木佔 2.00～2.94，第 3 層佔 3.00～3.94——所以第 3 層起是「走得過去的樹下」。
+   不擋的話大樹會變成一片 10×10 的隱形牆，小人繞著空氣走（見 homeBox）。 */
+const TREE_DUCK = 2;
 const DIG_T = 0.8;                  // 挖一塊要幾秒
 /* 挖料的地方離自己家的**地基邊緣**多遠（v1.99 改成相對於 h.r）。
    v1.98 是直接實測中心 3.5～8 格——平房小屋沒問題，但圍籬大屋的地基半徑就有 6.7，
@@ -2073,6 +2125,7 @@ function homeBox(h) {
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const sl of h.slots) {
     if (!sl.filled) continue;
+    if (h.tree && sl.gy > TREE_DUCK) continue;    // 樹只有樹幹擋路，樹冠走得過去
     if (sl.x < x0) x0 = sl.x;
     if (sl.x > x1) x1 = sl.x;
     if (sl.z < z0) z0 = sl.z;
@@ -2387,6 +2440,102 @@ function homeSlots(hx, hz, k, pal) {
   }
   return out;
 }
+/* 一棵樹的格子清單（v1.153）。回傳的東西跟 homeSlots 一模一樣，後面那一整套才接得上。
+   讀得出是樹靠這幾件事：
+
+     · 樹幹一路長進樹冠裡（不是只長到樹冠底下、也不從樹冠頂上冒出來）：被砸開之後
+       裡面也是樹幹，而且整片樹冠靠它六面連回地面（見下面的連通篩）
+     · 樹冠最外那一圈挑掉六分之一：整顆完美的橢球看過去是一顆球，不是樹
+     · 兩種葉色交錯撒：一色到底的樹冠是一團色塊，看不出體積
+     · 針葉塔兩層一階（cone 的 +0.55）：側面才有杉木那種鋸齒
+
+   順序是樹幹由下往上 → 樹冠一層一層、每層由內往外、一層換一個繞行方向。
+   照這個順序砌看起來才是「長出來」的，而且連號的兩格是真的相鄰
+   （同 homeSlots 沿周長生的理由：小人是照順序認格子的，跳來跳去就是在走路。
+   實測連號平均跳 1.7～2.2 格，不排的話是 2.4～3.2）。 */
+function treeSlots(hx, hz, k, pal) {
+  const c0 = (k.tw - 1) / 2;                     // 樹幹中心（2 格粗時落在 0.5）
+  const cells = new Map();                       // i:gy:kk → { i, gy, kk, c, d, a }
+  const key = (i, gy, kk) => i + ':' + gy + ':' + kk;
+  const hash = (i, gy, kk, a, b, c) => (((i * a + kk * b + gy * c) % 6) + 6) % 6;
+  // 葉色交錯、外圈偶爾掛一顆果子：都用位置算，同一棵樹每次長出來要一樣
+  const leafC = (i, gy, kk, edge) =>
+    edge && k.fruit && hash(i, gy, kk, 23, 31, 7) === 0 ? pal[3]
+      : hash(i, gy, kk, 7, 13, 5) < 2 ? pal[2] : pal[1];
+  const leaf = (i, gy, kk, edge) => {
+    if (edge && hash(i, gy, kk, 29, 17, 11) === 0) return;      // 外圈挑掉六分之一
+    cells.set(key(i, gy, kk), { i, gy, kk, c: leafC(i, gy, kk, edge),
+                                d: Math.hypot(i - c0, kk - c0),
+                                a: Math.atan2(kk - c0, i - c0) * (gy % 2 ? -1 : 1) });
+  };
+  /* 一層樹葉：半徑 r 的圓盤。只有最外那一圈（離邊 0.55 格以內）才挑得掉，
+     裡面一定留——裡面也挑的話樹冠會被打成蜂窩，看過去是一堆破洞。 */
+  const disc = (gy, r) => {
+    if (r < 0.4) return;
+    const R = Math.ceil(r + c0);
+    for (let i = -R; i <= R; i++)
+      for (let kk = -R; kk <= R; kk++) {
+        const d = Math.hypot(i - c0, kk - c0);
+        if (d > r + 0.15) continue;                // 放寬到 0.35 的話小樹冠會是個方塊
+        leaf(i, gy, kk, d > r - 0.55);
+      }
+  };
+  let trunkTop;
+  if (k.form === 'ball') {
+    const ry = Math.round(k.ry);
+    const cy = k.th + ry;                          // 樹冠中心那一層
+    trunkTop = cy;
+    for (let gy = k.th; gy <= cy + ry; gy++) {
+      const dy = (gy - cy) / k.ry;
+      disc(gy, k.rx * Math.sqrt(Math.max(0, 1 - dy * dy)));
+    }
+  } else if (k.form === 'cone') {
+    /* 針葉塔：半徑一路收到 0，兩層一階讓側面有鋸齒。
+       樹幹只探進樹冠底下那兩層——再高就會從塔尖冒出來（塔尖只有一格寬）。 */
+    trunkTop = k.th + 1;
+    for (let t = 0; t < k.ry; t++) {
+      /* 最上面兩層收成一根單格的塔尖：照公式算的話那裡是 r≈0.9 的十字，
+         看過去像天線不像樹（而 r 再小一點就會小於 disc 的下限、整層不見）。 */
+      const r = t >= k.ry - 2 ? 0.45
+                              : k.rx * (1 - t / k.ry) + (t % 2 === 0 ? 0.55 : 0);
+      disc(k.th + t, r);
+    }
+  } else {
+    /* 分層傘（老榕）：三層傘蓋，中間空兩層看得到樹幹。
+       一層傘是「一片圓盤 ＋ 上面一圈小一點的」，單薄一片會像塔的簷。 */
+    trunkTop = k.th + 6;
+    for (let j = 0; j < 3; j++) {
+      const r = k.rx * (1 - 0.24 * j), gy = k.th + j * 3;
+      disc(gy, r);
+      disc(gy + 1, r - 1.1);
+    }
+  }
+  // 樹幹（蓋過樹冠：同一格上樹幹優先，被砸開才看得到裡面是幹不是葉）
+  for (let gy = 0; gy <= trunkTop; gy++)
+    for (let i = 0; i < k.tw; i++)
+      for (let kk = 0; kk < k.tw; kk++)
+        cells.set(key(i, gy, kk), { i, gy, kk, c: pal[0], d: -1, a: 0 });
+  /* 連通篩：只留「六面連得回地面」的那些。挑掉外圈那一步有可能留下孤零零的一片葉子，
+     而那種葉子完好時 f6 就是 false，之後永遠不會被垮塌判定收掉（見 markHomeF6）——
+     與其讓它掛在半空，不如一開始就不要生出來。 */
+  const live = new Set(), st = [];
+  for (const [id, c] of cells) if (c.gy === 0) { live.add(id); st.push(c); }
+  while (st.length) {
+    const c = st.pop();
+    for (const d of NBR6) {
+      const id = key(c.i + d[0], c.gy + d[1], c.kk + d[2]);
+      if (live.has(id) || !cells.has(id)) continue;
+      live.add(id); st.push(cells.get(id));
+    }
+  }
+  const list = [];
+  for (const [id, c] of cells) if (live.has(id)) list.push(c);
+  list.sort((a, b) => (a.gy - b.gy) || (a.d - b.d) || (a.a - b.a));
+  return list.map(c => ({
+    x: hx + c.i - c0, y: c.gy + HB, z: hz + c.kk - c0, c: c.c,
+    i: c.i, k: c.kk, gy: c.gy, filled: false, claimed: -1
+  }));
+}
 /* 找一塊空地：從這一組人現在站的方位往外找，避開已經蓋好的房子與樹。
    找不到就回 null（那一組人就照常閒晃，不硬塞）。 */
 function pickHomeSite(cx, cz, rad) {
@@ -2413,15 +2562,17 @@ function pickHomeSite(cx, cz, rad) {
    h.left > 0 有兩種來源：上一輪蓋到一半就開下一座（stopHomes 把每個人的 hm 清掉了），
    或是蓋好之後被砸出洞（freeBlock 把那一格加回 h.left）。以前這裡一律開新的一間，
    所以這兩種都永遠沒人管——實測「蓋一半換場、下一輪再閒晃」的房子停在半棟不動。
+   tree 說要找的是樹還是房子（v1.153）：兩種都在這份清單上，但蓋房子的那一批不該被
+   派去接一棵蓋一半的樹（他還沒有家；接了就整輪都在種樹），反過來也一樣。
    taken 是這一次分派已經給人的，一間一組就好，其餘的人去開新的。
    **不能改成「都有人了就疊到同一間」**：這一輪剛開的新房子也是「還沒蓋完」，
    於是第二組之後全部併進第一間，一輪只蓋得出一間（實測 20 人 10 個離隊只蓋 1 間）。
    間數比組數多的時候會有一兩間排到下一輪，那是排隊、不是沒人管。 */
-function pickUnfinished(cx, cz, taken) {
+function pickUnfinished(cx, cz, taken, tree) {
   let best = -1, bd = Infinity;
   for (let i = 0; i < homes.list.length; i++) {
     const h = homes.list[i];
-    if (h.left <= 0 || taken.has(i)) continue;
+    if (h.left <= 0 || taken.has(i) || !!h.tree !== !!tree) continue;
     const d = (h.x - cx) ** 2 + (h.z - cz) ** 2;
     if (d < bd) { bd = d; best = i; }
   }
@@ -2472,27 +2623,19 @@ function startHomes() {
   const part = phase === 'build' ? 1 : HOME_PART;
   const left = pool.slice(0, Math.max(1, Math.round(pool.length * part)));
   while (left.length) {
-    const lead = workers[left.shift()];
-    /* 附近的人一起蓋（使用者：「也可以跟附近的小人一起合蓋大一點的小房子」）。
-       比的是現在站的位置——慶祝剛散場，所以「附近」就是圈上的鄰居。 */
-    const crew = [lead];
-    for (let i = left.length - 1; i >= 0 && crew.length < HOME_TEAM; i--) {
-      const o = workers[left[i]];
-      if ((o.x - lead.x) ** 2 + (o.z - lead.z) ** 2 > HOME_NEARBY * HOME_NEARBY) continue;
-      crew.push(o); left.splice(i, 1);
-    }
+    const crew = takeCrew(left);
     let cx = 0, cz = 0;
     for (const w of crew) { cx += w.x; cz += w.z; }
     cx /= crew.length; cz /= crew.length;
     // 有沒有蓋不完的／破了洞的可以接手（見 pickUnfinished）。先修舊的再蓋新的
-    let hi = pickUnfinished(cx, cz, taken);
+    let hi = pickUnfinished(cx, cz, taken, 0);
     if (hi >= 0) {
       /* 上一批人留下的認領要清掉：他們的 hm 早就被 stopHomes 抹了，
          那些格子沒人會去砌，留著的話 homeFree 會一直跳過它們，這間永遠差幾格。 */
       for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;
     } else {
       // 款式要先挑：間距看的是兩家地基的大小（見 pickHomeSite）
-      const kind = pickHomeKind(crew.length);
+      const kind = pickKind(HOME_KIND, crew.length);
       const spot = pickHomeSite(cx, cz, homeR(kind));
       if (!spot) continue;                             // 沒空地了，這一組就照常閒晃
       const pal = HOME_PAL[Math.floor(Math.random() * HOME_PAL.length)];
@@ -2515,6 +2658,79 @@ function startHomes() {
       releaseWorker(w);                                // 手上的建材先放掉，這趟不是上工
       w.hm = hi; w.hst = ''; w.pause = 0;
       w.own = homes.list[hi].id;                       // 從現在起這是他家（v1.109）
+    }
+  }
+  startTrees(taken);
+}
+/* 一組人：領頭的那個，再拉附近幾個一起蓋（使用者：「也可以跟附近的小人一起合蓋
+   大一點的小房子」）。比的是現在站的位置——慶祝剛散場，所以「附近」就是圈上的鄰居。
+   會從 left 裡把這一組人拿掉。 */
+function takeCrew(left) {
+  const lead = workers[left.shift()];
+  const crew = [lead];
+  for (let i = left.length - 1; i >= 0 && crew.length < HOME_TEAM; i--) {
+    const o = workers[left[i]];
+    if ((o.x - lead.x) ** 2 + (o.z - lead.z) ** 2 > HOME_NEARBY * HOME_NEARBY) continue;
+    crew.push(o); left.splice(i, 1);
+  }
+  return crew;
+}
+/* 沒事的人抽幾個去種樹（v1.153，使用者：「閒置的小人有點多 增加一些小人去蓋樹」、
+   「抽幾個沒事的人去蓋樹」）。接在房子那一批之後跑，所以「沒事」就是「這一輪沒被派到
+   房子」（w.hm < 0）——已經有家、又沒有洞要補的人本來整輪都在閒晃，那就是使用者說的閒置。
+
+   跟房子的三點差別：
+     · **不設 w.own**：樹不是家。設了的話種過樹的人從此不再蓋房子（那條擋的是
+       「已經有家的不要再開新的一間」，見上面），村子就不長了。
+     · 棵數不靠「一人一棵」擋，靠塊數（TREE_BUDGET）——理由見那裡。
+     · 蓋完之後照樣在自己種的那棵旁邊走走（updHome 那條共用的路，不必另外寫）。 */
+function startTrees(taken) {
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  const free = [];
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    if (w.hm >= 0 || !steady(w) || !joins(w)) continue;
+    free.push(i);
+  }
+  for (let i = free.length - 1; i > 0; i--) {          // 洗牌
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = free[i]; free[i] = free[j]; free[j] = t;
+  }
+  let budget = TREE_BUDGET;
+  for (const h of homes.list) if (h.tree) budget -= h.slots.length;
+  const left = free.slice(0, Math.round(free.length * TREE_PART));
+  while (left.length && budget > 0) {
+    const crew = takeCrew(left);
+    let cx = 0, cz = 0;
+    for (const w of crew) { cx += w.x; cz += w.z; }
+    cx /= crew.length; cz /= crew.length;
+    let hi = pickUnfinished(cx, cz, taken, 1);         // 先接手種一半的，再種新的
+    if (hi >= 0) {
+      for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;
+    } else {
+      const kind = pickKind(TREE_KIND, crew.length);
+      const spot = pickHomeSite(cx, cz, treeR(kind));
+      if (!spot) continue;                             // 沒空地了，這一組就照常閒晃
+      const pal = TREE_PAL[Math.floor(Math.random() * TREE_PAL.length)];
+      const slots = treeSlots(spot.x, spot.z, kind, pal);
+      if (slots.length > budget) continue;             // 預算只夠再種小的，這一款先跳過
+      budget -= slots.length;
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: spot.x, z: spot.z, r: treeR(kind), kind: kind.id, at,
+                  ox: (kind.tw - 1) / 2, oz: (kind.tw - 1) / 2,   // 見 homeSolid
+                  slots, left: slots.length, n: crew.length,
+                  tree: 1, done: false };
+      homeBox(h);
+      markHomeF6(h);
+      homes.list.push(h);
+      hi = homes.list.length - 1;
+    }
+    taken.add(hi);
+    for (const w of crew) {
+      releaseWorker(w);
+      w.hm = hi; w.hst = ''; w.pause = 0;              // w.own 不動：樹不是家
     }
   }
 }
@@ -2700,10 +2916,12 @@ function landHome(b, a) {
   sl.filled = true; sl.claimed = -1;
   h.left--;
   // 擋路的外框跟著長（見 homeBox）。就地擴一格就好，不必整份重算
-  if (sl.x - 0.5 < h.x0) h.x0 = sl.x - 0.5;
-  if (sl.x + 0.5 > h.x1) h.x1 = sl.x + 0.5;
-  if (sl.z - 0.5 < h.z0) h.z0 = sl.z - 0.5;
-  if (sl.z + 0.5 > h.z1) h.z1 = sl.z + 0.5;
+  if (!h.tree || sl.gy <= TREE_DUCK) {           // 樹冠不進外框，理由同 homeBox
+    if (sl.x - 0.5 < h.x0) h.x0 = sl.x - 0.5;
+    if (sl.x + 0.5 > h.x1) h.x1 = sl.x + 0.5;
+    if (sl.z - 0.5 < h.z0) h.z0 = sl.z - 0.5;
+    if (sl.z + 0.5 > h.z1) h.z1 = sl.z + 0.5;
+  }
   /* 蓋好過一次了。這個旗標一旦立起來就不收回去（被砸出洞、補回去都還算「蓋好過」）：
      它管的是「要不要用完好時的標準判退化」，見 dropHungHome 與 canPlaceHome。 */
   if (h.left <= 0) h.done = true;
