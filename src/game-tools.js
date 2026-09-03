@@ -52,7 +52,7 @@ const TOOLS = [
     tip: '點地面：一顆鐵球從正上方直直砸下來，撞爛沿路的積木，不再動就收掉',
     lock: { txt: '拆掉 12 座建築解鎖', ok: () => stats.destroyed >= 12 } },
   { id: 'gate', n: '王之財寶', k: '🗡',
-    tip: '點兩下地面：第一下決定門陣開在哪、第二下決定打哪裡。兵器從門裡伸出來、就位後停 3 秒，接著朝目標連射 7 秒；打中的地方炸開一個小缺口（不起火），兵器掉在地上慢慢消失',
+    tip: '點兩下：第一下點地面決定門陣開在哪，第二下決定打哪裡——點在建築上就打那個位置附近的一片空間，點地面就打建築下段。兵器從門裡伸出來、就位後停一下，接著朝目標連射 7 秒；打中的地方炸開一個小缺口（不起火），兵器掉在地上慢慢消失',
     lock: { txt: '累計擊飛 27,000 塊解鎖', ok: () => stats.smashed >= 27000 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
@@ -268,7 +268,7 @@ function afterHit(n, point, R, own) {
    每一顆都晃一下的話畫面會一路抖到它撤走（見 rockHit）。 */
 /* hush＝這一下不出聲（v1.132 為王之財寶加的）。它七秒射一百九十幾發、其中九十幾發
    打中建築，每一發都放 sndSmash 的話是一秒十幾聲爆裂噪音疊在一起；那一把自己有
-   一聲短促的金屬撞擊（sndClang），所以把這裡的聲音讓給它。
+   一聲短促的小爆炸（sndGateHit），所以把這裡的聲音讓給它。
    quiet 管的是**畫面震動**、hush 管的是**聲音**，兩件事分開給：
    投石機與雷是「不震但要響」，王之財寶是兩個都不要。 */
 function smash(point, dir, R0, pow0, quiet, hush) {
@@ -3792,6 +3792,20 @@ const GATE_ZONE_MIN = 10;
 const GATE_CONV = 0.25;
 const GATE_SPRAY = 0.25;         // 落點再抖多少（打擊範圍的幾成）
 const GATE_AIM_K = 0.28;
+/* ── 以下三個是「第二下點在建築上」那一發專用的（v1.152）─────────────
+   點空地那一發全部走不到，行為跟 v1.151 逐字一樣。 */
+/* 落點至少要比這個門低這麼多，才准瞄過去。飛行段沒有重力，瞄得比自己高的那一把
+   出手就是往上飛（見下面那條「落點一定要比這個門低」）；差太少則等於平射。
+   5 配上兩點最近的距離（GATE_NEAR＝10）是俯角 27 度，跟現在多數門的出手角度同一級。
+   代價是**低於「點擊高度＋5」的門瞄不到那一點**，那些退回舊規則（見 aimGate）。 */
+const GATE_DIP = 5;
+/* 落點最多被「吸」到多遠的那一塊積木上（見 gateSpots／aimGate）。
+   收在這一發自己的散布尺標（gateZone 是 10～13）：拉得比這更遠就不是「點擊位置附近」了，
+   寧可讓那一把退回舊規則。 */
+const GATE_SNAP = 12;
+/* 瞄過那一塊積木、往下再飛這麼多還是什麼都沒碰到，就當它落空了（見 stepWeapons）。
+   一塊積木高 1、刃尖又比重心前 len/2，所以 1.5 是「確實已經穿過去了」而不是還沒到。 */
+const GATE_PASS = 1.5;
 /* 出手方向最多能偏離「朝著鏡頭」這個軸幾弧度。
 
    為什麼要管：**門的朝向就是兵器的朝向**，所以方向偏多少、門就側多少。各自瞄自己的
@@ -3851,14 +3865,19 @@ const GATE_KEEP = 5;
    但**已經射出去的兵器不收**：它們在 weapons 裡，會自己飛完、自己淡掉。 */
 /* 第一下決定門陣開在哪，第二下決定打哪裡（v1.135，使用者指定）。
    跟保齡球、龍捲風共用同一套兩段點擊（aimFirst ＋ 地面那圈光環，見 AIM_RING）。 */
-function pickGate(point) {
+/* 第二下點在**建築**上時，那一點的高度也算目標（v1.152，使用者：「第二下也能點擊
+   建築做目標（點擊位置的一個空間範圍 目前好像會在點擊位置的平面座標地面上）」）。
+   點空地的那一下照舊（onBlock 為假 ＝ 不指定高度，落點回到「瞄建築的身體」那條規則，
+   見 aimGate）——使用者要的是「**也**能」，本來就能用的那一種不動。 */
+function pickGate(point, onBlock) {
   if (!aim) { aimFirst(point, GATE_AIM_R, GATE_AIM_C); return; }
-  castGate(aim, point);
+  castGate(aim, point, onBlock ? point.y : 0);
 }
 /* from＝門陣開在哪（第一下），toward＝打哪裡（第二下）。
    v1.135 之前是一個點：目標由點擊決定，門陣自己退到「鏡頭方向的另一側 GATE_BACK 遠」。 */
-function castGate(from, toward) {
+function castGate(from, toward, aimY) {
   aim = null;
+  const ty = aimY > 0 ? aimY : 0;         // 0 ＝ 沒指定高度（點空地／舊的單點呼叫）
   if (!gates) gates = [];
   /* 名額（v1.136）。滿了就把最早那一組推進收尾：它不再開新的門，把還裝著兵器的門
      射完就收（使用者：「結束的時候繼續把還有武器的門射完」）——v1.135 之前是連門帶
@@ -3880,16 +3899,23 @@ function castGate(from, toward) {
   const fx = dx / d, fz = dz / d;
   const ux = -fz, uz = fx;
 
-  const y = Math.max(GATE_Y0, (bp ? bp.height : 0) * GATE_UP + GATE_UP_ADD);
   const sp = gateSpan();
+  /* 門陣高度**沒有跟著目標動**（v1.152 試過，被實測擋下來）：把整片抬到目標上方之後，
+     門陣就整個高過屋頂，被錐面拉平的那些會從屋頂上空掠過去——泰姬瑪哈陵打掉的積木
+     2275 → 798、插在地上的最遠 17 → 131；抬到「俯角夠陡、滑不遠」的高度更慘，
+     台北 101 一整趟只打中 6 發。高門陣搆不到低處是錐面的硬限制（見 aimGate 的 lo），
+     所以維持原高度，改用「搆得到的門才瞄那一點」（見 aimGate）。 */
+  const y = Math.max(GATE_Y0, (bp ? bp.height : 0) * GATE_UP + GATE_UP_ADD);
   const g = {
-    x: toward.x, z: toward.z, y, fx, fz, ux, uz,
+    x: toward.x, z: toward.z, y, ty, fx, fz, ux, uz,
     /* 錐形夾角的軸：水平、朝著鏡頭（見 GATE_CONE）。**一定要在這裡就給值**——
        下面那個迴圈開門時就會叫 aimGate 用到它，留到迴圈後面才設的話，整趟的錐形
        夾角都是拿 (0,0,0) 當軸在算：夾角不會生效，而且回傳的方向長度變成 sin(錐角)
        ＝ 0.659（不是單位向量），門的朝向、切面的法線、飛行速度全部跟著錯。 */
     ax: -fx, ay: 0, az: -fz,
     cx: from.x, cz: from.z, back: d,          // back＝門陣離目標多遠（aimGate 的錐面下限要用）
+    /* 點在建築上時，落點要吸到的那一批積木（v1.152，見 gateSpots）。整發收一次。 */
+    spots: ty > 0 ? gateSpots(toward.x, ty, toward.z) : null,
     w: sp.w, h: sp.h, cols: sp.cols, rows: sp.rows,
     ph: 'open', t: 0, fireT: 0, next: 0, ports: []
   };
@@ -3987,6 +4013,18 @@ function newPort(g, i, delay) {
 function gateZone() {
   return clamp((bp ? bp.radius : GATE_ZONE) * 1.25, GATE_ZONE_MIN, GATE_ZONE);
 }
+/* 點擊那一點附近**還站著**的積木（v1.152）。castGate 收一次、整發共用；
+   途中被打掉的那些在 aimGate 用 b.st !== SET 濾掉，不必重收。
+   收的半徑就是這一發的散布尺標（gateZone），跟落點的抖動同一個量級。 */
+function gateSpots(x, y, z) {
+  const R = gateZone(), R2 = R * R, out = [];
+  for (const b of blocks) {
+    if (b.st !== SET) continue;
+    const dx = b.x - x, dy = b.y - y, dz = b.z - z;
+    if (dx * dx + dy * dy + dz * dz <= R2) out.push(b);
+  }
+  return out.length ? out : null;
+}
 /* 這一把要射去哪：點擊處附近的一點，橫向跟著這個門自己的位置收縮（見 GATE_CONV）。
    回傳的是**指向**——兵器在門裡就照這個方向擺，
    所以「伸出來的那一半」指的已經是它等一下要飛的方向。 */
@@ -4009,25 +4047,66 @@ function aimGate(g, p) {
      ＝ 門高 − tan(錐角) × 水平距離：瞄得到的地方才瞄，這一把就真的會落在範圍裡。
      矮建築（門陣本來就低）算出來是負的，等於沒有這條限制。 */
   const lo = Math.max(0.3, p.y - Math.tan(GATE_CONE) * (g.back || GATE_BACK));
-  const top = Math.max(lo + 0.5,
-    Math.min(Math.max(2, (bp ? bp.height : 12) * 0.9), Math.max(0.8, p.y * GATE_AIM_K)));
-  let dx = g.x + g.ux * lat + g.fx * dep - p.x;
-  let dy = rr(lo, top) - p.y;
-  let dz = g.z + g.uz * lat + g.fz * dep - p.z;
-  const L = Math.hypot(dx, dy, dz) || 1;
-  dx /= L; dy /= L; dz /= L;
+  /* 第二下點在建築上的那一發（v1.152，g.ty > 0）瞄的是**點擊的那一點**，不是上面
+     那條「建築的身體」。三個軸都用同一個尺標抖（gateZone × GATE_SPRAY），所以落點是
+     點擊位置附近的一顆球——使用者要的那個「空間範圍」。
+     高度夾在 [lo, 這個門再低 GATE_DIP] 之間，所以**低於「點擊高度＋5」的門瞄不到
+     那一點**，它們退回下面那條舊規則。實測（第一下點在建築外 20 格）：台北 101 打中的
+     高度中位數 12.5 → 31.5（點在 39 高，打中的發數兩邊都是 165）、泰姬瑪哈陵 3 → 11
+     （點在 15.6）——上半片門陣轉過去打，下半片照舊在啃底下那一段，
+     整體看得出火力被拉到點擊的高度，而且火力沒有變弱。 */
+  const bx = g.x + g.ux * lat + g.fx * dep, bz = g.z + g.uz * lat + g.fz * dep;
+  const cone = Math.cos(GATE_CONE);
+  const aimAt = (tx, ty2, tz) => {
+    let dx = tx - p.x, dy = ty2 - p.y, dz = tz - p.z;
+    const L = Math.hypot(dx, dy, dz) || 1;
+    return { dx: dx / L, dy: dy / L, dz: dz / L };
+  };
+  let d = null;
+  if (g.ty > 0) {
+    const hiY = Math.max(lo, p.y - GATE_DIP);
+    const aimH = clamp(g.ty + rr(-1, 1) * z * GATE_SPRAY, lo, hiY);
+    /* 再把落點**吸到最近的那一塊還站著的積木上**。
+       為什麼一定要吸：沒打到的那一把不會停，它照原方向一路滑到落地為止，而瞄得越高
+       滑得越遠（滑過頭的距離 ＝ 落點高度 × 水平距離 ÷ 落差）。只瞄「點擊位置附近的
+       一顆球」的話，球心多半落在建築外面的空氣裡——實測瞄八成樓高：台北 101 打中
+       168 → 20 發、插在地上的最遠 43 → 262，泰姬瑪哈陵 203 → 68 發、13.5 → 134，
+       整片門射出去的東西大半飛出場外。吸到積木上之後這條線一定終止在實心裡。
+       只收 [lo, hiY] 之間的：太低的錐面搆不到、太高的落不下來（同上面那兩條）。
+       一塊都合格不了（那一片打光了、或這個門搆不到）就退回下面那條舊規則。 */
+    let best = null, bd = GATE_SNAP * GATE_SNAP;
+    if (g.spots) for (const b of g.spots) {
+      if (b.st !== SET || b.y > hiY || b.y < lo) continue;
+      const ddx = b.x - bx, ddy = b.y - aimH, ddz = b.z - bz;
+      const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+      if (d2 < bd) { bd = d2; best = b; }
+    }
+    /* **搆得到才瞄**：算出來的方向被錐面夾到的話就不用它——被夾的那一把方向會被拉平，
+       既打不到點擊的那一點、又因為俯角變小而滑得特別遠（實測整片門陣都瞄過去時，
+       插在地上的最遠從 17 變成 131）。那種就退回下面那條舊規則，跟 v1.151 一樣。 */
+    if (best) {
+      const q = aimAt(best.x, best.y, best.z);
+      if (q.dx * g.ax + q.dy * g.ay + q.dz * g.az >= cone) { d = q; d.aimY = best.y; }
+    }
+  }
+  if (!d) {
+    const top = Math.max(lo + 0.5,
+      Math.min(Math.max(2, (bp ? bp.height : 12) * 0.9), Math.max(0.8, p.y * GATE_AIM_K)));
+    d = aimAt(bx, rr(lo, top), bz);
+  }
+  let dx = d.dx, dy = d.dy, dz = d.dz;
   /* 夾進以「朝著鏡頭」為軸的錐面內（見 GATE_CONE）。超出去的沿著大圓拉回錐面上：
      把方向拆成「軸向」與「垂直軸的那一截」，再照 cos／sin 重組——這是精確解，
      不是逼近，而且錐內的方向原封不動。 */
   const ax = g.ax, ay = g.ay, az = g.az;         // 朝著鏡頭（含俯角）
   const dot = dx * ax + dy * ay + dz * az;
-  const cone = Math.cos(GATE_CONE);
-  if (dot >= cone) return { dx, dy, dz };
+  const aimY = d.aimY || 0;
+  if (dot >= cone) return { dx, dy, dz, aimY };
   let px = dx - ax * dot, py = dy - ay * dot, pz = dz - az * dot;   // 垂直軸的那一截
   const pl = Math.hypot(px, py, pz) || 1;
   px /= pl; py /= pl; pz /= pl;
   const sn = Math.sin(GATE_CONE);
-  return { dx: ax * cone + px * sn, dy: ay * cone + py * sn, dz: az * cone + pz * sn };
+  return { dx: ax * cone + px * sn, dy: ay * cone + py * sn, dz: az * cone + pz * sn, aimY: 0 };
 }
 function newWeapon(g, p) {
   const k = Math.floor(Math.random() * WEAP_SCALE.length);
@@ -4047,7 +4126,7 @@ function newWeapon(g, p) {
      （v1.132.0 是靠「長度先給 0」擋的，那招在切面上位之後就不需要了）。 */
   const w = {
     x: p.x, y: p.y, z: p.z, dx: a.dx, dy: a.dy, dz: a.dz,
-    roll: Math.random() * Math.PI * 2, len, k, s: len,
+    roll: Math.random() * Math.PI * 2, len, k, s: len, aimY: a.aimY || 0,
     cut: [a.dx, a.dy, a.dz, a.dx * p.x + a.dy * p.y + a.dz * p.z],
     st: 'gate', out: 0, vx: 0, vy: 0, vz: 0,
     ax: 0, ay: 0, az: 0, spin: 0, lie: 0, fade: 1, glow: 0, em: 0, age: 0
@@ -4195,10 +4274,22 @@ function stepWeapons(dt) {
         if (-w.dy < GATE_STICK_MIN) lieWeapon(w); else stickWeapon(w);
         continue;
       }
+      /* 瞄著某一塊積木、卻整個穿過去的那一把（v1.152，只有點在建築上那一發會有
+         w.aimY）：**推力到此為止**，剩下交給重力，跟被積木擋下來的走同一支（會翻滾、
+         會落地、會插在地上、會淡掉）。**不是**讓它消失——v1.133.1 那個「飛過落點就
+         化成金色光塵」使用者不要，這裡只是讓它掉下來，收場跟以前完全一樣。
+
+         為什麼非有不可：滑過頭的距離 ＝ 落點高度 × 水平距離 ÷ 落差，而俯角被錐面
+         夾在 41 度內（見 GATE_CONE），所以瞄得越高滑得越遠，這是幾何上跑不掉的。
+         而一發打七秒、瞄同一小塊地方，那一塊打光之後**後面的全部落空**（實測瞄準線
+         在出手那一刻還是實心的只剩一成多）。沒有這一條的話：泰姬瑪哈陵插在地上的
+         中位數 7 → 26～42、最遠 16 → 143，台北 101 九成位 27 → 175～198、最遠 248
+         ——畫面上就是一條刀劍拖出去的彗星尾巴橫過整片草地（截圖比對過）。
+         加上這一條之後回到中位 9～10、最遠 22～43，跟點空地那一發同一個量級。 */
+      if (w.aimY > 0 && w.y < w.aimY - GATE_PASS) { fallWeapon(w); continue; }
       /* 保險：飛到地底下、或飛太久還沒碰到任何東西的，直接收掉。
-         **沒打到東西的一律讓它飛到落地、插在地上等淡掉**（使用者指定「照舊」）——
-         v1.133.1 一度改成「飛過落點就化成金色光塵」（想給落點分布一條硬邊界），
-         使用者不要那個收場。GATE_SPD × GATE_FLY_MAX ＝ 310 單位，比整片場地還長，
+         **沒打到東西的一律讓它飛到落地、插在地上等淡掉**（使用者指定「照舊」）。
+         GATE_SPD × GATE_FLY_MAX ＝ 310 單位，比整片場地還長，
          所以這條只在極端角度下才會碰到。 */
       w.age += dt;
       if (w.y < -6 || w.age > GATE_FLY_MAX) { weapons.splice(i, 1); }
@@ -4241,7 +4332,7 @@ function hitWeapon(w) {
   smash(p, { x: w.dx, y: w.dy, z: w.dz }, GATE_HIT_R, GATE_HIT_POW, true, true);
   weaponSpark(p, w);
   weaponBoom(p, w);
-  sndClang();
+  sndGateHit();
   fallWeapon(w);
 }
 /* 被擋下來之後就是一塊會翻滾的鐵：往前的勁道剩一點點，剩下交給重力。
@@ -4464,7 +4555,7 @@ function weaponBoom(pt, w) {
   }
 }
 /* 打到小人／吉祥物那一下的火球＋那一小片爆破（v1.148）。
-   quiet＋hush 照舊：這一把不震畫面、爆裂聲讓給它自己那一聲 sndClang／sndFall。
+   quiet＋hush 照舊：這一把不震畫面、爆裂聲讓給它自己那一聲 sndGateHit／sndFall。
    打積木那一發不走這裡——它本來就有 smash（GATE_HIT_R 1.5），不該疊第二發。
 
    半徑是量出來的，不是估的。使用者要「把 3～4 塊積木炸飛的程度」，而這一發的爆點
@@ -4588,7 +4679,8 @@ function useTool(hit) {
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'storm') { callStorm({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'drop') { dropBall(hit.point); return 0; }
-  if (tool === 'gate') { pickGate({ x: hit.point.x, z: hit.point.z }); return 0; }
+  // 第二下點在建築上就連高度一起當目標（v1.152，見 pickGate）
+  if (tool === 'gate') { pickGate(hit.point, hit.kind === 'block'); return 0; }
   return 0;
 }
 

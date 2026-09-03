@@ -10859,6 +10859,79 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gateHome.before.lost + ' 塊（撞到 ' + gateHome.before.hits + ' 次）→ 現在打掉 ' +
      gateHome.after.lost + ' 塊（撞到 ' + gateHome.after.hits + ' 次）');
 
+  /* 第二下點在**建築**上就打那個高度（v1.152，使用者：「第二下也能點擊建築做目標
+     （點擊位置的一個空間範圍 目前好像會在點擊位置的平面座標地面上）」）。
+     拿台北 101 量：塔高 65，點在六成高（39）跟「點空地」差得夠開，量得出來。
+     同一組數字要同時守住三件事，缺一不可——
+     ① 火力真的被拉到點擊的高度（打中的高度中位數）；
+     ② **落空的兵器沒有因此飛出場外**：瞄得越高，沒打到的那一把滑得越遠
+        （滑過頭 ＝ 落點高度 × 水平距離 ÷ 落差，而俯角被錐面夾在 41 度內），
+        所以這一條是這一版最容易踩的雷，靠 stepWeapons 那條 w.aimY 擋著；
+     ③ 點空地那一發**一個字都沒變**（門陣高度一樣、每一把的 aimY 都是 0）。
+     兩種點法各跑一趟同一座建築、同一組座標，差別只在 kind。 */
+  await reset(page, { shape: '台北 101', cnt: 3000, workers: 0 });
+  const gateHi = await page.evaluate(() => {
+    completeNow();
+    const ty = bp.height * 0.6;
+    const run = kind => {
+      /* 每一趟都**重蓋一次**：不重蓋的話第二趟是打在第一趟拆剩的塔上，
+         沒東西可打自然就打得少、落得遠，兩趟的數字不能比（實測點空地那一趟
+         打中 170 → 77 發、最遠 39 → 44）。 */
+      cleanTools();
+      startBuild(true);
+      completeNow();
+      tool = 'gate';
+      useTool({ kind: 'ground', point: { x: -bp.radius - 20, y: 0, z: 0 } });
+      useTool({ kind, point: { x: 0, y: ty, z: 0 } });
+      const g = gates[0];
+      const out = { ty0: +g.ty.toFixed(1), gy: +g.y.toFixed(1), spots: g.spots ? g.spots.length : 0 };
+      /* 打中的高度從 hitWeapon 攔（那是「撞到固體」那條路，炸點在刃尖）。
+         落地的距離事後從 weapons 撈——插在地上／躺著的都是 'lie'。 */
+      const hy = [], oHit = hitWeapon;
+      let aimN = 0, made = 0;
+      const oNew = newWeapon;
+      newWeapon = (gg, q) => { const w = oNew(gg, q); if (w) { made++; if (w.aimY > 0) aimN++; } return w; };
+      hitWeapon = w => { hy.push(w.y + w.dy * w.len * 0.5); oHit(w); };
+      let t = 0;
+      while (t < 16 && (gates || (weapons && weapons.length))) { step(1 / 60); t += 1 / 60; }
+      hitWeapon = oHit; newWeapon = oNew;
+      const far = (weapons || []).filter(w => w.st === 'lie')
+        .map(w => Math.hypot(w.x, w.z)).sort((a, b) => a - b);
+      hy.sort((a, b) => a - b);
+      const q = (a, f) => (a.length ? +a[Math.floor((a.length - 1) * f)].toFixed(1) : -1);
+      cleanTools();
+      return { ...out, made, aimN, hits: hy.length, mid: q(hy, 0.5),
+               lie: far.length, far9: q(far, 0.9), farMax: q(far, 1) };
+    };
+    const blk = run('block'), gnd = run('ground');
+    return { ty: +ty.toFixed(1), H: +bp.height.toFixed(1), blk, gnd };
+  });
+  /* 點擊高度 39：block 那一趟打中的高度中位數實測 31.5，ground 那一趟 12.5（打中的發數
+     兩趟都是 165，火力沒有因為改瞄準而變弱）。門檻取「比點空地高六成」（20）
+     ＋「至少爬到點擊高度的六成」（23.4），兩條離實測值都有三成以上餘裕。 */
+  ok('第二下點在建築上，火力就跟著打到那個高度（點空地照舊打身體下段）',
+     gateHi.blk.ty0 === gateHi.ty && gateHi.blk.spots > 50 && gateHi.blk.hits > 100 &&
+     gateHi.blk.mid > gateHi.gnd.mid * 1.6 && gateHi.blk.mid > gateHi.ty * 0.6,
+     '台北 101（高 ' + gateHi.H + '）點在 ' + gateHi.ty + ' 高：打中 ' + gateHi.blk.hits +
+     ' 發、高度中位數 ' + gateHi.blk.mid + '（點空地是 ' + gateHi.gnd.hits + ' 發、' +
+     gateHi.gnd.mid + '）；吸得到的積木 ' + gateHi.blk.spots + ' 塊');
+  /* 落空的那一把要跟點空地同一個量級。實測 block 九成位 18.2、最遠 42.6；
+     ground 九成位 31.7、最遠 46.2——**反而比點空地近**。
+     絕對門檻 70 是「還在草皮上」；相對門檻 1.5 倍擋的是回歸：拿掉 stepWeapons 那條
+     w.aimY，同一座塔的九成位會衝到 175～198、最遠 248（畫面上是一條刀劍拖出去的尾巴）。 */
+  ok('瞄高了，落空的兵器也沒有因此飛出場外',
+     gateHi.blk.farMax < 70 && gateHi.blk.far9 < gateHi.gnd.far9 * 1.5,
+     '插／躺在地上的距離：點建築 九成位 ' + gateHi.blk.far9 + '、最遠 ' + gateHi.blk.farMax +
+     '（' + gateHi.blk.lie + ' 把）；點空地 九成位 ' + gateHi.gnd.far9 + '、最遠 ' +
+     gateHi.gnd.farMax + '（' + gateHi.gnd.lie + ' 把）');
+  // 點空地那一發完全沒被這一版動到：不指定高度、門陣高度一樣、沒有任何一把帶 aimY
+  ok('點空地那一發跟 v1.151 一樣（不指定高度、門陣高度不動、沒有落空就墜落那條）',
+     gateHi.gnd.ty0 === 0 && gateHi.gnd.aimN === 0 && gateHi.gnd.gy === gateHi.blk.gy &&
+     gateHi.blk.aimN > 0,
+     '點空地：目標高度 ' + gateHi.gnd.ty0 + '、帶落點高度的兵器 ' + gateHi.gnd.aimN + '/' +
+     gateHi.gnd.made + ' 把；點建築 ' + gateHi.blk.aimN + '/' + gateHi.blk.made +
+     ' 把；門陣高度兩邊都是 ' + gateHi.gnd.gy);
+
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
      「燒完那塊有沒有變黑掉下來」。用大建築測：小的燒到剩 25% 就整棟垮掉換場，
@@ -17050,7 +17123,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   tone(2100, 0.09, 'sawtooth', 0.018, 0.32, 'bladeOld');
                   noise(0.07, 0.035, 5200);
                 }),
-                clang: await one(() => sndClang()),
+                /* 命中聲（v1.152 從金屬脆響換成爆炸的配方，見 sndGateHit）。
+                   五次取中位數：噪音打底的音效單次量到的頻段占比本來就會抖（同雷聲，見 many）。 */
+                gateHit: await many(() => sndGateHit(), 3, 5),
+                /* v1.132～v1.151 那一版的命中聲就地復刻當對照組：760Hz 的方波
+                   ＋ 切在 2100 的噪音。「像不像爆炸」是相對的，沒有對照組就只是在背數字。 */
+                clangOld: await many(() => {
+                  tone(760, 0.13, 'square', 0.022, 0.35, 'clangOld');
+                  noise(0.13, 0.075, 2100);
+                }, 3, 5),
                 /* 五次取中位數（同雷聲那兩發，見 many）：**peak 是一堆隨機噪音疊起來的
                    最大值**，單次量的話本來就會抖。同一份程式碼連量十五次，一組一秒份量到
                    0.165～0.268、三組 0.169～0.251——門檻 0.25 兩邊都會偶爾踩到，
@@ -17058,7 +17139,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                    離門檻有三成餘裕。門檻沒動（放寬門檻不算修，見 README〈九條偶爾飄的測試〉）。 */
                 gate1s: await many(() => {
                   for (let i = 0; i < GATE_RATE; i++) sndBlade();
-                  for (let i = 0; i < 13; i++) sndClang();
+                  for (let i = 0; i < 13; i++) sndGateHit();
+                  for (let i = 0; i < 15; i++) sndStab();
+                }, 3, 5),
+                /* 同一秒份、命中聲換回 v1.151 那一版（對照組）：使用者要「音量不要太大」，
+                   而這一聲一秒響十幾次，要比的就是**疊起來**的量不是單聲。 */
+                gateOld1s: await many(() => {
+                  for (let i = 0; i < GATE_RATE; i++) sndBlade();
+                  for (let i = 0; i < 13; i++) {
+                    tone(760, 0.13, 'square', 0.022, 0.35, 'clangOld');
+                    noise(0.13, 0.075, 2100);
+                  }
                   for (let i = 0; i < 15; i++) sndStab();
                 }, 3, 5),
                 /* 三組同時在射（v1.136）：發數三倍。撐住這件事的還是「同一支音效
@@ -17066,7 +17157,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                    這一條就是在驗那件事。 */
                 gate3s: await many(() => {
                   for (let i = 0; i < GATE_RATE * 3; i++) sndBlade();
-                  for (let i = 0; i < 39; i++) sndClang();
+                  for (let i = 0; i < 39; i++) sndGateHit();
                   for (let i = 0; i < 45; i++) sndStab();
                 }, 3, 5) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
@@ -17103,9 +17194,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '%；80–250Hz ' + snd.bladeOld.body + ' → ' + snd.blade.body +
      '；單聲 rms ' + snd.bladeOld.rms + ' → ' + snd.blade.rms);
   ok('王之財寶一發的破空聲比槌子輕得多',
-     snd.blade.rms < snd.smash.rms * 0.5 && snd.clang.rms < snd.smash.rms * 0.6,
-     '破空 rms ' + snd.blade.rms + '、命中 ' + snd.clang.rms +
+     snd.blade.rms < snd.smash.rms * 0.5 && snd.gateHit.rms < snd.smash.rms * 0.6,
+     '破空 rms ' + snd.blade.rms + '、命中 ' + snd.gateHit.rms +
      '（槌子 ' + snd.smash.rms + '）');
+  /* 命中聲要「接近爆炸音效」而且「音量不要太大」（v1.152，使用者：「調整王之財寶命中時
+     音效 應該要接近爆炸音效（音量也不要太大 因為很多發 只是現在音效跟特效不是很搭配）」）。
+     特效從 v1.148 起是一顆小爆炸火球，聲音卻還是 v1.132 那記金屬脆響。
+     三件事分開驗，缺一不可：
+     ① **像爆炸**：2kHz 以上的占比要從舊版那一大截掉下來，而且要落在炸彈那一帶
+        （±8 個百分點；實測 clangOld 67%、炸彈 13%、現在 15.6%）；
+     ② **有份量不是氣音**：80–250Hz 要比舊版翻上去（那是低頻鋸齒撐出來的）；
+     ③ **比舊的小聲**：單聲與「一秒份疊在一起」兩個都要比對照組小——一秒響十幾次，
+        只看單聲會漏掉疊起來的量。 */
+  ok('命中聲換成爆炸的配方，而且比 v1.151 那一版更小聲',
+     snd.gateHit.hiPct < snd.clangOld.hiPct * 0.35 &&
+     Math.abs(snd.gateHit.hiPct - snd.bomb.hiPct) < 8 &&
+     snd.gateHit.body > snd.clangOld.body * 1.6 &&
+     snd.gateHit.rms < snd.clangOld.rms &&
+     snd.gate1s.rms < snd.gateOld1s.rms && snd.gate1s.peak < snd.gateOld1s.peak,
+     '2kHz 以上 ' + snd.clangOld.hiPct + '% → ' + snd.gateHit.hiPct +
+     '%（炸彈 ' + snd.bomb.hiPct + '%）；80–250Hz ' + snd.clangOld.body + ' → ' +
+     snd.gateHit.body + '；單聲 rms ' + snd.clangOld.rms + ' → ' + snd.gateHit.rms +
+     '；一秒份 rms ' + snd.gateOld1s.rms + ' → ' + snd.gate1s.rms +
+     '、peak ' + snd.gateOld1s.peak + ' → ' + snd.gate1s.peak);
   /* 峰值用絕對門檻（跟「一排小人同時被掀倒」那條同一個 0.2 量級），不跟核彈比：
      這一秒份是幾十個短促的金屬撞擊，峰值本來就會比一聲拖很長的低頻爆炸高，
      真正要擋的是「疊到滿刻度」。總量（rms）才拿核彈當上限。 */
