@@ -17992,6 +17992,81 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        'step ' + r.step.toFixed(2) + 'ms + draw ' + r.draw.toFixed(2) + 'ms = ' +
        (r.step + r.draw).toFixed(2) + 'ms（CPU 上限約 ' + Math.round(1000 / (r.step + r.draw)) + ' fps）');
 
+  /* 推土機鏟子前那一坨（v1.151.2，使用者：「9000 塊積木時一排推土機推過去有降 FPS」）。
+     一排推土機是照工地寬度鋪滿的（最多 30 台），每台每幀把鏟面前那一坨碎料都
+     nudgeApart 一次——實測 9000 塊的泰姬瑪哈陵一幀要 nudge 1300～2500 塊，
+     整個 step() 有 93～99% 的時間耗在這條路上。
+
+     **不跑真的整地流程**：那要先蓋 9000 塊再一路砸到換場，一趟二三十秒，
+     為了一條效能門檻讓整輪多跑一分半不划算。改成直接對這支函式做微基準——
+     造一坨密度跟鏟子前那一坨一樣的碎料（實測每格中位 5～6 塊、最密 12～20 塊），
+     量「擠開一塊要幾微秒」。
+
+     **門檻是相對的，不是絕對的**：wall clock 換一台機器就整組平移（見〈九條偶爾飄的
+     測試〉）。所以把 v1.151.1 那一版原封不動放進來當**對照組**，同一坨碎料、同一輪
+     JIT 之下比兩者的比值——這樣守的是「這個優化沒有被改回去」，跟機器多快無關。
+     絕對值那一條放得很寬，只擋「兩邊都變慢」。
+     實測（同一坨）：舊 1.58～2.02 µs／次、現在 0.76～0.87 µs／次。 */
+  const nudgePerf = await page.evaluate(() => {
+    running = false;
+    /* v1.151.1 之前那一版：Math.hypot 算每一對鄰居的距離、ENG.BS 每次現查、
+       3×3 的 key 每格重組一次字串、for...of 每格配一個迭代器。 */
+    const OLD = function (b, lim) {
+      if (lim <= 0) return;
+      const cx = Math.floor(b.x / CELL), cz = Math.floor(b.z / CELL);
+      let px = 0, pz = 0;
+      for (let i = -1; i <= 1; i++) for (let k = -1; k <= 1; k++) {
+        const a = restGrid.get((cx + i) + ':' + (cz + k)); if (!a) continue;
+        for (const o of a) {
+          if (o === b) continue;
+          let dx = b.x - o.x, dz = b.z - o.z;
+          let d = Math.hypot(dx, dz);
+          if (d >= ENG.BS) continue;
+          if (d < 1e-4) { const ang = Math.random() * Math.PI * 2; dx = Math.cos(ang); dz = Math.sin(ang); d = 1e-4; }
+          const push = (ENG.BS - d) * 0.25;
+          px += dx / d * push; pz += dz / d * push;
+        }
+      }
+      const pl = Math.hypot(px, pz);
+      if (pl < 1e-6) return;
+      if (pl > lim) { px = px / pl * lim; pz = pz / pl * lim; }
+      b.x += px; b.z += pz;
+    };
+    targetCnt = 1800; shapePick = 0; startBuild(true); completeNow(); shapePick = -1;
+    for (const b of blocks) if (b.cell) gridDel(b);
+    const pile = [];
+    for (let i = 0; i < 1500 && i < blocks.length; i++) {
+      const b = blocks[i];
+      b.st = 0; b.rest = true; b.holder = -1; b.slot = -1;
+      b.x = (Math.random() * 2 - 1) * 11; b.z = (Math.random() * 2 - 1) * 11; b.y = 0.5;
+      gridAdd(b); pile.push(b);
+    }
+    // 只算有東西的格子：restGrid 會留著上一座清空後的空陣列，算進去中位數會是 0
+    const occ = [];
+    for (const a of restGrid.values()) if (a.length) occ.push(a.length);
+    occ.sort((p, q) => p - q);
+    const bench = (fn, reps) => {
+      const t = performance.now();
+      for (let r = 0; r < reps; r++) for (let i = 0; i < pile.length; i++) fn(pile[i], 0.2);
+      return (performance.now() - t) / (reps * pile.length) * 1000;      // µs／次
+    };
+    bench(OLD, 1); bench(nudgeApart, 1);            // 暖機：兩邊都讓 JIT 編過
+    const oldMs = [], nowMs = [];
+    for (let k = 0; k < 3; k++) {
+      oldMs.push(+bench(OLD, 3).toFixed(3));
+      nowMs.push(+bench(nudgeApart, 3).toFixed(3));
+    }
+    const med = a => a.slice().sort((p, q) => p - q)[1];
+    return { old: oldMs, now: nowMs, oldMed: med(oldMs), nowMed: med(nowMs),
+             n: pile.length, occMed: occ[occ.length >> 1] || 0, occMax: occ[occ.length - 1] || 0 };
+  });
+  ok('推土機鏟子前那一坨擠開得夠便宜（nudgeApart 比 v1.151.1 快三成以上）',
+     nudgePerf.nowMed < nudgePerf.oldMed * 0.7 && nudgePerf.nowMed < 3,
+     '一坨 ' + nudgePerf.n + ' 塊（每格中位 ' + nudgePerf.occMed + '、最密 ' +
+     nudgePerf.occMax + '）：舊寫法 ' + nudgePerf.old.join('／') + '、現在 ' +
+     nudgePerf.now.join('／') + ' µs／次（中位 ' + nudgePerf.oldMed + ' → ' +
+     nudgePerf.nowMed + '，快 ' + (nudgePerf.oldMed / nudgePerf.nowMed).toFixed(2) + ' 倍）');
+
   /* 塵霧最壞的一幕（v1.123）：三朵烏雲（一朵 700 團）＋ 一發核彈的蘑菇雲與火苗煙。
      兩件事一起驗——**都畫得出來**（MAXDUST 3400 是照這一幕訂的；砍在 2200 的話
      第三朵烏雲會整朵不見，因為烏雲接在 dust 後面、被切掉的是清單尾巴），
