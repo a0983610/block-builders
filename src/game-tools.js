@@ -480,8 +480,9 @@ const ROCK_STEP = 0.4;              // 掃掠取樣間距，要小於一格才�
 /* 連小人的家也算固體（v1.135）。blockAt 只認地標藍圖的格子表，房子不在裡面
    （房子自己帶一份格子清單，見 game-workers.js 的 homes）——水那條路 v1.103 已經踩過同一件事
    （見 solidAt）。破壞本身本來就打得到：smash 只看 st === SET，房子的積木照樣敲得掉，
-   缺的只有「撞到了沒」這一半。 */
-const hardAt = (x, y, z) => blockAt(x, y, z) || homeSolid(x, y, z);
+   缺的只有「撞到了沒」這一半。
+   那個聯集 v1.158.1 起收在 game-workers.js 的 hardAt（定義擺在 homeSolid 旁邊，
+   因為它要用到那一支），這裡直接用。 */
 /* 掃掠判定用的「固體」。預設只認地標藍圖的格子表（blockAt），要連小人的家一起認的
    自己傳一支進來（見 hardAt）。 */
 function sweepRock(r, px, py, pz, solid) {
@@ -1485,14 +1486,12 @@ const cellX = x => Math.round(x - gOffX);
 const cellZ = z => Math.round(z - gOffZ);
 const wldX = gx => gx + gOffX;
 const wldZ = gz => gz + gOffZ;
-/* 水撞到的「固體」。藍圖的格子表問一次，小人的家再問一次（v1.103）——
-   不問的話水從房子中間流過去、不會積在屋裡、杯壁破洞也不會從破口噴出來。
+/* 水撞到的「固體」＝**格子座標版的 hardAt**：藍圖的格子表問一次、小人的家再問一次
+   （v1.103；那個聯集 v1.158.1 起收在 hardAt）——不問的話水從房子中間流過去、
+   不會積在屋裡、杯壁破洞也不會從破口噴出來。
    兩邊的格線不同源（藍圖的原點隨每一座地標平移，房子各自有自己的原點），
-   所以拿世界座標分別問，對不齊的誤差最多半格。 */
-const solidAt = (gx, gy, gz) => {
-  const x = wldX(gx), y = gy + HB, z = wldZ(gz);
-  return blockAt(x, y, z) || homeSolid(x, y, z);
-};
+   所以先換算回世界座標再分別問，對不齊的誤差最多半格。 */
+const solidAt = (gx, gy, gz) => hardAt(wldX(gx), gy + HB, wldZ(gz));
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const wkey = (gx, gy, gz) => gx + ':' + gy + ':' + gz;
 
@@ -2249,12 +2248,12 @@ function stepFw(dt) {
     if (s.t <= 0 || s.y <= 0.3) { fwSparks.splice(i, 1); continue; }
     /* 打到建築就從那一塊燒起來。中點也要驗：火星一幀跑得比一格寬，
        只看終點的話會直接穿過薄牆。 */
-    // 房子也要點得著（v1.102）：blockAt 只認藍圖的格子表
-    if (blockAt(s.x, s.y, s.z) || homeSolid(s.x, s.y, s.z)) {
+    // 房子也要點得著（v1.102）：blockAt 只認藍圖的格子表，所以用 hardAt
+    if (hardAt(s.x, s.y, s.z)) {
       igniteAt(s.x, s.y, s.z); fwSparks.splice(i, 1); continue;
     }
     const mx = (px + s.x) / 2, my = (py + s.y) / 2, mz = (pz + s.z) / 2;
-    if (blockAt(mx, my, mz) || homeSolid(mx, my, mz)) { igniteAt(mx, my, mz); fwSparks.splice(i, 1); }
+    if (hardAt(mx, my, mz)) { igniteAt(mx, my, mz); fwSparks.splice(i, 1); }
   }
   if (!fwSparks.length) fwSparks = null;
   fwEnd();
@@ -4701,7 +4700,11 @@ function fixHit(hit) {
   for (let t = Math.min(hit.dist, 60); t >= 0; t -= 0.3) {
     const qx = p.x - d.x * t, qy = p.y - d.y * t, qz = p.z - d.z * t;
     /* 這裡要的是「這個點在不在積木裡」，所以 y 用 round(y − HB)：
-       第 g 層的積木占 y ∈ [g, g+BS]，中心在 g+HB。 */
+       第 g 層的積木占 y ∈ [g, g+BS]，中心在 g+HB。
+       這一行**不要**收成 hardAt 一次（v1.158.1 整理時特地留著）：前半是把座標對齊
+       藍圖格線之後才問的（cellX／round／cellZ），後面那次 homeSolid 用的是**沒對齊的
+       原始座標**——兩邊格線不同源（見 solidAt），房子要用自己的原點問才準。
+       併成一次的話，房子邊界上那半格會漏判。 */
     if (solidAt(cellX(qx), Math.round(qy - HB), cellZ(qz)) || homeSolid(qx, qy, qz)) {
       if (got) { wall = t; break; }               // 擋在前面的那面牆
       continue;                                   // 鏡頭本身在積木裡：跳過

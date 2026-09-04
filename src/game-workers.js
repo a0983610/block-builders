@@ -500,8 +500,14 @@ function stepTo(w, tx, tz, dt) {
      一個站在屋子裡不動的人永遠不會被推出來。 */
   if (d < REACH) { pushOutHome(w); w.gait += (0 - w.gait) * Math.min(1, dt * 8); return true; }
   /* 直線走也要繞開房子（v1.102）。這條路是上工（buildWalk 判斷「直線通得過」時）
-     與拆除／整地退場在用的，而 pathClear 只認得藍圖的格子表——房子不在裡面，
-     所以他會直直走進去、被 pushOutHome 推回來，貼著牆磨。 */
+     與拆除／整地退場在用的。
+     原註解寫的理由是「pathClear 只認得藍圖的格子表，房子不在裡面」——**那是 v1.102
+     當下的狀況，v1.103 起就不成立了**（pathClear 自己會問 homeFoot，見那一支）。
+     真正還需要 dodgeHome 的理由是另外兩件事，兩件都還在：
+       · **有呼叫端根本沒問過 pathClear**：buildWalk 最後那一段（w.clear ＝ 0 才走到）
+         與退場閒晃的 walkTo 都是直接走，沒有「這條路通不通」這一關。
+       · **問過的也只有 PATH_CHK（0.25 秒）那麼新**：房子會在這中間長出來。
+     所以 pathClear 是每 0.25 秒一次的路線層，dodgeHome 是每一幀的反應層，兩層都要有。 */
   const g = dodgeHome(w, dx / d, dz / d);
   const sp = WALK * dt;
   w.x += g.x * Math.min(sp, d); w.z += g.z * Math.min(sp, d);
@@ -2093,6 +2099,13 @@ function homeSolid(x, y, z) {
   }
   return false;
 }
+/* 「這個世界座標上有沒有硬東西」的**唯一入口**（v1.158.1）。
+   地標的積木在藍圖那張格子表（blockAt）、小人的家各自帶一份（homeSolid），兩邊都要問。
+   在這之前這個聯集是散在六處手寫的，每加一種會飛的東西就要記得再寫一次——
+   v1.103 的水（solidAt）跟 v1.135 的投石機石頭（sweepRock）都是漏掉之後才補上的。
+   定義擺在 homeSolid 旁邊而不是 game-tools.js，是因為載入順序是
+   game.js（blockAt）→ 這一支（homeSolid）→ game-tools.js，擺這裡才輪得到所有呼叫端。 */
+const hardAt = (x, y, z) => blockAt(x, y, z) || homeSolid(x, y, z);
 /* 房子的這一根柱子從地面連續疊到第幾層（沒有就 −1）。中間斷掉就不再往上算，
    跟 colTop 同一個道理：斷掉上面那些（門廊的雨遮）是從它底下穿過去的，不是翻過去。 */
 function homeColTop(h, x, z) {
@@ -3304,7 +3317,7 @@ function hurlTrip(w, h, dt) {
      或者旁邊又長出一間房子）：出手那一下整塊在牆裡。那就退回一般工人那條路——
      往房子走，走到不被埋住的地方就扔，走到房子邊上都還埋著就照一般工人那樣砌。
      **看的是那塊積木、不是他的腳**，理由同工地那條。 */
-  if (blockAt(b.x, b.y, b.z) || homeSolid(b.x, b.y, b.z)) { layTrip(w, h, dt); return; }
+  if (hardAt(b.x, b.y, b.z)) { layTrip(w, h, dt); return; }
   b.st = TOSS; b.rest = false;
   b.arc = {
     t: 0,
