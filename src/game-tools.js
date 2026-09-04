@@ -2206,6 +2206,40 @@ function igniteAt(x, y, z) {
   if (best.hh < 0 && phase === 'done') phase = 'wreck';   // 同上（v1.102）
   return true;
 }
+/* 火星打到活的東西就點著他（v1.158.3，使用者：「煙火調整 火星對小人動物等生效」）。
+   在這之前煙火是**唯一一支誰都打不到**的道具：火星只呼叫 igniteAt，而那一支的迴圈是
+   `for (const b of blocks)`——站在花火底下淋一身火星，人跟動物都不痛不癢。
+
+   規則沿用兩條既有的：
+     · **命中判定同王之財寶的兵器**（weaponVsWorker／weaponVsBeast）：半徑 0.75，
+       高度用「腳底到頭頂」，動物照身形放大、飛龍改用身體中段上下各半身高。
+       抄它是因為那也是「一個小東西飛過來打到人」，判定形狀本來就一樣。
+     · **點著的演法同火把**（game-ui.js 那支）：roll 給 0 ＝「站著被點著」——
+       他們是站著中的，不是被炸飛摔在地上，所以是抱頭跑圈圈不是就地打滾。
+
+   剛被消防車或水桶淋濕的點不著（igniteWorker／igniteBeast 自己會擋、回 false），
+   **那一顆火星就不算用掉**，繼續往下掉去點別的東西——同積木那條的寫法。 */
+const FW_MAN_R = 0.75;               // 火星離身體中心多近算打到（同 GATE_MAN_R）
+function fwBurn(x, y, z) {
+  for (const w of workers) {
+    if (w.air || w.burn > 0) continue;
+    const h = 1.5 * (w.scale || 1);                  // 頭頂（同 weaponVsWorker）
+    if (y < (w.y || 0) || y > (w.y || 0) + h) continue;
+    if ((w.x - x) ** 2 + (w.z - z) ** 2 > FW_MAN_R * FW_MAN_R) continue;
+    if (igniteWorker(w, 0)) return true;
+  }
+  if (beasts) for (const m of beasts) {
+    if (m.air || m.burn > 0) continue;
+    const mid = ENG.BEAST_MID[m.kind] * (m.sc || 1);
+    const lo = m.kind === 'dragon' ? (m.y || 0) - mid : 0;
+    const hi = m.kind === 'dragon' ? (m.y || 0) + mid : mid * 2;
+    if (y < lo || y > hi) continue;
+    const R = FW_MAN_R + mid * 0.8;
+    if ((m.x - x) ** 2 + (m.z - z) ** 2 > R * R) continue;
+    if (igniteBeast(m, 0)) return true;
+  }
+  return false;
+}
 function stepFw(dt) {
   if (fwWait) {                                      // 齊射還沒出膛的那幾發
     for (let i = fwWait.length - 1; i >= 0; i--) {
@@ -2248,11 +2282,15 @@ function stepFw(dt) {
     if (s.t <= 0 || s.y <= 0.3) { fwSparks.splice(i, 1); continue; }
     /* 打到建築就從那一塊燒起來。中點也要驗：火星一幀跑得比一格寬，
        只看終點的話會直接穿過薄牆。 */
+    /* 活的東西排在積木前面（v1.158.3）：人多半就站在牆邊，同一個取樣點兩邊都沾到時，
+       該燒的是站在前面的那個人，不是他背後那面牆。 */
+    if (fwBurn(s.x, s.y, s.z)) { fwSparks.splice(i, 1); continue; }
     // 房子也要點得著（v1.102）：blockAt 只認藍圖的格子表，所以用 hardAt
     if (hardAt(s.x, s.y, s.z)) {
       igniteAt(s.x, s.y, s.z); fwSparks.splice(i, 1); continue;
     }
     const mx = (px + s.x) / 2, my = (py + s.y) / 2, mz = (pz + s.z) / 2;
+    if (fwBurn(mx, my, mz)) { fwSparks.splice(i, 1); continue; }
     if (hardAt(mx, my, mz)) { igniteAt(mx, my, mz); fwSparks.splice(i, 1); }
   }
   if (!fwSparks.length) fwSparks = null;

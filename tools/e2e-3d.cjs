@@ -13466,6 +13466,48 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '視線高 ' + dropCam.ty0 + '（整段最高 ' + dropCam.peak + '）、視距 ' +
      dropCam.d0 + ' → ' + dropCam.d1);
 
+  /* ── 火星點得著人與動物（v1.159.0，使用者：「煙火調整 火星對小人動物等生效」）──
+     直接叫 fwBurn 而不是放一發煙火等它燒到誰：火星的落點本來就是隨機的，
+     「放一發、等它剛好燒到那個人」就是這一版在修的那種偶爾飄。
+     stepFw 真的每一顆火星都會叫它，由〈每一支破壞道具的傷害都經過認得動物的那幾支〉
+     那條守著（量到 fw 29240 次）。 */
+  const fwHit = await page.evaluate(() => {
+    cleanTools(); clearFires(); beasts = null;
+    for (const w of workers) { w.air = 0; w.fall = 0; w.burn = 0; w.wet = 0; w.lit = 0; }
+    const w = workers[0];
+    w.x = 40; w.z = 0; w.y = 0;
+    const m = spawnBeast('ape', 1);
+    m.x = 40; m.z = 12; m.y = 0; m.st = 'fun'; m.stay = 999;
+    m.burn = 0; m.wet = 0; m.air = 0; m.fall = 0;
+    /* 打滾旗標兩邊叫法不同：小人是 w.roll、動物是 m.brl（見〈猴子那兩隻整套借小人的〉
+       那張對照表）。兩個都要是 0 ＝「站著被點著」。 */
+    const manHi = fwBurn(w.x, 1.0, w.z);              // 打在胸口：燒起來
+    const manRoll = w.roll;
+    const manBurn = w.burn;
+    const beastHit = fwBurn(m.x, 0.4, m.z);
+    const beastBurn = m.burn, beastRoll = m.brl;
+    /* 打不到的兩種：離身體太遠、以及高過頭頂（火星從上面飄過去不該算）。
+       另外**濕的點不著，而且那一顆火星不算用掉**（回 false）——同積木那條。 */
+    const far = fwBurn(w.x + 3, 1.0, w.z);
+    const w2 = workers[1];
+    w2.x = 40; w2.z = -12; w2.y = 0; w2.burn = 0; w2.air = 0; w2.fall = 0;
+    const over = fwBurn(w2.x, 4.5, w2.z);
+    wetWorker(w2);
+    const wet = fwBurn(w2.x, 1.0, w2.z);
+    return { manHi, manBurn: +manBurn.toFixed(2), manRoll, beastHit,
+             beastBurn: +beastBurn.toFixed(2), beastRoll, far, over, wet,
+             wetLeft: +w2.wet.toFixed(1), w2burn: w2.burn };
+  });
+  ok('煙火的火星點得著小人與動物（站著被點著那一種，不是就地打滾）',
+     fwHit.manHi && fwHit.manBurn > 0 && !fwHit.manRoll &&
+     fwHit.beastHit && fwHit.beastBurn > 0 && !fwHit.beastRoll,
+     '小人燒 ' + fwHit.manBurn + ' 秒（打滾旗標 ' + fwHit.manRoll +
+     '）、猴子燒 ' + fwHit.beastBurn + ' 秒（打滾旗標 ' + fwHit.beastRoll + '）');
+  ok('火星打不到的三種都回 false（太遠、高過頭頂、剛淋濕的）',
+     !fwHit.far && !fwHit.over && !fwHit.wet && fwHit.wetLeft > 0 && fwHit.w2burn === 0,
+     '離 3 格 ' + fwHit.far + '、高 4.5 格 ' + fwHit.over + '、濕 ' +
+     fwHit.wetLeft + ' 秒那個 ' + fwHit.wet + '（沒燒起來＝' + (fwHit.w2burn === 0) + '）');
+
   /* ══════════ 小人也會被拆除工具波及 ══════════
      邏輯跟碎料同一套：吹飛／推走／炸飛走彈道，落地那一刻才判定要不要燒起來。
      每個案例都自己把人擺到定位再動手——照原本的分布，人多半在遠處撿貨，
@@ -17048,6 +17090,77 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hPick.poked && hPick.fall,
      '手指點到 ' + hPick.kind + '（同一隻＝' + hPick.same + '）、破壞道具那一把點到 ' +
      hPick.skip);
+
+  /* ── 每一支破壞道具的傷害都要走到「認得動物」那條路上（v1.158.2）──────────
+     v1.146 補動物時是一處一處加上去的，之後再新增工具很容易漏掉——而漏掉長得跟通過
+     一模一樣。這一條把 TOOLS 整張表跑一遍當守門員。
+
+     **不賭落點。** 投石機、龍捲風、打雷的落點本來就是隨機的，「把動物擺在那裡、
+     斷言牠有反應」等於再生一條會飄的測試（正是這一版在修的毛病）。所以驗的是
+     **這一發有沒有經過認得動物的那幾支**：
+       · eachBeastNear ── afterHit／explode／stepBall／打雷共用的那支範圍掃描
+       · tossBeast／igniteBeast／fellBeast／wetBeast ── 龍捲風、積水那幾條自己寫的迴圈
+       · weaponVsBeast ── 王之財寶的線段掃掠
+     沾到任何一支，就代表動物在這條傷害路徑的視野裡。
+
+     **兩支刻意不在名單上**（NO_BEAST），理由都查證過：
+       · 手指：useTool 第一行就 return 0，設計上只戳小人（見 game-ui.js 的 pick 'man'）。
+       · 放火：torch 只呼叫 igniteAt（那支的迴圈是 `for (const b of blocks)`）。
+         它對動物是走 **game-ui.js 的點擊分派**那條（`:307` igniteBeast，見上面
+         〈手指那一把點得到牠〉），不經過 useTool——所以這條測不到它是**對的**。
+     水桶同樣有點擊那條，但它經由 useTool 倒下去的水積起來之後照樣淋得到
+     （stepWater 那段 wetBeast），所以留在名單內。
+     煙火 v1.158.2 盤點時本來也在豁免名單上（火星只呼叫 igniteAt，對小人也一樣沒作用），
+     v1.159.0 依使用者要求補了 fwBurn，所以它現在要沾得到——而 fwBurn 是**每一顆火星
+     每一幀都掃一次**，跟 eachBeastNear 一樣不必賭它剛好燒到誰。 */
+  const hTools = await page.evaluate(() => {
+    const NAMES = ['eachBeastNear', 'tossBeast', 'igniteBeast', 'fellBeast',
+                   'wetBeast', 'weaponVsBeast', 'fwBurn'];
+    const orig = {};
+    let seen = 0;
+    for (const n of NAMES) {
+      orig[n] = window[n];
+      window[n] = function (...a) { seen++; return orig[n].apply(null, a); };
+    }
+    const TWO = ['ball', 'tornado', 'gate'];        // 要點兩下的那幾支
+    const out = [];
+    try {
+      for (const t of TOOLS) {
+        cleanTools(); clearFires(); beasts = null;
+        targetCnt = 600; startBuild(true); completeNow();
+        phase = 'done'; doomT = 1e9;
+        const m = spawnBeast('ape', 1);
+        /* 站在建築外殼上、落點就取在牠身上（v1.158.2）。**要壓在積木上**：
+           槌子那一路是 smash → afterHit，而 afterHit 開頭就 `if (n <= 0) return`——
+           落點取在建築外面的空地時一塊都沒打掉，那條路根本走不到動物那一段
+           （第一版落點取 radius + 2，量到 hammer 0、bighammer 2，差別只是半徑大小）。 */
+        m.x = bp.radius - 0.5; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999;
+        const P = { x: m.x, y: 1, z: m.z };
+        const hit = { kind: 'block', point: P, dir: { x: 0, y: -1, z: 0 } };
+        tool = t.id;
+        seen = 0;
+        // 第一下決定「從哪裡打」，第二下才是目標；一下就發的那幾支不必先點
+        if (TWO.indexOf(t.id) >= 0)
+          useTool({ kind: 'ground', point: { x: -bp.radius - 12, y: 0, z: 0 } });
+        useTool(hit);
+        // 10 秒夠慢的那幾支走完：魔法 6 秒引信、王之財寶射 7 秒、龍捲風掃 10 秒
+        for (let i = 0; i < 200; i++) step(0.05);
+        out.push({ id: t.id, seen });
+      }
+    } finally {
+      for (const n of NAMES) window[n] = orig[n];
+      cleanTools(); beasts = null;
+    }
+    return out;
+  });
+  const NO_BEAST = ['finger', 'fire'];
+  const tMissed = hTools.filter(r => NO_BEAST.indexOf(r.id) < 0 && r.seen === 0).map(r => r.id);
+  const tWrong = hTools.filter(r => NO_BEAST.indexOf(r.id) >= 0 && r.seen > 0).map(r => r.id);
+  ok('每一支破壞道具的傷害都經過認得動物的那幾支（手指與放火例外，理由見註解）',
+     hTools.length === 16 && tMissed.length === 0 && tWrong.length === 0,
+     hTools.length + ' 支：' + hTools.map(r => r.id + ' ' + r.seen).join('、') +
+     (tMissed.length ? '；**沒沾到動物的：' + tMissed.join('、') + '**' : '') +
+     (tWrong.length ? '；**不該沾到卻沾到的：' + tWrong.join('、') + '**' : ''));
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 
