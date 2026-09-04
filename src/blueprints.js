@@ -317,14 +317,31 @@ function dim(s, k, min, odd) {
 }
 
 /* 平均排成一圈：fn(v, x, z, 角度, 第幾個)。柱廊、環形塔樓、輻條都是這件事
-   （48 座裡有 28 處自己寫 cos/sin 迴圈）。a0 是起始角，預設從 +x 出發。 */
-function ringOf(v, n, r, fn, x0, z0, a0) {
-  bpArgs('ringOf(v, n, r, fn, x0, z0, a0)', 'vnnf', [v, n, r, fn]);
+   （48 座裡有 28 處自己寫 cos/sin 迴圈）。a0 是起始角，預設從 +x 出發。
+   span（弧度，選配）給了就只排**一段弧**：這時頭尾兩個都會落在弧的端點上
+   （間隔是 span/(n−1)），整圈那個模式反而不能這樣算——不然最後一個會疊在第一個上面。 */
+function ringOf(v, n, r, fn, x0, z0, a0, span) {
+  bpArgs('ringOf(v, n, r, fn, x0, z0, a0, span)', 'vnnf', [v, n, r, fn]);
   n = Math.max(1, Math.round(n));
+  const arc = Number.isFinite(span);
   for (let i = 0; i < n; i++) {
-    const a = (a0 || 0) + i / n * Math.PI * 2;
+    const a = (a0 || 0) + (arc ? (n > 1 ? i / (n - 1) * span : 0) : i / n * Math.PI * 2);
     fn(v, (x0 || 0) + Math.cos(a) * r, (z0 || 0) + Math.sin(a) * r, a, i);
   }
+}
+
+/* 沿一條軸等距排 n 份：fn(v, 位置, 第幾個)，位置以 c0（預設 0）為中心左右攤開。
+   回傳整排的總長。要沿 x 就把位置填進 x、沿 z 就填進 z——跟 mirrorX／mirrorZ 一樣
+   只給偏移量，軸由呼叫的人決定；要排成方陣就套兩層。
+
+   全倉庫有 20 處自己寫 `-總寬/2 + i * 間距`（柱廊、欄杆、扶壁、衣褶、一排摩艾），
+   而那個式子很容易寫歪：內建自由女神的正面衣褶用 (n−1) 當分母、背面用 (n−2) 還補
+   了 +0.5——同一份藍圖裡同一件事寫了兩種，其中一種是湊出來的。 */
+function rowOf(v, n, step, fn, c0) {
+  bpArgs('rowOf(v, n, 間距, fn, 中心)', 'vnnf', [v, n, step, fn]);
+  n = Math.max(1, Math.round(n));
+  for (let i = 0; i < n; i++) fn(v, (c0 || 0) + (i - (n - 1) / 2) * step, i);
+  return (n - 1) * step;
 }
 
 /* 左右／前後對稱各放一次。corners4 是四個角，這兩支是一對。 */
@@ -335,6 +352,57 @@ function mirrorX(v, dx, fn) {
 function mirrorZ(v, dz, fn) {
   bpArgs('mirrorZ(v, dz, fn)', 'vnf', [v, dz, fn]);
   fn(v, dz); fn(v, -dz);
+}
+
+/* 把一整組東西**轉一個角度**蓋上去：deg 是繞 y 軸轉幾度（正的是從 +x 轉向 +z），
+   (x0, z0) 是旋轉中心（預設原點）。fn 拿到的是一塊乾淨的畫布，照 0 度畫就好。
+
+   為什麼要專門一支：mirrorX／mirrorZ／corners4／ringOf 全都只給 0／90／180 度，
+   任何「斜著擺的一整組東西」都得自己算三角函數——實測五稜郭自己寫了一支
+   isInsideStar() 加兩層 41×41 的掃描才排出星形，彰化扇形車庫手刻兩組 cos/sin 掃角度
+   （連弧形屋頂都是 0.05 弧度一格一格掃出來的）。
+
+   正反兩趟都做，兩趟各守一件事（三種版本都量過）：
+   ① 正向：把來源每一格轉過去，保證來源每一格都有落點。**中空的四面牆轉 45 度時，
+      只做反向取樣會少 8 格**（原本 56 → 反向 40、兩趟 48）——牆會變得斑斑駁駁。
+   ② 反向：掃目的地的包圍盒、逆轉回來取樣，保證**轉完不會出現一格一格的縫**。
+      12×12 的實心量體只做正向的話，轉 15／30／45／60 度分別留下 6／16／20／16 處縫，
+      兩趟都是 0。
+   聯集才是「既沒少東西也沒有洞」。斜著的線本來就會變短（21 格的牆轉 45 度剩 15 格，
+   因為對角線一步跨的是 √2），那是格子的事，不是漏畫。 */
+function stampY(v, deg, fn, x0, z0) {
+  bpArgs('stampY(v, 幾度, fn, x0, z0)', 'vnf', [v, deg, fn]);
+  const src = new VOX();
+  fn(src, deg);
+  const cells = src.cells();
+  if (!cells.length) return;
+  const cx = x0 || 0, cz = z0 || 0;
+  const a = deg * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+  let mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
+  const col = new Map();                       // 同一根柱子上的格子收在一起，反向那趟才不必逐格查
+  for (const c of cells) {
+    if (c.x < mnx) mnx = c.x; if (c.x > mxx) mxx = c.x;
+    if (c.z < mnz) mnz = c.z; if (c.z > mxz) mxz = c.z;
+    const k = c.x + ':' + c.z, got = col.get(k);
+    if (got) got.push(c); else col.set(k, [c]);
+    const dx = c.x - cx, dz = c.z - cz;         // ① 正向
+    v.set(cx + dx * ca - dz * sa, c.y, cz + dx * sa + dz * ca, c.c);
+  }
+  let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
+  for (const p of [[mnx, mnz], [mnx, mxz], [mxx, mnz], [mxx, mxz]]) {
+    const dx = p[0] - cx, dz = p[1] - cz;
+    const px = cx + dx * ca - dz * sa, pz = cz + dx * sa + dz * ca;
+    if (px < bx0) bx0 = px; if (px > bx1) bx1 = px;
+    if (pz < bz0) bz0 = pz; if (pz > bz1) bz1 = pz;
+  }
+  for (let x = Math.floor(bx0); x <= Math.ceil(bx1); x++)          // ② 反向
+    for (let z = Math.floor(bz0); z <= Math.ceil(bz1); z++) {
+      const dx = x - cx, dz = z - cz;
+      const list = col.get(Math.round(cx + dx * ca + dz * sa) + ':' +
+                           Math.round(cz - dx * sa + dz * ca));
+      if (!list) continue;
+      for (const c of list) v.set(x, c.y, z, c.c);
+    }
 }
 
 /* 拱門：w 是開口寬（會逼成奇數，不然拱心落在兩格之間），h 是直柱段高度，
@@ -422,6 +490,25 @@ function windowGrid(v, o) {
     }
   }
   return n;
+}
+
+/* 方形收分：底面 w×d 一層一層收到頂面 w1×d1。城郭石垣、方尖碑、退縮式高樓
+   （帝國大廈那種）都是這件事——`taper` 只收圓的、`pyramid` 只給等速階梯，
+   中間這一格本來是空的：全倉庫有 13 處自己寫
+   `for y … step = floor((h−y) × 係數); box(w − step×2, …)`（大阪城的石垣、
+   松前城天守、吉薩大金字塔的收頂、五稜郭、總統府）。
+   t 給了就只留四面牆（中空的方塔），不給是實心的。 */
+function boxTaper(v, o) {
+  bpArgs('boxTaper(v, { … })', 'vo', [v, o]);
+  bpKeys('boxTaper(v, { x, y, z, w, d, w1, d1, h, c })', o, 'x y z w d w1 d1 h c');
+  const h = Math.max(1, Math.round(o.h));
+  for (let i = 0; i < h; i++) {
+    const t = h > 1 ? i / (h - 1) : 0;
+    const w = Math.max(1, Math.round(o.w + (o.w1 - o.w) * t));
+    const d = Math.max(1, Math.round(o.d + (o.d1 - o.d) * t));
+    if (o.t) v.walls(o.x, o.y + i, o.z, w, 1, d, o.c, o.t);
+    else v.box(o.x, o.y + i, o.z, w, 1, d, o.c);
+  }
 }
 
 /* 斜撐格架：兩根柱子之間拉 n 段交叉斜撐（鐵塔、桁架橋、電塔）。
@@ -4913,6 +5000,7 @@ if (typeof module !== 'undefined' && module.exports)
                      PROP_ALIVE,
                      checkBlueprint, bpIndexOf, BP_TARGETS,
                      cleanPaste, bpFileName, importBlueprint,
-                     dim, ringOf, mirrorX, mirrorZ, arch, archRow, stairs, hipRoof,
-                     windowGrid, lattice, corners4, tubeZ, wheelX, tint, paintFrom, blob, limb };
+                     dim, ringOf, rowOf, mirrorX, mirrorZ, stampY, arch, archRow, stairs, hipRoof,
+                     boxTaper, windowGrid, lattice, corners4, tubeZ, wheelX,
+                     tint, paintFrom, blob, limb };
 

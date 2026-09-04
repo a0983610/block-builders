@@ -821,9 +821,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await head('藍圖工具與體檢');
   const bpTool = await page.evaluate(() => {
     /* function 宣告會掛上 window，所以自訂藍圖檔（<script> 載進來的）叫得到 */
-    const names = ['dim', 'ringOf', 'mirrorX', 'mirrorZ', 'arch', 'archRow', 'stairs',
-                   'hipRoof', 'windowGrid', 'lattice', 'corners4', 'tubeZ', 'wheelX',
-                   'tint', 'paintFrom', 'blob', 'limb', 'checkBlueprint'];
+    const names = ['dim', 'ringOf', 'rowOf', 'mirrorX', 'mirrorZ', 'stampY', 'arch', 'archRow',
+                   'stairs', 'hipRoof', 'boxTaper', 'windowGrid', 'lattice', 'corners4',
+                   'tubeZ', 'wheelX', 'tint', 'paintFrom', 'blob', 'limb', 'checkBlueprint'];
     const missing = names.filter(n => typeof window[n] !== 'function');
 
     // dim：夾下限、取奇數
@@ -919,10 +919,69 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                  tOne: oneGroup(vt), foot: lay(vt, 0), tip: lay(vt, 16),
                  thin: vn.m.size, thinOne: oneGroup(vn) };
 
-    return { missing, d, archR, archMade, st, wg, ring, ringOk, hip, mx, mz, lat, lb };
+    /* rowOf（v1.158）：沿一軸等距排 n 份，以中心攤開；套兩層就是方陣 */
+    const vr = new VOX();
+    const rowSpan = rowOf(vr, 5, 3, (vv, p) => vv.box(p, 0, 0, 1, 4, 1, 0));
+    const vr2 = new VOX();
+    rowOf(vr2, 3, 4, (vv, px) => rowOf(vv, 2, 5, (w, pz) => w.box(px, 0, pz, 1, 3, 1, 0)));
+    const row = { xs: [...new Set(vr.cells().map(c => c.x))].sort((a, b) => a - b).join(','),
+                  span: rowSpan, grid: vr2.cells().filter(c => c.y === 0).length };
+
+    /* stampY（v1.158）：把一整組東西轉一個角度蓋上去。
+       ① 實心量體轉完不能出現一格一格的縫（只做正向那一版會留 16 處）
+       ② 轉的是整組東西的**朝向**，不是只把位置繞過去 */
+    const gapsOf = vv => {
+      const rows = {};
+      for (const c of vv.cells()) (rows[c.z] = rows[c.z] || []).push(c.x);
+      let n = 0;
+      for (const z of Object.keys(rows)) {
+        const a2 = rows[z].sort((p, q) => p - q);
+        for (let i = 1; i < a2.length; i++) if (a2[i] - a2[i - 1] > 1) n++;
+      }
+      return n;
+    };
+    const vs = new VOX();
+    stampY(vs, 30, w => w.box(0, 0, 0, 12, 1, 12, 0));
+    const vw = new VOX();                                  // 一片長條，轉 90 度後長邊要換軸
+    stampY(vw, 90, w => w.box(0, 0, 8, 3, 2, 9, 0));
+    const bb = cs => ({ w: Math.max(...cs.map(c => c.x)) - Math.min(...cs.map(c => c.x)) + 1,
+                        d: Math.max(...cs.map(c => c.z)) - Math.min(...cs.map(c => c.z)) + 1,
+                        x: Math.round(cs.reduce((s, c) => s + c.x, 0) / cs.length),
+                        z: Math.round(cs.reduce((s, c) => s + c.z, 0) / cs.length) });
+    const vd45 = new VOX();
+    stampY(vd45, 45, w => w.box(0, 0, 0, 21, 1, 1, 0));    // 1 格厚的斜牆
+    const perRow = {};
+    for (const c of vd45.cells()) perRow[c.z] = (perRow[c.z] || 0) + 1;
+    const stamp = { n: vs.m.size, gaps: gapsOf(vs), wing: bb(vw.cells()),
+                    diag: vd45.m.size, diagOne: oneGroup(vd45),
+                    diagMax: Math.max(...Object.values(perRow)) };
+
+    /* boxTaper（v1.158）：方形收分。taper 只收圓的、pyramid 只給等速階梯 */
+    const vbt = new VOX();
+    boxTaper(vbt, { x: 0, y: 0, z: 0, w: 21, d: 15, w1: 11, d1: 9, h: 6, c: 0 });
+    const btLay = y => {
+      const c = vbt.cells().filter(o => o.y === y);
+      return (Math.max(...c.map(o => o.x)) - Math.min(...c.map(o => o.x)) + 1) + '×' +
+             (Math.max(...c.map(o => o.z)) - Math.min(...c.map(o => o.z)) + 1);
+    };
+    const vbh = new VOX();
+    boxTaper(vbh, { x: 0, y: 0, z: 0, w: 15, d: 15, w1: 7, d1: 7, h: 8, c: 0, t: 1 });
+    const bt = { lay: [0, 1, 2, 3, 4, 5].map(btLay), hollowMid: !vbh.has(0, 4, 0),
+                 hollowN: vbh.m.size };
+
+    /* ringOf 的 span（v1.158）：給了就只排一段弧，頭尾落在端點；不給還是整圈 */
+    const arcPts = [], fullPts = [];
+    ringOf(new VOX(), 12, 10, (vv, x, z) => arcPts.push([+x.toFixed(2), +z.toFixed(2)]),
+           0, 0, 0, Math.PI);
+    ringOf(new VOX(), 4, 10, (vv, x, z) => fullPts.push(Math.round(x) + ',' + Math.round(z)));
+    const arc = { first: arcPts[0].join(','), last: arcPts[11].join(','),
+                  n: arcPts.length, full: fullPts.join(' ') };
+
+    return { missing, d, archR, archMade, st, wg, ring, ringOk, hip, mx, mz, lat, lb,
+             row, stamp, bt, arc };
   });
   ok('組合工具全都掛在全域，自訂藍圖叫得到', bpTool.missing.length === 0,
-     bpTool.missing.length ? '沒有：' + bpTool.missing.join('、') : '18 支都在');
+     bpTool.missing.length ? '沒有：' + bpTool.missing.join('、') : '21 支都在');
   ok('dim 會夾下限也會取奇數',
      bpTool.d[0] === 5 && bpTool.d[1] === 10 && bpTool.d[2] === 11 && bpTool.d[3] === 5,
      'dim(0.1,1,5)=' + bpTool.d[0] + '、dim(10,1,2)=' + bpTool.d[1] +
@@ -969,6 +1028,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('細到 r=0.5 的 limb 不會斷成一截一截（骨幹那條 v.line 補的）',
      bpTool.lb.thinOne && bpTool.lb.thin >= 14,
      'r=0.5、跨 14 層：' + bpTool.lb.thin + ' 格連成一組');
+  /* v1.158 的三支：全倉庫 20 處手刻「−總寬/2 + i × 間距」、13 處手刻方形收分，
+     而斜著擺的一整組東西以前只能自己算三角函數（五稜郭的星形、扇形車庫的放射狀機庫）。 */
+  ok('rowOf 沿一軸等距排開，以中心對稱，並回傳整排總長',
+     bpTool.row.xs === '-6,-3,0,3,6' && bpTool.row.span === 12,
+     '5 根、間距 3 → x=' + bpTool.row.xs + '，回傳 ' + bpTool.row.span);
+  ok('rowOf 套兩層就是方陣', bpTool.row.grid === 6,
+     '3 × 2 → ' + bpTool.row.grid + ' 根柱子');
+  ok('stampY 轉完的實心量體不會出現一格一格的縫',
+     bpTool.stamp.gaps === 0 && bpTool.stamp.n === 144,
+     '12×12 轉 30 度：' + bpTool.stamp.n + ' 格（原本 144）、列內有縫的地方 ' +
+     bpTool.stamp.gaps + ' 處');
+  /* 朝向與位置都要跟著轉，而且方向要照文件寫的那個約定：正角度是 +x 轉向 +z，
+     所以擺在 +z 的東西轉 90 度會跑到 −x（照抄文件的人得能預期它往哪邊去）。 */
+  ok('stampY 轉的是整組東西的朝向，不是只把位置繞過去',
+     bpTool.stamp.wing.w === 9 && bpTool.stamp.wing.d === 3 &&
+     Math.abs(bpTool.stamp.wing.x + 8) <= 1 && Math.abs(bpTool.stamp.wing.z) <= 1,
+     '3 寬 × 9 深、擺在 z=8 的一片，轉 90 度之後變成 ' + bpTool.stamp.wing.w + ' 寬 × ' +
+     bpTool.stamp.wing.d + ' 深、中心在 (' + bpTool.stamp.wing.x + ', ' +
+     bpTool.stamp.wing.z + ')');
+  ok('1 格厚的牆轉 45 度還是一片連續的斜牆（每一列剛好一格）',
+     bpTool.stamp.diagOne && bpTool.stamp.diagMax === 1 && bpTool.stamp.diag >= 14,
+     '21 格的牆 → ' + bpTool.stamp.diag + ' 格（對角線一步跨 √2，本來就會變短）、連成一組');
+  ok('boxTaper 一層一層從底面收到頂面（taper 只收圓的）',
+     bpTool.bt.lay.join(' → ') === '21×15 → 19×14 → 17×13 → 15×11 → 13×10 → 11×9',
+     bpTool.bt.lay.join(' → '));
+  ok('boxTaper 給了 t 就只留四面牆', bpTool.bt.hollowMid && bpTool.bt.hollowN > 0,
+     'w 15→7、高 8、t=1：' + bpTool.bt.hollowN + ' 格，中心那格是空的');
+  ok('ringOf 給了 span 就排在一段弧上，頭尾落在端點；不給還是整圈',
+     bpTool.arc.first === '10,0' && bpTool.arc.last === '-10,0' &&
+     bpTool.arc.full === '10,0 0,10 -10,0 0,-10',
+     '12 個排在 180 度弧上：' + bpTool.arc.first + ' → ' + bpTool.arc.last +
+     '；不給 span 的四個點 ' + bpTool.arc.full);
 
   /* 體檢報告：對好的藍圖不該有必修，對壞的要指名問題並附修法。
      每一種壞法都真的做一份藍圖出來測——這幾種就是 AI 產藍圖最常見的死法。 */
