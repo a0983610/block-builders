@@ -18930,6 +18930,81 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('畫面下緣看不到草地島的邊', isleFit.every(o => o.worst <= 1),
      isleFit.map(o => o.n + ' 島半徑 ' + o.half + '、下緣打到 ' + o.worst + ' 倍').join('、'));
 
+  /* 轉鏡頭時碎料不會黑白亂跳（v1.160.1，使用者：「碎料有黑有白時轉動攝影機
+     會有白黑抖動」）。落定的碎料都是軸向的、高度又完全一樣，兩塊斜著相鄰就會有
+     一小塊重疊區的頂面共面，深度緩衝分不出前後——鏡頭一轉就換一個贏。
+     修法是畫的時候讓碎料按編號各下沉一點點（見 game-ui.js 的 REST_SINK）。
+
+     怎麼量：鏡頭**每次只轉 0.0004 rad（0.023°）**，真的邊緣只會移動 0.03 個像素，
+     不可能讓一個像素的亮度翻過去；所以「亮度差超過 96 的像素」全都是共面在打架。
+     同一份碎料排列跑兩次（先重下同一顆種子，位置一模一樣）：一次黑白相間、
+     一次全白。全白那一次就是這台機器的地板（正常的邊緣移動）。
+     實測：改之前黑白 380～592 個像素／幀，改之後 36～53，全白是 9～14。 */
+  const shimmer = await page.evaluate(() => {
+    running = false;
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    startBuild(true);
+    const q = () => Math.round(Math.random() * 3) * Math.PI / 2;
+    // 把整池壓成「躺在地上的碎料」——落定的碎料就是這個樣子（見 stepSnap）
+    const layout = mono => {
+      window.__seed(20250904);                 // 兩次的排列要一模一樣，只差顏色
+      for (const b of blocks) if (b.cell) gridDel(b);
+      let i = 0;
+      for (const b of blocks) {
+        b.st = 0; b.rest = true; b.holder = -1; b.slot = -1; b.snap = 0;
+        b.gone = 0; b.hh = -1; b.burn = 0; b.wet = 0;
+        b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
+        const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * arenaR;
+        b.x = Math.cos(a) * d; b.z = Math.sin(a) * d;
+        b.rx = q(); b.ry = q(); b.rz = q();
+        b.y = halfY(b);
+        b.scale = 1; b.al = 1; b.wob = 0;
+        const w = mono ? 1 : (i % 2);          // 一塊焦炭一塊白積木交錯
+        b.r = b.tr = w ? 0.95 : 0.03;
+        b.g = b.tg = w ? 0.95 : 0.03;
+        b.b = b.tb = w ? 0.95 : 0.03;
+        separate(b); gridAdd(b);
+        i++;
+      }
+    };
+    const cv = ENG.three.renderer.domElement, W = cv.width, H = cv.height;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    const scan = () => {
+      ENG.cam.pitch = ENG.camTarget.pitch = 0.42;
+      ENG.cam.dist = ENG.camTarget.dist = 46;
+      ENG.cam.ty = ENG.camTarget.ty = 2;
+      ENG.cam.tx = ENG.camTarget.tx = ENG.cam.tz = ENG.camTarget.tz = 0;
+      let prev = null, flips = 0, n = 0;
+      for (let k = 0; k < 10; k++) {
+        ENG.cam.yaw = ENG.camTarget.yaw = 0.9 + k * 0.0004;
+        ENG.orbit(0, 0); ENG.updateCamera(0);
+        draw(); ENG.render();
+        g.drawImage(cv, 0, 0);                 // 同一個 task 內畫完就抓（不然緩衝已經清掉）
+        const d = g.getImageData(0, 0, W, H).data;
+        const lum = new Uint8Array(W * H);
+        for (let p = 0, j = 0; p < d.length; p += 4, j++)
+          lum[j] = (d[p] * 77 + d[p + 1] * 151 + d[p + 2] * 28) >> 8;
+        if (prev) {
+          let m = 0;
+          for (let j = 0; j < lum.length; j++) if (Math.abs(lum[j] - prev[j]) > 96) m++;
+          flips += m; n++;
+        }
+        prev = lum;
+      }
+      return +(flips / Math.max(1, n)).toFixed(1);
+    };
+    layout(false); const bw = scan();
+    layout(true);  const white = scan();
+    shapePick = -1; startBuild(true);          // 世界還原，後面幾段還要用
+    return { bw, white, px: W * H };
+  });
+  ok('黑白混雜的碎料，轉鏡頭時不會黑白亂跳（頂面共面沒有在打架）',
+     shimmer.bw < 200 && shimmer.bw < shimmer.white * 12 + 30,
+     '每轉 0.023°：黑白相間 ' + shimmer.bw + ' 個像素亮度翻轉、全白的對照組 ' +
+     shimmer.white + ' 個（共 ' + shimmer.px + ' 像素；改之前是 380～592）');
+
   /* ══════════ 視窗縮放 ══════════ */
   await head('視窗縮放');
   await page.setViewportSize({ width: 900, height: 620 });
@@ -19255,17 +19330,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      測試〉）。所以把 v1.151.1 那一版原封不動放進來當**對照組**，同一坨碎料、同一輪
      JIT 之下比兩者的比值——這樣守的是「這個優化沒有被改回去」，跟機器多快無關。
      絕對值那一條放得很寬，只擋「兩邊都變慢」。
-     實測（同一坨）：舊 1.58～2.02 µs／次、現在 0.76～0.87 µs／次。 */
+     實測（同一坨）：舊 1.58～2.02 µs／次、v1.151.2 是 0.76～0.87。
+     v1.160.1 之後同一坨上比舊寫法快 **4.0～5.3 倍**（兩輪各量到 1.6 → 0.40
+     與 2.71 → 0.51 µs／次；絕對值兩輪就差這麼多，所以門檻只看比值）。
+
+     v1.160.1 起對照組**讀自己那一份字串 key 的格子表**（strGrid）：那一版的 key 是
+     'cx:cz' 字串，而現在 restGrid 存的是整數 key（見 game.js 的 gcell）——
+     讓它照舊去查 restGrid 只會一格都查不到，變成「零鄰居的空轉」，比什麼都快。
+     同一坨碎料、同樣的順序各建一份，比的才是同一件事。 */
   const nudgePerf = await page.evaluate(() => {
     running = false;
     /* v1.151.1 之前那一版：Math.hypot 算每一對鄰居的距離、ENG.BS 每次現查、
        3×3 的 key 每格重組一次字串、for...of 每格配一個迭代器。 */
+    const strGrid = new Map();
     const OLD = function (b, lim) {
       if (lim <= 0) return;
       const cx = Math.floor(b.x / CELL), cz = Math.floor(b.z / CELL);
       let px = 0, pz = 0;
       for (let i = -1; i <= 1; i++) for (let k = -1; k <= 1; k++) {
-        const a = restGrid.get((cx + i) + ':' + (cz + k)); if (!a) continue;
+        const a = strGrid.get((cx + i) + ':' + (cz + k)); if (!a) continue;
         for (const o of a) {
           if (o === b) continue;
           let dx = b.x - o.x, dz = b.z - o.z;
@@ -19284,16 +19367,92 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = 1800; shapePick = 0; startBuild(true); completeNow(); shapePick = -1;
     for (const b of blocks) if (b.cell) gridDel(b);
     const pile = [];
+    /* 造一坨。spread 給半徑：11 是一般的碎料場（每格中位 5～6），
+       4 是鏟面前被推成一道牆的那一坨（每格幾十塊，見 v1.160.1）。 */
+    /* 現在這一版，但鄰居照 **3×3** 掃——其餘一個字都沒改。用來驗「2×2 少掃的
+       那五格真的貢獻 0」。**不能拿上面那個 OLD 當對照**：它是 v1.151.1，用的是
+       `Math.hypot`，而 v1.151.2 已經換成 `Math.sqrt(d2)`——兩者差在最後一兩個尾數，
+       本來就不可能逐位相同（實測拿它比只有 1287/1500，一開始就是這樣誤判的）。 */
+    const WIDE = function (b, lim) {
+      if (lim <= 0) return;
+      const BS = ENG.BS, BS2 = BS * BS;
+      const cx = Math.floor(b.x / CELL), cz = Math.floor(b.z / CELL);
+      let px = 0, pz = 0;
+      for (let i = -1; i <= 1; i++) {
+        const pre = (cx + i + 4096) * 8192 + 4097;
+        for (let k = -1; k <= 1; k++) {
+          const a = restGrid.get(pre + cz + k); if (!a) continue;
+          for (let q = 0; q < a.length; q++) {
+            const o = a[q];
+            if (o === b) continue;
+            let dx = b.x - o.x, dz = b.z - o.z;
+            const d2 = dx * dx + dz * dz;
+            if (d2 >= BS2) continue;
+            let d = Math.sqrt(d2);
+            if (d < 1e-4) { const ang = Math.random() * Math.PI * 2; dx = Math.cos(ang); dz = Math.sin(ang); d = 1e-4; }
+            const push = (BS - d) * 0.25;
+            px += dx / d * push; pz += dz / d * push;
+          }
+        }
+      }
+      const pl = Math.sqrt(px * px + pz * pz);
+      if (pl < 1e-6) return;
+      if (pl > lim) { px = px / pl * lim; pz = pz / pl * lim; }
+      b.x += px; b.z += pz;
+    };
+    const build = spread => {
+      /* 格子表整份重建（v1.160.1）。這一段跑在一千多條測試之後，restGrid 裡會有
+         別段直接搬過積木留下的殘渣——實測到 271 個「不在這一坨裡、b.cell 也對不上
+         自己那一格」的項目（開頭那一輪 gridDel 掃不掉它們，因為它照 b.cell 去找）。
+         那些殘渣會讓這一坨的密度失真（實測每格中位掉到 1），量出來的就不是
+         「鏟面前那一坨」的成本。 */
+      restGrid.clear();
+      for (const b of blocks) b.cell = '';
+      strGrid.clear();
+      for (const b of pile) {
+        b.x = (Math.random() * 2 - 1) * spread; b.z = (Math.random() * 2 - 1) * spread;
+        gridAdd(b);
+      }
+      for (const b of pile) {
+        const k = Math.floor(b.x / CELL) + ':' + Math.floor(b.z / CELL);
+        let a = strGrid.get(k); if (!a) strGrid.set(k, a = []);
+        a.push(b);                       // 順序要跟 restGrid 那一份一樣，加總才逐位相同
+      }
+      const occ = [];
+      for (const a of restGrid.values()) if (a.length) occ.push(a.length);
+      occ.sort((p, q) => p - q);
+      return { med: occ[occ.length >> 1] || 0, max: occ[occ.length - 1] || 0 };
+    };
     for (let i = 0; i < 1500 && i < blocks.length; i++) {
       const b = blocks[i];
-      b.st = 0; b.rest = true; b.holder = -1; b.slot = -1;
-      b.x = (Math.random() * 2 - 1) * 11; b.z = (Math.random() * 2 - 1) * 11; b.y = 0.5;
-      gridAdd(b); pile.push(b);
+      b.st = 0; b.rest = true; b.holder = -1; b.slot = -1; b.y = 0.5;
+      pile.push(b);
     }
-    // 只算有東西的格子：restGrid 會留著上一座清空後的空陣列，算進去中位數會是 0
-    const occ = [];
-    for (const a of restGrid.values()) if (a.length) occ.push(a.length);
-    occ.sort((p, q) => p - q);
+    /* 「結果完全一樣」得自己驗（v1.160.1）：2×2 少掃的那五格，格子邊界本身就離 b
+       超過 BS，所以那裡面的東西一律會被 d2 >= BS2 丟掉——鄰居是同一組、加總順序
+       也還是「x 由小到大、再 z 由小到大」，所以連浮點的尾數都該一樣。
+       每一塊都從快照的位置出發（不讓前一塊的位移影響下一塊），兩種寫法各算一次，
+       逐塊比 x 與 z 的**位元**。鬆的、密的各驗一遍。 */
+    const equal = spread => {
+      const occ = build(spread);
+      const snap = pile.map(b => ({ x: b.x, z: b.z }));
+      const run = fn => pile.map((b, i) => {
+        b.x = snap[i].x; b.z = snap[i].z;
+        fn(b, 0.2);
+        const r = { x: b.x, z: b.z };
+        b.x = snap[i].x; b.z = snap[i].z;
+        return r;
+      });
+      const a = run(WIDE), c = run(nudgeApart);
+      let same = 0, moved = 0;
+      for (let i = 0; i < pile.length; i++) {
+        if (a[i].x !== snap[i].x || a[i].z !== snap[i].z) moved++;
+        if (a[i].x === c[i].x && a[i].z === c[i].z) same++;
+      }
+      return { occ, same, moved, n: pile.length };
+    };
+    const eqLoose = equal(11), eqTight = equal(4);
+    const occ = build(11);
     const bench = (fn, reps) => {
       const t = performance.now();
       for (let r = 0; r < reps; r++) for (let i = 0; i < pile.length; i++) fn(pile[i], 0.2);
@@ -19307,7 +19466,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     const med = a => a.slice().sort((p, q) => p - q)[1];
     return { old: oldMs, now: nowMs, oldMed: med(oldMs), nowMed: med(nowMs),
-             n: pile.length, occMed: occ[occ.length >> 1] || 0, occMax: occ[occ.length - 1] || 0 };
+             n: pile.length, occMed: occ.med, occMax: occ.max, eqLoose, eqTight };
   });
   ok('推土機鏟子前那一坨擠開得夠便宜（nudgeApart 比 v1.151.1 快三成以上）',
      nudgePerf.nowMed < nudgePerf.oldMed * 0.7 && nudgePerf.nowMed < 3,
@@ -19315,6 +19474,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      nudgePerf.occMax + '）：舊寫法 ' + nudgePerf.old.join('／') + '、現在 ' +
      nudgePerf.now.join('／') + ' µs／次（中位 ' + nudgePerf.oldMed + ' → ' +
      nudgePerf.nowMed + '，快 ' + (nudgePerf.oldMed / nudgePerf.nowMed).toFixed(2) + ' 倍）');
+  ok('只掃 2×2 的 nudgeApart 跟同一版的 3×3 算出來逐位相同（鬆的與密的都驗）',
+     nudgePerf.eqLoose.same === nudgePerf.eqLoose.n &&
+     nudgePerf.eqTight.same === nudgePerf.eqTight.n &&
+     nudgePerf.eqLoose.moved > nudgePerf.eqLoose.n * 0.5 &&
+     nudgePerf.eqTight.moved > nudgePerf.eqTight.n * 0.9,
+     '鬆的（每格最密 ' + nudgePerf.eqLoose.occ.max + '）' + nudgePerf.eqLoose.same + '/' +
+     nudgePerf.eqLoose.n + ' 相同、其中 ' + nudgePerf.eqLoose.moved + ' 塊真的被推動；' +
+     '密的（最密 ' + nudgePerf.eqTight.occ.max + '）' + nudgePerf.eqTight.same + '/' +
+     nudgePerf.eqTight.n + ' 相同、' + nudgePerf.eqTight.moved + ' 塊被推動');
 
   /* 塵霧最壞的一幕（v1.123）：三朵烏雲（一朵 700 團）＋ 一發核彈的蘑菇雲與火苗煙。
      兩件事一起驗——**都畫得出來**（MAXDUST 3400 是照這一幕訂的；砍在 2200 的話

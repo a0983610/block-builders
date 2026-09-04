@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.160.0';
+const VERSION = '1.160.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -379,7 +379,16 @@ function sndThunder() {
    而且蓋掉了引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 還在。 */
 
 /* ── 空間雜湊：讓落地的碎塊不要疊在同一點 ─────────────────── */
-const gkey = (x, z) => Math.floor(x / CELL) + ':' + Math.floor(z / CELL);
+/* 格子編號是一個**整數**，不是 'cx:cz' 字串（v1.160.1）。整地那一段每幀要查上萬次
+   （nudgeApart 一幀被叫五千到七千次、每次查四格），組一個字串再拿去雜湊的成本
+   在那裡就是主要開銷之一——只把 key 換成整數，最壞的一幀 19.1ms → 12.1ms
+   （泰姬瑪哈陵 9000 建材，見 README〈推土機推過去還是會掉幀〉）。
+   +4096 有兩個用途：讓負座標也落在正數上，也讓 key 永遠 ≥ 1——`b.cell` 同時
+   兼任「這塊在不在格子裡」的真假值（`if (b.cell) gridDel(b)` 散在四個檔案裡），
+   算出 0 的話那些判斷會靜默失效。±4096 格 ＝ ±5120 單位，而場上最遠的碎料是
+   「最大的工地半徑（金門大橋 arenaR 約 138）＋ 推土機推出場那 25」＝ 165。 */
+const gcell = (cx, cz) => (cx + 4096) * 8192 + cz + 4097;
+const gkey = (x, z) => gcell(Math.floor(x / CELL), Math.floor(z / CELL));
 function gridAdd(b) {
   b.cell = gkey(b.x, b.z);
   let a = restGrid.get(b.cell);
@@ -396,7 +405,7 @@ function separate(b) {
     let px = 0, pz = 0, moved = false;
     const cx = Math.floor(b.x / CELL), cz = Math.floor(b.z / CELL);
     for (let i = -1; i <= 1; i++) for (let k = -1; k <= 1; k++) {
-      const a = restGrid.get((cx + i) + ':' + (cz + k)); if (!a) continue;
+      const a = restGrid.get(gcell(cx + i, cz + k)); if (!a) continue;
       for (const o of a) {
         if (o === b) continue;
         let dx = b.x - o.x, dz = b.z - o.z;
@@ -436,16 +445,30 @@ function separate(b) {
    ④ for...of 換成索引迴圈，省掉每格一個迭代器。
    合起來：整地那一段「每推到一千塊」的成本 **3.0ms → 1.3ms**，最壞的一幀
    10.3ms → 1.5ms；把新舊兩版放在同一坨碎料上直接對打是 1.6～2.0 → 0.76～0.87 µs／次
-   （見 README〈一排推土機推過去會掉幀（v1.151.2）〉，e2e 有一條守著）。 */
+   （見 README〈一排推土機推過去會掉幀（v1.151.2）〉，e2e 有一條守著）。
+
+   v1.160.1 又回來一次（使用者：「推土機推碎料還是會讓 FPS 下降」）。上面那一版
+   量的是「平均一幀」，真正掉幀的是**尖峰**：整地的後半段，鏟面前那一坨已經被推成
+   一道牆，一幀要 nudge 五千到七千塊、單塊的 3×3 裡有 240～495 個鄰居，
+   一幀 100～200 萬次距離判定 ＝ 33.5ms（泰姬瑪哈陵 9000 建材，超過 16ms 的有 80 幀）。
+   這一版兩件事都是「結果完全一樣、只是少做白工」：整數 key（見 gcell）＋ 下面的 2×2。
+   33.5 → 12.1ms，超過 16ms 的幀數 80 → 0。 */
 function nudgeApart(b, lim) {
   if (lim <= 0) return;
   const BS = ENG.BS, BS2 = BS * BS;
-  const cx = Math.floor(b.x / CELL), cz = Math.floor(b.z / CELL);
+  /* 只掃「真的可能碰得到」的那幾格（v1.160.1）：CELL 1.25 比 BS 0.94 大，所以
+     [x−BS, x+BS] 最多跨兩格，兩軸合起來是 **2×2 而不是 3×3**。
+     3×3 外圈那五格，格子邊界本身就離 b 超過 BS，裡面的東西一律會被 d2 >= BS2 丟掉
+     ——鄰居是同一組、算式一個字沒改，結果完全一樣（e2e 拿同一版的 3×3 寫法
+     逐塊對過 x／z 的位元；對照組**不能**拿 v1.151.1，那一版用 Math.hypot 算距離，
+     跟現在的 Math.sqrt(d2) 差在尾數，本來就不會逐位相同）。 */
+  const x0 = Math.floor((b.x - BS) / CELL), x1 = Math.floor((b.x + BS) / CELL);
+  const z0 = Math.floor((b.z - BS) / CELL), z1 = Math.floor((b.z + BS) / CELL);
   let px = 0, pz = 0;
-  for (let i = -1; i <= 1; i++) {
-    const pre = (cx + i) + ':';
-    for (let k = -1; k <= 1; k++) {
-      const a = restGrid.get(pre + (cz + k)); if (!a) continue;
+  for (let cx = x0; cx <= x1; cx++) {
+    const pre = (cx + 4096) * 8192 + 4097;        // gcell 的 x 那一半，提到外層只算一次
+    for (let cz = z0; cz <= z1; cz++) {
+      const a = restGrid.get(pre + cz); if (!a) continue;
       for (let q = 0; q < a.length; q++) {
         const o = a[q];
         if (o === b) continue;
