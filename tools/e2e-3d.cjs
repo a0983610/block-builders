@@ -823,7 +823,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* function 宣告會掛上 window，所以自訂藍圖檔（<script> 載進來的）叫得到 */
     const names = ['dim', 'ringOf', 'mirrorX', 'mirrorZ', 'arch', 'archRow', 'stairs',
                    'hipRoof', 'windowGrid', 'lattice', 'corners4', 'tubeZ', 'wheelX',
-                   'tint', 'paintFrom', 'blob', 'checkBlueprint'];
+                   'tint', 'paintFrom', 'blob', 'limb', 'checkBlueprint'];
     const missing = names.filter(n => typeof window[n] !== 'function');
 
     // dim：夾下限、取奇數
@@ -888,10 +888,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     lattice(vf, { x0: -8, z0: 0, x1: 8, z1: 0, y: 0, h: 20, n: 4, c: 0 });
     const lat = { n: vf.m.size, mid: vf.cells().some(c => Math.abs(c.x) <= 1 && c.y > 1 && c.y < 19) };
 
-    return { missing, d, archR, archMade, st, wg, ring, ringOk, hip, mx, mz, lat };
+    /* limb（v1.157）：斜的四肢。三件事——整根接得起來、會收尖、細的也不會斷。
+       連通性拿 26 鄰居數（跟遊戲的支撐判定同一套），斷掉的話畫出來就是一截一截的虛線。 */
+    const oneGroup = vv => {
+      const keys = new Set(vv.m.keys());
+      const first = keys.values().next().value;
+      if (!first) return false;
+      const st = [first], seen = new Set(st);
+      while (st.length) {
+        const p = st.pop().split(':').map(Number);
+        for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let k = -1; k <= 1; k++) {
+          const q = (p[0] + i) + ':' + (p[1] + j) + ':' + (p[2] + k);
+          if (keys.has(q) && !seen.has(q)) { seen.add(q); st.push(q); }
+        }
+      }
+      return seen.size === keys.size;
+    };
+    const lay = (vv, y) => vv.cells().filter(c => c.y === y).length;
+    const vg = new VOX();
+    limb(vg, { x: 0, y: 0, z: 0, x1: 12, y1: 12, z1: 0, r: 2, c: 0 });   // 斜 45 度、等粗
+    const cx = y => {
+      const c = vg.cells().filter(o => o.y === y);
+      return c.reduce((s, o) => s + o.x, 0) / c.length;
+    };
+    const vt = new VOX();
+    limb(vt, { x: 0, y: 0, z: 0, x1: 0, y1: 16, z1: 8, r: 2.4, r1: 0.6, c: 0 });   // 收尖
+    const vn = new VOX();
+    limb(vn, { x: 0, y: 0, z: 0, x1: 9, y1: 14, z1: 5, r: 0.5, c: 0 });            // 細的
+    const lb = { n: vg.m.size, one: oneGroup(vg), slope: +(cx(10) - cx(2)).toFixed(2),
+                 tOne: oneGroup(vt), foot: lay(vt, 0), tip: lay(vt, 16),
+                 thin: vn.m.size, thinOne: oneGroup(vn) };
+
+    return { missing, d, archR, archMade, st, wg, ring, ringOk, hip, mx, mz, lat, lb };
   });
   ok('組合工具全都掛在全域，自訂藍圖叫得到', bpTool.missing.length === 0,
-     bpTool.missing.length ? '沒有：' + bpTool.missing.join('、') : '17 支都在');
+     bpTool.missing.length ? '沒有：' + bpTool.missing.join('、') : '18 支都在');
   ok('dim 會夾下限也會取奇數',
      bpTool.d[0] === 5 && bpTool.d[1] === 10 && bpTool.d[2] === 11 && bpTool.d[3] === 5,
      'dim(0.1,1,5)=' + bpTool.d[0] + '、dim(10,1,2)=' + bpTool.d[1] +
@@ -925,6 +956,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'mirrorX → ' + bpTool.mx.join(',') + '、mirrorZ → ' + bpTool.mz.join(','));
   ok('lattice 在兩根柱子之間拉出交叉斜撐', bpTool.lat.n > 40 && bpTool.lat.mid,
      bpTool.lat.n + ' 格，跨距中段有料');
+  /* limb（v1.157）：在此之前工具箱沒有「斜的量體」，人像的四肢只能拿 box 疊
+     ——倉庫裡三尊人像（自由女神、獅身人面像、八卦山大佛）全是那樣畫的。 */
+  ok('limb 在兩點之間拉出一根有粗細的東西，而且整根接得起來',
+     bpTool.lb.one && bpTool.lb.n > 150 && Math.abs(bpTool.lb.slope - 8) < 0.6,
+     '斜 45 度、r=2：' + bpTool.lb.n + ' 格連成一組；往上 8 層，橫向也移了 ' +
+     bpTool.lb.slope + ' 格');
+  ok('limb 從 r 收到 r1（一頭粗一頭細）',
+     bpTool.lb.tOne && bpTool.lb.foot >= 15 && bpTool.lb.tip <= 3 &&
+     bpTool.lb.foot > bpTool.lb.tip * 4,
+     'r 2.4 → 0.6：底端那層 ' + bpTool.lb.foot + ' 格、頂端那層 ' + bpTool.lb.tip + ' 格');
+  ok('細到 r=0.5 的 limb 不會斷成一截一截（骨幹那條 v.line 補的）',
+     bpTool.lb.thinOne && bpTool.lb.thin >= 14,
+     'r=0.5、跨 14 層：' + bpTool.lb.thin + ' 格連成一組');
 
   /* 體檢報告：對好的藍圖不該有必修，對壞的要指名問題並附修法。
      每一種壞法都真的做一份藍圖出來測——這幾種就是 AI 產藍圖最常見的死法。 */

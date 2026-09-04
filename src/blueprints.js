@@ -263,6 +263,43 @@ function blob(v, x0, y0, z0, rx, ry, rz, c, shell) {
   }
 }
 
+/* 兩點之間長出一根**有粗細**的東西（膠囊／圓錐）：斜的手臂、大腿、脖子、尾巴、斜撐。
+   為什麼要專門一支：box／cyl／taper 都只能站著或沿著某一軸躺著，斜的部件只能自己
+   切成好幾段各挪一格——實測倉庫裡三尊人像（自由女神、獅身人面像、八卦山大佛）的四肢
+   全是軸對齊的方塊疊起來的，而「人像不像」的第一名就是這個。
+
+   做法是掃包圍盒、算每一格到那條線段的距離：先把格子投影到線段上（t 夾在 0～1，
+   所以兩端是圓的、不會超出去），再拿那一點的半徑（r 線性收到 r1）去比。
+   半徑刻意不取整，塊數才會隨尺度連續變化（跟 blob 同一個道理）。
+
+   為什麼先拉一條 v.line 當骨幹：半徑小的時候（一節手指、細尾巴）光靠距離判定會斷成
+   一截一截——線段上任一點到最近的格子中心最遠有 √3/2 ≈ 0.87 格，比 r 還大就整段沒東西。
+   v.line 是照最長那一軸一格一格走的，補上去就保證接得起來。 */
+function limb(v, o) {
+  bpArgs('limb(v, { … })', 'vo', [v, o]);
+  bpKeys('limb(v, { x, y, z, x1, y1, z1, r, c })', o, 'x y z x1 y1 z1 r c');
+  const bx = o.x1 - o.x, by = o.y1 - o.y, bz = o.z1 - o.z;
+  const len2 = bx * bx + by * by + bz * bz;
+  /* r1 是選配的（不給就等粗），所以照慣例不驗——但算成 NaN 的話距離比對會全部落空，
+     整根只剩骨幹那一條線。寧可退回「等粗」，也不要靜靜地只畫出一條線。 */
+  const r0 = Math.max(0.5, o.r);
+  const r1 = Math.max(0.5, Number.isFinite(o.r1) ? o.r1 : r0);
+  const rm = Math.max(r0, r1);
+  const x0 = Math.floor(Math.min(o.x, o.x1) - rm), xe = Math.ceil(Math.max(o.x, o.x1) + rm);
+  const y0 = Math.floor(Math.min(o.y, o.y1) - rm), ye = Math.ceil(Math.max(o.y, o.y1) + rm);
+  const z0 = Math.floor(Math.min(o.z, o.z1) - rm), ze = Math.ceil(Math.max(o.z, o.z1) + rm);
+  v.line(o.x, o.y, o.z, o.x1, o.y1, o.z1, o.c);       // 骨幹：保證整根接得起來
+  for (let x = x0; x <= xe; x++)
+    for (let y = Math.max(0, y0); y <= ye; y++)       // y<0 的格子遊戲本來就會忽略，不用白掃
+      for (let z = z0; z <= ze; z++) {
+        const px = x - o.x, py = y - o.y, pz = z - o.z;
+        let t = len2 ? (px * bx + py * by + pz * bz) / len2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        if (Math.hypot(px - bx * t, py - by * t, pz - bz * t) <= r0 + (r1 - r0) * t + 0.02)
+          v.set(x, y, z, o.c);
+      }
+}
+
 /* ── 組合工具（藍圖作者用）─────────────────────────────────
    下面這些不是 VOX 的方法，是包在外面的組合函式：48 座裡反覆手刻的那幾件事
    （尺寸下限、排成一圈、拱門、對稱、階梯、四坡頂、立面開窗、斜撐）收在這裡。
@@ -4877,5 +4914,5 @@ if (typeof module !== 'undefined' && module.exports)
                      checkBlueprint, bpIndexOf, BP_TARGETS,
                      cleanPaste, bpFileName, importBlueprint,
                      dim, ringOf, mirrorX, mirrorZ, arch, archRow, stairs, hipRoof,
-                     windowGrid, lattice, corners4, tubeZ, wheelX, tint, paintFrom, blob };
+                     windowGrid, lattice, corners4, tubeZ, wheelX, tint, paintFrom, blob, limb };
 
