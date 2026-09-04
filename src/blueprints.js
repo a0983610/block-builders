@@ -4635,6 +4635,9 @@ function importBlueprint(raw, own) {
    報告會直接說「s 已經頂到 hi」——那正是要給 AI 的訊號。 */
 const BP_TARGETS = [300, 1600, 3000, 10000];
 const BP_SLOW_MS = 250;         // 產一份藍圖的時間預算（換建築不能卡畫面）
+/* 輪廓圖的上限：一張最多幾格寬、幾格高（超過就降採樣）。
+   一格積木印成**兩個字元**，等寬字型下才是正方形（字元本身高是寬的兩倍）。 */
+const BP_ART_W = 32, BP_ART_H = 24;
 /* 門檻是拿內建 48 座校準過的，只留「真的是缺陷」的那幾條：
    包圍盒大小與懸空比例都**不**示警——金門大橋單邊 163、京都五重塔懸空 61%、
    倫敦眼有 156 組小孤島，那些是吊索與輻條，本來就長那樣。示警了只會逼 AI
@@ -4646,6 +4649,30 @@ function bpIndexOf(which) {
   if (typeof which === 'string' && which) return SHAPES.findIndex(sh => sh.n === which);
   for (let i = SHAPES.length - 1; i >= 0; i--) if (SHAPES[i].custom) return i;   // 預設：最後加進來的自訂藍圖
   return -1;
+}
+
+/* 把格子投影成一張字元圖。`h`／`v` 是這張圖的橫軸與縱軸（'x'／'y'／'z'），
+   `bb` 是包圍盒、`step` 是一格字元代表幾格積木，`vDown` 給 true 就把 v 小的畫在上面。
+
+   降採樣一律取「這一格區塊裡**有沒有**積木」，不是取樣中心點那一格：
+   1 格厚的牆、1 格寬的手臂在取樣式縮小裡會整片消失（附錄那條字元圖的老毛病），
+   而輪廓要的正是「這裡有沒有東西」。三張圖共用同一個 step，比例才不會被拉長壓扁
+   ——比例本身就是要看的東西之一。 */
+function bpArtView(cells, h, v, bb, step, vDown) {
+  const hn = Math.max(1, Math.ceil((bb[h][1] - bb[h][0] + 1) / step));
+  const vn = Math.max(1, Math.ceil((bb[v][1] - bb[v][0] + 1) / step));
+  const g = [];
+  for (let i = 0; i < vn; i++) g.push(new Array(hn).fill(0));
+  for (const c of cells)
+    g[Math.floor((c[v] - bb[v][0]) / step)][Math.floor((c[h] - bb[h][0]) / step)] = 1;
+  const out = [];
+  for (let i = 0; i < vn; i++) {
+    const row = g[vDown ? i : vn - 1 - i];
+    let line = '';
+    for (const f of row) line += f ? '##' : '..';
+    out.push('    ' + line);
+  }
+  return out;
 }
 
 function checkBlueprint(which, opt) {
@@ -4697,7 +4724,8 @@ function checkBlueprint(which, opt) {
                 w: cells.length ? mxx - mnx + 1 : 0,
                 h: cells.length ? mxy - mny + 1 : 0,
                 d: cells.length ? mxz - mnz + 1 : 0,
-                floor: cells.filter(c => c.y === mny).length });
+                floor: cells.filter(c => c.y === mny).length,
+                cells, bb: { x: [mnx, mxx], y: [mny, mxy], z: [mnz, mxz] } });
   }
 
   /* 塊數 */
@@ -4810,6 +4838,28 @@ function checkBlueprint(which, opt) {
   } catch (e) {
     bad('makeBlueprint 出錯');
     L.push('✘ 排施工順序時出錯：' + ((e && e.message) ? e.message : String(e)));
+  }
+
+  /* 三視圖輪廓：報告量得出塊數、配色、連通性，就是**量不出「像不像」**，
+     而產這份藍圖的 AI 看不到畫面——除非玩家自己截圖貼回去。
+     投影成字元圖是唯一能夾在純文字報告裡帶回去的形狀，所以印最大那一階
+     （細節最全的那一版）的三個方向。這一段**只給圖不示警**：像不像沒有門檻，
+     只有作者拿參考圖對照才判斷得出來，示警只會逼 AI 去修沒壞的東西。 */
+  if (big && big.cells.length) {
+    const step = Math.max(1, Math.ceil(big.h / BP_ART_H),
+                          Math.ceil(big.w / BP_ART_W), Math.ceil(big.d / BP_ART_W));
+    L.push('');
+    L.push('輪廓（' + big.t + ' 塊那一階，' + big.n + ' 格；一格字元 ＝ ' +
+           step + '×' + step + ' 格積木，# 有積木、. 沒有）');
+    L.push('  ① 正面（x 往右、y 往上）');
+    L.push(...bpArtView(big.cells, 'x', 'y', big.bb, step, false));
+    L.push('  ② 側面（z 往右 ＝ 正面往後，y 往上）');
+    L.push(...bpArtView(big.cells, 'z', 'y', big.bb, step, false));
+    L.push('  ③ 俯視（x 往右、z 往下 ＝ 正面往後）');
+    L.push(...bpArtView(big.cells, 'x', 'z', big.bb, step, true));
+    L.push('  輪廓沒有深度，所以正面與背面只差左右鏡像（藍圖裡 z 小的那一側是正面）。');
+    L.push('  這三張圖是報告裡唯一講得出「像不像」的東西：跟參考圖比整體輪廓、'
+         + '比各部位的長短與粗細比例（人物與動物先比頭身比），對不上就調係數、補部件。');
   }
 
   L.push('');

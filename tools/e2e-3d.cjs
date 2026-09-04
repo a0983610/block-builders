@@ -960,8 +960,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     mk('__壞 NaN', { pal: ['#fff'], lo: 2, hi: 9, gen(v, s) {
       blob(v, 0, 0, 0, dim(s, 1, 3), undefined, dim(s, 1, 3), 0);
     } });
+    /* ⑦ 不是壞法，是輪廓圖要守的那件事：1 格粗的部件降採樣之後不能被抽掉
+       （字元圖那條路的老毛病）。抽掉的話 AI 會以為自己畫的旗桿沒出現，去「修」沒壞的東西。 */
+    mk('__測 薄片', { pal: ['#fff'], lo: 2, hi: 9, gen(v, s) {
+      const w = dim(s, 2, 5);
+      v.box(0, 0, 0, w, w, w, 0);                  // 主量體
+      v.box(0, w, 0, 1, dim(s, 1, 3), 1, 0);       // 頂上 1 格粗的旗桿
+    } });
     const r = {
       good: { fails: good.fails.length, warns: good.warns.length, text: good.text },
+      thin: checkBlueprint('__測 薄片', { ver: VERSION }),
+      pyr: checkBlueprint('吉薩金字塔', { ver: VERSION }),
       boom: checkBlueprint('__壞 例外', { ver: VERSION }),
       args: checkBlueprint('__壞 少參數', { ver: VERSION }),
       nan: checkBlueprint('__壞 NaN', { ver: VERSION }),
@@ -970,7 +979,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       pin: checkBlueprint('__壞 針尖', { ver: VERSION }),
       missing: checkBlueprint('根本沒有這座', { ver: VERSION })
     };
-    for (const k of ['boom', 'args', 'nan', 'pal', 'gone', 'pin', 'missing'])
+    for (const k of ['boom', 'args', 'nan', 'pal', 'gone', 'pin', 'missing', 'thin', 'pyr'])
       r[k] = { fails: r[k].fails, warns: r[k].warns, text: r[k].text };
     r.targets = BP_TARGETS.slice();
     SHAPES.length = n0;                 // 測完收掉，別影響後面掃全部 SHAPES 的測試
@@ -1019,6 +1028,48 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      [diag.boom, diag.args, diag.nan, diag.pal, diag.gone, diag.pin, diag.missing]
        .every(r => /修法/.test(r.text)),
      '七種壞法（例外／少參數／NaN／配色／消失／針尖／找不到）都附了修法');
+
+  /* 三視圖輪廓（v1.156）：報告量得出塊數、配色、連通性，就是量不出「像不像」，
+     而產藍圖的 AI 看不到畫面。投影成字元圖是唯一能夾在純文字報告裡帶回去的形狀。
+     驗三件事：三張圖都是等寬、可解析的字元圖；投影真的是那個形狀；
+     以及 1 格粗的部件不會在降採樣時被抽掉。 */
+  const artOf = (text, no) => {
+    const ls = text.split('\n');
+    const i = ls.findIndex(l => l.indexOf('  ' + no + ' ') === 0);
+    const out = [];
+    for (let k = i + 1; i >= 0 && k < ls.length && /^ {4}[#.]+$/.test(ls[k]); k++)
+      out.push(ls[k].trim());
+    return out;
+  };
+  const views = ['①', '②', '③'].map(no => artOf(diag.good.text, no));
+  ok('報告附三視圖輪廓（正面／側面／俯視），三張都是等寬的字元圖',
+     views.every(a => a.length >= 3 &&
+                      a.every(r => r.length === a[0].length && r.length % 2 === 0)),
+     views.map((a, i) => ['正面', '側面', '俯視'][i] + ' ' +
+                         (a.length ? a[0].length / 2 : 0) + '×' + a.length + ' 格').join('、'));
+  /* 畫最大那一階：一萬塊那一版才刻得出招牌與雕花，也就是「像不像」真正看得出來的那一檔。
+     格數要跟上面那一行的實得對得上——對不上就是畫到別的尺寸去了。 */
+  const artHead = /輪廓（(\d+) 塊那一階，(\d+) 格；一格字元 ＝ (\d+)×\3 格積木/.exec(diag.good.text);
+  const big10k = /\n\s+10000 → \s*(\d+)/.exec(diag.good.text);
+  ok('輪廓畫的是最大那一階，格數跟上面量到的實得一致',
+     !!artHead && artHead[1] === '10000' && !!big10k && artHead[2] === big10k[1],
+     artHead ? '輪廓 ' + artHead[1] + ' 塊那一階 ' + artHead[2] + ' 格、上面量到 ' +
+               (big10k ? big10k[1] : '?') + ' 格，一格字元 ＝ ' + artHead[3] + ' 格見方'
+             : '(報告裡沒有輪廓那一段)');
+  /* 投影真的是那個形狀：金字塔的正面輪廓一定是由下往上一階一階變窄。
+     這一條同時守住「橫軸縱軸沒接錯」——接錯的話俯視那張才是三角形。 */
+  const pyrW = artOf(diag.pyr.text, '①').map(r => (r.match(/#/g) || []).length / 2);
+  ok('投影真的是那個形狀：金字塔的正面輪廓由下往上一階一階變窄',
+     pyrW.length >= 6 && pyrW.every((n, i) => i === 0 || n >= pyrW[i - 1]) &&
+     pyrW[pyrW.length - 1] >= pyrW[0] * 3,
+     '由上到下每一列 ' + pyrW.join('／') + ' 格');
+  /* 降採樣取的是「這一格區塊有沒有積木」，不是取樣中心點那一格：
+     1 格厚的牆、1 格寬的手臂在取樣式縮小裡會整片消失（附錄那條字元圖的老毛病）。 */
+  const thinTop = artOf(diag.thin.text, '①')[0] || '';
+  const thinStep = +((/一格字元 ＝ (\d+)×/.exec(diag.thin.text) || [0, 0])[1]);
+  ok('1 格粗的部件不會被降採樣抽掉（旗桿還在，而且只佔一格）',
+     thinStep >= 2 && thinTop.length >= 8 && /^\.*##\.*$/.test(thinTop),
+     '一格字元 ＝ ' + thinStep + ' 格積木，最上面那一列是「' + thinTop + '」');
 
   /* 遊戲裡**不該**有檢查藍圖的入口：做藍圖是做藍圖、玩是玩。
      入口在 藍圖預覽.html（下一段測），設定面板不留這一格。 */
