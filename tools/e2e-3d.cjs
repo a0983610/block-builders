@@ -1406,6 +1406,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      vpRow.h.every(h => h === vpRow.h[0]) && vpRow.h[0] < 46,
      vpRow.txt.join('／') + '，每顆高 ' + vpRow.h[0] + 'px');
 
+  /* Gemini／GPT（v1.160）：這一頁的路是「取得 prompt → 去問 AI → 貼回來」，
+     可是前面那兩步以前只有遊戲的匯入面板有連結（index.html 的 #impGem／#impGpt），
+     真正在做藍圖的人待在這一頁，反而要自己去開分頁。兩邊同一組網址。
+     擺在「重新產生／檢查藍圖」那一列是因為卡片高度已經頂滿（見下一條），只剩寬度可用——
+     所以這裡要驗它真的**擠在同一列裡**、沒有把那一列撐成兩層，也沒有溢出卡片。 */
+  const vpAi = await vp.evaluate(() => {
+    const gem = document.getElementById('gem'), gpt = document.getElementById('gpt');
+    const chk = document.getElementById('chk');
+    const r = [chk, gem, gpt].map(x => x.getBoundingClientRect());
+    return {
+      gem: gem.getAttribute('href'),
+      gpt: gpt.getAttribute('href'),
+      blank: [gem, gpt].every(a => a.target === '_blank'),
+      row: gem.parentElement === chk.parentElement,
+      oneRow: r.every(x => Math.round(x.top) === Math.round(r[0].top)),
+      // 混在一堆 <button> 中間的 <a>：沒補樣式的話沒有邊框、也不等高
+      sameH: r.slice(1).every(x => Math.abs(x.height - r[0].height) <= 1),
+      inCard: r[2].right <= document.getElementById('side').getBoundingClientRect().right
+    };
+  });
+  ok('預覽頁也有 Gemini／GPT，跟「檢查藍圖」擠在同一列、開新分頁',
+     vpAi.gem === 'https://gemini.google.com/app' && vpAi.gpt === 'https://chatgpt.com/' &&
+     vpAi.blank && vpAi.row && vpAi.oneRow && vpAi.sameH && vpAi.inCard,
+     vpAi.gem + '、' + vpAi.gpt + '（同一列、新分頁、跟按鈕等高）');
+
   const vpPaste = await vp.evaluate(async () => {
     await navigator.clipboard.writeText('customBlueprint({ 剪貼簿裡這一段 })');
     document.getElementById('paste').value = '';
@@ -1461,19 +1486,51 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '貼上框 ' + vpBox.paste + 'px、報告 ' + vpBox.rep + 'px；內容展開 ' + vpBox.open +
      'px、收起 ' + vpBox.shut + 'px（外框 ' + vpBox.fits + '，畫面高 ' + vpBox.view + '）');
 
-  /* 下載畫面：報告講不出「像不像」，那要看圖。這條要驗到真的有一個 PNG 掉下來——
-     canvas 的 drawingBuffer 合成後就被清空，沒有「render 完馬上取」的話會存到全黑或全空。 */
+  /* 下載四視圖：報告講不出「像不像」，那要看圖。這條要驗到真的有一個 PNG 掉下來——
+     canvas 的 drawingBuffer 合成後就被清空，沒有「render 完馬上取」的話會存到全黑或全空。
+     尺寸一起驗：1024×1024（四格 512）是 v1.160 刻意壓的，以前存的是視窗寬高 × dpr
+     （1920 螢幕配 dpr 1.5 就是 2880×1620），而這張圖是要餵給 AI 看的。 */
   const [vpDl] = await Promise.all([
     vp.waitForEvent('download'),
     vp.click('#shot')
   ]);
   const dlPath = path.join(OUT, 'viewer-shot.png');
   await vpDl.saveAs(dlPath);
-  const dlSize = fs.statSync(dlPath).size;
-  const dlHead = fs.readFileSync(dlPath).slice(1, 4).toString('latin1');
-  ok('按「下載畫面」真的存得出一張畫面 PNG',
-     dlHead === 'PNG' && dlSize > 20000 && /\.png$/.test(vpDl.suggestedFilename()),
-     '檔名「' + vpDl.suggestedFilename() + '」，' + Math.round(dlSize / 1024) + ' KB');
+  const dlBuf = fs.readFileSync(dlPath);
+  const dlSize = dlBuf.length;
+  const dlHead = dlBuf.slice(1, 4).toString('latin1');
+  /* PNG 的寬高就在檔頭後面：8 bytes 簽章 ＋ 4 長度 ＋ 4 個字的 'IHDR'，接著寬、高各 4 bytes */
+  const dlW = dlSize > 24 ? dlBuf.readUInt32BE(16) : 0;
+  const dlH = dlSize > 24 ? dlBuf.readUInt32BE(20) : 0;
+  ok('按「下載四視圖」真的存得出一張 1024×1024 的 PNG',
+     dlHead === 'PNG' && dlW === 1024 && dlH === 1024 && dlSize > 20000 &&
+     /\.png$/.test(vpDl.suggestedFilename()),
+     '檔名「' + vpDl.suggestedFilename() + '」，' + dlW + '×' + dlH + '、' +
+     Math.round(dlSize / 1024) + ' KB');
+
+  /* 四個鏡頭真的站對邊（v1.160）：藍圖的正面是 −z（臉、大門朝那邊），而鏡頭的 yaw
+     初值是 0.9 ＝ 相機站在 (+x, +z)——以前「下載畫面」存的其實是**背面** 45°，
+     AI 拿那張去對臉的位置，前後就整個反過來（使用者：「畫臉的位置常常對不準」）。
+     驗的是相機座標本身，不是像素：位置對了，那一格拍到的就是那一面。 */
+  const vpCam = await vp.evaluate(() => {
+    const keep = { yaw: ENG.cam.yaw, pitch: ENG.cam.pitch };
+    const out = SHOT_VIEWS.map(v => {
+      ENG.cam.yaw = v.yaw; ENG.cam.pitch = v.pitch;
+      ENG.orbit(0, 0); ENG.updateCamera(0);
+      const p = ENG.three.camera.position;
+      return { t: v.t, x: +p.x.toFixed(1), y: +p.y.toFixed(1), z: +p.z.toFixed(1) };
+    });
+    ENG.cam.yaw = keep.yaw; ENG.cam.pitch = keep.pitch; ENG.updateCamera(0);
+    return out;
+  });
+  const [vFront, vSide, vTop, vIso] = vpCam;
+  ok('四視圖的鏡頭各站對邊：正面在 −z、右側在 +x、俯視在正上方、45° 從正面斜看',
+     vpCam.length === 4 &&
+     vFront.z < -1 && Math.abs(vFront.x) < 1 &&
+     vSide.x > 1 && Math.abs(vSide.z) < 1 &&
+     vTop.y > Math.abs(vTop.x) + Math.abs(vTop.z) &&
+     vIso.x > 1 && vIso.z < -1,
+     vpCam.map(v => v.t + ' (' + v.x + ', ' + v.y + ', ' + v.z + ')').join('　'));
 
   /* 貼上藍圖：做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，中間不該卡著存檔案 + 編輯 list.js。
      這幾條驗的是那條路的每一種結局，包含 AI 實際輸出長什麼樣（markdown 圍籬 + 檔名那行）。 */

@@ -53,6 +53,12 @@
   button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
   button:disabled{opacity:.42;cursor:default}
   button:disabled:hover{background:#fff}
+  /* 外站連結（Gemini／GPT）要長得跟按鈕一樣：同一列裡混著 <a> 與 <button>，
+     不補這一條的話 <a> 沒有 flex、沒有邊框，整列會歪掉 */
+  .btns a{flex:1;display:flex;align-items:center;justify-content:center;
+    padding:7px 10px;border:1px solid var(--line);border-radius:9px;
+    background:#fff;text-decoration:none;color:var(--ink);white-space:nowrap}
+  .btns a:hover{background:#f4efe7}
   #stat{font-size:12px;line-height:1.7;font-variant-numeric:tabular-nums;
     border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:7px 0}
   #stat b{font-weight:700}
@@ -118,9 +124,15 @@
   <div class="r"><label>藍圖</label><select id="shape"></select></div>
   <!-- 三檔按鈕，跟遊戲的設定面板同一組數字（e2e 有一條測試守著兩邊一致） -->
   <div class="r"><label>建材</label><div class="seg" id="cnt"></div></div>
+  <!-- Gemini／GPT 擺這一列而不是擺在「取得 prompt」旁邊（v1.160）：那才是流程上的位置，
+       但整張卡片的高度已經頂滿（要放得進 800 高的畫面，e2e 有一條守著），量下來只剩 10px
+       餘裕，另開一列就會溢出、最下面那排被切掉。這一列本來就有 40 幾 px 的寬度沒用到，
+       而且不必展開任何東西就看得到。網址跟遊戲「匯入建築」那一格同一組（#impGem／#impGpt）。 -->
   <div class="btns">
     <button class="primary" id="go">重新產生</button>
     <button id="chk">🔍 檢查藍圖</button>
+    <a id="gem" href="https://gemini.google.com/app" target="_blank" rel="noopener">Gemini</a>
+    <a id="gpt" href="https://chatgpt.com/" target="_blank" rel="noopener">GPT</a>
   </div>
   <div class="checks">
     <!-- 自轉預設關：要對照參考圖的時候，畫面一直在轉反而不好比 -->
@@ -147,7 +159,8 @@
   <textarea id="rep" readonly tabindex="-1" spellcheck="false" placeholder="按「🔍 檢查藍圖」產出報告，整段複製貼回給產出這份藍圖的 AI。"></textarea>
   <div class="btns">
     <button id="copy">複製報告</button>
-    <button id="shot">下載畫面</button>
+    <!-- 四視圖而不是「當下畫面」：預設鏡頭站在建築背後，拍回去給 AI 會把正背面弄反（見 shotPng） -->
+    <button id="shot">下載四視圖</button>
     <!-- 貼進來的藍圖存成檔案。內建與 blueprints/ 裡的本來就有檔案，所以那些選起來時是灰的 -->
     <button id="save" disabled title="貼上來的藍圖才存得出檔案">下載 .js</button>
   </div>
@@ -188,7 +201,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載遊戲層那五支（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.159.0';
+const VIEWER_VER = '1.160.0';
 
 const $ = id => document.getElementById(id);
 
@@ -457,27 +470,106 @@ else {
   $('doc').title = 'src/bpdoc.js 沒放進來，拿不到〈藍圖製作說明〉全文';
 }
 
-/* 下載目前畫面：報告只講得出塊數與結構，講不出「像不像」——那要看圖。
+/* 下載四視圖：報告只講得出塊數與結構，講不出「像不像」——那要看圖。
    存成 PNG 之後跟報告一起丟回去給 AI，它才知道自己畫出來的是什麼樣子。
+
+   v1.160 之前存的是「當下畫面」那一張，有兩個問題：
+     · **拍到的是背面**。鏡頭的 yaw 初值是 0.9（engine 的 cam），相機座標是
+       (cos yaw, ·, sin yaw)·dist——兩個都是正的，相機站在 (+x, +z)，正對著 +z 那一面。
+       而藍圖的正面是 −z（臉、大門朝那邊，見〈藍圖製作說明〉第 2 節）。AI 拿那張去對
+       臉的位置，前後就整個反過來——這正是「畫臉的位置常常對不準」的來源。
+     · **太大**。取的是視窗寬高 × devicePixelRatio（1920 螢幕配 dpr 1.5 就是 2880×1620），
+       而圖是要餵給 AI 看的，上傳之後本來就會再縮一次，多出來的只是檔案大小。
+   所以改成一次出四格、每格 512、角上寫著這是哪一面，整張 1024×1024。
+
    canvas 的 drawingBuffer 在合成之後就被清掉了（preserveDrawingBuffer 預設 false），
-   所以一定要在同一個工作裡先 render 再取，不能等下一幀。
-   data: URL 直接掛 <a download> 有些瀏覽器會擋，轉成 blob 最保險（file:// 也通）。 */
+   所以每一格都要「render 完**在同一個工作裡**馬上 drawImage」，不能四張都畫完再一起取。
+   renderer 開了 alpha，畫面的天空是 CSS 給的——底色要自己先鋪一層，不然存出來是透明的。 */
+const SHOT_CELL = 512;
+/* yaw／pitch 就是 engine 那組球座標。正面要站在 −z，所以 yaw = −π/2；
+   45° 用 −0.9（預設 0.9 的鏡射）才是「從正面斜看」而不是從背面。
+   俯視的 pitch 給 1.45 ＝ updateCamera 的上限，再往上 lookAt 就跟 up 共線、畫面會翻。 */
+const SHOT_VIEWS = [
+  /* w／h ＝ 這一格畫面左右／上下方向量的是哪一軸，d ＝ 鏡頭望過去那一軸（決定退多遠） */
+  { t: '① 正面（−z）', yaw: -Math.PI / 2, pitch: 0.10, w: 'x',          d: 'z' },
+  { t: '② 右側（+x）', yaw: 0,            pitch: 0.10, w: 'z',          d: 'x' },
+  { t: '③ 俯視',       yaw: -Math.PI / 2, pitch: 1.45, w: 'x', h: 'z',  d: 'y' },
+  /* 45° 那一格的 dm：斜著看過去的「厚度」不是整個半徑（半徑量的是水平最遠那顆角落），
+     照整個半徑退的話這一格會比另外三格小一圈。 */
+  { t: '④ 45°',        yaw: -0.9,         pitch: 0.42, w: 'r',          d: 'r', dm: 0.55 }
+];
 function shotPng() {
-  ENG.render();
-  const url = ENG.three.renderer.domElement.toDataURL('image/png');
-  const bin = atob(url.slice(url.indexOf(',') + 1));
-  const buf = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-  const href = URL.createObjectURL(new Blob([buf], { type: 'image/png' }));
-  const a = document.createElement('a');
-  a.href = href;
-  a.download = (bp ? bp.name : '藍圖') + '-' + (bp ? bp.slots.length : 0) + '塊.png';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(href), 4000);
+  // 叫 REN 不叫 R：下面每一格的取景半徑也叫 R，同一支函式裡兩個 R 遲早出事
+  const REN = ENG.three.renderer, cv = REN.domElement, S = SHOT_CELL;
+  const keep = { yaw: ENG.cam.yaw, pitch: ENG.cam.pitch };
+  const out = document.createElement('canvas');
+  out.width = out.height = S * 2;
+  const g = out.getContext('2d');
+  g.fillStyle = '#d7e4ec';                       // 天空色：renderer 是透明的，底要自己鋪
+  g.fillRect(0, 0, out.width, out.height);
+  REN.setPixelRatio(1);
+  REN.setSize(S, S, false);                      // false ＝ 不要動畫面上那張 canvas 的 CSS 尺寸
+  ENG.three.camera.aspect = 1;
+  ENG.three.camera.updateProjectionMatrix();
+  ENG.orbit(0, 0);                               // 甩掉可能還在跑的鏡頭動畫，不然 yaw 會被它蓋回去
+  /* 每一格各自取景，不共用 fitCamera 那一次（v1.160）。fitCamera 收的「半徑」是水平方向的
+     **最大**半徑（獅身人面像身長是身寬的三倍），拿它去拍正面，主體只佔畫面兩成——
+     四宮格本來就是要看細節的，那樣等於白拍。所以先量出 x／z 兩個方向的半寬，
+     正面用 x、右側用 z、俯視是 x 配 z，只有 45° 才用整個半徑。
+     取景距離自己算就好：aspect 已經是 1，左右跟上下同一個半視角，把主體當一顆球即可。
+     視線也要抬到主體的腰——桌機的 fitCamera 是「看底部中心」（engine v1.55），
+     那會讓主體整個擠在上半格。 */
+  let hx = 1, hz = 1;
+  if (bp) for (const s of bp.slots) {
+    if (Math.abs(s.x) > hx) hx = Math.abs(s.x);
+    if (Math.abs(s.z) > hz) hz = Math.abs(s.z);
+  }
+  const halfV = ENG.three.camera.fov * Math.PI / 360;
+  const cy = bp ? bp.height * 0.5 : 4;
+  const span = k => (k === 'x' ? hx : k === 'z' ? hz : k === 'y' ? cy : bp ? bp.radius : 8);
+  g.textBaseline = 'middle';
+  SHOT_VIEWS.forEach((v, i) => {
+    ENG.cam.yaw = v.yaw; ENG.cam.pitch = v.pitch;
+    ENG.cam.ty = ENG.camTarget.ty = cy;
+    /* 1.2 ＝ 邊界留兩成。相機有一點俯角，主體上緣會被透視推得更靠近畫面頂——
+       1.08 的時候獅身人面像的頭巾差 25px 就切到了。
+       再加一段 span(v.d)：**取景要對準主體離鏡頭最近的那一面**，不是對準中心。
+       透視下近的那一面會被放大，只算到中心的話，愈厚的東西溢得愈多——
+       艾菲爾鐵塔的俯視就是這樣整根塔身衝出畫面（它高 60 幾格，俯視的「厚度」就是那個高度）。 */
+    const R = Math.max(span(v.w), v.h ? span(v.h) : cy) * 1.2 + 1.5;
+    ENG.cam.dist = ENG.camTarget.dist = R / Math.sin(halfV) + span(v.d) * (v.dm || 1);
+    ENG.updateCamera(0);                         // dt = 0：只換算相機位置，不做任何緩動
+    ENG.render();
+    const dx = (i % 2) * S, dy = Math.floor(i / 2) * S;
+    g.drawImage(cv, dx, dy, S, S);
+    g.font = '600 21px "Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif';
+    g.fillStyle = 'rgba(20,30,40,.66)';
+    g.fillRect(dx + 12, dy + 12, g.measureText(v.t).width + 22, 32);
+    g.fillStyle = '#fff';
+    g.fillText(v.t, dx + 23, dy + 29);
+  });
+  // 四格之間畫條線：不分格的話四張圖會黏成一片，看不出是四個方向
+  g.strokeStyle = 'rgba(20,30,40,.38)'; g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(S, 0); g.lineTo(S, out.height);
+  g.moveTo(0, S); g.lineTo(out.width, S);
+  g.stroke();
+  // 還原：resize() 會把 pixelRatio、緩衝區尺寸、aspect 一起設回去，並照 lastFit 重新取景
+  ENG.cam.yaw = keep.yaw; ENG.cam.pitch = keep.pitch;
+  ENG.resize();
+  /* data: URL 直接掛 <a download> 有些瀏覽器會擋，轉成 blob 最保險（file:// 也通） */
+  out.toBlob(b => {
+    const href = URL.createObjectURL(b);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = (bp ? bp.name : '藍圖') + '-' + (bp ? bp.slots.length : 0) + '塊-四視圖.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 4000);
+  }, 'image/png');
   $('shot').textContent = '已下載 ✓';
-  setTimeout(() => { $('shot').textContent = '下載畫面'; }, 1600);
+  setTimeout(() => { $('shot').textContent = '下載四視圖'; }, 1600);
 }
 $('shot').addEventListener('click', shotPng);
 
