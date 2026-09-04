@@ -5381,8 +5381,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const m = workers.find(w => w.mage);
       releaseWorker(m); m.hm = 0; m.hst = ''; m.ct = 0;
     }
-    const mine = workers.filter(w => w.mage && w.hm >= 0).map(w => w.hm);
-    const hi = mine[0];
+    const me = workers.find(w => w.mage && w.hm >= 0);
+    const hi = me.hm;
+    /* 讓他一個人蓋（v1.158.2）。房型與同組人數本來是骰子：同一顆種子 777008 抽過
+       「小院 104 格、1 人」「灌木 31 格、1 人」「大屋 136 格、3 人」三種，抽到最後那種時
+       他只分到 20 格，`cast > 20` 就差一票紅掉。這一條要驗的是「他用魔法而不是用手」，
+       不是「他在三個人裡分到幾格」——照〈九條「偶爾飄」的測試〉裡「工程師會換位置」
+       那條的規矩把骰子固定住，門檻一個字都不動。
+       先 releaseWorker 再拔 hm：不放掉的話他們認走的格子會一直掛著，那間永遠蓋不完。
+       fall 給大數字讓他們整段躺著，狀態機才不會又去認一間（同下面 w.fall = 99 的寫法）。
+       最小的一款是灌木 31 格（見 TREE_KIND 上面那段「塊數 31～220」），一個人蓋至少
+       也要拋 31 次，離門檻 20 有餘裕。 */
+    for (const w of workers) {
+      if (w === me) continue;
+      releaseWorker(w); w.hm = -1; w.fall = 999;
+    }
     const slots = homes.list[hi].slots.length;
     let cast = 0, carried = 0, pose = 0, secs = 0;
     const orig = castHome;
@@ -6966,7 +6979,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        這一條要驗的是「編號重編」，不是他們會不會把工作做完。 */
     w.fall = 99; mg.fall = 99;
     const pool0 = blocks.length;
-    const expect = blocks.filter(b => b.st === 0 && b.rest && b.holder < 0 && b.hh < 0).length;
+    /* 條件要跟 clearSpare 一模一樣，**b.gone 那一項不能少**（v1.158.2）：
+       那一支跳過「已經在淡出的」（game.js 的 `|| b.gone`），這裡漏掉的話，
+       前一段留下還在淡出的碎料會被算進 expect，gone === expect 就隨機紅。 */
+    const expect = blocks.filter(b => b.st === 0 && b.rest && b.holder < 0 &&
+                                      b.hh < 0 && !b.gone).length;
     const gone = clearSpare();
     let t = 0;
     while (t < 5 && blocks.some(b => b.gone > 0)) { step(0.05); t += 0.05; }
@@ -11277,6 +11294,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const gateHi = await page.evaluate(() => {
     completeNow();
     const ty = bp.height * 0.6;
+    const q = (a, f) => (a.length ? +a[Math.floor((a.length - 1) * f)].toFixed(1) : -1);
     const run = kind => {
       /* 每一趟都**重蓋一次**：不重蓋的話第二趟是打在第一趟拆剩的塔上，
          沒東西可打自然就打得少、落得遠，兩趟的數字不能比（實測點空地那一趟
@@ -11302,17 +11320,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const far = (weapons || []).filter(w => w.st === 'lie')
         .map(w => Math.hypot(w.x, w.z)).sort((a, b) => a - b);
       hy.sort((a, b) => a - b);
-      const q = (a, f) => (a.length ? +a[Math.floor((a.length - 1) * f)].toFixed(1) : -1);
       cleanTools();
-      return { ...out, made, aimN, hits: hy.length, mid: q(hy, 0.5),
+      return { ...out, made, aimN, far, hy };
+    };
+    /* 每一種點法跑三趟、把距離併起來再取百分位（v1.158.2）。一趟只落 80～95 把，
+       九成位就是從那八十幾個樣本裡挑一個出來的，而點空地那一組尾巴很長
+       （實測九成位 28.4、最遠 41）——樣本一晃，下面那條比值就跟著跳，
+       而門檻 2.5 離實測的 2.03 只有兩成餘裕。三趟併起來約 250 把，百分位穩得多。
+       修的是樣本數，兩個門檻一個字都沒動（同〈九條「偶爾飄」的測試〉裡
+       「樣本數自己在擲骰子」那條的修法：射到湊滿為止）。
+       **一個要記著的副作用**：farMax 取的是最大值，樣本變三倍它本來就會往上飄
+       （實測點建築 61.4 → 63.2、點空地 41 → 46.6）。絕對門檻 85 仍有兩成六餘裕，
+       但下次若再把趟數加上去，要重看的是這一條而不是九成位那一條。
+       ty0／gy／spots／aimN 這些每一趟都一樣，取第一趟的就好。 */
+    const runN = kind => {
+      const rs = [run(kind), run(kind), run(kind)];
+      const far = rs.flatMap(r => r.far).sort((a, b) => a - b);
+      const hy = rs.flatMap(r => r.hy).sort((a, b) => a - b);
+      return { ...rs[0], rounds: rs.length, hits: hy.length, mid: q(hy, 0.5),
                lie: far.length, far9: q(far, 0.9), farMax: q(far, 1) };
     };
-    const blk = run('block'), gnd = run('ground');
+    const blk = runN('block'), gnd = runN('ground');
     return { ty: +ty.toFixed(1), H: +bp.height.toFixed(1), blk, gnd };
   });
   /* 點擊高度 39：block 那一趟打中的高度中位數實測 31.5，ground 那一趟 12.5（打中的發數
      兩趟都是 165，火力沒有因為改瞄準而變弱）。門檻取「比點空地高六成」（20）
-     ＋「至少爬到點擊高度的六成」（23.4），兩條離實測值都有三成以上餘裕。 */
+     ＋「至少爬到點擊高度的六成」（23.4），兩條離實測值都有三成以上餘裕。
+     v1.158.2 起每種點法跑**三趟併起來**（見 runN），所以「打中的發數」印的是三趟的總和
+     （約 500），中位數與下面那條的九成位也都是併起來之後才算的——門檻沒動。 */
   ok('第二下點在建築上，火力就跟著打到那個高度（點空地照舊打身體下段）',
      gateHi.blk.ty0 === gateHi.ty && gateHi.blk.spots > 50 && gateHi.blk.hits > 100 &&
      gateHi.blk.mid > gateHi.gnd.mid * 1.6 && gateHi.blk.mid > gateHi.ty * 0.6,
@@ -13994,10 +14029,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
       const px = new Uint8Array(w * h * 4);
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
-      /* 每 5 個像素取一個。以前是每 17 個，取樣數只有六萬、過曝白才一百多點，
-         抖動大到會壓在門檻上（實測同一份程式一次 0.41%、一次 0.25%）。 */
+      /* **每一個像素都取**（v1.158.2）。一路走過來：每 17 個時取樣數只有六萬、過曝白
+         才一百多點，抖動大到會壓在門檻上（實測同一份程式一次 0.41%、一次 0.25%）；
+         改成每 5 個好了一些，但還是紅過（同一個 commit、同一顆種子量到過 0.24% 與 0.05%）。
+         全取是這條唯一「不改量的是什麼、也不動門檻」的收斂手段，成本只是一個迴圈。
+         **這不保證修掉**：0.24 → 0.05 那個落差太大，不像純取樣雜訊，比較像取景／落點
+         本身在變。真的再紅一次的話，下一步是把火球的位置釘死再量，而不是放寬 0.06。 */
       let n = 0, lit = 0;
-      for (let i = 0; i < px.length; i += 4 * 5) {
+      for (let i = 0; i < px.length; i += 4) {
         n++;
         if (px[i] > 245 && px[i + 1] > 240 && px[i + 2] > 200) lit++;   // 過曝的白
       }
@@ -18268,13 +18307,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ② **頻段**：舊版低通切 520，八成能量悶在 250Hz 以下（小喇叭根本推不出來）；
         風的呼嘯在 250～900 那一段。搬過去的同時不能變成嘶聲，所以高頻也要守著。
      總音量刻意對齊舊版：能量搬到聽得見的那一段之後，同樣的 rms 會大不少。 */
-  const bodyShare = m => +(m.body / m.rms * 100).toFixed(0);
+  /* 比大小要用**沒取整**的（v1.158.2）：先 toFixed(0) 再相減的話，量到 76.6% → 66.7%
+     會被讀成 77 → 67，差剛好 10，`< −10` 就差一票紅掉——飄的是四捨五入，不是音色。
+     印出來的那份照樣取整（報告要好讀）。 */
+  const bodyRaw = m => m.body / m.rms * 100;
+  const bodyShare = m => +bodyRaw(m).toFixed(0);
   ok('風聲是「一直在吹」，不是「呼」一聲就散',
      snd.wind.hold > 2 && snd.windOld.hold < 1,
      '中段音量 ÷ 起手音量：舊版 ' + snd.windOld.hold + '（一路弱下去）→ 新版 ' +
      snd.wind.hold + '（吹起來再撐著）');
   ok('風聲從悶在低頻搬到呼嘯的那一段，也沒有變成嘶聲',
-     bodyShare(snd.wind) < bodyShare(snd.windOld) - 10 && snd.wind.hiPct < 22 &&
+     bodyRaw(snd.wind) < bodyRaw(snd.windOld) - 10 && snd.wind.hiPct < 22 &&
      snd.wind.rms < snd.windOld.rms * 1.35,
      '80–250Hz 占比 ' + bodyShare(snd.windOld) + '% → ' + bodyShare(snd.wind) +
      '%、2kHz 以上 ' + snd.windOld.hiPct + '% → ' + snd.wind.hiPct +
