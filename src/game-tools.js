@@ -4724,17 +4724,29 @@ function gateList() {
    所以它**不是**躺平橫掃（那是第一版，缺口是水平的一條）：樞紐（劍柄的旋轉點）在
    「點到建築那一下」的高度上、離兩點一樣遠，刃尖起手落在第一點、收手落在第二點，
    整把在「樞紐 ＋ 那兩點」決定的那個**平面**上繞平面的法線轉。兩點高度不同時
-   那個平面就是斜的，缺口跟著斜。幾何細節見 castSword。 */
+   那個平面就是斜的，缺口跟著斜。幾何細節見 castSword。
+   v1.162 使用者又追加三件（都在這個平面上，幾何沒動）：「大劍長度增加（約兩倍
+   大劍比例也要微調）」、「出現後先有一段 往攻擊反方向移動一小段距離 然後向攻擊方向
+   加速 揮完後會超過一點」（見 SW_BACK_K／SW_OVER_K 與 stepSwords）、
+   「點兩下都是建築時 就從第一點位置揮到第二點」（見 aimSword 的 py）。
+   另外「中段刃尖入地」使用者說沒關係，所以不夾住。 */
 const SW_AIM_R = 5.5;            // 第一下在地上畫的那圈光環多大
 const SW_AIM_C = 0xdfe6ee;       // 鋼色（同刃）
 /* 全長跟兩點的**水平**距離成正比，再夾在這個範圍裡：兩點點得很近時劍不能縮成一根
-   牙籤，點得很開也不能長到半個工地。下限 24 ＝ 金字塔那一級的高度、
-   上限 46 ＝ 一般地標的高度（台北 101 是 65）。
+   牙籤，點得很開也不能長到半個工地。
+   v1.162 使用者：「大劍長度增加（約兩倍）」——三個數字一起乘二（0.80→1.60、
+   24→48、46→92），下限 48 ＝ 兩座金字塔疊起來、上限 92 ＝ 台北 101（65）再加一半。
+   造型的比例另外微調過（放大兩倍還用原比例看起來是鐵板，見 engine.js 的 SWORD_PART）。
    兩點高低差很大時這個長度可能短到「樞紐無解」，那一段會自己再拉長（見 castSword）。 */
-const SW_LEN_K = 0.80, SW_LEN_MIN = 24, SW_LEN_MAX = 46;
+const SW_LEN_K = 1.60, SW_LEN_MIN = 48, SW_LEN_MAX = 92;
 const SW_KEEP = 3;               // 同時最多幾把。**要 ≤ 引擎的 SWORD_MAX**，多的畫不出來
-const SW_RISE = 0.16;            // 出現：在起手角度淡入（不淡入的話它是憑空跳出來的）
+const SW_RISE = 0.22;            // 出現＋回抽：淡入的同時往攻擊的反方向拉開（見 stepSwords）
 const SW_SWING = 0.42;           // 揮過去要幾秒
+/* 回抽與收手超過的角度（使用者：「先有一段往攻擊反方向移動一小段距離 然後向攻擊方向
+   加速 揮完後會超過一點」）。用「掃過的角度的幾成」而不是寫死幾度——掃 40° 的一刀
+   回抽 30° 會變成往回砍；再各給一個上限，免得掃 170° 的那種一刀回抽到背後去。 */
+const SW_BACK_K = 0.35, SW_BACK_MAX = 0.30;
+const SW_OVER_K = 0.18, SW_OVER_MAX = 0.16;
 const SW_HOLD = 0.22;            // 揮到終點停多久
 const SW_FADE = 1.1;            // 原地化成金光淡掉要幾秒（使用者選的收尾）
 /* 刃掃到的厚度 ＝ 揮動平面兩側各一個刃寬，使用者選的是「刃掃過的整片削掉」。
@@ -4758,9 +4770,12 @@ function aimSword(point, onBlock) {
     toast('⚔ 大劍：其中一下要點在建築上', '那一下的高度就是劍柄旋轉點的高度');
     return;
   }
-  /* 樞紐的高度：點在建築上那一下的高度（兩下都點在建築上就取中間）。
+  /* 樞紐的高度：點在建築上那一下的高度。
+     **兩下都點在建築上就用第一下的**（v1.162 使用者：「點兩下都是建築時 就從第一點
+     位置揮到第二點」）——樞紐跟第一點同高，刃就從第一點那個高度平平地起手、
+     一路砍到第二點。原本取兩點的中間，樞紐會落在第一點的下面，起手是先往上撈。
      兩點各自的高度另外給——揮動平面是「樞紐 ＋ 那兩點」決定的，見 castSword。 */
-  const py = aim.son && onBlock ? (aim.sy + point.y) / 2 : (aim.son ? aim.sy : point.y);
+  const py = aim.son ? aim.sy : point.y;
   castSword(aim, point, py, aim.sy, point.y);
 }
 /* py＝樞紐的高度（點在建築上那一下的高度）、y1／y2＝兩點各自的高度。
@@ -4836,9 +4851,14 @@ function castSword(from, toward, py, y1, y2) {
   const e2x = ny * u0z - nz * u0y,
         e2y = nz * u0x - nx * u0z,
         e2z = nx * u0y - ny * u0x;
+  /* 回抽多少、收手超過多少（見 SW_BACK_K／SW_OVER_K）。超過的那一段還要留一點餘裕
+     別讓總角度頂到 180°——刃尖方向的角度是用 atan2 算的，過了 π 會翻到負的那一側，
+     那一幀的判定就會漏掉。 */
+  const back = Math.min(SW_BACK_MAX, span * SW_BACK_K);
+  const over = Math.min(SW_OVER_MAX, span * SW_OVER_K, Math.max(0, Math.PI * 0.995 - span));
   if (!swords) swords = [];
   while (swords.length >= SW_KEEP) swords.shift();        // 滿了擠掉最早那把（同其他清單型道具）
-  swords.push({ x: px, y: py, z: pz, len: len, r0: r0, r1: r1,
+  swords.push({ x: px, y: py, z: pz, len: len, r0: r0, r1: r1, back: back, over: over,
                 band: ENG.SWORD_W * len * SW_BAND_K,
                 u0x: u0x, u0y: u0y, u0z: u0z,             // 起手方向（平面內的第一軸）
                 e2x: e2x, e2y: e2y, e2z: e2z,             // 平面內的第二軸
@@ -4862,12 +4882,22 @@ function stepSwords(dt) {
     const s = swords[i];
     s.t += dt;
     if (s.ph === 'rise') {
-      s.fade = Math.min(1, s.t / SW_RISE);
-      if (s.t >= SW_RISE) { s.ph = 'swing'; s.t = 0; s.fade = 1; sndSwing(); }
+      /* 出現＋回抽：淡入的同時往攻擊的**反方向**拉開一段（θ 從 0 走到 −back）。
+         淡入比回抽快收完，不然是一把半透明的劍在那裡拉弓。
+         這一段**不切**——它是往回走的，掃過的那一片等一下正著揮過去時會一起削掉。 */
+      const p = Math.min(1, s.t / SW_RISE);
+      s.fade = Math.min(1, s.t / (SW_RISE * 0.55));
+      swordAim(s, -s.back * p * p * (3 - 2 * p));
+      if (p >= 1) { s.ph = 'swing'; s.t = 0; s.fade = 1; sndSwing(); }
     } else if (s.ph === 'swing') {
       const p = Math.min(1, s.t / SW_SWING);
       const th0 = s.ang;
-      swordAim(s, s.span * (p * p * (3 - 2 * p)));        // 起手慢、中段快、收手慢
+      /* 從回抽的位置一路揮到「第二點再過去一點」（−back → span ＋ over）。
+         這條曲線 ＝ 平滑階梯套在 p² 上，速度的峰值落在 p≈0.78：
+         起手是從靜止的回抽開始**加速**，最快的一段落在後半、收手才煞住
+         （使用者：「然後向攻擊方向加速 揮完後會超過一點」）。 */
+      const q = p * p;
+      swordAim(s, -s.back + (s.back + s.span + s.over) * q * q * (3 - 2 * q));
       swordCut(s, th0, s.ang, dt);
       if (p >= 1) { s.ph = 'hold'; s.t = 0; }
     } else if (s.ph === 'hold') {

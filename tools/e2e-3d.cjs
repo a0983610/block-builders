@@ -229,7 +229,7 @@ const installClean = page => page.evaluate(() => {
        castGate 借去的鏡頭高度還回去（不還的話下一條測試量到的視線高是被它抬過的）。 */
     gates = null; weapons = null; gateEnd();
     ENG.putGates([]); ENG.putWeapons([]);
-    swords = null; ENG.putSwords([]);   // 大劍（v1.161）：一趟一點九秒，別跨到下一條
+    swords = null; ENG.putSwords([]);   // 大劍（v1.161）：一趟快兩秒，別跨到下一條
     /* 天災（v1.138）：場上那幾隻與飛在半空的香蕉。倒數也要歸零——
        不歸零的話下一條測試一進 done 就繼承上一條數到一半的秒數。 */
     beasts = null; nanas = null; fballs = null; doomT = -1;
@@ -11495,7 +11495,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     clickG(p2);
     const s = swords[0];
     const shot = { x: s.x, y: s.y, z: s.z, len: s.len, r0: s.r0, r1: s.r1,
-                   band: s.band, span: s.span };
+                   band: s.band, span: s.span, back: s.back, over: s.over };
     /* ③④⑤ 樞紐到兩點的 **3D** 距離都該是「樞紐到刃尖」，而起手／收手的方向
        也該正對那兩點；平面的法線離垂直方向多遠 ＝ 那一刀有多斜。 */
     const dir = (q, y) => {
@@ -11542,11 +11542,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        （兩邊都走 breakBlock），就分不出刃到底掃到哪一片。垮塌本身另有一段在測。 */
     collapseUnsupported = () => 0;
     const before = blocks.filter(b => b.st === 3).length;
-    const phs = [];
-    for (let i = 0; i < 40; i++) {          // 0.664 秒：出現 0.16 ＋ 揮 0.42 都跑完
+    const phs = [], angs = [];
+    for (let i = 0; i < 50; i++) {          // 0.83 秒：出現＋回抽 0.22 ＋ 揮 0.42 都跑完
       step(0.0166);
-      phs.push(swords && swords[0] ? swords[0].ph : '-');
+      const w = swords && swords[0];
+      phs.push(w ? w.ph : '-');
+      angs.push(w ? w.ang : 0);
     }
+    /* 回抽 → 加速 → 超過（v1.162 使用者要的那一段）：整趟的角度紀錄裡，最小值要落在
+       0 以下（先往攻擊的反方向拉開）、最後停在 span 之後（收手超過一點），
+       而「角度走最多的那一步」要落在揮擊的後半段（起手慢、加速、後段最快）。 */
+    let minA = 1e9, maxA = -1e9, sw0 = -1, sw1 = -1;
+    for (let i = 0; i < angs.length; i++) {
+      if (angs[i] < minA) minA = angs[i];
+      if (angs[i] > maxA) maxA = angs[i];
+      if (phs[i] === 'swing') { if (sw0 < 0) sw0 = i; sw1 = i; }
+    }
+    let dMax = -1, fast = -1;
+    for (let i = Math.max(1, sw0); i <= sw1; i++) {
+      const d = angs[i] - angs[i - 1];
+      if (d > dMax) { dMax = d; fast = (i - sw0) / Math.max(1, sw1 - sw0); }
+    }
+    const wind = { back: minA, end: maxA, fast: fast };
     breakBlock = oBreak; collapseUnsupported = oColl;
     const midSet = blocks.filter(b => b.st === 3).length;
     let lo = 1e9, hiY = -1e9, offMax = 0;
@@ -11603,10 +11620,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let k = 0; k < 4; k++) { aim = null; clickB(); clickG(p2); }
     const keep = swords.length;
 
-    /* 兩點比刃還開：刃長頂到上限、樞紐退到中點（掃到接近 180 度） */
+    /* 兩點比刃還開：刃長頂到上限、樞紐退到中點（掃到接近 180 度）。
+       v1.162 刃長翻倍（上限 92）之後 120 單位已經在刃長之內了，所以這一條要點更遠。 */
     aim = null; swords = null;
     clickB();
-    clickG({ x: -p1.x / f * 120, z: -p1.z / f * 120 });
+    clickG({ x: -p1.x / f * 260, z: -p1.z / f * 260 });
     const wide = { len: swords[0].len, span: swords[0].span };
 
     /* 兩下都點在**同高度**的建築上：那個平面就是水平的，缺口回到水平的一條
@@ -11618,13 +11636,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const flat = { tilt: Math.acos(Math.min(1, Math.abs(swords[0].ny))) * 180 / Math.PI,
                    y: swords[0].y };
 
+    /* 兩下都點在建築上、**高度不一樣**：樞紐用第一點的高度（v1.162 使用者：
+       「點兩下都是建築時 就從第一點位置揮到第二點」），刃尖照樣起手落在第一點、
+       收手落在第二點（兩段 3D 距離都是刃尖半徑）。 */
+    aim = null; swords = null;
+    clickB();
+    const p3 = { x: -p1.x, y: p1.y * 0.5, z: -p1.z };
+    useTool({ kind: 'block', point: new THREE.Vector3(p3.x, p3.y, p3.z),
+              dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
+    const w2 = swords[0];
+    const twoB = { y: w2.y, r1: w2.r1,
+                   r3d1: Math.hypot(p1.x - w2.x, p1.y - w2.y, p1.z - w2.z),
+                   r3d2: Math.hypot(p3.x - w2.x, p3.y - w2.y, p3.z - w2.z) };
+
     ENG.shake = oShake;
     swords = null; aim = null; tool = 'hammer'; running = true;
     return { both, kept, shot, geo, before, midSet, cut: cutY.length,
-             lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes,
+             lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes, wind,
              phs: phs.filter((p, i) => i === 0 || p !== phs[i - 1]).join('→'),
              tipErr, tipEdgeErr, tipEdge: tEdge, tipPart: ti, tipPlane, rootErr,
-             fadeLog, gone, keep, wide, flat };
+             fadeLog, gone, keep, wide, flat, twoB };
   });
   ok('兩下都點在地面不會揮，會給提示，而且第一點留著（再點建築就發動）',
      swd.both.swords === 0 && swd.both.aim && /建築/.test(swd.both.toast),
@@ -11646,6 +11677,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、掃過 ' + (swd.shot.span * 180 / Math.PI).toFixed(1) + '°');
   ok('出現 → 揮 → 停 → 淡掉，四段依序走完',
      swd.phs === 'rise→swing→hold', swd.phs);
+  /* 使用者：「出現後先有一段 往攻擊反方向移動一小段距離 然後向攻擊方向加速
+     揮完後會超過一點」——三件事一條測試：回抽到 −back、收手停在 span＋over、
+     角度走最快的那一步落在揮擊的後半段（起手是從靜止的回抽開始加速的）。 */
+  ok('出現後先往攻擊的反方向回抽、再加速揮過去、揮完超過一點',
+     swd.shot.back > 0.05 && Math.abs(swd.wind.back + swd.shot.back) < 1e-9 &&
+     swd.shot.over > 0.02 &&
+     Math.abs(swd.wind.end - (swd.shot.span + swd.shot.over)) < 1e-9 &&
+     swd.wind.fast > 0.6,
+     '回抽 ' + (-swd.wind.back * 180 / Math.PI).toFixed(1) + '°、揮到 ' +
+     (swd.wind.end * 180 / Math.PI).toFixed(1) + '°（第二點在 ' +
+     (swd.shot.span * 180 / Math.PI).toFixed(1) + '°，超過 ' +
+     (swd.shot.over * 180 / Math.PI).toFixed(1) + '°）；最快的一步落在揮擊的 ' +
+     (swd.wind.fast * 100).toFixed(0) + '% 處');
   /* 「砍成斜的」：點在建築上那一點高、地面那一點低，揮動平面就是斜的，
      所以先切到的比後切到的高。兩個都驗：平面的傾角，以及真的切下來的那些的高度。 */
   /* 兩件事一起驗，兩件都不需要經驗門檻：
@@ -11684,12 +11728,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '　→　' + (swd.gone ? '收乾淨' : '還留著'));
   ok('同時最多三把（第四把把最早那把擠掉）', swd.keep === 3, '場上 ' + swd.keep + ' 把');
   ok('兩點比刃還開時：刃長頂到上限、樞紐退到中點（掃到接近 180 度）',
-     Math.abs(swd.wide.len - 46) < 1e-6 && swd.wide.span > Math.PI * 0.92,
+     Math.abs(swd.wide.len - 92) < 1e-6 && swd.wide.span > Math.PI * 0.92,
      '刃長 ' + swd.wide.len + '、掃過 ' + (swd.wide.span * 180 / Math.PI).toFixed(1) + '°');
   /* 斜不斜完全由那兩點的高低差決定：兩下都點在同高度的建築上，平面就是水平的 */
   ok('兩下點在同高度的建築上 → 平面回到水平（缺口是水平的一條）',
      swd.flat.tilt < 0.01 && Math.abs(swd.flat.y - swd.geo.clickY) < 1e-6,
      '揮動平面傾 ' + swd.flat.tilt.toFixed(3) + '°、樞紐高度 ' + swd.flat.y.toFixed(2));
+  /* v1.162 使用者：「點兩下都是建築時 就從第一點位置揮到第二點」——樞紐取**第一點**
+     的高度（原本取兩點的中間），刃尖照樣起手落在第一點、收手落在第二點。 */
+  ok('兩下都點在建築上（高度不同）→ 樞紐用第一點的高度，從第一點揮到第二點',
+     Math.abs(swd.twoB.y - swd.geo.clickY) < 1e-6 &&
+     Math.abs(swd.twoB.r3d1 - swd.twoB.r1) < 0.01 &&
+     Math.abs(swd.twoB.r3d2 - swd.twoB.r1) < 0.01,
+     '第一點 ' + swd.geo.clickY.toFixed(2) + ' 高、第二點 ' +
+     (swd.geo.clickY * 0.5).toFixed(2) + ' 高，樞紐 ' + swd.twoB.y.toFixed(2) +
+     '；樞紐到兩點 ' + swd.twoB.r3d1.toFixed(2) + '／' + swd.twoB.r3d2.toFixed(2) +
+     '（刃尖半徑 ' + swd.twoB.r1.toFixed(2) + '）');
 
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
@@ -17998,7 +18052,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     ballAim = null;                 // 保齡球那一輪只點了第一下，別把瞄準環留給後面的截圖
     // 王之財寶那一發會開著十三秒，留著會把後面幾條的鏡頭高度與畫面都佔走
     gates = null; weapons = null; gateEnd();
-    swords = null;                  // 大劍同理：一趟一點九秒，別讓它跨到後面幾條與截圖
+    swords = null;                  // 大劍同理：一趟快兩秒，別讓它跨到後面幾條與截圖
     const got = stats.badges.indexOf('allTools') >= 0;
     // 同一種道具用兩次不會重複記
     tool = 'hammer'; useTool(hit);
