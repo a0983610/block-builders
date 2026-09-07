@@ -53,16 +53,21 @@ const TOOLS = [
     lock: { txt: '拆掉 12 座建築解鎖', ok: () => stats.destroyed >= 12 } },
   { id: 'gate', n: '王之財寶', k: '🗡',
     tip: '點兩下：第一下點地面決定門陣開在哪，第二下決定打哪裡——點在建築上就打那個位置附近的一片空間，點地面就打建築下段。兵器從門裡伸出來、就位後停一下，接著朝目標連射 7 秒；打中的地方炸開一個小缺口（不起火），兵器掉在地上慢慢消失',
-    lock: { txt: '累計擊飛 27,000 塊解鎖', ok: () => stats.smashed >= 27000 } }
+    lock: { txt: '累計擊飛 27,000 塊解鎖', ok: () => stats.smashed >= 27000 } },
+  { id: 'sword', n: '大劍', k: '⚔',
+    tip: '點兩下：其中一下要點在建築上（那一下的高度就是劍柄旋轉點的高度）。一把大劍在「兩點與劍柄決定的那個斜面」上從第一點揮向第二點——點建築的高、點地面的低，就是斜著砍下去。刃掃過的那一片整片削掉、被切斷的部分接著自己垮；揮完原地化成金光淡掉',
+    lock: { txt: '拆掉 14 座建築解鎖', ok: () => stats.destroyed >= 14 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
    規定一定要點到建築的話，站在旁邊的空地放炸彈反而做不到。
    大槌點空地是地震、保齡球點空地是從那裡把球丟出去，所以也在這裡。
    小槌點空地什麼都不會掉，但仍然留在這裡：拿掉的話那一下完全沒反應，看起來像點壞了。 */
+/* 大劍也在這裡：它兩下之中**只要一下**點在建築上就夠（另一下點空地是正常用法，
+   那一下決定的是揮擊的起點或終點，不是高度）。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
-                      storm: 1, drop: 1, gate: 1 };
+                      storm: 1, drop: 1, gate: 1, sword: 1 };
 let tool = 'hammer';
 
 let hammerR = 5.5, hammerPow = 15;
@@ -4709,6 +4714,228 @@ function gateList() {
   return gateDraw;
 }
 
+/* ── 大劍（v1.161）──────────────────────────────────────
+   使用者：「操作方式點擊兩個位置 其中一次要在建築上／出現一隻大劍從第一個位置揮往
+   第二個位置／劍柄旋轉點的高度 大約在點在建築上的那次高度／劍刃攻擊方向從第一次位置
+   到第二次位置」，看過第一版之後追加：「點在建築那個點 跟地面的點 是會砍成斜的才對／
+   所以地面那個點的位置也是有影響的／建築物點擊位置 與該位置同高度的點 與地面的點
+   形成一個面 劍刃是在這個平面上揮動」。
+
+   所以它**不是**躺平橫掃（那是第一版，缺口是水平的一條）：樞紐（劍柄的旋轉點）在
+   「點到建築那一下」的高度上、離兩點一樣遠，刃尖起手落在第一點、收手落在第二點，
+   整把在「樞紐 ＋ 那兩點」決定的那個**平面**上繞平面的法線轉。兩點高度不同時
+   那個平面就是斜的，缺口跟著斜。幾何細節見 castSword。 */
+const SW_AIM_R = 5.5;            // 第一下在地上畫的那圈光環多大
+const SW_AIM_C = 0xdfe6ee;       // 鋼色（同刃）
+/* 全長跟兩點的**水平**距離成正比，再夾在這個範圍裡：兩點點得很近時劍不能縮成一根
+   牙籤，點得很開也不能長到半個工地。下限 24 ＝ 金字塔那一級的高度、
+   上限 46 ＝ 一般地標的高度（台北 101 是 65）。
+   兩點高低差很大時這個長度可能短到「樞紐無解」，那一段會自己再拉長（見 castSword）。 */
+const SW_LEN_K = 0.80, SW_LEN_MIN = 24, SW_LEN_MAX = 46;
+const SW_KEEP = 3;               // 同時最多幾把。**要 ≤ 引擎的 SWORD_MAX**，多的畫不出來
+const SW_RISE = 0.16;            // 出現：在起手角度淡入（不淡入的話它是憑空跳出來的）
+const SW_SWING = 0.42;           // 揮過去要幾秒
+const SW_HOLD = 0.22;            // 揮到終點停多久
+const SW_FADE = 1.1;            // 原地化成金光淡掉要幾秒（使用者選的收尾）
+/* 刃掃到的厚度 ＝ 揮動平面兩側各一個刃寬，使用者選的是「刃掃過的整片削掉」。
+   全長 30 時刃寬 3.6 單位，兩側各一個 ＝ 7.2 單位 ＝ 七塊多厚的一道缺口，
+   被切斷的那一段接著靠現成的垮塌判定自己塌下來。 */
+const SW_BAND_K = 1.0;
+const SW_HIT_K = 0.45;           // 擊飛速度 ＝ 那一塊所在半徑的刃速 × 這個
+const SW_HIT_MAX = 34;           // 擊飛速度上限（同一把尺：槌子 15、大槌 15×1.5＝22.5）
+let swords = null;               // 場上的大劍（出現 → 揮 → 停 → 淡完為止）
+
+/* 第一下記位置與高度，第二下才揮。
+   兩下都點在地面時沒有高度可用（使用者：其中一次要在建築上）——**第一點留著不清掉**，
+   直接再點一次建築就發動，不必整套重來（那一下完全沒反應會像點壞了）。 */
+function aimSword(point, onBlock) {
+  if (!aim) {
+    aimFirst(point, SW_AIM_R, SW_AIM_C);
+    aim.sy = point.y; aim.son = onBlock;      // 光環只讀 x/z/r/c，多帶兩個欄位不影響
+    return;
+  }
+  if (!aim.son && !onBlock) {
+    toast('⚔ 大劍：其中一下要點在建築上', '那一下的高度就是劍柄旋轉點的高度');
+    return;
+  }
+  /* 樞紐的高度：點在建築上那一下的高度（兩下都點在建築上就取中間）。
+     兩點各自的高度另外給——揮動平面是「樞紐 ＋ 那兩點」決定的，見 castSword。 */
+  const py = aim.son && onBlock ? (aim.sy + point.y) / 2 : (aim.son ? aim.sy : point.y);
+  castSword(aim, point, py, aim.sy, point.y);
+}
+/* py＝樞紐的高度（點在建築上那一下的高度）、y1／y2＝兩點各自的高度。
+   幾何（使用者第二、三、四句講的就是這個）：
+     ① 樞紐的高度 ＝ py，而且**離兩點一樣遠**（3D 距離都是「樞紐到刃尖」r1）
+        ——刃尖起手落在第一點、收手落在第二點。
+        設樞紐比某一點高 h，那麼樞紐到那一點的**水平**距離是 √(r1² − h²)；
+        於是樞紐就是「以兩點為心、以那兩個水平距離為半徑」的兩個圓的交點。
+     ② 樞紐、第一點、第二點三個點決定**一個平面**，刃就在那個平面上繞
+        「平面的法線」轉（見 swordAim 的 u(θ)）。兩點高度不同時那個平面是斜的，
+        所以砍出來的缺口是斜的——這正是使用者說的「會砍成斜的才對」。
+     ③ 地面那一點因此管三件事：揮擊的終點方向、平面的傾角、以及刃長（跟水平距離成正比）。 */
+function castSword(from, toward, py, y1, y2) {
+  aim = null;
+  let dx = toward.x - from.x, dz = toward.z - from.z;
+  let D = Math.hypot(dx, dz);
+  /* 同一個地方連點兩下：沿著「場心 → 那一點」的**切線**挪 8 單位當第二點
+     （同 aimDir 對兩點重疊的處理，只是這裡要的是切線不是徑向——徑向那一刀
+     會變成朝著鏡頭方向切，看不出是橫過去的一刀）。 */
+  if (D < 0.5) {
+    const rl = Math.hypot(from.x, from.z);
+    const tx = rl > 1e-4 ? -from.z / rl : 1, tz = rl > 1e-4 ? from.x / rl : 0;
+    dx = tx * 8; dz = tz * 8; D = 8;
+  }
+  const ex = dx / D, ez = dz / D;
+  const p2x = from.x + dx, p2z = from.z + dz;
+  /* 刃長跟水平距離成正比，但**至少要夠長到兩個圓碰得到**：樞紐落在其中一點的高度上
+     （h1 ＝ 0）時，兩圓相切的條件解出來是 r1 ≥ (D² + Δ²) / 2D，Δ ＝ 兩點的高度差。
+     不夠長就先照這條拉長（頂到 SW_LEN_MAX 為止）；兩點都在建築上那種一般情形不見得
+     適用這條，所以真正的判斷還是下面那個「兩圓有沒有交點」（hq2 > 0），沒有就退到中點。 */
+  const h1 = py - y1, h2 = py - y2;
+  const need = (D * D + (h1 - h2) * (h1 - h2)) / (2 * D) * 1.03;   // 留 3% 餘裕，別剛好相切
+  const tipK = ENG.SWORD_TIP - ENG.SWORD_PIVOT;
+  const len = Math.min(SW_LEN_MAX, Math.max(SW_LEN_MIN, D * SW_LEN_K, need / tipK));
+  const r1 = len * tipK;                                  // 樞紐到刃尖
+  const r0 = len * (ENG.SWORD_EDGE - ENG.SWORD_PIVOT);    // 樞紐到刃根
+  const a1 = Math.sqrt(Math.max(0, r1 * r1 - h1 * h1));   // 樞紐到第一點的水平距離
+  const a2 = Math.sqrt(Math.max(0, r1 * r1 - h2 * h2));
+  let px, pz;
+  const xf = (D * D + a1 * a1 - a2 * a2) / (2 * D);
+  const hq2 = a1 * a1 - xf * xf;
+  if (hq2 > 1e-9) {
+    const hq = Math.sqrt(hq2);
+    const bx = from.x + ex * xf, bz = from.z + ez * xf;   // 兩圓連心線上的垂足
+    const c1x = bx - ez * hq, c1z = bz + ex * hq;
+    const c2x = bx + ez * hq, c2z = bz - ex * hq;
+    /* 兩個交點取**離場心遠**的那一個：劍從場外掃進來，不是從建築肚子裡長出來。 */
+    const far1 = c1x * c1x + c1z * c1z >= c2x * c2x + c2z * c2z;
+    px = far1 ? c1x : c2x; pz = far1 ? c1z : c2z;
+  } else {
+    /* 兩點比刃還開（刃已經頂到上限）：樞紐退到中點。刃尖到不了那兩點，
+       但起手與收手的**方向**仍然是那兩點。 */
+    px = from.x + dx / 2; pz = from.z + dz / 2;
+  }
+  /* 起手／收手的方向，以及它們決定的那個平面 */
+  let u0x = from.x - px, u0y = y1 - py, u0z = from.z - pz;
+  let u1x = p2x - px, u1y = y2 - py, u1z = p2z - pz;
+  const l0 = Math.hypot(u0x, u0y, u0z) || 1, l1 = Math.hypot(u1x, u1y, u1z) || 1;
+  u0x /= l0; u0y /= l0; u0z /= l0;
+  u1x /= l1; u1y /= l1; u1z /= l1;
+  let nx = u0y * u1z - u0z * u1y,
+      ny = u0z * u1x - u0x * u1z,
+      nz = u0x * u1y - u0y * u1x;
+  let nl = Math.hypot(nx, ny, nz);
+  const dot = Math.max(-1, Math.min(1, u0x * u1x + u0y * u1y + u0z * u1z));
+  /* 兩個方向剛好共線（同向或正反向）時沒有平面可算——退回「水平面上掃」，
+     那是躺平橫掃的老樣子，至少方向仍然對。 */
+  if (nl < 1e-6) { nx = 0; ny = 1; nz = 0; nl = 1; }
+  nx /= nl; ny /= nl; nz /= nl;
+  const span = Math.atan2(nl, dot);       // 掃過的角度（0～π）
+  /* 平面內的第二個軸：從 u0 往 u1 轉的方向（e2 ＝ n × u0，跟 u0 垂直、長度 1）。
+     刃尖 u(θ) ＝ u0·cos θ ＋ e2·sin θ，θ 從 0 掃到 span。 */
+  const e2x = ny * u0z - nz * u0y,
+        e2y = nz * u0x - nx * u0z,
+        e2z = nx * u0y - ny * u0x;
+  if (!swords) swords = [];
+  while (swords.length >= SW_KEEP) swords.shift();        // 滿了擠掉最早那把（同其他清單型道具）
+  swords.push({ x: px, y: py, z: pz, len: len, r0: r0, r1: r1,
+                band: ENG.SWORD_W * len * SW_BAND_K,
+                u0x: u0x, u0y: u0y, u0z: u0z,             // 起手方向（平面內的第一軸）
+                e2x: e2x, e2y: e2y, e2z: e2z,             // 平面內的第二軸
+                nx: nx, ny: ny, nz: nz,                   // 揮動平面的法線
+                span: span, ang: 0,
+                ux: u0x, uy: u0y, uz: u0z,                // 這一刻的刃尖方向（畫的時候用）
+                ph: 'rise', t: 0, fade: 0, glow: 0, hit: false });
+  sndTick();
+}
+/* 刃尖轉到 θ：在揮動平面上從 u0 轉向 e2。 */
+function swordAim(s, th) {
+  const c = Math.cos(th), n = Math.sin(th);
+  s.ang = th;
+  s.ux = s.u0x * c + s.e2x * n;
+  s.uy = s.u0y * c + s.e2y * n;
+  s.uz = s.u0z * c + s.e2z * n;
+}
+function stepSwords(dt) {
+  if (!swords) return;
+  for (let i = swords.length - 1; i >= 0; i--) {
+    const s = swords[i];
+    s.t += dt;
+    if (s.ph === 'rise') {
+      s.fade = Math.min(1, s.t / SW_RISE);
+      if (s.t >= SW_RISE) { s.ph = 'swing'; s.t = 0; s.fade = 1; sndSwing(); }
+    } else if (s.ph === 'swing') {
+      const p = Math.min(1, s.t / SW_SWING);
+      const th0 = s.ang;
+      swordAim(s, s.span * (p * p * (3 - 2 * p)));        // 起手慢、中段快、收手慢
+      swordCut(s, th0, s.ang, dt);
+      if (p >= 1) { s.ph = 'hold'; s.t = 0; }
+    } else if (s.ph === 'hold') {
+      if (s.t >= SW_HOLD) { s.ph = 'fade'; s.t = 0; }
+    } else {
+      const p = Math.min(1, s.t / SW_FADE);
+      s.fade = 1 - p;
+      s.glow = Math.min(1, p * 1.5);       // 淡的同時整把推向金色（同兵器的化成金光）
+      if (p >= 1) swords.splice(i, 1);
+    }
+  }
+  if (!swords.length) swords = null;
+}
+/* 這一幀刃掃過的那一小段：**揮動平面**上的扇形（r0～r1）× 平面兩側各一個刃寬，
+   裡面的建築整片削掉。平面通常是斜的，所以缺口也是斜的。
+   每一幀的角度段**首尾相接**，所以整趟下來扇形裡的每一塊剛好被算到一次
+   ——不會漏、也不會同一塊被切兩次。 */
+function swordCut(s, aFrom, aTo, dt) {
+  const sweep = aTo - aFrom;
+  if (sweep <= 1e-6 || dt <= 0) return;                   // θ 一律從 0 往 span 增加
+  const om = sweep / dt;                                  // 這一幀的角速度（弧度／秒）
+  const r02 = s.r0 * s.r0, r12 = s.r1 * s.r1;
+  let n = 0, own = 0, cx = 0, cy = 0, cz = 0;
+  for (const b of blocks) {
+    if (b.st !== SET) continue;
+    const vx = b.x - s.x, vy = b.y - s.y, vz = b.z - s.z;
+    // 先看「離揮動平面多遠」：這一刀就這麼薄，絕大多數積木在這裡就被篩掉
+    if (Math.abs(vx * s.nx + vy * s.ny + vz * s.nz) > s.band) continue;
+    const a = vx * s.u0x + vy * s.u0y + vz * s.u0z;       // 平面內座標
+    const c = vx * s.e2x + vy * s.e2y + vz * s.e2z;
+    const d2 = a * a + c * c;
+    if (d2 < r02 || d2 > r12) continue;
+    const th = Math.atan2(c, a);
+    if (th < aFrom || th > aTo) continue;                 // 這一幀掃過的那一小段角度
+    const r = Math.sqrt(d2);
+    const sp = Math.min(SW_HIT_MAX, om * r * SW_HIT_K);
+    /* 刃前進的方向（平面內的切線）＝ 對 θ 微分：−sin θ·u0 ＋ cos θ·e2。
+       用 a／c 直接寫就是 (−c·u0 ＋ a·e2) / r。 */
+    const tx = (-c * s.u0x + a * s.e2x) / r,
+          ty = (-c * s.u0y + a * s.e2y) / r,
+          tz = (-c * s.u0z + a * s.e2z) / r;
+    const gx = (a * s.u0x + c * s.e2x) / r,               // 平面內的徑向（往刃尖那一頭）
+          gy = (a * s.u0y + c * s.e2y) / r,
+          gz = (a * s.u0z + c * s.e2z) / r;
+    const ow = b.hh < 0;                     // 同 smash：breakBlock 會把 hh 清掉，要先看
+    /* 主要沿著刃前進的方向飛，另外帶兩成五的徑向（削出去的碎料才會散成一把扇形，
+       不是一整排平移），再加一股往上的抬升——抬升一律往上：斜著往下砍的那一刀，
+       切線本身是朝下的，照切線給的話碎料會被壓進地面。 */
+    breakBlock(b,
+      tx * sp + gx * sp * 0.25 + rr(-1.6, 1.6),
+      Math.abs(ty * sp + gy * sp * 0.25) * 0.35 + rr(2.4, 6.8) + sp * 0.12,
+      tz * sp + gz * sp * 0.25 + rr(-1.6, 1.6));
+    n++; if (ow) own++;
+    cx += b.x; cy += b.y; cz += b.z;
+  }
+  if (!n) return;
+  const at = { x: cx / n, y: cy / n, z: cz / n };
+  afterHit(n, at, s.band, own);
+  spawnDust(at, s.band, n);
+  /* 一趟揮擊只震一次、只響一聲：它是「會持續破壞」的道具（每一幀都在切），
+     每幀都震的話畫面會一路抖到揮完（同投石機與雷，見 README〈會持續破壞的不震畫面〉）。 */
+  if (!s.hit) {
+    s.hit = true;
+    ENG.shake(0.6 + Math.min(1.4, n * 0.02));
+    sndSmash();
+  }
+}
+
 /* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
 /* 記下「這一把用過了」。成就〈工具箱清空〉要的是每一種都試過，
    而水桶按住不放那條路不經過 useTool（見 startPourAt），所以抽成一支共用。 */
@@ -4782,6 +5009,8 @@ function useTool(hit) {
   if (tool === 'drop') { dropBall(hit.point); return 0; }
   // 第二下點在建築上就連高度一起當目標（v1.152，見 pickGate）
   if (tool === 'gate') { pickGate(hit.point, hit.kind === 'block'); return 0; }
+  // 兩下之中點在建築上的那一下決定劍柄的高度（v1.161，見 aimSword）
+  if (tool === 'sword') { aimSword(hit.point, hit.kind === 'block'); return 0; }
   return 0;
 }
 

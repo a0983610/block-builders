@@ -101,6 +101,7 @@ function step(dt) {
   stepArcs(dt);
   stepStorms(dt);
   stepGates(dt);
+  stepSwords(dt);
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepDozers(dt);
   stepTrucks(dt);
@@ -251,6 +252,7 @@ function draw() {
      所以兩邊各自判斷有沒有東西要畫。 */
   ENG.putGates(gates ? gateList() : EMPTY);
   ENG.putWeapons(weapons || EMPTY);
+  ENG.putSwords(swords || EMPTY);                   // 大劍（v1.161，欄位就是 stepSwords 那一份）
 }
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石

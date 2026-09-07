@@ -258,6 +258,47 @@ const ENG = (function () {
      { p: [0, -0.34, 0], s: [0.032, 0.20, 0.032], c: G_DARK },
      { p: [0, -0.455, 0], s: [0.056, 0.044, 0.046], c: G_GOLD }]
   ];
+  /* ── 大劍（v1.161）─────────────────────────────────
+     破壞道具「大劍」揮的那一把。跟王之財寶那組兵器**不共用**：
+     那一組是「8 塊上限、600 把的池子」（一次射三百把），這一把 14 塊——
+     把 WEAP_PARTS 撐到 14 等於那 600 把每幀多寫三千六百筆矩陣，
+     而這裡同時最多 SWORD_MAX 把。造型的規矩照 WEAP_KIND：全長正規化成 1、
+     刃尖朝 +Y、原點在正中間，規則那邊只給「樞紐在哪、刃指哪、多長」。
+     淡出走的是兵器那一套 shader（aFade／aGlow，見 weapShader）：使用者要的收尾是
+     「原地慢慢淡掉」，而那邊現成就是「整把化成金光」。 */
+  const SWORD_MAX = 3, SWORD_PARTS = 14;
+  let swordMesh = null, swordFade = null, swordGlow = null;
+  /* 造型座標上的四個高度／寬度。**規則那邊直接讀這幾個**算刃掃到哪（同 DOZ_W 的用意）：
+     畫出來的刃跟判定用的扇形必須是同一塊，不然玩家會看到刃掃過去卻有積木沒動。
+       PIVOT 樞紐（劍柄的旋轉點，取握把中段）、EDGE 刃根（護手上緣）、TIP 刃尖、W 刃最寬處 */
+  const SWORD_PIVOT = -0.30, SWORD_EDGE = -0.16, SWORD_TIP = 0.514, SWORD_W = 0.120;
+  /* 造型：騎士巨劍（雙刃直刃、中脊開槽、平直十字護手、皮革纏柄圓劍首）。
+     這一版是先做成 3D 預覽頁、跟一面 26 塊高的牆並排給使用者看過才落地的
+     （造型／動作先給看過才落地，同天災那幾隻、同吉祥物）。看圖改掉的三處記在
+     README〈大劍〉：刃尖收四階（收兩階像螺絲頭）、每一階跟上一階重疊（不然接縫開）、
+     刃的寬厚比拉到 5:1 以上（3:1 看起來是根鐵條不是刃）。
+     護手四款也是看圖挑的，使用者選「平直十字」——原本兩端往刃側上揚 0.45 弧度，
+     翼根又擺在橫樑外面留了一條縫，看起來像貼上去往上翹的耳朵。 */
+  const SW_STEEL = 0xdfe6ee, SW_RIDGE = 0x5b6673, SW_GRIP = 0x5c3218, SW_WRAP = 0x33200f;
+  const SWORD_PART = [
+    /* 刃：主體 ＋ 收尖四階（每階跟上一階重疊 0.005） */
+    { p: [0, 0.10, 0], s: [SWORD_W, 0.520, 0.022], c: SW_STEEL },
+    { p: [0, 0.385, 0], s: [0.098, 0.060, 0.022], c: SW_STEEL },
+    { p: [0, 0.437, 0], s: [0.072, 0.055, 0.021], c: SW_STEEL },
+    { p: [0, 0.478, 0], s: [0.045, 0.045, 0.020], c: SW_STEEL },
+    { p: [0, 0.502, 0], s: [0.022, 0.024, 0.018], c: SW_STEEL },
+    { p: [0, 0.090, 0], s: [0.030, 0.470, 0.030], c: SW_RIDGE },   // 中脊：比刃厚，兩面各凸 0.004
+    /* 護手：一根平直的橫樑 ＋ 刃根箍 */
+    { p: [0, -0.186, 0], s: [0.320, 0.044, 0.058], c: G_GOLD },
+    { p: [0, -0.172, 0], s: [0.070, 0.070, 0.062], c: G_DEEP },
+    /* 柄 */
+    { p: [0, -0.300, 0], s: [0.052, 0.205, 0.052], c: SW_GRIP },
+    { p: [0, -0.240, 0], s: [0.060, 0.018, 0.060], c: SW_WRAP },
+    { p: [0, -0.300, 0], s: [0.060, 0.018, 0.060], c: SW_WRAP },
+    { p: [0, -0.360, 0], s: [0.060, 0.018, 0.060], c: SW_WRAP },
+    { p: [0, -0.428, 0], s: [0.105, 0.055, 0.075], c: G_GOLD },    // 劍首盤
+    { p: [0, -0.470, 0], s: [0.055, 0.035, 0.055], c: G_DEEP }
+  ];
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
   const TW_SEG = 16;                // 龍捲風的分段數
@@ -1037,6 +1078,33 @@ const ENG = (function () {
     weapMesh.customDepthMaterial = weapDepth;
     scene.add(weapMesh);
 
+    /* 大劍（v1.161）：自己一顆網格，但**材質與陰影材質都跟兵器共用同一份 shader**
+       ——要的就是那邊現成的「整把化成金光淡掉」。aCut 這一把用不到（它不是從門裡
+       探出來的），所以填一次「不切」（法線 0、d = −1，dot 0 < −1 不成立）就不再動它。 */
+    const swordGeo = new T.BoxGeometry(1, 1, 1);
+    const swordCut = new T.InstancedBufferAttribute(new Float32Array(SWORD_MAX * SWORD_PARTS * 4), 4);
+    for (let i = 0; i < SWORD_MAX * SWORD_PARTS; i++) swordCut.array[i * 4 + 3] = -1;
+    swordFade = new T.InstancedBufferAttribute(new Float32Array(SWORD_MAX * SWORD_PARTS), 1);
+    swordGlow = new T.InstancedBufferAttribute(new Float32Array(SWORD_MAX * SWORD_PARTS), 1);
+    swordFade.setUsage(T.DynamicDrawUsage);
+    swordGlow.setUsage(T.DynamicDrawUsage);
+    swordGeo.setAttribute('aCut', swordCut);
+    swordGeo.setAttribute('aFade', swordFade);
+    swordGeo.setAttribute('aGlow', swordGlow);
+    swordMesh = new T.InstancedMesh(swordGeo,
+      voxelMaterial({ color: 0xffffff, transparent: true }, weapShader),
+      SWORD_MAX * SWORD_PARTS);
+    swordMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    swordMesh.castShadow = true;
+    swordMesh.customDepthMaterial = weapDepth;
+    swordMesh.count = 0; swordMesh.frustumCulled = false; swordMesh.visible = false;
+    /* 顏色只有這一種造型，開場寫一次就好（兵器那邊要每次換種重寫，是因為一格會輪流
+       裝不同的兵器）。 */
+    for (let i = 0; i < SWORD_MAX; i++)
+      for (let k = 0; k < SWORD_PARTS; k++)
+        swordMesh.setColorAt(i * SWORD_PARTS + k, tmpC.setHex(SWORD_PART[k].c));
+    scene.add(swordMesh);
+
     resize();
   }
 
@@ -1712,6 +1780,56 @@ const ENG = (function () {
     weapMesh.instanceMatrix.needsUpdate = true;
     weapCut.needsUpdate = true; weapFade.needsUpdate = true; weapGlow.needsUpdate = true;
     if (colDirty && weapMesh.instanceColor) weapMesh.instanceColor.needsUpdate = true;
+  }
+
+  /* 大劍（v1.161）。s：{x, y, z 樞紐（劍柄的旋轉點）,
+     ux, uy, uz 刃尖指的方向（單位向量）, nx, ny, nz 揮動平面的法線（單位向量）,
+     len 全長, fade 不透明度, glow 化成金光的程度}。
+     它是在**一個平面上**繞樞紐轉的：使用者「建築物點擊位置 與該位置同高度的點 與地面的
+     點 形成一個面 劍刃是在這個平面上揮動」。那個平面通常是**斜的**（建築上那一點高、
+     地面那一點低），所以砍出來的缺口也是斜的。平面怎麼算、刃尖怎麼轉都在規則那邊
+     （castSword／stepSwords），這裡只負責把「刃尖朝哪、刃面朝哪」擺出來：
+       Y → u（刃尖方向）　Z → n（刃面法線 ＝ 揮動平面的法線，所以是刃口在前）
+       X ＝ Y × Z
+     u 與 n 互相垂直（規則那邊算出來就是），所以這三個軸是正交的；平面是水平時
+     n ＝ ±(0,1,0)，也就退回「躺平橫掃」那個樣子。造型在 z 上是對稱的，
+     所以 n 取哪一個方向畫出來都一樣。
+     原點要往刃尖方向推 |SWORD_PIVOT|×len：造型的原點在正中間，而規則那邊給的是樞紐。 */
+  const _swX = new T.Vector3(), _swY = new T.Vector3(), _swZ = new T.Vector3();
+  function putSwords(list) {
+    const n = Math.min(list.length, SWORD_MAX);
+    swordMesh.visible = n > 0;
+    swordMesh.count = n * SWORD_PARTS;
+    if (!n) return;
+    for (let i = 0; i < n; i++) {
+      const s = list[i];
+      _swY.set(s.ux, s.uy, s.uz);
+      _swZ.set(s.nx, s.ny, s.nz);
+      _swX.crossVectors(_swY, _swZ);
+      tmpM.makeBasis(_swX, _swY, _swZ);
+      scratch.quaternion.setFromRotationMatrix(tmpM);
+      scratch.position.set(s.x - _swY.x * SWORD_PIVOT * s.len,
+                           s.y - _swY.y * SWORD_PIVOT * s.len,
+                           s.z - _swY.z * SWORD_PIVOT * s.len);
+      scratch.scale.setScalar(s.len);
+      scratch.updateMatrix();
+      const fd = s.fade === undefined ? 1 : Math.max(0, Math.min(1, s.fade));
+      const gl = s.glow === undefined ? 0 : Math.max(0, Math.min(1, s.glow));
+      for (let k = 0; k < SWORD_PARTS; k++) {
+        const P = SWORD_PART[k];
+        scratchB.position.set(P.p[0], P.p[1], P.p[2]);
+        scratchB.rotation.set(0, 0, 0);
+        scratchB.scale.set(P.s[0], P.s[1], P.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        const at = i * SWORD_PARTS + k;
+        swordMesh.setMatrixAt(at, tmpM);
+        swordFade.array[at] = fd;
+        swordGlow.array[at] = gl;
+      }
+    }
+    swordMesh.instanceMatrix.needsUpdate = true;
+    swordFade.needsUpdate = true; swordGlow.needsUpdate = true;
   }
 
   /* 火球粒子。跟塵霧同一套資料格式，只是走那顆不透明的材質 */
@@ -3144,10 +3262,12 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
     putBalls, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
-    putStars, putBolts, putMarks, putGates, putWeapons, putBeasts,
+    putStars, putBolts, putMarks, putGates, putWeapons, putSwords, putBeasts,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
+    /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
+    SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_TIP, SWORD_W,
     MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
@@ -3158,12 +3278,12 @@ const ENG = (function () {
        NUKE_PARTS 是 init 時才填的，所以整份用 getter 取，不能在建物件那一刻就取值。 */
     get MODELS() {
       return { man: BODY, treb: TREB_PART, doz: DOZ_PART, truck: TRK_PART,
-               bomb: BOMB_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS,
+               bomb: BOMB_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
                ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh, swordMesh }; }
   };
 })();

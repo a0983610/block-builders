@@ -48,7 +48,7 @@ const BADGES = [
   { id: 'smash50k', n: '粉塵滿天', d: '累計擊飛 50000 塊積木', chk: s => s.smashed >= 50000 },
   { id: 'wreck5', n: '拆屋大亨', d: '拆掉 5 座建築', chk: s => s.destroyed >= 5 },
   { id: 'wreck25', n: '都市更新', d: '拆掉 25 座建築', chk: s => s.destroyed >= 25 },
-  { id: 'allTools', n: '工具箱清空', d: '十六種道具都用過', chk: s => s.tools.length >= TOOLS.length },
+  { id: 'allTools', n: '工具箱清空', d: '十七種道具都用過', chk: s => s.tools.length >= TOOLS.length },
   { id: 'boss20', n: '工頭嚴厲', d: '戳倒小人 20 次', chk: s => s.poked >= 20 },
   { id: 'poke100', n: '工安黑名單', d: '戳倒小人 100 次', chk: s => s.poked >= 100 },
   { id: 'million', n: '百萬工程', d: '累計人力支出破 $1,000,000', chk: s => s.spent >= 1e6 },
