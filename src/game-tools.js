@@ -23,7 +23,8 @@ const TOOLS = [
   { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：只敲地板，建築不受影響',
     lock: null },
   { id: 'bighammer', n: '大槌', k: '🔨', big: true,
-    tip: '點建築：兩倍大的槌子，範圍也是兩倍　·　點地面：地震，震掉 10% 的積木',
+    /* 「範圍三倍」是 v1.165 收小槌之後的實況（11 ÷ 3.6 ≈ 3.06）：大槌自己沒變。 */
+    tip: '點建築：兩倍大的槌子，範圍是小槌的三倍　·　點地面：地震，震掉 10% 的積木',
     lock: { txt: '累計擊飛 2,000 塊解鎖', ok: () => stats.smashed >= 2000 } },
   { id: 'ball', n: '保齡球', k: '🎳', tip: '點兩下：先點出手的地方，再點要滾過去的方向',
     lock: { txt: '拆掉 2 座建築解鎖', ok: () => stats.destroyed >= 2 } },
@@ -46,10 +47,12 @@ const TOOLS = [
   { id: 'magic', n: '爆裂魔法', k: '💥', tip: '點一下：魔法陣一層層展開，6 秒後爆炸',
     lock: { txt: '拆掉 10 座建築解鎖', ok: () => stats.destroyed >= 10 } },
   { id: 'storm', n: '打雷', k: '⚡',
-    tip: '點地面：那裡慢慢聚出一朵烏雲，接著隨機劈 5～7 道雷，劈中的地方炸出一個小缺口並燒起來',
+    /* v1.165 起一次三朵：從周圍飄進來、往中心靠攏，各自劈自己的雷（見 STORM_TRIO）。 */
+    tip: '點地面：周圍飄來三朵烏雲、往中心聚攏，各自隨機劈 5～7 道雷，劈中的地方炸出一個小缺口並燒起來',
     lock: { txt: '累計擊飛 23,000 塊解鎖', ok: () => stats.smashed >= 23000 } },
   { id: 'drop', n: '天降鐵球', k: '⚫',
-    tip: '點地面：一顆鐵球從正上方直直砸下來，撞爛沿路的積木，不再動就收掉',
+    /* v1.165 起不再是一路鑽到底：削過砸中的那一片，再順著屋頂的坡度滑下去（見 DROP_DIG）。 */
+    tip: '點地面：一顆鐵球從正上方直直砸下來，削掉砸中的那一片，接著順著屋頂的坡度滑下去，不再動就收掉',
     lock: { txt: '拆掉 12 座建築解鎖', ok: () => stats.destroyed >= 12 } },
   { id: 'gate', n: '王之財寶', k: '🗡',
     tip: '點兩下：第一下點地面決定門陣開在哪，第二下決定打哪裡——點在建築上就打那個位置附近的一片空間，點地面就打建築下段。兵器從門裡伸出來、就位後停一下，接著朝目標連射 7 秒；打中的地方炸開一個小缺口（不起火），兵器掉在地上慢慢消失',
@@ -72,7 +75,12 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       storm: 1, drop: 1, gate: 1, sword: 1 };
 let tool = 'hammer';
 
-let hammerR = 5.5, hammerPow = 15;
+/* 小槌的衝擊半徑。v1.165 從 5.5 收到 3.6（使用者：「槌子　減小一點破壞範圍
+   （可能打約 0.8~0.5 之間）」——取中間的 0.65 倍）。
+   大槌**不跟著縮**：它的半徑改成寫死的 BIG_R（＝本來的 hammerR × 2），
+   這次指名要改的只有小槌，見 resolveSwing。 */
+let hammerR = 3.6, hammerPow = 15;
+const BIG_R = 11;     // 大槌的衝擊半徑（絕對值，不再跟著小槌走）
 let swing = null;     // 正在揮下去的槌子
 let balls = null;     // 在場的鐵球（可以同時好幾顆，v1.116）
 let twists = null;    // 作用中的龍捲風（可以同時好幾道）
@@ -399,9 +407,11 @@ function resolveSwing() {
   const p = { x: swing.px, y: swing.py, z: swing.pz };
   // 砸在空地上：大槌是把整棟震一震（震到的那些自己垮下來），小槌只是敲一下地板
   if (swing.ground) return swing.big ? startQuake(p) : thumpGround(p);
-  const m = swing.big ? 2 : 1;                   // 大槌：範圍兩倍、力道再多五成
+  /* 大槌：範圍 BIG_R、力道再多五成。範圍本來寫成 hammerR × 2，
+     v1.165 小槌縮到 3.6 之後跟著縮就變成 7.2 了——這次要改的只有小槌，
+     所以大槌改用絕對值（11 ＝ 舊的 5.5 × 2，跟以前一模一樣）。 */
   return smash(p, { x: swing.dx, y: swing.dy, z: swing.dz },
-               hammerR * m, hammerPow * (swing.big ? 1.5 : 1));
+               swing.big ? BIG_R : hammerR, hammerPow * (swing.big ? 1.5 : 1));
 }
 function stepSwing(dt) {
   if (!swing) return;
@@ -599,6 +609,48 @@ const BALL_BRAKE = 0.0042, BALL_BRAKE_MIN = 0.42;
    轉多少：撞越多轉越多（n / BALL_VEER_N 封頂），滿額是每秒 BALL_VEER 弧度。 */
 const BALL_VEER = 2.6;              // 滿額時每秒轉幾弧度（約 149°／秒）
 const BALL_VEER_N = 40;             // 這一幀撞掉幾塊算滿額
+/* 正面撞上一整面牆要**彈開**（v1.165，使用者：「上次有說要計算碰撞後平面的移動方向
+   偏移沒有實現（目標是更多碰撞變化 像是彈珠檯的彈珠概念）」）。
+   上面那條（v1.123 的 BALL_VEER）只取法線**垂直於行進方向的那一半**：正對著牆撞上去時
+   那一半剛好是 0——球一點都不偏，直直鑿穿過去。使用者說「沒有實現」指的就是這個缺口：
+   會偏的只有擦邊，真正撞上牆的那一下反而沒有反應。
+   使用者要的是「碰撞**後平面**的移動方向偏移」，所以這一條真的去算那面牆的朝向：
+   ① 什麼時候算「撞上去」：**從外面斜著撞上一片實的那一幀**——上一幀幾乎沒碰到東西
+      （BALL_ENTER）、這一幀就打掉一整片（BALL_WALL_N）、而且撞的角度夠斜
+      （撞進牆面的速度占比在 BALL_HEAD 與 BALL_SQUARE 之間）。
+      · 用「進入的那一幀」而不是「撞得夠多的任何一幀」：球一路鑿進建築裡的時候
+        每一幀都在撞，那不是撞到牆、那是在穿過材料；而且那時候球身後已經是自己
+        鑿出來的空坑道，算出來的法線會被坑道帶歪（方向就會錯）。
+      · 正對著撞上去（占比 > BALL_SQUARE）**不彈，照樣鑿穿過去**：那是保齡球本來的
+        用法——一顆 34 單位／秒的鐵球正面撞上一片牆，該把牆撞開，不是被牆彈回來。
+        實測把正面那一下也彈掉的話，球會在建築外殼上彈開就跑了，整趟只撞飛 6 塊
+        （改之前是 300 多塊）。斜著擦上去才彈，就是跳彈（ricochet）。
+   ② 牆的朝向從哪來：球周圍外圈那一層（半徑 R～1.61R）**還沒被打掉**的積木，
+      方向加起來再反過來，就是「材料在那一邊、法線朝這一邊」。
+      這個算法的方向**不可能算錯邊**（它就是材料分佈的梯度），斜屋頂／斜牆也讀得出來。
+      不能拿這一幀打掉的那些算：那一堆是「往前掃過的那一小片新月」，方向永遠等於
+      行進的反方向，照它鏡射就每次都原路折返，牆是斜的還是正的完全反映不出來
+      （第一版就是這樣，實測十趟九趟都轉 180°）。
+      也試過改用主軸分解（協方差的特徵向量）配一個平面：那個方法**會算錯邊**
+      ——特徵向量沒有正負，而「哪一側是材料」得另外判斷，實測擦過金字塔右側時
+      把球往左（建築裡面）彈，正是使用者回報的「保齡球方向錯了」。
+   ③ 彈法用恢復係數：法線方向的分量反過來只留 BALL_REST，切線方向原封不動。
+      正面撞牆就彈回去（慢一截）、斜著擦上去就順著牆面轉個角度繼續跑，
+      而且反彈永遠不會比撞上去更快（天降鐵球 v1.118 那次照反射「加速度」算，
+      砸得越快彈得越猛，把球射出場外，見 DROP_PUSH 那一段）。
+   ④ 再加 ±BALL_JIT 的隨機角，同一個角度撞兩次不會走出一模一樣的路。
+   ⑤ 彈完鎖 BALL_CD 秒，免得同一片牆連彈好幾次。
+   門檻是掃出來的（新天鵝堡／帝國大廈／羅馬競技場各五條入射線，逐幀記下
+   打掉幾塊／外圈幾塊／撞得多正，再離線套不同門檻算「一趟會彈幾次」）：
+   每幀打掉的中位數只有 2～5 塊、九成位 6～10、最多 17，所以「一整片」收在 6 塊。 */
+const BALL_HEAD = 0.2;              // 撞進牆面的速度至少要占這麼多（cos）才算撞上去
+const BALL_SQUARE = 0.87;           // 占比超過這個就是正面撞上（30° 以內）：不彈，鑿穿過去
+const BALL_WALL_N = 6;              // 這一幀撞掉幾塊才算「撞上一片實的」
+const BALL_ENTER = 3;               // 上一幀最多撞掉幾塊才算「本來在外面」
+const BALL_SHELL = 4;               // 外圈那一層至少要有幾塊才算得出牆的朝向
+const BALL_REST = 0.6;              // 法線方向的恢復係數（切線方向不動）
+const BALL_JIT = 0.35;              // 彈開方向的隨機角（±弧度，約 ±20°）
+const BALL_CD = 0.22;               // 彈完多久之內不再彈
 /* 已經點好、還在等第二點的那一點。保齡球與龍捲風共用（v1.58 起兩個都是點兩下）：
    {x, z, ph 光環的脈動相位, r 光環半徑, c 光環顏色}。 */
 let aim = null;
@@ -631,6 +683,7 @@ function launchBall(from, toward) {
     x: from.x, y: BALL_R + BALL_DROP, z: from.z,
     vx: Math.cos(a) * 34, vz: Math.sin(a) * 34, vy: rr(-3, -0.5),   // 是往下丟不是往上拋
     r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 0,
+    cd: 0, pin: 0, pn: 0,            // cd＝彈開後的冷卻、pin＝彈開幾次、pn＝上一幀打掉幾塊
     // 滾動軸（水平、垂直於前進方向）。畫的時候直接讀這兩個，見 ENG.putBalls
     ax: Math.sin(a), az: -Math.cos(a)
   });
@@ -657,22 +710,49 @@ function launchBall(from, toward) {
 const DROP_TOP = 58;                // 矮建築的下限（維持 v1.117 的手感）
 const DROP_UP = 26;                 // 高過屋頂多少
 const DROP_BOUNCE = 0.22;           // 落地回彈保留多少垂直速度（保齡球是 0.42）
-/* 撞到東西要彈起來（v1.118，使用者：「少了鐵球撞到東西彈起來的感覺（目前就一路
-   摧毀直直落下 可以撞到破壞後彈起來一點撞到其他位置）」）。
-   門檻是「這一幀撞掉幾塊」：實測 60fps 直直落下時，帝國大廈那根天線一幀只碰到 1 塊、
-   真正的樓板是 10～27 塊（金字塔 12、競技場 12、凱旋門 12 都是中位數）。
-   收在 DROP_BITE＝10 就是「擦過細桿子不算，砸到一片實的才算」。
-   彈起來的高度**直接指定**、不照反射算：照反射算的話砸得越快彈得越高，
-   從 58 掉下來那一下會把球射出場外（第一版就是這樣，實測橫向跑了 30～87 單位、
-   只撞掉 10 塊就飛走了，反而不摧毀了）。 */
-const DROP_BITE = 10;               // 這一幀撞掉幾塊才算「砸到一片實的」
-const DROP_POP = 3.6;               // 第一下彈多高（換算成 v = √(2gh)）
-const DROP_AWAY = 5;                // 第一下往旁邊帶多少速度
-const DROP_DECAY = 0.62;            // 每彈一次高度與橫移各乘這個——彈幾次就沒力了
-/* 最多彈幾次。遞減到後面只剩十幾公分的碎跳，球會賴在屋頂上磨到壽命結束、
-   在半空中憑空消失，連落地那個坑都留不下（實測凱旋門八次裡有一次是這樣）。
-   彈滿這麼多次就不再彈，讓它一路鑿到地面收尾。 */
-const DROP_POPS = 4;
+/* ── 撞到東西的反應 ───────────────────────────────────
+   v1.118（使用者：「少了鐵球撞到東西彈起來的感覺（目前就一路摧毀直直落下
+   可以撞到破壞後彈起來一點撞到其他位置）」）是「彈起來」：彈多高、往旁邊帶多少
+   都是寫死的常數，跟撞到什麼、撞得多正**完全無關**——所以不管屋頂是平的、斜的、
+   圓的，球都在原地鑽一個洞下去，建築造型影響不了它。
+   v1.165 改成**照接觸法線被材料頂回去**（使用者：「天降鐵球　減少垂直向破壞力
+   （目的是更多根據建築造型的水平向滾動 例如溜滑梯）」）：
+   每壓碎一塊積木，球就被沿著接觸法線頂回去 DROP_PUSH 的速度——
+   「頂回去多少」跟「這一幀壓碎多少材料」成正比，等於把積木當成會潰縮的緩衝材。
+   平屋頂的法線朝正上方 → 頂回去的是垂直速度 → 鑽下去的那一下被材料擋住，
+   **這就是「減少垂直向破壞力」**：以前它從 58 掉下來的動能可以一路貫穿到地面，
+   現在每壓碎一層就被擋掉一截，鑽不了多深。
+   斜屋頂的法線是斜的 → 頂回去的一半是水平速度 → 一邊啃一邊被推著往坡下走，
+   啃出一條斜的溝，這就是溜滑梯。
+   還有第二道：**撞進表面的速度有上限**（DROP_SINK）。材料再脆也不可能讓一顆球
+   以每秒 49 的速度往裡面貫穿——超過的那一份收掉，而**沿著表面那一份原封不動**。
+   斜屋頂就是靠這一條變成滑梯：從 58 掉到 36° 的坡面上，49 拆成「順坡 28.8 ＋
+   垂直坡面 39.6」，垂直那份被壓到 8，順坡那份整份留著 → 球沿著坡面啃出一條溝。
+   為什麼**不是**只用這一條（把撞進表面的速度整份收掉、當成彈不破的牆）：試過，
+   球會貼著表面溜過去、一幀只刮到一兩塊——金字塔一趟只打掉 30～41 塊（舊版 350）。
+   兩條一起才對：材料會被壓碎（所以有破壞），但也擋得住球（所以鑽不深、會被帶著走）。
+   平屋頂上兩條的平衡點約是每秒沉 1.7、啃掉 74 塊，跟舊版一整趟的量同一個量級，
+   但**深度**只剩五分之一——這就是「減少垂直向破壞力」。
+   兩個上限擋住 v1.118 記過的「被彈飛」（那一版照反射加速度算，橫向跑 30～87 單位
+   就飛出場，反而不摧毀了）：水平 DROP_HMAX、垂直 DROP_VUP。 */
+const DROP_PUSH = 0.35;             // 每壓碎一塊積木，沿法線被頂回去多少速度
+const DROP_PUSH_MAX = 10;           // 單幀頂回去的上限（掉幀時一幀吃很多，不能整份給）
+const DROP_SINK = 8;                // 往表面裡鑽的速度上限（超過的收掉）
+/* 砸得夠猛（撞進表面超過 DROP_SLAM）就再往外彈 DROP_HOP。
+   v1.118 使用者要的是「撞到破壞後**彈起來一點**撞到其他位置」，上面那兩條做不出這一下：
+   頂回去的量跟著壓碎的材料走、撞進去的速度只是被壓到上限，兩個都不會讓球轉為往上走
+   （實測整趟 0 幀在往上）。這一條只在「真的砸下去那一下」補一個小跳，
+   貼著坡面滑的時候撞進表面的速度本來就小，不會一路跳成打水漂。 */
+const DROP_SLAM = 20;
+const DROP_HOP = 6;
+const DROP_TOUCH = 4;               // 這一幀碰到幾塊才算碰到表面（擦過細桿子不算）
+/* 彈起來的速度上限。矮建築是從 58 掉下來的（DROP_TOP），砸到屋頂時 −49；
+   不設限的話那一下會把球拋離屋頂三公尺高、整段飛過去——實測金字塔一趟只打掉 7 塊、
+   落在 48 單位外，跟 v1.118 那次「被彈飛」一模一樣。
+   收在 7（跳起來不到一公尺）它才會貼著屋頂一路蹭下去。 */
+const DROP_VUP = 7;
+const DROP_AWAY = 5;                // 平屋頂沒有坡度可用時，隨機往旁邊帶多少
+const DROP_HMAX = 8;                // 水平速度上限（擋住「被彈飛出場」）
 function dropBall(point) {
   if (!balls) balls = [];
   if (balls.length >= BALL_MAX) balls.shift();     // 滿了把最早那顆擠掉（同保齡球）
@@ -686,7 +766,8 @@ function dropBall(point) {
        「落地之後還能滾多久」都是同一份預算。 */
     r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE + Math.sqrt(2 * top / GRAV), hops: 0,
     ax: 1, az: 0,                    // 直直掉不滾（ang 也不會動），軸給個定值就好
-    drop: 1, pops: 0                 // pops＝在積木上彈過幾次（跟落地的 hops 分開算）
+    drop: 1, pops: 0,                // pops＝被表面頂過幾幀（跟落地的 hops 分開算）
+    cd: 0, pin: 0, pn: 0             // 跳彈那條（保齡球專用）的欄位，兩種球的形狀留一致
   });
   sndSwing();
 }
@@ -710,6 +791,7 @@ function stepBall(dt) {
   for (let i = balls.length - 1; i >= 0; i--) {
     const o = balls[i];
     o.life -= dt;
+    if (o.cd > 0) o.cd -= dt;        // 彈開之後的冷卻（見 BALL_CD）
     o.vy -= GRAV * dt;
     o.x += o.vx * dt; o.z += o.vz * dt; o.y += o.vy * dt;
     if (o.y <= o.r) {                              // 落地：彈一下，越彈越低
@@ -733,14 +815,29 @@ function stepBall(dt) {
     o.ang += sp / o.r * dt;                        // 滾動角度：走多遠就轉多少
     const R = o.r + 0.7, R2 = R * R;
     let n = 0, own = 0;                 // own＝其中有幾塊是地標的（見 afterHit）
-    let hx = 0, hz = 0;                 // 接觸法線的水平分量（撞到的積木指向球心）
+    let touch = 0;                      // 這一幀碰到幾塊（含沒被打掉的，天降鐵球用）
+    let hx = 0, hy = 0, hz = 0;         // 接觸法線（撞到的積木指向球心；hy 是 v1.165 加的）
+    /* 外圈那一層（沒被打掉的積木）合起來指向「牆在哪一邊」，反過來就是法線
+       ——見 BALL_HEAD。 */
+    let gx = 0, gz = 0, gn = 0;
     for (const b of blocks) {
       if (b.st !== SET && b.st !== FREE) continue;
       const dx = b.x - o.x, dy = b.y - o.y, dz = b.z - o.z;
       const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 > R2) { if (b.st === SET && d2 < R2 * 2.6) b.wob = 0.4; continue; }
+      if (d2 > R2) {
+        if (b.st === SET && d2 < R2 * 2.6) {
+          b.wob = 0.4;
+          /* 順手把外圈這一層的方向累起來（v1.165）：這些是球**還沒**打掉的積木，
+             加起來就是牆在哪一邊，反過來就是法線——彈開要用這個，見 BALL_HEAD。
+             只取水平方向：牆是直立的，垂直分量對「往哪邊彈」沒有意義。 */
+          const dl = Math.hypot(dx, dz);
+          if (dl > 1e-6) { gx -= dx / dl; gz -= dz / dl; gn++; }
+        }
+        continue;
+      }
       const d = Math.max(0.4, Math.sqrt(d2));
-      hx -= dx / d; hz -= dz / d;                // 積木在哪一邊，球就被往反方向頂
+      hx -= dx / d; hy -= dy / d; hz -= dz / d;  // 積木在哪一邊，球就被往反方向頂
+      touch++;
       const wasSet = b.st === SET;
       const wasOwn = b.hh < 0;                   // 同 smash：breakBlock 會把 hh 清掉
       breakBlock(b,
@@ -778,11 +875,32 @@ function stepBall(dt) {
       const brake = o.drop ? Math.max(0.3, 1 - n * 0.006)          // 撞越多掉速越快
                            : Math.max(BALL_BRAKE_MIN, 1 - n * BALL_BRAKE);
       o.vx *= brake; o.vz *= brake;
-      /* 保齡球撞完要偏一下方向（見 BALL_VEER）。天降鐵球不吃這一段：
-         它走的是下面那條「彈起來、往旁邊帶」，那才是砸下去該有的反應。 */
+      /* 保齡球撞完要偏一下方向（見 BALL_VEER）／正面撞上牆就彈開（見 BALL_HEAD）。
+         天降鐵球不吃這一段：它走的是下面那條照接觸法線反應（滑下去／彈起來），
+         那才是砸下去該有的反應。 */
       if (!o.drop) {
         const sp2 = Math.hypot(o.vx, o.vz), hxz = Math.hypot(hx, hz);
-        if (sp2 > 1 && hxz > 0.25) {
+        /* 斜著撞上一片實的：照那面牆的法線彈開（v1.165，見 BALL_HEAD 那一段）。
+           法線＝外圈那一層還沒被打掉的積木的方向總和（反過來）。 */
+        let hitWall = false, nx = 0, nz = 0;
+        if (n >= BALL_WALL_N && (o.pn || 0) <= BALL_ENTER && !(o.cd > 0) &&
+            gn >= BALL_SHELL && sp2 > 1) {
+          const gl = Math.hypot(gx, gz);
+          if (gl > 1e-6) {
+            nx = gx / gl; nz = gz / gl;                         // 法線：一定朝材料的反方向
+            const into = -(o.vx * nx + o.vz * nz) / sp2;        // 撞進牆面的速度占比
+            if (into > BALL_HEAD && into < BALL_SQUARE) hitWall = true;
+          }
+        }
+        if (hitWall) {
+          const dot = o.vx * nx + o.vz * nz;                    // 法線方向的分量（負的＝正衝著牆）
+          const vx = o.vx - (1 + BALL_REST) * dot * nx;
+          const vz = o.vz - (1 + BALL_REST) * dot * nz;
+          const out = Math.hypot(vx, vz), a = Math.atan2(vz, vx) + rr(-BALL_JIT, BALL_JIT);
+          o.vx = Math.cos(a) * out; o.vz = Math.sin(a) * out;
+          o.cd = BALL_CD; o.pin = (o.pin || 0) + 1;
+          sndThud(o.r * 2);
+        } else if (sp2 > 1 && hxz > 0.25) {
           const px = -o.vz / sp2, pz = o.vx / sp2;     // 行進方向的左手邊
           const side = (hx * px + hz * pz) / hxz;      // −1～1：法線偏在左邊還是右邊
           const a = side * Math.min(1, n / BALL_VEER_N) * BALL_VEER * dt;
@@ -791,23 +909,35 @@ function stepBall(dt) {
           o.vz = o.vx * sn + o.vz * cs; o.vx = vx;
         }
       }
-      /* 天降鐵球砸到一片實的就彈起來（v1.118，見 DROP_BITE 那一段的說明）。
-         每彈一次高度與橫移都乘 DROP_DECAY：前幾下跳得開、跳幾次之後就沒力了，
-         接著才一路鑿到地面——不遞減的話它會在屋頂上一路跳到壽命結束，
-         連落地那個坑都留不下。
-         偏的方向優先取接觸法線的水平分量：從屋簷邊緣砸下去會往外彈，那是對的方向感；
-         法線接近正上方（砸在平屋頂正中央）時沒有方向可用，才隨機抽一個。
-         保齡球不吃這一段：它貼著地面滾，n 常常上百，跟著跳起來就變成在打水漂。 */
-      if (o.drop && n >= DROP_BITE && o.vy < 0 && o.pops < DROP_POPS) {
-        const k = Math.pow(DROP_DECAY, o.pops++);
-        o.vy = Math.sqrt(2 * GRAV * DROP_POP * k);
-        const hxz = Math.hypot(hx, hz);
-        const a = hxz > 0.25 ? Math.atan2(hz, hx) + rr(-0.9, 0.9)
-                             : Math.random() * Math.PI * 2;
-        o.vx += Math.cos(a) * DROP_AWAY * k;
-        o.vz += Math.sin(a) * DROP_AWAY * k;
-      }
     }
+    /* 天降鐵球被壓碎的材料頂回去（v1.165，見 DROP_PUSH 那一段）。
+       這一段放在 `if (n)` **外面**：碰到表面卻一塊都沒打掉的那幾幀（腳下那層剛剛
+       被自己啃掉）也要頂，不然球會從自己啃出來的洞掉穿過去。
+       保齡球不吃這一段：它貼著地面滾、每一幀都在撞，跟著彈就變成在打水漂。 */
+    if (o.drop && (n > 0 || touch >= DROP_TOUCH)) {
+      const nl = Math.hypot(hx, hy, hz) || 1;
+      const nx = hx / nl, ny = hy / nl, nz = hz / nl;
+      const push = Math.min(DROP_PUSH_MAX, n * DROP_PUSH);      // ① 壓碎材料頂回去
+      o.vx += nx * push; o.vy += ny * push; o.vz += nz * push;
+      /* ② 往表面裡鑽的速度上限：超過的收掉，沿著表面那一份不動（＝滑梯）。
+         砸得夠猛的那一下再多彈 DROP_HOP（v1.118 要的「彈起來一點」，見 DROP_SLAM）。 */
+      const vn = o.vx * nx + o.vy * ny + o.vz * nz;
+      if (vn < -DROP_SINK) {
+        const k = -vn - DROP_SINK + (vn < -DROP_SLAM ? DROP_HOP : 0);
+        o.vx += nx * k; o.vy += ny * k; o.vz += nz * k;
+      }
+      /* 平屋頂正中央沒有坡度可用（法線朝正上方），隨機帶一點：
+         不帶的話它每一次都在同一個點原地往下鑿，跟改之前的鑽頭一模一樣。 */
+      if (Math.hypot(nx, nz) < 0.12) {
+        const a = Math.random() * Math.PI * 2, s = Math.min(1, push / 6) * DROP_AWAY;
+        o.vx += Math.cos(a) * s; o.vz += Math.sin(a) * s;
+      }
+      if (o.vy > DROP_VUP) o.vy = DROP_VUP;
+      const sp2 = Math.hypot(o.vx, o.vz);
+      if (sp2 > DROP_HMAX) { o.vx *= DROP_HMAX / sp2; o.vz *= DROP_HMAX / sp2; }
+      o.pops++;                                       // 被頂過幾幀（測試用）
+    }
+    o.pn = n;                        // 這一幀打掉幾塊：下一幀用來認「是不是剛從外面撞進來」
     const roll = Math.pow(BALL_ROLL, dt);          // 滾動阻力
     o.vx *= roll; o.vz *= roll;
     sp = Math.hypot(o.vx, o.vz);
@@ -3471,8 +3601,10 @@ function boltList() {
 }
 
 /* ── 打雷 ───────────────────────────────────────────────
-   使用者指定的順序就是這支的骨架：點地面 → 慢慢出現一朵烏雲 → 隨機劈 5～7 道雷 →
+   使用者指定的順序就是這支的骨架：點地面 → 慢慢出現烏雲 → 隨機劈 5～7 道雷 →
    被劈到的點小破壞（幾格積木）＋燒起來。
+   v1.165 起「一朵」變成「一組三朵」：從點擊處的周圍飄進來、往中心點靠攏，
+   出場還差一點時間差，各自劈自己的雷（見 STORM_TRIO）。
 
    雲用塵霧粒子堆（跟蘑菇雲同一套，不另外開一種畫面物件）：一團一團地聚出來，
    聚滿了才開始劈。一次生一整朵的話它會「啪」地整朵出現在半空，看起來像貼圖
@@ -3480,18 +3612,36 @@ function boltList() {
 
    閃電重用爆裂魔法那套折線（boltPts／bolts）：一道雷是「一條主幹 ＋ 兩條從主幹
    中段折出去、停在半空的分岔」。只畫主幹的話是一條光滑的折線，看起來像電線不像雷。
-   段數：主幹 11 ＋ 分岔 2×4 ＝ 19 段，三朵雲各自劈到最密也就 114 段，
-   加上三處爆裂魔法的餘電 126 段仍在引擎的 MAXBOLT（288）以內。 */
-const STORM_MAX = 3;             // 同時最多幾朵
+   段數：主幹 11 ＋ 分岔 2×4 ＝ 19 段，九朵雲（v1.165：一次三朵、最多三次點擊）
+   各自劈到最密是 9×2×19 ＝ 342 段，加上三處爆裂魔法的餘電 126 段，
+   引擎的 MAXBOLT 跟著 288 → 480。 */
+/* 一次點擊出三朵（v1.165，使用者：「烏雲出現方式 調整成周圍出現後再往中心點靠攏
+   一次出現三朵烏雲 分別打雷（出現可以故意設計微小時間差）」）。
+   三朵是一組：各自從點擊處的周圍飄進來、各自劈自己的雷，只有召喚是同一下。
+   同時最多 9 朵 ＝ 還是三次點擊的量（同 v1.123 的「最多三朵」，只是一朵變一組）。 */
+const STORM_TRIO = 3;            // 一次幾朵
+const STORM_LAG = 0.18;          // 三朵之間的出場時間差（使用者：「微小時間差」）
+const STORM_MAX = STORM_TRIO * 3;   // 同時最多幾朵
 /* 雲底高度（v1.118 改成跟著建築走）。本來是固定 26，但地標最高到 138（大笨鐘 9000 塊）
    ——雲整個埋在建築裡，電等於從樓層之間冒出來，看不出打在哪；使用者回報的就是這件事。
    現在是「屋頂再上去 STORM_UP」，矮建築另外有個下限，不然雲會貼在屋簷上、電只剩一小截。 */
 const STORM_Y0 = 34;             // 最低就這麼高（矮建築用）
 const STORM_UP = 16;             // 高過屋頂多少
-/* 雲的半徑。v1.123 從 12 放到 17（使用者：「烏雲面積 閃電破壞面積 加大(2倍)」）——
-   照字面是**面積**兩倍，所以半徑乘 √2（12 × 1.414 = 16.97）。
-   厚度（STORM_TH）不跟著放：使用者指定的是面積，而且薄而寬本來就比較像一層雷雨雲。 */
-const STORM_R = 17;
+/* **一朵**的半徑。v1.123 從 12 放到 17（使用者：「烏雲面積 閃電破壞面積 加大(2倍)」）
+   ——照字面是**面積**兩倍，所以半徑乘 √2（12 × 1.414 = 16.97）。
+   v1.165 一朵變三朵，單朵收到 9.9（17 × 0.58）：三朵落位在 STORM_SEP 的圓周上，
+   整組罩住的還是半徑 18.4 那一圈，跟改之前的 17 同一個量級——
+   使用者要的是「出現方式」變成三朵靠攏，不是把雷雨的規模放大。
+   厚度（STORM_TH）不跟著收：使用者指定的是面積，薄而寬本來就比較像一層雷雨雲。 */
+const STORM_R = 9.9;
+/* 三朵的落位（離點擊處多遠）與出場位置（再往外多遠）。
+   落位 8.5：三朵的雲心互相隔 14.7，各自半徑 9.9——看得出是三朵，又疊成一片。
+   出場再往外 26：飄進來那一段要看得出「從周圍往中心點靠攏」，
+   太近就變成原地長大。靠攏用指數逼近（每秒追上的比例 STORM_DRIFT），
+   1.2 的話 2.6 秒（＝聚滿一朵的時間）剩不到 1.2 單位，正好聚滿就到位。 */
+const STORM_SEP = 8.5;
+const STORM_COME = 26;
+const STORM_DRIFT = 1.2;
 const STORM_TH = 3.4;            // 雲心的厚度（往邊緣收，見 stormSeeds）
 /* 雲要聚多久才聚滿（使用者：「慢慢出現」）。v1.123 從 1.6 拉到 2.6：
    要看得出「先外圈、再往中心收」（見 stormSeeds），1.6 秒整朵就長完了，
@@ -3512,8 +3662,11 @@ const STORM_GROW = 2.6;
    ③ 引擎的 MAXDUST 跟著 900 → 2200（三朵同時在場就是 2100 團）。
       **顆數變多不等於變貴**：覆蓋度沒變多少，GPU 那邊的填色量就差不多；
       CPU 那邊量過一顆約 0.06µs（draw() 0 顆 0.29ms、900 顆 0.347ms），
-      2200 顆也只多 0.08ms，每幀預算是 4ms。 */
-const STORM_PUFF = 700;
+      2200 顆也只多 0.08ms，每幀預算是 4ms。
+   v1.165 一朵變三朵之後，團數照**面密度不變**換算：700 ÷ π17² ＝ 0.771 團／單位²，
+   半徑 9.9 的一朵就是 237 → 取 240（一次點擊 720 團，跟改之前的 700 同一個量級；
+   九朵塞滿也才 2160，仍在 MAXDUST 3400 以內）。 */
+const STORM_PUFF = 240;
 const STORM_S = [1.4, 2.9];
 const STORM_TAPER = 0.4;        // 邊緣的一團縮到中心的 (1 − 這個)
 /* 怎麼聚（v1.123，使用者：「烏雲出現時細節 先在中心外圍慢慢出現 然後往中心聚攏」）。
@@ -3529,12 +3682,19 @@ const STORM_IN = 1.45;
 const STORM_OUT = 7;
 const STORM_PULL = 2.4;
 const STORM_FADE = 0.45;         // 劈完之後整朵縮掉的半衰期
-const STORM_N = [15, 20];        // 劈幾道（使用者指定，v1.118 從 5～7 加到 7～15、v1.123 到 15～20）
+/* **一朵**劈幾道（使用者指定，v1.118 從 5～7 加到 7～15、v1.123 到 15～20）。
+   v1.165 一次三朵，所以把 15～20 拆給三朵：一朵 5～7，一次點擊仍是 15～21 道。
+   使用者這次講的是「出現方式」與「分別打雷」，沒有要加威力，所以總量維持不變。 */
+const STORM_N = [5, 7];
 const STORM_GAP = [0.22, 0.5];   // 兩道之間隔多久
-/* 雷打在雲心多遠以內。跟著雲一起放大（12 → 17 是乘 √2，這裡 9 → 13 也是）：
-   雲大了落點卻沒跟著散開的話，一朵三十四單位寬的雲只在正中央那一小圈劈，
-   看起來會像雲跟電是兩回事。 */
-const STRIKE_R = 13;
+/* 雷打在**自己這朵**的雲心多遠以內。v1.123 是 13（跟雲的 17 一起放大，比例 0.765）。
+   v1.165 一朵變三朵，要對齊的是**整組**的比例：三朵的雲心散在半徑 8.5 上，
+   所以整組的落點圓 ＝ 8.5 ＋ 這個數，整組的雲 ＝ 8.5 ＋ 9.9 ＝ 18.4；
+   收在 4.5 的話落點圓 13 ÷ 18.4 ＝ 0.71，跟改之前的 0.765 同一個量級。
+   照單朵的比例給（9.9 × 0.765 ＝ 7.6）的話落點圓會變成 16.1：**威力會少三分之一**
+   ——實測國會大廈五趟平均，打掉 789 塊掉到 511。使用者這次要的是出現方式，
+   不是把雷雨改弱，所以照整組對齊。 */
+const STRIKE_R = 4.5;
 const STRIKE_NEAR = 1.6;         // 找「這一點上方最高那塊」的水平容差
 /* 一道雷打掉的範圍。使用者指定「小破壞（可能就幾格積木）」，所以這個數是照著
    「打中那一塊 ＋ 它的面鄰居」湊的：格子間距是 1，收在 1.3 的話對角線（1.41）就進不來，
@@ -3559,16 +3719,28 @@ const BOLT_MAN_R = BOLT_FIRE_R;
 const BOLT_MARK = 4;             // 地上那塊焦黑多大（劈在屋頂上就不留，見 spawnMark）
 function callStorm(p) {
   if (!storms) storms = [];
-  if (storms.length >= STORM_MAX) storms.shift();   // 滿了把最早那朵擠掉（同其他清單型道具）
+  /* 滿了把最早的**一組**擠掉（同其他清單型道具，只是單位從一朵變一組）：
+     一朵一朵擠的話會留下兩朵孤零零的雲繼續劈。 */
+  while (storms.length + STORM_TRIO > STORM_MAX) storms.shift();
   const y = Math.max(STORM_Y0, (bp ? bp.height : 0) + STORM_UP);
-  const s = {
-    x: p.x, z: p.z, y, t: 0, out: 0, puffs: [], seeds: null, seed: 0,
-    // 均勻抽。用 rr 再四捨五入的話頭尾兩個值只有一半的機會，中間會偏多
-    left: STORM_N[0] + Math.floor(Math.random() * (STORM_N[1] - STORM_N[0] + 1)),
-    next: STORM_GROW + rr(0.1, 0.4)                 // 雲聚滿了才開始劈
-  };
-  s.seeds = stormSeeds(s);
-  storms.push(s);
+  const base = Math.random() * Math.PI * 2;          // 三朵的方位，整組隨機轉
+  for (let i = 0; i < STORM_TRIO; i++) {
+    const a = base + i * Math.PI * 2 / STORM_TRIO;
+    const lag = i * STORM_LAG;                       // 出場的微小時間差（使用者指定）
+    const s = {
+      /* 歸位點在點擊處周圍（STORM_SEP），出場再往外 STORM_COME，
+         之後一路往中心點靠攏——見 stepStorms 那段整朵平移。 */
+      gx: p.x + Math.cos(a) * STORM_SEP, gz: p.z + Math.sin(a) * STORM_SEP,
+      x: p.x + Math.cos(a) * (STORM_SEP + STORM_COME),
+      z: p.z + Math.sin(a) * (STORM_SEP + STORM_COME),
+      y, t: -lag, out: 0, puffs: [], seeds: null, seed: 0,
+      // 均勻抽。用 rr 再四捨五入的話頭尾兩個值只有一半的機會，中間會偏多
+      left: STORM_N[0] + Math.floor(Math.random() * (STORM_N[1] - STORM_N[0] + 1)),
+      next: STORM_GROW + lag + rr(0.1, 0.4)          // 自己聚滿了才開始劈
+    };
+    s.seeds = stormSeeds(s);
+    storms.push(s);
+  }
   /* 順手把鏡頭退到看得見整朵雲的距離（跟蘑菇雲共用 ENG.holdWide）。
      量過：預設取景的「畫面上緣」差不多就在鏡頭自己的高度——矮建築（羅馬競技場 h=15）
      只看得到 26 以下，雲擺在 34 就整朵在畫面外，點下去等於什麼都沒發生。
@@ -3580,10 +3752,14 @@ function callStorm(p) {
      第三個參數給 true，最後一朵散掉之後在 stormEnd() 還回去。
      視距不還，只還高度：把建築推出畫面的是仰角不是距離（見 ENG.holdWide）。 */
   stormHold++;
-  ENG.holdWide(y + STORM_TH, Math.max(STORM_R, bp ? bp.radius : STORM_R), true);
+  /* 半徑取整組罩住的那一圈（三朵落位 ＋ 一朵半徑），不是單朵——v1.165 一朵只有 9.9，
+     只給單朵的話鏡頭退得比改之前近，外圈那兩朵會擠在畫面邊緣。 */
+  const wide = STORM_SEP + STORM_R;
+  ENG.holdWide(y + STORM_TH, Math.max(wide, bp ? bp.radius : wide), true);
   sndTick();
 }
-/* 還欠幾次「把視線高度還回去」。同時最多三朵、還可以連點，所以要記次數——見 stormEnd()。 */
+/* 還欠幾次「把視線高度還回去」。一次點擊算一次（不是一朵一次），還可以連點，
+   所以要記次數——見 stormEnd()。 */
 let stormHold = 0;
 /* 雲全部收乾淨了就把高度還回去。stepStorms 的兩個出口都要叫：
    上面那個 early return 是「場上沒有雲」的捷徑，而最後一朵縮完的下一幀走的正是它。 */
@@ -3605,9 +3781,9 @@ function stormSeeds(s) {
     const k = Math.pow(Math.random(), 0.7);
     const th = STORM_TH * (1 - 0.55 * k);
     out.push({
-      a, k,
-      hx: s.x + Math.cos(a) * k * STORM_R, hy: s.y + rr(-th, th),
-      hz: s.z + Math.sin(a) * k * STORM_R,
+      /* 歸位點的水平位置改在 popPuff 才算（v1.165）：整朵雲一路往中心點靠攏，
+         雲心會動，出場那一刻的雲心才是這一團該歸的位置。 */
+      a, k, hy: s.y + rr(-th, th),
       vx: rr(-0.35, 0.35), vz: rr(-0.35, 0.35),
       rx: Math.random() * 6, ry: Math.random() * 6,
       // 大小跟著離雲心多遠收：輪廓上那些變小，整朵的邊緣才不會是一排立方體側面
@@ -3622,6 +3798,8 @@ function stormSeeds(s) {
 /* 讓下一團出場：生在自己歸位點的外側，之後每幀往歸位點飄（見 stepStorms）。 */
 function popPuff(s) {
   const q = s.seeds[s.seed++];
+  q.hx = s.x + Math.cos(q.a) * q.k * STORM_R;      // 歸位點以「出場當下的雲心」為準
+  q.hz = s.z + Math.sin(q.a) * q.k * STORM_R;
   const out = q.k * STORM_R * STORM_IN + STORM_OUT;
   q.x = s.x + Math.cos(q.a) * out;
   q.y = q.hy + rr(-0.6, 0.6);
@@ -3699,6 +3877,16 @@ function stepStorms(dt) {
   for (let i = storms.length - 1; i >= 0; i--) {
     const s = storms[i];
     s.t += dt;
+    /* 整朵往中心點靠攏（v1.165，使用者：「周圍出現後再往中心點靠攏」）。
+       指數逼近歸位點，已經出場的那些團跟著整體平移——它們自己還在往各自的歸位點飄，
+       那是下面 STORM_PULL 那一層，兩層疊起來才是「雲一邊聚、一邊往中心飄」。
+       s.t 還沒到 0 的那幾朵（出場時間差）先不動：從自己的出場位置開始飄才看得出來。 */
+    if (s.t > 0) {
+      const come = 1 - Math.exp(-STORM_DRIFT * dt);
+      const mx = (s.gx - s.x) * come, mz = (s.gz - s.z) * come;
+      s.x += mx; s.z += mz;
+      for (const q of s.puffs) { q.hx += mx; q.hz += mz; q.x += mx; q.z += mz; }
+    }
     /* 一團一團地聚出來。照時間算「現在該有幾團」而不是每幀累加固定的量：
        累加的話 dt 一變（4 倍速、掉幀）聚雲的快慢就跟著跑。 */
     const want = Math.min(STORM_PUFF, Math.round(STORM_PUFF * s.t / STORM_GROW));

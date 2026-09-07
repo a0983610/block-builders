@@ -5312,8 +5312,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     homes.list.forEach((h, hi) => {
       const mine = () => blocks.filter(b => b.hh === hi && b.st === 3);
       const shot = [];
-      /* 先把這一間每一塊都點一次、只看判定（不砸）：槌子的範圍是 5.5，
-         一下就把整間端掉了，砸完再點剩下的等於在點空氣。 */
+      /* 先把這一間每一塊都點一次、只看判定（不砸）：槌子的範圍是 3.6（v1.165 前是
+         5.5），一下就把小房子端掉大半了，砸完再點剩下的等於在點空氣。 */
       for (const b of mine()) {
         v.set(b.x, b.y, b.z).project(cam);
         if (v.x < -1 || v.x > 1 || v.y < -1 || v.y > 1) continue;
@@ -8593,6 +8593,39 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('大槌的範圍明顯比一般槌子大', bigH.big > bigH.small * 2.5,
      '一般槌子打飛 ' + bigH.small + ' 塊、大槌 ' + bigH.big + ' 塊');
 
+  /* 小槌收小（v1.165，使用者：「槌子　減小一點破壞範圍（可能打約 0.8~0.5 之間）」）。
+     兩件事一起驗，因為大槌本來是寫成「小槌 × 2」——照那樣改的話大槌會被連帶縮小，
+     而這次使用者指名要改的只有小槌：
+     ① 小槌的半徑落在舊值（5.5）的 0.5～0.8 倍之間；
+     ② 大槌的半徑仍然是 11（＝舊的 5.5 × 2），同一點下去打掉的塊數也對得上。 */
+  const hamR = await page.evaluate(() => {
+    const OLD = 5.5;
+    const one = R => {
+      cleanTools(); startBuild(true); completeNow();
+      const set = blocks.filter(b => b.st === 3);
+      let hi = 0; for (const b of set) if (b.y > hi) hi = b.y;
+      let p = null, far = -1;
+      for (const b of set) {
+        if (Math.abs(b.y - hi * 0.4) > 0.6) continue;
+        const d = Math.hypot(b.x, b.z); if (d > far) { far = d; p = b; }
+      }
+      const n0 = set.length;
+      smash({ x: p.x, y: p.y, z: p.z }, { x: 0.2, y: -0.94, z: 0.2 }, R, hammerPow);
+      return n0 - blocks.filter(b => b.st === 3).length;
+    };
+    shapePick = SHAPES.findIndex(s => s.n === '帝國大廈'); targetCnt = 3000;
+    const r = { small: hammerR, big: BIG_R, old: OLD,
+                cutNow: one(hammerR), cutOld: one(OLD), cutBig: one(BIG_R) };
+    cleanTools(); shapePick = -1;
+    return r;
+  });
+  ok('槌子的範圍收小了，大槌沒被連帶縮小',
+     hamR.small >= hamR.old * 0.5 && hamR.small <= hamR.old * 0.8 &&
+     Math.abs(hamR.big - hamR.old * 2) < 0.01 && hamR.cutNow < hamR.cutOld * 0.5,
+     '小槌半徑 ' + hamR.old + ' → ' + hamR.small + '（' +
+     (hamR.small / hamR.old).toFixed(2) + ' 倍）：同一點打掉 ' + hamR.cutOld +
+     ' → ' + hamR.cutNow + ' 塊；大槌仍是 ' + hamR.big + '（打掉 ' + hamR.cutBig + ' 塊）');
+
   /* 投石機 */
   await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 3 });
   const treb = await page.evaluate(() => {
@@ -8951,16 +8984,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       cleanTools();
       shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
       targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
-      // 自己組一顆：方向剛好是 +x，不吃 launchBall 的 ±BALL_SPREAD
+      /* 自己組一顆：方向剛好是 +x，不吃 launchBall 的 ±BALL_SPREAD。
+         cd 給一個大數＝把 v1.165 的跳彈鎖住（那條有冷卻，見 BALL_CD），
+         這一組要量的是 v1.123 的「擦到邊偏一點」，兩條混在一起就分不出是誰做的
+         ——跳彈那條自己有一組測試（見〈斜著撞上牆面會跳彈〉）。 */
       balls = [{ x: -70, y: BALL_R, z: off, vx: 34, vz: 0, vy: 0,
-                 r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 2, ax: 1, az: 0 }];
-      let a = 0, hit = 0;
+                 r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 2, ax: 1, az: 0,
+                 cd: 999, pin: 0 }];
+      let a = 0, hit = 0, pin = 0;
       for (let i = 0; i < 500 && balls; i++) {
         step(0.03);
         if (!balls) break;
-        a = Math.atan2(balls[0].vz, balls[0].vx); hit = balls[0].hit;
+        a = Math.atan2(balls[0].vz, balls[0].vx); hit = balls[0].hit; pin = balls[0].pin;
       }
-      return { turn: +(a * 180 / Math.PI).toFixed(1), hit };
+      return { turn: +(a * 180 / Math.PI).toFixed(1), hit, pin };
     };
     const r = { mid: shot(0), in4: shot(4), right: shot(9), left: shot(-9),
                 half: Math.max(...bp.slots.map(q => Math.abs(q.z))),
@@ -8971,7 +9008,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('保齡球擦過建築側面會被推向外側，左右對稱',
      ballVeer.right.turn > 5 && ballVeer.left.turn < -5 &&
      Math.abs(ballVeer.right.turn + ballVeer.left.turn) < 3 &&
-     ballVeer.right.hit > 50,
+     ballVeer.right.hit > 50 && ballVeer.right.pin === 0,
      '擦右邊轉 ' + ballVeer.right.turn + '°、擦左邊 ' + ballVeer.left.turn +
      '°（各撞掉 ' + ballVeer.right.hit + '／' + ballVeer.left.hit +
      ' 塊，塔身半寬 ' + ballVeer.half + '）');
@@ -8991,6 +9028,55 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('撞完掉的速度比以前少，但還是會停下來',
      ballBrake.every(b => b.now > b.old && b.now < 1),
      ballBrake.map(b => '撞 ' + b.n + ' 塊保留 ' + b.old + ' → ' + b.now).join('、'));
+
+  /* 斜著撞上牆面要**跳彈**（v1.165，使用者：「上次有說要計算碰撞後平面的移動方向偏移
+     沒有實現（目標是更多碰撞變化 像是彈珠檯的彈珠概念）」）。
+     上面那條（v1.123 的偏一下）只轉法線垂直於行進方向的那一半，正面撞牆時那一半是 0
+     ——所以 v1.164 的球是直直鑿穿過去的：同一組入射線量到的方向變化只有 1°。
+     這一條用圓的羅馬競技場、同一個方向（+x）不同位移的五條入射線（自己組球，
+     不吃 launchBall 的 ±BALL_SPREAD，可重現），驗三件事：
+       ① **正中央那一條照樣鑿穿**（不彈、方向幾乎不變）——一顆 34 單位／秒的鐵球正面
+          撞上一片牆，該把牆撞開；把正面也彈掉的話球會在外殼上彈開就跑了，
+          實測整趟只撞飛 6 塊（改之前 300 多塊）。
+       ② **擦邊的那幾條真的彈開**，方向變化跟 v1.164 的 1° 不是同一個量級。
+       ③ **彈開的方向是往外側**（擦右邊往右彈、擦左邊往左彈）。這一條是使用者回報
+          「保齡球方向錯了」之後補的：第一版用主軸分解配平面，特徵向量沒有正負，
+          「哪一側是材料」判錯就會把球往建築裡面彈（實測擦金字塔右側轉 −21°）。
+          現在法線取的是材料分佈的梯度（外圈那一層還沒打掉的積木方向總和取反），
+          方向不可能算錯邊。 */
+  const ballWall = await page.evaluate(() => {
+    const shot = z0 => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '羅馬競技場');
+      targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+      balls = [{ x: -70, y: BALL_R, z: z0, vx: 34, vz: 0,
+                 vy: 0, r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 2,
+                 ax: 1, az: 0, cd: 0, pin: 0, pn: 0 }];
+      let a1 = 0, pin = 0, hit = 0;
+      for (let i = 0; i < 500 && balls; i++) {
+        step(0.03);
+        if (!balls) break;
+        const o = balls[0];
+        if (Math.hypot(o.vx, o.vz) > 1) a1 = Math.atan2(o.vz, o.vx);
+        pin = o.pin; hit = o.hit;
+      }
+      return { z0, pin, hit, turn: +(a1 * 180 / Math.PI).toFixed(0) };
+    };
+    const r = { mid: shot(0), runs: [shot(9), shot(12), shot(-9), shot(-12)],
+                wallN: BALL_WALL_N, head: BALL_HEAD, square: BALL_SQUARE };
+    cleanTools();
+    return r;
+  });
+  const bwHit = ballWall.runs.filter(r => r.pin > 0 && Math.abs(r.turn) > 20);
+  const bwWrong = bwHit.filter(r => Math.sign(r.turn) !== Math.sign(r.z0));
+  ok('擦邊會往外側跳彈，正中央撞上去照樣鑿穿',
+     ballWall.mid.pin === 0 && Math.abs(ballWall.mid.turn) < 10 &&
+     ballWall.mid.hit > 100 && bwHit.length >= 3 && bwWrong.length === 0,
+     '正中央：彈 ' + ballWall.mid.pin + ' 次、轉 ' + ballWall.mid.turn + '°、撞飛 ' +
+     ballWall.mid.hit + ' 塊　·　' +
+     ballWall.runs.map(r => 'z=' + r.z0 + ' → 彈 ' + r.pin + ' 次、轉 ' +
+                            r.turn + '°').join('　·　') +
+     '（往建築裡彈的有 ' + bwWrong.length + ' 條；v1.164 五條全是 0 次、1° 以內）');
 
   /* 方向：第一點 → 第二點。八個不同的方向各丟一發，每一發都要對得上自己那個方向，
      而且只差在 ±BALL_SPREAD 的手感偏差裡（本來是「一律朝工地中心」）。 */
@@ -9161,6 +9247,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const r = { born, set0, set1: blocks.filter(b => b.st === 3).length,
                 drift: +drift.toFixed(4), air: +air.toFixed(1), rise, pops,
                 land, gone, alive1, crater: marks.filter(m => m.crater).length };
+    /* 「落地留一個坑」改到**空地那一發**上量（v1.165）：砸在建築上的這一顆現在是
+       被屋頂的坡度帶著滑下來的，撞進表面的速度有上限（DROP_SINK），落到地面時
+       早就慢下來了——那一下本來就不該再震一次、再挖一個坑。
+       空地那一發還是自由落體 49 單位／秒砸下去，坑照留。 */
+    marks.length = 0;
+    dropBall({ x: arenaR - 6, y: 0, z: 0 });
+    let t2 = 0;
+    while (t2 < 10 && balls) { step(0.05); t2 += 0.05; }
+    r.openCrater = marks.filter(m => m.crater).length;
     cleanTools();
     return r;
   });
@@ -9168,21 +9263,76 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dropOne.born.n === 1 && dropOne.born.vx === 0 && dropOne.born.vz === 0 &&
      dropOne.drift < 0.001 && dropOne.alive1 === 1,
      '從 ' + dropOne.born.y + ' 掉下來，撞到東西之前橫向偏移 ' + dropOne.drift);
-  /* 撞到東西要彈（v1.118，使用者：「少了鐵球撞到東西彈起來的感覺（目前就一路摧毀
-     直直落下 可以撞到破壞後彈起來一點撞到其他位置）」）。三件事一起驗：真的彈起來過、
-     落點真的換了地方、而且**不會被彈飛**——第一版照反射算，砸到屋頂就以幾十單位的
-     速度往旁邊噴，實測橫向跑 30～87 單位、只撞掉 10 塊就飛出去，反而不摧毀了。 */
-  ok('撞到東西會彈起來，落點跟著換地方（但不會被彈飛）',
-     dropOne.pops >= 1 && dropOne.rise > 0 &&
-     dropOne.air > 1 && dropOne.air < 40,
-     '在積木上彈了 ' + dropOne.pops + ' 次、有 ' + dropOne.rise +
-     ' 幀在往上走，最遠離出手點 ' + dropOne.air + ' 單位');
-  ok('砸爛沿路的積木，落地在地上留一個坑',
-     dropOne.set0 - dropOne.set1 > 20 && dropOne.crater === 1,
-     '打掉 ' + (dropOne.set0 - dropOne.set1) + ' 塊、留下 ' + dropOne.crater + ' 個坑洞');
+  /* 撞到東西要有反應（v1.118，使用者：「少了鐵球撞到東西彈起來的感覺（目前就一路摧毀
+     直直落下 可以撞到破壞後彈起來一點撞到其他位置）」）：真的被表面頂到、落點真的換了
+     地方、而且**不會被彈飛**——v1.118 第一版照反射算，砸到屋頂就以幾十單位的速度
+     往旁邊噴，實測橫向跑 30～87 單位、只撞掉 10 塊就飛出去，反而不摧毀了。
+     **「彈起來」那一條改到平屋頂上驗**（v1.165，見〈砸在斜屋頂上…〉那一組）：
+     這一發砸的是金字塔的斜面，現在它是順著坡面**磨下去**（垂直速度一路是負的），
+     不是彈起來——那正是這一版要的溜滑梯。平屋頂那一發才會真的往上跳。 */
+  ok('撞到東西會被頂到，落點跟著換地方（但不會被彈飛）',
+     dropOne.pops >= 1 && dropOne.air > 1 && dropOne.air < 40,
+     '被表面頂了 ' + dropOne.pops + ' 幀、最遠離出手點 ' + dropOne.air + ' 單位');
+  ok('砸爛沿路的積木；砸在空地上那一發照樣留一個坑',
+     dropOne.set0 - dropOne.set1 > 20 && dropOne.openCrater === 1,
+     '打掉 ' + (dropOne.set0 - dropOne.set1) + ' 塊、砸空地留下 ' +
+     dropOne.openCrater + ' 個坑洞（砸建築那一發滑下來才落地，' +
+     dropOne.crater + ' 個坑）');
+  /* 「落地之後還能滾多久」v1.165 從 3 秒放寬到 6：球現在是被屋頂帶著滑下來的，
+     落地時還帶著水平速度（上限 DROP_HMAX＝8），要滾一段才停——那正是這一版要的。
+     上限仍然要驗：沒有的話「滾不停」與「壽命到了憑空消失」就分不出來。 */
   ok('不再移動就自己收掉',
-     dropOne.land > 0 && dropOne.gone > dropOne.land && dropOne.gone - dropOne.land < 3,
+     dropOne.land > 0 && dropOne.gone > dropOne.land && dropOne.gone - dropOne.land < 6,
      '第 ' + dropOne.land + ' 秒落地、第 ' + dropOne.gone + ' 秒收掉');
+
+  /* 順著建築造型滑下去（v1.165，使用者：「天降鐵球　減少垂直向破壞力（目的是更多
+     根據建築造型的水平向滾動 例如溜滑梯）」）。
+     驗的是**坡度真的把它帶走**：砸在金字塔的斜面上，撞到之後還要一路滑下坡，
+     而且不能滑出草地（v1.118 那次照反射算就是被彈飛出場，反而不摧毀了）。
+     v1.164 同一發撞完只跑了 10.3 單位——那時候它是原地往下鑽的。 */
+  const dropSlide = await page.evaluate(() => {
+    const one = (shape, k) => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === shape);
+      targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+      /* 打掉多少用 stats.smashed 的增量：這一段有 12 個小人在場，
+         他們會一邊撿一邊補回去，「站著的積木少了幾塊」量到的是淨值。 */
+      const n0 = stats.smashed;
+      dropBall({ x: bp.radius * k, y: 0, z: 0 });
+      let t = 0, hx = 0, hz = 0, hit = 0, ex = 0, ez = 0, hy = 0;
+      let ground = 0, rise = 0, lastY = balls[0].y;
+      while (t < 16) {
+        step(1 / 60); t += 1 / 60;
+        const o = balls && balls[0];
+        if (!o) break;
+        if (!hit && o.pops > 0) { hit = 1; hx = o.x; hz = o.z; hy = +o.y.toFixed(1); }
+        if (hit && o.y > lastY + 0.01) rise++;          // 撞到之後有沒有往上走
+        lastY = o.y;
+        if (o.y <= o.r + 1e-6) ground = 1;
+        ex = o.x; ez = o.z;
+      }
+      return { shape, hy, ground, rise, roll: +Math.hypot(ex - hx, ez - hz).toFixed(1),
+               cut: stats.smashed - n0, endR: +Math.hypot(ex, ez).toFixed(1) };
+    };
+    const r = { slope: one('吉薩金字塔', 0.35),          // 斜屋頂：順坡滑下去
+                flat: one('帝國大廈', 0),                // 平屋頂：砸下去彈一下
+                edge: +(arenaR + 24).toFixed(0) };
+    cleanTools();
+    return r;
+  });
+  ok('砸在斜屋頂上會順著坡滑下去（不是原地鑽一個洞，也不會被彈飛出場）',
+     dropSlide.slope.roll > 15 && dropSlide.slope.ground === 1 &&
+     dropSlide.slope.endR < dropSlide.edge && dropSlide.slope.cut > 40,
+     '金字塔斜面 ' + dropSlide.slope.hy + ' 高撞上，之後又跑了 ' +
+     dropSlide.slope.roll + ' 單位（v1.164 是 10.3）、打掉 ' + dropSlide.slope.cut +
+     ' 塊、停在離場中心 ' + dropSlide.slope.endR + '（草地邊緣 ' + dropSlide.edge + '）');
+  /* 平屋頂沒有坡度可用：那一下要**彈起來一點**（v1.118 使用者要的那個手感），
+     不是把整段動能都拿去鑽。斜面那一發不驗這個——它是貼著坡面磨下去的。 */
+  ok('砸在平屋頂上會彈起來一點，不是一路鑽到底',
+     dropSlide.flat.rise > 0 && dropSlide.flat.ground === 1,
+     '帝國大廈屋頂 ' + dropSlide.flat.hy + ' 高撞上，之後有 ' + dropSlide.flat.rise +
+     ' 幀在往上走、又跑了 ' + dropSlide.flat.roll + ' 單位（打掉 ' +
+     dropSlide.flat.cut + ' 塊）');
 
   /* 起點跟著建築走（v1.119，使用者：「天降鐵球 初始高度也能像烏雲一樣 根據建築高度
      有些建築很高 導致鐵球在建築中間位置高度落下」）。固定 58 的時候，高一點的地標
@@ -9202,10 +9352,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const y0 = o.y;
       const buried = blocks.filter(b => b.st === 3 &&
         b.x * b.x + (b.y - y0) ** 2 + b.z * b.z < R * R).length;
-      let t = 0, land = -1, gone = -1;
+      /* 「落地」要連「落地那一幀就被收掉」也算（v1.165）：球現在是被屋頂帶著滑下來的，
+         到地面時常常已經慢到 sp < 4.5、vy 歸零，同一幀就達成「不再移動」被收走，
+         下一幀再看 balls[0] 就沒得看了。 */
+      let t = 0, land = -1, gone = -1, lastY = o.y;
       while (t < 20) {
+        const cur = balls && balls[0];
+        if (cur) lastY = cur.y;
         step(1 / 60); t += 1 / 60;
-        if (!balls) { gone = +t.toFixed(2); break; }
+        if (!balls) {
+          gone = +t.toFixed(2);
+          if (land < 0 && lastY <= o.r + 0.6) land = gone;
+          break;
+        }
         if (land < 0 && balls[0].y <= balls[0].r + 1e-6) land = +t.toFixed(2);
       }
       out.push({ shape: cfg[0], h: +bp.height.toFixed(0), y0: +y0.toFixed(0),
@@ -9219,8 +9378,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dropHigh.every(r => r.y0 === Math.max(r.floor, r.h + r.up) && r.buried === 0),
      dropHigh.map(r => r.shape + '（高 ' + r.h + '）從 ' + r.y0 +
                        ' 掉，球心周圍埋住 ' + r.buried + ' 塊').join('　·　'));
-  ok('不管從多高丟，落地之後都還有時間滾到停',
-     dropHigh.every(r => r.land > 0 && r.gone > r.land && r.crater === 1),
+  /* 壽命夠不夠（v1.119）：不管從多高丟，球都要**撐到落地**才被收掉，
+     不能在半空中壽命到期憑空消失。落地那個坑改由〈砸在空地上那一發〉守著
+     （v1.165：砸在建築上的球是滑下來的，到地面時早就慢了，本來就不該再挖一個坑）。 */
+  ok('不管從多高丟，都撐得到落地才收掉',
+     dropHigh.every(r => r.land > 0 && r.gone >= r.land),
      dropHigh.map(r => r.shape + ' 第 ' + r.land + ' 秒落地、第 ' + r.gone +
                        ' 秒收掉').join('　·　'));
 
@@ -9270,8 +9432,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const storm1 = await page.evaluate(() => {
     marks.length = 0; dust.length = 0;
     tool = 'storm';
+    /* 一次點擊出三朵（v1.165）：道數要把三朵加起來，劈了幾道也要三朵一起數
+       ——掛在 strike 上數，不用「bolts 這一幀變長了沒」：三朵可能同一幀一起劈，
+       那樣會少算。 */
+    const realStrike = window.strike;
+    let fired2 = 0;
+    window.strike = function (s) { fired2++; return realStrike(s); };
     useTool({ point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) });
-    const born = storms.length, want = storms[0].left;
+    const born = storms.length;
+    const want = storms.reduce((a, s) => a + s.left, 0);
+    const each = storms.map(s => s.left);
     /* 雲的高度要蓋過屋頂（v1.118）：固定 26 的時候整朵埋在高一點的建築裡，
        電等於從樓層之間冒出來——使用者回報「看不太到電打在建築上」就是這件事。 */
     const above = storms[0].y - bp.height;
@@ -9281,7 +9451,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let t = 0, first = -1, fired = 0, prev = 0;
     while (t < 18) {
       step(0.05); t += 0.05;
-      if (bolts.length > prev) { fired++; if (first < 0) first = +t.toFixed(2); }
+      if (fired2 > fired) { fired = fired2; if (first < 0) first = +t.toFixed(2); }
       prev = bolts.length;
       /* 雲有自己一份粒子（不放進 dust，見 game-tools.js 的 dustList）。
          取樣間隔跟著 STORM_GROW 走（v1.123 從 1.6 拉到 2.6）：寫死 0.4 秒的話，
@@ -9289,25 +9459,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       while (grow.length < 4 && t >= (grow.length + 1) * (STORM_GROW / 3))
         grow.push(storms ? storms[0].puffs.length : 0);
     }
-    const r = { born, want, fired, first, grow, full: STORM_GROW, above: +above.toFixed(0),
+    const r = { born, want, each, fired, first, grow, full: STORM_GROW,
+                above: +above.toFixed(0), trio: STORM_TRIO, nRange: STORM_N.slice(),
                 puff: STORM_PUFF, burn: fires ? fires.length : 0,
                 over: storms ? storms.length : 0 };
+    window.strike = realStrike;
     cleanTools();
     return r;
   });
-  ok('點下去先慢慢聚出一朵烏雲，不是一次生一整朵',
-     storm1.born === 1 && storm1.grow[0] > 0 &&
+  ok('點下去先慢慢聚出烏雲，不是一次生一整朵',
+     storm1.born === storm1.trio && storm1.grow[0] > 0 &&
      storm1.grow.every((n, i) => i === 0 || n >= storm1.grow[i - 1]) &&
      storm1.grow[3] > storm1.grow[0] * 2 && storm1.grow[3] === storm1.puff,
-     '每 ' + (storm1.full / 3).toFixed(2) + ' 秒量一次：' + storm1.grow.join(' → ') +
-     ' 團（滿朵 ' + storm1.puff + ' 團）');
+     '一次出 ' + storm1.born + ' 朵；第一朵每 ' + (storm1.full / 3).toFixed(2) +
+     ' 秒量一次：' + storm1.grow.join(' → ') + ' 團（滿朵 ' + storm1.puff + ' 團）');
   ok('雲飄在屋頂上方，電才看得出打在建築上', storm1.above >= 10,
      '雲底比屋頂高 ' + storm1.above + ' 單位');
   ok('雲聚滿了才開始劈，劈完雲自己收掉',
      storm1.first > storm1.full && storm1.over === 0,
      '第一道雷在第 ' + storm1.first + ' 秒（雲要聚 ' + storm1.full + ' 秒）');
-  ok('這一朵說要劈幾道就劈幾道', storm1.fired === storm1.want,
-     '排了 ' + storm1.want + ' 道、實際劈了 ' + storm1.fired + ' 道');
+  /* 三朵各自劈自己的（v1.165，使用者：「一次出現三朵烏雲 分別打雷」）：
+     每朵排 5～7 道、三朵加起來說要劈幾道就劈幾道。 */
+  ok('三朵各自劈自己的，說要劈幾道就劈幾道', storm1.fired === storm1.want &&
+     storm1.each.length === storm1.trio &&
+     storm1.each.every(n => n >= storm1.nRange[0] && n <= storm1.nRange[1]),
+     '三朵各排 ' + storm1.each.join('／') + ' 道（共 ' + storm1.want +
+     '）、實際劈了 ' + storm1.fired + ' 道');
   ok('劈中的地方會燒起來，火再自己往鄰居蔓延', storm1.burn > 20,
      '整趟劈完還有 ' + storm1.burn + ' 塊在燒');
 
@@ -9345,6 +9522,50 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      stormIn.outside > 0.9 && stormIn.settled < 1.2,
      '剛冒出來的 ' + stormIn.fresh + ' 團裡有 ' + Math.round(stormIn.outside * 100) +
      '% 還在自己位置的外面；聚滿之後平均離位 ' + stormIn.settled + ' 單位');
+
+  /* 一次三朵、從周圍往中心點靠攏（v1.165，使用者：「烏雲出現方式 調整成周圍出現後
+     再往中心點靠攏 一次出現三朵烏雲 分別打雷（出現可以故意設計微小時間差）」）。
+     上面兩條驗的是「一朵之內每一團怎麼聚」，這一條驗的是**整朵怎麼移動**：
+     三朵生在點擊處周圍更外面的地方（STORM_SEP ＋ STORM_COME），再一路飄向各自的
+     歸位點；三朵的方位要分得開，出場時間還要差一點。 */
+  const trio = await page.evaluate(() => {
+    cleanTools();
+    callStorm({ x: 0, z: 0 });
+    const far = () => storms.map(s => +Math.hypot(s.x, s.z).toFixed(1));
+    const born = storms.length;
+    const start = far();
+    const goal = storms.map(s => +Math.hypot(s.gx, s.gz).toFixed(1));
+    const lag = storms.map(s => +s.t.toFixed(2));
+    const ang = storms.map(s => Math.atan2(s.z, s.x));
+    let gap = 9;
+    for (let i = 0; i < ang.length; i++)
+      for (let j = i + 1; j < ang.length; j++) {
+        let g = Math.abs(ang[i] - ang[j]);
+        if (g > Math.PI) g = Math.PI * 2 - g;
+        gap = Math.min(gap, g);
+      }
+    let t = 0;
+    while (t < STORM_GROW) { step(0.05); t += 0.05; }
+    const r = { born, start, goal, lag, mid: far(),
+                gap: +(gap * 180 / Math.PI).toFixed(0), trio: STORM_TRIO,
+                sep: STORM_SEP, come: STORM_COME, lagStep: STORM_LAG, grow: STORM_GROW };
+    cleanTools();
+    return r;
+  });
+  ok('一次三朵烏雲，各自從周圍飄進來、往中心點靠攏',
+     trio.born === trio.trio && trio.gap > 100 &&
+     trio.start.every(v => v > trio.sep + trio.come * 0.9) &&
+     trio.goal.every(v => Math.abs(v - trio.sep) < 0.1) &&
+     trio.mid.every((v, i) => v < trio.start[i] * 0.45),
+     trio.born + ' 朵，方位互差 ' + trio.gap + '°；出場離點擊處 ' +
+     trio.start.join('／') + '，聚滿那一刻（第 ' + trio.grow + ' 秒）收到 ' +
+     trio.mid.join('／') + '（歸位點 ' + trio.goal.join('／') + '）');
+  ok('三朵的出場時間刻意差一點點',
+     trio.lag.every((v, i) => i === 0 || v < trio.lag[i - 1]) &&
+     Math.abs(trio.lag[trio.lag.length - 1]) < 1 &&
+     Math.abs(trio.lag[1] - trio.lag[0]) > 0.05,
+     '三朵各晚 ' + trio.lag.map(v => (-v).toFixed(2)).join('／') +
+     ' 秒出場（設定一朵差 ' + trio.lagStep + ' 秒）');
 
   /* 「閃電打到地面不震動」（v1.123 使用者指定）。劈到建築才震——那一下真的有東西被打歪；
      劈在空地上什麼都沒動，畫面跟著跳反而像打到了什麼。
@@ -11385,27 +11606,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       cleanTools();
       return { ...out, made, aimN, far, hy };
     };
-    /* 每一種點法跑三趟、把距離併起來再取百分位（v1.158.2）。一趟只落 80～95 把，
-       九成位就是從那八十幾個樣本裡挑一個出來的，而點空地那一組尾巴很長
-       （實測九成位 28.4、最遠 41）——樣本一晃，下面那條比值就跟著跳，
-       而門檻 2.5 離實測的 2.03 只有兩成餘裕。三趟併起來約 250 把，百分位穩得多。
-       修的是樣本數，兩個門檻一個字都沒動（同〈九條「偶爾飄」的測試〉裡
+    /* 每一種點法跑**五趟**（v1.158.2 是三趟併成一池取百分位，v1.165 改成五趟、
+       九成位取每趟的中位數，見下面）。一趟只落 80～95 把，九成位就是從那八十幾個
+       樣本裡挑一個出來的，而點空地那一組尾巴很長（實測九成位 28.4、最遠 41）
+       ——樣本一晃，下面那條比值就跟著跳，而門檻 2.5 離實測的 2.03 只有兩成餘裕。
+       修的是樣本數與量法，兩個門檻一個字都沒動（同〈九條「偶爾飄」的測試〉裡
        「樣本數自己在擲骰子」那條的修法：射到湊滿為止）。
-       **一個要記著的副作用**：farMax 取的是最大值，樣本變三倍它本來就會往上飄
-       （實測點建築 61.4 → 63.2、點空地 41 → 46.6）。絕對門檻 85 仍有兩成六餘裕，
-       但下次若再把趟數加上去，要重看的是這一條而不是九成位那一條。
+       **一個要記著的副作用**：farMax 取的是**整池**的最大值，趟數加上去它本來就會往上飄
+       （三趟時實測點建築 61.4 → 63.2、點空地 41 → 46.6；五趟量到 65.7／42.1）。
+       絕對門檻 85 仍有兩成餘裕，但下次若再把趟數加上去，要重看的是這一條
+       而不是九成位那一條。
        **v1.161 整輪跑到這裡紅過一次**：點空地的九成位掉到 22.6（比值 2.55 > 2.5）。
        拿印出來的 seed 重跑兩棵樹對照——這一版 56.2／29.2（1.92）、v1.160.1 56.6／29.1
        （1.94），兩邊都過而且彼此只差 0.4，所以那一次是骰子不是回歸（三趟併起來仍然
        壓不住點空地那組的長尾）。要再修的話修的是**量法**（趟數再加、或改取每趟九成位的
        中位數），門檻仍然一個字都不要動。
+       **v1.165 又紅了一次**（點空地 22.8、比值 2.504），所以照上面那句換量法：
+       九成位改成**五趟各自的九成位取中位數**，不再把五趟的樣本併成一池再取百分位。
+       差別在長尾：併成一池的話點空地那組的長尾會把整池的第 90 個百分位往下拉／往上推
+       （一趟只落八十幾把，尾巴一晃就跳好幾單位）；取「每趟九成位的中位數」則是先在
+       各趟內部消化掉自己的尾巴，再用中位數擋掉整趟偏掉的那一次。
+       同一顆紅過的種子（2753267097）換量法之後：點建築 57.3／點空地 28.2 ＝ **2.03**
+       ——回到註解開頭記的那個量級（1.97～2.05），離門檻 2.5 有兩成餘裕。
+       **門檻仍然一個字都沒動**（85 與 2.5）。
+       farMax 照舊取整池的最大值（那一條擋的是「阻力沒了」，要的就是極值）。
        ty0／gy／spots／aimN 這些每一趟都一樣，取第一趟的就好。 */
     const runN = kind => {
-      const rs = [run(kind), run(kind), run(kind)];
+      const rs = [run(kind), run(kind), run(kind), run(kind), run(kind)];
       const far = rs.flatMap(r => r.far).sort((a, b) => a - b);
       const hy = rs.flatMap(r => r.hy).sort((a, b) => a - b);
+      const per9 = rs.map(r => q(r.far, 0.9)).sort((a, b) => a - b);
       return { ...rs[0], rounds: rs.length, hits: hy.length, mid: q(hy, 0.5),
-               lie: far.length, far9: q(far, 0.9), farMax: q(far, 1) };
+               lie: far.length, far9: per9[(per9.length - 1) >> 1], farMax: q(far, 1) };
     };
     const blk = runN('block'), gnd = runN('ground');
     return { ty: +ty.toFixed(1), H: +bp.height.toFixed(1), blk, gnd };
@@ -14046,15 +14278,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       cleanTools();
       shapePick = SHAPES.findIndex(s => s.n === '台北 101');
       targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+      /* 站在水平 5（v1.165 從 8 收進來）：小槌的半徑 v1.165 從 5.5 縮到 3.6，
+         震倒範圍跟著 9.35 → 6.12（afterHit 是 R × 1.7）——站 8 的話「砸地面那一發
+         照舊全掀」這條對照組本來就構不到人，測到的會是新半徑，不是高度差。
+         炸彈那一組不受影響：半徑 11、震倒 18.7，5 跟 8 都在裡面。 */
       const ws = workers.slice(0, 8);
       ws.forEach((w, i) => {
         const a = i / 8 * Math.PI * 2;
-        w.x = 8 * Math.cos(a); w.z = 8 * Math.sin(a); w.y = 0;
+        w.x = 5 * Math.cos(a); w.z = 5 * Math.sin(a); w.y = 0;
         w.air = 0; w.burn = 0; w.fall = 0; w.lit = 0; w.roll = 0;
       });
       beasts = null;
       const m = spawnBeast('ape', 1);
-      m.x = 7; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999; m.fall = 0;
+      m.x = 4; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999; m.fall = 0;
       return { ws, m };
     };
     const hurt = s => ({ fall: s.ws.filter(w => w.fall > 0).length,
@@ -14079,7 +14315,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '炸彈炸在 ' + high.roof + ' 高的屋頂：倒 ' + high.bombHigh.fall + '、飛 ' +
      high.bombHigh.air + '、吉祥物 ' + high.bombHigh.beast + '；槌子砸 30 高：倒 ' +
      high.hamHigh.fall + '、飛 ' + high.hamHigh.air + '、吉祥物 ' + high.hamHigh.beast +
-     '（八個人站在水平 8，炸彈半徑 11、震倒 18.7）');
+     '（八個人站在水平 5，炸彈半徑 11、震倒 18.7；小槌半徑 3.6、震倒 6.1）');
   ok('同一發打在地面照舊全掀（上面那條不是「本來就打不到」）',
      high.bombLow.air === 8 && high.bombLow.beast === 1 &&
      high.hamLow.fall === 8 && high.hamLow.beast === 1,
@@ -17596,7 +17832,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
            落點取在建築外面的空地時一塊都沒打掉，那條路根本走不到動物那一段
            （第一版落點取 radius + 2，量到 hammer 0、bighammer 2，差別只是半徑大小）。 */
         m.x = bp.radius - 0.5; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999;
-        const P = { x: m.x, y: 1, z: m.z };
+        /* 落點取「離牠最近的那一塊積木」而不是牠腳下那個座標（v1.165）：
+           小槌的半徑縮到 3.6 之後，牠腳邊那個點的球裡可能一塊積木都沒有 →
+           afterHit 第一行就 return，這條就變成在測半徑而不是在測「有沒有經過動物」。 */
+        let near = null, best = 1e9;
+        for (const b of blocks) {
+          if (b.st !== SET) continue;
+          const d = Math.hypot(b.x - m.x, b.y - 1, b.z - m.z);
+          if (d < best) { best = d; near = b; }
+        }
+        const P = near ? { x: near.x, y: near.y, z: near.z } : { x: m.x, y: 1, z: m.z };
         const hit = { kind: 'block', point: P, dir: { x: 0, y: -1, z: 0 } };
         tool = t.id;
         seen = 0;
