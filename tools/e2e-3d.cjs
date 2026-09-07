@@ -179,7 +179,7 @@ const installClean = page => page.evaluate(() => {
   stepDoom = () => {};
   /* 吉祥物（v1.144）也預設關掉。三隻各自 3~6 分鐘就會來工地逛一圈，
      會走進閒晃範圍、吃掉 beastMesh 的名額，量閒晃分布與畫面統計的測試會被它洗掉；
-     v1.166 起還有四分之一的機率是來砸小房子的（見「吉祥物」那一段的〈偶而動手〉）。
+     v1.166 起還有四分之一的機率是來砸村子那邊的（見「吉祥物」那一段的〈偶而動手〉）。
      要測這件事本身的那一段自己把它裝回去（見「吉祥物」）。 */
   if (!window.mascStep) window.mascStep = stepMascot;
   stepMascot = () => {};
@@ -16959,9 +16959,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '吐了 ' + mtdra.shots + ' 顆，還站著的 ' + mtdra.set0 + ' → ' + mtdra.set + ' 塊');
 
   /* ── 偶而動手（v1.166）───────────────────────────────────
-     使用者：「吉祥物出沒偶而也會對不是地標建築破壞（根據吉祥物的破壞模式）」。
-     四件事要驗：多久一次（「偶而」）、砸的是小房子而地標沒事（「不是地標建築」）、
-     三隻各用自己那一套（「根據吉祥物的破壞模式」）、砸完照舊逛完才走。 */
+     使用者：「吉祥物出沒偶而也會對不是地標建築破壞（根據吉祥物的破壞模式）」，
+     追加一句「樹也算 地標建築以外就可以了」（v1.166.1）。
+     四件事要驗：多久一次（「偶而」）、砸的是村子那邊而地標沒事（「不是地標建築」，
+     房子與樹都算）、三隻各用自己那一套（「根據吉祥物的破壞模式」）、砸完照舊逛完才走。 */
   const mrate = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     /* 只攔「鐘放人的時候帶了什麼旗標」，不真的放一隻進來：放進來的話一趟要等牠走完，
@@ -17009,25 +17010,48 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        「房子少了幾塊」量到的是兩件事相減（實測砸完反而多了 300 多塊）。 */
     stopIdleEvent();
     for (let i = 0; i < 40; i++) step(0.05);           // 手上還抓著的那幾塊落地
-    const house = homes ? homes.list.map((h, i) => h.tree ? -1
-                          : blocks.filter(b => b.st === SET && b.hh === i).length)
-                        : [];
-    const near = homes ? Math.min(...homes.list.filter(h => !h.tree)
+    /* 房子與樹分開數：v1.166.1 起兩種都是目標（使用者：「樹也算 地標建築以外就
+       可以了」），但「村落真的蓋起來了」還是看房子——樹是同一輪順便種的。 */
+    const per = homes ? homes.list.map((h, i) =>
+                          blocks.filter(b => b.st === SET && b.hh === i).length) : [];
+    const house = homes ? per.filter((v, i) => v > 0 && !homes.list[i].tree) : [];
+    const tree = homes ? per.filter((v, i) => v > 0 && homes.list[i].tree) : [];
+    const near = homes ? Math.min(...homes.list.filter((h, i) => per[i] > 0)
                           .map(h => Math.hypot(h.x, h.z) - h.r)) : 0;
-    return { secs: +t.toFixed(1), blk: cnt(), houses: house.filter(v => v > 0).length,
-             big: Math.max(...house), gap: +(near - siteR).toFixed(1),
+    return { secs: +t.toFixed(1), blk: cnt(), houses: house.length, trees: tree.length,
+             big: Math.max(...house, 0), gap: +(near - siteR).toFixed(1),
              siteR: +siteR.toFixed(1) };
   });
-  ok('先蓋一個村落出來（後面幾條要有房子可砸）',
+  ok('先蓋一個村落出來（後面幾條要有東西可砸）',
      village.houses >= 2 && village.blk >= 60 && village.big >= 6,
-     village.secs + ' 秒蓋出 ' + village.houses + ' 間、共 ' + village.blk +
-     ' 塊站著（最大那間 ' + village.big + ' 塊）；最近的一間離地標外圈 ' +
-     village.gap + ' 格（siteR ' + village.siteR + '）');
+     village.secs + ' 秒蓋出 ' + village.houses + ' 間房子 ＋ ' + village.trees +
+     ' 棵樹、共 ' + village.blk + ' 塊站著（最大那間 ' + village.big +
+     ' 塊）；最近的一個離地標外圈 ' + village.gap + ' 格（siteR ' + village.siteR + '）');
+
+  /* 樹也算目標（v1.166.1，使用者：「樹也算 地標建築以外就可以了」）。
+     直接驗那一支挑目標的述詞：把村子裡隨便一個標成樹，再挑一次——挑到的還是它。
+     這樣驗才不用碰運氣（那一輪剛好有沒有種出積木的樹、猴子剛好走去哪一邊）。 */
+  const mtree = await page.evaluate(() => {
+    const b = blocks.find(x => x.st === SET && x.hh >= 0);
+    if (!b) return { ok: false, why: '村子裡一塊都沒有' };
+    const h = homes.list[b.hh], was = h.tree;
+    h.tree = 1;
+    const near = nearHome(b.x, b.z), any = anyHome();
+    h.tree = was;
+    return { ok: !!near && near.hh === b.hh && !!any,
+             kind: h.kind, wasTree: was ? 1 : 0,
+             nearHH: near ? near.hh : -1, hh: b.hh, anyHH: any ? any.hh : -1 };
+  });
+  ok('樹也算「地標建築以外」：標成樹的那一個照樣挑得到',
+     mtree.ok,
+     '把「' + mtree.kind + '」標成樹（本來 tree=' + mtree.wasTree + '）之後，' +
+     'nearHome 挑到 ' + mtree.nearHH + '（要 ' + mtree.hh + '）、anyHome 挑到 ' +
+     mtree.anyHH);
 
   /* 三隻各用自己那一套。共用的量法：
-       站著的地標塊（st === SET && hh < 0）與站著的房子塊（hh >= 0）分開數——
+       站著的地標塊（st === SET && hh < 0）與站著的村子塊（hh >= 0）分開數——
        breakBlock 會把 hh 清掉，所以碎料一律落在「hh < 0」那一邊，
-       只有 st === SET 才是「還站著的」（不加這個條件會把房子的碎料算成地標）。 */
+       只有 st === SET 才是「還站著的」（不加這個條件會把村子的碎料算成地標）。 */
   const mape = await page.evaluate(() => {
     beasts = null; nanas = null; fballs = null; clearFires();
     for (const b of blocks) b.wet = 0;
@@ -17063,12 +17087,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              site0, site: site(), home0, low, ph: phase,
              gone: !beasts || beasts.indexOf(m) < 0 };
   });
-  ok('黑獼猴那一趟：走過去把小房子點著，地標一塊都沒燒到、一塊都沒少',
+  ok('黑獼猴那一趟：走過去把村子那邊點著，地標一塊都沒燒到、一塊都沒少',
      mape.acted > 0 && mape.burnHome > 0 && mape.low < mape.home0 &&
      mape.burnSite === 0 && mape.hiSite === 0 && mape.site === mape.site0 &&
      mape.ph === 'done',
-     '走了 ' + mape.secs + ' 秒、站定瞄 ' + mape.acted + ' 秒，點著房子 ' +
-     mape.burnHome + ' 塊（還站著的房子 ' + mape.home0 + ' → ' + mape.low +
+     '走了 ' + mape.secs + ' 秒、站定瞄 ' + mape.acted + ' 秒，點著村子 ' +
+     mape.burnHome + ' 塊（還站著的村子 ' + mape.home0 + ' → ' + mape.low +
      '）；地標燒 ' + mape.hiSite + ' 塊、' + mape.site0 + ' → ' + mape.site +
      ' 塊，phase ' + mape.ph);
   ok('砸完回去把剩下的時間逛完才走（不像天災那幾隻動完手就走人）',
@@ -17105,10 +17129,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { secs: +(n * 0.05).toFixed(1), nana, st, air, lie, boomD, blast: NANA_R,
              site0, site: site(), home0, low, ph: phase };
   });
-  ok('白猴子那一趟：香蕉丟的是小房子，地標沒事',
+  ok('白猴子那一趟：香蕉丟的是村子那邊，地標沒事',
      msnow.nana > 0 && msnow.low < msnow.home0 && msnow.st === 'fun' &&
      msnow.site >= msnow.site0 - 4 && msnow.ph === 'done',
-     '丟了 ' + msnow.nana + ' 根，還站著的房子 ' + msnow.home0 + ' → ' + msnow.low +
+     '丟了 ' + msnow.nana + ' 根，還站著的村子 ' + msnow.home0 + ' → ' + msnow.low +
      ' 塊、地標 ' + msnow.site0 + ' → ' + msnow.site + ' 塊，phase ' + msnow.ph);
   ok('丟之前先站到自己的爆炸半徑外（不然牠會被自己的香蕉炸飛）',
      msnow.boomD > msnow.blast && msnow.air === 0,
@@ -17146,21 +17170,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   /* 顆數只驗「配額落在 1~2、而且真的吐得出來」，不驗「一顆都沒少」：
      整片村子被前兩隻砸到只剩最後一塊時，剩下的配額是故意作廢的（不改噴地標）。 */
-  ok('飛龍那一趟：火球瞄的是村子裡的小房子，不是地標',
+  ok('飛龍那一趟：火球瞄的是村子那邊，不是地標',
      mdrg.quota >= 1 && mdrg.quota <= 2 &&
      mdrg.hits.length >= 1 && mdrg.hits.length <= mdrg.quota &&
      mdrg.hits.every(h => h.dh >= 0 && h.dh < 10 && h.r > mdrg.siteR) &&
      mdrg.low < mdrg.home0,
      '配額 ' + mdrg.quota + ' 顆，落點 ' +
-     mdrg.hits.map(h => '半徑 ' + h.r + '／離最近那塊房子 ' + h.dh).join('，') +
-     '（siteR ' + mdrg.siteR + '）；還站著的房子 ' + mdrg.home0 + ' → ' + mdrg.low);
-  ok('火球的餘火只燒房子，不撒到旁邊的地標上',
+     mdrg.hits.map(h => '半徑 ' + h.r + '／離最近那塊村子的積木 ' + h.dh).join('，') +
+     '（siteR ' + mdrg.siteR + '）；還站著的村子 ' + mdrg.home0 + ' → ' + mdrg.low);
+  ok('火球的餘火只燒村子那邊，不撒到旁邊的地標上',
      mdrg.burnSite === 0 && mdrg.site >= mdrg.site0 - 4 && mdrg.ph === 'done',
      '地標燒起來 ' + mdrg.burnSite + ' 塊、' + mdrg.site0 + ' → ' + mdrg.site +
      ' 塊還站著，phase ' + mdrg.ph);
 
   /* 村子還沒蓋起來（或都被砸光了）：抽中的那一隻照舊只是來逛的。
-     cleanTools 正好把房子清掉，這一條就跑在它後面。 */
+     cleanTools 正好把房子與樹都清掉，這一條就跑在它後面。 */
   const mnone = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
     mascT.fill(1e9);                                  // cleanTools 把鐘歸零了，這一條要自己擺
@@ -17179,7 +17203,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return out;
   });
-  ok('一間房子都沒有的時候，抽中的那一隻照舊只是來逛的（不會改砸地標）',
+  ok('村子那邊一塊都沒有的時候，抽中的那一隻照舊只是來逛的（不會改砸地標）',
      mnone.gone && mnone.acted === 0 && mnone.burn === 0 && mnone.bad === 0 &&
      mnone.home === 0 && mnone.set === mnone.set0 && mnone.ph === 'done',
      '旗標自己收掉（bad ' + mnone.bad + '／home ' + mnone.home +

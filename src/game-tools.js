@@ -2436,7 +2436,7 @@ function stepFw(dt) {
 
 /* 爆炸的餘火：範圍內 st 這個狀態的積木隨機點幾塊起來。限量是必要的——
    一發核彈的範圍內有上百塊，全點著會一次吃光 FIRE_MAX，之後別的地方就再也燒不起來了。 */
-/* only 給了就只點得中它認的那些塊（v1.166）：吉祥物砸小房子那一趟只准燒房子，
+/* only 給了就只點得中它認的那些塊（v1.166）：吉祥物砸村子那一趟只准燒村子那邊，
    不准把火撒到旁邊的地標上（見 apeStrike／fballHit）。不給就跟以前一樣，誰都燒。 */
 function igniteAround(p, R, n, st, only) {
   const R2 = R * R;
@@ -5397,7 +5397,7 @@ const DOOM_OUT = 3;                   // 從碎料場外緣再往外幾格出現
 const DOOM_AIM = 1.1;                 // 站定到動手之間停幾秒（看得出牠在瞄）
 const DOOM_ARM = 4;                   // 抬手的快慢
 const DOOM_NEAR = 3.2;                // 走到離目標這麼近就夠了（火把搆得到）
-/* 丟香蕉的那一隻砸小房子時要站遠一點（v1.166）：那一根的爆炸半徑是 NANA_R 9，
+/* 丟香蕉的那一隻砸村子時要站遠一點（v1.166）：那一根的爆炸半徑是 NANA_R 9，
    站在 DOOM_NEAR 3.2 就丟的話牠會被自己的香蕉炸飛（實測第一次就飛了）。
    天災那一版沒這個問題——牠丟的是地標中心一帶，落點本來就在十幾格外。 */
 const DOOM_TOSS_NEAR = 10.5;
@@ -5432,7 +5432,8 @@ const DOOM_ACT = { ape: apeStrike, snow: nanaThrow };
 
 /* 從場邊放一隻進來。方位隨機——固定一邊的話，鏡頭剛好對著另一邊就永遠看不到牠走過來。
    fun＝這一隻是吉祥物（v1.144）：同一份造型、同一套走路，只是不動手（見檔案最後那一節）。
-   bad＝吉祥物那一趟順手砸一間小房子（v1.166，只有 fun 那一版會給，見 stepMascot）。 */
+   bad＝吉祥物那一趟順手砸村子那邊一間房子或一棵樹（v1.166，只有 fun 那一版會給，
+   見 stepMascot）。 */
 function spawnBeast(kind, fun, bad) {
   const a = Math.random() * Math.PI * 2, d = arenaR + DOOM_OUT;
   const m = {
@@ -5441,7 +5442,7 @@ function spawnBeast(kind, fun, bad) {
     ph: 0, gait: 0, leg: 0, tx: 0, tz: 0, ghost: 0, pause: 0,
     sc: DOOM_SC, arm: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,
     fun: fun ? 1 : 0, stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
-    /* bad＝這一趟要動手，home＝動手的目標是小房子（v1.166）。兩個分開是因為
+    /* bad＝這一趟要動手，home＝動手的目標在村子那邊（v1.166）。兩個分開是因為
        「還沒砸」與「砸的是誰」是兩件事：砸完 bad 歸零回去逛，home 也一起清掉。 */
     bad: bad ? 1 : 0, home: bad ? 1 : 0,
     /* 被破壞工具打到之後要用的（v1.146）。spin 是躺平角、roll 是打滾角，
@@ -5453,12 +5454,12 @@ function spawnBeast(kind, fun, bad) {
   beasts.push(m);
   sndBeast(kind === 'snow');
   const nm = kind === 'ape' ? '🐒 黑獼猴' : '🐵 白猴子';
-  /* 提示照「真的有房子可砸嗎」講（v1.166）：村子還沒蓋起來的時候牠什麼都不會做
-     （見 stepBeast 的 fun 那一段），這時候還說牠盯上了小房子就是騙人。 */
+  /* 提示照「真的有東西可砸嗎」講（v1.166）：村子還沒蓋起來的時候牠什麼都不會做
+     （見 stepBeast 的 fun 那一段），這時候還說牠盯上了村子就是騙人。 */
   if (fun) toast(nm + '來工地逛逛',
                  bad && nearHome(m.x, m.z)
-                   ? (kind === 'ape' ? '牠盯上了村子裡的小房子，手上那支火把還亮著'
-                                     : '牠盯上了村子裡的小房子，手上那根香蕉還在')
+                   ? (kind === 'ape' ? '牠盯上了村子那一帶，手上那支火把還亮著'
+                                     : '牠盯上了村子那一帶，手上那根香蕉還在')
                    : '牠不會動手，晃一圈就走');
   else toast(nm + '朝工地過來了',
              kind === 'ape' ? '牠手上有一支火把' : '牠手上有一根綁著膠帶的香蕉');
@@ -5475,35 +5476,36 @@ function nearSet(x, z) {
   }
   return best;
 }
-/* 上面那一支的另一半（v1.166）：還站著的**小人的家**裡離這裡最近的那一塊。
-   吉祥物那一趟拿它當「要砸哪裡」——使用者：「吉祥物出沒偶而也會對不是地標建築破壞」，
-   而場上的積木只分兩種：地標（hh < 0）與村子那邊（hh >= 0），所以「不是地標建築」
-   就是這一支挑出來的東西。
-   **樹不算**：v1.153 起樹也掛在 homes.list 上（h.tree），但樹不是建築。 */
-const isHouse = b => b.hh >= 0 && homes && homes.list[b.hh] && !homes.list[b.hh].tree;
+/* 上面那一支的另一半（v1.166）：**村子那邊**還站著的東西裡離這裡最近的那一塊。
+   吉祥物那一趟拿它當「要砸哪裡」——使用者：「吉祥物出沒偶而也會對不是地標建築破壞」。
+   場上的積木只分兩種：地標（hh < 0）與村子那邊（hh >= 0，小人的家與樹都在
+   homes.list 上），所以「不是地標建築」就是 hh >= 0 這一整邊。
+   v1.166.1 起**樹也算**（使用者：「樹也算 地標建築以外就可以了」）——原本擋掉樹的
+   那個 h.tree 判斷已經拿掉，這個述詞留著是給 igniteAround 的 only 用的。 */
+const isVillage = b => b.hh >= 0;
 function nearHome(x, z) {
   let best = null, bd = Infinity;
   for (const b of blocks) {
-    if (b.st !== SET || !isHouse(b)) continue;
+    if (b.st !== SET || !isVillage(b)) continue;
     const d = (b.x - x) ** 2 + (b.z - z) ** 2;
     if (d < bd) { bd = d; best = b; }
   }
   return best;
 }
-/* 隨機挑一間還站著的房子，回傳裡面隨便一塊（v1.166）。飛龍在天上，牠不像猴子那樣
-   挑最近的——整片村子牠都飛得到。整間被砸光的就跳過（slots 還在，積木沒了）。 */
+/* 隨機挑一間還站著的（房子或樹），回傳裡面隨便一塊（v1.166）。飛龍在天上，
+   牠不像猴子那樣挑最近的——整片村子牠都飛得到。
+   已經被砸光的就跳過（slots 還在，積木沒了）。 */
 function anyHome() {
   if (!homes || !homes.list.length) return null;
   const n = homes.list.length, off = Math.floor(Math.random() * n);
   for (let i = 0; i < n; i++) {
     const hh = (i + off) % n;
-    if (homes.list[hh].tree) continue;
     for (const b of blocks) if (b.st === SET && b.hh === hh) return b;
   }
   return null;
 }
-/* 那一塊屬於哪一間房子的中心（v1.166）。丟香蕉／吐火球瞄的是**屋頂中央**不是牠面前
-   那面牆：牆邊離地標最近，爆炸半徑 9 會擦到地標的外圈——而使用者要砸的是房子。 */
+/* 那一塊屬於哪一間（或哪一棵）的中心（v1.166）。丟香蕉／吐火球瞄的是**中央**不是
+   牠面前那面牆：牆邊離地標最近，爆炸半徑 9 會擦到地標的外圈——而要砸的是村子。 */
 function homeMid(b) {
   const h = homes && homes.list[b.hh];
   return h ? { x: h.x, z: h.z } : { x: b.x, z: b.z };
@@ -5527,7 +5529,7 @@ function leaveBeast(m) {
      come  strollTo：它會把「工地中心」這個目標推到建築外圈那一環上，所以牠停在
            建築邊上不會走進去；路上有小人的家也是它繞開的（dodgeHome／pushOutHome）。
      fun   吉祥物在建築外圈那一環上逛（見檔案最後那一節）。抽中要動手的那一趟
-           （v1.166）也走這一段，只是把逛的目標換成牠盯上的那一間小房子。
+           （v1.166）也走這一段，只是把逛的目標換成牠盯上的那一間房子（或那一棵樹）。
      near  那一環是照 siteR 畫的圓，而 siteR 有 7 的下限，小一點的地標離環還有幾格。
            所以再往最近那一塊走幾步——但**下一步會踩進建築或房子的格子就停**，
            「不要穿越」在這裡是硬條件，不是靠繞路碰運氣。
@@ -5602,13 +5604,18 @@ function stepBeast(m, dt) {
     return false;
   }
   if (m.st === 'near') {
-    /* 瞄地標還是瞄小房子（v1.166）：m.home 是吉祥物那一趟才有的旗標。 */
+    /* 瞄地標還是瞄村子那邊（v1.166）：m.home 是吉祥物那一趟才有的旗標。 */
     const b = m.home ? nearHome(m.x, m.z) : nearSet(m.x, m.z);
     if (!b) {                                         // 沒東西可砸了（都被拆光）
       if (m.fun) funBack(m); else leaveBeast(m);
       return false;
     }
-    const dx = b.x - m.x, dz = b.z - m.z, d = Math.hypot(dx, dz) || 1;
+    /* 丟香蕉那一隻要站在**炸點**外面，而炸點是那一間（那一棵）的中央不是牠面前
+       這一塊（見 nanaThrow）。照面前這一塊算的話，中央可能還在爆炸半徑內——
+       實測擺在一棵半徑 4.2 的闊葉樹旁邊，炸點只離牠 10.3 格（NANA_R 是 9）。
+       其餘的照舊看面前那一塊：火把是搆得到才點得著。 */
+    const aim = m.home && m.kind === 'snow' ? homeMid(b) : b;
+    const dx = aim.x - m.x, dz = aim.z - m.z, d = Math.hypot(dx, dz) || 1;
     m.a = Math.atan2(dx, dz);
     /* 還想再走多遠。**要留一格浮點的餘裕**：走到剩下剛好 DOOM_NEAR 時，
        d 會是 3.2000000000000006 這種數，`d <= DOOM_NEAR` 永遠不成立，
@@ -5644,14 +5651,14 @@ function stepBeast(m, dt) {
    igniteAt 會順手把 phase 從 done 推到 wreck（那是「地標開始垮了」的記號）。 */
 const DOOM_FIRE_R = 4, DOOM_FIRE_N = 5;
 function apeStrike(m) {
-  /* 吉祥物那一趟點的是小房子（v1.166）：連撒出去的那幾塊也只認房子的積木——
-     房子離地標至少 HOME_NEAR 遠，半徑 4 本來就摸不到地標，但寫死比較保險。
-     火自己蔓延那一段也不會跳過去：房子燒的是自己那份格子表（見 spreadHomeFire）。 */
+  /* 吉祥物那一趟點的是村子那邊（v1.166）：連撒出去的那幾塊也只認村子的積木——
+     村子離地標至少 HOME_NEAR 遠，半徑 4 本來就摸不到地標，但寫死比較保險。
+     火自己蔓延那一段也不會跳過去：那邊燒的是自己那份格子表（見 spreadHomeFire）。 */
   const b = m.home ? nearHome(m.x, m.z) : nearSet(m.x, m.z);
   if (!b) return 0;
   const p = { x: b.x, y: b.y, z: b.z };
   let n = igniteAt(p.x, p.y, p.z) ? 1 : 0;
-  n += igniteAround(p, DOOM_FIRE_R, DOOM_FIRE_N, SET, m.home ? isHouse : null);
+  n += igniteAround(p, DOOM_FIRE_R, DOOM_FIRE_N, SET, m.home ? isVillage : null);
   sndFire();
   return n;
 }
@@ -5665,10 +5672,10 @@ const NANA_HAND = 1.55;               // 出手高度（模型單位，舉過頭
 const NANA_SPIN = 9;                  // 飛的時候翻多快
 function nanaThrow(m) {
   let tx, tz;
-  /* 吉祥物那一趟丟的是小房子（v1.166）：瞄**屋頂中央**不是牠面前那面牆——
-     牆邊離地標最近，半徑 9 的爆炸會擦到地標外圈，而使用者要砸的是房子。 */
+  /* 吉祥物那一趟丟的是村子那邊（v1.166）：瞄**那一間（那一棵）的中央**不是牠面前
+     那面牆——牆邊離地標最近，半徑 9 的爆炸會擦到地標外圈。 */
   const hb = m.home ? nearHome(m.x, m.z) : null;
-  /* 瞄的那一間中途沒了（站定到出手之間那一秒被別的東西砸光）：這一根就不丟——
+  /* 瞄的那一個中途沒了（站定到出手之間那一秒被別的東西砸光）：這一根就不丟——
      丟了的話落點會退回地標中心那一帶，而那是天災那一版才做的事。 */
   if (m.home && !hb) return null;
   if (hb) { const h = homeMid(hb); tx = h.x; tz = h.z; }
@@ -5778,7 +5785,7 @@ let fballs = null;                   // 飛在半空的火球
 
 /* 放一條龍進來。方位隨機，順時針逆時針也隨機——固定的話每次看到的都一樣。
    fun＝吉祥物那一版（v1.144）：航線一模一樣，只是 left 給 0，一顆火球都不吐。
-   bad＝吉祥物那一趟順手噴小房子（v1.166）：配額給 MASC_BAD_SHOT，落點改瞄村子。 */
+   bad＝吉祥物那一趟順手噴村子（v1.166）：配額給 MASC_BAD_SHOT，落點改瞄村子那邊。 */
 function spawnDragon(fun, bad) {
   const a = Math.random() * Math.PI * 2, d = arenaR + DRA_OUT;
   const m = {
@@ -5799,7 +5806,7 @@ function spawnDragon(fun, bad) {
   beasts.push(m);
   sndRoar();
   if (fun) toast('🐉 一條龍飛過工地上空',
-                 bad && anyHome() ? '牠繞一圈就走，路上會朝村子的小房子吐幾顆火球'
+                 bad && anyHome() ? '牠繞一圈就走，路上會朝村子那邊吐幾顆火球'
                                   : '牠只是繞一圈就走，不會吐火球');
   else toast('🐉 一條龍朝工地飛過來了', '牠會在上空繞一圈，邊繞邊吐火球');
   return m;
@@ -5833,7 +5840,7 @@ function stepDragon(m, dt) {
     /* 邊繞邊吐（「中途吐幾顆火球」）。隔開來吐，不連噴。 */
     m.gap -= dt;
     if (m.gap <= 0 && m.left > 0) {
-      /* 吉祥物那一趟瞄的是小房子（v1.166）：一間都不剩就把剩下的配額作廢，
+      /* 吉祥物那一趟瞄的是村子那邊（v1.166）：一個都不剩就把剩下的配額作廢，
          別讓牠改噴地標——那是天災那一版才做的事。 */
       if (m.home && !anyHome()) m.left = 0;
       else { spitFire(m); m.left--; m.gap = rr(DRA_GAP[0], DRA_GAP[1]); }
@@ -5867,8 +5874,8 @@ const FB_MOUTH = 3.3, FB_JAW = 0.7;  // 嘴巴在模型的哪裡（往前 3.3、
 function spitFire(m) {
   /* 隨機挑一個目標：地標中心一帶取一點，高度取那附近最高的一塊——
      不取高度的話火球會穿過屋頂才炸。
-     吉祥物那一趟瞄的是小房子（v1.166）：整片村子牠都飛得到，所以隨機挑一間、
-     瞄屋頂中央（同香蕉那一根，理由見 nanaThrow）。 */
+     吉祥物那一趟瞄的是村子那邊（v1.166）：整片村子牠都飛得到，所以隨機挑一個、
+     瞄它的中央（同香蕉那一根，理由見 nanaThrow）。 */
   let tx, tz;
   const hb = m.home ? anyHome() : null;
   if (m.home && !hb) return null;          // 一間都不剩：這一顆不吐（同上）
@@ -5891,7 +5898,7 @@ function spitFire(m) {
   const f = {
     kind: 'fball', x: sx, y: sy, z: sz, sc: FB_SC, s: 1.1,   // s 是 sweepRock 的碰撞半徑
     a: Math.atan2(tx - sx, tz - sz), spin: 0, em: 0, t: 0, T,
-    home: m.home ? 1 : 0,                     // 這一顆是砸小房子的（v1.166，見 fballHit）
+    home: m.home ? 1 : 0,                     // 這一顆是砸村子的（v1.166，見 fballHit）
     vx: (tx - sx) / T, vz: (tz - sz) / T,
     vy: (ty + 0.5 - sy) / T + 0.5 * GRAV * T          // 解拋物線：湊出剛好 T 秒抵達
   };
@@ -5943,9 +5950,9 @@ function fballHit(f) {
   explode(p, FB_R, FB_POW);
   /* 爆炸本身帶一點餘火，但這是火球——落點一帶再多點幾塊起來，
      這是它跟同尺寸的普通爆炸最明顯的差別（同隕石）。
-     砸小房子那一顆只准燒房子（v1.166）：這裡的半徑 14.7 比爆炸的 9.2 大得多，
+     砸村子那一顆只准燒村子那邊（v1.166）：這裡的半徑 14.7 比爆炸的 9.2 大得多，
      不擋的話火會撒到旁邊的地標上——那就不是「對不是地標建築破壞」了。 */
-  igniteAround(p, FB_R * 1.6, Math.round(FB_R * 1.6), SET, f.home ? isHouse : null);
+  igniteAround(p, FB_R * 1.6, Math.round(FB_R * 1.6), SET, f.home ? isVillage : null);
 }
 
 /* ── 吉祥物（v1.144）─────────────────────────────────────
@@ -5969,9 +5976,11 @@ const MASC_STAY = [25, 45];           // 走到工地邊之後逛幾秒才走人
      · **「偶而」** ＝出場那一刻抽一次，MASC_BAD 的機率抽中（其餘照舊只是來逛的）。
        抽在**鐘裡**不是抽在 spawnBeast 裡：直接叫 spawnBeast 放進來的（測試、turnBad）
        一律是乖的那一版，「偶而」只發生在自己走進來的那幾隻身上。
-     · **「不是地標建築」** ＝小人的家。場上的積木只分兩種（地標 hh < 0、村子 hh >= 0），
-       而村子那邊還要再去掉樹（v1.153 起樹也在 homes.list 上）——樹不是建築。
-       整套只砸房子：連撒出去的餘火都擋掉非房子的塊（見 igniteAround 的 only）。
+     · **「不是地標建築」** ＝村子那一整邊。場上的積木只分兩種（地標 hh < 0、
+       村子 hh >= 0），所以判斷就是 hh >= 0（見 isVillage）。小人的家與**樹**都算
+       （v1.166.1 使用者：「樹也算 地標建築以外就可以了」；樹從 v1.153 起也掛在
+       homes.list 上）。整套只砸那一邊：連撒出去的餘火都擋掉地標的塊
+       （見 igniteAround 的 only）。
      · **「根據吉祥物的破壞模式」** ＝各用自己那一套，跟天災那一版同一份程式：
        黑獼猴走過去點火把、白猴子丟香蕉炸彈、飛龍在上空吐火球。
    砸完**不算天災**：m.fun 一直是 1，所以天災的鐘照數（見 stepDoom），牠也照舊
