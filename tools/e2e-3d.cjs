@@ -172,13 +172,14 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那一段自己把它裝回去（見「偷懶」）。 */
   if (!window.lazyRoll) window.lazyRoll = rollLazy;
   rollLazy = () => { for (const w of workers) w.lazy = 0; };
-  /* 天災（v1.138）也預設關掉。地標蓋完之後 10~15 分鐘會有猴子從場邊走進來放火／丟炸彈，
+  /* 天災（v1.138）也預設關掉。地標蓋完之後 8~12 分鐘（v1.166 收短）會有猴子從場邊走進來放火／丟炸彈，
      量完工、閒晃、道具、效能那些「跑很久」的測試會被它整個洗掉。
      要測這件事本身的那一段自己把它裝回去（見「天災」）。 */
   if (!window.doomStep) window.doomStep = stepDoom;
   stepDoom = () => {};
-  /* 吉祥物（v1.144）也預設關掉。三隻各自 3~6 分鐘就會來工地逛一圈，牠們不搞破壞，
-     但會走進閒晃範圍、吃掉 beastMesh 的名額，量閒晃分布與畫面統計的測試會被它洗掉。
+  /* 吉祥物（v1.144）也預設關掉。三隻各自 3~6 分鐘就會來工地逛一圈，
+     會走進閒晃範圍、吃掉 beastMesh 的名額，量閒晃分布與畫面統計的測試會被它洗掉；
+     v1.166 起還有四分之一的機率是來砸小房子的（見「吉祥物」那一段的〈偶而動手〉）。
      要測這件事本身的那一段自己把它裝回去（見「吉祥物」）。 */
   if (!window.mascStep) window.mascStep = stepMascot;
   stepMascot = () => {};
@@ -16163,7 +16164,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 天災 ══════════ */
   /* v1.138。使用者：「自動天災事件設計成可擴充多種／地標建築完成後 計時 10~15 分鐘
-     之間啟動／事件一 一隻小人大小的黑獼猴慢慢從邊緣走過來 對地標點火／事件二 一隻
+     之間啟動（v1.166 使用者改成「縮短到地標完成後 8~12 分鐘」）／事件一 一隻
+     小人大小的黑獼猴慢慢從邊緣走過來 對地標點火／事件二 一隻
      小人大小的白猴子(比黑獼猴略大)慢慢從邊緣走過來 對地標丟出香蕉形狀炸彈」，
      後續追加「可以按照小人行走邏輯 不要穿越地標建築&小房子」。
      造型是先做成預覽給使用者看過才落地的（白猴子改成「毛依然是黑的，只有皮膚比較白」）。 */
@@ -16279,11 +16281,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('只有地標蓋完（done）才開始倒數，施工中不數',
      btime.inBuild === -1 && btime.armed > 0, '施工中 ' + btime.inBuild);
-  ok('倒數的長度落在 10~15 分鐘',
-     btime.lo >= 600 && btime.hi <= 900 && btime.hi - btime.lo > 200,
+  ok('倒數的長度落在 8~12 分鐘（v1.166 從 10~15 收短）',
+     btime.lo >= 480 && btime.hi <= 720 && btime.hi - btime.lo > 200,
      '300 次抽樣：' + btime.lo.toFixed(0) + '～' + btime.hi.toFixed(0) + ' 秒');
   ok('倒數照模擬時間走，而且一次只來一件',
-     Math.abs(btime.ticked - 10) < 0.01 && btime.busy === -1 && btime.rearm > 600,
+     Math.abs(btime.ticked - 10) < 0.01 && btime.busy === -1 && btime.rearm > 480,
      '10 秒扣掉 ' + btime.ticked + '／場上有東西時 ' + btime.busy);
   /* 「設計成可擴充多種」：加第三種天災＝往 DOOMS 再放一列，別處不必動。 */
   const bpick = await page.evaluate(() => {
@@ -16955,6 +16957,234 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('補的那一圈真的吐得出火球，地標跟著垮',
      mtdra.shots >= 3 && mtdra.fb > 0 && mtdra.set < mtdra.set0,
      '吐了 ' + mtdra.shots + ' 顆，還站著的 ' + mtdra.set0 + ' → ' + mtdra.set + ' 塊');
+
+  /* ── 偶而動手（v1.166）───────────────────────────────────
+     使用者：「吉祥物出沒偶而也會對不是地標建築破壞（根據吉祥物的破壞模式）」。
+     四件事要驗：多久一次（「偶而」）、砸的是小房子而地標沒事（「不是地標建築」）、
+     三隻各用自己那一套（「根據吉祥物的破壞模式」）、砸完照舊逛完才走。 */
+  const mrate = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    /* 只攔「鐘放人的時候帶了什麼旗標」，不真的放一隻進來：放進來的話一趟要等牠走完，
+       八百次抽樣得跑上幾十萬幀。 */
+    const orig = MASCOTS.map(k => k.spawn);
+    const got = [];
+    MASCOTS[0].spawn = bad => { got.push(bad ? 1 : 0); };
+    for (let i = 0; i < 800; i++) { mascT[0] = 0.01; stepMascot(0.05); }
+    MASCOTS.forEach((k, i) => { k.spawn = orig[i]; });
+    /* 直接叫 spawnBeast／spawnDragon 放進來的一律是乖的那一版——上面每一條測試
+       （還有 turnBad）都靠這件事。 */
+    beasts = null;
+    const plain = [spawnBeast('ape', 1), spawnBeast('snow', 1), spawnDragon(1)]
+                  .every(m => !m.bad && !m.home);
+    cleanTools();
+    return { n: got.length, bad: got.reduce((a, v) => a + v, 0), plain, p: MASC_BAD };
+  });
+  ok('「偶而」＝出場那一刻抽一次，大約四隻裡一隻是來動手的',
+     mrate.p < 0.5 && Math.abs(mrate.bad / mrate.n - mrate.p) < 0.07 && mrate.plain,
+     '抽 ' + mrate.n + ' 次有 ' + mrate.bad + ' 次（' +
+     (mrate.bad / mrate.n * 100).toFixed(1) + '%，MASC_BAD ' + mrate.p +
+     '）；直接放進來的三隻都是乖的 ' + mrate.plain);
+
+  /* 蓋一個村落出來：上面每一條都是 cleanTools 開頭（那一支會把房子清掉），
+     所以砸房子這幾條自己蓋一次，中間不再 cleanTools。
+     **要從一座乾淨的地標重來（reset ＋ completeNow），不能只 fillAll**：
+     上面幾條把地標燒垮了，而村子要蓋幾十秒——那幾十秒裡遊戲會自己走完
+     「垮了 → 整地 → 開下一座」，一進 build 就只有偷懶的人會去蓋房子（而測試裡沒有
+     偷懶的人），實測 300 秒蓋出 0 塊。reset 會把 stepDoom／stepMascot 換回空的
+     （installClean），所以要再裝回來一次。 */
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 20 });
+  await page.evaluate(() => { stepDoom = window.doomStep; stepMascot = window.mascStep; });
+  const village = await page.evaluate(() => {
+    completeNow();
+    for (let i = 0; i < 240; i++) step(0.05);          // 散場
+    beasts = null; nanas = null; fballs = null; clearFires();
+    phase = 'done'; doomT = 1e9;
+    mascT.fill(1e9);                                  // 自己走進來的先別來，這幾條要自己擺
+    stopIdleEvent(); evArm = 0;
+    idleEv = IDLE_EVENTS[0]; startHomes();            // 挑哪一件另一段測過了，這裡直接開
+    const cnt = () => blocks.filter(b => b.st === SET && b.hh >= 0).length;
+    let t = 0;
+    while (t < 300 && cnt() < 100) { step(0.05); t += 0.05; }
+    /* **蓋到這裡就凍住**：不停的話下面幾條一邊被砸、村子一邊在長，
+       「房子少了幾塊」量到的是兩件事相減（實測砸完反而多了 300 多塊）。 */
+    stopIdleEvent();
+    for (let i = 0; i < 40; i++) step(0.05);           // 手上還抓著的那幾塊落地
+    const house = homes ? homes.list.map((h, i) => h.tree ? -1
+                          : blocks.filter(b => b.st === SET && b.hh === i).length)
+                        : [];
+    const near = homes ? Math.min(...homes.list.filter(h => !h.tree)
+                          .map(h => Math.hypot(h.x, h.z) - h.r)) : 0;
+    return { secs: +t.toFixed(1), blk: cnt(), houses: house.filter(v => v > 0).length,
+             big: Math.max(...house), gap: +(near - siteR).toFixed(1),
+             siteR: +siteR.toFixed(1) };
+  });
+  ok('先蓋一個村落出來（後面幾條要有房子可砸）',
+     village.houses >= 2 && village.blk >= 60 && village.big >= 6,
+     village.secs + ' 秒蓋出 ' + village.houses + ' 間、共 ' + village.blk +
+     ' 塊站著（最大那間 ' + village.big + ' 塊）；最近的一間離地標外圈 ' +
+     village.gap + ' 格（siteR ' + village.siteR + '）');
+
+  /* 三隻各用自己那一套。共用的量法：
+       站著的地標塊（st === SET && hh < 0）與站著的房子塊（hh >= 0）分開數——
+       breakBlock 會把 hh 清掉，所以碎料一律落在「hh < 0」那一邊，
+       只有 st === SET 才是「還站著的」（不加這個條件會把房子的碎料算成地標）。 */
+  const mape = await page.evaluate(() => {
+    beasts = null; nanas = null; fballs = null; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const site = () => blocks.filter(b => b.st === SET && b.hh < 0).length;
+    const home = () => blocks.filter(b => b.st === SET && b.hh >= 0).length;
+    const site0 = site(), home0 = home();
+    const m = spawnBeast('ape', 1, 1);
+    let n = 0, acted = 0, inside = 0;
+    /* `beasts &&` 不能省：逛的時間用完牠就走人（連 bad 都還沒用掉），
+       走出場外之後 beasts 是 null，少了這一半會當場 TypeError。 */
+    while (n < 6000 && m.bad && beasts && beasts.indexOf(m) >= 0) {
+      step(0.05); n++;
+      if (m.st === 'act') acted++;
+      if (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)) inside++;
+    }
+    const st = m.st, stay = m.stay;
+    const burnHome = blocks.filter(b => b.burn > 0 && b.st === SET && b.hh >= 0).length;
+    const burnSite = blocks.filter(b => b.burn > 0 && b.st === SET && b.hh < 0).length;
+    /* 燒下去：房子那幾塊要真的被吃掉，而火不會跳到地標上（房子燒的是自己那份格子表，
+       見 spreadHomeFire）。**跑到牠走出場外才停**，不是固定幀數——剩下要逛的
+       （m.stay 抽 25~45 秒，這一趟用掉的只有走進來那一段之後那幾秒）加上走回場外的
+       十幾秒，固定 60 秒只剩兩秒餘裕，那種門檻就是一顆偶爾才爆的雷。 */
+    let low = home0, hiSite = 0, out = 0;
+    while (out < 2400) {
+      step(0.05); out++;
+      low = Math.min(low, home());
+      hiSite = Math.max(hiSite, blocks.filter(b => b.burn > 0 && b.st === SET && b.hh < 0).length);
+      if (!beasts || beasts.indexOf(m) < 0) break;
+    }
+    return { secs: +(n * 0.05).toFixed(1), acted: +(acted * 0.05).toFixed(2), inside,
+             after: +(out * 0.05).toFixed(1),
+             burnHome, burnSite, hiSite, st, stay: +stay.toFixed(1),
+             site0, site: site(), home0, low, ph: phase,
+             gone: !beasts || beasts.indexOf(m) < 0 };
+  });
+  ok('黑獼猴那一趟：走過去把小房子點著，地標一塊都沒燒到、一塊都沒少',
+     mape.acted > 0 && mape.burnHome > 0 && mape.low < mape.home0 &&
+     mape.burnSite === 0 && mape.hiSite === 0 && mape.site === mape.site0 &&
+     mape.ph === 'done',
+     '走了 ' + mape.secs + ' 秒、站定瞄 ' + mape.acted + ' 秒，點著房子 ' +
+     mape.burnHome + ' 塊（還站著的房子 ' + mape.home0 + ' → ' + mape.low +
+     '）；地標燒 ' + mape.hiSite + ' 塊、' + mape.site0 + ' → ' + mape.site +
+     ' 塊，phase ' + mape.ph);
+  ok('砸完回去把剩下的時間逛完才走（不像天災那幾隻動完手就走人）',
+     mape.st === 'fun' && mape.gone && mape.inside === 0,
+     '動完手轉回 ' + mape.st + '（還剩 ' + mape.stay + ' 秒要逛）→ 又 ' + mape.after +
+     ' 秒之後走了 ' + mape.gone + '；全程踩進建築或房子 ' + mape.inside + ' 幀');
+
+  const msnow = await page.evaluate(() => {
+    beasts = null; nanas = null; fballs = null; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const site = () => blocks.filter(b => b.st === SET && b.hh < 0).length;
+    const home = () => blocks.filter(b => b.st === SET && b.hh >= 0).length;
+    const site0 = site(), home0 = home();
+    const m = spawnBeast('snow', 1, 1);
+    let n = 0, nana = 0;
+    while (n < 6000 && m.bad && beasts && beasts.indexOf(m) >= 0) {   // 同上，別省 beasts &&
+      step(0.05); n++;
+      nana = Math.max(nana, nanas ? nanas.length : 0);
+    }
+    const st = m.st;
+    /* 香蕉飛 1.15 秒才炸，炸完再讓碎料落地。順便量「炸點離牠多遠」與「牠飛了沒」：
+       砸房子的那一趟牠要站在自己的爆炸半徑外才丟（DOOM_TOSS_NEAR，見那裡的註解）。 */
+    let air = 0, lie = 0, low = home0, last = null, boomD = -1;
+    for (let i = 0; i < 200; i++) {
+      if (nanas && nanas[0]) last = { x: nanas[0].x, z: nanas[0].z };
+      step(0.05);
+      nana = Math.max(nana, nanas ? nanas.length : 0);
+      if (!nanas && last && boomD < 0)
+        boomD = +Math.hypot(m.x - last.x, m.z - last.z).toFixed(1);
+      if (m.air) air = 1;
+      if (m.lie > 0) lie = 1;
+      low = Math.min(low, home());
+    }
+    return { secs: +(n * 0.05).toFixed(1), nana, st, air, lie, boomD, blast: NANA_R,
+             site0, site: site(), home0, low, ph: phase };
+  });
+  ok('白猴子那一趟：香蕉丟的是小房子，地標沒事',
+     msnow.nana > 0 && msnow.low < msnow.home0 && msnow.st === 'fun' &&
+     msnow.site >= msnow.site0 - 4 && msnow.ph === 'done',
+     '丟了 ' + msnow.nana + ' 根，還站著的房子 ' + msnow.home0 + ' → ' + msnow.low +
+     ' 塊、地標 ' + msnow.site0 + ' → ' + msnow.site + ' 塊，phase ' + msnow.ph);
+  ok('丟之前先站到自己的爆炸半徑外（不然牠會被自己的香蕉炸飛）',
+     msnow.boomD > msnow.blast && msnow.air === 0,
+     '炸點離牠 ' + msnow.boomD + ' 格（爆炸半徑 ' + msnow.blast + '）：牠被炸飛 ' +
+     msnow.air + '、被震倒 ' + msnow.lie + '（震倒是圈外那一帶的正常反應，會自己爬起來）');
+
+  const mdrg = await page.evaluate(() => {
+    beasts = null; nanas = null; fballs = null; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const site = () => blocks.filter(b => b.st === SET && b.hh < 0).length;
+    const home = () => blocks.filter(b => b.st === SET && b.hh >= 0).length;
+    const site0 = site(), home0 = home();
+    /* 每一顆火球落在哪：攔 fballHit（爆炸前一刻），量落點離最近那一塊房子多遠、
+       離工地中心多遠。這是「瞄的是小房子」最直接的證據。 */
+    const orig = fballHit;
+    const hits = [];
+    fballHit = f => {
+      const b = nearHome(f.x, f.z);
+      hits.push({ r: +Math.hypot(f.x, f.z).toFixed(1),
+                  dh: b ? +Math.hypot(b.x - f.x, b.z - f.z).toFixed(1) : -1 });
+      return orig(f);
+    };
+    const m = spawnDragon(1, 1);
+    const quota = m.left;
+    let n = 0, low = home0;
+    while (n < 6000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.05); n++;
+      low = Math.min(low, home());
+    }
+    for (let i = 0; i < 200; i++) { step(0.05); low = Math.min(low, home()); }
+    fballHit = orig;
+    const burnSite = blocks.filter(b => b.burn > 0 && b.st === SET && b.hh < 0).length;
+    return { quota, hits, low, home0, site0, site: site(), burnSite,
+             secs: +(n * 0.05).toFixed(1), siteR: +siteR.toFixed(1), ph: phase };
+  });
+  /* 顆數只驗「配額落在 1~2、而且真的吐得出來」，不驗「一顆都沒少」：
+     整片村子被前兩隻砸到只剩最後一塊時，剩下的配額是故意作廢的（不改噴地標）。 */
+  ok('飛龍那一趟：火球瞄的是村子裡的小房子，不是地標',
+     mdrg.quota >= 1 && mdrg.quota <= 2 &&
+     mdrg.hits.length >= 1 && mdrg.hits.length <= mdrg.quota &&
+     mdrg.hits.every(h => h.dh >= 0 && h.dh < 10 && h.r > mdrg.siteR) &&
+     mdrg.low < mdrg.home0,
+     '配額 ' + mdrg.quota + ' 顆，落點 ' +
+     mdrg.hits.map(h => '半徑 ' + h.r + '／離最近那塊房子 ' + h.dh).join('，') +
+     '（siteR ' + mdrg.siteR + '）；還站著的房子 ' + mdrg.home0 + ' → ' + mdrg.low);
+  ok('火球的餘火只燒房子，不撒到旁邊的地標上',
+     mdrg.burnSite === 0 && mdrg.site >= mdrg.site0 - 4 && mdrg.ph === 'done',
+     '地標燒起來 ' + mdrg.burnSite + ' 塊、' + mdrg.site0 + ' → ' + mdrg.site +
+     ' 塊還站著，phase ' + mdrg.ph);
+
+  /* 村子還沒蓋起來（或都被砸光了）：抽中的那一隻照舊只是來逛的。
+     cleanTools 正好把房子清掉，這一條就跑在它後面。 */
+  const mnone = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    mascT.fill(1e9);                                  // cleanTools 把鐘歸零了，這一條要自己擺
+    for (const b of blocks) b.wet = 0;
+    const set0 = blocks.filter(b => b.st === SET).length;
+    const m = spawnBeast('ape', 1, 1);
+    let n = 0, acted = 0, burn = 0;
+    while (n < 4000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.05); n++;
+      if (m.st === 'near' || m.st === 'act') acted++;
+      burn = Math.max(burn, blocks.filter(b => b.burn > 0).length);
+    }
+    const out = { gone: !beasts || beasts.indexOf(m) < 0, acted, burn, bad: m.bad,
+                  home: m.home, set0, set: blocks.filter(b => b.st === SET).length,
+                  ph: phase };
+    cleanTools();
+    return out;
+  });
+  ok('一間房子都沒有的時候，抽中的那一隻照舊只是來逛的（不會改砸地標）',
+     mnone.gone && mnone.acted === 0 && mnone.burn === 0 && mnone.bad === 0 &&
+     mnone.home === 0 && mnone.set === mnone.set0 && mnone.ph === 'done',
+     '旗標自己收掉（bad ' + mnone.bad + '／home ' + mnone.home +
+     '）、沒進 near／act ' + mnone.acted + ' 幀、沒有火 ' + mnone.burn +
+     ' 塊，還站著的 ' + mnone.set0 + ' → ' + mnone.set + ' 塊');
 
   await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
 
