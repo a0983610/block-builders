@@ -11445,7 +11445,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 大劍 ══════════
      使用者要的規格就是這幾條，一條一條驗：
-       ① 點兩個位置、其中一次要在建築上
+       ① 點兩個位置（v1.164 起哪裡都能點：兩下都點地面就貼著地面水平橫掃）
        ② 大劍從第一個位置揮往第二個位置
        ③ 劍柄旋轉點的高度 ≈ 點在建築上那一次的高度
        ④ 刃的攻擊方向是第一點 → 第二點
@@ -11482,12 +11482,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const clickG = q => useTool({ kind: 'ground',
       point: new THREE.Vector3(q.x, 0, q.z), dir: new THREE.Vector3(0, -1, 0) });
 
-    /* ① 兩下都點地面：不該發動，要給提示，而且第一點**留著**（再點建築就發動） */
+    /* ① 兩下都點地面（v1.164 使用者：「不再限定一定要點建築 如果兩下都地面就在地面
+       水平橫掃就好」）：照樣揮，而且是**貼著地面水平橫掃**——樞紐在地面的高度上、
+       兩點也在地面，那個平面自然是水平的（幾何沒有為它開特例）。
+       v1.161～v1.163 這一下是不揮的：出一行提示、第一點留著等你再點一次建築。 */
     const t0 = toasts.length;
     clickG({ x: 30, z: 30 }); clickG(p2);
-    const both = { swords: swords ? swords.length : 0, aim: !!aim,
+    const both = { n: swords ? swords.length : 0, aim: !!aim,
+                   y: swords ? +swords[0].y.toFixed(2) : -1,
+                   tilt: swords
+                     ? +(Math.acos(Math.min(1, Math.abs(swords[0].ny))) * 180 / Math.PI).toFixed(3)
+                     : -1,
                    toast: toasts.length > t0 ? toasts[toasts.length - 1].txt : '' };
-    aim = null;
+    /* **一定要把它清掉**：不清的話下面那一把會排在 swords[1]，swords[0] 量到的是這一把 */
+    swords = null; aim = null;
 
     /* 正常一趟：第一下建築、第二下空地 */
     clickB();
@@ -11723,10 +11731,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              tipErr, tipEdgeErr, tipEdge: tEdge, tipPart: ti, tipPlane, rootErr,
              fadeLog, gone, keep, wide, flat, twoB };
   });
-  ok('兩下都點在地面不會揮，會給提示，而且第一點留著（再點建築就發動）',
-     swd.both.swords === 0 && swd.both.aim && /建築/.test(swd.both.toast),
-     '場上 ' + swd.both.swords + ' 把、瞄準點還在 ' + swd.both.aim +
-     '、提示「' + swd.both.toast + '」');
+  ok('兩下都點地面照樣揮，而且是貼著地面水平橫掃（v1.164 不再限定要點建築）',
+     swd.both.n === 1 && swd.both.y === 0 && swd.both.tilt < 0.01 &&
+     !swd.both.aim && swd.both.toast === '',
+     '揮出 ' + swd.both.n + ' 把、樞紐高度 ' + swd.both.y + '、揮動平面傾 ' +
+     swd.both.tilt + '°、瞄準點收掉 ' + !swd.both.aim +
+     '、沒有提示 ' + (swd.both.toast === '' ? 'true' : '「' + swd.both.toast + '」'));
   ok('劍柄旋轉點的高度 ＝ 點在建築上那一下的高度',
      swd.kept.on === true && Math.abs(swd.shot.y - swd.geo.clickY) < 1e-6,
      '點在 ' + swd.geo.clickY.toFixed(2) + ' 高，劍柄旋轉點 ' + swd.shot.y.toFixed(2));
