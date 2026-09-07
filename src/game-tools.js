@@ -55,7 +55,7 @@ const TOOLS = [
     tip: '點兩下：第一下點地面決定門陣開在哪，第二下決定打哪裡——點在建築上就打那個位置附近的一片空間，點地面就打建築下段。兵器從門裡伸出來、就位後停一下，接著朝目標連射 7 秒；打中的地方炸開一個小缺口（不起火），兵器掉在地上慢慢消失',
     lock: { txt: '累計擊飛 27,000 塊解鎖', ok: () => stats.smashed >= 27000 } },
   { id: 'sword', n: '大劍', k: '⚔',
-    tip: '點兩下：其中一下要點在建築上（那一下的高度就是劍柄旋轉點的高度）。一把大劍在「兩點與劍柄決定的那個斜面」上從第一點揮向第二點——點建築的高、點地面的低，就是斜著砍下去。刃掃過的那一片整片削掉、被切斷的部分接著自己垮；揮完原地化成金光淡掉',
+    tip: '點兩下：其中一下要點在建築上（那一下的高度就是劍柄旋轉點的高度）。一把大劍在「兩點與劍柄決定的那個斜面」上從第一點揮向第二點——點建築的高、點地面的低，就是斜著砍下去。刃掃過的那一片整片削掉、被切斷的部分接著自己垮，掃到的小人與動物會被撞飛；揮完原地化成金光淡掉',
     lock: { txt: '拆掉 14 座建築解鎖', ok: () => stats.destroyed >= 14 } }
 ];
 const toolOk = t => !t.lock || t.lock.ok();
@@ -4911,6 +4911,70 @@ function stepSwords(dt) {
   }
   if (!swords.length) swords = null;
 }
+/* 刃掃到小人與動物（v1.163，使用者：「大劍也要如果剛好碰到小人&吉祥物等動物
+   也要產生效果」——本來只有 afterHit 會把**削掉的那堆積木附近**還站著的人震倒，
+   所以刃從空地上的人身上掃過去、一塊積木也沒切到時，那個人完全沒反應）。
+   判定跟積木同一組（離揮動平面一個刃寬內、半徑在刃根～刃尖之間、角度在這一幀掃過的
+   那一段），差別三件：
+     ① 身體是站著的**一段**不是一個點：腳底與頭頂各算一次「離揮動平面多遠」，
+        兩端跨過刃面、或任一端落在刃寬內就算掃到。只拿胸口一個點量的話，
+        斜著砍下去的那一刀會從腳邊或頭頂穿過去卻判定沒中。
+     ② 半徑與角度取「身上最靠近刃面的那個高度」，不是腳底。
+     ③ 打到人不拆房子：撞飛就好，不叫 smash（同王之財寶射到小人那一段的取捨）；
+        也不點火——這一把本來就不起火。
+   力道跟積木同一條（那一塊所在半徑的刃速 × SW_HIT_K），生物再打 B_BLOW 的折
+   （牠們比人重一些，同爆炸那邊）。命中半徑借兵器那邊的 GATE_MAN_R，同一件事。 */
+function swordLives(s, aFrom, aTo, om) {
+  let hit = 0;
+  /* 站在 (ox, oy, oz)、身高 h、命中半徑 R 的東西被這一段刃掃到了嗎？
+     掃到就回「刃在牠身上那一點的切線方向與速度」，沒掃到回 null。 */
+  const swept = (ox, oy, oz, h, R) => {
+    const fx = ox - s.x, fz = oz - s.z;
+    const d0 = (fx * s.nx) + (oy - s.y) * s.ny + (fz * s.nz);   // 腳底離刃面多遠
+    const d1 = d0 + h * s.ny;                                   // 頭頂（跟腳底只差一個身高）
+    const tol = s.band + R;
+    if (Math.min(d0, d1) > tol || Math.max(d0, d1) < -tol) return null;
+    // 身上最靠近刃面的那個高度（0 ＝ 腳底、1 ＝ 頭頂）
+    const u = Math.abs(d1 - d0) < 1e-9 ? 0.5 : Math.max(0, Math.min(1, -d0 / (d1 - d0)));
+    const vy = oy + h * u - s.y;
+    const a = fx * s.u0x + vy * s.u0y + fz * s.u0z;             // 平面內座標（同積木）
+    const c = fx * s.e2x + vy * s.e2y + fz * s.e2z;
+    const d2 = a * a + c * c;
+    const lo = Math.max(0, s.r0 - R), hi = s.r1 + R;
+    if (d2 < lo * lo || d2 > hi * hi) return null;
+    const th = Math.atan2(c, a);
+    if (th < aFrom || th > aTo) return null;
+    const r = Math.sqrt(d2) || 1;
+    return { tx: (-c * s.u0x + a * s.e2x) / r, ty: (-c * s.u0y + a * s.e2y) / r,
+             tz: (-c * s.u0z + a * s.e2z) / r,
+             sp: Math.min(SW_HIT_MAX, om * r * SW_HIT_K) };
+  };
+  for (const w of workers) {
+    if (w.air) continue;                       // 已經飛在半空的不用再掀一次（同爆炸那邊）
+    const g = swept(w.x, w.y || 0, w.z, 1.5 * (w.scale || 1), GATE_MAN_R);
+    if (!g) continue;
+    /* 抬升一律往上：斜著往下砍的那一刀切線本身是朝下的，照切線給的話人會被壓進地面
+       （同上面削積木那段）。 */
+    tossWorker(w, g.tx * g.sp + rr(-1.5, 1.5),
+               Math.abs(g.ty * g.sp) * 0.35 + rr(3, 6) + g.sp * 0.1,
+               g.tz * g.sp + rr(-1.5, 1.5), false);
+    hit++;
+  }
+  if (beasts) for (const m of beasts) {
+    if (m.air) continue;
+    const mid = ENG.BEAST_MID[m.kind] * (m.sc || 1);
+    // 飛龍不站在地上：腳底取身體中段往下半個身高（同 weaponVsBeast）
+    const foot = m.kind === 'dragon' ? (m.y || 0) - mid : 0;
+    const g = swept(m.x, foot, m.z, mid * 2, GATE_MAN_R + mid * 0.8);
+    if (!g) continue;
+    tossBeast(m, (g.tx * g.sp + rr(-1.5, 1.5)) * B_BLOW,
+              Math.abs(g.ty * g.sp) * 0.35 + rr(3, 6) + g.sp * 0.1,
+              (g.tz * g.sp + rr(-1.5, 1.5)) * B_BLOW, false);
+    hit++;
+  }
+  if (hit) sndFall();                          // 一幀一聲（afterHit 那邊是一個人一聲）
+  return hit;
+}
 /* 這一幀刃掃過的那一小段：**揮動平面**上的扇形（r0～r1）× 平面兩側各一個刃寬，
    裡面的建築整片削掉。平面通常是斜的，所以缺口也是斜的。
    每一幀的角度段**首尾相接**，所以整趟下來扇形裡的每一塊剛好被算到一次
@@ -4953,6 +5017,10 @@ function swordCut(s, aFrom, aTo, dt) {
     n++; if (ow) own++;
     cx += b.x; cy += b.y; cz += b.z;
   }
+  /* 人與動物排在這裡：**不管有沒有切到積木都要判**（使用者要的就是「剛好碰到」也算），
+     而且要排在下面的 afterHit 前面——afterHit 不會動已經飛起來的人，順序反了的話
+     被刃掃到的那個會變成「原地倒下」而不是被撞飛（同爆炸那邊的順序）。 */
+  swordLives(s, aFrom, aTo, om);
   if (!n) return;
   const at = { x: cx / n, y: cy / n, z: cz / n };
   afterHit(n, at, s.band, own);

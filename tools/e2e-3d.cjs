@@ -11565,6 +11565,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     const wind = { back: minA, end: maxA, fast: fast };
     breakBlock = oBreak; collapseUnsupported = oColl;
+    /* 「一趟只震一次」要在**這裡**就把數字收起來：後面幾條（掃到人那一段）還會再叫
+       swordCut，事後才數的話數到的是那幾刀加起來的。 */
+    const shakeN = shakes;
     const midSet = blocks.filter(b => b.st === 3).length;
     let lo = 1e9, hiY = -1e9, offMax = 0;
     /* 刃面在缺口裡從多高掉到多低（ypHi → ypLo），以及每一塊離刃面的**垂直**距離
@@ -11649,10 +11652,73 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                    r3d1: Math.hypot(p1.x - w2.x, p1.y - w2.y, p1.z - w2.z),
                    r3d2: Math.hypot(p3.x - w2.x, p3.y - w2.y, p3.z - w2.z) };
 
+    /* 刃掃到小人與動物（v1.163，使用者：「大劍也要如果剛好碰到小人&吉祥物等動物
+       也要產生效果」）。直接叫 swordCut 把整趟的角度一次掃完，不用 step——
+       step 的話人會自己走動，量到的變成「他走去哪」而不是「刃掃到誰」。
+       擺三個人一隻吉祥物：站在刃面上的該被撞飛，站在樞紐正下方（半徑不到刃根）的
+       與站在離刃面四個刃寬外的都不該飛。 */
+    aim = null; swords = null;
+    clickB(); clickG(p2);
+    const sw = swords[0];
+    /* 刃面上、離地半個身高的那一點：沿著揮動平面掃一圈角度，找「刃在這個半徑上
+       剛好是 0.6 高」的那個角——那裡的刃是從站著的人身上橫過去的。 */
+    let spot = null;
+    for (let k = 60; k >= 1 && !spot; k--) {
+      const th = sw.span * k / 60, cs = Math.cos(th), sn = Math.sin(th);
+      const uy = sw.u0y * cs + sw.e2y * sn;
+      if (uy > -1e-3) continue;                       // 這個角的刃是往上的，碰不到地面
+      const r = (0.6 - sw.y) / uy;
+      if (r < sw.r0 + 3 || r > sw.r1 - 3) continue;
+      spot = { x: sw.x + (sw.u0x * cs + sw.e2x * sn) * r, z: sw.z + (sw.u0z * cs + sw.e2z * sn) * r,
+               dx: sw.u0x * cs + sw.e2x * sn, dz: sw.u0z * cs + sw.e2z * sn, r: r };
+    }
+    if (!spot) {                       // 找不到就退到第二點（刃尖收手就落在那裡，貼著地面）
+      const dl = Math.hypot(p2.x - sw.x, p2.z - sw.z) || 1;
+      spot = { x: p2.x, z: p2.z, dx: (p2.x - sw.x) / dl, dz: (p2.z - sw.z) / dl, r: sw.r1 };
+    }
+    const put = (w, x, z) => {
+      w.x = x; w.z = z; w.y = 0;
+      w.air = 0; w.burn = 0; w.fall = 0; w.lit = 0; w.roll = 0;
+    };
+    const men = workers.slice(0, 3);
+    put(men[0], spot.x, spot.z);                                   // 刃面上：該被撞飛
+    put(men[1], sw.x, sw.z);                                       // 樞紐正下方：半徑不到刃根
+    beasts = null;
+    const mob = spawnBeast('ape', 1);                              // 吉祥物（不搞破壞的那種）
+    mob.x = spot.x + spot.dx * 3; mob.z = spot.z + spot.dz * 3;    // 沿著刃挪開一點，還在刃面上
+    mob.y = 0; mob.st = 'fun'; mob.stay = 999; mob.fall = 0; mob.air = 0;
+    swordCut(sw, -sw.back, sw.span + sw.over, 0.42);               // 整趟一次掃完
+    const lives = { on: men[0].air ? 1 : 0, pivot: men[1].air ? 1 : 0,
+                    mob: mob.air ? 1 : 0,
+                    sp: +Math.hypot(men[0].vx || 0, men[0].vz || 0).toFixed(1),
+                    up: +(men[0].vy || 0).toFixed(1) };
+    /* 一塊積木都沒切到也要有效果（使用者說的是「剛好碰到」）：同一段角度再掃一次，
+       這時扇形裡的積木上一刀已經削光了，n ＝ 0，走的就是「只掃到人」那條路。 */
+    put(men[1], spot.x, spot.z);
+    const set0 = blocks.filter(b => b.st === 3).length;
+    swordCut(sw, -sw.back, sw.span + sw.over, 0.42);
+    lives.setSame = blocks.filter(b => b.st === 3).length === set0 ? 1 : 0;
+    lives.noBlock = men[1].air ? 1 : 0;
+    beasts = null;
+    /* 刃從**頭上**掃過去的不算（同「炸在屋頂、砸在高處，下面的人不被震倒」那條）：
+       兩下都點在同高度的建築上那一刀，整片刃面就停在點擊的高度上，
+       站在扇形正下方的人離刃面差了快一層樓，不該被掃到。 */
+    aim = null; swords = null;
+    clickB();
+    useTool({ kind: 'block', point: new THREE.Vector3(-p1.x, p1.y, -p1.z),
+              dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
+    const fw = swords[0];
+    const fr = (fw.r0 + fw.r1) / 2, fth = fw.span * 0.5;
+    put(men[2], fw.x + (fw.u0x * Math.cos(fth) + fw.e2x * Math.sin(fth)) * fr,
+                fw.z + (fw.u0z * Math.cos(fth) + fw.e2z * Math.sin(fth)) * fr);
+    swordCut(fw, -fw.back, fw.span + fw.over, 0.42);
+    lives.under = men[2].air ? 1 : 0;
+    lives.planeY = +fw.y.toFixed(2);
+
     ENG.shake = oShake;
     swords = null; aim = null; tool = 'hammer'; running = true;
-    return { both, kept, shot, geo, before, midSet, cut: cutY.length,
-             lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes, wind,
+    return { both, kept, shot, geo, before, midSet, cut: cutY.length, lives,
+             lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes: shakeN, wind,
              phs: phs.filter((p, i) => i === 0 || p !== phs[i - 1]).join('→'),
              tipErr, tipEdgeErr, tipEdge: tEdge, tipPart: ti, tipPlane, rootErr,
              fadeLog, gone, keep, wide, flat, twoB };
@@ -11734,6 +11800,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('兩下點在同高度的建築上 → 平面回到水平（缺口是水平的一條）',
      swd.flat.tilt < 0.01 && Math.abs(swd.flat.y - swd.geo.clickY) < 1e-6,
      '揮動平面傾 ' + swd.flat.tilt.toFixed(3) + '°、樞紐高度 ' + swd.flat.y.toFixed(2));
+  /* v1.163 使用者：「大劍也要如果剛好碰到小人&吉祥物等動物 也要產生效果」。
+     兩件事一起驗：掃到的被撞飛（而且掃不到的三種情形都不動），以及**一塊積木都沒切到
+     的那一刀照樣把人撞飛**——本來只有 afterHit 會震倒「削掉的那堆積木附近」的人，
+     刃從空地上的人身上掃過去是完全沒反應的。 */
+  ok('刃掃到的小人與吉祥物會被撞飛，掃不到的不動',
+     swd.lives.on === 1 && swd.lives.mob === 1 &&
+     swd.lives.pivot === 0 && swd.lives.under === 0 &&
+     swd.lives.sp > 3 && swd.lives.up > 0,
+     '刃面上的人被撞飛（水平 ' + swd.lives.sp + '、抬升 ' + swd.lives.up +
+     '）、吉祥物 ' + (swd.lives.mob ? '也飛了' : '沒反應') + '；樞紐正下方的（半徑不到刃根）' +
+     (swd.lives.pivot ? '飛了' : '沒動') + '、刃在 ' + swd.lives.planeY +
+     ' 高橫掃時站在正下方的 ' + (swd.lives.under ? '飛了' : '沒動'));
+  ok('一塊積木都沒切到的那一刀，照樣把刃掃到的人撞飛',
+     swd.lives.setSame === 1 && swd.lives.noBlock === 1,
+     '第二刀削掉 ' + (swd.lives.setSame ? '0' : '不只 0') + ' 塊積木，站在刃面上的人 ' +
+     (swd.lives.noBlock ? '照樣被撞飛' : '沒反應'));
   /* v1.162 使用者：「點兩下都是建築時 就從第一點位置揮到第二點」——樞紐取**第一點**
      的高度（原本取兩點的中間），刃尖照樣起手落在第一點、收手落在第二點。 */
   ok('兩下都點在建築上（高度不同）→ 樞紐用第一點的高度，從第一點揮到第二點',
