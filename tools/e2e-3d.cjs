@@ -9469,8 +9469,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const want = storms.reduce((a, s) => a + s.left, 0);
     const each = storms.map(s => s.left);
     /* 雲的高度要蓋過屋頂（v1.118）：固定 26 的時候整朵埋在高一點的建築裡，
-       電等於從樓層之間冒出來——使用者回報「看不太到電打在建築上」就是這件事。 */
-    const above = storms[0].y - bp.height;
+       電等於從樓層之間冒出來——使用者回報「看不太到電打在建築上」就是這件事。
+       量的是「比**現在**的屋頂高多少」（v1.169.2 起雲底照 siteTopNow 走，不是 bp.height
+       ——這一座 completeNow 過，兩個值一樣，會分岔的是塔沒蓋完那種狀況，
+       另外一條在幽浮那一段守著）。 */
+    const above = storms[0].y - siteTopNow();
     const grow = [];
     /* 18 秒：聚雲 2.6 ＋ 起手 0.4 ＋ 20 道 ×0.5 ＋ 收雲 1.35 ＝ 最壞 14.4 秒（v1.123
        雲聚得比較久、道數也多了）。跑不完的話量到的會是「還沒劈完」。 */
@@ -9500,7 +9503,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '一次出 ' + storm1.born + ' 朵；第一朵每 ' + (storm1.full / 3).toFixed(2) +
      ' 秒量一次：' + storm1.grow.join(' → ') + ' 團（滿朵 ' + storm1.puff + ' 團）');
   ok('雲飄在屋頂上方，電才看得出打在建築上', storm1.above >= 10,
-     '雲底比屋頂高 ' + storm1.above + ' 單位');
+     '雲底比現在的屋頂高 ' + storm1.above + ' 單位');
   ok('雲聚滿了才開始劈，劈完雲自己收掉',
      storm1.first > storm1.full && storm1.over === 0,
      '第一道雷在第 ' + storm1.first + ' 秒（雲要聚 ' + storm1.full + ' 秒）');
@@ -12166,7 +12169,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 240 幀散場：完工那一刻小人在繞圈慶祝，不散開的話落點上站著一排人，
        量「吸走幾塊積木」會被他們被吸走那幾件混進去。 */
     for (let i = 0; i < 240; i++) step(0.05);
-    const y = Math.max(UFO_Y0, bp.height + UFO_UP);
+    /* 高度照的是「**現在**蓋到多高」（v1.169.2，見 siteTopNow）——這一座已經
+       completeNow 了，所以 nowTop 就等於 bp.height；差別在下面那一條。
+       **要在這裡就記下來**：等一下幽浮會吸走六百多塊，那之後再算就不是同一個數了。 */
+    const nowTop = siteTopNow();
+    const y = Math.max(UFO_Y0, nowTop + UFO_UP);
     /* 光圈裡現在有幾塊還站著。用的是規則那邊真的在用的那支 ufoRad（倒錐），
        不是「半徑 UFO_R 的圓柱」——比例要對得上才知道「吸走幾成」是幾成。 */
     const probe = { x: 0, z: 0, y };
@@ -12239,7 +12246,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       // 理論值跟著兩個常數走（同龍捲風那條）：照光 UFO_BEAM 秒、每秒抽 UFO_TAKE
       want: +((1 - Math.pow(1 - UFO_TAKE, UFO_BEAM)) * 100).toFixed(1),
       born, comeT, beamT, goneT, dropT, awayD, atTarget,
-      wantY: y, mouth: +mouth.toFixed(2), riseTop: +riseTop.toFixed(1), riseLow: +riseLow.toFixed(1),
+      wantY: y, y0: UFO_Y0, up: UFO_UP,
+      topNow: +nowTop.toFixed(2), topFull: bp.height,
+      mouth: +mouth.toFixed(2), riseTop: +riseTop.toFixed(1), riseLow: +riseLow.toFixed(1),
       high: +high.toFixed(1),
       /* 落點：件數、最遠、平均半徑、三個四分位，以及「角度的合向量」
          （每一件取單位向量加起來再除件數：角度均勻的話互相抵銷 → 0）。
@@ -12264,10 +12273,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ufo.born.d > ufo.born.arena && ufo.born.st === 'come' && ufo.atTarget < 0.01,
      '出場在半徑 ' + ufo.born.d + '（場地半徑 ' + ufo.born.arena + '），' +
      ufo.comeT + ' 秒後到位、離點擊處 ' + ufo.atTarget);
-  /* 高度照烏雲那一套：屋頂上方 UFO_UP，矮建築至少 UFO_Y0（使用者：「高度類似打雷烏雲」）。 */
-  ok('停的高度照屋頂算（同打雷的烏雲）',
-     ufo.born.y === ufo.wantY && ufo.wantY === Math.max(34, 10 + 16),
-     '飛在 ' + ufo.born.y + '（屋頂 ' + (ufo.wantY - 16) + ' ＋ 16，下限 34）');
+  /* 高度照烏雲那一套：屋頂上方 UFO_UP，矮建築至少 UFO_Y0（使用者：「高度類似打雷烏雲」）。
+     門檻直接讀常數，不寫死數字（原本寫的是 `Math.max(34, 10 + 16)`，那個 10 還是
+     手抄的屋頂高度）。 */
+  ok('停的高度照「現在」的屋頂算（同打雷的烏雲）',
+     ufo.born.y === ufo.wantY && ufo.wantY === Math.max(ufo.y0, ufo.topNow + ufo.up),
+     '飛在 ' + ufo.born.y + '（現在的屋頂 ' + ufo.topNow + ' ＋ ' + ufo.up +
+     '，下限 ' + ufo.y0 + '；這一座蓋完是 ' + ufo.topFull + '）');
   /* 畫出來那一根倒錐就是判定用的那一根（同 DOZ_W 的用意）：
      引擎的錐度必須等於規則那邊的 UFO_MOUTH ÷ UFO_R，不然會看到「光柱外的積木被吸走」。 */
   const ufoK = await page.evaluate(() => ({
@@ -12548,6 +12560,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '碟身 ' + ufoDraw.on.hullN + '／' + ufoDraw.want.hull + ' 塊 ＋ 燈 ' +
      ufoDraw.on.litN + '／' + ufoDraw.want.lit + ' 塊 ＋ 光柱 ' +
      ufoDraw.on.beamN + ' 根，draw call ' + ufoDraw.base + ' → ' + ufoDraw.calls);
+
+  /* v1.169.2 使用者：「烏雲(UFO也一起改)高度改成根據目前目標高度(有些塔很高沒蓋完
+     出現時看起來太高)」。拿台北 101（蓋完 65 高）測：照 `bp.height` 算的話雲固定飄在
+     81 高，照 `siteTopNow()` 算就是「**現在**的屋頂 ＋ 16」。兩支共用同一支 siteTopNow，
+     所以一條測試同時驗兩支，門檻各自讀自己的常數（沒有一個數字是手抄的）。
+     **這一條擺在這一段最後**：它換了一座建築，前面每一條都還吃金字塔那一座
+     （段落之間有狀態相依，見檔頭）。下一段（放火）自己會 reset。 */
+  await reset(page, { shape: '台北 101', cnt: 3000, workers: 6 });
+  const halfBuilt = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const bpH = bp.height, full = siteTopNow();
+    /* 「沒蓋完」直接做出來：把腰以上還站著的積木鬆脫掉（不 step，所以它們還停在原地
+       還沒開始掉）。比「等小人蓋到一半」可靠——那要看派工順序，每次量到的高度都不一樣。 */
+    const cut = full * 0.35;
+    for (const b of blocks) if (b.st === SET && b.y > cut) freeBlock(b);
+    const now = siteTopNow();
+    callUfo({ x: 0, z: 0 });
+    callStorm({ x: 0, z: 0 });
+    const r = { bpH, full: +full.toFixed(2), now: +now.toFixed(2),
+                uy: +ufos[0].y.toFixed(2), sy: +storms[0].y.toFixed(2),
+                wantU: +Math.max(UFO_Y0, now + UFO_UP).toFixed(2),
+                wantS: +Math.max(STORM_Y0, now + STORM_UP).toFixed(2),
+                /* 改之前那兩支讀的是 bp.height，所以「照舊會飛在」是這兩個數 */
+                oldU: Math.max(UFO_Y0, bpH + UFO_UP),
+                oldS: Math.max(STORM_Y0, bpH + STORM_UP) };
+    cleanTools();
+    return r;
+  });
+  ok('塔還沒蓋完時，幽浮與烏雲照「現在」的高度出場（不是藍圖蓋完的高度）',
+     halfBuilt.now < halfBuilt.bpH * 0.5 &&
+     halfBuilt.uy === halfBuilt.wantU && halfBuilt.sy === halfBuilt.wantS &&
+     halfBuilt.uy < halfBuilt.oldU - 10 && halfBuilt.sy < halfBuilt.oldS - 10,
+     '台北 101 蓋完 ' + halfBuilt.bpH + ' 高（實蓋到 ' + halfBuilt.full + '），拆到只剩 ' +
+     halfBuilt.now + '：幽浮飛在 ' + halfBuilt.uy + '（照舊會是 ' + halfBuilt.oldU + '）、雲底 ' +
+     halfBuilt.sy + '（照舊會是 ' + halfBuilt.oldS + '）');
 
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與

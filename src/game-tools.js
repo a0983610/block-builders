@@ -108,6 +108,22 @@ function breakBlock(b, vx, vy, vz) {
   b.ax = rr(-9, 9); b.ay = rr(-9, 9); b.az = rr(-9, 9);
 }
 
+/* 「**現在**」的屋頂有多高（v1.169.2 使用者：「烏雲(UFO也一起改)高度改成根據目前目標
+   高度(有些塔很高沒蓋完 出現時看起來太高)」）。
+   烏雲與幽浮本來讀的是 `bp.height` ＝ **藍圖蓋完**的高度，所以台北 101（65）才蓋到
+   第三層時，雲已經飄在 81 高的地方，看起來像掛在天上、跟工地無關。
+   改成掃還站著的積木取最高那一塊的**頂面**（`b.y` 是中心，所以要加 HB）：
+     · 只算 `SET`——飛在半空的碎料（FLY）與小人手上的（CARRY）都不是屋頂；
+     · 一塊都沒有（開場、或整座被拆平）就回 0，讓呼叫端自己的下限去接手。
+   蓋完的時候這個值就等於 `bp.height`（最高那一塊的中心是 height − HB），
+   所以「蓋好之後的行為」跟以前一模一樣，改的只是施工中那一段。
+   成本：**一次點擊**掃一遍積木池（幾千筆），不是每幀。 */
+function siteTopNow() {
+  let top = 0;
+  for (const b of blocks) if (b.st === SET && b.y > top) top = b.y;
+  return top > 0 ? top + HB : 0;
+}
+
 /* ── 垮塌 ───────────────────────────────────────────────
    把下面打掉，上面連不到地面的部分要跟著垮。
    做法是從地面那一層做連通性搜尋，走不到的就鬆脫。
@@ -3630,7 +3646,9 @@ const STORM_LAG = 0.18;          // 三朵之間的出場時間差（使用者�
 const STORM_MAX = STORM_TRIO * 3;   // 同時最多幾朵
 /* 雲底高度（v1.118 改成跟著建築走）。本來是固定 26，但地標最高到 138（大笨鐘 9000 塊）
    ——雲整個埋在建築裡，電等於從樓層之間冒出來，看不出打在哪；使用者回報的就是這件事。
-   現在是「屋頂再上去 STORM_UP」，矮建築另外有個下限，不然雲會貼在屋簷上、電只剩一小截。 */
+   現在是「屋頂再上去 STORM_UP」，矮建築另外有個下限，不然雲會貼在屋簷上、電只剩一小截。
+   v1.169.2：「屋頂」改成讀 **siteTopNow()**（現在蓋到多高），不是 bp.height（蓋完多高）
+   ——使用者：「有些塔很高沒蓋完 出現時看起來太高」。 */
 const STORM_Y0 = 34;             // 最低就這麼高（矮建築用）
 const STORM_UP = 16;             // 高過屋頂多少
 /* **一朵**的半徑。v1.123 從 12 放到 17（使用者：「烏雲面積 閃電破壞面積 加大(2倍)」）
@@ -3728,7 +3746,7 @@ function callStorm(p) {
   /* 滿了把最早的**一組**擠掉（同其他清單型道具，只是單位從一朵變一組）：
      一朵一朵擠的話會留下兩朵孤零零的雲繼續劈。 */
   while (storms.length + STORM_TRIO > STORM_MAX) storms.shift();
-  const y = Math.max(STORM_Y0, (bp ? bp.height : 0) + STORM_UP);
+  const y = Math.max(STORM_Y0, siteTopNow() + STORM_UP);
   const base = Math.random() * Math.PI * 2;          // 三朵的方位，整組隨機轉
   for (let i = 0; i < STORM_TRIO; i++) {
     const a = base + i * Math.PI * 2 / STORM_TRIO;
@@ -3959,8 +3977,10 @@ function dustList() {
    ④ **光圈裡的東西一律算**：還站著的積木、躺著的碎料、小人、猴子牛羊都吸。
       飛龍不吸（同龍捲風：牠在天上飛，被吸進來會變成一條關在艙裡的龍）。 */
 const UFO_MAX = 2;               // 同時最多幾台（再點就把最早那一台擠掉，見 ufoBail）
-/* 飛行高度：照烏雲那一套「屋頂再上去一截」（見 STORM_Y0／STORM_UP）。
-   固定高度的話大笨鐘（138 高）那種地標會讓幽浮埋在建築裡，光柱只剩一小截。 */
+/* 飛行高度：照烏雲那一套「**現在**的屋頂再上去一截」（見 STORM_Y0／STORM_UP
+   與 siteTopNow）。固定高度的話大笨鐘（138 高）那種地標會讓幽浮埋在建築裡，
+   光柱只剩一小截；讀藍圖高度的話反過來——塔還沒蓋完就飄在天上（v1.169.2 使用者
+   回報的就是這件事，兩支一起改）。 */
 const UFO_Y0 = 34, UFO_UP = 16;
 const UFO_HULL = 7;              // 碟身半徑（造型在引擎的 UFO_PART，那邊照這個數放大）
 /* 光圈在地面的半徑。打雷整組罩 18.4、龍捲風的漏斗 6——取中間：一發吃掉一片牆的量，
@@ -4006,7 +4026,7 @@ function callUfo(p) {
      ufoBail 擠掉最後一台時會把 ufos 收成 null，所以補空陣列要排在它後面。 */
   while (ufos && ufos.length >= UFO_MAX) ufoBail(ufos[0]);
   if (!ufos) ufos = [];
-  const y = Math.max(UFO_Y0, (bp ? bp.height : 0) + UFO_UP);
+  const y = Math.max(UFO_Y0, siteTopNow() + UFO_UP);
   const a = Math.random() * Math.PI * 2;             // 從場外哪一邊飛進來
   const R = arenaR + UFO_IN;
   const x = p.x + Math.cos(a) * R, z = p.z + Math.sin(a) * R;
