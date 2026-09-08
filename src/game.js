@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.166.1';
+const VERSION = '1.167.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -210,6 +210,37 @@ function sndWind() {
   lfo.start(t); lfo.stop(t + WIND_DUR);
   src.start(t); src.stop(t + WIND_DUR);
   tone(74, WIND_DUR * 0.92, 'sawtooth', 0.03, 0, 'windLow', fade);
+}
+/* 幽浮的嗡嗡聲（v1.167）。跟風聲同一套「一段一段接下去」（見 stepUfo 的 u.snd，
+   長度與間隔在那邊的 UFO_SND_DUR／UFO_SND_GAP），差別是它**有音高**：
+   ① 兩支相差 UFO_DET Hz 的三角波打出**拍音**——每秒 UFO_DET 次的起伏就是那個「嗡嗡」，
+      單支的話只是一個平平的低音。
+   ② 再用一支 UFO_TREM Hz 的正弦在音量上抖（深度取音量的四成五，抖但不斷），
+      聽起來像碟子懸在空中而不是一台馬達。
+   ③ 收尾走低通：三角波的泛音是 1/n²，本來就柔，但兩支疊起來的高頻拍音很刺。
+   起收音跟風聲同一個算法（線性交叉，指數的話接縫處會掉到聽得出來的斷點）。 */
+const UFO_HZ = 78, UFO_DET = 2.6, UFO_TREM = 6.5, UFO_CUT = 900, UFO_VOL = 0.05;
+function sndUfo() {
+  const c = audio(); if (!c || muted) return;
+  if (!voiceOK('ufo', c)) return;
+  const t = c.currentTime;
+  const fade = Math.max(0.15, UFO_SND_DUR - UFO_SND_GAP);
+  const g = c.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(UFO_VOL, t + fade);
+  g.gain.setValueAtTime(UFO_VOL, t + UFO_SND_DUR - fade);
+  g.gain.linearRampToValueAtTime(0, t + UFO_SND_DUR);
+  const lfo = c.createOscillator(), amt = c.createGain();
+  lfo.type = 'sine'; lfo.frequency.value = UFO_TREM; amt.gain.value = UFO_VOL * 0.45;
+  lfo.connect(amt).connect(g.gain);
+  const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = UFO_CUT;
+  for (const f of [UFO_HZ, UFO_HZ + UFO_DET]) {
+    const o = c.createOscillator();
+    o.type = 'triangle'; o.frequency.value = f;
+    o.connect(g); o.start(t); o.stop(t + UFO_SND_DUR);
+  }
+  g.connect(lp).connect(c.destination);
+  lfo.start(t); lfo.stop(t + UFO_SND_DUR);
 }
 /* 點火：短促的「噗」一聲。只在點下去那一刻響，每塊都響會變成一片白噪音 */
 function sndFire() { noise(0.55, 0.16, 1600); tone(150, 0.4, 'sawtooth', 0.05, 2.4); }

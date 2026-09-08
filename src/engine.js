@@ -308,6 +308,45 @@ const ENG = (function () {
     { p: [0, -0.446, 0], s: [0.072, 0.046, 0.052], c: G_GOLD },    // 劍首盤
     { p: [0, -0.474, 0], s: [0.038, 0.026, 0.038], c: G_DEEP }
   ];
+  /* ── 幽浮（v1.167）─────────────────────────────────
+     造型是一疊由寬到窄的方塊（同投石機、推土機那一套 voxel 疊法），
+     全部正規化成「碟身半徑 ＝ 1」，規則那邊只給位置、高度與自轉角。
+     三顆 mesh：外殼吃光照、會亮的那幾塊（艙罩與邊燈）走不吃光照的 Basic
+     （Lambert 的話背光那一側的邊燈是暗的，看起來像沒亮），光柱再一顆。
+     在場時 3 個 draw call ＋ 外殼那一趟陰影；沒幽浮的時候三顆都 visible=false，
+     一個都不吃（見 README〈效能〉那條規矩）。 */
+  const UFO_MAX = 2;
+  const U_RIM = 0x74808e, U_HULL = 0x9aa6b4, U_DECK = 0xc3cedb, U_DARK = 0x5d6774;
+  /* 造型的規矩：`s` 是**整塊的邊長**（所以最寬那一片 2.0 ＝ 半徑剛好 1），
+     疊出來要是個透鏡（中間最寬、上下都收）——第一版上面疊了三階、下面兩階，
+     截圖看起來是座階梯金字塔不是碟子（下面那條邊燈的註解記著同一次的另一個錯）。 */
+  const UFO_PART = [
+    { p: [0, 0, 0], s: [2.00, 0.14, 2.00], c: U_RIM },        // 碟緣（最寬那一片）
+    { p: [0, 0.13, 0], s: [1.34, 0.14, 1.34], c: U_HULL },    // 上層
+    { p: [0, 0.25, 0], s: [0.78, 0.12, 0.78], c: U_DECK },    // 圓頂座
+    { p: [0, -0.13, 0], s: [1.50, 0.14, 1.50], c: U_DARK },   // 下緣
+    { p: [0, -0.25, 0], s: [0.92, 0.12, 0.92], c: U_DARK },   // 底盤
+    { p: [0, -0.34, 0], s: [0.40, 0.10, 0.40], c: U_RIM }     // 吸光口：光柱從這裡射出去
+  ];
+  /* 會亮的那幾塊：艙罩一個 ＋ 沿著碟緣一圈的邊燈。邊燈的亮度各自錯開相位跑
+     （見 putUfos），一起閃的話看起來像整台在閃不像一圈燈在跑。
+     半徑 0.82 是「貼在碟緣裡側」：第一版寫 1.74，那已經在碟子外面
+     （最寬那一片的半徑只有 1.0），截圖看到六顆燈浮在碟子旁邊沒接上。 */
+  const UFO_LAMP = 6, UFO_LAMP_R = 0.82;
+  const UFO_LIT = [{ p: [0, 0.38, 0], s: [0.62, 0.26, 0.62], c: 0x9df3ff, ph: -1 }];
+  for (let i = 0; i < UFO_LAMP; i++) {
+    const a = i / UFO_LAMP * Math.PI * 2;
+    UFO_LIT.push({ p: [Math.cos(a) * UFO_LAMP_R, -0.08, Math.sin(a) * UFO_LAMP_R],
+                   s: [0.17, 0.13, 0.17], c: 0xffe3a0, ph: i / UFO_LAMP });
+  }
+  const UFO_PARTS = UFO_PART.length, UFO_LITS = UFO_LIT.length;
+  /* 光柱的錐度：頂端（吸光口那一端）的半徑是地面那一圈的幾倍。
+     **這個數要跟規則那邊的 UFO_MOUTH ÷ UFO_R 一致**（2.2 ÷ 9 ＝ 0.244）——
+     判定用的倒錐就是畫出來這一根，不一致的話會出現「光柱外的積木被吸走」
+     （同 DOZ_W 的用意，e2e 有一條守著這件事）。 */
+  const UFO_TAPER = 0.244;
+  const UFO_MOUTH_Y = 0.34;         // 吸光口離碟心多低（碟身半徑的倍率，＝ UFO_PART 最後那一片）
+  let ufoMesh = null, ufoLitMesh = null, ufoBeamMesh = null;
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
   const TW_SEG = 16;                // 龍捲風的分段數
@@ -1114,6 +1153,44 @@ const ENG = (function () {
         swordMesh.setColorAt(i * SWORD_PARTS + k, tmpC.setHex(SWORD_PART[k].c));
     scene.add(swordMesh);
 
+    /* 幽浮（v1.167）。外殼跟投石機同一套：整台的部位塞進一顆 InstancedMesh，
+       所以一台跟兩台一樣貴。顏色開場寫一次就好（同大劍，造型只有這一種）。 */
+    ufoMesh = new T.InstancedMesh(unit, voxelMaterial({}), UFO_MAX * UFO_PARTS);
+    ufoMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    ufoMesh.castShadow = true; ufoMesh.count = 0;
+    ufoMesh.visible = false; ufoMesh.frustumCulled = false;
+    for (let i = 0; i < UFO_MAX; i++)
+      for (let k = 0; k < UFO_PARTS; k++)
+        ufoMesh.setColorAt(i * UFO_PARTS + k, tmpC.setHex(UFO_PART[k].c));
+    scene.add(ufoMesh);
+    /* 會亮的那幾塊：不吃光照的 Basic，亮度每幀由 putUfos 寫進 instanceColor
+       （邊燈要跑，不能是固定值）。不投影——一顆會發光的燈投出黑影很怪。 */
+    ufoLitMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: 0xffffff }),
+                                     UFO_MAX * UFO_LITS);
+    ufoLitMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    ufoLitMesh.count = 0;
+    ufoLitMesh.visible = false; ufoLitMesh.frustumCulled = false;
+    for (let i = 0; i < UFO_MAX * UFO_LITS; i++) ufoLitMesh.setColorAt(i, tmpC.setHex(0xffffff));
+    scene.add(ufoLitMesh);
+    /* 光柱：一根開口的倒錐（頂細底粗，錐度 UFO_TAPER）。加色混合 ＋ 不寫深度，
+       所以亮度可以整根用 instanceColor 調——黑就是看不見，光亮起來與收掉靠它
+       （同龍捲風那一疊圓筒的用意：透明的雙面材質要 forceSinglePass，
+       不然 three 會分兩趟畫，draw call 直接翻倍）。 */
+    ufoBeamMesh = new T.InstancedMesh(
+      new T.CylinderGeometry(UFO_TAPER, 1, 1, 24, 1, true),
+      new T.MeshBasicMaterial({
+        /* 濃度 0.22（第一版 0.5 太白：截圖裡光柱把罩住的那半棟整個洗白，
+           看不出裡面有建築）。雙面又是加色，所以實際疊起來是這個數的兩倍。 */
+        color: 0xcdf6ff, transparent: true, opacity: 0.22,
+        side: T.DoubleSide, depthWrite: false, forceSinglePass: true,
+        blending: T.AdditiveBlending
+      }), UFO_MAX);
+    ufoBeamMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    ufoBeamMesh.count = 0;
+    ufoBeamMesh.visible = false; ufoBeamMesh.frustumCulled = false;
+    for (let i = 0; i < UFO_MAX; i++) ufoBeamMesh.setColorAt(i, tmpC.setHex(0x000000));
+    scene.add(ufoBeamMesh);
+
     resize();
   }
 
@@ -1839,6 +1916,72 @@ const ENG = (function () {
     }
     swordMesh.instanceMatrix.needsUpdate = true;
     swordFade.needsUpdate = true; swordGlow.needsUpdate = true;
+  }
+
+  /* 幽浮（v1.167）。list 是規則那邊的本體 {x, y, z, r, spin, beam, lit}：
+     r 是光圈在地面的半徑、spin 是碟身自轉、beam 是光柱的亮度（0～1）、
+     lit 是它出場以來的秒數（邊燈跑的相位就是它）。
+     碟身照 UFO_HULL 放大——造型正規化成「碟身半徑 ＝ 1」，所以直接乘上去。 */
+  function putUfos(list) {
+    const n = Math.min(list.length, UFO_MAX);
+    ufoMesh.visible = n > 0;
+    ufoLitMesh.visible = n > 0;
+    ufoMesh.count = n * UFO_PARTS;
+    ufoLitMesh.count = n * UFO_LITS;
+    let beams = 0;
+    for (let i = 0; i < n; i++) {
+      const u = list[i];
+      scratch.position.set(u.x, u.y, u.z);
+      scratch.rotation.set(0, u.spin, 0);
+      scratch.scale.setScalar(u.hull);
+      scratch.updateMatrix();
+      for (let k = 0; k < UFO_PARTS; k++) {
+        const P = UFO_PART[k];
+        scratchB.position.set(P.p[0], P.p[1], P.p[2]);
+        scratchB.rotation.set(0, 0, 0);
+        scratchB.scale.set(P.s[0], P.s[1], P.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        ufoMesh.setMatrixAt(i * UFO_PARTS + k, tmpM);
+      }
+      for (let k = 0; k < UFO_LITS; k++) {
+        const P = UFO_LIT[k];
+        scratchB.position.set(P.p[0], P.p[1], P.p[2]);
+        scratchB.rotation.set(0, 0, 0);
+        scratchB.scale.set(P.s[0], P.s[1], P.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        const at = i * UFO_LITS + k;
+        ufoLitMesh.setMatrixAt(at, tmpM);
+        /* 亮度：艙罩（ph < 0）固定亮，邊燈各自錯開相位跑一圈。
+           最暗留 0.35 才看得出「那裡有一顆燈」，全暗會像缺了一塊。 */
+        const k2 = P.ph < 0 ? 1
+                 : 0.35 + 0.65 * Math.pow(Math.max(0, Math.sin((u.lit * 1.6 - P.ph) * Math.PI * 2)), 3);
+        tmpC.setHex(P.c).multiplyScalar(k2);
+        ufoLitMesh.setColorAt(at, tmpC);
+      }
+      /* 光柱：從吸光口一路罩到地面。geometry 的原點在圓筒中間，
+         所以位置給「吸光口與地面的中點」、高度給那一段的長度。 */
+      if (u.beam > 0.01) {
+        const top = u.y - u.hull * UFO_MOUTH_Y;
+        scratchB.position.set(u.x, top * 0.5, u.z);
+        scratchB.rotation.set(0, u.spin * 0.4, 0);
+        scratchB.scale.set(u.r, top, u.r);
+        scratchB.updateMatrix();
+        ufoBeamMesh.setMatrixAt(beams, scratchB.matrix);
+        ufoBeamMesh.setColorAt(beams, tmpC.setScalar(u.beam));
+        beams++;
+      }
+    }
+    ufoBeamMesh.visible = beams > 0;
+    ufoBeamMesh.count = beams;
+    ufoMesh.instanceMatrix.needsUpdate = true;
+    ufoLitMesh.instanceMatrix.needsUpdate = true;
+    if (ufoLitMesh.instanceColor) ufoLitMesh.instanceColor.needsUpdate = true;
+    if (beams) {
+      ufoBeamMesh.instanceMatrix.needsUpdate = true;
+      if (ufoBeamMesh.instanceColor) ufoBeamMesh.instanceColor.needsUpdate = true;
+    }
   }
 
   /* 火球粒子。跟塵霧同一套資料格式，只是走那顆不透明的材質 */
@@ -3271,12 +3414,15 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
     putBalls, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
-    putStars, putBolts, putMarks, putGates, putWeapons, putSwords, putBeasts,
+    putStars, putBolts, putMarks, putGates, putWeapons, putSwords, putBeasts, putUfos,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
     /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
     SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_TIP, SWORD_W,
+    /* 幽浮（v1.167）：光柱的錐度與吸光口高度。判定用的倒錐就是畫出來這一根，
+       所以規則那邊的 UFO_MOUTH ÷ UFO_R 必須等於 UFO_TAPER（e2e 有一條守著）。 */
+    UFO_MAX, UFO_PARTS, UFO_LITS, UFO_TAPER, UFO_MOUTH_Y, UFO_PART, UFO_LIT,
     MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
@@ -3288,11 +3434,12 @@ const ENG = (function () {
     get MODELS() {
       return { man: BODY, treb: TREB_PART, doz: DOZ_PART, truck: TRK_PART,
                bomb: BOMB_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
+               ufo: UFO_PART, ufoLit: UFO_LIT,
                ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh, swordMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh }; }
   };
 })();

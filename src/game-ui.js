@@ -102,6 +102,7 @@ function step(dt) {
   stepStorms(dt);
   stepGates(dt);
   stepSwords(dt);
+  stepUfo(dt);                           // 幽浮（v1.167）：飛進來、照光吸、飛走、五秒後丟下來
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepDozers(dt);
   stepTrucks(dt);
@@ -253,6 +254,8 @@ function draw() {
   ENG.putGates(gates ? gateList() : EMPTY);
   ENG.putWeapons(weapons || EMPTY);
   ENG.putSwords(swords || EMPTY);                   // 大劍（v1.161，欄位就是 stepSwords 那一份）
+  /* 幽浮（v1.167）。飛出場之後還在倒數丟東西的那幾台不畫，所以過一手 ufoList()。 */
+  ENG.putUfos(ufoList());
 }
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石

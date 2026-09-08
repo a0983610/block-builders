@@ -231,6 +231,9 @@ const installClean = page => page.evaluate(() => {
     gates = null; weapons = null; gateEnd();
     ENG.putGates([]); ENG.putWeapons([]);
     swords = null; ENG.putSwords([]);   // 大劍（v1.161）：一趟快兩秒，別跨到下一條
+    /* 幽浮（v1.167）：一趟十六秒，而且它把積木收在地板底下、還借了鏡頭的高度。
+       ufoClear() 是那兩件事的出口（同 gateEnd 的角色），不能只把 ufos 設成 null。 */
+    ufoClear(); ENG.putUfos([]);
     /* 天災（v1.138）：場上那幾隻與飛在半空的香蕉。倒數也要歸零——
        不歸零的話下一條測試一進 done 就繼承上一條數到一半的秒數。 */
     beasts = null; nanas = null; fballs = null; doomT = -1;
@@ -8479,13 +8482,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 解鎖狀態拼成一長串 true/false 很難讀（而且插進一種新道具就整排要重寫），
      所以照 id 來寫：「本來就開著的那幾種，加上這一關該開的」。
      手指與水桶不破壞任何東西，沒有鎖；破壞道具的階梯從槌子開始。 */
-  const NTOOL = 17;
+  const NTOOL = 18;                 // v1.167 加了幽浮
   const FREE = ['finger', 'bucket', 'hammer'];
   const isOpen = (id, ids) => FREE.indexOf(id) >= 0 || ids.indexOf(id) >= 0;
   const opened = (...ids) => lock0.ids.map(id => String(isOpen(id, ids))).join(',');
   const btnOpen = (...ids) => lock0.ids.map(id => isOpen(id, ids) ? 'open' : 'lock').join(',');
   const allOpen = () => Array(NTOOL).fill('true').join(',');
-  ok('工具共 17 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
+  ok('工具共 18 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
   ok('一開始只有手指、水桶跟槌子可用',
      lock0.ok.join(',') === opened(), lock0.ok.join(','));
   ok('鎖住的工具在畫面上也是鎖住的',
@@ -8511,7 +8514,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     at('destroyed', 12);
     at('smashed', 27000);
     at('destroyed', 14);
-    stats = freshStats(); stats.destroyed = 14; stats.smashed = 27000; renderTools();     // 全開
+    at('smashed', 31000);
+    stats = freshStats(); stats.destroyed = 14; stats.smashed = 31000; renderTools();     // 全開
     step2.push(TOOLS.map(t => toolOk(t)).join(','));
     return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
@@ -8547,11 +8551,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('拆掉 14 座解鎖大劍',
      lock1.step2[13] === opened('ball', 'tornado', 'fire', 'meteor', 'magic', 'drop', 'sword'),
      lock1.step2[13]);
-  ok('兩邊都推到頂就全開', lock1.step2[14] === allOpen(), lock1.step2[14]);
+  ok('擊飛 31,000 塊解鎖幽浮',
+     lock1.step2[14] === opened('bighammer', 'treb', 'fw', 'bomb', 'nuke', 'storm', 'gate', 'ufo'),
+     lock1.step2[14]);
+  ok('兩邊都推到頂就全開', lock1.step2[15] === allOpen(), lock1.step2[15]);
   ok('解鎖後畫面上的鎖頭消失',
      lock1.btn.join(',') === btnOpen('bighammer', 'ball', 'treb', 'tornado', 'fw',
                                      'fire', 'bomb', 'meteor', 'nuke', 'magic',
-                                     'storm', 'drop', 'gate', 'sword'),
+                                     'storm', 'drop', 'gate', 'sword', 'ufo'),
      lock1.btn.join(','));
 
   /* 手指：什麼都不破壞，但戳得倒小人 */
@@ -12069,6 +12076,316 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (swd.geo.clickY * 0.5).toFixed(2) + ' 高，樞紐 ' + swd.twoB.y.toFixed(2) +
      '；樞紐到兩點 ' + swd.twoB.r3d1.toFixed(2) + '／' + swd.twoB.r3d2.toFixed(2) +
      '（刃尖半徑 ' + swd.twoB.r1.toFixed(2) + '）');
+
+  /* ══════════ 幽浮 ══════════
+     使用者指定的順序就是這一段的骨架：
+       ① 點地面 → 一台幽浮從場外飛進來、停在那個位置上方（高度類似打雷的烏雲）
+       ② 往下照光，吸引積木（類似龍捲風幾%的數量）與小人等
+       ③ 吸進 UFO 後飛走
+       ④ 5 秒後被吸走的所有東西從天上掉下來
+     所以這一段每一條都對著其中一項；另外三條守著容易壞的地方：
+     光圈外的東西不該被吸、換場中途不能把積木留在地板底下、擠掉的那一台要把東西放掉。 */
+  await head('幽浮');
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 12 });
+  const ufo = await page.evaluate(() => {
+    completeNow();
+    /* 240 幀散場：完工那一刻小人在繞圈慶祝，不散開的話落點上站著一排人，
+       量「吸走幾塊積木」會被他們被吸走那幾件混進去。 */
+    for (let i = 0; i < 240; i++) step(0.05);
+    const y = Math.max(UFO_Y0, bp.height + UFO_UP);
+    /* 光圈裡現在有幾塊還站著。用的是規則那邊真的在用的那支 ufoRad（倒錐），
+       不是「半徑 UFO_R 的圓柱」——比例要對得上才知道「吸走幾成」是幾成。 */
+    const probe = { x: 0, z: 0, y };
+    let inLight = 0;
+    for (const b of blocks)
+      if (b.st === 3 && b.x * b.x + b.z * b.z <= ufoRad(probe, b.y) ** 2) inLight++;
+    const set0 = blocks.filter(b => b.st === 3).length;
+    const camY0 = ENG.camTarget.ty;
+    const mouth = y - UFO_HULL * ENG.UFO_MOUTH_Y;
+    callUfo({ x: 0, z: 0 });
+    const born = { d: +Math.hypot(ufos[0].x, ufos[0].z).toFixed(1), y: ufos[0].y,
+                   st: ufos[0].st, arena: +arenaR.toFixed(1) };
+    let f = 0, comeT = -1, beamT = -1, goneT = -1, dropT = -1;
+    let camUp = 0, hit = 0, bag = 0, rise = 0, riseTop = 0, riseLow = 99;
+    let atTarget = -1, awayD = -1, park = 0;
+    let taken = null, high = 0, backD = 0, backMax = 0;
+    while (f < 900) {
+      step(0.05); f++;
+      const u = ufos && ufos[0];
+      if (u) {
+        camUp = Math.max(camUp, ENG.camTarget.ty);
+        hit = u.hit; bag = Math.max(bag, u.bag.length + u.up.length);
+        if (comeT < 0 && u.st !== 'come') {
+          comeT = +(f * 0.05).toFixed(2);
+          atTarget = +Math.hypot(u.x - 0, u.z - 0).toFixed(2);
+        }
+        if (beamT < 0 && u.beam >= 1) beamT = +(f * 0.05).toFixed(2);
+        /* 光柱裡那些：先被捲上去才進艙。riseTop 是它們飛到的最高處
+           （該貼著吸光口 mouth），riseLow 是還在光裡那些的最低處。 */
+        rise = Math.max(rise, u.up.length);
+        for (const it of u.up) {
+          riseTop = Math.max(riseTop, it.o.y);
+          riseLow = Math.min(riseLow, it.o.y);
+        }
+        // 進艙的沉在地板底下（看不見）
+        if (u.bag.length) park = Math.max(park, u.bag.filter(it => it.o.y < -10).length);
+        if (u.st === 'wait' && goneT < 0) {
+          goneT = +(f * 0.05).toFixed(2);
+          awayD = +Math.hypot(u.x, u.z).toFixed(1);
+          // 記下「被吸走的地方」，等它們掉回來再量差多遠
+          taken = u.bag.slice(0, 40).map(it => ({ o: it.o, x: it.x, z: it.z }));
+        }
+        /* 東西丟下來那一刻（'rain'：幽浮已經不畫了，只是還在借鏡頭讓那一坨掉完）。 */
+        if (u.st === 'rain' && dropT < 0) {
+          dropT = +(f * 0.05).toFixed(2);
+          for (const t of taken) {
+            high = Math.max(high, t.o.y);
+            const d = Math.hypot(t.o.x - t.x, t.o.z - t.z);
+            backD += d / taken.length; backMax = Math.max(backMax, d);
+          }
+        }
+      } else if (dropT >= 0) break;
+    }
+    const set1 = blocks.filter(b => b.st === 3).length;
+    // 落地：等它們躺下來，再確認沒有東西卡在地板底下、旗標也清乾淨了
+    for (let i = 0; i < 300; i++) step(0.05);
+    return {
+      inLight, set0, set1, hit, bag, rise, park,
+      share: +(hit / Math.max(1, inLight) * 100).toFixed(1),
+      born, comeT, beamT, goneT, dropT, awayD, atTarget,
+      wantY: y, mouth: +mouth.toFixed(2), riseTop: +riseTop.toFixed(1), riseLow: +riseLow.toFixed(1),
+      high: +high.toFixed(1), backD: +backD.toFixed(1), backMax: +backMax.toFixed(1),
+      camY0: +camY0.toFixed(1), camUp: +camUp.toFixed(1), camEnd: +ENG.camTarget.ty.toFixed(1),
+      under: blocks.filter(b => b.y < -1).length,
+      flagged: blocks.filter(b => b.ufo).length,
+      carry: blocks.filter(b => b.st === 1).length,
+      free: blocks.filter(b => b.st === 0).length,
+      pool: blocks.length
+    };
+  });
+  ok('點地面：幽浮從場外飛進來（不是憑空出現在點擊處）',
+     ufo.born.d > ufo.born.arena && ufo.born.st === 'come' && ufo.atTarget < 0.01,
+     '出場在半徑 ' + ufo.born.d + '（場地半徑 ' + ufo.born.arena + '），' +
+     ufo.comeT + ' 秒後到位、離點擊處 ' + ufo.atTarget);
+  /* 高度照烏雲那一套：屋頂上方 UFO_UP，矮建築至少 UFO_Y0（使用者：「高度類似打雷烏雲」）。 */
+  ok('停的高度照屋頂算（同打雷的烏雲）',
+     ufo.born.y === ufo.wantY && ufo.wantY === Math.max(34, 10 + 16),
+     '飛在 ' + ufo.born.y + '（屋頂 ' + (ufo.wantY - 16) + ' ＋ 16，下限 34）');
+  /* 畫出來那一根倒錐就是判定用的那一根（同 DOZ_W 的用意）：
+     引擎的錐度必須等於規則那邊的 UFO_MOUTH ÷ UFO_R，不然會看到「光柱外的積木被吸走」。 */
+  const ufoK = await page.evaluate(() => ({
+    taper: ENG.UFO_TAPER, ratio: UFO_MOUTH / UFO_R, mouthY: ENG.UFO_MOUTH_Y,
+    lastPart: ENG.UFO_PART[ENG.UFO_PARTS - 1].p[1], max: ENG.UFO_MAX, r: UFO_R
+  }));
+  ok('光柱畫出來的那一根就是判定用的那一根',
+     Math.abs(ufoK.taper - ufoK.ratio) < 0.005 &&
+     Math.abs(ufoK.mouthY + ufoK.lastPart) < 1e-6,
+     '錐度 ' + ufoK.taper + '（判定 ' + ufoK.ratio.toFixed(3) + '）、吸光口 ' +
+     ufoK.mouthY + '（造型最後一片在 ' + ufoK.lastPart + '）');
+  /* 使用者：「吸引積木（類似龍捲風幾%的數量）」——所以驗的是**幾成**：
+     一趟吸走光圈裡的六到八成，而不是整根吸光（第一版 UFO_TAKE 0.55 就是吸光的，
+     見 game-tools 那段註解）。 */
+  ok('照光吸走的是光圈裡的「幾成」，不是整根吸光',
+     ufo.share > 55 && ufo.share < 85 && ufo.hit > 200,
+     '光圈裡 ' + ufo.inLight + ' 塊還站著 → 吸走 ' + ufo.hit + ' 塊（' + ufo.share +
+     '%）；整座 SET ' + ufo.set0 + ' → ' + ufo.set1 + '（含失去支撐自己垮的）');
+  ok('積木先被光捲上去，碰到吸光口才進艙',
+     ufo.rise > 20 && ufo.riseTop > ufo.mouth - 1.5 && ufo.riseTop < ufo.mouth + 0.6 &&
+     ufo.riseLow < 5,
+     '同時最多 ' + ufo.rise + ' 塊在光裡飄，飄到最高 ' + ufo.riseTop +
+     '（吸光口在 ' + ufo.mouth + '）、最低 ' + ufo.riseLow);
+  ok('進艙的沉到地板底下（畫面上看不見，也不必跟著幽浮搬）',
+     ufo.park > 100, '艙裡最多同時 ' + ufo.park + ' 塊在地板底下');
+  ok('吸完就飛走：飛出場外才算走掉',
+     ufo.awayD > ufo.born.arena, '飛到半徑 ' + ufo.awayD + ' 才收掉（場地半徑 ' + ufo.born.arena + '）');
+  /* 使用者指定的「5 秒後」：從飛出場那一刻算起。 */
+  ok('飛走之後 5 秒，被吸走的東西從天上掉下來',
+     ufo.dropT - ufo.goneT > 4.9 && ufo.dropT - ufo.goneT < 5.2 && ufo.high > 60,
+     '飛走 ' + ufo.goneT + ' 秒 → 掉下來 ' + ufo.dropT + ' 秒（差 ' +
+     (ufo.dropT - ufo.goneT).toFixed(2) + ' 秒），出現在 ' + ufo.high + ' 高');
+  ok('掉回「被吸走的那個地方」上方，不是幽浮飛走的方向',
+     ufo.backD < 4 && ufo.backMax < 6,
+     '平均離原地 ' + ufo.backD + '、最遠 ' + ufo.backMax + '（抖動是刻意加的 ±3）');
+  ok('掉下來的積木最後躺在地上，沒有卡在地板底下或留著旗標',
+     ufo.under === 0 && ufo.flagged === 0 && ufo.carry === 0 && ufo.free > 200 &&
+     ufo.pool === ufo.set0,
+     '地板底下 ' + ufo.under + ' 塊、還帶旗標 ' + ufo.flagged + ' 塊、躺在地上 ' +
+     ufo.free + ' 塊，池子 ' + ufo.pool + ' 塊沒變');
+  ok('照光期間鏡頭抬起來，飛走就把高度還回去',
+     ufo.camUp > ufo.camY0 + 5 && Math.abs(ufo.camEnd - ufo.camY0) < 0.01,
+     '視線高度 ' + ufo.camY0 + ' → 最高 ' + ufo.camUp + ' → 收工 ' + ufo.camEnd);
+
+  /* 光圈外的東西一塊都不能被吸（倒錐的邊界），以及小人與動物照樣吸得走。
+     積木自己擺位置：拿散料排成兩圈（光圈裡半徑 2、光圈外半徑 UFO_R+4）。 */
+  const ufoWho = await page.evaluate(() => {
+    cleanTools();
+    /* 地上鋪滿散料就好，不蓋建築：這一條要量的是散料、人與動物。
+       （completeNow() 會把整池積木都砌進地標，一塊散料都不剩，就沒東西可擺了。） */
+    scatterFree();
+    for (let i = 0; i < 20; i++) step(0.05);
+    callUfo({ x: 0, z: 0 });
+    /* **等光亮起來才擺**。飛進來那三秒足夠小人走出光圈（他們是會走的，
+       實測 12 個人只剩 4 個還站在裡面），動物同理，所以三種都在這一刻才擺進去。 */
+    let f = 0;
+    while (f < 200 && !(ufos && ufos[0].st === 'beam')) { step(0.05); f++; }
+    /* 兩圈散料：光圈裡 60 塊（半徑 2／4／6）、光圈外 40 塊（半徑 UFO_R + 4）。
+       裡面那圈給 60 塊而不是 20 塊，是因為「有沒有被吸走」是照 UFO_TAKE 抽的：
+       20 塊的話七成大約是 14 ± 2，門檻很難擺得穩（這一條要守的是**邊界**，
+       吸走幾成那一條在上面用 905 塊量）。 */
+    const near = [], far = [];
+    let k = 0;
+    for (const b of blocks) {
+      if (b.st !== 0 && b.st !== 4) continue;
+      if (k >= 100) break;
+      const a = k / 20 * Math.PI * 2, rad = k < 60 ? 2 + (k % 3) * 2 : UFO_R + 4;
+      if (b.cell) gridDel(b);
+      b.x = Math.cos(a) * rad; b.z = Math.sin(a) * rad; b.y = HB;
+      b.st = 0; b.rest = true; b.snap = 0; b.vx = b.vy = b.vz = 0;
+      gridAdd(b);
+      (k < 60 ? near : far).push(b);
+      k++;
+    }
+    const men = workers.slice(0, 12);
+    men.forEach((w, i) => {
+      releaseWorker(w);
+      w.x = Math.cos(i / 12 * Math.PI * 2) * 3; w.z = Math.sin(i / 12 * Math.PI * 2) * 3;
+      w.y = 0; w.air = 0; w.fall = 0; w.burn = 0;
+    });
+    spawnBeast('ape', 1, 0);
+    const ape = beasts[beasts.length - 1];
+    ape.x = 2; ape.z = -2; ape.y = 0; ape.st = 'fun';
+    /* 飛龍不吸（同龍捲風：牠在天上飛）。直接把一條放在光柱裡那個高度，
+       stepDoom 在這一段是停著的（見 installClean），所以牠不會自己飛走。 */
+    spawnDragon(1, 0);
+    const dra = beasts[beasts.length - 1];
+    dra.x = 1; dra.z = 1; dra.y = 26;
+    let menUp = 0, apeUp = 0, draUp = 0, apeTop = -99;
+    /* 「被吸走過」要在過程中記（旗標只在被抓著的那段時間是 1）：
+       全部掉回地面之後再看的話，兩圈積木都躺在地上，分不出誰被吸過。 */
+    const nearHit = new Set(), farHit = new Set();
+    while (f < 900) {
+      step(0.05); f++;
+      apeTop = Math.max(apeTop, ape.y);      // 掉下來那一幀幽浮已經收掉了，所以擺在外面
+      for (const b of near) if (b.ufo) nearHit.add(b);
+      for (const b of far) if (b.ufo) farHit.add(b);
+      const u = ufos && ufos[0];
+      if (u) {
+        const all = u.up.concat(u.bag);
+        menUp = Math.max(menUp, all.filter(it => it.kind === 1).length);
+        if (all.some(it => it.o === ape)) apeUp = 1;
+        if (all.some(it => it.o === dra)) draUp = 1;
+      } else if (f > 220) break;
+    }
+    // 掉下來之後：等牠們落地（stepDoom 停著，所以動物自己不動——放回去再推）
+    stepDoom = window.doomStep;
+    for (let i = 0; i < 300; i++) step(0.05);
+    return {
+      nearTaken: nearHit.size, nearN: near.length,
+      farTaken: farHit.size, farN: far.length,
+      menUp, apeUp, draUp, apeTop: +apeTop.toFixed(1),
+      apeY: +ape.y.toFixed(2), apeUfo: ape.ufo, apeFall: +(ape.fall || 0).toFixed(1),
+      menStand: workers.filter(w => !w.air && !w.ufo && w.y < 1).length,
+      menUfo: workers.filter(w => w.ufo).length,
+      draUfo: dra.ufo
+    };
+  });
+  ok('光圈裡的散料被吸走，光圈外的一塊都沒動',
+     ufoWho.nearTaken > 30 && ufoWho.farTaken === 0,
+     '光圈裡 ' + ufoWho.nearTaken + '/' + ufoWho.nearN + ' 被吸走、外圈（半徑 ' +
+     (ufoK.r + 4) + '）' + ufoWho.farTaken + '/' + ufoWho.farN);
+  ok('站在光裡的小人會被吸走，掉下來之後自己站起來',
+     ufoWho.menUp >= 10 && ufoWho.menUfo === 0 && ufoWho.menStand >= 10,
+     '吸走 ' + ufoWho.menUp + ' 個人，最後站著的 ' + ufoWho.menStand + ' 個、還帶旗標 ' +
+     ufoWho.menUfo + ' 個');
+  ok('動物也吸得走（飛龍例外：牠在天上飛）',
+     ufoWho.apeUp === 1 && ufoWho.draUp === 0 && !ufoWho.draUfo &&
+     ufoWho.apeTop > 60 && ufoWho.apeY < 1 && !ufoWho.apeUfo,
+     '猴子被吸走、從 ' + ufoWho.apeTop + ' 高掉回地面（y=' + ufoWho.apeY +
+     '、旗標 ' + (ufoWho.apeUfo || 0) + '）；飛龍' +
+     (ufoWho.draUp ? '也被吸了' : '沒被吸（旗標 ' + (ufoWho.draUfo || 0) + '）'));
+
+  /* 兩件容易壞的收尾：中途換場（CARRY 的積木會被 startBuild 解成碎料）、
+     第三次點擊擠掉最早那一台。兩種都不能把積木留在地板底下。 */
+  const ufoEdge = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    for (let i = 0; i < 120; i++) step(0.05);
+    callUfo({ x: 0, z: 0 });
+    let f = 0;
+    while (f < 200 && !(ufos && ufos[0].bag.length >= 30)) { step(0.05); f++; }
+    const bag = ufos && ufos[0] ? ufos[0].bag.length : -1;
+    startBuild(true);                                  // 換場
+    for (let i = 0; i < 400; i++) step(0.05);
+    const swap = { bag, under: blocks.filter(b => b.y < -1).length,
+                   flagged: blocks.filter(b => b.ufo).length,
+                   ufos: ufos ? ufos.length : 0 };
+    // 擠掉：連點三次
+    cleanTools(); completeNow();
+    for (let i = 0; i < 120; i++) step(0.05);
+    callUfo({ x: 0, z: 0 });
+    for (let i = 0; i < 120; i++) step(0.05);
+    callUfo({ x: 14, z: 0 });
+    for (let i = 0; i < 40; i++) step(0.05);
+    const n2 = ufos.length, held = ufos[0].bag.length + ufos[0].up.length;
+    callUfo({ x: -14, z: 0 });
+    const n3 = ufos.length;
+    for (let i = 0; i < 600; i++) step(0.05);
+    return { swap, n2, n3, held,
+             under: blocks.filter(b => b.y < -1).length,
+             flagged: blocks.filter(b => b.ufo).length,
+             cam: +ENG.camTarget.ty.toFixed(1), left: ufos ? ufos.length : 0 };
+  });
+  ok('照到一半換場：積木不會被留在地板底下',
+     ufoEdge.swap.under === 0 && ufoEdge.swap.flagged === 0 && ufoEdge.swap.bag >= 30,
+     '換場時艙裡有 ' + ufoEdge.swap.bag + ' 塊 → 地板底下 ' + ufoEdge.swap.under +
+     ' 塊、還帶旗標 ' + ufoEdge.swap.flagged + ' 塊');
+  ok('同時最多兩台，第三次點擊把最早那一台擠掉（手上的東西在原地放掉）',
+     ufoEdge.n2 === 2 && ufoEdge.n3 === 2 && ufoEdge.held > 50 &&
+     ufoEdge.under === 0 && ufoEdge.flagged === 0 && ufoEdge.left === 0 &&
+     Math.abs(ufoEdge.cam) < 0.01,
+     '第二台在場 ' + ufoEdge.n2 + ' 台、第三台照樣 ' + ufoEdge.n3 +
+     ' 台；被擠掉那一台手上有 ' + ufoEdge.held + ' 件 → 地板底下 ' + ufoEdge.under +
+     ' 塊、視線高度還回去（' + ufoEdge.cam + '）');
+
+  /* 畫面：碟身、邊燈、光柱三顆 mesh。沒幽浮在場時一律 visible=false
+     （沒東西在場就不吃 draw call，README〈效能〉那條規矩）。 */
+  const ufoDraw = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    for (let i = 0; i < 60; i++) step(0.05);
+    draw(); ENG.render();
+    const base = ENG.info().calls;
+    const t = ENG.three;
+    const off = { hull: t.ufoMesh.visible, lit: t.ufoLitMesh.visible, beam: t.ufoBeamMesh.visible };
+    callUfo({ x: 0, z: 0 });
+    let f = 0, on = null, calls = 0;
+    while (f < 300) {
+      step(0.05); f++;
+      if (ufos && ufos[0].st === 'beam' && ufos[0].beam >= 1) {
+        draw(); ENG.render();
+        on = { hull: t.ufoMesh.visible, hullN: t.ufoMesh.count,
+               lit: t.ufoLitMesh.visible, litN: t.ufoLitMesh.count,
+               beam: t.ufoBeamMesh.visible, beamN: t.ufoBeamMesh.count };
+        calls = ENG.info().calls;
+        break;
+      }
+    }
+    ufoClear();
+    draw(); ENG.render();
+    const after = { hull: t.ufoMesh.visible, lit: t.ufoLitMesh.visible, beam: t.ufoBeamMesh.visible,
+                    calls: ENG.info().calls };
+    return { base, off, on, calls, after };
+  });
+  ok('沒幽浮在場時三顆 mesh 都不畫（一個 draw call 都不吃）',
+     !ufoDraw.off.hull && !ufoDraw.off.lit && !ufoDraw.off.beam &&
+     !ufoDraw.after.hull && !ufoDraw.after.lit && !ufoDraw.after.beam &&
+     ufoDraw.after.calls === ufoDraw.base,
+     '沒在場 ' + ufoDraw.base + ' 個 draw call，收工後也是 ' + ufoDraw.after.calls);
+  ok('在場時碟身 6 塊、邊燈與艙罩 7 塊、光柱 1 根',
+     ufoDraw.on.hull && ufoDraw.on.hullN === 6 &&
+     ufoDraw.on.lit && ufoDraw.on.litN === 7 &&
+     ufoDraw.on.beam && ufoDraw.on.beamN === 1 &&
+     ufoDraw.calls - ufoDraw.base <= 6,
+     '碟身 ' + ufoDraw.on.hullN + ' ＋ 燈 ' + ufoDraw.on.litN + ' ＋ 光柱 ' +
+     ufoDraw.on.beamN + '，draw call ' + ufoDraw.base + ' → ' + ufoDraw.calls);
 
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
@@ -18117,7 +18434,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const tMissed = hTools.filter(r => NO_BEAST.indexOf(r.id) < 0 && r.seen === 0).map(r => r.id);
   const tWrong = hTools.filter(r => NO_BEAST.indexOf(r.id) >= 0 && r.seen > 0).map(r => r.id);
   ok('每一支破壞道具的傷害都經過認得動物的那幾支（手指與放火例外，理由見註解）',
-     hTools.length === 17 && tMissed.length === 0 && tWrong.length === 0,
+     hTools.length === 18 && tMissed.length === 0 && tWrong.length === 0,
      hTools.length + ' 支：' + hTools.map(r => r.id + ' ' + r.seen).join('、') +
      (tMissed.length ? '；**沒沾到動物的：' + tMissed.join('、') + '**' : '') +
      (tWrong.length ? '；**不該沾到卻沾到的：' + tWrong.join('、') + '**' : ''));
@@ -18644,6 +18961,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 王之財寶那一發會開著十三秒，留著會把後面幾條的鏡頭高度與畫面都佔走
     gates = null; weapons = null; gateEnd();
     swords = null;                  // 大劍同理：一趟快兩秒，別讓它跨到後面幾條與截圖
+    /* 幽浮（v1.167）：一趟十六秒（含飛走後那五秒），而且它會借鏡頭的高度。
+       ufoClear() 才會把借去的高度還回去、把艙裡的積木放掉（見 game-tools）。 */
+    ufoClear();
     const got = stats.badges.indexOf('allTools') >= 0;
     // 同一種道具用兩次不會重複記
     tool = 'hammer'; useTool(hit);
@@ -18652,7 +18972,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('用過哪些道具會記起來', toolRec.n === toolRec.total,
      toolRec.n + ' / ' + toolRec.total + '：' + toolRec.list.join(','));
-  ok('十七種道具都用過解鎖【工具箱清空】', toolRec.got);
+  ok('十八種道具都用過解鎖【工具箱清空】', toolRec.got);
 
   /* 存檔被改過時，不認得的道具 id 不該混進來 */
   const toolClean = await page.evaluate(() => {
@@ -18723,12 +19043,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 拆 4 座、擊飛 1234 塊 → 保齡球(2 座)、龍捲風(4 座) 開；
      大槌(擊飛 2,000)、投石機(6,000)、煙火(11,000)、放火(6 座)、炸彈(15,000)、
      隕石(8 座)、核彈(19,000)、爆裂魔法(10 座)、打雷(23,000)、天降鐵球(12 座)、
-     王之財寶(27,000)、大劍(14 座) 還鎖著 */
+     王之財寶(27,000)、大劍(14 座)、幽浮(31,000) 還鎖著 */
   const unlockedAfterReload = await page.evaluate(() =>
     [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
   ok('重開後解鎖狀態跟著回來',
      unlockedAfterReload ===
-       'open,open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock,lock,lock,lock,lock',
+       'open,open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock,lock,lock,lock,lock,lock',
      '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數。
@@ -19373,6 +19693,33 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      windLoop.last >= windLoop.tail && windLoop.dur - windLoop.last <= 1.1,
      '最後一段在還剩 ' + windLoop.last + ' 秒時起頭，所以它收乾淨的時間點在漏斗散掉後 ' +
      (windLoop.dur - windLoop.last).toFixed(2) + ' 秒（上限 1.1）');
+
+  /* 幽浮的嗡嗡聲（v1.167）走的是風聲那一套「一段一段接下去」，所以守的也是同一件事：
+     照光那幾秒不能有靜掉的空檔。飛進來與飛走各響一聲，中間照光那段才是接力的。 */
+  const ufoLoop = await page.evaluate(() => {
+    const real = sndUfo, at = [];
+    ufoClear();
+    let t = 0;
+    sndUfo = () => at.push(+t.toFixed(2));
+    callUfo({ x: 0, z: 0 });
+    let beam0 = -1, beam1 = -1;
+    while (ufos && t < 20) {
+      step(0.02); t += 0.02;
+      const u = ufos && ufos[0];
+      if (u && u.st === 'beam') { if (beam0 < 0) beam0 = t; beam1 = t; }
+    }
+    sndUfo = real;
+    ufoClear();
+    const inBeam = at.filter(v => v >= beam0 - 0.1 && v <= beam1 + 0.1);
+    const gaps = inBeam.slice(1).map((v, i) => +(v - inBeam[i]).toFixed(2));
+    return { n: at.length, beam: inBeam.length, gaps,
+             worst: gaps.length ? Math.max(...gaps) : 99,
+             beamLen: +(beam1 - beam0).toFixed(1), dur: UFO_SND_DUR, gap: UFO_SND_GAP };
+  });
+  ok('幽浮的嗡嗡聲照光整段都在（同風聲，一段一段接下去）',
+     ufoLoop.beam >= 3 && ufoLoop.worst <= ufoLoop.dur,
+     '照光那 ' + ufoLoop.beamLen + ' 秒裡響了 ' + ufoLoop.beam + ' 段（每段 ' + ufoLoop.dur +
+     ' 秒、間隔 ' + ufoLoop.gap + '），最長空檔 ' + ufoLoop.worst + ' 秒');
 
   /* 風聲的音色（v1.123，使用者：「龍捲風音效調整 目前沒有風聲的感覺」）。
      兩件事分開驗，各拿舊版當對照：

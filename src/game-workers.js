@@ -945,6 +945,9 @@ function assignSpots() {
 }
 
 function updWorker(w, wi, dt) {
+  /* 被幽浮吸走了（v1.167）：這個人這一段完全交給 stepUfo 管（在光裡飄、在艙裡等、
+     從天上掉回來），這裡整段跳過。擺在最前面：下面每一條分支都會動到位置。 */
+  if (w.ufo) return;
   /* 姿勢旗標每幀重算：跌倒、被炸飛、跑去躲的那幾條路徑都是 return 出去的，
      不歸零的話工程師被戳倒了還躺在地上舉著圖。 */
   w.hail = 0; w.plan = 0; w.dig = 0;   // dig：拿著鏟子挖料（v1.129，見 digTrip）
