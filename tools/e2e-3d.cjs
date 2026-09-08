@@ -11708,7 +11708,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        ③ 劍柄旋轉點的高度 ≈ 點在建築上那一次的高度
        ④ 刃的攻擊方向是第一點 → 第二點
        ⑤ 「建築物點擊位置 與該位置同高度的點 與地面的點 形成一個面 劍刃是在這個平面上
-          揮動」——所以刃尖起手落在第一點、收手落在第二點（3D 距離都是刃尖半徑），
+          揮動」——所以攻擊點起手落在第一點、收手落在第二點（3D 距離都是攻擊點半徑），
           而且**砍出來是斜的**（那個平面不是水平的）
      再加兩條這一把自己的：刃掃過的那一片才削得掉（不是整棟一起掉），
      以及**畫出來的刃跟判定用的扇形是同一塊**（引擎的 SWORD_* 那幾個數字兩邊共用）。 */
@@ -11762,7 +11762,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const s = swords[0];
     const shot = { x: s.x, y: s.y, z: s.z, len: s.len, r0: s.r0, r1: s.r1,
                    band: s.band, span: s.span, back: s.back, over: s.over };
-    /* ③④⑤ 樞紐到兩點的 **3D** 距離都該是「樞紐到刃尖」，而起手／收手的方向
+    /* ③④⑤ 樞紐到兩點的 **3D** 距離都該是「樞紐到攻擊點」，而起手／收手的方向
        也該正對那兩點；平面的法線離垂直方向多遠 ＝ 那一刀有多斜。 */
     const dir = (q, y) => {
       const l = Math.hypot(q.x - s.x, y - s.y, q.z - s.z) || 1;
@@ -11906,8 +11906,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                    y: swords[0].y };
 
     /* 兩下都點在建築上、**高度不一樣**：樞紐用第一點的高度（v1.162 使用者：
-       「點兩下都是建築時 就從第一點位置揮到第二點」），刃尖照樣起手落在第一點、
-       收手落在第二點（兩段 3D 距離都是刃尖半徑）。 */
+       「點兩下都是建築時 就從第一點位置揮到第二點」），攻擊點照樣起手落在第一點、
+       收手落在第二點（兩段 3D 距離都是攻擊點半徑）。 */
     aim = null; swords = null;
     clickB();
     const p3 = { x: -p1.x, y: p1.y * 0.5, z: -p1.z };
@@ -11938,7 +11938,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       spot = { x: sw.x + (sw.u0x * cs + sw.e2x * sn) * r, z: sw.z + (sw.u0z * cs + sw.e2z * sn) * r,
                dx: sw.u0x * cs + sw.e2x * sn, dz: sw.u0z * cs + sw.e2z * sn, r: r };
     }
-    if (!spot) {                       // 找不到就退到第二點（刃尖收手就落在那裡，貼著地面）
+    if (!spot) {                       // 找不到就退到第二點（攻擊點收手就落在那裡，貼著地面）
       const dl = Math.hypot(p2.x - sw.x, p2.z - sw.z) || 1;
       spot = { x: p2.x, z: p2.z, dx: (p2.x - sw.x) / dl, dz: (p2.z - sw.z) / dl, r: sw.r1 };
     }
@@ -11981,13 +11981,46 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     lives.under = men[2].air ? 1 : 0;
     lives.planeY = +fw.y.toFixed(2);
 
+    /* v1.169 使用者改的三件（造型本身沒動，動的是「哪一點在轉、哪一點在砍、手在哪一邊」）：
+       ⓐ「劍尖往下一小段才是攻擊點」——攻擊點在刃尖裡面、但還在刃身上
+          （刃根 < 攻擊點 < 刃尖），而且判定用的外緣半徑 r1 就是「樞紐到攻擊點」；
+       ⓑ「旋轉圓心在劍柄往外延伸一點」——樞紐比造型**最低那一片的下緣**還要外面，
+          中間那一段空的就是握劍的手（沒有畫出來）；
+       ⓒ「劍柄盡量在鏡頭方向」——同樣兩點、鏡頭轉到對面再揮一次，樞紐要跟著換邊。
+          兩個交點對稱於兩點的連線，所以「跟著鏡頭換邊」＝ 選的一直是靠鏡頭那一個；
+          比的是**垂直於連線那個分量的正負**，不是「離鏡頭近」——樞紐只可能落在
+          連線的左右兩側，沿著連線那個分量兩邊是一樣的。 */
+    let lowEdge = 1e9;
+    for (const P of ENG.MODELS.sword) lowEdge = Math.min(lowEdge, P.p[1] - P.s[1] / 2);
+    const D2 = Math.hypot(p2.x - p1.x, p2.z - p1.z) || 1;
+    const qx = -(p2.z - p1.z) / D2, qz = (p2.x - p1.x) / D2;      // 連線的法線（水平）
+    const side = (w, yw) =>
+      ((w.x - p1.x) * qx + (w.z - p1.z) * qz) * (qx * Math.cos(yw) + qz * Math.sin(yw));
+    const yaw0 = ENG.cam.yaw, yawA = 0.4, yawB = 0.4 + Math.PI;
+    aim = null; swords = null;
+    ENG.cam.yaw = yawA; clickB(); clickG(p2);
+    const hA = swords[0];
+    aim = null; swords = null;
+    ENG.cam.yaw = yawB; clickB(); clickG(p2);
+    const hB = swords[0];
+    ENG.cam.yaw = yaw0;
+    const hand = {
+      pivot: ENG.SWORD_PIVOT, edge: ENG.SWORD_EDGE, hit: ENG.SWORD_HIT, tip: ENG.SWORD_TIP,
+      low: +lowEdge.toFixed(4), gap: +(lowEdge - ENG.SWORD_PIVOT).toFixed(4),
+      r1: +sw.r1.toFixed(6),
+      r1want: +((ENG.SWORD_HIT - ENG.SWORD_PIVOT) * sw.len).toFixed(6),
+      rTip: +((ENG.SWORD_TIP - ENG.SWORD_PIVOT) * sw.len).toFixed(6),
+      sideA: +side(hA, yawA).toFixed(3), sideB: +side(hB, yawB).toFixed(3),
+      flip: +Math.hypot(hA.x - hB.x, hA.z - hB.z).toFixed(2)
+    };
+
     ENG.shake = oShake;
     swords = null; aim = null; tool = 'hammer'; running = true;
     return { both, kept, shot, geo, before, midSet, cut: cutY.length, lives,
              lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes: shakeN, wind,
              phs: phs.filter((p, i) => i === 0 || p !== phs[i - 1]).join('→'),
              tipErr, tipEdgeErr, tipEdge: tEdge, tipPart: ti, tipPlane, rootErr,
-             fadeLog, gone, keep, wide, flat, twoB };
+             fadeLog, gone, keep, wide, flat, twoB, hand };
   });
   ok('兩下都點地面照樣揮，而且是貼著地面水平橫掃（v1.164 不再限定要點建築）',
      swd.both.n === 1 && swd.both.y === 0 && swd.both.tilt < 0.01 &&
@@ -11998,12 +12031,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('劍柄旋轉點的高度 ＝ 點在建築上那一下的高度',
      swd.kept.on === true && Math.abs(swd.shot.y - swd.geo.clickY) < 1e-6,
      '點在 ' + swd.geo.clickY.toFixed(2) + ' 高，劍柄旋轉點 ' + swd.shot.y.toFixed(2));
-  /* 樞紐在「點到建築那一下」的高度上、離兩點的 **3D** 距離都是「樞紐到刃尖」
-     ＝ 刃尖起手落在第一點、收手落在第二點。兩點在刃長之內時誤差只會是浮點的量級。 */
-  ok('刃尖起手落在第一點、收手落在第二點（樞紐到兩點的 3D 距離都是刃尖半徑）',
+  /* 樞紐在「點到建築那一下」的高度上、離兩點的 **3D** 距離都是「樞紐到攻擊點」
+     ＝ 攻擊點起手落在第一點、收手落在第二點（v1.169 之前落在刃尖上，見下面
+     「攻擊點在刃尖裡面一小段」那一條）。兩點在刃長之內時誤差只會是浮點的量級。 */
+  ok('攻擊點起手落在第一點、收手落在第二點（樞紐到兩點的 3D 距離都是攻擊點半徑）',
      Math.abs(swd.geo.r3d1 - swd.shot.r1) < 0.01 &&
      Math.abs(swd.geo.r3d2 - swd.shot.r1) < 0.01,
-     '刃尖半徑 ' + swd.shot.r1.toFixed(2) + '；樞紐到第一點 ' + swd.geo.r3d1.toFixed(2) +
+     '攻擊點半徑 ' + swd.shot.r1.toFixed(2) + '；樞紐到第一點 ' + swd.geo.r3d1.toFixed(2) +
      '、到第二點 ' + swd.geo.r3d2.toFixed(2));
   ok('揮擊方向是第一點 → 第二點（起手正對第一點、收手正對第二點）',
      swd.geo.e0 < 1e-9 && swd.geo.e1 < 1e-9 && swd.shot.span > 0.3,
@@ -12047,7 +12081,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('一趟揮擊只震一次畫面（它每一幀都在切，每幀都震會抖到揮完）',
      swd.shakes === 1, '震了 ' + swd.shakes + ' 次');
   /* 畫面與判定同一份：引擎的 SWORD_TIP／SWORD_PIVOT 兩邊共用，
-     所以刃尖那一塊畫出來的位置就該落在判定用的刃尖半徑上。 */
+     所以刃尖那一塊畫出來的位置就該落在「樞紐 ＋ 這個角度 × 它自己的半徑」上。 */
   ok('畫出來的刃跟判定用的是同一份數字，而且刃面就是揮動平面',
      swd.tipEdgeErr < 1e-9 && swd.rootErr < 1e-9 && swd.tipErr < 0.02 &&
      swd.tipPlane < 0.02,
@@ -12055,6 +12089,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      swd.tipEdgeErr.toExponential(1) + '）、刃主體下緣 ＝ SWORD_EDGE（差 ' +
      swd.rootErr.toExponential(1) + '）；那一塊畫出來的位置差 ' +
      swd.tipErr.toExponential(1) + '、離揮動平面 ' + swd.tipPlane.toExponential(1));
+  /* v1.169 使用者：「劍尖往下一小段才是攻擊點」。守的是「攻擊點在刃尖裡面、
+     但還在刃身上」，以及判定的外緣半徑用的是攻擊點而不是刃尖——寫錯的話刃尖
+     那一小段會跟著砍，就退回改之前那樣。差幾格不寫死，直接從那兩個常數算。 */
+  ok('攻擊點在刃尖裡面一小段（判定與瞄準都用它，不是用刃尖）',
+     swd.hand.hit < swd.hand.tip && swd.hand.hit > swd.hand.edge &&
+     Math.abs(swd.hand.r1 - swd.hand.r1want) < 1e-6 && swd.hand.rTip > swd.hand.r1,
+     '攻擊點 ' + swd.hand.hit + '（刃根 ' + swd.hand.edge + '、刃尖 ' + swd.hand.tip +
+     '）；這一把樞紐到攻擊點 ' + swd.hand.r1 + '、到刃尖 ' + swd.hand.rTip +
+     '（刃尖多伸出去 ' + (swd.hand.rTip - swd.hand.r1).toFixed(2) + ' 單位，畫得到但不砍）');
+  /* v1.169 使用者：「旋轉圓心在劍柄往外延伸一點才正常」。樞紐要在**造型外面**：
+     比最低那一片（劍首底）的下緣還低，中間那一段空的就是握劍的手。 */
+  ok('旋轉圓心在劍柄外面（不是握在劍身上自己轉）',
+     swd.hand.pivot < swd.hand.low && swd.hand.gap > 0.05,
+     '樞紐 ' + swd.hand.pivot + '、造型最低的下緣 ' + swd.hand.low + '（中間空 ' +
+     swd.hand.gap + ' 全長 ＝ 握劍的手，沒畫出來）');
+  /* v1.169 使用者：「劍柄盡量在鏡頭方向(看起來像玩家揮劍)」。同樣兩點、鏡頭轉到對面
+     再揮一次，樞紐要跟著換到另一邊——兩個交點對稱於兩點的連線，所以「跟著鏡頭換邊」
+     就等於「一直選靠鏡頭那一個」。 */
+  ok('劍柄（旋轉圓心）落在鏡頭那一側，鏡頭轉到對面就跟著換邊',
+     swd.hand.sideA > 0 && swd.hand.sideB > 0 && swd.hand.flip > 1,
+     '鏡頭 0.4 rad 那一刀樞紐在鏡頭側（' + swd.hand.sideA + '）、轉到對面那一刀也在鏡頭側（' +
+     swd.hand.sideB + '），兩個樞紐相距 ' + swd.hand.flip + ' 單位');
   ok('揮完原地化成金光淡掉，最後自己收乾淨',
      swd.fadeLog[0][0] === 'hold' && swd.gone &&
      swd.fadeLog.some(r => r[0] === 'fade' && r[1] < 0.6 && r[2] > 0.4),
@@ -12085,7 +12141,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '第二刀削掉 ' + (swd.lives.setSame ? '0' : '不只 0') + ' 塊積木，站在刃面上的人 ' +
      (swd.lives.noBlock ? '照樣被撞飛' : '沒反應'));
   /* v1.162 使用者：「點兩下都是建築時 就從第一點位置揮到第二點」——樞紐取**第一點**
-     的高度（原本取兩點的中間），刃尖照樣起手落在第一點、收手落在第二點。 */
+     的高度（原本取兩點的中間），攻擊點照樣起手落在第一點、收手落在第二點。 */
   ok('兩下都點在建築上（高度不同）→ 樞紐用第一點的高度，從第一點揮到第二點',
      Math.abs(swd.twoB.y - swd.geo.clickY) < 1e-6 &&
      Math.abs(swd.twoB.r3d1 - swd.twoB.r1) < 0.01 &&
@@ -12093,7 +12149,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '第一點 ' + swd.geo.clickY.toFixed(2) + ' 高、第二點 ' +
      (swd.geo.clickY * 0.5).toFixed(2) + ' 高，樞紐 ' + swd.twoB.y.toFixed(2) +
      '；樞紐到兩點 ' + swd.twoB.r3d1.toFixed(2) + '／' + swd.twoB.r3d2.toFixed(2) +
-     '（刃尖半徑 ' + swd.twoB.r1.toFixed(2) + '）');
+     '（攻擊點半徑 ' + swd.twoB.r1.toFixed(2) + '）');
 
   /* ══════════ 幽浮 ══════════
      使用者指定的順序就是這一段的骨架：
@@ -12126,7 +12182,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let f = 0, comeT = -1, beamT = -1, goneT = -1, dropT = -1;
     let camUp = 0, hit = 0, bag = 0, rise = 0, riseTop = 0, riseLow = 99;
     let atTarget = -1, awayD = -1, park = 0;
-    let taken = null, high = 0, backD = 0, backMax = 0;
+    let taken = null, high = 0;
+    /* 落點的分佈（v1.169 起「均勻鋪在光圈那一圈裡」，見 ufoDrop）。
+       量的是**分位數與角度的合向量**，不是「切幾個桶各幾件」：桶子那種量法對
+       UFO_SOW_JIT 那點抖動很敏感（落點的半徑是一小步一小步排上去的，n ＝ 600 時
+       相鄰兩件只差 0.015，±0.5 的抖動等於有近百件跨在桶的邊界上，數出來的
+       件數自己就會晃 ±5%～8%），分位數與合向量則幾乎不受影響。 */
+    const sow = { d: [], cx: 0, cz: 0 };
     while (f < 900) {
       step(0.05); f++;
       const u = ufos && ufos[0];
@@ -12150,16 +12212,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (u.st === 'wait' && goneT < 0) {
           goneT = +(f * 0.05).toFixed(2);
           awayD = +Math.hypot(u.x, u.z).toFixed(1);
-          // 記下「被吸走的地方」，等它們掉回來再量差多遠
-          taken = u.bag.slice(0, 40).map(it => ({ o: it.o, x: it.x, z: it.z }));
+          // 記下艙裡有哪些，等它們掉回來再量落點鋪得多開
+          taken = u.bag.map(it => ({ o: it.o }));
         }
         /* 東西丟下來那一刻（'rain'：幽浮已經不畫了，只是還在借鏡頭讓那一坨掉完）。 */
         if (u.st === 'rain' && dropT < 0) {
           dropT = +(f * 0.05).toFixed(2);
+          /* 只算「真的被丟上天的」（y 還在 UFO_SKY 附近）：中途被別人接手而放掉的
+             那幾件還沉在地板底下，算進去會把最裡面那一環墊高。 */
           for (const t of taken) {
             high = Math.max(high, t.o.y);
-            const d = Math.hypot(t.o.x - t.x, t.o.z - t.z);
-            backD += d / taken.length; backMax = Math.max(backMax, d);
+            if (t.o.y < 60) continue;
+            const d = Math.hypot(t.o.x, t.o.z);      // 離光圈圓心（照光的那一點）多遠
+            sow.d.push(d);
+            if (d > 1e-6) { sow.cx += t.o.x / d; sow.cz += t.o.z / d; }
           }
         }
       } else if (dropT >= 0) break;
@@ -12174,7 +12240,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       want: +((1 - Math.pow(1 - UFO_TAKE, UFO_BEAM)) * 100).toFixed(1),
       born, comeT, beamT, goneT, dropT, awayD, atTarget,
       wantY: y, mouth: +mouth.toFixed(2), riseTop: +riseTop.toFixed(1), riseLow: +riseLow.toFixed(1),
-      high: +high.toFixed(1), backD: +backD.toFixed(1), backMax: +backMax.toFixed(1),
+      high: +high.toFixed(1),
+      /* 落點：件數、最遠、平均半徑、三個四分位，以及「角度的合向量」
+         （每一件取單位向量加起來再除件數：角度均勻的話互相抵銷 → 0）。
+         R 帶出去讓 node 那邊直接拿常數算理論值。 */
+      sow: (() => {
+        const d = sow.d.slice().sort((a, b) => a - b), n = d.length;
+        const q = p => n ? +d[Math.min(n - 1, Math.floor(p * n))].toFixed(2) : -1;
+        return { n, R: UFO_R, rMax: n ? +d[n - 1].toFixed(2) : -1,
+                 rMean: +(sow.d.reduce((a, b) => a + b, 0) / Math.max(1, n)).toFixed(2),
+                 q25: q(0.25), q50: q(0.5), q75: q(0.75),
+                 ang: +(Math.hypot(sow.cx, sow.cz) / Math.max(1, n)).toFixed(4) };
+      })(),
       camY0: +camY0.toFixed(1), camUp: +camUp.toFixed(1), camEnd: +ENG.camTarget.ty.toFixed(1),
       under: blocks.filter(b => b.y < -1).length,
       flagged: blocks.filter(b => b.ufo).length,
@@ -12202,6 +12279,44 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(ufoK.mouthY + ufoK.lastPart) < 1e-6,
      '錐度 ' + ufoK.taper + '（判定 ' + ufoK.ratio.toFixed(3) + '）、吸光口 ' +
      ufoK.mouthY + '（造型最後一片在 ' + ufoK.lastPart + '）');
+  /* 造型是不是真的圓的（v1.169 使用者：「UFO造型太粗糙 應該是圓盤型」）。
+     驗的是**幾何條件**不是外觀：一層 ＝ UFO_SLAB 片整條直徑的長條各轉 180°/N，
+     它們的聯集才是近圓，而且每片得夠寬到補滿夾角——半寬 ≥ r·sin(90°/N)，
+     窄一分夾角處就露出缺口（那就又變回「粗糙」）。門檻直接從 N 算，不寫死。 */
+  const ufoRound = await page.evaluate(() => {
+    const N = ENG.UFO_SLAB, lv = [];
+    for (const [who, src] of [['碟身', ENG.UFO_PART], ['艙罩', ENG.UFO_LIT]]) {
+      const bag = new Map();
+      for (const P of src) {
+        if (P.p[0] !== 0 || P.p[2] !== 0) continue;        // 邊燈不是圓盤層，跳過
+        const key = P.p[1].toFixed(4);
+        if (!bag.has(key)) bag.set(key, []);
+        bag.get(key).push(P);
+      }
+      for (const g of bag.values())
+        lv.push({ who, y: g[0].p[1], n: g.length, r: g[0].s[0] / 2, w: g[0].s[2],
+                  /* 角度該是 0、180/N、2×180/N …（照順序，不重複） */
+                  ang: g.map(P => +((P.ry || 0) / Math.PI * N).toFixed(6)) });
+    }
+    return { N, W: ENG.UFO_SLAB_W, lv,
+             lamp: ENG.UFO_LIT.filter(P => P.p[0] !== 0 || P.p[2] !== 0).length };
+  });
+  {
+    const N = ufoRound.N, wantW = 2 * Math.sin(Math.PI / (2 * N));
+    const bad = ufoRound.lv.filter(L =>
+      L.n !== N || L.w < L.r * wantW - 1e-9 ||
+      L.ang.slice().sort((a, b) => a - b).some((v, i) => Math.abs(v - i) > 1e-6));
+    /* 半徑起伏：正對某一片的軸與夾角正中都剛好 r，最遠是 r·√(1＋sin²(90°/N))
+       ——長度那一邊與寬度那一邊交會的那個角（推導見 engine.js 的 UFO_SLAB）。 */
+    const ripple = (Math.sqrt(1 + Math.pow(Math.sin(Math.PI / (2 * N)), 2)) - 1) * 100;
+    ok('碟身與艙罩每一層都是圓盤（' + N + ' 片轉開、寬度補滿夾角，半徑起伏 ' +
+       ripple.toFixed(1) + '%）',
+       ufoRound.lv.length >= 6 && !bad.length && ufoRound.lamp === 6 &&
+       Math.abs(ufoRound.W - wantW) < 1e-9,
+       ufoRound.lv.length + ' 層（' +
+       ufoRound.lv.map(L => L.who + L.y.toFixed(2) + '半徑' + L.r.toFixed(2)).join('、') +
+       '）＋ 邊燈 ' + ufoRound.lamp + ' 顆；不合格 ' + bad.length + ' 層');
+  }
   /* 使用者：「吸引積木（類似龍捲風幾%的數量）」——所以驗的是**幾成**，而且比例
      跟著 UFO_TAKE／UFO_BEAM 走（v1.168 改成理論值 ±12，不再寫死 55～85%）：
      吸走幾塊是隨機抽的、也是之後會調的細節，這一條只要守住「按比例抽，
@@ -12226,9 +12341,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ufo.dropT - ufo.goneT > 4.9 && ufo.dropT - ufo.goneT < 5.2 && ufo.high > 60,
      '飛走 ' + ufo.goneT + ' 秒 → 掉下來 ' + ufo.dropT + ' 秒（差 ' +
      (ufo.dropT - ufo.goneT).toFixed(2) + ' 秒），出現在 ' + ufo.high + ' 高');
-  ok('掉回「被吸走的那個地方」上方，不是幽浮飛走的方向',
-     ufo.backD < 4 && ufo.backMax < 6,
-     '平均離原地 ' + ufo.backD + '、最遠 ' + ufo.backMax + '（抖動是刻意加的 ±3）');
+  /* 使用者（v1.169）：「所有東西從天上掉下來應該是均勻分散的」。
+     兩件事一起驗，而且每個理論值都是**從「圓盤上均勻」算出來的**，不是抄來的門檻：
+       ⓐ 圈：落點全部在光圈那一圈裡（圓心是照光的那一點，半徑 UFO_R 再加抖動的餘裕）
+          ——這一條同時守著 v1.167 那條「掉在同一圈才看得出是剛剛那一片」；
+       ⓑ 均勻：圓盤上均勻的話半徑的累積分佈是 (r/R)²，所以第 p 分位 ＝ R√p
+          （四分位就是 0.5R／0.707R／0.866R），平均半徑 ＝ ⅔R；角度均勻則是
+          「每件取單位向量加起來 ≈ 0」。分位數與合向量都不受 UFO_SOW_JIT 那點
+          抖動影響，所以門檻可以收在半徑的 5% 以內（見上面 sow 那段註解）。
+     v1.167～v1.168 這一條驗的是「掉回各自原地 ±3」（backD < 4），那正是使用者
+     嫌它擠成一坨的原因，整條換掉。 */
+  {
+    const S = ufo.sow, R = S.R;
+    const want = [R * 0.5, R * Math.SQRT1_2, R * Math.sqrt(0.75)];
+    const qErr = Math.max(Math.abs(S.q25 - want[0]), Math.abs(S.q50 - want[1]),
+                          Math.abs(S.q75 - want[2])) / R;
+    ok('掉在照光那一圈的上方，而且均勻鋪滿那一圈（不是擠成一坨）',
+       S.n > 20 && S.rMax <= R + 1.5 && S.ang < 0.06 && qErr < 0.05 &&
+       Math.abs(S.rMean - R * 2 / 3) < R * 0.05,
+       S.n + ' 件：最遠離圓心 ' + S.rMax + '（光圈 ' + R + '）、平均 ' + S.rMean +
+       '（理論 ' + (R * 2 / 3).toFixed(2) + '）；四分位 ' +
+       S.q25 + '／' + S.q50 + '／' + S.q75 + '（理論 ' +
+       want.map(v => v.toFixed(2)).join('／') + '，最大差 ' +
+       (qErr * 100).toFixed(1) + '% 個半徑）；角度合向量 ' + S.ang + '（均勻 ＝ 0）');
+  }
   ok('掉下來的積木最後躺在地上，沒有卡在地板底下或留著旗標',
      ufo.under === 0 && ufo.flagged === 0 && ufo.carry === 0 && ufo.free > 0 &&
      ufo.pool === ufo.set0,
@@ -12394,20 +12530,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     draw(); ENG.render();
     const after = { hull: t.ufoMesh.visible, lit: t.ufoLitMesh.visible, beam: t.ufoBeamMesh.visible,
                     calls: ENG.info().calls };
-    return { base, off, on, calls, after };
+    /* 該畫幾塊直接讀造型表（v1.169 造型改成圓盤、塊數從 6／7 變成 36／24——
+       寫死數字的話每次調造型都要回來改，同「全部道具」那條的用意）。 */
+    return { base, off, on, calls, after,
+             want: { hull: ENG.UFO_PARTS, lit: ENG.UFO_LITS } };
   });
   ok('沒幽浮在場時三顆 mesh 都不畫（一個 draw call 都不吃）',
      !ufoDraw.off.hull && !ufoDraw.off.lit && !ufoDraw.off.beam &&
      !ufoDraw.after.hull && !ufoDraw.after.lit && !ufoDraw.after.beam &&
      ufoDraw.after.calls === ufoDraw.base,
      '沒在場 ' + ufoDraw.base + ' 個 draw call，收工後也是 ' + ufoDraw.after.calls);
-  ok('在場時碟身 6 塊、邊燈與艙罩 7 塊、光柱 1 根',
-     ufoDraw.on.hull && ufoDraw.on.hullN === 6 &&
-     ufoDraw.on.lit && ufoDraw.on.litN === 7 &&
+  ok('在場時碟身、邊燈與艙罩、光柱三顆都畫出來（塊數照造型表，一台的份）',
+     ufoDraw.on.hull && ufoDraw.on.hullN === ufoDraw.want.hull &&
+     ufoDraw.on.lit && ufoDraw.on.litN === ufoDraw.want.lit &&
      ufoDraw.on.beam && ufoDraw.on.beamN === 1 &&
      ufoDraw.calls - ufoDraw.base <= 6,
-     '碟身 ' + ufoDraw.on.hullN + ' ＋ 燈 ' + ufoDraw.on.litN + ' ＋ 光柱 ' +
-     ufoDraw.on.beamN + '，draw call ' + ufoDraw.base + ' → ' + ufoDraw.calls);
+     '碟身 ' + ufoDraw.on.hullN + '／' + ufoDraw.want.hull + ' 塊 ＋ 燈 ' +
+     ufoDraw.on.litN + '／' + ufoDraw.want.lit + ' 塊 ＋ 光柱 ' +
+     ufoDraw.on.beamN + ' 根，draw call ' + ufoDraw.base + ' → ' + ufoDraw.calls);
 
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與

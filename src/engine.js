@@ -271,10 +271,20 @@ const ENG = (function () {
      「原地慢慢淡掉」，而那邊現成就是「整把化成金光」。 */
   const SWORD_MAX = 3, SWORD_PARTS = 14;
   let swordMesh = null, swordFade = null, swordGlow = null;
-  /* 造型座標上的四個高度／寬度。**規則那邊直接讀這幾個**算刃掃到哪（同 DOZ_W 的用意）：
+  /* 造型座標上的幾個高度／寬度。**規則那邊直接讀這幾個**算刃掃到哪（同 DOZ_W 的用意）：
      畫出來的刃跟判定用的扇形必須是同一塊，不然玩家會看到刃掃過去卻有積木沒動。
-       PIVOT 樞紐（劍柄的旋轉點，取握把中段）、EDGE 刃根（護手上緣）、TIP 刃尖、W 刃最寬處 */
-  const SWORD_PIVOT = -0.320, SWORD_EDGE = -0.190, SWORD_TIP = 0.514, SWORD_W = 0.072;
+       PIVOT 樞紐（旋轉圓心）、EDGE 刃根（護手上緣）、HIT 攻擊點、TIP 刃尖、W 刃最寬處
+     v1.169 使用者改了兩件（造型本身沒動，動的是這兩個「基準點」）：
+     ① 「旋轉圓心在劍柄往外延伸一點才正常」——樞紐從 −0.320（握把中段，等於握在
+        劍身上自己轉）挪到 **−0.620**，也就是劍首外面 0.133 全長遠的地方
+        ＝ 握劍那隻看不見的手。所以 PIVOT **不在劍身上**，它比造型的下緣
+        （劍首底 −0.487）還要外面；揮起來是「手臂帶著劍掃過去」而不是「劍自己在原地轉」。
+     ② 「劍尖往下一小段才是攻擊點」——判定與瞄準用 HIT ＝ TIP − 0.120
+        （刃長 0.704 的 17.0%，全長 48～92 之下是刃尖往下 5.8～11.0 單位）。
+        刃尖那一小段照樣畫得出來、但不砍；瞄的那兩點落在 HIT 上，不是落在刃尖上。
+        第一版取 TIP − 0.060（5.28 單位），使用者看過說「再往下一點」，所以乘二。 */
+  const SWORD_PIVOT = -0.620, SWORD_EDGE = -0.190, SWORD_HIT = 0.394,
+        SWORD_TIP = 0.514, SWORD_W = 0.072;
   /* 造型：騎士巨劍（雙刃直刃、中脊開槽、平直十字護手、皮革纏柄圓劍首）。
      這一版是先做成 3D 預覽頁、跟一面 26 塊高的牆並排給使用者看過才落地的
      （造型／動作先給看過才落地，同天災那幾隻、同吉祥物）。看圖改掉的三處記在
@@ -308,8 +318,8 @@ const ENG = (function () {
     { p: [0, -0.446, 0], s: [0.072, 0.046, 0.052], c: G_GOLD },    // 劍首盤
     { p: [0, -0.474, 0], s: [0.038, 0.026, 0.038], c: G_DEEP }
   ];
-  /* ── 幽浮（v1.167）─────────────────────────────────
-     造型是一疊由寬到窄的方塊（同投石機、推土機那一套 voxel 疊法），
+  /* ── 幽浮（v1.167，造型 v1.169 改成圓盤）───────────────
+     造型是一疊由寬到窄的**圓盤**（每一層怎麼用方塊拼成圓的見下面 UFO_SLAB），
      全部正規化成「碟身半徑 ＝ 1」，規則那邊只給位置、高度與自轉角。
      三顆 mesh：外殼吃光照、會亮的那幾塊（艙罩與邊燈）走不吃光照的 Basic
      （Lambert 的話背光那一側的邊燈是暗的，看起來像沒亮），光柱再一顆。
@@ -317,27 +327,60 @@ const ENG = (function () {
      一個都不吃（見 README〈效能〉那條規矩）。 */
   const UFO_MAX = 2;
   const U_RIM = 0x74808e, U_HULL = 0x9aa6b4, U_DECK = 0xc3cedb, U_DARK = 0x5d6774;
-  /* 造型的規矩：`s` 是**整塊的邊長**（所以最寬那一片 2.0 ＝ 半徑剛好 1），
-     疊出來要是個透鏡（中間最寬、上下都收）——第一版上面疊了三階、下面兩階，
-     截圖看起來是座階梯金字塔不是碟子（下面那條邊燈的註解記著同一次的另一個錯）。 */
-  const UFO_PART = [
-    { p: [0, 0, 0], s: [2.00, 0.14, 2.00], c: U_RIM },        // 碟緣（最寬那一片）
-    { p: [0, 0.13, 0], s: [1.34, 0.14, 1.34], c: U_HULL },    // 上層
-    { p: [0, 0.25, 0], s: [0.78, 0.12, 0.78], c: U_DECK },    // 圓頂座
-    { p: [0, -0.13, 0], s: [1.50, 0.14, 1.50], c: U_DARK },   // 下緣
-    { p: [0, -0.25, 0], s: [0.92, 0.12, 0.92], c: U_DARK },   // 底盤
-    { p: [0, -0.34, 0], s: [0.40, 0.10, 0.40], c: U_RIM }     // 吸光口：光柱從這裡射出去
-  ];
-  /* 會亮的那幾塊：艙罩一個 ＋ 沿著碟緣一圈的邊燈。邊燈的亮度各自錯開相位跑
-     （見 putUfos），一起閃的話看起來像整台在閃不像一圈燈在跑。
-     半徑 0.82 是「貼在碟緣裡側」：第一版寫 1.74，那已經在碟子外面
-     （最寬那一片的半徑只有 1.0），截圖看到六顆燈浮在碟子旁邊沒接上。 */
-  const UFO_LAMP = 6, UFO_LAMP_R = 0.82;
-  const UFO_LIT = [{ p: [0, 0.38, 0], s: [0.62, 0.26, 0.62], c: 0x9df3ff, ph: -1 }];
+  /* 造型的規矩：`s` 是**整塊的邊長**（所以最寬那一層半徑 1 ＝ 邊長 2），全部正規化成
+     「碟身半徑 ＝ 1」。側面剖面要是個透鏡（中間最寬、上下都收）——v1.167 上面疊了
+     三階、下面兩階，截圖看起來是座階梯金字塔不是碟子。
+     v1.169 使用者：「UFO造型太粗糙 應該是圓盤型」。上面那次只把階數改少，**沒把
+     每一層變圓**：一層就是一個方塊，俯視是正方形，難怪不像碟子。
+     現在一層 ＝ UFO_SLAB 片「整條直徑」的長條，各轉 180°/UFO_SLAB，它們的**聯集**
+     是個近圓。每片半長 r、半寬 w ＝ r·sin(90°/N)，所以聯集的邊界半徑是
+     min(r/cos Δ, w/sin Δ)（Δ ＝ 離最近那一片的軸多少度）：正對軸與夾角正中都剛好 r，
+     最遠是兩者交會的那個角，＝ r·√(1＋sin²(90°/N))。**八片時起伏只有 1.9%**
+     （六片 3.3%，實際截圖看得出稜角，所以用八片）。
+     寬度就是照上面那個 w 來的：窄一分夾角處就露出缺口，整片寬 ＝ UFO_SLAB_W × r。
+     一層裡每片的 y 與厚度完全一樣，中間那一段是重疊的——**同色、同法線、同材質，
+     重疊面畫出來一模一樣**，所以不會有 z-fighting 那種閃動（要顏色不同才會）。 */
+  const UFO_SLAB = 8;
+  const UFO_SLAB_W = 2 * Math.sin(Math.PI / (2 * UFO_SLAB));
+  /* 疊一層圓盤：高度 y、半徑 r、厚度 h、顏色 c、相位 ph（只有會亮的那幾塊要）。
+     `ry` 是這一片自己繞 Y 轉多少，putUfos 逐片讀。 */
+  function ufoDisc(out, y, r, h, c, ph) {
+    for (let i = 0; i < UFO_SLAB; i++) {
+      const one = { p: [0, y, 0], s: [r * 2, h, r * UFO_SLAB_W],
+                    ry: i * Math.PI / UFO_SLAB, c: c };
+      if (ph !== undefined) one.ph = ph;
+      out.push(one);
+    }
+  }
+  /* 碟身：由上往下六層。**吸光口那一層要排在最後**——引擎開給規則用的 UFO_MOUTH_Y
+     就是「造型最後那一片的高度」，e2e 有一條守著（見下面 UFO_MOUTH_Y）。 */
+  const UFO_PART = [];
+  ufoDisc(UFO_PART, 0.22, 0.46, 0.11, U_DECK);      // 圓頂座
+  ufoDisc(UFO_PART, 0.12, 0.78, 0.12, U_HULL);      // 上層
+  ufoDisc(UFO_PART, 0.00, 1.00, 0.14, U_RIM);       // 碟緣（最寬那一層）
+  ufoDisc(UFO_PART, -0.12, 0.82, 0.13, U_DARK);     // 下緣
+  ufoDisc(UFO_PART, -0.24, 0.50, 0.12, U_DARK);     // 底盤
+  ufoDisc(UFO_PART, -0.34, 0.22, 0.10, U_RIM);      // 吸光口（**要在最後**）
+  /* 會亮的那幾塊：艙罩 ＋ 沿著碟緣一圈的邊燈。艙罩也照圓盤那一套疊三層
+     （v1.169：一個方塊的艙罩擺在圓碟上看起來是顆骰子）。邊燈的亮度各自錯開相位跑
+     （見 putUfos），一起閃的話看起來像整台在閃不像一圈燈在跑；每顆各自轉到切線方向，
+     不轉的話同一圈燈有的正對鏡頭、有的是斜菱形。
+     位置 0.94／−0.14 是「貼在碟緣**下面**那一圈」：
+       · 第一版寫半徑 1.74，那已經在碟子外面（最寬那一層的半徑只有 1.0），
+         截圖看到六顆燈浮在碟子旁邊沒接上；
+       · v1.167～v1.168 改成 0.82／−0.08，結果反過來——**整圈燈完全看不見**：
+         那個高度的碟身正好是「下緣」那一層（半徑 0.82），燈跟它齊平、上面又被
+         碟緣（半徑 1.0）整個罩住，v1.169 的截圖才發現。現在挪到碟緣的正下方
+         再往外一點（露出 0.025 個半徑），從側面與底下都看得到那一圈燈。 */
+  const UFO_LAMP = 6, UFO_LAMP_R = 0.94, UFO_LAMP_Y = -0.14;
+  const UFO_LIT = [];
+  ufoDisc(UFO_LIT, 0.30, 0.34, 0.12, 0x9df3ff, -1);
+  ufoDisc(UFO_LIT, 0.40, 0.26, 0.10, 0x9df3ff, -1);
+  ufoDisc(UFO_LIT, 0.47, 0.15, 0.08, 0x9df3ff, -1);
   for (let i = 0; i < UFO_LAMP; i++) {
     const a = i / UFO_LAMP * Math.PI * 2;
-    UFO_LIT.push({ p: [Math.cos(a) * UFO_LAMP_R, -0.08, Math.sin(a) * UFO_LAMP_R],
-                   s: [0.17, 0.13, 0.17], c: 0xffe3a0, ph: i / UFO_LAMP });
+    UFO_LIT.push({ p: [Math.cos(a) * UFO_LAMP_R, UFO_LAMP_Y, Math.sin(a) * UFO_LAMP_R],
+                   s: [0.17, 0.13, 0.17], ry: a, c: 0xffe3a0, ph: i / UFO_LAMP });
   }
   const UFO_PARTS = UFO_PART.length, UFO_LITS = UFO_LIT.length;
   /* 光柱的錐度：頂端（吸光口那一端）的半徑是地面那一圈的幾倍。
@@ -1880,7 +1923,9 @@ const ENG = (function () {
      u 與 n 互相垂直（規則那邊算出來就是），所以這三個軸是正交的；平面是水平時
      n ＝ ±(0,1,0)，也就退回「躺平橫掃」那個樣子。造型在 z 上是對稱的，
      所以 n 取哪一個方向畫出來都一樣。
-     原點要往刃尖方向推 |SWORD_PIVOT|×len：造型的原點在正中間，而規則那邊給的是樞紐。 */
+     原點要往刃尖方向推 |SWORD_PIVOT|×len：造型的原點在正中間，而規則那邊給的是樞紐。
+     v1.169 樞紐挪到劍首**外面**（−0.620），所以推的距離比整把的一半還多——樞紐到
+     劍首那 0.133×len 是空的，那裡就是握劍的手，沒有畫出來。 */
   const _swX = new T.Vector3(), _swY = new T.Vector3(), _swZ = new T.Vector3();
   function putSwords(list) {
     const n = Math.min(list.length, SWORD_MAX);
@@ -1935,10 +1980,12 @@ const ENG = (function () {
       scratch.rotation.set(0, u.spin, 0);
       scratch.scale.setScalar(u.hull);
       scratch.updateMatrix();
+      /* 每一片自己的 ry（圓盤那一層的六片各轉 180°/6，見 UFO_SLAB；
+         邊燈轉到自己那一格的切線方向）。沒寫 ry 的就是不轉。 */
       for (let k = 0; k < UFO_PARTS; k++) {
         const P = UFO_PART[k];
         scratchB.position.set(P.p[0], P.p[1], P.p[2]);
-        scratchB.rotation.set(0, 0, 0);
+        scratchB.rotation.set(0, P.ry || 0, 0);
         scratchB.scale.set(P.s[0], P.s[1], P.s[2]);
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
@@ -1947,7 +1994,7 @@ const ENG = (function () {
       for (let k = 0; k < UFO_LITS; k++) {
         const P = UFO_LIT[k];
         scratchB.position.set(P.p[0], P.p[1], P.p[2]);
-        scratchB.rotation.set(0, 0, 0);
+        scratchB.rotation.set(0, P.ry || 0, 0);
         scratchB.scale.set(P.s[0], P.s[1], P.s[2]);
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
@@ -3419,10 +3466,11 @@ const ENG = (function () {
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
     /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
-    SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_TIP, SWORD_W,
+    SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_HIT, SWORD_TIP, SWORD_W,
     /* 幽浮（v1.167）：光柱的錐度與吸光口高度。判定用的倒錐就是畫出來這一根，
        所以規則那邊的 UFO_MOUTH ÷ UFO_R 必須等於 UFO_TAPER（e2e 有一條守著）。 */
     UFO_MAX, UFO_PARTS, UFO_LITS, UFO_TAPER, UFO_MOUTH_Y, UFO_PART, UFO_LIT,
+    UFO_SLAB, UFO_SLAB_W,                   /* 圓盤一層幾片、每片要多寬才補得滿夾角 */
     MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
