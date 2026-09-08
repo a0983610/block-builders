@@ -9,7 +9,9 @@
    只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
    測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
    所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
-   段名清單：grep "head('" tools/e2e-3d.cjs
+
+   --list：印出所有段落（段名／起始行／行數／ok() 行數）就結束，不開瀏覽器。
+   找「要改的那一段在哪、多大」用；印出來的段名直接餵給 --until。
 
    --seed：整輪的亂數種子。不給就每輪自己抽一個，印在最上面與總結裡；
    紅了照那個數字重跑（--seed 12345）就是同一副骰子——這套測試有三分之一的條目
@@ -32,6 +34,40 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
+
+/* ---------- 段落一覽（--list） ----------
+   純靜態掃自己這支檔：不開瀏覽器、不跑測試，所以連 playwright 都不必裝就印得出來
+   （所以擺在 loadPlaywright 前面）。用途是「要改的那一段在哪、多大」——
+   印出來的段名就是 --until 吃的那個字串。
+   「ok() 行」是**寫在檔案裡的行數**，不是實際條數，那一欄是**下限**：有幾行 ok()
+   包在迴圈裡，一行會跑出好幾條；另外 probeWorkers 那支共用 helper 裡的一行不屬於
+   任何一段，沒有算進去（實測：表格合計 1,105 行 → 實際跑出 1,113 條）。 */
+if (process.argv.indexOf('--list') >= 0) {
+  const lines = fs.readFileSync(__filename, 'utf8').split('\n');
+  const secs = [];
+  lines.forEach((ln, i) => {
+    const m = ln.match(/^\s*await head\('([^']+)'\)/);
+    if (m) secs.push({ name: m[1], line: i + 1, ok: 0 });
+    else if (secs.length && /^\s*ok\(/.test(ln)) secs[secs.length - 1].ok++;
+  });
+  /* 對齊用：只有**全形**才算兩格。不能用「> 0xff 就算兩格」——段名裡的
+     → (U+2192) 與 · (U+00B7) 在終端機是一格寬，那樣算會把那兩行推歪。 */
+  const wide = t => t.replace(
+    /[⺀-〾ぁ-㏿㐀-䶿一-鿿豈-﫿！-｠]/g, '..').length;
+  const pad = (t, n) => t + ' '.repeat(Math.max(0, n - wide(t)));
+  console.log('\n' + secs.length + ' 段（段名就是 --until 吃的字串）\n');
+  console.log('  ' + pad('段名', 32) + '起始行     行數   ok() 行');
+  let okTot = 0;
+  secs.forEach((s, i) => {
+    const end = i + 1 < secs.length ? secs[i + 1].line : lines.length;
+    okTot += s.ok;
+    console.log('  ' + pad(s.name, 32) + String(s.line).padStart(6) +
+                String(end - s.line).padStart(9) + String(s.ok).padStart(9));
+  });
+  console.log('\n  共 ' + lines.length + ' 行、' + okTot +
+              ' 行 ok()（迴圈裡的一行會跑出好幾條，實際條數比這個多）\n');
+  process.exit(0);
+}
 
 /* ---------- 環境 ---------- */
 function loadPlaywright() {
