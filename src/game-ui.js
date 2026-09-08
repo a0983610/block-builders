@@ -103,6 +103,10 @@ function step(dt) {
   stepGates(dt);
   stepSwords(dt);
   stepUfo(dt);                           // 幽浮（v1.167）：飛進來、照光吸、飛走、五秒後丟下來
+  /* 箭雨（v1.171）：一隊人與飛在半空的箭是兩份清單——隊伍撤走之後箭還在飛、
+     還插在牆上慢慢淡，所以兩邊各走各的（同王之財寶的門與兵器）。 */
+  stepArchers(dt);
+  stepArrows(dt);
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepDozers(dt);
   stepTrucks(dt);
@@ -206,8 +210,14 @@ function draw() {
   }
   ENG.commitBlocks();
 
-  ENG.setWorkerCount(workers.length);
+  /* 小人 ＋ 箭雨那一隊弓箭手（v1.171）。弓箭手接在 workers **後面**同一顆網格畫
+     ——他們就是小人，只是手上多一把弓（引擎的 MAXW 已經留好那 80 個位子）。
+     ENG.setWorkerCount 只是把網格的 count 設成「這一幀有幾個人」，跟規則那邊的
+     人數設定（game-workers.js 的 setWorkerCount）是兩件事。 */
+  const arms = archerList();
+  ENG.setWorkerCount(workers.length + arms.length);
   for (let i = 0; i < workers.length; i++) ENG.putWorker(i, workers[i]);
+  for (let i = 0; i < arms.length; i++) ENG.putWorker(workers.length + i, arms[i]);
   ENG.commitWorkers();
   ENG.putEmotes(workers);            // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位）
   ENG.putBeasts(beastList());        // 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）
@@ -252,7 +262,7 @@ function draw() {
   /* 王之財寶（v1.132）：門與兵器是兩份清單——門收掉之後兵器還在飛、還躺在地上慢慢淡，
      所以兩邊各自判斷有沒有東西要畫。 */
   ENG.putGates(gates ? gateList() : EMPTY);
-  ENG.putWeapons(weapons || EMPTY);
+  ENG.putWeapons(weapList());                       // 兵器 ＋ 箭雨的箭（同一顆網格，見 weapList）
   ENG.putSwords(swords || EMPTY);                   // 大劍（v1.161，欄位就是 stepSwords 那一份）
   /* 幽浮（v1.167）。飛出場之後還在倒數丟東西的那幾台不畫，所以過一手 ufoList()。 */
   ENG.putUfos(ufoList());

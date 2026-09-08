@@ -156,8 +156,11 @@ const ENG = (function () {
   /* 兵器：一把最多 WEAP_PARTS 塊方塊，全部塞進同一顆 InstancedMesh（跟核彈同一個做法）。
      600 把是「門裡待發的 ＋ 飛在半空的 ＋ 掉在地上還沒淡完的」的量（見規則那邊的
      WEAP_KEEP）——v1.136 同時最多三組在射，光門裡待發的就有三百把。造型表 WEAP_KIND 每一種的長度都正規化成 1、刃尖朝 +Y、原點在正中間，
-     所以規則那邊只要給「多長、指向哪」就好，等比縮放不會把比例弄歪。 */
-  const WEAP_MAX = 600, WEAP_PARTS = 8;
+     所以規則那邊只要給「多長、指向哪」就好，等比縮放不會把比例弄歪。
+     v1.171 從 600 加到 840：箭雨的箭也走這顆網格（造型表最後那一種），一隊 80 人射三輪
+     ＝ 最多 240 支同時在場，跟王之財寶最壞的 560 把疊起來是 800。不加的話超出的是
+     **清單尾巴**——putWeapons 直接切掉，畫面上會有一批箭憑空消失。 */
+  const WEAP_MAX = 840, WEAP_PARTS = 8;
   let weapMesh = null;
   /* 三個逐 instance 的屬性（v1.132.1、aGlow 是 v1.148）。
      aCut＝一個**世界座標的切面** vec4(法線 xyz, 面上任一點與法線的內積)：
@@ -200,6 +203,9 @@ const ENG = (function () {
      護手與斧面的**寬度**不跟著收：那是輪廓不是粗細，收了會變成一根光禿禿的棒子。 */
   const G_BLADE = 0xf6ecc6, G_SILV = 0xdfe3ea, G_GOLD = 0xe8c33c, G_DEEP = 0xc9922a,
         G_GRIP = 0x6b3a1a, G_DARK = 0x2e2a26;
+  /* 箭（v1.171）多兩個色：桿的木色比兵器的握把（G_GRIP）亮一階——箭很細，
+     用那個深棕在草地上遠看只是一條黑線；羽是米白，才讀得出尾巴那一撮。 */
+  const A_WOOD = 0x8a5a2c, A_FEAT = 0xf0ece0;
   const WEAP_KIND = [
     /* 長劍 */
     [{ p: [0, 0.14, 0], s: [0.038, 0.60, 0.015], c: G_BLADE },
@@ -262,8 +268,19 @@ const ENG = (function () {
      { p: [0, 0.10, 0], s: [0.016, 0.54, 0.023], c: G_DEEP },
      { p: [0, -0.22, 0], s: [0.155, 0.034, 0.038], c: G_GOLD },
      { p: [0, -0.34, 0], s: [0.032, 0.20, 0.032], c: G_DARK },
-     { p: [0, -0.455, 0], s: [0.056, 0.044, 0.046], c: G_GOLD }]
+     { p: [0, -0.455, 0], s: [0.056, 0.044, 0.046], c: G_GOLD }],
+    /* 箭（v1.171，破壞道具「箭雨」）。排在王之財寶那七種**後面**：規則那邊抽兵器是
+       `Math.floor(Math.random() * WEAP_SCALE.length)`，而 WEAP_SCALE 只有七項——
+       所以門裡不會冒出一支箭，這一種也只有箭雨在用（ARROW_K 就是它的索引）。
+       比例照真的箭：桿佔全長九成、頭一小截、羽兩片十字交叉（一片的話轉到側面看不見）。
+       桿比兵器的桿細（0.055 對 0.14～0.22），但長度只有它們的一半，遠看還讀得出。 */
+    [{ p: [0, -0.04, 0], s: [0.055, 0.86, 0.055], c: A_WOOD },     // 桿
+     { p: [0, 0.445, 0], s: [0.080, 0.13, 0.080], c: G_SILV },     // 箭頭
+     { p: [0, -0.38, 0], s: [0.018, 0.20, 0.135], c: A_FEAT },     // 羽（立著這一片）
+     { p: [0, -0.38, 0], s: [0.135, 0.20, 0.018], c: A_FEAT },     // 羽（橫著這一片）
+     { p: [0, -0.475, 0], s: [0.070, 0.05, 0.070], c: G_DARK }]    // 弦扣
   ];
+  const ARROW_K = WEAP_KIND.length - 1;   // 規則那邊要拿它當 w.k（見上面那段）
   /* ── 大劍（v1.161）─────────────────────────────────
      破壞道具「大劍」揮的那一把。跟王之財寶那組兵器**不共用**：
      那一組是「8 塊上限、600 把的池子」（一次射三百把），這一把 14 塊——
@@ -463,16 +480,25 @@ const ENG = (function () {
      成本：instanceMatrix 是 16 個 float ×16000 ≈ 1.0MB，一次性配置，不影響每幀；
      每幀成本看的是**實際有幾塊**，不是這個上限（量到的數字見 README〈積木池上限〉）。 */
   const MAXB = 18000;
-  const MAXW = 80;                         // 小人上限
+  /* 小人上限。v1.171 從 80 提到 140：破壞道具「箭雨」那一隊弓箭手也是照 putWorker 畫的
+     （接在 workers 後面，見 game-ui.js 的 draw），人數上限 60 的場子再加一隊 80 人
+     （規則那邊的 AR_N，開發中從 40 加倍）剛好 140。
+     多出來的是一次性的 instance 配置（60 × WPARTS）。**平常那一幀量不出差別**：
+     同一座建築、同一副骰子、同一個進度（聖母院 1598/3060）對照 v1.170，
+     draw 兩邊都落在 0.40～0.43 ms（各量三段），差距在雜訊裡。
+     真正的成本只在弓箭隊在場那幾秒，見 README〈箭雨〉的每幀成本那一段。 */
+  const MAXW = 140;
   /* 每個小人的部位數，要跟 BODY 的長度一模一樣。7 個身體部位 ＋ 藍圖 ＋ 聊天泡泡兩塊
      ＋ v1.51 補的七塊細節（帽頂、帽舌、兩顆眼睛、兩隻鞋、腰帶）
      ＋ v1.64 魔法師的五塊（巫師帽三塊、法杖、寶珠）
      ＋ v1.112 肌肉小人的五塊（胸膛、兩塊肩、兩塊胸肌）
      ＋ v1.129 挖料的鏟子兩塊（柄、鏟面）
+     ＋ v1.171 弓箭手的七塊（弓臂兩塊、握把、弦兩截、搭著的箭、背上的箭袋）
      （v1.121 曾經有表情圖示的八塊，v1.122 換成貼圖之後收掉了，見 paintEmoAtlas）。
      道具沒拿的人整片縮到 0；全部共用同一個 InstancedMesh，不多一個 draw call。
-     實測 60 個人擺一輪：10 塊時 0.106ms、17 塊時 0.150ms——每幀預算 4ms，加得起。 */
-  const WPARTS = 29;
+     實測 60 個人擺一輪：10 塊時 0.106ms、17 塊時 0.150ms——每幀預算 4ms，加得起。
+     （29 → 36 是每個人每幀多七筆矩陣，照那條斜率 60 人約多 0.06ms。） */
+  const WPARTS = 36;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。
      v1.118 從 720 加到 900：打雷的烏雲也借這顆 mesh 畫（一朵 150 團），
@@ -2238,6 +2264,85 @@ const ENG = (function () {
     return [0, DIG_DEEP - Math.cos(ang) * DIG_PAN * 0.5,
             wz + Math.sin(ang) * (DIG_REACH + DIG_PAN * 0.5)];
   })();
+  /* ── 弓箭手的弓（v1.171）───────────────────────────────────
+     破壞道具「箭雨」那一隊人拿的（規則那邊見 game-tools.js 的〈箭雨〉）。
+     只有那一隊有（w.bow），別人身上這七塊縮成 0——同法杖與鏟子那兩組道具。
+
+     擺法照真的射箭姿勢：**弓在左手往身體前方端出去，右手把弦拉回臉旁**。
+     w.draw（0～1，拉了多滿）管三件事：弦扣被拉回多少、搭著的箭跟著往後滑、
+     右手收到哪裡；放箭那一刻 draw 歸零，弓自己彈回待發的樣子。
+
+     BOW_X 弓在身體的哪一側（負的＝左手邊）。**比手更靠中間**（手掛在 0.34，這裡 0.22）
+       ——使用者：「弓的位置應該比手更偏向小人中間 現在幾乎就在手臂上」。
+       靠中間之後弓臂會壓到安全帽的帽緣（帽緣半寬 0.27，抬起來之後弓臂正好掃過那個
+       高度），所以整把弓再**側傾** BOW_CANT：握把留在中線這一側，弓臂往外閃開帽緣。
+       側傾本身也是真的射法（射手會把弓斜著拿）。
+     BOW_Y 握把的高度、BOW_Z 端出去多遠（＝手臂前伸之後手掌落的位置）
+     BOW_ARM 握把到弓臂末端多長（整把弓高 2×BOW_ARM ＝ 0.92，小人連帽子 1.31）
+     BOW_TIP_Z 弓臂末端往回收多少：弦掛在那裡，所以整把弓是朝射手開口的 C 形
+     BOW_NOCK 弦的靜止位置離握把多遠（往回算）、BOW_PULL 滿弓再往回拉多少
+     BOW_ARROW 搭著的箭多長。跟飛出去那一支**同一個世界長度**（規則那邊的 AR_LEN 1.35
+       ÷ 小人平均身高倍率 1.8 ≈ 0.72）——不對齊的話箭一離手就變一號。
+       比例也對得上真的箭：滿弓時箭頭只伸出弓外 0.28。 */
+  const BOW_X = -0.22, BOW_Y = 0.70, BOW_Z = 0.42;
+  const BOW_ARM = 0.46, BOW_TIP_Z = -0.14;
+  const BOW_NOCK = -0.10, BOW_PULL = 0.34;
+  const BOW_ARROW = 0.72;
+  const BOW_GRIP = 0.11;                    // 握把那一塊的半高（弓臂從這裡往外接）
+  /* 仰角（v1.171，使用者：「小人拉弓 應該要往上45度」）。抬的是**射箭那一整組**
+     ——弓、弦、搭著的箭、兩隻手一起繞肩膀轉。只轉弓的話手還平舉在胸前，弓會從
+     手掌裡穿出去；而繞肩膀轉就是真的把弓臂舉起來，手掌自己跟著跑到該去的位置。
+     身體、頭、腳不跟著轉（他是站著仰射，不是整個人往後躺）。
+     負號是座標的事：繞 X 軸轉 θ 會把 +Z 送到 (0, −sinθ, cosθ)，要讓箭（+Z）朝上
+     就得給負角。規則那邊的彈道用同一個角度（見 game-tools.js 的 shootArrow）。 */
+  const BOW_SH = 0.84;                      // 肩關節的高度（抬起來繞的那一點）
+  const BOW_TILT = -Math.PI / 4;
+  const BOW_CT = Math.cos(BOW_TILT), BOW_ST = Math.sin(BOW_TILT);
+  /* 側傾：整把弓繞**握把**轉這麼多，上臂往外（離身體）、下臂往內。
+     0.50 弧度（29 度）是照帽緣量的：上弓臂那一塊的中心會落在 x = −0.36，
+     內側邊 −0.32，比帽緣的 0.27 外面還多 0.05，剛好不相交。
+     搭著的箭與弦扣都在握把那條軸上（dy＝0），所以**不受側傾影響**——箭一路留在
+     BOW_X 這一側、指向也還是正 45 度（繞 Z 軸轉不會動到 Z 軸本身）。 */
+  const BOW_CANT = 0.50;
+  const BOW_CC = Math.cos(BOW_CANT), BOW_CS = Math.sin(BOW_CANT);
+  /* 把一塊「還沒抬起來」的位置與轉角換算成抬起之後的。繞的是 (y=BOW_SH, z=0)。
+     回傳共用一個物件（同這支檔案的 scratch／tmpM 那些）：一個弓箭手一幀要叫九次，
+     每次配一個新物件的話 40 個人就是每幀 360 個垃圾。 */
+  const _bowL = { y: 0, z: 0, r: 0 };
+  function bowLift(y, z, rot) {
+    const dy = y - BOW_SH;
+    _bowL.y = BOW_SH + dy * BOW_CT - z * BOW_ST;
+    _bowL.z = dy * BOW_ST + z * BOW_CT;
+    _bowL.r = rot + BOW_TILT;
+    return _bowL;
+  }
+  /* 弓上一塊方塊的轉法：R ＝ 仰角(繞 X) · 側傾(繞 Z) · 這一塊自己的角度(繞 X)。
+     兩次繞 X 中間夾了一次繞 Z，湊不出對應的 Euler 順序（那三個角度不是同一組軸），
+     所以直接乘四元數——同 putWeapons 那邊 setFromUnitVectors 之後再乘 _spin 的做法。
+     寫進呼叫端給的那顆四元數裡（scratchB.quaternion），不另外配置。 */
+  const _bowAX = new T.Vector3(1, 0, 0), _bowAZ = new T.Vector3(0, 0, 1);
+  const _bowQ = new T.Quaternion();
+  function bowRot(rot, out) {
+    out.setFromAxisAngle(_bowAX, BOW_TILT);
+    _bowQ.setFromAxisAngle(_bowAZ, BOW_CANT);
+    out.multiply(_bowQ);
+    _bowQ.setFromAxisAngle(_bowAX, rot);
+    out.multiply(_bowQ);
+  }
+  /* 一片弓臂：從握把上緣接到弓臂末端。長度與傾角是算出來的（同鏟子的 digA），
+     BOW_ARM／BOW_TIP_Z 一改就自己跟著對。 */
+  const BOW_LIMB = (() => {
+    const dy = BOW_ARM - BOW_GRIP, dz = BOW_TIP_Z;
+    return { len: Math.hypot(dy, dz), a: Math.atan2(dz, dy),
+             y: BOW_Y + (BOW_GRIP + BOW_ARM) / 2, z: BOW_Z + BOW_TIP_Z / 2 };
+  })();
+  /* 箭離開弓的位置（相對小人原點、還沒乘身高）＝**抬起來之後**的握把位置。
+     規則那邊拿它當箭的出發點——兩邊各寫一份的話箭會從肚子飛出去
+     （同法杖的 WAND_TIP、鏟尖的 DIG_TIP）。 */
+  const BOW_TIP = (() => {
+    const L = bowLift(BOW_Y, BOW_Z, 0);
+    return [BOW_X, L.y, L.z];
+  })();
   /* ── 頭上的表情圖示（v1.121，v1.122 從方塊換成貼圖）─────────────
      使用者：「增加小人表達力，例如驚嘆號 愛心 問號 生氣（一個小圖示 像交談那樣在
      小人旁邊表示）」。哪個情境冒哪一個是規則那邊決定的（見 game-workers.js 的 showEmo），
@@ -2385,6 +2490,24 @@ const ENG = (function () {
        柄借法杖那個木色，鏟面借推土機那片鏟刃的鐵色——場上本來就有這兩種材質。 */
     { p: [0, DIG_GRIP_A[0], DIG_GRIP_A[1]], s: [0.07, DIG_LEN, 0.07], c: 'staff', dig: 1 },
     { p: [0, DIG_GRIP_A[0], DIG_GRIP_A[1]], s: [0.32, DIG_PAN, 0.05], c: 'blade', dig: 1, pan: 1 },
+    /* ── 弓箭手（v1.171，破壞道具「箭雨」）─────────────────────
+       七塊：弓臂上下、握把、弦兩截、搭著的箭、背上的箭袋。只有那一隊有（w.bow）。
+       弓臂與握把是固定的（弓本身不變形），弦與箭的位置在 putWorker 裡按 w.draw 重算
+       ——這裡寫的是滿弓的樣子。轉角也在那邊給：BODY 這張表本來沒有「自己轉多少」
+       這一欄，為七塊加一欄不如就擺在那個分支裡（同鏟子的 digA）。
+       材質全部借現成的：弓與箭桿借法杖的木色、弦借聊天泡泡的白、箭袋借鞋子的深褐
+       ——場上本來就有這三種顏色（同鏟子借法杖與鏟刃那兩色）。
+       擺在魔法師那一段**前面**：測試靠「BODY 最後一塊是寶珠」認寶珠。 */
+    { p: [BOW_X, BOW_LIMB.y, BOW_LIMB.z], s: [0.068, BOW_LIMB.len, 0.050],
+      c: 'staff', bow: 1, lim: 1 },                                     // 弓臂（上）
+    { p: [BOW_X, BOW_Y * 2 - BOW_LIMB.y, BOW_LIMB.z], s: [0.068, BOW_LIMB.len, 0.050],
+      c: 'staff', bow: 1, lim: -1 },                                    // 弓臂（下）
+    { p: [BOW_X, BOW_Y, BOW_Z], s: [0.085, BOW_GRIP * 2, 0.10], c: 'staff', bow: 1 },  // 握把
+    { p: [BOW_X, BOW_Y, BOW_Z], s: [0.022, 0.40, 0.022], c: 'talk', bow: 1, str: 1 },  // 弦（上半）
+    { p: [BOW_X, BOW_Y, BOW_Z], s: [0.022, 0.40, 0.022], c: 'talk', bow: 1, str: -1 }, // 弦（下半）
+    { p: [BOW_X, BOW_Y, BOW_Z], s: [0.05, 0.05, BOW_ARROW],
+      c: 'staff', bow: 1, nock: 1 },                                    // 搭在弦上那一支
+    { p: [0.17, 0.80, -0.22], s: [0.15, 0.44, 0.15], c: 'shoe', bow: 1, quiv: 1 },     // 背上的箭袋
     /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
        巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
        只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
@@ -2521,6 +2644,17 @@ const ENG = (function () {
           scratchB.rotation.x = (hi ? -0.45 : -0.80) - 0.20 * dgS;
           scratchB.position.y = (hi ? 0.76 : 0.66) - 0.03 * dgS;
           scratchB.position.z = hi ? 0.02 : 0.08;
+        } else if (w.bow) {
+          /* 射箭（v1.171）：**左手**把弓端出去（一路不動），**右手**跟著 w.draw
+             把弦收回來。左右手照這支檔案現成的慣例——b.arm > 0 是右手
+             （見下面指揮那一段：「右手抬起來朝建築指」）。
+             這裡寫的是「還沒抬起來」的姿勢（手平舉、手掌落在 z ≈ 0.42 ＝ 握把處），
+             再整組繞肩膀抬 45 度，見 bowLift。 */
+          const dk = w.draw || 0;
+          const L = b.arm < 0 ? bowLift(BOW_Y, 0.20, -1.42)
+                              : bowLift(BOW_Y + 0.04 * dk, 0.20 - 0.30 * dk, -1.34 + 0.58 * dk);
+          scratchB.rotation.x = L.r;
+          scratchB.position.y = L.y; scratchB.position.z = L.z;
         } else if (w.hail) {                // 慶祝：雙手舉高、跟著跳的節奏晃
           scratchB.rotation.x = -2.75 + Math.sin(w.ph) * 0.22;
           scratchB.rotation.z = b.arm * 0.30;
@@ -2581,6 +2715,40 @@ const ENG = (function () {
           const d = b.pan ? DIG_REACH : DIG_ROD;           // 鏟面在柄的下端、柄自己的中心偏下
           scratchB.position.set(0, digGy - Math.cos(digA) * d, digGz + Math.sin(digA) * d);
           scratchB.rotation.x = -digA;
+        }
+      }
+      /* 弓（v1.171）：不是弓箭隊的人這七塊縮成 0。弓臂與握把是固定的形狀，
+         弦與搭著的箭跟著 w.draw（拉了多滿）走。 */
+      if (b.bow) {
+        if (!w.bow) scratchB.scale.setScalar(0);
+        else if (b.quiv) scratchB.rotation.z = -0.34;       // 箭袋斜掛在背上，不跟著抬
+        else {
+          /* 弓、弦、搭著的箭：先算「還沒抬起來」的位置與轉角，最後整組抬 45 度
+             （bowLift）。分兩步是因為弦的角度要在弓自己的平面上算才看得懂。 */
+          const dk = w.draw || 0;
+          const nz = BOW_Z + BOW_NOCK - BOW_PULL * dk;      // 弦扣這一刻被拉到哪
+          let py = b.p[1], pz = b.p[2], rot = 0, sy = 0;
+          if (b.lim) rot = b.lim * BOW_LIMB.a;
+          else if (b.str) {
+            /* 一截弦：從弦扣拉到自己那一頭的弓臂末端。長度與角度都是算的，
+               所以滿弓時自己成 V 形、放掉那一刻自己回成一條直線。 */
+            const dy = b.str * BOW_ARM, tz = BOW_Z + BOW_TIP_Z;
+            py = BOW_Y + dy / 2; pz = (nz + tz) / 2;
+            rot = Math.atan2(tz - nz, dy);
+            sy = Math.hypot(dy, tz - nz);
+          } else if (b.nock) {
+            /* 搭在弦上那一支：尾端扣在弦上、頭朝弓指的方向。
+               還沒拉弓時不畫——那一刻箭還在箭袋裡，畫出來會像空手捏著一支箭。 */
+            if (dk < 0.05) scratchB.scale.setScalar(0);
+            py = BOW_Y; pz = nz + BOW_ARROW / 2;
+          }
+          /* 先側傾（繞握把，見 BOW_CANT）再抬起來（繞肩膀，見 bowLift）。
+             側傾只動 x 與 y：繞 Z 軸轉，z 不變；抬起來只動 y 與 z，x 不變。 */
+          const dy = py - BOW_Y;
+          const L = bowLift(BOW_Y + dy * BOW_CC, pz, rot);
+          scratchB.position.set(BOW_X - dy * BOW_CS, L.y, L.z);
+          bowRot(rot, scratchB.quaternion);
+          if (sy) scratchB.scale.set(b.s[0], sy, b.s[2]);
         }
       }
       /* 魔法師戴巫師帽，安全帽那三塊收掉——兩頂疊在同一顆頭上會直接穿模。 */
@@ -3469,6 +3637,9 @@ const ENG = (function () {
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK,
     DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
+    /* 箭雨（v1.171）：ARROW_K 是箭在造型表裡的索引、BOW_TIP 是箭離開弓的位置
+       （同 WAND_TIP／DIG_TIP：畫出來的弓與飛出去的箭要從同一個點對起來）。 */
+    ARROW_K, BOW_TIP,
     /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
     SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_HIT, SWORD_TIP, SWORD_W,
     /* 幽浮（v1.167）：光柱的錐度與吸光口高度。判定用的倒錐就是畫出來這一根，

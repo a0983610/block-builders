@@ -51,7 +51,9 @@ const TOOLS = [
        與看得到的結果，斜面、刃寬、淡出那些細節留在 README〈大劍〉。 */
     tip: '點兩下：一把大劍從第一點揮到第二點，刃掃過的那一片整片削掉。點建築的那一下決定揮的高度，兩下都點地面就貼著地面橫掃' },
   { id: 'ufo', n: '幽浮', k: '🛸',
-    tip: '點地面：一台幽浮從場外飛進來、停在那個位置上方往下照光，吸走光圈裡的積木（每秒兩成五）與小人動物，吸完就飛走；5 秒後被吸走的全部從天上掉下來，均勻撒回原來那一圈' }
+    tip: '點地面：一台幽浮從場外飛進來、停在那個位置上方往下照光，吸走光圈裡的積木（每秒兩成五）與小人動物，吸完就飛走；5 秒後被吸走的全部從天上掉下來，均勻撒回原來那一圈' },
+  { id: 'arrow', n: '箭雨', k: '🏹',
+    tip: '點兩下：第一下點地面站出一隊八十人的小人弓箭手，第二下決定射哪裡——45 度拋物線齊射三輪，箭插到的地方咬掉一小片（不爆炸、不起火），插著的箭慢慢淡掉' }
 ];
 /* 等差階梯（見上面那段）：TOOLS 裡沒寫 `lock: null` 的照順序補門檻，
    第 n 把＝擊飛 n × LOCK_STEP 塊。加新道具不必碰這裡。 */
@@ -72,9 +74,10 @@ const toolOk = t => !t.lock || t.lock.ok();
    小槌點空地什麼都不會掉，但仍然留在這裡：拿掉的話那一下完全沒反應，看起來像點壞了。 */
 /* 大劍也在這裡：兩下點哪裡都算數（v1.164 起連建築都不必點，兩下都點地面就是
    貼著地面橫掃）——點在建築上的那一下決定的是揮擊的高度。 */
+/* 箭雨兩下都是點地面（第一下站人、第二下是落點），所以也在這裡。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
-                      storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1 };
+                      storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1 };
 let tool = 'hammer';
 
 /* 小槌的衝擊半徑。v1.165 從 5.5 收到 3.6（使用者：「槌子　減小一點破壞範圍
@@ -5775,6 +5778,8 @@ function useTool(hit) {
   // 兩下之中點在建築上的那一下決定劍柄的高度（v1.161，見 aimSword）
   if (tool === 'sword') { aimSword(hit.point, hit.kind === 'block'); return 0; }
   if (tool === 'ufo') { callUfo({ x: hit.point.x, z: hit.point.z }); return 0; }
+  // 箭雨（v1.171）：第一下站人、第二下是落點，兩下都只讀 x／z（見 aimArrows）
+  if (tool === 'arrow') { aimArrows({ x: hit.point.x, z: hit.point.z }); return 0; }
   return 0;
 }
 
@@ -7016,4 +7021,275 @@ function beastWeapon(w, m) {
   weaponBlast(pt, w);
   sndFall();
   fallWeapon(w);
+}
+
+/* ── 箭雨（v1.171）─────────────────────────────────────────
+   使用者：「點擊地面 兩個位置 第一個位置出現一組小人弓箭手 對第二個位置射箭
+   (類似王之財寶 但是沒有爆炸效果)　箭矢做拋物線飛到位置二
+   小人弓箭隊一組大約40人射三輪」。四句話各對應一件事：
+
+     ① **兩點式**：走現成的那一套（aimFirst ＋ aim，同保齡球／龍捲風／大劍），
+        第一點站人、第二點是落點；兩下都點地面就算數（見 GROUND_TOOL）。
+     ② **弓箭手就是小人**：同一顆 InstancedMesh、同一支 putWorker，只是手上多一把弓
+        （造型見 engine.js 的 BOW_*）。所以引擎那邊的人數上限要留位子（MAXW 80 → 100），
+        畫的時候接在 workers 後面（見 game-ui.js 的 draw）。
+        **不塞進 workers**：那一份是「在上工的人」，混進去會被派工、被算工資、被閒晃
+        事件挑中，而且箭會把自己的隊員射倒（weaponVsWorker 只掃那一份）。
+     ③ **箭走拋物線**：解「T 秒抵達」的初速，同投石機的石頭（見 fireRock）。
+        出手一律 45 度（使用者指定的姿勢，畫出來的弓與彈道用同一個角度，見 AR_AIM_Y），
+        指向就是速度的方向，所以箭會自己在頂點翻成頭朝下——直線飛的不叫箭雨。
+        瞄的是第二點**的地面**：屋頂與外牆是路上撞到的，不必先去找目標高度
+        （投石機那邊為此掃一遍積木池，這裡靠掃掠判定就夠）。
+     ④ **「沒有爆炸效果」**：打中積木只咬掉一小片（不放火球、不點火、不震畫面），
+        打中小人只是撞倒。王之財寶 v1.148 起打中人會炸一顆小火球（manWeapon →
+        weaponBlast），這裡刻意不走那一條。
+
+   跟王之財寶像的地方：一群人朝同一個地方齊射、打中的地方咬掉一小片、射完就撤。
+   不像的地方除了上面第 ④ 點，還有「箭是拋出去的，兵器是直射的」。 */
+/* 一隊幾人。v1.171 開發中從 40 加倍到 80（使用者：「順面增加小人隊規模*2」；
+   40 是他一開始說的「一組大約 40 人」）。連帶要動三個容量，見引擎的 MAXW／WEAP_MAX
+   與下面的 AR_KEEP——那三個都是「裝不下就默默切掉清單尾巴」的池子。 */
+const AR_N = 80;
+const AR_VOL = 3;                // 射幾輪（使用者指定）
+const AR_COL = 16;               // 一排幾人（80 ＝ 5 排 × 16，正面寬 33 ≈ 工地直徑）
+const AR_GAP = 2.2, AR_ROWGAP = 2.6;    // 同一排的人隔多遠／排與排之間隔多遠
+const AR_JIT = 0.3;              // 站位再抖多少（不抖就是一個標準的方陣）
+const AR_LIFT = 0.45;            // 出場：整隊由小長到原尺寸要多久
+const AR_DRAW = 0.7;             // 拉一次弓要多久（弦從 0 拉到滿）
+const AR_SPREAD = 0.45;          // 同一輪裡每個人的放箭時刻各自錯開多少（不錯開像一個人在射）
+const AR_CYCLE = 1.7;            // 一輪到下一輪多久（要大於 AR_DRAW ＋ AR_SPREAD 才有空檔）
+const AR_IDLE = 1.3;             // 射完站多久才撤
+const AR_OUT = 0.45;             // 撤走：整隊縮回去要多久
+/* 出場／撤走的縮放下限。**不能給 0**：putWorker 讀的是 `w.scale || 1`，0 會被當成
+   「沒給」＝原尺寸——那樣整隊在最後一幀會突然彈回原大小再消失。給一個看不見的小數就好。 */
+const AR_K0 = 0.001;
+const AR_SPRAY = 5;              // 落點在第二點附近散多開（半徑）
+/* 出手角度 45 度（使用者：「小人拉弓 應該要往上45度」）。**畫出來的姿勢與真正的
+   彈道用同一個角度**（姿勢見引擎的 BOW_TILT）：45 度的彈道水平與垂直初速一樣大，
+   所以飛行時間由距離決定——
+     0.5·g·T² ＝ d ＋（出手高度 − 落點高度）　→　T ＝ √((d ＋ Δh) ÷ (g/2))
+   代回下面 shootArrow 那條解拋物線的式子，算出來的 vy 剛好等於 d/T ＝ vx，就是 45 度。
+   v1.171 第一版是「固定飛 1.9 秒」，那樣角度會跟著距離跑（實測 d=15 是 72 度、
+   d=60 是 38 度），箭離弓的方向跟弓指的方向差很多。
+   換來的代價：弧高跟著距離走，不再每一發一樣高（d=42 頂點約 11、d=15 約 3.8）。
+   AR_T_MIN 是給「兩點幾乎重疊」那種退化情況的下限（不夾的話 d≈0 時 T 只有 0.1 秒）。 */
+const AR_AIM_Y = 0.6;            // 瞄第二點的這個高度（地面上一點點）
+const AR_T_MIN = 0.6;
+const AR_LEN = 1.35;             // 箭多長（世界單位。手上那支對齊這個，見引擎的 BOW_ARROW）
+const AR_HIT_R = 1.1;            // 打中的地方咬掉多大一片（王之財寶 1.5、雷 1.84）
+const AR_HIT_POW = 7;            // 力道（王之財寶 12、投石機 12、槌子 15）——箭很輕
+const AR_BLOW = 10;              // 撞飛小人／動物的力道（王之財寶那邊是 16）
+const AR_LIE = [1.6, 3.2];       // 插住之後撐多久才開始淡（同王之財寶的 GATE_LIE）
+const AR_FADE = 1.4;             // 淡多久（透明度歸零就收掉）
+const AR_KEEP = 300;             // 場上最多幾支（一隊 240 支 ＋ 上一隊還沒淡完的）
+const AR_AIM_R = 9;              // 第一下在地上畫的那圈光環多大（一隊的正面寬 33）
+const AR_AIM_C = 0xc79a5a;       // 木色（同弓）
+let archers = null;              // 在場的弓箭隊（同時只有一隊，見 castArrows）
+let arrows = null;               // 場上所有箭：飛行中的 ＋ 插著淡出中的
+
+/* 第一下記位置、畫個光環，第二下才叫人。 */
+function aimArrows(point) {
+  if (!aim) { aimFirst(point, AR_AIM_R, AR_AIM_C); return; }
+  castArrows(aim, point);
+}
+/* 站位：一排一排排在第一點**背對目標**的那一側，整隊面向目標。
+   同時只有一隊（AR_N 是照 MAXW 的餘裕訂的，見引擎那邊）：再點一次就換一隊，
+   舊那一隊已經射出去的箭照樣飛完（同王之財寶「門收了兵器還在飛」）。 */
+function castArrows(from, toward) {
+  aim = null;
+  let dx = toward.x - from.x, dz = toward.z - from.z;
+  // 同一個地方連點兩下：沒有方向可用，就朝場心（同 aimDir 對兩點重疊的退路）
+  if (Math.hypot(dx, dz) < 0.5) { dx = -from.x; dz = -from.z; }
+  if (Math.hypot(dx, dz) < 1e-4) { dx = 1; dz = 0; }
+  const d = Math.hypot(dx, dz);
+  const ux = dx / d, uz = dz / d;               // 指向目標
+  const sx = -uz, sz = ux;                      // 隊伍的橫向
+  const a0 = Math.atan2(ux, uz);                // 面向目標（rotation.y 的慣例見 placeTreb）
+  const men = [];
+  for (let i = 0; i < AR_N; i++) {
+    const row = Math.floor(i / AR_COL), col = i % AR_COL;
+    const wide = Math.min(AR_COL, AR_N - row * AR_COL);      // 這一排幾個人（最後一排可能不滿）
+    const off = col - (wide - 1) / 2;
+    const p = arSpot(from.x + sx * off * AR_GAP - ux * row * AR_ROWGAP + rr(-AR_JIT, AR_JIT),
+                     from.z + sz * off * AR_GAP - uz * row * AR_ROWGAP + rr(-AR_JIT, AR_JIT),
+                     ux, uz);
+    men.push({
+      x: p.x, y: 0, z: p.z, a: a0 + rr(-0.05, 0.05),
+      /* putWorker 會讀到的欄位都要有值：ph／gait 是走路擺動用的（站著不動給 0），
+         tone 決定膚色與工作服（同 newWorker 拿編號當色號），base 是自己的身高倍率。 */
+      ph: 0, gait: 0, tone: i, base: rr(W_LO, W_HI), scale: 0,
+      bow: 1, draw: 0,                           // draw＝弦拉了多滿（引擎照它擺弦與箭）
+      done: 0, off: rr(0, AR_SPREAD)             // done＝已經射幾輪、off＝自己慢多少放箭
+    });
+  }
+  archers = { men, t: 0, tx: toward.x, tz: toward.z, end: -1, snd: 0 };
+  sndWind();                                    // 一隊人到位（同投石機架好那一聲）
+}
+/* 站位落在建築或小人的家裡面的話，先沿著背對目標的方向往後退到空地（退幾格就好，
+   退太遠整隊會散開）；還是踩在裡面的話，改成**照場心往外推**——第一下點在建築正中央
+   時往後退是從屋子的一頭退到另一頭，怎麼退都在屋裡（實測金字塔正中央：只往後退的話
+   40 個人有 4 個站在牆裡面），而往外推一定會出去。
+   兩種固體都要問：footBlocked 只認地標的格子表，房子自己帶一份（同 hardAt 那件事）。 */
+const arFree = (x, z) => !footBlocked(x, z) && !homeFoot(x, z);
+function arSpot(x, z, ux, uz) {
+  let p = { x, z };
+  for (let k = 0; k <= 3; k++) {
+    const px = x - ux * k * AR_ROWGAP, pz = z - uz * k * AR_ROWGAP;
+    if (arFree(px, pz)) { p = { x: px, z: pz }; break; }
+    if (k === 3) {
+      const d = Math.hypot(x, z) || 1;
+      for (let j = 1; j <= 8; j++) {
+        const r = d + j * AR_ROWGAP;
+        if (arFree(x / d * r, z / d * r)) { p = { x: x / d * r, z: z / d * r }; break; }
+      }
+    }
+  }
+  /* 最後夾回草地裡（v1.171，一隊 80 人正面寬 33，點在場邊時整排會有人站到島外面
+     ——草地是半徑 arenaR 的圓島，外面是虛空）。夾完可能又踩回固體上，那沒關係：
+     站在牆邊比站在空中好。 */
+  const d2 = Math.hypot(p.x, p.z), lim = arenaR - 1.5;
+  if (d2 > lim) { p.x = p.x / d2 * lim; p.z = p.z / d2 * lim; }
+  return p;
+}
+/* 一隊人的一生：出場（由小長大）→ 三輪齊射 → 站一下 → 撤走（縮回去）。
+   每個人各自算自己的鐘（m.off／m.done），所以一輪裡那八十支箭是散開的、不是一起彈出去。 */
+function stepArchers(dt) {
+  if (!archers) return;
+  const g = archers;
+  g.t += dt;
+  let k = g.t < AR_LIFT ? g.t / AR_LIFT : 1;         // 出場由小而大（同門的 GATE_GROW）
+  /* 撤走：g.end 是「開始縮」的**時刻**，射完之後還要站 AR_IDLE 秒才到，
+     所以 g.t > g.end 才開始算——少了這個條件的話，站著那 1.3 秒 q 是負的、
+     k ＝ 1 − q 會一路長到 3.9 倍（v1.171 開發中踩到，使用者：「離場的時候會變大」）。 */
+  if (g.end >= 0 && g.t > g.end) {
+    const q = (g.t - g.end) / AR_OUT;
+    if (q >= 1) { archers = null; return; }
+    k = 1 - q;
+  }
+  k = Math.max(AR_K0, k);                            // 下限不能是 0，理由見 AR_K0
+  let left = 0;
+  for (const m of g.men) {
+    if (m.done < AR_VOL) {
+      left++;
+      // 這一支什麼時候離手：出場 ＋ 拉一次弓 ＋ 前面幾輪 ＋ 自己的錯開量
+      if (g.t >= AR_LIFT + AR_DRAW + m.done * AR_CYCLE + m.off) {
+        shootArrow(g, m);
+        // 一輪只出一聲弦（這一輪最快的那個人出手時）：八十聲疊起來也只聽得到三聲
+        if (m.done === g.snd) { sndBow(); g.snd++; }
+        m.done++;
+      }
+      const nt = AR_LIFT + AR_DRAW + m.done * AR_CYCLE + m.off;   // 下一支（用更新後的 done）
+      m.draw = clamp(1 - (nt - g.t) / AR_DRAW, 0, 1);
+    } else m.draw = 0;
+    m.scale = m.base * k;
+  }
+  if (!left && g.end < 0) g.end = g.t + AR_IDLE;     // 全隊射完：站一下再撤
+}
+/* 射一支出去。出發點是**畫出來那把弓的位置**（引擎的 BOW_TIP 轉到世界座標），
+   不是小人的腳底——兩邊各寫一份的話箭會從肚子飛出去（同法杖的 WAND_TIP）。
+   身體座標 → 世界：rotation.y = a 之後 (px,py,pz) 落在
+   (px·cos a + pz·sin a, py, −px·sin a + pz·cos a)。 */
+function shootArrow(g, m) {
+  const s = Math.sin(m.a), c = Math.cos(m.a), sc = m.scale || m.base;
+  const B = ENG.BOW_TIP;
+  const x = m.x + (B[0] * c + B[2] * s) * sc;
+  const y = B[1] * sc;
+  const z = m.z + (-B[0] * s + B[2] * c) * sc;
+  /* 落點在第二點附近散開（開根號讓分布均勻，同投石機的 fireRock），高度瞄地面。 */
+  const ang = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * AR_SPRAY;
+  const tx = g.tx + Math.cos(ang) * rad, tz = g.tz + Math.sin(ang) * rad;
+  // 飛行時間由「45 度出手」決定（見 AR_AIM_Y 那一段）
+  const T = Math.max(AR_T_MIN,
+                     Math.sqrt(Math.max(0, Math.hypot(tx - x, tz - z) + y - AR_AIM_Y) / (GRAV / 2)));
+  if (!arrows) arrows = [];
+  if (arrows.length >= AR_KEEP) arrows.shift();      // 滿了把最早那支擠掉（同保齡球）
+  const r = {
+    x, y, z, k: ENG.ARROW_K, len: AR_LEN, roll: Math.random() * Math.PI * 2,
+    dx: 0, dy: 1, dz: 0, fade: 1, glow: 0, cut: null,
+    vx: (tx - x) / T, vz: (tz - z) / T,
+    vy: (AR_AIM_Y - y) / T + 0.5 * GRAV * T,         // 解拋物線：湊出剛好 T 秒落到地面
+    s: AR_LEN,                                       // 掃掠判定的「多探一截」（見 sweepRock）
+    st: 'fly', lie: 0
+  };
+  arrowDir(r);
+  arrows.push(r);
+}
+/* 指向 ＝ 速度的方向。每幀重算，箭才會在弧線頂點自己翻成頭朝下。 */
+function arrowDir(r) {
+  const d = Math.hypot(r.vx, r.vy, r.vz) || 1;
+  r.dx = r.vx / d; r.dy = r.vy / d; r.dz = r.vz / d;
+}
+/* 箭自己飛：拋物線 ＋ 沿著這一幀走過的線段掃掠（同石頭的 sweepRock，房子也算固體）。
+   只測終點的話，弧線會從屋頂與外牆直接穿過去——箭一幀走 1.4 單位，比一格還長。 */
+function stepArrows(dt) {
+  if (!arrows) return;
+  for (let i = arrows.length - 1; i >= 0; i--) {
+    const r = arrows[i];
+    if (r.st === 'stuck') {
+      /* 插著的：撐一段時間再淡掉。**不化成金光**（glow 一路是 0）——那是王之財寶
+         那些從虛空來的兵器的收尾，箭就只是箭（見 putWeapons 的 aGlow）。 */
+      if (r.lie > 0) r.lie -= dt;
+      else {
+        r.fade -= dt / AR_FADE;
+        if (r.fade <= 0) arrows.splice(i, 1);
+      }
+      continue;
+    }
+    const px = r.x, py = r.y, pz = r.z;
+    r.vy -= GRAV * dt;
+    r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
+    arrowDir(r);
+    /* 打到小人／動物：撞倒，但**箭照原本的弧線繼續飛**。停在半空的話會有一支箭
+       掛在那裡——兵器那邊是靠 fallWeapon 掉下去翻滾，箭沒有那一段。
+       被撞飛的人下一幀起就是 air，同一支箭不會再打到他一次。 */
+    const p = weaponVsWorker(r, px, py, pz);
+    if (p) arrowMan(r, p);
+    else {
+      const b = weaponVsBeast(r, px, py, pz);
+      if (b) arrowBeast(r, b);
+    }
+    if (sweepRock(r, px, py, pz, hardAt)) { arrowBlock(r); continue; }
+    if (r.y <= 0) arrowGround(r);
+  }
+  if (!arrows.length) arrows = null;
+}
+/* 插住：位置與指向都不再動，撐一段時間再淡掉。 */
+function arrowStick(r) {
+  r.st = 'stuck'; r.lie = rr(AR_LIE[0], AR_LIE[1]);
+  r.vx = 0; r.vy = 0; r.vz = 0;
+}
+/* 打中積木：咬掉一小片，箭插在那裡。
+   quiet ＋ hush ＝ 不震畫面、也不放 smash 那一記爆裂噪音（同王之財寶打積木那一條：
+   一輪八十支，每一支都震都響的話畫面會抖個沒完）；**不點火、不放火球**
+   ——使用者：「沒有爆炸效果」。插進去的那一聲用現成的 sndStab（王之財寶插土的那一記）。 */
+function arrowBlock(r) {
+  const p = { x: r.x, y: Math.max(0.4, r.y), z: r.z };
+  smash(p, { x: r.dx, y: r.dy, z: r.dz }, AR_HIT_R, AR_HIT_POW, true, true);
+  sndStab();
+  arrowStick(r);
+}
+/* 落在空地上：箭尖沒入土裡一點點，沒有東西可拆。 */
+function arrowGround(r) {
+  r.y = Math.max(0.06, -0.1 - r.dy * AR_LEN * 0.5);   // 讓箭尖落在地面下一點
+  sndStab();
+  arrowStick(r);
+}
+/* 打到小人：只把人撞倒（力道沿飛行方向，同王之財寶的 manWeapon），沒有火球、
+   也不炸旁邊的積木。 */
+function arrowMan(r, p) {
+  tossWorker(p, r.dx * AR_BLOW + rr(-1, 1), rr(3, 6), r.dz * AR_BLOW + rr(-1, 1), false);
+  sndFall();
+}
+function arrowBeast(r, m) {
+  tossBeast(m, r.dx * AR_BLOW * B_BLOW + rr(-1, 1), rr(3, 6),
+            r.dz * AR_BLOW * B_BLOW + rr(-1, 1), false);
+  sndFall();
+}
+/* 弓箭隊要畫的那一份（接在 workers 後面，見 game-ui.js 的 draw）。 */
+const archerList = () => archers ? archers.men : EMPTY;
+/* 兵器與箭畫在同一顆網格（引擎的 weapMesh，容量 WEAP_MAX）。兩邊都有東西才 concat
+   ——這是每幀都會跑到的路徑（同 draw() 裡 ringList 那一段的用意）。 */
+function weapList() {
+  if (!arrows) return weapons || EMPTY;
+  return weapons ? weapons.concat(arrows) : arrows;
 }

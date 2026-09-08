@@ -267,6 +267,11 @@ const installClean = page => page.evaluate(() => {
     gates = null; weapons = null; gateEnd();
     ENG.putGates([]); ENG.putWeapons([]);
     swords = null; ENG.putSwords([]);   // 大劍（v1.161）：一趟快兩秒，別跨到下一條
+    /* 箭雨（v1.171）：一隊人與飛在半空的箭是兩份清單，兩份都要收。
+       弓箭手是接在 workers 後面畫的，所以清掉之後還要把小人的 count 收回來，
+       不然這一段留下的 40 個位子會被下一條測試量到（它們讀的是 workerMesh.count）。 */
+    archers = null; arrows = null;
+    ENG.setWorkerCount(workers.length); ENG.putWeapons([]);
     /* 幽浮（v1.167）：一趟十六秒，而且它把積木收在地板底下、還借了鏡頭的高度。
        ufoClear() 是那兩件事的出口（同 gateEnd 的角色），不能只把 ufos 設成 null。 */
     ufoClear(); ENG.putUfos([]);
@@ -12596,6 +12601,319 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      halfBuilt.now + '：幽浮飛在 ' + halfBuilt.uy + '（照舊會是 ' + halfBuilt.oldU + '）、雲底 ' +
      halfBuilt.sy + '（照舊會是 ' + halfBuilt.oldS + '）');
 
+  /* ══════════ 箭雨 ══════════
+     v1.171 新增。使用者第一次要的：「點擊地面 兩個位置 第一個位置出現一組小人弓箭手
+     對第二個位置射箭(類似王之財寶 但是沒有爆炸效果)　箭矢做拋物線飛到位置二
+     小人弓箭隊一組大約40人射三輪」；看過造型之後又追加三件：「小人拉弓 應該要往上45度」
+     「箭矢要也能對生物作用」「地面的話就先插在地面上 然後慢慢消失」。
+     這一段就守那幾件事，一條對一件：兩點式、一隊人射三輪（人數讀 AR_N，加倍過一次）、
+     45 度出手（**姿勢與彈道
+     同一個角度**）、拋物線、不爆不燒不震、打得到小人與生物、落地插著再淡掉、收乾淨。 */
+  await head('箭雨');
+  await reset(page, { shape: '巴黎聖母院', cnt: 3000, workers: 6 });
+
+  /* 兩點式與隊形。useTool 不管解鎖（那是點擊那一層的事，見 renderTools）。 */
+  const arCast = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    tool = 'arrow';
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
+    const one = { aim: !!aim, men: archers ? 1 : 0, arrows: arrows ? arrows.length : 0 };
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    const M = archers.men, xs = M.map(m => m.x), zs = M.map(m => m.z);
+    const z0 = Math.min(...zs);
+    draw();                                   // 要畫過才讀得到這一幀的 instance 數
+    return {
+      one, aim2: !!aim, n: M.length, N: AR_N, col: AR_COL,
+      wantRows: Math.ceil(AR_N / AR_COL), wantWide: (AR_COL - 1) * AR_GAP,
+      rows: new Set(M.map(m => Math.round((m.z - z0) / AR_ROWGAP))).size,
+      wide: +(Math.max(...xs) - Math.min(...xs)).toFixed(1),
+      deep: +(Math.max(...zs) - z0).toFixed(1),
+      /* 整隊面向「第一點 → 第二點」那個方向（每個人再抖 ±0.05）：
+         不是各自朝目標轉，所以這裡比的是同一個 a0。 */
+      faceMax: +Math.max(...M.map(m => Math.abs(m.a - Math.PI))).toFixed(3),
+      inSolid: M.filter(m => footBlocked(m.x, m.z) || homeFoot(m.x, m.z)).length,
+      wcount: ENG.three.workerMesh.count,
+      want: (workers.length + M.length) * ENG.WPARTS,
+      inWorkers: workers.filter(w => w.bow).length
+    };
+  });
+  ok('點兩下：第一下只在地上畫瞄準環，第二下才站出一隊弓箭手',
+     arCast.one.aim && !arCast.one.men && !arCast.one.arrows &&
+     !arCast.aim2 && arCast.n === arCast.N,
+     '第一下：光環在、人 ' + arCast.one.men + '、箭 ' + arCast.one.arrows +
+     '；第二下：' + arCast.n + ' 個人站出來（AR_N ' + arCast.N + '），光環收掉');
+  /* 排數與正面寬都照 AR_N／AR_COL／AR_GAP 算出來比（那三個一改這條自己跟著對，
+     不寫死數字，見 README〈不要寫死會隨改動變動的數字〉）。 */
+  ok('一隊排成整齊的橫列、整隊面向目標，沒有人站在建築或房子裡',
+     arCast.rows === arCast.wantRows && arCast.faceMax < 0.06 && arCast.inSolid === 0 &&
+     Math.abs(arCast.wide - arCast.wantWide) < 1.2 &&
+     arCast.deep > (arCast.wantRows - 1) * 2 && arCast.deep < arCast.wantRows * 3,
+     arCast.rows + ' 排 × ' + arCast.col + '（期望 ' + arCast.wantRows +
+     ' 排）、正面寬 ' + arCast.wide + '（期望 ' + arCast.wantWide.toFixed(1) +
+     '）、縱深 ' + arCast.deep + '、朝向誤差最多 ' + arCast.faceMax +
+     ' 弧度、踩在固體裡 ' + arCast.inSolid + ' 人');
+  ok('弓箭手接在小人後面用同一顆網格畫，而且不混進 workers',
+     arCast.wcount === arCast.want && arCast.inWorkers === 0,
+     'workerMesh.count ' + arCast.wcount + ' ＝ (小人 ＋ 弓箭手) × 每人部位數 ＝ ' +
+     arCast.want + '；workers 裡帶弓的有 ' + arCast.inWorkers + ' 個');
+
+  /* 一整趟：三輪、每一支出手的角度、弧高、有沒有爆／燒／震、收不收乾淨。 */
+  const arRun = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const b0 = blocks.filter(b => b.st === SET).length, s0 = stats.smashed;
+    /* 出手角度要在**出手那一刻**記：讀 arrows[0] 會慢一幀，那一幀的重力已經扣掉
+       （實測會少 0.4～1.0 度）。 */
+    const shots = [];
+    const os = shootArrow;
+    let T = 0;
+    shootArrow = (g, m) => {
+      os(g, m);
+      const r = arrows[arrows.length - 1];
+      shots.push({ t: +T.toFixed(2), y: +r.y.toFixed(2),
+                   deg: +(Math.atan2(r.vy, Math.hypot(r.vx, r.vz)) * 180 / Math.PI).toFixed(2) });
+    };
+    tool = 'arrow';
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    const men = archers.men.length;
+    /* 震動要從 0 開始量：cleanTools 不管鏡頭，前面那幾段留下的震動衰減到這裡還有
+       0.001（實測），而這一條要驗的是「箭雨自己不震」。 */
+    const shake0 = +ENG.cam.shake.toFixed(4);
+    ENG.cam.shake = 0;
+    let peakY = 0, peakN = 0, shake = 0, hotMax = 0, flashMax = 0, up = 0, down = 0;
+    let quit = -1, gone = -1, kMax = 0, kLast = 0;
+    for (let i = 0; i < 60 * 24; i++) {
+      step(1 / 60); T += 1 / 60;
+      if (arrows) {
+        if (arrows.length > peakN) peakN = arrows.length;
+        for (const r of arrows) if (r.st === 'fly') {
+          if (r.y > peakY) peakY = r.y;
+          if (r.dy > 0.1) up++; else if (r.dy < -0.1) down++;
+        }
+      }
+      if (ENG.cam.shake > shake) shake = ENG.cam.shake;
+      if (hot.length > hotMax) hotMax = hot.length;
+      if (flashes.length > flashMax) flashMax = flashes.length;
+      /* 出場長大、撤走縮小，中間**不准變大**（v1.171 開發中的病：撤走前站著那 1.3 秒
+         縮放係數是負的 q，一路長到 3.9 倍——使用者：「離場的時候會變大」）。 */
+      if (archers) for (const m of archers.men) {
+        const k = m.scale / m.base;
+        if (k > kMax) kMax = k;
+        kLast = k;
+      }
+      if (!archers && quit < 0) quit = +T.toFixed(2);
+      if (quit >= 0 && !arrows && gone < 0) gone = +T.toFixed(2);
+    }
+    shootArrow = os;
+    draw();
+    const ts = shots.map(s => s.t).sort((a, b) => a - b);
+    let vol = 1;
+    for (let i = 1; i < ts.length; i++) if (ts[i] - ts[i - 1] > 0.8) vol++;
+    return { men, N: AR_N, want: AR_N * AR_VOL, vols: AR_VOL, shake0,
+             n: shots.length, vol,
+             degMin: Math.min(...shots.map(s => s.deg)),
+             degMax: Math.max(...shots.map(s => s.deg)),
+             y0: shots[0].y, peakY: +peakY.toFixed(1), peakN, up, down,
+             shake: +shake.toFixed(3), hotMax, flashMax,
+             burning: fires ? fires.length : 0, nSpread,
+             smashed: stats.smashed - s0,
+             setDrop: b0 - blocks.filter(b => b.st === SET).length,
+             quit, gone, weapVis: ENG.three.weapMesh.visible,
+             kMax: +kMax.toFixed(3), kLast: +kLast.toFixed(3),
+             wcount: ENG.three.workerMesh.count / ENG.WPARTS };
+  });
+  ok('一隊人各射三輪，每個人每輪一支，一支都不少',
+     arRun.men === arRun.N && arRun.n === arRun.want && arRun.vol === arRun.vols,
+     arRun.men + ' 人 × ' + arRun.vol + ' 輪 ＝ ' + arRun.n + ' 支（期望 ' +
+     arRun.want + '，同時最多 ' + arRun.peakN + ' 支在場）');
+  ok('每一支都是 45 度出手',
+     arRun.degMin > 44.9 && arRun.degMax < 45.1,
+     arRun.n + ' 支的出手角度 ' + arRun.degMin + '～' + arRun.degMax + ' 度');
+  ok('箭走拋物線：飛過頭頂那麼高，指向從朝上翻成朝下',
+     arRun.peakY > arRun.y0 + 6 && arRun.up > 100 && arRun.down > 100,
+     '出手 ' + arRun.y0 + ' 高、最高點 ' + arRun.peakY +
+     '；朝上 ' + arRun.up + ' 幀、朝下 ' + arRun.down + ' 幀');
+  ok('沒有爆炸效果：不放火球、不點火、不震畫面（但真的咬掉積木）',
+     arRun.hotMax === 0 && arRun.flashMax === 0 && arRun.burning === 0 &&
+     arRun.nSpread === 0 && arRun.shake === 0 && arRun.smashed > 60,
+     '火球 ' + arRun.hotMax + ' 顆、爆炸光 ' + arRun.flashMax + ' 顆、燒起來 ' +
+     arRun.burning + ' 塊、震動 ' + arRun.shake + '（開量之前先歸零，前面留下 ' +
+     arRun.shake0 + '）；打掉 ' + arRun.smashed +
+     ' 塊（還站著的少了 ' + arRun.setDrop + ' 塊）');
+  ok('整隊只會長出來與縮回去，中間不會變大（撤走前站著那一段也不會）',
+     arRun.kMax <= 1.001 && arRun.kLast < 0.35,
+     '整趟縮放係數最大 ' + arRun.kMax + '（＞1 就是變大了）、消失前最後一幀 ' +
+     arRun.kLast);
+  ok('射完整隊撤走、箭也全部收乾淨',
+     arRun.quit > 5 && arRun.gone > arRun.quit && !arRun.weapVis &&
+     arRun.wcount === 6,
+     '第 ' + arRun.quit + ' 秒整隊撤走、第 ' + arRun.gone +
+     ' 秒最後一支箭消失；兵器網格關掉、小人的 count 回到 ' + arRun.wcount);
+
+  /* 落在空地上：插著不動、撐一段時間才淡掉（使用者第三句）。 */
+  const arGnd = await page.evaluate(() => {
+    cleanTools();
+    tool = 'arrow';
+    useTool({ kind: 'ground', point: { x: 44, y: 0, z: 44 } });
+    useTool({ kind: 'ground', point: { x: 44, y: 0, z: 0 } });
+    let stuck = 0, first = -1, moved = 0, faded = 0, gone = -1, T = 0;
+    let hold = null, hx = 0, hy = 0, hz = 0, hdy = 0;
+    for (let i = 0; i < 60 * 22; i++) {
+      step(1 / 60); T += 1 / 60;
+      if (arrows) {
+        const s = arrows.filter(r => r.st === 'stuck');
+        if (s.length > stuck) stuck = s.length;
+        if (s.length && first < 0) {
+          first = +T.toFixed(2);
+          hold = s[0]; hx = hold.x; hy = hold.y; hz = hold.z; hdy = hold.dy;
+        }
+        if (hold && arrows.indexOf(hold) >= 0) {
+          // 插住之後位置一動都不能動（拿插上那一刻的座標比）
+          moved = Math.max(moved, Math.hypot(hold.x - hx, hold.y - hy, hold.z - hz));
+          if (hold.fade < 0.999) faded = 1;
+        }
+      } else if (first >= 0 && gone < 0) gone = +T.toFixed(2);
+    }
+    return { stuck, first, moved: +moved.toFixed(4), faded, gone,
+             y: +hy.toFixed(2), dy: +hdy.toFixed(2) };
+  });
+  ok('射在空地上：箭插在地面不再動，撐一段時間才慢慢淡掉',
+     arGnd.stuck > 60 && arGnd.first > 1 && arGnd.moved < 0.001 && arGnd.faded &&
+     arGnd.gone > arGnd.first + 3 && arGnd.y < 1.2 && arGnd.dy < -0.5,
+     '最多 ' + arGnd.stuck + ' 支插在地上（第 ' + arGnd.first + ' 秒插上、第 ' +
+     arGnd.gone + ' 秒全消）；插住之後位移 ' + arGnd.moved +
+     '、箭尾高 ' + arGnd.y + '、指向 ' + arGnd.dy + '（45 度落下來）');
+
+  /* 打得到小人與生物（使用者第二句），但一樣不爆。 */
+  const arLives = await page.evaluate(() => {
+    cleanTools();
+    /* 人與牛都搬到落點上。牛的 pause 給大一點讓牠站著別走，不然牠會逛出去。 */
+    for (const w of workers) {
+      w.x = 44 + rr(-3, 3); w.z = rr(-3, 3); w.tx = w.x; w.tz = w.z;
+      w.st = 'idle'; w.load = []; w.carry = false; w.air = 0; w.fall = 0; w.burn = 0;
+    }
+    beasts = null;
+    const cow = spawnCattle();
+    cow.x = 44; cow.z = 5; cow.tx = 44; cow.tz = 5; cow.pause = 999;
+    cow.air = 0; cow.fall = 0; cow.burn = 0;
+    tool = 'arrow';
+    useTool({ kind: 'ground', point: { x: 44, y: 0, z: 44 } });
+    useTool({ kind: 'ground', point: { x: 44, y: 0, z: 2 } });
+    let manAir = 0, cowAir = 0, boom = 0;
+    for (let i = 0; i < 60 * 16; i++) {
+      step(1 / 60);
+      manAir = Math.max(manAir, workers.filter(w => w.air).length);
+      if (beasts) cowAir = Math.max(cowAir, beasts.filter(b => b.air).length);
+      boom = Math.max(boom, flashes.length + hot.length);
+    }
+    const kind = beasts && beasts.length ? beasts[0].kind : '';
+    /* 動過的全域狀態還回去：整批小人重新生一次（位置、工作單都是新的），牛收掉。 */
+    const n = workers.length;
+    setWorkerCount(0); setWorkerCount(n);
+    beasts = null; ENG.putBeasts([]);
+    return { manAir, cowAir, boom, kind, men: n };
+  });
+  ok('箭打得到小人與生物：撞飛，但一樣沒有火球',
+     arLives.manAir > 0 && arLives.cowAir > 0 && arLives.boom === 0,
+     '同時最多 ' + arLives.manAir + '／' + arLives.men + ' 個小人被撞飛在半空、' +
+     arLives.kind + ' 也被撞飛（' + arLives.cowAir + ' 隻）；火球 ' + arLives.boom + ' 顆');
+
+  /* 弓是「只有那一隊有」的道具（同法杖與鏟子）＋ 姿勢跟彈道同一個角度。 */
+  const arBow = await page.evaluate(() => {
+    cleanTools();
+    tool = 'arrow';
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    for (let i = 0; i < 30; i++) step(1 / 60);
+    archers.men.forEach(m => { m.draw = 1; });      // 全隊擺成滿弓再畫
+    draw();
+    const M = ENG.three.workerMesh, W = ENG.WPARTS, A = M.instanceMatrix.array;
+    const parts = ENG.MODELS.man;
+    const bow = parts.map((b, i) => b.bow ? i : -1).filter(i => i >= 0);
+    const nock = parts.findIndex(b => b.nock);
+    // 矩陣第一欄的長度 ＝ 這一塊 x 方向的縮放（0 ＝ 縮成一個點、畫不出東西）
+    const sc = (inst, part) => {
+      const at = (inst * W + part) * 16;
+      return Math.hypot(A[at], A[at + 1], A[at + 2]);
+    };
+    const arch = workers.length;                    // 第一個弓箭手的 instance 編號
+    const at = (arch * W + nock) * 16;              // 搭著的那一支箭
+    const L = Math.hypot(A[at + 8], A[at + 9], A[at + 10]) || 1;
+    return { n: bow.length,
+             worker: +Math.max(...bow.map(p => sc(0, p))).toFixed(4),
+             archer: +Math.min(...bow.map(p => sc(arch, p))).toFixed(3),
+             deg: +(Math.asin(A[at + 9] / L) * 180 / Math.PI).toFixed(1),
+             last: !!parts[parts.length - 1].orb };
+  });
+  ok('弓那七塊只有弓箭手身上有（別人縮成 0），畫出來的箭跟彈道同一個角度',
+     arBow.n === 7 && arBow.worker < 1e-6 && arBow.archer > 0.01 &&
+     arBow.deg > 44 && arBow.deg < 46 && arBow.last,
+     '弓 ' + arBow.n + ' 塊：一般小人身上最大縮放 ' + arBow.worker +
+     '、弓箭手身上最小 ' + arBow.archer + '；畫出來那支箭朝上 ' + arBow.deg +
+     ' 度（彈道 45.00）');
+
+  /* 最貴的那一幀：人數上限的場子再加一整隊弓箭手，而且箭最多的時候
+     （80 人 × 36 塊 ＋ 240 支箭 × 8 塊都要擺矩陣）。門檻放寬到 6ms 是照現成的
+     perfWreck 那一條——這種牆上時鐘的量測本身就有 ±70% 的機器抖動，要守的是
+     「不要出現數量級的退步」，不是把數字釘在某一次量到的值上。 */
+  const arPerf = await page.evaluate(() => {
+    cleanTools();
+    setWorkerCount(Math.max(...WK_OPTS));            // 最壞情況：人數開到最大
+    tool = 'arrow';
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    let peak = 0, tPeak = 0, T = 0;
+    for (let i = 0; i < 60 * 12; i++) {
+      step(1 / 60); T += 1 / 60;
+      if (arrows && arrows.length > peak) { peak = arrows.length; tPeak = T; }
+    }
+    /* 再跑一趟走到那一刻量（第一趟只是找「箭最多是第幾秒」）。 */
+    cleanTools();
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    for (let i = 0; i < Math.round(tPeak * 60); i++) step(1 / 60);
+    const bench = () => {
+      const got = [];
+      for (let k = 0; k < 3; k++) {
+        for (let i = 0; i < 10; i++) { step(1 / 600); draw(); }   // 暖機（時間幾乎不動）
+        const t = performance.now();
+        for (let i = 0; i < 40; i++) { step(1 / 600); draw(); }
+        got.push((performance.now() - t) / 40);
+      }
+      return got.sort((a, b) => a - b)[1];
+    };
+    const ms = bench();
+    const now = { men: archers ? archers.men.length : 0, arrows: arrows ? arrows.length : 0,
+                  people: workers.length + (archers ? archers.men.length : 0) };
+    cleanTools();
+    setWorkerCount(6);                               // 這一段動過人數，還回去
+    return { ms: +ms.toFixed(2), peak, tPeak: +tPeak.toFixed(2), now };
+  });
+  ok('最貴的那一幀（人數開到最大 ＋ 一整隊弓箭手 ＋ 箭最多）還在預算內',
+     arPerf.ms < 6 && arPerf.now.men > 0,
+     arPerf.now.people + ' 個人（含弓箭手 ' + arPerf.now.men + '）＋ ' +
+     arPerf.now.arrows + ' 支箭：step ＋ draw ' + arPerf.ms +
+     'ms（自訂預算 4ms、60fps 的預算 16.7ms）；箭最多是第 ' + arPerf.tPeak + ' 秒的 ' +
+     arPerf.peak + ' 支');
+
+  /* 容量：兩邊的池子都要裝得下，不然被切掉的是清單尾巴（畫面上憑空消失一批）。 */
+  const arCap = await page.evaluate(() => ({
+    maxw: ENG.MAXW, wk: Math.max(...WK_OPTS), n: AR_N,
+    weapMax: ENG.WEAP_MAX, keep: WEAP_KEEP, need: AR_N * AR_VOL, arKeep: AR_KEEP,
+    kinds: ENG.WEAP_KIND.length, scales: WEAP_SCALE.length, arrowK: ENG.ARROW_K,
+    parts: ENG.WEAP_KIND[ENG.ARROW_K].length
+  }));
+  ok('容量留得夠：小人上限裝得下最多人數 ＋ 一隊弓箭手，兵器池裝得下王之財寶最壞值 ＋ 一隊的箭',
+     arCap.maxw >= arCap.wk + arCap.n && arCap.weapMax >= arCap.keep + arCap.need,
+     '小人上限 ' + arCap.maxw + ' ≥ ' + arCap.wk + ' ＋ ' + arCap.n +
+     '；兵器池 ' + arCap.weapMax + ' ≥ ' + arCap.keep + ' ＋ ' + arCap.need +
+     '（箭自己的上限 ' + arCap.arKeep + '）');
+  ok('箭排在造型表最後一種，王之財寶抽不到它',
+     arCap.arrowK === arCap.kinds - 1 && arCap.scales === arCap.kinds - 1 &&
+     arCap.parts === 5,
+     '造型表 ' + arCap.kinds + ' 種、箭是第 ' + arCap.arrowK +
+     ' 種（' + arCap.parts + ' 塊）；王之財寶抽的是前 ' + arCap.scales + ' 種');
+
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
      「燒完那塊有沒有變黑掉下來」。用大建築測：小的燒到剩 25% 就整棟垮掉換場，
@@ -18679,7 +18997,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       orig[n] = window[n];
       window[n] = function (...a) { seen++; return orig[n].apply(null, a); };
     }
-    const TWO = ['ball', 'tornado', 'gate', 'sword'];   // 要點兩下的那幾支
+    // 要點兩下的那幾支（v1.171 加箭雨：只點一下的話只會畫個瞄準環，一隊人都不會出來）
+    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow'];
     const out = [];
     try {
       for (const t of TOOLS) {
@@ -19810,7 +20129,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   for (let i = 0; i < GATE_RATE * 3; i++) sndBlade();
                   for (let i = 0; i < 39; i++) sndGateHit();
                   for (let i = 0; i < 45; i++) sndStab();
-                }, 3, 5) };
+                }, 3, 5),
+                /* 箭雨的弦聲（v1.171）：配方就是 sndBlade 上面那一版被拿掉的「弓箭聲」
+                   ——對王之財寶是缺點，對真的弓箭正好。一輪只放一聲。
+                   **一定要擺在最後面**：這些量測的噪音是用 Math.random() 填 buffer 的，
+                   插在中間會把整條亂數序列往後推，後面每一發量到的數字全部跟著換
+                   （加這一發時就踩到：插在 bladeOld 後面 → 王之財寶命中聲那一條紅了，
+                   「一秒份 rms 0.0077 → 0.0070」變成 0.0075 → 0.0075）。
+                   跟引擎多一顆網格會位移 generateUUID 那條序列是同一件事，見檔頭。 */
+                bow: await one(() => sndBow()) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
   });
@@ -19844,6 +20171,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '2kHz 以上 ' + snd.bladeOld.hiPct + '% → ' + snd.blade.hiPct +
      '%；80–250Hz ' + snd.bladeOld.body + ' → ' + snd.blade.body +
      '；單聲 rms ' + snd.bladeOld.rms + ' → ' + snd.blade.rms);
+  /* 反過來，箭雨要的就是那個「咻」（v1.171）：跟王之財寶的破空必須分得開，
+     不然兩把道具聽起來一樣。門檻拉得很寬（差 40 個百分點以上）——這兩者實測差七成，
+     而噪音打底的頻段占比本來就會抖（見 many 那一段）。 */
+  ok('箭雨的弦聲是高頻的「咻」，跟王之財寶的低頻破空分得開',
+     snd.bow.hiPct > 70 && snd.bow.hiPct > snd.blade.hiPct + 40 &&
+     snd.bow.rms < snd.smash.rms * 0.5,
+     '2kHz 以上：弦聲 ' + snd.bow.hiPct + '%、破空 ' + snd.blade.hiPct +
+     '%；單聲 rms ' + snd.bow.rms + '（槌子 ' + snd.smash.rms + '）');
   ok('王之財寶一發的破空聲比槌子輕得多',
      snd.blade.rms < snd.smash.rms * 0.5 && snd.gateHit.rms < snd.smash.rms * 0.6,
      '破空 rms ' + snd.blade.rms + '、命中 ' + snd.gateHit.rms +
