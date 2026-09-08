@@ -17416,8 +17416,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       nana = Math.max(nana, nanas ? nanas.length : 0);
     }
     const st = m.st;
-    /* 香蕉飛 1.15 秒才炸，炸完再讓碎料落地。順便量「炸點離牠多遠」與「牠飛了沒」：
-       砸房子的那一趟牠要站在自己的爆炸半徑外才丟（DOOM_TOSS_NEAR，見那裡的註解）。 */
+    /* 香蕉飛 1.15 秒才炸，炸完再讓碎料落地。順便量「炸點離牠多遠」與「牠飛了沒」
+       ——**只印不當門檻**（v1.168 使用者：「白猴子炸到自己也沒關係」）。 */
     let air = 0, lie = 0, low = home0, last = null, boomD = -1;
     for (let i = 0; i < 200; i++) {
       if (nanas && nanas[0]) last = { x: nanas[0].x, z: nanas[0].z };
@@ -17436,11 +17436,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      msnow.nana > 0 && msnow.low < msnow.home0 && msnow.st === 'fun' &&
      msnow.site >= msnow.site0 - 4 && msnow.ph === 'done',
      '丟了 ' + msnow.nana + ' 根，還站著的村子 ' + msnow.home0 + ' → ' + msnow.low +
-     ' 塊、地標 ' + msnow.site0 + ' → ' + msnow.site + ' 塊，phase ' + msnow.ph);
-  ok('丟之前先站到自己的爆炸半徑外（不然牠會被自己的香蕉炸飛）',
-     msnow.boomD > msnow.blast && msnow.air === 0,
-     '炸點離牠 ' + msnow.boomD + ' 格（爆炸半徑 ' + msnow.blast + '）：牠被炸飛 ' +
-     msnow.air + '、被震倒 ' + msnow.lie + '（震倒是圈外那一帶的正常反應，會自己爬起來）');
+     ' 塊、地標 ' + msnow.site0 + ' → ' + msnow.site + ' 塊，phase ' + msnow.ph +
+     '；炸點離牠 ' + msnow.boomD + ' 格（爆炸半徑 ' + msnow.blast + '）、被炸飛 ' +
+     msnow.air + '、被震倒 ' + msnow.lie + '（這三個只印不守，見上面那段註解）');
+  /* v1.166 加過一條〈丟之前先站到自己的爆炸半徑外〉，守 `boomD > NANA_R && !air`。
+     v1.168 拿掉：使用者說「白猴子炸到自己也沒關係」，而且那條本來就守不住——
+     香蕉是「先撞到什麼就在那裡炸」（見 stepNanas），飛行途中掛到房子或樹就提前爆，
+     站多遠都保證不了（--seed 1499016557 實測炸點只離牠 7.7 格，NANA_R 是 9）。
+     牠站遠一點的那個距離（DOOM_TOSS_NEAR）**沒有拿掉**，只是不再當成必須成立的事。
+     牠被炸飛之後照樣轉回 'fun' 逛完才走——那件事由上面那條的 st/phase 在守。 */
 
   const mdrg = await page.evaluate(() => {
     beasts = null; nanas = null; fballs = null; clearFires();
