@@ -1385,12 +1385,18 @@ function torch(hit) {
    同一座沒放火是 334 秒完工。所以消防車不是特效，它是這個死結的解。
 
    只在**建造中**派車（使用者指定）：拆除中你自己點的火不該被 AI 滅掉。
-   車走**外圈**——建造中不能像整地那樣叫小人退到旁邊等，所以車停在 siteClearR 外面
-   往裡面噴，工地裡的路一條都不占（代價是它打不到工地正中央深處，見 ftRange）。 */
-const FT_MAX = 2;                   // 最多幾台，跟畫面那邊的 MAXTRUCK 綁在一起
-/* 工地每這麼多平方單位派一台（1～FT_MAX）。2000 是照「一般工地一台、大工地兩台」訂的：
-   siteR 14 的小工地面積 745 → 1 台，siteR 33 以上（面積 3700+）→ 2 台。 */
-const FT_AREA = 2000;
+
+   v1.170 改了三件（使用者：「根據著火多寡派車」「車輛像小人等 不穿進建築」
+   「派車出來從地圖邊緣直接往火源處移動」）：台數照火勢算、從地圖邊緣直線開向火場、
+   車體不穿建築（被地標的牆或小人的家擋住就停在那裡往裡面噴）。
+   在此之前是「照工地面積算台數（1～2 台）＋ 沿著外圈繞過去、一步都不進工地」——
+   量過聖母院蓋一半放一把火：火燒到 142 塊還是只來 1 台，車停在半徑 19.5～21.9
+   （工地 17.6），水柱落點離車 11.6～13.3 單位。 */
+const FT_MAX = ENG.MAXTRUCK;        // 最多幾台。上限就是畫面那邊的容量，兩邊不會不一致
+/* 每這麼多塊「還站著的」在燒派一台（1～FT_MAX）：1～8 塊 1 台、9～16 塊 2 台，
+   25 塊以上就是上限 4 台。**只在叫車那一刻算一次**（使用者指定），
+   火後來變大不再追加——火小下去也不會趕車走，照舊等火滅乾淨才收工。 */
+const FT_PER = 8;
 const FT_CALL = 6;                  // 同時燒著幾塊才叫車：一兩塊自己就燒完了，不值得出動
 const FT_MOVE = 13;                 // 車速。比推土機快（DOZ_MOVE 9.5）——它是趕著來的
 const FT_WET_R = 3.2;               // 水柱落點這麼近的積木都會被淋濕
@@ -1398,14 +1404,34 @@ const FT_SWEEP = 17;                // 落點每秒掃多快：掃過去才像�
 const FT_PICK = 0.4;                // 多久重挑一次目標
 const FT_QUIT = 2.5;                // 火滅乾淨之後再待這麼久才走（復燃就不用重新叫車）
 const FT_LIMIT = 120;               // 保險絲：待再久也要收工
-/* 一次最多轉這麼多弧度去找下一個路點。直接朝目標角度切過去的話，火在對面時
-   那條直線會穿過工地正中央——「車走外圈」就白寫了。算過：從場外開進來時
-   0.3 rad 的路點讓整條路離場中心最近 20（外圈半徑本身 20、工地 16），0.5 rad 會掉到 13。 */
-const FT_ARC = 0.3;
-const ftRing = () => siteClearR() + 4;      // 停在外圈這個半徑上（比推土機的工作圈還外面）
-const ftRange = () => ftRing() + 7;         // 射程：打得到場中心再過去一點
+const FT_STOP = 7;                  // 沒東西擋的話，開到離目標這麼近就停下來噴
+/* 幾台一起來的時候要錯開，不然四台會疊成一台：進場方向差 FT_FAN、停的位置左右差 FT_GAP
+   （車寬 3.7、長 6.9，相鄰兩台隔 6 剛好不會重疊）。 */
+const FT_FAN = 0.4, FT_GAP = 6;
+const FT_EYE = 5;                   // 出場找路時往前探幾格（見 T.out 那一段）
+const FT_SAMP = 0.9;                // 擋路判定的取樣間距（要小於一格積木，見 ftIn）
+/* 往前開的時候車體外放這麼多才判擋路，所以車會停在離牆這麼遠的地方。
+   要留這個空隙是因為**原地轉頭會把車身掃出去**：車 6.9 長、半對角 3.77，
+   轉 30 度前角就往前多吃 0.47——貼著牆停的話，一轉頭車尾車角就插進牆裡了。 */
+const FT_PAD = 0.7;
+const FT_BACK = 6;                  // 倒車的速度（見 ftBack）
+const FT_JAM = 8, FT_GHOST = 3;     // 出場卡住幾秒就暫時穿透、穿透幾秒（見 stepTrucks）
+const ftRange = () => siteClearR() + 11;    // 射程（＝舊的「外圈 siteClearR+4」再加 7，數字沒動）
 const WATER_G = 12;                 // 水滴的重力（塵霧預設 7；水要沉一點才像水）
 let trucks = null;                  // 在場的消防車 { t, quit, out, list }
+/* 車體占地，直接從畫面那台車的造型表算出來（同推土機的 DOZ_W 取自引擎）：
+   判定跟看到的才會是同一台車，哪天改造型也不必回來改數字。
+   f 車頭前端、b 車尾、w 半寬（實測 3.3／−3.63／1.83），
+   mid／half 是車身中點與半長（房子那半的外接矩形要用）。 */
+const FT_BODY = (() => {
+  let f = 0, b = 0, w = 0;
+  for (const p of ENG.MODELS.truck) {
+    f = Math.max(f, p.p[2] + p.s[2] / 2);
+    b = Math.min(b, p.p[2] - p.s[2] / 2);
+    w = Math.max(w, Math.abs(p.p[0]) + p.s[0] / 2);
+  }
+  return { f, b, w, mid: (f + b) / 2, half: (f - b) / 2 };
+})();
 
 /* 還站著在燒的那些塊的平均位置角度——車從這個方向的場外進來。 */
 function fireAngle() {
@@ -1417,16 +1443,16 @@ function fireAngle() {
   return n ? Math.atan2(x / n, z / n) : Math.random() * Math.PI * 2;
 }
 function callTrucks() {
-  const n = clamp(Math.round(Math.PI * siteClearR() ** 2 / FT_AREA), 1, FT_MAX);
+  const n = clamp(Math.ceil(nSpread / FT_PER), 1, FT_MAX);     // 台數照火勢（見 FT_PER）
   const base = fireAngle();
   const far = arenaR + DOZ_FAR;             // 跟推土機同一個進場圈
   trucks = {
     t: 0, quit: 0, out: false,
     list: Array.from({ length: n }, (_, k) => {
-      const off = (k - (n - 1) / 2) * 0.5;  // 兩台在外圈上錯開一點，不要擠在同一個點
-      const ang = base + off;
+      const side = k - (n - 1) / 2;         // 排在中線的哪一側（見 FT_FAN／FT_GAP）
+      const ang = base + side * FT_FAN;
       return { x: Math.sin(ang) * far, z: Math.cos(ang) * far, a: ang + Math.PI,
-               off, t: rr(0, 2), bob: 0, bk: 0, tx: 0, tz: 0,
+               side, t: rr(0, 2), bob: 0, bk: 0, jam: 0, ghost: 0,
                pick: 0, aim: null, jet: 0, jx: 0, jy: 0, jz: 0, em: 0 };
     })
   };
@@ -1445,22 +1471,99 @@ function pickFire(m) {
   return best;
 }
 const aimOk = b => !!b && b.burn === 1 && b.st === SET;
-/* 只轉車頭、不前進。停下來噴水時要對著火場轉，driveTo 那支會連帶把車開走。 */
+/* 只轉車頭、不前進：停下來噴水時要對著火場轉（水砲固定朝車頭），
+   ftDrive 那支會連帶把車開走。
+   轉之前先確認車身掃得過去（v1.170）：轉頭會把 6.9 長的車身掃出去，
+   掃不過去就維持現在的角度——砲口斜一點，總比車身插在牆裡好。 */
 function faceTo(m, dt, x, z) {
   let d = Math.atan2(x - m.x, z - m.z) - m.a;
   while (d > Math.PI) d -= Math.PI * 2;
   while (d < -Math.PI) d += Math.PI * 2;
-  m.a += Math.min(Math.abs(d), DOZ_TURN * dt) * Math.sign(d);
+  const na = m.a + Math.min(Math.abs(d), DOZ_TURN * dt) * Math.sign(d);
+  if (ftIn(m.x, m.z, na) <= ftIn(m.x, m.z, m.a)) m.a = na;
 }
-/* 下一個路點：外圈上、離車子現在的角度最多 FT_ARC 的那一點（見 FT_ARC 的註解）。 */
-function ftWaypoint(m, ang) {
-  const now = Math.atan2(m.x, m.z);
-  let d = ang - now;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  const a = now + clamp(d, -FT_ARC, FT_ARC);
-  m.tx = Math.sin(a) * ftRing();
-  m.tz = Math.cos(a) * ftRing();
+/* 車體占地裡插到幾處建築（0 ＝ 沒插到，v1.170，使用者：「車輛像小人等 不穿進建築」）。
+   問的是「小人也走不進去的地方」——地標的積木（footBlocked，腳邊三層）＋
+   小人的家與樹（那一間的占地外框）。借小人那兩套而不自己另算一份：那才是全場
+   「不能穿過去的東西」的定義（v1.103 起收在那裡），車跟人擋在同一面牆上，
+   才不會一台穿一台不穿。
+
+   地標是**鋪滿整個車底逐點問**的，間距上限 FT_SAMP 0.9 小於一格積木（一塊佔滿 1 格），
+   所以漏不掉任何一塊——車體切成 9×6＝54 個點（外放 FT_PAD 時 11×7＝77 個）。
+   只問前中後三排 × 左中右三點（橫向間距 1.83）不夠：實測聖母院正面
+   一格寬的拱門就從兩點之間鑽過去，車一路開到離場中心 4.9，134 幀插在牆裡。
+
+   房子與樹改成**外接矩形比一次**（不逐點問 homeFoot）：一間房子本來就是一個矩形，
+   而村子可以有四十幾間 ＋ 十幾棵樹，逐點問是 54 點 × 每點掃一遍清單。
+   矩形對矩形略微保守（車斜著時外接矩形比車體大），對「不要穿過去」正好是安全的那一邊。
+
+   pad 是把車體外放多少：往前開時給 FT_PAD（留出轉頭的空隙），
+   問「現在插到了嗎」給 0（就是真的車體）。 */
+function ftIn(x, z, a, pad) {
+  const p = pad || 0;
+  const f1 = FT_BODY.f + p, b1 = FT_BODY.b - p, w1 = FT_BODY.w + p;
+  const nf = Math.ceil((f1 - b1) / FT_SAMP), nw = Math.ceil(w1 * 2 / FT_SAMP);
+  const s = Math.sin(a), c = Math.cos(a);
+  let n = 0;
+  for (let i = 0; i <= nf; i++) {
+    const f = b1 + (f1 - b1) * i / nf;
+    for (let j = 0; j <= nw; j++) {
+      const w = -w1 + w1 * 2 * j / nw;
+      if (footBlocked(x + s * f + c * w, z + c * f - s * w)) n++;
+    }
+  }
+  if (homes) {
+    // 車體的外接矩形：車身中點比車頭中心往後 FT_BODY.mid，半長 FT_BODY.half
+    const cx = x + s * FT_BODY.mid, cz = z + c * FT_BODY.mid;
+    const ex = Math.abs(s) * (FT_BODY.half + p) + Math.abs(c) * w1;
+    const ez = Math.abs(c) * (FT_BODY.half + p) + Math.abs(s) * w1;
+    for (const h of homes.list)
+      if (cx + ex > h.x0 && cx - ex < h.x1 && cz + ez > h.z0 && cz - ez < h.z1) n++;
+  }
+  return n;
+}
+/* 倒車：車頭不動、往後退一步，退不動就回 false。
+   「要往後走」的時候真的倒車，不原地轉頭——車 6.9 長，貼著牆轉頭就是把車身掃進牆裡
+   （車也本來就是這樣退出巷子的）。 */
+function ftBack(m, dt) {
+  const bx = m.x - Math.sin(m.a) * FT_BACK * dt, bz = m.z - Math.cos(m.a) * FT_BACK * dt;
+  if (m.ghost <= 0 && ftIn(bx, bz, m.a) > ftIn(m.x, m.z, m.a)) return false;
+  m.x = bx; m.z = bz;
+  return true;
+}
+/* 開向 (x, z)：轉車頭 → 前面不是建築才往前。回傳「還動得了嗎」，false 就是被擋住了
+   （呼叫端改成停在那裡對著火場噴）。
+   不共用推土機的 driveTo：位移前要先問一次擋路，而且擋住的那一幀車頭也不該轉
+   （轉了就換成呼叫端把車頭轉向火場，不然同一幀轉兩次會加倍）。 */
+function ftDrive(m, dt, x, z) {
+  let diff = Math.atan2(x - m.x, z - m.z) - m.a;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  const na = m.a + Math.min(Math.abs(diff), DOZ_TURN * dt) * Math.sign(diff);
+  const go = FT_MOVE * dt * Math.max(0, 1 - Math.abs(diff) / 1.2);   // 沒轉正就先慢下來
+  if (m.ghost > 0) {                    // 穿透中（同小人的 w.ghost，見 stepTrucks 的 m.jam）
+    m.a = na; m.x += Math.sin(na) * go; m.z += Math.cos(na) * go;
+    return true;
+  }
+  /* **轉頭用真的車體判、前進用外放 FT_PAD 的車體判**，兩件事的空間需求不一樣：
+     前進留 0.7 是為了停下來之後轉得動（見 FT_PAD），但拿同一個外放去擋轉頭的話，
+     停在牆邊的車連轉頭都轉不了——那就再也開不出去（實測三趟車都留在場上到最後）。
+     停在離牆 0.7 時，旋轉中心離牆 4.0、車身半對角 3.77，整圈轉得過去。 */
+  const turn = ftIn(m.x, m.z, na) <= ftIn(m.x, m.z, m.a);
+  if (turn) m.a = na;
+  /* 轉不動、又因為車頭沒對準而不能前進（go 是照角度差打折的）——那就倒車。
+     少了這一條會**當場卡死**：實測出場時車頭朝著建築、要轉 2.9 rad 才朝外，
+     中途有幾個角度車身會掃到牆，於是轉也轉不動、走也走不了（三趟裡有一趟卡到最後）。 */
+  if (!turn && go < FT_MOVE * dt * 0.2) return ftBack(m, dt);
+  const nx = m.x + Math.sin(m.a) * go, nz = m.z + Math.cos(m.a) * go;
+  /* 前面是建築就停在這裡（呼叫端會把車頭轉向火場）。
+     **已經被砌進去的時候不能一律擋死**：車停在牆邊噴水，小人照樣在旁邊砌牆，
+     真的會被砌到車底下——那時候車就永遠動不了，而下一批要等這一批走光才叫得出來
+     （見 stepTrucks 開頭的 !trucks）。所以規則是「不准往插得比現在多的方向動」：
+     乾淨的時候等於「前面有東西就不准前進」，被砌進去的時候還退得出來。 */
+  if (ftIn(nx, nz, m.a, FT_PAD) > ftIn(m.x, m.z, m.a, FT_PAD)) return false;
+  m.x = nx; m.z = nz;
+  return true;
 }
 /* 水柱：從砲口噴到落點的一串水滴，走現成的塵霧粒子池（那邊支援每顆自己的顏色），
    所以整個水效果是 0 個新 draw call。
@@ -1548,29 +1651,50 @@ function stepTrucks(dt) {
     m.t += dt;
     m.bob = Math.sin(m.t * 24) * 0.05;            // 引擎抖動：停著也在抖
     m.bk = Math.floor(m.t * 3.4) % 2;             // 警示燈：一秒閃三下多
+    m.ghost = Math.max(0, m.ghost - dt);
     if (T.out) {
       m.jet = 0;
-      faceTo(m, dt, m.x * 3, m.z * 3);            // 車頭轉朝外，直線開出去
-      m.x += Math.sin(m.a) * FT_MOVE * dt;
-      m.z += Math.cos(m.a) * FT_MOVE * dt;
+      /* 出場：往場外直線開。路上有房子就往旁邊偏著繞過去（±0.6、±1.2 rad 各探一次）。
+         五個方向都堵住就照原方向走——那時候車體通常已經被砌進去了，
+         ftDrive／ftBack 的「插得比現在少就准動」會接手。 */
+      const a0 = Math.atan2(m.x, m.z);
+      let way = a0;
+      for (const d of [0, 0.6, -0.6, 1.2, -1.2]) {
+        const g = a0 + d;
+        if (!ftIn(m.x + Math.sin(g) * FT_EYE, m.z + Math.cos(g) * FT_EYE, g)) { way = g; break; }
+      }
+      const px = m.x, pz = m.z;
+      /* 車頭轉向出口會把車身掃進東西裡的話，先倒車退出來再走（見 ftBack）。 */
+      if (ftIn(m.x, m.z, way) > ftIn(m.x, m.z, m.a)) ftBack(m, dt);
+      else ftDrive(m, dt, m.x + Math.sin(way) * 40, m.z + Math.cos(way) * 40);
+      /* 保險絲：出場的路真的被封死（三面都是牆）就暫時穿過去（同小人卡住時的
+         w.ghost）。不留這一條的話車會永遠留在場上，而**下一批要等這一批走光才叫得出來**
+         （見這支開頭的 !trucks）。ghost 給 FT_GHOST 秒，夠開出 39 格＝穿過任何一棟。 */
+      m.jam = Math.hypot(m.x - px, m.z - pz) < FT_MOVE * dt * 0.2 ? m.jam + dt : 0;
+      if (m.jam > FT_JAM) { m.ghost = FT_GHOST; m.jam = 0; }
       if (Math.hypot(m.x, m.z) > arenaR + 14) T.list.splice(i, 1);
       continue;
     }
+    m.jam = 0;                                     // 卡住的計時只在出場那一段有意義
     m.pick -= dt;
     if (m.pick <= 0 || !aimOk(m.aim)) { m.pick = FT_PICK; m.aim = pickFire(m); }
     const a = m.aim;
-    if (!a) { m.jet = 0; continue; }               // 沒得澆：停在原地等，外圈本來就是它的位置
-    /* 要先開到外圈上才噴（v1.68）。只看「打得到了嗎」的話，車會停在剛好進入射程的
-       那個位置——聖母院實測停在半徑 33，外圈才 21.4，遠遠停在場外對著建築噴。
-       所以兩個條件都要成立：人已經在外圈那一帶、目標也在射程內。 */
-    const reach = Math.hypot(a.x - m.x, a.z - m.z) <= ftRange();
-    if (!reach || Math.hypot(m.x, m.z) > ftRing() + 2) {
+    if (!a) { m.jet = 0; continue; }               // 沒得澆：停在原地等
+    /* 從地圖邊緣直接開向火場（v1.170，使用者指定），開到停不下去為止——
+       停的條件兩個：離目標夠近（FT_STOP），或者車頭前面已經是建築
+       （火在牆的另一邊、或在建築深處，那就停在牆邊往裡面噴）。
+       幾台一起來時各自的停點左右錯開 side × FT_GAP，錯開的方向是進場方向的側邊。 */
+    const fx = a.x - m.x, fz = a.z - m.z, dd = Math.hypot(fx, fz) || 1;
+    const tx = a.x - fz / dd * m.side * FT_GAP, tz = a.z + fx / dd * m.side * FT_GAP;
+    if (Math.hypot(tx - m.x, tz - m.z) > FT_STOP) {
       m.jet = 0;                                  // 還在路上就先收水柱，不要邊開邊亂噴
-      ftWaypoint(m, Math.atan2(a.x, a.z) + m.off);
-      driveTo(m, dt, FT_MOVE);
-      continue;
+      if (ftDrive(m, dt, tx, tz)) continue;       // 還開得動：這一幀就只是趕路
     }
-    // 打得到了：停下來、車頭轉向火場、水柱往目標掃過去
+    /* 停下來了。先看有沒有被砌進去（車停在牆邊噴水，小人照樣在旁邊砌牆）——
+       車身插在牆裡的樣子跟穿牆沒兩樣，那就先倒車退出來再噴。 */
+    if (ftIn(m.x, m.z, m.a)) { m.jet = 0; ftBack(m, dt); continue; }
+    // 打不到就等火燒過來，打得到就車頭轉向火場、水柱往目標掃過去
+    if (dd > ftRange()) { m.jet = 0; continue; }
     faceTo(m, dt, a.x, a.z);
     if (!m.jet) { m.jet = 1; m.jx = a.x; m.jy = a.y; m.jz = a.z; }
     else {

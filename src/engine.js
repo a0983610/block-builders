@@ -71,7 +71,10 @@ const ENG = (function () {
      成本是一次性的 instance 配置（30×10＝300 個），畫的還是同一個 InstancedMesh，
      draw call 不變；每幀只有真的在場的那幾台要算矩陣。 */
   const MAXDOZ = 30, DOZ_PARTS = 10;
-  const MAXTRUCK = 2, TRK_PARTS = 11;       // 消防車：最多兩台，一台 11 個部位
+  /* 消防車：最多幾台、一台 11 個部位。上限 v1.170 從 2 提到 4（台數改成照火勢算，
+     見規則那邊的 FT_PER）。同推土機：規則那邊用 ENG.MAXTRUCK 當上限，兩邊不會不一致；
+     多出來的成本只有一次性的 instance 配置（4×11＝44 個），draw call 不變。 */
+  const MAXTRUCK = 4, TRK_PARTS = 11;
   /* 水：同時最多幾格。**要跟規則那邊的 WT_CELLS 一樣大**——小於它的話多出來的格子
      整格不會被畫（而且被丟掉的是清單後面那些＝最新的水），實測就是「破口在流水，
      可是看不到水柱」：一個裝滿的馬克杯已經 4463 格，超過舊的 4000 格上限。 */
@@ -3463,7 +3466,8 @@ const ENG = (function () {
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks, putGates, putWeapons, putSwords, putBeasts, putUfos,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
-    cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
+    cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK,
+    DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
     /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
     SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_HIT, SWORD_TIP, SWORD_W,

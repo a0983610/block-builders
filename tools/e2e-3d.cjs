@@ -12960,8 +12960,50 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ftCall.litW >= ftCall.call && ftCall.inWreck === 0,
      ftCall.litW + ' 塊在燒，兩秒後場上 ' + ftCall.inWreck + ' 台');
 
-  /* 車走外圈（使用者指定）：建造中不能像整地那樣叫小人退到旁邊等，
-     所以車一步都不進工地，停在 siteClearR 外面往裡面噴。 */
+  /* 台數照火勢算（v1.170，使用者：「根據著火多寡派車」）：每 FT_PER 塊在燒一台，
+     上限 FT_MAX（＝畫面那邊的容量）。只在叫車那一刻算一次（使用者指定）。
+     直接點著 n 塊再叫車，不跑模擬——這一條驗的是那個對照表本身。 */
+  const ftFleet = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    const out = [];
+    for (const n of [1, FT_CALL, FT_PER, FT_PER + 1, FT_PER * 2, FT_PER * 2 + 1,
+                     FT_PER * (FT_MAX - 1) + 1, 40]) {
+      trucks = null; clearFires(); phase = 'build';
+      const c = blocks.filter(b => b.st === 3 && !b.burn);
+      for (let i = 0; i < n && i < c.length; i++) igniteBlock(c[Math.floor(i * c.length / n)]);
+      callTrucks();
+      out.push([nSpread, trucks.list.length]);
+    }
+    trucks = null; cleanTools();
+    return { out, per: FT_PER, max: FT_MAX };
+  });
+  ok('派幾台看火勢：每 ' + ftFleet.per + ' 塊在燒一台，上限 ' + ftFleet.max + ' 台',
+     ftFleet.out.every(([n, k]) => k === Math.min(ftFleet.max, Math.ceil(n / ftFleet.per))) &&
+     ftFleet.out[0][1] === 1 && ftFleet.out[ftFleet.out.length - 1][1] === ftFleet.max,
+     ftFleet.out.map(([n, k]) => n + ' 塊 → ' + k + ' 台').join('、'));
+
+  /* 車體不穿建築（v1.170，使用者：「車輛像小人等 不穿進建築」）：
+     擋路的定義借小人那兩套（地標的積木 footBlocked ＋ 小人家的占地外框），
+     所以車跟人擋在同一面牆上。房子那半用手做的外框驗（真的蓋房子在〈小房子〉那一節）。 */
+  const ftWall = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    const mid = ftIn(0, 0, 0), far = ftIn(arenaR + 20, 0, 0);
+    /* 房子與樹是「一間一個矩形」，ftIn 拿車體的外接矩形跟它比。
+       這裡直接放一個外框上去（homeBox 產出的就是這四個數字），比完就拿掉。 */
+    const had = homes;
+    homes = { list: [{ x0: 40, x1: 46, z0: -3, z1: 3 }] };
+    const onHome = ftIn(43, 0, 0), nextHome = ftIn(60, 0, 0);
+    homes = had;
+    cleanTools();
+    return { mid, far, onHome, nextHome };
+  });
+  ok('車體的擋路判定：地標裡面、房子外框上都算「插到了」，空地不算',
+     ftWall.mid > 0 && ftWall.far === 0 && ftWall.onHome > 0 && ftWall.nextHome === 0,
+     '工地正中央 ' + ftWall.mid + ' 點插到、場外空地 ' + ftWall.far +
+     '、壓在房子外框上 ' + ftWall.onHome + '、旁邊空地 ' + ftWall.nextHome);
+
+  /* 從地圖邊緣直接開向火場、開到建築外牆前才停（v1.170，使用者指定）。
+     v1.68～v1.169 是「沿著外圈繞過去、一步都不進工地」。 */
   const ftRun = await page.evaluate(() => {
     cleanTools();
     targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '巴黎聖母院');
@@ -12984,9 +13026,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const cand = blocks.filter(b => b.st === 3 && b.y > 3);
     cand.sort((a, b) => b.y - a.y);
     igniteBlock(cand[Math.floor(cand.length * 0.3)]);
+    /* 車體有沒有插進建築：這裡自己鋪一張比規則那邊更密的網（0.5 對 0.9）去問，
+       不呼叫 ftIn——用同一支函式驗它自己是繞圈子。尺寸取畫面那台車的造型表。 */
+    const TB = (() => {
+      let f = 0, b = 0, w = 0;
+      for (const p of ENG.MODELS.truck) {
+        f = Math.max(f, p.p[2] + p.s[2] / 2);
+        b = Math.min(b, p.p[2] - p.s[2] / 2);
+        w = Math.max(w, Math.abs(p.p[0]) + p.s[0] / 2);
+      }
+      return { f, b, w };
+    })();
+    const hitBody = m => {
+      let n = 0;
+      for (let f = TB.b; f <= TB.f + 1e-9; f += 0.5)
+        for (let s = -TB.w; s <= TB.w + 1e-9; s += 0.5)
+          if (footBlocked(m.x + Math.sin(m.a) * f + Math.cos(m.a) * s,
+                          m.z + Math.cos(m.a) * f - Math.sin(m.a) * s) ||
+              homeFoot(m.x + Math.sin(m.a) * f + Math.cos(m.a) * s,
+                       m.z + Math.cos(m.a) * f - Math.sin(m.a) * s)) n++;
+      return n;
+    };
     const at = placedCnt;
     let peak = 0, called = 0, arrive = -1, fireOut = -1, low = placedCnt;
     let minR = Infinity, sprayed = 0, wetMax = 0, gone = -1, t = 0;
+    let clip = 0, seen = 0, jetD = Infinity;
     while (t < 60) {
       step(0.05); t += 0.05;
       peak = Math.max(peak, nSpread);
@@ -12995,8 +13059,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (trucks) {
         called = Math.max(called, trucks.list.length);
         for (const m of trucks.list) {
+          seen++;
           minR = Math.min(minR, Math.hypot(m.x, m.z));
-          if (m.jet) { sprayed++; if (arrive < 0) arrive = +t.toFixed(1); }
+          if (hitBody(m)) clip++;
+          if (m.jet) {
+            sprayed++;
+            if (arrive < 0) arrive = +t.toFixed(1);
+            jetD = Math.min(jetD, Math.hypot(m.jx - m.x, m.jz - m.z));
+          }
         }
       } else if (called && gone < 0) gone = +t.toFixed(1);
       if (!nSpread && fireOut < 0 && t > 1) fireOut = +t.toFixed(1);
@@ -13004,16 +13074,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const end = placedCnt;
     cleanTools();
     return { at, peak, called, arrive, fireOut, low, end, sprayed, wetMax, gone, quit: FT_QUIT,
+             clip, seen, jetD: +jetD.toFixed(1),
              minR: +minR.toFixed(1), site: +siteClearR().toFixed(1),
-             ring: +ftRing().toFixed(1), range: +ftRange().toFixed(1) };
+             siteR: +siteR.toFixed(1), range: +ftRange().toFixed(1) };
   });
   /* 噴幾幀不設高門檻：淋濕一片就把蔓延的鏈子切斷了，火自己燒完，
-     所以「噴多久」是看火多快死，量到 20～29 幀（1～1.5 秒）都算正常。
-     這一條要驗的是「有噴，而且沒進工地」，滅得掉不掉由下面那條驗。 */
-  ok('車一步都不進工地，停在外圈往裡面噴',
-     ftRun.minR > ftRun.site && ftRun.sprayed > 5,
-     '最靠近場中心 ' + ftRun.minR + '（工地 ' + ftRun.site + '、外圈 ' + ftRun.ring +
-     '、射程 ' + ftRun.range + '），噴了 ' + ftRun.sprayed + ' 幀');
+     所以「噴多久」是看火多快死，貼著牆噴的時候量到 10～18 幀都算正常
+     （v1.169 站在 13 單位外噴是 58～235 幀，噴得久是因為澆不到重點）。
+     這一條要驗的是「開到牆邊、有噴、而且車體一幀都沒插進建築」。
+     插到的幀數為什麼不是抓 0：車停在牆邊噴水的時候小人照樣在旁邊砌牆，**真的會被砌到
+     車底下**，那時候車要花一兩幀倒出來（見 ftBack）。實測三趟 0／0／2 幀（在場 256～414
+     車-幀），所以門檻放在 2%。 */
+  ok('車直接開到建築外牆前才停，車體不插進建築（被砌到才倒車那一兩幀例外）',
+     ftRun.minR < ftRun.site && ftRun.clip <= ftRun.seen * 0.02 && ftRun.sprayed > 3,
+     '最靠近場中心 ' + ftRun.minR + '（工地 ' + ftRun.site + '、地標半徑 ' + ftRun.siteR +
+     '、射程 ' + ftRun.range + '）；在場 ' + ftRun.seen + ' 車-幀裡有 ' + ftRun.clip +
+     ' 幀車體插到，噴了 ' + ftRun.sprayed + ' 幀、水柱落點離車 ' + ftRun.jetD + ' 單位');
   ok('水柱掃過的一片都會濕',
      ftRun.wetMax > 40,
      '同時最多 ' + ftRun.wetMax + ' 塊是濕的');
