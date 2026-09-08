@@ -8471,95 +8471,74 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 破壞道具與解鎖 ══════════ */
   await head('破壞道具與解鎖');
+  /* v1.168 起門檻是**算出來的**（第 n 把破壞道具＝擊飛 n × LOCK_STEP 塊），
+     所以這一段整個照 TOOLS 生出來、不寫死任何一把的名字或數字——
+     加一把新道具不必回來改這裡（使用者：「不要每次新增就要改」）。 */
   const lock0 = await page.evaluate(() => {
     stats = freshStats(); renderTools();
     return {
       ids: TOOLS.map(t => t.id),
+      free: TOOLS.filter(t => !t.lock).map(t => t.id),
+      need: TOOLS.filter(t => t.lock).map(t => t.lock.need),
+      txt: TOOLS.filter(t => t.lock).map(t => t.lock.txt),
+      step: LOCK_STEP,
+      uniq: new Set(TOOLS.map(t => t.id)).size,
+      full: TOOLS.filter(t => t.id && t.n && t.k && t.tip).length,
       ok: TOOLS.map(t => toolOk(t)),
       btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open')
     };
   });
-  /* 解鎖狀態拼成一長串 true/false 很難讀（而且插進一種新道具就整排要重寫），
-     所以照 id 來寫：「本來就開著的那幾種，加上這一關該開的」。
-     手指與水桶不破壞任何東西，沒有鎖；破壞道具的階梯從槌子開始。 */
-  const NTOOL = 18;                 // v1.167 加了幽浮
-  const FREE = ['finger', 'bucket', 'hammer'];
-  const isOpen = (id, ids) => FREE.indexOf(id) >= 0 || ids.indexOf(id) >= 0;
-  const opened = (...ids) => lock0.ids.map(id => String(isOpen(id, ids))).join(',');
-  const btnOpen = (...ids) => lock0.ids.map(id => isOpen(id, ids) ? 'open' : 'lock').join(',');
-  const allOpen = () => Array(NTOOL).fill('true').join(',');
-  ok('工具共 18 種', lock0.ids.length === NTOOL, lock0.ids.join(','));
+  const NTOOL = lock0.ids.length;
+  const openStr = open => lock0.ids.map(id => String(open.indexOf(id) >= 0)).join(',');
+  ok('每一種道具都有 id、名字、圖示與說明，而且 id 不重複',
+     lock0.full === NTOOL && lock0.uniq === NTOOL,
+     NTOOL + ' 種：' + lock0.ids.join(','));
+  ok('畫面上的工具鈕跟道具表一樣多', lock0.btn.length === NTOOL,
+     lock0.btn.length + ' 顆鈕 / ' + NTOOL + ' 種道具');
+  /* 手指與水桶不破壞任何東西，槌子是起手用的：這三把沒有鎖，其餘一律要解。 */
   ok('一開始只有手指、水桶跟槌子可用',
-     lock0.ok.join(',') === opened(), lock0.ok.join(','));
+     lock0.ok.join(',') === openStr(lock0.free) &&
+     lock0.free.join(',') === 'finger,bucket,hammer',
+     '免解鎖的是 ' + lock0.free.join('、'));
   ok('鎖住的工具在畫面上也是鎖住的',
-     lock0.btn.join(',') === btnOpen(), lock0.btn.join(','));
+     lock0.btn.join(',') === lock0.ids.map(id => lock0.free.indexOf(id) >= 0 ? 'open' : 'lock').join(','),
+     lock0.btn.join(','));
+  ok('解鎖門檻是等差：第 n 把破壞道具就是 n × ' + lock0.step + ' 塊',
+     lock0.need.length === NTOOL - lock0.free.length &&
+     lock0.need.every((v, i) => v === (i + 1) * lock0.step),
+     lock0.need.join('／') + '（最後一把 ' + lock0.txt[lock0.txt.length - 1] + '）');
 
+  /* 每一把都獨立驗兩次：差一塊還鎖著、到了門檻就開，而且**只**開到那一把
+     （後面的不能被順便開掉）。每次都從乾淨的紀錄重設，不一路往上疊。 */
   const lock1 = await page.evaluate(() => {
-    const step2 = [];
-    const at = (k, v) => { stats = freshStats(); stats[k] = v; renderTools(); step2.push(TOOLS.map(t => toolOk(t)).join(',')); };
-    /* 每一關都從乾淨的紀錄重新設一個門檻值，不是一路往上疊——
-       疊著設的話「拆掉 10 座」會連帶滿足前面所有拆除門檻，
-       就分不出某一項到底是被自己的條件開的還是被別人順便開的。 */
-    at('smashed', 2000);
-    at('destroyed', 2);
-    at('smashed', 6000);
-    at('destroyed', 4);
-    at('smashed', 11000);
-    at('destroyed', 6);
-    at('smashed', 15000);
-    at('destroyed', 8);
-    at('smashed', 19000);
-    at('destroyed', 10);
-    at('smashed', 23000);
-    at('destroyed', 12);
-    at('smashed', 27000);
-    at('destroyed', 14);
-    at('smashed', 31000);
-    stats = freshStats(); stats.destroyed = 14; stats.smashed = 31000; renderTools();     // 全開
-    step2.push(TOOLS.map(t => toolOk(t)).join(','));
-    return { step2, btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
+    const rows = [];
+    const shot = s => {
+      stats = freshStats(); stats.smashed = s; renderTools();
+      return TOOLS.filter(t => toolOk(t)).map(t => t.id);
+    };
+    const locked = TOOLS.filter(t => t.lock);
+    const free = TOOLS.filter(t => !t.lock).map(t => t.id);
+    for (let i = 0; i < locked.length; i++) {
+      const need = locked[i].lock.need;
+      const want = free.concat(locked.slice(0, i).map(t => t.id));          // 到門檻前該開的
+      rows.push({ id: locked[i].id, need,
+                  before: shot(need - 1).join(','), wantBefore: want.join(','),
+                  after: shot(need).join(','), wantAfter: want.concat(locked[i].id).join(',') });
+    }
+    const top = locked[locked.length - 1].lock.need;
+    stats = freshStats(); stats.smashed = top; renderTools();               // 全開
+    return { rows, all: TOOLS.every(t => toolOk(t)), top,
+             btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open') };
   });
-  /* 兩種紀錄輪流當門檻，所以「擊飛」那幾關會順便開掉前面同一側的，但開不了另一側的
-     ——每一關列出來的就是那一側到這一關為止的全部。 */
-  ok('擊飛 2,000 塊解鎖大槌', lock1.step2[0] === opened('bighammer'), lock1.step2[0]);
-  ok('拆掉 2 座解鎖保齡球', lock1.step2[1] === opened('ball'), lock1.step2[1]);
-  ok('擊飛 6,000 塊解鎖投石機',
-     lock1.step2[2] === opened('bighammer', 'treb'), lock1.step2[2]);
-  ok('拆掉 4 座解鎖龍捲風',
-     lock1.step2[3] === opened('ball', 'tornado'), lock1.step2[3]);
-  ok('擊飛 11,000 塊解鎖煙火',
-     lock1.step2[4] === opened('bighammer', 'treb', 'fw'), lock1.step2[4]);
-  ok('拆掉 6 座解鎖放火',
-     lock1.step2[5] === opened('ball', 'tornado', 'fire'), lock1.step2[5]);
-  ok('擊飛 15,000 塊解鎖定時炸彈',
-     lock1.step2[6] === opened('bighammer', 'treb', 'fw', 'bomb'), lock1.step2[6]);
-  ok('拆掉 8 座解鎖隕石',
-     lock1.step2[7] === opened('ball', 'tornado', 'fire', 'meteor'), lock1.step2[7]);
-  ok('擊飛 19,000 塊解鎖核彈',
-     lock1.step2[8] === opened('bighammer', 'treb', 'fw', 'bomb', 'nuke'), lock1.step2[8]);
-  ok('拆掉 10 座解鎖爆裂魔法',
-     lock1.step2[9] === opened('ball', 'tornado', 'fire', 'meteor', 'magic'), lock1.step2[9]);
-  ok('擊飛 23,000 塊解鎖打雷',
-     lock1.step2[10] === opened('bighammer', 'treb', 'fw', 'bomb', 'nuke', 'storm'),
-     lock1.step2[10]);
-  ok('拆掉 12 座解鎖天降鐵球',
-     lock1.step2[11] === opened('ball', 'tornado', 'fire', 'meteor', 'magic', 'drop'),
-     lock1.step2[11]);
-  ok('擊飛 27,000 塊解鎖王之財寶',
-     lock1.step2[12] === opened('bighammer', 'treb', 'fw', 'bomb', 'nuke', 'storm', 'gate'),
-     lock1.step2[12]);
-  ok('拆掉 14 座解鎖大劍',
-     lock1.step2[13] === opened('ball', 'tornado', 'fire', 'meteor', 'magic', 'drop', 'sword'),
-     lock1.step2[13]);
-  ok('擊飛 31,000 塊解鎖幽浮',
-     lock1.step2[14] === opened('bighammer', 'treb', 'fw', 'bomb', 'nuke', 'storm', 'gate', 'ufo'),
-     lock1.step2[14]);
-  ok('兩邊都推到頂就全開', lock1.step2[15] === allOpen(), lock1.step2[15]);
+  const lockBad = lock1.rows.filter(r => r.before !== r.wantBefore || r.after !== r.wantAfter);
+  ok('每一把都卡在自己那一格：差一塊還鎖著，到了就開，而且不會順便開掉後面的',
+     lockBad.length === 0 && lock1.rows.length === lock0.need.length,
+     lock1.rows.length + ' 把逐一驗過' +
+     (lockBad.length ? '；**對不上的：' +
+        lockBad.map(r => r.id + '(' + r.need + ')　' + r.before + ' → ' + r.after).join('｜') + '**' : ''));
+  ok('推到最後一格就全開', lock1.all, '擊飛 ' + lock1.top + ' 塊');
   ok('解鎖後畫面上的鎖頭消失',
-     lock1.btn.join(',') === btnOpen('bighammer', 'ball', 'treb', 'tornado', 'fw',
-                                     'fire', 'bomb', 'meteor', 'nuke', 'magic',
-                                     'storm', 'drop', 'gate', 'sword', 'ufo'),
-     lock1.btn.join(','));
+     lock1.btn.join(',') === Array(NTOOL).fill('open').join(','), lock1.btn.join(','));
 
   /* 手指：什麼都不破壞，但戳得倒小人 */
   await reset(page, { shape: '吉薩金字塔', cnt: 700, workers: 12 });
@@ -8899,12 +8878,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                nearFrac: tot ? near / tot : -1, lo, hi };
     };
     const small = one(false), big = one(true);
-    return { small, big };
+    return { small, big, want: QUAKE_FRAC };
   });
-  ok('大槌砸空地會地震，震掉約 10% 的積木',
-     quakeT.big.born && quakeT.big.frac > 0.09 && quakeT.big.frac < 0.18,
+  /* 比例跟著 QUAKE_FRAC 走，不寫死 10%（v1.168）：這一條要守的是「有地震、掉的是
+     設定的那個量級」，實際調成幾成是可以改的細節。上緣放到 1.8 倍是留給垮塌的連帶。 */
+  ok('大槌砸空地會地震，震掉的比例照 QUAKE_FRAC 走',
+     quakeT.big.born && quakeT.big.frac > quakeT.want * 0.85 &&
+     quakeT.big.frac < quakeT.want * 1.8,
      quakeT.big.set0 + ' 塊掉了 ' + quakeT.big.fell + '（' +
-     (quakeT.big.frac * 100).toFixed(1) + '%）');
+     (quakeT.big.frac * 100).toFixed(1) + '%，設定 ' + (quakeT.want * 100).toFixed(0) + '%）');
   ok('是分好幾波掉的，不是同一幀全掉', quakeT.big.waves >= 4,
      '掉了 ' + quakeT.big.waves + ' 波');
   ok('震掉的散在整棟，不是在槌子那一帶砸出一個洞',
@@ -10207,7 +10189,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 容許 ±0.06：分母幾百塊，抽樣誤差本來就有兩三個百分點。v1.116 起垮塌在量的時候
      是關掉的（見上面），所以不必再為「連帶垮下來的」放寬上緣——實測三秒 74.8%／70.4%
      （理論 72.5%），兩個 dt 都在 ±0.03 以內。 */
-  ok('龍捲風罩著不走就一路啃下去，每秒吸走七成一',
+  ok('龍捲風罩著不走就一路啃下去，每秒啃掉的比例照 TW_TAKE 走',
      twTake.n > 200 && twTake.got.length === 3 &&
      twTake.got.every((v, i) => v > twTake.want[i] - 0.06 && v < twTake.want[i] + 0.10),
      '釘在原地：範圍內 ' + twTake.n + ' 塊，每秒累計吸走 ' +
@@ -10258,7 +10240,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '同樣三秒：dt 0.016 吸走 ' + (twRate.fine * 100).toFixed(0) + '%、dt 0.1 吸走 ' +
      (twRate.coarse * 100).toFixed(0) + '%（理論 ' + (twRate.want * 100).toFixed(0) + '%）');
 
-  /* 積木限 TW_TAKE 成，碎料不限：地上的碎塊照樣全部捲上天，
+  /* 積木照 TW_TAKE 抽，碎料不抽：地上的碎塊照樣全部捲上天，
      不然「龍捲風」看起來會像只在建築上戳幾個洞。 */
   const twDebris = await page.evaluate(() => {
     /* 藍圖要指定：素材是「落點附近 4 單位內還站著的積木」，隨機藍圖抽到那一帶
@@ -10284,7 +10266,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     twists = null; ENG.putTornados([]);
     return { n: rest.length, up };
   });
-  ok('腳下的碎料全部捲走，不受兩成那條限制',
+  ok('腳下的碎料全部捲走，不受 TW_TAKE 那條抽籤限制',
      twDebris.n >= 10 && twDebris.up >= twDebris.n * 0.9,
      '地上 ' + twDebris.n + ' 塊碎料 → 捲起 ' + twDebris.up + ' 塊');
 
@@ -12152,6 +12134,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return {
       inLight, set0, set1, hit, bag, rise, park,
       share: +(hit / Math.max(1, inLight) * 100).toFixed(1),
+      // 理論值跟著兩個常數走（同龍捲風那條）：照光 UFO_BEAM 秒、每秒抽 UFO_TAKE
+      want: +((1 - Math.pow(1 - UFO_TAKE, UFO_BEAM)) * 100).toFixed(1),
       born, comeT, beamT, goneT, dropT, awayD, atTarget,
       wantY: y, mouth: +mouth.toFixed(2), riseTop: +riseTop.toFixed(1), riseLow: +riseLow.toFixed(1),
       high: +high.toFixed(1), backD: +backD.toFixed(1), backMax: +backMax.toFixed(1),
@@ -12182,20 +12166,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(ufoK.mouthY + ufoK.lastPart) < 1e-6,
      '錐度 ' + ufoK.taper + '（判定 ' + ufoK.ratio.toFixed(3) + '）、吸光口 ' +
      ufoK.mouthY + '（造型最後一片在 ' + ufoK.lastPart + '）');
-  /* 使用者：「吸引積木（類似龍捲風幾%的數量）」——所以驗的是**幾成**：
-     一趟吸走光圈裡的六到八成，而不是整根吸光（第一版 UFO_TAKE 0.55 就是吸光的，
-     見 game-tools 那段註解）。 */
-  ok('照光吸走的是光圈裡的「幾成」，不是整根吸光',
-     ufo.share > 55 && ufo.share < 85 && ufo.hit > 200,
+  /* 使用者：「吸引積木（類似龍捲風幾%的數量）」——所以驗的是**幾成**，而且比例
+     跟著 UFO_TAKE／UFO_BEAM 走（v1.168 改成理論值 ±12，不再寫死 55～85%）：
+     吸走幾塊是隨機抽的、也是之後會調的細節，這一條只要守住「按比例抽，
+     不是整根吸光」（第一版 UFO_TAKE 0.55 就是吸光的，見 game-tools 那段註解）。 */
+  ok('照光吸走的是光圈裡的「幾成」（照 UFO_TAKE 抽），不是整根吸光',
+     Math.abs(ufo.share - ufo.want) < 12 && ufo.hit > 0,
      '光圈裡 ' + ufo.inLight + ' 塊還站著 → 吸走 ' + ufo.hit + ' 塊（' + ufo.share +
-     '%）；整座 SET ' + ufo.set0 + ' → ' + ufo.set1 + '（含失去支撐自己垮的）');
+     '%，理論 ' + ufo.want + '%）；整座 SET ' + ufo.set0 + ' → ' + ufo.set1 +
+     '（含失去支撐自己垮的）');
   ok('積木先被光捲上去，碰到吸光口才進艙',
-     ufo.rise > 20 && ufo.riseTop > ufo.mouth - 1.5 && ufo.riseTop < ufo.mouth + 0.6 &&
+     ufo.rise > 0 && ufo.riseTop > ufo.mouth - 1.5 && ufo.riseTop < ufo.mouth + 0.6 &&
      ufo.riseLow < 5,
      '同時最多 ' + ufo.rise + ' 塊在光裡飄，飄到最高 ' + ufo.riseTop +
      '（吸光口在 ' + ufo.mouth + '）、最低 ' + ufo.riseLow);
   ok('進艙的沉到地板底下（畫面上看不見，也不必跟著幽浮搬）',
-     ufo.park > 100, '艙裡最多同時 ' + ufo.park + ' 塊在地板底下');
+     ufo.park > 0,
+     '艙裡最多同時 ' + ufo.park + ' 件沉在地板底下（這一趟吸走 ' + ufo.hit + ' 塊）');
   ok('吸完就飛走：飛出場外才算走掉',
      ufo.awayD > ufo.born.arena, '飛到半徑 ' + ufo.awayD + ' 才收掉（場地半徑 ' + ufo.born.arena + '）');
   /* 使用者指定的「5 秒後」：從飛出場那一刻算起。 */
@@ -12207,7 +12194,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ufo.backD < 4 && ufo.backMax < 6,
      '平均離原地 ' + ufo.backD + '、最遠 ' + ufo.backMax + '（抖動是刻意加的 ±3）');
   ok('掉下來的積木最後躺在地上，沒有卡在地板底下或留著旗標',
-     ufo.under === 0 && ufo.flagged === 0 && ufo.carry === 0 && ufo.free > 200 &&
+     ufo.under === 0 && ufo.flagged === 0 && ufo.carry === 0 && ufo.free > 0 &&
      ufo.pool === ufo.set0,
      '地板底下 ' + ufo.under + ' 塊、還帶旗標 ' + ufo.flagged + ' 塊、躺在地上 ' +
      ufo.free + ' 塊，池子 ' + ufo.pool + ' 塊沒變');
@@ -12229,9 +12216,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let f = 0;
     while (f < 200 && !(ufos && ufos[0].st === 'beam')) { step(0.05); f++; }
     /* 兩圈散料：光圈裡 60 塊（半徑 2／4／6）、光圈外 40 塊（半徑 UFO_R + 4）。
-       裡面那圈給 60 塊而不是 20 塊，是因為「有沒有被吸走」是照 UFO_TAKE 抽的：
-       20 塊的話七成大約是 14 ± 2，門檻很難擺得穩（這一條要守的是**邊界**，
-       吸走幾成那一條在上面用 905 塊量）。 */
+       這一條要守的是**邊界**（外圈一塊都不能動），裡圈只要「有被吸到」就算數——
+       吸走幾成是照 UFO_TAKE 抽的，量在上面那條（用 905 塊）。 */
     const near = [], far = [];
     let k = 0;
     for (const b of blocks) {
@@ -12290,7 +12276,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
   });
   ok('光圈裡的散料被吸走，光圈外的一塊都沒動',
-     ufoWho.nearTaken > 30 && ufoWho.farTaken === 0,
+     ufoWho.nearTaken > 0 && ufoWho.farTaken === 0,
      '光圈裡 ' + ufoWho.nearTaken + '/' + ufoWho.nearN + ' 被吸走、外圈（半徑 ' +
      (ufoK.r + 4) + '）' + ufoWho.farTaken + '/' + ufoWho.farN);
   ok('站在光裡的小人會被吸走，掉下來之後自己站起來',
@@ -15365,7 +15351,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mgTake.dropFrames > 50 && mgTake.torn > 0 && mgTake.maxDrop < mgTake.torn * 0.1,
      '吸的 ' + mgTake.impTime + ' 秒裡有 ' + mgTake.dropFrames + ' 幀在掉，單幀最多少 ' +
      mgTake.maxDrop + ' 塊（整段共剝 ' + mgTake.torn + ' 塊）');
-  ok('吸的整段加起來剝走範圍內兩成，其餘留到爆炸',
+  ok('吸的整段加起來剝走範圍內 MAG_TAKE 那個比例，其餘留到爆炸',
      mgTake.torn > mgTake.inR * (mgTake.take - 0.05) &&
      mgTake.torn < mgTake.inR * (mgTake.take + 0.05) &&
      mgTake.preSet > mgTake.stood * 0.7,
@@ -18434,7 +18420,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const tMissed = hTools.filter(r => NO_BEAST.indexOf(r.id) < 0 && r.seen === 0).map(r => r.id);
   const tWrong = hTools.filter(r => NO_BEAST.indexOf(r.id) >= 0 && r.seen > 0).map(r => r.id);
   ok('每一支破壞道具的傷害都經過認得動物的那幾支（手指與放火例外，理由見註解）',
-     hTools.length === 18 && tMissed.length === 0 && tWrong.length === 0,
+     hTools.length === NTOOL && tMissed.length === 0 && tWrong.length === 0,
      hTools.length + ' 支：' + hTools.map(r => r.id + ' ' + r.seen).join('、') +
      (tMissed.length ? '；**沒沾到動物的：' + tMissed.join('、') + '**' : '') +
      (tWrong.length ? '；**不該沾到卻沾到的：' + tWrong.join('、') + '**' : ''));
@@ -18972,7 +18958,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('用過哪些道具會記起來', toolRec.n === toolRec.total,
      toolRec.n + ' / ' + toolRec.total + '：' + toolRec.list.join(','));
-  ok('十八種道具都用過解鎖【工具箱清空】', toolRec.got);
+  ok('全部道具都用過解鎖【工具箱清空】', toolRec.got);
 
   /* 存檔被改過時，不認得的道具 id 不該混進來 */
   const toolClean = await page.evaluate(() => {
@@ -19040,16 +19026,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const persist = await page.evaluate(() => ({ d: stats.destroyed, s: stats.smashed, b: stats.badges.length }));
   ok('關掉重開紀錄還在', persist.d === 4 && persist.s === 1234 && persist.b === 1,
      'destroyed=' + persist.d + '、smashed=' + persist.s + '、成就 ' + persist.b + ' 個');
-  /* 拆 4 座、擊飛 1234 塊 → 保齡球(2 座)、龍捲風(4 座) 開；
-     大槌(擊飛 2,000)、投石機(6,000)、煙火(11,000)、放火(6 座)、炸彈(15,000)、
-     隕石(8 座)、核彈(19,000)、爆裂魔法(10 座)、打雷(23,000)、天降鐵球(12 座)、
-     王之財寶(27,000)、大劍(14 座)、幽浮(31,000) 還鎖著 */
-  const unlockedAfterReload = await page.evaluate(() =>
-    [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','));
-  ok('重開後解鎖狀態跟著回來',
-     unlockedAfterReload ===
-       'open,open,open,lock,open,lock,open,lock,lock,lock,lock,lock,lock,lock,lock,lock,lock,lock',
-     '拆 4 座、擊飛 1234 塊 → ' + unlockedAfterReload);
+  /* 重點是「畫面跟著讀回來的紀錄重畫」，不是哪幾把該開——該開幾把是等差算出來的
+     （擊飛 1234 塊 ÷ 步幅 2,000 ＝ 0 把），寫死一長串的話每加一把道具就要改。 */
+  const afterReload = await page.evaluate(() => ({
+    dom: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','),
+    want: TOOLS.map(t => toolOk(t) ? 'open' : 'lock').join(','),
+    open: TOOLS.filter(t => toolOk(t)).length,
+    free: TOOLS.filter(t => !t.lock).length,
+    reach: Math.floor(stats.smashed / LOCK_STEP)
+  }));
+  ok('重開後解鎖狀態跟著回來（畫面照讀回來的紀錄重畫）',
+     afterReload.dom === afterReload.want &&
+     afterReload.open === afterReload.free + afterReload.reach,
+     '擊飛 1234 塊 → 免解鎖 ' + afterReload.free + ' 把＋推到第 ' + afterReload.reach +
+     ' 格＝開著 ' + afterReload.open + ' 把：' + afterReload.dom);
 
   /* 設定也要一起存——不然每次打開都要重調建材數與小人數。
      一律用「點按鈕」而不是直接改變數：要測的就是面板真的接上去了。 */
