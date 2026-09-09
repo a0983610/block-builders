@@ -12001,17 +12001,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     lives.noBlock = men[1].air ? 1 : 0;
     beasts = null;
     /* 刃從**頭上**掃過去的不算（同「炸在屋頂、砸在高處，下面的人不被震倒」那條）：
-       兩下都點在同高度上的那一刀，整片刃面就停在那個高度，站在扇形正下方的人
-       離刃面差了一大截，不該被掃到。
-       **這一刀改在 40 高橫掃**（v1.172）：刃掃到的厚度是「刃寬 × SW_BAND_K」，
-       倍率調到 1.8 之後這一把有 11.4 單位厚，而原本點的是腰上那 9.47 高
-       ——站在缺口正下方的人其實就在刃裡面（刃的下緣壓到地面以下），那就不是
-       「頭上掃過去」了。落差與刃厚兩個數都印在細節裡，倍率再調也看得出來還成不成立。 */
-    const yUp = 40;
+       兩下都點在同高度的建築上那一刀，整片刃面就停在點擊的高度上，
+       站在扇形正下方的人離刃面差了快一層樓，不該被掃到。
+       （v1.172 曾經改成在 40 高橫掃——那一版把 SW_BAND_K 調到 1.8，刃厚 11.4 已經
+       壓到地面，站在 9.47 高的缺口正下方等於站在刃裡面。倍率改回 1.0 之後
+       刃厚回到 6.33，這一條照原本的樣子就成立，所以也一起還原。） */
     aim = null; swords = null;
-    useTool({ kind: 'block', point: new THREE.Vector3(p1.x, yUp, p1.z),
-              dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
-    useTool({ kind: 'block', point: new THREE.Vector3(-p1.x, yUp, -p1.z),
+    clickB();
+    useTool({ kind: 'block', point: new THREE.Vector3(-p1.x, p1.y, -p1.z),
               dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
     const fw = swords[0];
     const fr = (fw.r0 + fw.r1) / 2, fth = fw.span * 0.5;
@@ -12020,7 +12017,6 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     swordCut(fw, -fw.back, fw.span + fw.over, 0.42);
     lives.under = men[2].air ? 1 : 0;
     lives.planeY = +fw.y.toFixed(2);
-    lives.band = +fw.band.toFixed(2);        // 刃掃到的厚度（＝ 刃寬 × SW_BAND_K）
 
     /* v1.169 使用者改的三件（造型本身沒動，動的是「哪一點在轉、哪一點在砍、手在哪一邊」）：
        ⓐ「劍尖往下一小段才是攻擊點」——攻擊點在刃尖裡面、但還在刃身上
@@ -12058,7 +12054,6 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     ENG.shake = oShake;
     swords = null; aim = null; tool = 'hammer'; running = true;
     return { both, kept, shot, geo, before, midSet, cut: cutY.length, lives,
-             bandK: SW_BAND_K, swW: ENG.SWORD_W,
              lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes: shakeN, wind,
              phs: phs.filter((p, i) => i === 0 || p !== phs[i - 1]).join('→'),
              tipErr, tipEdgeErr, tipEdge: tEdge, tipPart: ti, tipPlane, rootErr,
@@ -12120,15 +12115,6 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      swd.cut > 200 && swd.offMax <= swd.shot.band + 1e-6,
      '削掉 ' + swd.cut + ' 塊、離平面最遠的一塊 ' + swd.offMax.toFixed(3) +
      '（刃寬 ' + swd.shot.band.toFixed(2) + '）；被切時的高度分布 ' + swd.lo + '～' + swd.hi);
-  /* 一刀的厚度 ＝ 刃寬 × 刃長 × SW_BAND_K（v1.172 使用者把倍率從 1.0 調到 1.8，
-     因為 v1.162 加長收細與 v1.169 樞紐外移各讓一刀輕了一階，到 v1.169 已經是
-     「台北 101 那一趟比大槌還輕」）。這裡不寫死厚度，只驗它真的照那三個數走
-     ——倍率再調，這一條自己跟著對（見 README〈一刀有多重〉的量測表）。 */
-  ok('一刀的厚度 ＝ 刃寬 × 刃長 × SW_BAND_K（倍率再調這條自己跟著對）',
-     swd.bandK > 1 &&
-     Math.abs(swd.shot.band - swd.swW * swd.shot.len * swd.bandK) < 1e-9,
-     '刃寬 ' + swd.swW.toFixed(4) + ' × 刃長 ' + swd.shot.len.toFixed(2) + ' × ' +
-     swd.bandK + ' ＝ ' + swd.shot.band.toFixed(2) + '（平面兩側各這麼厚）');
   ok('一趟揮擊只震一次畫面（它每一幀都在切，每幀都震會抖到揮完）',
      swd.shakes === 1, '震了 ' + swd.shakes + ' 次');
   /* 畫面與判定同一份：引擎的 SWORD_TIP／SWORD_PIVOT 兩邊共用，
@@ -12182,12 +12168,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('刃掃到的小人與吉祥物會被撞飛，掃不到的不動',
      swd.lives.on === 1 && swd.lives.mob === 1 &&
      swd.lives.pivot === 0 && swd.lives.under === 0 &&
-     swd.lives.planeY > swd.lives.band && swd.lives.sp > 3 && swd.lives.up > 0,
+     swd.lives.sp > 3 && swd.lives.up > 0,
      '刃面上的人被撞飛（水平 ' + swd.lives.sp + '、抬升 ' + swd.lives.up +
      '）、吉祥物 ' + (swd.lives.mob ? '也飛了' : '沒反應') + '；樞紐正下方的（半徑不到刃根）' +
      (swd.lives.pivot ? '飛了' : '沒動') + '、刃在 ' + swd.lives.planeY +
-     ' 高橫掃（刃厚 ' + swd.lives.band + '，人在刃外面）時站在正下方的 ' +
-     (swd.lives.under ? '飛了' : '沒動'));
+     ' 高橫掃時站在正下方的 ' + (swd.lives.under ? '飛了' : '沒動'));
   ok('一塊積木都沒切到的那一刀，照樣把刃掃到的人撞飛',
      swd.lives.setSame === 1 && swd.lives.noBlock === 1,
      '第二刀削掉 ' + (swd.lives.setSame ? '0' : '不只 0') + ' 塊積木，站在刃面上的人 ' +
