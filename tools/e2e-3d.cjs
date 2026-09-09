@@ -9377,6 +9377,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       shapePick = SHAPES.findIndex(s => s.n === cfg[0]);
       targetCnt = cfg[1];
       cleanTools(); startBuild(true); completeNow();
+      /* 高度**在丟之前**先量：v1.172 起起點讀的是 siteTopNow()（現在的屋頂），
+         不是 bp.height（蓋完的高度）——這一座 completeNow 過，兩個差半塊
+         （最高那一塊的頂面 64.94 vs 藍圖 65），所以這裡不能拿 bp.height 當期望值。 */
+      const top0 = siteTopNow();
       dropBall({ x: 0, y: 0, z: 0 });
       const o = balls[0], R = o.r + 0.7;
       // 起點要在跑之前先記下來：o 是球本身，跑完 o.y 就變成落地的高度了
@@ -9398,16 +9402,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         }
         if (land < 0 && balls[0].y <= balls[0].r + 1e-6) land = +t.toFixed(2);
       }
-      out.push({ shape: cfg[0], h: +bp.height.toFixed(0), y0: +y0.toFixed(0),
+      out.push({ shape: cfg[0], h: +top0.toFixed(2), y0: +y0.toFixed(2),
                  buried, floor: DROP_TOP, up: DROP_UP, land, gone,
                  crater: marks.filter(m => m.crater).length });
       cleanTools();
     }
     return out;
   });
-  ok('起點跟著建築高度走，不會生在建築腰上',
-     dropHigh.every(r => r.y0 === Math.max(r.floor, r.h + r.up) && r.buried === 0),
-     dropHigh.map(r => r.shape + '（高 ' + r.h + '）從 ' + r.y0 +
+  ok('起點跟著「現在」的屋頂走，不會生在建築腰上',
+     dropHigh.every(r => Math.abs(r.y0 - Math.max(r.floor, r.h + r.up)) < 1e-9 &&
+                         r.buried === 0),
+     dropHigh.map(r => r.shape + '（屋頂 ' + r.h + '）從 ' + r.y0 +
                        ' 掉，球心周圍埋住 ' + r.buried + ' 塊').join('　·　'));
   /* 壽命夠不夠（v1.119）：不管從多高丟，球都要**撐到落地**才被收掉，
      不能在半空中壽命到期憑空消失。落地那個坑改由〈砸在空地上那一發〉守著
@@ -11608,7 +11613,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ③ 點空地那一發**一個字都沒變**（門陣高度一樣、每一把的 aimY 都是 0）。
      兩種點法各跑一趟同一座建築、同一組座標，差別只在 kind。 */
   await reset(page, { shape: '台北 101', cnt: 3000, workers: 0 });
-  const gateHi = await page.evaluate(() => {
+  const gateHi = await page.evaluate(SEEDIN => {
     completeNow();
     const ty = bp.height * 0.6;
     const q = (a, f) => (a.length ? +a[Math.floor((a.length - 1) * f)].toFixed(1) : -1);
@@ -11664,8 +11669,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        ——回到註解開頭記的那個量級（1.97～2.05），離門檻 2.5 有兩成餘裕。
        **門檻仍然一個字都沒動**（85 與 2.5）。
        farMax 照舊取整池的最大值（那一條擋的是「阻力沒了」，要的就是極值）。
-       ty0／gy／spots／aimN 這些每一趟都一樣，取第一趟的就好。 */
+       ty0／gy／spots／aimN 這些每一趟都一樣，取第一趟的就好。
+       **v1.172 第三次紅：兩種點法改用同一副骰子**（點空地 19.5、比值 2.95）。
+       這次查出來的病因跟前兩次不同，不是長尾——是**兩種點法共用同一條骰子序列**：
+       點建築那五趟先跑，它抽了幾發就決定點空地那五趟從序列的哪裡開始。
+       v1.172 把門陣高度從「藍圖高度」改成「現在的屋頂」，同一座塔差 **0.03**
+       （65 → 64.94，門陣是半個樓高所以 38.5 → 38.47），那 0.03 就足以讓
+       「搆得到的門才瞄那一點」那個門檻翻掉幾個門，於是點建築那一組抽的發數變了
+       ——點空地那一組（它自己完全不吃門陣高度，`aimY` 一路是 0）就換了一副骰子，
+       實測連生出來的兵器數都從 149 變成 141、九成位 26.5 → 19.5。
+       拿同一顆種子把那一行還原成 `bp.height` 重跑：588/588 全綠（九成位 26.5、比值 2.16）
+       ——所以那是骰子位移，不是門陣變低造成的回歸。
+       修法是**每一種點法開頭各自重下同一顆種子**（`__seed`，同 head() 每段重下的做法）：
+       ① 點空地那一組不再受點建築那一組抽幾發的影響；
+       ② 兩組拿到**同一副骰子**——這一條比的本來就是「同樣的落點序列，換一種瞄法」，
+          配對比較本來就該同種子，這樣量到的差異才是瞄法的差異、不是骰子的差異。
+       種子用「這一段的種子 ^ 一個固定字串」（跟 head() 同一套算法），所以 --seed 換了
+       這裡也跟著換，但同一顆種子重跑一定是同一副骰子。
+       修完掃八顆種子確認餘裕（同樣五趟）：比值 **2.07～2.30、中位 2.18**、
+       點建築最遠 64.1～66.1——離門檻 2.5 與 85 各有四個標準差以上，
+       所以趟數不必再加（加趟數會讓整輪更慢，而且 farMax 取整池最大值本來就會跟著飄）。
+       **兩個門檻仍然一個字都沒動**（85 與 2.5）。 */
     const runN = kind => {
+      window.__seed(SEEDIN);
       const rs = [run(kind), run(kind), run(kind), run(kind), run(kind)];
       const far = rs.flatMap(r => r.far).sort((a, b) => a - b);
       const hy = rs.flatMap(r => r.hy).sort((a, b) => a - b);
@@ -11675,7 +11701,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
     const blk = runN('block'), gnd = runN('ground');
     return { ty: +ty.toFixed(1), H: +bp.height.toFixed(1), blk, gnd };
-  });
+  }, seedOf('王之財寶·點建築 vs 點空地'));
   /* 點擊高度 39：block 那一趟打中的高度中位數實測 31.5，ground 那一趟 12.5（打中的發數
      兩趟都是 165，火力沒有因為改瞄準而變弱）。門檻取「比點空地高六成」（20）
      ＋「至少爬到點擊高度的六成」（23.4），兩條離實測值都有三成以上餘裕。
@@ -11975,11 +12001,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     lives.noBlock = men[1].air ? 1 : 0;
     beasts = null;
     /* 刃從**頭上**掃過去的不算（同「炸在屋頂、砸在高處，下面的人不被震倒」那條）：
-       兩下都點在同高度的建築上那一刀，整片刃面就停在點擊的高度上，
-       站在扇形正下方的人離刃面差了快一層樓，不該被掃到。 */
+       兩下都點在同高度上的那一刀，整片刃面就停在那個高度，站在扇形正下方的人
+       離刃面差了一大截，不該被掃到。
+       **這一刀改在 40 高橫掃**（v1.172）：刃掃到的厚度是「刃寬 × SW_BAND_K」，
+       倍率調到 1.8 之後這一把有 11.4 單位厚，而原本點的是腰上那 9.47 高
+       ——站在缺口正下方的人其實就在刃裡面（刃的下緣壓到地面以下），那就不是
+       「頭上掃過去」了。落差與刃厚兩個數都印在細節裡，倍率再調也看得出來還成不成立。 */
+    const yUp = 40;
     aim = null; swords = null;
-    clickB();
-    useTool({ kind: 'block', point: new THREE.Vector3(-p1.x, p1.y, -p1.z),
+    useTool({ kind: 'block', point: new THREE.Vector3(p1.x, yUp, p1.z),
+              dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
+    useTool({ kind: 'block', point: new THREE.Vector3(-p1.x, yUp, -p1.z),
               dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
     const fw = swords[0];
     const fr = (fw.r0 + fw.r1) / 2, fth = fw.span * 0.5;
@@ -11988,6 +12020,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     swordCut(fw, -fw.back, fw.span + fw.over, 0.42);
     lives.under = men[2].air ? 1 : 0;
     lives.planeY = +fw.y.toFixed(2);
+    lives.band = +fw.band.toFixed(2);        // 刃掃到的厚度（＝ 刃寬 × SW_BAND_K）
 
     /* v1.169 使用者改的三件（造型本身沒動，動的是「哪一點在轉、哪一點在砍、手在哪一邊」）：
        ⓐ「劍尖往下一小段才是攻擊點」——攻擊點在刃尖裡面、但還在刃身上
@@ -12025,6 +12058,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     ENG.shake = oShake;
     swords = null; aim = null; tool = 'hammer'; running = true;
     return { both, kept, shot, geo, before, midSet, cut: cutY.length, lives,
+             bandK: SW_BAND_K, swW: ENG.SWORD_W,
              lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes: shakeN, wind,
              phs: phs.filter((p, i) => i === 0 || p !== phs[i - 1]).join('→'),
              tipErr, tipEdgeErr, tipEdge: tEdge, tipPart: ti, tipPlane, rootErr,
@@ -12086,6 +12120,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      swd.cut > 200 && swd.offMax <= swd.shot.band + 1e-6,
      '削掉 ' + swd.cut + ' 塊、離平面最遠的一塊 ' + swd.offMax.toFixed(3) +
      '（刃寬 ' + swd.shot.band.toFixed(2) + '）；被切時的高度分布 ' + swd.lo + '～' + swd.hi);
+  /* 一刀的厚度 ＝ 刃寬 × 刃長 × SW_BAND_K（v1.172 使用者把倍率從 1.0 調到 1.8，
+     因為 v1.162 加長收細與 v1.169 樞紐外移各讓一刀輕了一階，到 v1.169 已經是
+     「台北 101 那一趟比大槌還輕」）。這裡不寫死厚度，只驗它真的照那三個數走
+     ——倍率再調，這一條自己跟著對（見 README〈一刀有多重〉的量測表）。 */
+  ok('一刀的厚度 ＝ 刃寬 × 刃長 × SW_BAND_K（倍率再調這條自己跟著對）',
+     swd.bandK > 1 &&
+     Math.abs(swd.shot.band - swd.swW * swd.shot.len * swd.bandK) < 1e-9,
+     '刃寬 ' + swd.swW.toFixed(4) + ' × 刃長 ' + swd.shot.len.toFixed(2) + ' × ' +
+     swd.bandK + ' ＝ ' + swd.shot.band.toFixed(2) + '（平面兩側各這麼厚）');
   ok('一趟揮擊只震一次畫面（它每一幀都在切，每幀都震會抖到揮完）',
      swd.shakes === 1, '震了 ' + swd.shakes + ' 次');
   /* 畫面與判定同一份：引擎的 SWORD_TIP／SWORD_PIVOT 兩邊共用，
@@ -12139,11 +12182,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('刃掃到的小人與吉祥物會被撞飛，掃不到的不動',
      swd.lives.on === 1 && swd.lives.mob === 1 &&
      swd.lives.pivot === 0 && swd.lives.under === 0 &&
-     swd.lives.sp > 3 && swd.lives.up > 0,
+     swd.lives.planeY > swd.lives.band && swd.lives.sp > 3 && swd.lives.up > 0,
      '刃面上的人被撞飛（水平 ' + swd.lives.sp + '、抬升 ' + swd.lives.up +
      '）、吉祥物 ' + (swd.lives.mob ? '也飛了' : '沒反應') + '；樞紐正下方的（半徑不到刃根）' +
      (swd.lives.pivot ? '飛了' : '沒動') + '、刃在 ' + swd.lives.planeY +
-     ' 高橫掃時站在正下方的 ' + (swd.lives.under ? '飛了' : '沒動'));
+     ' 高橫掃（刃厚 ' + swd.lives.band + '，人在刃外面）時站在正下方的 ' +
+     (swd.lives.under ? '飛了' : '沒動'));
   ok('一塊積木都沒切到的那一刀，照樣把刃掃到的人撞飛',
      swd.lives.setSame === 1 && swd.lives.noBlock === 1,
      '第二刀削掉 ' + (swd.lives.setSame ? '0' : '不只 0') + ' 塊積木，站在刃面上的人 ' +
@@ -12583,13 +12627,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const now = siteTopNow();
     callUfo({ x: 0, z: 0 });
     callStorm({ x: 0, z: 0 });
+    /* v1.172 使用者指名剩下那三支也跟著改（天降鐵球／王之財寶的門陣／飛龍的巡航高度）。
+       五支共用同一支 siteTopNow，所以擺在同一段量：這裡都不 step，所以五支量到的
+       是同一個屋頂。飛龍的高度是**進場時算一次存起來**的（每幀掃積木池太貴），
+       所以讀的是 m.cruise。 */
+    dropBall({ x: 0, y: 0, z: 0 });
+    gateAt({ x: 0, z: 0 });
+    const dra = spawnDragon(1);
     const r = { bpH, full: +full.toFixed(2), now: +now.toFixed(2),
                 uy: +ufos[0].y.toFixed(2), sy: +storms[0].y.toFixed(2),
                 wantU: +Math.max(UFO_Y0, now + UFO_UP).toFixed(2),
                 wantS: +Math.max(STORM_Y0, now + STORM_UP).toFixed(2),
                 /* 改之前那兩支讀的是 bp.height，所以「照舊會飛在」是這兩個數 */
                 oldU: Math.max(UFO_Y0, bpH + UFO_UP),
-                oldS: Math.max(STORM_Y0, bpH + STORM_UP) };
+                oldS: Math.max(STORM_Y0, bpH + STORM_UP),
+                by: +balls[0].y.toFixed(2), gy: +gates[0].y.toFixed(2),
+                dy: +dra.cruise.toFixed(2),
+                wantB: +Math.max(DROP_TOP, now + DROP_UP).toFixed(2),
+                wantG: +Math.max(GATE_Y0, now * GATE_UP + GATE_UP_ADD).toFixed(2),
+                wantD: +Math.max(DRA_MIN, now + DRA_UP).toFixed(2),
+                floor: DROP_TOP,
+                oldB: Math.max(DROP_TOP, bpH + DROP_UP),
+                oldG: Math.max(GATE_Y0, bpH * GATE_UP + GATE_UP_ADD),
+                oldD: Math.max(DRA_MIN, bpH + DRA_UP) };
     cleanTools();
     return r;
   });
@@ -12600,6 +12660,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '台北 101 蓋完 ' + halfBuilt.bpH + ' 高（實蓋到 ' + halfBuilt.full + '），拆到只剩 ' +
      halfBuilt.now + '：幽浮飛在 ' + halfBuilt.uy + '（照舊會是 ' + halfBuilt.oldU + '）、雲底 ' +
      halfBuilt.sy + '（照舊會是 ' + halfBuilt.oldS + '）');
+  /* v1.172 使用者：「DROP_UP／GATE_UP／DRA_UP 三支要不要跟著改成『現在的屋頂』→ 要改」。
+     三支各自的下限（DROP_TOP 58／GATE_Y0 12／DRA_MIN 30）都還在，所以矮的時候會被
+     下限接住——鐵球這一座就是（22.94 ＋ 26 ＝ 48.94 < 58，所以還是 58）。
+     那正是下限的用意，這一條要驗的是「不再讀蓋完的高度」，所以三支都跟自己算出來的
+     期望值比，另外要求至少有一支真的比舊算法低（不然這條測試會被下限架空）。 */
+  ok('塔還沒蓋完時，鐵球／門陣／飛龍也照「現在」的高度出場（v1.172 三支一起改）',
+     halfBuilt.by === halfBuilt.wantB && halfBuilt.gy === halfBuilt.wantG &&
+     halfBuilt.dy === halfBuilt.wantD &&
+     halfBuilt.by < halfBuilt.oldB && halfBuilt.gy < halfBuilt.oldG - 10 &&
+     halfBuilt.dy < halfBuilt.oldD - 10,
+     '鐵球從 ' + halfBuilt.by + ' 掉（照舊會是 ' + halfBuilt.oldB + '，這一座撞到下限 ' +
+     halfBuilt.floor + '）、門陣 ' + halfBuilt.gy + '（照舊 ' + halfBuilt.oldG +
+     '）、飛龍巡航 ' + halfBuilt.dy + '（照舊 ' + halfBuilt.oldD + '）');
 
   /* ══════════ 箭雨 ══════════
      v1.171 新增。使用者第一次要的：「點擊地面 兩個位置 第一個位置出現一組小人弓箭手
@@ -12913,6 +12986,125 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      arCap.parts === 5,
      '造型表 ' + arCap.kinds + ' 種、箭是第 ' + arCap.arrowK +
      ' 種（' + arCap.parts + ' 塊）；王之財寶抽的是前 ' + arCap.scales + ' 種');
+
+  /* ── 落點散多開（v1.172 使用者：「箭矢落點比現在更分散一點(正常射手沒這麼準)」）──
+     量的是「插住那一刻離瞄準點多遠」（插住之後就不動了，見上面那一條），
+     而**插住的位置要在插住那一刻記**——箭插著幾秒就淡掉收走了，事後再數是 0 支。
+     兩件事一起驗：散開半徑照 AR_SPRAY ＋ AR_SPRAY_D × 射程 走（所以射得愈遠愈散），
+     而且**任何射程都比 v1.171 的固定 5 更散**。均勻圓盤的中位半徑是 R/√2、
+     九成位是 R√0.9，所以期望值不必寫死，兩個都從公式算。 */
+  const arSpray = await page.evaluate(() => {
+    const res = [];
+    for (const d of [20, 60]) {
+      cleanTools();
+      tool = 'arrow';
+      const land = [];
+      const os = arrowStick;
+      arrowStick = r => { land.push([r.x, r.z]); os(r); };
+      const fz = 62, tz = fz - d;
+      useTool({ kind: 'ground', point: { x: 40, y: 0, z: fz } });
+      useTool({ kind: 'ground', point: { x: 40, y: 0, z: tz } });
+      for (let i = 0; i < 60 * 14; i++) step(1 / 60);
+      arrowStick = os;
+      const rs = land.map(l => Math.hypot(l[0] - 40, l[1] - tz)).sort((a, b) => a - b);
+      const q = f => +rs[Math.min(rs.length - 1, Math.floor(rs.length * f))].toFixed(2);
+      const R = AR_SPRAY + AR_SPRAY_D * d;
+      res.push({ d, n: rs.length, med: q(0.5), p90: q(0.9),
+                 wantMed: +(R / Math.SQRT2).toFixed(2), wantP90: +(R * Math.sqrt(0.9)).toFixed(2),
+                 oldP90: +(AR_SPRAY * Math.sqrt(0.9)).toFixed(2) });
+    }
+    cleanTools();
+    return res;
+  });
+  ok('落點散在瞄準點附近，而且射得愈遠愈散（比 v1.171 的固定半徑更散）',
+     arSpray.every(r => r.n > 150 && Math.abs(r.med - r.wantMed) < 2.5 &&
+                        Math.abs(r.p90 - r.wantP90) < 2.5 && r.p90 > r.oldP90) &&
+     arSpray[1].p90 > arSpray[0].p90 + 1,
+     arSpray.map(r => '射程 ' + r.d + '：' + r.n + ' 支落點中位 ' + r.med +
+                      '（期望 ' + r.wantMed + '）、九成在 ' + r.p90 +
+                      ' 內（期望 ' + r.wantP90 + '，v1.171 是 ' + r.oldP90 + '）').join('　·　'));
+
+  /* ── 第二下點在建築上就瞄那個高度（v1.172 使用者：「箭雨調整能夠點建築為目標
+     (目前好像都是以地面高度為目標)」）──
+     這一條**換一座建築**（台北 101，高而窄，牆面好瞄），所以擺在這一段最後
+     ——前面每一條都還吃巴黎聖母院那一座（段落之間有狀態相依，見檔頭）。
+     三件事一起驗：
+       ① 瞄的高度就是點到的那一塊（不是腳下地面的 AR_AIM_Y）；
+       ② 解出來的初速**真的會經過那一點**——從每一發自己的初速反推它要打的那一點，
+          誤差要是浮點的量級。目標比出手點高的走「最省力仰角」那一支
+          （見 shootArrow），所以出手角度不再是 45 度，而是 45～90 度之間；
+       ③ 箭真的插在**牆上**（插住的位置有高度），不是全部落到地面。 */
+  await reset(page, { shape: '台北 101', cnt: 3000, workers: 6 });
+  const arHigh = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    /* 半高最外側那一塊。**存快照不要存那塊積木本身**：它等一下就被射下來，
+       之後 b.y 會變成落在地上的高度（同大劍那一段記過的坑）。 */
+    const set = blocks.filter(b => b.st === SET);
+    let hi = 0;
+    for (const b of set) if (b.y > hi) hi = b.y;
+    let pick = null, far = -1;
+    for (const b of set) {
+      if (Math.abs(b.y - hi * 0.5) > 1) continue;
+      const d = Math.hypot(b.x, b.z);
+      if (d > far) { far = d; pick = b; }
+    }
+    const p = { x: pick.x, y: pick.y, z: pick.z };
+    const run = onBlock => {
+      cleanTools();
+      tool = 'arrow';
+      const shots = [], land = [];
+      const os = shootArrow, ost = arrowStick;
+      shootArrow = (g, m) => {
+        os(g, m);
+        const a = arrows[arrows.length - 1];
+        const vh = Math.hypot(a.vx, a.vz), v = Math.hypot(a.vx, a.vy, a.vz);
+        const th = Math.atan2(a.vy, vh);
+        /* 從這一發自己的初速反推「它要打的那一點有多高」：最省力仰角那一支
+             s ＝ v²/g ＝ Δh ＋ √(d²＋Δh²)、tanθ ＝ s/d
+           → d ＝ s/tanθ、Δh ＝ (s² − d²)/(2s)
+           反推得出來是因為那一支的仰角與初速綁在一起（一個目標一組解）。
+           **45 度那一支反推不出來**：45 度是一整族解（射多遠就配多快），
+           光看初速不知道它瞄的是哪一點——那一支改驗「角度就是 45.00 度」。 */
+        let err = 0;
+        if (th > Math.PI / 4 + 1e-6) {
+          const s = v * v / GRAV, d = s / Math.tan(th);
+          err = Math.abs(a.y + (s * s - d * d) / (2 * s) - g.ty);
+        }
+        shots.push({ deg: th * 180 / Math.PI, sp: v, err: err });
+      };
+      arrowStick = r => { land.push(r.y); ost(r); };
+      useTool({ kind: 'ground', point: { x: 0, y: 0, z: 22 } });
+      useTool(onBlock ? { kind: 'block', point: p } : { kind: 'ground', point: { x: p.x, y: 0, z: p.z } });
+      const ty = archers.ty;
+      for (let i = 0; i < 60 * 16; i++) step(1 / 60);
+      shootArrow = os; arrowStick = ost;
+      land.sort((a, b) => a - b);
+      return { ty: +ty.toFixed(2), n: shots.length,
+               degMin: +Math.min(...shots.map(q => q.deg)).toFixed(2),
+               degMax: +Math.max(...shots.map(q => q.deg)).toFixed(2),
+               err: Math.max(...shots.map(q => q.err)),
+               land: land.length, wall: land.filter(y => y > 3).length,
+               med: land.length ? +land[land.length >> 1].toFixed(2) : -1 };
+    };
+    const on = run(true), gnd = run(false);
+    cleanTools();
+    return { blockY: +p.y.toFixed(2), aimY: AR_AIM_Y, on, gnd };
+  });
+  ok('第二下點在建築上就瞄那一塊的高度，解出來的彈道真的經過那一點',
+     arHigh.on.ty === arHigh.blockY && arHigh.gnd.ty === arHigh.aimY &&
+     arHigh.on.err < 1e-6 &&
+     arHigh.on.degMin > 45 && arHigh.on.degMax < 90 &&
+     arHigh.gnd.degMin > 44.9 && arHigh.gnd.degMax < 45.1,
+     '點在 ' + arHigh.blockY + ' 高的牆上：瞄 ' + arHigh.on.ty + '、出手 ' +
+     arHigh.on.degMin + '～' + arHigh.on.degMax + ' 度（最省力仰角）、反推落點誤差 ' +
+     arHigh.on.err.toExponential(1) + '；同一點但點腳下的地面：瞄 ' + arHigh.gnd.ty +
+     '、出手 ' + arHigh.gnd.degMin + '～' + arHigh.gnd.degMax + ' 度');
+  ok('點牆上那一輪，箭插在牆上（不是全部落到地面）',
+     arHigh.on.wall > arHigh.on.land * 0.4 && arHigh.on.med > 5 &&
+     arHigh.gnd.med < 3,
+     '點牆上：' + arHigh.on.land + ' 支插住、其中 ' + arHigh.on.wall +
+     ' 支在 3 高以上（中位 ' + arHigh.on.med + '）；點地面：' + arHigh.gnd.land +
+     ' 支插住、只有 ' + arHigh.gnd.wall + ' 支在 3 高以上（中位 ' + arHigh.gnd.med + '）');
 
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
@@ -18593,7 +18785,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await fillAll(page);
   const hDra = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
+    /* 巡航高度**在進場那一刻**就算好存起來（v1.172 起讀 siteTopNow()，見 spawnDragon），
+       所以期望值要拿「牠出現時的屋頂」算，不能事後再量一次。 */
+    const top0 = siteTopNow();
     const m = spawnDragon(1);
+    const cached = +m.cruise.toFixed(1);
     for (let i = 0; i < 600 && m.st !== 'ring'; i++) stepDoom(0.05);
     const before = m.st;
     m.left = 4;                                        // 假裝牠是天災版、還有火球配額
@@ -18619,11 +18815,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              downY: +downY.toFixed(2), gnd: +draGround().toFixed(2),
              downT: +(downT * 0.05).toFixed(1), riseT: +(riseT * 0.05).toFixed(1),
              back: m.st, y: +m.y.toFixed(1),
-             cruise: +Math.max(DRA_MIN, (bp ? bp.height : 20) + DRA_UP).toFixed(1) };
+             cached, cruise: +Math.max(DRA_MIN, top0 + DRA_UP).toFixed(1) };
   });
   ok('飛龍被打下來：摔 → 趴 → 拍翅起飛 → 爬回巡航高度歸隊',
      hDra.hit && !hDra.twice && hDra.path === 'crash>down>rise>in' &&
-     hDra.back === 'in' && Math.abs(hDra.y - hDra.cruise) < 0.5,
+     hDra.back === 'in' && Math.abs(hDra.y - hDra.cruise) < 0.5 &&
+     hDra.cached === hDra.cruise,
      hDra.before + ' → ' + hDra.path + ' → ' + hDra.back + '；趴了 ' + hDra.downT +
      ' 秒、爬升 ' + hDra.riseT + ' 秒回到 ' + hDra.y + ' 格（巡航 ' + hDra.cruise + '）');
   ok('趴著的高度剛好貼草皮，盤旋進度不歸零，而且摔了就不吐火球',

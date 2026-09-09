@@ -53,7 +53,7 @@ const TOOLS = [
   { id: 'ufo', n: '幽浮', k: '🛸',
     tip: '點地面：一台幽浮從場外飛進來、停在那個位置上方往下照光，吸走光圈裡的積木（每秒兩成五）與小人動物，吸完就飛走；5 秒後被吸走的全部從天上掉下來，均勻撒回原來那一圈' },
   { id: 'arrow', n: '箭雨', k: '🏹',
-    tip: '點兩下：第一下點地面站出一隊八十人的小人弓箭手，第二下決定射哪裡——45 度拋物線齊射三輪，箭插到的地方咬掉一小片（不爆炸、不起火），插著的箭慢慢淡掉' }
+    tip: '點兩下：第一下點地面站出一隊八十人的小人弓箭手，第二下決定射哪裡（點建築就瞄那個高度）——45 度拋物線齊射三輪，落點散在附近（射得愈遠愈散），箭插到的地方咬掉一小片（不爆炸、不起火），插著的箭慢慢淡掉' }
 ];
 /* 等差階梯（見上面那段）：TOOLS 裡沒寫 `lock: null` 的照順序補門檻，
    第 n 把＝擊飛 n × LOCK_STEP 塊。加新道具不必碰這裡。 */
@@ -728,7 +728,10 @@ function launchBall(from, toward) {
    （1.4 秒）。固定值而不是按比例，砸到屋頂的力道才不會因建築高矮而不同。
    量過畫面上緣大約在建築高度的 1.3 倍，所以起點最多只高出畫面 9 單位
    （帝國大廈 3000）、最高的大笨鐘 9000 反而整段都在畫面內；球掉得快，
-   進畫面只差那一瞬間，所以不像烏雲那樣需要把鏡頭退開。 */
+   進畫面只差那一瞬間，所以不像烏雲那樣需要把鏡頭退開。
+   v1.172：「屋頂」跟烏雲與幽浮一樣改讀 **siteTopNow()**（現在蓋到多高），
+   不是 bp.height（蓋完多高）——使用者指名這三支（天降鐵球／王之財寶／飛龍）
+   一起改。塔還沒蓋完時球本來會從蓋完的高度掉下來，中間那一大段是空的。 */
 const DROP_TOP = 58;                // 矮建築的下限（維持 v1.117 的手感）
 const DROP_UP = 26;                 // 高過屋頂多少
 const DROP_BOUNCE = 0.22;           // 落地回彈保留多少垂直速度（保齡球是 0.42）
@@ -778,7 +781,7 @@ const DROP_HMAX = 8;                // 水平速度上限（擋住「被彈飛�
 function dropBall(point) {
   if (!balls) balls = [];
   if (balls.length >= BALL_MAX) balls.shift();     // 滿了把最早那顆擠掉（同保齡球）
-  const top = Math.max(DROP_TOP, (bp ? bp.height : 0) + DROP_UP);
+  const top = Math.max(DROP_TOP, siteTopNow() + DROP_UP);
   balls.push({
     x: point.x, y: top, z: point.z,
     vx: 0, vz: 0, vy: 0,             // 純自由落體
@@ -4644,8 +4647,11 @@ function castGate(from, toward, aimY) {
      門陣就整個高過屋頂，被錐面拉平的那些會從屋頂上空掠過去——泰姬瑪哈陵打掉的積木
      2275 → 798、插在地上的最遠 17 → 131；抬到「俯角夠陡、滑不遠」的高度更慘，
      台北 101 一整趟只打中 6 發。高門陣搆不到低處是錐面的硬限制（見 aimGate 的 lo），
-     所以維持原高度，改用「搆得到的門才瞄那一點」（見 aimGate）。 */
-  const y = Math.max(GATE_Y0, (bp ? bp.height : 0) * GATE_UP + GATE_UP_ADD);
+     所以維持原高度，改用「搆得到的門才瞄那一點」（見 aimGate）。
+     v1.172：「樓高」改讀 **siteTopNow()**（現在蓋到多高），不是 bp.height（蓋完多高）
+     ——同烏雲與幽浮那一版的理由，使用者指名這三支一起改。門陣是**半個樓高**再加 6，
+     所以塔沒蓋完時它只降一半（台北 101 拆到 23 高：38.5 → 17.5）。 */
+  const y = Math.max(GATE_Y0, siteTopNow() * GATE_UP + GATE_UP_ADD);
   const g = {
     x: toward.x, z: toward.z, y, ty, fx, fz, ux, uz,
     /* 錐形夾角的軸：水平、朝著鏡頭（見 GATE_CONE）。**一定要在這裡就給值**——
@@ -5411,10 +5417,18 @@ const SW_BACK_K = 0.35, SW_BACK_MAX = 0.30;
 const SW_OVER_K = 0.18, SW_OVER_MAX = 0.16;
 const SW_HOLD = 0.22;            // 揮到終點停多久
 const SW_FADE = 1.1;            // 原地化成金光淡掉要幾秒（使用者選的收尾）
-/* 刃掃到的厚度 ＝ 揮動平面兩側各一個刃寬，使用者選的是「刃掃過的整片削掉」。
-   全長 30 時刃寬 3.6 單位，兩側各一個 ＝ 7.2 單位 ＝ 七塊多厚的一道缺口，
-   被切斷的那一段接著靠現成的垮塌判定自己塌下來。 */
-const SW_BAND_K = 1.0;
+/* 刃掃到的厚度 ＝ 揮動平面兩側各「一個刃寬 × SW_BAND_K」，使用者選的是「刃掃過的
+   整片削掉」。全長 30 時刃寬 3.6 單位，兩側各一個 ＝ 7.2 單位 ＝ 七塊多厚的一道缺口，
+   被切斷的那一段接著靠現成的垮塌判定自己塌下來。
+   **v1.172 從 1.0 加到 1.8**（使用者選的，量測見下面）：v1.162 加長收細、v1.169 樞紐
+   外移＋攻擊點內縮，兩次都讓一刀變輕，到 v1.169 已經是「台北 101 那一趟比大槌還輕」
+   （16.6% vs 24.3%）。掃過 1.0／1.4／1.8／2.2／3.0 五個值（同一組點擊、跑十秒讓垮塌與
+   廢棄都走完）：
+     國會大廈  52.6 → 60.9 → 64.5 → 64.5 → 64.5 ％
+     台北 101  16.6 → 23.2 → 29.3 → 36.5 → 49.4 ％
+   矮而寬的國會在 1.8 就**頂到天花板**（再厚也沒東西可切，因為一刀掃到的是同一片扇形），
+   所以這個數字實際上只在調高塔那一種。 */
+const SW_BAND_K = 1.8;
 const SW_HIT_K = 0.45;           // 擊飛速度 ＝ 那一塊所在半徑的刃速 × 這個
 const SW_HIT_MAX = 34;           // 擊飛速度上限（同一把尺：槌子 15、大槌 15×1.5＝22.5）
 let swords = null;               // 場上的大劍（出現 → 揮 → 停 → 淡完為止）
@@ -5778,8 +5792,8 @@ function useTool(hit) {
   // 兩下之中點在建築上的那一下決定劍柄的高度（v1.161，見 aimSword）
   if (tool === 'sword') { aimSword(hit.point, hit.kind === 'block'); return 0; }
   if (tool === 'ufo') { callUfo({ x: hit.point.x, z: hit.point.z }); return 0; }
-  // 箭雨（v1.171）：第一下站人、第二下是落點，兩下都只讀 x／z（見 aimArrows）
-  if (tool === 'arrow') { aimArrows({ x: hit.point.x, z: hit.point.z }); return 0; }
+  // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
+  if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   return 0;
 }
 
@@ -6271,9 +6285,15 @@ let fballs = null;                   // 飛在半空的火球
    bad＝吉祥物那一趟順手噴村子（v1.166）：配額給 MASC_BAD_SHOT，落點改瞄村子那邊。 */
 function spawnDragon(fun, bad) {
   const a = Math.random() * Math.PI * 2, d = arenaR + DRA_OUT;
+  /* 巡航高度**進場時算一次就存起來**（v1.172）。改讀 siteTopNow()（現在蓋到多高）
+     而不是 bp.height（蓋完多高）——同烏雲與幽浮那一版的理由，使用者指名這三支一起改。
+     為什麼要存：siteTopNow() 是掃一遍積木池（幾千筆），飛龍的高度是**每一幀**都在算的
+     （見 stepDragon 那一行），每幀掃一遍太貴。存下來的副作用是「牠自己噴掉屋頂之後
+     不會跟著下降」——那正好，一趟盤旋中間高度自己往下掉才怪。 */
+  const cruise = Math.max(DRA_MIN, siteTopNow() + DRA_UP);
   const m = {
     kind: 'dragon', x: Math.cos(a) * d, z: Math.sin(a) * d,
-    y: Math.max(DRA_MIN, (bp ? bp.height : 20) + DRA_UP),
+    y: cruise, cruise: cruise,
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就朝著工地
     ph: 0, roll: 0, spin: 0, sc: DRA_SC, gait: 0,
     st: 'in', rc: Math.min(arenaR - 6, siteR + 12), dir: Math.random() < 0.5 ? 1 : -1,
@@ -6340,7 +6360,7 @@ function stepDragon(m, dt) {
   m.z += Math.cos(m.a) * DRA_SPD * dt;
   /* 身體跟著拍翅俯仰與上下浮，相位比翅膀晚一點——先拍翅，身體才被抬起來。 */
   m.spin = DRA_PITCH * Math.sin(m.ph + 0.8);
-  m.y = Math.max(DRA_MIN, (bp ? bp.height : 20) + DRA_UP) + DRA_BOB * Math.sin(m.ph - 1.0);
+  m.y = m.cruise + DRA_BOB * Math.sin(m.ph - 1.0);     // 巡航高度是進場時算好的（見 spawnDragon）
   return m.st === 'out' && Math.hypot(m.x, m.z) > arenaR + DRA_OUT;
 }
 
@@ -6886,7 +6906,7 @@ function fallenDragon(m, dt) {
     return false;
   }
   /* rise：拍翅起飛。鼻子抬起來、側傾收平，一路爬升到巡航高度才歸隊。 */
-  const top = Math.max(DRA_MIN, (bp ? bp.height : 20) + DRA_UP);
+  const top = m.cruise;                     // 爬回進場時那個高度（見 spawnDragon）
   m.ph += dt * DRA_FLAP * DRA_RISE_FLAP;
   m.spin += (DRA_RISE_PITCH - m.spin) * Math.min(1, dt * 3);
   m.roll += (0 - m.roll) * Math.min(1, dt * 3);
@@ -7038,8 +7058,8 @@ function beastWeapon(w, m) {
      ③ **箭走拋物線**：解「T 秒抵達」的初速，同投石機的石頭（見 fireRock）。
         出手一律 45 度（使用者指定的姿勢，畫出來的弓與彈道用同一個角度，見 AR_AIM_Y），
         指向就是速度的方向，所以箭會自己在頂點翻成頭朝下——直線飛的不叫箭雨。
-        瞄的是第二點**的地面**：屋頂與外牆是路上撞到的，不必先去找目標高度
-        （投石機那邊為此掃一遍積木池，這裡靠掃掠判定就夠）。
+        瞄的高度：第二下點空地就是地面上一點點（AR_AIM_Y），點在建築上就是**那一塊
+        的高度**（v1.172，見 aimArrows）；路上撞到的屋頂與外牆靠掃掠判定接。
      ④ **「沒有爆炸效果」**：打中積木只咬掉一小片（不放火球、不點火、不震畫面），
         打中小人只是撞倒。王之財寶 v1.148 起打中人會炸一顆小火球（manWeapon →
         weaponBlast），這裡刻意不走那一條。
@@ -7063,7 +7083,13 @@ const AR_OUT = 0.45;             // 撤走：整隊縮回去要多久
 /* 出場／撤走的縮放下限。**不能給 0**：putWorker 讀的是 `w.scale || 1`，0 會被當成
    「沒給」＝原尺寸——那樣整隊在最後一幀會突然彈回原大小再消失。給一個看不見的小數就好。 */
 const AR_K0 = 0.001;
-const AR_SPRAY = 5;              // 落點在第二點附近散多開（半徑）
+/* 落點在第二點附近散多開。**基本半徑 ＋ 射程的一個比例**（v1.172 使用者：「箭矢落點
+   比現在更分散一點(正常射手沒這麼準)」）：v1.171 是固定半徑 5，不管射 15 還是射 60
+   都一樣準——而射得愈遠愈不準才是射手該有的樣子（一點角度誤差乘上距離就是落點誤差）。
+   基本那 5 沒動，所以任何距離都只會比 v1.171 更散、不會更集中。
+   實測（同一組點擊、240 支）：射程 42 的一輪散開半徑 5.0 → 10.0。 */
+const AR_SPRAY = 5;              // 基本半徑
+const AR_SPRAY_D = 0.12;         // 每一單位射程再加多少半徑
 /* 出手角度 45 度（使用者：「小人拉弓 應該要往上45度」）。**畫出來的姿勢與真正的
    彈道用同一個角度**（姿勢見引擎的 BOW_TILT）：45 度的彈道水平與垂直初速一樣大，
    所以飛行時間由距離決定——
@@ -7072,8 +7098,10 @@ const AR_SPRAY = 5;              // 落點在第二點附近散多開（半徑�
    v1.171 第一版是「固定飛 1.9 秒」，那樣角度會跟著距離跑（實測 d=15 是 72 度、
    d=60 是 38 度），箭離弓的方向跟弓指的方向差很多。
    換來的代價：弧高跟著距離走，不再每一發一樣高（d=42 頂點約 11、d=15 約 3.8）。
-   AR_T_MIN 是給「兩點幾乎重疊」那種退化情況的下限（不夾的話 d≈0 時 T 只有 0.1 秒）。 */
-const AR_AIM_Y = 0.6;            // 瞄第二點的這個高度（地面上一點點）
+   AR_T_MIN 是給「兩點幾乎重疊」那種退化情況的下限（不夾的話 d≈0 時 T 只有 0.1 秒）。
+   **v1.172 起這一條只管「目標不比出手點高」那一半**（點空地的每一發都是），
+   目標比出手點高的走最省力仰角（見 shootArrow 的另一支），兩支在 Δh ＝ 0 接得上。 */
+const AR_AIM_Y = 0.6;            // 點空地時瞄的高度（地面上一點點。點建築見 aimArrows）
 const AR_T_MIN = 0.6;
 const AR_LEN = 1.35;             // 箭多長（世界單位。手上那支對齊這個，見引擎的 BOW_ARROW）
 const AR_HIT_R = 1.1;            // 打中的地方咬掉多大一片（王之財寶 1.5、雷 1.84）
@@ -7087,15 +7115,18 @@ const AR_AIM_C = 0xc79a5a;       // 木色（同弓）
 let archers = null;              // 在場的弓箭隊（同時只有一隊，見 castArrows）
 let arrows = null;               // 場上所有箭：飛行中的 ＋ 插著淡出中的
 
-/* 第一下記位置、畫個光環，第二下才叫人。 */
-function aimArrows(point) {
+/* 第一下記位置、畫個光環，第二下才叫人。
+   第二下點在**建築**上時那一點的高度也算目標（v1.172，使用者：「箭雨調整能夠點建築
+   為目標(目前好像都是以地面高度為目標)」）——同王之財寶 v1.152 那一版的做法（見 pickGate）。
+   點空地的那一下照舊（onBlock 為假 ＝ 瞄地面上一點點的 AR_AIM_Y）。 */
+function aimArrows(point, onBlock) {
   if (!aim) { aimFirst(point, AR_AIM_R, AR_AIM_C); return; }
-  castArrows(aim, point);
+  castArrows(aim, point, onBlock ? point.y : 0);
 }
 /* 站位：一排一排排在第一點**背對目標**的那一側，整隊面向目標。
    同時只有一隊（AR_N 是照 MAXW 的餘裕訂的，見引擎那邊）：再點一次就換一隊，
    舊那一隊已經射出去的箭照樣飛完（同王之財寶「門收了兵器還在飛」）。 */
-function castArrows(from, toward) {
+function castArrows(from, toward, aimY) {
   aim = null;
   let dx = toward.x - from.x, dz = toward.z - from.z;
   // 同一個地方連點兩下：沒有方向可用，就朝場心（同 aimDir 對兩點重疊的退路）
@@ -7122,7 +7153,9 @@ function castArrows(from, toward) {
       done: 0, off: rr(0, AR_SPREAD)             // done＝已經射幾輪、off＝自己慢多少放箭
     });
   }
-  archers = { men, t: 0, tx: toward.x, tz: toward.z, end: -1, snd: 0 };
+  // ty＝瞄的高度：點建築就是那一塊的高度，點空地就是地面上一點點（v1.172）
+  archers = { men, t: 0, tx: toward.x, ty: aimY > 0 ? aimY : AR_AIM_Y, tz: toward.z,
+              end: -1, snd: 0 };
   sndWind();                                    // 一隊人到位（同投石機架好那一聲）
 }
 /* 站位落在建築或小人的家裡面的話，先沿著背對目標的方向往後退到空地（退幾格就好，
@@ -7195,19 +7228,39 @@ function shootArrow(g, m) {
   const x = m.x + (B[0] * c + B[2] * s) * sc;
   const y = B[1] * sc;
   const z = m.z + (-B[0] * s + B[2] * c) * sc;
-  /* 落點在第二點附近散開（開根號讓分布均勻，同投石機的 fireRock），高度瞄地面。 */
-  const ang = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * AR_SPRAY;
+  /* 落點在第二點附近散開（開根號讓分布均勻，同投石機的 fireRock）。
+     散開的半徑**跟著射程走**（v1.172，見 AR_SPRAY_D）。 */
+  const far = Math.hypot(g.tx - x, g.tz - z);
+  const ang = Math.random() * Math.PI * 2;
+  const rad = Math.sqrt(Math.random()) * (AR_SPRAY + AR_SPRAY_D * far);
   const tx = g.tx + Math.cos(ang) * rad, tz = g.tz + Math.sin(ang) * rad;
-  // 飛行時間由「45 度出手」決定（見 AR_AIM_Y 那一段）
-  const T = Math.max(AR_T_MIN,
-                     Math.sqrt(Math.max(0, Math.hypot(tx - x, tz - z) + y - AR_AIM_Y) / (GRAV / 2)));
+  /* 瞄的高度：點建築就是那一塊（v1.172），點空地是 AR_AIM_Y。 */
+  const d2 = Math.hypot(tx - x, tz - z), dh = g.ty - y;
+  let vh, vy;
+  if (dh <= 0) {
+    /* 目標不比出手點高（點空地的每一發都是這一支）：**45 度**，飛行時間由距離決定
+       ——v1.171 那一條，出手角度剛好 45.00 度，見 AR_AIM_Y 那一段。 */
+    const T = Math.max(AR_T_MIN, Math.sqrt(Math.max(0, d2 - dh) / (GRAV / 2)));
+    vh = d2 / T; vy = dh / T + 0.5 * GRAV * T;
+  } else {
+    /* 目標比出手點高（點在建築上半段就是這一種）：45 度**打不到**比自己高得比距離
+       還多的點，所以改用「打得到那一點的最小初速」那一組解（最省力仰角）：
+         仰角 ＝ 45° ＋ atan(Δh ÷ d) ÷ 2　　初速² ＝ g × (Δh ＋ √(d² ＋ Δh²))
+       Δh ＝ 0 時它剛好退化成 45 度、初速² ＝ g·d，跟上面那一支接得上（點空地的行為
+       一個字都沒變）；打屋頂就自己抬到 60～70 度，弧頂剛好落在屋頂上方一點。
+       為什麼不用「45 度硬解」：那要嘛打不到（得把目標高度夾下來，等於點屋頂卻打在
+       牆上低 15 格的地方），要嘛初速爆掉（實測站 60 遠打 64 高的屋頂：96 對 62）。 */
+    const th = Math.PI / 4 + Math.atan2(dh, d2) / 2;
+    const v = Math.sqrt(GRAV * (dh + Math.hypot(d2, dh)));
+    vh = v * Math.cos(th); vy = v * Math.sin(th);
+  }
   if (!arrows) arrows = [];
   if (arrows.length >= AR_KEEP) arrows.shift();      // 滿了把最早那支擠掉（同保齡球）
   const r = {
     x, y, z, k: ENG.ARROW_K, len: AR_LEN, roll: Math.random() * Math.PI * 2,
     dx: 0, dy: 1, dz: 0, fade: 1, glow: 0, cut: null,
-    vx: (tx - x) / T, vz: (tz - z) / T,
-    vy: (AR_AIM_Y - y) / T + 0.5 * GRAV * T,         // 解拋物線：湊出剛好 T 秒落到地面
+    // 水平那一份按方向分給 x／z（大小 vh），垂直是 vy——兩支解法都湊出「剛好落在那一點」
+    vx: (tx - x) / (d2 || 1) * vh, vz: (tz - z) / (d2 || 1) * vh, vy: vy,
     s: AR_LEN,                                       // 掃掠判定的「多探一截」（見 sweepRock）
     st: 'fly', lie: 0
   };
