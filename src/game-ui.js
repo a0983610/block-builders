@@ -341,10 +341,12 @@ function onUp(e) {
     const m = beastAt(hit.idx);
     if (!m || m.air) return;
     /* 拿著火把點牠：站著被點著的會抱頭跑圈圈；飛龍是拖著火飛一段再摔下來
-       （v1.154，見 burnDragon）。已經在燒或剛被澆濕的點不著，那就改成打倒／打下來。 */
+       （v1.154，見 burnDragon）。已經在燒或剛被澆濕的點不著，那就改成打倒／打下來
+       （v1.176 起在天上的獅鷲也一樣，改成把牠打下來——見 grDown）。 */
     if (tool === 'fire') {
       if (igniteBeast(m, 0)) sndFire();
       else if (m.kind === 'dragon') crashDragon(m);
+      else if (m.sky) grDown(m);
       return;
     }
     // 拿水桶澆牠：濕 5 秒（身上有火的當場熄），不會把牠打倒

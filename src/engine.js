@@ -2999,29 +2999,41 @@ const ENG = (function () {
      自己離翼根多遠掛上去——所以拍下去時翼面是彎的，翼尖還會甩在後面。
      中間試過「每一塊各自繞翼根轉不同角度」：角度一差開，相鄰兩段就在關節處裂開
      （翼尖那一段整個斷掉），所以才改成沿弧線走——每一段本來就接在前一段的末端。 */
-  const WING_PX = 0.30, WING_PY = 0.46, WING_TIP = 4.85;   // 翼根 x／y、翼尖 x
-  const FLAP_MID = 0.18, FLAP_A = 0.62, FLAP_LAG = 1.05;   // 中位角、擺幅、翼尖落後多少
+  /* 翼弧的參數**一種一組**（v1.176 多了獅鷲）：px／py 翼根在哪、tip 翼尖的 x、
+     mid 中位角、amp 擺幅、lag 翼尖落後多少。飛龍那一組就是 v1.139 的原值。
+     curl＝角度沿著翼展再加多少（飛龍是 0：牠只有「拍翅」這一種姿態）。
+     獅鷲要靠 curl 收翅——翼根抬高、往翼尖一路折回來，就是貼在身側的那個形狀。 */
+  const WING_CFG = {
+    dragon: { px: 0.30, py: 0.46, tip: 4.85, mid: 0.18, amp: 0.62, lag: 1.05, curl: 0 },
+    gryphon: { px: 0.52, py: 2.00, tip: 3.30, mid: 0.24, amp: 0.58, lag: 0.95, curl: 0 }
+  };
   const TAIL_SW = 0.60, TAIL_K = 0.52, TAIL_W = 0.62;      // 尾巴：擺幅、波長、比翅膀慢幾成
   const NECK_SW = 0.22, NECK_W = 0.45;                     // 脖子：擺幅、快慢
-  const ARC_N = 14, WING_L = WING_TIP - WING_PX;
+  const ARC_N = 14;
   const arcX = new Float64Array(ARC_N + 1), arcY = new Float64Array(ARC_N + 1),
         arcA = new Float64Array(ARC_N + 1);
-  const wingAng = (u, ph) => FLAP_MID + FLAP_A * Math.sin(ph - FLAP_LAG * u);
+  /* 這一幀、離翼根 u 那一段的角度。**m.wb／m.wc／m.wa 給了就蓋掉表上的中位角／
+     彎曲／擺幅**（v1.176）：獅鷲用這三個切「拍翅／收翅／展翅」三種姿態，
+     飛龍三個都不給，照表走就是原本的拍翅。 */
+  const wingAng = (u, ph, c, m) =>
+    (m.wb === undefined ? c.mid : m.wb) +
+    (m.wc === undefined ? c.curl : m.wc) * u +
+    (m.wa === undefined ? c.amp : m.wa) * Math.sin(ph - c.lag * u);
   /* 這一幀的翼弧。積分出來的是「右半邊」，左半邊照 wg 的正負號鏡射。 */
-  function wingArc(ph) {
-    const ds = WING_L / ARC_N;
-    let x = WING_PX, y = WING_PY;
-    arcX[0] = x; arcY[0] = y; arcA[0] = wingAng(0, ph);
+  function wingArc(ph, c, m) {
+    const ds = (c.tip - c.px) / ARC_N;
+    let x = c.px, y = c.py;
+    arcX[0] = x; arcY[0] = y; arcA[0] = wingAng(0, ph, c, m);
     for (let i = 1; i <= ARC_N; i++) {
-      const a = wingAng((i - 0.5) / ARC_N, ph);
+      const a = wingAng((i - 0.5) / ARC_N, ph, c, m);
       x += Math.cos(a) * ds; y += Math.sin(a) * ds;
-      arcX[i] = x; arcY[i] = y; arcA[i] = wingAng(i / ARC_N, ph);
+      arcX[i] = x; arcY[i] = y; arcA[i] = wingAng(i / ARC_N, ph, c, m);
     }
   }
   /* 翼上那幾塊：掛 wg（左右）與 u（離翼根多遠，0 肩 1 翼尖，拍翅的相位落後照它算）。 */
-  function wing(list) {
+  function wing(list, c) {
     return list.map(b => Object.assign({}, b, { wg: 1,
-      u: Math.min(1, Math.max(0, (Math.abs(b.p[0]) - WING_PX) / WING_L)) }));
+      u: Math.min(1, Math.max(0, (Math.abs(b.p[0]) - c.px) / (c.tip - c.px))) }));
   }
   const D_RED = 0xb8443c, D_RED2 = 0x8e2c2a, D_BELLY = 0xcf7a52,
         D_SPIKE = 0x3c2b28, D_DK = 0x2a201e, D_MEMB = 0xd4685a,
@@ -3065,14 +3077,14 @@ const ENG = (function () {
     { p: [0.38, 0.90, 2.44], s: [0.14, 0.14, 0.46], c: D_DK, r: [0, -0.35, 0], nk: 1 },      // 頰角
     { p: [0.28, 1.26, 2.16], s: [0.14, 0.58, 0.17], c: D_SPIKE, r: [-0.50, 0, 0.26], nk: 1 },
     { p: [0.50, 1.12, 2.06], s: [0.12, 0.44, 0.15], c: D_SPIKE, r: [-0.50, 0, 0.46], nk: 1 }
-  ])).concat(bmir(wing(D_WING))).concat(bmir(wing([
+  ])).concat(bmir(wing(D_WING, WING_CFG.dragon))).concat(bmir(wing([
     { p: [0.80, 0.42, 0.74], s: [1.10, 0.30, 0.38], c: D_RED2 },                  // 上臂
     { p: [1.95, 0.46, 0.84], s: [1.30, 0.26, 0.32], c: D_RED2 },                  // 前臂
     { p: [3.30, 0.48, 0.60], s: [1.60, 0.18, 0.24], c: D_DK },                    // 翼指
     { p: [4.55, 0.48, 0.34], s: [0.30, 0.20, 0.38], c: D_CLAW },                  // 翼爪
     { p: [2.20, 0.47, -0.55], s: [2.20, 0.09, 0.13], c: D_DK, r: [0, 0.42, 0] },  // 膜上的指骨
     { p: [1.90, 0.47, -1.25], s: [1.80, 0.08, 0.12], c: D_DK, r: [0, 0.72, 0] }
-  ]))).concat(bmir([
+  ], WING_CFG.dragon))).concat(bmir([
     { p: [0.46, -0.42, -0.55], s: [0.36, 0.52, 0.46], c: D_RED, r: [0.50, 0, 0] },   // 後腿
     { p: [0.50, -0.78, -0.14], s: [0.28, 0.44, 0.32], c: D_RED2, r: [-0.55, 0, 0] },
     { p: [0.52, -0.98, 0.22], s: [0.30, 0.20, 0.44], c: D_CLAW }
@@ -3087,6 +3099,81 @@ const ENG = (function () {
     { p: [0, -0.04, -0.55], s: [0.30, 0.30, 0.34], c: 0xff6a12 },
     { p: [0, -0.08, -0.88], s: [0.18, 0.18, 0.26], c: 0xd8451a }
   ];
+
+  /* ── 獅鷲（v1.176）───────────────────────────────────────
+     使用者：「增加天災吉祥物 獅鷲／攻擊方式是噴火（類似消防車噴出長條狀的火）」，
+     並附了一張參考圖：白灰的鷲頭、黃色的鉤喙、大片褐色翅膀、黃褐的獅身與獅尾、
+     黃色帶爪的鳥腿。形態使用者選的是「飛進來 → 降落 → 站定噴火 → 拍翅飛走」。
+
+     所以牠是**站姿**（兩條後腿站著、前爪抬在胸前），不是飛龍那種水平的飛行姿態：
+     原點在腳底（同猴子，BEAST_FLOOR 算出來是 0），胸高臀低、脖子往前上方伸。
+     翅膀跟飛龍借同一套翼弧（wingArc），但參數自己一組（見 WING_CFG.gryphon）——
+     牠有三種姿態要切：飛的時候拍翅、站著收翅、噴火時展翅（規則那邊給 m.wb／wc／wa）。 */
+  const G_HD = 0xe9e5db, G_HD2 = 0xcfc8ba, G_BEAK = 0xe0a730, G_BEAK2 = 0xb8801f,
+        G_BODY = 0xb98a56, G_BODY2 = 0x9c703f, G_BELLY = 0xd0a978,
+        G_WING = 0x6b4a33, G_WING2 = 0x8d6844, G_WING3 = 0x4a3324,
+        G_LEG = 0xd9a63a, G_CLAW = 0x33291f, G_EYE = 0x1d1a16;
+  /* 翼面：內側覆羽一排 ＋ 外側初級飛羽一排，每一片各有各的前後緣（zf／zr），
+     所以前緣是掃過去的、後緣自然是鋸齒的（同飛龍的 D_WING）。
+     **整排共平面**（y 全等於 WING_CFG.gryphon.py）：上反角完全交給拍翅角度。
+     整片翼**往後擺**（前緣只到 z 0.12）：站著側面看的時候，翼前緣壓在頭上的話
+     整顆頭會被翅膀吃掉——第一版就是這樣（實際截圖抓到的，側面完全看不到鷲頭）。 */
+  const G_COV = [[0.85, 0.78, 0.12, -1.05], [1.55, 0.76, 0.06, -1.25],
+                 [2.20, 0.66, -0.04, -1.20], [2.75, 0.56, -0.16, -1.00],
+                 [3.14, 0.42, -0.28, -0.72]].map(q =>
+    ({ p: [q[0], 2.00, (q[2] + q[3]) / 2], s: [q[1], 0.10, q[2] - q[3]], c: G_WING2 }));
+  const G_PRI = [[1.95, 0.72, -1.25, -1.88], [2.55, 0.62, -1.20, -2.04],
+                 [3.05, 0.46, -1.00, -1.76]].map(q =>
+    ({ p: [q[0], 1.98, (q[2] + q[3]) / 2], s: [q[1], 0.09, q[2] - q[3]], c: G_WING3 }));
+  const GRYPH = [
+    { p: [0, 1.86, 0.18], s: [0.86, 0.92, 0.86], c: G_BODY },     // 胸
+    { p: [0, 1.92, 0.52], s: [0.62, 0.76, 0.30], c: G_HD },       // 胸前那片白羽
+    { p: [0, 1.30, 0.02], s: [0.76, 0.72, 0.80], c: G_BELLY },    // 腹
+    { p: [0, 1.16, -0.60], s: [0.80, 0.74, 0.72], c: G_BODY },    // 腰
+    { p: [0, 0.96, -1.02], s: [0.72, 0.66, 0.56], c: G_BODY2 },   // 臀
+    /* 脖子要**伸出翅膀外面**：頭頂到 3.19、頸往前推到 z 0.44，站著側面看才看得到
+       白頭與黃喙（第一版頭在 2.68／z 0.40，整顆埋在翼面裡）。 */
+    { p: [0, 2.46, 0.40], s: [0.42, 0.56, 0.46], c: G_HD },       // 頸
+    { p: [0, 2.18, 0.30], s: [0.70, 0.26, 0.66], c: G_HD2 },      // 頸羽（領圈，壓在肩上）
+    { p: [0, 2.90, 0.54], s: [0.50, 0.46, 0.54], c: G_HD },       // 頭
+    { p: [0, 3.12, 0.50], s: [0.46, 0.10, 0.46], c: G_HD2 },      // 頭頂平羽（頂到 3.17）
+    /* 喙要**鉤**：上喙往前、再掛一塊往下的鉤，下喙短一截縮在裡面。
+       只給一塊往前的方塊會變成鸚鵡的短喙，看不出是猛禽。 */
+    { p: [0, 2.84, 0.90], s: [0.24, 0.22, 0.30], c: G_BEAK },     // 上喙
+    { p: [0, 2.70, 1.00], s: [0.15, 0.18, 0.13], c: G_BEAK },     // 喙鉤
+    { p: [0, 2.69, 0.84], s: [0.20, 0.12, 0.26], c: G_BEAK2 },    // 下喙
+    { p: [0, 2.92, 0.76], s: [0.26, 0.12, 0.12], c: G_BEAK2 },    // 喙根（鼻孔那一段）
+    { p: [0, 0.92, -1.36], s: [0.20, 0.20, 0.34], c: G_BODY2 },   // 獅尾四節
+    { p: [0, 0.74, -1.62], s: [0.16, 0.24, 0.18], c: G_BODY2 },
+    { p: [0, 0.62, -1.80], s: [0.14, 0.20, 0.16], c: G_BODY2 },
+    { p: [0, 0.52, -1.94], s: [0.20, 0.22, 0.20], c: G_WING3 }    // 尾毛
+  ].concat(bmir([
+    /* 眼睛與眉脊都要**凸出頭的外面**才畫得到：頭半寬 0.25、前緣 0.81，第一版擺在
+       x 0.19／z 0.74（size 0.10×0.06）整顆埋在頭裡面，正面側面都看不到眼睛
+       ——實際截圖抓到的（同大劍那條「刃口比刃薄又同一個中心，整片被遮掉」）。 */
+    { p: [0.25, 2.96, 0.76], s: [0.10, 0.12, 0.14], c: G_EYE },   // 眼
+    /* 白頭配白眉的話，正面看過去眼睛整個糊在頭上（同白猴子那張白臉的教訓）。 */
+    { p: [0.26, 3.06, 0.72], s: [0.10, 0.07, 0.16], c: G_HD2 },   // 眉脊
+    { p: [0.42, 2.02, 0.14], s: [0.34, 0.40, 0.52], c: G_WING2 }, // 肩（蓋住翼與身體的接縫）
+    /* 前爪：兩隻一起抬（am 都給 1、hold＝不跟著走路擺），樞紐取肩。
+       噴火時 m.arm 推到 1 就是「舉起前爪、張嘴噴」那個架式。 */
+    { p: [0.46, 1.74, 0.30], s: [0.26, 0.48, 0.28], c: G_BODY, am: 1, hold: 1, pv: 1.98, pz: 0.26 },
+    { p: [0.49, 1.44, 0.40], s: [0.23, 0.36, 0.26], c: G_LEG, am: 1, hold: 1, pv: 1.98, pz: 0.26 },
+    { p: [0.51, 1.24, 0.52], s: [0.24, 0.16, 0.34], c: G_LEG, am: 1, hold: 1, pv: 1.98, pz: 0.26 },
+    { p: [0.51, 1.18, 0.70], s: [0.11, 0.11, 0.22], c: G_CLAW, am: 1, hold: 1, pv: 1.98, pz: 0.26 },
+    /* 後腿：羽毛大腿 ＋ 黃色跗骨 ＋ 三趾的腳。**還是要會擺**——著火那一段站著被點著的
+       會繞圈跑（burnBeast 的 gait 那一支），沒有 sw 的話那時候是滑步。 */
+    { p: [0.34, 1.00, -0.44], s: [0.34, 0.60, 0.40], c: G_BODY, sw: 0.9, pv: 1.16, pz: -0.44 },
+    { p: [0.34, 0.52, -0.30], s: [0.20, 0.48, 0.22], c: G_LEG, sw: 0.9, pv: 1.16, pz: -0.44 },
+    { p: [0.34, 0.12, -0.10], s: [0.28, 0.20, 0.50], c: G_LEG, sw: 0.9, pv: 1.16, pz: -0.44 },
+    { p: [0.34, 0.09, 0.20], s: [0.12, 0.13, 0.22], c: G_CLAW, sw: 0.9, pv: 1.16, pz: -0.44 },
+    { p: [0.34, 0.09, -0.36], s: [0.11, 0.12, 0.16], c: G_CLAW, sw: 0.9, pv: 1.16, pz: -0.44 }
+  ])).concat(bmir(wing(G_COV.concat(G_PRI).concat([
+    { p: [0.80, 2.06, 0.00], s: [0.60, 0.22, 0.26], c: G_WING },   // 上臂
+    { p: [1.70, 2.04, -0.06], s: [1.10, 0.18, 0.22], c: G_WING },  // 前臂
+    { p: [2.70, 2.02, -0.20], s: [1.00, 0.14, 0.18], c: G_WING },  // 腕
+    { p: [3.26, 2.00, -0.40], s: [0.30, 0.12, 0.30], c: G_WING3 }  // 翼尖
+  ]), WING_CFG.gryphon)));
 
   /* ── 閒逛的牛羊（v1.154）─────────────────────────────────
      使用者：「增加場上幾隻閒逛的動物（會被破壞工具作用 也會著火類似小人）／牛羊 2~3 隻
@@ -3191,7 +3278,7 @@ const ENG = (function () {
   });
 
   const BEASTS = { ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
-                   cow: COW, ox: OX, sheep: SHEEP, ram: RAM };
+                   cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH };
   /* 每一種的模型範圍。破壞工具打得到牠們之後（v1.146），規則那邊要拿這三個數字擺姿勢，
      所以照造型表算出來、不寫死——改造型時不必記得回來改常數。
        floor 原點要離地多高，最低的那一塊才剛好貼著草皮（猴子的原點在腳底，所以是 0；
@@ -3200,7 +3287,11 @@ const ENG = (function () {
        lift  仰躺（繞 x 轉 −90°）時世界高度就是模型的 z，所以要抬「z 最伸出去的那一塊」
              那麼多，整隻才剛好躺在草皮上（同小人的 FLAT_LIFT）
        side  側躺（繞 z 轉 ±90°）時世界高度變成模型的 x，所以要抬的是「最寬的那一塊」
-             （v1.154，四條腿的那幾隻在用——牛往後仰躺會變成用尾巴站著，見 m.side） */
+             （v1.154，四條腿的那幾隻在用——牛往後仰躺會變成用尾巴站著，見 m.side）
+             **翼上那幾塊不算進 side**（v1.176）：牠們的 x 是每一幀照翼弧重算的
+             （見 wingArc），表上的 p[0] 只是「離翼根多遠」用來算 u 的，不是實際位置。
+             算進去的話獅鷲側躺要抬 3.41（翼尖的 x），整隻會浮在草皮上方七格。
+             其餘三個照舊全部算：z 沒有被翼弧動到，而 y 那兩個飛龍在用（見 DRA_DOWN_PAD）。 */
   const BEAST_FLOOR = {}, BEAST_MID = {}, BEAST_LIFT = {}, BEAST_SIDE = {};
   for (const k in BEASTS) {
     let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
@@ -3209,7 +3300,7 @@ const ENG = (function () {
       ylo = Math.min(ylo, b.p[1] - b.s[1] / 2);
       yhi = Math.max(yhi, b.p[1] + b.s[1] / 2);
       zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
-      xhi = Math.max(xhi, Math.abs(b.p[0]) + b.s[0] / 2);
+      if (!b.wg) xhi = Math.max(xhi, Math.abs(b.p[0]) + b.s[0] / 2);
     }
     BEAST_FLOOR[k] = Math.max(0, -ylo);
     BEAST_MID[k] = (ylo + yhi) / 2;
@@ -3220,8 +3311,10 @@ const ENG = (function () {
      可以跟天災那一件同時在場（最多 4 隻），再加上龍嘴裡連著吐的火球，8 個會不夠——
      超出的那幾個是**靜靜地不畫**，不會報錯，所以留點餘裕。
      v1.154 再加到 16：場上多了 2～3 隻常駐的牛羊（HERD_N），牠們是一直在的，
-     等於把上面那筆預算整個往上墊。 */
-  const MAXBEAST = 16;
+     等於把上面那筆預算整個往上墊。
+     v1.176 再加到 18：吉祥物多了獅鷲（第四隻），而且天災那一件跟牠們是同一批動物，
+     最壞是「四種吉祥物 ＋ 三隻牛羊 ＋ 龍嘴裡連著吐的幾顆火球」。 */
+  const MAXBEAST = 18;
   /* 一隻最多幾塊。**照 BEASTS 整份算**（v1.154）：本來是把幾種列出來取 max，
      加新的一種時漏掉那一列的話，多出來的部位會被靜靜地切掉（畫不出來也不報錯）。 */
   let BEAST_PARTS = 0;
@@ -3262,7 +3355,8 @@ const ENG = (function () {
       }
       scratch.scale.setScalar(msc);
       scratch.updateMatrix();
-      if (m.kind === 'dragon') wingArc(m.ph || 0);      // 這一幀的翼弧，整條龍共用
+      const wc = WING_CFG[m.kind];                      // 這一幀的翼弧，整隻共用
+      if (wc) wingArc(m.ph || 0, wc, m);
       for (let k = 0; k < BEAST_PARTS; k++) {
         const b = parts[k];
         /* 這一種沒那麼多塊，或者手上那根香蕉已經丟出去了（m.bomb 收掉）：
@@ -3286,7 +3380,7 @@ const ENG = (function () {
           const ax = arcX[kk] + (arcX[kk + 1] - arcX[kk]) * f;
           const ay = arcY[kk] + (arcY[kk + 1] - arcY[kk]) * f;
           const aa = arcA[kk] + (arcA[kk + 1] - arcA[kk]) * f;
-          const off = b.p[1] - WING_PY;               // 這一塊原本離翼面多高，沿法線掛回去
+          const off = b.p[1] - wc.py;                 // 這一塊原本離翼面多高，沿法線掛回去
           scratchB.position.x = (ax - Math.sin(aa) * off) * b.wg;
           scratchB.position.y = ay + Math.cos(aa) * off;
           scratchB.rotation.z = ((b.r ? b.r[2] : 0) + aa) * b.wg;
@@ -3666,7 +3760,7 @@ const ENG = (function () {
                bomb: BOMB_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
                ufo: UFO_PART, ufoLit: UFO_LIT,
                ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
-               cow: COW, ox: OX, sheep: SHEEP, ram: RAM };
+               cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */

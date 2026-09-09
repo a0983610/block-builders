@@ -11869,14 +11869,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        水平橫掃就好」）：照樣揮，而且是**貼著地面水平橫掃**——樞紐在地面的高度上、
        兩點也在地面，那個平面自然是水平的（幾何沒有為它開特例）。
        v1.161～v1.163 這一下是不揮的：出一行提示、第一點留著等你再點一次建築。 */
-    const t0 = toasts.length;
+    /* **先把提示清空**再點：`toast()` 只留最後三則，滿了就把最舊的擠掉——
+       比「長度有沒有變多」的話，滿的時候新提示是量不到的。
+       而且這一條要驗的是「**大劍**沒有抱怨」，所以成就那種提示（🏅）要跳過：
+       整輪測試的成就是累計的，哪一刻跨過門檻要看前面所有段落總共拆了多少
+       ——v1.176 多了一種天災（獅鷲，一趟燒掉兩百多塊）之後，實測某些種子
+       「🏅 粉塵滿天」剛好在這一下跳出來，量到的就變成別人的提示。 */
+    toasts.length = 0; renderToasts();
     clickG({ x: 30, z: 30 }); clickG(p2);
+    const said = toasts.filter(t => t.txt.indexOf('🏅') < 0);
     const both = { n: swords ? swords.length : 0, aim: !!aim,
                    y: swords ? +swords[0].y.toFixed(2) : -1,
                    tilt: swords
                      ? +(Math.acos(Math.min(1, Math.abs(swords[0].ny))) * 180 / Math.PI).toFixed(3)
                      : -1,
-                   toast: toasts.length > t0 ? toasts[toasts.length - 1].txt : '' };
+                   toast: said.length ? said[said.length - 1].txt : '' };
     /* **一定要把它清掉**：不清的話下面那一把會排在 swords[1]，swords[0] 量到的是這一把 */
     swords = null; aim = null;
 
@@ -17714,9 +17721,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('倒數照模擬時間走，而且一次只來一件',
      Math.abs(btime.ticked - 10) < 0.01 && btime.busy === -1 && btime.rearm > 480,
      '10 秒扣掉 ' + btime.ticked + '／場上有東西時 ' + btime.busy);
-  /* 「設計成可擴充多種」：加第三種天災＝往 DOOMS 再放一列，別處不必動。 */
+  /* 「設計成可擴充多種」：加一種天災＝往 DOOMS 再放一列，別處不必動
+     （v1.176 加獅鷲那一次就是這樣加的，所以這一條的期望值跟著從三種變四種）。 */
   const bpick = await page.evaluate(() => {
-    /* 臨時加一筆權重 2 的：總權重變成 3 種 ×1 ＋ 2 ＝ 5，所以它該拿到四成上下。 */
+    /* 臨時加一筆權重 2 的：總權重變成 4 種 ×1 ＋ 2 ＝ 6，所以它該拿到三分之一上下。 */
     DOOMS.push({ id: 'test', wt: 2, start: () => {} });
     const cnt = {};
     for (let i = 0; i < 1000; i++) { const d = rollDoom(); cnt[d.id] = (cnt[d.id] || 0) + 1; }
@@ -17724,9 +17732,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { ids: DOOMS.map(d => d.id), cnt };
   });
   ok('事件表可擴充：加一筆進去就抽得到，而且照權重',
-     bpick.ids.length === 3 && bpick.cnt.test > 320 && bpick.cnt.test < 480 &&
-     bpick.cnt.ape > 120 && bpick.cnt.snow > 120 && bpick.cnt.dragon > 120,
-     '原本三種 ＋ 臨時加一種（權重 2）抽 1000 次：' + JSON.stringify(bpick.cnt));
+     bpick.ids.length === 4 && bpick.cnt.test > 270 && bpick.cnt.test < 400 &&
+     bpick.cnt.ape > 100 && bpick.cnt.snow > 100 && bpick.cnt.dragon > 100 &&
+     bpick.cnt.gryphon > 100,
+     '原本四種 ＋ 臨時加一種（權重 2）抽 1000 次：' + JSON.stringify(bpick.cnt));
 
   /* ── 走過來（使用者：「按照小人行走邏輯 不要穿越地標建築&小房子」）── */
   await fillAll(page);
@@ -17871,12 +17880,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              wing: D.filter(b => b.wg).length, tail: D.filter(b => b.tl).length,
              neck: D.filter(b => b.nk).length,
              memb: D.filter(b => b.c === 0xd4685a).length,
+             gry: ENG.BEASTS.gryphon.length,
              fball: ENG.BEASTS.fball.length };
   });
+  /* 「一隻最多幾塊」（BEAST_PARTS）是照 BEASTS 整份取最大算的，所以只能守
+     「裝得下飛龍」——v1.176 起最大的那一種是獅鷲（65 塊），不再是飛龍。 */
   ok('飛龍的翼展 20 格上下（小人 2.2 格，約九分之一）',
-     dfig.world > 19 && dfig.world < 22 && dfig.parts === dfig.max,
+     dfig.world > 19 && dfig.world < 22 && dfig.max >= dfig.parts,
      '模型翼展 ' + dfig.span + ' ×' + dfig.sc + ' ＝ ' + dfig.world +
-     ' 格、體長 ' + dfig.len + '，' + dfig.parts + ' 塊');
+     ' 格、體長 ' + dfig.len + '，' + dfig.parts + ' 塊（一隻的上限 ' + dfig.max +
+     ' 塊照最大的那一種算，現在是獅鷲的 ' + dfig.gry + ' 塊）');
   ok('翅膀、尾巴、脖子各有自己的擺動旗標',
      dfig.wing >= 20 && dfig.tail === 7 && dfig.neck >= 12 && dfig.memb === 10,
      '翼 ' + dfig.wing + ' 塊（翼膜 ' + dfig.memb + '）／尾 ' + dfig.tail +
@@ -18076,9 +18089,308 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 900; i++) { const d = rollDoom(); cnt[d.id] = (cnt[d.id] || 0) + 1; }
     return { ids: DOOMS.map(d => d.id), cnt };
   });
-  ok('三種天災都抽得到', dpick.ids.length === 3 && dpick.ids.indexOf('dragon') >= 0 &&
-     Object.keys(dpick.cnt).length === 3 && dpick.cnt.dragon > 200,
+  ok('四種天災都抽得到', dpick.ids.length === 4 && dpick.ids.indexOf('dragon') >= 0 &&
+     Object.keys(dpick.cnt).length === 4 && dpick.cnt.dragon > 150 &&
+     dpick.cnt.gryphon > 150,
      JSON.stringify(dpick.cnt));
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+
+  /* ══════════ 天災：獅鷲噴火 ══════════ */
+  /* v1.176。使用者：「增加天災吉祥物 獅鷲／攻擊方式是噴火(類似消防車噴出長條狀的火)／
+     也要做著火&倒地」，並附了一張參考圖；形態是三個選項裡挑的
+     「飛進來 → 降落 → 站定噴火 → 拍翅飛走」。造型與動作是先出實機截圖給使用者看過才落地的
+     （同天災那幾隻、同吉祥物、同牛羊、同大劍）。
+
+     牠是場上第一隻**橫跨天上與地上兩套**的動物（飛龍永遠在天上、猴子永遠在地上），
+     所以這一段驗的重點是那個交界：飛進來降落、火柱的形狀、火柱到了才點著、
+     以及被打到之後走的是**地上那一套**（而且照牛羊往側邊倒，不是兩條腿那種仰躺）。
+     另開一段而不是塞進上面那段，是為了不位移「天災：猴子與飛龍」那一段的骰子。 */
+  await head('天災：獅鷲噴火');
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
+  await fillAll(page);
+
+  /* ── 造型（讀引擎那份部位表，跟核可過的造型對得起來）── */
+  const gfig = await page.evaluate(() => {
+    const G = ENG.BEASTS.gryphon;
+    const wg = G.filter(b => b.wg);
+    const span = Math.max(...wg.map(b => Math.abs(b.p[0]) + b.s[0] / 2)) * 2;
+    const top = Math.max(...G.map(b => b.p[1] + b.s[1] / 2));
+    /* 頭＝最高的那一塊白羽色（頭、頸、胸前那片白羽共用同一個顏色）。 */
+    const hd = G.filter(b => b.c === 0xe9e5db).sort((a, b) => b.p[1] - a.p[1])[0];
+    const eye = G.find(b => b.c === 0x1d1a16);
+    const beak = G.filter(b => b.c === 0xe0a730).sort((a, b) => b.p[2] - a.p[2])[0];
+    return {
+      parts: G.length, max: ENG.BEAST_PARTS, wg: wg.length,
+      span: +span.toFixed(2), world: +(span * GR_SC).toFixed(1),
+      tall: +(top * GR_SC).toFixed(1), floor: ENG.BEAST_FLOOR.gryphon,
+      /* 眼睛凸出頭外面多少（負的＝埋在頭裡，正面側面都看不到眼睛） */
+      eyeX: +(Math.abs(eye.p[0]) + eye.s[0] / 2 -
+              (Math.abs(hd.p[0]) + hd.s[0] / 2)).toFixed(3),
+      eyeZ: +(eye.p[2] + eye.s[2] / 2 - (hd.p[2] + hd.s[2] / 2)).toFixed(3),
+      beakZ: +(beak.p[2] + beak.s[2] / 2 - (hd.p[2] + hd.s[2] / 2)).toFixed(2),
+      /* 頭前緣要伸出翼面前緣（不然站著側面看整顆頭被翅膀吃掉） */
+      hdWing: +(hd.p[2] + hd.s[2] / 2 -
+                Math.max(...wg.map(b => b.p[2] + b.s[2] / 2))).toFixed(2),
+      side: +ENG.BEAST_SIDE.gryphon.toFixed(2),
+      sideAll: +Math.max(...G.map(b => Math.abs(b.p[0]) + b.s[0] / 2)).toFixed(2)
+    };
+  });
+  ok('獅鷲：站起來六格多高、翼展十四格上下（小人 2.2 格、飛龍翼展 20.4 格）',
+     gfig.tall > 6 && gfig.tall < 7.5 && gfig.world > 12.5 && gfig.world < 16 &&
+     gfig.floor === 0 && gfig.wg >= 20 && gfig.max >= gfig.parts,
+     '高 ' + gfig.tall + ' 格、翼展 ' + gfig.world + ' 格（模型 ' + gfig.span + '）、' +
+     gfig.parts + ' 塊（翼上 ' + gfig.wg + ' 塊）、原點在腳底 ' + gfig.floor);
+  /* 這兩條守的是實際截圖抓到的兩個坑（v1.176 第一版）：眼睛整顆埋在頭裡面、
+     側面看整顆頭被翅膀吃掉。都是「有沒有凸出去」的問題，不是位置對不對。 */
+  ok('眼睛與喙都凸出頭的外面（不然正面側面都看不到眼睛）',
+     gfig.eyeX > 0 && gfig.eyeZ > 0 && gfig.beakZ > 0,
+     '眼睛凸出 x ' + gfig.eyeX + '／z ' + gfig.eyeZ + '，喙比頭前緣再前 ' + gfig.beakZ);
+  ok('頭伸在翼面前面（站著側面看得到鷲頭）',
+     gfig.hdWing > 0.4, '頭前緣比翼面前緣再前 ' + gfig.hdWing + '（模型單位）');
+  /* 側躺那條踩到的坑：翼上那幾塊的 p[0] 是「離翼根多遠」（算拍翅相位的 u 用的），
+     實際位置是每一幀照翼弧重算的，所以不能算進「側躺要抬多高」。 */
+  ok('翼上那幾塊不算進「側躺要抬多高」（不然整隻浮在草皮上方）',
+     gfig.side < 0.8 && gfig.sideAll > 3,
+     '側躺抬 ' + gfig.side + ' × 2.1 ＝ ' + (gfig.side * 2.1).toFixed(1) +
+     ' 格（照全部算會變成 ' + gfig.sideAll + '、浮 ' +
+     (gfig.sideAll * 2.1).toFixed(1) + ' 格）');
+
+  /* ── 一趟完整的天災獅鷲 ── */
+  const gtrip = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const set0 = blocks.filter(b => b.st === SET).length;
+    const m = spawnGryph();
+    const r0 = Math.hypot(m.x, m.z);
+    /* 這一幀火柱的形狀：多長、有沒有斷、拉長方向對不對、粗細落差。
+       **「斷了」用「空洞」量，不用「相鄰兩顆的縫」**：每一顆火痕蓋住
+       「離喙的距離 ± 自己一半長」這一段，把區間併起來，看從喙口到最遠那一顆之間
+       有多長完全沒被蓋到。用縫量的話，末端幾顆命長的會飛得比本體遠，
+       量到的是「那一顆離本體多遠」而不是柱子斷了（實測整條的縫 2.16，空洞只有 0.75）。 */
+    const snapJet = () => {
+      const nx = m.x + Math.sin(m.a) * GR_MOUTH * GR_SC;
+      const ny = m.y + GR_JAW * GR_SC;
+      const nz = m.z + Math.cos(m.a) * GR_MOUTH * GR_SC;
+      const js = hot.filter(h => h.jet);
+      const at = h => Math.hypot(h.x - nx, h.y - ny, h.z - nz);
+      const iv = js.map(h => [at(h) - h.ln / 2, at(h) + h.ln / 2])
+                   .sort((a, b) => a[0] - b[0]);
+      let end = 0, hole = 0, far = 0;
+      for (const s of iv) {
+        if (s[0] > end) hole = Math.max(hole, s[0] - end);
+        end = Math.max(end, s[1]);
+        far = Math.max(far, s[1]);
+      }
+      let cos = 2, spun = 0, wLo = 9, wHi = 0;
+      for (const h of js) {
+        const sp = Math.hypot(h.vx, h.vy, h.vz) || 1;
+        cos = Math.min(cos, (h.dx * h.vx + h.dy * h.vy + h.dz * h.vz) / sp);
+        if (h.rx !== undefined) spun++;              // jet 那幾顆不該有自轉角
+        wLo = Math.min(wLo, h.s); wHi = Math.max(wHi, h.s);
+      }
+      return { n: js.length, far: +far.toFixed(1), hole: +hole.toFixed(2),
+               cos: +cos.toFixed(4), spun,
+               wLo: +wLo.toFixed(2), wHi: +wHi.toFixed(2) };
+    };
+    const seen = {}, st = {};
+    let n = 0, landR = 0, inside = 0, fireN = 0, litAt = -1, want = 0, jet = null;
+    while (beasts && n < 2200) {
+      const was = m.st;
+      step(0.02); n++;
+      if (!beasts) break;
+      st[m.st] = (st[m.st] || 0) + 1;
+      if (seen[m.st] === undefined) seen[m.st] = +(n * 0.02).toFixed(2);
+      if (was !== 'aim' && m.st === 'aim' && !landR) landR = Math.hypot(m.x, m.z);
+      if (m.st === 'fire') {
+        if (!fireN) want = +grJetT(m).toFixed(3);      // 火柱飛到目標要幾秒
+        fireN++;
+        if (litAt < 0 && fires && fires.length) litAt = +(fireN * 0.02).toFixed(3);
+        if (fireN === 30) jet = snapJet();             // 噴了 0.6 秒那一幀
+      }
+      if (blockAt(m.x, m.y + 1, m.z)) inside++;        // 有沒有插進建築裡
+    }
+    return { r0: +r0.toFixed(1), arena: +arenaR.toFixed(1), siteR: +siteR.toFixed(1),
+             stand: GR_STAND,
+             seen, st, landR: +landR.toFixed(1), inside, jet, want, litAt,
+             secs: +(n * 0.02).toFixed(1), gone: !beasts,
+             set0, set: blocks.filter(b => b.st === SET).length,
+             burn: fires ? fires.length : 0 };
+  });
+  const gseq = ['in', 'land', 'aim', 'fire', 'up', 'out'];
+  ok('一趟就是「飛進來 → 降落 → 站定瞄 → 噴火 → 起飛 → 飛出場外」，順序不跳',
+     gseq.every((s, i) => gtrip.seen[s] !== undefined &&
+                          (i === 0 || gtrip.seen[s] > gtrip.seen[gseq[i - 1]])) &&
+     gtrip.gone,
+     '出現在半徑 ' + gtrip.r0 + '（場地 ' + gtrip.arena + '）→ ' +
+     gseq.map(s => s + '@' + gtrip.seen[s]).join(' → ') + '，共 ' + gtrip.secs + ' 秒');
+  ok('降落在建築外圈那一環上（同猴子站定的那個距離），而且沒插進建築裡',
+     gtrip.landR > gtrip.siteR + 3 && gtrip.landR < gtrip.siteR + 11 &&
+     gtrip.inside === 0,
+     '站在半徑 ' + gtrip.landR + '（降落點訂在 siteR ' + gtrip.siteR + ' ＋ ' +
+     gtrip.stand + '）、穿模 ' + gtrip.inside + ' 幀');
+  ok('火柱每一顆都沿著自己的飛行方向拉長，而且不自轉',
+     gtrip.jet && gtrip.jet.cos > 0.999 && gtrip.jet.spun === 0,
+     '拉長方向與飛行方向的 cos 最小 ' + gtrip.jet.cos + '（1＝完全一致）、帶自轉角的 ' +
+     gtrip.jet.spun + ' 顆');
+  ok('整條是連續的一柱，中間沒有斷開的空洞',
+     gtrip.jet && gtrip.jet.hole < 1.5 && gtrip.jet.n > 25 && gtrip.jet.far > 6,
+     '同時 ' + gtrip.jet.n + ' 顆、整條長 ' + gtrip.jet.far +
+     ' 格，最長的一段空洞 ' + gtrip.jet.hole + ' 格');
+  ok('粗細落差夠大（全一樣粗的話側面看是一塊平板）',
+     gtrip.jet && gtrip.jet.wHi / gtrip.jet.wLo > 1.8,
+     '最細 ' + gtrip.jet.wLo + '、最粗 ' + gtrip.jet.wHi);
+  /* 同 v1.175 消防車「水到了火才熄」的對偶：噴出去那一刻就燒的話，
+     火會在火柱還在半路的時候就從積木上冒出來。 */
+  ok('火柱到了才點著（不是一噴就燒起來）',
+     gtrip.litAt > gtrip.want * 0.9 && gtrip.litAt < gtrip.want + 0.35,
+     '飛到目標要 ' + gtrip.want + ' 秒，實際第 ' + gtrip.litAt + ' 秒才有第一塊燒起來');
+  ok('一趟燒得掉一片（剩下的交給火自己蔓延）',
+     gtrip.set < gtrip.set0 - 40 && gtrip.burn > 5,
+     '還站著的 ' + gtrip.set0 + ' → ' + gtrip.set + ' 塊、收工時還有 ' +
+     gtrip.burn + ' 塊在燒');
+
+  /* ── 吉祥物那一版：一道火都不噴 ── */
+  const gfun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const set0 = blocks.filter(b => b.st === SET).length;
+    const m = spawnGryph(1, 0);
+    const st = {};
+    let n = 0, jets = 0, burn = 0;
+    while (beasts && n < 4000) {
+      step(0.05); n++;
+      if (!beasts) break;
+      st[m.st] = (st[m.st] || 0) + 1;
+      for (const h of hot) if (h.jet) jets++;
+      /* 「有沒有點著誰」要**每一幀**量，不能只比頭尾的「還站著幾塊」：
+         上面那幾條把地標燒過一輪，焦黑的積木會在這 47 秒裡陸續鬆脫掉下來
+         （實測換一個種子就少 1 塊），那不是這一隻幹的。 */
+      burn = Math.max(burn, blocks.filter(b => b.burn).length);
+    }
+    return { st, jets, burn, fires: fires ? fires.length : 0, set0, gone: !beasts,
+             set: blocks.filter(b => b.st === SET).length, secs: +(n * 0.05).toFixed(1) };
+  });
+  ok('吉祥物那一版：照樣飛進來降落，站一段時間就走，一道火都不噴',
+     gfun.jets === 0 && gfun.burn === 0 && gfun.fires === 0 &&
+     gfun.st.stand > 0 && gfun.st.fire === undefined && gfun.gone,
+     '在場 ' + gfun.secs + ' 秒（站著 ' + (gfun.st.stand * 0.05).toFixed(1) +
+     ' 秒）、火柱粒子 ' + gfun.jets + ' 顆、全程在燒的積木最多 ' + gfun.burn +
+     ' 塊、還站著 ' + gfun.set + '／' + gfun.set0 + ' 塊（焦塊會自己掉，只印不守）');
+
+  /* ── 倒地：照牛羊那一條往側邊倒（使用者：「倒地不對 參考牛羊動物」）── */
+  const gdown = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const m = spawnGryph();
+    for (let i = 0; i < 900 && m.st !== 'aim'; i++) step(0.02);
+    const at = m.st, sky = m.sky;
+    const hit = fellBeast(m, 2);
+    for (let i = 0; i < 40; i++) step(0.02);
+    const out = { at, sky, hit, side: m.side, lie: +m.lie.toFixed(2),
+                  roll: +m.roll.toFixed(2), spin: +m.spin.toFixed(2),
+                  lift: +(ENG.BEAST_SIDE.gryphon * m.lie *
+                          Math.abs(Math.sin(m.roll)) * m.sc).toFixed(2) };
+    let n = 0;
+    while (m.st !== 'fire' && n < 800) { step(0.02); n++; }
+    out.back = m.st; out.wait = +(n * 0.02).toFixed(1);
+    return out;
+  });
+  ok('倒地照牛羊那一條：往側邊倒（不是兩條腿那種往後仰躺）',
+     gdown.hit && gdown.side === 1 && gdown.lie > 0 &&
+     Math.abs(Math.abs(gdown.roll) - Math.PI / 2) < 0.05 && Math.abs(gdown.spin) < 0.05,
+     '站著的時候被戳倒：側躺角 ' + gdown.roll + '（±1.57 ＝ 倒到底）、仰躺角 ' +
+     gdown.spin + '、引擎把原點抬起 ' + gdown.lift + ' 格');
+  ok('躺完自己爬起來，還沒噴的會重新瞄一次再噴（打倒只是拖延）',
+     gdown.back === 'fire', '躺完 ' + gdown.wait + ' 秒之後回到 ' + gdown.back);
+
+  /* ── 在天上被打到／被點著：先切成地上那一套再摔下來 ── */
+  const gair = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const m = spawnGryph();
+    for (let i = 0; i < 20; i++) step(0.02);
+    const st0 = m.st, sky0 = m.sky, y0 = +m.y.toFixed(1);
+    const hit = fellBeast(m, 2);
+    const sky1 = m.sky, air = m.air;
+    let n = 0;
+    while (m.air && n < 1200) { step(0.02); n++; }
+    const land = { y: +m.y.toFixed(2), lie: m.lie, st: m.st, fall: m.fall > 0 };
+    /* 換一隻：在天上被點著 → 帶著火摔下來、落地那一刻才開始燒 */
+    beasts = null; clearFires();
+    const g = spawnGryph();
+    for (let i = 0; i < 20; i++) step(0.02);
+    const lit = igniteBeast(g, 0);
+    const burnAir = g.burn, litFlag = g.lit;
+    let k = 0;
+    while (g.air && k < 1200) { step(0.02); k++; }
+    return { st0, sky0, y0, hit, sky1, air, land,
+             lit, burnAir, litFlag, burnGnd: +g.burn.toFixed(1) };
+  });
+  ok('在天上被打到：先切成地上那一套（m.sky 歸零）再摔下來，落地躺一下爬起來',
+     gair.sky0 === 1 && gair.hit && gair.sky1 === 0 && gair.air === 1 &&
+     gair.land.y < 0.05 && gair.land.lie > 0 && gair.land.fall,
+     '在 ' + gair.st0 + ' 段離地 ' + gair.y0 + ' 格被打到 → sky ' + gair.sky0 + '→' +
+     gair.sky1 + '、走彈道摔下來 → 落地 y=' + gair.land.y + '、躺著（' + gair.land.st + '）');
+  ok('在天上被點著：帶著火摔下來，落地那一刻才開始燒',
+     gair.lit && gair.burnAir === 0 && gair.litFlag === 1 && gair.burnGnd > 3,
+     '在天上 burn=' + gair.burnAir + '／lit=' + gair.litFlag + ' → 落地 burn=' +
+     gair.burnGnd + ' 秒');
+
+  /* ── 龍捲風：在天上捲不到，降落之後跟猴子一樣捲得走 ──
+     那個判斷從 v1.176 起問的是 m.sky（「這一隻現在在天上飛嗎」）而不是「牠是不是龍」，
+     幽浮的吸與三處命中判定的高度也都改問同一個旗標。 */
+  const gsuck = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const twist = m => {
+      twists = null;
+      launchTornado({ x: m.x, y: 0, z: m.z }, { x: m.x + 1, y: 0, z: m.z });
+      for (let i = 0; i < 20; i++) step(0.02);
+    };
+    const a = spawnGryph();
+    for (let i = 0; i < 20; i++) step(0.02);
+    const skyA = a.sky;
+    twist(a);
+    const airA = a.air;
+    beasts = null; twists = null;
+    const b = spawnGryph();
+    for (let i = 0; i < 900 && b.st !== 'aim'; i++) step(0.02);
+    const skyB = b.sky;
+    twist(b);
+    const airB = b.air;
+    twists = null; beasts = null;
+    return { skyA, airA, skyB, airB };
+  });
+  ok('在天上的捲不到（同飛龍），降落之後就跟猴子一樣捲得走',
+     gsuck.skyA === 1 && gsuck.airA === 0 && gsuck.skyB === 0 && gsuck.airB === 1,
+     '飛行中 sky=' + gsuck.skyA + ' → 被捲 ' + gsuck.airA +
+     '；降落後 sky=' + gsuck.skyB + ' → 被捲 ' + gsuck.airB);
+
+  /* ── 摔到很遠才爬起來：先飛起來重新降落一次，不噴一道三十格長的火柱 ── */
+  const gfar = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const m = spawnGryph();
+    for (let i = 0; i < 900 && m.st !== 'aim'; i++) step(0.02);
+    /* 假裝牠被炸到場邊才爬起來（jr 歸零＝重新挑一次目標，同 reaim） */
+    m.x = arenaR - 4; m.z = 0; m.jr = 0; m.t = GR_AIM; m.left = 1;
+    const r0 = +Math.hypot(m.x, m.z).toFixed(1);
+    let n = 0, up = 0, jets = 0;
+    while (n < 2000) {
+      step(0.02); n++;
+      if (m.st === 'up') up = 1;
+      for (const h of hot) if (h.jet) jets++;
+      if (up && m.st === 'aim') break;
+    }
+    return { r0, up, jets, back: m.st, r: +Math.hypot(m.x, m.z).toFixed(1),
+             siteR: +siteR.toFixed(1), range: GR_RANGE, secs: +(n * 0.02).toFixed(1) };
+  });
+  ok('摔到場邊才爬起來的那一趟：先飛起來重新降落一次，一路上不噴',
+     gfar.up === 1 && gfar.jets === 0 && gfar.back === 'aim' &&
+     gfar.r < gfar.siteR + 12,
+     '在半徑 ' + gfar.r0 + ' 爬起來（噴得到的上限 ' + gfar.range + '）→ 起飛重降 ' +
+     gfar.secs + ' 秒，落在半徑 ' + gfar.r + '（siteR ' + gfar.siteR + '）');
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 
@@ -18106,8 +18418,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              armed: armed.map(v => +v.toFixed(1)),
              lo: Math.min(...rolls), hi: Math.max(...rolls) };
   });
-  ok('三隻各有各的鐘，不是天災那個共用的倒數',
-     mtime.n === 3 && mtime.ids.join() === 'ape,snow,dragon',
+  ok('四隻各有各的鐘，不是天災那個共用的倒數',
+     mtime.n === 4 && mtime.ids.join() === 'ape,snow,dragon,gryphon',
      mtime.ids.join('／') + '，這一輪各抽到 ' + mtime.armed.join('／') + ' 秒');
   ok('間隔落在 3~6 分鐘，而且三個鐘都照模擬時間走',
      mtime.lo >= 180 && mtime.hi <= 360 && mtime.hi - mtime.lo > 60 &&
@@ -18152,9 +18464,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { kinds, allFun, n, drawn, max: ENG.MAXBEAST };
   });
-  ok('三隻有機會一起出沒', mall.kinds === 'ape,dragon,snow' && mall.allFun, mall.kinds);
-  ok('三隻吉祥物 ＋ 一件天災同場，四隻都畫得出來',
-     mall.n === 4 && mall.drawn === 4 && mall.max >= 4,
+  ok('四隻有機會一起出沒', mall.kinds === 'ape,dragon,gryphon,snow' && mall.allFun,
+     mall.kinds);
+  ok('四隻吉祥物 ＋ 一件天災同場，五隻都畫得出來',
+     mall.n === 5 && mall.drawn === 5 && mall.max >= 5,
      '場上 ' + mall.n + ' 隻、畫出 ' + mall.drawn + ' 隻（上限 ' + mall.max + '）');
 
   /* ── 猴子：走進來、逛一逛、走了，全程不動手 ── */
