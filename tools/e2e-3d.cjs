@@ -12126,13 +12126,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      swd.tipEdgeErr.toExponential(1) + '）、刃主體下緣 ＝ SWORD_EDGE（差 ' +
      swd.rootErr.toExponential(1) + '）；那一塊畫出來的位置差 ' +
      swd.tipErr.toExponential(1) + '、離揮動平面 ' + swd.tipPlane.toExponential(1));
-  /* v1.169 使用者：「劍尖往下一小段才是攻擊點」。守的是「攻擊點在刃尖裡面、
-     但還在刃身上」，以及判定的外緣半徑用的是攻擊點而不是刃尖——寫錯的話刃尖
-     那一小段會跟著砍，就退回改之前那樣。差幾格不寫死，直接從那兩個常數算。 */
-  ok('攻擊點在刃尖裡面一小段（判定與瞄準都用它，不是用刃尖）',
-     swd.hand.hit < swd.hand.tip && swd.hand.hit > swd.hand.edge &&
+  /* v1.169 使用者：「劍尖往下一小段才是攻擊點」；**v1.173 再挪到刃的正中央**
+     （使用者：「大劍打擊點改到劍刃中央」）。守三件事：攻擊點就是刃兩端的中點、
+     判定的外緣半徑用的是攻擊點而不是刃尖（寫錯的話刃尖那一段會跟著砍）、
+     刃尖確實還在攻擊點外面。中點不寫死，直接從刃根與刃尖算。 */
+  ok('攻擊點在刃的正中央（判定與瞄準都用它，不是用刃尖）',
+     Math.abs(swd.hand.hit - (swd.hand.edge + swd.hand.tip) / 2) < 1e-9 &&
      Math.abs(swd.hand.r1 - swd.hand.r1want) < 1e-6 && swd.hand.rTip > swd.hand.r1,
      '攻擊點 ' + swd.hand.hit + '（刃根 ' + swd.hand.edge + '、刃尖 ' + swd.hand.tip +
+     '，中點 ' + ((swd.hand.edge + swd.hand.tip) / 2).toFixed(3) +
      '）；這一把樞紐到攻擊點 ' + swd.hand.r1 + '、到刃尖 ' + swd.hand.rTip +
      '（刃尖多伸出去 ' + (swd.hand.rTip - swd.hand.r1).toFixed(2) + ' 單位，畫得到但不砍）');
   /* v1.169 使用者：「旋轉圓心在劍柄往外延伸一點才正常」。樞紐要在**造型外面**：
@@ -13084,9 +13086,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      arHigh.on.degMin + '～' + arHigh.on.degMax + ' 度（最省力仰角）、反推落點誤差 ' +
      arHigh.on.err.toExponential(1) + '；同一點但點腳下的地面：瞄 ' + arHigh.gnd.ty +
      '、出手 ' + arHigh.gnd.degMin + '～' + arHigh.gnd.degMax + ' 度');
+  /* 「插在牆上」數的是**比例**，不看中位數（v1.173 修）。落點高度是**雙峰**的：
+     打到牆的插在 20～30 高、沒打到的落在地上 0.4——兩堆的比例在 50% 附近晃的時候，
+     中位數會在 25 與 0.5 之間整個跳過去（實測同一組設定兩次量到 133/240 → 中位 25.01
+     與 108/240 → 中位 0.55，比例只差 10 個百分點，中位數卻差了五十倍）。
+     所以驗的是「四成以上插在 3 高以上」，而且**點牆上要比點地面多一倍以上**
+     ——後者才是這一版真正加的行為（點地面那一輪的箭是往塔腳鑽的）。 */
   ok('點牆上那一輪，箭插在牆上（不是全部落到地面）',
-     arHigh.on.wall > arHigh.on.land * 0.4 && arHigh.on.med > 5 &&
-     arHigh.gnd.med < 3,
+     arHigh.on.wall > arHigh.on.land * 0.4 &&
+     arHigh.on.wall > arHigh.gnd.wall * 2,
      '點牆上：' + arHigh.on.land + ' 支插住、其中 ' + arHigh.on.wall +
      ' 支在 3 高以上（中位 ' + arHigh.on.med + '）；點地面：' + arHigh.gnd.land +
      ' 支插住、只有 ' + arHigh.gnd.wall + ' 支在 3 高以上（中位 ' + arHigh.gnd.med + '）');
@@ -20373,18 +20381,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         （±8 個百分點；實測 clangOld 67%、炸彈 13%、現在 15.6%）；
      ② **有份量不是氣音**：80–250Hz 要比舊版翻上去（那是低頻鋸齒撐出來的）；
      ③ **比舊的小聲**：單聲與「一秒份疊在一起」兩個都要比對照組小——一秒響十幾次，
-        只看單聲會漏掉疊起來的量。 */
+        只看單聲會漏掉疊起來的量。
+     **v1.173 把「一秒份的 peak 要比對照組低」那半條拿掉**（紅過一次：0.174 → 0.181）。
+     不是放寬門檻，是那個量不能拿來比大小——peak 是「幾十發隨機噪音疊起來的最大值」，
+     而且量到的是**兩組都在抖的中位數**。實測拿同一顆種子把整輪跑兩次，
+     〈音效〉這一段 71 行裡有 18 行數字不一樣（連這一段第一發的核彈 peak 都是
+     0.139 對 0.153）——也就是說這一段**光給種子不保證重現**，兩個抖動量比大小
+     本來就是擲骰子。「更小聲」由單聲 rms 與一秒份 rms 兩條守（都是整段平均，穩得多），
+     peak 則由下一條的**絕對**門檻（< 0.25）守著，兩邊都沒漏。
+     同「核彈那一幀不會破表」那條的修法：拿會跳的量當門檻就換成穩的那個量，
+     peak 只留在細節裡當參考（見 README〈九條「偶爾飄」的測試〉）。 */
   ok('命中聲換成爆炸的配方，而且比 v1.151 那一版更小聲',
      snd.gateHit.hiPct < snd.clangOld.hiPct * 0.35 &&
      Math.abs(snd.gateHit.hiPct - snd.bomb.hiPct) < 8 &&
      snd.gateHit.body > snd.clangOld.body * 1.6 &&
      snd.gateHit.rms < snd.clangOld.rms &&
-     snd.gate1s.rms < snd.gateOld1s.rms && snd.gate1s.peak < snd.gateOld1s.peak,
+     snd.gate1s.rms < snd.gateOld1s.rms,
      '2kHz 以上 ' + snd.clangOld.hiPct + '% → ' + snd.gateHit.hiPct +
      '%（炸彈 ' + snd.bomb.hiPct + '%）；80–250Hz ' + snd.clangOld.body + ' → ' +
      snd.gateHit.body + '；單聲 rms ' + snd.clangOld.rms + ' → ' + snd.gateHit.rms +
      '；一秒份 rms ' + snd.gateOld1s.rms + ' → ' + snd.gate1s.rms +
-     '、peak ' + snd.gateOld1s.peak + ' → ' + snd.gate1s.peak);
+     '（peak ' + snd.gateOld1s.peak + ' → ' + snd.gate1s.peak +
+     '，只當參考不當門檻，見上面註解）');
   /* 峰值用絕對門檻（跟「一排小人同時被掀倒」那條同一個 0.2 量級），不跟核彈比：
      這一秒份是幾十個短促的金屬撞擊，峰值本來就會比一聲拖很長的低頻爆炸高，
      真正要擋的是「疊到滿刻度」。總量（rms）才拿核彈當上限。 */
