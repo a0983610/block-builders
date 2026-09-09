@@ -49,7 +49,7 @@ function newWorker(i) {
     // 被消防車噴到：wet 是還濕幾秒（這期間點不著），wetK 是身上顏色要乘的倍率
     wet: 0, wetK: 0,
     roll: 0, rspin: 0, rph: 0,
-    bem: 0, bx: 0, bz: 0, br: 0, ba: 0,
+    bem: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0,
     /* 工程師（eng）：拿藍圖 plan、站的角度 eang、下一個動作倒數 et、指揮動作剩幾秒 point。
        聊天：剩幾秒 chat、對象編號 cw、輪到誰講 side、講完多久才會再聊 chatCd、
        泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手，crun 是進場那一趟的腳程（見 CHEER_IN），
@@ -253,6 +253,18 @@ const ROLL_AMP = 1.9, ROLL_HZ = 0.9;
    才不會看起來像一邊轉一邊在冰上滑。來回滾的淨位移接近 0，人留在原地翻。 */
 const ROLL_R = 0.28;
 const W_PANIC = 3.4;                // 跑圈圈的角速度
+/* 圈子是**從腳下撐開**的（v1.176.1，使用者：「著火繞圈跟原本站立位置有點距離，看起來像
+   瞬移了一下才跑圈圈」）。位置每幀由「圈心＋半徑×角度」重算，圈心就是被點著時站的位置，
+   所以一開始就給滿半徑的話，被點著的下一幀人就出現在圈上那個點——最遠 2.8 格，那一下就是
+   使用者看到的瞬移。三件事一起改才接得順：
+   ① 半徑從 0 用 smoothstep 撐到 br：起步與收尾的徑向速度都是 0，人是從站著加速跑開，
+      不會看到往外彈一下。
+   ② 起跑角取 ba＝90°−a：撐開的那半秒位移**是徑向的**（半徑在長、角度還沒轉多少），
+      徑向方向就是 (cos ba, sin ba)，取 90°−a 才等於他原本的朝向 (sin a, cos a)。
+      取 −a 會讓徑向變成朝向的側邊，看起來是橫著平移出去。
+   ③ 面向改成看「這一幀真的走了哪個方向」：撐開時是往外衝、撐滿之後位移純粹是切線，
+      同一行就把「衝出去 → 彎成圈」那 90° 的轉身接起來，不必分段寫。 */
+const W_PANIC_OPEN = 0.5;           // 圈子撐到滿要幾秒
 let burningW = 0;                   // 這一幀有幾個人在燒：火苗配額要分給他們
 
 function tossWorker(w, vx, vy, vz, lit) {
@@ -276,7 +288,8 @@ function igniteWorker(w, roll) {
     w.tilt = Math.PI * 0.5; w.rph = rr(0, Math.PI * 2);
     w.rspin = ROLL_AMP * Math.sin(w.rph);
   }
-  w.bx = w.x; w.bz = w.z; w.br = rr(1.6, 2.8); w.ba = Math.random() * Math.PI * 2;
+  w.bx = w.x; w.bz = w.z; w.br = rr(1.6, 2.8);
+  w.ba = Math.PI * 0.5 - w.a; w.bo = 0;             // 從腳下往「他正對的方向」撐開
   return true;
 }
 /* 摔下來的地方有沒有正在燒的東西。只在落地那一幀查一次，不是每幀掃 fires。 */
@@ -356,15 +369,20 @@ function burnMove(w, dt) {
     w.gait = 0;
   } else {
     w.ba += dt * W_PANIC;
-    w.x = clamp(w.bx + Math.cos(w.ba) * w.br, -lim, lim);
-    w.z = clamp(w.bz + Math.sin(w.ba) * w.br, -lim, lim);
+    w.bo = Math.min(1, w.bo + dt / W_PANIC_OPEN);
+    const r = w.br * w.bo * w.bo * (3 - 2 * w.bo);      // 半徑從腳下撐開，不是一開始就滿
+    const nx = w.bx + Math.cos(w.ba) * r, nz = w.bz + Math.sin(w.ba) * r;
+    // 面向＝這一幀真的走的方向（撐開時往外衝、撐滿後就是切線＝繞著跑）
+    if (Math.abs(nx - w.x) > 1e-4 || Math.abs(nz - w.z) > 1e-4)
+      w.a = Math.atan2(nx - w.x, nz - w.z);
+    w.x = clamp(nx, -lim, lim);
+    w.z = clamp(nz, -lim, lim);
     const cx0 = w.x, cz0 = w.z;
     pushOutHome(w);                                     // 圈圈跑到人家屋子裡就推出來
     /* 推出來的位移也要加到**圈心**上（v1.104）：這裡的位置跟 ringWalk 一樣是每幀
        重算的，只推人不推圈心的話下一幀又照原本的圈心算回房子裡，等於推一輩子。
        加到圈心上，圈子會自己幾幀內滑出房子外面。 */
     w.bx += w.x - cx0; w.bz += w.z - cz0;
-    w.a = Math.atan2(-Math.sin(w.ba), Math.cos(w.ba));  // 面向切線＝繞著跑
     w.ph += dt * 22;                                    // 腳步比平常快一倍
     w.gait = 1;
     w.tilt += (0 - w.tilt) * Math.min(1, dt * 8);

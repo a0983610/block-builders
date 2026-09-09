@@ -15983,20 +15983,39 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const w = workers[0];
     w.x = 12; w.z = 0; w.y = 0; w.air = 0; w.burn = 0; w.fall = 0;
     const x0 = w.x, z0 = w.z;
+    const a0 = w.a;
     const lit = igniteWorker(w, false);
-    let far = 0, path = 0, px = w.x, pz = w.z;
+    let far = 0, path = 0, px = w.x, pz = w.z, first = 0, jump = 0, off = 0;
     for (let i = 0; i < 56; i++) {
       step(0.05);
+      const d = Math.hypot(w.x - px, w.z - pz);
+      /* 起跑那一下（v1.176.1）：圈子是從腳下撐開的，所以第一幀只該挪一點點。
+         v1.176.0 是「圈心在原地、半徑一開始就滿、起跑角隨機」，第一幀直接跳到圈上
+         那個點（實測 2.24 格），使用者看到的就是「瞬移一下才開始跑圈圈」。
+         off 是第一幀走的方向跟他原本朝向差幾度：撐開的位移是徑向的，取
+         ba＝90°−a 才會等於他正對的方向（這一幀角度已經轉了 W_PANIC×0.05）。 */
+      if (i === 0) {
+        first = Math.hypot(w.x - x0, w.z - z0);
+        off = Math.atan2(w.x - x0, w.z - z0) - a0;
+        while (off > Math.PI) off -= Math.PI * 2;
+        while (off < -Math.PI) off += Math.PI * 2;
+      } else jump = Math.max(jump, d);
       far = Math.max(far, Math.hypot(w.x - x0, w.z - z0));
-      path += Math.hypot(w.x - px, w.z - pz); px = w.x; pz = w.z;
+      path += d; px = w.x; pz = w.z;
       }
     return { lit, roll: w.roll, far: +far.toFixed(1), path: +path.toFixed(1),
-             gait: +w.gait.toFixed(2), y: +w.y.toFixed(2) };
+             gait: +w.gait.toFixed(2), y: +w.y.toFixed(2),
+             first: +first.toFixed(2), jump: +jump.toFixed(2),
+             off: +(off * 180 / Math.PI).toFixed(1) };
   });
   ok('放火點著站著的小人 → 抱頭跑圈圈',
      torched.lit && !torched.roll && torched.far < 6 && torched.path > 14,
      '2.8 秒跑了 ' + torched.path + ' 單位，但離原地最遠只有 ' + torched.far +
      '（步伐 ' + torched.gait + '）');
+  ok('被點著的第一幀不會瞬移到圈上，是從腳下往他正對的方向跑出去',
+     torched.first < 0.3 && torched.jump < 1 && Math.abs(torched.off) < 20,
+     '第一幀挪了 ' + torched.first + ' 格（往原本朝向偏 ' + torched.off +
+     '°），之後每幀最多 ' + torched.jump + ' 格');
 
   /* 燒不燒是在**落地那一刻**判定的，不是被打到的當下——所以不是被爆炸掃到的人，
      摔進一堆還在燒的碎料裡照樣會被引燃。 */
@@ -19339,18 +19358,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        完整的 step 才會老化，這裡只走 stepDoom——前面幾段留下來的火苗會一直卡在池子裡。 */
     hot.length = 0;
     const hot0 = hot.length;
-    const rx = roll.x, rz = roll.z;
-    let rollMove = 0, runR = 0;
+    const rx = roll.x, rz = roll.z, ux = run.x, uz = run.z;
+    let rollMove = 0, runR = 0, first = 0, jump = 0, px = run.x, pz = run.z;
     for (let i = 0; i < 60; i++) {
       stepDoom(0.05);
       rollMove = Math.max(rollMove, Math.hypot(roll.x - rx, roll.z - rz));
       runR = Math.max(runR, Math.hypot(run.x - run.bx, run.z - run.bz));
+      // 起跑那一下不會瞬移到圈上（v1.176.1，同小人：圈子從腳下撐開）
+      if (i === 0) first = Math.hypot(run.x - ux, run.z - uz);
+      else jump = Math.max(jump, Math.hypot(run.x - px, run.z - pz));
+      px = run.x; pz = run.z;
     }
     const mid = { rollSpin: +roll.spin.toFixed(2), rollLie: +roll.lie.toFixed(2),
                   runLie: run.lie, runGait: +run.gait.toFixed(2), fx: hot.length > hot0 };
     for (let i = 0; i < 200; i++) stepDoom(0.05);       // 燒完
     return { a, b, twice, mid, rollMove: +rollMove.toFixed(1), runR: +runR.toFixed(1),
-             burnT: B_BURN,
+             burnT: B_BURN, first: +first.toFixed(2), jump: +jump.toFixed(2),
              after: { burn: roll.burn, lie: roll.lie, spin: +roll.spin.toFixed(2) } };
   });
   ok('點得著，而且分躺著滾與站著跑圈圈兩種（已經在燒的不會再點一次）',
@@ -19361,6 +19384,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hBurn.mid.fx + '；躺著滾：躺平角 ' + hBurn.mid.rollSpin + '、抬升 ' +
      hBurn.mid.rollLie + ' 倍、就地翻 ' + hBurn.rollMove + ' 格；跑圈圈：躺著＝' +
      hBurn.mid.runLie + '、腳步 ' + hBurn.mid.runGait + '、繞著定點 ' + hBurn.runR + ' 格');
+  ok('跑圈圈的第一幀也不會瞬移到圈上（同小人）',
+     hBurn.first < 0.4 && hBurn.jump < 1.2,
+     '第一幀挪了 ' + hBurn.first + ' 格，之後每幀最多 ' + hBurn.jump + ' 格');
   ok('燒完自己拍拍灰站起來',
      hBurn.after.burn === 0 && hBurn.after.lie === 0 && Math.abs(hBurn.after.spin) < 0.05,
      '燒 ' + hBurn.burnT + ' 秒之後：burn ' + hBurn.after.burn + '、躺平角 ' +

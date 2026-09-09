@@ -6094,7 +6094,7 @@ function spawnBeast(kind, fun, bad) {
     /* 被破壞工具打到之後要用的（v1.146）。spin 是躺平角、roll 是打滾角，
        其餘欄位跟小人同名同義（見檔案最後那一節的 hurtBeast）。 */
     spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
-    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0
+    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0
   };
   if (!beasts) beasts = [];
   beasts.push(m);
@@ -6813,7 +6813,7 @@ function spawnGryph(fun, bad) {
        鼻子朝天——跟 v1.154 四條腿的牛羊踩到的是同一個坑（見 lieAng／sideLift）。 */
     side: 1, sdir: 1,
     lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
-    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0
+    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0
   };
   grSpot(m);
   if (!beasts) beasts = [];
@@ -7169,7 +7169,7 @@ function spawnCattle() {
        side＝四條腿的，倒下來是往側邊倒（見 lieAng／engine 的 BEAST_SIDE）。 */
     fun: 1, herd: 1, stay: 0, side: 1, sdir: 1,
     spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
-    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0
+    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0
   };
   idleSpot(m);
   m.x = m.tx; m.z = m.tz;
@@ -7212,6 +7212,10 @@ const B_BLOW = 0.75;                 // 爆炸掀飛的力道打幾折（牠們�
    換算回模型是 0.103 ÷ 半身厚 0.365 ＝ 多 28%，所以取 1.3。 */
 const B_ROLL_LIFT = 1.3;
 const B_PANIC = 2.6;                 // 抱頭跑圈圈的角速度（小人 W_PANIC 是 3.4）
+/* 圈子從腳下撐開、起跑方向接著原本的朝向、面向看這一幀真的走哪（v1.176.1）——整套同小人，
+   理由與三個環節見 game-workers.js 的 W_PANIC_OPEN：不這樣做的話被點著的下一幀牠就直接
+   出現在圈上那個點（最遠 3.6 格），看起來是瞬移一下才開始跑。 */
+const B_PANIC_OPEN = 0.5;            // 圈子撐到滿要幾秒（同小人）
 /* 四條腿的那幾隻**側躺**（v1.154，見 engine 的 BEAST_SIDE）：兩條腿的往後仰躺
    （繞 x 轉 −90°），牛羊照這樣躺會變成用尾巴站著、鼻子朝天——牠們要往側邊倒
    （繞 z 轉 ±90°）。躺著壓火的時候只小幅度前後晃：擺幅大的話抬升的補正
@@ -7277,7 +7281,8 @@ function igniteBeast(m, roll) {
   } else {
     m.lie = 0; m.spin = 0; m.roll = 0;
   }
-  m.bx = m.x; m.bz = m.z; m.br = rr(2.2, 3.6); m.ba = Math.random() * Math.PI * 2;
+  m.bx = m.x; m.bz = m.z; m.br = rr(2.2, 3.6);
+  m.ba = Math.PI * 0.5 - m.a; m.bo = 0;              // 從腳下往「牠正對的方向」撐開
   reaim(m);
   return true;
 }
@@ -7392,12 +7397,17 @@ function burnBeast(m, dt) {
     m.gait = 0;
   } else {
     m.ba += dt * B_PANIC;
-    m.x = clamp(m.bx + Math.cos(m.ba) * m.br, -lim, lim);
-    m.z = clamp(m.bz + Math.sin(m.ba) * m.br, -lim, lim);
+    m.bo = Math.min(1, m.bo + dt / B_PANIC_OPEN);
+    const r = m.br * m.bo * m.bo * (3 - 2 * m.bo);   // 半徑從腳下撐開，不是一開始就滿
+    const nx = m.bx + Math.cos(m.ba) * r, nz = m.bz + Math.sin(m.ba) * r;
+    // 面向＝這一幀真的走的方向（撐開時往外衝、撐滿後就是切線＝繞著跑）
+    if (Math.abs(nx - m.x) > 1e-4 || Math.abs(nz - m.z) > 1e-4)
+      m.a = Math.atan2(nx - m.x, nz - m.z);
+    m.x = clamp(nx, -lim, lim);
+    m.z = clamp(nz, -lim, lim);
     const cx0 = m.x, cz0 = m.z;
     pushOutHome(m);
     m.bx += m.x - cx0; m.bz += m.z - cz0;             // 圈圈整個跟著挪出房子外面
-    m.a = Math.atan2(-Math.sin(m.ba), Math.cos(m.ba));
     m.ph += dt * 18;
     m.gait = 1; m.lie = 0;
     m.spin += (0 - m.spin) * Math.min(1, dt * 8);
