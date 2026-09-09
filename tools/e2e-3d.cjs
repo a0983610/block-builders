@@ -5765,7 +5765,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 每一把破壞道具都要作用得到房子（v1.102，使用者指定）。
      兩把原本打不到：煙火的火星是用 blockAt（藍圖的格子表）判有沒有碰到東西，
-     房子不在那張表裡；投石機一律照工地中心取落點，擺在小人的家旁邊也是在轟地標。
+     房子不在那張表裡；投石機當年一律照工地中心取落點，擺在小人的家旁邊也是在轟地標
+     （v1.102 改成「擺在誰旁邊就轟誰」，v1.174 改成兩點式、第二下點誰就轟誰）。
      火勢蔓延同理——原本只燒被點著的那一塊（spreadFire 走的是藍圖的鄰居表）。
      水桶不在這張表裡：積水是照藍圖的格子在流的，房子不在那個格子系統裡（見 README）。 */
   const homeTools = await page.evaluate(() => {
@@ -5814,7 +5815,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     run('大槌', (h, p) => { launchHammer(p, { x: 0, y: -1, z: 0 }, true, false); resolveSwing(); });
     run('地震', (h, p) => { launchHammer({ x: h.x + 6, y: 0, z: h.z }, { x: 0, y: -1, z: 0 }, true, true); resolveSwing(); }, 300);
     run('保齡球', h => launchBall({ x: h.x, z: h.z + 14 }, { x: h.x, z: h.z }), 400);
-    run('投石機', h => placeTreb({ x: h.x + 10, z: h.z }), 900);
+    /* 投石機 v1.174 起是兩點式：第二下直接點那一間房子（以前是「擺在誰旁邊就轟誰」，
+       靠 TREB_NEAR 那條猜；現在想轟哪一間就點它）。 */
+    run('投石機', h => castTrebs({ x: h.x + 16, z: h.z }, { x: h.x, z: h.z }), 900);
     run('龍捲風', h => launchTornado({ x: h.x, z: h.z }), 400);
     /* 煙火放三發：火星是從高處隨機散下來的，一發打不中一間 7×5 的房子很正常
        （地標那邊也是同一回事，只是它大得多）。這裡要驗的是「打得到」，不是機率。 */
@@ -8654,23 +8657,53 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (hamR.small / hamR.old).toFixed(2) + ' 倍）：同一點打掉 ' + hamR.cutOld +
      ' → ' + hamR.cutNow + ' 塊；大槌仍是 ' + hamR.big + '（打掉 ' + hamR.cutBig + ' 塊）');
 
-  /* 投石機 */
+  /* 投石機。**v1.174 改成兩點式、一次四台**（使用者：「投石機調整 改成類似箭雨操作方式
+     兩個位置 然後一次出現4台投石機」），所以這一段從「點一下架一台」整組換掉：
+     第一下只畫光環、第二下才架一隊、隊形照 TREB_TEAM／TREB_GAP 排、落點跟著第二點走。
+     期望值一律讀常數算（那幾個一改這幾條自己跟著對，見 README〈不要寫死會隨改動變動的數字〉）。 */
   await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 3 });
   const treb = await page.evaluate(() => {
     completeNow();
     const n0 = placedCnt;
-    // 點在空地上：機台就該出現在那裡
-    const spot = { x: siteR + 14, z: -siteR * 0.4 };
-    placeTreb(spot);
-    const one = trebs.list.length;
-    const at = trebs.list[0];
-    const put = Math.hypot(at.x - spot.x, at.z - spot.z);
-    // 再點一台，數量要疊加
-    placeTreb({ x: -siteR - 12, z: siteR * 0.3 });
+    tool = 'treb';
+    /* 第一下：只有光環，一台都不該出現（同箭雨）。
+       站位挑在「工地外 ＋ 離島邊還有餘裕」的地方，兩道保險都不會動到隊形
+       （見 placeTreb：太靠中心會被推出去、太靠島邊會被夾回來）。 */
+    const from = { x: siteR + 14, z: 0 };
+    useTool({ kind: 'ground', point: { x: from.x, y: 0, z: from.z } });
+    const one = { aim: !!aim, n: trebs ? trebs.list.length : 0 };
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    const team = trebs.list.map(m => ({ x: m.x, z: m.z, a: m.a, tx: m.tx, tz: m.tz }));
+    /* 隊形：一列、中心落在第一點、間距 TREB_GAP、每台都朝自己的目標。
+       目標在 −x 方向，所以隊伍的橫向就是 z（見 castTrebs）。 */
+    const cx = team.reduce((s, m) => s + m.x, 0) / team.length;
+    const cz = team.reduce((s, m) => s + m.z, 0) / team.length;
+    const zs = team.map(m => m.z).sort((a, b) => a - b);
+    let gapMin = 9e9, gapMax = 0;
+    for (let i = 1; i < zs.length; i++) {
+      gapMin = Math.min(gapMin, zs[i] - zs[i - 1]);
+      gapMax = Math.max(gapMax, zs[i] - zs[i - 1]);
+    }
+    // 每台的朝向該是「自己 → 自己的目標」，目標則是第二下點的那一點
+    const faceErr = Math.max(...team.map(m => Math.abs(m.a - Math.atan2(m.tx - m.x, m.tz - m.z))));
+    const aimErr = Math.max(...team.map(m => Math.hypot(m.tx, m.tz)));
+    // 再架一隊：疊上去；架到滿（TREB_MAX）就把最早那一隊擠掉
+    useTool({ kind: 'ground', point: { x: -siteR - 14, y: 0, z: 0 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
     const two = trebs.list.length;
-    // 點在建築正中央：要被推到建築外圍，不能長在牆裡
-    placeTreb({ x: 0, z: 0 });
-    const pushed = Math.hypot(trebs.list[2].x, trebs.list[2].z);
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: siteR + 14 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    const three = trebs.list.length;
+    /* 第一下點在建築正中央：整隊要被推到建築外圍，而且**四台不能疊在一起**
+       （推隊伍的中心而不是一台一台推，理由見 castTrebs）。 */
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    useTool({ kind: 'ground', point: { x: siteR + 20, y: 0, z: 0 } });
+    const last = trebs.list.slice(-TREB_TEAM);
+    let apart = 9e9;
+    for (let i = 0; i < last.length; i++)
+      for (let j = i + 1; j < last.length; j++)
+        apart = Math.min(apart, Math.hypot(last[i].x - last[j].x, last[i].z - last[j].z));
+    const pushed = Math.min(...last.map(m => Math.hypot(m.x, m.z)));
     let maxRock = 0, offCentre = 0;
     for (let i = 0; i < 1400 && trebs; i++) {
       step(0.02);
@@ -8679,17 +8712,72 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         for (const r of trebs.rocks) if (Math.hypot(r.x, r.z) > arenaR + 5) offCentre++;
       }
     }
-    return { n0, after: placedCnt, one, two, put, pushed, siteR, maxRock, gone: !trebs, offCentre };
+    return { n0, after: placedCnt, one, team: team.length, want: TREB_TEAM, cap: TREB_MAX,
+             ctrErr: +Math.hypot(cx - from.x, cz - from.z).toFixed(4),
+             gapMin: +gapMin.toFixed(3), gapMax: +gapMax.toFixed(3), gap: TREB_GAP,
+             faceErr: +faceErr.toFixed(6), aimErr: +aimErr.toFixed(4),
+             two, three, pushed: +pushed.toFixed(1), apart: +apart.toFixed(1),
+             siteR: +siteR.toFixed(1), maxRock, gone: !trebs, offCentre };
   });
-  ok('點一下就在點的位置架一台', treb.one === 1 && treb.put < 0.001,
-     '機台落在點擊處，誤差 ' + treb.put.toFixed(3));
-  ok('可以連續架好幾台', treb.two === 2, treb.two + ' 台');
-  ok('點在建築上會把機台推到外圍', treb.pushed > treb.siteR,
-     '距中心 ' + treb.pushed.toFixed(1) + '（建築半徑 ' + treb.siteR.toFixed(1) + '）');
+  ok('點兩下：第一下只在地上畫光環，第二下才一次架四台',
+     treb.one.aim && treb.one.n === 0 && treb.team === treb.want,
+     '第一下：光環在、機台 ' + treb.one.n + ' 台；第二下：' + treb.team +
+     ' 台（TREB_TEAM ' + treb.want + '）');
+  ok('一隊排成一列、中心落在第一點，每台都朝第二點',
+     treb.ctrErr < 0.001 && Math.abs(treb.gapMin - treb.gap) < 0.001 &&
+     Math.abs(treb.gapMax - treb.gap) < 0.001 && treb.faceErr < 1e-9 && treb.aimErr < 1e-9,
+     '隊列中心離第一點 ' + treb.ctrErr + '、間距 ' + treb.gapMin + '～' + treb.gapMax +
+     '（TREB_GAP ' + treb.gap + '）、朝向誤差最多 ' + treb.faceErr + ' 弧度');
+  ok('可以再架一隊，架到上限就把最早那一隊擠掉',
+     treb.two === treb.want * 2 && treb.three === treb.cap,
+     '一隊 ' + treb.team + ' → 兩隊 ' + treb.two + ' → 再一隊 ' + treb.three +
+     '（上限 ' + treb.cap + '）');
+  ok('第一下點在建築上會把整隊推到外圍，四台不會疊在一起',
+     treb.pushed > treb.siteR && treb.apart > 3.5,
+     '最近的一台距中心 ' + treb.pushed + '（建築半徑 ' + treb.siteR +
+     '）、台與台之間最近 ' + treb.apart);
   ok('投石機會丟出石頭', treb.maxRock > 0, '同時最多 ' + treb.maxRock + ' 顆在空中');
   ok('石頭不會飛出場外', treb.offCentre === 0);
   ok('石頭砸下來會造成破壞', treb.after < treb.n0, placedCntTxt(treb.n0, treb.after));
   ok('打完會自己撤走', treb.gone);
+
+  /* 落點跟著「第二下點的地方」走（v1.174 的核心；v1.102～v1.173 是一律照工地中心，
+     擺在小人的家旁邊才改轟那一間）。量的是**每一顆真的砸在哪**（攔 rockHit，
+     那是石頭停下來的那一刻），期望值從 TREB_SPRAY 算：均勻圓盤的中位半徑是 R/√2、
+     九成位是 R√0.9（同箭雨那條）。
+     兩端都挑在空地上、連線也不跨過建築：路上撞到建築的石頭會在半路就炸開
+     （見「石頭半路撞到建築就當場炸開」那條），那種落點量的是牆不是瞄準點。 */
+  const trebAim = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const orig = rockHit, at = [];
+    rockHit = r => { at.push([r.x, r.z]); orig(r); };
+    tool = 'treb';
+    const T = { x: siteR + 12, z: 0 };                 // 目標：工地外的一塊空地
+    useTool({ kind: 'ground', point: { x: siteR + 30, y: 0, z: 0 } });
+    useTool({ kind: 'ground', point: { x: T.x, y: 0, z: T.z } });
+    for (let i = 0; i < 1600 && trebs; i++) step(0.02);
+    rockHit = orig;
+    const raw = at.map(p => ({ d: Math.hypot(p[0] - T.x, p[1] - T.z),
+                               c: Math.hypot(p[0], p[1]) }));
+    const ds = raw.map(r => r.d).sort((a, b) => a - b);
+    const q = f => +ds[Math.min(ds.length - 1, Math.floor(ds.length * f))].toFixed(2);
+    cleanTools();
+    return { n: ds.length, med: q(0.5), p90: q(0.9), max: +ds[ds.length - 1].toFixed(2),
+             R: TREB_SPRAY, shots: TREB_TEAM * TREB_SHOTS,
+             wantMed: +(TREB_SPRAY / Math.SQRT2).toFixed(2),
+             wantP90: +(TREB_SPRAY * Math.sqrt(0.9)).toFixed(2),
+             nearer: raw.filter(r => r.d < r.c).length,
+             tgt: +T.x.toFixed(1) };
+  });
+  ok('石頭砸在第二下點的那一點附近（不再是照工地中心）',
+     trebAim.n === trebAim.shots && trebAim.nearer === trebAim.n &&
+     trebAim.max < trebAim.R + 1 &&
+     Math.abs(trebAim.med - trebAim.wantMed) < 2 &&
+     Math.abs(trebAim.p90 - trebAim.wantP90) < 2,
+     trebAim.n + ' 顆（一隊 ' + trebAim.shots + ' 顆）全部離瞄準點（x=' + trebAim.tgt +
+     '）比離場心近；離瞄準點中位 ' + trebAim.med + '（期望 ' + trebAim.wantMed +
+     '）、九成在 ' + trebAim.p90 + ' 內（期望 ' + trebAim.wantP90 + '）、最遠 ' +
+     trebAim.max + '（散開半徑 TREB_SPRAY ' + trebAim.R + '）');
 
   /* 石頭穿牆：只在終點判定的話，拋物線會從屋頂／外牆直接穿過去，畫面上砸中了卻什麼事都沒有。
      這裡不看實作的格子查表，改用 blocks 的真實座標量：
@@ -8699,9 +8787,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     completeNow();
     const orig = rockHit, at = [];
     rockHit = r => { at.push(+(r.t / r.T).toFixed(2)); orig(r); };
-    for (let k = 0; k < 6; k++) {           // 圍一圈打，各種角度的弧線都試到
+    /* 圍一圈打，各種角度的弧線都試到。這裡走**單台**那支（placeTreb，v1.174 起要
+       自己給目標）：要的是六個方位各一台，不是六隊二十四台（上限只有八台）。 */
+    for (let k = 0; k < 6; k++) {
       const a = k / 6 * Math.PI * 2;
-      placeTreb({ x: Math.cos(a) * (siteR + 13), z: Math.sin(a) * (siteR + 13) });
+      placeTreb({ x: Math.cos(a) * (siteR + 13), z: Math.sin(a) * (siteR + 13) },
+                { x: 0, z: 0 });
     }
     let worst = 1e9, worstAt = null, seen = 0, frames = 0;
     for (let i = 0; i < 2000 && trebs; i++) {
@@ -9858,7 +9949,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (let i = 0; i < 160 && balls; i++) step(0.05);
     });
     const trebN = count(() => {
-      placeTreb({ x: 46, z: 0 });
+      castTrebs({ x: 46, z: 0 }, { x: 0, z: 0 });        // 一隊四台朝場心丟（v1.174 兩點式）
       for (let i = 0; i < 400 && trebs; i++) step(0.05);
     });
     /* 王之財寶（v1.132）：連射七秒、一趟一百九十幾發，同一個道理一次都不震。 */
@@ -11794,7 +11885,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const kept = aim ? { y: +aim.sy.toFixed(2), on: aim.son } : null;
     clickG(p2);
     const s = swords[0];
-    const shot = { x: s.x, y: s.y, z: s.z, len: s.len, r0: s.r0, r1: s.r1,
+    /* r1 ＝ 削掉那一片扇形的外緣（v1.174 起是**刃尖**）、rhit ＝ 樞紐到攻擊點（只管瞄準）。 */
+    const shot = { x: s.x, y: s.y, z: s.z, len: s.len, r0: s.r0, r1: s.r1, rhit: s.rhit,
                    band: s.band, span: s.span, back: s.back, over: s.over };
     /* ③④⑤ 樞紐到兩點的 **3D** 距離都該是「樞紐到攻擊點」，而起手／收手的方向
        也該正對那兩點；平面的法線離垂直方向多遠 ＝ 那一刀有多斜。 */
@@ -11833,8 +11925,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
            （繞了兩圈才找到這個量法：先拿「先切到 vs 後切到」比，量到的是建築形狀
              不是斜度，因為平面是**固定**的、刃只是在平面裡轉；改拿「沿著兩點連線
              的位置」比也只差 1.46，因為連線方向不是平面的下坡方向。） */
+        /* 第四個數：那一塊在**揮動平面裡的半徑**（同 swordCut 的算法）。v1.174 要驗
+           「破壞範圍是整片劍身」，靠的就是它——切到的最遠半徑要越過攻擊點、到刃尖。 */
+        const pa = ax * w.u0x + ay * w.u0y + az * w.u0z;
+        const pc = ax * w.e2x + ay * w.e2y + az * w.e2z;
         cutY.push([b.y, Math.abs(ax * w.nx + ay * w.ny + az * w.nz),
-                   w.y - ((b.x - w.x) * w.nx + (b.z - w.z) * w.nz) / w.ny]);
+                   w.y - ((b.x - w.x) * w.nx + (b.z - w.z) * w.nz) / w.ny,
+                   Math.hypot(pa, pc)]);
       }
       return oBreak(b, vx, vy, vz);
     };
@@ -11873,6 +11970,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 刃面在缺口裡從多高掉到多低（ypHi → ypLo），以及每一塊離刃面的**垂直**距離
        有沒有超過「一個刃寬」換算成垂直的量（band / cos 傾角）。 */
     let ypHi = -1e9, ypLo = 1e9, vOff = 0;
+    let rCutLo = 1e9, rCutHi = -1e9, beyondHit = 0;      // 切到的半徑範圍（v1.174）
     for (const r of cutY) {
       if (r[0] < lo) lo = r[0];
       if (r[0] > hiY) hiY = r[0];
@@ -11881,7 +11979,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (r[2] < ypLo) ypLo = r[2];
       const dv = Math.abs(r[0] - r[2]);
       if (dv > vOff) vOff = dv;
+      if (r[3] < rCutLo) rCutLo = r[3];
+      if (r[3] > rCutHi) rCutHi = r[3];
+      if (r[3] > s.rhit) beyondHit++;
     }
+    const ring = { lo: +rCutLo.toFixed(2), hi: +rCutHi.toFixed(2), beyondHit };
     const slant = { hi: ypHi, lo: ypLo, vOff: vOff,
                     vLim: s.band / Math.max(1e-6, Math.abs(s.ny)) };
 
@@ -11948,7 +12050,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     useTool({ kind: 'block', point: new THREE.Vector3(p3.x, p3.y, p3.z),
               dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
     const w2 = swords[0];
-    const twoB = { y: w2.y, r1: w2.r1,
+    const twoB = { y: w2.y, r1: w2.rhit,
                    r3d1: Math.hypot(p1.x - w2.x, p1.y - w2.y, p1.z - w2.z),
                    r3d2: Math.hypot(p3.x - w2.x, p3.y - w2.y, p3.z - w2.z) };
 
@@ -12020,7 +12122,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
     /* v1.169 使用者改的三件（造型本身沒動，動的是「哪一點在轉、哪一點在砍、手在哪一邊」）：
        ⓐ「劍尖往下一小段才是攻擊點」——攻擊點在刃尖裡面、但還在刃身上
-          （刃根 < 攻擊點 < 刃尖），而且判定用的外緣半徑 r1 就是「樞紐到攻擊點」；
+          （刃根 < 攻擊點 < 刃尖）；**判定用的外緣是刃尖**，那是 v1.174 分開的
+          （攻擊點只管瞄準，見下面那兩條）；
        ⓑ「旋轉圓心在劍柄往外延伸一點」——樞紐比造型**最低那一片的下緣**還要外面，
           中間那一段空的就是握劍的手（沒有畫出來）；
        ⓒ「劍柄盡量在鏡頭方向」——同樣兩點、鏡頭轉到對面再揮一次，樞紐要跟著換邊。
@@ -12044,8 +12147,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const hand = {
       pivot: ENG.SWORD_PIVOT, edge: ENG.SWORD_EDGE, hit: ENG.SWORD_HIT, tip: ENG.SWORD_TIP,
       low: +lowEdge.toFixed(4), gap: +(lowEdge - ENG.SWORD_PIVOT).toFixed(4),
-      r1: +sw.r1.toFixed(6),
-      r1want: +((ENG.SWORD_HIT - ENG.SWORD_PIVOT) * sw.len).toFixed(6),
+      r1: +sw.r1.toFixed(6), rhit: +sw.rhit.toFixed(6),
+      hitWant: +((ENG.SWORD_HIT - ENG.SWORD_PIVOT) * sw.len).toFixed(6),
       rTip: +((ENG.SWORD_TIP - ENG.SWORD_PIVOT) * sw.len).toFixed(6),
       sideA: +side(hA, yawA).toFixed(3), sideB: +side(hB, yawB).toFixed(3),
       flip: +Math.hypot(hA.x - hB.x, hA.z - hB.z).toFixed(2)
@@ -12053,7 +12156,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
     ENG.shake = oShake;
     swords = null; aim = null; tool = 'hammer'; running = true;
-    return { both, kept, shot, geo, before, midSet, cut: cutY.length, lives,
+    return { both, kept, shot, geo, before, midSet, cut: cutY.length, lives, ring,
              lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes: shakeN, wind,
              phs: phs.filter((p, i) => i === 0 || p !== phs[i - 1]).join('→'),
              tipErr, tipEdgeErr, tipEdge: tEdge, tipPart: ti, tipPlane, rootErr,
@@ -12072,9 +12175,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ＝ 攻擊點起手落在第一點、收手落在第二點（v1.169 之前落在刃尖上，見下面
      「攻擊點在刃尖裡面一小段」那一條）。兩點在刃長之內時誤差只會是浮點的量級。 */
   ok('攻擊點起手落在第一點、收手落在第二點（樞紐到兩點的 3D 距離都是攻擊點半徑）',
-     Math.abs(swd.geo.r3d1 - swd.shot.r1) < 0.01 &&
-     Math.abs(swd.geo.r3d2 - swd.shot.r1) < 0.01,
-     '攻擊點半徑 ' + swd.shot.r1.toFixed(2) + '；樞紐到第一點 ' + swd.geo.r3d1.toFixed(2) +
+     Math.abs(swd.geo.r3d1 - swd.shot.rhit) < 0.01 &&
+     Math.abs(swd.geo.r3d2 - swd.shot.rhit) < 0.01,
+     '攻擊點半徑 ' + swd.shot.rhit.toFixed(2) + '；樞紐到第一點 ' + swd.geo.r3d1.toFixed(2) +
      '、到第二點 ' + swd.geo.r3d2.toFixed(2));
   ok('揮擊方向是第一點 → 第二點（起手正對第一點、收手正對第二點）',
      swd.geo.e0 < 1e-9 && swd.geo.e1 < 1e-9 && swd.shot.span > 0.3,
@@ -12126,17 +12229,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      swd.tipEdgeErr.toExponential(1) + '）、刃主體下緣 ＝ SWORD_EDGE（差 ' +
      swd.rootErr.toExponential(1) + '）；那一塊畫出來的位置差 ' +
      swd.tipErr.toExponential(1) + '、離揮動平面 ' + swd.tipPlane.toExponential(1));
-  /* v1.169 使用者：「劍尖往下一小段才是攻擊點」；**v1.173 再挪到刃的正中央**
-     （使用者：「大劍打擊點改到劍刃中央」）。守三件事：攻擊點就是刃兩端的中點、
-     判定的外緣半徑用的是攻擊點而不是刃尖（寫錯的話刃尖那一段會跟著砍）、
-     刃尖確實還在攻擊點外面。中點不寫死，直接從刃根與刃尖算。 */
-  ok('攻擊點在刃的正中央（判定與瞄準都用它，不是用刃尖）',
+  /* v1.169 使用者：「劍尖往下一小段才是攻擊點」；v1.173 再挪到刃的正中央
+     （「大劍打擊點改到劍刃中央」）。**攻擊點只管瞄準**（v1.174 使用者：「破壞範圍當然是
+     整個劍身 打擊點是配合使用者點擊位置用的(劍術中不會用劍尖來瞄準攻擊目標位置)」）。
+     守兩件事：攻擊點就是刃兩端的中點（不寫死，直接從刃根與刃尖算），
+     而**判定用的外緣是刃尖**——寫成攻擊點的話刃的外側一半就只畫不砍（v1.169～v1.173
+     的老毛病）。 */
+  ok('攻擊點在刃的正中央，只管瞄準；判定的外緣是刃尖',
      Math.abs(swd.hand.hit - (swd.hand.edge + swd.hand.tip) / 2) < 1e-9 &&
-     Math.abs(swd.hand.r1 - swd.hand.r1want) < 1e-6 && swd.hand.rTip > swd.hand.r1,
+     Math.abs(swd.hand.rhit - swd.hand.hitWant) < 1e-6 &&
+     Math.abs(swd.hand.r1 - swd.hand.rTip) < 1e-6,
      '攻擊點 ' + swd.hand.hit + '（刃根 ' + swd.hand.edge + '、刃尖 ' + swd.hand.tip +
      '，中點 ' + ((swd.hand.edge + swd.hand.tip) / 2).toFixed(3) +
-     '）；這一把樞紐到攻擊點 ' + swd.hand.r1 + '、到刃尖 ' + swd.hand.rTip +
-     '（刃尖多伸出去 ' + (swd.hand.rTip - swd.hand.r1).toFixed(2) + ' 單位，畫得到但不砍）');
+     '）；這一把樞紐到攻擊點 ' + swd.hand.rhit + '、判定外緣 ' + swd.hand.r1 +
+     ' ＝ 樞紐到刃尖 ' + swd.hand.rTip);
+  /* v1.174 使用者：「確認大劍破壞範圍是否包含整個劍身(打擊點 只是對應點擊的位置)」
+     → 「破壞範圍當然是整個劍身」。上一條驗的是「常數接對了」，這一條驗**真的砍到那裡**：
+     被切下來的那幾百塊，在揮動平面裡的半徑要落在「刃根～刃尖」之間，而且**有一批
+     落在攻擊點以外**（那一批就是 v1.169～v1.173 砍不到的那半片刃）。
+     兩個邊界都不寫死：內緣讀 r0、外緣讀 r1（＝刃尖），中間那條線讀 rhit。 */
+  ok('破壞範圍是整片劍身：切到的半徑從刃根到刃尖，攻擊點以外也照樣砍',
+     swd.ring.lo >= swd.shot.r0 - 0.01 && swd.ring.hi <= swd.shot.r1 + 0.01 &&
+     swd.ring.hi > swd.shot.rhit && swd.ring.beyondHit > swd.cut * 0.1,
+     '切到的半徑 ' + swd.ring.lo + '～' + swd.ring.hi + '（刃根 ' +
+     swd.shot.r0.toFixed(2) + '、攻擊點 ' + swd.shot.rhit.toFixed(2) + '、刃尖 ' +
+     swd.shot.r1.toFixed(2) + '）；其中 ' + swd.ring.beyondHit + '/' + swd.cut +
+     ' 塊在攻擊點以外（v1.173 之前這一批砍不到）');
   /* v1.169 使用者：「旋轉圓心在劍柄往外延伸一點才正常」。樞紐要在**造型外面**：
      比最低那一片（劍首底）的下緣還低，中間那一段空的就是握劍的手。 */
   ok('旋轉圓心在劍柄外面（不是握在劍身上自己轉）',
@@ -12226,9 +12344,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let camUp = 0, hit = 0, bag = 0, rise = 0, riseTop = 0, riseLow = 99;
     let atTarget = -1, awayD = -1, park = 0;
     let taken = null, high = 0;
-    /* 落點的分佈（v1.169 起「均勻鋪在光圈那一圈裡」，見 ufoDrop）。
-       量的是**分位數與角度的合向量**，不是「切幾個桶各幾件」：桶子那種量法對
-       UFO_SOW_JIT 那點抖動很敏感（落點的半徑是一小步一小步排上去的，n ＝ 600 時
+    /* 落點的分佈（v1.169 起「均勻鋪」，v1.174 起鋪的是**整座島**而不是光圈那一圈，
+       見 ufoDrop）。量的是**分位數與角度的合向量**，不是「切幾個桶各幾件」：桶子那種
+       量法對 UFO_SOW_JIT 那點抖動很敏感（落點的半徑是一小步一小步排上去的，n ＝ 600 時
        相鄰兩件只差 0.015，±0.5 的抖動等於有近百件跨在桶的邊界上，數出來的
        件數自己就會晃 ±5%～8%），分位數與合向量則幾乎不受影響。 */
     const sow = { d: [], cx: 0, cz: 0 };
@@ -12292,7 +12410,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       sow: (() => {
         const d = sow.d.slice().sort((a, b) => a - b), n = d.length;
         const q = p => n ? +d[Math.min(n - 1, Math.floor(p * n))].toFixed(2) : -1;
-        return { n, R: UFO_R, rMax: n ? +d[n - 1].toFixed(2) : -1,
+        return { n, R: +ufoSowR().toFixed(2), old: UFO_R, rMax: n ? +d[n - 1].toFixed(2) : -1,
                  rMean: +(sow.d.reduce((a, b) => a + b, 0) / Math.max(1, n)).toFixed(2),
                  q25: q(0.25), q50: q(0.5), q75: q(0.75),
                  ang: +(Math.hypot(sow.cx, sow.cz) / Math.max(1, n)).toFixed(4) };
@@ -12389,10 +12507,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ufo.dropT - ufo.goneT > 4.9 && ufo.dropT - ufo.goneT < 5.2 && ufo.high > 60,
      '飛走 ' + ufo.goneT + ' 秒 → 掉下來 ' + ufo.dropT + ' 秒（差 ' +
      (ufo.dropT - ufo.goneT).toFixed(2) + ' 秒），出現在 ' + ufo.high + ' 高');
-  /* 使用者（v1.169）：「所有東西從天上掉下來應該是均勻分散的」。
+  /* 使用者（v1.169）：「所有東西從天上掉下來應該是均勻分散的」；**v1.174 又追加
+     「UFO吸走的東西是均勻分散全場的掉下來」**，所以鋪的範圍從「光圈那一圈」（半徑
+     UFO_R）換成「整座島」（半徑 ufoSowR() ＝ arenaR 減掉島邊的餘裕）。
      兩件事一起驗，而且每個理論值都是**從「圓盤上均勻」算出來的**，不是抄來的門檻：
-       ⓐ 圈：落點全部在光圈那一圈裡（圓心是照光的那一點，半徑 UFO_R 再加抖動的餘裕）
-          ——這一條同時守著 v1.167 那條「掉在同一圈才看得出是剛剛那一片」；
+       ⓐ 圈：落點全部在那個圓裡（圓心是場心，半徑再加抖動的餘裕），而且**真的鋪滿**
+          ——最遠那一件要貼著邊，範圍縮回一小圈就會掉出下界；
        ⓑ 均勻：圓盤上均勻的話半徑的累積分佈是 (r/R)²，所以第 p 分位 ＝ R√p
           （四分位就是 0.5R／0.707R／0.866R），平均半徑 ＝ ⅔R；角度均勻則是
           「每件取單位向量加起來 ≈ 0」。分位數與合向量都不受 UFO_SOW_JIT 那點
@@ -12404,15 +12524,54 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const want = [R * 0.5, R * Math.SQRT1_2, R * Math.sqrt(0.75)];
     const qErr = Math.max(Math.abs(S.q25 - want[0]), Math.abs(S.q50 - want[1]),
                           Math.abs(S.q75 - want[2])) / R;
-    ok('掉在照光那一圈的上方，而且均勻鋪滿那一圈（不是擠成一坨）',
-       S.n > 20 && S.rMax <= R + 1.5 && S.ang < 0.06 && qErr < 0.05 &&
+    ok('均勻鋪滿整座島（不是擠成一坨，也不再只鋪光圈那一圈）',
+       S.n > 20 && S.rMax <= R + 1.5 && S.rMax > R - 1.5 && R > S.old * 2 &&
+       S.ang < 0.06 && qErr < 0.05 &&
        Math.abs(S.rMean - R * 2 / 3) < R * 0.05,
-       S.n + ' 件：最遠離圓心 ' + S.rMax + '（光圈 ' + R + '）、平均 ' + S.rMean +
+       S.n + ' 件：最遠離場心 ' + S.rMax + '（鋪的半徑 ' + R + '，v1.173 只鋪光圈那 ' +
+       S.old + '）、平均 ' + S.rMean +
        '（理論 ' + (R * 2 / 3).toFixed(2) + '）；四分位 ' +
        S.q25 + '／' + S.q50 + '／' + S.q75 + '（理論 ' +
        want.map(v => v.toFixed(2)).join('／') + '，最大差 ' +
        (qErr * 100).toFixed(1) + '% 個半徑）；角度合向量 ' + S.ang + '（均勻 ＝ 0）');
   }
+  /* 鋪的**圓心是場心**，不是照光的那一點（v1.174）。上面那一條的光柱剛好照在場心，
+     兩者重合分不出來，所以這裡把光柱移到工地的一角再跑一趟：落點的重心該還是場心，
+     最遠那一件該還是貼著島邊。 */
+  const ufoSow = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    for (let i = 0; i < 120; i++) step(0.05);            // 完工後散場（同上面那一條）
+    const at = { x: siteR * 0.6, z: siteR * 0.6 };       // 照光的那一點刻意不放場心
+    callUfo(at);
+    let taken = null, f = 0;
+    while (f < 500) {
+      step(0.05); f++;
+      const u = ufos && ufos[0];
+      if (!u) break;
+      if (u.st === 'wait' && !taken) taken = u.bag.map(it => ({ o: it.o }));
+      if (u.st === 'rain') break;
+    }
+    // 只算真的被丟上天的那幾件（同上面那一條的 y > 60）
+    const pts = (taken || []).filter(t => t.o.y > 60);
+    const n = pts.length;
+    const ds = pts.map(t => Math.hypot(t.o.x, t.o.z)).sort((a, b) => a - b);
+    let cx = 0, cz = 0;
+    for (const t of pts) { cx += t.o.x; cz += t.o.z; }
+    for (let i = 0; i < 300; i++) step(0.05);             // 讓它們落地，別跨到下一條
+    return { n, beamD: +Math.hypot(at.x, at.z).toFixed(1),
+             ctr: n ? +Math.hypot(cx / n, cz / n).toFixed(2) : -1,
+             rMax: n ? +ds[n - 1].toFixed(2) : -1,
+             R: +ufoSowR().toFixed(2), old: UFO_R,
+             far: ds.filter(d => d > UFO_R + 2).length };
+  });
+  ok('鋪的圓心是場心，不是照光的那一點',
+     ufoSow.n > 20 && ufoSow.beamD > 5 && ufoSow.ctr < 1.5 &&
+     ufoSow.rMax > ufoSow.R - 1.5 && ufoSow.rMax <= ufoSow.R + 1.5 &&
+     ufoSow.far > ufoSow.n * 0.8,
+     '光柱照在離場心 ' + ufoSow.beamD + ' 的地方，' + ufoSow.n +
+     ' 件的重心離場心 ' + ufoSow.ctr + '、最遠 ' + ufoSow.rMax + '（鋪的半徑 ' +
+     ufoSow.R + '）；其中 ' + ufoSow.far + ' 件落在舊的光圈半徑 ' + ufoSow.old +
+     ' 之外');
   ok('掉下來的積木最後躺在地上，沒有卡在地板底下或留著旗標',
      ufo.under === 0 && ufo.flagged === 0 && ufo.carry === 0 && ufo.free > 0 &&
      ufo.pool === ufo.set0,
@@ -12666,8 +12825,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      對第二個位置射箭(類似王之財寶 但是沒有爆炸效果)　箭矢做拋物線飛到位置二
      小人弓箭隊一組大約40人射三輪」；看過造型之後又追加三件：「小人拉弓 應該要往上45度」
      「箭矢要也能對生物作用」「地面的話就先插在地面上 然後慢慢消失」。
-     這一段就守那幾件事，一條對一件：兩點式、一隊人射三輪（人數讀 AR_N，加倍過一次）、
-     45 度出手（**姿勢與彈道
+     這一段就守那幾件事，一條對一件：兩點式、一隊人射滿設定的輪數（人數與輪數都**讀
+     常數**AR_N／AR_VOL——v1.171 開發中 40→80 人、v1.174 又改成 40 人射 5 輪，
+     這幾條都不必跟著改）、45 度出手（**姿勢與彈道
      同一個角度**）、拋物線、不爆不燒不震、打得到小人與生物、落地插著再淡掉、收乾淨。 */
   await head('箭雨');
   await reset(page, { shape: '巴黎聖母院', cnt: 3000, workers: 6 });
@@ -12717,7 +12877,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'workerMesh.count ' + arCast.wcount + ' ＝ (小人 ＋ 弓箭手) × 每人部位數 ＝ ' +
      arCast.want + '；workers 裡帶弓的有 ' + arCast.inWorkers + ' 個');
 
-  /* 一整趟：三輪、每一支出手的角度、弧高、有沒有爆／燒／震、收不收乾淨。 */
+  /* 一整趟：射滿 AR_VOL 輪、每一支出手的角度、弧高、有沒有爆／燒／震、收不收乾淨。
+     24 秒的窗夠長：最後一支離手在第 8.4 秒（AR_LIFT ＋ AR_DRAW ＋ 4×AR_CYCLE ＋ 錯開），
+     整隊第 10 秒撤走，最後一支箭插著淡完約第 17 秒。 */
   const arRun = await page.evaluate(() => {
     cleanTools(); completeNow();
     const b0 = blocks.filter(b => b.st === SET).length, s0 = stats.smashed;
@@ -12782,7 +12944,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              kMax: +kMax.toFixed(3), kLast: +kLast.toFixed(3),
              wcount: ENG.three.workerMesh.count / ENG.WPARTS };
   });
-  ok('一隊人各射三輪，每個人每輪一支，一支都不少',
+  ok('一隊人把設定的輪數射滿，每個人每輪一支，一支都不少',
      arRun.men === arRun.N && arRun.n === arRun.want && arRun.vol === arRun.vols,
      arRun.men + ' 人 × ' + arRun.vol + ' 輪 ＝ ' + arRun.n + ' 支（期望 ' +
      arRun.want + '，同時最多 ' + arRun.peakN + ' 支在場）');
@@ -17693,12 +17855,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (st < lowSet) { lowSet = st; ph = phase; }
         if (!beasts) break;
       }
+      /* **窗停在「龍飛走」是對的**（v1.174 查過一次，見 README〈九條「偶爾飄」的測試〉
+         最後一列）：試過「再等到火自己燒完」，實測三趟都是**再燒 0 秒**——牠離場時
+         火早就滅了，所以這條測試飄的原因不在窗，而是「一趟拆掉 29%～100%」這個分布
+         本身跨過門檻（一半）。 */
       const gaps = times.slice(1).map((t, i) => t - times[i]);
       /* 只吐一顆的那一趟沒有「間隔」可言：給 −1 當「沒得比」，
          別給 0 —— 0 會被下面那條「不連噴」當成「連噴」而誤判。 */
       return { shots: times.length, maxAt,
                minGap: gaps.length ? +Math.min(...gaps).toFixed(2) : -1,
-               burn, set0, lowSet, ph, phase };
+               burn, set0, lowSet, ph, phase, secs: +(n * 0.05).toFixed(1) };
     }));
   }
   const dfire = dpass.slice().sort((a, b) => a.lowSet - b.lowSet)[1];   // 中位那一趟
@@ -17718,7 +17884,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '三趟最多同時燒 ' + dpass.map(d => d.burn).join('／') + ' 塊；還站著的 ' +
      dfire.set0 + ' → ' + dpass.map(d => d.lowSet).join('／') +
      ' 塊（取中位 ' + dfire.lowSet + '，門檻 ' + Math.round(dfire.set0 * 0.5) +
-     '），phase ' + dpass.map(d => d.ph).join('／'));
+     '），phase ' + dpass.map(d => d.ph).join('／') + '；每一趟龍在場 ' +
+     dpass.map(d => d.secs).join('／') + ' 秒');
   /* 「大約隕石那樣大」＝範圍 9.2、威力 16，那是**使用者說那句話時**（v1.146）的隕石。
      v1.151 使用者把隕石指定放大（v1.151.1 定案是半徑 ×2、範圍 18.4），火球
      **沒有跟著放大**——那是另一把道具，不該被隕石的每一次調整帶著跑，
@@ -19187,8 +19354,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       orig[n] = window[n];
       window[n] = function (...a) { seen++; return orig[n].apply(null, a); };
     }
-    // 要點兩下的那幾支（v1.171 加箭雨：只點一下的話只會畫個瞄準環，一隊人都不會出來）
-    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow'];
+    /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機：只點一下的話只會畫個瞄準環，
+       一台機器／一隊人都不會出來）。 */
+    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb'];
     const out = [];
     try {
       for (const t of TOOLS) {
@@ -21266,13 +21434,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const met = meteors ? meteors.length : 0;
     meteors = null; ENG.putMeteors([]);
 
-    tool = 'treb'; trebs = null;
-    tap(195, 470);
-    const treb = trebs ? trebs.list.length : 0;
-    trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
-
     /* 手機也要跟桌機同一套操作：兩點式的工具點兩下才發動，
-       第一下只是選地點（相容事件如果沒擋掉，第一下就會自己變成兩下）。 */
+       第一下只是選地點（相容事件如果沒擋掉，第一下就會自己變成兩下）。
+       投石機 v1.174 起也在這一組（以前是「點一下架一台」，跟隕石一起驗上面那條）。 */
+    tool = 'treb'; trebs = null; aim = null;
+    tap(150, 470);
+    const trebMid = { aim: !!aim, n: trebs ? trebs.list.length : 0 };
+    tap(260, 500);
+    const trebAfter = trebs ? trebs.list.length : 0;
+    trebs = null; ENG.putTrebs([]); ENG.putRocks([]); aim = null;
+
     tool = 'tornado'; twists = null; aim = null;
     tap(150, 470);
     const midAim = !!aim, mid = twists ? twists.length : 0;
@@ -21287,15 +21458,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const ballAfter = !!balls;
     balls = null; ENG.putBalls([]); aim = null;
     tool = keep;
-    return { met, treb, midAim, mid, after, ballMid, ballAfter };
+    return { met, trebMid, trebAfter, trebWant: TREB_TEAM, midAim, mid, after,
+             ballMid, ballAfter };
   });
-  ok('手機上點一下地板只算一次，不會變成兩顆隕石、兩台投石機',
-     ghost.met === 1 && ghost.treb === 1,
-     '點一下 → 隕石 ' + ghost.met + ' 顆、投石機 ' + ghost.treb + ' 台');
+  ok('手機上點一下地板只算一次，不會變成兩顆隕石',
+     ghost.met === 1, '點一下 → 隕石 ' + ghost.met + ' 顆');
   ok('兩點式的工具在手機上也是點兩下（跟桌機同一套操作）',
      ghost.midAim && ghost.mid === 0 && ghost.after === 1 &&
-     !ghost.ballMid && ghost.ballAfter,
-     '第一下：龍捲風 ' + ghost.mid + ' 道、球還沒出手；第二下：龍捲風 ' + ghost.after + ' 道、球出手了');
+     !ghost.ballMid && ghost.ballAfter &&
+     ghost.trebMid.aim && ghost.trebMid.n === 0 && ghost.trebAfter === ghost.trebWant,
+     '第一下：龍捲風 ' + ghost.mid + ' 道、球還沒出手、投石機 ' + ghost.trebMid.n +
+     ' 台；第二下：龍捲風 ' + ghost.after + ' 道、球出手了、投石機 ' +
+     ghost.trebAfter + ' 台（一隊 ' + ghost.trebWant + ' 台）');
 
   /* 直式手機的水平視角比垂直窄得多，取景只算垂直 fov 的話寬的地標會被切掉：
      修之前 36 座有 24 座出界，金門大橋溢出六成。挑最寬的四座來守。 */

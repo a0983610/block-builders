@@ -28,7 +28,8 @@ const TOOLS = [
     /* 「範圍三倍」是 v1.165 收小槌之後的實況（11 ÷ 3.6 ≈ 3.06）：大槌自己沒變。 */
     tip: '點建築：兩倍大的槌子，範圍是小槌的三倍　·　點地面：地震，震掉 10% 的積木' },
   { id: 'ball', n: '保齡球', k: '🎳', tip: '點兩下：先點出手的地方，再點要滾過去的方向' },
-  { id: 'treb', n: '投石機', k: '🪨', tip: '點地面：在那裡架一台投石機，朝建築丟石頭' },
+  { id: 'treb', n: '投石機', k: '🪨',
+    tip: '點兩下：先點機台架設的位置，再點要轟的地方（一次架 4 台，各丟 5 顆石頭）' },
   { id: 'tornado', n: '龍捲風', k: '🌪',
     tip: '點兩下：先點龍捲風出現的地方，再點要掃過去的方向（會一路亂竄 10 秒，罩到的建築每秒吸走七成）' },
   { id: 'fw', n: '煙火', k: '🎆',
@@ -457,44 +458,83 @@ function stepSwing(dt) {
 }
 
 /* ── 投石機 ─────────────────────────────────────────────
-   四周架起幾台，朝建築中心附近隨機丟石頭，走拋物線砸下來。 */
-const TREB_NEAR = 14;               // 放下去的地方幾格內有房子就轟那一間（見 placeTreb）
-const TREB_MAX = 8, TREB_SHOTS = 5, ROCK_R = 4.6, ROCK_POW = 12;
+   一次架四台，朝你點的第二個位置附近隨機丟石頭，走拋物線砸下來。
+
+   **v1.174 改成兩點式、一次四台**（使用者：「投石機調整　改成類似箭雨操作方式
+   兩個位置 然後一次出現4台投石機」）：第一下站機台、第二下是要轟的地方，走的就是
+   箭雨那一套（aimFirst ＋ aim、一列排在第一點、整隊面向目標，見 castArrows）。
+   v1.102～v1.173 是「點一下架一台，落點照工地中心取；放在小人的家 TREB_NEAR 格內
+   就改轟那一間」。目標改成明點的之後，那條「站在誰旁邊就轟誰」沒必要了——想轟哪一間
+   直接點它，比「站在誰旁邊」還準（e2e 那條「每一把破壞道具都打得到小人的家」照樣
+   守著，只是改成第二下點在那間房子上）。 */
+const TREB_MAX = 8;                 // 場上最多幾台（＝兩隊。**要 ≤ 引擎的 MAXTREB**）
+const TREB_TEAM = 4;                // 一次架幾台（使用者指定）
+const TREB_GAP = 7;                 // 台與台之間隔多遠（底座 3.8 寬，中間留得下走道）
+const TREB_SHOTS = 5, ROCK_R = 4.6, ROCK_POW = 12;
+/* 落點在第二點附近散多開（開根號讓分布均勻，同箭雨的 AR_SPRAY）。
+   石頭自己的破壞半徑是 ROCK_R ＝ 4.6，散開 8 剛好是「一隊二十顆打出來的坑連成一片，
+   又不是每一顆都砸同一個洞」。不跟著射程走（那是箭雨那一條，射手才有準度問題）。 */
+const TREB_SPRAY = 8;
+const TREB_AIM_R = (TREB_TEAM - 1) * TREB_GAP / 2 + 3;   // 第一下的光環 ≈ 一隊的正面寬
+const TREB_AIM_C = 0x8a5f3c;        // 木色（同機台的立柱）
 let trebs = null;
-/* 點一下就在那個位置架一台。點在建築上的話推到外圍，
-   不然機台會直接長在牆裡面。 */
-function placeTreb(point) {
+/* 第一下記位置、畫個光環，第二下才架（同箭雨的 aimArrows）。 */
+function aimTrebs(point) {
+  if (!aim) { aimFirst(point, TREB_AIM_R, TREB_AIM_C); return; }
+  castTrebs(aim, point);
+}
+/* 一隊排成一列、整隊面向目標（橫向 ＝ 指向目標那個方向轉 90 度，同 castArrows）。
+   同一個地方連點兩下就沒有方向可用，跟箭雨一樣退回「朝場心」。 */
+function castTrebs(from, toward) {
+  aim = null;
+  /* 第一下點在建築上的話**整隊**先推到外圍（機台不能長在牆裡面，同 v1.102 那條規則）。
+     推的是隊伍的中心、不是一台一台推：一台一台推會把四台壓到同一個半徑上，
+     排在同一側的兩台等於疊在一起（第一下點在建築正中央時整隊只剩兩個位置）。
+     推完才算方向——中心搬過了，「指向目標」也跟著換。 */
+  let cx = from.x, cz = from.z;
+  const d0 = Math.hypot(cx, cz), minD = siteR + 5;
+  if (d0 < minD) {
+    const a = d0 < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(cz, cx);
+    cx = Math.cos(a) * minD; cz = Math.sin(a) * minD;
+  }
+  let dx = toward.x - cx, dz = toward.z - cz;
+  if (Math.hypot(dx, dz) < 0.5) { dx = -cx; dz = -cz; }
+  if (Math.hypot(dx, dz) < 1e-4) { dx = 1; dz = 0; }
+  const d = Math.hypot(dx, dz);
+  const sx = -dz / d, sz = dx / d;                  // 隊伍的橫向
+  for (let i = 0; i < TREB_TEAM; i++) {
+    const off = (i - (TREB_TEAM - 1) / 2) * TREB_GAP;
+    placeTreb({ x: cx + sx * off, z: cz + sz * off }, toward);
+  }
+  sndWind();                        // 一隊架好那一聲（一隊一次，不是四台各一聲）
+}
+/* 架一台：站在 spot、轟 aimAt。
+   兩道保險（castTrebs 已經先推過隊伍的中心，這裡是給單台呼叫與斜著站的那一隊用的）：
+     ① 還是落在建築上就往外推——整隊斜著跨過工地時，內側那台可能還在牆裡。
+     ② 夾回島內：一隊四台的正面寬 21，第一下點在場邊時外側那台會站到島外面
+        （草地是半徑 arenaR 的圓島，同箭雨 arSpot 最後那一夾）。 */
+function placeTreb(spot, aimAt) {
   if (!trebs) trebs = { list: [], rocks: [] };
   if (trebs.list.length >= TREB_MAX) trebs.list.shift();
-  let x = point.x, z = point.z;
+  let x = spot.x, z = spot.z;
   const d = Math.hypot(x, z), minD = siteR + 5;
   if (d < minD) {
     const a = d < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(z, x);
     x = Math.cos(a) * minD; z = Math.sin(a) * minD;
   }
-  /* 轟哪一座（v1.102，使用者：「小房子也要能被所有破壞工具作用」）。原本一律照
-     工地中心取落點，所以擺在小人的家旁邊也是在轟地標。改成「擺在誰旁邊就轟誰」：
-     放下去的地方 TREB_NEAR 格內有房子就轟那一間，沒有才轟地標。 */
-  let hm = -1, best = TREB_NEAR * TREB_NEAR;
-  if (homes) homes.list.forEach((h, i) => {
-    const d2 = (h.x - point.x) ** 2 + (h.z - point.z) ** 2;
-    if (d2 < best) { best = d2; hm = i; }
-  });
-  const aim = hm >= 0 ? homes.list[hm] : { x: 0, z: 0 };
-  // 面向要轟的那一座：rotation.y = a 之後 local +Z 會指到 (sin a, 0, cos a)
-  trebs.list.push({ x, z, a: Math.atan2(aim.x - x, aim.z - z), hm,
+  const dd = Math.hypot(x, z), lim = arenaR - 2;
+  if (dd > lim) { x = x / dd * lim; z = z / dd * lim; }
+  // 面向要轟的那一點：rotation.y = a 之後 local +Z 會指到 (sin a, 0, cos a)
+  trebs.list.push({ x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
+                    tx: aimAt.x, tz: aimAt.z,
                     arm: -0.8, next: 0.4, left: TREB_SHOTS, idle: 0 });
-  sndWind();
 }
 function fireRock(m) {
-  /* 落點以「它要轟的那一座」的中心為準隨機取（開根號讓分布均勻，不然會全擠在中心）。
-     那一座是放下去的時候決定的（見 placeTreb）；房子被拆掉了就回頭轟地標。 */
-  const h = m.hm >= 0 && homes ? homes.list[m.hm] : null;
-  const cx = h ? h.x : 0, cz = h ? h.z : 0;
-  const spread = h ? h.r : siteR * 0.85;
+  /* 落點以「這一隊要轟的那一點」為準隨機取（開根號讓分布均勻，不然會全擠在中心）。
+     那一點就是第二下點的地方，架的時候記在機台上（見 castTrebs）。 */
   const a = Math.random() * Math.PI * 2;
-  const rad = Math.sqrt(Math.random()) * spread;
-  const tx = cx + Math.cos(a) * rad, tz = cz + Math.sin(a) * rad;
+  const rad = Math.sqrt(Math.random()) * TREB_SPRAY;
+  const tx = m.tx + Math.cos(a) * rad, tz = m.tz + Math.sin(a) * rad;
   // 目標高度取那附近最高的積木，石頭才會砸在建築上而不是穿進去才炸
   let ty = 0;
   for (const b of blocks) {
@@ -4097,10 +4137,11 @@ function dustList() {
       它們本來就不管小人手上的積木。地板是不透明的，沉到底下就看不見，
       也不必每幀跟著幽浮搬。
       小人與動物沒有這種狀態，所以各多一個 `ufo` 旗標，updWorker／stepBeast 開頭跳過。
-   ② **掉下來的位置是「照光那一圈」的上方**，不是幽浮飛走的方向。使用者說的是
-      「從天上掉下來」，落在同一圈才看得出「這一片就是剛剛被吸走的那一片」。
-      圈**裡面**怎麼分佈 v1.169 改過：原本是「掉回各自原地 ±3」（一坨），
-      現在均勻鋪滿那一圈（使用者：「所有東西從天上掉下來應該是均勻分散的」，見 ufoDrop）。
+   ② **掉下來的位置跟幽浮飛走的方向無關**，使用者說的是「從天上掉下來」。
+      鋪多大一片改過兩次（都在 ufoDrop）：v1.167 是「掉回各自原地 ±3」（一坨）、
+      v1.169 是「均勻鋪滿照光那一圈」（半徑 UFO_R，那時還想留住「這一片就是剛剛
+      被吸走的那一片」）、**v1.174 起是均勻鋪滿整座島**（使用者：「UFO吸走的東西是
+      均勻分散全場的掉下來」），所以「同一圈」那件事不留了。
    ③ **afterHit 的衝擊點給在幽浮那個高度，不是地面。** 那支順手會把衝擊點附近的人掀倒，
       而這一發根本沒有東西砸到地上；點在 34 高的地方，它掀人的判定半徑
       （UFO_R × 0.6 × 1.7 ＝ 9.2）本來就搆不到地面的人，而計分與「開始拆了」照樣記。
@@ -4253,9 +4294,11 @@ function ufoLift(u, dt) {
    v1.169 使用者：「所有東西從天上掉下來應該是均勻分散的」。v1.167～v1.168 是
    **掉回原地 ±3**（當時的理由是「掉回原地才看得出這一片就是剛剛被吸走的那一片」），
    但被吸走的那一片本來就是一棟建築、擠在幾格見方裡，掉下來就是一坨。
-   現在改成**均勻鋪在光圈那一圈裡**（圓心還是照光的那一點、半徑還是 UFO_R，所以
-   「就是剛剛那一圈」仍然看得出來，只是鋪平了）。鋪法是黃金角向日葵排列：
-   第 k 件放在半徑 UFO_R·√((k+½)/n)、角度 k × 2.39996 rad。
+   v1.169～v1.173 改成**均勻鋪在光圈那一圈裡**（圓心是照光的那一點、半徑 UFO_R）。
+   **v1.174 再放大到整片草地**（使用者：「UFO吸走的東西是均勻分散全場的掉下來」）：
+   圓心改成**場心**、半徑改成 arenaR（島有多大就鋪多大，見 ufoSowR），所以
+   「就是剛剛那一圈」這件事不留了——使用者要的是整場均勻，不是那一圈均勻。
+   鋪法沒動，還是黃金角向日葵排列：第 k 件放在半徑 R·√((k+½)/n)、角度 k × 2.39996 rad。
      · 半徑開根號才是「圓盤上均勻」（同 ufoDust 那一行的 √random）；
      · 黃金角保證相鄰兩件不落在同一個方向——**純隨機抽 n 個點是會結塊的**，
        那就不叫均勻分散了，所以這裡不用 rr()。
@@ -4264,17 +4307,25 @@ function ufoLift(u, dt) {
    半徑與高度綁在一起，看起來會是一圈一圈往外擴的漣漪。 */
 const UFO_SKY_SPAN = 18;         // 掉下來的高度鋪開多少（越大越不會同時落地）
 const UFO_SOW_JIT = 0.5;         // 落點再抖一點，不然看得出是條螺線
+/* 鋪多大一片（v1.174）：整座草地島，離島邊留 UFO_SOW_EDGE 的餘裕
+   ——落地那一刻碎塊還會互相擠開（見 game.js 的 separate），貼著島邊撒的話
+   被擠出去的那幾塊會被夾回半徑 arenaR，在邊上排成一圈。
+   arenaR 是跟著這一座的積木數算的（見 game.js 的 startBuild），所以這裡不寫死；
+   下限留 UFO_R 是給「島比光圈還小」那種退化情形。 */
+const UFO_SOW_EDGE = 3;
+const ufoSowR = () => Math.max(UFO_R, arenaR - UFO_SOW_EDGE);
 function ufoDrop(u) {
   let n = 0;
   for (const it of u.bag) if (ufoHas(it)) n++;
+  const R = ufoSowR();
   let k = 0;
   for (const it of u.bag) {
     if (!ufoHas(it)) { ufoLose(it); continue; }
     const o = it.o;
     o.ufo = 0;
-    const rad = UFO_R * Math.sqrt((k + 0.5) / n), ang = k * 2.39996323;
-    o.x = u.tx + Math.cos(ang) * rad + rr(-UFO_SOW_JIT, UFO_SOW_JIT);
-    o.z = u.tz + Math.sin(ang) * rad + rr(-UFO_SOW_JIT, UFO_SOW_JIT);
+    const rad = R * Math.sqrt((k + 0.5) / n), ang = k * 2.39996323;
+    o.x = Math.cos(ang) * rad + rr(-UFO_SOW_JIT, UFO_SOW_JIT);
+    o.z = Math.sin(ang) * rad + rr(-UFO_SOW_JIT, UFO_SOW_JIT);
     o.y = UFO_SKY + UFO_SKY_SPAN * ((k * 0.6180339887) % 1);
     k++;
     if (it.kind === 0) {
@@ -4355,7 +4406,9 @@ function stepUfo(dt) {
       if (u.t >= UFO_WAIT) {
         ufoDrop(u);
         u.st = 'rain'; u.t = 0; u.hold = 1;
-        ENG.holdWide(UFO_SKY + 8, UFO_R * 1.5, true);
+        /* 鏡頭要框得住「鋪到哪」：v1.174 起那一坨是撒滿整座島的，
+           還照 UFO_R × 1.5 退的話大半落在畫面外（見 ufoSowR）。 */
+        ENG.holdWide(UFO_SKY + 8, ufoSowR(), true);
       }
     } else {
       // rain：東西正在掉。鏡頭借到它們落地為止，然後這一台才收掉
@@ -5390,9 +5443,10 @@ function gateList() {
    就在地面水平橫掃就好」——所以 aimSword 不再擋、也不再出提示；兩下都點地面時
    樞紐就在地面的高度上，那個平面自然是水平的（幾何沒有為它開特例）。
    v1.169 使用者又追加三件（造型沒動，動的是「哪一點在轉、哪一點在砍、手在哪一邊」）：
-     ①「劍尖往下一小段才是攻擊點」——瞄準與判定改用引擎的 SWORD_HIT（刃尖往下
-       0.120 全長；第一版 0.060，使用者看過說「再往下一點」），刃尖那一小段照樣
-       畫得出來但不砍。
+     ①「劍尖往下一小段才是攻擊點」——**瞄準**改用引擎的 SWORD_HIT（刃尖往下
+       0.120 全長；第一版 0.060，使用者看過說「再往下一點」；v1.173 再挪到刃的正中央）。
+       v1.169～v1.173 連判定也用它，所以外側那半片刃只畫不砍；**v1.174 起判定改回
+       整片刃**（刃根→刃尖，見 castSword 的 rHit／rTip）。
      ②「旋轉圓心在劍柄往外延伸一點才正常」——引擎的 SWORD_PIVOT 從 −0.320
        （握把中段）挪到 −0.620（劍首外面），樞紐等於握劍那隻看不見的手。同一組點擊
        之下弧變得更大更平，看起來是手臂帶著劍掃過去，不是劍自己在原地打轉。
@@ -5486,12 +5540,20 @@ function castSword(from, toward, py, y1, y2) {
   const need = (D * D + (h1 - h2) * (h1 - h2)) / (2 * D) * 1.03;   // 留 3% 餘裕，別剛好相切
   const hitK = ENG.SWORD_HIT - ENG.SWORD_PIVOT;
   const len = Math.min(SW_LEN_MAX, Math.max(SW_LEN_MIN, D * SW_LEN_K, need / hitK));
-  /* 樞紐到**攻擊點**（v1.169 使用者：「劍尖往下一小段才是攻擊點」）。瞄準解的是這個
-     半徑、砍到的也是這個半徑為止——刃尖比它再外面 (TIP−HIT)×len，畫得出來但不砍。 */
-  const r1 = len * hitK;
-  const r0 = len * (ENG.SWORD_EDGE - ENG.SWORD_PIVOT);    // 樞紐到刃根
-  const a1 = Math.sqrt(Math.max(0, r1 * r1 - h1 * h1));   // 樞紐到第一點的水平距離
-  const a2 = Math.sqrt(Math.max(0, r1 * r1 - h2 * h2));
+  /* 兩個半徑，**v1.174 起分開**（使用者：「確認大劍破壞範圍是否包含整個劍身(打擊點
+     只是對應點擊的位置)」→「破壞範圍當然是整個劍身 打擊點是配合使用者點擊位置用的
+     (劍術中不會用劍尖來瞄準攻擊目標位置)」）：
+       rHit ＝ 樞紐到**攻擊點**（刃的正中央，見引擎的 SWORD_HIT）。**只管瞄準**——
+               起手落在第一點、收手落在第二點，下面那兩個圓解的就是它。
+       rTip ＝ 樞紐到**刃尖**。**破壞範圍的外緣**（存成 s.r1，swordCut／swordLives 用它）。
+     v1.169～v1.173 兩件事共用 rHit，所以刃的外側那一半畫得出來卻不砍（一刀掃過
+     一整棟、缺口只到刃的一半）。代價是缺口會**往外超過你點的第二點**
+     (TIP−HIT)×len ＝ 刃長的一半，那正是使用者要的「整個劍身」。 */
+  const rHit = len * hitK;
+  const rTip = len * (ENG.SWORD_TIP - ENG.SWORD_PIVOT);
+  const r0 = len * (ENG.SWORD_EDGE - ENG.SWORD_PIVOT);       // 樞紐到刃根
+  const a1 = Math.sqrt(Math.max(0, rHit * rHit - h1 * h1));  // 樞紐到第一點的水平距離
+  const a2 = Math.sqrt(Math.max(0, rHit * rHit - h2 * h2));
   let px, pz;
   const xf = (D * D + a1 * a1 - a2 * a2) / (2 * D);
   const hq2 = a1 * a1 - xf * xf;
@@ -5542,7 +5604,10 @@ function castSword(from, toward, py, y1, y2) {
   const over = Math.min(SW_OVER_MAX, span * SW_OVER_K, Math.max(0, Math.PI * 0.995 - span));
   if (!swords) swords = [];
   while (swords.length >= SW_KEEP) swords.shift();        // 滿了擠掉最早那把（同其他清單型道具）
-  swords.push({ x: px, y: py, z: pz, len: len, r0: r0, r1: r1, back: back, over: over,
+  /* r0～r1 ＝ 削掉的那一片扇形的內外緣 ＝ **刃根到刃尖**（v1.174）；
+     rhit 只留給瞄準那件事對帳用（起手／收手落在點的那兩點上，e2e 有一條在驗）。 */
+  swords.push({ x: px, y: py, z: pz, len: len, r0: r0, r1: rTip, rhit: rHit,
+                back: back, over: over,
                 band: ENG.SWORD_W * len * SW_BAND_K,
                 u0x: u0x, u0y: u0y, u0z: u0z,             // 起手方向（平面內的第一軸）
                 e2x: e2x, e2y: e2y, e2z: e2z,             // 平面內的第二軸
@@ -5598,7 +5663,7 @@ function stepSwords(dt) {
 /* 刃掃到小人與動物（v1.163，使用者：「大劍也要如果剛好碰到小人&吉祥物等動物
    也要產生效果」——本來只有 afterHit 會把**削掉的那堆積木附近**還站著的人震倒，
    所以刃從空地上的人身上掃過去、一塊積木也沒切到時，那個人完全沒反應）。
-   判定跟積木同一組（離揮動平面一個刃寬內、半徑在刃根～攻擊點之間、角度在這一幀掃過的
+   判定跟積木同一組（離揮動平面一個刃寬內、半徑在刃根～刃尖之間、角度在這一幀掃過的
    那一段），差別三件：
      ① 身體是站著的**一段**不是一個點：腳底與頭頂各算一次「離揮動平面多遠」，
         兩端跨過刃面、或任一端落在刃寬內就算掃到。只拿胸口一個點量的話，
@@ -5659,8 +5724,8 @@ function swordLives(s, aFrom, aTo, om) {
   if (hit) sndFall();                          // 一幀一聲（afterHit 那邊是一個人一聲）
   return hit;
 }
-/* 這一幀刃掃過的那一小段：**揮動平面**上的扇形（r0～r1）× 平面兩側各一個刃寬，
-   裡面的建築整片削掉。平面通常是斜的，所以缺口也是斜的。
+/* 這一幀刃掃過的那一小段：**揮動平面**上的扇形（r0～r1 ＝ 刃根到刃尖，v1.174 起
+   是整片刃）× 平面兩側各一個刃寬，裡面的建築整片削掉。平面通常是斜的，缺口也是斜的。
    每一幀的角度段**首尾相接**，所以整趟下來扇形裡的每一塊剛好被算到一次
    ——不會漏、也不會同一塊被切兩次。 */
 function swordCut(s, aFrom, aTo, dt) {
@@ -5770,7 +5835,7 @@ function useTool(hit) {
   if (tool === 'hammer') { launchHammer(hit.point, hit.dir, false, onGround); return 0; }
   if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true, onGround); return 0; }
   if (tool === 'ball') { aimBall(hit.point); return 0; }
-  if (tool === 'treb') { placeTreb({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'treb') { aimTrebs({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'tornado') { aimTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fw') {
     /* 點在建築上就從那一點射上去（v1.137，使用者指定）；點地面照舊從地面。
@@ -7067,13 +7132,20 @@ function beastWeapon(w, m) {
         weaponBlast），這裡刻意不走那一條。
 
    跟王之財寶像的地方：一群人朝同一個地方齊射、打中的地方咬掉一小片、射完就撤。
-   不像的地方除了上面第 ④ 點，還有「箭是拋出去的，兵器是直射的」。 */
-/* 一隊幾人。v1.171 開發中從 40 加倍到 80（使用者：「順面增加小人隊規模*2」；
-   40 是他一開始說的「一組大約 40 人」）。連帶要動三個容量，見引擎的 MAXW／WEAP_MAX
-   與下面的 AR_KEEP——那三個都是「裝不下就默默切掉清單尾巴」的池子。 */
-const AR_N = 80;
-const AR_VOL = 3;                // 射幾輪（使用者指定）
-const AR_COL = 16;               // 一排幾人（80 ＝ 5 排 × 16，正面寬 33 ≈ 工地直徑）
+   不像的地方除了上面第 ④ 點，還有「箭是拋出去的，兵器是直射的」。
+
+   v1.174 使用者：「箭雨弓箭隊改成40人射5輪」——只動 AR_N／AR_VOL／AR_COL 三個數，
+   隊形、彈道、判定一個字都沒改（見 AR_N 那一段的帳）。 */
+/* 一隊幾人、射幾輪。**v1.174 收回 40 人、加到五輪**（使用者：「箭雨弓箭隊改成40人
+   射5輪」）——v1.171 開發中曾從 40 加倍到 80（「順面增加小人隊規模*2」），這一版把
+   人數還回他一開始說的「一組大約 40 人」，改用輪數補總量：
+     80 人 × 3 輪 ＝ 240 支　→　40 人 × 5 輪 ＝ 200 支
+   一輪的密度掉一半、但齊射看五次，整趟從 6.7 秒拉長到 10.2 秒（見 stepArchers 的鐘）。
+   容量那三個池子只會更鬆，所以都不必動（引擎的 MAXW／WEAP_MAX 與下面的 AR_KEEP
+   ——那三個都是「裝不下就默默切掉清單尾巴」的池子，e2e 有一條照常數驗餘裕）。 */
+const AR_N = 40;
+const AR_VOL = 5;                // 射幾輪（使用者指定）
+const AR_COL = 10;               // 一排幾人（40 ＝ 4 排 × 10，正面寬 19.8）
 const AR_GAP = 2.2, AR_ROWGAP = 2.6;    // 同一排的人隔多遠／排與排之間隔多遠
 const AR_JIT = 0.3;              // 站位再抖多少（不抖就是一個標準的方陣）
 const AR_LIFT = 0.45;            // 出場：整隊由小長到原尺寸要多久
@@ -7111,8 +7183,8 @@ const AR_HIT_POW = 7;            // 力道（王之財寶 12、投石機 12、�
 const AR_BLOW = 10;              // 撞飛小人／動物的力道（王之財寶那邊是 16）
 const AR_LIE = [1.6, 3.2];       // 插住之後撐多久才開始淡（同王之財寶的 GATE_LIE）
 const AR_FADE = 1.4;             // 淡多久（透明度歸零就收掉）
-const AR_KEEP = 300;             // 場上最多幾支（一隊 240 支 ＋ 上一隊還沒淡完的）
-const AR_AIM_R = 9;              // 第一下在地上畫的那圈光環多大（一隊的正面寬 33）
+const AR_KEEP = 300;             // 場上最多幾支（一隊 200 支 ＋ 上一隊還沒淡完的）
+const AR_AIM_R = 9;              // 第一下在地上畫的那圈光環多大（一隊的正面寬 19.8）
 const AR_AIM_C = 0xc79a5a;       // 木色（同弓）
 let archers = null;              // 在場的弓箭隊（同時只有一隊，見 castArrows）
 let arrows = null;               // 場上所有箭：飛行中的 ＋ 插著淡出中的
@@ -7179,15 +7251,15 @@ function arSpot(x, z, ux, uz) {
       }
     }
   }
-  /* 最後夾回草地裡（v1.171，一隊 80 人正面寬 33，點在場邊時整排會有人站到島外面
+  /* 最後夾回草地裡（v1.171，一隊正面寬 19.8，點在場邊時整排會有人站到島外面
      ——草地是半徑 arenaR 的圓島，外面是虛空）。夾完可能又踩回固體上，那沒關係：
      站在牆邊比站在空中好。 */
   const d2 = Math.hypot(p.x, p.z), lim = arenaR - 1.5;
   if (d2 > lim) { p.x = p.x / d2 * lim; p.z = p.z / d2 * lim; }
   return p;
 }
-/* 一隊人的一生：出場（由小長大）→ 三輪齊射 → 站一下 → 撤走（縮回去）。
-   每個人各自算自己的鐘（m.off／m.done），所以一輪裡那八十支箭是散開的、不是一起彈出去。 */
+/* 一隊人的一生：出場（由小長大）→ AR_VOL 輪齊射 → 站一下 → 撤走（縮回去）。
+   每個人各自算自己的鐘（m.off／m.done），所以一輪裡那四十支箭是散開的、不是一起彈出去。 */
 function stepArchers(dt) {
   if (!archers) return;
   const g = archers;
@@ -7209,7 +7281,7 @@ function stepArchers(dt) {
       // 這一支什麼時候離手：出場 ＋ 拉一次弓 ＋ 前面幾輪 ＋ 自己的錯開量
       if (g.t >= AR_LIFT + AR_DRAW + m.done * AR_CYCLE + m.off) {
         shootArrow(g, m);
-        // 一輪只出一聲弦（這一輪最快的那個人出手時）：八十聲疊起來也只聽得到三聲
+        // 一輪只出一聲弦（這一輪最快的那個人出手時）：四十聲疊起來也只聽得到一聲
         if (m.done === g.snd) { sndBow(); g.snd++; }
         m.done++;
       }
