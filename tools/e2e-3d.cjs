@@ -12335,7 +12335,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const b of blocks)
       if (b.st === 3 && b.x * b.x + b.z * b.z <= ufoRad(probe, b.y) ** 2) inLight++;
     const set0 = blocks.filter(b => b.st === 3).length;
-    const camY0 = ENG.camTarget.ty;
+    const camY0 = ENG.camTarget.ty, camD0 = ENG.camTarget.dist;
     const mouth = y - UFO_HULL * ENG.UFO_MOUTH_Y;
     callUfo({ x: 0, z: 0 });
     const born = { d: +Math.hypot(ufos[0].x, ufos[0].z).toFixed(1), y: ufos[0].y,
@@ -12344,6 +12344,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let camUp = 0, hit = 0, bag = 0, rise = 0, riseTop = 0, riseLow = 99;
     let atTarget = -1, awayD = -1, park = 0;
     let taken = null, high = 0;
+    /* 掉落那一段的鏡頭（v1.175 使用者：「掉落時不需要控制鏡頭」）：
+       記下丟下來之前那一幀的取景，再看整個 'rain' 期間有沒有動過。 */
+    let preTy = -1, preD = -1, rainTyLo = 1e9, rainTyHi = -1e9, rainDLo = 1e9, rainDHi = -1e9;
     /* 落點的分佈（v1.169 起「均勻鋪」，v1.174 起鋪的是**整座島**而不是光圈那一圈，
        見 ufoDrop）。量的是**分位數與角度的合向量**，不是「切幾個桶各幾件」：桶子那種
        量法對 UFO_SOW_JIT 那點抖動很敏感（落點的半徑是一小步一小步排上去的，n ＝ 600 時
@@ -12370,6 +12373,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         }
         // 進艙的沉在地板底下（看不見）
         if (u.bag.length) park = Math.max(park, u.bag.filter(it => it.o.y < -10).length);
+        if (u.st === 'wait') { preTy = ENG.camTarget.ty; preD = ENG.camTarget.dist; }
+        if (u.st === 'rain') {
+          rainTyLo = Math.min(rainTyLo, ENG.camTarget.ty);
+          rainTyHi = Math.max(rainTyHi, ENG.camTarget.ty);
+          rainDLo = Math.min(rainDLo, ENG.camTarget.dist);
+          rainDHi = Math.max(rainDHi, ENG.camTarget.dist);
+        }
         if (u.st === 'wait' && goneT < 0) {
           goneT = +(f * 0.05).toFixed(2);
           awayD = +Math.hypot(u.x, u.z).toFixed(1);
@@ -12416,6 +12426,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                  ang: +(Math.hypot(sow.cx, sow.cz) / Math.max(1, n)).toFixed(4) };
       })(),
       camY0: +camY0.toFixed(1), camUp: +camUp.toFixed(1), camEnd: +ENG.camTarget.ty.toFixed(1),
+      camD0: +camD0.toFixed(1),
+      rain: { preTy: +preTy.toFixed(2), preD: +preD.toFixed(2),
+              tyLo: +rainTyLo.toFixed(2), tyHi: +rainTyHi.toFixed(2),
+              dLo: +rainDLo.toFixed(2), dHi: +rainDHi.toFixed(2) },
       under: blocks.filter(b => b.y < -1).length,
       flagged: blocks.filter(b => b.ufo).length,
       carry: blocks.filter(b => b.st === 1).length,
@@ -12580,6 +12594,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('照光期間鏡頭抬起來，飛走就把高度還回去',
      ufo.camUp > ufo.camY0 + 5 && Math.abs(ufo.camEnd - ufo.camY0) < 0.01,
      '視線高度 ' + ufo.camY0 + ' → 最高 ' + ufo.camUp + ' → 收工 ' + ufo.camEnd);
+  /* v1.175 使用者：「UFO吸走的東西 掉落時不需要控制鏡頭」。v1.174 這一段會再退一次
+     （退到框得住整座島的 ufoSowR），所以驗的是「丟下來之後那幾秒取景一動也不動」——
+     視線高度與視距都跟丟下來之前那一幀一模一樣。 */
+  ok('東西掉下來的那幾秒完全不碰鏡頭（照光那一段的取景照舊）',
+     ufo.rain.tyHi - ufo.rain.tyLo < 0.01 && Math.abs(ufo.rain.tyHi - ufo.rain.preTy) < 0.01 &&
+     ufo.rain.dHi - ufo.rain.dLo < 0.01 && Math.abs(ufo.rain.dHi - ufo.rain.preD) < 0.01,
+     '丟下來之前 視線 ' + ufo.rain.preTy + '／視距 ' + ufo.rain.preD +
+     '，掉的那幾秒 視線 ' + ufo.rain.tyLo + '～' + ufo.rain.tyHi +
+     '／視距 ' + ufo.rain.dLo + '～' + ufo.rain.dHi);
 
   /* 光圈外的東西一塊都不能被吸（倒錐的邊界），以及小人與動物照樣吸得走。
      積木自己擺位置：拿散料排成兩圈（光圈裡半徑 2、光圈外半徑 UFO_R+4）。 */
@@ -12826,8 +12849,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      小人弓箭隊一組大約40人射三輪」；看過造型之後又追加三件：「小人拉弓 應該要往上45度」
      「箭矢要也能對生物作用」「地面的話就先插在地面上 然後慢慢消失」。
      這一段就守那幾件事，一條對一件：兩點式、一隊人射滿設定的輪數（人數與輪數都**讀
-     常數**AR_N／AR_VOL——v1.171 開發中 40→80 人、v1.174 又改成 40 人射 5 輪，
-     這幾條都不必跟著改）、45 度出手（**姿勢與彈道
+     常數**AR_N／AR_VOL——v1.171 開發中 40→80 人、v1.174 改成 40 人射 5 輪、
+     v1.175 又回到 80 人射 5 輪，這幾條都不必跟著改）、45 度出手（**姿勢與彈道
      同一個角度**）、拋物線、不爆不燒不震、打得到小人與生物、落地插著再淡掉、收乾淨。 */
   await head('箭雨');
   await reset(page, { shape: '巴黎聖母院', cnt: 3000, workers: 6 });
@@ -13647,14 +13670,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ftFleet.out[0][1] === 1 && ftFleet.out[ftFleet.out.length - 1][1] === ftFleet.max,
      ftFleet.out.map(([n, k]) => n + ' 塊 → ' + k + ' 台').join('、'));
 
-  /* 車體不穿建築（v1.170，使用者：「車輛像小人等 不穿進建築」）：
-     擋路的定義借小人那兩套（地標的積木 footBlocked ＋ 小人家的占地外框），
-     所以車跟人擋在同一面牆上。房子那半用手做的外框驗（真的蓋房子在〈小房子〉那一節）。 */
+  /* 車體不穿**地標**（v1.170，使用者：「車輛像小人等 不穿進建築」），
+     但**穿得過小房子**（v1.175，使用者：「改回可以穿透小房子 現在太容易卡住走不動」）：
+     v1.170～v1.174 房子的占地外框也算擋路，而房子就蓋在車一定要穿過去的那一圈上，
+     村子滿了等於一道牆。所以這一條現在驗的是「地標算、房子不算」。 */
   const ftWall = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
     const mid = ftIn(0, 0, 0), far = ftIn(arenaR + 20, 0, 0);
-    /* 房子與樹是「一間一個矩形」，ftIn 拿車體的外接矩形跟它比。
-       這裡直接放一個外框上去（homeBox 產出的就是這四個數字），比完就拿掉。 */
+    /* 房子與樹是「一間一個矩形」（homeBox 產出的就是這四個數字）。
+       這裡直接放一個外框在場外空地上，車壓在它正中間也不該算插到。 */
     const had = homes;
     homes = { list: [{ x0: 40, x1: 46, z0: -3, z1: 3 }] };
     const onHome = ftIn(43, 0, 0), nextHome = ftIn(60, 0, 0);
@@ -13662,10 +13686,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { mid, far, onHome, nextHome };
   });
-  ok('車體的擋路判定：地標裡面、房子外框上都算「插到了」，空地不算',
-     ftWall.mid > 0 && ftWall.far === 0 && ftWall.onHome > 0 && ftWall.nextHome === 0,
+  ok('車體的擋路判定只認地標：壓在小房子外框上照樣算「沒插到」（穿得過去）',
+     ftWall.mid > 0 && ftWall.far === 0 && ftWall.onHome === 0 && ftWall.nextHome === 0,
      '工地正中央 ' + ftWall.mid + ' 點插到、場外空地 ' + ftWall.far +
-     '、壓在房子外框上 ' + ftWall.onHome + '、旁邊空地 ' + ftWall.nextHome);
+     '、壓在房子外框正中間 ' + ftWall.onHome + '、旁邊空地 ' + ftWall.nextHome);
+  /* 光「判定回 0」還不夠——真的要開得過去。把一台車放在房子外框前面，叫它往框的另一邊開：
+     v1.174 會在框的邊上停住（前面插得比現在多就不准動，見 ftDrive），現在直接壓過去。
+     場地擺在場外空地上，這樣擋路的只可能是那個外框。 */
+  const ftThru = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    const had = homes;
+    const R = arenaR + 6;                      // 場外空地：不會有地標的積木來干擾
+    homes = { list: [{ x0: R - 3, x1: R + 3, z0: -3, z1: 3 }] };
+    const m = { x: R, z: -10, a: 0, side: 0, t: 0, bob: 0, bk: 0, jam: 0, ghost: 0,
+                pick: 0, aim: null, jet: 0, jx: 0, jy: 0, jz: 0, em: 0, jetT: 0 };
+    let moved = 0, blocked = 0;
+    for (let i = 0; i < 40; i++) {
+      const px = m.x, pz = m.z;
+      if (!ftDrive(m, 0.05, R, 20)) blocked++;   // 目標在框的另一邊
+      moved += Math.hypot(m.x - px, m.z - pz);
+    }
+    homes = had;
+    cleanTools();
+    return { moved: +moved.toFixed(1), blocked, z: +m.z.toFixed(1) };
+  });
+  ok('房子擋在前面的車照樣開得過去（不再頂著房子磨）',
+     ftThru.blocked === 0 && ftThru.z > 3,
+     '從 z=−10 往前開兩秒：走了 ' + ftThru.moved + ' 單位到 z=' + ftThru.z +
+     '（房子的外框是 z −3～3），被擋 ' + ftThru.blocked + ' 幀');
 
   /* 從地圖邊緣直接開向火場、開到建築外牆前才停（v1.170，使用者指定）。
      v1.68～v1.169 是「沿著外圈繞過去、一步都不進工地」。 */
@@ -13691,8 +13739,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const cand = blocks.filter(b => b.st === 3 && b.y > 3);
     cand.sort((a, b) => b.y - a.y);
     igniteBlock(cand[Math.floor(cand.length * 0.3)]);
-    /* 車體有沒有插進建築：這裡自己鋪一張比規則那邊更密的網（0.5 對 0.9）去問，
-       不呼叫 ftIn——用同一支函式驗它自己是繞圈子。尺寸取畫面那台車的造型表。 */
+    /* 車體有沒有插進**地標**：這裡自己鋪一張比規則那邊更密的網（0.5 對 0.9）去問，
+       不呼叫 ftIn——用同一支函式驗它自己是繞圈子。尺寸取畫面那台車的造型表。
+       只問 footBlocked（v1.175）：小房子從這一版起本來就是穿得過去的（見上面那兩條）。 */
     const TB = (() => {
       let f = 0, b = 0, w = 0;
       for (const p of ENG.MODELS.truck) {
@@ -13707,9 +13756,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (let f = TB.b; f <= TB.f + 1e-9; f += 0.5)
         for (let s = -TB.w; s <= TB.w + 1e-9; s += 0.5)
           if (footBlocked(m.x + Math.sin(m.a) * f + Math.cos(m.a) * s,
-                          m.z + Math.cos(m.a) * f - Math.sin(m.a) * s) ||
-              homeFoot(m.x + Math.sin(m.a) * f + Math.cos(m.a) * s,
-                       m.z + Math.cos(m.a) * f - Math.sin(m.a) * s)) n++;
+                          m.z + Math.cos(m.a) * f - Math.sin(m.a) * s)) n++;
       return n;
     };
     const at = placedCnt;
@@ -13750,7 +13797,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      插到的幀數為什麼不是抓 0：車停在牆邊噴水的時候小人照樣在旁邊砌牆，**真的會被砌到
      車底下**，那時候車要花一兩幀倒出來（見 ftBack）。實測三趟 0／0／2 幀（在場 256～414
      車-幀），所以門檻放在 2%。 */
-  ok('車直接開到建築外牆前才停，車體不插進建築（被砌到才倒車那一兩幀例外）',
+  ok('車直接開到建築外牆前才停，車體不插進地標（被砌到才倒車那一兩幀例外）',
      ftRun.minR < ftRun.site && ftRun.clip <= ftRun.seen * 0.02 && ftRun.sprayed > 3,
      '最靠近場中心 ' + ftRun.minR + '（工地 ' + ftRun.site + '、地標半徑 ' + ftRun.siteR +
      '、射程 ' + ftRun.range + '）；在場 ' + ftRun.seen + ' 車-幀裡有 ' + ftRun.clip +
@@ -13770,6 +13817,119 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ftRun.gone > ftRun.fireOut && ftRun.gone < 60,
      '火滅在 ' + ftRun.fireOut + ' 秒、車在 ' + ftRun.gone + ' 秒離場（等 ' +
      ftRun.quit + ' 秒沒復燃才走）');
+
+  /* ── 水柱要看得出是「一條」（v1.175 使用者：「應該要水柱噴過去 ... 要看清楚是水柱
+     而不是一坨水」）──────────────────────────────────
+     手擺一台車、把落點釘死，噴一批出來當場量（不跑整場模擬：這一條驗的是水的形狀，
+     不是車的行為）。量四件事：
+       ① 每一顆都是**沿飛行方向拉長**的（sz 比橫截面大好幾倍、s 與 sy 相等），
+          而且拉的方向跟它自己的速度對得起來——把 rx／ry 依引擎那邊的
+          rotation.set(rx, ry, 0)（Euler XYZ ＝ Rx·Ry）轉回本地 z 軸來比。
+       ② 那些顆粒**不自轉**（hold）：轉了整條水柱就變成一堆翻滾的碎片。
+       ③ 整條在半路的橫向寬度（每一顆到「砲口→落點」那條線的水平距離）。
+       ④ 濺開的那幾滴照舊是一顆一顆的方塊（沒有 sy）。 */
+  const ftJet = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    dust.length = 0;
+    const tgt = { x: 12, y: 6, z: 0 };
+    const m = { x: 30, z: 0, a: Math.atan2(tgt.x - 30, tgt.z - 0), side: 0, t: 0,
+                bob: 0, bk: 0, jam: 0, ghost: 0, pick: 0, aim: null,
+                jet: 1, jx: tgt.x, jy: tgt.y, jz: tgt.z, em: 0, jetT: 0 };
+    const noz = jetNoz(m);
+    sprayFx(m, 0.05);                              // 一批新生的
+    const drops = dust.filter(p => p.sy !== undefined);
+    const splash = dust.length - drops.length;
+    let minLong = 99, sq = 0, minCos = 2, spinning = 0;
+    for (const p of drops) {
+      minLong = Math.min(minLong, p.sz / p.s);
+      if (Math.abs(p.s - p.sy) > 1e-9) sq++;
+      if (!p.hold) spinning++;
+      // 本地 z 軸（見上面）：(sin ry, −sin rx·cos ry, cos rx·cos ry)
+      const dx = Math.sin(p.ry), dy = -Math.sin(p.rx) * Math.cos(p.ry),
+            dz = Math.cos(p.rx) * Math.cos(p.ry);
+      const sp = Math.hypot(p.vx, p.vy, p.vz) || 1;
+      minCos = Math.min(minCos, (dx * p.vx + dy * p.vy + dz * p.vz) / sp);
+    }
+    const rx0 = drops[0] ? drops[0].rx : 0, ry0 = drops[0] ? drops[0].ry : 0;
+    // 飛完整趟，一路量橫向偏移（到「砲口→落點」那條線的水平距離）
+    const lx = tgt.x - noz.x, lz = tgt.z - noz.z, L = Math.hypot(lx, lz);
+    const offs = [];
+    for (let i = 0; i < 40; i++) {
+      stepDust(0.05);
+      for (const p of dust)
+        if (p.sy !== undefined)
+          offs.push(Math.abs((p.x - noz.x) * lz - (p.z - noz.z) * lx) / L);
+    }
+    offs.sort((a, b) => a - b);
+    const spun = drops[0] ? Math.abs(drops[0].rx - rx0) + Math.abs(drops[0].ry - ry0) : -1;
+    dust.length = 0;
+    cleanTools();
+    return { n: drops.length, splash, minLong: +minLong.toFixed(2), sq, spinning,
+             minCos: +minCos.toFixed(4), spun: +spun.toFixed(4),
+             q90: offs.length ? +offs[Math.floor(offs.length * 0.9)].toFixed(2) : -1,
+             wide: offs.length ? +offs[offs.length - 1].toFixed(2) : -1,
+             rate: FT_RATE, len: FT_DROP, w: FT_DROP_W, jit: FT_JIT, vjit: FT_VJIT };
+  });
+  ok('水柱的每一顆都是沿飛行方向拉長的水痕（不是一顆一顆的方塊）',
+     ftJet.n > 5 && ftJet.minLong > 3 && ftJet.sq === 0 && ftJet.minCos > 0.999,
+     '一批 ' + ftJet.n + ' 顆（每秒 ' + ftJet.rate + ' 顆）：長 ' + ftJet.len.join('～') +
+     ' × 粗 ' + ftJet.w.join('～') + '，最扁的那顆長寬比 ' + ftJet.minLong +
+     '、橫截面都是正方 ' + (ftJet.sq === 0) + '、跟速度方向的餘弦最差 ' + ftJet.minCos);
+  ok('水痕不自轉（不然一條水柱會變成一堆翻滾的碎片）',
+     ftJet.spinning === 0 && ftJet.spun === 0,
+     '沒帶 hold 的 ' + ftJet.spinning + ' 顆；飛了兩秒之後 rx／ry 共變了 ' + ftJet.spun);
+  ok('整條水柱是細的：九成的水都貼在「砲口→落點」那條線上',
+     ftJet.q90 < 0.7 && ftJet.wide < 1.6,
+     '橫向偏移九成位 ' + ftJet.q90 + '、最寬 ' + ftJet.wide +
+     '（出口抖 ±' + ftJet.jit + '、速度抖 ±' + ftJet.vjit +
+     '；v1.174 那組是 ±0.36 與 ±1.4）');
+  ok('打到東西濺開的那幾滴照舊是散的小方塊', ftJet.splash > 0,
+     '一批裡有 ' + ftJet.splash + ' 顆濺開的');
+
+  /* ── 水到了才滅火（v1.175 使用者：「水柱噴過去 然後一小段時間火熄了」）──────
+     v1.174 是「瞄到哪裡那一塊當場就熄」——水滴那時候還在砲口，看起來就是火自己滅的。
+     擺一台車在一塊燒著的積木旁邊（FT_STOP 以內，所以它不會再往前開），
+     量「開始噴」到「那塊熄掉」中間隔了多久，跟 jetTime 對照；
+     同時確認熄掉的那一刻**水真的到了**（有水痕落在那塊附近）。 */
+  const ftDelay = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    clearFires(); phase = 'build'; dust.length = 0;
+    // 挑最外緣那一塊點著：車擺在它外面才不會壓到別的積木
+    const cand = blocks.filter(b => b.st === 3);
+    cand.sort((a, b) => Math.hypot(b.x, b.z) - Math.hypot(a.x, a.z));
+    const b = cand[0];
+    igniteBlock(b);
+    const d = Math.hypot(b.x, b.z) || 1, ux = b.x / d, uz = b.z / d;
+    const stand = FT_STOP - 0.5;                   // 停得住（不會再往前開）的最遠處
+    const m = { x: b.x + ux * stand, z: b.z + uz * stand,
+                a: Math.atan2(-ux, -uz), side: 0, t: 0, bob: 0, bk: 0, jam: 0, ghost: 0,
+                pick: 0, aim: null, jet: 0, jx: 0, jy: 0, jz: 0, em: 0, jetT: 0 };
+    trucks = { t: 0, quit: 0, out: false, list: [m] };
+    let tJet = -1, tOut = -1, want = 0, near = 99, t = 0, moved = 0;
+    const x0 = m.x, z0 = m.z;
+    /* 走整支 step()（不是只叫 stepTrucks）：水滴要靠 stepDust 才會往前飛，
+       只跑消防車那一段的話水永遠掛在砲口，「水真的到了」就量不到。 */
+    for (let i = 0; i < 300 && tOut < 0; i++) {
+      step(0.02); t += 0.02;
+      if (tJet < 0 && m.jet) { tJet = +t.toFixed(3); want = +jetTime(m).toFixed(3); }
+      if (tOut < 0 && !b.burn) {
+        tOut = +t.toFixed(3);
+        for (const p of dust)
+          if (p.sy !== undefined)
+            near = Math.min(near, Math.hypot(p.x - b.x, p.y - b.y, p.z - b.z));
+      }
+      moved = Math.max(moved, Math.hypot(m.x - x0, m.z - z0));
+    }
+    trucks = null; dust.length = 0; clearFires(); cleanTools();
+    return { tJet, tOut, want, gap: +(tOut - tJet).toFixed(3),
+             near: +near.toFixed(2), moved: +moved.toFixed(2), r: FT_WET_R };
+  });
+  ok('水柱噴過去、水到了火才熄（不是瞄到就滅）',
+     ftDelay.tJet > 0 && ftDelay.tOut > ftDelay.tJet && ftDelay.gap > ftDelay.want * 0.8 &&
+     ftDelay.gap < ftDelay.want + 0.1 && ftDelay.near < ftDelay.r,
+     '第 ' + ftDelay.tJet + ' 秒開始噴 → 第 ' + ftDelay.tOut + ' 秒熄（隔 ' +
+     ftDelay.gap + ' 秒，水飛過去要 ' + ftDelay.want + ' 秒）；熄掉那一刻最近的水痕離那塊 ' +
+     ftDelay.near + '（淋濕半徑 ' + ftDelay.r + '）');
 
   /* 小人也會被噴到（使用者指定）：濕 5 秒、期間點不著，身上顏色一樣壓深。 */
   const wetWk = await page.evaluate(() => {

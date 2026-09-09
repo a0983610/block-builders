@@ -1437,7 +1437,14 @@ function torch(hit) {
    車體不穿建築（被地標的牆或小人的家擋住就停在那裡往裡面噴）。
    在此之前是「照工地面積算台數（1～2 台）＋ 沿著外圈繞過去、一步都不進工地」——
    量過聖母院蓋一半放一把火：火燒到 142 塊還是只來 1 台，車停在半徑 19.5～21.9
-   （工地 17.6），水柱落點離車 11.6～13.3 單位。 */
+   （工地 17.6），水柱落點離車 11.6～13.3 單位。
+
+   v1.175 又改了兩件（使用者：「噴水的效果比以前更差了 應該要水柱噴過去 然後一小段
+   時間火熄了(要看清楚是水柱 而不是一坨水)」「改回可以穿透小房子 現在太容易卡住走不動」）：
+     · **小房子與樹不再擋車**，只有地標擋（見 ftIn）。
+     · **水柱畫成一條**（沿飛行方向拉長的水花，見 sprayFx），而且**水到了才滅火**
+       （見 jetTime／m.jetT）——以前是「瞄到哪裡那一塊當場就熄」，水滴還在半路，
+       看起來就是火自己滅的、水噴得再久也無關。 */
 const FT_MAX = ENG.MAXTRUCK;        // 最多幾台。上限就是畫面那邊的容量，兩邊不會不一致
 /* 每這麼多塊「還站著的」在燒派一台（1～FT_MAX）：1～8 塊 1 台、9～16 塊 2 台，
    25 塊以上就是上限 4 台。**只在叫車那一刻算一次**（使用者指定），
@@ -1464,11 +1471,39 @@ const FT_BACK = 6;                  // 倒車的速度（見 ftBack）
 const FT_JAM = 8, FT_GHOST = 3;     // 出場卡住幾秒就暫時穿透、穿透幾秒（見 stepTrucks）
 const ftRange = () => siteClearR() + 11;    // 射程（＝舊的「外圈 siteClearR+4」再加 7，數字沒動）
 const WATER_G = 12;                 // 水滴的重力（塵霧預設 7；水要沉一點才像水）
+const FT_NOZ = 1.4, FT_NOZ_Y = 3.05;        // 砲口在車頭前面多遠、離地多高
+const FT_JET_V = 30;                // 解彈道用的水平速度（決定飛多久，見 jetTime）
+/* 水柱的樣子（v1.175 使用者：「要看清楚是水柱 而不是一坨水」）。關鍵不在量，
+   在**每一顆的形狀**與**整條的散開度**：
+     · 每一顆沿著自己的飛行方向拉長（FT_DROP 長 × FT_DROP_W 粗），畫出來是一段水痕，
+       一段接一段就是一條連續的水柱。同樣的顆數，正方塊看起來是散開的水花，
+       拉長的才看起來是一條線（借塵霧池畫非等比的方塊，見引擎 putDust 的 sy／sz，
+       彩帶也是走這一條）。
+     · 出口與速度的抖動收小（±0.36→±FT_JIT、±1.4→±FT_VJIT）：抖得大就是一片霧。
+   顆數與顆粒大小的歷程：75／0.16～0.34（像飛石）→ 130／0.12～0.26（太細）
+   → 175／0.2～0.42 → 230／0.3～0.6（使用者說了兩次「粗一點」，v1.68.2 定案；
+   但那一組是一顆一顆的正方塊，愈粗就愈像一坨）→ 現在這組。 */
+const FT_RATE = 170;                // 一秒噴幾顆
+const FT_DROP = [0.9, 1.5];         // 一顆水痕多長（沿飛行方向）
+const FT_DROP_W = [0.2, 0.3];       // 多粗
+const FT_JIT = 0.13;                // 出口的位置抖多少
+const FT_VJIT = 0.5;                // 速度抖多少（垂直方向給一半）
+/* 水柱這一段最多用到塵霧池的第幾顆（池子總量是引擎的 MAXDUST 3400）。
+   一台在場上的顆數 ＝ FT_RATE × 飛行時間：貼著牆噴（落點離車 4～5）只有 25 顆，
+   站遠一點噴（v1.169 量過落點離車 11.6～13.3）是 70～80 顆。
+   v1.68～v1.174 這個數是 560，那是**池子還只有 900** 的年代訂的；池子後來為了烏雲與
+   蘑菇雲加到 3400，這個數卻沒跟著動。實測（聖母院蓋一半放 40 把火、四台在場）：
+   舊版最擠的一幀是水 250 ＋ 煙 190 ＋ 濺開 17 ＝ 457，還沒撞到 560，
+   但那一幀只有**兩台**在噴——四台都站遠噴就是 320 顆水，加上煙（自己的上限 380）
+   就過 560 了，超出的會被這裡的 break 丟掉，水柱當場斷成一節一節。
+   900 是照「四台站遠噴 ＋ 煙滿載」訂的（320 ＋ 380 ＋ 濺開，再留一點）。 */
+const FT_DUST = 900;
 let trucks = null;                  // 在場的消防車 { t, quit, out, list }
 /* 車體占地，直接從畫面那台車的造型表算出來（同推土機的 DOZ_W 取自引擎）：
    判定跟看到的才會是同一台車，哪天改造型也不必回來改數字。
-   f 車頭前端、b 車尾、w 半寬（實測 3.3／−3.63／1.83），
-   mid／half 是車身中點與半長（房子那半的外接矩形要用）。 */
+   f 車頭前端、b 車尾、w 半寬（實測 3.3／−3.63／1.83）。
+   （v1.174 之前還算了 mid／half：那是給「房子的外接矩形」用的，
+   v1.175 房子不再擋路，那兩個就沒有人要了，見 ftIn。） */
 const FT_BODY = (() => {
   let f = 0, b = 0, w = 0;
   for (const p of ENG.MODELS.truck) {
@@ -1476,7 +1511,7 @@ const FT_BODY = (() => {
     b = Math.min(b, p.p[2] - p.s[2] / 2);
     w = Math.max(w, Math.abs(p.p[0]) + p.s[0] / 2);
   }
-  return { f, b, w, mid: (f + b) / 2, half: (f - b) / 2 };
+  return { f, b, w };
 })();
 
 /* 還站著在燒的那些塊的平均位置角度——車從這個方向的場外進來。 */
@@ -1499,7 +1534,7 @@ function callTrucks() {
       const ang = base + side * FT_FAN;
       return { x: Math.sin(ang) * far, z: Math.cos(ang) * far, a: ang + Math.PI,
                side, t: rr(0, 2), bob: 0, bk: 0, jam: 0, ghost: 0,
-               pick: 0, aim: null, jet: 0, jx: 0, jy: 0, jz: 0, em: 0 };
+               pick: 0, aim: null, jet: 0, jx: 0, jy: 0, jz: 0, em: 0, jetT: 0 };
     })
   };
 }
@@ -1528,20 +1563,23 @@ function faceTo(m, dt, x, z) {
   const na = m.a + Math.min(Math.abs(d), DOZ_TURN * dt) * Math.sign(d);
   if (ftIn(m.x, m.z, na) <= ftIn(m.x, m.z, m.a)) m.a = na;
 }
-/* 車體占地裡插到幾處建築（0 ＝ 沒插到，v1.170，使用者：「車輛像小人等 不穿進建築」）。
-   問的是「小人也走不進去的地方」——地標的積木（footBlocked，腳邊三層）＋
-   小人的家與樹（那一間的占地外框）。借小人那兩套而不自己另算一份：那才是全場
-   「不能穿過去的東西」的定義（v1.103 起收在那裡），車跟人擋在同一面牆上，
-   才不會一台穿一台不穿。
+/* 車體占地裡插到幾格**地標**（0 ＝ 沒插到，v1.170，使用者：「車輛像小人等 不穿進建築」）。
+   問的是地標的積木（footBlocked，腳邊三層）——跟小人擋在同一面牆上，
+   不會一台穿一台不穿。
 
-   地標是**鋪滿整個車底逐點問**的，間距上限 FT_SAMP 0.9 小於一格積木（一塊佔滿 1 格），
+   逐點問是**鋪滿整個車底**的，間距上限 FT_SAMP 0.9 小於一格積木（一塊佔滿 1 格），
    所以漏不掉任何一塊——車體切成 9×6＝54 個點（外放 FT_PAD 時 11×7＝77 個）。
    只問前中後三排 × 左中右三點（橫向間距 1.83）不夠：實測聖母院正面
    一格寬的拱門就從兩點之間鑽過去，車一路開到離場中心 4.9，134 幀插在牆裡。
 
-   房子與樹改成**外接矩形比一次**（不逐點問 homeFoot）：一間房子本來就是一個矩形，
-   而村子可以有四十幾間 ＋ 十幾棵樹，逐點問是 54 點 × 每點掃一遍清單。
-   矩形對矩形略微保守（車斜著時外接矩形比車體大），對「不要穿過去」正好是安全的那一邊。
+   **小房子與樹不擋**（v1.175 使用者：「改回可以穿透小房子 現在太容易卡住走不動」）：
+   v1.170～v1.174 這裡還會拿車體的外接矩形跟 homes.list 每一間比一次，
+   而房子就蓋在「工地外緣到碎料場外緣」那一圈——正好是車一定要穿過去的那一圈，
+   村子滿了（可以四十幾間）就等於一道牆，車卡在外面進不來、火場沒人澆。
+   卡住本來有兩層保險（轉不動就倒車、出場卡 FT_JAM 秒就穿透 FT_GHOST 秒），
+   但那是給「被砌進去」那種例外用的，不該拿來當常態。
+   拿掉之後車會從房子上壓過去——那是使用者要的（消防車趕火場，不是繞村子）。
+   地標照舊擋，所以「開到外牆前停下來往裡面噴」那一條完全沒動。
 
    pad 是把車體外放多少：往前開時給 FT_PAD（留出轉頭的空隙），
    問「現在插到了嗎」給 0（就是真的車體）。 */
@@ -1557,14 +1595,6 @@ function ftIn(x, z, a, pad) {
       const w = -w1 + w1 * 2 * j / nw;
       if (footBlocked(x + s * f + c * w, z + c * f - s * w)) n++;
     }
-  }
-  if (homes) {
-    // 車體的外接矩形：車身中點比車頭中心往後 FT_BODY.mid，半長 FT_BODY.half
-    const cx = x + s * FT_BODY.mid, cz = z + c * FT_BODY.mid;
-    const ex = Math.abs(s) * (FT_BODY.half + p) + Math.abs(c) * w1;
-    const ez = Math.abs(c) * (FT_BODY.half + p) + Math.abs(s) * w1;
-    for (const h of homes.list)
-      if (cx + ex > h.x0 && cx - ex < h.x1 && cz + ez > h.z0 && cz - ez < h.z1) n++;
   }
   return n;
 }
@@ -1611,36 +1641,59 @@ function ftDrive(m, dt, x, z) {
   m.x = nx; m.z = nz;
   return true;
 }
-/* 水柱：從砲口噴到落點的一串水滴，走現成的塵霧粒子池（那邊支援每顆自己的顏色），
-   所以整個水效果是 0 個新 draw call。
+// 砲口在哪（車頭前面 FT_NOZ、離地 FT_NOZ_Y）
+const jetNoz = m => ({ x: m.x + Math.sin(m.a) * FT_NOZ, y: FT_NOZ_Y,
+                       z: m.z + Math.cos(m.a) * FT_NOZ });
+/* 水從砲口飛到落點要幾秒。解彈道用它，**滅火的延遲也用它**（見 m.jetT）：
+   兩邊同一個數，才不會出現「火先滅、水後到」。 */
+function jetTime(m) {
+  const n = jetNoz(m);
+  return Math.max(0.12, Math.hypot(m.jx - n.x, m.jz - n.z) / FT_JET_V);
+}
+/* 把一顆水痕轉成沿著 (vx,vy,vz) 的方向（引擎畫的時候是 rotation.set(rx, ry, 0)，
+   Euler XYZ ＝ Rx·Ry，所以**本地 z 軸**會落在
+   (sin ry, −sin rx·cos ry, cos rx·cos ry)——那就是下面這兩行的來歷，
+   拉長的那一軸給 sz，見引擎 putDust）。 */
+function aimDrop(p, vx, vy, vz) {
+  const sp = Math.hypot(vx, vy, vz) || 1;
+  p.ry = Math.asin(clamp(vx / sp, -1, 1));
+  p.rx = Math.atan2(-vy, vz);
+  p.hold = 1;                       // 不要每幀自轉（見 stepDust）：轉了就不是一條水柱
+  return p;
+}
+/* 水柱：從砲口噴到落點的一串水痕，走現成的塵霧粒子池（那邊支援每顆自己的顏色
+   與非等比縮放），所以整個水效果是 0 個新 draw call。
    速度是解彈道解出來的（給定飛行時間，垂直初速要補上重力那一段），
    不是「往那個方向噴一個固定速度」——後者近的打太遠、遠的掉在半路。
    keep: 1 是關掉水平阻尼：塵霧預設每幀乘 0.94，水滴吃了那個會在半空停住。 */
 function sprayFx(m, dt) {
-  const nx = m.x + Math.sin(m.a) * 1.4, nz = m.z + Math.cos(m.a) * 1.4, ny = 3.05;
-  const d = Math.hypot(m.jx - nx, m.jz - nz);
-  const t = Math.max(0.12, d / 30);
-  /* 水柱的粗細（使用者說了兩次「粗一點」，v1.68.2 再加一級）：
-     一秒 230 顆、每顆 0.3～0.6 格，出口左右散開 ±0.36 格、速度再抖 ±1.4。
-     三個數字要一起加才會變「粗」：只放大顆粒是一串大冰塊，只加量是同一條線變密，
-     只散開是霧。歷程：75 顆／0.16～0.34（像飛石）→ 130／0.12～0.26（太細）
-     → 175／0.2～0.42 → 現在這組。 */
-  m.em += dt * 230;
+  const n0 = jetNoz(m), nx = n0.x, ny = n0.y, nz = n0.z;
+  const t = jetTime(m);
+  m.em += dt * FT_RATE;
   while (m.em >= 1) {
     m.em--;
-    if (dust.length > 560) break;               // 留一截給煙塵：火場本來就在冒煙
-    dust.push({
-      x: nx + rr(-0.36, 0.36), y: ny + rr(-0.28, 0.28), z: nz + rr(-0.36, 0.36),
-      vx: (m.jx - nx) / t + rr(-1.4, 1.4),
-      vy: (m.jy - ny) / t + 0.5 * WATER_G * t + rr(-0.65, 0.65),
-      vz: (m.jz - nz) / t + rr(-1.4, 1.4),
-      rx: Math.random() * 6, ry: Math.random() * 6,
-      life: t * rr(0.92, 1.12), s: rr(0.3, 0.6),
+    if (dust.length > FT_DUST) break;           // 留一截給煙塵：火場本來就在冒煙
+    const vx = (m.jx - nx) / t + rr(-FT_VJIT, FT_VJIT);
+    const vy = (m.jy - ny) / t + 0.5 * WATER_G * t + rr(-FT_VJIT, FT_VJIT) * 0.5;
+    const vz = (m.jz - nz) / t + rr(-FT_VJIT, FT_VJIT);
+    const w = rr(FT_DROP_W[0], FT_DROP_W[1]);
+    /* 這一顆其實是這一幀**中間**才出生的：一幀要生好幾顆（每秒 170 顆、一幀 2.8 顆），
+       全部生在同一點的話一條水柱會變成一串「每 0.5 格一坨」的虛線（水一幀飛 0.5 格）。
+       還沒生的顆數（m.em）就是它慢了幾顆＝慢了多久，照這個把它往前推一段。 */
+    const age = m.em / FT_RATE;
+    dust.push(aimDrop({
+      x: nx + rr(-FT_JIT, FT_JIT) + vx * age,
+      y: ny + rr(-FT_JIT, FT_JIT) + vy * age,
+      z: nz + rr(-FT_JIT, FT_JIT) + vz * age,
+      vx, vy, vz,
+      life: t * rr(0.92, 1.12),
+      s: w, sy: w, sz: rr(FT_DROP[0], FT_DROP[1]),
       cr: 0.58, cg: 0.82, cb: 1, g: WATER_G, keep: 1
-    });
+    }, vx, vy, vz));
   }
-  // 打在牆上濺開的那幾滴：往上彈、吃一點阻尼，落點才看得出來是「打到東西了」
-  if (Math.random() < dt * 55 && dust.length < 620)
+  /* 打在牆上濺開的那幾滴：往上彈、吃一點阻尼，落點才看得出來是「打到東西了」。
+     這幾顆照舊是一顆一顆的方塊（濺開本來就是散的，不是一條）。 */
+  if (Math.random() < dt * 55 && dust.length < FT_DUST + 60)
     dust.push({
       x: m.jx + rr(-0.7, 0.7), y: m.jy + rr(-0.5, 0.5), z: m.jz + rr(-0.7, 0.7),
       vx: rr(-2.4, 2.4), vy: rr(1.6, 4.4), vz: rr(-2.4, 2.4),
@@ -1650,10 +1703,13 @@ function sprayFx(m, dt) {
     });
 }
 /* 水柱落點附近的東西都淋濕。一幀掃一趟積木，兩台車共用這一趟——
-   一台掃一趟的話同一塊會被判兩次，而且掃兩遍三千塊是白花的。 */
+   一台掃一趟的話同一塊會被判兩次，而且掃兩遍三千塊是白花的。
+   **噴的時間還沒超過水的飛行時間的那台不算**（v1.175）：那是「水還在半路」。
+   使用者要的是「水柱噴過去 然後一小段時間火熄了」，而以前是瞄到哪裡那一塊當場就熄——
+   水滴那時候還在砲口，看起來就是火自己滅的（見 jetTime 與 stepTrucks 的 m.jetT）。 */
 function wetSpray() {
   const jets = [];
-  for (const m of trucks.list) if (m.jet) jets.push(m);
+  for (const m of trucks.list) if (m.jet && m.jetT >= jetTime(m)) jets.push(m);
   if (!jets.length) return;
   const r2 = FT_WET_R * FT_WET_R;
   for (const b of blocks) {
@@ -1699,8 +1755,9 @@ function stepTrucks(dt) {
     m.bk = Math.floor(m.t * 3.4) % 2;             // 警示燈：一秒閃三下多
     m.ghost = Math.max(0, m.ghost - dt);
     if (T.out) {
-      m.jet = 0;
-      /* 出場：往場外直線開。路上有房子就往旁邊偏著繞過去（±0.6、±1.2 rad 各探一次）。
+      m.jet = 0; m.jetT = 0;
+      /* 出場：往場外直線開。前面還是地標的牆就往旁邊偏著繞（±0.6、±1.2 rad 各探一次；
+         v1.175 起房子不擋，所以要繞的只剩地標，見 ftIn）。
          五個方向都堵住就照原方向走——那時候車體通常已經被砌進去了，
          ftDrive／ftBack 的「插得比現在少就准動」會接手。 */
       const a0 = Math.atan2(m.x, m.z);
@@ -1725,7 +1782,7 @@ function stepTrucks(dt) {
     m.pick -= dt;
     if (m.pick <= 0 || !aimOk(m.aim)) { m.pick = FT_PICK; m.aim = pickFire(m); }
     const a = m.aim;
-    if (!a) { m.jet = 0; continue; }               // 沒得澆：停在原地等
+    if (!a) { m.jet = 0; m.jetT = 0; continue; }   // 沒得澆：停在原地等
     /* 從地圖邊緣直接開向火場（v1.170，使用者指定），開到停不下去為止——
        停的條件兩個：離目標夠近（FT_STOP），或者車頭前面已經是建築
        （火在牆的另一邊、或在建築深處，那就停在牆邊往裡面噴）。
@@ -1734,13 +1791,13 @@ function stepTrucks(dt) {
     const tx = a.x - fz / dd * m.side * FT_GAP, tz = a.z + fx / dd * m.side * FT_GAP;
     if (Math.hypot(tx - m.x, tz - m.z) > FT_STOP) {
       m.jet = 0;                                  // 還在路上就先收水柱，不要邊開邊亂噴
-      if (ftDrive(m, dt, tx, tz)) continue;       // 還開得動：這一幀就只是趕路
+      if (ftDrive(m, dt, tx, tz)) { m.jetT = 0; continue; }   // 還開得動：這一幀就只是趕路
     }
     /* 停下來了。先看有沒有被砌進去（車停在牆邊噴水，小人照樣在旁邊砌牆）——
        車身插在牆裡的樣子跟穿牆沒兩樣，那就先倒車退出來再噴。 */
-    if (ftIn(m.x, m.z, m.a)) { m.jet = 0; ftBack(m, dt); continue; }
+    if (ftIn(m.x, m.z, m.a)) { m.jet = 0; m.jetT = 0; ftBack(m, dt); continue; }
     // 打不到就等火燒過來，打得到就車頭轉向火場、水柱往目標掃過去
-    if (dd > ftRange()) { m.jet = 0; continue; }
+    if (dd > ftRange()) { m.jet = 0; m.jetT = 0; continue; }
     faceTo(m, dt, a.x, a.z);
     if (!m.jet) { m.jet = 1; m.jx = a.x; m.jy = a.y; m.jz = a.z; }
     else {
@@ -1749,6 +1806,15 @@ function stepTrucks(dt) {
       if (d <= go) { m.jx = a.x; m.jy = a.y; m.jz = a.z; }
       else { m.jx += dx / d * go; m.jy += dy / d * go; m.jz += dz / d * go; }
     }
+    /* 連續噴了幾秒（v1.175）。**滅火要等這個追上水的飛行時間**（見 wetSpray）：
+       使用者要的是「水柱噴過去 然後一小段時間火熄了」。
+       為什麼不用「開始噴那一下記下飛行時間再倒數」：上面那幾條路徑會**每一幀**
+       先把 m.jet 歸零（「還在路上就先收水柱」那一條在開不動的時候會直接往下走），
+       車停在牆邊噴水時每一幀都算「重新開始噴」——倒數永遠不會走完，那台車就一滴
+       水都不算，火照樣蔓延（實測整座從 1377 塊被燒到 175 塊）。
+       所以改成「只在真的停噴時歸零」：趕路、被砌進去、打不到、收工那四條歸零，
+       站在牆邊連噴一整趟的照樣一路累加。 */
+    m.jetT += dt;
     sprayFx(m, dt);
   }
   if (!T.list.length) { trucks = null; return; }
@@ -4179,9 +4245,12 @@ const UFO_SWIRL = 2.6;           // 上升時繞著光柱轉幾 rad/s
 const UFO_FADE = 0.35;           // 光柱亮起來／收掉各花幾秒
 const UFO_WAIT = 5;              // 飛走之後幾秒把東西丟下來（使用者指定 5 秒）
 const UFO_SKY = 72;              // 從多高掉下來（重力 26，落地大約 2.4 秒）
-/* 掉下來那一段要把鏡頭退開幾秒。不退的話那一坨是從畫面上緣掉進來的
-   ——預設取景看得到的天空大約到 20 幾，而它們生在 72～90。
-   3.4 秒 ＝ 從 UFO_SKY 落地（2.4 秒）再留一秒看它們砸在地上。 */
+/* 東西丟下來之後這一台還要留幾秒（'rain'）：3.4 秒 ＝ 從 UFO_SKY 落地（2.4 秒）
+   再留一秒看它們砸在地上。留著的只是那個狀態機（幽浮本身已經不畫了），
+   為的是「這一趟還沒演完」——ufoClear／換場才知道要把它一起收掉。
+   **v1.175 起這一段不碰鏡頭**（使用者：「掉落時不需要控制鏡頭」）：所以那一坨可能是
+   從畫面上緣掉進來的（預設取景看得到的天空大約到 20 幾，而它們生在 72～90），
+   那是他要的——視角是玩家的。 */
 const UFO_RAIN = 3.4;
 const UFO_PARK = -80;            // 吸進艙的東西沉到這個高度（地板底下，見檔頭 ①）
 const UFO_SPIN = 1.2;            // 碟身自轉（rad/s）
@@ -4402,17 +4471,19 @@ function stepUfo(dt) {
       if (Math.hypot(u.x, u.z) > arenaR + UFO_IN) { u.st = 'wait'; u.t = 0; ufoLet(u); }
     } else if (u.st === 'wait') {
       /* 飛走之後的那五秒（使用者指定）。時間到把東西丟下來，然後**再留一下**
-         （'rain'）：鏡頭要退開才看得到那一坨從天上掉，而且這一台已經不畫了。 */
+         （'rain'）：這一台已經不畫了，留著只是為了讓那一坨掉完（見 UFO_RAIN）。
+         **掉的時候不碰鏡頭**（v1.175 使用者：「UFO吸走的東西 掉落時不需要控制鏡頭」）：
+         v1.174 這裡會 holdWide 到 ufoSowR() 那麼寬（那一坨撒滿整座島，框得住就得退很遠），
+         等於玩家的視角被拉開一次又還回來。照光那一段的取景照舊（見 callUfo 的 holdWide，
+         在 'wait' 那一步就已經還回去了），所以這一版拿掉的只有「掉落」這一段。 */
       if (u.t >= UFO_WAIT) {
         ufoDrop(u);
-        u.st = 'rain'; u.t = 0; u.hold = 1;
-        /* 鏡頭要框得住「鋪到哪」：v1.174 起那一坨是撒滿整座島的，
-           還照 UFO_R × 1.5 退的話大半落在畫面外（見 ufoSowR）。 */
-        ENG.holdWide(UFO_SKY + 8, ufoSowR(), true);
+        u.st = 'rain'; u.t = 0;
       }
     } else {
-      // rain：東西正在掉。鏡頭借到它們落地為止，然後這一台才收掉
-      if (u.t >= UFO_RAIN) { ufoLet(u); ufos.splice(i, 1); }
+      /* rain：東西正在掉，落完這一台才收掉。這裡不必還鏡頭——借去的那一次在
+         'go' → 'wait' 就還了（見上面的 ufoLet），這一段從頭到尾沒有碰鏡頭。 */
+      if (u.t >= UFO_RAIN) ufos.splice(i, 1);
     }
   }
   if (!ufos.length) ufos = null;
@@ -4645,7 +4716,8 @@ const GATE_FADE = 1.6;           // 淡多久（透明度歸零，再化成金�
 /* 化成金光的速度是淡出的幾倍（v1.148）。1.8 ＝ 不透明度掉到 0.45 時金光已經滿格，
    剩下那 0.45 是「一團完整的金色形體慢慢消失」的那一段。 */
 const GATE_GLOW_K = 1.8;
-/* 場上最多幾把。要 **≤ 引擎的 WEAP_MAX（360）**——超過的會被 putWeapons 默默切掉，
+/* 場上最多幾把。這個數 **＋ 箭雨的 AR_KEEP 要 ≤ 引擎的 WEAP_MAX（1000）**——
+   兩邊畫在同一顆網格上（見 weapList），超過的會被 putWeapons 默默切掉，
    而被切掉的是清單後面那些＝最新射出來的那幾把。
    量過的峰值：門裡待發 100 ＋ 飛在半空約 15 ＋ 躺著還沒淡完的約 90。 */
 const WEAP_KEEP = 560;
@@ -5929,7 +6001,9 @@ function stepDust(dt) {
     if (d.y < 0.1) { d.y = 0.1; d.vy = 0; d.vx *= 0.8; d.vz *= 0.8; }
     // 要慢慢淡掉的（蘑菇雲）用縮的。單靠 life 到期會「啪」地整團同時不見
     if (d.fade) d.s *= Math.pow(0.5, dt / d.fade);
-    d.rx += dt * 2; d.ry += dt * 3;
+    /* hold 的不自轉（v1.175）：消防車那條水柱的每一顆是「沿飛行方向拉長的水痕」，
+       方向就是它的意義（見 aimDrop）——自轉會把整條水柱轉成一團翻滾的碎片。 */
+    if (!d.hold) { d.rx += dt * 2; d.ry += dt * 3; }
   }
 }
 
@@ -7134,18 +7208,20 @@ function beastWeapon(w, m) {
    跟王之財寶像的地方：一群人朝同一個地方齊射、打中的地方咬掉一小片、射完就撤。
    不像的地方除了上面第 ④ 點，還有「箭是拋出去的，兵器是直射的」。
 
-   v1.174 使用者：「箭雨弓箭隊改成40人射5輪」——只動 AR_N／AR_VOL／AR_COL 三個數，
-   隊形、彈道、判定一個字都沒改（見 AR_N 那一段的帳）。 */
-/* 一隊幾人、射幾輪。**v1.174 收回 40 人、加到五輪**（使用者：「箭雨弓箭隊改成40人
-   射5輪」）——v1.171 開發中曾從 40 加倍到 80（「順面增加小人隊規模*2」），這一版把
-   人數還回他一開始說的「一組大約 40 人」，改用輪數補總量：
-     80 人 × 3 輪 ＝ 240 支　→　40 人 × 5 輪 ＝ 200 支
-   一輪的密度掉一半、但齊射看五次，整趟從 6.7 秒拉長到 10.2 秒（見 stepArchers 的鐘）。
-   容量那三個池子只會更鬆，所以都不必動（引擎的 MAXW／WEAP_MAX 與下面的 AR_KEEP
-   ——那三個都是「裝不下就默默切掉清單尾巴」的池子，e2e 有一條照常數驗餘裕）。 */
-const AR_N = 40;
+   v1.174～v1.175 只動人數與輪數（隊形、彈道、判定一個字都沒改，見 AR_N 那一段的帳）：
+   v1.174「箭雨弓箭隊改成40人射5輪」、v1.175「箭雨弓箭隊改成80人」。 */
+/* 一隊幾人、射幾輪。**v1.175 人數回到 80、五輪留著**（使用者：「箭雨弓箭隊改成80人」），
+   隊形也跟著回到 v1.171～v1.173 那個 5 排 × 16 的方陣（正面寬 33 ≈ 工地直徑）：
+     80 人 × 3 輪 ＝ 240 支（v1.171）→ 40 人 × 5 輪 ＝ 200 支（v1.174）
+       → **80 人 × 5 輪 ＝ 400 支**（v1.175）
+   一輪的密度回到 80 人，齊射還是看五次，所以整趟的長度不變（見 stepArchers 的鐘）。
+   **容量這一版要跟著動**：一趟射出來的總量是 v1.171 的 1.67 倍，兵器池原本只留到
+   「560 把 ＋ 240 支」＝ 800（引擎的 WEAP_MAX 840），現在要 560 ＋ AR_KEEP 才夠
+   ——引擎那邊 840 → 1000、AR_KEEP 300 → 400（見那兩處的註解與 e2e〈容量留得夠〉）。
+   小人上限不必動：MAXW 140 就是照「最多 60 人 ＋ 一隊 80 個弓箭手」訂的。 */
+const AR_N = 80;
 const AR_VOL = 5;                // 射幾輪（使用者指定）
-const AR_COL = 10;               // 一排幾人（40 ＝ 4 排 × 10，正面寬 19.8）
+const AR_COL = 16;               // 一排幾人（80 ＝ 5 排 × 16，正面寬 33 ≈ 工地直徑）
 const AR_GAP = 2.2, AR_ROWGAP = 2.6;    // 同一排的人隔多遠／排與排之間隔多遠
 const AR_JIT = 0.3;              // 站位再抖多少（不抖就是一個標準的方陣）
 const AR_LIFT = 0.45;            // 出場：整隊由小長到原尺寸要多久
@@ -7183,8 +7259,12 @@ const AR_HIT_POW = 7;            // 力道（王之財寶 12、投石機 12、�
 const AR_BLOW = 10;              // 撞飛小人／動物的力道（王之財寶那邊是 16）
 const AR_LIE = [1.6, 3.2];       // 插住之後撐多久才開始淡（同王之財寶的 GATE_LIE）
 const AR_FADE = 1.4;             // 淡多久（透明度歸零就收掉）
-const AR_KEEP = 300;             // 場上最多幾支（一隊 200 支 ＋ 上一隊還沒淡完的）
-const AR_AIM_R = 9;              // 第一下在地上畫的那圈光環多大（一隊的正面寬 19.8）
+/* 場上最多幾支。**v1.175 起等於一隊射出來的總量**（80 × 5 ＝ 400）：這樣同一隊的箭
+   絕對不會被自己擠掉（滿了擠掉的只會是上一隊還沒淡完的那些）。
+   實測一隊同時在場的峰值遠低於這個數（箭插住幾秒就淡掉了，見 AR_LIE／AR_FADE），
+   留這個數是要保證「插著的那一批不會憑空消失」。 */
+const AR_KEEP = AR_N * AR_VOL;
+const AR_AIM_R = 9;              // 第一下在地上畫的那圈光環多大（一隊的正面寬 33）
 const AR_AIM_C = 0xc79a5a;       // 木色（同弓）
 let archers = null;              // 在場的弓箭隊（同時只有一隊，見 castArrows）
 let arrows = null;               // 場上所有箭：飛行中的 ＋ 插著淡出中的
