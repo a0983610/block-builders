@@ -41,6 +41,9 @@ function newWorker(i) {
        cap 是一趟最多領幾對，li 是撿到第幾對（回程時一律從第 0 對開始丟）。 */
     load: [], cap: carryCap(scale), li: 0,
     wait: 0, fall: 0, tilt: 0, carry: false, cheer: 0, pause: 0, leg: 0,
+    /* 這次倒地是「自己走路絆的」嗎（v1.178，見 tripWalk）。跟被工具打倒共用 fall／tilt，
+       只有這個旗標分得出來——偷懶的人被工具打倒要收心上工，自己絆一跤不算。 */
+    trip: 0,
     /* 上工的路：clear 是「直線走得通」，chk 是還有多久要重算一次（見 buildWalk） */
     chk: 0, clear: 0,
     /* 被工具波及時才用得到：air 是正在飛，vx/vy/vz 是彈道，spin 是翻滾角速度，
@@ -56,6 +59,13 @@ function newWorker(i) {
        cout 是散場錯開多久（見 CHEER_OUT），cft 是下一束彩帶還有幾秒（見 CONF_GAP）。 */
     eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0, crun: 0, cout: 0, cft: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
+    /* 談不攏就打起來（v1.178，見 startFight）：fig 是還要打幾秒、fw 是對手編號、
+       guard 是舉拳的架勢、punch 是這一拳揮到哪 0～1（後兩個是畫的時候用的）。 */
+    fig: 0, fw: -1, guard: 0, punch: 0, pk: -1,
+    /* 閒著沒事來一段（v1.178，見 rollShow）：show 是哪一種（''＝沒有）、showT 是還剩幾秒、
+       showA 是開演時的朝向（跳舞繞著它左右轉）、showN 是這一段要翻幾圈。
+       danc／flip 是畫出來要用的姿勢旗標，跟 hail／plan 一樣每幀重算。 */
+    show: '', showT: 0, showA: 0, showN: 0, danc: 0, flip: 0,
     /* 頭上的表情圖示（v1.121，見 showEmo）：emo 是哪一種（EMO_KINDS 裡的字，''＝沒有）、
        emoT 是還要冒幾秒、emoK 是畫出來的大小 0～1。 */
     emo: '', emoT: 0, emoK: 0,
@@ -220,6 +230,12 @@ function releaseWorker(w) {
      但編號要清掉——換藍圖時整池積木會重編，留著會指到別人的積木上。 */
   w.fly.length = 0;
   endChat(w);
+  /* 打架與表演也一起收（v1.178）：這支是「這個人被抓離現在在做的事」的總開關
+     （被炸飛、被點著、換一座、人數調少、收心上工都會經過），跟 endChat 同一個理由。
+     w.trip 不在這裡收——那是**倒地中**才有的記號，而這支不會把人扶起來
+     （水柱打倒就是先 w.fall = 再叫這支）；換一座那裡才連 fall 一起清（見 startBuild）。 */
+  endFight(w);
+  w.show = ''; w.showT = 0;
 }
 /* 工作單裡的某一塊出事了（被打飛、被搶走、藍圖換掉）：只抽掉那一筆，其餘照搬。
    一塊出事就整趟作廢的話，搬三塊的人被抽掉一塊就得回頭重領一次。 */
@@ -273,7 +289,7 @@ function tossWorker(w, vx, vy, vz, lit) {
   if (sp > W_TOSS_MAX) { const k = W_TOSS_MAX / sp; vx *= k; vz *= k; }
   /* 慶祝的鐘不歸零（v1.120）：被炸飛的人落地後只補完剩下的那一段，
      不是重新開始跳七秒（見 updWorker 開頭那段鐘）。 */
-  w.air = 1; w.fall = 0; w.pause = 0; w.gait = 0; w.flee = 0;
+  w.air = 1; w.fall = 0; w.trip = 0; w.pause = 0; w.gait = 0; w.flee = 0;
   w.vx = vx; w.vy = vy; w.vz = vz;
   w.spin = rr(5, 12) * (Math.random() < 0.5 ? -1 : 1);
   if (lit) w.lit = 1;
@@ -283,6 +299,7 @@ function igniteWorker(w, roll) {
   if (w.burn > 0 || w.wet > 0) return false;      // 剛被消防車噴過的點不著
   releaseWorker(w);
   w.burn = W_BURN; w.roll = roll ? 1 : 0; w.bem = Math.random(); w.fall = 0; w.flee = 0;
+  w.trip = 0;                                     // 燒起來就不是「自己絆的」那一跤了（v1.178）
   // 躺平角直接就位（人本來就是摔在地上才點著的），來回滾的相位每個人不一樣
   if (roll) {
     w.tilt = Math.PI * 0.5; w.rph = rr(0, Math.PI * 2);
@@ -962,6 +979,36 @@ function assignSpots() {
   }
 }
 
+/* ── 走著走著絆一跤（v1.178）───────────────────────────────
+   使用者：「白猴子 黑獼猴 小人走路時有時會跌倒(機率不用太高 不然會影響工作效率)」。
+   **整套借既有的倒地**（w.fall／w.tilt，見下面 updWorker 那條分支）：趴一秒多自己爬起來、
+   爬起來那一刻生氣——跟被戳倒、被水柱打倒共用同一條路，只差沒有人碰他，
+   以及**這一跤是往前趴的**（使用者：「走路絆一跤 應該是往前倒」，見那條分支的註解）。
+   猴子那兩隻同理，借的是牠們自己那份 fellBeast（見 game-tools.js 的 stepBeast）。
+
+   兩個限制是使用者那句「不然會影響工作效率」換來的：
+   ① **手上有貨的不絆**。倒地那條分支是 return 出去的，carryPose 這一幀不會跑——
+      頭上那疊積木會停在半空看著他躺下去。要讓搬運中的人也絆，就得連「把貨撒一地」
+      一起做，那是另一件事（而且那才真的會拖慢工期）。空手走路的人才絆。
+   ② **機率算「每走一秒」不是「每幀」**（所以要乘 dt），而且只有腿真的在擺才算
+      （gait；站著聊天、發呆、等下一塊都不算，同 stuckWatch 的判準）。 */
+const TRIP_P = 0.004;               // 每走一秒絆倒的機率
+const TRIP_T = [0.7, 1.3];          // 趴幾秒才爬起來
+/* 這一幀絆倒了嗎。true＝他已經躺下去了，這一幀底下整段跳過（同被戳倒）。 */
+function tripWalk(w, dt) {
+  if (w.carry || w.load.length || w.gait < 0.6) return false;
+  /* 慶祝進場那一趟不絆（v1.178）：那一段是「全員要在幾秒內到齊」才成立的（見 CHEER_IN，
+     遠的人會用跑的趕回來），絆一跤就有人趕不上，圈子缺一角。實測從碎料場外緣趕回來
+     那一輪，全員到齊從 2.x 秒被拖到 3.7 秒。 */
+  if (idlePhase() && cheerOn(w)) return false;
+  if (Math.random() >= TRIP_P * dt) return false;
+  w.fall = rr(TRIP_T[0], TRIP_T[1]);
+  w.trip = 1;                       // 自己絆的，不是被工具打倒（見 quitLazy 那條）
+  w.gait = 0;
+  sndFall();
+  return true;
+}
+
 function updWorker(w, wi, dt) {
   /* 被幽浮吸走了（v1.167）：這個人這一段完全交給 stepUfo 管（在光裡飄、在艙裡等、
      從天上掉回來），這裡整段跳過。擺在最前面：下面每一條分支都會動到位置。 */
@@ -969,6 +1016,8 @@ function updWorker(w, wi, dt) {
   /* 姿勢旗標每幀重算：跌倒、被炸飛、跑去躲的那幾條路徑都是 return 出去的，
      不歸零的話工程師被戳倒了還躺在地上舉著圖。 */
   w.hail = 0; w.plan = 0; w.dig = 0;   // dig：拿著鏟子挖料（v1.129，見 digTrip）
+  // 跳舞／翻跟斗／打架的姿勢同理（v1.178）：只有真的在演的那條路徑會把它們撐回去
+  w.danc = 0; w.flip = 0; w.guard = 0; w.punch = 0;
   stuckWatch(w, dt);                 // 卡住了就脫困（v1.108）。擺在最前面：下面每一條分支都會 return
   /* 舉杖同理，只是它是漸進的（瞬間切 0/1 的話杖會用瞬移的抬起放下）：
      這裡每幀往下收，只有真的在施法那條路徑會用兩倍速把它撐回去（castPose）。
@@ -976,6 +1025,18 @@ function updWorker(w, wi, dt) {
   if (w.cast > 0) w.cast = Math.max(0, w.cast - dt * CAST_DOWN);
   if (w.chatCd > 0) w.chatCd -= dt;
   stepEmo(w, dt);                    // 表情圖示的鐘（v1.121）。同下面那段慶祝的鐘：擺在所有 return 之前
+  /* 表演的鐘（v1.178）。也擺在所有 return 之前，理由跟上面兩個鐘一樣，但這一個更要緊：
+     演到一半被抓去上工（或被炸飛）的人，鐘停在那裡的話，他下次站定發呆時會**接著演**
+     ——翻跟斗那一段是照剩幾秒算角度的，接下去的第一幀身體會從站直瞬間扭到半空那個角。
+     鐘照走就自己過期了，那一段就算了。 */
+  if (w.showT > 0) {
+    w.showT -= dt;
+    /* 收工那一幀要把翻的角度**歸零**，不能留給下面那條 tilt 的漸收：翻完停在
+       −2π×圈數，看起來跟站直一模一樣，但漸收會把它慢慢轉回 0——畫面上就是
+       落地之後又慢慢倒轉一圈。角度本來就每一圈歸一次零（見 stepShow 的 u % 1），
+       這裡收掉的是最後不到一幀的零頭。 */
+    if (w.showT <= 0) { w.showT = 0; if (w.show === 'flip') w.tilt = 0; w.show = ''; }
+  }
   /* 慶祝的鐘（v1.120）。擺在**所有 return 之前**：完工那一刻起就一直在走，被炸飛、
      被震倒、被嚇跑、被點著的那幾秒也照算——慶祝是「完工後那一段時間」，不是「站在圈上
      跳了七秒」（使用者：「慶祝應該只要完工後一次就好」）。以前是掛在下面那條慶祝分支裡
@@ -996,9 +1057,10 @@ function updWorker(w, wi, dt) {
   }
   /* 被吹飛／點著／推倒／要逃命，或是換場要清工地了——聊天一律中斷。
      蓋完的那一刻也中斷：慶祝要全員到齊，不然聊到一半的那兩個會晚五秒才入圈。 */
-  if (w.chat > 0 && (w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
-      (phase !== 'build' && !idlePhase()) || (idlePhase() && cheerOn(w))))
-    endChat(w);
+  if ((w.chat > 0 || w.fig > 0) && (w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
+      (phase !== 'build' && !idlePhase()) || (idlePhase() && cheerOn(w)))) {
+    endChat(w); endFight(w);         // 打架（v1.178）用同一個判準：它是那場對話的下半場
+  }
   if (w.burn > 0) {
     w.burn -= dt;
     burnFx(w, dt);
@@ -1024,22 +1086,29 @@ function updWorker(w, wi, dt) {
   /* 被工具打倒就收心上工（v1.134，使用者：「被工具攻擊倒地才會進入建築模式」）。
      擺在這裡才每一種都收得到——戳倒、水柱打倒、被掀飛落地、雷劈倒、被燒得在地上打滾，
      全都會經過這一幀（w.fall 是倒地的倒數，w.roll 是燒起來趴在地上滾）。
-     站著被點燃、抱頭跑圈圈的那種不算：那個人沒有倒地，他照樣偷懶。 */
-  if (w.lazy && (w.fall > 0 || w.roll)) quitLazy(w);
+     站著被點燃、抱頭跑圈圈的那種不算：那個人沒有倒地，他照樣偷懶。
+     自己走路絆的那一跤也不算（v1.178，w.trip）：沒有人碰他，他沒有理由因此收心。 */
+  if (w.lazy && ((w.fall > 0 && !w.trip) || w.roll)) quitLazy(w);
   if (w.air) { flyWorker(w, dt); return; }            // 被吹飛／炸飛：走彈道
   if (w.burn > 0) { burnMove(w, dt); return; }        // 燒起來：打滾或跑圈圈
 
-  if (w.fall > 0) {                                   // 被震倒／被戳倒
+  if (w.fall > 0) {                                   // 被震倒／被戳倒／自己絆倒（v1.178）
     /* 躺平就是躺平（v1.60）：以前只倒到 0.44π（79°），停在一個「快躺平又還撐著」的
-       角度。現在倒滿 90°，而且是**往後仰躺**（負角）——往前趴的話帽舌、鼻尖那幾塊
-       會插進草地裡，仰躺貼地的是背面，那是整個模型最平的一面。
+       角度。現在倒滿 90°。**被工具打倒是往後仰躺**（負角）——仰躺貼地的是背面，
+       那是整個模型最平的一面，而且那本來就是被推倒的。
        躺平之後身體會落在草皮那一層，所以 engine 會照傾角把人抬起半個身厚。 */
     w.fall -= dt;
-    w.tilt += (-Math.PI * 0.5 - w.tilt) * Math.min(1, dt * 9);
+    /* 自己絆的那一跤**往前趴**（v1.178，使用者：「走路絆一跤 應該是往前倒」）：
+       絆到的人是往前撲，往後仰躺看起來像被人推的。被工具打倒的照舊往後——那真的是
+       被推倒的。往前趴唯一會插進草地的是帽舌（前緣 0.42，抬的是 0.27）：埋進去的
+       那 0.15 就是「臉朝下吃土」該有的樣子，臉、眼睛（前緣 0.20／0.215）都還在草皮上面。 */
+    w.tilt += ((w.trip ? Math.PI * 0.5 : -Math.PI * 0.5) - w.tilt) * Math.min(1, dt * 9);
     w.gait += (0 - w.gait) * Math.min(1, dt * 6);
     if (w.fall <= 0) {
       w.st = 'idle';
-      /* 爬起來的那一刻生氣（v1.121）：被戳、被掀飛落地、被水柱打倒都走這裡。
+      w.trip = 0;                    // 爬起來了，這一跤是誰害的就不必再分（v1.178）
+      /* 爬起來的那一刻生氣（v1.121）：被戳、被掀飛落地、被水柱打倒、自己絆一跤
+         （v1.178 的 tripWalk）都走這裡。
          **濕著爬起來的不生氣**——那是身上有火被水澆熄的人（見 wetWorker），
          他頭上那顆愛心還在，不要蓋掉。 */
       if (w.wet <= 0) showEmo(w, 'anger');
@@ -1053,6 +1122,8 @@ function updWorker(w, wi, dt) {
   if (w.flee > 0) { stepFlee(w, dt); w.y += (0 - w.y) * Math.min(1, dt * 6); return; }
 
   if (w.chat > 0) { stepChat(w, wi, dt); return; }
+  if (w.fig > 0) { stepFight(w, wi, dt); return; }   // 談不攏就打起來（v1.178）
+  if (tripWalk(w, dt)) return;                       // 走著走著絆一跤（v1.178）
 
   if (phase === 'clear') {
     /* 整地中退到旁邊等——推土機還在推，這時候進場只會被鏟到。
@@ -1508,8 +1579,72 @@ function idleSpot(w) {
   }
 }
 function wander(w, dt) {
-  if (w.pause > 0) { w.pause -= dt; w.gait += (0 - w.gait) * Math.min(1, dt * 8); return; }
-  if (strollTo(w, dt)) { strollPause(w); idleSpot(w); }
+  if (w.show || w.pause > 0) { idleWait(w, dt); return; }
+  if (strollTo(w, dt)) { strollPause(w); rollShow(w); idleSpot(w); }
+}
+
+/* ── 閒著沒事來一段（v1.178）───────────────────────────────
+   使用者：「小人閒置時有時會跳舞 翻跟斗等動作」。演的時機借**現成的發呆**
+   （strollPause：走到定點就站一會兒，站多久跟剛走完那段路成比例）——閒晃的人本來
+   就有大把時間杵在那裡不動，把其中一部分換成表演就好，不必另外插一個狀態進狀態機。
+   所以「閒置」的範圍也跟著現成的走：閒晃（wander）跟蓋完房子在自家附近走走
+   （liveHome）這兩條路上的發呆都算，正在搬料、看圖、施法的人一概沒有。
+
+   兩種：
+     dance  跳舞：兩隻手輪流舉、身體繞著開演時的朝向左右轉、腳下小碎步彈跳。
+     flip   翻跟斗：原地起跳，在半空往後翻一到兩圈再落地。
+   翻跟斗的**旋轉中心在身體中段**、不在腳底（引擎那邊看 w.flip，跟被吹飛在半空翻
+   同一套）：繞腳底轉的話那是「以腳為軸倒下去」，而且轉過水平時整個人會插進草皮裡
+   （見 engine.js 的 ROLL_PIVOT 那段）。
+   演到一半被抓去上工／被炸飛怎麼收：見 updWorker 開頭那個 showT 的鐘。 */
+const SHOW_P = 0.3;                 // 每次站定發呆，有多少機率不是純發呆而是來一段
+const SHOW_DANCE = [3.2, 5.5];      // 跳舞跳幾秒
+const SHOW_HZ = 7.5;                // 跳舞的節拍（手、腳、彈跳共用這個相位）
+const SHOW_SWAY = 0.55;             // 跳舞時左右轉幾弧度（繞著開演時的朝向）
+const SHOW_HOP = 0.11;              // 跳舞時腳下彈多高（格）
+const SHOW_FLIP_N = [1, 2];         // 翻跟斗翻幾圈
+const SHOW_FLIP_T = 0.85;           // 一圈幾秒
+const SHOW_FLIP_H = 1.25;           // 翻到最高離地幾格
+/* 站定的那一刻抽一次。抽中就把發呆時間**拉長到夠演完**——照原本那個時間演的話，
+   剛走一小段就站定的人（pause 不到一秒）會演到一半就走人。 */
+function rollShow(w) {
+  w.show = ''; w.showT = 0;
+  if (Math.random() >= SHOW_P) return;
+  if (Math.random() < 0.5) {
+    w.show = 'dance'; w.showT = rr(SHOW_DANCE[0], SHOW_DANCE[1]);
+  } else {
+    w.showN = Math.round(rr(SHOW_FLIP_N[0], SHOW_FLIP_N[1]));
+    w.show = 'flip'; w.showT = w.showN * SHOW_FLIP_T;
+  }
+  w.showA = w.a;                    // 繞著現在的朝向演，演完還是朝這邊
+  w.pause = Math.max(w.pause, w.showT);
+}
+/* 站定不動的那一段：抽中的話這幾秒在表演，沒抽中就純站著（原本的行為）。
+   **演完之前不算站完**（w.show 那個條件，見 wander／liveHome）：pause 有可能一開始
+   就是 0——strollPause 是照剛走完那段路算的，而「挑到的下一個點剛好就在腳邊」
+   那一次走的距離是 0。那樣的話這一段演到一半就會被下一次 rollShow 洗掉，
+   洗在翻跟斗中間的話身體會停在半空那個角度再慢慢轉回來（實測 450 秒裡出現 2 次）。 */
+function idleWait(w, dt) {
+  if (w.pause > 0) w.pause -= dt;
+  if (w.show) stepShow(w, dt);
+  else w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+}
+/* 這一幀的表演。人**不移動**（表演是站定之後的事），動的是朝向、離地高度與姿勢旗標。 */
+function stepShow(w, dt) {
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  if (w.show === 'dance') {
+    w.danc = 1;
+    w.ph += dt * SHOW_HZ;
+    w.a = w.showA + Math.sin(w.ph * 0.5) * SHOW_SWAY;
+    w.y = Math.abs(Math.sin(w.ph)) * SHOW_HOP;
+    return;
+  }
+  /* 翻跟斗：u 是這一段翻到第幾圈（0 ～ showN）。角度乘 −2π（負的是往後翻，
+     跟仰躺同一個方向），高度取**每一圈自己**的半個正弦，落地那一刻剛好回到 0。 */
+  const u = (1 - w.showT / (w.showN * SHOW_FLIP_T)) * w.showN;
+  w.flip = 1;
+  w.tilt = -Math.PI * 2 * (u % 1);            // 每一圈歸一次零（−2π 跟 0 是同一個姿勢）
+  w.y = Math.sin((u % 1) * Math.PI) * SHOW_FLIP_H;
 }
 
 /* ── 工程師 ───────────────────────────────────────────────
@@ -1778,6 +1913,8 @@ function endChat(w) {
 function chatFree(w) {
   if (w.chat > 0 || w.chatCd > 0 || w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
       w.carry) return false;
+  if (w.fig > 0) return false;              // 正在打架（v1.178）
+  if (w.show === 'flip') return false;      // 翻到一半被叫住會在半空停格（v1.178）
   // 正在蓋自己的家的人不算閒（蓋完了在家附近走走的才算，v1.97）
   if (w.hm >= 0 && homeBusy(w)) return false;
   if (idlePhase()) return !cheerOn(w);
@@ -1824,15 +1961,96 @@ function stepChat(w, wi, dt) {
        （使用者：「小人交談後有生氣或是愛心(目前是都愛心)」）。**兩個人一定是同一個**
        ——這是同一場對話的結果，一邊愛心一邊生氣看起來會像兩件不相干的事，
        所以骰子在這裡只擲一次，兩個人共用。 */
-    const mate = workers[w.cw];
+    const mi = w.cw, mate = workers[mi];
     endChat(w);
     const emo = Math.random() < CHAT_MAD ? 'anger' : 'heart';
     showEmo(w, emo);
     if (mate && mate.cw === wi) showEmo(mate, emo);
+    /* 談不攏有時候會打起來（v1.178，見 startFight）。接在生氣後面：骰子只在
+       **已經談不攏**的那幾場再擲一次，聊得來的一律不會打。
+       `mate.cw === wi` 是「對方還指著自己」（被抓走的人 endChat 時已經把 cw 清成 −1）
+       ——一個人是打不起來的。 */
+    if (emo === 'anger' && mate && mate.cw === wi && startFight(wi, mi)) return;
     /* 聊完就走：給一個新的閒晃目標，不然兩個人會杵在原地等發呆時間跑完。
        有自己家的人挑自己家附近（v1.100）：挑工地外圈那一環的話，他會先往工地走幾步，
        下一幀才被 liveHome 叫回來——而在那之前如果他還在挖料那條路上，
        那個目標會把他一路帶到工地那邊去（實測跑到離自己家 38 格）。 */
+    const h = w.hm >= 0 && homes ? homes.list[w.hm] : null;
+    if (h) liveSpot(w, h); else idleSpot(w);
+    w.pause = 0;
+  }
+}
+
+/* ── 談不攏就打起來（v1.178）───────────────────────────────
+   使用者：「小人遇到時交談如果結果是生氣有時會打架」。所以這件事接在**既有的那顆骰子**
+   後面：聊完天有 CHAT_MAD 的機率談不攏（v1.131 就有了，兩個人各冒一個生氣），
+   談不攏的那幾場再抽 FIGHT_P 打起來——聊得來的一律不會打。
+
+   一場架長這樣：兩個人先湊近一點（聊天那個距離揮空拳），面對面**輪流**出拳
+   （同時揮的話看起來是兩個人在原地各揮各的），出拳的往前壓、挨拳的往後仰，
+   腳下踩著小碎步。打完各自走開，而且聊天冷卻再乘 FIGHT_CD：剛打完的兩個人
+   不該下一秒又湊在一起聊天。
+
+   兩件**沒做**的事：沒有人會因此倒地（打完都站著走開）；也不影響工期——
+   打得起來的本來就只有閒著的人（chatFree 挑的就是那些）。 */
+const FIGHT_P = 0.4;                // 談不攏的對話裡有幾成會打起來
+const FIGHT_T = 3.6;                // 一場打幾秒
+const FIGHT_TURN = 0.6;             // 一拳幾秒（輪流，所以一個人每 1.2 秒一拳）
+const FIGHT_D = 1.35;               // 打架時站多近（聊天是 CHAT_D 2.6）
+const FIGHT_IN = 1.6;               // 往前湊的速度（格／秒）
+const FIGHT_CD = 2;                 // 打完之後聊天冷卻乘幾倍
+const FIGHT_LEAN = 0.22;            // 出拳往前壓／挨拳往後仰幾弧度
+function endFight(w) {
+  if (w.fig > 0) w.chatCd = rr(CHAT_CD, CHAT_CD * 2) * FIGHT_CD;
+  w.fig = 0; w.fw = -1; w.punch = 0; w.guard = 0; w.pk = -1;
+}
+/* 打起來（回傳 false＝這一場沒抽中，照舊各自走開）。a／b 是那兩個人的編號。 */
+function startFight(a, b) {
+  const x = workers[a], y = workers[b];
+  if (!x || !y) return false;
+  if (Math.random() >= FIGHT_P) return false;
+  x.fig = y.fig = FIGHT_T;
+  x.fw = b; y.fw = a;
+  x.side = 0; y.side = 1;                   // 先出拳的是 a（同聊天先開口的那一個）
+  x.pk = y.pk = -1;
+  x.pause = y.pause = 0;
+  x.show = y.show = ''; x.showT = y.showT = 0;   // 打架優先於表演
+  return true;
+}
+function stepFight(w, wi, dt) {
+  const p = workers[w.fw];
+  if (!p || p.fig <= 0 || p.fw !== wi) { endFight(w); return; }   // 對手被抓走了
+  w.fig -= dt;
+  w.y += (0 - w.y) * Math.min(1, dt * 6);
+  const dx = p.x - w.x, dz = p.z - w.z, d = Math.hypot(dx, dz) || 1;
+  w.a = Math.atan2(dx, dz);                                       // 面對面
+  /* 站到 FIGHT_D 那個距離：遠了往前湊，太近了往後退（聊天是走近了就聊，實測有從
+     0.5 格開始的那種——那個距離出拳兩個人是疊在一起的）。走一半就好：兩個人都在動，
+     各走一半才會停在 FIGHT_D，各走全程的話會擠成一團再彈開。 */
+  {
+    const sp = clamp((d - FIGHT_D) * 0.5, -FIGHT_IN * dt, FIGHT_IN * dt);
+    w.x += dx / d * sp; w.z += dz / d * sp;
+  }
+  w.guard = 1;                              // 雙手舉在胸前
+  w.ph += dt * 6;                           // 腳下小碎步
+  w.gait += (0.3 - w.gait) * Math.min(1, dt * 6);
+  /* 輪到誰出拳：跟聊天輪流講話同一個算法。一拳的形狀是半個正弦——揮出去、收回來，
+     收回來才輪到對方。拳頭聲在**揮到一半**（打到人那一刻）才響，一拳只響一次
+     （w.pk 記的是已經響過的是第幾拳）。 */
+  const turn = (FIGHT_T - w.fig) / FIGHT_TURN;
+  const n = Math.floor(turn);
+  const mine = n % 2 === w.side;
+  w.punch = mine ? Math.sin((turn % 1) * Math.PI) : 0;
+  if (mine && turn % 1 >= 0.5 && w.pk !== n) { w.pk = n; sndStab(); }
+  // 出拳的往前壓、挨拳的往後仰（p.punch 是對手這一刻揮到哪）
+  w.tilt = (w.punch - (p.punch || 0)) * FIGHT_LEAN;
+  if (w.fig <= 0) {
+    /* 收尾整套照聊天那一段（見 stepChat）：兩個人各冒一個生氣、各自挑一個新的
+       目標點走開，不然他們會杵在原地等發呆時間跑完。 */
+    const mate = workers[w.fw];
+    endFight(w);
+    showEmo(w, 'anger');
+    if (mate && mate.fw === wi) showEmo(mate, 'anger');
     const h = w.hm >= 0 && homes ? homes.list[w.hm] : null;
     if (h) liveSpot(w, h); else idleSpot(w);
     w.pause = 0;
@@ -1850,7 +2068,9 @@ function stepChat(w, wi, dt) {
      驚嘆號 bang   預告一出現、丟下手上的東西開始逃命（startFlee）
      問號   quest  ① 走不動要重找路線（stuckWatch）② 要搬的那塊被打飛／被搶走（dropJob）
      愛心   heart  ① 聊完天各自走開、而且聊得來（stepChat）② 身上的火被水澆熄（wetWorker）
-     生氣   anger  ① 跌倒爬起來那一刻（被戳、被掀飛、被水柱打倒）② 聊完天談不攏（stepChat）
+     生氣   anger  ① 跌倒爬起來那一刻（被戳、被掀飛、被水柱打倒，v1.178 起也包含
+                      自己走路絆一跤，見 tripWalk）② 聊完天談不攏（stepChat）
+                      ③ 打完一場架（v1.178，見 stepFight）
    v1.131 動了兩處（都是使用者指定）：碰到水不再生氣（見 wetWorker）、
    聊完天不再一律愛心（四分之一是生氣，見 CHAT_MAD）。
 
@@ -2978,9 +3198,10 @@ function liveHome(w, h, dt) {
      或者（房子被同組的人蓋完、他一塊都沒搬到時）事件開始前的閒晃點，
      那個可能在工地的另一邊（實測有人因此先走了 46 格才回家）。離家太遠就先重挑。 */
   if (Math.hypot(w.tx - h.x, w.tz - h.z) > h.r + LIVE_R) liveSpot(w, h);
-  if (w.pause > 0) { w.pause -= dt; w.gait += (0 - w.gait) * Math.min(1, dt * 8); return; }
+  if (w.show || w.pause > 0) { idleWait(w, dt); return; }
   if (!strollTo(w, dt)) return;
   strollPause(w);
+  rollShow(w);                      // 在自家門口也會來一段（v1.178，同 wander）
   liveSpot(w, h);
 }
 /* 這一幀的「蓋自己的家」。跟魔法師一樣是一條自己的路，不走 idle／pick／build 那套——

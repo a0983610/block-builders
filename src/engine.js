@@ -2580,6 +2580,8 @@ const ENG = (function () {
         mage 是不是魔法師（戴巫師帽、拿法杖）,cast 施法深淺 0～1（杖抬多高、寶珠多亮）,
         mus 是不是肌肉小人（裸上半身、肩臂粗一圈）,
         dig 挖料的深淺（0＝沒拿鏟子，0～1＝這一鏟挖到哪了，見 DIG_GRIP_A）,
+        danc 正在跳舞、flip 正在翻跟斗（v1.178：翻的角度就是 tilt，這個旗標只管
+        「繞身體中段轉、不要抬」）,guard 打架的架勢、punch 這一拳揮到哪 0～1,
         emo 頭上的表情圖示是哪一種（EMO_KINDS 裡的字，空的就是沒有）,emoK 圖示大小 0～1
         ——這兩個是 putEmotes 在用的，putWorker 本身不畫圖示} */
   function putWorker(i, w) {
@@ -2603,8 +2605,11 @@ const ENG = (function () {
     /* 沒在打滾但身體是斜的（被戳倒、被震倒、飛在半空翻滾）也要抬——
        原點在腳底，倒到水平時整個身體剛好落在草皮那一層，半個身厚是埋在地裡的。
        抬 |sin(傾角)| × 半個身厚：站直時 0，躺平時剛好把人托在草地上（v1.60）。 */
-    /* 飛在半空的不抬：下面改成繞身體中段轉，本來就不會陷進地裡（v1.146）。 */
-    const lift = w.air ? 0
+    /* 飛在半空的不抬：下面改成繞身體中段轉，本來就不會陷進地裡（v1.146）。
+       翻跟斗（v1.178 的 w.flip）走同一套——那就是「在半空翻」，只是這一回是
+       自己跳起來翻的。繞腳底轉的話，轉過水平時整個人會插進草皮裡（見 ROLL_PIVOT）。 */
+    const mid = w.air || w.flip;
+    const lift = mid ? 0
                : piv ? (ROLL_FLAT + (ROLL_PIVOT - ROLL_FLAT) * Math.abs(Math.cos(w.tilt || 0)))
                      : FLAT_LIFT * Math.abs(Math.sin(w.tilt || 0));
     /* 順序用 YZX：R = Ry(朝向)·Rz(打滾)·Rx(躺平)。z 那一軸轉的是「躺平之後的身體長軸」，
@@ -2615,7 +2620,7 @@ const ENG = (function () {
     scratch.position.set(w.x, w.y + lift * wsc, w.z);
     /* 繞局部點 p 轉 ＝ 把位置補上 (p − R·p)（見 AIR_PIVOT）。站直時 R·p 就是 p，
        補的是 0——所以起飛那一刻與落地那一刻都不會跳。 */
-    if (w.air) {
+    if (mid) {
       _piv.set(0, AIR_PIVOT, 0).applyEuler(scratch.rotation);
       scratch.position.x -= _piv.x * wsc;
       scratch.position.y += (AIR_PIVOT - _piv.y) * wsc;
@@ -2666,6 +2671,21 @@ const ENG = (function () {
           scratchB.rotation.x = -2.75 + Math.sin(w.ph) * 0.22;
           scratchB.rotation.z = b.arm * 0.30;
           scratchB.position.y = 0.82;
+        } else if (w.danc) {
+          /* 跳舞（v1.178）：兩隻手**輪流**舉（相位差半圈），一邊舉一邊往外開。
+             兩隻同時舉的話那是慶祝那個姿勢，看不出是在跳舞。 */
+          const s = Math.sin(w.ph + (b.arm > 0 ? 0 : Math.PI));
+          scratchB.rotation.x = -1.55 + s * 1.15;
+          scratchB.rotation.z = b.arm * (0.30 + s * 0.28);
+          scratchB.position.y = 0.80;
+        } else if (w.guard) {
+          /* 打架（v1.178）：兩隻手舉在胸前護著，**右手**（b.arm > 0，同指揮那一段的
+             慣例）跟著 w.punch 打出去。punch 是 0～1 的半個正弦，見 stepFight。 */
+          const p = b.arm > 0 ? (w.punch || 0) : 0;
+          scratchB.rotation.x = -1.10 - p * 0.55;
+          scratchB.rotation.z = b.arm * (0.26 - p * 0.26);
+          scratchB.position.y = 0.74;
+          scratchB.position.z = 0.12 + p * 0.26;
         } else if (w.cast > 0.02 && b.arm > 0) {   // 施法：拿杖那隻手抬起來扶著杖身
           scratchB.rotation.x = -1.15 * w.cast;
           scratchB.position.y = b.p[1] + 0.16 * w.cast;

@@ -6073,6 +6073,12 @@ const DOOM_OUT = 3;                   // 從碎料場外緣再往外幾格出現
 const DOOM_AIM = 1.1;                 // 站定到動手之間停幾秒（看得出牠在瞄）
 const DOOM_ARM = 4;                   // 抬手的快慢
 const DOOM_NEAR = 3.2;                // 走到離目標這麼近就夠了（火把搆得到）
+/* 走著走著絆一跤（v1.178，使用者：「白猴子 黑獼猴 小人走路時有時會跌倒」）。
+   機率的算法照小人那一份（每走一秒、腿真的在擺才算，見 game-workers.js 的 TRIP_P），
+   但**值高一截**：小人一場二十個人在走，猴子一次只有一兩隻，照小人的 0.004 給的話
+   一隻猴子從進場到走人（MASC_STAY 25～45 秒）幾乎不會絆到。 */
+const B_TRIP_P = 0.02;                // 每走一秒絆倒的機率
+const B_TRIP_T = [0.8, 1.4];          // 躺幾秒才爬起來
 /* 丟香蕉的那一隻砸村子時要站遠一點（v1.166）：那一根的爆炸半徑是 NANA_R 9，
    站在 DOOM_NEAR 3.2 就丟的話牠會被自己的香蕉炸飛（實測第一次就飛了）。
    天災那一版沒這個問題——牠丟的是地標中心一帶，落點本來就在十幾格外。
@@ -6131,6 +6137,7 @@ function spawnBeast(kind, fun, bad) {
     /* 被破壞工具打到之後要用的（v1.146）。spin 是躺平角、roll 是打滾角，
        其餘欄位跟小人同名同義（見檔案最後那一節的 hurtBeast）。 */
     spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
+    face: 0,                                      // 這一跤往前趴（v1.178 自己絆的，見 lieAng）
     lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0
   };
   if (!beasts) beasts = [];
@@ -6226,6 +6233,14 @@ function stepBeast(m, dt) {
   if (m.kind === 'gryphon') return stepGryph(m, dt);      // 飛進來降落再起飛，自己一套（v1.176）
   /* 被破壞工具打到了（v1.146）：飛、躺、燒那幾段自己一套，這一幀底下整段跳過（同小人）。 */
   if (hurtBeast(m, dt)) return false;
+  /* 走著走著絆一跤（v1.178）。**只有兩隻猴子會**：使用者那句點名的就是牠們兩隻，
+     牛羊、飛龍、獅鷲都不在裡面。倒地整套借 fellBeast（被戳倒走的是同一條路），
+     所以躺完會自己爬起來、爬起來接著走原本那一段（reaim 對 come／fun／near 不動作）。 */
+  if ((m.kind === 'ape' || m.kind === 'snow') && m.gait > 0.6 &&
+      Math.random() < B_TRIP_P * dt && fellBeast(m, rr(B_TRIP_T[0], B_TRIP_T[1]), 1)) {
+    sndFall();
+    return false;
+  }
   const spd = m.herd ? HERD_WALK : DOOM_WALK;             // 牛羊散步，比猴子再慢一截
   /* 開工／整地就放棄走人：天災是衝著「蓋好的那一座」來的，半成品不在它的守備範圍
      （也免得牠站在推土機的路線上）。
@@ -7317,8 +7332,15 @@ const B_PANIC_OPEN = 0.5;            // 圈子撐到滿要幾秒（同小人）
 const B_SIDE_ROCK = 0.14;
 /* 往哪一邊倒，每次隨機。兩條腿的沒有這回事（牠們只往後仰）。 */
 function lieSide(m) { if (m.side) m.sdir = Math.random() < 0.5 ? 1 : -1; }
-/* 這一隻躺平時的角度：側躺的是 roll、仰躺的是 spin。 */
-function lieAng(m) { return m.side ? m.sdir * Math.PI * 0.5 : -Math.PI * 0.5; }
+/* 這一隻躺平時的角度：側躺的是 roll、仰躺的是 spin。
+   m.face＝這一跤是**往前趴**的（v1.178 自己絆的那種，見 fellBeast）：兩條腿的才有這回事，
+   四條腿的（牛羊）本來就是往側邊倒。抬的高度**照舊用 BEAST_LIFT**（那是背面那一側的
+   最外緣，仰躺時貼地的就是它），沒有為了趴著另開一份：兩隻猴子的背緣與前緣差得很少
+   （黑獼猴 0.365／0.375、白猴子 0.46／0.53），趴著埋進草皮的就是鼻尖那 0.01～0.07，
+   而那正是臉朝下該有的樣子。 */
+function lieAng(m) {
+  return m.side ? m.sdir * Math.PI * 0.5 : (m.face ? Math.PI * 0.5 : -Math.PI * 0.5);
+}
 /* 側躺著晃的時候 m.lie 要給多少（倍率）。躺平在 90° 時剛好是 1，引擎那邊抬的
    `SIDE·|sin(roll)|` 正好等於半個身寬；偏開 δ 之後**本來朝上那一側會轉到地面下**，
    要多抬 (身高 ÷ 身寬)·tan δ 那麼多。取「最寬 × 最高」那個角來算，所以是寧可
@@ -7381,12 +7403,13 @@ function igniteBeast(m, roll) {
   reaim(m);
   return true;
 }
-/* 被震倒／被戳倒／被水柱打到。t 是躺幾秒。 */
-function fellBeast(m, t) {
+/* 被震倒／被戳倒／被水柱打到。t 是躺幾秒，face＝往前趴（v1.178，自己絆的那一跤）。 */
+function fellBeast(m, t, face) {
   if (m.kind === 'dragon') return crashDragon(m);
   if (m.sky) return grDown(m);                       // 在天上的獅鷲：打下來（v1.176）
   if (m.air || m.burn > 0 || m.fall > 0) return false;
   m.fall = t; m.lie = 1; m.gait = 0; m.pause = 0;
+  m.face = face ? 1 : 0;                             // 被工具打倒的照舊往後仰
   if (!m.side) m.roll = 0;                           // 側躺的那個角度就是 roll，別歸零
   lieSide(m);
   grLie(m);                                          // 有翅膀的那一種：翅膀直接就位
@@ -7410,7 +7433,7 @@ function wetBeast(m) {
   if (m.burn > 0) {
     m.burn = 0; m.brl = 0; m.spin = 0; m.rph = 0; m.gait = 0;
     if (!m.side) m.roll = 0;             // 側躺的那個角度就是 roll，歸零的話牠會先站起來再倒下去
-    m.fall = rr(0.5, 1.1); m.lie = 1;
+    m.fall = rr(0.5, 1.1); m.lie = 1; m.face = 0;
   }
   return true;
 }
@@ -7459,7 +7482,7 @@ function flyBeast(m, dt) {
   const lit = m.lit || nearFire(m);                  // 落地這一刻才判定燒不燒
   m.lit = 0;
   if (!lit || !igniteBeast(m, 1)) {
-    m.spin = 0; m.fall = rr(B_FALL[0], B_FALL[1]); m.lie = 1;
+    m.spin = 0; m.fall = rr(B_FALL[0], B_FALL[1]); m.lie = 1; m.face = 0;
     lieSide(m);
   }
   sndFall();

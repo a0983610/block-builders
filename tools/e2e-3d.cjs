@@ -3866,8 +3866,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        把他丟在四十單位外遊蕩，用寫死的秒數等會時靈時不靈。 */
     const ring = siteR + 3.4;
     for (let i = 0; i < 400 && Math.abs(Math.hypot(e.x, e.z) - ring) > 0.1; i++) step(0.05);
+    let down = 0;
     for (let i = 0; i < 2400 && phase === 'build'; i++) {
       step(0.05);
+      /* 他自己絆一跤趴在地上的那一秒不算（v1.178）：那幾幀他手上當然沒有圖
+         （姿勢旗標每幀重算，updEng 根本沒跑），跟「他有沒有一直在看圖」是兩回事。
+         照樣數的話，一跤就吃掉 2% 的幀數，而這一條守的是 100%。 */
+      if (e.fall > 0 || e.trip) { down++; continue; }
       n++;
       if (e.carry) carried++;
       if (e.load.length) claimed++;
@@ -3878,7 +3883,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (d > far) far = d;
       if (i % 200 === 0) angs.push(Math.round(Math.atan2(e.z, e.x) * 180 / Math.PI));
     }
-    return { n, carried, claimed, planPct: +(plan / n).toFixed(2), pointPct: +(point / n).toFixed(2),
+    return { n, down, carried, claimed, planPct: +(plan / n).toFixed(2),
+             pointPct: +(point / n).toFixed(2),
              near: +near.toFixed(1), far: +far.toFixed(1), siteR: +siteR.toFixed(1),
              moves: new Set(angs).size, samples: angs.length,
              others: workers.slice(1).filter(w => w.eng).length,
@@ -3889,7 +3895,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 秒內他搬了 ' + engr.carried + ' 幀、認領了 ' + engr.claimed + ' 格（其他人共搬了 ' +
      engr.carriedAll + ' 趟）');
   ok('施工中一直拿著設計圖在看', engr.planPct === 1,
-     '拿著圖的幀數占 ' + (engr.planPct * 100).toFixed(0) + '%');
+     '拿著圖的幀數占 ' + (engr.planPct * 100).toFixed(0) + '%（自己絆倒趴著的 ' +
+     engr.down + ' 幀不算，見上面）');
   /* 「站在建築外面」是這一條真正守得住的東西：實測 near／far 是 14.0～14.3 對 siteR 10.9，
      他貼著 siteR + ENG_KEEP 那一圈站，一步都不進工地。
      **「他會換位置」那一半 v1.128 拆出去了**（見下一條）：本來是「取樣 8～12 次、
@@ -4956,6 +4963,232 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      emoWhen.upK > 0.9 && emoWhen.downK < 0.1 && emoWhen.downT > 0.8 && emoWhen.gone,
      '站著 emoK ' + emoWhen.upK + ' → 倒下 0.3 秒後 ' + emoWhen.downK +
      '（剩 ' + emoWhen.downT + ' 秒沒被凍住）；倒數走完收掉：' + (emoWhen.gone ? '是' : '否'));
+
+  /* ══════════ 絆倒、跳舞、打架 ══════════ */
+  await head('絆倒、跳舞、打架');
+  /* v1.178（使用者：「白猴子 黑獼猴 小人走路時有時會跌倒(機率不用太高 不然會影響工作
+     效率)」「小人閒置時有時會跳舞 翻跟斗等動作」「小人遇到時交談如果結果是生氣有時會
+     打架」）。三件事都是**接在現成的東西後面**，所以這一段量的是「接得對不對」：
+     絆倒借倒地那一套（w.fall／w.tilt，只是改成往前趴）、表演借發呆那一段（strollPause
+     算出來的 pause）、打架借聊天收尾那顆骰子（談不攏之後再抽一次）。 */
+
+  /* ── 絆倒：姿勢與收尾（不靠機率，把骰子押到底直接觸發）── */
+  const tripNow = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(4); startBuild(true); completeNow();
+    for (let i = 0; i < 200; i++) step(0.05);          // 慶祝跑完
+    const w = workers[0];
+    w.carry = false; w.load.length = 0; w.gait = 0.85; w.chat = 0; w.fig = 0;
+    w.emo = ''; w.emoT = 0; w.wet = 0; w.lazy = 0;
+    const fired = tripWalk(w, 1000);                   // dt 給很大＝這一發一定中
+    let peak = 0;
+    for (let i = 0; i < 12; i++) { step(0.05); peak = Math.max(peak, w.tilt); }
+    for (let i = 0; i < 60 && (w.fall > 0 || w.trip); i++) step(0.05);   // 趴完、爬起來
+    const emo = w.emo, up = w.fall <= 0 && !w.trip;    // 表情要在爬起來那一刻讀（1.8 秒就退掉）
+    w.pause = 99;                                      // 站著別動：不然他可能接著來一段翻跟斗
+    for (let i = 0; i < 14; i++) step(0.05);           // 姿勢收回去
+    /* 手上有貨的不絆：倒地那條分支是 return 出去的，carryPose 這一幀不會跑，
+       頭上那疊積木會停在半空看著他躺下去（見 tripWalk 的註解）。 */
+    const b = workers[1];
+    b.carry = true; b.gait = 0.85; b.fall = 0; b.trip = 0;
+    const carried = tripWalk(b, 1000);
+    /* 偷懶的人自己絆一跤不算「被工具打倒」，不該因此收心上工（見 quitLazy）。 */
+    const c = workers[2];
+    c.lazy = 1; c.carry = false; c.load.length = 0; c.gait = 0.85; c.fall = 0; c.trip = 0;
+    tripWalk(c, 1000);
+    step(0.05);
+    const lazyKept = c.lazy;
+    return { fired, peak: +peak.toFixed(2), emo, up, carried, lazyKept,
+             rest: +w.tilt.toFixed(2) };
+  });
+  ok('絆一跤＝往前趴（不是往後仰），躺一下自己爬起來、爬起來生氣',
+     tripNow.fired && tripNow.peak > 1.4 && tripNow.up && tripNow.emo === 'anger' &&
+     Math.abs(tripNow.rest) < 0.2,
+     '倒到 ' + tripNow.peak + ' 弧度（往前趴是 +90°＝1.57）、爬起來 ' +
+     (tripNow.up ? '是' : '否') + '、表情 ' + (tripNow.emo || '沒有') +
+     '、收回站姿 ' + tripNow.rest);
+  ok('手上有貨的人不會絆（不然頭上那疊會停在半空）', tripNow.carried === false,
+     'tripWalk 回傳 ' + tripNow.carried);
+  ok('偷懶的人自己絆一跤不會因此收心上工', tripNow.lazyKept === 1,
+     '絆完 lazy＝' + tripNow.lazyKept + '（被工具打倒才會歸零）');
+
+  /* ── 絆倒：機率不高、不影響工期（施工中量一輪）── */
+  const tripRate = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    let walkF = 0, trips = 0, downF = 0, up = 0, carryTrip = 0, busyShow = 0;
+    let lateF = 0, faceF = 0;
+    const was = workers.map(() => 0);
+    for (let i = 0; i < 8000; i++) {                   // 400 秒
+      step(0.05);
+      for (let k = 0; k < workers.length; k++) {
+        const w = workers[k];
+        if (w.gait > 0.6 && !w.carry && !w.load.length && !w.air && w.burn <= 0) walkF++;
+        if (w.show && (w.carry || w.st === 'pick' || w.st === 'build')) busyShow++;
+        if (w.trip) {
+          downF++;
+          if (!was[k]) { trips++; if (w.carry || w.load.length) carryTrip++; }
+          // 躺到後半段時角度該已經到位（往前趴＝ +90°）
+          if (w.fall > 0 && w.fall < 0.45) { lateF++; if (w.tilt > 1.3) faceF++; }
+        } else if (was[k]) up++;
+        was[k] = w.trip;
+      }
+    }
+    return { walkSecs: +(walkF * 0.05).toFixed(1), trips, up, carryTrip, busyShow,
+             lateF, faceF, lost: +(downF * 0.05).toFixed(1),
+             manSecs: 8000 * 0.05 * workers.length,
+             per: trips ? Math.round(walkF * 0.05 / trips) : -1 };
+  });
+  /* 機率**帶區間**：這條是隨機的，只押「有發生、而且沒有多到擾民」。
+     設定是每走一秒 TRIP_P＝0.004（＝每走 250 秒一次），量到的落在 80～1200 都算對。 */
+  ok('走路的人偶爾會絆一跤，但不常',
+     tripRate.trips >= 1 && tripRate.per >= 80 && tripRate.per <= 1200,
+     '400 秒 × 20 人：空手走了 ' + tripRate.walkSecs + ' 人-秒、絆了 ' + tripRate.trips +
+     ' 次＝每走 ' + tripRate.per + ' 秒一次（設定 250）');
+  ok('絆倒的人都自己爬得起來，不會躺在那裡', tripRate.up >= tripRate.trips - 1,
+     '絆 ' + tripRate.trips + ' 次、爬起來 ' + tripRate.up + ' 次');
+  ok('這一輪也沒有人搬著貨絆倒，趴的角度都到位',
+     tripRate.carryTrip === 0 && tripRate.lateF > 0 && tripRate.faceF === tripRate.lateF,
+     '搬著貨絆倒 ' + tripRate.carryTrip + ' 次；躺到後半段的 ' + tripRate.lateF +
+     ' 幀裡有 ' + tripRate.faceF + ' 幀是往前趴');
+  /* 使用者：「機率不用太高 不然會影響工作效率」——躺掉的時間占總人時要是零頭。 */
+  ok('絆倒吃掉的工時是零頭（不影響工期）',
+     tripRate.lost / tripRate.manSecs < 0.005,
+     '躺掉 ' + tripRate.lost + ' 人-秒 ÷ ' + tripRate.manSecs + ' 人-秒＝' +
+     (tripRate.lost / tripRate.manSecs * 100).toFixed(3) + '%');
+  ok('搬料中的人不會跳舞（表演只發生在閒晃那條路上）', tripRate.busyShow === 0,
+     '搬運中在表演 ' + tripRate.busyShow + ' 幀');
+
+  /* ── 表演與打架：蓋完之後量一輪 ── */
+  const fun = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(20); startBuild(true); completeNow();
+    for (let i = 0; i < 200; i++) step(0.05);          // 慶祝跑完
+    let dance = 0, flip = 0, moved = 0, under = 0, maxY = 0, maxT = 0, endBad = 0;
+    let fights = 0, fightF = 0, both = 0, faceBad = 0, punches = 0, angry = 0, anger = 0;
+    let minD = 99;
+    const dDur = [], fDur = [];
+    const seen = workers.map(() => ''), t0 = workers.map(() => -1);
+    const px = workers.map(w => w.x), pz = workers.map(w => w.z);
+    const wasFig = workers.map(() => 0), wasPk = workers.map(() => -1);
+    const N = 8000;                                    // 400 秒
+    for (let i = 0; i < N + 400; i++) {
+      /* 尾巴多跑幾秒把還在打的那一場打完：不然最後那一場的拳數與收尾的生氣都會少算，
+         而那不是程式的事，是窗口切在中間。 */
+      if (i >= N && !workers.some(w => w.fig > 0)) break;
+      step(0.05);
+      for (let k = 0; k < workers.length; k++) {
+        const w = workers[k];
+        /* 表演。開場就已經在演的那幾段記成 −1：從中途開始數的長度不算數（同閒聊那一段）。 */
+        if (w.show && !seen[k]) {
+          if (w.show === 'dance') dance++; else flip++;
+          t0[k] = i > 0 ? i : -1;
+        } else if (!w.show && seen[k]) {
+          if (t0[k] > 0) (seen[k] === 'dance' ? dDur : fDur).push(+((i - t0[k]) * 0.05).toFixed(2));
+          // 翻完那一幀角度就該歸零，不然落地後會再慢慢倒轉一圈回來
+          if (seen[k] === 'flip' && Math.abs(w.tilt) > 0.01) endBad++;
+        }
+        if (w.show) {
+          if (Math.hypot(w.x - px[k], w.z - pz[k]) > 1e-6) moved++;   // 表演不移動
+          if (w.y < -1e-6) under++;
+          if (w.y > maxY) maxY = w.y;
+          if (Math.abs(w.tilt) > maxT) maxT = Math.abs(w.tilt);
+        }
+        seen[k] = w.show;
+        /* 打架。開打那一刻兩個人一定是剛冒完生氣（談不攏才打得起來）。 */
+        if (w.fig > 0 && !wasFig[k]) { fights++; if (w.emo === 'anger') angry++; }
+        if (w.fig > 0) {
+          fightF++;
+          const p = workers[w.fw];
+          if (p && p.fig > 0 && p.fw === k) {
+            both++;
+            const d = Math.hypot(p.x - w.x, p.z - w.z);
+            if (FIGHT_T - w.fig > 0.7 && d < minD) minD = d;   // 湊近的那半秒不算
+            const want = Math.atan2(p.x - w.x, p.z - w.z);
+            if (Math.abs(((w.a - want + Math.PI * 3) % (Math.PI * 2)) - Math.PI) > 0.2) faceBad++;
+          }
+          if (w.pk !== wasPk[k] && w.pk >= 0) punches++;        // 一拳只算一次（見 stepFight）
+        }
+        if (wasFig[k] > 0 && w.fig <= 0 && w.emo === 'anger') anger++;
+        wasFig[k] = w.fig; wasPk[k] = w.pk;
+        px[k] = w.x; pz[k] = w.z;
+      }
+    }
+    dDur.sort((a, b) => a - b); fDur.sort((a, b) => a - b);
+    return { dance, flip, moved, under, maxY: +maxY.toFixed(2), maxT: +maxT.toFixed(2), endBad,
+             dDur: dDur.length ? [dDur[0], dDur[dDur.length - 1]] : [],
+             fDur: fDur.length ? [fDur[0], fDur[fDur.length - 1]] : [],
+             fights: fights / 2, angry: angry / 2, anger: anger / 2, punches,
+             fightF, both, faceBad, minD: +minD.toFixed(2) };
+  });
+  ok('閒著的人偶爾會來一段：跳舞或翻跟斗',
+     fun.dance >= 3 && fun.flip >= 3,
+     '400 秒 × 20 人：跳舞 ' + fun.dance + ' 段、翻跟斗 ' + fun.flip + ' 段');
+  ok('一段跳舞 3.2～5.5 秒、一段翻跟斗 0.85 或 1.7 秒（一到兩圈）',
+     fun.dDur[0] >= 3.15 && fun.dDur[1] <= 5.55 && fun.fDur[0] >= 0.8 && fun.fDur[1] <= 1.75,
+     '跳舞 ' + fun.dDur[0] + '–' + fun.dDur[1] + ' 秒、翻跟斗 ' + fun.fDur[0] + '–' +
+     fun.fDur[1] + ' 秒');
+  ok('表演的時候人站在原地，不會邊演邊滑走', fun.moved === 0,
+     '表演中移動 ' + fun.moved + ' 幀');
+  /* 翻跟斗繞的是身體中段（engine 的 w.flip 走 AIR_PIVOT 那一套）：繞腳底轉的話
+     轉過水平時整個人會插進草皮裡。 */
+  ok('翻跟斗是原地起跳翻整圈，不會陷到地面下',
+     fun.under === 0 && fun.maxY > 1.2 && fun.maxY <= 1.26 && fun.maxT > 5.5 &&
+     fun.maxT < 6.3,
+     '最高離地 ' + fun.maxY + ' 格（設定 1.25）、最大翻轉 ' + fun.maxT +
+     ' 弧度（一圈 6.28，每圈歸零）、陷到地面下 ' + fun.under + ' 幀');
+  ok('翻完角度歸零，落地後不會又慢慢倒轉一圈回來', fun.endBad === 0,
+     '收工那一幀角度沒歸零的 ' + fun.endBad + ' 段');
+  ok('聊完天談不攏，有時候會打起來（聊得來的不會）',
+     fun.fights >= 2 && fun.angry === fun.fights,
+     '400 秒裡打了 ' + fun.fights + ' 場，開打那一刻兩個人都剛冒生氣的 ' + fun.angry + ' 場');
+  ok('打架是兩個人面對面、輪流出拳，一場六拳',
+     fun.both === fun.fightF && fun.faceBad === 0 && fun.punches === fun.fights * 6,
+     '互指 ' + fun.both + '/' + fun.fightF + ' 幀、沒面對面 ' + fun.faceBad +
+     ' 幀、' + fun.punches + ' 拳 ÷ ' + fun.fights + ' 場');
+  ok('打架的兩個人站得開（收在 1.35 格），不會疊在一起', fun.minD >= 1.3,
+     '最近 ' + fun.minD + ' 格（設定 FIGHT_D 1.35）');
+  ok('打完兩個人都冒生氣', fun.anger === fun.fights,
+     '打完冒生氣 ' + fun.anger + ' 場 ÷ ' + fun.fights + ' 場');
+
+  /* ── 猴子也會絆一跤，牛羊不會 ── */
+  const apeTrip = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 400; setWorkerCount(8); startBuild(true); completeNow();
+    for (let i = 0; i < 200; i++) step(0.05);
+    beasts = null;
+    const list = [spawnBeast('ape', 1), spawnBeast('snow', 1), spawnCattle()];
+    for (const m of list) { m.stay = 9999; }           // 別讓吉祥物逛完就走
+    let walkF = 0, trips = 0, cow = 0, back = 0, up = 0, late = 0, face = 0;
+    const was = list.map(() => 0);
+    for (let i = 0; i < 8000; i++) {                   // 400 秒
+      step(0.05);
+      for (let k = 0; k < list.length; k++) {
+        const m = list[k];
+        stepBeast(m, 0.05);                            // 天災／吉祥物／牛羊的鐘都被 installClean 拔掉了
+        if (m.gait > 0.6) walkF++;
+        if (m.fall > 0) {
+          if (!was[k]) { if (m.herd) cow++; else trips++; }
+          if (m.fall < 0.5 && !m.herd) { late++; if (m.spin > 1.3) face++; }
+          if (m.spin < -0.01 && !m.herd) back++;       // 猴子這一跤不該往後仰
+        } else if (was[k]) up++;
+        was[k] = m.fall;
+      }
+    }
+    return { walkSecs: +(walkF * 0.05).toFixed(1), trips, cow, back, up, late, face,
+             per: trips ? Math.round(walkF * 0.05 / trips) : -1 };
+  });
+  ok('黑獼猴與白猴子走路也會絆一跤（比小人常，場上只有一兩隻）',
+     apeTrip.trips >= 1 && apeTrip.per >= 15 && apeTrip.per <= 300,
+     '三隻走了 ' + apeTrip.walkSecs + ' 隻-秒，猴子絆了 ' + apeTrip.trips +
+     ' 次＝每走 ' + apeTrip.per + ' 秒一次（設定 50）');
+  ok('猴子那一跤也是往前趴，趴完自己爬起來',
+     apeTrip.back === 0 && apeTrip.late > 0 && apeTrip.face === apeTrip.late &&
+     apeTrip.up >= apeTrip.trips - 1,
+     '往後仰 ' + apeTrip.back + ' 幀、趴到後半段 ' + apeTrip.late + ' 幀裡 ' +
+     apeTrip.face + ' 幀角度到位、爬起來 ' + apeTrip.up + ' 次');
+  ok('牛羊不會絆（使用者點名的只有兩隻猴子）', apeTrip.cow === 0,
+     '牛羊倒地 ' + apeTrip.cow + ' 次');
 
   /* ══════════ 閒晃事件：小人的家 ══════════ */
   await head('閒晃事件：小人的家');
@@ -6850,6 +7083,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       w.chk = 99;                                    // 被重設成 0 ＝ 重找了路線
       q.pause = 9; q.gait = 0;                       // 對照組：站著發呆（腿沒在擺）
       step(0.05);
+      /* 這個夾具要的是「腿一直在擺、位置一直沒變」。他自己絆一跤（v1.178）會讓腿停下來
+         一秒多，卡住的鐘跟著停——量到的就變成「1.5 秒 ＋ 那一跤」（實測 2.9 秒）。
+         那不是卡住偵測壞了，是夾具被別的行為打斷，所以這裡把他扶起來。 */
+      if (w.fall > 0 || w.trip) { w.fall = 0; w.trip = 0; w.tilt = 0; w.gait = 0.85; }
       w.x = 20; w.z = 0;                             // 釘住：走路狀態卻位置一樣
       q.x = 26; q.z = 0;
       if (re < 0 && w.chk !== 99) re = +((i + 1) * 0.05).toFixed(2);
@@ -9875,26 +10112,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      （半徑 1.3 時是 1～7、平均 3）。格數比面積多得多是因為它是球不是圓——
      半徑乘 √2，體積就是 2.83 倍，再加上格子落點的零頭。
      垮塌要先擋掉：上面連不到地面而跟著垮的那些不是這一道雷打掉的。 */
+  /* v1.178 把這一條的**量法**修好（門檻沒動）。原本它是接著上一條的世界打的——那是被
+     兩朵雷劈過的羅馬競技場——而且 40 道全劈在同一點 (0, 0)，那裡是競技場中間的空地。
+     於是量到的「平均」其實是「同一個洞越挖越空」的衰減曲線，跟註解寫的 14.2 差很遠
+     （實測舊版平均 5～6 格，門檻是 > 6，等於一直踩在邊界上：同一顆種子 11780
+     v1.177 量到 6.4、v1.178 量到 5.4 就紅了）。
+     改成：**重新蓋一座完好的金字塔**，而且每一道都劈在沒劈過的那一根柱子上。 */
+  await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 12 });
   const stormBite = await page.evaluate(() => {
+    completeNow();
     const real = markSupportDirty;
     markSupportDirty = () => {};
-    const per = [];
+    const per = [], done = [];
     for (let k = 0; k < 40; k++) {
+      /* 挑一根還站著、而且離劈過的點都超過 3.2 格的柱子（判定半徑 1.84 的兩倍不到，
+         保證這一道打的是完好的表面，不是上一道挖出來的洞）。 */
+      const cand = blocks.filter(b => b.st === 3 &&
+        done.every(p => Math.hypot(b.x - p.x, b.z - p.z) > 3.2));
+      if (!cand.length) break;
+      const b0 = cand[Math.floor(Math.random() * cand.length)];
+      done.push({ x: b0.x, z: b0.z });
       const before = blocks.filter(b => b.st === 3).length;
-      strike({ x: 0, z: 0, y: 40 });          // y 是雲底高度（v1.118 起跟著建築走）
+      strike({ x: b0.x, z: b0.z, y: 40 });    // y 是雲底高度（v1.118 起跟著建築走）
       per.push(before - blocks.filter(b => b.st === 3).length);
       bolts.length = 0;
     }
     markSupportDirty = real;
     per.sort((a, b) => a - b);
-    const r = { min: per[0], max: per[per.length - 1],
+    const r = { n: per.length, min: per[0], max: per[per.length - 1],
                 avg: +(per.reduce((a, b) => a + b, 0) / per.length).toFixed(1) };
     cleanTools();
     return r;
   });
   ok('一道雷咬掉的是「面積兩倍」那一片，不是整面牆',
-     stormBite.max <= 27 && stormBite.avg > 6 && stormBite.avg < 22,
-     '劈 40 道：一道 ' + stormBite.min + '～' + stormBite.max +
+     stormBite.n >= 30 && stormBite.max <= 27 && stormBite.avg > 6 && stormBite.avg < 22,
+     '劈 ' + stormBite.n + ' 道：一道 ' + stormBite.min + '～' + stormBite.max +
      ' 格、平均 ' + stormBite.avg + ' 格（幾何上限 27 格；半徑 1.3 時是 1～7、平均 3）');
 
   /* 劈在空地上：地上留焦黑（不是坑洞——雷是燒不是砸），旁邊的建築一塊都不能掉。 */
@@ -15674,10 +15926,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   k: +Math.max(...workers.map(w => w.burnK)).toFixed(2),
                   busy: workers.filter(w => w.load.length || w.carry).length,
                   hotNear: hot.filter(h => workers.some(w => Math.hypot(h.x - w.x, h.z - w.z) < 1.2)).length };
-    for (let i = 0; i < 50; i++) step(0.05);            // 湊滿 3 秒＋
+    /* 湊滿 3 秒＋。這一段裡「做過別的事」的人要記下來（v1.178）：燒完之後這幾秒是自由
+       活動，有人剛好在翻跟斗（離地 1.25、翻一整圈）、絆一跤（趴著 +90°）或打架
+       （出拳前傾 0.22）都是正常的，跟「燒完站不站得起來」無關；而且爬起來、收姿勢
+       還要半秒才收乾淨，所以是**整段記名**，不是只看最後那一幀。
+       燒完沒站起來的人身上會是 burn／roll，不會是這三個。 */
+    const busy = workers.map(() => false);
+    for (let i = 0; i < 50; i++) {
+      step(0.05);
+      workers.forEach((w, k) => { if (w.show || w.trip || w.fig > 0) busy[k] = true; });
+    }
+    const mx = a => (a.length ? Math.max(...a) : 0);
+    const free = workers.filter((w, k) => !busy[k]);
     const done = { burn: workers.filter(w => w.burn > 0).length,
-                   y: +Math.max(...workers.map(w => w.y)).toFixed(2),
-                   tilt: +Math.max(...workers.map(w => Math.abs(w.tilt))).toFixed(2),
+                   free: free.length,
+                   y: +mx(free.map(w => w.y)).toFixed(2),
+                   tilt: +mx(free.map(w => Math.abs(w.tilt))).toFixed(2),
                    k: +Math.max(...workers.map(w => w.burnK)).toFixed(2) };
     for (let i = 0; i < 60; i++) step(0.05);
     done.k2 = +Math.max(...workers.map(w => w.burnK)).toFixed(3);
@@ -15701,7 +15965,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      blown.done.burn === 0 && blown.done.y === 0 && blown.done.tilt === 0 &&
      blown.done.k2 < 0.02 && blown.done.walking > 0,
      '3 秒後躺著的 ' + blown.done.burn + ' 人、傾角 ' + blown.done.tilt +
-     '，焦黑 ' + blown.done.k + ' → ' + blown.done.k2 + '，走動中 ' + blown.done.walking + ' 人');
+     '（' + blown.done.free + '/20 人沒在表演也沒在絆），焦黑 ' + blown.done.k + ' → ' +
+     blown.done.k2 + '，走動中 ' + blown.done.walking + ' 人');
   ok('炸得再遠也不會被轟出草地', blown.land.out === 0,
      '越界 ' + blown.land.out + ' 人（邊界＝工地半徑 + 22）');
 
@@ -18541,18 +18806,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const set0 = blocks.filter(b => b.st === SET).length;
     const m = spawnBeast('ape', 1);
     const stay0 = +m.stay.toFixed(2);                 // 這一趟抽到要逛幾秒
-    let n = 0, come = 0, roam = 0, go = 0, inSite = 0, moved = 0;
+    let n = 0, come = 0, roam = 0, go = 0, inSite = 0, moved = 0, down = 0;
+    let lastStay = m.stay;                           // 見下面：只數鐘真的有走的那幾幀
     let burn = 0, nana = 0, fb = 0, minSet = set0, rMin = 1e9, rMax = 0;
     let px = m.x, pz = m.z;
     while (n < 5000 && beasts && beasts.indexOf(m) >= 0) {
       step(0.05); n++;
       if (m.st === 'come') come++;
       else if (m.st === 'fun') {
-        roam++;
-        moved += Math.hypot(m.x - px, m.z - pz);
-        const r = Math.hypot(m.x, m.z);
-        rMin = Math.min(rMin, r); rMax = Math.max(rMax, r);
+        /* 只數「stay 的鐘真的有走」的那幾幀（v1.178）：絆一跤趴著的時候整段狀態機被
+           hurtBeast 跳過，鐘沒在走（連爬起來那一幀也還沒走），照樣數的話「逛的長度＝
+           這一趟抽到的 stay」就會多出趴著那幾秒（實測一跤多 1.1 秒）。
+           直接看鐘有沒有動最準，不必去猜哪幾種狀態會早退。 */
+        if (!(m.stay < lastStay - 1e-9)) down++;
+        else {
+          roam++;
+          moved += Math.hypot(m.x - px, m.z - pz);
+          const r = Math.hypot(m.x, m.z);
+          rMin = Math.min(rMin, r); rMax = Math.max(rMax, r);
+        }
       } else if (m.st === 'go') go++;
+      lastStay = m.stay;
       px = m.x; pz = m.z;
       if (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)) inSite++;
       burn = Math.max(burn, blocks.filter(b => b.burn > 0).length);
@@ -18563,6 +18837,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { gone: !beasts || beasts.indexOf(m) < 0, secs: +(n * 0.05).toFixed(1), stay0,
              come: +(come * 0.05).toFixed(1), roam: +(roam * 0.05).toFixed(1),
              go: +(go * 0.05).toFixed(1), moved: +moved.toFixed(1), inSite,
+             down: +(down * 0.05).toFixed(1),
              rMin: +rMin.toFixed(1), rMax: +rMax.toFixed(1),
              siteR: +siteR.toFixed(1), arena: +arenaR.toFixed(1),
              burn, nana, fb, set0, minSet, ph: phase };
@@ -18574,7 +18849,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mwalk.gone && mwalk.come > 5 && mwalk.go > 5 &&
      mwalk.stay0 >= 25 && mwalk.stay0 <= 45 && Math.abs(mwalk.roam - mwalk.stay0) < 0.2,
      '走進來 ' + mwalk.come + ' 秒、逛了 ' + mwalk.roam + ' 秒（抽到 ' + mwalk.stay0 +
-     '）、走回去 ' + mwalk.go + ' 秒（全程 ' + mwalk.secs + ' 秒）');
+     '）、走回去 ' + mwalk.go + ' 秒（全程 ' + mwalk.secs + ' 秒，其中絆倒趴著 ' +
+     mwalk.down + ' 秒不算逛）');
   ok('逛的時候真的在走，而且繞著建築外圈（沒有站著發呆一整段）',
      mwalk.moved > 20 && mwalk.rMin >= mwalk.siteR && mwalk.rMax < mwalk.arena,
      '走了 ' + mwalk.moved + ' 格，半徑 ' + mwalk.rMin + '～' + mwalk.rMax +
@@ -18962,9 +19238,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const orig = fballHit;
     const hits = [];
     fballHit = f => {
+      /* 落點離村子多遠。**量到「最近那一間房子」的外框**，不是「最近那一塊還站著的
+         積木」（v1.178 改）：瞄的那一間可能在火球飛行的那一兩秒裡被上一顆的火燒光，
+         那時候「最近的積木」會跳到十幾格外的下一間去——量到的就變成「上一顆燒得多快」，
+         不是這一條要驗的「瞄的是村子還是地標」。房子的位置（homes.list 的 x／z／r）
+         不會因為積木沒了就消失。dblk 只印不守，留著看發生了什麼。 */
+      let dh = -1;
+      if (homes && homes.list.length) {
+        dh = 1e9;
+        for (const h of homes.list)
+          dh = Math.min(dh, Math.max(0, Math.hypot(h.x - f.x, h.z - f.z) - h.r));
+        dh = +dh.toFixed(1);
+      }
       const b = nearHome(f.x, f.z);
-      hits.push({ r: +Math.hypot(f.x, f.z).toFixed(1),
-                  dh: b ? +Math.hypot(b.x - f.x, b.z - f.z).toFixed(1) : -1 });
+      hits.push({ r: +Math.hypot(f.x, f.z).toFixed(1), dh,
+                  dblk: b ? +Math.hypot(b.x - f.x, b.z - f.z).toFixed(1) : -1 });
       return orig(f);
     };
     const m = spawnDragon(1, 1);
@@ -18988,7 +19276,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mdrg.hits.every(h => h.dh >= 0 && h.dh < 10 && h.r > mdrg.siteR) &&
      mdrg.low < mdrg.home0,
      '配額 ' + mdrg.quota + ' 顆，落點 ' +
-     mdrg.hits.map(h => '半徑 ' + h.r + '／離最近那塊村子的積木 ' + h.dh).join('，') +
+     mdrg.hits.map(h => '半徑 ' + h.r + '／離最近那間房子的外框 ' + h.dh +
+                        '（離最近那塊還站著的積木 ' + h.dblk + '）').join('，') +
      '（siteR ' + mdrg.siteR + '）；還站著的村子 ' + mdrg.home0 + ' → ' + mdrg.low);
   ok('火球的餘火只燒村子那邊，不撒到旁邊的地標上',
      mdrg.burnSite === 0 && mdrg.site >= mdrg.site0 - 4 && mdrg.ph === 'done',
@@ -19912,6 +20201,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
            落點取在建築外面的空地時一塊都沒打掉，那條路根本走不到動物那一段
            （第一版落點取 radius + 2，量到 hammer 0、bighammer 2，差別只是半徑大小）。 */
         m.x = bp.radius - 0.5; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999;
+        /* 站在那裡別動（v1.178）：這一條要的是「牠在落點上被打到」，不是「牠會走」。
+           讓牠繼續逛的話 ① 十秒內牠會走離落點 ② 走路會自己絆一跤（tripWalk 那條），
+           而絆倒走的就是 fellBeast——這裡數的是「這支工具有沒有經過那幾支」，
+           自己絆的那一下會被算成工具打的（實測 fire 因此多了 1）。 */
+        m.pause = 999;
         /* 落點取「離牠最近的那一塊積木」而不是牠腳下那個座標（v1.165）：
            小槌的半徑縮到 3.6 之後，牠腳邊那個點的球裡可能一塊積木都沒有 →
            afterHit 第一行就 return，這條就變成在測半徑而不是在測「有沒有經過動物」。 */
