@@ -9609,7 +9609,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      storm1.first > storm1.full && storm1.over === 0,
      '第一道雷在第 ' + storm1.first + ' 秒（雲要聚 ' + storm1.full + ' 秒）');
   /* 三朵各自劈自己的（v1.165，使用者：「一次出現三朵烏雲 分別打雷」）：
-     每朵排 5～7 道、三朵加起來說要劈幾道就劈幾道。 */
+     每朵排 STORM_N 道、三朵加起來說要劈幾道就劈幾道（v1.177 起一朵 15～20）。 */
   ok('三朵各自劈自己的，說要劈幾道就劈幾道', storm1.fired === storm1.want &&
      storm1.each.length === storm1.trio &&
      storm1.each.every(n => n >= storm1.nRange[0] && n <= storm1.nRange[1]),
@@ -9845,7 +9845,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '兩朵都在場時視線高最低只到 ' + stormCam.two.mid + '，全散完才回到 ' +
      stormCam.two.ty1);
 
-  /* 道數：使用者指定 15～20（v1.123，v1.118 是 7～15、更早是 5～7）。抽 900 朵，
+  /* 道數：使用者指定 15～20（v1.123，v1.118 是 7～15、更早是 5～7；v1.165 一次三朵時
+     把總量拆給三朵、一朵剩 5～7，v1.177 使用者要求加回來，一朵又是 15～20）。抽 900 朵，
      範圍內每個值都要出現、也不能跑出範圍；順便驗頭尾兩個值沒有比中間少一半
      （用 rr 再四捨五入會有那個毛病）。 */
   const stormN = await page.evaluate(() => {
@@ -18140,8 +18141,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const hd = G.filter(b => b.c === 0xe9e5db).sort((a, b) => b.p[1] - a.p[1])[0];
     const eye = G.find(b => b.c === 0x1d1a16);
     const beak = G.filter(b => b.c === 0xe0a730).sort((a, b) => b.p[2] - a.p[2])[0];
+    const body = G.filter(b => !b.wg);
+    const long = Math.max(...body.map(b => b.p[2] + b.s[2] / 2)) -
+                 Math.min(...body.map(b => b.p[2] - b.s[2] / 2));
     return {
       parts: G.length, max: ENG.BEAST_PARTS, wg: wg.length,
+      /* 四足（v1.177）：四條腿都掛 sw（會跟著步伐擺），一塊 am 都沒有
+         ——v1.176 的前爪是 am（抬起來的手），走起來只有後腿在動。 */
+      legs: G.filter(b => b.sw).length, arms: G.filter(b => b.am).length,
+      long: +(long * GR_SC).toFixed(1),
       span: +span.toFixed(2), world: +(span * GR_SC).toFixed(1),
       tall: +(top * GR_SC).toFixed(1), floor: ENG.BEAST_FLOOR.gryphon,
       /* 眼睛凸出頭外面多少（負的＝埋在頭裡，正面側面都看不到眼睛） */
@@ -18156,11 +18164,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       sideAll: +Math.max(...G.map(b => Math.abs(b.p[0]) + b.s[0] / 2)).toFixed(2)
     };
   });
-  ok('獅鷲：站起來六格多高、翼展十四格上下（小人 2.2 格、飛龍翼展 20.4 格）',
-     gfig.tall > 6 && gfig.tall < 7.5 && gfig.world > 12.5 && gfig.world < 16 &&
-     gfig.floor === 0 && gfig.wg >= 20 && gfig.max >= gfig.parts,
-     '高 ' + gfig.tall + ' 格、翼展 ' + gfig.world + ' 格（模型 ' + gfig.span + '）、' +
-     gfig.parts + ' 塊（翼上 ' + gfig.wg + ' 塊）、原點在腳底 ' + gfig.floor);
+  /* v1.177 使用者：「獅鷲應該是四足走」——所以這一條連「四條腿都會擺」一起守：
+     v1.176 是站姿，前爪掛 am（抬起來的手），只有兩條後腿跟著步伐擺。 */
+  ok('獅鷲是四足獸：高五格多、身長八格、翼展十四格上下，四條腿都跟著步伐擺',
+     gfig.tall > 5 && gfig.tall < 6.5 && gfig.long > 7 && gfig.long < 9 &&
+     gfig.world > 12.5 && gfig.world < 16 &&
+     gfig.floor === 0 && gfig.wg >= 20 && gfig.max >= gfig.parts &&
+     gfig.legs >= 16 && gfig.arms === 0,
+     '高 ' + gfig.tall + '、長 ' + gfig.long + '、翼展 ' + gfig.world +
+     ' 格（模型 ' + gfig.span + '）、' + gfig.parts + ' 塊（翼上 ' + gfig.wg +
+     ' 塊、腿上 ' + gfig.legs + ' 塊、抬手的 ' + gfig.arms +
+     ' 塊）、原點在腳底 ' + gfig.floor);
   /* 這兩條守的是實際截圖抓到的兩個坑（v1.176 第一版）：眼睛整顆埋在頭裡面、
      側面看整顆頭被翅膀吃掉。都是「有沒有凸出去」的問題，不是位置對不對。 */
   ok('眼睛與喙都凸出頭的外面（不然正面側面都看不到眼睛）',
@@ -18215,12 +18229,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
     const seen = {}, st = {};
     let n = 0, landR = 0, inside = 0, fireN = 0, litAt = -1, want = 0, jet = null;
+    /* 落地之後那一段是**用走的**（v1.177）：走了多遠、腿有沒有在擺、落地點與站定點
+       各在哪一圈。px/pz 逐幀累加，不是頭尾直線距離——繞開房子的話那兩個不一樣。 */
+    let walked = 0, gait = 0, touchR = 0, px = m.x, pz = m.z;
     while (beasts && n < 2200) {
       const was = m.st;
       step(0.02); n++;
       if (!beasts) break;
       st[m.st] = (st[m.st] || 0) + 1;
       if (seen[m.st] === undefined) seen[m.st] = +(n * 0.02).toFixed(2);
+      if (m.st === 'walk') {
+        if (!touchR) touchR = Math.hypot(m.x, m.z);
+        walked += Math.hypot(m.x - px, m.z - pz);
+        gait = Math.max(gait, m.gait || 0);
+      }
+      px = m.x; pz = m.z;
       if (was !== 'aim' && m.st === 'aim' && !landR) landR = Math.hypot(m.x, m.z);
       if (m.st === 'fire') {
         if (!fireN) want = +grJetT(m).toFixed(3);      // 火柱飛到目標要幾秒
@@ -18231,14 +18254,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (blockAt(m.x, m.y + 1, m.z)) inside++;        // 有沒有插進建築裡
     }
     return { r0: +r0.toFixed(1), arena: +arenaR.toFixed(1), siteR: +siteR.toFixed(1),
-             stand: GR_STAND,
+             stand: GR_STAND, walkIn: GR_WALK_IN,
+             walked: +walked.toFixed(1), gait: +gait.toFixed(2),
+             touchR: +touchR.toFixed(1), walkSecs: +((st.walk || 0) * 0.02).toFixed(1),
              seen, st, landR: +landR.toFixed(1), inside, jet, want, litAt,
              secs: +(n * 0.02).toFixed(1), gone: !beasts,
              set0, set: blocks.filter(b => b.st === SET).length,
              burn: fires ? fires.length : 0 };
   });
-  const gseq = ['in', 'land', 'aim', 'fire', 'up', 'out'];
-  ok('一趟就是「飛進來 → 降落 → 站定瞄 → 噴火 → 起飛 → 飛出場外」，順序不跳',
+  const gseq = ['in', 'land', 'walk', 'aim', 'fire', 'up', 'out'];
+  ok('一趟就是「飛進來 → 降落 → 走過去 → 站定瞄 → 噴火 → 起飛 → 飛出場外」，順序不跳',
      gseq.every((s, i) => gtrip.seen[s] !== undefined &&
                           (i === 0 || gtrip.seen[s] > gtrip.seen[gseq[i - 1]])) &&
      gtrip.gone,
@@ -18249,6 +18274,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gtrip.inside === 0,
      '站在半徑 ' + gtrip.landR + '（降落點訂在 siteR ' + gtrip.siteR + ' ＋ ' +
      gtrip.stand + '）、穿模 ' + gtrip.inside + ' 幀');
+  /* v1.177 使用者：「有觀察到獅鷲在地面好像就不會行走」——落地點退到站定位置外面
+     GR_WALK_IN 格，那一段用四條腿走完（第一版給 6 格，走 2.3 秒、不到牠自己的身長，
+     畫面上等於原地落地）。走的距離用逐幀累加，繞開房子時會比直線長。 */
+  ok('落地之後是四足走過去的，不是憑空落在該站的那一格',
+     gtrip.walked > gtrip.walkIn * 0.7 && gtrip.gait > 0.5 &&
+     gtrip.touchR > gtrip.landR + gtrip.walkIn * 0.5,
+     '落在半徑 ' + gtrip.touchR + ' → 走 ' + gtrip.walked + ' 格／' +
+     gtrip.walkSecs + ' 秒（腿的擺幅到 ' + gtrip.gait + '）→ 站定在半徑 ' +
+     gtrip.landR + '（降落點退到外面 ' + gtrip.walkIn + ' 格）');
   ok('火柱每一顆都沿著自己的飛行方向拉長，而且不自轉',
      gtrip.jet && gtrip.jet.cos > 0.999 && gtrip.jet.spun === 0,
      '拉長方向與飛行方向的 cos 最小 ' + gtrip.jet.cos + '（1＝完全一致）、帶自轉角的 ' +
@@ -18278,10 +18312,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const m = spawnGryph(1, 0);
     const st = {};
     let n = 0, jets = 0, burn = 0;
+    let roam = 0, px = m.x, pz = m.z;                  // 站著那一段走了多遠（v1.177）
     while (beasts && n < 4000) {
       step(0.05); n++;
       if (!beasts) break;
       st[m.st] = (st[m.st] || 0) + 1;
+      if (m.st === 'stand') roam += Math.hypot(m.x - px, m.z - pz);
+      px = m.x; pz = m.z;
       for (const h of hot) if (h.jet) jets++;
       /* 「有沒有點著誰」要**每一幀**量，不能只比頭尾的「還站著幾塊」：
          上面那幾條把地標燒過一輪，焦黑的積木會在這 47 秒裡陸續鬆脫掉下來
@@ -18289,6 +18326,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       burn = Math.max(burn, blocks.filter(b => b.burn).length);
     }
     return { st, jets, burn, fires: fires ? fires.length : 0, set0, gone: !beasts,
+             roam: +roam.toFixed(1),
              set: blocks.filter(b => b.st === SET).length, secs: +(n * 0.05).toFixed(1) };
   });
   ok('吉祥物那一版：照樣飛進來降落，站一段時間就走，一道火都不噴',
@@ -18297,6 +18335,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '在場 ' + gfun.secs + ' 秒（站著 ' + (gfun.st.stand * 0.05).toFixed(1) +
      ' 秒）、火柱粒子 ' + gfun.jets + ' 顆、全程在燒的積木最多 ' + gfun.burn +
      ' 塊、還站著 ' + gfun.set + '／' + gfun.set0 + ' 塊（焦塊會自己掉，只印不守）');
+  /* 那幾十秒不是站著發呆（v1.177）：在建築外圈走走停停，逛的點借 idleSpot、
+     走法借 strollTo，同猴子的 fun 那一段。 */
+  ok('吉祥物那一版在地上是走走停停的，不是站著不動把時間晃完',
+     gfun.roam > 12,
+     '站著那一段（' + (gfun.st.stand * 0.05).toFixed(1) + ' 秒）走了 ' +
+     gfun.roam + ' 格');
 
   /* ── 倒地：照牛羊那一條往側邊倒（使用者：「倒地不對 參考牛羊動物」）── */
   const gdown = await page.evaluate(() => {
