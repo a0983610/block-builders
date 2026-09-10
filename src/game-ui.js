@@ -567,14 +567,24 @@ function saveImports() {
 }
 
 /* 下拉選單重建。匯入／刪除之後都要叫一次，不然新的那座選不到、刪掉的還留在單子上。
-   自訂藍圖排在最前面（緊接在「隨機」後面）：會自己弄藍圖的人就是想馬上看到成果，
-   排在內建 48 座後面每次都得捲到底。只動顯示順序——option 的 value 一律還是
-   SHAPES 的索引，所以 shapePick、存檔記的編號、測試裡寫死的索引都不受影響。
-   用兩次 filter 而不是 sort：不必依賴 sort 的穩定性，同一群內的原順序就是原順序。 */
+   **顯示順序是「越晚進來的排越前面」**（v1.180，使用者指定）：
+
+     🎲 隨機 → 瀏覽器存檔（貼上來匯入的） → blueprints/ 資料夾 → 內建 blueprints.js
+
+   理由是找起來的路徑長短：剛貼進來那一座是現在要看的，資料夾裡那些是自己放的，
+   內建 48 座隨時都在。v1.180 之前是「自訂（資料夾＋匯入混在一起，照 SHAPES 順序
+   ＝資料夾先）→ 內建」，所以剛匯入的那座反而排在二十幾座資料夾藍圖後面。
+
+   只動**顯示順序**——option 的 value 一律還是 SHAPES 的索引，所以 shapePick、
+   存檔記的編號、測試裡寫死的索引都不受影響。
+   分群用 filter 而不是 sort：不必依賴 sort 的穩定性，同一群內的原順序就是原順序。
+   `importedIdx` 是「哪幾座是匯入的」那份索引（見上面 loadImports）。 */
 function refreshShapeMenu() {
   const sel = $('shape'), ord = SHAPES.map((s, i) => i);
+  const group = i => importedIdx.has(i) ? 0 : SHAPES[i].custom ? 1 : 2;
   sel.innerHTML = '<option value="-1">🎲 隨機</option>' +
-    ord.filter(i => SHAPES[i].custom).concat(ord.filter(i => !SHAPES[i].custom))
+    ord.filter(i => group(i) === 0)
+       .concat(ord.filter(i => group(i) === 1), ord.filter(i => group(i) === 2))
        .map(i => '<option value="' + i + '">' + esc(SHAPES[i].n) + '</option>').join('');
   sel.value = String(shapePick);
   if (sel.value !== String(shapePick)) sel.value = '-1';    // 指定的那座剛被刪掉

@@ -910,10 +910,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      custom.n === CUSTOM_COUNT && custom.i === SHAPE_COUNT && custom.files.length === CUSTOM_COUNT,
      'list.js 列了 ' + custom.files.join('、') + ' → 接在第 ' + custom.i + ' 個（內建 ' +
      SHAPE_COUNT + ' 座之後），名字「' + custom.name + '」');
-  /* 選單第 0 項是「隨機」，自訂藍圖就緊接在後面（第 1 項）。
+  /* 選單順序是「越晚進來的排越前面」：隨機 → 瀏覽器存檔（匯入的）→ blueprints/ 資料夾
+     → 內建（v1.180，使用者指定）。這一段沒有匯入的藍圖，所以資料夾那支就是第 1 項；
+     三群的界線由〈匯入建築〉那一段驗（那邊才有匯進來的那一座）。
      同時守住那個關鍵不變量：排到前面只改顯示順序，option 的 value
      一定還是 SHAPES 的索引——不然選什麼都會蓋錯建築。 */
-  ok('自訂藍圖排在下拉選單最前面，而且 value 還是 SHAPES 的索引',
+  ok('資料夾藍圖排在內建前面，而且 value 還是 SHAPES 的索引',
      custom.menuAt === 1 && custom.menuVal === custom.i && custom.opts === ALL_SHAPES + 1,
      '「' + custom.name + '」在第 ' + custom.menuAt + ' 項（第 0 項是隨機）、value=' +
      custom.menuVal + '（SHAPES 第 ' + custom.i + ' 個），選單共 ' + custom.opts +
@@ -2152,17 +2154,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              rows: document.querySelectorAll('#impList .it').length,
              row: (document.querySelector('#impList .it') || {}).textContent || '',
              inMenu: [...sel.options].map(o => o.textContent).indexOf('貼上來的小屋'),
+             // 內建那 48 座從哪一項開始（SHAPES[0] 一定是內建的第一座）
+             builtin0: [...sel.options].map(o => o.textContent).indexOf(SHAPES[0].n),
+             b0name: SHAPES[0].n,
              saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]') };
   }, '```js\n// 檔名：我的小屋.js\n' + SAMPLE + '\n```');
-  /* 下拉選單：[0] 是「🎲 隨機」，接著是 blueprints/ 裡那 CUSTOM_COUNT 支，
-     自訂的都排在內建 48 座前面，剛匯入的接在自訂那一群的最後面
-     → 位置就是 1 + CUSTOM_COUNT。 */
+  /* 下拉選單的順序（v1.180 使用者指定）：[0] 是「🎲 隨機」，接著是**瀏覽器存檔**
+     （貼上來匯入的），然後 blueprints/ 資料夾那 CUSTOM_COUNT 支，最後內建 48 座。
+     所以剛匯入的那座就是第 1 項。v1.180 之前它排在資料夾那 28 支後面（1 + CUSTOM_COUNT）。 */
   ok('貼上並匯入之後，藍圖清單、下拉選單、存檔三邊都跟上了',
      impGood.good && impGood.shapes === impUi.shapes + 1 && impGood.rows === 1 &&
-     impGood.inMenu === 1 + CUSTOM_COUNT && impGood.left === '' &&
+     impGood.inMenu === 1 && impGood.left === '' &&
      impGood.saved.length === 1 && impGood.saved[0].names[0] === '貼上來的小屋' &&
      impGood.saved[0].file === '我的小屋.js',
      impGood.msg + '　清單「' + impGood.row + '」，下拉第 ' + impGood.inMenu + ' 項');
+  /* 三群的界線：隨機(0) → 瀏覽器存檔(1，這一座) → 資料夾那 CUSTOM_COUNT 支 → 內建。
+     所以內建第一座落在 2 + CUSTOM_COUNT 項。只驗頭尾兩個界線就夠——中間那一群
+     是同一個 filter 出來的，順序就是 SHAPES 的原順序。 */
+  ok('選單順序是：隨機 → 瀏覽器存檔 → blueprints/ 資料夾 → 內建',
+     impGood.inMenu === 1 && impGood.builtin0 === 2 + CUSTOM_COUNT,
+     '匯入的在第 ' + impGood.inMenu + ' 項、資料夾 ' + CUSTOM_COUNT +
+     ' 支接著，內建第一座「' + impGood.b0name + '」在第 ' + impGood.builtin0 + ' 項');
 
   const impBuild = await gp.evaluate(() => {
     const sel = document.getElementById('shape');
@@ -2190,8 +2202,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     inMenu: [...document.getElementById('shape').options].map(o => o.textContent)
               .indexOf('貼上來的小屋')
   }));
-  ok('重開頁面之後匯進來的藍圖還在（而且還是排在自訂那一群裡）',
-     impKeep.has && impKeep.shapes === impUi.shapes + 1 && impKeep.inMenu === 1 + CUSTOM_COUNT,
+  ok('重開頁面之後匯進來的藍圖還在（而且還是排在選單最前面）',
+     impKeep.has && impKeep.shapes === impUi.shapes + 1 && impKeep.inMenu === 1,
      '共 ' + impKeep.shapes + ' 座，下拉第 ' + impKeep.inMenu + ' 項');
 
   /* 匯出是**一列一顆**（v1.57.1）：分享的單位是「一座建築」，不是整包。
@@ -2340,7 +2352,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('程式更新後多了同名的內建：匯進來的那一座改名留下來，不會整份消失',
      impMigrate.rows.join(',') === '吉薩金字塔2' && impMigrate.builtin === 1 &&
      impMigrate.mine === 1 && impMigrate.shapes === impUi.shapes + 1 &&
-     impMigrate.inMenu === 1 + CUSTOM_COUNT,
+     impMigrate.inMenu === 1,
      '清單「' + impMigrate.rows.join('、') + '」，下拉第 ' + impMigrate.inMenu +
      ' 項，共 ' + impMigrate.shapes + ' 座');
   // 收乾淨，不要留給後面「存檔搬家」那一段
@@ -5648,12 +5660,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        (o.wantBelt ? '、腰線 ' + o.belt : '') +
        (o.wantPorch ? '、門廊 ' + o.canopy : '') +
        (o.wantFence ? '、圍籬 ' + o.ring : '') + '）').join('；'));
-  /* 一輪裡真的會出現好幾款（不是每次都蓋同一種）。三個人數各三款，
-     隨機挑 → 六間至少該有三種不同的。 */
-  ok('一輪蓋出來的房子有好幾款',
-     new Set(houses.map(h => h.kind)).size >= 3,
-     houses.length + ' 間：' + houses.map(h => h.kind).join('、') +
-     (grove.length ? '；樹 ' + grove.map(h => h.kind).join('、') : ''));
+  /* 款式是隨機挑的（不是每次都蓋同一種）。
+     v1.180 修**量法**（門檻沒動）：原本是「這一輪蓋出來的房子至少三款」，而一輪只有
+     五到八間、款式又是**照人數分組**抽的（`pickKind`：n=1/2/3 各三款），所以幾間房子
+     的人數一偏，款式數就跟著掉——實測抽到「5 間：長屋、長屋、兩層樓、兩層樓、長屋」，
+     兩款，紅。那不是程式壞了，是樣本數在賭（同一份程式、同一顆種子的另外幾輪都是 7～8 間
+     4～5 款，綠）。
+     改成直接問抽籤：每一組人數抽 200 次，**那一組的三款都要出現、而且不會抽到別組的**。
+     這比原本的門檻嚴（原本只要求「三款」，抽到別組的也算數）。
+     「九款都真的蓋得出正確造型」由上一條守著（它是把九款全部蓋一遍）。
+     detail 只放款名不放次數：次數每輪都不一樣，放進去這一條就變成浮動條目了。 */
+  const kindMix = await page.evaluate(() => [1, 2, 3].map(n => {
+    const seen = {};
+    for (let i = 0; i < 200; i++) seen[pickKind(HOME_KIND, n).id] = 1;
+    return { n, got: Object.keys(seen).sort(),
+             want: HOME_KIND.filter(k => k.n === n).map(k => k.id).sort() };
+  }));
+  ok('房子款式是照人數分組隨機挑的（每一組的三款都抽得到）',
+     kindMix.every(g => g.want.length === 3 && g.got.join() === g.want.join()),
+     kindMix.map(g => g.n + ' 人 ' + g.got.join('／')).join('；') + '（每組抽 200 次）');
   /* 蓋在工地外圈那一帶（使用者選的），彼此不重疊、不壓到樹。 */
   /* 範圍是「地標建築範圍外～小樹圈內」（v1.98，使用者指定「應該分散一點」）。
      樹種在碎料場外圍（arenaR + 3～15），所以外緣就是 arenaR。
@@ -22559,15 +22584,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       t = performance.now();
       for (let i = 0; i < 120; i++) draw();
       const d = (performance.now() - t) / 120;
-      rows.push({ blocks: blocks.length, wk: workers.length, step: s, draw: d });
+      rows.push({ want: cnt, blocks: blocks.length, wk: workers.length, step: s, draw: d });
     }
     return rows;
   });
+  /* 條目名字用**要幾塊**（900／3000／10000，夾具自己的旋鈕）而不是實際的 blocks.length：
+     v1.180 修的量法問題。實際塊數是「藍圖格數 vs 目標塊數」湊出來的，兩輪之間會差幾塊
+     （實測 874 對 878），名字跟著變的話同一條測試在兩輪的紀錄裡就是兩個不同的 key——
+     `--json` 比對、浮動條目清單（見〈測試分三檔〉）、回頭翻歷史全部對不上。
+     會變的數字一律擺 detail。 */
   for (const r of perf)
-    ok(r.blocks + ' 塊積木 + ' + r.wk + ' 小人：CPU 每幀 < 4ms',
+    ok('目標 ' + r.want + ' 塊 ＋ ' + r.wk + ' 小人：CPU 每幀 < 4ms',
        r.step + r.draw < 4,
-       'step ' + r.step.toFixed(2) + 'ms + draw ' + r.draw.toFixed(2) + 'ms = ' +
-       (r.step + r.draw).toFixed(2) + 'ms（CPU 上限約 ' + Math.round(1000 / (r.step + r.draw)) + ' fps）');
+       '實際 ' + r.blocks + ' 塊：step ' + r.step.toFixed(2) + 'ms + draw ' + r.draw.toFixed(2) +
+       'ms = ' + (r.step + r.draw).toFixed(2) + 'ms（CPU 上限約 ' +
+       Math.round(1000 / (r.step + r.draw)) + ' fps）');
 
   /* 推土機鏟子前那一坨（v1.151.2，使用者：「9000 塊積木時一排推土機推過去有降 FPS」）。
      一排推土機是照工地寬度鋪滿的（最多 30 台），每台每幀把鏟面前那一坨碎料都
