@@ -5,13 +5,25 @@
    需要 Playwright 與 chromium；找不到時會印出安裝指令。
    全部通過 exit 0，有失敗是 1，腳本自己壞掉是 2。
 
-   --until：改一行就要等整輪（965 條）太慢，這個讓它跑到指定段落就停。
-   只做「從頭跑到某一段」，不做「挑幾段跑」——**段落之間有狀態相依**，
-   測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，跳過前面量到的會是別的東西。
-   所以它只省後面那一段，前面照跑；驗收一律跑完整輪（部分執行時總結會標出來）。
+   --until：改一行就要等整輪太慢，這個讓它跑到指定段落就停。
+   只做「從頭跑到某一段」，前面照跑；要**跳掉中間**的段落是 --tier 的事。
+   驗收一律跑完整輪（部分執行時總結會標出來）。
 
-   --list：印出所有段落（段名／起始行／行數／ok() 行數）就結束，不開瀏覽器。
-   找「要改的那一段在哪、多大」用；印出來的段名直接餵給 --until。
+   --tier must|commit|full：測試分三檔（見 README〈測試分三檔〉的段落表與實測秒數）。
+     must    骨架 ＋ 核心行為與道具主幹。改一行先看有沒有整支炸掉用的。
+     commit  扣掉「只在動到那個檔時才會壞」的貴段（藍圖兩段、藍圖預覽頁、匯入建築、水桶、音效）。
+     full    全部，**預設值**。驗收一律用這個。
+   等級寫在 head() 的第二個參數，段落本體包在 `SEC: { … }` 裡，跳過就 break 出去
+   （本體沿用原縮排，不重排才不會生出整檔 diff）。
+
+   段落之間有狀態相依——測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，
+   所以「可以跳」不是推論出來的，是**量出來**的：跳掉之後拿 --json 逐條比對，
+   數字對不上就不准跳（做法與結果見 README〈測試分三檔〉）。
+   還有一條硬規則由〈整體〉那一段守著：**某一段宣告、別段才讀的變數，宣告的那一段
+   等級不能比讀它的那一段高**，否則跳掉之後那個名字會變成 undefined。
+
+   --list：印出所有段落（段名／等級／起始行／行數／ok() 行數）就結束，不開瀏覽器。
+   找「要改的那一段在哪、多大、屬於哪一檔」用；印出來的段名直接餵給 --until。
 
    --seed：整輪的亂數種子。不給就每輪自己抽一個，印在最上面與總結裡；
    紅了照那個數字重跑（--seed 12345）就是同一副骰子——這套測試有三分之一的條目
@@ -21,6 +33,9 @@
    沒有這一層的話會這樣：three.js 的 generateUUID 每建一個物件抽四發 Math.random()，
    引擎多一顆網格就把整條序列往後推，幾百條之後某條不相干的測試就換了骰子（見 README）。
    --json <檔>：把每一條的結果寫成 JSON。給「跑十輪不同種子把偶發挖出來」用。
+   --update-varying a.json b.json：拿兩份**不同種子**的 --json 逐條比 detail，把
+   「換種子數字就會變」的條目寫成 tools/e2e-varying.json。`--tier commit`／`must`
+   不記那些條（門檻是統計帶不是固定值，會偶爾擋住 commit）；完整檔照驗。純 node，不開瀏覽器。
    --update-models：把現在的造型重新存成基準檔（tools/model-baseline.json）。
    故意改造型時才用，改完看 git diff 確認變的就是你要改的那幾塊。見〈造型基準〉那一段。
 
@@ -42,30 +57,90 @@ const fs = require('fs');
    「ok() 行」是**寫在檔案裡的行數**，不是實際條數，那一欄是**下限**：有幾行 ok()
    包在迴圈裡，一行會跑出好幾條；另外 probeWorkers 那支共用 helper 裡的一行不屬於
    任何一段，沒有算進去（實測：表格合計 1,105 行 → 實際跑出 1,113 條）。 */
+/* 段落開頭的兩種寫法（見檔頭 --tier）：`  await head('X', T_MUST);`
+   與 `  SEC: { if (!(await head('X', T_FULL))) break SEC;`。
+   **一定要錨在行首兩格**：不然會連註解裡的範例一起抓進來，多出一段不存在的段落。 */
+const SEC_RE = /^ {2}(?:await |SEC: \{ if \(!\(await )head\('([^']+)'(?:\s*,\s*([A-Z_]+))?\s*\)/;
 if (process.argv.indexOf('--list') >= 0) {
   const lines = fs.readFileSync(__filename, 'utf8').split('\n');
   const secs = [];
   lines.forEach((ln, i) => {
-    const m = ln.match(/^\s*await head\('([^']+)'\)/);
-    if (m) secs.push({ name: m[1], line: i + 1, ok: 0 });
+    const m = ln.match(SEC_RE);
+    if (m) secs.push({ name: m[1], line: i + 1, tier: m[2] || 'T_COMMIT', ok: 0 });
     else if (secs.length && /^\s*ok\(/.test(ln)) secs[secs.length - 1].ok++;
   });
+  const TIER_ZH = { T_MUST: '必要', T_COMMIT: 'commit', T_FULL: '完整' };
   /* 對齊用：只有**全形**才算兩格。不能用「> 0xff 就算兩格」——段名裡的
      → (U+2192) 與 · (U+00B7) 在終端機是一格寬，那樣算會把那兩行推歪。 */
   const wide = t => t.replace(
     /[⺀-〾ぁ-㏿㐀-䶿一-鿿豈-﫿！-｠]/g, '..').length;
   const pad = (t, n) => t + ' '.repeat(Math.max(0, n - wide(t)));
   console.log('\n' + secs.length + ' 段（段名就是 --until 吃的字串）\n');
-  console.log('  ' + pad('段名', 32) + '起始行     行數   ok() 行');
+  console.log('  ' + pad('段名', 32) + pad('等級', 10) + '起始行     行數   ok() 行');
   let okTot = 0;
+  const perTier = {};
   secs.forEach((s, i) => {
     const end = i + 1 < secs.length ? secs[i + 1].line : lines.length;
     okTot += s.ok;
-    console.log('  ' + pad(s.name, 32) + String(s.line).padStart(6) +
+    perTier[s.tier] = (perTier[s.tier] || 0) + 1;
+    console.log('  ' + pad(s.name, 32) + pad(TIER_ZH[s.tier] || s.tier, 10) +
+                String(s.line).padStart(6) +
                 String(end - s.line).padStart(9) + String(s.ok).padStart(9));
   });
   console.log('\n  共 ' + lines.length + ' 行、' + okTot +
-              ' 行 ok()（迴圈裡的一行會跑出好幾條，實際條數比這個多）\n');
+              ' 行 ok()（迴圈裡的一行會跑出好幾條，實際條數比這個多）');
+  /* 等級是累積的：--tier must 只跑必要、commit 跑必要＋commit、full 全跑 */
+  const nm = perTier.T_MUST || 0, nc = perTier.T_COMMIT || 0, nf = perTier.T_FULL || 0;
+  console.log('  --tier must ' + nm + ' 段、commit ' + (nm + nc) + ' 段、full ' +
+              (nm + nc + nf) + ' 段\n');
+  process.exit(0);
+}
+
+/* ---------- 浮動條目清單（--update-varying，見 README〈測試分三檔〉） ----------
+   「換一顆種子數字就不一樣」的那些條目：它們的門檻是統計帶，不是固定值。
+   `--tier commit`／`must` 不記它們（見 ok()），完整檔照跑。
+   清單是**量出來**的，不是手挑的——拿幾份 --json 逐條比 detail，有一份不一樣就算浮動：
+
+     node tools/e2e-3d.cjs --seed 1178 --json a.json
+     node tools/e2e-3d.cjs --seed 1178 --json b.json     ← 同一顆種子再跑一次
+     node tools/e2e-3d.cjs --seed 990011 --json c.json    ← 換一顆種子
+     node tools/e2e-3d.cjs --update-varying a.json b.json c.json
+
+   **同種子那一份不能省**：實測同一顆種子重跑，1190 條裡有 384 條數字就不一樣了
+   （見 README〈`--seed` 釘不住的那三成〉），只比換種子會漏掉十幾條。
+   幾份都要是**同一版程式**跑的，不然版本號那幾條會被誤判成浮動。
+   跟〈造型基準〉的 --update-models 同一個套路：產生的檔進 git，改動之後重產、看 diff。
+   純 node，不開瀏覽器，所以擺在載入 playwright 之前。 */
+const VARY_FILE = path.join(__dirname, 'e2e-varying.json');
+const varyKey = (sec, name) => sec + ' │ ' + name;
+if (process.argv.indexOf('--update-varying') >= 0) {
+  const files = process.argv.slice(process.argv.indexOf('--update-varying') + 1)
+                            .filter(a => !a.startsWith('--'));
+  if (files.length < 2) { console.log('用法：--update-varying a.json b.json [c.json …]（至少兩份完整輪的 --json）'); process.exit(2); }
+  const js = files.map(f => JSON.parse(fs.readFileSync(f, 'utf8')));
+  const bad = js.findIndex(j => j.partial || (j.tier && j.tier < 3));
+  if (bad >= 0) { console.log(files[bad] + ' 不是完整輪（--until 或 --tier 的結果不能用）'); process.exit(2); }
+  const grp = res => { const m = new Map(); for (const r of res) { const k = varyKey(r.section, r.name); if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; };
+  const ms = js.map(j => grp(j.results));
+  const items = [];
+  for (const [k, r0] of ms[0]) {
+    let vary = false;
+    for (let f = 1; f < ms.length && !vary; f++) {
+      const rf = ms[f].get(k);
+      if (!rf) continue;                    // 只有一邊有的不算（條目名帶數字時會這樣）
+      for (let n = 0; n < Math.min(r0.length, rf.length); n++)
+        if ((r0[n].detail || '') !== (rf[n].detail || '')) { vary = true; break; }
+    }
+    if (vary) items.push(k);
+  }
+  items.sort();
+  const seeds = js.map(j => j.seed);
+  fs.writeFileSync(VARY_FILE, JSON.stringify({
+    note: '數字會浮動的條目（換種子會變、或同種子重跑就會變）：門檻是統計帶而不是固定值，' +
+          '--tier commit/must 不記它們，完整檔照驗。用 --update-varying 重產。',
+    seeds, runs: files.length, total: js[0].results.length, items }, null, 1) + '\n', 'utf8');
+  console.log(files.length + ' 份（種子 ' + seeds.join('、') + '）：' + js[0].results.length +
+              ' 條裡有 ' + items.length + ' 條數字會浮動 → ' + path.relative(process.cwd(), VARY_FILE));
   process.exit(0);
 }
 
@@ -107,8 +182,36 @@ let BROWSER = null;                         // 收工時要關掉它（不關會
    丟出去讓最外層那個 catch 收（它認得 stopRun 這個記號），關瀏覽器、印總結、才離開。 */
 const stopRun = () => Object.assign(new Error('--until 收工'), { stopRun: true });
 
-/* ---------- 亂數種子（--seed，見檔頭） ---------- */
 const argOf = f => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] || '') : ''; };
+
+/* ---------- 測試分三檔（--tier，見檔頭與 README〈測試分三檔〉） ----------
+   數字要能比大小：段落的等級 ≤ 這一輪的等級才跑。所以等級是**累積**的，
+   commit 檔一定包含必要檔那幾段。 */
+const T_MUST = 1, T_COMMIT = 2, T_FULL = 3;
+const TIER = (() => {
+  const v = (argOf('--tier') || '').toLowerCase();
+  if (!v) return T_FULL;                    // 不給就是完整輪（驗收用的那個）
+  const map = { must: T_MUST, 必要: T_MUST, commit: T_COMMIT, 提交: T_COMMIT, full: T_FULL, 完整: T_FULL };
+  const t = map[v];
+  if (!t) {
+    console.log('--tier 只認 must／commit／full（給的是「' + argOf('--tier') + '」）');
+    process.exit(2);
+  }
+  return t;
+})();
+const TIER_NAME = { 1: 'must（必要）', 2: 'commit', 3: 'full（完整）' }[TIER];
+const skippedSecs = [];                     // 這一輪被等級跳掉的段名，總結要印出來
+/* 浮動條目：完整檔照跑，commit／must 檔不記（見上面 --update-varying 那一段）。
+   讀不到清單就當空的——那只會讓 commit 檔多記幾條，不會把測試變寬鬆。 */
+const VARY = (() => {
+  if (TIER >= T_FULL) return null;
+  if (!fs.existsSync(VARY_FILE)) { console.log('（沒有 ' + path.basename(VARY_FILE) + '：浮動條目照記）'); return null; }
+  try { return new Set(JSON.parse(fs.readFileSync(VARY_FILE, 'utf8')).items || []); }
+  catch (e) { console.log('（' + path.basename(VARY_FILE) + ' 讀不進來：' + e.message + '，浮動條目照記）'); return null; }
+})();
+let skippedOks = 0;                         // 被浮動條目清單擋掉的條數
+
+/* ---------- 亂數種子（--seed，見檔頭） ---------- */
 const SEED = (() => {
   const v = parseInt(argOf('--seed'), 10);
   return Number.isFinite(v) ? v >>> 0 : (Math.random() * 0xffffffff) >>> 0;
@@ -134,12 +237,23 @@ const newPage = async o => { const p = await BROWSER.newPage(o); await p.addInit
 /* ---------- 記分板 ---------- */
 const R = [];
 let section = '';
-const head = async t => {
+/* 回傳「這一段要不要跑」——呼叫端長這樣（見檔頭 --tier）：
+     SEC: { if (!(await head('水桶', T_FULL))) break SEC;
+     … 段落本體（縮排不動）…
+     }                                                     */
+const head = async (t, tier = T_COMMIT) => {
   /* 指定的段落已經跑完，接著要開下一段了——收工。判斷用部分比對（含子字串就算），
      打 --until 慶祝 也對得到「完工慶祝」。 */
   if (UNTIL) {
     if (untilHit && t.indexOf(UNTIL) < 0) throw stopRun();
     if (t.indexOf(UNTIL) >= 0) untilHit = true;
+  }
+  /* 等級不夠就整段跳掉。不重下種子：每一段的骰子只跟「種子 ^ 段名」有關，
+     跳掉的那一段本來就不會抽到，也不會位移別段的序列。 */
+  if (tier > TIER) {
+    skippedSecs.push(t);
+    console.log('\n── ' + t + ' ── \x1b[90m跳過（--tier ' + TIER_NAME + '）\x1b[0m');
+    return false;
   }
   section = t;
   /* 每一段重下種子：那一段抽到什麼只跟「種子 + 段名」有關，跟前面跑過幾條無關，
@@ -148,8 +262,16 @@ const head = async t => {
   Math.random = mulberry32(seedOf(t));
   if (PAGE) await PAGE.evaluate(n => window.__seed(n), seedOf(t)).catch(() => {});
   console.log('\n── ' + t + ' ' + '─'.repeat(Math.max(0, 46 - t.length * 2)));
+  return true;
 };
 const ok = (name, pass, detail) => {
+  /* 浮動條目在 commit／must 檔不記（v1.179）。夾具照跑——省的不是時間，
+     是「commit 前被一條在賭骰子的測試擋住」。要看它們就跑完整檔。 */
+  if (VARY && VARY.has(varyKey(section, name))) {
+    skippedOks++;
+    console.log('  \x1b[90mSKIP\x1b[0m  ' + name + '  → 浮動條目（完整檔才驗）');
+    return;
+  }
   R.push({ section, name, pass: !!pass, detail });
   console.log((pass ? '  \x1b[32mPASS\x1b[0m  ' : '  \x1b[31mFAIL\x1b[0m  ') +
               name + (detail ? '  → ' + detail : ''));
@@ -424,8 +546,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
   page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text().split('\n')[0]); });
 
+  /* ---------- 跨段共用的東西（--tier 上提，v1.179） ----------
+     可以跳過的段落本體包在 `SEC: { … }` 裡（見檔頭 --tier），塊裡的 const 出了塊就看不到，
+     所以「某一段量到、後面別段要拿來比」的名字得宣告在這裡。
+     現在只有一個：〈藍圖預覽頁〉讀進來的範例藍圖原始碼，〈匯入建築〉也拿它當貼上的內容。
+     要再加的話規則是：**宣告的那一段等級不能比讀它的那一段高**，否則跳掉之後這裡會留
+     undefined，測試會拿 undefined 去比而不是紅在明顯的地方——這條由〈整體〉那一段守著。 */
+  let SAMPLE;
+
   /* ══════════ 啟動 ══════════ */
-  await head('啟動');
+  await head('啟動', T_MUST);
   await page.goto(APP);
   await page.waitForTimeout(1200);
   await installClean(page);
@@ -531,7 +661,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('README 的版本號跟程式一致', readme.indexOf('v' + ver.v) >= 0, '找 v' + ver.v);
 
   /* ══════════ 打包出來的 three ══════════ */
-  await head('three.js 打包');
+  await head('three.js 打包', T_MUST);
   const libSrc = fs.readFileSync(path.join(ROOT, 'lib', 'three.min.js'), 'utf8');
   ok('lib/three.min.js 存在且夠大', libSrc.length > 300000, Math.round(libSrc.length / 1024) + ' KB');
   ok('沒有殘留 ES module 語法', !/(^|[;\n{}])\s*(import|export)\s*[{*]/.test(libSrc),
@@ -556,7 +686,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      noStrict.join('、') || handSrc.length + ' 支都有：' + handSrc.join('、'));
 
   /* ══════════ 渲染 ══════════ */
-  await head('渲染');
+  await head('渲染', T_MUST);
   await reset(page, { shape: '吉薩金字塔', cnt: 800, workers: 8 });
   await fillAll(page);
   const p1 = await pix(page);
@@ -590,7 +720,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ══════════ 藍圖 ══════════ */
   /* ══════════ 造型基準 ══════════ */
-  await head('造型基準');
+  await head('造型基準', T_MUST);
   /* 使用者要的是「確認有沒有改壞就可以了……以後如果發現變了就要知道被改壞了」，
      所以這一段不訂任何美學門檻：把現在的造型整份存成基準，以後對不上就紅，
      再由人判斷「這是我故意改的」還是「改壞了」。
@@ -661,7 +791,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        rq.bad.length === 0, rq.msg);
   }
 
-  await head('藍圖');
+  SEC: { if (!(await head('藍圖', T_FULL))) break SEC;
   const bpAll = await page.evaluate(cnt => {
     const out = [];
     for (let i = 0; i < SHAPES.length; i++) {
@@ -864,7 +994,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      所以（1）組合工具要能讓它少寫樣板、少犯下限與奇偶的錯，
      （2）checkBlueprint() 要吐出一段能整段複製、貼回去給 AI 的純文字報告。
      遊戲裡的按鈕與 tools/check-bp.cjs 共用同一支，最後一條測試守著這件事。 */
-  await head('藍圖工具與體檢');
+  }   // ── 〈藍圖〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('藍圖工具與體檢', T_FULL))) break SEC;
   const bpTool = await page.evaluate(() => {
     /* function 宣告會掛上 window，所以自訂藍圖檔（<script> 載進來的）叫得到 */
     const names = ['dim', 'ringOf', 'rowOf', 'mirrorX', 'mirrorZ', 'stampY', 'arch', 'archRow',
@@ -1294,7 +1425,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      做藍圖用的獨立進入點：看得到蓋起來的樣子、按一下產出可貼回給 AI 的報告。
      它不載遊戲層那五支（那會把整個遊戲跑起來），所以引擎那些「還沒餵資料」的網格
      要自己清乾淨——不清的話原點會冒出 80 個小人。 */
-  await head('藍圖預覽頁');
+  }   // ── 〈藍圖工具與體檢〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('藍圖預覽頁', T_FULL))) break SEC;
   const vpErr = [];
   // acceptDownloads：那一頁的「下載畫面」要真的存得出檔案才驗得到
   // clipboard：v1.63 起這一頁也有「取得 prompt」，要能讀回剪貼簿才驗得到內容
@@ -1580,8 +1712,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 貼上藍圖：做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，中間不該卡著存檔案 + 編輯 list.js。
      這幾條驗的是那條路的每一種結局，包含 AI 實際輸出長什麼樣（markdown 圍籬 + 檔名那行）。 */
-  const SAMPLE = fs.readFileSync(path.join(ROOT, 'blueprints/範例-小教堂.js'), 'utf8')
-                   .replace("name: '範例小教堂'", "name: '貼上來的小屋'");
+  /* 上提到段落之外（見「跨段共用」那一塊）：〈匯入建築〉也拿它當貼上的原始碼，
+     而段落本體現在包在 SEC 塊裡，塊內的 const 出了塊就看不到了。 */
+  SAMPLE = fs.readFileSync(path.join(ROOT, 'blueprints/範例-小教堂.js'), 'utf8')
+             .replace("name: '範例小教堂'", "name: '貼上來的小屋'");
   const pasteInto = async src => {
     // 不強制展開：貼上區要自己一直開著（v1.50.1），這裡幫它打開就驗不到那件事
     await vp.evaluate(t => { document.getElementById('paste').value = t; }, src);
@@ -1833,7 +1967,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
      開一個獨立的分頁跑：匯入會動到 SHAPES、還會寫 localStorage，
      混進主分頁那條長長的流程裡會影響後面每一條測試。 */
-  await head('匯入建築');
+  }   // ── 〈藍圖預覽頁〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('匯入建築', T_FULL))) break SEC;
   const impErr = [];
   const gp = await newPage({ viewport: VIEW, acceptDownloads: true,
                                      permissions: ['clipboard-read', 'clipboard-write'] });
@@ -2332,9 +2467,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { seen, uniq: new Set(seen).size };
   });
   ok('隨機換建築不會一直重複', variety.uniq >= 9, '連續 12 次出現 ' + variety.uniq + ' 種');
+  }   // ── 〈匯入建築〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 小人施工 ══════════ */
-  await head('小人施工');
+  await head('小人施工', T_MUST);
   await reset(page, { shape: '吉薩金字塔', cnt: 400, workers: 16, scale: 1 });
   const b0 = await st(page);
   await sim(page, 200);
@@ -2807,7 +2943,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                : '沒抓到「工作單有兩筆」的人');
 
   /* ══════════ 缺料就自己挖 ══════════ */
-  await head('缺料就自己挖');
+  await head('缺料就自己挖', T_MUST);
   /* v1.141（使用者：「目前更換建築會自動在場上灑上積木，改成材料不夠小人自己挖」
      「也為以後不用考慮積木夠不夠的問題，需要積木又沒得撿的時候用挖的就能產生」）。
      兩件事要一起成立：換場不再無中生有一整圈建材（reconcilePool 少了不補），
@@ -2936,7 +3072,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      digDone.free + ' 塊');
 
   /* ══════════ 破壞（局部） ══════════ */
-  await head('破壞：只壞被打到的地方');
+  await head('破壞：只壞被打到的地方', T_MUST);
   await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 4 });
   await fillAll(page);
   const smash1 = await page.evaluate(() => {
@@ -3024,7 +3160,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await probeWorkers(page, '破壞後');
 
   /* ══════════ 垮塌 ══════════ */
-  await head('垮塌：下面沒了上面跟著垮');
+  await head('垮塌：下面沒了上面跟著垮', T_MUST);
   await reset(page, { shape: '倫敦大笨鐘', cnt: 900, workers: 1 });
   const tower = await page.evaluate(() => {
     completeNow();
@@ -3324,7 +3460,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await probeWorkers(page, '垮塌後');
 
   /* ══════════ 遊戲流程：蓋好 → 拆掉 → 蓋下一座 ══════════ */
-  await head('流程：蓋好 → 拆掉 → 蓋下一座');
+  await head('流程：蓋好 → 拆掉 → 蓋下一座', T_MUST);
   await reset(page, { shape: '吉薩金字塔', cnt: 700, workers: 12 });
   const flow = await page.evaluate(() => {
     completeNow();
@@ -3473,7 +3609,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      idle.empty + ' 幀');
 
   /* ══════════ 完工慶祝 ══════════ */
-  await head('完工慶祝');
+  await head('完工慶祝', T_MUST);
   /* 要讓它自己蓋到完工，不能用 completeNow：上一段測試把人放到地圖邊緣去遊蕩了，
      量到的會是「走回來多久」而不是「圍圈多快」。
      真的蓋完的那一刻，人都還站在工地邊上——那才是這段要量的起點。
@@ -3855,7 +3991,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      cheerHit.last + ' 秒（窗口 ' + cheerHit.win + ' 秒）');
 
   /* ══════════ 工程師 ══════════ */
-  await head('工程師');
+  await head('工程師', T_MUST);
   const engr = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 600; setWorkerCount(12); startBuild(true);
@@ -3991,7 +4127,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      solo.idx + ' 號接任');
 
   /* ══════════ 魔法師 ══════════ */
-  await head('魔法師');
+  await head('魔法師', T_MUST);
   /* v1.64：十個人有一個是魔法師，站在工地旁邊隔空把建材拋上去。
      這一段驗的是「他真的沒搬」——不是看畫面上有沒有巫師帽，而是看那些積木
      從躺著的地方直接進拋物線，中途沒有任何一幀是被人舉在手上的。
@@ -4400,7 +4536,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（身體傾角 ' + wzDown.tilt + '）');
 
   /* ══════════ 肌肉小人 ══════════ */
-  await head('肌肉小人');
+  await head('肌肉小人', T_MUST);
   /* 使用者：「增加10%肌肉小人 大肌肉裸上半身」「類似法師小人 走到積木旁拿起來
      直接就能丟到目的地」「跟法師小人比撿積木同普通小人 拋出去像法師小人
      但是積木飛得比較快 因為是靠力量拋」。所以要驗的是三件事：
@@ -4674,7 +4810,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      musLook.plainArmX + '）；安全帽 ' + musLook.hat + ' 塊，帽頂 ' + musLook.top);
 
   /* ══════════ 閒聊 ══════════ */
-  await head('閒聊');
+  await head('閒聊', T_MUST);
   const chat = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 500; setWorkerCount(20); startBuild(true); completeNow();
@@ -4741,7 +4877,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      busy.placed + ' 塊）');
 
   /* ══════════ 表情圖示 ══════════ */
-  await head('表情圖示');
+  await head('表情圖示', T_MUST);
   /* 頭上的小圖示（v1.121，v1.122 從方塊換成貼圖）：驚嘆號／問號／愛心／生氣。
      現在是一片正對鏡頭的四邊形，貼上啟動時用 canvas 畫好的那張橫條圖，所以這裡量
      三件事——① 貼圖畫出來了、四格各一種 ② 那一片擺在頭上、正對鏡頭、從錨點長出來
@@ -4965,7 +5101,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（剩 ' + emoWhen.downT + ' 秒沒被凍住）；倒數走完收掉：' + (emoWhen.gone ? '是' : '否'));
 
   /* ══════════ 絆倒、跳舞、打架 ══════════ */
-  await head('絆倒、跳舞、打架');
+  await head('絆倒、跳舞、打架', T_MUST);
   /* v1.178（使用者：「白猴子 黑獼猴 小人走路時有時會跌倒(機率不用太高 不然會影響工作
      效率)」「小人閒置時有時會跳舞 翻跟斗等動作」「小人遇到時交談如果結果是生氣有時會
      打架」）。三件事都是**接在現成的東西後面**，所以這一段量的是「接得對不對」：
@@ -5191,7 +5327,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '牛羊倒地 ' + apeTrip.cow + ' 次');
 
   /* ══════════ 閒晃事件：小人的家 ══════════ */
-  await head('閒晃事件：小人的家');
+  await head('閒晃事件：小人的家', T_MUST);
   // 這一段要測的就是它，把 installClean 關掉的那支裝回去
   await page.evaluate(() => { stepIdleEvent = window.evStep; clearHomes(); });
   /* 慶祝散完場、場上真的沒事幹的時候**一定**會發生一件事（v1.101，使用者指定
@@ -7719,7 +7855,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '，拆掉座數 +' + lag.gained);
 
   /* ══════════ 偷懶 ══════════ */
-  await head('偷懶');
+  await head('偷懶', T_MUST);
   /* v1.134，使用者：「建築模式下 10% 小人不去蓋地標建築 繼續他的閒晃模式（閒晃模式的事件）」
      「被工具攻擊倒地才會進入建築模式」。這一段要測的就是它，把 installClean 關掉的兩支裝回去。 */
   await page.evaluate(() => { rollLazy = window.lazyRoll; stepIdleEvent = window.evStep; clearHomes(); });
@@ -7892,7 +8028,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
 
   /* ══════════ 整地推土機 ══════════ */
-  await head('整地推土機');
+  SEC: { if (!(await head('整地推土機', T_COMMIT))) break SEC;
   /* 這一段的門檻是照「1400 塊上下的工地」量出來的。v1.66 把城堡換成新天鵝堡之後，
      那一格最小就是 4450 塊（dim 的下限撐著，調 lo 沒用），工地大了三倍、10 秒的時限
      本來就清不完（實測清除率掉到 50%）。改用尺寸最接近舊城堡的泰姬瑪哈陵：
@@ -8421,9 +8557,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('開場那一座不用整地', dozeSkip.phase === 'build' && !dozeSkip.doz,
      'phase=' + dozeSkip.phase + '、推土機 ' + (dozeSkip.doz ? '有' : '沒有'));
+  }   // ── 〈整地推土機〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 小人反應 ══════════ */
-  await head('小人反應');
+  await head('小人反應', T_MUST);
   await reset(page, { shape: '吉薩金字塔', cnt: 500, workers: 20 });
   await sim(page, 400);
   const scare = await page.evaluate(() => {
@@ -8566,7 +8703,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 塊、被重新撿走／丟向格子的 ' + unpar.again + ' 塊');
 
   /* ══════════ 逃命 ══════════ */
-  await head('逃命');
+  await head('逃命', T_MUST);
   /* 核彈有 2.8 秒倒數、魔法陣有 6 秒——預告一出現，範圍內的人就該丟下東西往外跑。
      對照組把 alertFlee 換成空的，量「沒這個機制會被炸飛幾個」。 */
   const flee = await page.evaluate(() => {
@@ -8751,7 +8888,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '圈內的人各跑了 ' + flee.mag.runMin + '～' + flee.mag.runMax + ' 單位（設定 16～34）');
 
   /* ══════════ 破壞道具與解鎖 ══════════ */
-  await head('破壞道具與解鎖');
+  await head('破壞道具與解鎖', T_MUST);
   /* v1.168 起門檻是**算出來的**（第 n 把破壞道具＝擊飛 n × LOCK_STEP 塊），
      所以這一段整個照 TOOLS 生出來、不寫死任何一把的名字或數字——
      加一把新道具不必回來改這裡（使用者：「不要每次新增就要改」）。 */
@@ -10878,7 +11015,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      對範圍隨機位置連射 7 秒（不規則，不是一波一波）→ 射出去的圓縮小消失、
      換個位置再開 → 打中積木造成破壞（**沒有燃燒效果**）、兵器掉到地面，
      打中地面就插在地上 → 最後都慢慢消失。每一件事一條。 */
-  await head('王之財寶');
+  SEC: { if (!(await head('王之財寶', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 0 });
   /* 用 completeNow 不用 fillAll：fillAll 不會收掉整地推土機，剛擺好的最底層
      會被還在場上的推土機推散，那不是道具幹的（跟打雷那一段同一個理由）。 */
@@ -12090,7 +12227,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           而且**砍出來是斜的**（那個平面不是水平的）
      再加兩條這一把自己的：刃掃過的那一片才削得掉（不是整棟一起掉），
      以及**畫出來的刃跟判定用的扇形是同一塊**（引擎的 SWORD_* 那幾個數字兩邊共用）。 */
-  await head('大劍');
+  }   // ── 〈王之財寶〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('大劍', T_COMMIT))) break SEC;
   await reset(page, { shape: '美國國會大廈', cnt: 3000, workers: 6 });
   const swd = await page.evaluate(() => {
     completeNow();
@@ -12576,7 +12714,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        ④ 5 秒後被吸走的所有東西從天上掉下來
      所以這一段每一條都對著其中一項；另外三條守著容易壞的地方：
      光圈外的東西不該被吸、換場中途不能把積木留在地板底下、擠掉的那一台要把東西放掉。 */
-  await head('幽浮');
+  }   // ── 〈大劍〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('幽浮', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 12 });
   const ufo = await page.evaluate(() => {
     completeNow();
@@ -13112,7 +13251,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      常數**AR_N／AR_VOL——v1.171 開發中 40→80 人、v1.174 改成 40 人射 5 輪、
      v1.175 又回到 80 人射 5 輪，這幾條都不必跟著改）、45 度出手（**姿勢與彈道
      同一個角度**）、拋物線、不爆不燒不震、打得到小人與生物、落地插著再淡掉、收乾淨。 */
-  await head('箭雨');
+  }   // ── 〈幽浮〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('箭雨', T_COMMIT))) break SEC;
   await reset(page, { shape: '巴黎聖母院', cnt: 3000, workers: 6 });
 
   /* 兩點式與隊形。useTool 不管解鎖（那是點擊那一層的事，見 renderTools）。 */
@@ -13548,7 +13688,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
      「燒完那塊有沒有變黑掉下來」。用大建築測：小的燒到剩 25% 就整棟垮掉換場，
      量到的會是換場規則不是火。 */
-  await head('放火');
+  }   // ── 〈箭雨〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('放火', T_COMMIT))) break SEC;
   await reset(page, { shape: '新天鵝堡', cnt: 2400, workers: 6 });
   const fire = await page.evaluate(() => {
     completeNow();
@@ -13636,7 +13777,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ══════════ 碎料燃燒 ══════════
      爆炸打出來的碎料會帶著火飛出去，燒滿 3 秒變成一塊焦炭。
      一律拿大城堡的邊角開炸：塌不到 25%，量到一半才不會被「拆完換下一座」洗掉狀態。 */
-  await head('碎料燃燒');
+  }   // ── 〈放火〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('碎料燃燒', T_COMMIT))) break SEC;
   const emb2 = await page.evaluate(() => {
     running = false;
     const setup = () => {
@@ -13788,7 +13930,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      建造中失火本來會卡死（沒有消防車的量測見 README）：小人把積木補回火場旁邊，
      新放上去的又被蔓延點著。v1.68 加了「被水噴到就濕 5 秒、濕的點不著」，
      以及建造中會從地圖邊緣開進來的消防車。 */
-  await head('消防車與潮濕');
+  }   // ── 〈碎料燃燒〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('消防車與潮濕', T_COMMIT))) break SEC;
 
   const wetOne = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
@@ -14245,7 +14388,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      往下掉 → 往旁邊攤 → 貼著地面／積木的那一格慢慢滲。
      這一節驗的就是「看得出體積」、「會往下流」、「最後滲進地面」這三件事，
      外加「一下要裝半個馬克杯」這個量的基準。 */
-  await head('水桶');
+  }   // ── 〈消防車與潮濕〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('水桶', T_FULL))) break SEC;
 
   // 讀水的狀態：幾格水、總水量、最高／最低、每一層有幾格
   const wat = () => page.evaluate(() => {
@@ -15478,8 +15622,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'yaw 轉了 ' + (wbDrag.yaw - wbYaw0).toFixed(2) + '，倒出水來了嗎 ' + wbDrag.water + wbWhere);
 
   await page.evaluate(() => { tool = 'hammer'; });         // 別把水桶留給後面的測試
+  }   // ── 〈水桶〉結束（--tier 跳過時從這裡出來）
 
-  await head('煙火');
+  SEC: { if (!(await head('煙火', T_COMMIT))) break SEC;
   await reset(page, { shape: '新天鵝堡', cnt: 2000, workers: 4 });
   const fw = await page.evaluate(() => {
     completeNow();
@@ -15893,7 +16038,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      邏輯跟碎料同一套：吹飛／推走／炸飛走彈道，落地那一刻才判定要不要燒起來。
      每個案例都自己把人擺到定位再動手——照原本的分布，人多半在遠處撿貨，
      量到的會是「沒打到」而不是「打到了沒反應」。 */
-  await head('小人被工具波及');
+  }   // ── 〈煙火〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('小人被工具波及', T_COMMIT))) break SEC;
   await reset(page, { shape: '新天鵝堡', cnt: 900, workers: 20 });
   // 把人排在工地上，炸點就在他們中間
   const blown = await page.evaluate(() => {
@@ -16345,7 +16491,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      三個的共通點是「點下去不會馬上炸」。全部拿大建築來測：
      小建築被炸掉七成五就整棟垮掉換下一座，數字會被那條規則洗掉，
      量到的就不是這個道具自己的範圍。 */
-  await head('倒數型道具');
+  }   // ── 〈小人被工具波及〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('倒數型道具', T_COMMIT))) break SEC;
   await reset(page, { shape: '美國國會大廈', cnt: 3000, workers: 6 });
   const bomb = await page.evaluate(() => {
     completeNow();
@@ -17888,7 +18035,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      小人大小的白猴子(比黑獼猴略大)慢慢從邊緣走過來 對地標丟出香蕉形狀炸彈」，
      後續追加「可以按照小人行走邏輯 不要穿越地標建築&小房子」。
      造型是先做成預覽給使用者看過才落地的（白猴子改成「毛依然是黑的，只有皮膚比較白」）。 */
-  await head('天災：猴子與飛龍');
+  }   // ── 〈倒數型道具〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('天災：猴子與飛龍', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 2600, workers: 12 });
   await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
 
@@ -18391,7 +18539,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      所以這一段驗的重點是那個交界：飛進來降落、火柱的形狀、火柱到了才點著、
      以及被打到之後走的是**地上那一套**（而且照牛羊往側邊倒，不是兩條腿那種仰躺）。
      另開一段而不是塞進上面那段，是為了不位移「天災：猴子與飛龍」那一段的骰子。 */
-  await head('天災：獅鷲噴火');
+  }   // ── 〈天災：猴子與飛龍〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('天災：獅鷲噴火', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
   await fillAll(page);
@@ -18728,7 +18877,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (所以有機會一起出沒)」。出沒時機與間隔是問過使用者的：「任何時候都可能」「各自 3~6 分鐘」。
      跟天災共用同一批動物與同一套走路，所以這一段驗的是**差在哪裡**，不重驗造型。
      兩支鐘都要裝回去：走路那一段是 stepDoom 在跑（beasts 的迴圈在它裡面）。 */
-  await head('吉祥物：來逛一圈就走');
+  }   // ── 〈天災：獅鷲噴火〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('吉祥物：來逛一圈就走', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; stepMascot = window.mascStep; });
   await fillAll(page);
@@ -19319,7 +19469,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      隨機出現」（四款：乳牛、黃牛、綿羊、黑面羊）。
      整套借吉祥物那條路（同一份 beasts 清單、同一套走路、同一套被打到的反應），
      所以這一段驗的是**差在哪裡**：不走人、不挑階段、不佔天災的名額、四條腿繞自己的關節轉。 */
-  await head('閒逛的牛羊');
+  }   // ── 〈吉祥物：來逛一圈就走〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('閒逛的牛羊', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; stepHerd = window.herdStep; });
   await fillAll(page);
@@ -19642,7 +19793,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      修正小人被吹飛的旋轉軸(目前似乎在腳底 看起來很奇怪)」。
      倒地起飛那一段是先出預覽圖給使用者看過才落地的（同天災那幾隻的造型）。
      這一段驗的是「規則跟小人一樣」與「姿勢擺得對」，不重驗小人自己那一套。 */
-  await head('破壞工具打得到那幾隻');
+  }   // ── 〈閒逛的牛羊〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('破壞工具打得到那幾隻', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 8 });
   await page.evaluate(() => { stepDoom = window.doomStep; });
   await fillAll(page);
@@ -20243,9 +20395,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (tWrong.length ? '；**不該沾到卻沾到的：' + tWrong.join('、') + '**' : ''));
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+  }   // ── 〈破壞工具打得到那幾隻〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 隕石 ══════════ */
-  await head('隕石');
+  SEC: { if (!(await head('隕石', T_COMMIT))) break SEC;
   /* 靶要**比爆炸範圍大**（v1.151，本來是新天鵝堡 3000）。新天鵝堡的 siteR 只有 17，
      而 v1.151.1 的隕石半徑是 18.4：一顆下去多半整座掃平，爆炸半徑外常常只剩幾十塊
      ——那幾十塊當場點著之後 2.2 秒就燒完脫落，於是「兩秒後蔓延開」反而變少。
@@ -20429,9 +20582,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('半路撞到建築就當場砸開，不會穿進去',
      metSweep.fy > 5,
      '落點指在 y=0.6，實際砸在 y=' + metSweep.fy + '（塔高 ' + metSweep.h + '）');
+  }   // ── 〈隕石〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 地面痕跡 ══════════ */
-  await head('地面痕跡');
+  SEC: { if (!(await head('地面痕跡', T_COMMIT))) break SEC;
 
   /* 使用者指定：「爆炸地面留下焦黑、隕石留下坑洞、會漸漸消失」。
      炸彈與隕石各放一發，看地上留下什麼——兩種痕跡的差別在 crater 這個旗標
@@ -20583,9 +20737,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('痕跡是淡的，不會把煙塵蓋掉',
      mkEdge.ink > 0.15 && mkEdge.ink <= 0.5,
      '最濃的頂點 alpha = ' + mkEdge.ink + '（改之前是 0.96）');
+  }   // ── 〈地面痕跡〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 人力金額 ══════════ */
-  await head('人力金額');
+  SEC: { if (!(await head('人力金額', T_COMMIT))) break SEC;
   const cost = await page.evaluate(() => {
     stats = freshStats();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
@@ -20606,9 +20761,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '接下來 40 人跑 10 秒又燒了 ' + (cost.b.th - cost.a.th).toFixed(0));
   ok('累計支出跟著本次一起長', cost.b.all >= cost.b.th);
   ok('完工之後不再計費', Math.abs(cost.d - cost.c) < 0.001, cost.c.toFixed(0) + ' → ' + cost.d.toFixed(0));
+  }   // ── 〈人力金額〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 破壞造成的損失 ══════════ */
-  await head('破壞損失');
+  SEC: { if (!(await head('破壞損失', T_COMMIT))) break SEC;
   const loss = await page.evaluate(() => {
     stats = freshStats();
     shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
@@ -20673,9 +20829,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '$99,999 → ' + lossBadge.notYet + '、$100,000 → ' + lossBadge.got);
   ok('$2,000,000 損失解鎖【保險公司拒保】', lossBadge.big);
   ok('成就面板寫出累計損失', lossBadge.dom === '$2,000,000', lossBadge.dom);
+  }   // ── 〈破壞損失〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 成就 ══════════ */
-  await head('成就');
+  SEC: { if (!(await head('成就', T_COMMIT))) break SEC;
   const badge = await page.evaluate(() => {
     stats = freshStats(); renderBadges();
     const n0 = stats.badges.length;
@@ -20802,9 +20959,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.screenshot({ path: path.join(OUT, '05-成就.png') });
   await page.click('#badgeClose');
   ok('成就面板關得掉', !(await page.evaluate(() => document.getElementById('badgeWrap').classList.contains('on'))));
+  }   // ── 〈成就〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 存檔 ══════════ */
-  await head('自動存檔');
+  await head('自動存檔', T_MUST);
   const saveR = await page.evaluate(() => {
     localStorage.removeItem('block-builders/save1');
     stats = freshStats();
@@ -20932,7 +21090,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   errors.length = 0;
 
   /* ══════════ 控制項 ══════════ */
-  await head('控制項');
+  SEC: { if (!(await head('控制項', T_COMMIT))) break SEC;
   await page.evaluate(() => { running = false; muted = true; });
   await page.evaluate(() => { running = true; });
   await page.selectOption('#shape', String(await page.evaluate(() => SHAPES.findIndex(s => s.n === '倫敦眼摩天輪'))));
@@ -21129,7 +21287,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      音效全是即時合成的（沒有音檔），所以可以用 OfflineAudioContext 把波形算出來直接量，
      不必真的發出聲音。tone()／noise() 都是先叫 audio() 拿 context，
      把 audio 換掉就能把整段導到離線 context；量完要把 audio 與 muted 放回去。 */
-  await head('音效');
+  }   // ── 〈控制項〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('音效', T_FULL))) break SEC;
   const snd = await page.evaluate(async () => {
     const SR = 44100, SEC = 3, realAudio = audio, wasMuted = muted, wasRunning = running;
     /* 量的時候一定要把遊戲停下來：算圖是非同步的，中間遊戲迴圈只要放了任何一聲
@@ -21615,9 +21774,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '爆炸＋20 人跌倒 rms ' + snd.nukeHit.rms + '、peak ' + snd.nukeHit.peak +
      '、打到滿刻度 ' + snd.nukeHit.over + ' 個取樣（爆炸自己 peak ' +
      snd.nuke.peak + '）');
+  }   // ── 〈音效〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 視角操作 ══════════ */
-  await head('視角操作');
+  SEC: { if (!(await head('視角操作', T_COMMIT))) break SEC;
   await reset(page, { shape: '艾菲爾鐵塔', cnt: 900, workers: 6 });
   await fillAll(page);
   // v1.70 起拖曳的意義跟手上拿什麼有關（水桶是把水澆過去），所以先釘住工具
@@ -22088,9 +22248,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      shimmer.bw < 200 && shimmer.bw < shimmer.white * 12 + 30,
      '每轉 0.023°：黑白相間 ' + shimmer.bw + ' 個像素亮度翻轉、全白的對照組 ' +
      shimmer.white + ' 個（共 ' + shimmer.px + ' 像素；改之前是 380～592）');
+  }   // ── 〈視角操作〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 視窗縮放 ══════════ */
-  await head('視窗縮放');
+  SEC: { if (!(await head('視窗縮放', T_COMMIT))) break SEC;
   await page.setViewportSize({ width: 900, height: 620 });
   await page.waitForTimeout(300);
   const rs = await page.evaluate(() => ({
@@ -22185,9 +22346,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'hover:none ' + padUi.hover + '、pointer:coarse ' + padUi.coarse +
      '、工具列 top ' + padUi.top + '（視窗高 ' + padUi.h + '）' +
      '、設定鈕 left ' + padUi.panel + '、版本號 left ' + padUi.ver);
+  }   // ── 〈視窗縮放〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 手機版 ══════════ */
-  await head('手機版 · 觸控');
+  SEC: { if (!(await head('手機版 · 觸控', T_COMMIT))) break SEC;
   await page.setViewportSize({ width: 390, height: 780 });
   await page.waitForTimeout(300);
   const mob = await page.evaluate(() => {
@@ -22381,9 +22543,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.setViewportSize(VIEW);
   await page.waitForTimeout(200);
+  }   // ── 〈手機版 · 觸控〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 效能（CPU 端） ══════════ */
-  await head('效能');
+  SEC: { if (!(await head('效能', T_COMMIT))) break SEC;
   const perf = await page.evaluate(() => {
     running = false;
     const rows = [];
@@ -22676,9 +22839,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('換建築不會卡住畫面（最慢的藍圖 < 250ms）', bpTime.worst < 250,
      bpTime.name + ' ' + bpTime.worst.toFixed(0) + 'ms');
+  }   // ── 〈效能〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 連續操作壓力 ══════════ */
-  await head('連續操作壓力');
+  SEC: { if (!(await head('連續操作壓力', T_COMMIT))) break SEC;
   errors.length = 0;
   const stress = await page.evaluate(() => {
     running = false;
@@ -22722,9 +22886,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('反覆重建不會累積物件', memGrow.after < memGrow.before * 2 + 200,
      memGrow.before + ' → ' + memGrow.after);
+  }   // ── 〈連續操作壓力〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 檔案沒放齊的防呆 ══════════ */
-  await head('檔案沒放齊的防呆');
+  await head('檔案沒放齊的防呆', T_MUST);
   /* 把遊戲寄給別人，對方直接在壓縮檔裡按兩下 index.html——Windows 只解出那一支檔，
      旁邊的 lib／src 都不在，畫面就只剩 body 的漸層背景，看起來像遊戲自己壞了。
      這裡真的做殘缺的複本去開，驗證會蓋出說明而不是一片空白。 */
@@ -22800,7 +22965,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      await page.evaluate(() => !document.getElementById('fatal')));
 
   /* ══════════ 整體 ══════════ */
-  await head('整體');
+  await head('整體', T_MUST);
+
+  /* 守 --tier 這套機制本身（v1.179）：掃自己這支檔。
+     ① 每一段都要標等級——漏標會默默吃到 head() 的預設值 T_COMMIT，那一段就會在
+        `--tier must` 悄悄消失，而總結只會說「跳了 N 段」，不會說它是漏標的。
+     ② 包起來的段落數要跟收尾的 } 數目一樣——少一個就是某一段的本體黏到下一段裡去了
+        （語法過得去，但那一段會跟著上一段一起被跳掉）。 */
+  const selfSrc = fs.readFileSync(__filename, 'utf8').split('\n');
+  const tagged = selfSrc.filter(l => SEC_RE.test(l));
+  const noTier = tagged.filter(l => !/,\s*T_(MUST|COMMIT|FULL)\s*\)/.test(l));
+  const wrapped = tagged.filter(l => l.startsWith('  SEC: {')).length;
+  const closes = selfSrc.filter(l => /^  \}   \/\/ ── 〈.*〉結束/.test(l)).length;
+  ok('每一段都標了 --tier 等級、SEC 塊有頭有尾',
+     tagged.length >= 50 && noTier.length === 0 && wrapped === closes && wrapped > 0,
+     tagged.length + ' 段、漏標 ' + noTier.length + ' 段、包了 ' + wrapped +
+     ' 段對上 ' + closes + ' 個收尾');
+
   await page.evaluate(() => { running = true; timeScale = 1; setWorkerCount(20); });
   await reset(page, { shape: '莫斯科克里姆林塔', cnt: 900, workers: 20 });
   await page.evaluate(() => { running = true; });
@@ -22824,13 +23005,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
 /* ---------- 總結 ---------- */
 /* partial＝--until 收工的那一輪。**不能印「全數通過」**：後面幾百條根本沒跑，
-   那句話會被當成完整綠燈（自己回頭看紀錄時最容易誤判的就是這個）。 */
+   那句話會被當成完整綠燈（自己回頭看紀錄時最容易誤判的就是這個）。
+   --tier 同理：跳了段落的那一輪也不准印「全數通過」（v1.179）。 */
 function report(partial) {
   const fail = R.filter(r => !r.pass);
+  const cut = partial || skippedSecs.length > 0 || skippedOks > 0;
   console.log('\n' + '═'.repeat(52));
   console.log('  ' + (R.length - fail.length) + ' / ' + R.length + ' 通過' +
               (fail.length ? '，\x1b[31m' + fail.length + ' 項失敗\x1b[0m'
                : partial ? '  \x1b[33m（--until 只跑到「' + section + '」為止，不是完整一輪）\x1b[0m'
+               : cut ? '  \x1b[33m（--tier ' + TIER_NAME + '，跳了 ' + skippedSecs.length +
+                       ' 段 ＋ ' + skippedOks + ' 條浮動條目，不是完整一輪）\x1b[0m'
                          : '  \x1b[32m全數通過\x1b[0m'));
   if (fail.length) {
     console.log('');
@@ -22839,11 +23024,16 @@ function report(partial) {
   }
   // 指定的段名打錯就整輪跑完了，要講一聲，不然會以為「跑得好快」
   if (UNTIL && !untilHit) console.log('  \x1b[33m--until「' + UNTIL + '」沒對到任何段名，跑的是完整一輪\x1b[0m');
+  if (skippedSecs.length) console.log('  \x1b[33m--tier ' + TIER_NAME + ' 跳掉 ' +
+    skippedSecs.length + ' 段：' + skippedSecs.join('、') + '\x1b[0m');
+  if (skippedOks) console.log('  \x1b[33m另有 ' + skippedOks +
+    ' 條浮動條目沒記（' + path.basename(VARY_FILE) + '，完整檔才驗）\x1b[0m');
   /* 種子一定要印：這一輪紅的那幾條，照這個數字重跑才是同一副骰子。 */
   console.log('  種子：--seed ' + SEED);
   console.log('  截圖：' + path.relative(ROOT, OUT));
   if (JSON_OUT) {
-    fs.writeFileSync(JSON_OUT, JSON.stringify({ seed: SEED, partial, results: R }, null, 1));
+    fs.writeFileSync(JSON_OUT, JSON.stringify(
+      { seed: SEED, partial, tier: TIER, skipped: skippedSecs, results: R }, null, 1));
     console.log('  結果：' + JSON_OUT);
   }
   console.log('═'.repeat(52));
