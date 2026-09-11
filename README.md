@@ -1,4 +1,4 @@
-# 積木小人 · 世界地標工地　`v1.183.1`
+# 積木小人 · 世界地標工地　`v1.184.0`
 
 一進來就有一座蓋好的世界地標。你把它砸爛，小人們才會從滿地的碎料裡
 一塊一塊搬出來，慢慢蓋出下一座。被打到的地方才會壞，沒波及的地方原封不動。
@@ -10,9 +10,21 @@ three.js ＋ 原生 JavaScript，沒有建置步驟、沒有套件相依、不�
 **雙擊 `index.html` 就能玩**，不用開 server。
 要做自訂藍圖的話開 **`藍圖預覽.html`**：拿 prompt、看藍圖蓋起來的樣子、跑體檢、複製報告給 AI。
 
-要傳給別人玩的話，**整個資料夾一起打包**（`index.html` ＋ `lib/` ＋ `src/`，約 1 MB；
-`blueprints/` 與 `藍圖預覽.html` 可省，省了只是少那 28 座自訂藍圖與那個工作台）。
-收到的人要先**解壓縮出來**再開裡面的 `index.html`——直接在壓縮檔裡按兩下的話
+## 要傳給別人玩
+
+**雙擊 `tools/export-game.bat`**（或 `python tools/export-game.py`）。
+它把跑得起來的那幾支挑出來放進 `dist/積木小人-v版號/`，整個資料夾丟出去就能玩：
+
+| | 內容 | |
+|---|---|---|
+| 預設 | `index.html` ＋ `lib/` ＋ `src/` ＋ `blueprints/`（28 座）＋ `藍圖預覽.html` | 40 支、2.3 MB |
+| `--min` | 只有遊戲本體（`index.html` ＋ `lib/` ＋ `src/`） | 10 支、2.1 MB |
+
+還有 `--zip`（順便壓一包）、`--list`（只印會匯出哪些檔）、`--clean`、`--out 路徑`。
+**要匯出哪些檔是從 `index.html` 讀出來的**，不是寫死的清單——之後多一支 `.js`、
+多一座藍圖，這支腳本不用跟著改。
+
+**收到的人要先解壓縮出來**再開裡面的 `index.html`——直接在壓縮檔裡按兩下的話
 Windows 只會解出那一支檔，旁邊的 `lib/`、`src/` 都不在。真的漏了也不會只剩一片空白：
 開場會先確認八支相依檔都載到了，沒到就蓋一層說明講缺哪幾支、要怎麼做。
 
@@ -163,6 +175,9 @@ tools/e2e-3d.cjs        端對端測試（1204 項；`--tier must/commit` 分三
 tools/e2e-varying.json  數字會浮動的條目清單（`--tier commit` 不記它們，用 --update-varying 重產）
 tools/model-baseline.json  造型基準（部位表與固定姿勢的塊數，用 --update-models 重產）
 tools/check-bp.cjs      藍圖體檢（命令列版，跟遊戲裡那顆按鈕共用同一支邏輯）
+tools/export-game.py    把遊戲跑得起來的檔案匯出成一包（清單是從 index.html 讀的，不寫死）
+tools/export-game.bat   上面那支的雙擊版（切 UTF-8、找 python、跑完停住）
+dist/                   匯出的成品包（不進 git，隨時能重產）
 ```
 
 遊戲層拆成五支的理由、為什麼不改成 ES module、為什麼 three 要自己打包，
