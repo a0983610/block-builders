@@ -7,12 +7,14 @@
 
    --until：改一行就要等整輪太慢，這個讓它跑到指定段落就停。
    只做「從頭跑到某一段」，前面照跑；要**跳掉中間**的段落是 --tier 的事。
-   驗收一律跑完整輪（部分執行時總結會標出來）。
+   部分執行時總結會標出來（見下面 --tier 那一段的規矩）。
 
    --tier must|commit|full：測試分三檔（見 README〈測試分三檔〉的段落表與實測秒數）。
      must    骨架 ＋ 核心行為與道具主幹。改一行先看有沒有整支炸掉用的。
      commit  扣掉「只在動到那個檔時才會壞」的貴段（藍圖兩段、藍圖預覽頁、匯入建築、水桶、音效）。
-     full    全部，**預設值**。驗收一律用這個。
+     full    全部，**預設值**。
+   **規矩（v1.183 使用者定）**：commit 前跑 commit 檔就好，一輪綠就算完成；
+   完整輪是使用者說要跑才跑，不是每次 commit 的預設動作（見 README〈驗收規矩〉）。
    等級寫在 head() 的第二個參數，段落本體包在 `SEC: { … }` 裡，跳過就 break 出去
    （本體沿用原縮排，不重排才不會生出整檔 diff）。
 
@@ -3562,18 +3564,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (d > lim) out++;
       }
     }
-    return { far, out, worst, a0, ph0, arenaR, siteR, phase, name: bp.name, lim: arenaR + 26, pre,
-             band: IDLE_FAR };
+    return { far, out, worst, a0, ph0, arenaR, siteR, phase, name: bp.name, lim: arenaR + 26, pre };
   });
-  /* v1.60～v1.95 是「完工後逛遍整張地圖」（目標點取 arenaR + 20 的方形亂數）。
-     v1.96 起收回工地外圈那一環（使用者指定「不要讓建築一圈都沒人，看起來會有點明顯」），
-     所以這條反過來守上限：150 秒都不該有人走到碎料場那邊去。
-     下限與「一圈有沒有人」由「閒晃」那一段的兩條守。 */
-  ok('完工後在建築周圍閒晃，不會走到碎料場外',
-     roam.far < roam.siteR + roam.band + 2,
-     '150 秒最遠走到 ' + roam.far.toFixed(0) + '（環外緣 ' +
-     (roam.siteR + roam.band).toFixed(0) + '、建築半徑 ' + roam.siteR.toFixed(0) +
-     '、碎料場半徑 ' + roam.a0.toFixed(0) + '）');
+  /* 這條的方向改過兩次，都是使用者定的（見 idleSpot 的註解）：
+     v1.60～v1.95 逛遍整張地圖 → v1.96 收回工地外圈那一環（「不要讓建築一圈都沒人」）
+     → **v1.183 放回整片碎料場**（「小人跟動物 能走的範圍都是碎料範圍」）。
+     所以現在守的是**下限**：150 秒之內真的要有人走到碎料場那一帶去。
+     上限由下面那條「不會走出草地」守，「有沒有空出一圈」由〈閒晃〉那一段的密度那條守。
+     0.6 倍是留給抽樣的餘裕——按面積平均抽，20 個人 150 秒本來就該有人抽到外圈。 */
+  ok('完工後逛的是整片碎料場，不是只繞著建築那一圈',
+     roam.far > roam.a0 * 0.6,
+     '150 秒最遠走到 ' + roam.far.toFixed(0) + '（碎料場半徑 ' + roam.a0.toFixed(0) +
+     '、建築半徑 ' + roam.siteR.toFixed(0) + '）');
   ok('但不會走出草地', roam.out === 0,
      '越界 ' + roam.out + ' 次；草地半邊長 ' + roam.lim.toFixed(0) +
      '；進場時最遠的三個小人 ' + JSON.stringify(roam.pre) +
@@ -3589,6 +3591,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const run = workers.map(() => 0), best = workers.map(() => 0);
     const px = workers.map(w => w.x), pz = workers.map(w => w.z);
     let moved = 0, samples = 0, near = Infinity, far = 0, empty = 0, frames = 0;
+    /* 「會不會空出一圈」v1.183 分兩層量，因為這兩件事的穩定度差很多：
+         ① **目標點**照 idleSpot 自己的上下界切三個等面積的環，抽 2000 次——
+            按面積平均抽的定義就是三環各三分之一，這一層很穩（門檻可以收緊）。
+         ② **實際待的位置**：每一環都要有人。這一層**不比大小**——60 秒的取樣會被
+            「人剛好在哪」帶著走（實測同一份程式換一顆種子，最少÷最多 0.51 → 0.30），
+            而且過路的會往內切，內環本來就會多吃一份過境流量。
+       等面積而不是等寬：等寬的話外環面積大得多，本來就會比較多人，比了沒意義。 */
+    const tLo = siteR + IDLE_NEAR, tHi = Math.max(tLo + 1, arenaR);
+    const tCut = f => Math.sqrt(tLo * tLo + (tHi * tHi - tLo * tLo) * f);
+    const tEdge = [tCut(1 / 3), tCut(2 / 3)];
+    const tBand = [0, 0, 0], probe = { tx: 0, tz: 0 };
+    for (let i = 0; i < 2000; i++) {
+      idleSpot(probe);
+      const r = Math.hypot(probe.tx, probe.tz);
+      tBand[r < tEdge[0] ? 0 : r < tEdge[1] ? 1 : 2]++;
+    }
+    const bLo = siteR + KEEP, bHi = Math.max(bLo + 1, arenaR);
+    const cut = f => Math.sqrt(bLo * bLo + (bHi * bHi - bLo * bLo) * f);
+    const edge = [cut(1 / 3), cut(2 / 3)];
+    const band = [0, 0, 0];
     for (let i = 0; i < 1200; i++) {
       step(0.05); frames++;
       for (let k = 0; k < workers.length; k++) {
@@ -3600,9 +3622,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         const r = Math.hypot(w.x, w.z);         // 離工地中心多遠——閒晃不該踩進建築裡
         if (r < near) near = r;
         if (r > far) far = r;
+        band[r < edge[0] ? 0 : r < edge[1] ? 1 : 2]++;
       }
-      // 這一幀建築周圍有沒有人（見下面那條：一圈都沒人的話畫面很明顯）
-      if (!workers.some(w => Math.hypot(w.x, w.z) < siteR + IDLE_FAR)) empty++;
+      // 這一幀整片場上有沒有人（真的一個人都不剩才算，位置分布看下面那三環）
+      if (!workers.length) empty++;
     }
     best.sort((a, b) => b - a);
     return { longest: +best[0].toFixed(2), median: +best[best.length >> 1].toFixed(2),
@@ -3610,7 +3633,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              movingFrac: +(moved / samples).toFixed(2), n: workers.length,
              near: +near.toFixed(2), siteR: +siteR.toFixed(2),
              far: +far.toFixed(2), empty, frames, arenaR: +arenaR.toFixed(1),
-             band: IDLE_FAR };
+             band, edge: edge.map(v => +v.toFixed(1)),
+             tBand, tEven: +(Math.min(...tBand) / Math.max(...tBand)).toFixed(2),
+             thin: +(Math.min(...band) / band.reduce((a, b) => a + b, 0)).toFixed(3) };
   });
   ok('遊蕩時會不時停下來站一會兒', idle.median >= 1.1,
      idle.n + ' 人在 60 秒裡最長站定：中位數 ' + idle.median + ' 秒、最久 ' +
@@ -3623,15 +3648,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      所以最近距離會停在建築外圈；踩進去的話這個數字會小於建築半徑。 */
   ok('閒晃不會穿過建築', idle.near >= idle.siteR,
      '最近只走到離工地中心 ' + idle.near + '（建築半徑 ' + idle.siteR + '）');
-  /* 上限（v1.96，使用者指定「盡量不要讓建築一圈都沒人，看起來會有點明顯」）。
-     v1.60～v1.95 的散場後是整片草地亂挑目標（arenaR + 20 的方形），人會一路走到
-     碎料場外緣去——鏡頭取的是建築那一帶，那等於走出畫面，建築周圍空掉。
-     現在閒晃目標一律取在工地外圈 IDLE_NEAR～IDLE_FAR 這一環裡。 */
-  ok('閒晃不會走到建築周圍以外，一圈也不會沒人',
-     idle.far < idle.siteR + idle.band + 1.5 && idle.empty === 0,
-     '最遠走到 ' + idle.far + '（環的外緣是 ' + (idle.siteR + idle.band).toFixed(1) +
-     '，碎料場外緣 ' + idle.arenaR + '）；60 秒 ' + idle.frames + ' 幀裡「建築周圍一個人都沒有」 ' +
-     idle.empty + ' 幀');
+  /* v1.183：使用者要的是「小人跟動物能走的範圍都是碎料範圍」，而當年那句
+     「不要讓建築一圈都沒人」講的是**內緣空一圈**（走不到建築邊），不是走太遠
+     ——見 idleSpot 的註解。所以這一條從「守上限」改成「守密度均勻」：
+     三個等面積的環，最少的那一環不該少於最多那一環的一半。
+     舊版方形亂挑會在第一環上現形（貼著建築那一圈抽不太到）。 */
+  /* 兩層的門檻差很多，理由見上面那段註解：目標點那一層是抽樣定義（2000 抽、門檻 0.85），
+     實際位置那一層只守「沒有一環空掉」（最少的一環至少占 5%，三環平均是 33%）。
+     第一版把兩件事混成一條「最少÷最多 > 0.35」，換一顆種子就掉到 0.30——
+     那是把門檻建在會抖的量上，跟〈九條偶爾飄的測試〉是同一個坑。 */
+  ok('閒晃鋪滿整片碎料場，而且哪一圈都不會空掉（目標點按面積平均，三環都有人）',
+     idle.tEven > 0.85 && idle.thin > 0.05 &&
+     idle.far > idle.arenaR * 0.6 && idle.empty === 0,
+     '目標點三環 ' + idle.tBand.join('／') + '（2000 抽，最少÷最多 ' + idle.tEven +
+     '）；實際人-幀 ' + idle.band.join('／') + '（分界 ' + idle.edge.join('、') +
+     '，最少的一環占 ' + (idle.thin * 100).toFixed(0) + '%）；最遠走到 ' + idle.far +
+     '（碎料場外緣 ' + idle.arenaR + '）');
 
   /* ══════════ 完工慶祝 ══════════ */
   await head('完工慶祝', T_MUST);
@@ -3788,16 +3820,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              spread: +((Math.max(...started) - Math.min(...started)) * dt).toFixed(2),
              radial: +(radial / mov).toFixed(2),
              far: +Math.max(...rad).toFixed(1), siteR: +siteR.toFixed(1),
-             band: IDLE_FAR, arenaR: +arenaR.toFixed(1) };
+             arenaR: +arenaR.toFixed(1) };
   });
+  /* 要驗的是「不是整群同時、同方向」，所以三個量都是**散不散**：同一幀起步幾人、
+     起步時間差多少、平均徑向分量是不是接近 0。
+     v1.183 拿掉「十秒後最遠走到哪」那一項——閒晃範圍放到整片碎料場之後，
+     走得遠本來就正常，那一項守的是舊的環，不是這一條要問的事。 */
   ok('散場不會整圈一起往外走',
      scatter.started >= scatter.n - 2 && scatter.sync <= 5 && scatter.spread > 0.5 &&
-     Math.abs(scatter.radial) < 0.2 && scatter.far < scatter.siteR + scatter.band + 1.5,
+     Math.abs(scatter.radial) < 0.2,
      scatter.n + ' 人裡 ' + scatter.started + ' 人走了、最多 ' + scatter.sync +
      ' 人同一幀起步（改之前是 20 人全在同一幀），' +
      '起步時間前後差 ' + scatter.spread + ' 秒；平均徑向分量 ' + scatter.radial +
      '（改之前 +0.25～+0.42），十秒後最遠走到 ' + scatter.far +
-     '（環外緣 ' + (scatter.siteR + scatter.band).toFixed(1) + '，碎料場外緣 ' + scatter.arenaR + '）');
+     '（碎料場外緣 ' + scatter.arenaR + '）');
 
   /* 彩帶（v1.96，使用者要的）。紙片借塵霧那個池子畫（給非等比縮放就是一張薄紙片），
      所以判斷「這顆是彩帶」看有沒有 sy。四件事要成立：真的有噴、飛得起來、
@@ -3963,7 +3999,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const d of dust.filter(isC)) if (!was.has(d)) conf++;
     }
     const r = { jumping, fled, still, hail, conf, n: workers.length, ph: phase,
-                back: workers.filter(w => Math.hypot(w.x, w.z) < siteR + IDLE_FAR + 4).length,
+                back: workers.filter(w => Math.hypot(w.x, w.z) < arenaR).length,
+                arenaR: +arenaR.toFixed(1),
                 far: +Math.max(...workers.map(w => Math.hypot(w.x, w.z))).toFixed(1) };
     cleanTools(); dust.length = 0;
     return r;
@@ -3975,10 +4012,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '嚇跑前 ' + cheerFlee.jumping + '/' + cheerFlee.n + ' 人在跳；下令那一刻 ' +
      cheerFlee.fled + ' 人起跑、' + cheerFlee.still + ' 人的慶祝窗口還開著；' +
      '之後 20 秒最多 ' + cheerFlee.hail + ' 人舉手、彩帶噴了 ' + cheerFlee.conf + ' 片');
-  ok('嚇跑之後回建築外圈閒晃，不是留在跑出去的地方',
+  /* v1.183：閒晃範圍放大到整片碎料場之後，「回到建築外圈那一環」就沒有意義了
+     （那本來就只是舊版閒晃的範圍）。要驗的還是同一件事——**有沒有走回場上繼續閒晃**，
+     所以改成問「回到碎料場裡面沒有」：逃命是往場外跑到 arenaR + 20 去的。 */
+  ok('嚇跑之後回場上閒晃，不是留在跑出去的地方',
      cheerFlee.back >= cheerFlee.n * 0.7,
-     cheerFlee.back + '/' + cheerFlee.n + ' 人回到外圈那一環（半徑 ' +
-     '建築 + 9 + 4 以內），最遠的還在 ' + cheerFlee.far);
+     cheerFlee.back + '/' + cheerFlee.n + ' 人回到碎料場裡（半徑 ' + cheerFlee.arenaR +
+     ' 以內），最遠的還在 ' + cheerFlee.far);
 
   /* ② 慶祝的鐘不會被中斷「暫停」：被炸飛的人落地後只補完剩下的那一段，不是重新開始
      （改之前 tossWorker 也把 w.cheer 歸零，那個人會在別人都散場之後自己跳滿七秒）。
@@ -5035,7 +5075,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     out.bang = alive.filter(w => w.emo === 'bang' && w.emoT > 0).length;
     out.aliveN = alive.length;
     step(0.05);
-    out.bangK = alive.filter(w => w.emoK > 0).length;
+    /* 「看得到」只能算**還站著的**：躺著的那幾秒本來就不顯示（見 stepEmo 的 want，
+       跟上面〈躺著、打滾的時候不畫圖示〉是同一條規則）。這一幀剛好絆倒的人
+       （v1.178 走路會絆一跤）不能算進來——v1.183 閒晃範圍放大之後大家走得更多，
+       絆倒的機會跟著變高，八個人裡偶爾就有一個是趴著的。 */
+    const up = alive.filter(w => !w.air && w.burn <= 0 && w.fall <= 0);
+    out.upN = up.length;
+    out.bangK = up.filter(w => w.emoK > 0).length;
     // 下面幾條要用同一批人，把逃命收掉（startBuild 不管 flee）
     for (const w of workers) { w.flee = 0; w.fdel = 0; w.emo = ''; w.emoT = 0; w.emoK = 0; }
     // ② 要搬的那塊被打飛了：冒問號。freeBlock 就是破壞道具走的那條路
@@ -5095,9 +5141,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return out;
   });
   ok('預告一出現，全場都冒驚嘆號',
-     emoWhen.bang === emoWhen.aliveN && emoWhen.bangK === emoWhen.aliveN,
-     emoWhen.bang + '/' + emoWhen.aliveN + ' 個人冒了驚嘆號，下一幀 ' +
-     emoWhen.bangK + ' 個已經看得到');
+     emoWhen.bang === emoWhen.aliveN && emoWhen.bangK === emoWhen.upN,
+     emoWhen.bang + '/' + emoWhen.aliveN + ' 個人冒了驚嘆號，下一幀還站著的 ' +
+     emoWhen.upN + ' 個裡 ' + emoWhen.bangK + ' 個已經看得到');
   ok('要搬的那塊被打飛，那個人冒問號',
      emoWhen.hasJob && emoWhen.quest === 'quest',
      emoWhen.hasJob ? '打掉他認的那塊 → ' + emoWhen.quest : '這輪沒有人領到工作單');
@@ -7077,17 +7123,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('敲完工的建築不會把全場小人嚇跑（拆除中照樣過自己的生活）',
      /* 「被趕到外圈」那個比例只列出來參考，不當判準：房子本來就散在外圈到碎料場外緣，
-        住在自己家附近的人本來就在那個半徑上（實測 0.36）。分得出來的是三件事——
-        事件還在不在跑、有家可住的人還有沒有、**沒有家的人還在不在閒晃那一圈**。
-        v1.105 之前這三個分別是 0 幀、0 人、被推到 arenaR×0.78（≈28）。 */
+        住在自己家附近的人本來就在那個半徑上（實測 0.36）。
+        v1.105 之前的三個症狀是「事件 0 幀、有家的 0 人、沒家的被推到 arenaR×0.78」。
+        **v1.183 拿掉第三個**：閒晃範圍放到整片碎料場之後，沒家的人平均半徑本來就
+        會落在 20 幾（實測 23.7），跟「被推到 0.78×arenaR」(≈28) 分不開了——
+        那個量已經不具鑑別力。前兩個症狀本來就各自足以抓到它（被趕的話事件會停、
+        家也沒了），所以這裡不補新的量，只是把失效的那一個拿掉。 */
      noScare.ph === 'wreck' && noScare.ev === 600 && noScare.own1 === noScare.own0 &&
-     noScare.r1 > 0 && noScare.r1 < noScare.siteR + 12 &&
-     noScare.placed1 === noScare.placed0,
+     noScare.r1 > 0 && noScare.placed1 === noScare.placed0,
      '敲一下之後 phase=' + noScare.ph + '：事件還在跑 ' + noScare.ev +
      '/600 幀、有家可住的 ' + noScare.own0 + ' → ' + noScare.own1 +
      ' 人、沒家的人平均半徑 ' + noScare.r0 + ' → ' + noScare.r1 +
-     '（閒晃圈上限 ' + (noScare.siteR + 12).toFixed(1) + '、碎料場外緣 ' +
-     noScare.arenaR + '，被趕到外圈的人-幀占 ' + noScare.outFrac +
+     '（碎料場外緣 ' + noScare.arenaR + '，被趕到外圈的人-幀占 ' + noScare.outFrac +
      '）、建築 ' + noScare.placed0 + ' → ' + noScare.placed1 + ' 沒被偷偷修回去');
 
   /* ══════════ 一整輪的生命週期（v1.108，使用者指定的四段） ══════════
@@ -19033,16 +19080,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 逛的秒數直接跟「這一趟抽到的 m.stay」對，不是對 25~45 那個範圍的邊界：
      秒數是一幀一幀（0.05）數出來的，剛好抽到 45 的那一趟會量到 45.05，
      拿邊界當門檻等於埋一顆偶爾才爆的雷。 */
+  /* 「走回去」那一段的下限 v1.183 從 5 秒放寬到 1 秒：閒晃範圍放到整片碎料場之後，
+     牠可能剛好逛到場邊才到時間，離出口只剩幾格（退場點是 arenaR + DOOM_OUT）。
+     這一條要驗的是「有走出去這一段、不是原地消失」，不是「走了多久」。 */
   ok('走進來 → 逛一逛 → 走人，逛的長度就是這一趟抽到的 MASC_STAY',
-     mwalk.gone && mwalk.come > 5 && mwalk.go > 5 &&
+     mwalk.gone && mwalk.come > 5 && mwalk.go > 1 &&
      mwalk.stay0 >= 25 && mwalk.stay0 <= 45 && Math.abs(mwalk.roam - mwalk.stay0) < 0.2,
      '走進來 ' + mwalk.come + ' 秒、逛了 ' + mwalk.roam + ' 秒（抽到 ' + mwalk.stay0 +
      '）、走回去 ' + mwalk.go + ' 秒（全程 ' + mwalk.secs + ' 秒，其中絆倒趴著 ' +
      mwalk.down + ' 秒不算逛）');
-  ok('逛的時候真的在走，而且繞著建築外圈（沒有站著發呆一整段）',
-     mwalk.moved > 20 && mwalk.rMin >= mwalk.siteR && mwalk.rMax < mwalk.arena,
+  ok('逛的時候真的在走，範圍是整片碎料場（沒有站著發呆一整段）',
+     mwalk.moved > 20 && mwalk.rMin >= mwalk.siteR && mwalk.rMax < mwalk.arena + 1,
      '走了 ' + mwalk.moved + ' 格，半徑 ' + mwalk.rMin + '～' + mwalk.rMax +
-     '（建築 ' + mwalk.siteR + '、場地 ' + mwalk.arena + '）');
+     '（建築 ' + mwalk.siteR + '、碎料場外緣 ' + mwalk.arena + '）');
   ok('不搞破壞：一塊都沒少、沒有火、沒丟香蕉，地標還是 done',
      mwalk.minSet === mwalk.set0 && mwalk.burn === 0 && mwalk.nana === 0 &&
      mwalk.fb === 0 && mwalk.ph === 'done',
@@ -19644,21 +19694,70 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const out = { frames, inside, moved: +moved.toFixed(1), gait: +gait.toFixed(2),
                   graze: +(grazed / frames).toFixed(2),
                   rMin: +rMin.toFixed(1), rMax: +rMax.toFixed(1),
-                  keep: +(siteR + KEEP).toFixed(1), far: +(siteR + IDLE_FAR).toFixed(1),
-                  walk: HERD_WALK, secs: 60 };
+                  keep: +(siteR + KEEP).toFixed(1), far: +arenaR.toFixed(1), secs: 60 };
     cleanTools();
     return out;
   });
-  ok('閒逛的動物照小人那套走路：一格都沒踩進建築與小房子，範圍就是閒晃那一環',
+  ok('閒逛的動物照小人那套走路：一格都沒踩進建築與小房子，範圍就是整片碎料場',
      cwalk.inside === 0 && cwalk.rMin > cwalk.keep - 0.5 && cwalk.rMax < cwalk.far + 3,
      cwalk.frames + ' 個取樣 ' + cwalk.inside + ' 次踩進去；半徑 ' + cwalk.rMin + '～' +
-     cwalk.rMax + '（外圈 ' + cwalk.keep + '、閒晃上限 ' + cwalk.far + '）');
-  /* 站著吃草的比例不設下限太緊：一趟路可能長到二十幾秒（目標是那一環上隨機挑的），
+     cwalk.rMax + '（建築外圈 ' + cwalk.keep + '、碎料場外緣 ' + cwalk.far + '）');
+  /* 站著吃草的比例不設下限太緊：一趟路可能長到二十幾秒（目標是整片碎料場裡隨機挑的），
      60 秒裡只停一次是正常的。要驗的是「會停」不是「停多久」。 */
   ok('走一段停一段：60 秒裡走走停停，腳步跟得上速度',
      cwalk.moved > 20 && cwalk.gait > 0.8 && cwalk.graze > 0 && cwalk.graze < 0.9,
-     '60 秒走了 ' + cwalk.moved + ' 格（速度 ' + cwalk.walk + '）、' +
+     '60 秒走了 ' + cwalk.moved + ' 格、' +
      Math.round(cwalk.graze * 100) + '% 的時間站著吃草');
+
+  /* ── 每一款自己的腳程（v1.183，使用者：「根據動物種類給速度」）── */
+  const cspd = await page.evaluate(() => {
+    /* ① 表上的關係：腿擺的快慢是照「速度 ÷ (腿長×sin(擺幅))」算的，所以
+       **每一款的「一個週期走的距離 ÷ 腳掃過的距離」應該是同一個數**（見 HERD_STEP）。
+       這一條是加新款的守門員：只給速度、step 讓程式自己算，比就會一致；
+       哪天有人回頭寫死一個 step，這裡就對不上。 */
+    const tbl = {};
+    for (const k of HERD_KIND) {
+      const legs = ENG.MODELS[k].filter(b => b.sw);
+      const legLen = Math.max(...legs.map(b => b.pv)) - Math.min(...legs.map(b => b.p[1]));
+      const amp = Math.max(...legs.map(b => Math.abs(b.sw)));
+      const cycle = 2 * Math.PI / (11 * HERD_STEP[k]);        // 一個步伐週期幾秒
+      const foot = 4 * legLen * Math.sin(amp) * DOOM_SC;      // 那個週期腳掃過幾格
+      tbl[k] = { walk: HERD_WALK[k], step: +HERD_STEP[k].toFixed(2),
+                 ratio: +(HERD_WALK[k] * cycle / foot).toFixed(3) };
+    }
+    /* ② 真的走一段量出來的速度，就是表上那個數字。
+       小房子先收起來（走路會繞開它們，量到的就不是腳程了），量完放回去。 */
+    const saved = homes; homes = null;
+    for (const kind of HERD_KIND) {
+      cleanTools(); phase = 'done'; doomT = 1e9;
+      beasts = null;
+      const m = spawnCattle();
+      m.kind = kind; m.pause = 0; m.gait = 0;
+      m.x = siteR + 25; m.z = 0; m.y = 0;
+      m.tx = siteR + 45; m.tz = 0;                            // 沿半徑往外走，不可能穿到建築
+      let d = 0, px = m.x, pz = m.z;
+      for (let i = 0; i < 80; i++) {                          // 4 秒，前 1 秒在加速不算
+        stepDoom(0.05);
+        if (i >= 20) d += Math.hypot(m.x - px, m.z - pz);
+        px = m.x; pz = m.z;
+      }
+      tbl[kind].got = +(d / 3).toFixed(2);
+    }
+    homes = saved;
+    cleanTools();
+    return tbl;
+  });
+  ok('每一款動物有自己的腳程，走出來的速度就是表上那個數字',
+     HERD_KINDS.every(k => Math.abs(cspd[k].got - cspd[k].walk) < 0.12) &&
+     new Set(HERD_KINDS.map(k => cspd[k].walk)).size >= 5 &&
+     Math.max(...HERD_KINDS.map(k => cspd[k].walk)) /
+       Math.min(...HERD_KINDS.map(k => cspd[k].walk)) > 1.5,
+     HERD_KINDS.map(k => k + ' ' + cspd[k].walk + '→' + cspd[k].got).join('／'));
+  ok('腿擺的快慢是照腿長與速度算出來的，八款的跨距比一模一樣（不會空踩也不會碎步）',
+     HERD_KINDS.every(k => Math.abs(cspd[k].ratio - cspd.cow.ratio) < 0.01) &&
+     cspd.cow.ratio > 0.7 && cspd.cow.ratio < 1.1,
+     HERD_KINDS.map(k => k + ' 擺 ' + cspd[k].step).join('／') +
+     '；跨距比一律 ' + cspd.cow.ratio);
 
   /* 「不要走進建物裡面」是硬條件，不是靠繞路碰運氣：每一幀把目標壓回工地正中央。 */
   const cin = await page.evaluate(() => {

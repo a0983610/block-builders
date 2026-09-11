@@ -6241,20 +6241,21 @@ function stepBeast(m, dt) {
     sndFall();
     return false;
   }
-  const spd = m.herd ? HERD_WALK : DOOM_WALK;             // 牛羊散步，比猴子再慢一截
+  const spd = m.herd ? HERD_WALK[m.kind] : DOOM_WALK;     // 每一款自己的腳程（v1.183）
+  const stp = m.herd ? HERD_STEP[m.kind] : 0;
   /* 開工／整地就放棄走人：天災是衝著「蓋好的那一座」來的，半成品不在它的守備範圍
      （也免得牠站在推土機的路線上）。
      吉祥物只避整地（v1.144）：牠不挑地標的狀態，施工中照樣可以來逛（使用者選的），
      但整地那一段推土機會把整片工地掃過去，走路的先讓開。
-     牛羊哪一段都不避（v1.154）：牠們住在這裡，沒有「走人」這件事——而且本來就只在
-     建築外圈那一環上晃（strollTo 會把目標推到圈外），推土機掃的是圈內。 */
+     牛羊哪一段都不避（v1.154）：牠們住在這裡，沒有「走人」這件事——而且 strollTo
+     會把目標推到建築外圈之外，推土機掃的是圈內。 */
   const away = m.herd ? false
              : m.fun ? phase === 'clear' : (phase === 'build' || phase === 'clear');
   if (away && m.st !== 'go') leaveBeast(m);
   m.arm += ((m.st === 'act' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
   if (m.st === 'come') {
     m.tx = 0; m.tz = 0;
-    if (strollTo(m, dt, spd, m.herd ? HERD_STEP : 0)) {
+    if (strollTo(m, dt, spd, stp)) {
       /* 吉祥物走到建築外圈就開始逛，不進 near／act——那兩段是要動手的人才走的。 */
       m.st = m.fun ? 'fun' : 'near';
       /* 進場那一段路不算進「站多久」：strollPause 是照剛走完那段路算的，
@@ -6263,9 +6264,9 @@ function stepBeast(m, dt) {
     }
     return false;
   }
-  /* 吉祥物：在建築外圈那一環上晃，晃夠 m.stay 秒就走人（使用者：「只是出現逛一逛
-     一段時間又走了」）。逛的點跟小人閒晃借同一支 idleSpot——那一環本來就是
-     「繞著建築、又還在鏡頭裡」的範圍，也已經會避開小人的家；站多久也照小人那套
+  /* 吉祥物：在工地那一帶晃，晃夠 m.stay 秒就走人（使用者：「只是出現逛一逛
+     一段時間又走了」）。逛的點跟小人閒晃借同一支 idleSpot——它挑的範圍就是
+     「碎料場那一片、又還在鏡頭裡」，也已經會避開小人的家；站多久也照小人那套
      （strollPause，跟剛走完那段路成比例）。 */
   if (m.st === 'fun') {
     /* 牛羊沒有這個倒數（v1.154）：逛完不走人，這一段就是牠們的日常。 */
@@ -6296,7 +6297,7 @@ function stepBeast(m, dt) {
       m.gait += (0 - m.gait) * Math.min(1, dt * 8);
       return false;
     }
-    if (strollTo(m, dt, spd, m.herd ? HERD_STEP : 0)) {
+    if (strollTo(m, dt, spd, stp)) {
       /* 站多久：猴子照剛走完那段路算（strollPause），牛羊改成固定抽——
          牠們一趟只走幾格，照比例算的話停不到一秒，看起來是一直在繞圈。 */
       if (m.herd) { m.pause = rr(HERD_STAY[0], HERD_STAY[1]); m.leg = 0; }
@@ -7275,7 +7276,7 @@ function turnBad(id) {
    **整套借吉祥物那條路**：同一份 beasts 清單、同一套走路（strollTo／idleSpot，
    所以「不走進建築與小房子」是同一份程式在管）、同一套被打到的反應。差三件事：
      · **不走**：沒有 stay 倒數、也不會 leaveBeast；場上少了就補到滿（stepHerd）。
-     · **不挑階段**：整地、施工、拆除都在（牠們只在建築外圈那一環上晃）。
+     · **不挑階段**：整地、施工、拆除都在（strollTo 擋著，牠們不會走進工地裡）。
      · **不算天災的「一次一件」**：牠們永遠在場上，算進去的話天災就再也不會來
        （見 stepDoom 的 m.herd）。
    被吹飛、被點著、被水澆熄、被兵器打到那一整套是白吃的——牠們就在 beasts 裡，
@@ -7285,16 +7286,39 @@ function turnBad(id) {
    兩個一起加才有意義：8 款只養 2~3 隻的話，一場遊戲大半的款式根本不會出現。 */
 const HERD_N = [5, 8];               // 場上養幾隻（v1.154 是 2~3，使用者：「牛羊2~3隻」）
 const HERD_KIND = ['cow', 'ox', 'sheep', 'ram', 'deer', 'stag', 'hog', 'boar'];
-const HERD_WALK = 1.5;               // 走多快（小人 6.8、猴子 2.2；牛羊是散步）
-const HERD_STEP = 0.62;              // 腿擺多快（倍率，見 strollTo 的 step）
+/* 走多快，**一款一個**（v1.183 使用者：「根據動物種類給速度」；小人 6.8、猴子 2.2）。
+   牛慢、羊更慢、豬短腿小跑、鹿最快——v1.154～v1.182 是八款共用 1.5。 */
+const HERD_WALK = { cow: 1.5, ox: 1.6, sheep: 1.3, ram: 1.35,
+                    deer: 2.4, stag: 2.1, hog: 1.4, boar: 1.9 };
+/* 腿擺多快（倍率，見 strollTo 的 step）**不是自由參數**：一步跨多遠是腿長與擺幅決定的，
+   跟不上速度就是原地空踩、擺太快就是碎步。所以照造型表算，不一款一款寫死——
+
+     一條腿一趟掃 2·腿長·sin(擺幅)，四條腿對角同步 → 一個週期走 4·腿長·sin(擺幅)
+     週期 ＝ 2π ÷ (11·step)（見 strollTo 那行 w.ph += dt * 11 * step）
+     要 速度 × 週期 ≒ 一個週期走的距離  →  step ∝ 速度 ÷ (腿長·sin(擺幅))
+
+   HERD_STEP_K 是拿乳牛的舊值（速度 1.5、腿長 0.49、擺幅 0.5 → 0.62）回推的，
+   所以牛羊那四款的數字跟 v1.154 一模一樣，只有新的兩種與改了速度的才動。
+   腿長＝關節高度 pv 減最低那一塊的中心高（就是造型表裡那幾塊掛 sw 的）。 */
+const HERD_STEP_K = 0.0971;
+const HERD_STEP = (() => {
+  const out = {};
+  for (const k in HERD_WALK) {
+    const legs = ENG.BEASTS[k].filter(b => b.sw);
+    const legLen = Math.max(...legs.map(b => b.pv)) - Math.min(...legs.map(b => b.p[1]));
+    const amp = Math.max(...legs.map(b => Math.abs(b.sw)));
+    out[k] = HERD_STEP_K * HERD_WALK[k] / (legLen * Math.sin(amp));
+  }
+  return out;
+})();
 const HERD_SC = [0.90, 1.08];        // 每一隻的大小抽一個倍率，同一款也不會一模一樣
 const HERD_STAY = [3.5, 9];          // 走到了站著吃草幾秒
 let herdN = 0;                       // 這一場養幾隻（第一次叫 stepHerd 時抽）
 
-/* 放一隻進來。**直接站在建築外圈那一環上**，不像猴子那樣從場外走進來：
-   牠們是這片草地的住戶不是訪客，而且走那麼慢（1.5）的話，從碎料場外緣走到工地
-   要半分鐘——開場那半分鐘場上一隻動物都沒有。落腳點借 idleSpot 挑（那一支本來就
-   會避開小人的家），先挑一個站著、再挑一個當第一個目標。 */
+/* 放一隻進來。**直接站在場上**（落腳點借 idleSpot 挑，那一支本來就會避開小人的家），
+   不像猴子那樣從場外走進來：牠們是這片草地的住戶不是訪客，而且走那麼慢的話
+   （最慢的綿羊 1.3），從碎料場外緣走到工地要一分鐘——開場那一分鐘場上一隻動物都沒有。
+   先挑一個站著、再挑一個當第一個目標。 */
 function spawnCattle() {
   const kind = HERD_KIND[Math.floor(Math.random() * HERD_KIND.length)];
   const m = {
