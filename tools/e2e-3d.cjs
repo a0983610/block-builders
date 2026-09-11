@@ -9,18 +9,18 @@
    只做「從頭跑到某一段」，前面照跑；要**跳掉中間**的段落是 --tier 的事。
    部分執行時總結會標出來（見下面 --tier 那一段的規矩）。
 
-   --tier must|commit|full：測試分三檔（見 README〈測試分三檔〉的段落表與實測秒數）。
+   --tier must|commit|full：測試分三檔（見 開發筆記〈測試分三檔〉的段落表與實測秒數）。
      must    骨架 ＋ 核心行為與道具主幹。改一行先看有沒有整支炸掉用的。
      commit  扣掉「只在動到那個檔時才會壞」的貴段（藍圖兩段、藍圖預覽頁、匯入建築、水桶、音效）。
      full    全部，**預設值**。
    **規矩（v1.183 使用者定）**：commit 前跑 commit 檔就好，一輪綠就算完成；
-   完整輪是使用者說要跑才跑，不是每次 commit 的預設動作（見 README〈驗收規矩〉）。
+   完整輪是使用者說要跑才跑，不是每次 commit 的預設動作（見 開發筆記〈驗收規矩〉）。
    等級寫在 head() 的第二個參數，段落本體包在 `SEC: { … }` 裡，跳過就 break 出去
    （本體沿用原縮排，不重排才不會生出整檔 diff）。
 
    段落之間有狀態相依——測試註解裡就有「上一段測試把人散到四十單位外去了」這種前提，
    所以「可以跳」不是推論出來的，是**量出來**的：跳掉之後拿 --json 逐條比對，
-   數字對不上就不准跳（做法與結果見 README〈測試分三檔〉）。
+   數字對不上就不准跳（做法與結果見 開發筆記〈測試分三檔〉）。
    還有一條硬規則由〈整體〉那一段守著：**某一段宣告、別段才讀的變數，宣告的那一段
    等級不能比讀它的那一段高**，否則跳掉之後那個名字會變成 undefined。
 
@@ -33,7 +33,7 @@
    分不出是程式壞了還是這條測試在賭。
    種子在**每一段開頭重新下**（種子 ^ 段名的雜湊），所以在某一段加測試不會位移別段的骰子。
    沒有這一層的話會這樣：three.js 的 generateUUID 每建一個物件抽四發 Math.random()，
-   引擎多一顆網格就把整條序列往後推，幾百條之後某條不相干的測試就換了骰子（見 README）。
+   引擎多一顆網格就把整條序列往後推，幾百條之後某條不相干的測試就換了骰子（見 開發筆記）。
    --json <檔>：把每一條的結果寫成 JSON。給「跑十輪不同種子把偶發挖出來」用。
    --update-varying a.json b.json：拿兩份**不同種子**的 --json 逐條比 detail，把
    「換種子數字就會變」的條目寫成 tools/e2e-varying.json。`--tier commit`／`must`
@@ -98,7 +98,7 @@ if (process.argv.indexOf('--list') >= 0) {
   process.exit(0);
 }
 
-/* ---------- 浮動條目清單（--update-varying，見 README〈測試分三檔〉） ----------
+/* ---------- 浮動條目清單（--update-varying，見 開發筆記〈測試分三檔〉） ----------
    「換一顆種子數字就不一樣」的那些條目：它們的門檻是統計帶，不是固定值。
    `--tier commit`／`must` 不記它們（見 ok()），完整檔照跑。
    清單是**量出來**的，不是手挑的——拿幾份 --json 逐條比 detail，有一份不一樣就算浮動：
@@ -109,7 +109,7 @@ if (process.argv.indexOf('--list') >= 0) {
      node tools/e2e-3d.cjs --update-varying a.json b.json c.json
 
    **同種子那一份不能省**：實測同一顆種子重跑，1190 條裡有 384 條數字就不一樣了
-   （見 README〈`--seed` 釘不住的那三成〉），只比換種子會漏掉十幾條。
+   （見 開發筆記〈`--seed` 釘不住的那三成〉），只比換種子會漏掉十幾條。
    幾份都要是**同一版程式**跑的，不然版本號那幾條會被誤判成浮動。
    跟〈造型基準〉的 --update-models 同一個套路：產生的檔進 git，改動之後重產、看 diff。
    純 node，不開瀏覽器，所以擺在載入 playwright 之前。 */
@@ -186,7 +186,7 @@ const stopRun = () => Object.assign(new Error('--until 收工'), { stopRun: true
 
 const argOf = f => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] || '') : ''; };
 
-/* ---------- 測試分三檔（--tier，見檔頭與 README〈測試分三檔〉） ----------
+/* ---------- 測試分三檔（--tier，見檔頭與 開發筆記〈測試分三檔〉） ----------
    數字要能比大小：段落的等級 ≤ 這一輪的等級才跑。所以等級是**累積**的，
    commit 檔一定包含必要檔那幾段。 */
 const T_MUST = 1, T_COMMIT = 2, T_FULL = 3;
@@ -755,7 +755,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       pose[kind] = rows;
     }
-    ENG.putBeasts([]);      // 動過的狀態還回去（見 README〈測試動過的全域狀態要還回去〉）
+    ENG.putBeasts([]);      // 動過的狀態還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）
     return { parts, pose };
   });
   const BASE = path.join(__dirname, 'model-baseline.json');
@@ -1949,7 +1949,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 使用者回報「按鈕文字折行」：390px 的手機上那三顆各自折成兩行、還被卡片下緣切掉。
      窄畫面的修法是**整顆換列**而不是把字折斷，所以這一條數的是「每顆幾行字」。
-     量完要把視窗還回去（見 README〈測試動過的全域狀態要還回去〉）。 */
+     量完要把視窗還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）。 */
   await vp.setViewportSize({ width: 390, height: 844 });
   await vp.waitForTimeout(200);
   const vpNarrow = await vp.evaluate(() => {
@@ -5553,7 +5553,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 600 秒（v1.100 從 400 再拉上來）：房子放大到 100～300 塊，
        六七間共 800～950 塊，實測 219～244 秒蓋完（一趟搬 2～3 塊之前是 350 秒）。
        v1.129 起一趟多了「走過去撿」那一段、一趟的塊數下限也從 2 降到 1，
-       同一場景實測 269～396 秒（同一天量的舊流程是 199～223 秒，見 README）。 */
+       同一場景實測 269～396 秒（同一天量的舊流程是 199～223 秒，見 開發筆記）。 */
     while (secs < 600 && homes.list.some(h => h.left > 0)) {
       snap();
       step(0.05); secs += 0.05;
@@ -6221,7 +6221,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      房子不在那張表裡；投石機當年一律照工地中心取落點，擺在小人的家旁邊也是在轟地標
      （v1.102 改成「擺在誰旁邊就轟誰」，v1.174 改成兩點式、第二下點誰就轟誰）。
      火勢蔓延同理——原本只燒被點著的那一塊（spreadFire 走的是藍圖的鄰居表）。
-     水桶不在這張表裡：積水是照藍圖的格子在流的，房子不在那個格子系統裡（見 README）。 */
+     水桶不在這張表裡：積水是照藍圖的格子在流的，房子不在那個格子系統裡（見 開發筆記）。 */
   const homeTools = await page.evaluate(() => {
     const rows = [];
     const build = () => {
@@ -8248,7 +8248,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 清得掉多少很看堆的位置，但門檻要有意義：繞內側那版是平均 27～33%
      （中世紀城堡（v1.66 換掉的那份）四輪 15/18/32/43%），對穿之後 51～69%，時限拉到 10 秒（v1.61.1）
      之後是 82～87%，v1.142 照寬度並排掃一趟之後是 92%（同一份藍圖同一支測試；
-     另外六個場景 93/98/94/100/95/95%，見 README〈整地〉）。門檻跟著拉到八成，
+     另外六個場景 93/98/94/100/95/95%，見 開發筆記〈整地〉）。門檻跟著拉到八成，
      擋的是退步不是抖動。 */
   ok('機器真的把碎料推出去了，不是全靠收尾彈掉', doze.pushedOut > doze.cohort * 0.8,
      doze.cohort + ' 塊裡有 ' + doze.pushedOut + ' 塊被鏟出範圍（' +
@@ -9119,7 +9119,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 投石機。**v1.174 改成兩點式、一次四台**（使用者：「投石機調整 改成類似箭雨操作方式
      兩個位置 然後一次出現4台投石機」），所以這一段從「點一下架一台」整組換掉：
      第一下只畫光環、第二下才架一隊、隊形照 TREB_TEAM／TREB_GAP 排、落點跟著第二點走。
-     期望值一律讀常數算（那幾個一改這幾條自己跟著對，見 README〈不要寫死會隨改動變動的數字〉）。 */
+     期望值一律讀常數算（那幾個一改這幾條自己跟著對，見 開發筆記〈不要寫死會隨改動變動的數字〉）。 */
   await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 3 });
   const treb = await page.evaluate(() => {
     completeNow();
@@ -9766,7 +9766,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 一顆跟六顆畫起來一樣貴：球換成 InstancedMesh 了（v1.116），場上幾顆只是多幾個
      instance。沒球的時候要回到原點——InstancedMesh 就算 count = 0 也會吃一個 draw call，
-     所以沒球一定要 visible = false（見 README〈效能〉）。 */
+     所以沒球一定要 visible = false（見 開發筆記〈效能〉）。 */
   const ballCalls = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
     draw(); ENG.render();
@@ -10186,7 +10186,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      沒掉，整段等於沒跑。
      小人要**凍住**（updWorker 換成空的）：不凍的話他們在雲聚滿之前就走掉了
      （實測 16 秒走了 80 幾單位），量到的會是「沒打到」而不是「打不到」。
-     量法在 v1.134 改過（見 README〈打雷劈到人那一條也在賭骰子〉）：人**鋪滿整個落點圓**，
+     量法在 v1.134 改過（見 開發筆記〈打雷劈到人那一條也在賭骰子〉）：人**鋪滿整個落點圓**，
      而且驗的是「每個人離最近的落點多遠」——一道雷的落點是在半徑 STRIKE_R 的圓裡隨機挑的，
      把人全擠在圓心的話，這一條就是在賭「這朵雲有沒有剛好劈到中間」。 */
   const stormMan = await page.evaluate(() => {
@@ -13219,7 +13219,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 塊、視線高度還回去（' + ufoEdge.cam + '）');
 
   /* 畫面：碟身、邊燈、光柱三顆 mesh。沒幽浮在場時一律 visible=false
-     （沒東西在場就不吃 draw call，README〈效能〉那條規矩）。 */
+     （沒東西在場就不吃 draw call，開發筆記〈效能〉那條規矩）。 */
   const ufoDraw = await page.evaluate(() => {
     cleanTools(); completeNow();
     for (let i = 0; i < 60; i++) step(0.05);
@@ -13371,7 +13371,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '第一下：光環在、人 ' + arCast.one.men + '、箭 ' + arCast.one.arrows +
      '；第二下：' + arCast.n + ' 個人站出來（AR_N ' + arCast.N + '），光環收掉');
   /* 排數與正面寬都照 AR_N／AR_COL／AR_GAP 算出來比（那三個一改這條自己跟著對，
-     不寫死數字，見 README〈不要寫死會隨改動變動的數字〉）。 */
+     不寫死數字，見 開發筆記〈不要寫死會隨改動變動的數字〉）。 */
   ok('一隊排成整齊的橫列、整隊面向目標，沒有人站在建築或房子裡',
      arCast.rows === arCast.wantRows && arCast.faceMax < 0.06 && arCast.inSolid === 0 &&
      Math.abs(arCast.wide - arCast.wantWide) < 1.2 &&
@@ -14012,7 +14012,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      它是「往天上灑火種」：一發打不掉任何積木，但落下來的火星碰到建築就從那一塊燒起來。
      v1.39 起一次點下去是**三發齊射**（第二、三發晚 0.2～0.5 秒 ×序號出膛）。 */
   /* ══════════ 消防車與潮濕 ══════════
-     建造中失火本來會卡死（沒有消防車的量測見 README）：小人把積木補回火場旁邊，
+     建造中失火本來會卡死（沒有消防車的量測見 開發筆記）：小人把積木補回火場旁邊，
      新放上去的又被蔓延點著。v1.68 加了「被水噴到就濕 5 秒、濕的點不著」，
      以及建造中會從地圖邊緣開進來的消防車。 */
   }   // ── 〈碎料燃燒〉結束（--tier 跳過時從這裡出來）
@@ -18546,7 +18546,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (st < lowSet) { lowSet = st; ph = phase; }
         if (!beasts) break;
       }
-      /* **窗停在「龍飛走」是對的**（v1.174 查過一次，見 README〈九條「偶爾飄」的測試〉
+      /* **窗停在「龍飛走」是對的**（v1.174 查過一次，見 開發筆記〈九條「偶爾飄」的測試〉
          最後一列）：試過「再等到火自己燒完」，實測三趟都是**再燒 0 秒**——牠離場時
          火早就滅了，所以這條測試飄的原因不在窗，而是「一趟拆掉 29%～100%」這個分布
          本身跨過門檻（一半）。 */
@@ -21631,7 +21631,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        取五次的中位數之後（連量六輪）：現在這一版 40.1～41.6、v1.130 那一版 51.0～55.7、
        差距 10.2～15.4，離門檻 8 有兩個百分點以上的餘裕。
        抖的主要是**對照組**：它的 250–800Hz 幾乎全來自開頭那 0.26 秒的劈裂聲，
-       短的噪音爆本來就抖；門檻沒動（放寬門檻不算修，見 README〈九條偶爾飄的測試〉）。
+       短的噪音爆本來就抖；門檻沒動（放寬門檻不算修，見 開發筆記〈九條偶爾飄的測試〉）。
        只有雷聲那兩發需要——其他音效不是噪音打底、就是門檻離實測值夠遠。 */
     const many = async (fn, sec, reps) => {
       const rows = [];
@@ -21718,7 +21718,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                    最大值**，單次量的話本來就會抖。同一份程式碼連量十五次，一組一秒份量到
                    0.165～0.268、三組 0.169～0.251——門檻 0.25 兩邊都會偶爾踩到，
                    跟改了什麼無關。取五次的中位數之後（連量六輪）落在 0.183～0.208，
-                   離門檻有三成餘裕。門檻沒動（放寬門檻不算修，見 README〈九條偶爾飄的測試〉）。 */
+                   離門檻有三成餘裕。門檻沒動（放寬門檻不算修，見 開發筆記〈九條偶爾飄的測試〉）。 */
                 gate1s: await many(() => {
                   for (let i = 0; i < GATE_RATE; i++) sndBlade();
                   for (let i = 0; i < 13; i++) sndGateHit();
@@ -21812,7 +21812,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      本來就是擲骰子。「更小聲」由單聲 rms 與一秒份 rms 兩條守（都是整段平均，穩得多），
      peak 則由下一條的**絕對**門檻（< 0.25）守著，兩邊都沒漏。
      同「核彈那一幀不會破表」那條的修法：拿會跳的量當門檻就換成穩的那個量，
-     peak 只留在細節裡當參考（見 README〈九條「偶爾飄」的測試〉）。 */
+     peak 只留在細節裡當參考（見 開發筆記〈九條「偶爾飄」的測試〉）。 */
   ok('命中聲換成爆炸的配方，而且比 v1.151 那一版更小聲',
      snd.gateHit.hiPct < snd.clangOld.hiPct * 0.35 &&
      Math.abs(snd.gateHit.hiPct - snd.bomb.hiPct) < 8 &&
