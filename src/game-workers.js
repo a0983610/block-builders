@@ -1519,8 +1519,12 @@ function strollPause(w) { w.pause = w.leg / WALK * rr(1.7, 3.1); w.leg = 0; }
    所以是借這一支、只換速度，不是另外刻一份（見 game-tools.js 的 DOOM_WALK）。
    step 是腿擺多快的倍率（v1.154）：走得慢的還照原速擺腿的話，腳在原地空踩——
    牛羊只有猴子的三分之二速度，那四條腿看起來就是滑步（見 HERD_STEP）。 */
-function strollTo(w, dt, spd, step) {
-  const keep = siteR + KEEP;
+/* keepMore 是「這一隻要離建築再遠幾格」（v1.182）：預設 0＝照 KEEP 走。
+   飛龍身長 10 格上下，站在 siteR+1.5 上頭跟尾巴會插進地標裡，所以牠多要 8.5 格。
+   目標點推到圈外、快貼牆時掰到切線，兩段都吃這個值——只推目標不夠，
+   兩點之間那條直線本來就會從圈裡切過去。 */
+function strollTo(w, dt, spd, step, keepMore) {
+  const keep = siteR + KEEP + (keepMore || 0);
   /* 目標點落在建築裡就先推到外圈。不推的話他會繞著建築打轉永遠抵達不了，
      也就永遠不換下一個目標，等於卡死在那一圈上。 */
   const tr = Math.hypot(w.tx, w.tz);

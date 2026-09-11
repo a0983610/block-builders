@@ -6512,7 +6512,11 @@ function spawnDragon(fun, bad) {
     fun: fun ? 1 : 0, bad: bad ? 1 : 0, home: bad ? 1 : 0,
     /* 被打下來之後要用的（v1.146，見 crashDragon）：was 是摔之前在哪一段、
        t 是趴著的倒數、tsp 是摔下去時的翻滾角速度。 */
-    was: '', t: 0, tsp: 0, vx: 0, vy: 0, vz: 0, lie: 0, wet: 0, burn: 0, air: 0, fall: 0
+    was: '', t: 0, tsp: 0, vx: 0, vy: 0, vz: 0, lie: 0, wet: 0, burn: 0, air: 0, fall: 0,
+    /* 地面行走要用的（v1.182）：翅膀姿態從「照表拍翅」那一組起步（見 DRA_POSE），
+       leg／pause／ghost／tx／tz／lx／lz 是 strollTo 與 grSpot 的欄位（同獅鷲的 spawnGryph）。 */
+    wb: DRA_POSE.flap[0], wc: DRA_POSE.flap[1], wa: DRA_POSE.flap[2],
+    leg: 0, pause: 0, ghost: 0, tx: 0, tz: 0, lx: 0, lz: 0
   };
   if (!beasts) beasts = [];
   beasts.push(m);
@@ -6527,9 +6531,12 @@ function spawnDragon(fun, bad) {
 function stepDragon(m, dt) {
   /* 濕度自己在這裡遞減：走地上的那幾隻是 hurtBeast 在減，而牠不走那一支（v1.154）。 */
   if (m.wet > 0) m.wet = Math.max(0, m.wet - dt);
-  /* 被打下來了（v1.146）：摔 → 趴 → 拍翅起飛，那三段自己一套（見 fallenDragon）。 */
-  if (m.st === 'crash' || m.st === 'down' || m.st === 'rise') return fallenDragon(m, dt);
+  /* 被打下來了（v1.146）：摔 → 趴 → 走一段（v1.182）→ 拍翅起飛，自己一套（見 fallenDragon）。 */
+  if (m.st === 'crash' || m.st === 'down' || m.st === 'gwalk' || m.st === 'rise')
+    return fallenDragon(m, dt);
+  if (m.st === 'land') return landDragon(m, dt);          // 自己降落（v1.182，見上面那一段）
   if (m.st === 'ablaze') return ablazeDragon(m, dt);      // 身上著火（v1.154，見 burnDragon）
+  draWings(m, 'flap', dt, 4);                             // 在天上：翅膀回到拍翅那一組
   m.ph += dt * DRA_FLAP;
   const r = Math.hypot(m.x, m.z) || 1;
   let want = m.a;
@@ -6548,7 +6555,14 @@ function stepDragon(m, dt) {
     const err = Math.max(-1, Math.min(1, (r - m.rc) / (m.rc * 0.5)));
     want = Math.atan2(-nz * m.dir - nx * err, nx * m.dir - nz * err);
     m.turned += dt * DRA_SPD / m.rc;
-    if (m.turned >= DRA_RING * Math.PI * 2) m.st = 'out';
+    if (m.turned >= DRA_RING * Math.PI * 2) {
+      /* 繞完了。吉祥物那一趟**偶爾自己降落**、在草皮上走一段再飛走（v1.182）。
+         等繞完才判斷：中途落地的話這一圈的火球（bad 那一版）就吐不完了。 */
+      if (m.fun && m.left <= 0 && Math.random() < DRA_LAND_P) {
+        draSpot(m); m.was = 'out'; m.st = 'land';
+        toast('🐉 那條龍降落到草皮上了', '牠會在地上走一段，然後拍翅飛走');
+      } else m.st = 'out';
+    }
     /* 邊繞邊吐（「中途吐幾顆火球」）。隔開來吐，不連噴。 */
     m.gap -= dt;
     if (m.gap <= 0 && m.left > 0) {
@@ -6909,16 +6923,19 @@ function spawnGryph(fun, bad) {
    **落地點再往外 GR_WALK_IN 格**（v1.177）：那一段留給四條腿走完（見 stepGryph 的 walk）。
    落地點也要挑過（同樣避開房子與建築），挑不到就退回「直接落在站定的位置」——
    走不走得成是次要的，落在人家屋頂上不行。 */
-function grSpot(m) {
+/* stand／walkIn 給了就用給的（v1.182）：飛龍要自己降落走一段，挑點的規矩跟獅鷲
+   一模一樣，只是牠佔地大得多，站定的圈要再往外推（見 DRA_STAND）。 */
+function grSpot(m, stand, walkIn) {
   const r = Math.hypot(m.x, m.z) || 1;
   const a0 = Math.atan2(m.z / r, m.x / r);
-  const d0 = siteR + GR_STAND;
+  const d0 = siteR + (stand === undefined ? GR_STAND : stand);
+  const win = walkIn === undefined ? GR_WALK_IN : walkIn;
   for (let i = 0; i < 8; i++) {
     const a = a0 + (i ? rr(-0.5, 0.5) : 0), d = d0 + (i ? rr(0, 4) : 0);
     const x = Math.cos(a) * d, z = Math.sin(a) * d;
     if (i < 7 && (homeAt(x, z) || footBlocked(x, z))) continue;
     m.tx = x; m.tz = z;
-    const lx = Math.cos(a) * (d + GR_WALK_IN), lz = Math.sin(a) * (d + GR_WALK_IN);
+    const lx = Math.cos(a) * (d + win), lz = Math.sin(a) * (d + win);
     const ok = Math.hypot(lx, lz) < arenaR - 2 && !homeAt(lx, lz) && !footBlocked(lx, lz);
     m.lx = ok ? lx : x; m.lz = ok ? lz : z;
     return;
@@ -6927,14 +6944,17 @@ function grSpot(m) {
 /* 在天上朝一個點飛：轉向限速（弧線是這樣轉出來的）＋ 轉多急就往內側傾斜多少。
    目標是**落地點**（m.lx／m.lz），不是站定的位置——最後那幾格是走過去的。
    回傳還剩多少水平距離。 */
-function grFly(m, dt, spd) {
+/* turn／roll 給了就用給的（v1.182，同 grSpot）：飛龍降落也是「轉向限速飛向落地點」
+   這件事，只是牠轉得比獅鷲慢（DRA_TURN 0.62 對 GR_TURN 0.9）。 */
+function grFly(m, dt, spd, turn, roll) {
+  const tn = turn === undefined ? GR_TURN : turn, rl = roll === undefined ? GR_ROLL : roll;
   const dx = m.lx - m.x, dz = m.lz - m.z, d = Math.hypot(dx, dz);
   let e = Math.atan2(dx, dz) - m.a;
   while (e > Math.PI) e -= Math.PI * 2;
   while (e < -Math.PI) e += Math.PI * 2;
-  const rate = clamp(e / Math.max(dt, 1e-4), -GR_TURN, GR_TURN);
+  const rate = clamp(e / Math.max(dt, 1e-4), -tn, tn);
   m.a += rate * dt;
-  m.roll += (-rate / GR_TURN * GR_ROLL - m.roll) * Math.min(1, dt * 3);
+  m.roll += (-rate / tn * rl - m.roll) * Math.min(1, dt * 3);
   m.x += Math.sin(m.a) * spd * dt;
   m.z += Math.cos(m.a) * spd * dt;
   return d;
@@ -7200,6 +7220,9 @@ function turnBad(id) {
     if (m.kind !== id || !m.fun) continue;
     if (m.kind === 'dragon') {
       if (m.st === 'out') continue;             // 已經在飛出場了
+      /* 在地上那一段的（v1.182：摔下來或自己降落）：起飛之後要接回盤旋，
+         不然牠拿著配額直接飛走——rise 是照 m.was 歸隊的。 */
+      if (m.was === 'out') m.was = 'in';
       m.left = Math.round(rr(DRA_SHOT[0], DRA_SHOT[1]));
       /* 繞的圈數歸零＝再繞一圈，這一圈是來吐火球的。不歸零的話牠可能只差幾度就繞滿了，
          配額給了也吐不完就飛走。gap 也要重給：吉祥物那一路 left 是 0，
@@ -7242,10 +7265,12 @@ function turnBad(id) {
   return false;
 }
 
-/* ── 閒逛的牛羊（v1.154）──────────────────────────────────
+/* ── 閒逛的動物（v1.154 牛羊，v1.182 加鹿與豬）──────────────
    使用者：「增加場上幾隻閒逛的動物（會被破壞工具作用 也會著火類似小人）／
    牛羊 2~3 隻 依照小人行走邏輯不要走進建物裡面」，看過造型之後追加
    「也可以牛羊多種造型隨機出現」（四款：乳牛、黃牛、綿羊、黑面羊）。
+   **v1.182 加到八款、5~8 隻**（梅花鹿、赤鹿、家豬、山豬）——加一款只要在 HERD_KIND
+   多寫一個名字、engine.js 的 BEASTS 多一份造型，這一支以下的程式一個字都不必動。
 
    **整套借吉祥物那條路**：同一份 beasts 清單、同一套走路（strollTo／idleSpot，
    所以「不走進建築與小房子」是同一份程式在管）、同一套被打到的反應。差三件事：
@@ -7255,8 +7280,11 @@ function turnBad(id) {
        （見 stepDoom 的 m.herd）。
    被吹飛、被點著、被水澆熄、被兵器打到那一整套是白吃的——牠們就在 beasts 裡，
    eachBeastNear／tossBeast／igniteBeast／fellBeast／weaponVsBeast 一個字都不必改。 */
-const HERD_N = [2, 3];               // 場上養幾隻（使用者：「牛羊2~3隻」）
-const HERD_KIND = ['cow', 'ox', 'sheep', 'ram'];
+/* v1.182 使用者：「增加閒逛的動物場上存在數量 & 種類增加 鹿 豬（像牛羊 也要多種版本）」，
+   看過造型之後選 5~8 隻。款數從 4 變 8（鹿與豬各兩款，見 engine.js 的 deerParts／pigParts）——
+   兩個一起加才有意義：8 款只養 2~3 隻的話，一場遊戲大半的款式根本不會出現。 */
+const HERD_N = [5, 8];               // 場上養幾隻（v1.154 是 2~3，使用者：「牛羊2~3隻」）
+const HERD_KIND = ['cow', 'ox', 'sheep', 'ram', 'deer', 'stag', 'hog', 'boar'];
 const HERD_WALK = 1.5;               // 走多快（小人 6.8、猴子 2.2；牛羊是散步）
 const HERD_STEP = 0.62;              // 腿擺多快（倍率，見 strollTo 的 step）
 const HERD_SC = [0.90, 1.08];        // 每一隻的大小抽一個倍率，同一款也不會一模一樣
@@ -7574,11 +7602,15 @@ function draDive(m, vy) {
 /* 把牠打下來。回傳 true＝真的打到了（已經在摔的不重複觸發）。 */
 function crashDragon(m) {
   if (m.st === 'crash' || m.st === 'down' || m.st === 'rise') return false;
-  m.was = m.st;
+  /* 走在地上／正在降落的那一隻（v1.182）：m.was 已經是「起飛之後要接回哪一段」了，
+     別把它蓋成 gwalk／land——蓋掉的話 rise 那一行會把牠送回盤旋，本來要走人的又繞一圈。 */
+  const onGround = m.st === 'gwalk';
+  if (!onGround && m.st !== 'land') m.was = m.st;
   draDive(m, rr(-2, 1.5));
   m.left = 0;                                        // 摔下去就不吐火球了
   sndRoar();
-  toast('🐉 那條龍被打下來了', '牠在地上趴一下就會再飛起來');
+  toast(onGround ? '🐉 那條龍被打倒了' : '🐉 那條龍被打下來了',
+        '牠在地上趴一下就會再飛起來');
   return true;
 }
 /* 趴在地上時原點要離地多高。BEAST_FLOOR 是照造型表算的「最低的那一塊剛好貼草皮」，
@@ -7615,11 +7647,14 @@ function fallenDragon(m, dt) {
       return false;
     }
     m.roll += (DRA_DOWN_ROLL - m.roll) * Math.min(1, dt * 6);
-    if (m.t <= 0) { m.st = 'rise'; sndRoar(); }
+    /* 喘完了就**站起來走一段**（v1.182），不再直接拍翅走人。 */
+    if (m.t <= 0) { draLanded(m, 1); sndRoar(); }
     return false;
   }
+  if (m.st === 'gwalk') return walkDragon(m, dt);         // 在草皮上走（v1.182）
   /* rise：拍翅起飛。鼻子抬起來、側傾收平，一路爬升到巡航高度才歸隊。 */
   const top = m.cruise;                     // 爬回進場時那個高度（見 spawnDragon）
+  draWings(m, 'flap', dt, 4);               // 翅膀從收著的那一對張回來（v1.182）
   m.ph += dt * DRA_FLAP * DRA_RISE_FLAP;
   m.spin += (DRA_RISE_PITCH - m.spin) * Math.min(1, dt * 3);
   m.roll += (0 - m.roll) * Math.min(1, dt * 3);
@@ -7661,13 +7696,23 @@ function burnDragon(m) {
     toast('🐉 趴在地上那條龍被點著了', '牠會先把火壓掉才飛得起來');
     return true;
   }
+  /* 走在草皮上被點著（v1.182）：就地趴下來壓火（走同一段 down），
+     燒完會再站起來把剩下的路走完——不推回 down 的話牠會拖著火在地上散步。 */
+  if (m.st === 'gwalk') {
+    m.st = 'down'; m.t = rr(DRA_DOWN[0], DRA_DOWN[1]); m.gait = 0;
+    m.spin = DRA_DOWN_PITCH; m.roll = DRA_DOWN_ROLL; m.ph = DRA_DOWN_PH;
+    toast('🐉 走在地上那條龍被點著了', '牠會趴下來把火壓掉才飛得起來');
+    return true;
+  }
   /* 才剛拍翅爬到一半又被點著：再摔一次（走同一段 crash）。 */
   if (m.st === 'rise') {
     draDive(m, 0);
     toast('🐉 那條龍剛飛起來又被點著了', '牠會再摔一次，在地上把火燒完');
     return true;
   }
-  m.was = m.st === 'out' ? 'out' : 'in';         // 火滅了要接回原本那一段
+  /* 火滅了要接回原本那一段。**降落到一半被點著的不蓋掉**（v1.182）：
+     牠的 m.was 在進 land 那一刻就設成 'out' 了（繞完才降落的），蓋掉會變成再繞一圈。 */
+  if (m.st !== 'land') m.was = m.st === 'out' ? 'out' : 'in';
   m.st = 'ablaze';
   m.t = rr(DRA_ABLAZE[0], DRA_ABLAZE[1]);
   toast('🐉 那條龍身上著火了', '牠撐不了多久，會摔下來在地上把火滅掉');
@@ -7694,6 +7739,93 @@ function ablazeDragon(m, dt) {
   /* 火被澆熄了（wetBeast 會把 st 推回航線），或撐到底了就摔下去。 */
   if (m.t > 0 && m.burn > 0) return false;
   draDive(m, 0);                                 // 不是被打的那一下，所以沒有往上彈
+  return false;
+}
+
+/* ── 飛龍：地面行走（v1.182）─────────────────────────────
+   使用者：「飛龍也要像獅鷲能做出地面行走 著火 倒地等行為」。
+   著火（v1.154）與倒地（v1.146）本來就有，缺的是中間那一段——牠趴著喘完就直接
+   拍翅走人，兩條腿一步都沒踏過。現在兩條路都會經過地上那一段：
+     被打下來   crash → down（趴著喘／壓火）→ **gwalk（站起來走一段）** → rise
+     自己降落   ring 繞完 → **land（收翅滑降）** → gwalk → rise → out
+   自己降落**只有吉祥物那一趟會做**（m.fun）：天災那一趟是衝著地標來的，
+   中途落地會把「繞一圈邊吐火球」整個打斷。
+
+   走法整套借小人那支 strollTo（同猴子、牛羊、獅鷲）：繞開別人家、不穿建築、
+   走到了回 true 全是它在管，這裡只給速度與腿擺多快。
+   **地上這一段 m.sky 照舊是 1**：牠從進場到飛走都在飛龍自己那條狀態機裡
+   （見 spawnDragon 那個旗標的註解），v1.146 起趴在草皮上那一段本來就是這樣。
+   意思是龍捲風與幽浮還是吸不到牠、火星與兵器的命中帶還是照「身體中段上下各半身高」
+   抓——跟「趴著的龍」同一個待遇，這次沒有改那件事。 */
+const DRA_WALK = 3.2;                // 走多快（格／秒；獅鷲 2.6、牛羊 1.5——龍大一號）
+/* 腿擺多快（倍率，見 strollTo 的 step）。**照「一步跨多遠」湊的**：
+   髖到腳底 0.78 模型單位 × 2.1 ＝ 1.64 格，擺幅 ±0.8 弧度（見造型表那三塊的 sw）
+   → 一條腿一趟掃 2×1.64×sin(0.8) ＝ 2.35 格、兩條腿一個週期走 4.7 格；
+   週期是 2π ÷ (11×step)，要讓 DRA_WALK × 週期 ≒ 4.7 才不會原地空踩。 */
+const DRA_STEP = 0.40;
+const DRA_GWALK = [4.5, 8];          // 在草皮上待幾秒（走到了就換下一個點，時間到才起飛）
+const DRA_STAND = 10;                // 站定的圈在建築外圈再往外幾格（獅鷲 5.5；龍佔地大）
+const DRA_WALK_IN = 16;              // 落地點再往外幾格，那一段用走的補完（獅鷲 14）
+const DRA_LAND_P = 0.5;              // 吉祥物那一趟繞完之後，有多少機會自己降落
+const DRA_LAND_SPD = 10;             // 降落那一段慢下來（巡航 15）
+const DRA_LAND_PITCH = -0.24;        // 降落時鼻子抬起來煞車（同獅鷲）
+/* 兩種翅膀姿態（見引擎的 wingAng：中位角／沿翼展的彎曲／擺幅）。
+   flap **要跟 WING_CFG.dragon 表上那三個數字一樣**——那一組就是「照表拍翅」，
+   不一樣的話起飛之後翅膀會歪掉（同獅鷲的 GR_POSE.flap 對 WING_CFG.gryphon）。
+   rest 是站著／走路收起來的那一對：翼根抬高、沿翼展一路彎回來，積出來是一道
+   從背上升起的拱（做法與不能超過 90° 的理由都見 GR_POSE 那一段）。 */
+const DRA_POSE = { flap: [0.18, 0, 0.62], rest: [1.45, -2.95, 0.05] };
+function draWings(m, to, dt, k) {
+  const p = DRA_POSE[to], r = Math.min(1, dt * (k || 5));
+  m.wb += (p[0] - m.wb) * r;
+  m.wc += (p[1] - m.wc) * r;
+  m.wa += (p[2] - m.wa) * r;
+}
+/* 落地點與站定的位置：整套借獅鷲那支（見 grSpot），只換兩個距離。 */
+function draSpot(m) { grSpot(m, DRA_STAND, DRA_WALK_IN); }
+/* 在地上逛的下一個點：借牛羊那支 idleSpot（隨機挑、避開人家的屋子）。
+   挑出來的是 siteR+2～siteR+9，比龍站得住的位置近得多——那一段交給 strollTo 的
+   keepMore（見下面 DRA_KEEP）：它會把目標推到圈外，連路線都繞在圈外。 */
+const DRA_KEEP = DRA_STAND - KEEP;   // 走路時要離建築再遠幾格（KEEP 1.5 → 總共 siteR+10）
+/* 收翅滑降。高度照**剩下的時間**收，不寫死每秒掉幾格（同獅鷲的 land：寫死的話
+   遠一點的落地點會先落地再滑過去、近一點的會還在半空就到了）。 */
+function landDragon(m, dt) {
+  draWings(m, 'flap', dt, 4);
+  m.ph += dt * DRA_FLAP * 1.5;                       // 拍翅煞車：拍得比巡航用力
+  m.spin += (DRA_LAND_PITCH - m.spin) * Math.min(1, dt * 4);
+  const gnd = draGround();
+  const d = grFly(m, dt, DRA_LAND_SPD, DRA_TURN, DRA_ROLL);
+  const tt = Math.max(0.3, d / DRA_LAND_SPD);
+  m.y = Math.max(gnd, m.y - (m.y - gnd) / tt * dt);
+  if (d > 1.5 && m.y > gnd + 0.05) return false;
+  draLanded(m, 0);
+  spawnRing({ x: m.x, y: 0, z: m.z }, 6);            // 落地砸出一圈塵
+  sndFall();
+  return false;
+}
+/* 腳踩到草皮那一刻。spot＝要不要就地挑一個新的目標：自己降落的那條路在進 land
+   之前就挑好了（grSpot 的 tx/tz ＝站定的位置，那一段是走進去的），
+   摔下來的那條沒有，就地借 idleSpot 挑一個（同牛羊逛街的挑法）。 */
+function draLanded(m, spot) {
+  m.y = draGround(); m.gait = 0; m.leg = 0;
+  if (spot) idleSpot(m);
+  m.st = 'gwalk'; m.t = rr(DRA_GWALK[0], DRA_GWALK[1]);
+}
+/* 在草皮上走。m.t 是這一段的總時間：走到了就換下一個點，時間到才拍翅起飛
+   （房子擋在路中間時 strollTo 可能一直到不了，時間到照樣起飛——同獅鷲那個保險）。
+   趴著留下的俯仰／側傾與降落的側傾在這裡收回來，不在切狀態那一幀硬歸零（會跳一下）。 */
+function walkDragon(m, dt) {
+  draWings(m, 'rest', dt, 3);
+  m.y += (draGround() - m.y) * Math.min(1, dt * 8);
+  m.spin += (0 - m.spin) * Math.min(1, dt * 4);
+  m.roll += (0 - m.roll) * Math.min(1, dt * 4);
+  m.t -= dt;
+  /* 走到了還有時間就換下一個點。**用 idleSpot 不用 draSpot**：grSpot 挑的是
+     「牠現在這個方位、外圈上那一點」，站定之後再叫一次會挑到同一點，
+     於是每一幀都「已經到了」，龍就杵在原地不動了。 */
+  if (strollTo(m, dt, DRA_WALK, DRA_STEP, DRA_KEEP) && m.t > 0) idleSpot(m);
+  if (m.t > 0) return false;
+  m.st = 'rise'; m.gait = 0; sndRoar();
   return false;
 }
 

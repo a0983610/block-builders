@@ -341,9 +341,10 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那一段自己把它裝回去（見「吉祥物」）。 */
   if (!window.mascStep) window.mascStep = stepMascot;
   stepMascot = () => {};
-  /* 閒逛的牛羊（v1.154）同理，而且更該關掉：牠們是**常駐**的（2~3 隻一直在場上），
-     天災與吉祥物那兩整段都在數 beasts（「場上幾隻」「beasts[0] 是不是牠」），
-     多兩隻牛在裡面全部會歪。要測這件事本身的那一段自己裝回去（見「閒逛的牛羊」）。 */
+  /* 閒逛的動物（v1.154）同理，而且更該關掉：牠們是**常駐**的（HERD_N 隻一直在場上，
+     v1.182 起是 5~8 隻），天災與吉祥物那兩整段都在數 beasts（「場上幾隻」
+     「beasts[0] 是不是牠」），多幾隻牛在裡面全部會歪。
+     要測這件事本身的那一段自己裝回去（見「閒逛的動物」）。 */
   if (!window.herdStep) window.herdStep = stepHerd;
   stepHerd = () => {};
   /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
@@ -19077,6 +19078,65 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '配額 ' + mdra.shots + ' 顆、場上最多 ' + mdra.fb + ' 顆；' +
      mdra.set0 + ' → ' + mdra.set + ' 塊');
 
+  /* ── 飛龍：偶爾自己降落，在草皮上走一段再飛走（v1.182）───────────
+     使用者：「飛龍也要像獅鷲能做出地面行走 著火 倒地等行為」，形態選的是
+     「倒地後爬起來走一段」＋「偶爾主動降落走一段」。主動降落**只有吉祥物那一趟做**
+     （天災那一趟是衝著地標來的，中途落地會把「繞一圈邊吐火球」整個打斷）。
+     機率那一段把 Math.random 押到底驗兩邊：押 0 一定降落、押 0.99 一定不降落。
+     押骰子而不是跑幾十趟看比例，是為了讓這兩條是**固定值**——統計帶的條目
+     在 --tier commit 會被浮動清單濾掉，這兩條要每一檔都守著。 */
+  const mland = await page.evaluate(() => {
+    const R = Math.random;
+    const run = (fun, dice) => {
+      cleanTools(); phase = 'done'; doomT = 1e9;
+      Math.random = () => dice;
+      const m = spawnDragon(fun);
+      m.left = 0;                                     // 這裡不驗吐火球，配額清掉
+      const path = [];
+      let walked = 0, gait = 0, low = 1e9, inside = 0, rMin = 1e9, px = m.x, pz = m.z;
+      for (let i = 0; i < 6000 && beasts && beasts.indexOf(m) >= 0; i++) {
+        stepDoom(0.05);
+        if (path[path.length - 1] !== m.st) path.push(m.st);
+        if (m.st === 'gwalk') {
+          walked += Math.hypot(m.x - px, m.z - pz);
+          gait = Math.max(gait, m.gait);
+          low = Math.min(low, m.y);
+          rMin = Math.min(rMin, Math.hypot(m.x, m.z));
+          if (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)) inside++;
+        }
+        px = m.x; pz = m.z;
+      }
+      Math.random = R;
+      return { path: path.join('>'), gone: !beasts || beasts.indexOf(m) < 0,
+               walked: +walked.toFixed(1), gait: +gait.toFixed(2), inside,
+               low: +low.toFixed(2), rMin: +rMin.toFixed(1) };
+    };
+    const land = run(1, 0);            // 吉祥物 ＋ 骰子押到底：一定降落
+    const skip = run(1, 0.99);         // 吉祥物 ＋ 骰子押另一邊：不降落，照舊飛走
+    const bad = run(0, 0);             // 天災那一趟：押到底也不降落
+    const gnd = +draGround().toFixed(2);
+    const ring = +(siteR + DRA_STAND).toFixed(1);
+    cleanTools();
+    return { land, skip, bad, gnd, ring };
+  });
+  ok('吉祥物那一趟的龍會自己降落：繞完 → 收翅滑降 → 在草皮上走一段 → 拍翅飛走',
+     mland.land.path === 'in>ring>land>gwalk>rise>out' && mland.land.gone,
+     mland.land.path);
+  /* 龍身長 10 格上下，所以牠走的那一圈要**整個退到 siteR + DRA_STAND 外面**
+     （strollTo 的 keepMore，v1.182）：只把目標推出去不夠，兩點之間那條直線
+     本來就會從圈裡切過去，所以連路線都得繞在圈外。 */
+  ok('落地那一段是真的用走的：腳踩在草皮上、腿在擺，整趟都繞在建築外圈那一圈外面',
+     mland.land.walked > 5 && mland.land.gait > 0.8 && mland.land.inside === 0 &&
+     mland.land.rMin > mland.ring - 1 &&
+     Math.abs(mland.land.low - mland.gnd) < 0.05,
+     '走了 ' + mland.land.walked + ' 格、腳步 ' + mland.land.gait + '、踩進去 ' +
+     mland.land.inside + ' 次；最近只到半徑 ' + mland.land.rMin + '（那一圈 ' +
+     mland.ring + '）、貼地 ' + mland.land.low + '（地面 ' + mland.gnd + '）');
+  ok('沒抽中的那一趟照舊繞完就飛走，天災那一趟則是壓根不會降落',
+     mland.skip.path === 'in>ring>out' && mland.skip.gone &&
+     mland.bad.path === 'in>ring>out' && mland.bad.gone,
+     '吉祥物沒抽中 ' + mland.skip.path + '；天災 ' + mland.bad.path);
+
   /* ── 不挑階段（使用者選的「任何時候都可能」）── */
   const mph = await page.evaluate(() => {
     const out = {};
@@ -19500,19 +19560,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
 
-  /* ══════════ 閒逛的牛羊 ══════════ */
+  /* ══════════ 閒逛的動物 ══════════ */
   /* v1.154。使用者：「增加場上幾隻閒逛的動物(會被破壞工具作用 也會著火類似小人)／
      牛羊2~3隻 依照小人行走邏輯不要走進建物裡面」，看過造型之後追加「也可以牛羊多種造型
      隨機出現」（四款：乳牛、黃牛、綿羊、黑面羊）。
+     **v1.182 加到八款、5~8 隻**（使用者：「增加閒逛的動物場上存在數量 & 種類增加 鹿 豬」）
+     ——所以這一段的每一條都是**照 HERD_KIND 掃過每一款**，不寫死款數；
+     段名也從〈閒逛的牛羊〉改成〈閒逛的動物〉（裡面已經不只牛羊了）。
      整套借吉祥物那條路（同一份 beasts 清單、同一套走路、同一套被打到的反應），
      所以這一段驗的是**差在哪裡**：不走人、不挑階段、不佔天災的名額、四條腿繞自己的關節轉。 */
   }   // ── 〈吉祥物：來逛一圈就走〉結束（--tier 跳過時從這裡出來）
-  SEC: { if (!(await head('閒逛的牛羊', T_COMMIT))) break SEC;
+  SEC: { if (!(await head('閒逛的動物', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; stepHerd = window.herdStep; });
   await fillAll(page);
 
-  /* ── 場上養幾隻、四款都抽得到 ── */
+  /* ── 場上養幾隻、每一款都抽得到 ── */
   const cnum = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     herdN = 0;                                        // 重抽這一場要養幾隻
@@ -19521,9 +19584,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const allHerd = beasts ? beasts.every(m => m.herd === 1 && m.st === 'fun') : false;
     const onRing = beasts ? beasts.every(m => Math.hypot(m.x, m.z) > siteR + KEEP) : false;
     const more = (() => { for (let i = 0; i < 20; i++) stepHerd(0.05); return beasts.length; })();
-    /* 抽 400 隻看四款都出得來、大小也不是每一隻都一樣 */
+    /* 抽 800 隻看每一款都出得來、大小也不是每一隻都一樣。**取樣數要跟著款數走**
+       （v1.182 從 400 加到 800）：八款平分 400 隻的話每一款平均只有 50，
+       抽樣的起伏就會壓到下限上。800 隻 → 平均 100、標準差 9.4，下限 60 是 4 個標準差外。 */
     const kinds = {}, sc = [];
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0; i < 800; i++) {
       beasts = null;
       const m = spawnCattle();
       kinds[m.kind] = (kinds[m.kind] || 0) + 1;
@@ -19537,18 +19602,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              nLo: Math.min(...ns), nHi: Math.max(...ns),
              want: HERD_N.slice(), base: DOOM_SC, k: HERD_SC.slice() };
   });
-  ok('開場就有 2~3 隻站在建築外圈那一環上（不像猴子從場外走進來），補滿就不再補',
+  /* 隻數照 HERD_N 驗，不寫死數字（v1.182 從 2~3 變 5~8）——寫死的話下次調隻數
+     又要回來改一次，而且條目名字裡的數字一變，浮動清單與歷史紀錄就對不起來了。 */
+  ok('開場就照 HERD_N 站在建築外圈那一環上（不像猴子從場外走進來），補滿就不再補',
      cnum.n >= cnum.want[0] && cnum.n <= cnum.want[1] && cnum.more === cnum.n &&
      cnum.allHerd && cnum.onRing &&
      cnum.nLo === cnum.want[0] && cnum.nHi === cnum.want[1],
      '這一輪 ' + cnum.n + ' 隻（再數 1 秒還是 ' + cnum.more + ' 隻）；200 次抽樣 ' +
-     cnum.nLo + '～' + cnum.nHi + ' 隻');
-  ok('牛羊四款都抽得到，每一隻的大小還各抽一個',
-     cnum.ids.length === 4 && Object.keys(cnum.kinds).length === 4 &&
+     cnum.nLo + '～' + cnum.nHi + ' 隻，設定是 ' + cnum.want[0] + '～' + cnum.want[1]);
+  ok('HERD_KIND 每一款都抽得到，每一隻的大小還各抽一個',
+     cnum.ids.length >= 8 && Object.keys(cnum.kinds).length === cnum.ids.length &&
      Math.min(...cnum.ids.map(k => cnum.kinds[k])) > 60 &&
      cnum.lo >= cnum.base * cnum.k[0] - 1e-6 && cnum.hi <= cnum.base * cnum.k[1] + 1e-6 &&
      cnum.hi - cnum.lo > 0.1,
-     '400 隻裡 ' + cnum.ids.map(k => k + ' ' + cnum.kinds[k]).join('／') +
+     '800 隻裡 ' + cnum.ids.map(k => k + ' ' + cnum.kinds[k]).join('／') +
      '；放大倍率 ' + cnum.lo.toFixed(2) + '～' + cnum.hi.toFixed(2));
   const HERD_KINDS = cnum.ids;            // 下面幾條照這份掃過每一款
 
@@ -19582,7 +19649,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return out;
   });
-  ok('牛羊照小人那套走路：一格都沒踩進建築與小房子，範圍就是閒晃那一環',
+  ok('閒逛的動物照小人那套走路：一格都沒踩進建築與小房子，範圍就是閒晃那一環',
      cwalk.inside === 0 && cwalk.rMin > cwalk.keep - 0.5 && cwalk.rMax < cwalk.far + 3,
      cwalk.frames + ' 個取樣 ' + cwalk.inside + ' 次踩進去；半徑 ' + cwalk.rMin + '～' +
      cwalk.rMax + '（外圈 ' + cwalk.keep + '、閒晃上限 ' + cwalk.far + '）');
@@ -19640,7 +19707,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { n0, done, clear, build, apeGo };
   });
-  ok('牛羊不會逛完就走人，蓋好、整地、施工三段都在（吉祥物整地那段會走人）',
+  ok('閒逛的動物不會逛完就走人，蓋好、整地、施工三段都在（吉祥物整地那段會走人）',
      cstay.done && cstay.clear && cstay.build && cstay.apeGo,
      '100 秒後 ' + cstay.n0 + ' 隻都還在（done ' + cstay.done + '／clear ' + cstay.clear +
      '／build ' + cstay.build + '），同一段路的吉祥物整地時走人＝' + cstay.apeGo);
@@ -19657,9 +19724,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { n0, armed, bad };
   });
-  ok('牛羊不佔天災「一次一件」那個名額：場上一直有牠們，天災照樣來',
+  ok('閒逛的動物不佔天災「一次一件」那個名額：場上一直有牠們，天災照樣來',
      cdoom.armed && cdoom.bad === 1,
-     '場上 ' + cdoom.n0 + ' 隻牛羊，天災的鐘照樣起跳＝' + cdoom.armed +
+     '場上 ' + cdoom.n0 + ' 隻，天災的鐘照樣起跳＝' + cdoom.armed +
      '，時間到放進來 ' + cdoom.bad + ' 件');
 
   /* ── 被破壞工具打到那一整套：跟猴子同一份程式 ── */
@@ -19729,7 +19796,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '澆完 burn ' + chit.doused.burn + '、濕 ' + chit.doused.wet + ' 秒、再點一次 ' +
      chit.doused.again + '；兵器射中 ' + chit.weap);
 
-  /* ── 四款站著與躺著都貼著草皮 ── */
+  /* ── 每一款站著與躺著都貼著草皮 ── */
   const cgnd = await page.evaluate(() => {
     const low = () => {
       const mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4();
@@ -19772,7 +19839,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return out;
   });
-  ok('四款牛羊站著、側躺、躺著壓火都貼著草皮（不陷進去也不浮起來）',
+  ok('每一款動物站著、側躺、躺著壓火都貼著草皮（不陷進去也不浮起來）',
      HERD_KINDS.every(k => cgnd[k][0] >= -0.02 && cgnd[k][0] < 0.05 &&
                            cgnd[k][1] >= -0.02 && cgnd[k][1] < 0.10 &&
                            cgnd[k][2] >= -0.02 && cgnd[k][2] < 0.25 &&
@@ -19794,6 +19861,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                    back.every(o => (o.b.p[0] > 0) === (o.b.sw < 0));
       const pzOk = legs.every(o => Math.abs(o.b.pz - o.b.p[2]) < 0.06);
       const amp = Math.max(...legs.map(o => Math.abs(o.b.sw)));
+      /* 「幾條腿」要**照關節數算，不是照塊數**（v1.182）：一條腿幾塊各款不一樣
+         （牛羊 2 塊、鹿 3 塊——細腿要分大腿／小腿／蹄才像鹿），寫死 8 塊的話
+         加一款腿分三節的就紅了。同一邊、同一個 pz ＝ 同一條腿。 */
+      const nLeg = new Set(legs.map(o => (o.b.p[0] > 0 ? 'R' : 'L') + o.b.pz.toFixed(2))).size;
       /* 「繞自己的肩」＝那一點在任何步伐相位下都待在同一個世界點。
          照 JOINT_Z 轉的話它會跑掉 2·sin(擺幅/2)·|pz − JOINT_Z|（下面的 ctrl）。 */
       const o = front[0], b = o.b;
@@ -19804,7 +19875,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 .applyMatrix4(m4).clone();
       };
       const p0 = at(0), p1 = at(Math.PI / 2), p2 = at(-Math.PI / 2);
-      out[kind] = { n: legs.length, diag, pzOk, amp: +amp.toFixed(2),
+      out[kind] = { n: legs.length, nLeg, diag, pzOk, amp: +amp.toFixed(2),
                     piv: +Math.max(p1.distanceTo(p0), p2.distanceTo(p0)).toFixed(3),
                     ctrl: +(2 * Math.sin(amp / 2) * Math.abs(b.pz - 0.03)).toFixed(3) };
     }
@@ -19812,8 +19883,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return out;
   });
   ok('四條腿是對角同步的，擺幅比猴子小一半',
-     HERD_KINDS.every(k => clegs[k].n === 8 && clegs[k].diag && clegs[k].amp <= 0.55),
-     HERD_KINDS.map(k => k + ' ' + clegs[k].n + ' 塊／擺幅 ' + clegs[k].amp).join('；'));
+     HERD_KINDS.every(k => clegs[k].nLeg === 4 && clegs[k].n >= 8 &&
+                           clegs[k].diag && clegs[k].amp <= 0.55),
+     HERD_KINDS.map(k => k + ' ' + clegs[k].nLeg + ' 條腿／' + clegs[k].n +
+                    ' 塊／擺幅 ' + clegs[k].amp).join('；'));
   /* ctrl 是「照 JOINT_Z 轉的話那個關節會跑掉多少」＝ 2·sin(擺幅/2)·|pz − JOINT_Z|：
      牛 0.163、羊 0.076（羊的腳離身體中線比較近、擺幅也小一點）。 */
   ok('前腳繞自己的肩、後腳繞自己的髖（pz），不是全部繞肚子中線',
@@ -19830,7 +19903,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      修正小人被吹飛的旋轉軸(目前似乎在腳底 看起來很奇怪)」。
      倒地起飛那一段是先出預覽圖給使用者看過才落地的（同天災那幾隻的造型）。
      這一段驗的是「規則跟小人一樣」與「姿勢擺得對」，不重驗小人自己那一套。 */
-  }   // ── 〈閒逛的牛羊〉結束（--tier 跳過時從這裡出來）
+  }   // ── 〈閒逛的動物〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('破壞工具打得到那幾隻', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 8 });
   await page.evaluate(() => { stepDoom = window.doomStep; });
@@ -19998,8 +20071,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              back: m.st, y: +m.y.toFixed(1),
              cached, cruise: +Math.max(DRA_MIN, top0 + DRA_UP).toFixed(1) };
   });
-  ok('飛龍被打下來：摔 → 趴 → 拍翅起飛 → 爬回巡航高度歸隊',
-     hDra.hit && !hDra.twice && hDra.path === 'crash>down>rise>in' &&
+  /* v1.182 起中間多一段 gwalk（站起來在草皮上走一段），見〈飛龍：地面行走〉。 */
+  ok('飛龍被打下來：摔 → 趴 → 走一段 → 拍翅起飛 → 爬回巡航高度歸隊',
+     hDra.hit && !hDra.twice && hDra.path === 'crash>down>gwalk>rise>in' &&
      hDra.back === 'in' && Math.abs(hDra.y - hDra.cruise) < 0.5 &&
      hDra.cached === hDra.cruise,
      hDra.before + ' → ' + hDra.path + ' → ' + hDra.back + '；趴了 ' + hDra.downT +
@@ -20016,7 +20090,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const m = spawnDragon(1);
     m.st = 'out'; m.x = 30; m.z = 0; m.a = 0;
     crashDragon(m);
-    for (let i = 0; i < 1500 && (m.st === 'crash' || m.st === 'down' || m.st === 'rise'); i++)
+    for (let i = 0; i < 3000 &&
+         (m.st === 'crash' || m.st === 'down' || m.st === 'gwalk' || m.st === 'rise'); i++)
       stepDoom(0.05);
     return { was: m.was, back: m.st };
   });
@@ -20059,7 +20134,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('飛龍著火：拖著火飛一段 → 摔下來 → 在地上燒完才拍翅起飛（已經在燒的不會再點一次）',
      hFire.lit && !hFire.twice && hFire.st0 === 'ablaze' && hFire.burn0 === hFire.burnT &&
-     hFire.path === 'ablaze>crash>down>rise>in' && hFire.back === 'in' &&
+     hFire.path === 'ablaze>crash>down>gwalk>rise>in' && hFire.back === 'in' &&
      hFire.abl >= hFire.ablT[0] - 0.1 && hFire.abl <= hFire.ablT[1] + 0.1 &&
      hFire.downBurn > 0.3 && hFire.riseB === 0,
      hFire.path + '；拖著火飛了 ' + hFire.abl + ' 秒（抽樣範圍 ' + hFire.ablT.join('～') +
@@ -20119,12 +20194,59 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { t0, lit, st, waited: +(waited * 0.05).toFixed(1), after, burnT: DRA_BURN };
   });
-  ok('趴在地上被點著的龍會先把火壓掉才飛得起來（不會再摔一次）',
-     hDownFire.lit && hDownFire.st === 'down' && hDownFire.after === 'rise' &&
+  /* 火壓掉之後接的是 gwalk（v1.182 起牠會先站起來走一段），不是直接 rise。 */
+  ok('趴在地上被點著的龍會先把火壓掉才站得起來（不會再摔一次）',
+     hDownFire.lit && hDownFire.st === 'down' && hDownFire.after === 'gwalk' &&
      hDownFire.waited > hDownFire.t0 + 0.5 &&
      Math.abs(hDownFire.waited - hDownFire.burnT) < 1,
      '趴著還剩 ' + hDownFire.t0 + ' 秒就被點著 → 又趴了 ' + hDownFire.waited +
      ' 秒（火燒 ' + hDownFire.burnT + ' 秒）才進 ' + hDownFire.after);
+
+  /* ── 飛龍：站起來走那一段（v1.182）─────────────────────────
+     使用者：「飛龍也要像獅鷲能做出地面行走」。摔下來那條路的最後多一段 gwalk：
+     趴著喘完站起來，在草皮上走幾秒才拍翅起飛。這裡驗三件事：真的在走（腿在擺、
+     腳貼著草皮、沒走進建築）、翅膀收起來、走著被點著會趴回去壓火。 */
+  const hWalk = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnDragon(1);
+    for (let i = 0; i < 600 && m.st !== 'ring'; i++) stepDoom(0.05);
+    crashDragon(m);
+    for (let i = 0; i < 3000 && m.st !== 'gwalk'; i++) stepDoom(0.05);
+    const got = m.st;
+    const flap = +m.wb.toFixed(2);                    // 剛落地時翅膀還在拍翅那一組
+    let moved = 0, gait = 0, low = 1e9, inside = 0, px = m.x, pz = m.z;
+    for (let i = 0; i < 40 && m.st === 'gwalk'; i++) {
+      stepDoom(0.05);
+      moved += Math.hypot(m.x - px, m.z - pz); px = m.x; pz = m.z;
+      gait = Math.max(gait, m.gait);
+      low = Math.min(low, m.y);
+      if (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)) inside++;
+    }
+    const rest = +m.wb.toFixed(2);                    // 走著走著翅膀收起來了
+    const lit = igniteBeast(m, 1);
+    const st = m.st;                                  // 就地趴下來壓火
+    let waited = 0;
+    for (let i = 0; i < 3000; i++) { stepDoom(0.05); if (m.st !== 'down') break; waited++; }
+    const after = m.st;                               // 燒完再站起來把路走完
+    cleanTools();
+    return { got, moved: +moved.toFixed(1), gait: +gait.toFixed(2), inside,
+             low: +low.toFixed(2), gnd: +draGround().toFixed(2), flap, rest,
+             pose: DRA_POSE.rest[0], lit, st, after,
+             waited: +(waited * 0.05).toFixed(1), burnT: DRA_BURN };
+  });
+  ok('飛龍趴完會站起來走一段：腳貼著草皮、腿真的在擺，也不會走進建築與小房子',
+     hWalk.got === 'gwalk' && hWalk.moved > 2 && hWalk.gait > 0.8 &&
+     hWalk.inside === 0 && Math.abs(hWalk.low - hWalk.gnd) < 0.05,
+     '2 秒走了 ' + hWalk.moved + ' 格、腳步 ' + hWalk.gait + '、踩進去 ' + hWalk.inside +
+     ' 次；貼地 ' + hWalk.low + '（地面 ' + hWalk.gnd + '）');
+  ok('走路時翅膀收成拱起來的一對（不是攤著在地上拖）',
+     hWalk.flap < 0.5 && hWalk.rest > hWalk.pose * 0.5,
+     '中位角 ' + hWalk.flap + ' → ' + hWalk.rest + '（收翅那一組是 ' + hWalk.pose + '）');
+  ok('走在草皮上被點著：就地趴下來壓火，燒完再站起來把路走完',
+     hWalk.lit && hWalk.st === 'down' && hWalk.after === 'gwalk' &&
+     Math.abs(hWalk.waited - hWalk.burnT) < 1.2,
+     '走著被點著 → ' + hWalk.st + ' 壓火 ' + hWalk.waited + ' 秒（火燒 ' +
+     hWalk.burnT + ' 秒）→ ' + hWalk.after);
 
   /* ── 爆炸對飛龍算三維距離：地面一顆小炸彈打不到天上的牠 ── */
   await fillAll(page);
