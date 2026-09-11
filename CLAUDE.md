@@ -35,8 +35,9 @@
 
 產出的文件、註解、commit 訊息一律**繁體中文**。程式識別字照現有風格（英文短名）。
 
-唯一的例外是 **`.bat` 的註解要用 ASCII**：`cmd.exe` 會把 UTF-8 中文解析壞，雙擊之後
-先噴兩行 `is not recognized` 才開始跑（見〈`.bat` 裡不能寫中文註解〉）。別把它改回中文。
+唯一的例外是 **`.bat` 裡只能有 ASCII**（註解、`echo`、`set /p` 都算）：`cmd.exe` 會把
+UTF-8 中文解析壞，雙擊之後先噴幾行 `is not recognized` 才開始跑
+（見〈`.bat` 裡不能寫中文〉）。要給人看的中文一律讓 `.py` 印，別把 `.bat` 改回中文。
 
 ## 版本號：三個地方要一致
 
@@ -75,6 +76,7 @@ node tools/e2e-3d.cjs                  完整輪（7~8 分鐘）
 node tools/e2e-3d.cjs --until 段名     開發用：跑到那一段就收工
 node tools/e2e-3d.cjs --list           印段落一覽（段名／等級／行數），段名直接餵給 --until
 node tools/check-bp.cjs --all          48 座藍圖體檢（幾秒）
+tools\run-tests.bat                    不想打指令：雙擊出選單（參數也吃，直接接過去）
 ```
 
 **規矩（v1.183 使用者定案，原話在 `開發筆記.md`〈驗收規矩〉）：**

@@ -1,4 +1,4 @@
-# 積木小人 · 世界地標工地　`v1.184.1`
+# 積木小人 · 世界地標工地　`v1.185.0`
 
 一進來就有一座蓋好的世界地標。你把它砸爛，小人們才會從滿地的碎料裡
 一塊一塊搬出來，慢慢蓋出下一座。被打到的地方才會壞，沒波及的地方原封不動。
@@ -177,6 +177,8 @@ tools/model-baseline.json  造型基準（部位表與固定姿勢的塊數，�
 tools/check-bp.cjs      藍圖體檢（命令列版，跟遊戲裡那顆按鈕共用同一支邏輯）
 tools/export-game.py    把遊戲跑得起來的檔案匯出成一包（清單是從 index.html 讀的，不寫死）
 tools/export-game.bat   上面那支的雙擊版（切 UTF-8、找 python、跑完停住）
+tools/run-tests.py      跑測試的選單：不必記指令，選一個數字就開跑
+tools/run-tests.bat     上面那支的雙擊版
 dist/                   匯出的成品包（不進 git，隨時能重產）
 ```
 
@@ -212,6 +214,10 @@ node tools/e2e-3d.cjs --update-models --until 造型基準    改了造型才用
 node tools/e2e-3d.cjs --update-varying a.json b.json     重產浮動條目清單
 node tools/check-bp.cjs --all               48 座藍圖體檢（幾秒鐘）
 ```
+
+**不想打指令的話雙擊 `tools\run-tests.bat`**：出一份選單（必要檔／commit 檔／完整輪／
+跑到某一段／段落一覽／藍圖體檢），選一個數字就開跑，跑完報花了多久。
+帶參數也行（`run-tests.bat --tier must`），那時就不出選單。
 
 需要 Playwright 與 chromium；找不到時腳本會印出安裝方式。全部通過 exit 0。
 截圖產物在 `tools/.e2e-out/`（已 gitignore）。
