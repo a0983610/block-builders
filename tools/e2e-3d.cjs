@@ -1728,6 +1728,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       bad: document.getElementById('pasteMsg').className.indexOf('bad') >= 0,
       open: document.getElementById('pasteBox').open,
       picked: document.getElementById('shape').selectedOptions[0].textContent,
+      /* 貼完會自動選中那一座，所以 selectedIndex 就是「它排在選單第幾項」。
+         builtin0 ＝ 第一個沒有 ★ 的選項（★ 是自訂的記號），也就是內建那一群的開頭。 */
+      at: document.getElementById('shape').selectedIndex,
+      builtin0: [...document.getElementById('shape').options]
+                  .findIndex(o => o.textContent.indexOf('★') !== 0),
       name: bp ? bp.name : null,
       drawn: ENG.three.blockMesh.count,
       shapes: SHAPES.length,
@@ -1740,6 +1745,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      !pGood.bad && pGood.name === '貼上來的小屋' && pGood.drawn > 100 &&
      pGood.picked.indexOf('貼上來的小屋') > 0 && pGood.shapes === ALL_SHAPES + 1,
      pGood.msg + '（畫了 ' + pGood.drawn + ' 塊）');
+  /* 選單順序跟遊戲那邊一致（v1.181）：這一頁貼上來的 → blueprints/ 資料夾 → 內建。
+     這一頁沒有「🎲 隨機」也沒有「瀏覽器存檔」（貼上的 F5 就沒了），所以剛貼的那座
+     就是第 0 項，內建那一群從 1 + CUSTOM_COUNT 開始。 */
+  ok('預覽頁選單順序：剛貼上的 → blueprints/ 資料夾 → 內建',
+     pGood.at === 0 && pGood.builtin0 === 1 + CUSTOM_COUNT,
+     '剛貼的在第 ' + pGood.at + ' 項、資料夾 ' + CUSTOM_COUNT +
+     ' 支接著，內建從第 ' + pGood.builtin0 + ' 項開始');
   /* 載入成功不去動貼上區：下一輪還要在那段文字上改，自動收起來的話每次都得先點開 */
   ok('貼上之後順手把診斷也跑掉了，而且貼上區還開著',
      pGood.rep === '藍圖：貼上來的小屋（自訂 · gen）' && pGood.open,

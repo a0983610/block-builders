@@ -201,7 +201,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載遊戲層那五支（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.180.0';
+const VIEWER_VER = '1.181.0';
 
 const $ = id => document.getElementById(id);
 
@@ -230,11 +230,24 @@ ENG.putFire([]); ENG.putFlash([]); ENG.putNukes([]);
 ENG.putBalls([]); ENG.hideHammer(); ENG.hideRings();
 window.addEventListener('resize', () => ENG.resize());
 
-/* ── 選單：自訂藍圖排前面（自己丟檔案進來的人就是想馬上看到它） ──
-   sort 在現代 JS 是穩定的，所以內建那 48 座之間的先後不會被打亂。 */
+/* 這一頁貼進來的那幾份在 SHAPES 的索引（貼上那一段在下面，但選單一載入就要用它分群，
+   所以宣告擺在這裡——const 不會提升，留在下面的話 refreshMenu() 第一次跑就是 TDZ）。 */
+const pasted = new Set();
+
+/* ── 選單：越晚進來的排越前面（v1.181，跟遊戲那邊同一個順序） ──
+
+     ★ 這一頁貼上來的  →  ★ blueprints/ 資料夾  →  內建 blueprints.js
+
+   遊戲那邊第一群是「瀏覽器存檔」（匯入的會存進 localStorage），這一頁沒有那一群——
+   貼上來的只活在這一頁，F5 就沒了（見下面〈貼上藍圖〉）——所以第一群換成「剛貼的」。
+   道理一樣：正在改的那一份要在最上面，不必每次捲過二十幾支資料夾藍圖。
+   ★ 是「自訂」的記號，貼上的與資料夾的都有（跟 v1.181 之前一樣）。
+   分群用 filter 而不是 sort：不必依賴 sort 的穩定性，同一群內的原順序就是原順序。 */
 function refreshMenu(pick) {
-  const order = SHAPES.map((s, i) => i)
-    .sort((a, b) => (SHAPES[b].custom ? 1 : 0) - (SHAPES[a].custom ? 1 : 0));
+  const ord = SHAPES.map((s, i) => i);
+  const group = i => pasted.has(i) ? 0 : SHAPES[i].custom ? 1 : 2;
+  const order = ord.filter(i => group(i) === 0)
+    .concat(ord.filter(i => group(i) === 1), ord.filter(i => group(i) === 2));
   $('shape').innerHTML = order.map(i =>
     '<option value="' + i + '">' + (SHAPES[i].custom ? '★ ' : '') + SHAPES[i].n + '</option>').join('');
   if (pick !== undefined) $('shape').value = String(pick);
@@ -309,7 +322,7 @@ function build() {
    所以這裡貼進來的藍圖**只活在這一頁**（F5 就沒了，要留著就照下面那行提示存檔）。
    真正把程式跑起來的是 blueprints.js 的 importBlueprint()——遊戲的「匯入建築」
    走的是同一支，兩邊的清洗與撞名規則才會一模一樣。 */
-const pasted = new Set();          // 這一頁貼進來的那幾份在 SHAPES 的索引
+/* `pasted`（貼進來的那幾份在 SHAPES 的索引）宣告在上面選單那一段——載入時就要用到。 */
 /* 貼進來的原始碼，用藍圖名字當鍵（SHAPES 裡名字不會重複，索引則會因為蓋掉同名而位移）。
    留著是為了「下載 .js」：滿意了就直接存成檔案，不必回頭去翻剛才貼的那段。
    一次貼進好幾份的話，每一份指到的都是同一段程式——它們本來就是同一個檔案。 */
