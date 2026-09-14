@@ -6085,7 +6085,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (n > big) { big = n; bigN = SHAPES[i].n; }
       siteR = Math.max(7, b2.radius);
       arenaR = Math.sqrt((siteR + 2) ** 2 + SPREAD * n / Math.PI) + 8;
-      const wn = wallPlan(() => false).reduce((a, h) => a + h.slots.length, 0);
+      const wn = wallPlan().reduce((a, h) => a + h.slots.length, 0);
       if (wn > wall) { wall = wn; wallN = SHAPES[i].n; }
     }
     siteR = keepR[0]; arenaR = keepR[1];
@@ -8005,7 +8005,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       cleanTools(); clearHomes();
       siteR = sr; arenaR = ar;
       homes = { list: [] };
-      for (const h of wallPlan(() => false)) {
+      for (const h of wallPlan()) {
         const hi = homes.list.length;
         homes.list.push(h);
         for (let i = 0; i < h.slots.length; i++) {
@@ -8041,7 +8041,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* ② 整圈的組成：四座角樓 ＋ 一座門樓 ＋ 幾段直牆，而且每一格都落在牆線上
        （x = ±W 或 z = ±W，角樓與門樓各自往外／往內鋪開，所以容許 T 與 1 格的厚度）。 */
     siteR = 12; arenaR = 52;
-    const W = wallRing(), segs = wallPlan(() => false);
+    const W = wallRing(), segs = wallPlan();
     const T = (WALL_TOW - 1) / 2;
     let off = 0, blocks0 = 0;
     for (const h of segs)
@@ -8075,7 +8075,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const wallCut = await page.evaluate(() => {
     siteR = 12; arenaR = 52;
     const W = wallRing();
-    const h = wallPlan(() => false).find(q => q.thin === 'z' && q.z < 0);   // 北牆的一段
+    const h = wallPlan().find(q => q.thin === 'z' && q.z < 0);   // 北牆的一段
     const by = {};
     for (const sl of h.slots) {
       const k = sl.z.toFixed(0);
@@ -8263,7 +8263,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       targetCnt = 600; setWorkerCount(0); startBuild(true); completeNow();
       stopIdleEvent(); clearHomes();
       homes = { list: [] };
-      for (const h of wallPlan(() => false)) {
+      for (const h of wallPlan()) {
         const k = keep(h);
         if (k === 'drop') continue;                      // 門樓被打爛了：整段不在
         const hi = homes.list.length;
@@ -8339,7 +8339,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = 600; setWorkerCount(0); startBuild(true); completeNow();
     stopIdleEvent(); clearHomes();
     homes = { list: [] };
-    for (const h of wallPlan(() => false)) {
+    for (const h of wallPlan()) {
       if (h.gap) continue;                                     // 沒有門的一圈：一定會擋到
       const hi = homes.list.length;
       homes.list.push(h);
@@ -8519,6 +8519,95 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      evTrack.have < evTrack.built && evTrack.peak2 === evTrack.peak,
      `蓋出 ${evTrack.built} 塊、最高點 ${evTrack.peak}；打掉一半剩 ${evTrack.have} 塊，` +
      `最高點還是 ${evTrack.peak2}`);
+
+  /* ⑪ 擋在牆線上的小房子，蓋牆前就整間拆成碎料（v1.189，使用者：「應該蓋牆前就把小房子
+     拆成碎料」）。v1.186~v1.188 是讓它嵌進牆裡（壓到的那幾格不生出來），
+     坑在 開發筆記〈蓋牆前先把擋路的拆掉〉。**殘骸也要算占位**：`homeBox` 只框還站著的
+     格子，一塊都不剩的殘骸框是空的，所以這裡看的是 `homeSpan`（不管砌起來沒有）。 */
+  const wallClr = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    siteR = 12; arenaR = 52;
+    homes = { list: [] };
+    const W = wallRing();
+    const full0 = wallPlan().reduce((a, s) => a + s.slots.length, 0);
+    /* 一間房子，fill＝已經砌好的比例（0＝打光的殘骸，格子還在清單上但一塊都不剩） */
+    const mk = (hx, hz, fill) => {
+      const kind = HOME_KIND[HOME_KIND.length - 1];       // 最大的一款，確定跨得過牆線
+      const slots = homeSlots(hx, hz, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: hx, z: hz, r: homeR(kind), kind: kind.id, at,
+                  ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                  slots, left: slots.length, n: 1, tree: 0, done: fill >= 1 };
+      const hi = homes.list.length;
+      const want = Math.round(slots.length * fill);
+      for (let i = 0; i < want; i++) {
+        const sl = slots[i], b = newBlock();
+        b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      homeBox(h); markHomeF6(h); homes.list.push(h);
+      return h;
+    };
+    const nb0 = blocks.length;                            // 這一條造的積木最後要收乾淨
+    const onWall = mk(W, 0, 1);                           // 完好，正壓在東牆上
+    const ruin = mk(0, -W, 0);                            // 打光的殘骸，正壓在北牆上
+    const far = mk(0, arenaR - 4, 1);                     // 離牆線很遠，不該被動到
+    ENG.setBlockCount(blocks.length);
+    const free0 = blocks.filter(b => b.hh < 0).length;
+    startWall();
+    const live = new Set(homes.list.map(h => h.id));
+    const wallBlocks = homes.list.filter(h => h.wall).reduce((a, h) => a + h.slots.length, 0);
+    const o = { full0, wallBlocks, onWallN: onWall.slots.length, ruinN: ruin.slots.length,
+                keptFull: live.has(onWall.id), keptRuin: live.has(ruin.id),
+                keptFar: live.has(far.id),
+                freed: blocks.filter(b => b.hh < 0).length - free0 };
+    /* 造出來的積木要收乾淨（見 開發筆記〈測試動過的全域狀態要還回去〉）：`clearHomes`
+       只把它們變回一般碎料、還留在 blocks 裡，後面的段落就多了幾百塊。實測那會讓
+       〈消防車與潮濕〉點到的火換一批，增援那條（門檻是 ±3 秒）就這樣翻紅過。 */
+    for (let i = blocks.length - 1; i >= nb0; i--) { const b = blocks[i]; if (b.cell) gridDel(b); }
+    blocks.length = nb0;
+    ENG.setBlockCount(blocks.length);
+    stopIdleEvent(); clearHomes();
+    return o;
+  });
+  ok('擋在牆線上的小房子（含打光的殘骸）蓋牆前就拆成碎料，整圈照樣生完整',
+     wallClr.wallBlocks === wallClr.full0 && !wallClr.keptFull && !wallClr.keptRuin &&
+     wallClr.keptFar && wallClr.freed === wallClr.onWallN,
+     `整圈 ${wallClr.wallBlocks} 格（沒被挖掉：基準 ${wallClr.full0}）；壓在東牆的 ` +
+     `${wallClr.onWallN} 塊變成碎料 ${wallClr.freed} 塊、壓在北牆的殘骸（${wallClr.ruinN} 格、` +
+     `0 塊）也整筆清掉；場邊那間還在＝${wallClr.keptFar}`);
+
+  /* ⑫ 反過來（v1.189，使用者：「反過來如果 還有城牆殘骸 蓋事件一小房子 也是要把擋路
+     城牆拆掉喔」）——量完是**不用拆**：`wallSeg` 除了 homeBox 那組框，另外存了
+     `wx0~wz1`＝整段蓋起來會占到哪裡，`pickHomeSite` 對城牆比的就是這一組（再留 rad+1），
+     所以砌了幾塊完全不影響。這一條把它釘住：拿 homeBox 那組去擋的話，
+     一塊都沒砌時框是空的，房子就會蓋到牆線上。 */
+  const homeVsWall = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    siteR = 12; arenaR = 52;
+    homes = { list: [] };
+    for (const s of wallPlan()) homes.list.push(s);       // 整圈，一塊都沒砌＝全是殘骸
+    const boxEmpty = homes.list.every(h => h.x0 > h.x1);  // homeBox 的框是空的
+    const segs = homes.list.length;
+    let got = 0, none = 0, hit = 0;
+    for (let i = 0; i < 600; i++) {
+      const kind = HOME_KIND[i % HOME_KIND.length], rad = homeR(kind);
+      const spot = pickHomeSite(rr(-40, 40), rr(-40, 40), rad);
+      if (!spot) { none++; continue; }
+      got++;
+      for (const h of homes.list)
+        if (spot.x + rad > h.wx0 && spot.x - rad < h.wx1 &&
+            spot.z + rad > h.wz0 && spot.z - rad < h.wz1) { hit++; break; }
+    }
+    clearHomes();
+    return { segs, boxEmpty, got, none, hit };
+  });
+  ok('城牆一塊都還沒砌，事件一挑房子位置照樣避得開（比的是整段的占地，不是砌好的那幾格）',
+     homeVsWall.boxEmpty && homeVsWall.got > 550 && homeVsWall.hit === 0,
+     `整圈 ${homeVsWall.segs} 段、一塊都沒砌（homeBox 的框是空的＝${homeVsWall.boxEmpty}）：` +
+     `挑 600 次 → ${homeVsWall.got} 次挑得到位置、其中 ${homeVsWall.hit} 次落在牆的占地內`);
 
   /* 天災裝回去過（上面那幾條要牠），這裡要關回去——不關的話後面每一段都會跑到
      隨機來訪的猴子（同天災那幾段的收尾）。 */

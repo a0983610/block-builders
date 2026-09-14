@@ -2490,6 +2490,20 @@ function homeBox(h) {
   h.x0 = x0 - 0.5; h.x1 = x1 + 0.5;
   h.z0 = z0 - 0.5; h.z1 = z1 + 0.5;
 }
+/* 同一個外框，但**不管砌起來沒有**（v1.189）。`homeBox` 只框還站著的格子，所以
+   一塊都不剩的殘骸框是空的（x0 > x1）；蓋牆要問的是「這塊地被誰占著」，殘骸也算數
+   （見 startWall 開頭）。樹一樣只算樹幹，理由同 homeBox。 */
+function homeSpan(h) {
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const sl of h.slots) {
+    if (h.tree && sl.gy > TREE_DUCK) continue;
+    if (sl.x < x0) x0 = sl.x;
+    if (sl.x > x1) x1 = sl.x;
+    if (sl.z < z0) z0 = sl.z;
+    if (sl.z > z1) z1 = sl.z;
+  }
+  return { x0: x0 - 0.5, x1: x1 + 0.5, z0: z0 - 0.5, z1: z1 + 0.5 };
+}
 /* 完好時「只靠六個面連不連得到地面」，蓋之前算一次（v1.103）。
    跟藍圖那邊同名的 f6 同一個用途：那是退化偵測的**基準線**，不是支撐判定。
    房子本來就有靠對角勾著的部件（屋脊往內縮一格、煙囪站在屋脊上、雨遮搭在柱子上），
@@ -2974,14 +2988,14 @@ function wallSeg(cells, kind, thin, gap) {
 /* 整圈切成哪幾段。牆線走 x = ±W 與 z = ±W，四個角各一座角樓，
    **朝鏡頭那一面（+z）**正中央是門樓——開場鏡頭在 +x/+z 那一象限（engine.js 的 yaw 0.9），
    門開在背面的話玩家只看得到一圈平牆。
-   skip(x, z) 回傳 true 的格子不生出來：已經站在牆線上的小房子就讓它嵌在牆上，
-   硬蓋的話兩邊的積木會疊在同一格。 */
-function wallPlan(skip) {
+   整圈一定生完整（v1.189）：擋在牆線上的小房子在這之前就被拆成碎料了（見 startWall）。
+   v1.186~v1.188 這裡吃一個 skip(x, z)，壓到房子的那幾格不生出來、讓房子嵌在牆上——
+   那條路的兩個坑寫在 開發筆記〈蓋牆前先把擋路的拆掉〉。 */
+function wallPlan() {
   const W = wallRing(), T = (WALL_TOW - 1) / 2, pal = WALL_PAL;
   const G = (WALL_GATE - 1) / 2, P = G + WALL_PIER;
   const end = W - T - 1;                       // 直牆到哪裡為止（再過去是角樓）
   const out = [];
-  const keep = cells => cells.filter(c => !skip(c.i, c.k));
   /* 角樓：空心方塔 ＋ 四坡屋頂（一層一層縮到剩一格）＋ 頂上一根旗桿。
      **屋頂一定要是尖的**：第一版收在「鋪滿一層 ＋ 縮一圈」，看過去是牆上擺了一個
      藍色箱子；縮到剩一格才讀得出是塔。 */
@@ -3004,8 +3018,7 @@ function wallPlan(skip) {
     }
     cells.push({ i: cx, k: cz, gy: H + T + 1, c: pal[0] });      // 旗桿
     cells.push({ i: cx, k: cz, gy: H + T + 2, c: pal[3] });      // 旗子
-    const c2 = keep(cells);
-    if (c2.length) out.push(wallSeg(c2, '角樓'));
+    out.push(wallSeg(cells, '角樓'));
   }
   /* 一段直牆（v1.186 改成 3 格厚的空心牆，使用者：「城牆看起來太單薄
      (可能到三層厚度 古代城牆上是能站人的)」）。剖面：
@@ -3046,8 +3059,7 @@ function wallPlan(skip) {
     for (let s = 0; s < n; s++) {
       const b0 = a0 + s * len, b1 = Math.min(a1, b0 + len - 1);
       if (b1 < b0) continue;
-      const cells = keep(runCells(b0, b1, fix, horiz));
-      if (cells.length) out.push(wallSeg(cells, '城牆', horiz ? 'z' : 'x'));
+      out.push(wallSeg(runCells(b0, b1, fix, horiz), '城牆', horiz ? 'z' : 'x'));
     }
   };
   addSide(-end, end, -W, true);                        // 北牆
@@ -3074,9 +3086,8 @@ function wallPlan(skip) {
         cells.push({ i, k: W + (i % 2 ? 1 - n : n - 1), gy: H, c: pal[2] });
     for (let i = -P + 1; i <= P - 1; i++) cells.push({ i, k: W, gy: H + 1, c: pal[2] });
     for (let i = -P + 2; i <= P - 2; i++) cells.push({ i, k: W, gy: H + 2, c: pal[2] });
-    const c2 = keep(cells);
-    if (c2.length) out.push(wallSeg(c2, '城門樓', null,
-                                    { x0: -G - 0.5, x1: G + 0.5, z0: W - 1.5, z1: W + 1.5 }));
+    out.push(wallSeg(cells, '城門樓', null,
+                     { x0: -G - 0.5, x1: G + 0.5, z0: W - 1.5, z1: W + 1.5 }));
   }
   for (const h of out) h.ring = W;      // 這一圈多大（見 inWall：誰在城裡、誰在城外）
   return out;
@@ -3343,14 +3354,23 @@ function startWall() {
   const joins = w => phase !== 'build' || w.lazy;
   const W = wallRing();
   if (!homes.list.some(h => h.wall)) {
-    /* 已經站在牆線上的小房子就讓它嵌進牆裡：那幾格不生出來（見 wallPlan 的 skip）。
-       硬蓋的話兩邊的積木會疊在同一格上。 */
-    const hit = (x, z) => {
-      for (const h of homes.list)
-        if (x > h.x0 && x < h.x1 && z > h.z0 && z < h.z1) return true;
-      return false;
+    /* 擋在牆線上的小房子與樹**先拆成碎料**（v1.189，使用者：「應該蓋牆前就把小房子
+       拆成碎料」）。v1.186~v1.188 是讓它嵌進牆裡（壓到的那幾格不生出來），
+       實測那條路有兩個坑（見 開發筆記〈蓋牆前先把擋路的拆掉〉）：
+         · 打光的殘骸外框是空的（homeBox 只框還站著的格子）→ 牆整段照蓋過去，
+           之後有人回來接手補那間殘骸，231 格裡有 40 格跟牆的積木半格錯位互穿
+         · 嵌進去的那間之後被打掉的話，少生的那 122 格永遠不會補回來
+           （wallPlan 一圈只跑一次），牆線上就開一個十格寬的洞
+       拆成碎料剛好接回原本的流程：那幾塊變成 FREE 躺在地上，小人撿去砌牆
+       （等於「你家被徵收了」，同 clearHomesInSite）。 */
+    const plan = wallPlan();
+    const wSpan = plan.map(homeSpan);
+    const blocked = h => {
+      const b = homeSpan(h);
+      return wSpan.some(w => b.x0 < w.x1 && b.x1 > w.x0 && b.z0 < w.z1 && b.z1 > w.z0);
     };
-    for (const h of wallPlan(hit)) homes.list.push(h);
+    dropHomes(h => !blocked(h));
+    for (const h of plan) homes.list.push(h);
   }
   /* 城內要放幾間、幾棵：按**可用的環面積**算（使用者選的），扣掉已經在城裡的那些。
      內緣是房子的內緣（siteR + HOME_NEAR），外緣貼著牆內側。 */
