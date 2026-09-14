@@ -8579,10 +8579,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              ev: idleEv ? idleEv.id : null, lazy: workers.filter(w => w.lazy).length,
              homes: homes ? homes.list.length : 0 };
   });
+  /* 抽到哪一件不重要，重點是「有重挑、而且全場都上工」。
+     v1.186 加了城牆那一件之後，這裡有一定機率抽到 wall（實測 --seed 1187 就是），
+     而城牆一樣是掛在 homes.list 上、一樣用 w.hm 派人——所以兩件都算數。
+     （原本寫死 ev === 'home'，那是 v1.97 只有一件事件的年代留下來的。） */
   ok('完工之後事件重挑，全場都能參加（不只偷懶的那幾個）',
-     lazyDone.ev === 'home' && lazyDone.crew > lazyDone.during && lazyDone.crew > 4,
+     (lazyDone.ev === 'home' || lazyDone.ev === 'wall') &&
+     lazyDone.crew > lazyDone.during && lazyDone.crew > 4,
      '施工中 ' + lazyDone.during + ' 個人在蓋自己的家（偷懶的 ' + lazyDone.lazy +
-     ' 個），慶祝散場後變成 ' + lazyDone.crew + ' 個、村子 ' + lazyDone.homes + ' 間');
+     ' 個），慶祝散場後重挑到「' + lazyDone.ev + '」、' + lazyDone.crew +
+     ' 個人上工、掛著 ' + lazyDone.homes + ' 筆');
 
   // 後面幾段不該再有房子、事件與偷懶（見 installClean）
   await page.evaluate(() => {
@@ -14683,8 +14689,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '從 z=−10 往前開兩秒：走了 ' + ftThru.moved + ' 單位到 z=' + ftThru.z +
      '（房子的外框是 z −3～3），被擋 ' + ftThru.blocked + ' 幀');
 
-  /* 從地圖邊緣直接開向火場、開到建築外牆前才停（v1.170，使用者指定）。
-     v1.68～v1.169 是「沿著外圈繞過去、一步都不進工地」。 */
+  /* 水砲在車尾（v1.187，使用者：「改成用車尾噴水」）。兩件事：
+     ① 砲口（jetNoz）在車尾那一頭，而且**跟車尾切齊**——所以水砲一格都沒有把車變長，
+        車體占地、擋路判定、城牆那條「車照穿」全都不受影響；
+     ② 造型表裡真的有一根朝車尾的砲管（細長、擺在車身後半）。 */
+  const ftNoz = await page.evaluate(() => {
+    const back = Math.min(...ENG.MODELS.truck.map(p => p.p[2] - p.s[2] / 2));
+    const front = Math.max(...ENG.MODELS.truck.map(p => p.p[2] + p.s[2] / 2));
+    const n0 = jetNoz({ x: 0, z: 0, a: 0 });               // 車頭朝 +Z
+    const n1 = jetNoz({ x: 0, z: 0, a: Math.PI / 2 });     // 車頭朝 +X
+    const pipe = ENG.MODELS.truck.filter(p => p.s[0] < 0.6 && p.s[2] > 2);   // 細長的那根
+    return { back: +back.toFixed(2), front: +front.toFixed(2),
+             nz: +n0.z.toFixed(2), ny: +n0.y.toFixed(2), nx: +n1.x.toFixed(2),
+             pipes: pipe.length, pipeZ: pipe.length ? +pipe[0].p[2].toFixed(2) : 0 };
+  });
+  ok('水砲在車尾：砲口從車尾出水，而且跟車尾切齊（沒有把車變長）',
+     ftNoz.nz < 0 && Math.abs(ftNoz.nz - ftNoz.back) < 0.1 &&
+     Math.abs(ftNoz.nx - ftNoz.back) < 0.1 && ftNoz.pipes === 1 && ftNoz.pipeZ < 0,
+     '砲口在本地座標 z=' + ftNoz.nz + '（車尾 ' + ftNoz.back + '、車頭 ' + ftNoz.front +
+     '）、離地 ' + ftNoz.ny + '；造型表裡的砲管 ' + ftNoz.pipes + ' 根，擺在 z=' +
+     ftNoz.pipeZ + '（負的＝朝車尾）');
+
+  /* 從地圖邊緣直接開向火場（v1.170，使用者指定），**停在工地圈外用車尾噴**
+     （v1.187，使用者：「增加噴水距離」「噴水時不要太靠近建築(會被卡住)」「改成用車尾噴水」）。
+     v1.68～v1.169 是「沿著外圈繞過去、一步都不進工地」，v1.170～v1.186 是
+     「開到外牆前停下來往裡面噴」——那一版實測車身離地標只剩 0.25，就是使用者說的卡住。 */
   const ftRun = await page.evaluate(() => {
     cleanTools();
     targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '巴黎聖母院');
@@ -14730,7 +14759,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const at = placedCnt;
     let peak = 0, called = 0, arrive = -1, fireOut = -1, low = placedCnt;
     let minR = Infinity, sprayed = 0, wetMax = 0, gone = -1, t = 0;
-    let clip = 0, seen = 0, jetD = Infinity;
+    let clip = 0, seen = 0, jetD = Infinity, jetSum = 0, aimMax = 0;
     while (t < 60) {
       step(0.05); t += 0.05;
       peak = Math.max(peak, nSpread);
@@ -14745,7 +14774,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           if (m.jet) {
             sprayed++;
             if (arrive < 0) arrive = +t.toFixed(1);
-            jetD = Math.min(jetD, Math.hypot(m.jx - m.x, m.jz - m.z));
+            /* 水柱長度量的是**砲口**到落點（v1.187 砲口搬到車尾了），
+               順便量車尾對準落點的偏角——噴的時候一定要在 FT_AIM 以內。 */
+            const n = jetNoz(m), d = Math.hypot(m.jx - n.x, m.jz - n.z);
+            jetD = Math.min(jetD, d); jetSum += d;
+            aimMax = Math.max(aimMax, backErr(m, m.jx, m.jz));
           }
         }
       } else if (called && gone < 0) gone = +t.toFixed(1);
@@ -14755,24 +14788,106 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { at, peak, called, arrive, fireOut, low, end, sprayed, wetMax, gone, quit: FT_QUIT,
              clip, seen, jetD: +jetD.toFixed(1),
+             jetAvg: sprayed ? +(jetSum / sprayed).toFixed(1) : -1,
+             aimMax: +aimMax.toFixed(2), aim: FT_AIM, stop: FT_STOP,
              minR: +minR.toFixed(1), site: +siteClearR().toFixed(1),
              siteR: +siteR.toFixed(1), range: +ftRange().toFixed(1) };
   });
   /* 噴幾幀不設高門檻：淋濕一片就把蔓延的鏈子切斷了，火自己燒完，
-     所以「噴多久」是看火多快死，貼著牆噴的時候量到 10～18 幀都算正常
-     （v1.169 站在 13 單位外噴是 58～235 幀，噴得久是因為澆不到重點）。
-     這一條要驗的是「開到牆邊、有噴、而且車體一幀都沒插進建築」。
-     插到的幀數為什麼不是抓 0：車停在牆邊噴水的時候小人照樣在旁邊砌牆，**真的會被砌到
-     車底下**，那時候車要花一兩幀倒出來（見 ftBack）。實測三趟 0／0／2 幀（在場 256～414
-     車-幀），所以門檻放在 2%。 */
-  ok('車直接開到建築外牆前才停，車體不插進地標（被砌到才倒車那一兩幀例外）',
-     ftRun.minR < ftRun.site && ftRun.clip <= ftRun.seen * 0.02 && ftRun.sprayed > 3,
+     所以「噴多久」是看火多快死，實測 35～37 幀（v1.186 貼著牆噴是 23～31 幀，
+     v1.169 站在 13 單位外噴是 58～235 幀，噴得久是因為澆不到重點）。
+     這一條驗的是 v1.187 的三件事：**停在工地圈外**（intoSite 那條線）、
+     **車體一幀都沒插進地標**、**噴的時候車尾是對著落點的**。
+     插到的幀數這一版可以抓 0：車不再停在牆邊，小人砌不到它身上
+     （v1.170～v1.186 是 0／0／2 幀，所以那時候門檻放在 2%）。 */
+  ok('車停在工地圈外用車尾噴，車體一幀都沒插進地標',
+     ftRun.minR > ftRun.site - 0.5 && ftRun.clip === 0 && ftRun.sprayed > 3 &&
+     ftRun.aimMax <= ftRun.aim,
      '最靠近場中心 ' + ftRun.minR + '（工地 ' + ftRun.site + '、地標半徑 ' + ftRun.siteR +
      '、射程 ' + ftRun.range + '）；在場 ' + ftRun.seen + ' 車-幀裡有 ' + ftRun.clip +
-     ' 幀車體插到，噴了 ' + ftRun.sprayed + ' 幀、水柱落點離車 ' + ftRun.jetD + ' 單位');
+     ' 幀車體插到，噴了 ' + ftRun.sprayed + ' 幀、車尾對準落點的偏角最大 ' +
+     ftRun.aimMax + '（容許 ' + ftRun.aim + '）');
+  /* 噴水距離（v1.187，使用者：「增加噴水距離」）。門檻拿常數比，不寫死：
+     車停下來的距離是 FT_STOP，而砲口在車尾、車又停在工地圈外，所以實際的水柱
+     一定比 FT_STOP 長一截。實測平均 16～18（v1.186 是 10.1／9.8／10.4）。 */
+  ok('水柱比車停下來的距離還長（砲口在車尾、車停在工地圈外）',
+     ftRun.jetAvg > ftRun.stop && ftRun.jetD > 0,
+     '水柱長度平均 ' + ftRun.jetAvg + '、最短 ' + ftRun.jetD +
+     '（停車距離 ' + ftRun.stop + '；v1.186 同一個場景平均 10.1）');
   ok('水柱掃過的一片都會濕',
      ftRun.wetMax > 40,
      '同時最多 ' + ftRun.wetMax + ' 塊是濕的');
+
+  /* 火在建築**另一頭**：車要沿著工地圈繞過去，不能頂在圈邊不動（v1.187，
+     使用者回報「還是會有卡住不會去滅火的情況」）。
+     v1.187 第一版就是這樣卡住的：intoSite 擋掉了直線，而車不會自己繞路——
+     實測總統府那一趟，車停在工地圈邊四十秒（離火 34.7、射程 30.2），一滴水都沒澆到。
+     這裡把車擺在 +x 那一側的場外、火點在 −x 那一側，看它繞不繞得過去。 */
+  const ftRound = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    clearFires(); phase = 'build';
+    const cand = blocks.filter(b => b.st === 3 && b.x < 0 && b.y > 2);
+    cand.sort((a, b) => Math.hypot(b.x, b.z) - Math.hypot(a.x, a.z));
+    for (let i = 0; i < 8 && i < cand.length; i++) igniteBlock(cand[i]);
+    const fire = cand[0];
+    trucks = { t: 0, quit: 0, out: false, more: 0, list: [mkTruck(Math.PI / 2, 0)] };
+    const m = trucks.list[0];
+    let t = 0, sprayed = 0, reach = Infinity, minR = Infinity, out = -1;
+    while (t < 30) {
+      step(0.05); t += 0.05;
+      if (!trucks || !trucks.list.length) break;
+      minR = Math.min(minR, Math.hypot(m.x, m.z));
+      reach = Math.min(reach, Math.hypot(m.x - fire.x, m.z - fire.z));
+      if (m.jet) sprayed++;
+      if (!nSpread && out < 0) out = +t.toFixed(1);
+    }
+    const r = { sprayed, out, reach: +reach.toFixed(1), minR: +minR.toFixed(1),
+                d0: +Math.hypot(fire.x, fire.z).toFixed(1),
+                site: +siteClearR().toFixed(1), range: +ftRange().toFixed(1) };
+    trucks = null; cleanTools(); clearFires();
+    return r;
+  });
+  ok('火在建築另一頭：車會沿著工地圈繞過去，不是頂在圈邊不動',
+     ftRound.sprayed > 3 && ftRound.reach <= ftRound.range && ftRound.out > 0 &&
+     ftRound.minR > ftRound.site - 0.5,
+     '車從對面進場：最近繞到離火 ' + ftRound.reach + '（射程 ' + ftRound.range +
+     '）、噴了 ' + ftRound.sprayed + ' 幀、' + ftRound.out + ' 秒火全滅；' +
+     '最靠近場中心 ' + ftRound.minR + '（工地圈 ' + ftRound.site + '）');
+
+  /* 火一直滅不掉就再多派（v1.187，使用者：「如果一段時間後 火還是沒滅 再多派消防車」）。
+     這裡一路補火讓它滅不掉，看車數是不是每 FT_MORE 秒加一台、加到 FT_MAX 為止。 */
+  const ftMore = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    clearFires(); phase = 'build';
+    const fresh = () => blocks.filter(b => b.st === 3 && !b.burn && !b.wet && b.y > 2);
+    const lightUp = (n) => {
+      const c = fresh();
+      for (let i = 0; i < n && c.length; i++) igniteBlock(c[Math.floor(i * c.length / n)]);
+    };
+    lightUp(FT_CALL + 2);
+    callTrucks();
+    const n0 = trucks.list.length;
+    const at = [];
+    let t = 0, last = n0;
+    while (t < FT_MORE * (FT_MAX + 0.7)) {
+      if (nSpread < FT_CALL + 2) lightUp(4);      // 補火：模擬「一直滅不掉」
+      step(0.05); t += 0.05;
+      const n = trucks ? trucks.list.length : 0;
+      if (n !== last) { at.push([+t.toFixed(1), n]); last = n; }
+    }
+    const end = trucks ? trucks.list.length : 0;
+    trucks = null; cleanTools(); clearFires();
+    return { n0, at, end, more: FT_MORE, max: FT_MAX };
+  });
+  /* 間隔抓 ±3 秒：加車那一刻要 nSpread 撐得住門檻，補火是每 0.05 秒補一次，會有一點抖。 */
+  ok('火一直滅不掉就再多派一台，加到上限為止',
+     ftMore.n0 >= 1 && ftMore.end === ftMore.max &&
+     ftMore.at.length === ftMore.max - ftMore.n0 &&
+     ftMore.at.every(([tt, n], i) => n === ftMore.n0 + i + 1 &&
+                     Math.abs(tt - ftMore.more * (i + 1)) < 3),
+     '一開始 ' + ftMore.n0 + ' 台 → ' +
+     (ftMore.at.map(([tt, n]) => tt + ' 秒第 ' + n + ' 台').join('、') || '沒有增援') +
+     '（每 ' + ftMore.more + ' 秒一台，上限 ' + ftMore.max + '）');
   ok('建造中被放一把火：火會被撲掉，工程繼續往前',
      ftRun.called >= 1 && ftRun.arrive > 0 && ftRun.arrive < 25 &&
      ftRun.fireOut > 0 && ftRun.fireOut < 40 &&
@@ -14800,8 +14915,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools(); startBuild(true); completeNow();
     dust.length = 0;
     const tgt = { x: 12, y: 6, z: 0 };
-    const m = { x: 30, z: 0, a: Math.atan2(tgt.x - 30, tgt.z - 0), side: 0, t: 0,
-                bob: 0, bk: 0, jam: 0, ghost: 0, pick: 0, aim: null,
+    // 車尾朝著目標（v1.187：水砲在車尾，所以擺位是車頭背對火場）
+    const m = { x: 30, z: 0, a: Math.atan2(30 - tgt.x, 0 - tgt.z), side: 0, t: 0,
+                bob: 0, bk: 0, jam: 0, ghost: 0, pick: 0, aim: null, st: 'aim', hasJ: 1,
                 jet: 1, jx: tgt.x, jy: tgt.y, jz: tgt.z, em: 0, jetT: 0 };
     const noz = jetNoz(m);
     sprayFx(m, 0.05);                              // 一批新生的
@@ -14868,10 +14984,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const b = cand[0];
     igniteBlock(b);
     const d = Math.hypot(b.x, b.z) || 1, ux = b.x / d, uz = b.z / d;
-    const stand = FT_STOP - 0.5;                   // 停得住（不會再往前開）的最遠處
+    /* 停得住（不會再倒車進場）的最遠處，而且**車尾朝著那塊火**——v1.187 起水砲在車尾，
+       車頭朝外擺（Math.atan2(ux, uz) 就是背對場中心的方向）。 */
+    const stand = FT_STOP - 0.5;
     const m = { x: b.x + ux * stand, z: b.z + uz * stand,
-                a: Math.atan2(-ux, -uz), side: 0, t: 0, bob: 0, bk: 0, jam: 0, ghost: 0,
-                pick: 0, aim: null, jet: 0, jx: 0, jy: 0, jz: 0, em: 0, jetT: 0 };
+                a: Math.atan2(ux, uz), side: 0, t: 0, bob: 0, bk: 0, jam: 0, ghost: 0,
+                pick: 0, aim: null, st: 'aim', hasJ: 0,
+                jet: 0, jx: 0, jy: 0, jz: 0, em: 0, jetT: 0 };
     trucks = { t: 0, quit: 0, out: false, list: [m] };
     let tJet = -1, tOut = -1, want = 0, near = 99, t = 0, moved = 0;
     const x0 = m.x, z0 = m.z;

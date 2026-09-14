@@ -1483,7 +1483,20 @@ function torch(hit) {
      · **小房子與樹不再擋車**，只有地標擋（見 ftIn）。
      · **水柱畫成一條**（沿飛行方向拉長的水花，見 sprayFx），而且**水到了才滅火**
        （見 jetTime／m.jetT）——以前是「瞄到哪裡那一塊當場就熄」，水滴還在半路，
-       看起來就是火自己滅的、水噴得再久也無關。 */
+       看起來就是火自己滅的、水噴得再久也無關。
+
+   v1.187 又改了三件（使用者：「增加噴水距離」「噴水時不要太靠近建築(會被卡住)」
+   「改成用車尾噴水」），見 開發筆記〈v1.187：車尾噴水、站遠一點噴〉：
+     · **水砲搬到車尾**（造型表那兩塊 ＋ jetNoz ＋ backTo）。車因此**倒車進場**：
+       一進射程就轉半個圈、對準就開噴，然後一邊噴一邊往火場倒車。
+       車頭朝外，收工那一下直接開走、不必再轉頭（離場從 15 秒縮到 13.6 秒）。
+     · **不再貼著建築**：擋路的空隙 FT_PAD 0.7 → 2.2，再加一條「工地圈裡不准再往
+       中心靠」（intoSite）。實測車身離地標的空隙從 **0.25 變成 6 以上**、
+       車體插進地標 0 幀，水柱長度從 6.7～15.8 變成 **16.3～21.4**。
+     · **對準了才噴**（FT_AIM）：轉半圈要 0.9 秒，這段時間噴出去的話，
+       水會從砲管的側面飛出去（水的速度是砲口到落點解出來的，跟車頭朝哪無關）。
+   配套是把一球水的範圍 FT_WET_R 3.2 → 4.6（見那裡）：站遠了不放大的話，
+   同一個場景要 22 秒才滅火（原本 7 秒），整座會被多燒掉三百多塊。 */
 const FT_MAX = ENG.MAXTRUCK;        // 最多幾台。上限就是畫面那邊的容量，兩邊不會不一致
 /* 每這麼多塊「還站著的」在燒派一台（1～FT_MAX）：1～8 塊 1 台、9～16 塊 2 台，
    25 塊以上就是上限 4 台。**只在叫車那一刻算一次**（使用者指定），
@@ -1491,12 +1504,27 @@ const FT_MAX = ENG.MAXTRUCK;        // 最多幾台。上限就是畫面那邊�
 const FT_PER = 8;
 const FT_CALL = 6;                  // 同時燒著幾塊才叫車：一兩塊自己就燒完了，不值得出動
 const FT_MOVE = 13;                 // 車速。比推土機快（DOZ_MOVE 9.5）——它是趕著來的
-const FT_WET_R = 3.2;               // 水柱落點這麼近的積木都會被淋濕
+/* 水柱落點這麼近的積木都會被淋濕。v1.68～v1.186 是 3.2，**v1.187 放大到 4.6**——
+   這是「站遠一點噴」的配套，不是順手調的：車不再貼著建築，落點離砲口從 10 變成 17.6，
+   而挑目標的規則是「離車最近那一塊」，站遠了就變成一路澆火堆**面向車的那一面**。
+   實測（聖母院蓋一半放一把火，同一顆種子三趟）：3.2 是 21.6／22.7／21.6 秒才滅、
+   整座從 1377 塊掉到 956～1004；4.6 是 **6.7～6.9 秒**滅、最低 1317～1338——
+   跟 v1.186 貼著建築噴的 6.9～7.2 秒／1294～1332 一樣好。
+   為什麼是這個數：火在第 6 秒前後是一叢平均半徑 4.0～4.7 的球（見 開發筆記的時間軸），
+   一球水要蓋得住那一叢，半徑就得跟它同一個量級。 */
+const FT_WET_R = 4.6;
 const FT_SWEEP = 17;                // 落點每秒掃多快：掃過去才像在澆，瞬移看起來像在閃
 const FT_PICK = 0.4;                // 多久重挑一次目標
 const FT_QUIT = 2.5;                // 火滅乾淨之後再待這麼久才走（復燃就不用重新叫車）
 const FT_LIMIT = 120;               // 保險絲：待再久也要收工
-const FT_STOP = 7;                  // 沒東西擋的話，開到離目標這麼近就停下來噴
+/* 倒車進場倒到離目標這麼近就停（量的是**車體中心到落點**，砲口還在車尾後方 FT_NOZ）。
+   **這個數字 v1.187 沒有動**：噴水距離是靠「砲口搬到車尾 ＋ 不進工地圈 ＋ 一進射程
+   就開噴」拉開的（實測水柱 6.7～15.8 → 16.3～21.4），不是靠把它調大。
+   試過拉到 14：車根本用不到（火在 7 秒就滅了，那時候它還在倒車進場的路上）。 */
+const FT_STOP = 7;
+/* 車尾對準火場的容差（rad）：差在這以內才噴。
+   0.35 rad ＝ 20 度，落點在 17 遠的時候砲口偏 6 單位——再大就看得出水不是從砲管出來的。 */
+const FT_AIM = 0.35;
 /* 幾台一起來的時候要錯開，不然四台會疊成一台：進場方向差 FT_FAN、停的位置左右差 FT_GAP
    （車寬 3.7、長 6.9，相鄰兩台隔 6 剛好不會重疊）。 */
 const FT_FAN = 0.4, FT_GAP = 6;
@@ -1504,13 +1532,19 @@ const FT_EYE = 5;                   // 出場找路時往前探幾格（見 T.ou
 const FT_SAMP = 0.9;                // 擋路判定的取樣間距（要小於一格積木，見 ftIn）
 /* 往前開的時候車體外放這麼多才判擋路，所以車會停在離牆這麼遠的地方。
    要留這個空隙是因為**原地轉頭會把車身掃出去**：車 6.9 長、半對角 3.77，
-   轉 30 度前角就往前多吃 0.47——貼著牆停的話，一轉頭車尾車角就插進牆裡了。 */
-const FT_PAD = 0.7;
+   轉 30 度前角就往前多吃 0.47——貼著牆停的話，一轉頭車尾車角就插進牆裡了。
+   v1.68～v1.186 是 0.7（只夠「轉得動」）；**v1.187 拉到 2.2**（使用者：「噴水時
+   不要太靠近建築(會被卡住)」）：車頭停在離牆 2.2，車身中心就離牆 5.5，
+   轉半圈把車尾對過去之後車尾還離牆 1.9——0.7 的話車尾只剩 0.4，等於貼著牆噴。 */
+const FT_PAD = 2.2;
 const FT_BACK = 6;                  // 倒車的速度（見 ftBack）
 const FT_JAM = 8, FT_GHOST = 3;     // 出場卡住幾秒就暫時穿透、穿透幾秒（見 stepTrucks）
 const ftRange = () => siteClearR() + 11;    // 射程（＝舊的「外圈 siteClearR+4」再加 7，數字沒動）
 const WATER_G = 12;                 // 水滴的重力（塵霧預設 7；水要沉一點才像水）
-const FT_NOZ = 1.4, FT_NOZ_Y = 3.05;        // 砲口在車頭前面多遠、離地多高
+/* 砲口在**車尾後面**多遠、離地多高（v1.187 從「車頭前面 1.4」搬過來）。
+   3.63 就是造型表那根砲管的末端，跟車尾切齊（＝FT_BODY.b）——所以水砲一格都沒有
+   把車變長，車體占地、擋路判定、城牆那一條「車照穿」全部沒動到。 */
+const FT_NOZ = 3.63, FT_NOZ_Y = 3.05;
 const FT_JET_V = 30;                // 解彈道用的水平速度（決定飛多久，見 jetTime）
 /* 水柱的樣子（v1.175 使用者：「要看清楚是水柱 而不是一坨水」）。關鍵不在量，
    在**每一顆的形狀**與**整條的散開度**：
@@ -1535,8 +1569,12 @@ const FT_VJIT = 0.5;                // 速度抖多少（垂直方向給一半�
    舊版最擠的一幀是水 250 ＋ 煙 190 ＋ 濺開 17 ＝ 457，還沒撞到 560，
    但那一幀只有**兩台**在噴——四台都站遠噴就是 320 顆水，加上煙（自己的上限 380）
    就過 560 了，超出的會被這裡的 break 丟掉，水柱當場斷成一節一節。
-   900 是照「四台站遠噴 ＋ 煙滿載」訂的（320 ＋ 380 ＋ 濺開，再留一點）。 */
-const FT_DUST = 900;
+   v1.175～v1.186 是 900（照「四台站遠噴 320 ＋ 煙滿載 380 ＋ 濺開」訂的）。
+   **v1.187 跟著噴水距離一起抬到 1300**：一條水柱最長就是射程，
+   ftRange ÷ FT_JET_V × FT_RATE ＝ 28.6 ÷ 30 × 170 ≒ 162 顆，四台 648，
+   加上煙（自己的上限 380）與濺開的幾十顆，900 會不夠、水柱就會斷成一節一節。
+   實測一台站在半徑 33 噴（水柱 16～21）同時有 114～120 顆在飛。 */
+const FT_DUST = 1300;
 let trucks = null;                  // 在場的消防車 { t, quit, out, list }
 /* 車體占地，直接從畫面那台車的造型表算出來（同推土機的 DOZ_W 取自引擎）：
    判定跟看到的才會是同一台車，哪天改造型也不必回來改數字。
@@ -1562,24 +1600,47 @@ function fireAngle() {
   }
   return n ? Math.atan2(x / n, z / n) : Math.random() * Math.PI * 2;
 }
+/* 生一台車：從場邊 base + side×FT_FAN 那個方位進場，停點左右錯開 side×FT_GAP。 */
+function mkTruck(base, side) {
+  const far = arenaR + DOZ_FAR;             // 跟推土機同一個進場圈
+  const ang = base + side * FT_FAN;
+  return { x: Math.sin(ang) * far, z: Math.cos(ang) * far, a: ang + Math.PI,
+           side, t: rr(0, 2), bob: 0, bk: 0, jam: 0, ghost: 0,
+           pick: 0, aim: null, jet: 0, jx: 0, jy: 0, jz: 0, em: 0, jetT: 0,
+           /* v1.187：st ＝ go 趕路中／aim 轉身噴水中；hasJ ＝ 落點還算不算數
+              （見 stepTrucks）。 */
+           st: 'go', hasJ: 0 };
+}
 function callTrucks() {
   const n = clamp(Math.ceil(nSpread / FT_PER), 1, FT_MAX);     // 台數照火勢（見 FT_PER）
   const base = fireAngle();
-  const far = arenaR + DOZ_FAR;             // 跟推土機同一個進場圈
-  trucks = {
-    t: 0, quit: 0, out: false,
-    list: Array.from({ length: n }, (_, k) => {
-      const side = k - (n - 1) / 2;         // 排在中線的哪一側（見 FT_FAN／FT_GAP）
-      const ang = base + side * FT_FAN;
-      return { x: Math.sin(ang) * far, z: Math.cos(ang) * far, a: ang + Math.PI,
-               side, t: rr(0, 2), bob: 0, bk: 0, jam: 0, ghost: 0,
-               pick: 0, aim: null, jet: 0, jx: 0, jy: 0, jz: 0, em: 0, jetT: 0 };
-    })
-  };
+  trucks = { t: 0, quit: 0, out: false, more: 0,
+             list: Array.from({ length: n }, (_, k) => mkTruck(base, k - (n - 1) / 2)) };
+}
+/* 火一直滅不掉就再多派一台（v1.187，使用者：「如果一段時間後 火還是沒滅 再多派消防車」）。
+   FT_MORE 秒沒把火壓下去就加一台，加完重新計時，一路加到 FT_MAX（＝畫面那邊的容量）。
+   為什麼是 15 秒：一台把自然蔓延的一叢火撲掉是 7 秒、四台撲 40 把火是 10 秒
+   （見 開發筆記〈v1.187〉的對照表），拖到 15 秒就是「這幾台不夠」。
+   新來的那台排在**還沒被占用**的側位上（side 一正一負往外長），才不會跟現場的疊在一起。 */
+const FT_MORE = 15;
+function moreTruck(T, dt) {
+  if (T.out || nSpread < FT_CALL || T.list.length >= FT_MAX) { T.more = 0; return; }
+  T.more += dt;
+  if (T.more < FT_MORE) return;
+  T.more = 0;
+  const k = T.list.length;                       // 1 → +1、2 → −1、3 → +2 …
+  T.list.push(mkTruck(fireAngle(), (k % 2 ? 1 : -1) * Math.ceil(k / 2)));
 }
 /* 還澆得到的目標：離這台車最近、**還站著**在燒的那一塊。
    碎料的火（f.sp = false）不追——它們散得到處都是，而且燒完自己就成焦炭，
-   追著跑的話車會一路被拉離建築；掃到的碎料照樣會被水淋濕（見 wetSpray）。 */
+   追著跑的話車會一路被拉離建築；掃到的碎料照樣會被水淋濕（見 wetSpray）。
+
+   「最近的那一塊」看起來笨，其實是**這一套裡最會滅火的挑法**：澆熄一塊就換下一塊，
+   落點等於一路在火堆上**割草**。v1.187 試過兩種「聰明」的挑法，兩種都更慢
+   （見 開發筆記〈瞄準改聰明反而更慢〉）：
+     · 瞄「周圍燒得最密的那一塊」：那個點會在兩叢之間跳，落點永遠在半路上，50 秒沒滅。
+     · 瞄「火堆重心」：落點停在原地不動，等於一直澆同一個已經濕透的水窪，
+       第一球只熄掉 18 塊（同一個場景，「最近的一塊」是 48 塊）。 */
 function pickFire(m) {
   if (!fires) return null;
   let best = null, bd = Infinity;
@@ -1591,16 +1652,25 @@ function pickFire(m) {
   return best;
 }
 const aimOk = b => !!b && b.burn === 1 && b.st === SET;
-/* 只轉車頭、不前進：停下來噴水時要對著火場轉（水砲固定朝車頭），
+/* 只轉車身、不前進：停下來噴水時要把**車尾**對著火場轉（水砲在車尾，v1.187），
    ftDrive 那支會連帶把車開走。
    轉之前先確認車身掃得過去（v1.170）：轉頭會把 6.9 長的車身掃出去，
    掃不過去就維持現在的角度——砲口斜一點，總比車身插在牆裡好。 */
-function faceTo(m, dt, x, z) {
-  let d = Math.atan2(x - m.x, z - m.z) - m.a;
+function backTo(m, dt, x, z) {
+  let d = Math.atan2(m.x - x, m.z - z) - m.a;         // 車尾（m.a 的反向）對準那裡
   while (d > Math.PI) d -= Math.PI * 2;
   while (d < -Math.PI) d += Math.PI * 2;
   const na = m.a + Math.min(Math.abs(d), DOZ_TURN * dt) * Math.sign(d);
   if (ftIn(m.x, m.z, na) <= ftIn(m.x, m.z, m.a)) m.a = na;
+}
+/* 車尾離「對準 (x,z)」還差幾 rad（v1.187）。**沒對準就先不噴**：水的速度是
+   「砲口 → 落點」解出來的彈道，跟車身朝哪完全無關，所以轉身那 0.9 秒照噴的話，
+   水會從砲管的側面飛出去。 */
+function backErr(m, x, z) {
+  let d = Math.atan2(m.x - x, m.z - z) - m.a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return Math.abs(d);
 }
 /* 車體占地裡插到幾格**地標**（0 ＝ 沒插到，v1.170，使用者：「車輛像小人等 不穿進建築」）。
    問的是地標的積木（footBlocked，腳邊三層）——跟小人擋在同一面牆上，
@@ -1646,6 +1716,58 @@ function ftBack(m, dt) {
   m.x = bx; m.z = bz;
   return true;
 }
+/* 不准再往工地圈裡鑽（v1.187，使用者：「噴水時不要太靠近建築(會被卡住)」）。
+   ftIn 那一層只擋「車體會插到地標的積木」，而地標從來不是實心的——聖母院的拱門、
+   側廊之間都有縫，車鑽進去之後就是被夾在裡面（實測倒車進場一路退到離場中心 9.2、
+   59 幀車體插在牆裡）。所以再加一條粗一點的圈：**工地外緣以內不准再往中心靠**。
+   只擋「往中心」那一半，車已經在裡面的時候照樣退得出來。 */
+function intoSite(m, nx, nz) {
+  const r = Math.hypot(nx, nz);
+  return r < siteClearR() && r < Math.hypot(m.x, m.z);
+}
+/* 趕路要往哪裡開：火在建築另一頭的時候，**沿著工地圈繞過去**（v1.187）。
+   直接朝火場開的話車會頂在 intoSite 那條線上不動——它不會自己繞路，
+   實測（總統府蓋六成、火點在另一頭）車開到工地圈邊就停在那裡，
+   離火 34.7、射程只有 30.2，四十秒都沒澆到，`go`／`aim` 每秒互跳。
+   （同 v1.186 動物繞城門那一套：不進圈、沿著圈走到火場的方位再進去。）
+   還在圈外一段距離就照舊直線開——最後那一段自然會被 intoSite 收住。 */
+const FT_RING = 4;                  // 繞的時候貼著「工地圈 ＋ 這麼多」的圓走
+const FT_WAY = 0.5;                 // 一次沿著圓弧轉多少（rad）：轉太多就等於又對著建築開
+function ftWay(m, ax, az) {
+  const keep = siteClearR() + FT_RING;
+  if (Math.hypot(m.x, m.z) > keep + 1) return { x: ax, z: az };
+  let A = Math.atan2(m.x, m.z);
+  let d = Math.atan2(ax, az) - A;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  if (Math.abs(d) < 0.12) return { x: ax, z: az };     // 已經在火場那個方位了
+  const g = A + Math.sign(d) * Math.min(Math.abs(d), FT_WAY);
+  return { x: Math.sin(g) * keep, z: Math.cos(g) * keep };
+}
+/* 倒車進場：車尾已經對著火場了，所以「往後退」就是「往火場靠」（v1.187）。
+   擋路照樣用外放 FT_PAD 的車體判，所以它會停在離建築 FT_PAD 的地方，
+   不會像 v1.186 那樣一路貼到牆上。 */
+function ftRev(m, dt) {
+  const sp = FT_BACK * dt;
+  const nx = m.x - Math.sin(m.a) * sp, nz = m.z - Math.cos(m.a) * sp;
+  if (intoSite(m, nx, nz)) return false;
+  if (m.ghost <= 0 && ftIn(nx, nz, m.a, FT_PAD) > ftIn(m.x, m.z, m.a, FT_PAD)) return false;
+  m.x = nx; m.z = nz;
+  return true;
+}
+/* 「離 (x,z) 遠一步」：沿著車身那條軸線，往離目標比較遠的那一頭挪（v1.187）。
+   v1.186 以前這種場合一律叫 ftBack（純倒車）——那是「車頭永遠朝著火場」年代的寫法。
+   水砲搬到車尾之後，噴水姿勢的**車尾才是朝著建築的**，硬倒車就是往牆裡鑽：
+   實測（聖母院蓋一半放一把火）車一路退到離場中心 11、648 幀車體插在地標裡、
+   整座從 1377 塊被燒到 44 塊。 */
+function ftAway(m, dt, x, z) {
+  const fwd = (m.x - x) * Math.sin(m.a) + (m.z - z) * Math.cos(m.a) > 0 ? 1 : -1;
+  const sp = FT_BACK * dt * fwd;
+  const nx = m.x + Math.sin(m.a) * sp, nz = m.z + Math.cos(m.a) * sp;
+  if (m.ghost <= 0 && ftIn(nx, nz, m.a) > ftIn(m.x, m.z, m.a)) return false;
+  m.x = nx; m.z = nz;
+  return true;
+}
 /* 開向 (x, z)：轉車頭 → 前面不是建築才往前。回傳「還動得了嗎」，false 就是被擋住了
    （呼叫端改成停在那裡對著火場噴）。
    不共用推土機的 driveTo：位移前要先問一次擋路，而且擋住的那一幀車頭也不該轉
@@ -1677,12 +1799,13 @@ function ftDrive(m, dt, x, z) {
      （見 stepTrucks 開頭的 !trucks）。所以規則是「不准往插得比現在多的方向動」：
      乾淨的時候等於「前面有東西就不准前進」，被砌進去的時候還退得出來。 */
   if (ftIn(nx, nz, m.a, FT_PAD) > ftIn(m.x, m.z, m.a, FT_PAD)) return false;
+  if (intoSite(m, nx, nz)) return false;          // 工地圈裡不再往中心靠（v1.187）
   m.x = nx; m.z = nz;
   return true;
 }
-// 砲口在哪（車頭前面 FT_NOZ、離地 FT_NOZ_Y）
-const jetNoz = m => ({ x: m.x + Math.sin(m.a) * FT_NOZ, y: FT_NOZ_Y,
-                       z: m.z + Math.cos(m.a) * FT_NOZ });
+// 砲口在哪（車尾後面 FT_NOZ、離地 FT_NOZ_Y；v1.187 從車頭搬到車尾）
+const jetNoz = m => ({ x: m.x - Math.sin(m.a) * FT_NOZ, y: FT_NOZ_Y,
+                       z: m.z - Math.cos(m.a) * FT_NOZ });
 /* 水從砲口飛到落點要幾秒。解彈道用它，**滅火的延遲也用它**（見 m.jetT）：
    兩邊同一個數，才不會出現「火先滅、水後到」。 */
 function jetTime(m) {
@@ -1787,6 +1910,7 @@ function stepTrucks(dt) {
     else if (nSpread) T.quit = 0;
     else { T.quit += dt; if (T.quit > FT_QUIT) T.out = true; }
   }
+  moreTruck(T, dt);                   // 火還沒滅就再多派（v1.187，見 FT_MORE）
   for (let i = T.list.length - 1; i >= 0; i--) {
     const m = T.list[i];
     m.t += dt;
@@ -1794,7 +1918,7 @@ function stepTrucks(dt) {
     m.bk = Math.floor(m.t * 3.4) % 2;             // 警示燈：一秒閃三下多
     m.ghost = Math.max(0, m.ghost - dt);
     if (T.out) {
-      m.jet = 0; m.jetT = 0;
+      m.jet = 0; m.jetT = 0; m.hasJ = 0;
       /* 出場：往場外直線開。前面還是地標的牆就往旁邊偏著繞（±0.6、±1.2 rad 各探一次；
          v1.175 起房子不擋，所以要繞的只剩地標，見 ftIn）。
          五個方向都堵住就照原方向走——那時候車體通常已經被砌進去了，
@@ -1821,30 +1945,71 @@ function stepTrucks(dt) {
     m.pick -= dt;
     if (m.pick <= 0 || !aimOk(m.aim)) { m.pick = FT_PICK; m.aim = pickFire(m); }
     const a = m.aim;
-    if (!a) { m.jet = 0; m.jetT = 0; continue; }   // 沒得澆：停在原地等
-    /* 從地圖邊緣直接開向火場（v1.170，使用者指定），開到停不下去為止——
-       停的條件兩個：離目標夠近（FT_STOP），或者車頭前面已經是建築
-       （火在牆的另一邊、或在建築深處，那就停在牆邊往裡面噴）。
+    if (!a) { m.jet = 0; m.jetT = 0; m.hasJ = 0; continue; }   // 沒得澆：停在原地等
+    /* 從地圖邊緣直接開向火場（v1.170，使用者指定）。
+       停的條件兩個：離目標夠近（FT_STOP），或者車尾／車頭前面已經是建築
+       （火在牆的另一邊、或在建築深處，那就停在那裡往裡面噴）。
        幾台一起來時各自的停點左右錯開 side × FT_GAP，錯開的方向是進場方向的側邊。 */
     const fx = a.x - m.x, fz = a.z - m.z, dd = Math.hypot(fx, fz) || 1;
     const tx = a.x - fz / dd * m.side * FT_GAP, tz = a.z + fx / dd * m.side * FT_GAP;
-    if (Math.hypot(tx - m.x, tz - m.z) > FT_STOP) {
-      m.jet = 0;                                  // 還在路上就先收水柱，不要邊開邊亂噴
-      if (ftDrive(m, dt, tx, tz)) { m.jetT = 0; continue; }   // 還開得動：這一幀就只是趕路
+    /* 車尾噴水之後分兩段（v1.187）：
+       ① **go**：車頭朝前開，開到火場進了射程（ftRange）為止。
+       ② **aim**：轉半圈把車尾對過去，對準就開噴——**這時候人還在外圈**，不必等到定位；
+          然後一邊噴一邊**倒車進場**，倒到離目標 FT_STOP 就停。
+       為什麼是「先轉身再倒車進場」而不是「開到定位再轉身」：**第一滴水落地的時間**
+       是這一版最要命的數字。實測這個場景（聖母院蓋一半放一把火）第 6 秒前後，
+       火會從「一叢」散成「一片」（火堆平均半徑 4.0 → 4.7、往後一路長到 9），
+       而一球水的半徑只有 FT_WET_R 3.2：第一滴水落在 5.8 秒是兩秒滅火，
+       落在 6.55 秒就變成追著跑二十幾秒、整座從 1377 塊掉到 1000 塊。
+       先開到定位再轉那半圈剛好就是那 0.75 秒。
+       這兩段也**不能每一幀重新決定**（用 m.st 記著、進出各有門檻）：趕路那段把車頭
+       轉過去、噴水那段把車尾轉回來，混在一起每幀互相抵銷——實測 1169 幀裡有 1085 幀
+       沒對準，整座被燒到只剩 182 塊。 */
+    if (dd > (m.st === 'go' ? ftRange() * 0.9 : ftRange())) {
+      const w = ftWay(m, tx, tz);                 // 火在另一頭就沿著工地圈繞過去
+      if (ftDrive(m, dt, w.x, w.z)) {
+        m.st = 'go'; m.jet = 0; m.jetT = 0; m.hasJ = 0;   // 真的在趕路：先不噴
+        continue;
+      }
+      /* 開不動了（前面是建築、或已經貼著工地圈）：就地轉身噴，能澆多少算多少。
+         **這條路徑不歸零 jetT**——歸零的話「站在原地噴」永遠累積不到水的飛行時間，
+         那台車一滴水都不算（v1.175 踩過同一個坑，見下面 m.jetT 的說明）。 */
     }
+    m.st = 'aim';
     /* 停下來了。先看有沒有被砌進去（車停在牆邊噴水，小人照樣在旁邊砌牆）——
-       車身插在牆裡的樣子跟穿牆沒兩樣，那就先倒車退出來再噴。 */
-    if (ftIn(m.x, m.z, m.a)) { m.jet = 0; m.jetT = 0; ftBack(m, dt); continue; }
-    // 打不到就等火燒過來，打得到就車頭轉向火場、水柱往目標掃過去
-    if (dd > ftRange()) { m.jet = 0; m.jetT = 0; continue; }
-    faceTo(m, dt, a.x, a.z);
-    if (!m.jet) { m.jet = 1; m.jx = a.x; m.jy = a.y; m.jz = a.z; }
+       車身插在牆裡的樣子跟穿牆沒兩樣，那就先退出來再噴。
+       退的方向是「離火場遠一步」而不是純倒車（v1.187，見 ftAway）。 */
+    if (ftIn(m.x, m.z, m.a)) { m.jet = 0; m.jetT = 0; ftAway(m, dt, a.x, a.z); continue; }
+    /* 落點先往目標掃過去（不瞬移，見 FT_SWEEP），**車尾再跟著落點轉**——
+       跟的是落點不是目標：目標每 0.4 秒重挑一塊，而且澆熄一塊就馬上換下一塊，
+       方位跳來跳去（實測同一秒內在 0.76 rad 之間來回），車身轉不了那麼快；
+       落點是慢慢掃過去的，車尾跟著它就一直對得上。
+       m.hasJ ＝「落點還算數」（趕路、沒目標、收工時歸零）。**不能拿 m.jet 當這個旗子**：
+       沒對準的那幾幀 m.jet 是 0，落點就會瞬移到新目標、車尾又得追一次大角度，
+       愈追愈亂——四台車那一場實測 1318 幀裡有 641 幀在轉身。 */
+    if (!m.hasJ) { m.jx = a.x; m.jy = a.y; m.jz = a.z; m.hasJ = 1; }
     else {
       const dx = a.x - m.jx, dy = a.y - m.jy, dz = a.z - m.jz;
       const d = Math.hypot(dx, dy, dz), go = FT_SWEEP * dt;
       if (d <= go) { m.jx = a.x; m.jy = a.y; m.jz = a.z; }
       else { m.jx += dx / d * go; m.jy += dy / d * go; m.jz += dz / d * go; }
     }
+    /* 轉半圈把車尾對著落點（v1.187）。**轉不動就退到轉得過去為止**——這就是使用者說的
+       「噴水時不要太靠近建築(會被卡住)」：貼著牆停的車，車身半對角 3.77 掃不出去，
+       backTo 會維持原角度（見它自己的說明），退開一步空間就出來了。
+       實測不退的話它會一路用車頭對著火噴（偏角量到 2.97 rad，等於水從砲管側面飛出去）。
+       沒對準的那幾幀不噴，也把 jetT 歸零（見下面）。 */
+    const e0 = backErr(m, m.jx, m.jz);
+    backTo(m, dt, m.jx, m.jz);
+    const e1 = backErr(m, m.jx, m.jz);
+    if (e1 > FT_AIM) {
+      m.jet = 0; m.jetT = 0;
+      if (e0 - e1 < DOZ_TURN * dt * 0.5) ftAway(m, dt, m.jx, m.jz);  // 這一幀根本沒轉動：退開
+      continue;
+    }
+    m.jet = 1;
+    // 對準了、還沒到定位：一邊噴一邊倒車進場（見上面那段說明）
+    if (dd > FT_STOP) ftRev(m, dt);
     /* 連續噴了幾秒（v1.175）。**滅火要等這個追上水的飛行時間**（見 wetSpray）：
        使用者要的是「水柱噴過去 然後一小段時間火熄了」。
        為什麼不用「開始噴那一下記下飛行時間再倒數」：上面那幾條路徑會**每一幀**
