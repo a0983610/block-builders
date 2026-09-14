@@ -5427,10 +5427,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (idleEv) out.started++;
       stopIdleEvent(); clearHomes();
     }
-    /* 權重：塞一筆 wt 是三倍的假事件，抽 600 次看比例（1 : 3 → 25% / 75%）。
+    /* 權重：塞一筆 wt 是三倍的假事件，抽 600 次看比例。**期望值照表算出來**，
+       不寫死 25%——事件表多一件（v1.186 的城牆）那個數字就變了。
        抽完一定要拿掉，不然後面幾段會跑到這一筆假的。 */
+    const n0 = IDLE_EVENTS.length;
     const fake = { id: '__wt3', wt: 3, start: () => {}, step: null, stop: () => {} };
     IDLE_EVENTS.push(fake);
+    const wtAll = IDLE_EVENTS.reduce((a, e) => a + e.wt, 0);
     const cnt = {};
     for (let i = 0; i < 600; i++) {
       const e = rollIdleEvent();
@@ -5440,16 +5443,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     out.table = IDLE_EVENTS.map(e => e.id + ':' + e.wt).join('、');
     out.home = cnt.home || 0;
     out.fake = cnt.__wt3 || 0;
+    out.want = 600 / wtAll;                        // wt 1 的那一件期望抽到幾次
+    out.n0 = n0;
     out.left = IDLE_EVENTS.length;
     stopIdleEvent(); evArm = 1;
     return out;
   });
   ok('慶祝還沒散場不會觸發事件，散場後一定會發生一件，而且照權重挑',
      evRoll.cheerStart === null && evRoll.cheering > 0 && evRoll.started === 5 &&
-     evRoll.left === 1 && evRoll.home > 600 * 0.25 * 0.7 && evRoll.home < 600 * 0.25 * 1.3,
+     evRoll.left === evRoll.n0 &&
+     evRoll.home > evRoll.want * 0.7 && evRoll.home < evRoll.want * 1.3,
      '事件表 [' + evRoll.table + ']；慶祝中（還有 ' + evRoll.cheering + ' 人在跳）挑到的是 ' +
      evRoll.cheerStart + '，散場後 5 輪挑到 ' + evRoll.started +
-     ' 次；權重 1:3 抽 600 次 → ' + evRoll.home + ' : ' + evRoll.fake);
+     ' 次；加一筆 wt 3 的假事件抽 600 次 → 小人的家 ' + evRoll.home + ' 次（期望 ' +
+     evRoll.want.toFixed(0) + '）、假的 ' + evRoll.fake + ' 次');
 
   /* 蓋家的完整一輪：離隊的人數、房子的位置與大小、真的蓋起來、積木是挖出來的。
      這一段跑一次留著給後面幾條用（每條各跑一輪要一分多鐘）。 */
@@ -6068,11 +6075,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      第二座起每座 13000+ 次全部失敗，留下 41 間永遠蓋不完的空屋）。
      所以這裡要驗的是「挖得出來」，不是「有上限」：上限本來就有，它得夠大。 */
   const poolFit = await page.evaluate(() => {
-    let big = 0, bigN = '';
+    let big = 0, bigN = '', wall = 0, wallN = '';
+    /* 城牆那一份（v1.186）：整圈的塊數沒有預算可擋，是幾何算出來的，所以照每一座的
+       siteR／arenaR 實際生一圈、取最大的那一座——**不寫死量到的數字**，
+       改了 WALL_H／WALL_RUN 這種常數它會自己跟著變。 */
+    const keepR = [siteR, arenaR];
     for (let i = 0; i < SHAPES.length; i++) {
-      const n = makeBlueprint(i, CNT_MAX).slots.length;
+      const b2 = makeBlueprint(i, CNT_MAX), n = b2.slots.length;
       if (n > big) { big = n; bigN = SHAPES[i].n; }
+      siteR = Math.max(7, b2.radius);
+      arenaR = Math.sqrt((siteR + 2) ** 2 + SPREAD * n / Math.PI) + 8;
+      const wn = wallPlan(() => false).reduce((a, h) => a + h.slots.length, 0);
+      if (wn > wall) { wall = wn; wallN = SHAPES[i].n; }
     }
+    siteR = keepR[0]; arenaR = keepR[1];
     cleanTools();
     shapePick = SHAPES.findIndex(s => s.n === bigN);
     targetCnt = CNT_MAX; setWorkerCount(60); startBuild(true); completeNow();
@@ -6106,7 +6122,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     digBlock = orig;
     const hs = homes.list;
     const sum = f => hs.filter(f).reduce((a, h) => a + h.slots.length, 0);
-    return { big, bigN, maxb: ENG.MAXB, pool: blocks.length, full, secs,
+    return { big, bigN, wall, wallN, maxb: ENG.MAXB, pool: blocks.length, full, secs,
              placed: placedCnt, total: bp.slots.length,
              homes: hs.filter(h => !h.tree).length, slots: sum(h => !h.tree),
              trees: hs.filter(h => h.tree).length, treeSlots: sum(h => h.tree),
@@ -6115,15 +6131,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   /* 門檻 v1.153 加上樹那一份：村子現在是「最多 43 間 5405 格的房子 ＋ 最多
      TREE_BUDGET 塊的樹」，兩者都是硬上限（房子靠一人一間、樹靠塊數），
-     所以池子要留得下 5405 ＋ 1800。 */
-  ok('積木池同時容得下最大的地標與整個村子（挖得出積木）',
+     所以池子要留得下 5405 ＋ 1800。
+     v1.186 再加城牆那一份：整圈的塊數是上面那個迴圈當場生出來的最大值。 */
+  ok('積木池同時容得下最大的地標、整個村子與一圈城牆（挖得出積木）',
      poolFit.full === 0 && poolFit.left === 0 && poolFit.pool <= poolFit.maxb &&
      poolFit.placed === poolFit.total &&
-     poolFit.maxb - poolFit.big >= 5405 + poolFit.budget &&
+     poolFit.maxb - poolFit.big >= 5405 + poolFit.budget + poolFit.wall &&
      poolFit.treeSlots <= poolFit.budget,
      poolFit.bigN + ' ' + poolFit.big + ' 塊 ＋ 60 人的村子 ' + poolFit.homes + ' 間 ' +
      poolFit.slots + ' 格 ＋ 樹 ' + poolFit.trees + ' 棵 ' + poolFit.treeSlots +
-     ' 格（上限 ' + poolFit.budget + '）→ 池子 ' + poolFit.pool + '／' + poolFit.maxb +
+     ' 格（上限 ' + poolFit.budget + '）＋ 最大的一圈城牆 ' + poolFit.wall + ' 塊（' +
+     poolFit.wallN + '）→ 池子 ' + poolFit.pool + '／' + poolFit.maxb +
      '，挖不出來 ' + poolFit.full + ' 次、蓋了 ' + poolFit.secs + ' 秒還缺 ' +
      poolFit.left + ' 格');
 
@@ -7938,6 +7956,468 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      lag.phase !== 'wreck' && lag.gained === 1,
      '隔 ' + lag.gap + ' 秒（設定 ' + lag.wait + '）後 phase=' + lag.phase +
      '，拆掉座數 +' + lag.gained);
+
+  /* **不是玩家拆的也算**（v1.186，使用者：「不小心燒到地標沒關係 但是遊戲要察覺&燒完換場」）。
+     以前只有道具（afterHit）與點火（igniteAt）會把 phase 從 done 推進拆除中，所以
+     **火從村子燒過來**、或者**失去支撐自己垮下來**的時候，地標被吃光了遊戲還當作完好——
+     實測吉祥物的火燒光整座 1681 塊，phase 還停在 done，換場那條線（只在 wreck 時才數）
+     一動也不動。現在改成「已就位的積木離開建築」就推（見 game.js 的 freeBlock）。
+     這裡直接呼叫 breakBlock，走的正是火燒完／垮下來那條路（不經過道具的 afterHit）。 */
+  const autoWreck = await page.evaluate(() => {
+    cleanTools(); clearHomes();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(0); startBuild(true); completeNow();
+    const total = bp.slots.length, gate = Math.floor(total * WRECK_AT);
+    const set = () => blocks.filter(b => b.st === 3 && b.hh < 0);
+    const ph0 = phase;
+    breakBlock(set()[0], 0, 0, 0);                     // ① 少一塊就該察覺
+    const ph1 = phase;
+    for (const b of set()) { if (placedCnt <= gate) break; breakBlock(b, 0, 0, 0); }
+    const d0 = stats.destroyed;
+    let t = 0;
+    while (t < SWAP_WAIT + 3 && stats.destroyed === d0) { step(0.05); t += 0.05; }
+    return { ph0, ph1, placed: placedCnt, gate, total, wait: SWAP_WAIT,
+             swapped: stats.destroyed - d0, secs: +t.toFixed(1), ph2: phase };
+  });
+  /* 等幾秒才換場是上面那一條在守的事，這裡只驗「有沒有換」——而且 swapWait 是接著
+     上一條的（phase 不是 wreck 才會歸零，見 game-ui.js），這一段沒 step 過就先打掉，
+     所以它可能一進來就滿了。 */
+  ok('不是玩家拆的也算：地標少一塊就進拆除中，吃光了照樣換場',
+     autoWreck.ph0 === 'done' && autoWreck.ph1 === 'wreck' && autoWreck.swapped === 1,
+     '完工（' + autoWreck.ph0 + '）→ 不經過道具直接打掉一塊 → ' + autoWreck.ph1 +
+     '；吃到剩 ' + autoWreck.placed + '/' + autoWreck.total + '（門檻 ' + autoWreck.gate +
+     '）→ ' + autoWreck.secs + ' 秒後換場 ' + autoWreck.swapped + ' 次，現在是 ' +
+     autoWreck.ph2);
+
+  /* ══════════ 閒晃事件：城牆 ══════════ */
+  SEC: { if (!(await head('閒晃事件：城牆', T_COMMIT))) break SEC;
+  /* v1.186，使用者：「小人蓋城牆把地標建築圍起來／城牆內只有幾間小房子&小樹（比事件一少
+     看起來稀疏的感覺）／城牆依地標大小會不同範圍 會擋生物移動 積木組成 能被道具等破壞
+     （同小房子）」。整圈切成好幾段掛在同一份 homes.list 上（見 game-workers.js 的 wallPlan），
+     所以支撐與垮塌、被道具打壞、補洞、打到剩兩成五整段廢棄那一整套跟小房子共用，
+     這一段驗的是**城牆自己的那幾件事**：範圍跟著地標走、整圈的組成、擋誰不擋誰、
+     真的蓋得起來、城內稀疏、換場留不留。 */
+
+  /* 一圈現成的城牆（不等小人蓋）：驗擋路與破壞的那幾條要的是「已經站在那裡的牆」。
+     照 landHome 那條路填：每一格生一塊 SET、掛上 hh/hk、外框重算。 */
+  await page.evaluate(() => {
+    window.mkWall = (sr, ar) => {
+      cleanTools(); clearHomes();
+      siteR = sr; arenaR = ar;
+      homes = { list: [] };
+      for (const h of wallPlan(() => false)) {
+        const hi = homes.list.length;
+        homes.list.push(h);
+        for (let i = 0; i < h.slots.length; i++) {
+          const sl = h.slots[i], b = newBlock();
+          b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
+          b.hh = hi; b.hk = i; b.dug = 1;
+          blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+        }
+        h.done = true; homeBox(h);
+      }
+      for (const w of workers) { releaseWorker(w); w.hm = -1; w.x = 300; w.z = 300; }
+      ENG.setBlockCount(blocks.length);
+      return wallRing();
+    };
+  });
+
+  const wallGeo = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    for (let i = 0; i < 240; i++) step(0.05);           // 12 秒：等慶祝散場
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    /* ① 範圍跟著地標大小走（使用者：「城牆依地標大小會不同範圍」）：
+       選的是「大包圍」＝工地外緣與碎料場外緣的中間，兩頭各夾一次
+       （內緣 siteR + WALL_NEAR、外緣讓四個角不要凸出碎料場太多）。 */
+    const keep = [siteR, arenaR];
+    const ring = [];
+    for (const [sr, ar] of [[8, 46], [20, 60], [46, 115], [73, 127]]) {
+      siteR = sr; arenaR = ar;
+      ring.push({ sr, ar, W: wallRing(), mid: (sr + ar) / 2,
+                  lo: sr + WALL_NEAR, hi: (ar + 6) / Math.SQRT2 });
+    }
+    /* ② 整圈的組成：四座角樓 ＋ 一座門樓 ＋ 幾段直牆，而且每一格都落在牆線上
+       （x = ±W 或 z = ±W，角樓與門樓各自往外／往內鋪開，所以容許 T 與 1 格的厚度）。 */
+    siteR = 12; arenaR = 52;
+    const W = wallRing(), segs = wallPlan(() => false);
+    const T = (WALL_TOW - 1) / 2;
+    let off = 0, blocks0 = 0;
+    for (const h of segs)
+      for (const sl of h.slots) {
+        blocks0++;
+        const dx = Math.abs(Math.abs(sl.x) - W), dz = Math.abs(Math.abs(sl.z) - W);
+        if (Math.min(dx, dz) > T) off++;                // 離牆線太遠＝跑掉了
+      }
+    const kinds = {};
+    for (const h of segs) kinds[h.kind] = (kinds[h.kind] || 0) + 1;
+    siteR = keep[0]; arenaR = keep[1];
+    return { ring, W, segs: segs.length, off, blocks0, kinds,
+             gate: segs.filter(h => h.gap).length, thin: segs.filter(h => h.thin).length };
+  });
+  ok('城牆的範圍跟著地標大小走（夾在「放得下一圈房子」與「角不要凸出碎料場」之間）',
+     wallGeo.ring.every(r => r.W >= Math.round(r.lo) - 1 &&
+                             Math.abs(r.W - Math.max(r.lo, Math.min(r.mid, r.hi))) <= 0.5),
+     wallGeo.ring.map(r => `siteR ${r.sr}／arenaR ${r.ar} → 牆半徑 ${r.W}` +
+                           `（中間值 ${r.mid.toFixed(1)}、下限 ${r.lo}、上限 ${r.hi.toFixed(1)}）`).join('；'));
+  ok('一圈是四座角樓 ＋ 一座城門樓 ＋ 幾段直牆，每一格都在牆線上',
+     wallGeo.kinds['角樓'] === 4 && wallGeo.kinds['城門樓'] === 1 &&
+     wallGeo.kinds['城牆'] >= 8 && wallGeo.off === 0 &&
+     wallGeo.gate === 1 && wallGeo.thin === wallGeo.kinds['城牆'],
+     `牆半徑 ${wallGeo.W}：${wallGeo.segs} 段（` +
+     Object.keys(wallGeo.kinds).map(k => k + ' ' + wallGeo.kinds[k]).join('／') +
+     `）、共 ${wallGeo.blocks0} 塊，離牆線太遠的格子 ${wallGeo.off} 個`);
+
+  /* ②-b 牆身的剖面（v1.186，使用者：「城牆看起來太單薄(可能到三層厚度
+     古代城牆上是能站人的)」，他選 3 格厚的空心牆）：內外兩面立到頂、中間是空的、
+     最上面一層三格鋪滿當走道、垛口只立在外緣。 */
+  const wallCut = await page.evaluate(() => {
+    siteR = 12; arenaR = 52;
+    const W = wallRing();
+    const h = wallPlan(() => false).find(q => q.thin === 'z' && q.z < 0);   // 北牆的一段
+    const by = {};
+    for (const sl of h.slots) {
+      const k = sl.z.toFixed(0);
+      (by[k] = by[k] || { gy: [], n: 0 }).n++;
+      by[k].gy.push(sl.gy);
+    }
+    const rows = Object.keys(by).sort((a, b) => a - b).map(k => ({
+      z: +k, n: by[k].n, lo: Math.min(...by[k].gy), hi: Math.max(...by[k].gy)
+    }));
+    return { W, rows, thick: rows.length, top: WALL_H,
+             out: rows[0], mid: rows[1], in: rows[2] };      // z 由小到大＝外、中、內
+  });
+  ok('牆是 3 格厚的空心牆：內外兩面立到頂、中間只有頂上那一層走道、垛口在外緣',
+     wallCut.thick === 3 &&
+     wallCut.out.lo === 0 && wallCut.in.lo === 0 &&
+     wallCut.mid.lo === wallCut.top && wallCut.mid.hi === wallCut.top &&
+     wallCut.out.hi === wallCut.top + 1 && wallCut.in.hi === wallCut.top,
+     wallCut.rows.map(r => `z=${r.z}：${r.n} 格、第 ${r.lo}～${r.hi} 層`).join('；') +
+     `（牆身 ${wallCut.top} 層）`);
+
+  /* ②-c 兩段之間的接縫不能是洞（v1.186 踩過）。整圈是切成好幾段的，而 pushOutHome
+     原本是「四面挑最近的那一面推出去」——踩在接縫上的那一個會被推進隔壁那一段的框裡、
+     隔壁再把他推回來，一來一回之間就順著接縫鑽過牆了（實測黑獼猴 9.4 秒穿牆進城）。
+     現在直牆段只准往厚度那一軸推。 */
+  const seam = await page.evaluate(() => {
+    mkWall(12, 52);
+    const W = wallRing();
+    const side = homes.list.filter(h => h.wall && h.thin === 'z' && h.z < 0)
+                          .sort((a, b) => a.x0 - b.x0);
+    let sx = null;
+    for (let i = 0; i + 1 < side.length; i++)
+      if (Math.abs(side[i].x1 - side[i + 1].x0) < 0.01) { sx = side[i].x1; break; }
+    if (sx === null) return { sx: null };
+    /* 貼著接縫、剛踩進外面那一層：推出來之後該在牆外，而且不是被推去隔壁那一段。
+       取 sx − 0.1：接縫那一點本身兩段都用嚴格不等式，誰的框都不算它。 */
+    const x0 = sx - 0.1;
+    const o = { x: x0, z: -W - 1.2, ghost: 0 };
+    pushOutHome(o);
+    return { sx, x0, x: +o.x.toFixed(2), z: +o.z.toFixed(2), W,
+             out: o.z < -W - 1.5 + 0.001, moved: Math.abs(o.x - x0) };
+  });
+  ok('兩段城牆的接縫不是洞：踩在接縫上會被推回牆外，不是被推進隔壁那一段',
+     seam.sx !== null && seam.out && seam.moved < 0.001,
+     `接縫在 x=${seam.sx}：從 (${seam.x0}, ${-seam.W - 1.2}) 被推到 (${seam.x}, ${seam.z})` +
+     `（牆外緣 ${-seam.W - 1.5}）`);
+
+  /* ③ 擋誰不擋誰（使用者選的「留門洞；擋小人與動物，車照穿」）。
+     小人與動物看的是 footHome／homeAt（同一份 homes.list），消防車看的是 ftIn，
+     而 ftIn 從 v1.175 起只問地標的格子表——所以城牆本來就不擋車，這裡守著別改回去。 */
+  const wallBlock = await page.evaluate(() => {
+    const W = mkWall(12, 52);
+    const at = (x, z) => !!footHome(x, z);
+    return { W,
+             gate: at(0, W), pier: at(WALL_GATE, W), north: at(0, -W),
+             east: at(W, 0), tower: at(W, W), inner: at(0, W - 8), outer: at(0, W + 8),
+             beastWall: homeAt(0, -W), beastGate: homeAt(0, W),
+             truckWall: ftIn(0, -W, 0, 0), truckSite: ftIn(0, 0, 0, 0) };
+  });
+  ok('城牆擋小人與動物，門洞走得過去，車照穿',
+     wallBlock.north && wallBlock.east && wallBlock.tower && wallBlock.pier &&
+     !wallBlock.gate && !wallBlock.inner && !wallBlock.outer &&
+     wallBlock.beastWall && !wallBlock.beastGate &&
+     wallBlock.truckWall === 0 && wallBlock.truckSite > 0,
+     `牆半徑 ${wallBlock.W}：北牆/東牆/角樓/門墩擋住＝` +
+     [wallBlock.north, wallBlock.east, wallBlock.tower, wallBlock.pier].join('/') +
+     `；門洞 ${wallBlock.gate ? '擋住' : '走得過去'}、城內外空地 ` +
+     `${wallBlock.inner || wallBlock.outer ? '有東西擋' : '都走得過去'}；` +
+     `動物眼中的牆＝${wallBlock.beastWall}、門洞＝${wallBlock.beastGate}；` +
+     `消防車在牆上插到 ${wallBlock.truckWall} 點（地標中心 ${wallBlock.truckSite} 點）`);
+
+  /* ④ 真的蓋得起來：跑一輪事件，看人怎麼分、牆有沒有進度、有沒有人卡在原地。
+     實測 20 人一圈 1872 塊約 6 分半蓋完（每分鐘 355／365／346／192／224／244 塊），
+     這裡只跑 45 秒看「動起來了沒有」——蓋得完不完是使用者說了算的長度。 */
+  const wallRun = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    for (let i = 0; i < 240; i++) step(0.05);
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    idleEv = IDLE_EVENTS.find(e => e.id === 'wall');
+    startWall();
+    const segs = () => homes.list.filter(h => h.wall);
+    const seg0 = segs().length, total = segs().reduce((a, h) => a + h.slots.length, 0);
+    const onWall = workers.filter(w => w.hm >= 0 && homes.list[w.hm].wall).length;
+    const onIn = workers.filter(w => w.hm >= 0 && !homes.list[w.hm].wall).length;
+    // 再開一次不該多出第二圈（一座場上只有一圈城牆）
+    startWall();
+    const seg1 = segs().length;
+    const px = workers.map(w => w.x), pz = workers.map(w => w.z);
+    for (let i = 0; i < 900; i++) step(0.05);            // 45 秒
+    let still = 0;
+    for (let i = 0; i < workers.length; i++)
+      if (Math.hypot(workers[i].x - px[i], workers[i].z - pz[i]) < 0.5) still++;
+    const done = segs().reduce((a, h) => a + (h.slots.length - h.left), 0);
+    const inside = homes.list.filter(h => !h.wall);
+    const W = wallRing();
+    const area = Math.PI * Math.max(0, (W - 2) ** 2 - (siteR + HOME_NEAR) ** 2);
+    /* 砌上去的（SET）才算：還舉在手上、還在飛的那幾塊也掛著 hh/hk（見 takeHomeBlock），
+       拿它們一起比的話「砌好幾塊」永遠對不上。 */
+    const set = b => b.st === 3 && b.hh >= 0 && homes.list[b.hh];
+    return { seg0, seg1, total, done, onWall, onIn, still,
+             mine: blocks.filter(b => set(b) && homes.list[b.hh].wall).length,
+             dug: blocks.filter(b => set(b) && homes.list[b.hh].wall && b.dug).length,
+             houses: inside.filter(h => !h.tree).length,
+             trees: inside.filter(h => h.tree).length,
+             inR: inside.every(h => Math.abs(h.x) < W && Math.abs(h.z) < W),
+             wantH: Math.min(WALL_IN_MAX, Math.round(area / WALL_IN_AREA)),
+             wantT: Math.min(WALL_IN_TMAX, Math.round(area / WALL_IN_TAREA)) };
+  });
+  ok('一輪事件：大部分的人上牆、城牆真的一塊一塊砌起來、沒有人卡在原地',
+     wallRun.onWall > wallRun.onIn && wallRun.done > 60 && wallRun.still <= 1 &&
+     wallRun.mine === wallRun.done && wallRun.dug > 0,
+     `${wallRun.seg0} 段共 ${wallRun.total} 塊；分派 牆 ${wallRun.onWall} 人／城內 ` +
+     `${wallRun.onIn} 人；45 秒砌好 ${wallRun.done} 塊（都掛在牆上：${wallRun.mine}，` +
+     `其中挖出來的 ${wallRun.dug}）、整段沒動過的人 ${wallRun.still}`);
+  ok('一座場上只有一圈城牆（再開一次不會多長一圈）',
+     wallRun.seg1 === wallRun.seg0,
+     `再呼叫一次 startWall：${wallRun.seg0} 段 → ${wallRun.seg1} 段`);
+  ok('城內只有幾間小房子與樹，數量按牆內面積算、都在牆裡面',
+     wallRun.houses <= wallRun.wantH && wallRun.trees <= wallRun.wantT &&
+     wallRun.houses + wallRun.trees > 0 && wallRun.inR,
+     `城內 ${wallRun.houses} 間房子（上限 ${wallRun.wantH}）、${wallRun.trees} 棵樹` +
+     `（上限 ${wallRun.wantT}）——事件一同樣人數是 7 間`);
+
+  /* ⑤ 打得壞、打到剩兩成五整段廢棄（使用者：「能被道具等破壞（同小房子）」）。
+     跟小房子共用同一套（wreckHomes 的 WRECK_AT），所以這裡只驗「城牆也吃這一套」。
+     ⑥ 換場：牆會不會被下一座地標徵收，看的是**整段的外框**跟新工地圓有沒有碰到
+     （wallHitsSite）。拿外接圓比的話每換一座就整圈拆光。 */
+  const wallHurt = await page.evaluate(() => {
+    mkWall(12, 52);
+    const segs = () => homes.list.filter(h => h.wall);
+    // 挑一段直牆，打到只剩兩成
+    const hi = homes.list.findIndex(h => h.wall && h.thin);
+    const h = homes.list[hi];
+    const n0 = h.slots.length, keepN = Math.round(n0 * 0.2);
+    let k = 0, hit = 0;
+    for (const b of blocks) {
+      if (b.hh !== hi || b.st !== 3) continue;
+      if (k++ < keepN) continue;
+      breakBlock(b, 0, 0, 0); hit++;
+    }
+    for (let i = 0; i < 60; i++) step(0.05);
+    const after = { segs: segs().length, gone: !homes.list.some(q => q.id === h.id) };
+    /* 換場：小地標留著；大到蓋過牆線的那幾段解成碎料。
+       **方形的四個角在 W√2**，所以圓形的新工地吃到四面牆的時候還吃不到角樓——
+       那正是「拿外框比、不拿外接圓比」要的結果，所以中間再取樣一次。 */
+    const keepSr = siteR, W = wallRing();
+    const before = segs().length;
+    siteR = 5; clearHomesInSite();
+    const small = segs().length;
+    siteR = W + 3; clearHomesInSite();                  // 蓋過四面牆，還沒到角
+    const mid = segs().length;
+    siteR = W * 1.5; clearHomesInSite();                // 連角樓都吃進去（角在 1.41W）
+    const big = segs().length;
+    siteR = keepSr;
+    cleanTools(); clearHomes();
+    return { n0, keepN, hit, after, before, small, mid, big, W };
+  });
+  ok('城牆打到剩不到兩成五，那一段整段廢棄（同小房子）',
+     wallHurt.after.gone,
+     `一段 ${wallHurt.n0} 塊打掉 ${wallHurt.hit} 塊（只留 ${wallHurt.keepN}）→ ` +
+     `那一段還在清單上：${!wallHurt.after.gone}`);
+  ok('換場：小地標時城牆留著，大到蓋過牆線才一段一段解成碎料',
+     wallHurt.small === wallHurt.before && wallHurt.big === 0 &&
+     wallHurt.mid > 0 && wallHurt.mid < wallHurt.before,
+     `牆半徑 ${wallHurt.W}：${wallHurt.before} 段 → siteR 5 剩 ${wallHurt.small} 段 → ` +
+     `siteR ${wallHurt.W + 3}（蓋過四面牆、還沒到角）剩 ${wallHurt.mid} 段 → ` +
+     `siteR ${(wallHurt.W * 1.5).toFixed(0)}（連角都吃進去）剩 ${wallHurt.big} 段`);
+
+  /* ⑦ 天災遇到城牆（v1.186，使用者：「白猴子&黑獼猴可能被擋路(可以繞路走城門
+     或他自己動手破壞)」，形態問過選「兩個都要」）。三條路各驗一次：
+     門在自己這一側 → 直接走門；門在對面 → 沿著牆外繞過去；門樓沒了 → 就地拆牆。
+     沒有這一段的話牠會在城外對著牆走到天亮（三種情形實測都卡滿 400 秒）。 */
+  const apeWall = await page.evaluate(() => {
+    /* 這一段要測的就是天災，把 installClean 關掉的那支裝回去（同「天災」那一段的做法）。
+       牠們不是自己來的：每一輪都是這裡 spawnBeast 放一隻進場，倒數的鐘還沒響就演完了。 */
+    stepDoom = window.doomStep;
+    /* keep(h)：true＝這一段砌起來、false＝格子在但還沒砌（＝缺口）、'drop'＝整段不在。 */
+    const run = (keep, a0) => {
+      if (typeof fires !== 'undefined' && fires) fires.length = 0;
+      for (const b of blocks) b.burn = 0;
+      if (beasts) beasts.length = 0;
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 600; setWorkerCount(0); startBuild(true); completeNow();
+      stopIdleEvent(); clearHomes();
+      homes = { list: [] };
+      for (const h of wallPlan(() => false)) {
+        const k = keep(h);
+        if (k === 'drop') continue;                      // 門樓被打爛了：整段不在
+        const hi = homes.list.length;
+        homes.list.push(h);
+        if (!k) continue;                                // 還沒蓋起來：格子在、積木沒有
+        for (let i = 0; i < h.slots.length; i++) {
+          const sl = h.slots[i], b = newBlock();
+          b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+          b.hh = hi; b.hk = i; b.dug = 1;
+          blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+        }
+        h.done = true; homeBox(h);
+      }
+      ENG.setBlockCount(blocks.length);
+      const m = spawnBeast('ape');
+      m.x = Math.cos(a0) * (arenaR + 8); m.z = Math.sin(a0) * (arenaR + 8);
+      const seen = {};
+      let act = null, n = 0;
+      while (n++ < 4000 && beasts && beasts.includes(m)) {
+        const st = m.st;
+        step(0.05);
+        seen[st] = (seen[st] || 0) + 1;
+        if (!act && m.st === 'act')
+          act = { inWall: inWall(m.x, m.z), home: m.home || 0 };
+      }
+      return { gate: seen.gate || 0, act, secs: +(n * 0.05).toFixed(0),
+               wallBurn: blocks.filter(b => b.burn && b.hh >= 0).length,
+               burn: blocks.filter(b => b.burn).length };
+    };
+    const all = () => true;
+    const near = run(all, Math.PI / 2);          // 門開在 +z，從同一側進場
+    const far = run(all, -Math.PI / 2);          // 從對面進場：要繞過去
+    const none = run(h => (h.gap ? 'drop' : true), -Math.PI / 2);   // 沒有門：就地拆牆
+    // 正前方那一段還沒蓋起來：不該繞路，直直走過去
+    const gap = run(h => !(h.thin === 'z' && h.z < 0 && Math.abs(h.x) < 14), -Math.PI / 2);
+    cleanTools(); clearHomes();
+    return { near, far, none, gap };
+  });
+  ok('牆還沒蓋起來就直接走過去，不繞遠路（使用者：「能走過去就走」）',
+     apeWall.gap.gate === 0 && apeWall.gap.act && apeWall.gap.act.inWall &&
+     !apeWall.gap.act.home && apeWall.gap.secs < apeWall.far.secs,
+     `正前方那一段沒砌：繞門 ${apeWall.gap.gate} 幀、${apeWall.gap.secs} 秒就在城裡動手` +
+     `（整圈蓋好時要 ${apeWall.far.secs} 秒繞過去）`);
+  ok('天災遇到城牆：門在同一側就直接走門進城',
+     apeWall.near.gate > 0 && apeWall.near.act && apeWall.near.act.inWall &&
+     !apeWall.near.act.home && apeWall.near.secs < 120,
+     `走門洞 ${apeWall.near.gate} 幀、${apeWall.near.secs} 秒後動手，` +
+     `站在${apeWall.near.act && apeWall.near.act.inWall ? '城裡' : '城外'}、` +
+     `砸的是${apeWall.near.act && apeWall.near.act.home ? '村子那邊' : '地標'}`);
+  ok('門開在對面也繞得過去（沿著牆外繞到門口，不是貼著牆磨）',
+     apeWall.far.gate > apeWall.near.gate && apeWall.far.act && apeWall.far.act.inWall &&
+     !apeWall.far.act.home && apeWall.far.secs < 200,
+     `繞了 ${apeWall.far.gate} 幀（${(apeWall.far.gate * 0.05).toFixed(0)} 秒）到門口、` +
+     `總共 ${apeWall.far.secs} 秒後在${apeWall.far.act && apeWall.far.act.inWall ? '城裡' : '城外'}動手`);
+  ok('門樓被打爛了就就地拆牆（使用者選的「兩個都要」）',
+     apeWall.none.gate === 0 && apeWall.none.act && apeWall.none.act.home === 1 &&
+     apeWall.none.wallBurn > 0 && apeWall.none.wallBurn === apeWall.none.burn &&
+     apeWall.none.secs < 120,
+     `沒走門（${apeWall.none.gate} 幀）、${apeWall.none.secs} 秒後在` +
+     `${apeWall.none.act && apeWall.none.act.inWall ? '城裡' : '城外'}動手，` +
+     `燒起來 ${apeWall.none.burn} 塊、其中城牆 ${apeWall.none.wallBurn} 塊`);
+
+  /* ⑦-b 誰會動手：**吉祥物會**（使用者：「吉祥物 可以動手 如果擋到路的話」），
+     **牛羊不會**（「牛羊不動手(他們沒有攻擊手段)」）。後者不只是設計取捨——`DOOM_ACT`
+     裡根本沒有牛羊那幾款，真讓牠們走到 act 會叫到 undefined。 */
+  const wallWho = await page.evaluate(() => {
+    const noAct = HERD_KIND.filter(k => DOOM_ACT[k]);          // 牛羊有動手的招式嗎（該是空的）
+    if (typeof fires !== 'undefined' && fires) fires.length = 0;
+    for (const b of blocks) b.burn = 0;
+    if (beasts) beasts.length = 0;
+    cleanTools();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(0); startBuild(true); completeNow();
+    stopIdleEvent(); clearHomes();
+    homes = { list: [] };
+    for (const h of wallPlan(() => false)) {
+      if (h.gap) continue;                                     // 沒有門的一圈：一定會擋到
+      const hi = homes.list.length;
+      homes.list.push(h);
+      for (let i = 0; i < h.slots.length; i++) {
+        const sl = h.slots[i], b = newBlock();
+        b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      h.done = true; homeBox(h);
+    }
+    ENG.setBlockCount(blocks.length);
+    /* 從**沒有門的那一面**（−z）進場：門樓整段拿掉之後，+z 那一面就是個七格寬的缺口，
+       從那邊進場的話牠會直接走進去（第一版就是這樣，測不到「被擋住」那條）。 */
+    const mas = spawnBeast('ape', 1);                          // 吉祥物：同一批動物，平常不動手
+    mas.x = 0; mas.z = -(arenaR + 8);
+    const cow = spawnCattle();
+    cow.x = 0; cow.z = -(arenaR + 6);
+    /* 量的是**動手那一刻**：牠砸完會 funBack 回去逛，逛完 m.stay 才走人，
+       所以收工時的狀態一定是 go；火也早就燒完了（整段跑 120 秒）。 */
+    const seen = { m: {}, c: {} };
+    let masAct = 0, actHome = -1, backFun = 0, burnMax = 0;
+    for (let i = 0; i < 2400 && beasts && beasts.includes(mas); i++) {
+      step(0.05);
+      seen.m[mas.st] = 1;
+      if (beasts.includes(cow)) seen.c[cow.st] = 1;
+      if (mas.st === 'act' && !masAct) { masAct = 1; actHome = mas.home || 0; }
+      if (masAct && mas.st === 'fun') backFun = 1;            // 砸完回去逛（funBack）
+      if (masAct && i % 5 === 0) {
+        const wb = blocks.filter(b => b.burn && b.hh >= 0).length;
+        if (wb > burnMax) burnMax = wb;
+      }
+    }
+    const r = { mas: Object.keys(seen.m).sort().join('/'), cow: Object.keys(seen.c).sort().join('/'),
+                masAct, actHome, backFun, masHome: mas.home || 0,
+                noAct: noAct.length, kinds: HERD_KIND.length, wallBurn: burnMax };
+    cleanTools(); clearHomes();
+    return r;
+  });
+  ok('吉祥物被牆擋住也會動手，牛羊不會（牠們根本沒有動手的招式）',
+     wallWho.masAct && wallWho.actHome === 1 && wallWho.backFun &&
+     wallWho.wallBurn > 0 && wallWho.masHome === 0 &&
+     wallWho.cow === 'fun' && wallWho.noAct === 0,
+     `吉祥物走過 ${wallWho.mas}；動手那一刻瞄的是村子那邊（m.home=${wallWho.actHome}）、` +
+     `最多燒起來 ${wallWho.wallBurn} 塊城牆，砸完回去逛：${!!wallWho.backFun}` +
+     `（m.home 歸零：${wallWho.masHome === 0}）；牛羊全程 ${wallWho.cow}；` +
+     `HERD_KIND ${wallWho.kinds} 款裡有 ${wallWho.noAct} 款有 DOOM_ACT`);
+
+  /* ⑧ 事件黏著（v1.186，使用者：「多個閒晃事件切換問題(目前是想說如果小房子建築
+     都被破壞剩下 25% 才再隨機一次? 因為城牆要蓋好幾輪吧)」，形態問過選「就照字面，
+     黏到被拆為止」）：整圈城牆三千多塊、一輪蓋不完，每一輪重抽的話半成品好幾輪沒人理。
+     「還在」＝那一類在 homes.list 上還有任何一筆——打到剩不到兩成五的會自己整段廢棄
+     消失（wreckHomes），所以這一句就是使用者說的那個門檻。 */
+  const evStick = await page.evaluate(() => {
+    cleanTools(); clearHomes();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(12); startBuild(true); completeNow();
+    stopIdleEvent(); clearHomes(); evArm = 0; evLast = null;
+    idleEv = IDLE_EVENTS.find(e => e.id === 'wall');
+    evLast = idleEv; startWall();
+    let stuck = 0;
+    for (let i = 0; i < 60; i++) if (rollIdleEvent().id === 'wall') stuck++;
+    // 整圈拆光（＝每一段都被打到剩不到兩成五、廢棄）之後才會重抽
+    dropHomes(h => !h.wall);
+    const cnt = {};
+    for (let i = 0; i < 300; i++) { const id = rollIdleEvent().id; cnt[id] = (cnt[id] || 0) + 1; }
+    stopIdleEvent(); clearHomes(); evLast = null; evArm = 1;
+    return { stuck, kinds: Object.keys(cnt).sort().join('／'),
+             n: Object.keys(cnt).length, cnt: JSON.stringify(cnt) };
+  });
+  ok('城牆還站著就不重抽事件，拆光了才換（使用者選的「黏到被拆為止」）',
+     evStick.stuck === 60 && evStick.n > 1,
+     `城牆還在時連抽 60 次：${evStick.stuck} 次都是城牆；拆光之後抽 300 次 → ${evStick.cnt}`);
+
+  /* 天災裝回去過（上面那幾條要牠），這裡要關回去——不關的話後面每一段都會跑到
+     隨機來訪的猴子（同天災那幾段的收尾）。 */
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); clearHomes(); });
+  }   // ── 〈閒晃事件：城牆〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 偷懶 ══════════ */
   await head('偷懶', T_MUST);
@@ -19510,9 +19990,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { secs: +(n * 0.05).toFixed(1), nana, st, air, lie, boomD, blast: NANA_R,
              site0, site: site(), home0, low, ph: phase };
   });
-  ok('白猴子那一趟：香蕉丟的是村子那邊，地標沒事',
+  /* 「地標沒事」是**瞄的目標**那件事，不是硬保證：香蕉會先撞到什麼就在哪裡炸，
+     波及到地標邊上是可能的（使用者 v1.186：「不小心燒到地標沒關係 但是遊戲要察覺
+     &燒完換場」）。所以這裡守的改成**兩者擇一**：沒被波及就該還在 done；
+     被波及了就不該還停在 done（少一塊就進拆除中，見 freeBlock）。 */
+  ok('白猴子那一趟：香蕉丟的是村子那邊；波及到地標的話遊戲要察覺',
      msnow.nana > 0 && msnow.low < msnow.home0 && msnow.st === 'fun' &&
-     msnow.site >= msnow.site0 - 4 && msnow.ph === 'done',
+     (msnow.site >= msnow.site0 - 4 ? msnow.ph === 'done' : msnow.ph !== 'done'),
      '丟了 ' + msnow.nana + ' 根，還站著的村子 ' + msnow.home0 + ' → ' + msnow.low +
      ' 塊、地標 ' + msnow.site0 + ' → ' + msnow.site + ' 塊，phase ' + msnow.ph +
      '；炸點離牠 ' + msnow.boomD + ' 格（爆炸半徑 ' + msnow.blast + '）、被炸飛 ' +
@@ -19548,22 +20032,52 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         dh = +dh.toFixed(1);
       }
       const b = nearHome(f.x, f.z);
+      /* 這一顆炸完之後地標少了幾塊（v1.186 加）：這一條守的就是「別啃到地標」，
+         炸點與塊數擺在一起才看得出是「爆炸波及」還是「餘火燒過去」。 */
+      const before = blocks.filter(q => q.st === SET && q.hh < 0).length;
+      const out = orig(f);
       hits.push({ r: +Math.hypot(f.x, f.z).toFixed(1), dh,
-                  dblk: b ? +Math.hypot(b.x - f.x, b.z - f.z).toFixed(1) : -1 });
-      return orig(f);
+                  dblk: b ? +Math.hypot(b.x - f.x, b.z - f.z).toFixed(1) : -1,
+                  lost: before - blocks.filter(q => q.st === SET && q.hh < 0).length });
+      return out;
+    };
+    /* 誰把地標的塊變成碎料（v1.186 加）：這一條紅過一次是「整座地標變成地上的碎料」，
+       而每一顆火球都 −0，所以要攔住真正動手的那兩支。 */
+    const oFree = freeBlock, oBreak = breakBlock, oColl = collapseUnsupported;
+    let byFree = 0, byBreak = 0, byColl = 0;
+    collapseUnsupported = () => { const r = oColl(); byColl += r; return r; };
+    freeBlock = b => { if (b.hh < 0 && b.st === SET) byFree++; return oFree(b); };
+    breakBlock = (b, a1, a2, a3, a4) => {
+      if (b && b.hh < 0 && b.st === SET) byBreak++;
+      return oBreak(b, a1, a2, a3, a4);
     };
     const m = spawnDragon(1, 1);
     const quota = m.left;
-    let n = 0, low = home0;
+    let n = 0, low = home0, drop = null;
     while (n < 6000 && beasts && beasts.indexOf(m) >= 0) {
       step(0.05); n++;
       low = Math.min(low, home());
+      /* 地標開始掉塊的那一刻長什麼樣（v1.186 加）：這一條紅過一次是
+         「整座地標變成地上的碎料」，光看收工時的數字看不出是誰砸的。 */
+      if (!drop && site() < site0 - 4)
+        drop = { t: +(n * 0.05).toFixed(1), ph: phase, placed: placedCnt, site: site(),
+                 fb: fballs ? fballs.length : 0,
+                 fire: blocks.filter(q => q.burn > 0).length,
+                 beasts: beasts ? beasts.map(b => b.kind + (b.fun ? '(吉)' : '')).join('+') : '' };
     }
     for (let i = 0; i < 200; i++) { step(0.05); low = Math.min(low, home()); }
-    fballHit = orig;
+    fballHit = orig; freeBlock = oFree; breakBlock = oBreak; collapseUnsupported = oColl;
     const burnSite = blocks.filter(b => b.burn > 0 && b.st === SET && b.hh < 0).length;
-    return { quota, hits, low, home0, site0, site: site(), burnSite,
-             secs: +(n * 0.05).toFixed(1), siteR: +siteR.toFixed(1), ph: phase };
+    /* 地標的塊數掉下來時要分得出是哪一種（v1.186 加）：燒掉的、變回碎料的、
+       整個不在 blocks 裡了，還有這段期間場上有沒有長出城牆（閒晃事件在這一段是開著的）。 */
+    const st = {};
+    for (const b of blocks) if (b.hh < 0) st[b.st] = (st[b.st] || 0) + 1;
+    return { quota, hits, low, home0, site0, site: site(), burnSite, drop,
+             byFree, byBreak, byColl,
+             secs: +(n * 0.05).toFixed(1), siteR: +siteR.toFixed(1), ph: phase,
+             st: JSON.stringify(st), all: blocks.length, bp: bp.slots.length,
+             wall: homes ? homes.list.filter(h => h.wall).length : -1,
+             homesN: homes ? homes.list.length : -1 };
   });
   /* 顆數只驗「配額落在 1~2、而且真的吐得出來」，不驗「一顆都沒少」：
      整片村子被前兩隻砸到只剩最後一塊時，剩下的配額是故意作廢的（不改噴地標）。 */
@@ -19574,12 +20088,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mdrg.low < mdrg.home0,
      '配額 ' + mdrg.quota + ' 顆，落點 ' +
      mdrg.hits.map(h => '半徑 ' + h.r + '／離最近那間房子的外框 ' + h.dh +
-                        '（離最近那塊還站著的積木 ' + h.dblk + '）').join('，') +
+                        '（離最近那塊還站著的積木 ' + h.dblk + '）／這一顆之後地標少 ' +
+                        h.lost + ' 塊').join('，') +
      '（siteR ' + mdrg.siteR + '）；還站著的村子 ' + mdrg.home0 + ' → ' + mdrg.low);
-  ok('火球的餘火只燒村子那邊，不撒到旁邊的地標上',
-     mdrg.burnSite === 0 && mdrg.site >= mdrg.site0 - 4 && mdrg.ph === 'done',
+  /* 一開始點著的那幾塊只准是村子的（igniteAround 的 only 過濾器，v1.166）——這條沒變。
+     但**火燒到後來波及地標**是允許的（使用者 v1.186：「不小心燒到地標沒關係 但是
+     遊戲要察覺&燒完換場」），所以後半改成擇一守：沒被波及就該還在 done、
+     被波及了就該進拆除中（少一塊就推，見 freeBlock；換場那條線只在 wreck 時才數）。 */
+  ok('火球一開始只點村子那邊；燒到地標的話遊戲要察覺（進拆除中）',
+     mdrg.site >= mdrg.site0 - 4 ? (mdrg.burnSite === 0 && mdrg.ph === 'done')
+                                 : mdrg.ph !== 'done',
      '地標燒起來 ' + mdrg.burnSite + ' 塊、' + mdrg.site0 + ' → ' + mdrg.site +
-     ' 塊還站著，phase ' + mdrg.ph);
+     ' 塊還站著，phase ' + mdrg.ph + '；每一顆火球 ' +
+     mdrg.hits.map(h => '半徑 ' + h.r + '／離房子 ' + h.dh + '／地標 −' + h.lost).join('、') +
+     (mdrg.drop ? '；第 ' + mdrg.drop.t + ' 秒開始掉（phase ' + mdrg.drop.ph +
+                  '、placedCnt ' + mdrg.drop.placed + '、剩 ' + mdrg.drop.site +
+                  '、火球 ' + mdrg.drop.fb + ' 顆、燒著 ' + mdrg.drop.fire +
+                  ' 塊、場上 [' + mdrg.drop.beasts + ']）' : '') +
+     '；地標的塊被 freeBlock 放掉 ' + mdrg.byFree + ' 次、被 breakBlock 打掉 ' +
+     mdrg.byBreak + ' 次、被垮塌判定收掉 ' + mdrg.byColl + ' 塊；狀態分布 ' + mdrg.st +
+     '（場上 ' + mdrg.all + ' 塊、藍圖 ' + mdrg.bp + ' 格）、村子 ' + mdrg.homesN +
+     ' 筆其中城牆 ' + mdrg.wall + ' 段');
 
   /* 村子還沒蓋起來（或都被砸光了）：抽中的那一隻照舊只是來逛的。
      cleanTools 正好把房子與樹都清掉，這一條就跑在它後面。 */

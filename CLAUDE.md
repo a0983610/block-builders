@@ -119,7 +119,7 @@ tools\run-tests.bat                    不想打指令：雙擊出選單（參�
 ```
 src/engine.js        只管怎麼畫：three 場景、光影、相機、InstancedMesh 積木池、BEASTS 造型表
 src/game.js          ①核心：版本、常數、狀態、音效、空間雜湊、積木、藍圖與積木池、整地
-src/game-workers.js  ②小人：施工、逃命、慶祝、閒晃、工程師、魔法師、閒聊、閒晃事件、村子、偷懶
+src/game-workers.js  ②小人：施工、逃命、慶祝、閒晃、工程師、魔法師、閒聊、閒晃事件、村子、城牆、偷懶
 src/game-save.js     ③紀錄、成就、存檔（換場門檻 WRECK_AT 也在這）
 src/game-tools.js    ④破壞道具與特效、天災與吉祥物、閒逛動物
 src/game-ui.js       ⑤樹、主迴圈、輸入、HUD、面板、匯入建築、啟動（boot）
@@ -141,6 +141,14 @@ e2e 加一段 → `README.md` 的道具名單加一個字 → `開發筆記.md`�
 `bmir()` 鏡射右→左並反相 `sw`）→ 註冊進 `MODELS` → `game-tools.js` 的 `HERD_KIND`
 與 `HERD_WALK` 各加一行（腿擺倍率是算出來的，只要給速度）→ `--update-models` 重產基準
 → **先做一頁預覽給使用者看造型**，他點頭再往下走。
+
+**加一件閒晃事件**：`game-workers.js` 的 `IDLE_EVENTS` 加一列（`wt` 是相對權重，
+`start`／`step`／`stop`）。**東西掛在 `homes.list` 上就免費拿到**支撐垮塌、被道具打壞、
+有人補洞、打到剩兩成五廢棄、積木就地挖出來那一整套（見〈事件二：城牆〉）——
+新的一種要在 `homeCat`、`EV_WALL`（事件黏著）各多一格，`pickUnfinished` 照 `cat` 找。
+**擋路的外框是矩形**，所以細長或圍成一圈的東西要**切成好幾段**，不然那個框會把中間整片地
+都框住——切了之後記得看〈城牆踩到的四個坑〉：接縫會變成洞、站位可能落在隔壁那一段身上、
+料掉在另一邊就撿不到。e2e 加一段（權重那條測試會自己照表算期望值）。
 
 **加一座內建藍圖**：`src/blueprints.js` 加一個吃 `s` 的產生器；積木數靠 `fitScale()` 掃，
 不要自己套公式。**自訂藍圖**則是 `blueprints/` 加一支 `.js` ＋ `list.js` 加一行。

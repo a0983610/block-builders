@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.185.0';
+const VERSION = '1.186.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -574,7 +574,19 @@ function freeBlock(b) {
     // 只認 SET：TOSS 中的積木雖然也占著 slot，但還沒計進 placedCnt。
     /* 這裡是「已就位的積木離開建築」唯一的出口，所以損失也記在這——
        不管是被槌子打飛、被龍捲風吸走，還是失去支撐自己垮下來，都算。 */
-    if (b.st === SET) { placedCnt--; stats.wrecked += WRECK_COST; lossThis += WRECK_COST; }
+    if (b.st === SET) {
+      placedCnt--; stats.wrecked += WRECK_COST; lossThis += WRECK_COST;
+      /* 蓋好的地標少一塊，就是「這一座開始被拆了」（v1.186）。以前只有玩家的道具
+         （afterHit）與點火（igniteAt）會把 phase 推進拆除中，所以**火從村子燒過來**、
+         或者**自己失去支撐垮下來**的時候遊戲整個沒察覺：實測吉祥物的火燒光整座
+         1681 塊，phase 還停在 done，換場那條線（game-ui.js 的 swapWait，只在 wreck
+         時才數）當然也不會動——地標被夷平了還當作完好。
+         使用者：「不小心燒到地標沒關係 但是遊戲要察覺&燒完換場」。
+         擺在這裡是因為這一段本來就是「已就位的積木離開建築」唯一的出口（見上面那段
+         註解），不管是誰造成的都收得到。換場那條路不走這裡（startBuild 自己就地解開
+         舊建築），所以不會誤觸。 */
+      if (phase === 'done') phase = 'wreck';
+    }
     bp.slots[b.slot].filled = false; bp.slots[b.slot].claimed = -1;
     /* 派工游標退回這個洞。不退的話洞排在游標後面，只有「游標之後找不到任何
        蓋得起來的格子」時才輪得到——地基被炸掉之後小人會先在上面蓋一大段

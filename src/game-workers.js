@@ -1622,6 +1622,9 @@ function idleSpot(w, near) {
       x = Math.cos(a) * d; z = Math.sin(a) * d;
     }
     if (t < 7 && homeAt(x, z)) continue;      // 別挑在人家屋子裡（v1.97）
+    /* 也別挑在城牆的另一邊（v1.186）：那個點走不到（牆擋著），而 strollTo 要走到了
+       才會換下一個目標——挑到的話他會對著牆磨到這一輪結束。牛羊、吉祥物借的是同一支。 */
+    if (t < 7 && wallSplits(w.x, w.z, x, z)) continue;
     w.tx = x; w.tz = z; return;
   }
 }
@@ -2159,10 +2162,31 @@ let evPh = '';                      // 現在這一件是在哪個階段挑的�
 const IDLE_EVENTS = [
   /* 小人的家。每個人的行為擺在 updHome（跟魔法師一樣是「一條自己的路」），
      所以這裡不需要每幀的 step。 */
-  { id: 'home', wt: 1, start: startHomes, step: null, stop: stopHomes }
+  { id: 'home', wt: 1, start: startHomes, step: null, stop: stopHomes },
+  /* 城牆（v1.186）。蓋法跟房子同一條路（都掛在 homes.list 上），所以收尾共用 stopHomes。 */
+  { id: 'wall', wt: 1, start: startWall, step: null, stop: stopHomes }
 ];
-/* 照權重挑一件。回傳 null 只有一種情況：表是空的。 */
+/* 上一件事蓋出來的東西還在場上嗎（v1.186）。
+   「還在」＝ homes.list 上還有那一類的東西：城牆是任何一段、小人的家是任何一間或一棵。
+   **打到剩不到兩成五的會自己整筆廢棄消失**（見 wreckHomes，門檻 WRECK_AT），
+   所以這一句就是使用者說的那個門檻。 */
+const EV_WALL = { home: false, wall: true };
+function evAlive(e) {
+  const wall = EV_WALL[e.id];
+  if (wall === undefined || !homes) return false;
+  return homes.list.some(h => !!h.wall === wall);
+}
+/* 照權重挑一件。回傳 null 只有一種情況：表是空的。
+
+   **上一件事蓋的東西還站著就不重抽**（v1.186，使用者：「多個閒晃事件切換問題
+   (目前是想說如果小房子建築都被破壞剩下 25% 才再隨機一次? 因為城牆要蓋好幾輪吧)」，
+   形態問過，他選「就照字面，黏到被拆為止」）。整圈城牆兩三千塊、一輪蓋不完，
+   每一輪重抽的話半成品常常好幾輪沒人理；黏著之後它一輪接一輪蓋到好。
+   代價他知道：城牆蓋完之後會一直是城牆這一件（修牆、補城內的房子），
+   要換得等玩家把牆拆到剩不到兩成五。 */
+let evLast = null;                  // 上一件跑過的（stopIdleEvent 之後還記著）
 function rollIdleEvent() {
+  if (evLast && evAlive(evLast)) return evLast;
   let tot = 0;
   for (const e of IDLE_EVENTS) tot += e.wt;
   if (tot <= 0) return null;
@@ -2198,7 +2222,7 @@ function stepIdleEvent(dt) {
     if (ph === 'idle' && workers.some(w => cheerOn(w))) return;
     evArm = 0;
     idleEv = rollIdleEvent();
-    if (idleEv) idleEv.start();
+    if (idleEv) { evLast = idleEv; idleEv.start(); }
   }
   if (idleEv && idleEv.step) idleEv.step(dt);
 }
@@ -2262,8 +2286,11 @@ const HOME_KIND = [
    人數超過表上最多的那組就用最大那組。 */
 function pickKind(tab, n) {
   const want = Math.min(n, tab[tab.length - 1].n);
+  /* 表被濾過、剛好缺那一組人數的款式時（城內那一圈太窄，只有小款放得下，
+     見 wallInside），就從剩下的裡面挑——原本的兩張表不會走到這條。 */
   const pool = tab.filter(k => k.n === want);
-  return pool[Math.floor(Math.random() * pool.length)];
+  const use = pool.length ? pool : tab;
+  return use[Math.floor(Math.random() * use.length)];
 }
 /* 地基半徑：閒晃的人要繞開這麼多，圍籬也要圈進來（圍籬在外面兩格）。
    取對角的一半再加一點——方的東西用圓框，寧可框大一點。 */
@@ -2573,8 +2600,13 @@ function homeAt(x, z) {
    一塊都還沒砌、或被拆平了的就不擋——那時候地上什麼都沒有。 */
 function footHome(x, z) {
   if (!homes) return null;
-  for (const h of homes.list)
-    if (x > h.x0 && x < h.x1 && z > h.z0 && z < h.z1) return h;
+  for (const h of homes.list) {
+    if (!(x > h.x0 && x < h.x1 && z > h.z0 && z < h.z1)) continue;
+    /* 城門的門洞是真的走得過去（v1.186）：門樓整座是一筆，外框當然含門洞那一塊，
+       所以命中之後再問一次 h.gap。命中外框本來就少見，這一條不進熱路徑。 */
+    if (h.gap && x > h.gap.x0 && x < h.gap.x1 && z > h.gap.z0 && z < h.gap.z1) continue;
+    return h;
+  }
   return null;
 }
 const homeFoot = (x, z) => !!footHome(x, z);
@@ -2587,6 +2619,12 @@ function pushOutHome(w) {
   const h = footHome(w.x, w.z);
   if (!h) return;
   const e = 0.02;                    // 剛好推到邊上會被浮點誤差判成還在裡面
+  /* 城牆的直牆段只准**往厚度那一軸**推出去（v1.186）。整圈是切成好幾段的，
+     照「四面挑最近的」推的話，踩在兩段接縫上的那一個會被推進隔壁那一段的框裡、
+     隔壁再把他推回來——一來一回之間他就順著接縫鑽過牆了（實測黑獼猴 9.4 秒穿牆進城）。
+     往厚度那一軸推＝從他進來的那一面退回去，接縫上也成立。 */
+  if (h.thin === 'z') { w.z = w.z - h.z0 < h.z1 - w.z ? h.z0 - e : h.z1 + e; return; }
+  if (h.thin === 'x') { w.x = w.x - h.x0 < h.x1 - w.x ? h.x0 - e : h.x1 + e; return; }
   const xl = w.x - h.x0, xr = h.x1 - w.x, zl = w.z - h.z0, zr = h.z1 - w.z;
   const m = Math.min(xl, xr, zl, zr);
   if (m === xl) w.x = h.x0 - e;
@@ -2839,22 +2877,246 @@ function treeSlots(hx, hz, k, pal) {
     i: c.i, k: c.kk, gy: c.gy, filled: false, claimed: -1
   }));
 }
+/* ── 事件二：城牆（v1.186）──────────────────────────────────────
+   使用者：「小人蓋城牆把地標建築圍起來／城牆內只有幾間小房子&小樹（比事件一少
+   看起來稀疏的感覺）／城牆依地標大小會不同範圍 會擋生物移動 積木組成
+   能被道具等破壞（同小房子）」，造型照他給的參考圖：方牆 ＋ 四座角樓 ＋ 一座城門樓。
+
+   **整圈不是一筆，是切成好幾段掛在同一份 homes.list 上。** 走路的擋路判定看的是
+   外接矩形（見 footHome），整圈當一筆的話那個框會把城內連同地標整個框住，
+   人連進城都進不去。切成段之後每一段的框都是薄薄一條，而且支撐與垮塌、
+   被每一把道具打壞、打到剩兩成五整段廢棄、有人補洞、積木就地挖出來、魔法師隔空拋、
+   肌肉小人就地掄——那一整套跟小房子與樹共用，一行都不必再寫
+   （同〈同一件事的第二種建物：樹〉那條路）。 */
+const WALL_H = 5;                   // 牆身幾層高（使用者選「大包圍、5 層」）
+const WALL_TOW = 5;                 // 角樓邊長（空心方塔，實心的話一座 200 塊、外面還看不出差別）
+/* 角樓的牆比城牆高幾層。2 的時候看過去就是牆上一個胖箱子（第一版實測），
+   參考圖裡的角樓差不多是牆的兩倍高——牆身 5 ＋ 3 ＝ 8，再加三層四坡屋頂與旗子。 */
+const WALL_TOW_UP = 3;
+const WALL_GATE = 3;                // 門洞幾格寬
+const WALL_GATE_H = 3;              // 門洞幾格高（小人連頭頂那塊約 3 格，2 格會穿幫）
+const WALL_PIER = 2;                // 門樓兩側的墩座各幾格寬
+const WALL_RUN = 16;                // 一段直牆最多幾格長（見上面：框要薄，但段數也不能爆）
+/* 牆離工地至少多遠。最小的小房子地基半徑 4.6，城內要放得下一圈
+   （內緣是 siteR + HOME_NEAR，所以這裡要留得下 HOME_NEAR ＋ 一間房子的直徑）。 */
+const WALL_NEAR = 16;
+const WALL_PAL = [[0.66, 0.63, 0.57],     // 牆身（淺灰石）
+                  [0.55, 0.52, 0.48],     // 壓頂與垛口
+                  [0.38, 0.45, 0.58],     // 角樓與門樓的屋頂（借 HOME_PAL 那組藍灰）
+                  [0.24, 0.44, 0.72]];    // 角樓頂上那面旗（照參考圖）
+/* 城內每多少面積放一間房子／一棵樹，各自的上限（使用者選「按牆內面積算」）。
+   事件一的密度是一間 1000 面積上下（20 人 7 間鋪滿整片碎料場），這裡再稀一階；
+   上限是必要的——金門大橋那種大工地光城內就塞得下十幾間，那就變成第二個村子了。 */
+const WALL_IN_AREA = 800, WALL_IN_MAX = 5;
+const WALL_IN_TAREA = 1000, WALL_IN_TMAX = 4;
+/* 牆圍多大（使用者選「大包圍」＝工地外緣與碎料場外緣的中間）。兩頭各夾一次：
+   內緣至少 siteR + WALL_NEAR（城內要放得下房子），外緣讓**四個角**不要凸出碎料場太多
+   ——方形的角離場中心是邊的 √2 倍，不夾的話大工地的角樓會蓋到場邊那圈樹裡。 */
+function wallRing() {
+  const lo = siteR + WALL_NEAR;
+  return Math.round(Math.max(lo, Math.min((siteR + arenaR) / 2, (arenaR + 6) / Math.SQRT2)));
+}
+/* 把一份格子清單收成一段（一段＝homes.list 上的一筆，欄位跟房子一樣）。
+   cells 的 i／k 就是**世界格座標**——整圈共用同一張整數格，四面牆才對得上角樓。
+   thin 是「薄的是哪一軸」（直牆才有，見 homeStand）；gap 是門洞那塊走得過去的地方。
+   wx0～wz1 是**整段蓋起來會占到哪裡**：h.x0～h.z1 只框已經砌好的那幾格（見 homeBox），
+   一塊都還沒砌時是空的，拿它去擋位置的話房子會蓋在還沒砌的牆線上。 */
+function wallSeg(cells, kind, thin, gap) {
+  let i0 = Infinity, i1 = -Infinity, k0 = Infinity, k1 = -Infinity;
+  for (const c of cells) {
+    if (c.i < i0) i0 = c.i;
+    if (c.i > i1) i1 = c.i;
+    if (c.k < k0) k0 = c.k;
+    if (c.k > k1) k1 = c.k;
+  }
+  const slots = cells.map(c => ({ x: c.i, y: c.gy + HB, z: c.k, c: c.c,
+                                  i: c.i - i0, k: c.k - k0, gy: c.gy,
+                                  filled: false, claimed: -1 }));
+  const at = new Map();
+  slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+  const h = { id: homeSeq++, x: (i0 + i1) / 2, z: (k0 + k1) / 2,
+              r: Math.hypot(i1 - i0, k1 - k0) / 2 + 0.7, kind, at,
+              ox: (i1 - i0) / 2, oz: (k1 - k0) / 2,          // 見 homeSolid
+              slots, left: slots.length, n: 1,
+              wall: 1, thin: thin || null, gap: gap || null,
+              wx0: i0 - 0.5, wx1: i1 + 0.5, wz0: k0 - 0.5, wz1: k1 + 0.5,
+              done: false };
+  homeBox(h);
+  markHomeF6(h);
+  return h;
+}
+/* 整圈切成哪幾段。牆線走 x = ±W 與 z = ±W，四個角各一座角樓，
+   **朝鏡頭那一面（+z）**正中央是門樓——開場鏡頭在 +x/+z 那一象限（engine.js 的 yaw 0.9），
+   門開在背面的話玩家只看得到一圈平牆。
+   skip(x, z) 回傳 true 的格子不生出來：已經站在牆線上的小房子就讓它嵌在牆上，
+   硬蓋的話兩邊的積木會疊在同一格。 */
+function wallPlan(skip) {
+  const W = wallRing(), T = (WALL_TOW - 1) / 2, pal = WALL_PAL;
+  const G = (WALL_GATE - 1) / 2, P = G + WALL_PIER;
+  const end = W - T - 1;                       // 直牆到哪裡為止（再過去是角樓）
+  const out = [];
+  const keep = cells => cells.filter(c => !skip(c.i, c.k));
+  /* 角樓：空心方塔 ＋ 四坡屋頂（一層一層縮到剩一格）＋ 頂上一根旗桿。
+     **屋頂一定要是尖的**：第一版收在「鋪滿一層 ＋ 縮一圈」，看過去是牆上擺了一個
+     藍色箱子；縮到剩一格才讀得出是塔。 */
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const cx = sx * W, cz = sz * W, H = WALL_H + WALL_TOW_UP, cells = [];
+    const ring = [];
+    for (let i = -T; i <= T; i++) ring.push([i, -T]);
+    for (let k = -T + 1; k <= T; k++) ring.push([T, k]);
+    for (let i = T - 1; i >= -T; i--) ring.push([i, T]);
+    for (let k = T - 1; k >= -T + 1; k--) ring.push([-T, k]);
+    for (let gy = 0; gy < H; gy++)
+      for (const [di, dk] of ring)
+        cells.push({ i: cx + di, k: cz + dk, gy, c: gy === H - 1 ? pal[1] : pal[0] });
+    // 一層一層縮的四坡頂，每層照蛇行（一排掃到底、下一排倒著回來），同 homeSlots
+    for (let s = 0; s <= T; s++) {
+      const q = T - s;
+      for (let di = -q; di <= q; di++)
+        for (let n = 0; n <= 2 * q; n++)
+          cells.push({ i: cx + di, k: cz + (di % 2 ? q - n : -q + n), gy: H + s, c: pal[2] });
+    }
+    cells.push({ i: cx, k: cz, gy: H + T + 1, c: pal[0] });      // 旗桿
+    cells.push({ i: cx, k: cz, gy: H + T + 2, c: pal[3] });      // 旗子
+    const c2 = keep(cells);
+    if (c2.length) out.push(wallSeg(c2, '角樓'));
+  }
+  /* 一段直牆（v1.186 改成 3 格厚的空心牆，使用者：「城牆看起來太單薄
+     (可能到三層厚度 古代城牆上是能站人的)」）。剖面：
+
+         外  中  內
+         █  ▓  █   ← gy = WALL_H     走道鋪滿三格，外緣再立垛口
+         █  ·  █
+         █  ·  █   ← 中間是空的（同這個遊戲裡的房子與角樓，都是殼）
+         █  ·  █
+
+     實心要多三成塊數，而外面看起來一模一樣——會看到中空只有在被打穿的那一刻。
+     「能站人」是**看起來**能站（使用者確認過）：走路判定還是平面的，小人不上牆。
+     每一層沿著牆蛇行（一層掃到底、下一層倒著回來），理由同 homeSlots 沿周長生格子：
+     小人是照順序認格子的，連號的兩格跳得遠就是在走路。
+     內外兩面同一個位置連著生，那兩格只隔 2 格（< HOME_REACH），同一趟就砌得掉。
+     垛口隔一格一個，照**世界座標**的奇偶決定，所以切了段也接得起來。 */
+  const runCells = (a0, a1, fix, horiz) => {
+    const cells = [];
+    const side = fix > 0 ? 1 : -1;                     // 哪一側是城外
+    const put = (a, d, gy, c) =>
+      cells.push(horiz ? { i: a, k: fix + d, gy, c } : { i: fix + d, k: a, gy, c });
+    const sweep = (gy, f) => {
+      for (let n = 0; n <= a1 - a0; n++) f(gy % 2 ? a1 - n : a0 + n);
+    };
+    for (let gy = 0; gy < WALL_H; gy++)                // 內外兩面
+      sweep(gy, a => { put(a, side, gy, pal[0]); put(a, -side, gy, pal[0]); });
+    sweep(WALL_H, a => {                               // 頂上的走道
+      put(a, side, WALL_H, pal[1]); put(a, 0, WALL_H, pal[1]); put(a, -side, WALL_H, pal[1]);
+    });
+    sweep(WALL_H + 1, a => {                           // 垛口：只立在外緣
+      if (!(((a % 2) + 2) % 2)) put(a, side, WALL_H + 1, pal[1]);
+    });
+    return cells;
+  };
+  const addSide = (a0, a1, fix, horiz) => {
+    if (a1 < a0) return;
+    const n = Math.ceil((a1 - a0 + 1) / WALL_RUN), len = Math.ceil((a1 - a0 + 1) / n);
+    for (let s = 0; s < n; s++) {
+      const b0 = a0 + s * len, b1 = Math.min(a1, b0 + len - 1);
+      if (b1 < b0) continue;
+      const cells = keep(runCells(b0, b1, fix, horiz));
+      if (cells.length) out.push(wallSeg(cells, '城牆', horiz ? 'z' : 'x'));
+    }
+  };
+  addSide(-end, end, -W, true);                        // 北牆
+  addSide(-end, -P - 1, W, true);                      // 南牆（門樓左半）
+  addSide(P + 1, end, W, true);                        // 南牆（門樓右半）
+  addSide(-end, end, -W, false);                       // 西牆
+  addSide(-end, end, W, false);                        // 東牆
+  /* 門樓：兩側墩座 ＋ 門洞上方的拱 ＋ 兩層屋頂，往城內外各多一格（深 3）才讀得出是門樓。
+     **門洞是真的缺口**：那一塊記在 h.gap 裡，footHome 命中外框之後會再問一次，
+     所以小人與動物走得過去（使用者選的「留門洞；擋小人與動物，車照穿」）。
+     整座門樓是一筆、不切兩半：切開的話外框各自薄薄一條，門洞上方那幾格就沒有人認領。 */
+  {
+    const H = WALL_H + 3, cells = [];
+    const col = (i, gy0, c) => {
+      for (let gy = gy0; gy < H; gy++)
+        for (let k = W - 1; k <= W + 1; k++) cells.push({ i, k, gy, c });
+    };
+    for (let i = -P; i <= -G - 1; i++) col(i, 0, pal[0]);           // 左墩
+    for (let i = G + 1; i <= P; i++) col(i, 0, pal[0]);             // 右墩
+    for (let i = -G; i <= G; i++) col(i, WALL_GATE_H, pal[0]);      // 門洞上方的拱
+    // 屋頂三層一層層收（同角樓：平頂會讀成一塊板子）
+    for (let i = -P; i <= P; i++)
+      for (let n = 0; n < 3; n++)
+        cells.push({ i, k: W + (i % 2 ? 1 - n : n - 1), gy: H, c: pal[2] });
+    for (let i = -P + 1; i <= P - 1; i++) cells.push({ i, k: W, gy: H + 1, c: pal[2] });
+    for (let i = -P + 2; i <= P - 2; i++) cells.push({ i, k: W, gy: H + 2, c: pal[2] });
+    const c2 = keep(cells);
+    if (c2.length) out.push(wallSeg(c2, '城門樓', null,
+                                    { x0: -G - 0.5, x1: G + 0.5, z0: W - 1.5, z1: W + 1.5 }));
+  }
+  for (const h of out) h.ring = W;      // 這一圈多大（見 inWall：誰在城裡、誰在城外）
+  return out;
+}
+/* 場上這一圈城牆的半徑（沒有城牆就 0）。城牆是一段一段的，隨便問一段都行。
+   **一幀只算一次**（同 homeOwners 的做法）：走路、挑站位、挑要撿哪一塊都在問它，
+   而每問一次就要掃一遍 homes.list。 */
+let wallR = 0, wallRAt = -1;
+function wallNow() {
+  if (wallRAt === frameNo) return wallR;
+  wallRAt = frameNo; wallR = 0;
+  if (homes) for (const h of homes.list) if (h.wall) { wallR = h.ring; break; }
+  return wallR;
+}
+const inWall = (x, z) => {
+  const W = wallNow();
+  return W > 0 && Math.abs(x) < W && Math.abs(z) < W;
+};
+/* 這兩點被城牆隔開了嗎（一個在城裡、一個在城外）。天災那幾隻拿它決定要不要繞城門。 */
+const wallSplits = (x0, z0, x1, z1) => wallNow() > 0 && inWall(x0, z0) !== inWall(x1, z1);
+/* 城門在哪：門洞中心 ＋ 由場中心往外的法線（門開在 +z 那一面，法線就是 (0,1)）。
+   門樓被打爛、或這一座還沒有城牆就回 null——那時候天災就沒有門可以繞（見 stepBeast）。 */
+function wallGateSpot() {
+  if (!homes) return null;
+  for (const h of homes.list) {
+    if (!h.gap) continue;
+    const x = (h.gap.x0 + h.gap.x1) / 2, z = (h.gap.z0 + h.gap.z1) / 2;
+    const d = Math.hypot(x, z) || 1;
+    return { x, z, nx: x / d, nz: z / d };
+  }
+  return null;
+}
+/* 這一段城牆跟「以場中心為圓心、半徑 r 的圓」碰到了沒有（v1.186）。
+   換場要靠它決定舊城牆留不留：拿外接圓比的話（房子那條 hypot(h.x,h.z) − h.r），
+   一段 16 格長的牆外接半徑就有 8，整圈每一段都會被判成「壓在新工地上」、每次換場全拆。 */
+function wallHitsSite(h, r) {
+  const x = Math.max(h.wx0, Math.min(0, h.wx1)), z = Math.max(h.wz0, Math.min(0, h.wz1));
+  return x * x + z * z < r * r;
+}
 /* 找一塊空地：從這一組人現在站的方位往外找，避開已經蓋好的房子與樹。
-   找不到就回 null（那一組人就照常閒晃，不硬塞）。 */
-function pickHomeSite(cx, cz, rad) {
+   找不到就回 null（那一組人就照常閒晃，不硬塞）。
+   capOut 給了就用它當外緣（v1.186，城內那幾間房子要留在牆裡面）。 */
+function pickHomeSite(cx, cz, rad, capOut) {
   const base = Math.atan2(cz, cx);
+  /* 內緣要把自己的地基半徑加進去（v1.100）：房子大了（最寬 12 格、地基半徑 9.6），
+     只算中心的話整棟會壓進工地，下一座一開工就被徵收。 */
+  const lo = siteR + HOME_NEAR + rad;
+  const hi = capOut === undefined ? Math.max(lo + 4, homeOut()) : capOut;
+  if (hi < lo) return null;                        // 城內太窄，這一間放不下
   for (let t = 0; t < 40; t++) {
-    /* 內緣要把自己的地基半徑加進去（v1.100）：房子大了（最寬 12 格、地基半徑 9.6），
-       只算中心的話整棟會壓進工地，下一座一開工就被徵收。 */
-    const lo = siteR + HOME_NEAR + rad;
-    const a = base + rr(-HOME_ARC, HOME_ARC), r = rr(lo, Math.max(lo + 4, homeOut()));
+    const a = base + rr(-HOME_ARC, HOME_ARC), r = rr(lo, hi);
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     let ok = true;
     /* 隔多遠：至少 HOME_GAP，而且兩家的地基不能碰到（v1.99 起有圍籬大屋，
-       地基半徑 6.7——固定 12 的話兩間會疊在一起）。 */
-    for (const h of homes.list)
+       地基半徑 6.7——固定 12 的話兩間會疊在一起）。
+       城牆改用整段的外框比（v1.186）：它又直又長，外接圓半徑 8 以上，
+       拿圓去比的話城內整片都會被判成「離牆太近」，一間都放不進去。 */
+    for (const h of homes.list) {
+      if (h.wall) {
+        if (x > h.wx0 - rad - 1 && x < h.wx1 + rad + 1 &&
+            z > h.wz0 - rad - 1 && z < h.wz1 + rad + 1) { ok = false; break; }
+        continue;
+      }
       if ((h.x - x) ** 2 + (h.z - z) ** 2 <
           Math.max(HOME_GAP, h.r + rad + 3) ** 2) { ok = false; break; }
+    }
     if (ok) for (const t2 of trees)
       if ((t2.x - x) ** 2 + (t2.z - z) ** 2 < (HOME_TREE + t2.r) ** 2) { ok = false; break; }
     if (ok) return { x, z };
@@ -2865,17 +3127,20 @@ function pickHomeSite(cx, cz, rad) {
    h.left > 0 有兩種來源：上一輪蓋到一半就開下一座（stopHomes 把每個人的 hm 清掉了），
    或是蓋好之後被砸出洞（freeBlock 把那一格加回 h.left）。以前這裡一律開新的一間，
    所以這兩種都永遠沒人管——實測「蓋一半換場、下一輪再閒晃」的房子停在半棟不動。
-   tree 說要找的是樹還是房子（v1.153）：兩種都在這份清單上，但蓋房子的那一批不該被
+   **cat 說要找的是哪一種**（0＝房子、1＝樹、2＝城牆；v1.153 分出樹、v1.186 多了城牆，
+   原本傳 0／1 的呼叫端一個字都沒改）：三種都在這份清單上，但蓋房子的那一批不該被
    派去接一棵蓋一半的樹（他還沒有家；接了就整輪都在種樹），反過來也一樣。
    taken 是這一次分派已經給人的，一間一組就好，其餘的人去開新的。
    **不能改成「都有人了就疊到同一間」**：這一輪剛開的新房子也是「還沒蓋完」，
    於是第二組之後全部併進第一間，一輪只蓋得出一間（實測 20 人 10 個離隊只蓋 1 間）。
    間數比組數多的時候會有一兩間排到下一輪，那是排隊、不是沒人管。 */
-function pickUnfinished(cx, cz, taken, tree) {
+const homeCat = h => h.wall ? 2 : h.tree ? 1 : 0;
+const NO_TAKEN = new Set();                        // 「誰都還沒被認走」：見 updHome 接下一段
+function pickUnfinished(cx, cz, taken, cat) {
   let best = -1, bd = Infinity;
   for (let i = 0; i < homes.list.length; i++) {
     const h = homes.list[i];
-    if (h.left <= 0 || taken.has(i) || !!h.tree !== !!tree) continue;
+    if (h.left <= 0 || taken.has(i) || homeCat(h) !== cat) continue;
     const d = (h.x - cx) ** 2 + (h.z - cz) ** 2;
     if (d < bd) { bd = d; best = i; }
   }
@@ -3037,6 +3302,106 @@ function startTrees(taken) {
     }
   }
 }
+/* 事件二：蓋城牆把地標圍起來（v1.186）。
+   **一圈只開一次**：場上還有城牆在的話，這一輪就是補牆 ＋ 把城內那幾間房子與樹補齊
+   （整圈動輒兩千塊，一輪蓋不完是常態，見 開發筆記〈一圈要蓋多久〉）。
+
+   跟事件一的差別：
+     · 誰參加——站得穩的人**全部**，不管有沒有家（城牆不是誰的家，w.own 一律不動，同樹）
+     · 每三組分一組去蓋城內的房子或樹，其餘全部上牆（城牆是主角，而且塊數是村子的好幾倍）
+     · 蓋完一段自己接下一段（見 updHome），不站在牆邊發呆 */
+function startWall() {
+  if (!homes) homes = { list: [] };
+  const taken = new Set();
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  const W = wallRing();
+  if (!homes.list.some(h => h.wall)) {
+    /* 已經站在牆線上的小房子就讓它嵌進牆裡：那幾格不生出來（見 wallPlan 的 skip）。
+       硬蓋的話兩邊的積木會疊在同一格上。 */
+    const hit = (x, z) => {
+      for (const h of homes.list)
+        if (x > h.x0 && x < h.x1 && z > h.z0 && z < h.z1) return true;
+      return false;
+    };
+    for (const h of wallPlan(hit)) homes.list.push(h);
+  }
+  /* 城內要放幾間、幾棵：按**可用的環面積**算（使用者選的），扣掉已經在城裡的那些。
+     內緣是房子的內緣（siteR + HOME_NEAR），外緣貼著牆內側。 */
+  const area = Math.PI * Math.max(0, (W - 2) ** 2 - (siteR + HOME_NEAR) ** 2);
+  let wantH = Math.min(WALL_IN_MAX, Math.round(area / WALL_IN_AREA));
+  let wantT = Math.min(WALL_IN_TMAX, Math.round(area / WALL_IN_TAREA));
+  for (const h of homes.list) {
+    if (h.wall || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;   // 城外的不算
+    if (h.tree) wantT--; else wantH--;
+  }
+  const pool = [];
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    if (!steady(w) || !joins(w)) continue;
+    pool.push(i);
+  }
+  for (let i = pool.length - 1; i > 0; i--) {          // 洗牌（同 startHomes）
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+  }
+  let nCrew = 0;
+  while (pool.length) {
+    const crew = takeCrew(pool);
+    let cx = 0, cz = 0;
+    for (const w of crew) { cx += w.x; cz += w.z; }
+    cx /= crew.length; cz /= crew.length;
+    let hi = -1;
+    if (++nCrew % 3 === 0 && (wantH > 0 || wantT > 0)) {
+      const tree = wantH <= 0;
+      hi = wallInside(crew, cx, cz, tree, W);
+      if (hi >= 0) { if (tree) wantT--; else wantH--; }
+    }
+    if (hi < 0) {
+      hi = pickUnfinished(cx, cz, taken, 2);
+      // 每一段都有人了就疊上去：一段十六格長，兩三組人各認各的格子不會打架
+      if (hi < 0) hi = pickUnfinished(cx, cz, NO_TAKEN, 2);
+      if (hi < 0) continue;                            // 整圈都蓋完了：這一組照常閒晃
+      for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;
+    }
+    taken.add(hi);
+    const h = homes.list[hi];
+    for (const w of crew) {
+      releaseWorker(w);                                // 手上的建材先放掉，這趟不是上工
+      w.hm = hi; w.hst = ''; w.pause = 0;
+      if (!h.wall && !h.tree) w.own = h.id;            // 城內那幾間是真的家（同事件一）
+    }
+  }
+}
+/* 城內的一間房子或一棵樹。回傳 homes.list 的索引，放不下就 −1。
+   蓋法、外型、被破壞的規則全部沿用事件一那一套，差別只有「外緣貼著城牆內側」。 */
+function wallInside(crew, cx, cz, tree, W) {
+  const tab = tree ? TREE_KIND : HOME_KIND;
+  const rOf = k => tree ? treeR(k) : homeR(k);
+  /* 先把放不下的款式濾掉再抽。城內可用的那一圈常常很窄（內緣 siteR + HOME_NEAR、
+     外緣貼著牆內側），小地標更是只剩幾格寬——不濾的話抽到大屋就整組空手回去，
+     實測 20 人跑一輪城內一間都沒有（兩組都抽到放不下的款式）。 */
+  const fit = tab.filter(k => siteR + HOME_NEAR + rOf(k) <= W - 2 - rOf(k));
+  if (!fit.length) return -1;
+  const kind = pickKind(fit, crew.length);
+  const rad = rOf(kind);
+  const spot = pickHomeSite(cx, cz, rad, W - 2 - rad);
+  if (!spot) return -1;
+  const pal = tree ? TREE_PAL[Math.floor(Math.random() * TREE_PAL.length)]
+                   : HOME_PAL[Math.floor(Math.random() * HOME_PAL.length)];
+  const slots = (tree ? treeSlots : homeSlots)(spot.x, spot.z, kind, pal);
+  const at = new Map();
+  slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+  const w0 = tree ? kind.tw : kind.w, d0 = tree ? kind.tw : kind.d;
+  const h = { id: homeSeq++, x: spot.x, z: spot.z, r: rad, kind: kind.id, at,
+              ox: (w0 - 1) / 2, oz: (d0 - 1) / 2,            // 見 homeSolid
+              slots, left: slots.length, n: crew.length,
+              tree: tree ? 1 : 0, done: false };
+  homeBox(h);
+  markHomeF6(h);
+  homes.list.push(h);
+  return homes.list.length - 1;
+}
 function stopHomes() {
   for (const w of workers) {
     if (w.hm < 0) continue;
@@ -3051,7 +3416,11 @@ function stopHomes() {
    索引會變，所以積木的 hh 跟小人的 hm 要一起重編。 */
 function clearHomesInSite() {
   const r = siteR + KEEP;
-  dropHomes(h => Math.hypot(h.x, h.z) - h.r > r);
+  /* 城牆用整段的外框比（v1.186，見 wallHitsSite）：它又直又長，拿外接圓比的話
+     每換一座地標就整圈拆掉重蓋。這樣一來換到比較小的地標時，上一座留下的城牆
+     就照舊站在那裡（那是已經蓋好的城，沒有理由自己倒）；換到更大的、牆會切進
+     新工地的那幾段才解成碎料。 */
+  dropHomes(h => h.wall ? !wallHitsSite(h, r) : Math.hypot(h.x, h.z) - h.r > r);
 }
 /* 把不要的那幾間解成碎料，其餘重編索引。keep(h) 回傳 true 就留著，回傳解掉了幾間。
    索引會變，所以積木的 hh、**還在飛的那些的 arc.hm**、以及小人的 hm 都要一起重編。
@@ -3132,15 +3501,19 @@ function digSpot(w, h) {
      房子大了之後（地基半徑可以到 9.6），亂挑的話一趟裡「走去挖」跟「走回去砌」
      常常在房子的兩頭，而繞過去就是半圈——實測六成的時間花在走路上。
      同一側就只是幾步；砌的位置自己會隨格子進度繞房子跑，挖料點跟著他跑就好。 */
+  /* 城牆的直牆段改成**繞著他自己挖**（v1.186）：那一段十六格長、中心可能在十格外，
+     照「離地基邊緣多遠」算的話，他會為了一塊料走到牆的另一頭去。 */
+  const cx = h.thin ? w.x : h.x, cz = h.thin ? w.z : h.z, rad = h.thin ? 0 : h.r;
   const a0 = Math.atan2(w.z - h.z, w.x - h.x);
   for (let t = 0; t < 20; t++) {
-    const a = a0 + rr(-DIG_ARC, DIG_ARC), d = h.r + rr(DIG_NEAR, DIG_FAR);
-    const x = h.x + Math.cos(a) * d, z = h.z + Math.sin(a) * d;
+    const a = h.thin ? Math.random() * Math.PI * 2 : a0 + rr(-DIG_ARC, DIG_ARC);
+    const d = rad + rr(DIG_NEAR, DIG_FAR);
+    const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
     if (Math.hypot(x, z) < siteR + KEEP) continue;
     if (homeAt(x, z)) continue;
     w.tx = x; w.tz = z; w.hdt = DIG_T; return;
   }
-  w.tx = h.x + h.r + DIG_NEAR; w.tz = h.z; w.hdt = DIG_T;
+  w.tx = cx + rad + DIG_NEAR; w.tz = cz; w.hdt = DIG_T;
 }
 /* 用鏟子挖出一塊來，讓它蹦到地上（v1.129，使用者：「先用鏟子挖出積木 動作完成後
    積木在地面上（這樣就能去撿了）」）。回傳「挖到了沒有」。
@@ -3267,6 +3640,9 @@ function updHome(w, wi, dt) {
      38 格遠。手上還有貨的例外：那幾格還算在 h.left 裡，所以這裡不會擋到砌完最後幾塊。 */
   if (h.left <= 0 && !w.load.length) {
     w.hst = '';
+    /* 城牆蓋完一段就自己去接最近的下一段（v1.186）：整圈是切成十幾段的，
+       蓋完就站在牆邊過日子的話，一輪只推得動幾段。整圈都好了才回去閒晃。 */
+    if (h.wall) { w.hm = pickUnfinished(w.x, w.z, NO_TAKEN, 2); return; }
     liveHome(w, h, dt);
     return;
   }
@@ -3316,11 +3692,9 @@ function castTrip(w, wi, h, dt) {
     const g = pickSpot(b);
     w.tx = g.x; w.tz = g.z;
   } else {
-    /* 站位：從屋子中心往那一格的方向推到地基外（跟工人同一套，見 layTrip 的說明）。 */
-    let dx = sl.x - h.x, dz = sl.z - h.z;
-    let d = Math.hypot(dx, dz);
-    if (d < 0.001) { dx = w.x - h.x; dz = w.z - h.z; d = Math.hypot(dx, dz) || 1; }
-    w.tx = h.x + dx / d * (h.r + MAGE_HOME); w.tz = h.z + dz / d * (h.r + MAGE_HOME);
+    /* 站位：從屋子中心往那一格的方向推到地基外（跟工人同一套，見 homeStand）。 */
+    const g = homeStand(h, sl, w, MAGE_HOME);
+    w.tx = g.x; w.tz = g.z;
   }
   const leg = w.leg;                                    // 上工的路不算閒晃里程
   const walking = !strollTo(w, dt);
@@ -3419,6 +3793,10 @@ function freeNearHome(w, h) {
     const b = blocks[i];
     if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
     if (!homeNear(b, h) || !homeMine(b)) continue;
+    /* 城牆的一段橫跨城裡城外，所以要擋掉「在牆另一邊」的那些（v1.186）：
+       認了走不到（牆擋著），而他認定一塊就不放——那個人會舉著空手對著牆磨到這一輪結束。
+       實測不擋的話整圈砌到七成就幾乎停擺、十一個人卡在牆邊。 */
+    if (wallSplits(w.x, w.z, b.x, b.z)) continue;
     const d = (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
     if (d < bd) { bd = d; best = i; }
   }
@@ -3431,7 +3809,7 @@ function freeNearHome(w, h) {
    會出現「自己算的時候看得到、撿的時候看不到」→ 永遠挖不完），**還在半空的也算**：
    剛挖出來那幾塊還沒落地（見 digBlock），不算的話同一間的另一個人會在它們落地前
    再挖一輪。手上那幾塊不算——它們認走的格子也不算在空格裡，兩邊剛好對消。 */
-function digNeed(h) {
+function digNeed(w, h) {
   let n = 0;
   for (const sl of h.slots) if (!sl.filled && sl.claimed < 0) n++;
   if (n <= 0) return 0;                                  // 格子全被認走了：不必掃積木
@@ -3439,6 +3817,7 @@ function digNeed(h) {
     if (b.holder >= 0) continue;
     if (b.st === FREE ? !b.rest : b.st !== FLY) continue;
     if (!homeNear(b, h) || !homeMine(b)) continue;
+    if (wallSplits(w.x, w.z, b.x, b.z)) continue;        // 牆另一邊的撿不到（同 freeNearHome）
     if (--n <= 0) return 0;
   }
   return n;
@@ -3448,6 +3827,16 @@ function digNeed(h) {
 const _gs = { x: 0, z: 0 };
 function grabStand(h, bx, bz) {
   _gs.x = bx; _gs.z = bz;
+  /* 城牆的直牆段只往厚度那一軸站出去（v1.186，同 pushOutHome 的理由）：
+     照四面挑最近的話，掉在兩段接縫附近的那一塊會把人叫到牆身裡面去站。 */
+  if (h.thin === 'z') {
+    _gs.z = bz - h.z0 < h.z1 - bz ? h.z0 - HOME_STAND : h.z1 + HOME_STAND;
+    return _gs;
+  }
+  if (h.thin === 'x') {
+    _gs.x = bx - h.x0 < h.x1 - bx ? h.x0 - HOME_STAND : h.x1 + HOME_STAND;
+    return _gs;
+  }
   const xl = bx - h.x0, xr = h.x1 - bx, zl = bz - h.z0, zr = h.z1 - bz;
   const m = Math.min(xl, xr, zl, zr);
   if (m === xl) _gs.x = h.x0 - HOME_STAND;
@@ -3550,7 +3939,7 @@ function digTrip(w, h, dt) {
   w.dig = wait ? 0.001 : Math.min(1, Math.max(0.001, 1 - Math.max(0, w.hdt) / DIG_T));
   if (w.hdt > 0) return;                                 // 還在挖這一鏟／還在等土落定
   /* 這一趟還要挖：塊數照 hcap，而且「這一間真的還缺」才挖（見 digNeed）。 */
-  if (w.dug < w.hcap && digNeed(h) > 0 && digBlock(w, 1)) {
+  if (w.dug < w.hcap && digNeed(w, h) > 0 && digBlock(w, 1)) {
     w.dug++;
     w.hdt = w.dug < w.hcap ? DIG_T : DIG_SET;            // 挖下一鏟／等最後那一塊落定
     return;
@@ -3565,20 +3954,52 @@ function digTrip(w, h, dt) {
   w.hst = '';
 }
 /* 走回房子、站定原地把手上的丟完。 */
+/* 要砌這一格的話站到哪裡去（v1.186 抽出來共用，工人與魔法師都走這支）。
+   **房子與樹**：從中心往那一格的方向推到地基外。
+   屋頂正中央那一格 dx/dz 都是 0（3×3 的房子就有一格在正中心），那時候改用
+   「他現在站的方向」——不然目標會落在屋子正中心，人一走進去就被 pushOutHome 推出來，
+   永遠抵達不了，那一格也就永遠砌不上（實測 6 間有 2 間卡住）。
+   推的距離要大於「走到多近算抵達」（REACH 0.9），不然他站定的位置可能還在屋裡。
+   **城牆的直牆段**（h.thin）：那一段又直又長（16 格，外接半徑 8），照上面那樣推的話
+   人會被推到離牆八格外、或者推到牆的兩頭去。改成走到那一格旁邊、站在**整段牆的外框外**，
+   **他現在在哪一側就站哪一側**（繞到另一側要走一整段牆）。
+   **站位要看整段的框，不是那一格**（v1.186 踩過）：牆是 3 格厚的，照「那一格 ±1.9」算的話，
+   砌外面那一面時站位會落在牆身裡——每一幀被 pushOutHome 推開、於是永遠「還沒抵達」，
+   那個人就舉著積木在牆邊原地震盪。實測第 9 分鐘起有 5～8 個人是這樣卡著的，
+   整圈砌到七成五就幾乎停擺。 */
+const _hst = { x: 0, z: 0 };
+function homeStand(h, sl, w, pad) {
+  const set = (x, z) => { _hst.x = x; _hst.z = z; return _hst; };
+  if (h.thin === 'z') return set(sl.x, w.z > h.z ? h.wz1 + pad : h.wz0 - pad);
+  if (h.thin === 'x') return set(w.x > h.x ? h.wx1 + pad : h.wx0 - pad, sl.z);
+  let dx = sl.x - h.x, dz = sl.z - h.z;
+  let d = Math.hypot(dx, dz);
+  if (d < 0.001) { dx = w.x - h.x; dz = w.z - h.z; d = Math.hypot(dx, dz) || 1; }
+  const a0 = Math.atan2(dz, dx), r = h.r + pad;
+  /* 算出來的站位站不住（落在別的東西的框裡、或者跟他之間隔著城牆）就繞著這一間轉，
+     找第一個站得住的角度（v1.186）。角樓就是這樣：它的站位正好落在接上去的那一段
+     牆身上，人走過去會被 pushOutHome 推開、於是永遠「還沒抵達」——實測 11 個人
+     舉著積木卡在四個角樓旁邊，整圈停在七成一不動。房子與樹走的是第一個角度，
+     跟以前一模一樣。 */
+  const try_ = a => {
+    const x = h.x + Math.cos(a) * r, z = h.z + Math.sin(a) * r;
+    return !footHome(x, z) && !wallSplits(w.x, w.z, x, z) ? set(x, z) : null;
+  };
+  const p0 = try_(a0);
+  if (p0) return p0;
+  for (let k = 1; k <= 4; k++) {
+    const p = try_(a0 + k * 0.7) || try_(a0 - k * 0.7);
+    if (p) return p;
+  }
+  return set(h.x + Math.cos(a0) * r, h.z + Math.sin(a0) * r);   // 都站不住：照原本那一點
+}
 function layTrip(w, h, dt) {
   carryPose(w);
   const b0 = blocks[w.load[0].b];
   const sl = b0 && b0.hh === w.hm ? h.slots[b0.hk] : null;
   if (!sl) { dropJob(w, 0); return; }
-  /* 站在格子外面丟（跟工人一樣不走進牆裡）：從屋子中心往那一格的方向推到地基外。
-     **屋頂正中央那一格 dx/dz 都是 0**（3×3 的房子就有一格在正中心），
-     那時候改用「他現在站的方向」——不然目標會落在屋子正中心，人一走進去就被
-     pushOutHome 推出來，永遠抵達不了，那一格也就永遠砌不上（實測 6 間有 2 間卡住）。
-     推的距離要大於「走到多近算抵達」（REACH 0.9），不然他站定的位置可能還在屋裡。 */
-  let dx = sl.x - h.x, dz = sl.z - h.z;
-  let d = Math.hypot(dx, dz);
-  if (d < 0.001) { dx = w.x - h.x; dz = w.z - h.z; d = Math.hypot(dx, dz) || 1; }
-  w.tx = h.x + dx / d * (h.r + HOME_STAND); w.tz = h.z + dz / d * (h.r + HOME_STAND);
+  const g = homeStand(h, sl, w, HOME_STAND);   // 站在格子外面丟，不走進牆裡（見 homeStand）
+  w.tx = g.x; w.tz = g.z;
   const leg = w.leg;                                     // 同上：上工的路不算里程
   const done = strollTo(w, dt);
   w.leg = leg;
