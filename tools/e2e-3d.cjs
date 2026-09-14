@@ -9267,18 +9267,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const moved = probes.map(p => +((p.b.x - p.x0) * p.fx + (p.b.z - p.z0) * p.fz).toFixed(2));
     // 碎料應該跟車子走一樣的距離——是被推著，不是被拉扯
     const drove = dozers ? dozers.list.map((m, i) => +Math.hypot(m.x - view[i].x, m.z - view[i].z).toFixed(2)) : [];
-    /* 上面那個 completeNow 讓小人慶祝了一輪，彩帶（v1.96）還飄在半空。
-       塵霧那個池子只要非空就多一個 draw call，而這一條量的是推土機。 */
+    /* 量的是**推土機自己多吃幾個** draw call：整台畫面的絕對值會被場上其他殘留帶著跑
+       （上面那個 completeNow 讓小人慶祝了一輪，彩帶還飄在半空；前面幾段留下的火苗、
+       水花、動物也都各算一個），實測同一個種子重跑就會在 13～15 之間跳。
+       所以拿「有推土機」跟「把推土機收掉」兩張畫面相減，對殘留免疫（v1.189.1 改）。 */
     dust.length = 0;
     draw(); ENG.render();
+    const calls = ENG.info().calls;
+    const keep = dozers; dozers = null;                // 只有推土機不見，其他一律不動
+    draw(); ENG.render();
+    const bare = ENG.info().calls;
+    dozers = keep;
+    draw(); ENG.render();                              // 畫面還原，後面幾條要接著用
     return { n: view.length, moved, drove, min: Math.min(...moved),
-             slip: Math.max(...moved.map((v, i) => Math.abs(v - drove[i]))), calls: ENG.info().calls };
+             slip: Math.max(...moved.map((v, i) => Math.abs(v - drove[i]))),
+             calls, bare, extra: calls - bare };
   });
   ok('鏟面前的碎料跟著車子一起走', dozAlign.min > 0.5 && dozAlign.slip < 0.35,
      '車子走了 ' + JSON.stringify(dozAlign.drove) + '，碎料走了 ' +
      JSON.stringify(dozAlign.moved) + '（最大落差 ' + dozAlign.slip.toFixed(2) + '）');
-  ok('推土機沒有多吃 draw call', dozAlign.calls <= 13,
-     dozAlign.calls + ' 個（整地中的機器共用一個 InstancedMesh，幾台都一樣）');
+  ok('推土機沒有多吃 draw call', dozAlign.extra <= 1,
+     dozAlign.n + ' 台在場 ' + dozAlign.calls + ' 個 draw call、把它們收掉剩 ' +
+     dozAlign.bare + ' 個 → 多吃 ' + dozAlign.extra +
+     ' 個（整地中的機器共用一個 InstancedMesh，幾台都一樣）');
 
   /* 碎料要「被帶著走」，不能被彈開。踩過的雷：每幀直接呼叫 separate 擠開重疊，
      它一幀能把積木推開 4.7 單位、遠比車速快，鏟子前的碎料瞬間就被彈出作用範圍——
@@ -15023,31 +15034,56 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     clearFires(); phase = 'build';
     const cand = blocks.filter(b => b.st === 3 && b.x < 0 && b.y > 2);
     cand.sort((a, b) => Math.hypot(b.x, b.z) - Math.hypot(a.x, a.z));
-    for (let i = 0; i < 8 && i < cand.length; i++) igniteBlock(cand[i]);
-    const fire = cand[0];
+    let fx = 0, fz = 0, nf = 0;
+    for (let i = 0; i < 8 && i < cand.length; i++) {
+      igniteBlock(cand[i]); fx += cand[i].x; fz += cand[i].z; nf++;
+    }
+    fx /= nf; fz /= nf;                                // 火場中心（座標記下來，不抓著某一塊）
     trucks = { t: 0, quit: 0, out: false, more: 0, list: [mkTruck(Math.PI / 2, 0)] };
     const m = trucks.list[0];
-    let t = 0, sprayed = 0, reach = Infinity, minR = Infinity, out = -1;
+    /* 「繞過去」量的是**離火場拉近了多少**（配上「沒進工地圈」＝它是繞的，不是穿過去的）。
+       車繞的角度只當觀察值不當門檻：它只要繞進射程就停下來噴，不必繞到火場正對面
+       ——實測繞 1.04 rad 就打到了，而火場在 2.21 rad 外。
+       v1.187 原本拿「離 cand[0] 這一塊夠不夠近 ≤ ftRange()」當門檻，那個量錯了東西：
+       車追的是當下最近的那一塊、而 cand[0] 是點火時最遠的那一塊，兩者常常不同塊，
+       而且它隨時會被澆熄或燒掉。實測有的種子火明明 9.9 秒就全滅、也噴了 114 幀，
+       卻因為離 cand[0] 差 0.6 格而紅（v1.189.1 改成現在這樣量）。 */
+    let ang = Math.atan2(m.x, m.z), turn = 0;
+    let d = Math.atan2(fx, fz) - ang;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    const need = Math.abs(d);                          // 從進場方位轉到火場方位要繞這麼多
+    const reach0 = Math.hypot(m.x - fx, m.z - fz);
+    let t = 0, sprayed = 0, reach = reach0, minR = Infinity, out = -1;
     while (t < 30) {
       step(0.05); t += 0.05;
       if (!trucks || !trucks.list.length) break;
+      const a1 = Math.atan2(m.x, m.z);
+      let dd = a1 - ang;
+      while (dd > Math.PI) dd -= Math.PI * 2;
+      while (dd < -Math.PI) dd += Math.PI * 2;
+      turn += Math.abs(dd); ang = a1;
       minR = Math.min(minR, Math.hypot(m.x, m.z));
-      reach = Math.min(reach, Math.hypot(m.x - fire.x, m.z - fire.z));
+      reach = Math.min(reach, Math.hypot(m.x - fx, m.z - fz));
       if (m.jet) sprayed++;
       if (!nSpread && out < 0) out = +t.toFixed(1);
     }
-    const r = { sprayed, out, reach: +reach.toFixed(1), minR: +minR.toFixed(1),
-                d0: +Math.hypot(fire.x, fire.z).toFixed(1),
+    const r = { sprayed, out, minR: +minR.toFixed(1),
+                turn: +turn.toFixed(2), need: +need.toFixed(2),
+                reach: +reach.toFixed(1), reach0: +reach0.toFixed(1),
+                d0: +Math.hypot(fx, fz).toFixed(1),
                 site: +siteClearR().toFixed(1), range: +ftRange().toFixed(1) };
     trucks = null; cleanTools(); clearFires();
     return r;
   });
   ok('火在建築另一頭：車會沿著工地圈繞過去，不是頂在圈邊不動',
-     ftRound.sprayed > 3 && ftRound.reach <= ftRound.range && ftRound.out > 0 &&
-     ftRound.minR > ftRound.site - 0.5,
-     '車從對面進場：最近繞到離火 ' + ftRound.reach + '（射程 ' + ftRound.range +
-     '）、噴了 ' + ftRound.sprayed + ' 幀、' + ftRound.out + ' 秒火全滅；' +
-     '最靠近場中心 ' + ftRound.minR + '（工地圈 ' + ftRound.site + '）');
+     ftRound.sprayed > 3 && ftRound.out > 0 && ftRound.minR > ftRound.site - 0.5 &&
+     ftRound.reach < ftRound.reach0 * 0.7,
+     '車從對面進場：方位角繞了 ' + ftRound.turn + ' rad（火場在 ' + ftRound.need +
+     ' rad 外）、離火場從 ' + ftRound.reach0 + ' 拉近到 ' + ftRound.reach +
+     '（射程 ' + ftRound.range + '）、噴了 ' + ftRound.sprayed + ' 幀、' +
+     ftRound.out + ' 秒火全滅；最靠近場中心 ' + ftRound.minR +
+     '（工地圈 ' + ftRound.site + '）');
 
   /* 火一直滅不掉就再多派（v1.187，使用者：「如果一段時間後 火還是沒滅 再多派消防車」）。
      這裡一路補火讓它滅不掉，看車數是不是每 FT_MORE 秒加一台、加到 FT_MAX 為止。 */
@@ -15063,26 +15099,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     callTrucks();
     const n0 = trucks.list.length;
     const at = [];
-    let t = 0, last = n0;
-    while (t < FT_MORE * (FT_MAX + 0.7)) {
+    /* 量的是**程式自己那個計時器**（trucks.more）走到幾秒才加車，不是牆鐘。
+       moreTruck 的計時器只在 nSpread >= FT_CALL 時往前走，而且**火一被壓下去就歸零
+       重來**（那正是它要表達的「這幾台夠了」）——三台車有時候壓得比補火快，
+       牆鐘就會多出七八秒、每一輪還不一樣（實測第四台 44.6／52.2／53.5 秒都出現過）。
+       拿牆鐘比「每 15 秒一台 ±3」等於在賭火勢，改量計時器就精準到一幀。 */
+    let t = 0, prevMore = 0;
+    while (t < FT_MORE * (FT_MAX + 4)) {
       if (nSpread < FT_CALL + 2) lightUp(4);      // 補火：模擬「一直滅不掉」
+      const before = trucks ? trucks.list.length : 0;
       step(0.05); t += 0.05;
       const n = trucks ? trucks.list.length : 0;
-      if (n !== last) { at.push([+t.toFixed(1), n]); last = n; }
+      if (n !== before) at.push([+(prevMore + 0.05).toFixed(2), n]);
+      prevMore = trucks ? trucks.more : 0;
+      if (n >= FT_MAX) break;
     }
     const end = trucks ? trucks.list.length : 0;
     trucks = null; cleanTools(); clearFires();
-    return { n0, at, end, more: FT_MORE, max: FT_MAX };
+    return { n0, at, end, more: FT_MORE, max: FT_MAX, wall: +t.toFixed(1) };
   });
-  /* 間隔抓 ±3 秒：加車那一刻要 nSpread 撐得住門檻，補火是每 0.05 秒補一次，會有一點抖。 */
+  /* 誤差抓一幀（0.2 秒）：計時器是每幀 +dt，跨過 FT_MORE 的那一幀才加車。 */
   ok('火一直滅不掉就再多派一台，加到上限為止',
      ftMore.n0 >= 1 && ftMore.end === ftMore.max &&
      ftMore.at.length === ftMore.max - ftMore.n0 &&
      ftMore.at.every(([tt, n], i) => n === ftMore.n0 + i + 1 &&
-                     Math.abs(tt - ftMore.more * (i + 1)) < 3),
+                     Math.abs(tt - ftMore.more) < 0.2),
      '一開始 ' + ftMore.n0 + ' 台 → ' +
-     (ftMore.at.map(([tt, n]) => tt + ' 秒第 ' + n + ' 台').join('、') || '沒有增援') +
-     '（每 ' + ftMore.more + ' 秒一台，上限 ' + ftMore.max + '）');
+     (ftMore.at.map(([tt, n]) => '計時器 ' + tt + ' 秒時第 ' + n + ' 台').join('、') ||
+      '沒有增援') + '（門檻 ' + ftMore.more + ' 秒，上限 ' + ftMore.max +
+     '；牆鐘總共 ' + ftMore.wall + ' 秒——火被壓下去計時器就歸零重來，所以會比較久）');
   ok('建造中被放一把火：火會被撲掉，工程繼續往前',
      ftRun.called >= 1 && ftRun.arrive > 0 && ftRun.arrive < 25 &&
      ftRun.fireOut > 0 && ftRun.fireOut < 40 &&
@@ -20357,6 +20402,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
     /* 誰把地標的塊變成碎料（v1.186 加）：這一條紅過一次是「整座地標變成地上的碎料」，
        而每一顆火球都 −0，所以要攔住真正動手的那兩支。 */
+    /* **地標被波及了沒有**，看的是「整趟有沒有任何一塊地標的積木被點著過」（v1.189.1）。
+       原本拿「收工那一刻還在燒幾塊」＋「掉了幾塊」判，兩個都會漏：推 phase 進拆除中的
+       是 igniteFire／igniteNear 那兩行 `b.hh < 0 && phase === 'done'`（見 game-tools.js），
+       **點著就算，不必掉塊**；而燒完或被撲掉之後 burnSite 又變回 0。
+       實測有一輪就是「1398 → 1398 塊還站著、burnSite 0、phase 卻是 wreck」而紅。 */
+    const oIgn = igniteBlock;
+    let litSite = 0;
+    igniteBlock = b => {
+      const own = b && b.hh < 0 && b.st === SET;
+      const r = oIgn(b);
+      if (r && own) litSite++;
+      return r;
+    };
     const oFree = freeBlock, oBreak = breakBlock, oColl = collapseUnsupported;
     let byFree = 0, byBreak = 0, byColl = 0;
     collapseUnsupported = () => { const r = oColl(); byColl += r; return r; };
@@ -20381,12 +20439,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     for (let i = 0; i < 200; i++) { step(0.05); low = Math.min(low, home()); }
     fballHit = orig; freeBlock = oFree; breakBlock = oBreak; collapseUnsupported = oColl;
+    igniteBlock = oIgn;
     const burnSite = blocks.filter(b => b.burn > 0 && b.st === SET && b.hh < 0).length;
     /* 地標的塊數掉下來時要分得出是哪一種（v1.186 加）：燒掉的、變回碎料的、
        整個不在 blocks 裡了，還有這段期間場上有沒有長出城牆（閒晃事件在這一段是開著的）。 */
     const st = {};
     for (const b of blocks) if (b.hh < 0) st[b.st] = (st[b.st] || 0) + 1;
-    return { quota, hits, low, home0, site0, site: site(), burnSite, drop,
+    return { quota, hits, low, home0, site0, site: site(), burnSite, drop, litSite,
              byFree, byBreak, byColl,
              secs: +(n * 0.05).toFixed(1), siteR: +siteR.toFixed(1), ph: phase,
              st: JSON.stringify(st), all: blocks.length, bp: bp.slots.length,
@@ -20410,9 +20469,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      遊戲要察覺&燒完換場」），所以後半改成擇一守：沒被波及就該還在 done、
      被波及了就該進拆除中（少一塊就推，見 freeBlock；換場那條線只在 wreck 時才數）。 */
   ok('火球一開始只點村子那邊；燒到地標的話遊戲要察覺（進拆除中）',
-     mdrg.site >= mdrg.site0 - 4 ? (mdrg.burnSite === 0 && mdrg.ph === 'done')
-                                 : mdrg.ph !== 'done',
-     '地標燒起來 ' + mdrg.burnSite + ' 塊、' + mdrg.site0 + ' → ' + mdrg.site +
+     mdrg.litSite === 0 ? (mdrg.site >= mdrg.site0 - 4 && mdrg.ph === 'done')
+                        : mdrg.ph !== 'done',
+     '地標被點著過 ' + mdrg.litSite + ' 塊（收工時還在燒 ' + mdrg.burnSite + ' 塊）、' +
+     mdrg.site0 + ' → ' + mdrg.site +
      ' 塊還站著，phase ' + mdrg.ph + '；每一顆火球 ' +
      mdrg.hits.map(h => '半徑 ' + h.r + '／離房子 ' + h.dh + '／地標 −' + h.lost).join('、') +
      (mdrg.drop ? '；第 ' + mdrg.drop.t + ' 秒開始掉（phase ' + mdrg.drop.ph +
@@ -20908,10 +20968,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     const mid = { rollSpin: +roll.spin.toFixed(2), rollLie: +roll.lie.toFixed(2),
                   runLie: run.lie, runGait: +run.gait.toFixed(2), fx: hot.length > hot0 };
-    for (let i = 0; i < 200; i++) stepDoom(0.05);       // 燒完
+    /* 量「燒完的那一刻」，不是「跑滿 200 幀之後」：burnBeast 在 burn 歸零那一幀就把
+       躺平角收掉，但之後這 10 秒裡天災還在跑，有的種子會有炸彈把牠**再震倒一次**
+       （hurtBeast 的 fall 分支又把 spin 拉回 lieAng），量到的就變成「還躺著」。 */
+    let after = null;
+    for (let i = 0; i < 200; i++) {
+      stepDoom(0.05);
+      if (!after && roll.burn <= 0)
+        after = { burn: roll.burn, lie: roll.lie, spin: +roll.spin.toFixed(2), at: +(i * 0.05).toFixed(2) };
+    }
     return { a, b, twice, mid, rollMove: +rollMove.toFixed(1), runR: +runR.toFixed(1),
              burnT: B_BURN, first: +first.toFixed(2), jump: +jump.toFixed(2),
-             after: { burn: roll.burn, lie: roll.lie, spin: +roll.spin.toFixed(2) } };
+             after: after || { burn: roll.burn, lie: roll.lie, spin: +roll.spin.toFixed(2), at: -1 } };
   });
   ok('點得著，而且分躺著滾與站著跑圈圈兩種（已經在燒的不會再點一次）',
      hBurn.a && hBurn.b && !hBurn.twice && hBurn.mid.fx &&
@@ -20925,9 +20993,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hBurn.first < 0.4 && hBurn.jump < 1.2,
      '第一幀挪了 ' + hBurn.first + ' 格，之後每幀最多 ' + hBurn.jump + ' 格');
   ok('燒完自己拍拍灰站起來',
-     hBurn.after.burn === 0 && hBurn.after.lie === 0 && Math.abs(hBurn.after.spin) < 0.05,
-     '燒 ' + hBurn.burnT + ' 秒之後：burn ' + hBurn.after.burn + '、躺平角 ' +
-     hBurn.after.spin);
+     hBurn.after.at > 0 && hBurn.after.burn === 0 && hBurn.after.lie === 0 &&
+     Math.abs(hBurn.after.spin) < 0.05,
+     '燒完那一刻（第 ' + hBurn.after.at + ' 秒，B_BURN ' + hBurn.burnT + '）：burn ' +
+     hBurn.after.burn + '、躺著＝' + hBurn.after.lie + '、躺平角 ' + hBurn.after.spin);
 
   /* ── 水澆得熄，濕的當下點不著（同小人） ── */
   const hWet = await page.evaluate(() => {
