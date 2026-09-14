@@ -8388,31 +8388,137 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `（m.home 歸零：${wallWho.masHome === 0}）；牛羊全程 ${wallWho.cow}；` +
      `HERD_KIND ${wallWho.kinds} 款裡有 ${wallWho.noAct} 款有 DOOM_ACT`);
 
-  /* ⑧ 事件黏著（v1.186，使用者：「多個閒晃事件切換問題(目前是想說如果小房子建築
-     都被破壞剩下 25% 才再隨機一次? 因為城牆要蓋好幾輪吧)」，形態問過選「就照字面，
-     黏到被拆為止」）：整圈城牆三千多塊、一輪蓋不完，每一輪重抽的話半成品好幾輪沒人理。
-     「還在」＝那一類在 homes.list 上還有任何一筆——打到剩不到兩成五的會自己整段廢棄
-     消失（wreckHomes），所以這一句就是使用者說的那個門檻。 */
+  /* ⑧ 事件黏著（v1.186 加、判準 v1.188 換掉）。使用者當初：「多個閒晃事件切換問題
+     (目前是想說如果小房子建築都被破壞剩下 25% 才再隨機一次? 因為城牆要蓋好幾輪吧)」；
+     v1.188 他回報「每次都抽到事件一」，並把判準講清楚：「原本是想說事件一或二的
+     小房子或城牆 已建造數不多就抽 如果完成度比較高就繼續」。
+     所以現在看的是**塊數比例**：那一類現在還立著的塊數，跌到「曾經蓋到的最高點」的
+     WRECK_AT 以下才重抽。分母是最高點、不是整圈該有的塊數——城牆第一輪只蓋得了
+     幾百塊（整圈三千多），拿該有的當分母一開工就被判成「建造數不多」，城牆永遠蓋不起來。
+     舊判準是「homes.list 上還有那一類的任何一筆」，實測沒有出口
+     （見 開發筆記〈事件永遠不會換：黏著沒有出口〉）。 */
   const evStick = await page.evaluate(() => {
-    cleanTools(); clearHomes();
-    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
-    targetCnt = 600; setWorkerCount(12); startBuild(true); completeNow();
-    stopIdleEvent(); clearHomes(); evArm = 0; evLast = null;
-    idleEv = IDLE_EVENTS.find(e => e.id === 'wall');
-    evLast = idleEv; startWall();
-    let stuck = 0;
-    for (let i = 0; i < 60; i++) if (rollIdleEvent().id === 'wall') stuck++;
-    // 整圈拆光（＝每一段都被打到剩不到兩成五、廢棄）之後才會重抽
-    dropHomes(h => !h.wall);
-    const cnt = {};
-    for (let i = 0; i < 300; i++) { const id = rollIdleEvent().id; cnt[id] = (cnt[id] || 0) + 1; }
-    stopIdleEvent(); clearHomes(); evLast = null; evArm = 1;
-    return { stuck, kinds: Object.keys(cnt).sort().join('／'),
+    const wallEv = IDLE_EVENTS.find(e => e.id === 'wall');
+    /* 每一次都從同一個狀態抽：rollIdleEvent 抽完會把 evLast／evPeak 一起換掉，
+       不復原的話第二次抽起就不是同一個題目了。 */
+    const roll = (n, e, peak) => {
+      const c = {};
+      for (let i = 0; i < n; i++) {
+        evLast = e; evPeak = peak;
+        const id = rollIdleEvent().id; c[id] = (c[id] || 0) + 1;
+      }
+      evLast = null; evPeak = 0;
+      return c;
+    };
+    /* 打掉一部分：從已填的格子拿掉，直到那一類只剩 keep 比例。回傳剩幾塊。 */
+    const bash = (wall, keep) => {
+      let have = 0;
+      for (const h of homes.list) if (!!h.wall === wall) have += h.slots.length - h.left;
+      const want = Math.floor(have * keep);
+      for (const h of homes.list) {
+        if (!!h.wall !== wall) continue;
+        for (const sl of h.slots) {
+          if (have <= want) break;
+          if (!sl.filled) continue;
+          sl.filled = false; sl.claimed = -1; h.left++; have--;
+        }
+      }
+      return have;
+    };
+    cleanTools(); stopIdleEvent(); evArm = 0; evLast = null; evPeak = 0;
+    mkWall(12, 52);                                        // 整圈現成的城牆
+    const total = homes.list.reduce((a, h) => a + h.slots.length, 0);
+    const full = evBlocks(wallEv);
+    const stuck = roll(60, wallEv, full).wall || 0;         // 整圈都在：一直是城牆
+    const young = bash(true, 0.07);                         // 只蓋得了整圈的七分之一不到
+    const stuckYoung = roll(60, wallEv, young).wall || 0;   // 分母是最高點，所以照樣黏
+    const left = bash(true, 0.2);                           // 從那個最高點再拆到剩兩成
+    const cnt = roll(300, wallEv, young);
+    stopIdleEvent(); clearHomes(); evLast = null; evArm = 1; evPeak = 0;
+    return { total, full, stuck, young, stuckYoung, left,
              n: Object.keys(cnt).length, cnt: JSON.stringify(cnt) };
   });
-  ok('城牆還站著就不重抽事件，拆光了才換（使用者選的「黏到被拆為止」）',
-     evStick.stuck === 60 && evStick.n > 1,
-     `城牆還在時連抽 60 次：${evStick.stuck} 次都是城牆；拆光之後抽 300 次 → ${evStick.cnt}`);
+  ok('城牆還剩四分之一以上就不重抽，拆掉四分之三才換（使用者：已建造數不多就抽）',
+     evStick.stuck === 60 && evStick.stuckYoung === 60 && evStick.n > 1,
+     `整圈 ${evStick.total} 塊全在時抽 60 次：${evStick.stuck} 次城牆；才剛蓋了 ` +
+     `${evStick.young} 塊（整圈的 ${Math.round(evStick.young / evStick.total * 100)}%）也是 ` +
+     `${evStick.stuckYoung} 次；從那裡拆到剩 ${evStick.left} 塊之後抽 300 次 → ${evStick.cnt}`);
+
+  /* ⑨ 蓋到一半又被打光的殘骸不會再卡住切換（v1.188 修的就是使用者回報的那個）。
+     wrecked 那一條要 h.done，所以「從沒蓋完過的」打光了也不會廢棄，永遠留在 homes.list 上；
+     舊判準只看「還有沒有任何一筆」，那一筆殘骸就讓事件一輩子換不掉
+     （實測：整片打光之後抽 200 次全是同一件）。 */
+  const evRuin = await page.evaluate(() => {
+    const homeEv = IDLE_EVENTS.find(e => e.id === 'home');
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(12); startBuild(true); completeNow();
+    stopIdleEvent(); clearHomes(); evArm = 0; evLast = null; evPeak = 0;
+    /* 上一條的 mkWall 把人丟到 (300,300) 去了，走回來要好幾分鐘——擺回工地邊上，
+       不然半分鐘只蓋得出幾十塊，量到的東西沒有代表性（不用亂數，免得動到後面的骰子）。 */
+    for (let i = 0; i < workers.length; i++) {
+      const a = i / workers.length * Math.PI * 2;
+      const w = workers[i];
+      releaseWorker(w); w.hm = -1; w.hst = '';
+      w.x = Math.sin(a) * (siteR + 4); w.z = Math.cos(a) * (siteR + 4); w.y = 0;
+    }
+    idleEv = homeEv; evLast = homeEv; startHomes();
+    for (let i = 0; i < 60 * 90; i++) step(1 / 60);         // 一分半：蓋出一片村子（挖料＋搬運，一秒才兩塊）
+    const peak = evBlocks(homeEv);
+    const half = homes.list.filter(h => !h.done).length;
+    for (const h of homes.list) for (const sl of h.slots)   // 玩家把整片村子打光
+      if (sl.filled) { sl.filled = false; sl.claimed = -1; h.left++; }
+    const gone = wreckHomes();                              // 只清得掉「蓋好過的」
+    const ruins = homes.list.length;
+    const cnt = {};
+    for (let i = 0; i < 300; i++) {
+      evLast = homeEv; evPeak = peak;
+      const id = rollIdleEvent().id; cnt[id] = (cnt[id] || 0) + 1;
+    }
+    stopIdleEvent(); clearHomes(); evLast = null; evArm = 1; evPeak = 0;
+    return { peak, half, gone, ruins, n: Object.keys(cnt).length, cnt: JSON.stringify(cnt) };
+  });
+  ok('蓋到一半又被打光的殘骸不會卡住事件切換（塊數歸零就放行）',
+     evRuin.peak > 0 && evRuin.ruins > 0 && evRuin.n > 1,
+     `村子蓋了 ${evRuin.peak} 塊、其中 ${evRuin.half} 筆沒蓋完；整片打光後 wreckHomes 清掉 ` +
+     `${evRuin.gone} 筆、還剩 ${evRuin.ruins} 筆殘骸在清單上；抽 300 次 → ${evRuin.cnt}`);
+
+  /* ⑩ 分母（曾經蓋到多少）每幀都在追：stepIdleEvent 開頭那一行。
+     追丟的話 evPeak 停在 0，evAlive 拿 0 去比什麼都算「還活著」，黏著又變回沒有出口。 */
+  const evTrack = await page.evaluate(() => {
+    const homeEv = IDLE_EVENTS.find(e => e.id === 'home');
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(12); startBuild(true); completeNow();
+    stopIdleEvent(); clearHomes(); evArm = 0; evLast = null; evPeak = 0;
+    /* 上一條的 mkWall 把人丟到 (300,300) 去了，走回來要好幾分鐘——擺回工地邊上，
+       不然半分鐘只蓋得出幾十塊，量到的東西沒有代表性（不用亂數，免得動到後面的骰子）。 */
+    for (let i = 0; i < workers.length; i++) {
+      const a = i / workers.length * Math.PI * 2;
+      const w = workers[i];
+      releaseWorker(w); w.hm = -1; w.hst = '';
+      w.x = Math.sin(a) * (siteR + 4); w.z = Math.cos(a) * (siteR + 4); w.y = 0;
+    }
+    idleEv = homeEv; evLast = homeEv; startHomes();
+    const stub = stepIdleEvent;
+    stepIdleEvent = window.evStep;                          // 裝回真的那一支（見 installClean）
+    for (let i = 0; i < 60 * 40; i++) step(1 / 60);
+    const built = evBlocks(homeEv), peak = evPeak;
+    let k = 0;                                              // 隔一塊打一塊（不動骰子）
+    for (const h of homes.list) for (const sl of h.slots)
+      if (sl.filled && (k++ & 1)) { sl.filled = false; sl.claimed = -1; h.left++; }
+    const have = evBlocks(homeEv);
+    for (let i = 0; i < 30; i++) step(1 / 60);
+    const peak2 = evPeak;
+    stepIdleEvent = stub;
+    stopIdleEvent(); clearHomes(); evLast = null; evArm = 1; evPeak = 0;
+    return { built, peak, have, peak2 };
+  });
+  ok('黏著的分母跟著蓋的量往上長，被打掉不會跟著縮',
+     evTrack.built > 0 && evTrack.peak >= evTrack.built &&
+     evTrack.have < evTrack.built && evTrack.peak2 === evTrack.peak,
+     `蓋出 ${evTrack.built} 塊、最高點 ${evTrack.peak}；打掉一半剩 ${evTrack.have} 塊，` +
+     `最高點還是 ${evTrack.peak2}`);
 
   /* 天災裝回去過（上面那幾條要牠），這裡要關回去——不關的話後面每一段都會跑到
      隨機來訪的猴子（同天災那幾段的收尾）。 */

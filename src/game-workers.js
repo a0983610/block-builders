@@ -2166,24 +2166,41 @@ const IDLE_EVENTS = [
   /* 城牆（v1.186）。蓋法跟房子同一條路（都掛在 homes.list 上），所以收尾共用 stopHomes。 */
   { id: 'wall', wt: 1, start: startWall, step: null, stop: stopHomes }
 ];
-/* 上一件事蓋出來的東西還在場上嗎（v1.186）。
-   「還在」＝ homes.list 上還有那一類的東西：城牆是任何一段、小人的家是任何一間或一棵。
-   **打到剩不到兩成五的會自己整筆廢棄消失**（見 wreckHomes，門檻 WRECK_AT），
-   所以這一句就是使用者說的那個門檻。 */
+/* 上一件事蓋出來的東西還剩多少（v1.186 的黏著，**判準 v1.188 換掉**）。
+   舊的判準是「homes.list 上還有那一類的任何一筆」——實測那個門檻**沒有出口**
+   （見 開發筆記〈事件永遠不會換：黏著沒有出口〉）：房子與樹散在離場中心 20~36 的整片
+   碎料場，換下一座地標也徵收不到（工地半徑才 12），而**沒蓋完的（done=false）
+   打光了也不會廢棄**（wrecked 那一條要 h.done），剩一筆殘骸就永遠黏著；
+   更糟的是每黏一輪村子還多幾筆（實測四輪 10 → 17 筆）。
+
+   現在改成看**塊數比例**（使用者：「原本是想說事件一或二的 小房子或城牆
+   已建造數不多就抽 如果完成度比較高就繼續」）：這一類現在場上還立著的塊數，
+   跌到「曾經蓋到的最高點」的四分之一以下（WRECK_AT，就是他原本說的那個門檻）就重抽。
+   **分母是最高點，不是藍圖該有的總塊數**：整圈城牆 3384 塊、第一輪只蓋得了 246 塊
+   （實測），拿總塊數當分母的話一開工就被判定「建造數不多」，城牆永遠蓋不起來。
+   最高點記在事件這一層、不是逐筆記：逐筆的話廢棄一筆連分母也跟著消失，
+   打掉三分之一反而變回 100%。 */
 const EV_WALL = { home: false, wall: true };
-function evAlive(e) {
+let evPeak = 0;                     // 這一件事曾經蓋到的最高塊數（換一件才歸零，見 rollIdleEvent）
+function evBlocks(e) {
   const wall = EV_WALL[e.id];
-  if (wall === undefined || !homes) return false;
-  return homes.list.some(h => !!h.wall === wall);
+  if (wall === undefined || !homes) return 0;
+  let n = 0;
+  for (const h of homes.list) if (!!h.wall === wall) n += h.slots.length - h.left;
+  return n;
+}
+function evAlive(e) {
+  const n = evBlocks(e);
+  return n > 0 && n >= evPeak * WRECK_AT;
 }
 /* 照權重挑一件。回傳 null 只有一種情況：表是空的。
 
-   **上一件事蓋的東西還站著就不重抽**（v1.186，使用者：「多個閒晃事件切換問題
-   (目前是想說如果小房子建築都被破壞剩下 25% 才再隨機一次? 因為城牆要蓋好幾輪吧)」，
-   形態問過，他選「就照字面，黏到被拆為止」）。整圈城牆兩三千塊、一輪蓋不完，
-   每一輪重抽的話半成品常常好幾輪沒人理；黏著之後它一輪接一輪蓋到好。
-   代價他知道：城牆蓋完之後會一直是城牆這一件（修牆、補城內的房子），
-   要換得等玩家把牆拆到剩不到兩成五。 */
+   **上一件事蓋的東西還剩四分之一以上就不重抽**（v1.186，使用者：「多個閒晃事件切換問題
+   (目前是想說如果小房子建築都被破壞剩下 25% 才再隨機一次? 因為城牆要蓋好幾輪吧)」；
+   判準見上面 evAlive，v1.188 從「還有任何一筆」換成塊數比例）。整圈城牆兩三千塊、
+   一輪蓋不完，每一輪重抽的話半成品常常好幾輪沒人理；黏著之後它一輪接一輪蓋到好。
+   代價他知道：城牆蓋起來之後會一直是城牆這一件（修牆、補城內的房子），
+   要換得先把牆拆掉四分之三。 */
 let evLast = null;                  // 上一件跑過的（stopIdleEvent 之後還記著）
 function rollIdleEvent() {
   if (evLast && evAlive(evLast)) return evLast;
@@ -2191,8 +2208,14 @@ function rollIdleEvent() {
   for (const e of IDLE_EVENTS) tot += e.wt;
   if (tot <= 0) return null;
   let r = Math.random() * tot;
-  for (const e of IDLE_EVENTS) { r -= e.wt; if (r < 0) return e; }
-  return IDLE_EVENTS[IDLE_EVENTS.length - 1];      // 浮點誤差的保險
+  let e = IDLE_EVENTS[IDLE_EVENTS.length - 1];     // 浮點誤差的保險
+  for (const x of IDLE_EVENTS) { r -= x.wt; if (r < 0) { e = x; break; } }
+  /* 換一件事，最高點就跟著換成「這一類現在有多少」（見 evAlive）。
+     這兩個一定要一起動：只歸零 evPeak、evLast 留給呼叫端設的話，
+     中間那一瞬間 evAlive 拿 peak 0 去比，什麼都會判成「還活著」。 */
+  evLast = e;
+  evPeak = evBlocks(e);
+  return e;
 }
 function stopIdleEvent() {
   const e = idleEv;
@@ -2208,6 +2231,9 @@ function evPhase() {
   return '';
 }
 function stepIdleEvent(dt) {
+  /* 「曾經蓋到多少」每幀追一次，而且要在最前面：下面那個 `if (!ph)` 會早退
+     （施工中沒人偷懶、整地中），但玩家那段時間照樣在拆村子，漏追的話峰值會停在錯的地方。 */
+  if (evLast) { const n = evBlocks(evLast); if (n > evPeak) evPeak = n; }
   const ph = evPhase();
   if (!ph) { stopIdleEvent(); evArm = 1; evPh = ''; return; }
   /* 換場合就重挑（v1.134）。最要緊的是「施工中 → 蓋完了」那一刻：不重挑的話 evArm
@@ -2222,7 +2248,7 @@ function stepIdleEvent(dt) {
     if (ph === 'idle' && workers.some(w => cheerOn(w))) return;
     evArm = 0;
     idleEv = rollIdleEvent();
-    if (idleEv) { evLast = idleEv; idleEv.start(); }
+    if (idleEv) idleEv.start();         // evLast 與最高點在 rollIdleEvent 裡一起換好了
   }
   if (idleEv && idleEv.step) idleEv.step(dt);
 }
