@@ -36,8 +36,12 @@
    引擎多一顆網格就把整條序列往後推，幾百條之後某條不相干的測試就換了骰子（見 開發筆記）。
    --json <檔>：把每一條的結果寫成 JSON。給「跑十輪不同種子把偶發挖出來」用。
    --update-varying a.json b.json：拿兩份**不同種子**的 --json 逐條比 detail，把
-   「換種子數字就會變」的條目寫成 tools/e2e-varying.json。`--tier commit`／`must`
-   不記那些條（門檻是統計帶不是固定值，會偶爾擋住 commit）；完整檔照驗。純 node，不開瀏覽器。
+   「換種子數字就會變」的條目寫成 tools/e2e-varying.json＝**統計型條目**的清單。
+   統計型條目**哪一檔都不判成敗**（v1.191.0），只印數值；判成敗的是規則型的條目。
+   純 node，不開瀏覽器。
+   --update-stats：把這一輪統計型條目的數值存成基準（tools/e2e-stats.json，進 git）。
+   完整輪跑完會自動跟那份基準比，印出變動最大的幾條當**參考**——不判成敗，
+   因為「飄多少才算異常」沒有量出來過，訂了就又是一個憑空的門檻。
    --update-models：把現在的造型重新存成基準檔（tools/model-baseline.json）。
    故意改造型時才用，改完看 git diff 確認變的就是你要改的那幾塊。見〈造型基準〉那一段。
 
@@ -98,9 +102,9 @@ if (process.argv.indexOf('--list') >= 0) {
   process.exit(0);
 }
 
-/* ---------- 浮動條目清單（--update-varying，見 開發筆記〈測試分三檔〉） ----------
+/* ---------- 統計型條目清單（--update-varying，見 開發筆記〈測試分三檔〉） ----------
    「換一顆種子數字就不一樣」的那些條目：它們的門檻是統計帶，不是固定值。
-   `--tier commit`／`must` 不記它們（見 ok()），完整檔照跑。
+   **哪一檔都不判成敗，只記數值**（見 ok()，v1.191.0）。
    清單是**量出來**的，不是手挑的——拿幾份 --json 逐條比 detail，有一份不一樣就算浮動：
 
      node tools/e2e-3d.cjs --seed 1178 --json a.json
@@ -122,8 +126,11 @@ if (process.argv.indexOf('--update-varying') >= 0) {
   const js = files.map(f => JSON.parse(fs.readFileSync(f, 'utf8')));
   const bad = js.findIndex(j => j.partial || (j.tier && j.tier < 3));
   if (bad >= 0) { console.log(files[bad] + ' 不是完整輪（--until 或 --tier 的結果不能用）'); process.exit(2); }
+  /* 已經在清單上的條目不進 results（它們不判成敗了），但 detail 照樣算得出來、寫在
+     stats 裡——重產時兩邊要合起來比，不然清單會一次縮水成只剩「這一版新冒出來」的那幾條。 */
+  const allOf = j => (j.results || []).concat(j.stats || []);
   const grp = res => { const m = new Map(); for (const r of res) { const k = varyKey(r.section, r.name); if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; };
-  const ms = js.map(j => grp(j.results));
+  const ms = js.map(j => grp(allOf(j)));
   const items = [];
   for (const [k, r0] of ms[0]) {
     let vary = false;
@@ -138,11 +145,11 @@ if (process.argv.indexOf('--update-varying') >= 0) {
   items.sort();
   const seeds = js.map(j => j.seed);
   fs.writeFileSync(VARY_FILE, JSON.stringify({
-    note: '數字會浮動的條目（換種子會變、或同種子重跑就會變）：門檻是統計帶而不是固定值，' +
-          '--tier commit/must 不記它們，完整檔照驗。用 --update-varying 重產。',
-    seeds, runs: files.length, total: js[0].results.length, items }, null, 1) + '\n', 'utf8');
-  console.log(files.length + ' 份（種子 ' + seeds.join('、') + '）：' + js[0].results.length +
-              ' 條裡有 ' + items.length + ' 條數字會浮動 → ' + path.relative(process.cwd(), VARY_FILE));
+    note: '統計型條目（換種子會變、或同種子重跑就會變）：門檻是統計帶而不是固定值，' +
+          '所以哪一檔都不判成敗，只把數值印出來、寫進 e2e-stats.json。用 --update-varying 重產。',
+    seeds, runs: files.length, total: allOf(js[0]).length, items }, null, 1) + '\n', 'utf8');
+  console.log(files.length + ' 份（種子 ' + seeds.join('、') + '）：' + allOf(js[0]).length +
+              ' 條裡有 ' + items.length + ' 條是統計型 → ' + path.relative(process.cwd(), VARY_FILE));
   process.exit(0);
 }
 
@@ -223,15 +230,20 @@ const TIER = (() => {
 })();
 const TIER_NAME = { 1: 'must（必要）', 2: 'commit', 3: 'full（完整）' }[TIER];
 const skippedSecs = [];                     // 這一輪被等級跳掉的段名，總結要印出來
-/* 浮動條目：完整檔照跑，commit／must 檔不記（見上面 --update-varying 那一段）。
-   讀不到清單就當空的——那只會讓 commit 檔多記幾條，不會把測試變寬鬆。 */
+/* 統計型條目：**哪一檔都不判成敗，只記數值**（v1.191.0，使用者定案；
+   見 開發筆記〈統計型只記數值，規則型才判成敗〉）。
+   以前是「commit／must 不記、完整檔照驗」，但清單上那四百條的門檻全是統計帶——
+   一條單輪紅 0.5%，四百條跑一輪的期望就是兩條紅，「完整輪全綠」根本不是做得到的目標，
+   而照著那個目標修測試就是一輪修一條、下一輪換隔壁紅，永遠不會收斂。
+   讀不到清單就當空的——那只會讓它們變回照記成敗，不會把測試變寬鬆。 */
 const VARY = (() => {
-  if (TIER >= T_FULL) return null;
-  if (!fs.existsSync(VARY_FILE)) { console.log('（沒有 ' + path.basename(VARY_FILE) + '：浮動條目照記）'); return null; }
+  if (!fs.existsSync(VARY_FILE)) { console.log('（沒有 ' + path.basename(VARY_FILE) + '：統計型條目照記成敗）'); return null; }
   try { return new Set(JSON.parse(fs.readFileSync(VARY_FILE, 'utf8')).items || []); }
-  catch (e) { console.log('（' + path.basename(VARY_FILE) + ' 讀不進來：' + e.message + '，浮動條目照記）'); return null; }
+  catch (e) { console.log('（' + path.basename(VARY_FILE) + ' 讀不進來：' + e.message + '，統計型條目照記成敗）'); return null; }
 })();
-let skippedOks = 0;                         // 被浮動條目清單擋掉的條數
+const STATS = [];                           // 統計型條目的數值：跑完寫成一份統計表
+const STATS_FILE = path.join(__dirname, 'e2e-stats.json');      // 基準（進 git，--update-stats 重產）
+const UPDATE_STATS = process.argv.indexOf('--update-stats') >= 0;
 
 /* ---------- 亂數種子（--seed，見檔頭） ---------- */
 const SEED = (() => {
@@ -287,11 +299,12 @@ const head = async (t, tier = T_COMMIT) => {
   return true;
 };
 const ok = (name, pass, detail) => {
-  /* 浮動條目在 commit／must 檔不記（v1.179）。夾具照跑——省的不是時間，
-     是「commit 前被一條在賭骰子的測試擋住」。要看它們就跑完整檔。 */
+  /* 統計型條目只記數值、不判成敗（v1.191.0）。夾具照跑、detail 照算——
+     要的就是那個數字：印出來給人看，完整輪跑完寫成統計表跟基準比（見 report）。
+     `pass` 照樣留著寫進統計表，之後回頭翻「那一輪落在帶內還是帶外」用。 */
   if (VARY && VARY.has(varyKey(section, name))) {
-    skippedOks++;
-    console.log('  \x1b[90mSKIP\x1b[0m  ' + name + '  → 浮動條目（完整檔才驗）');
+    STATS.push({ section, name, pass: !!pass, detail });
+    console.log('  \x1b[90mSTAT\x1b[0m  ' + name + (detail ? '  → ' + detail : ''));
     return;
   }
   R.push({ section, name, pass: !!pass, detail });
@@ -20324,7 +20337,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      （天災那一趟是衝著地標來的，中途落地會把「繞一圈邊吐火球」整個打斷）。
      機率那一段把 Math.random 押到底驗兩邊：押 0 一定降落、押 0.99 一定不降落。
      押骰子而不是跑幾十趟看比例，是為了讓這兩條是**固定值**——統計帶的條目
-     在 --tier commit 會被浮動清單濾掉，這兩條要每一檔都守著。 */
+     哪一檔都不判成敗（只記數值），這兩條要真的守著「降不降落」這條規則。 */
   const mland = await page.evaluate(() => {
     const R = Math.random;
     const run = (fun, dice) => {
@@ -24703,13 +24716,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
    --tier 同理：跳了段落的那一輪也不准印「全數通過」（v1.179）。 */
 function report(partial) {
   const fail = R.filter(r => !r.pass);
-  const cut = partial || skippedSecs.length > 0 || skippedOks > 0;
+  /* 統計型條目不算在 cut 裡（v1.191.0）：它們在**哪一檔都不判成敗**，那是設計，
+     不是「這一輪少跑了什麼」。算進去的話完整輪永遠印不出「全數通過」。 */
+  const cut = partial || skippedSecs.length > 0;
   console.log('\n' + '═'.repeat(52));
   console.log('  ' + (R.length - fail.length) + ' / ' + R.length + ' 通過' +
               (fail.length ? '，\x1b[31m' + fail.length + ' 項失敗\x1b[0m'
                : partial ? '  \x1b[33m（--until 只跑到「' + section + '」為止，不是完整一輪）\x1b[0m'
                : cut ? '  \x1b[33m（--tier ' + TIER_NAME + '，跳了 ' + skippedSecs.length +
-                       ' 段 ＋ ' + skippedOks + ' 條浮動條目，不是完整一輪）\x1b[0m'
+                       ' 段，不是完整一輪）\x1b[0m'
                          : '  \x1b[32m全數通過\x1b[0m'));
   if (fail.length) {
     console.log('');
@@ -24720,16 +24735,85 @@ function report(partial) {
   if (UNTIL && !untilHit) console.log('  \x1b[33m--until「' + UNTIL + '」沒對到任何段名，跑的是完整一輪\x1b[0m');
   if (skippedSecs.length) console.log('  \x1b[33m--tier ' + TIER_NAME + ' 跳掉 ' +
     skippedSecs.length + ' 段：' + skippedSecs.join('、') + '\x1b[0m');
-  if (skippedOks) console.log('  \x1b[33m另有 ' + skippedOks +
-    ' 條浮動條目沒記（' + path.basename(VARY_FILE) + '，完整檔才驗）\x1b[0m');
+  if (STATS.length) console.log('  \x1b[90m另有 ' + STATS.length +
+    ' 條統計型條目只記數值、不判成敗（' + path.basename(VARY_FILE) + '）\x1b[0m');
   /* 種子一定要印：這一輪紅的那幾條，照這個數字重跑才是同一副骰子。 */
   console.log('  種子：--seed ' + SEED);
   console.log('  截圖：' + path.relative(ROOT, OUT));
   if (JSON_OUT) {
     fs.writeFileSync(JSON_OUT, JSON.stringify(
-      { seed: SEED, partial, tier: TIER, skipped: skippedSecs, results: R }, null, 1));
+      { seed: SEED, partial, tier: TIER, skipped: skippedSecs, results: R, stats: STATS }, null, 1));
     console.log('  結果：' + JSON_OUT);
   }
+  statsReport(partial);
   console.log('═'.repeat(52));
   process.exit(fail.length ? 1 : 0);
+}
+
+/* ---------- 統計型條目的數值表（v1.191.0，見 開發筆記〈統計型只記數值，規則型才判成敗〉） ----------
+   使用者：「可能輸出一個目前統計型的數值是多少 記錄下來 以後觀察比較用／
+   規則型的 例如判斷效果是否正常才是通過跟不通過」。
+   所以這裡**只印不判**：跟基準差多少就寫多少，不設門檻——「飄多少才算異常」沒有量出來過，
+   訂一個就又是一個憑空的關卡，而那正是這一版要拆掉的東西。 */
+function statsReport(partial) {
+  if (!STATS.length) return;
+  const full = TIER >= T_FULL && !partial;
+  const doc = {
+    note: '統計型條目這一輪量到的數值：不判成敗，留著比對趨勢用。' +
+          '跑完整輪加 --update-stats 就把這一份存成基準（進 git）。',
+    ver: (fs.readFileSync(path.join(ROOT, 'src/game.js'), 'utf8')
+            .match(/const VERSION = '([^']+)'/) || [])[1] || '?',
+    seed: SEED, at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    tier: TIER, partial: !!partial, count: STATS.length,
+    items: STATS.reduce((m, s) => { m[varyKey(s.section, s.name)] = s.detail || ''; return m; }, {})
+  };
+  /* 平常寫到 .e2e-out（gitignore、每輪覆寫）：看得到這一輪的全部數字，又不會弄髒 git。 */
+  const live = path.join(OUT, 'e2e-stats.json');
+  try { fs.mkdirSync(OUT, { recursive: true }); } catch (e) { /* 已經有了 */ }
+  fs.writeFileSync(live, JSON.stringify(doc, null, 1) + '\n', 'utf8');
+  console.log('  數值：' + path.relative(ROOT, live) + '（' + STATS.length + ' 條）');
+  if (UPDATE_STATS && full) {
+    fs.writeFileSync(STATS_FILE, JSON.stringify(doc, null, 1) + '\n', 'utf8');
+    console.log('  \x1b[32m基準已更新\x1b[0m：' + path.relative(ROOT, STATS_FILE) + '（記得看 git diff）');
+    return;
+  }
+  if (UPDATE_STATS) console.log('  \x1b[33m--update-stats 只吃完整輪（這一輪是 ' + TIER_NAME +
+                                (partial ? ' ＋ --until' : '') + '），基準沒動\x1b[0m');
+  if (!fs.existsSync(STATS_FILE)) {
+    console.log('  \x1b[90m（還沒有基準：跑一次完整輪加 --update-stats 存起來，以後就比得了）\x1b[0m');
+    return;
+  }
+  let base;
+  try { base = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8')); }
+  catch (e) { console.log('  \x1b[33m基準讀不進來：' + e.message + '\x1b[0m'); return; }
+  const bi = base.items || {};
+  /* 比法：把 detail 裡的數字依序挖出來逐位置比，取這一條變動最大的那一個當代表。
+     detail 是中文句子，數字的**位置**才是穩定的識別（「絆了 5 次」的 5 在第二位）。 */
+  const nums = t => (String(t || '').match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  const moved = [], shape = [];
+  for (const s of STATS) {
+    const k = varyKey(s.section, s.name);
+    if (!(k in bi)) continue;                        // 這一版新增的條目，沒得比
+    const a = nums(bi[k]), b = nums(s.detail);
+    if (a.length !== b.length) { shape.push(k); continue; }   // detail 格式改了，數字對不齊
+    let worst = 0;
+    for (let i = 0; i < a.length; i++) {
+      const d = Math.abs(b[i] - a[i]) / Math.max(Math.abs(a[i]), 1);
+      if (d > worst) worst = d;
+    }
+    if (worst > 0) moved.push({ k, worst, was: bi[k], now: s.detail || '' });
+  }
+  const gone = Object.keys(bi).filter(k => !STATS.some(s => varyKey(s.section, s.name) === k));
+  moved.sort((x, y) => y.worst - x.worst);
+  console.log('  \x1b[90m跟基準（' + base.ver + '／種子 ' + base.seed + '）比：' +
+              moved.length + ' 條數字有變' +
+              (shape.length ? '、' + shape.length + ' 條 detail 格式變了' : '') +
+              (gone.length ? '、基準有但這一輪沒量到 ' + gone.length + ' 條' : '') + '\x1b[0m');
+  for (const m of moved.slice(0, 8))
+    console.log('    \x1b[90m' + (m.worst >= 10 ? '≥×10' : '×' + (1 + m.worst).toFixed(1)) +
+                '  ' + m.k + '\n      基準 ' + m.was + '\n      這輪 ' + m.now + '\x1b[0m');
+  /* 條目改名沒搬鍵就會落在這裡（見 CLAUDE.md〈改測試時一定要記得的四件事〉第 1 點）。 */
+  if (gone.length && full)
+    console.log('    \x1b[33m基準有、這一輪沒量到：' + gone.slice(0, 5).join('、') +
+                (gone.length > 5 ? ' …' : '') + '（條目改名了？鍵要一起搬）\x1b[0m');
 }
