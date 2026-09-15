@@ -5550,12 +5550,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       trip[dug0[i]] = (trip[dug0[i]] || 0) + 1;
       if (workers[i].hst === 'grab') toGrab++; else toIdle++;
     };
-    const walked = i => Math.hypot(workers[i].x - px[i], workers[i].z - pz[i]) > 0.01;
+    /* 「在走路」要比「有位移」嚴（v1.190.3）。這一條守的是 `pushOutHome`——**走路的人
+       同一幀就被推出框外**，所以在走的人不該出現在框裡。但站定的人每幀也會被微調
+       零點幾格：實測踩到的那兩幀是同一個人站在**自己那棵樹**的框邊 0.01 格處，
+       一幀只移動了 0.01 與 0.05 格，那不是在走路，是站定時的抖動。
+       一步是 WALK × dt ≈ 0.34，取半步當門檻——真的穿過去的人每一幀都走滿一步，
+       而且要連走一二十幀才穿得過一間房子。 */
+    const STEP_MIN = WALK * 0.05 / 2;
+    const walked = i => Math.hypot(workers[i].x - px[i], workers[i].z - pz[i]) > STEP_MIN;
+    const why = [];                 // 踩進去的那幾幀長什麼樣（診斷用，見下面的斷言）
     const tally = i => {
       const w = workers[i];
-      if (!homeAt(w.x, w.z)) return;
+      const h = footHome(w.x, w.z);
+      if (!h) return;
       inside++;
-      if (walked(i) && !w.air && !(w.ghost > 0)) insideWalk++;
+      if (walked(i) && !w.air && !(w.ghost > 0)) {
+        insideWalk++;
+        if (why.length < 8)
+          why.push({ i, kind: h.kind, left: h.left, done: !!h.done, mine: w.hm === homes.list.indexOf(h),
+                     hst: w.hst || '-', load: w.load.length,
+                     dx: +(Math.min(w.x - h.x0, h.x1 - w.x)).toFixed(2),
+                     dz: +(Math.min(w.z - h.z0, h.z1 - w.z)).toFixed(2),
+                     step: +Math.hypot(w.x - px[i], w.z - pz[i]).toFixed(2) });
+      }
     };
     /* 600 秒（v1.100 從 400 再拉上來）：房子放大到 100～300 塊，
        六七間共 800～950 塊，實測 219～244 秒蓋完（一趟搬 2～3 塊之前是 350 秒）。
@@ -5597,7 +5614,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         tree = Math.min(tree, Math.hypot(homes.list[i].x - tr.x, homes.list[i].z - tr.z) - tr.r);
     }
     return { crew, crewT, n: workers.length, list, pool0, pool1, all0, all1: blocks.length,
-             homeSet, left, secs: +secs.toFixed(1), inside, insideWalk,
+             homeSet, left, secs: +secs.toFixed(1), inside, insideWalk, why,
              far: +far.toFixed(1), back,
              marks1, dirt1, digs, carry, cap: HOME_CARRY,
              dug, inHand, notPop, notDirt, trip, toGrab, toIdle,
@@ -5867,7 +5884,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('沒有人從房子中間穿過去', home.insideWalk === 0,
      '走路中踩在房子地基上 ' + home.insideWalk + ' 幀（含站著不動與被掀飛的共 ' +
      home.inside + ' 幀；' + home.list.length + ' 間、量了 ' +
-     (home.secs + 20).toFixed(0) + ' 秒）');
+     (home.secs + 20).toFixed(0) + ' 秒）' +
+     (home.why.length ? '；踩到的那幾幀：' + JSON.stringify(home.why) : ''));
 
   /* 一開始建造就回去上工（使用者：「如果要再建造時 直接恢復進入建造模式」），
      房子留在場上（使用者選的）。推土機只推工地內的 FREE 碎料，所以碰不到房子。 */
@@ -7241,8 +7259,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                  gone: homes.list.indexOf(tgt) < 0,
                  alive: !!other && homes.list.indexOf(other) >= 0,
                  hurt: other ? other.left : -1, roof: Math.min(6, oq.length) };
-    s3.secs = go(500, () => homes.list.every(h => h.left <= 0));
-    s3.left = homes.list.reduce((a, h) => a + h.left, 0);
+    /* 等的是**被敲掉屋頂的那一間**補完，不是「全村每一間都補完」（v1.190.3）。
+       村子每一輪都會再開幾間新的，全村永遠有還沒砌完的格子——實測 500 秒跑滿時
+       「那一間」早就補好了，剩的 6 格是別間新開的工。這一條要驗的是「只破了洞的
+       補回來」，那就只看那一間。 */
+    s3.secs = go(500, () => !other || other.left <= 0);
+    s3.left = other ? other.left : 0;
+    s3.village = homes.list.reduce((a, h) => a + h.left, 0);   // 全村還缺幾格（參考用）
 
     /* ── ④ 把地標打掉換下一座，蓋完小人又開始蓋自己的家 ── */
     const d0 = stats.destroyed;
@@ -7254,10 +7277,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const swap = go(60, () => stats.destroyed > d0);
     const hm0 = workers.filter(w => w.hm >= 0).length;
     const build2 = go(400, () => phase === 'done' || phase === 'wreck');
-    const newHome = go(60, () => idleEv && workers.some(w => w.hm >= 0));
+    /* 這一條守的是「**換場之後閒晃事件會重新開始**」（v1.134 的坑：不重挑的話 evArm
+       早就是 0，完工散場後那一輪永遠不會開始）。「一定有人離隊去蓋房子」不是程式保證的
+       ——這一輪抽到的可能是城牆，而整圈早就砌完了，那就沒事可做（實測開出過
+       「全村 21 間、0 人離隊」，21 正好是一圈城牆的段數）。所以等的是
+       「事件挑好了，而且有人開工**或**該蓋的都蓋完了」。 */
+    const nothingToDo = () => !!homes && homes.list.every(h => h.left <= 0);
+    const newHome = go(60, () => idleEv && (workers.some(w => w.hm >= 0) || nothingToDo()));
     const s4 = { swap, destroyed: stats.destroyed - d0, name: bp.name, build: build2,
                  placed: placedCnt, total: bp.slots.length, phase, hm0,
                  crew: workers.filter(w => w.hm >= 0).length, newHome,
+                 /* 沒人開工的時候要看得出是哪一關：抽到的是哪一件事、那時候是什麼階段
+                    （施工中只有偷懶的人會參加，而測試把偷懶關掉了）。 */
+                 ev: idleEv ? idleEv.id : null, lazy: workers.filter(w => w.lazy).length,
+                 wall: homes ? homes.list.filter(h => h.wall).length : 0,
+                 todo: homes ? homes.list.filter(h => h.left > 0).length : 0,
                  houses: homes ? homes.list.length : 0 };
 
     const out = { s1, s2, s3, s4,
@@ -7282,14 +7316,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      lifeRun.s3.alive && lifeRun.s3.hurt > 0 && lifeRun.s3.left === 0,
      '打到剩兩成的那一間廢棄了（' + lifeRun.s3.before + ' → ' + lifeRun.s3.after +
      ' 間）；另一間敲掉 ' + lifeRun.s3.roof + ' 塊屋頂 → 缺 ' +
-     lifeRun.s3.hurt + ' 格，' + lifeRun.s3.secs + ' 秒後補完（全村還缺 ' + lifeRun.s3.left + ' 格）');
-  ok('④ 換下一座地標，蓋完小人又開始蓋自己的家',
+     lifeRun.s3.hurt + ' 格，' + lifeRun.s3.secs + ' 秒後補完（那一間還缺 ' +
+     lifeRun.s3.left + ' 格；全村還缺 ' + lifeRun.s3.village + ' 格，那是別間新開的工）');
+  ok('④ 換下一座地標，蓋完閒晃事件重新開始（有人開工，或該蓋的都蓋完了）',
      lifeRun.s4.destroyed === 1 && lifeRun.s4.placed === lifeRun.s4.total &&
-     lifeRun.s4.hm0 === 0 && lifeRun.s4.crew > 0 && lifeRun.s4.newHome < 60,
+     lifeRun.s4.hm0 === 0 && lifeRun.s4.ev &&
+     (lifeRun.s4.crew > 0 || lifeRun.s4.todo === 0) && lifeRun.s4.newHome < 60,
      '砸完 ' + lifeRun.s4.swap + ' 秒換場（拆掉 +' + lifeRun.s4.destroyed + '），' +
      lifeRun.s4.name + ' 蓋了 ' + lifeRun.s4.build + ' 秒到 ' + lifeRun.s4.placed + '/' +
      lifeRun.s4.total + '；換場當下有家的 ' + lifeRun.s4.hm0 + ' 人 → 慶祝散場 ' +
-     lifeRun.s4.newHome + ' 秒後 ' + lifeRun.s4.crew + ' 人離隊，全村 ' + lifeRun.s4.houses + ' 間');
+     lifeRun.s4.newHome + ' 秒後 ' + lifeRun.s4.crew + ' 人離隊，全村 ' + lifeRun.s4.houses +
+     ' 間（抽到的事件 ' + lifeRun.s4.ev + '、其中城牆 ' + lifeRun.s4.wall +
+     ' 段、階段 ' + lifeRun.s4.phase + '、偷懶的 ' + lifeRun.s4.lazy + ' 人）');
   /* 上限是機制自己給的：撐到 STUCK_T 重找路線、撐到 2×STUCK_T（3 秒）開始穿透，
      穿出去還要走一小段才離開錨點，所以量到的最壞值會落在 3 秒多一點。
      同一份量測在 v1.107 抓到過完全解不開的（下一座地標停在 678／680，900 秒沒動）。 */
@@ -7667,13 +7705,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = 500; setWorkerCount(12); startBuild(true); completeNow();
     homes = { list: [] };
     startHomes();
+    /* 前置條件**直接建立**（v1.190.3）。原本是等「村子全部蓋完」再拿 `homes.list[0]`
+       當目標，而那一間有沒有蓋完、有沒有主人是另一件事的骰子：實測 12 個人的場上
+       村子長到 21 間（事件每一輪都會再開幾間），跑滿 600 秒時 `homes.list[0]` 還是
+       104/104 一塊沒砌、而蓋完的那十幾間都沒有主人（人只有 12 個）。目標沒砌就沒得打
+       （`kill` 算出來是負的、一塊都沒破），`wreckHomes` 自然不收——那一條本來就只收
+       `h.done` 的（見 開發筆記〈事件永遠不會換〉），於是這一條每次都卡在
+       「整間廢棄：false」，而它根本還沒開始驗自己要驗的東西。
+       **這一條要驗的是「家沒了 → `w.own` 清成 −1 → 原主人可以再蓋一間」**，
+       主人是誰、那一間怎麼蓋起來的都不是重點，所以等到有一間蓋好的就指定一個主人。 */
+    const built = () => homes.list.findIndex(h => h.done && h.left <= 0);
     let t = 0;
-    while (t < 600 && homes.list.some(h => h.left > 0)) { step(0.05); t += 0.05; }
+    while (t < 600 && built() < 0) { step(0.05); t += 0.05; }
     stopHomes();
-    const tgt = homes.list[0];
+    const ti = Math.max(0, built());
+    const tgt = homes.list[ti];
+    const owner = workers[0];
+    owner.own = tgt.id; owner.hm = -1; owner.hst = '';     // 這一間從現在起是他的家
     const owners = workers.filter(w => w.own === tgt.id).length;
-    // 打到剩兩成 → 整間廢棄
-    const q = blocks.filter(b => b.st === 3 && b.hh === 0);
+    // 打到剩兩成 → 整間廢棄（打的是挑中的那一間，不是清單上的第一間）
+    const q = blocks.filter(b => b.st === 3 && b.hh === ti);
     const kill = Math.ceil(q.length - tgt.slots.length * 0.2);
     for (let i = 0; i < kill && i < q.length; i++) breakBlock(q[i], 0, 0, 0);
     for (let i = 0; i < 80; i++) step(0.05);
@@ -7698,6 +7749,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const freed = workers.filter(w => w.own !== tgt.id).length;
     const back = workers.filter(w => w.hm >= 0).length;
     const out = { owners, gone, n0, n1: homes.list.length, freed, back, men: workers.length,
+                  /* 沒廢棄的時候要看得出是哪一關沒過：wreckHomes 只收「蓋完的」
+                     （見 開發筆記〈事件永遠不會換〉），沒蓋完的打光了也不會廢棄。 */
+                  done: !!tgt.done, leftAt: tgt.left, slots: tgt.slots.length,
+                  keptN: blocks.filter(b => b.st === 3 && b.hh === ti).length, waited: +t.toFixed(0),
                   stillTagged: workers.filter(w => w.own === tgt.id).length };
     cleanTools(); clearHomes();
     return out;
@@ -7708,7 +7763,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '那一間本來有 ' + ownAgain.owners + ' 個主人：打到剩兩成 → 整間廢棄（' +
      ownAgain.gone + '），標記歸零的還剩 ' + ownAgain.stillTagged +
      ' 人；下一輪村子 ' + ownAgain.n0 + ' → ' + ownAgain.n1 + ' 間、' +
-     ownAgain.back + ' 人離隊');
+     ownAgain.back + ' 人離隊（那一間蓋完了：' + ownAgain.done + '，還缺 ' +
+     ownAgain.leftAt + '/' + ownAgain.slots + ' 格、打完剩 ' + ownAgain.keptN +
+     ' 塊，等有一間蓋好等了 ' + ownAgain.waited + ' 秒）');
 
   /* 按「立刻建成」不會把整村變成碎料（v1.109 修掉的舊坑）。
      completeNow 以前是照編號硬取 blocks[0..格數) 當建材、編號更後面的一律壓成散料——
@@ -13130,11 +13187,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ② 相對 2.5 倍擋「整條規則沒了」——拿掉 stepWeapons 那條 w.aimY 是九成位 175～198、
         最遠 248（畫面上是一條刀劍拖出去的尾巴橫過整片草地）。
      實測的比值 1.97～2.05，離 2.5 有兩成餘裕。 */
+  /* **v1.190.3 第四次紅（22.4、比值 2.53），這次不再修分母，改成量各自的絕對值。**
+     前三次都是在修「怎麼取百分位」（三趟 → 五趟 → 每趟九成位取中位 → 兩組同種子），
+     但病根其實在**比值這個量本身**：拿兩個取樣分布相除，雜訊是加倍的。
+     探針掃六顆種子量出來（同樣五趟）：
+       點建築 九成位 56.3~57.0（變異 1.2%，**非常穩**）、最遠 63.7~65.3
+       點空地 九成位 26.2~29.6（變異 13%），而整輪跑還開出過 19.5／22.4／22.6／22.8
+     ——分母自己在跳，比值就跟著跳（1.90~2.17，整輪開出過 2.53～2.95）。
+     中位數更不能用：點建築的中位只有 9.0~12.7（變異 41%），因為多數兵器**打中目標
+     就地掉**，中位數落在那一群身上，根本不是這一條要看的「落空的那幾把」。
+     所以改成**兩組各自的絕對門檻**：
+       · 點建築（這一版動過的那組）九成位 < 70 —— 實測 57.0 封頂，餘裕 23%，
+         跟 farMax 那條同一個比例；bug 的樣子是「滑過頭」，整組會一起變遠，抓得到。
+       · 點空地（沒被動過的對照組）九成位 < 45 —— 實測 29.6 封頂。
+     偵測力沒有變鬆：舊門檻 `gnd.far9 × 2.5` 在 gnd 飄到 29.6 時等於 74，比 70 還寬。
+     farMax < 85 那條照舊（它擋的是「阻力沒了」，要的就是極值）。 */
   ok('落空的那一把是拋物線落地，不是一路滑出場外',
-     gateHi.blk.farMax < 85 && gateHi.blk.far9 < gateHi.gnd.far9 * 2.5,
-     '插／躺在地上的距離：點建築 九成位 ' + gateHi.blk.far9 + '、最遠 ' + gateHi.blk.farMax +
-     '（' + gateHi.blk.lie + ' 把）；點空地 九成位 ' + gateHi.gnd.far9 + '、最遠 ' +
-     gateHi.gnd.farMax + '（' + gateHi.gnd.lie + ' 把）');
+     gateHi.blk.farMax < 85 && gateHi.blk.far9 < 70 && gateHi.gnd.far9 < 45,
+     '插／躺在地上的距離：點建築 九成位 ' + gateHi.blk.far9 + '（門檻 70）、最遠 ' +
+     gateHi.blk.farMax + '（門檻 85，' + gateHi.blk.lie + ' 把）；點空地 九成位 ' +
+     gateHi.gnd.far9 + '（門檻 45）、最遠 ' + gateHi.gnd.farMax +
+     '（' + gateHi.gnd.lie + ' 把）');
   // 點空地那一發完全沒被這一版動到：不指定高度、門陣高度一樣、沒有任何一把帶 aimY
   ok('點空地那一發跟 v1.151 一樣（不指定高度、門陣高度不動、沒有落空就墜落那條）',
      gateHi.gnd.ty0 === 0 && gateHi.gnd.aimN === 0 && gateHi.gnd.gy === gateHi.blk.gy &&
@@ -17477,6 +17550,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 保齡球：擋在球路上的被撞開。球速 34，人自己又一直在走——
      先讓球上路，再把人排到它正前方，不然量到的是「球從空地滾過去」。 */
   const bowled = await page.evaluate(() => {
+    cleanTools();                    // 前面那幾條留下的道具先收乾淨（球、漏斗、還在飛的東西）
     startBuild(true); completeNow();
     /* 前面那幾條炸過、燒過，碎料上還有火。落地要不要燒是 tossWorker 判的
        （`w.lit || nearFire(w)`）——摔進火堆裡本來就該燒，那是別條在驗的事。
@@ -17487,9 +17561,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     launchBall({ x: -30, y: 0, z: 0 }, { x: 0, z: 0 });   // 從場邊往工地中心滾
     // 球是舉高了丟出去的，先等它落地開始滾——還在半空飛過頭頂時本來就不該撞到人
     let g = 0;
-    while (balls && balls[0].y > balls[0].r + 0.1 && g++ < 200) step(0.05);
+    while (balls && balls[0] && balls[0].y > balls[0].r + 0.1 && g++ < 200) step(0.05);
+    const ball = balls && balls[0];
+    /* 排人之前把球**釘回標準狀態**（v1.190.3）。落地那一刻的速度與 z 偏移是「丟出去
+       之後路上遇到什麼」的結果——撞到建築會掉速、`BALL_SPREAD`（±4.6°）滾十幾格就偏出
+       一兩格、`BALL_LIFE` 也一直在倒數。那些都不是這一條要驗的事：**這一條要驗的是
+       「球撞到人，人會被往球的方向推開」**。不釘的話，人會被排在一條球不會經過的線上、
+       或者球還沒滾到就停了——整輪跑真的開出過「0 人被撞飛」，同一顆種子重跑卻是 18 人。
+       人的 z 也跟著球走（原本寫死 0，球偏出去就全部落空）。 */
+    if (ball) {
+      ball.vx = 34; ball.vz = 0;                       // 同 launchBall 的初速，方向正 +x
+      ball.ax = 0; ball.az = -1;                       // 滾動軸跟著方向（畫面用，見 putBalls）
+      ball.life = BALL_LIFE; ball.hit = 0; ball.cd = 0;
+    }
     workers.forEach((w, i) => {
-      w.x = balls[0].x + 5 + (i % 5) * 1.7; w.z = (i % 3 - 1) * 0.6;
+      w.x = (ball ? ball.x : 0) + 5 + (i % 5) * 1.7;
+      w.z = (ball ? ball.z : 0) + (i % 3 - 1) * 0.6;
       w.y = 0; w.air = 0; w.burn = 0; w.fall = 0;
     });
     const p0 = workers.map(w => w.x);
@@ -17504,12 +17591,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 只看真的被撞飛的那些飛了多遠——沒被撞到的人自己也會走，混進來就不是這個數字
     const push = [...flew].map(k => top[k] - p0[k]).sort((a, b) => b - a);
     balls = null; ENG.putBalls([]);      // 同上：球還在滾，下一條的人就站在它的路上
-    return { air, flew: flew.size, best: +(push[0] || 0).toFixed(1),
+    return { air, flew: flew.size, best: +(push[0] || 0).toFixed(1), g,
+             ball: !!ball, men: workers.length,
              burn: workers.filter(w => w.burn > 0).length };
   });
-  ok('保齡球會把擋路的小人推走', bowled.flew > 0 && bowled.best > 4,
-     bowled.flew + ' 人被撞飛（同時最多 ' + bowled.air + ' 人在空中），最遠往球的方向推了 ' +
-     bowled.best + ' 單位');
+  ok('保齡球會把擋路的小人推走',
+     bowled.ball && bowled.flew > 0 && bowled.best > 4,
+     bowled.flew + '／' + bowled.men + ' 人被撞飛（同時最多 ' + bowled.air +
+     ' 人在空中），最遠往球的方向推了 ' + bowled.best + ' 單位' +
+     '（球落地花了 ' + bowled.g + ' 幀，排人之前把速度釘回 34）');
   ok('保齡球也不會點火', bowled.burn === 0, '著火 ' + bowled.burn + ' 人');
 
   /* 放火點站著的人：抱頭跑圈圈——會一直動，但繞著被點著的那個位置轉，不會跑掉 */
@@ -17590,25 +17680,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wswap.before > 0 && wswap.burn === 0 && wswap.air === 0 && wswap.k === 0,
      '換場前 ' + wswap.before + ' 人在燒 → 換場後 ' + wswap.burn + ' 人（焦黑 ' + wswap.k + '）');
 
+  /* 量三段取中位，門檻一個字沒動（v1.190.3）。牆上時鐘量一段就定案的話，整輪裡踩到
+     一次排程尖峰就紅——實測完整輪量到 draw 8.23ms（門檻 4），同一顆種子重跑 2.40ms。
+     跟〈上千塊碎料在燒〉與〈那一幕的 draw 仍然遠低於每幀預算〉同一招
+     （見 開發筆記〈九條「偶爾飄」的測試〉）。 */
   const wperf = await page.evaluate(() => {
     targetCnt = 2000; setWorkerCount(60); startBuild(true); completeNow();
-    workers.forEach((w, i) => {
-      const a = i / workers.length * Math.PI * 2;
-      w.x = Math.cos(a) * rr(2, 12); w.z = Math.sin(a) * rr(2, 12);
-      w.y = 0; w.air = 0; w.fall = 0; igniteWorker(w, i % 2);
-    });
-    for (let i = 0; i < 10; i++) step(0.05);
-    const n = workers.filter(w => w.burn > 0).length;
-    let t0 = performance.now();
-    for (let i = 0; i < 30; i++) step(0.02);
-    const stepMs = (performance.now() - t0) / 30;
-    t0 = performance.now();
-    for (let i = 0; i < 30; i++) { draw(); ENG.render(); }
-    return { n, stepMs, drawMs: (performance.now() - t0) / 30, hot: hot.length };
+    const one = () => {
+      workers.forEach((w, i) => {
+        const a = i / workers.length * Math.PI * 2;
+        w.x = Math.cos(a) * rr(2, 12); w.z = Math.sin(a) * rr(2, 12);
+        w.y = 0; w.air = 0; w.fall = 0; igniteWorker(w, i % 2);
+      });
+      for (let i = 0; i < 10; i++) step(0.05);
+      const n = workers.filter(w => w.burn > 0).length;
+      let t0 = performance.now();
+      for (let i = 0; i < 30; i++) step(0.02);
+      const stepMs = (performance.now() - t0) / 30;
+      t0 = performance.now();
+      for (let i = 0; i < 30; i++) { draw(); ENG.render(); }
+      return { n, stepMs, drawMs: (performance.now() - t0) / 30, hot: hot.length };
+    };
+    const runs = [one(), one(), one()];
+    const tot = r => r.stepMs + r.drawMs;
+    const all = runs.map(r => +tot(r).toFixed(2)).sort((a, b) => a - b);
+    runs.sort((a, b) => tot(a) - tot(b));
+    return Object.assign({ all }, runs[1]);            // 中位那一趟整筆
   });
   ok('六十個人同時在燒：CPU 每幀 < 4ms', wperf.stepMs + wperf.drawMs < 4,
      wperf.n + ' 人在燒（火苗 ' + wperf.hot + ' 顆）：step ' + wperf.stepMs.toFixed(2) +
-     'ms + draw ' + wperf.drawMs.toFixed(2) + 'ms');
+     'ms + draw ' + wperf.drawMs.toFixed(2) + 'ms（三段的總和 ' + wperf.all.join('／') +
+     '，取中位那一段）');
 
   /* ══════════ 倒數型道具：炸彈／核彈／魔法 ══════════
      三個的共通點是「點下去不會馬上炸」。全部拿大建築來測：
@@ -20228,6 +20330,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ── 不挑階段（使用者選的「任何時候都可能」）── */
   const mph = await page.evaluate(() => {
     const out = {};
+    const keepPh = phase;              // 動過的全域狀態要還回去（v1.190.3，見下面）
     for (const ph of ['build', 'done', 'wreck', 'clear']) {
       cleanTools(); phase = ph; doomT = 1e9;
       const fun = spawnBeast('ape', 1);
@@ -20243,7 +20346,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const inClear = beasts ? beasts.map(m => m.kind).sort().join() : '';
     const held = mascT[0] === 0.01 && mascT[1] === 0.01;
     cleanTools();
-    return { out, inClear, held };
+    /* **phase 還回去**（v1.190.3）：這一條為了測四種階段直接改了全域 phase，改完停在
+       'clear'。下面〈火球一開始只點村子那邊〉那一條會拿 phase 當判準（「沒燒到地標
+       就該還是 done」），被這裡汙染的話它就在賭「這一趟有沒有剛好燒到地標」
+       ——實測 commit 檔開出過「地標一塊都沒被點著、phase 卻是 wreck」。 */
+    phase = keepPh;
+    return { out, inClear, held, keepPh };
   });
   ok('施工中天災那隻會走人，吉祥物照樣留下來逛',
      mph.out.build === 'come/go' && mph.out.done === 'come/come' &&
@@ -20527,7 +20635,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const site0 = site(), home0 = home();
     const m = spawnBeast('snow', 1, 1);
     let n = 0, nana = 0;
+    const seen = {}, trail = [];
+    let ghostN = 0;
     while (n < 6000 && m.bad && beasts && beasts.indexOf(m) >= 0) {   // 同上，別省 beasts &&
+      seen[m.st] = (seen[m.st] || 0) + 1;
+      if (m.ghost > 0) ghostN++;
+      if (n % 400 === 0) trail.push({ t: +(n * 0.05).toFixed(0), st: m.st,
+                                      x: +m.x.toFixed(1), z: +m.z.toFixed(1),
+                                      tx: +m.tx.toFixed(1), tz: +m.tz.toFixed(1),
+                                      home: m.home || 0, bad: m.bad || 0 });
       step(0.05); n++;
       nana = Math.max(nana, nanas ? nanas.length : 0);
     }
@@ -20546,7 +20662,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       low = Math.min(low, home());
     }
     return { secs: +(n * 0.05).toFixed(1), nana, st, air, lie, boomD, blast: NANA_R,
-             site0, site: site(), home0, low, ph: phase };
+             site0, site: site(), home0, low, ph: phase, seen, trail, ghostN };
   });
   /* 「地標沒事」是**瞄的目標**那件事，不是硬保證：香蕉會先撞到什麼就在哪裡炸，
      波及到地標邊上是可能的（使用者 v1.186：「不小心燒到地標沒關係 但是遊戲要察覺
@@ -20558,7 +20674,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '丟了 ' + msnow.nana + ' 根，還站著的村子 ' + msnow.home0 + ' → ' + msnow.low +
      ' 塊、地標 ' + msnow.site0 + ' → ' + msnow.site + ' 塊，phase ' + msnow.ph +
      '；炸點離牠 ' + msnow.boomD + ' 格（爆炸半徑 ' + msnow.blast + '）、被炸飛 ' +
-     msnow.air + '、被震倒 ' + msnow.lie + '（這三個只印不守，見上面那段註解）');
+     msnow.air + '、被震倒 ' + msnow.lie + '（這三個只印不守，見上面那段註解）' +
+     '；跑了 ' + msnow.secs + ' 秒：' + JSON.stringify(msnow.seen) +
+     '、穿透 ' + msnow.ghostN + ' 幀');
   /* v1.166 加過一條〈丟之前先站到自己的爆炸半徑外〉，守 `boomD > NANA_R && !air`。
      v1.168 拿掉：使用者說「白猴子炸到自己也沒關係」，而且那條本來就守不住——
      香蕉是「先撞到什麼就在那裡炸」（見 stepNanas），飛行途中掛到房子或樹就提前爆，
@@ -20571,7 +20689,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const b of blocks) b.wet = 0;
     const site = () => blocks.filter(b => b.st === SET && b.hh < 0).length;
     const home = () => blocks.filter(b => b.st === SET && b.hh >= 0).length;
-    const site0 = site(), home0 = home();
+    const site0 = site(), home0 = home(), ph0 = phase;   // 開場的階段（見下面那條斷言）
     /* 每一顆火球落在哪：攔 fballHit（爆炸前一刻），量落點離最近那一塊房子多遠、
        離工地中心多遠。這是「瞄的是小房子」最直接的證據。 */
     const orig = fballHit;
@@ -20646,7 +20764,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const b of blocks) if (b.hh < 0) st[b.st] = (st[b.st] || 0) + 1;
     return { quota, hits, low, home0, site0, site: site(), burnSite, drop, litSite,
              byFree, byBreak, byColl,
-             secs: +(n * 0.05).toFixed(1), siteR: +siteR.toFixed(1), ph: phase,
+             secs: +(n * 0.05).toFixed(1), siteR: +siteR.toFixed(1), ph: phase, ph0,
              st: JSON.stringify(st), all: blocks.length, bp: bp.slots.length,
              wall: homes ? homes.list.filter(h => h.wall).length : -1,
              homesN: homes ? homes.list.length : -1 };
@@ -20667,12 +20785,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      但**火燒到後來波及地標**是允許的（使用者 v1.186：「不小心燒到地標沒關係 但是
      遊戲要察覺&燒完換場」），所以後半改成擇一守：沒被波及就該還在 done、
      被波及了就該進拆除中（少一塊就推，見 freeBlock；換場那條線只在 wreck 時才數）。 */
+  /* 沒波及地標時守的是「**這一趟沒有把階段推走**」，不是「phase 等於 done」
+     （v1.190.3）：這一段前面那幾條會為了各自要測的事直接改全域 phase，
+     拿絕對值比就變成在賭「這一趟有沒有剛好燒到地標」——實測開出過
+     「地標一塊都沒被點著、phase 卻是 wreck」。汙染源那一條也補了還原（見 mph）。 */
   ok('火球一開始只點村子那邊；燒到地標的話遊戲要察覺（進拆除中）',
-     mdrg.litSite === 0 ? (mdrg.site >= mdrg.site0 - 4 && mdrg.ph === 'done')
+     mdrg.litSite === 0 ? (mdrg.site >= mdrg.site0 - 4 && mdrg.ph === mdrg.ph0)
                         : mdrg.ph !== 'done',
      '地標被點著過 ' + mdrg.litSite + ' 塊（收工時還在燒 ' + mdrg.burnSite + ' 塊）、' +
      mdrg.site0 + ' → ' + mdrg.site +
-     ' 塊還站著，phase ' + mdrg.ph + '；每一顆火球 ' +
+     ' 塊還站著，phase ' + mdrg.ph0 + ' → ' + mdrg.ph + '；每一顆火球 ' +
      mdrg.hits.map(h => '半徑 ' + h.r + '／離房子 ' + h.dh + '／地標 −' + h.lost).join('、') +
      (mdrg.drop ? '；第 ' + mdrg.drop.t + ' 秒開始掉（phase ' + mdrg.drop.ph +
                   '、placedCnt ' + mdrg.drop.placed + '、剩 ' + mdrg.drop.site +
