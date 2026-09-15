@@ -39,9 +39,10 @@
    「換種子數字就會變」的條目寫成 tools/e2e-varying.json＝**統計型條目**的清單。
    統計型條目**哪一檔都不判成敗**（v1.191.0），只印數值；判成敗的是規則型的條目。
    純 node，不開瀏覽器。
-   --update-stats：把這一輪統計型條目的數值存成基準（tools/e2e-stats.json，進 git）。
-   完整輪跑完會自動跟那份基準比，印出變動最大的幾條當**參考**——不判成敗，
-   因為「飄多少才算異常」沒有量出來過，訂了就又是一個憑空的門檻。
+   統計型條目的數值**累積成一個範圍**（tools/e2e-stats.json，進 git）：完整輪跑完
+   自動把這一輪的數字併進去，突破既有上下限的那幾條印出來提醒——**不判成敗**。
+   跑越多輪範圍越穩，「又擴張了」本身就是要看一眼的訊號，不必再訂一個「飄多少算異常」。
+   --reset-stats：範圍從頭來過（改版之後數值整組位移、舊範圍沒有參考價值時用）。
    --update-models：把現在的造型重新存成基準檔（tools/model-baseline.json）。
    故意改造型時才用，改完看 git diff 確認變的就是你要改的那幾塊。見〈造型基準〉那一段。
 
@@ -241,9 +242,11 @@ const VARY = (() => {
   try { return new Set(JSON.parse(fs.readFileSync(VARY_FILE, 'utf8')).items || []); }
   catch (e) { console.log('（' + path.basename(VARY_FILE) + ' 讀不進來：' + e.message + '，統計型條目照記成敗）'); return null; }
 })();
-const STATS = [];                           // 統計型條目的數值：跑完寫成一份統計表
-const STATS_FILE = path.join(__dirname, 'e2e-stats.json');      // 基準（進 git，--update-stats 重產）
-const UPDATE_STATS = process.argv.indexOf('--update-stats') >= 0;
+const STATS = [];                           // 統計型條目的數值：跑完併進累積範圍
+const STATS_FILE = path.join(__dirname, 'e2e-stats.json');      // 累積下來的上下限（進 git）
+/* 累積範圍從頭來過（改版之後數值整組位移、舊範圍沒有參考價值時用）。
+   平常不必給：完整輪跑完就自動把這一輪併進去。 */
+const RESET_STATS = process.argv.indexOf('--reset-stats') >= 0;
 
 /* ---------- 亂數種子（--seed，見檔頭） ---------- */
 const SEED = (() => {
@@ -3519,6 +3522,149 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      noDip.placed + '/' + noDip.total + '（' + noDip.phase + '），過程中最大回退 ' + noDip.dip + ' 塊');
 
   await probeWorkers(page, '垮塌後');
+
+  /* ══════════ 規則本身：垮塌、補洞、廢棄 ══════════ */
+  /* 這一段跟別段不一樣：**不跑模擬、不抽籤**，直接造一個最小的場面呼叫那幾支函式，
+     驗的是規則本身（v1.191.1，使用者：「B一些規則型的要補設計進去
+     支撐垮塌、補洞、廢棄這些規則 都補」）。
+     跑一場模擬事後量統計的那些條目數字每輪都會變，已經改成只記數值不判成敗
+     （見 開發筆記〈統計型只記數值，規則型才判成敗〉）——規則要有人守，就是這一段。
+     每一條的 detail 都是固定值，不會進 e2e-varying.json。 */
+  await head('規則：垮塌、補洞、廢棄', T_MUST);
+  const rule = await page.evaluate(() => {
+    const keepBp = bp, keepHomes = homes;            // 動過的全域狀態最後要還回去
+    const out = {};
+
+    /* ── 支撐：從地面往上長的連通性（computeSupport／supported）──
+       造一根三格高的柱子、一格只跟柱頂**對角**相鄰的（支撐判定認 26 鄰居）、
+       一格誰也碰不到的孤兒。全部 anchor，不走懸空部件那條路。 */
+    const mkBp = (cells, floats) => {
+      const slots = cells.map(c => ({
+        gx: c[0], gy: c[1], gz: c[2], filled: true, claimed: -1,
+        anchor: c[3] === undefined ? 1 : c[3], fg: c[4] === undefined ? -1 : c[4]
+      }));
+      const at = new Map();
+      slots.forEach((s, i) => at.set(gkeyOf(s.gx, s.gy, s.gz), i));
+      return { slots, at, floats: floats || [], name: '規則夾具', height: 6, radius: 8 };
+    };
+    const P0 = 0, P1 = 1, P2 = 2, DIAG = 3, LONE = 4;
+    bp = mkBp([[0, 0, 0], [0, 1, 0], [0, 2, 0], [1, 3, 0], [5, 2, 5]]);
+    const sup = () => { computeSupport(); return bp.slots.map((s, i) => supported(i)); };
+    const all = sup();
+    out.whole = [all[P0], all[P1], all[P2], all[DIAG]].every(Boolean);
+    out.lone = all[LONE];                                 // 孤兒：連不到地面
+    /* 抽掉中間那一格：上面兩格（含對角勾著的那格）就連不回地面了 */
+    bp.slots[P1].filled = false;
+    const cut = sup();
+    out.cutBase = cut[P0];                                // 地面那格不受影響
+    out.cutUp = [cut[P1], cut[P2], cut[DIAG]].some(Boolean);
+    /* 施工中「已認領、正在路上」的格子算存在——不然施工前緣一定有洞，
+       剛放上去的積木會被自己的判定打下來（見 isHere） */
+    bp.slots[P1].claimed = 0;
+    const claim = sup();
+    out.claimBack = [claim[P1], claim[P2], claim[DIAG]].every(Boolean);
+
+    /* ── 蓋得起來嗎（canPlace）：地基被敲掉之後不准繼續往上疊 ── */
+    bp.slots[P1].claimed = -1;                            // 回到「中間那格不見了」
+    computeSupport();
+    out.placeGround = canPlace(P0);                       // 貼地那層永遠可以蓋
+    out.placeAir = canPlace(P2);                          // 底下沒東西了，不准蓋
+    bp.slots[P1].filled = true;
+    computeSupport();
+    out.placeBack = canPlace(P2);
+
+    /* ── 懸空部件（floats／PROP_ALIVE）：靠山掉到剩兩成五以下就跟著掉 ──
+       四根獨立的短柱當靠山，一格懸空的掛在上面（anchor 0、fg 0），
+       另一格的 props 是空的＝找不到靠山，那種永遠豁免（風車扇葉那類）。 */
+    const props = [[10, 0, 0], [10, 1, 0], [12, 0, 0], [12, 1, 0],
+                   [14, 0, 0], [14, 1, 0], [16, 0, 0], [16, 1, 0]];
+    const tops = [1, 3, 5, 7];                            // 四根柱頂在 slots 裡的序號
+    bp = mkBp(props.concat([[13, 5, 0, 0, 0], [20, 5, 0, 0, 1]]),
+              [{ props: tops }, { props: [] }]);
+    const HANG = 8, FREE_HANG = 9;
+    const alive = n => {                                  // 只留 n 根柱子站著
+      tops.forEach((t, i) => { bp.slots[t].filled = i < n; });
+      computeSupport();
+      return supported(HANG);
+    };
+    out.hang4 = alive(4);                                 // 靠山都在 → 撐著
+    out.hang2 = alive(2);                                 // 2 > 4×0.25 → 還撐得住
+    out.hang1 = alive(1);                                 // 1 不 > 1 → 掉
+    out.hang0 = alive(0);
+    out.hangFree = supported(FREE_HANG);                  // 沒有靠山的那組永遠豁免
+    out.propAlive = PROP_ALIVE;
+
+    /* ── 補洞／接手：pickUnfinished 挑哪一間 ──
+       同一份清單裡有房子、樹、城牆，蓋房子的那批不該被派去接一棵種一半的樹。 */
+    const H = (x, z, left, more) => Object.assign({ id: 0, x, z, left, slots: [], done: true }, more || {});
+    homes = { list: [
+      H(0, 0, 0),                       // 0 沒洞（蓋完了）
+      H(10, 0, 3),                      // 1 有洞，遠
+      H(3, 0, 5),                       // 2 有洞，近
+      H(1, 0, 2, { tree: 1 }),          // 3 種一半的樹
+      H(1, 1, 2, { wall: 1 })           // 4 蓋一半的城牆
+    ] };
+    out.pickNear = pickUnfinished(0, 0, new Set(), 0);            // 挑最近那間有洞的
+    out.pickTaken = pickUnfinished(0, 0, new Set([2]), 0);        // 已經有人接了就換下一間
+    out.pickNone = pickUnfinished(0, 0, new Set([1, 2]), 0);      // 只剩沒洞的 → 誰都不接
+    out.pickTree = pickUnfinished(0, 0, new Set(), 1);
+    out.pickWall = pickUnfinished(0, 0, new Set(), 2);
+
+    /* ── 廢棄：打到剩不到兩成五就整間解成碎料（wrecked／wreckHomes）──
+       門檻是嚴格小於，而且只算蓋好過一次的（h.done）：第一次蓋本來就是從 0 長起來的。 */
+    const W = (left, done) => ({ id: 0, x: 0, z: 0, left, done, slots: new Array(100).fill(0) });
+    out.wreckAt = WRECK_AT;
+    out.w24 = wrecked(W(76, true));        // 剩 24 格 < 25 → 廢棄
+    out.w25 = wrecked(W(75, true));        // 剛好 25 格：不是「不到」→ 留著
+    out.w26 = wrecked(W(74, true));
+    out.wHalfBuilt = wrecked(W(100, false));   // 從沒蓋好過的打光了也不廢棄
+    /* left 是「還缺幾格」，所以站著的是 slots.length − left：80／0／90 ＝ 剩 20%／100%／10% */
+    homes = { list: [W(80, true), W(0, true), W(90, true)] };     // 第 0、2 間該廢棄
+    workers[0].hm = 1;                     // 這個人正在顧中間那間（沒被打爛的）
+    const gone = wreckHomes();
+    out.gone = gone;
+    out.leftN = homes.list.length;
+    out.leftDone = homes.list[0] && homes.list[0].left === 0;     // 留下來的是沒被打爛那間
+    out.hmMoved = workers[0].hm;           // 前面兩間沒了，索引要跟著補（1 → 0）
+
+    bp = keepBp; homes = keepHomes;        // 還回去
+    for (const w of workers) w.hm = -1;
+    markSupportDirty(0); computeSupport();
+    return out;
+  });
+  ok('支撐＝從地面連得上來：柱子撐住、孤零零那格撐不住',
+     rule.whole === true && rule.lone === false,
+     '柱子三格＋對角勾著那格都撐住＝' + rule.whole + '、連不到地面的孤兒撐住＝' + rule.lone);
+  ok('抽掉中間那一格，上面就全部失去支撐（含只靠對角勾著的）',
+     rule.cutBase === true && rule.cutUp === false,
+     '地面那格 ' + rule.cutBase + '、上面三格還有人撐住＝' + rule.cutUp);
+  ok('施工中已認領的格子算存在（不然施工前緣會被自己的判定打下來）',
+     rule.claimBack === true, 'claimed 之後上面三格都回來＝' + rule.claimBack);
+  ok('地基被敲掉就不准往上蓋（canPlace）',
+     rule.placeGround === true && rule.placeAir === false && rule.placeBack === true,
+     '貼地層 ' + rule.placeGround + '、底下沒東西 ' + rule.placeAir +
+     '、補回來之後 ' + rule.placeBack);
+  ok('懸空部件：靠山剩不到 PROP_ALIVE 就跟著掉，沒有靠山的永遠豁免',
+     rule.hang4 === true && rule.hang2 === true &&
+     rule.hang1 === false && rule.hang0 === false && rule.hangFree === true,
+     '四根靠山 ' + rule.hang4 + '／兩根 ' + rule.hang2 + '／一根 ' + rule.hang1 +
+     '／全倒 ' + rule.hang0 + '（門檻 ' + rule.propAlive + '）、沒靠山那組 ' + rule.hangFree);
+  ok('補洞：挑最近那間還沒蓋完的，有人接了就換下一間，都蓋完了就不接',
+     rule.pickNear === 2 && rule.pickTaken === 1 && rule.pickNone === -1,
+     '最近 ' + rule.pickNear + '（該 2）、有人接了 ' + rule.pickTaken +
+     '（該 1）、沒得接 ' + rule.pickNone + '（該 −1）');
+  ok('補洞：房子、樹、城牆各找各的（蓋房子的不會被派去接種一半的樹）',
+     rule.pickTree === 3 && rule.pickWall === 4,
+     '樹 ' + rule.pickTree + '（該 3）、城牆 ' + rule.pickWall + '（該 4）');
+  ok('廢棄：蓋好過的打到剩不到兩成五就整間報銷，剛好兩成五還留著',
+     rule.w24 === true && rule.w25 === false && rule.w26 === false &&
+     rule.wHalfBuilt === false && rule.wreckAt === 0.25,
+     '剩 24% ' + rule.w24 + '／25% ' + rule.w25 + '／26% ' + rule.w26 +
+     '、沒蓋好過的打光 ' + rule.wHalfBuilt + '（WRECK_AT ' + rule.wreckAt + '）');
+  ok('廢棄之後清單收合，正在顧那間的人索引跟著補回去',
+     rule.gone === 2 && rule.leftN === 1 && rule.leftDone === true && rule.hmMoved === 0,
+     '廢棄 ' + rule.gone + ' 間、剩 ' + rule.leftN + ' 間、留下的是完好那間＝' +
+     rule.leftDone + '、w.hm 1 → ' + rule.hmMoved);
 
   /* ══════════ 遊戲流程：蓋好 → 拆掉 → 蓋下一座 ══════════ */
   await head('流程：蓋好 → 拆掉 → 蓋下一座', T_MUST);
@@ -8464,7 +8610,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       return { gate: seen.gate || 0, act, secs: +(n * 0.05).toFixed(0),
                wallBurn: blocks.filter(b => b.burn && b.hh >= 0).length,
-               burn: blocks.filter(b => b.burn).length };
+               burn: blocks.filter(b => b.burn).length,
+               /* 「有沒有跑去砸地標」要看**地標的格子**在不在燒：藍圖的積木 slot >= 0，
+                  城牆的是 −1（上面那個迴圈只給 hh／hk）。
+                  不能寫成「燒起來的每一塊都還掛在城牆上」（wallBurn === burn）——
+                  牆上的積木燒掉會脫落成碎料，那一刻 hh 就變 −1 了，但它還在燒，
+                  於是這一條會因為「牆被拆下來一塊」而紅（實測種子 3264923352：
+                  64 塊在燒、其中一塊是 st4/slot−1/y2.3 的碎料，那正是拆下來的牆）。 */
+               siteBurn: blocks.filter(b => b.burn && b.slot >= 0).length };
     };
     const all = () => true;
     const near = run(all, Math.PI / 2);          // 門開在 +z，從同一側進場
@@ -8493,11 +8646,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `總共 ${apeWall.far.secs} 秒後在${apeWall.far.act && apeWall.far.act.inWall ? '城裡' : '城外'}動手`);
   ok('門樓被打爛了就就地拆牆（使用者選的「兩個都要」）',
      apeWall.none.gate === 0 && apeWall.none.act && apeWall.none.act.home === 1 &&
-     apeWall.none.wallBurn > 0 && apeWall.none.wallBurn === apeWall.none.burn &&
+     apeWall.none.wallBurn > 0 && apeWall.none.siteBurn === 0 &&
      apeWall.none.secs < 120,
      `沒走門（${apeWall.none.gate} 幀）、${apeWall.none.secs} 秒後在` +
      `${apeWall.none.act && apeWall.none.act.inWall ? '城裡' : '城外'}動手，` +
-     `燒起來 ${apeWall.none.burn} 塊、其中城牆 ${apeWall.none.wallBurn} 塊`);
+     `燒起來 ${apeWall.none.burn} 塊（城牆 ${apeWall.none.wallBurn} 塊、地標 ${apeWall.none.siteBurn} 塊）`);
 
   /* ⑦-b 砸完**走得出去**（v1.190.2，使用者：「有觀察到猴子會被城牆卡住 走不出去」）。
      v1.186~v1.190.1 有四條路都會把牠關在城裡（實測四種配置各跑 400 秒，一隻都沒走掉）：
@@ -24750,70 +24903,98 @@ function report(partial) {
   process.exit(fail.length ? 1 : 0);
 }
 
-/* ---------- 統計型條目的數值表（v1.191.0，見 開發筆記〈統計型只記數值，規則型才判成敗〉） ----------
-   使用者：「可能輸出一個目前統計型的數值是多少 記錄下來 以後觀察比較用／
-   規則型的 例如判斷效果是否正常才是通過跟不通過」。
-   所以這裡**只印不判**：跟基準差多少就寫多少，不設門檻——「飄多少才算異常」沒有量出來過，
-   訂一個就又是一個憑空的關卡，而那正是這一版要拆掉的東西。 */
+/* ---------- 統計型條目的數值範圍（v1.191.1，見 開發筆記〈統計型只記數值，規則型才判成敗〉） ----------
+   > 使用者：「統計型的看能不能記錄成一個範圍 例如跑完一次 如果比目前最大值大 就更新最大值
+   > 最小值同理／到時候累計跑很多次後 就知道大概範圍是正常 如果要更新最大最小值
+   > 就是要稍微注意的時候」
+
+   所以 tools/e2e-stats.json 記的不是「某一輪的值」，是**累積下來的上下限**：完整輪跑完
+   就把這一輪的數字併進去，突破既有範圍的那幾條印出來提醒。**不判成敗**——
+   跑得越多範圍越穩，「又擴張了」本身就是那個訊號，不必再訂一個「飄多少算異常」的門檻。
+   要從頭來過（改版之後數值整組位移）就 --reset-stats。 */
 function statsReport(partial) {
   if (!STATS.length) return;
   const full = TIER >= T_FULL && !partial;
-  const doc = {
-    note: '統計型條目這一輪量到的數值：不判成敗，留著比對趨勢用。' +
-          '跑完整輪加 --update-stats 就把這一份存成基準（進 git）。',
-    ver: (fs.readFileSync(path.join(ROOT, 'src/game.js'), 'utf8')
-            .match(/const VERSION = '([^']+)'/) || [])[1] || '?',
-    seed: SEED, at: new Date().toISOString().slice(0, 19).replace('T', ' '),
-    tier: TIER, partial: !!partial, count: STATS.length,
-    items: STATS.reduce((m, s) => { m[varyKey(s.section, s.name)] = s.detail || ''; return m; }, {})
-  };
-  /* 平常寫到 .e2e-out（gitignore、每輪覆寫）：看得到這一輪的全部數字，又不會弄髒 git。 */
-  const live = path.join(OUT, 'e2e-stats.json');
-  try { fs.mkdirSync(OUT, { recursive: true }); } catch (e) { /* 已經有了 */ }
-  fs.writeFileSync(live, JSON.stringify(doc, null, 1) + '\n', 'utf8');
-  console.log('  數值：' + path.relative(ROOT, live) + '（' + STATS.length + ' 條）');
-  if (UPDATE_STATS && full) {
-    fs.writeFileSync(STATS_FILE, JSON.stringify(doc, null, 1) + '\n', 'utf8');
-    console.log('  \x1b[32m基準已更新\x1b[0m：' + path.relative(ROOT, STATS_FILE) + '（記得看 git diff）');
-    return;
-  }
-  if (UPDATE_STATS) console.log('  \x1b[33m--update-stats 只吃完整輪（這一輪是 ' + TIER_NAME +
-                                (partial ? ' ＋ --until' : '') + '），基準沒動\x1b[0m');
-  if (!fs.existsSync(STATS_FILE)) {
-    console.log('  \x1b[90m（還沒有基準：跑一次完整輪加 --update-stats 存起來，以後就比得了）\x1b[0m');
-    return;
-  }
-  let base;
-  try { base = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8')); }
-  catch (e) { console.log('  \x1b[33m基準讀不進來：' + e.message + '\x1b[0m'); return; }
-  const bi = base.items || {};
-  /* 比法：把 detail 裡的數字依序挖出來逐位置比，取這一條變動最大的那一個當代表。
-     detail 是中文句子，數字的**位置**才是穩定的識別（「絆了 5 次」的 5 在第二位）。 */
+  /* detail 是中文句子，數字的**位置**才是穩定的識別（「絆了 7 次」的 7 永遠在第二位）。 */
   const nums = t => (String(t || '').match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
-  const moved = [], shape = [];
+  let base = null;
+  if (!RESET_STATS && fs.existsSync(STATS_FILE)) {
+    try { base = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8')); }
+    catch (e) { console.log('  \x1b[33m' + path.basename(STATS_FILE) + ' 讀不進來：' +
+                            e.message + '，範圍從這一輪重新開始\x1b[0m'); }
+  }
+  const bi = (base && base.items) || {};
+  const items = {}, grew = [], fresh = [], shape = [];
   for (const s of STATS) {
     const k = varyKey(s.section, s.name);
-    if (!(k in bi)) continue;                        // 這一版新增的條目，沒得比
-    const a = nums(bi[k]), b = nums(s.detail);
-    if (a.length !== b.length) { shape.push(k); continue; }   // detail 格式改了，數字對不齊
-    let worst = 0;
-    for (let i = 0; i < a.length; i++) {
-      const d = Math.abs(b[i] - a[i]) / Math.max(Math.abs(a[i]), 1);
-      if (d > worst) worst = d;
+    const v = nums(s.detail);
+    const b = bi[k];
+    /* 沒見過的條目，或 detail 的數字個數變了（條目改寫過）→ 範圍從這一輪重新開始。 */
+    if (!b || !Array.isArray(b.lo) || b.lo.length !== v.length) {
+      items[k] = { n: 1, lo: v, hi: v, eg: s.detail || '' };
+      (b && Array.isArray(b.lo) ? shape : fresh).push(k);
+      continue;
     }
-    if (worst > 0) moved.push({ k, worst, was: bi[k], now: s.detail || '' });
+    const lo = b.lo.slice(), hi = b.hi.slice();
+    let out = false;
+    for (let i = 0; i < v.length; i++) {
+      if (v[i] < lo[i]) { lo[i] = v[i]; out = true; }
+      if (v[i] > hi[i]) { hi[i] = v[i]; out = true; }
+    }
+    /* eg 是「第一次記到的那一句」，**不跟著每輪換**：它只是用來看懂 lo／hi 的第 N 個數字
+       在講什麼。跟著換的話，範圍早就穩定了這個檔還是每輪都有 diff，
+       「檔案變了＝有東西突破範圍」這個訊號就沒了。 */
+    items[k] = { n: b.n + 1, lo, hi, eg: b.eg || b.last || s.detail || '' };
+    if (out) grew.push({ k, detail: s.detail || '', lo: b.lo, hi: b.hi });
   }
-  const gone = Object.keys(bi).filter(k => !STATS.some(s => varyKey(s.section, s.name) === k));
-  moved.sort((x, y) => y.worst - x.worst);
-  console.log('  \x1b[90m跟基準（' + base.ver + '／種子 ' + base.seed + '）比：' +
-              moved.length + ' 條數字有變' +
-              (shape.length ? '、' + shape.length + ' 條 detail 格式變了' : '') +
-              (gone.length ? '、基準有但這一輪沒量到 ' + gone.length + ' 條' : '') + '\x1b[0m');
-  for (const m of moved.slice(0, 8))
-    console.log('    \x1b[90m' + (m.worst >= 10 ? '≥×10' : '×' + (1 + m.worst).toFixed(1)) +
-                '  ' + m.k + '\n      基準 ' + m.was + '\n      這輪 ' + m.now + '\x1b[0m');
+  /* 這一輪沒量到的（--tier 跳段、--until、或條目改名）原樣留著，別把累積洗掉。 */
+  const gone = Object.keys(bi).filter(k => !(k in items));
+  for (const k of gone) items[k] = bi[k];
+  const doc = {
+    note: '統計型條目累積下來的數值範圍：lo／hi 是 detail 裡第 1、2、3… 個數字的下限與上限，' +
+          'n 是這一條併進來幾輪、eg 是第一次記到的那一句（看懂第 N 個數字在講什麼用，不跟著換）。' +
+          '不判成敗，突破範圍時印出來提醒而已。完整輪跑完自動併入；--reset-stats 從頭來過。',
+    ver: (fs.readFileSync(path.join(ROOT, 'src/game.js'), 'utf8')
+            .match(/const VERSION = '([^']+)'/) || [])[1] || '?',
+    runs: ((base && base.runs) || 0) + 1,
+    at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    seeds: ((base && base.seeds) || []).concat(SEED).slice(-20),
+    count: Object.keys(items).length, items
+  };
+  /* 只有完整輪才寫回累積檔：部分輪的樣本不齊，寫進去會把範圍洗成「這一輪剛好跑到的那些」。 */
+  if (full) {
+    fs.writeFileSync(STATS_FILE, JSON.stringify(doc, null, 1) + '\n', 'utf8');
+    console.log('  數值範圍：' + path.relative(ROOT, STATS_FILE) + '（' + doc.count +
+                ' 條，累積 ' + doc.runs + ' 輪' + (RESET_STATS ? '，--reset-stats 從頭開始' : '') + '）');
+  } else {
+    try { fs.mkdirSync(OUT, { recursive: true }); } catch (e) { /* 已經有了 */ }
+    const live = path.join(OUT, 'e2e-stats.json');
+    fs.writeFileSync(live, JSON.stringify(doc, null, 1) + '\n', 'utf8');
+    console.log('  數值：' + path.relative(ROOT, live) + '（這一輪 ' + STATS.length +
+                ' 條；累積檔只有完整輪才更新）');
+  }
+  if (fresh.length) console.log('    \x1b[90m新條目 ' + fresh.length + ' 條，範圍從這一輪開始記\x1b[0m');
+  if (shape.length) console.log('    \x1b[33mdetail 的數字個數變了 ' + shape.length +
+              ' 條，範圍重新開始：' + shape.slice(0, 3).join('、') + (shape.length > 3 ? ' …' : '') + '\x1b[0m');
+  /* 突破既有範圍的那幾條＝使用者說的「要稍微注意的時候」。前幾輪範圍還是單點，幾乎每條
+     都會擴張；跑久了這個數字自己會掉下來，掉不下來的那幾條才是真的在飄。 */
+  if (grew.length) {
+    console.log('    \x1b[33m' + grew.length + ' 條超出既有範圍\x1b[0m\x1b[90m' +
+                '（↑／↓ 標的是原本的上下限；跑越多輪越該收斂，還在擴張的就是要稍微注意的）\x1b[0m');
+    for (const g of grew.slice(0, 10)) {
+      let i = 0;
+      const marked = String(g.detail).replace(/-?\d+(?:\.\d+)?/g, m => {
+        const v = +m, l = g.lo[i], h = g.hi[i]; i++;
+        if (l == null) return m;
+        return v > h ? m + '\x1b[33m↑' + h + '\x1b[90m' : v < l ? m + '\x1b[33m↓' + l + '\x1b[90m' : m;
+      });
+      console.log('      \x1b[90m' + g.k + '\n        ' + marked + '\x1b[0m');
+    }
+    if (grew.length > 10) console.log('      \x1b[90m…還有 ' + (grew.length - 10) + ' 條\x1b[0m');
+  }
   /* 條目改名沒搬鍵就會落在這裡（見 CLAUDE.md〈改測試時一定要記得的四件事〉第 1 點）。 */
   if (gone.length && full)
-    console.log('    \x1b[33m基準有、這一輪沒量到：' + gone.slice(0, 5).join('、') +
-                (gone.length > 5 ? ' …' : '') + '（條目改名了？鍵要一起搬）\x1b[0m');
+    console.log('    \x1b[33m累積檔有、這一輪沒量到 ' + gone.length + ' 條：' +
+                gone.slice(0, 3).join('、') + (gone.length > 3 ? ' …' : '') +
+                '（條目改名了？鍵要一起搬）\x1b[0m');
 }

@@ -1,4 +1,4 @@
-# 積木小人 · 世界地標工地　`v1.191.0`
+# 積木小人 · 世界地標工地　`v1.191.1`
 
 一進來就有一座蓋好的世界地標。你把它砸爛，小人們才會從滿地的碎料裡
 一塊一塊搬出來，慢慢蓋出下一座。被打到的地方才會壞，沒波及的地方原封不動。
@@ -179,11 +179,11 @@ blueprints/             自訂藍圖資料夾（28 支 .js，見上一節）
   金閣寺.js 章魚燒.js …    其餘 27 支：地標、食物、場景都有
 tools/build-three.cjs   把官方 three build 轉成 classic script
 tools/build-bpdoc.cjs   把〈藍圖製作說明.md〉包成 src/bpdoc.js（改了那份 .md 就重跑）
-tools/e2e-3d.cjs        端對端測試（規則型 814 項判成敗 ＋ 統計型 423 項只記數值；
+tools/e2e-3d.cjs        端對端測試（規則型 823 項判成敗 ＋ 統計型 423 項只記數值；
                         `--tier must/commit` 分三檔跑、`--until 段名` 只跑到某一段、
                         `--list` 印段落一覽含等級）
 tools/e2e-varying.json  統計型條目清單（不判成敗、只記數值，用 --update-varying 重產）
-tools/e2e-stats.json    統計型條目的數值基準（跑完會跟它比，用 --update-stats 重產）
+tools/e2e-stats.json    統計型條目累積下來的數值範圍（完整輪跑完自動併入，--reset-stats 從頭來）
 tools/model-baseline.json  造型基準（部位表與固定姿勢的塊數，用 --update-models 重產）
 tools/check-bp.cjs      藍圖體檢（命令列版，跟遊戲裡那顆按鈕共用同一支邏輯）
 tools/export-game.py    把遊戲跑得起來的檔案匯出成一包（清單是從 index.html 讀的，不寫死）
@@ -223,7 +223,7 @@ node tools/e2e-3d.cjs --seed 12345          照這個種子重跑＝同一副骰
 node tools/e2e-3d.cjs --json out.json       每一條的結果寫成 JSON（找偶發用）
 node tools/e2e-3d.cjs --update-models --until 造型基準    改了造型才用，重產基準檔
 node tools/e2e-3d.cjs --update-varying a.json b.json     重產統計型條目清單
-node tools/e2e-3d.cjs --update-stats        跑完整輪並把統計型的數值存成新基準
+node tools/e2e-3d.cjs --reset-stats         統計型的數值範圍從頭累積（改版之後整組位移才用）
 node tools/check-bp.cjs --all               48 座藍圖體檢（幾秒鐘）
 ```
 
