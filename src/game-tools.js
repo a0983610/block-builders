@@ -2047,6 +2047,7 @@ const WB_DROPS = 100;               // 相容用：呼叫端給的「幾團 × �
 const WB_VOL = WB_CLICK / WB_DROPS; // 一團 23 格
 const WB_UP = 0.55;                 // 倒水口比點到的地方高多少
 const WB_WET = 0.12;                // 每隔多久把碰到水的積木與小人淋濕一次
+const WB_RETRY = 0.25;              // 一滴都倒不進去的那一桶，隔多久才再試一次（見 stepWater）
 const WB_DUST = 640;                // 水花最多用到塵霧池的第幾顆（池子共 720，留一截給煙）
 
 const WT_TICK = 1 / 30;             // 水一秒算幾拍（也決定落下速度：一拍掉一格）
@@ -2089,7 +2090,20 @@ const wldZ = gz => gz + gOffZ;
    所以先換算回世界座標再分別問，對不齊的誤差最多半格。 */
 const solidAt = (gx, gy, gz) => hardAt(wldX(gx), gy + HB, wldZ(gz));
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-const wkey = (gx, gy, gz) => gx + ':' + gy + ':' + gz;
+/* 格子的 key ＝ **一個整數**，不是 `'x:y:z'` 字串（v1.190，跟推土機的 `gcell` 同一招，
+   見 開發筆記〈推土機推過去還是會掉幀〉①）。一大片水每一拍要查好幾萬次表——`faceMask`
+   光鄰居就是每格 5～6 次——而字串 key 每查一次都要先組一個字串再拿去雜湊。
+   微基準（9000 格 × 5 次查表）：字串 2.6 ms vs 整數 0.4 ms，**6.5 倍**。
+
+   **偏移與寬度是有界線的**：gx／gz 落在 −256 ～ 767，gy 落在 0 ～ 511，超出去就會跟
+   別的格子撞同一個 key（字串 key 沒這個問題，這是換來速度的代價）。實際用到多少：
+   場地半徑 60、最寬的地標半徑 94，換算出來的格座標實測是 −79 ～ 109；最高的地標
+   138 層（大笨鐘 9000），倒水口往上找水面最多再 WT_HIGH（60）層，離 512 還很遠。
+   算出來最大 ~5.4e8，還在 V8 的 SMI（2^31）裡面——超過的話 key 會變成 HeapNumber，
+   那就白改了。e2e〈效能〉那一段有一條測試掃過整個場地範圍，守著「不撞 key、不出 SMI」。 */
+const WK_OFF = 256, WK_W = 1024, WK_H = 512;
+const wkey = (gx, gy, gz) => ((gx + WK_OFF) * WK_W + (gz + WK_OFF)) * WK_H + gy;
+const ckey = (gx, gz) => (gx + WK_OFF) * WK_W + (gz + WK_OFF);   // 同一套偏移的「一柱」key
 
 function newWater() {
   if (!water) water = { cells: new Map(), pours: [], acc: 0, wt: 0, wave: 0 };
@@ -2186,7 +2200,7 @@ function injectWater(gx, gy, gz, amount) {
   let nodes = 0;
   for (let lv = 0; lv < WT_HIGH && left > 1e-4 && nodes < WT_POUR_N * 2; lv++, gy++) {
     const seen = new Set();
-    for (let i = 0; i < cur.length; i += 2) seen.add(cur[i] + ':' + cur[i + 1]);
+    for (let i = 0; i < cur.length; i += 2) seen.add(ckey(cur[i], cur[i + 1]));
     const up = [];                                 // 這一層倒得進去的欄位＝上一層的起點
     for (let i = 0; i < cur.length && left > 1e-4 && nodes < WT_POUR_N * 2; i += 2, nodes++) {
       const x = cur[i], z = cur[i + 1];
@@ -2194,7 +2208,7 @@ function injectWater(gx, gy, gz, amount) {
       left -= addWater(x, gy, z, Math.min(left, 1 - watAt(x, gy, z)));
       up.push(x, z);
       for (const d of DIR4) {
-        const nx = x + d[0], nz = z + d[1], k = nx + ':' + nz;
+        const nx = x + d[0], nz = z + d[1], k = ckey(nx, nz);
         if (!seen.has(k)) { seen.add(k); cur.push(nx, nz); }
       }
     }
@@ -2207,7 +2221,7 @@ function injectWater(gx, gy, gz, amount) {
 function pourBucket(x, y, z, n, vol) {
   const total = (n || 1) * (vol || WB_VOL);
   newWater().pours.push({ gx: cellX(x), gy: Math.max(0, Math.round(y)), gz: cellZ(z),
-                          x, y, z, left: total, rate: total / WB_POUR });
+                          x, y, z, left: total, rate: total / WB_POUR, wait: 0, hold: 0 });
 }
 /* 點下去倒一桶。出水點**要用格子把射線重走一次**，不能直接拿 pick 給的落點：
 
@@ -2246,9 +2260,28 @@ function stepWater(dt) {
   // 倒水：一下的量分 WB_POUR 秒倒完（塞不下就留著，下一幀再塞）
   for (let i = W.pours.length - 1; i >= 0; i--) {
     const p = W.pours[i];
-    const give = Math.min(p.left, p.rate * dt);
-    p.left -= injectWater(p.gx, p.gy, p.gz, give);
-    sprayAt(p.x, p.y - 0.3, p.z, 0.45);
+    sprayAt(p.x, p.y - 0.3, p.z, 0.45);            // 桶口的水花照噴（倒不倒得進去都在倒）
+    /* **一滴都倒不進去的時候先歇一下**（v1.190）。`injectWater` 那趟 BFS 最多走
+       WT_POUR_N × 2 ＝ 1800 格，一次 0.5 ms；水滿了（或這一攤已經攤到滲水的平衡點）
+       它回 0，`p.left` 一格都沒少，於是這一桶**永遠留在清單裡、每一幀重走一趟**。
+       實測連點 20 下水桶：倒進馬克杯堆到 15 桶、倒在空地上 20 桶全部卡住，
+       每幀光 injectWater 就 8.2／11.2 ms（9000 格的水本身才 7.4 ms）。
+
+       **水還在這一桶裡等**，跟改版前一樣（滲水騰出空間就會繼續倒進去，實測馬克杯那組
+       最後全部倒完），只是重試從每幀變成 WB_RETRY 一次。
+
+       歇著的那段時間要**累積起來**（p.hold），重試時一次倒 `rate × (歇了多久 + dt)`：
+       不累積的話，一桶水在「快滿、斷斷續續才擠得進去一點」的時候，每 0.25 秒只倒得進
+       一幀的量——倒水速度掉 15 倍（實測連點 20 下，改版前 15 秒內全部倒完，
+       不累積的版本 15 秒後還有 18 桶沒倒完）。累積之後總量與速度都跟改版前同一條線，
+       只是從「每幀一點」變成「每 0.25 秒一陣」；一次給多少本來就不等於塞得進多少
+       （塞不下 addWater 會回 0，剩的照樣留在桶裡）。 */
+    if (p.wait > 0) { p.wait -= dt; p.hold += dt; continue; }
+    const give = Math.min(p.left, p.rate * (dt + p.hold));
+    p.hold = 0;
+    const got = injectWater(p.gx, p.gy, p.gz, give);
+    p.left -= got;
+    if (got <= 1e-6) p.wait = WB_RETRY;
     if (p.left <= 1e-3) W.pours.splice(i, 1);
   }
   /* 水用固定的拍子算（跟畫面幀率無關，4× 速也不會算出不一樣的結果）。
@@ -2289,11 +2322,11 @@ function waterTick() {
      出口那一格頭上其實沒有水，壓力是從水缸那邊「傳」過來的——見下面往旁邊攤那段。 */
   const colTop = new Map();
   for (const c of list) {
-    const k = c.gx + ':' + c.gz, t = c.gy + c.v;
+    const k = ckey(c.gx, c.gz), t = c.gy + c.v;
     if (!(colTop.get(k) >= t)) colTop.set(k, t);
   }
   for (const c of list) {
-    const own = Math.max(0, colTop.get(c.gx + ':' + c.gz) - (c.gy + c.v));
+    const own = Math.max(0, colTop.get(ckey(c.gx, c.gz)) - (c.gy + c.v));
     /* 取「自己頭上壓的水」與「上一拍從水缸那邊傳過來的壓力（每拍衰減 1）」的大的那個。
        只用自己頭上的水的話，破口出口那一格每一拍都被歸零——傳過來的壓力還沒用到就沒了，
        噴不出去（實測只甩得到 2 格）。 */
@@ -2547,7 +2580,7 @@ function wetByWater() {
   const col = new Map();
   for (const c of W.cells.values()) {
     if (c.v < 0.12) continue;
-    const k = c.gx + ':' + c.gz, e = col.get(k);
+    const k = ckey(c.gx, c.gz), e = col.get(k);
     if (!e) col.set(k, { lo: c.gy, hi: c.gy });
     else { if (c.gy < e.lo) e.lo = c.gy; if (c.gy > e.hi) e.hi = c.gy; }
   }
@@ -2555,18 +2588,18 @@ function wetByWater() {
   for (const b of blocks) {
     if (b.holder >= 0) continue;                   // 扛在人身上的不算（人自己會被淋到）
     const gx = cellX(b.x), gz = cellZ(b.z), y = Math.round(b.y - HB);
-    if (soaked(col.get(gx + ':' + gz), y)) { wetBlock(b); continue; }
+    if (soaked(col.get(ckey(gx, gz)), y)) { wetBlock(b); continue; }
     for (const d of DIR4)                          // 貼著水的那一面牆
-      if (soaked(col.get((gx + d[0]) + ':' + (gz + d[1])), y)) { wetBlock(b); break; }
+      if (soaked(col.get(ckey(gx + d[0], gz + d[1])), y)) { wetBlock(b); break; }
   }
   for (const w of workers) {
     if (w.wet > WET_TIME - 0.5) continue;          // 剛淋過就不必再算一次
-    const e = col.get(cellX(w.x) + ':' + cellZ(w.z));
+    const e = col.get(ckey(cellX(w.x), cellZ(w.z)));
     if (soaked(e, Math.max(0, Math.round(w.y)))) wetWorker(w);
   }
   if (beasts) for (const m of beasts) {            // 站在水裡的生物同理（v1.146）
     if (m.wet > WET_TIME - 0.5) continue;
-    const e = col.get(cellX(m.x) + ':' + cellZ(m.z));
+    const e = col.get(ckey(cellX(m.x), cellZ(m.z)));
     if (soaked(e, Math.max(0, Math.round(m.y)))) wetBeast(m);
   }
 }

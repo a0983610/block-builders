@@ -15479,7 +15479,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 60 * 22; i++) step(1 / 60);          // 裝水、等它靜下來
     /* 「這一塊水的頂」取**有 50 格以上水的最高那一層**：只看最高的那一格會被
        噴出去的零星水花帶著跑（那幾格飛在半空，跟水柱塌不塌無關）。 */
+    /* **水可能在這 3 秒裡就滲光了**（`water` 變回 null）：2200 格攤到地面上、
+       一格一拍滲 SEEP_G / 30，實測整攤撐 3.0 秒上下——剛好落在下面那個迴圈的邊上。
+       迴圈條件檢查完 `water` 才 step，所以 prof() 這邊得自己認得「已經乾了」，
+       不然偶爾會在 step 之後讀到 null.cells（腳本整支爆掉，不是紅一條）。
+       乾光了就是塌得最徹底的那一種，回 bulk −1（下面比的是「掉了幾層」）。 */
     const prof = () => {
+      if (!water) return { bulk: -1, com: 0, vol: 0 };
       const byY = new Map();
       let vol = 0, cy = 0;
       for (const c of water.cells.values()) {
@@ -15493,6 +15499,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 中央那一柱：滿的格子裡，有幾格的腳下不算撐到地面（＝塌不下來的那種格子）
     const midAir = () => {
       let full = 0, air = 0;
+      if (!water) return { full, air };
       for (let gy = 0; gy < 40; gy++) {
         const c = water.cells.get(wkey(mx, gy, mz));
         if (!c || c.v <= 0.9) continue;
@@ -15506,7 +15513,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const b of blocks) if (b.slot >= 0) { freeBlock(b); gone++; }
     const at = {};
     let t = 0, half = -1;
-    while (t < 3 && water) {
+    while (t < 3) {                                  // 水乾光了也要跑完，s10／s30 才取得到
       step(1 / 60); t += 1 / 60;
       const p = prof();
       if (half < 0 && p.com <= a.com / 2) half = t;
@@ -15681,6 +15688,48 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wbCalls.on === wbCalls.before + 1 && wbCalls.off === wbCalls.before,
      wbCalls.cells + ' 格水：' + wbCalls.before + ' → ' + wbCalls.on + ' → 收掉 ' + wbCalls.off +
      '（水花走現成的塵霧池，0 個新的）');
+
+  /* 倒不進去的那一桶會**等**，不是被丟掉（v1.190 的退避重試）。
+     杯子滿了之後再連點，那幾桶的水留在清單裡，滲水騰出一點空間就繼續倒進去——
+     行為跟改版前一樣，差別只在「多久重試一次」（每幀 → WB_RETRY 一次），
+     因為每一次重試都是一趟最多 WT_POUR_N × 2 格的 BFS（見 開發筆記〈倒不進去的那一桶〉）。
+     這一條守的是「省成本沒有把水吃掉」：有桶在等、而且桶裡的水一路在變少。 */
+  const wbWait = await page.evaluate(() => {
+    cleanTools();
+    /* **用完把 shapePick 還回去**（同〈水面的樣子〉那幾條）：後面的測試是
+       `startBuild(true)` 直接沿用當下的 shapePick，留一座馬克杯給它們，
+       〈連倒二十下〉就變成「把 20 桶倒進杯子裡」——杯裡的水坐在積木上幾乎不滲，
+       200 秒排不掉（實測留下 3914 格，那條要的是 < 60）。這一版第一次就是這樣紅的。 */
+    const keep = shapePick;
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    const N = 12;                                    // 一口氣倒 12 桶：杯子絕對裝不下
+    for (let k = 0; k < N; k++) pourBucket(0, rim + 2, 0, WB_DROPS);
+    const bucket = () => water ? Math.round(water.pours.reduce((a, p) => a + p.left, 0)) : 0;
+    let peak = 0, waited = 0, at5 = -1;
+    for (let i = 0; i < 60 * 20; i++) {
+      step(1 / 60);
+      if (!water) continue;
+      peak = Math.max(peak, water.pours.length);
+      if (water.pours.some(p => p.wait > 0)) waited++;
+      if (i === 60 * 5) at5 = bucket();
+    }
+    const r = { peak, waited, at5, at20: bucket(), N,
+                pours: water ? water.pours.length : 0,
+                cells: water ? water.cells.size : 0 };
+    cleanTools();
+    shapePick = keep;
+    return r;
+  });
+  ok('杯子滿了之後連點，那幾桶會等著慢慢倒進去，不是被丟掉',
+     wbWait.peak === wbWait.N && wbWait.waited > 0 &&
+     wbWait.at20 < wbWait.at5 && wbWait.cells > 4000,
+     '一口氣倒 ' + wbWait.N + ' 桶：桶裡剩的水 5 秒 ' + wbWait.at5 + ' → 20 秒 ' +
+     wbWait.at20 + ' 格（還在等的 ' + wbWait.pours + ' 桶、場上 ' + wbWait.cells +
+     ' 格水），有桶在退避的幀數 ' + wbWait.waited);
 
   /* ══════════ 水面的樣子（v1.94）══════════
      v1.69～v1.93 的水是 MeshBasicMaterial——不吃光，任何角度都是同一片均勻的藍
@@ -24002,6 +24051,131 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      perfBoom.blocks + ' 塊積木 + ' + perfBoom.parts + ' 顆粒子：step ' +
      perfBoom.step.toFixed(2) + 'ms + draw ' + perfBoom.draw.toFixed(2) + 'ms = ' +
      (perfBoom.step + perfBoom.draw).toFixed(2) + 'ms');
+
+  /* 一大攤水（v1.190，使用者：「調查大量水體時會降低FPS 看有沒有辦法調整效能」）。
+     水的每一拍是 O(格數)，格數上限 WT_CELLS 就是最壞情況——而它不是罕見場面：
+     一個裝滿的馬克杯 4632 格會**一直留著**（坐在積木上，SEEP_B 一拍只滲 0.0007 格）。
+     這裡量的是「有水 vs 沒水」的差，不是絕對值：同一幀裡還有小人、積木與畫面那一份，
+     絕對值換一台機器就整組平移（見〈九條偶爾飄的測試〉）。
+     實測 v1.189（字串 key）→ v1.190（整數 key）：一拍 8.1 → 3.3 ms（9000 格）。 */
+  const perfWater = await page.evaluate(() => {
+    running = false;
+    targetCnt = 3000; shapePick = 0; setWorkerCount(20); startBuild(true); completeNow();
+    if (water) { water.cells.clear(); water.pours.length = 0; }
+    water = null;
+    /* 鋪一大攤：兩層鋪滿就頂到格數上限（真的倒要倒二十幾桶，那太慢）。
+       **地面上的水會滲**（SEEP_G 0.6／秒，實測整攤 3 秒就沒了），所以每一趟計時前
+       重鋪一次、只量 60 幀——量到的是「從上限滲到一半」這段的平均。 */
+    const fill = () => {
+      for (let y = 0; y < 2; y++)
+        for (let x = -40; x <= 40; x++) for (let z = -40; z <= 40; z++) {
+          if (x * x + z * z > 1600) continue;
+          addWater(cellX(x), y, cellZ(z), 1);
+        }
+      return water ? water.cells.size : 0;
+    };
+    const bench = pre => {                           // 取兩趟裡快的那一趟，避開 JIT 抖動
+      let best = 1e9, end = 0;
+      for (let r = 0; r < 2; r++) {
+        if (pre) pre();
+        for (let i = 0; i < 20; i++) { step(1 / 60); draw(); }
+        if (pre) pre();
+        const t = performance.now();
+        for (let i = 0; i < 60; i++) { step(1 / 60); draw(); }
+        best = Math.min(best, (performance.now() - t) / 60);
+        end = water ? water.cells.size : 0;
+      }
+      return { ms: best, end };
+    };
+    const dry = bench().ms;
+    const cells = fill();
+    const w = bench(fill);
+    const wet = w.ms, wetEnd = w.end;
+    /* key 不能撞：整數 key 是拿 gx／gz／gy 拼出來的，出了 WK_* 那個範圍
+       兩格會算出同一個數字（字串 key 沒這個問題，這是換來速度的代價）。
+       掃的範圍比實際用得到的大一圈：場地半徑 60、最寬的地標半徑 94，
+       換算出來的格座標實測 −79～109；最高的地標 138 層，倒水口再往上找 WT_HIGH 層。 */
+    const seen = new Set();
+    let dup = 0, worst = 0, notNum = 0;
+    for (let gx = -130; gx <= 170; gx += 1)
+      for (let gz = -130; gz <= 170; gz += 1)
+        for (const gy of [0, 1, 138, 138 + WT_HIGH]) {
+          const k = wkey(gx, gy, gz);
+          if (typeof k !== 'number') notNum++;
+          if (seen.has(k)) dup++; else seen.add(k);
+          if (k > worst) worst = k;
+        }
+    const cSeen = new Set();
+    let cDup = 0;
+    for (let gx = -130; gx <= 170; gx += 1)
+      for (let gz = -130; gz <= 170; gz += 1) {
+        const k = ckey(gx, gz);
+        if (cSeen.has(k)) cDup++; else cSeen.add(k);
+      }
+    /* 倒不進去的那幾桶（v1.190）：水滿了 injectWater 回 0、`p.left` 一格都沒少，
+       改版前那一桶就**永遠留在清單裡、每一幀重走一趟 1800 格的 BFS**。
+       改版後隔 WB_RETRY 才重試一次，所以「每幀平均呼叫幾次」會遠小於桶數
+       （改版前必定剛好等於桶數——每幀每桶無條件叫一次）。
+
+       **夾具要用裝滿的杯子，不能用地面上那一攤**：地面水一直在滲（0.6／秒），
+       每一幀都騰得出空間，於是每一幀都倒得進去一點——那量到的不是「倒不進去」
+       （第一版就是這樣量的，8 桶量到每幀 6.27 次）。坐在積木上的水一拍只滲
+       0.0007 格，杯子滿了就是真的塞不下。 */
+    if (water) { water.cells.clear(); water.pours.length = 0; }
+    water = null;
+    targetCnt = 3000;
+    shapePick = SHAPES.findIndex(s => s.n === '經典馬克杯');
+    startBuild(true); completeNow();
+    let rim = 0;
+    for (const s of bp.slots) if (s.filled) rim = Math.max(rim, s.gy);
+    for (let k = 0; k < 3; k++) pourBucket(0, rim + 2, 0, WB_DROPS);
+    for (let i = 0; i < 60 * 12; i++) step(1 / 60);   // 先把杯子灌滿、讓它靜下來
+    const mug = water ? water.cells.size : 0;
+    /* 要守的是**空轉**（跑完一整趟 BFS 卻一滴都沒倒進去）。只數「叫了幾次」會被
+       「杯子外溢的那攤地面水一直在滲、所以有幾桶真的倒得進去」稀釋掉。
+       改版後每一桶每 WB_RETRY 最多空轉一次，期望值就是 幀數 ÷ (WB_RETRY × 60) × 桶數。 */
+    const oInj = injectWater;
+    let calls = 0, idle = 0;
+    injectWater = (a, b, c, d) => {
+      calls++;
+      const got = oInj(a, b, c, d);
+      if (got <= 1e-6) idle++;
+      return got;
+    };
+    const NP = 8, NF = 120;
+    for (let k = 0; k < NP; k++) pourBucket(0, rim + 2, 0, WB_DROPS);
+    const left0 = water.pours.reduce((a, p) => a + p.left, 0);
+    for (let i = 0; i < NF; i++) step(1 / 60);
+    const left1 = water.pours.reduce((a, p) => a + p.left, 0);
+    injectWater = oInj;
+    const r = { dry, wet, wetEnd, cells, dup, worst, notNum, cDup, calls, idle, NP, NF, mug,
+                want: Math.round(NF / (WB_RETRY * 60) * NP),   // 退避之下最多空轉幾次
+                pours: water ? water.pours.length : 0,
+                left0: Math.round(left0), left1: Math.round(left1) };
+    // 還原：這一段造的水與那座馬克杯都不留給後面的段落
+    if (water) { water.cells.clear(); water.pours.length = 0; }
+    water = null;
+    targetCnt = 3000; shapePick = -1; startBuild(true); completeNow();
+    return r;
+  });
+  ok('一大攤水（頂到格數上限）每幀多出來的成本還在預算內',
+     perfWater.wet - perfWater.dry < 8 && perfWater.cells > 8000,
+     '鋪到 ' + perfWater.cells + ' 格（量完剩 ' + perfWater.wetEnd + ' 格，地面水一直在滲）：' +
+     '沒水 ' + perfWater.dry.toFixed(2) + 'ms → 有水 ' + perfWater.wet.toFixed(2) +
+     'ms（多 ' + (perfWater.wet - perfWater.dry).toFixed(2) + 'ms；60fps 的預算是 16.7ms）');
+  ok('水的格子 key 是整數，場地範圍內不會兩格撞同一個',
+     perfWater.dup === 0 && perfWater.cDup === 0 && perfWater.notNum === 0 &&
+     perfWater.worst < 2 ** 31,
+     '掃 301×301 格 × 4 層：撞 key ' + perfWater.dup + ' 次、ckey 撞 ' +
+     perfWater.cDup + ' 次、最大 key ' + perfWater.worst + '（SMI 上限 2^31）');
+  ok('倒不進去的那幾桶不會每一幀都重跑一趟 BFS',
+     perfWater.idle <= perfWater.want * 2 && perfWater.pours > 0 &&
+     perfWater.left1 <= perfWater.left0 && perfWater.mug > 4000,
+     '杯裡 ' + perfWater.mug + ' 格水（滿了）再倒 ' + perfWater.NP + ' 桶 × ' +
+     perfWater.NF + ' 幀：空轉（跑完 BFS 一滴都沒進去）' + perfWater.idle + ' 次' +
+     '（退避之下最多 ' + perfWater.want + '、改版前最多 ' + perfWater.NP * perfWater.NF +
+     '），injectWater 共 ' + perfWater.calls + ' 次；桶裡剩的水 ' + perfWater.left0 +
+     ' → ' + perfWater.left1 + ' 格、還有 ' + perfWater.pours + ' 桶在等');
 
   const bpTime = await page.evaluate(() => {
     let worst = 0, name = '';
