@@ -2677,10 +2677,12 @@ function pushOutHome(w) {
    只有硬推（pushOutHome）是不夠的：目標在房子另一邊時，人會直直走進去、每幀被推回來，
    看起來是「面向房子原地走路」（使用者回報過兩次）。實測施工中搬料的人有 236 幀
    是這樣貼著人家的牆磨過去的。 */
+/* skip（v1.190.2）：這一間不算擋路。只有天災那幾隻穿城門時會給——牠要穿的就是
+   門樓那一段的門洞，斜著進門時 2.2 格的探針會打到兩側的墩座，一繞就永遠進不去。 */
 const _dodge = { x: 0, z: 0 };
-function dodgeHome(w, ux, uz) {
+function dodgeHome(w, ux, uz, skip) {
   _dodge.x = ux; _dodge.z = uz;
-  const h = blockHome(w, ux, uz);
+  const h = blockHome(w, ux, uz, skip);
   if (!h) return _dodge;
   const bx = w.x - h.x, bz = w.z - h.z;
   const bd = Math.hypot(bx, bz) || 1;
@@ -2700,11 +2702,11 @@ function dodgeHome(w, ux, uz) {
    探的距離要比一步大（WALK 6.8，一幀約 0.34），不然掰的時候已經踩進去了。 */
 const DODGE_EYE = 2.2, DODGE_STEP = 0.55;
 const _blk = { d: 0 };
-function blockHome(w, ux, uz) {
+function blockHome(w, ux, uz, skip) {
   if (!homes || w.ghost > 0) return null;             // 穿透中（見 stuckWatch）
   for (let d = DODGE_STEP; d <= DODGE_EYE + 1e-6; d += DODGE_STEP) {
     const h = footHome(w.x + ux * d, w.z + uz * d);
-    if (h) { _blk.d = d; return h; }
+    if (h && h !== skip) { _blk.d = d; return h; }    // skip：穿城門那一段（見 dodgeHome）
   }
   return null;
 }
@@ -3116,7 +3118,8 @@ function wallGateSpot() {
     if (!h.gap) continue;
     const x = (h.gap.x0 + h.gap.x1) / 2, z = (h.gap.z0 + h.gap.z1) / 2;
     const d = Math.hypot(x, z) || 1;
-    return { x, z, nx: x / d, nz: z / d };
+    // h 是門樓那一段本身：穿門的時候不繞它（v1.190.2，見 stepBeast 的 gate）
+    return { x, z, nx: x / d, nz: z / d, h };
   }
   return null;
 }

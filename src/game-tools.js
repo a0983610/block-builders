@@ -6327,6 +6327,9 @@ function spawnBeast(kind, fun, bad) {
     kind, x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d,
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就面向工地
     ph: 0, gait: 0, leg: 0, tx: 0, tz: 0, ghost: 0, pause: 0,
+    /* 卡住了就脫困那一套的欄位（v1.190.2，跟小人同一組：見 game-workers.js 的 stuckWatch）。
+       sx／sz 是「上次確定有前進」的錨點，開場就是牠站的地方。 */
+    sx: Math.cos(a) * d, sz: Math.sin(a) * d, stk: 0,
     sc: DOOM_SC, arm: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,
     fun: fun ? 1 : 0, stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
     /* bad＝這一趟要動手，home＝動手的目標在村子那邊（v1.166）。兩個分開是因為
@@ -6411,6 +6414,19 @@ function leaveBeast(m) {
   m.tx = m.x / d * (arenaR + DOOM_OUT);
   m.tz = m.z / d * (arenaR + DOOM_OUT);
 }
+/* 穿門那一段結束了，回原本在做的事（v1.190.2）。
+   **目標一定要重算**：走人（go）那一段的目標是「從牠當時站的地方徑向往外」那個場外點，
+   而繞門出城之後那個點還在城的另一邊——於是 wallSplits 又成立，牠再穿門走回城裡，
+   撞到對面那道牆又去走門，如此往復。實測 400 秒走了 859 格還在城裡，週期 53 秒
+   （見 開發筆記〈猴子被城牆關在城裡〉）。逛（fun）那一段的目標被這一段借去了，
+   也要重挑一個，不然牠會回頭往門口走。 */
+function gateBack(m) {
+  m.st = m.gback || 'near';
+  m.leg = 0;
+  if (m.st === 'go') leaveBeast(m);          // 從現在站的地方重挑場外那一點
+  else if (m.st === 'fun') idleSpot(m);      // 逛的目標被借走了，重挑一個
+  // come 下一幀自己把目標設回工地中心；near 不吃 m.tx／m.tz
+}
 /* 一隻的一幀。回傳 true＝走出場外了，收掉。
 
    走法**借小人那一套**（使用者：「可以按照小人行走邏輯 不要穿越地標建築&小房子」）：
@@ -6452,6 +6468,14 @@ function stepBeast(m, dt) {
   if (m.ufo) return false;
   if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   if (m.kind === 'gryphon') return stepGryph(m, dt);      // 飛進來降落再起飛，自己一套（v1.176）
+  /* 卡住了就脫困（v1.190.2，使用者：「小人 牛羊 猴子這類盡量同一套走位判定」）。
+     整套跟小人共用同一支 stuckWatch（腿在擺卻沒前進 → 先把壓在人家外框裡的目標挪出來，
+     再撐一下就穿透幾秒），動物身上本來就有那組欄位（ghost／sx／sz／stk），
+     pushOutHome 與 blockHome 也早就認 ghost——**只差沒人替牠們計時**。
+     城牆圍起來之後牠們會遇到兩種小人碰不到的殘局：門口那一點被城內的房子壓住
+     （實測 7952 幀動不了），還有牛羊沒有攻擊手段、沒門可繞時只能穿出去。
+     擺在最前面：下面每一條分支都會 return（同 updWorker 裡的位置）。 */
+  stuckWatch(m, dt);
   /* 被破壞工具打到了（v1.146）：飛、躺、燒那幾段自己一套，這一幀底下整段跳過（同小人）。 */
   if (hurtBeast(m, dt)) return false;
   /* 走著走著絆一跤（v1.178）。**只有兩隻猴子會**：使用者那句點名的就是牠們兩隻，
@@ -6472,7 +6496,12 @@ function stepBeast(m, dt) {
      會把目標推到建築外圈之外，推土機掃的是圈內。 */
   const away = m.herd ? false
              : m.fun ? phase === 'clear' : (phase === 'build' || phase === 'clear');
-  if (away && m.st !== 'go') leaveBeast(m);
+  /* **正在穿城門的不要打斷**（v1.190.2）：穿門是一段不可分割的位移（走到門口那一點 →
+     穿過去），而這一條會把牠拉回 go，go 那一段下一行又發現被牆擋住、再把牠推回 gate——
+     兩邊每幀互推，gate 的位移程式碼永遠跑不到，牠就定在原地了（連 stuckWatch 的穿透
+     也救不了：那幾秒同樣一步都沒走）。實測開工中的那一座城裡，猴子就這樣定在
+     (0.5, −91) 整整 400 秒。穿完門 gateBack 自己會回到 go。 */
+  if (away && m.st !== 'go' && m.st !== 'gate') leaveBeast(m);
   m.arm += ((m.st === 'act' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
   if (m.st === 'come') {
     m.tx = 0; m.tz = 0;
@@ -6509,7 +6538,7 @@ function stepBeast(m, dt) {
      從城裡往外走不必繞（城內是空的），所以那一種直接走門內那一點。 */
   if (m.st === 'gate') {
     const g = wallGateSpot(), W = wallNow();
-    if (!g || !W) { m.st = m.gback || 'near'; return false; }
+    if (!g || !W) { gateBack(m); return false; }
     const side = m.gstep ? -m.gout : m.gout;
     let tx = g.x + g.nx * GATE_WAY * side, tz = g.z + g.nz * GATE_WAY * side;
     let arc = false;
@@ -6524,18 +6553,29 @@ function stepBeast(m, dt) {
         arc = true;
       }
     }
+    /* 目標寫進 m.tx／m.tz（那本來就是「牠要去哪」那一組，v1.190.2）：卡住的時候
+       stuckWatch 會把壓在人家外框裡的目標挪到框外——門內那一點剛好落在城內某間房子上
+       就是這樣解開的。 */
+    m.tx = tx; m.tz = tz;
     const gx = tx - m.x, gz = tz - m.z, gd = Math.hypot(gx, gz) || 1;
     /* 只有真的走到門口那一點才算過一關——圓弧上的中繼點離自己本來就很近，
        拿它當「到了」的話，牠會在半路上就以為自己已經到門口（實測從對面進場的那一隻
        8 秒就跳到第二段，然後對著牆走了 400 秒）。 */
     if (!arc && gd < 1.5) {
       if (!m.gstep) m.gstep = 1;
-      else { m.st = m.gback || 'near'; m.leg = 0; }
+      else gateBack(m);
       return false;
     }
-    m.a = Math.atan2(gx, gz);
     const gs = Math.min(spd * dt, gd);
-    m.x += gx / gd * gs; m.z += gz / gd * gs;
+    /* 擋路的房子繞過去（v1.190.2）。這三段本來假設「每一段都保證是空地」，但**城內
+       不是空的**：事件二本來就會在城裡蓋 2~5 間房子與 2~4 棵樹，門內那一點壓在其中一間
+       上的話，牠走過去每幀被 pushOutHome 推開、永遠到不了「1.5 格內」那個過關條件
+       （實測 7952 幀只走了 48 格）。繞法跟小人同一支 dodgeHome。
+       **門樓那一段不繞**：牠要穿的就是那個門洞，斜著進門時 2.2 格的探針會打到兩側的
+       墩座，一繞就永遠進不去（見 blockHome 的 skip）。 */
+    const gu = dodgeHome(m, gx / gd, gz / gd, g.h);
+    m.a = Math.atan2(gu.x, gu.z);            // 面向真正在走的方向，不是目標方向（同 strollTo）
+    m.x += gu.x * gs; m.z += gu.z * gs;
     pushOutHome(m);
     m.ph += dt * 11;
     m.gait += (0.85 - m.gait) * Math.min(1, dt * 8);
@@ -6642,7 +6682,14 @@ function stepBeast(m, dt) {
   /* 走人（go）也要走城門（v1.186）：砸完之後牠站在城裡，不繞門的話就被自己
      剛剛路過的那道牆關住（實測黑獼猴在城裡磨了 400 秒還出不去）。
      同樣是**擋住了才繞**：牆上有缺口就直接從缺口出去。 */
-  if (wallAhead(m, m.tx, m.tz) && gateNeed(m, m.tx, m.tz)) return false;
+  if (wallAhead(m, m.tx, m.tz)) {
+    if (gateNeed(m, m.tx, m.tz)) return false;
+    /* 沒門可繞（門樓被打爛了）：**會動手的就地拆牆出去**（v1.190.2，跟進城那一段對稱，
+       使用者選的「會動手的拆牆、其他穿過去」）。牛羊沒有攻擊手段（DOOM_ACT 裡沒有牠們
+       那幾款），交給 stuckWatch 穿出去。不給出路的話牠就對著牆磨到這一輪結束——
+       實測 8000 幀（400 秒）定在牆內側 (1.5, −25.5) 一步都沒動。 */
+    if (DOOM_ACT[m.kind]) { m.home = 1; m.st = 'near'; m.leg = 0; return false; }
+  }
   return strollTo(m, dt, DOOM_WALK);
 }
 

@@ -8393,6 +8393,89 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `${apeWall.none.act && apeWall.none.act.inWall ? '城裡' : '城外'}動手，` +
      `燒起來 ${apeWall.none.burn} 塊、其中城牆 ${apeWall.none.wallBurn} 塊`);
 
+  /* ⑦-b 砸完**走得出去**（v1.190.2，使用者：「有觀察到猴子會被城牆卡住 走不出去」）。
+     v1.186~v1.190.1 有四條路都會把牠關在城裡（實測四種配置各跑 400 秒，一隻都沒走掉）：
+       · 繞門出城之後沒有人重算目標 → 那個場外點還在城的另一邊，牠再穿門走回去（週期 53 秒）
+       · 穿門那三段不繞障礙 → 門內那一點壓在城內的房子上，7952 幀只走了 48 格
+       · 門樓被打爛時 go 那一段沒有備案 → 對著牆磨 8000 幀
+       · 地標一開工，「放棄走人」每幀把牠拉回 go、go 又每幀把牠推進 gate，兩邊互推
+     見 開發筆記〈猴子被城牆關在城裡〉。 */
+  const apeOut = await page.evaluate(() => {
+    stepDoom = window.doomStep;
+    const keepPh = phase;
+    /* 城裡放一隻、叫牠走人，看幾秒走得出場。gate=false＝門樓被打爛的那一圈、
+       city＝城內擺幾間房子與樹（真實的事件二本來就有）、ph＝那時候的 phase。 */
+    const run = (kind, gate, city, ph) => {
+      if (beasts) beasts.length = 0;
+      if (typeof fires !== 'undefined' && fires) fires.length = 0;
+      for (const b of blocks) b.burn = 0;
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 600; setWorkerCount(0); startBuild(true); completeNow();
+      stopIdleEvent(); clearHomes();
+      homes = { list: [] };
+      /* 那一段（或那一間）照 landHome 那條路砌起來。吃的是清單上的索引，因為
+         wallInside 會自己把挑好的那一間掛上去（回傳的就是它的索引）。 */
+      const fill = hi => {
+        const h = homes.list[hi];
+        for (let i = 0; i < h.slots.length; i++) {
+          const sl = h.slots[i], b = newBlock();
+          b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+          b.hh = hi; b.hk = i; b.dug = 1;
+          blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+        }
+        h.done = true; homeBox(h);
+      };
+      for (const h of wallPlan())
+        if (gate || !h.gap) { homes.list.push(h); fill(homes.list.length - 1); }
+      const W = wallRing();
+      for (let k = 0; k < city; k++) {                    // 城內的小房子與樹
+        const hi = wallInside([], Math.cos(k * 1.7) * (siteR + 8),
+                              Math.sin(k * 1.7) * (siteR + 8), k % 2 === 1, W);
+        if (hi >= 0) fill(hi);
+      }
+      ENG.setBlockCount(blocks.length);
+      phase = ph || keepPh;
+      const m = spawnBeast(kind);
+      m.x = 0; m.z = -(siteR + 2 + W - 2) / 2;            // 城內、門的對面那一側
+      leaveBeast(m);                                      // 砸完了：走人
+      /* 拆掉幾塊牆要**算塊數少了多少**，不是收工時還在燒的那幾塊：牠拆完就走了，
+         迴圈結束時火早就燒完（實測那樣量到 0，而牆確實破了）。 */
+      const wallSeg = new Set();
+      homes.list.forEach((h, i) => { if (h.wall) wallSeg.add(i); });
+      const wall0 = blocks.filter(b => wallSeg.has(b.hh)).length;
+      let n = 0, ghost = 0, acts = 0, last = '';
+      while (n++ < 8000 && beasts && beasts.includes(m)) {     // 最長 400 秒（拆牆那種要拆好幾趟）
+        if (m.st === 'act' && last !== 'act') acts++;
+        last = m.st;
+        step(0.05);
+        if (m.ghost > 0) ghost++;
+      }
+      return { gone: !(beasts && beasts.includes(m)), secs: +(n * 0.05).toFixed(0), ghost, acts,
+               wallLost: wall0 - blocks.filter(b => wallSeg.has(b.hh)).length };
+    };
+    const city = run('ape', true, 3);                     // 城內有房子與樹
+    const nogate = run('ape', false, 3);                  // 門樓被打爛：會動手的拆牆出去
+    const build = run('ape', true, 3, 'build');           // 地標又開工了（away 那一條）
+    const cow = run('cow', false, 3);                     // 牛羊不動手：靠 stuckWatch 穿出去
+    phase = keepPh;                                       // 動過的全域狀態還回去
+    cleanTools(); clearHomes();
+    return { city, nogate, build, cow };
+  });
+  ok('城裡的生物砸完走得出去（城內有房子、門樓沒了、地標又開工，三種都一樣）',
+     apeOut.city.gone && apeOut.nogate.gone && apeOut.build.gone,
+     `城內有房子與樹 ${apeOut.city.secs} 秒走掉（${apeOut.city.gone}）；` +
+     `門樓被打爛 ${apeOut.nogate.secs} 秒（${apeOut.nogate.gone}）；` +
+     `地標開工中 ${apeOut.build.secs} 秒（${apeOut.build.gone}）` +
+     `——修掉之前這三種各跑滿 400 秒都走不掉`);
+  ok('沒門可繞：會動手的就地拆牆出去，牛羊沒有攻擊手段就靠穿透出去',
+     apeOut.nogate.gone && apeOut.nogate.acts > 0 && apeOut.nogate.wallLost > 0 &&
+     apeOut.cow.gone && apeOut.cow.ghost > 0 && apeOut.cow.acts === 0 &&
+     apeOut.cow.wallLost === 0,
+     `猴子動手 ${apeOut.nogate.acts} 次、拆掉 ${apeOut.nogate.wallLost} 塊牆，` +
+     `${apeOut.nogate.secs} 秒走掉；牛一次都沒動手（${apeOut.cow.acts}）、` +
+     `一塊牆都沒少（${apeOut.cow.wallLost}），穿透 ${apeOut.cow.ghost} 幀走掉`);
+
   /* ⑦-b 誰會動手：**吉祥物會**（使用者：「吉祥物 可以動手 如果擋到路的話」），
      **牛羊不會**（「牛羊不動手(他們沒有攻擊手段)」）。後者不只是設計取捨——`DOOM_ACT`
      裡根本沒有牛羊那幾款，真讓牠們走到 act 會叫到 undefined。 */
