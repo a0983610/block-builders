@@ -3543,16 +3543,44 @@ function digPuff(w, p) {
 /* 這一趟去哪裡挖。每一趟重挑：一直挖同一個坑的話，人會黏在那個點上不動。
    不挖工地裡（那是別人的建材場，而且他會被 strollTo 推出來）、不挖在人家屋子裡。 */
 function digSpot(w, h) {
+  /* 城牆的直牆段：挖料點**貼著那一段自己的外框**，沿牆那一軸取「他投影過去的那一點」，
+     垂直方向取他現在站的那一側（v1.190.1，見 開發筆記〈挖出來的料自己撿不到〉）。
+     v1.186 是「繞著他自己挖」（cx/cz 就是 w.x/w.z），為的是不要讓他為了一塊料走到
+     十六格長的牆的另一頭去——但那條路跟「找料的範圍綁在建物上」（homeNear：離段中心
+     h.r + GRAB_R，城牆一段約 20 格）打架：人被派到二十格外的那一段時，他在原地挖出來的
+     料全部落在自己搆不到的範圍外，freeNearHome 挑不到、digNeed 也不算它，於是再挖一趟、
+     再撿不到——而小人只有手上有料才會走向工地（layTrip），找料這一步沒有任何力量把他
+     拉向牆。實測金門大橋（牆半徑 94）六分鐘：挖出來的 2798 塊裡 687 塊當場就撿不到，
+     其中 622 塊是三個人挖的，最長連續 233 趟沒挖對過，他們那三段一塊都沒砌。
+     投影過去就同時解決兩件事：他第一趟就往牆走（那是上工的路），而挖出來的料離段中心
+     最多十一格，一定在 GRAB_R 以內。 */
+  if (h.thin) {
+    const zx = h.thin === 'z';                             // 薄的是 z 軸＝這一段沿 x 延伸
+    const lo = zx ? h.wx0 : h.wz0, hi = zx ? h.wx1 : h.wz1;          // 沿牆那一軸的兩端
+    const p0 = Math.min(Math.max(zx ? w.x : w.z, lo), hi);           // 他投影到這一段上的那一點
+    const side = zx ? w.z > h.z : w.x > h.x;               // 他在哪一側就挖哪一側（同 homeStand）
+    const out = zx ? h.wz1 : h.wx1, back = zx ? h.wz0 : h.wx0;
+    for (let t = 0; t < 20; t++) {
+      const p = Math.min(Math.max(p0 + rr(-DIG_FAR, DIG_FAR), lo), hi);
+      const d = rr(DIG_NEAR, DIG_FAR);
+      const q = side ? out + d : back - d;
+      const x = zx ? p : q, z = zx ? q : p;
+      if (Math.hypot(x, z) < siteR + KEEP) continue;
+      if (homeAt(x, z)) continue;
+      w.tx = x; w.tz = z; w.hdt = DIG_T; return;
+    }
+    const q = side ? out + DIG_NEAR : back - DIG_NEAR;
+    w.tx = zx ? p0 : q; w.tz = zx ? q : p0; w.hdt = DIG_T;
+    return;
+  }
   /* 挖的地方取在「他現在站的那一側」，不是整圈亂挑（v1.100）。
      房子大了之後（地基半徑可以到 9.6），亂挑的話一趟裡「走去挖」跟「走回去砌」
      常常在房子的兩頭，而繞過去就是半圈——實測六成的時間花在走路上。
      同一側就只是幾步；砌的位置自己會隨格子進度繞房子跑，挖料點跟著他跑就好。 */
-  /* 城牆的直牆段改成**繞著他自己挖**（v1.186）：那一段十六格長、中心可能在十格外，
-     照「離地基邊緣多遠」算的話，他會為了一塊料走到牆的另一頭去。 */
-  const cx = h.thin ? w.x : h.x, cz = h.thin ? w.z : h.z, rad = h.thin ? 0 : h.r;
+  const cx = h.x, cz = h.z, rad = h.r;
   const a0 = Math.atan2(w.z - h.z, w.x - h.x);
   for (let t = 0; t < 20; t++) {
-    const a = h.thin ? Math.random() * Math.PI * 2 : a0 + rr(-DIG_ARC, DIG_ARC);
+    const a = a0 + rr(-DIG_ARC, DIG_ARC);
     const d = rad + rr(DIG_NEAR, DIG_FAR);
     const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
     if (Math.hypot(x, z) < siteR + KEEP) continue;

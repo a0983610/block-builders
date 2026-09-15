@@ -8200,6 +8200,73 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `城內 ${wallRun.houses} 間房子（上限 ${wallRun.wantH}）、${wallRun.trees} 棵樹` +
      `（上限 ${wallRun.wantT}）——事件一同樣人數是 7 間`);
 
+  /* ④-b 挖料點貼著自己那一段（v1.190.1）。v1.186~v1.190.0 的 digSpot 對直牆段是
+     「繞著他自己挖」，而找料的範圍（homeNear）綁在那一段上（離段中心 h.r + GRAB_R）——
+     人被派到二十格外的那一段時，他在原地挖出來的料自己也撿不到（freeNearHome 挑不到、
+     digNeed 也不算它），於是再挖一趟、再撿不到，而小人只有手上有料才會走向工地。
+     實測金門大橋（牆半徑 94）六分鐘：挖出來的 2798 塊裡 687 塊當場就撿不到，
+     其中 622 塊是三個人挖的（最長連續 233 趟沒挖對過，他們那三段一塊都沒砌），
+     地上堆了 623 塊沒人撿的碎料。見 開發筆記〈挖出來的料自己撿不到〉。 */
+  const digNear = await page.evaluate(() => {
+    mkWall(73, 127);                                    // 大地標那種尺寸的一圈
+    const hi = homes.list.findIndex(q => q.thin === 'z' && q.z < 0);
+    const h = homes.list[hi], w = workers[0];
+    /* 四種站位：貼著牆、城內幾十格外、沿牆方向偏出這一段之外、牆的另一側 */
+    const spots = [[h.x, h.z + 3], [h.x + 30, h.z + 60], [h.x - 40, h.z + 8], [h.x, h.z - 4]];
+    const res = [];
+    for (const [x, z] of spots) {
+      let far = 0, worst = 0;
+      for (let t = 0; t < 50; t++) {
+        w.x = x; w.z = z; w.hm = hi; w.hst = '';
+        digSpot(w, h);
+        if (!homeNear({ x: w.tx, z: w.tz }, h)) far++;  // 挖出來當場就撿不到＝白挖
+        worst = Math.max(worst, Math.hypot(w.tx - h.x, w.tz - h.z));
+      }
+      res.push({ gap: +(Math.hypot(x - h.x, z - h.z) - h.r).toFixed(1),
+                 far, worst: +worst.toFixed(1) });
+    }
+    return { res, reach: +(h.r + GRAB_R).toFixed(1) };
+  });
+  ok('城牆：挖料點貼著自己那一段，人站得再遠也挖在自己搆得到的範圍內',
+     digNear.res.every(r => r.far === 0),
+     digNear.res.map(r => `離那一段 ${r.gap} 格 → 抽 50 次挖點最遠 ${r.worst}`).join('；') +
+     `（搆得到的範圍是離段中心 ${digNear.reach}）`);
+
+  const digOrphan = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    for (let i = 0; i < 240; i++) step(0.05);
+    stopIdleEvent(); clearHomes(); evArm = 0;
+    /* 工地撐到大地標那種尺寸：人還在場心附近，牆線在九十幾格外——就是「被派到的
+       那一段在幾十格外」那個情境（修掉之前，這裡會堆出一地沒有任何人搆得到的碎料）。 */
+    const keep = [siteR, arenaR];
+    siteR = 73; arenaR = 127;
+    idleEv = IDLE_EVENTS.find(e => e.id === 'wall');
+    startWall();
+    const gap0 = workers.filter(w => w.hm >= 0 && homes.list[w.hm].wall)
+      .map(w => { const h = homes.list[w.hm]; return Math.hypot(w.x - h.x, w.z - h.z) - h.r; });
+    for (let i = 0; i < 1800; i++) step(0.05);          // 90 秒（人要先走幾十格到牆邊）
+    const live = homes.list.filter(h => h.left > 0);
+    let dug = 0, orphan = 0;
+    for (const b of blocks) {
+      if (b.st !== FREE || !b.rest || b.holder >= 0 || !b.dug) continue;
+      dug++;
+      if (!live.some(h => homeNear(b, h))) orphan++;    // 沒有任何一段搆得到＝孤兒
+    }
+    const done = homes.list.filter(h => h.wall)
+                           .reduce((a, h) => a + (h.slots.length - h.left), 0);
+    siteR = keep[0]; arenaR = keep[1];                  // 動過的全域狀態還回去
+    cleanTools(); clearHomes();
+    return { done, dug, orphan, n: gap0.length,
+             gap0: +Math.max(...gap0).toFixed(1) };
+  });
+  ok('城牆：人被派到幾十格外的那一段，挖出來的料不會變成沒人撿的孤兒',
+     digOrphan.orphan === 0 && digOrphan.done > 0,
+     `開工時最遠的人離自己那一段 ${digOrphan.gap0} 格（${digOrphan.n} 人上牆）；` +
+     `90 秒砌好 ${digOrphan.done} 塊，地上還躺著自己挖出來的 ${digOrphan.dug} 塊，` +
+     `其中沒有任何一段搆得到的 ${digOrphan.orphan} 塊`);
+
   /* ⑤ 打得壞、打到剩兩成五整段廢棄（使用者：「能被道具等破壞（同小房子）」）。
      跟小房子共用同一套（wreckHomes 的 WRECK_AT），所以這裡只驗「城牆也吃這一套」。
      ⑥ 換場：牆會不會被下一座地標徵收，看的是**整段的外框**跟新工地圓有沒有碰到
