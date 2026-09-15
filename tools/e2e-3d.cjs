@@ -20640,10 +20640,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     while (n < 6000 && m.bad && beasts && beasts.indexOf(m) >= 0) {   // 同上，別省 beasts &&
       seen[m.st] = (seen[m.st] || 0) + 1;
       if (m.ghost > 0) ghostN++;
-      if (n % 400 === 0) trail.push({ t: +(n * 0.05).toFixed(0), st: m.st,
-                                      x: +m.x.toFixed(1), z: +m.z.toFixed(1),
-                                      tx: +m.tx.toFixed(1), tz: +m.tz.toFixed(1),
-                                      home: m.home || 0, bad: m.bad || 0 });
+      if (n % 400 === 0) {
+        const t0 = nearHome(m.x, m.z);                  // 牠這一刻盯上的那一間
+        const hh = t0 && homes && homes.list[t0.hh];
+        trail.push({ t: +(n * 0.05).toFixed(0), st: m.st,
+                     x: +m.x.toFixed(1), z: +m.z.toFixed(1), r: +Math.hypot(m.x, m.z).toFixed(2),
+                     tx: +m.tx.toFixed(1), tz: +m.tz.toFixed(1),
+                     tr: +Math.hypot(m.tx, m.tz).toFixed(2),
+                     home: m.home || 0, bad: m.bad || 0,
+                     hR: hh ? +Math.hypot(hh.x, hh.z).toFixed(1) : -1,
+                     hr: hh ? +hh.r.toFixed(1) : -1,
+                     stand: hh ? +(hh.r + doomNear(m)).toFixed(1) : -1 });
+      }
       step(0.05); n++;
       nana = Math.max(nana, nanas ? nanas.length : 0);
     }
@@ -20662,7 +20670,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       low = Math.min(low, home());
     }
     return { secs: +(n * 0.05).toFixed(1), nana, st, air, lie, boomD, blast: NANA_R,
-             site0, site: site(), home0, low, ph: phase, seen, trail, ghostN };
+             site0, site: site(), home0, low, ph: phase, seen, trail, ghostN,
+             siteR: +siteR.toFixed(2), keep: +(siteR + KEEP).toFixed(2) };
   });
   /* 「地標沒事」是**瞄的目標**那件事，不是硬保證：香蕉會先撞到什麼就在哪裡炸，
      波及到地標邊上是可能的（使用者 v1.186：「不小心燒到地標沒關係 但是遊戲要察覺
@@ -20675,8 +20684,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 塊、地標 ' + msnow.site0 + ' → ' + msnow.site + ' 塊，phase ' + msnow.ph +
      '；炸點離牠 ' + msnow.boomD + ' 格（爆炸半徑 ' + msnow.blast + '）、被炸飛 ' +
      msnow.air + '、被震倒 ' + msnow.lie + '（這三個只印不守，見上面那段註解）' +
-     '；跑了 ' + msnow.secs + ' 秒：' + JSON.stringify(msnow.seen) +
-     '、穿透 ' + msnow.ghostN + ' 幀');
+     '；跑了 ' + msnow.secs + ' 秒、' + JSON.stringify(msnow.seen) +
+     /* 丟不出香蕉時把現場印出來（v1.190.3）：牠是在 fun 段追一個「被 strollTo 推到
+        工地圈上」的站位——`h.r + doomNear` 算出來的點落在 siteR + KEEP 圈內時，
+        strollTo 開頭會把它推到圈上，那個點跟「房子旁邊」已經沒關係了。
+        實測卡住那次目標 r = 20.16、工地圈 20.11（兩次觀測都精確吻合）。 */
+     (msnow.nana ? '' : '；工地圈 ' + msnow.keep + '（siteR ' + msnow.siteR +
+                        '）、穿透 ' + msnow.ghostN + ' 幀、' + JSON.stringify(msnow.trail)));
   /* v1.166 加過一條〈丟之前先站到自己的爆炸半徑外〉，守 `boomD > NANA_R && !air`。
      v1.168 拿掉：使用者說「白猴子炸到自己也沒關係」，而且那條本來就守不住——
      香蕉是「先撞到什麼就在那裡炸」（見 stepNanas），飛行途中掛到房子或樹就提前爆，
