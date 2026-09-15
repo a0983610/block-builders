@@ -167,6 +167,26 @@ const ROOT = path.resolve(__dirname, '..');
 const APP = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
 const OUT = path.join(__dirname, '.e2e-out');
 const VIEW = { width: 1280, height: 800 };
+/* ---------- 效能的門檻（v1.190.4）----------
+   > 使用者：「效能每幀預算應該會隨著機器&後續加東西而變吧 不需要這樣定門檻
+   > 只要能跑到 60fps 不太降就可以」「有些機器好像是 120fps 這也要考量」
+
+   舊的門檻是寫死的 4ms——那是「60fps 預算的四分之一」這種拍腦袋的訂法，
+   跟「這台機器跑不跑得動」沒有直接關係，而且會被機器與後續加的東西一路推上去
+   （〈那一幕的 draw〉實測 2.05 → 2.17 → 2.43，門檻 2 就這樣被逼紅）。
+
+   現在兩條判準：
+     FRAME_MS  天花板：CPU 端每幀要留得住 **120fps**（8.33ms）。這個數字有物理意義
+               ——不是某一次量到的值，換機器、加東西都還是同一句話。
+     PERF_X    不太降：同一台機器、同一個場景，「有那個東西」不超過「沒有」的幾倍。
+               只有量得到對照基準的那幾條用得上（塵霧 idle、水的 dry）。
+   沒有實測過每一條的餘裕（使用者：「效能門檻 先不實測」），所以 PERF_X 先給寬的 4——
+   它要抓的是「某一版讓 draw 變十倍」這種退化，不是釘住某個數字。之後真要收緊，
+   就跑一輪把每一條的「基準 vs 實測」量出來再訂。
+   **最壞單幀那幾條不吃這兩個數**（worst < 60、p95 < 12）：那些守的是卡頓不是平均成本。 */
+const FRAME_MS = 1000 / 120;     // 8.33ms：CPU 端還留得住 120fps
+const PERF_X = 4;                // 有特效時不超過沒特效時的幾倍
+
 const SHAPE_COUNT = 48;          // blueprints.js 內建的 SHAPES 數量
 const WB_CLICK_MIN = 1500;       // 點一下倒 2300 格，滲掉一些之後至少該剩這麼多
 const CUSTOM_COUNT = 28;         // blueprints/ 資料夾裡預設附的自訂藍圖
@@ -3322,8 +3342,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 50; i++) collapseUnsupported();
     return { ms: (performance.now() - t0) / 50, n: blocks.length };
   });
-  ok('垮塌判定夠便宜', supCost.ms < 4,
-     supCost.n + ' 塊時一次 ' + supCost.ms.toFixed(2) + ' ms（最多每 0.08 秒算一次）');
+  ok('垮塌判定夠便宜', supCost.ms < FRAME_MS,
+     supCost.n + ' 塊時一次 ' + supCost.ms.toFixed(2) + ' ms（最多每 0.08 秒算一次；' +
+     '一幀的預算 ' + FRAME_MS.toFixed(2) + 'ms ＝ 120fps）');
 
   /* 支撐判定用 26 鄰居（角碰角就算連著），所以炸穿一面牆之後會留下「用一個角
      吊在半空」的積木或整坨。dropHung 專門收這種：基準線是藍圖的 f6
@@ -5366,14 +5387,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     beasts = null;
     const list = [spawnBeast('ape', 1), spawnBeast('snow', 1), spawnCattle()];
     for (const m of list) { m.stay = 9999; }           // 別讓吉祥物逛完就走
-    let walkF = 0, trips = 0, cow = 0, back = 0, up = 0, late = 0, face = 0;
+    /* 分母只能算**猴子**走路的時間（v1.190.4）：場上那三隻裡牛不會絆
+       （使用者點名的只有兩隻猴子），把牠的走路時間也算進去，「每走幾秒絆一次」
+       就被稀釋了——實測三隻合計 725 秒、猴子自己只走了其中一部分。 */
+    let walkF = 0, apeF = 0, trips = 0, cow = 0, back = 0, up = 0, late = 0, face = 0;
     const was = list.map(() => 0);
     for (let i = 0; i < 8000; i++) {                   // 400 秒
       step(0.05);
       for (let k = 0; k < list.length; k++) {
         const m = list[k];
         stepBeast(m, 0.05);                            // 天災／吉祥物／牛羊的鐘都被 installClean 拔掉了
-        if (m.gait > 0.6) walkF++;
+        if (m.gait > 0.6) { walkF++; if (!m.herd) apeF++; }
         if (m.fall > 0) {
           if (!was[k]) { if (m.herd) cow++; else trips++; }
           if (m.fall < 0.5 && !m.herd) { late++; if (m.spin > 1.3) face++; }
@@ -5382,13 +5406,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         was[k] = m.fall;
       }
     }
-    return { walkSecs: +(walkF * 0.05).toFixed(1), trips, cow, back, up, late, face,
-             per: trips ? Math.round(walkF * 0.05 / trips) : -1 };
+    return { walkSecs: +(walkF * 0.05).toFixed(1), apeSecs: +(apeF * 0.05).toFixed(1),
+             trips, cow, back, up, late, face,
+             per: trips ? Math.round(apeF * 0.05 / trips) : -1 };
   });
   ok('黑獼猴與白猴子走路也會絆一跤（比小人常，場上只有一兩隻）',
      apeTrip.trips >= 1 && apeTrip.per >= 15 && apeTrip.per <= 300,
-     '三隻走了 ' + apeTrip.walkSecs + ' 隻-秒，猴子絆了 ' + apeTrip.trips +
-     ' 次＝每走 ' + apeTrip.per + ' 秒一次（設定 50）');
+     '三隻走了 ' + apeTrip.walkSecs + ' 隻-秒，其中猴子 ' + apeTrip.apeSecs +
+     ' 隻-秒（牛不會絆，不算分母）：絆了 ' + apeTrip.trips +
+     ' 次＝每走 ' + apeTrip.per + ' 秒一次（設定 50，門檻 15~300）');
   ok('猴子那一跤也是往前趴，趴完自己爬起來',
      apeTrip.back === 0 && apeTrip.late > 0 && apeTrip.face === apeTrip.late &&
      apeTrip.up >= apeTrip.trips - 1,
@@ -7266,6 +7292,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     s3.secs = go(500, () => !other || other.left <= 0);
     s3.left = other ? other.left : 0;
     s3.village = homes.list.reduce((a, h) => a + h.left, 0);   // 全村還缺幾格（參考用）
+    /* 沒補完的時候要看得出是哪一關：這 500 秒裡閒晃事件抽到的是哪一件（抽到城牆的話
+       人全部上牆，沒有人在管房子的洞）、有沒有人認領那一間。 */
+    s3.ev = idleEv ? idleEv.id : null;
+    s3.wall = homes.list.filter(h => h.wall).length;
+    s3.crew = other ? workers.filter(w => w.hm === homes.list.indexOf(other)).length : -1;
+    s3.tree = other ? !!other.tree : false;
+    s3.kind = other ? other.kind : '';
 
     /* ── ④ 把地標打掉換下一座，蓋完小人又開始蓋自己的家 ── */
     const d0 = stats.destroyed;
@@ -7317,7 +7350,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '打到剩兩成的那一間廢棄了（' + lifeRun.s3.before + ' → ' + lifeRun.s3.after +
      ' 間）；另一間敲掉 ' + lifeRun.s3.roof + ' 塊屋頂 → 缺 ' +
      lifeRun.s3.hurt + ' 格，' + lifeRun.s3.secs + ' 秒後補完（那一間還缺 ' +
-     lifeRun.s3.left + ' 格；全村還缺 ' + lifeRun.s3.village + ' 格，那是別間新開的工）');
+     lifeRun.s3.left + ' 格；全村還缺 ' + lifeRun.s3.village + ' 格，那是別間新開的工）' +
+     (lifeRun.s3.left ? '；沒補完時：那一間是 ' + lifeRun.s3.kind + '（樹 ' + lifeRun.s3.tree +
+                        '）、認領的人 ' + lifeRun.s3.crew + '、這段時間的事件 ' +
+                        lifeRun.s3.ev + '、場上城牆 ' + lifeRun.s3.wall + ' 段' : ''));
   ok('④ 換下一座地標，蓋完閒晃事件重新開始（有人開工，或該蓋的都蓋完了）',
      lifeRun.s4.destroyed === 1 && lifeRun.s4.placed === lifeRun.s4.total &&
      lifeRun.s4.hm0 === 0 && lifeRun.s4.ev &&
@@ -8494,7 +8530,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       ENG.setBlockCount(blocks.length);
       phase = ph || keepPh;
       const m = spawnBeast(kind);
-      m.x = 0; m.z = -(siteR + 2 + W - 2) / 2;            // 城內、門的對面那一側
+      /* 有門的那兩種擺在城內中間（牠要自己找到門）；**沒門的那一種貼著牆內側**擺
+         （v1.190.4）——這一條要驗的是「被牆擋住、又沒有門可以繞的時候有沒有出路」，
+         不是「牠在城裡晃多久才碰到牆」。擺中間的話前面那一段是骰子：整輪跑開出過
+         400 秒還沒走掉、而且一次都沒動手（＝根本沒碰到牆，`wallAhead` 從沒成立）。 */
+      m.x = 0; m.z = gate ? -(siteR + 2 + W - 2) / 2 : -(W - 4);
       leaveBeast(m);                                      // 砸完了：走人
       /* 拆掉幾塊牆要**算塊數少了多少**，不是收工時還在燒的那幾塊：牠拆完就走了，
          迴圈結束時火早就燒完（實測那樣量到 0，而牆確實破了）。 */
@@ -8502,13 +8542,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       homes.list.forEach((h, i) => { if (h.wall) wallSeg.add(i); });
       const wall0 = blocks.filter(b => wallSeg.has(b.hh)).length;
       let n = 0, ghost = 0, acts = 0, last = '';
+      const seen = {};
       while (n++ < 8000 && beasts && beasts.includes(m)) {     // 最長 400 秒（拆牆那種要拆好幾趟）
         if (m.st === 'act' && last !== 'act') acts++;
         last = m.st;
+        seen[m.st] = (seen[m.st] || 0) + 1;
         step(0.05);
         if (m.ghost > 0) ghost++;
       }
-      return { gone: !(beasts && beasts.includes(m)), secs: +(n * 0.05).toFixed(0), ghost, acts,
+      const gone = !(beasts && beasts.includes(m));
+      return { gone, secs: +(n * 0.05).toFixed(0), ghost, acts, seen,
+               end: gone ? null : { x: +m.x.toFixed(1), z: +m.z.toFixed(1), st: m.st,
+                                    in: inWall(m.x, m.z), tx: +m.tx.toFixed(1),
+                                    tz: +m.tz.toFixed(1), W: +W.toFixed(0) },
                wallLost: wall0 - blocks.filter(b => wallSeg.has(b.hh)).length };
     };
     const city = run('ape', true, 3);                     // 城內有房子與樹
@@ -8524,7 +8570,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `城內有房子與樹 ${apeOut.city.secs} 秒走掉（${apeOut.city.gone}）；` +
      `門樓被打爛 ${apeOut.nogate.secs} 秒（${apeOut.nogate.gone}）；` +
      `地標開工中 ${apeOut.build.secs} 秒（${apeOut.build.gone}）` +
-     `——修掉之前這三種各跑滿 400 秒都走不掉`);
+     `——修掉之前這三種各跑滿 400 秒都走不掉` +
+     [apeOut.city, apeOut.nogate, apeOut.build].filter(r => !r.gone)
+       .map(r => `；沒走掉那一種：${JSON.stringify(r.seen)}、${JSON.stringify(r.end)}`).join(''));
   ok('沒門可繞：會動手的就地拆牆出去，牛羊沒有攻擊手段就靠穿透出去',
      apeOut.nogate.gone && apeOut.nogate.acts > 0 && apeOut.nogate.wallLost > 0 &&
      apeOut.cow.gone && apeOut.cow.ghost > 0 && apeOut.cow.acts === 0 &&
@@ -12933,7 +12981,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      門是 1 個——它是透明的雙面材質，沒開 forceSinglePass 的話 three 會分兩趟畫，
      量到的就是 2（實測過）。 */
   ok('三組同時連射最凶的那幾秒，每幀的成本在預算內；門與兵器加起來只多三個 draw call',
-     gateCost.avg < 4 && gateCost.gate === 1 && gateCost.weap === 2 &&
+     gateCost.avg < FRAME_MS && gateCost.gate === 1 && gateCost.weap === 2 &&
      gateCost.sets === 3 && gateCost.gt <= gateCost.gmax && gateCost.w <= gateCost.keep &&
      gateCost.w <= gateCost.wmax,
      gateCost.sets + ' 組同時在射：' + gateCost.gt + ' 片門（引擎 ' + gateCost.gmax +
@@ -14535,10 +14583,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { ms: +ms.toFixed(2), peak, tPeak: +tPeak.toFixed(2), now };
   });
   ok('最貴的那一幀（人數開到最大 ＋ 一整隊弓箭手 ＋ 箭最多）還在預算內',
-     arPerf.ms < 6 && arPerf.now.men > 0,
+     arPerf.ms < FRAME_MS && arPerf.now.men > 0,
      arPerf.now.people + ' 個人（含弓箭手 ' + arPerf.now.men + '）＋ ' +
      arPerf.now.arrows + ' 支箭：step ＋ draw ' + arPerf.ms +
-     'ms（自訂預算 4ms、60fps 的預算 16.7ms）；箭最多是第 ' + arPerf.tPeak + ' 秒的 ' +
+     'ms（預算 ' + FRAME_MS.toFixed(2) + 'ms ＝ 120fps；60fps 是 16.7ms）；箭最多是第 ' + arPerf.tPeak + ' 秒的 ' +
      arPerf.peak + ' 支');
 
   /* 容量：兩邊的池子都要裝得下，不然被切掉的是清單尾巴（畫面上憑空消失一批）。 */
@@ -14910,7 +14958,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      emb2.smooth.min > 60 && emb2.smooth.max <= 190,
      '1 秒內火苗數 ' + emb2.smooth.min + ' ~ ' + emb2.smooth.max + ' 顆（煙 ' +
      emb2.smooth.dust + ' 團）');
-  ok('上千塊碎料在燒：CPU 每幀 < 4ms', emb2.perf.stepMs + emb2.perf.drawMs < 4,
+  ok('上千塊碎料在燒：CPU 每幀在預算內',
+     emb2.perf.stepMs + emb2.perf.drawMs < FRAME_MS,
      emb2.perf.fires + ' 塊在燒：step ' + emb2.perf.stepMs.toFixed(2) + 'ms + draw ' +
      emb2.perf.drawMs.toFixed(2) + 'ms（量三段取中位，三段各是 ' +
      emb2.perf.all.join('／') + 'ms）');
@@ -16302,9 +16351,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      所以它本來就會偶爾紅，跟改了什麼無關。門檻沒有放寬（12 ms 原封不動），
      只是把「單一極值」換成「95% 的幀都在這條線以下」。 */
   ok('一杯水在場時每幀的成本在預算內',
-     wbCost.avg < 4 && wbCost.p95 < 12,
+     wbCost.avg < FRAME_MS && wbCost.p95 < 12,
      wbCost.cells + ' 格水：step + draw 平均 ' + wbCost.avg + ' ms、p95 ' +
-     wbCost.p95 + ' ms、最慢一幀 ' + wbCost.worst + ' ms（預算 4ms）');
+     wbCost.p95 + ' ms、最慢一幀 ' + wbCost.worst + ' ms（平均的預算 ' +
+     FRAME_MS.toFixed(2) + 'ms ＝ 120fps；p95 那條守的是卡頓，門檻 12ms 不動）');
 
   // 連倒二十下也不會失控（格數有上限），最後水也走得掉
   const wbMany = await page.evaluate(() => {
@@ -17707,7 +17757,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     runs.sort((a, b) => tot(a) - tot(b));
     return Object.assign({ all }, runs[1]);            // 中位那一趟整筆
   });
-  ok('六十個人同時在燒：CPU 每幀 < 4ms', wperf.stepMs + wperf.drawMs < 4,
+  ok('六十個人同時在燒：CPU 每幀在預算內', wperf.stepMs + wperf.drawMs < FRAME_MS,
      wperf.n + ' 人在燒（火苗 ' + wperf.hot + ' 顆）：step ' + wperf.stepMs.toFixed(2) +
      'ms + draw ' + wperf.drawMs.toFixed(2) + 'ms（三段的總和 ' + wperf.all.join('／') +
      '，取中位那一段）');
@@ -24074,8 +24124,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `--json` 比對、浮動條目清單（見〈測試分三檔〉）、回頭翻歷史全部對不上。
      會變的數字一律擺 detail。 */
   for (const r of perf)
-    ok('目標 ' + r.want + ' 塊 ＋ ' + r.wk + ' 小人：CPU 每幀 < 4ms',
-       r.step + r.draw < 4,
+    ok('目標 ' + r.want + ' 塊 ＋ ' + r.wk + ' 小人：CPU 每幀在預算內',
+       r.step + r.draw < FRAME_MS,
        '實際 ' + r.blocks + ' 塊：step ' + r.step.toFixed(2) + 'ms + draw ' + r.draw.toFixed(2) +
        'ms = ' + (r.step + r.draw).toFixed(2) + 'ms（CPU 上限約 ' +
        Math.round(1000 / (r.step + r.draw)) + ' fps）');
@@ -24283,9 +24333,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      perfDust.want === perfDust.drawn && perfDust.want > 3000,
      '要畫 ' + perfDust.want + ' 顆、實際畫 ' + perfDust.drawn +
      ' 顆（上限 ' + perfDust.cap + '）');
-  ok('那一幕的 draw 仍然遠低於每幀預算', perfDust.full < 2,
+  /* 這一條有現成的對照基準（同一個場景、什麼特效都沒有時的 draw），所以兩條都守：
+     天花板（120fps 的預算）＋ 不太降（不超過基準的 PERF_X 倍）。 */
+  ok('那一幕的 draw 仍然遠低於每幀預算',
+     perfDust.full < FRAME_MS && perfDust.full < perfDust.idle * PERF_X,
      '沒有塵霧 ' + perfDust.idle.toFixed(2) + 'ms → 這一幕 ' + perfDust.full.toFixed(2) +
-     'ms（每幀預算 4ms）');
+     'ms ＝ 基準的 ' + (perfDust.full / perfDust.idle).toFixed(1) + ' 倍（天花板 ' +
+     FRAME_MS.toFixed(2) + 'ms ＝ 120fps、倍數上限 ' + PERF_X + '）');
 
   /* 建材開到一萬之後最貴的場面不是靜態，而是「拆到一半」：垮塌連鎖會一直把支撐
      標記成 dirty，於是每幀都要重算一次連通性（一萬塊時單次 4.1ms，三千塊時 1.4ms）。
@@ -24314,9 +24368,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      2.07～3.53ms、最壞單幀 7.2～16.2ms，看有沒有別的 node 行程在跑）。
      要守的是「不要出現數量級的退步」，不是把數字釘在某一次量到的值上。 */
   ok('一萬塊拆到一半（垮塌連鎖 + 支撐重算）：平均每幀還在預算內',
-     perfWreck.avg < 6 && perfWreck.worst < 60,
-     perfWreck.blocks + ' 塊：平均 ' + perfWreck.avg.toFixed(2) + 'ms、最壞單幀 ' +
-     perfWreck.worst.toFixed(1) + 'ms（60fps 的預算是 16.7ms）');
+     perfWreck.avg < FRAME_MS && perfWreck.worst < 60,
+     perfWreck.blocks + ' 塊：平均 ' + perfWreck.avg.toFixed(2) + 'ms（預算 ' +
+     FRAME_MS.toFixed(2) + 'ms ＝ 120fps）、最壞單幀 ' + perfWreck.worst.toFixed(1) +
+     'ms（那一條守的是卡頓，門檻 60ms 不動）');
 
   /* 最貴的一幀是核彈剛炸完：三千塊碎料在飛，加上滿場的火球與蘑菇雲粒子。
      粒子上限從 420 拉到 560、又多了一組火球，這裡守住它沒有把成本翻上去。 */
@@ -24333,7 +24388,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const d = (performance.now() - t) / 90;
     return { step: s, draw: d, parts, blocks: blocks.length };
   });
-  ok('核彈爆炸當下：CPU 每幀 < 4ms', perfBoom.step + perfBoom.draw < 4,
+  ok('核彈爆炸當下：CPU 每幀在預算內', perfBoom.step + perfBoom.draw < FRAME_MS,
      perfBoom.blocks + ' 塊積木 + ' + perfBoom.parts + ' 顆粒子：step ' +
      perfBoom.step.toFixed(2) + 'ms + draw ' + perfBoom.draw.toFixed(2) + 'ms = ' +
      (perfBoom.step + perfBoom.draw).toFixed(2) + 'ms');
@@ -24444,11 +24499,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = 3000; shapePick = -1; startBuild(true); completeNow();
     return r;
   });
+  /* 這一條本來就是相對量（有水 − 沒水），所以天花板直接套在「多出來的那一截」上：
+     水本身不能把一幀的預算吃掉。 */
   ok('一大攤水（頂到格數上限）每幀多出來的成本還在預算內',
-     perfWater.wet - perfWater.dry < 8 && perfWater.cells > 8000,
+     perfWater.wet - perfWater.dry < FRAME_MS && perfWater.cells > 8000,
      '鋪到 ' + perfWater.cells + ' 格（量完剩 ' + perfWater.wetEnd + ' 格，地面水一直在滲）：' +
      '沒水 ' + perfWater.dry.toFixed(2) + 'ms → 有水 ' + perfWater.wet.toFixed(2) +
-     'ms（多 ' + (perfWater.wet - perfWater.dry).toFixed(2) + 'ms；60fps 的預算是 16.7ms）');
+     'ms（多 ' + (perfWater.wet - perfWater.dry).toFixed(2) + 'ms；預算 ' +
+     FRAME_MS.toFixed(2) + 'ms ＝ 120fps）');
   ok('水的格子 key 是整數，場地範圍內不會兩格撞同一個',
      perfWater.dup === 0 && perfWater.cDup === 0 && perfWater.notNum === 0 &&
      perfWater.worst < 2 ** 31,
