@@ -275,7 +275,10 @@ function dropHung(drop) {
    算的話，玩家去拆村落裡的房子會讓整座地標進入拆除中、閒晃事件也跟著被收掉，
    那一組人就再也沒回去蓋，房子永遠停在半棟（實測 600 秒補回 2 塊）。
    不給就照舊全部算地標的（那些呼叫端本來就只可能打到地標）。 */
-function afterHit(n, point, R, own) {
+/* self＝**這一下是牠自己打的，不要震到牠**（v1.192，巨人）。牠踹的是自己腳前 4.7 格，
+   而 GIA_R 是 9——不擋的話每踹一腳就把自己掀倒一次，一趟根本踹不完第二腳。
+   只有巨人在給；其餘呼叫端不給，行為一個位元都沒變。 */
+function afterHit(n, point, R, own, self) {
   if (n <= 0) return;
   stats.smashed += n;
   if (n > stats.bestHit) stats.bestHit = n;
@@ -293,7 +296,7 @@ function afterHit(n, point, R, own) {
   }
   /* 那幾隻生物同樣被震倒（v1.146）；飛龍被震到就是從天上摔下來（見 crashDragon）。 */
   eachBeastNear(point, R * 1.7, m => {
-    if (m.air || m.burn > 0 || m.fall > 0) return;      // 正在飛／正在燒的不用再掀一次
+    if (m.air || m.burn > 0 || m.fall > 0 || m === self) return;   // 正在飛／正在燒／自己打的不用再掀
     if (fellBeast(m, rr(B_FALL[0], B_FALL[1]))) sndFall();
   });
   shakeTrees(point, R);
@@ -1247,7 +1250,8 @@ const Y_BOOST = 0.85;               // 抬升占衝擊力道的比例（重力 2
 /* crash＝隕石那種「砸下來」的爆法：一樣把積木掃飛、一樣點火，但不走火球那一套
    （發光球殼、噴出來的火星、貼地光環、衝擊環），聲音也改成一聲悶響。
    隕石的重點本來就是火不是爆炸，掛一顆跟核彈同款的火球在上面反而搶戲。 */
-function explode(point, R, power, magic, wind, crash) {
+/* self＝這一下是場上哪一隻自己打的，不要把牠掀飛（v1.192 巨人，見 afterHit）。 */
+function explode(point, R, power, magic, wind, crash, self) {
   const R2 = R * R;
   let n = 0, ownN = 0;                          // ownN＝其中有幾塊是地標的（見 afterHit）
   for (const b of blocks) {
@@ -1305,7 +1309,7 @@ function explode(point, R, power, magic, wind, crash) {
   }
   /* 生物也一起掀（v1.146）。同一條公式，只是力道打個折——牠們比人重一些。 */
   eachBeastNear(point, R, (m, d) => {
-    if (m.air) return;
+    if (m.air || m === self) return;
     const f = Math.pow(1 - d / R, 0.55) * power * B_BLOW;
     const lift = f * Y_BOOST * (0.35 + 0.65 * (1 - d / R));
     const hd = Math.hypot(m.x - point.x, m.z - point.z);   // 方向取水平的，同上面那段
@@ -1314,7 +1318,7 @@ function explode(point, R, power, magic, wind, crash) {
     if (hd < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
     tossBeast(m, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true);
   });
-  afterHit(n, point, R, ownN);
+  afterHit(n, point, R, ownN, self);
   /* 還站著的（SET）餘火：半徑放到 1.5 倍去找——衝擊圈內幾乎都被炸飛了，
      沒倒的都在圈外那一帶。這些會繼續往鄰居蔓延。
      碎料的火不在這裡點，在上面那個迴圈裡逐塊點——見那邊的說明。 */
@@ -6285,8 +6289,56 @@ const B_TRIP_T = [0.8, 1.4];          // 躺幾秒才爬起來
    v1.168 使用者：「白猴子炸到自己也沒關係」——所以那幾次就算了，
    測試也不再守這件事（見 e2e 那段註解）。 */
 const DOOM_TOSS_NEAR = 10.5;
-const doomNear = m => (m.home && m.kind === 'snow') ? DOOM_TOSS_NEAR : DOOM_NEAR;
-const DOOM_RAISE = { ape: 1.5, snow: 2.6 };   // 右手抬到底幾度：送火把 vs 舉過頭要丟
+/* ── 巨人（v1.192）──────────────────────────────────────
+   使用者：「新天災+吉祥物／巨人 在地面行走的巨人 攻擊方式是腳踢 擊中的地方積木破壞
+   (帶有燃燒效果)／造型先做出來給我看過(比小人大得多 參考進擊的巨人)」，附了一張
+   超大型巨人的參考圖。造型見 engine.js 的 BEASTS.giant（先做預覽給使用者看過才落地）。
+
+   **走路那一整套一個字都沒重刻**：牠跟兩隻猴子一樣是地上走的，所以 come／fun／near／go
+   全部沿用 stepBeast 既有的那幾段（繞開別人家、不穿建築、走城門、絆倒、被打倒、
+   著火都是現成的）。新的只有「踹」這一段（見 stepKick）與四個屬於牠自己的數字。 */
+const GIA_SC = 3.0;                   // 模型高 5.00 × 3.0 ＝ 場上 15 格（使用者選的：跟金字塔頂 13.5 齊高）
+const GIA_WALK = 4.0;                 // 腳程（猴子 2.2、牛羊 1.5、獅鷲 2.6——牠腿長，走得比誰都快）
+/* 腿擺多快。**照「一步跨多遠」湊的**，不是隨便給一個數字（同飛龍的 DRA_STEP）：
+     髖到腳底 2.30 × 3.0 ＝ 6.90 格，擺幅 ＝ sw 0.62 × gait 0.85 ＝ 0.527 弧度
+     一條腿一趟掃 2 × 6.90 × sin(0.527) ＝ 6.94 格，兩條腿一個週期 13.88 格
+     週期 ＝ 2π ÷ (11 × step)，要 GIA_WALK × 週期 ≒ 13.88  →  step ＝ 0.165 */
+const GIA_STEP = 0.165;
+/* 走路時要離建築外圈再遠幾格（strollTo 的 keepMore，同飛龍的 DRA_KEEP）。
+   牠肩寬 5.3 格（半寬 2.65），而 KEEP 只有 1.5——不推出去的話肩膀會插進地標裡。
+   比飛龍的 8.5 小得多：龍是「身長 10 格橫著擺」，巨人是直的，佔地只有肩寬那一圈。 */
+const GIA_KEEP = 2.5;
+/* 站定要離最近那一塊多遠才踹。腳掌踹出去離身體中線 4.7 格（量出來的，見 giantKick），
+   站 4.0 的話腳掌會落在那一塊再往裡 0.7 格——**看得到腳真的踩在牆上**。
+   給 DOOM_NEAR 3.2 的話牠的肩膀已經站進建築的範圍裡了。 */
+const GIA_NEAR = 4.0;
+/* 一腳的破壞力。使用者選的是「香蕉炸彈那一級（一次約 700~800 塊）、一趟踢 2~3 腳」。
+   **數字自己一組、不寫成 NANA_R／NANA_POW**：那是另一把道具，跟著它每一次調整跑的話
+   哪天香蕉改了、巨人也跟著變（同飛龍的火球 v1.151 從 MET_R 獨立出來那件事）。 */
+const GIA_R = 9, GIA_POW = 14;
+/* 一趟踹幾腳。吉祥物那一版只踹一腳（同飛龍 MASC_BAD_SHOT 1~2 vs DRA_SHOT 3~5、
+   同獅鷲的 left 1）：牠本來是來逛的，順手砸一下就回去逛，不是來拆村子的。 */
+const GIA_KICKS = [2, 3], GIA_BAD_KICKS = 1;
+const GIA_LEAN = 0.12;                // 踹的時候上半身往後仰幾度（撐住，不是要跌倒）
+/* 一腳的節奏（秒）：收腿 → 踹出去 → 停在踹滿 → 收回來。
+   **踹出去要快、收回來可以慢**：慢慢伸出去像在做體操。
+   破壞是在「踹滿」那一刻結算一次（見 stepKick），不是整段一直扣。 */
+const GIA_WIND = 0.55, GIA_OUT = 0.22, GIA_HOLD = 0.35, GIA_BACK = 0.65;
+const GIA_CYCLE = GIA_WIND + GIA_OUT + GIA_HOLD + GIA_BACK;
+/* 身上冒的蒸氣（使用者選的「照參考圖，再加走路冒蒸氣」）。借塵霧那一池畫，
+   不另開 mesh——**0 個新 draw call**（同火、同煙）。走得越兇冒得越多。 */
+const GIA_STEAM = [10, 26, 44];       // 站著／走路／踹 每秒幾顆
+const GIA_STEAM_MAX = 150;            // 自己的配額（dust 那一池總共 400，不能被牠吃光）
+const doomNear = m => m.kind === 'giant' ? GIA_NEAR
+                    : (m.home && m.kind === 'snow') ? DOOM_TOSS_NEAR : DOOM_NEAR;
+/* 每一款自己的腳程、腿擺倍率、跟建築要保持的距離。沒列到的照 DOOM_WALK 那一組走
+   （兩隻猴子）——加下一款走地上的天災時在這三張表各加一格就好。 */
+const DOOM_SPD = { giant: GIA_WALK };
+const DOOM_STEP = { giant: GIA_STEP };
+const DOOM_KEEP = { giant: GIA_KEEP };
+/* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
+   不該把手舉起來（不給的話 putBeasts 會套預設的 BEAST_RAISE 2.6，變成舉手投降）。 */
+const DOOM_RAISE = { ape: 1.5, snow: 2.6, giant: 0 };
 let beasts = null;                    // 場上那幾隻（天災來的 ＋ 吉祥物，差在 m.fun）
 let nanas = null;                     // 飛在半空的香蕉炸彈
 let doomT = -1;                       // 倒數（−1＝沒在數）
@@ -6303,7 +6355,9 @@ const DOOMS = [
   { id: 'dragon', wt: 1, start: () => spawnDragon() },
   /* 事件四：獅鷲，飛進來降落在建築旁邊，張開翅膀噴一道長火柱（v1.176）。
      同上包一層再叫：牠也吃 fun／bad 兩個參數。 */
-  { id: 'gryphon', wt: 1, start: () => spawnGryph() }
+  { id: 'gryphon', wt: 1, start: () => spawnGryph() },
+  /* 事件五：巨人，走進來對著地標踹 2~3 腳，踹中那一片炸開並燒起來（v1.192）。 */
+  { id: 'giant', wt: 1, start: () => spawnBeast('giant') }
 ];
 /* 照權重挑一件。回傳 null 只有一種情況：表是空的。（同 rollIdleEvent） */
 function rollDoom() {
@@ -6315,7 +6369,12 @@ function rollDoom() {
   return DOOMS[DOOMS.length - 1];      // 浮點誤差的保險
 }
 /* 誰來了就做什麼。表在上面、動作在下面，加新的天災時兩邊各加一列，互不干擾。 */
+/* 巨人不在這張表裡是**故意的**：牠不是「動一次手就走」，一趟要踹 2~3 腳，
+   所以 act 那一段對牠只是「站定瞄一下」，接著轉進自己的 kick 段（見 stepBeast）。
+   但有兩處是拿「這一款有沒有攻擊手段」在問的（走人被城牆擋住時要不要拆牆、
+   牛羊不動手），那兩處要認得牠，所以另外列一張。 */
 const DOOM_ACT = { ape: apeStrike, snow: nanaThrow };
+const canFight = m => !!DOOM_ACT[m.kind] || m.kind === 'giant';
 
 /* 從場邊放一隻進來。方位隨機——固定一邊的話，鏡頭剛好對著另一邊就永遠看不到牠走過來。
    fun＝這一隻是吉祥物（v1.144）：同一份造型、同一套走路，只是不動手（見檔案最後那一節）。
@@ -6330,7 +6389,11 @@ function spawnBeast(kind, fun, bad) {
     /* 卡住了就脫困那一套的欄位（v1.190.2，跟小人同一組：見 game-workers.js 的 stuckWatch）。
        sx／sz 是「上次確定有前進」的錨點，開場就是牠站的地方。 */
     sx: Math.cos(a) * d, sz: Math.sin(a) * d, stk: 0,
-    sc: DOOM_SC, arm: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,
+    /* 巨人自己一個倍率（v1.192）：牠的模型是拿 5.00 當高畫的，不是拿小人的 1.31，
+       所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。 */
+    sc: kind === 'giant' ? GIA_SC : DOOM_SC,
+    kick: 0, kleft: 0, kt: 0, hit: 0, puff: 0,
+    arm: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,
     fun: fun ? 1 : 0, stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
     /* bad＝這一趟要動手，home＝動手的目標在村子那邊（v1.166）。兩個分開是因為
        「還沒砸」與「砸的是誰」是兩件事：砸完 bad 歸零回去逛，home 也一起清掉。 */
@@ -6343,17 +6406,20 @@ function spawnBeast(kind, fun, bad) {
   };
   if (!beasts) beasts = [];
   beasts.push(m);
-  sndBeast(kind === 'snow');
-  const nm = kind === 'ape' ? '🐒 黑獼猴' : '🐵 白猴子';
+  if (kind === 'giant') sndGiant(); else sndBeast(kind === 'snow');
+  const nm = kind === 'giant' ? '🗿 巨人'
+           : kind === 'ape' ? '🐒 黑獼猴' : '🐵 白猴子';
   /* 提示照「真的有東西可砸嗎」講（v1.166）：村子還沒蓋起來的時候牠什麼都不會做
      （見 stepBeast 的 fun 那一段），這時候還說牠盯上了村子就是騙人。 */
+  const hand = kind === 'giant' ? '牠有十五格高，一腳就能踹垮一面牆'
+             : kind === 'ape' ? '牠手上有一支火把' : '牠手上有一根綁著膠帶的香蕉';
   if (fun) toast(nm + '來工地逛逛',
                  bad && nearHome(m.x, m.z)
-                   ? (kind === 'ape' ? '牠盯上了村子那一帶，手上那支火把還亮著'
+                   ? (kind === 'giant' ? '牠盯上了村子那一帶，腳步已經轉過去了'
+                    : kind === 'ape' ? '牠盯上了村子那一帶，手上那支火把還亮著'
                                      : '牠盯上了村子那一帶，手上那根香蕉還在')
                    : '牠不會動手，晃一圈就走');
-  else toast(nm + '朝工地過來了',
-             kind === 'ape' ? '牠手上有一支火把' : '牠手上有一根綁著膠帶的香蕉');
+  else toast(nm + '朝工地過來了', hand);
   return m;
 }
 /* 離這個位置最近的那一塊地標（還站著的）。天災那幾隻拿它當「要砸哪裡」。
@@ -6409,6 +6475,11 @@ function funBack(m) {
   strollPause(m); idleSpot(m);
 }
 function leaveBeast(m) {
+  /* 踹到一半被叫走的（v1.192）：那一腳要先收乾淨，不然牠會維持著「一腳舉在半空」
+     的姿勢一路滑回場外。真的會發生：牠自己把地標踹到跌破換場門檻之後 phase 會變成
+     clear（整地），而 stepBeast 開頭那條 away 就會把牠推進 go。
+     擺在這裡而不是各呼叫端：leaveBeast 是所有「走人」的共同出口。 */
+  if (m.kick) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; }
   m.st = 'go';
   const d = Math.hypot(m.x, m.z) || 1;
   m.tx = m.x / d * (arenaR + DOOM_OUT);
@@ -6486,8 +6557,11 @@ function stepBeast(m, dt) {
     sndFall();
     return false;
   }
-  const spd = m.herd ? HERD_WALK[m.kind] : DOOM_WALK;     // 每一款自己的腳程（v1.183）
-  const stp = m.herd ? HERD_STEP[m.kind] : 0;
+  const spd = m.herd ? HERD_WALK[m.kind] : (DOOM_SPD[m.kind] || DOOM_WALK);   // 每一款自己的腳程（v1.183）
+  const stp = m.herd ? HERD_STEP[m.kind] : (DOOM_STEP[m.kind] || 0);
+  const kp = m.herd ? 0 : (DOOM_KEEP[m.kind] || 0);       // 要離建築外圈再遠幾格（v1.192 巨人）
+  /* 身上冒的蒸氣（v1.192 巨人）。擺在這裡而不是各段裡面：牠在場上的每一段都在冒。 */
+  if (m.kind === 'giant') giantSteam(m, dt);
   /* 開工／整地就放棄走人：天災是衝著「蓋好的那一座」來的，半成品不在它的守備範圍
      （也免得牠站在推土機的路線上）。
      吉祥物只避整地（v1.144）：牠不挑地標的狀態，施工中照樣可以來逛（使用者選的），
@@ -6516,7 +6590,7 @@ function stepBeast(m, dt) {
       else { m.home = 1; m.st = 'near'; m.leg = 0; }
       return false;
     }
-    if (strollTo(m, dt, spd, stp)) {
+    if (strollTo(m, dt, spd, stp, kp)) {
       /* 吉祥物走到建築外圈就開始逛，不進 near／act——那兩段是要動手的人才走的
          （例外：上面那條「被城牆擋住」，使用者要吉祥物也動手，見 v1.186）。 */
       m.st = m.fun ? 'fun' : 'near';
@@ -6612,7 +6686,7 @@ function stepBeast(m, dt) {
         const stand = h.r + doomNear(m);
         m.tx = h.x + (m.x - h.x) / d * stand;
         m.tz = h.z + (m.z - h.z) / d * stand;
-        if (strollTo(m, dt, spd)) { m.st = 'near'; m.leg = 0; }
+        if (strollTo(m, dt, spd, stp, kp)) { m.st = 'near'; m.leg = 0; }
         return false;
       }
     }
@@ -6621,7 +6695,7 @@ function stepBeast(m, dt) {
       m.gait += (0 - m.gait) * Math.min(1, dt * 8);
       return false;
     }
-    if (strollTo(m, dt, spd, stp)) {
+    if (strollTo(m, dt, spd, stp, kp)) {
       /* 站多久：猴子照剛走完那段路算（strollPause），牛羊改成固定抽——
          牠們一趟只走幾格，照比例算的話停不到一秒，看起來是一直在繞圈。 */
       if (m.herd) { m.pause = rr(HERD_STAY[0], HERD_STAY[1]); m.leg = 0; }
@@ -6664,10 +6738,12 @@ function stepBeast(m, dt) {
       m.st = 'act'; m.t = DOOM_AIM;
       return false;
     }
-    const sp = Math.min(DOOM_WALK * dt, adv);
+    /* 最後這幾步也照自己的腳程走（v1.192）：寫死 DOOM_WALK 的話巨人會在最後
+       四格突然變回猴子的速度，看起來像踩到煞車。腿擺同理要吃 stp。 */
+    const sp = Math.min(spd * dt, adv);
     m.x += dx / d * sp; m.z += dz / d * sp;
     pushOutHome(m);
-    m.ph += dt * 11;
+    m.ph += dt * 11 * (stp || 1);
     m.gait += (0.85 - m.gait) * Math.min(1, dt * 8);
     return false;
   }
@@ -6675,10 +6751,19 @@ function stepBeast(m, dt) {
     m.gait += (0 - m.gait) * Math.min(1, dt * 8);
     m.t -= dt;
     if (m.t > 0) return false;
+    /* 巨人不是「動一次手就走」（v1.192）：一趟要踹 GIA_KICKS 腳，一腳是一個
+       收腿→踹出去→停住→收回來的來回，所以轉進牠自己那一段（見 stepKick）。
+       act 對牠就只剩「站定、轉向、瞄一下」那個用途。 */
+    if (m.kind === 'giant') {
+      m.st = 'kick'; m.kt = 0; m.hit = 0;
+      m.kleft = m.fun ? GIA_BAD_KICKS : Math.round(rr(GIA_KICKS[0], GIA_KICKS[1]));
+      return false;
+    }
     DOOM_ACT[m.kind](m);
     if (m.fun) funBack(m); else leaveBeast(m);        // 吉祥物砸完回去逛（v1.166）
     return false;
   }
+  if (m.st === 'kick') return stepKick(m, dt);
   /* 走人（go）也要走城門（v1.186）：砸完之後牠站在城裡，不繞門的話就被自己
      剛剛路過的那道牆關住（實測黑獼猴在城裡磨了 400 秒還出不去）。
      同樣是**擋住了才繞**：牆上有缺口就直接從缺口出去。 */
@@ -6688,9 +6773,9 @@ function stepBeast(m, dt) {
        使用者選的「會動手的拆牆、其他穿過去」）。牛羊沒有攻擊手段（DOOM_ACT 裡沒有牠們
        那幾款），交給 stuckWatch 穿出去。不給出路的話牠就對著牆磨到這一輪結束——
        實測 8000 幀（400 秒）定在牆內側 (1.5, −25.5) 一步都沒動。 */
-    if (DOOM_ACT[m.kind]) { m.home = 1; m.st = 'near'; m.leg = 0; return false; }
+    if (canFight(m)) { m.home = 1; m.st = 'near'; m.leg = 0; return false; }
   }
-  return strollTo(m, dt, DOOM_WALK);
+  return strollTo(m, dt, spd, stp, kp);
 }
 
 /* ── 事件一：黑獼猴放火 ─────────────────────────────────
@@ -6769,6 +6854,99 @@ function stepNanas(dt) {
     }
   }
   if (!nanas.length) nanas = null;
+}
+
+/* ── 事件五：巨人腳踢（v1.192）──────────────────────────────
+   使用者：「攻擊方式是腳踢 擊中的地方積木破壞(帶有燃燒效果)」。
+   一趟踹 GIA_KICKS（2~3）腳，每一腳是一個來回：
+     收腿 GIA_WIND → 踹出去 GIA_OUT → 停在踹滿 GIA_HOLD → 收回來 GIA_BACK
+   破壞在「踹滿那一刻」結算一次（m.hit 記著這一腳結過了沒），不是整段一直扣。 */
+/* 這一腳踹到哪一點（世界座標）。**位置是引擎給的**（ENG.giantFoot）：畫面上腳掌就是
+   繞髖轉同一個角度畫出去的，各寫一份的話會變成「腳踹在這裡、積木炸在那裡」
+   ——同大劍的 SWORD_HIT、幽浮的 UFO_MOUTH。 */
+function giantHit(m) {
+  const f = ENG.giantFoot(1, GIA_LEAN);
+  /* 模型座標轉世界：朝向 m.a 就是繞 Y 轉（同 putBeasts 的 rotation.set(…, m.a, …, 'YZX')），
+     three 的 Ry 把 (x, ·, z) 轉成 (x·cos + z·sin, ·, −x·sin + z·cos)。
+     **x 不能漏**：踢的是右腿，腳掌偏在中線右邊 0.93 格。 */
+  const c = Math.cos(m.a), s = Math.sin(m.a);
+  return { x: m.x + (f.x * c + f.z * s) * m.sc,
+           y: f.y * m.sc,
+           z: m.z + (-f.x * s + f.z * c) * m.sc };
+}
+/* 踹到的那一下。回傳打掉幾塊（測試在讀）。 */
+function giantKick(m) {
+  const p = giantHit(m);
+  /* crash 那一版的爆法（同隕石）：一樣把積木掃飛、一樣點火，但**不要火球、衝擊環
+     與那聲爆炸**——一腳踹下去不是炸彈，聲音該是一記悶響（sndThud）。
+     self 給 m：牠踹的是自己腳前 4.7 格，而半徑是 9，不擋的話每踹一腳就把自己
+     掀倒一次，一趟踹不完第二腳（見 explode 的 self）。 */
+  const n = explode(p, GIA_R, GIA_POW, false, false, true, m);
+  /* 「帶有燃燒效果」：踹中那一片再撒一輪餘火，剩下的交給火自己蔓延（同隕石、同火球）。
+     吉祥物那一趟（m.home）只認村子那一邊的積木，地標一塊都不准點。 */
+  igniteAround(p, GIA_R * 1.6, Math.round(GIA_R * 1.6), SET, m.home ? isVillage : null);
+  return n;
+}
+function stepKick(m, dt) {
+  m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+  m.kt += dt;
+  const t = m.kt;
+  /* 這一腳踹到哪了（0～1）。引擎照它擺腿（見 putBeasts 的 m.kick），
+     身體同步往後仰——後仰是「撐住」，不是要跌倒，所以只給 GIA_LEAN。 */
+  m.kick = t < GIA_WIND ? 0
+         : t < GIA_WIND + GIA_OUT ? (t - GIA_WIND) / GIA_OUT
+         : t < GIA_WIND + GIA_OUT + GIA_HOLD ? 1
+         : Math.max(0, 1 - (t - GIA_WIND - GIA_OUT - GIA_HOLD) / GIA_BACK);
+  m.spin = -GIA_LEAN * m.kick;
+  /* 踹滿那一刻結算一次。**要有 m.hit 這個記號**：停在踹滿有 GIA_HOLD 那麼久，
+     照 m.kick >= 1 判的話那幾十幀會一幀炸一次。 */
+  if (!m.hit && m.kick >= 1) {
+    m.hit = 1;
+    giantKick(m);
+  }
+  if (t < GIA_CYCLE) return false;
+  /* 一腳走完：還有配額就再來一腳，沒了就走人（吉祥物砸完回去逛，同猴子）。
+     **每一腳都重新轉向**：上一腳把那一片踹垮之後，最近的那一塊已經換人了。 */
+  m.kt = 0; m.hit = 0; m.kick = 0; m.spin = 0;
+  if (--m.kleft > 0) {
+    const b = m.home ? nearHome(m.x, m.z) : nearSet(m.x, m.z);
+    if (b) { m.a = Math.atan2(b.x - m.x, b.z - m.z); return false; }
+    // 沒東西可踹了（都被自己踹光）：提早收工
+  }
+  if (m.fun) funBack(m); else leaveBeast(m);
+  return false;
+}
+/* 身上冒的蒸氣（v1.192，使用者選的「照參考圖，再加走路冒蒸氣」）。
+   從兩側斜方肌那一帶往上飄，越飄越大越淡。借塵霧那一池畫（dust），
+   不另開 mesh——**0 個新 draw call**（同火、同煙）。
+   自己有一份配額 GIA_STEAM_MAX：那一池總共 400，被牠吃光的話爆炸的揚塵就沒了
+   （同龍捲風那條註解踩過的事）。 */
+/* 被打倒、著火、被幽浮吸走那幾段冒不到這裡：呼叫端排在 hurtBeast 後面，
+   那幾段早就 return 掉了。 */
+function giantSteam(m, dt) {
+  const rate = m.kick > 0 ? GIA_STEAM[2] : m.gait > 0.3 ? GIA_STEAM[1] : GIA_STEAM[0];
+  m.puff = (m.puff || 0) + dt * rate;
+  if (m.puff < 1) return;
+  let mine = 0;
+  for (const d of dust) if (d.gia) mine++;
+  while (m.puff >= 1) {
+    m.puff--;
+    if (mine++ >= GIA_STEAM_MAX || dust.length > 380) break;
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const ox = side * rr(0.32, 0.80) * m.sc, oz = rr(-0.34, 0.16) * m.sc;
+    dust.push({
+      gia: 1,                                       // 記號：上面那段算自己用掉幾顆
+      x: m.x + Math.cos(m.a) * ox + Math.sin(m.a) * oz,
+      y: rr(3.95, 4.30) * m.sc,
+      z: m.z - Math.sin(m.a) * ox + Math.cos(m.a) * oz,
+      vx: side * rr(0.5, 1.4), vy: rr(2.6, 4.6), vz: rr(-1.1, -0.3),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      /* g 給負的＝往上飄（同火球、蘑菇雲）；keep 鬆一點讓它散得開；
+         fade 讓它是「慢慢淡掉」不是「啪一聲整團不見」。 */
+      g: -1.7, keep: 0.985, fade: 1.1,
+      life: rr(1.1, 2.0), s: rr(0.40, 0.95), c: rr(0.93, 1)
+    });
+  }
 }
 
 /* 天災的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）。 */
@@ -7530,7 +7708,9 @@ const MASCOTS = [
   { id: 'dragon', ground: 0, spawn: bad => spawnDragon(1, bad) },
   /* 獅鷲雖然是飛進來的，ground 還是給 1（v1.176）：牠會**降落**在建築外圈那一環上，
      整地那一段推土機正在掃的就是那一帶，不要在那時候放牠進來。 */
-  { id: 'gryphon', ground: 1, spawn: bad => spawnGryph(1, bad) }
+  { id: 'gryphon', ground: 1, spawn: bad => spawnGryph(1, bad) },
+  /* 巨人（v1.192）：用走的，整地那一段先不放進來（同兩隻猴子）。 */
+  { id: 'giant', ground: 1, spawn: bad => spawnBeast('giant', 1, bad) }
 ];
 const mascT = MASCOTS.map(() => -1);  // 每隻各自的倒數（−1＝還沒抽），跟 MASCOTS 同索引
 /* 這一種現在在不在場上。**不分吉祥物還是天災**：同款的已經在場上了就別再放一隻進來，
@@ -7595,11 +7775,17 @@ function turnBad(id) {
          **原本正在往村子走的那一隻（v1.166）**：目標換成地標了，讓牠重走進場那一段
          （come 走到工地外圈再進 near），不然牠會從村子那邊直線切過來，
          半路卡在別人家門口就地點火——near 那一段沒有繞路，它只會停下來動手。 */
+      /* 正踹到一半被翻臉的（v1.192）：這一腳先收乾淨——腿還舉在半空就被推去走路的話，
+         牠會用那個姿勢一路滑過去。收完再照下面那兩行決定接哪一段。 */
+      const mid = m.st === 'kick';
+      if (mid) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; }
       if (m.home) m.st = 'come';
-      else if (m.st === 'fun') m.st = 'near';
-      sndBeast(m.kind === 'snow');
-      toast(m.kind === 'ape' ? '🐒 黑獼猴不逛了' : '🐵 白猴子不逛了',
-            m.kind === 'ape' ? '牠舉起手上那支火把，朝地標走過去'
+      else if (m.st === 'fun' || mid) m.st = 'near';
+      if (m.kind === 'giant') sndGiant(); else sndBeast(m.kind === 'snow');
+      toast(m.kind === 'giant' ? '🗿 那隻巨人不逛了'
+          : m.kind === 'ape' ? '🐒 黑獼猴不逛了' : '🐵 白猴子不逛了',
+            m.kind === 'giant' ? '牠轉過身，朝地標走過去'
+          : m.kind === 'ape' ? '牠舉起手上那支火把，朝地標走過去'
                              : '牠舉起手上那根香蕉，朝地標走過去');
     }
     /* 最後才拿掉旗標：上面那幾行還要靠它分辨「牠原本是來逛的」。
@@ -7839,6 +8025,11 @@ function wetBeast(m) {
    噴到一半被打斷也一樣——配額 m.left 還在，牠爬起來會再噴一道。 */
 function reaim(m) {
   if (m.st === 'act') { m.st = 'near'; m.t = DOOM_AIM; m.arm = 0; }
+  /* 巨人踹到一半被打斷（v1.192）：這一腳收掉、回 near 重走過去再瞄一次。
+     剩下的 kleft 留著——打倒牠只是拖延，爬起來牠會把沒踹完的踹完（同猴子）。
+     **m.spin 不在這裡動**：那是躺平角，剛被 fellBeast／igniteBeast 擺好的，
+     歸零的話牠會平躺著卻站得直直的；爬起來自己會收回 0（見 hurtBeast 最後兩行）。 */
+  else if (m.st === 'kick') { m.st = 'near'; m.kick = 0; m.kt = 0; m.hit = 0; }
   else if (m.st === 'aim' || m.st === 'fire' || m.st === 'walk') {
     m.st = 'aim'; m.t = GR_AIM; m.jr = 0;              // jr 歸零＝爬起來重新挑一次目標
   }

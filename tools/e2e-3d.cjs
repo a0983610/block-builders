@@ -19596,20 +19596,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(btime.ticked - 10) < 0.01 && btime.busy === -1 && btime.rearm > 480,
      '10 秒扣掉 ' + btime.ticked + '／場上有東西時 ' + btime.busy);
   /* 「設計成可擴充多種」：加一種天災＝往 DOOMS 再放一列，別處不必動
-     （v1.176 加獅鷲那一次就是這樣加的，所以這一條的期望值跟著從三種變四種）。 */
+     （v1.176 加獅鷲、v1.192 加巨人那兩次就是這樣加的）。
+     **期望值照表算，不寫死種數**（見 開發筆記〈不要寫死會隨改動變動的數字〉）：
+     v1.176 那一版寫死「四種」，v1.192 多一列就得回來改一次——那種數字不該手動維護。 */
   const bpick = await page.evaluate(() => {
-    /* 臨時加一筆權重 2 的：總權重變成 4 種 ×1 ＋ 2 ＝ 6，所以它該拿到三分之一上下。 */
+    /* 臨時加一筆權重 2 的：總權重 ＝ 原本那幾種的權重和 ＋ 2，它該拿到 2/總 那麼多。 */
+    const base = DOOMS.reduce((s, d) => s + d.wt, 0);
     DOOMS.push({ id: 'test', wt: 2, start: () => {} });
     const cnt = {};
     for (let i = 0; i < 1000; i++) { const d = rollDoom(); cnt[d.id] = (cnt[d.id] || 0) + 1; }
     DOOMS.pop();
-    return { ids: DOOMS.map(d => d.id), cnt };
+    return { ids: DOOMS.map(d => d.id), cnt, base, want: Math.round(2 / (base + 2) * 1000) };
   });
   ok('事件表可擴充：加一筆進去就抽得到，而且照權重',
-     bpick.ids.length === 4 && bpick.cnt.test > 270 && bpick.cnt.test < 400 &&
-     bpick.cnt.ape > 100 && bpick.cnt.snow > 100 && bpick.cnt.dragon > 100 &&
-     bpick.cnt.gryphon > 100,
-     '原本四種 ＋ 臨時加一種（權重 2）抽 1000 次：' + JSON.stringify(bpick.cnt));
+     bpick.cnt.test > bpick.want * 0.78 && bpick.cnt.test < bpick.want * 1.3 &&
+     bpick.ids.every(id => bpick.cnt[id] > 1000 / (bpick.base + 2) * 0.55),
+     '原本 ' + bpick.ids.length + ' 種（權重和 ' + bpick.base +
+     '）＋ 臨時加一種（權重 2）抽 1000 次，那一筆該拿 ' + bpick.want + '：' +
+     JSON.stringify(bpick.cnt));
 
   /* ── 走過來（使用者：「按照小人行走邏輯 不要穿越地標建築&小房子」）── */
   await fillAll(page);
@@ -19958,15 +19962,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '火球 範圍 ' + dnum.r + '／威力 ' + dnum.pow + '，隕石 ' + dnum.mr + '／' + dnum.mpow +
      '；同一點炸下去 火球 ' + dpow.fball + ' 塊、隕石 ' + dpow.meteor + ' 塊');
 
+  /* 每一種都抽得到。**種數照表算不寫死**（同上面那條，v1.192 加巨人時改的）：
+     期望值是 900 ÷ 種數，門檻取它的六成。 */
   const dpick = await page.evaluate(() => {
     const cnt = {};
     for (let i = 0; i < 900; i++) { const d = rollDoom(); cnt[d.id] = (cnt[d.id] || 0) + 1; }
-    return { ids: DOOMS.map(d => d.id), cnt };
+    return { ids: DOOMS.map(d => d.id), cnt, want: Math.round(900 / DOOMS.length) };
   });
-  ok('四種天災都抽得到', dpick.ids.length === 4 && dpick.ids.indexOf('dragon') >= 0 &&
-     Object.keys(dpick.cnt).length === 4 && dpick.cnt.dragon > 150 &&
-     dpick.cnt.gryphon > 150,
-     JSON.stringify(dpick.cnt));
+  ok('每一種天災都抽得到',
+     Object.keys(dpick.cnt).length === dpick.ids.length &&
+     dpick.ids.every(id => dpick.cnt[id] > dpick.want * 0.6),
+     dpick.ids.length + ' 種（每種期望 ' + dpick.want + '）：' + JSON.stringify(dpick.cnt));
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 
@@ -20312,13 +20318,270 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 
+  /* ══════════ 天災：巨人腳踢 ══════════ */
+  /* v1.192。使用者：「新天災+吉祥物／巨人 在地面行走的巨人 攻擊方式是腳踢
+     擊中的地方積木破壞(帶有燃燒效果)／造型先做出來給我看過(比小人大得多 參考進擊的巨人)」，
+     附了一張超大型巨人的參考圖。四件會影響做法的事是一次問完才動手的：
+     多高（15 格，跟金字塔頂 13.5 齊高）、天災＋吉祥物都做、一腳的量級（香蕉炸彈那一級、
+     一趟 2~3 腳）、造型照參考圖再加走路冒蒸氣。
+
+     牠走路那一整套**一個字都沒重刻**（沿用猴子的 come／fun／near／go），
+     所以這一段驗的是新的那些：踹的那一段狀態機、踹到哪一點（畫面與判定同一份數字）、
+     一腳只結算一次、不會把自己踹倒、量級真的是香蕉那一級、還有牠這麼大一隻
+     走起來不插進地標。另開一段而不是塞進上面兩段，是為了不位移那兩段的骰子。 */
+  }   // ── 〈天災：獅鷲噴火〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('天災：巨人腳踢', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
+  await fillAll(page);
+
+  /* ── 造型（讀引擎那份部位表，跟核可過的造型對得起來）── */
+  const jfig = await page.evaluate(() => {
+    const G = ENG.BEASTS.giant;
+    const top = Math.max(...G.map(b => b.p[1] + b.s[1] / 2));
+    const lo = Math.min(...G.map(b => b.p[1] - b.s[1] / 2));
+    const wide = Math.max(...G.map(b => Math.abs(b.p[0]) + b.s[0] / 2)) * 2;
+    const legs = G.filter(b => b.sw), kk = G.filter(b => b.kk);
+    const sole = G.find(b => b.kk && b.s[2] > 0.6 && b.p[0] > 0);
+    /* 牙齒要凸出臉盤前緣才看得見（第一版整個下半臉糊成一團米色，使用者看圖才發現的）。
+       臉盤＝那塊 GI_FACE2；牙＝GI_TEETH 那兩塊裡比較前面的。 */
+    const face = G.filter(b => b.c === 0xc9a98c).sort((a, b) => b.p[2] - a.p[2])[0];
+    const teeth = G.filter(b => b.c === 0xf0e8d6).sort((a, b) => b.p[2] - a.p[2])[0];
+    return {
+      parts: G.length, max: ENG.BEAST_PARTS,
+      tall: +(top * GIA_SC).toFixed(1), floor: ENG.BEAST_FLOOR.giant,
+      lo: +lo.toFixed(3), wide: +(wide * GIA_SC).toFixed(1),
+      /* 頭小肩寬：頭高 ÷ 全身。八頭身以上才是「巨人」，照真人七頭身縮放只是放大的小人。 */
+      heads: +(top / 0.55).toFixed(1),
+      legs: legs.length, kk: kk.length, arms: G.filter(b => b.am).length,
+      /* 兩條腿要**反相**（右腿 sw > 0，bmir 翻成負的），不像牛羊四條腿是對角同步 */
+      swSigns: [...new Set(legs.map(b => Math.sign(b.sw)))].sort().join(),
+      kickOnlyRight: kk.filter(b => b.sw > 0).length === kk.length / 2,
+      sole: sole ? [sole.p[1], sole.p[2]] : null,
+      toothZ: +(teeth.p[2] + teeth.s[2] / 2 - (face.p[2] + face.s[2] / 2)).toFixed(3),
+      sc: GIA_SC
+    };
+  });
+  ok('巨人高 15 格（小人 2.26 的 6.6 倍）、原點在腳底、頭只佔九分之一',
+     jfig.tall > 14.5 && jfig.tall < 15.5 && jfig.floor === 0 &&
+     Math.abs(jfig.lo) < 0.001 && jfig.heads >= 8.5,
+     '模型高 ' + (jfig.tall / jfig.sc).toFixed(2) + ' ×' + jfig.sc + ' ＝ ' + jfig.tall +
+     ' 格、肩寬 ' + jfig.wide + ' 格、' + jfig.heads + ' 頭身，' +
+     jfig.parts + ' 塊（一隻的上限 ' + jfig.max + '）');
+  ok('兩條腿反相擺、整條腿都掛 kk，而且只有右腿那一條真的踢得動',
+     jfig.legs === 16 && jfig.kk === 16 && jfig.swSigns === '-1,1' && jfig.kickOnlyRight,
+     '腿 ' + jfig.legs + ' 塊（掛 kk 的 ' + jfig.kk + ' 塊，正負號 ' + jfig.swSigns +
+     '）、手 ' + jfig.arms + ' 塊');
+  ok('那排牙凸出臉盤前緣（不凸的話整個下半臉糊成一團米色）',
+     jfig.toothZ > 0.01, '牙比臉盤前緣再往前 ' + jfig.toothZ);
+
+  /* ── 踹到哪一點：畫面與判定是同一份數字 ──
+     同大劍的 SWORD_HIT、幽浮的 UFO_MOUTH。各寫一份的話會變成
+     「腳踹在這裡、積木炸在那裡」，而那種錯畫面上看不出來。 */
+  const jhit = await page.evaluate(() => {
+    const G = ENG.BEASTS.giant;
+    const k = G.findIndex(b => b.kk && b.s[2] > 0.6 && b.p[0] > 0);
+    const m = { kind: 'giant', x: 3, y: 0, z: -7, a: 0.7, sc: GIA_SC,
+                ph: 0, gait: 0, kick: 1, spin: -GIA_LEAN };
+    ENG.putBeasts([m]);
+    const mat = new THREE.Matrix4();
+    ENG.three.beastMesh.getMatrixAt(k, mat);
+    const drawn = { x: mat.elements[12], y: mat.elements[13], z: mat.elements[14] };
+    const rule = giantHit(m);
+    ENG.putBeasts([]);
+    /* 站著（kick 0）時腳掌該貼在草皮上，踹滿時抬到 giantFoot 說的高度 */
+    const stand = ENG.giantFoot(0, 0), full = ENG.giantFoot(1, GIA_LEAN);
+    return { d: +Math.hypot(drawn.x - rule.x, drawn.y - rule.y, drawn.z - rule.z).toFixed(4),
+             y: +(full.y * GIA_SC).toFixed(1), z: +(full.z * GIA_SC).toFixed(1),
+             standY: +(stand.y * GIA_SC).toFixed(2), near: GIA_NEAR };
+  });
+  ok('踹到的那一點就是畫出來的腳掌（畫面與判定同一份數字）',
+     jhit.d < 0.001, '兩者差 ' + jhit.d + ' 格');
+  ok('踹滿時腳掌在 3 格高、5 格遠，站定的距離搆得到',
+     jhit.y > 2.6 && jhit.y < 3.6 && jhit.z > 4.2 && jhit.z > jhit.near &&
+     jhit.standY < 0.5,
+     '踹滿 高 ' + jhit.y + '／遠 ' + jhit.z + ' 格（站定離最近那一塊 ' + jhit.near +
+     ' 格，所以腳落在那一塊再往裡 ' + (jhit.z - jhit.near).toFixed(1) +
+     ' 格）；站著時腳掌在 ' + jhit.standY);
+
+  /* ── 一腳只結算一次 ──
+     踹滿要停 GIA_HOLD 秒，照「m.kick >= 1」判的話那幾十幀會一幀炸一次。 */
+  const jonce = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const m = spawnBeast('giant');
+    m.x = 0; m.z = -(siteR + GIA_NEAR); m.a = 0;
+    m.st = 'kick'; m.kt = 0; m.hit = 0; m.kick = 0; m.kleft = 1;
+    const real = explode; let calls = 0, frames = 0, full = 0;
+    explode = function (...a) { calls++; return real.apply(null, a); };
+    while (m.st === 'kick' && frames < 400) { stepKick(m, 0.02); frames++; if (m.kick >= 1) full++; }
+    explode = real;
+    const st = m.st;
+    beasts = null;
+    return { calls, full, frames, secs: +(frames * 0.02).toFixed(2), st,
+             cycle: +GIA_CYCLE.toFixed(2) };
+  });
+  ok('一腳只結算一次，不是踹滿那幾十幀每幀炸一次',
+     jonce.calls === 1 && jonce.full > 10 && Math.abs(jonce.secs - jonce.cycle) < 0.05,
+     '踹滿那一段有 ' + jonce.full + ' 幀，explode 只叫了 ' + jonce.calls +
+     ' 次；一腳走完 ' + jonce.secs + ' 秒（GIA_CYCLE ' + jonce.cycle + '）');
+
+  /* ── 威力：**同一點**各炸一次才比得出量級 ──
+     使用者選的是「香蕉炸彈那一級」。踹的是牆角、香蕉丟的是塔頂，
+     不擺在同一點比的話量到的是「位置」不是「威力」。
+
+     **站的位置要照 near 那一段真的會停的地方算**（第一版寫死
+     `z = -(siteR + GIA_NEAR)` 就錯了：siteR 是**外接**半徑，而方底的金字塔沿著軸線
+     的邊只到 siteR/√2——那一點在建築外面 4.75 格，半徑 9 內只有 6 塊，
+     兩邊都量到 6，那條測試等於沒在守）。
+
+     **只量「當場掃飛幾塊」、不推模擬**（同火球 vs 隕石那條的量法）：
+     推下去的話推土機與火會把場景吃掉，後面幾條測試量到的就是殘局。
+     每一發之間用 fillAll 把整座重新站好。 */
+  const jpow = {};
+  for (const kind of ['giant', 'nana', 'rock']) {
+    await fillAll(page);
+    jpow[kind] = await page.evaluate(k => {
+      /* 站的位置照 near 那一段真的會停的地方算：從 −z 那個方位看過去最近的那一塊，
+         再退 GIA_NEAR。**不能寫死 siteR + GIA_NEAR**——siteR 是**外接**半徑，
+         而方底的金字塔沿著軸線的邊只到 siteR/√2，那樣算出來的點在建築外面四五格，
+         半徑 9 內只有六塊，兩邊都量到 6，這條測試就等於沒在守（第一版就是這樣）。 */
+      buildSlotOwner();
+      const b0 = nearSet(0, -600);
+      const m = { x: b0.x, z: b0.z - GIA_NEAR, a: 0, sc: GIA_SC };
+      const p = giantHit(m);
+      const R = k === 'giant' ? GIA_R : k === 'nana' ? NANA_R : ROCK_R;
+      const P = k === 'giant' ? GIA_POW : k === 'nana' ? NANA_POW : ROCK_POW;
+      const n0 = blocks.filter(b => b.st === SET).length;
+      explode(p, R, P, false, false, true);
+      return { n: n0 - blocks.filter(b => b.st === SET).length, n0,
+               p: [+p.x.toFixed(1), +p.y.toFixed(1), +p.z.toFixed(1)] };
+    }, kind);
+  }
+  await fillAll(page);                     // 量完把整座還回去，後面幾條要用
+  const jnum = await page.evaluate(() => ({ r: GIA_R, pow: GIA_POW, nr: NANA_R, np: NANA_POW }));
+  ok('一腳是香蕉炸彈那一級（同一點各炸一次，差在雜訊內）',
+     jnum.r === jnum.nr && jnum.pow === jnum.np &&
+     Math.abs(jpow.giant.n - jpow.nana.n) < jpow.nana.n * 0.1 &&
+     jpow.giant.n > jpow.rock.n * 3,
+     '炸點 (' + jpow.giant.p.join(', ') + ')，炸之前還站著 ' + jpow.giant.n0 +
+     ' 塊：巨人一腳 ' + jpow.giant.n + ' 塊、香蕉 ' + jpow.nana.n +
+     ' 塊、投石機的石頭 ' + jpow.rock.n + ' 塊（範圍／威力 ' + jnum.r + '／' + jnum.pow + '）');
+
+  /* ── 一整趟：走進來、踹完、走人 ── */
+  const jrun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    const set0 = blocks.filter(b => b.st === 3).length;
+    const m = spawnBeast('giant');
+    const r0 = Math.hypot(m.x, m.z);
+    let n = 0, kicks = 0, last = 0, inSite = 0, inHome = 0, down = 0, steam = 0;
+    let arrive = 0, standR = 0;
+    while (n < 4000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.02); n++;
+      if (m.hit && !last) kicks++;
+      last = m.hit;
+      if (!arrive && (m.st === 'near' || m.st === 'act')) { arrive = n; standR = Math.hypot(m.x, m.z); }
+      if (footBlocked(m.x, m.z)) inSite++;
+      if (homeFoot(m.x, m.z)) inHome++;
+      if (m.fall > 0 || m.air) down++;
+      const s = dust.filter(d => d.gia).length;
+      if (s > steam) steam = s;
+    }
+    const set1 = blocks.filter(b => b.st === 3).length;
+    const burn = blocks.filter(b => b.st === 3 && b.burn).length;
+    return { r0: +r0.toFixed(1), arrive: +(arrive * 0.02).toFixed(1), standR: +standR.toFixed(1),
+             siteR: +siteR.toFixed(1), near: GIA_NEAR, kicks, lo: GIA_KICKS[0], hi: GIA_KICKS[1],
+             set0, set1, burn, inSite, inHome, down, steam,
+             secs: +(n * 0.02).toFixed(1), gone: !beasts || beasts.indexOf(m) < 0 };
+  });
+  ok('一趟踹 2~3 腳，踹完就走人',
+     jrun.kicks >= jrun.lo && jrun.kicks <= jrun.hi && jrun.gone,
+     '從半徑 ' + jrun.r0 + ' 走進來、' + jrun.arrive + ' 秒到位（站在半徑 ' + jrun.standR +
+     '，siteR ' + jrun.siteR + ' ＋ ' + jrun.near + '）→ 踹 ' + jrun.kicks +
+     ' 腳 → 走人，全程 ' + jrun.secs + ' 秒');
+  ok('踹掉的積木還會燒（使用者：「擊中的地方積木破壞(帶有燃燒效果)」）',
+     jrun.set1 < jrun.set0 && jrun.burn > 0,
+     '還站著的 ' + jrun.set0 + ' → ' + jrun.set1 + ' 塊，收工時還有 ' + jrun.burn + ' 塊在燒');
+  ok('自己踹的那一下不會把自己掀倒（半徑 9 本來就罩得到牠自己）',
+     jrun.down === 0, '全程躺／飛 ' + jrun.down + ' 幀');
+  ok('十五格高的一隻走起來也不插進地標與小房子',
+     jrun.inSite === 0 && jrun.inHome === 0,
+     '站在建築的格子裡 ' + jrun.inSite + ' 幀、站在房子裡 ' + jrun.inHome + ' 幀');
+  ok('身上一直在冒蒸氣，而且吃的是自己那份配額',
+     jrun.steam > 5 && jrun.steam <= 150,
+     '同時最多 ' + jrun.steam + ' 顆（自己的上限 150、塵霧那一池 400）');
+
+  /* ── 腿擺的快慢是「一步跨多遠」湊出來的，不是隨便給一個數字 ──
+     同飛龍的 DRA_STEP。寫死一個數字的話，改腳程時腳會在原地空踩。 */
+  const jstep = await page.evaluate(() => {
+    const sole = ENG.BEASTS.giant.find(b => b.kk && b.s[2] > 0.6 && b.p[0] > 0);
+    const hip = sole.pv * GIA_SC;                     // 髖到腳底（場上）
+    const amp = Math.abs(sole.sw) * 0.85;             // 擺幅：sw × 走起來的 gait
+    const per = Math.PI * 2 / (11 * GIA_STEP);        // 一個週期幾秒（strollTo 的 ph += dt*11*step）
+    const stride = 2 * (2 * hip * Math.sin(amp));     // 兩條腿一個週期走多遠
+    return { hip: +hip.toFixed(2), amp: +amp.toFixed(3), per: +per.toFixed(2),
+             stride: +stride.toFixed(2), want: +(GIA_WALK * per).toFixed(2),
+             walk: GIA_WALK, step: GIA_STEP, spd: DOOM_SPD.giant };
+  });
+  ok('腿擺的快慢照「一步跨自己的腿長」算出來，不是寫死的',
+     Math.abs(jstep.stride - jstep.want) < jstep.want * 0.08 && jstep.spd === jstep.walk,
+     '髖到腳底 ' + jstep.hip + ' 格、擺幅 ' + jstep.amp + '：一個週期 ' + jstep.per +
+     ' 秒走 ' + jstep.stride + ' 格，而 ' + jstep.walk + ' 格／秒 × 週期 ＝ ' + jstep.want);
+
+  /* ── 吉祥物那一版：狀態機根本走不到踹那一段 ──
+     **整座要先重新站好**：上一條踹完留下 150 塊在燒，那把火會在這五十幾秒裡
+     自己再啃掉十幾塊——量到的就不是「吉祥物有沒有動手」了（第一版就是這樣紅的）。 */
+  await fillAll(page);
+  const jfun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    const set0 = blocks.filter(b => b.st === 3).length;
+    const m = spawnBeast('giant', 1);                 // fun＝1，不給 bad
+    const seen = new Set();
+    /* **數的是「牠有沒有動手」，不是「場上少了幾塊」**：那幾十秒裡小人與餘火
+       本來就會動到幾塊，拿總數當proxy 量到的不是這條要驗的事（第一版就是這樣紅的）。
+       踹下去唯一會打掉積木的路徑就是 giantKick 裡那一發 explode，所以直接數它。 */
+    const real = explode; let booms = 0;
+    explode = function (...a) { booms++; return real.apply(null, a); };
+    let n = 0, hit = 0;
+    while (n < 5000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.02); n++; seen.add(m.st); if (m.hit) hit++;
+    }
+    explode = real;
+    const set1 = blocks.filter(b => b.st === 3).length;
+    beasts = null;
+    return { sts: [...seen].join('／'), kick: seen.has('kick') || seen.has('act'),
+             booms, hit, set0, set1, secs: +(n * 0.02).toFixed(1) };
+  });
+  ok('吉祥物那一版不動手：狀態機走不到 act／kick，一發都沒炸',
+     !jfun.kick && jfun.booms === 0 && jfun.hit === 0,
+     '走過的段：' + jfun.sts + '，' + jfun.secs + ' 秒，踹了 ' + jfun.hit +
+     ' 下、explode 被叫 ' + jfun.booms + ' 次（場上還站著 ' +
+     jfun.set0 + ' → ' + jfun.set1 + ' 塊，那個差是小人與餘火，跟牠無關）');
+
+  /* ── 兩張表各有牠一列（加一種＝加一列，別處不必動）── */
+  const jtab = await page.evaluate(() => ({
+    doom: DOOMS.map(d => d.id), masc: MASCOTS.map(k => k.id),
+    ground: (MASCOTS.find(k => k.id === 'giant') || {}).ground,
+    act: !!DOOM_ACT.giant, fight: canFight({ kind: 'giant' }),
+    badKicks: GIA_BAD_KICKS, kicks: GIA_KICKS
+  }));
+  ok('DOOMS 與 MASCOTS 各多一列就接上了，吉祥物那一版只踹一腳',
+     jtab.doom.indexOf('giant') >= 0 && jtab.masc.indexOf('giant') >= 0 &&
+     jtab.ground === 1 && !jtab.act && jtab.fight && jtab.badKicks === 1,
+     '天災 ' + jtab.doom.join('／') + '；吉祥物 ' + jtab.masc.join('／') +
+     '（ground ' + jtab.ground + '）；天災那一趟踹 ' + jtab.kicks.join('~') +
+     ' 腳、吉祥物那一趟 ' + jtab.badKicks + ' 腳');
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+
   /* ══════════ 吉祥物 ══════════ */
   /* v1.144。使用者：「黑獼猴 白猴子 飛龍 列為吉祥物／吉祥物一段時間就會出來刷存在感
      (不搞破壞 只是出現逛一逛 一段時間又走了)／各吉祥物出來刷存在感的事件各自獨立
      (所以有機會一起出沒)」。出沒時機與間隔是問過使用者的：「任何時候都可能」「各自 3~6 分鐘」。
      跟天災共用同一批動物與同一套走路，所以這一段驗的是**差在哪裡**，不重驗造型。
      兩支鐘都要裝回去：走路那一段是 stepDoom 在跑（beasts 的迴圈在它裡面）。 */
-  }   // ── 〈天災：獅鷲噴火〉結束（--tier 跳過時從這裡出來）
+  }   // ── 〈天災：巨人腳踢〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('吉祥物：來逛一圈就走', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; stepMascot = window.mascStep; });
@@ -20337,8 +20600,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              armed: armed.map(v => +v.toFixed(1)),
              lo: Math.min(...rolls), hi: Math.max(...rolls) };
   });
-  ok('四隻各有各的鐘，不是天災那個共用的倒數',
-     mtime.n === 4 && mtime.ids.join() === 'ape,snow,dragon,gryphon',
+  /* 幾隻照表算，不寫死（v1.192 加巨人時改的，同 DOOMS 那兩條）：
+     要守的是「鐘的數量跟表一樣多」，不是「剛好四隻」。 */
+  ok('每一隻各有各的鐘，不是天災那個共用的倒數',
+     mtime.n === mtime.ids.length && mtime.ids.indexOf('giant') >= 0,
      mtime.ids.join('／') + '，這一輪各抽到 ' + mtime.armed.join('／') + ' 秒');
   ok('間隔落在 3~6 分鐘，而且三個鐘都照模擬時間走',
      mtime.lo >= 180 && mtime.hi <= 360 && mtime.hi - mtime.lo > 60 &&
@@ -20381,12 +20646,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const drawn = ENG.three.beastMesh.count / ENG.BEAST_PARTS;
     const n = beasts.length;
     cleanTools();
-    return { kinds, allFun, n, drawn, max: ENG.MAXBEAST };
+    /* 期望值照 MASCOTS 那張表算，不寫死種數（v1.192 加巨人時改的，同 DOOMS 那幾條）：
+       要守的是「表上每一隻都能同時在場」，不是「剛好四隻」。 */
+    return { kinds, allFun, n, drawn, max: ENG.MAXBEAST,
+             want: MASCOTS.map(k => k.id).sort().join() };
   });
-  ok('四隻有機會一起出沒', mall.kinds === 'ape,dragon,gryphon,snow' && mall.allFun,
-     mall.kinds);
-  ok('四隻吉祥物 ＋ 一件天災同場，五隻都畫得出來',
-     mall.n === 5 && mall.drawn === 5 && mall.max >= 5,
+  ok('表上每一隻都有機會一起出沒', mall.kinds === mall.want && mall.allFun, mall.kinds);
+  ok('全部吉祥物 ＋ 一件天災同場，每一隻都畫得出來',
+     mall.n === mall.want.split(',').length + 1 && mall.drawn === mall.n && mall.max >= mall.n,
      '場上 ' + mall.n + ' 隻、畫出 ' + mall.drawn + ' 隻（上限 ' + mall.max + '）');
 
   /* ── 猴子：走進來、逛一逛、走了，全程不動手 ── */
