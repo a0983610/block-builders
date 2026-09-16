@@ -6510,6 +6510,9 @@ function leaveBeast(m) {
      clear（整地），而 stepBeast 開頭那條 away 就會把牠推進 go。
      擺在這裡而不是各呼叫端：leaveBeast 是所有「走人」的共同出口。 */
   if (m.kick) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; }
+  /* 「正在拆擋路的那一段牆」那個旗標也收掉（v1.194）：拆一下就是一趟，收掉之後
+     上面那條 away 的豁免才只罩著這一趟（還是走不出去的話，go 下一行會再立一次）。 */
+  m.home = 0;
   m.st = 'go';
   const d = Math.hypot(m.x, m.z) || 1;
   m.tx = m.x / d * (arenaR + DOOM_OUT);
@@ -6556,7 +6559,11 @@ function wallAhead(m, tx, tz) {
    （門樓被打爛了）——後者由呼叫端決定怎麼辦，那邊會改成就地拆牆。 */
 const GATE_WAY = 5;                 // 門外／門內那一個落腳點離門洞多遠
 function gateNeed(m, tx, tz) {
-  if (m.st === 'gate' || !wallSplits(m.x, m.z, tx, tz) || !wallGateSpot()) return false;
+  if (m.st === 'gate' || !wallSplits(m.x, m.z, tx, tz)) return false;
+  /* 四面都有門之後（v1.194）挑**離自己最近的那一座**，挑好釘住（見 wallGateSpot）。 */
+  const g = wallGateSpot(m.x, m.z);
+  if (!g) return false;
+  m.ghid = g.h.id;
   m.gback = m.st;                   // 穿過去之後回哪一段
   m.gout = inWall(m.x, m.z) ? -1 : 1;   // 現在在城裡還是城外：先走門的哪一側
   m.gstep = 0;
@@ -6605,7 +6612,13 @@ function stepBeast(m, dt) {
      兩邊每幀互推，gate 的位移程式碼永遠跑不到，牠就定在原地了（連 stuckWatch 的穿透
      也救不了：那幾秒同樣一步都沒走）。實測開工中的那一座城裡，猴子就這樣定在
      (0.5, −91) 整整 400 秒。穿完門 gateBack 自己會回到 go。 */
-  if (away && m.st !== 'go' && m.st !== 'gate') leaveBeast(m);
+  /* **正在拆擋路的那一段牆也不要打斷**（v1.194，跟上面那條穿門的同一個道理）：
+     沒有門可以繞的時候，走人那一段會立起 m.home、轉進 near → act 去拆牆（見下面的 go）。
+     這一條把牠拉回 go，go 下一行又發現被牆擋住、再把牠推回 near——兩邊每幀互推，
+     DOOM_AIM 那個倒數永遠數不完，牠就定在原地了（實測 phase=build 的場子裡
+     8000 幀只走了 1.2 格、一次都沒動手）。m.home 只有天災「拆擋路的牆」那一路會立起來
+     （吉祥物那一趟是 m.fun 那邊的旗標，不在這一條裡），拆完 leaveBeast 就歸零。 */
+  if (away && m.st !== 'go' && m.st !== 'gate' && !(m.home && !m.fun)) leaveBeast(m);
   m.arm += ((m.st === 'act' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
   if (m.st === 'come') {
     m.tx = 0; m.tz = 0;
@@ -6641,7 +6654,7 @@ function stepBeast(m, dt) {
        ③ 徑向走到門外那一點，再直直穿過門洞
      從城裡往外走不必繞（城內是空的），所以那一種直接走門內那一點。 */
   if (m.st === 'gate') {
-    const g = wallGateSpot(), W = wallNow();
+    const g = wallGateSpot(m.x, m.z, m.ghid), W = wallNow();
     if (!g || !W) { gateBack(m); return false; }
     const side = m.gstep ? -m.gout : m.gout;
     let tx = g.x + g.nx * GATE_WAY * side, tz = g.z + g.nz * GATE_WAY * side;

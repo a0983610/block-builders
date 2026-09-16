@@ -8290,17 +8290,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       ring.push({ sr, ar, W: wallRing(), mid: (sr + ar) / 2,
                   lo: sr + WALL_NEAR, hi: (ar + 6) / Math.SQRT2 });
     }
-    /* ② 整圈的組成：四座角樓 ＋ 一座門樓 ＋ 幾段直牆，而且每一格都落在牆線上
-       （x = ±W 或 z = ±W，角樓與門樓各自往外／往內鋪開，所以容許 T 與 1 格的厚度）。 */
+    /* ② 整圈的組成：四座角樓 ＋ **四座門樓**（v1.194，使用者：「城牆四個方向都做門」）
+       ＋ 幾段直牆，而且每一格都落在牆線上（x = ±W 或 z = ±W，角樓與門樓各自往外／
+       往內鋪開，所以容許 T 與 1 格的厚度）。 */
     siteR = 12; arenaR = 52;
     const W = wallRing(), segs = wallPlan();
     const T = (WALL_TOW - 1) / 2;
     let off = 0, blocks0 = 0;
+    /* 容許的厚度：角樓半徑 T，或門樓那一側最遠的那一排托架
+       （凸出 WALL_JUT ＋ 再挑 WALL_MACH，見 gateTower）——**照常數算**，
+       改了哪一個它自己跟著變（見 開發筆記〈不要寫死會隨改動變動的數字〉）。 */
+    const thick = Math.max(T, 1 + WALL_JUT + WALL_MACH);
     for (const h of segs)
       for (const sl of h.slots) {
         blocks0++;
         const dx = Math.abs(Math.abs(sl.x) - W), dz = Math.abs(Math.abs(sl.z) - W);
-        if (Math.min(dx, dz) > T) off++;                // 離牆線太遠＝跑掉了
+        if (Math.min(dx, dz) > thick) off++;            // 離牆線太遠＝跑掉了
       }
     const kinds = {};
     for (const h of segs) kinds[h.kind] = (kinds[h.kind] || 0) + 1;
@@ -8313,10 +8318,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                              Math.abs(r.W - Math.max(r.lo, Math.min(r.mid, r.hi))) <= 0.5),
      wallGeo.ring.map(r => `siteR ${r.sr}／arenaR ${r.ar} → 牆半徑 ${r.W}` +
                            `（中間值 ${r.mid.toFixed(1)}、下限 ${r.lo}、上限 ${r.hi.toFixed(1)}）`).join('；'));
-  ok('一圈是四座角樓 ＋ 一座城門樓 ＋ 幾段直牆，每一格都在牆線上',
-     wallGeo.kinds['角樓'] === 4 && wallGeo.kinds['城門樓'] === 1 &&
+  ok('一圈是四座角樓 ＋ 四座城門樓 ＋ 幾段直牆，每一格都在牆線上',
+     wallGeo.kinds['角樓'] === 4 && wallGeo.kinds['城門樓'] === 4 &&
      wallGeo.kinds['城牆'] >= 8 && wallGeo.off === 0 &&
-     wallGeo.gate === 1 && wallGeo.thin === wallGeo.kinds['城牆'],
+     wallGeo.gate === 4 && wallGeo.thin === wallGeo.kinds['城牆'],
      `牆半徑 ${wallGeo.W}：${wallGeo.segs} 段（` +
      Object.keys(wallGeo.kinds).map(k => k + ' ' + wallGeo.kinds[k]).join('／') +
      `）、共 ${wallGeo.blocks0} 塊，離牆線太遠的格子 ${wallGeo.off} 個`);
@@ -8347,6 +8352,66 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wallCut.out.hi === wallCut.top + 1 && wallCut.in.hi === wallCut.top,
      wallCut.rows.map(r => `z=${r.z}：${r.n} 格、第 ${r.lo}～${r.hi} 層`).join('；') +
      `（牆身 ${wallCut.top} 層）`);
+
+  /* ②-b2 門樓的幾何（v1.194，使用者：「城牆四個方向都做門 門的造型調整 洞口大一點」
+     ＋「應該比牆凸出一點點吧 一格?」，造型照 參考圖/271.png）。這一條是**規則型**：
+     不跑模擬，直接把四座門樓生出來量——
+       · 門洞是尖拱：每一柱開到第幾層照 WALL_GATE_H 算（4／5／7，不寫死）
+       · 磚身往城外凸出 WALL_JUT 格、城內那面跟牆齊
+       · 缺口（h.gap）**整段深度都要蓋到**：漏掉托架挑出去那一格的話，
+         人走到托架下面會被外框擋住、進不了門
+       · 門洞中心 gmid 落在牆線上（不是外框中心，見 wallGateSpot）
+       · 門樓的外框不跟隔壁那一段疊在一起（疊在一起的兩個框會互推，見〈四個坑〉①）
+       · 牆線上每一格都有人認領（門樓兩側的直牆從 P+1 起算，不能差一格開個洞） */
+  const gateGeo = await page.evaluate(() => {
+    siteR = 12; arenaR = 52;
+    const W = wallRing(), plan = wallPlan();
+    const G = (WALL_GATE - 1) / 2, P = G + WALL_PIER;
+    const gates = plan.filter(h => h.gap);
+    const g = gates.find(h => h.gmid && h.gmid.z > 0);        // 南門（+z 那一面）
+    /* 門洞剖面：外牆面那一層（z = W + WALL_JUT + 1）每一柱最低的那一格在第幾層，
+       也就是「這一柱開了幾格高」。期望值照常數算，不寫死。 */
+    const face = new Set(g.slots.filter(s => s.z === W + 1 + WALL_JUT)
+                                .map(s => s.x + ':' + s.gy));
+    const prof = [], want = [];
+    for (let a = -G; a <= G; a++) {
+      let n = 0;
+      while (n < 14 && !face.has(a + ':' + n)) n++;
+      prof.push(n);
+      want.push(WALL_GATE_H + (a === 0 ? G + 1 : G - Math.abs(a)));
+    }
+    const runs = plan.filter(h => h.thin === 'z' && h.z > 0);
+    const holes = [];
+    const have = new Set();
+    for (const h of plan) for (const s of h.slots) if (Math.abs(s.z - W) <= 1) have.add(s.x);
+    for (let i = -(W - 3); i <= W - 3; i++) if (!have.has(i)) holes.push(i);
+    return {
+      W, n: gates.length, prof, want, blocks: g.slots.length,
+      jut: Math.max(...g.slots.map(s => s.z)) - W,           // 最外那一排離牆線幾格
+      wantJut: 1 + WALL_JUT + WALL_MACH,                     // 期望值照常數算，不寫死
+      inner: W - Math.min(...g.slots.map(s => s.z)),          // 城內那一面離牆線幾格
+      mid: g.gmid, gap: g.gap, box: [g.wx0, g.wx1, g.wz0, g.wz1],
+      gapCovers: g.gap.z0 <= g.wz0 + 1e-9 && g.gap.z1 >= g.wz1 - 1e-9,
+      lap: runs.some(h => h.wx0 < g.wx1 && h.wx1 > g.wx0 && h.wz0 < g.wz1 && h.wz1 > g.wz0),
+      holes: holes.length,
+      // 四座門樓各自的門洞中心：四面各一座、都在牆線上
+      mids: gates.map(h => [h.gmid.x, h.gmid.z]).sort((a, b) => a[0] - b[0] || a[1] - b[1])
+    };
+  });
+  ok('四面各一座門樓：尖拱、往城外凸出一格、缺口蓋住整段、外框不跟隔壁疊、牆線沒缺口',
+     gateGeo.n === 4 && gateGeo.prof.join() === gateGeo.want.join() &&
+     gateGeo.jut === gateGeo.wantJut && gateGeo.inner === 1 &&
+     Math.abs(gateGeo.mid.z - gateGeo.W) < 1e-9 && gateGeo.mid.x === 0 &&
+     gateGeo.gapCovers && !gateGeo.lap && gateGeo.holes === 0 &&
+     gateGeo.mids.filter(m => Math.abs(Math.abs(m[0]) - gateGeo.W) < 1e-9).length === 2 &&
+     gateGeo.mids.filter(m => Math.abs(Math.abs(m[1]) - gateGeo.W) < 1e-9).length === 2,
+     `牆半徑 ${gateGeo.W}：${gateGeo.n} 座門樓（門洞中心 ` +
+     gateGeo.mids.map(m => `(${m[0]}, ${m[1]})`).join('／') + `）；` +
+     `尖拱剖面 ${gateGeo.prof.join('／')} 格（照常數算是 ${gateGeo.want.join('／')}）；` +
+     `一座 ${gateGeo.blocks} 塊、往城外凸到 ${gateGeo.jut} 格（照常數算 ${gateGeo.wantJut}）、` +
+     `城內面 ${gateGeo.inner} 格；` +
+     `外框 z ${gateGeo.box[2]}～${gateGeo.box[3]}、缺口 z ${gateGeo.gap.z0}～${gateGeo.gap.z1}；` +
+     `跟隔壁疊到 ${gateGeo.lap ? '有' : '沒有'}、牆線缺格 ${gateGeo.holes} 個`);
 
   /* ②-c 兩段之間的接縫不能是洞（v1.186 踩過）。整圈是切成好幾段的，而 pushOutHome
      原本是「四面挑最近的那一面推出去」——踩在接縫上的那一個會被推進隔壁那一段的框裡、
@@ -8380,20 +8445,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const wallBlock = await page.evaluate(() => {
     const W = mkWall(12, 52);
     const at = (x, z) => !!footHome(x, z);
+    const G = (WALL_GATE - 1) / 2;
     return { W,
-             gate: at(0, W), pier: at(WALL_GATE, W), north: at(0, -W),
-             east: at(W, 0), tower: at(W, W), inner: at(0, W - 8), outer: at(0, W + 8),
-             beastWall: homeAt(0, -W), beastGate: homeAt(0, W),
-             truckWall: ftIn(0, -W, 0, 0), truckSite: ftIn(0, 0, 0, 0) };
+             /* 四面的門洞都要走得過去（v1.194）。門樓往城外凸出去之後**整條隧道**
+                都算門洞：凸出那一格、托架下面那一格漏掉的話人會卡在門口。 */
+             gates: [at(0, W), at(0, -W), at(W, 0), at(-W, 0)],
+             jut: at(0, W + 1 + WALL_JUT), mach: at(0, W + 1 + WALL_JUT + WALL_MACH),
+             pier: at(G + 2, W),                        // 門墩（門洞外面那一柱）
+             jutSide: at(G + 2, W + 1 + WALL_JUT),       // 凸出去那一段的側面也擋
+             north: at(8, -W), east: at(W, 8), tower: at(W, W),
+             inner: at(0, W - 8), outer: at(0, W + 8),
+             beastWall: homeAt(8, -W), beastGate: homeAt(0, W),
+             truckWall: ftIn(8, -W, 0, 0), truckSite: ftIn(0, 0, 0, 0) };
   });
-  ok('城牆擋小人與動物，門洞走得過去，車照穿',
+  ok('城牆擋小人與動物，四面的門洞都走得過去，車照穿',
      wallBlock.north && wallBlock.east && wallBlock.tower && wallBlock.pier &&
-     !wallBlock.gate && !wallBlock.inner && !wallBlock.outer &&
+     wallBlock.jutSide && !wallBlock.gates.some(v => v) &&
+     !wallBlock.jut && !wallBlock.mach && !wallBlock.inner && !wallBlock.outer &&
      wallBlock.beastWall && !wallBlock.beastGate &&
      wallBlock.truckWall === 0 && wallBlock.truckSite > 0,
-     `牆半徑 ${wallBlock.W}：北牆/東牆/角樓/門墩擋住＝` +
-     [wallBlock.north, wallBlock.east, wallBlock.tower, wallBlock.pier].join('/') +
-     `；門洞 ${wallBlock.gate ? '擋住' : '走得過去'}、城內外空地 ` +
+     `牆半徑 ${wallBlock.W}：北牆/東牆/角樓/門墩/凸出段側面擋住＝` +
+     [wallBlock.north, wallBlock.east, wallBlock.tower, wallBlock.pier,
+      wallBlock.jutSide].join('/') +
+     `；四面門洞 ${wallBlock.gates.some(v => v) ? '有的擋住' : '都走得過去'}` +
+     `（含凸出那一格與托架下）、城內外空地 ` +
      `${wallBlock.inner || wallBlock.outer ? '有東西擋' : '都走得過去'}；` +
      `動物眼中的牆＝${wallBlock.beastWall}、門洞＝${wallBlock.beastGate}；` +
      `消防車在牆上插到 ${wallBlock.truckWall} 點（地標中心 ${wallBlock.truckSite} 點）`);
@@ -8565,9 +8640,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `siteR ${(wallHurt.W * 1.5).toFixed(0)}（連角都吃進去）剩 ${wallHurt.big} 段`);
 
   /* ⑦ 天災遇到城牆（v1.186，使用者：「白猴子&黑獼猴可能被擋路(可以繞路走城門
-     或他自己動手破壞)」，形態問過選「兩個都要」）。三條路各驗一次：
-     門在自己這一側 → 直接走門；門在對面 → 沿著牆外繞過去；門樓沒了 → 就地拆牆。
-     沒有這一段的話牠會在城外對著牆走到天亮（三種情形實測都卡滿 400 秒）。 */
+     或他自己動手破壞)」，形態問過選「兩個都要」）。四條路各驗一次：
+     正對著門進場 → 直直穿過去；從牆角那一側進場 → 繞去**最近的那一座**門
+     （v1.194 四面都有門，所以繞行最多四分之一圈）；正前方那一段還沒砌 → 直接走過去；
+     四座門樓都沒了 → 就地拆牆。
+     沒有這一段的話牠會在城外對著牆走到天亮（實測都卡滿 400 秒）。 */
   const apeWall = await page.evaluate(() => {
     /* 這一段要測的就是天災，把 installClean 關掉的那支裝回去（同「天災」那一段的做法）。
        牠們不是自己來的：每一輪都是這裡 spawnBeast 放一隻進場，倒數的鐘還沒響就演完了。 */
@@ -8600,15 +8677,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const m = spawnBeast('ape');
       m.x = Math.cos(a0) * (arenaR + 8); m.z = Math.sin(a0) * (arenaR + 8);
       const seen = {};
-      let act = null, n = 0;
+      let act = null, n = 0, pick = null;
       while (n++ < 4000 && beasts && beasts.includes(m)) {
         const st = m.st;
         step(0.05);
         seen[st] = (seen[st] || 0) + 1;
+        /* 牠挑的是哪一座門（v1.194）：釘在 m.ghid 上，第一次進 gate 那一刻問一次。
+           四面都有門之後這一條就是「有沒有挑最近的」的證據。 */
+        if (!pick && m.st === 'gate' && m.ghid !== undefined) {
+          const s = wallGateSpot(m.x, m.z, m.ghid);
+          if (s) {
+            let d = Math.atan2(s.z, s.x) - a0;          // 跟進場方位差幾度
+            while (d > Math.PI) d -= Math.PI * 2;
+            while (d < -Math.PI) d += Math.PI * 2;
+            pick = { x: s.x, z: s.z, deg: +(Math.abs(d) * 180 / Math.PI).toFixed(0) };
+          }
+        }
         if (!act && m.st === 'act')
           act = { inWall: inWall(m.x, m.z), home: m.home || 0 };
       }
-      return { gate: seen.gate || 0, act, secs: +(n * 0.05).toFixed(0),
+      return { gate: seen.gate || 0, act, pick, secs: +(n * 0.05).toFixed(0),
                wallBurn: blocks.filter(b => b.burn && b.hh >= 0).length,
                burn: blocks.filter(b => b.burn).length,
                /* 「有沒有跑去砸地標」要看**地標的格子**在不在燒：藍圖的積木 slot >= 0，
@@ -8620,35 +8708,56 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                siteBurn: blocks.filter(b => b.burn && b.slot >= 0).length };
     };
     const all = () => true;
-    const near = run(all, Math.PI / 2);          // 門開在 +z，從同一側進場
-    const far = run(all, -Math.PI / 2);          // 從對面進場：要繞過去
-    const none = run(h => (h.gap ? 'drop' : true), -Math.PI / 2);   // 沒有門：就地拆牆
-    // 正前方那一段還沒蓋起來：不該繞路，直直走過去
-    const gap = run(h => !(h.thin === 'z' && h.z < 0 && Math.abs(h.x) < 14), -Math.PI / 2);
+    const W = wallRing();
+    const near = run(all, Math.PI / 2);          // 正對著南門進場：門就在正前方
+    const corner = run(all, Math.PI / 4);        // 從牆角那一側進場：要繞去最近的門
+    const none = run(h => (h.gap ? 'drop' : true), Math.PI / 4);   // 四座門都沒了：就地拆牆
+    /* 正前方那一段還沒蓋起來：不該繞路，直直走過去。走的是「撞在 +z 牆 x≈14 那一段」
+       的方位（不是正對門，那條由 near 顧），把那一段留成「格子在、還沒砌」。
+       比的是 **wx0／wx1**（整段蓋起來會占到哪）不是 x0／x1：後者只框**已經砌好**的格子，
+       而這時候一塊都還沒砌，框是空的（x0 > x1），誰都對不上、整圈就全砌起來了。 */
+    const aGap = Math.atan2(W, 14);
+    const gap = run(h => !(h.thin === 'z' && h.z > 0 && h.wx0 < 14 && h.wx1 > 14), aGap);
+    /* 規則本身（不跑模擬）：站在牆外同樣的距離，**砌起來的那一段算擋路、
+       只有格子還沒砌的那一段不算**。「能走過去就走」靠的就是這一條——擋不擋看的是
+       砌好的那幾格（homeBox），沒砌的那一段連外框都是空的。
+       場上就是 gap 那一輪留下來的那一圈：x≈14 那一段沒砌、x≈20 那一段砌好了。 */
+    const W2 = wallRing();
+    const eye = x => !!wallAhead({ x, z: W2 + 2, ghost: 0 }, 0, 0);
+    const rule = { unbuilt: eye(14), built: eye(20), W: W2 };
     cleanTools(); clearHomes();
-    return { near, far, none, gap };
+    return { near, corner, none, gap, W, rule };
   });
-  ok('牆還沒蓋起來就直接走過去，不繞遠路（使用者：「能走過去就走」）',
-     apeWall.gap.gate === 0 && apeWall.gap.act && apeWall.gap.act.inWall &&
-     !apeWall.gap.act.home && apeWall.gap.secs < apeWall.far.secs,
-     `正前方那一段沒砌：繞門 ${apeWall.gap.gate} 幀、${apeWall.gap.secs} 秒就在城裡動手` +
-     `（整圈蓋好時要 ${apeWall.far.secs} 秒繞過去）`);
-  ok('天災遇到城牆：門在同一側就直接走門進城',
-     apeWall.near.gate > 0 && apeWall.near.act && apeWall.near.act.inWall &&
+  ok('牆還沒蓋起來就不算擋路，走得過去就直接走（使用者：「能走過去就走」）',
+     !apeWall.rule.unbuilt && apeWall.rule.built &&
+     apeWall.gap.act && apeWall.gap.act.inWall && !apeWall.gap.act.home,
+     `牆外同樣的距離：沒砌的那一段擋路＝${apeWall.rule.unbuilt}、` +
+     `砌好的那一段擋路＝${apeWall.rule.built}（牆半徑 ${apeWall.rule.W}）；` +
+     `跑一輪：正前方那一段沒砌，${apeWall.gap.secs} 秒就在城裡動手` +
+     `（繞門 ${apeWall.gap.gate} 幀；牆角那一側進場要 ${apeWall.corner.secs} 秒）`);
+  ok('天災遇到城牆：門就在正前方就直接穿過去進城',
+     apeWall.near.act && apeWall.near.act.inWall &&
      !apeWall.near.act.home && apeWall.near.secs < 120,
-     `走門洞 ${apeWall.near.gate} 幀、${apeWall.near.secs} 秒後動手，` +
+     `繞門 ${apeWall.near.gate} 幀、${apeWall.near.secs} 秒後動手，` +
      `站在${apeWall.near.act && apeWall.near.act.inWall ? '城裡' : '城外'}、` +
      `砸的是${apeWall.near.act && apeWall.near.act.home ? '村子那邊' : '地標'}`);
-  ok('門開在對面也繞得過去（沿著牆外繞到門口，不是貼著牆磨）',
-     apeWall.far.gate > apeWall.near.gate && apeWall.far.act && apeWall.far.act.inWall &&
-     !apeWall.far.act.home && apeWall.far.secs < 200,
-     `繞了 ${apeWall.far.gate} 幀（${(apeWall.far.gate * 0.05).toFixed(0)} 秒）到門口、` +
-     `總共 ${apeWall.far.secs} 秒後在${apeWall.far.act && apeWall.far.act.inWall ? '城裡' : '城外'}動手`);
-  ok('門樓被打爛了就就地拆牆（使用者選的「兩個都要」）',
+  /* 四面都有門之後（v1.194）繞的是**最近的那一座**：從牆角那一側進場，挑到的那一座
+     跟進場方位差不到 46°（四座門相隔 90°，最遠的情形就是站在兩座正中間的 45°）。
+     v1.193 只有一座門的時候，從對面進場要沿著牆外繞掉大半圈（實測 1388 幀 69 秒）。 */
+  ok('四面都有門：被牆擋住時繞的是離自己最近的那一座（最多四分之一圈）',
+     apeWall.corner.gate > 0 && apeWall.corner.pick && apeWall.corner.pick.deg <= 46 &&
+     apeWall.corner.act && apeWall.corner.act.inWall && !apeWall.corner.act.home &&
+     apeWall.corner.secs < 200,
+     `從 45° 那個角進場：挑的門在 (${apeWall.corner.pick && apeWall.corner.pick.x}, ` +
+     `${apeWall.corner.pick && apeWall.corner.pick.z})、跟進場方位差 ` +
+     `${apeWall.corner.pick && apeWall.corner.pick.deg}°，繞了 ${apeWall.corner.gate} 幀` +
+     `（${(apeWall.corner.gate * 0.05).toFixed(0)} 秒），總共 ${apeWall.corner.secs} 秒後在` +
+     `${apeWall.corner.act && apeWall.corner.act.inWall ? '城裡' : '城外'}動手`);
+  ok('四座門樓都被打爛了就就地拆牆（使用者選的「兩個都要」）',
      apeWall.none.gate === 0 && apeWall.none.act && apeWall.none.act.home === 1 &&
      apeWall.none.wallBurn > 0 && apeWall.none.siteBurn === 0 &&
      apeWall.none.secs < 120,
-     `沒走門（${apeWall.none.gate} 幀）、${apeWall.none.secs} 秒後在` +
+     `沒門可繞（${apeWall.none.gate} 幀）、${apeWall.none.secs} 秒後在` +
      `${apeWall.none.act && apeWall.none.act.inWall ? '城裡' : '城外'}動手，` +
      `燒起來 ${apeWall.none.burn} 塊（城牆 ${apeWall.none.wallBurn} 塊、地標 ${apeWall.none.siteBurn} 塊）`);
 
@@ -8699,8 +8808,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       /* 有門的那兩種擺在城內中間（牠要自己找到門）；**沒門的那一種貼著牆內側**擺
          （v1.190.4）——這一條要驗的是「被牆擋住、又沒有門可以繞的時候有沒有出路」，
          不是「牠在城裡晃多久才碰到牆」。擺中間的話前面那一段是骰子：整輪跑開出過
-         400 秒還沒走掉、而且一次都沒動手（＝根本沒碰到牆，`wallAhead` 從沒成立）。 */
-      m.x = 0; m.z = gate ? -(siteR + 2 + W - 2) / 2 : -(W - 4);
+         400 秒還沒走掉、而且一次都沒動手（＝根本沒碰到牆，`wallAhead` 從沒成立）。
+         **而且要閃開門樓留下的那個缺口**（v1.194）：四面各一座門樓，整段拿掉之後
+         牆線上就是四個十幾格寬的洞，擺在 x=0 等於站在洞前面——牠一步就走出去了，
+         量到的是「猴子動手 0 次、拆掉 0 塊牆」（這一條就是這樣紅的）。
+         所以往旁邊挪到**門樓外面那一段直牆的內側**：門洞半寬 ＋ 墩座 ＋ 3 格，
+         照常數算（牆半徑再小，直牆也是從 P+1 起算，這一點一定落在牆身上）。
+         不能挪太遠——挪到牆角那一帶的話，牠徑向往外的那條路正對著角樓，
+         實測會在 near 那一段對著角樓磨滿 8000 幀。 */
+      m.x = gate ? 0 : (WALL_GATE - 1) / 2 + WALL_PIER + 3;
+      m.z = gate ? -(siteR + 2 + W - 2) / 2 : -(W - 4);
       leaveBeast(m);                                      // 砸完了：走人
       /* 拆掉幾塊牆要**算塊數少了多少**，不是收工時還在燒的那幾塊：牠拆完就走了，
          迴圈結束時火早就燒完（實測那樣量到 0，而牆確實破了）。 */
@@ -8723,13 +8840,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                                     tz: +m.tz.toFixed(1), W: +W.toFixed(0) },
                wallLost: wall0 - blocks.filter(b => wallSeg.has(b.hh)).length };
     };
-    const city = run('ape', true, 3);                     // 城內有房子與樹
-    const nogate = run('ape', false, 3);                  // 門樓被打爛：會動手的拆牆出去
+    /* phase 每一種都**明講**（v1.194）：沿用上一段測試留下來的話，這幾條驗到的是
+       哪一種場面就變成前面改了什麼決定的——實測改了 ⑦ 的分支之後留下來的變成 build，
+       nogate 那一條就從「拆牆出去」變成在驗「開工中的 away」，紅了也看不出是哪裡壞。 */
+    const city = run('ape', true, 3, 'done');             // 城內有房子與樹
+    const nogate = run('ape', false, 3, 'done');          // 門樓被打爛：會動手的拆牆出去
     const build = run('ape', true, 3, 'build');           // 地標又開工了（away 那一條）
-    const cow = run('cow', false, 3);                     // 牛羊不動手：靠 stuckWatch 穿出去
+    /* 開工中 ＋ 一座門都沒有（v1.194）：away 每幀把牠拉回 go、go 又把牠推回 near 去拆牆，
+       兩邊互推的話 DOOM_AIM 永遠數不完（實測 8000 幀只走了 1.2 格、一次都沒動手）。 */
+    const noneBuild = run('ape', false, 3, 'build');
+    const cow = run('cow', false, 3, 'done');             // 牛羊不動手：靠 stuckWatch 穿出去
     phase = keepPh;                                       // 動過的全域狀態還回去
     cleanTools(); clearHomes();
-    return { city, nogate, build, cow };
+    return { city, nogate, build, noneBuild, cow };
   });
   ok('城裡的生物砸完走得出去（城內有房子、門樓沒了、地標又開工，三種都一樣）',
      apeOut.city.gone && apeOut.nogate.gone && apeOut.build.gone,
@@ -8739,13 +8862,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `——修掉之前這三種各跑滿 400 秒都走不掉` +
      [apeOut.city, apeOut.nogate, apeOut.build].filter(r => !r.gone)
        .map(r => `；沒走掉那一種：${JSON.stringify(r.seen)}、${JSON.stringify(r.end)}`).join(''));
-  ok('沒門可繞：會動手的就地拆牆出去，牛羊沒有攻擊手段就靠穿透出去',
+  /* 開工中又一座門都沒有（v1.194 修的那一條）：驗的是**沒有被凍住**——牠照樣一趟一趟
+     動手拆牆。修之前是 8000 幀裡動手 0 次、只挪了 1.2 格（away 與 go 每幀互推）。
+     **不驗「走得掉」**：施工中火勢一大消防車就出動（見 stepTrucks），牠燒開的洞
+     一邊被澆熄，400 秒未必真的破得出去——那是消防車該做的事，不是這一條要管的。 */
+  ok('開工中又一座門都沒有：不會被「放棄走人」凍住，照樣一趟一趟動手拆牆',
+     apeOut.noneBuild.acts > 0 && apeOut.noneBuild.wallLost > 0,
+     `開工中、四座門樓都沒了：動手 ${apeOut.noneBuild.acts} 次、拆掉 ` +
+     `${apeOut.noneBuild.wallLost} 塊牆（${apeOut.noneBuild.secs} 秒，走掉＝` +
+     `${apeOut.noneBuild.gone}；消防車會來澆熄）——修之前是動手 0 次`);
+  /* 牛羊那一半 v1.194 起**不驗穿透**：四面各一座門樓，整段被打爛之後牆線上是
+     四個十幾格寬的洞，牛走到洞口就出去了，根本輪不到 stuckWatch 的穿透
+     （v1.186~v1.193 只有一座門，牠在另外三面就是真的被關住）。這一條要守的是
+     「牛羊沒有攻擊手段、所以一塊牆都不會少」，那部分照舊判成敗。 */
+  ok('沒門可繞：會動手的就地拆牆出去，牛羊不動手（一塊牆都不會少）',
      apeOut.nogate.gone && apeOut.nogate.acts > 0 && apeOut.nogate.wallLost > 0 &&
-     apeOut.cow.gone && apeOut.cow.ghost > 0 && apeOut.cow.acts === 0 &&
-     apeOut.cow.wallLost === 0,
+     apeOut.cow.gone && apeOut.cow.acts === 0 && apeOut.cow.wallLost === 0,
      `猴子動手 ${apeOut.nogate.acts} 次、拆掉 ${apeOut.nogate.wallLost} 塊牆，` +
      `${apeOut.nogate.secs} 秒走掉；牛一次都沒動手（${apeOut.cow.acts}）、` +
-     `一塊牆都沒少（${apeOut.cow.wallLost}），穿透 ${apeOut.cow.ghost} 幀走掉`);
+     `一塊牆都沒少（${apeOut.cow.wallLost}），${apeOut.cow.secs} 秒走掉` +
+     `（穿透 ${apeOut.cow.ghost} 幀）`);
 
   /* ⑦-b 誰會動手：**吉祥物會**（使用者：「吉祥物 可以動手 如果擋到路的話」），
      **牛羊不會**（「牛羊不動手(他們沒有攻擊手段)」）。後者不只是設計取捨——`DOOM_ACT`
@@ -8773,12 +8909,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       h.done = true; homeBox(h);
     }
     ENG.setBlockCount(blocks.length);
-    /* 從**沒有門的那一面**（−z）進場：門樓整段拿掉之後，+z 那一面就是個七格寬的缺口，
-       從那邊進場的話牠會直接走進去（第一版就是這樣，測不到「被擋住」那條）。 */
+    /* 進場的位置要**對準砌好的那一段直牆**：門樓整段拿掉之後，四面正中央各是一個
+       十幾格寬的缺口（v1.194 起四面都有門），對著缺口進場的話牠會直接走進去，
+       就測不到「被擋住」那條（v1.193 只有一座門的時候，從 −z 正中央進場就夠了）。
+       走法是徑向走向工地中心，所以順著「通過 (14, −W) 的那條射線」擺，
+       落點就在北牆第一段的中間（直牆從 P+1＝6 起算，到 W−3 為止）。 */
+    const W0 = wallRing(), ray = (arenaR + 8) / W0;
     const mas = spawnBeast('ape', 1);                          // 吉祥物：同一批動物，平常不動手
-    mas.x = 0; mas.z = -(arenaR + 8);
+    mas.x = 14 * ray; mas.z = -W0 * ray;
     const cow = spawnCattle();
-    cow.x = 0; cow.z = -(arenaR + 6);
+    cow.x = 14 * ray * 0.96; cow.z = -W0 * ray * 0.96;
     /* 量的是**動手那一刻**：牠砸完會 funBack 回去逛，逛完 m.stay 才走人，
        所以收工時的狀態一定是 go；火也早就燒完了（整段跑 120 秒）。 */
     const seen = { m: {}, c: {} };

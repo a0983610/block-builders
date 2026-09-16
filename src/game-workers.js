@@ -2935,17 +2935,25 @@ const WALL_TOW = 5;                 // 角樓邊長（空心方塔，實心的�
 /* 角樓的牆比城牆高幾層。2 的時候看過去就是牆上一個胖箱子（第一版實測），
    參考圖裡的角樓差不多是牆的兩倍高——牆身 5 ＋ 3 ＝ 8，再加三層四坡屋頂與旗子。 */
 const WALL_TOW_UP = 3;
-const WALL_GATE = 3;                // 門洞幾格寬
-const WALL_GATE_H = 3;              // 門洞幾格高（小人連頭頂那塊約 3 格，2 格會穿幫）
-const WALL_PIER = 2;                // 門樓兩側的墩座各幾格寬
+/* 門洞（v1.194 整組放大，使用者：「城牆四個方向都做門 門的造型調整 洞口大一點
+   (還是要符合目前比例)」，參考圖 參考圖/271.png＝歐式城牆上的尖拱門）。
+   **尖拱**：兩側那一柱 WALL_GATE_H 格高，往中間每一柱高一層，最中間那一柱再往上
+   多 G 格收成尖的——5 寬 4 高的話是 4／5／7 格（牆身才 5 層，所以門洞比牆還高）。 */
+const WALL_GATE = 5;                // 門洞幾格寬（v1.186 是 3）
+const WALL_GATE_H = 4;              // 門洞最外那一柱幾格高（往中間每一柱再高一層）
+const WALL_GATE_UP = 4;             // 門樓磚身比牆高幾層（磚身 9 層 ＋ 走道 ＋ 垛口＝11 層）
+const WALL_PIER = 3;                // 門樓兩側的墩座各幾格寬（v1.186 是 2）
+const WALL_JUT = 1;                 // 門樓比牆面往**城外**凸出幾格（使用者：「應該比牆凸出一點點吧 一格?」）
+const WALL_MACH = 1;                // 垛口下那一排托架再往外挑幾格（照參考圖那排堞口）
 const WALL_RUN = 16;                // 一段直牆最多幾格長（見上面：框要薄，但段數也不能爆）
 /* 牆離工地至少多遠。最小的小房子地基半徑 4.6，城內要放得下一圈
    （內緣是 siteR + HOME_NEAR，所以這裡要留得下 HOME_NEAR ＋ 一間房子的直徑）。 */
 const WALL_NEAR = 16;
 const WALL_PAL = [[0.66, 0.63, 0.57],     // 牆身（淺灰石）
-                  [0.55, 0.52, 0.48],     // 壓頂與垛口
-                  [0.38, 0.45, 0.58],     // 角樓與門樓的屋頂（借 HOME_PAL 那組藍灰）
-                  [0.24, 0.44, 0.72]];    // 角樓頂上那面旗（照參考圖）
+                  [0.55, 0.52, 0.48],     // 壓頂、垛口、門樓的走道與托架
+                  [0.38, 0.45, 0.58],     // 角樓的屋頂（借 HOME_PAL 那組藍灰）
+                  [0.24, 0.44, 0.72],     // 角樓頂上那面旗（照參考圖）
+                  [0.46, 0.43, 0.39]];    // 門洞的拱圈（比牆身暗一階才看得出是拱，見 gateTower）
 /* 城內每多少面積放一間房子／一棵樹，各自的上限（使用者選「按牆內面積算」）。
    事件一的密度是一間 1000 面積上下（20 人 7 間鋪滿整片碎料場），這裡再稀一階；
    上限是必要的——金門大橋那種大工地光城內就塞得下十幾間，那就變成第二個村子了。 */
@@ -2987,9 +2995,71 @@ function wallSeg(cells, kind, thin, gap) {
   markHomeF6(h);
   return h;
 }
+/* 一座城門樓（v1.194 改成四面各一座，使用者：「城牆四個方向都做門 門的造型調整
+   洞口大一點(還是要符合目前比例)」）。造型照他第二次給的參考圖（參考圖/271.png，
+   歐式城牆上的門）——**頂上沒有樓閣屋頂**，就是一段比牆高一截的牆：
+   兩側墩座 ＋ **尖拱**門洞（周圍一圈換色的拱圈石）＋ 垛口下一排往外挑的托架
+   （參考圖最顯眼的那一排堞口）＋ 頂上照城牆的做法收成走道與垛口。
+
+   > 使用者（看過第一版的中式門樓之後）：「改成這種樣式的好了」，範圍選「只換門」、
+   > 配色選「維持淡灰石」——所以牆身、角樓、垛口、配色一個字都沒動。
+
+   fix／horiz 跟 runCells 同一套：a 是沿著牆那一軸的世界座標，d 是離牆線幾格
+   （fix 的正負那一邊是城外，所以 d === side 就是外牆面）。
+
+   **門洞是真的缺口**：那一塊記在 h.gap 裡，footHome 命中外框之後會再問一次，
+   所以小人與動物走得過去（使用者選的「留門洞；擋小人與動物，車照穿」）。
+   缺口的深度要**含托架挑出去的那一格**（那一格讓整段的外框往城外多一格），
+   不然人走到托架下面會被外框擋住、進不了門。
+   整座門樓是一筆、不切兩半：切開的話外框各自薄薄一條，門洞上方那幾格就沒有人認領。 */
+function gateTower(fix, horiz) {
+  const G = (WALL_GATE - 1) / 2, P = G + WALL_PIER, pal = WALL_PAL;
+  const H = WALL_H + WALL_GATE_UP;             // 磚身幾層高（再上去是走道與垛口）
+  const side = fix > 0 ? 1 : -1;               // 哪一側是城外
+  const J = side * (1 + WALL_JUT);             // 凸出去的那一面在離牆線幾格
+  const M = side * (1 + WALL_JUT + WALL_MACH); // 托架／挑出去的那一排又在外面一格
+  const b0 = Math.min(-1, J), b1 = Math.max(1, J);      // 磚身占到的深度（城內那面跟牆齊）
+  const even = a => !(((a % 2) + 2) % 2);      // 照**世界座標**的奇偶（同 runCells 的垛口）
+  const cells = [];
+  const put = (a, d, gy, c) =>
+    cells.push(horiz ? { i: a, k: fix + d, gy, c } : { i: fix + d, k: a, gy, c });
+  /* 門洞的輪廓是**尖拱**：兩側那一柱 WALL_GATE_H 格高，往中間每一柱高一層，
+     最中間那一柱再多 G 格收成尖的（5 寬 4 高＝4／5／7 格）。 */
+  const open = (a, gy) => Math.abs(a) <= G &&
+                          gy < WALL_GATE_H + (a === 0 ? G + 1 : G - Math.abs(a));
+  // 拱圈：貼著門洞外圍那一圈石（換個色才讀得出是拱不是方洞）
+  const rim = (a, gy) => open(a, gy - 1) || open(a - 1, gy) || open(a + 1, gy);
+  for (let gy = 0; gy < H; gy++)
+    for (let n = 0; n <= 2 * P; n++) {
+      const a = gy % 2 ? P - n : -P + n;                    // 蛇行，同 runCells
+      if (open(a, gy)) continue;
+      // 拱圈只刷在看得到的那兩面（城外那一面是凸出去的 J，城內那一面跟牆齊）
+      for (let d = b0; d <= b1; d++)
+        put(a, d, gy, (d === J || d === -side) && rim(a, gy) ? pal[4] : pal[0]);
+    }
+  /* 垛口下那一排托架（machicolation，參考圖上最顯眼的那一排小拱）：隔一格一塊挑出去，
+     上面的走道跟著挑出來壓在托架上、垛口再立在挑出來的那一格——看過去就是一排小拱。
+     托架與垛口**錯開一格**（托架在奇數、垛口在偶數）：同格的話整排會變成一條直溝。
+     每一塊都有下面或旁邊那一格撐著（垛口 → 走道 → 托架 → 牆面），垮塌那一套照舊。 */
+  for (let a = -P; a <= P; a++) if (!even(a)) put(a, M, H - 1, pal[1]);
+  for (let a = -P; a <= P; a++) {
+    for (let d = b0; d <= b1; d++) put(a, d, H, pal[1]);    // 走道
+    put(a, M, H, pal[1]);                                   // 挑出去的那一條
+  }
+  for (let a = -P; a <= P; a++) if (even(a)) put(a, M, H + 1, pal[1]);   // 垛口
+  const g0 = -G - 0.5, g1 = G + 0.5;
+  const d0 = fix + Math.min(b0, M) - 0.5, d1 = fix + Math.max(b1, M) + 0.5;
+  const h = wallSeg(cells, '城門樓', null,
+                    horiz ? { x0: g0, x1: g1, z0: d0, z1: d1 }
+                          : { x0: d0, x1: d1, z0: g0, z1: g1 });
+  /* 門洞中心那一點（在**牆線上**，不是外框的中心）：門樓往城外凸出去之後，
+     外框的中心就偏到牆外一格，拿它當「門在哪」的話天災的落腳點會整組往外偏
+     （見 wallGateSpot）。 */
+  h.gmid = horiz ? { x: 0, z: fix } : { x: fix, z: 0 };
+  return h;
+}
 /* 整圈切成哪幾段。牆線走 x = ±W 與 z = ±W，四個角各一座角樓，
-   **朝鏡頭那一面（+z）**正中央是門樓——開場鏡頭在 +x/+z 那一象限（engine.js 的 yaw 0.9），
-   門開在背面的話玩家只看得到一圈平牆。
+   **四面正中央各一座門樓**（v1.194；v1.186~v1.193 只有朝鏡頭那一面有門）。
    整圈一定生完整（v1.189）：擋在牆線上的小房子在這之前就被拆成碎料了（見 startWall）。
    v1.186~v1.188 這裡吃一個 skip(x, z)，壓到房子的那幾格不生出來、讓房子嵌在牆上——
    那條路的兩個坑寫在 開發筆記〈蓋牆前先把擋路的拆掉〉。 */
@@ -3064,33 +3134,15 @@ function wallPlan() {
       out.push(wallSeg(runCells(b0, b1, fix, horiz), '城牆', horiz ? 'z' : 'x'));
     }
   };
-  addSide(-end, end, -W, true);                        // 北牆
-  addSide(-end, -P - 1, W, true);                      // 南牆（門樓左半）
-  addSide(P + 1, end, W, true);                        // 南牆（門樓右半）
-  addSide(-end, end, -W, false);                       // 西牆
-  addSide(-end, end, W, false);                        // 東牆
-  /* 門樓：兩側墩座 ＋ 門洞上方的拱 ＋ 兩層屋頂，往城內外各多一格（深 3）才讀得出是門樓。
-     **門洞是真的缺口**：那一塊記在 h.gap 裡，footHome 命中外框之後會再問一次，
-     所以小人與動物走得過去（使用者選的「留門洞；擋小人與動物，車照穿」）。
-     整座門樓是一筆、不切兩半：切開的話外框各自薄薄一條，門洞上方那幾格就沒有人認領。 */
-  {
-    const H = WALL_H + 3, cells = [];
-    const col = (i, gy0, c) => {
-      for (let gy = gy0; gy < H; gy++)
-        for (let k = W - 1; k <= W + 1; k++) cells.push({ i, k, gy, c });
-    };
-    for (let i = -P; i <= -G - 1; i++) col(i, 0, pal[0]);           // 左墩
-    for (let i = G + 1; i <= P; i++) col(i, 0, pal[0]);             // 右墩
-    for (let i = -G; i <= G; i++) col(i, WALL_GATE_H, pal[0]);      // 門洞上方的拱
-    // 屋頂三層一層層收（同角樓：平頂會讀成一塊板子）
-    for (let i = -P; i <= P; i++)
-      for (let n = 0; n < 3; n++)
-        cells.push({ i, k: W + (i % 2 ? 1 - n : n - 1), gy: H, c: pal[2] });
-    for (let i = -P + 1; i <= P - 1; i++) cells.push({ i, k: W, gy: H + 1, c: pal[2] });
-    for (let i = -P + 2; i <= P - 2; i++) cells.push({ i, k: W, gy: H + 2, c: pal[2] });
-    out.push(wallSeg(cells, '城門樓', null,
-                     { x0: -G - 0.5, x1: G + 0.5, z0: W - 1.5, z1: W + 1.5 }));
+  /* 四面各自切成「門樓左半 ＋ 門樓 ＋ 門樓右半」（v1.194）。直牆接在門樓的墩座外面
+     （P+1 起算）：兩邊的外框剛好貼在一起、不重疊——疊在一起的兩個框會互推
+     （見〈城牆踩到的四個坑〉①）。 */
+  for (const [fix, horiz] of [[-W, true], [W, true], [-W, false], [W, false]]) {
+    addSide(-end, -P - 1, fix, horiz);
+    addSide(P + 1, end, fix, horiz);
   }
+  for (const [fix, horiz] of [[-W, true], [W, true], [-W, false], [W, false]])
+    out.push(gateTower(fix, horiz));
   for (const h of out) h.ring = W;      // 這一圈多大（見 inWall：誰在城裡、誰在城外）
   return out;
 }
@@ -3110,18 +3162,28 @@ const inWall = (x, z) => {
 };
 /* 這兩點被城牆隔開了嗎（一個在城裡、一個在城外）。天災那幾隻拿它決定要不要繞城門。 */
 const wallSplits = (x0, z0, x1, z1) => wallNow() > 0 && inWall(x0, z0) !== inWall(x1, z1);
-/* 城門在哪：門洞中心 ＋ 由場中心往外的法線（門開在 +z 那一面，法線就是 (0,1)）。
-   門樓被打爛、或這一座還沒有城牆就回 null——那時候天災就沒有門可以繞（見 stepBeast）。 */
-function wallGateSpot() {
+/* 走哪一座城門：門洞中心 ＋ 由場中心往外的法線（門開在 +z 那一面，法線就是 (0,1)）。
+   一座門樓都不剩、或這一座還沒有城牆就回 null——那時候天災就沒有門可以繞（見 stepBeast）。
+
+   四面都有門之後（v1.194）要挑一座：給了 (x, z) 就挑**離那一點最近的**（繞路從半圈
+   縮到最多四分之一圈）。id 是「已經在走的那一座」——挑好就釘住，不然牠走到兩座之間時
+   每幀換一個目標，會卡在中線上左右擺；那一座被打爛了就自動退回最近的一座。 */
+function wallGateSpot(x, z, id) {
   if (!homes) return null;
+  /* 門洞中心：gmid（牆線上那一點，見 gateTower）；沒有就退回外框中心。 */
+  const mid = h => h.gmid || { x: (h.gap.x0 + h.gap.x1) / 2, z: (h.gap.z0 + h.gap.z1) / 2 };
+  let best = null, bd = Infinity;
   for (const h of homes.list) {
     if (!h.gap) continue;
-    const x = (h.gap.x0 + h.gap.x1) / 2, z = (h.gap.z0 + h.gap.z1) / 2;
-    const d = Math.hypot(x, z) || 1;
-    // h 是門樓那一段本身：穿門的時候不繞它（v1.190.2，見 stepBeast 的 gate）
-    return { x, z, nx: x / d, nz: z / d, h };
+    if (id !== undefined && h.id === id) { best = h; break; }
+    if (x === undefined) { best = h; break; }
+    const m = mid(h), d = Math.hypot(m.x - x, m.z - z);
+    if (d < bd) { bd = d; best = h; }
   }
-  return null;
+  if (!best) return null;
+  const m = mid(best), d = Math.hypot(m.x, m.z) || 1;
+  // h 是門樓那一段本身：穿門的時候不繞它（v1.190.2，見 stepBeast 的 gate）
+  return { x: m.x, z: m.z, nx: m.x / d, nz: m.z / d, h: best };
 }
 /* 這一段城牆跟「以場中心為圓心、半徑 r 的圓」碰到了沒有（v1.186）。
    換場要靠它決定舊城牆留不留：拿外接圓比的話（房子那條 hypot(h.x,h.z) − h.r），
