@@ -60,7 +60,7 @@ const ENG = (function () {
      實測 4 → 24 的 step + draw 差在雜訊內（1.87 → 1.70 ms）。 */
   const FLASH_MAX = 24;
   const FLASH_SQUASH = 0.82;               // 壓扁一點：貼地炸開的火球是扁的，不是正球
-  const MAXROCK = 48, MAXTREB = 8, TREB_PARTS = 5;
+  const MAXROCK = 48, MAXTREB = 8;   // TREB_PARTS 由造型表自己數（見 TREB_PART）
   /* 鐵球最多同時幾顆（v1.116）。要跟規則那邊的 BALL_MAX 一樣大——
      小於它的話多出來的球會整顆不見（規則還在算，畫面上沒有）。 */
   const MAXBALL = 6;
@@ -621,6 +621,26 @@ const ENG = (function () {
     return m;
   }
 
+  /* ── 飛石與隕石的球（v1.193）──
+     使用者：「投出去的石頭改成球型」「隕石也順便改成球型」。兩邊以前都掛在 unit
+     那顆方塊上，所以天上飛的是一個轉來轉去的木箱。
+     用 IcosahedronGeometry 的 detail 1（80 面）而不是經緯球：看得出刻面、像一顆
+     粗鑿的石球，跟整支程式的方塊風格對得起來，三角形也只有同精細度經緯球的一半。
+     **半徑給 0.5 不是 1**：呼叫端的 s 一路都是「這顆多大」（＝原本那個方塊的邊長，
+     也是 sweepRock 拿 s×0.5 當碰撞半徑的那個 s），半徑 1 的球乘上去會整整大一倍，
+     而且畫出來的跟判定用的就對不起來了。兩處共用同一顆幾何，所以只做一次。 */
+  let _rockGeo = null;
+  function rockGeo() { return _rockGeo || (_rockGeo = new T.IcosahedronGeometry(0.5, 1)); }
+  /* 球**不能**用 voxelMaterial：那一份的深色邊是照「單位方塊的 local 座標」算的
+     （0.5 −「三軸絕對值的第二大者」），套在球上整顆都判成面中央，一點邊都畫不出來
+     ——白付一次 shader 注入。改用跟保齡球同一路的 Lambert，加 flatShading 讓每個刻面
+     各吃各的光：three 的多面體幾何預設是球面法線（平滑），不開這個旗標看起來就是
+     一顆光滑的蛋，轉起來也看不出它在轉。
+     見 開發筆記〈整台照參考圖重做、甩臂方向掉頭、石頭改成球〉第五節 */
+  function rockMaterial(color) {
+    return new T.MeshLambertMaterial({ color, flatShading: true });
+  }
+
   /* ── 水面材質（v1.94）──
      v1.69～v1.93 用的是 MeshBasicMaterial：**不吃光**，所以不管從哪個角度看、
      頂面還是側壁，都是同一片均勻的藍——使用者看到的是「藍色果凍／玻璃罩」。
@@ -857,7 +877,7 @@ const ENG = (function () {
     /* 投石機：每台三個部位（底座、立柱、拋臂）全塞進同一個 InstancedMesh，
        四台machine 也只吃 1 個 draw call。飛石另開一個。 */
     trebMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXTREB * TREB_PARTS);
-    rockMesh = new T.InstancedMesh(unit, voxelMaterial({ color: 0x6b6660 }), MAXROCK);
+    rockMesh = new T.InstancedMesh(rockGeo(), rockMaterial(0x6b6660), MAXROCK);
     dozMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXDOZ * DOZ_PARTS);
     for (const m of [trebMesh, rockMesh, dozMesh]) {
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -944,8 +964,9 @@ const ENG = (function () {
     bombMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
     /* 隕石：一顆一個 instance。石頭本體走 instance color，越接近落地燒得越紅
-       （火焰本身是 hot 那批粒子拖出來的，這裡只負責那顆石頭）。 */
-    meteorMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXMET);
+       （火焰本身是 hot 那批粒子拖出來的，這裡只負責那顆石頭）。
+       幾何跟投石機的飛石同一顆球（v1.193，使用者：「隕石也順便改成球型」）。 */
+    meteorMesh = new T.InstancedMesh(rockGeo(), rockMaterial(0xffffff), MAXMET);
     meteorMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     meteorMesh.castShadow = true; meteorMesh.count = 0;
     meteorMesh.frustumCulled = false; meteorMesh.visible = false;
@@ -1338,16 +1359,129 @@ const ENG = (function () {
   function hideHammer() { hammerGroup.visible = false; }
   function hammerVisible() { return hammerGroup.visible; }
 
-  /* 投石機。t：{x, z, a 面向, arm 拋臂角度}
-     底座與立柱固定，拋臂繞立柱頂端擺——發射時從後仰掃到前傾。 */
-  const CW_ARM = 3.4;               // 配重掛在拋臂後端多遠
-  const TREB_PART = [
-    { p: [0, 0.35, 0], s: [3.8, 0.7, 2.9], c: 0x7a5334 },        // 底座
-    { p: [-1.05, 2.1, 0], s: [0.5, 3.6, 0.5], c: 0x8a5f3c },     // 左立柱
-    { p: [1.05, 2.1, 0], s: [0.5, 3.6, 0.5], c: 0x8a5f3c },      // 右立柱
-    { p: [0, 3.85, 0], s: [0.45, 0.45, 7.4], c: 0x5f4126, arm: 1 },   // 拋臂
-    { p: [0, 3.85, 0], s: [1.6, 1.6, 1.6], c: 0x494440, cw: 1 }       // 配重
-  ];
+  /* 投石機（v1.193 照使用者給的參考圖整台重做）。t：{x, z, a 面向, arm 拋臂角度}
+
+     v1.58～v1.192 是五塊：一塊底座、兩根立柱、一支拋臂、一顆配重方塊。現在是
+     四輪底盤 ＋ A 形立架 ＋ 吊在短臂上的滾筒配重 ＋ 臂尖再接一條投石索。
+
+     造型表的欄位：
+       p    位置（機台座標，**+z 朝目標**）  s 尺寸  c 顏色
+       r    固定旋轉 [x,y,z]——斜撐與輪輻要用（以前的表只有「跟著臂轉」一種旋轉）
+       d    掛在拋臂上、離支點多遠（正＝投石端＝**朝 −z**、負＝配重端＝朝 +z）
+       hang 掛點再往下吊多少（配重是吊著的，所以不跟著臂的升降走）
+       spin 跟著臂一起轉（臂身、臂上的鐵箍）；沒給就維持直立
+       sd   掛在投石索上、離臂尖多遠（索有自己的角度，見 trebSling）
+     有 d／sd 的那幾塊只吃 p[0]（左右偏移），y／z 是每一幀算出來的。
+
+     **投石端朝 −z、配重端朝 +z**——也就是配重掛在**朝目標**那一側。v1.193 第一版
+     做反了（使用者：「你的投石機放反了吧」），當時是配重在後、長臂壓低在前往上撈。
+     真投石機是這樣走的：待發時**配重高舉在前**、長臂壓低在**後**、投石索與石頭躺在
+     底盤的石槽裡（TREB_REST）；放開之後配重往前下方落，長臂從後面往上甩過頭頂，
+     索甩到臂尖前面把石頭放掉（TREB_REL），石頭**從機台上方飛出去**；臂繼續甩到
+     幾乎朝天、配重落到最低（TREB_END）。
+     這個定向的代價是出手點落在機台**後方** 2.06 格——石頭是越過自己的機台飛出去的，
+     那正是真投石機的樣子，也剛好讓站位不必再退遠（見 game-tools.js 的 placeTreb）。
+     擺動本身歸規則那邊跑（見 game-tools.js 的 stepTrebs），這裡只管畫。
+     見 開發筆記〈整台照參考圖重做、甩臂方向掉頭、石頭改成球〉 */
+  const TREB_PIV = 5.0;             // 支點（A 形架頂那根軸）多高
+  const TREB_ARM = 3.7;             // 支點到投石端臂尖（長臂，朝 −z）
+  const TREB_CW = 2.6;              // 支點到配重掛點（短臂，朝 +z）
+  const TREB_SLING = 2.1;           // 投石索：從臂尖再延出去多長，石頭從它末端離手
+  const TREB_WHEEL = 0.95;          // 輪子半徑（要大過底盤的厚度，不然從側面看只像四塊墊腳）
+  const TREB_BED = 1.15;            // 底盤縱樑的中心高
+  const TREB_REST = 1.05;           // 待發：配重高舉在前、長臂壓低在後、索躺在石槽裡
+  const TREB_REL = -0.55;           // 放索：長臂甩到後上方、索領在前面，石頭在這裡離手
+  const TREB_END = -1.15;           // 甩到底：配重落到最低、長臂幾乎朝天
+
+  const TR_BEAM = 0x7a5334, TR_WOOD = 0x8a5f3c, TR_DECK = 0x9c7047;
+  const TR_IRON = 0x494440, TR_BLUE = 0x2f6ea8;      // 藍鐵箍＝參考圖上那幾道藍
+  const TR_ARMC = 0x5f4126, TR_ROPE = 0xc9b083, TR_CWC = 0x5a5048;
+
+  /* 一個輪子＝兩塊交叉的板（0° 與 45°）。單一方塊只會像個木箱，交叉之後是個八角星
+     ——輪輻的樣子。尖角剛好落在輪緣（半徑 TREB_WHEEL），所以最低那個尖點正好觸地。 */
+  function trebWheel(x, z) {
+    const w = TREB_WHEEL * Math.SQRT2;
+    return [
+      { p: [x, TREB_WHEEL, z], s: [0.36, w, w], c: TR_WOOD },
+      { p: [x, TREB_WHEEL, z], s: [0.36, w, w], c: TR_WOOD, r: [Math.PI / 4, 0, 0] }
+    ];
+  }
+  /* 一根斜撐：給「從哪撐到哪」（同一個 x 平面上的兩點），長度與傾角自己算
+     ——支點高度或底盤長度一改就跟著對，不必回頭改死數字
+     （見 開發筆記〈不要寫死會隨改動變動的數字〉）。 */
+  function trebLeg(x, z0, y0, z1, y1, w, c) {
+    const dy = y1 - y0, dz = z1 - z0;
+    return { p: [x, (y0 + y1) / 2, (z0 + z1) / 2],
+             s: [w, Math.hypot(dy, dz), w], c, r: [Math.atan2(dz, dy), 0, 0] };
+  }
+  const TREB_PART = [].concat(
+    [
+      /* 底盤：兩根縱樑、前後橫樑，前橫樑上一道藍鐵箍。
+         前橫樑擺在 2.72 不是 2.45：配重盪到低處時滾筒最前緣會走到 z 2.29，
+         擺 2.45 的話那兩塊會插在一起（實測掃過整個擺程量出來的）。 */
+      { p: [-1.45, TREB_BED, 0],    s: [0.66, 0.55, 6.0],  c: TR_BEAM },
+      { p: [1.45, TREB_BED, 0],     s: [0.66, 0.55, 6.0],  c: TR_BEAM },
+      { p: [0, TREB_BED, 2.72],     s: [3.5, 0.5, 0.56],   c: TR_WOOD },
+      { p: [0, TREB_BED, -2.62],    s: [3.5, 0.5, 0.66],   c: TR_WOOD },
+      { p: [0, TREB_BED, 2.72],     s: [3.6, 0.28, 0.62],  c: TR_BLUE },
+      /* 石槽：待發時投石索與石頭就躺在這條槽裡，長臂從後面把它拖出去。
+         往前只鋪到 0.35——再長就會被盪到低處的滾筒掃到（同上，量出來的）。 */
+      { p: [0, TREB_BED + 0.33, -0.98], s: [0.95, 0.22, 2.65], c: TR_DECK }
+    ],
+    trebWheel(-1.85, 1.95), trebWheel(1.85, 1.95),
+    trebWheel(-1.85, -1.95), trebWheel(1.85, -1.95),
+    [
+      /* A 形立架：每側一前一後兩根斜腿撐到支點，中間一根橫拉桿 */
+      trebLeg(-1.32, 2.15, TREB_BED + 0.3, 0, TREB_PIV, 0.5, TR_WOOD),
+      trebLeg(1.32, 2.15, TREB_BED + 0.3, 0, TREB_PIV, 0.5, TR_WOOD),
+      trebLeg(-1.32, -2.15, TREB_BED + 0.3, 0, TREB_PIV, 0.5, TR_WOOD),
+      trebLeg(1.32, -2.15, TREB_BED + 0.3, 0, TREB_PIV, 0.5, TR_WOOD),
+      { p: [-1.32, 3.2, 0],     s: [0.34, 0.34, 2.1],  c: TR_WOOD },
+      { p: [1.32, 3.2, 0],      s: [0.34, 0.34, 2.1],  c: TR_WOOD },
+      { p: [0, TREB_PIV, 0],    s: [3.5, 0.42, 0.42],  c: TR_IRON },   // 支點軸
+      /* 側邊那一層站人的平台（參考圖右上那一層） */
+      { p: [2.45, 2.75, -0.2],  s: [1.5, 0.3, 3.2],    c: TR_DECK },
+      { p: [2.95, 1.9, -0.2],   s: [0.3, 1.4, 0.3],    c: TR_BEAM },   // 平台撐柱
+      { p: [3.05, 3.4, 1.2],    s: [0.24, 1.0, 0.24],  c: TR_WOOD },   // 欄杆柱
+      { p: [3.05, 3.4, -1.6],   s: [0.24, 1.0, 0.24],  c: TR_WOOD },
+      { p: [3.05, 3.83, -0.2],  s: [0.24, 0.22, 3.2],  c: TR_WOOD },   // 欄杆橫桿
+      /* 拋臂那一組。臂身從配重掛點一路長到臂尖，所以中心偏在投石端這一側 */
+      { d: (TREB_ARM - TREB_CW) / 2, s: [0.46, 0.46, TREB_ARM + TREB_CW],
+        c: TR_ARMC, spin: 1 },
+      { d: TREB_ARM - 1.0, s: [0.56, 0.56, 0.3], c: TR_BLUE, spin: 1 },
+      { d: -TREB_CW, hang: 0.45, s: [0.22, 0.8, 0.22], c: TR_IRON },   // 配重吊桿
+      { d: -TREB_CW, hang: 1.05, s: [1.6, 1.4, 1.35],  c: TR_CWC },    // 配重滾筒
+      { d: -TREB_CW, hang: 1.05, s: [1.7, 0.32, 1.45], c: TR_BLUE },   // 滾筒的鐵箍
+      /* 投石索：一截繩 ＋ 末端的石兜。石兜那一點就是石頭的出手點（見 trebSling） */
+      { sd: TREB_SLING / 2, s: [0.14, 0.14, TREB_SLING], c: TR_ROPE },
+      { sd: TREB_SLING, s: [0.62, 0.34, 0.54], c: 0x6b5a3c }
+    ]
+  );
+  const TREB_PARTS = TREB_PART.length;
+
+  /* 臂上離支點 d 的那一點在機台座標的位置。臂的方向（從支點指向投石端）是
+     (z, y) = (−cos arm, −sin arm)：arm 0 ＝ 長臂水平朝**後**，正角＝長臂壓低在後
+     （配重高舉在前），負角＝長臂甩到後上方。 */
+  function trebAt(arm, d) {
+    return { y: TREB_PIV - Math.sin(arm) * d, z: -Math.cos(arm) * d };
+  }
+  function trebTip(arm) { return trebAt(arm, TREB_ARM); }
+  /* 投石索的方向（從 +z 量起的角度）。真投石機的索不是「順著臂延出去」：
+     待發時它**躺在石槽裡朝前**（石頭在機台肚子底下），被拖出去之後才一路甩到
+     臂尖前面、在放索那一刻領著石頭往前上方走。所以這裡從「朝前躺平」(0) 內插到
+     「臂尖的行進方向」——放索那一刻剛好就是石頭該飛的方向，索、石兜、弧線三個
+     對得起來。sin 恆 ≥ 0，所以石兜永遠不會低過臂尖，也就永遠不會插進地裡。 */
+  function trebSlingAngle(arm) {
+    const k = Math.max(0, Math.min(1, (TREB_REST - arm) / (TREB_REST - TREB_REL)));
+    return k * Math.atan2(Math.cos(arm), -Math.sin(arm));
+  }
+  /* 投石索末端（石兜）：**石頭就是從這一點離手的**。規則那邊拿它當出手點——
+     畫出來的跟飛出去的必須是同一份數字（同 BOW_TIP／WAND_TIP／giantFoot），
+     各寫一份的話石頭會從機台肚子裡冒出來（v1.192 以前就是那樣：固定在 y=4.4）。 */
+  function trebSling(arm) {
+    const tip = trebTip(arm), a = trebSlingAngle(arm);
+    return { a, y: tip.y + Math.sin(a) * TREB_SLING, z: tip.z + Math.cos(a) * TREB_SLING };
+  }
   function putTrebs(list) {
     const n = Math.min(list.length, MAXTREB);
     trebMesh.count = n * TREB_PARTS;
@@ -1357,12 +1491,29 @@ const ENG = (function () {
       scratch.rotation.set(0, t.a, 0);
       scratch.scale.setScalar(1);
       scratch.updateMatrix();
+      const tip = trebTip(t.arm), sa = trebSlingAngle(t.arm);
       for (let k = 0; k < TREB_PARTS; k++) {
         const b = TREB_PART[k];
-        // 配重要跟著拋臂繞支點轉：把 (0,0,-CW_ARM) 繞 X 軸轉 arm 角度
-        if (b.cw) scratchB.position.set(b.p[0], b.p[1] + Math.sin(t.arm) * CW_ARM, -Math.cos(t.arm) * CW_ARM);
-        else scratchB.position.set(b.p[0], b.p[1], b.p[2]);
-        scratchB.rotation.set(b.arm ? t.arm : 0, 0, 0);
+        const bx = b.p ? b.p[0] : 0;
+        if (b.sd !== undefined) {
+          /* 掛在投石索上：從臂尖沿著索自己的角度往外算。
+             盒子的 local +z 繞 X 轉 ρ 之後指到 (cos ρ, −sin ρ)，要它指到
+             (cos sa, sin sa)，所以 ρ ＝ −sa。 */
+          scratchB.position.set(bx, tip.y + Math.sin(sa) * b.sd,
+                                tip.z + Math.cos(sa) * b.sd);
+          scratchB.rotation.set(-sa, 0, 0);
+        } else if (b.d !== undefined) {
+          /* 掛在拋臂上（見 trebAt）。hang 是再往下吊多少——配重是吊著的，
+             跟著臂的**位置**走、不跟著臂的角度轉。
+             臂身要指到 (−cos arm, −sin arm)，同上一段解出來 ρ ＝ π − arm。 */
+          scratchB.position.set(bx, TREB_PIV - Math.sin(t.arm) * b.d - (b.hang || 0),
+                                -Math.cos(t.arm) * b.d);
+          scratchB.rotation.set(b.spin ? Math.PI - t.arm : 0, 0, 0);
+        } else {
+          scratchB.position.set(bx, b.p[1], b.p[2]);
+          if (b.r) scratchB.rotation.set(b.r[0], b.r[1], b.r[2]);
+          else scratchB.rotation.set(0, 0, 0);
+        }
         scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
@@ -4060,6 +4211,10 @@ const ENG = (function () {
     /* 箭雨（v1.171）：ARROW_K 是箭在造型表裡的索引、BOW_TIP 是箭離開弓的位置
        （同 WAND_TIP／DIG_TIP：畫出來的弓與飛出去的箭要從同一個點對起來）。 */
     ARROW_K, BOW_TIP,
+    /* 投石機（v1.193）：甩臂的三個定位角，與「投石索末端在哪」。
+       規則那邊拿 trebSling 當石頭的出手點——畫出來的索末端就是飛出去的起點
+       （同 BOW_TIP／SWORD_TIP／giantFoot），各寫一份的話石頭會從機台肚子裡冒出來。 */
+    TREB_REST, TREB_REL, TREB_END, trebSling,
     /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
     SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_HIT, SWORD_TIP, SWORD_W,
     /* 幽浮（v1.167）：光柱的錐度與吸光口高度。判定用的倒錐就是畫出來這一根，

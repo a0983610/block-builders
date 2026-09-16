@@ -490,6 +490,19 @@ const TREB_SPRAY = 8;
         再解 h ＝ vy·T − ½·GRAV·T² 的**大根**——大根＝「下降時」才抵達目標，
         石頭是從上面砸下來的。取小根的話它會在上升途中撞到目標，那就是原本的平射。 */
 const TREB_LOB = 0.55, TREB_CLEAR = 7;
+/* 甩臂（v1.193，使用者：發射動作「要改（配重落下、長臂上甩）」）。
+   v1.58～v1.192 根本沒有擺動：發射那一幀直接把臂角切到定位，再慢慢飄回待發——
+   而且切過去的方向是「配重往上抬、長臂往前下拍」，跟真投石機相反。現在照真的走：
+   待發配重高舉（ENG.TREB_REST）→ 放開之後用 TREB_SWING 的角速度一路掃到底
+   （ENG.TREB_END）→ 石頭在半路的 ENG.TREB_REL 離開投石索。
+   掃完再慢慢絞回待發（TREB_WIND）——那是絞盤把配重拉回去，本來就該慢。
+   見 開發筆記〈整台照參考圖重做、甩臂方向掉頭、石頭改成球〉 */
+const TREB_SWING = 8;               // 甩臂角速度（rad/s；2.2 弧度約 0.27 秒掃完）
+const TREB_WIND = 2.2;              // 絞回待發的快慢
+/* 站位維持 siteR + 5（沒動）。石頭雖然改成從投石索末端飛出去，但那一點落在機台
+   **後方** 2.06 格（配重掛在朝目標那一側，長臂是從後面甩上來的，見 ENG.trebSling）
+   ——離工地更遠，所以不必像「出手點在機台前方」那樣把整隊再往後推。 */
+const TREB_STAND = 5;
 const TREB_AIM_R = (TREB_TEAM - 1) * TREB_GAP / 2 + 3;   // 第一下的光環 ≈ 一隊的正面寬
 const TREB_AIM_C = 0x8a5f3c;        // 木色（同機台的立柱）
 let trebs = null;
@@ -507,7 +520,7 @@ function castTrebs(from, toward) {
      排在同一側的兩台等於疊在一起（第一下點在建築正中央時整隊只剩兩個位置）。
      推完才算方向——中心搬過了，「指向目標」也跟著換。 */
   let cx = from.x, cz = from.z;
-  const d0 = Math.hypot(cx, cz), minD = siteR + 5;
+  const d0 = Math.hypot(cx, cz), minD = siteR + TREB_STAND;
   if (d0 < minD) {
     const a = d0 < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(cz, cx);
     cx = Math.cos(a) * minD; cz = Math.sin(a) * minD;
@@ -551,7 +564,7 @@ function placeTreb(spot, aimAt) {
   if (!trebs) trebs = { list: [], rocks: [] };
   if (trebs.list.length >= TREB_MAX) trebs.list.shift();
   let x = spot.x, z = spot.z;
-  const d = Math.hypot(x, z), minD = siteR + 5;
+  const d = Math.hypot(x, z), minD = siteR + TREB_STAND;
   if (d < minD) {
     const a = d < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(z, x);
     x = Math.cos(a) * minD; z = Math.sin(a) * minD;
@@ -561,7 +574,8 @@ function placeTreb(spot, aimAt) {
   // 面向要轟的那一點：rotation.y = a 之後 local +Z 會指到 (sin a, 0, cos a)
   trebs.list.push({ x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
                     tx: aimAt.x, tz: aimAt.z,
-                    arm: -0.8, next: 0.4, left: TREB_SHOTS, idle: 0 });
+                    arm: ENG.TREB_REST, sw: 0, shot: 0,
+                    next: 0.4, left: TREB_SHOTS, idle: 0 });
 }
 function fireRock(m) {
   /* 落點以「這一隊要轟的那一點」為準隨機取（開根號讓分布均勻，不然會全擠在中心）。
@@ -576,19 +590,24 @@ function fireRock(m) {
     if (Math.abs(b.x - tx) > 1.8 || Math.abs(b.z - tz) > 1.8) continue;
     if (b.y > ty) ty = b.y;
   }
-  const sy = 4.4;
+  /* 出手點＝**畫出來的投石索末端**（v1.193）。v1.102～v1.192 是固定在機台中心、
+     離地 4.4——石頭從機台肚子裡冒出來，跟臂尖完全沒關係。現在跟 BOW_TIP／
+     SWORD_TIP 那一套一樣，位置由引擎算（ENG.trebSling），兩邊只有一份數字。
+     取**當下的臂角**不是 TREB_REL：dt 大的時候這一幀可能已經掃過頭了，
+     照臂角算才保證石頭真的是從畫面上那個石兜飛出去的。 */
+  const sl = ENG.trebSling(m.arm);
+  const sx = m.x + Math.sin(m.a) * sl.z, sz = m.z + Math.cos(m.a) * sl.z, sy = sl.y;
   const h = ty + 0.6 - sy;                        // 目標比出手點高多少
-  const d = Math.hypot(tx - m.x, tz - m.z);
+  const d = Math.hypot(tx - sx, tz - sz);
   const top = Math.max(sy, ty + 0.6) + Math.max(TREB_CLEAR, d * TREB_LOB);   // 頂點高度
   const vy = Math.sqrt(2 * GRAV * (top - sy));    // 由頂點解出手的垂直速度
   // 落下時才抵達＝取大根（見 TREB_LOB 上面那段）
   const T = (vy + Math.sqrt(Math.max(0, vy * vy - 2 * GRAV * h))) / GRAV;
   trebs.rocks.push({
-    x: m.x, y: sy, z: m.z,
-    vx: (tx - m.x) / T, vz: (tz - m.z) / T,
+    x: sx, y: sy, z: sz,
+    vx: (tx - sx) / T, vz: (tz - sz) / T,
     vy, T, t: 0, rx: 0, ry: 0, s: rr(1.3, 2.1)
   });
-  m.arm = 1.35;
   sndSwing();
 }
 /* 石頭飛行途中撞到建築就當場炸開，撞在哪就從哪散。
@@ -638,13 +657,24 @@ function stepTrebs(dt) {
   if (!trebs) return;
   for (let i = trebs.list.length - 1; i >= 0; i--) {
     const m = trebs.list[i];
-    m.arm += (-0.8 - m.arm) * Math.min(1, dt * 5);   // 甩出去之後慢慢拉回待發位置
-    if (m.left > 0) {
-      m.next -= dt;
-      if (m.next <= 0) { m.next = rr(1.2, 2); m.left--; fireRock(m); }
+    if (m.sw) {
+      /* 正在甩：配重掃下來、長臂往前上方甩過去。掃過放索的角度就出手
+         （夾在 TREB_END，dt 大的時候不會掃過頭，也保證不會漏掉那一發）。 */
+      m.arm = Math.max(ENG.TREB_END, m.arm - TREB_SWING * dt);
+      /* 掃過放索的角度就出手。**先把臂角釘回 TREB_REL 再放**：一幀掃 0.13～0.4 弧度
+         （看 dt），不釘的話出手點會跟著幀率上下飄半格，同一發的弧線每次都不一樣。
+         釘了之後這一幀少掃一點點（畫面上看不出來），出手點就是固定的那一個。 */
+      if (!m.shot && m.arm <= ENG.TREB_REL) { m.arm = ENG.TREB_REL; m.shot = 1; fireRock(m); }
+      if (m.arm <= ENG.TREB_END) m.sw = 0;
     } else {
-      m.idle += dt;                                  // 打完站一下再撤走
-      if (m.idle > 3.5) trebs.list.splice(i, 1);
+      m.arm += (ENG.TREB_REST - m.arm) * Math.min(1, dt * TREB_WIND);   // 絞回待發
+      if (m.left > 0) {
+        m.next -= dt;
+        if (m.next <= 0) { m.next = rr(1.2, 2); m.left--; m.sw = 1; m.shot = 0; }
+      } else {
+        m.idle += dt;                                // 打完站一下再撤走
+        if (m.idle > 3.5) trebs.list.splice(i, 1);
+      }
     }
   }
   for (let i = trebs.rocks.length - 1; i >= 0; i--) {
