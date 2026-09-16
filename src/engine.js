@@ -433,6 +433,10 @@ const ENG = (function () {
   const scratchB = new T.Object3D();
   const tmpM = new T.Matrix4();
   const tmpC = new T.Color();
+  /* 全 0 的矩陣：「這個人沒有這一塊」時直接塞進去（縮成一個點，畫不出東西）。
+     見 putWorker 開頭那條——測試也是靠 elements[0]／[5] 是不是 0 認「沒拿的道具」。 */
+  const ZERO_M = new T.Matrix4();
+  ZERO_M.elements.fill(0);
   const _emoR = new T.Vector3(), _emoU = new T.Vector3();   // 鏡頭的右／上向量（表情圖示用）
   const raycaster = new T.Raycaster();
   const ndc = new T.Vector2();
@@ -506,11 +510,21 @@ const ENG = (function () {
      ＋ v1.112 肌肉小人的五塊（胸膛、兩塊肩、兩塊胸肌）
      ＋ v1.129 挖料的鏟子兩塊（柄、鏟面）
      ＋ v1.171 弓箭手的七塊（弓臂兩塊、握把、弦兩截、搭著的箭、背上的箭袋）
+     ＋ v1.198 Q 版補的二十二塊：五官（眼白兩塊、眉兩塊、瀏海、後髮、嘴、耳兩塊、
+       腮紅兩塊）、衣著（領口、圍兜、袖兩塊、手套兩塊）、肌肉小人的腹、
+       魔法師的袍下襬、帽帶、鬍子兩塊
      （v1.121 曾經有表情圖示的八塊，v1.122 換成貼圖之後收掉了，見 paintEmoAtlas）。
-     道具沒拿的人整片縮到 0；全部共用同一個 InstancedMesh，不多一個 draw call。
-     實測 60 個人擺一輪：10 塊時 0.106ms、17 塊時 0.150ms——每幀預算 4ms，加得起。
-     （29 → 36 是每個人每幀多七筆矩陣，照那條斜率 60 人約多 0.06ms。） */
-  const WPARTS = 36;
+     全部共用同一個 InstancedMesh，不多一個 draw call。
+
+     **這個人身上沒有的那幾塊只付一個全 0 矩陣的錢**（v1.198，見 putWorker 開頭與 REQ）：
+     一般工人 58 塊裡只畫 33 塊。實測 60 人擺一輪（同一台機器、同一個場景、各量三四次）：
+       36 塊、每一塊都走完整條路（v1.197）  0.83～0.87ms
+       36 塊、沒有的那些跳過              0.48～0.65ms
+       58 塊、跳過但條件用 b.xxx 判斷      0.96～1.14ms   ← 光判斷就吃掉省下來的
+       58 塊、跳過且條件查 REQ 表          0.79～0.86ms   ← 現在這個
+     也就是**部位多了六成、一般工人畫的從 14 塊變 33 塊，每幀成本跟改版前同一個帶**。
+     同一個場景的 draw 也一樣（改版前 1.61～2.01ms，現在 1.56～1.99ms）。 */
+  const WPARTS = 58;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。
      v1.118 從 720 加到 900：打雷的烏雲也借這顆 mesh 畫（一朵 150 團），
@@ -2407,13 +2421,23 @@ const ENG = (function () {
   /* 法杖的尺寸（v1.64）。杖身中心在 STAFF_MID、杖頭（寶珠）在它上面 STAFF_TIP 處，
      施法時整根往上抬 CAST_LIFT、杖頭往前傾 CAST_TILT——抬完手掌那個高度剛好落在杖身上。
      這幾個值 BODY、putWorker、WAND_TIP 三處都要用，所以擺在最前面只寫一次。 */
-  const STAFF_X = 0.42, STAFF_MID = 0.78, STAFF_Z = 0.02, STAFF_TIP = 0.86;
+  const STAFF_X = 0.40, STAFF_MID = 0.78, STAFF_Z = 0.02, STAFF_TIP = 0.86;
   const CAST_LIFT = 0.34, CAST_TILT = 0.24;
+  /* 手臂掛在哪、多長（v1.198 改成常數）。六種手的姿勢本來各自寫死一個高度
+     （0.85／0.76／0.82…），那些數字全是照「手臂中心在 0.62」量出來的；
+     Q 版把肩膀降到 0.56 之後每一個都得重算。現在一律寫成 ARM_Y ＋ 位移，
+     下次再調比例只要改這一行（見 開發筆記〈不要寫死會隨改動變動的數字〉）。 */
+  const ARM_X = 0.32, ARM_Y = 0.56, ARM_H = 0.34, ARM_W = 0.19, ARM_D = 0.23;
+  /* 掛在手臂上的兩件（v1.198）：袖子往上 SLEEVE_ON、手套往下 HAND_ON，
+     沿著手臂自己的軸走，所以手一擺它們自己跟著轉（見 putWorker 的 b.on）。 */
+  const SLEEVE_ON = -0.10, HAND_ON = 0.235;
+  /* 指揮時藍圖收到左手邊垂著 */
+  const PLAN_X = ARM_X, PLAN_Y = 0.50;
   /* 肌肉小人的手臂（v1.112）：粗 MUS_ARM 倍、往外挪到 MUS_ARM_X。
      不另開部位是因為手的姿勢有六種分支（搬、歡呼、施法、讀圖、比劃、走路擺手），
      複製一份就得跟著維護兩份。往外挪是因為胸膛比工作服寬：半寬 0.35，
      原本的手掛在 0.34，不挪的話整隻手埋在胸膛裡。 */
-  const MUS_ARM_X = 0.46, MUS_ARM = 1.5;
+  const MUS_ARM_X = 0.44, MUS_ARM = 1.5;
   /* 挖料的鏟子（v1.129，v1.130 照使用者給的照片重做動作）。
      照片上的用法是：**人彎腰，兩手握在近乎垂直的柄上，鏟面插在腳前面的地裡**——
      不是把長柄舉在身體前方橫掃（v1.129 就是那樣，鏟面落在身體前方 1.18 格）。
@@ -2427,11 +2451,14 @@ const ENG = (function () {
      柄的角度**不寫死**，照「手到鏟面的高度差」用 acos 反算——柄一改長角度自己跟著對。
      而且要在**世界座標**算：地面在 y=0，而身體前傾會把整支鏟子帶著往下轉，
      所以先把手的位置轉到世界座標、算完角度再轉回身體座標（見 putWorker 的 digA）。 */
-  const DIG_GRIP_A = [0.74, 0.04], DIG_GRIP_B = [0.62, 0.10];   // 手的位置（身體座標 y/z）
+  /* v1.198 跟著 Q 版比例往下挪：肩膀從 0.62 掉到 0.56，手握的位置不跟著掉的話
+     兩隻手會舉在胸口上方握著柄。DIG_REACH 也跟著收（0.66 → 0.58）——
+     握得低、柄長不變的話 acos 反算出來的柄會躺下去，鏟面從腳前 0.52 跑到 0.73 格。 */
+  const DIG_GRIP_A = [0.64, 0.04], DIG_GRIP_B = [0.54, 0.10];   // 手的位置（身體座標 y/z）
   /* 柄要**伸出手的上方** DIG_OVER（照片上柄頭在胸口）：不伸出去的話柄從手掌開始，
      整支被兩隻手臂的方塊蓋掉，畫面上只剩腳邊一小截 ＋ 一塊鐵（試過，看起來像鎯頭）。
      所以柄長是「手上方那截 ＋ 手到鏟面」推出來的，鏟面自己接在柄的下端。 */
-  const DIG_OVER = 0.30, DIG_REACH = 0.66, DIG_PAN = 0.38;   // 伸出手上方／手到鏟面中心／鏟面長
+  const DIG_OVER = 0.30, DIG_REACH = 0.58, DIG_PAN = 0.38;   // 伸出手上方／手到鏟面中心／鏟面長
   const DIG_LEN = DIG_OVER + DIG_REACH - DIG_PAN * 0.5;      // 柄長
   const DIG_ROD = (DIG_REACH - DIG_PAN * 0.5 - DIG_OVER) / 2;  // 柄中心離手多遠（沿著柄往下）
   const DIG_DEEP = -0.06, DIG_UP = 0.24;          // 鏟面中心：插到底（埋一半）／撬起來
@@ -2469,7 +2496,9 @@ const ENG = (function () {
      BOW_ARROW 搭著的箭多長。跟飛出去那一支**同一個世界長度**（規則那邊的 AR_LEN 1.35
        ÷ 小人平均身高倍率 1.8 ≈ 0.72）——不對齊的話箭一離手就變一號。
        比例也對得上真的箭：滿弓時箭頭只伸出弓外 0.28。 */
-  const BOW_X = -0.22, BOW_Y = 0.70, BOW_Z = 0.42;
+  /* BOW_Y 跟著肩膀往下挪（v1.198：0.70 → ARM_Y ＋ 0.02）——它同時是握把的高度
+     與「還沒抬起來」時手臂中心的高度，不挪的話手舉在肩膀上方端著弓。 */
+  const BOW_X = -0.22, BOW_Y = ARM_Y + 0.02, BOW_Z = 0.42;
   const BOW_ARM = 0.46, BOW_TIP_Z = -0.14;
   const BOW_NOCK = -0.10, BOW_PULL = 0.34;
   const BOW_ARROW = 0.72;
@@ -2480,15 +2509,17 @@ const ENG = (function () {
      身體、頭、腳不跟著轉（他是站著仰射，不是整個人往後躺）。
      負號是座標的事：繞 X 軸轉 θ 會把 +Z 送到 (0, −sinθ, cosθ)，要讓箭（+Z）朝上
      就得給負角。規則那邊的彈道用同一個角度（見 game-tools.js 的 shootArrow）。 */
-  const BOW_SH = 0.84;                      // 肩關節的高度（抬起來繞的那一點）
+  const BOW_SH = ARM_Y + ARM_H / 2;         // 肩關節的高度（抬起來繞的那一點）＝手臂的上緣
   const BOW_TILT = -Math.PI / 4;
   const BOW_CT = Math.cos(BOW_TILT), BOW_ST = Math.sin(BOW_TILT);
   /* 側傾：整把弓繞**握把**轉這麼多，上臂往外（離身體）、下臂往內。
-     0.50 弧度（29 度）是照帽緣量的：上弓臂那一塊的中心會落在 x = −0.36，
-     內側邊 −0.32，比帽緣的 0.27 外面還多 0.05，剛好不相交。
+     0.58 弧度（33 度）是照帽緣量的：上弓臂那一塊的中心會落在 x = −0.376，
+     內側邊 −0.342，比帽緣的 0.32 外面還多 0.022，剛好不相交。
+     （v1.198 從 0.50 加到 0.58：Q 版的帽緣從半寬 0.27 變成 0.32，
+     舊的側傾只差 0.0025 格，等於貼著帽緣掃過去。）
      搭著的箭與弦扣都在握把那條軸上（dy＝0），所以**不受側傾影響**——箭一路留在
      BOW_X 這一側、指向也還是正 45 度（繞 Z 軸轉不會動到 Z 軸本身）。 */
-  const BOW_CANT = 0.50;
+  const BOW_CANT = 0.58;
   const BOW_CC = Math.cos(BOW_CANT), BOW_CS = Math.sin(BOW_CANT);
   /* 把一塊「還沒抬起來」的位置與轉角換算成抬起之後的。繞的是 (y=BOW_SH, z=0)。
      回傳共用一個物件（同這支檔案的 scratch／tmpM 那些）：一個弓箭手一幀要叫九次，
@@ -2623,52 +2654,100 @@ const ENG = (function () {
     for (let i = 0; i < EMO_KINDS.length; i++) paintEmo(g, EMO_KINDS[i], i * EMO_CELL);
     return cv;
   }
-  /* 身體各部位（相對小人原點）。x 會左右鏡射，所以只寫一半 */
+  /* ── 身體各部位（相對小人原點）────────────────────────────────
+     v1.198「Q 版大頭」（使用者挑的那一版，三版預覽見 開發筆記〈小人造型改版〉）：
+     三頭身——頭放大到 0.50 寬、腿縮短，五官整組放大（有眼白、腮紅），
+     工作服改吊帶褲。**帽頂仍然停在 1.31**：那個高度是搬運時積木擱的位置。
+
+     前三塊的順序不能動：測試拿 BODY[2] 當「安全帽的顏色」（見 e2e〈魔法師〉），
+     而**最後一塊必須是寶珠**（e2e 拿 a[a.length-1] 認它）。
+
+     欄位：
+       c     顏色（WCOL 的 key）
+       alt   魔法師身上改用這個顏色——工作服→長袍、腰帶→腰繩、頭髮眉毛→白的、
+             手套→露出的手。多開一塊的話那一塊對別人就是「看不見卻照樣要算」的成本，
+             換色只是一次比較（見 putWorker 結尾的 pal）。
+       cloth 衣服：肌肉小人裸上半身，這幾塊他沒有
+       hard  魔法師沒有的那幾塊（安全帽三塊 ＋ 工人的圍兜）
+       on    掛在手臂上，沿著手臂的軸往下多遠（負的＝往上） */
   const BODY = [
-    { p: [0, 0.60, 0], s: [0.50, 0.52, 0.34], c: 'suit' },   // 身體
-    { p: [0, 1.02, 0], s: [0.40, 0.36, 0.40], c: 'skin' },   // 頭
+    { p: [0, 0.535, 0], s: [0.48, 0.40, 0.36], c: 'suit', alt: 'robe', cloth: 1 },   // 身體
+    { p: [0, 0.96, 0], s: [0.50, 0.44, 0.48], c: 'skin' },   // 頭（Q 版：比肩膀還寬）
     /* 安全帽拆成「帽緣一圈 + 帽頂一塊 + 前面帽舌」三塊（v1.51）。
        本來是一塊 0.52×0.14×0.52 的平板，遠看是頭上蓋了張紙。
        帽頂的上緣仍然停在 1.31——那個高度是搬運時積木擱的位置，改了積木就會陷進帽子。 */
-    { p: [0, 1.19, 0], s: [0.54, 0.06, 0.54], c: 'hat', hard: 1 },   // 帽緣（比帽頂寬一圈）
-    { p: [-0.14, 0.20, 0], s: [0.20, 0.42, 0.24], c: 'leg', swing: -1 },
-    { p: [0.14, 0.20, 0], s: [0.20, 0.42, 0.24], c: 'leg', swing: 1 },
-    { p: [-0.34, 0.62, 0], s: [0.16, 0.44, 0.20], c: 'skin', arm: -1 },
-    { p: [0.34, 0.62, 0], s: [0.16, 0.44, 0.20], c: 'skin', arm: 1 },
+    { p: [0, 1.16, 0], s: [0.64, 0.07, 0.62], c: 'hat', hard: 1 },   // 帽緣（比帽頂寬一圈）
+    { p: [-0.135, 0.19, 0], s: [0.22, 0.28, 0.26], c: 'leg', swing: -1 },
+    { p: [0.135, 0.19, 0], s: [0.22, 0.28, 0.26], c: 'leg', swing: 1 },
+    { p: [-ARM_X, ARM_Y, 0], s: [ARM_W, ARM_H, ARM_D], c: 'skin', arm: -1 },
+    { p: [ARM_X, ARM_Y, 0], s: [ARM_W, ARM_H, ARM_D], c: 'skin', arm: 1 },
     /* 以下三塊是道具。p/s 只是預設值，真正的位置在 putWorker 裡按姿勢重算；
-       沒拿的人 scale 設 0（退化成一個點，畫不出東西）。 */
-    /* 藍圖畫得比肩膀寬（身體 0.50，圖 0.80），而且斜立起來——工程師是面向建築站的，
+       沒拿的人整塊跳過（塞一個全 0 的矩陣，見 putWorker 開頭）。 */
+    /* 藍圖畫得比肩膀寬（身體 0.48，圖 0.80），而且斜立起來——工程師是面向建築站的，
        玩家多半從他背後看過去，圖只有露出身體兩側的那一截看得到。 */
-    { p: [0, 0.80, 0.26], s: [0.80, 0.05, 0.50], c: 'plan', plan: 1 },   // 工程師的藍色設計圖
+    { p: [0, 0.74, 0.28], s: [0.80, 0.05, 0.50], c: 'plan', plan: 1 },   // 工程師的藍色設計圖
     /* 聊天泡泡要兩塊：頭上一顆白方塊自己看起來只是一塊飄在半空的積木，
        加一顆小的把它跟頭連起來，才讀得出是對話框。 */
-    { p: [0.20, 1.68, 0], s: [0.46, 0.34, 0.38], c: 'talk', bub: 1 },
-    { p: [0.11, 1.44, 0], s: [0.18, 0.18, 0.16], c: 'talk', bub: 1 },
-    /* ── 細節（v1.51，接在最後面：前面那幾塊的索引被測試拿來認部位）──────
-       小人放大 1.5 倍之後，原本那七塊看起來就是一疊方塊。這六塊補的是
-       「一眼看出他面朝哪邊、腳踩在哪裡」——臉、鞋、腰各一件事。 */
-    /* 帽頂要夠厚：帽緣只比它寬 0.05，才是工地安全帽；帽緣太寬會變成一頂草帽。 */
-    { p: [0, 1.25, 0], s: [0.44, 0.12, 0.44], c: 'hat', hard: 1 },       // 帽頂（上緣停在 1.31）
-    { p: [0, 1.185, 0.32], s: [0.34, 0.05, 0.20], c: 'hat', hard: 1 },   // 帽舌（只有前面有，指出朝向）
-    /* 眼睛貼在臉皮外面一點點（頭的前緣在 z=0.20，眼睛中心也在 0.20，凸出去 0.015）：
-       完全切齊的話兩個面共平面，會閃爍。 */
-    { p: [-0.10, 1.06, 0.20], s: [0.08, 0.10, 0.03], c: 'eye' },
-    { p: [0.10, 1.06, 0.20], s: [0.08, 0.10, 0.03], c: 'eye' },
+    { p: [0.20, 1.62, 0], s: [0.46, 0.34, 0.38], c: 'talk', bub: 1 },
+    { p: [0.11, 1.38, 0], s: [0.18, 0.18, 0.16], c: 'talk', bub: 1 },
+    /* ── 細節（v1.51 起接在最後面：前面那幾塊的索引被測試拿來認部位）────── */
+    /* 帽頂要夠厚：帽緣只比它寬 0.06，才是工地安全帽；帽緣太寬會變成一頂草帽。 */
+    { p: [0, 1.235, 0], s: [0.52, 0.15, 0.52], c: 'hat', hard: 1 },      // 帽頂（上緣停在 1.31）
+    { p: [0, 1.155, 0.36], s: [0.40, 0.05, 0.22], c: 'hat', hard: 1 },   // 帽舌（只有前面有，指出朝向）
+    /* 眼睛（v1.198 改成眼白 ＋ 瞳孔兩層）：Q 版的眼睛要大而且要有白的部分——
+       整顆黑的放大之後是兩個黑洞。瞳孔比眼白**往外偏 0.01**，看起來才不是在對眼。
+       都貼在臉皮外面一點點（頭的前緣在 0.24）：完全切齊的話兩個面共平面，會閃爍。 */
+    { p: [-0.125, 0.93, 0.238], s: [0.15, 0.15, 0.025], c: 'white' },
+    { p: [0.125, 0.93, 0.238], s: [0.15, 0.15, 0.025], c: 'white' },
+    { p: [-0.135, 0.92, 0.244], s: [0.09, 0.11, 0.02], c: 'eye' },
+    { p: [0.135, 0.92, 0.244], s: [0.09, 0.11, 0.02], c: 'eye' },
     /* 鞋子比腿寬一點、往前多一點，而且要跟著腿擺（swing 跟同一邊的腿同號）。 */
-    { p: [-0.14, 0.05, 0.03], s: [0.23, 0.11, 0.30], c: 'shoe', swing: -1 },
-    { p: [0.14, 0.05, 0.03], s: [0.23, 0.11, 0.30], c: 'shoe', swing: 1 },
-    { p: [0, 0.40, 0], s: [0.53, 0.10, 0.37], c: 'belt' },      // 腰帶：把長條的身體斷開
-    /* ── 肌肉小人（v1.112）───────────────────────────────────────
-       裸上半身：工作服（第 0 塊，'suit'）在他身上縮成 0，換成這一塊膚色的胸膛——
-       比工作服寬 0.20、厚 0.10，底面抬到腰帶上面（0.45）：一路蓋到腰的話腰身就沒了，
-       遠看是一個桶子。肩與胸肌各兩塊補在胸膛的外側與前面：一塊放大的方塊讀不出是肌肉，
+    { p: [-0.135, 0.055, 0.05], s: [0.26, 0.10, 0.34], c: 'shoe', swing: -1 },
+    { p: [0.135, 0.055, 0.05], s: [0.26, 0.10, 0.34], c: 'shoe', swing: 1 },
+    { p: [0, 0.36, 0], s: [0.52, 0.09, 0.38], c: 'belt', alt: 'sash' },   // 腰帶：把身體斷開
+    /* ── 臉上的其餘部位（v1.198）───────────────────────────────
+       現行只有兩顆眼睛，遠看是一顆貼了兩個點的方塊（使用者：「目前不夠好看」）。
+       牛羊那邊光一顆頭就有吻、鼻孔、耳、角四件事，這裡補到同一個水準。
+       **眉毛、瀏海、後髮的高度是量出來的**：帽緣底在 1.125，瀏海要整條露在它下面，
+       眉毛又要跟瀏海之間留一條膚色——擠在一起的話遠看糊成一片黑（預覽第一版就是這樣）。 */
+    { p: [-0.125, 1.03, 0.238], s: [0.13, 0.04, 0.025], c: 'hair', alt: 'beard' },   // 眉
+    { p: [0.125, 1.03, 0.238], s: [0.13, 0.04, 0.025], c: 'hair', alt: 'beard' },
+    { p: [0, 1.098, 0.19], s: [0.44, 0.05, 0.14], c: 'hair', alt: 'beard' },         // 瀏海
+    { p: [0, 1.098, -0.19], s: [0.44, 0.05, 0.14], c: 'hair', alt: 'beard' },        // 後髮
+    { p: [0, 0.785, 0.242], s: [0.16, 0.045, 0.03], c: 'mouth' },                    // 嘴
+    { p: [-0.255, 0.92, -0.01], s: [0.08, 0.14, 0.13], c: 'skin' },                  // 耳
+    { p: [0.255, 0.92, -0.01], s: [0.08, 0.14, 0.13], c: 'skin' },
+    { p: [-0.215, 0.83, 0.238], s: [0.10, 0.06, 0.02], c: 'blush' },                 // 腮紅
+    { p: [0.215, 0.83, 0.238], s: [0.10, 0.06, 0.02], c: 'blush' },
+    /* 領口：工人是深一階的衣領，魔法師換色之後就是披在肩上的那一件（alt）。
+       同一塊兩用——各開一塊的話兩邊都要付「看不見卻照樣要算」的錢。 */
+    { p: [0, 0.695, 0], s: [0.52, 0.09, 0.40], c: 'suitD', alt: 'wizD', cloth: 1 },
+    /* 吊帶褲胸前那塊圍兜：Q 版的衣著特徵，遠看就是胸口一塊深色。
+       魔法師（hard）與肌肉小人（cloth）都沒有。 */
+    { p: [0, 0.60, 0.19], s: [0.30, 0.26, 0.02], c: 'suitD', hard: 1, cloth: 1 },
+    /* 袖子與手套：掛在手臂上（on），所以六種姿勢一個都不必改就會自己跟著轉。
+       袖子往上蓋住肩關節——不蓋的話手一擺，肩膀那裡會開一條縫。 */
+    { p: [-ARM_X, ARM_Y, 0], s: [ARM_W + 0.05, 0.17, ARM_D + 0.05], c: 'suit', alt: 'robe',
+      arm: -1, on: SLEEVE_ON, cloth: 1 },
+    { p: [ARM_X, ARM_Y, 0], s: [ARM_W + 0.05, 0.17, ARM_D + 0.05], c: 'suit', alt: 'robe',
+      arm: 1, on: SLEEVE_ON, cloth: 1 },
+    { p: [-ARM_X, ARM_Y, 0], s: [ARM_W + 0.02, 0.15, ARM_D + 0.02], c: 'glove', alt: 'skin',
+      arm: -1, on: HAND_ON },
+    { p: [ARM_X, ARM_Y, 0], s: [ARM_W + 0.02, 0.15, ARM_D + 0.02], c: 'glove', alt: 'skin',
+      arm: 1, on: HAND_ON },
+    /* ── 肌肉小人（v1.112，v1.198 跟著 Q 版重排）─────────────────
+       裸上半身：衣服那幾塊（cloth）在他身上跳掉，換成這幾塊膚色的。
+       **腰要露出來**才有「寬肩細腰」：胸膛只蓋到 0.525、腹自己占一段——
+       一路蓋到腰的話腰身就沒了，遠看是一個桶子（預覽第一版就是這樣）。
+       肩與胸肌各兩塊補在胸膛的外側與前面：一塊放大的方塊讀不出是肌肉，
        要有「肩比胸寬、胸往前鼓」這兩個轉折才看得出來。手臂不另開部位（見 MUS_ARM）。
        擺在魔法師那一段**前面**：測試靠「BODY 最後一塊是寶珠」認寶珠。 */
-    { p: [0, 0.68, 0], s: [0.70, 0.46, 0.44], c: 'skin', mus: 1 },        // 胸膛（取代工作服）
-    { p: [-0.35, 0.82, 0], s: [0.28, 0.24, 0.42], c: 'skin', mus: 1 },    // 左肩（比胸膛再寬 0.14）
-    { p: [0.35, 0.82, 0], s: [0.28, 0.24, 0.42], c: 'skin', mus: 1 },     // 右肩
-    { p: [-0.17, 0.78, 0.24], s: [0.30, 0.20, 0.10], c: 'skin', mus: 1 }, // 左胸肌（往前鼓 0.07）
-    { p: [0.17, 0.78, 0.24], s: [0.30, 0.20, 0.10], c: 'skin', mus: 1 },  // 右胸肌
+    { p: [0, 0.645, 0], s: [0.72, 0.24, 0.46], c: 'skin', mus: 1 },        // 胸膛（取代工作服）
+    { p: [-0.355, 0.71, 0], s: [0.30, 0.24, 0.46], c: 'skin', mus: 1 },    // 左肩（比胸膛再寬 0.15）
+    { p: [0.355, 0.71, 0], s: [0.30, 0.24, 0.46], c: 'skin', mus: 1 },     // 右肩
+    { p: [-0.175, 0.665, 0.255], s: [0.30, 0.17, 0.09], c: 'skin', mus: 1 }, // 左胸肌（往前鼓 0.07）
+    { p: [0.175, 0.665, 0.255], s: [0.30, 0.17, 0.09], c: 'skin', mus: 1 },  // 右胸肌
+    { p: [0, 0.46, 0], s: [0.54, 0.18, 0.40], c: 'skin', mus: 1 },         // 腹（腰在這裡收進去）
     /* ── 挖料的鏟子（v1.129，使用者：「先用鏟子挖出積木」）─────────
        只有在挖的那幾秒拿在手上（w.dig > 0），其他時候縮成 0。
        位置與角度在 putWorker 裡按那一鏟的深淺重算，這裡寫的是預設值。
@@ -2692,14 +2771,24 @@ const ENG = (function () {
     { p: [BOW_X, BOW_Y, BOW_Z], s: [0.022, 0.40, 0.022], c: 'talk', bow: 1, str: -1 }, // 弦（下半）
     { p: [BOW_X, BOW_Y, BOW_Z], s: [0.05, 0.05, BOW_ARROW],
       c: 'staff', bow: 1, nock: 1 },                                    // 搭在弦上那一支
-    { p: [0.17, 0.80, -0.22], s: [0.15, 0.44, 0.15], c: 'shoe', bow: 1, quiv: 1 },     // 背上的箭袋
+    { p: [0.17, 0.74, -0.24], s: [0.15, 0.40, 0.15], c: 'shoe', bow: 1, quiv: 1 },     // 背上的箭袋
     /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
        巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
        只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
-       （hard 那三塊縮到 0），兩頂疊著會直接穿模。 */
-    { p: [0, 1.21, 0], s: [0.66, 0.07, 0.66], c: 'wiz', wiz: 1 },   // 帽簷（比安全帽寬得多）
-    { p: [0, 1.40, 0], s: [0.38, 0.32, 0.38], c: 'wiz', wiz: 1 },   // 帽身
-    { p: [0, 1.64, 0], s: [0.17, 0.22, 0.17], c: 'wiz', wiz: 1 },   // 帽尖
+       （hard 那幾塊整塊跳過），兩頂疊著會直接穿模。
+
+       v1.198 補了袍、披肩、鬍子與帽帶：**現行的魔法師穿的是工地的橘色工作服**，
+       只換了頂帽子（使用者：「目前不夠好看」）。身體、腰帶、袖子、頭髮那幾塊
+       靠 alt 換色就變成紫袍、腰繩、白髮，只有下面這幾塊是他獨有的。 */
+    { p: [0, 0.26, 0], s: [0.58, 0.30, 0.44], c: 'robe', wiz: 1 },  // 袍的下襬（蓋住大腿）
+    { p: [0, 1.16, 0], s: [0.76, 0.07, 0.76], c: 'wiz', wiz: 1 },   // 帽簷（比安全帽寬得多）
+    { p: [0, 1.215, 0], s: [0.50, 0.05, 0.50], c: 'sash', wiz: 1 }, // 帽帶（金，要比帽身寬才露得出來）
+    { p: [0, 1.345, 0], s: [0.44, 0.29, 0.44], c: 'wiz', wiz: 1 },  // 帽身
+    { p: [0, 1.60, 0], s: [0.18, 0.24, 0.18], c: 'wiz', wiz: 1 },   // 帽尖（頂到 1.72，在圖示底邊 1.80 以下）
+    /* 鬍子兩節：上面那節的**頂邊要低於眼白的底邊**，不然兩片白在臉上連成一片
+       （預覽第一版就是這樣）。下面那節垂到披肩上，剪影才看得出是長鬍子。 */
+    { p: [0, 0.72, 0.20], s: [0.30, 0.20, 0.14], c: 'beard', wiz: 1 },
+    { p: [0, 0.585, 0.19], s: [0.18, 0.14, 0.12], c: 'beard', wiz: 1 },
     /* 法杖：一根長方塊 ＋ 頂端一顆寶珠。位置在 putWorker 裡按施法深淺重算，
        這裡寫的是垂在右手邊的常態姿勢。 */
     { p: [STAFF_X, STAFF_MID, STAFF_Z], s: [0.09, 1.56, 0.09], c: 'staff', wiz: 1, staff: 1 },
@@ -2726,9 +2815,44 @@ const ENG = (function () {
     wiz: [0x4a3b8c],
     staff: [0x6a4a30],
     blade: [0x6f7780],      // 鏟面：鐵（v1.130 壓深一階，亮灰看起來像鎯頭）
-    orb: [0xffd66b]
+    orb: [0xffd66b],
+    /* ── v1.198 補的（Q 版的五官與衣著）───────────────────────────
+       每一組的長度要嘛 1（所有人都一樣）要嘛 4（跟著 w.tone 抽），
+       跟上面既有的那幾組對齊：tone 是同一個索引，膚色深的人頭髮也要跟著深。 */
+    white: [0xffffff],      // 眼白
+    hair: [0x4a3a2c, 0x2b2119, 0x191410, 0x6e4a26],
+    mouth: [0x9a5347],
+    blush: [0xe8907f],
+    glove: [0x8a5a34],      // 工作手套：皮
+    suitD: [0xc07f26, 0x3672b4, 0x3d8f52, 0xb24f42],   // 領口／圍兜：工作服深一階
+    /* 魔法師靠 alt 換上的那幾色（見 BODY 的 alt）：袍、腰繩與帽帶的金、
+       披肩（帽子深一階）、白鬍子與白髮。 */
+    robe: [0x53439b],
+    sash: [0xd8b23a],
+    wizD: [0x352a66],
+    beard: [0xeae6e0]
   };
   const ORB_LIT = new T.Color(0xffffff);   // 施法時寶珠往這個亮色靠（要跟金色差得夠開才看得出亮起來）
+
+  /* ── 「這個人身上有沒有這一塊」查表（v1.198）──────────────────────
+     每一塊需要什麼條件，開機時壓成一個 16 位元的遮罩存進 REQ；每個人每幀先算一次
+     自己**滿足哪些條件**（has），迴圈裡就只剩 `REQ[k] & ~has` 一次位元運算。
+
+     為什麼不直接在迴圈裡寫 `b.wiz && !w.mage || …`：BODY 這 58 塊的欄位組合有十七種
+     （有的有 swing、有的有 bow、有的有 wiz…），JS 引擎眼中它們是十七種不同的物件，
+     `b.wiz` 這種讀取每次都要重新查——實測九個條件讀下來，**光是判斷「要不要畫」
+     就要 0.011ms／塊**，跟真的畫一塊（0.024ms）同一個量級。
+     改成查表之後那一塊連 BODY[k] 都不必碰（`const b` 移到判斷後面）。
+     實測 60 人擺一輪：0.96～1.14ms → 0.79～0.86ms。 */
+  const RQ_MAGE = 1, RQ_PLAIN = 2, RQ_MUS = 4, RQ_CLOTH = 8, RQ_PLAN = 16,
+        RQ_BUB = 32, RQ_DIG = 64, RQ_BOW = 128, RQ_DRAW = 256;
+  const REQ = new Uint16Array(WPARTS);
+  for (let k = 0; k < WPARTS; k++) {
+    const b = BODY[k];
+    REQ[k] = (b.wiz ? RQ_MAGE : 0) | (b.hard ? RQ_PLAIN : 0) | (b.mus ? RQ_MUS : 0) |
+             (b.cloth ? RQ_CLOTH : 0) | (b.plan ? RQ_PLAN : 0) | (b.bub ? RQ_BUB : 0) |
+             (b.dig ? RQ_DIG : 0) | (b.bow ? RQ_BOW : 0) | (b.nock ? RQ_DRAW : 0);
+  }
 
   function setWorkerCount(n) { workerMesh.count = Math.min(n, MAXW) * WPARTS; }
   const CHAR = new T.Color(0x2b1d15);        // 燒起來的人往這個焦黑色靠
@@ -2741,9 +2865,10 @@ const ENG = (function () {
      中心離地多高還要跟著姿勢走：站著（或倒立）時是半個身高，橫躺時只有半個身厚。
      固定用半個身高的話，橫躺那半圈整個人浮在草皮上面。 */
   const ROLL_PIVOT = 0.65, ROLL_FLAT = 0.30;
-  /* 仰躺時最深的那一塊是安全帽的帽緣（0.54 深的一片，半深 0.27）。
-     抬這麼多，整個人剛好躺在草皮上，一塊都不埋（v1.60）。 */
-  const FLAT_LIFT = 0.27;
+  /* 仰躺時最深的那一塊是安全帽的帽緣，抬半個帽緣深，整個人剛好躺在草皮上、
+     一塊都不埋（v1.60）。**照 BODY 算**（v1.198）：本來寫死 0.27，
+     Q 版的帽緣從 0.54 深變成 0.62，寫死的話躺下去半頂帽子插在土裡。 */
+  const FLAT_LIFT = BODY[2].s[2] / 2;
   /* 被吹飛時在半空翻滾的旋轉中心（v1.146，使用者：「修正小人被吹飛的旋轉軸
      (目前似乎在腳底 看起來很奇怪)」）。跟打滾同一個高度——身體中段——但**是真的當旋轉
      中心用**，不是拿來抬高：飛在半空沒有地面要閃，繞腳底轉的話人像被釘在腳尖上甩，
@@ -2751,7 +2876,10 @@ const ENG = (function () {
      就是以腳為支點倒的。 */
   const AIR_PIVOT = 0.65;
   const _piv = new T.Vector3();
-  const HIP = 0.41;                          // 髖關節高度（腿的上緣），走路擺動的圓心
+  const _armV = new T.Vector3();             // 袖子／手套沿著手臂的軸挪多少（見 putWorker 的 b.on）
+  /* 髖關節高度（腿的上緣），走路擺動的圓心。**照 BODY 的腿算**（v1.198）：
+     寫死的話 Q 版把腿縮短之後，鞋子會繞著大腿中段轉。 */
+  const HIP = BODY[3].p[1] + BODY[3].s[1] / 2;
   /* w：{x,y,z,a 朝向,ph 步伐相位,carry 是否舉手,tilt 跌倒角度,tone 膚色/衣色編號,
         burnK 身上燒黑的深淺（0～1，火滅之後會自己褪回 0）,roll 正在打滾,
         hail 慶祝舉手,plan 手上有藍圖,point 指揮動作剩幾秒,talk 說話中,bub 泡泡大小 0～1,
@@ -2806,7 +2934,21 @@ const ENG = (function () {
     }
     scratch.scale.setScalar(wsc);
     scratch.updateMatrix();
+    /* 這個人滿足哪些條件（見 REQ）。一個人算一次，不是一塊算一次。 */
+    const has = (w.mage ? RQ_MAGE : RQ_PLAIN) | (w.mus ? RQ_MUS : RQ_CLOTH) |
+                (w.plan ? RQ_PLAN : 0) | (w.bub >= 0.02 ? RQ_BUB : 0) |
+                (w.dig ? RQ_DIG : 0) | (w.bow ? RQ_BOW : 0) |
+                (w.draw >= 0.05 ? RQ_DRAW : 0);
     for (let k = 0; k < WPARTS; k++) {
+      /* 這個人身上沒有的那幾塊（別種人的零件、沒拿的道具）**直接塞一個全 0 的矩陣**
+         就跳掉（v1.198，見 開發筆記〈沒有的部位不要走完整條路〉）。
+         本來是照樣 compose 一次、跟身體矩陣相乘一次、再算一次顏色，只是把 scale 設成 0
+         ——而一個人身上有一半以上的部位是「別人的東西」（58 塊裡一般工人只畫 33 塊）。
+         省掉的是那些塊的 compose ＋ 4×4 相乘 ＋ 顏色，只留 16 個 float 的寫入。 */
+      if (REQ[k] & ~has) {
+        workerMesh.setMatrixAt(i * WPARTS + k, ZERO_M);
+        continue;
+      }
       const b = BODY[k];
       scratchB.position.set(b.p[0], b.p[1], b.p[2]);
       scratchB.rotation.set(0, 0, 0);
@@ -2820,11 +2962,13 @@ const ENG = (function () {
         scratchB.position.y = b.p[1] - Math.abs(Math.sin(sw)) * 0.05;
       }
       /* 手的姿勢有先後：搬東西 → 歡呼 → 拿藍圖（含指揮）→ 說話比劃 → 走路擺手。
-         負的 rotation.x 是把手往前上方抬（-1.5 是水平前伸，-2.8 幾乎舉直）。 */
+         負的 rotation.x 是把手往前上方抬（-1.5 是水平前伸，-2.8 幾乎舉直）。
+         高度一律寫成 **ARM_Y ＋ 位移**（v1.198）：這幾個數字原本是照「手臂中心在 0.62」
+         量出來的，比例一改就全錯（見 ARM_Y 那一段）。 */
       if (b.arm) {
         if (w.carry) {                      // 搬東西時雙手舉高
           scratchB.rotation.x = -2.5;
-          scratchB.position.y = 0.85; scratchB.position.z = -0.16;
+          scratchB.position.y = ARM_Y + 0.23; scratchB.position.z = -0.14;
         } else if (w.dig) {
           /* 挖料（v1.130）：兩手握在鏟柄上，一隻握上端、另一隻往下握一截
              （照使用者給的照片；兩隻手擺一樣的話看起來是抱著柄，不是握著）。
@@ -2832,7 +2976,7 @@ const ENG = (function () {
              畫在腰邊（DIG_GRIP_A），兩隻手朝它斜下去就對得上。 */
           const hi = b.arm > 0;
           scratchB.rotation.x = (hi ? -0.45 : -0.80) - 0.20 * dgS;
-          scratchB.position.y = (hi ? 0.76 : 0.66) - 0.03 * dgS;
+          scratchB.position.y = DIG_GRIP_A[0] + (hi ? 0.02 : -0.08) - 0.03 * dgS;
           scratchB.position.z = hi ? 0.02 : 0.08;
         } else if (w.bow) {
           /* 射箭（v1.171）：**左手**把弓端出去（一路不動），**右手**跟著 w.draw
@@ -2848,21 +2992,21 @@ const ENG = (function () {
         } else if (w.hail) {                // 慶祝：雙手舉高、跟著跳的節奏晃
           scratchB.rotation.x = -2.75 + Math.sin(w.ph) * 0.22;
           scratchB.rotation.z = b.arm * 0.30;
-          scratchB.position.y = 0.82;
+          scratchB.position.y = ARM_Y + 0.20;
         } else if (w.danc) {
           /* 跳舞（v1.178）：兩隻手**輪流**舉（相位差半圈），一邊舉一邊往外開。
              兩隻同時舉的話那是慶祝那個姿勢，看不出是在跳舞。 */
           const s = Math.sin(w.ph + (b.arm > 0 ? 0 : Math.PI));
           scratchB.rotation.x = -1.55 + s * 1.15;
           scratchB.rotation.z = b.arm * (0.30 + s * 0.28);
-          scratchB.position.y = 0.80;
+          scratchB.position.y = ARM_Y + 0.18;
         } else if (w.guard) {
           /* 打架（v1.178）：兩隻手舉在胸前護著，**右手**（b.arm > 0，同指揮那一段的
              慣例）跟著 w.punch 打出去。punch 是 0～1 的半個正弦，見 stepFight。 */
           const p = b.arm > 0 ? (w.punch || 0) : 0;
           scratchB.rotation.x = -1.10 - p * 0.55;
           scratchB.rotation.z = b.arm * (0.26 - p * 0.26);
-          scratchB.position.y = 0.74;
+          scratchB.position.y = ARM_Y + 0.12;
           scratchB.position.z = 0.12 + p * 0.26;
         } else if (w.cast > 0.02 && b.arm > 0) {   // 施法：拿杖那隻手抬起來扶著杖身
           scratchB.rotation.x = -1.15 * w.cast;
@@ -2870,33 +3014,40 @@ const ENG = (function () {
         } else if (w.plan) {
           if (w.point > 0 && b.arm > 0) {   // 指揮：右手抬起來朝建築指，左手還端著圖
             scratchB.rotation.x = -2.05 - Math.sin(w.ph * 2.2) * 0.28;
-            scratchB.position.y = 0.80;
+            scratchB.position.y = ARM_Y + 0.18;
           } else {                          // 讀圖：雙手前伸把圖端在胸前
             scratchB.rotation.x = -1.25;
-            scratchB.position.y = 0.70; scratchB.position.z = 0.14;
+            scratchB.position.y = ARM_Y + 0.08; scratchB.position.z = 0.14;
           }
         } else if (w.talk && b.arm > 0) {   // 說話的人單手比劃
           scratchB.rotation.x = -1.0 - Math.sin(w.ph * 2.6) * 0.45;
-          scratchB.position.y = 0.66; scratchB.position.z = 0.10;
+          scratchB.position.y = ARM_Y + 0.04; scratchB.position.z = 0.10;
         } else {
           scratchB.rotation.x = -Math.sin(w.ph) * b.arm * w.gait * 0.8;
         }
-      }
-      /* 肌肉小人（v1.112）：工作服那一塊收掉（裸上半身），胸膛／肩／胸肌那五塊只有他有，
-         手臂加粗並往外挪（見 MUS_ARM）。挪的是 x——手的六種姿勢都只動 rotation 與 y／z，
-         所以擺在它們後面不會被蓋掉。 */
-      if (w.mus) {
-        if (b.c === 'suit') scratchB.scale.setScalar(0);
-        else if (b.arm) {
+        /* 肌肉小人（v1.112）：衣服那幾塊在上面就跳掉了（裸上半身），這裡只剩
+           手臂加粗並往外挪（見 MUS_ARM）。挪的是 x——手的六種姿勢都只動 rotation 與 y／z，
+           所以擺在它們後面不會被蓋掉。 */
+        if (w.mus) {
           scratchB.position.x = b.arm * MUS_ARM_X;
           scratchB.scale.set(b.s[0] * MUS_ARM, b.s[1], b.s[2] * MUS_ARM);
         }
-      } else if (b.mus) scratchB.scale.setScalar(0);
+        /* 掛在手臂上的那兩件（v1.198）：上面那幾種姿勢擺的是「手臂中心」，
+           這裡再沿著**手臂自己的軸**往下挪 on 格（負的＝往上）。
+           照 rotation 整個轉過去、不是只算繞 X 的那一項：歡呼／跳舞／打架那三種
+           姿勢還會繞 Z 把手往外開，只算 X 的話手套會飄在手臂旁邊 0.13 格。
+           這樣一來六種姿勢一個都不必為袖子與手套改。 */
+        if (b.on) {
+          _armV.set(0, -b.on, 0).applyEuler(scratchB.rotation);
+          scratchB.position.x += _armV.x;
+          scratchB.position.y += _armV.y;
+          scratchB.position.z += _armV.z;
+        }
+      }
       /* 藍圖跟著手走：指揮時收到左手邊垂著，平常端在胸前、斜著朝自己 */
       if (b.plan) {
-        if (!w.plan) scratchB.scale.setScalar(0);
-        else if (w.point > 0) {
-          scratchB.position.set(-0.34, 0.56, 0.14);
+        if (w.point > 0) {
+          scratchB.position.set(-PLAN_X, PLAN_Y, 0.14);
           scratchB.rotation.set(-0.35, 0, 0.55);
         } else {
           scratchB.rotation.x = -1.0;
@@ -2904,29 +3055,22 @@ const ENG = (function () {
       }
       /* 聊天泡泡：說話的那一方才鼓起來，還會隨語氣上下浮 */
       if (b.bub) {
-        const k = w.bub || 0;
-        if (k < 0.02) scratchB.scale.setScalar(0);
-        else {
-          scratchB.scale.set(b.s[0] * k, b.s[1] * k, b.s[2] * k);
-          scratchB.position.y = b.p[1] + Math.sin(w.ph * 2.6) * 0.05;
-        }
+        const k = w.bub;
+        scratchB.scale.set(b.s[0] * k, b.s[1] * k, b.s[2] * k);
+        scratchB.position.y = b.p[1] + Math.sin(w.ph * 2.6) * 0.05;
       }
       /* 鏟子（v1.129）：沒在挖的人縮成 0。柄與鏟面都掛在同一個握把上（digGy／digGz），
          沿著柄的方向各自往外挪自己的距離——所以只要一個角度就把兩塊擺好。
          角度與握把的位置在上面算（digA），這裡只負責擺。 */
       if (b.dig) {
-        if (!w.dig) scratchB.scale.setScalar(0);
-        else {
-          const d = b.pan ? DIG_REACH : DIG_ROD;           // 鏟面在柄的下端、柄自己的中心偏下
-          scratchB.position.set(0, digGy - Math.cos(digA) * d, digGz + Math.sin(digA) * d);
-          scratchB.rotation.x = -digA;
-        }
+        const d = b.pan ? DIG_REACH : DIG_ROD;             // 鏟面在柄的下端、柄自己的中心偏下
+        scratchB.position.set(0, digGy - Math.cos(digA) * d, digGz + Math.sin(digA) * d);
+        scratchB.rotation.x = -digA;
       }
       /* 弓（v1.171）：不是弓箭隊的人這七塊縮成 0。弓臂與握把是固定的形狀，
          弦與搭著的箭跟著 w.draw（拉了多滿）走。 */
       if (b.bow) {
-        if (!w.bow) scratchB.scale.setScalar(0);
-        else if (b.quiv) scratchB.rotation.z = -0.34;       // 箭袋斜掛在背上，不跟著抬
+        if (b.quiv) scratchB.rotation.z = -0.34;            // 箭袋斜掛在背上，不跟著抬
         else {
           /* 弓、弦、搭著的箭：先算「還沒抬起來」的位置與轉角，最後整組抬 45 度
              （bowLift）。分兩步是因為弦的角度要在弓自己的平面上算才看得懂。 */
@@ -2943,8 +3087,8 @@ const ENG = (function () {
             sy = Math.hypot(dy, tz - nz);
           } else if (b.nock) {
             /* 搭在弦上那一支：尾端扣在弦上、頭朝弓指的方向。
-               還沒拉弓時不畫——那一刻箭還在箭袋裡，畫出來會像空手捏著一支箭。 */
-            if (dk < 0.05) scratchB.scale.setScalar(0);
+               還沒拉弓時不畫（在上面那條就跳掉了）——那一刻箭還在箭袋裡，
+               畫出來會像空手捏著一支箭。 */
             py = BOW_Y; pz = nz + BOW_ARROW / 2;
           }
           /* 先側傾（繞握把，見 BOW_CANT）再抬起來（繞肩膀，見 bowLift）。
@@ -2956,28 +3100,27 @@ const ENG = (function () {
           if (sy) scratchB.scale.set(b.s[0], sy, b.s[2]);
         }
       }
-      /* 魔法師戴巫師帽，安全帽那三塊收掉——兩頂疊在同一顆頭上會直接穿模。 */
-      if (b.hard && w.mage) scratchB.scale.setScalar(0);
-      /* 巫師帽與法杖只有魔法師有。杖與寶珠跟著施法深淺（w.cast 0～1）抬起來，
+      /* 巫師帽與法杖只有魔法師有（安全帽那幾塊在上面就跳掉了——兩頂疊在同一顆頭上
+         會直接穿模）。杖與寶珠跟著施法深淺（w.cast 0～1）抬起來，
          寶珠的位置是用杖的傾角算出來的：寫死的話一抬杖它就脫離杖頂飄在旁邊。 */
-      if (b.wiz) {
-        if (!w.mage) scratchB.scale.setScalar(0);
-        else if (b.staff || b.orb) {
-          const k = w.cast || 0, tl = CAST_TILT * k;
-          if (b.staff) {
-            scratchB.rotation.x = tl;
-            scratchB.position.y = b.p[1] + CAST_LIFT * k;
-          } else {
-            scratchB.position.y = STAFF_MID + CAST_LIFT * k + Math.cos(tl) * STAFF_TIP;
-            scratchB.position.z = b.p[2] + Math.sin(tl) * STAFF_TIP;
-          }
+      if (b.staff || b.orb) {
+        const k = w.cast || 0, tl = CAST_TILT * k;
+        if (b.staff) {
+          scratchB.rotation.x = tl;
+          scratchB.position.y = b.p[1] + CAST_LIFT * k;
+        } else {
+          scratchB.position.y = STAFF_MID + CAST_LIFT * k + Math.cos(tl) * STAFF_TIP;
+          scratchB.position.z = b.p[2] + Math.sin(tl) * STAFF_TIP;
         }
       }
       scratchB.position.y -= piv;      // 打滾時整具身體往下挪，旋轉中心才落在身體中段
       scratchB.updateMatrix();
       tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
       workerMesh.setMatrixAt(i * WPARTS + k, tmpM);
-      const pal = WCOL[b.c];
+      /* alt：魔法師身上那一塊改用另一組色（工作服→長袍、腰帶→腰繩、頭髮→白的、
+         手套→露出的手，見 BODY 的 alt）。多開一塊的話那一塊對其他人就是
+         「看不見卻照樣要算」的成本，換色只是一次比較。 */
+      const pal = WCOL[(b.alt !== undefined && w.mage) ? b.alt : b.c];
       tmpC.setHex(pal[w.tone % pal.length]);
       // 寶珠在施法時亮起來，還帶一點明滅——這是「他正在施法」最省事的那個訊號
       if (b.orb && w.cast) tmpC.lerp(ORB_LIT, w.cast * (0.55 + 0.3 * Math.sin(w.ph * 3)));

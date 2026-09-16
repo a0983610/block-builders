@@ -2784,50 +2784,69 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '身高 ' + (1.31 * carry.lo).toFixed(2) + '–' + (1.31 * carry.hi).toFixed(2) +
      ' 格（積木邊長 0.94、格距 1）');
 
-  /* 放大之後那七塊方塊就是一疊方塊，所以補了臉、鞋、腰帶。
+  /* 放大之後那七塊方塊就是一疊方塊，所以補了臉、鞋、腰帶（v1.198 又補到 58 塊）。
      這裡不看像不像，只驗「該有的部位真的擺在該在的位置」——
-     部位漏掉或位置寫錯（例如鞋子留在原地不跟腿走）從畫面上不一定看得出來。 */
+     部位漏掉或位置寫錯（例如鞋子留在原地不跟腿走）從畫面上不一定看得出來。
+     **認部位是照造型表的顏色欄（c），不是照寫死的高度**（v1.198 改）：
+     本來用「y 在 1.06 上下」抓眼睛、用「由低到高第 1、2 塊是鞋、第 3、4 塊是腿」
+     抓腳，比例一改就整組失效（同這支檔案〈魔法師〉那條的做法：
+     「用顏色認部位——位置會隨姿勢跑，顏色不會」）。 */
   const build = await page.evaluate(() => {
     const pose = extra => {
       const w = workers[1];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
                          bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         /* 這四個也要歸零（v1.198）：跳舞／打架會把手臂繞 Z 轉出去，
+                            量到的手臂寬度就變成 cos(角度) 倍；在半空翻滾會把整個人
+                            繞身體中段轉，量到的身高就不是站著的身高。量外觀之前
+                            要把姿勢歸零，不然量到的是「他剛好在做什麼」。 */
+                         danc: 0, guard: 0, punch: 0, air: 0, flip: 0,
                          dig: 0 }, extra);
       ENG.putWorker(1, w);
       const m = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
+      const T = ENG.MODELS.man;
       for (let k = 0; k < ENG.WPARTS; k++) {
         ENG.three.workerMesh.getMatrixAt(ENG.WPARTS + k, m);
-        if (m.elements[0] === 0 && m.elements[5] === 0) continue;   // 沒拿的道具縮成 0
+        if (m.elements[0] === 0 && m.elements[5] === 0) continue;   // 這個人沒有的那幾塊
         v.setFromMatrixPosition(m);
-        out.push({ x: v.x, y: v.y, z: v.z });
+        out.push({ k, c: T[k].c, x: v.x, y: v.y, z: v.z });
       }
       return { s: w.scale, parts: out.sort((p, q) => p.y - q.y) };
     };
     const st = pose({});
     const s = st.s;
-    // 臉朝 +z（a=0）：眼睛要凸出臉皮、左右對稱；帽舌要更往前而且在帽子的高度
-    const eyes = st.parts.filter(p => Math.abs(p.y - 1.06 * s) < 0.03 * s &&
-                                      p.z > 0.19 * s && Math.abs(p.x) > 0.05 * s);
-    const peak = st.parts.filter(p => p.z > 0.28 * s && p.y > 1.1 * s);
-    // 由低到高：最低兩塊是鞋、再上去兩塊是腿
-    const lowest = st.parts.slice(0, 4);
+    const by = c => st.parts.filter(p => p.c === c);
+    // 臉朝 +z（a=0）：眼睛要凸出臉皮、左右對稱
+    const eyes = by('eye');
+    // 帽舌：安全帽那幾塊裡最往前的那一塊，而且要真的凸出頭的前面
+    const hat = by('hat');
+    const peak = hat.length ? hat.reduce((a, p) => p.z > a.z ? p : a) : null;
+    const head = by('skin').reduce((a, p) => p.y > a.y ? p : a);   // 最高的膚色塊＝頭
+    const shoe = by('shoe'), leg = by('leg');
     // 走路時鞋要跟著同一隻腿往同一邊擺，而且擺得比腿更遠（它離髖關節更遠）
     const wk = pose({ gait: 1, ph: Math.PI / 2 });
-    const low = wk.parts.slice(0, 4);
-    const shoeL = low.slice(0, 2).find(p => p.x < 0), shoeR = low.slice(0, 2).find(p => p.x > 0);
-    const legL = low.slice(2, 4).find(p => p.x < 0), legR = low.slice(2, 4).find(p => p.x > 0);
+    const wshoe = wk.parts.filter(p => p.c === 'shoe'), wleg = wk.parts.filter(p => p.c === 'leg');
+    const shoeL = wshoe.find(p => p.x < 0), shoeR = wshoe.find(p => p.x > 0);
+    const legL = wleg.find(p => p.x < 0), legR = wleg.find(p => p.x > 0);
     const same = shoeL && legL && shoeR && legR &&
                  shoeL.z * legL.z > 0 && shoeR.z * legR.z > 0;
     return { n: st.parts.length, parts: ENG.WPARTS, s: +s.toFixed(2),
              eyes: eyes.length, sym: eyes.length === 2 ? +(eyes[0].x + eyes[1].x).toFixed(3) : 9,
-             peak: peak.length, shoeY: +(lowest[1].y / s).toFixed(2), legY: +(lowest[3].y / s).toFixed(2),
+             eyeZ: eyes.length ? +((eyes[0].z - head.z) / s).toFixed(3) : -9,
+             peakZ: peak ? +((peak.z - head.z) / s).toFixed(3) : -9,
+             nShoe: shoe.length, nLeg: leg.length,
+             shoeY: +(shoe[0].y / s).toFixed(2), legY: +(leg[0].y / s).toFixed(2),
              same, far: same ? +(Math.abs(shoeL.z) - Math.abs(legL.z)).toFixed(3) : -1 };
   });
+  /* 眼睛要在頭的前面（eyeZ > 0）、帽舌要比頭更往前（peakZ > 0）、
+     鞋在腿下面。數字都是**相對頭的位置**，不是寫死的座標。 */
   ok('臉上有兩顆對稱的眼睛、帽子有帽舌、腳上有鞋',
-     build.eyes === 2 && Math.abs(build.sym) < 1e-6 && build.peak === 1 &&
-     build.shoeY < 0.12 && build.legY > 0.15,
-     build.parts + ' 塊部位畫了 ' + build.n + ' 塊（其餘是沒拿的道具）；鞋在 y=' +
-     build.shoeY + '、腿在 y=' + build.legY);
+     build.eyes === 2 && Math.abs(build.sym) < 1e-6 &&
+     build.eyeZ > 0 && build.peakZ > build.eyeZ &&
+     build.nShoe === 2 && build.nLeg === 2 && build.shoeY < build.legY,
+     build.parts + ' 塊部位畫了 ' + build.n + ' 塊（其餘是這個人沒有的）；' +
+     '眼睛凸出頭前 ' + build.eyeZ + '、帽舌凸出 ' + build.peakZ +
+     '；鞋在 y=' + build.shoeY + '、腿在 y=' + build.legY);
   ok('走路時鞋跟著同一隻腿擺，而且擺得比腿更遠',
      build.same && build.far > 0.05,
      '鞋比腿多往前 ' + build.far + '（鞋離髖 0.36、腿離髖 0.21）');
@@ -4604,6 +4623,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const w = workers[i];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
                          bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         /* 這四個也要歸零（v1.198）：跳舞／打架會把手臂繞 Z 轉出去，
+                            量到的手臂寬度就變成 cos(角度) 倍；在半空翻滾會把整個人
+                            繞身體中段轉，量到的身高就不是站著的身高。量外觀之前
+                            要把姿勢歸零，不然量到的是「他剛好在做什麼」。 */
+                         danc: 0, guard: 0, punch: 0, air: 0, flip: 0,
                          cast: 0, dig: 0 }, extra);
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -4641,12 +4665,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              orbFwd: +(orb(lit).z - orb(mage).z).toFixed(2),
              orbLum: +(lum(orb(lit).c) - lum(orb(mage).c)).toFixed(0) };
   });
+  /* 多出來的顏色 v1.198 從 3 種變 7 種：本來他只是「換一頂帽子的工人」
+     （身上穿的是工地的橘色工作服），現在袍、腰繩／帽帶的金、披肩、白鬍子都換掉了。
+     七種＝巫師帽紫、披肩深紫、袍、金、白鬍、杖的木色、寶珠的金黃。 */
   ok('魔法師戴巫師帽拿法杖，而且不戴安全帽',
-     wiz.hatN === 3 && wiz.hatOnMage === 0 && wiz.newCols === 3 &&
+     wiz.hatN === 3 && wiz.hatOnMage === 0 && wiz.newCols === 7 &&
      wiz.top > wiz.plainTop + 0.3,
      '一般工人身上安全帽色 ' + wiz.hatN + ' 塊、他身上 ' + wiz.hatOnMage +
-     ' 塊，多出 ' + wiz.newCols + ' 種顏色（帽、杖、寶珠）；頭頂 ' + wiz.top +
-     '，一般工人 ' + wiz.plainTop);
+     ' 塊，多出 ' + wiz.newCols + ' 種顏色（帽、披肩、袍、金、鬍、杖、寶珠）；頭頂 ' +
+     wiz.top + '，一般工人 ' + wiz.plainTop);
   ok('施法時杖抬起來、杖頭往前傾、寶珠亮起來',
      wiz.orbUp > 0.25 && wiz.orbFwd > 0.1 && wiz.orbLum > 20,
      '寶珠抬高 ' + wiz.orbUp + '、往前 ' + wiz.orbFwd + ' 格，亮度 +' + wiz.orbLum);
@@ -4665,6 +4692,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const w = workers[i];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
                          bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         /* 這四個也要歸零（v1.198）：跳舞／打架會把手臂繞 Z 轉出去，
+                            量到的手臂寬度就變成 cos(角度) 倍；在半空翻滾會把整個人
+                            繞身體中段轉，量到的身高就不是站著的身高。量外觀之前
+                            要把姿勢歸零，不然量到的是「他剛好在做什麼」。 */
+                         danc: 0, guard: 0, punch: 0, air: 0, flip: 0,
                          cast: 0, burnK: 0, wetK: 0, dig });
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -5004,6 +5036,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const w = workers[i];
       Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0,
                          bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         /* 這四個也要歸零（v1.198）：跳舞／打架會把手臂繞 Z 轉出去，
+                            量到的手臂寬度就變成 cos(角度) 倍；在半空翻滾會把整個人
+                            繞身體中段轉，量到的身高就不是站著的身高。量外觀之前
+                            要把姿勢歸零，不然量到的是「他剛好在做什麼」。 */
+                         danc: 0, guard: 0, punch: 0, air: 0, flip: 0,
                          cast: 0, burnK: 0, wetK: 0, dig: 0 });
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -5013,16 +5050,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         ENG.three.workerMesh.getMatrixAt(at, M);
         v.setFromMatrixPosition(M);
         const e = M.elements;
+        /* 兩份：r 開頭的是原值（拿去比大小），沒有 r 的四捨五入過（只拿去印）。
+           **邊界值不能先捨再加**（v1.198）：帽頂中心 1.235 ＋ 半高 0.075 剛好落在
+           進位邊界上，各自捨到兩位再相加，肌肉小人（身高倍率多 8%）與一般工人會
+           進到不同邊，量出來變成 1.30 對 1.31——不是造型不一樣，是量法不穩。 */
         out.push({ k, vis: !(e[0] === 0 && e[5] === 0),
                    x: +(v.x / w.scale).toFixed(2), y: +(v.y / w.scale).toFixed(2),
                    sx: +(Math.abs(e[0]) / w.scale).toFixed(2),
                    sy: +(Math.abs(e[5]) / w.scale).toFixed(2),
+                   rx: v.x / w.scale, ry: v.y / w.scale,
+                   rsx: Math.abs(e[0]) / w.scale, rsy: Math.abs(e[5]) / w.scale,
                    c: [0, 1, 2].map(j => Math.round(col[at * 3 + j] * 255)).join(',') });
       }
       const on = out.filter(p => p.vis);
       return { all: out, n: on.length,
-               wide: +Math.max.apply(null, on.map(p => Math.abs(p.x) + p.sx / 2)).toFixed(2),
-               top: +Math.max.apply(null, on.map(p => p.y + p.sy / 2)).toFixed(2) };
+               wide: +Math.max.apply(null, on.map(p => Math.abs(p.rx) + p.rsx / 2)).toFixed(3),
+               top: +Math.max.apply(null, on.map(p => p.ry + p.rsy / 2)).toFixed(3) };
     };
     setWorkerCount(20);
     const mi = workers.findIndex(w => w.mus);
@@ -5040,19 +5083,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              arm: m.all[6].sx, plainArm: p.all[6].sx,
              armX: m.all[6].x, plainArmX: p.all[6].x };
   });
-  ok('裸上半身：工作服那一塊收掉，換成膚色的胸膛、肩、胸肌五塊',
-     musLook.onlyMus.length === 5 && musLook.onlyPlain.length === 1 &&
+  /* v1.198：他獨有的從五塊變六塊（胸膛、兩塊肩、兩塊胸肌 ＋ 腰收進去的腹），
+     一般工人獨有的從一塊變五塊（工作服 ＋ 領口、圍兜、兩隻袖子——那幾塊都標了 cloth）。
+     驗的還是同一件事：他身上多出來的**全是膚色**（真的裸上半身），
+     而且工作服那一塊（第 0 塊）在他身上看不見。 */
+  ok('裸上半身：工作服那幾塊收掉，換成膚色的胸膛、肩、胸肌、腹六塊',
+     musLook.onlyMus.length === 6 && musLook.onlyPlain.length === 5 &&
      musLook.onlyPlain[0] === 0 && musLook.bare,
      '只有他有的 ' + musLook.onlyMus.length + ' 塊（第 ' + musLook.onlyMus.join('、') +
      ' 塊，全是膚色 ' + musLook.skin + '）；只有一般工人有的是第 ' +
-     musLook.onlyPlain.join('、') + ' 塊（工作服）');
+     musLook.onlyPlain.join('、') + ' 塊（工作服、領口、圍兜、兩隻袖子）');
   ok('上半身大一圈、手臂粗一圈，安全帽照戴、身高不變',
      musLook.wide > musLook.plainWide * 1.25 && musLook.hat === 3 &&
      musLook.plainHat === 3 && Math.abs(musLook.top - musLook.plainTop) < 0.01 &&
      musLook.arm > musLook.plainArm * 1.4 && musLook.armX > musLook.plainArmX,
      '最寬 ' + musLook.wide + '（一般工人 ' + musLook.plainWide + '）、手臂寬 ' +
      musLook.arm + '（' + musLook.plainArm + '）、掛在 x=' + musLook.armX + '（' +
-     musLook.plainArmX + '）；安全帽 ' + musLook.hat + ' 塊，帽頂 ' + musLook.top);
+     musLook.plainArmX + '）；安全帽 ' + musLook.hat + '／' + musLook.plainHat +
+     ' 塊，帽頂 ' + musLook.top + '／' + musLook.plainTop);
 
   /* ══════════ 閒聊 ══════════ */
   await head('閒聊', T_MUST);
