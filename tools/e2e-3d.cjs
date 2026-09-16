@@ -13756,6 +13756,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 正常一趟：第一下建築、第二下空地 */
     clickB();
     const kept = aim ? { y: +aim.sy.toFixed(2), on: aim.son } : null;
+    /* 第一點的標記（v1.196，使用者：「第一點的光環固定畫在地面 可能要做出一個在空間中
+       的版本」）：大劍的第一點會落在半空，所以那兩圈要畫在**點到的那個高度**上、
+       正對鏡頭、畫在最上層（環比建築還寬，不關深度測試就會被切成斷弧）。
+       **對照組是保齡球**：那圈環是六把道具共用的，其餘五把的第一點一律是地面，
+       照舊貼地、不正對鏡頭、也不畫在最上層——共用的東西改了就要驗別的呼叫端沒被改到。 */
+    const mark = r => ({ y: +r.y.toFixed(2), face: !!r.face, top: !!r.top });
+    const markS = aimRings().map(mark);
+    const keepAim = aim;
+    tool = 'ball'; aim = null;
+    useTool({ kind: 'ground', point: new THREE.Vector3(30, 0, 30), dir: new THREE.Vector3(0, -1, 0) });
+    const markG = aimRings().map(mark);
+    tool = 'sword'; aim = keepAim;
     clickG(p2);
     const s = swords[0];
     /* r1 ＝ 削掉那一片扇形的外緣（v1.174 起是**刃尖**）、rhit ＝ 樞紐到攻擊點（只管瞄準）。 */
@@ -14029,7 +14041,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
     ENG.shake = oShake;
     swords = null; aim = null; tool = 'hammer'; running = true;
-    return { both, kept, shot, geo, before, midSet, cut: cutY.length, lives, ring,
+    return { both, kept, shot, geo, before, midSet, cut: cutY.length, lives, ring, markS, markG,
              lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes: shakeN, wind,
              phs: phs.filter((p, i) => i === 0 || p !== phs[i - 1]).join('→'),
              tipErr, tipEdgeErr, tipEdge: tEdge, tipPart: ti, tipPlane, rootErr,
@@ -14044,6 +14056,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('劍柄旋轉點的高度 ＝ 點在建築上那一下的高度',
      swd.kept.on === true && Math.abs(swd.shot.y - swd.geo.clickY) < 1e-6,
      '點在 ' + swd.geo.clickY.toFixed(2) + ' 高，劍柄旋轉點 ' + swd.shot.y.toFixed(2));
+  /* v1.196：第一點的標記浮到空間中。兩件事一起驗——大劍那兩圈畫在點到的高度上、
+     正對鏡頭、畫在最上層；共用同一組環的其餘五把（拿保齡球當對照）完全沒被改到。 */
+  ok('第一點的標記畫在點到的那個高度上、正對鏡頭、不被牆擋（其餘五把照舊貼地）',
+     swd.markS.length === 2 &&
+     swd.markS.every(m => Math.abs(m.y - swd.geo.clickY) < 0.01 && m.face && m.top) &&
+     swd.markG.length === 2 &&
+     swd.markG.every(m => m.y < 1 && !m.face && !m.top),
+     '大劍（點在 ' + swd.geo.clickY.toFixed(2) + ' 高）' + JSON.stringify(swd.markS) +
+     '；保齡球 ' + JSON.stringify(swd.markG));
   /* 樞紐在「點到建築那一下」的高度上、離兩點的 **3D** 距離都是「樞紐到攻擊點」
      ＝ 攻擊點起手落在第一點、收手落在第二點（v1.169 之前落在刃尖上，見下面
      「攻擊點在刃尖裡面一小段」那一條）。兩點在刃長之內時誤差只會是浮點的量級。 */

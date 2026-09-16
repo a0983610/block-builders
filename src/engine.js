@@ -1851,9 +1851,12 @@ const ENG = (function () {
   }
 
   /* 貼地圓環。list 每一項 {x, z, y, r 半徑, spin 轉到哪, op 濃度,
-     c 顏色, sp 要不要輻條, add 要不要加法混色}。
+     c 顏色, sp 要不要輻條, add 要不要加法混色, face 要不要正對鏡頭, top 要不要畫在最上層}。
      魔法陣的每一層、爆炸衝擊波、蘑菇雲腰上那一圈都走這裡，所以位置逐環給，
-     不是共用一個圓心——不然衝擊波還在擴散時再放一個魔法陣就會互相拉走。 */
+     不是共用一個圓心——不然衝擊波還在擴散時再放一個魔法陣就會互相拉走。
+     face／top 是**可選**的（v1.196，只有大劍的第一點標記在用，見 開發筆記
+     〈第一點的標記浮到空間中〉）：不給就是原本那種貼地、會被建築擋住的環，
+     所以其餘每一個呼叫端都不必動。 */
   function setRings(list) {
     const n = Math.min(list.length, MAG_MAX);
     ringGroup.visible = n > 0;
@@ -1865,7 +1868,24 @@ const ENG = (function () {
       if (!r) continue;
       m.position.set(r.x, r.y, r.z);
       m.scale.set(r.r, r.r, 1);
-      m.rotation.z = r.spin || 0;         // 放平之後，繞自己的法線轉就是 local Z
+      /* 朝向。face＝正對鏡頭：直接抄鏡頭的 quaternion（同星光那顆公告板的做法），
+         轉到哪裡看都是正圓。**兩條路都要把三軸整個寫掉**——這 54 顆環是共用的池子，
+         同一顆上一幀可能是正對鏡頭的那一種，只設 rotation.z 的話會疊在上一幀留下的
+         x／y 上（quaternion 與 rotation 在 three 裡是互相同步的，寫哪一邊都會動到另一邊）。 */
+      if (r.face) {
+        m.quaternion.copy(camera.quaternion);
+        _spin.setFromAxisAngle(_zAxis, r.spin || 0);
+        m.quaternion.multiply(_spin);
+      } else {
+        // RingGeometry 生在 XY 平面，要放平；放平之後繞自己的法線轉就是 local Z
+        m.rotation.set(-Math.PI / 2, 0, r.spin || 0);
+      }
+      /* top＝畫在最上層（關掉深度測試）。這種環是 UI 標記不是景物：它比一般建築還寬，
+         不關的話有一側一定埋進牆裡——實測半徑 5.5 的環貼在 9 塊寬的塔上會被切成斷掉的弧，
+         而沿點擊方向往前推 0.3 完全不夠（要推 3.4 才整圈出得來，那樣就明顯浮在牆外了）。
+         depthTest 是 runtime state，不必 needsUpdate（不像 blending 那條）。 */
+      m.material.depthTest = !r.top;
+      m.renderOrder = r.top ? 10 : 0;
       m.material.opacity = r.op * 0.85;
       m.material.color.setHex(r.c === undefined ? 0x8b3ff0 : r.c);
       // 混色模式只在真的變了才動：每幀設 needsUpdate 會逼 three 重建 shader

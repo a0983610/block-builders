@@ -906,15 +906,24 @@ function dropBall(point) {
   sndSwing();
 }
 /* 等第二點的時候在第一點畫一圈會脈動的光環：沒有這個的話，
-   第一下點下去畫面完全沒反應，看起來像點壞了。 */
+   第一下點下去畫面完全沒反應，看起來像點壞了。
+   **高度預設寫死貼地**：保齡球、龍捲風、投石機、王之財寶、箭雨的第一點都是地面
+   （出手點／選一個地點），貼地的環本來就對。**只有大劍的第一點會落在半空**——
+   它多帶一個 `aim.face`，環就改成畫在那個點上、正對鏡頭、不被牆擋
+   （v1.196，見 開發筆記〈第一點的標記浮到空間中〉）。 */
 const AIM_RING = [];
 function aimRings() {
   AIM_RING.length = 0;
   const p = 0.5 + 0.5 * Math.sin(aim.ph * 4.5);
-  AIM_RING.push({ x: aim.x, z: aim.z, y: 0.14, r: aim.r * (1.1 + 0.14 * p),
-                  spin: aim.ph * 0.8, op: 0.9, c: aim.c, add: 1 });
-  AIM_RING.push({ x: aim.x, z: aim.z, y: 0.13, r: aim.r * 0.5,
-                  spin: -aim.ph * 0.5, op: 0.35 + 0.5 * p, c: 0xffffff, add: 1 });
+  const y = aim.face ? aim.sy : 0.14;
+  AIM_RING.push({ x: aim.x, z: aim.z, y: y, r: aim.r * (1.1 + 0.14 * p),
+                  spin: aim.ph * 0.8, op: 0.9, c: aim.c, add: 1,
+                  face: aim.face, top: aim.face });
+  /* 貼地那一種要壓在外圈下面一點（0.13 對 0.14）免得 z-fighting；正對鏡頭那一種
+     兩圈都關了深度測試，本來就不會打架，所以同一個高度就好。 */
+  AIM_RING.push({ x: aim.x, z: aim.z, y: aim.face ? y : 0.13, r: aim.r * 0.5,
+                  spin: -aim.ph * 0.5, op: 0.35 + 0.5 * p, c: 0xffffff, add: 1,
+                  face: aim.face, top: aim.face });
   return AIM_RING;
 }
 /* 每一顆各自跑（v1.116：以前只有一顆，第二顆一出手就把第一顆蓋掉——球還在滾就整顆
@@ -5801,7 +5810,10 @@ function gateList() {
        之下弧變得更大更平，看起來是手臂帶著劍掃過去，不是劍自己在原地打轉。
      ③「劍柄盡量在鏡頭方向(看起來像玩家揮劍)」——兩個圓的交點改取**靠鏡頭**的那一個
        （見 castSword 那一段），手落在鏡頭這一側、刃往場內掃出去。 */
-const SW_AIM_R = 5.5;            // 第一下在地上畫的那圈光環多大
+/* 第一下那圈光環多大。v1.196 從 5.5 收到 2.5（使用者：「不要那麼大圈 知道位置用而已」）
+   ——積木邊長 1，5.5 的半徑是 11 塊寬、比一般建築的整個面還寬，看起來像個大法陣
+   而不是位置標記；2.5 是 5 塊寬。見 開發筆記〈第一點的標記浮到空間中〉。 */
+const SW_AIM_R = 2.5;
 const SW_AIM_C = 0xdfe6ee;       // 鋼色（同刃）
 /* 全長跟兩點的**水平**距離成正比，再夾在這個範圍裡：兩點點得很近時劍不能縮成一根
    牙籤，點得很開也不能長到半個工地。
@@ -5844,7 +5856,9 @@ let swords = null;               // 場上的大劍（出現 → 揮 → 停 →
 function aimSword(point, onBlock) {
   if (!aim) {
     aimFirst(point, SW_AIM_R, SW_AIM_C);
-    aim.sy = point.y; aim.son = onBlock;      // 光環只讀 x/z/r/c，多帶兩個欄位不影響
+    /* sy＝點到的那個高度、son＝點到的是不是建築。face＝這一把的標記要浮在空間中、
+       正對鏡頭（v1.196，其餘五把用同一組環但不給這個欄位，畫法一個像素都不變）。 */
+    aim.sy = point.y; aim.son = onBlock; aim.face = 1;
     return;
   }
   /* 樞紐的高度：點在建築上那一下的高度。
