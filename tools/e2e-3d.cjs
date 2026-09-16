@@ -8360,7 +8360,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        · 磚身往城外凸出 WALL_JUT 格、城內那面跟牆齊
        · 缺口（h.gap）**整段深度都要蓋到**：漏掉托架挑出去那一格的話，
          人走到托架下面會被外框擋住、進不了門
-       · 門洞中心 gmid 落在牆線上（不是外框中心，見 wallGateSpot）
+       · 門洞中心 gmid 落在牆線上（不是外框中心，見 wallOpenSpot）
        · 門樓的外框不跟隔壁那一段疊在一起（疊在一起的兩個框會互推，見〈四個坑〉①）
        · 牆線上每一格都有人認領（門樓兩側的直牆從 P+1 起算，不能差一格開個洞） */
   const gateGeo = await page.evaluate(() => {
@@ -8682,10 +8682,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         const st = m.st;
         step(0.05);
         seen[st] = (seen[st] || 0) + 1;
-        /* 牠挑的是哪一座門（v1.194）：釘在 m.ghid 上，第一次進 gate 那一刻問一次。
-           四面都有門之後這一條就是「有沒有挑最近的」的證據。 */
-        if (!pick && m.st === 'gate' && m.ghid !== undefined) {
-          const s = wallGateSpot(m.x, m.z, m.ghid);
+        /* 牠挑的是哪一個開口（v1.194 只有門，v1.195 起連缺口也算）：釘在 m.gw.id 上
+           （v1.194 是 m.ghid，抽出來跟小人共用之後搬進 m.gw，見 crossStep），
+           第一次進 gate 那一刻問一次。這一輪整圈都砌好了，所以開口就只有四座門——
+           這一條就是「有沒有挑最近的」的證據。 */
+        if (!pick && m.st === 'gate' && m.gw) {
+          const s = wallOpenSpot(m.x, m.z, m.gw.id);
           if (s) {
             let d = Math.atan2(s.z, s.x) - a0;          // 跟進場方位差幾度
             while (d > Math.PI) d -= Math.PI * 2;
@@ -8760,6 +8762,125 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `沒門可繞（${apeWall.none.gate} 幀）、${apeWall.none.secs} 秒後在` +
      `${apeWall.none.act && apeWall.none.act.inWall ? '城裡' : '城外'}動手，` +
      `燒起來 ${apeWall.none.burn} 塊（城牆 ${apeWall.none.wallBurn} 塊、地標 ${apeWall.none.siteBurn} 塊）`);
+
+  /* ⑦-a2 走路那一層的規則（v1.195）。全部是**自己組一個最小場面直接呼叫那支函式**、
+     不跑模擬賭骰子——照〈規則：垮塌、補洞、廢棄〉那個樣子寫。
+     要守的四條規則：
+       ① wallBlocked 誠實：擋不擋看**砌好的那幾格**，不是幾何方框
+       ② wallOpenSpot 把「整段還沒砌」也算開口，而且挑最近的（不是只認門）
+       ③ 小人也繞得過去，而且**不必靠穿牆**（城外本來就有小人的家，見 startWall）
+       ④ idleSpot 不再硬塞一個走不到的點（v1.194 是第 8 次強制接受） */
+  const wallWalk = await page.evaluate(() => {
+    const keepPh = phase;
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 600; setWorkerCount(1); startBuild(true); completeNow();
+    phase = 'done';
+    /* 那一段照 landHome 那條路砌滿（同 ⑦-b 的 fill）。 */
+    const fill = hi => {
+      const h = homes.list[hi];
+      for (let i = 0; i < h.slots.length; i++) {
+        const sl = h.slots[i], b = newBlock();
+        b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      h.done = true; homeBox(h);
+    };
+    /* 整圈生出來，skip(h) 回 true 的那一段留著不砌（＝還沒蓋起來的缺口）。 */
+    const ring = skip => {
+      homes = { list: [] };
+      for (const h of wallPlan()) {
+        homes.list.push(h);
+        if (!(skip && skip(h))) fill(homes.list.length - 1);
+      }
+      ENG.setBlockCount(blocks.length);
+      return wallRing();
+    };
+
+    /* ── ① 誠實：缺口那一段走得過去，砌好的那一段走不過去 ── */
+    const W = ring(h => h.thin === 'z' && h.z > 0 && h.wx0 < 14 && h.wx1 > 14);
+    const G = (WALL_GATE - 1) / 2;                  // 門洞半寬（正中間穿得過）
+    const P = G + WALL_PIER;                        // 墩座外緣（偏出去就被擋）
+    const honest = {
+      gap: wallBlocked(14, W + 8, 0, 0),            // 還沒砌的那一段：不擋
+      built: wallBlocked(20, W + 8, 0, 0),          // 砌好的那一段：擋
+      /* 幾何方框怎麼說：兩條都是「一點在框內、一點在框外」，所以它兩條都說擋——
+         這一格就是 v1.186~v1.194 的病灶（見 wallBlocked 的註解）。 */
+      oldGap: wallSplits(14, W + 8, 0, 0),
+      mid: wallBlocked(0, W - 8, 0, W + 8),         // 對準門洞正中間：穿得過
+      pier: wallBlocked(G + 2, W - 8, G + 2, W + 8) // 偏到墩座上：擋住
+    };
+    /* ── ② 開口清單：缺口就在旁邊時挑的是缺口，不是更遠的門 ── */
+    const near = wallOpenSpot(14, W + 8);
+    const open = { x: near ? +near.x.toFixed(1) : null,
+                   z: near ? +near.z.toFixed(1) : null,
+                   isGap: !!(near && Math.abs(near.x) > P + 1),
+                   gateX: 0, P };
+    /* ── ③ 小人繞得過去，而且不必穿牆 ──
+       整圈砌滿（沒有缺口，只剩四座門），人在城內、目標在城外而且**不對著門**。
+       A/B：把 crossNeed 換成永遠 false 就是 v1.194 的小人（只有 strollTo ＋ 穿透）。
+       押死的場面：起點、目標、整圈都是寫死的，沒有骰子。 */
+    const W2 = ring(null);
+    const segs = homes.list.filter(q => q.wall);
+    const inSeg = (x, z) => segs.some(q => x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1);
+    const need = crossNeed;
+    const walkRun = cross => {
+      crossNeed = cross ? need : () => false;
+      const w = workers[0];
+      w.x = W2 - 8; w.z = 12; w.sx = w.x; w.sz = w.z;
+      w.gw = null; w.stk = 0; w.ghost = 0; w.gait = 0; w.leg = 0; w.pause = 0;
+      w.tx = W2 + 12; w.tz = 14;
+      let n = 0, ghost = 0, thru = 0, done = 0;
+      while (n++ < 3000) {
+        stuckWatch(w, 0.05);
+        if (workTo(w, 0.05, WALK)) { done = n; break; }
+        if (w.ghost > 0) { ghost++; if (inSeg(w.x, w.z)) thru++; }
+      }
+      crossNeed = need;
+      return { secs: done ? +(done * 0.05).toFixed(1) : -1, ghost, thru };
+    };
+    const man = { on: walkRun(true), off: walkRun(false), W: W2 };
+    /* ── ④ idleSpot 挑的點一定走得到 ──
+       整圈砌滿、人在城內。閒晃的範圍到 arenaR（比牆遠），所以大半的候選在牆外；
+       v1.194 第 8 次強制接受，那時候就會塞一個牆外的點給他。
+       這一條不押骰子也成立：**不管抽到什麼**，挑完的目標都不該被牆擋住。 */
+    const w0 = workers[0];
+    w0.x = 0; w0.z = 6; w0.tx = 0; w0.tz = 6;
+    let bad = 0;
+    for (let i = 0; i < 200; i++) {
+      idleSpot(w0);
+      if (wallBlocked(w0.x, w0.z, w0.tx, w0.tz)) bad++;
+    }
+    phase = keepPh;                                  // 動過的全域狀態還回去
+    cleanTools(); clearHomes();
+    return { honest, open, man, idleBad: bad, W };
+  });
+  ok('城牆擋不擋看**砌好的那幾格**，不是幾何方框（v1.195）',
+     !wallWalk.honest.gap && wallWalk.honest.built &&
+     wallWalk.honest.oldGap && !wallWalk.honest.mid && wallWalk.honest.pier,
+     `牆外同一個距離往場心走：還沒砌的那一段擋路＝${wallWalk.honest.gap}、` +
+     `砌好的那一段＝${wallWalk.honest.built}（幾何方框對前者的說法是 ` +
+     `${wallWalk.honest.oldGap}，那就是 v1.194 之前繞去走門的原因）；` +
+     `門洞正中間＝${wallWalk.honest.mid}、偏到墩座上＝${wallWalk.honest.pier}`);
+  ok('缺口也算開口：旁邊有一段還沒蓋起來時，挑的是缺口不是更遠的門（v1.195）',
+     wallWalk.open.isGap,
+     `牆外 (14, W+8) 問到的開口在 (${wallWalk.open.x}, ${wallWalk.open.z})——` +
+     `門在 x=0、墩座外緣 ±${wallWalk.open.P}，所以 |x| > ${wallWalk.open.P + 1} 就是缺口`);
+  /* 使用者：「小人走出城牆 過不去硬是用穿的 所以才想來調整行走邏輯」。
+     **走得到**與**不穿牆**兩件事都要：只驗走得到的話，穿牆過去也算過。 */
+  ok('小人被城牆隔開時繞得過去，而且不必靠穿牆（v1.195）',
+     wallWalk.man.on.secs > 0 && wallWalk.man.on.thru === 0 &&
+     wallWalk.man.on.ghost === 0 && wallWalk.man.off.thru > 0,
+     `人在城內、目標在城外而且不對著門（牆半徑 ${wallWalk.man.W}）：` +
+     `繞開口 ${wallWalk.man.on.secs} 秒到、脫困穿透 ${wallWalk.man.on.ghost} 幀` +
+     `（穿在牆身裡 ${wallWalk.man.on.thru} 幀）；` +
+     `沒有繞開口那條路（v1.194 的小人）${wallWalk.man.off.secs} 秒到、穿透 ` +
+     `${wallWalk.man.off.ghost} 幀（穿在牆身裡 ${wallWalk.man.off.thru} 幀）`);
+  ok('閒晃挑的目標一定走得到：不會再硬塞一個牆另一邊的點（v1.195）',
+     wallWalk.idleBad === 0,
+     `整圈砌滿、人在城內，挑 200 次閒晃點，挑到牆另一邊的 ${wallWalk.idleBad} 次` +
+     `（v1.194 是第 8 次強制接受，那一次就會塞一個走不到的點）`);
 
   /* ⑦-b 砸完**走得出去**（v1.190.2，使用者：「有觀察到猴子會被城牆卡住 走不出去」）。
      v1.186~v1.190.1 有四條路都會把牠關在城裡（實測四種配置各跑 400 秒，一隻都沒走掉）：
@@ -21314,6 +21435,59 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         實測卡住那次目標 r = 20.16、工地圈 20.11（兩次觀測都精確吻合）。 */
      (msnow.nana ? '' : '；工地圈 ' + msnow.keep + '（siteR ' + msnow.siteR +
                         '）、穿透 ' + msnow.ghostN + ' 幀、' + JSON.stringify(msnow.trail)));
+  /* 盯上那一間的**站位不會落在工地圈內**（v1.195，見 開發筆記〈順帶：一條真的卡住的〉）。
+     站位本來是「從房子中心往牠的方向推 h.r + doomNear」——牠比房子更靠近場心時那一點
+     會落在 siteR + KEEP 圈內，接著被 strollTo 開頭推到圈上，**那個點跟「房子旁邊」
+     已經沒關係了**（實測那一間 r = 28.4、算出來 r ≈ 13.3、被推到 20.11，追了 887 幀）。
+     押死的場面：房子、牠的位置、款式全部寫死，不跑模擬也不賭骰子。 */
+  const badStand = await page.evaluate(() => {
+    const keepPh = phase;
+    beasts = null; nanas = null; fballs = null; clearFires();
+    cleanTools(); clearHomes(); stopIdleEvent();
+    homes = { list: [] };
+    /* 房子擺在**工地圈外一點點**，牠擺在房子與場心中間——那正是會出事的擺法。 */
+    const kind = HOME_KIND[0], hx = siteR + KEEP + 8, hz = 0;
+    const slots = homeSlots(hx, hz, kind, HOME_PAL[0]);
+    const at = new Map();
+    slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+    const h = { id: homeSeq++, x: hx, z: hz, r: homeR(kind), kind: kind.id, at,
+                ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                slots, left: slots.length, n: 1, done: false };
+    homeBox(h); markHomeF6(h); homes.list.push(h);
+    for (let i = 0; i < slots.length; i++) {          // 砌滿（nearHome 找的是還站著的積木）
+      const sl = slots[i], b = newBlock();
+      b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+      b.hh = 0; b.hk = i; b.dug = 1;
+      blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+    }
+    h.done = true; homeBox(h);
+    ENG.setBlockCount(blocks.length);
+    /* 巨人：doomNear 大（牠身長擺在那裡），站位往內推得最深，最容易落進圈內。 */
+    const m = spawnBeast('giant', 1, 1);
+    m.x = 4; m.z = 0; m.st = 'fun'; m.bad = 1; m.home = 1; m.pause = 0; m.stay = 999;
+    const stand = h.r + doomNear(m);
+    const d0 = Math.hypot(m.x - h.x, m.z - h.z) || 1;
+    // 舊算式（v1.194）：從房子中心往牠的方向推
+    const old = { x: h.x + (m.x - h.x) / d0 * stand, z: h.z + (m.z - h.z) / d0 * stand };
+    step(0.05);
+    const out = {
+      keep: +(siteR + KEEP).toFixed(2), stand: +stand.toFixed(2),
+      hR: +Math.hypot(h.x, h.z).toFixed(1), hr: +h.r.toFixed(1),
+      oldR: +Math.hypot(old.x, old.z).toFixed(2),          // 舊算式落在哪一圈
+      newR: +Math.hypot(m.tx, m.tz).toFixed(2),            // 新算式落在哪一圈
+      toHome: +Math.hypot(m.tx - h.x, m.tz - h.z).toFixed(2)   // 離房子多遠（該是 stand）
+    };
+    beasts = null; phase = keepPh; cleanTools(); clearHomes();
+    return out;
+  });
+  ok('吉祥物盯上的那一間：站位不會落在工地圈內（v1.195）',
+     badStand.oldR < badStand.keep && badStand.newR >= badStand.keep - 0.01 &&
+     Math.abs(badStand.toHome - badStand.stand) < 0.2,
+     `房子 r = ${badStand.hR}、地基 ${badStand.hr}、站位要離它 ${badStand.stand} 格，` +
+     `工地圈 ${badStand.keep}：舊算式落在 r = ${badStand.oldR}（圈內，會被 strollTo ` +
+     `推到圈上、追一個跟房子無關的點），改成挑外側之後 r = ${badStand.newR}、` +
+     `離房子 ${badStand.toHome} 格`);
+
   /* v1.166 加過一條〈丟之前先站到自己的爆炸半徑外〉，守 `boomD > NANA_R && !air`。
      v1.168 拿掉：使用者說「白猴子炸到自己也沒關係」，而且那條本來就守不住——
      香蕉是「先撞到什麼就在那裡炸」（見 stepNanas），飛行途中掛到房子或樹就提前爆，
