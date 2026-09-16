@@ -4214,11 +4214,21 @@ const ENG = (function () {
     return best;
   }
 
+  /* 螢幕座標 → 射線（v1.197，大劍的第二下用）。`pick` 只有「打到東西」時才給得出
+     方向，而那一下要的是角度、可以指著天空——所以那條射線要單獨拿得到。
+     回傳純數字（不是 Vector3）：規則那一層不碰 three。 */
+  function rayAt(px, py) {
+    ndc.set(px / W * 2 - 1, -(py / H * 2 - 1));
+    raycaster.setFromCamera(ndc, camera);
+    const o = raycaster.ray.origin, d = raycaster.ray.direction;
+    return { ox: o.x, oy: o.y, oz: o.z, dx: d.x, dy: d.y, dz: d.z };
+  }
+
   function render() { renderer.render(scene, camera); }
   function info() { const r = renderer.info.render; return { calls: r.calls, tris: r.triangles }; }
 
   return {
-    init, resize, render, info, pick,
+    init, resize, render, info, pick, rayAt,
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers, putEmotes,
     putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
