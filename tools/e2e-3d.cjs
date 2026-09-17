@@ -23131,7 +23131,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     draw(); ENG.render();
     const callsOff = ENG.info().calls;
     meteors.forEach((k, i) => { k.lit = litSaved[i]; });
-    const flying = { hot: hot.length, on: callsOn, off: callsOff };
+    /* 火的粒度（v1.200.1，使用者：「我覺得那像是火跟煙 也順便修精細一點」）。
+       舊版火頭是 rr(1,1.8) × MET_FIRE ＝ 每顆 2.0～3.6 格（一塊積木才 1），
+       實測畫面上最大 3.8——那就是使用者說的「火紅方塊」。 */
+    const lines = hot.filter(d => d.ln);
+    const flying = { hot: hot.length, on: callsOn, off: callsOff,
+                     big: hot.filter(d => d.s > 1).length, line: lines.length,
+                     sMax: +Math.max(...hot.map(d => d.s)).toFixed(2),
+                     unit: lines.length
+                       ? Math.max(...lines.map(d => Math.abs(Math.hypot(d.dx, d.dy, d.dz) - 1))) : 9 };
     let g2 = 0;
     while (meteors && g2++ < 60) step(0.05);          // 撞下去
     /* 只數「還站著又燒起來」的：碎料的火另外算（爆炸一次就上千塊），
@@ -23157,6 +23165,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 門檻壓在 15：尾巴的火苗壽命只有 0.1～0.4 秒又逐顆隨機，同一個取樣點量到的
      在 24～40 之間跳（原本訂 25 會偶爾誤判）。要驗的是「有一條火」，不是精確的顆數。 */
   ok('下墜時拖著一條火', met.flying.hot > 15, '同時 ' + met.flying.hot + ' 顆火苗');
+  /* 火要小、要密、要短命（同爆炸的火星那條）：一顆都不能比一塊積木大，
+     而且拖尾那批要**順著飛行方向拉成短條**——一顆一顆的小方塊連不成一條尾巴。
+     方向必須是單位向量，不然引擎那邊 setFromUnitVectors 會把整條線轉歪。 */
+  ok('火頭與拖尾都是小而密：沒有比一塊積木大的，拖尾是順著飛行方向的短條',
+     met.flying.hot > 60 && met.flying.big === 0 &&
+     met.flying.line > 20 && met.flying.unit < 1e-9,
+     '同時 ' + met.flying.hot + ' 顆（最大一顆 ' + met.flying.sMax +
+     '，一塊積木是 1）、其中 ' + met.flying.line + ' 條是短條');
   /* 一個是主畫面、一個是陰影貼圖：石頭有 castShadow，落地前地上那塊影子
      剛好提示它要砸哪裡，這個 call 是值得付的。不飛的時候兩個都不畫。 */
   ok('那顆石頭吃 2 個 draw call（畫面＋陰影），沒在飛就不畫',
