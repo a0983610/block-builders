@@ -481,17 +481,27 @@ const TREB_SHOTS = 5, ROCK_R = 4.6, ROCK_POW = 12;
    石頭自己的破壞半徑是 ROCK_R ＝ 4.6，散開 8 剛好是「一隊二十顆打出來的坑連成一片，
    又不是每一顆都砸同一個洞」。不跟著射程走（那是箭雨那一條，射手才有準度問題）。 */
 const TREB_SPRAY = 8;
-/* 拋物線要**高**（v1.177 使用者：「投石機 投石拋物線應該要更高才合理」）。
-   v1.102～v1.176 是「不管多遠都固定飛 T ＝ 1.7 秒」，於是頂點永遠只在出手點上方
-   GRAV·T²/8 ≒ 9.4 格（實測整條最高 12.0），比多數地標的屋頂還低——石頭幾乎是平射
-   進牆裡的，看起來像弩不像投石機。改成**先訂頂點、再解飛行時間**：
-     ① 頂點高度 ＝ max(出手點, 目標) ＋ max(TREB_CLEAR, 距離 × TREB_LOB)
-        跟距離成比例才「合理」：越遠拋越高（TREB_LOB 0.55 ≒ 出手仰角 66°），
-        近距離也至少高過目標 TREB_CLEAR 格。
+/* 拋物線：**先訂頂點、再解飛行時間**（v1.177 使用者：「投石拋物線應該要更高才合理」；
+   v1.102～v1.176 是「不管多遠都固定飛 T ＝ 1.7 秒」，頂點永遠只有 12，比屋頂還低）：
+     ① 頂點高度 ＝ max(出手點 ＋ max(TREB_CLEAR, 距離 × TREB_LOB), 目標 ＋ 0.6 ＋ TREB_OVER)
+        跟距離成比例才合理：越遠拋越高（頂點／距離 ＝ tanθ/4，所以 TREB_LOB 0.25 ⇒ 仰角 45°），
+        打高的東西至少要高過屋頂 TREB_OVER 格才砸得下去。
      ② 由頂點解出出手的垂直速度 vy ＝ √(2·GRAV·(頂點 − 出手高))，
         再解 h ＝ vy·T − ½·GRAV·T² 的**大根**——大根＝「下降時」才抵達目標，
-        石頭是從上面砸下來的。取小根的話它會在上升途中撞到目標，那就是原本的平射。 */
-const TREB_LOB = 0.55, TREB_CLEAR = 7;
+        石頭是從上面砸下來的。取小根的話它會在上升途中撞到目標，那就是原本的平射。
+
+   **v1.199 兩件事一起改**（使用者：「拋物線看起來也很高 不太合理」「重點在拋物線不要超出畫面」）：
+   ① 屋頂高度與拋高從**相加**改成**取大者**。相加的話打高樓會把屋頂高度先墊上去再加整條
+      d×LOB，實測仰角被推到 70～77°（設計值才 66°）——那一層是無意的。
+   ② TREB_LOB 0.55 → 0.25、TREB_CLEAR 7 → 4。0.55 ＝ 仰角 66°，是迫擊砲不是投石機：
+      全部 76 座藍圖各打 20 發掃過一輪，石頭最高衝到畫面座標 NDC y 2.16（1 就出界了）、
+      23.1% 的飛行幀在畫面外——丟出去看不到，掉下來才又出現。
+      壓到 0.25（仰角 44.8°）之後全場最高 0.93，**沒有一發衝出上緣**；
+      頂點仍然跟著距離走，也仍然高過屋頂（最扁的舒芙蕾厚鬆餅屋頂 10、頂點 16～17）。
+   ③ TREB_LOB 與引擎的 ENG.TREB_REL 是綁在一起的：放索那一點的切線 ＝ arm+90° 就是
+      石頭飛出去的方向，所以 tan(REL+90°) 必須等於 4×TREB_LOB（e2e 有一條在對）。
+   見 開發筆記〈拋物線改成不出畫面：取大者 ＋ LOB 0.25〉 */
+const TREB_LOB = 0.25, TREB_CLEAR = 4, TREB_OVER = 2;
 /* 甩臂（v1.193，使用者：發射動作「要改（配重落下、長臂上甩）」）。
    v1.58～v1.192 根本沒有擺動：發射那一幀直接把臂角切到定位，再慢慢飄回待發——
    而且切過去的方向是「配重往上抬、長臂往前下拍」，跟真投石機相反。現在照真的走：
@@ -499,11 +509,20 @@ const TREB_LOB = 0.55, TREB_CLEAR = 7;
    （ENG.TREB_END）→ 石頭在半路的 ENG.TREB_REL 離開投石索。
    掃完再慢慢絞回待發（TREB_WIND）——那是絞盤把配重拉回去，本來就該慢。
    見 開發筆記〈整台照參考圖重做、甩臂方向掉頭、石頭改成球〉 */
-const TREB_SWING = 8;               // 甩臂角速度（rad/s；2.2 弧度約 0.27 秒掃完）
+/* 角速度**不是挑的，是解出來的**（v1.199）：放索那一刻索是拉直的，石兜在半徑
+   (臂 3.7 ＋ 索 2.1) 上，所以石兜的速度 ＝ 5.8 × 角速度。要它等於石頭的初速
+   （.25 那一檔實測平均 27.8），角速度就是 27.8 / 5.8 ＝ 4.8。這樣「畫出來的索
+   甩多快」與「石頭飛多快」是同一個數字，石頭才像是被索甩出去的。
+   代價是整輪從 0.28 秒變 0.46 秒——慢一點反而看得清楚那一甩。 */
+const TREB_SWING = 4.8;             // 甩臂角速度（rad/s；2.2 弧度約 0.46 秒掃完）
 const TREB_WIND = 2.2;              // 絞回待發的快慢
+/* 絞回時索是鬆的，往「垂下來／躺回石槽」收的快慢。不能直接切過去：
+   甩完那一刻索還拉得直直的（指向後上方），直接換成垂下來會瞬移 200 度。 */
+const TREB_DROOP = 4;
 /* 站位維持 siteR + 5（沒動）。石頭雖然改成從投石索末端飛出去，但那一點落在機台
-   **後方** 2.06 格（配重掛在朝目標那一側，長臂是從後面甩上來的，見 ENG.trebSling）
-   ——離工地更遠，所以不必像「出手點在機台前方」那樣把整隊再往後推。 */
+   **後方** 4.09 格（v1.199 索拉直之後更後面；配重掛在朝目標那一側，長臂是從後面
+   甩上來的，見 ENG.trebSling）——離工地更遠，所以不必像「出手點在機台前方」
+   那樣把整隊再往後推。 */
 const TREB_STAND = 5;
 const TREB_AIM_R = (TREB_TEAM - 1) * TREB_GAP / 2 + 3;   // 第一下的光環 ≈ 一隊的正面寬
 const TREB_AIM_C = 0x8a5f3c;        // 木色（同機台的立柱）
@@ -574,9 +593,13 @@ function placeTreb(spot, aimAt) {
   const dd = Math.hypot(x, z), lim = arenaR - 2;
   if (dd > lim) { x = x / dd * lim; z = z / dd * lim; }
   // 面向要轟的那一點：rotation.y = a 之後 local +Z 會指到 (sin a, 0, cos a)
+  /* sa 是索自己的角度（絞回時它跟臂角不同步，見 stepTrebs）、
+     load 是「石兜裡有沒有石頭」、rs 是那顆石頭多大——**裝填的時候就抽好**，
+     所以待發時畫在石兜裡的跟等一下飛出去的是同一顆（見 ENG.putRocks）。 */
   trebs.list.push({ x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
                     tx: aimAt.x, tz: aimAt.z,
-                    arm: ENG.TREB_REST, sw: 0, shot: 0,
+                    arm: ENG.TREB_REST, sa: ENG.trebSlingLoose(ENG.TREB_REST),
+                    sw: 0, shot: 0, load: 1, rs: rr(1.3, 2.1),
                     next: 0.4, left: TREB_SHOTS, idle: 0 });
 }
 function fireRock(m) {
@@ -601,14 +624,15 @@ function fireRock(m) {
   const sx = m.x + Math.sin(m.a) * sl.z, sz = m.z + Math.cos(m.a) * sl.z, sy = sl.y;
   const h = ty + 0.6 - sy;                        // 目標比出手點高多少
   const d = Math.hypot(tx - sx, tz - sz);
-  const top = Math.max(sy, ty + 0.6) + Math.max(TREB_CLEAR, d * TREB_LOB);   // 頂點高度
+  // 頂點：拋高與「高過屋頂」取大者，不是相加（見 TREB_LOB 上面那段）
+  const top = Math.max(sy + Math.max(TREB_CLEAR, d * TREB_LOB), ty + 0.6 + TREB_OVER);
   const vy = Math.sqrt(2 * GRAV * (top - sy));    // 由頂點解出手的垂直速度
   // 落下時才抵達＝取大根（見 TREB_LOB 上面那段）
   const T = (vy + Math.sqrt(Math.max(0, vy * vy - 2 * GRAV * h))) / GRAV;
   trebs.rocks.push({
     x: sx, y: sy, z: sz,
     vx: (tx - sx) / T, vz: (tz - sz) / T,
-    vy, T, t: 0, rx: 0, ry: 0, s: rr(1.3, 2.1)
+    vy, T, t: 0, rx: 0, ry: 0, s: m.rs      // 就是剛剛還躺在石兜裡的那一顆
   });
   sndSwing();
 }
@@ -663,13 +687,25 @@ function stepTrebs(dt) {
       /* 正在甩：配重掃下來、長臂往前上方甩過去。掃過放索的角度就出手
          （夾在 TREB_END，dt 大的時候不會掃過頭，也保證不會漏掉那一發）。 */
       m.arm = Math.max(ENG.TREB_END, m.arm - TREB_SWING * dt);
-      /* 掃過放索的角度就出手。**先把臂角釘回 TREB_REL 再放**：一幀掃 0.13～0.4 弧度
+      /* 掃過放索的角度就出手。**先把臂角釘回 TREB_REL 再放**：一幀掃 0.08～0.24 弧度
          （看 dt），不釘的話出手點會跟著幀率上下飄半格，同一發的弧線每次都不一樣。
          釘了之後這一幀少掃一點點（畫面上看不出來），出手點就是固定的那一個。 */
-      if (!m.shot && m.arm <= ENG.TREB_REL) { m.arm = ENG.TREB_REL; m.shot = 1; fireRock(m); }
-      if (m.arm <= ENG.TREB_END) m.sw = 0;
+      if (!m.shot && m.arm <= ENG.TREB_REL) { m.arm = ENG.TREB_REL; m.shot = 1; m.load = 0; fireRock(m); }
+      m.sa = ENG.trebSlingAngle(m.arm);          // 甩的時候索的角度是算出來的
+      /* 甩完了：還有得打就順手裝填下一顆。**裝填的那一刻就把大小抽好**，
+         絞回那一路石兜裡就看得到它，飛出去的也是同一顆（不是起甩才重抽一顆）。 */
+      if (m.arm <= ENG.TREB_END) {
+        m.sw = 0;
+        if (m.left > 0) { m.load = 1; m.rs = rr(1.3, 2.1); }
+      }
     } else {
       m.arm += (ENG.TREB_REST - m.arm) * Math.min(1, dt * TREB_WIND);   // 絞回待發
+      /* 甩完了，索就鬆了：往「垂下來／躺回石槽」收。**只能往同一個方向繼續轉**
+         ——石兜是往它現在所在的那一側掉下去的，抄近路轉回去會變成索從頭頂翻過去。 */
+      let tgt = ENG.trebSlingLoose(m.arm);
+      while (tgt < m.sa) tgt += Math.PI * 2;
+      m.sa += (tgt - m.sa) * Math.min(1, dt * TREB_DROOP);
+      if (m.sa > Math.PI * 2) m.sa -= Math.PI * 2;
       if (m.left > 0) {
         m.next -= dt;
         if (m.next <= 0) { m.next = rr(1.2, 2); m.left--; m.sw = 1; m.shot = 0; }

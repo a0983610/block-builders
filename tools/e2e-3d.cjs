@@ -8989,10 +8989,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       m.z = gate ? -(siteR + 2 + W - 2) / 2 : -(W - 4);
       leaveBeast(m);                                      // 砸完了：走人
       /* 拆掉幾塊牆要**算塊數少了多少**，不是收工時還在燒的那幾塊：牠拆完就走了，
-         迴圈結束時火早就燒完（實測那樣量到 0，而牆確實破了）。 */
+         迴圈結束時火早就燒完（實測那樣量到 0，而牆確實破了）。
+         **算身分不算淨值**（v1.199）：淨值＝「現在的牆塊數 − 原本的」會被別的東西補回來
+         抵銷掉，實測某顆種子量到 −12（牠明明動手 7 次），那是量法的問題不是規則壞了。
+         改成把開場那批牆的積木**記下來**，最後數其中有幾塊已經不屬於牆——
+         只算真的少掉的那幾塊，補進來的多少都不影響，也永遠不會是負的。 */
       const wallSeg = new Set();
       homes.list.forEach((h, i) => { if (h.wall) wallSeg.add(i); });
-      const wall0 = blocks.filter(b => wallSeg.has(b.hh)).length;
+      const wall0 = blocks.filter(b => wallSeg.has(b.hh));
       let n = 0, ghost = 0, acts = 0, last = '';
       const seen = {};
       while (n++ < 8000 && beasts && beasts.includes(m)) {     // 最長 400 秒（拆牆那種要拆好幾趟）
@@ -9007,7 +9011,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                end: gone ? null : { x: +m.x.toFixed(1), z: +m.z.toFixed(1), st: m.st,
                                     in: inWall(m.x, m.z), tx: +m.tx.toFixed(1),
                                     tz: +m.tz.toFixed(1), W: +W.toFixed(0) },
-               wallLost: wall0 - blocks.filter(b => wallSeg.has(b.hh)).length };
+               wallLost: wall0.filter(b => !wallSeg.has(b.hh)).length,
+               wallNet: wall0.length - blocks.filter(b => wallSeg.has(b.hh)).length };
     };
     /* phase 每一種都**明講**（v1.194）：沿用上一段測試留下來的話，這幾條驗到的是
        哪一種場面就變成前面改了什麼決定的——實測改了 ⑦ 的分支之後留下來的變成 build，
@@ -9047,7 +9052,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('沒門可繞：會動手的就地拆牆出去，牛羊不動手（一塊牆都不會少）',
      apeOut.nogate.gone && apeOut.nogate.acts > 0 && apeOut.nogate.wallLost > 0 &&
      apeOut.cow.gone && apeOut.cow.acts === 0 && apeOut.cow.wallLost === 0,
-     `猴子動手 ${apeOut.nogate.acts} 次、拆掉 ${apeOut.nogate.wallLost} 塊牆，` +
+     `猴子動手 ${apeOut.nogate.acts} 次、拆掉 ${apeOut.nogate.wallLost} 塊牆` +
+     `（淨值 ${apeOut.nogate.wallNet}，會被補回來的抵銷，所以不拿它判）、` +
      `${apeOut.nogate.secs} 秒走掉；牛一次都沒動手（${apeOut.cow.acts}）、` +
      `一塊牆都沒少（${apeOut.cow.wallLost}），${apeOut.cow.secs} 秒走掉` +
      `（穿透 ${apeOut.cow.ghost} 幀）`);
@@ -10621,6 +10627,123 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('石頭不會飛出場外', treb.offCentre === 0);
   ok('石頭砸下來會造成破壞', treb.after < treb.n0, placedCntTxt(treb.n0, treb.after));
   ok('打完會自己撤走', treb.gone);
+
+  /* ── 投石索：石兜要甩到圓弧外側，放索時索是拉直的（v1.199）────────────────
+     > 使用者：「目前都在同一側 看起來沒有甩出去的感覺」「這段時間應該是在後面外側吧」
+     v1.193～v1.198 的索角是「從躺平內插到臂尖的行進方向」，cos 恆 > 0 ⇒ 石兜永遠在臂尖
+     **前方**、整趟掛在圓弧**內側**（甩到一半時離支點只剩 1.6，比臂尖的 3.7 還近）。
+     現在索是**拋臂的延伸**：落後角 ψ 從「被石槽折在前面」收到 0，放索那一刻完全拉直。
+     **不跑模擬**：整條擺程掃一遍純幾何（ψ 與餘弦定理），所以這一條永遠不會飄。
+     離支點的距離用餘弦定理算，不必再把支點高度開出來：
+       r² = 臂² + 索² + 2·臂·索·cos(ψ)，所以 r > 臂 ⟺ cos(ψ) > −索/(2·臂)。 */
+  const slingGeo = await page.evaluate(() => {
+    const A = ENG.TREB_ARM, S = ENG.TREB_SLING;
+    const rOf = psi => Math.sqrt(A * A + S * S + 2 * A * S * Math.cos(psi));
+    const wrap = x => Math.atan2(Math.sin(x), Math.cos(x));      // 收進 ±π
+    const psiOf = arm => wrap(ENG.trebSling(arm).a - (arm + Math.PI));
+    let outFrom = null, minR = 9e9, maxR = 0, behind = 1, rest = null;
+    for (let a = ENG.TREB_REST; a >= ENG.TREB_REL - 1e-9; a -= 0.005) {
+      const r = rOf(psiOf(a));
+      if (rest === null) rest = r;
+      if (outFrom === null && r > A) outFrom = a;
+      if (outFrom !== null) {                 // 一旦甩到外側就不准再掉回內側
+        minR = Math.min(minR, r); maxR = Math.max(maxR, r);
+        if (Math.cos(psiOf(a)) <= 0) behind = behind && true;    // ψ > 90° ＝石兜落在臂尖後方
+      }
+    }
+    return { A, S, full: A + S, rest: +rest.toFixed(2),
+             outFrom: outFrom === null ? null : +outFrom.toFixed(3),
+             minR: +minR.toFixed(2), maxR: +maxR.toFixed(2),
+             relPsi: +(psiOf(ENG.TREB_REL) * 180 / Math.PI).toFixed(4),
+             relR: +rOf(psiOf(ENG.TREB_REL)).toFixed(3),
+             relZ: +ENG.trebSling(ENG.TREB_REL).z.toFixed(2),
+             relY: +ENG.trebSling(ENG.TREB_REL).y.toFixed(2),
+             // 放索點的切線＝石頭飛出去的方向，必須跟拋物線的 TREB_LOB 對得上
+             tan: +Math.tan(ENG.TREB_REL + Math.PI / 2).toFixed(6), want: +(4 * TREB_LOB).toFixed(6)
+           };
+  });
+  ok('放索那一刻投石索是拉直的（石兜就在臂長＋索長那個半徑上）',
+     Math.abs(slingGeo.relPsi) < 1e-6 && Math.abs(slingGeo.relR - slingGeo.full) < 1e-6,
+     '落後角 ' + slingGeo.relPsi + '°、離支點 ' + slingGeo.relR + '（臂 ' + slingGeo.A +
+     ' ＋ 索 ' + slingGeo.S + ' ＝ ' + slingGeo.full + '）');
+  ok('石兜會甩到臂尖走的那個圓的外側，而且之後不再掉回內側',
+     slingGeo.outFrom !== null && slingGeo.minR > slingGeo.A && slingGeo.rest < slingGeo.A,
+     '待發時離支點 ' + slingGeo.rest + '（圓內，石頭壓在石槽裡）→ 從臂角 ' + slingGeo.outFrom +
+     ' 起跑到圓外，之後維持在 ' + slingGeo.minR + '～' + slingGeo.maxR + '（臂長 ' + slingGeo.A + '）');
+  ok('出手點在機台後方、高過整台機器',
+     slingGeo.relZ < -3 && slingGeo.relY > 9,
+     '放索點 z ' + slingGeo.relZ + '（負的＝背對目標那一側）、y ' + slingGeo.relY);
+  /* 放索的臂角與拋物線的拋高係數是綁在一起的：那一點的切線就是石頭飛出去的方向，
+     所以 tan(REL + 90°) 必須等於 4×TREB_LOB（頂點／距離 ＝ tanθ/4）。
+     改了其中一個而沒改另一個，索指的方向就跟石頭飛的方向對不起來。 */
+  ok('索拉直的方向 ＝ 拋物線的出手仰角（ENG.TREB_REL 與 TREB_LOB 對得上）',
+     Math.abs(slingGeo.tan - slingGeo.want) < 1e-6,
+     'tan(放索切線) ' + slingGeo.tan + ' vs 4×TREB_LOB ' + slingGeo.want);
+
+  /* 待發的那顆石頭要看得見（v1.199）。以前石頭是放索那一刻才生出來的，
+     所以整段甩臂石兜都是空的、石頭從索末端憑空冒出來。
+     驗的是**真的畫出去幾顆**（ENG.three.rockMesh.count），不是規則那邊的陣列長度。 */
+  const loaded = await page.evaluate(() => {
+    trebs = null;
+    placeTreb({ x: siteR + 20, z: 0 }, { x: 0, z: 0 });
+    const m = trebs.list[0], rs = m.rs;
+    ENG.putRocks(trebs.rocks, trebs.list);
+    const idle = { flying: trebs.rocks.length, drawn: ENG.three.rockMesh.count };
+    m.next = 0;
+    for (let i = 0; i < 60 && !m.shot; i++) stepTrebs(1 / 60);
+    ENG.putRocks(trebs.rocks, trebs.list);
+    const shot = { flying: trebs.rocks.length, drawn: ENG.three.rockMesh.count,
+                   same: trebs.rocks.length === 1 && Math.abs(trebs.rocks[0].s - rs) < 1e-9 };
+    trebs = null; ENG.putTrebs([]); ENG.putRocks([]);      // 還原：這一段動過的全域狀態
+    return { rs: +rs.toFixed(2), idle, shot };
+  });
+  ok('待發時石頭就躺在石兜裡，放了手才交棒給飛石',
+     loaded.idle.flying === 0 && loaded.idle.drawn === 1 &&
+     loaded.shot.flying === 1 && loaded.shot.drawn === 1 && loaded.shot.same,
+     '還沒放手：飛石 ' + loaded.idle.flying + ' 顆、畫出去 ' + loaded.idle.drawn +
+     ' 顆（石兜裡那一顆，直徑 ' + loaded.rs + '）；放手後：飛石 ' + loaded.shot.flying +
+     ' 顆、畫出去 ' + loaded.shot.drawn + ' 顆，跟待發時同一顆 ' + loaded.shot.same);
+
+  /* 石頭不能衝出畫面上緣（v1.199，使用者：「拋物線看起來也很高 不太合理」
+     「重點在拋物線不要超出畫面」）。取景最緊的是**矮建築**（相機貼著建築、天空只留一點），
+     所以拿全場最扁的那一座來測。v1.198 的式子在這一座是 61.7% 的飛行幀在畫面外、
+     最高衝到 NDC y 1.49。
+     **規則型不是統計型**：進來先把骰子換成固定序列（落點與石頭大小就都釘住了），
+     量完再把 Math.random 還回去。 */
+  await reset(page, { shape: '舒芙蕾厚鬆餅', cnt: 1500, workers: 3 });
+  const trebCam = await page.evaluate(() => {
+    completeNow();
+    const rnd0 = Math.random;
+    let s = 0x2f6e2b1;
+    Math.random = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+    for (let i = 0; i < 90; i++) ENG.updateCamera(1 / 60);     // 讓取景收斂到定位
+    const cam = ENG.three.camera;
+    let roof = 0; for (const b of blocks) if (b.st === SET && b.y > roof) roof = b.y;
+    tool = 'treb';
+    useTool({ kind: 'ground', point: { x: siteR + 14, y: 0, z: 0 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    let maxNdc = -9, over = 0, fr = 0, top = 0;
+    const seen = new Set();
+    for (let i = 0; i < 1500 && trebs; i++) {
+      step(1 / 60);                              // 整個 step：鏡頭也跟著跑
+      if (!trebs) break;
+      cam.updateMatrixWorld();
+      for (const r of trebs.rocks) {
+        seen.add(r); top = Math.max(top, r.y);
+        const p = new THREE.Vector3(r.x, r.y, r.z).project(cam);
+        fr++; if (p.y > 1) over++;
+        if (p.y > maxNdc) maxNdc = p.y;
+      }
+    }
+    Math.random = rnd0;
+    return { roof: +roof.toFixed(1), n: seen.size, fr, over,
+             maxNdc: +maxNdc.toFixed(2), top: +top.toFixed(1) };
+  });
+  ok('石頭不會衝出畫面上緣（拿全場最扁的那一座測，取景最緊）',
+     trebCam.over === 0 && trebCam.maxNdc < 1 && trebCam.n > 10,
+     trebCam.n + ' 顆石頭、' + trebCam.fr + ' 幀：出上緣 ' + trebCam.over +
+     ' 幀、最高 NDC y ' + trebCam.maxNdc + '（1 就是畫面上緣）、最高飛到 ' +
+     trebCam.top + '（屋頂 ' + trebCam.roof + '）');
 
   /* 落點跟著「第二下點的地方」走（v1.174 的核心；v1.102～v1.173 是一律照工地中心，
      擺在小人的家旁邊才改轟那一間）。量的是**每一顆真的砸在哪**（攔 rockHit，

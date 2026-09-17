@@ -225,7 +225,8 @@ function draw() {
   ENG.putTrees(trees);
   ENG.putDust(dustList());
   ENG.putTrebs(trebs ? trebs.list : EMPTY);
-  ENG.putRocks(trebs ? trebs.rocks : EMPTY);
+  // 第二個參數是機台清單：還沒放手的那幾台，石頭要畫在石兜裡（v1.199）
+  ENG.putRocks(trebs ? trebs.rocks : EMPTY, trebs ? trebs.list : null);
   ENG.putBombs(bombs || EMPTY);
   /* 只把真的在天上飛的隕石丟過去（還在倒數的那幾顆連影子都不該有）。
      重用同一個陣列，不要每幀配置一個新的。 */
