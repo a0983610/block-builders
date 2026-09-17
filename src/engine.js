@@ -4284,6 +4284,19 @@ const ENG = (function () {
     tyTop = 0;
   }
 
+  /* 鏡頭現在在世界的哪一點（**不含震動**：那是畫面效果，規則那一層要的是穩定的位置）。
+     updateCamera 與規則層共用同一份公式——大劍的樞紐是從鏡頭這一側解出來的
+     （見 game-tools 的 castSword），兩邊各寫一份的話，看到的跟砍到的就對不起來。
+     回傳的是共用的那一顆（不要留著跨幀用）。 */
+  const _eye = { x: 0, y: 0, z: 0 };
+  function camEye() {
+    const cp = Math.cos(cam.pitch);
+    _eye.x = cam.tx + Math.cos(cam.yaw) * cp * cam.dist;
+    _eye.y = cam.ty + Math.sin(cam.pitch) * cam.dist;
+    _eye.z = cam.tz + Math.sin(cam.yaw) * cp * cam.dist;
+    return _eye;
+  }
+
   function updateCamera(dt) {
     cam.dist += (camTarget.dist - cam.dist) * Math.min(1, dt * 2.2);
     cam.ty += (camTarget.ty - cam.ty) * Math.min(1, dt * 2.2);
@@ -4305,10 +4318,8 @@ const ENG = (function () {
       }
     }
     cam.pitch = Math.max(0.06, Math.min(1.45, cam.pitch));
-    const cp = Math.cos(cam.pitch);
-    let x = cam.tx + Math.cos(cam.yaw) * cp * cam.dist;
-    let y = cam.ty + Math.sin(cam.pitch) * cam.dist;
-    let z = cam.tz + Math.sin(cam.yaw) * cp * cam.dist;
+    const eye = camEye();
+    let x = eye.x, y = eye.y, z = eye.z;
     if (cam.shake > 0.001) {                 // 打擊時的畫面震動（太近就不震，見 SHAKE_NEAR）
       cam.shakeT += dt * 47;
       const k = cam.shake * Math.max(0, Math.min(1, (cam.dist - SHAKE_NEAR) / (SHAKE_FULL - SHAKE_NEAR)));
@@ -4418,21 +4429,11 @@ const ENG = (function () {
     return best;
   }
 
-  /* 螢幕座標 → 射線（v1.197，大劍的第二下用）。`pick` 只有「打到東西」時才給得出
-     方向，而那一下要的是角度、可以指著天空——所以那條射線要單獨拿得到。
-     回傳純數字（不是 Vector3）：規則那一層不碰 three。 */
-  function rayAt(px, py) {
-    ndc.set(px / W * 2 - 1, -(py / H * 2 - 1));
-    raycaster.setFromCamera(ndc, camera);
-    const o = raycaster.ray.origin, d = raycaster.ray.direction;
-    return { ox: o.x, oy: o.y, oz: o.z, dx: d.x, dy: d.y, dz: d.z };
-  }
-
   function render() { renderer.render(scene, camera); }
   function info() { const r = renderer.info.render; return { calls: r.calls, tris: r.triangles }; }
 
   return {
-    init, resize, render, info, pick, rayAt,
+    init, resize, render, info, pick, camEye,
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers, putEmotes,
     putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,

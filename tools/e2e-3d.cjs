@@ -8990,7 +8990,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       leaveBeast(m);                                      // 砸完了：走人
       /* 拆掉幾塊牆要**算塊數少了多少**，不是收工時還在燒的那幾塊：牠拆完就走了，
          迴圈結束時火早就燒完（實測那樣量到 0，而牆確實破了）。
-         **算身分不算淨值**（v1.199）：淨值＝「現在的牆塊數 − 原本的」會被別的東西補回來
+         **算身分不算淨值**（v1.202）：淨值＝「現在的牆塊數 − 原本的」會被別的東西補回來
          抵銷掉，實測某顆種子量到 −12（牠明明動手 7 次），那是量法的問題不是規則壞了。
          改成把開場那批牆的積木**記下來**，最後數其中有幾塊已經不屬於牆——
          只算真的少掉的那幾塊，補進來的多少都不影響，也永遠不會是負的。 */
@@ -10628,7 +10628,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('石頭砸下來會造成破壞', treb.after < treb.n0, placedCntTxt(treb.n0, treb.after));
   ok('打完會自己撤走', treb.gone);
 
-  /* ── 投石索：石兜要甩到圓弧外側，放索時索是拉直的（v1.199）────────────────
+  /* ── 投石索：石兜要甩到圓弧外側，放索時索是拉直的（v1.202）────────────────
      > 使用者：「目前都在同一側 看起來沒有甩出去的感覺」「這段時間應該是在後面外側吧」
      v1.193～v1.198 的索角是「從躺平內插到臂尖的行進方向」，cos 恆 > 0 ⇒ 石兜永遠在臂尖
      **前方**、整趟掛在圓弧**內側**（甩到一半時離支點只剩 1.6，比臂尖的 3.7 還近）。
@@ -10680,7 +10680,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(slingGeo.tan - slingGeo.want) < 1e-6,
      'tan(放索切線) ' + slingGeo.tan + ' vs 4×TREB_LOB ' + slingGeo.want);
 
-  /* 待發的那顆石頭要看得見（v1.199）。以前石頭是放索那一刻才生出來的，
+  /* 待發的那顆石頭要看得見（v1.202）。以前石頭是放索那一刻才生出來的，
      所以整段甩臂石兜都是空的、石頭從索末端憑空冒出來。
      驗的是**真的畫出去幾顆**（ENG.three.rockMesh.count），不是規則那邊的陣列長度。 */
   const loaded = await page.evaluate(() => {
@@ -10704,7 +10704,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 顆（石兜裡那一顆，直徑 ' + loaded.rs + '）；放手後：飛石 ' + loaded.shot.flying +
      ' 顆、畫出去 ' + loaded.shot.drawn + ' 顆，跟待發時同一顆 ' + loaded.shot.same);
 
-  /* 石頭不能衝出畫面上緣（v1.199，使用者：「拋物線看起來也很高 不太合理」
+  /* 石頭不能衝出畫面上緣（v1.202，使用者：「拋物線看起來也很高 不太合理」
      「重點在拋物線不要超出畫面」）。取景最緊的是**矮建築**（相機貼著建築、天空只留一點），
      所以拿全場最扁的那一座來測。v1.198 的式子在這一座是 61.7% 的飛行幀在畫面外、
      最高衝到 NDC y 1.49。
@@ -13901,10 +13901,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
     const clickG = q => useTool({ kind: 'ground',
       point: new THREE.Vector3(q.x, 0, q.z), dir: new THREE.Vector3(0, -1, 0) });
+    /* 造型最低那一片的下緣（劍首底）。期望值一律從造型表算出來，不寫死。 */
+    let lowEdge = 1e9;
+    for (const P of ENG.MODELS.sword) lowEdge = Math.min(lowEdge, P.p[1] - P.s[1] / 2);
+    /* 整趟揮擊（含回抽與超過）裡，劍首底端最低到哪（v1.202 使用者：「不要劍被埋入地下」）。
+       造型原點擺在「樞紐 ＋ u × |PIVOT| × len」（見 engine 的 putSwords），
+       所以劍首底那一點的半徑是 (lowEdge − PIVOT) × len。 */
+    const lowestButt = w => {
+      const rb = (lowEdge - ENG.SWORD_PIVOT) * w.len;
+      let lo = 1e9;
+      for (let k = 0; k <= 24; k++) {
+        const th = -w.back + (w.span + w.over + w.back) * k / 24;
+        lo = Math.min(lo, w.y + (w.u0y * Math.cos(th) + w.e2y * Math.sin(th)) * rb);
+      }
+      return +lo.toFixed(2);
+    };
 
     /* ① 兩下都點地面（v1.164 使用者：「不再限定一定要點建築 如果兩下都地面就在地面
-       水平橫掃就好」）：照樣揮，而且是**貼著地面水平橫掃**——樞紐在地面的高度上、
-       兩點也在地面，那個平面自然是水平的（幾何沒有為它開特例）。
+       水平橫掃就好」）：照樣揮、沒有提示。**v1.202 起「貼地」的意思換了**——缺口是
+       地面上那兩點的連線（看過去就是貼著地面的一條），但揮動平面通過鏡頭、不是水平的，
+       所以樞紐落在半空（劍從斜上方掃過去，不會埋進草皮）。
        v1.161～v1.163 這一下是不揮的：出一行提示、第一點留著等你再點一次建築。 */
     /* **先把提示清空**再點：`toast()` 只留最後三則，滿了就把最舊的擠掉——
        比「長度有沒有變多」的話，滿的時候新提示是量不到的。
@@ -13913,20 +13929,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        ——v1.176 多了一種天災（獅鷲，一趟燒掉兩百多塊）之後，實測某些種子
        「🏅 粉塵滿天」剛好在這一下跳出來，量到的就變成別人的提示。 */
     toasts.length = 0; renderToasts();
-    clickG({ x: 30, z: 30 }); clickG(p2);
+    const gp1 = { x: 30, z: 30 };
+    clickG(gp1); clickG(p2);
     const said = toasts.filter(t => t.txt.indexOf('🏅') < 0);
+    /* 平面通過鏡頭 ＝ 那兩點跟鏡頭都在平面上（法線是單位向量，所以這是距離） */
+    const eye0 = ENG.camEye();
+    const onPlane = (w, q, y) =>
+      Math.abs((q.x - w.x) * w.nx + (y - w.y) * w.ny + (q.z - w.z) * w.nz);
     const both = { n: swords ? swords.length : 0, aim: !!aim,
                    y: swords ? +swords[0].y.toFixed(2) : -1,
-                   tilt: swords
-                     ? +(Math.acos(Math.min(1, Math.abs(swords[0].ny))) * 180 / Math.PI).toFixed(3)
-                     : -1,
+                   /* 兩點都在地面，所以「缺口貼著地面」＝ 那條連線本身；
+                      要驗的是平面通過鏡頭（看過去才是一條線），以及劍柄沒埋進地裡。 */
+                   eyeOff: swords ? onPlane(swords[0], eye0, eye0.y) : -1,
+                   low: swords ? lowestButt(swords[0]) : -1,
                    toast: said.length ? said[said.length - 1].txt : '' };
     /* **一定要把它清掉**：不清的話下面那一把會排在 swords[1]，swords[0] 量到的是這一把 */
     swords = null; aim = null;
 
     /* 正常一趟：第一下建築、第二下空地 */
     clickB();
-    const kept = aim ? { y: +aim.sy.toFixed(2) } : null;
     /* 第一點的標記（v1.196，使用者：「第一點的光環固定畫在地面 可能要做出一個在空間中
        的版本」）：大劍的第一點會落在半空，所以那兩圈要畫在**點到的那個高度**上、
        正對鏡頭、畫在最上層（環比建築還寬，不關深度測試就會被切成斷弧）。
@@ -13956,12 +13977,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
     const off = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
     const d1 = dir(p1, p1.y), d2 = dir(p2, 0), uEnd = at(s.span);
+    /* v1.202 的核心：**揮動平面通過鏡頭**。那兩點本來就在平面上（樞紐是解在平面裡的），
+       所以真正要驗的是「鏡頭也在平面上」——這一條成立，刃掃過的那一整片投影到螢幕
+       就收成一條線，而那條線的兩端正是你點的兩點（所見即所砍）。
+       另外兩解裡取的要是**靠鏡頭**那一個：另一解是它對兩點中點的鏡射。 */
+    const eye = ENG.camEye();
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + 0) / 2, z: (p1.z + p2.z) / 2 };
+    const oppo = { x: 2 * mid.x - s.x, y: 2 * mid.y - s.y, z: 2 * mid.z - s.z };
     const geo = {
       r3d1: Math.hypot(p1.x - s.x, p1.y - s.y, p1.z - s.z),
       r3d2: Math.hypot(p2.x - s.x, 0 - s.y, p2.z - s.z),
       e0: off([s.u0x, s.u0y, s.u0z], d1), e1: off(uEnd, d2),
-      /* 平面的傾角：法線跟垂直方向差幾度。0 ＝ 水平面（第一版那種水平的一條缺口） */
-      tilt: Math.acos(Math.min(1, Math.abs(s.ny))) * 180 / Math.PI,
+      eyeOff: Math.abs((eye.x - s.x) * s.nx + (eye.y - s.y) * s.ny + (eye.z - s.z) * s.nz),
+      nLen: Math.hypot(s.nx, s.ny, s.nz),
+      dNear: Math.hypot(s.x - eye.x, s.y - eye.y, s.z - eye.z),
+      dFar: Math.hypot(oppo.x - eye.x, oppo.y - eye.y, oppo.z - eye.z),
+      low: lowestButt(s),
       clickY: p1.y
     };
     /* ⑥ 刃切到的那些，**被切的那一刻**記三個數：高度、離揮動平面多遠、當時轉到幾度
@@ -13975,19 +14006,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const w = swords && swords[0];
       if (w) {
         const ax = b.x - w.x, ay = b.y - w.y, az = b.z - w.z;
-        /* 三個數：高度、離揮動平面多遠、以及**刃面在這一塊的水平位置上有多高**
-           （yp ＝ 平面方程式解出來的高度）。斜不斜就看 yp 在整個缺口裡的落差——
-           水平面算出來落差就是 0，不必訂什麼經驗門檻。
-           （繞了兩圈才找到這個量法：先拿「先切到 vs 後切到」比，量到的是建築形狀
-             不是斜度，因為平面是**固定**的、刃只是在平面裡轉；改拿「沿著兩點連線
-             的位置」比也只差 1.46，因為連線方向不是平面的下坡方向。） */
-        /* 第四個數：那一塊在**揮動平面裡的半徑**（同 swordCut 的算法）。v1.174 要驗
-           「破壞範圍是整片劍身」，靠的就是它——切到的最遠半徑要越過攻擊點、到刃尖。 */
+        /* 三個數：被切那一刻的高度、離揮動平面多遠、以及那一塊在**揮動平面裡的半徑**
+           （同 swordCut 的算法）。
+           第二個數是 v1.202 之後最重要的一個：平面通過鏡頭（另一條在守），
+           所以「每一塊離平面都在一個刃寬之內」就等於「缺口在畫面上是貼著那兩點
+           連線的一條」——不必真的做投影，兩條加起來就把所見即所砍釘死了。
+           第三個數給 v1.174 的「破壞範圍是整片劍身」用：切到的最遠半徑要越過
+           攻擊點、一路到刃尖。 */
         const pa = ax * w.u0x + ay * w.u0y + az * w.u0z;
         const pc = ax * w.e2x + ay * w.e2y + az * w.e2z;
-        cutY.push([b.y, Math.abs(ax * w.nx + ay * w.ny + az * w.nz),
-                   w.y - ((b.x - w.x) * w.nx + (b.z - w.z) * w.nz) / w.ny,
-                   Math.hypot(pa, pc)]);
+        cutY.push([b.y, Math.abs(ax * w.nx + ay * w.ny + az * w.nz), Math.hypot(pa, pc)]);
       }
       return oBreak(b, vx, vy, vz);
     };
@@ -14023,25 +14051,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const shakeN = shakes;
     const midSet = blocks.filter(b => b.st === 3).length;
     let lo = 1e9, hiY = -1e9, offMax = 0;
-    /* 刃面在缺口裡從多高掉到多低（ypHi → ypLo），以及每一塊離刃面的**垂直**距離
-       有沒有超過「一個刃寬」換算成垂直的量（band / cos 傾角）。 */
-    let ypHi = -1e9, ypLo = 1e9, vOff = 0;
     let rCutLo = 1e9, rCutHi = -1e9, beyondHit = 0;      // 切到的半徑範圍（v1.174）
     for (const r of cutY) {
       if (r[0] < lo) lo = r[0];
       if (r[0] > hiY) hiY = r[0];
       if (r[1] > offMax) offMax = r[1];
-      if (r[2] > ypHi) ypHi = r[2];
-      if (r[2] < ypLo) ypLo = r[2];
-      const dv = Math.abs(r[0] - r[2]);
-      if (dv > vOff) vOff = dv;
-      if (r[3] < rCutLo) rCutLo = r[3];
-      if (r[3] > rCutHi) rCutHi = r[3];
-      if (r[3] > s.rhit) beyondHit++;
+      if (r[2] < rCutLo) rCutLo = r[2];
+      if (r[2] > rCutHi) rCutHi = r[2];
+      if (r[2] > s.rhit) beyondHit++;
     }
     const ring = { lo: +rCutLo.toFixed(2), hi: +rCutHi.toFixed(2), beyondHit };
-    const slant = { hi: ypHi, lo: ypLo, vOff: vOff,
-                    vLim: s.band / Math.max(1e-6, Math.abs(s.ny)) };
 
     /* ⑥ 畫面與判定是同一塊。兩件事一起驗：
        ⓐ 造型表裡**最遠那一塊的外緣**就是引擎開給規則用的 SWORD_TIP
@@ -14082,33 +14101,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const keep = swords.length;
 
     /* 兩點比刃還開：刃長頂到上限、樞紐退到中點（掃到接近 180 度）。
-       v1.162 刃長翻倍（上限 92）之後 120 單位已經在刃長之內了，所以這一條要點更遠。 */
+       v1.202 起這條退化的門檻乾淨很多——樞紐解得出來的條件只剩「攻擊點半徑 ≥
+       兩點距離的一半」，所以要點到 2×92×hitK ＝ 143.9 以外才會走到這裡。 */
     aim = null; swords = null;
     clickB();
     clickG({ x: -p1.x / f * 260, z: -p1.z / f * 260 });
-    const wide = { len: swords[0].len, span: swords[0].span };
+    const wide = { len: swords[0].len, span: swords[0].span,
+                   need: 2 * SW_LEN_MAX * (ENG.SWORD_HIT - ENG.SWORD_PIVOT) };
 
-    /* 兩下都點在**同高度**的建築上：那個平面就是水平的，缺口回到水平的一條
-       （斜不斜完全由那兩點的高低差決定，不是寫死的） */
-    aim = null; swords = null;
-    clickB();
-    useTool({ kind: 'block', point: new THREE.Vector3(-p1.x, p1.y, -p1.z),
-              dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
-    const flat = { tilt: Math.acos(Math.min(1, Math.abs(swords[0].ny))) * 180 / Math.PI,
-                   y: swords[0].y };
-
-    /* 兩下都點在建築上、**高度不一樣**：樞紐用第一點的高度（v1.162 使用者：
-       「點兩下都是建築時 就從第一點位置揮到第二點」），攻擊點照樣起手落在第一點、
-       收手落在第二點（兩段 3D 距離都是攻擊點半徑）。 */
+    /* 兩下都點在建築上、**高度不一樣**（v1.162 使用者：「點兩下都是建築時 就從第一點
+       位置揮到第二點」）：攻擊點照樣起手落在第一點、收手落在第二點，而且這一刀的
+       平面一樣通過鏡頭、劍柄一樣在地面以上——**兩點怎麼來的都走同一條路**。 */
     aim = null; swords = null;
     clickB();
     const p3 = { x: -p1.x, y: p1.y * 0.5, z: -p1.z };
     useTool({ kind: 'block', point: new THREE.Vector3(p3.x, p3.y, p3.z),
               dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
     const w2 = swords[0];
+    const eye2 = ENG.camEye();
     const twoB = { y: w2.y, r1: w2.rhit,
                    r3d1: Math.hypot(p1.x - w2.x, p1.y - w2.y, p1.z - w2.z),
-                   r3d2: Math.hypot(p3.x - w2.x, p3.y - w2.y, p3.z - w2.z) };
+                   r3d2: Math.hypot(p3.x - w2.x, p3.y - w2.y, p3.z - w2.z),
+                   eyeOff: Math.abs((eye2.x - w2.x) * w2.nx + (eye2.y - w2.y) * w2.ny +
+                                    (eye2.z - w2.z) * w2.nz),
+                   low: lowestButt(w2) };
 
     /* 刃掃到小人與動物（v1.163，使用者：「大劍也要如果剛好碰到小人&吉祥物等動物
        也要產生效果」）。直接叫 swordCut 把整趟的角度一次掃完，不用 step——
@@ -14158,23 +14174,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     lives.setSame = blocks.filter(b => b.st === 3).length === set0 ? 1 : 0;
     lives.noBlock = men[1].air ? 1 : 0;
     beasts = null;
-    /* 刃從**頭上**掃過去的不算（同「炸在屋頂、砸在高處，下面的人不被震倒」那條）：
-       兩下都點在同高度的建築上那一刀，整片刃面就停在點擊的高度上，
-       站在扇形正下方的人離刃面差了快一層樓，不該被掃到。
-       （v1.172 曾經改成在 40 高橫掃——那一版把 SW_BAND_K 調到 1.8，刃厚 11.4 已經
-       壓到地面，站在 9.47 高的缺口正下方等於站在刃裡面。倍率改回 1.0 之後
-       刃厚回到 6.33，這一條照原本的樣子就成立，所以也一起還原。） */
-    aim = null; swords = null;
-    clickB();
-    useTool({ kind: 'block', point: new THREE.Vector3(-p1.x, p1.y, -p1.z),
-              dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
-    const fw = swords[0];
-    const fr = (fw.r0 + fw.r1) / 2, fth = fw.span * 0.5;
-    put(men[2], fw.x + (fw.u0x * Math.cos(fth) + fw.e2x * Math.sin(fth)) * fr,
-                fw.z + (fw.u0z * Math.cos(fth) + fw.e2z * Math.sin(fth)) * fr);
+    /* 離刃面夠遠的不算（**v1.202 換掉的那一格**）：以前這裡站的是「兩下都點同高度
+       建築那一刀的扇形正下方」——那一版的揮動平面是水平的，正下方等於離刃面一層樓。
+       現在平面通過鏡頭、不再是水平的，「正下方」可能正好在刃裡面（實測那個人真的飛了），
+       所以那個擺法量的已經不是原本要守的東西。換成幾何上站得住的版本：
+       **同一刀、同一個位置，只把人沿著法線推開 4 個刃寬**（swordLives 的判定就是
+       「離揮動平面一個刃寬內」），推開之後不該再被掃到。 */
+    const fw = sw;
+    /* 人只能站在地面，所以只能**水平**挪。要讓「離平面的距離」達到 4 個刃寬，
+       水平得走 4×band ÷ 法線的水平分量（法線愈接近垂直，同樣的水平位移愈沒用
+       ——上一版就是栽在這裡：直接水平推 4×band，實際只離開平面 band×4×nh）。 */
+    const nh = Math.hypot(fw.nx, fw.nz) || 1e-6;
+    const push = fw.band * 4 / nh;
+    put(men[2], spot.x + fw.nx / nh * push, spot.z + fw.nz / nh * push);
     swordCut(fw, -fw.back, fw.span + fw.over, 0.42);
     lives.under = men[2].air ? 1 : 0;
-    lives.planeY = +fw.y.toFixed(2);
+    lives.planeY = +push.toFixed(2);
+    lives.off = +(push * nh).toFixed(2);
+    lives.band = +fw.band.toFixed(2);
 
     /* v1.169 使用者改的三件（造型本身沒動，動的是「哪一點在轉、哪一點在砍、手在哪一邊」）：
        ⓐ「劍尖往下一小段才是攻擊點」——攻擊點在刃尖裡面、但還在刃身上
@@ -14183,15 +14200,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        ⓑ「旋轉圓心在劍柄往外延伸一點」——樞紐比造型**最低那一片的下緣**還要外面，
           中間那一段空的就是握劍的手（沒有畫出來）；
        ⓒ「劍柄盡量在鏡頭方向」——同樣兩點、鏡頭轉到對面再揮一次，樞紐要跟著換邊。
-          兩個交點對稱於兩點的連線，所以「跟著鏡頭換邊」＝ 選的一直是靠鏡頭那一個；
-          比的是**垂直於連線那個分量的正負**，不是「離鏡頭近」——樞紐只可能落在
-          連線的左右兩側，沿著連線那個分量兩邊是一樣的。 */
-    let lowEdge = 1e9;
-    for (const P of ENG.MODELS.sword) lowEdge = Math.min(lowEdge, P.p[1] - P.s[1] / 2);
-    const D2 = Math.hypot(p2.x - p1.x, p2.z - p1.z) || 1;
-    const qx = -(p2.z - p1.z) / D2, qz = (p2.x - p1.x) / D2;      // 連線的法線（水平）
-    const side = (w, yw) =>
-      ((w.x - p1.x) * qx + (w.z - p1.z) * qz) * (qx * Math.cos(yw) + qz * Math.sin(yw));
+          v1.202 起兩個解是「在通過鏡頭的那個平面裡、對兩點中點鏡射」的一對，選的
+          一直是離鏡頭近的那一個，所以轉到對面就會換邊（兩個樞紐相距一大段）。 */
     const yaw0 = ENG.cam.yaw, yawA = 0.4, yawB = 0.4 + Math.PI;
     aim = null; swords = null;
     ENG.cam.yaw = yawA; clickB(); clickG(p2);
@@ -14206,124 +14216,80 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       r1: +sw.r1.toFixed(6), rhit: +sw.rhit.toFixed(6),
       hitWant: +((ENG.SWORD_HIT - ENG.SWORD_PIVOT) * sw.len).toFixed(6),
       rTip: +((ENG.SWORD_TIP - ENG.SWORD_PIVOT) * sw.len).toFixed(6),
-      sideA: +side(hA, yawA).toFixed(3), sideB: +side(hB, yawB).toFixed(3),
-      flip: +Math.hypot(hA.x - hB.x, hA.z - hB.z).toFixed(2)
+      flip: +Math.hypot(hA.x - hB.x, hA.z - hB.z).toFixed(2),
+      lowA: lowestButt(hA), lowB: lowestButt(hB)
     };
 
-    /* ── 第二下改成「在螢幕上比角度」（v1.197）────────────────────────
-       使用者：「目前覺得不夠直覺不能如想像的砍」→「是兩下很難決定切的角度」。
-       量的是那支純函式 `swordPoint` 本身（不跑模擬）：造一條「從鏡頭指著 P」的射線
-       餵進去，P 落在那面垂直平面上時，算出來的第二點就該**正好是 P**。
-       押死的東西沒有一個是隨機的，所以這幾條是規則型、永遠不會飄。 */
-    const yawT = ENG.cam.yaw;
-    const uxT = -Math.sin(yawT), uzT = Math.cos(yawT);      // 平面內的水平軸
-    /* 平面上的一點：從錨點沿「水平軸 × s」走 L·cosθ、再往上 L·sinθ */
-    const onPlane = (o, L, thDeg, s) => {
-      const th = thDeg * Math.PI / 180, d = L * Math.cos(th);
-      return { x: o.x + uxT * d * s, y: o.y + L * Math.sin(th), z: o.z + uzT * d * s };
-    };
-    /* 一條真的從鏡頭位置指過去的射線（鏡頭在旋轉中心的 (cos yaw, sin yaw) 方向上，
-       見 engine.js 的 updateCamera） */
-    const rayTo = (P, yw) => {
-      const o = { x: Math.cos(yw) * 200, y: 120, z: Math.sin(yw) * 200 };
-      const d = { x: P.x - o.x, y: P.y - o.y, z: P.z - o.z };
-      const l = Math.hypot(d.x, d.y, d.z);
-      return { ox: o.x, oy: o.y, oz: o.z, dx: d.x / l, dy: d.y / l, dz: d.z / l };
-    };
-    const dist3 = (P, Q) => Math.hypot(P.x - Q.x, P.y - Q.y, P.z - Q.z);
-    const A1 = { x: p1.x, y: p1.y, z: p1.z };
-    /* 名字不能叫 draw：那是遊戲層的全域函式，這一段前面就叫過了（const 會遮住它） */
-    const drawTo = (o, L, thDeg, s) =>
-      swordPoint(rayTo(onPlane(o, L, thDeg, s), yawT), o, yawT);
-    /* ① 比 0°（游標跟第一點等高）→ 第二點跟第一點等高；
-       ② 比 ±35° → 第二點的高度 ＝ y1 ± L·sin35（期望值用常數算出來，不寫死數字）。 */
-    const L0 = 40, th0 = 35;
-    const flatP = drawTo(A1, L0, 0, 1);
-    const upP = drawTo(A1, L0, th0, 1), dnP = drawTo(A1, L0, -th0, 1);
-    const angled = {
-      flatDy: Math.abs(flatP.y - A1.y),
-      up: upP.y - A1.y, dn: dnP.y - A1.y,
-      want: L0 * Math.sin(th0 * Math.PI / 180),
-      /* 兩點的**水平**距離一上一下要一樣（＝ L·cos35）：對稱就是從這裡來的 */
-      upD: Math.hypot(upP.x - A1.x, upP.z - A1.z),
-      dnD: Math.hypot(dnP.x - A1.x, dnP.z - A1.z)
-    };
-    /* ③ 同一條射線、鏡頭轉 90°：那面平面跟著轉，算出來的第二點也跟著轉，
-       而且兩個都**落在各自的平面上**（(P − 第一點) · 法線 ＝ 0）。 */
-    const rFix = rayTo(onPlane(A1, L0, 20, 1), yawT);
-    const yawB2 = yawT + Math.PI / 2;
-    const turnA = swordPoint(rFix, A1, yawT), turnB = swordPoint(rFix, A1, yawB2);
-    const onNrm = (P, yw) =>
-      Math.abs((P.x - A1.x) * Math.cos(yw) + (P.z - A1.z) * Math.sin(yw));
-    const turn = { a: onNrm(turnA, yawT), b: onNrm(turnB, yawB2), moved: dist3(turnA, turnB) };
-    /* ④ 夾：比 80° 會被夾成 SW_TH_MAX；而且**又長又陡的那一下夾完樞紐還解得出來**
-       （不掉進「樞紐退到中點」那條退化分支）——驗的就是退化分支不成立的那個性質：
-       樞紐到兩點的 3D 距離都等於攻擊點半徑。線長 200、比 80° 是最極端的一下。 */
-    const steepP = drawTo(A1, 200, 80, 1);
-    const steepL = dist3(steepP, A1);
-    aim = null; swords = null;
-    clickB(); useTool({ kind: 'sword', point: steepP });
-    const ss = swords[0];
-    const steep = {
-      th: Math.asin((steepP.y - A1.y) / steepL) * 180 / Math.PI,
-      thMax: SW_TH_MAX * 180 / Math.PI,
-      L: steepL,
-      /* 夾完的線長上限：L ≤ SW_LEN_MAX × hitK × 2cosθ ÷ SW_NEED_PAD（見 swordPoint） */
-      lMax: SW_LEN_MAX * (ENG.SWORD_HIT - ENG.SWORD_PIVOT) * 2 *
-            Math.cos(SW_TH_MAX) / SW_NEED_PAD,
-      lenMax: SW_LEN_MAX,                       // 刃長的上限，給下面那條比對用
-      r1: Math.hypot(p1.x - ss.x, p1.y - ss.y, p1.z - ss.z),
-      r2: Math.hypot(steepP.x - ss.x, steepP.y - ss.y, steepP.z - ss.z),
-      rhit: ss.rhit, len: ss.len
-    };
-    /* ⑤ **上往下砍與下往上砍完全對稱**（使用者：「我要的是能上往下砍 也能下往上砍」）。
-       h1 恆為 0（樞紐跟第一點同高），所以 ±θ 只有第二點的高度一上一下，
-       刃長、樞紐位置、傾角、掃過的角度應該一模一樣。 */
-    const swing = P => {
+    /* ── 一路往下劈到垂直：舊幾何解不出來的那幾刀（v1.202）────────────────
+       舊做法的樞紐跟第一點同高、離兩點等距（兩個圓的交點），兩點愈接近垂直疊在一起
+       就愈解不出來，所以 v1.197 得夾一個 ±60° 的角度上限。新做法的條件只剩
+       「攻擊點半徑 ≥ 兩點距離的一半」，跟兩點怎麼擺完全無關——這裡就從第一點的正上方
+       一路試到正下方（連垂直的那兩刀都試），每一刀都要**不掉進退化分支**
+       （樞紐到兩點的 3D 距離都等於攻擊點半徑）、平面都通過鏡頭、劍柄都在地面以上。 */
+    /* 第二點一律是**真實表面位置**（點到哪就是哪），所以往上那幾刀第二點在建築上、
+       往下那幾刀第二點在地面上——水平距離愈短，那一刀就愈陡，`h: 2` 已經是
+       「幾乎正下方」＝ 垂直下劈（舊幾何在 ±60° 就解不出來了）。 */
+    const steepCase = [
+      { n: '往上 緩', up: 6, h: 22 }, { n: '往上 中', up: 16, h: 14 },
+      { n: '往上 陡', up: 24, h: 6 }, { n: '往上 幾乎垂直', up: 26, h: 2 },
+      { n: '往下 緩', up: 0, h: 22 }, { n: '往下 中', up: 0, h: 10 },
+      { n: '往下 陡', up: 0, h: 5 }, { n: '往下 幾乎垂直', up: 0, h: 2 }
+    ];
+    const steep = [];
+    for (const c of steepCase) {
+      const hx = p2.x - p1.x, hz = p2.z - p1.z, hl = Math.hypot(hx, hz) || 1;
+      /* up ＞ 0 ＝ 點在建築更高處（第二點的高度就是那裡）；up ＝ 0 ＝ 點地面 */
+      const P = { x: p1.x + hx / hl * c.h, y: c.up ? p1.y + c.up : 0, z: p1.z + hz / hl * c.h };
       aim = null; swords = null;
-      clickB(); useTool({ kind: 'sword', point: P });
+      clickB();
+      useTool({ kind: c.up ? 'block' : 'ground', point: new THREE.Vector3(P.x, P.y, P.z),
+                dir: new THREE.Vector3(0, -1, 0) });
       const w = swords[0];
-      return { len: w.len, rhit: w.rhit, span: w.span, py: w.y, x: w.x, z: w.z,
-               tilt: Math.acos(Math.min(1, Math.abs(w.ny))) * 180 / Math.PI };
-    };
-    const sUp = swing(upP), sDn = swing(dnP);
-    const mirror = {
-      len: Math.abs(sUp.len - sDn.len), rhit: Math.abs(sUp.rhit - sDn.rhit),
-      span: Math.abs(sUp.span - sDn.span), tilt: Math.abs(sUp.tilt - sDn.tilt),
-      pivot: Math.hypot(sUp.x - sDn.x, sUp.z - sDn.z),
-      py: Math.abs(sUp.py - p1.y) + Math.abs(sDn.py - p1.y),
-      tiltA: sUp.tilt
-    };
-    /* ⑥ 第一下點**地面**、往上比：樞紐留在地面（＝第一點的高度），不會跟著第二點
-       飄到空中。v1.196 以前的規則在這一格取的是第二點的高度，往下比時手還會埋到地下。 */
-    const G1 = { x: 30, y: 0, z: 30 };
-    const gUp = drawTo(G1, L0, th0, 1);
-    aim = null; swords = null;
-    clickG({ x: G1.x, z: G1.z }); useTool({ kind: 'sword', point: gUp });
-    const gnd = { py: swords[0].y, y2: gUp.y, tilt: Math.acos(Math.min(1,
-      Math.abs(swords[0].ny))) * 180 / Math.PI };
+      const ey = ENG.camEye();
+      /* 這一刀有多陡：兩點連線跟水平面的夾角（＝ 玩家看到的那條線的傾斜） */
+      const dy = P.y - p1.y, dh = Math.hypot(P.x - p1.x, P.z - p1.z);
+      steep.push({ n: c.n, deg: +(Math.atan2(dy, dh) * 180 / Math.PI).toFixed(1),
+        r1: Math.hypot(p1.x - w.x, p1.y - w.y, p1.z - w.z),
+        r2: Math.hypot(P.x - w.x, P.y - w.y, P.z - w.z),
+        rhit: w.rhit, len: w.len,
+        eyeOff: Math.abs((ey.x - w.x) * w.nx + (ey.y - w.y) * w.ny + (ey.z - w.z) * w.nz),
+        low: lowestButt(w), y2: +P.y.toFixed(2) });
+    }
 
     ENG.shake = oShake;
     swords = null; aim = null; tool = 'hammer'; running = true;
-    return { both, kept, shot, geo, before, midSet, cut: cutY.length, lives, ring, markS, markG,
-             angled, turn, steep, mirror, gnd,
-             lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, slant, shakes: shakeN, wind,
+    return { both, shot, geo, before, midSet, cut: cutY.length, lives, ring, markS, markG,
+             steep,
+             lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, shakes: shakeN, wind,
              phs: phs.filter((p, i) => i === 0 || p !== phs[i - 1]).join('→'),
              tipErr, tipEdgeErr, tipEdge: tEdge, tipPart: ti, tipPlane, rootErr,
-             fadeLog, gone, keep, wide, flat, twoB, hand };
+             fadeLog, gone, keep, wide, twoB, hand };
   });
-  ok('兩下都點地面照樣揮，而且是貼著地面水平橫掃（v1.164 不再限定要點建築）',
-     swd.both.n === 1 && swd.both.y === 0 && swd.both.tilt < 0.01 &&
-     !swd.both.aim && swd.both.toast === '',
-     '揮出 ' + swd.both.n + ' 把、樞紐高度 ' + swd.both.y + '、揮動平面傾 ' +
-     swd.both.tilt + '°、瞄準點收掉 ' + !swd.both.aim +
-     '、沒有提示 ' + (swd.both.toast === '' ? 'true' : '「' + swd.both.toast + '」'));
-  /* v1.197 起這一條就是「＝**第一下**點到的高度」（第二下不再點任何表面，
-     所以「點在建築上那一下」與「第一下」收斂成同一句）。 */
-  ok('劍柄旋轉點的高度 ＝ 第一下點到的那個高度',
-     Math.abs(swd.kept.y - swd.geo.clickY) < 0.01 &&
-     Math.abs(swd.shot.y - swd.geo.clickY) < 1e-6,
-     '點在 ' + swd.geo.clickY.toFixed(2) + ' 高，劍柄旋轉點 ' + swd.shot.y.toFixed(2));
+  ok('兩下都點地面照樣揮，缺口就是地面上那兩點的連線（v1.164 不再限定要點建築）',
+     swd.both.n === 1 && !swd.both.aim && swd.both.toast === '' &&
+     swd.both.eyeOff < 1e-6 && swd.both.low > 0,
+     '揮出 ' + swd.both.n + ' 把、瞄準點收掉 ' + !swd.both.aim +
+     '、沒有提示 ' + (swd.both.toast === '' ? 'true' : '「' + swd.both.toast + '」') +
+     '；平面離鏡頭 ' + swd.both.eyeOff.toExponential(1) +
+     '、樞紐高 ' + swd.both.y + '、整趟劍首最低 ' + swd.both.low);
+  /* ── v1.202 的本體（使用者：「以劍柄在攝影機位置去找一點 做劍柄揮的中心」）──────
+     **揮動平面通過鏡頭**。那兩點本來就在平面上，所以只要鏡頭也在，從鏡頭看過去
+     刃掃過的整片就收成一條線——這一條配上下面「每一塊離平面都在一個刃寬內」，
+     就把「所見即所砍」釘死了（不必真的做螢幕投影）。
+     另外驗兩個解裡取的是**靠鏡頭**那一個：另一解是它對兩點中點的鏡射。 */
+  ok('揮動平面通過鏡頭，而且劍柄取的是靠鏡頭那一側的解',
+     swd.geo.eyeOff < 1e-6 && Math.abs(swd.geo.nLen - 1) < 1e-9 &&
+     swd.geo.dNear < swd.geo.dFar - 1,
+     '鏡頭離揮動平面 ' + swd.geo.eyeOff.toExponential(1) +
+     '（法線長 ' + swd.geo.nLen.toFixed(6) + '）；劍柄離鏡頭 ' + swd.geo.dNear.toFixed(1) +
+     '，另一個解 ' + swd.geo.dFar.toFixed(1));
+  /* 使用者：「不要劍被埋入地下」。兩點都在地面上（點到哪就是哪），而靠鏡頭那一解
+     會被鏡頭的高度拉到半空，所以整趟揮下來劍首底端都在地面以上。
+     劍首的位置從造型表算（lowEdge），不寫死。 */
+  ok('劍不會埋進地裡：整趟揮擊劍首底端都在地面以上',
+     swd.geo.low > 0 && swd.twoB.low > 0 && swd.hand.lowA > 0 && swd.hand.lowB > 0,
+     '第一點建築→第二點地面那一刀 ' + swd.geo.low + '；兩下都建築 ' + swd.twoB.low +
+     '；鏡頭兩個方位 ' + swd.hand.lowA + ' / ' + swd.hand.lowB);
   /* v1.196：第一點的標記浮到空間中。兩件事一起驗——大劍那兩圈畫在點到的高度上、
      正對鏡頭、畫在最上層；共用同一組環的其餘五把（拿保齡球當對照）完全沒被改到。 */
   ok('第一點的標記畫在點到的那個高度上、正對鏡頭、不被牆擋（其餘五把照舊貼地）',
@@ -14333,48 +14299,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      swd.markG.every(m => m.y < 1 && !m.face && !m.top),
      '大劍（點在 ' + swd.geo.clickY.toFixed(2) + ' 高）' + JSON.stringify(swd.markS) +
      '；保齡球 ' + JSON.stringify(swd.markG));
-  /* ── 第二下改成「在螢幕上比角度」（v1.197）───────────────────────────
-     使用者：「是兩下很難決定切的角度」。四條規則型（押死、不跑模擬，見上面那段）。 */
-  ok('螢幕上比 0° 就等高、比 ±θ 第二點就高／低 L·sinθ（跟游標停在哪個表面無關）',
-     swd.angled.flatDy < 1e-9 &&
-     Math.abs(swd.angled.up - swd.angled.want) < 1e-9 &&
-     Math.abs(swd.angled.dn + swd.angled.want) < 1e-9 &&
-     Math.abs(swd.angled.upD - swd.angled.dnD) < 1e-9,
-     '比 0° 高度差 ' + swd.angled.flatDy.toExponential(1) + '；比 ±35°（線長 40）→ ' +
-     swd.angled.up.toFixed(3) + ' / ' + swd.angled.dn.toFixed(3) +
-     '（期望 ±' + swd.angled.want.toFixed(3) + '），水平距離 ' +
-     swd.angled.upD.toFixed(3) + ' / ' + swd.angled.dnD.toFixed(3));
-  ok('第二點一定落在「通過第一點、正對鏡頭」的那面垂直平面上，鏡頭轉它就跟著轉',
-     swd.turn.a < 1e-9 && swd.turn.b < 1e-9 && swd.turn.moved > 1,
-     '離平面 ' + swd.turn.a.toExponential(1) + ' / ' + swd.turn.b.toExponential(1) +
-     '；鏡頭轉 90° 之後同一條射線算出來的點差了 ' + swd.turn.moved.toFixed(1));
-  /* 夾兩次（角度 ＋ 線長）的目的只有一個：樞紐永遠解得出來。所以驗的不是「夾到幾」，
-     而是**退化分支不成立的那個性質**——樞紐到兩點的 3D 距離都等於攻擊點半徑。 */
-  ok('比得又長又陡會被夾住（角度 ±SW_TH_MAX、線長跟著夾），夾完樞紐照樣解得出來',
-     Math.abs(swd.steep.th - swd.steep.thMax) < 1e-6 &&
-     swd.steep.L <= swd.steep.lMax + 1e-6 && swd.steep.len <= swd.steep.lenMax + 1e-6 &&
-     Math.abs(swd.steep.r1 - swd.steep.rhit) < 0.01 &&
-     Math.abs(swd.steep.r2 - swd.steep.rhit) < 0.01,
-     '比 80°／線長 200 → 夾成 ' + swd.steep.th.toFixed(1) + '°（上限 ' +
-     swd.steep.thMax.toFixed(0) + '°）、線長 ' + swd.steep.L.toFixed(2) + '（上限 ' +
-     swd.steep.lMax.toFixed(2) + '）、刃長 ' + swd.steep.len.toFixed(2) +
-     '；樞紐到兩點 ' + swd.steep.r1.toFixed(2) + ' / ' + swd.steep.r2.toFixed(2) +
-     '（攻擊點半徑 ' + swd.steep.rhit.toFixed(2) + '）');
-  /* 使用者：「我要的是能上往下砍 也能下往上砍」。兩個方向都砍得出來是一回事，
-     **對稱**是另一回事——樞紐跟第一點同高（h1 恆為 0）才有這個性質。 */
-  ok('上往下砍與下往上砍完全對稱（同一個手勢，只有第二點一上一下）',
-     swd.mirror.len < 1e-9 && swd.mirror.rhit < 1e-9 && swd.mirror.span < 1e-9 &&
-     swd.mirror.tilt < 1e-9 && swd.mirror.pivot < 1e-9 && swd.mirror.py < 1e-6 &&
-     swd.mirror.tiltA > 1,
-     '±35° 兩刀的刃長／攻擊點半徑／掃過的角度／傾角差 ' +
-     [swd.mirror.len, swd.mirror.rhit, swd.mirror.span, swd.mirror.tilt]
-       .map(v => v.toExponential(0)).join(' / ') +
-     '、樞紐差 ' + swd.mirror.pivot.toExponential(0) +
-     '（兩刀的平面都傾 ' + swd.mirror.tiltA.toFixed(1) + '°，不是水平的那種退化）');
-  ok('第一下點地面、往上比：樞紐留在地面，不會跟著第二點飄到空中',
-     swd.gnd.py === 0 && swd.gnd.y2 > 5 && swd.gnd.tilt > 1,
-     '第二點浮在 ' + swd.gnd.y2.toFixed(2) + ' 高，樞紐 ' + swd.gnd.py +
-     '、平面傾 ' + swd.gnd.tilt.toFixed(1) + '°');
+  /* ── 方向自由度（v1.202）───────────────────────────────────────────
+     使用者：「重點是操作能不能 依想切的方向進行」。舊幾何的樞紐跟第一點同高，
+     兩點愈接近垂直就愈解不出來，所以 v1.197 得夾 ±60°；新幾何的條件只剩
+     「攻擊點半徑 ≥ 兩點距離的一半」，跟方向無關，所以**連垂直上劈／垂直下劈都成立**。
+     八個方向一條測試，每一刀都驗三件事：沒掉進退化分支、平面通過鏡頭、劍柄不入地。 */
+  {
+    const bad = swd.steep.filter(r =>
+      Math.abs(r.r1 - r.rhit) > 0.01 || Math.abs(r.r2 - r.rhit) > 0.01 ||
+      r.eyeOff > 1e-6 || r.low <= 0 || r.len > 92 + 1e-6);
+    ok('往上挑到垂直、往下劈到垂直都砍得出來（沒有角度上限了）',
+       bad.length === 0 && swd.steep.length === 8,
+       swd.steep.map(r => r.n + '（' + r.deg + '°）：刃長 ' + r.len.toFixed(1) +
+         '、樞紐到兩點 ' + r.r1.toFixed(1) + '/' + r.r2.toFixed(1) +
+         '、劍首最低 ' + r.low).join('；'));
+  }
   /* 樞紐在「點到建築那一下」的高度上、離兩點的 **3D** 距離都是「樞紐到攻擊點」
      ＝ 攻擊點起手落在第一點、收手落在第二點（v1.169 之前落在刃尖上，見下面
      「攻擊點在刃尖裡面一小段」那一條）。兩點在刃長之內時誤差只會是浮點的量級。 */
@@ -14402,22 +14341,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (swd.shot.span * 180 / Math.PI).toFixed(1) + '°，超過 ' +
      (swd.shot.over * 180 / Math.PI).toFixed(1) + '°）；最快的一步落在揮擊的 ' +
      (swd.wind.fast * 100).toFixed(0) + '% 處');
-  /* 「砍成斜的」：點在建築上那一點高、地面那一點低，揮動平面就是斜的，
-     所以先切到的比後切到的高。兩個都驗：平面的傾角，以及真的切下來的那些的高度。 */
-  /* 兩件事一起驗，兩件都不需要經驗門檻：
-     ① 缺口裡的刃面**從點在建築上那一下的高度掉到接近地面**——落差至少是點擊高度的
-        一半（水平的一刀落差是 0，所以這一條只有斜的才過得了）；
-     ② 每一塊離刃面的垂直距離都在「一個刃寬換算成垂直」之內，也就是缺口真的貼著那個斜面。 */
-  ok('點建築的高、點地面的低 → 砍出來是斜的（不是水平的一條）',
-     swd.geo.tilt > 5 && swd.slant.hi - swd.slant.lo > swd.geo.clickY * 0.5 &&
-     swd.slant.vOff <= swd.slant.vLim + 1e-6,
-     '揮動平面傾 ' + swd.geo.tilt.toFixed(1) + '°；缺口裡的刃面從 ' +
-     swd.slant.hi.toFixed(2) + ' 高掉到 ' + swd.slant.lo.toFixed(2) +
-     '（落差 ' + (swd.slant.hi - swd.slant.lo).toFixed(2) + '，點擊高度 ' +
-     swd.geo.clickY.toFixed(2) + '）；離刃面最遠的一塊（垂直）' + swd.slant.vOff.toFixed(2) +
-     '，上限 ' + swd.slant.vLim.toFixed(2));
   /* 刃掃過的那一片才削得掉：被刃切到的每一塊，被切的那一刻都在「揮動平面 ± 一個刃寬」裡。
-     量的是**被切的那一刻**——打飛之後它們會往上飛，量飛完的位置就分不出刃切與垮塌。 */
+     量的是**被切的那一刻**——打飛之後它們會往上飛，量飛完的位置就分不出刃切與垮塌。
+     **這一條就是「所見即所砍」的另一半**：平面通過鏡頭（上面那一條）＋ 每一塊都貼著
+     那個平面 ⇒ 缺口投影到螢幕上就是貼著你點的那兩點連線的一條（實測 95% 落在 30px 內，
+     線長 220～421px，見 開發筆記〈v1.202〉）。 */
   ok('削掉的是刃掃過的那一片（每一塊被切時都在揮動平面 ± 一個刃寬內）',
      swd.cut > 200 && swd.offMax <= swd.shot.band + 1e-6,
      '削掉 ' + swd.cut + ' 塊、離平面最遠的一塊 ' + swd.offMax.toFixed(3) +
@@ -14465,13 +14393,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      swd.hand.pivot < swd.hand.low && swd.hand.gap > 0.05,
      '樞紐 ' + swd.hand.pivot + '、造型最低的下緣 ' + swd.hand.low + '（中間空 ' +
      swd.hand.gap + ' 全長 ＝ 握劍的手，沒畫出來）');
-  /* v1.169 使用者：「劍柄盡量在鏡頭方向(看起來像玩家揮劍)」。同樣兩點、鏡頭轉到對面
-     再揮一次，樞紐要跟著換到另一邊——兩個交點對稱於兩點的連線，所以「跟著鏡頭換邊」
-     就等於「一直選靠鏡頭那一個」。 */
+  /* v1.169 使用者：「劍柄盡量在鏡頭方向(看起來像玩家揮劍)」，v1.202 變成
+     「以劍柄在攝影機位置去找一點」。同樣兩點、鏡頭轉到對面再揮一次，樞紐要跟著換邊
+     ——兩個解對兩點中點鏡射，所以「跟著鏡頭換邊」就等於「一直選靠鏡頭那一個」。 */
   ok('劍柄（旋轉圓心）落在鏡頭那一側，鏡頭轉到對面就跟著換邊',
-     swd.hand.sideA > 0 && swd.hand.sideB > 0 && swd.hand.flip > 1,
-     '鏡頭 0.4 rad 那一刀樞紐在鏡頭側（' + swd.hand.sideA + '）、轉到對面那一刀也在鏡頭側（' +
-     swd.hand.sideB + '），兩個樞紐相距 ' + swd.hand.flip + ' 單位');
+     swd.hand.flip > 1,
+     '鏡頭 0.4 rad 與轉到對面那兩刀，樞紐相距 ' + swd.hand.flip + ' 單位');
   ok('揮完原地化成金光淡掉，最後自己收乾淨',
      swd.fadeLog[0][0] === 'hold' && swd.gone &&
      swd.fadeLog.some(r => r[0] === 'fade' && r[1] < 0.6 && r[2] > 0.4),
@@ -14480,11 +14407,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('同時最多三把（第四把把最早那把擠掉）', swd.keep === 3, '場上 ' + swd.keep + ' 把');
   ok('兩點比刃還開時：刃長頂到上限、樞紐退到中點（掃到接近 180 度）',
      Math.abs(swd.wide.len - 92) < 1e-6 && swd.wide.span > Math.PI * 0.92,
-     '刃長 ' + swd.wide.len + '、掃過 ' + (swd.wide.span * 180 / Math.PI).toFixed(1) + '°');
-  /* 斜不斜完全由那兩點的高低差決定：兩下都點在同高度的建築上，平面就是水平的 */
-  ok('兩下點在同高度的建築上 → 平面回到水平（缺口是水平的一條）',
-     swd.flat.tilt < 0.01 && Math.abs(swd.flat.y - swd.geo.clickY) < 1e-6,
-     '揮動平面傾 ' + swd.flat.tilt.toFixed(3) + '°、樞紐高度 ' + swd.flat.y.toFixed(2));
+     '刃長 ' + swd.wide.len + '、掃過 ' + (swd.wide.span * 180 / Math.PI).toFixed(1) +
+     '°（門檻＝兩點距離超過 ' + swd.wide.need.toFixed(1) + '）');
   /* v1.163 使用者：「大劍也要如果剛好碰到小人&吉祥物等動物 也要產生效果」。
      兩件事一起驗：掃到的被撞飛（而且掃不到的三種情形都不動），以及**一塊積木都沒切到
      的那一刀照樣把人撞飛**——本來只有 afterHit 會震倒「削掉的那堆積木附近」的人，
@@ -14495,22 +14419,49 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      swd.lives.sp > 3 && swd.lives.up > 0,
      '刃面上的人被撞飛（水平 ' + swd.lives.sp + '、抬升 ' + swd.lives.up +
      '）、吉祥物 ' + (swd.lives.mob ? '也飛了' : '沒反應') + '；樞紐正下方的（半徑不到刃根）' +
-     (swd.lives.pivot ? '飛了' : '沒動') + '、刃在 ' + swd.lives.planeY +
-     ' 高橫掃時站在正下方的 ' + (swd.lives.under ? '飛了' : '沒動'));
+     (swd.lives.pivot ? '飛了' : '沒動') + '、水平挪開 ' + swd.lives.planeY +
+     '（＝離刃面 ' + swd.lives.off + '＝四個刃寬 ' + swd.lives.band + '）的 ' +
+     (swd.lives.under ? '飛了' : '沒動'));
   ok('一塊積木都沒切到的那一刀，照樣把刃掃到的人撞飛',
      swd.lives.setSame === 1 && swd.lives.noBlock === 1,
      '第二刀削掉 ' + (swd.lives.setSame ? '0' : '不只 0') + ' 塊積木，站在刃面上的人 ' +
      (swd.lives.noBlock ? '照樣被撞飛' : '沒反應'));
-  /* v1.162 使用者：「點兩下都是建築時 就從第一點位置揮到第二點」——樞紐取**第一點**
-     的高度（原本取兩點的中間），攻擊點照樣起手落在第一點、收手落在第二點。 */
-  ok('兩下都點在建築上（高度不同）→ 樞紐用第一點的高度，從第一點揮到第二點',
-     Math.abs(swd.twoB.y - swd.geo.clickY) < 1e-6 &&
+  /* v1.162 使用者：「點兩下都是建築時 就從第一點位置揮到第二點」。v1.202 之後
+     這一格跟其他點法走**完全同一條路**（兩點都是點到的表面位置），所以驗的是
+     同一組性質：起手落第一點、收手落第二點，平面通過鏡頭。 */
+  ok('兩下都點在建築上（高度不同）→ 一樣是從第一點揮到第二點',
      Math.abs(swd.twoB.r3d1 - swd.twoB.r1) < 0.01 &&
-     Math.abs(swd.twoB.r3d2 - swd.twoB.r1) < 0.01,
+     Math.abs(swd.twoB.r3d2 - swd.twoB.r1) < 0.01 &&
+     swd.twoB.eyeOff < 1e-6,
      '第一點 ' + swd.geo.clickY.toFixed(2) + ' 高、第二點 ' +
      (swd.geo.clickY * 0.5).toFixed(2) + ' 高，樞紐 ' + swd.twoB.y.toFixed(2) +
      '；樞紐到兩點 ' + swd.twoB.r3d1.toFixed(2) + '／' + swd.twoB.r3d2.toFixed(2) +
-     '（攻擊點半徑 ' + swd.twoB.r1.toFixed(2) + '）');
+     '（攻擊點半徑 ' + swd.twoB.r1.toFixed(2) + '）、平面離鏡頭 ' +
+     swd.twoB.eyeOff.toExponential(1));
+
+  /* ── 點到天空那一下無效（v1.202 使用者定案）────────────────────────────
+     這一條走**真的滑鼠事件**，不是直接叫 useTool：要驗的就是 onUp 那條路
+     ——大劍的第二下已經沒有繞過 pick 的特例了，打不到東西就整下作廢、
+     第一點留著等你重點（v1.197 那一版點天空是算數的，因為它不走 pick）。 */
+  const sky = await page.evaluate(() => {
+    tool = 'sword'; aim = null; swords = null;
+    const b = blocks.find(q => q.st === 3);
+    useTool({ kind: 'block', point: new THREE.Vector3(b.x, b.y, b.z),
+              dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
+    /* 天空的螢幕座標：畫面上緣一定看得到天（取景永遠把建築擺在下半部） */
+    return { aimed: !!aim, hitSky: ENG.pick(window.innerWidth - 60, 40, 'skip') === null };
+  });
+  await page.mouse.move(VIEW.width - 60, 40);
+  await page.mouse.down(); await page.mouse.up();
+  const skyAfter = await page.evaluate(() => {
+    const r = { aim: !!aim, n: swords ? swords.length : 0 };
+    swords = null; aim = null; tool = 'hammer';
+    return r;
+  });
+  ok('第二下點到天空那一下無效：不揮、第一點留著',
+     sky.aimed && sky.hitSky && skyAfter.aim && skyAfter.n === 0,
+     '第一下記住了 ' + sky.aimed + '、那個位置確實是天空 ' + sky.hitSky +
+     '；點下去之後 揮出 ' + skyAfter.n + ' 把、第一點還在 ' + skyAfter.aim);
 
   /* ══════════ 幽浮 ══════════
      使用者指定的順序就是這一段的骨架：
