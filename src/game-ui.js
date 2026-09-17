@@ -283,9 +283,19 @@ let drag = null;
    留一倍餘裕；混用滑鼠與觸控的機器最多就是「剛戳完螢幕的那一下滑鼠點擊不算」。 */
 const GHOST_MS = 700;
 let lastTouch = 0;
+
+/* 一動手玩，左下的設定面板就自己收下去（v1.201，使用者：「設定面版在遊玩時自動縮下去
+   （像是破壞工具選單那樣）」，見 開發筆記〈一動手玩，設定面板就收下去〉）。
+   「動手玩」＝在畫布上按下去（點建築、拖曳轉視角、雙指）、滾輪縮放、按鏡頭那幾顆鍵——
+   三個入口都在畫布／鍵盤那一側，所以**在面板裡怎麼點都不會收**（使用者指定的：
+   三檔按鈕常常要連調好幾項，點一下就收等於每項都要重開）。要它回來就按 ⚙ 設定。
+   收下去就是加 .hide，跟 ⚙ 那顆鈕同一個 class（CSS 那條 transition 讓它滑下去）。 */
+function hidePanelOnPlay() { $('panel').classList.add('hide'); }
+
 function onDown(e) {
   if (e.touches) lastTouch = performance.now();
   else if (performance.now() - lastTouch < GHOST_MS) return;
+  hidePanelOnPlay();
   const p = e.touches ? e.touches[0] : e;
   drag = { x: p.clientX, y: p.clientY, x0: p.clientX, y0: p.clientY, moved: 0, t: performance.now(), n: e.touches ? e.touches.length : 1, pinch: 0 };
   if (e.touches && e.touches.length === 2)
@@ -392,6 +402,12 @@ function onKey(e) {
      一起擋掉的話「剛按完設定就按不動鏡頭」反而莫名其妙。 */
   const tag = e.target && e.target.tagName;
   if (tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'INPUT') return;
+  /* 動鏡頭也算動手玩（見 hidePanelOnPlay）。擺在上面那條防線後面：在下拉選單或
+     貼上框裡打字本來就不算動鏡頭，當然也不該把面板收掉。只認 keydown——
+     放開那一下再收一次沒意義（面板早收了），只會在「按著 W 又去開面板」時打架。
+     按著 Ctrl／⌘／Alt 的不算：那些是瀏覽器的快捷鍵（Ctrl＋C 是複製，下面那段
+     也是這樣把它跟「C 復位」分開的），沒有人是在動鏡頭。 */
+  if (e.type === 'keydown' && !e.ctrlKey && !e.metaKey && !e.altKey) hidePanelOnPlay();
   /* C 是按一下就做完的事，不進 keyDown。Ctrl／⌘＋C 是複製，不能被當成復位；
      按著不放時 keydown 會一直重送（e.repeat），也只復位一次。 */
   if (e.code === RESET_KEY) {
@@ -794,7 +810,7 @@ function boot() {
   cv.addEventListener('touchstart', onDown, { passive: false });
   cv.addEventListener('touchmove', onMove, { passive: false });
   cv.addEventListener('touchend', onUp);
-  cv.addEventListener('wheel', e => { ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9); e.preventDefault(); }, { passive: false });
+  cv.addEventListener('wheel', e => { hidePanelOnPlay(); ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9); e.preventDefault(); }, { passive: false });
   cv.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKey);

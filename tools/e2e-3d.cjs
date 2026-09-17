@@ -23797,6 +23797,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ══════════ 控制項 ══════════ */
   SEC: { if (!(await head('控制項', T_COMMIT))) break SEC;
   await page.evaluate(() => { running = false; muted = true; });
+
+  /* 一動手玩，設定面板就自己收下去（v1.201）。直接呼叫 onDown／onKey 驗規則本身，
+     不真的在畫布上點——那一下會用掉道具、把這一段後面要量的場面打壞。
+     這一段也是後面那些條目的前置：前面幾段點過畫布，面板這時本來就收著，而
+     page.click／check 會做命中測試，收起來的面板 pointer-events:none 一定點不到。 */
+  const autoHide = await page.evaluate(() => {
+    const p = document.getElementById('panel');
+    const hidden = () => p.classList.contains('hide');
+    lastTouch = 0;                       // 免得被前面某一段的觸控事件當成相容事件擋掉
+    p.classList.remove('hide');
+    onDown({ clientX: 300, clientY: 300 });          // 在畫布上按下去＝點建築／拖曳轉視角
+    const byPointer = hidden();
+    drag = null;                                     // onDown 記下的拖曳狀態還回去
+    document.getElementById('panelBtn').click();     // ⚙ 設定：叫得回來
+    const byBtn = hidden();
+    onKey({ type: 'keydown', code: 'KeyW', target: document.body });   // 動鏡頭也算動手玩
+    const byKey = hidden();
+    keyDown.KeyW = false;                            // 不還回去鏡頭會一直往前飄
+    p.classList.remove('hide');
+    onKey({ type: 'keydown', code: 'KeyW', target: { tagName: 'TEXTAREA' } });  // 打字不算
+    const byTyping = hidden();
+    return { byPointer, byBtn, byKey, byTyping, open: !hidden() };
+  });
+  ok('動手玩就把設定面板收下去', autoHide.byPointer, '點畫布之後 #panel 掛上 .hide');
+  ok('按 ⚙ 設定叫得回來', !autoHide.byBtn);
+  ok('動鏡頭（WASD）也算動手玩', autoHide.byKey);
+  ok('在輸入框打字不算，面板留著', !autoHide.byTyping);
+  ok('面板留在打開的狀態（後面幾條要真的點得到它）', autoHide.open);
+
   await page.evaluate(() => { running = true; });
   await page.selectOption('#shape', String(await page.evaluate(() => SHAPES.findIndex(s => s.n === '倫敦眼摩天輪'))));
   await page.waitForTimeout(400);
