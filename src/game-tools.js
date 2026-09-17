@@ -3693,6 +3693,13 @@ function implode(m, dt) {
    火星走 hot（不透明材質）而不是塵霧——塵霧那顆固定 50% 透明，
    火球混在裡面只會像幾片橘色玻璃，飛塊一擋就完全看不到了。 */
 const HOT_MAX = 220;
+/* 一發爆炸自己的天花板（v1.200）。火星改成「多而細」之後，一發核彈要 350 顆出頭，
+   常態池 220 塞不下——但它是**一次性的爆量**（0.5 秒內就燒完），所以不動常態池：
+   碎料的火苗、蘑菇雲的火光那些照舊擋在 HOT_MAX − 40，只有爆炸這一支頂到這個數，
+   火星退光之後池子就回到原本的水位。
+   引擎那顆 InstancedMesh 要畫得下「這個數 ＋ 一場煙火齊射的拖線（約 500 條）」，
+   所以 MAXFIRE 同時從 960 抬到 1280（見引擎那邊）。 */
+const HOT_BURST = 560;
 /* 中央那顆火球。粒子撐不出「一整顆在發光的球」——96 顆小方塊再多也是一團碎火，
    中間該最亮的地方反而因為方塊之間有縫而透出背景。所以球本體交給實體球殼
    （見引擎 FLASH_SHELL），粒子留著當從球裡噴出來的火星。 */
@@ -3710,27 +3717,71 @@ function spawnBlast(p, R, magic) {
      上半個球高過碎料堆，才是參考圖那顆罩在爆心上的火球。 */
   if (flashes.length >= FLASH_MAX) flashes.shift();
   flashes.push({ x: p.x, y: p.y + R * FLASH_UP, z: p.z, R, magic, t: 0, r: R * 0.34, op: 1 });
-  const n = Math.min(96, 22 + Math.round(R * 2.4));
-  for (let i = 0; i < n; i++) {
-    if (hot.length >= HOT_MAX) break;
+  /* ── 火星（v1.200 整批變細，見 開發筆記〈火星再細一級〉）──────────────
+     使用者：「爆炸類的火紅色正方塊 目前來看太粗糙了 要調整成精細一點
+     (達到其他特效水準的程度)」。舊版一發只有 48（炸彈）～96（核彈）顆、單顆
+     0.63～1.96（**比一塊積木還大**）、grow 1.25 等於每秒脹 3.8 倍、壽命又給到 1.1 秒
+     ——爆後 0.45 秒那一幀滿天都是比碎料還大的橘色紙片，而且全部擠在同一個高度
+     （舊版只在水平面上繞一圈），看起來是一串項鍊不是一顆炸開的火球。
+
+     照〈顆粒再細一級〉同一條：**顆數往上、單顆往下**；位置改成撒在球面上；
+     再分成兩批做出層次：
+       ① 火舌：貼著球面翻滾的小方塊，慢、會長大一點點——火球外緣那層火。
+       ② 火星：甩出去的**短條**（ln，跟投石機火花、煙火拖線同一個做法），
+          又細又快、冷得也快，「迸出去」的感覺全在這一批身上。
+     兩批都繞著**球心**（爆點上方 R×FLASH_UP）生在 0.5～0.98 倍半徑處：生在球裡的話
+     這些幾乎不透明的方塊會糊在球的正面，把中間最亮的地方遮成一堆橘色碎片。
+     仰角偏上半球（sin 取 −0.25～1）：往下那半本來就埋在碎料堆與地面裡，撒下去是浪費配額。 */
+  const hk = 0.8 + R * 0.055;                     // 單顆尺寸的倍率（沿用舊的算法）
+  const cy = p.y + R * FLASH_UP;                  // 球心
+  const n1 = Math.min(180, 40 + Math.round(R * 4.4));
+  for (let i = 0; i < n1; i++) {
+    if (hot.length >= HOT_BURST) break;
     const a = Math.random() * Math.PI * 2;
-    const u = Math.pow(Math.random(), 0.6);
-    /* 火星生在球面附近往外噴，不生在球心。生在球裡的話這些幾乎不透明的方塊
-       會整片糊在球的正面，把中間最亮的地方遮成一堆橘色碎片——
-       火球就退回「一團碎火」，正是要避開的那個樣子。 */
-    const rad = R * (0.52 + 0.46 * u);
-    const up = Math.random() * R * 0.3;
+    const ey = rr(-0.25, 1), eh = Math.sqrt(Math.max(0, 1 - ey * ey));   // 仰角的 sin／cos
+    /* u 壓向 0（次方 > 1）＝大半生在貼著球面那一圈。給平均分布的話外圈那一帶
+       跟球面同樣密，看起來是一團散開的碎火，不是「從球面燒出來」。 */
+    const u = Math.pow(Math.random(), 1.3);
+    const rad = R * (0.48 + 0.5 * u);
     /* 顏色照半徑分：貼著球面的亮黃、噴得最遠的橘。整團都給接近白的話，
        近看就只是一片奶油色，看不出是火。 */
     const core = u < 0.35;
     hot.push({
-      x: p.x + Math.cos(a) * rad, y: p.y + up * 0.6 + 0.5, z: p.z + Math.sin(a) * rad,
-      vx: Math.cos(a) * rad * 1.5, vy: 3 + up * 1.9, vz: Math.sin(a) * rad * 1.5,
+      x: p.x + Math.cos(a) * eh * rad, y: Math.max(0.4, cy + ey * rad),
+      z: p.z + Math.sin(a) * eh * rad,
+      vx: Math.cos(a) * eh * rad * 1.2, vy: 2 + ey * rad * 0.9, vz: Math.sin(a) * eh * rad * 1.2,
       rx: Math.random() * 6, ry: Math.random() * 6,
-      s: rr(0.45, 0.8) * (0.8 + R * 0.055), life: rr(0.45, 1.1),
-      g: -1.5, grow: 1.25, cool: rr(0.5, 0.9),
+      /* 單顆**連脹到最大的那一刻都要比一塊積木（邊長 1）小**——使用者嫌粗糙的就是
+         「比積木還大的火紅色方塊」。核彈那一檔是最大的：0.32×2.45 ＝ 0.78，
+         再乘上 0.48 秒的膨脹 1.06^2.88 ＝ 1.19 → 0.93，剛好壓在 1 以下（有測試在守）。 */
+      s: rr(0.15, 0.32) * hk, life: rr(0.2, 0.48),
+      g: -1.5, grow: 1.06, cool: rr(0.35, 0.7),
       cr: 1, cg: core ? rr(0.78, 0.92) : rr(0.34, 0.5), cb: core ? rr(0.3, 0.5) : rr(0.04, 0.12),
       to: magic ? [0.85, 0.12, 0.32] : [0.5, 0.12, 0.03]            // 冷成暗紅／暗橘
+    });
+  }
+  const n2 = Math.min(260, 52 + Math.round(R * 6.8));
+  for (let i = 0; i < n2; i++) {
+    if (hot.length >= HOT_BURST) break;
+    const a = Math.random() * Math.PI * 2;
+    const ey = rr(-0.2, 1), eh = Math.sqrt(Math.max(0, 1 - ey * ey));
+    /* (dx, ey, dz) 本來就是單位向量（eh = √(1−ey²)）——引擎那邊 setFromUnitVectors
+       吃的就是單位向量，不是的話整條線會歪掉（煙火那一段有測試在掃全場的 ln 粒子）。 */
+    const dx = Math.cos(a) * eh, dz = Math.sin(a) * eh;
+    const u = Math.pow(Math.random(), 1.3);       // 同上：大半貼著球面生
+    const rad = R * (0.5 + 0.48 * u);
+    const sp = R * rr(0.8, 2);                    // 甩出去的速度跟著爆炸半徑走
+    const core = u < 0.4;
+    hot.push({
+      x: p.x + dx * rad, y: Math.max(0.4, cy + ey * rad), z: p.z + dz * rad,
+      vx: dx * sp, vy: ey * sp, vz: dz * sp,
+      rx: 0, ry: 0,                               // 拉成條的那些用不到自轉（見引擎 putFire）
+      s: rr(0.07, 0.15) * hk, life: rr(0.12, 0.3),
+      g: 1.2, grow: 0.88, cool: rr(0.16, 0.36),
+      keep: 0.965,                                // 預設 0.9 會讓它原地就停住（見 stepHot）
+      cr: 1, cg: core ? rr(0.82, 0.96) : rr(0.42, 0.6), cb: core ? rr(0.4, 0.6) : rr(0.06, 0.16),
+      to: magic ? [0.85, 0.12, 0.32] : [0.55, 0.12, 0.03],
+      dx, dy: ey, dz, ln: rr(0.9, 2.1) * (0.55 + R * 0.045)
     });
   }
   /* 中央的白閃原本是幾顆放大的白色方塊，現在球本體的核心就是白熱的，
@@ -3968,7 +4019,11 @@ function stepHot(dt) {
       d.vz += (pz / pd * 30 + px / pd * 20) * dt;
       d.vy += 16 * dt;
     }
-    d.vx *= 0.9; d.vz *= 0.9;
+    /* 水平阻尼。預設 0.9 是「爆起來一團、就地停住」用的，一秒不到橫速就歸零
+       ——甩出去的那批火星（spawnBlast 的短條）自己帶一個比較鬆的 keep，
+       才飛得出爆炸半徑那麼遠。同塵霧那邊的 keep（見 spawnWind）。 */
+    const kp = d.keep === undefined ? 0.9 : d.keep;
+    d.vx *= kp; d.vz *= kp;
     d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
     if (d.y < 0.4) { d.y = 0.4; d.vy = Math.max(0, d.vy); }
     d.rx += dt * 1.6; d.ry += dt * 2.2;

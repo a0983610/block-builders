@@ -15643,6 +15643,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
     /* 5. 火苗要平順。同一幀點著上千塊，配額若從 0 起跳它們會同時湊滿一顆，
        火就變成「整片一起閃、然後一起沒有」。量 1 秒內每幀的火苗數，看谷底。 */
+    /* 爆炸自己那一發的火星先清掉（v1.200）：它從 96 顆變成 428 顆，留著的話這裡量到的
+       是「爆炸的火星在退」而不是「火苗平不平順」——兩者共用同一個 hot 陣列。
+       火星 0.5 秒就退光，它退的那半秒剛好蓋住這一條要看的前半段。 */
+    hot.length = 0;
     const hots = [];
     for (let i = 0; i < 60; i++) { step(1 / 60); hots.push(hot.length); }
     const smooth = { min: Math.min(...hots.slice(20)), max: Math.max(...hots),
@@ -18603,8 +18607,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        那個數字爆炸當下就有好幾十團，「雲是慢慢長出來的」就測不出來了。 */
     const cloudy = () => dust.filter(d => d.fade >= 3);
     const cloud0 = cloudy().length;
-    for (let i = 0; i < 12; i++) step(0.05);            // 0.6 秒
+    /* 冷卻量在 0.25 秒（v1.200 從 0.6 秒收短）：火星改細之後壽命是 0.12～0.48 秒，
+       0.6 秒時這一批已經全數退光，filter 出來是空的——那樣這條會「通過」但什麼都沒驗到。
+       後面那幾段的時間軸不動（補回剩下的 7 步就是原本的 0.6 秒）。 */
+    for (let i = 0; i < 5; i++) step(0.05);            // 0.25 秒
     const lit1 = avgG(sample.filter(d => d.life > 0));
+    for (let i = 0; i < 7; i++) step(0.05);            // 補到爆後 0.6 秒
     let peak = 0, peakY = 0, y1 = 0;
     for (let i = 0; i < 12; i++) step(0.05);            // 爆後 1.2 秒：整朵雲該長齊了
     const cloud1 = cloudy().length;
@@ -18639,8 +18647,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      nk.fire0 + ' 顆火球、' + nk.ring0 + ' 圈衝擊環');
   /* 火球會冷卻：綠色分量從亮黃(高)掉到暗紅(低)。
      只看「有沒有火球」的話，顏色一路卡在白熱也測不出來。 */
-  ok('火球會由亮黃冷成暗紅', nk.lit1 < nk.lit0 * 0.75,
-     '同一批粒子的綠分量 0.6 秒內 ' + nk.lit0.toFixed(2) + ' → ' + nk.lit1.toFixed(2));
+  ok('火球會由亮黃冷成暗紅', nk.lit1 > 0 && nk.lit1 < nk.lit0 * 0.75,
+     '同一批粒子的綠分量 0.25 秒內 ' + nk.lit0.toFixed(2) + ' → ' + nk.lit1.toFixed(2));
   /* 蘑菇雲是「長出來」的不是「跳出來」的：爆炸當下只有零星幾團，
      一秒多之後柱子與傘蓋才長齊。一次生完的話這兩個數字會一樣大。
      用比例不用絕對值（v1.123）：柱子每秒生成量從 58 顆加到 160 顆之後，
@@ -18707,15 +18715,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 6; i++) step(0.05);            // 爆後 0.75 秒：超過 FLASH_LIFE
     const left = flashes.length;
     /* 火星的分布單獨量：這一刻場上的 hot 混著蘑菇雲柱心的火光（那些本來就生在中心），
-       混在一起量不出「火星有沒有生在球面外」。直接叫一次 spawnBlast 最乾淨。 */
+       混在一起量不出「火星有沒有生在球面外」。直接叫一次 spawnBlast 最乾淨。
+       **量的是離球心的三維距離**（v1.200）：火星從 v1.200 起撒在球面上而不是
+       同一個高度繞一圈，接近正上方那幾顆的水平距離本來就接近 0——
+       「有沒有生在球心」問的是離球心多遠，不是離那條中軸多遠。門檻不動（0.45R）。 */
     hot.length = 0; flashes.length = 0; fxRings.length = 0;
     spawnBlast({ x: 0, y: 2.5, z: 0 }, 30, false);
-    const sparkMin = Math.min(...hot.map(d => Math.hypot(d.x, d.z)));
+    const cy = 2.5 + 30 * FLASH_UP;
+    const sparkMin = Math.min(...hot.map(d => Math.hypot(d.x, d.y - cy, d.z)));
+    /* 火星本身的精細度（v1.200，使用者：「爆炸類的火紅色正方塊 目前來看太粗糙了
+       要調整成精細一點(達到其他特效水準的程度)」）。三件事一起守：
+       ① 顆數夠多（舊版核彈只有 96 顆，所以每顆得畫很大）
+       ② **單顆不能比一塊積木大**——連膨脹到最大的那一刻都不行（舊版脹到 2.1）
+       ③ 一半以上是拉長的短條（投石機火花、煙火拖線同一個做法），
+          而且方向要是單位向量（不是的話引擎那邊整條會歪掉）。 */
+    const spark = { n: hot.length, line: hot.filter(d => d.ln).length,
+                    s0: Math.max(...hot.map(d => d.s)),
+                    unit: Math.max(...hot.filter(d => d.ln)
+                            .map(d => Math.abs(Math.hypot(d.dx, d.dy, d.dz) - 1))) };
+    /* **只盯這一發自己那幾顆**（記下物件本身）：hot 是共用的一池，
+       蘑菇雲的火光與上千塊碎料的火苗每一幀都在補新的進來，
+       看 hot.length 的話「幾秒收乾淨」永遠等不到 0，量到的也不是這一發的尺寸。 */
+    const mine = hot.slice();
+    let sMax = 0, sparkGone = -1;
+    for (let i = 0; i < 24; i++) {                     // 1.2 秒：看它脹到多大、幾秒收乾淨
+      step(0.05);
+      let alive = 0;
+      for (const d of mine) if (d.life > 0) { alive++; sMax = Math.max(sMax, d.s); }
+      if (sparkGone < 0 && !alive) sparkGone = +((i + 1) * 0.05).toFixed(2);
+    }
+    spark.sMax = +Math.max(sMax, spark.s0).toFixed(2);
+    spark.gone = sparkGone;
     /* 要炸得比上限多才驗得到「只留最新的那幾顆」（上限 v1.148.1 從 4 拉到 24） */
+    hot.length = 0; flashes.length = 0; fxRings.length = 0;
     for (let i = 0; i < FLASH_MAX + 4; i++) spawnBlast({ x: i * 3, y: 2.5, z: 0 }, 30, false);
     const capped = flashes.length, cap = FLASH_MAX;
     hot.length = 0; flashes.length = 0; fxRings.length = 0;
-    return { born, on, off, hold, fade, left, sparkMin, capped, cap, boomY };
+    return { born, on, off, hold, fade, left, sparkMin, spark, capped, cap, boomY };
   });
   /* 半徑走 sqrt，爆後第一幀（0.05 秒）就衝到一半以上——「一瞬間撐開」是刻意的，
      等速膨脹看起來像吹氣球。所以這裡量的是「一幀內有沒有到半徑的一半」。 */
@@ -18746,7 +18782,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 火星要生在球面外。生在球心的話那些幾乎不透明的方塊會整片糊在球的正面，
      把最亮的核心遮成一堆橘色碎片——改成球殼的意義就沒了。 */
   ok('火星生在球面外，不會糊住核心', flash.sparkMin > 30 * 0.45,
-     '最近的一顆離爆心 ' + flash.sparkMin.toFixed(1) + '（半徑 30 的 45% 是 13.5）');
+     '最近的一顆離球心 ' + flash.sparkMin.toFixed(1) + '（半徑 30 的 45% 是 13.5）');
+  /* 一塊積木邊長 1。舊版單顆 1.10～1.96、還以每秒 3.8 倍脹大（實測脹到 2.1），
+     那就是使用者說的「太粗糙的火紅色正方塊」。 */
+  ok('火星是「多而細」：顆數夠多、單顆比一塊積木小、一半以上是拉長的短條',
+     flash.spark.n > 300 && flash.spark.sMax < 1 &&
+     flash.spark.line > flash.spark.n * 0.5 && flash.spark.unit < 1e-9,
+     '核彈一發 ' + flash.spark.n + ' 顆（' + flash.spark.line + ' 條是短條）、' +
+     '最大的一顆 ' + flash.spark.sMax + '（一塊積木是 1）');
+  ok('火星 0.6 秒內收乾淨', flash.spark.gone > 0 && flash.spark.gone <= 0.6,
+     '全部退光要 ' + flash.spark.gone + ' 秒');
   ok('同時炸好幾發也只留最新的那幾顆火球', flash.capped === flash.cap,
      '連續 ' + (flash.cap + 5) + ' 發 → 場上 ' + flash.capped + ' 顆（上限 ' + flash.cap + '）');
 
