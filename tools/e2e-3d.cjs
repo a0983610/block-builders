@@ -22964,6 +22964,65 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        '（抬升撐了 ' + hRise[k].secs + ' 秒）／躺著壓火 ' + hRise[k].burn +
        '（只印不守，見上面那段註解）').join('；'));
 
+  /* ── 爬起來那一段朝向是限速轉的，不會一幀甩過去（v1.202.2）──
+     **規則型，骰子押死**：躺著的時候 hurtBeast 不動 m.a，所以直接把朝向轉到背面，
+     爬起來第一幀就一定會想轉 180°——不必等某一輪剛好抽到大角度。
+     改之前實測那一幀 巨人轉 61.5°、獅鷲 117.7°、黑獼猴 111.3°（單發箭打中追 300 幀），
+     巨人畫出去那一團的重心一幀跳 8.98 格。 */
+  const hYaw = await page.evaluate(() => {
+    const out = {};
+    for (const kind of ['gryphon', 'giant', 'ape']) {
+      cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+      for (const b of blocks) b.wet = 0;
+      let m;
+      if (kind === 'gryphon') {
+        m = spawnGryph();
+        for (let i = 0; i < 900 && m.sky; i++) step(0.02);   // 等牠降落到草皮上
+      } else {
+        m = spawnBeast(kind);
+        m.x = 26; m.z = 0; m.y = 0;
+        m.st = 'near'; m.leg = 0;              // 走過去砸那一段，朝向就是那一段在賦值的
+      }
+      fellBeast(m, 0.5);
+      /* 躺著把朝向轉到**背對場中心**：三款瞄的都是工地那一帶，所以爬起來第一幀
+         一定會想轉將近 180°。`m.a += Math.PI` 是不行的——spawn 給的朝向是隨機的，
+         加 π 之後跟目標的夾角也是隨機的（第一版就是這樣寫的，巨人那一輪只需要轉 42°，
+         限速根本沒咬到，等於白測）。 */
+      m.a = Math.atan2(-m.x, -m.z) + Math.PI;
+      const dt = 1 / 60;
+      let worst = 0, turned = 0, n = 0, alive = 1;
+      for (let i = 0; i < 300; i++) {
+        const a0 = m.a, lie0 = m.lie, fall0 = m.fall;
+        if (stepBeast(m, dt)) { alive = 0; break; }
+        let e = m.a - a0;
+        while (e > Math.PI) e -= Math.PI * 2;
+        while (e < -Math.PI) e += Math.PI * 2;
+        /* 只看「躺平角還沒收完、而且已經不在躺著倒數」那一段＝爬起來的那個窗口。
+           躺著的時候 hurtBeast 回 true、m.a 根本不動，混進來會把平均稀釋掉。 */
+        if (lie0 && fall0 <= 0) {
+          worst = Math.max(worst, Math.abs(e)); turned += Math.abs(e); n++;
+        }
+      }
+      out[kind] = { worst: +worst.toFixed(4), lim: +(B_RISE_YAW * dt).toFixed(4),
+                    turned: +turned.toFixed(3), budget: +(B_RISE_YAW * dt * n).toFixed(3),
+                    secs: +(n * dt).toFixed(2), n, alive };
+    }
+    cleanTools();
+    return out;
+  });
+  /* 兩邊一起驗才有意義：**沒超過上限**（限速有效）＋**幾乎整段都頂在上限**
+     （牠真的想轉更多、限速真的咬到了）。只驗前者的話，一隻根本不想轉身的也會過。
+     期望值照 B_RISE_YAW 算出來，不寫死度數（見 開發筆記〈不要寫死會隨改動變動的數字〉）。 */
+  ok('倒地爬起來那一段，朝向是每幀限速轉的，不會一幀把躺平的身體甩過去',
+     ['gryphon', 'giant', 'ape'].every(k => hYaw[k].alive && hYaw[k].n > 20 &&
+                                            hYaw[k].worst <= hYaw[k].lim + 1e-9 &&
+                                            hYaw[k].turned >= hYaw[k].budget * 0.9),
+     ['gryphon', 'giant', 'ape'].map(k => k + ' 單幀最大 ' +
+       (hYaw[k].worst * 180 / Math.PI).toFixed(1) + '°（上限 ' +
+       (hYaw[k].lim * 180 / Math.PI).toFixed(1) + '°），爬起來那 ' + hYaw[k].secs +
+       ' 秒轉了 ' + (hYaw[k].turned * 180 / Math.PI).toFixed(0) + '°／限速給的 ' +
+       (hYaw[k].budget * 180 / Math.PI).toFixed(0) + '°').join('；'));
+
   /* ── 小人被吹飛的旋轉軸（使用者：「目前似乎在腳底 看起來很奇怪」）── */
   const hPivot = await page.evaluate(() => {
     cleanTools();
