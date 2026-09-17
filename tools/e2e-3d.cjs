@@ -22867,6 +22867,103 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '最低點：站 ' + hGround.stand + '／躺 ' + hGround.lie + '／滾 ' + hGround.roll +
      '／龍趴著 ' + hGround.dragon);
 
+  /* ── 獅鷲與巨人也貼著草皮，而且抬升要跟著躺平角一起收（v1.202.1）──
+     上面那一條守的是兩隻猴子與飛龍，牛羊另有一條（〈閒逛的動物〉），
+     **這兩款本來誰都沒守**——而牠們正是體型最大、看得最清楚的兩隻。
+     **規則型**：不跑狀態機、自己把姿勢擺好、直接驅動 hurtBeast。理由是站直之後
+     走路擺腿本身就會讓 OBB 下緣掉 0.05~0.23 格（對照組量出來的既有現象），
+     跑狀態機的話那一段會蓋過這裡要守的東西。 */
+  const hRise = await page.evaluate(() => {
+    const low = () => {
+      const mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4();
+      let lo = 1e9;
+      for (let i = 0; i < mesh.count; i++) {
+        mesh.getMatrixAt(i, m4);
+        const a = m4.elements;
+        if (Math.hypot(a[0], a[1], a[2]) < 1e-4 || Math.hypot(a[4], a[5], a[6]) < 1e-4 ||
+            Math.hypot(a[8], a[9], a[10]) < 1e-4) continue;
+        lo = Math.min(lo, a[13] - 0.5 * (Math.abs(a[1]) + Math.abs(a[5]) + Math.abs(a[9])));
+      }
+      return +lo.toFixed(3);
+    };
+    const out = {};
+    for (const kind of ['gryphon', 'giant']) {
+      cleanTools(); phase = 'done'; doomT = 1e9;
+      let m;
+      if (kind === 'gryphon') {
+        m = spawnGryph(1);
+        m.sky = 0; m.st = 'walk'; m.t = 99;             // 切成「站在草皮上的那一隻」
+      } else m = spawnBeast('giant', 1);
+      m.x = 26; m.z = 0; m.a = 0; m.y = 0; m.gait = 0; m.pause = 999; m.stay = 999;
+      draw();
+      const stand = low();
+      /* 躺到底 */
+      fellBeast(m, 6);
+      for (let i = 0; i < 30; i++) hurtBeast(m, 0.05);
+      draw();
+      const lie = low();
+      const ang = Math.abs(m.side ? m.roll : m.spin);
+      /* 躺著壓火晃一整圈取最低：側躺的前後晃（B_SIDE_ROCK），仰躺的沿長軸滾（B_ROLL_AMP）。
+         **這一項只印不守**：實測獅鷲 −0.52、巨人 −1.07，是**既有的另一個缺陷**，
+         不是 v1.202.1 改出來的——巨人走的是 B_ROLL_LIFT 那條（v1.202.1 一個字都沒動），
+         獅鷲那條因為 sideLift 的底被墊高反而變淺了。根因是那兩個抬升倍率都是**照黑獼猴
+         量出來的定值**（B_ROLL_LIFT = 1.3 的來歷見 開發筆記〈姿勢都要貼著草皮〉），
+         套到身形比例差很多的這兩款就不夠——要修得照造型表算，那會動到現在正常的
+         猴子與牛羊，是另一件事。先把數字擺在這裡，不要讓它沉下去。 */
+      m.fall = 0;
+      igniteBeast(m, 1);
+      m.sdir = 1;                                     // 往哪邊倒押死，這一條不賭骰子
+      let burn = 1e9;
+      for (let k = 0; k < 40; k++) {
+        m.rph = k / 40 * Math.PI * 2;
+        if (m.side) {
+          m.roll = m.sdir * (Math.PI * 0.5 + B_SIDE_ROCK * Math.sin(m.rph));
+          m.lie = sideLift(m);
+        } else {
+          m.roll = B_ROLL_AMP * Math.sin(m.rph); m.spin = Math.PI / 2; m.lie = B_ROLL_LIFT;
+        }
+        draw();
+        burn = Math.min(burn, low());
+      }
+      /* 爬起來：躺平角從 ±90° 收回 0 的那一段。抬升提前歸零的話這裡會當場陷下去
+         （v1.202.1 之前實測 獅鷲 −1.53、巨人 −1.29 格）。 */
+      cleanTools(); phase = 'done'; doomT = 1e9;
+      if (kind === 'gryphon') {
+        m = spawnGryph(1); m.sky = 0; m.st = 'walk'; m.t = 99;
+      } else m = spawnBeast('giant', 1);
+      m.x = 26; m.z = 0; m.a = 0; m.y = 0; m.gait = 0; m.pause = 999; m.stay = 999;
+      /* **躺幾秒要讓它自己跑完**，不要手動把 m.fall 設成 0：v1.202.1 之前把抬升關掉的
+         就是「fall 歸零那一幀」那一行，手動跳過的話這條就守不到那個回歸。 */
+      fellBeast(m, 1.5);
+      let rise = 1e9, bad = 0, n = 0;
+      for (let i = 0; i < 300; i++) {
+        hurtBeast(m, 1 / 60);
+        draw();
+        if (m.fall > 0) continue;                       // 還躺著，那一段上面量過了
+        rise = Math.min(rise, low());
+        /* 這一條就是 v1.202.1 修的那個規則：**抬升不准比躺平角先收掉**。
+           收掉的那一刻角度必須也是 0（兩個是同一行歸零的）。 */
+        if (!m.lie && Math.abs(m.side ? m.roll : m.spin) > 0) bad++;
+        if (m.lie) n++;
+      }
+      out[kind] = { stand, lie, ang: +ang.toFixed(2), burn, rise, bad,
+                    secs: +(n / 60).toFixed(2),
+                    up: +((m.side ? ENG.BEAST_SIDE[kind] : ENG.BEAST_LIFT[kind]) *
+                          m.sc).toFixed(2) };
+      cleanTools();
+    }
+    return out;
+  });
+  ok('獅鷲與巨人：站著／躺著／爬起來那一段都貼著草皮，抬升不比躺平角先收',
+     ['gryphon', 'giant'].every(k => hRise[k].stand >= -0.02 && hRise[k].stand < 0.05 &&
+                                     hRise[k].lie >= -0.02 && hRise[k].lie < 0.10 &&
+                                     hRise[k].rise >= -0.02 && hRise[k].bad === 0 &&
+                                     Math.abs(hRise[k].ang - Math.PI / 2) < 0.05),
+     ['gryphon', 'giant'].map(k => k + ' 站 ' + hRise[k].stand + '／躺 ' + hRise[k].lie +
+       '（躺平角 ' + hRise[k].ang + '、抬 ' + hRise[k].up + ' 格）／爬起來 ' + hRise[k].rise +
+       '（抬升撐了 ' + hRise[k].secs + ' 秒）／躺著壓火 ' + hRise[k].burn +
+       '（只印不守，見上面那段註解）').join('；'));
+
   /* ── 小人被吹飛的旋轉軸（使用者：「目前似乎在腳底 看起來很奇怪」）── */
   const hPivot = await page.evaluate(() => {
     cleanTools();

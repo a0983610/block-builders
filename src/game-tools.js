@@ -8132,14 +8132,33 @@ function lieSide(m) { if (m.side) m.sdir = Math.random() < 0.5 ? 1 : -1; }
 function lieAng(m) {
   return m.side ? m.sdir * Math.PI * 0.5 : (m.face ? Math.PI * 0.5 : -Math.PI * 0.5);
 }
-/* 側躺著晃的時候 m.lie 要給多少（倍率）。躺平在 90° 時剛好是 1，引擎那邊抬的
-   `SIDE·|sin(roll)|` 正好等於半個身寬；偏開 δ 之後**本來朝上那一側會轉到地面下**，
-   要多抬 (身高 ÷ 身寬)·tan δ 那麼多。取「最寬 × 最高」那個角來算，所以是寧可
+/* 側躺時**翼上那幾塊還是比身體寬一點**，要多抬這麼多（模型單位，v1.202.1）。
+   `BEAST_SIDE` 刻意不把翼上那幾塊算進去（見 engine 那一段：牠們表上的 p[0] 是
+   「離翼根多遠」，實際位置每一幀照翼弧重算），而收成立起來的翼（`GR_POSE.down`）
+   翼尖實測伸到模型 x 0.729，比 `BEAST_SIDE.gryphon` 的 0.58 多 0.149——
+   所以獅鷲一躺下去就陷進草皮 **0.313 格**（躺著那一幀最低的前十塊全是翼上的，
+   非翼的最深只有 0.035）。**先量再補**，同飛龍趴著補 `DRA_DOWN_PAD` 的做法。
+   四條腿的牛羊身上一塊翼都沒有，不在這張表裡＝一個位元都沒變。 */
+const BEAST_SIDE_PAD = { gryphon: 0.15 };
+/* 躺平不動時 m.lie 該給多少（倍率）。沒有翅膀的就是 1（引擎抬的 `SIDE·|sin(roll)|`
+   正好是半個身寬）；有翅膀的把上面那塊補正折成倍率交給引擎，因為抬升是引擎照
+   `BEAST_SIDE × m.lie` 算的，game 這一層只有 m.lie 這個槓桿。 */
+function lieLift(m) {
+  const pad = (m.side && BEAST_SIDE_PAD[m.kind]) || 0;
+  return pad ? 1 + pad / (ENG.BEAST_SIDE[m.kind] || 0.01) : 1;
+}
+/* 側躺著晃的時候 m.lie 要給多少（倍率）。躺平在 90° 時剛好是 lieLift（沒翅膀的就是 1），
+   引擎那邊抬的 `SIDE·|sin(roll)|` 正好等於半個身寬；偏開 δ 之後**本來朝上那一側會轉到
+   地面下**，要多抬 (身高 ÷ 身寬)·tan δ 那麼多。取「最寬 × 最高」那個角來算，所以是寧可
    浮一點點也不陷進去（實測浮 0.09 格，而不補的話陷 0.15~0.25 格）。 */
 function sideLift(m) {
   const d = Math.min(0.5, Math.abs(m.roll - lieAng(m)));
-  return 1 + ENG.BEAST_MID[m.kind] * 2 / (ENG.BEAST_SIDE[m.kind] || 0.01) * Math.tan(d);
+  return lieLift(m) +
+         ENG.BEAST_MID[m.kind] * 2 / (ENG.BEAST_SIDE[m.kind] || 0.01) * Math.tan(d);
 }
+/* 爬起來那一段，抬升收到「剩不到這麼多格」就跟躺平角一起歸零（世界單位，v1.202.1）。
+   見 hurtBeast 最後那一段。 */
+const B_UP_EPS = 0.01;
 
 /* 被吹飛／炸飛。回傳 true＝真的打到了。飛龍改成摔下來（牠本來就在天上）。
    帶火的那一下（爆炸都是 lit＝true）v1.154 起會點著牠：跟走地上的那幾隻同一條規則
@@ -8199,7 +8218,7 @@ function fellBeast(m, t, face) {
   if (m.kind === 'dragon') return crashDragon(m);
   if (m.sky) return grDown(m);                       // 在天上的獅鷲：打下來（v1.176）
   if (m.air || m.burn > 0 || m.fall > 0) return false;
-  m.fall = t; m.lie = 1; m.gait = 0; m.pause = 0;
+  m.fall = t; m.lie = lieLift(m); m.gait = 0; m.pause = 0;
   m.face = face ? 1 : 0;                             // 被工具打倒的照舊往後仰
   if (!m.side) m.roll = 0;                           // 側躺的那個角度就是 roll，別歸零
   lieSide(m);
@@ -8224,7 +8243,7 @@ function wetBeast(m) {
   if (m.burn > 0) {
     m.burn = 0; m.brl = 0; m.spin = 0; m.rph = 0; m.gait = 0;
     if (!m.side) m.roll = 0;             // 側躺的那個角度就是 roll，歸零的話牠會先站起來再倒下去
-    m.fall = rr(0.5, 1.1); m.lie = 1; m.face = 0;
+    m.fall = rr(0.5, 1.1); m.lie = lieLift(m); m.face = 0;
   }
   return true;
 }
@@ -8255,12 +8274,27 @@ function hurtBeast(m, dt) {
     if (m.side) m.roll += (lieAng(m) - m.roll) * Math.min(1, dt * 9);
     else m.spin += (lieAng(m) - m.spin) * Math.min(1, dt * 9);
     m.gait += (0 - m.gait) * Math.min(1, dt * 6);
-    if (m.fall <= 0) { m.fall = 0; m.lie = 0; }
+    if (m.fall <= 0) m.fall = 0;
     return true;
   }
   // 爬起來，躺平角收回去（側躺的收 roll，仰躺的收 spin）
   if (m.spin) m.spin += (0 - m.spin) * Math.min(1, dt * 7);
   if (m.roll) m.roll += (0 - m.roll) * Math.min(1, dt * 7);
+  /* **抬升要跟著角度一起收**（v1.202.1）。m.lie 是抬升的倍率，本來在 fall 歸零那一幀就
+     直接關掉——可是躺平角還要 0.5 秒才收得回來，那一秒身體還斜著、托著牠的抬升卻沒了，
+     整隻當場陷進草皮：實測 獅鷲 **1.53**、巨人 **1.29**、白猴子 0.79、黑獼猴 0.63、
+     牛羊 0.48 格（引擎抬的就是 `BEAST_LIFT／BEAST_SIDE × m.lie × |sin(角度)|`，
+     照這五款的常數乘出來剛好是這五個數，所以那一跳整個是這一行造成的）。
+     現在留著不動，讓 |sin(角度)| 自己把它收掉——那正是小人那邊的做法（`FLAT_LIFT ×
+     |sin(w.tilt)|`，小人根本沒有 lie 這個旗標，所以從來沒這個問題）。
+     收到抬升剩不到 B_UP_EPS 格才連角度一起歸零：不歸零的話 stepGryph 會一直以為牠躺著、
+     翅膀永遠收成立起來的。門檻照這一款的抬升常數換算，不寫死角度。 */
+  if (m.lie) {
+    const up = (m.side ? ENG.BEAST_SIDE[m.kind] : ENG.BEAST_LIFT[m.kind]) * m.lie * (m.sc || 1);
+    if (Math.abs(m.side ? m.roll : m.spin) * up < B_UP_EPS) {
+      m.spin = 0; m.roll = 0; m.lie = 0;
+    }
+  }
   return false;
 }
 /* 飛在半空：走彈道、一路翻滾，撞到草地邊緣就彈回來（同 flyWorker）。 */
@@ -8278,7 +8312,7 @@ function flyBeast(m, dt) {
   const lit = m.lit || nearFire(m);                  // 落地這一刻才判定燒不燒
   m.lit = 0;
   if (!lit || !igniteBeast(m, 1)) {
-    m.spin = 0; m.fall = rr(B_FALL[0], B_FALL[1]); m.lie = 1; m.face = 0;
+    m.spin = 0; m.fall = rr(B_FALL[0], B_FALL[1]); m.lie = lieLift(m); m.face = 0;
     lieSide(m);
   }
   sndFall();
