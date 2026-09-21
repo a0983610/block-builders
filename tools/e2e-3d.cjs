@@ -16119,7 +16119,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 同時在燒的上限。手動一路點到點不動為止——真的等它自己燒到 150 塊要好幾十秒，
        而且會先把建築燒垮。數的是 nSpread（還站著的那種火）：碎料的火走另一份額度。 */
     for (const b of blocks) igniteBlock(b);              // 點到點不動為止
-    const cap = { fires: nSpread, all: fires.length, hot: 0, HOT_MAX, FIRE_MAX };
+    const cap = { fires: nSpread, all: fires.length, hot: 0, BURN_HOT, FIRE_MAX,
+                  fits: BURN_HOT + HOT_BURST <= ENG.MAXFIRE };
     // 火苗要跑幾幀才生得出來，量的是這段時間的峰值
     for (let i = 0; i < 30; i++) { step(0.05); cap.hot = Math.max(cap.hot, hot.length); }
     startBuild(true);
@@ -16144,10 +16145,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('同時在燒的塊數有上限', fire.cap.fires === fire.cap.FIRE_MAX,
      '還站著的 ' + fire.cap.fires + ' / ' + fire.cap.FIRE_MAX + ' 塊（連碎料共 ' +
      fire.cap.all + ' 塊在燒）');
-  /* 火苗跟爆炸的火球共用同一個粒子池。整棟在燒時把池子吃光的話，
-     這時候丟一發核彈就會沒有火球，所以火苗的配額除以 √(在燒的塊數)、並留一截給爆炸。 */
-  ok('整棟在燒也不會把爆炸的火球配額吃光', fire.cap.hot < fire.cap.HOT_MAX - 30,
-     fire.cap.FIRE_MAX + ' 塊在燒時 ' + fire.cap.hot + ' / ' + fire.cap.HOT_MAX + ' 顆火粒子');
+  /* 火苗跟爆炸的火球共用同一個 hot 陣列。整棟在燒時把它塞爆的話，這時候丟一發核彈
+     就會沒有火球，所以燃燒有自己的一檔 BURN_HOT（v1.210.1，以前是跟別人共用 HOT_MAX−40），
+     配額再除以 √(在燒的塊數)。兩件事要成立：燒的不超過自己那一檔，而且那一檔
+     **加上一發核彈的 HOT_BURST 之後引擎還畫得下**（不然多出來的會被 Math.min 默默切掉）。
+     門檻讀常數算，不寫死數字——三個數都會再動。 */
+  ok('整棟在燒也不會把爆炸的火球配額吃光',
+     fire.cap.hot <= fire.cap.BURN_HOT && fire.cap.fits === true,
+     fire.cap.FIRE_MAX + ' 塊在燒時 ' + fire.cap.hot + ' / ' + fire.cap.BURN_HOT +
+     ' 顆火粒子，加爆炸那一發還畫得下 ' + fire.cap.fits);
   /* v1.59 反過來了：換建築時火**不收**。一整棟在燒忽然全暗是「換場感」最重的一筆，
      現在那些燒著的積木會被打散成碎料、拖著火飛出去、落地燒成焦炭。
      擋的是下一步——小人把還在燒的碎料撿去蓋新的那座（見下面那條 douse 的測試）。 */
@@ -16246,7 +16252,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const hots = [];
     for (let i = 0; i < 60; i++) { step(1 / 60); hots.push(hot.length); }
     const smooth = { min: Math.min(...hots.slice(20)), max: Math.max(...hots),
-                     dust: dust.length };
+                     dust: dust.length, cap: BURN_HOT };
 
     /* 6. 效能：上千塊在燒的當下。
        **量三次取中位**，不是一段就定案（v1.148）：這是牆上時鐘，在一輪二十分鐘的
@@ -16312,10 +16318,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      emb2.quota.spread < 150,
      emb2.quota.ember + ' 塊碎料在燒時，還站著的火只用了 ' + emb2.quota.spread +
      ' / 150，仍點得起來（' + emb2.quota.canLight + '）');
+  /* 上限讀 BURN_HOT 算（閘門是 `> BURN_HOT` 才停，所以最多會多生出一顆）——
+     v1.210.1 之前這裡寫死 190，閘門一動那個數字就失效了。 */
   ok('上千塊一起燒，火苗不會整片一起閃一起沒',
-     emb2.smooth.min > 60 && emb2.smooth.max <= 190,
-     '1 秒內火苗數 ' + emb2.smooth.min + ' ~ ' + emb2.smooth.max + ' 顆（煙 ' +
-     emb2.smooth.dust + ' 團）');
+     emb2.smooth.min > 60 && emb2.smooth.max <= emb2.smooth.cap + 1,
+     '1 秒內火苗數 ' + emb2.smooth.min + ' ~ ' + emb2.smooth.max + ' 顆（上限 ' +
+     emb2.smooth.cap + '，煙 ' + emb2.smooth.dust + ' 團）');
   ok('上千塊碎料在燒：CPU 每幀在預算內',
      emb2.perf.stepMs + emb2.perf.drawMs < FRAME_MS,
      emb2.perf.fires + ' 塊在燒：step ' + emb2.perf.stepMs.toFixed(2) + 'ms + draw ' +
@@ -24873,6 +24881,33 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('存檔真的寫進 localStorage', !!saveR.raw && saveR.len > 40, saveR.len + ' 字元');
   ok('存檔不是明文', !saveR.plain, '看不到欄位名或建築名');
+
+  /* 自動存檔的計時（v1.210.1）。兩件事要守：門檻是 SAVE_EVERY 秒，而且算的是
+     **真實時間不是模擬時間**——saveT 直接加 dt 的話，開 4× 快轉就變成每 15 秒寫一次
+     localStorage。不跑模擬、直接餵 dt 給 autoSave()：跑一整場去等那 60 秒的話，
+     期間的完工／成就／解鎖也會各自存一次，量到的就不是這道計時器了。
+     期望值讀 SAVE_EVERY 算，不寫死 60。 */
+  const autoT = await page.evaluate(() => {
+    const spd0 = timeScale, key = 'block-builders/save1';
+    /* 推進 secs 秒的**真實**時間：主迴圈給的 dt 已經乘過 timeScale，所以這裡也乘。
+       一幀一秒（幀數不影響結果，累加的是秒數）。 */
+    const run = (spd, secs) => {
+      timeScale = spd; saveT = 0;
+      localStorage.removeItem(key);
+      for (let i = 0; i < secs; i++) autoSave(1 * spd);
+      return !!localStorage.getItem(key);
+    };
+    const r = { every: SAVE_EVERY,
+                n1: run(1, SAVE_EVERY - 1), y1: run(1, SAVE_EVERY + 1),
+                n4: run(4, SAVE_EVERY - 1), y4: run(4, SAVE_EVERY + 1) };
+    timeScale = spd0; saveT = 0;                       // 動過的全域還回去
+    return r;
+  });
+  ok('自動存檔每 SAVE_EVERY 秒一次，快轉不會讓它變密',
+     autoT.n1 === false && autoT.y1 === true && autoT.n4 === false && autoT.y4 === true,
+     '1×：' + (autoT.every - 1) + ' 秒沒存 ' + !autoT.n1 + '／' + (autoT.every + 1) +
+     ' 秒存了 ' + autoT.y1 + '；4× 快轉照真實時間，同樣是 ' + autoT.every + ' 秒（' +
+     !autoT.n4 + '／' + autoT.y4 + '）');
 
   const reloadR = await page.evaluate(() => {
     stats = freshStats(); load();

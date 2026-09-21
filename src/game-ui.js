@@ -116,8 +116,7 @@ function step(dt) {
     toasts[i].t -= dt;
     if (toasts[i].t <= 0) { toasts.splice(i, 1); renderToasts(); }
   }
-  saveT += dt;
-  if (saveT > 12) { saveT = 0; save(); }
+  autoSave(dt);                        // 每 SAVE_EVERY 秒（真實時間）存一次，見 game-save.js
 
   if (supportDirty) {
     supportT -= dt;

@@ -1769,8 +1769,10 @@ function explode(point, R, power, magic, wind, crash, self, quiet, markR) {
   afterHit(n, point, R, ownN, self);
   /* 還站著的（SET）餘火：半徑放到 1.5 倍去找——衝擊圈內幾乎都被炸飛了，
      沒倒的都在圈外那一帶。這些會繼續往鄰居蔓延。
-     碎料的火不在這裡點，在上面那個迴圈裡逐塊點——見那邊的說明。 */
-  igniteAround(point, R * 1.5, Math.round(R * 0.8), SET);
+     碎料的火不在這裡點，在上面那個迴圈裡逐塊點——見那邊的說明。
+     塊數 v1.210.1 從 R×0.8 拉到 R×1.2（使用者指定的同一檔 ×1.5）：核彈打完只點 24 塊，
+     攤在半徑 45 的範圍裡稀疏到看不出「炸完那一圈在燒」。上限照舊是 FIRE_MAX 150。 */
+  igniteAround(point, R * 1.5, Math.round(R * 1.2), SET);
   // 火球與衝擊環是「爆炸」的長相，crash 那條只留下被砸飛的積木與揚起來的塵土
   if (!crash) { spawnBlast(point, R, magic); spawnRing(point, R); }
   /* 地上留一塊痕跡：一般爆炸是焦黑，砸下來的（隕石）是坑洞。
@@ -1802,6 +1804,16 @@ const EMBER_MAX = 3000;
 const BURN_TIME = 2.2;        // 一塊從點著到燒斷掉下來
 const EMBER_TIME = 3;         // 碎料燒多久——燒完就是一塊焦炭，不會再掉一次
 const BURN_SPREAD = 0.35;     // 燒到幾成才開始把火傳給鄰居
+/* 燃燒自己的粒子閘門（v1.210.1，見 開發筆記〈火看起來燒不起來，是粒子的帳不是塊數的帳〉）。
+   以前燒積木／燒小人／燒動物跟王之財寶的拖尾、火球的尾巴共用 `HOT_MAX − 40`（180），
+   而每塊的配額還要再除以 √(在燒的塊數)——實測 150 塊在燒只噴 94～111 顆火苗、
+   上千塊碎料在燒就被 180 卡死（實測 167～181 顆攤在整座島上，平均十五塊才看得到一顆）。
+   使用者：「觀察到好像燃燒不多」。照 GR_HOT／MET_HOT_CAP／FW_HOT 的慣例給燃燒開自己一檔，
+   不動 HOT_MAX（那是十幾個特效共用的常態水位，動它等於全場一起變）。
+   400 這個數字的上界是引擎的 MAXFIRE 1280：跟一發核彈的 HOT_BURST 560 同台是 960，
+   還畫得下（有一條測試在守這個關係）。煙同理：380 在碎料燃燒時實測 374～378 已經頂滿，
+   而引擎 MAXDUST 3400 還很鬆，隕石那邊早就放到 700 了。 */
+const BURN_HOT = 400, BURN_SMOKE = 700;
 let slotOwner = null;         // slot → blocks 索引；只有蔓延需要反查，燒的時候每幀重建
 /* 重建那張反查表。積木只記得自己在哪個 slot，沒有反向的表，而「沿著格子走」的東西
    （火的蔓延、水沿表面流）都得從格子反查回積木。要用的那一幀自己重建一次：
@@ -3414,11 +3426,14 @@ function stepFire(dt) {
     b.tg = f.c0[1] * (1 - k) + 0.045 * k;
     b.tb = f.c0[2] * (1 - k) + 0.04 * k;
     /* 火苗。整棟在燒時每塊都全速噴會把粒子池吃光，所以配額除以 √(在燒的塊數)：
-       一塊燒得旺、五十塊各自小小地燒，總量才守得住。 */
-    f.em += dt * 13 / Math.sqrt(fires.length);
+       一塊燒得旺、五十塊各自小小地燒，總量才守得住。
+       係數 v1.210.1 從 13 拉到 20（使用者：「觀察到好像燃燒不多」）——√ 那個分母留著，
+       它是「總量守得住」的本體；真正讓畫面太乾的是係數與閘門都訂在還沒有專屬額度的年代。
+       場上的火苗總數 ≈ 係數 × 粒子壽命(均 0.46 秒) × √N，所以 13 → 20 就是整組 ×1.5。 */
+    f.em += dt * 20 / Math.sqrt(fires.length);
     while (f.em >= 1) {
       f.em--;
-      if (hot.length > HOT_MAX - 40) break;             // 留一截給爆炸的火球
+      if (hot.length > BURN_HOT) break;                 // 燃燒自己那一檔（見 BURN_HOT）
       hot.push({
         x: b.x + rr(-0.4, 0.4), y: b.y + rr(0, 0.5), z: b.z + rr(-0.4, 0.4),
         vx: rr(-0.6, 0.6), vy: rr(2.4, 4.6), vz: rr(-0.6, 0.6),
@@ -3428,7 +3443,7 @@ function stepFire(dt) {
       });
     }
     // 煙：比爆炸的煙深，而且往上飄（g 給負的）
-    if (Math.random() < dt * 2.4 && dust.length < 380)
+    if (Math.random() < dt * 2.4 && dust.length < BURN_SMOKE)
       dust.push({
         x: b.x + rr(-0.3, 0.3), y: b.y + 0.5, z: b.z + rr(-0.3, 0.3),
         vx: rr(-0.5, 0.5), vy: rr(1.2, 2.6), vz: rr(-0.5, 0.5),
@@ -9063,7 +9078,7 @@ function burnBeastFx(m, dt) {
   m.bem += dt * 26 / Math.sqrt(burningW || 1);
   while (m.bem >= 1) {
     m.bem--;
-    if (hot.length > HOT_MAX - 40) break;
+    if (hot.length > BURN_HOT) break;
     hot.push({
       x: m.x + rr(-r, r), y: m.y + rr(0.1, h), z: m.z + rr(-r, r),
       vx: rr(-0.6, 0.6), vy: rr(2, 4), vz: rr(-0.6, 0.6),

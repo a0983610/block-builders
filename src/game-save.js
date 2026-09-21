@@ -117,6 +117,19 @@ function unpackSave(txt) {
   return JSON.parse(body);
 }
 let saveT = 0;
+/* 自動存檔的間隔（v1.210.1 從 12 秒拉到 60 秒，使用者：「不想要一直持續在跑存檔」）。
+   **算的是真實時間，不是模擬時間**：主迴圈的 dt 是 `min(0.05, raw) × timeScale`，
+   直接累加的話開 4× 快轉就變成每 15 秒寫一次 localStorage——而那是同步的磁碟 I/O，
+   沒有理由跟著快轉變密。除回去拿到的就是這一幀的真實秒數。
+   拉長不太會掉紀錄：蓋完一座、拿到成就、解鎖道具、改設定都會各自存一次（見那幾處），
+   這道只是「一直在破壞、什麼事件都沒發生」時的兜底。
+   抽成一支函式是為了測得死（見 開發筆記〈自動存檔拉到 60 秒，而且算真實時間〉）：
+   e2e 直接餵 dt 給它，不必跑一整場模擬去等那 60 秒。 */
+const SAVE_EVERY = 60;
+function autoSave(dt) {
+  saveT += dt / (timeScale || 1);
+  if (saveT > SAVE_EVERY) { saveT = 0; save(); }
+}
 /* 只把存檔裡型別對得上的欄位搬過來，其他一律用預設值。
    這樣舊版存檔、被改過的存檔都不會讓程式吃到奇怪的東西。 */
 function merge(fresh, src) {

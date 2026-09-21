@@ -337,7 +337,7 @@ function burnFx(w, dt) {
   w.bem += dt * 26 / Math.sqrt(burningW || 1);
   while (w.bem >= 1) {
     w.bem--;
-    if (hot.length > HOT_MAX - 40) break;              // 留一截給爆炸的火球
+    if (hot.length > BURN_HOT) break;                  // 燃燒自己那一檔（見 BURN_HOT）
     hot.push({
       x: w.x + rr(-0.35, 0.35), y: w.y + rr(0.1, h), z: w.z + rr(-0.35, 0.35),
       vx: rr(-0.6, 0.6), vy: rr(2, 4), vz: rr(-0.6, 0.6),
@@ -346,7 +346,7 @@ function burnFx(w, dt) {
       cr: 1, cg: rr(0.5, 0.82), cb: rr(0.06, 0.24), to: [0.6, 0.12, 0.02]
     });
   }
-  if (Math.random() < dt * 2 && dust.length < 380)
+  if (Math.random() < dt * 2 && dust.length < BURN_SMOKE)
     dust.push({
       x: w.x + rr(-0.3, 0.3), y: w.y + h, z: w.z + rr(-0.3, 0.3),
       vx: rr(-0.5, 0.5), vy: rr(1.2, 2.6), vz: rr(-0.5, 0.5),

@@ -4740,7 +4740,7 @@ const ENG = (function () {
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK,
     DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
-    MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, WEAP_KIND, WEAP_MAX, GATE_MAX,
+    MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, MAXFIRE, WEAP_KIND, WEAP_MAX, GATE_MAX,
     /* 箭雨（v1.171）：ARROW_K 是箭在造型表裡的索引、BOW_TIP 是箭離開弓的位置
        （同 WAND_TIP／DIG_TIP：畫出來的弓與飛出去的箭要從同一個點對起來）。 */
     ARROW_K, BOW_TIP,
