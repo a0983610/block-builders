@@ -16,6 +16,7 @@ const ENG = (function () {
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, beastMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh, poolMesh;
+  let canMesh, shellMesh;           // 加農砲與燒著的砲彈（v1.204）
   let poolGeo, poolPos, poolFoam, poolUni;
   let markMesh, markGeo, markPos, markCol;
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
@@ -63,6 +64,11 @@ const ENG = (function () {
   const FLASH_MAX = 24;
   const FLASH_SQUASH = 0.82;               // 壓扁一點：貼地炸開的火球是扁的，不是正球
   const MAXROCK = 48, MAXTREB = 8;   // TREB_PARTS 由造型表自己數（見 TREB_PART）
+  /* 加農砲（v1.204）：場上最多幾門、同時最多幾顆砲彈在空中。
+     **要 ≥ 規則那邊的 CAN_MAX**，小於它的話多出來的整門畫不出來。
+     一門 29 個部位全塞進同一顆 InstancedMesh，六門也只吃 1 個 draw call。
+     砲彈 16：一門一次一顆在空中（飛行約 1 秒、每 1.6～2.4 秒才打一發），六門用不到一半。 */
+  const MAXCAN = 6, MAXSHELL = 16;
   /* 鐵球最多同時幾顆（v1.116）。要跟規則那邊的 BALL_MAX 一樣大——
      小於它的話多出來的球會整顆不見（規則還在算，畫面上沒有）。 */
   const MAXBALL = 6;
@@ -904,6 +910,21 @@ const ENG = (function () {
     trebMesh.setColorAt(0, tmpC.setHex(0xffffff));
     dozMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
+    /* 加農砲與砲彈（v1.204）。照新規矩「沒東西在場就不吃 draw call」——
+       這兩顆平常 visible=false（投石機那兩顆是 v1.58 的舊寫法，沒跟著改）。
+       砲彈跟飛石、隕石共用同一顆球，只是換一個火色的材質。 */
+    canMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXCAN * CAN_PARTS);
+    canMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    canMesh.castShadow = true; canMesh.count = 0;
+    canMesh.frustumCulled = false; canMesh.visible = false;
+    canMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(canMesh);
+    shellMesh = new T.InstancedMesh(rockGeo(), rockMaterial(0xd8531c), MAXSHELL);
+    shellMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    shellMesh.castShadow = true; shellMesh.count = 0;
+    shellMesh.frustumCulled = false; shellMesh.visible = false;
+    scene.add(shellMesh);
+
     /* 消防車（v1.68）。跟推土機同一套：整台車的部位塞進一顆 InstancedMesh，
        所以**一台跟兩台一樣貴**（它會投影，在場時是 2 個 draw call：主畫面 + 陰影那一趟）。
        差別是它照新規矩「沒車就 visible=false」——建造中沒火的時候一台都不在場，
@@ -1586,6 +1607,180 @@ const ENG = (function () {
     trebMesh.instanceMatrix.needsUpdate = true;
     if (trebMesh.instanceColor) trebMesh.instanceColor.needsUpdate = true;
   }
+
+  /* ── 加農砲（v1.204）─────────────────────────────────
+     使用者給的參考圖：四輪…不，**兩個大輻條輪** ＋ 木製砲架 ＋ 一支粗砲管，
+     管身中段一圈藍鐵箍、前段纏兩道繩、尾端一塊直立的木板。
+     造型水準比照投石機（使用者指定），所以一樣不是幾塊方塊了事。
+
+     **砲口朝 +z**（同投石機的機台座標：rotation.y = a 之後 local +Z 指向目標）。
+
+     造型表的欄位（比投石機少兩種，砲沒有「吊著」與「索」那兩件事）：
+       p    位置（機台座標）  s 尺寸  c 顏色
+       r    固定旋轉 [x,y,z]——輪輻要用
+       d    掛在**砲管**上、離耳軸多遠（正＝朝砲口）。這些塊會跟著砲管仰角轉、
+            也跟著後座往後滑；只吃 p[0]（左右偏移），y／z 每一幀算出來
+       wheel 這一塊是輪子：整台後退時要跟著**滾**（滾角 ＝ 位移 ÷ 輪半徑）
+
+     **後座是兩層的**（v1.204 使用者：「後座力又表現得更強　整台砲都後退一點再回去」）：
+       ① 砲管沿著管軸滑（rec 0～1，行程 CAN_RECOIL）——駐退機那一層
+       ② **整台往後退**（back，最多 CAN_KICK）再滾回原位——車輪被後座推著走那一層
+     兩層都會把砲口往後帶，所以 canMuzzle 兩個都要吃：畫出來的砲口與砲彈飛出去的
+     起點必須是同一點（同 trebSling／BOW_TIP）。
+
+     **仰角是常數 CAN_EL，不是每門各自瞄的。** 規則那邊照這個角度反解初速
+     （見 game-tools.js 的 fireCannon），所以「畫出來的砲管方向」與「砲彈飛出去的方向」
+     永遠是同一個數字——不必像投石機那樣去對切線（e2e 有一條在驗這個等式）。
+     打不到那麼高的目標就平射過去打牆，那是加農砲本來的樣子。
+     見 開發筆記〈加農砲：直射、後座、燒著的砲彈〉 */
+  /* 砲管仰角＝砲彈出手仰角。25° → **18°**（v1.204 使用者：「砲彈拋物線再平一點」）：
+     頂點／距離 ＝ tanθ/4，25° 是 0.117、18° 是 **0.081**（投石機 TREB_LOB 0.25 的三成）。
+     再往下就是 15°（0.067），那已經是這條路的底——初速跟著 √(G·d/sin2θ) 往上跑，
+     55 格那一發會逼到 CAN_VMAX，而且 reach 變小之後幾乎每一發都改成平射打外牆。 */
+  const CAN_EL = 18 * Math.PI / 180;
+  /* 耳軸（砲管繞著它擺、後座時也沿著管軸滑過它）多高。**2.25 是被後座逼出來的**：
+     管軸是斜的，砲尾往後退就同時往下沉（退 CAN_RECOIL 沉 sin25°×那麼多），
+     第一版支點只有 1.95、後座 0.85，砲尾退到底時下緣掉到離地 0.19、還會插進尾梁裡。 */
+  const CAN_PIV = 2.25;
+  const CAN_LEN = 5.0;              // 耳軸到砲口
+  const CAN_BACK = 1.7;             // 耳軸到砲尾
+  const CAN_RECOIL = 0.7;           // 砲管後座行程（沿著管軸往後退多遠）
+  /* 整台往後退多遠（v1.204 使用者：「後座力又表現得更強　整台砲都後退一點再回去」）。
+     1.1 格 ＝ 一個輪徑的四分之三，輪子跟著滾 0.76 弧度（43°）——看得出是被推著走，
+     又不會退到隊形亂掉（門與門間隔 7）。推回去的快慢歸規則那邊跑（CAN_KICK_T）。 */
+  const CAN_KICK = 1.1;
+  const CAN_WHEEL = 1.45;           // 輪半徑（參考圖裡輪子是主角，比投石機的 0.95 大一圈）
+  const CAN_TRACK = 1.45;           // 輪子離中線多遠
+  const CAN_BED = 1.15;             // 砲架縱樑的中心高
+
+  const CN_BARREL = 0x4a4e4c, CN_RING = 0x5e6360;   // 砲身：暗鋼綠、亮一階的箍
+  const CN_WHEELC = 0x6b3a2c;                       // 輪子：參考圖那種暗紅褐
+  const CN_ROPE = 0xa8875a;                         // 纏管的繩比投石索深一階（貼在暗管身上）
+  /* 木料與藍鐵箍跟投石機共用同一組色（同一個工地出來的東西） */
+
+  /* 一個輪子＝**兩塊交叉的板（0° 與 45°）＝八角星，跟投石機同一款**
+     （v1.204 使用者：「輪子也順便改成像投石機那種」）。第一版是三塊（0°／60°／120°、
+     十二角），想做參考圖那種密輻輪，但出圖看起來是個齒輪不是車輪——角一多，
+     尖角之間的凹口就淺到看不出輻條，整片糊成一個圓盤。
+     邊長取 CAN_WHEEL×√2，尖角剛好落在輪緣、最低那個尖點正好觸地（同 trebWheel）。
+     wheel: 1 ＝ 整台後退時這一塊要跟著滾（見 putCannons）。 */
+  function canWheel(x) {
+    const w = CAN_WHEEL * Math.SQRT2, z = 0.45;
+    return [
+      { p: [x, CAN_WHEEL, z], s: [0.38, w, w], c: CN_WHEELC, r: [0, 0, 0], wheel: 1 },
+      { p: [x, CAN_WHEEL, z], s: [0.38, w, w], c: CN_WHEELC, r: [Math.PI / 4, 0, 0], wheel: 1 }
+    ];
+  }
+  const CAN_PART = [].concat(
+    [
+      /* 砲架：兩片側板 ＋ 前後橫樑 ＋ 前樑上一道藍鐵箍（同投石機那一道，參考圖也有藍）。
+         後橫樑擺在 −3.2 不是 −2.3：砲尾退到底時後緣會走到 z −2.70，
+         擺在 −2.3 那兩塊會插在一起（同投石機的前橫樑，掃過整個後座行程量出來的）。 */
+      { p: [-1.02, CAN_BED, -0.5], s: [0.42, 0.82, 5.8], c: TR_BEAM },
+      { p: [1.02, CAN_BED, -0.5],  s: [0.42, 0.82, 5.8], c: TR_BEAM },
+      { p: [0, CAN_BED, 2.1],      s: [2.3, 0.5, 0.5],   c: TR_WOOD },
+      { p: [0, CAN_BED, 2.1],      s: [2.4, 0.26, 0.56], c: TR_BLUE },
+      { p: [0, CAN_BED - 0.05, -3.2], s: [2.0, 0.45, 0.5], c: TR_WOOD },
+      /* 車軸：輪子掛在它兩端（有它才看得出兩個輪子是同一根軸上的） */
+      { p: [0, CAN_WHEEL, 0.45],   s: [3.4, 0.34, 0.34], c: CN_RING },
+      /* 耳軸座：砲管就是從這兩塊中間滑進滑出的（後座時看得出來）。
+         下緣要壓到縱樑頂（CAN_BED + 0.41），不然整座會浮在半空 */
+      { p: [-0.92, CAN_PIV - 0.35, 0], s: [0.5, 1.3, 0.95], c: CN_RING },
+      { p: [0.92, CAN_PIV - 0.35, 0],  s: [0.5, 1.3, 0.95], c: CN_RING }
+    ],
+    canWheel(-CAN_TRACK), canWheel(CAN_TRACK),
+    [
+      /* 尾梁：從側板後端往後下方收（長度與傾角自己算，同 trebLeg——
+         砲架高度一改就跟著對，見 開發筆記〈不要寫死會隨改動變動的數字〉） */
+      trebLeg(-0.64, -3.3, CAN_BED - 0.1, -5.2, 0.72, 0.5, TR_BEAM),
+      trebLeg(0.64, -3.3, CAN_BED - 0.1, -5.2, 0.72, 0.5, TR_BEAM),
+      /* 尾端那塊直立的木板（參考圖最後面那一塊）＋ 底下的駐鋤 */
+      { p: [0, 1.38, -5.3],  s: [1.05, 1.5, 0.45], c: TR_DECK },
+      { p: [0, 0.38, -5.1],  s: [0.95, 0.44, 0.8], c: CN_RING },
+      /* ── 砲管（d：離耳軸多遠，跟著仰角轉、跟著後座滑）──
+         管身總長 7.3、最粗 1.2：**細長才像砲**。第一版是 6.2 長、最粗 1.46
+         （5.7 比 1），出圖看起來是一坨方塊不是一根管子。 */
+      { d: -CAN_BACK,      s: [1.2, 1.2, 1.15], c: CN_BARREL },   // 砲尾
+      { d: -0.35,          s: [1.08, 1.08, 1.5], c: CN_BARREL },  // 藥室
+      { d: 0.6,            s: [1.18, 1.18, 0.85], c: TR_BLUE },   // 中段那圈藍鐵箍
+      { d: 1.75,           s: [1.0, 1.0, 1.5],   c: CN_BARREL },  // 中段
+      { d: 2.5,            s: [1.08, 1.08, 0.14], c: CN_ROPE },   // 纏在管身的兩道繩
+      { d: 3.05,           s: [1.08, 1.08, 0.14], c: CN_ROPE },
+      { d: 3.5,            s: [0.94, 0.94, 1.9], c: CN_BARREL },  // 前段
+      { d: CAN_LEN - 0.2,  s: [1.1, 1.1, 0.42],  c: CN_RING }     // 砲口環
+    ]
+  );
+  const CAN_PARTS = CAN_PART.length;
+  /* 砲口在哪（機台座標）。**砲彈就是從這一點飛出去的**——規則那邊拿它當出手點，
+     跟 trebSling／BOW_TIP／SWORD_TIP 同一條規矩：畫出來的與飛出去的只有一份數字。
+     rec：砲管後座 0 ＝ 復進到底（待發），1 ＝ 後座到底。
+     kick：整台往後退了多少（世界格數，0 ～ CAN_KICK）。兩層都要算進來，
+     不然開火那一幀砲彈會從「整台還沒退」的那個位置冒出來，跟畫面差一格多。 */
+  function canMuzzle(rec, kick) {
+    const d = CAN_LEN - (rec || 0) * CAN_RECOIL;
+    return { y: CAN_PIV + Math.sin(CAN_EL) * d, z: Math.cos(CAN_EL) * d - (kick || 0) };
+  }
+  /* c：{x, z, a 朝向, rec 砲管後座 0～1, back 整台退了多少} */
+  function putCannons(list) {
+    const n = Math.min(list.length, MAXCAN);
+    canMesh.visible = n > 0;                 // 沒砲在場就不吃 draw call
+    canMesh.count = n * CAN_PARTS;
+    for (let i = 0; i < n; i++) {
+      const t = list[i];
+      /* 整台後退：沿著機台自己的 −z（砲口朝 +z，所以後退是 −z）。
+         擺在**外層矩陣**上，所以砲架、輪子、砲管整台一起走——這就是
+         「整台砲都後退一點再回去」那一層。 */
+      const kick = t.back || 0;
+      scratch.position.set(t.x - Math.sin(t.a) * kick, 0, t.z - Math.cos(t.a) * kick);
+      scratch.rotation.set(0, t.a, 0);
+      scratch.scale.setScalar(1);
+      scratch.updateMatrix();
+      const back = (t.rec || 0) * CAN_RECOIL;
+      // 輪子滾的角度：走過的弧長 ÷ 半徑。後退是 −z，所以輪子往後滾（負角）
+      const roll = -kick / CAN_WHEEL;
+      for (let k = 0; k < CAN_PARTS; k++) {
+        const b = CAN_PART[k];
+        const bx = b.p ? b.p[0] : 0;
+        if (b.d !== undefined) {
+          /* 掛在砲管上：沿著管軸擺。盒子的 local +z 繞 X 轉 ρ 之後指到
+             (cos ρ, −sin ρ)，要它指到 (cos EL, sin EL)，所以 ρ ＝ −EL。 */
+          const d = b.d - back;
+          scratchB.position.set(bx, CAN_PIV + Math.sin(CAN_EL) * d, Math.cos(CAN_EL) * d);
+          scratchB.rotation.set(-CAN_EL, 0, 0);
+        } else {
+          scratchB.position.set(bx, b.p[1], b.p[2]);
+          if (b.wheel) scratchB.rotation.set(b.r[0] + roll, 0, 0);
+          else if (b.r) scratchB.rotation.set(b.r[0], b.r[1], b.r[2]);
+          else scratchB.rotation.set(0, 0, 0);
+        }
+        scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        canMesh.setMatrixAt(i * CAN_PARTS + k, tmpM);
+        canMesh.setColorAt(i * CAN_PARTS + k, tmpC.setHex(b.c));
+      }
+    }
+    canMesh.instanceMatrix.needsUpdate = true;
+    if (canMesh.instanceColor) canMesh.instanceColor.needsUpdate = true;
+  }
+  /* 燒著的砲彈。跟投石機的飛石、隕石共用同一顆球（IcosahedronGeometry(0.5,1)），
+     只有顏色不同——火色（使用者：「可以像投石機那顆球型 顏色偏火色」）。
+     火焰本身是 hot 那批粒子拖出來的，這裡只負責那顆彈體。 */
+  function putShells(list) {
+    const n = Math.min(list.length, MAXSHELL);
+    shellMesh.visible = n > 0;
+    shellMesh.count = n;
+    for (let i = 0; i < n; i++) {
+      const r = list[i];
+      scratch.position.set(r.x, r.y, r.z);
+      scratch.rotation.set(r.rx, r.ry, 0);
+      scratch.scale.setScalar(r.s);
+      scratch.updateMatrix();
+      shellMesh.setMatrixAt(i, scratch.matrix);
+    }
+    shellMesh.instanceMatrix.needsUpdate = true;
+  }
+
   /* 推土機。d：{x, z, a 朝向, bob 引擎抖動}
      車頭（推土鏟）朝 local +Z，跟投石機同一套擺位方式。
      鏟子的寬度就是規則那邊 DOZ_W 的兩倍——畫面上推得到的寬度必須跟判定一致，
@@ -4436,7 +4631,7 @@ const ENG = (function () {
     init, resize, render, info, pick, camEye,
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers, putEmotes,
-    putTrees, putDust, putTrebs, putRocks, putDozers, putTrucks, putPools,
+    putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
     putBalls, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks, putGates, putWeapons, putSwords, putBeasts, putUfos,
@@ -4454,6 +4649,10 @@ const ENG = (function () {
        （放索時索是拉直的，石兜就在這個半徑上，e2e 拿它驗「甩到圓弧外側」）。 */
     TREB_REST, TREB_REL, TREB_END, trebSling,
     trebSlingAngle, trebSlingLoose: trebTroughAng, TREB_ARM, TREB_SLING,
+    /* 加農砲（v1.204）：砲管仰角就是砲彈的出手仰角，砲口就是出手點——
+       規則那邊照這兩個算彈道（同 trebSling／BOW_TIP），各寫一份的話
+       砲彈會從管子側面冒出來、或飛的方向跟管子指的方向不一樣。 */
+    CAN_EL, CAN_RECOIL, CAN_KICK, CAN_LEN, canMuzzle, MAXCAN,
     /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
     SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_HIT, SWORD_TIP, SWORD_W,
     /* 幽浮（v1.167）：光柱的錐度與吸光口高度。判定用的倒錐就是畫出來這一根，
@@ -4472,7 +4671,7 @@ const ENG = (function () {
        「有沒有在拍」「彎不彎」，兩片疊在一起照樣過。行為對、外觀壞，本來完全沒人守。
        NUKE_PARTS 是 init 時才填的，所以整份用 getter 取，不能在建物件那一刻就取值。 */
     get MODELS() {
-      return { man: BODY, treb: TREB_PART, doz: DOZ_PART, truck: TRK_PART,
+      return { man: BODY, treb: TREB_PART, cannon: CAN_PART, doz: DOZ_PART, truck: TRK_PART,
                bomb: BOMB_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
                ufo: UFO_PART, ufoLit: UFO_LIT,
                ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
@@ -4481,6 +4680,6 @@ const ENG = (function () {
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh }; }
   };
 })();

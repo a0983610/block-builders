@@ -416,6 +416,7 @@ const installClean = page => page.evaluate(() => {
     balls = null; ENG.putBalls([]); aim = null;
     twists = null; ENG.putTornados([]);
     trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
+    cannons = null; ENG.putCannons([]); ENG.putShells([]);   // 加農砲（v1.204）：砲與飛在空中的彈
     bombs = null; ENG.putBombs([]);
     meteors = null; ENG.putMeteors([]);
     nukes = null; ENG.putNukes([]);
@@ -15441,11 +15442,298 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 支在 3 高以上（中位 ' + arHigh.on.med + '）；點地面：' + arHigh.gnd.land +
      ' 支插住、只有 ' + arHigh.gnd.wall + ' 支在 3 高以上（中位 ' + arHigh.gnd.med + '）');
 
+  }   // ── 〈箭雨〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 加農砲 ══════════
+     v1.204 新增（使用者：「新增破壞道具 加農砲　參考圖(造型水準 同投石機)　操作方法
+     類似投石機 但是拋物線是更直線很多的砲彈…並帶有燃燒效果」）。
+     它跟投石機共用的那一套（兩點式、隊形、掃掠判定）在〈破壞道具與解鎖〉的投石機那幾條
+     已經守著，這一段只驗**它自己不一樣的地方**：
+       ① 出手仰角永遠 ＝ 畫出來的砲管仰角（常數；投石機是每發各自算）
+       ② 出手點 ＝ 畫出來的砲口（從真的畫出去的矩陣量回來）
+       ③ 彈道比投石機直得多
+       ④ 抬不到的高度就平射，初速不會爆掉
+       ⑤ 落點炸開**並起火**（投石機的石頭只是砸）
+       ⑥ 一整輪不震畫面
+       ⑦ 砲口不能生在牆裡（CAN_STAND 比投石機遠得多的理由）
+     全部押得住骰子或純解析，所以都是規則型（見 CLAUDE.md〈兩種條目〉）。 */
+  SEC: { if (!(await head('加農砲', T_COMMIT))) break SEC;
+  await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 3 });
+  const can = await page.evaluate(() => {
+    completeNow();
+    tool = 'cannon';
+    /* 第一下：只有光環，一門都不該出現（同投石機）。站位挑在「工地外 ＋ 離島邊還有餘裕」
+       的地方，兩道保險都不會動到隊形（見 placeCannon）。 */
+    const from = { x: siteR + CAN_STAND + 6, z: 0 };
+    useTool({ kind: 'ground', point: { x: from.x, y: 0, z: from.z } });
+    const one = { aim: !!aim, n: cannons ? cannons.list.length : 0 };
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    const team = cannons.list.map(m => ({ x: m.x, z: m.z, a: m.a, tx: m.tx, tz: m.tz }));
+    const cx = team.reduce((s, m) => s + m.x, 0) / team.length;
+    const cz = team.reduce((s, m) => s + m.z, 0) / team.length;
+    const zs = team.map(m => m.z).sort((a, b) => a - b);
+    let gapMin = 9e9, gapMax = 0;
+    for (let i = 1; i < zs.length; i++) {
+      gapMin = Math.min(gapMin, zs[i] - zs[i - 1]);
+      gapMax = Math.max(gapMax, zs[i] - zs[i - 1]);
+    }
+    const faceErr = Math.max(...team.map(m => Math.abs(m.a - Math.atan2(m.tx - m.x, m.tz - m.z))));
+    const aimErr = Math.max(...team.map(m => Math.hypot(m.tx, m.tz)));
+    // 再架一隊：疊上去；架到滿（CAN_MAX）就把最早那一隊擠掉
+    useTool({ kind: 'ground', point: { x: -siteR - CAN_STAND - 6, y: 0, z: 0 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    const two = cannons.list.length;
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: siteR + CAN_STAND + 6 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    const three = cannons.list.length;
+    /* 第一下點在建築正中央：整隊要被推到圈外，而且量的是**砲口**不是機台中心
+       ——砲口在機台前方 canMuzzle().z，那正是 CAN_STAND 要遠的理由。 */
+    cleanTools(); completeNow();
+    tool = 'cannon';
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    useTool({ kind: 'ground', point: { x: siteR + 20, y: 0, z: 0 } });
+    const mzZ = ENG.canMuzzle(0).z;
+    const muzzleD = Math.min(...cannons.list.map(m => Math.hypot(
+      m.x + Math.sin(m.a) * mzZ, m.z + Math.cos(m.a) * mzZ)));
+    let apart = 9e9;
+    const last = cannons.list;
+    for (let i = 0; i < last.length; i++)
+      for (let j = i + 1; j < last.length; j++)
+        apart = Math.min(apart, Math.hypot(last[i].x - last[j].x, last[i].z - last[j].z));
+    /* 跑一整輪：**重新架一隊、而且第二下要點在建築上**。上面那一隊的第二下點的是
+       工地外的空地（那一段驗的是隊形被推出去），照那一隊跑完會打在草地上，
+       量到的破壞當然是 0（第一版就是這樣紅的）。 */
+    cleanTools(); completeNow();
+    const b0 = placedCnt;
+    tool = 'cannon';
+    useTool({ kind: 'ground', point: { x: siteR + CAN_STAND + 6, y: 0, z: 0 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    let maxShell = 0, offCentre = 0, drawn = 0;
+    for (let i = 0; i < 2000 && cannons; i++) {
+      step(0.02);
+      if (cannons) {
+        maxShell = Math.max(maxShell, cannons.shells.length);
+        /* step() 只跑模擬、不畫（畫在 draw()），所以要自己畫一次才問得到
+           「真的畫出去幾顆」——同投石機那條〈待發時石頭就躺在石兜裡〉。 */
+        ENG.putShells(cannons.shells);
+        drawn = Math.max(drawn, ENG.three.shellMesh.count);
+        for (const r of cannons.shells) if (Math.hypot(r.x, r.z) > arenaR + 5) offCentre++;
+      }
+    }
+    return { n0: b0, after: placedCnt, one, team: team.length, want: CAN_TEAM, cap: CAN_MAX,
+             shots: CAN_SHOTS,
+             ctrErr: +Math.hypot(cx - from.x, cz - from.z).toFixed(4),
+             gapMin: +gapMin.toFixed(3), gapMax: +gapMax.toFixed(3), gap: CAN_GAP,
+             faceErr: +faceErr.toFixed(6), aimErr: +aimErr.toFixed(4),
+             two, three, apart: +apart.toFixed(1), muzzleD: +muzzleD.toFixed(1),
+             siteR: +siteR.toFixed(1), maxShell, drawn, gone: !cannons, offCentre };
+  });
+  ok('點兩下：第一下只在地上畫光環，第二下才一次架 ' + can.want + ' 門',
+     can.one.aim && can.one.n === 0 && can.team === can.want,
+     '第一下：光環在、砲 ' + can.one.n + ' 門；第二下：' + can.team +
+     ' 門（CAN_TEAM ' + can.want + '、每門 ' + can.shots + ' 發）');
+  ok('一隊排成一列、中心落在第一點，每門都朝第二點',
+     can.ctrErr < 0.001 && Math.abs(can.gapMin - can.gap) < 0.001 &&
+     Math.abs(can.gapMax - can.gap) < 0.001 && can.faceErr < 1e-9 && can.aimErr < 1e-9,
+     '隊列中心離第一點 ' + can.ctrErr + '、間距 ' + can.gapMin + '～' + can.gapMax +
+     '（CAN_GAP ' + can.gap + '）、朝向誤差最多 ' + can.faceErr + ' 弧度');
+  ok('可以再架一隊，架到上限就把最早那一隊擠掉',
+     can.two === can.want * 2 && can.three === can.cap,
+     '一隊 ' + can.team + ' → 兩隊 ' + can.two + ' → 再一隊 ' + can.three +
+     '（上限 ' + can.cap + '）');
+  /* 這一條守的就是 CAN_STAND ＝ 11 的理由：砲口在機台**前方**（投石機的出手點在後方），
+     照投石機的 5 站的話砲口會落在牆裡，一出膛就在自己臉前面炸開。 */
+  ok('第一下點在建築正中央：整隊被推到圈外，而且砲口也在圈外（不會生在牆裡）',
+     can.muzzleD > can.siteR && can.apart > 3.5,
+     '最近的一門砲口距中心 ' + can.muzzleD + '（建築半徑 ' + can.siteR +
+     '）、砲與砲之間最近 ' + can.apart);
+  ok('砲彈畫得出來、不會飛出場外',
+     can.maxShell > 0 && can.drawn > 0 && can.offCentre === 0,
+     '同時最多 ' + can.maxShell + ' 顆在空中（畫出去 ' + can.drawn + ' 顆）');
+  ok('砲彈打下來會造成破壞', can.after < can.n0, placedCntTxt(can.n0, can.after));
+  ok('打完會自己撤走', can.gone);
+
+  /* ── 彈道：仰角是常數，初速才是算出來的 ────────────────────────────
+     **不跑模擬**：直接呼叫 fireCannon，讀它算出來的那一筆速度。
+     ① 出手仰角 atan2(vy, 水平速度) 必須**永遠**等於 ENG.CAN_EL——不管打多遠、
+        打多高、砲管在待發還是後座到底。這就是「畫出來的砲管方向 ＝ 砲彈飛的方向」。
+     ② 出手點要落在**畫出去的砲口**上：拿 canMesh 裡砲口環那一塊的世界座標來比
+        （砲口環中心在 d ＝ CAN_LEN − 0.2，所以兩點該差 0.2）。
+     ③ 初速不會爆掉：打高樓時 h 會被 reach 擋掉、改成平射（見 fireCannon）。 */
+  const canBal = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    cannons = null;
+    placeCannon({ x: siteR + CAN_STAND, z: 0 }, { x: 0, z: 0 });
+    const m = cannons.list[0];
+    let elErr = 0, vMax = 0, vMin = 9e9, tipErr = 0;
+    const m4 = new THREE.Matrix4(), v3 = new THREE.Vector3();
+    const per = ENG.MODELS.cannon.length;
+    for (let k = 0; k < 60; k++) {
+      cannons.shells.length = 0;
+      m.rec = k % 3 / 2;                       // 待發／後座一半／後座到底都試一遍
+      m.back = (k % 2) * ENG.CAN_KICK;         // 整台退到底與沒退都試（兩層後座）
+      m.tx = k < 30 ? 0 : siteR * 0.5;         // 打場心（有高樓）與打邊角
+      m.tz = 0;
+      ENG.putCannons(cannons.list);            // 先畫出去，才能拿畫出來的砲口來比
+      fireCannon(m);
+      const r = cannons.shells[0];
+      const vh = Math.hypot(r.vx, r.vz);
+      elErr = Math.max(elErr, Math.abs(Math.atan2(r.vy, vh) - ENG.CAN_EL));
+      const v = Math.hypot(vh, r.vy);
+      vMax = Math.max(vMax, v); vMin = Math.min(vMin, v);
+      // 砲口環（造型表最後一塊）的世界座標
+      m4.identity(); ENG.three.canMesh.getMatrixAt(per - 1, m4);
+      v3.setFromMatrixPosition(m4);
+      tipErr = Math.max(tipErr, Math.abs(Math.hypot(r.x - v3.x, r.y - v3.y, r.z - v3.z) - 0.2));
+    }
+    /* 彈道有多彎：打**空地**（目標高度 0）量頂點離地，跟投石機同距離的公式對照。
+       目標挑在砲側面那片空草地（工地在原點，往 z 走這一段沒有積木），所以
+       fireCannon 掃到的 ty 是 0——量到的就是拋物線本身，不含屋頂高度那一項。
+       機台朝哪不影響這一條：頂點只跟距離與目標高度有關。 */
+    cannons.shells.length = 0;
+    m.rec = 0; m.back = 0; m.tx = m.x; m.tz = 40;
+    fireCannon(m);
+    const r = cannons.shells[0];
+    const vh = Math.hypot(r.vx, r.vz);
+    const d = vh * r.T;
+    const apex = r.y + r.vy * r.vy / (2 * GRAV);        // 頂點離地
+    // 投石機同距離、同樣打平地的頂點（fireRock 那條式子，出手點是索末端）
+    const ts = ENG.trebSling(ENG.TREB_REL);
+    const tTop = Math.max(ts.y + Math.max(TREB_CLEAR, d * TREB_LOB), 0.6 + TREB_OVER);
+    cleanTools(); clearFires();
+    return { elErr: +elErr.toFixed(12), el: +(ENG.CAN_EL * 180 / Math.PI).toFixed(2),
+             vMax: +vMax.toFixed(1), vMin: +vMin.toFixed(1), cap: CAN_VMAX,
+             tipErr: +tipErr.toFixed(6),
+             apex: +apex.toFixed(1), d: +d.toFixed(1), fly: +r.T.toFixed(2),
+             tTop: +tTop.toFixed(1) };
+  });
+  ok('每一發的出手仰角都正好等於畫出來的砲管仰角（不管打多遠、砲管退到哪）',
+     canBal.elErr < 1e-9,
+     '砲管 ' + canBal.el + '°、六十發的最大誤差 ' + canBal.elErr + ' 弧度');
+  ok('砲彈是從畫出來的砲口飛出去的',
+     canBal.tipErr < 0.001,
+     '出手點離砲口環中心 0.2 ± ' + canBal.tipErr + '（環心在 CAN_LEN − 0.2）');
+  /* 「更直線很多」就是這一條：同一段距離、同樣打平地，砲的頂點要明顯低於投石機。
+     兩邊都是照各自的式子算出來的（沒有跑模擬），所以永遠不會飄。 */
+  ok('彈道比投石機直得多（同距離打平地，頂點不到投石機的六成）',
+     canBal.apex < canBal.tTop * 0.6,
+     '飛 ' + canBal.d + ' 格：砲的頂點 ' + canBal.apex + '（' + canBal.fly +
+     ' 秒）、投石機同距離 ' + canBal.tTop);
+  ok('初速不會爆掉：抬不到的高度就平射過去打牆',
+     canBal.vMax <= canBal.cap + 0.01,
+     '六十發初速 ' + canBal.vMin + '～' + canBal.vMax + '（上限 CAN_VMAX ' + canBal.cap + '）');
+
+  /* ── 兩層後座（v1.204 使用者：「後座力又表現得更強　整台砲都後退一點再回去」）──
+     ① 砲管沿管軸滑（rec）② **整台往後退再滾回原位**（back）。
+     兩層都要把砲口往後帶，不然砲彈會從管子外面冒出來。
+     **不跑整輪**：只推 stepCannons，開火那一幀與之後幾幀直接讀狀態，所以不會飄。 */
+  const canKick = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    cannons = null;
+    placeCannon({ x: siteR + CAN_STAND, z: 0 }, { x: 0, z: 0 });
+    const m = cannons.list[0];
+    const at = () => {                          // 這一刻砲口在世界的哪裡（照畫面那一份算）
+      const mz = ENG.canMuzzle(m.rec, m.back);
+      return { x: m.x + Math.sin(m.a) * mz.z, y: mz.y, z: m.z + Math.cos(m.a) * mz.z };
+    };
+    const home = { x: m.x, z: m.z }, muz0 = at();
+    m.next = 0;                                 // 下一幀就開火
+    stepCannons(1 / 60);
+    const shot = { back: m.back, rec: m.rec, muz: at() };
+    /* 開火那一幀畫出去，看**畫出來的砲口環**有沒有跟著退（整台的位移是掛在外層矩陣上的，
+       只驗規則那邊的 m.back 等於沒驗到畫面）。 */
+    ENG.putCannons(cannons.list);
+    const m4 = new THREE.Matrix4(), v3 = new THREE.Vector3();
+    ENG.three.canMesh.getMatrixAt(ENG.MODELS.cannon.length - 1, m4);
+    v3.setFromMatrixPosition(m4);
+    const drawnGap = Math.abs(Math.hypot(shot.muz.x - v3.x, shot.muz.y - v3.y,
+                                         shot.muz.z - v3.z) - 0.2);
+    let t = 0;                                  // 推回原位要多久
+    while (m.back > 0 && t < 5) { stepCannons(1 / 60); t += 1 / 60; }
+    const restMuz = at();
+    cleanTools(); clearFires();
+    return { kick: ENG.CAN_KICK, want: CAN_KICK_T,
+             back: +shot.back.toFixed(3), rec: +shot.rec.toFixed(3),
+             moved: +Math.hypot(shot.muz.x - muz0.x, shot.muz.z - muz0.z).toFixed(2),
+             lower: +(muz0.y - shot.muz.y).toFixed(2),
+             drawnGap: +drawnGap.toFixed(6), back2: +t.toFixed(2),
+             home: +Math.hypot(m.x - home.x, m.z - home.z).toFixed(3),
+             rest: +Math.hypot(restMuz.x - muz0.x, restMuz.z - muz0.z).toFixed(3) };
+  });
+  ok('開一砲：整台往後退、砲管也往後滑，砲口跟著退到後面',
+     canKick.back === canKick.kick && canKick.rec === 1 &&
+     canKick.moved > canKick.kick && canKick.lower > 0,
+     '整台退 ' + canKick.back + ' 格（CAN_KICK ' + canKick.kick + '）、砲管 rec ' +
+     canKick.rec + '：砲口往後 ' + canKick.moved + ' 格、低了 ' + canKick.lower);
+  ok('畫出來的砲口也跟著整台退了（不是只有規則那邊的數字在動）',
+     canKick.drawnGap < 0.001,
+     '出手點離畫出來的砲口環中心 0.2 ± ' + canKick.drawnGap);
+  ok('整台會自己滾回原位（機台座標沒被位移汙染）',
+     Math.abs(canKick.back2 - canKick.want) < 0.1 && canKick.home === 0 && canKick.rest < 0.001,
+     '推回原位 ' + canKick.back2 + ' 秒（CAN_KICK_T ' + canKick.want +
+     '）、機台座標位移 ' + canKick.home + '、砲口回到 ±' + canKick.rest);
+
+  /* ── 落點：炸開並起火（投石機的石頭只是砸）──────────────────────
+     兩支各在同一個點打一發，量「打掉幾塊」與「留下幾處火」。
+     **不跑模擬**：直接呼叫落點那一支，所以不會飄。 */
+  const canFire = await page.evaluate(() => {
+    const put = () => {
+      cleanTools(); clearFires();
+      targetCnt = 1200; startBuild(true); completeNow();
+      return blocks.filter(b => b.st === SET).length;
+    };
+    const p = { x: 0, y: 4, z: 0 };
+    let n = put();
+    shellHit({ x: p.x, y: p.y, z: p.z, s: CAN_SHELL });
+    const shell = { gone: n - blocks.filter(b => b.st === SET).length,
+                    fires: fires ? fires.length : 0 };
+    n = put();
+    rockHit({ x: p.x, y: p.y, z: p.z, s: 1.6 });
+    const rock = { gone: n - blocks.filter(b => b.st === SET).length,
+                   fires: fires ? fires.length : 0 };
+    cleanTools(); clearFires();
+    return { shell, rock, R: CAN_R, rockR: ROCK_R };
+  });
+  ok('砲彈落點會炸開並燒起來；投石機的石頭同樣範圍只是砸、不起火',
+     canFire.shell.gone > 0 && canFire.shell.fires > 0 && canFire.rock.fires === 0,
+     '砲彈 −' + canFire.shell.gone + ' 塊、起火 ' + canFire.shell.fires +
+     ' 處；石頭 −' + canFire.rock.gone + ' 塊、起火 ' + canFire.rock.fires +
+     ' 處（兩邊半徑都是 ' + canFire.R + '）');
+
+  /* 一輪 18 發、每半秒落一顆——跟保齡球、投石機、王之財寶同一條規矩：不震畫面
+     （見 開發筆記〈會持續破壞的不震畫面〉）。這是 explode 那個 quiet 參數守的。 */
+  const canShake = await page.evaluate(() => {
+    const real = ENG.shake;
+    let n = 0;
+    ENG.shake = v => { n++; return real(v); };
+    cleanTools(); clearFires(); startBuild(true); completeNow();
+    castCannons({ x: siteR + CAN_STAND + 6, z: 0 }, { x: 0, z: 0 });
+    let shots = 0;
+    const realHit = window.shellHit;
+    window.shellHit = r => { shots++; return realHit(r); };
+    for (let i = 0; i < 700 && cannons; i++) step(0.05);
+    window.shellHit = realHit;
+    ENG.shake = real;
+    const got = n;
+    // 對照組：同一支 explode 不給 quiet 就要震，不然是整套震動被我弄壞了
+    n = 0; ENG.shake = v => { n++; return real(v); };
+    explode({ x: 0, y: 4, z: 0 }, CAN_R, CAN_POW);
+    const loud = n;
+    ENG.shake = real;
+    cleanTools(); clearFires();
+    return { got, loud, shots, want: CAN_TEAM * CAN_SHOTS };
+  });
+  ok('加農砲打完一整輪，畫面一次都不震（同保齡球／投石機／王之財寶）',
+     canShake.got === 0 && canShake.shots === canShake.want,
+     '一輪 ' + canShake.shots + ' 發（' + canShake.want + ' 發）、震 ' + canShake.got + ' 次');
+  ok('同一支 explode 不給 quiet 照樣震', canShake.loud === 1,
+     '炸一發震 ' + canShake.loud + ' 次');
+  }   // ── 〈加農砲〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 放火 ══════════
      這個道具沒有「一下」，威力全在蔓延，所以量的是「火有沒有沿著格子走」與
      「燒完那塊有沒有變黑掉下來」。用大建築測：小的燒到剩 25% 就整棟垮掉換場，
      量到的會是換場規則不是火。 */
-  }   // ── 〈箭雨〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('放火', T_COMMIT))) break SEC;
   await reset(page, { shape: '新天鵝堡', cnt: 2400, workers: 6 });
   const fire = await page.evaluate(() => {
@@ -23134,9 +23422,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       orig[n] = window[n];
       window[n] = function (...a) { seen++; return orig[n].apply(null, a); };
     }
-    /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機：只點一下的話只會畫個瞄準環，
-       一台機器／一隊人都不會出來）。 */
-    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb'];
+    /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機、v1.204 加加農砲：
+       只點一下的話只會畫個瞄準環，一台機器／一隊人都不會出來）。 */
+    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb', 'cannon'];
     const out = [];
     try {
       for (const t of TOOLS) {

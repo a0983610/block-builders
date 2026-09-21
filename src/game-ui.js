@@ -86,6 +86,7 @@ function step(dt) {
   stepBall(dt);
   stepTwist(dt);
   stepTrebs(dt);
+  stepCannons(dt);
   stepBombs(dt);
   stepMeteors(dt);
   stepFw(dt);
@@ -227,6 +228,8 @@ function draw() {
   ENG.putTrebs(trebs ? trebs.list : EMPTY);
   // 第二個參數是機台清單：還沒放手的那幾台，石頭要畫在石兜裡（v1.199）
   ENG.putRocks(trebs ? trebs.rocks : EMPTY, trebs ? trebs.list : null);
+  ENG.putCannons(cannons ? cannons.list : EMPTY);      // 加農砲（v1.204）
+  ENG.putShells(cannons ? cannons.shells : EMPTY);
   ENG.putBombs(bombs || EMPTY);
   /* 只把真的在天上飛的隕石丟過去（還在倒數的那幾顆連影子都不該有）。
      重用同一個陣列，不要每幀配置一個新的。 */

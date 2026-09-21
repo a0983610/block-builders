@@ -59,7 +59,10 @@ const TOOLS = [
   { id: 'ufo', n: '幽浮', k: '🛸',
     tip: '點地面：一台幽浮從場外飛進來、停在那個位置上方往下照光，吸走光圈裡的積木（每秒兩成五）與小人動物，吸完就飛走；5 秒後被吸走的全部從天上掉下來，均勻撒回原來那一圈' },
   { id: 'arrow', n: '箭雨', k: '🏹',
-    tip: '點兩下：第一下點地面站出一隊八十人的小人弓箭手，第二下決定射哪裡（點建築就瞄那個高度）——45 度拋物線齊射三輪，落點散在附近（射得愈遠愈散），箭插到的地方咬掉一小片（不爆炸、不起火），插著的箭慢慢淡掉' }
+    tip: '點兩下：第一下點地面站出一隊八十人的小人弓箭手，第二下決定射哪裡（點建築就瞄那個高度）——45 度拋物線齊射三輪，落點散在附近（射得愈遠愈散），箭插到的地方咬掉一小片（不爆炸、不起火），插著的箭慢慢淡掉' },
+  { id: 'cannon', n: '加農砲', k: '🔫',
+    /* 接在最後面（見上面那段解鎖階梯的說明）：門檻是照順序算出來的，不必挑數字。 */
+    tip: '點兩下：先點架砲的位置，再點要轟的地方（一次架 3 門，各打 6 發）——砲管固定 18 度、砲彈走又低又直的彈道，一路拖著火，打到的地方炸開並燒起來；每開一砲噴出一大團白煙，整台被後座推得往後退一截再滾回原位' }
 ];
 /* 等差階梯（見上面那段）：TOOLS 裡沒寫 `lock: null` 的照順序補門檻，
    第 n 把＝擊飛 n × LOCK_STEP 塊。加新道具不必碰這裡。 */
@@ -81,9 +84,10 @@ const toolOk = t => !t.lock || t.lock.ok();
 /* 大劍也在這裡：兩下點哪裡都算數（v1.164 起連建築都不必點，兩下都點地面就是
    貼著地面橫掃）——點在建築上的那一下決定的是揮擊的高度。 */
 /* 箭雨兩下都是點地面（第一下站人、第二下是落點），所以也在這裡。 */
+/* 加農砲兩下都是點地面（第一下擺砲、第二下是要轟的地方），同投石機。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
-                      storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1 };
+                      storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1 };
 let tool = 'hammer';
 
 /* 小槌的衝擊半徑。v1.165 從 5.5 收到 3.6（使用者：「槌子　減小一點破壞範圍
@@ -731,6 +735,299 @@ function stepTrebs(dt) {
   if (!trebs.list.length && !trebs.rocks.length) { trebs = null; ENG.putTrebs([]); ENG.putRocks([]); }
 }
 
+/* ── 加農砲 ─────────────────────────────────────────────
+   （v1.204，使用者：「新增破壞道具 加農砲　參考圖(造型水準 同投石機)　操作方法類似投石機
+   但是拋物線是更直線很多的砲彈(可以像投石機那顆球型 顏色偏火色)　並帶有燃燒效果」）
+
+   操作跟投石機同一套（兩點式：第一下擺砲、第二下轟哪裡、一隊排成一列面向目標），
+   差別全在彈道與火：
+
+   | | 投石機 | 加農砲 |
+   |---|---|---|
+   | 一次幾台／幾發 | 4 × 5 ＝ 20 | **3 × 6 ＝ 18**（使用者選的） |
+   | 出手仰角 | 45°（TREB_LOB 0.25 推出來） | **25°**（ENG.CAN_EL，使用者選的「低伸彈道」） |
+   | 誰決定角度 | 先訂頂點高度、再反解角度 ⇒ 每發都不一樣 | **砲管指哪就是哪**（常數），初速才是算出來的 |
+   | 落點 | smash：砸一個坑，不起火 | **explode：炸開、碎料帶火、周圍燒起來會往鄰居蔓延** |
+   | 彈體 | 石色的球，隨機 1.3～2.1 | **火色的球、固定口徑，飛行途中一路拖著火** |
+
+   **「角度固定、初速算出來」是它跟投石機最根本的差別**，也是「更直線」的來源：
+   投石機要把石頭吊到屋頂上方再砸下來，所以先訂頂點；砲管指著哪裡就打哪裡，
+   要打多遠靠裝藥（＝初速）。好處是**畫出來的砲管方向永遠等於砲彈飛出去的方向**，
+   不必像投石機那樣去對放索點的切線（e2e 有一條在驗這個等式）。
+   代價是打不到太高的東西——那就平射過去打牆，那正是加農砲的樣子。
+   見 開發筆記〈加農砲：直射、後座、燒著的砲彈〉 */
+const CAN_MAX = 6;                  // 場上最多幾門（＝兩隊。**要 ≤ 引擎的 MAXCAN**）
+const CAN_TEAM = 3;                 // 一次架幾門（使用者指定）
+const CAN_GAP = 7;                  // 門與門之間隔多遠（同投石機；整台寬 3.2，中間留得下走道）
+const CAN_SHOTS = 6;                // 每門幾發（使用者指定）
+/* 破壞半徑與力道：**同投石機的石頭**（使用者指定）。所以兩把的差別是彈道、速度與火，
+   不是單發威力——一隊 18 發對 20 發，總量也在同一個量級，好比較。 */
+const CAN_R = ROCK_R, CAN_POW = ROCK_POW;
+/* 落點散開得比投石機小（8 → 6）：直射砲比拋射準，這是它換來的。
+   仍然是開根號讓分布均勻（同 fireRock）。 */
+const CAN_SPRAY = 6;
+const CAN_SHELL = 0.9;              // 砲彈多大＝砲管口徑（畫出來的管子塞得下這一顆）
+/* 初速上限。這一條決定「抬不到就打牆」那條規則在哪裡翻面（見 fireCannon）：
+   55 ≈ 投石機石頭初速（約 28）的兩倍，再快看起來就是子彈不是砲彈了。 */
+const CAN_VMAX = 55;
+/* 彈道至少要「掉」這麼多才解得出初速：貼著臉打（d 很小）時分母會趨近 0，
+   不夾的話初速會噴到無限大。夾住之後那一發只是打得比瞄準點高一點。 */
+const CAN_DROP = 1.2;
+/* 站位：siteR + 這麼多。**比投石機的 5 遠得多**，因為砲口在機台**前方** 4.53 格
+   （投石機的出手點在機台後方，見 ENG.trebSling），站 siteR+5 的話砲口會插在牆裡、
+   一出膛就在自己臉前面炸開——投石機 v1.193 第一版踩過同一個坑。
+   11 − 4.53 ＝ 砲口離工地外緣還有 6.5 格。 */
+const CAN_STAND = 11;
+const CAN_BACK_T = 0.55;            // 砲管後座之後多久復進到底（絞回去那一段，同投石機的慢）
+/* 整台被後座推著往後滾（ENG.CAN_KICK 1.1 格）之後，多久推回原位
+   （v1.204 使用者：「後座力又表現得更強　整台砲都後退一點再回去」）。
+   **比砲管慢一倍**：管子是駐退機彈回去的，整台是人推回去的——
+   一樣快的話兩層會疊成同一個動作，看起來就只剩「整台抖一下」。 */
+const CAN_KICK_T = 1.1;
+const CAN_LOAD = [1.6, 2.4];        // 下一發要等多久（裝填）
+const CAN_HOT_CAP = 260;            // 拖尾的火最多占這麼多（同時幾門就分掉多少，同隕石）
+const CAN_AIM_R = (CAN_TEAM - 1) * CAN_GAP / 2 + 3;   // 第一下的光環 ≈ 一隊的正面寬
+const CAN_AIM_C = 0x4a4e4c;         // 砲身的暗鋼色
+let cannons = null;
+/* 第一下記位置、畫個光環，第二下才架（同投石機的 aimTrebs）。 */
+function aimCannons(point) {
+  if (!aim) { aimFirst(point, CAN_AIM_R, CAN_AIM_C); return; }
+  castCannons(aim, point);
+}
+/* 一隊排成一列、整隊面向目標。**整段隊形的算法與理由跟 castTrebs 一模一樣**
+   （推隊伍的中心而不是一台一台推、推完才算方向、排完再整隊往外挪到每一門都在圈外、
+   最後夾回島內）——那邊的註解就是這一段的說明，不重抄一遍。
+   照 castArrows／castTrebs 的先例各留一份：這三把的隊形細節（幾台、間距、退多遠）
+   各不相同，抽成共用的話參數會比程式還長。 */
+function castCannons(from, toward) {
+  aim = null;
+  let cx = from.x, cz = from.z;
+  const d0 = Math.hypot(cx, cz), minD = siteR + CAN_STAND;
+  if (d0 < minD) {
+    const a = d0 < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(cz, cx);
+    cx = Math.cos(a) * minD; cz = Math.sin(a) * minD;
+  }
+  let dx = toward.x - cx, dz = toward.z - cz;
+  if (Math.hypot(dx, dz) < 0.5) { dx = -cx; dz = -cz; }
+  if (Math.hypot(dx, dz) < 1e-4) { dx = 1; dz = 0; }
+  const d = Math.hypot(dx, dz);
+  const sx = -dz / d, sz = dx / d;                  // 隊伍的橫向
+  {
+    const cr = Math.hypot(cx, cz) || 1, ux = cx / cr, uz = cz / cr;
+    const lim = minD + 0.05;
+    let push = 0;
+    for (let i = 0; i < CAN_TEAM; i++) {
+      const off = (i - (CAN_TEAM - 1) / 2) * CAN_GAP;
+      const px = cx + sx * off, pz = cz + sz * off;
+      const b = px * ux + pz * uz, c2 = px * px + pz * pz - lim * lim;
+      if (c2 >= 0) continue;
+      push = Math.max(push, -b + Math.sqrt(b * b - c2));
+    }
+    cx += ux * push; cz += uz * push;
+  }
+  for (let i = 0; i < CAN_TEAM; i++) {
+    const off = (i - (CAN_TEAM - 1) / 2) * CAN_GAP;
+    placeCannon({ x: cx + sx * off, z: cz + sz * off }, toward);
+  }
+  sndWind();                        // 一隊架好那一聲（同投石機，一隊一次）
+}
+/* 架一門：站在 spot、轟 aimAt。兩道保險同 placeTreb（斜著站時還在牆裡的那一門要推出去、
+   站到島外的要夾回來）。 */
+function placeCannon(spot, aimAt) {
+  if (!cannons) cannons = { list: [], shells: [] };
+  if (cannons.list.length >= CAN_MAX) cannons.list.shift();
+  let x = spot.x, z = spot.z;
+  const d = Math.hypot(x, z), minD = siteR + CAN_STAND;
+  if (d < minD) {
+    const a = d < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(z, x);
+    x = Math.cos(a) * minD; z = Math.sin(a) * minD;
+  }
+  const dd = Math.hypot(x, z), lim = arenaR - 2;
+  if (dd > lim) { x = x / dd * lim; z = z / dd * lim; }
+  // 面向要轟的那一點：rotation.y = a 之後 local +Z（砲口）會指到 (sin a, 0, cos a)
+  /* rec ＝ 砲管後座 0～1、back ＝ 整台退了多少格（兩層後座，見 ENG.putCannons） */
+  cannons.list.push({ x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
+                      tx: aimAt.x, tz: aimAt.z,
+                      rec: 0, back: 0, next: 0.4, left: CAN_SHOTS, idle: 0 });
+}
+/* 開一砲。**仰角是常數，初速是算出來的**（跟投石機正好相反，見上面那張表）：
+     標準彈道式 y(x) = x·tanθ − G·x² / (2·v²·cos²θ)，代 x ＝ d、y ＝ h 解 v：
+       v² ＝ G·d² / (2·cos²θ·(d·tanθ − h))
+   分母那個 `d·tanθ − h` 就是「這條 25° 直線比目標高出多少」——砲彈要掉的量。
+   它越小初速越大（貼著擦過去），≤ 0 就是這個角度根本打不到那麼高。 */
+/* **名字不能叫 fireShell**：那個名字煙火早就用掉了（fireShell(x, z, y0)，見下面），
+   而 classic script 的函式宣告是後蓋前——取同名的話這一支會被煙火那一支默默蓋掉，
+   砲照樣架、照樣後座、照樣撤走，就是一顆彈都不會出現（實測踩過，查了十分鐘）。
+   同 開發筆記〈巨人〉那條「前綴用 GI_ 不是 G_」。 */
+function fireCannon(m) {
+  const a = Math.random() * Math.PI * 2;
+  const rad = Math.sqrt(Math.random()) * CAN_SPRAY;
+  const tx = m.tx + Math.cos(a) * rad, tz = m.tz + Math.sin(a) * rad;
+  // 目標高度取那附近最高的積木（同 fireRock）
+  let ty = 0;
+  for (const b of blocks) {
+    if (b.st !== SET) continue;
+    if (Math.abs(b.x - tx) > 1.8 || Math.abs(b.z - tz) > 1.8) continue;
+    if (b.y > ty) ty = b.y;
+  }
+  /* 出手點＝**畫出來的砲口**（ENG.canMuzzle，同 trebSling／BOW_TIP 那一套）。
+     兩層後座都要帶進去（砲管滑多少 rec、整台退多少 back）：只算一層的話，
+     砲彈會從畫面上砲口以外的地方冒出來。 */
+  const mz = ENG.canMuzzle(m.rec, m.back);
+  const sx = m.x + Math.sin(m.a) * mz.z, sz = m.z + Math.cos(m.a) * mz.z, sy = mz.y;
+  const dd = Math.hypot(tx - sx, tz - sz);
+  const d = Math.max(1, dd);
+  const ux = dd > 1e-4 ? (tx - sx) / dd : Math.sin(m.a);
+  const uz = dd > 1e-4 ? (tz - sz) / dd : Math.cos(m.a);
+  const th = ENG.CAN_EL, ct = Math.cos(th), tn = Math.tan(th);
+  /* 這個距離、初速頂到 CAN_VMAX 時最高打得到多高（把上面那條式子反過來解 h）。
+     打不到就把目標高度當 0 —— **平射過去打牆**，半路撞到哪就在哪炸開
+     （sweepRock 會接住）。不夾的話打高樓時初速會衝到 139 以上，那是子彈不是砲彈。 */
+  const reach = d * tn - GRAV * d * d / (2 * CAN_VMAX * CAN_VMAX * ct * ct);
+  let h = ty + 0.6 - sy;
+  if (h > reach) h = 0;
+  const drop = Math.max(CAN_DROP, d * tn - h);
+  const v = Math.sqrt(GRAV * d * d / (2 * ct * ct * drop));
+  const vh = v * ct;
+  cannons.shells.push({
+    x: sx, y: sy, z: sz,
+    vx: ux * vh, vz: uz * vh, vy: v * Math.sin(th),
+    T: d / vh, t: 0, rx: 0, ry: 0, s: CAN_SHELL
+  });
+  canBlast(m, sx, sy, sz);
+  sndCannon();
+}
+/* 砲口那一團火與白煙。方向沿著管軸往前上方噴——貼著砲口生一顆球的話
+   看起來是「砲口亮了一下」，不是「火藥把東西推出去」。
+   **煙是主角**（v1.204 使用者：「打出去時　炮口要有煙霧」）：第一版只給 10 團、
+   單顆 0.3～0.8、活 0.6～1.3 秒，等於火光旁邊幾點灰——黑火藥砲該是一大團白煙
+   噴出去、散開、慢慢往上飄。現在 34 團、單顆 0.5～1.5、活 1.3～2.8 秒，
+   而且分兩批：噴出去的那一股 ＋ 留在砲口打轉的那一團。
+   顆數與單顆大小照〈顆粒再細一級〉那條調（**顆數往上、單顆往下**）：34 團 × 0.6～1.5
+   出圖是幾塊各自飄的白方塊，48 團 × 0.45～1.2 才連成一團煙。
+   配額用 dust 那一池（閘門 400，同 spawnDust／spawnRing）：三門同時開火是 144 團，
+   還進得去；真的滿了就少生幾團，不去擠掉別的道具的畫面。 */
+const CAN_FLASH = 26;
+const CAN_SMOKE = 48;
+function canBlast(m, sx, sy, sz) {
+  const fx = Math.sin(m.a), fz = Math.cos(m.a);         // 砲口朝哪（水平）
+  const up = Math.sin(ENG.CAN_EL), fw = Math.cos(ENG.CAN_EL);
+  for (let i = 0; i < CAN_FLASH; i++) {
+    if (hot.length >= HOT_BURST) break;
+    const sp = rr(6, 17);
+    hot.push({
+      x: sx + rr(-0.3, 0.3), y: sy + rr(-0.3, 0.3), z: sz + rr(-0.3, 0.3),
+      vx: fx * fw * sp + rr(-2.5, 2.5), vy: up * sp + rr(-1.5, 2.5),
+      vz: fz * fw * sp + rr(-2.5, 2.5),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.16, 0.42), life: rr(0.1, 0.26),
+      g: 0.9, grow: 1.05, cool: rr(0.3, 0.6), keep: 0.955,
+      cr: 1, cg: rr(0.66, 0.92), cb: rr(0.16, 0.42), to: [0.55, 0.14, 0.03]
+    });
+  }
+  for (let i = 0; i < CAN_SMOKE; i++) {
+    if (dust.length > 400) break;
+    /* 兩批：① 前三分之二是「噴出去」的那一股，沿著管軸衝到砲口前方好幾格
+       ② 其餘留在砲口打轉（速度小、散得開），那團才是「砲口罩著一層煙」的樣子。
+       兩批都往上飄（g 負的）、都比第一版大而且活得久——煙要看得見得靠**留得住**。 */
+    const jet = i < CAN_SMOKE * 0.66;
+    const sp = jet ? rr(5, 14) : rr(0.4, 2.5);
+    dust.push({
+      x: sx + rr(-0.5, 0.5), y: sy + rr(-0.5, 0.5), z: sz + rr(-0.5, 0.5),
+      vx: fx * fw * sp + rr(-2.4, 2.4),
+      vy: up * sp * 0.6 + rr(0.4, 2.4),
+      vz: fz * fw * sp + rr(-2.4, 2.4),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: jet ? rr(1.3, 2.4) : rr(1.8, 2.8),
+      s: jet ? rr(0.45, 1.0) : rr(0.6, 1.2),
+      c: rr(0.74, 0.92),                  // 白煙（隕石的尾煙是 0.22～0.38 的深灰）
+      /* g 負的＝往上飄；**keep 要自己給**：stepDust 預設的水平阻力是 0.94／幀，
+         噴出去那一股走不到一格就停住了，看起來像原地冒煙不像砲口噴出來
+         （風壓那道塵牆也是為了同一件事自己帶 keep）。
+         fade 是**縮小**不是變大（見 stepDust），所以給長一點，讓這團煙撐得住。 */
+      g: -0.35, fade: 2.4, keep: jet ? 0.98 : 0.95
+    });
+  }
+}
+/* 砲彈拖著的火：沿著這一幀走過的線段撒，而且**順著飛行方向拉成短條**（ln），
+   跟隕石的尾巴同一個做法——一顆一顆的小方塊連不成一條尾巴。
+   砲彈飛得比石頭快（一幀跑 0.6～1 格），只生在端點的話尾巴會斷成一節一節。 */
+function shellTrail(r, px, py, pz) {
+  const sx = r.x - px, sy = r.y - py, sz = r.z - pz;
+  const sl = Math.hypot(sx, sy, sz);
+  if (sl < 1e-4) return;
+  const share = Math.sqrt(cannons.shells.length);     // 同時幾顆就分掉多少配額（同隕石）
+  r.em = (r.em || 0) + 320 / share * (sl / 30);
+  while (r.em >= 1) {
+    r.em--;
+    if (hot.length > CAN_HOT_CAP) break;
+    const head = Math.random() < 0.4;                 // 包住彈體的火頭／拖在後面的尾
+    const u = head ? 1 : Math.random();
+    const j = head ? 0.5 : 0.22;
+    const h = {
+      x: px + sx * u + rr(-j, j), y: py + sy * u + rr(-j, j), z: pz + sz * u + rr(-j, j),
+      vx: rr(-0.7, 0.7), vy: rr(0.6, 2.2), vz: rr(-0.7, 0.7),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      s: head ? rr(0.2, 0.42) : rr(0.12, 0.28), life: head ? rr(0.1, 0.22) : rr(0.16, 0.4),
+      g: -1.6, grow: 1.04, cool: rr(0.2, 0.42),
+      cr: 1, cg: rr(0.5, 0.84), cb: rr(0.06, 0.22), to: [0.55, 0.1, 0.02]
+    };
+    if (!head) { h.dx = sx / sl; h.dy = sy / sl; h.dz = sz / sl; h.ln = rr(0.6, 1.9); }
+    hot.push(h);
+  }
+}
+function shellHit(r) {
+  const p = { x: r.x, y: Math.max(0.5, r.y), z: r.z };
+  /* 炸開並起火（使用者選的那一款）：explode 會掀飛、把炸出來的碎料逐塊點著，
+     再往周圍還站著的積木補幾處火——那些火會自己往鄰居蔓延（同放火）。
+     **最後一個參數 quiet ＝ 不震畫面**：一輪 18 發、每半秒就落一顆，每顆都晃的話
+     畫面會一路抖到整輪打完（同投石機的石頭與雷，見 開發筆記〈會持續破壞的不震畫面〉）。
+     聲音照給——連續的砲擊本來就該聽得到。 */
+  explode(p, CAN_R, CAN_POW, false, false, false, null, true);
+}
+function stepCannons(dt) {
+  if (!cannons) return;
+  for (let i = cannons.list.length - 1; i >= 0; i--) {
+    const m = cannons.list[i];
+    // 復進：砲管彈回待發位置，整台也一路推回原位（兩層各走各的，見 ENG.putCannons）
+    if (m.rec > 0) m.rec = Math.max(0, m.rec - dt / CAN_BACK_T);
+    if (m.back > 0) m.back = Math.max(0, m.back - ENG.CAN_KICK * dt / CAN_KICK_T);
+    if (m.left > 0) {
+      m.next -= dt;
+      if (m.next <= 0) {
+        m.next = rr(CAN_LOAD[0], CAN_LOAD[1]);
+        m.left--;
+        /* **先把兩層後座都踢到底、再開砲**：出手點取的是 ENG.canMuzzle(m.rec, m.back)，
+           這樣畫面上那一幀的砲口就是砲彈生出來的那一點（同投石機「先把臂角釘回
+           TREB_REL 再放」）。差的那一格多在一幀之內看不出來，而兩邊對不齊就會
+           看到砲彈從管子外面冒出來。 */
+        m.rec = 1;
+        m.back = ENG.CAN_KICK;
+        fireCannon(m);
+      }
+    } else {
+      m.idle += dt;                                  // 打完站一下再撤走（同投石機）
+      if (m.idle > 3.5) cannons.list.splice(i, 1);
+    }
+  }
+  for (let i = cannons.shells.length - 1; i >= 0; i--) {
+    const r = cannons.shells[i];
+    const px = r.x, py = r.y, pz = r.z;
+    r.t += dt;
+    r.vy -= GRAV * dt;
+    r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
+    r.rx += dt * 3.2; r.ry += dt * 2.4;
+    shellTrail(r, px, py, pz);
+    // 半路撞到什麼就在那裡炸開，跟投石機的石頭、隕石、核彈共用同一套掃掠判定
+    if (sweepRock(r, px, py, pz) || r.t >= r.T || r.y <= 0.6) {
+      cannons.shells.splice(i, 1); shellHit(r);
+    }
+  }
+  if (!cannons.list.length && !cannons.shells.length) {
+    cannons = null; ENG.putCannons([]); ENG.putShells([]);
+  }
+}
+
 /* 保齡球：貼著地面從場外滾進來，把沿路的東西撞飛。
    撞掉越多減速越多，滾不動就停下。滾在地面而不是飛在半空，
    剛好會先把建築的底部掏空——上面的部分接著就靠垮塌判定自己塌下來。 */
@@ -1330,7 +1627,10 @@ const Y_BOOST = 0.85;               // 抬升占衝擊力道的比例（重力 2
    （發光球殼、噴出來的火星、貼地光環、衝擊環），聲音也改成一聲悶響。
    隕石的重點本來就是火不是爆炸，掛一顆跟核彈同款的火球在上面反而搶戲。 */
 /* self＝這一下是場上哪一隻自己打的，不要把牠掀飛（v1.192 巨人，見 afterHit）。 */
-function explode(point, R, power, magic, wind, crash, self) {
+/* quiet＝這一發不震畫面（v1.204 加農砲）。同 smash() 的 quiet，理由也一樣：
+   一輪 18 發、每半秒落一顆，每顆都晃的話畫面會一路抖到整輪打完
+   （見 開發筆記〈會持續破壞的不震畫面〉）。**只管震動，不管聲音**——砲擊要聽得到。 */
+function explode(point, R, power, magic, wind, crash, self, quiet) {
   const R2 = R * R;
   let n = 0, ownN = 0;                          // ownN＝其中有幾塊是地標的（見 afterHit）
   for (const b of blocks) {
@@ -1409,7 +1709,7 @@ function explode(point, R, power, magic, wind, crash, self) {
   spawnDust(point, R, n);
   // 風壓排在最後：它吃的塵霧配額比較兇，先讓爆炸本身那些拿到自己的份
   if (wind) spawnWind(point, R, magic);
-  ENG.shake(0.5 + Math.min(1.8, R * 0.03 + n * 0.015));
+  if (!quiet) ENG.shake(0.5 + Math.min(1.8, R * 0.03 + n * 0.015));
   if (crash) sndThud(R); else sndBoom(R);
   return n;
 }
@@ -6362,6 +6662,7 @@ function useTool(hit) {
   if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true, onGround); return 0; }
   if (tool === 'ball') { aimBall(hit.point); return 0; }
   if (tool === 'treb') { aimTrebs({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'cannon') { aimCannons({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'tornado') { aimTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fw') {
     /* 點在建築上就從那一點射上去（v1.137，使用者指定）；點地面照舊從地面。
