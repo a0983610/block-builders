@@ -6651,7 +6651,12 @@ function swordLives(s, aFrom, aTo, om) {
 /* 這一幀刃掃過的那一小段：**揮動平面**上的扇形（r0～r1 ＝ 刃根到刃尖，v1.174 起
    是整片刃）× 平面兩側各一個刃寬，裡面的建築整片削掉。平面通常是斜的，缺口也是斜的。
    每一幀的角度段**首尾相接**，所以整趟下來扇形裡的每一塊剛好被算到一次
-   ——不會漏、也不會同一塊被切兩次。 */
+   ——不會漏、也不會同一塊被切兩次。
+   **躺在地上的碎料（FREE）也一起擊飛**（v1.209，使用者：「大劍也對碎料作用 會把碎料擊飛」）：
+   吃的是跟積木同一條力道公式，但**不算破壞**——它本來就已經是碎料了，所以不進 n／own，
+   afterHit、揚塵、震動與音效照舊只看切到建築的塊數（同鐵球，見 castBall 裡那個迴圈）。
+   半空中飛的（FLY）不碰：那些多半就是這一刀自己剛切飛出去的，再吃一次力就破壞了
+   上面那條「每一塊剛好被算到一次」。見 開發筆記〈大劍也掃得動地上的碎料〉。 */
 function swordCut(s, aFrom, aTo, dt) {
   const sweep = aTo - aFrom;
   if (sweep <= 1e-6 || dt <= 0) return;                   // θ 一律從 0 往 span 增加
@@ -6660,7 +6665,7 @@ function swordCut(s, aFrom, aTo, dt) {
   let n = 0, own = 0, cx = 0, cy = 0, cz = 0;
   const slab = s.band + s.bhit;       // 刃自己的厚度 ＋ 積木的半寬（「碰到就算」，見 castSword）
   for (const b of blocks) {
-    if (b.st !== SET) continue;
+    if (b.st !== SET && b.st !== FREE) continue;   // FREE ＝躺在地上的碎料，一起擊飛
     const vx = b.x - s.x, vy = b.y - s.y, vz = b.z - s.z;
     // 先看「離揮動平面多遠」：這一刀就這麼薄，絕大多數積木在這裡就被篩掉
     if (Math.abs(vx * s.nx + vy * s.ny + vz * s.nz) > slab) continue;
@@ -6680,7 +6685,8 @@ function swordCut(s, aFrom, aTo, dt) {
     const gx = (a * s.u0x + c * s.e2x) / r,               // 平面內的徑向（往刃尖那一頭）
           gy = (a * s.u0y + c * s.e2y) / r,
           gz = (a * s.u0z + c * s.e2z) / r;
-    const ow = b.hh < 0;                     // 同 smash：breakBlock 會把 hh 清掉，要先看
+    const set = b.st === SET;                // 同鐵球：breakBlock 之後就分不出來了，先記著
+    const ow = set && b.hh < 0;              // 同 smash：breakBlock 會把 hh 清掉，要先看
     /* 主要沿著刃前進的方向飛，另外帶兩成五的徑向（削出去的碎料才會散成一把扇形，
        不是一整排平移），再加一股往上的抬升——抬升一律往上：斜著往下砍的那一刀，
        切線本身是朝下的，照切線給的話碎料會被壓進地面。 */
@@ -6688,6 +6694,8 @@ function swordCut(s, aFrom, aTo, dt) {
       tx * sp + gx * sp * 0.25 + rr(-1.6, 1.6),
       Math.abs(ty * sp + gy * sp * 0.25) * 0.35 + rr(2.4, 6.8) + sp * 0.12,
       tz * sp + gz * sp * 0.25 + rr(-1.6, 1.6));
+    // 地上的碎料被掃開不算破壞：不進塊數、也不把揚塵與 afterHit 的中心拉過去
+    if (!set) continue;
     n++; if (ow) own++;
     cx += b.x; cy += b.y; cz += b.z;
   }

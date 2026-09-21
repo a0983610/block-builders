@@ -14481,6 +14481,45 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     lives.off = +(push * nh).toFixed(2);
     lives.band = +fw.band.toFixed(2);
 
+    /* ── 地上的碎料也一起擊飛（v1.209，使用者：「大劍也對碎料作用 會把碎料擊飛」）──
+       規則型：不跑模擬、不押骰子，自己把三塊積木擺成「躺在地上的碎料」，
+       同一把刃、整趟角度一次掃完（擺法照上面抓人那一段）：
+         ① 擺在刃面上（spot）→ 該被擊飛
+         ② 擺在樞紐正下方（在揮動平面裡的半徑不到刃根）→ 不該動
+         ③ 從 ① 沿法線水平推開 4 個刃寬（離平面 > 刃厚一半＋積木半寬）→ 不該動
+       另外兩件「不算破壞」：placedCnt／stats.wrecked 一個字都不變，
+       而且這一刀沒切到任何建築（上面那條已驗扇形裡的 SET 都削光了），
+       所以照使用者定案**不響不震**——用 shakes 有沒有多一次來驗。 */
+    const lay = (b, x, z) => {                // 把一塊積木變成「躺在 (x, z) 的碎料」
+      freeBlock(b);                           // 走正規出口：該退的 slot／工作單都退掉
+      if (b.cell) gridDel(b);
+      b.st = 0; b.rest = true; b.snap = 0; b.gone = 0; b.al = 1; b.burn = 0; b.wet = 0;
+      b.x = x; b.y = HB; b.z = z;
+      b.vx = 0; b.vy = 0; b.vz = 0; b.rx = 0; b.ry = 0; b.rz = 0;
+    };
+    const deb = [blocks[0], blocks[1], blocks[2]];
+    lay(deb[0], spot.x, spot.z);
+    lay(deb[1], fw.x, fw.z);
+    lay(deb[2], spot.x + fw.nx / nh * push, spot.z + fw.nz / nh * push);
+    /* 每一塊「離揮動平面多遠」與「在平面裡的半徑」都量出來，門檻一律從劍身上讀
+       （slab ＝ band ＋ bhit，同 swordCut；刃根讀 r0），不寫死。 */
+    const probe = b => {
+      const ax = b.x - fw.x, ay = b.y - fw.y, az = b.z - fw.z;
+      return { off: +Math.abs(ax * fw.nx + ay * fw.ny + az * fw.nz).toFixed(2),
+               r: +Math.hypot(ax * fw.u0x + ay * fw.u0y + az * fw.u0z,
+                              ax * fw.e2x + ay * fw.e2y + az * fw.e2z).toFixed(2) };
+    };
+    const debPos = deb.map(probe);
+    const dBefore = { placed: placedCnt, wrecked: stats.wrecked, sh: shakes };
+    swordCut(fw, -fw.back, fw.span + fw.over, 0.42);
+    const debris = {
+      on: deb[0].st === 4 ? 1 : 0, pivot: deb[1].st === 4 ? 1 : 0, off: deb[2].st === 4 ? 1 : 0,
+      sp: +Math.hypot(deb[0].vx, deb[0].vz).toFixed(1), up: +deb[0].vy.toFixed(1),
+      pos: debPos, slab: +(fw.band + fw.bhit).toFixed(2), r0: +fw.r0.toFixed(2),
+      placed: placedCnt - dBefore.placed, wrecked: stats.wrecked - dBefore.wrecked,
+      shake: shakes - dBefore.sh
+    };
+
     /* v1.169 使用者改的三件（造型本身沒動，動的是「哪一點在轉、哪一點在砍、手在哪一邊」）：
        ⓐ「劍尖往下一小段才是攻擊點」——攻擊點在刃尖裡面、但還在刃身上
           （刃根 < 攻擊點 < 刃尖）；**判定用的外緣是刃尖**，那是 v1.174 分開的
@@ -14546,7 +14585,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
     ENG.shake = oShake;
     swords = null; aim = null; tool = 'hammer'; running = true;
-    return { both, shot, geo, before, midSet, cut: cutY.length, lives, ring, markS, markG,
+    return { both, shot, geo, before, midSet, cut: cutY.length, lives, debris, ring, markS, markG,
              steep,
              lo: +lo.toFixed(2), hi: +hiY.toFixed(2), offMax, shakes: shakeN, wind,
              phs: phs.filter((p, i) => i === 0 || p !== phs[i - 1]).join('→'),
@@ -14718,6 +14757,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      swd.lives.setSame === 1 && swd.lives.noBlock === 1,
      '第二刀削掉 ' + (swd.lives.setSame ? '0' : '不只 0') + ' 塊積木，站在刃面上的人 ' +
      (swd.lives.noBlock ? '照樣被撞飛' : '沒反應'));
+  /* v1.209 使用者：「大劍也對碎料作用 會把碎料擊飛」。躺在地上的碎料（FREE）進判定，
+     半空中飛的（FLY）不進——那些多半就是這一刀自己剛切飛出去的，再吃一次力會破壞
+     〈判定〉那條「扇形裡每一塊剛好被算到一次」。門檻都從劍身上讀，不寫死。 */
+  ok('刃掃到地上的碎料會被擊飛，掃不到的不動',
+     swd.debris.on === 1 && swd.debris.pivot === 0 && swd.debris.off === 0 &&
+     swd.debris.up > 0 && swd.debris.pos[1].r < swd.debris.r0 &&
+     swd.debris.pos[2].off > swd.debris.slab,
+     '刃面上那塊被擊飛（水平 ' + swd.debris.sp + '、抬升 ' + swd.debris.up +
+     '、離平面 ' + swd.debris.pos[0].off + ' ≤ 刃厚一半＋積木半寬 ' + swd.debris.slab +
+     '）；樞紐正下方那塊（半徑 ' + swd.debris.pos[1].r + ' < 刃根 ' + swd.debris.r0 + '）' +
+     (swd.debris.pivot ? '飛了' : '沒動') + '、推開到離平面 ' + swd.debris.pos[2].off +
+     ' 那塊 ' + (swd.debris.off ? '飛了' : '沒動'));
+  /* 碎料本來就已經是碎料了：掃開它不是破壞——不扣進度、不記損失，
+     這一刀又完全沒切到建築（上一條已驗扇形裡的 SET 削光了），所以照舊不響不震。 */
+  ok('碎料被掃開不算破壞：不扣進度、不記損失，沒切到建築就不震畫面',
+     swd.debris.placed === 0 && swd.debris.wrecked === 0 && swd.debris.shake === 0,
+     '進度 ' + (swd.debris.placed >= 0 ? '+' : '') + swd.debris.placed +
+     '、累計損失 +' + swd.debris.wrecked + '、震畫面 +' + swd.debris.shake + ' 次');
   /* v1.162 使用者：「點兩下都是建築時 就從第一點位置揮到第二點」。v1.202 之後
      這一格跟其他點法走**完全同一條路**（兩點都是點到的表面位置），所以驗的是
      同一組性質：起手落第一點、收手落第二點，平面通過鏡頭。 */
