@@ -305,7 +305,7 @@ function afterHit(n, point, R, own, self) {
   /* 那幾隻生物同樣被震倒（v1.146）；飛龍被震到就是從天上摔下來（見 crashDragon）。 */
   eachBeastNear(point, R * 1.7, m => {
     if (m.air || m.burn > 0 || m.fall > 0 || m === self) return;   // 正在飛／正在燒／自己打的不用再掀
-    if (fellBeast(m, rr(B_FALL[0], B_FALL[1]))) sndFall();
+    if (fellBeast(m, rr(B_FALL[0], B_FALL[1]))) { sndFall(); beastHit(m); }   // v1.208
   });
   shakeTrees(point, R);
   markSupportDirty();
@@ -1342,8 +1342,8 @@ function stepBall(dt) {
     eachBeastNear({ x: o.x, y: o.y, z: o.z }, R + 0.8, (m, d) => {
       if (m.air) return;
       const dd = Math.max(0.4, Math.hypot(m.x - o.x, m.z - o.z));
-      tossBeast(m, o.vx * 0.6 + (m.x - o.x) / dd * 6, rr(4, 7),
-                o.vz * 0.6 + (m.z - o.z) / dd * 6, false);
+      if (tossBeast(m, o.vx * 0.6 + (m.x - o.x) / dd * 6, rr(4, 7),
+                    o.vz * 0.6 + (m.z - o.z) / dd * 6, false)) beastHit(m);   // v1.208
     });
     if (n) {
       o.hit += n;
@@ -1662,7 +1662,7 @@ function stepTwist(dt) {
       const d2 = dx * dx + dz * dz;
       if (d2 > R2 || p.y > w.h) continue;
       const d = Math.max(0.5, Math.sqrt(d2));
-      if (!p.air) tossBeast(p, 0, 0, 0, false);
+      if (!p.air && tossBeast(p, 0, 0, 0, false)) beastHit(p);   // v1.208
       twSwirl(w, p, dx, dz, d, dt, B_BLOW);        // 大隻的捲得慢一點（同掀飛照體型打折）
     }
     if (n) {
@@ -1762,7 +1762,8 @@ function explode(point, R, power, magic, wind, crash, self, quiet, markR) {
     const ol = Math.max(0.6, hd);
     let nx = (m.x - point.x) / ol, nz = (m.z - point.z) / ol;
     if (hd < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
-    tossBeast(m, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true);
+    if (tossBeast(m, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true))
+      beastHit(m);                                 // v1.208（落地那一下的點著不再數一次）
   });
   afterHit(n, point, R, ownN, self);
   /* 還站著的（SET）餘火：半徑放到 1.5 倍去找——衝擊圈內幾乎都被炸飛了，
@@ -3318,7 +3319,7 @@ function fwBurn(x, y, z) {
     if (y < lo || y > hi) continue;
     const R = FW_MAN_R + mid * 0.8;
     if ((m.x - x) ** 2 + (m.z - z) ** 2 > R * R) continue;
-    if (igniteBeast(m, 0)) return true;
+    if (igniteBeast(m, 0)) { beastHit(m); return true; }        // v1.208
   }
   return false;
 }
@@ -4905,7 +4906,7 @@ function strike(s) {
      這條線上。照三維距離算的話牠飛在 30 格高、雷的判定半徑才 5 格，等於永遠劈不到。 */
   eachBeastNear(p, BOLT_MAN_R, m => {
     if (m.air || m.burn > 0 || m.fall > 0) return;
-    if (!igniteBeast(m, 1)) fellBeast(m, rr(B_FALL[0], B_FALL[1]));
+    if (igniteBeast(m, 1) || fellBeast(m, rr(B_FALL[0], B_FALL[1]))) beastHit(m);   // v1.208
     sndFall();
   }, true);
   spawnMark(p, BOLT_MARK, false);           // 焦黑不是坑洞：雷是燒不是砸（劈在屋頂就不留）
@@ -5125,7 +5126,7 @@ function ufoSuck(u, dt) {
     if (m.ufo || m.sky) continue;         // 在天上飛的那幾隻不吸（見檔頭 ④）
     const rad = ufoRad(u, m.y || 0);
     if ((m.x - u.x) ** 2 + (m.z - u.z) ** 2 > rad * rad) continue;
-    if (!m.air) tossBeast(m, 0, 0, 0, false);
+    if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m);   // v1.208
     ufoGrab(u, m, 2);
   }
   if (n) { u.hit += n; afterHit(n, { x: u.x, y: u.y, z: u.z }, UFO_R * 0.6, own); }
@@ -6639,9 +6640,9 @@ function swordLives(s, aFrom, aTo, om) {
     const foot = m.sky ? (m.y || 0) - mid : 0;
     const g = swept(m.x, foot, m.z, mid * 2, GATE_MAN_R + mid * 0.8);
     if (!g) continue;
-    tossBeast(m, (g.tx * g.sp + rr(-1.5, 1.5)) * B_BLOW,
-              Math.abs(g.ty * g.sp) * 0.35 + rr(3, 6) + g.sp * 0.1,
-              (g.tz * g.sp + rr(-1.5, 1.5)) * B_BLOW, false);
+    if (tossBeast(m, (g.tx * g.sp + rr(-1.5, 1.5)) * B_BLOW,
+                  Math.abs(g.ty * g.sp) * 0.35 + rr(3, 6) + g.sp * 0.1,
+                  (g.tz * g.sp + rr(-1.5, 1.5)) * B_BLOW, false)) beastHit(m);   // v1.208
     hit++;
   }
   if (hit) sndFall();                          // 一幀一聲（afterHit 那邊是一個人一聲）
@@ -7023,6 +7024,9 @@ function spawnBeast(kind, fun, bad) {
     /* bad＝這一趟要動手，home＝動手的目標在村子那邊（v1.166）。兩個分開是因為
        「還沒砸」與「砸的是誰」是兩件事：砸完 bad 歸零回去逛，home 也一起清掉。 */
     bad: bad ? 1 : 0, home: bad ? 1 : 0,
+    /* 被打到就改變主意那一套（v1.208，見 beastHit）：hurt＝這一趟被打幾次了，
+       quit＝天災被打幾次就放棄（吉祥物不看這個，牠是一擊切換一次）。 */
+    hurt: 0, quit: Math.round(rr(DOOM_QUIT[0], DOOM_QUIT[1])),
     /* 被破壞工具打到之後要用的（v1.146）。spin 是躺平角、roll 是打滾角，
        其餘欄位跟小人同名同義（見檔案最後那一節的 hurtBeast）。 */
     spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
@@ -7292,8 +7296,11 @@ function stepBeast0(m, dt) {
     }
     if (strollTo(m, dt, spd, stp, kp)) {
       /* 吉祥物走到建築外圈就開始逛，不進 near／act——那兩段是要動手的人才走的
-         （例外：上面那條「被城牆擋住」，使用者要吉祥物也動手，見 v1.186）。 */
-      m.st = m.fun ? 'fun' : 'near';
+         （例外：上面那條「被城牆擋住」，使用者要吉祥物也動手，見 v1.186）。
+         **被打到之後生氣、這一趟改砸地標的那一隻也直接進 near**（v1.208，見 madSet）：
+         fun 那一段的「要動手」只認村子那一邊（下面那段的 m.bad），
+         推進 fun 的話牠會轉頭去砸房子，不是牠現在盯上的那一座。 */
+      m.st = (m.fun && !madSet(m)) ? 'fun' : 'near';
       /* 進場那一段路不算進「站多久」：strollPause 是照剛走完那段路算的，
          不歸零的話牠一到工地就會照著「從場外走進來的那五十幾格」站著發呆十幾秒。 */
       m.leg = 0;
@@ -7325,6 +7332,10 @@ function stepBeast0(m, dt) {
        strollTo 就永遠回不了 true——牠會頂著牆原地發抖。所以給外框再外面那一點點。
        一間房子都沒有（還沒蓋、或都被砸光了）就照舊只是來逛的。 */
     if (m.bad) {
+      /* 生氣那一趟砸的是地標（v1.208，見 madSet）：交給 near 那一段，它瞄的就是
+         最近的一塊地標（m.home 是 0）。走位不必在這裡處理——會走到這裡的一定已經
+         在工地外圈上了（生氣那一刻還在外面逛的，madMascot 會先把牠推回 come）。 */
+      if (madSet(m)) { m.st = 'near'; m.leg = 0; return false; }
       const t = nearHome(m.x, m.z);
       if (!t) { m.bad = 0; m.home = 0; }
       else {
@@ -7507,6 +7518,7 @@ function nanaThrow(m) {
     kind: 'nana', x: m.x, y: sy, z: m.z,
     s: 0.7 * DOOM_SC,                                  // sweepRock 拿它當碰撞半徑
     sc: DOOM_SC, a: Math.atan2(tx - m.x, tz - m.z), spin: 0, t: 0,
+    by: m,                                             // 誰丟的（v1.208，見 hitBy）
     vx: (tx - m.x) / NANA_T, vz: (tz - m.z) / NANA_T,
     vy: (ty + 0.6 - sy) / NANA_T + 0.5 * GRAV * NANA_T   // 解拋物線：湊出剛好 NANA_T 秒抵達
   };
@@ -7530,7 +7542,13 @@ function stepNanas(dt) {
        飛過頭或落地也炸——不然丟歪的那一根會一路飛出場外。 */
     if (sweepRock(n, px, py, pz, hardAt) || n.t > NANA_T * 2.5 || n.y <= 0.4) {
       nanas.splice(i, 1);
+      /* 丟的那一隻不算「被攻擊」（v1.208，見 hitBy）：牠站在 11 格外、爆炸半徑 9 摸不到，
+         但震倒的判定是 1.7 倍（15.3），所以**牠幾乎每次都會被自己那一根震倒**。
+         不擋的話吉祥物那一版砸完回去逛的下一秒就被自己惹毛，一根接一根丟下去。
+         **只擋「算不算一擊」，照樣震得倒牠**（v1.168 使用者：「白猴子炸到自己也沒關係」）。 */
+      hitBy = n.by;
       explode({ x: n.x, y: Math.max(0.5, n.y), z: n.z }, NANA_R, NANA_POW);
+      hitBy = null;
     }
   }
   if (!nanas.length) nanas = null;
@@ -7757,6 +7775,7 @@ function spawnDragon(fun, bad) {
     left: fun ? (bad ? Math.round(rr(MASC_BAD_SHOT[0], MASC_BAD_SHOT[1])) : 0)
               : Math.round(rr(DRA_SHOT[0], DRA_SHOT[1])),
     fun: fun ? 1 : 0, bad: bad ? 1 : 0, home: bad ? 1 : 0,
+    hurt: 0, quit: Math.round(rr(DOOM_QUIT[0], DOOM_QUIT[1])),   // 被打到就改變主意（v1.208，見 beastHit）
     /* 被打下來之後要用的（v1.146，見 crashDragon）：was 是摔之前在哪一段、
        t 是趴著的倒數、tsp 是摔下去時的翻滾角速度。 */
     was: '', t: 0, tsp: 0, vx: 0, vy: 0, vz: 0, lie: 0, wet: 0, burn: 0, air: 0, fall: 0,
@@ -8143,6 +8162,7 @@ function spawnGryph(fun, bad) {
     /* 噴幾道（吉祥物只有抽中要動手的那一趟才噴，其餘 0）。同飛龍的 m.left。 */
     left: fun ? (bad ? 1 : 0) : 1,
     fun: fun ? 1 : 0, bad: bad ? 1 : 0, home: bad ? 1 : 0,
+    hurt: 0, quit: Math.round(rr(DOOM_QUIT[0], DOOM_QUIT[1])),   // 被打到就改變主意（v1.208，見 beastHit）
     stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
     jx: 0, jy: 0, jz: 0, jr: 0, a0: 0, em: 0, ign: 0, hem: 0, back: 0,
     tx: 0, tz: 0, lx: 0, lz: 0,          // tx/tz 站定的位置、lx/lz 落地的位置（見 grSpot）
@@ -8520,6 +8540,122 @@ function turnBad(id) {
   return false;
 }
 
+/* ── 被打到就改變主意（v1.208）───────────────────────────
+   使用者：「吉祥物逛村子要是被攻擊 就會切換是否攻擊行為（例如原本是會攻擊就會放棄
+   原本不攻擊就會生氣隨意攻擊目標）／天災模式的進場要是被攻擊幾次就會放棄然後會
+   [走人離場]」（後半句當場問過才做，使用者選的是「直接走人離場」）。
+
+   在此之前**打到牠只是拖延**（見〈破壞工具打得到那幾隻〉那一節）：躺完爬起來照樣把
+   原本要做的事做完。現在這一擊會改變牠的來意：
+     · **吉祥物**（m.fun）：**一擊切換一次**。本來要動手的收手回去逛，本來只是來逛的
+       就生氣、隨手挑一個目標砸——村子或地標都可能（使用者定的），各半。
+     · **天災**（!m.fun）：數到 m.quit 次（出場時抽 DOOM_QUIT，2~3）就**放棄走人**，
+       地標砸完了沒都不管了。
+   **牛羊不算**：牠們沒有「來意」這件事，也沒有攻擊手段（同 DOOM_ACT 那一條）。
+   **已經在走人的那一隻也不算**：都走到一半了又掉頭回來很怪（同 turnBad 的規矩）。
+   **翻臉過的那一隻（turnBad）算天災**：m.fun 已經是 0，走的就是「被打幾次就放棄」。
+
+   呼叫點在**道具真的打中了**那幾條（那幾支回傳 true 的那一刻），不是塞進 tossBeast／
+   igniteBeast／fellBeast 裡面：炸飛帶火的那一發落地還會再點著一次（見 flyBeast 的
+   落地判定），塞在裡面的話一發會數成兩次；而自己絆的那一跤（v1.178）與澆水
+   也就自然不在裡面。 */
+const DOOM_QUIT = [2, 3];             // 天災被打幾次就放棄（出場時抽一個，使用者選的「隨機 2~3 次」）
+const MASC_MAD_SET = 0.5;             // 生氣那一趟改砸地標的機率，其餘砸村子那邊
+const BEAST_NM = { ape: '🐒 黑獼猴', snow: '🐵 白猴子', dragon: '🐉 飛龍',
+                   gryphon: '🦅 獅鷲', giant: '🗿 巨人' };
+/* 叫一聲。哪一種叫哪一聲照 spawnBeast／spawnDragon 那邊的分法，不另訂一套。 */
+function beastCry(m) {
+  if (m.kind === 'dragon' || m.kind === 'gryphon') sndRoar();
+  else if (m.kind === 'giant') sndGiant();
+  else sndBeast(m.kind === 'snow');
+}
+/* 這一隻已經在走人了嗎（那就別再改牠的主意，同 turnBad 的規矩：都走到一半了
+   又掉頭回來很怪）。三種狀態機各有各的說法：走路的是 go、龍是 out、獅鷲是 up／out。
+   **獅鷲的吉祥物那一版看的是「這一趟逛完了沒」（m.stay）不是狀態**：牠被打下來的
+   那一刻 grDown 已經先把狀態推到 up 了（牠原本沒事要做，見那一支），照狀態認的話
+   「被打下來的吉祥物」就永遠改不了主意——而那正是使用者要的那一擊。 */
+function beastLeaving(m) {
+  if (m.kind === 'gryphon') return m.fun ? m.stay <= 0 : (m.st === 'up' || m.st === 'out');
+  if (m.kind === 'dragon') return m.st === 'out';
+  return m.st === 'go';
+}
+/* 這一趟要砸的是地標嗎（v1.208 生氣那一版才會有）：m.bad 是「要動手」、
+   m.home 是「動手的目標在村子那邊」，所以兩個湊起來才分得出砸哪一邊。 */
+const madSet = m => !!m.bad && !m.home;
+/* 吉祥物收手：回去把剩下的 stay 逛完，跟砸完那一趟同一個出口（funBack）。 */
+function calmMascot(m) {
+  m.bad = 0; m.home = 0;
+  if (m.kind === 'dragon') m.left = 0;                 // 配額收掉＝這一圈不吐了
+  else if (m.kind === 'gryphon') {
+    m.left = 0;
+    /* 瞄到一半、噴到一半的就地收手，回去走走停停把 stay 晃完（同噴完那一條）。 */
+    if (m.st === 'aim' || m.st === 'fire') m.st = 'stand';
+  }
+  /* 還在走進來的（come）只要把旗標拿掉：牠走到工地外圈自己會進 fun。
+     funBack 會把牠當場推進 fun，那一段是「在外圈逛」，人還在場外就推過去很怪。 */
+  else if (m.st !== 'come') funBack(m);
+  beastCry(m);
+  toast((BEAST_NM[m.kind] || '牠') + '被打退了', '牠不砸了，回去把剩下的路逛完');
+}
+/* 吉祥物生氣：隨手挑一邊砸。挑到的那一邊沒東西可砸就換另一邊，兩邊都沒有就算了
+   （村子還沒蓋、地標拆光都可能）。 */
+function madMascot(m) {
+  const dice = Math.random() < MASC_MAD_SET;           // true＝抽到地標，false＝抽到村子那邊
+  const canSet = !!nearSet(m.x, m.z), canVill = !!nearHome(m.x, m.z);
+  if (!canSet && !canVill) return;                     // 兩邊都沒東西可砸：不改牠的主意
+  const set = canSet && (dice || !canVill);            // 抽到的那一邊沒東西可砸就換另一邊
+  m.bad = 1; m.home = set ? 0 : 1;
+  if (m.kind === 'dragon') {
+    m.left = Math.round(rr(MASC_BAD_SHOT[0], MASC_BAD_SHOT[1]));
+    /* 圈數歸零＝再繞一圈（這一圈是來吐火球的）、gap 重給，兩件事的理由同 turnBad。
+       在地上那一段的（摔下來或自己降落）起飛之後要接回盤旋，不然牠拿著配額直接飛走。 */
+    if (m.was === 'out') m.was = 'in';
+    m.turned = 0; m.gap = rr(0.4, 1.2);
+  } else if (m.kind === 'gryphon') {
+    m.left = 1;
+    /* 站著晃的、瞄到一半的、**剛被打下來的**（grDown 看牠沒事做就推到 up 了）都就地
+       重新瞄一次：grTarget 是每次進 aim 才問的，所以只要把狀態推回 aim，目標就換成
+       這一趟挑的那一邊了（同 turnBad）。還在天上的（in／land）與正走最後那幾格的
+       （walk）不用動，牠們自己會走到 aim。 */
+    if (!m.sky && m.st !== 'walk') { m.st = 'aim'; m.t = GR_AIM; m.jr = 0; }
+  } else if (madSet(m) && m.st === 'fun') {
+    /* 正在外圈逛、這一趟又改瞄地標：讓牠**重走進場那一段**（走到工地外圈再進 near），
+       理由同 turnBad——near 那一段沒有繞路，從碎料場外緣直線切過來的話，
+       牠會半路卡在別人家門口就地動手。走到了進哪一段見 stepBeast 的 come。 */
+    m.st = 'come'; m.tx = 0; m.tz = 0; m.leg = 0;
+  }
+  beastCry(m);
+  toast((BEAST_NM[m.kind] || '牠') + '被惹毛了',
+        madSet(m) ? '牠不逛了，轉頭朝地標動手' : '牠不逛了，轉頭朝村子那邊動手');
+}
+/* 天災放棄這一趟：轉身走人（使用者選的「直接走人離場」）。 */
+function quitDoom(m) {
+  if (m.kind === 'dragon') {
+    m.left = 0;
+    /* 在地上那幾段（摔著、趴著、走著、正在起飛、燒著）改的是 m.was：
+       那是「起飛之後接回哪一段」，給 out 就是爬起來直接飛出場（見 fallenDragon）。 */
+    if (m.st === 'in' || m.st === 'ring') m.st = 'out';
+    else m.was = 'out';
+  } else if (m.kind === 'gryphon') {
+    m.left = 0;
+    m.st = m.sky ? 'out' : 'up';                       // 同 stepGryph 的 away 那一條
+  } else leaveBeast(m);
+  beastCry(m);
+  toast((BEAST_NM[m.kind] || '牠') + '被打退了', '牠放棄這一趟，轉身走回場外');
+}
+/* 這一下是誰打的（v1.208）。平常是 null；只有「牠自己丟的那一根香蕉回頭震倒牠自己」
+   這一種要擋（見 stepNanas），擋的也只是「算不算被攻擊」，照樣震得倒。
+   用一個旗標而不是多傳一層參數：中間隔著 explode → afterHit → eachBeastNear 三層，
+   而要傳的東西只有這一種情況在用。 */
+let hitBy = null;
+/* 道具打中一隻的那一刻。呼叫點見上面那一段的說明。 */
+function beastHit(m) {
+  if (!m || m === hitBy || m.herd || beastLeaving(m)) return;
+  if (m.fun) { if (m.bad) calmMascot(m); else madMascot(m); return; }
+  m.hurt = (m.hurt || 0) + 1;
+  if (m.hurt >= (m.quit || DOOM_QUIT[1])) quitDoom(m);
+}
+
 /* ── 閒逛的動物（v1.154 牛羊，v1.182 加鹿與豬）──────────────
    使用者：「增加場上幾隻閒逛的動物（會被破壞工具作用 也會著火類似小人）／
    牛羊 2~3 隻 依照小人行走邏輯不要走進建物裡面」，看過造型之後追加
@@ -8693,8 +8829,12 @@ function tossBeast(m, vx, vy, vz, lit) {
   if (m.kind === 'dragon') return (lit && igniteBeast(m, 1)) || crashDragon(m);
   /* 在天上的獅鷲（v1.176）：先切成「地上那一隻」，接著就照猴子那一套被掀出去
      （彈道 → 落地那一刻才判定燒不燒 → 躺一下 → 爬起來，見 flyBeast）。
-     牠不像飛龍有專屬的摔／趴／起飛三段——降落本來就是牠會做的事。 */
-  if (m.sky) grDown(m);
+     牠不像飛龍有專屬的摔／趴／起飛三段——降落本來就是牠會做的事。
+     **回傳 grDown 的結果**（v1.208）：底下那一行 m.air 已經被 grDown 立起來了，
+     照舊往下走就是回 false——「打下來了」卻回報「沒打到」，那一擊就不會被數
+     （見 beastHit）。行為一個位元都沒變：grDown 一律回 true，而且下面那一段本來
+     就跑不到。 */
+  if (m.sky) return grDown(m);
   if (m.air) return false;                           // 已經在飛了，不用再掀一次
   const sp = Math.hypot(vx, vz);
   if (sp > B_TOSS_MAX) { const k = B_TOSS_MAX / sp; vx *= k; vz *= k; }
@@ -9227,8 +9367,8 @@ function beastWeapon(w, m) {
   const t = w.len * 0.5;
   const pt = { x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t };
   weaponSpark(pt, w);
-  tossBeast(m, w.dx * 16 * B_BLOW + rr(-2, 2), rr(5, 8),
-            w.dz * 16 * B_BLOW + rr(-2, 2), false);
+  if (tossBeast(m, w.dx * 16 * B_BLOW + rr(-2, 2), rr(5, 8),
+                w.dz * 16 * B_BLOW + rr(-2, 2), false)) beastHit(m);   // v1.208
   weaponBlast(pt, w);
   sndFall();
   fallWeapon(w);
@@ -9549,8 +9689,8 @@ function arrowMan(r, p) {
    箭雨本來就是武器，而玩鬧的箭打到猴子、獅鷲也沒有理由比較溫柔。 */
 function arrowBeast(r, m) {
   if (r.play && m.herd) { playHit(r, m); return; }
-  tossBeast(m, r.dx * AR_BLOW * B_BLOW + rr(-1, 1), rr(3, 6),
-            r.dz * AR_BLOW * B_BLOW + rr(-1, 1), false);
+  if (tossBeast(m, r.dx * AR_BLOW * B_BLOW + rr(-1, 1), rr(3, 6),
+                r.dz * AR_BLOW * B_BLOW + rr(-1, 1), false)) beastHit(m);   // v1.208
   sndFall();
 }
 /* ── 閒著的小人對牛羊射一箭（v1.206）──────────────────────────

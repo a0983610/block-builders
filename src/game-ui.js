@@ -358,9 +358,11 @@ function onUp(e) {
        （v1.154，見 burnDragon）。已經在燒或剛被澆濕的點不著，那就改成打倒／打下來
        （v1.176 起在天上的獅鷲也一樣，改成把牠打下來——見 grDown）。 */
     if (tool === 'fire') {
-      if (igniteBeast(m, 0)) sndFire();
-      else if (m.kind === 'dragon') crashDragon(m);
-      else if (m.sky) grDown(m);
+      /* 戳／點也算「被攻擊」（v1.208，見 game-tools.js 的 beastHit）：吉祥物切換
+         要不要動手、天災被打幾次就放棄。 */
+      if (igniteBeast(m, 0)) { sndFire(); beastHit(m); }
+      else if (m.kind === 'dragon') { if (crashDragon(m)) beastHit(m); }
+      else if (m.sky) { if (grDown(m)) beastHit(m); }
       return;
     }
     // 拿水桶澆牠：濕 5 秒（身上有火的當場熄），不會把牠打倒
@@ -370,7 +372,7 @@ function onUp(e) {
       sndWater();
       return;
     }
-    if (fellBeast(m, rr(1.2, 2.4))) sndFall();
+    if (fellBeast(m, rr(1.2, 2.4))) { sndFall(); beastHit(m); }   // v1.208
     return;
   }
   // 這幾種點空地也算（本來就是「選一個地點」）；其他工具要點到建築

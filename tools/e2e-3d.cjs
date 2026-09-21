@@ -5725,6 +5725,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const n = s.n ? Math.round((s.n[0] + s.n[1]) / 2) : 0;
       const tot = s.n ? n * s.beat : (s.t[0] + s.t[1]) / 2;
       w.show = id; w.showT = tot; w.showN = n; w.showA = 0; w.a = 0; w.x = kx; w.z = kz;
+      /* **相位也要歸零**（v1.208）：開合跳的高度是 max(0, sin(w.ph)) × SHOW_JACK_H，
+         而 w.ph 是前面那一段模擬帶進來的——取樣格（每幀 0.05 秒 ＝ 0.571 弧度）
+         落在波峰哪一側就決定量到 0.198 還是 0.192，四捨五入之後是 0.20 或 0.19，
+         而這一條的門檻是「跟 SHOW_JACK_H 差不到 0.01」。等於在賭骰子（實測 0.19 紅過
+         一次、同樣的程式換三顆種子都是 0.20）。歸零之後取樣格固定、這一條永遠不會飄。 */
+      w.ph = 0;
       let flag = 0, minY = 0, maxY = 0, lean = 0, turn = 0, moved = 0;
       for (let i = 0; i < Math.round(tot / 0.05) + 2; i++) {
         // 同 updWorker：姿勢每幀重算，只有真的在演的那條路徑會把它撐回去
@@ -22732,6 +22738,263 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
 
+  /* ══════════ 被打到就改變主意 ══════════ */
+  /* v1.208。使用者：「吉祥物逛村子要是被攻擊 就會切換是否攻擊行為（例如原本是會攻擊
+     就會放棄 原本不攻擊就會生氣隨意攻擊目標）／天災模式的進場要是被攻擊幾次就會放棄
+     然後會[走人離場]」（後半句當場問過，使用者選「直接走人離場」、門檻隨機 2~3 次、
+     「任何道具打中都算一次」、生氣那一趟「村子或地標都可能」）。
+     **整段是規則型**：直接叫 beastHit（十一個道具呼叫點打中時叫的就是它）、直接看
+     旗標與狀態，不跑模擬碰運氣。只有兩條要走：一發炸彈只數一次（要等牠落地著火）、
+     生氣之後真的去砸了（要驗狀態機接得起來）。 */
+  }   // ── 〈吉祥物：來逛一圈就走〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('被打到就改變主意', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; stepMascot = window.mascStep; });
+  await fillAll(page);
+
+  /* ── 天災：被打幾次就放棄 ── */
+  const hq = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    /* 抽樣門檻：放人會跳一則提示，六十次就是六十則——先把 toast 換掉再還回去。 */
+    const otoast = toast;
+    toast = () => {};
+    const rolls = [];
+    for (let i = 0; i < 60; i++) { rolls.push(spawnBeast('ape').quit); beasts = null; }
+    const walk = [];
+    for (const kind of ['ape', 'snow', 'giant']) {
+      const m = spawnBeast(kind);
+      m.quit = 3;                                   // 門檻自己給，這一條不賭骰子
+      const trail = [];
+      for (let i = 0; i < 3; i++) { beastHit(m); trail.push(m.st + '/' + m.hurt); }
+      walk.push({ kind, trail: trail.join(' → '), go: m.st === 'go', hurt: m.hurt,
+                  early: trail.slice(0, 2).every(s => s.indexOf('go') < 0) });
+      beasts = null;
+    }
+    toast = otoast;
+    cleanTools();
+    return { lo: Math.min(...rolls), hi: Math.max(...rolls), n: rolls.length,
+             two: rolls.filter(v => v === 2).length, walk, want: DOOM_QUIT.join('~') };
+  });
+  ok('天災出場時抽一個「被打幾次就放棄」的門檻，落在 DOOM_QUIT（2~3）',
+     hq.lo === 2 && hq.hi === 3,
+     hq.n + ' 次抽樣 ' + hq.lo + '～' + hq.hi + '（其中 2 次的有 ' + hq.two +
+     ' 個，DOOM_QUIT ' + hq.want + '）');
+  ok('走路的那三種放棄＝轉身走回場外，門檻之前的幾下照舊',
+     hq.walk.every(v => v.go && v.hurt === 3 && v.early),
+     hq.walk.map(v => v.kind + '：' + v.trail).join('；'));
+
+  /* 飛的那兩種沒有 go 這一段：龍是 out（照當下的朝向飛出去）、獅鷲是 up（先起飛）。 */
+  const hfly = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const d = spawnDragon(); d.quit = 2;
+    beastHit(d);
+    const d1 = { st: d.st, hurt: d.hurt, left: d.left };
+    beastHit(d);
+    const d2 = { st: d.st, left: d.left };
+    beasts = null;
+    const g = spawnGryph(); g.quit = 2;
+    beastHit(g);
+    const g1 = { st: g.st, hurt: g.hurt };
+    beastHit(g);
+    const g2 = { st: g.st, left: g.left, sky: g.sky };
+    beasts = null;
+    /* 已經降落、站在地上的那一隻（被打下來的也是這個樣子）：放棄＝拍翅起飛。 */
+    const g3 = spawnGryph(); g3.quit = 1; g3.sky = 0; g3.st = 'aim';
+    beastHit(g3);
+    const g3o = { st: g3.st, left: g3.left };
+    cleanTools();
+    return { d1, d2, g1, g2, g3o };
+  });
+  ok('飛龍放棄＝火球配額收掉、直接飛出場（out）',
+     hfly.d1.st === 'in' && hfly.d1.hurt === 1 && hfly.d2.st === 'out' && hfly.d2.left === 0,
+     '第一下 ' + hfly.d1.st + '（配額 ' + hfly.d1.left + '）→ 第二下 ' + hfly.d2.st +
+     '（配額 ' + hfly.d2.left + '）');
+  ok('獅鷲放棄＝不噴了，在天上的飛出去、站著的先起飛',
+     hfly.g1.st === 'in' && hfly.g2.st === 'out' && hfly.g2.left === 0 &&
+     hfly.g3o.st === 'up' && hfly.g3o.left === 0,
+     '天上那隻 ' + hfly.g1.st + ' → ' + hfly.g2.st + '，站著那隻 aim → ' + hfly.g3o.st);
+
+  /* ── 吉祥物：一擊切換一次 ── */
+  const htog = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const m = spawnBeast('ape', 1);                 // 乖的那一版（bad 0）
+    m.st = 'fun';                                   // 當牠已經走進來在逛了
+    const trail = [{ bad: m.bad, home: m.home, st: m.st, fun: m.fun }];
+    for (let i = 0; i < 4; i++) {
+      beastHit(m);
+      trail.push({ bad: m.bad, home: m.home, st: m.st, fun: m.fun });
+    }
+    /* 出場就要動手的那一隻（v1.166）：一擊就收手，而且是回去逛不是走人。 */
+    beasts = null;
+    const b = spawnBeast('snow', 1, 1);
+    b.st = 'near'; b.stay = 30;                     // 當牠已經走到房子旁邊了
+    beastHit(b);
+    const calm = { bad: b.bad, home: b.home, st: b.st, fun: b.fun, stay: b.stay > 0 };
+    cleanTools();
+    return { trail, calm };
+  });
+  ok('吉祥物被打一下就切換一次「要不要動手」，來回切',
+     htog.trail.map(v => v.bad).join() === '0,1,0,1,0' &&
+     htog.trail.every(v => v.fun === 1),
+     htog.trail.map(v => 'bad' + v.bad + '/' + v.st).join(' → ') + '（fun 全程 1）');
+  ok('本來要動手的那一隻被打就收手，回去把剩下的路逛完（不是走人）',
+     htog.calm.bad === 0 && htog.calm.home === 0 && htog.calm.st === 'fun' &&
+     htog.calm.fun === 1 && htog.calm.stay,
+     'bad ' + htog.calm.bad + '／home ' + htog.calm.home + '／狀態 near → ' +
+     htog.calm.st);
+
+  /* ── 生氣那一趟砸哪一邊：村子或地標都可能，那一邊沒東西就換另一邊 ── */
+  const hpick = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const or = Math.random;
+    const mk = () => { const m = spawnBeast('ape', 1); m.st = 'fun'; return m; };
+    /* 村子還沒蓋起來（cleanTools 剛把房子清掉）：骰子抽中村子也只能改砸地標。 */
+    Math.random = () => 0.9;                        // ≥ MASC_MAD_SET ＝ 抽中村子
+    const noVill = (() => { const m = mk(); beastHit(m); beasts = null;
+                            return { bad: m.bad, home: m.home }; })();
+    /* 把一塊地標的積木暫時掛到村子那一邊（hh >= 0 就是村子，見 isVillage），
+       兩邊都有東西可砸之後再押骰子看牠挑哪一邊。**只碰這一塊、量完還回去**。 */
+    const b0 = blocks.find(x => x.st === SET && x.hh < 0);
+    const was = b0.hh;
+    b0.hh = 0;
+    Math.random = () => 0.9;                        // ≥ MASC_MAD_SET ＝ 砸村子
+    const vill = (() => { const m = mk(); beastHit(m); beasts = null;
+                          return { bad: m.bad, home: m.home }; })();
+    Math.random = () => 0;                          // < MASC_MAD_SET ＝ 砸地標
+    const set = (() => { const m = mk(); beastHit(m); beasts = null;
+                         return { bad: m.bad, home: m.home }; })();
+    b0.hh = was;
+    /* 兩邊都沒東西可砸：旗標不動（牠就繼續逛）。積木池整個借走再還回去。 */
+    const keep = blocks;
+    blocks = [];
+    const none = (() => { const m = mk(); beastHit(m); beasts = null;
+                          return { bad: m.bad, home: m.home }; })();
+    blocks = keep;
+    Math.random = or;
+    cleanTools();
+    return { noVill, vill, set, none, p: MASC_MAD_SET };
+  });
+  ok('生氣那一趟村子或地標都可能：押骰子押哪邊就砸哪邊',
+     hpick.vill.bad === 1 && hpick.vill.home === 1 &&
+     hpick.set.bad === 1 && hpick.set.home === 0,
+     '骰 0.9 → 砸村子（home ' + hpick.vill.home + '）、骰 0 → 砸地標（home ' +
+     hpick.set.home + '），MASC_MAD_SET ' + hpick.p);
+  ok('抽到的那一邊沒東西可砸就換另一邊，兩邊都沒有就不改牠的主意',
+     hpick.noVill.bad === 1 && hpick.noVill.home === 0 && hpick.none.bad === 0,
+     '村子還沒蓋：bad ' + hpick.noVill.bad + '／home ' + hpick.noVill.home +
+     '（＝改砸地標）；兩邊都沒有：bad ' + hpick.none.bad);
+
+  /* ── 不吃這一套的那幾種 ── */
+  const hskip = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const c = spawnCattle();                        // 牛羊：沒有「來意」這件事
+    beastHit(c);
+    const herd = { bad: c.bad, st: c.st, hurt: c.hurt };
+    beasts = null;
+    const m = spawnBeast('ape', 1);                 // 吉祥物，已經在走回場外
+    leaveBeast(m);
+    beastHit(m);
+    const goM = { bad: m.bad, st: m.st };
+    beasts = null;
+    const d = spawnBeast('ape');                    // 天災，已經在走回場外
+    d.quit = 1;
+    leaveBeast(d);
+    beastHit(d);
+    const goD = { hurt: d.hurt, st: d.st };
+    cleanTools();
+    return { herd, goM, goD };
+  });
+  ok('牛羊不吃這一套（連數都不數），已經在走人的也不改主意',
+     hskip.herd.bad === undefined && hskip.herd.st === 'fun' &&
+     hskip.herd.hurt === undefined &&
+     hskip.goM.bad === 0 && hskip.goM.st === 'go' &&
+     hskip.goD.hurt === 0 && hskip.goD.st === 'go',
+     '牛羊 bad ' + hskip.herd.bad + '／hurt ' + hskip.herd.hurt +
+     '；走人中的吉祥物 bad ' + hskip.goM.bad + '、天災 hurt ' + hskip.goD.hurt);
+
+  /* ── 一發炸彈只數一次 ── */
+  /* 帶火的那一發（爆炸都是 lit）會把牠掀到半空，**落地那一刻才點著**（見 flyBeast）。
+     把「數一擊」塞進 tossBeast／igniteBeast 裡面的話，這一發會數成兩次——所以呼叫點
+     擺在道具那一條上。這一條就是在守那件事。 */
+  const honce = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9); clearFires();
+    const m = spawnBeast('ape');
+    m.quit = 9;                                     // 這一條不要讓牠中途放棄走人
+    m.x = arenaR * 0.8; m.z = 0; m.st = 'come';     // 離地標遠一點：只驗這一發打到牠
+    explode({ x: m.x + 1, y: 0.5, z: m.z }, 10, 20);
+    const hit1 = { hurt: m.hurt, air: m.air, lit: m.lit };
+    let burned = 0;
+    for (let i = 0; i < 240; i++) { stepDoom(0.05); burned = Math.max(burned, m.burn); }
+    const out = { hit1, hurt: m.hurt, burned: +burned.toFixed(1) };
+    cleanTools();
+    return out;
+  });
+  ok('一發炸彈只數一次：落地那一刻燒起來的那一下不再數第二次',
+     honce.hit1.hurt === 1 && honce.hit1.air === 1 && honce.hit1.lit === 1 &&
+     honce.burned > 0 && honce.hurt === 1,
+     '炸到那一刻 hurt ' + honce.hit1.hurt + '（飛在半空、身上帶火），落地燒了 ' +
+     honce.burned + ' 秒之後還是 hurt ' + honce.hurt);
+
+  /* ── 自己丟的那一根不算被攻擊 ── */
+  /* 白猴子站在 11 格外丟香蕉（爆炸半徑 9 摸不到牠），但震倒的判定是 1.7 倍（15.3）
+     ——**牠幾乎每次都會被自己那一根震倒**（v1.168 使用者：「白猴子炸到自己也沒關係」）。
+     不擋的話吉祥物那一版砸完回去逛的下一秒就被自己惹毛，一根接一根丟下去。
+     同一根香蕉換成別人丟的就照樣算一擊，兩邊對照著驗。 */
+  const hself = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    /* 香蕉要炸在**站著的積木**上：afterHit（震倒就在那裡面）在「這一下一塊都沒打掉」
+       的時候會直接 return，炸在空地上的話牠根本不會倒，這一條就什麼都沒驗到。 */
+    const shot = by => {
+      const b = blocks.find(x => x.st === SET && x.hh < 0 && x.y < 3);
+      const m = spawnBeast('snow', 1);              // 乖的吉祥物（砸完回去逛就是這個狀態）
+      m.st = 'fun'; m.x = b.x + 11; m.z = b.z;      // 站 11 格外：炸不到（半徑 9）但震得到（15.3）
+      nanas = [{ kind: 'nana', x: b.x, y: 0.6, z: b.z, s: 0.7 * DOOM_SC, sc: DOOM_SC,
+                 a: 0, spin: 0, t: 99, by: by === 'self' ? m : null,
+                 vx: 0, vy: 0, vz: 0 }];
+      stepNanas(0.05);                              // t 早就過了，這一幀當場炸
+      const out = { fell: m.fall > 0, air: !!m.air, bad: m.bad };
+      beasts = null; nanas = null;
+      return out;
+    };
+    const self = shot('self'), other = shot('other');
+    cleanTools();
+    return { self, other };
+  });
+  ok('自己丟的那一根照樣震得倒牠，但不算「被攻擊」；別人丟的就算',
+     hself.self.fell && hself.self.bad === 0 &&
+     hself.other.fell && hself.other.bad === 1,
+     '自己丟的：震倒 ' + hself.self.fell + '／生氣 ' + hself.self.bad +
+     '；別人丟的：震倒 ' + hself.other.fell + '／生氣 ' + hself.other.bad +
+     '（兩次落點都在牠 11 格外，爆炸半徑 9、震倒 15.3）');
+
+  /* ── 生氣之後真的去砸了 ── */
+  const hrun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9); clearFires();
+    for (const b of blocks) b.wet = 0;
+    const m = spawnBeast('ape', 1);
+    m.st = 'fun'; m.stay = 60;
+    beastHit(m);                                    // 村子還沒蓋＝這一趟一定挑地標
+    const mad = { bad: m.bad, home: m.home, st: m.st };
+    let n = 0, acted = 0;
+    while (n < 4000 && beasts && beasts.indexOf(m) >= 0 && !(acted && m.st === 'fun')) {
+      step(0.05); n++;
+      if (m.st === 'act') acted = 1;
+    }
+    const out = { mad, acted, st: m.st, fun: m.fun, bad: m.bad,
+                  burn: blocks.filter(b => b.burn > 0).length, ph: phase,
+                  secs: +(n * 0.05).toFixed(1) };
+    cleanTools();
+    return out;
+  });
+  ok('生氣之後真的走過去動手，砸完照舊回去逛（牠還是吉祥物）',
+     hrun.mad.bad === 1 && hrun.mad.home === 0 && hrun.mad.st === 'come' &&
+     hrun.acted === 1 && hrun.st === 'fun' && hrun.fun === 1 && hrun.bad === 0 &&
+     hrun.burn > 0 && hrun.ph === 'wreck',
+     '生氣那一刻 bad1／home0／狀態推回 ' + hrun.mad.st + '，' + hrun.secs +
+     ' 秒後點著 ' + hrun.burn + ' 塊、phase ' + hrun.ph + '，自己回到 ' + hrun.st);
+
+  await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
+
   /* ══════════ 閒逛的動物 ══════════ */
   /* v1.154。使用者：「增加場上幾隻閒逛的動物(會被破壞工具作用 也會著火類似小人)／
      牛羊2~3隻 依照小人行走邏輯不要走進建物裡面」，看過造型之後追加「也可以牛羊多種造型
@@ -22741,7 +23004,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      段名也從〈閒逛的牛羊〉改成〈閒逛的動物〉（裡面已經不只牛羊了）。
      整套借吉祥物那條路（同一份 beasts 清單、同一套走路、同一套被打到的反應），
      所以這一段驗的是**差在哪裡**：不走人、不挑階段、不佔天災的名額、四條腿繞自己的關節轉。 */
-  }   // ── 〈吉祥物：來逛一圈就走〉結束（--tier 跳過時從這裡出來）
+  }   // ── 〈被打到就改變主意〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('閒逛的動物', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; stepHerd = window.herdStep; });
