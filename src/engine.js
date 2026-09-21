@@ -320,6 +320,7 @@ const ENG = (function () {
            寫成兩端的中點而不是抄一個數字，刃的兩端哪天再動它自己跟著對。
            ＝ 0.162，刃尖那一半（0.352 全長）照樣畫得出來但不砍。 */
         SWORD_HIT = (SWORD_EDGE + SWORD_TIP) / 2, SWORD_W = 0.072;
+  const SW_BLADE_Z = 0.014, SW_RIDGE_Z = 0.020;   // 刃身多厚、中脊多厚（中脊兩面各凸 0.003）
   /* 造型：騎士巨劍（雙刃直刃、中脊開槽、平直十字護手、皮革纏柄圓劍首）。
      這一版是先做成 3D 預覽頁、跟一面 26 塊高的牆並排給使用者看過才落地的
      （造型／動作先給看過才落地，同天災那幾隻、同吉祥物）。看圖改掉的三處記在
@@ -332,16 +333,18 @@ const ENG = (function () {
      刃長 0.674→0.704、刃寬 0.120→**0.072**（刃的長寬比 5.6:1→9.8:1；
      刃的寬厚比 0.072/0.014 仍守著 5:1 以上那條線，不然又會變回鐵條），
      護手 0.320→0.230、中脊／柄／劍首同步收細，不然放大兩倍看起來是一塊鐵板不是一把劍。
-     刃寬也是判定用的（band ＝ SWORD_W × 刃長），所以刃收細＝那一刀也跟著薄。 */
+     v1.161～v1.204 判定的厚度吃的是**刃寬**（band ＝ SWORD_W × 刃長，兩側各一個）；
+     **v1.205 起吃的是刃厚**（SWORD_THK ＝ 護手以上最厚那一塊 ＝ 中脊，見造型表下面
+     那個常數），再加上「被刃碰到的積木都算」的那半塊積木（規則那邊加，見 castSword）。 */
   const SW_STEEL = 0xdfe6ee, SW_RIDGE = 0x5b6673, SW_GRIP = 0x5c3218, SW_WRAP = 0x33200f;
   const SWORD_PART = [
     /* 刃：主體 ＋ 收尖四階（每階跟上一階重疊 0.008～0.015） */
-    { p: [0, 0.092, 0], s: [SWORD_W, 0.564, 0.014], c: SW_STEEL },
+    { p: [0, 0.092, 0], s: [SWORD_W, 0.564, SW_BLADE_Z], c: SW_STEEL },
     { p: [0, 0.388, 0], s: [0.059, 0.058, 0.014], c: SW_STEEL },
     { p: [0, 0.438, 0], s: [0.043, 0.058, 0.013], c: SW_STEEL },
     { p: [0, 0.478, 0], s: [0.027, 0.044, 0.012], c: SW_STEEL },
     { p: [0, 0.503, 0], s: [0.013, 0.022, 0.011], c: SW_STEEL },
-    { p: [0, 0.085, 0], s: [0.019, 0.500, 0.020], c: SW_RIDGE },   // 中脊：比刃厚，兩面各凸 0.003
+    { p: [0, 0.085, 0], s: [0.019, 0.500, SW_RIDGE_Z], c: SW_RIDGE },  // 中脊：比刃厚，兩面各凸 0.003
     /* 護手：一根平直的橫樑 ＋ 刃根箍 */
     { p: [0, -0.210, 0], s: [0.230, 0.042, 0.042], c: G_GOLD },
     { p: [0, -0.196, 0], s: [0.046, 0.062, 0.046], c: G_DEEP },
@@ -353,6 +356,12 @@ const ENG = (function () {
     { p: [0, -0.446, 0], s: [0.072, 0.046, 0.052], c: G_GOLD },    // 劍首盤
     { p: [0, -0.474, 0], s: [0.038, 0.026, 0.038], c: G_DEEP }
   ];
+  /* 刃有多厚（揮動平面的法線方向那一邊）＝**護手以上那幾塊裡最厚的那一塊**，
+     也就是中脊。規則那邊拿它當那一刀的厚度（v1.205 使用者：「大劍破壞寬度降低
+     (最好是符合實際大劍寬度)」→ 問過之後定案「刃厚含中脊，再讓刃碰到的都算破壞」），
+     所以這個數字跟 `SWORD_W` 一樣是**畫面與判定共用**的（同 `DOZ_W` 的用意）。
+     **從造型表掃出來、不寫死**：哪天刃或中脊再收細，那一刀自己跟著薄。 */
+  const SWORD_THK = Math.max(...SWORD_PART.filter(p => p.p[1] > SWORD_EDGE).map(p => p.s[2]));
   /* ── 幽浮（v1.167，造型 v1.169 改成圓盤）───────────────
      造型是一疊由寬到窄的**圓盤**（每一層怎麼用方塊拼成圓的見下面 UFO_SLAB），
      全部正規化成「碟身半徑 ＝ 1」，規則那邊只給位置、高度與自轉角。
@@ -1356,6 +1365,12 @@ const ENG = (function () {
     ballMesh.instanceMatrix.needsUpdate = true;
   }
 
+  /* 漏斗在高度 t（0 ＝ 地面、1 ＝ 頂）畫出來有多寬。作用半徑 w.r 進來，畫的半徑出去。
+     **規則那邊也讀這一支**（v1.205：碎料繞的半徑照漏斗的側影張開，見 game-tools 的
+     twSwirlR）——同 DOZ_W／SWORD_W 的用意，側影只有一份，改這裡兩邊一起變。
+     `× 0.9`：漏斗畫得比作用範圍細一點，邊緣的積木先被吸進來才碰到雲柱。
+     上緣張得比以前開：拉高之後還用原本的錐度，整條會細成一根針。 */
+  const twRad = (r, t) => r * 0.9 * (0.18 + t * t * 1.25 + t * 0.55);
   /* 漏斗：越往上越粗，每一段各自轉、各自往旁邊偏一點，整條才會扭起來。
      list 是規則那邊的龍捲風本體 {x,z,r,h,spin}，一次可以給好幾道。 */
   function putTornados(list) {
@@ -1367,11 +1382,8 @@ const ENG = (function () {
       seg.count = n;
       for (let k = 0; k < n; k++) {
         const w = list[k];
-        // 漏斗畫得比作用範圍細一點：邊緣的積木先被吸進來才碰到雲柱，看起來才像被風捲走
         const r = w.r * 0.9, h = w.h, spin = w.spin;
-        /* 上緣張得比以前開：漏斗拉高之後還用原本的錐度，整條會細成一根針。
-           底細頂寬才是漏斗，錐度大致跟著高度一起放大。 */
-        const rad = r * (0.18 + t * t * 1.25 + t * 0.55);
+        const rad = twRad(w.r, t);            // 側影只有一份（見 twRad），規則那邊也讀它
         const wob = Math.sin(spin * 1.3 + t * 5.2) * r * 0.3 * t;
         const wob2 = Math.cos(spin * 1.1 + t * 4.4) * r * 0.3 * t;
         scratch.position.set(w.x + wob, h * t + h / TW_SEG * 0.5, w.z + wob2);
@@ -4632,7 +4644,7 @@ const ENG = (function () {
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers, putEmotes,
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
-    putBalls, putTornados, setHammer, hideHammer, hammerVisible, hammerPos,
+    putBalls, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks, putGates, putWeapons, putSwords, putBeasts, putUfos,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
@@ -4654,7 +4666,7 @@ const ENG = (function () {
        砲彈會從管子側面冒出來、或飛的方向跟管子指的方向不一樣。 */
     CAN_EL, CAN_RECOIL, CAN_KICK, CAN_LEN, canMuzzle, MAXCAN,
     /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
-    SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_HIT, SWORD_TIP, SWORD_W,
+    SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_HIT, SWORD_TIP, SWORD_W, SWORD_THK,
     /* 幽浮（v1.167）：光柱的錐度與吸光口高度。判定用的倒錐就是畫出來這一根，
        所以規則那邊的 UFO_MOUTH ÷ UFO_R 必須等於 UFO_TAPER（e2e 有一條守著）。 */
     UFO_MAX, UFO_PARTS, UFO_LITS, UFO_TAPER, UFO_MOUTH_Y, UFO_PART, UFO_LIT,

@@ -13963,9 +13963,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     tool = 'sword'; aim = keepAim;
     clickG(p2);
     const s = swords[0];
-    /* r1 ＝ 削掉那一片扇形的外緣（v1.174 起是**刃尖**）、rhit ＝ 樞紐到攻擊點（只管瞄準）。 */
+    /* r1 ＝ 削掉那一片扇形的外緣（v1.174 起是**刃尖**）、rhit ＝ 樞紐到攻擊點（只管瞄準）。
+       band ＝ 刃自己有多厚的一半、bhit ＝ 積木在法線方向的半寬（v1.205「碰到就算」）。 */
     const shot = { x: s.x, y: s.y, z: s.z, len: s.len, r0: s.r0, r1: s.r1, rhit: s.rhit,
-                   band: s.band, span: s.span, back: s.back, over: s.over };
+                   band: s.band, bhit: s.bhit, span: s.span, back: s.back, over: s.over };
     /* ③④⑤ 樞紐到兩點的 **3D** 距離都該是「樞紐到攻擊點」，而起手／收手的方向
        也該正對那兩點；平面的法線離垂直方向多遠 ＝ 那一刀有多斜。 */
     const dir = (q, y) => {
@@ -14347,10 +14348,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      **這一條就是「所見即所砍」的另一半**：平面通過鏡頭（上面那一條）＋ 每一塊都貼著
      那個平面 ⇒ 缺口投影到螢幕上就是貼著你點的那兩點連線的一條（實測 95% 落在 30px 內，
      線長 220～421px，見 開發筆記〈v1.202〉）。 */
-  ok('削掉的是刃掃過的那一片（每一塊被切時都在揮動平面 ± 一個刃寬內）',
-     swd.cut > 200 && swd.offMax <= swd.shot.band + 1e-6,
+  /* v1.205：門檻從「一個刃寬」換成「半個刃厚 ＋ 積木在法線方向的半寬」——後面那一項
+     就是使用者要的「被劍刃碰到都算破壞」（積木有體積，刃擦過它一角也得算）。
+     兩個數都從劍身上讀，不寫死。 */
+  ok('削掉的是刃掃過的那一片（每一塊被切時都在「刃 ＋ 半塊積木」內）',
+     swd.cut > 200 && swd.offMax <= swd.shot.band + swd.shot.bhit + 1e-6,
      '削掉 ' + swd.cut + ' 塊、離平面最遠的一塊 ' + swd.offMax.toFixed(3) +
-     '（刃寬 ' + swd.shot.band.toFixed(2) + '）；被切時的高度分布 ' + swd.lo + '～' + swd.hi);
+     '（刃厚的一半 ' + swd.shot.band.toFixed(2) + ' ＋ 積木半寬 ' +
+     swd.shot.bhit.toFixed(2) + '）；被切時的高度分布 ' + swd.lo + '～' + swd.hi);
   ok('一趟揮擊只震一次畫面（它每一幀都在切，每幀都震會抖到揮完）',
      swd.shakes === 1, '震了 ' + swd.shakes + ' 次');
   /* 畫面與判定同一份：引擎的 SWORD_TIP／SWORD_PIVOT 兩邊共用，
@@ -14656,9 +14661,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   }
   /* 使用者：「吸引積木（類似龍捲風幾%的數量）」——所以驗的是**幾成**，而且比例
      跟著 UFO_TAKE／UFO_BEAM 走（v1.168 改成理論值 ±12，不再寫死 55～85%）：
-     吸走幾塊是隨機抽的、也是之後會調的細節，這一條只要守住「按比例抽，
-     不是整根吸光」（第一版 UFO_TAKE 0.55 就是吸光的，見 game-tools 那段註解）。 */
-  ok('照光吸走的是光圈裡的「幾成」（照 UFO_TAKE 抽），不是整根吸光',
+     吸走幾塊是隨機抽的、也是之後會調的細節，這一條守的是「**每幀照 1−(1−UFO_TAKE)^dt
+     抽**」這條規則本身，所以常數怎麼調它都成立。
+     **v1.205 使用者要「吸乾淨」**（UFO_TAKE 0.25 → 0.90，理論值因此逼近 100%），
+     所以條目名裡原本那句「不是整根吸光」拿掉了——那是 v1.167 收成 0.25 時的規格，
+     現在使用者要的正好相反。仍然不是「一幀端走整圈」：0.90 是**一層一層**吸上去的
+     （見 game-tools 的 UFO_TAKE）。 */
+  ok('照光吸走的比例照 UFO_TAKE 抽（v1.205 起是 0.90／秒 ＝ 吸乾淨）',
      Math.abs(ufo.share - ufo.want) < 12 && ufo.hit > 0,
      '光圈裡 ' + ufo.inLight + ' 塊還站著 → 吸走 ' + ufo.hit + ' 塊（' + ufo.share +
      '%，理論 ' + ufo.want + '%）；整座 SET ' + ufo.set0 + ' → ' + ufo.set1 +
@@ -20817,8 +20826,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      v1.151 使用者把隕石指定放大（v1.151.1 定案是半徑 ×2、範圍 18.4），火球
      **沒有跟著放大**——那是另一把道具，不該被隕石的每一次調整帶著跑，
      所以 FB_R／FB_POW 從那一版起自己一組數字，不再寫成 MET_R／MET_POW。
-     這一條因此從「跟隕石一樣」改成守「還是 v1.146 那一組」：常數要對，
-     而且同一點炸下去打掉的要明顯比現在的隕石少（實測 799 對 2487 塊）。 */
+     這一條因此從「跟隕石一樣」改成守「還是 v1.146 那一組」。
+
+     **v1.205 起「比隕石小得多」那半條退場了**：使用者把隕石的破壞範圍收回 9.2
+     （見〈隕石〉那一段），跟火球剛好又一樣大——原本那兩個門檻
+     （`MET_R > FB_R × 1.5`、同一點炸下去火球打掉的 < 隕石的六成，實測 799 對 2487 塊）
+     現在結構上就不成立，硬留著只是每輪紅一次。守的剩下「火球那一組數字自己沒動」：
+     隕石這幾版來回調過四次（9.2 → 46 → 18.4 → 9.2），火球一次都沒跟著跑。 */
   const dpow = {};
   for (const kind of ['fball', 'meteor']) {
     await fillAll(page);
@@ -20832,9 +20846,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }, kind);
   }
   const dnum = await page.evaluate(() => ({ r: FB_R, pow: FB_POW, mr: MET_R, mpow: MET_POW }));
-  ok('火球維持 v1.146 那一組數字，沒被放大的隕石帶著走',
-     dnum.r === 9.2 && dnum.pow === 16 && dnum.mr > dnum.r * 1.5 &&
-     dpow.fball < dpow.meteor * 0.6,
+  ok('火球維持 v1.146 那一組數字，隕石怎麼調它都不跟著跑',
+     dnum.r === 9.2 && dnum.pow === 16 && dpow.fball > 0,
      '火球 範圍 ' + dnum.r + '／威力 ' + dnum.pow + '，隕石 ' + dnum.mr + '／' + dnum.mpow +
      '；同一點炸下去 火球 ' + dpow.fball + ' 塊、隕石 ' + dpow.meteor + ' 塊');
 
@@ -23253,10 +23266,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        '（只印不守，見上面那段註解）').join('；'));
 
   /* ── 爬起來那一段朝向是限速轉的，不會一幀甩過去（v1.202.2）──
-     **規則型，骰子押死**：躺著的時候 hurtBeast 不動 m.a，所以直接把朝向轉到背面，
-     爬起來第一幀就一定會想轉 180°——不必等某一輪剛好抽到大角度。
+     **規則型，骰子押死**：躺著的每一幀都包一層 stepBeast0，讓牠跑完之後「想轉 180°」，
+     限速那一層排在它後面（見 game-tools 的 stepBeast），所以整段窗口每一幀都該被咬到上限。
      改之前實測那一幀 巨人轉 61.5°、獅鷲 117.7°、黑獼猴 111.3°（單發箭打中追 300 幀），
-     巨人畫出去那一團的重心一幀跳 8.98 格。 */
+     巨人畫出去那一團的重心一幀跳 8.98 格。
+
+     **v1.205 把「想轉多少」從幾何改成包一層**（原本是 `m.a = atan2(−x, −z) + π`，
+     註解寫著「背對場中心 ⇒ 一定想轉將近 180°」）。那個式子對不上：朝向的慣例是
+     atan2(dz, dx)，而 near 段瞄的也不是場心——實測**猴子每一輪都只需要轉 77.7°**
+     （40 次抽樣全部一樣），轉完就停在那裡；而爬起來的窗口長度是隨機的
+     （實測 37／43／50／67／75 幀，看躺著倒數抽到多久），窗口一長「幾乎整段頂在上限」
+     這半條就掛掉——40 次裡紅 3 次（7.5%）。包一層之後 40 次全部 ratio 剛好 1.0。 */
   const hYaw = await page.evaluate(() => {
     const out = {};
     for (const kind of ['gryphon', 'giant', 'ape']) {
@@ -23272,11 +23292,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         m.st = 'near'; m.leg = 0;              // 走過去砸那一段，朝向就是那一段在賦值的
       }
       fellBeast(m, 0.5);
-      /* 躺著把朝向轉到**背對場中心**：三款瞄的都是工地那一帶，所以爬起來第一幀
-         一定會想轉將近 180°。`m.a += Math.PI` 是不行的——spawn 給的朝向是隨機的，
-         加 π 之後跟目標的夾角也是隨機的（第一版就是這樣寫的，巨人那一輪只需要轉 42°，
-         限速根本沒咬到，等於白測）。 */
-      m.a = Math.atan2(-m.x, -m.z) + Math.PI;
+      /* 躺著的每一幀都「想轉 180°」（見上面那段註解）：包在 stepBeast0 外面，
+         限速那一層在它之後，所以量到的就是限速本身放行了多少。量完還回去。 */
+      const orig = stepBeast0;
+      stepBeast0 = (b, d) => { const a0 = b.a; const r = orig(b, d); if (b.lie) b.a = a0 + Math.PI; return r; };
       const dt = 1 / 60;
       let worst = 0, turned = 0, n = 0, alive = 1;
       for (let i = 0; i < 300; i++) {
@@ -23291,6 +23310,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           worst = Math.max(worst, Math.abs(e)); turned += Math.abs(e); n++;
         }
       }
+      stepBeast0 = orig;                     // 動過的全域要還回去（同其他幾條的規矩）
       out[kind] = { worst: +worst.toFixed(4), lim: +(B_RISE_YAW * dt).toFixed(4),
                     turned: +turned.toFixed(3), budget: +(B_RISE_YAW * dt * n).toFixed(3),
                     secs: +(n * dt).toFixed(2), n, alive };
@@ -23608,17 +23628,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      metLook.mine.shake > 0.3 && metLook.mine.fires > 0,
      '砸飛 ' + metLook.mine.smashed + ' 塊、揚塵 ' + metLook.mine.dust +
      ' 團、震動 ' + metLook.mine.shake + '、點著 ' + metLook.mine.fires + ' 塊');
-  /* 使用者：「隕石大幅提高大小 約5倍(包含隕石本體&破壞範圍)」。
-     兩件事寫成一條，因為使用者要的是同一件事：這顆東西整體變大。
-     **5 倍講的是體積，不是半徑**（v1.151.1，使用者：「隕石現在有點過大了 因為你是
-     半徑變為五倍 體積就會變 5^3 如果是這樣大概半徑接近兩倍的程度」）：v1.151 照半徑 ×5
-     做出來的範圍是 46（體積 ×125、比核彈的 30 還大一圈），一顆就把 3000 塊的地標
-     整個掃成瓦礫。現在是半徑 ×2（體積 ×8，使用者說的「接近兩倍」）。
-     v1.150 之前是「範圍＝投石機石頭的兩倍」（9.2）、石身 2 格。 */
-  ok('本體與破壞範圍都放大 2 倍（v1.151.1：5 倍講的是體積）',
-     met.sz === 4 && Math.abs(met.R - met.rockR * 4) < 1e-6,
-     '石身 ' + met.sz + ' 格（v1.150 是 2）、範圍 ' + met.R +
-     '＝投石機石頭 ' + met.rockR + ' 的四倍（v1.150 是兩倍 9.2；核彈是 30）');
+  /* 石身與破壞範圍是**兩個各自被使用者指定過的數**，所以一條測試守兩個常數：
+     · 石身 4 格：v1.151.1 定案（使用者：「隕石大幅提高大小 約5倍(包含隕石本體&破壞範圍)」
+       ＋「現在有點過大了…大概半徑接近兩倍的程度」——5 倍講的是體積，所以是半徑 ×2）。
+     · 破壞範圍 ＝ 投石機石頭的**兩倍**（9.2）：**v1.205 從 18.4 收回一半**
+       （使用者：「調整隕石破壞範圍符合石頭範圍(目前看起來好像破壞範圍比石頭大)」，
+       問過之後選的是「縮到坑那一圈」＝ v1.204 地上那個坑的半徑 9.2）。
+       石身**沒有**跟著收——使用者嫌的是範圍太大，不是石頭太小，所以這一版
+       兩個數字的關係跟以往任何一版都不同（v1.150 是石身 2／範圍 9.2、
+       v1.151.1 是 4／18.4、現在是 4／9.2），只能各守各的。 */
+  ok('石身 4 格、破壞範圍是投石機石頭的兩倍（v1.205 從四倍收回來）',
+     met.sz === 4 && Math.abs(met.R - met.rockR * 2) < 1e-6,
+     '石身 ' + met.sz + ' 格、範圍 ' + met.R + '＝投石機石頭 ' + met.rockR +
+     ' 的兩倍（v1.151.1～v1.204 是四倍 18.4；核彈是 30）');
 
   /* 威力：同一座建築、同一個落點，隕石打掉的要明顯比投石機的石頭多。
      只比常數不算驗證——要驗的是那個半徑真的有作用到積木上。 */
@@ -23733,11 +23755,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(mkKind.bomb[0].r - mkKind.bombR * mkKind.scorch) < 0.1,
      '一塊焦黑，半徑 ' + (mkKind.bomb[0] ? mkKind.bomb[0].r : '—') +
      '（爆炸半徑 ' + mkKind.bombR + ' × ' + mkKind.scorch + '）');
-  ok('隕石留下的是坑洞，不是焦黑',
+  /* 坑的半徑**跟破壞半徑一樣大**（v1.205 使用者：「坑放大到 9.2」）：
+     隕石傳給 spawnMark 的是 MET_R ÷ MARK_CRATER_R，乘回去剛好就是 MET_R。
+     炸彈那一條照舊（焦黑 ＝ 爆炸半徑 × MARK_SCORCH_R），所以共用的那兩個倍率沒被動到
+     ——上面那一條就是在守這件事。 */
+  ok('隕石留下的是坑洞，不是焦黑，而且坑跟破壞範圍一樣大',
      mkKind.met.length === 1 && mkKind.met[0].crater === 1 &&
-     Math.abs(mkKind.met[0].r - mkKind.metR * mkKind.crat) < 0.1,
+     Math.abs(mkKind.met[0].r - mkKind.metR) < 0.1,
      '一個坑洞，半徑 ' + (mkKind.met[0] ? mkKind.met[0].r : '—') +
-     '（隕石半徑 ' + mkKind.metR + ' × ' + mkKind.crat + '）');
+     '（破壞半徑 ' + mkKind.metR + '；一般爆炸的坑是 ×' + mkKind.crat + '）');
 
   /* 「會漸漸消失」：前面那一段維持全濃，最後 MARK_FADE 秒才淡，時間到整塊收掉、
      那顆網格也要跟著 visible=false（不然沒痕跡還在吃一個 draw call）。 */
