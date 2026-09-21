@@ -9418,16 +9418,6 @@ function stepArrows(dt) {
     r.vy -= GRAV * dt;
     r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
     arrowDir(r);
-    /* 閒著的小人玩鬧射的那一支（v1.206）：**只認牛羊**。不撞人、不咬積木——
-       那是「箭雨」那把破壞道具的事，閒著沒事的人不該把自己蓋的地標射掉
-       （smash 還會把它記進「擊飛幾塊」的統計）。撞到硬的就插著。 */
-    if (r.play) {
-      const b = weaponVsBeast(r, px, py, pz);
-      if (b && b.herd) playHit(r, b);
-      if (sweepRock(r, px, py, pz, hardAt)) { sndStab(); arrowStick(r); continue; }
-      if (r.y <= 0) arrowGround(r);
-      continue;
-    }
     /* 打到小人／動物：撞倒，但**箭照原本的弧線繼續飛**。停在半空的話會有一支箭
        掛在那裡——兵器那邊是靠 fallWeapon 掉下去翻滾，箭沒有那一段。
        被撞飛的人下一幀起就是 air，同一支箭不會再打到他一次。 */
@@ -9469,7 +9459,12 @@ function arrowMan(r, p) {
   tossWorker(p, r.dx * AR_BLOW + rr(-1, 1), rr(3, 6), r.dz * AR_BLOW + rr(-1, 1), false);
   sndFall();
 }
+/* 打到動物。**只有一種例外**：小人玩鬧射的那一支打中牛羊時不是掀飛，
+   而是倒地 PLAY_LIE 秒再爬起來跑開——那就是使用者點名要的那件事
+   （「中箭後牛羊倒地5秒後站起」，見 playHit）。其餘一律照舊掀飛：
+   箭雨本來就是武器，而玩鬧的箭打到猴子、獅鷲也沒有理由比較溫柔。 */
 function arrowBeast(r, m) {
+  if (r.play && m.herd) { playHit(r, m); return; }
   tossBeast(m, r.dx * AR_BLOW * B_BLOW + rr(-1, 1), rr(3, 6),
             r.dz * AR_BLOW * B_BLOW + rr(-1, 1), false);
   sndFall();
@@ -9480,8 +9475,13 @@ function arrowBeast(r, m) {
    那張表當第八種，見 SHOWS／stepShow 的 case 'bow'）；這一支只管射出去那一發。
 
    整套借箭雨（v1.171）：同一種箭、同一顆 weapMesh、同一條 45 度彈道、同一個出手點
-   （ENG.BOW_TIP ＝ 畫出來那把弓的握把）、同一支 pushArrow。差的是打到東西的後果
-   ——這是玩鬧不是攻擊（見 stepArrows 裡 r.play 那一段）。 */
+   （ENG.BOW_TIP ＝ 畫出來那把弓的握把）、同一支 pushArrow，連**打到東西的後果都一樣**。
+
+   v1.206.1 把「玩鬧的箭不咬積木、不撞人」那三個例外整組拿掉（使用者：「其實這個
+   射壞積木 射到生物也沒關係 就讓它發生 而不是寫成例外」）——射歪了就咬掉地標一小片、
+   射到人就把人撞倒，跟玩家自己放的箭雨走同一條路，統計（擊飛幾塊、損失多少）也照記。
+   `r.play` 現在只剩一個用途：**打中牛羊時改走 playHit**（倒地五秒），
+   那是使用者點名要的行為，不是為了讓它少破壞什麼。 */
 const PLAY_LIE = 5;              // 中箭躺幾秒（使用者指定）
 const PLAY_RUN = [3, 4];         // 爬起來之後小跑開幾秒（使用者指定）
 const PLAY_RUN_K = 1.8;          // 跑開那幾秒腳程放大幾倍（腿擺跟著同一個倍率）

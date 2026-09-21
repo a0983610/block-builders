@@ -5828,29 +5828,33 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '跑了 ' + shotCow.runT + ' 秒（設定 ' + shotCow.run.join('~') + '）、最快 ' +
      shotCow.runSpd + ' 格/秒（平常 ' + shotCow.walk + '、設定放大 ' + shotCow.k + ' 倍）');
 
-  /* ── 玩鬧的箭不咬積木、不撞人（那是「箭雨」那把道具的事）── */
-  const playSafe = await page.evaluate(() => {
+  /* ── 玩鬧的箭就是一支箭：咬得掉積木、也撞得倒人（v1.206.1）──
+     使用者：「其實這個射壞積木 射到生物也沒關係 就讓它發生 而不是寫成例外」。
+     v1.206.0 特地擋掉這兩件事，這一條現在反過來守：**別哪天又被寫回例外**。 */
+  const playHurt = await page.evaluate(() => {
     beasts = null; arrows = null;
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 300; setWorkerCount(4); startBuild(true); completeNow();
     const set0 = blocks.filter(b => b.st === 3).length, sm0 = stats.smashed;
-    // 對著地標最高那一塊射一支：插著就好，不該咬掉一片（smash 還會記進「擊飛幾塊」）
+    // 對著地標最高那一塊射一支：照樣咬掉一小片，統計也照記
     const top = blocks.filter(b => b.st === 3).sort((a, b) => b.y - a.y)[0];
     pushArrow(top.x - 3, top.y, top.z, 20, 0, 0, 1);
     for (let i = 0; i < 40; i++) stepArrows(0.05);
     const lost = set0 - blocks.filter(b => b.st === 3).length, smashed = stats.smashed - sm0;
-    // 對著一個人射一支：不該被撞倒
+    const ph = phase;                                  // 地標被動到：done → wreck（同玩家自己砸）
+    // 對著一個人射一支：照樣被撞飛（同箭雨打到小人那條，manWeapon 的力道走飛行方向）
     const w = workers[0];
     w.fall = 0; w.air = 0; w.burn = 0; w.trip = 0;
     arrows = null;
     pushArrow(w.x - 3, 1.0 * (w.scale || 1), w.z, 20, 0, 0, 1);
     for (let i = 0; i < 20; i++) stepArrows(0.05);
-    return { lost, smashed, fell: w.fall > 0 ? 1 : 0 };
+    return { lost, smashed, ph, hit: w.air || w.fall > 0 ? 1 : 0 };
   });
-  ok('玩鬧的箭不咬積木、也不撞倒人（那是「箭雨」那把破壞道具的事）',
-     playSafe.lost === 0 && playSafe.smashed === 0 && !playSafe.fell,
-     '地標少了 ' + playSafe.lost + ' 塊、擊飛統計 +' + playSafe.smashed +
-     '、被射到的人倒地 ' + playSafe.fell + ' 次');
+  ok('玩鬧的箭就是一支箭：咬得掉積木、也撞得倒人（不寫成例外）',
+     playHurt.lost > 0 && playHurt.smashed === playHurt.lost && playHurt.ph === 'wreck' &&
+     playHurt.hit === 1,
+     '地標少了 ' + playHurt.lost + ' 塊、擊飛統計 +' + playHurt.smashed + '、phase→' +
+     playHurt.ph + '、被射到的人被撞飛 ' + playHurt.hit + ' 次');
 
   /* ── 休息：做久了就地喘一口氣 ── */
   const rest = await page.evaluate(() => {
