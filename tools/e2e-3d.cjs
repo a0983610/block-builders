@@ -506,6 +506,13 @@ const fillAll = page => page.evaluate(() => {
     b.st = 3; b.slot = i; b.x = s.x; b.y = s.y + HB; b.z = s.z;
     b.rx = b.ry = b.rz = 0; b.scale = 1; b.al = 1; b.holder = -1;
     b.vx = b.vy = b.vz = b.ax = b.ay = b.az = 0;
+    /* **落定轉正的動畫要收掉**（同遊戲裡的 completeNow，也同下面那個迴圈）：
+       主迴圈是 `if (b.snap > 0) stepSnap(…)`——**不看 st**，而 stepSnap 收尾時
+       一律 `b.st = FREE`。撿一塊還在轉正的碎料來填地標的話，它會在 0.2 秒後
+       自己從建築上掉下來（slot 還留著，所以小人又補回去）。
+       實測上一段留了一地剛落地的碎料時，這一段開頭五幀地標少 16 塊
+       （1681 → 1665，phase 還是 done、一點火都沒有，查了很久才找到這裡）。 */
+    b.snap = 0;
     s.filled = true; s.claimed = -1;
   }
   /* 多出來的積木要壓成靜止的散料。放著不管的話它們還帶著上一輪的速度，
@@ -21745,6 +21752,174 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '天災 ' + jtab.doom.join('／') + '；吉祥物 ' + jtab.masc.join('／') +
      '（ground ' + jtab.ground + '）；天災那一趟踹 ' + jtab.kicks.join('~') +
      ' 腳、吉祥物那一趟 ' + jtab.badKicks + ' 腳');
+
+  /* ── 太高走不了城門，擋路的踹掉再走（v1.207）─────────────────
+     > 使用者：「天災巨人行為調整(只針對巨人)／巨人太高不能走城門
+     >           行走有障礙物就發動攻擊踢掉」
+
+     **整段不跑模擬**（同〈規則：垮塌、補洞、廢棄〉的寫法）：自己組一份 homes.list
+     ——一段正中央開著門洞的牆——直接呼叫 gateNeed／wallFoot／footHome／giantBust／
+     stepKick 驗規則本身，所以一個骰子都沒有。動過的全域最後都還回去。 */
+  const jgate = await page.evaluate(() => {
+    const keep = { homes, cross: crossNeed, boom: explode, ig: igniteAround };
+    /* 一段 16 格長、3 格厚、正中央 5 格寬門洞的牆（照城門樓那個形狀寫的）。 */
+    const wall = { wall: 1, id: 1, ring: 30, x0: -8, x1: 8, z0: -1.5, z1: 1.5,
+                   gap: { x0: -2.5, x1: 2.5, z0: -1.5, z1: 1.5 } };
+    homes = { list: [wall] };
+    const mk = o => Object.assign({
+      kind: 'giant', st: 'come', x: 0, z: -6, a: 0, tx: 0, tz: 20,
+      pause: 0, ghost: 0, gait: 0.85, sc: GIA_SC, fun: 0, home: 0,
+      kick: 0, kleft: 0, kt: 0, hit: 0, spin: 0, bust: null, bn: 0, bskip: null
+    }, o);
+    /* ① 城門：牠連問都不問（gateNeed 第一行就回 false）。crossNeed 換成一律
+       「被擋住而且有開口可繞」，才分得出「不繞」是牠自己決定的，
+       不是因為場上剛好沒有門可繞。 */
+    let asked = 0;
+    crossNeed = () => { asked++; return true; };
+    const gi = mk({}), ap = mk({ kind: 'ape' });
+    const gGate = gateNeed(gi, 0, 20), gAsk = asked;
+    const aGate = gateNeed(ap, 0, 20), aAsk = asked - gAsk;
+    crossNeed = keep.cross;
+    /* ② 門洞那一點：別人走得過去，牠不行（footHome 的 noGap）。 */
+    const holeOpen = !footHome(0, 0), holeShut = footHome(0, 0, true) === wall;
+    /* ③ 「走到牆邊就地拆牆」那一條對牠也關掉（那條會改掉牠這一趟的目標）：
+       站在門洞旁邊、腳邊 1.5 格就是牆身——猴子 true、巨人 false。 */
+    const wfA = wallFoot(mk({ kind: 'ape', x: 5, z: -2.6 }), 5, 0);
+    const wfG = wallFoot(mk({ x: 5, z: -2.6 }), 5, 0);
+    /* ④ 擋路就停下來踹：正對著**門洞**站，五格內探得到 → 轉進 kick，
+       並記下踹完要回哪一段。 */
+    const m = mk({});
+    const bust = giantBust(m);
+    const eye = { st: m.st, back: m.bust, bn: m.bn };
+    /* ⑤ 一腳結算一次、踹完還擋著就再一腳（使用者：「踹到路通為止」）。
+       explode／igniteAround 換成樁：這一段驗的是狀態機，不要真的去炸場上那座金字塔。 */
+    let booms = 0;
+    explode = () => { booms++; return 0; };
+    igniteAround = () => 0;
+    // 一腳＝跑到 m.kt 歸零那一刻（週期結束，見 stepKick）
+    const oneKick = mm => { for (let i = 0; i < 300; i++) { const t0 = mm.kt; stepKick(mm, 0.02); if (mm.kt < t0) break; } };
+    oneKick(m);
+    const k1 = { booms, st: m.st, bn: m.bn, back: m.bust };
+    /* ⑥ 路通了（那一段被踹平＝空框，見 homeBox）就回原本那一段繼續走。 */
+    wall.x0 = 1; wall.x1 = -1;
+    oneKick(m);
+    const k2 = { booms, st: m.st, back: m.bust, skip: m.bskip };
+    /* ⑦ 踹滿 GIA_BUST 腳還不通（外框是所有還站著的格子的 min／max，中間踹穿了
+       框也不會縮）：放它一馬記進 bskip，改用原本那套繞過去——再問一次就不攔了。 */
+    wall.x0 = -8; wall.x1 = 8;
+    const m2 = mk({});
+    giantBust(m2);
+    let kicks = 0;
+    while (m2.st === 'kick' && kicks < GIA_BUST + 4) { oneKick(m2); kicks++; }
+    const giveUp = { kicks, st: m2.st, skip: m2.bskip === wall };
+    giveUp.again = giantBust(m2);
+    /* ⑧ 吉祥物那一隻吃同一條（使用者選的「兩隻都改」）。 */
+    const fun = mk({ fun: 1, st: 'fun' });
+    const funBust = giantBust(fun);
+    explode = keep.boom; igniteAround = keep.ig; homes = keep.homes;
+    return { gGate, aGate, gAsk, aAsk, aSt: ap.st, holeOpen, holeShut, wfA, wfG,
+             bust, eye, k1, k2, giveUp, funBust, funBack: fun.bust,
+             eye5: GIA_EYE, max: GIA_BUST };
+  });
+  ok('巨人不走城門：連問都不問，門洞對牠等於實心牆',
+     jgate.gGate === false && jgate.gAsk === 0 &&
+     jgate.aGate === true && jgate.aAsk === 1 && jgate.aSt === 'gate' &&
+     jgate.holeOpen && jgate.holeShut && jgate.wfG === false && jgate.wfA === true,
+     '同一段有門洞的牆：猴子問了 ' + jgate.aAsk + ' 次繞不繞、轉進 ' + jgate.aSt +
+     '；巨人問 ' + jgate.gAsk + ' 次（門洞那一點 別人 footHome＝null、牠＝那一段），' +
+     '走到牆邊拆牆那條 猴子 ' + jgate.wfA + '／巨人 ' + jgate.wfG);
+  ok('擋路就停下來踹，路通了回原本那一段繼續走（不是踹完就收工）',
+     jgate.bust && jgate.eye.st === 'kick' && jgate.eye.back === 'come' &&
+     jgate.k1.booms === 1 && jgate.k1.st === 'kick' && jgate.k1.bn === 1 &&
+     jgate.k2.booms === 2 && jgate.k2.st === 'come' && !jgate.k2.back && !jgate.k2.skip,
+     '前方 ' + jgate.eye5 + ' 格內探到 → kick（踹完回 ' + jgate.eye.back +
+     '）；第一腳炸 ' + jgate.k1.booms + ' 次、還擋著所以留在 ' + jgate.k1.st +
+     '（第 ' + jgate.k1.bn + ' 腳）→ 踹平之後那一腳結束就回 ' + jgate.k2.st);
+  ok('踹滿就放它一馬改繞過去（外框中間被踹穿也不會縮，不然會踹到天亮）',
+     jgate.giveUp.kicks === jgate.max && jgate.giveUp.st === 'come' &&
+     jgate.giveUp.skip && jgate.giveUp.again === false,
+     '同一個障礙物踹了 ' + jgate.giveUp.kicks + ' 腳（上限 ' + jgate.max +
+     '）就回 ' + jgate.giveUp.st + '、記進 bskip，再問一次攔不攔：' + jgate.giveUp.again);
+  ok('吉祥物那一隻吃同一條規則（使用者選的「兩隻都改」）',
+     jgate.funBust && jgate.funBack === 'fun',
+     '逛到一半被擋住 → 轉進 kick，踹完回 ' + jgate.funBack);
+
+  /* 只有巨人改（使用者：「只針對巨人」）：同一間擋路的房子，猴子照舊繞過去。
+     用房子不用城牆——這一條驗的是「擋路的東西」，城牆那一套上面那條已經驗過。 */
+  const jonly = await page.evaluate(() => {
+    const keep = { homes, ph: phase, boom: explode, ig: igniteAround };
+    phase = 'done';
+    let booms = 0;
+    explode = () => { booms++; return 0; };
+    igniteAround = () => 0;
+    const hz = -(siteR + 8);
+    homes = { list: [{ x: 0, z: hz, r: 4, left: 0, slots: [],
+                       x0: -3, x1: 3, z0: hz - 2, z1: hz + 2 }] };
+    const run = kind => {
+      const m = spawnBeast(kind);
+      m.x = 0; m.z = hz - 8; m.a = 0; m.st = 'come'; m.tx = 0; m.tz = 0;
+      const seen = new Set();
+      for (let i = 0; i < 200; i++) { stepBeast(m, 0.02); seen.add(m.st); }
+      beasts = null;
+      return { sts: [...seen].join('／'), kick: seen.has('kick'),
+               off: +Math.abs(m.x).toFixed(1), adv: +(m.z - (hz - 8)).toFixed(1) };
+    };
+    const gi = run('giant'), ap = run('ape');
+    homes = keep.homes; phase = keep.ph; explode = keep.boom; igniteAround = keep.ig;
+    return { gi, ap, booms, hz: +hz.toFixed(1) };
+  });
+  ok('只有巨人這樣：同一間擋路的房子，猴子照舊繞過去',
+     jonly.gi.kick && jonly.booms > 0 && !jonly.ap.kick && jonly.ap.off > 1,
+     '房子擺在半徑 ' + Math.abs(jonly.hz) + ' 那條路上，各走 4 秒：巨人 ' + jonly.gi.sts +
+     '（踹了 ' + jonly.booms + ' 下、橫移 ' + jonly.gi.off + ' 格）；猴子 ' + jonly.ap.sts +
+     '（橫移 ' + jonly.ap.off + ' 格＝繞開了、往前 ' + jonly.ap.adv + ' 格）');
+
+  /* 真的一整圈牆圍著（照〈閒晃事件：城牆〉那一段的做法把整圈砌起來）：
+     牠一次都沒去繞門，踹穿擋路的那一段就走進城裡。 */
+  await fillAll(page);
+  const jwall = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    stopIdleEvent(); clearHomes();
+    homes = { list: [] };
+    for (const h of wallPlan()) {
+      const hi = homes.list.length;
+      homes.list.push(h);
+      for (let i = 0; i < h.slots.length; i++) {
+        const sl = h.slots[i], b = newBlock();
+        b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      h.done = true; homeBox(h);
+    }
+    ENG.setBlockCount(blocks.length);
+    const stand = () => homes.list.reduce((n, h) => n + (h.slots.length - h.left), 0);
+    const n0 = stand();
+    const m = spawnBeast('giant');
+    /* 這一圈多大：直接讀那一段自己的 ring。**不能問 wallNow()**——它一幀只算一次
+       （wallRAt === frameNo），而這一幀在砌牆之前就有人問過了，拿回來的是 0。 */
+    const W = homes.list[0].ring;
+    m.x = 0; m.z = -(W + 12); m.a = 0; m.st = 'come';     // 正對著 −z 那一面進場
+    let n = 0, gate = 0, kicks = 0, last = 0, into = 0;
+    while (n < 4000 && beasts && beasts.includes(m)) {
+      step(0.02); n++;
+      if (m.st === 'gate') gate++;
+      if (m.hit && !last) kicks++;
+      last = m.hit;
+      if (!into && inWall(m.x, m.z)) into = n;
+    }
+    const n1 = stand();
+    beasts = null;
+    // 手動砌的那一圈牆要收掉（同〈閒晃事件：城牆〉那幾個夾具的結尾）
+    cleanTools(); clearHomes();
+    return { W: +W.toFixed(1), gate, kicks, n0, n1,
+             into: +(into * 0.02).toFixed(1), secs: +(n * 0.02).toFixed(1) };
+  });
+  ok('整圈牆圍著也不繞門：踹穿擋路的那一段走進城裡',
+     jwall.gate === 0 && jwall.into > 0 && jwall.n1 < jwall.n0,
+     '牆半徑 ' + jwall.W + '（' + jwall.n0 + ' 塊）：繞門 ' + jwall.gate +
+     ' 幀、踹 ' + jwall.kicks + ' 腳、' + jwall.into + ' 秒進到城裡，' +
+     '整圈剩 ' + jwall.n1 + ' 塊（全程 ' + jwall.secs + ' 秒）');
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 

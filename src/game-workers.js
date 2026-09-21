@@ -2837,13 +2837,16 @@ function homeAt(x, z) {
    半徑 6.72、實際半寬只有 4.5），面積差一倍，看過去每間房子外面都空一圈，
    跟使用者要的「不要讓建築一圈都沒人」剛好相反。長條屋差更多（大長屋 128 → 292）。
    一塊都還沒砌、或被拆平了的就不擋——那時候地上什麼都沒有。 */
-function footHome(x, z) {
+/* noGap（v1.207）＝**門洞也算擋住**。只有巨人在給：門洞五層高，而牠有十五格
+   （使用者：「巨人太高不能走城門」），對牠來說那個洞跟實心的牆沒兩樣。
+   其餘呼叫端一個字都沒改，預設行為一個位元都沒變（同 explode／afterHit 的 self）。 */
+function footHome(x, z, noGap) {
   if (!homes) return null;
   for (const h of homes.list) {
     if (!(x > h.x0 && x < h.x1 && z > h.z0 && z < h.z1)) continue;
     /* 城門的門洞是真的走得過去（v1.186）：門樓整座是一筆，外框當然含門洞那一塊，
        所以命中之後再問一次 h.gap。命中外框本來就少見，這一條不進熱路徑。 */
-    if (h.gap && x > h.gap.x0 && x < h.gap.x1 && z > h.gap.z0 && z < h.gap.z1) continue;
+    if (!noGap && h.gap && x > h.gap.x0 && x < h.gap.x1 && z > h.gap.z0 && z < h.gap.z1) continue;
     return h;
   }
   return null;

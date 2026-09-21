@@ -6938,6 +6938,16 @@ const GIA_CYCLE = GIA_WIND + GIA_OUT + GIA_HOLD + GIA_BACK;
    不另開 mesh——**0 個新 draw call**（同火、同煙）。走得越兇冒得越多。 */
 const GIA_STEAM = [10, 26, 44];       // 站著／走路／踹 每秒幾顆
 const GIA_STEAM_MAX = 150;            // 自己的配額（dust 那一池總共 400，不能被牠吃光）
+/* 擋路的就踹掉（v1.207，使用者：「巨人太高不能走城門 行走有障礙物就發動攻擊踢掉」）。
+   往前探幾格算擋路：踹出去的腳掌落在身體前方 4.7 格（量出來的，見 giantHit），
+   所以探 5.0 格＝「看到了就停下來踹，腳剛好落在它身上」，同 GIA_NEAR 4.0 那個道理。
+   探的步進 0.5 格：樹只有樹幹擋路（外框可能只有一格寬），1 格一跳會從它身上跨過去。 */
+const GIA_EYE = 5.0, GIA_EYE_STEP = 0.5;
+/* 同一個障礙物最多踹幾腳。使用者選的是「踹到路通為止」，這個數字是**保險不是門檻**：
+   外框是所有還站著的格子的 min／max（見 homeBox），十六格長的牆被踹穿中間那一段時
+   外框不會縮，照「還探得到就再踹」判的話牠會對著一個永遠不通的框踹到天亮。
+   踹滿還不通就放它一馬（記進 m.bskip），改用原本那套繞過去。 */
+const GIA_BUST = 8;
 const doomNear = m => m.kind === 'giant' ? GIA_NEAR
                     : (m.home && m.kind === 'snow') ? DOOM_TOSS_NEAR : DOOM_NEAR;
 /* 每一款自己的腳程、腿擺倍率、跟建築要保持的距離。沒列到的照 DOOM_WALK 那一組走
@@ -7005,6 +7015,9 @@ function spawnBeast(kind, fun, bad) {
        所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。 */
     sc: kind === 'giant' ? GIA_SC : DOOM_SC,
     kick: 0, kleft: 0, kt: 0, hit: 0, puff: 0,
+    /* 擋路就踹那一段的狀態（v1.207，只有巨人在用）：bust＝踹完要回哪一段
+       （null＝不是在清路），bn＝這個障礙物已經踹幾腳了，bskip＝踹不通、放它一馬的那一個。 */
+    bust: null, bn: 0, bskip: null,
     arm: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,
     fun: fun ? 1 : 0, stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
     /* bad＝這一趟要動手，home＝動手的目標在村子那邊（v1.166）。兩個分開是因為
@@ -7083,6 +7096,7 @@ function homeMid(b) {
    吉祥物本來就是「來逛一圈」的，砸完那一間回去把剩下的 stay 逛完再走。 */
 function funBack(m) {
   m.bad = 0; m.home = 0;
+  m.bust = null; m.bn = 0;                   // 清擋路那一腳的旗標（v1.207，同 leaveBeast）
   m.st = 'fun';
   strollPause(m); idleSpot(m);
 }
@@ -7092,6 +7106,9 @@ function leaveBeast(m) {
      clear（整地），而 stepBeast 開頭那條 away 就會把牠推進 go。
      擺在這裡而不是各呼叫端：leaveBeast 是所有「走人」的共同出口。 */
   if (m.kick) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; }
+  /* 清擋路那一腳的旗標也收掉（v1.207）：走人是一趟的結束，那一腳要回的那一段
+     已經不存在了；放過的那一個（bskip）也跟著這一趟作廢。 */
+  m.bust = null; m.bn = 0; m.bskip = null;
   /* 「正在拆擋路的那一段牆」那個旗標也收掉（v1.194）：拆一下就是一趟，收掉之後
      上面那條 away 的豁免才只罩著這一趟（還是走不出去的話，go 下一行會再立一次）。 */
   m.home = 0;
@@ -7151,6 +7168,7 @@ const wallAhead = (m, tx, tz) => wallBlocked(m.x, m.z, tx, tz);
    動手 334 次、拆掉 0 塊牆）。破牆而入要破的是擋路的那一段，所以這一步照舊要走到牆邊。 */
 const WALL_EYE = 1.5;
 function wallFoot(m, tx, tz) {
+  if (m.kind === 'giant') return false;                  // 巨人自己一套（v1.207，見 giantBust）
   const dx = tx - m.x, dz = tz - m.z, d = Math.hypot(dx, dz) || 1;
   const h = footHome(m.x + dx / d * WALL_EYE, m.z + dz / d * WALL_EYE);
   return !!(h && h.wall);
@@ -7161,6 +7179,10 @@ function wallFoot(m, tx, tz) {
    v1.195 起走的是跟小人共用的那一支（crossNeed／crossStep），這裡只管天災自己那個
    狀態機的部分：記下穿過去之後要回哪一段、把 st 推進 gate。 */
 function gateNeed(m, tx, tz) {
+  /* **巨人不走門**（v1.207，使用者：「巨人太高不能走城門」）：門洞五層高、牠十五格，
+     繞過去也鑽不過。牠那一套是「擋路的踹掉再走」（見 giantBust），
+     wallFoot 那一條對牠也一起關掉，所以城牆那三處分支對牠整組不動作。 */
+  if (m.kind === 'giant') return false;
   if (m.st === 'gate' || !crossNeed(m, tx, tz)) return false;
   m.gback = m.st;                   // 穿過去之後回哪一段
   m.st = 'gate'; m.leg = 0;
@@ -7238,8 +7260,20 @@ function stepBeast0(m, dt) {
      DOOM_AIM 那個倒數永遠數不完，牠就定在原地了（實測 phase=build 的場子裡
      8000 幀只走了 1.2 格、一次都沒動手）。m.home 只有天災「拆擋路的牆」那一路會立起來
      （吉祥物那一趟是 m.fun 那邊的旗標，不在這一條裡），拆完 leaveBeast 就歸零。 */
-  if (away && m.st !== 'go' && m.st !== 'gate' && !(m.home && !m.fun)) leaveBeast(m);
+  /* **正在踹擋路的東西也不要打斷**（v1.207，跟上面那兩條同一個道理）：清路那一腳
+     踹完會回原本那一段（見 stepKick），被這一條拉回 go 的話，go 下一幀又探到同一個
+     障礙物、再把牠推回 kick——兩邊每幀互推，那一腳永遠踹不完。m.bust 只有巨人
+     清路那一路會立起來（踹地標走的是 kleft 那一路，不在這一條裡）。 */
+  if (away && m.st !== 'go' && m.st !== 'gate' && !(m.home && !m.fun) && !m.bust) leaveBeast(m);
   m.arm += ((m.st === 'act' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
+  /* 巨人自己那一套擋路規則（v1.207）：走的那三段（進場、逛、走人）每一幀先探前面
+     五格，擋著就停下來踹掉再走。擺在這裡而不是各段裡面：三段共用同一條規則，
+     而且要排在下面城牆那三處分支**之前**——那三處對牠已經整組不動作
+     （gateNeed／wallFoot 都回 false），這一條才是牠遇到牆時真正在走的路。
+     near／act／kick 不在裡面：那是「走到地標旁邊動手」那一段，牠本來就會踹。
+     站著發呆的那幾秒（m.pause）也不算「行走」，不去踹面前的東西。 */
+  if (m.kind === 'giant' && !(m.pause > 0) &&
+      (m.st === 'come' || m.st === 'fun' || m.st === 'go') && giantBust(m)) return false;
   if (m.st === 'come') {
     m.tx = 0; m.tz = 0;
     /* 城牆擋在前面才處理（v1.186，見 wallAhead）：還沒蓋起來、或有缺口就直直走過去。
@@ -7554,6 +7588,17 @@ function stepKick(m, dt) {
   /* 一腳走完：還有配額就再來一腳，沒了就走人（吉祥物砸完回去逛，同猴子）。
      **每一腳都重新轉向**：上一腳把那一片踹垮之後，最近的那一塊已經換人了。 */
   m.kt = 0; m.hit = 0; m.kick = 0; m.spin = 0;
+  /* 清擋路的那一腳（v1.207，使用者：「踹到路通為止」→「繼續走原本的路」）：
+     踹完當場再探一次前面五格，還擋著就再一腳，通了就回原本在走的那一段。
+     **朝向不必重新算**：牠面向的就是要走的方向，而擋路的東西就在那個方向上
+     （踹地標那一路才要重新挑最近的一塊）。 */
+  if (m.bust) {
+    const h = giantBlock(m);
+    if (h && ++m.bn < GIA_BUST) return false;          // 還擋著：再一腳
+    if (h) m.bskip = h;                                // 踹滿了還不通：放它一馬，改繞過去
+    m.st = m.bust; m.bust = null; m.bn = 0; m.kleft = 0;
+    return false;
+  }
   if (--m.kleft > 0) {
     const b = m.home ? nearHome(m.x, m.z) : nearSet(m.x, m.z);
     if (b) { m.a = Math.atan2(b.x - m.x, b.z - m.z); return false; }
@@ -7561,6 +7606,38 @@ function stepKick(m, dt) {
   }
   if (m.fun) funBack(m); else leaveBeast(m);
   return false;
+}
+/* ── 巨人：太高走不了城門，擋路的踹掉再走（v1.207）─────────────
+   > 使用者：「天災巨人行為調整(只針對巨人)／巨人太高不能走城門 行走有障礙物就發動攻擊踢掉」
+   形態是問過使用者才做的：**擋路的都踢**（城牆、小人的家、樹）、**天災與吉祥物兩隻都改**、
+   **踹完繼續走原本的路**（不是踹完就收工走人）、**踹到路通為止**。
+
+   為什麼不是沿用「走城門／走到牆邊拆牆」那一套（v1.186~v1.195）：
+     · 走城門  門洞五層高，牠十五格——繞半圈過去也鑽不過（footHome 的 noGap 就是為這件事）
+     · 拆牆    那條路是「立起 m.home → 轉進 near → act → 踹完 leaveBeast 走人」，
+               擋路變成改了牠這一趟的目標，跟使用者要的「繼續走原本的路」不一樣
+   所以 gateNeed／wallFoot 對巨人整組回 false，牠只吃這一支。 */
+/* 前面五格內擋路的那一個（沒有就 null）。沿**牠實際在走的方向**探（m.a 是 strollTo
+   每幀設的「真正在走的方向」，不是目標方向）——會撞上的就是那個方向上的東西。
+   探的是中線那一條線，不是肩寬 5.3 格那一整條帶：跟 dodgeHome 同樣的判法
+   （那邊也只探中線），擦邊的照舊繞過去。 */
+function giantBlock(m) {
+  if (m.ghost > 0) return null;                        // 穿透中（見 stuckWatch）
+  const ux = Math.sin(m.a), uz = Math.cos(m.a);
+  for (let s = GIA_EYE_STEP; s <= GIA_EYE + 1e-6; s += GIA_EYE_STEP) {
+    const h = footHome(m.x + ux * s, m.z + uz * s, true);   // true＝門洞也算擋住
+    if (h && h !== m.bskip) return h;
+  }
+  return null;
+}
+/* 這一幀擋路了嗎。回 true＝已經轉進踹那一段，呼叫端直接 return。
+   m.bust 記的是「踹完要回哪一段」，同穿門那一段的 m.gback。 */
+function giantBust(m) {
+  const h = giantBlock(m);
+  if (!h) { m.bskip = null; return false; }            // 路通了：上次放過的那一個也不必再記
+  m.bust = m.st; m.bn = 0;
+  m.st = 'kick'; m.kt = 0; m.hit = 0; m.kick = 0; m.kleft = 0;
+  return true;
 }
 /* 身上冒的蒸氣（v1.192，使用者選的「照參考圖，再加走路冒蒸氣」）。
    從兩側斜方肌那一帶往上飄，越飄越大越淡。借塵霧那一池畫（dust），
@@ -8715,7 +8792,14 @@ function reaim(m) {
      剩下的 kleft 留著——打倒牠只是拖延，爬起來牠會把沒踹完的踹完（同猴子）。
      **m.spin 不在這裡動**：那是躺平角，剛被 fellBeast／igniteBeast 擺好的，
      歸零的話牠會平躺著卻站得直直的；爬起來自己會收回 0（見 hurtBeast 最後兩行）。 */
-  else if (m.st === 'kick') { m.st = 'near'; m.kick = 0; m.kt = 0; m.hit = 0; }
+  /* 清擋路的那一腳被打斷（v1.207）：爬起來回**原本在走的那一段**，不是回 near——
+     near 是「走到地標旁邊動手」那一段，回那裡等於被打一下就改去砸地標了。
+     還擋著的話下一幀 giantBust 會再攔一次，那一腳自然會重踹。 */
+  else if (m.st === 'kick') {
+    m.kick = 0; m.kt = 0; m.hit = 0;
+    m.st = m.bust || 'near';
+    m.bust = null; m.bn = 0;
+  }
   else if (m.st === 'aim' || m.st === 'fire' || m.st === 'walk') {
     m.st = 'aim'; m.t = GR_AIM; m.jr = 0;              // jr 歸零＝爬起來重新挑一次目標
   }
