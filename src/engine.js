@@ -3156,6 +3156,9 @@ const ENG = (function () {
         dig 挖料的深淺（0＝沒拿鏟子，0～1＝這一鏟挖到哪了，見 DIG_GRIP_A）,
         danc 正在跳舞、flip 正在翻跟斗（v1.178：翻的角度就是 tilt，這個旗標只管
         「繞身體中段轉、不要抬」）,guard 打架的架勢、punch 這一拳揮到哪 0～1,
+        lean 站著彎腰／後仰幾弧度（v1.206，正＝前傾。不進 lift，見下面 rotation 那段）,
+        stre 伸懶腰的深淺 0～1、twirl 原地轉圈、jack 開合跳、clap 拍手、wave 揮手,
+        tire 累了在喘的呼吸深淺 0～1（v1.206）,
         emo 頭上的表情圖示是哪一種（EMO_KINDS 裡的字，空的就是沒有）,emoK 圖示大小 0～1
         ——這兩個是 putEmotes 在用的，putWorker 本身不畫圖示} */
   function putWorker(i, w) {
@@ -3187,8 +3190,11 @@ const ENG = (function () {
                : piv ? (ROLL_FLAT + (ROLL_PIVOT - ROLL_FLAT) * Math.abs(Math.cos(w.tilt || 0)))
                      : FLAT_LIFT * Math.abs(Math.sin(w.tilt || 0));
     /* 順序用 YZX：R = Ry(朝向)·Rz(打滾)·Rx(躺平)。z 那一軸轉的是「躺平之後的身體長軸」，
-       也就是滾木頭那個滾法。沒在打滾時 z 給 0，跟原本的 YXZ 完全等價。 */
-    scratch.rotation.set((w.tilt || 0) + DIG_LEAN * dgS, w.a,
+       也就是滾木頭那個滾法。沒在打滾時 z 給 0，跟原本的 YXZ 完全等價。
+       w.lean（v1.206）是「站著彎腰／後仰」的角度（正＝前傾），跟挖料那個 DIG_LEAN 同一路：
+       **只進 rotation、不進上面那個 lift**——lift 是「躺平了要把人抬到草皮上」，
+       算進去的話彎個腰整個人就浮起來（彎 0.5 弧度浮 0.15 格）。 */
+    scratch.rotation.set((w.tilt || 0) + DIG_LEAN * dgS + (w.lean || 0), w.a,
                          w.roll ? (w.rspin || 0) : 0, 'YZX');
     const wsc = w.scale || 1;
     scratch.position.set(w.x, w.y + lift * wsc, w.z);
@@ -3228,6 +3234,19 @@ const ENG = (function () {
         scratchB.rotation.x = sw;
         scratchB.position.z = b.p[2] + Math.sin(sw) * (HIP - b.p[1]);
         scratchB.position.y = b.p[1] - Math.abs(Math.sin(sw)) * 0.05;
+        /* 開合跳的腿（v1.206）：跟手同一個相位（w.ph）往外開。走路那個擺盪是繞 X，
+           開合是**繞 Z**——腳那一頭往外（b.swing × 正的，同手臂那邊的慣例）。
+           繞自己的中心轉，所以髖那一頭會往內縮 0.05 格，那一截本來就藏在身體底下。 */
+        if (w.jack) {
+          const js = (Math.sin(w.ph) + 1) / 2;
+          scratchB.rotation.x = 0;
+          scratchB.rotation.z = b.swing * js * 0.55;
+          /* 腿只有 0.28 長，光轉的話腳掌只挪 0.07——跨不出去。整條再往外挪一截
+             （同手臂那邊的做法），兩腳之間才真的張得開。 */
+          scratchB.position.x = b.p[0] + b.swing * js * 0.07;
+          scratchB.position.z = b.p[2];
+          scratchB.position.y = b.p[1];
+        }
       }
       /* 手的姿勢有先後：搬東西 → 歡呼 → 拿藍圖（含指揮）→ 說話比劃 → 走路擺手。
          負的 rotation.x 是把手往前上方抬（-1.5 是水平前伸，-2.8 幾乎舉直）。
@@ -3268,6 +3287,55 @@ const ENG = (function () {
           scratchB.rotation.x = -1.55 + s * 1.15;
           scratchB.rotation.z = b.arm * (0.30 + s * 0.28);
           scratchB.position.y = ARM_Y + 0.18;
+        } else if (w.stre > 0.02) {
+          /* 伸懶腰（v1.206）：兩隻手一起往上舉直、往外開。跟慶祝（hail）差在
+             **手是伸過頭頂往後拉的**（−2.55 再往後 0.55），而且身體同時往後仰
+             （w.lean 給負值），所以看得出是「撐開」不是「歡呼」。
+             stre 是 0～1 的深淺（撐開→停住→收回，見 stepShow）。 */
+          scratchB.rotation.x = -2.5 - w.stre * 0.62;
+          scratchB.rotation.z = b.arm * (0.10 + w.stre * 0.26);
+          /* 手臂整支往上挪（不是只轉角度）：手臂只有 0.34 長，光轉的話手只到耳朵邊，
+             看起來是「手張開」不是「往上撐」。挪到頂時手掌剛好到帽緣那個高度。 */
+          scratchB.position.y = ARM_Y + 0.18 + w.stre * 0.22;
+        } else if (w.twirl) {
+          /* 原地轉圈（v1.206）：兩隻手平舉張開（陀螺），身體自己繞 y 轉——
+             轉的是 w.a，這裡只管手。手不張開的話遠看只是一個人在原地打轉。 */
+          scratchB.rotation.z = b.arm * 1.32;
+          scratchB.position.y = ARM_Y + 0.05;
+        } else if (w.jack) {
+          /* 開合跳（v1.206）：兩隻手一起開合，合＝垂在身側、開＝舉到頭頂外側。
+             相位跟腳下彈跳共用 w.ph（見 stepShow），所以手張到最開的那一刻人在半空。 */
+          const s = (Math.sin(w.ph) + 1) / 2;
+          scratchB.rotation.z = b.arm * (0.10 + s * 1.95);
+          scratchB.rotation.x = -0.18 * s;
+          scratchB.position.y = ARM_Y + 0.14 * s;
+        } else if (w.clap) {
+          /* 拍手（v1.206）：兩隻手往前伸，繞 Z **往內**收到在胸前碰在一起
+             （所以是 −b.arm）。|sin| 讓兩掌一碰就彈開，那一下才像拍的。 */
+          const s = Math.abs(Math.sin(w.ph));
+          scratchB.rotation.x = -1.30;
+          scratchB.rotation.z = -b.arm * (0.16 + s * 0.42);
+          scratchB.position.y = ARM_Y + 0.08; scratchB.position.z = 0.14;
+          /* 兩隻手要真的碰在一起：手臂只有 0.34 長，光靠往內轉最多把手挪 0.17，
+             肩膀卻在 ±0.32——差的那一截靠**整支往內挪**補（同肌肉小人那邊挪 x 的做法）。 */
+          scratchB.position.x = b.arm * (0.30 - s * 0.14);
+        } else if (w.wave) {
+          /* 揮手（v1.206）：**右手**（b.arm > 0，同指揮那一段的慣例）高舉左右擺，
+             左手照常垂著擺——兩隻都舉那是慶祝。 */
+          if (b.arm > 0) {
+            scratchB.rotation.x = -2.78;
+            scratchB.rotation.z = b.arm * (0.26 + Math.sin(w.ph) * 0.46);
+            scratchB.position.y = ARM_Y + 0.21;
+          } else {
+            scratchB.rotation.x = -Math.sin(w.ph) * b.arm * 0.12;
+          }
+        } else if (w.tire > 0) {
+          /* 累了在喘（v1.206）：彎腰撐膝（身體前傾是 w.lean 給的），兩隻手往前下方
+             伸去撐在膝蓋上，肩膀跟著呼吸起伏。tire 是 0～1 的呼吸深淺（見 stepRest）。 */
+          scratchB.rotation.x = -0.95 - w.tire * 0.16;
+          scratchB.rotation.z = b.arm * 0.18;
+          scratchB.position.y = ARM_Y - 0.10 + w.tire * 0.03;
+          scratchB.position.z = 0.10;
         } else if (w.guard) {
           /* 打架（v1.178）：兩隻手舉在胸前護著，**右手**（b.arm > 0，同指揮那一段的
              慣例）跟著 w.punch 打出去。punch 是 0～1 的半個正弦，見 stepFight。 */

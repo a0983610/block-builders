@@ -5501,6 +5501,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = 500; setWorkerCount(20); startBuild(true); completeNow();
     for (let i = 0; i < 200; i++) step(0.05);          // 慶祝跑完
     let dance = 0, flip = 0, moved = 0, under = 0, maxY = 0, maxT = 0, endBad = 0;
+    const kinds = {};                                  // 每一種各演了幾段（v1.206 加到八種）
     let fights = 0, fightF = 0, both = 0, faceBad = 0, punches = 0, angry = 0, anger = 0;
     let minD = 99;
     const dDur = [], fDur = [];
@@ -5517,10 +5518,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         const w = workers[k];
         /* 表演。開場就已經在演的那幾段記成 −1：從中途開始數的長度不算數（同閒聊那一段）。 */
         if (w.show && !seen[k]) {
-          if (w.show === 'dance') dance++; else flip++;
+          /* v1.206 起有八種，所以是**照 id 分別數**——本來是「不是 dance 就算 flip」，
+             那樣新加的五種會全部被算進翻跟斗，長度那一條也跟著花掉。 */
+          kinds[w.show] = (kinds[w.show] || 0) + 1;
+          if (w.show === 'dance') dance++; else if (w.show === 'flip') flip++;
           t0[k] = i > 0 ? i : -1;
         } else if (!w.show && seen[k]) {
-          if (t0[k] > 0) (seen[k] === 'dance' ? dDur : fDur).push(+((i - t0[k]) * 0.05).toFixed(2));
+          if (t0[k] > 0 && (seen[k] === 'dance' || seen[k] === 'flip'))
+            (seen[k] === 'dance' ? dDur : fDur).push(+((i - t0[k]) * 0.05).toFixed(2));
           // 翻完那一幀角度就該歸零，不然落地後會再慢慢倒轉一圈回來
           if (seen[k] === 'flip' && Math.abs(w.tilt) > 0.01) endBad++;
         }
@@ -5551,7 +5556,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
     }
     dDur.sort((a, b) => a - b); fDur.sort((a, b) => a - b);
-    return { dance, flip, moved, under, maxY: +maxY.toFixed(2), maxT: +maxT.toFixed(2), endBad,
+    return { dance, flip, kinds, moved, under, maxY: +maxY.toFixed(2), maxT: +maxT.toFixed(2), endBad,
              dDur: dDur.length ? [dDur[0], dDur[dDur.length - 1]] : [],
              fDur: fDur.length ? [fDur[0], fDur[fDur.length - 1]] : [],
              fights: fights / 2, angry: angry / 2, anger: anger / 2, punches,
@@ -5564,6 +5569,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fun.dDur[0] >= 3.15 && fun.dDur[1] <= 5.55 && fun.fDur[0] >= 0.8 && fun.fDur[1] <= 1.75,
      '跳舞 ' + fun.dDur[0] + '–' + fun.dDur[1] + ' 秒、翻跟斗 ' + fun.fDur[0] + '–' +
      fun.fDur[1] + ' 秒');
+  /* v1.206 新的五種（使用者：「增加小人行為(像是原本的跳舞 翻跟斗等行為)」）。
+     這一輪沒有牛羊（installClean 把 stepHerd 拔掉了），所以射箭那一種抽不到——
+     它自己那一段有規則型的測試（見〈新動作：表演八選一、射箭、休息〉）。
+     期望值照表算，不寫死七這個數字：加一種就自動跟著要求它出現。 */
+  const wantShows = await page.evaluate(() => SHOWS.map(s => s.id).filter(id => id !== 'bow'));
+  const missShow = wantShows.filter(id => !fun.kinds[id]);
+  ok('八種表演不是擺著看的：沒有牛羊時那七種每一種都真的演得到',
+     missShow.length === 0,
+     '400 秒 × 20 人：' + wantShows.map(id => id + ' ' + (fun.kinds[id] || 0)).join('、') +
+     (missShow.length ? '（沒演到：' + missShow.join('、') + '）' : ''));
   ok('表演的時候人站在原地，不會邊演邊滑走', fun.moved === 0,
      '表演中移動 ' + fun.moved + ' 幀');
   /* 翻跟斗繞的是身體中段（engine 的 w.flip 走 AIR_PIVOT 那一套）：繞腳底轉的話
@@ -5595,6 +5610,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     beasts = null;
     const list = [spawnBeast('ape', 1), spawnBeast('snow', 1), spawnCattle()];
     for (const m of list) { m.stay = 9999; }           // 別讓吉祥物逛完就走
+    /* v1.206 起閒著的小人會對牛羊射箭，中箭的牛也會倒地——而這一段問的是
+       「會不會**自己絆**」。把射箭那一支停掉（跑完還回去，見 開發筆記〈測試動過的
+       全域狀態要還回去〉），不然「牛羊不會絆」會被那一箭打紅（射箭本身在
+       〈新動作：表演八選一、射箭、休息〉那一段驗）。 */
+    const realShot = playShot;
+    playShot = () => {};
     /* 分母只能算**猴子**走路的時間（v1.190.4）：場上那三隻裡牛不會絆
        （使用者點名的只有兩隻猴子），把牠的走路時間也算進去，「每走幾秒絆一次」
        就被稀釋了——實測三隻合計 725 秒、猴子自己只走了其中一部分。 */
@@ -5614,6 +5635,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         was[k] = m.fall;
       }
     }
+    playShot = realShot;                               // 借去停掉的那一支還回來
     return { walkSecs: +(walkF * 0.05).toFixed(1), apeSecs: +(apeF * 0.05).toFixed(1),
              trips, cow, back, up, late, face,
              per: trips ? Math.round(apeF * 0.05 / trips) : -1 };
@@ -5630,6 +5652,253 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      apeTrip.face + ' 幀角度到位、爬起來 ' + apeTrip.up + ' 次');
   ok('牛羊不會絆（使用者點名的只有兩隻猴子）', apeTrip.cow === 0,
      '牛羊倒地 ' + apeTrip.cow + ' 次');
+
+  /* ══════════ 新動作：表演八選一、射箭、休息 ══════════ */
+  await head('新動作：表演八選一、射箭、休息', T_MUST);
+  /* v1.206（使用者：「增加小人行為(像是原本的跳舞 翻跟斗等行為)」「閒置小人有時會對牛羊
+     射箭(中箭後牛羊倒地5秒後站起)」「持續工作一陣子後會休息(要有勞累動作)」）。
+     整段都是**規則型**：骰子押死、場面自己組、驗的是規則本身，所以不會飄
+     （見 CLAUDE.md〈兩種條目：規則型判成敗、統計型只記數值〉）。 */
+
+  /* ── 一張表八種：每一種都抽得到、長度照表、發呆時間被拉長到夠演完 ── */
+  const showTab = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(4); startBuild(true); completeNow();
+    for (let i = 0; i < 200; i++) step(0.05);          // 慶祝跑完
+    const w = workers[0];
+    beasts = null;
+    const cow = spawnCattle();                         // 旁邊有牛，射箭那一種才抽得到
+    cow.x = w.x + 9; cow.z = w.z; cow.gait = 0; cow.pause = 999;
+    const real = Math.random;
+    const out = [];
+    for (let k = 0; k < SHOWS.length; k++) {
+      /* 押骰子：第一發過 SHOW_P 那一關（要 < 0.3），第二發指定抽第幾格
+         （權重都一樣，所以 (k + 0.5) / 幾種 正好落在第 k 格），
+         其餘一律 0.5 ＝ 每個範圍取正中間。 */
+      const q = [0, (k + 0.5) / SHOWS.length];
+      Math.random = () => (q.length ? q.shift() : 0.5);
+      w.pause = 0; w.show = ''; w.showT = 0; w.showM = null;
+      rollShow(w);
+      const s = SHOWS[k];
+      // 期望值**照表算**，不寫死秒數（見 開發筆記〈不要寫死會隨改動變動的數字〉）
+      const want = s.n ? Math.round((s.n[0] + s.n[1]) / 2) * s.beat : (s.t[0] + s.t[1]) / 2;
+      out.push({ id: w.show, want: +want.toFixed(2), got: +w.showT.toFixed(2),
+                 pause: +w.pause.toFixed(2), aimed: w.showM === cow });
+    }
+    /* 附近沒有牛羊時，射箭那一格要**整個從抽籤裡拿掉**（不是抽中了什麼都不演）：
+       把牛挪到射程外，再押「抽最後一格」抽一次看抽到誰。 */
+    cow.x = w.x + SHOW_BOW_NEAR[1] + 30;
+    const q2 = [0, 0.999];
+    Math.random = () => (q2.length ? q2.shift() : 0.5);
+    w.pause = 0; w.show = ''; rollShow(w);
+    const farPick = w.show;
+    Math.random = real;
+    w.show = ''; w.showT = 0; w.showM = null;
+    return { ids: SHOWS.map(s => s.id), out, farPick };
+  });
+  const tabBad = showTab.out.filter((o, k) => o.id !== showTab.ids[k] ||
+                                   Math.abs(o.got - o.want) > 0.01 || o.pause < o.got - 0.01);
+  ok('表演是一張表：' + showTab.ids.length + ' 種都抽得到，長度照表、發呆拉長到夠演完',
+     tabBad.length === 0,
+     showTab.out.map((o, k) => showTab.ids[k] + ' ' + o.got + 's').join('、') +
+     (tabBad.length ? '（對不上：' + tabBad.map(o => o.id + ' ' + o.got + '≠' + o.want).join('、') + '）' : ''));
+  ok('射箭要附近真的有牛羊才抽得到（沒有就從抽籤裡拿掉，不是抽中了不演）',
+     showTab.out[showTab.ids.indexOf('bow')].aimed && !!showTab.farPick &&
+     showTab.farPick !== 'bow',
+     '旁邊有牛時瞄到了那一隻；把牛挪到 20 格外再押「抽最後一格」，抽到的是 ' +
+     (showTab.farPick || '（什麼都沒抽到）'));
+
+  /* ── 五種新姿勢：旗標撐得起來、人不移動、不陷到地面下 ── */
+  const poses = await page.evaluate(() => {
+    const w = workers[0];
+    const kx = w.x, kz = w.z;
+    const out = {};
+    for (const id of ['stre', 'twirl', 'jack', 'clap', 'wave']) {
+      const s = SHOWS.find(x => x.id === id);
+      const n = s.n ? Math.round((s.n[0] + s.n[1]) / 2) : 0;
+      const tot = s.n ? n * s.beat : (s.t[0] + s.t[1]) / 2;
+      w.show = id; w.showT = tot; w.showN = n; w.showA = 0; w.a = 0; w.x = kx; w.z = kz;
+      let flag = 0, minY = 0, maxY = 0, lean = 0, turn = 0, moved = 0;
+      for (let i = 0; i < Math.round(tot / 0.05) + 2; i++) {
+        // 同 updWorker：姿勢每幀重算，只有真的在演的那條路徑會把它撐回去
+        w.stre = w.twirl = w.jack = w.clap = w.wave = 0; w.lean = 0; w.y = 0;
+        w.showT -= 0.05;
+        if (w.showT <= 0) break;
+        stepShow(w, 0.05);
+        flag = Math.max(flag, +w[id] || 0);
+        minY = Math.min(minY, w.y); maxY = Math.max(maxY, w.y);
+        if (Math.abs(w.lean) > Math.abs(lean)) lean = w.lean;
+        turn = Math.max(turn, Math.abs(w.a - w.showA));
+        if (Math.hypot(w.x - kx, w.z - kz) > 1e-9) moved++;
+      }
+      out[id] = { flag: +flag.toFixed(2), minY: +minY.toFixed(3), maxY: +maxY.toFixed(2),
+                  lean: +lean.toFixed(2), turn: +turn.toFixed(2), moved };
+    }
+    w.show = ''; w.showT = 0;
+    return { out, spin: Math.PI * 2 * SHOW_TWIRL_N, hop: SHOW_JACK_H };
+  });
+  const pp = poses.out;
+  const poseBad = Object.keys(pp).filter(id => pp[id].flag < 0.9 || pp[id].minY < 0 ||
+                                               pp[id].moved > 0);
+  ok('五種新姿勢：旗標都撐得起來、人站在原地、不會陷到地面下',
+     poseBad.length === 0,
+     Object.keys(pp).map(id => id + ' 旗標 ' + pp[id].flag).join('、') +
+     (poseBad.length ? '（不對：' + poseBad.join('、') + '）' : ''));
+  ok('伸懶腰是往後仰、拍手是往前傾、轉圈真的轉了兩圈半、開合跳跳得起來',
+     pp.stre.lean < -0.2 && pp.clap.lean > 0.05 &&
+     Math.abs(pp.twirl.turn - poses.spin) < 0.05 &&
+     Math.abs(pp.jack.maxY - poses.hop) < 0.01,
+     '伸懶腰 lean ' + pp.stre.lean + '、拍手 lean ' + pp.clap.lean + '、轉圈 ' +
+     pp.twirl.turn + ' 弧度（設定 ' + poses.spin.toFixed(2) + '）、開合跳離地 ' +
+     pp.jack.maxY + ' 格');
+
+  /* ── 射箭：拉滿弓才放、45 度拋射、一段只射一支 ── */
+  const bowShot = await page.evaluate(() => {
+    const w = workers[0];
+    beasts = null; arrows = null;
+    const cow = spawnCattle();
+    cow.x = w.x + 9; cow.z = w.z + 1; cow.a = 0; cow.gait = 0; cow.pause = 999;
+    w.show = 'bow'; w.showT = SHOW_BOW_T; w.showM = cow; w.shot = 0; w.a = 0;
+    const draws = [];
+    let fired = -1, bowOn = 0, face = 9;
+    for (let i = 0; i < 200; i++) {
+      w.bow = 0; w.draw = 0;
+      w.showT -= 0.05;
+      if (w.showT <= 0) break;
+      stepShow(w, 0.05);
+      bowOn += w.bow ? 1 : 0;
+      draws.push(w.draw);
+      if (arrows && fired < 0) fired = +(SHOW_BOW_T - w.showT).toFixed(2);
+      face = Math.min(face, Math.abs(w.a - Math.atan2(cow.x - w.x, cow.z - w.z)));
+    }
+    const r = arrows && arrows[0];
+    return { n: arrows ? arrows.length : 0, play: r ? r.play : -1,
+             ang: r ? +(Math.atan2(r.vy, Math.hypot(r.vx, r.vz)) * 180 / Math.PI).toFixed(1) : -99,
+             fired, maxDraw: +Math.max.apply(null, draws).toFixed(2), bowOn,
+             frames: draws.length, face: +face.toFixed(4), drawT: SHOW_BOW_DRAW };
+  });
+  ok('射箭：整段都拿著弓、朝著那一隻、拉滿才放，一段只射一支',
+     bowShot.n === 1 && bowShot.bowOn === bowShot.frames && bowShot.face < 0.001 &&
+     bowShot.maxDraw === 1 && Math.abs(bowShot.fired - bowShot.drawT) < 0.06,
+     '射了 ' + bowShot.n + ' 支、弓拿了 ' + bowShot.bowOn + '/' + bowShot.frames +
+     ' 幀、拉到 ' + bowShot.maxDraw + '、第 ' + bowShot.fired + ' 秒出手（拉弓 ' +
+     bowShot.drawT + ' 秒）');
+  ok('那一支是玩鬧的箭，出手 45 度（跟箭雨同一條彈道）',
+     bowShot.play === 1 && Math.abs(bowShot.ang - 45) < 1,
+     'play＝' + bowShot.play + '、出手仰角 ' + bowShot.ang + ' 度');
+
+  /* ── 中箭：側躺 5 秒 → 爬起來 → 小跑開 3~4 秒 ── */
+  const shotCow = await page.evaluate(() => {
+    beasts = null; arrows = null;
+    const cow = spawnCattle();
+    cow.x = 40; cow.z = 0; cow.a = 0; cow.gait = 0; cow.pause = 999; cow.tx = 40; cow.tz = 0;
+    const mid = ENG.BEAST_MID[cow.kind] * (cow.sc || 1);
+    pushArrow(cow.x - 3, mid, cow.z, 12, 0, 0, 1);     // 直接餵一支玩鬧的箭給牠（不跑模擬）
+    let fallAt = -1, upAt = -1, lie = 0, runT = 0, runSpd = 0, t = 0;
+    let px = cow.x, pz = cow.z, spookMax = 0;
+    for (let i = 0; i < 400; i++) {                    // 20 秒
+      t += 0.05;
+      stepArrows(0.05);
+      stepBeast(cow, 0.05);
+      if (cow.fall > 0) {
+        if (fallAt < 0) fallAt = +t.toFixed(2);
+        lie = Math.max(lie, Math.abs(cow.roll));
+      } else if (fallAt >= 0 && upAt < 0) upAt = +t.toFixed(2);
+      /* 只算**爬起來之後**那一段：spook 是中箭那一刻就記上的，躺著那 5 秒
+         那個鐘不會動（hurtBeast 把底下整段跳過了），連進來就變成 5 ＋ 3 秒。 */
+      if (cow.spook > 0 && cow.fall <= 0) {
+        runT += 0.05; spookMax = Math.max(spookMax, cow.spook);
+        runSpd = Math.max(runSpd, Math.hypot(cow.x - px, cow.z - pz) / 0.05);
+      }
+      px = cow.x; pz = cow.z;
+    }
+    return { fallAt, upAt, lie: +lie.toFixed(2), side: cow.side,
+             lay: +(upAt - fallAt).toFixed(2), runT: +runT.toFixed(2),
+             runSpd: +runSpd.toFixed(2), walk: HERD_WALK[cow.kind], kind: cow.kind,
+             want: PLAY_LIE, run: PLAY_RUN, k: PLAY_RUN_K, spookMax: +spookMax.toFixed(2) };
+  });
+  ok('牛羊中箭：側躺 5 秒（使用者指定）再爬起來',
+     shotCow.fallAt > 0 && Math.abs(shotCow.lay - shotCow.want) < 0.11 &&
+     shotCow.side === 1 && Math.abs(shotCow.lie - Math.PI / 2) < 0.1,
+     shotCow.kind + ' 第 ' + shotCow.fallAt + ' 秒中箭、躺了 ' + shotCow.lay +
+     ' 秒（設定 ' + shotCow.want + '）、側躺角 ' + shotCow.lie + '（90°＝1.57）');
+  ok('爬起來之後往反方向小跑開 3~4 秒（跑得比平常快）',
+     shotCow.runT >= shotCow.run[0] - 0.1 && shotCow.runT <= shotCow.run[1] + 0.1 &&
+     shotCow.runSpd > shotCow.walk * 1.2,
+     '跑了 ' + shotCow.runT + ' 秒（設定 ' + shotCow.run.join('~') + '）、最快 ' +
+     shotCow.runSpd + ' 格/秒（平常 ' + shotCow.walk + '、設定放大 ' + shotCow.k + ' 倍）');
+
+  /* ── 玩鬧的箭不咬積木、不撞人（那是「箭雨」那把道具的事）── */
+  const playSafe = await page.evaluate(() => {
+    beasts = null; arrows = null;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(4); startBuild(true); completeNow();
+    const set0 = blocks.filter(b => b.st === 3).length, sm0 = stats.smashed;
+    // 對著地標最高那一塊射一支：插著就好，不該咬掉一片（smash 還會記進「擊飛幾塊」）
+    const top = blocks.filter(b => b.st === 3).sort((a, b) => b.y - a.y)[0];
+    pushArrow(top.x - 3, top.y, top.z, 20, 0, 0, 1);
+    for (let i = 0; i < 40; i++) stepArrows(0.05);
+    const lost = set0 - blocks.filter(b => b.st === 3).length, smashed = stats.smashed - sm0;
+    // 對著一個人射一支：不該被撞倒
+    const w = workers[0];
+    w.fall = 0; w.air = 0; w.burn = 0; w.trip = 0;
+    arrows = null;
+    pushArrow(w.x - 3, 1.0 * (w.scale || 1), w.z, 20, 0, 0, 1);
+    for (let i = 0; i < 20; i++) stepArrows(0.05);
+    return { lost, smashed, fell: w.fall > 0 ? 1 : 0 };
+  });
+  ok('玩鬧的箭不咬積木、也不撞倒人（那是「箭雨」那把破壞道具的事）',
+     playSafe.lost === 0 && playSafe.smashed === 0 && !playSafe.fell,
+     '地標少了 ' + playSafe.lost + ' 塊、擊飛統計 +' + playSafe.smashed +
+     '、被射到的人倒地 ' + playSafe.fell + ' 次');
+
+  /* ── 休息：做久了就地喘一口氣 ── */
+  const rest = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(6); startBuild(true);
+    for (let i = 0; i < 100; i++) step(0.05);          // 開工，大家都在搬了
+    const w = workers.find(x => !x.eng && !x.mage && !x.lazy) || workers[1];
+    w.toil = REST_AT;                                  // 連續工作的鐘推到門檻（不必真的等 60 秒）
+    let restAt = -1, restT = 0, moved = 0, carried = 0, leanMax = 0;
+    let tireMin = 9, tireMax = -9, gait = 0, toilAfter = -1, engRest = 0;
+    let px = w.x, pz = w.z;
+    for (let i = 0; i < 600; i++) {                    // 30 秒
+      const was = w.st;
+      step(0.05);
+      for (const o of workers) if ((o.eng || o.mage) && o.st === 'rest') engRest++;
+      if (w.st === 'rest') {
+        if (restAt < 0) { restAt = i * 0.05; px = w.x; pz = w.z; }
+        restT += 0.05;
+        moved = Math.max(moved, Math.hypot(w.x - px, w.z - pz));
+        if (w.load.length || w.carry) carried++;
+        leanMax = Math.max(leanMax, w.lean);
+        tireMin = Math.min(tireMin, w.tire); tireMax = Math.max(tireMax, w.tire);
+        gait = Math.max(gait, w.gait);
+      } else if (was === 'rest' && toilAfter < 0) toilAfter = w.toil;
+    }
+    return { restAt: +restAt.toFixed(2), restT: +restT.toFixed(2), moved: +moved.toFixed(3),
+             carried, leanMax: +leanMax.toFixed(2), tireMin: +tireMin.toFixed(2),
+             tireMax: +tireMax.toFixed(2), gait: +gait.toFixed(2),
+             toilAfter: +toilAfter.toFixed(2), engRest,
+             range: REST_T, lean: REST_LEAN, at: REST_AT };
+  });
+  ok('連續工作 60 秒就會停下來喘 4~6 秒，喘完鐘歸零接著做',
+     rest.restAt >= 0 && rest.restT >= rest.range[0] - 0.1 &&
+     rest.restT <= rest.range[1] + 0.1 && rest.toilAfter === 0,
+     '第 ' + rest.restAt + ' 秒開始喘、喘了 ' + rest.restT + ' 秒（設定 ' +
+     rest.range.join('~') + '）、喘完 toil＝' + rest.toilAfter);
+  ok('喘的時候站在原地、手上沒貨、腳沒在走（不會停在半路上擱著積木）',
+     rest.moved < 0.01 && rest.carried === 0 && rest.gait < 0.05,
+     '移動 ' + rest.moved + ' 格、手上有貨 ' + rest.carried + ' 幀、腳擺最大 ' + rest.gait);
+  /* 呼吸**不能碰到 0**：引擎那邊認的是 w.tire > 0，踩在谷底那一幀姿勢會掉回
+     「走路擺手」閃一下（見 stepRest 的 REST_FLOOR）。 */
+  ok('勞累姿勢：彎腰撐膝、胸口跟著呼吸起伏（使用者挑的那一版）',
+     Math.abs(rest.leanMax - rest.lean) < 0.06 && rest.tireMin > 0 && rest.tireMax <= 1 &&
+     rest.tireMax - rest.tireMin > 0.5,
+     '彎腰 ' + rest.leanMax + ' 弧度（設定 ' + rest.lean + '）、呼吸 ' +
+     rest.tireMin + '~' + rest.tireMax);
+  ok('工程師與魔法師不休息（他們本來就沒在搬）', rest.engRest === 0,
+     '看圖／施法的人進休息 ' + rest.engRest + ' 幀');
 
   /* ══════════ 閒晃事件：小人的家 ══════════ */
   await head('閒晃事件：小人的家', T_MUST);

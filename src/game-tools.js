@@ -7320,6 +7320,19 @@ function stepBeast0(m, dt) {
         return false;
       }
     }
+    /* 被小人射了一箭，爬起來先跑開一段（v1.206，見 playHit）：往反方向的落腳點
+       在中箭那一刻就挑好了，這一段只管「跑得快一點、中途不停下來吃草」。
+       **走到了或時間到都算跑完**，所以就算那個點走不到（被牆隔開）也不會卡在這裡。 */
+    if (m.spook > 0) {
+      m.spook -= dt;
+      m.pause = 0;
+      if (strollTo(m, dt, spd * PLAY_RUN_K, stp * PLAY_RUN_K, kp) || m.spook <= 0) {
+        m.spook = 0;
+        m.pause = rr(HERD_STAY[0], HERD_STAY[1]); m.leg = 0;
+        idleSpot(m);
+      }
+      return false;
+    }
     if (m.pause > 0) {
       m.pause -= dt;
       m.gait += (0 - m.gait) * Math.min(1, dt * 8);
@@ -8493,6 +8506,7 @@ function spawnCattle() {
     /* fun 是「在外圈那一環上逛、不動手」那條路（見 stepBeast）；herd 才是牛羊自己的記號。
        side＝四條腿的，倒下來是往側邊倒（見 lieAng／engine 的 BEAST_SIDE）。 */
     fun: 1, herd: 1, stay: 0, side: 1, sdir: 1,
+    spook: 0,                                      // 中箭爬起來之後還要跑開幾秒（v1.206）
     spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
     lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0
   };
@@ -9360,18 +9374,24 @@ function shootArrow(g, m) {
     const v = Math.sqrt(GRAV * (dh + Math.hypot(d2, dh)));
     vh = v * Math.cos(th); vy = v * Math.sin(th);
   }
+  // 水平那一份按方向分給 x／z（大小 vh），垂直是 vy——兩支解法都湊出「剛好落在那一點」
+  pushArrow(x, y, z, (tx - x) / (d2 || 1) * vh, vy, (tz - z) / (d2 || 1) * vh, 0);
+}
+/* 把一支箭放進場上。兩個地方會造箭：箭雨那一隊（shootArrow）與閒著的小人玩鬧
+   （playShot，v1.206）——差別只在 play 這個記號，其餘一個字都一樣，所以擺一份就好。 */
+function pushArrow(x, y, z, vx, vy, vz, play) {
   if (!arrows) arrows = [];
   if (arrows.length >= AR_KEEP) arrows.shift();      // 滿了把最早那支擠掉（同保齡球）
   const r = {
     x, y, z, k: ENG.ARROW_K, len: AR_LEN, roll: Math.random() * Math.PI * 2,
     dx: 0, dy: 1, dz: 0, fade: 1, glow: 0, cut: null,
-    // 水平那一份按方向分給 x／z（大小 vh），垂直是 vy——兩支解法都湊出「剛好落在那一點」
-    vx: (tx - x) / (d2 || 1) * vh, vz: (tz - z) / (d2 || 1) * vh, vy: vy,
+    vx, vy, vz,
     s: AR_LEN,                                       // 掃掠判定的「多探一截」（見 sweepRock）
-    st: 'fly', lie: 0
+    st: 'fly', lie: 0, play: play || 0
   };
   arrowDir(r);
   arrows.push(r);
+  return r;
 }
 /* 指向 ＝ 速度的方向。每幀重算，箭才會在弧線頂點自己翻成頭朝下。 */
 function arrowDir(r) {
@@ -9398,6 +9418,16 @@ function stepArrows(dt) {
     r.vy -= GRAV * dt;
     r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
     arrowDir(r);
+    /* 閒著的小人玩鬧射的那一支（v1.206）：**只認牛羊**。不撞人、不咬積木——
+       那是「箭雨」那把破壞道具的事，閒著沒事的人不該把自己蓋的地標射掉
+       （smash 還會把它記進「擊飛幾塊」的統計）。撞到硬的就插著。 */
+    if (r.play) {
+      const b = weaponVsBeast(r, px, py, pz);
+      if (b && b.herd) playHit(r, b);
+      if (sweepRock(r, px, py, pz, hardAt)) { sndStab(); arrowStick(r); continue; }
+      if (r.y <= 0) arrowGround(r);
+      continue;
+    }
     /* 打到小人／動物：撞倒，但**箭照原本的弧線繼續飛**。停在半空的話會有一支箭
        掛在那裡——兵器那邊是靠 fallWeapon 掉下去翻滾，箭沒有那一段。
        被撞飛的人下一幀起就是 air，同一支箭不會再打到他一次。 */
@@ -9444,6 +9474,67 @@ function arrowBeast(r, m) {
             r.dz * AR_BLOW * B_BLOW + rr(-1, 1), false);
   sndFall();
 }
+/* ── 閒著的小人對牛羊射一箭（v1.206）──────────────────────────
+   使用者：「閒置小人有時會對牛羊射箭(中箭後牛羊倒地5秒後站起)」，
+   爬起來再小跑開一段也是他定的。**時機**在 game-workers.js（併進「站定發呆來一段」
+   那張表當第八種，見 SHOWS／stepShow 的 case 'bow'）；這一支只管射出去那一發。
+
+   整套借箭雨（v1.171）：同一種箭、同一顆 weapMesh、同一條 45 度彈道、同一個出手點
+   （ENG.BOW_TIP ＝ 畫出來那把弓的握把）、同一支 pushArrow。差的是打到東西的後果
+   ——這是玩鬧不是攻擊（見 stepArrows 裡 r.play 那一段）。 */
+const PLAY_LIE = 5;              // 中箭躺幾秒（使用者指定）
+const PLAY_RUN = [3, 4];         // 爬起來之後小跑開幾秒（使用者指定）
+const PLAY_RUN_K = 1.8;          // 跑開那幾秒腳程放大幾倍（腿擺跟著同一個倍率）
+const PLAY_RUN_D = 12;           // 往反方向挑多遠的落腳點
+/* 這個人附近有沒有牛羊可以射（rng 是 [最近, 最遠] 格）。挑**最近的那一隻**：
+   隨機挑的話他常常越過旁邊那隻去射遠處那隻，看起來像瞄錯人。
+   已經躺著／在飛／在燒的不算（射一支箭進去什麼事都不會發生）。 */
+function herdNear(w, rng) {
+  if (!beasts) return null;
+  let best = null, bd = 0;
+  for (const m of beasts) {
+    if (!m.herd || m.air || m.lie || m.fall > 0 || m.burn > 0) continue;
+    const d = Math.hypot(m.x - w.x, m.z - w.z);
+    if (d < rng[0] || d > rng[1]) continue;
+    if (!best || d < bd) { best = m; bd = d; }
+  }
+  return best;
+}
+/* 射出去那一發。瞄的是「牠等一下會在的地方」：箭要飛一秒多，照現在的位置瞄的話
+   牛早就走開了（乳牛 1.5 格/秒 × 1.1 秒 ＝ 1.6 格，判定半徑才 1.4）。
+   提前量用牠自己那一款的腳程（HERD_WALK，跟牠走路用的同一份）外推一次就夠。 */
+function playShot(w, m) {
+  const B = ENG.BOW_TIP, s = Math.sin(w.a), c = Math.cos(w.a), sc = w.scale || 1;
+  const x = w.x + (B[0] * c + B[2] * s) * sc;
+  const y = B[1] * sc;
+  const z = w.z + (-B[0] * s + B[2] * c) * sc;
+  const aimY = ENG.BEAST_MID[m.kind] * (m.sc || 1);        // 瞄身體中段，不是腳底
+  const d0 = Math.hypot(m.x - x, m.z - z);
+  const t0 = Math.max(AR_T_MIN, Math.sqrt(d0 / (GRAV / 2)));
+  const lead = HERD_WALK[m.kind] * (m.gait || 0) * t0;     // 站著吃草的 gait 是 0＝不提前
+  const tx = m.x + Math.sin(m.a) * lead, tz = m.z + Math.cos(m.a) * lead;
+  /* 45 度（同 shootArrow 的第一支：目標比出手點低，牛羊一律是）。 */
+  const d2 = Math.hypot(tx - x, tz - z), dh = aimY - y;
+  const T = Math.max(AR_T_MIN, Math.sqrt(Math.max(0, d2 - dh) / (GRAV / 2)));
+  const vh = d2 / T;
+  pushArrow(x, y, z, (tx - x) / (d2 || 1) * vh, dh / T + 0.5 * GRAV * T,
+            (tz - z) / (d2 || 1) * vh, 1);
+  sndBow();
+}
+/* 射中了：倒地 PLAY_LIE 秒（fellBeast，跟被戳倒走同一條，所以躺平角、抬升、
+   爬起來那一整套都是現成的），爬起來再往**箭來的反方向**小跑開一段（見 stepBeast0
+   的 m.spook）。方向直接用箭的飛行方向——箭就是從射手那邊飛過來的，不必記射手是誰。 */
+function playHit(r, m) {
+  if (!fellBeast(m, PLAY_LIE)) return;
+  sndFall();
+  m.spook = rr(PLAY_RUN[0], PLAY_RUN[1]);
+  const d = Math.hypot(r.dx, r.dz) || 1;
+  const ax = m.x + r.dx / d * PLAY_RUN_D, az = m.z + r.dz / d * PLAY_RUN_D;
+  const ar = Math.hypot(ax, az) || 1, lim = arenaR - 2;    // 別跑到草地外面去
+  m.tx = ar > lim ? ax / ar * lim : ax;
+  m.tz = ar > lim ? az / ar * lim : az;
+}
+
 /* 弓箭隊要畫的那一份（接在 workers 後面，見 game-ui.js 的 draw）。 */
 const archerList = () => archers ? archers.men : EMPTY;
 /* 兵器與箭畫在同一顆網格（引擎的 weapMesh，容量 WEAP_MAX）。兩邊都有東西才 concat

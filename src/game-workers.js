@@ -64,10 +64,17 @@ function newWorker(i) {
     /* 談不攏就打起來（v1.178，見 startFight）：fig 是還要打幾秒、fw 是對手編號、
        guard 是舉拳的架勢、punch 是這一拳揮到哪 0～1（後兩個是畫的時候用的）。 */
     fig: 0, fw: -1, guard: 0, punch: 0, pk: -1,
-    /* 閒著沒事來一段（v1.178，見 rollShow）：show 是哪一種（''＝沒有）、showT 是還剩幾秒、
-       showA 是開演時的朝向（跳舞繞著它左右轉）、showN 是這一段要翻幾圈。
-       danc／flip 是畫出來要用的姿勢旗標，跟 hail／plan 一樣每幀重算。 */
-    show: '', showT: 0, showA: 0, showN: 0, danc: 0, flip: 0,
+    /* 閒著沒事來一段（v1.178，v1.206 加到八種，見 rollShow）：show 是哪一種（''＝沒有）、
+       showT 是還剩幾秒、showA 是開演時的朝向（跳舞繞著它左右轉）、
+       showN 是這一段幾拍（翻幾圈／跳幾下／拍幾下），
+       showM 是射箭瞄上的那一隻牛羊、shot 是這一段的箭射出去了沒。
+       danc／flip／stre／twirl／jack／clap／wave／bow／draw／lean 是畫出來要用的姿勢，
+       跟 hail／plan 一樣每幀重算。 */
+    show: '', showT: 0, showA: 0, showN: 0, showM: null, shot: 0,
+    danc: 0, flip: 0, stre: 0, twirl: 0, jack: 0, clap: 0, wave: 0, lean: 0, bow: 0, draw: 0,
+    /* 做久了停下來喘一口氣（v1.206，見 stepRest）：toil 是連續工作幾秒了、
+       rst 是這一次還要喘幾秒，tire 是畫出來的呼吸深淺（每幀重算）。 */
+    toil: 0, rst: 0, tire: 0,
     /* 頭上的表情圖示（v1.121，見 showEmo）：emo 是哪一種（EMO_KINDS 裡的字，''＝沒有）、
        emoT 是還要冒幾秒、emoK 是畫出來的大小 0～1。 */
     emo: '', emoT: 0, emoK: 0,
@@ -240,7 +247,7 @@ function releaseWorker(w) {
      w.trip 不在這裡收——那是**倒地中**才有的記號，而這支不會把人扶起來
      （水柱打倒就是先 w.fall = 再叫這支）；換一座那裡才連 fall 一起清（見 startBuild）。 */
   endFight(w);
-  w.show = ''; w.showT = 0;
+  w.show = ''; w.showT = 0; w.showM = null; w.shot = 0;
 }
 /* 工作單裡的某一塊出事了（被打飛、被搶走、藍圖換掉）：只抽掉那一筆，其餘照搬。
    一塊出事就整趟作廢的話，搬三塊的人被抽掉一塊就得回頭重領一次。 */
@@ -1044,6 +1051,10 @@ function updWorker(w, wi, dt) {
   w.hail = 0; w.plan = 0; w.dig = 0;   // dig：拿著鏟子挖料（v1.129，見 digTrip）
   // 跳舞／翻跟斗／打架的姿勢同理（v1.178）：只有真的在演的那條路徑會把它們撐回去
   w.danc = 0; w.flip = 0; w.guard = 0; w.punch = 0;
+  /* v1.206 新的那幾種表演、射箭的弓，還有累了在喘的彎腰同理。
+     lean 一定要在這裡歸零：它是站著的身體傾角，留著的話那個人會一路彎著腰去搬料。 */
+  w.stre = 0; w.twirl = 0; w.jack = 0; w.clap = 0; w.wave = 0;
+  w.bow = 0; w.draw = 0; w.tire = 0; w.lean = 0;
   stuckWatch(w, dt);                 // 卡住了就脫困（v1.108）。擺在最前面：下面每一條分支都會 return
   /* 舉杖同理，只是它是漸進的（瞬間切 0/1 的話杖會用瞬移的抬起放下）：
      這裡每幀往下收，只有真的在施法那條路徑會用兩倍速把它撐回去（castPose）。
@@ -1217,8 +1228,19 @@ function updWorker(w, wi, dt) {
   if (w.eng) { updEng(w, dt); return; }      // 工程師只看圖、只指揮
   if (w.mage) { updMage(w, wi, dt); return; }   // 魔法師不搬，站在旁邊隔空拋
 
+  /* 連續工作幾秒了（v1.206，見 stepRest）：**只算真的在做事的那幾個狀態**。
+     idle 不算（那一幀不是在領下一張工作單，就是根本沒工作可做在閒晃），
+     rest 自己更不算。工程師與魔法師走的是上面那兩條 return，本來就數不到這裡。 */
+  if (w.st !== 'idle' && w.st !== 'rest') w.toil += dt;
   switch (w.st) {
     case 'idle': {
+      /* 做久了先喘一口氣再領下一張工作單（v1.206）。判在這裡而不是隨便哪一幀：
+         這一刻手上一定沒貨（上一趟剛丟完），停下來不會把積木擱在半空。 */
+      if (w.toil >= REST_AT) {
+        w.st = 'rest'; w.rst = rr(REST_T[0], REST_T[1]);
+        stepRest(w, dt);              // 這一幀就擺好姿勢，不要先站直一幀再彎下去
+        break;
+      }
       // 肌肉小人一趟只領一塊（v1.112，見 MUS_WIND）
       const short = loadUp(w, wi, w.mus ? 1 : 0);
       if (!w.load.length) {
@@ -1233,6 +1255,7 @@ function updWorker(w, wi, dt) {
       break;
     }
     case 'dig': digSite(w, dt); break;      // 缺料：走幾步挖出來（v1.141）
+    case 'rest': stepRest(w, dt); break;    // 做久了就地喘一口氣（v1.206）
     case 'pick': {
       // 要撿的那幾塊中途被抽掉，剩下的已經都在手上了：直接回工地
       if (w.li >= w.load.length) { w.li = 0; toSlot(w); break; }
@@ -1669,16 +1692,19 @@ function wander(w, dt) {
   if (strollTo(w, dt)) { strollPause(w); rollShow(w); idleSpot(w); }
 }
 
-/* ── 閒著沒事來一段（v1.178）───────────────────────────────
+/* ── 閒著沒事來一段（v1.178，v1.206 從兩種變八種）─────────────
    使用者：「小人閒置時有時會跳舞 翻跟斗等動作」。演的時機借**現成的發呆**
    （strollPause：走到定點就站一會兒，站多久跟剛走完那段路成比例）——閒晃的人本來
    就有大把時間杵在那裡不動，把其中一部分換成表演就好，不必另外插一個狀態進狀態機。
    所以「閒置」的範圍也跟著現成的走：閒晃（wander）跟蓋完房子在自家附近走走
    （liveHome）這兩條路上的發呆都算，正在搬料、看圖、施法的人一概沒有。
 
-   兩種：
-     dance  跳舞：兩隻手輪流舉、身體繞著開演時的朝向左右轉、腳下小碎步彈跳。
-     flip   翻跟斗：原地起跳，在半空往後翻一到兩圈再落地。
+   v1.206 使用者：「增加小人行為(像是原本的跳舞 翻跟斗等行為)」、「閒置小人有時會
+   對牛羊射箭(中箭後牛羊倒地5秒後站起)」。時機一個字都沒改，改的只有「演什麼」——
+   兩個寫死的 if 換成**一張表**（同 IDLE_EVENTS／TOOLS 的做法），加一種就多一列。
+   五種新的造型（伸懶腰、原地轉圈、開合跳、拍手、揮手）先產一頁預覽請使用者挑過
+   才落地，姿勢本體在 engine.js 的 putWorker（w.stre／twirl／jack／clap／wave）。
+
    翻跟斗的**旋轉中心在身體中段**、不在腳底（引擎那邊看 w.flip，跟被吹飛在半空翻
    同一套）：繞腳底轉的話那是「以腳為軸倒下去」，而且轉過水平時整個人會插進草皮裡
    （見 engine.js 的 ROLL_PIVOT 那段）。
@@ -1691,17 +1717,63 @@ const SHOW_HOP = 0.11;              // 跳舞時腳下彈多高（格）
 const SHOW_FLIP_N = [1, 2];         // 翻跟斗翻幾圈
 const SHOW_FLIP_T = 0.85;           // 一圈幾秒
 const SHOW_FLIP_H = 1.25;           // 翻到最高離地幾格
+/* 伸懶腰（v1.206）：撐開 → 停住 → 收回，收尾走平滑曲線（硬切的話手會「啪」一下放下）。 */
+const SHOW_STRE_T = 3.2, SHOW_STRE_UP = 0.8, SHOW_STRE_DN = 1.0;
+const SHOW_STRE_LEAN = 0.30;        // 撐到底時身體後仰幾弧度
+const SHOW_STRE_H = 0.055;          // 腳跟踮多高
+/* 原地轉圈（v1.206）：轉幾圈、幾秒轉完，起步與收尾都放慢（等速的話頭尾那一幀朝向是跳的）。 */
+const SHOW_TWIRL_T = 2.6, SHOW_TWIRL_N = 2.5;
+const SHOW_TWIRL_HZ = 13;           // 腳下小碎步的節拍
+const SHOW_JACK_N = [5, 8];         // 開合跳幾下
+const SHOW_JACK_T = 0.55;           // 一下幾秒（手腳開合與彈跳共用這個相位）
+const SHOW_JACK_H = 0.20;           // 跳多高
+const SHOW_CLAP_N = [6, 10];        // 拍幾下
+const SHOW_CLAP_T = 0.33;           // 一下幾秒
+const SHOW_CLAP_LEAN = 0.09;        // 拍手時身體前傾幾弧度
+const SHOW_WAVE_T = [2.4, 3.6];     // 揮手幾秒
+const SHOW_WAVE_HZ = 7;             // 揮的節拍
+const SHOW_WAVE_TURN = 0.6;         // 一邊揮一邊左右轉幾弧度
+/* 對牛羊射箭（v1.206）。箭、弓、45 度彈道、牛羊倒地**全是現成的**
+   （箭雨 v1.171 的 shootArrow／fellBeast，見 game-tools.js 的 playShot）。 */
+const SHOW_BOW_NEAR = [5, 20];      // 幾格內的牛羊才射（太近沒有拋物線、太遠純浪費）
+const SHOW_BOW_DRAW = 0.75;         // 拉弓幾秒（同箭雨的 AR_DRAW 0.7）
+const SHOW_BOW_T = 1.6;             // 一段幾秒：拉弓 → 放箭 → 目送一下
+/* 八種演什麼。wt 是相對權重；長度兩種寫法擇一——
+     t    [最短, 最長] 秒，直接抽一個
+     n／beat  抽「幾拍」（記在 w.showN，姿勢那邊照它算相位）× 一拍幾秒
+   need 是「這一刻抽不抽得到」（只有射箭有：附近要真的有牛羊），回傳值會存進 w.showM。 */
+const SHOWS = [
+  { id: 'dance', wt: 3, t: SHOW_DANCE },
+  { id: 'flip',  wt: 3, n: SHOW_FLIP_N, beat: SHOW_FLIP_T },
+  { id: 'stre',  wt: 3, t: [SHOW_STRE_T, SHOW_STRE_T] },
+  { id: 'twirl', wt: 3, t: [SHOW_TWIRL_T, SHOW_TWIRL_T] },
+  { id: 'jack',  wt: 3, n: SHOW_JACK_N, beat: SHOW_JACK_T },
+  { id: 'clap',  wt: 3, n: SHOW_CLAP_N, beat: SHOW_CLAP_T },
+  { id: 'wave',  wt: 3, t: SHOW_WAVE_T },
+  { id: 'bow',   wt: 3, t: [SHOW_BOW_T, SHOW_BOW_T], need: w => herdNear(w, SHOW_BOW_NEAR) }
+];
 /* 站定的那一刻抽一次。抽中就把發呆時間**拉長到夠演完**——照原本那個時間演的話，
-   剛走一小段就站定的人（pause 不到一秒）會演到一半就走人。 */
+   剛走一小段就站定的人（pause 不到一秒）會演到一半就走人。
+   **條件不成立的先濾掉再抽**（v1.206）：連在表上一起抽的話，附近沒牛羊時
+   那一份權重會變成「抽中了卻什麼都不演」，等於把三成的表演吃掉八分之一。 */
 function rollShow(w) {
-  w.show = ''; w.showT = 0;
+  w.show = ''; w.showT = 0; w.showM = null; w.shot = 0;
   if (Math.random() >= SHOW_P) return;
-  if (Math.random() < 0.5) {
-    w.show = 'dance'; w.showT = rr(SHOW_DANCE[0], SHOW_DANCE[1]);
-  } else {
-    w.showN = Math.round(rr(SHOW_FLIP_N[0], SHOW_FLIP_N[1]));
-    w.show = 'flip'; w.showT = w.showN * SHOW_FLIP_T;
+  const ok = [];
+  let tot = 0;
+  for (const s of SHOWS) {
+    const need = s.need ? s.need(w) : true;
+    if (!need) continue;
+    ok.push({ s, need }); tot += s.wt;
   }
+  if (!ok.length) return;
+  let r = Math.random() * tot, hit = ok[ok.length - 1];     // 浮點誤差的保險（同 pickIdleEvent）
+  for (const o of ok) { r -= o.s.wt; if (r < 0) { hit = o; break; } }
+  const s = hit.s;
+  w.show = s.id;
+  if (s.need) w.showM = hit.need;                           // 射箭瞄上的那一隻
+  if (s.n) { w.showN = Math.round(rr(s.n[0], s.n[1])); w.showT = w.showN * s.beat; }
+  else w.showT = rr(s.t[0], s.t[1]);
   w.showA = w.a;                    // 繞著現在的朝向演，演完還是朝這邊
   w.pause = Math.max(w.pause, w.showT);
 }
@@ -1715,22 +1787,113 @@ function idleWait(w, dt) {
   if (w.show) stepShow(w, dt);
   else w.gait += (0 - w.gait) * Math.min(1, dt * 8);
 }
-/* 這一幀的表演。人**不移動**（表演是站定之後的事），動的是朝向、離地高度與姿勢旗標。 */
+/* 這一幀的表演。人**不移動**（表演是站定之後的事），動的是朝向、離地高度與姿勢旗標。
+   每一種都只讀 w.showT（還剩幾秒）與自己那組常數算相位，所以被 updWorker 的鐘
+   截斷時不會留下半截狀態。 */
 function stepShow(w, dt) {
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
-  if (w.show === 'dance') {
-    w.danc = 1;
-    w.ph += dt * SHOW_HZ;
-    w.a = w.showA + Math.sin(w.ph * 0.5) * SHOW_SWAY;
-    w.y = Math.abs(Math.sin(w.ph)) * SHOW_HOP;
-    return;
+  switch (w.show) {
+    case 'dance':
+      w.danc = 1;
+      w.ph += dt * SHOW_HZ;
+      w.a = w.showA + Math.sin(w.ph * 0.5) * SHOW_SWAY;
+      w.y = Math.abs(Math.sin(w.ph)) * SHOW_HOP;
+      return;
+    case 'flip': {
+      /* 翻跟斗：u 是這一段翻到第幾圈（0 ～ showN）。角度乘 −2π（負的是往後翻，
+         跟仰躺同一個方向），高度取**每一圈自己**的半個正弦，落地那一刻剛好回到 0。 */
+      const u = (1 - w.showT / (w.showN * SHOW_FLIP_T)) * w.showN;
+      w.flip = 1;
+      w.tilt = -Math.PI * 2 * (u % 1);        // 每一圈歸一次零（−2π 跟 0 是同一個姿勢）
+      w.y = Math.sin((u % 1) * Math.PI) * SHOW_FLIP_H;
+      return;
+    }
+    case 'stre': {
+      /* 伸懶腰：撐開 → 停住 → 收回。k 是「撐到幾分滿」，再過一次平滑曲線
+         （k²(3−2k)）——線性的話放下來那一下是硬切的。 */
+      const done = SHOW_STRE_T - w.showT;
+      const k = clamp(done < SHOW_STRE_UP ? done / SHOW_STRE_UP : w.showT / SHOW_STRE_DN, 0, 1);
+      const e = k * k * (3 - 2 * k);
+      w.stre = e;
+      w.lean = -SHOW_STRE_LEAN * e;           // 負的＝往後仰
+      w.y = SHOW_STRE_H * e;                  // 腳跟踮起來
+      return;
+    }
+    case 'twirl': {
+      /* 原地轉圈：轉的角度走同一條平滑曲線，所以起步與收尾都是慢慢的。
+         腳下踩的是小碎步（gait 給一半，腿才會擺但擺不大）。 */
+      const u = clamp(1 - w.showT / SHOW_TWIRL_T, 0, 1);
+      const e = u * u * (3 - 2 * u);
+      w.twirl = 1;
+      w.a = w.showA + Math.PI * 2 * SHOW_TWIRL_N * e;
+      w.ph += dt * SHOW_TWIRL_HZ;
+      w.gait = 0.55;
+      w.y = Math.abs(Math.sin(w.ph)) * 0.035;
+      return;
+    }
+    case 'jack':
+      /* 開合跳：手、腳、彈跳共用 w.ph，所以張到最開的那一刻人剛好在半空
+         （姿勢那邊也是讀 w.ph 算的，見 engine 的 w.jack）。 */
+      w.jack = 1;
+      w.ph += dt * (Math.PI * 2 / SHOW_JACK_T);
+      w.y = Math.max(0, Math.sin(w.ph)) * SHOW_JACK_H;
+      return;
+    case 'clap':
+      /* 拍手：一拍是半個正弦（姿勢那邊取 |sin|），所以相位一拍走 π 不是 2π。 */
+      w.clap = 1;
+      w.ph += dt * (Math.PI / SHOW_CLAP_T);
+      w.lean = SHOW_CLAP_LEAN;
+      w.y = Math.abs(Math.sin(w.ph)) * 0.035;
+      return;
+    case 'wave':
+      // 揮手：右手高舉左右揮，人也跟著慢慢左右轉（朝不同方向各揮一下）
+      w.wave = 1;
+      w.ph += dt * SHOW_WAVE_HZ;
+      w.a = w.showA + Math.sin(w.ph * 0.11) * SHOW_WAVE_TURN;
+      return;
+    case 'bow': {
+      /* 對牛羊射一箭。瞄上的那一隻中途可能不在了（被工具打飛、換場清掉）——
+         beasts 那份清單會被 splice，所以認的是「還在不在清單上」，不是旗標。 */
+      const m = w.showM;
+      if (!m || !beasts || beasts.indexOf(m) < 0) { w.show = ''; w.showT = 0; return; }
+      w.bow = 1;
+      w.a = Math.atan2(m.x - w.x, m.z - w.z);      // 一直對著牠（牠還在走）
+      /* 弦拉了多滿。放箭那一幀明寫 1（照 done 算的話那一幀是 0.93——一幀 0.05 秒，
+         拉弓 0.75 秒剛好差最後一格，畫面上就是「還沒拉滿箭就飛出去了」）。 */
+      const done = SHOW_BOW_T - w.showT;
+      w.draw = done < SHOW_BOW_DRAW ? done / SHOW_BOW_DRAW : (w.shot ? 0 : 1);
+      if (done >= SHOW_BOW_DRAW && !w.shot) { w.shot = 1; playShot(w, m); }
+      return;
+    }
   }
-  /* 翻跟斗：u 是這一段翻到第幾圈（0 ～ showN）。角度乘 −2π（負的是往後翻，
-     跟仰躺同一個方向），高度取**每一圈自己**的半個正弦，落地那一刻剛好回到 0。 */
-  const u = (1 - w.showT / (w.showN * SHOW_FLIP_T)) * w.showN;
-  w.flip = 1;
-  w.tilt = -Math.PI * 2 * (u % 1);            // 每一圈歸一次零（−2π 跟 0 是同一個姿勢）
-  w.y = Math.sin((u % 1) * Math.PI) * SHOW_FLIP_H;
+}
+
+/* ── 做久了停下來喘一口氣（v1.206）───────────────────────────
+   使用者：「持續工作一陣子後會休息(要有勞累動作 可以先給我看過)」，
+   門檻與地點都是他挑的：**連續工作 60 秒 → 就地站著喘 4~6 秒**，不走開、不坐下。
+
+   接在現成的工作狀態機上，不另開一條路：倒數在「一趟做完回來領下一張工作單」那一刻
+   （case 'idle'）才看，所以停下來的時候手上一定沒貨。姿勢是彎腰撐膝（engine.js 的
+   w.tire ＋ w.lean），三版預覽給使用者挑過（見 開發筆記〈累了在喘：三版挑一版〉）。
+
+   **會拖慢工期，那是這件事的定義**：一輪 60 ＋ 5 秒裡有 5 秒沒在搬，約 8%。 */
+const REST_AT = 60;                 // 連續工作幾秒就該喘一下
+const REST_T = [4, 6];              // 喘幾秒
+const REST_LEAN = 0.50;             // 彎腰幾弧度（正的＝前傾）
+const REST_BREATH = 0.045;          // 呼吸時腰再上下起伏幾弧度
+const REST_HZ = 5;                  // 呼吸的節拍
+const REST_FLOOR = 0.08;            // 呼吸的下限（理由見 stepRest：0 那一幀姿勢會閃掉）
+function stepRest(w, dt) {
+  w.rst -= dt;
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  w.ph += dt * REST_HZ;
+  /* 呼吸 0～1。**不給到 0**：引擎那邊認的是 `w.tire > 0`，剛好踩在谷底那一幀
+     會掉回「走路擺手」的姿勢，手臂閃一下。 */
+  const b = REST_FLOOR + (1 - REST_FLOOR) * (Math.sin(w.ph) + 1) / 2;
+  w.tire = b;                                 // 手撐在膝上、肩膀跟著起伏（engine）
+  w.lean = REST_LEAN + REST_BREATH * b;
+  // 喘完了：連續工作的鐘重新算，回去領下一張工作單
+  if (w.rst <= 0) { w.rst = 0; w.toil = 0; w.st = 'idle'; }
 }
 
 /* ── 工程師 ───────────────────────────────────────────────

@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.205.0';
+const VERSION = '1.206.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -735,6 +735,9 @@ function startBuild(instant) {
     releaseWorker(w);
     w.air = 0; w.burn = 0; w.burnK = 0; w.lit = 0; w.roll = 0; w.fall = 0; w.trip = 0;
     w.wet = 0; w.wetK = 0;
+    /* 連續工作的鐘跟著換場歸零（v1.206）：上一座蓋完慶祝、閒晃了一大段之後，
+       新的一座第一趟就停下來喘是說不通的。 */
+    w.toil = 0; w.rst = 0;
     w.emo = ''; w.emoT = 0; w.emoK = 0;   // 上一座留下的表情圖示不要跟著進新工地（v1.121）
     w.y = 0; w.tilt = 0; w.vx = w.vy = w.vz = 0;
   }
