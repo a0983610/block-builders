@@ -11,7 +11,7 @@ function makeTrees() {
   const n = 18;
   for (let i = 0; i < n; i++) {
     const a = i / n * Math.PI * 2 + rr(-0.18, 0.18);
-    const d = arenaR + rr(3, 15);       // 種在建材散落區外圍，不擋工地
+    const d = debrisR + rr(3, 15);      // 種在碎料圈外圍（v1.210 起，見 DEBRIS_X），不擋工地
     trees.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, h: rr(2.2, 4.2), r: rr(1.7, 3), rot: rr(0, 1), wob: 0, wv: 0 });
   }
 }

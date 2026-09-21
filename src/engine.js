@@ -481,6 +481,9 @@ const ENG = (function () {
   /* 爆炸運鏡的留白。比 FIT_MARGIN 小：那個是給建築的（四周要留白才好看），
      這裡只要求「效果整個進得了畫面」，留太多等於白白把鏡頭往後推。 */
   const HOLD_MARGIN = 1.15;
+  /* 草地島比碎料圈往外多鋪幾格（v1.210 拉出來當常數：取景的上限與島的大小要讀同一個數，
+     各寫一份的話鏡頭會退到島邊外面去）。26 是 v1.55 起就在用的值。 */
+  const GROUND_PAD = 26;
   /* 畫面震動要看視距才算數：位移是固定的世界座標（最多 2.6 單位），
      換算到畫面上，視距 10 時那 2.6 單位是偏 14.6°、視距 66 只剩 2.3°。
      貼著建築看的時候同一發爆炸會晃到看不清楚，所以視距 SHAKE_NEAR 以下完全不震，
@@ -4474,6 +4477,17 @@ const ENG = (function () {
                                 (radius * 1.05 + 2) / Math.sin(halfH)) * FIT_MARGIN;
       camTarget.ty = atBase ? 0 : height * 0.44 + 1.5;
       camTarget.tx = camTarget.tz = 0;        // 取景時把鏡頭帶回工地中心
+      /* 退到島蓋不住畫面下緣就不准再退（v1.210，使用者：「島的範圍不應該跟鏡頭有關，
+         應該跟地標有關而已，或是固定一個大小要地標配合」）。v1.55～v1.209 是**反過來**的
+         ——鏡頭愛退多遠就退多遠，島跟著撐大（見下面 setGroundSize 那一段）。
+         換過來的理由與代價見 開發筆記〈島不再跟著鏡頭長，改成鏡頭配合島〉。
+         groundReach() 對 dist 幾乎是線性的（camTarget.ty ≠ 0 的手機版才有常數項），
+         所以量一次、等比例縮回去就夠，最多跑三輪收尾。 */
+      for (let i = 0; i < 3; i++) {
+        const reach = groundReach();
+        if (reach <= arena + GROUND_PAD) break;
+        camTarget.dist *= (arena + GROUND_PAD) / reach;
+      }
       /* 重新取景就把「等一下要還的高度」作廢（見 holdWide 的 temp）。
          換場不收道具（v1.59），所以煙火可能跨場繼續放——那時候記著的是**上一座**
          的視線高，還回去等於拿舊建築的取景蓋掉新的。重新取景本來就蓋過一切。 */
@@ -4485,20 +4499,28 @@ const ENG = (function () {
     const sc = sun.shadow.camera;
     sc.left = -s; sc.right = s; sc.top = s; sc.bottom = -s;
     sc.updateProjectionMatrix();
-    /* 島還要大到蓋住畫面下緣（v1.55）。視線落到地面之後，下緣那兩個角會打在很外面——
-       量過：艾菲爾鐵塔打到島半徑的 2.07 倍、台北 101 是 1.21 倍，畫面左下角就直接看到
-       島的邊與底下那層土。島變大不多花 draw call（就那三個盒子），遠處交給霧。 */
-    setGroundSize(Math.max(arena + 26, groundReach()));
+    /* 島只跟地標走（v1.210）：碎料圈往外留 GROUND_PAD 一圈草地，就這樣。
+       v1.55～v1.209 是 `max(arena + 26, groundReach())`——島大到蓋得住畫面下緣，
+       鏡頭退多遠島就長多大。那樣做「同一座地標的島有多大」會變成一個看鏡頭臉色的數字：
+       開場重新取景時 169.2、玩到一半換過去只有 87.9，而且拉一下視窗就當場跨過去。
+       現在改成鏡頭去配合島（見上面 fitCamera 裡那個 for 迴圈）。 */
+    setGroundSize(arena + GROUND_PAD);
     setFog();
   }
 
   /* 畫面下緣（左下角、正下方、右下角）三條射線打到地面的落點，離工地中心最遠那個。
      相機朝原點看，所以只有俯角、視角與視距在決定它，跟 yaw 無關；島是正方形，
-     用「半徑」當半邊長是刻意保守——轉視角時最短的是邊心不是角。 */
+     用「半徑」當半邊長是刻意保守——轉視角時最短的是邊心不是角。
+     俯角讀的是**開場那個角度**（CAM0.pitch），不是玩家當下的 cam.pitch（v1.210）：
+     這支現在只有一個用途——算「取景可以退多遠」（見 fitCamera），而那個上限必須是
+     「同一座地標、同一個視窗就同一個值」，不能被玩家把鏡頭轉到哪裡影響。
+     實測倫敦大笨鐘 3000：cam.pitch 是 1.17 或 1.92，算出來都是 163.1，按 C 復位
+     回得去開場那一次；讀 cam.pitch 的話這兩個數字不一樣（俯角越陡下緣打得越近、
+     上限就放得越寬），〈視角操作〉那一段的「按 C 回到開場的取景」就是這樣紅的。 */
   function groundReach() {
     const tanV = Math.tan(camera.fov * Math.PI / 360);
     const tanH = tanV * camera.aspect;
-    const sp = Math.sin(cam.pitch), cp = Math.cos(cam.pitch);
+    const sp = Math.sin(CAM0.pitch), cp = Math.cos(CAM0.pitch);
     const down = sp + cp * tanV;                       // 下緣射線往前一單位就往下這麼多
     if (down < 0.01) return 0;                         // 幾乎平視：下緣打不到地面
     const t = (camTarget.ty + sp * camTarget.dist) / down;

@@ -567,12 +567,14 @@ const probeWorkers = async (page, tag) => {
       if (d > mw) { mw = d; who = { d: +d.toFixed(0), tx: +w.tx.toFixed(0), tz: +w.tz.toFixed(0), st: w.st }; }
     }
     for (const b of blocks) mb = Math.max(mb, Math.hypot(b.x, b.z));
-    return { mw, mb, who, arenaR };
+    return { mw, mb, who, debrisR };
   });
-  const lim = r.arenaR + 30;
+  /* 界線用**碎料圈**不是生活圈（v1.210 起兩個分開了，見 game.js 的 DEBRIS_X）：
+     碎料的硬邊界就是 debrisR，人被炸飛的上限是 arenaR + 22（更裡面）。 */
+  const lim = r.debrisR + 30;
   ok('（' + tag + '）沒有東西跑出場外', r.mw < lim && r.mb < lim,
      '最遠小人 ' + r.mw.toFixed(0) + '、最遠積木 ' + r.mb.toFixed(0) +
-     '，場地半徑 ' + r.arenaR.toFixed(0) + (r.mw >= lim ? '　' + JSON.stringify(r.who) : ''));
+     '，碎料圈半徑 ' + r.debrisR.toFixed(0) + (r.mw >= lim ? '　' + JSON.stringify(r.who) : ''));
 };
 
 const toScreen = (page, sel) => page.evaluate(sel => {
@@ -3231,7 +3233,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let flying = 0, outside = 0, sunk = 0, float = 0, worstY = 0, freeN = 0;
     for (const b of blocks) {
       if (b.st === 4) flying++;
-      if (Math.hypot(b.x, b.z) > arenaR + 1.5) outside++;
+      if (Math.hypot(b.x, b.z) > debrisR + 1.5) outside++;   // 碎料的硬邊界（v1.210 起是 debrisR）
       if (b.st !== 0 || b.snap > 0) continue;
       freeN++;
       /* 用 halfY 不是 h/2：積木斜著落定時，沿世界 Y 的半高會大於 0.47 */
@@ -3763,7 +3765,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let far = 0, out = 0, worst = null;
     for (let i = 0; i < 3000; i++) {
       step(0.05);
-      const lim = arenaR + 26;                      // 草地島的半邊長，會隨建築換而改
+      const lim = debrisR + 26;                     // 草地島的半邊長，會隨建築換而改
       for (const w of workers) {
         const d = Math.max(Math.abs(w.x), Math.abs(w.z));
         if (d > far) far = d;
@@ -3771,7 +3773,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (d > lim) out++;
       }
     }
-    return { far, out, worst, a0, ph0, arenaR, siteR, phase, name: bp.name, lim: arenaR + 26, pre };
+    return { far, out, worst, a0, ph0, arenaR, siteR, phase, name: bp.name, lim: debrisR + 26, pre };
   });
   /* 這條的方向改過兩次，都是使用者定的（見 idleSpot 的註解）：
      v1.60～v1.95 逛遍整張地圖 → v1.96 收回工地外圈那一環（「不要讓建築一圈都沒人」）
@@ -8902,8 +8904,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     stopIdleEvent(); clearHomes(); evArm = 0;
     /* 工地撐到大地標那種尺寸：人還在場心附近，牆線在九十幾格外——就是「被派到的
        那一段在幾十格外」那個情境（修掉之前，這裡會堆出一地沒有任何人搆得到的碎料）。 */
-    const keep = [siteR, arenaR];
-    siteR = 73; arenaR = 127;
+    /* debrisR 也要一起假裝（v1.210）：碎料落定時會被夾回 debrisR（見 game.js 的 separate），
+       只改 arenaR 的話，牆邊九十幾格外挖出來的料會整批被拉回舊的碎料圈，
+       於是「每一塊都是孤兒」——那是量測沒對齊，不是程式壞了。 */
+    const keep = [siteR, arenaR, debrisR];
+    siteR = 73; arenaR = 127; debrisR = arenaR * DEBRIS_X;
     idleEv = IDLE_EVENTS.find(e => e.id === 'wall');
     startWall();
     const gap0 = workers.filter(w => w.hm >= 0 && homes.list[w.hm].wall)
@@ -8918,7 +8923,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     const done = homes.list.filter(h => h.wall)
                            .reduce((a, h) => a + (h.slots.length - h.left), 0);
-    siteR = keep[0]; arenaR = keep[1];                  // 動過的全域狀態還回去
+    siteR = keep[0]; arenaR = keep[1]; debrisR = keep[2];  // 動過的全域狀態還回去
     cleanTools(); clearHomes();
     return { done, dug, orphan, n: gap0.length,
              gap0: +Math.max(...gap0).toFixed(1) };
@@ -25786,14 +25791,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('平移方向跟著視角轉，不是固定的世界軸', Math.abs(dAng - Math.PI / 2) < 0.2,
      '視角轉 90°，同一顆鍵的世界方向差 ' + (dAng * 57.3).toFixed(0) + '°');
 
-  /* 草地是有限的圓島，推到底要停在場地邊緣，不能飄出去看到虛空 */
+  /* 草地是有限的島，推到底要停在場地邊緣，不能飄出去看到虛空。
+     界線是**碎料圈**（v1.210 起 fitCamera 收到的 arena 就是 debrisR，見 game.js 的
+     DEBRIS_X）——外圈那一帶本來就是場地的一部分，推得過去才看得到躺在那裡的碎料。 */
   const clamped = await page.evaluate(() => {
     ENG.camTarget.tx = ENG.camTarget.tz = 0;
     for (let i = 0; i < 600; i++) ENG.pan(1, 0.3, 0.05);
-    return { d: Math.hypot(ENG.camTarget.tx, ENG.camTarget.tz), arena: arenaR };
+    return { d: Math.hypot(ENG.camTarget.tx, ENG.camTarget.tz), arena: debrisR };
   });
   ok('平移不會跑出場地', clamped.d <= clamped.arena + 0.01,
-     '一直推 → 停在 ' + clamped.d.toFixed(1) + '，場地半徑 ' + clamped.arena.toFixed(1));
+     '一直推 → 停在 ' + clamped.d.toFixed(1) + '，碎料圈半徑 ' + clamped.arena.toFixed(1));
 
   /* ── Q／E 轉視角 ── */
   await page.evaluate(() => { ENG.cam.yaw = 0; });

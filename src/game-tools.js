@@ -585,8 +585,9 @@ function castTrebs(from, toward) {
 /* 架一台：站在 spot、轟 aimAt。
    兩道保險（castTrebs 已經先推過隊伍的中心，這裡是給單台呼叫與斜著站的那一隊用的）：
      ① 還是落在建築上就往外推——整隊斜著跨過工地時，內側那台可能還在牆裡。
-     ② 夾回島內：一隊四台的正面寬 21，第一下點在場邊時外側那台會站到島外面
-        （草地是半徑 arenaR 的圓島，同箭雨 arSpot 最後那一夾）。 */
+     ② 夾回生活圈內：一隊四台的正面寬 21，第一下點在場邊時外側那台會站到很外面
+        （同箭雨 arSpot 最後那一夾）。v1.210 起草地島鋪到 debrisR 更外面，
+        但機台還是夾在 arenaR 裡——外圈那一帶是給碎料散的空地，不是站人站機器的地方。 */
 function placeTreb(spot, aimAt) {
   if (!trebs) trebs = { list: [], rocks: [] };
   if (trebs.list.length >= TREB_MAX) trebs.list.shift();
@@ -5169,11 +5170,14 @@ function ufoLift(u, dt) {
    半徑與高度綁在一起，看起來會是一圈一圈往外擴的漣漪。 */
 const UFO_SKY_SPAN = 18;         // 掉下來的高度鋪開多少（越大越不會同時落地）
 const UFO_SOW_JIT = 0.5;         // 落點再抖一點，不然看得出是條螺線
-/* 鋪多大一片（v1.174）：整座草地島，離島邊留 UFO_SOW_EDGE 的餘裕
-   ——落地那一刻碎塊還會互相擠開（見 game.js 的 separate），貼著島邊撒的話
-   被擠出去的那幾塊會被夾回半徑 arenaR，在邊上排成一圈。
+/* 鋪多大一片（v1.174）：整個**生活圈**，邊上留 UFO_SOW_EDGE 的餘裕
+   ——落地那一刻碎塊還會互相擠開（見 game.js 的 separate），貼著邊撒的話
+   被擠出去的那幾塊會在邊上排成一圈。
    arenaR 是跟著這一座的積木數算的（見 game.js 的 startBuild），所以這裡不寫死；
-   下限留 UFO_R 是給「島比光圈還小」那種退化情形。 */
+   下限留 UFO_R 是給「圈比光圈還小」那種退化情形。
+   v1.210 起碎料圈（debrisR）比生活圈大，但這裡**刻意不跟著放大**：撒出去的料是要
+   給小人撿回去的，撒到外圈空地上等於每一塊都要多走一段（小人的閒晃與撿料動線都在
+   生活圈裡，見 game.js 的 DEBRIS_X）。 */
 const UFO_SOW_EDGE = 3;
 const ufoSowR = () => Math.max(UFO_R, arenaR - UFO_SOW_EDGE);
 function ufoDrop(u) {
@@ -9529,8 +9533,9 @@ function arSpot(x, z, ux, uz) {
       }
     }
   }
-  /* 最後夾回草地裡（v1.171，一隊正面寬 19.8，點在場邊時整排會有人站到島外面
-     ——草地是半徑 arenaR 的圓島，外面是虛空）。夾完可能又踩回固體上，那沒關係：
+  /* 最後夾回生活圈裡（v1.171，一隊正面寬 19.8，點在場邊時整排會有人站到很外面）。
+     v1.210 起草地島鋪到 debrisR 更外面，這裡照舊夾 arenaR：外圈那一帶是留給碎料的
+     空地（見 game.js 的 DEBRIS_X）。夾完可能又踩回固體上，那沒關係：
      站在牆邊比站在空中好。 */
   const d2 = Math.hypot(p.x, p.z), lim = arenaR - 1.5;
   if (d2 > lim) { p.x = p.x / d2 * lim; p.z = p.z / d2 * lim; }

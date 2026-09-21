@@ -23,12 +23,18 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.209.0';
+const VERSION = '1.210.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
 const GRAV = 26;                    // 重力
 const SPREAD = 2.9;                 // 建材散落區的鬆緊：每塊積木分到幾平方單位
+/* 碎料圈是生活圈的幾倍（v1.210，使用者：「想稍微加大碎料能掉的範圍…原本小房子、
+   城牆都不變，只是讓外圍更多一點空間」）。所以半徑拆成兩個，**只有這個倍率是新的**：
+     arenaR   生活圈：房子、城牆、閒晃、挖料、推土機與天災的進退場圈全綁它，一格都沒動
+     debrisR  碎料圈：碎塊飛行上限、草地島／陰影／霧、樹種在哪
+   見 開發筆記〈場地有兩圈：生活圈與碎料圈〉。 */
+const DEBRIS_X = 1.3;
 const WALK = 6.8;                   // 小人走路速度
 const REACH = 0.9;                  // 走到多近算抵達
 const CELL = 1.25;                  // 空間雜湊格子大小（分離碎塊用）
@@ -44,7 +50,8 @@ let bp = null;                      // 目前藍圖
 let placedCnt = 0;
 let slotCursor = 0;
 let siteR = 12;                     // 建築占地半徑
-let arenaR = 40;                    // 整片工地半徑（建材散落 + 碎塊飛行上限）
+let arenaR = 40;                    // 生活圈半徑（房子、城牆、閒晃、進退場圈，見 DEBRIS_X）
+let debrisR = 40 * DEBRIS_X;        // 碎料圈半徑（碎塊飛行上限、草地島、樹）
 let phase = 'build';                // clear（整地）| build | done | wreck
 /* 小人「沒有工地要顧」的兩個階段。拆除中（wreck）純粹是換場的記帳狀態：
    拆到剩不到 WRECK_AT 就換下一座（見 step 尾巴）。v1.106 之前拆除中還會讓全場退場，
@@ -440,7 +447,7 @@ function sndThunder() {
    +4096 有兩個用途：讓負座標也落在正數上，也讓 key 永遠 ≥ 1——`b.cell` 同時
    兼任「這塊在不在格子裡」的真假值（`if (b.cell) gridDel(b)` 散在四個檔案裡），
    算出 0 的話那些判斷會靜默失效。±4096 格 ＝ ±5120 單位，而場上最遠的碎料是
-   「最大的工地半徑（金門大橋 arenaR 約 138）＋ 推土機推出場那 25」＝ 165。 */
+   「最大的碎料圈（金門大橋 9000 建材實測 debrisR 165.6）＋ 推土機推出場那 25」＝ 191。 */
 const gcell = (cx, cz) => (cx + 4096) * 8192 + cz + 4097;
 const gkey = (x, z) => gcell(Math.floor(x / CELL), Math.floor(z / CELL));
 function gridAdd(b) {
@@ -480,7 +487,7 @@ function separate(b) {
     b.x += px; b.z += pz;
   }
   const d = Math.hypot(b.x, b.z);          // 保險：擠到最後還是要留在場內
-  if (d > arenaR) { b.x = b.x / d * arenaR; b.z = b.z / d * arenaR; }
+  if (d > debrisR) { b.x = b.x / d * debrisR; b.z = b.z / d * debrisR; }
 }
 /* separate 的溫和版：只算一輪、力道打折、位移還給上限。
    要「每幀都擠一點」的地方（推土機鏟子前那一坨）不能用 separate——
@@ -634,9 +641,9 @@ function stepBlock(b, dt) {
   b.rx += b.ax * dt; b.ry += b.ay * dt; b.rz += b.az * dt;
 
   const d = Math.hypot(b.x, b.z);
-  if (d > arenaR) {                    // 別讓碎塊飛到天邊，撞牆彈回來
+  if (d > debrisR) {                   // 別讓碎塊飛到天邊，撞牆彈回來
     const nx = b.x / d, nz = b.z / d;
-    b.x = nx * arenaR; b.z = nz * arenaR;
+    b.x = nx * debrisR; b.z = nz * debrisR;
     const dot = b.vx * nx + b.vz * nz;
     b.vx -= 2 * dot * nx * 0.55; b.vz -= 2 * dot * nz * 0.55;
   }
@@ -788,6 +795,7 @@ function startBuild(instant) {
   siteR = Math.max(7, bp.radius);
   // 建材散落區從工地邊緣往外鋪，面積跟積木數成正比 → 不管 300 塊還 3000 塊都一樣鬆
   arenaR = Math.sqrt((siteR + 2) ** 2 + SPREAD * bp.slots.length / Math.PI) + 8;
+  debrisR = arenaR * DEBRIS_X;       // 碎料可以飛到生活圈外面那一圈（見 DEBRIS_X）
   clearHomesInSite();                // 新工地蓋到誰家，那一間解成碎料（v1.97）
   reconcilePool();
 
@@ -801,7 +809,9 @@ function startBuild(instant) {
   /* 第五個參數＝保留現在的視角。開場那一次要取景（不然一進來不知道鏡頭在哪），
      之後每換一座都不再動鏡頭——玩家自己轉好、拉近、平移過的視角不該被搶走。
      草地大小、陰影範圍、霧的起點還是照新工地重算，那些不是「鏡頭」。 */
-  ENG.fitCamera(siteR, bp.height, arenaR, !!instant, !instant);
+  /* 第三個參數餵的是**碎料圈**：草地島、陰影範圍、霧都要蓋得住碎料飛得到的地方，
+     不是只蓋住生活圈（見 DEBRIS_X）。 */
+  ENG.fitCamera(siteR, bp.height, debrisR, !!instant, !instant);
   syncHud();
 }
 
