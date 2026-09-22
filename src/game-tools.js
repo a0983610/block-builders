@@ -29,7 +29,9 @@ const TOOLS = [
     tip: '點建築：兩倍大的槌子，範圍是小槌的三倍　·　點地面：地震，震掉 10% 的積木' },
   { id: 'ball', n: '保齡球', k: '🎳', tip: '點兩下：先點出手的地方，再點要滾過去的方向' },
   { id: 'treb', n: '投石機', k: '🪨',
-    tip: '點兩下：先點機台架設的位置，再點要轟的地方（一次架 4 台，各丟 5 顆石頭）' },
+    /* v1.212 補上「點建築就瞄那個高度」（同箭雨那一句）：那一版起第二下點到的高度
+       就是要轟的高度，不再是「落點附近最高的屋頂」。 */
+    tip: '點兩下：先點機台架設的位置，再點要轟的地方（點建築就瞄那個高度）——一次架 4 台，各丟 5 顆石頭' },
   { id: 'tornado', n: '龍捲風', k: '🌪',
     tip: '點兩下：先點龍捲風出現的地方，再點要掃過去的方向（會一路亂竄 10 秒，罩到的建築每秒吸走七成）' },
   { id: 'fw', n: '煙火', k: '🎆',
@@ -62,7 +64,7 @@ const TOOLS = [
     tip: '點兩下：第一下點地面站出一隊八十人的小人弓箭手，第二下決定射哪裡（點建築就瞄那個高度）——45 度拋物線齊射三輪，落點散在附近（射得愈遠愈散），箭插到的地方咬掉一小片（不爆炸、不起火），插著的箭慢慢淡掉' },
   { id: 'cannon', n: '加農砲', k: '🔫',
     /* 接在最後面（見上面那段解鎖階梯的說明）：門檻是照順序算出來的，不必挑數字。 */
-    tip: '點兩下：先點架砲的位置，再點要轟的地方（一次架 3 門，各打 6 發）——砲管固定 18 度、砲彈走又低又直的彈道，一路拖著火，打到的地方炸開並燒起來；每開一砲噴出一大團白煙，整台被後座推得往後退一截再滾回原位' }
+    tip: '點兩下：先點架砲的位置，再點要轟的地方（點建築就瞄那個高度）——一次架 3 門、各打 6 發；砲管 18 度起跳、打不到那麼高才抬頭，砲彈走又低又直的彈道，一路拖著火，打到的地方炸開並燒起來；每開一砲噴出一大團白煙，整台被後座推得往後退一截再滾回原位' }
 ];
 /* 等差階梯（見上面那段）：TOOLS 裡沒寫 `lock: null` 的照順序補門檻，
    第 n 把＝擊飛 n × LOCK_STEP 塊。加新道具不必碰這裡。 */
@@ -84,7 +86,9 @@ const toolOk = t => !t.lock || t.lock.ok();
 /* 大劍也在這裡：兩下點哪裡都算數（v1.164 起連建築都不必點，兩下都點地面就是
    貼著地面橫掃）——點在建築上的那一下決定的是揮擊的高度。 */
 /* 箭雨兩下都是點地面（第一下站人、第二下是落點），所以也在這裡。 */
-/* 加農砲兩下都是點地面（第一下擺砲、第二下是要轟的地方），同投石機。 */
+/* 加農砲兩下都是點地面（第一下擺砲、第二下是要轟的地方），同投石機。
+   這三把的第二下**點在建築上也算數**（本來就算），v1.212 起那一下點到的高度
+   就是要轟的高度（見 useTool）——在這張表裡只是「點空地也不會沒反應」。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
                       storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1 };
@@ -487,6 +491,23 @@ const TREB_SHOTS = 5, ROCK_R = 4.6, ROCK_POW = 12;
    石頭自己的破壞半徑是 ROCK_R ＝ 4.6，散開 8 剛好是「一隊二十顆打出來的坑連成一片，
    又不是每一顆都砸同一個洞」。不跟著射程走（那是箭雨那一條，射手才有準度問題）。 */
 const TREB_SPRAY = 8;
+/* 「這個落點底下實際有多高的東西」要掃多寬（v1.212，投石機與加農砲共用）。
+   v1.102～v1.211 這個掃描是**目標高度本身**（那時要的是「別讓石頭從屋簷邊緣擦過去」），
+   現在它只當**上限**——目標高度是使用者點到的那一點，見 fireRock。
+   **1.8 這個數字沒動**：改成 0.9（＝「落點正下方那一根柱子」，看起來比較誠實）
+   反而每一項都變差，同一顆種子、同樣的點擊實測：
+
+   |  | 十八發撞到幾發 | 打掉幾塊 | 爆炸高度平均 | 飛過頭幾發 |
+   |---|---|---|---|---|
+   | ±1.8（留著） | 15 | 2109 | 11.7 | 3 |
+   | ±0.9 | 10 | 2070 | 9.1 | 1 |
+
+   理由是落點散在半徑 6～8 內，有一批會落在建築輪廓外一兩格——±1.8 會把旁邊那面牆
+   的高度算給它們，於是那幾發仍然瞄著牆的高度飛過去、擦在牆上（撞到 15 發）；
+   ±0.9 則把它們壓成地面高度，從牆腳底下鑽過去落在草地上（撞到剩 10 發）。
+   代價是那幾發沒擦到的會飛過頭（18 發有 3 發落在瞄準點 25 格外）——但都是**落地**，
+   不是舊版那種半空自爆（兩種寬度的半空自爆都是 0）。 */
+const AIM_COL = 1.8;
 /* 拋物線：**先訂頂點、再解飛行時間**（v1.177 使用者：「投石拋物線應該要更高才合理」；
    v1.102～v1.176 是「不管多遠都固定飛 T ＝ 1.7 秒」，頂點永遠只有 12，比屋頂還低）：
      ① 頂點高度 ＝ max(出手點 ＋ max(TREB_CLEAR, 距離 × TREB_LOB), 目標 ＋ 0.6 ＋ TREB_OVER)
@@ -533,14 +554,16 @@ const TREB_STAND = 5;
 const TREB_AIM_R = (TREB_TEAM - 1) * TREB_GAP / 2 + 3;   // 第一下的光環 ≈ 一隊的正面寬
 const TREB_AIM_C = 0x8a5f3c;        // 木色（同機台的立柱）
 let trebs = null;
-/* 第一下記位置、畫個光環，第二下才架（同箭雨的 aimArrows）。 */
-function aimTrebs(point) {
+/* 第一下記位置、畫個光環，第二下才架（同箭雨的 aimArrows）。
+   第二下點在**建築**上時那一點的高度也算目標（v1.212，同 aimArrows）。 */
+function aimTrebs(point, onBlock) {
   if (!aim) { aimFirst(point, TREB_AIM_R, TREB_AIM_C); return; }
-  castTrebs(aim, point);
+  castTrebs(aim, point, onBlock ? point.y : 0);
 }
 /* 一隊排成一列、整隊面向目標（橫向 ＝ 指向目標那個方向轉 90 度，同 castArrows）。
-   同一個地方連點兩下就沒有方向可用，跟箭雨一樣退回「朝場心」。 */
-function castTrebs(from, toward) {
+   同一個地方連點兩下就沒有方向可用，跟箭雨一樣退回「朝場心」。
+   aimY ＝ 要轟的那一點多高（點空地是 0，同 castArrows 的第三個參數）。 */
+function castTrebs(from, toward, aimY) {
   aim = null;
   /* 第一下點在建築上的話**整隊**先推到外圍（機台不能長在牆裡面，同 v1.102 那條規則）。
      推的是隊伍的中心、不是一台一台推：一台一台推會把四台壓到同一個半徑上，
@@ -578,7 +601,7 @@ function castTrebs(from, toward) {
   }
   for (let i = 0; i < TREB_TEAM; i++) {
     const off = (i - (TREB_TEAM - 1) / 2) * TREB_GAP;
-    placeTreb({ x: cx + sx * off, z: cz + sz * off }, toward);
+    placeTreb({ x: cx + sx * off, z: cz + sz * off }, toward, aimY);
   }
   sndWind();                        // 一隊架好那一聲（一隊一次，不是四台各一聲）
 }
@@ -590,7 +613,7 @@ function castTrebs(from, toward) {
         （使用者：「箭雨 投石機 加農砲 這些會叫出東西做攻擊的 還是被限制在舊的範圍」）
         ——v1.210 那版的理由「外圈是給碎料散的空地，不是站機器的地方」被這一句推翻了：
         草地島鋪到哪，機台就架得到哪。見 開發筆記〈生活圈只剩房子與城牆〉。 */
-function placeTreb(spot, aimAt) {
+function placeTreb(spot, aimAt, aimY) {
   if (!trebs) trebs = { list: [], rocks: [] };
   if (trebs.list.length >= TREB_MAX) trebs.list.shift();
   let x = spot.x, z = spot.z;
@@ -605,8 +628,9 @@ function placeTreb(spot, aimAt) {
   /* sa 是索自己的角度（絞回時它跟臂角不同步，見 stepTrebs）、
      load 是「石兜裡有沒有石頭」、rs 是那顆石頭多大——**裝填的時候就抽好**，
      所以待發時畫在石兜裡的跟等一下飛出去的是同一顆（見 ENG.putRocks）。 */
+  /* ty ＝ 要轟的那一點多高（v1.212，點建築就是點到的那一塊，點空地是 0）。 */
   trebs.list.push({ x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
-                    tx: aimAt.x, tz: aimAt.z,
+                    tx: aimAt.x, tz: aimAt.z, ty: aimY || 0,
                     arm: ENG.TREB_REST, sa: ENG.trebSlingLoose(ENG.TREB_REST),
                     sw: 0, shot: 0, load: 1, rs: rr(1.3, 2.1),
                     next: 0.4, left: TREB_SHOTS, idle: 0 });
@@ -617,13 +641,27 @@ function fireRock(m) {
   const a = Math.random() * Math.PI * 2;
   const rad = Math.sqrt(Math.random()) * TREB_SPRAY;
   const tx = m.tx + Math.cos(a) * rad, tz = m.tz + Math.sin(a) * rad;
-  // 目標高度取那附近最高的積木，石頭才會砸在建築上而不是穿進去才炸
-  let ty = 0;
+  /* 目標高度 ＝ **第二下點到的那一點**（v1.212，記在機台上，見 placeTreb），
+     但**不高過這一顆自己的落點實際有的東西**（下面那段掃描）。
+     v1.102～v1.211 是「一律取掃描值」——那條讓石頭永遠砸屋頂，點屋頂、點牆腰、
+     點地基打出來的是同一個地方（實測點帝國大廈 y=28.3 的牆，二十顆的落點高度
+     0.1～48.4、平均 10.5，就是屋頂剖面不是點到的高度）。
+     使用者：「加農砲 投石機 應該要同箭雨的操作」——箭雨 v1.172 就是這樣接的。
+     **掃描留著當上限**：落點散開之後有一半會落在建築的輪廓外，那裡的「點到的高度」
+     是一團空氣，瞄它就是從建築旁邊擦過去、一路飛到島外才落地（加農砲實測過，
+     見 開發筆記〈點哪打哪：加農砲會抬頭、目標高度照點到的〉）。取小的就會落在
+     那個落點真的有的東西上：輪廓內＝點到的高度（半路撞到牆就在牆上炸），
+     輪廓外＝地面。 */
+  /* colTop 不要叫 top：下面那條拋物線的頂點已經叫 top 了，同一個函式裡再宣告一次
+     是 SyntaxError ——而 classic script 的整支檔會當場載不起來（實測踩過，
+     同 開發筆記〈fireShell 這個名字已經有人用了〉那一節的道理）。 */
+  let colTop = 0;
   for (const b of blocks) {
     if (b.st !== SET) continue;
-    if (Math.abs(b.x - tx) > 1.8 || Math.abs(b.z - tz) > 1.8) continue;
-    if (b.y > ty) ty = b.y;
+    if (Math.abs(b.x - tx) > AIM_COL || Math.abs(b.z - tz) > AIM_COL) continue;
+    if (b.y > colTop) colTop = b.y;
   }
+  const ty = Math.min(m.ty || 0, colTop);
   /* 出手點＝**畫出來的投石索末端**（v1.193）。v1.102～v1.192 是固定在機台中心、
      離地 4.4——石頭從機台肚子裡冒出來，跟臂尖完全沒關係。現在跟 BOW_TIP／
      SWORD_TIP 那一套一樣，位置由引擎算（ENG.trebSling），兩邊只有一份數字。
@@ -731,7 +769,13 @@ function stepTrebs(dt) {
     r.vy -= GRAV * dt;
     r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
     r.rx += dt * 3.2; r.ry += dt * 2.4;
-    if (sweepRock(r, px, py, pz) || r.t >= r.T || r.y <= 0.6) {
+    /* **只有「撞到東西」或「落地」才炸**（v1.212，同箭雨的箭 stepArrows）。
+       v1.102～v1.211 還有一條 `r.t >= r.T`＝「飛到瞄準點那一刻」就炸，那一條會讓
+       沒打中任何東西的石頭在半空自爆（實測點帝國大廈那一輪：二十顆有八顆是這樣炸的，
+       爆炸點離最近一塊積木平均 2.9 格、最遠 9.1）。瞄準點的下方是矮的部位就繼續往下飛，
+       打到什麼算什麼。**固體要連小人的家一起認**（hardAt）：其餘會飛的東西
+       （兵器、香蕉、火球、箭）早就是這樣了，只有石頭與砲彈漏掉。 */
+    if (sweepRock(r, px, py, pz, hardAt) || r.y <= 0.6) {
       trebs.rocks.splice(i, 1); rockHit(r);
     }
   }
@@ -748,17 +792,19 @@ function stepTrebs(dt) {
    | | 投石機 | 加農砲 |
    |---|---|---|
    | 一次幾台／幾發 | 4 × 5 ＝ 20 | **3 × 6 ＝ 18**（使用者選的） |
-   | 出手仰角 | 45°（TREB_LOB 0.25 推出來） | **25°**（ENG.CAN_EL，使用者選的「低伸彈道」） |
-   | 誰決定角度 | 先訂頂點高度、再反解角度 ⇒ 每發都不一樣 | **砲管指哪就是哪**（常數），初速才是算出來的 |
+   | 出手仰角 | 45°（TREB_LOB 0.25 推出來） | **18°**（ENG.CAN_EL，使用者選的「低伸彈道」），打不到才抬 |
+   | 誰決定角度 | 先訂頂點高度、再反解角度 ⇒ 每發都不一樣 | **砲管指哪就是哪**，初速才是算出來的 |
    | 落點 | smash：砸一個坑，不起火 | **explode：炸開、碎料帶火、周圍燒起來會往鄰居蔓延** |
    | 彈體 | 石色的球，隨機 1.3～2.1 | **火色的球、固定口徑，飛行途中一路拖著火** |
 
-   **「角度固定、初速算出來」是它跟投石機最根本的差別**，也是「更直線」的來源：
+   **「角度先訂、初速算出來」是它跟投石機最根本的差別**，也是「更直線」的來源：
    投石機要把石頭吊到屋頂上方再砸下來，所以先訂頂點；砲管指著哪裡就打哪裡，
    要打多遠靠裝藥（＝初速）。好處是**畫出來的砲管方向永遠等於砲彈飛出去的方向**，
    不必像投石機那樣去對放索點的切線（e2e 有一條在驗這個等式）。
-   代價是打不到太高的東西——那就平射過去打牆，那正是加農砲的樣子。
-   見 開發筆記〈加農砲：直射、後座、燒著的砲彈〉 */
+   **v1.212 起角度不再是常數**：以 18° 為底，18° 打不到那個高度時才抬到剛好打得到
+   （上限 ENG.CAN_ELMAX 45°），抬到上限還打不到就打它打得到的最高處——打在牆上。
+   低目標、打平地的每一發都還是 18°，低伸彈道一個字沒變（見 canEl／canV）。
+   見 開發筆記〈加農砲：直射、後座、燒著的砲彈〉〈點哪打哪：加農砲會抬頭、目標高度照點到的〉 */
 const CAN_MAX = 6;                  // 場上最多幾門（＝兩隊。**要 ≤ 引擎的 MAXCAN**）
 const CAN_TEAM = 3;                 // 一次架幾門（使用者指定）
 const CAN_GAP = 7;                  // 門與門之間隔多遠（同投石機；整台寬 3.2，中間留得下走道）
@@ -770,8 +816,9 @@ const CAN_R = ROCK_R, CAN_POW = ROCK_POW;
    仍然是開根號讓分布均勻（同 fireRock）。 */
 const CAN_SPRAY = 6;
 const CAN_SHELL = 0.9;              // 砲彈多大＝砲管口徑（畫出來的管子塞得下這一顆）
-/* 初速上限。這一條決定「抬不到就打牆」那條規則在哪裡翻面（見 fireCannon）：
-   55 ≈ 投石機石頭初速（約 28）的兩倍，再快看起來就是子彈不是砲彈了。 */
+/* 初速上限。這一條決定「要不要抬頭／抬到上限還打不到就打牆」在哪裡翻面
+   （見 canReach／canEl／canV）：55 ≈ 投石機石頭初速（約 28）的兩倍，
+   再快看起來就是子彈不是砲彈了。 */
 const CAN_VMAX = 55;
 /* 彈道至少要「掉」這麼多才解得出初速：貼著臉打（d 很小）時分母會趨近 0，
    不夾的話初速會噴到無限大。夾住之後那一發只是打得比瞄準點高一點。 */
@@ -792,17 +839,18 @@ const CAN_HOT_CAP = 260;            // 拖尾的火最多占這麼多（同時�
 const CAN_AIM_R = (CAN_TEAM - 1) * CAN_GAP / 2 + 3;   // 第一下的光環 ≈ 一隊的正面寬
 const CAN_AIM_C = 0x4a4e4c;         // 砲身的暗鋼色
 let cannons = null;
-/* 第一下記位置、畫個光環，第二下才架（同投石機的 aimTrebs）。 */
-function aimCannons(point) {
+/* 第一下記位置、畫個光環，第二下才架（同投石機的 aimTrebs）。
+   第二下點在**建築**上時那一點的高度也算目標（v1.212，同 aimArrows）。 */
+function aimCannons(point, onBlock) {
   if (!aim) { aimFirst(point, CAN_AIM_R, CAN_AIM_C); return; }
-  castCannons(aim, point);
+  castCannons(aim, point, onBlock ? point.y : 0);
 }
 /* 一隊排成一列、整隊面向目標。**整段隊形的算法與理由跟 castTrebs 一模一樣**
    （推隊伍的中心而不是一台一台推、推完才算方向、排完再整隊往外挪到每一門都在圈外、
    最後夾回島內）——那邊的註解就是這一段的說明，不重抄一遍。
    照 castArrows／castTrebs 的先例各留一份：這三把的隊形細節（幾台、間距、退多遠）
    各不相同，抽成共用的話參數會比程式還長。 */
-function castCannons(from, toward) {
+function castCannons(from, toward, aimY) {
   aim = null;
   let cx = from.x, cz = from.z;
   const d0 = Math.hypot(cx, cz), minD = siteR + CAN_STAND;
@@ -830,13 +878,13 @@ function castCannons(from, toward) {
   }
   for (let i = 0; i < CAN_TEAM; i++) {
     const off = (i - (CAN_TEAM - 1) / 2) * CAN_GAP;
-    placeCannon({ x: cx + sx * off, z: cz + sz * off }, toward);
+    placeCannon({ x: cx + sx * off, z: cz + sz * off }, toward, aimY);
   }
   sndWind();                        // 一隊架好那一聲（同投石機，一隊一次）
 }
 /* 架一門：站在 spot、轟 aimAt。兩道保險同 placeTreb（斜著站時還在牆裡的那一門要推出去、
    站到島外的要夾回來；v1.211 起外緣同樣是 debrisR）。 */
-function placeCannon(spot, aimAt) {
+function placeCannon(spot, aimAt, aimY) {
   if (!cannons) cannons = { list: [], shells: [] };
   if (cannons.list.length >= CAN_MAX) cannons.list.shift();
   let x = spot.x, z = spot.z;
@@ -848,10 +896,54 @@ function placeCannon(spot, aimAt) {
   const dd = Math.hypot(x, z), lim = debrisR - 2;
   if (dd > lim) { x = x / dd * lim; z = z / dd * lim; }
   // 面向要轟的那一點：rotation.y = a 之後 local +Z（砲口）會指到 (sin a, 0, cos a)
-  /* rec ＝ 砲管後座 0～1、back ＝ 整台退了多少格（兩層後座，見 ENG.putCannons） */
+  /* rec ＝ 砲管後座 0～1、back ＝ 整台退了多少格（兩層後座，見 ENG.putCannons）。
+     ty ＝ 要轟的那一點多高、el ＝ 砲管現在抬到幾度（v1.212）。
+     **架好的那一刻就先抬好**：等第一發才抬的話，整隊會先平舉一秒多再突然抬頭。 */
+  const ty = aimY || 0;
+  const mz0 = ENG.canMuzzle(0, 0, ENG.CAN_EL);
+  const el = canEl(Math.max(1, Math.hypot(aimAt.x - x, aimAt.z - z) - mz0.z),
+                   ty + 0.6 - mz0.y + CAN_AIM_PAD);
   cannons.list.push({ x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
-                      tx: aimAt.x, tz: aimAt.z,
+                      tx: aimAt.x, tz: aimAt.z, ty, el,
                       rec: 0, back: 0, next: 0.4, left: CAN_SHOTS, idle: 0 });
+}
+/* ── 彈道：仰角先，初速後（v1.212）────────────────────────────────
+   v1.204～v1.211 是**固定 18°**、打不到的高度就把 h 當 0 —— 而 h 是「相對砲口」的
+   高度，所以那等於「瞄砲口等高（離地 3.58）平射過去」，不是瞄地面。路上有牆就打牆
+   （設計時想的那一種），路上沒東西就飛到瞄準距離在半空自爆。實測點帝國大廈 y=27.9
+   的那一面牆：十八發只有兩發真的撞到積木，十五發炸在離最近積木 1.5 格以外
+   （平均 5.1、最遠 11.5），爆炸高度全擠在 0.3～5.9。
+   現在拆成兩步：**能用 18° 打到就維持 18°**（低伸彈道是使用者 v1.204 選的），
+   打不到才抬到剛好打得到的角度、上限 ENG.CAN_ELMAX（45°）。
+   見 開發筆記〈點哪打哪：加農砲會抬頭、目標高度照點到的〉 */
+/* 解仰角時多留的一點高度（v1.212）。canEl 給的是「剛好打得到」的角度，**正好落在
+   邊界上**：砲口只要再動一點點（抬完頭砲口的高度就變了，見 fireCannon 那兩趟），
+   目標就變成「差一點點打不到」，canV 於是把落點壓低那一點點——實測沒有這道餘裕時，
+   落點比點到的那一點低 0.075。留 0.3 之後初速離上限還有一截，落點就正中點到的那一點。 */
+const CAN_AIM_PAD = 0.3;
+/* 這個角度、初速頂到 CAN_VMAX 時，距離 d 上最高打得到多高（相對砲口）。 */
+function canReach(el, d) {
+  const ct = Math.cos(el);
+  return d * Math.tan(el) - GRAV * d * d / (2 * CAN_VMAX * CAN_VMAX * ct * ct);
+}
+/* 打 (d, h) 要抬到幾度。**兩個解裡取平的那一個**（低角解）：
+     tanθ ＝ (v² − √(v⁴ − G·(G·d² + 2h·v²))) / (G·d)
+   根號裡 < 0 ＝ 滿裝藥也打不到那麼高，那就取「這個距離射程最遠」的角度
+   （tanθ ＝ v²/(G·d)），再夾進 [CAN_EL, CAN_ELMAX]。 */
+function canEl(d, h) {
+  if (h <= canReach(ENG.CAN_EL, d)) return ENG.CAN_EL;      // 低伸那一檔就打得到
+  const V2 = CAN_VMAX * CAN_VMAX;
+  const disc = V2 * V2 - GRAV * (GRAV * d * d + 2 * h * V2);
+  const el = Math.atan((disc >= 0 ? V2 - Math.sqrt(disc) : V2) / (GRAV * d));
+  return Math.min(Math.max(el, ENG.CAN_EL), ENG.CAN_ELMAX);
+}
+/* 照這個角度打 (d, h) 要多少初速。**抬到上限還是打不到就打它打得到的最高處**
+   ——也就是打在牆上（`Math.min(h, canReach(el, d))`），不是退回砲口等高平射。
+   CAN_DROP 那一夾是給「貼著臉打」用的：d 很小時分母會趨近 0，不夾初速會噴掉。 */
+function canV(el, d, h) {
+  const ct = Math.cos(el), tn = Math.tan(el);
+  const drop = Math.max(CAN_DROP, d * tn - Math.min(h, canReach(el, d)));
+  return Math.sqrt(GRAV * d * d / (2 * ct * ct * drop));
 }
 /* 開一砲。**仰角是常數，初速是算出來的**（跟投石機正好相反，見上面那張表）：
      標準彈道式 y(x) = x·tanθ − G·x² / (2·v²·cos²θ)，代 x ＝ d、y ＝ h 解 v：
@@ -866,35 +958,40 @@ function fireCannon(m) {
   const a = Math.random() * Math.PI * 2;
   const rad = Math.sqrt(Math.random()) * CAN_SPRAY;
   const tx = m.tx + Math.cos(a) * rad, tz = m.tz + Math.sin(a) * rad;
-  // 目標高度取那附近最高的積木（同 fireRock）
-  let ty = 0;
+  /* 目標高度 ＝ 第二下點到的那一點，但不高過這一發的落點實際有的東西
+     （v1.212，整段理由與掃描範圍都同 fireRock）。 */
+  let colTop = 0;
   for (const b of blocks) {
     if (b.st !== SET) continue;
-    if (Math.abs(b.x - tx) > 1.8 || Math.abs(b.z - tz) > 1.8) continue;
-    if (b.y > ty) ty = b.y;
+    if (Math.abs(b.x - tx) > AIM_COL || Math.abs(b.z - tz) > AIM_COL) continue;
+    if (b.y > colTop) colTop = b.y;
   }
-  /* 出手點＝**畫出來的砲口**（ENG.canMuzzle，同 trebSling／BOW_TIP 那一套）。
-     兩層後座都要帶進去（砲管滑多少 rec、整台退多少 back）：只算一層的話，
-     砲彈會從畫面上砲口以外的地方冒出來。 */
-  const mz = ENG.canMuzzle(m.rec, m.back);
+  const ty = Math.min(m.ty || 0, colTop);
+  /* **先解仰角、再解初速**（v1.212）。砲口的位置跟著仰角跑（抬頭會把砲口抬高、
+     往回縮），而仰角又要照砲口到目標的距離與高度差解——兩邊互為因果，所以**解兩次**：
+     第一次用現在的砲管角度估砲口，第二次用抬完頭的砲口再解一次。
+     解完才取最後那一次的砲口當出手點，所以出手點與畫出來的砲口還是同一點
+     （兩邊都吃 m.el，e2e 在量那 0.2）；兩層後座也都要帶進去（砲管滑多少 rec、
+     整台退多少 back），只算一層的話砲彈會從畫面上砲口以外的地方冒出來。 */
+  let el = m.el != null ? m.el : ENG.CAN_EL;
+  for (let pass = 0; pass < 2; pass++) {
+    const q = ENG.canMuzzle(m.rec, m.back, el);
+    const qx = m.x + Math.sin(m.a) * q.z, qz = m.z + Math.cos(m.a) * q.z;
+    el = canEl(Math.max(1, Math.hypot(tx - qx, tz - qz)), ty + 0.6 - q.y + CAN_AIM_PAD);
+  }
+  m.el = el;
+  const mz = ENG.canMuzzle(m.rec, m.back, m.el);
   const sx = m.x + Math.sin(m.a) * mz.z, sz = m.z + Math.cos(m.a) * mz.z, sy = mz.y;
   const dd = Math.hypot(tx - sx, tz - sz);
   const d = Math.max(1, dd);
   const ux = dd > 1e-4 ? (tx - sx) / dd : Math.sin(m.a);
   const uz = dd > 1e-4 ? (tz - sz) / dd : Math.cos(m.a);
-  const th = ENG.CAN_EL, ct = Math.cos(th), tn = Math.tan(th);
-  /* 這個距離、初速頂到 CAN_VMAX 時最高打得到多高（把上面那條式子反過來解 h）。
-     打不到就把目標高度當 0 —— **平射過去打牆**，半路撞到哪就在哪炸開
-     （sweepRock 會接住）。不夾的話打高樓時初速會衝到 139 以上，那是子彈不是砲彈。 */
-  const reach = d * tn - GRAV * d * d / (2 * CAN_VMAX * CAN_VMAX * ct * ct);
-  let h = ty + 0.6 - sy;
-  if (h > reach) h = 0;
-  const drop = Math.max(CAN_DROP, d * tn - h);
-  const v = Math.sqrt(GRAV * d * d / (2 * ct * ct * drop));
+  const ct = Math.cos(m.el);
+  const v = canV(m.el, d, ty + 0.6 - sy);
   const vh = v * ct;
   cannons.shells.push({
     x: sx, y: sy, z: sz,
-    vx: ux * vh, vz: uz * vh, vy: v * Math.sin(th),
+    vx: ux * vh, vz: uz * vh, vy: v * Math.sin(m.el),
     T: d / vh, t: 0, rx: 0, ry: 0, s: CAN_SHELL
   });
   canBlast(m, sx, sy, sz);
@@ -914,7 +1011,8 @@ const CAN_FLASH = 26;
 const CAN_SMOKE = 48;
 function canBlast(m, sx, sy, sz) {
   const fx = Math.sin(m.a), fz = Math.cos(m.a);         // 砲口朝哪（水平）
-  const up = Math.sin(ENG.CAN_EL), fw = Math.cos(ENG.CAN_EL);
+  const el = m.el != null ? m.el : ENG.CAN_EL;          // 抬了頭煙也要跟著斜（v1.212）
+  const up = Math.sin(el), fw = Math.cos(el);
   for (let i = 0; i < CAN_FLASH; i++) {
     if (hot.length >= HOT_BURST) break;
     const sp = rr(6, 17);
@@ -1021,8 +1119,12 @@ function stepCannons(dt) {
     r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
     r.rx += dt * 3.2; r.ry += dt * 2.4;
     shellTrail(r, px, py, pz);
-    // 半路撞到什麼就在那裡炸開，跟投石機的石頭、隕石、核彈共用同一套掃掠判定
-    if (sweepRock(r, px, py, pz) || r.t >= r.T || r.y <= 0.6) {
+    /* 半路撞到什麼就在那裡炸開，跟投石機的石頭、隕石、核彈共用同一套掃掠判定。
+       **只有「撞到東西」或「落地」才炸**（v1.212，同箭雨的箭與上面的石頭）：
+       v1.204～v1.211 還有 `r.t >= r.T` 那一條，沒打中任何東西的砲彈會在飛到瞄準
+       距離的那一刻自爆（實測點帝國大廈那一輪：十八發有十三發是這樣炸的）。
+       固體連小人的家一起認（hardAt，同石頭）。 */
+    if (sweepRock(r, px, py, pz, hardAt) || r.y <= 0.6) {
       cannons.shells.splice(i, 1); shellHit(r);
     }
   }
@@ -6792,8 +6894,12 @@ function useTool(hit) {
   if (tool === 'hammer') { launchHammer(hit.point, hit.dir, false, onGround); return 0; }
   if (tool === 'bighammer') { launchHammer(hit.point, hit.dir, true, onGround); return 0; }
   if (tool === 'ball') { aimBall(hit.point); return 0; }
-  if (tool === 'treb') { aimTrebs({ x: hit.point.x, z: hit.point.z }); return 0; }
-  if (tool === 'cannon') { aimCannons({ x: hit.point.x, z: hit.point.z }); return 0; }
+  /* 投石機與加農砲：第二下點在建築上就**連高度一起當目標**（v1.212，同箭雨 v1.172
+     與王之財寶 v1.152）。v1.174～v1.211 這兩把只取 x／z，高度是各自去掃「落點附近
+     最高的積木」——所以點屋頂、點牆腰、點地基打出來的是同一個地方。
+     使用者：「順便確認投石機能點建築決定目標位置嗎? 加農砲 投石機 應該要同箭雨的操作」 */
+  if (tool === 'treb') { aimTrebs(hit.point, hit.kind === 'block'); return 0; }
+  if (tool === 'cannon') { aimCannons(hit.point, hit.kind === 'block'); return 0; }
   if (tool === 'tornado') { aimTornado({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'fw') {
     /* 點在建築上就從那一點射上去（v1.137，使用者指定）；點地面照舊從地面。

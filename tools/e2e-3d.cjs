@@ -10926,6 +10926,72 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('石頭砸下來會造成破壞', treb.after < treb.n0, placedCntTxt(treb.n0, treb.after));
   ok('打完會自己撤走', treb.gone);
 
+  /* ── 目標高度照「點到的那一點」（v1.212）──────────────────────────────
+     > 使用者：「順便確認投石機能點建築決定目標位置嗎? 加農砲 投石機 應該要同箭雨的操作」
+     v1.102～v1.211 只取點到的 x／z，高度是自己去掃「落點附近 ±1.8 內最高的積木」——
+     所以點屋頂、點牆腰、點地基打出來的是同一個地方（實測點帝國大廈 y=28.3 的牆，
+     二十顆的落點高度 0.1～48.4）。現在點在建築上就連高度一起當目標（同箭雨 v1.172）。
+     **押死骰子**（落點不散開）而且**不跑模擬**：直接解一次彈道、算這條弧線會在哪個
+     高度抵達目標，所以這一條永遠不會飄。點的高度照屋頂算出來，不寫死。 */
+  const trebPick = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const dice = Math.random;
+    Math.random = () => 0;                       // 落點不散開：打的就是點的那一點
+    let roof = 0;                                // 場心那一帶的屋頂（舊版會瞄這裡）
+    for (const b of blocks)
+      if (b.st === SET && Math.abs(b.x) < 1.8 && Math.abs(b.z) < 1.8 && b.y > roof) roof = b.y;
+    const shotAt = hit => {
+      cleanTools();
+      tool = 'treb';
+      useTool({ kind: 'ground', point: { x: siteR + 14, y: 0, z: 0 } });
+      useTool(hit);
+      const m = trebs.list[0];
+      trebs.rocks.length = 0;
+      m.arm = ENG.TREB_REL;                      // 放索那一刻（出手點是索末端）
+      fireRock(m);
+      const r = trebs.rocks[0];
+      // 這條弧線抵達目標時的高度（不跑模擬，直接代拋物線）
+      return { ty: m.ty, end: +(r.y + r.vy * r.T - 0.5 * GRAV * r.T * r.T).toFixed(2) };
+    };
+    const want = +(roof * 0.4).toFixed(2);       // 點在牆腰：明顯低於那一帶的屋頂
+    const onBlock = shotAt({ kind: 'block', point: { x: 0, y: want, z: 0 } });
+    const onGround = shotAt({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    Math.random = dice;
+    cleanTools(); clearFires();
+    return { onBlock, onGround, want, roof: +roof.toFixed(1) };
+  });
+  ok('投石機第二下點在建築上：瞄的是點到的那一點，不是那一帶最高的屋頂',
+     Math.abs(trebPick.onBlock.ty - trebPick.want) < 1e-9 &&
+     Math.abs(trebPick.onBlock.end - (trebPick.want + 0.6)) < 0.05 &&
+     trebPick.roof - trebPick.onBlock.end > 3,
+     '點在 ' + trebPick.want + ' 高：石頭落在 ' + trebPick.onBlock.end +
+     '（那一帶的屋頂在 ' + trebPick.roof + '）');
+  ok('點空地就還是打地面',
+     trebPick.onGround.ty === 0 && Math.abs(trebPick.onGround.end - 0.6) < 0.05,
+     '點空地：石頭落在 ' + trebPick.onGround.end);
+
+  /* ── 沒打中東西就不炸，一路飛到落地（v1.212，同箭雨的箭）──────────────
+     v1.102～v1.211 的終止條件多一條 `r.t >= r.T`＝「飛到瞄準距離的那一刻」，
+     路上沒東西的那幾顆就在半空自爆。**自己放一顆石頭往島外飛**（路上一塊積木都沒有），
+     不跑整輪、不賭落點，所以不會飄。 */
+  const rockDud = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    trebs = { list: [], rocks: [] };
+    trebs.rocks.push({ x: siteR + 20, y: 10, z: 0, vx: 20, vy: 0, vz: 0,
+                       T: 0.3, t: 0, rx: 0, ry: 0, s: 1.6 });     // T 只有 0.3 秒
+    let at = null;
+    const real = rockHit;
+    rockHit = r => { at = { y: +r.y.toFixed(2), t: +r.t.toFixed(2) }; };
+    for (let i = 0; i < 600 && trebs && trebs.rocks.length; i++) stepTrebs(0.02);
+    rockHit = real;
+    cleanTools(); clearFires();
+    return at;
+  });
+  ok('石頭沒打中東西就不炸，一路飛到落地（不再飛到瞄準距離就自爆）',
+     !!rockDud && rockDud.y <= 0.6 && rockDud.t > 0.3,
+     rockDud ? '落在 y ' + rockDud.y + '、飛了 ' + rockDud.t +
+               ' 秒（瞄準點的 T 只有 0.3 秒）' : '石頭沒有落地');
+
   /* ── 投石索：石兜要甩到圓弧外側，放索時索是拉直的（v1.202）────────────────
      > 使用者：「目前都在同一側 看起來沒有甩出去的感覺」「這段時間應該是在後面外側吧」
      v1.193～v1.198 的索角是「從躺平內插到臂尖的行進方向」，cos 恆 > 0 ⇒ 石兜永遠在臂尖
@@ -15858,9 +15924,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     tool = 'cannon';
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
     useTool({ kind: 'ground', point: { x: siteR + 20, y: 0, z: 0 } });
-    const mzZ = ENG.canMuzzle(0).z;
-    const muzzleD = Math.min(...cannons.list.map(m => Math.hypot(
-      m.x + Math.sin(m.a) * mzZ, m.z + Math.cos(m.a) * mzZ)));
+    // 砲口離場心多遠（**砲口不是機台中心**）。抬了頭砲口會往回縮，所以照各自的仰角算
+    const muzzleD = Math.min(...cannons.list.map(m => {
+      const mz = ENG.canMuzzle(0, 0, m.el);
+      return Math.hypot(m.x + Math.sin(m.a) * mz.z, m.z + Math.cos(m.a) * mz.z);
+    }));
     let apart = 9e9;
     const last = cannons.list;
     for (let i = 0; i < last.length; i++)
@@ -15919,32 +15987,40 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('砲彈打下來會造成破壞', can.after < can.n0, placedCntTxt(can.n0, can.after));
   ok('打完會自己撤走', can.gone);
 
-  /* ── 彈道：仰角是常數，初速才是算出來的 ────────────────────────────
+  /* ── 彈道：仰角先、初速後（v1.212 改成「打不到才抬頭」）──────────────────
      **不跑模擬**：直接呼叫 fireCannon，讀它算出來的那一筆速度。
-     ① 出手仰角 atan2(vy, 水平速度) 必須**永遠**等於 ENG.CAN_EL——不管打多遠、
-        打多高、砲管在待發還是後座到底。這就是「畫出來的砲管方向 ＝ 砲彈飛的方向」。
+     ① 出手仰角 atan2(vy, 水平速度) 必須**永遠**等於這一門砲管畫出去的仰角 m.el
+        ——不管打多遠、打多高、砲管在待發還是後座到底。
+        這就是「畫出來的砲管方向 ＝ 砲彈飛的方向」（v1.204～v1.211 那個角度是常數
+        ENG.CAN_EL，現在是每發解出來的，但等式一個字沒變）。
      ② 出手點要落在**畫出去的砲口**上：拿 canMesh 裡砲口環那一塊的世界座標來比
         （砲口環中心在 d ＝ CAN_LEN − 0.2，所以兩點該差 0.2）。
-     ③ 初速不會爆掉：打高樓時 h 會被 reach 擋掉、改成平射（見 fireCannon）。 */
+     ③ 打得到就維持 CAN_EL、打不到才抬，且永遠不超過 ENG.CAN_ELMAX。
+     ④ 初速不會爆掉：抬到上限還打不到時 h 會被 canReach 夾住（見 canV）。
+     目標高度三檔都試：0（低伸那一檔）、9（要抬一點）、22（抬到上限還差一截）。 */
   const canBal = await page.evaluate(() => {
     cleanTools(); completeNow();
     cannons = null;
     placeCannon({ x: siteR + CAN_STAND, z: 0 }, { x: 0, z: 0 });
     const m = cannons.list[0];
     let elErr = 0, vMax = 0, vMin = 9e9, tipErr = 0;
+    let elLo = 9, elHi = 0, flatOk = 1;
     const m4 = new THREE.Matrix4(), v3 = new THREE.Vector3();
     const per = ENG.MODELS.cannon.length;
     for (let k = 0; k < 60; k++) {
       cannons.shells.length = 0;
       m.rec = k % 3 / 2;                       // 待發／後座一半／後座到底都試一遍
       m.back = (k % 2) * ENG.CAN_KICK;         // 整台退到底與沒退都試（兩層後座）
-      m.tx = k < 30 ? 0 : siteR * 0.5;         // 打場心（有高樓）與打邊角
+      m.tx = k % 4 < 2 ? 0 : siteR * 0.5;      // 打場心與打邊角
       m.tz = 0;
-      ENG.putCannons(cannons.list);            // 先畫出去，才能拿畫出來的砲口來比
-      fireCannon(m);
+      m.ty = k < 20 ? 0 : (k < 40 ? 9 : 22);   // 目標高度三檔（v1.212）
+      fireCannon(m);                           // 仰角是這一發解出來的，解完才畫
+      ENG.putCannons(cannons.list);            // 砲管要停在這一發的仰角上
       const r = cannons.shells[0];
       const vh = Math.hypot(r.vx, r.vz);
-      elErr = Math.max(elErr, Math.abs(Math.atan2(r.vy, vh) - ENG.CAN_EL));
+      elErr = Math.max(elErr, Math.abs(Math.atan2(r.vy, vh) - m.el));
+      elLo = Math.min(elLo, m.el); elHi = Math.max(elHi, m.el);
+      if (k < 20 && m.el !== ENG.CAN_EL) flatOk = 0;      // 打平地的每一發都該還是 18°
       const v = Math.hypot(vh, r.vy);
       vMax = Math.max(vMax, v); vMin = Math.min(vMin, v);
       // 砲口環（造型表最後一塊）的世界座標
@@ -15952,6 +16028,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       v3.setFromMatrixPosition(m4);
       tipErr = Math.max(tipErr, Math.abs(Math.hypot(r.x - v3.x, r.y - v3.y, r.z - v3.z) - 0.2));
     }
+    m.ty = 0;                                  // 還回去：下面那一發量的是打平地的彈道
     /* 彈道有多彎：打**空地**（目標高度 0）量頂點離地，跟投石機同距離的公式對照。
        目標挑在砲側面那片空草地（工地在原點，往 z 走這一段沒有積木），所以
        fireCannon 掃到的 ty 是 0——量到的就是拋物線本身，不含屋頂高度那一項。
@@ -15967,7 +16044,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const ts = ENG.trebSling(ENG.TREB_REL);
     const tTop = Math.max(ts.y + Math.max(TREB_CLEAR, d * TREB_LOB), 0.6 + TREB_OVER);
     cleanTools(); clearFires();
-    return { elErr: +elErr.toFixed(12), el: +(ENG.CAN_EL * 180 / Math.PI).toFixed(2),
+    const deg = v => +(v * 180 / Math.PI).toFixed(2);
+    return { elErr: +elErr.toFixed(12), el: deg(ENG.CAN_EL), elMax: deg(ENG.CAN_ELMAX),
+             elLo: deg(elLo), elHi: deg(elHi), flatOk,
              vMax: +vMax.toFixed(1), vMin: +vMin.toFixed(1), cap: CAN_VMAX,
              tipErr: +tipErr.toFixed(6),
              apex: +apex.toFixed(1), d: +d.toFixed(1), fly: +r.T.toFixed(2),
@@ -15975,7 +16054,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('每一發的出手仰角都正好等於畫出來的砲管仰角（不管打多遠、砲管退到哪）',
      canBal.elErr < 1e-9,
-     '砲管 ' + canBal.el + '°、六十發的最大誤差 ' + canBal.elErr + ' 弧度');
+     '砲管 ' + canBal.elLo + '～' + canBal.elHi + '°、六十發的最大誤差 ' +
+     canBal.elErr + ' 弧度');
+  /* v1.212：低伸彈道是使用者 v1.204 選的，所以「打得到就不准抬」是規則的一半；
+     另一半是「打不到要抬，但不准抬過上限」（再上去就是迫擊砲了）。 */
+  ok('打得到就維持 ' + canBal.el + '°，打不到才抬頭，而且不超過上限 ' + canBal.elMax + '°',
+     canBal.flatOk === 1 && canBal.elLo === canBal.el &&
+     canBal.elHi > canBal.el && canBal.elHi <= canBal.elMax + 1e-9,
+     '打平地那二十發全是 ' + canBal.el + '°；打 9 高與 22 高時抬到 ' +
+     canBal.elLo + '～' + canBal.elHi + '°（上限 ' + canBal.elMax + '°）');
   ok('砲彈是從畫出來的砲口飛出去的',
      canBal.tipErr < 0.001,
      '出手點離砲口環中心 0.2 ± ' + canBal.tipErr + '（環心在 CAN_LEN − 0.2）');
@@ -15985,7 +16072,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      canBal.apex < canBal.tTop * 0.6,
      '飛 ' + canBal.d + ' 格：砲的頂點 ' + canBal.apex + '（' + canBal.fly +
      ' 秒）、投石機同距離 ' + canBal.tTop);
-  ok('初速不會爆掉：抬不到的高度就平射過去打牆',
+  ok('初速不會爆掉：抬到上限還打不到就打它打得到的最高處（打在牆上）',
      canBal.vMax <= canBal.cap + 0.01,
      '六十發初速 ' + canBal.vMin + '～' + canBal.vMax + '（上限 CAN_VMAX ' + canBal.cap + '）');
 
@@ -15999,7 +16086,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     placeCannon({ x: siteR + CAN_STAND, z: 0 }, { x: 0, z: 0 });
     const m = cannons.list[0];
     const at = () => {                          // 這一刻砲口在世界的哪裡（照畫面那一份算）
-      const mz = ENG.canMuzzle(m.rec, m.back);
+      const mz = ENG.canMuzzle(m.rec, m.back, m.el);      // 仰角也要帶（v1.212）
       return { x: m.x + Math.sin(m.a) * mz.z, y: mz.y, z: m.z + Math.cos(m.a) * mz.z };
     };
     const home = { x: m.x, z: m.z }, muz0 = at();
@@ -16065,6 +16152,72 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '砲彈 −' + canFire.shell.gone + ' 塊、起火 ' + canFire.shell.fires +
      ' 處；石頭 −' + canFire.rock.gone + ' 塊、起火 ' + canFire.rock.fires +
      ' 處（兩邊半徑都是 ' + canFire.R + '）');
+
+  /* ── 點哪打哪：目標高度照點到的、沒打中就不炸（v1.212）────────────────
+     > 使用者：「加農砲觀察到沒有碰撞到目標就爆炸 而且爆炸位置太集中固定」
+     > 「加農砲 投石機 應該要同箭雨的操作」
+     投石機那一段（〈破壞道具與解鎖〉）有同樣兩條，這裡是砲自己的：砲多一層
+     「抬不到就抬頭」，所以點在牆腰時**解出來的落點高度**要真的等於點到的那一點。
+     押死骰子（落點不散開）、不跑模擬，所以不會飄。 */
+  const canAimY = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const dice = Math.random;
+    Math.random = () => 0;
+    let roof = 0;
+    for (const b of blocks)
+      if (b.st === SET && Math.abs(b.x) < 1.8 && Math.abs(b.z) < 1.8 && b.y > roof) roof = b.y;
+    const shotAt = hit => {
+      cleanTools();
+      tool = 'cannon';
+      useTool({ kind: 'ground', point: { x: siteR + CAN_STAND + 6, y: 0, z: 0 } });
+      useTool(hit);
+      const m = cannons.list[0];
+      cannons.shells.length = 0;
+      fireCannon(m);
+      const r = cannons.shells[0];
+      return { ty: m.ty, el: +(m.el * 180 / Math.PI).toFixed(2),
+               end: +(r.y + r.vy * r.T - 0.5 * GRAV * r.T * r.T).toFixed(2) };
+    };
+    /* 點的高度**算出來，不寫死**（見 開發筆記〈不要寫死會隨改動變動的數字〉）：
+       要同時滿足兩件事——① 高過「18° 打得到的最高處」，砲才會抬頭
+       ② 比那一帶的屋頂低一截，才驗得到「瞄的不是屋頂」。 */
+    const mz = ENG.canMuzzle(0, 0, ENG.CAN_EL);
+    const want = +Math.min(roof - 4,
+                           mz.y + canReach(ENG.CAN_EL, siteR + CAN_STAND + 6 - mz.z) + 2)
+                      .toFixed(2);
+    const onBlock = shotAt({ kind: 'block', point: { x: 0, y: want, z: 0 } });
+    const onGround = shotAt({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    /* 沒打中東西就不炸：放一顆往島外飛的砲彈（路上一塊積木都沒有），
+       T 只有 0.3 秒——舊版會在 10 高、0.3 秒那一刻自爆。 */
+    cleanTools();
+    cannons = { list: [], shells: [] };
+    cannons.shells.push({ x: siteR + 20, y: 10, z: 0, vx: 20, vy: 0, vz: 0,
+                          T: 0.3, t: 0, rx: 0, ry: 0, s: CAN_SHELL });
+    let dud = null;
+    const real = shellHit;
+    shellHit = r => { dud = { y: +r.y.toFixed(2), t: +r.t.toFixed(2) }; };
+    for (let i = 0; i < 600 && cannons && cannons.shells.length; i++) stepCannons(0.02);
+    shellHit = real;
+    Math.random = dice;
+    cleanTools(); clearFires();
+    return { onBlock, onGround, want, roof: +roof.toFixed(1), dud,
+             el0: +(ENG.CAN_EL * 180 / Math.PI).toFixed(2) };
+  });
+  ok('加農砲第二下點在建築上：砲管抬到打得到那一點，落點就是點到的那一點',
+     Math.abs(canAimY.onBlock.ty - canAimY.want) < 1e-9 &&
+     Math.abs(canAimY.onBlock.end - (canAimY.want + 0.6)) < 0.05 &&
+     canAimY.onBlock.el > canAimY.el0 && canAimY.roof - canAimY.onBlock.end > 3,
+     '點在 ' + canAimY.want + ' 高：砲管抬到 ' + canAimY.onBlock.el + '°（底 ' +
+     canAimY.el0 + '°）、砲彈落在 ' + canAimY.onBlock.end +
+     '（那一帶的屋頂在 ' + canAimY.roof + '）');
+  ok('點空地就還是 ' + canAimY.el0 + '° 打地面',
+     canAimY.onGround.ty === 0 && canAimY.onGround.el === canAimY.el0 &&
+     Math.abs(canAimY.onGround.end - 0.6) < 0.05,
+     '點空地：砲管 ' + canAimY.onGround.el + '°、砲彈落在 ' + canAimY.onGround.end);
+  ok('砲彈沒打中東西就不炸，一路飛到落地（不再飛到瞄準距離就自爆）',
+     !!canAimY.dud && canAimY.dud.y <= 0.6 && canAimY.dud.t > 0.3,
+     canAimY.dud ? '落在 y ' + canAimY.dud.y + '、飛了 ' + canAimY.dud.t +
+                   ' 秒（瞄準點的 T 只有 0.3 秒）' : '砲彈沒有落地');
 
   /* 一輪 18 發、每半秒落一顆——跟保齡球、投石機、王之財寶同一條規矩：不震畫面
      （見 開發筆記〈會持續破壞的不震畫面〉）。這是 explode 那個 quiet 參數守的。 */

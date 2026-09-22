@@ -1643,16 +1643,24 @@ const ENG = (function () {
      兩層都會把砲口往後帶，所以 canMuzzle 兩個都要吃：畫出來的砲口與砲彈飛出去的
      起點必須是同一點（同 trebSling／BOW_TIP）。
 
-     **仰角是常數 CAN_EL，不是每門各自瞄的。** 規則那邊照這個角度反解初速
-     （見 game-tools.js 的 fireCannon），所以「畫出來的砲管方向」與「砲彈飛出去的方向」
-     永遠是同一個數字——不必像投石機那樣去對切線（e2e 有一條在驗這個等式）。
-     打不到那麼高的目標就平射過去打牆，那是加農砲本來的樣子。
+     **仰角以 CAN_EL 為底、打不到才抬頭**（v1.212）：每門自己帶一個 `el`，規則那邊
+     照它反解初速（見 game-tools.js 的 canEl／canV），所以「畫出來的砲管方向」與
+     「砲彈飛出去的方向」永遠是同一個數字——不必像投石機那樣去對切線（e2e 有一條在驗）。
+     v1.204～v1.211 是**固定** CAN_EL、抬不到的高度就當目標在砲口等高平射過去，
+     結果是點高樓時十八發全擠在同一條平射線上、路上沒東西就在半空自爆
+     （見 開發筆記〈點哪打哪：加農砲會抬頭、目標高度照點到的〉）。
+     現在打不到才抬，上限 CAN_ELMAX——連那個角度都打不到就打它打得到的最高處（牆上）。
      見 開發筆記〈加農砲：直射、後座、燒著的砲彈〉 */
   /* 砲管仰角＝砲彈出手仰角。25° → **18°**（v1.204 使用者：「砲彈拋物線再平一點」）：
      頂點／距離 ＝ tanθ/4，25° 是 0.117、18° 是 **0.081**（投石機 TREB_LOB 0.25 的三成）。
      再往下就是 15°（0.067），那已經是這條路的底——初速跟著 √(G·d/sin2θ) 往上跑，
      55 格那一發會逼到 CAN_VMAX，而且 reach 變小之後幾乎每一發都改成平射打外牆。 */
   const CAN_EL = 18 * Math.PI / 180;
+  /* 抬頭的上限（v1.212，使用者選的那一檔：「打不到才抬頭…上限 45°」）。
+     再往上就是迫擊砲了——投石機那一節量過 66° 是什麼樣子。
+     抬到 45° 還是打不到的（摩天樓頂層），就打這個角度打得到的最高處，
+     也就是打在牆上：加農砲本來就不是拿來打屋頂的。 */
+  const CAN_ELMAX = 45 * Math.PI / 180;
   /* 耳軸（砲管繞著它擺、後座時也沿著管軸滑過它）多高。**2.25 是被後座逼出來的**：
      管軸是斜的，砲尾往後退就同時往下沉（退 CAN_RECOIL 沉 sin25°×那麼多），
      第一版支點只有 1.95、後座 0.85，砲尾退到底時下緣掉到離地 0.19、還會插進尾梁裡。 */
@@ -1730,12 +1738,16 @@ const ENG = (function () {
      跟 trebSling／BOW_TIP／SWORD_TIP 同一條規矩：畫出來的與飛出去的只有一份數字。
      rec：砲管後座 0 ＝ 復進到底（待發），1 ＝ 後座到底。
      kick：整台往後退了多少（世界格數，0 ～ CAN_KICK）。兩層都要算進來，
-     不然開火那一幀砲彈會從「整台還沒退」的那個位置冒出來，跟畫面差一格多。 */
-  function canMuzzle(rec, kick) {
+     不然開火那一幀砲彈會從「整台還沒退」的那個位置冒出來，跟畫面差一格多。
+     el：砲管仰角（v1.212，不給就是 CAN_EL）。抬頭之後砲口會往上往後跑
+     （45° 時 y 5.79／z 3.54，18° 時 y 3.80／z 4.76），**規則那邊取出手點時要帶同一個
+     角度進來**，不然砲彈會從管子外面冒出來（e2e 有一條在量這 0.2）。 */
+  function canMuzzle(rec, kick, el) {
+    const e = el != null ? el : CAN_EL;
     const d = CAN_LEN - (rec || 0) * CAN_RECOIL;
-    return { y: CAN_PIV + Math.sin(CAN_EL) * d, z: Math.cos(CAN_EL) * d - (kick || 0) };
+    return { y: CAN_PIV + Math.sin(e) * d, z: Math.cos(e) * d - (kick || 0) };
   }
-  /* c：{x, z, a 朝向, rec 砲管後座 0～1, back 整台退了多少} */
+  /* c：{x, z, a 朝向, rec 砲管後座 0～1, back 整台退了多少, el 砲管仰角} */
   function putCannons(list) {
     const n = Math.min(list.length, MAXCAN);
     canMesh.visible = n > 0;                 // 沒砲在場就不吃 draw call
@@ -1751,6 +1763,8 @@ const ENG = (function () {
       scratch.scale.setScalar(1);
       scratch.updateMatrix();
       const back = (t.rec || 0) * CAN_RECOIL;
+      // 這一門現在的砲管仰角（v1.212：打不到才抬頭，規則那邊解出來記在砲上）
+      const el = t.el != null ? t.el : CAN_EL;
       // 輪子滾的角度：走過的弧長 ÷ 半徑。後退是 −z，所以輪子往後滾（負角）
       const roll = -kick / CAN_WHEEL;
       for (let k = 0; k < CAN_PARTS; k++) {
@@ -1758,10 +1772,10 @@ const ENG = (function () {
         const bx = b.p ? b.p[0] : 0;
         if (b.d !== undefined) {
           /* 掛在砲管上：沿著管軸擺。盒子的 local +z 繞 X 轉 ρ 之後指到
-             (cos ρ, −sin ρ)，要它指到 (cos EL, sin EL)，所以 ρ ＝ −EL。 */
+             (cos ρ, −sin ρ)，要它指到 (cos el, sin el)，所以 ρ ＝ −el。 */
           const d = b.d - back;
-          scratchB.position.set(bx, CAN_PIV + Math.sin(CAN_EL) * d, Math.cos(CAN_EL) * d);
-          scratchB.rotation.set(-CAN_EL, 0, 0);
+          scratchB.position.set(bx, CAN_PIV + Math.sin(el) * d, Math.cos(el) * d);
+          scratchB.rotation.set(-el, 0, 0);
         } else {
           scratchB.position.set(bx, b.p[1], b.p[2]);
           if (b.wheel) scratchB.rotation.set(b.r[0] + roll, 0, 0);
@@ -4753,8 +4767,10 @@ const ENG = (function () {
     trebSlingAngle, trebSlingLoose: trebTroughAng, TREB_ARM, TREB_SLING,
     /* 加農砲（v1.204）：砲管仰角就是砲彈的出手仰角，砲口就是出手點——
        規則那邊照這兩個算彈道（同 trebSling／BOW_TIP），各寫一份的話
-       砲彈會從管子側面冒出來、或飛的方向跟管子指的方向不一樣。 */
-    CAN_EL, CAN_RECOIL, CAN_KICK, CAN_LEN, canMuzzle, MAXCAN,
+       砲彈會從管子側面冒出來、或飛的方向跟管子指的方向不一樣。
+       **CAN_EL 是底、CAN_ELMAX 是抬頭的上限**（v1.212）：兩個數字規則那邊都要用到
+       （見 game-tools.js 的 canEl），砲管畫在哪個角度就照那個角度解初速。 */
+    CAN_EL, CAN_ELMAX, CAN_RECOIL, CAN_KICK, CAN_LEN, canMuzzle, MAXCAN,
     /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
     SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_HIT, SWORD_TIP, SWORD_W, SWORD_THK,
     /* 幽浮（v1.167）：光柱的錐度與吸光口高度。判定用的倒錐就是畫出來這一根，
