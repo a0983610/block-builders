@@ -23,17 +23,20 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.210.2';
+const VERSION = '1.211.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
 const GRAV = 26;                    // 重力
 const SPREAD = 2.9;                 // 建材散落區的鬆緊：每塊積木分到幾平方單位
 /* 碎料圈是生活圈的幾倍（v1.210，使用者：「想稍微加大碎料能掉的範圍…原本小房子、
-   城牆都不變，只是讓外圍更多一點空間」）。所以半徑拆成兩個，**只有這個倍率是新的**：
-     arenaR   生活圈：房子、城牆、閒晃、挖料、推土機與天災的進退場圈全綁它，一格都沒動
-     debrisR  碎料圈：碎塊飛行上限、草地島／陰影／霧、樹種在哪
-   見 開發筆記〈場地有兩圈：生活圈與碎料圈〉。 */
+   城牆都不變，只是讓外圍更多一點空間」）。所以半徑拆成兩個：
+     arenaR   生活圈：**只剩小房子（homeOut）與城牆（wallRing）**綁它，一格都沒動
+     debrisR  碎料圈＝場地本身：碎塊飛行上限、草地島／陰影／霧、樹、生物走到哪、
+              進退場圈、會叫出東西攻擊的那幾把道具站在哪
+   v1.211 起分界就是使用者那句「範圍變大，但是小房子、城牆範圍不跟著變大」——
+   所以拿 arenaR 當「場地邊緣」用的地方全部改讀 debrisR，只有那兩樣留在生活圈。
+   見 開發筆記〈場地有兩圈：生活圈與碎料圈〉〈生活圈只剩房子與城牆〉。 */
 const DEBRIS_X = 1.3;
 const WALK = 6.8;                   // 小人走路速度
 const REACH = 0.9;                  // 走到多近算抵達
@@ -50,8 +53,8 @@ let bp = null;                      // 目前藍圖
 let placedCnt = 0;
 let slotCursor = 0;
 let siteR = 12;                     // 建築占地半徑
-let arenaR = 40;                    // 生活圈半徑（房子、城牆、閒晃、進退場圈，見 DEBRIS_X）
-let debrisR = 40 * DEBRIS_X;        // 碎料圈半徑（碎塊飛行上限、草地島、樹）
+let arenaR = 40;                    // 生活圈半徑（v1.211 起只剩小房子與城牆綁它，見 DEBRIS_X）
+let debrisR = 40 * DEBRIS_X;        // 碎料圈半徑＝場地邊緣（碎塊、草地島、樹、生物、進退場圈）
 let phase = 'build';                // clear（整地）| build | done | wreck
 /* 小人「沒有工地要顧」的兩個階段。拆除中（wreck）純粹是換場的記帳狀態：
    拆到剩不到 WRECK_AT 就換下一座（見 step 尾巴）。v1.106 之前拆除中還會讓全場退場，
@@ -848,7 +851,7 @@ const DOZ_TURN = 3.4;               // 轉向角速度（rad/s）
    換場那一下三到六台機器同時冒出來。現在從碎料場外緣開進來，那段路本身就是等碎料
    落地的時間，不必再站著等。
    進場那一段不算進時限——時限是給「推」的，不是給趕路的（見 stepDozers）。 */
-const DOZ_FAR = 6;                  // 進場點在碎料場外緣（arenaR）再外面幾格
+const DOZ_FAR = 6;                  // 進場點在場地外緣（debrisR，v1.211 前是 arenaR）再外面幾格
 const DOZ_ENTER_MAX = 6;            // 進場最多算幾秒（保險絲，時限一定要開始跑）
 /* 鏟面後方多深之內都算同一堆，一起往前帶。抓得越深一次帶越多，但也得推得更遠
    才能整堆送出範圍外——不然機器停下時，那一疊的尾巴還留在工地裡。 */
@@ -912,7 +915,7 @@ function startClear() {
   const ang = sweepAngle();
   const ux = -Math.cos(ang), uz = -Math.sin(ang);      // 行進方向（往場中心）
   const px = -uz, pz = ux;                             // 橫向：並排就排在這條線上
-  const far = arenaR + DOZ_FAR;                        // 出發點：碎料場外緣再外面幾格
+  const far = debrisR + DOZ_FAR;                       // 出發點：場地外緣再外面幾格（v1.211）
   const out = dozOutR();                               // 軸向推到這裡就算穿出去了
   const gap = 2 * R / n;                               // 相鄰兩台的間距（一定 ≤ 2·DOZ_W）
   dozers = {
@@ -1038,7 +1041,7 @@ function stepDozers(dt) {
     let alive = 0;
     for (const m of D.list) {
       dozeMove(m, dt, sp => { m.x += Math.sin(m.a) * sp * dt; m.z += Math.cos(m.a) * sp * dt; });
-      if (Math.hypot(m.x, m.z) < arenaR + 14) alive++;
+      if (Math.hypot(m.x, m.z) < debrisR + 14) alive++;
     }
     if (!alive) { dozers = null; ENG.putDozers([]); }
     return;

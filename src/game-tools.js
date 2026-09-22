@@ -585,9 +585,11 @@ function castTrebs(from, toward) {
 /* 架一台：站在 spot、轟 aimAt。
    兩道保險（castTrebs 已經先推過隊伍的中心，這裡是給單台呼叫與斜著站的那一隊用的）：
      ① 還是落在建築上就往外推——整隊斜著跨過工地時，內側那台可能還在牆裡。
-     ② 夾回生活圈內：一隊四台的正面寬 21，第一下點在場邊時外側那台會站到很外面
-        （同箭雨 arSpot 最後那一夾）。v1.210 起草地島鋪到 debrisR 更外面，
-        但機台還是夾在 arenaR 裡——外圈那一帶是給碎料散的空地，不是站人站機器的地方。 */
+     ② 夾回場地內：一隊四台的正面寬 21，第一下點在場邊時外側那台會站到很外面
+        （同箭雨 arSpot 最後那一夾）。**v1.211 起夾的是 debrisR 不是 arenaR**
+        （使用者：「箭雨 投石機 加農砲 這些會叫出東西做攻擊的 還是被限制在舊的範圍」）
+        ——v1.210 那版的理由「外圈是給碎料散的空地，不是站機器的地方」被這一句推翻了：
+        草地島鋪到哪，機台就架得到哪。見 開發筆記〈生活圈只剩房子與城牆〉。 */
 function placeTreb(spot, aimAt) {
   if (!trebs) trebs = { list: [], rocks: [] };
   if (trebs.list.length >= TREB_MAX) trebs.list.shift();
@@ -597,7 +599,7 @@ function placeTreb(spot, aimAt) {
     const a = d < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(z, x);
     x = Math.cos(a) * minD; z = Math.sin(a) * minD;
   }
-  const dd = Math.hypot(x, z), lim = arenaR - 2;
+  const dd = Math.hypot(x, z), lim = debrisR - 2;
   if (dd > lim) { x = x / dd * lim; z = z / dd * lim; }
   // 面向要轟的那一點：rotation.y = a 之後 local +Z 會指到 (sin a, 0, cos a)
   /* sa 是索自己的角度（絞回時它跟臂角不同步，見 stepTrebs）、
@@ -833,7 +835,7 @@ function castCannons(from, toward) {
   sndWind();                        // 一隊架好那一聲（同投石機，一隊一次）
 }
 /* 架一門：站在 spot、轟 aimAt。兩道保險同 placeTreb（斜著站時還在牆裡的那一門要推出去、
-   站到島外的要夾回來）。 */
+   站到島外的要夾回來；v1.211 起外緣同樣是 debrisR）。 */
 function placeCannon(spot, aimAt) {
   if (!cannons) cannons = { list: [], shells: [] };
   if (cannons.list.length >= CAN_MAX) cannons.list.shift();
@@ -843,7 +845,7 @@ function placeCannon(spot, aimAt) {
     const a = d < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(z, x);
     x = Math.cos(a) * minD; z = Math.sin(a) * minD;
   }
-  const dd = Math.hypot(x, z), lim = arenaR - 2;
+  const dd = Math.hypot(x, z), lim = debrisR - 2;
   if (dd > lim) { x = x / dd * lim; z = z / dd * lim; }
   // 面向要轟的那一點：rotation.y = a 之後 local +Z（砲口）會指到 (sin a, 0, cos a)
   /* rec ＝ 砲管後座 0～1、back ＝ 整台退了多少格（兩層後座，見 ENG.putCannons） */
@@ -1430,7 +1432,7 @@ function stepBall(dt) {
        三個條件缺一不可——少了 vy 那條，彈起來的空檔會被當成停住；
        少了 sp 那條，被積木彈到帶著水平速度落地時會在滑行途中憑空消失。 */
     const done = o.drop ? (o.y <= o.r && o.vy === 0 && sp < 4.5) : sp < 4.5;
-    if (done || o.life <= 0 || Math.hypot(o.x, o.z) > arenaR + 24) {
+    if (done || o.life <= 0 || Math.hypot(o.x, o.z) > debrisR + 24) {
       spawnRing({ x: o.x, y: 0, z: o.z }, 5);
       balls.splice(i, 1);
     } else {
@@ -1616,7 +1618,7 @@ function stepTwist(dt) {
     const sp = Math.max(TW_SPD_MIN,
                         Math.min(TW_SPD_MAX, Math.hypot(w.vx, w.vz) + rr(-3, 3) * dt));
     w.vx = Math.cos(ang) * sp; w.vz = Math.sin(ang) * sp;
-    if (Math.hypot(w.x, w.z) > arenaR) { w.vx *= -1; w.vz *= -1; }
+    if (Math.hypot(w.x, w.z) > debrisR) { w.vx *= -1; w.vz *= -1; }
 
     const R = w.r, R2 = R * R;
     /* 這一幀啃掉幾成：一秒 TW_TAKE 成換算成這一幀的機率（見 TW_TAKE）。
@@ -2068,7 +2070,7 @@ function fireAngle() {
 }
 /* 生一台車：從場邊 base + side×FT_FAN 那個方位進場，停點左右錯開 side×FT_GAP。 */
 function mkTruck(base, side) {
-  const far = arenaR + DOZ_FAR;             // 跟推土機同一個進場圈
+  const far = debrisR + DOZ_FAR;            // 跟推土機同一個進場圈（v1.211 起在場地外緣）
   const ang = base + side * FT_FAN;
   return { x: Math.sin(ang) * far, z: Math.cos(ang) * far, a: ang + Math.PI,
            side, t: rr(0, 2), bob: 0, bk: 0, jam: 0, ghost: 0,
@@ -2404,7 +2406,7 @@ function stepTrucks(dt) {
          （見這支開頭的 !trucks）。ghost 給 FT_GHOST 秒，夠開出 39 格＝穿過任何一棟。 */
       m.jam = Math.hypot(m.x - px, m.z - pz) < FT_MOVE * dt * 0.2 ? m.jam + dt : 0;
       if (m.jam > FT_JAM) { m.ghost = FT_GHOST; m.jam = 0; }
-      if (Math.hypot(m.x, m.z) > arenaR + 14) T.list.splice(i, 1);
+      if (Math.hypot(m.x, m.z) > debrisR + 14) T.list.splice(i, 1);
       continue;
     }
     m.jam = 0;                                     // 卡住的計時只在出場那一段有意義
@@ -5030,7 +5032,7 @@ const UFO_R = 9;
 const UFO_MOUTH = 2.2;
 const UFO_IN = 40;               // 出場位置：場外再往外這麼遠
 /* 飛進來／飛走的速度（單位／秒）。**v1.205 從 30 乘 1.5**（使用者：「提升飛碟移動
-   速度」）：出場在 arenaR + UFO_IN，舊速度進場要 3.1 秒，現在約 2.1 秒。
+   速度」）：出場在 debrisR + UFO_IN（v1.211 前是 arenaR），舊速度進場要 3.1 秒，現在約 2.1 秒。
    飛走那一段同時往上爬（UFO_CLIMB）——爬升沒有跟著調，跟著調的話它會斜著竄出畫面。 */
 const UFO_SPD = 45;
 const UFO_CLIMB = 9;             // 飛走時同時往上爬多快
@@ -5077,7 +5079,7 @@ function callUfo(p) {
   if (!ufos) ufos = [];
   const y = Math.max(UFO_Y0, siteTopNow() + UFO_UP);
   const a = Math.random() * Math.PI * 2;             // 從場外哪一邊飛進來
-  const R = arenaR + UFO_IN;
+  const R = debrisR + UFO_IN;
   const x = p.x + Math.cos(a) * R, z = p.z + Math.sin(a) * R;
   const d = Math.hypot(p.x - x, p.z - z) || 1;
   ufos.push({
@@ -5174,7 +5176,7 @@ function ufoLift(u, dt) {
    但被吸走的那一片本來就是一棟建築、擠在幾格見方裡，掉下來就是一坨。
    v1.169～v1.173 改成**均勻鋪在光圈那一圈裡**（圓心是照光的那一點、半徑 UFO_R）。
    **v1.174 再放大到整片草地**（使用者：「UFO吸走的東西是均勻分散全場的掉下來」）：
-   圓心改成**場心**、半徑改成 arenaR（島有多大就鋪多大，見 ufoSowR），所以
+   圓心改成**場心**、半徑改成整座島（島有多大就鋪多大，見 ufoSowR），所以
    「就是剛剛那一圈」這件事不留了——使用者要的是整場均勻，不是那一圈均勻。
    鋪法沒動，還是黃金角向日葵排列：第 k 件放在半徑 R·√((k+½)/n)、角度 k × 2.39996 rad。
      · 半徑開根號才是「圓盤上均勻」（同 ufoDust 那一行的 √random）；
@@ -5185,16 +5187,17 @@ function ufoLift(u, dt) {
    半徑與高度綁在一起，看起來會是一圈一圈往外擴的漣漪。 */
 const UFO_SKY_SPAN = 18;         // 掉下來的高度鋪開多少（越大越不會同時落地）
 const UFO_SOW_JIT = 0.5;         // 落點再抖一點，不然看得出是條螺線
-/* 鋪多大一片（v1.174）：整個**生活圈**，邊上留 UFO_SOW_EDGE 的餘裕
+/* 鋪多大一片（v1.174）：整個**場地**，邊上留 UFO_SOW_EDGE 的餘裕
    ——落地那一刻碎塊還會互相擠開（見 game.js 的 separate），貼著邊撒的話
    被擠出去的那幾塊會在邊上排成一圈。
-   arenaR 是跟著這一座的積木數算的（見 game.js 的 startBuild），所以這裡不寫死；
+   半徑是跟著這一座的積木數算的（見 game.js 的 startBuild），所以這裡不寫死；
    下限留 UFO_R 是給「圈比光圈還小」那種退化情形。
-   v1.210 起碎料圈（debrisR）比生活圈大，但這裡**刻意不跟著放大**：撒出去的料是要
-   給小人撿回去的，撒到外圈空地上等於每一塊都要多走一段（小人的閒晃與撿料動線都在
-   生活圈裡，見 game.js 的 DEBRIS_X）。 */
+   v1.210 拆成兩圈時這裡**刻意沒跟著放大**，理由是「小人的閒晃與撿料動線都在生活圈裡，
+   撒到外圈等於每一塊都要多走一段」；**v1.211 那個理由沒了**——小人與動物的走動範圍
+   已經是整片碎料圈，撒到島邊就是撒在他們平常會經過的地方，所以改回「島有多大就鋪多大」
+   （見 game.js 的 DEBRIS_X 與 開發筆記〈生活圈只剩房子與城牆〉）。 */
 const UFO_SOW_EDGE = 3;
-const ufoSowR = () => Math.max(UFO_R, arenaR - UFO_SOW_EDGE);
+const ufoSowR = () => Math.max(UFO_R, debrisR - UFO_SOW_EDGE);
 function ufoDrop(u) {
   let n = 0;
   for (const it of u.bag) if (ufoHas(it)) n++;
@@ -5280,7 +5283,7 @@ function stepUfo(dt) {
     } else if (u.st === 'go') {
       u.x += u.hx * UFO_SPD * dt; u.z += u.hz * UFO_SPD * dt;
       u.y += UFO_CLIMB * dt;
-      if (Math.hypot(u.x, u.z) > arenaR + UFO_IN) { u.st = 'wait'; u.t = 0; ufoLet(u); }
+      if (Math.hypot(u.x, u.z) > debrisR + UFO_IN) { u.st = 'wait'; u.t = 0; ufoLet(u); }
     } else if (u.st === 'wait') {
       /* 飛走之後的那五秒（使用者指定）。時間到把東西丟下來，然後**再留一下**
          （'rain'）：這一台已經不畫了，留著只是為了讓那一坨掉完（見 UFO_RAIN）。
@@ -7028,7 +7031,7 @@ const canFight = m => !!DOOM_ACT[m.kind] || m.kind === 'giant';
    bad＝吉祥物那一趟順手砸村子那邊一間房子或一棵樹（v1.166，只有 fun 那一版會給，
    見 stepMascot）。 */
 function spawnBeast(kind, fun, bad) {
-  const a = Math.random() * Math.PI * 2, d = arenaR + DOOM_OUT;
+  const a = Math.random() * Math.PI * 2, d = debrisR + DOOM_OUT;
   const m = {
     kind, x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d,
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就面向工地
@@ -7145,8 +7148,8 @@ function leaveBeast(m) {
   m.home = 0;
   m.st = 'go';
   const d = Math.hypot(m.x, m.z) || 1;
-  m.tx = m.x / d * (arenaR + DOOM_OUT);
-  m.tz = m.z / d * (arenaR + DOOM_OUT);
+  m.tx = m.x / d * (debrisR + DOOM_OUT);
+  m.tz = m.z / d * (debrisR + DOOM_OUT);
 }
 /* 穿門那一段結束了，回原本在做的事（v1.190.2）。
    **目標一定要重算**：走人（go）那一段的目標是「從牠當時站的地方徑向往外」那個場外點，
@@ -7781,7 +7784,7 @@ let fballs = null;                   // 飛在半空的火球
    fun＝吉祥物那一版（v1.144）：航線一模一樣，只是 left 給 0，一顆火球都不吐。
    bad＝吉祥物那一趟順手噴村子（v1.166）：配額給 MASC_BAD_SHOT，落點改瞄村子那邊。 */
 function spawnDragon(fun, bad) {
-  const a = Math.random() * Math.PI * 2, d = arenaR + DRA_OUT;
+  const a = Math.random() * Math.PI * 2, d = debrisR + DRA_OUT;
   /* 巡航高度**進場時算一次就存起來**（v1.172）。改讀 siteTopNow()（現在蓋到多高）
      而不是 bp.height（蓋完多高）——同烏雲與幽浮那一版的理由，使用者指名這三支一起改。
      為什麼要存：siteTopNow() 是掃一遍積木池（幾千筆），飛龍的高度是**每一幀**都在算的
@@ -7797,7 +7800,7 @@ function spawnDragon(fun, bad) {
     sky: 1,
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就朝著工地
     ph: 0, roll: 0, spin: 0, sc: DRA_SC, gait: 0,
-    st: 'in', rc: Math.min(arenaR - 6, siteR + 12), dir: Math.random() < 0.5 ? 1 : -1,
+    st: 'in', rc: Math.min(debrisR - 6, siteR + 12), dir: Math.random() < 0.5 ? 1 : -1,
     turned: 0, gap: rr(0.4, 1.2),
     left: fun ? (bad ? Math.round(rr(MASC_BAD_SHOT[0], MASC_BAD_SHOT[1])) : 0)
               : Math.round(rr(DRA_SHOT[0], DRA_SHOT[1])),
@@ -7877,7 +7880,7 @@ function stepDragon(m, dt) {
   /* 身體跟著拍翅俯仰與上下浮，相位比翅膀晚一點——先拍翅，身體才被抬起來。 */
   m.spin = DRA_PITCH * Math.sin(m.ph + 0.8);
   m.y = m.cruise + DRA_BOB * Math.sin(m.ph - 1.0);     // 巡航高度是進場時算好的（見 spawnDragon）
-  return m.st === 'out' && Math.hypot(m.x, m.z) > arenaR + DRA_OUT;
+  return m.st === 'out' && Math.hypot(m.x, m.z) > debrisR + DRA_OUT;
 }
 
 /* ── 火球 ───────────────────────────────────────────────
@@ -8176,7 +8179,7 @@ function grHitFx(m, dt) {
    fun＝吉祥物那一版：一模一樣的一趟，只是 left 給 0、一道火都不噴，站著晃完就走。
    bad＝吉祥物那一趟順手燒村子（同 v1.166 那三隻）：噴，但目標換成村子那邊。 */
 function spawnGryph(fun, bad) {
-  const a = Math.random() * Math.PI * 2, d = arenaR + GR_OUT;
+  const a = Math.random() * Math.PI * 2, d = debrisR + GR_OUT;
   /* 巡航高度進場時算一次就存起來（同飛龍 v1.172 的理由：siteTopNow 要掃一遍積木池，
      而高度是每一幀都在用的）。 */
   const cruise = Math.max(GR_MIN, siteTopNow() + GR_UP);
@@ -8230,7 +8233,7 @@ function grSpot(m, stand, walkIn) {
     if (i < 7 && (homeAt(x, z) || footBlocked(x, z))) continue;
     m.tx = x; m.tz = z;
     const lx = Math.cos(a) * (d + win), lz = Math.sin(a) * (d + win);
-    const ok = Math.hypot(lx, lz) < arenaR - 2 && !homeAt(lx, lz) && !footBlocked(lx, lz);
+    const ok = Math.hypot(lx, lz) < debrisR - 2 && !homeAt(lx, lz) && !footBlocked(lx, lz);
     m.lx = ok ? lx : x; m.lz = ok ? lz : z;
     return;
   }
@@ -8435,7 +8438,7 @@ function stepGryph(m, dt) {
   m.roll += (0 - m.roll) * Math.min(1, dt * 3);
   m.x += Math.sin(m.a) * GR_SPD * dt;
   m.z += Math.cos(m.a) * GR_SPD * dt;
-  return Math.hypot(m.x, m.z) > arenaR + GR_OUT;
+  return Math.hypot(m.x, m.z) > debrisR + GR_OUT;
 }
 
 /* ── 吉祥物（v1.144）─────────────────────────────────────
@@ -9013,7 +9016,7 @@ function flyBeast(m, dt) {
   m.x += m.vx * dt; m.y += m.vy * dt; m.z += m.vz * dt;
   m.spin = (m.spin + m.tsp * dt) % (Math.PI * 2);
   m.a += m.tsp * 0.35 * dt;
-  const lim = arenaR + 22;
+  const lim = debrisR + 22;
   if (Math.abs(m.x) > lim) { m.x = clamp(m.x, -lim, lim); m.vx *= -0.4; }
   if (Math.abs(m.z) > lim) { m.z = clamp(m.z, -lim, lim); m.vz *= -0.4; }
   if (m.y > 0) return;
@@ -9035,7 +9038,7 @@ function burnBeast(m, dt) {
     m.burn = 0; m.brl = 0; m.spin = 0; m.roll = 0; m.rph = 0; m.gait = 0; m.lie = 0;
     return;
   }
-  const lim = arenaR + 22;
+  const lim = debrisR + 22;
   if (m.brl) {
     m.rph += dt * B_ROLL_HZ * Math.PI * 2;
     const was = m.roll;
@@ -9548,11 +9551,11 @@ function arSpot(x, z, ux, uz) {
       }
     }
   }
-  /* 最後夾回生活圈裡（v1.171，一隊正面寬 19.8，點在場邊時整排會有人站到很外面）。
-     v1.210 起草地島鋪到 debrisR 更外面，這裡照舊夾 arenaR：外圈那一帶是留給碎料的
-     空地（見 game.js 的 DEBRIS_X）。夾完可能又踩回固體上，那沒關係：
-     站在牆邊比站在空中好。 */
-  const d2 = Math.hypot(p.x, p.z), lim = arenaR - 1.5;
+  /* 最後夾回場地裡（v1.171，一隊正面寬 19.8，點在場邊時整排會有人站到很外面）。
+     **v1.211 起夾的是 debrisR**（使用者：「箭雨 投石機 加農砲 這些會叫出東西做攻擊的
+     還是被限制在舊的範圍」）：草地島鋪到哪，弓箭隊就站得到哪。
+     夾完可能又踩回固體上，那沒關係：站在牆邊比站在空中好。 */
+  const d2 = Math.hypot(p.x, p.z), lim = debrisR - 1.5;
   if (d2 > lim) { p.x = p.x / d2 * lim; p.z = p.z / d2 * lim; }
   return p;
 }
@@ -9782,7 +9785,7 @@ function playHit(r, m) {
   m.spook = rr(PLAY_RUN[0], PLAY_RUN[1]);
   const d = Math.hypot(r.dx, r.dz) || 1;
   const ax = m.x + r.dx / d * PLAY_RUN_D, az = m.z + r.dz / d * PLAY_RUN_D;
-  const ar = Math.hypot(ax, az) || 1, lim = arenaR - 2;    // 別跑到草地外面去
+  const ar = Math.hypot(ax, az) || 1, lim = debrisR - 2;   // 別跑到草地外面去
   m.tx = ar > lim ? ax / ar * lim : ax;
   m.tz = ar > lim ? az / ar * lim : az;
 }

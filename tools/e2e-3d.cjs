@@ -570,7 +570,7 @@ const probeWorkers = async (page, tag) => {
     return { mw, mb, who, debrisR };
   });
   /* 界線用**碎料圈**不是生活圈（v1.210 起兩個分開了，見 game.js 的 DEBRIS_X）：
-     碎料的硬邊界就是 debrisR，人被炸飛的上限是 arenaR + 22（更裡面）。 */
+     碎料的硬邊界就是 debrisR，人被炸飛的上限是 debrisR + 22（v1.211 起同一圈起算）。 */
   const lim = r.debrisR + 30;
   ok('（' + tag + '）沒有東西跑出場外', r.mw < lim && r.mb < lim,
      '最遠小人 ' + r.mw.toFixed(0) + '、最遠積木 ' + r.mb.toFixed(0) +
@@ -3807,7 +3807,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
             「人剛好在哪」帶著走（實測同一份程式換一顆種子，最少÷最多 0.51 → 0.30），
             而且過路的會往內切，內環本來就會多吃一份過境流量。
        等面積而不是等寬：等寬的話外環面積大得多，本來就會比較多人，比了沒意義。 */
-    const tLo = siteR + IDLE_NEAR, tHi = Math.max(tLo + 1, arenaR);
+    const tLo = siteR + IDLE_NEAR, tHi = Math.max(tLo + 1, debrisR);   // v1.211：外緣是碎料圈
     const tCut = f => Math.sqrt(tLo * tLo + (tHi * tHi - tLo * tLo) * f);
     const tEdge = [tCut(1 / 3), tCut(2 / 3)];
     const tBand = [0, 0, 0], probe = { tx: 0, tz: 0 };
@@ -3816,7 +3816,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const r = Math.hypot(probe.tx, probe.tz);
       tBand[r < tEdge[0] ? 0 : r < tEdge[1] ? 1 : 2]++;
     }
-    const bLo = siteR + KEEP, bHi = Math.max(bLo + 1, arenaR);
+    const bLo = siteR + KEEP, bHi = Math.max(bLo + 1, debrisR);        // 同上
     const cut = f => Math.sqrt(bLo * bLo + (bHi * bHi - bLo * bLo) * f);
     const edge = [cut(1 / 3), cut(2 / 3)];
     const band = [0, 0, 0];
@@ -3841,7 +3841,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              least: +best[best.length - 1].toFixed(2),
              movingFrac: +(moved / samples).toFixed(2), n: workers.length,
              near: +near.toFixed(2), siteR: +siteR.toFixed(2),
-             far: +far.toFixed(2), empty, frames, arenaR: +arenaR.toFixed(1),
+             far: +far.toFixed(2), empty, frames, arenaR: +debrisR.toFixed(1),
              band, edge: edge.map(v => +v.toFixed(1)),
              tBand, tEven: +(Math.min(...tBand) / Math.max(...tBand)).toFixed(2),
              thin: +(Math.min(...band) / band.reduce((a, b) => a + b, 0)).toFixed(3) };
@@ -4208,8 +4208,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const d of dust.filter(isC)) if (!was.has(d)) conf++;
     }
     const r = { jumping, fled, still, hail, conf, n: workers.length, ph: phase,
-                back: workers.filter(w => Math.hypot(w.x, w.z) < arenaR).length,
-                arenaR: +arenaR.toFixed(1),
+                back: workers.filter(w => Math.hypot(w.x, w.z) < debrisR).length,
+                arenaR: +debrisR.toFixed(1),
                 far: +Math.max(...workers.map(w => Math.hypot(w.x, w.z))).toFixed(1) };
     cleanTools(); dust.length = 0;
     return r;
@@ -4223,7 +4223,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '之後 20 秒最多 ' + cheerFlee.hail + ' 人舉手、彩帶噴了 ' + cheerFlee.conf + ' 片');
   /* v1.183：閒晃範圍放大到整片碎料場之後，「回到建築外圈那一環」就沒有意義了
      （那本來就只是舊版閒晃的範圍）。要驗的還是同一件事——**有沒有走回場上繼續閒晃**，
-     所以改成問「回到碎料場裡面沒有」：逃命是往場外跑到 arenaR + 20 去的。 */
+     所以改成問「回到碎料場裡面沒有」：逃命是往場外跑到 debrisR + 20 去的（v1.211）。 */
   ok('嚇跑之後回場上閒晃，不是留在跑出去的地方',
      cheerFlee.back >= cheerFlee.n * 0.7,
      cheerFlee.back + '/' + cheerFlee.n + ' 人回到碎料場裡（半徑 ' + cheerFlee.arenaR +
@@ -5805,6 +5805,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ── 中箭：側躺 5 秒 → 爬起來 → 小跑開 3~4 秒 ── */
   const shotCow = await page.evaluate(() => {
     beasts = null; arrows = null;
+    /* 場地暫時放大（v1.211）：牛是往箭來的反方向挑一個 PLAY_RUN_D＝12 格外的落腳點，
+       而那個點會被夾在場地邊緣內（playHit 的 debrisR − 2）。牛站在 x=40、場地外緣
+       也在 40 上下時，牠跑一格就抵達、spook 那 3~4 秒根本跑不滿——量到的會是
+       「場地多大」不是這條規則。放大之後這一條跟場地大小無關（跑完再還回去）。 */
+    const dr = debrisR; debrisR = 200;
     const cow = spawnCattle();
     cow.x = 40; cow.z = 0; cow.a = 0; cow.gait = 0; cow.pause = 999; cow.tx = 40; cow.tz = 0;
     const mid = ENG.BEAST_MID[cow.kind] * (cow.sc || 1);
@@ -5827,6 +5832,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       px = cow.x; pz = cow.z;
     }
+    debrisR = dr;                                     // 動過的全域狀態還回去
     return { fallAt, upAt, lie: +lie.toFixed(2), side: cow.side,
              lay: +(upAt - fallAt).toFixed(2), runT: +runT.toFixed(2),
              runSpd: +runSpd.toFixed(2), walk: HERD_WALK[cow.kind], kind: cow.kind,
@@ -7656,7 +7662,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     while (s < 600 && homes.list.some(h => h.left > 0)) { step(0.05); s += 0.05; }
     /* 量的是**沒有家的那些人**的平均半徑：有家的人本來就住在自己家附近（外圈到碎料場
        外緣都有），把他們算進來會把數字洗掉（實測全場平均在 20～24 之間亂跳）。
-       沒有家的人該待在閒晃那一圈（siteR + 2～9）；被趕走的話會跑到 arenaR×0.78。 */
+       沒有家的人該待在閒晃那一圈（siteR + 2～9）；被趕走的話會跑到 debrisR×0.78。 */
     const avgR = () => {
       const q = workers.filter(w => w.hm < 0);
       return q.length ? +(q.reduce((a, w) => a + Math.hypot(w.x, w.z), 0) /
@@ -7670,12 +7676,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 600; i++) {                   // 30 秒
       step(0.05);
       if (idleEv) ev++;                               // 事件還在跑
-      for (const w of workers) if (Math.hypot(w.x, w.z) > arenaR * 0.7) out++;
+      for (const w of workers) if (Math.hypot(w.x, w.z) > debrisR * 0.7) out++;
     }
     const out1 = { ph, own0, own1: workers.filter(w => w.hm >= 0).length,
                    r0, r1: avgR(), placed0, placed1: placedCnt, ev,
                    outFrac: +(out / (600 * workers.length)).toFixed(2),
-                   arenaR: +arenaR.toFixed(1), siteR: +siteR.toFixed(1) };
+                   arenaR: +debrisR.toFixed(1), siteR: +siteR.toFixed(1) };
     cleanTools(); clearHomes();
     return out1;
   });
@@ -9996,7 +10002,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const latOf = p => p.x * Math.cos(a0) - p.z * Math.sin(a0);
     const lat0 = dozers.list.map(latOf);
     let drift = 0;
-    const outsideAtBirth = dozers.list.filter(m => Math.hypot(m.x, m.z) > arenaR).length;
+    const outsideAtBirth = dozers.list.filter(m => Math.hypot(m.x, m.z) > debrisR).length;
     const entry = new Map();
     let outFrames = 0, outUp = 0, inFrames = 0, inDown = 0, passes = 0;
     const wasSt = new Map();
@@ -10035,7 +10041,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       eGapMin = Math.min(eGapMin, eLat[i] - eLat[i - 1]);
     }
     return { n: dozers ? dozers.list.length : 0, spawnR, outsideAtBirth,
-             arena: +arenaR.toFixed(1), work: +dozWorkR().toFixed(1),
+             arena: +debrisR.toFixed(1), work: +dozWorkR().toFixed(1),
              entered: es.length, minEntry: +minEntry.toFixed(1),
              sameSide, eGapMax: +eGapMax.toFixed(2), eGapMin: +eGapMin.toFixed(2),
              blade: ENG.DOZ_W * 2, drift: +drift.toFixed(3),
@@ -10888,7 +10894,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       step(0.02);
       if (trebs) {
         maxRock = Math.max(maxRock, trebs.rocks.length);
-        for (const r of trebs.rocks) if (Math.hypot(r.x, r.z) > arenaR + 5) offCentre++;
+        for (const r of trebs.rocks) if (Math.hypot(r.x, r.z) > debrisR + 5) offCentre++;
       }
     }
     return { n0, after: placedCnt, one, team: team.length, want: TREB_TEAM, cap: TREB_MAX,
@@ -11734,7 +11740,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
     const r = { slope: one('吉薩金字塔', 0.35),          // 斜屋頂：順坡滑下去
                 flat: one('帝國大廈', 0),                // 平屋頂：砸下去彈一下
-                edge: +(arenaR + 24).toFixed(0) };
+                edge: +(debrisR + 24).toFixed(0) };
     cleanTools();
     return r;
   });
@@ -12507,8 +12513,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 滾多遠：把積木清空、場地放大，量到的就是摩擦與壽命本身（不含撞到東西的煞車）。
      v1.39 之前是 6 秒 ×每秒保留 0.82，量到 119.3；現在 7.5 秒 ×0.86，量到 152.7。 */
   const ballRun = await page.evaluate(() => {
-    const bk = blocks, wk = workers, ar = arenaR;
-    blocks = []; workers = []; arenaR = 300;
+    /* debrisR 也要一起假裝（v1.211）：球滾出場地就被收掉，而那個界線 v1.211 起
+       讀的是 debrisR（見 game-tools.js 的 stepBalls）——只放大 arenaR 的話，
+       球從 x=−80 出手的那一幀就已經在界外，量到的是「滾了 0 單位」。 */
+    const bk = blocks, wk = workers, ar = arenaR, dr = debrisR;
+    blocks = []; workers = []; arenaR = 300; debrisR = 300;
     launchBall({ x: -80, z: 0 }, { x: 100, z: 0 });
     let moved = 0, px = balls[0].x, pz = balls[0].z, t = 0;
     for (let i = 0; i < 800 && balls; i++) {
@@ -12516,7 +12525,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (!balls) break;
       moved += Math.hypot(balls[0].x - px, balls[0].z - pz); px = balls[0].x; pz = balls[0].z;
     }
-    blocks = bk; workers = wk; arenaR = ar;
+    blocks = bk; workers = wk; arenaR = ar; debrisR = dr;   // 動過的全域狀態還回去
     return { moved: +moved.toFixed(1), t: +t.toFixed(2), life: BALL_LIFE };
   });
   ok('空場上一發滾得完整個工地那麼遠',
@@ -14849,7 +14858,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mouth = y - UFO_HULL * ENG.UFO_MOUTH_Y;
     callUfo({ x: 0, z: 0 });
     const born = { d: +Math.hypot(ufos[0].x, ufos[0].z).toFixed(1), y: ufos[0].y,
-                   st: ufos[0].st, arena: +arenaR.toFixed(1) };
+                   st: ufos[0].st, arena: +debrisR.toFixed(1) };
     let f = 0, comeT = -1, beamT = -1, goneT = -1, dropT = -1;
     let camUp = 0, hit = 0, bag = 0, rise = 0, riseTop = 0, riseLow = 99;
     let atTarget = -1, awayD = -1, park = 0;
@@ -15037,7 +15046,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (ufo.dropT - ufo.goneT).toFixed(2) + ' 秒），出現在 ' + ufo.high + ' 高');
   /* 使用者（v1.169）：「所有東西從天上掉下來應該是均勻分散的」；**v1.174 又追加
      「UFO吸走的東西是均勻分散全場的掉下來」**，所以鋪的範圍從「光圈那一圈」（半徑
-     UFO_R）換成「整座島」（半徑 ufoSowR() ＝ arenaR 減掉島邊的餘裕）。
+     UFO_R）換成「整座島」（半徑 ufoSowR() ＝ debrisR 減掉島邊的餘裕，v1.211 起）。
      兩件事一起驗，而且每個理論值都是**從「圓盤上均勻」算出來的**，不是抄來的門檻：
        ⓐ 圈：落點全部在那個圓裡（圓心是場心，半徑再加抖動的餘裕），而且**真的鋪滿**
           ——最遠那一件要貼著邊，範圍縮回一小圈就會掉出下界；
@@ -15874,7 +15883,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
            「真的畫出去幾顆」——同投石機那條〈待發時石頭就躺在石兜裡〉。 */
         ENG.putShells(cannons.shells);
         drawn = Math.max(drawn, ENG.three.shellMesh.count);
-        for (const r of cannons.shells) if (Math.hypot(r.x, r.z) > arenaR + 5) offCentre++;
+        for (const r of cannons.shells) if (Math.hypot(r.x, r.z) > debrisR + 5) offCentre++;
       }
     }
     return { n0: b0, after: placedCnt, one, team: team.length, want: CAN_TEAM, cap: CAN_MAX,
@@ -16455,7 +16464,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const inWreck = trucks ? trucks.list.length : 0;
     cleanTools();
     return { lit, inBuild, startR: +startR.toFixed(1), litW, inWreck,
-             call: FT_CALL, edge: +(arenaR + DOZ_FAR).toFixed(1), max: FT_MAX };
+             call: FT_CALL, edge: +(debrisR + DOZ_FAR).toFixed(1), max: FT_MAX };
   });
   ok('建造中火勢起來會叫消防車，而且從地圖邊緣進場',
      ftCall.lit >= ftCall.call && ftCall.inBuild >= 1 && ftCall.inBuild <= ftCall.max &&
@@ -18675,7 +18684,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       burn: workers.filter(w => w.burn > 0).length,
       roll: workers.filter(w => w.roll).length,
       moved: +(workers.reduce((s, w, i) => s + Math.hypot(w.x - p0[i].x, w.z - p0[i].z), 0) / workers.length).toFixed(1),
-      out: workers.filter(w => Math.max(Math.abs(w.x), Math.abs(w.z)) > arenaR + 22.5).length,
+      out: workers.filter(w => Math.max(Math.abs(w.x), Math.abs(w.z)) > debrisR + 22.5).length,
       busy: workers.filter(w => w.load.length || w.carry).length
     };
     // 燒的中途看一眼：身上要有火、要在翻滾、不能回去工作
@@ -18726,7 +18735,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（' + blown.done.free + '/20 人沒在表演也沒在絆），焦黑 ' + blown.done.k + ' → ' +
      blown.done.k2 + '，走動中 ' + blown.done.walking + ' 人');
   ok('炸得再遠也不會被轟出草地', blown.land.out === 0,
-     '越界 ' + blown.land.out + ' 人（邊界＝工地半徑 + 22）');
+     '越界 ' + blown.land.out + ' 人（邊界＝場地半徑 debrisR + 22）');
 
   /* 高處那一發打不到地面的人與吉祥物（v1.147，使用者：「炸彈炸在屋頂、槌子砸在高處，
      下面的人不被震倒」）。以前震倒（afterHit）與吹飛（explode 那個迴圈）都只取水平距離，
@@ -21100,7 +21109,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (blockAt(m.x, m.y, m.z)) inside++;
       if (m.st === 'out' && Math.hypot(m.x, m.z) > arenaR) break;
     }
-    return { r0: +r0.toFixed(1), arena: +arenaR.toFixed(1), rc: +m.rc.toFixed(1),
+    return { r0: +r0.toFixed(1), arena: +debrisR.toFixed(1), rc: +m.rc.toFixed(1),
              rMin: +rMin.toFixed(1), rMax: +rMax.toFixed(1), st,
              roll: +roll.toFixed(2), inside, top: +top.toFixed(1),
              yMin: +yMin.toFixed(1), secs: +(n * 0.05).toFixed(1), gone: !beasts };
@@ -23149,7 +23158,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const out = { frames, inside, moved: +moved.toFixed(1), gait: +gait.toFixed(2),
                   graze: +(grazed / frames).toFixed(2),
                   rMin: +rMin.toFixed(1), rMax: +rMax.toFixed(1),
-                  keep: +(siteR + KEEP).toFixed(1), far: +arenaR.toFixed(1), secs: 60 };
+                  keep: +(siteR + KEEP).toFixed(1), far: +debrisR.toFixed(1), secs: 60 };
     cleanTools();
     return out;
   });
@@ -23482,7 +23491,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return { hit, twice, path: [...new Set(seen)].join('>'), top: +top.toFixed(1),
              spun: +spun.toFixed(2), y: +m.y.toFixed(2), lie: m.lie,
-             r: +Math.hypot(m.x, m.z).toFixed(1), lim: +(arenaR + 22).toFixed(1) };
+             r: +Math.hypot(m.x, m.z).toFixed(1), lim: +(debrisR + 22).toFixed(1) };
   });
   /* 飛多高照拋物線算就好：初速 11、重力 26 → 頂點 11² ÷ (2×26) ＝ 2.33 格，
      一幀 0.05 秒抽樣抓到的會略低一點。寫 3 是我一開始沒算就填的數字。 */

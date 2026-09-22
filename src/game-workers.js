@@ -361,7 +361,7 @@ function flyWorker(w, dt) {
   w.x += w.vx * dt; w.y += w.vy * dt; w.z += w.vz * dt;
   w.tilt = (w.tilt + w.spin * dt) % (Math.PI * 2);
   w.a += w.spin * 0.35 * dt;
-  const lim = arenaR + 22;
+  const lim = debrisR + 22;
   if (Math.abs(w.x) > lim) { w.x = clamp(w.x, -lim, lim); w.vx *= -0.4; }
   if (Math.abs(w.z) > lim) { w.z = clamp(w.z, -lim, lim); w.vz *= -0.4; }
   if (w.y > 0) return;
@@ -379,7 +379,7 @@ function flyWorker(w, dt) {
 /* 燒起來的兩種演法。跑圈圈是繞著「被點著時站的那個位置」轉，不是隨機亂走——
    繞定點才看得出是同一個人在原地打轉，隨機走看起來只是走得比較快。 */
 function burnMove(w, dt) {
-  const lim = arenaR + 22;
+  const lim = debrisR + 22;
   if (w.roll) {
     /* 「停、躺、滾」：人是**躺平之後沿著身體長軸滾**（像滾木頭），不是頭上腳下翻筋斗。
        所以躺平角固定在 90°、轉的是另一根軸（rspin），而且滾的位移是身體的**側向**，
@@ -775,7 +775,7 @@ function stepFlee(w, dt) {
      他會頂著人家的牆原地跑。fdir 本身不改，繞過去之後自己會接回原本的方向。 */
   const g = dodgeHome(w, Math.sin(w.fdir), Math.cos(w.fdir));
   const ux = g.x, uz = g.z;
-  const lim = arenaR + 20;
+  const lim = debrisR + 20;
   w.x = clamp(w.x + ux * WALK * FLEE_SPD * dt, -lim, lim);
   w.z = clamp(w.z + uz * WALK * FLEE_SPD * dt, -lim, lim);
   pushOutHome(w);
@@ -1174,14 +1174,14 @@ function updWorker(w, wi, dt) {
        「不會偷偷把它修回去」還是成立——那條是 build 的狀態機，這裡走不到。 */
     w.cheer = 0;
     const d = Math.hypot(w.x, w.z);
-    if (d < arenaR * 0.62) {
+    if (d < debrisR * 0.62) {
       const a = d < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(w.z, w.x);
-      w.tx = Math.cos(a) * arenaR * 0.78; w.tz = Math.sin(a) * arenaR * 0.78;
+      w.tx = Math.cos(a) * debrisR * 0.78; w.tz = Math.sin(a) * debrisR * 0.78;
     }
     if (walkTo(w, dt)) {
       /* 下一個閒晃點取在自己附近的角度，不是整圈亂挑。挑到對面去的話
          他會直接穿過工地正中央——拆到一半的建築裡、推土機的車道上都照走。 */
-      const a = Math.atan2(w.z, w.x) + rr(-0.8, 0.8), r2 = arenaR * rr(0.6, 0.85);
+      const a = Math.atan2(w.z, w.x) + rr(-0.8, 0.8), r2 = debrisR * rr(0.6, 0.85);
       w.tx = Math.cos(a) * r2; w.tz = Math.sin(a) * r2;
     }
     w.y += (0 - w.y) * Math.min(1, dt * 6);
@@ -1388,12 +1388,13 @@ function loadUp(w, wi, cap) {
 function siteDigSpot(w) {
   /* 每一趟重挑：一直挖同一個坑的話，人會黏在那個點上不動（v1.100 在自己家那邊踩過）。
      三種地方不挖：工地裡（那是要蓋上去的地方，而且他會被 strollTo 推出來）、
-     人家屋子裡、碎料場外面（走出去離工地太遠，搬回來的路比挖的時間還長）。 */
+     人家屋子裡、場地外面（走出去離工地太遠，搬回來的路比挖的時間還長）。
+     v1.211 起外緣是 debrisR（場地本身），跟他閒晃走得到的那一圈同一條線。 */
   for (let t = 0; t < 20; t++) {
     const a = rr(0, Math.PI * 2), d = rr(DIG_NEAR, DIG_FAR);
     const x = w.x + Math.cos(a) * d, z = w.z + Math.sin(a) * d;
     const r = Math.hypot(x, z);
-    if (r < siteR + KEEP + SDIG_OUT || r > arenaR) continue;
+    if (r < siteR + KEEP + SDIG_OUT || r > debrisR) continue;
     if (homeAt(x, z)) continue;
     w.tx = x; w.tz = z; w.hdt = DIG_T; return;
   }
@@ -1555,9 +1556,11 @@ function carryPose(w) {
    把建築當成以工地中心為圓心、半徑 siteR 的一根柱子繞過去就好——
    要的是「不要從建築中間穿過去」，不是貼著每一塊積木算精確的邊。 */
 const KEEP = 1.5;                   // 閒晃時跟建築外圍保持的距離
-/* 閒晃目標點的內緣：離建築外圍幾格起跳（見 idleSpot）。外緣是 arenaR（碎料場外緣，
+/* 閒晃目標點的內緣：離建築外圍幾格起跳（見 idleSpot）。外緣是 debrisR（場地外緣，
    v1.183 使用者：「小人跟動物 能走的範圍都是碎料範圍 但是不穿地標跟小房子」）——
-   實測預設鏡頭下半徑 70 以內 100% 在畫面裡，而碎料場外緣是 63，所以整片都看得到。 */
+   v1.210 把場地拆成兩圈時這裡跟著生活圈留在 arenaR，等於那句話被縮水了；
+   v1.211 使用者重新定調「生物能走動的範圍也調整到比較大的新碎料範圍」，
+   所以外緣搬回真正的碎料圈（吉薩 3000 建材：63.7 → 82.8）。 */
 const IDLE_NEAR = 2;
 
 /* 走到定點就站一會兒。站的時間跟**剛走完**那段路成比例——
@@ -1648,7 +1651,7 @@ function strollTo(w, dt, spd, step, keepMore) {
    **保持半徑、只轉角度**才是真的 0：往哪一邊轉隨機，第一段路就是繞著建築走一小段，
    之後的目標點照舊整片按面積抽。near 是這一段的弧長上限。 */
 function idleSpot(w, near) {
-  const lo = siteR + IDLE_NEAR, hi = Math.max(lo + 1, arenaR);
+  const lo = siteR + IDLE_NEAR, hi = Math.max(lo + 1, debrisR);
   for (let t = 0; t < 8; t++) {
     let x, z;
     if (near) {
@@ -2474,8 +2477,10 @@ let homeSeq = 0;
 const HOME_PART = 0.5;              // 大約幾成的人離隊去蓋（使用者選「一半左右」）
 /* 蓋在哪一帶（v1.98 放寬，使用者：「應該分散一點，地標建築範圍外到小樹圈內」）。
    v1.97 是 siteR + 8～22 的窄環，幾間房子擠在同一圈上。現在內緣貼著地標外圍、
-   外緣就是碎料場外緣——樹種在那外面（makeTrees 是 arenaR + 3～15），
-   所以「小樹圈內」＝整片碎料場。範圍跟著建築大小走，大工地就散得更開。 */
+   外緣是**生活圈** arenaR。範圍跟著建築大小走，大工地就散得更開。
+   **v1.210 起這一圈就不再是場地邊緣了，v1.211 起連樹也不在它外面**（樹種在
+   debrisR + 3～15）——使用者兩次都指名「小房子的範圍不要跟著變大」，所以
+   這裡與城牆（wallRing）是整份程式裡僅存的兩個 arenaR 用戶。 */
 const HOME_NEAR = 5;
 const homeOut = () => Math.max(siteR + HOME_NEAR + 5, arenaR);
 const HOME_ARC = 1.6;               // 挑位置時偏離「這組人現在站的方位」多少弧度
