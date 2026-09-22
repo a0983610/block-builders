@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>積木小人 · 世界地標工地</title>
+<style>
+  :root{
+    --ink:#1b2430; --panel:rgba(255,255,255,.86); --line:rgba(27,36,48,.14);
+    --accent:#e8873c; --ok:#3f9e63; --bad:#c0483c;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden}
+  body{
+    font:14px/1.5 "Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+    color:var(--ink); -webkit-user-select:none; user-select:none;
+    background:linear-gradient(#5f9fd4 0%,#8fc0e4 46%,#cfe3ec 72%,#e6eee6 100%);
+    -webkit-tap-highlight-color:transparent;
+  }
+  /* canvas 是 replaced element：絕對定位下 width:auto 會拿內建尺寸，
+     所以寬高一定要明講（three 也會再設一次 style，兩邊一致） */
+  #cv{position:fixed;inset:0;width:100vw;height:100vh;display:block;touch-action:none}
+
+  .card{
+    position:fixed;background:var(--panel);backdrop-filter:blur(8px);
+    border:1px solid var(--line);border-radius:14px;
+    box-shadow:0 6px 24px rgba(20,32,48,.16);
+  }
+
+  /* 左上：目前在蓋什麼 */
+  #head{top:14px;left:14px;padding:10px 14px;min-width:206px}
+  #head h1{margin:0;font-size:17px;font-weight:800;letter-spacing:.5px}
+  #head .sub{display:flex;gap:8px;align-items:center;margin-top:4px;font-size:12px;opacity:.75}
+  .tag{padding:1px 8px;border-radius:99px;background:var(--accent);color:#fff;font-size:11px;font-weight:700}
+  .tag.ok{background:var(--ok)}
+  .tag.bad{background:var(--bad)}
+  #stat{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:7px;font-size:11px;opacity:.72;
+        font-variant-numeric:tabular-nums}
+  #stat b{font-weight:700;opacity:.95}
+  #track{height:5px;border-radius:99px;background:rgba(27,36,48,.13);margin-top:8px;overflow:hidden}
+  #bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#f0b46b);transition:width .25s}
+
+  /* 右上：時鐘與計時 */
+  #time{top:14px;right:14px;padding:10px 14px;text-align:right}
+  #clock{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+  #time .row{margin-top:3px;font-size:12px;opacity:.72;font-variant-numeric:tabular-nums}
+  #time .row.bad b{color:var(--bad)}          /* 損失用紅字，跟施工計時一眼分得開 */
+
+  /* 左下：設定 */
+  /* 面板往上讓出一排，收合鈕才不會壓在面板上 */
+  #panel{left:14px;bottom:58px;padding:12px 14px;width:262px;transition:transform .22s,opacity .22s}
+  #panel.hide{transform:translateY(calc(100% + 24px));opacity:0;pointer-events:none}
+  #panel .r{display:flex;align-items:center;gap:8px;margin:9px 0}
+  #panel label{flex:0 0 54px;font-size:12px;opacity:.78}
+  /* 三檔按鈕：min-width:0 一定要給，不然按鈕的內容寬度會把整排撐爆 */
+  #panel .seg{display:flex;flex:1;gap:5px;min-width:0}
+  #panel .seg button{flex:1;min-width:0;padding:5px 2px;font-size:12.5px;
+    font-variant-numeric:tabular-nums}
+  #panel .seg button.on{background:var(--accent);border-color:transparent;color:#fff;font-weight:700}
+  select,button{
+    font:inherit;font-size:13px;color:var(--ink);background:#fff;
+    border:1px solid var(--line);border-radius:9px;padding:6px 9px;cursor:pointer;
+  }
+  select{width:100%}
+  button:active{transform:translateY(1px)}
+  button.primary{background:var(--accent);color:#fff;border-color:transparent;font-weight:700;width:100%}
+  /* 兩顆按鈕併排：flex:1 的 flex-basis 是 0，所以 .primary 身上的 width:100% 不會搶寬度 */
+  #panel .btns{display:flex;gap:7px}
+  #panel .btns button{flex:1;white-space:nowrap;padding:6px 4px}
+  #panel .btns button:disabled{opacity:.42;cursor:default}
+  .checks{display:flex;gap:14px;margin-top:10px;font-size:12px;opacity:.8}
+  .checks label{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+  #panelBtn{position:fixed;left:14px;bottom:14px;z-index:5;padding:7px 11px}
+
+  #ver{
+    position:fixed;right:14px;bottom:14px;z-index:4;
+    font-size:11px;font-variant-numeric:tabular-nums;color:var(--ink);opacity:.42;
+    pointer-events:none;
+  }
+  #hint{
+    position:fixed;left:50%;bottom:70px;transform:translateX(-50%);
+    padding:7px 15px;border-radius:99px;background:rgba(27,36,48,.55);color:#fff;
+    font-size:12px;white-space:nowrap;pointer-events:none;
+  }
+
+  /* 破壞工具（畫面上方中央）：平常只留一顆「現在拿什麼」的小窗，
+     滑鼠指上去才展開整份選單。選單是會自動換行的網格，所以之後再加道具
+     不用重新安排版面，也不會把整排推到壓住別的卡片。 */
+  #toolbox{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:6}
+  #toolNow{
+    display:flex;align-items:center;gap:8px;padding:7px 13px;border-radius:12px;
+    background:var(--panel);border:1px solid var(--line);color:var(--ink);
+    box-shadow:0 4px 16px rgba(20,32,48,.16);cursor:pointer;font:inherit;
+  }
+  #toolNow .k{font-size:19px;line-height:1.1}
+  #toolNow .n{font-size:12.5px;font-weight:700}
+  #toolNow .c{font-size:9px;opacity:.4}
+  #toolbox:hover:not(.shut) #toolNow,#toolbox.open #toolNow{border-color:var(--accent)}
+  /* padding 那一段是刻意留的「橋」：小窗與選單之間不能有真空的縫，
+     不然滑鼠往下移到縫上就 mouseleave，選單會在半路收掉。 */
+  #toolMenu{
+    position:absolute;top:100%;left:50%;transform:translateX(-50%);padding-top:8px;
+    opacity:0;visibility:hidden;transition:opacity .12s;
+  }
+  /* .shut＝剛剛選好一把（v1.123，使用者：「選擇工具點擊後 就可以把工具清單收起來
+     目前要把滑鼠移開才會收」）。選完只把 .open 拿掉的話，:hover 還按著它——
+     指標本來就停在剛點的那顆按鈕上，選單等於原地不動。加一個「這次先別展開」的
+     旗標把 :hover 那條擋掉，滑鼠指回小窗時再撤掉（見 game-ui.js 的 pointerover）。 */
+  #toolbox:hover:not(.shut) #toolMenu,#toolbox.open #toolMenu{opacity:1;visibility:visible}
+  /* 這裡不用 --panel（86% 半透明白）：選單底下常常剛好是操作提示那條深色藥丸，
+     透上來會把字襯得看不清楚。其他卡片是靜態的所以透一點沒關係，這個是蓋在上面的選單。 */
+  #tools{
+    display:grid;grid-template-columns:repeat(4,76px);gap:6px;padding:8px;
+    border-radius:14px;background:#fff;border:1px solid var(--line);
+    box-shadow:0 10px 28px rgba(20,32,48,.22);
+  }
+  .tool{
+    display:flex;flex-direction:column;align-items:center;gap:1px;
+    padding:6px 4px;border-radius:10px;
+    background:transparent;border:1px solid transparent;cursor:pointer;
+  }
+  .tool:hover{background:#f1efec}
+  .tool .k{font-size:19px;line-height:1.1}
+  .tool .n{font-size:11px;opacity:.8}
+  .tool.on{background:var(--accent);color:#fff;border-color:transparent}
+  .tool.on .n{opacity:.95}
+  .tool.on:hover{background:var(--accent)}
+  .tool.lock{opacity:.5;filter:grayscale(1)}
+  /* 大槌跟槌子同一個圖示，靠尺寸區分 */
+  .tool[data-tool="bighammer"] .k{font-size:25px}
+
+  /* 成就與提示（工具列移到上方後，提示往下讓開） */
+  #toast{position:fixed;left:50%;top:88px;transform:translateX(-50%);z-index:15;
+         display:flex;flex-direction:column;gap:6px;align-items:center;pointer-events:none}
+  #toast .t{
+    padding:8px 16px;border-radius:12px;background:rgba(27,36,48,.88);color:#fff;
+    display:flex;flex-direction:column;align-items:center;line-height:1.35;
+    box-shadow:0 6px 20px rgba(0,0,0,.25);
+  }
+  #toast .t b{font-size:14px}
+  #toast .t span{font-size:11px;opacity:.72}
+
+  #badgeWrap,#impWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
+             background:rgba(12,18,26,.72)}
+  #badgeWrap.on,#impWrap.on{display:grid}
+  #badgeBox,#impBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
+            max-height:82vh;overflow:auto}
+  #badgeBox h2,#impBox h2{margin:0 0 2px;font-size:17px}
+  #badgeBox .sub,#impBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
+  /* 成就多了就排兩欄，不然要一直捲 */
+  #badgeBox #badges{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  #badgeLoss{color:var(--bad);font-weight:700}
+  /* 匯入／匯出的結果訊息：跟「匯入建築」那個框同一套配色，成功綠、失敗紅 */
+  #saveMsg{font-size:12px;margin-top:7px;display:none}
+  #saveMsg.on{display:block}
+  #saveMsg.bad{color:var(--bad)}
+  #saveMsg.good{color:#3f7a34}
+  .badge{display:flex;flex-direction:column;padding:8px 10px;border-radius:10px;
+         background:#f2f2f0;opacity:.55}
+  .badge.got{background:#fdf1e2;opacity:1}
+  .badge b{font-size:13px}
+  .badge span{font-size:11.5px;opacity:.7}
+  #badgeBox .row,#impBox .row{display:flex;gap:8px;margin-top:12px}
+  #badgeBox .row button,#impBox .row button{flex:1}
+
+  /* 匯入建築：先去拿一份藍圖（四顆入口）→ 貼進來 → 匯入 → 下面是存下來的清單 */
+  #impInfo{width:21px;height:21px;padding:0;border-radius:99px;line-height:1;
+    font:700 13px/1 Georgia,"Times New Roman",serif;vertical-align:2px;opacity:.5}
+  #impInfo:hover{opacity:1}
+  #impInfo.on{background:var(--accent);border-color:transparent;color:#fff;opacity:1}
+  #impHelp{display:none;margin:10px 0 0;padding:9px 10px 9px 30px;border-radius:10px;
+    background:#f7f4f0;font-size:12px;line-height:1.8}
+  #impHelp.on{display:block}
+  #impHelp li{margin:3px 0}
+  #impHelp code{background:rgba(27,36,48,.08);border-radius:4px;padding:0 4px}
+  #impBox .go{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:12px}
+  #impBox .go a,#impBox .go button{display:flex;align-items:center;justify-content:center;
+    padding:7px 4px;font-size:12.5px;white-space:nowrap;text-decoration:none;
+    color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:9px;cursor:pointer}
+  #impBox .go a:hover,#impBox .go button:hover{background:#f4efe7}
+  /* body 給了 user-select:none（免得拖曳轉視角時選到字），輸入框要自己要回來 */
+  #impPaste{width:100%;height:118px;margin-top:9px;resize:vertical;color:var(--ink);
+    font:11.5px/1.45 ui-monospace,Consolas,monospace;
+    border:1px solid var(--line);border-radius:9px;padding:7px 8px;
+    -webkit-user-select:text;user-select:text}
+  #impMsg{display:none;font-size:12px;margin-top:7px;line-height:1.6}
+  #impMsg.on{display:block}
+  #impMsg.bad{color:var(--bad)}
+  #impMsg.good{color:var(--ok)}
+  #impList{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+  #impList .it{display:flex;align-items:center;gap:8px;padding:6px 10px;
+    border-radius:10px;background:#f4f2ef;font-size:12.5px}
+  #impList .it span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;font-size:11.5px;opacity:.58}
+  #impList .it button{padding:3px 9px;font-size:12px}
+  #impList .none{font-size:12px;opacity:.6;padding:3px 2px}
+
+  /* 手機與平板才把工具搬到下緣（v1.110）。以前的斷點是「窄於 1500 就搬」，但筆電幾乎
+     全落在它下面——1920 的螢幕開 125% 縮放是 1536、150% 是 1280——於是一般筆電看到的
+     都是手機那一套版面。現在分兩件事看，中一個就搬：
+       ① 視窗真的窄（≤1024：平板豎放、縮小的桌機視窗）。上方中央擠不出位置。
+       ② 沒有滑鼠的觸控裝置（hover:none + pointer:coarse），不管多寬。平板橫放是
+          1180～1366px，寬度看起來跟筆電沒兩樣，但那裡本來就該用下緣（比較好按）。
+     量過（資訊卡撐到最寬的 347px、時鐘 193px、收起來的小窗 103px、展開的選單 340px）：
+     小窗放在上面，寬 860 以上就閃得過資訊卡；選單要 1062 以上才完全不蓋到它——
+     1025～1061 那一小段（滑鼠、又剛好把視窗拉到那麼窄）展開時會壓到資訊卡一角，
+     選單是浮在上面的一層，蓋到不影響操作，所以斷點還是取整數 1024，
+     讓平板豎放的 1024 落在下緣這一邊。選單跟著往上開。 */
+  @media (max-width:1024px), (hover:none) and (pointer:coarse){
+    #toolbox{top:auto;bottom:12px}
+    #toolMenu{top:auto;bottom:100%;padding:0 0 8px}
+    /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具小窗 */
+    #panelBtn{right:14px;left:auto}
+    #ver{left:14px;right:auto}
+    /* 設定面板要讓開底部的小窗，不然會壓在它上面 */
+    #panel{bottom:84px}
+  }
+
+  @media (max-width:640px){
+    /* 限寬，不然統計那一行會把卡片撐到右上角的時鐘底下。
+       扣掉的是時鐘那張卡的寬度＋兩邊留白：它的寬度是裡面最寬那顆按鈕撐出來的，
+       v1.57 多了「📥 匯入建築」之後從 186 變成 193px（220 那版會剛好疊到 1px）。 */
+    #head{min-width:0;padding:8px 11px;max-width:calc(100vw - 232px)}
+    #head h1{font-size:15px}
+    #stat{font-size:10px;gap:2px 8px}
+    #clock{font-size:20px}
+    #panel{width:calc(100vw - 28px)}
+    #tools{grid-template-columns:repeat(3,74px)}   /* 四欄 338px 在 390 的螢幕上太貼邊 */
+    #hint{display:none}
+    #toast{top:14px}
+    #badgeBox #badges{grid-template-columns:1fr}   /* 手機排不下兩欄 */
+  }
+
+  /* 相依檔沒載到／啟動失敗時蓋上來的說明。平常不存在（由最後那段 script 現做），
+     樣式寫在這裡是因為它跟 index.html 同一支檔，一定跟得到。 */
+  #fatal{position:fixed;inset:0;z-index:99;display:flex;align-items:center;justify-content:center;
+         background:rgba(27,36,48,.55);padding:20px}
+  #fatal .box{background:#fff;border-radius:14px;padding:22px 26px;max-width:520px;
+              box-shadow:0 18px 50px rgba(27,36,48,.3);line-height:1.75}
+  #fatal h2{margin:0 0 10px;font-size:18px}
+  #fatal ul{margin:8px 0;padding-left:20px}
+  #fatal code{background:rgba(27,36,48,.07);border-radius:4px;padding:1px 5px;font-size:13px}
+  #fatal .why{margin-top:14px;font-size:12px;opacity:.72}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="card" id="head">
+  <h1 id="bname">—</h1>
+  <div class="sub"><span class="tag" id="phase">施工中</span><span id="prog">0 / 0</span><span id="bcount"></span></div>
+  <div id="track"><div id="bar"></div></div>
+  <div id="stat">
+    <span>本次人力 <b id="cost">$0</b></span>
+    <span>累計 <b id="costAll">$0</b></span>
+    <span>拆掉 <b id="nDest">0</b> 座</span>
+    <span>擊飛 <b id="nSmash">0</b> 塊</span>
+  </div>
+</div>
+
+<div class="card" id="time">
+  <div id="clock">--:--:--</div>
+  <div class="row">施工 <b id="timer">0:00</b></div>
+  <div class="row bad">損失 <b id="lossAll">$0</b></div>
+  <div class="row" id="fps">— fps</div>
+  <button id="badgeBtn" style="margin-top:7px;width:100%">🏅 成就</button>
+  <button id="impBtn" style="margin-top:6px;width:100%">📥 匯入建築</button>
+  <!-- 後端版才有的入口：不必自己開 AI、複製 prompt、貼程式碼，那一整條在伺服器上跑。
+
+       file:// 開的時候**照樣顯示**，按了才講「要先起站台」。原本是直接隱藏，
+       但整包的玩法本來就是「雙擊 index.html」（見上游 README 第一段），
+       那樣這顆按鈕會無聲消失，找不到的人只會以為沒做出來——寧可按了得到一句說明。
+
+       display:block 是必要的，不是順手加的：這張卡是 shrink-to-fit，而裡面的按鈕
+       預設是 inline-block ——同一行的 inline 盒子在算 max-content 時是**相加**的，
+       所以多一顆按鈕就把卡片撐寬一截（實測 193 → 290px），而 640px 以下 #head 只讓出
+       232px（見上面那條 media query 的註解），390px 的螢幕上會跟時鐘卡疊在一起 86px。
+       改成 block 就自己成一行，卡片寬度變成取各行的最大值，維持 193px。 -->
+  <button id="aiBtn" style="margin-top:6px;width:100%;display:block">🤖 AI 產藍圖</button>
+</div>
+<script>
+  (function () {
+    var b = document.getElementById('aiBtn');
+    var offline = location.protocol === 'file:';
+    b.title = offline
+      ? '這一顆要先把後端跑起來（dotnet run）再從 http:// 開這一頁'
+      : '用描述或參考圖直接請 Gemini 產一份藍圖（伺服器會自動跑體檢與四視圖修到好）';
+    b.addEventListener('click', function () {
+      if (!offline) { window.open('藍圖產生器.html', '_blank', 'noopener'); return; }
+      /* 用遊戲自己的 toast（game-save.js）而不是 alert：alert 會凍住 requestAnimationFrame，
+         而且跟整個介面的調性不合。載不到就退回 alert。 */
+      var m = '這一頁是用 file:// 開的，沒有後端';
+      var s = '在專案目錄跑 dotnet run，再開 http://localhost:5273/';
+      if (typeof toast === 'function') toast('🤖 ' + m, s); else alert(m + '\n' + s);
+    });
+  })();
+</script>
+
+<div id="toast"></div>
+<div id="toolbox">
+  <button id="toolNow" type="button"><span class="k">🔨</span><span class="n">槌子</span><span class="c">▾</span></button>
+  <div id="toolMenu"><div id="tools"></div></div>
+</div>
+
+<button id="panelBtn">⚙ 設定</button>
+<div class="card" id="panel">
+  <select id="shape"></select>
+  <!-- 三檔按鈕，不是滑桿。按鈕是照 game.js 的 CNT_OPTS／WK_OPTS／SPD_OPTS 生出來的，
+       數字只寫在那邊一份，HTML 這裡只留空盒子，兩邊不會對不起來。 -->
+  <div class="r"><label>建材</label><div class="seg" id="cnt"></div></div>
+  <div class="r"><label>小人</label><div class="seg" id="wk"></div></div>
+  <div class="r"><label>速度</label><div class="seg" id="spd"></div></div>
+  <div class="btns">
+    <button class="primary" id="again">換一座來蓋</button>
+    <button id="finish" title="跳過施工過程，直接把這一座蓋好（不算人力費）">⚡ 立刻建成</button>
+  </div>
+  <div class="checks">
+    <label><input type="checkbox" id="spin"> 自轉</label>
+    <label><input type="checkbox" id="mute"> 靜音</label>
+  </div>
+</div>
+
+<div id="hint">點建築 = 一槌砸下去 ｜ 拖曳／QE 轉視角 ｜ WASD 平移、ZX 升降、C 復位 ｜ 滾輪縮放 ｜ 點小人會跌倒</div>
+<div id="ver"></div>
+
+<div id="badgeWrap">
+  <div id="badgeBox">
+    <h2>成就</h2>
+    <div class="sub">已解鎖 <span id="badgeN">0 / 0</span>　·　累計造成損失 <b id="badgeLoss">$0</b>
+      （拆掉 <span id="badgeDest">0</span> 座、擊飛 <span id="badgeSmash">0</span> 塊）</div>
+    <div class="sub">紀錄會自動存在這台電腦上</div>
+    <!-- 存檔搬家：紀錄平常只活在這台電腦的 localStorage 裡，換電腦、換瀏覽器就沒了。
+         匯出下載一份檔案，匯入把它讀回來（**直接覆蓋**現在的紀錄）。
+         排在「紀錄存在這台電腦上」那句下面：那句話講的就是這件事，而且成就一多，
+         擺到最下面等於要捲過十九個成就才看得到。 -->
+    <div class="row">
+      <button id="saveOut">⬇ 匯出存檔</button>
+      <button id="saveIn">⬆ 匯入存檔</button>
+    </div>
+    <div id="saveMsg"></div>
+    <input type="file" id="saveFile" accept=".txt,text/plain" hidden>
+    <div id="badges"></div>
+    <div class="row">
+      <button id="resetBtn">清空紀錄</button>
+      <button class="primary" id="badgeClose">關閉</button>
+    </div>
+  </div>
+</div>
+
+<!-- 匯入建築：請 AI 照〈藍圖製作說明〉做一份藍圖，貼進來就能在遊戲裡蓋出來。
+     跟藍圖預覽.html 的貼上框走同一支 importBlueprint()，差別是這邊會存起來。 -->
+<div id="impWrap">
+  <div id="impBox">
+    <!-- 用純字母 i 不用 ⓘ：那個字元多半走 emoji 呈現，吃不到 color，
+         展開時「白字配橘底」會變成一顆看不清楚的深色圓點。按鈕自己就是圓的。 -->
+    <h2>📥 匯入建築 <button id="impInfo" type="button" title="怎麼弄一份藍圖">i</button></h2>
+    <div class="sub">請 AI 照說明做一份藍圖，貼進來就能在遊戲裡蓋。匯進來的會存在這台電腦上。</div>
+    <!-- 點 ⓘ 才展開：知道怎麼用的人不必每次都看一遍，第一次來的人有整條路可以照著走 -->
+    <ol id="impHelp">
+      <li>按 <b>📋 取得 prompt</b>——整份〈藍圖製作說明〉會複製到剪貼簿。</li>
+      <li>按 <b>Gemini</b> 或 <b>GPT</b> 開新分頁，把剪貼簿貼進對話框（Ctrl+V）送出。
+          要指定蓋什麼就補一句「請做一座 ○○○」，附一張參考圖會更像。</li>
+      <li>AI 會回一段 <code>```js</code> 開頭的程式碼，<b>整段複製</b>起來
+          （圍籬跟「檔名：」那幾行不用清掉，貼進來會自動忽略）。</li>
+      <li>貼進下面那個框（懶得按 Ctrl+V 就按 <b>📋 貼上</b>，剪貼簿裡那段直接倒進框裡），
+          按 <b>匯入</b>。名字撞到現有藍圖會被擋下來，回去請 AI 改個 name。</li>
+      <li>匯完它就在<b>設定面板的下拉選單</b>裡（自訂的排在最前面），選了就開始蓋。</li>
+      <li>匯進來的<b>會存著</b>，關掉再開還在。清單那一列可以 <b>匯出</b> 成 .js 傳給別人，
+          或 <b>刪除</b>。</li>
+      <li>想先看看蓋起來的樣子，或讓 AI 照體檢報告改到好——按 <b>藍圖預覽</b>，
+          診斷報告只有那一頁產得出來。</li>
+    </ol>
+    <div class="go">
+      <button id="impDoc" type="button">📋 取得 prompt</button>
+      <!-- 這兩個是外站，藍圖預覽是同一個資料夾裡的那一頁（相對網址＝同網址） -->
+      <a id="impGem" href="https://gemini.google.com/app" target="_blank" rel="noopener">Gemini</a>
+      <a id="impGpt" href="https://chatgpt.com/" target="_blank" rel="noopener">GPT</a>
+      <a id="impView" href="藍圖預覽.html" target="_blank" rel="noopener">藍圖預覽</a>
+    </div>
+    <textarea id="impPaste" spellcheck="false"
+      placeholder="把 AI 給的整段貼進來（就是 customBlueprint({...}) 那種內容）。```js 圍籬與「檔名：xxx.js」那行會自動忽略。"></textarea>
+    <!-- 匯出在下面每一列各自一顆：分享的單位是「一座建築」，不是整包 -->
+    <!-- 貼上排在匯入前面：那就是這一步的順序（先把 AI 給的倒進框裡、再匯入）。
+         不是主鍵：會按 Ctrl+V 的人根本不需要它 -->
+    <div class="row"><button id="impPasteBtn">📋 貼上</button><button class="primary" id="impGo">匯入</button></div>
+    <div id="impMsg"></div>
+    <div id="impList"></div>
+    <div class="row"><button id="impClose">關閉</button></div>
+  </div>
+</div>
+
+<script src="lib/three.min.js"></script>
+<script src="src/blueprints.js"></script>
+<!-- 〈藍圖製作說明.md〉包成的 JS（tools/build-bpdoc.cjs 產出）：
+     file:// 讀不到旁邊的 .md，而「取得 prompt」要把整份說明放進剪貼簿。
+     沒放這一支的話遊戲照跑，只有那顆按鈕會停用。 -->
+<script src="src/bpdoc.js"></script>
+<!-- 自訂藍圖：list.js 列出檔名，下面這段逐一叫進來，接在內建的 48 座後面。
+     file:// 沒辦法列資料夾內容（fetch 會被 CORS 擋），所以一定要有那份清單；
+     用 document.write 是因為它是解析期同步插入，順序保證排在 game.js 前面
+     （game.js 一開始就要讀 SHAPES 把下拉選單建出來）。 -->
+<script src="blueprints/list.js"></script>
+<script>
+  if (window.BP_FILES) for (var i = 0; i < BP_FILES.length; i++)
+    document.write('<script src="blueprints/' + encodeURI(BP_FILES[i]) + '"><\/script>');
+</script>
+<script src="src/engine.js"></script>
+<!-- 遊戲層拆成五支（見 src/game.js 檔頭那張表）。都是 classic script、共用同一份
+     全域 scope，所以拆檔跟寫在同一支檔裡完全等價。順序有兩個要求：核心那支要排在
+     引擎後面（它的頂層有 HB = ENG.BS / 2），啟動那支排最後（boot 在裡面）。 -->
+<script src="src/game.js"></script>
+<script src="src/game-workers.js"></script>
+<script src="src/game-save.js"></script>
+<script src="src/game-tools.js"></script>
+<script src="src/game-ui.js"></script>
+<script>
+/* 開場防呆：相依檔沒跟著複製過來時（最常見：直接在壓縮檔裡按兩下 index.html，
+   Windows 只解出這一支），畫面會只剩 body 的漸層背景，看起來像遊戲壞了。
+   這段一定要寫在 index.html 裡——game.js 自己沒載到時，寫在它裡面的檢查根本不會執行。 */
+(function () {
+  /* ENG／SHAPES 是 const：那支檔執行到一半炸掉會卡在 TDZ，連 typeof 都噴 ReferenceError，
+     所以每個都要包 try——抓到就等同「這支沒好」。 */
+  var need = [
+    ['lib/three.min.js',    function () { return THREE; }],
+    ['src/blueprints.js',   function () { return SHAPES; }],
+    ['src/engine.js',       function () { return ENG; }],
+    /* 遊戲層那五支各抓一個自己檔裡宣告的東西（v1.120.1 拆檔）。只驗 boot 是不夠的：
+       boot 在最後那支，前面四支任何一支沒載到，boot 照樣在，缺的東西要等它跑到
+       才炸——那就會走「啟動失敗」那條訊息，而真正的原因是檔案沒放齊。 */
+    ['src/game.js',         function () { return VERSION; }],
+    ['src/game-workers.js', function () { return updWorker; }],
+    ['src/game-save.js',    function () { return checkBadges; }],
+    ['src/game-tools.js',   function () { return useTool; }],
+    ['src/game-ui.js',      function () { return boot; }]
+  ], miss = [], i;
+  for (i = 0; i < need.length; i++) {
+    try { if (!need[i][1]()) miss.push(need[i][0]); } catch (e) { miss.push(need[i][0]); }
+  }
+
+  function fatal(html) {
+    var d = document.createElement('div');
+    d.id = 'fatal';
+    d.innerHTML = '<div class="box">' + html + '</div>';
+    document.body.appendChild(d);
+  }
+
+  if (miss.length) {
+    fatal('<h2>🧱 檔案沒放齊，遊戲跑不起來</h2>' +
+          '<code>index.html</code> 旁邊這些檔沒有載進來：<ul><li><code>' +
+          miss.join('</code></li><li><code>') + '</code></li></ul>' +
+          '請把整包<b>解壓縮出來</b>之後，再開資料夾裡的 <code>index.html</code>。' +
+          '<div class="why">直接在壓縮檔裡按兩下 index.html 是不行的：' +
+          '那樣只會解出那一支檔，旁邊的 lib／src 都不在。</div>');
+    return;
+  }
+
+  try { boot(); }
+  catch (e) {
+    console.error(e);          /* 保留原始錯誤，F12 還查得到 */
+    fatal('<h2>⚠ 遊戲啟動失敗</h2>' +
+          '檔案是齊的，但初始化時出錯了：<ul><li><code>' +
+          String(e && e.message || e).replace(/[<>]/g, '') + '</code></li></ul>' +
+          '這通常是瀏覽器不支援 WebGL（太舊、或顯卡加速被關掉）。' +
+          '<div class="why">換 Chrome／Edge 新版再試；按 F12 看 Console 有完整錯誤訊息。</div>');
+  }
+})();
+</script>
+</body>
+</html>

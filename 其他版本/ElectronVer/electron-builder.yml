@@ -1,0 +1,22 @@
+appId: com.winton.blockbuilders
+productName: BlockBuilders
+
+directories:
+  output: dist
+  buildResources: build
+
+# 只打包執行時真的用得到的：主行程、橋樑、還有整包網頁。
+# 參考/（原始碼備份、參考圖、README、tools 開發腳本）不進 exe。
+files:
+  - package.json
+  - src/main/**
+  - src/preload/**
+  - src/renderer/**
+
+win:
+  target:
+    - portable
+  # icon: build/icon.ico    # 還沒有圖示，先用 Electron 預設的；做好 256x256 的 .ico 放這裡再打開
+
+portable:
+  artifactName: BlockBuilders-${version}-portable.${ext}

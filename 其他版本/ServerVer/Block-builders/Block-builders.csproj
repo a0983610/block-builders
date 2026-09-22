@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Block_builders</RootNamespace>
+    <UserSecretsId>block-builders-gemini</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 藍圖體檢是叫 node 跑 tools/*.cjs（見 Services/BlueprintValidator.cs）。
+         路徑用 ContentRootPath 解，publish 後也要在，所以跟著輸出走。 -->
+    <Content Include="tools\**\*.cjs" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

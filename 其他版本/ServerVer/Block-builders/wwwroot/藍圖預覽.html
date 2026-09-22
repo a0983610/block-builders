@@ -1,0 +1,775 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>藍圖預覽 · 積木小人</title>
+<!--
+  藍圖工作台：直接看一份藍圖蓋起來長什麼樣，並跑體檢產出可貼回給 AI 的報告。
+  為什麼獨立一頁而不是放在遊戲裡：這件事是「做藍圖」而不是「玩」——
+  不需要小人、不需要施工、不需要破壞道具，也不該在遊戲的設定面板裡佔一格。
+  改了 blueprints/ 裡的檔案按 F5 就好。
+-->
+<style>
+  :root{--ink:#2b2b2b;--card:rgba(255,255,255,.94);--line:#dcd7cc;--acc:#e8833a}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;
+    font:14px/1.5 "Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;color:var(--ink)}
+  body{background:linear-gradient(#bcd3e0,#e7eef2)}
+  #cv{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+  /* 高度跟著內容走（bottom:auto）：報告縮小之後，卡片就跟著收短，
+     不會在下面留一塊空白。內容真的比畫面高時才捲動。 */
+  #side{position:fixed;left:14px;top:14px;width:388px;z-index:3;
+    max-height:calc(100% - 28px);overflow:auto;
+    display:flex;flex-direction:column;gap:7px;
+    background:var(--card);border-radius:16px;padding:12px 14px;
+    box-shadow:0 8px 26px rgba(20,30,40,.18);backdrop-filter:blur(3px)}
+  /* 卡片放不下時，孩子要**溢出去讓卡片捲動**，不是被壓扁。flex 直欄預設 shrink:1，
+     手機上實測結論那行被擠成 7px 高、字整個看不見（原本只有 #rep 自己寫了 flex:0 0 auto
+     擋住這件事，新加一格就會再踩一次，所以訂成整片面板的通則）。 */
+  #side > *{flex:0 0 auto}
+  /* 收起來只剩標題列。手機上這張卡片會蓋掉大半個畫面，而這一頁的重點是**看藍圖**——
+     收合鈕讓整片畫面還得回來。桌機也能用，只是比較少需要。 */
+  #side.fold > *:not(.head){display:none}
+  #side.fold .sub{display:none}
+  .head{display:flex;align-items:center;gap:8px}
+  .head > div{flex:1;min-width:0}
+  #fold{flex:0 0 auto;width:34px;padding:5px 0;font-size:12px;line-height:1.2}
+  h1{margin:0;font-size:17px}
+  .sub{font-size:12px;opacity:.62;margin-top:2px}
+  .r{display:flex;align-items:center;gap:8px}
+  .r label{flex:0 0 44px;font-size:12px;opacity:.78}
+  .seg{display:flex;flex:1;gap:5px;min-width:0}
+  .seg button{flex:1;min-width:0;padding:5px 2px;font-size:12.5px;font-variant-numeric:tabular-nums}
+  .seg button.on{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
+  select{flex:1;min-width:0;padding:5px 6px;border:1px solid var(--line);border-radius:8px;background:#fff;font:inherit}
+  /* 排不下就**整顆掉到下一列**，不要把字折成兩行（實測 390px 手機上「📋 取得 prompt」
+     「📋 貼上」「貼上並預覽」三顆都變成兩層高，還被卡片下緣切掉）。
+     nowrap 讓 flex 的 min-content 等於整串文字，配上 wrap 就會整顆換列。 */
+  .btns{display:flex;gap:7px;flex-wrap:wrap}
+  button{flex:1;padding:7px 10px;border:1px solid var(--line);border-radius:9px;
+    background:#fff;font:inherit;cursor:pointer;white-space:nowrap}
+  button:hover{background:#f4efe7}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
+  button:disabled{opacity:.42;cursor:default}
+  button:disabled:hover{background:#fff}
+  /* 外站連結（Gemini／GPT）要長得跟按鈕一樣：同一列裡混著 <a> 與 <button>，
+     不補這一條的話 <a> 沒有 flex、沒有邊框，整列會歪掉 */
+  .btns a{flex:1;display:flex;align-items:center;justify-content:center;
+    padding:7px 10px;border:1px solid var(--line);border-radius:9px;
+    background:#fff;text-decoration:none;color:var(--ink);white-space:nowrap}
+  .btns a:hover{background:#f4efe7}
+  #stat{font-size:12px;line-height:1.7;font-variant-numeric:tabular-nums;
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:7px 0}
+  #stat b{font-weight:700}
+  /* 報告整個不佔版面（使用者：「檢查報告框太大，那只需要複製給 AI 看就好」）。
+     它留在 DOM 裡，因為「複製報告」與測試都讀它的 value——但畫面上一格都不給，
+     改成下面那行結論。原本 132px 的框八成的時間是空的，還把卡片撐到滿版。 */
+  #rep{position:absolute;width:1px;height:1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%)}
+  /* 結論：✔／⚠／✘ 加上每一項的短句。按了檢查總要有回饋，全文才交給「複製報告」。
+     只給四行左右，超過在自己框裡捲，不會再把卡片撐長。 */
+  #verdict{font-size:12px;line-height:1.55;max-height:76px;overflow:auto;
+    white-space:pre-wrap;border-top:1px solid var(--line);padding-top:6px}
+  #verdict.idle{opacity:.55}
+  #verdict.ok{color:#3f7a34}
+  #verdict.warn{color:#a5641c}
+  #verdict.bad{color:#c0483c}
+  #pasteBox,#listBox{border:1px solid var(--line);border-radius:10px;padding:7px 9px;background:#fff}
+  #pasteBox summary,#listBox summary{cursor:pointer;font-size:12.5px;font-weight:700}
+  #listBox .btns{margin-top:7px}
+  /* 檔案清單：勾一勾就產出新的 list.js。跟報告框一樣只給「看得到幾行」的高度 */
+  #files{max-height:120px;overflow:auto;border:1px solid var(--line);border-radius:8px;
+    margin:7px 0;padding:4px 7px;font-size:12px}
+  #files label{display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer}
+  #files label span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #files em{flex:0 0 auto;font-style:normal;font-size:11px;opacity:.55}
+  /* AI 給的藍圖動輒上百行，92px 一次只看得到五六行，貼錯了也看不出來。
+     190px 大約看得到十二行，同時讓整張卡片在 800 高的畫面上不必捲動。 */
+  #paste{width:100%;height:190px;margin:7px 0;resize:vertical;
+    font:11.5px/1.45 ui-monospace,Consolas,monospace;
+    border:1px solid var(--line);border-radius:8px;padding:7px 8px}
+  /* 貼上那顆只占自己的寬度：這一列有三顆，平分的話「📋 取得 prompt」會被壓到換行 */
+  #pasteBtn{flex:0 0 auto}
+  #pasteMsg{font-size:11.5px;margin-top:6px;display:none}
+  #pasteMsg.on{display:block}
+  #pasteMsg.bad{color:#c0483c}
+  #pasteMsg.good{color:#3f7a34}
+  .hint{font-size:11.5px;opacity:.6}
+  .checks{display:flex;gap:12px;font-size:12px;opacity:.85}
+  #err{position:fixed;inset:0;z-index:9;display:none;place-items:center;padding:24px;
+    background:#f4efe7;font-size:15px;line-height:1.8}
+  #err.on{display:grid}
+  @media (max-width:760px){
+    /* 卡片壓到半個畫面以下，下半截留給藍圖本身；貼上框與檔案清單也跟著縮。
+       要看整座就按標題列那顆收合鈕。 */
+    #side{left:8px;right:8px;top:8px;bottom:auto;width:auto;max-height:52vh}
+    #paste{height:130px}
+    #files{max-height:96px}
+    .hint{font-size:11px}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div id="side">
+  <div class="head">
+    <div>
+      <h1>藍圖預覽</h1>
+      <div class="sub">看藍圖蓋起來的樣子，並產出貼得回去給 AI 的體檢報告</div>
+    </div>
+    <!-- 收合：手機上卡片會蓋掉大半個畫面，而這一頁的重點是看藍圖 -->
+    <button id="fold" title="收合面板">▲</button>
+  </div>
+  <div class="r"><label>藍圖</label><select id="shape"></select></div>
+  <!-- 三檔按鈕，跟遊戲的設定面板同一組數字（e2e 有一條測試守著兩邊一致） -->
+  <div class="r"><label>建材</label><div class="seg" id="cnt"></div></div>
+  <!-- Gemini／GPT 擺這一列而不是擺在「取得 prompt」旁邊（v1.160）：那才是流程上的位置，
+       但整張卡片的高度已經頂滿（要放得進 800 高的畫面，e2e 有一條守著），量下來只剩 10px
+       餘裕，另開一列就會溢出、最下面那排被切掉。這一列本來就有 40 幾 px 的寬度沒用到，
+       而且不必展開任何東西就看得到。網址跟遊戲「匯入建築」那一格同一組（#impGem／#impGpt）。 -->
+  <div class="btns">
+    <button class="primary" id="go">重新產生</button>
+    <button id="chk">🔍 檢查藍圖</button>
+    <a id="gem" href="https://gemini.google.com/app" target="_blank" rel="noopener">Gemini</a>
+    <a id="gpt" href="https://chatgpt.com/" target="_blank" rel="noopener">GPT</a>
+  </div>
+  <div class="checks">
+    <!-- 自轉預設關：要對照參考圖的時候，畫面一直在轉反而不好比 -->
+    <label><input type="checkbox" id="spin"> 自轉</label>
+    <label><input type="checkbox" id="wire"> 只看輪廓（隱藏草地）</label>
+  </div>
+  <!-- 預設展開：AI 產的藍圖多半是「貼上」而不是「存檔」進來的，這是主要入口 -->
+  <details id="pasteBox" open>
+    <summary>貼上藍圖（不用先存檔）</summary>
+    <textarea id="paste" spellcheck="false"
+      placeholder="把 AI 給的整段貼進來（就是 blueprints/ 裡那種 customBlueprint({...}) 的內容），按下面的按鈕就直接預覽並診斷。```js 圍籬與「檔名：xxx.js」那行會自動忽略。"></textarea>
+    <!-- 取得 prompt 排在前面：整條路是「先拿說明去問 AI → 再把它給的貼回這個框」，
+         按鈕的順序就照那個順序排。跟遊戲裡「匯入建築」那顆是同一份說明、同一支 BP_DOC。 -->
+    <div class="btns">
+      <button id="doc">📋 取得 prompt</button>
+      <button id="pasteBtn">📋 貼上</button>
+      <button id="load">貼上並預覽</button>
+    </div>
+  </details>
+  <div id="pasteMsg"></div>
+  <div id="stat"></div>
+  <div id="verdict" class="idle">按「🔍 檢查藍圖」跑體檢，結論會顯示在這裡；報告全文按「複製報告」整段帶走。</div>
+  <!-- tabindex=-1：它已經不在畫面上了，留著會變成一個看不見的 Tab 停靠點（按 Tab 焦點會憑空消失一格） -->
+  <textarea id="rep" readonly tabindex="-1" spellcheck="false" placeholder="按「🔍 檢查藍圖」產出報告，整段複製貼回給產出這份藍圖的 AI。"></textarea>
+  <div class="btns">
+    <button id="copy">複製報告</button>
+    <!-- 四視圖而不是「當下畫面」：預設鏡頭站在建築背後，拍回去給 AI 會把正背面弄反（見 shotPng） -->
+    <button id="shot">下載四視圖</button>
+    <!-- 貼進來的藍圖存成檔案。內建與 blueprints/ 裡的本來就有檔案，所以那些選起來時是灰的 -->
+    <button id="save" disabled title="貼上來的藍圖才存得出檔案">下載 .js</button>
+  </div>
+  <!-- 產生 list.js：存了 .js 進 blueprints/ 之後還得自己把檔名加進 list.js，忘了加等於沒放。
+       這一格把那件事收成「掃一下資料夾 → 勾一勾 → 下載」。 -->
+  <details id="listBox">
+    <summary>產生 list.js（藍圖檔案清單）</summary>
+    <div class="btns">
+      <button id="scan">選 blueprints 資料夾</button>
+      <button id="allOn">全不選</button>
+    </div>
+    <div id="files"></div>
+    <div class="btns"><button class="primary" id="dlList">下載 list.js</button></div>
+    <div class="hint" id="listMsg"></div>
+    <!-- webkitdirectory 是瀏覽器唯一肯交出「資料夾裡有哪些檔案」的路，選了不會上傳任何東西 -->
+    <input type="file" id="dir" webkitdirectory multiple hidden>
+  </details>
+  <!-- 收成兩行：三行的話 1366×768 的筆電就得捲那 9px -->
+  <div class="hint">拖曳轉視角　·　滾輪縮放　·　貼上的藍圖只活在這一頁：按「下載 .js」存進 <code>blueprints/</code>，再用「產生 list.js」補進清單</div>
+</div>
+
+<div id="err"></div>
+
+<script src="lib/three.min.js"></script>
+<script src="src/blueprints.js"></script>
+<!-- 自訂藍圖：跟 index.html 同一套（list.js 列檔名 → 逐一載入 → 檔案自己呼叫 customBlueprint） -->
+<script src="blueprints/list.js"></script>
+<script>
+  if (window.BP_FILES) for (var i = 0; i < BP_FILES.length; i++)
+    document.write('<script src="blueprints/' + encodeURI(BP_FILES[i]) + '"><\/script>');
+</script>
+<!-- 〈藍圖製作說明.md〉包成的 JS（tools/build-bpdoc.cjs 產出）：
+     file:// 讀不到旁邊的 .md，而「取得 prompt」要把整份說明放進剪貼簿。
+     沒放這一支的話這一頁照跑，只有那顆按鈕會停用。 -->
+<script src="src/bpdoc.js"></script>
+<script src="src/engine.js"></script>
+<script>
+/* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
+   這一頁不載遊戲層那五支（那會把整個遊戲跑起來），所以自己留一份，
+   e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
+const VIEWER_VER = '1.176.0';
+
+const $ = id => document.getElementById(id);
+
+/* 相依檔沒放齊時給一句人看得懂的話，而不是一片空白（跟 index.html 同一個用意） */
+(function guard() {
+  const miss = [];
+  if (typeof THREE === 'undefined') miss.push('lib/three.min.js');
+  if (typeof SHAPES === 'undefined') miss.push('src/blueprints.js');
+  if (typeof ENG === 'undefined') miss.push('src/engine.js');
+  if (!miss.length) return;
+  $('err').innerHTML = '🧱 <b>檔案沒放齊，這一頁跑不起來</b><br>' +
+    '缺：' + miss.join('、') + '<br>請把整包解壓縮出來之後，再開資料夾裡的這一頁。';
+  $('err').classList.add('on');
+  throw new Error('missing deps: ' + miss.join(','));
+})();
+
+/* ── 場景：這一頁只畫積木 ────────────────────────────────
+   引擎的每個 InstancedMesh 預設 count 就是它的上限，沒餵資料的話
+   會在原點冒出 80 個小人、一堆石頭與樹。所以全部餵一次空的。 */
+ENG.init($('cv'));
+ENG.resize();
+ENG.setWorkerCount(0);
+ENG.putTrees([]); ENG.putDust([]); ENG.putRocks([]); ENG.putTrebs([]);
+ENG.putDozers([]); ENG.putBombs([]); ENG.putMeteors([]); ENG.putTornados([]);
+ENG.putFire([]); ENG.putFlash([]); ENG.putNukes([]);
+ENG.putBalls([]); ENG.hideHammer(); ENG.hideRings();
+window.addEventListener('resize', () => ENG.resize());
+
+/* ── 選單：自訂藍圖排前面（自己丟檔案進來的人就是想馬上看到它） ──
+   sort 在現代 JS 是穩定的，所以內建那 48 座之間的先後不會被打亂。 */
+function refreshMenu(pick) {
+  const order = SHAPES.map((s, i) => i)
+    .sort((a, b) => (SHAPES[b].custom ? 1 : 0) - (SHAPES[a].custom ? 1 : 0));
+  $('shape').innerHTML = order.map(i =>
+    '<option value="' + i + '">' + (SHAPES[i].custom ? '★ ' : '') + SHAPES[i].n + '</option>').join('');
+  if (pick !== undefined) $('shape').value = String(pick);
+}
+refreshMenu();
+
+/* ── 產生一份藍圖並擺上場 ───────────────────────────────── */
+const HB = ENG.BS / 2;
+const ZERO = new THREE.Euler();
+let bp = null;
+
+/* 建材三檔：跟遊戲設定面板同一組數字。這一頁不載遊戲層（那會把整個遊戲跑起來），
+   所以自己留一份，e2e 有一條測試守著它跟 game.js 的 CNT_OPTS 一致。 */
+const CNT_OPTS = [1800, 3000, 9000];
+let wantCnt = 3000;
+(function makeSeg() {
+  const box = $('cnt');
+  for (const v of CNT_OPTS) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.dataset.v = String(v); b.textContent = String(v);
+    b.addEventListener('click', () => { wantCnt = v; syncSeg(); build(); });
+    box.appendChild(b);
+  }
+})();
+function syncSeg() {
+  for (const b of $('cnt').children) b.classList.toggle('on', +b.dataset.v === wantCnt);
+}
+syncSeg();
+
+function build() {
+  const idx = +$('shape').value, want = wantCnt;
+  const t0 = performance.now();
+  try {
+    bp = makeBlueprint(idx, want);
+  } catch (e) {
+    bp = null;
+    $('stat').innerHTML = '<b style="color:#c0483c">產不出來</b>：' + (e && e.message ? e.message : e) +
+                          '<br>按「🔍 檢查藍圖」看完整診斷。';
+    ENG.setBlockCount(0); ENG.commitBlocks();
+    return;
+  }
+  const ms = Math.round(performance.now() - t0);
+
+  let w = 0, d = 0;
+  for (const s of bp.slots) { w = Math.max(w, Math.abs(s.x)); d = Math.max(d, Math.abs(s.z)); }
+  ENG.setBlockCount(bp.slots.length);
+  for (let i = 0; i < bp.slots.length && i < ENG.MAXB; i++) {
+    const s = bp.slots[i], c = bp.pal[s.c % bp.pal.length];
+    ENG.putBlock(i, s.x, s.y + HB, s.z, ZERO, 1,
+                 ((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255);
+  }
+  ENG.commitBlocks();
+  /* 取景。第三個參數在遊戲裡是碎料散落範圍，這一頁沒有碎料，但它同時決定
+     草地大小（arena + 26）與起霧距離——給得太小的話會看到草地的邊緣與後面的天空。
+     取景距離大約是建築半徑的兩倍多，所以草地至少要鋪到那麼遠。 */
+  ENG.fitCamera(bp.radius, bp.height, Math.max(bp.radius * 2 + 30, bp.height * 1.6), true);
+
+  const over = bp.slots.length > ENG.MAXB;
+  $('stat').innerHTML =
+    '<b>' + bp.name + '</b>　' + bp.slots.length.toLocaleString('en-US') + ' 塊' +
+    '（想要 ' + want.toLocaleString('en-US') + '，差 ' +
+    (bp.slots.length >= want ? '+' : '') + Math.round((bp.slots.length / want - 1) * 100) + '%）<br>' +
+    '尺寸 ' + Math.round(w * 2 + 1) + '×' + bp.height + '×' + Math.round(d * 2 + 1) + ' 格' +
+    '　·　配色 ' + bp.pal.length + ' 色' +
+    '　·　產生 ' + ms + 'ms' +
+    (over ? '<br><b style="color:#c0483c">超過積木池上限 ' + ENG.MAXB +
+            '，多的沒畫出來</b>' : '');
+}
+
+/* ── 貼上藍圖 ─────────────────────────────────────────────
+   做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，中間不該卡著「存檔案 + 編輯 list.js」。
+   所以這裡貼進來的藍圖**只活在這一頁**（F5 就沒了，要留著就照下面那行提示存檔）。
+   真正把程式跑起來的是 blueprints.js 的 importBlueprint()——遊戲的「匯入建築」
+   走的是同一支，兩邊的清洗與撞名規則才會一模一樣。 */
+const pasted = new Set();          // 這一頁貼進來的那幾份在 SHAPES 的索引
+/* 貼進來的原始碼，用藍圖名字當鍵（SHAPES 裡名字不會重複，索引則會因為蓋掉同名而位移）。
+   留著是為了「下載 .js」：滿意了就直接存成檔案，不必回頭去翻剛才貼的那段。
+   一次貼進好幾份的話，每一份指到的都是同一段程式——它們本來就是同一個檔案。 */
+const pastedSrc = new Map();
+
+function pasteBlueprint(raw) {
+  const added = importBlueprint(raw, pasted);
+  for (const a of added) pastedSrc.set(a.name, { file: a.file, code: a.code });
+  return added;
+}
+
+/* ── 體檢報告 ───────────────────────────────────────────── */
+const VERDICT_IDLE = '按「🔍 檢查藍圖」跑體檢，結論會顯示在這裡；報告全文按「複製報告」整段帶走。';
+/* 報告不顯示在畫面上了，所以「結論」要自己挑出來寫成幾行——不然按下檢查會完全沒有回饋。
+   全文照樣在 #rep.value 裡等著被複製走。 */
+function showVerdict(r) {
+  const v = $('verdict'), item = m => '· ' + m;
+  if (r.fails.length) {
+    v.className = 'bad';
+    v.textContent = ['✘ ' + r.fails.length + ' 項要修'].concat(r.fails.map(item)).join('\n');
+  } else if (r.warns.length) {
+    v.className = 'warn';
+    v.textContent = ['⚠ ' + r.warns.length + ' 項提醒'].concat(r.warns.map(item)).join('\n');
+  } else {
+    v.className = 'ok';
+    v.textContent = '✔ 沒有查到問題（' + r.name + '）';
+  }
+}
+function clearVerdict() { $('verdict').className = 'idle'; $('verdict').textContent = VERDICT_IDLE; }
+function diagnose() {
+  const r = checkBlueprint(+$('shape').value, { ver: VIEWER_VER });
+  $('rep').value = r.text;
+  showVerdict(r);
+  return r;
+}
+
+/* 複製：file:// 給不給 clipboard API 看瀏覽器政策，所以留一條 execCommand 的退路。
+   報告的整個價值就在「複製得出去」。
+   退路是「塞一個看不見的 textarea 進去選取再 execCommand」——報告那一顆本來直接選
+   畫面上那個 textarea，但 prompt 那一顆沒有對應的框，所以統一走這條。 */
+function copyText(text, btn, back) {
+  const done = () => { btn.textContent = '已複製 ✓';
+                       setTimeout(() => { btn.textContent = back; }, 1600); };
+  const legacy = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    if (ok) { done(); return; }
+    btn.textContent = '請按 Ctrl+C';
+    setTimeout(() => { btn.textContent = back; }, 2200);
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, legacy);
+      return;
+    }
+  } catch (e) { /* 往下走舊路 */ }
+  legacy();
+}
+
+/* 從剪貼簿倒進框裡（v1.140）。讀剪貼簿要瀏覽器同意，file:// 給不給
+   要看政策（跟上面 copyText 同一個問題），不給就退回「自己按 Ctrl+V」。
+   退路要先把游標放進框裡、整段選起來，Ctrl+V 才是「換掉舊那段」
+   而不是插在游標處。 */
+function pasteText(ta, btn, back) {
+  const flash = t => { btn.textContent = t; setTimeout(() => { btn.textContent = back; }, 1600); };
+  const manual = () => {
+    ta.focus();
+    ta.select();
+    btn.textContent = '請按 Ctrl+V';
+    setTimeout(() => { btn.textContent = back; }, 2200);
+  };
+  let p = null;
+  try {
+    if (navigator.clipboard && navigator.clipboard.readText) p = navigator.clipboard.readText();
+  } catch (e) { p = null; }
+  if (!p) { manual(); return; }
+  /* 空的就別動框裡那段：剪貼簿是空的多半是「以為複製到了其實沒有」，
+     這時把已經貼好的一段洗掉最惱人。 */
+  p.then(t => { if (!t) { flash('剪貼簿是空的'); return; }
+                ta.value = t; flash('已貼上 ✓'); }, manual);
+}
+
+function copyReport() {
+  const ta = $('rep');
+  if (!ta.value) { ta.value = diagnose().text; }
+  copyText(ta.value, $('copy'), '複製報告');
+}
+
+/* ── 操作 ───────────────────────────────────────────────── */
+$('shape').addEventListener('change', () => { build(); $('rep').value = ''; clearVerdict(); syncSave(); });
+/* 收合面板：手機上卡片蓋掉大半個畫面，看不到正在預覽的那一座。 */
+$('fold').addEventListener('click', () => {
+  const on = $('side').classList.toggle('fold');
+  $('fold').textContent = on ? '▼' : '▲';
+  $('fold').title = on ? '展開面板' : '收合面板';
+});
+$('go').addEventListener('click', build);
+$('chk').addEventListener('click', diagnose);
+/* 貼上 → 進清單 → 選起來 → 畫出來 → 順手把診斷也跑掉。
+   貼的人要的就是這一連串，不該還要自己再按兩個按鈕。 */
+$('load').addEventListener('click', () => {
+  const msg = $('pasteMsg');
+  try {
+    const added = pasteBlueprint($('paste').value);
+    const last = added[added.length - 1];
+    refreshMenu(last.idx);
+    build();
+    diagnose();
+    syncSave();
+    renderList();                     // 貼進來的檔名也要進 list.js 的候選清單
+    msg.className = 'on good';
+    const renamed = added.filter(a => a.was);
+    msg.textContent = '✔ 已載入「' + added.map(a => a.name).join('、') + '」' +
+      (added.length > 1 ? '（' + added.length + ' 份，選的是最後一份）' : '') + '，下面是它的診斷。' +
+      (renamed.length ? '（原名「' + renamed.map(a => a.was).join('、') +
+        '」跟內建或 blueprints/ 裡的撞號，自動加了編號）' : '');
+    /* 載完不動貼上區（v1.50.1）：這一頁的節奏是「貼上 → 看 → 改 → 再貼」，
+       每次都自動收起來的話，下一輪要先把它點開才改得到那段文字。
+       要讓版面給報告的人自己點標題收起來就好——收起來的狀態也不會被這裡蓋回去。 */
+  } catch (e) {
+    msg.className = 'on bad';
+    msg.textContent = '✘ ' + ((e && e.message) ? e.message : e);
+  }
+});
+/* 貼上框點一下就整段選起來（v1.111）：這一頁的節奏是「貼上 → 看 → 改 → 再貼」，
+   而「再貼」是拿新的一份**換掉**框裡那一段，每次都要先自己 Ctrl+A 很煩。
+   只在「游標本來不在框裡」的那一下全選（focus，以及緊接著那一次 mouseup——
+   點一下會把游標放到某個字中間、順手把選取收掉，所以要在 mouseup 再選一次）；
+   之後再點就是正常移游標，不然想手改裡面幾個字會改不了。
+   自己拖出一段選取的也尊重他的選取，不蓋掉。 */
+const pasteTa = $('paste');
+let pasteFresh = false;
+pasteTa.addEventListener('focus', () => { pasteFresh = true; pasteTa.select(); });
+pasteTa.addEventListener('blur', () => { pasteFresh = false; });
+pasteTa.addEventListener('mouseup', () => {
+  if (!pasteFresh) return;
+  pasteFresh = false;
+  if (pasteTa.selectionStart !== pasteTa.selectionEnd) return;
+  pasteTa.select();
+});
+
+/* 貼上（v1.140）：剪貼簿那段直接倒進上面那個框。只倒進去、不順手預覽——
+   這一頁的節奏是「貼上 → 看 → 改 → 再貼」，倒進來之後常常還要自己改幾個字。 */
+$('pasteBtn').addEventListener('click', () => pasteText(pasteTa, $('pasteBtn'), '📋 貼上'));
+
+$('copy').addEventListener('click', copyReport);
+/* 沒放 src/bpdoc.js 的話這一頁照跑，只有這顆拿不到說明全文（跟遊戲那邊同一套處理） */
+if (typeof BP_DOC === 'string')
+  $('doc').addEventListener('click', () => copyText(BP_DOC, $('doc'), '📋 取得 prompt'));
+else {
+  $('doc').disabled = true;
+  $('doc').title = 'src/bpdoc.js 沒放進來，拿不到〈藍圖製作說明〉全文';
+}
+
+/* 下載四視圖：報告只講得出塊數與結構，講不出「像不像」——那要看圖。
+   存成 PNG 之後跟報告一起丟回去給 AI，它才知道自己畫出來的是什麼樣子。
+
+   v1.160 之前存的是「當下畫面」那一張，有兩個問題：
+     · **拍到的是背面**。鏡頭的 yaw 初值是 0.9（engine 的 cam），相機座標是
+       (cos yaw, ·, sin yaw)·dist——兩個都是正的，相機站在 (+x, +z)，正對著 +z 那一面。
+       而藍圖的正面是 −z（臉、大門朝那邊，見〈藍圖製作說明〉第 2 節）。AI 拿那張去對
+       臉的位置，前後就整個反過來——這正是「畫臉的位置常常對不準」的來源。
+     · **太大**。取的是視窗寬高 × devicePixelRatio（1920 螢幕配 dpr 1.5 就是 2880×1620），
+       而圖是要餵給 AI 看的，上傳之後本來就會再縮一次，多出來的只是檔案大小。
+   所以改成一次出四格、每格 512、角上寫著這是哪一面，整張 1024×1024。
+
+   canvas 的 drawingBuffer 在合成之後就被清掉了（preserveDrawingBuffer 預設 false），
+   所以每一格都要「render 完**在同一個工作裡**馬上 drawImage」，不能四張都畫完再一起取。
+   renderer 開了 alpha，畫面的天空是 CSS 給的——底色要自己先鋪一層，不然存出來是透明的。 */
+const SHOT_CELL = 512;
+/* yaw／pitch 就是 engine 那組球座標。正面要站在 −z，所以 yaw = −π/2；
+   45° 用 −0.9（預設 0.9 的鏡射）才是「從正面斜看」而不是從背面。
+   俯視的 pitch 給 1.45 ＝ updateCamera 的上限，再往上 lookAt 就跟 up 共線、畫面會翻。 */
+const SHOT_VIEWS = [
+  /* w／h ＝ 這一格畫面左右／上下方向量的是哪一軸，d ＝ 鏡頭望過去那一軸（決定退多遠） */
+  { t: '① 正面（−z）', yaw: -Math.PI / 2, pitch: 0.10, w: 'x',          d: 'z' },
+  { t: '② 右側（+x）', yaw: 0,            pitch: 0.10, w: 'z',          d: 'x' },
+  { t: '③ 俯視',       yaw: -Math.PI / 2, pitch: 1.45, w: 'x', h: 'z',  d: 'y' },
+  /* 45° 那一格的 dm：斜著看過去的「厚度」不是整個半徑（半徑量的是水平最遠那顆角落），
+     照整個半徑退的話這一格會比另外三格小一圈。 */
+  { t: '④ 45°',        yaw: -0.9,         pitch: 0.42, w: 'r',          d: 'r', dm: 0.55 }
+];
+function shotPng() {
+  // 叫 REN 不叫 R：下面每一格的取景半徑也叫 R，同一支函式裡兩個 R 遲早出事
+  const REN = ENG.three.renderer, cv = REN.domElement, S = SHOT_CELL;
+  const keep = { yaw: ENG.cam.yaw, pitch: ENG.cam.pitch };
+  const out = document.createElement('canvas');
+  out.width = out.height = S * 2;
+  const g = out.getContext('2d');
+  g.fillStyle = '#d7e4ec';                       // 天空色：renderer 是透明的，底要自己鋪
+  g.fillRect(0, 0, out.width, out.height);
+  REN.setPixelRatio(1);
+  REN.setSize(S, S, false);                      // false ＝ 不要動畫面上那張 canvas 的 CSS 尺寸
+  ENG.three.camera.aspect = 1;
+  ENG.three.camera.updateProjectionMatrix();
+  ENG.orbit(0, 0);                               // 甩掉可能還在跑的鏡頭動畫，不然 yaw 會被它蓋回去
+  /* 每一格各自取景，不共用 fitCamera 那一次（v1.160）。fitCamera 收的「半徑」是水平方向的
+     **最大**半徑（獅身人面像身長是身寬的三倍），拿它去拍正面，主體只佔畫面兩成——
+     四宮格本來就是要看細節的，那樣等於白拍。所以先量出 x／z 兩個方向的半寬，
+     正面用 x、右側用 z、俯視是 x 配 z，只有 45° 才用整個半徑。
+     取景距離自己算就好：aspect 已經是 1，左右跟上下同一個半視角，把主體當一顆球即可。
+     視線也要抬到主體的腰——桌機的 fitCamera 是「看底部中心」（engine v1.55），
+     那會讓主體整個擠在上半格。 */
+  let hx = 1, hz = 1;
+  if (bp) for (const s of bp.slots) {
+    if (Math.abs(s.x) > hx) hx = Math.abs(s.x);
+    if (Math.abs(s.z) > hz) hz = Math.abs(s.z);
+  }
+  const halfV = ENG.three.camera.fov * Math.PI / 360;
+  const cy = bp ? bp.height * 0.5 : 4;
+  const span = k => (k === 'x' ? hx : k === 'z' ? hz : k === 'y' ? cy : bp ? bp.radius : 8);
+  g.textBaseline = 'middle';
+  SHOT_VIEWS.forEach((v, i) => {
+    ENG.cam.yaw = v.yaw; ENG.cam.pitch = v.pitch;
+    ENG.cam.ty = ENG.camTarget.ty = cy;
+    /* 1.2 ＝ 邊界留兩成。相機有一點俯角，主體上緣會被透視推得更靠近畫面頂——
+       1.08 的時候獅身人面像的頭巾差 25px 就切到了。
+       再加一段 span(v.d)：**取景要對準主體離鏡頭最近的那一面**，不是對準中心。
+       透視下近的那一面會被放大，只算到中心的話，愈厚的東西溢得愈多——
+       艾菲爾鐵塔的俯視就是這樣整根塔身衝出畫面（它高 60 幾格，俯視的「厚度」就是那個高度）。 */
+    const R = Math.max(span(v.w), v.h ? span(v.h) : cy) * 1.2 + 1.5;
+    ENG.cam.dist = ENG.camTarget.dist = R / Math.sin(halfV) + span(v.d) * (v.dm || 1);
+    ENG.updateCamera(0);                         // dt = 0：只換算相機位置，不做任何緩動
+    ENG.render();
+    const dx = (i % 2) * S, dy = Math.floor(i / 2) * S;
+    g.drawImage(cv, dx, dy, S, S);
+    g.font = '600 21px "Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif';
+    g.fillStyle = 'rgba(20,30,40,.66)';
+    g.fillRect(dx + 12, dy + 12, g.measureText(v.t).width + 22, 32);
+    g.fillStyle = '#fff';
+    g.fillText(v.t, dx + 23, dy + 29);
+  });
+  // 四格之間畫條線：不分格的話四張圖會黏成一片，看不出是四個方向
+  g.strokeStyle = 'rgba(20,30,40,.38)'; g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(S, 0); g.lineTo(S, out.height);
+  g.moveTo(0, S); g.lineTo(out.width, S);
+  g.stroke();
+  // 還原：resize() 會把 pixelRatio、緩衝區尺寸、aspect 一起設回去，並照 lastFit 重新取景
+  ENG.cam.yaw = keep.yaw; ENG.cam.pitch = keep.pitch;
+  ENG.resize();
+  /* data: URL 直接掛 <a download> 有些瀏覽器會擋，轉成 blob 最保險（file:// 也通） */
+  out.toBlob(b => {
+    const href = URL.createObjectURL(b);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = (bp ? bp.name : '藍圖') + '-' + (bp ? bp.slots.length : 0) + '塊-四視圖.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 4000);
+  }, 'image/png');
+  $('shot').textContent = '已下載 ✓';
+  setTimeout(() => { $('shot').textContent = '下載四視圖'; }, 1600);
+}
+$('shot').addEventListener('click', shotPng);
+
+/* 下載 .js：貼上來的藍圖存成檔案。做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，
+   滿意的那一版就在貼上框裡，但要留下來還得自己選取、複製、開編輯器、貼上、存檔——
+   這顆按鈕把那五步收成一步。存出來的就是貼進來的那段（圍籬已經清掉、檔名那行留著）。
+   內建與 blueprints/ 裡的藍圖本來就有檔案，所以選到那些時按鈕是灰的。 */
+function currentSrc() {
+  const sh = SHAPES[+$('shape').value];
+  return sh ? pastedSrc.get(sh.n) : null;
+}
+function syncSave() { $('save').disabled = !currentSrc(); }
+function saveJs() {
+  const src = currentSrc();
+  if (!src) return;
+  const href = URL.createObjectURL(
+    new Blob([src.code.replace(/\s*$/, '') + '\n'], { type: 'text/javascript;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = src.file;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
+  $('save').textContent = '已下載 ✓';
+  setTimeout(() => { $('save').textContent = '下載 .js'; }, 1600);
+}
+$('save').addEventListener('click', saveJs);
+
+/* ── 產生 list.js ─────────────────────────────────────────
+   存了 .js 進 blueprints/ 之後還得自己把檔名加進 list.js，忘了加就等於沒放進來
+   （檔案在那裡、遊戲卻看不到，而且不會有任何錯誤訊息）。這一段把那件事收成
+   「掃一下資料夾 → 勾一勾 → 下載」。
+
+   為什麼要按一次「選資料夾」而不是自己去讀：file:// 讀不到資料夾內容——
+   fetch 會被 CORS 擋掉，一支一支去試載入又會在 console 留一堆 404，
+   list.js 這份清單本來就是為了這件事才存在的。<input webkitdirectory> 是瀏覽器
+   唯一肯交出檔名清單的路，選了不會上傳任何東西，只是在這一頁讀到檔名而已。
+
+   抬頭那段註解跟 blueprints/list.js 現在那份逐字相同：產出來的檔案要能直接覆蓋回去，
+   而不是每產一次就把說明洗掉一次（e2e 有一條測試守著兩邊一致）。 */
+const LIST_HEAD = `/* 自訂藍圖的檔案清單。
+   新增一份藍圖 = 在 blueprints/ 放一支 .js，然後把檔名加進這個陣列
+   （藍圖預覽.html 的「產生 list.js」會掃資料夾直接產一份新的，不必自己編輯）。
+
+   為什麼要這份清單：整個遊戲是用 file:// 直接開的（不架伺服器），
+   而 file:// 沒有辦法列出資料夾內容——fetch 會被 CORS 擋掉，
+   一支一支去試載入又會在 console 留下一堆 404。所以檔名得自己列。
+
+   順序＝這些自訂藍圖之間的先後（它們一起排在選單最前面，內建 48 座在後）。 */
+`;
+
+/* 掃過資料夾之後就以資料夾為準（掃到什麼就是什麼，舊清單列了但檔案不在的不再出現——
+   那種檔名留著只會產出一份載入時 404 的 list.js）。還沒掃之前列的是
+   「現在載進來的 list.js」＋「這一頁貼進來的」。 */
+let scanned = null;
+const listOn = new Map();          // 檔名 → 勾了沒。重畫時記得住使用者的取捨
+
+function listCand() {
+  if (scanned) return scanned.slice();
+  const out = (window.BP_FILES || []).slice();
+  for (const s of pastedSrc.values()) if (out.indexOf(s.file) < 0) out.push(s.file);
+  return out;
+}
+/* 檔名是從檔案系統與貼上的文字撈來的，不是我們給的，所以進 HTML 前要跳脫 */
+function esc(t) {
+  return String(t).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+function tagOf(f) {
+  const inList = (window.BP_FILES || []).indexOf(f) >= 0;
+  if (inList) return '';
+  return scanned ? '新的' : '這一頁貼上的';
+}
+function renderList() {
+  const files = listCand();
+  for (const f of files) if (!listOn.has(f)) listOn.set(f, true);      // 預設全選
+  $('files').innerHTML = files.length
+    ? files.map(f => '<label><input type="checkbox" data-f="' + esc(f) + '"' +
+        (listOn.get(f) ? ' checked' : '') + '><span>' + esc(f) + '</span><em>' +
+        tagOf(f) + '</em></label>').join('')
+    : '<div class="hint">一支自訂藍圖都沒有。放 .js 進 blueprints/ 之後再掃一次。</div>';
+  const on = files.filter(f => listOn.get(f)).length;
+  $('allOn').textContent = on === files.length && files.length ? '全不選' : '全選';
+  $('dlList').disabled = !files.length;
+  $('listMsg').textContent =
+    (scanned ? '掃到 ' + scanned.length + ' 支藍圖 .js（list.js 本身不算）'
+             : '還沒掃資料夾，先列現在的 list.js ＋ 這一頁貼上的') +
+    '，勾了 ' + on + ' 支。下載後直接覆蓋 blueprints/list.js。';
+}
+$('files').addEventListener('change', e => {
+  if (!e.target.dataset.f) return;
+  listOn.set(e.target.dataset.f, e.target.checked);
+  renderList();
+});
+$('allOn').addEventListener('click', () => {
+  const files = listCand(), to = $('allOn').textContent === '全選';
+  for (const f of files) listOn.set(f, to);
+  renderList();
+});
+
+/* 資料夾裡的檔案 → 清單。抽成一支純函式：e2e 才驗得到「選錯成整包根目錄」那條路
+   （那要有真的 webkitRelativePath，用 setInputFiles 餵不出來）。 */
+function bpFilesFrom(rel) {
+  /* 使用者可能選到整包的根目錄而不是 blueprints/。看得到 blueprints/ 這一層
+     就只收它底下的，否則收全部——不然會把 src/game.js 那些也列進來。 */
+  const inBp = rel.filter(p => p.indexOf('blueprints/') === 0);
+  const list = (inBp.length ? inBp.map(p => p.slice('blueprints/'.length)) : rel)
+    .filter(p => /\.js$/i.test(p) && p !== 'list.js');
+  /* 舊清單的順序有意義（＝這幾座在選單裡的先後），所以本來就在的照舊排前面 */
+  const was = (window.BP_FILES || []).filter(f => list.indexOf(f) >= 0);
+  return was.concat(list.filter(f => was.indexOf(f) < 0)
+                        .sort((a, b) => a.localeCompare(b, 'zh-Hant')));
+}
+$('scan').addEventListener('click', () => $('dir').click());
+$('dir').addEventListener('change', e => {
+  scanned = bpFilesFrom([...e.target.files].map(f => {
+    /* webkitRelativePath 的第一段是使用者選的那個資料夾自己的名字，剝掉。
+       拿不到相對路徑時（有些瀏覽器只給得出檔名）就用檔名。 */
+    const p = f.webkitRelativePath || '';
+    return p ? p.split('/').slice(1).join('/') : f.name;
+  }));
+  e.target.value = '';               // 同一個資料夾再選一次也要能觸發 change
+  renderList();
+});
+
+function listText() {
+  const files = listCand().filter(f => listOn.get(f));
+  return LIST_HEAD + 'var BP_FILES = [' +
+    (files.length ? '\n' + files.map(f =>
+      "  '" + f.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'").join(',\n') + '\n' : '') +
+    '];\n';
+}
+$('dlList').addEventListener('click', () => {
+  const href = URL.createObjectURL(new Blob([listText()], { type: 'text/javascript;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = 'list.js';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
+  $('dlList').textContent = '已下載 ✓';
+  setTimeout(() => { $('dlList').textContent = '下載 list.js'; }, 1600);
+});
+
+/* 「只看輪廓」＝把草地那三層藏起來。引擎沒有給那幾顆網格取名字，
+   但上面已經把其他東西全餵空的了，所以「現在還看得見、又不是積木的網格」
+   就是草皮／切邊／土層這三顆。開場記下來，之後只切它們。 */
+const GROUND = ENG.three.scene.children.filter(
+  o => o.isMesh && o !== ENG.three.blockMesh && o.visible);
+$('wire').addEventListener('change', e => {
+  for (const o of GROUND) o.visible = !e.target.checked;
+});
+
+let drag = null;
+$('cv').addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; });
+window.addEventListener('pointerup', () => { drag = null; });
+window.addEventListener('pointermove', e => {
+  if (!drag) return;
+  ENG.orbit(e.clientX - drag.x, e.clientY - drag.y);
+  drag = { x: e.clientX, y: e.clientY };
+});
+$('cv').addEventListener('wheel', e => {
+  ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9); e.preventDefault();
+}, { passive: false });
+
+/* ── 主迴圈：只有鏡頭在動，積木擺一次就不用再算 ───────────── */
+let last = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - (last || now)) / 1000);
+  last = now;
+  if ($('spin').checked) ENG.cam.yaw += dt * 0.16;
+  ENG.updateCamera(dt);
+  ENG.render();
+}
+
+build();
+syncSave();
+renderList();
+requestAnimationFrame(frame);
+
+/* ── 從「AI 藍圖產生器」交接過來的一版（後端版才有的那一頁）────
+   那一頁只給得出靜態四視圖，想拖著轉、想比 1800／9000 兩檔、想跑體檢還是得來這裡。
+   它把程式碼放進 localStorage 這個鍵再開這一頁，這裡開場自動貼上並預覽，
+   省掉「複製 → 切頁 → 貼上 → 按預覽」四步。讀完就清掉，不留過期資料。
+
+   用 localStorage 不用 sessionStorage：window.open 開出來的新分頁雖然會繼承一份
+   sessionStorage，但那份是**複製**、而且 noopener 之類的情況下不保證，跨分頁不可靠。
+   這一段刻意放在 build() 之後：它會自己再 build 一次，不必跟開場那次搶。 */
+const HANDOFF_KEY = 'block-builders/handoff';
+try {
+  const hand = localStorage.getItem(HANDOFF_KEY);
+  if (hand) {
+    localStorage.removeItem(HANDOFF_KEY);
+    $('paste').value = hand;
+    $('load').click();                 // 走跟人工貼上完全同一條路（importBlueprint）
+  }
+} catch (e) { /* 無痕模式讀 localStorage 會丟例外，那就當沒有交接 */ }
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36414.22 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Block-builders", "Block-builders\Block-builders.csproj", "{6234B6EE-060E-4B42-9CE7-7A17C8EFC271}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6234B6EE-060E-4B42-9CE7-7A17C8EFC271}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6234B6EE-060E-4B42-9CE7-7A17C8EFC271}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6234B6EE-060E-4B42-9CE7-7A17C8EFC271}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6234B6EE-060E-4B42-9CE7-7A17C8EFC271}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {B96671D5-2832-4C2C-A153-53C4DD2339C8}
+	EndGlobalSection
+EndGlobal

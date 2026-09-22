@@ -1,0 +1,1206 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AI 藍圖產生器 · 積木小人</title>
+<!--
+  這一頁是後端版才有的第三個工作台，跟另外兩頁的分工：
+    index.html      玩（蓋、拆）
+    藍圖預覽.html   人工做藍圖：看樣子、按體檢、複製報告貼給 AI
+    藍圖產生器.html  這一頁：說一句要做什麼 → 看四視圖 → 不像就給意見再跑一輪
+
+  流程刻意是「半自動」：
+    · 蓋不起來（體檢有必修）→ 伺服器自己重跑，不打擾使用者。那有客觀門檻。
+    · 蓋起來了 → 停下來把四視圖給使用者看。像不像沒有任何一條檢查看得出來
+      （說明書第 7 節），所以判斷的人是使用者，不是模型自己。
+
+  跟預覽頁不同，這一頁**一定要走 http://（伺服器）**，不能用 file:// 開——
+  它做的每一件事都在後端（呼叫 Gemini、跑 node 體檢與四視圖、寫檔、重產 list.js）。
+  樣式刻意跟 藍圖預覽.html 同一套色票與圓角，讓兩頁看起來是同一組工具。
+-->
+<style>
+  :root{--ink:#2b2b2b;--card:rgba(255,255,255,.94);--line:#dcd7cc;--acc:#e8833a}
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;
+    font:14px/1.5 "Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;color:var(--ink)}
+  body{background:linear-gradient(#bcd3e0,#e7eef2);background-attachment:fixed;padding:18px 14px 48px}
+  .wrap{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+  .card{background:var(--card);border-radius:16px;padding:14px 16px;
+    box-shadow:0 8px 26px rgba(20,30,40,.18);backdrop-filter:blur(3px)}
+  h1{margin:0;font-size:19px}
+  h2{margin:0;font-size:16px}
+  .sub{font-size:12px;opacity:.62;margin-top:3px}
+  .head{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
+  .head > div:first-child{flex:1;min-width:190px}
+  label.lb{display:block;font-size:12.5px;opacity:.78;margin:10px 0 4px}
+  textarea{width:100%;padding:8px 9px;border:1px solid var(--line);
+    border-radius:9px;background:#fff;font:inherit;resize:vertical}
+  #desc{height:92px}
+  #fb{height:78px}
+  #code{height:220px;font:12px/1.55 ui-monospace,"Cascadia Mono",Consolas,monospace;white-space:pre}
+  .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  button{flex:1;padding:8px 12px;border:1px solid var(--line);border-radius:9px;
+    background:#fff;font:inherit;cursor:pointer;white-space:nowrap}
+  button:hover:not(:disabled){background:#f4efe7}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
+  button.ok{background:#4f8f3f;border-color:#4f8f3f;color:#fff;font-weight:700}
+  button:disabled{opacity:.42;cursor:default}
+  .btns a{flex:1;display:flex;align-items:center;justify-content:center;padding:8px 12px;
+    border:1px solid var(--line);border-radius:9px;background:#fff;text-decoration:none;
+    color:var(--ink);white-space:nowrap}
+  .btns a:hover{background:#f4efe7}
+  .pill{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:99px;
+    border:1px solid var(--line);background:#fff;margin:0 4px 4px 0}
+  .pill.bad{border-color:#c8534a;color:#a5372f}
+  .pill.ok{border-color:#5e9a4e;color:#3f7a34}
+  /* 模型下拉長得跟 pill 一樣，只是可以點開。font 要自己指定——select 不繼承 */
+  .pill select{font:inherit;font-size:11.5px;border:0;background:none;padding:0;margin:0;
+    color:inherit;cursor:pointer}
+  .drop{border:1.5px dashed var(--line);border-radius:12px;padding:12px;text-align:center;
+    font-size:12.5px;opacity:.8;background:#fff8;cursor:pointer}
+  .drop.on{border-color:var(--acc);background:#fff3e6}
+  .thumbBox{display:none;align-items:center;gap:10px;margin-top:8px}
+  .thumbBox img{max-width:112px;max-height:112px;border-radius:9px;border:1px solid var(--line)}
+  #note{font-size:13px;line-height:1.6;white-space:pre-wrap}
+  #note.ok{color:#3f7a34}
+  #note.warn{color:#a5641c}
+  #note.bad{color:#a5372f}
+  /* 四視圖：這一頁的主角，所以給它整個寬度。點一下開原圖 1024×1024 */
+  #shot{display:block;width:100%;border:1px solid var(--line);border-radius:11px;margin-top:10px}
+  details{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden;margin-top:8px}
+  details > summary{cursor:pointer;padding:7px 10px;font-size:12.5px;list-style:none}
+  details > summary::-webkit-details-marker{display:none}
+  details pre{margin:0;padding:10px;border-top:1px solid var(--line);
+    font:11.5px/1.5 ui-monospace,"Cascadia Mono",Consolas,monospace;
+    white-space:pre;overflow-x:auto;background:#fcfbf8;max-height:420px;overflow-y:auto}
+  /* 自我對照那份清單：一條一列，前面一個勾選框。**不是 details pre**——那一條是給體檢報告
+     用的（等寬字 ＋ white-space:pre，因為裡面有三張對齊的 ASCII 輪廓圖）。 */
+  #diff{margin:0;padding:4px 10px;border:1px solid var(--line);border-radius:10px;
+    background:#fffdf5;font-size:12.5px;line-height:1.55;max-height:320px;overflow-y:auto}
+  #diff label{display:flex;gap:7px;align-items:flex-start;padding:6px 1px;cursor:pointer}
+  #diff label + label{border-top:1px dashed var(--line)}
+  #diff input{margin:2px 0 0;flex:0 0 auto}
+  #diff span{flex:1;overflow-wrap:break-word}
+  /* 拆不出一條一條時（例如它只回「都對得上」）退回整段顯示 */
+  #diff .whole{padding:6px 1px;white-space:pre-wrap;overflow-wrap:break-word}
+  details .inner{border-top:1px solid var(--line);padding:10px}
+  /* 版本列：每一版一張縮圖，點了回到那一版（可以從舊版再分岔出去）。
+     候選列（#candRow）長一樣，只是那一排是「同一版的幾個 sample」。 */
+  #vers,#candRow{display:flex;gap:8px;overflow-x:auto;padding:2px}
+  .ver{flex:0 0 auto;width:104px;border:2px solid var(--line);border-radius:10px;
+    background:#fff;padding:4px;cursor:pointer;text-align:center;font-size:11.5px}
+  .ver.on{border-color:var(--acc);box-shadow:0 0 0 3px rgba(232,131,58,.18)}
+  .ver img{width:100%;border-radius:6px;display:block}
+  .ver .ph{width:100%;aspect-ratio:1;border-radius:6px;background:#f0ece4;
+    display:flex;align-items:center;justify-content:center;opacity:.5;font-size:18px}
+  .ver b{display:block;margin-top:3px;font-weight:700}
+  .files{font-size:12px;line-height:1.9;opacity:.85;max-height:150px;overflow:auto}
+  /* 產生紀錄：一列一份，縮圖＋當初打的描述。點了載回上面的工作區 */
+  #hist{max-height:420px;overflow-y:auto}
+  .hrow{display:flex;gap:9px;align-items:flex-start;padding:7px;border:1px solid var(--line);
+    border-radius:10px;background:#fff;margin-bottom:7px;cursor:pointer;text-align:left}
+  .hrow:hover{background:#f4efe7}
+  .hrow img,.hrow .ph{flex:0 0 auto;width:64px;height:64px;border-radius:7px;
+    border:1px solid var(--line);object-fit:cover}
+  .hrow .ph{background:#f0ece4;display:flex;align-items:center;justify-content:center;opacity:.5}
+  .hrow .m{flex:1;min-width:0}
+  .hrow .d{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hrow .t{font-size:11.5px;opacity:.6;margin-top:2px}
+  .spin{display:none;align-items:center;gap:9px;font-size:13px;margin-top:10px}
+  .spin.on{display:flex}
+  .dot{flex:0 0 auto;width:11px;height:11px;border-radius:50%;background:var(--acc);
+    animation:pulse 1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card">
+    <div class="head">
+      <div>
+        <h1>🤖 AI 藍圖產生器</h1>
+        <div class="sub">說一句要做什麼 → 看四視圖 → 不像就給意見再跑一輪。
+          蓋不起來（體檢有必修）伺服器會自己重跑，不用管。</div>
+      </div>
+      <div class="btns" style="margin:0;flex:0 0 auto">
+        <a href="index.html">🎮 開遊戲</a>
+        <a href="藍圖預覽.html">🔍 預覽頁</a>
+      </div>
+    </div>
+    <div id="env" style="margin-top:10px"></div>
+  </div>
+
+  <!-- ── 1. 目標 ─────────────────────────────────────────── -->
+  <div class="card">
+    <h2>1 · 要做什麼</h2>
+    <label class="lb" for="desc">越具體越好：從正面看是什麼形狀、哪三樣東西讓人一眼認出它</label>
+    <textarea id="desc" spellcheck="false"
+      placeholder="例：一個馬克杯。正面看是圓筒，右邊一個 C 形握把；側面看杯口比杯底寬一點；三樣識別物是握把、杯口那圈厚邊、杯身上一條橫向色帶。"></textarea>
+
+    <label class="lb">參考圖（可不給。給了「像不像」會準很多，每一輪都會一起送給 AI）</label>
+    <div class="drop" id="drop">把圖片拖進來，或點一下選檔案<br>
+      <b>可以一次給多張</b>：正面一張、側面一張最有用——只給正面的話，側面是 AI 自己編的。
+      最多 4 張，單張上限 8 MB（PNG／JPEG／WebP）</div>
+    <input type="file" id="file" multiple accept="image/png,image/jpeg,image/webp,image/heic,image/heif" class="hide">
+    <div id="refList"></div>
+    <div id="refSw" class="sub hide" style="margin-top:6px"></div>
+
+    <div class="btns">
+      <button id="go" class="primary">✨ 產生第一版</button>
+    </div>
+    <div class="spin" id="spin"><span class="dot"></span><span id="spinMsg"></span></div>
+  </div>
+
+  <!-- ── 2. 目前這一版 ───────────────────────────────────── -->
+  <div class="card hide" id="cur">
+    <div class="head">
+      <div><h2 id="curTitle">2 · 這一版</h2>
+        <div class="sub" id="curSub">四視圖：左上正面（−z）、右上右側（+x）、左下俯視、右下 45°。點圖看原圖。</div></div>
+    </div>
+    <div id="note" style="margin-top:8px"></div>
+    <div id="usage" class="sub hide" style="margin-top:6px"></div>
+
+    <!-- 同一輪跑出來的幾份：自動打磨的「前／後」，或（Candidates > 1 時）並行的幾個候選。
+         像不像沒有客觀門檻，所以擺出來讓人自己比，而不是讓模型說哪個比較像。 -->
+    <div id="cands" class="hide" style="margin-top:10px">
+      <div class="sub" style="margin-bottom:6px">同一輪的幾份結果（點一下換成那一份）</div>
+      <div id="candRow"></div>
+    </div>
+
+    <a id="shotLink" target="_blank" rel="noopener"><img id="shot" alt="四視圖"></a>
+    <div id="noShot" class="sub hide" style="margin-top:8px"></div>
+
+    <!-- 自我對照：AI 拿它開工時寫下的設計（藍圖開頭那幾行註解：正面／側面／三樣識別物／
+         部件清單）加上參考圖，逐條比對上面那張四視圖，列出「說好要有、圖上卻看不到」的。
+         補的是說明書第 5 節第 6 項那個步驟——後端模式把它剝掉之後一直沒有東西接手。
+
+         **只比形狀與部件，不比顏色**：四視圖是在遊戲場景裡拍的，顏色被光照與霧去飽和了
+         （實測藍圖宣告 #fcda78 亮黃，拍出來是 #838b7a 灰綠），照圖評色會叫它去改一份
+         本來就正確的 pal。
+
+         這一段**不改任何東西**：像不像還是你看圖決定，按鈕只是把清單填進意見框省打字。 -->
+    <div id="diffBox" class="hide" style="margin-top:10px">
+      <div class="sub" style="margin-bottom:5px">🔎 自我對照：拿它開工時寫下的設計比對上面那張圖（只比形狀與部件，不比顏色）</div>
+      <div id="diff"></div>
+      <!-- 預設只勾前兩條：六條一起改的實測結果是一條都沒改好，還多出新問題。
+           但**哪一條最不像由你決定**——清單是模型自己排的，它排第一的那條可能根本做不出來
+           （實測「中央八角切角」就是），所以全部列出來讓你自己勾。 -->
+      <div class="sub" style="margin:2px 0 0">勾這一輪要它改的（預設兩條。一次給太多它會顧此失彼，而且容易把沒提到的地方改壞）</div>
+      <div class="btns" style="margin-top:8px">
+        <button id="useDiff">📝 拿勾選的去改一版</button>
+      </div>
+    </div>
+
+    <details id="repBox"><summary>📋 體檢報告（塊數、尺寸、配色、連通性、字元輪廓圖）▾</summary>
+      <pre id="rep"></pre></details>
+    <details id="codeBox"><summary>📄 藍圖程式 ▾</summary>
+      <div class="inner"><textarea id="code" spellcheck="false"></textarea></div></details>
+    <details id="triesBox" class="hide"><summary id="triesSum"></summary>
+      <div class="inner" id="tries"></div></details>
+
+    <div class="btns">
+      <button id="accept" class="ok">✅ 就這個，收進遊戲</button>
+      <button id="again" class="primary">🔁 再改一版</button>
+    </div>
+    <div class="btns" style="margin-top:8px">
+      <button id="open3d">🔍 在預覽頁打開這一版</button>
+      <button id="saveFile">📁 另存成 blueprints/ 檔案</button>
+    </div>
+    <div class="btns" style="margin-top:8px">
+      <button id="dl">💾 下載 .js</button>
+      <button id="copy">📋 複製</button>
+    </div>
+    <div class="sub" style="margin-top:8px">
+      上面那張是**靜態圖**（也是 AI 看到的同一張）。想拖著轉、想比 1800／9000 兩檔長什麼樣、
+      想自己跑一次體檢，按 <b>在預覽頁打開這一版</b>——那邊是完整的工作台。<br>
+      <b>收進遊戲</b>＝存到這個瀏覽器，跟遊戲裡「📥 匯入建築」是同一處，回遊戲按 F5 就選得到，
+      也能在那邊匯出或刪除。清瀏覽資料或換瀏覽器就沒了。<br>
+      <b>另存成檔案</b>＝寫一支 .js 進 <code>blueprints/</code> 並重產 <code>list.js</code>，
+      跟著專案走、每個開這個站的人都看得到，整包拿去 <code>file://</code> 開也在。
+    </div>
+  </div>
+
+  <!-- ── 3. 再改一版 ─────────────────────────────────────── -->
+  <div class="card hide" id="fbCard">
+    <h2>3 · 哪裡不像？</h2>
+    <div class="sub">這一輪 AI 會拿到：你的意見 ＋ 目前這份藍圖 ＋ 它的體檢報告 ＋ 上面那張四視圖
+      ＋ 原本的描述與參考圖。不會帶前面幾輪的來回。</div>
+    <label class="lb" for="fb">意見（留空就讓它自己照四視圖判斷）</label>
+    <textarea id="fb" spellcheck="false"
+      placeholder="例：握把太小而且黏在杯身上看不出是握把，要往外伸出去；杯口那圈厚邊不見了；整體太瘦，杯身要更矮胖。"></textarea>
+
+    <label class="lb">這一輪補一張圖（可不給，例如你圈出哪裡要改）</label>
+    <div class="drop" id="fbDrop">把圖片拖進來，或點一下選檔案</div>
+    <input type="file" id="fbFile" accept="image/png,image/jpeg,image/webp,image/heic,image/heif" class="hide">
+    <div class="thumbBox" id="fbThumbBox">
+      <img id="fbThumb" alt="補充圖預覽">
+      <div>
+        <div id="fbThumbName" style="font-size:12.5px"></div>
+        <button type="button" id="fbRm" style="margin-top:6px;flex:0 0 auto">移除</button>
+      </div>
+    </div>
+
+    <div class="btns">
+      <button id="send" class="primary">🚀 跑這一輪</button>
+      <button id="cancel">取消</button>
+    </div>
+  </div>
+
+  <!-- ── 版本 ────────────────────────────────────────────── -->
+  <div class="card hide" id="versCard">
+    <h2>版本</h2>
+    <div class="sub">點一下回到那一版（可以從舊版再分岔出去改）。存檔存的是你現在選的這一版。</div>
+    <div id="vers" style="margin-top:9px"></div>
+  </div>
+
+  <!-- ── 產生紀錄 ─────────────────────────────────────────
+       每一份產出都自動落地在伺服器的 history/ 底下。存在的理由：在此之前藍圖程式
+       只活在這一頁的 JavaScript 陣列裡，關掉分頁就沒了，只有四視圖 PNG 留著
+       （圖還在、程式不見了，實際踩過）。 -->
+  <div class="card">
+    <div class="head"><div><h2>產生紀錄</h2>
+      <div class="sub">每一份產出（含蓋不起來的）都自動存在伺服器上，關掉分頁也不會不見。
+        點一下把那一版載回上面的工作區。要清就刪專案裡的 <code>history/</code> 資料夾。</div></div>
+      <div class="btns" style="margin:0;flex:0 0 auto"><button id="reloadHist" style="flex:0 0 auto">重新讀取</button></div>
+    </div>
+    <div id="hist" style="margin-top:9px"></div>
+  </div>
+
+  <div class="card">
+    <div class="head"><div><h2>遊戲裡已匯入的（這個瀏覽器）</h2>
+      <div class="sub">跟遊戲「📥 匯入建築」那張清單同一份資料。要刪除或匯出去那邊做。</div></div>
+      <div class="btns" style="margin:0;flex:0 0 auto"><button id="reloadImp" style="flex:0 0 auto">重新讀取</button></div>
+    </div>
+    <div class="files" id="imps" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <div class="head"><div><h2>blueprints/ 檔案</h2>
+      <div class="sub">存成檔案的那些。存檔後 list.js 會自動重產，回遊戲按 F5 就選得到。</div></div>
+      <div class="btns" style="margin:0;flex:0 0 auto"><button id="reload" style="flex:0 0 auto">重新讀取</button></div>
+    </div>
+    <div class="files" id="files" style="margin-top:8px"></div>
+  </div>
+
+</div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+
+let refImgs = [];           // 目標的參考圖，最多 MAX_REF_IMAGES 張（每一輪都全部一起送）
+                            // [{file, orig, bin, px, url}]——bin/px 留著給 pickColors 一起算主色
+let refColors = [];         // 所有參考圖一起量出來的主色（文字送給 AI，見 pickColors）
+let fbImg = null;           // 這一輪補的圖
+let versions = [];          // [{n, name, fileName, code, report, warns, shotUrl, rounds, alts, inGame, inFile}]
+let cur = -1;               // 現在看的是第幾版（索引）
+let busy = false;
+let env = {};               // GET /api/blueprints 的內容（候選數、拍照檔位…）
+/* 使用者挑的旋鈕。**存在這裡而不是只存在 <select> 上**：那一排狀態 pill 是
+   loadEnv() 用 innerHTML 整塊重建的（存檔後會再跑一次），選好的值會跟著被洗掉。
+   空字串＝還沒挑過，照後端給的預設。送出時一律走下面那三支。
+   自動重跑那一輪的思考強度**故意沒有**對應的格子——它是這兩格降下去之後的保單
+   （漏參數的藍圖由它以 high 重修），放上來給人關掉等於讓下修變成沒有底。 */
+let pickedModel = '', pickedThink = '', pickedRevise = '';
+const modelNow  = () => pickedModel  || env.model || '';
+const thinkNow  = () => pickedThink  || env.thinkingLevel || '';
+const reviseNow = () => pickedRevise || env.reviseThinkingLevel || '';
+
+/* 做一個長得像 pill 的下拉。**只有一個選項時退回純文字**——不擺假的控制項。 */
+function pickHtml(id, opts, cur, tip) {
+  if (!opts || opts.length < 2) return esc(cur || (opts && opts[0]) || '');
+  return '<select id="' + id + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>'
+    + opts.map(o => '<option value="' + esc(o) + '"' + (o === cur ? ' selected' : '')
+                  + '>' + esc(o) + '</option>').join('')
+    + '</select>';
+}
+/* 「這一輪連體檢都過不了」時，卡片顯示的是那份壞掉的程式，但 cur 還指著上一個好版本。
+   不擋的話按存檔會拿壞掉的程式配上好版本的檔名存下去，所以用這個旗標把存檔擋掉。 */
+let failView = false;
+
+/* 「收進遊戲」＝寫進遊戲自己的匯入儲存。key 與資料格式都照 src/game-ui.js:534-567
+   （`block-builders/bp1`，內容是 [{file, code, names:[…]}]，存的是**原始碼**不是格子——
+   藍圖是一支會跟著建材檔位重畫的函式，存格子等於把它釘死在某一個大小）。
+   另外設計一套格式的話，同一份東西就有兩套解析要維護，而且遊戲那邊讀不到。
+   兩頁同源，所以這裡寫的就是遊戲那邊讀的。 */
+const IMPORT_KEY = 'block-builders/bp1';
+
+function readImports() {
+  try {
+    const t = localStorage.getItem(IMPORT_KEY);
+    if (!t) return [];
+    const p = JSON.parse(t);
+    return Array.isArray(p) ? p : [];
+  } catch (e) {
+    return null;            // 無痕模式讀 localStorage 會直接丟例外
+  }
+}
+
+/* names 只用來給遊戲那張清單當標籤、以及這裡判斷同名要不要換掉——真正的名字是
+   程式跑起來時 customBlueprint 收到的那個。使用者可能在「藍圖程式」框裡手改過 name，
+   所以優先從程式碼撈，撈不到才用這一版原本的名字。 */
+function nameOf(code, fallback) {
+  const m = /name\s*:\s*(['"])(.*?)\1/.exec(code || '');
+  return (m && m[2]) || fallback;
+}
+
+function saveToGame(v) {
+  const list = readImports();
+  if (list === null) throw new Error('讀不到這個瀏覽器的儲存空間（無痕模式會擋）。改用「另存成 blueprints/ 檔案」。');
+
+  const name = nameOf(v.code, v.name);
+  const entry = { file: v.fileName, code: v.code, names: [name] };
+  /* 同名的**換掉**而不是再加一筆：遊戲載入時對每一筆跑 importBlueprint，撞到自己已匯入的
+     同名那份會直接蓋掉（blueprints.js:4719-4726），所以留兩筆的結果是「匯入建築」那張
+     清單出現兩列同名、卻只有一座蓋得出來。換掉才跟遊戲自己的「再貼一次＝換一版」一致。 */
+  const i = list.findIndex(it => it && Array.isArray(it.names) && it.names.indexOf(name) >= 0);
+  if (i >= 0) list[i] = entry; else list.push(entry);
+
+  try { localStorage.setItem(IMPORT_KEY, JSON.stringify(list)); }
+  catch (e) { throw new Error('這個瀏覽器的儲存空間滿了，存不進去。改用「另存成 blueprints/ 檔案」。'); }
+  return { replaced: i >= 0, total: list.length };
+}
+
+function renderImports() {
+  const box = $('imps');
+  const list = readImports();
+  if (list === null) { box.textContent = '（讀不到瀏覽器儲存，無痕模式會擋）'; return; }
+  box.innerHTML = list.length
+    ? list.map((it, i) => (i + 1) + '. ' + esc((it.names || []).join('、') || it.file || '?')
+                          + ' <span style="opacity:.55">' + esc(it.file || '') + '</span>').join('<br>')
+    : '（這個瀏覽器還沒匯入任何藍圖）';
+}
+
+function esc(t) {
+  return String(t == null ? '' : t).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+/* ── 環境狀態 ─────────────────────────────────────────────
+   金鑰沒設、node／playwright 有問題這幾件事要在按之前就講清楚：
+   不然按下去等好幾分鐘才拿到一句 502，使用者不知道是自己描述寫得不好還是環境沒備齊。 */
+async function loadEnv() {
+  const box = $('env'), fl = $('files');
+  try {
+    const r = await fetch('api/blueprints');
+    const d = await r.json();
+    env = d;
+    /* 模型可以挑（清單是後端的白名單，見 GeminiOptions.Models）。
+       只有一個可挑的時候不要擺下拉，那只是個假的控制項。
+       挑過的值要在重建之後補回去，不然存完檔一跑 loadEnv 就跳回預設。 */
+    const models = Array.isArray(d.models) && d.models.length ? d.models : [d.model];
+    const levels = Array.isArray(d.thinkingLevels) ? d.thinkingLevels : [];
+    // 白名單改過（設定改了、頁面還開著）就別留舊的選擇，退回後端現在的預設
+    if (pickedModel && !models.includes(pickedModel)) pickedModel = '';
+    if (pickedThink && !levels.includes(pickedThink)) pickedThink = '';
+    if (pickedRevise && !levels.includes(pickedRevise)) pickedRevise = '';
+    const bits = ['<span class="pill">模型 '
+      + pickHtml('model', models, modelNow()) + '</span>'];
+    bits.push(d.hasApiKey ? '<span class="pill ok">API 金鑰已設定</span>'
+                          : '<span class="pill bad">還沒設 API 金鑰</span>');
+    if (d.candidates > 1) bits.push('<span class="pill">第一版產 ' + d.candidates + ' 個候選</span>');
+    bits.push('<span class="pill">四視圖 ' + (d.shotSlots || 3000).toLocaleString('en-US') + ' 塊</span>');
+    /* 思考分兩格：第一版一格、「再改一版／自動打磨」一格。
+       以前兩格相同時只印一個（那時是唯讀，那條斜線是雜訊）；**現在兩個都要一直在**，
+       不然值一樣的時候改版那個下拉會消失，就永遠調不動它了。
+       自動重跑那一輪不在這裡，理由見上面 pickedThink 那段。 */
+    if (d.thinkingLevel) bits.push('<span class="pill">思考 '
+      + pickHtml('think', levels, thinkNow(), '第一版那一輪。降過頭只是細節變少，看四視圖就看得出來')
+      + '／改版 '
+      + pickHtml('rthink', levels, reviseNow(),
+                 '「再改一版」與自動打磨那一輪。不建議調到 low：'
+               + '思考太低時它可能安靜地把你原本喜歡的部件簡化掉，而沒有任何一條檢查抓得到')
+      + '</span>');
+    bits.push('<span class="pill">現有藍圖 ' + d.names.length + ' 座</span>');
+    if (d.envError) bits.push('<span class="pill bad">體檢環境有問題</span>');
+    let html = bits.join('');
+    if (!d.hasApiKey)
+      html += '<div class="sub" style="margin-top:6px">把金鑰貼進這個檔案存起來就好（不必重啟）：'
+            + '<br><code>' + esc(d.apiKeyFile) + '</code>'
+            + '<br>金鑰去 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> 拿。</div>';
+    if (d.envError)
+      html += '<div class="sub" style="margin-top:6px;color:#a5372f">' + esc(d.envError) + '</div>';
+    box.innerHTML = html;
+    // innerHTML 重建之後才綁得到，而且要在這裡而不是用 onchange 屬性（CSP 友善）
+    if ($('model'))  $('model').onchange  = e => { pickedModel  = e.target.value; };
+    if ($('think'))  $('think').onchange  = e => { pickedThink  = e.target.value; };
+    if ($('rthink')) $('rthink').onchange = e => { pickedRevise = e.target.value; };
+    $('go').disabled = !d.hasApiKey;
+    /* 檔位要講出來：說明書寫著「上萬塊正是看得出像不像的那一檔」，
+       而在 3000 塊評像不像是在看它最不利的那一檔（實測皮卡丘在 3000 塊沒有手腳）。 */
+    if (d.shotSlots)
+      $('curSub').textContent = '四視圖（' + d.shotSlots.toLocaleString('en-US')
+        + ' 塊那一檔）：左上正面（−z）、右上右側（+x）、左下俯視、右下 45°。點圖看原圖。';
+
+    fl.innerHTML = d.files.length
+      ? d.files.map((f, i) => (i + 1) + '. ' + esc(f)).join('<br>')
+      : '（還沒有自訂藍圖）';
+  } catch (e) {
+    box.innerHTML = '<span class="pill bad">讀不到後端</span>'
+      + '<div class="sub" style="margin-top:6px">這一頁必須用 http:// 開（把站台跑起來），不能用 file:// 直接開。</div>';
+    fl.textContent = '—';
+  }
+}
+
+/* ── 上傳前處理：縮到合理大小，並且量出主色 ────────────────
+   **縮圖不是為了省 token。** Gemini 3 的圖片是按 mediaResolution 固定計價的
+   （一張 HIGH ＝ 1120 個 token），跟像素多少、檔案多大都無關——縮小只會讓模型
+   看不清楚而一個 token 都省不到。縮的目的只有一個：不要上傳一張手機拍的 8 MB 照片。
+   所以上限給 1024（跟四視圖同一個量級），已經夠小的就原檔送。
+
+   順手在同一趟 canvas 裡把**主色**量出來：說明書第 5 節只叫模型「抓圖片的 4–6 個主色」，
+   沒有任何東西驗證它抓對——實測產出裡皮卡丘的黃變成橄欖黃、樹懶變成水泥灰。
+   量好了用文字直接給，比叫它用眼睛估準得多，而且幾十個 token 而已。
+   任何一步失敗都退回「原檔、沒有主色」，不要讓一張怪圖擋住整個流程。 */
+const IMG_MAX_PX = 1024;
+const IMG_QUALITY = 0.90;
+
+/* 量主色：把圖畫成 64×64，每個通道砍到 4 bits（4096 桶）數次數。
+
+   **照數量取前 n 名是錯的**，那樣取出來是「同一片顏色的 n 個鄰居」。砍位數本來
+   就是要把漸層併成一桶，但併不乾淨：一大片白牆、草地或灰天空還是會攤在好幾個
+   相鄰的桶裡，於是前幾名全被它佔滿。實測 14 筆產生紀錄量到的那 8 個色，
+   去重之後只剩 **2–4 個**真的不同的色——中正紀念堂 8 個全是灰（真正的藍屋瓦
+   一個都沒進榜）、酷洛米量不到粉紅。而 prompt 那邊叫模型「主體照這幾個色來」，
+   結果就是整棟灰的紀念堂，註解還寫著「金色寶頂」。
+
+   所以改兩件事：
+   1. **候選池放大**——不是只看前 n 名，而是從所有夠大的桶由多到少一路往下走。
+      面積小卻認得出來的顏色（蝴蝶結、屋瓦、招牌、門）才排得進來。
+   2. **挑的時候要求彼此夠不同**——跟已挑的色距離小於 MIN_GAP 就跳過。
+   太小的桶跳掉（低於總數的 MIN_SHARE）：那是 JPEG 邊緣的雜訊，不是真的顏色。
+
+   **挑不滿 n 個就給少一點。** 整張圖真的只有兩個色系時，說 2 個比湊 8 個假的誠實——
+   而 prompt 會叫模型自己補小面積的識別色（見 BlueprintGenerator.Goal）。
+   全透明的像素跳掉（去背圖的背景）；不濾白色，因為濾了就分不出「白色的杯子」，
+   改成在 prompt 裡講明「可能包含背景色」讓模型自己判斷。 */
+const COLOR_MIN_GAP = 40;         // RGB 歐氏距離，滿刻度約 441
+const COLOR_MIN_SHARE = 0.0025;   // 佔比低於這個的桶不算一個顏色
+
+/* 分兩步是因為**參考圖可以有好幾張**：先各自數桶（binOf），再把所有張的桶加起來
+   一次挑（pickColors）。分開挑再合併會挑出一堆重複的色，而且各張的數量沒得比。
+   每張都取樣 64×64，所以不管原圖多大，每張的權重一樣。 */
+function binOf(g, w, h) {
+  try {
+    const d = g.getImageData(0, 0, w, h).data;
+    const bin = new Map();
+    let px = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] < 128) continue;
+      px++;
+      const k = (d[i] >> 4 << 8) | (d[i + 1] >> 4 << 4) | (d[i + 2] >> 4);
+      const e = bin.get(k);
+      if (e) { e.n++; e.r += d[i]; e.g += d[i + 1]; e.b += d[i + 2]; }
+      else bin.set(k, { n: 1, r: d[i], g: d[i + 1], b: d[i + 2] });
+    }
+    return { bin, px };
+  } catch (e) {
+    return { bin: new Map(), px: 0 };   // 跨來源的圖會讓 getImageData 丟例外（本機檔案理論上不會）
+  }
+}
+
+/** entries：binOf 的結果陣列（一張圖一個）。回傳挑好的 hex 清單，可能少於 n。 */
+function pickColors(entries, n) {
+  const all = new Map();
+  let total = 0;
+  for (const e of entries) {
+    if (!e || !e.px) continue;
+    total += e.px;
+    for (const [k, v] of e.bin) {
+      const o = all.get(k);
+      if (o) { o.n += v.n; o.r += v.r; o.g += v.g; o.b += v.b; }
+      else all.set(k, { n: v.n, r: v.r, g: v.g, b: v.b });
+    }
+  }
+  if (!total) return [];
+
+  const floor = Math.max(3, total * COLOR_MIN_SHARE);
+  const cand = [...all.values()].filter(e => e.n >= floor).sort((a, b) => b.n - a.n)
+    .map(e => [Math.round(e.r / e.n), Math.round(e.g / e.n), Math.round(e.b / e.n)]);
+
+  const pick = [];
+  for (const c of cand) {
+    if (pick.length >= n) break;
+    if (pick.some(p => Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]) < COLOR_MIN_GAP)) continue;
+    pick.push(c);
+  }
+  const hex = v => v.toString(16).padStart(2, '0');
+  return pick.map(c => '#' + hex(c[0]) + hex(c[1]) + hex(c[2]));
+}
+
+/* 回傳 { file, bin, px }：file 可能就是原檔（本來就夠小）；bin／px 是這一張的色桶，
+   留著給 pickColors 用——參考圖有好幾張時要把所有張的桶加起來一起挑。 */
+function prepImage(file) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    const fallback = () => { URL.revokeObjectURL(url); resolve({ file, bin: new Map(), px: 0 }); };
+    img.onload = () => {
+      try {
+        const long = Math.max(img.naturalWidth, img.naturalHeight);
+        const k = Math.min(1, IMG_MAX_PX / long);
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.naturalWidth * k));
+        c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        const g = c.getContext('2d');
+        g.imageSmoothingQuality = 'high';
+        g.drawImage(img, 0, 0, c.width, c.height);
+
+        // 主色在另一張小 canvas 上量（64×64 就夠，而且快）
+        const sc = document.createElement('canvas');
+        sc.width = sc.height = 64;
+        const sg = sc.getContext('2d');
+        sg.imageSmoothingQuality = 'high';
+        sg.drawImage(img, 0, 0, 64, 64);
+        const { bin, px } = binOf(sg, 64, 64);
+
+        if (k === 1) { URL.revokeObjectURL(url); resolve({ file, bin, px }); return; }
+        c.toBlob(blob => {
+          URL.revokeObjectURL(url);
+          if (!blob) { resolve({ file, bin, px }); return; }
+          const name = file.name.replace(/\.[^.]+$/, '') + '-' + c.width + 'x' + c.height + '.jpg';
+          const small = new File([blob], name, { type: 'image/jpeg' });
+          // 縮完反而變大就用原檔（極小的 PNG 轉 JPEG 有時會這樣）
+          resolve({ file: small.size < file.size ? small : file, bin, px });
+        }, 'image/jpeg', IMG_QUALITY);
+      } catch (e) { fallback(); }
+    };
+    img.onerror = fallback;
+    img.src = url;
+  });
+}
+
+/* ── 選圖 ─────────────────────────────────────────────────
+   拖放與點選的接線兩邊共用；參考圖是多張、補充圖是單張，所以各自渲染。 */
+function wireFiles(dropId, fileId, onFiles) {
+  const drop = $(dropId), file = $(fileId);
+  drop.addEventListener('click', () => file.click());
+  file.addEventListener('change', e => { onFiles(e.target.files); e.target.value = ''; });
+  ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('on'); }));
+  ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('on'); }));
+  drop.addEventListener('drop', e => onFiles(e.dataTransfer.files));
+}
+
+const sizeNote = (orig, f) => esc(orig.name) + '（' + Math.round(orig.size / 1024) + ' KB'
+  + (f !== orig ? ' → ' + Math.round(f.size / 1024) + ' KB、長邊 ' + IMG_MAX_PX + 'px' : '') + '）';
+
+/* 參考圖：最多 MAX_REF_IMAGES 張。**多張的用處是側面**——說明書要模型講出
+   「正面看是什麼形狀、側面看是什麼形狀」，只給一張正面照的話側面是它自己編的
+   （實測「亞洲商業中心」只給正面照，蓋出來的側牆與背牆是一整片空白）。
+   主色是**所有張一起**量的（見 pickColors），不是各張各量。 */
+const MAX_REF_IMAGES = 4;
+
+async function addRefs(files) {
+  const pics = [...(files || [])].filter(f => f && /^image\//.test(f.type));
+  if (!pics.length) { if (files && files.length) alert('那不是圖片檔。'); return; }
+
+  const room = MAX_REF_IMAGES - refImgs.length;
+  if (room <= 0) { alert('參考圖最多 ' + MAX_REF_IMAGES + ' 張，要換的話先移除一張。'); return; }
+  if (pics.length > room) alert('參考圖最多 ' + MAX_REF_IMAGES + ' 張，這次只收前 ' + room + ' 張。');
+
+  for (const orig of pics.slice(0, room)) {
+    const r = await prepImage(orig);
+    refImgs.push({ file: r.file, orig, bin: r.bin, px: r.px, url: URL.createObjectURL(r.file) });
+  }
+  renderRefs();
+}
+
+function renderRefs() {
+  refColors = pickColors(refImgs, 8);
+  const box = $('refList');
+  box.innerHTML = '';
+
+  refImgs.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'thumbBox';
+    row.style.display = 'flex';
+    const img = document.createElement('img');
+    img.src = r.url;
+    img.alt = '參考圖 ' + (i + 1);
+    const side = document.createElement('div');
+    side.innerHTML = '<div style="font-size:12.5px"><b>第 ' + (i + 1) + ' 張</b>　'
+      + sizeNote(r.orig, r.file) + '</div>';
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.textContent = '移除';
+    rm.style.marginTop = '6px';
+    rm.addEventListener('click', () => {
+      URL.revokeObjectURL(r.url);
+      refImgs.splice(i, 1);
+      renderRefs();
+    });
+    side.appendChild(rm);
+    row.appendChild(img); row.appendChild(side);
+    box.appendChild(row);
+  });
+
+  /* 挑不滿 8 個是正常的（整張圖只有兩個色系時就只有兩個色），所以把「量到幾個」寫出來，
+     不然看到兩個色塊會以為壞了。 */
+  const sw = $('refSw');
+  if (!refColors.length) { sw.classList.add('hide'); sw.innerHTML = ''; return; }
+  sw.classList.remove('hide');
+  sw.innerHTML = (refImgs.length > 1 ? refImgs.length + ' 張一起量到的主色：' : '主色：')
+    + refColors.map(c => '<span title="' + esc(c) + '" style="display:inline-block;width:15px;'
+        + 'height:15px;border-radius:3px;border:1px solid #0002;vertical-align:middle;'
+        + 'margin-right:3px;background:' + esc(c) + '"></span>').join('')
+    + '<span style="opacity:.6">（' + refColors.length + ' 個，會跟著送給 AI）</span>';
+}
+
+wireFiles('drop', 'file', addRefs);
+
+// 補充圖不量主色：那是「圈出哪裡要改」的圖，不是目標的配色來源
+wireFiles('fbDrop', 'fbFile', async files => {
+  const f = [...(files || [])].find(x => x && /^image\//.test(x.type));
+  if (!f) { if (files && files.length) alert('那不是圖片檔。'); return; }
+  const r = await prepImage(f);
+  fbImg = r.file;
+  $('fbThumb').src = URL.createObjectURL(fbImg);
+  $('fbThumbName').innerHTML = sizeNote(f, fbImg);
+  $('fbThumbBox').style.display = 'flex';
+});
+$('fbRm').addEventListener('click', () => {
+  fbImg = null; $('fbThumbBox').style.display = 'none'; $('fbThumb').removeAttribute('src');
+});
+
+/* ── 畫面 ───────────────────────────────────────────────── */
+function setNote(cls, msg) { const n = $('note'); n.className = cls; n.textContent = msg; }
+
+/* ── 候選 ───────────────────────────────────────────────────
+   同一句話並行跑出來的幾個版本。差距通常很大（同一個 prompt 不同 sample），
+   而「哪個比較像」沒有任何檢查看得出來，所以擺出來讓人挑。
+   點一下就把「這一版」的內容整組換成那個候選——包括程式、報告、四視圖。 */
+function renderCands(v) {
+  const box = $('cands'), row = $('candRow');
+  const list = (v && v.alts) || [];
+  if (list.length < 2) { box.classList.add('hide'); row.innerHTML = ''; return; }
+  box.classList.remove('hide');
+  row.innerHTML = '';
+  list.forEach((c, k) => {
+    const d = document.createElement('div');
+    d.className = 'ver' + (c.no === v.pickedNo ? ' on' : '');
+    d.title = c.message || '';
+    const tag = !c.ok ? ' ✘' : (c.warns && c.warns.length ? ' ⚠' + c.warns.length : ' ✔');
+    d.innerHTML = (c.shotUrl ? '<img src="' + esc(c.shotUrl) + '" alt="">' : '<div class="ph">—</div>')
+                // 標籤由後端給：並行候選是「候選 N」，自動打磨那兩份是「打磨前／打磨後」
+                + '<b>' + esc(c.label || ('候選 ' + c.no)) + tag + '</b>'
+                + (c.slots ? '<span style="opacity:.6">' + c.slots.toLocaleString('en-US') + ' 塊</span>' : '');
+    d.addEventListener('click', () => { if (!busy) useCandidate(k); });
+    row.appendChild(d);
+  });
+}
+
+function useCandidate(k) {
+  if (cur < 0) return;
+  const v = versions[cur], c = v.alts[k];
+  if (!c || c.no === v.pickedNo) return;
+  /* 換成另一份程式了，所以「已收進遊戲／已存成檔案」要跟著失效——
+     不然按鈕會顯示已存，實際上存的是另一個候選。 */
+  /* diff 也要一起歸零：那份對帳清單是對**後端挑的那一份**做的（打磨後那一版），
+     換成另一份之後它講的東西就對不上了——留著比沒有更糟。 */
+  Object.assign(v, {
+    pickedNo: c.no, name: c.name, fileName: c.fileName, code: c.code, report: c.report,
+    warns: c.warns || [], shotUrl: c.shotUrl, rounds: c.rounds || [], message: c.message,
+    inGame: false, inFile: false, diff: null
+  });
+  showVersion(cur);
+}
+
+/* 這一次花了多少。圖片是固定計價的（一張 ULTRA_HIGH ＝ 2240 個 token），
+   所以真正的大頭是說明書那兩萬多字——而它每輪逐字相同，隱式快取會自動打一折，
+   「快取命中」那個數字就是省下來的部分。 */
+function renderUsage(u) {
+  const el = $('usage');
+  if (!u || !u.calls) { el.classList.add('hide'); return; }
+  const k = n => (n || 0).toLocaleString('en-US');
+  el.classList.remove('hide');
+  el.textContent = '這一次呼叫 ' + u.calls + ' 次｜輸入 ' + k(u.prompt)
+    + '（快取命中 ' + k(u.cached) + '，那部分打一折）｜輸出 ' + k(u.output)
+    + (u.thoughts ? '（另有思考 ' + k(u.thoughts) + '）' : '')
+    + '｜估 US$' + (u.usd || 0).toFixed(4);
+}
+
+/* 把對照清單渲染成「一條一列 ＋ 勾選框」，預設勾前兩條。
+   為什麼要勾：實測公司大樓那六條原封不動一起送出去改一版，**一條都沒修好**，
+   還平白多出一圈屋頂簷口。但**哪一條最不像由使用者決定**——清單的順序是模型自己排的，
+   它排第一的那條可能根本做不出來（實測「中央八角切角」就是），所以全部列出來讓人自己勾。
+
+   格式：對照輪的輸出是一行一條、`·` 開頭（實測四組 23 條都是）。
+   拆不出任何一條就整段顯示（例如它只回「都對得上」那一行）。 */
+const DIFF_PRECHECK = 2;
+function renderDiff(text) {
+  const t = (text || '').trim();
+  const box = $('diff');
+  $('diffBox').classList.toggle('hide', !t);
+  box.innerHTML = '';
+  if (!t) { syncDiffBtn(); return; }
+
+  const rows = t.split('\n').map(s => s.trim()).filter(s => s.startsWith('·'));
+  if (!rows.length) {
+    const d = document.createElement('div');
+    d.className = 'whole';
+    d.textContent = t;
+    box.appendChild(d);
+  } else {
+    rows.forEach((r, i) => {
+      const lb = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = i < DIFF_PRECHECK;
+      cb.addEventListener('change', syncDiffBtn);
+      const sp = document.createElement('span');
+      sp.textContent = r;                       // 用 textContent，清單是模型產的字串
+      lb.append(cb, sp);
+      box.appendChild(lb);
+    });
+  }
+  syncDiffBtn();
+}
+
+/** 現在勾了哪幾條（原文，一行一條）。 */
+function pickedDiff() {
+  return [...$('diff').querySelectorAll('label')]
+    .filter(l => l.querySelector('input').checked)
+    .map(l => l.querySelector('span').textContent)
+    .join('\n');
+}
+
+/* 按鈕要講出「這一下會送幾條」，不然改了勾選看不出差別；一條都沒勾就按不下去。 */
+function syncDiffBtn() {
+  const whole = !!$('diff').querySelector('.whole');
+  const n = $('diff').querySelectorAll('label input:checked').length;
+  $('useDiff').disabled = busy || (!whole && n === 0);
+  $('useDiff').textContent = whole ? '📝 拿這段去改一版'
+    : n ? '📝 拿勾選的 ' + n + ' 條去改一版' : '📝 先勾一條';
+}
+
+function showVersion(i) {
+  cur = i;
+  failView = false;
+  const v = versions[i];
+  $('cur').classList.remove('hide');
+  $('curTitle').textContent = '2 · 第 ' + v.n + ' 版' + (v.name ? '「' + v.name + '」' : '');
+  setNote(v.warns.length ? 'warn' : 'ok', (v.warns.length ? '⚠ ' : '✔ ') + v.message);
+  renderUsage(v.usage);
+  renderCands(v);
+
+  if (v.shotUrl) {
+    $('shotLink').href = v.shotUrl;
+    $('shot').src = v.shotUrl;
+    $('shot').classList.remove('hide');
+    $('noShot').classList.add('hide');
+  } else {
+    $('shot').classList.add('hide');
+    $('noShot').classList.remove('hide');
+    $('noShot').textContent = '這一版的四視圖產不出來（多半是 playwright／chromium 的問題，看伺服器 log）。'
+                            + '像不像只能看報告裡那三張字元輪廓圖。';
+  }
+  // 自我對照的清單（舊紀錄、以及沒跑對照的那幾筆沒有這一格，那就不畫）
+  renderDiff(v.diff);
+
+  $('rep').textContent = v.report || '（沒有報告）';
+  $('code').value = v.code || '';
+
+  // 蓋不起來而自動重跑的那幾輪：預設收起來，要看才展開
+  const failed = (v.rounds || []).filter(r => r.fails.length || r.error || r.renamedFrom);
+  if (failed.length) {
+    $('triesBox').classList.remove('hide');
+    $('triesSum').textContent = '🔧 這一版前面有 ' + failed.length + ' 輪體檢沒過、已自動重跑 ▾';
+    $('tries').innerHTML = failed.map(r => {
+      const why = r.error ? esc(r.error)
+        : r.renamedFrom ? 'name「' + esc(r.renamedFrom) + '」撞號'
+        : r.fails.map(esc).join('<br>· ');
+      return '<div style="margin-bottom:8px"><b>第 ' + r.round + ' 輪</b><br>· ' + why + '</div>';
+    }).join('');
+  } else {
+    $('triesBox').classList.add('hide');
+  }
+
+  syncSaveBtns();
+  renderVers();
+}
+
+function syncSaveBtns() {
+  const v = cur >= 0 && !failView ? versions[cur] : null;
+  const has = !!(v && v.code);
+  $('accept').disabled = !has || (v && v.inGame);
+  $('accept').textContent = v && v.inGame ? '✔ 已收進遊戲' : '✅ 就這個，收進遊戲';
+  $('saveFile').disabled = !has || (v && v.inFile);
+  $('saveFile').textContent = v && v.inFile ? '✔ 已存成檔案' : '📁 另存成 blueprints/ 檔案';
+  /* 預覽頁那顆連「蓋不起來的那一份」也讓按：那一頁載不進去會自己講原因，
+     而看得到錯誤訊息比按不下去有用。所以只看框裡有沒有程式。 */
+  $('open3d').disabled = !$('code').value;
+}
+
+function renderVers() {
+  if (!versions.length) return;
+  $('versCard').classList.remove('hide');
+  const box = $('vers');
+  box.innerHTML = '';
+  versions.forEach((v, i) => {
+    const d = document.createElement('div');
+    d.className = 'ver' + (i === cur ? ' on' : '');
+    d.title = v.name || '';
+    const mark = (v.inGame ? ' 🎮' : '') + (v.inFile ? ' 📁' : '');
+    d.innerHTML = (v.shotUrl ? '<img src="' + esc(v.shotUrl) + '" alt="">' : '<div class="ph">—</div>')
+                + '<b>v' + v.n + mark + '</b>';
+    d.addEventListener('click', () => { if (!busy) showVersion(i); });
+    box.appendChild(d);
+  });
+}
+
+function setBusy(on, msg) {
+  busy = on;
+  $('spin').classList.toggle('on', on);
+  if (msg) $('spinMsg').textContent = msg;
+  ['go', 'accept', 'saveFile', 'open3d', 'again', 'send', 'cancel', 'useDiff']
+    .forEach(id => { $(id).disabled = on; });
+  if (!on) {
+    $('go').disabled = false;
+    if (versions.length) syncSaveBtns();
+  }
+  // 對照那顆的狀態不只看 busy，還看勾了幾條，所以不能只靠上面那個迴圈
+  syncDiffBtn();
+}
+
+/* ── 跑一輪 ─────────────────────────────────────────────── */
+async function run(url, fd, waitMsg) {
+  setBusy(true, waitMsg);
+  try {
+    const res = await fetch(url, { method: 'POST', body: fd });
+    const d = await res.json();
+    if (!res.ok) {
+      $('cur').classList.remove('hide');
+      setNote('bad', d.error || ('後端回 HTTP ' + res.status));
+      return null;
+    }
+    return d;
+  } catch (e) {
+    $('cur').classList.remove('hide');
+    setNote('bad', '呼叫後端失敗：' + e.message);
+    return null;
+  } finally {
+    setBusy(false);
+  }
+}
+
+function push(d, feedback) {
+  if (!d.ok) {
+    // 連體檢都過不了：把最後那版與每一輪的原因顯示出來，不進版本列、也不給存檔
+    failView = true;
+    $('cur').classList.remove('hide');
+    setNote('bad', d.message + '（這一份蓋不起來，沒有收進版本列。程式在下面「藍圖程式」裡，可以自己改）');
+    renderUsage(d.usage);          // 沒過關也花了錢，一樣要看得到
+    renderCands(null);
+    $('shot').classList.add('hide');
+    $('noShot').classList.add('hide');
+    $('diffBox').classList.add('hide');     // 蓋不起來就沒有四視圖，也就沒有對帳
+    $('rep').textContent = d.report || '（沒有報告）';
+    $('code').value = d.code || '';
+    const rs = d.rounds || [];
+    $('triesBox').classList.remove('hide');
+    $('triesSum').textContent = '🔧 ' + rs.length + ' 輪都沒過，每一輪的原因 ▾';
+    $('tries').innerHTML = rs.map(r => {
+      const why = r.error ? esc(r.error)
+        : r.renamedFrom ? 'name「' + esc(r.renamedFrom) + '」撞號'
+        : r.fails.map(esc).join('<br>· ');
+      return '<div style="margin-bottom:8px"><b>第 ' + r.round + ' 輪</b><br>· ' + why + '</div>';
+    }).join('');
+    syncSaveBtns();
+    return;
+  }
+  /* alts＝這一版的候選清單（只有一個就不會顯示那一排）。
+     pickedNo 是現在顯示的是哪一個——後端挑的是「提醒最少的那個」，使用者可以改。
+     哪一個是後端挑的要由後端講（d.pickedNo）：拿程式碼字串去比的話，
+     兩個候選剛好產出一樣的程式時會比中錯的那一個。 */
+  const alts = (d.candidates || []).slice();
+  versions.push({
+    n: versions.length + 1, name: d.name, fileName: d.fileName, code: d.code,
+    report: d.report, warns: d.warns || [], shotUrl: d.shotUrl, rounds: d.rounds || [],
+    message: d.message, feedback: feedback || '', inGame: false, inFile: false,
+    alts, pickedNo: d.pickedNo || (alts[0] ? alts[0].no : 0), usage: d.usage, diff: d.diff
+  });
+  showVersion(versions.length - 1);
+  $('fbCard').classList.add('hide');
+  $('cur').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  loadHistory();          // 伺服器剛剛記了一筆，把清單刷新
+}
+
+$('go').addEventListener('click', async () => {
+  const desc = $('desc').value.trim();
+  if (!desc && !refImgs.length) { $('cur').classList.remove('hide'); setNote('bad', '至少要給一段描述或一張參考圖。'); return; }
+  const fd = new FormData();
+  fd.append('description', desc);
+  // 每一張都用同一個 image 欄位重複 append，後端綁成 List<IFormFile>
+  for (const r of refImgs) fd.append('image', r.file, r.file.name);
+  if (refColors.length) fd.append('refColors', refColors.join('、'));
+  if (modelNow()) fd.append('model', modelNow());
+  if (thinkNow()) fd.append('think', thinkNow());
+  // 這一條也可能跑到自動打磨，那一輪走的是「改版」那一格
+  if (reviseNow()) fd.append('reviseThink', reviseNow());
+  const n = env.candidates || 1;
+  const d = await run('api/blueprints/generate', fd,
+    (n > 1 ? '同時產 ' + n + ' 個候選…' : '產生第一版…')
+    + '每個都要讀完說明書、跑體檢、再算四視圖（'
+    + (env.shotSlots || 3000).toLocaleString('en-US') + ' 塊那一檔）。'
+    + '蓋不起來會自動重跑，可能要幾分鐘。');
+  if (d) push(d, '');
+});
+
+$('again').addEventListener('click', () => {
+  $('fbCard').classList.remove('hide');
+  $('fbCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  $('fb').focus();
+});
+/* 「拿勾選的去改一版」：把勾選那幾條填進意見框、順手把卡片打開——**不會自己送出**。
+   刻意不做成「按一下就自動跑下一輪」：那份清單是模型自己列的，採不採用、要不要先改幾個字，
+   是使用者的判斷。像不像的決定權留在使用者手上，是這整條流程的分界線。
+
+   前面那句「其餘一個字都不要動」是照 `PolishAsync` 的 prompt 抄的。revise 那邊原本只有
+   比較軟的「使用者沒提到的地方不要順手改掉」，而實測它會平白多做一圈屋頂簷口出來。 */
+let lastFill = '';
+$('useDiff').addEventListener('click', () => {
+  if (cur < 0) return;
+  const whole = $('diff').querySelector('.whole');
+  const picked = whole ? whole.textContent.trim() : pickedDiff();
+  if (!picked) return;
+
+  const body = '這一輪**只改下面這幾條，其餘一個字都不要動**：\n\n' + picked;
+  /* 框是空的、或裡面就是上一次按出來的那一份 → 直接換掉（不然改了勾選再按一次沒有意義）；
+     使用者自己打了字 → 接在後面，不要弄丟他寫的東西。 */
+  const now = $('fb').value;
+  const keep = (now.trim() === '' || now === lastFill) ? '' : now.trimEnd() + '\n\n';
+  $('fb').value = keep + body;
+  lastFill = $('fb').value;
+
+  $('fbCard').classList.remove('hide');
+  $('fbCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  $('fb').focus();
+});
+
+$('cancel').addEventListener('click', () => $('fbCard').classList.add('hide'));
+
+$('send').addEventListener('click', async () => {
+  if (cur < 0) return;
+  const v = versions[cur];
+  const fd = new FormData();
+  fd.append('description', $('desc').value.trim());
+  fd.append('code', v.code || '');
+  if (v.shotUrl) fd.append('shotUrl', v.shotUrl);
+  fd.append('feedback', $('fb').value.trim());
+  for (const r of refImgs) fd.append('image', r.file, r.file.name);
+  if (refColors.length) fd.append('refColors', refColors.join('、'));
+  if (fbImg) fd.append('feedbackImage', fbImg, fbImg.name);
+  // 每一輪各自帶：改到一半想換個模型或思考強度再試是合理的（紀錄會分別記下各輪用了哪個）
+  if (modelNow()) fd.append('model', modelNow());
+  if (reviseNow()) fd.append('reviseThink', reviseNow());   // 這一條走的就是「改版」那一格
+
+  const d = await run('api/blueprints/revise', fd,
+    '照你的意見改第 ' + v.n + ' 版…體檢與四視圖都要重跑，可能要幾分鐘。');
+  if (d) {
+    push(d, $('fb').value.trim());
+    // 意見送出就清掉，下一輪要寫新的；補圖也一併清
+    $('fb').value = '';
+    if (fbImg) $('fbRm').click();
+  }
+});
+
+/* ── 存檔／下載／複製 ───────────────────────────────────── */
+/* 收進遊戲：純前端，寫進遊戲自己的匯入儲存。不必呼叫後端。 */
+$('accept').addEventListener('click', () => {
+  if (failView || cur < 0) return;
+  const v = versions[cur];
+  v.code = $('code').value || v.code;      // 使用者可能在下面那個框裡手改過
+  if (!v.code) return;
+  try {
+    const r = saveToGame(v);
+    v.inGame = true;
+    setNote('ok', '✔ 已收進遊戲（' + (r.replaced ? '換掉同名的舊版' : '新增一筆')
+                  + '，這個瀏覽器目前有 ' + r.total + ' 筆匯入）。回遊戲按 F5 就選得到，'
+                  + '也會出現在「📥 匯入建築」那張清單裡。');
+    syncSaveBtns();
+    renderVers();
+    renderImports();
+  } catch (e) {
+    setNote('bad', e.message);
+  }
+});
+
+/* 在預覽頁打開：把程式碼放進交接鍵再開那一頁，它開場會自己讀走並預覽
+   （藍圖預覽.html 尾巴那段 HANDOFF_KEY）。這一頁只給得出靜態四視圖，
+   想拖著轉、比建材檔位、跑體檢都在那邊，不在這裡重刻一份引擎。 */
+const HANDOFF_KEY = 'block-builders/handoff';
+$('open3d').addEventListener('click', () => {
+  const code = $('code').value || (cur >= 0 ? versions[cur].code : '');
+  if (!code) return;
+  try {
+    localStorage.setItem(HANDOFF_KEY, code);
+  } catch (e) {
+    setNote('bad', '交接不過去（讀不到瀏覽器儲存，無痕模式會擋）。可以按「複製」自己貼到預覽頁。');
+    return;
+  }
+  window.open('藍圖預覽.html', '_blank');   // 不加 noopener：交接走 localStorage，但別擋掉開窗
+  flash($('open3d'), '已開新分頁 ↗', '🔍 在預覽頁打開這一版');
+});
+
+/* 另存成檔案：走後端寫進 blueprints/ 並重產 list.js。 */
+$('saveFile').addEventListener('click', async () => {
+  if (failView || cur < 0) return;
+  const v = versions[cur];
+  const code = $('code').value || v.code;
+  if (!code) return;
+  setBusy(true, '存檔中…');
+  try {
+    const res = await fetch('api/blueprints/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code, fileName: v.fileName })
+    });
+    const d = await res.json();
+    if (!res.ok) { setNote('bad', d.error || ('存檔失敗：HTTP ' + res.status)); return; }
+    v.inFile = true;
+    v.code = code;
+    setNote('ok', '✔ 已存成 blueprints/' + d.fileName + '，list.js 也重產了。回遊戲按 F5 就選得到。');
+    renderVers();
+    loadEnv();
+  } catch (e) {
+    setNote('bad', '存檔失敗：' + e.message);
+  } finally {
+    setBusy(false);
+  }
+});
+
+$('dl').addEventListener('click', () => {
+  const t = $('code').value;
+  if (!t) return;
+  const v = cur >= 0 ? versions[cur] : null;
+  const href = URL.createObjectURL(new Blob([t], { type: 'text/javascript;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = href; a.download = (v && v.fileName) || '藍圖.js';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
+  flash($('dl'), '已下載 ✓', '💾 下載 .js');
+});
+$('copy').addEventListener('click', () => {
+  const t = $('code').value;
+  if (!t) return;
+  navigator.clipboard.writeText(t).then(
+    () => flash($('copy'), '已複製 ✓', '📋 複製'),
+    () => { $('code').select(); flash($('copy'), '請按 Ctrl+C', '📋 複製'); });
+});
+function flash(btn, on, back) { btn.textContent = on; setTimeout(() => { btn.textContent = back; }, 1600); }
+
+/* ── 產生紀錄 ─────────────────────────────────────────────
+   伺服器每產一輪就寫一份 history/{目標}/{stem}.js ＋ .json，四視圖走
+   shots/{目標}/{stem}.png——同一個目標資料夾、同一個 stem，圖跟程式配得起來。
+   **自動重跑掉的中間輪也會存**（那幾輪最貴也最需要回頭查），所以一條跑了 3 輪的鏈
+   會列出 3 列。這一頁只是把它列出來、能載回工作區繼續改。 */
+const KIND = { generate: '第一版', revise: '再改一版', polish: '自動打磨' };
+
+/* 這一輪自己的帳單。**思考跟輸出擺在一起是刻意的**——兩個都按輸出計價，
+   而那個比值就是這條流程最大的成本旋鈕（實測 medium 約 0.2–0.5 倍、high 約 10 倍）。
+   前面那個 high／medium 是產它的當下旋鈕在哪一格：沒有它，兩筆數字不同會分不出
+   是題目不同還是設定改過。舊紀錄沒有帳單，那一行就不畫。 */
+function billLine(u, think, model) {
+  if (!u || !u.calls) return '';
+  const k = n => (n || 0).toLocaleString('en-US');
+  return '<div class="t">'
+    /* 模型也要寫出來，理由跟思考等級一樣：模型可以在上面那個下拉換，
+       不標的話兩筆數字差很多會分不出是題目、旋鈕還是模型造成的。
+       舊紀錄沒有這一格，那就不畫（不要寫「未知」佔位置）。 */
+    + (model ? esc(model) + '　' : '')
+    + '思考' + (think ? ' ' + esc(think) : '') + '：' + k(u.thoughts)
+    + '／輸出 ' + k(u.output)
+    + (u.calls > 1 ? '　' + u.calls + ' 次呼叫' : '')
+    + '　估 US$' + (u.usd || 0).toFixed(4) + '</div>';
+}
+
+async function loadHistory() {
+  const box = $('hist');
+  try {
+    const r = await fetch('api/blueprints/history');
+    const d = await r.json();
+    const items = d.items || [];
+    if (!items.length) { box.innerHTML = '<div class="sub">（還沒有紀錄）</div>'; return; }
+    box.innerHTML = '';
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'hrow';
+      const when = new Date(it.at);
+      const t = isNaN(when) ? '' : (when.getMonth() + 1) + '/' + when.getDate() + ' '
+              + String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0');
+      const bad = !it.ok ? '<span class="pill bad">蓋不起來</span>' : '';
+      const warn = it.ok && it.warns && it.warns.length
+        ? '<span class="pill">⚠' + it.warns.length + '</span>' : '';
+      /* 一條鏈跑了好幾輪時把輪次標出來：中間那幾輪是自動重跑掉的失敗版，
+         列在這裡就是為了回頭查「它那次錯在哪」。 */
+      const rd = it.rounds > 1 ? '<span class="pill">第 ' + it.round + '/' + it.rounds + ' 輪</span>' : '';
+      row.innerHTML =
+        (it.shotUrl ? '<img src="' + esc(it.shotUrl) + '" alt="" loading="lazy">'
+                    : '<div class="ph">—</div>')
+        + '<div class="m">'
+        + '<div class="d"><b>' + esc(it.name || it.group || '（沒有名字）') + '</b>　'
+        + bad + warn + rd + '</div>'
+        + '<div class="d" style="opacity:.75">' + esc(it.description || '（沒有描述）') + '</div>'
+        + (it.error ? '<div class="t" style="color:#a5372f">' + esc(it.error.split('\n')[0]) + '</div>' : '')
+        /* 打磨那一筆的「意見」是後端自己組的指令（「體檢報告裡這幾項要修掉…」），
+           列在這裡只是雜訊——kind 那個標籤已經寫了「自動打磨」。只顯示人寫的。 */
+        + (it.feedback && it.kind !== 'polish'
+            ? '<div class="t">意見：' + esc(it.feedback.split('\n')[0]) + '</div>' : '')
+        + '<div class="t">' + t + '　' + esc(KIND[it.kind] || it.kind)
+        + (it.slots ? '　' + it.slots.toLocaleString('en-US') + ' 塊' : '') + '</div>'
+        + billLine(it.usage, it.think, it.model)
+        + '</div>';
+      row.addEventListener('click', () => { if (!busy) revive(it.stem); });
+      box.appendChild(row);
+    }
+  } catch (e) {
+    box.innerHTML = '<div class="sub">讀不到紀錄：' + esc(e.message) + '</div>';
+  }
+}
+
+/* 載回工作區：當成新的一版接在版本列後面（不覆蓋現在那一版）。
+   描述也一起還原——不還原的話按「再改一版」時目標會變成現在框裡那句，改出來的是另一個東西。
+   參考圖沒有存（那是使用者本機的檔案），要繼續改就得重拖一次，所以講出來。 */
+async function revive(stem) {
+  setBusy(true, '讀紀錄…');
+  try {
+    const r = await fetch('api/blueprints/history/' + encodeURIComponent(stem));
+    const d = await r.json();
+    if (!r.ok) { $('cur').classList.remove('hide'); setNote('bad', d.error || '讀不到那一筆紀錄。'); return; }
+    const h = d.head || {};
+    if (h.description) $('desc').value = h.description;
+    versions.push({
+      n: versions.length + 1, name: h.name, fileName: h.fileName || ((h.name || '藍圖') + '.js'),
+      code: d.code, report: d.report, warns: h.warns || [], shotUrl: h.shotUrl,
+      rounds: [], message: '從紀錄載回來的（' + (KIND[h.kind] || h.kind) + '，' + stem + '）'
+        + (h.ok ? '' : '——這一份當初蓋不起來')
+        /* 參考圖有存進紀錄（history/{目標}/_ref/），但**不會自動載回這一頁**——
+           那要再開一條把圖送回瀏覽器的路。所以要繼續改還是得重拖一次。 */
+        + (refImgs.length ? '' : '。參考圖不會跟著載回來，要繼續改的話重新拖進來'),
+      feedback: h.feedback || '', inGame: false, inFile: false,
+      // 當初那份對照清單也一起還原（舊紀錄沒有這一格，那就不畫）
+      alts: [], pickedNo: 0, usage: null, diff: h.diff
+    });
+    showVersion(versions.length - 1);
+    failView = !h.ok;
+    syncSaveBtns();
+    $('cur').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    $('cur').classList.remove('hide');
+    setNote('bad', '讀紀錄失敗：' + e.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+$('reload').addEventListener('click', loadEnv);
+$('reloadImp').addEventListener('click', renderImports);
+$('reloadHist').addEventListener('click', loadHistory);
+loadEnv();
+renderImports();
+loadHistory();
+</script>
+</body>
+</html>

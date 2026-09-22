@@ -1,0 +1,16 @@
+{
+  "name": "block-builders",
+  "version": "1.216.0",
+  "description": "積木小人 · 世界地標工地（桌面版）",
+  "author": "cm8",
+  "license": "UNLICENSED",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3"
+  }
+}
