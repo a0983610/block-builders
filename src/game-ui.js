@@ -659,6 +659,21 @@ function doImport() {
   }
 }
 
+/* 讀一支 .js 檔進來（v1.213）。手上已經是檔案的時候（別人傳來的、上次按「匯出」存下來的、
+   從預覽頁「下載 .js」存的），以前得先拿編輯器開起來、全選、複製、再貼進框裡。
+
+   讀完**直接匯入**（使用者指定）：檔案就是完整的一份，不像剪貼簿那段常常還要先看一眼、
+   改幾個字（那是「📋 貼上」不順手匯入的理由，見 開發筆記〈一顆「貼上」〉）。
+   內容照樣先倒進框裡再走 doImport()——清洗、撞名規則、成功／失敗訊息、存檔全部共用
+   同一支，不會分岔；成功之後 doImport 會把框清空，失敗時那段留在框裡等人看哪裡不對。 */
+function importBpFile(file) {
+  const msg = $('impMsg');
+  const r = new FileReader();
+  r.onerror = () => { msg.className = 'on bad'; msg.textContent = '✘ 讀不到這個檔案'; };
+  r.onload = () => { $('impPaste').value = r.result; doImport(); };
+  r.readAsText(file);
+}
+
 /* 存成檔案。data: URL 直接掛 <a download> 有些瀏覽器會擋，轉成 blob 最保險（file:// 也通）。 */
 function download(name, text) {
   const href = URL.createObjectURL(new Blob([text], { type: 'text/javascript;charset=utf-8' }));
@@ -882,6 +897,14 @@ function boot() {
     if (e.target.id === 'impWrap' || e.target.id === 'impClose') $('impWrap').classList.remove('on');
   });
   $('impGo').addEventListener('click', doImport);
+  /* 讀檔（v1.213）：真正的 <input type=file> 藏起來、按鈕代點（跟「⬆ 匯入存檔」同一套，
+     它自己的樣子在各瀏覽器長得都不一樣）。讀完直接匯入，見 importBpFile。 */
+  $('impFileBtn').addEventListener('click', () => $('impFile').click());
+  $('impFile').addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';                      // 清掉才能連續選同一個檔案（值沒變就不會再觸發 change）
+    if (f) importBpFile(f);
+  });
   /* 貼上（v1.140）：只倒進框裡，不順手匯入——貼完先看一眼才按匯入是對的順序 */
   $('impPasteBtn').addEventListener('click',
     () => pasteText($('impPaste'), $('impPasteBtn'), '📋 貼上'));

@@ -76,6 +76,12 @@
   #verdict.bad{color:#c0483c}
   #pasteBox,#listBox{border:1px solid var(--line);border-radius:10px;padding:7px 9px;background:#fff}
   #pasteBox summary,#listBox summary{cursor:pointer;font-size:12.5px;font-weight:700}
+  /* 讀檔那一顆擠在 summary 那一行的右邊（v1.213）。為什麼不跟「取得 prompt／貼上／
+     貼上並預覽」排同一列：那一列已經滿了（卡片只有 388px 寬），第四顆不管多短都會把
+     「貼上並預覽」擠到下一列——實測整張卡片從 750px 長到 794px，超過「放得進 800 高的
+     畫面」那條線（772，e2e 有一條守著）。放在 summary 那一行只多 3px（753）。
+     float 而不是把 summary 改成 flex：改了 display 就沒有那顆展開三角形了。 */
+  #fileBtn{float:right;flex:0 0 auto;padding:1px 9px;font-size:11.5px;font-weight:400}
   #listBox .btns{margin-top:7px}
   /* 檔案清單：勾一勾就產出新的 list.js。跟報告框一樣只給「看得到幾行」的高度 */
   #files{max-height:120px;overflow:auto;border:1px solid var(--line);border-radius:8px;
@@ -141,7 +147,10 @@
   </div>
   <!-- 預設展開：AI 產的藍圖多半是「貼上」而不是「存檔」進來的，這是主要入口 -->
   <details id="pasteBox" open>
-    <summary>貼上藍圖（不用先存檔）</summary>
+    <!-- 讀檔（v1.213）：手上已經是一支 .js（別人傳來的、上次「下載 .js」存的）時，
+         不必先開起來複製內容。讀完直接載入並預覽，跟按「貼上並預覽」同一條路。 -->
+    <summary>貼上藍圖（不用先存檔）<button id="fileBtn" type="button"
+      title="讀一支 .js 檔進來，直接預覽並診斷">📂 讀檔</button></summary>
     <textarea id="paste" spellcheck="false"
       placeholder="把 AI 給的整段貼進來（就是 blueprints/ 裡那種 customBlueprint({...}) 的內容），按下面的按鈕就直接預覽並診斷。```js 圍籬與「檔名：xxx.js」那行會自動忽略。"></textarea>
     <!-- 取得 prompt 排在前面：整條路是「先拿說明去問 AI → 再把它給的貼回這個框」，
@@ -151,6 +160,8 @@
       <button id="pasteBtn">📋 貼上</button>
       <button id="load">貼上並預覽</button>
     </div>
+    <!-- 真正的 <input type=file> 藏起來、上面那顆按鈕代點（跟遊戲那邊同一套） -->
+    <input type="file" id="bpFile" accept=".js,text/javascript" hidden>
   </details>
   <div id="pasteMsg"></div>
   <div id="stat"></div>
@@ -201,7 +212,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載遊戲層那五支（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.212.0';
+const VIEWER_VER = '1.213.0';
 
 const $ = id => document.getElementById(id);
 
@@ -428,8 +439,9 @@ $('fold').addEventListener('click', () => {
 $('go').addEventListener('click', build);
 $('chk').addEventListener('click', diagnose);
 /* 貼上 → 進清單 → 選起來 → 畫出來 → 順手把診斷也跑掉。
-   貼的人要的就是這一連串，不該還要自己再按兩個按鈕。 */
-$('load').addEventListener('click', () => {
+   貼的人要的就是這一連串，不該還要自己再按兩個按鈕。
+   抽成具名函式（v1.213）：「📂 讀檔」讀完也走這一支，兩條路的訊息與規則才會一模一樣。 */
+function loadPasted() {
   const msg = $('pasteMsg');
   try {
     const added = pasteBlueprint($('paste').value);
@@ -452,6 +464,30 @@ $('load').addEventListener('click', () => {
     msg.className = 'on bad';
     msg.textContent = '✘ ' + ((e && e.message) ? e.message : e);
   }
+}
+$('load').addEventListener('click', loadPasted);
+
+/* 📂 讀檔（v1.213）：手上已經是一支 .js 的時候，以前得先拿編輯器開起來、全選、複製、
+   再貼進框裡。讀完直接載入並預覽——檔案就是完整的一份，不像剪貼簿那段常常還要改幾個字
+   （那是「📋 貼上」不順手預覽的理由）。內容照樣先倒進框裡再走 loadPasted()，
+   所以「改一版再按貼上並預覽」「下載 .js」那幾條路接得下去。 */
+$('fileBtn').addEventListener('click', e => {
+  /* 這顆坐在 <summary> 裡，不擋的話按下去會順手把整個貼上區收起來 */
+  e.preventDefault();
+  e.stopPropagation();
+  $('bpFile').click();
+});
+$('bpFile').addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';                // 清掉才能連續選同一個檔案（值沒變就不會再觸發 change）
+  if (!f) return;
+  const r = new FileReader();
+  r.onerror = () => {
+    $('pasteMsg').className = 'on bad';
+    $('pasteMsg').textContent = '✘ 讀不到這個檔案';
+  };
+  r.onload = () => { $('paste').value = r.result; loadPasted(); };
+  r.readAsText(f);
 });
 /* 貼上框點一下就整段選起來（v1.111）：這一頁的節奏是「貼上 → 看 → 改 → 再貼」，
    而「再貼」是拿新的一份**換掉**框裡那一段，每次都要先自己 Ctrl+A 很煩。

@@ -2020,6 +2020,65 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      vpNarrow.rep.join('／') + ' 行；卡片 ' + vpNarrow.card + 'px／畫面 ' +
      vpNarrow.view + 'px' + (vpNarrow.wide ? '（橫向溢出！）' : ''));
 
+  /* 📂 讀檔（v1.213）：跟遊戲那顆同一件事——手上已經是一支 .js 就不必先開起來複製內容。
+     它坐在 <summary>「貼上藍圖」那一行的右邊而不是跟另外三顆排同一列：那一列已經滿了
+     （卡片只有 388px 寬），實測第四顆不管多短都會把「貼上並預覽」擠到下一列、整張卡片
+     從 750 長到 794px，超過上面那條「放得進畫面」的線（772）。放在 summary 只多 3px。 */
+  const vpFileUi = await vp.evaluate(() => {
+    const b = document.getElementById('fileBtn'), f = document.getElementById('bpFile');
+    const sum = document.querySelector('#pasteBox summary');
+    const box = document.getElementById('pasteBox'), side = document.getElementById('side');
+    box.open = true;
+    const r = b.getBoundingClientRect(), rs = sum.getBoundingClientRect();
+    /* 借過一下：真的按下去會開檔案選取窗，所以只驗「它去點了那個隱藏的 input」。
+       同時驗這顆按下去不會順手把貼上區收起來（它坐在 <summary> 裡，不擋就會收）。 */
+    const real = f.click;
+    let asked = 0;
+    f.click = () => { asked++; };
+    b.click();
+    f.click = real;
+    return { txt: b.textContent, asked, stillOpen: box.open, onSummary: sum.contains(b),
+             sameLine: Math.abs((r.top + r.height / 2) - (rs.top + rs.height / 2)) < 12,
+             inCard: r.right <= side.getBoundingClientRect().right,
+             hidden: f.hidden && f.type === 'file', accept: f.accept,
+             open: side.scrollHeight, view: window.innerHeight };
+  });
+  /* 卡片高度不在這一條的判準裡：上面〈報告不佔版面…〉那條才是守它的（那裡量的是乾淨的
+     卡片，這一顆實測只多 3px：750 → 753）。跑到這裡時結論列與載入訊息已經多了好幾行，
+     把那個數字綁進來等於讓這一條去管別人的事——印出來看一眼就好。 */
+  ok('預覽頁的「📂 讀檔」坐在貼上區標題那一行，按了不會把貼上區收起來',
+     vpFileUi.txt === '📂 讀檔' && vpFileUi.onSummary && vpFileUi.sameLine &&
+     vpFileUi.asked === 1 && vpFileUi.stillOpen && vpFileUi.inCard &&
+     vpFileUi.hidden && vpFileUi.accept.indexOf('.js') >= 0,
+     '「' + vpFileUi.txt + '」在 summary 那一行，卡片展開 ' + vpFileUi.open +
+     'px（畫面 ' + vpFileUi.view + '）');
+
+  const vpFileGo = await vp.evaluate(async src => {
+    const before = SHAPES.length;
+    const inp = document.getElementById('bpFile');
+    const dt = new DataTransfer();
+    dt.items.add(new File([src], '讀檔來的.js', { type: 'text/javascript' }));
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 300));     // FileReader 是非同步的
+    return { msg: document.getElementById('pasteMsg').textContent,
+             bad: document.getElementById('pasteMsg').className.indexOf('bad') >= 0,
+             added: SHAPES.length - before,
+             name: bp ? bp.name : null,
+             drawn: ENG.three.blockMesh.count,
+             picked: document.getElementById('shape').selectedOptions[0].textContent,
+             rep: document.getElementById('rep').value.split('\n')[1] || '',
+             /* 這一頁不清框：節奏是「載進來 → 看 → 改幾個字 → 再按貼上並預覽」 */
+             inBox: document.getElementById('paste').value.indexOf('讀檔來的小屋') > 0,
+             cleared: inp.value === '' };
+  }, '// 檔名：讀檔來的.js\n' + SAMPLE.replace("name: '貼上來的小屋'", "name: '讀檔來的小屋'"));
+  ok('預覽頁選一支 .js 就直接載入並預覽，順手把診斷也跑掉、原始碼留在框裡',
+     !vpFileGo.bad && vpFileGo.added === 1 && vpFileGo.name === '讀檔來的小屋' &&
+     vpFileGo.drawn > 100 && vpFileGo.picked.indexOf('讀檔來的小屋') > 0 &&
+     vpFileGo.rep === '藍圖：讀檔來的小屋（自訂 · gen）' && vpFileGo.inBox &&
+     vpFileGo.cleared,
+     vpFileGo.msg + '（畫了 ' + vpFileGo.drawn + ' 塊，報告第二行「' + vpFileGo.rep + '」）');
+
   ok('預覽頁整段跑完沒有 console 錯誤', vpErr.length === 0, vpErr.join(' / ') || '乾淨');
   await vp.close();
 
@@ -2416,10 +2475,84 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      impMigrate.inMenu === 1,
      '清單「' + impMigrate.rows.join('、') + '」，下拉第 ' + impMigrate.inMenu +
      ' 項，共 ' + impMigrate.shapes + ' 座');
-  // 收乾淨，不要留給後面「存檔搬家」那一段
+  /* ── 📂 讀檔並匯入（v1.213）────────────────────────────
+     手上已經是一支 .js（別人傳來的、上次按「匯出」存下來的、預覽頁「下載 .js」存的）
+     時，以前得先拿編輯器開起來、全選、複製、再貼進框裡。這一顆把那四步收成「選檔」。
+     讀完**直接匯入**（使用者指定）：檔案是完整的一份，不像剪貼簿那段常常還要先改幾個字。
+     用 DataTransfer 造一個 File 塞進 <input type=file>，真的走 change → FileReader
+     那條路，不是繞過 UI 直接呼叫函式。 */
+  const impFileUi = await gp.evaluate(() => {
+    const b = document.getElementById('impFileBtn'), p = document.getElementById('impPasteBtn');
+    const g = document.getElementById('impGo'), f = document.getElementById('impFile');
+    const rb = b.getBoundingClientRect(), rp = p.getBoundingClientRect();
+    return { txt: b.textContent, first: rb.right <= rp.left,
+             sameRow: Math.round(rb.top) === Math.round(g.getBoundingClientRect().top),
+             hidden: f.hidden && f.type === 'file', accept: f.accept,
+             w: Math.round(rb.width) };
+  });
+  ok('匯入面板多一顆「📂 讀檔並匯入」，跟貼上／匯入同一列、排在最前面',
+     impFileUi.txt === '📂 讀檔並匯入' && impFileUi.first && impFileUi.sameRow &&
+     impFileUi.hidden && impFileUi.accept.indexOf('.js') >= 0 && impFileUi.w > 60,
+     '「' + impFileUi.txt + '」寬 ' + impFileUi.w + 'px，檔案框吃 ' + impFileUi.accept);
+
+  const impFileGo = await gp.evaluate(async src => {
+    const before = SHAPES.length;
+    const inp = document.getElementById('impFile');
+    const dt = new DataTransfer();
+    dt.items.add(new File([src], '讀檔來的.js', { type: 'text/javascript' }));
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 250));      // FileReader 是非同步的
+    const names = [...document.querySelectorAll('#impList .it b')].map(b => b.textContent);
+    return { msg: document.getElementById('impMsg').textContent,
+             good: document.getElementById('impMsg').className.indexOf('good') >= 0,
+             added: SHAPES.length - before,
+             left: document.getElementById('impPaste').value,
+             names: names,
+             /* 清掉 value 才能連續選同一支檔（值沒變就不會再觸發 change） */
+             cleared: inp.value === '',
+             inMenu: [...document.getElementById('shape').options]
+                       .map(o => o.textContent).indexOf('讀檔來的小屋'),
+             group: names.length,
+             saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]')
+                      .map(e => e.file) };
+  }, '// 檔名：讀檔來的.js\n' + SAMPLE.replace("name: '貼上來的小屋'", "name: '讀檔來的小屋'"));
+  /* inMenu 落在 1～匯入的筆數之間＝它排進了「瀏覽器存檔」那一群（[0] 是 🎲 隨機）。
+     不寫死第幾項：這一群裡排第幾只看誰先進來，那不是這一條要守的事。 */
+  ok('選一支 .js 檔就直接匯入了（不必再按「匯入」），清單、下拉選單、存檔三邊都跟上',
+     impFileGo.good && impFileGo.added === 1 && impFileGo.left === '' &&
+     impFileGo.names.indexOf('讀檔來的小屋') >= 0 && impFileGo.cleared &&
+     impFileGo.inMenu >= 1 && impFileGo.inMenu <= impFileGo.group &&
+     impFileGo.saved.indexOf('讀檔來的.js') >= 0,
+     impFileGo.msg + '　清單「' + impFileGo.names.join('、') + '」，下拉第 ' +
+     impFileGo.inMenu + ' 項，存檔 ' + impFileGo.saved.join('、'));
+
+  const impFileBad = await gp.evaluate(async () => {
+    const inp = document.getElementById('impFile');
+    const dt = new DataTransfer();
+    dt.items.add(new File(['console.log("我不是藍圖")'], '不是藍圖.js',
+                          { type: 'text/javascript' }));
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 250));
+    return { msg: document.getElementById('impMsg').textContent,
+             bad: document.getElementById('impMsg').className.indexOf('bad') >= 0,
+             left: document.getElementById('impPaste').value,
+             rows: document.querySelectorAll('#impList .it').length };
+  });
+  /* 失敗時那段要留在框裡：不然「檔案挑錯了／內容不對」的人連看都看不到是什麼東西 */
+  ok('讀到不是藍圖的 .js：講清楚要的是什麼，內容留在框裡讓人看，清單不動',
+     impFileBad.bad && impFileBad.msg.indexOf('customBlueprint') > 0 &&
+     impFileBad.left.indexOf('我不是藍圖') > 0 && impFileBad.rows === impFileGo.group,
+     impFileBad.msg);
+
+  // 收乾淨，不要留給後面「存檔搬家」那一段（讀檔那幾條又多匯了一座，所以逐列刪光）
   await gp.evaluate(() => {
-    const del = document.querySelector('#impList [data-del="0"]');
-    if (del) del.click();
+    for (let i = 0; i < 20; i++) {
+      const del = document.querySelector('#impList [data-del]');
+      if (!del) break;
+      del.click();
+    }
     localStorage.removeItem('block-builders/bp1');
   });
 
@@ -5811,6 +5944,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        「場地多大」不是這條規則。放大之後這一條跟場地大小無關（跑完再還回去）。 */
     const dr = debrisR; debrisR = 200;
     const cow = spawnCattle();
+    /* 物種也要釘死（v1.213）：`spook` 的規則是「**走到了或時間到都算跑完**」
+       （見 stepBeast0），而 spawnCattle 是八款隨機抽的。抽到最快的 deer（腳程 2.4，
+       跑開時 ×1.8＝4.32 格/秒）跑完 PLAY_RUN_D＝12 格只要 2.65 秒，spook 還剩
+       0.71~1.0 秒就被「走到了」提前結束——量到的會是「牠多快跑到」而不是這條規則，
+       八輪就紅一輪。逐款實測（各跑一次）：deer 2.65 ✘；stag 3.0、sheep 3.2、boar 3.3、
+       cow 3.3、ram 3.15~3.6 ✔。釘成最慢的 sheep（1.3，×1.8＝2.34 格/秒 → 走完 12 格
+       要 5.1 秒 > 上限 4 秒），「時間到」就成了唯一的結束方式。
+       kind 只是物件上的一個欄位（spawnCattle 沒有從它衍生出別的東西），改它是安全的。 */
+    cow.kind = 'sheep';
     cow.x = 40; cow.z = 0; cow.a = 0; cow.gait = 0; cow.pause = 999; cow.tx = 40; cow.tz = 0;
     const mid = ENG.BEAST_MID[cow.kind] * (cow.sc || 1);
     pushArrow(cow.x - 3, mid, cow.z, 12, 0, 0, 1);     // 直接餵一支玩鬧的箭給牠（不跑模擬）

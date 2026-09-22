@@ -334,7 +334,8 @@
       <li>AI 會回一段 <code>```js</code> 開頭的程式碼，<b>整段複製</b>起來
           （圍籬跟「檔名：」那幾行不用清掉，貼進來會自動忽略）。</li>
       <li>貼進下面那個框（懶得按 Ctrl+V 就按 <b>📋 貼上</b>，剪貼簿裡那段直接倒進框裡），
-          按 <b>匯入</b>。名字撞到現有藍圖會被擋下來，回去請 AI 改個 name。</li>
+          按 <b>匯入</b>。已經存成 <code>.js</code> 檔的（別人傳來的、上次匯出的）
+          直接按 <b>📂 讀檔並匯入</b> 挑那支檔，不必先開起來複製內容。</li>
       <li>匯完它就在<b>設定面板的下拉選單</b>裡（自訂的排在最前面），選了就開始蓋。</li>
       <li>匯進來的<b>會存著</b>，關掉再開還在。清單那一列可以 <b>匯出</b> 成 .js 傳給別人，
           或 <b>刪除</b>。</li>
@@ -353,7 +354,11 @@
     <!-- 匯出在下面每一列各自一顆：分享的單位是「一座建築」，不是整包 -->
     <!-- 貼上排在匯入前面：那就是這一步的順序（先把 AI 給的倒進框裡、再匯入）。
          不是主鍵：會按 Ctrl+V 的人根本不需要它 -->
-    <div class="row"><button id="impPasteBtn">📋 貼上</button><button class="primary" id="impGo">匯入</button></div>
+    <!-- 讀檔排最前面（v1.213）：手上已經是一支 .js 的話，這一顆就是整條路
+         （選檔 → 直接匯入），不必先開檔案把內容複製出來貼進框裡。
+         真正的 <input type=file> 藏起來、按鈕代點——跟「⬆ 匯入存檔」同一套。 -->
+    <div class="row"><button id="impFileBtn">📂 讀檔並匯入</button><button id="impPasteBtn">📋 貼上</button><button class="primary" id="impGo">匯入</button></div>
+    <input type="file" id="impFile" accept=".js,text/javascript" hidden>
     <div id="impMsg"></div>
     <div id="impList"></div>
     <div class="row"><button id="impClose">關閉</button></div>
