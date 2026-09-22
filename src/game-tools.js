@@ -16,7 +16,9 @@
    一座拆到換場門檻（剩 WRECK_AT＝25% 就算拆完）至少會擊飛 2,250 塊。
    建材調小的話一座擊飛得少，就要多拆幾座才追得上（工作量差不多）。
    v1.168 之前是「擊飛數／拆除座數輪流當門檻」，每加一把都得挑一個數字、
-   改一排測試，所以收成單一條等差（使用者：「按照一個等差條件解鎖」）。 */
+   改一排測試，所以收成單一條等差（使用者：「按照一個等差條件解鎖」）。
+   **v1.214 步幅從 2,000 拉到 4,000**（使用者：「同時提高原本破壞依序獲得破壞道具的
+   門檻(大約*2) 因為多了這個機制」）——多了道具泡泡這條路，兩條路加起來才是原本的速度。 */
 const TOOLS = [
   { id: 'finger', n: '手指', k: '👆', tip: '不破壞任何東西，只能戳小人', lock: null },
   { id: 'bucket', n: '水桶', k: '🪣',
@@ -68,7 +70,7 @@ const TOOLS = [
 ];
 /* 等差階梯（見上面那段）：TOOLS 裡沒寫 `lock: null` 的照順序補門檻，
    第 n 把＝擊飛 n × LOCK_STEP 塊。加新道具不必碰這裡。 */
-const LOCK_STEP = 2000;
+const LOCK_STEP = 4000;
 (() => {
   let n = 0;
   for (const t of TOOLS) {
@@ -78,7 +80,9 @@ const LOCK_STEP = 2000;
                ok: () => stats.smashed >= need };
   }
 })();
-const toolOk = t => !t.lock || t.lock.ok();
+/* 兩條路都算解鎖（v1.214）：累計擊飛到門檻，**或**在泡泡裡開到它（stats.gift，會進存檔）。
+   泡泡開出來的不照階梯順序，所以可能先拿到核彈——那就是這個機制的用意。 */
+const toolOk = t => !t.lock || t.lock.ok() || stats.gift.indexOf(t.id) >= 0;
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
    規定一定要點到建築的話，站在旁邊的空地放炸彈反而做不到。
    大槌點空地是地震、保齡球點空地是從那裡把球丟出去，所以也在這裡。
@@ -93,6 +97,81 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
                       storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1 };
 let tool = 'hammer';
+
+/* ── 破壞道具泡泡（v1.214）───────────────────────────────
+   > 使用者：「破壞積木有機率 掉出一個隨機的破壞道具泡泡 點了以後直接解鎖該道具
+   > (記得觸發儲存)　機率大約是破壞一個9000積木建築掉一個
+   > 同時提高原本破壞依序獲得破壞道具的門檻(大約*2) 因為多了這個機制」
+
+   所以解鎖現在有兩條路：**階梯**（累計擊飛，門檻同步 ×2＝ LOCK_STEP 4,000）與**泡泡**
+   （隨機、不照順序）。泡泡開出來的那一把記在 stats.gift（會進存檔），見 toolOk。
+
+   機率就照使用者給的數字直接寫成「平均每 GIFT_EVERY 塊掉一顆」：整數部分一定掉、
+   小數部分抽一次骰（所以一發打掉兩萬塊的核彈會一次掉兩顆以上，不是被機率吃掉）。
+   **算的是「積木被破壞」這件事本身**，所以三條路都算：道具直接打掉的（afterHit）、
+   被燒斷鬆脫的（stepFire）、支撐沒了垮下來的（game-ui 那段）——那三處就是
+   stats.smashed 加分的地方，跟階梯用的是同一個計數，兩條路才對得起來。
+
+   **只從還沒解鎖的那幾把裡挑**：全開了就不掉（掉了也沒有東西可以開）。 */
+const GIFT_EVERY = 9000;         // 平均破壞幾塊積木掉一顆（使用者指定：一座 9000 塊的建築一顆）
+const GIFT_MAX = 6;              // 場上最多幾顆（同其他清單型道具：再掉就擠掉最早那顆）
+const GIFT_Y = 1.9;              // 落地後泡泡中心離地多高（直徑 3.2，所以底緣離地 0.3）
+const GIFT_RISE = 1.2;           // 冒出來先往上頂一下
+const GIFT_FALL = 4.2;           // 往下飄的最快速度：泡泡是**飄**下來的，不是砸下來的
+const GIFT_G = GRAV * 0.18;      // 同一個理由，重力只給兩成
+const GIFT_POP = 0.25;           // 由小長大要幾秒
+const GIFT_BOB = 0.22;           // 落地後上下浮多少
+let gifts = null;                // 場上還沒被點掉的泡泡（換場不收，見 startBuild）
+
+/* 還鎖著的那幾把（泡泡只從這裡面挑）。已經用泡泡開過的也算解鎖，所以走 toolOk。 */
+function lockedTools() { return TOOLS.filter(t => t.lock && !toolOk(t)); }
+function spawnGift(x, y, z) {
+  const pool = lockedTools();
+  if (!pool.length) return null;                 // 全開了就不掉
+  const t = pool[Math.floor(Math.random() * pool.length)];
+  if (!gifts) gifts = [];
+  const g = { id: t.id, k: TOOLS.indexOf(t), x, y: Math.max(y, GIFT_Y), z,
+              vy: GIFT_RISE, sc: 0, ph: rr(0, 6.3), rest: false };
+  gifts.push(g);
+  if (gifts.length > GIFT_MAX) gifts.shift();
+  return g;
+}
+/* 這一下打掉 n 塊，該掉幾顆泡泡。回傳真的掉了幾顆（全開時是 0）。 */
+function giftRoll(n, x, y, z) {
+  if (!(n > 0)) return 0;
+  const rate = n / GIFT_EVERY;
+  let k = Math.floor(rate);
+  if (Math.random() < rate - k) k++;
+  let got = 0;
+  for (let i = 0; i < k; i++) if (spawnGift(x + rr(-1.2, 1.2), y, z + rr(-1.2, 1.2))) got++;
+  return got;
+}
+function stepGifts(dt) {
+  if (!gifts) return;
+  for (const g of gifts) {
+    g.ph += dt;
+    if (g.sc < 1) g.sc = Math.min(1, g.sc + dt / GIFT_POP);
+    if (g.rest) { g.y = GIFT_Y + Math.sin(g.ph * 1.6) * GIFT_BOB; continue; }
+    g.vy = Math.max(-GIFT_FALL, g.vy - GIFT_G * dt);
+    g.y += g.vy * dt;
+    if (g.y <= GIFT_Y) { g.y = GIFT_Y; g.vy = 0; g.rest = true; }
+  }
+}
+/* 點到第 i 顆：解鎖、存檔、選單那一格當場從鎖頭變成可以點。
+   **存檔是使用者指名要的**（「記得觸發儲存」）：解鎖是紀錄，關頁就沒了最不能接受。 */
+function takeGift(i) {
+  if (!gifts || !gifts[i]) return null;
+  const g = gifts.splice(i, 1)[0];
+  if (!gifts.length) gifts = null;
+  const t = TOOLS.find(x => x.id === g.id);
+  if (stats.gift.indexOf(g.id) < 0) stats.gift.push(g.id);
+  save();
+  renderTools();
+  toast('🫧 ' + t.n + ' 解鎖了', '泡泡開出來的，不用等累計擊飛');
+  sndBadge();
+  spawnStars(g.x, g.z, g.y, 2.2, 10);            // 破掉那一下撒一把星（同魔法陣那套）
+  return t;
+}
 
 /* 小槌的衝擊半徑。v1.165 從 5.5 收到 3.6（使用者：「槌子　減小一點破壞範圍
    （可能打約 0.8~0.5 之間）」——取中間的 0.65 倍）。
@@ -293,6 +372,7 @@ function dropHung(drop) {
 function afterHit(n, point, R, own, self) {
   if (n <= 0) return;
   stats.smashed += n;
+  giftRoll(n, point.x, point.y, point.z);           // 有機率掉道具泡泡（v1.214）
   if (n > stats.bestHit) stats.bestHit = n;
   if ((own === undefined ? n : own) > 0 && phase === 'done') phase = 'wreck';
   /* 震倒的判定高度也要算（v1.147，使用者：「炸彈炸在屋頂、槌子砸在高處，
@@ -3568,6 +3648,7 @@ function stepFire(dt) {
     if (f.sp && b.st === SET) {
       breakBlock(b, rr(-1.3, 1.3), rr(-0.4, 0.6), rr(-1.3, 1.3));
       stats.smashed++;
+      giftRoll(1, b.x, b.y, b.z);            // 燒斷的也算破壞，一樣有機率掉泡泡（v1.214）
       markSupportDirty(0.05);
     }
     /* 焦黑要設在 breakBlock 之後：freeBlock 會把目標色打回建材色（碎料就是建材），
@@ -6863,9 +6944,11 @@ function markTool(id) {
 
    **小人的那一下不驗**：手指本來就設計成「人排第一」，隔著建築也戳得到（見 onUp）。
    改出來的 hit 不帶 idx（那是引擎的 instance 編號）：只有 torch 在用它，而它本來就有
-   「找落點附近最近的一塊建築」的後路，落點退到牆前面之後找到的就是那面牆。 */
+   「找落點附近最近的一塊建築」的後路，落點退到牆前面之後找到的就是那面牆。
+   **道具泡泡那一下也不驗**（v1.214）：它在引擎那邊就已經確認「前面沒有東西擋著」才算
+   點到（見 pick），再走一次這裡只會被格線與畫出來的積木那 0.06 格差值改判成打到牆。 */
 function fixHit(hit) {
-  if (!hit || hit.kind === 'worker' || !hit.dir || !(hit.dist > 0)) return hit;
+  if (!hit || hit.kind === 'worker' || hit.kind === 'gift' || !hit.dir || !(hit.dist > 0)) return hit;
   const d = hit.dir, p = hit.point;
   let fx = p.x, fy = p.y, fz = p.z, wall = -1, got = false;
   for (let t = Math.min(hit.dist, 60); t >= 0; t -= 0.3) {

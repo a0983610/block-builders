@@ -385,6 +385,13 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那一段自己裝回去（見「閒逛的動物」）。 */
   if (!window.herdStep) window.herdStep = stepHerd;
   stepHerd = () => {};
+  /* 道具泡泡（v1.214）也預設關掉。破壞積木有 1/GIFT_EVERY 的機率掉一顆，而泡泡
+     **永遠不會自己消失**（使用者定的）——量 draw call 的那幾條都是「先量沒東西在場的
+     數字、打一發再量、收掉再量一次」，中間掉一顆就多一個 draw call，那些條目會偶爾紅；
+     它還會解鎖道具，把「每一把都卡在自己那一格」那種條目一起洗掉。
+     要測這件事本身的那幾條自己把它裝回去（見「破壞道具與解鎖」裡的泡泡那一段）。 */
+  if (!window.giftRollFn) window.giftRollFn = giftRoll;
+  giftRoll = () => 0;
   /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
      清成一般碎料就好，下一次 startBuild 的 reconcilePool 會把多的收掉。 */
   window.clearHomes = () => {
@@ -429,6 +436,9 @@ const installClean = page => page.evaluate(() => {
     gates = null; weapons = null; gateEnd();
     ENG.putGates([]); ENG.putWeapons([]);
     swords = null; ENG.putSwords([]);   // 大劍（v1.161）：一趟快兩秒，別跨到下一條
+    /* 道具泡泡（v1.214）：它**永遠不會自己消失**（使用者定的），不清的話這一段掉下來的
+       那幾顆會一路飄到後面每一段去（點擊、draw call、解鎖狀態都會被它影響）。 */
+    gifts = null; ENG.putGifts([]);
     /* 箭雨（v1.171）：一隊人與飛在半空的箭是兩份清單，兩份都要收。
        弓箭手是接在 workers 後面畫的，所以清掉之後還要把小人的 count 收回來，
        不然這一段留下的 40 個位子會被下一條測試量到（它們讀的是 workerMesh.count）。 */
@@ -10910,6 +10920,178 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('推到最後一格就全開', lock1.all, '擊飛 ' + lock1.top + ' 塊');
   ok('解鎖後畫面上的鎖頭消失',
      lock1.btn.join(',') === Array(NTOOL).fill('open').join(','), lock1.btn.join(','));
+
+  /* ── 破壞道具泡泡（v1.214）────────────────────────────────
+     > 使用者：「破壞積木有機率 掉出一個隨機的破壞道具泡泡 點了以後直接解鎖該道具
+     > (記得觸發儲存)　機率大約是破壞一個9000積木建築掉一個
+     > 同時提高原本破壞依序獲得破壞道具的門檻(大約*2) 因為多了這個機制」
+
+     整段都寫成**規則型**：機率那幾條把 Math.random 押死（0 ＝ 一定中、0.999 ＝ 只有
+     整數部分會中），飄落那一條直接餵 dt 給 stepGifts，兩邊都不跑模擬、永遠不會飄。
+     押過的骰子一定要還回去（見〈測試動過的全域狀態要還回去〉）。 */
+  ok('解鎖階梯的步幅是 4,000（v1.214 從 2,000 拉成兩倍）', lock0.step === 4000,
+     'LOCK_STEP = ' + lock0.step + '，最後一把 ' + lock0.txt[lock0.txt.length - 1]);
+  const gift = await page.evaluate(() => {
+    const R = Math.random, out = {};
+    /* installClean 把 giftRoll 換成空的了（見那一段）：這幾條要的就是它本人，
+       量完再把空的裝回去，不然後面每一段都會開始掉泡泡。 */
+    const stub = giftRoll;
+    giftRoll = window.giftRollFn || giftRoll;
+    try {
+      cleanTools();
+      /* ① 掉落率就是「這一下打掉幾塊 ÷ GIFT_EVERY」 */
+      stats = freshStats(); gifts = null;
+      Math.random = () => 0;
+      out.one = giftRoll(1, 0, 20, 0);                    // 一塊也有 1/9000，押 0 一定中
+      gifts = null;
+      Math.random = () => 0.999;
+      out.miss = giftRoll(1, 0, 20, 0);                   // 同一發押到最大：不中
+      out.exact = giftRoll(GIFT_EVERY, 0, 20, 0);         // 整數部分：一座 9000 塊剛好一顆
+      out.twice = giftRoll(GIFT_EVERY * 2, 0, 20, 0);     // 一發打掉兩座的量就兩顆
+      out.every = GIFT_EVERY;
+      /* ② 場上最多 GIFT_MAX 顆（同其他清單型道具：再掉就擠掉最早那顆） */
+      gifts = null;
+      out.burst = giftRoll(GIFT_EVERY * 20, 0, 20, 0);
+      out.cap = gifts.length; out.capWant = GIFT_MAX;
+      /* ③ 只從「還沒解鎖」的裡面挑，而且真的是隨機挑（不是每次都同一把） */
+      gifts = null; stats = freshStats();
+      stats.smashed = TOOLS.filter(t => t.lock)[2].lock.need;   // 先用階梯開掉前三把
+      const open = TOOLS.filter(t => toolOk(t)).map(t => t.id);
+      const seq = [0, 0.17, 0.33, 0.5, 0.67, 0.83, 0.99];
+      let si = 0;
+      Math.random = () => seq[si++ % seq.length];
+      const picked = [];
+      for (let i = 0; i < 40; i++) { const g = spawnGift(0, 20, 0); if (g) picked.push(g.id); }
+      out.pickN = picked.length;
+      out.pickOpen = picked.filter(id => open.indexOf(id) >= 0).length;    // 已經開的不該再掉
+      out.pickKinds = new Set(picked).size;
+      out.lockedN = lockedTools().length;
+      /* ④ 飄下來、落地就停在 GIFT_Y 上下浮著（不會自己消失） */
+      Math.random = R;
+      gifts = null;
+      const g4 = spawnGift(3, 40, -2);
+      let t4 = 0;
+      while (!g4.rest && t4 < 30) { stepGifts(0.05); t4 += 0.05; }
+      out.fallT = +t4.toFixed(2); out.restY = +g4.y.toFixed(2);
+      out.moved = +Math.hypot(g4.x - 3, g4.z + 2).toFixed(3);   // 落點不該橫向飄走
+      out.sc = g4.sc;                                           // 由小長大，落地時早就長滿了
+      let lo = 99, hi = -99;
+      for (let i = 0; i < 40; i++) { stepGifts(0.05); lo = Math.min(lo, g4.y); hi = Math.max(hi, g4.y); }
+      out.bob = [+lo.toFixed(2), +hi.toFixed(2)];
+      out.alive = gifts.length;                                 // 兩秒過去還在（不會自己破掉）
+      out.giftY = GIFT_Y; out.giftBob = GIFT_BOB;
+      /* ⑤ 點下去：直接解鎖那一把、寫進存檔、選單那一格當場開起來 */
+      gifts = null; stats = freshStats(); Math.random = () => 0;
+      const g5 = spawnGift(0, 20, 0), id5 = g5.id;
+      out.id5 = id5;
+      out.before = toolOk(TOOLS.find(t => t.id === id5));
+      localStorage.removeItem(SAVE_KEY);
+      const took = takeGift(0);
+      out.took = took && took.id;
+      out.after = toolOk(TOOLS.find(t => t.id === id5));
+      out.inStats = stats.gift.indexOf(id5) >= 0;
+      out.gone = gifts === null;
+      out.saved = !!localStorage.getItem(SAVE_KEY);
+      out.smashed = stats.smashed;                  // 泡泡不會順便灌擊飛數
+      renderTools();
+      const btn = [...document.querySelectorAll('.tool')].find(e => e.dataset.tool === id5);
+      out.btn = btn && btn.className.indexOf('lock') < 0;
+      /* ⑥ 存檔關掉再開還在（解鎖不能只活在這一次開著的分頁裡） */
+      stats = freshStats();
+      out.beforeLoad = toolOk(TOOLS.find(t => t.id === id5));
+      load();
+      out.afterLoad = toolOk(TOOLS.find(t => t.id === id5)) && stats.gift.indexOf(id5) >= 0;
+      /* ⑦ 全部解鎖之後就不掉了（掉了也沒有東西可以開） */
+      stats = freshStats();
+      stats.smashed = TOOLS.filter(t => t.lock).slice(-1)[0].lock.need;
+      gifts = null; Math.random = () => 0;
+      out.allOpen = TOOLS.every(t => toolOk(t));
+      out.noneWhenOpen = giftRoll(GIFT_EVERY * 3, 0, 20, 0);
+      out.stillNull = gifts === null;
+      /* ⑧ 沒東西在場就不吃 draw call（那條規矩，見 CLAUDE.md〈效能相關〉） */
+      gifts = null; draw();
+      out.hidden = ENG.three.giftMesh.visible === false;
+    } finally {
+      Math.random = R; giftRoll = stub;
+      stats = freshStats(); gifts = null; cleanTools(); renderTools();
+    }
+    return out;
+  });
+  ok('破壞 ' + gift.every + ' 塊平均掉一顆泡泡（機率就是「打掉幾塊 ÷ ' + gift.every + '」）',
+     gift.one === 1 && gift.miss === 0 && gift.exact === 1 && gift.twice === 2,
+     '一塊押中 ' + gift.one + ' 顆／一塊押不中 ' + gift.miss + ' 顆／' +
+     gift.every + ' 塊 ' + gift.exact + ' 顆／' + gift.every * 2 + ' 塊 ' + gift.twice + ' 顆');
+  ok('場上最多同時 ' + gift.capWant + ' 顆，再掉就擠掉最早那顆',
+     gift.cap === gift.capWant && gift.burst === 20,
+     '一次掉 ' + gift.burst + ' 顆，場上留下 ' + gift.cap + ' 顆');
+  ok('泡泡只從還沒解鎖的道具裡挑，而且是隨機挑',
+     gift.pickN === 40 && gift.pickOpen === 0 && gift.pickKinds > 1 &&
+     gift.pickKinds <= gift.lockedN,
+     '抽 ' + gift.pickN + ' 次抽到 ' + gift.pickKinds + ' 種（還鎖著的有 ' + gift.lockedN +
+     ' 把），已經解鎖的抽到 ' + gift.pickOpen + ' 次');
+  ok('泡泡飄下來就停在地面上方 ' + gift.giftY + '，上下浮著不會消失',
+     Math.abs(gift.restY - gift.giftY) < 1e-6 && gift.moved < 1e-6 && gift.sc === 1 &&
+     gift.alive === 1 &&
+     gift.bob[0] >= gift.giftY - gift.giftBob - 1e-6 && gift.bob[1] <= gift.giftY + gift.giftBob + 1e-6,
+     '從 40 高飄 ' + gift.fallT + ' 秒落定在 ' + gift.restY +
+     '，之後在 ' + gift.bob[0] + '～' + gift.bob[1] + ' 之間浮');
+  ok('點下去直接解鎖那一把，不必管累計擊飛',
+     gift.before === false && gift.after === true && gift.took === gift.id5 &&
+     gift.inStats && gift.gone && gift.smashed === 0,
+     '開到 ' + gift.id5 + '（點之前鎖著：' + !gift.before + '，擊飛數還是 ' + gift.smashed + '）');
+  ok('撿到就存檔，關掉再開還在（使用者指名要的）',
+     gift.saved && gift.btn && gift.beforeLoad === false && gift.afterLoad,
+     '存檔寫了：' + gift.saved + '、讀回來還開著：' + gift.afterLoad + '、選單那一格開了：' + gift.btn);
+  ok('全部解鎖之後就不掉泡泡了',
+     gift.allOpen && gift.noneWhenOpen === 0 && gift.stillNull,
+     '打掉 ' + gift.every * 3 + ' 塊也掉了 ' + gift.noneWhenOpen + ' 顆');
+  ok('場上沒泡泡就不吃 draw call', gift.hidden);
+
+  /* 點得到才有用：泡泡在引擎那邊排在**所有東西前面**（拿著核彈也點得到），
+     但被建築擋住的那一顆不算——那一顆畫面上本來就看不見。 */
+  const giftPick = await page.evaluate(() => {
+    const R = Math.random, out = {};
+    try {
+      startBuild(true); completeNow(); cleanTools();
+      stats = freshStats(); gifts = null;
+      const cam = ENG.three.camera;
+      ENG.updateCamera(1); cam.updateMatrixWorld();
+      Math.random = () => 0;
+      const g = spawnGift(0, 20, 0);
+      g.sc = 1; g.rest = true;
+      // 擺在鏡頭正前方 12 單位：一定在畫面裡，而且前面什麼都沒有
+      const fwd = new THREE.Vector3(); cam.getWorldDirection(fwd);
+      g.x = cam.position.x + fwd.x * 12; g.y = cam.position.y + fwd.y * 12;
+      g.z = cam.position.z + fwd.z * 12;
+      draw();
+      const v = new THREE.Vector3(g.x, g.y, g.z).project(cam);
+      const px = (v.x + 1) / 2 * window.innerWidth, py = (1 - v.y) / 2 * window.innerHeight;
+      out.kinds = ['skip', 'man', ''].map(m => (ENG.pick(px, py, m) || {}).kind);
+      const raw = ENG.pick(px, py, 'skip');
+      out.idx = raw && raw.idx;
+      out.fixed = raw && fixHit(raw).kind;         // fixHit 不該把它改判成打到牆
+      /* 搬到某一塊積木的**正後方**（同一條射線上再往後 2.5）：投影到螢幕上是同一個點，
+         但射線會先打到那一塊，所以那一顆就點不到了。 */
+      const b = blocks.find(x => x.st === 3 && x.y > 2);
+      const d = new THREE.Vector3(b.x - cam.position.x, b.y - cam.position.y,
+                                  b.z - cam.position.z).normalize();
+      g.x = b.x + d.x * 2.5; g.y = b.y + d.y * 2.5; g.z = b.z + d.z * 2.5;
+      draw();
+      const v2 = new THREE.Vector3(g.x, g.y, g.z).project(cam);
+      out.blocked = (ENG.pick((v2.x + 1) / 2 * window.innerWidth,
+                              (1 - v2.y) / 2 * window.innerHeight, 'skip') || {}).kind;
+    } finally {
+      Math.random = R;
+      stats = freshStats(); gifts = null; cleanTools(); renderTools();
+    }
+    return out;
+  });
+  ok('拿哪一把道具都點得到泡泡（它排在所有東西前面）',
+     giftPick.kinds.join(',') === 'gift,gift,gift' && giftPick.idx === 0 &&
+     giftPick.fixed === 'gift',
+     '三種點選模式回報的是 ' + giftPick.kinds.join('／'));
+  ok('被建築擋住的泡泡點不到', giftPick.blocked === 'block',
+     '把泡泡塞進建築裡，點下去打到的是 ' + giftPick.blocked);
 
   /* 手指：什麼都不破壞，但戳得倒小人 */
   await reset(page, { shape: '吉薩金字塔', cnt: 700, workers: 12 });

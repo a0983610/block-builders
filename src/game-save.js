@@ -19,9 +19,12 @@ const SAVE_KEY = 'block-builders/save1';
 const SAVE_MAGIC = 'BB1';
 const SAVE_XOR = 'winton-block-builders-2026';
 
+/* tools＝**用過**哪幾把（成就〈工具箱清空〉在看）；gift＝從泡泡裡**開到**哪幾把
+   （v1.214，跟累計擊飛那條階梯是兩條並行的解鎖路，見 game-tools.js 的 toolOk）。
+   兩個都是道具 id 的清單，但問的是不同的事，所以各存各的。 */
 const freshStats = () => ({
   destroyed: 0, smashed: 0, carried: 0, poked: 0, spent: 0, wrecked: 0,
-  bestHit: 0, bigBuild: 0, miracle: false, built: [], tools: [], badges: []
+  bestHit: 0, bigBuild: 0, miracle: false, built: [], tools: [], gift: [], badges: []
 });
 let stats = freshStats();
 /* 面板上的設定也一起存，不然每次打開都要重調一輪 */
@@ -176,6 +179,7 @@ function applySave(o) {
   // 認得的才留：存檔被改過、或舊版留下已經不存在的 id，都不要讓它影響成就判定
   f.badges = f.badges.filter(id => BADGES.some(b => b.id === id));
   f.tools = f.tools.filter(id => TOOLS.some(t => t.id === id));
+  f.gift = f.gift.filter(id => TOOLS.some(t => t.id === id && t.lock));   // 免解鎖的三把不該在裡面
   stats = f;
   const g = merge(freshPref(), o.p);
   /* 沒有版本欄位＝預設建材還是 900 那個年代存的。那時候的 900 分不出是玩家挑的

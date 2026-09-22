@@ -109,6 +109,7 @@ function step(dt) {
   stepArchers(dt);
   stepArrows(dt);
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
+  stepGifts(dt);                         // 道具泡泡（v1.214）：飄下來、落地之後上下浮著等人點
   stepDozers(dt);
   stepTrucks(dt);
   stepWater(dt);
@@ -131,6 +132,7 @@ function step(dt) {
       if (b.fallIn <= 0) {
         breakBlock(b, rr(-2.6, 2.6), rr(-1.6, 0.8), rr(-2.6, 2.6));
         stats.smashed++;                // 垮下來的也算擊飛
+        giftRoll(1, b.x, b.y, b.z);     // 也一樣有機率掉道具泡泡（v1.214）
         // 這塊垮掉之後，原本靠它撐住的鄰居可能也懸空了，再算一次
         markSupportDirty(0.05);
       }
@@ -267,6 +269,7 @@ function draw() {
   ENG.putGates(gates ? gateList() : EMPTY);
   ENG.putWeapons(weapList());                       // 兵器 ＋ 箭雨的箭（同一顆網格，見 weapList）
   ENG.putSwords(swords || EMPTY);                   // 大劍（v1.161，欄位就是 stepSwords 那一份）
+  ENG.putGifts(gifts || EMPTY);                     // 道具泡泡（v1.214）：沒有就 visible=false
   /* 幽浮（v1.167）。飛出場之後還在倒數丟東西的那幾台不畫，所以過一手 ufoList()。 */
   ENG.putUfos(ufoList());
 }
@@ -335,6 +338,9 @@ function onUp(e) {
   const hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man'
                                   : tool === 'fire' || tool === 'bucket' ? '' : 'skip'));
   if (!hit) return;
+  /* 道具泡泡（v1.214）：撿起來就解鎖，跟手上拿哪一把無關，也不會用掉那一發
+     ——引擎那邊已經把它排在所有東西前面（見 pick）。 */
+  if (hit.kind === 'gift') { takeGift(hit.idx); return; }
   if (hit.kind === 'worker') {            // 戳小人：跌倒、手上的積木掉下來
     const w = workers[hit.idx];
     if (!w || w.air) return;
@@ -813,6 +819,9 @@ function pasteText(ta, btn, back) {
 function boot() {
   $('ver').textContent = 'v' + VERSION;
   ENG.init($('cv'));
+  /* 道具泡泡的貼圖要等這裡才畫得出來（v1.214）：引擎不認得道具表，
+     哪幾個圖示要畫進那張貼圖是規則這邊餵過去的，見 engine.js 的 setGiftIcons。 */
+  ENG.setGiftIcons(TOOLS.map(t => t.k));
   window.addEventListener('resize', () => ENG.resize());
 
   const cv = $('cv');

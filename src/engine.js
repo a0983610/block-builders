@@ -23,6 +23,7 @@ const ENG = (function () {
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
   let emoMesh, emoGeo, emoPos, emoUv;      // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
+  let giftMesh, giftGeo, giftPos, giftUv;  // 掉在地上的道具泡泡（v1.214，見 setGiftIcons／putGifts）
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
      一顆七個部位，全部在同一顆 InstancedMesh 裡。 */
   const NUKE_MAX = 4;
@@ -3531,6 +3532,112 @@ const ENG = (function () {
     emoMesh.visible = n > 0;
   }
 
+  /* ── 破壞道具泡泡（v1.214）──────────────────────────────
+     破壞積木有機率掉一顆泡泡在地上，點下去直接解鎖裡面那一把（規則在 game-tools.js，
+     見 開發筆記〈破壞積木掉道具泡泡〉）。畫法整個沿用表情圖示那一套：一片永遠正對鏡頭的
+     貼圖、一個 draw call，場上沒泡泡就 visible = false（一個 draw call 都不吃）。
+     跟表情圖示只差兩件事：
+
+       · **圖示是道具的 emoji**，而道具表（TOOLS）是規則那一層的東西——這支檔案不認得它。
+         所以要畫哪幾個圖示是開場由規則那邊餵進來的（`ENG.setGiftIcons(TOOLS.map(t => t.k))`，
+         見 game-ui.js 的 boot），貼圖也是那一刻才畫。沒餵就整組不存在，什麼都不會畫。
+       · **它是點得到的**：pick() 把 giftMesh 排在所有東西前面（見那一段）。
+
+     emoji 用 fillText 畫進 canvas（表情圖示那四種是自己用路徑畫的，因為那是自訂圖案；
+     道具的圖示本來就是系統字型裡的 emoji，照著重畫一次只會畫得比較差）。 */
+  const MAXGIFT = 8;                 // 引擎的上限。規則那邊的 GIFT_MAX 是 6，留兩格餘裕
+  const GIFT_CELL = 128;             // 貼圖一格幾像素（同 EMO_CELL：畫面上最多百來像素）
+  const GIFT_SIZE = 3.2;             // 泡泡直徑（世界單位）＝ 3.4 塊積木寬
+  const GIFT_FONT = '"Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif';
+  let GIFT_N = 0;                    // 貼圖裡有幾格（＝餵進來幾個圖示）
+  const giftAt = new Int32Array(MAXGIFT);   // 這一幀第 n 片畫的是清單裡的第幾顆（pick 要用）
+  /* 一格一格畫，座標以「這一格的左上角」為原點。只用平塗的路徑、不用漸層——
+     跟表情圖示同一個理由：這個遊戲整個是平面著色的方塊，帶漸層的貼圖看起來像別的遊戲的圖。 */
+  function paintGift(g, x0, emo) {
+    const cx = x0 + GIFT_CELL / 2, cy = GIFT_CELL / 2, R = GIFT_CELL * 0.44, TAU = Math.PI * 2;
+    g.fillStyle = 'rgba(206,234,255,0.44)';                  // 泡身（淡藍、半透明）
+    g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,0.95)'; g.lineWidth = GIFT_CELL * 0.05;
+    g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.stroke();     // 外圈白邊
+    g.strokeStyle = 'rgba(96,176,238,0.55)'; g.lineWidth = GIFT_CELL * 0.022;
+    g.beginPath(); g.arc(cx, cy, R * 0.88, 0, TAU); g.stroke();   // 內圈：兩層邊才像玻璃
+    g.fillStyle = 'rgba(255,255,255,0.92)';                  // 高光：左上一顆小圓
+    g.beginPath(); g.arc(cx - R * 0.42, cy - R * 0.46, R * 0.15, 0, TAU); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,0.72)'; g.lineWidth = GIFT_CELL * 0.03; g.lineCap = 'round';
+    g.beginPath(); g.arc(cx, cy, R * 0.74, Math.PI * 1.02, Math.PI * 1.3); g.stroke();  // ＋一道短弧
+    g.font = Math.round(GIFT_CELL * 0.5) + 'px ' + GIFT_FONT;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(emo, cx, cy + GIFT_CELL * 0.02);              // 中間那一把道具
+  }
+  /* 規則那邊在開場餵一次：keys[i] 就是道具表第 i 把的圖示，所以泡泡只要帶「第幾把」。
+     再餵一次就整張重畫（貼圖換掉、網格沿用），開場以外沒有人會呼叫它。 */
+  function setGiftIcons(keys) {
+    if (!scene || !keys || !keys.length) return;
+    GIFT_N = keys.length;
+    const cv = document.createElement('canvas');
+    cv.width = GIFT_CELL * GIFT_N;
+    cv.height = GIFT_CELL;
+    const g = cv.getContext('2d');
+    for (let i = 0; i < GIFT_N; i++) paintGift(g, i * GIFT_CELL, keys[i]);
+    const tex = new T.CanvasTexture(cv);
+    tex.colorSpace = T.SRGBColorSpace;   // 同表情圖示：不設的話 canvas 畫的顏色會整片偏亮
+    if (giftMesh) {
+      if (giftMesh.material.map) giftMesh.material.map.dispose();
+      giftMesh.material.map = tex; giftMesh.material.needsUpdate = true;
+      return;
+    }
+    giftGeo = new T.BufferGeometry();
+    giftPos = new Float32Array(MAXGIFT * 4 * 3);
+    giftUv = new Float32Array(MAXGIFT * 4 * 2);
+    const pos = new T.BufferAttribute(giftPos, 3), uv = new T.BufferAttribute(giftUv, 2);
+    pos.setUsage(T.DynamicDrawUsage); uv.setUsage(T.DynamicDrawUsage);
+    giftGeo.setAttribute('position', pos);
+    giftGeo.setAttribute('uv', uv);
+    const idx = [];
+    for (let i = 0; i < MAXGIFT; i++) {
+      const v = i * 4;
+      idx.push(v, v + 3, v + 2, v, v + 2, v + 1);
+    }
+    giftGeo.setIndex(idx);
+    giftGeo.setDrawRange(0, 0);
+    /* alphaTest 壓得比表情圖示低：泡身本來就是半透明的（alpha 0.44），
+       照那邊的 0.1 切下去泡身還在，但再高一點就會把整顆泡泡挖掉只剩圖示。 */
+    giftMesh = new T.Mesh(giftGeo, new T.MeshBasicMaterial({
+      map: tex, transparent: true, alphaTest: 0.05, depthWrite: false, side: T.DoubleSide
+    }));
+    giftMesh.frustumCulled = false; giftMesh.visible = false;
+    scene.add(giftMesh);
+  }
+  /* 清單裡一筆＝一顆泡泡：{x, y, z, k 第幾把道具, sc 大小倍率（冒出來時由小長大）} */
+  function putGifts(list) {
+    if (!giftMesh) return;
+    let n = 0;
+    _emoR.set(1, 0, 0).applyQuaternion(camera.quaternion);
+    _emoU.set(0, 1, 0).applyQuaternion(camera.quaternion);
+    for (let i = 0; i < list.length && n < MAXGIFT; i++) {
+      const g = list[i];
+      const cell = g.k | 0;
+      const hs = GIFT_SIZE * 0.5 * (g.sc === undefined ? 1 : g.sc);
+      if (cell < 0 || cell >= GIFT_N || !(hs > 0.001)) continue;
+      const u0 = cell / GIFT_N, u1 = (cell + 1) / GIFT_N;
+      const o = n * 12, t = n * 8;
+      for (let c = 0; c < 4; c++) {
+        const a = EMO_SX[c] * hs, b = EMO_SY[c] * hs;
+        giftPos[o + c * 3] = g.x + _emoR.x * a + _emoU.x * b;
+        giftPos[o + c * 3 + 1] = g.y + _emoR.y * a + _emoU.y * b;
+        giftPos[o + c * 3 + 2] = g.z + _emoR.z * a + _emoU.z * b;
+        giftUv[t + c * 2] = c === 1 || c === 2 ? u1 : u0;
+        giftUv[t + c * 2 + 1] = c < 2 ? 1 : 0;     // canvas 的上緣是 v=1（貼圖預設 flipY）
+      }
+      giftAt[n] = i;                               // 點到第 n 片＝清單裡的第 i 顆
+      n++;
+    }
+    giftGeo.setDrawRange(0, n * 6);
+    giftGeo.attributes.position.needsUpdate = true;
+    giftGeo.attributes.uv.needsUpdate = true;
+    giftMesh.visible = n > 0;
+  }
+
   /* ── 天災的生物（v1.138）───────────────────────
      地標蓋完之後會有東西從場邊走進來砸場（什麼時候來、來了做什麼是規則那邊的事，
      見 game-tools.js 的 DOOMS）。這裡只管「長什麼樣、怎麼擺」。
@@ -4709,28 +4816,40 @@ const ENG = (function () {
   /* beast 跟 worker 同一級（v1.146：破壞工具也打得到牠們）：'man' 這一把是手指／火把／
      水桶用的，會先挑活的東西；'skip' 是其餘破壞道具用的，那些一律不理活的，
      所以表裡照舊沒有 beast——被路過的猴子擋掉那一下就白點了。 */
-  const PICK_RANK = { block: 0, worker: 1, beast: 1, ground: 2 };
-  const PICK_MAN = { worker: 0, beast: 0, block: 1, ground: 2 };
-  const PICK_SKIP = { block: 0, ground: 1 };
+  /* 道具泡泡（v1.214）排在**每一把道具的最前面**：它不是拿道具打的東西，是撿的東西，
+     拿著核彈也要點得到。但它只有「沒被擋住」才算——見下面那條 i > 0。 */
+  const PICK_RANK = { gift: 0, block: 1, worker: 2, beast: 2, ground: 3 };
+  const PICK_MAN = { gift: 0, worker: 1, beast: 1, block: 2, ground: 3 };
+  const PICK_SKIP = { gift: 0, block: 1, ground: 2 };
   function pick(px, py, mode) {
     const rankOf = mode === 'man' ? PICK_MAN : mode === 'skip' ? PICK_SKIP : PICK_RANK;
     ndc.set(px / W * 2 - 1, -(py / H * 2 - 1));
     raycaster.setFromCamera(ndc, camera);
     // intersectObjects 是照距離排好的，所以同一種裡先遇到的就是最近的那個
-    const hits = raycaster.intersectObjects([blockMesh, workerMesh, beastMesh, ground], false);
+    const objs = [blockMesh, workerMesh, beastMesh, ground];
+    if (giftMesh && giftMesh.visible) objs.push(giftMesh);
+    const hits = raycaster.intersectObjects(objs, false);
     let best = null, rank = 9;
-    for (const h of hits) {
+    for (let i = 0; i < hits.length; i++) {
+      const h = hits[i];
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
                  : h.object === beastMesh ? 'beast'
+                 : h.object === giftMesh ? 'gift'
                  : h.object === ground ? 'ground' : null;
+      /* 泡泡被牆擋住就點不到（畫面上本來就看不見它：泡泡不寫深度，但仍然吃深度測試）。
+         hits 是照距離排的，所以「排在最前面」＝ 前面沒有東西擋著。 */
+      if (kind === 'gift' && i > 0) continue;
       if (kind === null || rankOf[kind] === undefined || !(rankOf[kind] < rank)) continue;
       rank = rankOf[kind];
       best = {
         kind: kind,
         idx: kind === 'block' ? h.instanceId
            : kind === 'worker' ? Math.floor(h.instanceId / WPARTS)
-           : kind === 'beast' ? Math.floor(h.instanceId / BEAST_PARTS) : -1,
+           : kind === 'beast' ? Math.floor(h.instanceId / BEAST_PARTS)
+           /* 泡泡是一整片貼圖網格（不是 instanced）：一顆兩個三角形，
+              而 giftAt 記著這一幀第幾片畫的是清單裡的第幾顆（見 putGifts）。 */
+           : kind === 'gift' ? giftAt[Math.floor(h.faceIndex / 2)] : -1,
         /* dist ＝ 射線飛了多遠才打到。規則那邊要拿它沿著射線往回走
            （水桶就靠這個把出水點退到牆的正確那一側，見 pourWater）。 */
         point: h.point, dir: raycaster.ray.direction.clone(), dist: h.distance
@@ -4747,6 +4866,7 @@ const ENG = (function () {
     init, resize, render, info, pick, camEye,
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers, putEmotes,
+    setGiftIcons, putGifts, GIFT_SIZE,         /* 道具泡泡（v1.214）：開場餵圖示、每幀送位置 */
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
     putBalls, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
@@ -4798,6 +4918,6 @@ const ENG = (function () {
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, giftMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh }; }
   };
 })();
