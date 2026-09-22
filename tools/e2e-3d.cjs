@@ -10742,18 +10742,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     })();
     /* 魔法陣：六秒預告，圈內的人夠時間全部跑出去。
        **人要自己擺**（v1.133 修間歇性失敗）：本來是「那一輪剛好站在圈內的人」，
-       而跑不跑得出半徑 30 同時看兩個骰子——他站得多裡面、加上自己抽的 16～34 跑多遠。
+       而跑不跑得出爆炸半徑同時看兩個骰子——他站得多裡面、加上自己抽的 16～34 跑多遠。
        門檻寫七成，實測就在邊上跳（16 人裡出去 11～13 人 ＝ 69%～81%），69% 那次就掛了。
-       改成全部擺在半徑 22：最短的一段 16 也跑得到 38，跑得出去變成**必然**，
+       改成全部擺在「最短的一段也跑得出去」的圈上，跑得出去變成**必然**，
        而萬一六秒不夠跑完（這條真正要驗的事）就會馬上現形。
-       這是這一段本來就在用的招——爆炸那組的「遠近各擺十個人」同一個道理。 */
+       這是這一段本來就在用的招——爆炸那組的「遠近各擺十個人」同一個道理。
+       **那個圈要讀常數算**（v1.215）：本來寫死 22（配 MAG_R 30，最短的 16 也跑得到 38）
+       ——半徑放大之後（先做的 ×2 那一版是 60），22 那個圈變成「怎麼跑都出不去」，這一條就從
+       「六秒夠不夠跑完」翻成永遠 0/20 人。它在 e2e-varying.json 裡（統計型、不判成敗），
+       所以**紅不了**，只會默默印一個沒有意義的數字。
+       徑向淨增至少 FLEE_RUN[0]×cos(FLEE_SKEW)（方向最多偏 FLEE_SKEW），再往裡收 4 當餘裕。
+       建材也從 900 提到 3000：逃命的位置夾在 debrisR + 20，900 那一檔的場地太小，
+       人會被夾在圈邊上（實測 3000 檔 debrisR 83.5，夾點 103.5，跑到 64 很寬裕）。 */
     shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
-    targetCnt = 900; setWorkerCount(20); startBuild(true);
+    targetCnt = 3000; setWorkerCount(20); startBuild(true);
     for (let i = 0; i < 400; i++) step(0.05);
+    const magAt = MAG_R - FLEE_RUN[0] * Math.cos(FLEE_SKEW) + 4;
     workers.forEach((w, i) => {
       releaseWorker(w);
       const a = i / workers.length * Math.PI * 2;
-      w.x = Math.cos(a) * 22; w.z = Math.sin(a) * 22; w.y = 0;
+      w.x = Math.cos(a) * magAt; w.z = Math.sin(a) * magAt; w.y = 0;
     });
     const inRing = workers.filter(w => Math.hypot(w.x, w.z) < MAG_R);
     const ring0 = inRing.map(w => ({ x: w.x, z: w.z }));
@@ -10765,6 +10773,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 各自跑了多遠（起點到終點的直線距離，路線本來就是直的）
     const runs = inRing.map((w, k) => Math.hypot(w.x - ring0[k].x, w.z - ring0[k].z));
     return { on, off, planted, mag: { n: inRing.length, fleeing: magFlee, out: magOut,
+                                      R: MAG_R, at: +magAt.toFixed(1),
                                       far: +magFar.toFixed(1),
                                       runMin: +Math.min(...runs).toFixed(1),
                                       runMax: +Math.max(...runs).toFixed(1) } };
@@ -10841,8 +10850,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      最短的一段 16 也跑得到 38，跑完的人一定在圈外，被時間切掉的一定還在圈內。 */
   ok('魔法陣六秒預告，圈內的人來得及跑',
      flee.mag.n > 5 && flee.mag.fleeing >= flee.mag.n && flee.mag.out === flee.mag.n,
-     '圈內 ' + flee.mag.n + ' 人全部起跑，跑出半徑 30 的有 ' + flee.mag.out +
-     ' 人（最遠 ' + flee.mag.far + '）');
+     '站在 ' + flee.mag.at + ' 的 ' + flee.mag.n + ' 人全部起跑，跑出半徑 ' +
+     flee.mag.R + ' 的有 ' + flee.mag.out + ' 人（最遠 ' + flee.mag.far + '）');
   /* 小人不會知道這一發的威力範圍到哪裡，所以每個人是「自己抽一段距離跑完就停」，
      不是「跑到安全半徑」。驗的是那段距離真的因人而異、而且落在設定的區間裡。 */
   ok('每個人跑的距離不一樣，跟爆炸半徑無關',
@@ -19992,6 +20001,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        以前整朵染紅、雲裡還撒粉白星光，使用者要的是同一種雲。 */
     const tinted = dust.filter(d => d.fade >= 3 && d.cr !== undefined).length;
     return { set0, calm, suck, seq, full, magTime: MAG_TIME, coreY: MAG_CORE_Y,
+             up: +(MAG_R * FLASH_UP).toFixed(2),
              alive, flashY, flew, flew1,
              set1: blocks.filter(b => b.st === 3).length,
              hitMax, after: !!magics, fire, cloud, tinted };
@@ -20016,7 +20026,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      現在整段吸的過程一直在剝，所以要驗三件事：一路剝（沒有哪一幀忽然少一大塊）、
      整段加起來剛好兩成、剝下來的真的有被捲到陣心。
      分子用**攔 afterHit** 數，不用塊數差：連帶垮塌的也是 SET 變 FLY，數塊數分不出來，
-     而 implode 記帳時半徑給 6、位置在陣心（見 game-tools.js），跟別人撞不到號。
+     而 implode 記帳時半徑給 MAG_CORE_R、位置在陣心（見 game-tools.js），跟別人撞不到號。
+     **半徑要讀常數**（v1.215）：這裡本來寫死 6，MAG_R 一放大（記帳半徑跟著變 9）
+     就再也攔不到，這一條量到「剝走 0 塊」——而它是統計型、不判成敗，所以悄悄過了一輪。
      藍圖指定新天鵝堡、3000 塊：分母要夠大，抽樣誤差才壓得下去。 */
   const mgTake = await page.evaluate(() => {
     cleanTools(); magics = null;
@@ -20026,7 +20038,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const orig = afterHit;
     let torn = 0;                        // implode 直接剝下來的（不含連帶垮塌）
     afterHit = (n, p, R) => {
-      if (R === 6 && Math.abs(p.y - MAG_CORE_Y) < 0.01) torn += n;
+      if (R === MAG_CORE_R && Math.abs(p.y - MAG_CORE_Y) < 0.01) torn += n;
       return orig(n, p, R);
     };
     castMagic({ x: 0, z: 0 });
@@ -20075,7 +20087,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { stood, inR, suckAt, torn, take: MAG_TAKE, impTime: IMP_TIME,
              maxDrop, dropFrames, preSet, n: pick ? pick.length : 0,
              pickD0: +pickD0.toFixed(1), gathered: +gathered.toFixed(1),
-             gatherY: +gatherY.toFixed(1), coreY: +MAG_CORE_Y.toFixed(1),
+             gatherY: +gatherY.toFixed(1), coreY: +MAG_CORE_Y.toFixed(1), ball: CRUSH_BALL,
              pulled: +(minD ? minD.reduce((s, v) => s + v, 0) / minD.length : -1).toFixed(1) };
   });
   ok('吸的過程一路在剝牆，不是某一幀忽然少一大塊',
@@ -20089,8 +20101,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '吸力從第 ' + mgTake.suckAt + ' 秒起，範圍內 ' + mgTake.inR + ' 塊 → 剝走 ' +
      mgTake.torn + ' 塊（' + (mgTake.torn / mgTake.inR * 100).toFixed(1) + '%，設定 ' +
      (mgTake.take * 100) + '%），爆炸前還有 ' + mgTake.preSet + ' 塊站著');
+  /* 「爆炸當下離陣心多近」的門檻要照**收攏球**算（v1.215）：本來寫死 5，配的是
+     CRUSH_BALL 2.6（實測平均 2.1～2.3）。球跟著 MAG_R 放大成 5.2 之後，平均自然
+     跟著到 4.6～5.1——寫死的 5 就變成「剛好卡在邊上」。兩倍球半徑對得上原本那個 5。
+     高度那項不動：它比的是「跟爆點差多少」，實測 1.0 以內。 */
   ok('剝下來的會被捲到陣心，爆炸那一刻就在爆點上',
-     mgTake.pulled < mgTake.pickD0 * 0.35 && mgTake.gathered < 5 &&
+     mgTake.pulled < mgTake.pickD0 * 0.35 && mgTake.gathered < mgTake.ball * 2 &&
      Math.abs(mgTake.gatherY - mgTake.coreY) < 3.5,
      '早期剝下來那批裡最外圈 ' + mgTake.n + ' 塊原本離陣心 ' + mgTake.pickD0 +
      '，爆炸當下 ' + mgTake.gathered + '（最靠近 ' + mgTake.pulled + '），高度 ' +
@@ -20107,11 +20123,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         剩下的離陣心近、徑向速度本來就小），取的窗一拉長就把前面較快的那幾幀平均進來，
         比出來的倍數會偏小（CRUSH_AT 0.6 那版取一秒半時是 3.9 → 8.1，只有 2.1 倍）。
         兩段等長又相鄰，比的才是「同一批碎料在交界前後的速度」。
-     ② 離陣心 2 格內的不算：已經到陣心的那些徑向速度沒有意義。
+     ② **離陣心 `CRUSH_BALL` 以內的不算**：已經收攏到那顆球裡的，徑向速度沒有意義
+        （它們只是在自己那個隨機目標點附近微調，一半往內一半往外）。
+        這個門檻 v1.215 之前寫死 2——`CRUSH_BALL` 跟著 MAG_R 放大之後
+        （先做的 ×2 那一版是 5.2），收攏好的那幾百塊剛好落在 2～5 這圈裡被算進來，
+        平均值就被它們拉成負的（那一版實測 2～5 那箱 454 塊、−14.8／秒，
+        而 5～10 箱 +32、10～20 箱 +54.7 照樣在往內衝，爆炸當下平均離陣心 5.1、最近 1.1
+        ——收攏本身好得很，是量測的圈畫錯了）。
         （曾經改成「只看 10 格外的」想放大差距，結果那個族群只剩 1～5 塊，
-        數字會隨機跳——樣本要夠多，這裡是 120～175 塊。）
-     實測（v1.93.1，CRUSH_AT 0.3）：0.7～0.9 → 13.6～15.3／秒，**16～19 倍**。
-     門檻只訂 2.5 倍：CRUSH_AT 一改倍數就跳很多（0.6 那版是 2.4 → 7.8 ＝ 3.2 倍），
+        數字會隨機跳——樣本要夠多，v1.215 之前是 120～175 塊。）
+     實測（v1.93.1，CRUSH_AT 0.3，排除圈還是 2 的時候）：0.7～0.9 → 13.6～15.3／秒，
+     **16～19 倍**。那個倍數是**尺度耦合出來的**：分母裡有一大批「已經被吸到陣心那一團、
+     被阻尼拖慢」的碎料（徑向速度 0.x），分子是同一批被拽上彈道（十幾／秒）。
+     排除圈改讀 `CRUSH_BALL` 之後那一批整批出局，剩下的是**還在外圈的**——
+     它們在慢吸段末期本來就已經很快，所以 v1.215 實測只剩 1.2～1.3 倍
+     （×2 那一版量到 18.3 → 24／秒，22／29 塊）。**這一條是統計型（e2e-varying.json），不判成敗**，
+     所以門檻跟著改成「後段更快」就好，不再留那個 2.5 倍（它現在守不住也沒在守）。
+     門檻本來訂 2.5 倍的理由留著參考：CRUSH_AT 一改倍數就跳很多（0.6 那版是 2.4 → 7.8 ＝ 3.2 倍），
      這一條守的是「那一段在不在」，不是「剛好幾倍」。
      紅檢（把 implode 裡的 fast 關成 false，等於退回 v1.92）：2 → 1／秒（0.5 倍），
      最後那一段反而是整段最慢的——慢吸一路遞減，不會自己冒出一段衝刺。
@@ -20127,7 +20155,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const b of blocks) {
         if (b.st !== 4) continue;
         const d = Math.hypot(b.x, b.z);
-        if (d > MAG_R || d < 2) continue;
+        if (d > MAG_R || d < CRUSH_BALL) continue;
         s += -(b.vx * b.x + b.vz * b.z) / d; n++;
       }
       return n ? { v: s / n, n } : null;
@@ -20148,16 +20176,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              sn, fn, slowN, fastN, at: CRUSH_AT };
   });
   ok('最後那一段改成快速往內吸，不是一路等速捲進來',
-     mgFast.fn > 2 && mgFast.slow > 0 && mgFast.fast > mgFast.slow * 2.5,
+     mgFast.fn > 2 && mgFast.slow > 0 && mgFast.fast > mgFast.slow,
      '快吸前那 ' + mgFast.at + ' 秒 ' + mgFast.sn + ' 幀：碎料平均往內 ' + mgFast.slow + ' ／秒（' +
      mgFast.slowN + ' 塊）→ 最後 ' + mgFast.at + ' 秒 ' + mgFast.fn + ' 幀：' +
      mgFast.fast + ' ／秒（' + mgFast.fastN + ' 塊）');
 
   /* 爆點要在最低那層的圓心上，不是地面：碎料被吸到那個高度，火球就該從那裡炸開。
-     火球本體再往上抬 R×0.22（免得被自己炸出來的碎料堆埋掉），所以對得上 12.1 + 6.6。 */
+     火球本體再往上抬 MAG_R×FLASH_UP（免得被自己炸出來的碎料堆埋掉），
+     所以對得上「陣心 + 那個抬升」。抬升**讀常數算**（v1.215 之前寫死 30×0.22，
+     MAG_R 一放大就變成假的期望值——見 開發筆記〈不要寫死會隨改動變動的數字〉）。 */
   ok('爆點在最低層魔法陣的圓心上',
-     Math.abs(mg.flashY - (mg.coreY + 30 * 0.22)) < 0.05,
-     '火球中心 y=' + mg.flashY.toFixed(1) + '（陣心 ' + mg.coreY.toFixed(1) + ' + 抬升 6.6）');
+     Math.abs(mg.flashY - (mg.coreY + mg.up)) < 0.05,
+     '火球中心 y=' + mg.flashY.toFixed(1) + '（陣心 ' + mg.coreY.toFixed(1) +
+     ' + 抬升 ' + mg.up + '）');
   ok('六秒一到火球把它們全噴出去',
      mg.set1 < mg.set0 * 0.2 && !mg.after && mg.flew1 > mg.flew * 1.5 && mg.hitMax > 25,
      '爆炸當下離陣心 ' + mg.flew.toFixed(1) + ' → 一秒後 ' + mg.flew1.toFixed(1) +
@@ -20184,7 +20215,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 v1.93 換成使用者從新參考圖挑的兩色：亮黃的鑲邊 #fcf534 ＋ 紅橘的場 #cb2306
                 （v1.62.1～v1.92 是亮黃／金黃的鑲邊配桃紅的場）。 */
              red: core.every(o => o.c === 0xfcf534 && o.fc === 0xcb2306),
-             ground: core[0] ? core[0].r : 0,
+             ground: core[0] ? core[0].r : 0, R: MAG_R,
              // 每層都要有填滿的盤與放射紋路，只有環的話看起來是「地上畫了一個圈」
              solid: all.filter(o => o.fill).length, lace: all.filter(o => o.sp).length };
   });
@@ -20372,8 +20403,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mgZip.closer === mgZip.n && mgZip.spd > mgZip.want * 0.6,
      mgZip.n + ' 顆裡有 ' + mgZip.closer + ' 顆靠近了，平均每秒收 ' + mgZip.spd +
      ' 單位（設定 ' + mgZip.want + '）');
+  // detail 印實際剩幾顆：寫死「一顆都不剩」的話，紅掉時看不出是剩幾顆（v1.215 踩過）
   ok('捲到陣心就熄掉，不會對穿過去再飛出另一邊', mgZip.left === 0,
-     '1.9 秒後那批 ' + mgZip.n + ' 顆一顆都不剩');
+     '1.9 秒後那批 ' + mgZip.n + ' 顆還剩 ' + mgZip.left + ' 顆');
   ok('陣心不再往外冒東西（原本那道光柱）', mgZip.plume === 0,
      '兩秒裡陣心 6 單位內往上飛的粒子累計 ' + mgZip.plume + ' 顆次');
 
@@ -20633,8 +20665,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('魔法陣長層不再出聲', mgSnd.rune === 'undefined' && mgSnd.boom === 'function',
      'sndRune 是 ' + mgSnd.rune + '、sndBoom 還是 ' + mgSnd.boom);
 
-  // 魔法爆炸也要有風壓（跟核彈同一套，只是顏色偏紅）
+  /* 魔法爆炸也要有風壓（跟核彈同一套，只是顏色偏紅）。
+     **前面留下的蘑菇雲與塵霧要先清掉**（v1.215 踩到）：`spawnWind` 自己有一道
+     「`dust.length > 600` 就不再生」的閘門，而上一條〈三個陣同時爆〉留下**三朵**
+     蘑菇雲，它們每幀都在生煙——實測爆炸那一刻 dust 已經 1009～1040，
+     這條就量到 0 顆。清乾淨之後同一發量到 dust 118、風壓塵土 64 顆（＝WIND_DUST）。
+     （順帶量到的既有行為：場上還有雲的時候**核彈那一發也吃不到風壓塵**，
+     跟這次放大無關，沒有去動那道閘門。） */
   const mgWind = await page.evaluate(() => {
+    clouds.length = 0; dust.length = 0;
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     let g = 0;
@@ -20648,11 +20687,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '被風吹著跑的塵土 ' + mgWind.wd + ' 顆');
   /* 整疊都浮在半空：最下層離地也有一段，而且不做滿爆炸半徑——
      做滿的話那一圈會比建築大一大圈，看起來像地上的跑道而不是浮空的陣。 */
+  /* 「沒有大到蓋滿爆炸範圍」要**照爆炸半徑算**（v1.215）：本來寫死 `30 * 0.8`，
+     MAG_R 一放大最下層半徑就超過那個 24（×2 那一版量到 34.3），這條會判不過
+     （而它在 e2e-varying.json 裡是統計型，所以只會默默印出來，不會紅）。 */
   ok('最下層浮在半空，也沒有大到蓋滿爆炸範圍',
-     mgRing.rings[0].y > 8 && mgRing.ground < 30 * 0.8,
-     '最下層離地 ' + mgRing.rings[0].y + '、半徑 ' + mgRing.ground + '（爆炸範圍 30）');
-  /* 整疊要夠高。最寬那圈直徑就有 46.8，疊得矮的話遠看是一疊盤子不是一座法陣——
-     這條線是使用者反映「太扁平」之後訂的（撐寬是 v1.93 照參考圖做的，高度沒動）。 */
+     mgRing.rings[0].y > 8 && mgRing.ground < mgRing.R * 0.8,
+     '最下層離地 ' + mgRing.rings[0].y + '、半徑 ' + mgRing.ground +
+     '（爆炸範圍 ' + mgRing.R + '）');
+  /* 整疊要夠高，疊得矮的話遠看是一疊盤子不是一座法陣——這條線是使用者反映「太扁平」
+     之後訂的（撐寬是 v1.93 照參考圖做的，高度倍率沒動）。
+     門檻 20 配的是 MAG_R 30 那一版（實測疊高 22.5）；v1.215 放大 1.5 倍之後是 33.8。 */
   ok('整疊夠高，不是扁扁的一疊',
      mgRing.rings[5].y - mgRing.rings[0].y > 20,
      '最下層 ' + mgRing.rings[0].y + ' → 最上層 ' + mgRing.rings[5].y +
@@ -20661,6 +20705,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 形狀（v1.93）：**上下大、中間細**的沙漏，而且照參考圖撐寬到最寬 0.78R——
      最上那圈直徑 46.8，超過整疊高度（22.5）的兩倍，遠看才是參考圖那個「寬而扁」的輪廓。
+     （那兩個絕對值是 MAG_R 30 那時的；v1.215 放大成 70.2／33.8，比例不變——所以
+     這一條驗的全是**倍率**，detail 裡的直徑與疊高改成照 MAG_R 算出來印。）
      每層各乘 0.82～1.18 的抖動（使用者要的「半徑保持有點隨機性」）。這裡守兩件事：
      ① 最寬的**一定**落在兩端（中間那幾層的上限 0.46×1.18 ＝ 0.54 搶不到）；
      ② **兩端都會輪到**——最下那圈的上限 0.62×1.18 ＝ 0.73 大過最上那圈的下限
@@ -20685,14 +20731,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if ([order[0][1], order[1][1]].every(i => i === 0 || i === 5)) ends2++;
     }
     for (const w of workers) w.flee = 0;
-    return { base, hist, ends2, N, wide: Math.max(...base),
+    return { base, hist, ends2, N, wide: Math.max(...base), R: MAG_R,
+             // 整疊高：頂層與底層的高度差（倍率 × MAG_R），detail 印出來用
+             h: +(MAG_R * (MAG_LAYER[MAG_LAYER.length - 1].y - MAG_LAYER[0].y)).toFixed(1),
              mid: Math.max(...base.slice(1, 5)) };
   });
   ok('上下兩層最寬、中間收窄，而且整疊寬過它的高度',
      mgShape.base[0] > mgShape.mid && mgShape.base[5] > mgShape.mid &&
      mgShape.wide > 0.7 && mgShape.wide <= 0.8,
      '各層 ' + mgShape.base.join('／') + 'R（中間最寬的一層 ' + mgShape.mid +
-     'R；最寬那圈直徑 ' + (mgShape.wide * 60).toFixed(1) + '，整疊高 22.5）');
+     'R；最寬那圈直徑 ' + (mgShape.wide * mgShape.R * 2).toFixed(1) +
+     '，整疊高 ' + mgShape.h + '）');
   ok('最寬的一圈一定落在最上或最下，而且兩端都會輪到',
      mgShape.hist[0] + mgShape.hist[5] === mgShape.N &&
      mgShape.hist[0] > 0 && mgShape.hist[5] > 0 && mgShape.ends2 / mgShape.N > 0.95,
@@ -21140,10 +21189,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      2. 「還站著的燒起來」要用**比爆炸範圍大**的建築才量得到（萬里長城橫著鋪開，
         遠比半徑 30 寬）。半徑 30 蓋滿的一般建築，範圍內一塊都不會剩——
         那種情況的餘火是「帶著火飛出去的碎料」，另一條測試在量。
-        **長城那兩發要 9000 那一檔**（v1.114）：換上新的長城藍圖之後 3000 那檔只有半徑 28.8
+        **長城那一發要 9000 那一檔**（v1.114）：換上新的長城藍圖之後 3000 那檔只有半徑 28.8
         （舊的 32.1），整條剛好落在魔法範圍內——實測魔法那一發打完只剩 2 塊站著，
         站著的餘火 0～2 塊，這條就變成擲骰子（四輪量到 24／1／1／0）。
-        9000 那檔半徑 46、打完還剩 4010～4784 塊站著，核彈與魔法都穩定量到 24 塊。 */
+        9000 那檔半徑 46、打完還剩 4010～4784 塊站著，核彈與魔法都穩定量到 24 塊。
+        **魔法那一發 v1.215 改用金門大橋 9000**：魔法的半徑放大之後，長城 9000
+        （實測還站著的最遠 45）就**整條落在範圍上**——先做的 ×2 那一版（R=60）打完
+        placedCnt 歸零、站著的餘火 0 塊；收成 1.5 倍（R=45）之後那個 45 剛好壓在
+        範圍邊上，一樣是在賭骰子。換成沿 z 軸拉開的金門大橋 9000（實測半徑 72.2，
+        R=60 時 60～90 那圈環帶有 4053 塊站著，R=45 更多），穩定量到 igniteAround
+        那邊的 R×1.2 上限（R=60 是 72 塊、R=45 是 54 塊），核彈那一發照舊用長城。
+        （不改成「把爆點挪到長城一端」是因為那要寫死一個偏移量，換藍圖就會再踩一次
+        v1.114 那個坑。） */
   const emb = await page.evaluate(() => {
     /* armed() 回報「道具還在倒數」，用它偵測爆炸落在哪一幀，不用自己數步數：
        倒數秒數改一下、或哪天多一幀延遲，數死的步數就會量到爆炸前或換場後。 */
@@ -21162,7 +21219,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 變數不能取名 nukes／magics：那會遮住同名的全域狀態，armed() 讀到的就是自己 */
     const bombE = one('美國國會大廈', () => placeBomb({ x: 14, y: 4, z: 0 }), () => !!bombs);
     const nukeE = one('萬里長城', () => callNuke({ x: 0, z: 0 }), () => !!nukes, 9000);
-    const magicE = one('萬里長城', () => castMagic({ x: 0, z: 0 }), () => !!magics, 9000);
+    const magicE = one('金門大橋', () => castMagic({ x: 0, z: 0 }), () => !!magics, 9000);
     /* 「剛好被夷平」要挑矮的：核彈炸在接觸點上，打高樓時炸點在樓頂，
        下半截會留著（那些就會有站著的餘火）。金字塔頂只有 14 高，整座都在半徑內。 */
     const flatE = one('吉薩金字塔', () => callNuke({ x: 0, z: 0 }), () => !!nukes);
