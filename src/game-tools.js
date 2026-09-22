@@ -4449,6 +4449,15 @@ function spawnBlast(p, R, magic) {
 const WIND_R = 2.6;                 // 氣浪掃到爆炸半徑的幾倍
 const WIND_RINGS = 4;
 const WIND_DUST = 64;               // 塵牆幾顆
+/* 塵牆自己的閘門（v1.215.1）。本來寫死 600，配的是「引擎的塵霧上限是 720」那個年代
+   ——現在 MAXDUST 是 3400，而**一朵蘑菇雲自己就吃到一千多顆**（CLOUD_CAP 1550、
+   CLOUD_SKIRT_CAP 1350）。所以場上還有前一發的雲時，下一發的塵牆**一顆都生不出來**：
+   實測爆炸那一刻 dust 已經 1009～1040，keep 塵 0 顆（核彈與魔法都一樣，連放兩發、
+   或三個陣同時爆就會看到「只有光環在掃、地上沒被掀起來」）。清乾淨重測同一發是
+   dust 118、64 顆滿額。
+   改成照引擎的池子留一截：塵牆只要 64 顆、又是一次性的爆量（0.9～1.7 秒就退光），
+   留 300 給還在冒的煙綽綽有餘——真的頂到池子才停，那時本來就畫不下了。 */
+const WIND_DUST_CAP = ENG.MAXDUST - 300;
 function spawnWind(p, R, magic) {
   /* 顏色偏暖、不要接近白：這幾圈是加法混色又鋪得很大，給白的話整片畫面會過曝，
      連中間那顆火球都被洗掉（量過：拿掉火球的同一幀，過曝白從 0.13% 漲到 0.21%，
@@ -4468,7 +4477,7 @@ function spawnWind(p, R, magic) {
     });
   }
   for (let i = 0; i < WIND_DUST; i++) {
-    if (dust.length > 600) break;                   // 引擎的塵霧上限是 720
+    if (dust.length > WIND_DUST_CAP) break;         // 見 WIND_DUST_CAP
     const a = i / WIND_DUST * Math.PI * 2 + rr(-0.06, 0.06);
     const sp = R * rr(1.1, 1.9);                    // 追得上光環的速度，才像同一股風
     dust.push({

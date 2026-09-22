@@ -20685,6 +20685,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('魔法爆炸也會掃出風壓', mgWind.wd === mgWind.want,
      '被風吹著跑的塵土 ' + mgWind.wd + ' 顆');
+  /* 塵牆的閘門要照引擎的池子算，不是寫死的 600（v1.215.1）：一朵蘑菇雲自己就吃到
+     一千多顆，閘門停在 600 的話「場上還有前一發的雲時，下一發的塵牆一顆都生不出來」
+     ——那正是上面那條清場之前量到的 0 顆。
+     **不跑模擬**，直接造場面驗規則（見〈規則：垮塌、補洞、廢棄〉那一套）：
+     塞一批假塵進去再叫 spawnWind，量它還生不生得出來；真的頂到池子時才該停。 */
+  const windCap = await page.evaluate(() => {
+    const mk = n => { for (let i = 0; i < n; i++) dust.push({
+      x: 0, y: 1, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, life: 9, s: 1, c: 0.5 }); };
+    const shot = n => {
+      dust.length = 0; fxRings.length = 0;
+      mk(n);
+      spawnWind({ x: 0, y: 1, z: 0 }, 30, 0);
+      return dust.filter(d => d.keep).length;
+    };
+    const cloudy = shot(1200);                    // 場上有一朵雲那種量
+    const packed = shot(ENG.MAXDUST - 50);        // 池子真的快滿了
+    dust.length = 0; fxRings.length = 0;          // 動過的全域還回去
+    return { cloudy, packed, want: WIND_DUST, cap: WIND_DUST_CAP, max: ENG.MAXDUST };
+  });
+  ok('場上已經有一朵雲的煙，風壓的塵牆照樣生得出來',
+     windCap.cloudy === windCap.want && windCap.packed === 0,
+     '場上 1200 顆煙時生了 ' + windCap.cloudy + ' 顆（要 ' + windCap.want +
+     '）、池子剩 50 格時 ' + windCap.packed + ' 顆（閘門 ' + windCap.cap +
+     '、引擎池子 ' + windCap.max + '）');
   /* 整疊都浮在半空：最下層離地也有一段，而且不做滿爆炸半徑——
      做滿的話那一圈會比建築大一大圈，看起來像地上的跑道而不是浮空的陣。 */
   /* 「沒有大到蓋滿爆炸範圍」要**照爆炸半徑算**（v1.215）：本來寫死 `30 * 0.8`，
