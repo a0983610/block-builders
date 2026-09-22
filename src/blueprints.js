@@ -21,7 +21,7 @@
 const BP_KIND = {
   v: [o => !!o && typeof o.set === 'function' && typeof o.has === 'function', '一個 VOX（第一個參數要傳 v）'],
   n: [o => typeof o === 'number' && Number.isFinite(o), '數字'],
-  c: [o => typeof o === 'number' && Number.isFinite(o) && o >= 0, '顏色索引（pal 的第幾個，從 0 算）'],
+  c: [o => typeof o === 'number' && Number.isInteger(o) && o >= 0, '顏色索引（pal 的第幾個，從 0 算，要整數）'],
   f: [o => typeof o === 'function', '函式'],
   s: [o => typeof o === 'string' && !!o, '字串'],
   o: [o => !!o && typeof o === 'object', '物件（具名參數）']
@@ -59,8 +59,15 @@ VOX.prototype = {
   constructor: VOX,
   set(x, y, z, c) {
     /* 每一格都會走這裡，所以直接比、不配陣列（bpArgs 那條路只有真的出事時才走）。
-       上游哪一支算出 NaN、或忘了給顏色，最後都會流到這裡——擋在這裡等於一次守住全部。 */
-    if (!(typeof c === 'number' && c >= 0) || !Number.isFinite(x + y + z))
+       上游哪一支算出 NaN、或忘了給顏色，最後都會流到這裡——擋在這裡等於一次守住全部。
+
+       c 要求**整數**，而且是在這裡擋、不是在上面補 Math.round(c)：座標有取整，
+       所以「c 也會被取整」看起來很合理，但 pal[2.5] 是 undefined，遊戲那邊
+       (undefined >> 16) & 255 算出 0 → 畫成一塊純黑積木（game.js 上色那段），
+       而體檢的「索引超出 pal」查的是 maxC >= pal.length，2.5 < 3 過得去。
+       補 round 只是從「作者算錯索引」變成「靜默畫上一個沒人指定的顏色」——
+       那正是這一整段驗證在避的事（見檔頭與 ellipseRing 的 thick）。 */
+    if (!(typeof c === 'number' && Number.isInteger(c) && c >= 0) || !Number.isFinite(x + y + z))
       bpArgs('v.set(x, y, z, c)', 'nnnc', [x, y, z, c]);
     x = Math.round(x); y = Math.round(y); z = Math.round(z);
     if (y < 0) return;
@@ -298,6 +305,100 @@ function limb(v, o) {
         if (Math.hypot(px - bx * t, py - by * t, pz - bz * t) <= r0 + (r1 - r0) * t + 0.02)
           v.set(x, y, z, o.c);
       }
+}
+
+/* 沿折線的**薄片**：立在指定平面上、有寬度也有厚度的一條帶子。
+   為什麼要專門一支：limb 是圓的（斜手臂、尾巴、脖子），box／cyl／taper 只能站著或
+   沿某一軸躺著，而「平的、彎的、薄的」那一類——閃電形的尾巴、魚鰭、翅膜、旗子、
+   招牌、緞帶、爪子——兩邊都做不出來。實測踩過：皮卡丘的閃電尾拿 box 一格一格疊，
+   疊出來的是一片**躺在 x–z 平面的鋸齒板**（俯視圖一看就知道），而它該立在 y 方向。
+
+   plane 決定薄片立在哪個平面，厚度就往剩下那一軸長：
+     'xy' 正面那一片（厚度沿 z）　'zy' 側面那一片（厚度沿 x）　'xz' 躺平那一片（厚度沿 y）
+   pts 是那個平面上的折線，**照 plane 的兩個字母順序給**（'zy' 就是 [[z, y], …]）；
+   at 是第三軸的**中心**、t 是厚度、w 是帶子寬度。
+   轉折處是圓的（跟 limb 一樣夾 t 在 0～1），所以折線在轉角接得起來、不會缺一塊。
+   每一層都先拉一條 v.line 當骨幹：w 小的時候光靠距離判定會斷成一截一截。 */
+function plate(v, o) {
+  bpArgs('plate(v, { … })', 'vo', [v, o]);
+  bpKeys('plate(v, { pts, plane, at, w, t, c })', o, 'at c');
+  const pts = o.pts;
+  if (!Array.isArray(pts) || pts.length < 2)
+    throw new Error('參數錯誤：plate(v, { … }) 的 pts 要是至少兩個點的陣列，' +
+                    '像 [[0, 0], [3, 5], [0, 9]]（照 plane 的字母順序給）');
+  for (const p of pts)
+    if (!Array.isArray(p) || !Number.isFinite(p[0]) || !Number.isFinite(p[1]))
+      throw new Error('參數錯誤：plate(v, { … }) 的 pts 每一個點都要是兩個數字，收到 ' + bpShow(p));
+  const plane = o.plane || 'xy';
+  if (plane !== 'xy' && plane !== 'zy' && plane !== 'xz')
+    throw new Error('參數錯誤：plate(v, { … }) 的 plane 收到 ' + bpShow(o.plane) +
+                    "，只能是 'xy'（正面）／'zy'（側面）／'xz'（躺平）");
+  const w = Math.max(1, o.w || 1), t = Math.max(1, Math.round(o.t || 1));
+  const hw = w / 2;
+  /* 平面座標 (u, q) ＋ 第三軸偏移 k → 真正的 x/y/z。三種平面只差這個對應。 */
+  const put = (u, q, k) => {
+    if (plane === 'xy') v.set(u, q, o.at + k, o.c);
+    else if (plane === 'zy') v.set(o.at + k, q, u, o.c);
+    else v.set(u, o.at + k, q, o.c);
+  };
+  const spine = (au, aq, bu, bq, k) => {
+    if (plane === 'xy') v.line(au, aq, o.at + k, bu, bq, o.at + k, o.c);
+    else if (plane === 'zy') v.line(o.at + k, aq, au, o.at + k, bq, bu, o.c);
+    else v.line(au, o.at + k, aq, bu, o.at + k, bq, o.c);
+  };
+  for (let s = 0; s + 1 < pts.length; s++) {
+    const au = pts[s][0], aq = pts[s][1], bu = pts[s + 1][0], bq = pts[s + 1][1];
+    const du = bu - au, dq = bq - aq, len2 = du * du + dq * dq;
+    for (let i = 0; i < t; i++) spine(au, aq, bu, bq, i - (t - 1) / 2);
+    const u0 = Math.floor(Math.min(au, bu) - hw), u1 = Math.ceil(Math.max(au, bu) + hw);
+    const q0 = Math.floor(Math.min(aq, bq) - hw), q1 = Math.ceil(Math.max(aq, bq) + hw);
+    for (let u = u0; u <= u1; u++)
+      for (let q = q0; q <= q1; q++) {
+        const pu = u - au, pq = q - aq;
+        let tt = len2 ? (pu * du + pq * dq) / len2 : 0;
+        tt = tt < 0 ? 0 : tt > 1 ? 1 : tt;
+        if (Math.hypot(pu - du * tt, pq - dq * tt) > hw + 0.02) continue;
+        for (let i = 0; i < t; i++) put(u, q, i - (t - 1) / 2);
+      }
+  }
+}
+
+/* 剖面線繞 y 軸轉一圈：杯子、瓶子、碗、鐘、燈罩、花瓶、棋子、香爐、輪胎。
+   prof 是 [[半徑, 高度], …]，高度相對 y（會自己照小到大排），轉折點之間線性內插——
+   所以給幾個點就夠：一個馬克杯大約四點（杯底、腰、杯口下緣、外翻的厚邊）。
+   為什麼要專門一支：這一類東西現在只能一段一段疊 cyl／taper，疊出來的接縫是硬階，
+   而且每加一節就多一行、尺度一縮就對不齊。
+   半徑刻意不取整，塊數才會隨尺度連續變化（跟 blob／limb 同一個道理）。
+   shell 給了就只留外壁（中空的容器）；**杯底自己補一片 v.cyl**——跟 cyl 的 hollow 一致。 */
+function revolve(v, o) {
+  bpArgs('revolve(v, { … })', 'vo', [v, o]);
+  bpKeys('revolve(v, { x, y, z, prof, c, shell })', o, 'x y z c');
+  const prof = Array.isArray(o.prof) ? o.prof.slice() : null;
+  if (!prof || prof.length < 2)
+    throw new Error('參數錯誤：revolve(v, { … }) 的 prof 要是至少兩個 [半徑, 高度] 的陣列，' +
+                    '像 [[3, 0], [3, 8], [4, 9]]');
+  for (const p of prof)
+    if (!Array.isArray(p) || !Number.isFinite(p[0]) || !Number.isFinite(p[1]))
+      throw new Error('參數錯誤：revolve(v, { … }) 的 prof 每一項都要是 [半徑, 高度] 兩個數字，' +
+                      '收到 ' + bpShow(p));
+  prof.sort((a, b) => a[1] - b[1]);
+  const base = prof[0][1], top = Math.round(prof[prof.length - 1][1] - base);
+  let k = 0;
+  for (let j = 0; j <= top; j++) {
+    const hy = base + j;
+    while (k + 2 < prof.length && hy > prof[k + 1][1]) k++;   // j 只增不減，所以往前推就好
+    const a = prof[k], b = prof[k + 1], span = b[1] - a[1];
+    const tt = span > 0 ? Math.min(1, Math.max(0, (hy - a[1]) / span)) : 0;
+    const r = Math.max(0, a[0] + (b[0] - a[0]) * tt);
+    const n = Math.ceil(r);
+    const inner = o.shell ? r - o.shell : -1;
+    for (let i = -n; i <= n; i++)
+      for (let m = -n; m <= n; m++) {
+        const d = Math.hypot(i, m);
+        if (d > r + 0.02 || d < inner) continue;
+        v.set(o.x + i, o.y + j, o.z + m, o.c);
+      }
+  }
 }
 
 /* ── 組合工具（藍圖作者用）─────────────────────────────────
@@ -5189,5 +5290,5 @@ if (typeof module !== 'undefined' && module.exports)
                      cleanPaste, bpFileName, importBlueprint,
                      dim, ringOf, rowOf, mirrorX, mirrorZ, stampY, arch, archRow, stairs, hipRoof,
                      boxTaper, windowGrid, lattice, corners4, tubeZ, wheelX,
-                     tint, paintFrom, blob, limb };
+                     tint, paintFrom, blob, limb, plate, revolve };
 

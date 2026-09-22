@@ -1061,7 +1061,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* function 宣告會掛上 window，所以自訂藍圖檔（<script> 載進來的）叫得到 */
     const names = ['dim', 'ringOf', 'rowOf', 'mirrorX', 'mirrorZ', 'stampY', 'arch', 'archRow',
                    'stairs', 'hipRoof', 'boxTaper', 'windowGrid', 'lattice', 'corners4',
-                   'tubeZ', 'wheelX', 'tint', 'paintFrom', 'blob', 'limb', 'checkBlueprint'];
+                   'tubeZ', 'wheelX', 'tint', 'paintFrom', 'blob', 'limb', 'plate', 'revolve',
+                   'checkBlueprint'];
     const missing = names.filter(n => typeof window[n] !== 'function');
 
     // dim：夾下限、取奇數
@@ -1215,11 +1216,44 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const arc = { first: arcPts[0].join(','), last: arcPts[11].join(','),
                   n: arcPts.length, full: fullPts.join(' ') };
 
-    return { missing, d, archR, archMade, st, wg, ring, ringOk, hip, mx, mz, lat, lb,
-             row, stamp, bt, arc };
+    /* plate（v1.217）：沿折線的薄片。要守的就是它被加進來的那個病徵——
+       皮卡丘的閃電尾拿 box 疊，疊出來是一片**躺在 x–z 平面**的鋸齒板，而它該立在 y 方向。
+       所以量的是「厚度長在哪一軸」：plane 給什麼，厚度就只能往剩下那一軸長，別的軸要照折線鋪開。 */
+    const ext = (vv, k) => {
+      const a = vv.cells().map(o => o[k]);
+      return Math.max(...a) - Math.min(...a) + 1;
+    };
+    const zig = [[0, 10], [4, 14], [-2, 19], [3, 24]];   // 閃電折線（說明書 3.3 那個範例）
+    const pl = {};
+    for (const [pn, thick] of [['zy', 'x'], ['xy', 'z'], ['xz', 'y']]) {
+      const vp = new VOX();
+      plate(vp, { plane: pn, at: 0, t: 2, w: 2.4, c: 0, pts: zig });
+      pl[pn] = { thick: ext(vp, thick), n: vp.m.size, one: oneGroup(vp) };
+    }
+    /* 'zy' 的折線是 [[z, y], …]：y 那一軸要照折線鋪開，厚度只有 x 那一軸。
+       期望值從 zig 自己算（折線的 y 跨距），不寫死——帶子有寬度，兩端還會外擴半個 w。 */
+    const vpz = new VOX();
+    plate(vpz, { plane: 'zy', at: 0, t: 2, w: 2.4, c: 0, pts: zig });
+    const zq = zig.map(p => p[1]);
+    pl.spanY = ext(vpz, 'y');
+    pl.zigSpan = Math.max(...zq) - Math.min(...zq) + 1;
+
+    /* revolve（v1.217）：剖面繞 y 軸轉。兩件事——半徑是轉折點之間內插出來的、
+       shell 給了只留外壁（杯底要作者自己補一片，跟 cyl 的 hollow 一致）。 */
+    const rad = (vv, y) => Math.max(...vv.cells().filter(o => o.y === y).map(o => Math.abs(o.x)));
+    const vrv = new VOX();
+    revolve(vrv, { x: 0, y: 0, z: 0, c: 0, prof: [[3, 0], [3, 8], [5, 9]] });   // 直筒到 8，口外翻
+    const vsh = new VOX(), vsl = new VOX();
+    revolve(vsh, { x: 0, y: 0, z: 0, c: 0, shell: 1, prof: [[4, 0], [4, 10]] });
+    revolve(vsl, { x: 0, y: 0, z: 0, c: 0, prof: [[4, 0], [4, 10]] });
+    const rv = { r0: rad(vrv, 0), r8: rad(vrv, 8), r9: rad(vrv, 9), lay: ext(vrv, 'y'),
+                 shellMid: vsh.has(0, 5, 0), shellWall: vsh.has(4, 5, 0), solidMid: vsl.has(0, 5, 0) };
+
+    return { missing, nAll: names.length, d, archR, archMade, st, wg, ring, ringOk, hip, mx, mz,
+             lat, lb, row, stamp, bt, arc, pl, rv };
   });
   ok('組合工具全都掛在全域，自訂藍圖叫得到', bpTool.missing.length === 0,
-     bpTool.missing.length ? '沒有：' + bpTool.missing.join('、') : '21 支都在');
+     bpTool.missing.length ? '沒有：' + bpTool.missing.join('、') : bpTool.nAll + ' 支都在');
   ok('dim 會夾下限也會取奇數',
      bpTool.d[0] === 5 && bpTool.d[1] === 10 && bpTool.d[2] === 11 && bpTool.d[3] === 5,
      'dim(0.1,1,5)=' + bpTool.d[0] + '、dim(10,1,2)=' + bpTool.d[1] +
@@ -1266,6 +1300,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('細到 r=0.5 的 limb 不會斷成一截一截（骨幹那條 v.line 補的）',
      bpTool.lb.thinOne && bpTool.lb.thin >= 14,
      'r=0.5、跨 14 層：' + bpTool.lb.thin + ' 格連成一組');
+  /* plate／revolve（v1.217，從 server 版搬回來）：limb 是圓的、box／cyl／taper 只能軸對齊，
+     「平的彎的薄的」（鰭、翅膜、爪、旗、招牌、握把）與「旋轉對稱的器物」（杯、碗、鐘）
+     在此之前沒有工具做得出來。第一條守的就是加它的那個病徵——閃電尾疊成躺平的鋸齒板。 */
+  ok('plate 的薄片立在指定的平面上，厚度只往第三軸長',
+     bpTool.pl.zy.thick === 2 && bpTool.pl.xy.thick === 2 && bpTool.pl.xz.thick === 2 &&
+     bpTool.pl.spanY >= bpTool.pl.zigSpan,
+     "t=2：'zy' 厚度在 x " + bpTool.pl.zy.thick + " 格、'xy' 在 z " + bpTool.pl.xy.thick +
+     " 格、'xz' 在 y " + bpTool.pl.xz.thick + " 格；'zy' 的折線在 y 鋪開 " +
+     bpTool.pl.spanY + ' 層（折線本身跨 ' + bpTool.pl.zigSpan + ' 層，不是躺平）');
+  ok('plate 的折線在轉角接得起來（整片連成一組）',
+     bpTool.pl.zy.one && bpTool.pl.xy.one && bpTool.pl.xz.one && bpTool.pl.zy.n > 100,
+     '三段折線、w=2.4：' + bpTool.pl.zy.n + ' 格連成一組');
+  ok('revolve 照剖面長出半徑，轉折點之間是內插的',
+     bpTool.rv.r0 === 3 && bpTool.rv.r8 === 3 && bpTool.rv.r9 === 5 && bpTool.rv.lay === 10,
+     '[[3,0],[3,8],[5,9]]：y=0 半徑 ' + bpTool.rv.r0 + '、y=8 ' + bpTool.rv.r8 +
+     '、y=9 ' + bpTool.rv.r9 + '，共 ' + bpTool.rv.lay + ' 層');
+  ok('revolve 給了 shell 只留外壁（杯底要自己補一片）',
+     !bpTool.rv.shellMid && bpTool.rv.shellWall && bpTool.rv.solidMid,
+     'shell=1：中軸是空的、外壁還在；不給 shell 時中軸是實心的');
   /* v1.158 的三支：全倉庫 20 處手刻「−總寬/2 + i × 間距」、13 處手刻方形收分，
      而斜著擺的一整組東西以前只能自己算三角函數（五稜郭的星形、扇形車庫的放射狀機庫）。 */
   ok('rowOf 沿一軸等距排開，以中心對稱，並回傳整排總長',
