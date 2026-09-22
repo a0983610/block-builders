@@ -2063,14 +2063,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '「' + vpFileUi.txt + '」在 summary 那一行，卡片展開 ' + vpFileUi.open +
      'px（畫面 ' + vpFileUi.view + '）');
 
-  const vpFileGo = await vp.evaluate(async src => {
-    const before = SHAPES.length;
+  /* 讀檔走的是 FileReader 的非同步回呼，**不要用固定毫秒等它**（v1.216.1）：整輪測試踩到過
+     一次，300 毫秒還沒回來，量到的 name／rep／drawn 全是上一條「貼上來的小屋」的殘留。
+     改成先把訊息清空、再等它真的被寫上去：`loadPasted()` 是同步的，而且成功與失敗兩條路
+     最後都會設訊息，所以「訊息出現」就等於預覽、診斷、選單都跑完了，程式真的壞掉時
+     也不會卡在這裡、照樣走到下面那條 ok() 判紅。同〈存檔搬家〉那兩處
+     （v1.148.1 修過一模一樣的坑，見 開發筆記〈九條「偶爾飄」的測試〉）。 */
+  const vpBefore = await vp.evaluate(src => {
+    const n = SHAPES.length;
+    document.getElementById('pasteMsg').textContent = '';
     const inp = document.getElementById('bpFile');
     const dt = new DataTransfer();
     dt.items.add(new File([src], '讀檔來的.js', { type: 'text/javascript' }));
     inp.files = dt.files;
     inp.dispatchEvent(new Event('change'));
-    await new Promise(r => setTimeout(r, 300));     // FileReader 是非同步的
+    return n;
+  }, '// 檔名：讀檔來的.js\n' + SAMPLE.replace("name: '貼上來的小屋'", "name: '讀檔來的小屋'"));
+  await vp.waitForFunction(() => document.getElementById('pasteMsg').textContent.trim() !== '',
+                           null, { timeout: 5000 });
+  const vpFileGo = await vp.evaluate(before => {
     return { msg: document.getElementById('pasteMsg').textContent,
              bad: document.getElementById('pasteMsg').className.indexOf('bad') >= 0,
              added: SHAPES.length - before,
@@ -2080,8 +2091,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              rep: document.getElementById('rep').value.split('\n')[1] || '',
              /* 這一頁不清框：節奏是「載進來 → 看 → 改幾個字 → 再按貼上並預覽」 */
              inBox: document.getElementById('paste').value.indexOf('讀檔來的小屋') > 0,
-             cleared: inp.value === '' };
-  }, '// 檔名：讀檔來的.js\n' + SAMPLE.replace("name: '貼上來的小屋'", "name: '讀檔來的小屋'"));
+             cleared: document.getElementById('bpFile').value === '' };
+  }, vpBefore);
   ok('預覽頁選一支 .js 就直接載入並預覽，順手把診斷也跑掉、原始碼留在框裡',
      !vpFileGo.bad && vpFileGo.added === 1 && vpFileGo.name === '讀檔來的小屋' &&
      vpFileGo.drawn > 100 && vpFileGo.picked.indexOf('讀檔來的小屋') > 0 &&
@@ -2505,14 +2516,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      impFileUi.hidden && impFileUi.accept.indexOf('.js') >= 0 && impFileUi.w > 60,
      '「' + impFileUi.txt + '」寬 ' + impFileUi.w + 'px，檔案框吃 ' + impFileUi.accept);
 
-  const impFileGo = await gp.evaluate(async src => {
-    const before = SHAPES.length;
+  /* 同預覽頁那一處（v1.216.1）：先清訊息、再等它真的被寫上去，不要用固定毫秒等 FileReader。
+     踩到過的樣子是「清單、下拉、存檔三邊都還是上一條的殘留」，而遲到的那則成功訊息
+     會落到下一條測試身上，一次帶紅兩條。`doImport()` 是同步的，成功與失敗都設訊息。 */
+  const impBefore = await gp.evaluate(src => {
+    const n = SHAPES.length;
+    document.getElementById('impMsg').textContent = '';
     const inp = document.getElementById('impFile');
     const dt = new DataTransfer();
     dt.items.add(new File([src], '讀檔來的.js', { type: 'text/javascript' }));
     inp.files = dt.files;
     inp.dispatchEvent(new Event('change'));
-    await new Promise(r => setTimeout(r, 250));      // FileReader 是非同步的
+    return n;
+  }, '// 檔名：讀檔來的.js\n' + SAMPLE.replace("name: '貼上來的小屋'", "name: '讀檔來的小屋'"));
+  await gp.waitForFunction(() => document.getElementById('impMsg').textContent.trim() !== '',
+                           null, { timeout: 5000 });
+  const impFileGo = await gp.evaluate(before => {
     const names = [...document.querySelectorAll('#impList .it b')].map(b => b.textContent);
     return { msg: document.getElementById('impMsg').textContent,
              good: document.getElementById('impMsg').className.indexOf('good') >= 0,
@@ -2520,13 +2539,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              left: document.getElementById('impPaste').value,
              names: names,
              /* 清掉 value 才能連續選同一支檔（值沒變就不會再觸發 change） */
-             cleared: inp.value === '',
+             cleared: document.getElementById('impFile').value === '',
              inMenu: [...document.getElementById('shape').options]
                        .map(o => o.textContent).indexOf('讀檔來的小屋'),
              group: names.length,
              saved: JSON.parse(localStorage.getItem('block-builders/bp1') || '[]')
                       .map(e => e.file) };
-  }, '// 檔名：讀檔來的.js\n' + SAMPLE.replace("name: '貼上來的小屋'", "name: '讀檔來的小屋'"));
+  }, impBefore);
   /* inMenu 落在 1～匯入的筆數之間＝它排進了「瀏覽器存檔」那一群（[0] 是 🎲 隨機）。
      不寫死第幾項：這一群裡排第幾只看誰先進來，那不是這一條要守的事。 */
   ok('選一支 .js 檔就直接匯入了（不必再按「匯入」），清單、下拉選單、存檔三邊都跟上',
@@ -2537,19 +2556,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      impFileGo.msg + '　清單「' + impFileGo.names.join('、') + '」，下拉第 ' +
      impFileGo.inMenu + ' 項，存檔 ' + impFileGo.saved.join('、'));
 
-  const impFileBad = await gp.evaluate(async () => {
+  await gp.evaluate(() => {
+    document.getElementById('impMsg').textContent = '';
     const inp = document.getElementById('impFile');
     const dt = new DataTransfer();
     dt.items.add(new File(['console.log("我不是藍圖")'], '不是藍圖.js',
                           { type: 'text/javascript' }));
     inp.files = dt.files;
     inp.dispatchEvent(new Event('change'));
-    await new Promise(r => setTimeout(r, 250));
-    return { msg: document.getElementById('impMsg').textContent,
-             bad: document.getElementById('impMsg').className.indexOf('bad') >= 0,
-             left: document.getElementById('impPaste').value,
-             rows: document.querySelectorAll('#impList .it').length };
   });
+  await gp.waitForFunction(() => document.getElementById('impMsg').textContent.trim() !== '',
+                           null, { timeout: 5000 });
+  const impFileBad = await gp.evaluate(() => ({
+    msg: document.getElementById('impMsg').textContent,
+    bad: document.getElementById('impMsg').className.indexOf('bad') >= 0,
+    left: document.getElementById('impPaste').value,
+    rows: document.querySelectorAll('#impList .it').length
+  }));
   /* 失敗時那段要留在框裡：不然「檔案挑錯了／內容不對」的人連看都看不到是什麼東西 */
   ok('讀到不是藍圖的 .js：講清楚要的是什麼，內容留在框裡讓人看，清單不動',
      impFileBad.bad && impFileBad.msg.indexOf('customBlueprint') > 0 &&
@@ -24442,14 +24465,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     bad.x = 26; bad.z = 0; bad.y = 0;
     const fell = fellBeast(bad, 2);
     const st = { fun: bad.fun, fall: bad.fall > 0, lie: bad.lie };
-    for (let i = 0; i < 80; i++) stepDoom(0.05);       // 躺完會爬起來繼續走
+    /* 押住骰子（v1.216.1）：兩隻猴子走路時每幀還會 `Math.random() < B_TRIP_P * dt`
+       自己再絆一跤（見 game-tools 的 B_TRIP_P ＝ 0.02／秒）。躺 2 秒爬起來之後，
+       這四秒裡還有約兩秒暴露在那個機率下（約 4%），三輪完整輪就撞到一次——量到的是
+       「牠又躺下去了」，但那不是這一條要守的事（自己絆跤有自己那一條在守）。
+       給 1 就永遠不小於 0.02×dt，絆跤不會發生，這一條因此是規則型、不會飄；
+       跑完把 Math.random 還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）。 */
+    const rnd = Math.random;
+    Math.random = () => 1;
+    try { for (let i = 0; i < 80; i++) stepDoom(0.05); }   // 躺完會爬起來繼續走
+    finally { Math.random = rnd; }
     return { fell, st, after: { fall: bad.fall, lie: bad.lie, st: bad.st } };
   });
   ok('天災那幾隻同樣打得倒（同一種生物、同一份程式），躺完會爬起來繼續走',
      hDoomHit.fell && hDoomHit.st.fun === 0 && hDoomHit.st.fall &&
      hDoomHit.after.fall === 0 && hDoomHit.after.lie === 0,
      '打倒天災版的黑獼猴：躺著 ' + hDoomHit.st.fall + ' → 爬起來回到 ' +
-     hDoomHit.after.st);
+     hDoomHit.after.st + '（倒數 ' + hDoomHit.after.fall + '、抬升 ' + hDoomHit.after.lie + '）');
 
   /* ── 每一種姿勢都貼著草皮，不會陷進去也不會浮起來 ── */
   const hGround = await page.evaluate(() => {
