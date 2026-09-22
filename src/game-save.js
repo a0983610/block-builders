@@ -125,10 +125,27 @@ let saveT = 0;
    這道只是「一直在破壞、什麼事件都沒發生」時的兜底。
    抽成一支函式是為了測得死（見 開發筆記〈自動存檔拉到 60 秒，而且算真實時間〉）：
    e2e 直接餵 dt 給它，不必跑一整場模擬去等那 60 秒。 */
-const SAVE_EVERY = 60;
+const SAVE_EVERY = 300;
 function autoSave(dt) {
   saveT += dt / (timeScale || 1);
   if (saveT > SAVE_EVERY) { saveT = 0; save(); }
+}
+/* 關頁存一次（v1.210.2，使用者：「加上關頁時存一次」）。有了這道，定時那道才敢從
+   60 秒再拉到 300 秒——真正會掉紀錄的只剩「連關頁事件都沒發出來」那幾種情況。
+   **兩個事件都掛，而且都不是 `beforeunload`**（那個在行動裝置上根本不保證會來，
+   而且會讓瀏覽器把頁面排除在 back/forward cache 之外）：
+     · `visibilitychange` → `hidden`：切走分頁、最小化、關分頁、關瀏覽器都會先走這裡。
+     · `pagehide`：真的要卸載了（關分頁、關瀏覽器、重新整理、換頁）。
+   兩個都掛是因為它們各自有漏的場合，而重複存一次的代價只是多寫一次幾百位元組。
+   `localStorage` 是同步 API，在這兩個 handler 裡寫得完（非同步的送出去就不保證）。
+   **存不到的情況**：處理程序被強制結束、當機、系統回收分頁——那些沒有事件可掛，
+   所以定時那道留著當兜底。兩種關法都實測過，見
+   開發筆記〈關頁存一次：關分頁與關瀏覽器都量過〉。 */
+function watchHide() {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') save();
+  });
+  window.addEventListener('pagehide', () => save());
 }
 /* 只把存檔裡型別對得上的欄位搬過來，其他一律用預設值。
    這樣舊版存檔、被改過的存檔都不會讓程式吃到奇怪的東西。 */

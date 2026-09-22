@@ -919,6 +919,7 @@ function boot() {
   });
 
   load();
+  watchHide();            // 關分頁／關瀏覽器時再存一次，見 game-save.js
   applyPref();
   renderTools();
   renderBadges();

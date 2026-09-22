@@ -24909,6 +24909,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 秒存了 ' + autoT.y1 + '；4× 快轉照真實時間，同樣是 ' + autoT.every + ' 秒（' +
      !autoT.n4 + '／' + autoT.y4 + '）');
 
+  /* 關頁存一次（v1.210.2）。定時那道敢拉到 300 秒就是靠這個，所以要有人守著。
+     兩件事：`pagehide`（要卸載了）一定存；`visibilitychange` **只有 hidden 才存**
+     ——少了那個判斷的話，切回分頁也會存一次，等於每次 alt-tab 都寫一次磁碟。
+     測試頁面本身是看得見的，所以派一個 visibilitychange 給它，正確的行為是「不存」。
+     真的關分頁／關視窗存不存得到不在這裡驗（那要另外開一個 persistent 的瀏覽器
+     關掉再打開），量過了，見 開發筆記〈關頁存一次：關分頁與關瀏覽器都量過〉。 */
+  const hideSave = await page.evaluate(() => {
+    const key = 'block-builders/save1', keep = stats.destroyed;
+    const r = { vis: document.visibilityState };
+    localStorage.removeItem(key);
+    stats.destroyed = 4321; saveT = 0;
+    document.dispatchEvent(new Event('visibilitychange'));   // 頁面還看得見 → 不該存
+    r.afterVis = !!localStorage.getItem(key);
+    window.dispatchEvent(new Event('pagehide'));             // 要卸載了 → 該存
+    r.afterHide = !!localStorage.getItem(key);
+    stats.destroyed = keep; save();                          // 動過的還回去（下一條要讀它）
+    return r;
+  });
+  ok('關頁會存一次，但看得見的時候不存',
+     hideSave.vis === 'visible' && hideSave.afterVis === false && hideSave.afterHide === true,
+     '頁面 ' + hideSave.vis + '：派 visibilitychange 後存了 ' + hideSave.afterVis +
+     '、派 pagehide 後存了 ' + hideSave.afterHide);
+
   const reloadR = await page.evaluate(() => {
     stats = freshStats(); load();
     return { destroyed: stats.destroyed, smashed: stats.smashed, built: stats.built.length, badges: stats.badges.length };
