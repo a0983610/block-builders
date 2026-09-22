@@ -1818,19 +1818,106 @@ const SHAPES = [
     stairs(v, 0, 0, faceZ1 - stN - (stoneH - 1) * 2 - 1, stN + stoneH, dim(s, 0.6, 2, true), 'z', 2);
   } },
 
-{ n: '京都五重塔', lo: 6, hi: 42, pal: [0x8c3b2e, 0x6d2c22, 0x3f4a52, 0xd8c98a],
+{ n: '京都五重塔', lo: 2.0, hi: 13.5,
+  pal: [0x5a3d28, 0x2e353b, 0x9e836a, 0xd4aa50, 0xdcd4c5, 0x8b2e2e],
+  /* 來源：blueprints/京都五重塔.js（v1.216 換掉原本那份） */
   gen(v, s) {
-    let y = 0, w = Math.round(s * 0.62);
-    v.box(0, 0, 0, w + 6, 1, w + 6, 3);
-    for (let t = 0; t < 5; t++) {
-      const th = Math.max(2, Math.round(s * 0.16));
-      v.walls(0, y + 1, 0, w, th, w, t % 2 ? 1 : 0, 1);
-      y += 1 + th;
-      v.eave(0, y, 0, w + 5, w + 5, 2, 2);
-      y += 2; w = Math.max(3, w - 2);
+    // 1. 基座（石階與平台）
+    const bw = dim(s, 2.0, 9, true);
+    const bh = dim(s, 0.25, 1);
+    v.box(0, 0, 0, bw, bh, bw, 2);
+    stairs(v, 0, 0, -(bw - 1) / 2 - 2, 2, dim(s, 0.4, 3, true), 'z', 2);
+
+    // 2. 塔身高寬比例計算
+    const baseW = dim(s, 1.35, 7, true);   // 初層塔身寬
+    const floorH = dim(s, 0.55, 3);        // 每層牆高
+    let currentY = bh;
+
+    // 3. 五層塔身、門窗、斗栱與出簷
+    for (let floor = 0; floor < 5; floor++) {
+      // 漸縮係數（收分）
+      const shrinkRatio = 1 - floor * 0.07;
+      const fw = Math.max(3, Math.round(baseW * shrinkRatio) | 1); // 維持奇數
+      const ew = fw + dim(s, 0.65, 4, true); // 大出簷寬度
+      const ed = ew;
+
+      // 迴廊與走道欄杆（初層）
+      if (floor === 0) {
+        v.box(0, currentY, 0, fw + 2, 1, fw + 2, 2);
+        currentY += 1;
+      }
+
+      // 塔身四面牆與角柱
+      v.walls(0, currentY, 0, fw, floorH, fw, 0, 1);
+
+      // 初層設四面正門，上層設格窗
+      const doorW = dim(s, 0.25, 1, true);
+      const doorH = Math.max(2, floorH - 1);
+      const faceOffset = (fw - 1) / 2;
+
+      mirrorZ(v, faceOffset, (vv, dz) => {
+        if (floor === 0) {
+          // 初層大門
+          vv.carve(0, currentY, dz, doorW, doorH, 1);
+          vv.box(0, currentY, dz > 0 ? dz - 1 : dz + 1, doorW, doorH, 1, 5);
+        } else {
+          // 上層障子窗（走 tint）
+          tint(vv, 0, currentY + 1, dz, 4);
+          if (fw >= 5) {
+            tint(vv, -1, currentY + 1, dz, 5);
+            tint(vv, 1, currentY + 1, dz, 5);
+          }
+        }
+      });
+
+      mirrorX(v, faceOffset, (vv, dx) => {
+        if (floor === 0) {
+          vv.carve(dx, currentY, 0, 1, doorH, doorW);
+          vv.box(dx > 0 ? dx - 1 : dx + 1, currentY, 0, 1, doorH, doorW, 5);
+        } else {
+          tint(vv, dx, currentY + 1, 0, 4);
+          if (fw >= 5) {
+            tint(vv, dx, currentY + 1, -1, 5);
+            tint(vv, dx, currentY + 1, 1, 5);
+          }
+        }
+      });
+
+      // 斗栱與挑簷承托層
+      v.box(0, currentY + floorH, 0, fw + 1, 1, fw + 1, 0);
+
+      // 深遠和式屋簷（出簷與四坡斜頂）
+      v.eave(0, currentY + floorH + 1, 0, ew, ed, 1, 1);
+      hipRoof(v, 0, currentY + floorH + 2, 0, ew, ed, 1);
+
+      // 更新下一層底部的 Y 座標
+      const roofPeakH = Math.max(1, Math.round((ew - fw) / 2));
+      currentY += floorH + 2 + roofPeakH;
     }
-    v.box(0, y, 0, 1, Math.max(3, Math.round(s * 0.28)), 1, 3);   // 相輪
-    for (let i = 0; i < 5; i++) v.box(0, y + 1 + i * 2, 0, 3, 1, 3, 3);
+
+    // 4. 頂部相輪（九輪、水煙、伏缽、寶珠飾件）
+    const spireH = dim(s, 1.2, 7);
+    // 露盤與覆缽
+    v.box(0, currentY, 0, 3, 1, 3, 3);
+    v.box(0, currentY + 1, 0, 2, 1, 2, 3);
+
+    // 剎柱本體
+    v.box(0, currentY + 2, 0, 1, spireH, 1, 3);
+
+    // 九輪（相輪環節）
+    const ringCount = dim(s, 0.6, 5);
+    const ringSpacing = Math.max(1, Math.floor((spireH - 3) / ringCount));
+    for (let i = 0; i < ringCount; i++) {
+      const ry = currentY + 2 + i * ringSpacing;
+      if (ry < currentY + spireH - 2) {
+        v.box(0, ry, 0, 3, 1, 3, 3);
+      }
+    }
+
+    // 頂部水煙與寶珠
+    const topY = currentY + spireH + 1;
+    v.box(0, topY, 0, 2, 2, 2, 3);
+    v.set(0, topY + 2, 0, 3);
   } },
 
 { n: '帝國大廈', lo: 9, hi: 76, pal: [0xbfb9a8, 0xa39c8c, 0x8b8474, 0xd9d2be],
@@ -1853,28 +1940,108 @@ const SHAPES = [
     v.box(0, h + 1 + Math.max(3, Math.round(h * 0.09)), 0, 1, Math.max(3, Math.round(h * 0.11)), 1, 3);
   } },
 
-{ n: '雙子星塔', lo: 8, hi: 62, pal: [0xb9c6d0, 0x93a3b0, 0xdfe7ec],
+{ n: '雙子星塔', lo: 1.8, hi: 11.5,
+  pal: [0xd6dce2, 0x1c252a, 0xf4f5f5, 0x5a6776, 0x858d97, 0x9fc2d6],
+  /* 來源：blueprints/吉隆坡雙子塔.js（v1.216 換掉原本那份）。
+     檔案叫「吉隆坡雙子塔」、內建這一格叫「雙子星塔」，是同一座建築——
+     照 v1.143 姬路城那次的裁示換掉內建、名字沿用內建那一個。 */
   gen(v, s) {
-    const h = Math.round(s), gap = Math.max(6, Math.round(s * 0.3));
-    const r0 = Math.max(3, s * 0.14);
-    for (const sx of [-1, 1]) {
-      for (let y = 0; y < h; y++) {
-        // 上段逐漸收細，最後收成尖塔座
-        const t = y < h * 0.72 ? 0 : (y - h * 0.72) / (h * 0.28);
-        const r = Math.max(1.2, r0 * (1 - t * 0.72));
-        v.cyl(sx * gap, y, 0, r, 1, y % 6 === 0 ? 2 : 0, Math.max(1, r * 0.5));
-        if (y % 6 === 0) v.cyl(sx * gap, y, 0, r + 0.7, 1, 2, 1.2);   // 樓層環
+    const r0 = dim(s, 0.38, 2.6);                // 主塔底半徑（保持修長）
+    const dx = dim(s, 0.95, 6, true);             // 雙塔中心間距（半距 dx，雙塔完全筆直平行）
+    const totalH = dim(s, 6.20, 26);             // 塔身高度（顯著拉長，體現摩天大樓挺拔感）
+    const spireH = dim(s, 1.80, 8);              // 尖頂避雷針高度
+
+    // 1. 基座地基
+    const baseW = (dx + r0 + 2) * 2;
+    const baseD = (r0 + 3) * 2;
+    v.box(0, 0, 0, baseW, 1, baseD, 4);
+
+    // 2. 正面低矮入口裙樓（壓低高度，使天橋下方留出大幅懸空挑高視野）
+    const podR = Math.max(2.5, Math.round(dx * 0.62));
+    const podH = Math.max(2, Math.round(dim(s, 0.22, 2)));
+    const podZ = -Math.round(r0 * 0.75);
+    v.cyl(0, 1, podZ, podR, podH, 0, 1);
+    v.cyl(0, 1 + podH, podZ, podR + 0.6, 1, 2);
+    // 裙樓玻璃大門入口
+    v.cyl(0, 1, podZ, podR - 0.8, podH - 1, 5, 1);
+
+    // 3. 雙塔主體高度劃分（逐段退縮）
+    const h1 = Math.round(totalH * 0.42);         // 第1段：基底至天橋上方
+    const h2 = Math.round(totalH * 0.26);         // 第2段：中高層
+    const h3 = Math.round(totalH * 0.18);         // 第3段：高層退縮段
+    const hCrown = totalH - (h1 + h2 + h3);       // 第4段：頂部金字塔階梯過渡
+
+    // 雙塔左右對稱生成（雙塔中心嚴格固定在 ±dx，各段 360 度均勻旋轉對稱，保證絕對平行無外撇）
+    mirrorX(v, dx, (vv, tx) => {
+      let curY = 1;
+      const ringStep = Math.max(2, Math.round(dim(s, 0.35, 2)));
+
+      // 輔助函式：生成雙子星標誌性的 8 瓣凸壁柱（完全旋轉對稱）
+      const buildSection = (r, h, lobeR, isFirst) => {
+        vv.cyl(tx, curY, 0, r, h, 0, 1);
+        if (lobeR > 0.5) {
+          ringOf(vv, 8, r * 0.82, (lv, lx, lz) => {
+            lv.cyl(lx, curY, lz, lobeR, h, 0, 1);
+          }, tx, 0);
+        }
+        for (let y = curY + 1; y < curY + h; y += ringStep) {
+          vv.cyl(tx, y, 0, r + 0.45, 1, (y % (ringStep * 2) === 0) ? 2 : 1, 1);
+        }
+        curY += h;
+        // 退縮環邊界
+        vv.cyl(tx, curY, 0, r + 0.7, 1, 2);
+        curY += 1;
+      };
+
+      // --- 第 1 段 ---
+      buildSection(r0, h1, Math.max(1.0, r0 * 0.42), true);
+
+      // --- 第 2 段 ---
+      const r1 = Math.max(2.2, r0 * 0.86);
+      buildSection(r1, h2, Math.max(0.8, r1 * 0.38), false);
+
+      // --- 第 3 段 ---
+      const r2 = Math.max(1.7, r0 * 0.72);
+      buildSection(r2, h3, Math.max(0.6, r2 * 0.35), false);
+
+      // --- 第 4 段：塔冠逐階收縮圓錐（Crown） ---
+      const crownH = Math.max(3, hCrown);
+      vv.taper(tx, curY, 0, r2, 0.8, crownH, 2, 1);
+      curY += crownH;
+
+      // --- 第 5 段：尖塔避雷天線（Spire） ---
+      const spireBaseH = Math.max(2, Math.round(spireH * 0.35));
+      vv.cyl(tx, curY, 0, 0.9, spireBaseH, 0);
+      vv.cyl(tx, curY + spireBaseH, 0, 0.45, spireH - spireBaseH, 2);
+      vv.set(tx, curY + spireH, 0, 2);
+    });
+
+    // 4. 懸空天橋（Skybridge）與倒 V 字形斜撐支柱
+    const bridgeY = 1 + Math.round(totalH * 0.40);
+    const bridgeH = Math.max(2, Math.round(dim(s, 0.30, 2)));
+    const bridgeW = (dx - r0 + 1) * 2;
+    const bridgeD = Math.max(2, Math.round(r0 * 0.65));
+
+    // 雙層懸空天橋本體
+    v.box(0, bridgeY, 0, bridgeW, bridgeH, bridgeD, 0);
+    // 天橋兩側觀景窗帶
+    v.box(0, bridgeY + 1, 0, bridgeW - 2, Math.max(1, bridgeH - 2), bridgeD + 0.2, 5);
+    // 天橋上下金屬飾線
+    v.box(0, bridgeY, 0, bridgeW, 1, bridgeD + 0.4, 2);
+    v.box(0, bridgeY + bridgeH, 0, bridgeW, 1, bridgeD + 0.4, 2);
+
+    // 倒 V 字形斜撐鋼樑（起點高於裙樓頂部，在空中形成舒展的懸空支撐）
+    const strutStartY = Math.round(bridgeY * 0.58);
+    const strutSpreadX = Math.round(dx * 0.72);
+    mirrorX(v, 1, (vv, sign) => {
+      vv.line(sign * strutSpreadX, strutStartY, 0, 0, bridgeY, 0, 3);
+      if (bridgeD >= 3) {
+        vv.line(sign * strutSpreadX, strutStartY, 1, 0, bridgeY, Math.floor(bridgeD / 2), 3);
+        vv.line(sign * strutSpreadX, strutStartY, -1, 0, bridgeY, -Math.floor(bridgeD / 2), 3);
       }
-      v.box(sx * gap, h, 0, 1, Math.max(4, Math.round(h * 0.16)), 1, 2);   // 尖塔
-    }
-    const by = Math.round(h * 0.46);                 // 空中天橋：兩層樓板
-    for (let x = -gap; x <= gap; x++) for (let z = -1; z <= 1; z++) {
-      v.set(x, by, z, 1); v.set(x, by + 3, z, 1);
-    }
-    for (const x of [-gap, gap]) for (let y = by; y <= by + 3; y++) v.set(x * 0.34, y, 0, 1);
-    // 天橋底下的斜撐（第一版誤畫成兩根浮在半空的直柱）
-    for (const sx of [-1, 1])
-      v.line(sx * gap, by - Math.round(h * 0.12), 0, sx * gap * 0.34, by, 0, 1);
+    });
+    // 斜撐頂點金屬基座
+    v.box(0, bridgeY - 1, 0, Math.max(1, Math.round(dim(s, 0.2, 1))), 1, bridgeD, 2);
   } },
 
 { n: '台北 101', lo: 2.2, hi: 13.5, pal: [0x37686b, 0x588f91, 0xd0dad6, 0x224244, 0xd4a743, 0x7d8d91, 0x535c61],
@@ -2295,102 +2462,117 @@ const SHAPES = [
       }
     }
   } },
-{ n: '獅身人面像', lo: 2.2, hi: 15, pal: [0xdfc28d, 0xb89764, 0x8a6d46, 0xcfb078, 0xe2cc9b, 0x5c4528],
-  /* 來源：blueprints/獅身人面像.js（v1.66 換掉原本那份） */
+{ n: '獅身人面像', lo: 2.2, hi: 15.0,
+  pal: [0xc29b62, 0x9e7b47, 0x2b4c7e, 0xd4a73b, 0x701b1b, 0xe8dcc4],
+  /* 來源：blueprints/獅身人面像.js（v1.216 換掉 v1.66 那份） */
   gen(v, s) {
-    // 1. 核心比例
-    const bw = dim(s, 1.30, 7, true);   // 身寬
-    const bl = dim(s, 3.00, 16);        // 身長（拉長，突顯伏臥感）
-    const bh = dim(s, 0.95, 5);         // 身高
-    const bz = dim(s, 0.60, 3);         // 身軀中心
-    const frontZ = bz - Math.round(bl / 2);
+    // 1. 基座台座
+    const baseW = dim(s, 1.45, 5);
+    const baseL = dim(s, 3.85, 13);
+    const baseH = dim(s, 0.28, 1);
+    v.box(0, 0, 0, baseW, baseH, baseL, 1);
 
-    // 2. 基座石台
-    v.box(0, 0, bz, bw + 2, 1, bl + 2, 1);
+    // 2. 以「頭」為核心基準錨點
+    const hd = s * 0.62;
+    const headR = Math.max(1.3, hd * 0.48);
 
-    // 3. 獅身主體（伏臥身軀，兩段層次）
-    v.box(0, 1, bz, bw, bh - 1, bl, 0);
-    v.box(0, bh, bz + 1, Math.max(3, bw - 2), 1, bl - 2, 0);
+    // 3. 獅身軀幹（伏臥平滑形變）
+    const bodyW = Math.max(2.2, hd * 1.35);
+    const bodyL = Math.max(4.2, hd * 3.0);
+    const bodyH = Math.max(1.6, hd * 1.1);
+    const bodyZ = hd * 0.35;
 
-    // 4. 後臀弧度與肌肉（後段略高微拱）
-    const rearZ = bz + Math.round(bl * 0.3);
-    const rearW = bw;
-    v.box(0, bh, rearZ, rearW, 2, Math.round(bl * 0.35), 0);
-    v.box(0, bh + 2, rearZ + 1, Math.max(3, rearW - 2), 1, Math.round(bl * 0.25), 0);
+    // 前胸厚實隆起與後腰臀部
+    blob(v, 0, baseH + bodyH * 0.58, bodyZ - hd * 0.45, bodyW * 0.85, bodyH * 0.88, bodyL * 0.48, 0);
+    blob(v, 0, baseH + bodyH * 0.68, bodyZ + hd * 0.72, bodyW * 0.9, bodyH * 0.92, bodyL * 0.44, 0);
 
-    // 側面沉積岩橫紋風化層
-    for (let y = 2; y <= bh; y += 2) {
-      mirrorX(v, (bw - 1) / 2, (vv, dx) => {
-        paintFrom(vv, dx + 1, y, bz, -1, 0, 0, 2, 1);
+    // 4. 四肢與尾巴
+    // 前爪
+    const pawW = dim(s, 0.26, 1);
+    const pawL = dim(s, 1.35, 3);
+    const pawH = dim(s, 0.22, 1);
+    const pawX = Math.round(bodyW * 0.52);
+    const pawZ = -Math.round(bodyL * 0.42 + pawL * 0.4);
+
+    mirrorX(v, pawX, (vv, dx) => {
+      vv.box(dx, baseH, pawZ, pawW, pawH, pawL, 0);
+      vv.box(dx, baseH, pawZ - Math.round(pawL * 0.4), pawW, Math.max(1, pawH), 1, 1);
+    });
+
+    // 後腿側髀
+    mirrorX(v, Math.round(bodyW * 0.7), (vv, dx) => {
+      blob(vv, dx, baseH + bodyH * 0.48, bodyZ + hd * 0.75, hd * 0.38, hd * 0.6, hd * 0.72, 0);
+    });
+
+    // 尾巴
+    limb(v, {
+      x: Math.round(bodyW * 0.65), y: baseH + 1, z: Math.round(bodyZ + bodyL * 0.48),
+      x1: Math.round(bodyW * 0.75), y1: baseH + Math.round(bodyH * 0.55), z1: Math.round(bodyZ + bodyL * 0.15),
+      r: 0.5, r1: 0.35, c: 1
+    });
+
+    // 5. 頸部與法老頭部
+    const neckY = baseH + bodyH * 0.76;
+    const headY = neckY + hd * 0.65;
+    const headZ = -Math.round(bodyL * 0.38);
+
+    // 頸柱
+    v.cyl(0, Math.round(neckY), headZ, Math.max(1.1, headR * 0.7), Math.max(1, Math.round(hd * 0.35)), 0);
+
+    // 人面頭部
+    blob(v, 0, headY, headZ, headR * 0.88, headR * 0.95, headR * 0.88, 0);
+
+    // 6. 法老頭巾（Nemes）
+    const hw = Math.max(3, Math.round(headR * 2.6));
+    const hh = Math.max(3, Math.round(hd * 1.15));
+    const hdDepth = Math.max(2, Math.round(headR * 1.9));
+
+    boxTaper(v, {
+      x: 0, y: Math.round(headY - headR * 0.25), z: headZ + 1,
+      w: hw, d: hdDepth,
+      w1: Math.max(2, Math.round(hw * 0.68)), d1: Math.max(2, Math.round(hdDepth * 0.78)),
+      h: hh, c: 2
+    });
+
+    // 額前頭巾金白帶包邊（保障 pal[5] 在 300 塊小尺寸不消失，寬度下限設為 3 且奇數置中）
+    const browW = dim(s, 0.45, 3, true);
+    const browY = Math.round(headY + headR * 0.5);
+    const browZ = headZ - Math.round(headR * 0.82);
+    v.box(0, browY, browZ, browW, 1, 1, 5);
+
+    // 頭巾垂布
+    const flapW = Math.max(1, Math.round(headR * 0.4));
+    const flapH = Math.max(2, Math.round(hd * 0.85));
+    mirrorX(v, Math.round(headR * 0.8), (vv, dx) => {
+      vv.box(dx, Math.round(neckY - flapH * 0.35), headZ - Math.round(headR * 0.48), flapW, flapH, 1, 3);
+    });
+
+    // 頂巾條紋
+    const stripeCount = Math.max(2, Math.round(hh * 0.6));
+    for (let i = 0; i < stripeCount; i++) {
+      const curY = Math.round(headY + i * 0.9);
+      const col = i % 2 === 0 ? 3 : 2;
+      mirrorX(v, Math.round(headR * 0.9), (vv, dx) => {
+        paintFrom(vv, dx, curY, headZ + 1, 0, 0, 1, 3, col);
       });
     }
 
-    // 5. 前伸雙爪與肩部厚肉
-    const pw = dim(s, 0.32, 2);
-    const pl = dim(s, 1.40, 7);
-    const ph = dim(s, 0.38, 2);
-    const pawX = Math.round((bw - 1) / 2 - pw / 2);
-    const pawZ = frontZ - Math.round(pl / 2) + 1;
+    // 7. 神聖識別物（蛇飾、鬍子、五官面容）
+    // 額前眼鏡蛇神飾（Uraeus）
+    v.box(0, Math.round(headY + headR * 0.78), headZ - Math.round(headR * 0.88), 1, Math.max(2, Math.round(hd * 0.35)), 1, 4);
 
-    mirrorX(v, pawX, (vv, dx) => {
-      // 前爪本體
-      vv.box(dx, 1, pawZ, pw, ph, pl, 0);
-      // 爪尖細部與暗色趾縫
-      vv.box(dx, 1, pawZ - Math.round(pl / 2), pw, 1, 1, 1);
-      // 肩關節與軀幹斜接
-      vv.box(dx, 1 + ph, frontZ, pw, dim(s, 0.4, 2), dim(s, 0.6, 2), 0);
+    // 儀式假鬍子
+    v.box(0, Math.round(headY - headR * 0.85), headZ - Math.round(headR * 0.72), 1, Math.max(2, Math.round(hd * 0.4)), 1, 4);
+
+    // 面部五官（眼白與眼線雙重著色）
+    mirrorX(v, Math.max(1, Math.round(headR * 0.38)), (vv, dx) => {
+      paintFrom(vv, dx, Math.round(headY + headR * 0.12), headZ - Math.ceil(headR) - 1, 0, 0, 1, 4, 5);
+      paintFrom(vv, dx, Math.round(headY + headR * 0.22), headZ - Math.ceil(headR) - 1, 0, 0, 1, 4, 2);
     });
 
-    // 6. 前胸石碑（記夢碑，立於雙爪中間）
-    const stW = dim(s, 0.34, 1, true);
-    const stH = dim(s, 0.70, 3);
-    v.box(0, 1, frontZ - 1, stW, stH, 1, 2);
-
-    // 7. 前胸與頸肩（前挺斜向收至頸部）
-    const chestH = dim(s, 0.85, 4);
-    const headZ = frontZ + Math.round(bw * 0.30); // 頭部後退，與胸部形成自然斜角
-    const neckY = bh + 1;
-
-    // 前挺胸膛（厚實過渡層）
-    v.box(0, neckY, frontZ + 1, Math.max(3, bw - 2), chestH - 1, dim(s, 1.0, 4), 0);
-    v.box(0, neckY + 1, frontZ + 2, Math.max(3, bw - 4), chestH - 1, dim(s, 0.8, 3), 0);
-
-    // 8. 法老頭部與面容
-    const headY = neckY + chestH - 1;
-    const hr = dim(s, 0.52, 3); // 頭部半徑
-
-    // 面部基底
-    blob(v, 0, headY + hr, headZ, hr * 0.9, hr * 1.05, hr * 0.9, 4);
-
-    // 9. 法老頭巾（Nemes）— 兩側大弧翼展開與頂冠
-    const nemesSpan = Math.round(hr * 1.4);
-    // 兩側向外撐開的大頭巾褶翼
-    mirrorX(v, nemesSpan, (vv, dx) => {
-      // 側翼厚片
-      vv.box(dx, headY - 1, headZ, 1, Math.round(hr * 2.0), Math.round(hr * 1.3), 3);
-      // 外擴邊緣收弧
-      vv.box(dx > 0 ? dx - 1 : dx + 1, headY - 2, headZ - 1, 1, Math.round(hr * 1.5), 1, 3);
-    });
-
-    // 頭巾頂部圓弧與後腦盔甲
-    v.dome(0, headY + Math.round(hr * 1.3), headZ + 1, Math.max(2, Math.round(hr * 1.2)), 3, 0.6);
-    v.box(0, headY, headZ + Math.round(hr * 0.7), Math.max(3, Math.round(hr * 1.8)), Math.round(hr * 1.6), 2, 3);
-
-    // 10. 五官特徵（風化雙眼、微突殘鼻、下巴假鬍基座）
-    // 雙眼與眉骨
-    mirrorX(v, Math.max(1, Math.round(hr * 0.4)), (vv, dx) => {
-      paintFrom(vv, dx, Math.round(headY + hr * 1.05), headZ - Math.ceil(hr) - 2, 0, 0, 1, 4, 5);
-    });
-    // 鼻形（風化殘缺）
-    paintFrom(v, 0, Math.round(headY + hr * 0.70), headZ - Math.ceil(hr) - 2, 0, 0, 1, 4, 0);
-    // 下巴厚實假鬍殘留處
-    v.box(0, headY + Math.round(hr * 0.15), headZ - Math.round(hr * 0.75), Math.max(1, dim(s, 0.22, 1, true)), Math.max(1, dim(s, 0.3, 1)), 2, 1);
-
-    // 11. 盤繞長尾（右後側沿身體環繞）
-    const tailX = Math.round((bw - 1) / 2);
-    const tailZ = rearZ + 1;
-    v.line(tailX + 1, 1, tailZ - 2, tailX + 1, 2, tailZ + 1, 1);
-    v.line(tailX + 1, 2, tailZ + 1, tailX - 1, 2, tailZ + 2, 1);
+    // 鼻部與下唇
+    paintFrom(v, 0, Math.round(headY), headZ - Math.ceil(headR) - 1, 0, 0, 1, 4, 0);
+    paintFrom(v, 0, Math.round(headY - headR * 0.28), headZ - Math.ceil(headR) - 1, 0, 0, 1, 4, 1);
   } },
 { n: '聖巴索大教堂', lo: 2.2, hi: 14.0, pal: [0x9e2a2b, 0xf4f1de, 0x3a6b35, 0xe09f3e, 0x1d3557, 0x540b0e],
   /* 來源：AgentData/blueprints/聖巴索大教堂.js（v1.143 換掉原本那份）。dim 的下限一律乘 0.8（22 處）：原稿最小 2067 塊，面板的 1800 按下去等於沒反應。

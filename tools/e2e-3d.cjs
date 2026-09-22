@@ -197,8 +197,8 @@ const PERF_X = 4;                // 有特效時不超過沒特效時的幾倍
 
 const SHAPE_COUNT = 48;          // blueprints.js 內建的 SHAPES 數量
 const WB_CLICK_MIN = 1500;       // 點一下倒 2300 格，滲掉一些之後至少該剩這麼多
-const CUSTOM_COUNT = 28;         // blueprints/ 資料夾裡預設附的自訂藍圖
-const CUSTOM_FILES = '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js,馬克杯.js,三色糰子與熱茶.js,五稜郭.js,孔廟建築群.js,日式醬油糰子.js,水榭戲亭.js,北海道舊本廳舍.js,吉薩大金字塔.js,松前城天守.js,林家花園觀稼樓.js,金閣寺.js,俄式白石大教堂.js,特製叉燒拉麵.js,清水寺本堂與舞台.js,章魚燒.js,焦糖布丁.js,舒芙蕾厚鬆餅.js,超商咖啡.js,新竹火車站.js,極地雪夜極光.js,聖三一修道院.js,彰化扇形車庫.js,銀閣寺.js,箱館奉行所.js,總統府.js';
+const CUSTOM_COUNT = 39;         // blueprints/ 資料夾裡預設附的自訂藍圖
+const CUSTOM_FILES = '範例-小教堂.js,八卦山大佛.js,大阪城天守閣.js,馬克杯.js,三色糰子與熱茶.js,孔廟建築群.js,日式醬油糰子.js,水榭戲亭.js,北海道舊本廳舍.js,吉薩大金字塔.js,松前城天守.js,林家花園觀稼樓.js,金閣寺.js,俄式白石大教堂.js,特製叉燒拉麵.js,清水寺本堂與舞台.js,章魚燒.js,焦糖布丁.js,舒芙蕾厚鬆餅.js,超商咖啡.js,新竹火車站.js,聖三一修道院.js,彰化扇形車庫.js,銀閣寺.js,箱館奉行所.js,總統府.js,中正紀念堂.js,日式天目曜變瓷碗.js,北極熊培波.js,哆啦A夢.js,美國白宮.js,商業大樓.js,商銀凹折雙翼大樓.js,商銀柱列大樓.js,現代折角商辦大樓.js,現代商業大樓.js,瓷碗.js,都會商辦大廈.js,應援兔兔.js';
 const ALL_SHAPES = SHAPE_COUNT + CUSTOM_COUNT;
 
 /* ---------- 只跑到某一段（--until，開發用，見檔頭） ---------- */
