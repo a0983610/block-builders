@@ -7828,7 +7828,7 @@ const DOOMS = [
   { id: 'gryphon', wt: 1, start: () => spawnGryph() },
   /* 事件五：巨人，走進來對著地標踹 2~3 腳，踹中那一片炸開並燒起來（v1.192）。 */
   { id: 'giant', wt: 1, start: () => spawnBeast('giant') },
-  /* 事件六：Saber，走到地標旁邊舉劍蓄力，劈出一道光刃把整座打穿（v1.222，見 stepExcal）。 */
+  /* 事件六：Saber，走到地標旁邊把劍舉過頭頂蓄力，整條光柱斬下來把整座劈開（v1.222／v1.223，見 stepExcal）。 */
   { id: 'saber', wt: 1, start: () => spawnBeast('saber') }
 ];
 /* 照權重挑一件。回傳 null 只有一種情況：表是空的。（同 rollIdleEvent） */
@@ -7869,7 +7869,9 @@ function spawnBeast(kind, fun, bad) {
        所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。 */
     sc: kind === 'giant' ? GIA_SC : DOOM_SC,
     kick: 0, kleft: 0, kt: 0, hit: 0, puff: 0,
-    xt: 0,                                        // Saber 出招到第幾秒（v1.222，見 stepExcal）
+    /* Saber 出招到第幾秒（v1.222，見 stepExcal）；th0 上一幀光柱的角度（null＝不在斬）、
+       thS 開斬那一刻的角度，xn／xb 這一招斬掉幾塊／點著幾塊（測試在讀），xs 震過畫面了沒 */
+    xt: 0, th0: null, thS: 0, xn: 0, xb: 0, xs: 0,
     /* 擋路就踹那一段的狀態（v1.207，只有巨人在用）：bust＝踹完要回哪一段
        （null＝不是在清路），bn＝這個障礙物已經踹幾腳了，bskip＝踹不通、放它一馬的那一個。 */
     bust: null, bn: 0, bskip: null,
@@ -7897,7 +7899,7 @@ function spawnBeast(kind, fun, bad) {
      （見 stepBeast 的 fun 那一段），這時候還說牠盯上了村子就是騙人。
      Saber 用「她」（v1.222）：場上就她一個不是野獸。 */
   const hand = kind === 'giant' ? '牠有十五格高，一腳就能踹垮一面牆'
-             : kind === 'saber' ? '她舉劍蓄力之後，一道光刃能把整座地標劈穿'
+             : kind === 'saber' ? '她把劍舉過頭頂蓄力，整條光柱斬下來能把整座地標劈成兩半'
              : kind === 'ape' ? '牠手上有一支火把' : '牠手上有一根綁著膠帶的香蕉';
   if (fun) toast(nm + '來工地逛逛',
                  bad && nearHome(m.x, m.z)
@@ -8310,7 +8312,7 @@ function stepBeast0(m, dt) {
     }
     /* Saber（v1.222）同巨人：act 只是站定架劍瞄一下，接著轉進自己那一段（舉劍、蓄力、劈）。
        一趟就一招（使用者選的「1 次」），天災與吉祥物砸村子那一趟都一樣。 */
-    if (m.kind === 'saber') { m.st = 'excal'; m.xt = 0; m.hit = 0; return false; }
+    if (m.kind === 'saber') { m.st = 'excal'; m.xt = 0; m.hit = 0; m.th0 = null; return false; }
     DOOM_ACT[m.kind](m);
     if (m.fun) funBack(m); else leaveBeast(m);        // 吉祥物砸完回去逛（v1.166）
     return false;
@@ -8554,130 +8556,181 @@ function giantSteam(m, dt) {
   }
 }
 
-/* ── 事件六：Saber 的 Excalibur（v1.222）──────────────────────────
+/* ── 事件六：Saber 的 Excalibur（v1.222，v1.223 改成整條光柱斬下來）─────────────
    使用者：「做成天災吉祥物 攻擊是excalibur舉劍往前轟」（造型先做預覽過目，見 engine.js〈Saber〉）。
-   形態是一次問完才做的：舉劍選 **A 面前高舉**、威力選**貫穿一條線**（寬 3、高 5 格，一路打穿
-   30 格，上面沒打到的照支撐規則垮下來）、一趟轟 **1 次**、畫法選**自己一顆 mesh**。
+   v1.222 那一版是「劈下之後貼地往前轟一道光刃」，而且**問完選項就落地、沒讓使用者看效果**。
+   使用者：「你這次沒讓我看效果就做完 我是想說舉過頭頂 然後整條大光炮般的斬下來 同時也有燃燒效果
+   然後比現在再粗一點」。第二版預覽給了兩種斬法，使用者選 **甲 整條光柱斬下來、粗 6 格**。
 
    **走路那一整套一個字都沒重刻**：她是小人大小、走地上，DOOM_SC／DOOM_WALK／DOOM_NEAR
    全部照猴子那一組；come／fun／near／act／go、走城門、被打倒、著火、翻臉都是現成的。
-   新的只有「出招」這一段（excal，stepExcal）與光刃（beams，stepBeams）。
+   新的只有出招這一段（excal，stepExcal）。
 
-   **光刃跟她分開算**（同香蕉 nanas 跟白猴子分開）：光刃一出去就是自己的東西，她那一瞬間被打倒
-   也不會把光收回來。前緣 EXC_GROW 秒衝到底，**這幾幀一段一段往前削**——每一幀削「上一幀的前緣
-   → 這一幀的前緣」那一截，首尾相接，每一塊剛好被算到一次（同大劍的 swordCut）——
-   看得到光刃先打穿最近那一面、再一路往裡鑽。
-   形狀、時間軸、起點全部讀引擎那一份（ENG.EXC／EXC_TIP／EXC_W／excH／EXC_L）：
-   畫出來的光刃就是削掉的那一條（同 giantHit 讀 ENG.giantFoot）。 */
-const EXC_HIT = [16, 26];             // 積木沿著光刃飛出去的速度（同一把尺：槌子 15、大槌 22.5、大劍上限 34）
-const EXC_UP = [3, 9];                // 往上掀的速度
-/* 飛出去的光刃：{x, z 起點, ux, uz 方向, t 出來第幾秒, front 削到哪（格）, by 誰劈的,
-   home 吉祥物砸村子那一趟, n 這一道削掉幾塊（測試在讀）, hit 震過畫面了沒} */
-let beams = null;
+   斬法同大劍（swordCut）：光柱在她面對的那個直立面上，從「朝天」轉到「前下方」，
+   **每一幀掃過一小段、首尾相接**，每一塊剛好被算到一次。離劍的距離在光柱長度內、離那個直立面
+   在光柱粗細的一半以內的，整片斬飛——所以一招下去是沿著她面對的方向把整座劈出一道 6 格寬、
+   從地面一路到光柱掃得到的高度的縫。
+   「這一幀掃到了沒」**比的是兩條線，不是角度**：上一幀還在光柱前面、這一幀已經在光柱後面的
+   才算。第一版比的是「從握把看過去的角度落在上一幀～這一幀之間」——但斬的時候握把會從頭頂
+   移到胸前，一塊積木看過去的角度會因為握把在動而**自己往回跳**，跳過那一小段就再也掃不到
+   （實測一定掃得到的 350 塊漏了 19 塊，縫裡留著一顆一顆沒斬掉的）。比兩條線的話，
+   握把怎麼移都一樣：每一塊都剛好在某一幀從前面翻到後面。
+   「燃燒效果」兩件：斬飛的帶火飛出去（碎料的火），斬到底那一刻斬口兩側還站著的那一兩排
+   稀疏地點著（同 igniteAround 的三成五），剩下的交給火自己蔓延。
+   光柱在哪、朝哪、多粗全部讀引擎那一份（ENG.excSword／excWidth／EXC_W／EXC_L／EXC_BASE）：
+   畫出來的光柱掃過哪裡，斬掉的就是哪裡（同 giantHit 讀 ENG.giantFoot）。 */
+const EXC_HIT = [16, 26];             // 積木沿著刃前進的方向飛出去（同一把尺：槌子 15、大槌 22.5、大劍上限 34）
+const EXC_EDGE = 1.6;                 // 斬口外面幾格內還站著的會被點著
+/* 這一幀的光柱＝她面對的那個直立面上的一條線：握把 (gx, gy, gz) ＋ 方向 (du 往前、dv 往上，
+   投影到那個面上再正規化)。寫進 o（不另外配置） */
+function excLine(m, o) {
+  const s = ENG.excSword(m), fx = Math.sin(m.a), fz = Math.cos(m.a);
+  o.gx = s.x; o.gy = s.y; o.gz = s.z;
+  o.du = s.dx * fx + s.dz * fz; o.dv = s.dy;
+  const n = Math.hypot(o.du, o.dv) || 1;
+  o.du /= n; o.dv /= n;
+  return o;
+}
+const _excC = { gx: 0, gy: 0, gz: 0, du: 0, dv: 1 };
 function stepExcal(m, dt) {
   m.gait += (0 - m.gait) * Math.min(1, dt * 8);
   const E = ENG.EXC, t0 = m.xt;
   m.xt += dt;
-  if (t0 < E.raise && m.xt >= E.raise) sndCharge();         // 舉到頂，開始蓄力
-  /* 光刃出來那一刻結算一次（同巨人那一腳的 m.hit）：之後停在劈到底那一段有一秒多，
-     照「m.xt >= fire」判的話每一幀都會再劈一道。 */
-  if (!m.hit && m.xt >= E.fire) { m.hit = 1; fireExcal(m); }
+  if (t0 < E.raise && m.xt >= E.raise) sndCharge();         // 舉到頂，光柱長出來、開始蓄力
+  /* 開斬那一刻：這一招算出手了（m.hit，同巨人那一腳），記下光柱這時候那一條線＝斬的起點。
+     th0／thS 是那條線的角度（0＝朝天、π/2＝朝前），給點火與測試看的 */
+  if (!m.hit && m.xt >= E.charge) {
+    m.hit = 1; m.xn = 0; m.xs = 0; m.xb = 0;
+    m.xp = excLine(m, m.xp || {});
+    m.th0 = m.thS = Math.atan2(m.xp.du, m.xp.dv);
+    sndExcal();
+  }
+  if (m.hit && m.th0 != null) {
+    const C = excLine(m, _excC);
+    excSweep(m, m.xp, C);
+    Object.assign(m.xp, C);
+    m.th0 = Math.atan2(C.du, C.dv);
+    /* 斬到底：斬口兩側燒起來，這一招不再斬（th0 收掉）——之後停在前下方那一秒多，
+       照「m.xt 過了 charge」判的話每一幀都會再斬一次（同巨人那一腳的 m.hit）。 */
+    if (m.xt >= E.slash) { excBurn(m, m.thS, m.th0); m.th0 = null; }
+  }
   if (m.xt < E.end) return false;
-  m.xt = 0; m.hit = 0;
+  m.xt = 0; m.hit = 0; m.th0 = null;
   if (m.fun) funBack(m); else leaveBeast(m);                // 吉祥物砸完回去逛（同猴子）
   return false;
 }
-function fireExcal(m) {
-  const tip = ENG.EXC_TIP, sc = m.sc || 1;
-  /* 模型座標轉世界：朝向 m.a 就是繞 Y 轉，three 的 Ry 把 (x, ·, z) 轉成
-     (x·cos + z·sin, ·, −x·sin + z·cos)（同 giantHit）。方向就是她面對的 (sin a, cos a）。 */
-  const c = Math.cos(m.a), s = Math.sin(m.a);
-  const e = { x: m.x + (tip.x * c + tip.z * s) * sc, z: m.z + (-tip.x * s + tip.z * c) * sc,
-              ux: s, uz: c, t: 0, front: 0, by: m, home: m.home ? 1 : 0, n: 0, hit: 0 };
-  if (!beams) beams = [];
-  beams.push(e);
-  sndExcal();
-  return e;
+/* 光柱在這一幀的幾何：握把 (gx, gy, gz)、她面對的 (fx, fz)、光柱起點離握把 base、最遠 R。
+   回傳共用一個物件（每幀叫好幾次，不必各配一個）。 */
+const _exc = { gx: 0, gy: 0, gz: 0, fx: 0, fz: 1, base: 0, R: 0, W2: 0 };
+function excGeo(m) {
+  const s = ENG.excSword(m);
+  _exc.gx = s.x; _exc.gy = s.y; _exc.gz = s.z;
+  _exc.fx = Math.sin(m.a); _exc.fz = Math.cos(m.a);
+  _exc.base = ENG.EXC_BASE * (m.sc || 1);
+  _exc.R = _exc.base + ENG.EXC_L;
+  _exc.W2 = ENG.EXC_W / 2;
+  return _exc;
 }
-function stepBeams(dt) {
-  if (!beams) return;
-  for (let i = beams.length - 1; i >= 0; i--) {
-    const e = beams[i];
-    e.t += dt;
-    const f = Math.min(1, e.t / ENG.EXC_GROW) * ENG.EXC_L;
-    if (f > e.front) { excCut(e, e.front, f); e.front = f; }
-    if (e.t >= ENG.EXC_GROW + ENG.EXC_FADE) beams.splice(i, 1);
-  }
-  if (!beams.length) beams = null;
+/* (x, y, z) 在這一幀被光柱掃過了嗎：上一條線（P）的前面、這一條線（C）的後面，而且在這一條
+   光柱的長度內（握把後面不算）、離那個直立面在光柱粗細的一半以內。pad＝對方自己的半徑（只加在粗細上）。
+   「前面／後面」是線的方向叉乘那一點：d = (du, dv)、p = (往前, 往上)，du·pv − dv·pu 負的＝還在前面
+   （朝天的線，正前方那一點是 −1；線轉到朝前之後，正上方那一點變成 +1＝已經掃過）。 */
+function excCross(g, P, C, x, y, z, pad) {
+  const vx = x - C.gx, vy = y - C.gy, vz = z - C.gz;
+  const pu = vx * g.fx + vz * g.fz;
+  const along = pu * C.du + vy * C.dv;                        // 沿著這一條光柱多遠
+  if (along < -0.5 || along > g.R + 0.5) return false;
+  if (Math.abs(vx * g.fz - vz * g.fx) > g.W2 * ENG.excWidth(along - g.base) + pad) return false;
+  if (C.du * vy - C.dv * pu < 0) return false;                 // 還在這一條的前面：下一幀才輪到
+  const qu = (x - P.gx) * g.fx + (z - P.gz) * g.fz, qv = y - P.gy;
+  return P.du * qv - P.dv * qu < 0;                            // 上一條的後面＝上一幀就掃過了
 }
-/* 光刃從 a0 削到 a1（沿著光刃量的距離，格）：離中線 EXC_W/2 以內、高度在那一段光刃底下的
-   積木打飛。**第一段往後多收半格**：起點那一格的積木中心可能剛好落在劍尖後面一點點。
-   回傳這一段削掉幾塊（還站著的；地上的碎料一起掃飛但不算破壞，同大劍）。 */
-function excCut(e, a0, a1) {
-  const W2 = ENG.EXC_W / 2, lo = a0 > 0 ? a0 : -0.5;
+/* 上一條線 P 掃到這一條 C 的那一小段：回傳斬掉幾塊（還站著的；地上的碎料一起掃飛但不算破壞，同大劍） */
+function excSweep(m, P, C) {
+  const g = excGeo(m);
+  /* 刃前進的方向（在直立面上跟這一條線垂直、朝還沒掃到的那一側）：線朝天時是往前、朝前時是往下 */
+  const tu = C.dv, tv = -C.du;
   let n = 0, own = 0, cx = 0, cy = 0, cz = 0;
   for (const b of blocks) {
-    if (b.st !== SET && b.st !== FREE) continue;         // FREE ＝躺在地上的碎料，一起掃飛
-    const vx = b.x - e.x, vz = b.z - e.z;
-    const al = vx * e.ux + vz * e.uz;                    // 沿著光刃多遠
-    if (al <= lo || al > a1) continue;
-    if (Math.abs(vx * e.uz - vz * e.ux) > W2) continue;  // 離中線多遠
-    if (b.y > ENG.excH(al)) continue;                    // 那一段光刃有多高
+    if (b.st !== SET && b.st !== FREE) continue;       // FREE ＝躺在地上的碎料，一起掃飛
+    if (!excCross(g, P, C, b.x, b.y, b.z, 0)) continue;
     const set = b.st === SET;
     const ow = set && b.hh < 0;              // 同 smash：breakBlock 會把 hh 清掉，要先看
     /* 吉祥物砸村子那一趟：**地標一塊都不准動**（同巨人 giantKick 的 isVillage），光照樣穿過去 */
-    if (e.home && ow) continue;
-    const sp = rr(EXC_HIT[0], EXC_HIT[1]);
-    breakBlock(b, e.ux * sp + rr(-1.5, 1.5), rr(EXC_UP[0], EXC_UP[1]), e.uz * sp + rr(-1.5, 1.5));
+    if (m.home && ow) continue;
+    /* 沿著刃前進的方向飛（往前那一份至少留三成五：斬過水平之後刃是往下、往她那一側走的），
+       抬升一律往上——往下斬的切線是朝下的，照切線給的話碎料會被壓進地面（同大劍） */
+    const sp = rr(EXC_HIT[0], EXC_HIT[1]), tf = Math.max(0.35, tu);
+    breakBlock(b, g.fx * tf * sp + rr(-1.5, 1.5), Math.abs(tv) * sp * 0.35 + rr(2.4, 6.8),
+               g.fz * tf * sp + rr(-1.5, 1.5));
     if (!set) continue;
+    igniteBlock(b);                          // 帶火飛出去（碎料那一份額度，見 EMBER_MAX）
     n++; if (ow) own++;
     cx += b.x; cy += b.y; cz += b.z;
   }
   /* 人與動物排在 afterHit 前面（同大劍）：afterHit 不會動已經飛起來的人，
-     順序反了的話被光刃掃到的那個會變成「原地倒下」而不是被沖飛。 */
-  excLives(e, lo, a1);
+     順序反了的話被光柱掃到的那個會變成「原地倒下」而不是被沖飛。 */
+  excLives(m, g, P, C);
   if (!n) return 0;
   const at = { x: cx / n, y: cy / n, z: cz / n };
-  /* self 給劈的那一位：光刃從她劍尖前 2 格起跳，削掉的那一截離她很近，
-     afterHit 震倒的半徑（W2 × 1.7）會罩到她自己（同巨人那一腳的 self）。 */
-  afterHit(n, at, W2, own, e.by);
-  spawnDust(at, W2 + 1, n);
-  e.n += n;
-  /* 一道光刃只震一次（同大劍：會持續破壞的不每幀震）；聲音在出光刃那一刻已經響過了 */
-  if (!e.hit) { e.hit = 1; ENG.shake(1.2 + Math.min(1.4, n * 0.02)); }
+  /* self 給斬的那一位：開斬那幾幀斬的是她頭頂正前方，afterHit 震倒的半徑（W2 × 1.7）會罩到她自己
+     （同巨人那一腳的 self） */
+  afterHit(n, at, g.W2, own, m);
+  spawnDust(at, g.W2, n);
+  m.xn += n;
+  if (!m.xs) { m.xs = 1; ENG.shake(1.4 + Math.min(1.4, n * 0.01)); }   // 一招只震一次（同大劍）
   return n;
 }
-/* 站在光刃這一截裡的人與動物，順著光刃沖飛。劈的那一位自己不算。 */
-function excLives(e, lo, a1) {
-  const W2 = ENG.EXC_W / 2;
-  const inBeam = (x, y, z, R) => {
-    const vx = x - e.x, vz = z - e.z, al = vx * e.ux + vz * e.uz;
-    return al > lo && al <= a1 && Math.abs(vx * e.uz - vz * e.ux) <= W2 + R && y < ENG.excH(al);
-  };
+/* 站在光柱掃過那一段裡的人與動物，順著刃沖飛、身上帶火。斬的那一位自己不算。 */
+function excLives(m, g, P, C) {
+  const tf = Math.max(0.35, C.dv);                     // 刃前進的方向往前那一份（同 excSweep）
   let hit = 0;
   for (const w of workers) {
-    if (w.air || !inBeam(w.x, w.y || 0, w.z, GATE_MAN_R)) continue;
+    if (w.air) continue;
+    if (!excCross(g, P, C, w.x, (w.y || 0) + 0.9 * (w.scale || 1), w.z, GATE_MAN_R)) continue;
     const sp = rr(EXC_HIT[0], EXC_HIT[1]) * 0.6;
-    tossWorker(w, e.ux * sp + rr(-1.5, 1.5), rr(4, 8), e.uz * sp + rr(-1.5, 1.5), false);
+    tossWorker(w, g.fx * tf * sp + rr(-1.5, 1.5), rr(4, 8), g.fz * tf * sp + rr(-1.5, 1.5), true);
     hit++;
   }
-  if (beasts) for (const m of beasts) {
-    if (m === e.by || m.air) continue;
-    if (!inBeam(m.x, m.y || 0, m.z, GATE_MAN_R + ENG.BEAST_MID[m.kind] * (m.sc || 1) * 0.8)) continue;
+  if (beasts) for (const o of beasts) {
+    if (o === m || o.air) continue;
+    const mid = ENG.BEAST_MID[o.kind] * (o.sc || 1);
+    if (!excCross(g, P, C, o.x, (o.y || 0) + (o.sky ? 0 : mid), o.z, GATE_MAN_R + mid * 0.8)) continue;
     const sp = rr(EXC_HIT[0], EXC_HIT[1]) * 0.6;
-    if (tossBeast(m, (e.ux * sp + rr(-1.5, 1.5)) * B_BLOW, rr(4, 8),
-                  (e.uz * sp + rr(-1.5, 1.5)) * B_BLOW, false)) beastHit(m);   // v1.208
+    if (tossBeast(o, (g.fx * tf * sp + rr(-1.5, 1.5)) * B_BLOW, rr(4, 8),
+                  (g.fz * tf * sp + rr(-1.5, 1.5)) * B_BLOW, true)) beastHit(o);   // v1.208
     hit++;
   }
   if (hit) sndFall();
   return hit;
+}
+/* 斬到底那一刻：斬口外面 EXC_EDGE 格內還站著的，在整段掃過的角度（a0～a1）裡稀疏地點著
+   （同 igniteAround 的三成五：連成一片就不像餘火）。站著的那一份額度 FIRE_MAX 會自己擋住上限。
+   吉祥物那一趟只准燒村子那一邊（同 giantKick）。回傳點著幾塊（測試在讀）。 */
+function excBurn(m, a0, a1) {
+  const g = excGeo(m);
+  let n = 0;
+  for (const b of blocks) {
+    if (b.st !== SET || b.burn) continue;
+    if (m.home && !isVillage(b)) continue;
+    const vx = b.x - g.gx, vy = b.y - g.gy, vz = b.z - g.gz;
+    const fwd = vx * g.fx + vz * g.fz, r = Math.hypot(vy, fwd);
+    if (r > g.R + 0.5) continue;
+    const ph = Math.atan2(fwd, vy);
+    if (ph < a0 || ph > a1) continue;
+    const d = Math.abs(vx * g.fz - vz * g.fx) - g.W2 * ENG.excWidth(r - g.base);
+    if (d <= 0 || d > EXC_EDGE) continue;
+    if (Math.random() > 0.35) continue;
+    if (igniteBlock(b)) n++;
+  }
+  m.xb = n;
+  return n;
 }
 
 /* 天災的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）。 */
 function stepDoom(dt) {
   stepNanas(dt);
   stepFballs(dt);
-  stepBeams(dt);                                    // Saber 的光刃（v1.222）
   if (beasts) {
     for (let i = beasts.length - 1; i >= 0; i--)
       if (stepBeast(beasts[i], dt)) beasts.splice(i, 1);
@@ -8686,7 +8739,7 @@ function stepDoom(dt) {
   if (phase !== 'done') { doomT = -1; return; }     // 沒有一座完好的地標可砸
   /* 一次一件，等這一件演完。**吉祥物不算**（v1.144）：那是另一條線，場上有牠在逛的
      時候天災的鐘照數——不排除的話，三隻輪流來逛就等於把天災關掉了。 */
-  if (nanas || fballs || beams || (beasts && beasts.some(m => !m.fun && !m.herd))) return;
+  if (nanas || fballs || (beasts && beasts.some(m => !m.fun && !m.herd))) return;
   if (doomT < 0) { doomT = rr(DOOM_LO, DOOM_HI); return; }
   doomT -= dt;
   if (doomT > 0) return;
@@ -9438,7 +9491,7 @@ const MASCOTS = [
   { id: 'gryphon', ground: 1, spawn: bad => spawnGryph(1, bad) },
   /* 巨人（v1.192）：用走的，整地那一段先不放進來（同兩隻猴子）。 */
   { id: 'giant', ground: 1, spawn: bad => spawnBeast('giant', 1, bad) },
-  /* Saber（v1.222）：用走的，同上。砸村子那一趟也是一招 Excalibur，但地標一塊都不削（見 excCut）。 */
+  /* Saber（v1.222）：用走的，同上。砸村子那一趟也是一招 Excalibur，但地標一塊都不斬、不燒（見 excSweep）。 */
   { id: 'saber', ground: 1, spawn: bad => spawnBeast('saber', 1, bad) }
 ];
 const mascT = MASCOTS.map(() => -1);  // 每隻各自的倒數（−1＝還沒抽），跟 MASCOTS 同索引
@@ -9508,7 +9561,7 @@ function turnBad(id) {
          牠會用那個姿勢一路滑過去。收完再照下面那兩行決定接哪一段。 */
       /* Saber 出招到一半被翻臉的（v1.222）同上：那一招收乾淨（xt／hit 歸零）再去走地標那一段 */
       const mid = m.st === 'kick' || m.st === 'excal';
-      if (mid) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; m.xt = 0; }
+      if (mid) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; m.xt = 0; m.th0 = null; }
       if (m.home) m.st = 'come';
       else if (m.st === 'fun' || mid) m.st = 'near';
       beastCry(m);
@@ -9932,12 +9985,12 @@ function reaim(m) {
     m.st = m.bust || 'near';
     m.bust = null; m.bn = 0;
   }
-  /* Saber 出招到一半被打斷（v1.222）：光刃還沒出去就回 near 重走過去再瞄一次（同巨人那一腳）；
-     **已經劈出去了（m.hit）就算這一趟做完了**——光刃是自己的東西（見 stepBeams），
-     爬起來再劈一次的話一趟就變兩招，使用者選的是一趟 1 次。 */
+  /* Saber 出招到一半被打斷（v1.222）：還沒開斬就回 near 重走過去再瞄一次（同巨人那一腳）；
+     **已經開斬了（m.hit）就算這一趟做完了**——光柱跟著劍，她倒下那一刻斬到哪就是哪，
+     爬起來再斬一次的話一趟就變兩招，使用者選的是一趟 1 次。 */
   else if (m.st === 'excal') {
     const done = m.hit;
-    m.xt = 0; m.hit = 0; m.arm = 0;
+    m.xt = 0; m.hit = 0; m.arm = 0; m.th0 = null;
     if (!done) m.st = 'near';
     else if (m.fun) funBack(m);
     else leaveBeast(m);

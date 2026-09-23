@@ -228,11 +228,11 @@ function draw() {
   ENG.commitWorkers();
   ENG.putEmotes(workers);            // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位）
   /* 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）。Saber（v1.222）也在這份清單裡，
-     putBeasts 把她那一格留空、putSabers 用她自己那顆 mesh 畫（索引對齊，點選才對得回去）。 */
+     putBeasts 把她那一格留空、putSabers 用她自己那顆 mesh 畫（索引對齊，點選才對得回去）；
+     她的光柱跟著劍一起畫（v1.223），不另外一份清單。 */
   const bl = beastList();
   ENG.putBeasts(bl);
   ENG.putSabers(bl);
-  ENG.putExcal(beams || EMPTY);      // 光刃（v1.222）
 
   ENG.putTrees(trees);
   ENG.putDust(dustList());

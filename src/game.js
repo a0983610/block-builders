@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.222.0';
+const VERSION = '1.223.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -294,12 +294,12 @@ function sndSaber() {
   tone(1320, 0.28, 'sine', 0.045, 1.5, 'saber');
   setTimeout(() => tone(1760, 0.4, 'triangle', 0.035, 1, 'saber'), 90);
 }
-/* 蓄力：一聲 1.5 秒往上爬的嗡鳴（ENG.EXC 的 charge − raise），爬到頂正好接上劈下去那一聲 */
+/* 蓄力：一聲 1.6 秒往上爬的嗡鳴（ENG.EXC 的 charge − raise），爬到頂正好接上斬下去那一聲 */
 function sndCharge() {
-  tone(180, 1.5, 'triangle', 0.05, 4, 'excCharge', 0.4);
-  tone(360, 1.5, 'sine', 0.025, 4, 'excCharge2', 0.6);
+  tone(180, 1.6, 'triangle', 0.05, 4, 'excCharge', 0.4);
+  tone(360, 1.6, 'sine', 0.025, 4, 'excCharge2', 0.6);
 }
-/* 光刃出去：低頻的轟 ＋ 一道往下掃的亮音（光衝出去）。自己的 key，不跟爆炸搶發聲名額 */
+/* 開斬：低頻的轟 ＋ 一道往下掃的亮音（光柱斬下來）。自己的 key，不跟爆炸搶發聲名額 */
 function sndExcal() {
   noise(0.9, 0.24, 700);
   tone(72, 1.0, 'sawtooth', 0.09, 0.4, 'excal');
