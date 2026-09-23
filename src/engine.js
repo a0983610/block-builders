@@ -19,6 +19,7 @@ const ENG = (function () {
   let canMesh, shellMesh;           // 加農砲與燒著的砲彈（v1.204）
   let poolGeo, poolPos, poolFoam, poolUni;
   let markMesh, markGeo, markPos, markCol;
+  let searMesh, searGeo, searPos, searCol;   // Excalibur 的燒灼痕（v1.224，見 putSears）
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
@@ -97,6 +98,11 @@ const ENG = (function () {
      所以頂點上限＝塊數 × 片數 × (圈數−1) × 6。 */
   const MARK_MAX = 24, MARK_SEG = 18, MARK_RING = 5;
   const MARKV = MARK_MAX * MARK_SEG * (MARK_RING - 1) * 6;
+  /* Excalibur 的燒灼痕（v1.224）：同時最多幾道、一道最多切幾刀（沿著長度）、橫的方向從左緣到右緣幾個點。
+     一刀跟下一刀之間每一格鋪兩個三角形，所以頂點上限＝道數 × 刀數 × (點數−1) × 6。 */
+  const SEAR_MAX = 3, SEAR_SEC = 100;
+  const SEAR_U = [-1, -0.75, -0.45, -0.18, 0, 0.18, 0.45, 0.75, 1];
+  const SEARV = SEAR_MAX * SEAR_SEC * (SEAR_U.length - 1) * 6;
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
@@ -901,9 +907,14 @@ const ENG = (function () {
     sparkMesh.frustumCulled = false;
     for (let i = 0; i < MAXSAB * SAB_SPARK; i++) sparkMesh.setColorAt(i, tmpC.setHex(SAB_SPARK_C[i % 4]));
     scene.add(sparkMesh);
-    /* 光柱三層：亮芯（一般混色）、金、外暈（後兩層加亮）。都不寫深度、不投影。一位一條 */
+    /* 光柱三層：亮芯（一般混色）、金、外暈（後兩層加亮）。都不寫深度、不投影。一位一條。
+       **圓柱不是方塊**（v1.224，使用者：「太方了 應該要偏圓柱狀」）：直徑 1、沿 y 軸，
+       縮放照舊是 (粗, 長, 粗)，所以直徑就是 EXC_W——判定量的是離直立面多遠，跟截面的形狀無關。
+       （靠劍那一截拉長、做成平順的錐形也試過，預覽 10～40 格四組，使用者：「好像都不如原本的」，
+       所以照舊是 3 格內一段一段長到全粗，見 開發筆記〈破壞道具：Excalibur〉。） */
+    const barGeo = new T.CylinderGeometry(0.5, 0.5, 1, 24);
     for (const L of EXC_LAYERS) {
-      const m = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
+      const m = new T.InstancedMesh(barGeo, new T.MeshBasicMaterial({
         color: L.c, transparent: true, opacity: L.op, depthWrite: false,
         blending: L.add ? T.AdditiveBlending : T.NormalBlending }), MAXSAB * (EXC_SEG.length - 1));
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -1080,6 +1091,26 @@ const ENG = (function () {
     markMesh.receiveShadow = true;
     markMesh.frustumCulled = false; markMesh.visible = false;
     scene.add(markMesh);
+    /* Excalibur 的燒灼痕（v1.224）：跟上面同一套（每幀重組、逐頂點 RGBA、一顆網格一個 draw call），
+       差兩件：**不吃光**（MeshBasic）——中線那一條暗紅是自己在發光，照 Lambert 算的話在建築的陰影裡
+       會變成暗褐色；黑的部分吃不吃光看起來都一樣黑。**兩面都畫**：長帶的三角形是一格一格拼的，
+       不必逐一對頂點順序。排在地面痕跡後面畫（renderOrder），貼得比它高一點點才不會搶深度。 */
+    searGeo = new T.BufferGeometry();
+    searPos = new Float32Array(SEARV * 3);
+    searCol = new Float32Array(SEARV * 4);
+    const searPosAttr = new T.BufferAttribute(searPos, 3);
+    const searColAttr = new T.BufferAttribute(searCol, 4);
+    searPosAttr.setUsage(T.DynamicDrawUsage);
+    searColAttr.setUsage(T.DynamicDrawUsage);
+    searGeo.setAttribute('position', searPosAttr);
+    searGeo.setAttribute('color', searColAttr);
+    searGeo.setDrawRange(0, 0);
+    searMesh = new T.Mesh(searGeo, new T.MeshBasicMaterial({
+      vertexColors: true, transparent: true, depthWrite: false, side: T.DoubleSide
+    }));
+    searMesh.renderOrder = 1;
+    searMesh.frustumCulled = false; searMesh.visible = false;
+    scene.add(searMesh);
 
     /* 定時炸彈：可以同時放好幾顆，走 instancing。
        新道具的網格一律「沒在用就 visible=false」——InstancedMesh 就算 count=0
@@ -2183,6 +2214,73 @@ const ENG = (function () {
       ca.updateRange.offset = 0; ca.updateRange.count = v * 4;
     }
     pa.needsUpdate = true; ca.needsUpdate = true;
+  }
+  /* ── Excalibur 的燒灼痕（v1.224）──
+     使用者：「接觸到的地面也要加上焦黑」→「焦痕再黑一點 可以活久一點(可以中心先深紅色再變黑 增加細節)」。
+     一道是一條**長帶**，不是一串圓：沿著光柱掃過的那一條，每一刀（規則那邊切好的 n 刀）橫著從左緣到右緣
+     SEAR_U 那幾個點，兩刀之間鋪成格子。細節全是規則那邊生的時候抽好的（每幀重抽的話會一直抖）：
+       jl／jr  每一刀左右緣各自的寬度倍率——邊是燒開的形狀，不是直尺畫的
+       hot     每一刀冷得多慢——中線先是發著光的暗紅，冷得慢的那幾段會多紅一陣，看起來是幾處還沒熄的餘燼
+     冷到哪了看 cool（燒了幾秒 ÷ SEAR_HOT），濃淡看 a（最後那幾秒淡掉）。兩端收細：光柱是從她腳前開始碰到地的，
+     遠的那一端是光柱的尾巴。
+     **比一般的痕跡濃得多**：一般的痕跡「要淡、不能把煙塵蓋掉」（v1.88.1 使用者定的，有測試守著），
+     這一道是使用者另外要的「再黑一點」。 */
+  const SEAR_Y = 0.05;              // 比地面痕跡（MARK_Y）再高一點點：兩個都不寫深度，靠 renderOrder 排先後
+  const searC = (c, a) => { const k = new T.Color(c); return { r: k.r, g: k.g, b: k.b, a }; };
+  /* 橫切面：中線 → 邊緣（|u| 對應 SEAR_U 的 0、0.18、0.45、0.75、1）。
+     SEAR_GLOW 是每一圈吃幾成熱度：**只有中線那一窄條會紅**（第一版中線到 0.45 都紅，整條 15 格寬幾乎全紅，
+     冷得慢的那幾刀還變成一條一條豎的紅條——不是「中心先深紅」）。 */
+  const SEAR_CHAR = [searC(0x070403, 0.96), searC(0x0a0604, 0.96), searC(0x0e0906, 0.93),
+                     searC(0x1a120b, 0.82), searC(0x261c13, 0)];
+  const SEAR_GLOW = [1, 0.6, 0.12, 0, 0];
+  const SEAR_RED = searC(0x7a1004, 1), SEAR_EMBER = searC(0xd8380c, 1);   // 暗紅 → 最燙那幾處偏橘
+  const _sc = { r: 0, g: 0, b: 0, a: 0 };
+  /* 這一點的顏色：h＝這一點還有多燙（0～1）。0.5 以下從焦黑往暗紅，以上從暗紅往餘燼的橘 */
+  function searTint(base, h) {
+    if (h <= 0) { _sc.r = base.r; _sc.g = base.g; _sc.b = base.b; _sc.a = base.a; return _sc; }
+    const A = h < 0.5 ? base : SEAR_RED, B = h < 0.5 ? SEAR_RED : SEAR_EMBER, f = h < 0.5 ? h * 2 : (h - 0.5) * 2;
+    _sc.r = A.r + (B.r - A.r) * f; _sc.g = A.g + (B.g - A.g) * f; _sc.b = A.b + (B.b - A.b) * f;
+    _sc.a = base.a;
+    return _sc;
+  }
+  /* list 每一項 {x, z 起點, fx, fz 方向, len 長, w 半寬, n 刀數, jl, jr, hot（各 n+1 個）, cool, a}。 */
+  function putSears(list) {
+    const cnt = Math.min(list.length, SEAR_MAX);
+    const P = searPos, C = searCol, lim = groundHalf - 0.4, mid = (SEAR_U.length - 1) / 2;
+    let v = 0;
+    const put = (s, k, b) => {
+      const u = SEAR_U[b], f = s.len * k / s.n;
+      const side = u < 0 ? s.jl[k] : s.jr[k];
+      const taper = Math.min(1, 0.35 + f / 3) * Math.min(1, 0.3 + (s.len - f) / 10);
+      const w = s.w * side * taper * u;
+      P[v * 3] = Math.max(-lim, Math.min(lim, s.x + s.fx * f - s.fz * w));
+      P[v * 3 + 1] = SEAR_Y;
+      P[v * 3 + 2] = Math.max(-lim, Math.min(lim, s.z + s.fz * f + s.fx * w));
+      const ring = Math.abs(b - mid);                 // 0 中線 … 4 邊緣
+      const heat = Math.max(0, Math.min(1, 1 - s.cool / (0.45 + 1.1 * s.hot[k])));
+      const c = searTint(SEAR_CHAR[ring], heat * SEAR_GLOW[ring]);
+      C[v * 4] = c.r; C[v * 4 + 1] = c.g; C[v * 4 + 2] = c.b; C[v * 4 + 3] = c.a * s.a;
+      v++;
+    };
+    for (let i = 0; i < cnt; i++) {
+      const s = list[i], ns = Math.min(s.n, SEAR_SEC);
+      for (let k = 0; k < ns; k++)
+        for (let b = 0; b + 1 < SEAR_U.length; b++) {
+          put(s, k, b); put(s, k, b + 1); put(s, k + 1, b + 1);
+          put(s, k, b); put(s, k + 1, b + 1); put(s, k + 1, b);
+        }
+    }
+    searMesh.visible = v > 0;
+    searGeo.setDrawRange(0, v);
+    const pa = searGeo.attributes.position, ca = searGeo.attributes.color;
+    if (pa.clearUpdateRanges) {
+      pa.clearUpdateRanges(); pa.addUpdateRange(0, v * 3);
+      ca.clearUpdateRanges(); ca.addUpdateRange(0, v * 4);
+    } else if (pa.updateRange) {
+      pa.updateRange.offset = 0; pa.updateRange.count = v * 3;
+      ca.updateRange.offset = 0; ca.updateRange.count = v * 4;
+    }
+    if (v) { pa.needsUpdate = true; ca.needsUpdate = true; }
   }
   /* 飛在天上的石頭 ＋ **還在石兜裡待發的那幾顆**（v1.199）。
      以前石頭是放索那一刻才生出來的，所以待發與整段甩臂都看不到石頭，
@@ -4919,11 +5017,13 @@ const ENG = (function () {
     _sG[6].multiplyMatrices(_sG[0], _sA[6].compose(_sAt, _sq, _sOne));
   }
   /* 光柱（使用者看過第二版預覽選的：**甲 整條光柱斬下來、粗 6 格**；30 格長）。
+     v1.224 加粗加長到 **15 × 80**（使用者：「加長加粗saber攻擊的光柱(破壞範圍也要符合)」，
+     在 Excalibur 預覽頁上 6～15 × 30～80 挑的）：吉薩大金字塔同一個位置一斬 631 → 1417 塊。
      **場上的格子**，不乘她的 sc。從護手那裡（握把往劍身 EXC_BASE，模型單位）長出去，
      劍身整把包在光裡；靠近劍的那一小截比較細（0.25 起跳，3 格內長到全粗：光從劍上長出來）。
      規則那邊判定的粗細也是這一支（excWidth），位置與方向讀 excSword（跟畫出去的劍同一支 sabRig），
      所以畫出來的光柱掃過哪裡，斬掉的就是哪裡。 */
-  const EXC_W = 6, EXC_L = 30, EXC_BASE = 0.1;
+  const EXC_W = 15, EXC_L = 80, EXC_BASE = 0.1;
   const EXC_SEG = [0, 0.75, 1.5, 2.25, 3, EXC_L];
   const excWidth = d => Math.min(1, Math.max(0.25, 0.25 + d / 3));
   /* 這一刻的光柱多長（格）、多亮（0～1）：舉到頂之後長出來，蓄力時一明一暗，斬完停一下就淡掉 */
@@ -5528,7 +5628,7 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
-    putStars, putBolts, putMarks, putGates, putWeapons, putSwords, putBeasts, putUfos,
+    putStars, putBolts, putMarks, putSears, SEAR_MAX, SEAR_SEC, putGates, putWeapons, putSwords, putBeasts, putUfos,
     putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,
@@ -5582,6 +5682,6 @@ const ENG = (function () {
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes }; }
   };
 })();

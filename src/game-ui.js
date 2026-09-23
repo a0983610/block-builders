@@ -275,6 +275,7 @@ function draw() {
   ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
   ENG.putPools(water ? poolList() : EMPTY, water ? water.wave : 0);   // 水窪同理
   ENG.putMarks(marks);                              // 地上的焦黑與坑洞（沒有就 visible=false）
+  ENG.putSears(sears);                              // Excalibur 的燒灼痕（v1.224，同上）
   /* 王之財寶（v1.132）：門與兵器是兩份清單——門收掉之後兵器還在飛、還躺在地上慢慢淡，
      所以兩邊各自判斷有沒有東西要畫。 */
   ENG.putGates(gates ? gateList() : EMPTY);

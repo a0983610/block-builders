@@ -74,7 +74,10 @@ const TOOLS = [
     tip: '點兩下：先點出手的位置，再點要丟過去的地方——24 顆彈跳球飛過去，撞一下咬一小口就彈開，越彈越低' },
   { id: 'hole', n: '小黑洞', k: '🕳',
     /* v1.221：點地面或建築都算，見 castHole。 */
-    tip: '點一下：範圍內的積木、小人動物被吸進黑洞消失，5 秒後從天上撒滿整座島' }
+    tip: '點一下：範圍內的積木、小人動物被吸進黑洞消失，5 秒後從天上撒滿整座島' },
+  { id: 'excalibur', n: 'Excalibur', k: '✨',
+    /* v1.224：點地面或建築都算，叫 Saber 走過去斬那一招（見 callSaber）。 */
+    tip: '點一下：叫 Saber 走過來，朝那一點舉劍斬下光柱（她在場上就直接叫過去）' }
 ];
 /* 說明最多幾個字（v1.220.2，使用者：「破壞工具說明不要太長」）。選好一把之後它會接在
    底部那條操作提示的最前面，而那條不換行、後半段固定的操作說明自己就佔掉約 514px——
@@ -107,10 +110,11 @@ const toolOk = t => !t.lock || t.lock.ok() || stats.gift.indexOf(t.id) >= 0;
 /* 加農砲兩下都是點地面（第一下擺砲、第二下是要轟的地方），同投石機。
    這三把的第二下**點在建築上也算數**（本來就算），v1.212 起那一下點到的高度
    就是要轟的高度（見 useTool）——在這張表裡只是「點空地也不會沒反應」。 */
+/* Excalibur（v1.224）點地面就是「斬那一點」（Saber 停在那一點前面朝它斬），所以也在這裡。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
                       storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1,
-                      bounce: 1, hole: 1 };
+                      bounce: 1, hole: 1, excalibur: 1 };
 let tool = 'hammer';
 
 /* ── 破壞道具泡泡（v1.214）───────────────────────────────
@@ -5001,6 +5005,65 @@ function stepMarks(dt) {
     if (m.t <= 0) { marks.splice(i, 1); continue; }
     m.a = Math.min(1, m.t / MARK_FADE);
   }
+  stepSears(dt);
+}
+/* ── Excalibur 的燒灼痕（v1.224）──
+   使用者：「接觸到的地面也要加上焦黑」→ 看過之後「焦痕再黑一點 可以活久一點(可以中心先深紅色再變黑
+   增加細節)」。第一版是沿著那一條串 11 塊上面那種焦黑，兩件事做不到：
+     · **活不久**：那一池同時只有 MARK_MAX 塊，小人挖料的土痕一秒好幾塊也在那一池，
+       實測 3 秒那一版在第 2.5 秒就被擠掉兩塊——活久一點只會被擠得更早。所以自己一池（ENG.SEAR_MAX）。
+     · **暗紅發不了光**：那一池吃光（Lambert），紅的那幾處在陰影裡會變成暗褐色。
+   所以長相另外一支（引擎的 putSears：一條長帶，不吃光）；這裡生的時候把細節抽好：
+   每一刀左右緣的寬度（邊是燒開的形狀）、每一刀冷得多慢（hot：冷得慢的那幾段多紅一陣＝餘燼）。
+   兩道正弦疊出來再加一點點亂數，理由同 spawnMark 的輪廓：各抽各的話相鄰兩刀沒有關聯，邊會長刺。
+   還燙的那幾段冒煙（塵霧那一池，額度同火的煙 BURN_SMOKE）。 */
+const SEAR_LIFE = 10;          // 一道活幾秒（使用者：「可以活久一點」；一般的痕跡是 MARK_LIFE 3 秒）
+const SEAR_FADE = 4;           // 最後幾秒淡掉
+/* 冷成焦黑的時間尺：一刀冷完要 SEAR_HOT × (0.45 + 1.1 × hot) 秒，最快約 1.1 秒、最慢約 3.9 秒 */
+const SEAR_HOT = 2.5;
+const SEAR_STEP = 1;           // 沿著長度幾格切一刀
+const SEAR_SMOKE = 26;         // 還燙的時候每秒冒幾縷煙（抽到已經冷掉的那一刀就不冒）
+const sears = [];
+function spawnSear(x, z, fx, fz, len, w) {
+  if (sears.length >= ENG.SEAR_MAX) sears.shift();
+  const n = Math.max(2, Math.min(ENG.SEAR_SEC, Math.ceil(len / SEAR_STEP)));
+  const p = [];
+  for (let i = 0; i < 6; i++) p.push(rr(0, 6.28));
+  const jl = [], jr = [], hot = [];
+  for (let k = 0; k <= n; k++) {
+    jl.push(1 + 0.16 * Math.sin(k * 0.41 + p[0]) + 0.09 * Math.sin(k * 1.27 + p[1]) + rr(-0.04, 0.04));
+    jr.push(1 + 0.16 * Math.sin(k * 0.37 + p[2]) + 0.09 * Math.sin(k * 1.19 + p[3]) + rr(-0.04, 0.04));
+    hot.push(clamp(0.5 + 0.55 * Math.sin(k * 0.23 + p[4]) * Math.sin(k * 0.61 + p[5]) + rr(-0.08, 0.08), 0, 1));
+  }
+  const s = { x, z, fx, fz, len, w, n, jl, jr, hot, t: SEAR_LIFE, cool: 0, a: 1, smoke: 0 };
+  sears.push(s);
+  return s;
+}
+/* 這一刀還有多燙（0～1）。引擎 putSears 那一行是同一條式子 */
+const searHeat = (s, k) => clamp(1 - s.cool / (0.45 + 1.1 * s.hot[k]), 0, 1);
+function stepSears(dt) {
+  for (let i = sears.length - 1; i >= 0; i--) {
+    const s = sears[i];
+    s.t -= dt;
+    if (s.t <= 0) { sears.splice(i, 1); continue; }
+    s.a = Math.min(1, s.t / SEAR_FADE);
+    s.cool = (SEAR_LIFE - s.t) / SEAR_HOT;
+    if (s.cool > 1.55) continue;                       // 最慢那一刀也冷了（0.45 + 1.1）
+    s.smoke += dt * SEAR_SMOKE;
+    while (s.smoke >= 1) {
+      s.smoke--;
+      const k = Math.floor(Math.random() * s.n);
+      if (searHeat(s, k) <= 0) continue;
+      if (dust.length >= BURN_SMOKE) { s.smoke = 0; break; }
+      const f = s.len * (k + Math.random()) / s.n, off = rr(-0.5, 0.5) * s.w;
+      dust.push({
+        x: s.x + s.fx * f - s.fz * off, y: 0.3, z: s.z + s.fz * f + s.fx * off,
+        vx: rr(-0.4, 0.4), vy: rr(1.0, 2.2), vz: rr(-0.4, 0.4),
+        rx: Math.random() * 6, ry: Math.random() * 6,
+        life: rr(1.4, 2.6), s: rr(0.45, 0.95), c: rr(0.16, 0.3), g: -0.6, fade: 2.2
+      });
+    }
+  }
 }
 
 /* ── 十字星光 ─────────────────────────────────────────────
@@ -7638,6 +7701,7 @@ function useTool(hit) {
   if (tool === 'sword') { aimSword(hit.point); return 0; }
   if (tool === 'ufo') { callUfo({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'hole') { castHole(hit.point, onGround); return 0; }   // 小黑洞（v1.221）
+  if (tool === 'excalibur') { callSaber(hit.point); return 0; }       // Excalibur（v1.224）
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   return 0;
@@ -7852,9 +7916,11 @@ const canFight = m => !!DOOM_ACT[m.kind] || m.kind === 'giant' || m.kind === 'sa
 /* 從場邊放一隻進來。方位隨機——固定一邊的話，鏡頭剛好對著另一邊就永遠看不到牠走過來。
    fun＝這一隻是吉祥物（v1.144）：同一份造型、同一套走路，只是不動手（見檔案最後那一節）。
    bad＝吉祥物那一趟順手砸村子那邊一間房子或一棵樹（v1.166，只有 fun 那一版會給，
-   見 stepMascot）。 */
-function spawnBeast(kind, fun, bad) {
-  const a = Math.random() * Math.PI * 2, d = debrisR + DOOM_OUT;
+   見 stepMascot）。
+   ang＝從哪個方位進場（v1.224，只有 Excalibur 叫來的那一位會給：從離目標最近的那一邊進來，
+   見 callSaber）。給了方位的不在這裡講提示，由叫她的那一支講。 */
+function spawnBeast(kind, fun, bad, ang) {
+  const a = ang === undefined ? Math.random() * Math.PI * 2 : ang, d = debrisR + DOOM_OUT;
   const m = {
     kind, x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d,
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就面向工地
@@ -7872,6 +7938,10 @@ function spawnBeast(kind, fun, bad) {
     /* Saber 出招到第幾秒（v1.222，見 stepExcal）；th0 上一幀光柱的角度（null＝不在斬）、
        thS 開斬那一刻的角度，xn／xb 這一招斬掉幾塊／點著幾塊（測試在讀），xs 震過畫面了沒 */
     xt: 0, th0: null, thS: 0, xn: 0, xb: 0, xs: 0,
+    /* Excalibur 叫她去斬的那一道命令（v1.224，見 callSaber）：call 正在走過去的那一點（null＝沒有）、
+       cq 出招中又點的那一點（這一招收完才去）、cn 已經走到最後那幾步了沒；
+       chome／cbad 接到第一道命令那一刻原本的樣子（斬完要還原，見 excDone） */
+    call: null, cq: null, cn: 0, chome: 0, cbad: 0,
     /* 擋路就踹那一段的狀態（v1.207，只有巨人在用）：bust＝踹完要回哪一段
        （null＝不是在清路），bn＝這個障礙物已經踹幾腳了，bskip＝踹不通、放它一馬的那一個。 */
     bust: null, bn: 0, bskip: null,
@@ -7894,6 +7964,7 @@ function spawnBeast(kind, fun, bad) {
   if (kind === 'giant') sndGiant();
   else if (kind === 'saber') sndSaber();
   else sndBeast(kind === 'snow');
+  if (ang !== undefined) return m;               // Excalibur 叫來的：提示由 callSaber 講（v1.224）
   const nm = BEAST_NM[kind];
   /* 提示照「真的有東西可砸嗎」講（v1.166）：村子還沒蓋起來的時候牠什麼都不會做
      （見 stepBeast 的 fun 那一段），這時候還說牠盯上了村子就是騙人。
@@ -8128,7 +8199,10 @@ function stepBeast0(m, dt) {
      踹完會回原本那一段（見 stepKick），被這一條拉回 go 的話，go 下一幀又探到同一個
      障礙物、再把牠推回 kick——兩邊每幀互推，那一腳永遠踹不完。m.bust 只有巨人
      清路那一路會立起來（踹地標走的是 kleft 那一路，不在這一條裡）。 */
-  if (away && m.st !== 'go' && m.st !== 'gate' && !(m.home && !m.fun) && !m.bust) leaveBeast(m);
+  /* **Excalibur 叫她去斬的那一趟也不趕**（v1.224）：那是玩家點的，斬完才照原本的規矩
+     （吉祥物、天災各自那一條）走。 */
+  if (away && m.st !== 'go' && m.st !== 'gate' && !(m.home && !m.fun) && !m.bust &&
+      !m.call && !m.cq) leaveBeast(m);
   /* Saber 出招那幾秒（excal）也撐著：她的 m.arm 是「雙手握劍架在腰前」（見引擎的 sabPose），
      出招的關鍵格從架劍開始、收回架劍結束，中途掉回 0 的話收招那一下會垂手。別的款不會走到 excal。 */
   m.arm += ((m.st === 'act' || m.st === 'excal' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
@@ -8140,6 +8214,7 @@ function stepBeast0(m, dt) {
      站著發呆的那幾秒（m.pause）也不算「行走」，不去踹面前的東西。 */
   if (m.kind === 'giant' && !(m.pause > 0) &&
       (m.st === 'come' || m.st === 'fun' || m.st === 'go') && giantBust(m)) return false;
+  if (m.st === 'call') return stepCall(m, dt, spd, stp, kp);    // Excalibur 叫她過去（v1.224）
   if (m.st === 'come') {
     m.tx = 0; m.tz = 0;
     /* 城牆擋在前面才處理（v1.186，見 wallAhead）：還沒蓋起來、或有缺口就直直走過去。
@@ -8612,11 +8687,11 @@ function stepExcal(m, dt) {
     m.th0 = Math.atan2(C.du, C.dv);
     /* 斬到底：斬口兩側燒起來，這一招不再斬（th0 收掉）——之後停在前下方那一秒多，
        照「m.xt 過了 charge」判的話每一幀都會再斬一次（同巨人那一腳的 m.hit）。 */
-    if (m.xt >= E.slash) { excBurn(m, m.thS, m.th0); m.th0 = null; }
+    if (m.xt >= E.slash) { excBurn(m, m.thS, m.th0); excScorch(m); m.th0 = null; }
   }
   if (m.xt < E.end) return false;
   m.xt = 0; m.hit = 0; m.th0 = null;
-  if (m.fun) funBack(m); else leaveBeast(m);                // 吉祥物砸完回去逛（同猴子）
+  excDone(m);                  // 吉祥物砸完回去逛、天災走人；Excalibur 叫的那一招回原本那一段（v1.224）
   return false;
 }
 /* 光柱在這一幀的幾何：握把 (gx, gy, gz)、她面對的 (fx, fz)、光柱起點離握把 base、最遠 R。
@@ -8726,6 +8801,153 @@ function excBurn(m, a0, a1) {
   m.xb = n;
   return n;
 }
+/* 光柱碰到的地面燒出一道燒灼痕（v1.224，使用者：「接觸到的地面也要加上焦黑」）。斬下去那一路，
+   光柱在她面對的那個直立面上從朝天轉到前下方，**正前方一整條地面都被掃過**（寬 EXC_W、長到光柱
+   搆得到的 R——斬掉的範圍也是這一條，見 excCross）。所以斬到底那一刻沿著這一條鋪一道：
+   從握把正下方起、半寬就是光柱的半粗（見〈地面痕跡〉那一節的 spawnSear）。回傳那一道（測試在讀）。 */
+function excScorch(m) {
+  const g = excGeo(m);
+  return spawnSear(g.gx, g.gz, g.fx, g.fz, g.R, g.W2);
+}
+
+/* ── 破壞道具：Excalibur（v1.224）────────────────────────────
+   使用者：「新增破壞工具 excalibur 可以點在地面或建築上 呼叫吉祥物saber從地圖出現
+   然後走到目標位置攻擊 如果已經在場上就把saber叫過來攻擊」。問過四件，使用者選：
+   斬完**留下來逛一陣子**（同吉祥物）、**照原本的步伐走**、點地面就**停在那一點前面朝那一點斬**
+   （點建築同一個規則）、正在出招時再點就**這一招斬完再過去**。
+
+   看過預覽之後：「saber是特定角色 所以天災抽到saber 就直接用天災那隻 然後取消他的天災任務」——
+   **場上只會有一位 Saber**。
+
+   **一招整套是天災那一招**（act → excal，stepExcal／excSweep／excBurn 一個字都沒動）：
+   新的只有「走到哪裡、朝哪裡斬」這一段（call，見 stepCall）。叫來的那一位就是一隻吉祥物
+   （m.fun），手上多一道命令 m.call：
+     · 場上已經有 Saber（吉祥物、天災、上一次叫來的都算）就叫她，沒有才從場邊放一位進來——
+       從**那一點的方位上**進場，同一個步伐少走一大段。
+     · **叫到的是天災那一位：她的天災任務當場取消**（ownSaber），從這一刻起就是吉祥物。
+     · 正在出招（excal）就先記著（m.cq），這一招收完才去；其餘狀態當場改走過去，
+       路上又點一下就以最後一下為準。
+     · 玩家的道具不分地標與村子：這一趟 m.home 給 0（吉祥物砸村子那一趟「地標不准動」的規矩
+       不適用），斬完還原。
+     · 斬完回去逛（excDone），至少再逛 MASC_STAY 那麼久（這段時間再點就直接叫過去）。
+     · 走過去那一趟**被打到只是拖延**：照樣倒、爬起來接著走，不改主意（beastHit）、
+       不被換場趕走（stepBeast 的 away）。天災這時候抽到 Saber：不把她就地翻臉（turnBad），
+       也不另外放一位進來——**那一件天災作廢**（stepDoom）。 */
+/* 停在目標前面幾格。光柱從護手長出去要 2.25 格才到全粗（excWidth），斬到底那一刻握把在她身前
+   約 0.6 格，所以站 4 格時那一點離光柱起點 3 格出頭——剛好是全粗那一段。 */
+const EXC_STAND = 4;
+/* 挑一位。場上只會有一位（見 stepDoom），挑「最近的」只是保險；
+   被幽浮／小黑洞收著的排最後（也叫得到，掉回來爬起來就去）。 */
+function pickSaber(p) {
+  let best = null, bd = Infinity;
+  if (beasts) for (const m of beasts) {
+    if (m.kind !== 'saber') continue;
+    const d = Math.hypot(m.x - p.x, m.z - p.z) + (m.ufo ? 1e6 : 0);
+    if (d < bd) { bd = d; best = m; }
+  }
+  return best;
+}
+/* 點下去的那一下（useTool）。回傳被叫去的那一位（測試在讀）。 */
+function callSaber(p) {
+  const at = { x: p.x, y: p.y || 0, z: p.z };
+  let m = pickSaber(at);
+  if (!m) {
+    /* 點在場心附近就沒有「最近的那一邊」可言，隨機挑一個方位（同天災） */
+    const a = Math.hypot(at.x, at.z) > 1 ? Math.atan2(at.z, at.x) : Math.random() * Math.PI * 2;
+    m = spawnBeast('saber', 1, 0, a);
+    toast(BEAST_NM.saber + '應召而來', '她朝你點的地方走過去，到了就舉劍斬下去');
+  } else {
+    beastCry(m);
+    const doom = ownSaber(m);
+    toast(BEAST_NM.saber + (doom ? '放下了天災那一趟' : '聽到了'),
+          m.st === 'excal' ? '這一招斬完就過去' : '她轉身朝你點的地方走過去');
+  }
+  if (m.st === 'excal') m.cq = at;            // 正在出招：這一招斬完再過去（使用者選的）
+  else sendSaber(m, at);
+  return m;
+}
+/* 天災那一位被叫到：天災任務取消，從這一刻起是吉祥物（使用者：「直接用天災那隻 然後取消他的天災任務」）。
+   要動手的旗標全部收掉（斬完還原的也是這一份，所以之後就只是來逛的）；被打幾次的計數也作廢
+   （吉祥物不看它）；逛多久照吉祥物抽一次。stepDoom 的「一次一件」只數 !m.fun，
+   所以天災的鐘接著照數。回傳 true＝她原本是天災。正在出招的那一招照舊斬完（使用者選的）。 */
+function ownSaber(m) {
+  if (m.fun) return false;
+  m.fun = 1; m.bad = 0; m.home = 0; m.hurt = 0;
+  m.stay = rr(MASC_STAY[0], MASC_STAY[1]);
+  return true;
+}
+/* 交給她一道命令。**第一道才記下原本的樣子**（斬完要還原；路上又點一下不算第一道）。 */
+function sendSaber(m, p) {
+  if (!m.call) { m.chome = m.home; m.cbad = m.bad; }
+  m.call = p; m.cn = 0; m.home = 0;
+  m.pause = 0; m.spook = 0;
+  /* 正在穿城門的不打斷（穿門是一段不可分割的位移，理由見 stepBeast 的 away）：穿完接著走過去 */
+  if (m.st === 'gate') m.gback = 'call';
+  else { m.st = 'call'; m.leg = 0; }
+}
+/* 走過去的一幀。遠的那一段借 strollTo（繞開別人家、不穿建築，同進場那一段）；
+   走到了（或走到城牆腳下又沒門可繞）改成最後那幾步：直直走過去，下一步會踩進建築或房子
+   就停（同 near）——停在離那一點 EXC_STAND 格，或是被擋住的地方，轉過去對著那一點出招。 */
+function stepCall(m, dt, spd, stp, kp) {
+  const c = m.call;
+  const dx = c.x - m.x, dz = c.z - m.z, d = Math.hypot(dx, dz) || 1;
+  if (d <= EXC_STAND + 0.05) { callAim(m); return false; }
+  if (!m.cn) {
+    let tx = c.x, tz = c.z;
+    /* 點在房子（或樹、城牆）上：目標不能給那一點——pushOutHome 把她擋在外框外面，
+       strollTo 就永遠回不了 true，她會頂著牆原地發抖。改走到外框再外面那一點
+       （同吉祥物砸房子那一段，站位落進工地圈就改站房子的外側）。 */
+    const h = footHome(c.x, c.z, true);
+    if (h) {
+      const hd = Math.hypot(m.x - h.x, m.z - h.z) || 1, stand = h.r + DOOM_NEAR;
+      let ax = (m.x - h.x) / hd, az = (m.z - h.z) / hd;
+      if (Math.hypot(h.x + ax * stand, h.z + az * stand) < siteR + KEEP) {
+        const hr = Math.hypot(h.x, h.z) || 1;
+        ax = h.x / hr; az = h.z / hr;
+      }
+      tx = h.x + ax * stand; tz = h.z + az * stand;
+    }
+    /* 城牆擋在前面：有門走門，沒門就走到牆腳下改走最後那幾步（牆在中間，那一刀連牆一起斬） */
+    if (wallAhead(m, tx, tz)) {
+      if (gateNeed(m, tx, tz)) return false;
+      if (wallFoot(m, tx, tz)) { m.cn = 1; return false; }
+    }
+    m.tx = tx; m.tz = tz;
+    if (strollTo(m, dt, spd, stp, kp)) { m.cn = 1; m.leg = 0; }
+    return false;
+  }
+  m.a = Math.atan2(dx, dz);
+  const adv = Math.max(0, d - EXC_STAND);
+  const sp = Math.min(spd * dt, adv);
+  /* 往前探半格（等踩進去才判斷的話，這一幀已經站在牆裡面了）。探的是**這一步**，不是 near 那樣
+     探「走到底那一點」：near 走到底是最近那一塊外面 DOOM_NEAR 格、一定是空地，這裡走到底是
+     點到的那一點前面 EXC_STAND 格——點的是牆的話那一點常常在建築裡面，照 near 那樣探她會一進這一段
+     就原地站定（測試抓到的：停在工地外圈那一環上，離目標 10.5 格、前面根本沒東西擋）。 */
+  const ex = m.x + dx / d * (sp + 0.5), ez = m.z + dz / d * (sp + 0.5);
+  if (adv < 0.05 || footBlocked(ex, ez) || homeFoot(ex, ez)) { callAim(m); return false; }
+  m.x += dx / d * sp; m.z += dz / d * sp;
+  pushOutHome(m);
+  m.ph += dt * 11 * (stp || 1);
+  m.gait += (0.85 - m.gait) * Math.min(1, dt * 8);
+  return false;
+}
+/* 站定、轉過去對著那一點、架劍瞄一下（act 那一段，DOOM_AIM 之後轉進 excal，同天災那一招）。
+   點在她腳邊的話就照原本的朝向斬（那一點的方向算不出來）。 */
+function callAim(m) {
+  const c = m.call, dx = c.x - m.x, dz = c.z - m.z;
+  if (Math.hypot(dx, dz) > 0.3) m.a = Math.atan2(dx, dz);
+  m.st = 'act'; m.t = DOOM_AIM;
+}
+/* 一招收完（斬完、或開斬之後被打斷）要去哪裡。排著的下一道命令先做；
+   叫來的那一招收完回去逛（叫到的一定已經是吉祥物，見 ownSaber）；她自己那一招照舊（吉祥物回去逛、天災走人）。 */
+function excDone(m) {
+  if (m.cq) { const q = m.cq; m.cq = null; sendSaber(m, q); return; }
+  if (!m.call) { if (m.fun) funBack(m); else leaveBeast(m); return; }
+  m.call = null; m.cn = 0;
+  funBack(m);                                   // 它會把 bad／home 清掉，還原要排在它後面
+  m.bad = m.cbad; m.home = m.chome;
+  m.stay = Math.max(m.stay, rr(MASC_STAY[0], MASC_STAY[1]));   // 「留下來逛一陣子」
+}
 
 /* 天災的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）。 */
 function stepDoom(dt) {
@@ -8748,7 +8970,11 @@ function stepDoom(dt) {
   if (!d) return;
   /* 抽到的剛好是場上那隻吉祥物的同一種：讓牠**就地翻臉**，不要再從場外放一隻同款的
      進來（不然畫面上會是兩隻一模一樣的猴子，一隻在放火、一隻在散步）。見 turnBad。 */
-  if (!turnBad(d.id)) d.start();
+  if (turnBad(d.id)) return;
+  /* **Saber 只有一位**（v1.224，使用者：「saber是特定角色」）：她在場上卻轉不過來（正被 Excalibur
+     叫著、或已經在走回場外）就這一件作廢，不另外放一位進來。doomT 已經是 −1，下一幀重抽時間再數。 */
+  if (d.id === 'saber' && beastOn('saber')) return;
+  d.start();
 }
 /* 要畫的清單：場上那幾隻 ＋ 飛在半空的香蕉，引擎那邊一顆網格畫完。
    重用同一個陣列，不要每幀配置一個新的。 */
@@ -9526,6 +9752,8 @@ function turnBad(id) {
   if (!beasts) return false;
   for (const m of beasts) {
     if (m.kind !== id || !m.fun) continue;
+    /* Excalibur 叫去斬的那一位不轉（v1.224）：那一趟是玩家的。她只有一位，所以這一件天災作廢（見 stepDoom） */
+    if (m.call || m.cq) continue;
     if (m.kind === 'dragon') {
       if (m.st === 'out') continue;             // 已經在飛出場了
       /* 在地上那一段的（v1.182：摔下來或自己降落）：起飛之後要接回盤旋，
@@ -9695,7 +9923,8 @@ function quitDoom(m) {
 let hitBy = null;
 /* 道具打中一隻的那一刻。呼叫點見上面那一段的說明。 */
 function beastHit(m) {
-  if (!m || m === hitBy || m.herd || beastLeaving(m)) return;
+  /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
+  if (!m || m === hitBy || m.herd || beastLeaving(m) || m.call || m.cq) return;
   if (m.fun) { if (m.bad) calmMascot(m); else madMascot(m); return; }
   m.hurt = (m.hurt || 0) + 1;
   if (m.hurt >= (m.quit || DOOM_QUIT[1])) quitDoom(m);
@@ -9972,7 +10201,8 @@ function wetBeast(m) {
    獅鷲（v1.176）沒有 near 那一段（牠是飛進來降落的），所以是就地重新瞄一次；
    噴到一半被打斷也一樣——配額 m.left 還在，牠爬起來會再噴一道。 */
 function reaim(m) {
-  if (m.st === 'act') { m.st = 'near'; m.t = DOOM_AIM; m.arm = 0; }
+  /* Excalibur 叫去的那一招（v1.224）：回 call 重走過去再瞄那一點，不是回 near 去找地標 */
+  if (m.st === 'act') { m.st = m.call ? 'call' : 'near'; m.t = DOOM_AIM; m.arm = 0; }
   /* 巨人踹到一半被打斷（v1.192）：這一腳收掉、回 near 重走過去再瞄一次。
      剩下的 kleft 留著——打倒牠只是拖延，爬起來牠會把沒踹完的踹完（同猴子）。
      **m.spin 不在這裡動**：那是躺平角，剛被 fellBeast／igniteBeast 擺好的，
@@ -9988,12 +10218,14 @@ function reaim(m) {
   /* Saber 出招到一半被打斷（v1.222）：還沒開斬就回 near 重走過去再瞄一次（同巨人那一腳）；
      **已經開斬了（m.hit）就算這一趟做完了**——光柱跟著劍，她倒下那一刻斬到哪就是哪，
      爬起來再斬一次的話一趟就變兩招，使用者選的是一趟 1 次。 */
+  /* Excalibur 那一道命令（v1.224）：斬完了照 excDone 收；還沒開斬、又有排著的那一點，
+     就直接去排著的那一點（這一招沒出成，以最後一下為準）；叫去的那一招回 call 重瞄。 */
   else if (m.st === 'excal') {
     const done = m.hit;
     m.xt = 0; m.hit = 0; m.arm = 0; m.th0 = null;
-    if (!done) m.st = 'near';
-    else if (m.fun) funBack(m);
-    else leaveBeast(m);
+    if (done) excDone(m);
+    else if (m.cq) { const q = m.cq; m.cq = null; sendSaber(m, q); }
+    else m.st = m.call ? 'call' : 'near';
   }
   else if (m.st === 'aim' || m.st === 'fire' || m.st === 'walk') {
     m.st = 'aim'; m.t = GR_AIM; m.jr = 0;              // jr 歸零＝爬起來重新挑一次目標

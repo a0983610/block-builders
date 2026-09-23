@@ -461,6 +461,7 @@ const installClean = page => page.evaluate(() => {
     fworks = null; fwSparks = null; fwWait = null;
     quake = null;
     marks.length = 0;                 // 地上的焦黑／坑洞：留著會多吃一個 draw call
+    sears.length = 0; ENG.putSears([]);   // Excalibur 的燒灼痕（v1.224）：一道活 10 秒，同上
     clearFires();
     // 弄乾：濕的積木點不著，留給下一條測試會讓它「放火放不起來」（踩過）
     for (const b of blocks) b.wet = 0;
@@ -23107,6 +23108,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      「劍光不要留 那做成天災吉祥物 攻擊是excalibur舉劍往前轟」。
      v1.223 改招：「舉過頭頂 然後整條大光炮般的斬下來 同時也有燃燒效果 然後比現在再粗一點」，
      看過第二版預覽選的是 **甲 整條光柱斬下來、粗 6 格**（一趟 1 次、自己一顆 mesh 照舊）。
+     v1.224 加粗加長到 15 × 80、改成圓柱（Excalibur 那一版一起改的），所以粗細與長度一律讀 ENG.EXC_W／EXC_L。
      **規則那幾條不跑模擬**（同〈規則：垮塌、補洞、廢棄〉）：直接呼叫 stepExcal／excSweep／
      excBurn／reaim 驗規則本身；只有「一整趟」那兩條真的讓她從場邊走進來。 */
   SEC: { if (!(await head('天災：Saber 的 Excalibur', T_COMMIT))) break SEC;
@@ -23190,7 +23192,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { pos: +pos.toFixed(4), dir: +dir.toFixed(4), off: +off.toFixed(4), t: +t.toFixed(1),
              bw: +bw.toFixed(2), W: ENG.EXC_W, vis: ENG.three.excMeshes[2].visible };
   });
-  ok('光柱就是畫出來的那一把劍：規則讀的位置與方向跟劍身一致，光柱沿著那條線、粗 6 格',
+  ok('光柱就是畫出來的那一把劍：規則讀的位置與方向跟劍身一致，光柱沿著那條線、粗 EXC_W 格',
      saxis.pos < 0.001 && saxis.dir < 0.001 && saxis.off < 0.001 && saxis.t > 10 &&
      Math.abs(saxis.bw - saxis.W) <= saxis.W * 0.061,
      '劍身位置差 ' + saxis.pos + '、方向差 ' + saxis.dir + ' 弧度；最遠那一段在線上 ' + saxis.t +
@@ -23222,7 +23224,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ── 斬掉的就是光柱掃過的那一片 ──
      握把在斬的時候會從頭頂移到胸前，所以「掃過的那一片」不是一個定點的扇形。這一條不重算一遍
      規則（那等於拿同一份程式驗自己），而是用**開斬與斬到底兩個握把**圈出兩圈：
-       一定掃到的（兩個握把看過去都在角度範圍內、離直立面 W/2 − 0.6 內、4 格以外 30 格以內）→ 要一塊不剩
+       一定掃到的（兩個握把看過去都在角度範圍內、離直立面 W/2 − 0.6 內、4 格以外 L − 2 以內）→ 要一塊不剩
        一定掃不到的（離直立面 W/2 + 0.6 以外、在她身後、或兩個握把看過去都在 L + 2 以外）→ 要一塊不少
      只推 stepExcal，不推主迴圈——垮塌與火是之後的事，這一條驗的是那一斬本身。 */
   await fillAll(page);
@@ -25696,8 +25698,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (TWO.indexOf(t.id) >= 0)
           useTool({ kind: 'ground', point: { x: -bp.radius - 12, y: 0, z: 0 } });
         useTool(hit);
-        // 10 秒夠慢的那幾支走完：魔法 6 秒引信、王之財寶射 7 秒、龍捲風掃 10 秒
-        for (let i = 0; i < 200; i++) step(0.05);
+        /* 10 秒夠慢的那幾支走完：魔法 6 秒引信、王之財寶射 7 秒、龍捲風掃 10 秒。
+           **Excalibur（v1.224）例外**：Saber 從場邊照天災的步伐走進來，站定、蓄力要二十幾秒，
+           所以最多推 60 秒、沾到就停（它斬到那隻猴子的那一刻就是 excLives／afterHit 那一條）。 */
+        const slow = t.id === 'excalibur';
+        for (let i = 0; i < (slow ? 1200 : 200); i++) { step(0.05); if (slow && seen) break; }
         out.push({ id: t.id, seen });
       }
     } finally {
@@ -26034,6 +26039,294 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        hd.cuts.every(n => n === 4), '三層各換到 ' + hd.cuts.join('／') + ' 刀');
   }
   }   // ── 〈小黑洞〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 破壞道具：Excalibur（v1.224）══════════
+     使用者：「新增破壞工具 excalibur 可以點在地面或建築上 呼叫吉祥物saber從地圖出現 然後走到目標位置攻擊
+     如果已經在場上就把saber叫過來攻擊」。問過四件：斬完留下來逛一陣子、照原本的步伐走、點地面就停在
+     那一點前面朝它斬、出招中再點就這一招斬完再過去。看預覽之後又定了：「saber是特定角色 所以天災抽到saber
+     就直接用天災那隻 然後取消他的天災任務」、光柱 15 × 80 圓柱、「接觸到的地面也要加上焦黑」→
+     「焦痕再黑一點 可以活久一點(可以中心先深紅色再變黑 增加細節)」。
+     一條守一句，**全是規則型**：規則直接呼叫（callSaber／sendSaber／excDone／reaim／spawnSear），
+     只有「一整趟」那一條真的讓她從場邊走進來；期望值一律讀常數（EXC_STAND／SEAR_LIFE／MASC_STAY…）。 */
+  SEC: { if (!(await head('破壞道具：Excalibur', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 她走路是 stepDoom 在推（beasts 的迴圈在它裡面）
+  await fillAll(page);
+
+  /* ── 點下去：場上沒有 Saber 就從那一點的方位進場，是吉祥物、手上一道命令 ── */
+  const xin = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    let P = null;                                  // 金字塔 +x 那一面、3 格高的外殼
+    for (const b of blocks) if (b.st === SET && Math.abs(b.y - 3) < 0.6 && (!P || b.x > P.x)) P = b;
+    const p = { x: P.x, y: P.y, z: P.z };
+    tool = 'excalibur';
+    useTool({ kind: 'block', point: p, dir: { x: -1, y: 0, z: 0 } });
+    const sab = (beasts || []).filter(b => b.kind === 'saber'), m = sab[0];
+    let da = Math.atan2(m.z, m.x) - Math.atan2(p.z, p.x);
+    while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+    const r = { n: sab.length, fun: m.fun, st: m.st, da: Math.abs(da), r: Math.hypot(m.x, m.z),
+                want: debrisR + DOOM_OUT, call: !!m.call && m.call.x === p.x && m.call.z === p.z,
+                last: TOOLS[TOOLS.length - 1].id, ground: !!GROUND_TOOL.excalibur };
+    beasts = null; tool = 'hammer';
+    return r;
+  });
+  ok('點下去：場上沒有 Saber 就從那一點的方位進場，是吉祥物、手上拿著那一點',
+     xin.n === 1 && xin.fun === 1 && xin.st === 'call' && xin.da < 1e-9 &&
+     Math.abs(xin.r - xin.want) < 1e-6 && xin.call && xin.last === 'excalibur' && xin.ground,
+     xin.n + ' 位、fun ' + xin.fun + '、' + xin.st + '；進場方位差 ' + xin.da.toExponential(1) +
+     ' 弧度、半徑 ' + xin.r.toFixed(2) + '（debrisR + DOOM_OUT ' + xin.want.toFixed(2) + '）；TOOLS 最後一把 ' + xin.last);
+
+  /* ── 一整趟：走過去、停在那一點前面（被擋住就停在擋住的地方）、轉過去對著它斬、斬完回去逛 ── */
+  await fillAll(page);
+  const xrun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    let P = null;
+    for (const b of blocks) if (b.st === SET && Math.abs(b.y - 3) < 0.6 && (!P || b.x > P.x)) P = b;
+    const p = { x: P.x, y: P.y, z: P.z };
+    const m = callSaber(p);
+    const seen = [];
+    let n = 0, act = null, down = 0, inSite = 0, inHome = 0;
+    while (n < 6000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.02); n++;
+      if (seen[seen.length - 1] !== m.st) seen.push(m.st);
+      if (!act && m.st === 'act') {
+        const dx = p.x - m.x, dz = p.z - m.z, d = Math.hypot(dx, dz);
+        let e = m.a - Math.atan2(dx, dz);
+        while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI;
+        const ex = m.x + dx / d * 0.55, ez = m.z + dz / d * 0.55;
+        act = { d: +d.toFixed(2), face: Math.abs(e), blk: footBlocked(ex, ez) || homeFoot(ex, ez),
+                secs: +(n * 0.02).toFixed(1) };
+      }
+      if (m.fall > 0 || m.air) down++;
+      if (footBlocked(m.x, m.z)) inSite++;
+      if (homeFoot(m.x, m.z)) inHome++;
+      if (m.st === 'fun' && seen.indexOf('excal') >= 0) break;
+    }
+    const r = { seen: seen.join('→'), act, cut: P.st !== SET, xn: m.xn, down, inSite, inHome,
+                st: m.st, call: m.call, stay: m.stay, lo: MASC_STAY[0], stand: EXC_STAND };
+    beasts = null; clearFires();
+    return r;
+  });
+  ok('一整趟：走過去 → 停在那一點前面 → 轉過去對著它斬 → 點到的那一塊斬掉了 → 回去逛',
+     xrun.seen === 'call→act→excal→fun' && xrun.act && xrun.act.face < 0.01 &&
+     xrun.act.d >= xrun.stand - 0.1 && (xrun.act.d <= xrun.stand + 0.1 || xrun.act.blk) &&
+     xrun.cut && xrun.xn > 0 && xrun.call === null && xrun.stay >= xrun.lo,
+     xrun.seen + '；' + (xrun.act ? xrun.act.secs + ' 秒站定、離那一點 ' + xrun.act.d + ' 格（EXC_STAND ' +
+     xrun.stand + '，被擋住＝' + xrun.act.blk + '）、朝向差 ' + xrun.act.face.toFixed(4) : '沒站定') +
+     '；那一斬斬掉 ' + xrun.xn + ' 塊、點到的那一塊斬掉＝' + xrun.cut + '；斬完還要逛 ' +
+     (xrun.stay || 0).toFixed(1) + ' 秒（MASC_STAY 下限 ' + xrun.lo + '）');
+  ok('走過去那一趟不插進地標與小房子、自己斬的那一下不把自己震倒',
+     xrun.down === 0 && xrun.inSite === 0 && xrun.inHome === 0,
+     '躺／飛 ' + xrun.down + ' 幀、站在建築的格子裡 ' + xrun.inSite + ' 幀、站在房子裡 ' + xrun.inHome + ' 幀');
+
+  /* ── 她在場上：點地面就叫同一位過去，停在離那一點 EXC_STAND 格、朝它斬 ── */
+  await fillAll(page);
+  const xgnd = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const m = spawnBeast('saber', 1);
+    m.x = siteR + 8; m.z = 0; m.st = 'fun'; m.pause = 99;
+    const a = 1.1, G = { x: Math.cos(a) * (siteR + 14), y: 0, z: Math.sin(a) * (siteR + 14) };
+    const r = callSaber(G);
+    let n = 0, act = null;
+    while (n < 3000 && !act) {
+      step(0.02); n++;
+      if (m.st === 'act') {
+        let e = m.a - Math.atan2(G.x - m.x, G.z - m.z);
+        while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI;
+        act = { d: Math.hypot(G.x - m.x, G.z - m.z), face: Math.abs(e) };
+      }
+    }
+    const out = { same: r === m, n: beasts.filter(b => b.kind === 'saber').length, act, stand: EXC_STAND };
+    beasts = null;
+    return out;
+  });
+  ok('她在場上：點地面就叫同一位過去，停在離那一點 EXC_STAND 格、轉過去對著它',
+     xgnd.same && xgnd.n === 1 && xgnd.act && Math.abs(xgnd.act.d - xgnd.stand) <= 0.1 && xgnd.act.face < 0.01,
+     '同一位＝' + xgnd.same + '、場上 ' + xgnd.n + ' 位；' + (xgnd.act ? '站定時離那一點 ' +
+     xgnd.act.d.toFixed(3) + ' 格（EXC_STAND ' + xgnd.stand + '）、朝向差 ' + xgnd.act.face.toFixed(4) : '沒站定'));
+
+  /* ── Saber 只有一位：叫到天災那一位就取消她的天災任務；她被叫著時天災抽到 Saber 就作廢 ── */
+  const xone = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const nSab = () => (beasts || []).filter(b => b.kind === 'saber').length;
+    const d = spawnBeast('saber');                    // 天災那一位（fun 0），走進來的半路
+    const r = callSaber({ x: 30, y: 0, z: -30 });
+    const a = { same: r === d, fun: d.fun, bad: d.bad, home: d.home, st: d.st, n: nSab(),
+                busy: beasts.some(b => !b.fun && !b.herd) };
+    const realRoll = rollDoom;
+    rollDoom = () => DOOMS.find(x => x.id === 'saber');
+    doomT = 0.001; stepDoom(0.02);
+    const b = { n: nSab(), st: d.st, fun: d.fun, call: !!d.call, doomT };
+    // 吉祥物那一位正在走回場外（turnBad 本來就不轉走人的）：一樣不另外放一位
+    d.call = null; d.st = 'go'; d.tx = 999; d.tz = 999;
+    doomT = 0.001; stepDoom(0.02);
+    const c = { n: nSab(), st: d.st };
+    rollDoom = realRoll;
+    beasts = null; doomT = -1;
+    return { a, b, c };
+  });
+  ok('Saber 只有一位：叫到天災那一位就取消她的天災任務，她被叫著時天災抽到 Saber 那一件作廢',
+     xone.a.same && xone.a.fun === 1 && xone.a.bad === 0 && xone.a.home === 0 && xone.a.st === 'call' &&
+     xone.a.n === 1 && !xone.a.busy && xone.b.n === 1 && xone.b.st === 'call' && xone.b.call &&
+     xone.b.doomT === -1 && xone.c.n === 1 && xone.c.st === 'go',
+     '叫到天災那一位：同一位＝' + xone.a.same + '、fun ' + xone.a.fun + '、' + xone.a.st + '、天災的鐘被占著＝' +
+     xone.a.busy + '；她被叫著時抽到 Saber → 場上 ' + xone.b.n + ' 位、她還在 ' + xone.b.st +
+     '；吉祥物那一位在走人時抽到 → 場上 ' + xone.c.n + ' 位');
+
+  /* ── 出招中再點：這一招斬完才去；路上再點一下以最後一下為準 ── */
+  await fillAll(page);
+  const xq = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const b0 = nearSet(0, -600);
+    const m = spawnBeast('saber');
+    m.x = b0.x; m.z = b0.z - DOOM_NEAR; m.a = 0; m.st = 'excal'; m.xt = 1.0; m.hit = 0; m.th0 = null;
+    const Q = { x: 20, y: 0, z: 30 }, Q2 = { x: -25, y: 0, z: 28 };
+    callSaber(Q);
+    const mid = { st: m.st, cq: !!m.cq, call: !!m.call };
+    let g = 0;
+    while (m.st === 'excal' && g++ < 400) stepExcal(m, 0.02);
+    const after = { st: m.st, call: m.call && m.call.x === Q.x && m.call.z === Q.z, cq: m.cq, xn: m.xn };
+    callSaber(Q2);
+    const last = { st: m.st, call: m.call && m.call.x === Q2.x && m.call.z === Q2.z };
+    beasts = null; clearFires();
+    return { mid, after, last };
+  });
+  ok('出招中再點：這一招斬完才去；路上再點一下以最後一下為準',
+     xq.mid.st === 'excal' && xq.mid.cq && !xq.mid.call && xq.after.st === 'call' && xq.after.call &&
+     xq.after.cq === null && xq.after.xn > 0 && xq.last.st === 'call' && xq.last.call,
+     '點下去那一刻還在 ' + xq.mid.st + '（排著＝' + xq.mid.cq + '）；那一招斬掉 ' + xq.after.xn + ' 塊之後 → ' +
+     xq.after.st + '、去的是排著的那一點＝' + xq.after.call + '；再點一下 → 去的是最後那一點＝' + xq.last.call);
+
+  /* ── 叫去的那一趟：被打到只是拖延（不改主意）、不被換場趕走、被打斷回去重瞄那一點 ── */
+  const xhold = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('saber', 1);
+    m.x = siteR + 20; m.z = 0;
+    callSaber({ x: siteR + 30, y: 0, z: 10 });
+    beastHit(m);                                     // 吉祥物本來會「一擊切換一次」（v1.208）
+    const hit = { bad: m.bad, st: m.st, call: !!m.call };
+    phase = 'clear'; stepBeast(m, 0.02);             // 整地：吉祥物本來會走人
+    const clear = m.st; phase = 'done';
+    m.st = 'act'; reaim(m); const act = m.st;
+    m.st = 'excal'; m.xt = 1; m.hit = 0; reaim(m); const exc = m.st;
+    const Q = { x: 5, y: 0, z: -40 };
+    m.st = 'excal'; m.xt = 1; m.hit = 0; m.cq = Q; reaim(m);
+    const q = { st: m.st, call: m.call === Q, cq: m.cq };
+    beasts = null;
+    return { hit, clear, act, exc, q };
+  });
+  ok('叫去的那一趟：被打到不改主意、整地也不趕她走、被打斷就回去重瞄那一點',
+     xhold.hit.bad === 0 && xhold.hit.st === 'call' && xhold.hit.call && xhold.clear === 'call' &&
+     xhold.act === 'call' && xhold.exc === 'call' && xhold.q.st === 'call' && xhold.q.call && xhold.q.cq === null,
+     '被打到：bad ' + xhold.hit.bad + '、還在 ' + xhold.hit.st + '；整地那一幀 → ' + xhold.clear +
+     '；瞄到一半被打斷 → ' + xhold.act + '；蓄力中被打斷 → ' + xhold.exc + '；蓄力中被打斷又排著一點 → 去排著的那一點＝' +
+     xhold.q.call);
+
+  /* ── 玩家的道具不分地標與村子；斬完還原她原本的樣子；斬到底那一刻鋪一道燒灼痕 ──
+     吉祥物砸村子那一趟（home＝1）本來「地標一塊都不准動」（v1.166），被叫去斬的那一招照斬。 */
+  await fillAll(page);
+  const xown = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const b0 = nearSet(0, -600);
+    const m = spawnBeast('saber', 1, 1);
+    const was = { bad: m.bad, home: m.home };
+    callSaber({ x: b0.x, y: b0.y, z: b0.z });
+    const during = m.home;
+    m.x = b0.x; m.z = b0.z - DOOM_NEAR; m.a = 0;    // 站定在那一點前面（走路那一段上面驗過了）
+    m.st = 'excal'; m.xt = 0; m.hit = 0; m.th0 = null;
+    const own = () => blocks.filter(b => b.st === SET && b.hh < 0).length;
+    const set0 = own();
+    const real = spawnSear; let sn = 0;
+    spawnSear = function (...a) { sn++; return real(...a); };
+    let g = 0;
+    while (m.st === 'excal' && g++ < 400) stepExcal(m, 0.02);
+    spawnSear = real;
+    const s = sears[0], G = excGeo(m);
+    const r = { was, during, set0, set1: own(), after: { bad: m.bad, home: m.home, st: m.st, call: m.call },
+                sn, n: sears.length,
+                sear: s ? { w: s.w, len: s.len, fx: s.fx, fz: s.fz, off: Math.hypot(s.x - m.x, s.z - m.z) } : null,
+                W2: ENG.EXC_W / 2, R: G.R };
+    beasts = null; clearFires();
+    return r;
+  });
+  ok('玩家的道具不分地標與村子：吉祥物砸村子那一趟被叫去，那一招照斬地標，斬完還原',
+     xown.was.home === 1 && xown.during === 0 && xown.set1 < xown.set0 &&
+     xown.after.home === 1 && xown.after.bad === 1 && xown.after.st === 'fun' && xown.after.call === null,
+     '原本 home ' + xown.was.home + ' → 叫去那一趟 ' + xown.during + '；地標 ' + xown.set0 + ' → ' + xown.set1 +
+     ' 塊；斬完 home ' + xown.after.home + '、bad ' + xown.after.bad + '、' + xown.after.st);
+  ok('斬到底那一刻鋪一道燒灼痕：沿著她面對的方向、半寬＝光柱的半粗、長到光柱搆得到的地方',
+     xown.sn === 1 && xown.n === 1 && xown.sear && xown.sear.w === xown.W2 &&
+     Math.abs(xown.sear.len - xown.R) < 1e-9 && Math.abs(xown.sear.fx) < 1e-9 &&
+     Math.abs(xown.sear.fz - 1) < 1e-9 && xown.sear.off < 1.5,
+     '一招鋪 ' + xown.sn + ' 道；' + (xown.sear ? '半寬 ' + xown.sear.w + '（EXC_W/2 ' + xown.W2 + '）、長 ' +
+     xown.sear.len.toFixed(2) + '（R ' + xown.R.toFixed(2) + '）、方向 (' + xown.sear.fx.toFixed(3) + ', ' +
+     xown.sear.fz.toFixed(3) + ')、起點離她 ' + xown.sear.off.toFixed(2) + ' 格' : '沒有'));
+
+  /* ── 燒灼痕本身：中線先暗紅、一段一段冷成焦黑，比一般的痕跡濃，SEAR_LIFE 秒後收掉 ──
+     讀的是真的送進 GPU 的頂點顏色（searMesh 的 color attribute，線性空間）。
+     「發紅」＝ r > 0.1 而且 r > 3g（焦黑那幾色 r 都在 0.02 以下、r／g 不到 2）。
+     「全冷了」＝不透明的那些頂點最亮的一色 < 0.12（暗紅 SEAR_RED 的 r 是 0.19，焦黑是 0.01；
+     門檻取在中間，不去貼著 three 的色彩空間換算）。 */
+  const xsear = await page.evaluate(() => {
+    cleanTools();
+    const s = spawnSear(0, 0, 1, 0, 60, 7.5);        // 沿 +x、半寬 7.5：橫的方向就是 z
+    const read = () => {
+      ENG.putSears(sears);
+      const g = ENG.three.searMesh.geometry, n = g.drawRange.count;
+      const P = g.attributes.position.array, C = g.attributes.color.array;
+      let red = 0, redZ = 0, maxA = 0, maxRgb = 0;
+      for (let i = 0; i < n; i++) {
+        const r = C[i * 4], gg = C[i * 4 + 1], a = C[i * 4 + 3];
+        maxA = Math.max(maxA, a);
+        if (a > 0.5) maxRgb = Math.max(maxRgb, r, gg, C[i * 4 + 2]);
+        if (r > 0.1 && r > 3 * gg) { red++; redZ = Math.max(redZ, Math.abs(P[i * 3 + 2])); }
+      }
+      return { n, red, redZ: +redZ.toFixed(2), maxA: +maxA.toFixed(2), maxRgb: +maxRgb.toFixed(3),
+               vis: ENG.three.searMesh.visible };
+    };
+    const run = secs => { for (let t = 0; t < secs - 1e-9; t += 0.02) stepMarks(0.02); };
+    run(0.3); const hot = read();
+    run(0.9 * SEAR_HOT - 0.3);                       // cool ≈ 0.9：冷得快的那幾刀已經黑了、慢的還紅
+    const hotN = s.hot.filter((h, k) => searHeat(s, k) > 0).length;
+    run(0.66 * SEAR_HOT); const cold = read();       // cool ≈ 1.56：最慢那一刀也冷了
+    const jl = s.jl, avg = jl.reduce((a, b) => a + b, 0) / jl.length;
+    const sd = Math.sqrt(jl.reduce((a, b) => a + (b - avg) ** 2, 0) / jl.length);
+    // 自己一池：一般痕跡塞滿也擠不掉它
+    for (let i = 0; i < MARK_MAX + 6; i++) spawnMark({ x: 0, y: 0.5, z: 0 }, 3, i % 2 === 0);
+    const kept = sears.length;
+    run(SEAR_LIFE); const gone = { n: sears.length, vis: read().vis };
+    marks.length = 0;
+    return { hot, hotN, all: s.n + 1, cold, sd: +sd.toFixed(3), kept, gone, core: +(0.2 * 7.5 * 1.3).toFixed(2),
+             life: SEAR_LIFE };
+  });
+  ok('燒灼痕：中線先暗紅、一段一段冷成焦黑（只有中線那一窄條紅），邊是燒開的形狀',
+     xsear.hot.red > 0 && xsear.hot.redZ <= xsear.core && xsear.hotN > 0 && xsear.hotN < xsear.all &&
+     xsear.cold.red === 0 && xsear.cold.maxRgb < 0.12 && xsear.sd > 0.05,
+     '剛斬完發紅的頂點 ' + xsear.hot.red + ' 個、離中線最遠 ' + xsear.hot.redZ + ' 格（上限 ' + xsear.core +
+     '）；冷到一半還燙的 ' + xsear.hotN + '／' + xsear.all + ' 刀；全冷之後發紅 ' + xsear.cold.red +
+     ' 個、最亮 ' + xsear.cold.maxRgb + '；邊緣寬度的散布 ' + xsear.sd);
+  ok('燒灼痕比一般的痕跡濃、自己一池不被擠掉，SEAR_LIFE 秒後收掉',
+     xsear.hot.maxA >= 0.9 && xsear.kept === 1 && xsear.gone.n === 0 && !xsear.gone.vis,
+     '最濃的頂點 alpha ' + xsear.hot.maxA + '（一般的痕跡上限 0.5）；一般痕跡塞滿之後還在 ' + xsear.kept +
+     ' 道；' + xsear.life + ' 秒後剩 ' + xsear.gone.n + ' 道、網格 visible＝' + xsear.gone.vis);
+
+  /* ── 畫面成本：沒燒灼痕就不吃 draw call；光柱是圓柱、三層共用一顆幾何體 ── */
+  const xdraw = await page.evaluate(() => {
+    cleanTools();
+    draw(); const off = ENG.three.searMesh.visible;
+    spawnSear(0, 0, 1, 0, 40, 7.5);
+    draw(); const on = ENG.three.searMesh.visible;
+    cleanTools(); draw(); const gone = ENG.three.searMesh.visible;
+    const ex = ENG.three.excMeshes;
+    return { off, on, gone, cyl: ex.map(x => x.geometry.type).join(','), shared: ex.every(x => x.geometry === ex[0].geometry) };
+  });
+  ok('沒燒灼痕就不吃 draw call；光柱是圓柱（不是方塊）、三層共用一顆幾何體',
+     !xdraw.off && xdraw.on && !xdraw.gone && xdraw.cyl.split(',').every(t => t === 'CylinderGeometry') && xdraw.shared,
+     '沒有 ' + xdraw.off + '／有一道 ' + xdraw.on + '／收掉 ' + xdraw.gone + '；光柱三層 ' + xdraw.cyl);
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+  }   // ── 〈破壞道具：Excalibur〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 隕石 ══════════ */
   SEC: { if (!(await head('隕石', T_COMMIT))) break SEC;
@@ -26584,6 +26877,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 幽浮（v1.167）：一趟十六秒（含飛走後那五秒），而且它會借鏡頭的高度。
        ufoClear() 才會把借去的高度還回去、把艙裡的積木放掉（見 game-tools）。 */
     ufoClear();
+    /* Excalibur（v1.224）叫來的 Saber：這一段沒裝天災的鐘（她不會走），留著會站在場邊一路被後面幾條畫到 */
+    beasts = null; ENG.putSabers([]);
     const got = stats.badges.indexOf('allTools') >= 0;
     // 同一種道具用兩次不會重複記
     tool = 'hammer'; useTool(hit);
