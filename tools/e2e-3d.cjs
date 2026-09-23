@@ -453,8 +453,10 @@ const installClean = page => page.evaluate(() => {
     /* 天災（v1.138）：場上那幾隻與飛在半空的香蕉。倒數也要歸零——
        不歸零的話下一條測試一進 done 就繼承上一條數到一半的秒數。 */
     beasts = null; nanas = null; fballs = null; doomT = -1;
+    beams = null;                     // Saber 的光刃（v1.222）：同香蕉，飛出去就是自己的東西
     mascT.fill(-1);                   // 吉祥物那三個鐘（v1.144）也要歸零，同上
     ENG.putBeasts([]);
+    ENG.putSabers([]); ENG.putExcal([]);   // 她自己那顆 mesh 與光刃也藏起來（v1.222）
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
@@ -23100,6 +23102,276 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      跟天災共用同一批動物與同一套走路，所以這一段驗的是**差在哪裡**，不重驗造型。
      兩支鐘都要裝回去：走路那一段是 stepDoom 在跑（beasts 的迴圈在它裡面）。 */
   }   // ── 〈天災：巨人腳踢〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 天災：Saber 的 Excalibur ══════════ */
+  /* v1.222。使用者：「如果想加特定知名角色進遊戲中 … 同小人大小 越精緻越像越好」→ 預覽過目兩輪 →
+     「劍光不要留 那做成天災吉祥物 攻擊是excalibur舉劍往前轟」。形態是一次問完的：
+     舉劍 A 面前高舉、威力「貫穿一條線」（寬 3、高 5、長 30 格）、一趟 1 次、自己一顆 mesh。
+     **規則那幾條不跑模擬**（同〈規則：垮塌、補洞、廢棄〉）：直接呼叫 fireExcal／stepBeams／
+     stepExcal／reaim 驗規則本身，一個骰子都沒有；只有「一整趟」那兩條真的讓她從場邊走進來。 */
+  SEC: { if (!(await head('天災：Saber 的 Excalibur', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
+  await fillAll(page);
+
+  /* ── 造型：她自己一顆 mesh，不把別的動物拖累 ── */
+  const sfig = await page.evaluate(() => {
+    const S = ENG.SABER, body = S.filter(b => b.g !== 6);      // g 6 ＝劍（劍自己的座標，不算身高）
+    const top = Math.max(...body.map(b => b.p[1] + b.s[1] / 2));
+    const lo = Math.min(...body.map(b => b.p[1] - b.s[1] / 2));
+    const m = spawnBeast('saber'), sc = m.sc;
+    beasts = null;
+    return { parts: S.length, sabParts: ENG.SAB_PARTS, inBeasts: 'saber' in ENG.BEASTS,
+             beastParts: ENG.BEAST_PARTS,
+             maxOther: Math.max(...Object.values(ENG.BEASTS).map(a => a.length)),
+             top: +top.toFixed(3), lo: +lo.toFixed(3), sc, doomSc: DOOM_SC,
+             model: !!ENG.MODELS.saber, sword: S.length - body.length };
+  });
+  ok('Saber 自己一顆 mesh：不進 BEASTS，別的動物一隻還是照原本最多塊那一款付成本',
+     sfig.parts === sfig.sabParts && !sfig.inBeasts && sfig.beastParts === sfig.maxOther && sfig.model,
+     '她 ' + sfig.parts + ' 塊（劍 ' + sfig.sword + ' 塊）、BEAST_PARTS 還是 ' + sfig.beastParts +
+     '（BEASTS 裡最多塊那一款 ' + sfig.maxOther + '）');
+  ok('跟小人同一個比例：原點在腳底、呆毛尖在 1.3～1.45、放大倍率同猴子（DOOM_SC）',
+     Math.abs(sfig.lo) < 0.001 && sfig.top > 1.3 && sfig.top < 1.45 && sfig.sc === sfig.doomSc,
+     '最低 ' + sfig.lo + '、最高 ' + sfig.top + '（小人帽頂 1.31）× ' + sfig.sc.toFixed(2) +
+     ' ＝ 場上 ' + (sfig.top * sfig.sc).toFixed(2) + ' 格');
+
+  /* ── 光刃從畫出來的劍尖出去（畫面與判定同一份數字）──
+     同巨人那一腳的 giantFoot：劍劈在這裡、光從那裡冒出來的錯，畫面上一眼就看得出來，
+     但規則那邊算錯的話只會變成「削掉的那一條跟光刃對不起來」。
+     劍尖那一塊是轉 45° 的菱形，中心到尖端差 0.0375（×倍率），所以容差就給這麼多。 */
+  const stip = await page.evaluate(() => {
+    const k = ENG.SABER.length - 1;                  // 最後一塊是劍尖
+    const m = { kind: 'saber', x: 3, y: 0, z: -7, a: 0.7, sc: DOOM_SC, gait: 0, arm: 1,
+                st: 'excal', xt: (ENG.EXC.swing + ENG.EXC.back) / 2 };
+    ENG.putSabers([m]);
+    const mat = new THREE.Matrix4();
+    ENG.three.sabMesh.getMatrixAt(k, mat);
+    const dx = mat.elements[12], dy = mat.elements[13], dz = mat.elements[14];
+    const e = fireExcal(m);
+    beams = null;
+    ENG.putSabers([]);
+    return { d: +Math.hypot(dx - e.x, dy - ENG.EXC_TIP.y * m.sc, dz - e.z).toFixed(3),
+             tol: +(0.0375 * m.sc + 0.01).toFixed(3),
+             ahead: +((e.x - m.x) * e.ux + (e.z - m.z) * e.uz).toFixed(2),
+             dir: Math.abs(Math.atan2(e.ux, e.uz) - m.a) };
+  });
+  ok('光刃從畫出來的劍尖出去、朝她面對的方向',
+     stip.d < stip.tol && stip.ahead > 1.5 && stip.dir < 1e-9,
+     '劍尖那一塊的中心到光刃起點差 ' + stip.d + ' 格（容差 ' + stip.tol + '）、起點在她前面 ' +
+     stip.ahead + ' 格');
+
+  /* ── 一招只出一道光刃 ──
+     劈到底之後要停一秒多（EXC.fire → EXC.end），照「m.xt >= fire」判的話那幾十幀會每幀再劈一道。 */
+  const sonce = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const b0 = nearSet(0, -600);
+    const m = spawnBeast('saber');
+    m.x = b0.x; m.z = b0.z - DOOM_NEAR; m.a = 0; m.st = 'excal'; m.xt = 0; m.hit = 0;
+    const real = fireExcal; let calls = 0, frames = 0, after = 0;
+    fireExcal = function (mm) { calls++; return real(mm); };
+    while (m.st === 'excal' && frames < 400) {
+      stepExcal(m, 0.02); stepBeams(0.02); frames++;
+      if (m.hit) after++;
+    }
+    fireExcal = real;
+    const st = m.st;
+    beasts = null; beams = null;
+    return { calls, after, secs: +(frames * 0.02).toFixed(2), st, end: ENG.EXC.end };
+  });
+  ok('一招只出一道光刃（劈到底停住那一秒多不會每幀再劈），收完就走',
+     sonce.calls === 1 && sonce.after > 30 && Math.abs(sonce.secs - sonce.end) < 0.05 && sonce.st === 'go',
+     '出光刃之後還停了 ' + sonce.after + ' 幀，fireExcal 只叫了 ' + sonce.calls + ' 次；一招 ' +
+     sonce.secs + ' 秒（EXC.end ' + sonce.end + '）→ ' + sonce.st);
+
+  /* ── 光刃削掉的就是那一條，一塊不多一塊不少 ──
+     拿**同一份幾何**（EXC_W／excH／EXC_L）先把「應該被削的」圈出來，只推光刃自己
+     （stepBeams，不推主迴圈——垮塌與火是之後的事，這一條驗的是光刃本身）。 */
+  await fillAll(page);
+  const scut = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    buildSlotOwner();
+    const b0 = nearSet(0, -600);
+    const m = { kind: 'saber', x: b0.x, z: b0.z - DOOM_NEAR, a: 0, sc: DOOM_SC, home: 0 };
+    const e = fireExcal(m);
+    const W2 = ENG.EXC_W / 2;
+    const inside = b => {
+      const vx = b.x - e.x, vz = b.z - e.z, al = vx * e.ux + vz * e.uz;
+      return al > -0.5 && al <= ENG.EXC_L && Math.abs(vx * e.uz - vz * e.ux) <= W2 && b.y <= ENG.excH(al);
+    };
+    const pre = blocks.filter(b => b.st === SET);
+    const want = pre.filter(inside), rest = pre.filter(b => !inside(b));
+    let g = 0;
+    while (beams && g++ < 200) stepBeams(0.02);
+    return { pre: pre.length, want: want.length, left: want.filter(b => b.st === SET).length,
+             rest: rest.length, lost: rest.filter(b => b.st !== SET).length, n: e.n,
+             deep: +Math.max(...want.map(b => (b.x - e.x) * e.ux + (b.z - e.z) * e.uz)).toFixed(1),
+             secs: +(g * 0.02).toFixed(2) };
+  });
+  ok('光刃削掉的就是那一條（寬 3、高照 excH、長 30 格）：裡面一塊不剩、外面一塊不少',
+     scut.want > 50 && scut.left === 0 && scut.lost === 0 && scut.n === scut.want,
+     '金字塔 ' + scut.pre + ' 塊裡落在光刃裡的 ' + scut.want + ' 塊，削完剩 ' + scut.left +
+     ' 塊；外面 ' + scut.rest + ' 塊少了 ' + scut.lost + ' 塊；最深打到 ' + scut.deep + ' 格，' +
+     scut.secs + ' 秒收掉');
+
+  /* ── 吉祥物砸村子那一趟：光照樣穿過去，地標一塊都不削 ──
+     同巨人 giantKick 的 isVillage：吉祥物那一版「地標一律不動」（v1.166 使用者定的）。 */
+  await fillAll(page);
+  const shome = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const b0 = nearSet(0, -600);
+    const m = { kind: 'saber', x: b0.x, z: b0.z - DOOM_NEAR, a: 0, sc: DOOM_SC, home: 1 };
+    const set0 = blocks.filter(b => b.st === SET && b.hh < 0).length;
+    const e = fireExcal(m);
+    let g = 0;
+    while (beams && g++ < 200) stepBeams(0.02);
+    return { set0, set1: blocks.filter(b => b.st === SET && b.hh < 0).length, n: e.n };
+  });
+  ok('吉祥物砸村子那一趟：光刃穿過地標也一塊都不削',
+     shome.set1 === shome.set0,
+     '地標 ' + shome.set0 + ' → ' + shome.set1 + ' 塊（這一道削掉村子那邊 ' + shome.n + ' 塊）');
+
+  /* ── 一整趟：走進來、劈一招、走人 ── */
+  await fillAll(page);
+  const srun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    const set0 = blocks.filter(b => b.st === SET).length;
+    const m = spawnBeast('saber');
+    const r0 = Math.hypot(m.x, m.z);
+    const real = fireExcal; let fires = 0, e = null;
+    fireExcal = function (mm) { fires++; e = real(mm); return e; };
+    const seen = [];
+    let n = 0, down = 0, inSite = 0, inHome = 0, arrive = 0, standR = 0;
+    while (n < 6000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.02); n++;
+      if (seen[seen.length - 1] !== m.st) seen.push(m.st);
+      if (!arrive && m.st === 'act') { arrive = n; standR = Math.hypot(m.x, m.z); }
+      if (m.fall > 0 || m.air) down++;
+      if (footBlocked(m.x, m.z)) inSite++;
+      if (homeFoot(m.x, m.z)) inHome++;
+    }
+    fireExcal = real;
+    const set1 = blocks.filter(b => b.st === SET).length;
+    return { r0: +r0.toFixed(1), seen: seen.join('→'), fires, n: e ? e.n : 0, set0, set1,
+             arrive: +(arrive * 0.02).toFixed(1), standR: +standR.toFixed(1),
+             down, inSite, inHome, secs: +(n * 0.02).toFixed(1), gone: !beasts || beasts.indexOf(m) < 0,
+             last: seen[seen.length - 1] };
+  });
+  ok('一趟劈一招就走：走進來 → 站定架劍 → 出招 → 走人',
+     srun.fires === 1 && srun.gone && srun.seen.indexOf('excal') >= 0 && srun.last === 'go' && srun.n > 0,
+     '從半徑 ' + srun.r0 + ' 走進來、' + srun.arrive + ' 秒站定（半徑 ' + srun.standR + '）；' +
+     srun.seen + '；光刃削掉 ' + srun.n + ' 塊（還站著的 ' + srun.set0 + ' → ' + srun.set1 +
+     '），全程 ' + srun.secs + ' 秒');
+  ok('自己劈的光刃不會把自己震倒，走路也不插進地標與小房子',
+     srun.down === 0 && srun.inSite === 0 && srun.inHome === 0,
+     '全程躺／飛 ' + srun.down + ' 幀、站在建築的格子裡 ' + srun.inSite + ' 幀、站在房子裡 ' +
+     srun.inHome + ' 幀');
+
+  /* ── 吉祥物那一版：狀態機根本走不到出招那一段 ── */
+  await fillAll(page);
+  const sfun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const m = spawnBeast('saber', 1);                 // fun＝1，不給 bad
+    const real = fireExcal; let fires = 0;
+    fireExcal = function (mm) { fires++; return real(mm); };
+    const seen = new Set();
+    let n = 0;
+    while (n < 7000 && beasts && beasts.indexOf(m) >= 0) { step(0.02); n++; seen.add(m.st); }
+    fireExcal = real;
+    beasts = null; beams = null;
+    return { sts: [...seen].join('／'), fires, act: seen.has('act') || seen.has('excal'),
+             secs: +(n * 0.02).toFixed(1) };
+  });
+  ok('吉祥物那一版不動手：狀態機走不到 act／excal，一道光刃都沒出',
+     !sfun.act && sfun.fires === 0,
+     '走過的段：' + sfun.sts + '，' + sfun.secs + ' 秒，fireExcal 被叫 ' + sfun.fires + ' 次');
+
+  /* ── 劈到一半被打斷 ──
+     光刃還沒出去：回 near 重走過去再瞄一次（同巨人那一腳）。
+     已經劈出去了：光刃是自己的東西，這一趟就算做完了（使用者選的是一趟 1 次）。 */
+  const sint = await page.evaluate(() => {
+    cleanTools();
+    const mk = o => Object.assign(spawnBeast('saber'), { st: 'excal', xt: 1.0, hit: 0 }, o);
+    const a = mk({}); reaim(a);
+    const b = mk({ xt: 3.0, hit: 1 }); reaim(b);
+    const c = mk({ fun: 1, xt: 3.0, hit: 1 }); reaim(c);
+    const r = { a: [a.st, a.xt, a.hit].join('／'), b: b.st, c: c.st };
+    beasts = null; beams = null;
+    return r;
+  });
+  ok('劈到一半被打斷：光刃還沒出去就回去重瞄，已經劈出去就算這一趟做完了',
+     sint.a === 'near／0／0' && sint.b === 'go' && sint.c === 'fun',
+     '蓄力中被打倒 → ' + sint.a + '（st／xt／hit）；劈完被打倒 → 天災 ' + sint.b + '、吉祥物 ' + sint.c);
+
+  /* ── 兩張表各有她一列（加一種＝加一列，別處不必動），提示用「她」── */
+  const stab = await page.evaluate(() => ({
+    doom: DOOMS.map(d => d.id), masc: MASCOTS.map(k => k.id),
+    ground: (MASCOTS.find(k => k.id === 'saber') || {}).ground,
+    fight: canFight({ kind: 'saber' }), act: !!DOOM_ACT.saber,
+    nm: BEAST_NM.saber, it: itOf({ kind: 'saber' }) + itOf({ kind: 'ape' })
+  }));
+  ok('DOOMS 與 MASCOTS 各多一列就接上了，提示裡她是「她」、其餘照舊是「牠」',
+     stab.doom.indexOf('saber') >= 0 && stab.masc.indexOf('saber') >= 0 && stab.ground === 1 &&
+     stab.fight && !stab.act && stab.nm && stab.it === '她牠',
+     '天災 ' + stab.doom.join('／') + '；吉祥物 ' + stab.masc.join('／') + '（ground ' + stab.ground +
+     '）；' + stab.nm + '：' + stab.it);
+
+  /* ── 畫面成本：沒她在場一個 draw call 都不吃（CLAUDE.md〈效能相關〉那條規矩）── */
+  const sdraw = await page.evaluate(() => {
+    cleanTools();
+    const T3 = ENG.three;
+    const vis = () => T3.sabMesh.visible + '／' + T3.sparkMesh.visible + '／' +
+                      T3.excMeshes.map(x => x.visible).join(',');
+    draw();
+    const off = vis();
+    const m = spawnBeast('saber');
+    m.st = 'excal'; m.xt = 1.5; m.hit = 1; m.arm = 1;       // 蓄力中
+    draw();
+    const on = vis(), cnt = T3.sabMesh.count, sp = T3.sparkMesh.count;
+    const e = fireExcal(m); e.t = 0.2;
+    m.xt = 2.6;                                          // 劈出去了，光點收掉
+    draw();
+    const beam = vis();
+    beasts = null; beams = null;
+    draw();
+    const after = vis();
+    return { off, on, cnt, sp, beam, after, parts: ENG.SAB_PARTS };
+  });
+  ok('沒她在場就不吃 draw call：她那顆 mesh、蓄力光點、光刃三層平常都藏著',
+     sdraw.off === 'false／false／false,false,false' && sdraw.on === 'true／true／false,false,false' &&
+     sdraw.cnt === sdraw.parts && sdraw.sp > 0 &&
+     sdraw.beam === 'true／false／true,true,true' && sdraw.after === sdraw.off,
+     '沒她 ' + sdraw.off + '；蓄力中 ' + sdraw.on + '（' + sdraw.cnt + ' 塊、' + sdraw.sp +
+     ' 顆光點）；光刃出去 ' + sdraw.beam + '；收掉 ' + sdraw.after + '（mesh／光點／光刃三層）');
+
+  /* ── 點得到她：點選回報成 beast，索引對回 beasts 裡的她 ──
+     她前面先擺一隻遠在場外的牛，所以她是 beasts[1]——putBeasts 把她那一格留空、
+     putSabers 記下「第幾格畫的是清單裡第幾個」，兩邊對不起來的話點到的會是那隻牛。 */
+  const spick = await page.evaluate(() => {
+    cleanTools();
+    const cam = ENG.three.camera.position;
+    const d = Math.hypot(cam.x, cam.z) || 1;
+    beasts = [{ kind: 'cow', x: 900, y: 0, z: 900, a: 0, sc: 1, ph: 0, gait: 0 }];
+    const m = spawnBeast('saber');
+    m.x = cam.x / d * (siteR + 6); m.z = cam.z / d * (siteR + 6); m.st = 'fun'; m.arm = 0;
+    draw(); ENG.render();
+    const v = new THREE.Vector3(m.x, 0.75 * m.sc, m.z).project(ENG.three.camera);
+    const cv = ENG.three.renderer.domElement;
+    const px = (v.x + 1) / 2 * cv.clientWidth, py = (1 - v.y) / 2 * cv.clientHeight;
+    const hit = ENG.pick(px, py, 'man');
+    const r = { kind: hit && hit.kind, idx: hit ? hit.idx : -1, me: !!hit && beastAt(hit.idx) === m,
+                px: Math.round(px), py: Math.round(py) };
+    beasts = null; ENG.putBeasts([]); ENG.putSabers([]);
+    return r;
+  });
+  ok('點得到她：回報成 beast、索引對回 beasts 裡的她（不是排在她前面那一隻）',
+     spick.kind === 'beast' && spick.idx === 1 && spick.me,
+     '點畫面 (' + spick.px + ', ' + spick.py + ')：' + spick.kind + ' #' + spick.idx +
+     (spick.me ? '，就是她' : '，不是她'));
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+  }   // ── 〈天災：Saber 的 Excalibur〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('吉祥物：來逛一圈就走', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; stepMascot = window.mascStep; });

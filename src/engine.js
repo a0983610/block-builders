@@ -438,6 +438,10 @@ const ENG = (function () {
   const UFO_TAPER = 0.244;
   const UFO_MOUTH_Y = 0.34;         // 吸光口離碟心多低（碟身半徑的倍率，＝ UFO_PART 最後那一片）
   let ufoMesh = null, ufoLitMesh = null, ufoBeamMesh = null;
+  /* Saber（v1.222）：她自己一顆 mesh、光刃三層、蓄力的光點。平常全部 visible = false，
+     見下面〈Saber〉那一節的 putSabers／putExcal。 */
+  let sabMesh = null, sparkMesh = null;
+  const excMeshes = [];
   /* 小黑洞（v1.221）。規則那邊只給位置、黑球半徑、亮度與自轉角，長相全在這裡。
      使用者：「黑色球是要表現得往內吸的感覺」——所以會動的那幾樣**全部往內走**：
      ① 黑球：純黑、不吃光（MeshBasic），它就是一個洞。
@@ -877,6 +881,36 @@ const ENG = (function () {
     beastMesh.frustumCulled = false;
     scene.add(beastMesh);
     beastMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
+    /* Saber（v1.222）：自己一顆，不進 beastMesh（理由見〈Saber〉那一節）。
+       顏色開機時寫死——每一格的顏色永遠是造型表那一格，不必每幀重寫。 */
+    sabMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXSAB * SAB_PARTS);
+    sabMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    sabMesh.castShadow = true;
+    sabMesh.count = 0;
+    sabMesh.visible = false;
+    sabMesh.frustumCulled = false;
+    for (let i = 0; i < MAXSAB; i++)
+      for (let k = 0; k < SAB_PARTS; k++) sabMesh.setColorAt(i * SAB_PARTS + k, tmpC.setHex(SABER[k].c));
+    scene.add(sabMesh);
+    /* 蓄力時往劍身收的金色光點：不透明、不吃光（第一版預覽用加亮混色，疊在天空上直接變白） */
+    sparkMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: 0xffffff }), MAXSAB * SAB_SPARK);
+    sparkMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    sparkMesh.count = 0;
+    sparkMesh.visible = false;
+    sparkMesh.frustumCulled = false;
+    for (let i = 0; i < MAXSAB * SAB_SPARK; i++) sparkMesh.setColorAt(i, tmpC.setHex(SAB_SPARK_C[i % 4]));
+    scene.add(sparkMesh);
+    /* 光刃三層：亮芯（一般混色）、金、外暈（後兩層加亮）。都不寫深度、不投影 */
+    for (const L of EXC_LAYERS) {
+      const m = new T.InstancedMesh(unit, new T.MeshBasicMaterial({
+        color: L.c, transparent: true, opacity: L.op, depthWrite: false,
+        blending: L.add ? T.AdditiveBlending : T.NormalBlending }), MAXEXC * (EXC_SEG.length - 1));
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.count = 0; m.visible = false; m.frustumCulled = false;
+      scene.add(m);
+      excMeshes.push(m);
+    }
 
     trunkMesh = new T.InstancedMesh(unit, voxelMaterial({ color: 0x6b4a2f }), 64);
     leafMesh = new T.InstancedMesh(unit, voxelMaterial({}), 64 * 3);
@@ -4553,6 +4587,418 @@ const ENG = (function () {
     BEAST_LIFT[k] = -zlo;
     BEAST_SIDE[k] = xhi;
   }
+
+  /* ── Saber（v1.222）─────────────────────────────────────────
+     使用者：「如果想加特定知名角色進遊戲中 … 同小人大小 越精緻越像越好」，附了一張 Saber 的圖。
+     預覽頁過了兩輪（「背面全藍色 不合理要調整」→ 補背甲、束腰繞一圈、裙褶、後腦髮流），然後：
+     「劍光不要留 那做成天災吉祥物 攻擊是excalibur舉劍往前轟」。
+     來龍去脈見 開發筆記〈Saber：天災＋吉祥物，Excalibur 舉劍往前轟〉。
+
+     **自己一顆 mesh，不進 BEASTS**（使用者選的）：她 130 塊，而 BEASTS 是「每一隻都照最多塊
+     那一款付成本」（BEAST_PARTS，原本 67）——塞進去的話場上常駐的五到八隻牛羊每隻都要多背
+     六十幾格。手也擺不出來：她是雙手握同一把劍、手要**伸到某一點**，putBeasts 的手只會繞肩膀前後轉。
+     規則那邊她照樣是 beasts 裡的一隻（走路、被打倒、著火、被吸走、翻臉全部沿用），
+     只是畫的時候 putBeasts 跳過她、改由 putSabers 畫；點選照樣回報成 beast、索引一樣。
+
+     部位表同 BODY／BEASTS 的格式：p 位置、s 尺寸（站直時、相對腳底原點）、c 顏色，多兩欄：
+     g 掛在哪一組上（SAB_G，那一組繞自己的樞紐轉）、r 這一塊自己的轉角。
+     劍那幾塊是劍自己的座標：握把中心在原點、劍身朝 +y。面向 +z，所以**右手在 −x**。
+     比例跟小人同一套：頭 0.50 寬、三頭身、頭頂 1.18（呆毛尖約 1.40）。 */
+  const SB = {
+    skin: 0xffdcc4, skinD: 0xf0bfa4,
+    hair: 0xffd46e, hairD: 0xe2a53e, hairL: 0xfff3cc, brow: 0xd2a23c,
+    white: 0xffffff, iris: 0x2f9c70, irisL: 0x86dcae, pupil: 0x164a35, lash: 0x3a2618,
+    mouth: 0xcb7a6c, blush: 0xf7b3a3,
+    blue: 0x2c45ae, blueD: 0x1d2f7c, gold: 0xe2b845,
+    silver: 0xd3d9e3, silverD: 0x98a2b2, silverL: 0xf2f5fa,
+    black: 0x1d1e28, lace: 0xdcdce6, petti: 0xf5f1e6, emblem: 0x2f58cf,
+    ribbon: 0x2b3b9e, glove: 0x2b2d38,
+    blade: 0xffe68a, bladeL: 0xfff8dc, grip: 0x1f2a66, gem: 0x3a70ea
+  };
+  const SAB_G = { body: 0, head: 1, armR: 2, armL: 3, legR: 4, legL: 5, sword: 6 };
+  const SABER = (() => {
+    const out = [];
+    const P = (g, p, s, c, r) => out.push({ g: SAB_G[g], p, s, c: SB[c], r: r || [0, 0, 0] });
+    /* 左右一次放兩塊：x 反號、繞 Y／Z 的角度反號（鏡射只翻那兩軸），arm／leg 自動分成 L（+x）與 R（−x） */
+    const M = (g, p, s, c, r) => {
+      r = r || [0, 0, 0];
+      const side = g === 'arm' || g === 'leg';
+      P(side ? g + 'L' : g, p, s, c, r);
+      P(side ? g + 'R' : g, [-p[0], p[1], p[2]], s, c, [r[0], -r[1], -r[2]]);
+    };
+    /* ── 頭（樞紐在脖子 0.74）── */
+    P('head', [0, 0.96, 0], [0.50, 0.44, 0.48], 'skin');
+    // 眼睛：眼白 → 虹膜 → 虹膜下半的亮色 → 瞳孔 → 高光，一層比一層往外 0.005，面不共平面才不會閃
+    M('head', [0.118, 0.905, 0.2415], [0.13, 0.15, 0.02], 'white');
+    M('head', [0.122, 0.895, 0.2465], [0.10, 0.13, 0.02], 'iris');
+    M('head', [0.122, 0.853, 0.2525], [0.08, 0.035, 0.012], 'irisL');
+    M('head', [0.122, 0.905, 0.2525], [0.05, 0.07, 0.012], 'pupil');
+    // 高光兩眼放**同一側**（光從同一邊來），所以不用 M
+    P('head', [0.097, 0.93, 0.258], [0.035, 0.04, 0.01], 'white');
+    P('head', [-0.147, 0.93, 0.258], [0.035, 0.04, 0.01], 'white');
+    // 上睫毛要細：預覽第一版 0.028 粗，遠看變成兩條濃眉
+    M('head', [0.12, 0.982, 0.25], [0.15, 0.018, 0.02], 'lash');
+    M('head', [0.192, 0.97, 0.25], [0.04, 0.014, 0.02], 'lash', [0, 0, -0.5]);   // 眼尾往下勾
+    M('head', [0.12, 1.022, 0.247], [0.10, 0.014, 0.012], 'brow', [0, 0, 0.15]); // 眉（內低外高，認真的表情）
+    P('head', [0, 0.858, 0.2415], [0.022, 0.018, 0.004], 'skinD');              // 鼻（一點陰影，貼平）
+    P('head', [0, 0.795, 0.2445], [0.07, 0.02, 0.012], 'mouth');
+    M('head', [0.165, 0.835, 0.2425], [0.07, 0.035, 0.012], 'blush');
+    /* 頭髮：頂、頂上再收一階（頭頂才是圓的）、後、兩側。頂髮的前緣跟瀏海切齊、兩邊跟側髮切齊：
+       預覽第一版頂髮縮在瀏海後面 0.025，前面看是兩層錯開的板子，像戴了一頂帽簷。 */
+    P('head', [0, 1.205, 0.0025], [0.575, 0.07, 0.545], 'hair');
+    P('head', [0, 1.255, -0.04], [0.42, 0.04, 0.40], 'hair');
+    P('head', [0, 0.99, -0.257], [0.54, 0.40, 0.05], 'hair');
+    M('head', [0.262, 1.02, -0.03], [0.05, 0.32, 0.44], 'hair');
+    // 後腦的髮流：頭髮是往上梳進包頭的，從後頸往包頭底（0.95）收攏（不加的話後面是一整塊平板）
+    P('head', [0, 0.87, -0.2835], [0.02, 0.15, 0.006], 'hairD');
+    M('head', [0.07, 0.87, -0.2835], [0.02, 0.15, 0.006], 'hairD', [0, 0, 0.25]);
+    M('head', [0.16, 0.875, -0.2835], [0.022, 0.17, 0.006], 'hairD', [0, 0, 0.5]);
+    // 兩側垂到下巴的鬢髮（Saber 的特徵之一），尾端往內勾
+    M('head', [0.232, 0.875, 0.21], [0.07, 0.34, 0.08], 'hair');
+    M('head', [0.218, 0.712, 0.228], [0.05, 0.05, 0.06], 'hair', [0, 0, 0.3]);
+    // 瀏海：一條橫帶 ＋ 往下分的幾束（中間那束最長，垂到兩眼之間）
+    P('head', [0, 1.135, 0.25], [0.50, 0.07, 0.05], 'hair');
+    P('head', [0, 1.045, 0.262], [0.06, 0.13, 0.03], 'hair');
+    M('head', [0.075, 1.07, 0.26], [0.075, 0.09, 0.03], 'hair', [0, 0, 0.1]);
+    M('head', [0.16, 1.06, 0.258], [0.08, 0.10, 0.03], 'hair', [0, 0, 0.15]);
+    // 頭頂的光澤（瀏海正面本來也有一條，正面吃不到太陽光，淺色在那裡變灰像接縫，拿掉了）
+    M('head', [0.14, 1.242, 0.10], [0.10, 0.006, 0.16], 'hairL');
+    // 呆毛：兩節往前彎
+    P('head', [0.012, 1.325, 0.07], [0.035, 0.12, 0.035], 'hair', [0.35, 0, -0.3]);
+    P('head', [0.05, 1.39, 0.105], [0.03, 0.075, 0.03], 'hair', [0.9, 0, 0.7]);
+    // 後腦的編髮包頭：橫豎兩塊疊成十字（方塊世界的圓）＋ 中線 ＋ 兩排人字紋
+    P('head', [0, 1.05, -0.32], [0.26, 0.15, 0.09], 'hair');
+    P('head', [0, 1.05, -0.325], [0.19, 0.20, 0.10], 'hair');
+    P('head', [0, 1.05, -0.377], [0.03, 0.19, 0.006], 'hairD');
+    M('head', [0.065, 1.015, -0.377], [0.10, 0.02, 0.006], 'hairD', [0, 0, 0.35]);
+    M('head', [0.065, 1.085, -0.377], [0.10, 0.02, 0.006], 'hairD', [0, 0, 0.35]);
+    // 藍緞帶：結 ＋ 兩個蝴蝶耳 ＋ 兩條垂尾
+    P('head', [0, 1.165, -0.33], [0.07, 0.065, 0.075], 'ribbon');
+    M('head', [0.085, 1.18, -0.33], [0.11, 0.075, 0.05], 'ribbon', [0, 0, 0.35]);
+    M('head', [0.045, 1.10, -0.385], [0.035, 0.10, 0.02], 'ribbon', [0, 0, -0.25]);
+
+    /* ── 身體 ── */
+    P('body', [0, 0.72, 0], [0.40, 0.05, 0.36], 'blueD');          // 高領
+    P('body', [0, 0.53, 0], [0.44, 0.40, 0.33], 'blue');           // 洋裝上身
+    // 胸甲：主板、上緣亮邊、往腰收的下緣
+    P('body', [0, 0.615, 0.178], [0.40, 0.20, 0.05], 'silver');
+    P('body', [0, 0.708, 0.181], [0.38, 0.022, 0.054], 'silverL');
+    P('body', [0, 0.49, 0.172], [0.30, 0.06, 0.045], 'silver');
+    /* 側板前後整片包過去，背後再接一片背甲：胸甲是一整圈的胴甲。
+       預覽第一版側板只包到側面中段，背後整片是洋裝的藍（使用者：「背面全藍色 不合理」）。 */
+    M('body', [0.205, 0.60, 0], [0.04, 0.20, 0.36], 'silver');
+    P('body', [0, 0.605, -0.178], [0.40, 0.20, 0.05], 'silver');     // 背甲
+    P('body', [0, 0.708, -0.181], [0.38, 0.022, 0.054], 'silverL');  // 背甲上緣亮邊
+    P('body', [0, 0.49, -0.172], [0.30, 0.06, 0.045], 'silver');     // 背甲往腰收的下緣
+    P('body', [0, 0.60, -0.2055], [0.03, 0.17, 0.006], 'silverD');   // 背脊的稜線
+    // 胸口的藍色紋章：直紋 ＋ 上揚兩翼 ＋ 下垂兩翼 ＋ 頂上一顆菱形
+    P('body', [0, 0.60, 0.2045], [0.03, 0.14, 0.006], 'emblem');
+    M('body', [0.055, 0.635, 0.2045], [0.09, 0.025, 0.006], 'emblem', [0, 0, 0.55]);
+    M('body', [0.045, 0.572, 0.2045], [0.07, 0.022, 0.006], 'emblem', [0, 0, -0.45]);
+    P('body', [0, 0.683, 0.2045], [0.032, 0.032, 0.006], 'emblem', [0, 0, 0.785]);
+    /* 黑束腰 ＋ 兩組交叉綁帶。束腰要比洋裝上身（深 0.33）厚，前後都凸出來才繞得成一圈
+       ——預覽第一版深 0.335 又往前偏 0.005，背面剛好被上身蓋住。 */
+    P('body', [0, 0.405, 0], [0.45, 0.11, 0.35], 'black');
+    for (const y of [0.428, 0.385]) {
+      P('body', [0, y, 0.179], [0.075, 0.012, 0.006], 'lace', [0, 0, 0.6]);
+      P('body', [0, y, 0.179], [0.075, 0.012, 0.006], 'lace', [0, 0, -0.6]);
+    }
+    // 長裙：三層往外擴（voxel 的圓錐就長這樣，同巫師帽）＋ 每層下緣一道金邊
+    P('body', [0, 0.285, 0], [0.50, 0.13, 0.38], 'blue');
+    P('body', [0, 0.165, 0], [0.58, 0.12, 0.45], 'blue');
+    P('body', [0, 0.055, 0], [0.66, 0.11, 0.52], 'blue');
+    P('body', [0, 0.012, 0], [0.67, 0.024, 0.53], 'gold');
+    P('body', [0, 0.113, 0], [0.59, 0.016, 0.46], 'gold');
+    P('body', [0, 0.227, 0], [0.51, 0.014, 0.39], 'gold');
+    // 裙子背面的褶：每一層兩道深藍直線，後面才不是三塊平板
+    M('body', [0.10, 0.292, -0.193], [0.018, 0.11, 0.006], 'blueD');
+    M('body', [0.12, 0.173, -0.228], [0.018, 0.10, 0.006], 'blueD');
+    M('body', [0.14, 0.067, -0.263], [0.018, 0.086, 0.006], 'blueD');
+    // 裙前開衩露出的白襯裙，兩邊鑲金
+    P('body', [0, 0.058, 0.2615], [0.10, 0.10, 0.006], 'petti');
+    M('body', [0.057, 0.058, 0.262], [0.014, 0.10, 0.008], 'gold');
+    /* 裙甲：前兩片、左右兩片。一片就是一整塊斜板，斜度照裙子的外擴
+       （腰 0.35 處貼著第一層、0.12 處貼著第三層：往外 0.062／往下 0.23 ≈ 0.263 弧度）。
+       預覽第一版是每片三層小疊片，十二塊灰方塊排起來像一面磚牆。中間一條深色線讀得出是分節的。 */
+    const TAS = 0.263;
+    M('body', [0.115, 0.232, 0.235], [0.20, 0.23, 0.02], 'silver', [-TAS, 0, 0.04]);
+    M('body', [0.115, 0.232, 0.2462], [0.19, 0.012, 0.004], 'silverD', [-TAS, 0, 0.04]);
+    M('body', [0.293, 0.232, 0], [0.02, 0.23, 0.28], 'silver', [0, 0, TAS]);
+    M('body', [0.3042, 0.232, 0], [0.004, 0.012, 0.27], 'silverD', [0, 0, TAS]);
+
+    /* ── 手（樞紐在肩膀 ±0.32, 0.72）── */
+    M('arm', [0.325, 0.645, 0], [0.22, 0.16, 0.26], 'blue');         // 蓬袖
+    M('arm', [0.325, 0.545, 0], [0.235, 0.05, 0.265], 'silverL');    // 護手外翻的袖口
+    M('arm', [0.325, 0.475, 0], [0.20, 0.10, 0.23], 'silver');       // 前臂
+    M('arm', [0.325, 0.53, -0.13], [0.12, 0.08, 0.04], 'silver');    // 肘甲
+    M('arm', [0.325, 0.42, 0], [0.19, 0.022, 0.22], 'silverD');      // 腕帶
+    M('arm', [0.33, 0.38, 0], [0.175, 0.06, 0.19], 'silverD');       // 手背甲
+    M('arm', [0.325, 0.335, 0.01], [0.15, 0.04, 0.17], 'glove');     // 手指（黑手套）
+
+    /* ── 腳（裙子蓋住，只露出鐵靴的腳尖）── */
+    M('leg', [0.11, 0.035, 0.21], [0.13, 0.07, 0.17], 'silver');
+    M('leg', [0.11, 0.028, 0.293], [0.11, 0.05, 0.02], 'silverD');
+
+    /* ── 劍（自己的座標：握把中心在原點，劍身朝 +y）。不套劍光（使用者：「劍光不要留」）── */
+    P('sword', [0, -0.085, 0], [0.065, 0.045, 0.065], 'gold');        // 柄頭
+    P('sword', [0, 0, 0], [0.042, 0.13, 0.042], 'grip');              // 握把
+    P('sword', [0, 0.08, 0], [0.22, 0.04, 0.06], 'gold');             // 護手
+    M('sword', [0.115, 0.098, 0], [0.04, 0.06, 0.06], 'gold', [0, 0, 0.4]);
+    P('sword', [0, 0.08, 0], [0.05, 0.05, 0.072], 'gem');             // 藍寶石
+    P('sword', [0, 0.125, 0], [0.09, 0.05, 0.032], 'gold');           // 劍根
+    P('sword', [0, 0.44, 0], [0.075, 0.58, 0.022], 'blade');          // 劍身
+    P('sword', [0, 0.43, 0], [0.022, 0.50, 0.028], 'bladeL');         // 血槽
+    P('sword', [0, 0.735, 0], [0.053, 0.053, 0.022], 'blade', [0, 0, 0.785]);  // 劍尖
+    return out;
+  })();
+  const SAB_PARTS = SABER.length;
+  /* 同時畫得下幾位。一般只會有一位（beastOn 擋著同款的不再放進來），
+     例外是吉祥物那一位正在走回場外（go）時天災抽到她：turnBad 不轉，照舊從場外放一位進來。 */
+  const MAXSAB = 2;
+  /* 每一塊組矩陣要用的三樣，開機時算一次。**不掛在 SABER 那幾個物件上**：
+     那一份整個存進造型基準檔（MODELS），掛了 THREE 的物件會一起被寫進 JSON。 */
+  const SAB_PV = SABER.map(b => new T.Vector3(b.p[0], b.p[1], b.p[2]));
+  const SAB_SV = SABER.map(b => new T.Vector3(b.s[0], b.s[1], b.s[2]));
+  const SAB_QV = SABER.map(b => new T.Quaternion().setFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2])));
+  /* 模型範圍（同上面 BEASTS 那一套，規則那邊拿它擺躺平、飛起來的姿勢與命中半徑）。
+     劍那幾塊是劍自己的座標，不算進去。 */
+  {
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
+    for (const b of SABER) {
+      if (b.g === SAB_G.sword) continue;
+      ylo = Math.min(ylo, b.p[1] - b.s[1] / 2);
+      yhi = Math.max(yhi, b.p[1] + b.s[1] / 2);
+      zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
+      xhi = Math.max(xhi, Math.abs(b.p[0]) + b.s[0] / 2);
+    }
+    BEAST_FLOOR.saber = Math.max(0, -ylo);
+    BEAST_MID.saber = (ylo + yhi) / 2;
+    BEAST_LIFT.saber = -zlo;
+    BEAST_SIDE.saber = xhi;
+  }
+
+  /* ── 她的姿勢 ──
+     手是「伸向某一點」擺的（sabAim）：Q 版手臂只有 0.37、頭又比肩寬，繞肩膀怎麼轉都繞不過頭頂，
+     搆不到的差額整支往那一點挪過去（同小人那邊的註解「手臂太短要整支挪」）。
+     三種姿勢混在一起：
+       站／走    m.gait：右手垂著握劍、左手往外張（原圖那個站姿），走起來擺手擺腳
+       架劍      m.arm 0～1：站定瞄的那一秒雙手握劍在腰前（規則那邊 act／excal 時推到 1）
+       Excalibur m.st === 'excal'、m.xt 秒：照 sabKey 的關鍵格 舉 → 蓄力 → 劈 → 收回架劍 */
+  const SAB_PIV = [[0, 0, 0], [0, 0.74, 0], [-0.32, 0.72, 0], [0.32, 0.72, 0], [-0.11, 0.33, 0], [0.11, 0.33, 0]];
+  const SAB_ARM = 0.37;                                  // 肩膀到握點
+  const SAB_HAND = new T.Vector3(-0.325, 0.35, 0.02);    // 右手握劍那一點（站直時）
+  const SAB_TIP = 0.7725;                                // 劍尖離握把多遠：劍尖那塊菱形 0.735 ＋ 半條對角線
+  /* 一招的時間軸（秒，從 act 站定瞄完那一刻算）。規則那邊照同一份表決定「哪一刻出光刃、哪一刻收工」
+     ——畫出來的劈下去跟光刃冒出來必須是同一個時間點（同 giantFoot 的道理，只是這裡對的是時間）。
+       raise 舉劍（0.7 秒）→ charge 蓄力到這一刻（1.5 秒）→ swing 劈到底（0.22 秒，越劈越快）
+       fire  光刃出來（劈到底前一點點：看起來是劍揮出去的那股勁把光送出去）
+       back  停在劈到底 → 收回架劍，end 收工 */
+  const EXC = { raise: 0.7, charge: 2.2, fire: 2.36, swing: 2.42, back: 3.7, end: 4.5 };
+  /* 關鍵格：握把位置、劍身方向、左右手要伸到哪、身體前傾、低頭。
+     舉劍那一格是使用者在兩版裡挑的 **A 面前高舉**：手握在嘴前、劍身直立擋在鼻樑中線、
+     劍尖高過頭頂——另一版（照參考圖握在頭頂上方）手臂要拉長到 1.8 倍才搆得到。 */
+  const sabK = (g, d, r, l, lean, head) => ({
+    grip: new T.Vector3(g[0], g[1], g[2]), dir: new T.Vector3(d[0], d[1], d[2]).normalize(),
+    hR: new T.Vector3(r[0], r[1], r[2]), hL: new T.Vector3(l[0], l[1], l[2]), lean, head });
+  const SAB_K = {
+    guard: sabK([-0.03, 0.44, 0.27], [0, 0.42, 0.91], [-0.10, 0.45, 0.25], [0.05, 0.43, 0.24], 0.06, 0.06),
+    up:    sabK([0, 0.80, 0.38], [0, 1, -0.12], [-0.06, 0.81, 0.37], [0.06, 0.79, 0.37], -0.06, -0.04),
+    down:  sabK([0, 0.60, 0.34], [0, -0.2, 1], [-0.06, 0.61, 0.32], [0.06, 0.59, 0.32], 0.18, 0.12)
+  };
+  const _sk = sabK([0, 0, 0], [0, 1, 0], [0, 0, 0], [0, 0, 0], 0, 0);
+  function sabBlend(a, b, f) {
+    _sk.grip.lerpVectors(a.grip, b.grip, f); _sk.dir.lerpVectors(a.dir, b.dir, f).normalize();
+    _sk.hR.lerpVectors(a.hR, b.hR, f); _sk.hL.lerpVectors(a.hL, b.hL, f);
+    _sk.lean = a.lean + (b.lean - a.lean) * f; _sk.head = a.head + (b.head - a.head) * f;
+    return _sk;
+  }
+  const sEase = f => f * f * (3 - 2 * f);
+  function sabKey(u) {
+    const K = SAB_K;
+    if (u < EXC.raise) return sabBlend(K.guard, K.up, sEase(u / EXC.raise));
+    if (u < EXC.charge) return K.up;
+    // 劈下去要越劈越快（f²），不是慢慢放下去
+    if (u < EXC.swing) { const f = (u - EXC.charge) / (EXC.swing - EXC.charge); return sabBlend(K.up, K.down, f * f); }
+    if (u < EXC.back) return K.down;
+    if (u < EXC.end) return sabBlend(K.down, K.guard, sEase((u - EXC.back) / (EXC.end - EXC.back)));
+    return K.guard;
+  }
+  const _sDOWN = new T.Vector3(0, -1, 0), _sUP = new T.Vector3(0, 1, 0);
+  const _sv = new T.Vector3(), _sv2 = new T.Vector3(), _sE = new T.Euler();
+  const _sq = new T.Quaternion(), _sq2 = new T.Quaternion(), _sOne = new T.Vector3(1, 1, 1);
+  const _sm = new T.Matrix4(), _sm2 = new T.Matrix4();
+  const _sQ = [0, 1, 2, 3, 4, 5].map(() => new T.Quaternion());    // 每一組這一幀的轉角
+  const _sQ1 = [0, 1, 2, 3, 4, 5].map(() => new T.Quaternion());   // 架劍／出招那一套的轉角
+  const _sOff = [0, 1, 2, 3, 4, 5].map(() => new T.Vector3());     // 每一組整支挪多少
+  const _sOff1 = [0, 1, 2, 3, 4, 5].map(() => new T.Vector3());
+  const _sA = [0, 1, 2, 3, 4, 5, 6].map(() => new T.Matrix4());    // 相對身體
+  const _sG = [0, 1, 2, 3, 4, 5, 6].map(() => new T.Matrix4());    // 世界
+  const _sAt = new T.Vector3(), _sDir = new T.Vector3();
+  const SAB_DIR_STAND = new T.Vector3(-0.45, -0.42, 0.79).normalize();   // 站著：劍尖朝前下方（原圖）
+  const SAB_DIR_WALK = new T.Vector3(-0.35, -0.38, 0.86).normalize();
+  let _sLean = 0, _sBob = 0, _sRoll = 0;
+  function sabAim(piv, target, q, off) {
+    _sv.set(target.x - piv[0], target.y - piv[1], target.z - piv[2]);
+    const len = _sv.length() || 1;
+    _sv.multiplyScalar(1 / len);
+    q.setFromUnitVectors(_sDOWN, _sv);
+    off.copy(_sv).multiplyScalar(Math.max(0, len - SAB_ARM));
+  }
+  /* 繞樞紐轉：A = T(樞紐 + off) · R · T(−樞紐) */
+  function sabPivot(out, piv, q, off) {
+    out.makeRotationFromQuaternion(q);
+    out.multiply(_sm.makeTranslation(-piv[0], -piv[1], -piv[2]));
+    out.premultiply(_sm.makeTranslation(piv[0] + off.x, piv[1] + off.y, piv[2] + off.z));
+    return out;
+  }
+  function sabPose(m) {
+    const g = Math.min(1, Math.max(0, (m.gait || 0) / 0.85)), s = Math.sin(m.ph || 0);
+    /* 站／走：原圖那個站姿，走起來往擺手擺腳靠（照 gait 混） */
+    _sQ[1].setFromEuler(_sE.set(0.03 * (1 - g), -0.12 * (1 - g), 0.05 * (1 - g) + 0.03 * s * g));
+    _sQ[2].setFromEuler(_sE.set(-0.35 + (0.10 + 0.22 * s) * g, 0, -0.35 + 0.05 * g));
+    _sQ[3].setFromEuler(_sE.set(0.18 + (-0.4 * s - 0.18) * g, 0, 1.0 - 0.88 * g));
+    _sQ[4].setFromEuler(_sE.set(-0.45 * s * g, 0, 0));
+    _sQ[5].setFromEuler(_sE.set(0.45 * s * g, 0, 0));
+    for (let i = 0; i < 6; i++) _sOff[i].set(0, 0, 0);
+    _sBob = Math.abs(Math.cos(m.ph || 0)) * 0.025 * g;
+    _sDir.lerpVectors(SAB_DIR_STAND, SAB_DIR_WALK, g).normalize();
+    _sRoll = 0.45 - 0.15 * g;
+    _sAt.copy(SAB_HAND).applyMatrix4(sabPivot(_sm2, SAB_PIV[2], _sQ[2], _sOff[2]));   // 劍在右手心
+    _sLean = 0;
+    /* 架劍／出招：照 m.arm 混過去（出招那幾秒一律是 1） */
+    const w = m.st === 'excal' ? 1 : Math.min(1, Math.max(0, m.arm || 0));
+    if (w <= 0) return;
+    const k = m.st === 'excal' ? sabKey(m.xt || 0) : SAB_K.guard;
+    sabAim(SAB_PIV[2], k.hR, _sQ1[2], _sOff1[2]);
+    sabAim(SAB_PIV[3], k.hL, _sQ1[3], _sOff1[3]);
+    _sQ1[1].setFromEuler(_sE.set(k.head, 0, 0));
+    _sQ1[4].setFromEuler(_sE.set(-0.28, 0, 0));     // 右腳往前一步
+    _sQ1[5].setFromEuler(_sE.set(0.22, 0, 0));
+    for (let i = 1; i < 6; i++) { _sQ[i].slerp(_sQ1[i], w); _sOff[i].lerp(_sOff1[i], w); }
+    _sAt.lerp(k.grip, w);
+    _sDir.lerp(k.dir, w).normalize();
+    _sRoll *= 1 - w;
+    _sLean = k.lean * w;
+    _sBob *= 1 - w;
+  }
+  /* 算出這一位每一組的世界矩陣（_sG）。putSaber 與 excTip 共用，所以畫面與判定是同一份。 */
+  function sabRig(m) {
+    sabPose(m);
+    /* 根：同 putBeasts（YZX：朝向 → 打滾 → 躺平／前傾；躺著要抬、飛在半空繞身體中段轉） */
+    scratch.rotation.set((m.spin || 0) + _sLean, m.a || 0, m.roll || 0, 'YZX');
+    const msc = m.sc || 1;
+    const mlift = !m.lie ? 0
+      : m.side ? BEAST_SIDE.saber * m.lie * Math.abs(Math.sin(m.roll || 0))
+               : BEAST_LIFT.saber * m.lie * Math.abs(Math.sin(m.spin || 0));
+    scratch.position.set(m.x || 0, (m.y || 0) + (mlift + _sBob) * msc, m.z || 0);
+    if (m.air) {
+      _piv.set(0, BEAST_MID.saber, 0).applyEuler(scratch.rotation);
+      scratch.position.x -= _piv.x * msc;
+      scratch.position.y += (BEAST_MID.saber - _piv.y) * msc;
+      scratch.position.z -= _piv.z * msc;
+    }
+    scratch.scale.setScalar(msc);
+    scratch.updateMatrix();
+    _sG[0].copy(scratch.matrix);
+    for (let i = 1; i < 6; i++) _sG[i].multiplyMatrices(_sG[0], sabPivot(_sA[i], SAB_PIV[i], _sQ[i], _sOff[i]));
+    // 劍：先繞劍身自轉，再轉到那個方向，原點放在握把
+    _sq.setFromUnitVectors(_sUP, _sDir).multiply(_sq2.setFromAxisAngle(_sUP, _sRoll));
+    _sG[6].multiplyMatrices(_sG[0], _sA[6].compose(_sAt, _sq, _sOne));
+  }
+  /* 光刃從哪裡出來（**模型座標**、還沒乘 sc）：停在劈到底那一格時的劍尖。
+     規則那邊拿它當光刃的起點——同 giantFoot／SWORD_TIP，畫出來的劍尖跟光刃接得起來。 */
+  function excTip() {
+    sabRig({ st: 'excal', xt: (EXC.swing + EXC.back) / 2, a: 0, sc: 1 });
+    const p = new T.Vector3(0, SAB_TIP, 0).applyMatrix4(_sG[6]);
+    return { x: p.x, y: p.y, z: p.z };
+  }
+  const EXC_TIP = excTip();
+  /* 光刃（使用者選的「貫穿一條線：寬 3、高 5 格，一路打穿 30 格」）。**場上的格子**，不乘她的 sc。
+     靠近劍尖那一小截比較矮（光從劍上長出來），往前 1.5 格內長到全高——規則那邊判定的高度
+     也是這一支（excH），畫出來的光刃跟削掉的那一條是同一個形狀。
+     GROW 秒前緣衝到底、FADE 秒收掉；沿著長度切成幾段，是因為那個「長出來」的斜坡要分段畫。 */
+  const EXC_W = 3, EXC_H = 5, EXC_L = 30;
+  const EXC_SEG = [0, 0.75, 1.5, 2.25, 3, EXC_L];
+  const excH = d => EXC_H * Math.min(1, 0.4 + d / 2.5);
+  const EXC_GROW = 0.35, EXC_FADE = 0.6;
+  const excFade = t => t < EXC_GROW + 0.1 ? 1 : Math.max(0, 1 - (t - EXC_GROW - 0.1) / (EXC_FADE - 0.1));
+  /* 三層同心：亮芯偏金、半透明、收窄——預覽第一版是不透明的近白色，從側面看是一大片白板，像牆不像光 */
+  const EXC_LAYERS = [
+    { c: 0xfff0a0, w: 0.30, h: 0.55, op: 0.85, add: 0 },
+    { c: 0xffc03a, w: 0.65, h: 0.80, op: 0.42, add: 1 },
+    { c: 0xff9a1a, w: 1.00, h: 1.00, op: 0.18, add: 1 }
+  ];
+  const MAXEXC = 2;
+  /* 蓄力的光點：一位 SAB_SPARK 顆，從半徑 1.3 的一圈往劍身中段收。參數開機時定好
+     （黃金角＋小數部分，不抽 Math.random：這一支每幀都跑，也不該吃掉規則那邊的骰子） */
+  const SAB_SPARK = 48;
+  const SAB_SPARK_C = [0xffd23c, 0xffe27a, 0xffb81e, 0xfff1b0];
+  const SAB_SP = [];
+  for (let i = 0; i < SAB_SPARK; i++)
+    SAB_SP.push({ th: i * 2.39996, off: (i * 0.618034) % 1, s: 0.02 + 0.025 * ((i * 2.673) % 1) });
+  const sabAt = [];                         // 這一幀第幾格畫的是清單裡的第幾個（點選用，同 giftAt）
+  /* list：規則那邊的 beastList()（跟 putBeasts 同一份），只畫 kind === 'saber' 的那幾個 */
+  function putSabers(list) {
+    let n = 0, sp = 0;
+    for (let i = 0; i < list.length && n < MAXSAB; i++) {
+      const m = list[i];
+      if (m.kind !== 'saber') continue;
+      sabAt[n] = i;
+      sabRig(m);
+      for (let k = 0; k < SAB_PARTS; k++) {
+        tmpM.compose(SAB_PV[k], SAB_QV[k], SAB_SV[k]);
+        _sm2.multiplyMatrices(_sG[SABER[k].g], tmpM);
+        sabMesh.setMatrixAt(n * SAB_PARTS + k, _sm2);
+      }
+      const u = m.xt || 0;
+      if (m.st === 'excal' && u > EXC.raise && u < EXC.fire) {
+        const msc = m.sc || 1;
+        _sv2.set(0, 0.45, 0).applyMatrix4(_sG[6]);     // 劍身中段（世界）
+        for (let j = 0; j < SAB_SPARK; j++) {
+          const p = SAB_SP[j], l = (u * 0.9 + p.off) % 1, r = 1.3 * (1 - l) * msc;
+          _sv.set(_sv2.x + Math.cos(p.th) * r,
+                  _sv2.y + (-0.7 * (1 - l) + 0.3 * Math.sin(p.th * 3)) * msc,
+                  _sv2.z + Math.sin(p.th) * r);
+          const sc = p.s * msc * Math.min(1, l * 4) * Math.min(1, (EXC.fire - u) * 4);
+          tmpM.compose(_sv, _sq.identity(), _sAt.set(sc, sc, sc));
+          sparkMesh.setMatrixAt(sp++, tmpM);
+        }
+      }
+      n++;
+    }
+    sabMesh.count = n * SAB_PARTS;
+    sabMesh.visible = n > 0;
+    if (n) { sabMesh.instanceMatrix.needsUpdate = true; dropSphere(sabMesh); }
+    sparkMesh.count = sp;
+    sparkMesh.visible = sp > 0;
+    if (sp) sparkMesh.instanceMatrix.needsUpdate = true;
+  }
+  /* list：規則那邊的光刃 {x, z 起點, ux, uz 方向（單位向量）, t 出來第幾秒} */
+  function putExcal(list) {
+    const n = Math.min(list.length, MAXEXC), segs = EXC_SEG.length - 1;
+    for (let L = 0; L < excMeshes.length; L++) {
+      const mesh = excMeshes[L], lay = EXC_LAYERS[L];
+      mesh.visible = n > 0;
+      mesh.count = n * segs;
+      if (!n) continue;
+      for (let i = 0; i < n; i++) {
+        const e = list[i];
+        const front = Math.min(1, e.t / EXC_GROW) * EXC_L, wk = excFade(e.t);
+        _sq.setFromAxisAngle(_sUP, Math.atan2(e.ux, e.uz));
+        for (let s = 0; s < segs; s++) {
+          const a = EXC_SEG[s], len = Math.max(0, Math.min(EXC_SEG[s + 1], front) - a);
+          const h = excH((EXC_SEG[s] + EXC_SEG[s + 1]) / 2);
+          const fl = 1 + 0.06 * Math.sin(e.t * 43 + s * 1.7 + L);      // 光在抖
+          _sv.set(len > 0 ? EXC_W * lay.w * wk * fl : 0, h * lay.h * fl, len);
+          _sAt.set(e.x + e.ux * (a + len / 2), h / 2, e.z + e.uz * (a + len / 2));
+          tmpM.compose(_sAt, _sq, _sv);
+          mesh.setMatrixAt(i * segs + s, tmpM);
+        }
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
   /* 場上同時畫得下幾個（含飛在半空的香蕉與火球）。v1.144 從 8 加到 12：吉祥物那三隻
      可以跟天災那一件同時在場（最多 4 隻），再加上龍嘴裡連著吐的火球，8 個會不夠——
      超出的那幾個是**靜靜地不畫**，不會報錯，所以留點餘裕。
@@ -4589,6 +5035,12 @@ const ENG = (function () {
     beastMesh.count = n * BEAST_PARTS;
     for (let i = 0; i < n; i++) {
       const m = list[i], parts = BEASTS[m.kind];
+      /* 沒有造型表的那一種（Saber，v1.222）自己一顆 mesh 畫（見 putSabers）：這一格留空，
+         其餘的格子照舊跟 list 同索引——點選是照「第幾格」對回 beasts 的。 */
+      if (!parts) {
+        for (let k = 0; k < BEAST_PARTS; k++) beastMesh.setMatrixAt(i * BEAST_PARTS + k, ZERO_M);
+        continue;
+      }
       /* 順序跟小人一樣用 YZX：R = Ry(朝向)·Rz(側傾)·Rx(俯仰／翻滾)。
          香蕉飛出去時是繞自己橫軸翻，所以翻滾放 x；飛龍的俯仰也放 x、
          轉彎往內側傾斜放 z（那兩個值是規則那邊算的，見 game-tools.js 的 stepDragon）。
@@ -4999,13 +5451,14 @@ const ENG = (function () {
     // intersectObjects 是照距離排好的，所以同一種裡先遇到的就是最近的那個
     const objs = [blockMesh, workerMesh, beastMesh, ground];
     if (giftMesh && giftMesh.visible) objs.push(giftMesh);
+    if (sabMesh && sabMesh.visible) objs.push(sabMesh);   // Saber 算 beast（v1.222，見 putSabers）
     const hits = raycaster.intersectObjects(objs, false);
     let best = null, rank = 9;
     for (let i = 0; i < hits.length; i++) {
       const h = hits[i];
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
-                 : h.object === beastMesh ? 'beast'
+                 : h.object === beastMesh || h.object === sabMesh ? 'beast'
                  : h.object === giftMesh ? 'gift'
                  : h.object === ground ? 'ground' : null;
       /* 泡泡被牆擋住就點不到（畫面上本來就看不見它：泡泡不寫深度，但仍然吃深度測試）。
@@ -5017,7 +5470,8 @@ const ENG = (function () {
         kind: kind,
         idx: kind === 'block' ? h.instanceId
            : kind === 'worker' ? Math.floor(h.instanceId / WPARTS)
-           : kind === 'beast' ? Math.floor(h.instanceId / BEAST_PARTS)
+           : kind === 'beast' ? (h.object === sabMesh ? sabAt[Math.floor(h.instanceId / SAB_PARTS)]
+                                                      : Math.floor(h.instanceId / BEAST_PARTS))
            /* 泡泡是一整片貼圖網格（不是 instanced）：一顆兩個三角形，
               而 giftAt 記著這一幀第幾片畫的是清單裡的第幾顆（見 putGifts）。 */
            : kind === 'gift' ? giftAt[Math.floor(h.faceIndex / 2)] : -1,
@@ -5073,6 +5527,10 @@ const ENG = (function () {
     /* 巨人（v1.192）：規則那邊要拿它算「這一腳踹到哪一點」。
        畫出來的腳掌跟判定用的那一點是同一條式子算的（同 SWORD_HIT／UFO_MOUTH）。 */
     giantFoot,
+    /* Saber（v1.222）：她自己一顆 mesh（putSabers）、光刃（putExcal）。規則那邊照 EXC 的時間軸
+       出光刃、照 EXC_TIP 定光刃起點、照 EXC_W／excH／EXC_L 判定削哪一條——跟畫出來的同一份數字。 */
+    putSabers, putExcal, SABER, SAB_PARTS, MAXSAB, MAXEXC,
+    EXC, EXC_TIP, EXC_W, EXC_H, EXC_L, EXC_SEG, EXC_GROW, EXC_FADE, excH,
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
     /* 全部造型表（v1.149）：測試把這一份整個存成基準檔（tools/model-baseline.json），
@@ -5086,10 +5544,10 @@ const ENG = (function () {
                ufo: UFO_PART, ufoLit: UFO_LIT,
                ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
-               deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT };
+               deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, saber: SABER };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes }; }
   };
 })();

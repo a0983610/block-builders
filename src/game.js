@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.221.0';
+const VERSION = '1.222.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -286,6 +286,24 @@ function sndBeast(hi) {
   tone(f, 0.14, 'sawtooth', 0.05, 1.45, 'beast');
   noise(0.12, 0.03, 1500);
   setTimeout(() => tone(f * 1.18, 0.2, 'sawtooth', 0.045, 0.6, 'beast'), 170);
+}
+/* Saber（v1.222）：登場是一聲拔劍的金屬聲——一掃很高的噪音 ＋ 兩顆亮的音往上。
+   跟猴子 220／330、龍 88、巨人 64 那幾聲完全分得開：場上就她一個不是野獸，不該是吼聲。 */
+function sndSaber() {
+  noise(0.18, 0.05, 5200);
+  tone(1320, 0.28, 'sine', 0.045, 1.5, 'saber');
+  setTimeout(() => tone(1760, 0.4, 'triangle', 0.035, 1, 'saber'), 90);
+}
+/* 蓄力：一聲 1.5 秒往上爬的嗡鳴（ENG.EXC 的 charge − raise），爬到頂正好接上劈下去那一聲 */
+function sndCharge() {
+  tone(180, 1.5, 'triangle', 0.05, 4, 'excCharge', 0.4);
+  tone(360, 1.5, 'sine', 0.025, 4, 'excCharge2', 0.6);
+}
+/* 光刃出去：低頻的轟 ＋ 一道往下掃的亮音（光衝出去）。自己的 key，不跟爆炸搶發聲名額 */
+function sndExcal() {
+  noise(0.9, 0.24, 700);
+  tone(72, 1.0, 'sawtooth', 0.09, 0.4, 'excal');
+  tone(1400, 0.6, 'triangle', 0.04, 0.25, 'excalHi');
 }
 // 倒水：低通壓得比火低（水聲沒有火那種高頻的嘶），再墊一顆往下滑的低音當「灌下去」
 function sndWater() { noise(0.6, 0.13, 620); tone(210, 0.45, 'sine', 0.04, 0.5); }
