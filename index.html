@@ -70,7 +70,15 @@
   #panel .btns button:disabled{opacity:.42;cursor:default}
   .checks{display:flex;gap:14px;margin-top:10px;font-size:12px;opacity:.8}
   .checks label{display:flex;align-items:center;gap:5px;flex:0 0 auto}
-  #panelBtn{position:fixed;left:14px;bottom:14px;z-index:5;padding:7px 11px}
+  /* ⚙ 設定與小人模式（v1.219，使用者指定模式小窗擺在設定鈕右邊）：兩顆包在 #corner 裡，
+     桌機橫排、設定在左；窄螢幕設定鈕搬到右下角，模式小窗疊在它上面（見下面的 @media）。
+     各自 fixed 的話模式小窗得猜設定鈕多寬。#corner 本身不吃指標，
+     不然兩顆中間那道縫點下去打到的是它、不是畫布。 */
+  #corner{position:fixed;left:14px;bottom:14px;z-index:5;display:flex;gap:6px;
+          align-items:flex-end;pointer-events:none}
+  #corner > *{pointer-events:auto}
+  #modebox{position:relative}
+  #panelBtn{padding:7px 11px}
 
   #ver{
     position:fixed;right:14px;bottom:14px;z-index:4;
@@ -86,14 +94,8 @@
   /* 破壞工具（畫面上方中央）：平常只留一顆「現在拿什麼」的小窗，
      滑鼠指上去才展開整份選單。選單是會自動換行的網格，所以之後再加道具
      不用重新安排版面，也不會把整排推到壓住別的卡片。
-     旁邊那顆是小人模式（v1.219，見 game-workers.js 的 LAZY_MODES），長相與開合照抄工具這一套。
-     兩顆包在 #dock 裡一起置中：各自 fixed 的話，工具名字長短一變（兩字～四字）就會疊在一起。
-     #dock 本身不吃指標，不然兩顆中間那道縫點下去打到的是它、不是畫布。
-     width:max-content 一定要給：left:50% 的 fixed 元素可用寬度只剩半個畫面，
-     手機 390 寬時只有 195px，兩顆會被擠到字折成兩行（實測「槌/子」「普/通」）。 */
-  #dock{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:6;width:max-content;
-        display:flex;gap:8px;align-items:flex-start;pointer-events:none}
-  #toolbox,#modebox{position:relative;pointer-events:auto}
+     小人模式那顆（v1.219，#modeNow）長相與開合照抄這一套，擺的位置見下面的 #corner。 */
+  #toolbox{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:6}
   #toolNow,#modeNow{
     display:flex;align-items:center;gap:8px;padding:7px 13px;border-radius:12px;
     background:var(--panel);border:1px solid var(--line);color:var(--ink);
@@ -110,6 +112,8 @@
     position:absolute;top:100%;left:50%;transform:translateX(-50%);padding-top:8px;
     opacity:0;visibility:hidden;transition:opacity .12s;
   }
+  /* 小人模式在下緣，選單一律往上開、靠左對齊（窄螢幕靠右，見下面的 @media） */
+  #modeMenu{top:auto;bottom:100%;left:0;transform:none;padding:0 0 8px}
   /* .shut＝剛剛選好一把（v1.123，使用者：「選擇工具點擊後 就可以把工具清單收起來
      目前要把滑鼠移開才會收」）。選完只把 .open 拿掉的話，:hover 還按著它——
      指標本來就停在剛點的那顆按鈕上，選單等於原地不動。加一個「這次先別展開」的
@@ -233,13 +237,17 @@
      選單是浮在上面的一層，蓋到不影響操作，所以斷點還是取整數 1024，
      讓平板豎放的 1024 落在下緣這一邊。選單跟著往上開。 */
   @media (max-width:1024px), (hover:none) and (pointer:coarse){
-    #dock{top:auto;bottom:12px}
-    #toolMenu,#modeMenu{top:auto;bottom:100%;padding:0 0 8px}
-    /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具小窗 */
-    #panelBtn{right:14px;left:auto}
+    #toolbox{top:auto;bottom:12px}
+    #toolMenu{top:auto;bottom:100%;padding:0 0 8px}
+    /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具小窗。
+       小人模式跟著設定鈕走（v1.219，使用者選「疊在設定鈕上面」）：底排中間擺不下第二顆
+       （390 寬時設定鈕左邊只剩 56px，模式小窗要 93），所以直排、右緣對齊，選單靠右往上開。 */
+    #corner{right:14px;left:auto;flex-direction:column-reverse;align-items:flex-end}
+    #modeMenu{left:auto;right:0}
     #ver{left:14px;right:auto}
-    /* 設定面板要讓開底部的小窗，不然會壓在它上面 */
-    #panel{bottom:84px}
+    /* 設定面板要讓開底部的小窗與右下角疊起來的兩顆，不然會壓在它們上面。
+       v1.219 從 84 拉到 100：14＋設定鈕 35＋6＋模式小窗 37＝92，84 的話會壓到 8px。 */
+    #panel{bottom:100px}
   }
 
   @media (max-width:640px){
@@ -252,10 +260,6 @@
     #clock{font-size:20px}
     #panel{width:calc(100vw - 28px)}
     #tools{grid-template-columns:repeat(3,74px)}   /* 四欄 338px 在 390 的螢幕上太貼邊 */
-    /* 底排中間擺兩顆小窗（v1.219）：道具名最長四個字（王之財寶）時，照桌機的內距
-       模式小窗右緣 311、設定鈕左緣 312，只差 1px。內距與間距收一點才讓得開。 */
-    #dock{gap:6px}
-    #toolNow,#modeNow{padding:7px 10px;gap:6px}
     #hint{display:none}
     #toast{top:14px}
     #badgeBox #badges{grid-template-columns:1fr}   /* 手機排不下兩欄 */
@@ -298,18 +302,18 @@
 </div>
 
 <div id="toast"></div>
-<div id="dock">
 <div id="toolbox">
   <button id="toolNow" type="button"><span class="k">🔨</span><span class="n">槌子</span><span class="c">▾</span></button>
   <div id="toolMenu"><div id="tools"></div></div>
 </div>
+
+<div id="corner">
+<button id="panelBtn">⚙ 設定</button>
 <div id="modebox">
   <button id="modeNow" type="button"><span class="k">😐</span><span class="n">普通</span><span class="c">▾</span></button>
   <div id="modeMenu"><div id="modes"></div></div>
 </div>
 </div>
-
-<button id="panelBtn">⚙ 設定</button>
 <div class="card" id="panel">
   <select id="shape"></select>
   <!-- 三檔按鈕，不是滑桿。按鈕是照 game.js 的 CNT_OPTS／WK_OPTS／SPD_OPTS 生出來的，

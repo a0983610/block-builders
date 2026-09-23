@@ -198,7 +198,7 @@ function tagMuscle() {
    百分比／例如悠閒 普通 高壓 決定多少%小人去建地標 多少人在做閒晃事件」）。
    三檔的比例是使用者挑的；v1.134 寫死的 LAZY_PART = 0.1 就是這張表的前身。
    只管施工中：完工之後照舊是 HOME_PART 那一半的人去蓋家（使用者選「不變」）。
-   選單在破壞工具小窗旁邊（見 game-ui.js 的 renderModes），選哪一檔存進 pref.lazy。 */
+   選單在 ⚙ 設定鈕旁邊（見 game-ui.js 的 renderModes、index.html 的 #corner），選哪一檔存進 pref.lazy。 */
 const LAZY_MODES = [
   { id: 'chill', k: '😌', n: '悠閒', part: 0.5 },
   { id: 'norm', k: '😐', n: '普通', part: 0.2 },

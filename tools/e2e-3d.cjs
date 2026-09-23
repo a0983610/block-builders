@@ -11760,39 +11760,54 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      之後實際踩到：水桶那兩條點的是金字塔頂端（640,271），剛好落在展開的選單裡。 */
   await page.mouse.move(900, 500);
 
-  /* 小人模式（v1.219）：工具小窗旁邊那一顆，使用者選「跟工具一樣的小窗」，所以要驗的也是
-     上面那幾件：收著不擋畫面（兩顆包在 #dock 裡，中間那道縫也要打到畫布）、指上去才展開、
-     選了就換、選完就收、觸控點得開。偷懶在測試裡是關掉的（installClean），換檔不會生出人來。 */
+  /* 小人模式（v1.219）：⚙ 設定右邊那一顆（使用者指定的位置），長相與開合照工具小窗——
+     所以要驗的也是上面那幾件：收著不擋東西（兩顆包在 #corner 裡，中間那道縫也不能被它吃掉）、
+     指上去才展開（在下緣所以往上開）、選了就換、選完就收、觸控點得開。
+     「不擋」量的是**那一點打到的不是 #corner 裡的東西**，不是「打到畫布」：選單往上開正好落在
+     設定面板的位置，面板開著的時候那一點本來就是面板。
+     偷懶在測試裡是關掉的（installClean），換檔不會生出人來。 */
   const modeIdle = await page.evaluate(() => {
+    const cor = document.getElementById('corner');
     const r = document.getElementById('modes').getBoundingClientRect();
     const mid = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    const a = document.getElementById('toolbox').getBoundingClientRect();
+    const a = document.getElementById('panelBtn').getBoundingClientRect();
     const b = document.getElementById('modebox').getBoundingClientRect();
-    const gap = document.elementFromPoint((a.right + b.left) / 2, (a.top + a.bottom) / 2);
+    const gy = (Math.max(a.top, b.top) + Math.min(a.bottom, b.bottom)) / 2;
+    const gap = document.elementFromPoint((a.right + b.left) / 2, gy);
     return { menu: getComputedStyle(document.getElementById('modeMenu')).visibility,
-             hit: mid ? mid.tagName : '—', gap: gap ? gap.tagName : '—',
-             side: b.left >= a.right && Math.abs(b.top - a.top) < 2,
+             hit: mid ? mid.tagName + (mid.id ? '#' + mid.id : '') : '—', hitIn: !!mid && cor.contains(mid),
+             gap: gap ? gap.tagName + (gap.id ? '#' + gap.id : '') : '—', gapIn: !!gap && cor.contains(gap),
+             side: b.left >= a.right && Math.abs(b.bottom - a.bottom) < 3,
+             at: [a.left, a.right, b.left, b.right, b.bottom].map(Math.round).join('／'),
              cur: document.getElementById('modeNow').dataset.cur, mode: lazyMode,
              label: document.getElementById('modeNow').textContent.replace(/\s+/g, '') };
   });
-  ok('小人模式的小窗排在工具右邊，收著的選單與兩顆中間的縫都不擋畫面',
-     modeIdle.menu === 'hidden' && modeIdle.hit === 'CANVAS' && modeIdle.gap === 'CANVAS' &&
+  ok('小人模式的小窗排在設定鈕右邊，收著的選單與兩顆中間的縫都不擋東西',
+     modeIdle.menu === 'hidden' && !modeIdle.hitIn && !modeIdle.gapIn &&
      modeIdle.side && modeIdle.cur === modeIdle.mode,
-     '小窗寫著「' + modeIdle.label + '」（' + modeIdle.cur + '）、排在工具右邊 ' + modeIdle.side +
-     '；選單 ' + modeIdle.menu + '、那塊點下去打到 ' + modeIdle.hit + '、兩顆中間的縫打到 ' + modeIdle.gap);
+     '小窗寫著「' + modeIdle.label + '」（' + modeIdle.cur + '）、排在設定鈕右邊 ' + modeIdle.side +
+     '（設定 左／右、模式 左／右、底 ' + modeIdle.at + '）；選單 ' + modeIdle.menu + '、那塊點下去打到 ' +
+     modeIdle.hit + '、兩顆中間的縫打到 ' + modeIdle.gap);
   await page.hover('#modeNow');
   await page.waitForTimeout(200);
-  const modeOpen = await page.evaluate(() => ({
-    menu: getComputedStyle(document.getElementById('modeMenu')).visibility,
-    tools: getComputedStyle(document.getElementById('toolMenu')).visibility,
-    list: [...document.querySelectorAll('#modes .mode')].map(e => e.textContent.replace(/\s+/g, '')).join('、'),
-    want: LAZY_MODES.map(m => m.k + m.n + Math.round(m.part * 100) + '%').join('、'),
-    on: [...document.querySelectorAll('#modes .mode.on')].map(e => e.dataset.mode).join(',')
-  }));
-  ok('指到小人模式才展開三檔（工具選單不跟著開），每一檔寫出比例、亮的是現在這一檔',
+  const modeOpen = await page.evaluate(() => {
+    const m = document.getElementById('modes').getBoundingClientRect();
+    const n = document.getElementById('modeNow').getBoundingClientRect();
+    return {
+      menu: getComputedStyle(document.getElementById('modeMenu')).visibility,
+      tools: getComputedStyle(document.getElementById('toolMenu')).visibility,
+      list: [...document.querySelectorAll('#modes .mode')].map(e => e.textContent.replace(/\s+/g, '')).join('、'),
+      want: LAZY_MODES.map(m => m.k + m.n + Math.round(m.part * 100) + '%').join('、'),
+      on: [...document.querySelectorAll('#modes .mode.on')].map(e => e.dataset.mode).join(','),
+      up: m.bottom <= n.top, inside: m.left >= 0 && m.top >= 0,
+      at: [m.left, m.top, m.right, m.bottom, n.top].map(Math.round).join('／')
+    };
+  });
+  ok('指到小人模式才展開三檔（往上開、工具選單不跟著開），每一檔寫出比例、亮的是現在這一檔',
      modeOpen.menu === 'visible' && modeOpen.tools === 'hidden' && modeOpen.list === modeOpen.want &&
-     modeOpen.on === modeIdle.mode,
-     '選單 ' + modeOpen.menu + '、工具選單 ' + modeOpen.tools + '：' + modeOpen.list + '，亮的是 ' + modeOpen.on);
+     modeOpen.on === modeIdle.mode && modeOpen.up && modeOpen.inside,
+     '選單 ' + modeOpen.menu + '、工具選單 ' + modeOpen.tools + '：' + modeOpen.list + '，亮的是 ' +
+     modeOpen.on + '；選單 左／上／右／下 與小窗頂 ' + modeOpen.at);
   await page.click('#modes [data-mode="chill"]');
   const modePick = await page.evaluate(() => ({
     mode: lazyMode, pref: pref.lazy, cur: document.getElementById('modeNow').dataset.cur,
@@ -27232,14 +27247,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 1025／1024 是斷點兩側的第一格（v1.110 從 1500 降成 1024）：1025 起工具列回到上方中央，
      而那裡剛好要閃過撐到最寬的資訊卡 */
   const widths = [1600, 1440, 1366, 1280, 1100, 1025, 1024, 900, 700];
-  const clash = [];
+  const clash = [], modeAt = [], modeBad = [];
   let statTxt = '', barAt = [];
   for (const w of widths) {
     await page.setViewportSize({ width: w, height: 800 });
     await page.waitForTimeout(120);
     const r = await page.evaluate(() => {
       const box = {};
-      // 量的是收起來的小窗（toolbox，v1.219 起旁邊多一顆 modebox）：選單平常是藏著的，不占版面
+      // 量的是收起來的小窗（toolbox；v1.219 的小人模式 modebox 在設定鈕旁邊）：選單平常是藏著的，不占版面
       for (const id of ['head', 'time', 'toolbox', 'modebox', 'panelBtn', 'ver']) {
         const e = document.getElementById(id);
         if (getComputedStyle(e).display !== 'none') box[id] = e.getBoundingClientRect();
@@ -27251,18 +27266,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           if (a.right > b.left && b.right > a.left && a.bottom > b.top && b.bottom > a.top)
             bad.push(keys[i] + '×' + keys[j]);
         }
+      /* 小人模式（v1.219）跟著設定鈕：桌機排在它右邊、底對齊；窄視窗疊在它上面、右緣對齊。
+         設定面板**展開的時候**也不能壓到它——面板平常可能是收著的，量之前先關掉動畫攤開，
+         量完照原樣收回去（v1.219 窄視窗的面板從 bottom 84 拉到 100 就是為了這條）。 */
+      const p = box.panelBtn, m = box.modebox;
+      const side = m.left >= p.right && Math.abs(m.bottom - p.bottom) < 3;
+      const stack = m.bottom <= p.top && Math.abs(m.right - p.right) < 2;
+      const pnl = document.getElementById('panel'), hid = pnl.classList.contains('hide');
+      pnl.style.transition = 'none'; pnl.classList.remove('hide');
+      const q = pnl.getBoundingClientRect();
+      if (hid) pnl.classList.add('hide');
+      void pnl.offsetWidth; pnl.style.transition = '';
+      const pm = q.right > m.left && m.right > q.left && q.bottom > m.top && m.bottom > q.top;
       return { bad, headW: Math.round(box.head.width), top: Math.round(box.toolbox.top),
-               out: box.toolbox.left < -1 || box.modebox.right > window.innerWidth + 1,
+               out: box.toolbox.left < -1 || box.toolbox.right > window.innerWidth + 1,
+               side, stack, pm, gapPm: Math.round(m.top - q.bottom),
                txt: document.getElementById('stat').textContent.replace(/\s+/g, ' ').trim() };
     });
     statTxt = r.txt;
     barAt.push(w + '→' + (r.top < 200 ? '上' : '下'));
     if (r.bad.length) clash.push(w + 'px：' + r.bad.join('、'));
     if (r.out) clash.push(w + 'px：工具列超出畫面');
+    modeAt.push(w + '→' + (r.side ? '右邊' : r.stack ? '上面' : '？') + '（離面板 ' + r.gapPm + '）');
+    if ((w > 1024 ? !r.side : !r.stack) || r.pm) modeBad.push(w + 'px');
   }
   ok('量的時候資訊卡確實是最寬的狀態', /累計\s*\$1,234,567/.test(statTxt), statTxt);
   ok('桌機縮視窗，工具列不會壓到資訊卡', clash.length === 0,
      clash.join(' / ') || '工具列位置：' + barAt.join('、'));
+  ok('小人模式跟著設定鈕：桌機排在右邊、窄視窗疊在上面，設定面板展開也壓不到它',
+     modeBad.length === 0,
+     (modeBad.length ? '不對的：' + modeBad.join('、') + '；' : '') + modeAt.join('、'));
   /* v1.110：以前是「窄於 1500 就把工具搬到下緣」，於是一般筆電（1920 開 125% 縮放是 1536、
      150% 是 1280）看到的都是手機那一套版面。現在只有真的很窄才搬。 */
   const barBad = widths.filter((w, i) => barAt[i].endsWith('上') !== (w > 1024));
@@ -27326,13 +27359,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     document.getElementById('modebox').classList.add('open');           // 小人模式那一份（v1.219）
     const mm = document.getElementById('modes').getBoundingClientRect();
     document.getElementById('modebox').classList.remove('open');
+    /* 小人模式疊在設定鈕上面（v1.219，使用者選的）；手機的面板是整排寬，展開也不能壓到它 */
+    const p = box.panelBtn, m = box.modebox;
+    const pnl = document.getElementById('panel'), hid = pnl.classList.contains('hide');
+    pnl.style.transition = 'none'; pnl.classList.remove('hide');
+    const q = pnl.getBoundingClientRect();
+    if (hid) pnl.classList.add('hide');
+    void pnl.offsetWidth; pnl.style.transition = '';
     const out = keys.filter(k => box[k].right > window.innerWidth + 1 || box[k].left < -1);
     return { bad, out, toolsW: Math.round(box.toolbox.width), modeW: Math.round(box.modebox.width),
              menu: { w: Math.round(menu.width), l: Math.round(menu.left),
                      r: Math.round(menu.right), t: Math.round(menu.top) },
              mode: { w: Math.round(mm.width), l: Math.round(mm.left),
-                     r: Math.round(mm.right), t: Math.round(mm.top) } };
+                     r: Math.round(mm.right), t: Math.round(mm.top) },
+             stack: m.bottom <= p.top && Math.abs(m.right - p.right) < 2,
+             pm: q.right > m.left && m.right > q.left && q.bottom > m.top && m.bottom > q.top,
+             at: [p.top, m.bottom, p.right, m.right, q.bottom, m.top].map(Math.round).join('／') };
   });
+  ok('手機版小人模式疊在設定鈕上面，設定面板展開也壓不到它',
+     overlap.stack && !overlap.pm,
+     '設定鈕頂／模式小窗底 ' + overlap.at.split('／').slice(0, 2).join('／') + '、右緣 ' +
+     overlap.at.split('／').slice(2, 4).join('／') + '；面板底／模式小窗頂 ' +
+     overlap.at.split('／').slice(4).join('／'));
   ok('手機版的 UI 不會互相疊到', overlap.bad.length === 0, overlap.bad.join('、') || '六個區塊都沒相交');
   ok('手機版工具小窗不會超出畫面', overlap.out.length === 0,
      '小窗寬 ' + overlap.toolsW + '，視窗寬 390' + (overlap.out.length ? '；超出：' + overlap.out.join(',') : ''));
