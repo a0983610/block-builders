@@ -64,21 +64,21 @@
   select{width:100%}
   button:active{transform:translateY(1px)}
   button.primary{background:var(--accent);color:#fff;border-color:transparent;font-weight:700;width:100%}
-  /* 兩顆按鈕併排：flex:1 的 flex-basis 是 0，所以 .primary 身上的 width:100% 不會搶寬度 */
-  #panel .btns{display:flex;gap:7px}
-  #panel .btns button{flex:1;white-space:nowrap;padding:6px 4px}
-  #panel .btns button:disabled{opacity:.42;cursor:default}
   .checks{display:flex;gap:14px;margin-top:10px;font-size:12px;opacity:.8}
   .checks label{display:flex;align-items:center;gap:5px;flex:0 0 auto}
-  /* ⚙ 設定與小人模式（v1.219，使用者指定模式小窗擺在設定鈕右邊）：兩顆包在 #corner 裡，
-     桌機橫排、設定在左；窄螢幕設定鈕搬到右下角，模式小窗疊在它上面（見下面的 @media）。
-     各自 fixed 的話模式小窗得猜設定鈕多寬。#corner 本身不吃指標，
+  /* ⚙ 設定、⚡ 立刻建成與小人模式（v1.219，使用者指定模式小窗擺在設定鈕右邊）：包在 #corner 裡，
+     桌機橫排、設定在左；窄螢幕設定鈕搬到右下角，另外兩顆疊在它上面（見下面的 @media）。
+     ⚡ 立刻建成 v1.220.2 從設定面板搬出來、夾在設定與模式中間（使用者：「移出設定頁面
+     獨立在外面方便按」）——面板一動手玩就收下去，要按它得先叫回面板。
+     各自 fixed 的話後面那幾顆得猜前面的多寬。#corner 本身不吃指標，
      不然兩顆中間那道縫點下去打到的是它、不是畫布。 */
   #corner{position:fixed;left:14px;bottom:14px;z-index:5;display:flex;gap:6px;
           align-items:flex-end;pointer-events:none}
   #corner > *{pointer-events:auto}
   #modebox{position:relative}
-  #panelBtn{padding:7px 11px}
+  #panelBtn,#finish{padding:7px 11px;white-space:nowrap}
+  /* 已經蓋好或正在拆的時候沒得立刻建成（使用者選「灰掉」，不藏：藏了旁邊那顆會跟著跳位） */
+  #finish:disabled{opacity:.42;cursor:default}
 
   #ver{
     position:fixed;right:14px;bottom:14px;z-index:4;
@@ -241,13 +241,15 @@
     #toolMenu{top:auto;bottom:100%;padding:0 0 8px}
     /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具小窗。
        小人模式跟著設定鈕走（v1.219，使用者選「疊在設定鈕上面」）：底排中間擺不下第二顆
-       （390 寬時設定鈕左邊只剩 56px，模式小窗要 93），所以直排、右緣對齊，選單靠右往上開。 */
+       （390 寬時設定鈕左邊只剩 56px，模式小窗要 93），所以直排、右緣對齊，選單靠右往上開。
+       ⚡ 立刻建成（v1.220.2）夾在中間，使用者選「三顆直排疊起來」：由下往上 ⚙、⚡、模式。 */
     #corner{right:14px;left:auto;flex-direction:column-reverse;align-items:flex-end}
     #modeMenu{left:auto;right:0}
     #ver{left:14px;right:auto}
-    /* 設定面板要讓開底部的小窗與右下角疊起來的兩顆，不然會壓在它們上面。
-       v1.219 從 84 拉到 100：14＋設定鈕 35＋6＋模式小窗 37＝92，84 的話會壓到 8px。 */
-    #panel{bottom:100px}
+    /* 設定面板要讓開底部的小窗與右下角疊起來的那幾顆，不然會壓在它們上面。
+       v1.219 從 84 拉到 100：14＋設定鈕 35＋6＋模式小窗 37＝92，84 的話會壓到 8px。
+       v1.220.2 多疊一顆 ⚡（35＋6）→ 133，照舊留 8px 就是 141。 */
+    #panel{bottom:141px}
   }
 
   @media (max-width:640px){
@@ -309,6 +311,7 @@
 
 <div id="corner">
 <button id="panelBtn">⚙ 設定</button>
+<button id="finish" title="跳過施工過程，直接把這一座蓋好（不算人力費）">⚡ 立刻建成</button>
 <div id="modebox">
   <button id="modeNow" type="button"><span class="k">😐</span><span class="n">普通</span><span class="c">▾</span></button>
   <div id="modeMenu"><div id="modes"></div></div>
@@ -321,10 +324,7 @@
   <div class="r"><label>建材</label><div class="seg" id="cnt"></div></div>
   <div class="r"><label>小人</label><div class="seg" id="wk"></div></div>
   <div class="r"><label>速度</label><div class="seg" id="spd"></div></div>
-  <div class="btns">
-    <button class="primary" id="again">換一座來蓋</button>
-    <button id="finish" title="跳過施工過程，直接把這一座蓋好（不算人力費）">⚡ 立刻建成</button>
-  </div>
+  <button class="primary" id="again">換一座來蓋</button>
   <div class="checks">
     <label><input type="checkbox" id="spin"> 自轉</label>
     <label><input type="checkbox" id="mute"> 靜音</label>

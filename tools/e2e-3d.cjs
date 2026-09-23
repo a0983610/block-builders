@@ -11034,6 +11034,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('每一種道具都有 id、名字、圖示與說明，而且 id 不重複',
      lock0.full === NTOOL && lock0.uniq === NTOOL,
      NTOOL + ' 種：' + lock0.ids.join(','));
+  /* 說明不能太長（v1.220.2，使用者：「破壞工具說明不要太長」）：選好一把之後說明接在底部
+     那條不換行的操作提示最前面，太長整條就超出畫面兩邊。字數上限讀 TIP_MAX；
+     第二條走真的點擊路徑（全部塞進 stats.gift 解鎖、逐把點選單裡那顆），量那條提示本身。 */
+  const tipLen = await page.evaluate(() => {
+    const hint = document.getElementById('hint'), was = hint.textContent, keep = stats.gift;
+    const len = TOOLS.map(t => ({ n: t.n, c: [...t.tip].length }));
+    stats.gift = TOOLS.map(t => t.id); renderTools();
+    const out = [];
+    let wMax = 0;
+    for (const t of TOOLS) {
+      document.querySelector('#tools [data-tool="' + t.id + '"]').click();
+      const r = hint.getBoundingClientRect();
+      wMax = Math.max(wMax, r.width);
+      if (r.left < 0 || r.right > innerWidth) out.push(t.n + ' ' + Math.round(r.left) + '～' + Math.round(r.right));
+    }
+    stats.gift = keep; tool = 'hammer'; aim = null; renderTools();
+    document.getElementById('toolbox').classList.remove('shut');
+    hint.textContent = was;
+    return { max: TIP_MAX, len, out, wMax: Math.round(wMax), vw: innerWidth };
+  });
+  const tipLong = tipLen.len.filter(o => o.c > tipLen.max);
+  const tipTop = tipLen.len.slice().sort((a, b) => b.c - a.c).slice(0, 3);
+  ok('每一把道具的說明都不超過 TIP_MAX 個字',
+     tipLong.length === 0,
+     (tipLong.length ? '超過的：' + tipLong.map(o => o.n + ' ' + o.c).join('、') + '；' : '') +
+     '上限 ' + tipLen.max + '，最長的三把 ' + tipTop.map(o => o.n + ' ' + o.c).join('、'));
+  ok('選好哪一把，底部那條操作提示都整條留在畫面裡',
+     tipLen.out.length === 0,
+     (tipLen.out.length ? '超出的：' + tipLen.out.join('、') + '；' : '') +
+     '最寬 ' + tipLen.wMax + 'px，視窗 ' + tipLen.vw);
   ok('畫面上的工具鈕跟道具表一樣多', lock0.btn.length === NTOOL,
      lock0.btn.length + ' 顆鈕 / ' + NTOOL + ' 種道具');
   /* 手指與水桶不破壞任何東西，槌子是起手用的：這三把沒有鎖，其餘一律要解。 */
@@ -11770,28 +11800,53 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      「不擋」量的是**那一點打到的不是 #corner 裡的東西**，不是「打到畫布」：選單往上開正好落在
      設定面板的位置，面板開著的時候那一點本來就是面板。
      偷懶在測試裡是關掉的（installClean），換檔不會生出人來。 */
+  /* v1.220.2 起 ⚡ 立刻建成夾在設定與模式中間（使用者選的），所以「中間的縫」變成兩道。 */
   const modeIdle = await page.evaluate(() => {
     const cor = document.getElementById('corner');
     const r = document.getElementById('modes').getBoundingClientRect();
     const mid = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
     const a = document.getElementById('panelBtn').getBoundingClientRect();
+    const f = document.getElementById('finish').getBoundingClientRect();
     const b = document.getElementById('modebox').getBoundingClientRect();
-    const gy = (Math.max(a.top, b.top) + Math.min(a.bottom, b.bottom)) / 2;
-    const gap = document.elementFromPoint((a.right + b.left) / 2, gy);
+    const name = e => e ? e.tagName + (e.id ? '#' + e.id : '') : '—';
+    const gapAt = (l, rr) => document.elementFromPoint((l.right + rr.left) / 2,
+      (Math.max(l.top, rr.top) + Math.min(l.bottom, rr.bottom)) / 2);
+    const gaps = [gapAt(a, f), gapAt(f, b)];
     return { menu: getComputedStyle(document.getElementById('modeMenu')).visibility,
-             hit: mid ? mid.tagName + (mid.id ? '#' + mid.id : '') : '—', hitIn: !!mid && cor.contains(mid),
-             gap: gap ? gap.tagName + (gap.id ? '#' + gap.id : '') : '—', gapIn: !!gap && cor.contains(gap),
-             side: b.left >= a.right && Math.abs(b.bottom - a.bottom) < 3,
-             at: [a.left, a.right, b.left, b.right, b.bottom].map(Math.round).join('／'),
+             hit: name(mid), hitIn: !!mid && cor.contains(mid),
+             gap: gaps.map(name).join('／'), gapIn: gaps.some(g => !!g && cor.contains(g)),
+             side: f.left >= a.right && b.left >= f.right &&
+                   Math.abs(f.bottom - a.bottom) < 3 && Math.abs(b.bottom - a.bottom) < 3,
+             at: [a.left, a.right, f.left, f.right, b.left, b.right, b.bottom].map(Math.round).join('／'),
              cur: document.getElementById('modeNow').dataset.cur, mode: lazyMode,
              label: document.getElementById('modeNow').textContent.replace(/\s+/g, '') };
   });
-  ok('小人模式的小窗排在設定鈕右邊，收著的選單與兩顆中間的縫都不擋東西',
+  ok('⚙ 設定、⚡ 立刻建成、小人模式由左到右排一排，收著的選單與中間的縫都不擋東西',
      modeIdle.menu === 'hidden' && !modeIdle.hitIn && !modeIdle.gapIn &&
      modeIdle.side && modeIdle.cur === modeIdle.mode,
-     '小窗寫著「' + modeIdle.label + '」（' + modeIdle.cur + '）、排在設定鈕右邊 ' + modeIdle.side +
-     '（設定 左／右、模式 左／右、底 ' + modeIdle.at + '）；選單 ' + modeIdle.menu + '、那塊點下去打到 ' +
-     modeIdle.hit + '、兩顆中間的縫打到 ' + modeIdle.gap);
+     '小窗寫著「' + modeIdle.label + '」（' + modeIdle.cur + '）、三顆排一排 ' + modeIdle.side +
+     '（設定 左／右、立刻建成 左／右、模式 左／右、底 ' + modeIdle.at + '）；選單 ' + modeIdle.menu +
+     '、那塊點下去打到 ' + modeIdle.hit + '、兩道縫打到 ' + modeIdle.gap);
+  /* ⚡ 立刻建成搬出設定面板（v1.220.2，使用者：「移出設定頁面 獨立在外面方便按」）：
+     面板一動手玩就收下去，所以要驗的是**面板收著的時候**它還看得到、點得到。 */
+  const finOut = await page.evaluate(() => {
+    const pnl = document.getElementById('panel'), fin = document.getElementById('finish');
+    const hid = pnl.classList.contains('hide');
+    pnl.style.transition = 'none'; pnl.classList.add('hide');
+    const r = fin.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const vis = getComputedStyle(fin).visibility, disp = getComputedStyle(fin).display;
+    if (!hid) pnl.classList.remove('hide');
+    void pnl.offsetWidth; pnl.style.transition = '';
+    return { inPanel: pnl.contains(fin), inCorner: document.getElementById('corner').contains(fin),
+             hit: hit === fin, hitName: hit ? hit.tagName + (hit.id ? '#' + hit.id : '') : '—',
+             shown: vis === 'visible' && disp !== 'none' && r.width > 0,
+             panelBtns: [...pnl.querySelectorAll('button')].map(e => e.id).filter(Boolean).join(',') };
+  });
+  ok('⚡ 立刻建成不在設定面板裡，面板收著也看得到、點得到',
+     !finOut.inPanel && finOut.inCorner && finOut.shown && finOut.hit,
+     '在面板裡 ' + finOut.inPanel + '、在 #corner 裡 ' + finOut.inCorner + '；面板收著時中心點打到 ' +
+     finOut.hitName + '；面板上剩下的按鈕 ' + finOut.panelBtns);
   await page.hover('#modeNow');
   await page.waitForTimeout(200);
   const modeOpen = await page.evaluate(() => {
@@ -27344,8 +27399,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     await page.waitForTimeout(120);
     const r = await page.evaluate(() => {
       const box = {};
-      // 量的是收起來的小窗（toolbox；v1.219 的小人模式 modebox 在設定鈕旁邊）：選單平常是藏著的，不占版面
-      for (const id of ['head', 'time', 'toolbox', 'modebox', 'panelBtn', 'ver']) {
+      // 量的是收起來的小窗（toolbox；v1.219 的小人模式 modebox 與 v1.220.2 的 finish 在設定鈕旁邊）：選單平常是藏著的，不占版面
+      for (const id of ['head', 'time', 'toolbox', 'modebox', 'finish', 'panelBtn', 'ver']) {
         const e = document.getElementById(id);
         if (getComputedStyle(e).display !== 'none') box[id] = e.getBoundingClientRect();
       }
@@ -27356,21 +27411,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           if (a.right > b.left && b.right > a.left && a.bottom > b.top && b.bottom > a.top)
             bad.push(keys[i] + '×' + keys[j]);
         }
-      /* 小人模式（v1.219）跟著設定鈕：桌機排在它右邊、底對齊；窄視窗疊在它上面、右緣對齊。
-         設定面板**展開的時候**也不能壓到它——面板平常可能是收著的，量之前先關掉動畫攤開，
-         量完照原樣收回去（v1.219 窄視窗的面板從 bottom 84 拉到 100 就是為了這條）。 */
-      const p = box.panelBtn, m = box.modebox;
-      const side = m.left >= p.right && Math.abs(m.bottom - p.bottom) < 3;
-      const stack = m.bottom <= p.top && Math.abs(m.right - p.right) < 2;
+      /* 小人模式（v1.219）與 ⚡ 立刻建成（v1.220.2）跟著設定鈕：桌機依序排在它右邊（⚙ ⚡ 模式）、
+         底對齊；窄視窗依序疊在它上面（由下往上 ⚙ ⚡ 模式）、右緣對齊。
+         設定面板**展開的時候**也不能壓到它們——面板平常可能是收著的，量之前先關掉動畫攤開，
+         量完照原樣收回去（窄視窗的面板 bottom 從 84 拉到 100、再拉到 141 就是為了這條）。 */
+      const p = box.panelBtn, f = box.finish, m = box.modebox;
+      const side = f.left >= p.right && m.left >= f.right &&
+                   Math.abs(f.bottom - p.bottom) < 3 && Math.abs(m.bottom - p.bottom) < 3;
+      const stack = f.bottom <= p.top && m.bottom <= f.top &&
+                    Math.abs(f.right - p.right) < 2 && Math.abs(m.right - p.right) < 2;
       const pnl = document.getElementById('panel'), hid = pnl.classList.contains('hide');
       pnl.style.transition = 'none'; pnl.classList.remove('hide');
       const q = pnl.getBoundingClientRect();
       if (hid) pnl.classList.add('hide');
       void pnl.offsetWidth; pnl.style.transition = '';
-      const pm = q.right > m.left && m.right > q.left && q.bottom > m.top && m.bottom > q.top;
+      const hitP = e => q.right > e.left && e.right > q.left && q.bottom > e.top && e.bottom > q.top;
+      const pm = hitP(m) || hitP(f);
       return { bad, headW: Math.round(box.head.width), top: Math.round(box.toolbox.top),
                out: box.toolbox.left < -1 || box.toolbox.right > window.innerWidth + 1,
-               side, stack, pm, gapPm: Math.round(m.top - q.bottom),
+               side, stack, pm, gapPm: Math.round(Math.min(m.top, f.top) - q.bottom),
                txt: document.getElementById('stat').textContent.replace(/\s+/g, ' ').trim() };
     });
     statTxt = r.txt;
@@ -27383,7 +27442,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('量的時候資訊卡確實是最寬的狀態', /累計\s*\$1,234,567/.test(statTxt), statTxt);
   ok('桌機縮視窗，工具列不會壓到資訊卡', clash.length === 0,
      clash.join(' / ') || '工具列位置：' + barAt.join('、'));
-  ok('小人模式跟著設定鈕：桌機排在右邊、窄視窗疊在上面，設定面板展開也壓不到它',
+  ok('⚡ 立刻建成與小人模式跟著設定鈕：桌機依序排在右邊、窄視窗依序疊在上面，設定面板展開也壓不到',
      modeBad.length === 0,
      (modeBad.length ? '不對的：' + modeBad.join('、') + '；' : '') + modeAt.join('、'));
   /* v1.110：以前是「窄於 1500 就把工具搬到下緣」，於是一般筆電（1920 開 125% 縮放是 1536、
@@ -27428,7 +27487,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 手機版空間很擠，按鈕互相疊到就點不到了——直接量方框有沒有相交 */
   const overlap = await page.evaluate(() => {
-    const ids = ['head', 'time', 'toolbox', 'modebox', 'panelBtn', 'ver'];
+    const ids = ['head', 'time', 'toolbox', 'modebox', 'finish', 'panelBtn', 'ver'];
     const box = {};
     for (const id of ids) {
       const e = document.getElementById(id);
@@ -27449,29 +27508,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     document.getElementById('modebox').classList.add('open');           // 小人模式那一份（v1.219）
     const mm = document.getElementById('modes').getBoundingClientRect();
     document.getElementById('modebox').classList.remove('open');
-    /* 小人模式疊在設定鈕上面（v1.219，使用者選的）；手機的面板是整排寬，展開也不能壓到它 */
-    const p = box.panelBtn, m = box.modebox;
+    /* 小人模式疊在設定鈕上面（v1.219，使用者選的），v1.220.2 起 ⚡ 立刻建成夾在兩顆中間
+       （使用者選「三顆直排疊起來」）；手機的面板是整排寬，展開也不能壓到它們 */
+    const p = box.panelBtn, f = box.finish, m = box.modebox;
     const pnl = document.getElementById('panel'), hid = pnl.classList.contains('hide');
     pnl.style.transition = 'none'; pnl.classList.remove('hide');
     const q = pnl.getBoundingClientRect();
     if (hid) pnl.classList.add('hide');
     void pnl.offsetWidth; pnl.style.transition = '';
+    const hitP = e => q.right > e.left && e.right > q.left && q.bottom > e.top && e.bottom > q.top;
     const out = keys.filter(k => box[k].right > window.innerWidth + 1 || box[k].left < -1);
-    return { bad, out, toolsW: Math.round(box.toolbox.width), modeW: Math.round(box.modebox.width),
+    return { bad, out, n: keys.length, toolsW: Math.round(box.toolbox.width), modeW: Math.round(box.modebox.width),
              menu: { w: Math.round(menu.width), l: Math.round(menu.left),
                      r: Math.round(menu.right), t: Math.round(menu.top) },
              mode: { w: Math.round(mm.width), l: Math.round(mm.left),
                      r: Math.round(mm.right), t: Math.round(mm.top) },
-             stack: m.bottom <= p.top && Math.abs(m.right - p.right) < 2,
-             pm: q.right > m.left && m.right > q.left && q.bottom > m.top && m.bottom > q.top,
-             at: [p.top, m.bottom, p.right, m.right, q.bottom, m.top].map(Math.round).join('／') };
+             stack: f.bottom <= p.top && m.bottom <= f.top &&
+                    Math.abs(f.right - p.right) < 2 && Math.abs(m.right - p.right) < 2,
+             pm: hitP(m) || hitP(f),
+             at: [p.top, f.bottom, f.top, m.bottom, p.right, f.right, m.right, q.bottom, m.top].map(Math.round) };
   });
-  ok('手機版小人模式疊在設定鈕上面，設定面板展開也壓不到它',
+  ok('手機版 ⚡ 立刻建成與小人模式依序疊在設定鈕上面，設定面板展開也壓不到',
      overlap.stack && !overlap.pm,
-     '設定鈕頂／模式小窗底 ' + overlap.at.split('／').slice(0, 2).join('／') + '、右緣 ' +
-     overlap.at.split('／').slice(2, 4).join('／') + '；面板底／模式小窗頂 ' +
-     overlap.at.split('／').slice(4).join('／'));
-  ok('手機版的 UI 不會互相疊到', overlap.bad.length === 0, overlap.bad.join('、') || '六個區塊都沒相交');
+     '設定鈕頂／立刻建成底 ' + overlap.at.slice(0, 2).join('／') + '、立刻建成頂／模式小窗底 ' +
+     overlap.at.slice(2, 4).join('／') + '、右緣 ' + overlap.at.slice(4, 7).join('／') +
+     '；面板底／模式小窗頂 ' + overlap.at.slice(7).join('／'));
+  ok('手機版的 UI 不會互相疊到', overlap.bad.length === 0, overlap.bad.join('、') || overlap.n + ' 個區塊都沒相交');
   ok('手機版工具小窗不會超出畫面', overlap.out.length === 0,
      '小窗寬 ' + overlap.toolsW + '，視窗寬 390' + (overlap.out.length ? '；超出：' + overlap.out.join(',') : ''));
   ok('手機版展開的工具選單也在畫面內',
