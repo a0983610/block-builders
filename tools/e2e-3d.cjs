@@ -448,6 +448,8 @@ const installClean = page => page.evaluate(() => {
     /* 幽浮（v1.167）：一趟十六秒，而且它把積木收在地板底下、還借了鏡頭的高度。
        ufoClear() 是那兩件事的出口（同 gateEnd 的角色），不能只把 ufos 設成 null。 */
     ufoClear(); ENG.putUfos([]);
+    /* 小黑洞（v1.221）：同幽浮，收起來的東西沉在地板底下，要走 holeClear() 才放得出來。 */
+    holeClear(); ENG.putHoles([], []);
     /* 天災（v1.138）：場上那幾隻與飛在半空的香蕉。倒數也要歸零——
        不歸零的話下一條測試一進 done 就繼承上一條數到一半的秒數。 */
     beasts = null; nanas = null; fballs = null; doomT = -1;
@@ -25382,6 +25384,323 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈破壞工具打得到那幾隻〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 小黑洞（v1.221）══════════
+     使用者：「新增破壞工具 小黑洞／可以點在地面或建築上 然後將一定範圍內積木&生物&碎料往內部吸
+     積木先微幅震動 然後慢慢移動 忽然一瞬間吸到中心點消失(可以加上黑色的類似爆炸的火球)
+     消失的東西五秒後像飛碟一樣方式平均散落下來回歸」；看預覽的時候又補了三句：
+     「黑色球是要表現得往內吸的感覺」「黑球應該是東西要被吸進去消失的很短時間內 先從中心快速膨脹
+     然後快速收縮一起消失」「在建築物上的積木被吸的時候太整齊了」。
+     一條守一句，**全是規則型**：吸入範圍是一顆球、範圍內全部吸（使用者選的，不抽骰子），
+     所以「該吸的都吸了、範圍外的沒動」直接數得出來；期望值一律讀常數（HOLE_R／HOLE_QUAKE…），
+     常數再調也不必回來改。「各走各的」那一條量的是整批的散布（幾百塊），不是某一塊的骰子。 */
+  SEC: { if (!(await head('小黑洞', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  const hl = await page.evaluate(() => {
+    const avg = a => a.reduce((s, x) => s + x, 0) / Math.max(1, a.length);
+    completeNow();
+    for (let i = 0; i < 240; i++) step(0.05);          // 散場（完工那一刻小人圍在旁邊慶祝）
+    // 點在金字塔 +x 那一面、三成高的外殼上
+    let P = null;
+    for (const b of blocks)
+      if (b.st === SET && Math.abs(b.y - bp.height * 0.3) < 0.6 && (!P || b.x > P.x)) P = b;
+    const p = { x: P.x, y: P.y, z: P.z };
+    const R2 = HOLE_R * HOLE_R;
+    const inR = o => (o.x - p.x) ** 2 + (o.y - p.y) ** 2 + (o.z - p.z) ** 2 <= R2;
+    const set0 = blocks.filter(b => b.st === SET && inR(b)), s0 = new Set(set0);
+    const pos0 = set0.map(b => [b.x, b.y, b.z]), col0 = set0.map(b => [b.tr, b.tg, b.tb]);
+    const h = castHole(p, false);
+    const dt = 1 / 60;
+    // ── 抖：還砌著、座標沒動，只有畫出來的位置在動（讀 blockMesh 真的寫進去的矩陣）
+    for (let i = 0; i < 12; i++) step(dt);
+    draw();
+    const m4 = new THREE.Matrix4(), v = new THREE.Vector3();
+    let shaking = 0, moved = 0, stillSet = 0, drawOff = 0, drawMax = 0;
+    set0.forEach((b, i) => {
+      if (b.st === SET) stillSet++;
+      if (b.x !== pos0[i][0] || b.y !== pos0[i][1] || b.z !== pos0[i][2]) moved++;
+      if (!b.qk) return;
+      shaking++;
+      ENG.three.blockMesh.getMatrixAt(blocks.indexOf(b), m4);
+      v.setFromMatrixPosition(m4);
+      if (Math.hypot(v.x - b.x, v.y - b.y, v.z - b.z) > 1e-4) drawOff++;
+      drawMax = Math.max(drawMax, Math.abs(v.x - b.x), Math.abs(v.y - b.y), Math.abs(v.z - b.z));
+    });
+    const quake = { st: h.st, shaking, moved, stillSet, drawOff, drawMax: +drawMax.toFixed(3) };
+    // ── 慢慢移動開始的那一幀：範圍裡還砌著的全部接手，範圍外的一塊都不碰
+    let f = 12;
+    while (h.st === 'quake' && f < 600) { step(dt); f++; }
+    const pull = {
+      at: +(f * dt).toFixed(3),
+      grabbed: set0.filter(b => b.ufo === 1 && b.st === CARRY).length,
+      leftIn: blocks.filter(b => b.st === SET && inR(b)).length,
+      far: +Math.max(...h.up.map(it => Math.hypot(it.dx, it.dy, it.dz))).toFixed(3),
+      calm: set0.filter(b => b.qk).length,
+      keepCol: set0.filter((b, i) => b.tr === col0[i][0] && b.tg === col0[i][1] &&
+                                     b.tb === col0[i][2]).length
+    };
+    // ── 先慢後快、各走各的：量的是一開始就接手的那一批
+    const first = h.up.filter(it => s0.has(it.o));
+    let halfP = -1;
+    while (h.st === 'pull' && f < 1200) {
+      step(dt); f++;
+      if (halfP < 0 && h.st === 'pull' && h.t >= HOLE_PULL / 2) halfP = avg(first.map(it => 1 - it.f));
+    }
+    // 收掉那一段剛開始：fe 就是慢慢移動走完那一刻的 f（見 holeSnapStart）
+    const fe = first.map(it => it.fe), aa = first.map(it => it.a);
+    const walk = { half: +halfP.toFixed(3), end: +avg(fe.map(x => 1 - x)).toFixed(3),
+                   fSpread: +(Math.max(...fe) - Math.min(...fe)).toFixed(3),
+                   aSpread: +(Math.max(...aa) - Math.min(...aa)).toFixed(3) };
+    // ── 最後那一下：黑色火球從中心脹開、再縮回零，縮完的那一幀東西剛好全部收起來
+    const fx0 = holeFx.length ? { r: +holeFx[0].r.toFixed(3), core: +h.core.toFixed(3) } : null;
+    let peak = 0, peakU = -1, prev = -1, lastR = -1, grew = true, shrank = true, frames = 0;
+    while (h.st === 'snap' && f < 1400) {
+      step(dt); f++; frames++;
+      if (h.st !== 'snap' || !holeFx.length) continue;
+      const r = holeFx[0].r, u = h.t / HOLE_SNAP;
+      if (r > peak) { peak = r; peakU = u; }
+      if (prev >= 0 && u <= HOLE_BOOM_UP && r < prev - 1e-9) grew = false;
+      if (prev >= 0 && u > HOLE_BOOM_UP + 2 * dt / HOLE_SNAP && r > prev + 1e-9) shrank = false;
+      prev = r; lastR = r;
+    }
+    const bag = h.bag.slice();
+    const gone = {
+      st: h.st, fx: holeFx.length, up: h.up.length, bag: bag.length, frames,
+      parked: bag.filter(it => it.o.y <= UFO_PARK).length,
+      blk: bag.filter(it => it.kind === 0).length,
+      dust: bag.filter(it => it.kind === 0 && it.dust && it.o.tr === it.dust[0] &&
+                             it.o.tg === it.dust[1] && it.o.tb === it.dust[2]).length,
+      scale1: bag.filter(it => it.kind === 0 && it.o.scale === 1).length,
+      drawn: holeList().length
+    };
+    // ── 五秒後撒滿整座島（整支借幽浮的 ufoDrop）
+    const f0 = f;
+    while (h.st === 'wait' && f < 2400) { step(dt); f++; }
+    const cx = avg(bag.map(it => it.o.x)), cz = avg(bag.map(it => it.o.z));
+    const drop = {
+      wait: +((f - f0) * dt).toFixed(3), st: h.st,
+      freed: bag.filter(it => !it.o.ufo).length,
+      // 撒下來的那一步裡碎塊物理已經推過一幀（最低那一件從 UFO_SKY 起跳），留一格餘裕
+      high: bag.filter(it => it.o.y >= UFO_SKY - 1).length,
+      rMean: +avg(bag.map(it => Math.hypot(it.o.x, it.o.z))).toFixed(2),
+      sowR: +ufoSowR().toFixed(2), off: +Math.hypot(cx, cz).toFixed(2),
+      hole: +Math.hypot(p.x, p.z).toFixed(2)
+    };
+    for (let i = 0; i < 480; i++) step(dt);             // 8 秒：落地、這一顆收掉
+    return { n0: set0.length, quake, pull, walk, fx0, peak: +peak.toFixed(3), peakU: +peakU.toFixed(3),
+             lastR: +lastR.toFixed(3), grew, shrank, gone, drop,
+             under: blocks.filter(b => b.y < -1).length, flagged: blocks.filter(b => b.ufo).length,
+             holes: holes ? holes.length : 0,
+             K: { R: HOLE_R, shake: HOLE_SHAKE, quake: HOLE_QUAKE, snap: HOLE_SNAP, wait: HOLE_WAIT,
+                  boom: HOLE_BOOM, up: HOLE_BOOM_UP, hin: HOLE_IN, sp: HOLE_SP, wr: HOLE_WR,
+                  spin: HOLE_SPIN, dt } };
+  });
+  {
+    const K = hl.K, q = hl.quake, pl = hl.pull, w = hl.walk, g = hl.gone, d = hl.drop;
+    ok('先抖：範圍裡的積木還砌在原地，只有畫出來的位置在抖（「微幅震動」）',
+       hl.n0 > 100 && q.st === 'quake' && q.stillSet === hl.n0 && q.moved === 0 &&
+       q.shaking === hl.n0 && q.drawOff >= q.shaking * 0.95 && q.drawMax <= K.shake + 1e-9,
+       '範圍裡 ' + hl.n0 + ' 塊：' + q.stillSet + ' 塊還砌著、座標動了 ' + q.moved + ' 塊；' +
+       q.shaking + ' 塊在抖，畫出來偏了 ' + q.drawOff + ' 塊、最大 ' + q.drawMax + '（上限 ' + K.shake + '）');
+    ok('抖完 HOLE_QUAKE 秒才開始吸：範圍裡還砌著的一塊不漏全部接手，範圍外的一塊都不碰',
+       Math.abs(pl.at - K.quake) <= 2 * K.dt && pl.grabbed === hl.n0 && pl.leftIn === 0 &&
+       pl.far <= K.R + 1e-9 && pl.calm === 0,
+       '第 ' + pl.at + ' 秒開始吸（HOLE_QUAKE ' + K.quake + '）：接手 ' + pl.grabbed + '／' + hl.n0 +
+       ' 塊、範圍裡還砌著 ' + pl.leftIn + ' 塊、接手的離球心最遠 ' + pl.far + '（半徑 ' + K.R +
+       '）、還在抖 ' + pl.calm + ' 塊');
+    ok('被吸的時候留著原本的顏色，收起來那一刻才換成碎料色（不然吸過去的是一團白的）',
+       pl.keepCol === hl.n0 && g.blk > 0 && g.dust === g.blk,
+       '剛接手 ' + pl.keepCol + '／' + hl.n0 + ' 塊還是原色；收起來 ' + g.dust + '／' + g.blk +
+       ' 塊換成碎料色');
+    /* 「太整齊」那一版是整批共用一個縮放與一個旋轉角：fe 全部一樣、a 全部一樣，兩個散布都是 0。
+       門檻照骰子的範圍算：sp 在 HOLE_SP 之間 → 走完時 f 的散布理論上接近 HOLE_IN·(SP 寬)，
+       要到八成；wr 在 HOLE_WR 之間 → 角度的散布至少是 HOLE_SPIN·(WR 寬) 的一半。 */
+    const fWant = 0.8 * K.hin * (K.sp[1] - K.sp[0]), aWant = 0.5 * K.spin * (K.wr[1] - K.wr[0]);
+    ok('慢慢移動：先慢後快，而且每一塊各走各的（不是整片一起轉，「太整齊了」）',
+       w.half > 0 && w.half < w.end - w.half && w.fSpread >= fWant && w.aSpread >= aWant,
+       '往球心走了 ' + w.half + '（前半）→ ' + w.end + '（走完）；走完時離球心的比例散布 ' +
+       w.fSpread + '（門檻 ' + fWant.toFixed(3) + '）、繞的角度散布 ' + w.aSpread + ' rad（門檻 ' +
+       aWant.toFixed(3) + '）');
+    ok('最後那一下：黑色火球從黑球的大小脹到 HOLE_BOOM 再縮回去，縮完那一幀東西剛好全部收起來',
+       hl.fx0 && Math.abs(hl.fx0.r - hl.fx0.core) < 1e-6 && hl.peak >= K.boom * 0.95 &&
+       hl.peak <= K.boom + 1e-9 && Math.abs(hl.peakU - K.up) <= 2 * K.dt / K.snap &&
+       hl.grew && hl.shrank && hl.lastR < K.boom * 0.2 &&
+       Math.abs(g.frames * K.dt - K.snap) <= 2 * K.dt &&
+       g.st === 'wait' && g.fx === 0 && g.up === 0 && g.parked === g.bag && g.bag >= hl.n0 &&
+       g.scale1 === g.blk && g.drawn === 0,
+       '從 ' + (hl.fx0 && hl.fx0.r) + '（黑球 ' + (hl.fx0 && hl.fx0.core) + '）脹到 ' + hl.peak +
+       '（第 ' + hl.peakU + ' 段，HOLE_BOOM_UP ' + K.up + '）、最後一幀 ' + hl.lastR + '；收起來那一幀 ' +
+       g.parked + '／' + g.bag + ' 件沉到地板底下、火球 ' + g.fx + ' 顆、還在畫的黑洞 ' + g.drawn + ' 顆');
+    ok('五秒後從天上撒滿整座島（圓心是場心，不是黑洞那一點），落完一塊都不留在地板底下',
+       Math.abs(d.wait - K.wait) <= 2 * K.dt && d.st === 'rain' && d.freed === g.bag &&
+       d.high === g.bag && Math.abs(d.rMean / (d.sowR * 2 / 3) - 1) < 0.08 &&
+       d.off < d.sowR * 0.1 && d.hole > d.off * 2 &&
+       hl.under === 0 && hl.flagged === 0 && hl.holes === 0,
+       '收起來 ' + d.wait + ' 秒後撒下來（HOLE_WAIT ' + K.wait + '）：' + d.freed + '／' + g.bag +
+       ' 件、平均半徑 ' + d.rMean + '（整座島 ' + d.sowR + ' 的 ⅔ ＝ ' + (d.sowR * 2 / 3).toFixed(2) +
+       '）、重心離場心 ' + d.off + '（黑洞離場心 ' + d.hole + '）；落完地板底下 ' + hl.under +
+       ' 塊、還帶旗標 ' + hl.flagged + ' 塊');
+  }
+
+  /* 小人與動物（「將一定範圍內積木&生物&碎料往內部吸」），與球心放在哪。
+     小人用 fall 壓在原地（躺著也照吸：holeTake 只跳過飛在半空的），免得一秒內走出範圍。 */
+  const hw = await page.evaluate(() => {
+    cleanTools();
+    const dt = 1 / 60;
+    const g = castHole({ x: 0, y: 0, z: 0 }, true).y;
+    const hi = castHole({ x: 0, y: 7.3, z: 0 }, false).y;
+    const lo = castHole({ x: 0, y: 0.5, z: 0 }, false).y;
+    holeClear();
+    const p = { x: debrisR * 0.6, y: 0, z: 0 };        // 建築外的空地
+    const h = castHole(p, true);
+    const ws = workers.slice(0, 3);
+    ws.forEach((w, i) => {
+      releaseWorker(w);
+      w.air = 0; w.fall = 30; w.y = 0; w.z = 0;
+      w.x = i < 2 ? p.x + (i ? 1.5 : -1.5) : p.x + HOLE_R + 4;   // 第三個在範圍外
+    });
+    beasts = null;
+    const m = spawnBeast('ape', 1);
+    m.x = p.x; m.z = 2; m.y = 0; m.st = 'fun'; m.stay = 999; m.pause = 999;
+    let f = 0;
+    while (h.st === 'quake' && f < 600) { step(dt); f++; }
+    step(dt);
+    const took = { w: ws.map(w => w.ufo || 0), m: m.ufo || 0 };
+    while (h.st !== 'wait' && f < 1400) { step(dt); f++; }
+    const parked = { w: ws.slice(0, 2).every(w => w.y <= UFO_PARK), m: m.y <= UFO_PARK };
+    while (h.st !== 'rain' && f < 2400) { step(dt); f++; }
+    for (let i = 0; i < 420; i++) step(dt);
+    const back = { w: ws.slice(0, 2).every(w => !w.ufo && w.y > -1), m: !m.ufo && m.y > -1 };
+    ws[2].fall = 0;
+    cleanTools(); beasts = null;
+    return { g, hi, lo, wantG: HOLE_R * HOLE_LIFT, wantLo: HOLE_CORE + 0.4, took, parked, back };
+  });
+  ok('點地面：球心抬到地面上方 HOLE_R × HOLE_LIFT；點建築就是點到的那一點（太低才墊到黑球露得出來）',
+     hw.g === hw.wantG && hw.hi === 7.3 && hw.lo === hw.wantLo,
+     '點地面 ' + hw.g + '（' + hw.wantG + '）、點建築 7.3 → ' + hw.hi + '、點在 0.5 → ' + hw.lo +
+     '（' + hw.wantLo + '）');
+  ok('範圍裡的小人與動物也吸進去、收起來，五秒後掉回來；範圍外的不吸',
+     hw.took.w[0] === 1 && hw.took.w[1] === 1 && hw.took.w[2] === 0 && hw.took.m === 1 &&
+     hw.parked.w && hw.parked.m && hw.back.w && hw.back.m,
+     '接手：範圍裡兩個人 ' + hw.took.w.slice(0, 2).join('／') + '、範圍外那個 ' + hw.took.w[2] +
+     '、猴子 ' + hw.took.m + '；收起來 ' + hw.parked.w + '／' + hw.parked.m + '；掉回地面 ' +
+     hw.back.w + '／' + hw.back.m);
+
+  /* 三件容易壞的收尾（同幽浮那兩條）：點滿了擠掉最早那顆、已經收完的不該被擠、收起來等五秒時換場。
+     三種都不能把積木留在地板底下。 */
+  const he = await page.evaluate(() => {
+    const dt = 1 / 60;
+    const side = sgn => {                               // 金字塔 ±x 那一面、三成高的外殼
+      let P = null;
+      for (const b of blocks)
+        if (b.st === SET && Math.abs(b.y - bp.height * 0.3) < 0.6 && (!P || b.x * sgn > P.x * sgn)) P = b;
+      return { x: P.x, y: P.y, z: P.z };
+    };
+    const ring = k => {                                 // 建築外的空地，一顆一個方向
+      const a = k / HOLE_MAX * Math.PI * 2 + 1, R = debrisR * 0.6;
+      return { x: Math.cos(a) * R, y: 0, z: Math.sin(a) * R };
+    };
+    const run = (h, st) => { let f = 0; while (h.st !== st && f < 2400) { step(dt); f++; } };
+    cleanTools(); completeNow();
+    for (let i = 0; i < 60; i++) step(0.05);
+    // ① 擠掉：第一顆吸到一半，再點 HOLE_MAX 顆
+    const a = castHole(side(1), false);
+    run(a, 'pull');
+    for (let i = 0; i < 30; i++) step(dt);
+    const held = a.up.slice();
+    for (let k = 0; k < HOLE_MAX; k++) castHole(ring(k), true);
+    const bump = { live: holes.filter(holeLive).length, gone: holes.indexOf(a) < 0,
+                   held: held.length, freed: held.filter(it => !it.o.ufo).length,
+                   blk: held.filter(it => it.kind === 0).length,
+                   fly: held.filter(it => it.kind === 0 && it.o.st === FLY).length };
+    holeClear();
+    for (let i = 0; i < 300; i++) step(dt);
+    bump.under = blocks.filter(b => b.y < -1).length;
+    /* ② 已經收完、在等五秒的那一顆不算數。
+       **先把建築補回來**（第一次跑 --tier commit 紅在這裡）：這一座只有 10 格高，
+       ① 那一顆吃完剩 1148 塊，這一顆再接手 1034 塊就跌破換場線，遊戲自動換場——
+       startBuild 把 CARRY 的積木全部解成碎料，量到的「手上幾件」只剩 2、3 件。
+       那是 ③ 在守的事，不是這一條要量的。 */
+    completeNow();
+    for (let i = 0; i < 60; i++) step(0.05);
+    const b = castHole(side(-1), false);
+    run(b, 'wait');
+    const bag = b.bag.length;
+    for (let k = 0; k < HOLE_MAX; k++) castHole(ring(k), true);
+    const keep = { alive: holes.indexOf(b) >= 0, st: b.st, bag, now: b.bag.length,
+                   live: holes.filter(holeLive).length };
+    holeClear();
+    for (let i = 0; i < 300; i++) step(dt);
+    // ③ 收起來等五秒的時候換場（CARRY 的積木會被 startBuild 解成碎料）
+    completeNow();
+    for (let i = 0; i < 60; i++) step(0.05);
+    const c = castHole(side(1), false);
+    run(c, 'wait');
+    const cBag = c.bag.length;
+    startBuild(true);
+    for (let i = 0; i < 720; i++) step(dt);             // 12 秒：五秒到了照樣撒、落完、收掉
+    const swap = { bag: cBag, under: blocks.filter(b => b.y < -1).length,
+                   flagged: blocks.filter(b => b.ufo).length, holes: holes ? holes.length : 0 };
+    cleanTools();
+    return { bump, keep, swap, max: HOLE_MAX };
+  });
+  ok('同時最多 HOLE_MAX 顆在吸，再點就擠掉最早那顆（手上的東西當場放掉）',
+     he.bump.live === he.max && he.bump.gone && he.bump.held > 50 &&
+     he.bump.freed === he.bump.held && he.bump.fly === he.bump.blk && he.bump.under === 0,
+     '再點 ' + he.max + ' 顆之後在吸的 ' + he.bump.live + ' 顆、最早那顆' +
+     (he.bump.gone ? '被擠掉' : '還在') + '；它手上 ' + he.bump.held + ' 件放掉 ' + he.bump.freed +
+     ' 件，落完地板底下 ' + he.bump.under + ' 塊');
+  ok('已經收完、在等五秒的那一顆不算數：再點滿也不會被擠掉（不然那一包會在原地掉出來）',
+     he.keep.alive && he.keep.st === 'wait' && he.keep.bag > 50 && he.keep.now === he.keep.bag &&
+     he.keep.live === he.max,
+     '等五秒的那一顆' + (he.keep.alive ? '還在' : '被擠掉了') + '（' + he.keep.st + '），手上 ' +
+     he.keep.bag + ' → ' + he.keep.now + ' 件；另外在吸的 ' + he.keep.live + ' 顆');
+  ok('收起來等五秒的時候換場：積木不會被留在地板底下',
+     he.swap.bag > 50 && he.swap.under === 0 && he.swap.flagged === 0 && he.swap.holes === 0,
+     '換場時收著 ' + he.swap.bag + ' 塊 → 地板底下 ' + he.swap.under + ' 塊、還帶旗標 ' +
+     he.swap.flagged + ' 塊');
+
+  /* 畫面：黑球、兩層光暈、吸積盤、三層黑色火球。量**那幾顆 mesh 自己**的 visible 與 count，
+     不量整個畫面的 draw call——同彈跳球那一條踩過的坑：別的東西剛好在中間消失，整體數字會跟著跳。 */
+  const hd = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const t = ENG.three, dt = 1 / 60;
+    const vis = () => ({
+      core: t.holeCore.visible ? t.holeCore.count : 0,
+      disk: t.holeDisk.visible ? t.holeDisk.count : 0,
+      halo: t.holeHalos.map(m => m.visible ? m.count : 0),
+      boom: t.holeBooms.map(m => m.visible ? m.count : 0)
+    });
+    draw(); ENG.render();
+    const off = vis();
+    const h = castHole({ x: debrisR * 0.6, y: 0, z: 0 }, true);
+    let f = 0;
+    while (h.st !== 'pull' && f < 600) { step(dt); f++; }
+    draw(); ENG.render();
+    const pull = vis();
+    while (h.st !== 'snap' && f < 1200) { step(dt); f++; }
+    step(dt); draw(); ENG.render();
+    const snap = vis();
+    const cuts = t.holeBooms.map(m => m.material.userData.cuts);
+    while (h.st !== 'wait' && f < 1400) { step(dt); f++; }
+    draw(); ENG.render();
+    const wait = vis();
+    holeClear(); draw(); ENG.render();
+    return { off, pull, snap, wait, after: vis(), cuts };
+  });
+  {
+    const none = v => v.core === 0 && v.disk === 0 && v.halo.every(n => n === 0) && v.boom.every(n => n === 0);
+    const hole1 = v => v.core === 1 && v.disk === 1 && v.halo.every(n => n === 1);
+    const fmt = v => '黑球 ' + v.core + '、盤 ' + v.disk + '、光暈 ' + v.halo.join('／') + '、火球 ' + v.boom.join('／');
+    ok('沒黑洞在場時一樣都不畫；吸的時候黑球／光暈／吸積盤各一顆，最後那一下才多畫黑色火球',
+       none(hd.off) && hole1(hd.pull) && hd.pull.boom.every(n => n === 0) &&
+       hole1(hd.snap) && hd.snap.boom.every(n => n === 1) && none(hd.wait) && none(hd.after),
+       '沒在場：' + fmt(hd.off) + '；吸：' + fmt(hd.pull) + '；收掉：' + fmt(hd.snap) +
+       '；收完：' + fmt(hd.wait));
+    ok('黑色火球的逐顆淡出四刀都注入到了（three 改了 chunk 名字會靜默失效）',
+       hd.cuts.every(n => n === 4), '三層各換到 ' + hd.cuts.join('／') + ' 刀');
+  }
+  }   // ── 〈小黑洞〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 隕石 ══════════ */
   SEC: { if (!(await head('隕石', T_COMMIT))) break SEC;

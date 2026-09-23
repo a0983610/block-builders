@@ -105,6 +105,7 @@ function step(dt) {
   stepGates(dt);
   stepSwords(dt);
   stepUfo(dt);                           // 幽浮（v1.167）：飛進來、照光吸、飛走、五秒後丟下來
+  stepHoles(dt);                         // 小黑洞（v1.221）：抖、慢慢吸、一口吞掉、五秒後撒回來
   /* 箭雨（v1.171）：一隊人與飛在半空的箭是兩份清單——隊伍撤走之後箭還在飛、
      還插在牆上慢慢淡，所以兩邊各走各的（同王之財寶的門與兵器）。 */
   stepArchers(dt);
@@ -209,7 +210,10 @@ function draw() {
     _e.set(b.rx, b.ry, b.rz);
     const wob = b.wob > 0 ? Math.sin(b.wob * 40) * b.wob * 0.06 : 0;
     const sink = b.st === FREE && b.rest ? (i & 7) * REST_SINK : 0;
-    ENG.putBlock(i, b.x + wob, b.y - sink, b.z, _e, b.scale * b.al, b.r, b.g, b.b);
+    /* 小黑洞吸之前那一秒在抖（v1.221）：只加在畫出來的位置上，b.x／y／z 不動（見 holeQuake） */
+    if (b.qk) ENG.putBlock(i, b.x + wob + b.qx, b.y - sink + b.qy, b.z + b.qz, _e,
+                           b.scale * b.al, b.r, b.g, b.b);
+    else ENG.putBlock(i, b.x + wob, b.y - sink, b.z, _e, b.scale * b.al, b.r, b.g, b.b);
   }
   ENG.commitBlocks();
 
@@ -274,6 +278,7 @@ function draw() {
   ENG.putGifts(gifts || EMPTY);                     // 道具泡泡（v1.214）：沒有就 visible=false
   /* 幽浮（v1.167）。飛出場之後還在倒數丟東西的那幾台不畫，所以過一手 ufoList()。 */
   ENG.putUfos(ufoList());
+  ENG.putHoles(holeList(), holeFx);                 // 小黑洞（v1.221）：黑球 ＋ 收掉那一下的黑色火球
 }
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石

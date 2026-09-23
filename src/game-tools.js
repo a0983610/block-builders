@@ -71,7 +71,10 @@ const TOOLS = [
     tip: '點兩下：先點架砲的位置，再點要轟的地方（點建築就瞄那個高度）——3 門砲各打 6 發，打到就炸開起火' },
   { id: 'bounce', n: '彈跳球', k: '🟠',
     /* v1.218：點兩下，見 launchBounce。 */
-    tip: '點兩下：先點出手的位置，再點要丟過去的地方——24 顆彈跳球飛過去，撞一下咬一小口就彈開，越彈越低' }
+    tip: '點兩下：先點出手的位置，再點要丟過去的地方——24 顆彈跳球飛過去，撞一下咬一小口就彈開，越彈越低' },
+  { id: 'hole', n: '小黑洞', k: '🕳',
+    /* v1.221：點地面或建築都算，見 castHole。 */
+    tip: '點一下：範圍內的積木、小人動物被吸進黑洞消失，5 秒後從天上撒滿整座島' }
 ];
 /* 說明最多幾個字（v1.220.2，使用者：「破壞工具說明不要太長」）。選好一把之後它會接在
    底部那條操作提示的最前面，而那條不換行、後半段固定的操作說明自己就佔掉約 514px——
@@ -107,7 +110,7 @@ const toolOk = t => !t.lock || t.lock.ok() || stats.gift.indexOf(t.id) >= 0;
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
                       storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1,
-                      bounce: 1 };
+                      bounce: 1, hole: 1 };
 let tool = 'hammer';
 
 /* ── 破壞道具泡泡（v1.214）───────────────────────────────
@@ -200,6 +203,8 @@ let nukes = null;     // 已呼叫的核彈（倒數或下墜中，可以好幾�
 let magics = null;    // 正在展開的魔法陣（可以好幾個）
 let storms = null;    // 正在打雷的烏雲（可以好幾朵）
 let ufos = null;      // 在場的幽浮（含飛走之後還在倒數丟東西的那幾台，v1.167）
+let holes = null;     // 在場的小黑洞（含收完之後還在等五秒撒回來的那幾顆，v1.221）
+const holeFx = [];    // 小黑洞收掉那一下的黑色火球（倒著放的爆炸，見 holeGulp）
 let gates = null;     // 正在發動的王之財寶（同時最多三組，見 castGate）
 let weapons = null;   // 場上所有兵器：門裡待發、飛行中、翻滾中、躺在地上的（v1.132）
 let fires = null;     // 正在燒的積木（還站著的會往鄰居蔓延，碎料的只燒自己）
@@ -5811,6 +5816,332 @@ function ufoList() {
   return _ufoDraw;
 }
 
+/* ── 小黑洞（v1.221）─────────────────────────────────────
+   > 使用者：「新增破壞工具 小黑洞／可以點在地面或建築上 然後將一定範圍內積木&生物&碎料往內部吸
+   > 積木先微幅震動 然後慢慢移動 忽然一瞬間吸到中心點消失(可以加上黑色的類似爆炸的火球)
+   > 消失的東西五秒後像飛碟一樣方式平均散落下來回歸」
+   > 使用者（做到一半補的）：「黑色球是要表現得往內吸的感覺」
+   問過三件事，使用者選的：範圍半徑 12、範圍內**全部**吸走（不抽）、黑色火球**純特效**。
+
+   使用者那句話就是狀態機，一句一段：
+     quake  HOLE_QUAKE 秒：範圍內的積木原地抖（只抖畫出來的位置，見 holeQuake），黑球長出來
+     pull   HOLE_PULL 秒：範圍內的全部接手，一邊繞一邊往球心靠（先慢後快）；
+            這一段中途掉進範圍的也收（上面被掏空的那一截垮下來，就會掉進來）
+     snap   HOLE_SNAP 秒：一瞬間拽進球心、縮小，到了就收起來。黑色火球在這一段
+            **從中心快速脹開、再快速縮回零，跟東西同一刻消失**（使用者：「黑球應該是東西要被
+            吸進去消失的很短時間內 先從中心快速膨脹 然後快速收縮一起消失」，見 holeEnv），
+            暗色火星也往中心收
+     wait   HOLE_WAIT 秒（使用者指定 5 秒）：什麼都不畫
+     rain   撒滿整座島——**整支借幽浮的 ufoDrop**（使用者：「像飛碟一樣方式」）
+
+   收起來的做法也整套借幽浮（見上面幽浮檔頭 ①）：積木改 CARRY ＋ 沉到 UFO_PARK，
+   小人與動物掛 `ufo` 旗標，updWorker／stepBeast 開頭就跳過。旗標沿用 `ufo` 這個名字、
+   不另開一個：它的意思是「這一件被收走了、由某個道具在管」——幽浮與黑洞才看得懂對方抓走的
+   東西（ufoSuck 本來就跳過 b.ufo），ufoDrop／ufoHas 也才能原封不動拿來用。
+   飛在天上的那幾隻（m.sky）不吸，理由同幽浮檔頭 ④。
+
+   afterHit 的半徑給 0：它順手會把衝擊點附近的人掀倒，而範圍裡的人本來就全部被吸走，
+   範圍外的人什麼都沒被打到（使用者選的是「純特效」）——計分與「開始拆了」照樣記。 */
+const HOLE_MAX = ENG.MAXHOLE;    // 同時最多幾顆「還在吸」的（再點就擠掉最早那顆，見 castHole）
+const HOLE_R = 12;               // 吸入範圍：一顆球的半徑（使用者選的）
+/* 點地面的時候球心抬到地面上方 HOLE_R × 這個數：不抬的話半顆球埋在地下（那一半什麼都吸不到），
+   黑球也只露出半個。抬半個半徑，地面那一圈還搆得到 √(12² − 6²) ≈ 10.4。
+   點建築就照點到的那一點（使用者：「可以點在地面或建築上」）。 */
+const HOLE_LIFT = 0.5;
+const HOLE_QUAKE = 1.0;          // 先抖多久
+const HOLE_PULL = 2.6;           // 慢慢移動多久
+/* 「忽然一瞬間」拽進去。比爆裂魔法最後那一下（CRUSH_AT 0.3）長一點：黑色火球要在這一段裡
+   先脹開再縮回去，0.3 秒的話脹的那一下只有五、六幀，看不出來。 */
+const HOLE_SNAP = 0.4;
+/* 慢慢移動那一段：**每一塊各走各的**（使用者看過第一版：「在建築物上的積木被吸的時候太整齊了」）。
+   第一版是整批共用同一個旋轉角與同一個縮放比例，建築被挖下來的那一塊就像一整片硬塊在轉。
+   現在每一件接手時各抽一組（見 holeGrab）：
+     lag  幾秒後才開始動（0～HOLE_LAG，離球心越遠越晚）——一塊一塊被剝下來，不是整片同時走
+     sp   往球心靠多快（HOLE_SP 的範圍）——同一時刻有的已經快到球心、有的還在外圈
+     wr   繞多快（HOLE_WR 的範圍）——繞的角速度不同，整片會被扭散（方向一致，才看得出是在繞）
+     t?   自己怎麼翻（三個軸各一個速度）——第一版全部一起同速翻，排得整整齊齊
+   離球心剩幾成照 1 − HOLE_IN·sp·q² 收（q＝這一件自己的進度），先慢後快：
+   一開始幾乎沒動（「慢慢移動」），越接近收掉越急，接上最後那一下才不會像突然換了一支程式。 */
+const HOLE_IN = 0.5;
+const HOLE_LAG = 0.9;
+const HOLE_SP = [0.55, 1.6];
+const HOLE_WR = [0.4, 1.9];
+const HOLE_SPIN = 0.6;           // 慢慢移動那一段繞著球心轉多快（rad/s，照進度往上加，再乘 wr）
+const HOLE_SHAKE = 0.12;         // 抖的幅度（格）：「微幅震動」，積木之間的縫是 0.06
+const HOLE_CORE = 1.8;           // 中間那顆黑球的半徑（畫面）
+const HOLE_DISK_SPIN = 2.2;      // 吸積盤轉多快（rad/s；轉的方向決定螺線看起來往內流，見引擎）
+const HOLE_WAIT = 5;             // 消失之後幾秒撒回來（使用者指定 5 秒）
+/* 黑色火球（使用者：「先從中心快速膨脹 然後快速收縮一起消失」）：從黑球的大小開始，
+   前 HOLE_BOOM_UP 的時間脹到 HOLE_BOOM，剩下的時間縮回零——壽命就是 HOLE_SNAP，
+   所以它縮到零的那一刻正好是東西全部到球心、收起來的那一刻。 */
+const HOLE_BOOM = 7, HOLE_BOOM_UP = 0.3;
+/* 收掉那一段的包絡（0～1）：脹是先快後慢（一下衝出去），縮是先慢後快（最後被吸乾淨）。 */
+function holeEnv(u) {
+  if (u < HOLE_BOOM_UP) return 1 - Math.pow(1 - u / HOLE_BOOM_UP, 2);
+  return Math.max(0, 1 - Math.pow((u - HOLE_BOOM_UP) / (1 - HOLE_BOOM_UP), 2));
+}
+const holeLive = h => h.st === 'quake' || h.st === 'pull' || h.st === 'snap';
+function castHole(p, onGround) {
+  /* 滿了把最早那顆還在吸的擠掉，手上的東西當場放掉（見 holeBail）。
+     **已經收完、在等五秒的不算**：它們畫面上已經沒有東西了，擠掉的話那一包會突然在原地掉出來。
+     holeBail 擠掉最後一顆時會把 holes 收成 null，所以補空陣列要排在它後面。 */
+  let live = 0;
+  if (holes) for (const h of holes) if (holeLive(h)) live++;
+  while (live >= HOLE_MAX) { holeBail(holes.find(holeLive)); live--; }
+  if (!holes) holes = [];
+  const h = {
+    x: p.x, y: onGround ? HOLE_R * HOLE_LIFT : Math.max(HOLE_CORE + 0.4, p.y), z: p.z,
+    st: 'quake', t: 0, lit: 0, core: 0, glow: 0, spin: rr(0, 6.28), emit: 0, hit: 0,
+    shk: [], up: [], bag: []
+  };
+  /* 要抖的那幾塊：點下去那一刻還砌著的、躺在地上的。這一段不接手（還留在格子裡），
+     所以上面那一截要等 pull 開始才會失去支撐。 */
+  const R2 = HOLE_R * HOLE_R;
+  for (const b of blocks) {
+    if ((b.st !== SET && b.st !== FREE) || b.ufo) continue;
+    if ((b.x - h.x) ** 2 + (b.y - h.y) ** 2 + (b.z - h.z) ** 2 <= R2) h.shk.push(b);
+  }
+  holes.push(h);
+  sndHole();
+  return h;
+}
+/* 抖：只寫畫出來的偏移（b.qx／qy／qz，draw 那邊加上去），b.x／y／z 一格都不動——
+   這一段它們還砌在格子裡，動了真的座標，支撐、碰撞、小人的站位全都會跟著錯。
+   幅度照進度從三成爬到滿，「越抖越兇」才接得上後面的吸。 */
+function holeQuake(h, k) {
+  const a = HOLE_SHAKE * (0.3 + 0.7 * k);
+  for (const b of h.shk) {
+    if (b.st !== SET && b.st !== FREE) { b.qk = 0; continue; }    // 半路被別的道具打走了
+    b.qk = 1; b.qx = rr(-a, a); b.qy = rr(-a, a) * 0.5; b.qz = rr(-a, a);
+  }
+}
+function holeCalm(h) { for (const b of h.shk) b.qk = 0; h.shk.length = 0; }
+/* 接手一件東西。記下接手那一刻離球心的偏移（dx／dy／dz），之後每一幀的位置都照
+   「這個偏移繞球心轉 a、再縮成 f」**算出來**（見 holeMove），不是一幀一幀推——
+   半路才掉進來的那幾塊也從它自己的位置平順地接上，不會一被抓就瞬移。
+   其餘那幾個是這一件自己的骰子（見 HOLE_IN 那段）。 */
+function holeGrab(h, o, kind) {
+  o.ufo = 1;
+  if (kind === 0) { o.st = CARRY; o.holder = -1; o.rest = false; o.snap = 0; o.qk = 0; }
+  const y = o.y || 0;
+  const dx = o.x - h.x, dy = y - h.y, dz = o.z - h.z;
+  const far = Math.min(1, Math.hypot(dx, dy, dz) / HOLE_R);   // 0 球心 → 1 範圍邊緣
+  const it = { o, kind, x: o.x, z: o.z, dx, dy, dz, dust: null,
+               age: 0, f: 1, fe: 1, a: 0,
+               lag: HOLE_LAG * (0.3 + 0.7 * far) * Math.random(),
+               sp: rr(HOLE_SP[0], HOLE_SP[1]), wr: rr(HOLE_WR[0], HOLE_WR[1]),
+               tx: rr(-4, 4), ty: rr(-4, 4), tz: rr(-4, 4) };
+  h.up.push(it);
+  return it;
+}
+/* 範圍裡的全部接手（使用者選「全部吸走」，所以不抽骰子）。pull 那一段每一幀都掃，
+   中途掉進來的（垮下來的上半截、走進來的小人）也收。 */
+function holeTake(h) {
+  const R2 = HOLE_R * HOLE_R;
+  let n = 0, own = 0;                      // own＝其中有幾塊是地標的（見 afterHit）
+  for (const b of blocks) {
+    if (b.st === CARRY || b.st === TOSS || b.ufo) continue;
+    if ((b.x - h.x) ** 2 + (b.y - h.y) ** 2 + (b.z - h.z) ** 2 > R2) continue;
+    const wasSet = b.st === SET, wasOwn = b.hh < 0;   // breakBlock 會把 hh 清掉
+    const tr = b.tr, tg = b.tg, tb = b.tb;
+    breakBlock(b, 0, 0, 0);                // 照正規出口離場：進度、損失、支撐都靠它
+    douse(b);                              // 燒著的先熄，不然它收起來之後燒完會自己鬆脫
+    /* 顏色先留著原本的：freeBlock 會把它換成碎料的米白，那樣被吸過去的是一團白雲，
+       看不出是「那一塊建築」在動。碎料色記在手上，收起來那一刻才換（見 holePark），
+       撒下來的時候就跟幽浮撒的一樣是碎料。 */
+    holeGrab(h, b, 0).dust = [b.tr, b.tg, b.tb];
+    b.tr = tr; b.tg = tg; b.tb = tb;
+    if (wasSet) { n++; if (wasOwn) own++; }
+  }
+  for (const w of workers) {
+    if (w.ufo || w.air) continue;          // 已經被收走／正飛在半空的不吸（落地還在範圍裡就收）
+    if ((w.x - h.x) ** 2 + ((w.y || 0) + 0.9 - h.y) ** 2 + (w.z - h.z) ** 2 > R2) continue;
+    tossWorker(w, 0, 0, 0, false);         // 手上的工作先脫手（同被龍捲風捲走）
+    holeGrab(h, w, 1);
+  }
+  if (beasts) for (const m of beasts) {
+    if (m.ufo || m.sky) continue;
+    if ((m.x - h.x) ** 2 + ((m.y || 0) + 1 - h.y) ** 2 + (m.z - h.z) ** 2 > R2) continue;
+    if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m);   // v1.208
+    holeGrab(h, m, 2);
+  }
+  if (n) { h.hit += n; afterHit(n, h, 0, own); }
+}
+/* 手上那些這一幀在哪：接手時的偏移繞球心轉 a、再縮成 f（兩個都是這一件自己的，見 HOLE_IN 那段）。
+   u 沒給＝慢慢移動那一段：照自己的進度 q 收、繞、翻，還沒輪到它動的（q = 0）原地繼續抖，
+        開始動之後抖得越來越小。
+   u 有給＝收掉那一段（0～1）：從收掉開始那一刻自己在的地方（fe）一路拽進球心、縮小。 */
+function holeMove(h, dt, u) {
+  const snap = u !== undefined;
+  for (let i = h.up.length - 1; i >= 0; i--) {
+    const it = h.up[i], o = it.o;
+    if (!ufoHas(it)) { ufoLose(it); h.up.splice(i, 1); continue; }
+    let q = 1, jit = 0;
+    if (snap) {
+      it.f = it.fe * (1 - u * u);
+      it.a += dt * HOLE_SPIN * 6 * it.wr;
+    } else {
+      it.age += dt;
+      q = Math.max(0, Math.min(1, (it.age - it.lag) / (HOLE_PULL - HOLE_LAG)));
+      it.f = Math.max(0.1, 1 - HOLE_IN * it.sp * q * q);
+      it.a += dt * HOLE_SPIN * (0.2 + 1.3 * q) * it.wr * (q > 0 ? 1 : 0);
+      jit = HOLE_SHAKE * (1 - q);
+    }
+    const c = Math.cos(it.a), sn = Math.sin(it.a), f = it.f;
+    o.x = h.x + (it.dx * c - it.dz * sn) * f;
+    o.z = h.z + (it.dx * sn + it.dz * c) * f;
+    o.y = h.y + it.dy * f;
+    if (jit > 0) { o.x += rr(-jit, jit); o.y += rr(-jit, jit) * 0.5; o.z += rr(-jit, jit); }
+    const tw = dt * (snap ? 3 : 0.25 + q);             // 翻得越來越快
+    if (it.kind === 0) {
+      o.rx += tw * it.tx; o.ry += tw * it.ty; o.rz += tw * it.tz;
+      if (snap) o.scale = 1 - 0.8 * u;     // 拽進去的同時縮小（step 那條只把 > 1 的收回 1）
+    } else o.tilt = ((o.tilt || 0) + tw * Math.abs(it.tx)) % 6.283;
+  }
+}
+/* 到了：全部收起來（沉到地板底下，見幽浮檔頭 ①），縮小的積木還原成原本的大小。 */
+function holePark(h) {
+  for (const it of h.up) {
+    if (!ufoHas(it)) { ufoLose(it); continue; }
+    const o = it.o;
+    o.y = UFO_PARK;
+    if (it.kind === 0) {
+      o.scale = 1;
+      if (it.dust) { o.tr = o.r = it.dust[0]; o.tg = o.g = it.dust[1]; o.tb = o.b = it.dust[2]; }
+    }
+    h.bag.push(it);
+  }
+  h.up.length = 0;
+}
+/* 往中心收的一道暗色火星（魔法陣那套 suck：每幀重新瞄準球心、帶一點切線，到了就熄）。
+   拉成條（ln）而且條的方向就是往球心那一條——一眼看得出「被吸進去」，不是在飄。
+   lit＝亮紫那幾道（三成），其餘是近黑的深紫：全黑的在天空前面看得到、在黑球前面看不到，
+   摻一點亮的才讀得出流向。 */
+function holeStreak(h, rad, spd, lit) {
+  const a = Math.random() * Math.PI * 2, ey = rr(-1, 1), eh = Math.sqrt(1 - ey * ey);
+  const x = h.x + Math.cos(a) * eh * rad, z = h.z + Math.sin(a) * eh * rad;
+  const y = Math.max(0.4 + Math.random() * 1.5, h.y + ey * rad);   // 埋在地下的挪到地面上
+  const dx = h.x - x, dy = h.y - y, dz = h.z - z, d = Math.hypot(dx, dy, dz) || 1;
+  hot.push({
+    x, y, z, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0,
+    s: rr(0.07, 0.15), life: d / spd * 1.6 + 0.2, spd, suck: [h.x, h.y, h.z],
+    cr: lit ? rr(0.55, 0.75) : rr(0.04, 0.1),
+    cg: lit ? rr(0.28, 0.42) : rr(0.01, 0.04),
+    cb: lit ? 1 : rr(0.1, 0.2),
+    dx: dx / d, dy: dy / d, dz: dz / d, ln: rr(0.7, 1.6)
+  });
+}
+function holeMotes(h, dt, k) {
+  h.emit += dt * (26 + 60 * k);            // 越接近收掉，被吸進去的越密
+  while (h.emit >= 1) {
+    h.emit--;
+    if (hot.length >= HOT_MAX - 40) { h.emit = 0; break; }   // 同其他常態火苗，留一截給爆炸
+    holeStreak(h, HOLE_R * rr(0.7, 1.05), rr(6, 10) * (1 + 1.2 * k), Math.random() < 0.3);
+  }
+}
+/* 收掉那一段開頭：黑色火球從球心冒出來（大小照 holeEnv 走，見 stepHoles）；
+   一整圈火星同時往中心衝，速度算成「剛好在收掉那一刻到」（遠的近的同時到，同爆裂魔法的 crush）。 */
+function holeSnapStart(h) {
+  for (const it of h.up) it.fe = it.f;     // 各自從現在的位置拽進去（見 holeMove）
+  if (holeFx.length >= HOLE_MAX) holeFx.shift();
+  holeFx.push({ x: h.x, y: h.y, z: h.z, r0: h.core, R: HOLE_BOOM, r: h.core, op: 1, t: 0,
+                life: HOLE_SNAP });
+  for (let i = 0; i < 90; i++) {
+    if (hot.length >= HOT_BURST) break;
+    const rad = HOLE_R * rr(0.6, 1.05);
+    holeStreak(h, rad, rad / HOLE_SNAP, Math.random() < 0.35);
+  }
+}
+/* 東西全部收進去的那一刻：一聲悶的「咕嘟」、輕輕一震。 */
+function holeGulp() {
+  sndHoleGulp();
+  ENG.shake(0.3);
+}
+/* 被擠掉的那一顆：手上的東西當場放掉，已經收起來的從球心掉出來（同 ufoBail）。 */
+function holeBail(h) {
+  holeCalm(h);
+  for (const it of h.up.concat(h.bag)) {
+    if (!ufoHas(it)) { ufoLose(it); continue; }
+    const o = it.o;
+    o.ufo = 0;
+    if (o.y <= UFO_PARK) { o.x = h.x + rr(-1, 1); o.y = h.y; o.z = h.z + rr(-1, 1); }
+    o.vx = rr(-2, 2); o.vy = 0; o.vz = rr(-2, 2);
+    if (it.kind === 0) {
+      o.st = FLY; o.rest = false; o.snap = 0; o.al = 1; o.scale = 1;
+      if (it.dust) { o.tr = it.dust[0]; o.tg = it.dust[1]; o.tb = it.dust[2]; }   // 放掉就是碎料了
+    } else o.air = 1;
+  }
+  h.up.length = 0; h.bag.length = 0;
+  const i = holes.indexOf(h);
+  if (i >= 0) holes.splice(i, 1);
+  if (!holes.length) holes = null;
+}
+/* 一次收乾淨（清場用，同 ufoClear）：每一顆都走 holeBail，收在地板底下的才放得出來。 */
+function holeClear() { while (holes && holes.length) holeBail(holes[0]); holes = null; holeFx.length = 0; }
+function stepHoles(dt) {
+  for (let i = holeFx.length - 1; i >= 0; i--) {
+    const f = holeFx[i];
+    f.t += dt;
+    const k = f.t / f.life;
+    if (k >= 1) { holeFx.splice(i, 1); continue; }
+    /* 脹的那一段從黑球的大小（r0）起跳，縮的那一段一路縮到零（見 holeEnv）。 */
+    const e = holeEnv(k);
+    f.r = k < HOLE_BOOM_UP ? f.r0 + (f.R - f.r0) * e : f.R * e;
+  }
+  if (!holes) return;
+  for (let i = holes.length - 1; i >= 0; i--) {
+    const h = holes[i];
+    h.t += dt; h.lit += dt;
+    if (h.st === 'quake') {
+      const k = Math.min(1, h.t / HOLE_QUAKE);
+      h.core = HOLE_CORE * (1 - Math.pow(1 - k, 3));
+      h.glow = k;
+      h.spin += dt * HOLE_DISK_SPIN;
+      holeQuake(h, k);
+      holeMotes(h, dt, 0);
+      if (h.t >= HOLE_QUAKE) {
+        holeCalm(h);
+        h.st = 'pull'; h.t = 0;
+        holeTake(h);
+        sndHoleSuck();
+      }
+    } else if (h.st === 'pull') {
+      const k = Math.min(1, h.t / HOLE_PULL);
+      h.core = HOLE_CORE * (1 + 0.25 * k);
+      h.spin += dt * HOLE_DISK_SPIN * (1 + 1.5 * k);
+      holeTake(h);
+      holeMove(h, dt);
+      holeMotes(h, dt, k);
+      if (h.t >= HOLE_PULL) { h.st = 'snap'; h.t = 0; holeSnapStart(h); }
+    } else if (h.st === 'snap') {
+      /* 黑球、光暈、吸積盤跟著黑色火球一起收：火球脹開的那一段黑球被它罩著，
+         縮回去的那一段黑球跟著縮到零——「一起消失」。 */
+      const u = Math.min(1, h.t / HOLE_SNAP);
+      if (u > HOLE_BOOM_UP) h.core = HOLE_CORE * 1.25 * holeEnv(u);
+      h.glow = 1 - u;
+      h.spin += dt * HOLE_DISK_SPIN * 4;
+      holeMove(h, dt, u);
+      if (u >= 1) { holePark(h); holeGulp(); h.st = 'wait'; h.t = 0; }
+    } else if (h.st === 'wait') {
+      if (h.t >= HOLE_WAIT) { ufoDrop(h); h.st = 'rain'; h.t = 0; }   // 撒法整支借幽浮（見檔頭）
+    } else if (h.t >= UFO_RAIN) holes.splice(i, 1);   // rain：等最後幾塊落地才收（同幽浮）
+  }
+  if (!holes.length) holes = null;
+}
+/* 要畫的那幾顆：收完之後（wait／rain）已經不在場上了。 */
+const _holeDraw = [];
+function holeList() {
+  _holeDraw.length = 0;
+  if (holes) for (const h of holes) if (holeLive(h)) _holeDraw.push(h);
+  return _holeDraw;
+}
+/* 聲音：張開是一聲很低、一路往下沉的嗡；吸的那 2.9 秒是一支往上拉緊的低音；
+   收掉是一聲悶的「咕嘟」——三聲都壓在 150 Hz 以下，跟幽浮的 78 Hz 拍音分得開的是包絡
+   （這三聲都是一整段滑音，幽浮是不滑的拍音）。 */
+function sndHole() { tone(110, HOLE_QUAKE + HOLE_PULL, 'sine', 0.08, 0.4, 'hole', 0.5); noise(1.4, 0.07, 240); }
+function sndHoleSuck() { tone(48, HOLE_PULL + HOLE_SNAP, 'sawtooth', 0.035, 3.2, 'holeSuck', 0.8); }
+function sndHoleGulp() { noise(0.45, 0.2, 380); tone(150, 0.42, 'sawtooth', 0.075, 0.22, 'holeGulp'); }
+
 /* ── 王之財寶（v1.132）─────────────────────────────────
    使用者指定的順序就是這支的骨架：點地面 → **參考鏡頭方向**開出一整片金色的圓（由小而大）
    → 冷兵器從圓心慢慢伸出來、一半留在圓外 → 全部就位後停 3 秒 → 對範圍內的隨機位置
@@ -7306,6 +7637,7 @@ function useTool(hit) {
      點到天空那一下上面 `if (!hit) return` 就擋掉了，跟其他道具同一條路。 */
   if (tool === 'sword') { aimSword(hit.point); return 0; }
   if (tool === 'ufo') { callUfo({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'hole') { castHole(hit.point, onGround); return 0; }   // 小黑洞（v1.221）
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   return 0;

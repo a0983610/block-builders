@@ -438,6 +438,38 @@ const ENG = (function () {
   const UFO_TAPER = 0.244;
   const UFO_MOUTH_Y = 0.34;         // 吸光口離碟心多低（碟身半徑的倍率，＝ UFO_PART 最後那一片）
   let ufoMesh = null, ufoLitMesh = null, ufoBeamMesh = null;
+  /* 小黑洞（v1.221）。規則那邊只給位置、黑球半徑、亮度與自轉角，長相全在這裡。
+     使用者：「黑色球是要表現得往內吸的感覺」——所以會動的那幾樣**全部往內走**：
+     ① 黑球：純黑、不吃光（MeshBasic），它就是一個洞。
+     ② 光暈：兩層背面、加色的球殼，一直**往內縮**：在外圈淡淡亮起來、縮到貼著黑球時最亮，
+        然後被吞掉、外面再來一層（兩層錯開半圈）。用背面才不會把黑球本身染成紫的——
+        正對鏡頭那半個殼在黑球後面，被深度擋掉，看得到的只有黑球外面那一圈。
+     ③ 吸積盤：一片斜放的平環，亮度照一條螺線排（sin(3θ − 5 ln r)）。它跟著 spin 往 θ 正向轉，
+        而 ln r 前面是負號，螺線的臂看起來就是一路**往中心流進去**的（正號的話是往外甩）。
+     ④ 收掉那一下的「黑色火球」：一疊一般混色的深色球殼，從中心快速脹開、再快速縮回零，
+        跟被吸進去的東西同一刻消失（使用者：「先從中心快速膨脹 然後快速收縮一起消失」；
+        大小照規則那邊的 holeEnv 走，這裡只照 r 畫）。
+        加法混色畫不出黑（黑＝加零），所以不能借爆炸那組 FLASH_SHELL；
+        一般混色又不能拿顏色當亮度旋鈕，淡入淡出要逐顆的透明度，所以多一個 aFade
+        （同兵器那一套注入，見 weapShader）。
+     沒有黑洞在場時全部 visible = false（〈效能〉那條：沒東西在場就不吃 draw call）。 */
+  const HOLE_MAX = 3;                       // 同時畫幾顆（要 ≥ 規則那邊的 HOLE_MAX）
+  const HOLE_HALO = [0x8a4dff, 0x5a2bd0];   // 兩層往內縮的光暈
+  const HOLE_HALO_R = 0.8;                  // 光暈從黑球外多遠縮進來（黑球半徑的倍率）
+  const HOLE_HALO_HZ = 1.3;                 // 一秒縮進來幾層
+  const HOLE_DISK_IN = 1.25, HOLE_DISK_OUT = 3.0, HOLE_DISK_TILT = 0.38;
+  /* 光暈與吸積盤的整體亮度。第一版給滿（1），截圖裡它們疊在被吸過來的淺色積木上
+     整團過曝成白的，看起來像一顆白熱的光球、不像黑洞。 */
+  const HOLE_GLOW = 0.55;
+  /* 黑色火球的三層殼（r 是半徑倍率、op 這層的濃度、c 顏色）：越裡面越黑越濃，
+     外面那層偏紫、淡——整顆看起來是「一團黑的往中間擠」，而不是一顆實心的黑球。 */
+  const HOLE_BOOM = [
+    { r: 0.62, op: 0.95, c: 0x040006 },
+    { r: 0.82, op: 0.62, c: 0x170629 },
+    { r: 1.00, op: 0.36, c: 0x36126e }
+  ];
+  let holeCore = null, holeDisk = null, holeFade = null;
+  const holeHalos = [], holeBooms = [];
   // 推土鏟的半寬與它離車體中心多遠。規則那邊直接取這兩個值，畫面與判定才不會各說各話
   const DOZ_W = 3.2, DOZ_FRONT = 3.6;
   const TW_SEG = 16;                // 龍捲風的分段數
@@ -1356,6 +1388,73 @@ const ENG = (function () {
     ufoBeamMesh.visible = false; ufoBeamMesh.frustumCulled = false;
     for (let i = 0; i < UFO_MAX; i++) ufoBeamMesh.setColorAt(i, tmpC.setHex(0x000000));
     scene.add(ufoBeamMesh);
+
+    /* 小黑洞（v1.221），四樣東西各一顆 InstancedMesh（見上面 HOLE_MAX 那段）。
+       黑球與光暈共用一顆球的幾何體：它們身上沒有掛 instanced attribute，共用沒事。 */
+    const holeGeo = new T.SphereGeometry(1, 24, 16);
+    holeCore = new T.InstancedMesh(holeGeo, new T.MeshBasicMaterial({ color: 0x000000 }), HOLE_MAX);
+    holeCore.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    holeCore.count = 0; holeCore.visible = false; holeCore.frustumCulled = false;
+    scene.add(holeCore);
+    for (const c of HOLE_HALO) {
+      const m = new T.InstancedMesh(holeGeo, new T.MeshBasicMaterial({
+        color: c, transparent: true, side: T.BackSide, depthWrite: false,
+        blending: T.AdditiveBlending
+      }), HOLE_MAX);
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.count = 0; m.visible = false; m.frustumCulled = false;
+      m.setColorAt(0, tmpC.setHex(0xffffff));
+      holeHalos.push(m); scene.add(m);
+    }
+    /* 吸積盤：螺線直接烤進頂點色（內緣橘白 → 外緣紫、外緣淡到零），
+       instanceColor 只當整片的亮度旋鈕（加法混色下黑就是看不見）。
+       徑向切 10 段：ln r 那一項從內緣到外緣差 5·ln(3/1.25) ≈ 4.4 弧度，段數太少螺線會變折線。 */
+    const dGeo = new T.RingGeometry(HOLE_DISK_IN, HOLE_DISK_OUT, 72, 10);
+    const dPos = dGeo.attributes.position, dCol = new Float32Array(dPos.count * 3);
+    const cIn = new T.Color(0xffc27a), cOut = new T.Color(0x6a32c8);
+    for (let i = 0; i < dPos.count; i++) {
+      const x = dPos.getX(i), y = dPos.getY(i), r = Math.hypot(x, y);
+      const u = (r - HOLE_DISK_IN) / (HOLE_DISK_OUT - HOLE_DISK_IN);   // 0 內緣 → 1 外緣
+      const arm = 0.35 + 0.65 * Math.max(0, Math.sin(3 * Math.atan2(y, x) - 5 * Math.log(r)));
+      tmpC.copy(cIn).lerp(cOut, u).multiplyScalar(arm * Math.pow(1 - u, 1.4));
+      dCol[i * 3] = tmpC.r; dCol[i * 3 + 1] = tmpC.g; dCol[i * 3 + 2] = tmpC.b;
+    }
+    dGeo.setAttribute('color', new T.BufferAttribute(dCol, 3));
+    holeDisk = new T.InstancedMesh(dGeo, new T.MeshBasicMaterial({
+      vertexColors: true, transparent: true, side: T.DoubleSide, depthWrite: false,
+      forceSinglePass: true, blending: T.AdditiveBlending
+    }), HOLE_MAX);
+    holeDisk.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    holeDisk.count = 0; holeDisk.visible = false; holeDisk.frustumCulled = false;
+    holeDisk.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(holeDisk);
+    /* 黑色火球：三層殼共用一顆幾何體**連同 aFade**——第 k 顆火球在三層裡都是第 k 格，
+       三層的淡入淡出本來就是同一個數，所以一份 attribute 剛好夠用。
+       renderOrder 裡面那層先畫：只畫正面的球殼由內往外疊，才是由遠到近。 */
+    const boomGeo = new T.SphereGeometry(1, 24, 16);
+    holeFade = new T.InstancedBufferAttribute(new Float32Array(HOLE_MAX), 1);
+    holeFade.setUsage(T.DynamicDrawUsage);
+    boomGeo.setAttribute('aFade', holeFade);
+    HOLE_BOOM.forEach((sh, i) => {
+      const mat = new T.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: sh.op, depthWrite: false });
+      mat.onBeforeCompile = s => {
+        const cut = injector();
+        s.vertexShader = cut(s.vertexShader, '#include <common>',
+          '\nattribute float aFade;\nvarying float vFade;');
+        s.vertexShader = cut(s.vertexShader, '#include <begin_vertex>', '\nvFade = aFade;');
+        s.fragmentShader = cut(s.fragmentShader, '#include <common>', '\nvarying float vFade;');
+        s.fragmentShader = cut(s.fragmentShader, '#include <color_fragment>',
+          '\ndiffuseColor.a *= vFade;');
+        mat.userData.cuts = cut.count();          // 給測試看：四刀都換到了嗎
+      };
+      mat.customProgramCacheKey = () => 'hole-boom';
+      const m = new T.InstancedMesh(boomGeo, mat, HOLE_MAX);
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.count = 0; m.visible = false; m.frustumCulled = false; m.renderOrder = i;
+      for (let k = 0; k < HOLE_MAX; k++) m.setColorAt(k, tmpC.setHex(sh.c));
+      holeBooms.push(m); scene.add(m);
+    });
 
     resize();
   }
@@ -2556,6 +2655,65 @@ const ENG = (function () {
       ufoBeamMesh.instanceMatrix.needsUpdate = true;
       if (ufoBeamMesh.instanceColor) ufoBeamMesh.instanceColor.needsUpdate = true;
     }
+  }
+
+  /* 小黑洞（v1.221）。list 是還在吸的那幾顆 {x, y, z, core 黑球半徑, glow 亮度 0～1,
+     spin 吸積盤轉到哪, lit 出場幾秒}；booms 是收掉那一下的黑色火球 {x, y, z, r, op}。
+     長相的說明見上面 HOLE_MAX 那段。 */
+  function putHoles(list, booms) {
+    const n = Math.min(list.length, HOLE_MAX);
+    holeCore.visible = holeDisk.visible = n > 0;
+    holeCore.count = holeDisk.count = n;
+    for (const m of holeHalos) { m.visible = n > 0; m.count = n; }
+    for (let i = 0; i < n; i++) {
+      const h = list[i];
+      scratch.position.set(h.x, h.y, h.z);
+      scratch.rotation.set(0, 0, 0);
+      scratch.scale.setScalar(h.core);
+      scratch.updateMatrix();
+      holeCore.setMatrixAt(i, scratch.matrix);
+      /* 光暈往內縮：ph 0 在最外圈、1 貼著黑球。亮度照 ph² 爬——剛冒出來的時候幾乎看不見，
+         越縮越亮，縮到底被吞掉，外面接著冒下一層。 */
+      for (let k = 0; k < holeHalos.length; k++) {
+        const ph = (h.lit * HOLE_HALO_HZ + k / holeHalos.length) % 1;
+        scratch.scale.setScalar(h.core * (1.06 + HOLE_HALO_R * (1 - ph)));
+        scratch.updateMatrix();
+        holeHalos[k].setMatrixAt(i, scratch.matrix);
+        holeHalos[k].setColorAt(i, tmpC.setScalar(h.glow * ph * ph * HOLE_GLOW));
+      }
+      /* 吸積盤：RingGeometry 躺在 XY 平面，先繞自己的法線（z）轉 spin，再放平、斜一點
+         （Euler 預設 XYZ：z 那一項最先作用，所以轉的是盤面自己）。 */
+      scratch.rotation.set(-Math.PI / 2 + HOLE_DISK_TILT, 0, h.spin);
+      scratch.scale.setScalar(h.core);
+      scratch.updateMatrix();
+      holeDisk.setMatrixAt(i, scratch.matrix);
+      holeDisk.setColorAt(i, tmpC.setScalar(h.glow * HOLE_GLOW));
+    }
+    if (n) {
+      holeCore.instanceMatrix.needsUpdate = true;
+      holeDisk.instanceMatrix.needsUpdate = true;
+      if (holeDisk.instanceColor) holeDisk.instanceColor.needsUpdate = true;
+      for (const m of holeHalos) {
+        m.instanceMatrix.needsUpdate = true;
+        if (m.instanceColor) m.instanceColor.needsUpdate = true;
+      }
+    }
+    const nb = Math.min(booms.length, HOLE_MAX);
+    for (let s = 0; s < HOLE_BOOM.length; s++) {
+      const m = holeBooms[s];
+      m.visible = nb > 0; m.count = nb;
+      for (let k = 0; k < nb; k++) {
+        const b = booms[k];
+        scratch.position.set(b.x, b.y, b.z);
+        scratch.rotation.set(0, 0, 0);
+        scratch.scale.setScalar(Math.max(0.001, b.r * HOLE_BOOM[s].r));
+        scratch.updateMatrix();
+        m.setMatrixAt(k, scratch.matrix);
+      }
+      if (nb) m.instanceMatrix.needsUpdate = true;
+    }
+    for (let k = 0; k < nb; k++) holeFade.array[k] = booms[k].op;
+    if (nb) holeFade.needsUpdate = true;
   }
 
   /* 火球粒子。跟塵霧同一套資料格式，只是走那顆不透明的材質 */
@@ -4884,6 +5042,7 @@ const ENG = (function () {
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks, putGates, putWeapons, putSwords, putBeasts, putUfos,
+    putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,
     DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
@@ -4931,6 +5090,6 @@ const ENG = (function () {
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms }; }
   };
 })();
