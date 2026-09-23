@@ -73,9 +73,9 @@ const ENG = (function () {
   /* 鐵球最多同時幾顆（v1.116）。要跟規則那邊的 BALL_MAX 一樣大——
      小於它的話多出來的球會整顆不見（規則還在算，畫面上沒有）。 */
   const MAXBALL = 6;
-  /* 彈跳球最多同時幾顆（v1.218）：一次丟 12 顆、兩把同時在場。規則那邊的 BNC_MAX
-     直接讀這個（同 MAXDOZ），兩邊不會不一致。 */
-  const MAXBNC = 24;
+  /* 彈跳球最多同時幾顆（v1.218）：兩把同時在場。規則那邊的 BNC_MAX
+     直接讀這個（同 MAXDOZ），兩邊不會不一致。v1.220 一把從 12 顆變 24 顆，這裡跟著 ×2。 */
+  const MAXBNC = 48;
   /* 推土機最多同時幾台（v1.142 從 6 拉到 30）。整地改成「照地標寬度排一排、一趟掃過去」，
      台數就跟工地寬度走：實測一般的地標 4～6 台、萬里長城 3000 建材 10 台，
      最寬的金門大橋（9000 建材、半徑 89）要 29 台。
@@ -873,7 +873,7 @@ const ENG = (function () {
     ballMesh.castShadow = true; ballMesh.count = 0;
     ballMesh.visible = false; ballMesh.frustumCulled = false;
     scene.add(ballMesh);
-    /* 彈跳球（v1.218）：自己一顆橘色的 InstancedMesh（一次丟 12 顆、場上最多 MAXBNC 顆，
+    /* 彈跳球（v1.218）：自己一顆橘色的 InstancedMesh（一次丟 24 顆、場上最多 MAXBNC 顆，
        跟鐵球那 6 格分開）。同鐵球：沒球的時候 visible = false，一個 draw call 都不吃。 */
     bncMesh = new T.InstancedMesh(new T.SphereGeometry(1, 14, 10),
       new T.MeshLambertMaterial({ color: 0xff8a1f }), MAXBNC);

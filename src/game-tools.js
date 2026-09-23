@@ -48,8 +48,9 @@ const TOOLS = [
        v1.177 一朵劈 15～20 道（使用者要求加次數，見 STORM_N）。 */
     tip: '點地面：周圍飄來三朵烏雲、往中心聚攏，各自隨機劈 15～20 道雷，劈中的地方炸出一個小缺口並燒起來' },
   { id: 'drop', n: '天降鐵球', k: '⚫',
-    /* v1.165 起不再是一路鑽到底：削過砸中的那一片，再順著屋頂的坡度滑下去（見 DROP_DIG）。 */
-    tip: '點地面：一顆鐵球從正上方直直砸下來，削掉砸中的那一片，接著順著屋頂的坡度滑下去，不再動就收掉' },
+    /* v1.165 起不再是一路鑽到底：削過砸中的那一片，再順著屋頂的坡度滑下去（見 DROP_DIG）。
+       v1.220 起點兩下、平平拋出去（見 aimDropBall）。 */
+    tip: '點兩下：先點出手的位置，再點要砸的地方——一顆鐵球從那個位置的上空平平拋出去、落向那一點，削掉砸中的那一片，接著順著屋頂的坡度滑下去，不再動就收掉（同一個地方連點兩下就是直直砸下來）' },
   { id: 'gate', n: '王之財寶', k: '🗡',
     tip: '點兩下：第一下點地面決定門陣開在哪，第二下決定打哪裡——點在建築上就打那個位置附近的一片空間，點地面就打建築下段。兵器從門裡伸出來、就位後停一下，接著朝目標連射 7 秒；打中的地方炸開一個小缺口（不起火），兵器掉在地上慢慢消失' },
   { id: 'sword', n: '大劍', k: '⚔',
@@ -69,7 +70,7 @@ const TOOLS = [
     tip: '點兩下：先點架砲的位置，再點要轟的地方（點建築就瞄那個高度）——一次架 3 門、各打 6 發；砲管 18 度起跳、打不到那麼高才抬頭，砲彈走又低又直的彈道，一路拖著火，打到的地方炸開並燒起來；每開一砲噴出一大團白煙，整台被後座推得往後退一截再滾回原位' },
   { id: 'bounce', n: '彈跳球', k: '🟠',
     /* v1.218：點兩下，見 launchBounce。 */
-    tip: '點兩下：先點出手的位置，再點要丟過去的地方——一次 12 顆小彈跳球從那個位置的上空朝那一點飛過去，每撞一下只咬掉一小口就照撞到的那一面彈開，越彈越低，停下來就收掉' }
+    tip: '點兩下：先點出手的位置，再點要丟過去的地方——一次 24 顆小彈跳球從那個位置的上空朝那一點飛過去，每撞一下只咬掉一小口就照撞到的那一面彈開，越彈越低，停下來就收掉' }
 ];
 /* 等差階梯（見上面那段）：TOOLS 裡沒寫 `lock: null` 的照順序補門檻，
    第 n 把＝擊飛 n × LOCK_STEP 塊。加新道具不必碰這裡。 */
@@ -1354,7 +1355,7 @@ function launchBall(from, toward) {
    「碰撞參考保齡球」就照字面做：跟保齡球共用同一份 balls 清單、同一支 stepBall
    ——同一套掃描、同一組撞擊力、同一份顆數上限（BALL_MAX），畫面那邊也是同一顆
    InstancedMesh，不必為它多開一種東西。差別只有兩點，都掛在 drop 這個旗標上：
-   ① 出手沒有水平速度，純自由落體（「與地面垂直」）；
+   ① 出手沒有水平速度，純自由落體（「與地面垂直」）——v1.220 起改成點兩下、平拋出去（見 aimDropBall）；
    ② 落地幾乎不彈——鐵球不是橡皮球，而且彈太久就不符合「不再移動後消失」。
    一路上撞到的積木都算（球每幀移動 2.7 單位，小於它的判定半徑 3.8，不會整層穿過去）。 */
 /* 從多高開始掉。v1.119 起跟著建築走（同烏雲），使用者：「天降鐵球 初始高度也能像
@@ -1414,23 +1415,49 @@ const DROP_TOUCH = 4;               // 這一幀碰到幾塊才算碰到表面�
    收在 7（跳起來不到一公尺）它才會貼著屋頂一路蹭下去。 */
 const DROP_VUP = 7;
 const DROP_AWAY = 5;                // 平屋頂沒有坡度可用時，隨機往旁邊帶多少
-const DROP_HMAX = 8;                // 水平速度上限（擋住「被彈飛出場」）
-function dropBall(point) {
+/* 水平速度上限（擋住「被彈飛出場」）。v1.220 起**只管被材料頂出去多出來的那一份**：
+   出手帶著水平初速，碰到東西那一刻照舊收到 8 的話，平拋出去的那一份動量一碰就沒了。
+   所以上限是 max(DROP_HMAX, 這一幀被頂之前的水平速度)——被頂出去不會比撞上來更快，
+   出手的那一份留著，靠「每撞一塊就掉速」那一條（brake）慢慢停。
+   使用者選的「出手的動量保留」。**只管沿著表面那一份**：平平正面撞上直牆時，撞進牆面的
+   那一份照舊由 DROP_SINK 壓到 8（實測水平 30 撞上去，那一幀剩 8.39、0.2 秒內停住），
+   所以留得住的是砸在屋頂／斜面上往前滑的那一份，見 開發筆記〈天降鐵球改成點兩下平拋〉。 */
+const DROP_HMAX = 8;
+/* 點兩下（v1.220，使用者：「天降鐵球也像彈跳球一樣 改成兩點操作 有個初始水平方向初速」）：
+   第一下記位置、第二下丟。出手點在第一下那個位置的上空（高度照舊），
+   **只給水平速度、垂直 0**（平拋，使用者選的），大小算成「沒撞到東西的話剛好落在第二下那一點」：
+   掉到球心貼地要 T = √(2(起點 − 半徑)／g) 秒，水平速度＝兩點距離 ÷ T 秒裡飛得到的比例。
+   「比例」是因為 stepBall 的滾動阻力（BALL_ROLL）**在空中也照扣**：不補的話
+   速度每秒剩 0.86，T 秒只飛得到 (1 − 0.86^T)／ln(1／0.86)，從 58 掉下來約 1.77 秒份
+   （不是 2.06），實測出手 16、碰到建築時剩 12.1，落點短了一成四。stepBall 不動，在這裡補。
+   同一個地方連點兩下水平速度就是 0，等於以前那種直直砸下來。 */
+function aimDropBall(point) {
+  if (!aim) { aimFirst(point, BALL_R, 0xc0c8d2); return; }
+  dropBall(aim, point);
+}
+/* toward 不給＝直直掉（測試與「從這一點砸下去」的呼叫端用）。 */
+function dropBall(point, toward) {
   if (!balls) balls = [];
   if (balls.length >= BALL_MAX) balls.shift();     // 滿了把最早那顆擠掉（同保齡球）
   const top = Math.max(DROP_TOP, siteTopNow() + DROP_UP);
+  const T = Math.sqrt(2 * (top - BALL_R) / GRAV);
+  const fly = (1 - Math.pow(BALL_ROLL, T)) / Math.log(1 / BALL_ROLL);   // T 秒飛得到幾秒份（見上面）
+  const vx = toward ? (toward.x - point.x) / fly : 0, vz = toward ? (toward.z - point.z) / fly : 0;
+  const h = Math.hypot(vx, vz);
   balls.push({
     x: point.x, y: top, z: point.z,
-    vx: 0, vz: 0, vy: 0,             // 純自由落體
+    vx, vz, vy: 0,                   // 平拋：垂直從 0 開始
     /* 壽命要把「掉下來那一段」外加進去（v1.119）：起點跟著建築走之後，
        最高的地標要掉 3.55 秒，那等於先吃掉 BALL_LIFE 的一半——實測大笨鐘 9000
        落地才第 6.9 秒，剩不到 0.6 秒就被壽命收掉。外加之後不管從多高丟下來，
        「落地之後還能滾多久」都是同一份預算。 */
     r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE + Math.sqrt(2 * top / GRAV), hops: 0,
-    ax: 1, az: 0,                    // 直直掉不滾（ang 也不會動），軸給個定值就好
+    // 滾動軸（同保齡球）；直直掉不滾，軸給個定值就好
+    ax: h > 1e-6 ? vz / h : 1, az: h > 1e-6 ? -vx / h : 0,
     drop: 1, pops: 0,                // pops＝被表面頂過幾幀（跟落地的 hops 分開算）
     cd: 0, pin: 0, pn: 0             // 跳彈那條（保齡球專用）的欄位，兩種球的形狀留一致
   });
+  aim = null;
   sndSwing();
 }
 /* 彈跳球（v1.218）。使用者三次要求疊起來的：
@@ -1455,13 +1482,14 @@ function dropBall(point) {
    ⑥ 慢慢衰減到停（使用者選的）：每彈一下只留 BNC_REST，彈不起來就貼著表面滾、滾到停就收。
    ⑦ 撞得太輕（撞進表面的速度 < BNC_SOFT）不咬：不然停在屋頂上時，重力每一幀都把它
       往下壓一點，會一幀咬六塊、原地鑽穿整棟。
-   ⑧ **自己一份清單 bncs、自己一顆 mesh**，上限 BNC_MAX（＝引擎的 MAXBNC 24，兩把同時在場，
+   ⑧ **自己一份清單 bncs、自己一顆 mesh**，上限 BNC_MAX（＝引擎的 MAXBNC 48，兩把同時在場，
       使用者選的）。第一版跟鐵球共用 balls 那 6 格，一次 12 顆就放不下了。
+      v1.220 一把 ×2（使用者：「彈跳球改成一次更多顆(*2試試看)」），上限跟著 ×2。
    ⑨ **一幀切成幾小步走**：半徑 0.8 的判定範圍只有 1.5，落地前後速度 60～80，
       一幀（1/60）就走 1～1.3，掉幀時會整顆穿過一層牆。所以一幀只掃一次積木池
       （把這一幀走得到的範圍裡的積木先撿出來），再照 BNC_SUB 切小步，每一步只跟撿出來的撞。 */
 const BNC_R = 0.8;          // 半徑（使用者選的；鐵球 BALL_R 3.1）
-const BNC_N = 12;           // 一次丟幾顆（使用者指定）
+const BNC_N = 24;           // 一次丟幾顆（使用者指定：v1.218 是 12，v1.220 ×2）
 const BNC_SPD = 40;         // 平均速度：出手點到落點的直線距離 ÷ 飛行時間
 const BNC_YAW = 0.21;       // 一把裡每顆的方向亂多少（±弧度，約 12°）
 const BNC_PITCH = 0.1;      // 俯仰亂多少（±弧度，約 6°）
@@ -1791,6 +1819,7 @@ function stepBall(dt) {
        被自己啃掉）也要頂，不然球會從自己啃出來的洞掉穿過去。
        保齡球不吃這一段：它貼著地面滾、每一幀都在撞，跟著彈就變成在打水漂。 */
     if (o.drop && (n > 0 || touch >= DROP_TOUCH)) {
+      const h0 = Math.hypot(o.vx, o.vz);               // 被頂之前的水平速度（見 DROP_HMAX）
       const nl = Math.hypot(hx, hy, hz) || 1;
       const nx = hx / nl, ny = hy / nl, nz = hz / nl;
       const push = Math.min(DROP_PUSH_MAX, n * DROP_PUSH);      // ① 壓碎材料頂回去
@@ -1809,8 +1838,8 @@ function stepBall(dt) {
         o.vx += Math.cos(a) * s; o.vz += Math.sin(a) * s;
       }
       if (o.vy > DROP_VUP) o.vy = DROP_VUP;
-      const sp2 = Math.hypot(o.vx, o.vz);
-      if (sp2 > DROP_HMAX) { o.vx *= DROP_HMAX / sp2; o.vz *= DROP_HMAX / sp2; }
+      const sp2 = Math.hypot(o.vx, o.vz), hmax = Math.max(DROP_HMAX, h0);
+      if (sp2 > hmax) { o.vx *= hmax / sp2; o.vz *= hmax / sp2; }
       o.pops++;                                       // 被頂過幾幀（測試用）
     }
     o.pn = n;                        // 這一幀打掉幾塊：下一幀用來認「是不是剛從外面撞進來」
@@ -7261,7 +7290,7 @@ function useTool(hit) {
   if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'storm') { callStorm({ x: hit.point.x, z: hit.point.z }); return 0; }
-  if (tool === 'drop') { dropBall(hit.point); return 0; }
+  if (tool === 'drop') { aimDropBall(hit.point); return 0; }
   if (tool === 'bounce') { aimBounce(hit.point); return 0; }
   // 第二下點在建築上就連高度一起當目標（v1.152，見 pickGate）
   if (tool === 'gate') { pickGate(hit.point, hit.kind === 'block'); return 0; }

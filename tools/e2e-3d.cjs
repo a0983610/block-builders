@@ -12280,6 +12280,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     marks.length = 0;
     const P = { x: 6, z: -4 };
     tool = 'drop';
+    /* v1.220 起點兩下（見〈點兩下、平拋〉那一組）：同一個地方連點兩下＝水平速度 0，
+       就是以前那種直直砸下來，所以這一組照舊是那一發。 */
+    useTool({ point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) });
     useTool({ point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) });
     const born = { n: balls.length, y: +balls[0].y.toFixed(1),
                    vx: balls[0].vx, vz: balls[0].vz };
@@ -12314,7 +12317,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return r;
   });
-  ok('天降鐵球從正上方直直掉，碰到東西之前一步都不歪',
+  ok('天降鐵球同一個地方點兩下：從正上方直直掉，碰到東西之前一步都不歪',
      dropOne.born.n === 1 && dropOne.born.vx === 0 && dropOne.born.vz === 0 &&
      dropOne.drift < 0.001 && dropOne.alive1 === 1,
      '從 ' + dropOne.born.y + ' 掉下來，撞到東西之前橫向偏移 ' + dropOne.drift);
@@ -12480,6 +12483,89 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dropShare.capped === dropShare.max,
      '混著丟 ' + (dropShare.max * 2) + ' 顆 → 場上 ' + dropShare.capped +
      ' 顆（上限 ' + dropShare.max + '）');
+
+  /* 點兩下、平拋（v1.220，使用者：「天降鐵球也像彈跳球一樣 改成兩點操作 有個初始水平方向初速」）。
+     全部是規則型：
+     ① 第一下只記位置；第二下從第一下的上空出手，**垂直速度 0**、水平朝第二下那一點（平拋，使用者選的）；
+     ② 沒撞到東西就落在第二下那一點（兩點都在場邊空地）——出手速度有把「空中也照扣的滾動阻力」
+        補回去（見 aimDropBall），不補的話落點短一成四；
+     ③ 撞到東西時出手的水平速度留著（使用者選的「出手的動量保留」：不再一碰就收到 DROP_HMAX），
+        但被頂出去也不會比撞上來更快；直直砸在斜的地方、被轉成水平的那一份照舊收在 DROP_HMAX
+        （v1.165 擋「被彈飛出場」的那一條）。③ 造最小的場面：球擺在塔尖／斜面上方、給定速度、
+        只跑一幀 stepBall，Math.random 押 0.5。 */
+  const dropAim = await page.evaluate(() => {
+    const rnd = Math.random;
+    try {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
+      const H = Math.max(DROP_TOP, siteTopNow() + DROP_UP);
+      const A = { x: arenaR - 4, y: 0, z: 20 }, B = { x: arenaR - 4, y: 0, z: -20 };
+      tool = 'drop';
+      useTool({ kind: 'ground', point: A, dir: { x: 0, y: -1, z: 0 } });
+      const mid = balls ? balls.length : 0;
+      useTool({ kind: 'ground', point: B, dir: { x: 0, y: -1, z: 0 } });
+      const o = balls[0], h = Math.hypot(o.vx, o.vz);
+      const born = { n: balls.length, vy: o.vy, h: +h.toFixed(2),
+                     at: o.x === A.x && o.z === A.z && Math.abs(o.y - H) < 1e-9,
+                     dir: (o.vx * (B.x - A.x) + o.vz * (B.z - A.z)) /
+                          (h * Math.hypot(B.x - A.x, B.z - A.z)) };
+      let land = null, t = 0;
+      while (t < 10 && !land) {
+        step(1 / 60); t += 1 / 60;
+        if (o.y <= o.r + 1e-6) land = { x: o.x, z: o.z, pops: o.pops };
+      }
+      const miss = land ? Math.hypot(land.x - B.x, land.z - B.z) : -1;
+      // ③ 最小的場面
+      Math.random = () => 0.5;
+      cleanTools();
+      /* 兩個場面：最高那一塊（塔尖，法線朝上）、半山腰 z≈0 那一列最外面那一塊（斜面，
+         金字塔的坡度約 36°，見 開發筆記〈不再是垂直的鑽頭〉）。第一版斜面那一發擺在塔尖旁邊
+         2 格，那裡的法線其實幾乎朝正上方（撞完水平只有 0.29），根本沒測到上限。 */
+      let top = null, side = null;
+      for (const b of blocks) if (b.st === SET && (!top || b.y > top.y)) top = b;
+      const hy = siteTopNow() * 0.5;
+      for (const b of blocks) {
+        if (b.st === SET && Math.abs(b.z) < 0.6 && Math.abs(b.y - hy) < 0.6 &&
+            (!side || b.x > side.x)) side = b;
+      }
+      const one = (p, vx, vy) => {
+        cleanTools();
+        dropBall({ x: p.x, z: p.z });
+        const q = balls[0];
+        q.y = p.y; q.vx = vx; q.vy = vy; q.vz = 0;
+        stepBall(1 / 60);
+        const r = { h: +Math.hypot(q.vx, q.vz).toFixed(3), pops: q.pops };
+        cleanTools();
+        return r;
+      };
+      // 斜著砸在塔尖上：出手那一份留著
+      const keep = one({ x: top.x, y: top.y + 2.5, z: top.z }, 20, -20);
+      // 直直砸在斜面上（球擺在那一塊外側、沿坡面法線 2.7 遠）：被轉成水平的那一份收在 DROP_HMAX
+      const slope = one({ x: side.x + 1.6, y: side.y + 2.2, z: side.z }, 0, -49);
+      slope.y = +side.y.toFixed(1);
+      return { mid, born, miss: +miss.toFixed(3), landPops: land ? land.pops : -1, H: +H.toFixed(1),
+               keep, slope, hmax: DROP_HMAX, rollK: Math.pow(BALL_ROLL, 1 / 60) };
+    } finally { Math.random = rnd; cleanTools(); }
+  });
+  ok('天降鐵球點兩下：第一下只記位置，第二下從那個位置的上空平平拋出去',
+     dropAim.mid === 0 && dropAim.born.n === 1 && dropAim.born.at && dropAim.born.vy === 0 &&
+     dropAim.born.h > 0 && dropAim.born.dir > 1 - 1e-9,
+     '第一下之後 ' + dropAim.mid + ' 顆、第二下之後 ' + dropAim.born.n + ' 顆，從高度 ' + dropAim.H +
+     ' 出手、垂直速度 ' + dropAim.born.vy + '、水平 ' + dropAim.born.h + ' 朝第二下那一點');
+  ok('天降鐵球沒撞到東西就落在第二下那一點',
+     dropAim.miss >= 0 && dropAim.miss < 0.5 && dropAim.landPops === 0,
+     '落點離第二下那一點 ' + dropAim.miss + ' 單位（途中碰到東西 ' + dropAim.landPops + ' 幀）');
+  /* 「被頂出去不會比撞上來更快」上限是 20（撞上來的水平速度）；收到 DROP_HMAX 的那一發
+     量到的是 DROP_HMAX × 這一幀的滾動阻力（收完才扣阻力），所以下限要乘 rollK。 */
+  ok('出手的水平速度撞到東西不會被收掉，被頂出去也不會比撞上來更快',
+     dropAim.keep.pops === 1 && dropAim.keep.h > dropAim.hmax && dropAim.keep.h <= 20,
+     '水平 20 斜著砸下去，撞完剩 ' + dropAim.keep.h + '（v1.219 會被收到 ' + dropAim.hmax + '）');
+  ok('直直砸在斜面上，被轉成水平的那一份照舊收在 DROP_HMAX',
+     dropAim.slope.pops === 1 && dropAim.slope.h <= dropAim.hmax + 1e-9 &&
+     dropAim.slope.h >= dropAim.hmax * dropAim.rollK - 1e-3,
+     '從 49 直直砸在金字塔 ' + dropAim.slope.y + ' 高的斜面上，撞完水平 ' + dropAim.slope.h +
+     '（上限 ' + dropAim.hmax + '）');
 
   /* ── 彈跳球（v1.218）─────────────────────────────────────
      使用者：「新增破壞道具　彈跳球(比鐵球小　橘色)　操作方式同天降鐵球
@@ -25183,9 +25269,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       orig[n] = window[n];
       window[n] = function (...a) { seen++; return orig[n].apply(null, a); };
     }
-    /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機、v1.204 加加農砲、v1.218 加彈跳球：
-       只點一下的話只會畫個瞄準環，一台機器／一隊人都不會出來）。 */
-    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb', 'cannon', 'bounce'];
+    /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機、v1.204 加加農砲、v1.218 加彈跳球、
+       v1.220 加天降鐵球：只點一下的話只會畫個瞄準環，一台機器／一隊人都不會出來）。 */
+    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb', 'cannon', 'bounce', 'drop'];
     const out = [];
     try {
       for (const t of TOOLS) {
