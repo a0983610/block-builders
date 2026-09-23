@@ -85,20 +85,28 @@
 
   /* 破壞工具（畫面上方中央）：平常只留一顆「現在拿什麼」的小窗，
      滑鼠指上去才展開整份選單。選單是會自動換行的網格，所以之後再加道具
-     不用重新安排版面，也不會把整排推到壓住別的卡片。 */
-  #toolbox{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:6}
-  #toolNow{
+     不用重新安排版面，也不會把整排推到壓住別的卡片。
+     旁邊那顆是小人模式（v1.219，見 game-workers.js 的 LAZY_MODES），長相與開合照抄工具這一套。
+     兩顆包在 #dock 裡一起置中：各自 fixed 的話，工具名字長短一變（兩字～四字）就會疊在一起。
+     #dock 本身不吃指標，不然兩顆中間那道縫點下去打到的是它、不是畫布。
+     width:max-content 一定要給：left:50% 的 fixed 元素可用寬度只剩半個畫面，
+     手機 390 寬時只有 195px，兩顆會被擠到字折成兩行（實測「槌/子」「普/通」）。 */
+  #dock{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:6;width:max-content;
+        display:flex;gap:8px;align-items:flex-start;pointer-events:none}
+  #toolbox,#modebox{position:relative;pointer-events:auto}
+  #toolNow,#modeNow{
     display:flex;align-items:center;gap:8px;padding:7px 13px;border-radius:12px;
     background:var(--panel);border:1px solid var(--line);color:var(--ink);
     box-shadow:0 4px 16px rgba(20,32,48,.16);cursor:pointer;font:inherit;
   }
-  #toolNow .k{font-size:19px;line-height:1.1}
-  #toolNow .n{font-size:12.5px;font-weight:700}
-  #toolNow .c{font-size:9px;opacity:.4}
-  #toolbox:hover:not(.shut) #toolNow,#toolbox.open #toolNow{border-color:var(--accent)}
+  #toolNow .k,#modeNow .k{font-size:19px;line-height:1.1}
+  #toolNow .n,#modeNow .n{font-size:12.5px;font-weight:700}
+  #toolNow .c,#modeNow .c{font-size:9px;opacity:.4}
+  #toolbox:hover:not(.shut) #toolNow,#toolbox.open #toolNow,
+  #modebox:hover:not(.shut) #modeNow,#modebox.open #modeNow{border-color:var(--accent)}
   /* padding 那一段是刻意留的「橋」：小窗與選單之間不能有真空的縫，
      不然滑鼠往下移到縫上就 mouseleave，選單會在半路收掉。 */
-  #toolMenu{
+  #toolMenu,#modeMenu{
     position:absolute;top:100%;left:50%;transform:translateX(-50%);padding-top:8px;
     opacity:0;visibility:hidden;transition:opacity .12s;
   }
@@ -106,7 +114,8 @@
      目前要把滑鼠移開才會收」）。選完只把 .open 拿掉的話，:hover 還按著它——
      指標本來就停在剛點的那顆按鈕上，選單等於原地不動。加一個「這次先別展開」的
      旗標把 :hover 那條擋掉，滑鼠指回小窗時再撤掉（見 game-ui.js 的 pointerover）。 */
-  #toolbox:hover:not(.shut) #toolMenu,#toolbox.open #toolMenu{opacity:1;visibility:visible}
+  #toolbox:hover:not(.shut) #toolMenu,#toolbox.open #toolMenu,
+  #modebox:hover:not(.shut) #modeMenu,#modebox.open #modeMenu{opacity:1;visibility:visible}
   /* 這裡不用 --panel（86% 半透明白）：選單底下常常剛好是操作提示那條深色藥丸，
      透上來會把字襯得看不清楚。其他卡片是靜態的所以透一點沒關係，這個是蓋在上面的選單。 */
   #tools{
@@ -128,6 +137,23 @@
   .tool.lock{opacity:.5;filter:grayscale(1)}
   /* 大槌跟槌子同一個圖示，靠尺寸區分 */
   .tool[data-tool="bighammer"] .k{font-size:25px}
+  /* 小人模式的三檔：一檔一列，右邊寫出比例（照 LAZY_MODES 的 part 算，見 renderModes） */
+  #modes{
+    display:flex;flex-direction:column;gap:3px;padding:6px;
+    border-radius:14px;background:#fff;border:1px solid var(--line);
+    box-shadow:0 10px 28px rgba(20,32,48,.22);
+  }
+  .mode{
+    display:flex;align-items:center;gap:7px;padding:6px 10px;border-radius:10px;
+    background:transparent;border:1px solid transparent;white-space:nowrap;
+  }
+  .mode:hover{background:#f1efec}
+  .mode .k{font-size:17px;line-height:1.1}
+  .mode .n{font-size:12.5px;font-weight:700}
+  .mode .p{margin-left:auto;padding-left:12px;font-size:11px;opacity:.6;font-variant-numeric:tabular-nums}
+  .mode.on{background:var(--accent);color:#fff;border-color:transparent}
+  .mode.on .p{opacity:.9}
+  .mode.on:hover{background:var(--accent)}
 
   /* 成就與提示（工具列移到上方後，提示往下讓開） */
   #toast{position:fixed;left:50%;top:88px;transform:translateX(-50%);z-index:15;
@@ -207,8 +233,8 @@
      選單是浮在上面的一層，蓋到不影響操作，所以斷點還是取整數 1024，
      讓平板豎放的 1024 落在下緣這一邊。選單跟著往上開。 */
   @media (max-width:1024px), (hover:none) and (pointer:coarse){
-    #toolbox{top:auto;bottom:12px}
-    #toolMenu{top:auto;bottom:100%;padding:0 0 8px}
+    #dock{top:auto;bottom:12px}
+    #toolMenu,#modeMenu{top:auto;bottom:100%;padding:0 0 8px}
     /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具小窗 */
     #panelBtn{right:14px;left:auto}
     #ver{left:14px;right:auto}
@@ -226,6 +252,10 @@
     #clock{font-size:20px}
     #panel{width:calc(100vw - 28px)}
     #tools{grid-template-columns:repeat(3,74px)}   /* 四欄 338px 在 390 的螢幕上太貼邊 */
+    /* 底排中間擺兩顆小窗（v1.219）：道具名最長四個字（王之財寶）時，照桌機的內距
+       模式小窗右緣 311、設定鈕左緣 312，只差 1px。內距與間距收一點才讓得開。 */
+    #dock{gap:6px}
+    #toolNow,#modeNow{padding:7px 10px;gap:6px}
     #hint{display:none}
     #toast{top:14px}
     #badgeBox #badges{grid-template-columns:1fr}   /* 手機排不下兩欄 */
@@ -268,9 +298,15 @@
 </div>
 
 <div id="toast"></div>
+<div id="dock">
 <div id="toolbox">
   <button id="toolNow" type="button"><span class="k">🔨</span><span class="n">槌子</span><span class="c">▾</span></button>
   <div id="toolMenu"><div id="tools"></div></div>
+</div>
+<div id="modebox">
+  <button id="modeNow" type="button"><span class="k">😐</span><span class="n">普通</span><span class="c">▾</span></button>
+  <div id="modeMenu"><div id="modes"></div></div>
+</div>
 </div>
 
 <button id="panelBtn">⚙ 設定</button>

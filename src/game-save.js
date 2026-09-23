@@ -29,7 +29,8 @@ const freshStats = () => ({
 let stats = freshStats();
 /* 面板上的設定也一起存，不然每次打開都要重調一輪 */
 /* v 是設定檔版本。舊存檔沒有這個欄位，load() 靠它認出「這份存檔是預設值改掉之前存的」 */
-const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, v: 1 });
+/* lazy＝小人模式選哪一檔（v1.219，見 game-workers.js 的 LAZY_MODES），存的是 id */
+const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm', v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -190,6 +191,8 @@ function applySave(o) {
   g.cnt = snapOpt(g.cnt, CNT_OPTS);
   g.wk = snapOpt(g.wk, WK_OPTS);
   g.spd = snapOpt(g.spd, SPD_OPTS);
+  // 小人模式認不得的 id（被改壞的存檔）回到預設那一檔，不然選單上三檔都不亮
+  if (!LAZY_MODES.some(m => m.id === g.lazy)) g.lazy = freshPref().lazy;
   pref = g;
 }
 /* 數字吸到最近的一檔。壞掉的存檔（NaN、字串）當 0 處理，會吸到最小的那一檔 */
@@ -200,10 +203,12 @@ function snapOpt(v, opts) {
 /* 把存回來的設定套進變數與面板 */
 function applyPref() {
   targetCnt = pref.cnt; timeScale = pref.spd; muted = pref.mute; spinOn = pref.spin;
+  lazyMode = pref.lazy;
   setWorkerCount(pref.wk);
   $('mute').checked = pref.mute;
   $('spin').checked = pref.spin;
   syncHud();
+  renderModes();
 }
 function resetSave() {
   stats = freshStats(); spentThis = 0;

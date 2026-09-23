@@ -9884,7 +9884,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { rollLazy = window.lazyRoll; stepIdleEvent = window.evStep; clearHomes(); });
 
   /* 抽法是洗牌取前 n 個（不是每個人各擲一次點數），所以人數固定時抽到的**個數**也固定，
-     抽到的**是誰**每座都不一樣。三種人數各驗一次：20→2、5→1、2→0（一成不到一個人）。 */
+     抽到的**是誰**每座都不一樣。三種人數各驗一次。v1.219 起比例是小人模式選的
+     （見 LAZY_MODES），期望值照現在這一檔算——預設「普通」兩成：20→4、5→1、2→0。 */
   const lazyRoll = await page.evaluate(() => {
     cleanTools();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
@@ -9898,15 +9899,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         tally[list.length] = (tally[list.length] || 0) + 1;
         for (const k of list) seen.add(k);
       }
-      return { tally: Object.keys(tally).map(k => k + '×' + tally[k]).join('、'), who: seen.size };
+      return { tally: Object.keys(tally).map(k => k + '×' + tally[k]).join('、'), who: seen.size,
+               want: Math.round(wk * lazyPart()) + '×' + n };
     };
-    return { w20: draw(20, 40), w5: draw(5, 10), w2: draw(2, 10) };
+    return { w20: draw(20, 40), w5: draw(5, 10), w2: draw(2, 10), mode: lazyMode };
   });
-  ok('每座開工重抽一成的人偷懶，人數固定、抽到的不是固定那幾個',
-     lazyRoll.w20.tally === '2×40' && lazyRoll.w5.tally === '1×10' &&
-     lazyRoll.w2.tally === '0×10' && lazyRoll.w20.who >= 15,
-     '20 人開工 40 次 → 每次偷懶 [' + lazyRoll.w20.tally + ']、輪到過 ' + lazyRoll.w20.who +
-     ' 個不同的人；5 人 [' + lazyRoll.w5.tally + ']；2 人 [' + lazyRoll.w2.tally + ']');
+  ok('每座開工照這一檔的比例重抽偷懶的人，人數固定、抽到的不是固定那幾個',
+     lazyRoll.w20.tally === lazyRoll.w20.want && lazyRoll.w5.tally === lazyRoll.w5.want &&
+     lazyRoll.w2.tally === lazyRoll.w2.want && lazyRoll.w20.who >= 15,
+     '（' + lazyRoll.mode + '）20 人開工 40 次 → 每次偷懶 [' + lazyRoll.w20.tally + ']、輪到過 ' +
+     lazyRoll.w20.who + ' 個不同的人；5 人 [' + lazyRoll.w5.tally + ']；2 人 [' + lazyRoll.w2.tally +
+     ']；期望 ' + [lazyRoll.w20.want, lazyRoll.w5.want, lazyRoll.w2.want].join('／'));
 
   /* 施工中那一整段：偷懶的人在做什麼、其他人有沒有被拖累、地標蓋不蓋得完。
      跑一輪留著給下面三條用（一輪要一分多鐘）。 */
@@ -9922,7 +9925,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     if (mi >= 0 && k0 >= 0 && !workers[mi].lazy) { workers[k0].lazy = 0; workers[mi].lazy = 1; }
     const idx = workers.map((w, i) => w.lazy ? i : -1).filter(i => i >= 0);
     const o = { n: idx.length, carried: 0, home: 0, wander: 0, ev: 0, frames: 0, busy: 0, others: 0,
-                mage: mi >= 0 && workers[mi].lazy ? 1 : 0 };
+                mage: mi >= 0 && workers[mi].lazy ? 1 : 0,
+                want: Math.round(workers.length * lazyPart()) };   // 照這一檔算（v1.219）
     let t = 0;
     while (phase === 'build' && t < 900) {
       step(0.05); t += 0.05; o.frames++;
@@ -9947,7 +9951,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return o;
   });
   ok('施工中偷懶的人不搬地標的料，沒抽中的照常上工',
-     lazyRun.n === 2 && lazyRun.carried === 0 && lazyRun.others === 0 && lazyRun.busy > 5,
+     lazyRun.n === lazyRun.want && lazyRun.carried === 0 && lazyRun.others === 0 && lazyRun.busy > 5,
      '20 人裡 ' + lazyRun.n + ' 個偷懶：手上出現地標建材 ' + lazyRun.carried + ' 幀；' +
      '沒抽中的跑去蓋房子 ' + lazyRun.others + ' 幀，平均 ' + lazyRun.busy + ' 個人手上有貨');
   ok('偷懶的人在施工中就跑閒晃事件（去蓋自己的家）',
@@ -9960,7 +9964,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      lazyRun.stolen === 0 && lazyRun.mage === 1 && lazyRun.phase === 'done' &&
      lazyRun.placed === lazyRun.total,
      '村子那 ' + lazyRun.homeSet + ' 塊裡，不是自己挖的有 ' + lazyRun.stolen +
-     ' 塊（偷懶的那兩個裡有魔法師：' + (lazyRun.mage ? '是' : '否') + '）；地標 ' +
+     ' 塊（偷懶的那幾個裡有魔法師：' + (lazyRun.mage ? '是' : '否') + '）；地標 ' +
      lazyRun.placed + '/' + lazyRun.total + '（' + lazyRun.phase + '）');
 
   /* 被工具打倒才會收心上工。順便驗「倒地」的界線：站著被點著、抱頭跑圈圈的那種不算。 */
@@ -10047,6 +10051,76 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '施工中 ' + lazyDone.during + ' 個人在蓋自己的家（偷懶的 ' + lazyDone.lazy +
      ' 個），慶祝散場後重挑到「' + lazyDone.ev + '」、' + lazyDone.crew +
      ' 個人上工、掛著 ' + lazyDone.homes + ' 筆');
+
+  /* 小人模式（v1.219）：施工中換一檔**立刻**照新比例補差額（使用者選「立刻生效，只補差額」）——
+     調高只從正在上工的人裡加抽、原本偷懶的照舊；調低只讓多出來的收心、剩下的照舊。
+     驗的是規則本身：名單是不是超集／子集、中途被抽中的人手上有沒有留著地標的料與格子、
+     新抽到的人有沒有被派進閒晃事件、收心的人蓋到一半的家有沒有放掉、完工之後換檔不動名單。 */
+  const lazySwap = await page.evaluate(() => {
+    cleanTools(); clearHomes();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(20);
+    const mode0 = lazyMode;
+    setLazyMode('norm'); startBuild(true);
+    scatterFree();                                     // 料鋪滿：換檔那一刻大多數人手上都有貨
+    for (let k = 0; k < 300 && phase !== 'build'; k++) step(0.05);   // 等整地收工
+    for (let k = 0; k < 200; k++) step(0.05);
+    const list = () => workers.map((w, i) => w.lazy ? i : -1).filter(i => i >= 0);
+    const a = list();
+    const had = workers.map(w => w.load.length);
+    const busy = workers.filter(w => !w.lazy && w.load.length).length;
+    setLazyMode('chill');
+    const b = list();
+    const added = b.filter(i => a.indexOf(i) < 0);
+    const hadN = added.filter(i => had[i] > 0).length;
+    const held = added.filter(i => workers[i].load.length || workers[i].carry).length;
+    /* 已經出手、還在半空的那幾塊**本來就**占著目標格，落定才放（b.slot，見 updWorker 的 build
+       與 hurl／castOne）——那不是他還認著，是那塊積木在路上。只算沒有積木在飛過去的那幾格。 */
+    const flying = new Set(blocks.filter(x => x.st === TOSS && x.hh < 0 && x.slot >= 0).map(x => x.slot));
+    const inAir = bp.slots.filter((s, k) => added.indexOf(s.claimed) >= 0 && flying.has(k)).length;
+    const claimed = bp.slots.filter((s, k) => added.indexOf(s.claimed) >= 0 && !flying.has(k)).length;
+    const armed = evArm;
+    step(0.05);
+    const joined = added.filter(i => workers[i].hm >= 0).length;
+    for (let k = 0; k < 100; k++) step(0.05);
+    const homeN = b.filter(i => workers[i].hm >= 0).length;
+    setLazyMode('rush');
+    const c = list();
+    const quit = b.filter(i => c.indexOf(i) < 0);
+    const quitHm = quit.filter(i => workers[i].hm >= 0).length;
+    // 完工之後換檔只記下來：那時候偷懶的旗標沒有意義，下一座開工才照新的一檔抽
+    completeNow();
+    const d0 = list().join(','), ph = phase;
+    setLazyMode('chill');
+    const d1 = list().join(','), dMode = lazyMode;
+    startBuild(true);
+    const e = list().length;
+    setLazyMode(mode0);
+    return { a: a.length, b: b.length, c: c.length, e, ph, dMode,
+             want: LAZY_MODES.map(m => Math.round(20 * m.part)),
+             keepA: a.every(i => b.indexOf(i) >= 0), sub: c.every(i => b.indexOf(i) >= 0),
+             added: added.length, hadN, held, claimed, inAir, busy, armed, joined, homeN,
+             quit: quit.length, quitHm, doneSame: d0 === d1 };
+  });
+  ok('施工中換一檔立刻照新比例補差額：調高只加抽、調低只收心，其他人不動',
+     lazySwap.a === lazySwap.want[1] && lazySwap.b === lazySwap.want[0] &&
+     lazySwap.c === lazySwap.want[2] && lazySwap.keepA && lazySwap.sub,
+     '20 人：普通 ' + lazySwap.a + ' → 悠閒 ' + lazySwap.b + '（原本那 ' + lazySwap.a + ' 個都還在：' +
+     lazySwap.keepA + '）→ 高壓 ' + lazySwap.c + '（留下的都是原本在偷懶的：' + lazySwap.sub +
+     '，收心 ' + lazySwap.quit + ' 個）；期望 ' + lazySwap.want.join('／'));
+  ok('中途被抽去偷懶的人把手上的料與認的格子放掉，閒晃事件重挑把他們派進去',
+     lazySwap.held === 0 && lazySwap.claimed === 0 &&
+     lazySwap.armed === 1 && lazySwap.joined > 0,
+     '加抽 ' + lazySwap.added + ' 個（換檔前手上有貨的 ' + lazySwap.hadN + ' 個，全場 ' +
+     lazySwap.busy + ' 個）：換檔後手上還有貨 ' + lazySwap.held + ' 個、地標還記在他們名下 ' +
+     lazySwap.claimed + ' 格（另有 ' + lazySwap.inAir + ' 格是已經出手、還在半空的）；事件重挑 evArm=' +
+     lazySwap.armed + '，下一幀就有 ' +
+     lazySwap.joined + ' 個去蓋家（5 秒後偷懶的 ' + lazySwap.b + ' 個裡 ' + lazySwap.homeN + ' 個）');
+  ok('收心的人蓋到一半的家放掉；完工之後換檔只記下來，下一座開工才照新的一檔抽',
+     lazySwap.quitHm === 0 && lazySwap.ph === 'done' && lazySwap.doneSame &&
+     lazySwap.dMode === 'chill' && lazySwap.e === lazySwap.want[0],
+     '收心的 ' + lazySwap.quit + ' 個裡還掛著家 ' + lazySwap.quitHm + ' 個；完工（' + lazySwap.ph +
+     '）時換到悠閒名單沒動：' + lazySwap.doneSame + '，下一座開工抽了 ' + lazySwap.e + ' 個');
 
   // 後面幾段不該再有房子、事件與偷懶（見 installClean）
   await page.evaluate(() => {
@@ -11684,6 +11758,68 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `#toolbox:hover` 開的（不只是 .open 那個 class）——指標停在上面它就一直開著，
      後面每一條「真的用滑鼠點畫面」的測試都會先打到選單。v1.110 把工具搬回上方中央
      之後實際踩到：水桶那兩條點的是金字塔頂端（640,271），剛好落在展開的選單裡。 */
+  await page.mouse.move(900, 500);
+
+  /* 小人模式（v1.219）：工具小窗旁邊那一顆，使用者選「跟工具一樣的小窗」，所以要驗的也是
+     上面那幾件：收著不擋畫面（兩顆包在 #dock 裡，中間那道縫也要打到畫布）、指上去才展開、
+     選了就換、選完就收、觸控點得開。偷懶在測試裡是關掉的（installClean），換檔不會生出人來。 */
+  const modeIdle = await page.evaluate(() => {
+    const r = document.getElementById('modes').getBoundingClientRect();
+    const mid = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const a = document.getElementById('toolbox').getBoundingClientRect();
+    const b = document.getElementById('modebox').getBoundingClientRect();
+    const gap = document.elementFromPoint((a.right + b.left) / 2, (a.top + a.bottom) / 2);
+    return { menu: getComputedStyle(document.getElementById('modeMenu')).visibility,
+             hit: mid ? mid.tagName : '—', gap: gap ? gap.tagName : '—',
+             side: b.left >= a.right && Math.abs(b.top - a.top) < 2,
+             cur: document.getElementById('modeNow').dataset.cur, mode: lazyMode,
+             label: document.getElementById('modeNow').textContent.replace(/\s+/g, '') };
+  });
+  ok('小人模式的小窗排在工具右邊，收著的選單與兩顆中間的縫都不擋畫面',
+     modeIdle.menu === 'hidden' && modeIdle.hit === 'CANVAS' && modeIdle.gap === 'CANVAS' &&
+     modeIdle.side && modeIdle.cur === modeIdle.mode,
+     '小窗寫著「' + modeIdle.label + '」（' + modeIdle.cur + '）、排在工具右邊 ' + modeIdle.side +
+     '；選單 ' + modeIdle.menu + '、那塊點下去打到 ' + modeIdle.hit + '、兩顆中間的縫打到 ' + modeIdle.gap);
+  await page.hover('#modeNow');
+  await page.waitForTimeout(200);
+  const modeOpen = await page.evaluate(() => ({
+    menu: getComputedStyle(document.getElementById('modeMenu')).visibility,
+    tools: getComputedStyle(document.getElementById('toolMenu')).visibility,
+    list: [...document.querySelectorAll('#modes .mode')].map(e => e.textContent.replace(/\s+/g, '')).join('、'),
+    want: LAZY_MODES.map(m => m.k + m.n + Math.round(m.part * 100) + '%').join('、'),
+    on: [...document.querySelectorAll('#modes .mode.on')].map(e => e.dataset.mode).join(',')
+  }));
+  ok('指到小人模式才展開三檔（工具選單不跟著開），每一檔寫出比例、亮的是現在這一檔',
+     modeOpen.menu === 'visible' && modeOpen.tools === 'hidden' && modeOpen.list === modeOpen.want &&
+     modeOpen.on === modeIdle.mode,
+     '選單 ' + modeOpen.menu + '、工具選單 ' + modeOpen.tools + '：' + modeOpen.list + '，亮的是 ' + modeOpen.on);
+  await page.click('#modes [data-mode="chill"]');
+  const modePick = await page.evaluate(() => ({
+    mode: lazyMode, pref: pref.lazy, cur: document.getElementById('modeNow').dataset.cur,
+    label: document.getElementById('modeNow').textContent.replace(/\s+/g, ''),
+    menu: getComputedStyle(document.getElementById('modeMenu')).visibility
+  }));
+  ok('選了哪一檔，小窗就換成哪一檔、寫進設定，選完不用移開滑鼠就收',
+     modePick.mode === 'chill' && modePick.pref === 'chill' && modePick.cur === 'chill' &&
+     modePick.label.indexOf('悠閒') >= 0 && modePick.menu === 'hidden',
+     '小窗寫著「' + modePick.label + '」、lazyMode=' + modePick.mode + '、pref.lazy=' + modePick.pref +
+     '，點完那一瞬間選單 ' + modePick.menu);
+  const modeTap = await page.evaluate(() => {
+    const box = document.getElementById('modebox');
+    box.classList.remove('open');
+    document.getElementById('modeNow').click();
+    const opened = box.classList.contains('open');
+    const tool = document.getElementById('toolbox').classList.contains('open');
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const closed = !box.classList.contains('open');
+    document.getElementById('modeNow').click();
+    document.querySelector('#modes [data-mode="norm"]').click();       // 換回預設，順便驗選完會收
+    return { opened, tool, closed, afterPick: !box.classList.contains('open'), mode: lazyMode };
+  });
+  ok('小人模式觸控也能用：點小窗展開（工具小窗不跟著開），點別處或選完就收起來',
+     modeTap.opened && !modeTap.tool && modeTap.closed && modeTap.afterPick && modeTap.mode === 'norm',
+     '點開 ' + modeTap.opened + '（工具小窗 ' + modeTap.tool + '）、點別處收起 ' + modeTap.closed +
+     '、選完收起 ' + modeTap.afterPick + '，換回 ' + modeTap.mode);
   await page.mouse.move(900, 500);
 
   await reset(page, { shape: '新天鵝堡', cnt: 1200, workers: 4 });
@@ -25784,6 +25920,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const hit = (id, v) => [...document.getElementById(id).children]
       .find(b => +b.dataset.v === v).click();
     hit('cnt', 1800); hit('wk', 40); hit('spd', 0.5);
+    document.querySelector('#modes [data-mode="rush"]').click();       // 小人模式（v1.219）
     document.getElementById('mute').checked = true;
     document.getElementById('mute').dispatchEvent(new Event('change', { bubbles: true }));
     return { pref: JSON.parse(JSON.stringify(pref)) };
@@ -25799,9 +25936,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return {
       cnt: targetCnt, wk: workers.length, spd: timeScale, mute: muted,
       onCnt: on('cnt'), onWk: on('wk'), onSpd: on('spd'),
-      domMute: document.getElementById('mute').checked
+      domMute: document.getElementById('mute').checked,
+      lazy: lazyMode, lazyPref: pref.lazy, lazyCur: document.getElementById('modeNow').dataset.cur,
+      lazyOn: [...document.querySelectorAll('#modes .mode.on')].map(e => e.dataset.mode).join(',')
     };
   });
+  ok('重開後小人模式也跟著回來（小窗與選單亮的那一檔一起）',
+     prefBack.lazy === 'rush' && prefBack.lazyPref === 'rush' && prefBack.lazyCur === 'rush' &&
+     prefBack.lazyOn === 'rush',
+     'lazyMode=' + prefBack.lazy + '、pref.lazy=' + prefBack.lazyPref + '、小窗 ' + prefBack.lazyCur +
+     '、選單亮的 ' + prefBack.lazyOn);
   ok('重開後設定自動套用（不用每次重調）',
      prefBack.cnt === 1800 && prefBack.wk === 40 && Math.abs(prefBack.spd - 0.5) < 0.01 && prefBack.mute === true,
      '建材 ' + prefBack.cnt + '、小人 ' + prefBack.wk + '、速度 ' + prefBack.spd + '、靜音 ' + prefBack.mute);
@@ -25813,18 +25957,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 面板只剩三檔，中間值選不出來了：存檔裡不是那三檔的值一律吸到最近的一檔
      （壞掉的存檔也一樣，不然畫面上會三顆都不亮、跑的卻是第四個數字）。 */
   const prefClamp = await page.evaluate(() => {
-    pref.cnt = 99999; pref.wk = -5; pref.spd = 900; save();
+    pref.cnt = 99999; pref.wk = -5; pref.spd = 900;
+    pref.lazy = 'nope';                        // 認不得的小人模式（v1.219）回到預設那一檔
+    save();
     stats = freshStats(); pref = freshPref(); load();
     const a = JSON.parse(JSON.stringify(pref));
     pref.cnt = 2600; pref.wk = 33; pref.spd = 2.4; save();       // 剛好落在兩檔中間附近
     stats = freshStats(); pref = freshPref(); load();
-    return { a, b: JSON.parse(JSON.stringify(pref)) };
+    return { a, b: JSON.parse(JSON.stringify(pref)), fresh: freshPref().lazy };
   });
   ok('存檔裡的設定會吸到最近的一檔',
      prefClamp.a.cnt === 9000 && prefClamp.a.wk === 20 && prefClamp.a.spd === 4 &&
      prefClamp.b.cnt === 3000 && prefClamp.b.wk === 40 && prefClamp.b.spd === 1,
      '99999/-5/900 → ' + prefClamp.a.cnt + '/' + prefClamp.a.wk + '/' + prefClamp.a.spd +
      '；2600/33/2.4 → ' + prefClamp.b.cnt + '/' + prefClamp.b.wk + '/' + prefClamp.b.spd);
+  ok('存檔裡認不得的小人模式回到預設那一檔', prefClamp.a.lazy === prefClamp.fresh,
+     '"nope" → ' + prefClamp.a.lazy + '（預設 ' + prefClamp.fresh + '）');
+  // 上面重開時套回來的是「高壓」：變數與畫面換回預設，後面幾段照預設那一檔跑
+  await page.evaluate(() => { setLazyMode(freshPref().lazy); pref.lazy = lazyMode; renderModes(); });
 
   /* 預設建材從 900 改成 3000 那次：舊存檔裡的 900 分不出是玩家挑的還是舊預設，
      所以認「沒有 v 欄位」的存檔，一次性換成新預設。存過一次之後就不再動它。 */
@@ -27089,8 +27239,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     await page.waitForTimeout(120);
     const r = await page.evaluate(() => {
       const box = {};
-      // 量的是收起來的小窗（toolbox）：選單平常是藏著的，不占版面
-      for (const id of ['head', 'time', 'toolbox', 'panelBtn', 'ver']) {
+      // 量的是收起來的小窗（toolbox，v1.219 起旁邊多一顆 modebox）：選單平常是藏著的，不占版面
+      for (const id of ['head', 'time', 'toolbox', 'modebox', 'panelBtn', 'ver']) {
         const e = document.getElementById(id);
         if (getComputedStyle(e).display !== 'none') box[id] = e.getBoundingClientRect();
       }
@@ -27102,7 +27252,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
             bad.push(keys[i] + '×' + keys[j]);
         }
       return { bad, headW: Math.round(box.head.width), top: Math.round(box.toolbox.top),
-               out: box.toolbox.left < -1 || box.toolbox.right > window.innerWidth + 1,
+               out: box.toolbox.left < -1 || box.modebox.right > window.innerWidth + 1,
                txt: document.getElementById('stat').textContent.replace(/\s+/g, ' ').trim() };
     });
     statTxt = r.txt;
@@ -27155,7 +27305,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 手機版空間很擠，按鈕互相疊到就點不到了——直接量方框有沒有相交 */
   const overlap = await page.evaluate(() => {
-    const ids = ['head', 'time', 'toolbox', 'panelBtn', 'ver'];
+    const ids = ['head', 'time', 'toolbox', 'modebox', 'panelBtn', 'ver'];
     const box = {};
     for (const id of ids) {
       const e = document.getElementById(id);
@@ -27173,18 +27323,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     document.getElementById('toolbox').classList.add('open');
     const menu = document.getElementById('tools').getBoundingClientRect();
     document.getElementById('toolbox').classList.remove('open');
+    document.getElementById('modebox').classList.add('open');           // 小人模式那一份（v1.219）
+    const mm = document.getElementById('modes').getBoundingClientRect();
+    document.getElementById('modebox').classList.remove('open');
     const out = keys.filter(k => box[k].right > window.innerWidth + 1 || box[k].left < -1);
-    return { bad, out, toolsW: Math.round(box.toolbox.width),
+    return { bad, out, toolsW: Math.round(box.toolbox.width), modeW: Math.round(box.modebox.width),
              menu: { w: Math.round(menu.width), l: Math.round(menu.left),
-                     r: Math.round(menu.right), t: Math.round(menu.top) } };
+                     r: Math.round(menu.right), t: Math.round(menu.top) },
+             mode: { w: Math.round(mm.width), l: Math.round(mm.left),
+                     r: Math.round(mm.right), t: Math.round(mm.top) } };
   });
-  ok('手機版的 UI 不會互相疊到', overlap.bad.length === 0, overlap.bad.join('、') || '五個區塊都沒相交');
+  ok('手機版的 UI 不會互相疊到', overlap.bad.length === 0, overlap.bad.join('、') || '六個區塊都沒相交');
   ok('手機版工具小窗不會超出畫面', overlap.out.length === 0,
      '小窗寬 ' + overlap.toolsW + '，視窗寬 390' + (overlap.out.length ? '；超出：' + overlap.out.join(',') : ''));
   ok('手機版展開的工具選單也在畫面內',
      overlap.menu.l >= 0 && overlap.menu.r <= 390 && overlap.menu.t >= 0,
      '選單寬 ' + overlap.menu.w + '，左 ' + overlap.menu.l + '、右 ' + overlap.menu.r +
      '、上 ' + overlap.menu.t);
+  ok('手機版展開的小人模式選單也在畫面內',
+     overlap.mode.l >= 0 && overlap.mode.r <= 390 && overlap.mode.t >= 0,
+     '小窗寬 ' + overlap.modeW + '、選單寬 ' + overlap.mode.w + '，左 ' + overlap.mode.l + '、右 ' +
+     overlap.mode.r + '、上 ' + overlap.mode.t);
   const pMob = await pix(page);
   ok('手機尺寸下照樣畫得出來', pMob.opaque > 0.4, (pMob.opaque * 100).toFixed(0) + '%');
   await page.screenshot({ path: path.join(OUT, '06-手機版.png') });

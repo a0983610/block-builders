@@ -534,6 +534,37 @@ function renderTools() {
      小窗也掛的話 querySelector('[data-tool=x]') 會先撈到小窗（它排在前面）。 */
   $('toolNow').dataset.cur = cur.id;
 }
+/* 小人模式選單（v1.219，見 game-workers.js 的 LAZY_MODES）：使用者選「跟工具一樣的小窗」，
+   所以長相與開合都照 renderTools——平常只留「現在是哪一檔」，指上去或點一下才展開，
+   選完就收（.open／.shut 兩個 class 的理由見上面那段）。名字與比例只寫在 LAZY_MODES。 */
+function modeTip(m) {
+  return '施工中 ' + Math.round(m.part * 100) + '% 的小人不蓋地標、去做閒晃事件（被工具打倒就收心上工）';
+}
+function renderModes() {
+  const box = $('modes');
+  box.innerHTML = '';
+  for (const m of LAZY_MODES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mode' + (lazyMode === m.id ? ' on' : '');
+    b.dataset.mode = m.id;
+    b.innerHTML = '<span class="k">' + m.k + '</span><span class="n">' + m.n +
+                  '</span><span class="p">' + Math.round(m.part * 100) + '%</span>';
+    b.title = modeTip(m);
+    b.addEventListener('click', () => {
+      audio();
+      setLazyMode(m.id); pref.lazy = lazyMode; save(); renderModes();
+      $('modebox').classList.remove('open');
+      $('modebox').classList.add('shut');
+    });
+    box.appendChild(b);
+  }
+  const cur = LAZY_MODES.find(m => m.id === lazyMode) || LAZY_MODES[1];
+  $('modeNow').innerHTML = '<span class="k">' + cur.k + '</span><span class="n">' + cur.n +
+                           '</span><span class="c">▾</span>';
+  $('modeNow').title = '小人模式：' + modeTip(cur);
+  $('modeNow').dataset.cur = cur.id;       // 同 toolNow：不掛 data-mode，免得 querySelector 先撈到小窗
+}
 function renderBadges() {
   const box = $('badges');
   box.innerHTML = BADGES.map(b => {
@@ -878,6 +909,12 @@ function boot() {
      它就一直記著「指標還在 #toolbox 裡」，之後再指回來連 pointerenter 也不會響。
      pointerover 是每次越過元素邊界都補一發，所以指回小窗那一下一定收得到。 */
   $('toolbox').addEventListener('pointerover', () => $('toolbox').classList.remove('shut'));
+  // 小人模式的小窗（v1.219）：開合跟工具小窗同一套，理由見上面那三段
+  $('modeNow').addEventListener('click', () => $('modebox').classList.toggle('open'));
+  document.addEventListener('pointerdown', e => {
+    if (!$('modebox').contains(e.target)) $('modebox').classList.remove('open');
+  });
+  $('modebox').addEventListener('pointerover', () => $('modebox').classList.remove('shut'));
   $('badgeBtn').addEventListener('click', () => {
     renderBadges();
     $('saveMsg').className = '';              // 上一次匯入的結果不要留到下一次開啟

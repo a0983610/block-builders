@@ -88,7 +88,7 @@ function newWorker(i) {
     /* 肌肉小人（mus，v1.112）：撿料跟一般工人一樣走過去撿，撿起來就地掄起來扔
        （見 updWorker 的 hurl）。掄的倒數借魔法師那個 ct——沒有人同時是兩種。 */
     mus: 0,
-    /* 偷懶（lazy，v1.134）：1＝這一輪不上工，繼續過閒晃模式的生活（見 LAZY_PART）。
+    /* 偷懶（lazy，v1.134）：1＝這一輪不上工，繼續過閒晃模式的生活（見 LAZY_MODES）。
        被工具打倒就歸零，從此這一輪都在上工（見 quitLazy）。 */
     lazy: 0,
     /* 蓋自己的家（v1.97 的閒晃事件，見 homes）：hm 是哪一間（−1＝沒在蓋），
@@ -194,22 +194,68 @@ function tagMuscle() {
    人數改了不重抽（施工中也能加減人）：新來的就是即戰力，下一座才重新抽。
    抽法是**洗牌取前 n 個**，不是每個人各擲一次點數：擲點數的話一口氣抽到一半、
    或一個都沒抽到都有可能（20 人擲 10% 實測 0～6 人），「一成」就不成立了。 */
-const LAZY_PART = 0.1;              // 幾成的人會偷懶（使用者指定 10%）
-function rollLazy() {
-  const idx = [];
-  for (let i = 0; i < workers.length; i++) { workers[i].lazy = 0; idx.push(i); }
-  for (let i = idx.length - 1; i > 0; i--) {           // 洗牌
-    const j = Math.floor(Math.random() * (i + 1));
-    const t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+/* 小人模式（v1.219，使用者：「增加小人模式選項／在破壞工具旁邊多個選單 選擇決定偷懶機制的
+   百分比／例如悠閒 普通 高壓 決定多少%小人去建地標 多少人在做閒晃事件」）。
+   三檔的比例是使用者挑的；v1.134 寫死的 LAZY_PART = 0.1 就是這張表的前身。
+   只管施工中：完工之後照舊是 HOME_PART 那一半的人去蓋家（使用者選「不變」）。
+   選單在破壞工具小窗旁邊（見 game-ui.js 的 renderModes），選哪一檔存進 pref.lazy。 */
+const LAZY_MODES = [
+  { id: 'chill', k: '😌', n: '悠閒', part: 0.5 },
+  { id: 'norm', k: '😐', n: '普通', part: 0.2 },
+  { id: 'rush', k: '😤', n: '高壓', part: 0.05 }
+];
+let lazyMode = 'norm';
+function lazyPart() { return (LAZY_MODES.find(m => m.id === lazyMode) || LAZY_MODES[1]).part; }
+/* keep＝施工中途換了一檔（見 setLazyMode）：名單不重抽，**只補差額**（使用者選的）——
+   調高就從正在上工的人裡再抽幾個去偷懶，調低就讓多出來的那幾個收心；其他人不動。
+   沒給 keep 是開工那一次（startBuild）：全部清掉，照現在這一檔重抽。 */
+function rollLazy(keep) {
+  const mix = a => {                                   // 洗牌
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  };
+  const on = [], off = [];
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    if (!keep) w.lazy = 0;
+    if (w.lazy) on.push(i);
+    /* 中途只抽站得穩的：倒地的人下一幀就會收心（見 updWorker 開頭那一行），
+       飛在半空、著火、在逃命、被幽浮吸走的也都不是「正在上工」。開工那一次全都抽得到
+       （startBuild 剛把這些狀態清掉）。 */
+    else if (!keep || !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0 || w.ufo)) off.push(i);
   }
-  const n = Math.round(workers.length * LAZY_PART);    // 20 人→2、5 人→1、2 人→0
-  for (let k = 0; k < n; k++) {
-    const w = workers[idx[k]];
+  const n = Math.round(workers.length * lazyPart());   // 20 人：悠閒 10、普通 4、高壓 1
+  if (on.length > n) {
+    /* 收心跟被打倒同一條路（戳倒一個人是先 releaseWorker、下一幀 quitLazy，見 game-ui.js
+       的 onUp）：聊到一半、演到一半、蓋家蓋到一半的都一起收掉，下一幀直接回去上工。 */
+    for (const i of mix(on).slice(0, on.length - n)) { releaseWorker(workers[i]); quitLazy(workers[i]); }
+    return;
+  }
+  const add = mix(off).slice(0, n - on.length);
+  for (const i of add) {
+    const w = workers[i];
+    /* 中途被抽中的人手上可能還有地標的料、認著格子：先整個放掉，不然那幾格永遠被他認著，
+       地標永遠差幾塊（開工那一次 startBuild 已經先放過了，再放一次是空轉） */
+    if (keep) releaseWorker(w);
     w.lazy = 1;
     /* 上一座認定的那一塊不算數：魔法師回自己家拋料時會先看 w.gb（見 castHome），
        留著的話他會把地標的建材捲進自己家——料池剛好只夠蓋完那一座（見 homeMine）。 */
     w.gb = -1;
   }
+  /* 閒晃事件的人手是**開始那一刻**派的（startHomes／startWall），中途多出來的人
+     不重挑一次就只會在旁邊閒晃，等不到事件。重挑跟換場合同一套（見 stepIdleEvent）：
+     蓋到一半的先擱著，原本的人回自己那一間，上一件蓋的東西還在就照舊是那一件（evAlive）。 */
+  if (keep && add.length && phase === 'build') { stopIdleEvent(); evArm = 1; }
+}
+/* 換一檔。施工中（含整地）立刻照新比例補差額；完工之後偷懶的旗標沒有意義
+   （那時候全場都在閒晃），存著就好，下一座開工 rollLazy 會照新的這一檔抽。 */
+function setLazyMode(id) {
+  if (!LAZY_MODES.some(m => m.id === id)) return;
+  lazyMode = id;
+  if (phase === 'build' || phase === 'clear') rollLazy(true);
 }
 /* 收心上工：蓋到一半的家先擱著（那一間留在場上，下一次事件有人會接手，見 pickUnfinished）。
    releaseWorker 要在抹掉 w.hm **之前**叫：它靠 w.hm 才找得到要放掉的那幾格（homeUnclaim）。 */

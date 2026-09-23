@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.218.0';
+const VERSION = '1.219.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -751,7 +751,7 @@ function startBuild(instant) {
     w.emo = ''; w.emoT = 0; w.emoK = 0;   // 上一座留下的表情圖示不要跟著進新工地（v1.121）
     w.y = 0; w.tilt = 0; w.vx = w.vy = w.vz = 0;
   }
-  rollLazy();                        // 這一座誰偷懶重抽（v1.134，見 LAZY_PART）
+  rollLazy();                        // 這一座誰偷懶重抽（v1.134，見 LAZY_MODES）
   for (const b of blocks) {
     // 家的那些不解（v1.97）：房子留在場上（使用者指定），只有被新工地蓋到才拆（見下面）
     if (b.hh >= 0) continue;
