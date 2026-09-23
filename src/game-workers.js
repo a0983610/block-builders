@@ -4089,6 +4089,7 @@ function digBlock(w, own) {
   const b = newBlock();
   b.x = gx; b.z = gz; b.y = HB;
   b.dug = own;                                           // 村子自己挖的？（v1.134，見 homeMine）
+  b.fresh = own;                                         // 落地時彈進工地圈就推出去（見 separate）
   b.r = b.tr = DIG_DIRT[0]; b.g = b.tg = DIG_DIRT[1]; b.b = b.tb = DIG_DIRT[2];
   /* 往**身體的側面**扔（w.a 是面向自己家的方向，± 90° 就是左右兩邊）：
      往前會扔進屋子的占地、往後會扔回工地那一側，那兩邊都可能撿不到；

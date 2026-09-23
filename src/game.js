@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.224.0';
+const VERSION = '1.224.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -509,6 +509,18 @@ function separate(b) {
   }
   const d = Math.hypot(b.x, b.z);          // 保險：擠到最後還是要留在場內
   if (d > debrisR) { b.x = b.x / d * debrisR; b.z = b.z / d * debrisR; }
+  /* 村子剛挖出來的那一塊，落定時掉進工地圈就推回圈外（v1.224.1）。digBlock 挑往哪邊扔
+     只拿初速估落點，實際會彈——房子貼著工地圈時偶爾彈進去一點點（實測 0.09 格），
+     而 homeNear 不撿工地圈裡的料，那一塊就誰都不撿了。
+     只認 fresh（剛挖、第一次落地）：房子被打爛飛進工地的那些 dug 也是 1，但那是飛了
+     幾十格進去的，整塊瞬移出來會很怪，照舊落在哪就在哪。
+     推到圈外再半塊：homeNear 比的是 ≥，剛好壓線會被浮點誤差吃掉。
+     見 開發筆記〈挖出來的料彈進工地圈〉 */
+  if (b.fresh) {
+    b.fresh = 0;
+    const e = Math.hypot(b.x, b.z), ring = siteR + KEEP;
+    if (e > 0 && e < ring) { const k = (ring + HB) / e; b.x *= k; b.z *= k; }
+  }
 }
 /* separate 的溫和版：只算一輪、力道打折、位移還給上限。
    要「每幀都擠一點」的地方（推土機鏟子前那一坨）不能用 separate——
@@ -584,6 +596,7 @@ function newBlock() {
     /* 這塊是村子自己從地上挖出來的嗎（v1.134，見 digBlock／homeMine）。施工中小人蓋自己的
        家只撿得起這一種——地上其他那些是地標的建材，料池剛好只夠蓋完那一座。 */
     dug: 0,
+    fresh: 0,                            // 1 = 村子剛挖出來、還沒落地（見 separate）
     scale: 1, snap: 0, snapFrom: null, arc: null, wob: 0, al: 1, fallIn: 0,
     gone: 0,                             // >0＝完工後多餘的碎料正在淡出（v1.109，見 clearSpare）
     burn: 0,                             // 1 = 正在燒（狀態本體在 fires 那筆裡）

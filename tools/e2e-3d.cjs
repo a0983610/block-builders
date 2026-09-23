@@ -6446,6 +6446,49 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      home.trip[1] > 0 && home.trip[3] > 0 && home.toGrab > home.toIdle * 5,
      '一趟挖幾塊 ' + JSON.stringify(home.trip) + '（設定 ' + home.cap[0] + '～' +
      home.cap[1] + '）；挖完去撿 ' + home.toGrab + ' 趟、重開一趟 ' + home.toIdle + ' 趟');
+  /* 剛挖出來的料彈進工地圈就推回圈外（v1.224.1，見 開發筆記〈挖出來的料彈進工地圈〉）。
+     完整輪種子 420304899 抓到的：房子貼著工地圈，挖出來的一塊彈進圈裡 0.09 格，
+     homeNear 不撿工地圈裡的料，它就成了誰都不撿的孤兒。
+     規則型：不跑模擬，直接擺一塊在半空讓它落地（stepBlock／stepSnap），骰子押住。
+     三種：剛挖的落在圈內（推出去）、剛挖的落在圈外（不動）、
+     dug 但不是剛挖的（房子被打爛飛進來的那種，照舊落在哪就在哪）。 */
+  const digRing = await page.evaluate(() => {
+    const keepRnd = Math.random;                 // 彈跳那一下的音效也抽骰子，押住再還回去
+    Math.random = () => 0.5;
+    const R = siteR + KEEP;
+    const spots = [R - 0.3, R + 3, R - 2];
+    /* 挑一個三個落點附近都沒有別的碎料的方位角（separate 會把它擠開） */
+    let ang = 0;
+    for (let t = 0; t < 72; t++) {
+      const a = t * Math.PI / 36;
+      if (!blocks.some(o => spots.some(r =>
+            Math.hypot(o.x - Math.cos(a) * r, o.z - Math.sin(a) * r) < 3))) { ang = a; break; }
+    }
+    const drop = (r, fresh) => {
+      const b = newBlock();
+      b.x = Math.cos(ang) * r; b.z = Math.sin(ang) * r; b.y = HB + 0.5;
+      b.dug = 1; b.fresh = fresh;
+      b.st = FLY; b.rest = false;
+      for (let t = 0; t < 400 && !b.rest; t++) {
+        if (b.snap > 0) stepSnap(b, 0.02); else stepBlock(b, 0.02);
+      }
+      if (b.cell) gridDel(b);                    // 沒進 blocks，格子裡那一筆也要收掉
+      return { rest: b.rest, r: +Math.hypot(b.x, b.z).toFixed(3), fresh: b.fresh,
+               out: b.x * b.x + b.z * b.z >= R * R };
+    };
+    const res = { R: +R.toFixed(3), inFresh: drop(spots[0], 1), outFresh: drop(spots[1], 1),
+                  inOld: drop(spots[2], 0) };
+    Math.random = keepRnd;
+    return res;
+  });
+  ok('剛挖出來的料彈進工地圈就推回圈外（房子被打飛進來的照舊）',
+     digRing.inFresh.rest && digRing.inFresh.out && digRing.inFresh.fresh === 0 &&
+     digRing.outFresh.rest && Math.abs(digRing.outFresh.r - (digRing.R + 3)) < 0.01 &&
+     digRing.inOld.rest && !digRing.inOld.out && Math.abs(digRing.inOld.r - (digRing.R - 2)) < 0.01,
+     '工地圈 ' + digRing.R + '：剛挖的落在圈內 ' + (digRing.R - 0.3).toFixed(3) + ' → ' +
+     digRing.inFresh.r + '（撿得到＝' + digRing.inFresh.out + '）、落在圈外 ' +
+     (digRing.R + 3).toFixed(3) + ' → ' + digRing.outFresh.r + '；房子飛進來的 ' +
+     (digRing.R - 2).toFixed(3) + ' → ' + digRing.inOld.r);
   /* 外型（v1.98 重做、v1.99 加款式）。使用者先說「小房子外型不像房子要調整」，
      再說「增加小房子種類 增加豐富性」。**掃過款式表裡的每一款**，不是只看這一輪剛好
      蓋出來的那幾間——不然覆蓋率要靠運氣。每一款都要有：
