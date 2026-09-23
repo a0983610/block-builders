@@ -66,7 +66,10 @@ const TOOLS = [
     tip: '點兩下：第一下點地面站出一隊八十人的小人弓箭手，第二下決定射哪裡（點建築就瞄那個高度）——45 度拋物線齊射三輪，落點散在附近（射得愈遠愈散），箭插到的地方咬掉一小片（不爆炸、不起火），插著的箭慢慢淡掉' },
   { id: 'cannon', n: '加農砲', k: '🔫',
     /* 接在最後面（見上面那段解鎖階梯的說明）：門檻是照順序算出來的，不必挑數字。 */
-    tip: '點兩下：先點架砲的位置，再點要轟的地方（點建築就瞄那個高度）——一次架 3 門、各打 6 發；砲管 18 度起跳、打不到那麼高才抬頭，砲彈走又低又直的彈道，一路拖著火，打到的地方炸開並燒起來；每開一砲噴出一大團白煙，整台被後座推得往後退一截再滾回原位' }
+    tip: '點兩下：先點架砲的位置，再點要轟的地方（點建築就瞄那個高度）——一次架 3 門、各打 6 發；砲管 18 度起跳、打不到那麼高才抬頭，砲彈走又低又直的彈道，一路拖著火，打到的地方炸開並燒起來；每開一砲噴出一大團白煙，整台被後座推得往後退一截再滾回原位' },
+  { id: 'bounce', n: '彈跳球', k: '🟠',
+    /* v1.218：點兩下，見 launchBounce。 */
+    tip: '點兩下：先點出手的位置，再點要丟過去的地方——一次 12 顆小彈跳球從那個位置的上空朝那一點飛過去，每撞一下只咬掉一小口就照撞到的那一面彈開，越彈越低，停下來就收掉' }
 ];
 /* 等差階梯（見上面那段）：TOOLS 裡沒寫 `lock: null` 的照順序補門檻，
    第 n 把＝擊飛 n × LOCK_STEP 塊。加新道具不必碰這裡。 */
@@ -95,7 +98,8 @@ const toolOk = t => !t.lock || t.lock.ok() || stats.gift.indexOf(t.id) >= 0;
    就是要轟的高度（見 useTool）——在這張表裡只是「點空地也不會沒反應」。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
-                      storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1 };
+                      storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1,
+                      bounce: 1 };
 let tool = 'hammer';
 
 /* ── 破壞道具泡泡（v1.214）───────────────────────────────
@@ -1427,6 +1431,207 @@ function dropBall(point) {
   });
   sndSwing();
 }
+/* 彈跳球（v1.218）。使用者三次要求疊起來的：
+   > 「新增破壞道具　彈跳球(比鐵球小　橘色)　操作方式同天降鐵球
+   >   每次碰撞破壞不多但是可以一直彈跳(需要計算彈的方向)」
+   > 「好像沒很會彈」
+   > 「目前這樣彈可以 但是初速太低觀賞性不足　調整點兩下 第一下是球的位置
+   >   這二下是球往那個方向　縮小球的半徑 一次丟出12顆球」
+   ① **點兩下、一次 BNC_N 顆**：出手點在第一下那個位置的正上方，高度照天降鐵球
+      （屋頂上方 DROP_UP，至少 DROP_TOP）；往第二下那一點的**地面座標**丟過去。
+      不是給一個仰角——是「沒撞到東西的話剛好落在那一點」：飛多久＝直線距離 ÷ BNC_SPD，
+      再照那個時間解出初速（水平等速、垂直把重力那一份補回去）。
+      一把各自亂一點（方向 ±BNC_YAW、俯仰 ±BNC_PITCH、速度 ±BNC_SPDJ，使用者選的「隨機小散布」）。
+   ② 撞到東西**照接觸法線反射**：法線＝碰到的每一塊指向球心的方向總和（同鐵球的 hx/hy/hz），
+      法線分量反過來只留 BNC_REST、沿著表面那一份留 BNC_FRIC。
+   ③ 一下只咬掉**最近的 BNC_BITE 塊**，咬完就彈開——鐵球是一路鑿下去，這顆是啃一口就走。
+   ④ 每一下再偏一個隨機角（最多 BNC_TILT）：平屋頂／平地的法線朝正上方，只照反射算
+      會在原地上下彈，偏一下才會亂彈跑開（使用者選的）。
+   ⑤ **不封頂、照物理彈**（使用者看了預覽說「好像沒很會彈」之後選的）：第一版封頂 18
+      （第一下只彈回 7.5）、水平再封頂 7（斜面一彈只剩 7.2），兩個都拿掉了，
+      見 開發筆記〈破壞道具：彈跳球〉。代價是斜面上一彈就往旁邊飛很遠——使用者知道之後選的。
+   ⑥ 慢慢衰減到停（使用者選的）：每彈一下只留 BNC_REST，彈不起來就貼著表面滾、滾到停就收。
+   ⑦ 撞得太輕（撞進表面的速度 < BNC_SOFT）不咬：不然停在屋頂上時，重力每一幀都把它
+      往下壓一點，會一幀咬六塊、原地鑽穿整棟。
+   ⑧ **自己一份清單 bncs、自己一顆 mesh**，上限 BNC_MAX（＝引擎的 MAXBNC 24，兩把同時在場，
+      使用者選的）。第一版跟鐵球共用 balls 那 6 格，一次 12 顆就放不下了。
+   ⑨ **一幀切成幾小步走**：半徑 0.8 的判定範圍只有 1.5，落地前後速度 60～80，
+      一幀（1/60）就走 1～1.3，掉幀時會整顆穿過一層牆。所以一幀只掃一次積木池
+      （把這一幀走得到的範圍裡的積木先撿出來），再照 BNC_SUB 切小步，每一步只跟撿出來的撞。 */
+const BNC_R = 0.8;          // 半徑（使用者選的；鐵球 BALL_R 3.1）
+const BNC_N = 12;           // 一次丟幾顆（使用者指定）
+const BNC_SPD = 40;         // 平均速度：出手點到落點的直線距離 ÷ 飛行時間
+const BNC_YAW = 0.21;       // 一把裡每顆的方向亂多少（±弧度，約 12°）
+const BNC_PITCH = 0.1;      // 俯仰亂多少（±弧度，約 6°）
+const BNC_SPDJ = 0.15;      // 速度亂多少（±比例）
+const BNC_MAX = ENG.MAXBNC; // 場上最多幾顆（引擎那邊開幾格就是幾顆）
+const BNC_SUB = 0.5;        // 一小步最多走多遠（見 ⑨）
+const BNC_BITE = 6;         // 一下最多打掉幾塊（使用者選的）
+const BNC_REST = 0.85;      // 法線方向留多少（恢復係數）
+const BNC_FRIC = 0.9;       // 沿著表面那一份留多少
+const BNC_TILT = 0.4;       // 彈開方向的隨機偏角上限（弧度，約 23°）
+const BNC_SOFT = 4;         // 撞進表面的速度小於這個就不咬、不彈，只是靠著
+const BNC_ROLL = 0.35;      // 靠著表面滾的阻力：每秒保留多少速度
+const BNC_STOP = 1.5;       // 速度小於這個……
+const BNC_STOP_T = 0.3;     // ……連續這麼久就算停了
+/* 保險用的壽命上限（正常是衰減到停先收）。不封頂之後壽命跟著速度走：
+   從 58 直直掉下來約 24 秒，最高的大笨鐘 9000 約 40 秒——60 才不會在半空中收掉。 */
+const BNC_LIFE = 60;
+let bncs = null;            // 在場的彈跳球
+/* 第一下記位置，第二下丟出去（同保齡球）。 */
+function aimBounce(point) {
+  if (!aim) { aimFirst(point, 2.5, 0xff8a1f); return; }
+  launchBounce(aim, point);
+}
+function spawnBnc(x, y, z, vx, vy, vz) {
+  if (!bncs) bncs = [];
+  if (bncs.length >= BNC_MAX) bncs.shift();        // 滿了把最早那顆擠掉（同鐵球）
+  const o = { x, y, z, vx, vy, vz, r: BNC_R, ang: 0, ax: 1, az: 0, hit: 0,
+              life: BNC_LIFE, bn: 0, still: 0 };   // bn＝彈了幾下（測試用）、still＝已經慢了多久
+  bncs.push(o);
+  return o;
+}
+function launchBounce(from, toward) {
+  const top = Math.max(DROP_TOP, siteTopNow() + DROP_UP);
+  const dx = toward.x - from.x, dy = BNC_R - top, dz = toward.z - from.z;   // 瞄的是球心貼地那一點
+  const T = Math.hypot(dx, dy, dz) / BNC_SPD;
+  const vx = dx / T, vy = dy / T + 0.5 * GRAV * T, vz = dz / T;         // T 秒後剛好落在那一點
+  const h = Math.hypot(vx, vz), s = Math.hypot(h, vy);
+  const yaw = Math.atan2(vz, vx), pit = Math.atan2(vy, h);
+  for (let i = 0; i < BNC_N; i++) {
+    const a = yaw + rr(-BNC_YAW, BNC_YAW), p = pit + rr(-BNC_PITCH, BNC_PITCH);
+    const k = s * (1 + rr(-BNC_SPDJ, BNC_SPDJ));
+    spawnBnc(from.x, top, from.z,
+             Math.cos(a) * Math.cos(p) * k, Math.sin(p) * k, Math.sin(a) * Math.cos(p) * k);
+  }
+  aim = null;
+  sndSwing();
+}
+/* 照法線 (nx, ny, nz) 彈開：法線分量反過來留 BNC_REST、沿表面那份留 BNC_FRIC，
+   再往隨機方向偏最多 BNC_TILT（偏完還朝著表面裡面的話就不偏；偏角不改速度大小）。 */
+function bncReflect(o, nx, ny, nz) {
+  const vn = o.vx * nx + o.vy * ny + o.vz * nz;
+  let vx = (o.vx - vn * nx) * BNC_FRIC - vn * BNC_REST * nx;
+  let vy = (o.vy - vn * ny) * BNC_FRIC - vn * BNC_REST * ny;
+  let vz = (o.vz - vn * nz) * BNC_FRIC - vn * BNC_REST * nz;
+  const s = Math.hypot(vx, vy, vz);
+  if (s > 1e-6) {
+    const ux = vx / s, uy = vy / s, uz = vz / s;
+    // 跟 u 垂直的兩個方向 p、q（先拿一個不平行的軸去叉）
+    const ax = Math.abs(uy) < 0.9 ? 0 : 1, ay = 1 - ax;
+    let px = uy * 0 - uz * ay, py = uz * ax - ux * 0, pz = ux * ay - uy * ax;
+    const pl = Math.hypot(px, py, pz); px /= pl; py /= pl; pz /= pl;
+    const qx = uy * pz - uz * py, qy = uz * px - ux * pz, qz = ux * py - uy * px;
+    const f = Math.random() * Math.PI * 2, th = Math.random() * BNC_TILT;
+    const cf = Math.cos(f), sf = Math.sin(f), ct = Math.cos(th), st = Math.sin(th);
+    const wx = ux * ct + (px * cf + qx * sf) * st;
+    const wy = uy * ct + (py * cf + qy * sf) * st;
+    const wz = uz * ct + (pz * cf + qz * sf) * st;
+    if (wx * nx + wy * ny + wz * nz > 0.05) { vx = wx * s; vy = wy * s; vz = wz * s; }
+    else { vx = ux * s; vy = uy * s; vz = uz * s; }
+  }
+  o.vx = vx; o.vy = vy; o.vz = vz;
+  o.bn++;
+}
+// 彈得越快音越高（40 以上就是最高那一聲）
+function sndBoing(v) { tone(300 + Math.min(1, v / 40) * 260, 0.16, 'sine', 0.07, 1.9, 'boing'); }
+const BNC_POOL = [], BNC_NEAR = [], BNC_D2 = [];
+function stepBncs(dt) {
+  if (!bncs) return;
+  for (let i = bncs.length - 1; i >= 0; i--) {
+    const o = bncs[i];
+    o.life -= dt;
+    if (stepBounce(o, dt)) { spawnRing({ x: o.x, y: 0, z: o.z }, 1.5); bncs.splice(i, 1); }
+  }
+  if (!bncs.length) bncs = null;
+}
+/* 彈跳球這一幀：切小步走（見 ⑨）、人與動物、停了沒。回傳 true＝該收掉了。 */
+function stepBounce(o, dt) {
+  const R = o.r + 0.7;
+  const sp0 = Math.hypot(o.vx, o.vy, o.vz) + GRAV * dt;
+  const n = Math.min(8, Math.max(1, Math.ceil(sp0 * dt / BNC_SUB)));
+  // 這一幀走得到的範圍裡的積木先撿出來：一幀只掃一次積木池
+  const reach = R + sp0 * dt, reach2 = reach * reach;
+  BNC_POOL.length = 0;
+  for (const b of blocks) {
+    if (b.st !== SET && b.st !== FREE) continue;
+    const dx = b.x - o.x, dy = b.y - o.y, dz = b.z - o.z;
+    if (dx * dx + dy * dy + dz * dz <= reach2) BNC_POOL.push(b);
+  }
+  const h = dt / n;
+  for (let k = 0; k < n; k++) {
+    o.vy -= GRAV * h;
+    o.x += o.vx * h; o.y += o.vy * h; o.z += o.vz * h;
+    bncTouch(o, h, R);
+  }
+  ballShove(o, R);
+  const sp = Math.hypot(o.vx, o.vz);
+  o.ang += sp / o.r * dt;
+  if (sp > 1e-4) { o.ax = o.vz / sp; o.az = -o.vx / sp; }
+  o.still = Math.hypot(sp, o.vy) < BNC_STOP ? o.still + dt : 0;
+  return o.still >= BNC_STOP_T || o.life <= 0 || Math.hypot(o.x, o.z) > debrisR + 24;
+}
+/* 一小步的碰撞：地面、撿出來的那幾塊積木。 */
+function bncTouch(o, h, R) {
+  let rest = false;                                // 這一步有沒有靠在東西上
+  if (o.y <= o.r) {                                // 地面：不咬，只彈
+    o.y = o.r;
+    if (o.vy < -BNC_SOFT) {
+      bncReflect(o, 0, 1, 0);
+      spawnDust({ x: o.x, y: 0.3, z: o.z }, 1, 2);
+      sndBoing(o.vy);
+    } else { if (o.vy < 0) o.vy = 0; rest = true; }
+  }
+  const R2 = R * R;
+  let hx = 0, hy = 0, hz = 0;
+  BNC_NEAR.length = 0; BNC_D2.length = 0;
+  for (const b of BNC_POOL) {
+    if (b.st !== SET && b.st !== FREE) continue;   // 前一步被咬掉的已經飛走了
+    const dx = b.x - o.x, dy = b.y - o.y, dz = b.z - o.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > R2) continue;
+    const d = Math.max(0.4, Math.sqrt(d2));
+    hx -= dx / d; hy -= dy / d; hz -= dz / d;      // 積木在哪一邊，法線就朝反方向
+    BNC_NEAR.push(b); BNC_D2.push(d2);
+  }
+  const nl = Math.hypot(hx, hy, hz);
+  if (BNC_NEAR.length && nl > 1e-6) {
+    const nx = hx / nl, ny = hy / nl, nz = hz / nl;
+    const vn = o.vx * nx + o.vy * ny + o.vz * nz;  // 負的＝正往表面裡面撞
+    if (vn < -BNC_SOFT) {
+      /* 只咬最近的那幾塊（使用者：「每次碰撞破壞不多」）。 */
+      const idx = BNC_NEAR.map((b, i) => i).sort((a, b) => BNC_D2[a] - BNC_D2[b]);
+      const sp = Math.hypot(o.vx, o.vy, o.vz);
+      let n = 0, own = 0;
+      for (let k = 0; k < idx.length && k < BNC_BITE; k++) {
+        const b = BNC_NEAR[idx[k]];
+        const dx = b.x - o.x, dy = b.y - o.y, dz = b.z - o.z;
+        const d = Math.max(0.4, Math.sqrt(BNC_D2[idx[k]]));
+        const wasSet = b.st === SET, wasOwn = b.hh < 0;   // 同鐵球：breakBlock 之後就分不出來
+        breakBlock(b,
+          o.vx * 0.3 + dx / d * 4 + rr(-1.5, 1.5),
+          Math.max(2, sp * 0.15) + dy / d * 2 + rr(1, 3),
+          o.vz * 0.3 + dz / d * 4 + rr(-1.5, 1.5));
+        if (wasSet) { n++; if (wasOwn) own++; }         // 地上的散料被撞開不算破壞
+      }
+      bncReflect(o, nx, ny, nz);
+      if (n) {
+        o.hit += n;
+        afterHit(n, { x: o.x, y: o.y, z: o.z }, R, own);
+        spawnDust({ x: o.x, y: o.y, z: o.z }, o.r, n);
+      }
+      sndBoing(-vn);
+    } else if (vn < 0) {
+      // 撞得太輕：把撞進去的那一份拿掉，靠著表面（見 ⑦）
+      o.vx -= vn * nx; o.vy -= vn * ny; o.vz -= vn * nz;
+      rest = true;
+    }
+  }
+  if (rest) {                                      // 靠著東西滾：慢慢停下來
+    const k = Math.pow(BNC_ROLL, h);
+    o.vx *= k; o.vz *= k;
+  }
+}
 /* 等第二點的時候在第一點畫一圈會脈動的光環：沒有這個的話，
    第一下點下去畫面完全沒反應，看起來像點壞了。
    **高度預設寫死貼地**：保齡球、龍捲風、投石機、王之財寶、箭雨的第一點都是地面
@@ -1451,6 +1656,28 @@ function aimRings() {
 /* 每一顆各自跑（v1.116：以前只有一顆，第二顆一出手就把第一顆蓋掉——球還在滾就整顆
    憑空不見，那正是使用者看到的）。每顆都要掃一次整池積木，所以顆數卡在 BALL_MAX。
    畫在 draw() 那邊統一送出去（ENG.putBalls），跟龍捲風、炸彈那些清單型道具同一套。 */
+/* 球撞開擋路的人與動物（v1.218 從 stepBall 抽出來，彈跳球也要用）。 */
+function ballShove(o, R) {
+  /* 擋在球路上的人被撞開：方向是「球的行進方向 ＋ 從球心往外推」，
+     所以正面被撞的往前飛，擦邊的往旁邊彈開。球不會點火，純粹是被推走。 */
+  for (const w of workers) {
+    if (w.air) continue;
+    // 高度也要算：球還在半空中飛過頭頂時不該把下面的人撞飛
+    const dx = w.x - o.x, dy = o.y - 0.9, dz = w.z - o.z;
+    const dd = dx * dx + dy * dy + dz * dz;
+    if (dd > (R + 0.8) * (R + 0.8)) continue;
+    const d = Math.max(0.4, Math.hypot(dx, dz));
+    tossWorker(w, o.vx * 0.6 + dx / d * 6, rr(4, 7), o.vz * 0.6 + dz / d * 6, false);
+  }
+  /* 球也撞得動那幾隻（v1.146）。飛龍在天上，球滾不到牠——eachBeastNear 對牠算的是
+     三維距離，天上那條線本來就在半徑外。 */
+  eachBeastNear({ x: o.x, y: o.y, z: o.z }, R + 0.8, (m, d) => {
+    if (m.air) return;
+    const dd = Math.max(0.4, Math.hypot(m.x - o.x, m.z - o.z));
+    if (tossBeast(m, o.vx * 0.6 + (m.x - o.x) / dd * 6, rr(4, 7),
+                  o.vz * 0.6 + (m.z - o.z) / dd * 6, false)) beastHit(m);   // v1.208
+  });
+}
 function stepBall(dt) {
   if (!balls) return;
   for (let i = balls.length - 1; i >= 0; i--) {
@@ -1511,25 +1738,7 @@ function stepBall(dt) {
         o.vz * 0.5 + dz / d * 7 + rr(-2, 2));
       if (wasSet) { n++; if (wasOwn) own++; }      // 地上的散料被撞開不算破壞
     }
-    /* 擋在球路上的人被撞開：方向是「球的行進方向 ＋ 從球心往外推」，
-       所以正面被撞的往前飛，擦邊的往旁邊彈開。球不會點火，純粹是被推走。 */
-    for (const w of workers) {
-      if (w.air) continue;
-      // 高度也要算：球還在半空中飛過頭頂時不該把下面的人撞飛
-      const dx = w.x - o.x, dy = o.y - 0.9, dz = w.z - o.z;
-      const dd = dx * dx + dy * dy + dz * dz;
-      if (dd > (R + 0.8) * (R + 0.8)) continue;
-      const d = Math.max(0.4, Math.hypot(dx, dz));
-      tossWorker(w, o.vx * 0.6 + dx / d * 6, rr(4, 7), o.vz * 0.6 + dz / d * 6, false);
-    }
-    /* 球也撞得動那幾隻（v1.146）。飛龍在天上，球滾不到牠——eachBeastNear 對牠算的是
-       三維距離，天上那條線本來就在半徑外。 */
-    eachBeastNear({ x: o.x, y: o.y, z: o.z }, R + 0.8, (m, d) => {
-      if (m.air) return;
-      const dd = Math.max(0.4, Math.hypot(m.x - o.x, m.z - o.z));
-      if (tossBeast(m, o.vx * 0.6 + (m.x - o.x) / dd * 6, rr(4, 7),
-                    o.vz * 0.6 + (m.z - o.z) / dd * 6, false)) beastHit(m);   // v1.208
-    });
+    ballShove(o, R);
     if (n) {
       o.hit += n;
       afterHit(n, { x: o.x, y: o.y, z: o.z }, R, own);
@@ -7051,6 +7260,7 @@ function useTool(hit) {
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'storm') { callStorm({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'drop') { dropBall(hit.point); return 0; }
+  if (tool === 'bounce') { aimBounce(hit.point); return 0; }
   // 第二下點在建築上就連高度一起當目標（v1.152，見 pickGate）
   if (tool === 'gate') { pickGate(hit.point, hit.kind === 'block'); return 0; }
   /* 兩下都是「點到哪就是哪」：第一下記位置，第二下揮（v1.202，見 aimSword）。

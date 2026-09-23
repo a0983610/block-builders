@@ -84,6 +84,7 @@ function step(dt) {
   stepSwing(dt);
   stepQuake(dt);
   stepBall(dt);
+  stepBncs(dt);
   stepTwist(dt);
   stepTrebs(dt);
   stepCannons(dt);
@@ -238,6 +239,7 @@ function draw() {
   if (meteors) for (const m of meteors) if (m.lit) metFly.push(m);
   ENG.putMeteors(metFly);
   ENG.putBalls(balls || EMPTY);
+  ENG.putBncs(bncs || EMPTY);
   ENG.putTornados(twists || EMPTY);
   ENG.putFire(fireList());
   ENG.putFlash(flashes);

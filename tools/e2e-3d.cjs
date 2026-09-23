@@ -421,6 +421,7 @@ const installClean = page => page.evaluate(() => {
     clearHomes();
     swing = null; ENG.hideHammer();
     balls = null; ENG.putBalls([]); aim = null;
+    bncs = null; ENG.putBncs([]);                            // 彈跳球（v1.218）：自己一份清單
     twists = null; ENG.putTornados([]);
     trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
     cannons = null; ENG.putCannons([]); ENG.putShells([]);   // 加農砲（v1.204）：砲與飛在空中的彈
@@ -12324,6 +12325,158 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dropShare.capped === dropShare.max,
      '混著丟 ' + (dropShare.max * 2) + ' 顆 → 場上 ' + dropShare.capped +
      ' 顆（上限 ' + dropShare.max + '）');
+
+  /* ── 彈跳球（v1.218）─────────────────────────────────────
+     使用者：「新增破壞道具　彈跳球(比鐵球小　橘色)　操作方式同天降鐵球
+     每次碰撞破壞不多但是可以一直彈跳(需要計算彈的方向)」→「好像沒很會彈」→
+     「初速太低觀賞性不足　調整點兩下 第一下是球的位置 這二下是球往那個方向
+     縮小球的半徑 一次丟出12顆球」。
+     全部押骰子，所以都是規則型：
+     ① 反射本身：Math.random = () => 0（偏角 0），直接呼叫 bncReflect，期望值照常數算；
+     ② 一下只咬 BNC_BITE 塊以內、撞得太輕（< BNC_SOFT）不咬；
+     ③ 空地上直直掉：越彈越低、停了就收（不是壽命到了才收）；第一下照物理彈回
+        落下高度的 BNC_REST² 左右（「好像沒很會彈」那時候封頂 18，從 78.9 只彈回 7.5）；
+     ④ 點兩下：Math.random = () => 0.5（散布 0），一把 BNC_N 顆從第一下的上空出手，
+        沒撞到東西就剛好落在第二下那一點；三把丟下去場上是 BNC_MAX 顆（最早那把被擠掉）；
+     ⑤ 自己一顆 mesh：沒球不吃 draw call、一把兩把一樣多、收掉回到原點。 */
+  await reset(page, { shape: '帝國大廈', cnt: 3000, workers: 0 });
+  await page.evaluate(() => completeNow());
+  const bnc = await page.evaluate(() => {
+    const rnd = Math.random;
+    Math.random = () => 0;
+    try {
+      const r = {};
+      /* ① 反射：平地、斜著砸下去；牆、斜著撞上去；從 58 砸下來那一下（不封頂）。 */
+      const g = { vx: 3, vy: -10, vz: 0, bn: 0 };
+      bncReflect(g, 0, 1, 0);
+      const w = { vx: -5, vy: 0, vz: 1, bn: 0 };
+      bncReflect(w, 1, 0, 0);
+      const f = { vx: 0, vy: -55, vz: 0, bn: 0 };
+      bncReflect(f, 0, 1, 0);
+      r.g = [g.vx, g.vy, g.vz]; r.w = [w.vx, w.vy, w.vz]; r.f = f.vy;
+      r.eg = [3 * BNC_FRIC, 10 * BNC_REST, 0]; r.ew = [5 * BNC_REST, 0, BNC_FRIC];
+      /* ② 一下咬幾塊：擺在屋頂最高那一塊正上方往下砸，跑一幀。 */
+      cleanTools();
+      let top = null;
+      for (const b of blocks) if (b.st === SET && (!top || b.y > top.y)) top = b;
+      const bite = vy => {
+        cleanTools();
+        const n0 = stats.smashed;
+        const o = spawnBnc(top.x, top.y + BNC_R + 0.3, top.z, 0, vy, 0);
+        stepBncs(1 / 60);
+        const out = { cut: stats.smashed - n0, vy: +o.vy.toFixed(2) };
+        cleanTools();
+        return out;
+      };
+      r.hard = bite(-20); r.soft = bite(-1);
+      /* ③ 空地上直直掉（起點高度同出手那一套）：越彈越低、停了就收。 */
+      cleanTools();
+      const H = Math.max(DROP_TOP, siteTopNow() + DROP_UP);
+      const o = spawnBnc(arenaR - 6, H, 0, 0, 0, 0);
+      const peaks = [];
+      let t = 0, last = o.y, up = false, gone = -1;
+      while (t < BNC_LIFE) {
+        step(1 / 60); t += 1 / 60;
+        if (!bncs) { gone = +t.toFixed(2); break; }
+        if (o.y > last) up = true;
+        else if (up && o.y < last) { peaks.push(+last.toFixed(2)); up = false; }
+        last = o.y;
+      }
+      r.H = +H.toFixed(1); r.peaks = peaks; r.gone = gone; r.bn = o.bn;
+      // 能量守恆：彈回的高度（離地、扣掉半徑）＝ 落下的高度 × BNC_REST²
+      r.first = +(BNC_R + BNC_REST * BNC_REST * (H - BNC_R)).toFixed(2);
+      r.k = { R: BNC_R, iron: BALL_R, bite: BNC_BITE, rest: BNC_REST, life: BNC_LIFE,
+              n: BNC_N, max: BNC_MAX };
+      return r;
+    } finally { Math.random = rnd; cleanTools(); }
+  });
+  const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
+  ok('彈跳球照接觸法線反射（法線那份反過來留 BNC_REST、沿表面那份留 BNC_FRIC、不封頂）',
+     near(bnc.g, bnc.eg) && near(bnc.w, bnc.ew) && Math.abs(bnc.f - 55 * bnc.k.rest) < 1e-9,
+     '平地 ' + bnc.g.map(v => +v.toFixed(2)).join('／') + '、牆 ' +
+     bnc.w.map(v => +v.toFixed(2)).join('／') + '、從 55 砸下去彈回 ' + bnc.f);
+  ok('一下只咬掉幾塊就彈開；撞得太輕不咬',
+     bnc.hard.cut >= 1 && bnc.hard.cut <= bnc.k.bite && bnc.hard.vy > 0 &&
+     bnc.soft.cut === 0 && bnc.soft.vy <= 0,
+     '往下 20 砸：咬掉 ' + bnc.hard.cut + ' 塊（上限 ' + bnc.k.bite + '）、彈回 ' + bnc.hard.vy +
+     '　·　往下 1 靠上去：咬掉 ' + bnc.soft.cut + ' 塊');
+  ok('空地上越彈越低，停了就自己收掉（不是壽命到了才收）',
+     bnc.peaks.length >= 3 && bnc.peaks.every((p, i) => !i || p < bnc.peaks[i - 1]) &&
+     bnc.gone > 0 && bnc.gone < bnc.k.life,
+     '彈了 ' + bnc.bn + ' 下、頂點 ' + bnc.peaks.slice(0, 6).join(' → ') +
+     (bnc.peaks.length > 6 ? ' …' : '') + '、第 ' + bnc.gone + ' 秒收掉');
+  /* 容許 5%：1/60 秒一步的積分與「剛好在哪一幀碰地」會差一點，要守的是量級
+     （封頂那一版是 7.5 對期望 57，差七倍多）。 */
+  ok('彈跳球照物理彈：第一下彈回落下高度的 BNC_REST² 左右',
+     bnc.peaks.length > 0 && Math.abs(bnc.peaks[0] - bnc.first) < bnc.first * 0.05,
+     '從 ' + bnc.H + ' 掉下來，第一下彈到 ' + bnc.peaks[0] +
+     '（照 ' + bnc.k.rest + '² 算是 ' + bnc.first + '）');
+
+  /* ④⑤ 點兩下丟一把。落點驗的是「沒撞到東西就落在第二下那一點」：兩點都選在空地
+     （場邊、z ±20），第一顆第一次碰到東西（bn 從 0 變 1）那一刻就是落地。 */
+  const bncAim = await page.evaluate(() => {
+    const rnd = Math.random;
+    Math.random = () => 0.5;                          // rr(-a, a) 全部取中間 ⇒ 散布 0
+    try {
+      /* 畫面成本量的是**這一顆 mesh 自己**（visible／count），不是整個畫面的 draw call：
+         整體的 call 數會被前一段留下的揚塵、落地環那些東西帶著跳（第一次跑 --tier commit
+         量到「沒球 14、一把 16、滿 14、收掉 12」——多出來的兩個是別的東西在那一刻消失了）。
+         一顆 InstancedMesh 不管畫幾顆都是同一個 call，所以守 visible 與 count 就等於守
+         「沒東西在場就不吃 draw call」那條規矩。 */
+      const M = ENG.three.bncMesh;
+      const look = () => { draw(); return { vis: M.visible, n: M.count }; };
+      cleanTools();
+      const idle = look();
+      const A = { x: arenaR - 10, y: 0, z: 20 }, B = { x: arenaR - 10, y: 0, z: -20 };
+      const H = Math.max(DROP_TOP, siteTopNow() + DROP_UP);
+      tool = 'bounce';
+      useTool({ kind: 'ground', point: A, dir: { x: 0, y: -1, z: 0 } });
+      const mid = bncs ? bncs.length : 0;
+      useTool({ kind: 'ground', point: B, dir: { x: 0, y: -1, z: 0 } });
+      const n1 = bncs ? bncs.length : 0;
+      const at = bncs.every(o => o.x === A.x && o.z === A.z && Math.abs(o.y - H) < 1e-9);
+      const r0 = bncs[0].r;
+      const one = look();
+      const o = bncs[0];
+      let land = null, t = 0;
+      while (t < 10 && !land) {
+        step(1 / 60); t += 1 / 60;
+        if (o.bn > 0) land = { x: o.x, z: o.z };
+      }
+      const miss = land ? Math.hypot(land.x - B.x, land.z - B.z) : -1;
+      // 三把丟下去：上限是 BNC_MAX，最早那一把被擠掉
+      cleanTools();
+      const first = [];
+      for (let k = 0; k < 3; k++) {
+        aimBounce({ x: -40 + k * 5, z: 0 }); aimBounce({ x: 0, z: 0 });
+        if (!k) first.push(...bncs);
+      }
+      const capped = bncs.length, oldGone = first.every(q => bncs.indexOf(q) < 0);
+      const full = look();
+      bncs = null;                        // 不走 cleanTools：要驗的是 draw() 自己把它藏起來
+      const after = look();
+      const c = M.material.color;
+      return { idle, one, full, after, mid, n1, at, r0, miss: +miss.toFixed(3), capped, oldGone,
+               H: +H.toFixed(1), orange: c.r > c.g && c.g > c.b };
+    } finally { Math.random = rnd; cleanTools(); }
+  });
+  ok('彈跳球點兩下：第一下只記位置，第二下從那個位置的上空一次丟出一把',
+     bncAim.mid === 0 && bncAim.n1 === bnc.k.n && bncAim.at,
+     '第一下之後 ' + bncAim.mid + ' 顆、第二下之後 ' + bncAim.n1 + ' 顆，全部從高度 ' +
+     bncAim.H + ' 出手');
+  ok('沒撞到東西的話剛好落在第二下那一點', bncAim.miss >= 0 && bncAim.miss < 0.5,
+     '落點離第二下那一點 ' + bncAim.miss + ' 單位');
+  ok('彈跳球是橘色、比鐵球小；場上最多 BNC_MAX 顆，再丟就擠掉最早那一把',
+     bncAim.orange && bncAim.r0 < bnc.k.iron &&
+     bncAim.capped === bnc.k.max && bncAim.oldGone,
+     '半徑 ' + bncAim.r0 + '（鐵球 ' + bnc.k.iron + '）、丟三把 → 場上 ' + bncAim.capped +
+     ' 顆（上限 ' + bnc.k.max + '）、第一把' + (bncAim.oldGone ? '全部' : '沒有') + '被擠掉');
+  const vc = s => (s.vis ? '畫 ' : '藏起來 ') + s.n + ' 顆';
+  ok('彈跳球自己一顆 mesh：沒球就藏起來（不吃 draw call），有球才畫、畫幾顆就幾顆',
+     !bncAim.idle.vis && bncAim.one.vis && bncAim.one.n === bnc.k.n &&
+     bncAim.full.vis && bncAim.full.n === bnc.k.max && !bncAim.after.vis,
+     '沒球 ' + vc(bncAim.idle) + '、一把 ' + vc(bncAim.one) + '、滿 ' + vc(bncAim.full) +
+     '、收掉 ' + vc(bncAim.after));
 
   /* ── 打雷（v1.117）─────────────────────────────────────
      使用者：「點擊地面 慢慢出現一朵烏雲 然後隨機打5~7道雷(閃電) 被雷打到的點造成
@@ -24875,9 +25028,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       orig[n] = window[n];
       window[n] = function (...a) { seen++; return orig[n].apply(null, a); };
     }
-    /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機、v1.204 加加農砲：
+    /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機、v1.204 加加農砲、v1.218 加彈跳球：
        只點一下的話只會畫個瞄準環，一台機器／一隊人都不會出來）。 */
-    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb', 'cannon'];
+    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb', 'cannon', 'bounce'];
     const out = [];
     try {
       for (const t of TOOLS) {

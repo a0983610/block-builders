@@ -15,7 +15,7 @@ const ENG = (function () {
 
   let renderer, scene, camera, canvas;
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, beastMesh, trunkMesh, leafMesh, dustMesh;
-  let ballMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh, poolMesh;
+  let ballMesh, bncMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh, poolMesh;
   let canMesh, shellMesh;           // 加農砲與燒著的砲彈（v1.204）
   let poolGeo, poolPos, poolFoam, poolUni;
   let markMesh, markGeo, markPos, markCol;
@@ -73,6 +73,9 @@ const ENG = (function () {
   /* 鐵球最多同時幾顆（v1.116）。要跟規則那邊的 BALL_MAX 一樣大——
      小於它的話多出來的球會整顆不見（規則還在算，畫面上沒有）。 */
   const MAXBALL = 6;
+  /* 彈跳球最多同時幾顆（v1.218）：一次丟 12 顆、兩把同時在場。規則那邊的 BNC_MAX
+     直接讀這個（同 MAXDOZ），兩邊不會不一致。 */
+  const MAXBNC = 24;
   /* 推土機最多同時幾台（v1.142 從 6 拉到 30）。整地改成「照地標寬度排一排、一趟掃過去」，
      台數就跟工地寬度走：實測一般的地標 4～6 台、萬里長城 3000 建材 10 台，
      最寬的金門大橋（9000 建材、半徑 89）要 29 台。
@@ -870,6 +873,14 @@ const ENG = (function () {
     ballMesh.castShadow = true; ballMesh.count = 0;
     ballMesh.visible = false; ballMesh.frustumCulled = false;
     scene.add(ballMesh);
+    /* 彈跳球（v1.218）：自己一顆橘色的 InstancedMesh（一次丟 12 顆、場上最多 MAXBNC 顆，
+       跟鐵球那 6 格分開）。同鐵球：沒球的時候 visible = false，一個 draw call 都不吃。 */
+    bncMesh = new T.InstancedMesh(new T.SphereGeometry(1, 14, 10),
+      new T.MeshLambertMaterial({ color: 0xff8a1f }), MAXBNC);
+    bncMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    bncMesh.castShadow = true; bncMesh.count = 0;
+    bncMesh.visible = false; bncMesh.frustumCulled = false;
+    scene.add(bncMesh);
 
     /* 槌子：槌頭朝 local +Z，握把往 −Z 拖在後面。
        擺位時用 lookAt 對準落點——three 的 lookAt 對非相機物件是讓 +Z 指向目標。 */
@@ -1352,10 +1363,12 @@ const ENG = (function () {
   /* ── 破壞道具 ───────────────────────────────────── */
   /* 鐵球。list 是規則那邊的球本體 {x, y, z, r, ax, az, ang}，一次可以給好幾顆
      （v1.116）：(ax,az) 是滾動軸（水平、垂直於前進方向），ang 是已滾過的角度。 */
-  function putBalls(list) {
-    const n = Math.min(list.length, MAXBALL);
-    ballMesh.visible = n > 0;
-    ballMesh.count = n;
+  function putBalls(list) { putSpheres(ballMesh, list, MAXBALL); }
+  function putBncs(list) { putSpheres(bncMesh, list, MAXBNC); }     // 彈跳球（v1.218），同一套
+  function putSpheres(mesh, list, max) {
+    const n = Math.min(list.length, max);
+    mesh.visible = n > 0;
+    mesh.count = n;
     for (let i = 0; i < n; i++) {
       const b = list[i];
       _axis.set(b.ax, 0, b.az);
@@ -1364,9 +1377,9 @@ const ENG = (function () {
       scratch.position.set(b.x, b.y, b.z);
       scratch.scale.setScalar(b.r);
       scratch.updateMatrix();
-      ballMesh.setMatrixAt(i, scratch.matrix);
+      mesh.setMatrixAt(i, scratch.matrix);
     }
-    ballMesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceMatrix.needsUpdate = true;
   }
 
   /* 漏斗在高度 t（0 ＝ 地面、1 ＝ 頂）畫出來有多寬。作用半徑 w.r 進來，畫的半徑出去。
@@ -4868,11 +4881,11 @@ const ENG = (function () {
     setWorkerCount, putWorker, commitWorkers, putEmotes,
     setGiftIcons, putGifts, GIFT_SIZE,         /* 道具泡泡（v1.214）：開場餵圖示、每幀送位置 */
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
-    putBalls, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
+    putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putStars, putBolts, putMarks, putGates, putWeapons, putSwords, putBeasts, putUfos,
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
-    cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK,
+    cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,
     DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, MAXFIRE, WEAP_KIND, WEAP_MAX, GATE_MAX,
     /* 箭雨（v1.171）：ARROW_K 是箭在造型表裡的索引、BOW_TIP 是箭離開弓的位置
@@ -4918,6 +4931,6 @@ const ENG = (function () {
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, emoMesh, giftMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh }; }
   };
 })();
