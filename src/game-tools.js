@@ -45,8 +45,9 @@ const TOOLS = [
   { id: 'magic', n: '爆裂魔法', k: '💥', tip: '點一下：魔法陣一層層展開，6 秒後爆炸' },
   { id: 'storm', n: '打雷', k: '⚡',
     /* v1.165 起一次三朵：從周圍飄進來、往中心靠攏，各自劈自己的雷（見 STORM_TRIO）。
-       v1.177 一朵劈 15～20 道（使用者要求加次數，見 STORM_N）。 */
-    tip: '點地面：周圍飄來三朵烏雲、往中心聚攏，各自隨機劈 15～20 道雷，劈中的地方炸出一個小缺口並燒起來' },
+       v1.177 一朵劈 15～20 道（使用者要求加次數，見 STORM_N）。
+       v1.228 起點兩下：在第一點聚攏，邊劈邊飄到第二點（見 aimStorm）。 */
+    tip: '點兩下：先點烏雲出現的地方，再點要飄過去的地方——三朵烏雲邊飄邊劈，劈中的地方炸出小缺口並燒起來' },
   { id: 'drop', n: '天降鐵球', k: '⚫',
     /* v1.165 起不再是一路鑽到底：削過砸中的那一片，再順著屋頂的坡度滑下去（見 DROP_DIG）。
        v1.220 起點兩下、平平拋出去（見 aimDropBall）。 */
@@ -1974,11 +1975,18 @@ const TW_SWAY = 0.85;               // 轉向角的擺幅（rad/s）：一路歪
 
    逆時針的比例 825/825 ＝ 100%。**頂端仍然比漏斗細**（4.96 vs 9.11）：漏斗畫出來
    本來就比作用半徑張得開，而跑到作用半徑外面的東西下一幀就不歸這裡管了，
-   所以 TW_SWIRL_CAP 只能收在 0.78 左右——再往外就會邊繞邊漏出去。 */
-const TW_ORB = 5;                   // 繞圈的角速度（rad/s）：0.8 圈／秒
-const TW_LIFT = 13;                 // 往上爬多快（單位／秒）；爬到漏斗頂約 2.5 秒 ＝ 兩圈
-const TW_GRAB = 20;                 // 追上目標速度有多快（1/秒）
-const TW_IN = 12;                   // 離目標半徑多遠就以多快往回收（1/秒）
+   所以 TW_SWIRL_CAP 只能收在 0.78 左右——再往外就會邊繞邊漏出去。
+
+   **v1.228 繞圈 ×2**（使用者：「龍捲風加強在內部旋轉的速度」，看過預覽選的是
+   「碎料／小人繞圈」×2，漏斗本體的 TW_SPIN 不動）。ORB、GRAB、IN **三個一起乘 2**：
+   落後角 ORB÷GRAB 維持 0.25 弧度，往內收的力跟著落後角那一股一起變大，
+   平衡半徑還是目標的 1.16 倍（ω²dt/2 那一項 60fps 時 0.83，約 IN 24 的 3.5%）。
+   只乘 ORB 的話落後角變 0.5 弧度，就回到上面那個「一秒甩出去」的第一版。
+   爬升（TW_LIFT）不動，所以爬到頂之前從兩圈變四圈。實測見 開發筆記〈龍捲風：碎料繞圈 ×2〉。 */
+const TW_ORB = 10;                  // 繞圈的角速度（rad/s）：1.6 圈／秒（v1.228 從 5 乘 2）
+const TW_LIFT = 13;                 // 往上爬多快（單位／秒）；爬到漏斗頂約 2.5 秒 ＝ 四圈
+const TW_GRAB = 40;                 // 追上目標速度有多快（1/秒）（v1.228 跟著 ORB 乘 2）
+const TW_IN = 24;                   // 離目標半徑多遠就以多快往回收（1/秒）（v1.228 同上）
 const TW_SWIRL_CAP = 0.78;          // 目標半徑最多到漏斗作用半徑的幾成（再外面就吸不住了）
 /* 每一塊自己的脾氣（v1.205，使用者看過第一版之後：「主要是會形成一條碎料沒有在裡面旋轉」）。
    同一層的碎料如果角速度、半徑、爬升都一模一樣，它們彼此之間就完全不動
@@ -5218,6 +5226,7 @@ function boltList() {
    被劈到的點小破壞（幾格積木）＋燒起來。
    v1.165 起「一朵」變成「一組三朵」：從點擊處的周圍飄進來、往中心點靠攏，
    出場還差一點時間差，各自劈自己的雷（見 STORM_TRIO）。
+   v1.228 起點兩下：在第一點聚攏，聚滿之後整組邊劈邊飄到第二點（見 aimStorm）。
 
    雲用塵霧粒子堆（跟蘑菇雲同一套，不另外開一種畫面物件）：一團一團地聚出來，
    聚滿了才開始劈。一次生一整朵的話它會「啪」地整朵出現在半空，看起來像貼圖
@@ -5333,30 +5342,61 @@ const BOLT_FIRE_N = 5;           // 一道雷最多點著幾塊，其餘交給�
    本來就是燒，而不是砸——焦黑範圍內的人一起著火才對得上畫面。 */
 const BOLT_MAN_R = BOLT_FIRE_R;
 const BOLT_MARK = 4;             // 地上那塊焦黑多大（劈在屋頂上就不留，見 spawnMark）
-function callStorm(p) {
+/* 點兩下，從第一點一路飄到第二點（v1.228，使用者：「打雷調整成點兩個位置
+   然後從A點慢慢移動到B點」）。怎麼走是看過預覽之後定的「**劈多久走多久**」：
+   三朵照舊在 A 周圍聚攏（上面那一整套都不動），聚滿那一刻（STORM_GROW）整組開始
+   沿 A→B 等速平移，走完的時間＝三朵裡最晚劈完的那一朵——所以不管兩點隔多遠，
+   一朵照舊劈 15～20 道（威力不變），最後一道剛好劈在 B。代價是隔得遠就走得快
+   （e2e 那一趟 48.7 格走 6.1 秒、每秒 8 格）。預覽裡另一種「固定每秒 3 格、劈完還沒到 B
+   就一路劈到 B」使用者先選了、再看一次之後改成這一種（探針量那一種 48 格要劈 130 道）。
+   同一點點兩下（相距不到 0.5，同 aimDir 的門檻）就原地劈，跟 v1.227 以前一模一樣。
+   見 開發筆記〈打雷：點兩下，從 A 一路飄到 B〉。 */
+const STORM_AIM_R = STORM_SEP + STRIKE_R;   // 第一下那圈光環：整組的雷落得到的那一圈（13）
+const STORM_AIM_C = 0xa9b4d8;
+function aimStorm(point) {
+  if (!aim) { aimFirst(point, STORM_AIM_R, STORM_AIM_C); return; }
+  const from = aim;
+  aim = null;
+  callStorm(from, point);
+}
+/* to 不給＝原地劈（測試與 v1.227 以前的呼叫端都是只給一點）。 */
+function callStorm(p, to) {
   if (!storms) storms = [];
   /* 滿了把最早的**一組**擠掉（同其他清單型道具，只是單位從一朵變一組）：
      一朵一朵擠的話會留下兩朵孤零零的雲繼續劈。 */
   while (storms.length + STORM_TRIO > STORM_MAX) storms.shift();
   const y = Math.max(STORM_Y0, siteTopNow() + STORM_UP);
   const base = Math.random() * Math.PI * 2;          // 三朵的方位，整組隨機轉
+  const bx = to ? to.x : p.x, bz = to ? to.z : p.z;
+  const trio = [];
+  let dur = 0;
   for (let i = 0; i < STORM_TRIO; i++) {
     const a = base + i * Math.PI * 2 / STORM_TRIO;
     const lag = i * STORM_LAG;                       // 出場的微小時間差（使用者指定）
+    const ox = Math.cos(a) * STORM_SEP, oz = Math.sin(a) * STORM_SEP;
     const s = {
       /* 歸位點在點擊處周圍（STORM_SEP），出場再往外 STORM_COME，
          之後一路往中心點靠攏——見 stepStorms 那段整朵平移。 */
-      gx: p.x + Math.cos(a) * STORM_SEP, gz: p.z + Math.sin(a) * STORM_SEP,
+      gx: p.x + ox, gz: p.z + oz,
       x: p.x + Math.cos(a) * (STORM_SEP + STORM_COME),
       z: p.z + Math.sin(a) * (STORM_SEP + STORM_COME),
       y, t: -lag, out: 0, puffs: [], seeds: null, seed: 0,
       // 均勻抽。用 rr 再四捨五入的話頭尾兩個值只有一半的機會，中間會偏多
       left: STORM_N[0] + Math.floor(Math.random() * (STORM_N[1] - STORM_N[0] + 1)),
-      next: STORM_GROW + lag + rr(0.1, 0.4)          // 自己聚滿了才開始劈
+      next: STORM_GROW + lag + rr(0.1, 0.4),         // 自己聚滿了才開始劈
+      /* 往 B 飄用的（v1.228）：A、B、這一朵在整組裡的位置、出場時間差、要走多久（0＝原地） */
+      ax: p.x, az: p.z, bx, bz, ox, oz, lag, dur: 0, gaps: []
     };
+    /* 每一道之間隔多久先抽好（v1.228）：「劈多久走多久」要先知道這一朵劈到第幾秒收工。
+       抽的分布跟以前「劈完一道現抽一次」一樣。 */
+    let end = s.next;
+    for (let k = 1; k < s.left; k++) { const g = rr(STORM_GAP[0], STORM_GAP[1]); s.gaps.push(g); end += g; }
+    dur = Math.max(dur, end - STORM_GROW);
     s.seeds = stormSeeds(s);
+    trio.push(s);
     storms.push(s);
   }
+  if (Math.hypot(bx - p.x, bz - p.z) >= 0.5) for (const s of trio) s.dur = dur;
   /* 順手把鏡頭退到看得見整朵雲的距離（跟蘑菇雲共用 ENG.holdWide）。
      量過：預設取景的「畫面上緣」差不多就在鏡頭自己的高度——矮建築（羅馬競技場 h=15）
      只看得到 26 以下，雲擺在 34 就整朵在畫面外，點下去等於什麼都沒發生。
@@ -5503,6 +5543,18 @@ function stepStorms(dt) {
       s.x += mx; s.z += mz;
       for (const q of s.puffs) { q.hx += mx; q.hz += mz; q.x += mx; q.z += mz; }
     }
+    /* 整組往 B 飄（v1.228，見 aimStorm 上面那段）：歸位點照時間沿 A→B 等速走，
+       雲連同已經出場的每一團跟著平移同一段。跟上面那層靠攏疊在一起——
+       聚滿那一刻還差的那一點點（約 1 格）照樣指數收掉。 */
+    if (s.dur > 0) {
+      const k = Math.max(0, Math.min(1, (s.t + s.lag - STORM_GROW) / s.dur));
+      const nx = s.ax + (s.bx - s.ax) * k + s.ox, nz = s.az + (s.bz - s.az) * k + s.oz;
+      const mx = nx - s.gx, mz = nz - s.gz;
+      if (mx || mz) {
+        s.gx = nx; s.gz = nz; s.x += mx; s.z += mz;
+        for (const q of s.puffs) { q.hx += mx; q.hz += mz; q.x += mx; q.z += mz; }
+      }
+    }
     /* 一團一團地聚出來。照時間算「現在該有幾團」而不是每幀累加固定的量：
        累加的話 dt 一變（4 倍速、掉幀）聚雲的快慢就跟著跑。 */
     const want = Math.min(STORM_PUFF, Math.round(STORM_PUFF * s.t / STORM_GROW));
@@ -5519,7 +5571,8 @@ function stepStorms(dt) {
     }
     if (s.left > 0) {
       s.next -= dt;
-      if (s.next <= 0) { strike(s); s.left--; s.next = rr(STORM_GAP[0], STORM_GAP[1]); }
+      /* 間隔在 callStorm 就抽好了（v1.228）。最後一道劈完就沒得拿，那時 left 也歸零、用不到 */
+      if (s.next <= 0) { strike(s); s.left--; s.next = s.gaps.length ? s.gaps.shift() : 0; }
     } else {
       /* 劈完了：整朵縮掉再收。直接 splice 的話一朵雲會「啪」地整團消失。 */
       s.out += dt;
@@ -7695,7 +7748,7 @@ function useTool(hit) {
   if (tool === 'meteor') { callMeteor(hit.point); return 0; }
   if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
-  if (tool === 'storm') { callStorm({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'storm') { aimStorm({ x: hit.point.x, z: hit.point.z }); return 0; }   // v1.228 點兩下
   if (tool === 'drop') { aimDropBall(hit.point); return 0; }
   if (tool === 'bounce') { aimBounce(hit.point); return 0; }
   // 第二下點在建築上就連高度一起當目標（v1.152，見 pickGate）

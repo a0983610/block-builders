@@ -13056,7 +13056,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const realStrike = window.strike;
     let fired2 = 0;
     window.strike = function (s) { fired2++; return realStrike(s); };
-    useTool({ point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) });
+    /* v1.228 起點兩下：同一點點兩下＝原地劈（就是 v1.227 以前點一下的樣子）。
+       飄到第二點那一套另外一條驗（〈點兩下、從 A 一路飄到 B〉）。 */
+    const at0 = { point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) };
+    useTool(at0); useTool(at0);
     const born = storms.length;
     const want = storms.reduce((a, s) => a + s.left, 0);
     const each = storms.map(s => s.left);
@@ -13188,6 +13191,91 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '三朵各晚 ' + trio.lag.map(v => (-v).toFixed(2)).join('／') +
      ' 秒出場（設定一朵差 ' + trio.lagStep + ' 秒）');
 
+  /* 點兩下、從 A 一路飄到 B（v1.228，使用者：「打雷調整成點兩個位置 然後從A點慢慢移動到B點」，
+     看過預覽選的是「劈多久走多久」）。全是規則型，期望值讀常數與那一趟自己排的道數，
+     骰子怎麼擲都一樣：
+     ① 第一下只畫瞄準環、一朵都還沒出來；第二下才出三朵。
+     ② 聚滿之前（STORM_GROW）整組待在 A；之後等速沿 A→B 走，雲本體跟著走、隊形不散。
+     ③ 最晚劈完的那一朵，最後一道劈下去那一刻整組剛好到 B（＝劈多久走多久）。
+     ④ 道數照舊（一朵 STORM_N、排幾道劈幾道），不因為走得遠就變多。
+     ⑤ 同一點點兩下就原地劈，雲心一步都不動。 */
+  const stormAB = await page.evaluate(() => {
+    cleanTools();
+    const hitAt = p => ({ point: new THREE.Vector3(p.x, 0, p.z), dir: new THREE.Vector3(0, -1, 0) });
+    const cen = s => ({ x: s.gx - s.ox, z: s.gz - s.oz });   // 整組的中心（扣掉這一朵在隊形裡的位置）
+    const A = { x: -24, z: 6 }, B = { x: 22, z: -10 };
+    tool = 'storm'; aim = null;
+    useTool(hitAt(A));
+    const one = { aim: !!aim, n: storms ? storms.length : 0 };
+    useTool(hitAt(B));
+    const trio = storms ? storms.slice() : [];
+    const plan = trio.map(s => s.left);
+    const hits = trio.map(() => []);
+    const realStrike = window.strike;
+    let T = 0;
+    window.strike = function (s) {
+      const i = trio.indexOf(s);
+      if (i >= 0) { const c = cen(s); hits[i].push({ t: T, x: c.x, z: c.z }); }
+      return realStrike(s);
+    };
+    const D = Math.hypot(B.x - A.x, B.z - A.z), dur = trio.length ? trio[0].dur : 0;
+    let preA = 0, lin = 0, form = 0;
+    while (storms && T < 30) {
+      step(1 / 60); T += 1 / 60;
+      if (!storms) break;                              // 最後一朵收掉的那一幀 storms 會變 null
+      const g = T - STORM_GROW;                        // 整組的時間 ＝ 沒有出場時間差的第一朵
+      const k = Math.max(0, Math.min(1, g / dur));
+      for (const s of storms) {
+        const c = cen(s);
+        if (g < 0) preA = Math.max(preA, Math.hypot(c.x - A.x, c.z - A.z));
+        lin = Math.max(lin, Math.hypot(c.x - (A.x + (B.x - A.x) * k), c.z - (A.z + (B.z - A.z) * k)));
+        /* 雲本體（不是只有歸位點）跟著走：聚攏剩下的那一點點一秒後已經收到 1 格以內 */
+        if (g > 1) form = Math.max(form, Math.hypot(s.x - c.x - s.ox, s.z - c.z - s.oz));
+      }
+    }
+    window.strike = realStrike;
+    const last = hits.map(h => h[h.length - 1]).filter(Boolean).sort((a, b) => b.t - a.t)[0];
+    const r = { one, born: trio.length, trioN: STORM_TRIO, plan, fired: hits.map(h => h.length),
+                nRange: STORM_N.slice(), preA, lin, form, D, dur, done: !storms,
+                end: last ? Math.hypot(last.x - B.x, last.z - B.z) : 99, lastT: last ? last.t : 0 };
+    /* ⑤ 同一點點兩下 */
+    cleanTools();
+    tool = 'storm'; aim = null;
+    useTool(hitAt(A)); useTool(hitAt(A));
+    const same = storms ? storms.slice() : [];
+    let still = 0;
+    T = 0;
+    while (storms && T < 20) {
+      step(0.05); T += 0.05;
+      for (const s of same) still = Math.max(still, Math.hypot(cen(s).x - A.x, cen(s).z - A.z));
+    }
+    r.sameN = same.length; r.sameDur = same.map(s => s.dur); r.still = still; r.sameDone = !storms;
+    cleanTools();
+    return r;
+  });
+  ok('打雷點兩下：第一下只畫瞄準環，第二下才出三朵',
+     stormAB.one.aim && stormAB.one.n === 0 && stormAB.born === stormAB.trioN,
+     '第一下 ' + stormAB.one.n + ' 朵（瞄準環 ' + (stormAB.one.aim ? '有' : '沒有') +
+     '）、第二下 ' + stormAB.born + ' 朵');
+  ok('聚滿之前整組待在第一點，之後三朵保持隊形等速飄到第二點',
+     stormAB.done && stormAB.dur > 0 && stormAB.preA < 1e-6 && stormAB.lin < 0.01 && stormAB.form < 1,
+     'A→B ' + stormAB.D.toFixed(1) + ' 格走 ' + stormAB.dur.toFixed(2) + ' 秒（每秒 ' +
+     (stormAB.D / stormAB.dur).toFixed(1) + ' 格）；聚滿前離 A ' + stormAB.preA.toFixed(3) +
+     '、離等速線最多 ' + stormAB.lin.toFixed(3) + '、雲本體離隊形最多 ' + stormAB.form.toFixed(2));
+  ok('劈多久走多久：最後一道雷劈下去那一刻剛好到第二點',
+     stormAB.end < 0.5,
+     '最後一道在第 ' + stormAB.lastT.toFixed(2) + ' 秒，那時整組中心離 B ' + stormAB.end.toFixed(2) + ' 格');
+  ok('飄得再遠道數也照舊，排幾道劈幾道',
+     stormAB.fired.every((n, i) => n === stormAB.plan[i]) &&
+     stormAB.plan.every(n => n >= stormAB.nRange[0] && n <= stormAB.nRange[1]),
+     '三朵各排 ' + stormAB.plan.join('／') + '、實際劈 ' + stormAB.fired.join('／') +
+     ' 道（一朵 ' + stormAB.nRange.join('～') + '）');
+  ok('同一點點兩下就原地劈，雲一步都不動',
+     stormAB.sameN === stormAB.trioN && stormAB.sameDur.every(v => v === 0) &&
+     stormAB.still < 1e-6 && stormAB.sameDone,
+     stormAB.sameN + ' 朵、要走的時間 ' + stormAB.sameDur.join('／') + '，整趟離點擊處最多 ' +
+     stormAB.still.toFixed(4) + ' 格');
+
   /* 「閃電打到地面不震動」（v1.123 使用者指定）。劈到建築才震——那一下真的有東西被打歪；
      劈在空地上什麼都沒動，畫面跟著跳反而像打到了什麼。
      一朵雲現在劈 15～20 道，每一道都震的話畫面會抖上七八秒。 */
@@ -13245,7 +13333,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const oSmash = smash, pts = [];
     smash = (p, d, r, pow, quiet, hush) => { pts.push({ x: p.x, z: p.z }); return oSmash(p, d, r, pow, quiet, hush); };
     tool = 'storm';
-    useTool({ point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) });
+    const atP = { point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) };
+    useTool(atP); useTool(atP);                      // v1.228 起點兩下：同一點＝原地劈
     const hit = workers.map(() => ({ burn: 0, fall: 0 }));
     let T = 0;
     while (T < 16) {
@@ -13410,7 +13499,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     marks.length = 0;
     const set0 = blocks.filter(b => b.st === 3).length;
     tool = 'storm';
-    useTool({ point: new THREE.Vector3(70, 0, 70), dir: new THREE.Vector3(0, -1, 0) });
+    const atFar = { point: new THREE.Vector3(70, 0, 70), dir: new THREE.Vector3(0, -1, 0) };
+    useTool(atFar); useTool(atFar);                  // v1.228 起點兩下：同一點＝原地劈
     let t = 0, peak = 0, crater = 0;
     while (t < 18) {
       step(0.05); t += 0.05;
@@ -26214,9 +26304,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       window[n] = function (...a) { seen++; return orig[n].apply(null, a); };
     }
     /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機、v1.204 加加農砲、v1.218 加彈跳球、
-       v1.220 加天降鐵球、v1.227 加火槍兵：只點一下的話只會畫個瞄準環，一台機器／一隊人都不會出來）。 */
+       v1.220 加天降鐵球、v1.227 加火槍兵、v1.228 加打雷：只點一下的話只會畫個瞄準環，
+       一台機器／一隊人都不會出來）。 */
     const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb', 'cannon', 'bounce', 'drop',
-                 'musket'];
+                 'musket', 'storm'];
     const out = [];
     try {
       for (const t of TOOLS) {
