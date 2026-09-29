@@ -110,6 +110,8 @@ function step(dt) {
      還插在牆上慢慢淡，所以兩邊各走各的（同王之財寶的門與兵器）。 */
   stepArchers(dt);
   stepArrows(dt);
+  stepMusket(dt);                        // 火槍兵（v1.227）：一隊人與飛著的子彈也是兩份清單
+  stepBullets(dt);
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepGifts(dt);                         // 道具泡泡（v1.214）：飄下來、落地之後上下浮著等人點
   stepDozers(dt);
@@ -222,9 +224,12 @@ function draw() {
      ENG.setWorkerCount 只是把網格的 count 設成「這一幀有幾個人」，跟規則那邊的
      人數設定（game-workers.js 的 setWorkerCount）是兩件事。 */
   const arms = archerList();
-  ENG.setWorkerCount(workers.length + arms.length);
+  /* 火槍兵（v1.227）再接在弓箭手後面，同一顆網格（引擎的 MAXW 已經留好這 60 個位子）。 */
+  const guns = musketList(), g0 = workers.length + arms.length;
+  ENG.setWorkerCount(g0 + guns.length);
   for (let i = 0; i < workers.length; i++) ENG.putWorker(i, workers[i]);
   for (let i = 0; i < arms.length; i++) ENG.putWorker(workers.length + i, arms[i]);
+  for (let i = 0; i < guns.length; i++) ENG.putWorker(g0 + i, guns[i]);
   ENG.commitWorkers();
   ENG.putEmotes(workers);            // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位）
   /* 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）。Saber（v1.222）也在這份清單裡，

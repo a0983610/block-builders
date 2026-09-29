@@ -569,8 +569,10 @@ const ENG = (function () {
      多出來的是一次性的 instance 配置（60 × WPARTS）。**平常那一幀量不出差別**：
      同一座建築、同一副骰子、同一個進度（聖母院 1598/3060）對照 v1.170，
      draw 兩邊都落在 0.40～0.43 ms（各量三段），差距在雜訊裡。
-     真正的成本只在弓箭隊在場那幾秒，見 開發筆記〈箭雨〉的每幀成本那一段。 */
-  const MAXW = 140;
+     真正的成本只在弓箭隊在場那幾秒，見 開發筆記〈箭雨〉的每幀成本那一段。
+     v1.227 再到 200：破壞道具「火槍兵」那一隊 60 人也是照 putWorker 畫的（接在弓箭手後面），
+     60 個工人 ＋ 80 個弓箭手 ＋ 60 個火槍兵同時在場剛好 200（見 開發筆記〈火槍兵〉）。 */
+  const MAXW = 200;
   /* 每個小人的部位數，要跟 BODY 的長度一模一樣。7 個身體部位 ＋ 藍圖 ＋ 聊天泡泡兩塊
      ＋ v1.51 補的七塊細節（帽頂、帽舌、兩顆眼睛、兩隻鞋、腰帶）
      ＋ v1.64 魔法師的五塊（巫師帽三塊、法杖、寶珠）
@@ -580,6 +582,7 @@ const ENG = (function () {
      ＋ v1.198 Q 版補的二十二塊：五官（眼白兩塊、眉兩塊、瀏海、後髮、嘴、耳兩塊、
        腮紅兩塊）、衣著（領口、圍兜、袖兩塊、手套兩塊）、肌肉小人的腹、
        魔法師的袍下襬、帽帶、鬍子兩塊
+     ＋ v1.227 火槍兵的十一塊：火繩槍七塊（床尾、台木、槍管、金箍、火挾、火繩頭、槊杖）、陣笠四塊
      （v1.121 曾經有表情圖示的八塊，v1.122 換成貼圖之後收掉了，見 paintEmoAtlas）。
      全部共用同一個 InstancedMesh，不多一個 draw call。
 
@@ -591,7 +594,7 @@ const ENG = (function () {
        58 塊、跳過且條件查 REQ 表          0.79～0.86ms   ← 現在這個
      也就是**部位多了六成、一般工人畫的從 14 塊變 33 塊，每幀成本跟改版前同一個帶**。
      同一個場景的 draw 也一樣（改版前 1.61～2.01ms，現在 1.56～1.99ms）。 */
-  const WPARTS = 58;
+  const WPARTS = 69;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。
      v1.118 從 720 加到 900：打雷的烏雲也借這顆 mesh 畫（一朵 150 團），
@@ -3173,6 +3176,110 @@ const ENG = (function () {
     const L = bowLift(BOW_Y, BOW_Z, 0);
     return [BOW_X, L.y, L.z];
   })();
+  /* ── 火槍兵的火繩槍（v1.227）─────────────────────────────────
+     破壞道具「火槍兵」那一隊人拿的（規則那邊見 game-tools.js 的〈火槍兵〉）。
+     只有那一隊有（w.gun），別人身上這七塊縮成 0——同弓、法杖與鏟子。造型是先做預覽、
+     使用者看過才定的（見 開發筆記〈火槍兵〉）。
+
+     槍身座標：原點在床尾末端、+Z 朝槍口、+Y 是槍管那一面。一個姿勢＝「槍身擺在身體的
+     哪裡、朝哪」＋「兩隻手握在槍身的哪一點」；**手臂是照握點反算的**（從肩膀朝握點伸過去，
+     手掌中心剛好落在握點上），所以槍怎麼動——換姿勢、後座、抬仰角——手都自己跟著，
+     不必每一種各寫一份手的角度。hr／hl 是槍身座標的握點；null ＝ 那隻手空著（照走路擺）；
+     'rod' ＝ 握在槊杖上。
+
+     w.gp → w.gq 是兩個姿勢、w.gk（0～1）是走到哪了（位置 lerp、轉角 slerp）；
+     w.rec（0～1）後座、w.rod（0～1）槊杖搗到哪、w.el 仰角（弧度，只加在構え上）。 */
+  const GUN_L = 0.95;                  // 床尾到槍口（小人連帽子 1.31）
+  const GUN_BORE = 0.045;              // 槍管中心在槍身座標的高度
+  const ROD_L = 0.60;                  // 槊杖多長
+  const ROD_OUT = [0.08, 0.28];        // 槊杖露出槍口多少（搗到底 → 拉到頂）
+  const ROD_GRIP = 0.09;               // 手握在槊杖頂端往下多少（頂端要露在手外面才看得出是一根杖）
+  const GUN_SH = ARM_Y + ARM_H / 2;    // 肩膀（手臂的上緣）
+  const GUN_REACH = HAND_ON + ARM_H / 2;   // 肩膀到手掌中心
+  const GUN_POSE = {
+    rest:  { p: [0.42, 0.015, 0.08], e: [-Math.PI / 2, 0, 0], hr: [0, 0, 0.31], hl: null },   // 立て銃
+    shoul: { p: [0.345, 0.40, 0.30], e: [-Math.PI * 3 / 4, 0, 0], hr: [0, -0.02, 0.12], hl: null },  // 担え銃
+    /* 構え：槍托頂在胸口，槍管上緣剛好在下巴底下（Q 版的大頭擺不下「貼著臉頰」那種架法）。 */
+    aim:   { p: [0.06, 0.665, 0.02], e: [0, 0, 0], hr: [0.03, -0.05, 0.27], hl: [0, -0.055, 0.44] },
+    /* 裝填：槍立在右腳前、槍口到肩膀前方，右手往下搗槊杖。左手構不到（手只有 0.34 長，
+       要橫過整個身體），所以空著垂在身邊。預覽第一版把槍擺在身體正前方，右手得舉過臉，
+       整張臉被手臂擋掉（見 開發筆記〈火槍兵〉）。 */
+    load:  { p: [0.34, 0.012, 0.24], e: [-(Math.PI / 2 - 0.10), 0, 0], hr: 'rod', hl: null }
+  };
+  const _gE = new T.Euler(), _gQa = new T.Quaternion(), _gQb = new T.Quaternion(), _gRx = new T.Quaternion();
+  const _gP = new T.Vector3(), _gQ = new T.Quaternion();
+  const _hR = new T.Vector3(), _hL = new T.Vector3();
+  const _gV = new T.Vector3(), _gV2 = new T.Vector3(), _gV3 = new T.Vector3();
+  const _gAX = new T.Vector3(1, 0, 0), _gDown = new T.Vector3(0, -1, 0);
+  let _gRodP = 0;
+  /* 空著的那隻手：照走路的擺法（同 putWorker 最後那個預設分支），繞肩膀擺。 */
+  function gunFree(w, side, out) {
+    const rx = -Math.sin(w.ph || 0) * side * (w.gait || 0) * 0.8;
+    return out.set(side * ARM_X, GUN_SH - GUN_REACH * Math.cos(rx), -GUN_REACH * Math.sin(rx));
+  }
+  function gunHand(P, key, w, side, out) {
+    const h = P[key];
+    if (!h) return gunFree(w, side, out);
+    if (h === 'rod') out.set(0, GUN_BORE, GUN_L + _gRodP - ROD_GRIP);
+    else out.set(h[0], h[1], h[2]);
+    return out.applyQuaternion(_gQ).add(_gP);
+  }
+  /* 這一幀槍擺在哪（身體座標）：兩個姿勢之間走一段，再疊仰角與後座。
+     算出 _gP／_gQ 與兩隻手的握點 _hR／_hL。一個人一幀算一次（putWorker 開頭）。 */
+  function gunPose(w) {
+    const A = GUN_POSE[w.gp] || GUN_POSE.rest, B = GUN_POSE[w.gq || w.gp] || A;
+    const k = w.gk || 0;
+    _gQa.setFromEuler(_gE.set(A.e[0], A.e[1], A.e[2]));
+    _gQb.setFromEuler(_gE.set(B.e[0], B.e[1], B.e[2]));
+    _gQ.copy(_gQa).slerp(_gQb, k);
+    _gP.set(A.p[0] + (B.p[0] - A.p[0]) * k, A.p[1] + (B.p[1] - A.p[1]) * k, A.p[2] + (B.p[2] - A.p[2]) * k);
+    /* 仰角（v1.227 使用者：「火槍也要能有一定的仰角射擊角度」）：只加在構え上
+       （照構え那一份的權重，舉槍舉到一半就抬到一半），繞**右手的握點**抬。
+       繞床尾抬的話，槍管在臉的前緣（z 0.24）那裡會抬到嘴巴的高度，Q 版的大頭會被槍穿過去；
+       握點本來就在臉的前面（z 0.29），繞它抬，前半截全在臉外面，後半截（床尾）往下收進肚子。 */
+    const wa = (w.gp === 'aim' ? 1 - k : 0) + ((w.gq || w.gp) === 'aim' ? k : 0);
+    const el = (w.el || 0) * wa;
+    if (el) {
+      const H = GUN_POSE.aim.hr;
+      _gV2.set(H[0], H[1], H[2]).applyQuaternion(_gQ).add(_gP);       // 握點（身體座標）
+      _gRx.setFromAxisAngle(_gAX, -el);
+      _gV.subVectors(_gP, _gV2).applyQuaternion(_gRx);
+      _gP.addVectors(_gV2, _gV);
+      _gQ.premultiply(_gRx);
+    }
+    /* 後座：槍口往上跳、整把往後頂。 */
+    const rc = w.rec || 0;
+    if (rc) {
+      _gRx.setFromAxisAngle(_gAX, -0.24 * rc);
+      _gQ.multiply(_gRx);
+      _gP.add(_gV.set(0, 0.02 * rc, -0.075 * rc));
+    }
+    _gRodP = ROD_OUT[0] + (ROD_OUT[1] - ROD_OUT[0]) * (w.rod || 0);
+    gunHand(A, 'hr', w, 1, _gV); gunHand(B, 'hr', w, 1, _gV2); _hR.lerpVectors(_gV, _gV2, k);
+    gunHand(A, 'hl', w, -1, _gV); gunHand(B, 'hl', w, -1, _gV2); _hL.lerpVectors(_gV, _gV2, k);
+  }
+  /* 槍口在世界座標的哪裡（規則那邊拿它出子彈、放煙）。照 w **現在的姿勢**算，
+     所以畫出來的槍口就是子彈生出來的那一點（同弓的 BOW_TIP、法杖的 WAND_TIP）。 */
+  function gunMuzzle(w, out) {
+    gunPose(w);
+    _gV.set(0, GUN_BORE, GUN_L).applyQuaternion(_gQ).add(_gP);
+    const s = w.scale || 1, c = Math.cos(w.a), sn = Math.sin(w.a);
+    out.x = w.x + (_gV.x * c + _gV.z * sn) * s;
+    out.y = (w.y || 0) + _gV.y * s;
+    out.z = w.z + (-_gV.x * sn + _gV.z * c) * s;
+    return out;
+  }
+  /* 「他要是面向 a、擺成構え、抬 el 那麼多」槍口會在哪。規則那邊在舉槍之前就要解仰角
+     （抬了頭槍口會跟著動，要拿抬完的槍口再解一次，同加農砲的 canMuzzle），
+     那時候他手上還是担え銃、也還沒轉向目標，不能拿 w 本身去算。
+     借一個共用的空殼（不配置新物件）。 */
+  const _gAim = { gp: 'aim', gq: null, gk: 0, rec: 0, rod: 0, el: 0, ph: 0, gait: 0,
+                  x: 0, y: 0, z: 0, a: 0, scale: 1 };
+  function gunAim(w, a, el, out) {
+    _gAim.el = el; _gAim.x = w.x; _gAim.y = w.y || 0; _gAim.z = w.z; _gAim.a = a;
+    _gAim.scale = w.scale || 1;
+    return gunMuzzle(_gAim, out);
+  }
   /* ── 頭上的表情圖示（v1.121，v1.122 從方塊換成貼圖）─────────────
      使用者：「增加小人表達力，例如驚嘆號 愛心 問號 生氣（一個小圖示 像交談那樣在
      小人旁邊表示）」。哪個情境冒哪一個是規則那邊決定的（見 game-workers.js 的 showEmo），
@@ -3386,6 +3493,25 @@ const ENG = (function () {
     { p: [BOW_X, BOW_Y, BOW_Z], s: [0.05, 0.05, BOW_ARROW],
       c: 'staff', bow: 1, nock: 1 },                                    // 搭在弦上那一支
     { p: [0.17, 0.74, -0.24], s: [0.15, 0.40, 0.15], c: 'shoe', bow: 1, quiv: 1 },     // 背上的箭袋
+    /* ── 火槍兵（v1.227，破壞道具「火槍兵」）─────────────────────
+       火繩槍（種子島）七塊。**p 是槍身座標**（原點在床尾末端、+Z 朝槍口，見 GUN_POSE），
+       真正擺在身上哪裡由姿勢決定（putWorker 裡照 _gP／_gQ 換算）。只有那一隊有（w.gun）；
+       槊杖只在裝填時才畫（見 has 那一行）。預覽第一版槍管 0.05 粗，遠看只是一條黑線，
+       整組加粗到現在這樣。擺在魔法師那一段**前面**：測試靠「BODY 最後一塊是寶珠」認寶珠。 */
+    { p: [0, -0.03, 0.095], s: [0.105, 0.16, 0.19], c: 'gwood', gun: 1 },             // 床尾
+    { p: [0, -0.012, 0.45], s: [0.092, 0.088, 0.56], c: 'gwood', gun: 1 },            // 台木
+    { p: [0, GUN_BORE, 0.17 + (GUN_L - 0.17) / 2], s: [0.066, 0.066, GUN_L - 0.17],
+      c: 'iron', gun: 1 },                                                              // 槍管
+    { p: [0, 0.01, 0.70], s: [0.104, 0.12, 0.04], c: 'brass', gun: 1 },              // 金箍
+    { p: [0.056, 0.075, 0.25], s: [0.032, 0.10, 0.05], c: 'brass', gun: 1, gr: -0.5 }, // 火挾（往後斜）
+    { p: [0.058, 0.12, 0.222], s: [0.05, 0.05, 0.05], c: 'ember', gun: 1, ember: 1 },  // 火繩頭（會明滅）
+    { p: [0, GUN_BORE, GUN_L], s: [0.026, 0.026, ROD_L], c: 'staff', gun: 1, rod: 1 },   // 槊杖
+    /* 陣笠（使用者選的）：三層往上收的平錐 ＋ 正面一塊金紋。戴這頂的人不戴安全帽
+       （hard 那幾塊整塊跳過，同巫師帽——兩頂疊在同一顆頭上會直接穿模）。 */
+    { p: [0, 1.15, 0], s: [0.86, 0.05, 0.86], c: 'kasa', kasa: 1 },
+    { p: [0, 1.205, 0], s: [0.60, 0.07, 0.60], c: 'kasa', kasa: 1 },
+    { p: [0, 1.265, 0], s: [0.30, 0.06, 0.30], c: 'kasa', kasa: 1 },
+    { p: [0, 1.205, 0.302], s: [0.16, 0.05, 0.012], c: 'brass', kasa: 1 },
     /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
        巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
        只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
@@ -3444,9 +3570,17 @@ const ENG = (function () {
     robe: [0x53439b],
     sash: [0xd8b23a],
     wizD: [0x352a66],
-    beard: [0xeae6e0]
+    beard: [0xeae6e0],
+    /* 火槍兵（v1.227）：槍管黑鐵、台木紅褐（種子島的樫木）、金具黃銅、火繩頭橘紅、陣笠黑漆。
+       鐵與木比第一版預覽各亮一階——太暗的話槍在草地上看起來只是一道影子。 */
+    iron: [0x3d434b],
+    gwood: [0x7e3f22],
+    brass: [0xc9a03e],
+    ember: [0xff5a1a],
+    kasa: [0x26211f]
   };
   const ORB_LIT = new T.Color(0xffffff);   // 施法時寶珠往這個亮色靠（要跟金色差得夠開才看得出亮起來）
+  const EMBER_HI = new T.Color(0xffd27a);  // 火繩頭明滅往這個亮色靠
 
   /* ── 「這個人身上有沒有這一塊」查表（v1.198）──────────────────────
      每一塊需要什麼條件，開機時壓成一個 16 位元的遮罩存進 REQ；每個人每幀先算一次
@@ -3459,13 +3593,15 @@ const ENG = (function () {
      改成查表之後那一塊連 BODY[k] 都不必碰（`const b` 移到判斷後面）。
      實測 60 人擺一輪：0.96～1.14ms → 0.79～0.86ms。 */
   const RQ_MAGE = 1, RQ_PLAIN = 2, RQ_MUS = 4, RQ_CLOTH = 8, RQ_PLAN = 16,
-        RQ_BUB = 32, RQ_DIG = 64, RQ_BOW = 128, RQ_DRAW = 256;
+        RQ_BUB = 32, RQ_DIG = 64, RQ_BOW = 128, RQ_DRAW = 256,
+        RQ_GUN = 512, RQ_ROD = 1024, RQ_KASA = 2048;       // v1.227 火槍兵
   const REQ = new Uint16Array(WPARTS);
   for (let k = 0; k < WPARTS; k++) {
     const b = BODY[k];
     REQ[k] = (b.wiz ? RQ_MAGE : 0) | (b.hard ? RQ_PLAIN : 0) | (b.mus ? RQ_MUS : 0) |
              (b.cloth ? RQ_CLOTH : 0) | (b.plan ? RQ_PLAN : 0) | (b.bub ? RQ_BUB : 0) |
-             (b.dig ? RQ_DIG : 0) | (b.bow ? RQ_BOW : 0) | (b.nock ? RQ_DRAW : 0);
+             (b.dig ? RQ_DIG : 0) | (b.bow ? RQ_BOW : 0) | (b.nock ? RQ_DRAW : 0) |
+             (b.gun ? RQ_GUN : 0) | (b.rod ? RQ_ROD : 0) | (b.kasa ? RQ_KASA : 0);
   }
 
   function setWorkerCount(n) { workerMesh.count = Math.min(n, MAXW) * WPARTS; }
@@ -3555,10 +3691,15 @@ const ENG = (function () {
     scratch.scale.setScalar(wsc);
     scratch.updateMatrix();
     /* 這個人滿足哪些條件（見 REQ）。一個人算一次，不是一塊算一次。 */
-    const has = (w.mage ? RQ_MAGE : RQ_PLAIN) | (w.mus ? RQ_MUS : RQ_CLOTH) |
+    /* 戴陣笠的（v1.227 火槍兵）同魔法師：安全帽那幾塊整塊跳過。
+       槊杖只在「這一刻主要是裝填」時畫（兩個姿勢之間走到一半以上才換）。 */
+    const has = (w.mage ? RQ_MAGE : w.kasa ? 0 : RQ_PLAIN) | (w.mus ? RQ_MUS : RQ_CLOTH) |
                 (w.plan ? RQ_PLAN : 0) | (w.bub >= 0.02 ? RQ_BUB : 0) |
                 (w.dig ? RQ_DIG : 0) | (w.bow ? RQ_BOW : 0) |
-                (w.draw >= 0.05 ? RQ_DRAW : 0);
+                (w.draw >= 0.05 ? RQ_DRAW : 0) |
+                (w.gun ? RQ_GUN : 0) | (w.kasa ? RQ_KASA : 0) |
+                (w.gun && ((w.gk || 0) < 0.5 ? w.gp : w.gq || w.gp) === 'load' ? RQ_ROD : 0);
+    if (w.gun) gunPose(w);
     for (let k = 0; k < WPARTS; k++) {
       /* 這個人身上沒有的那幾塊（別種人的零件、沒拿的道具）**直接塞一個全 0 的矩陣**
          就跳掉（v1.198，見 開發筆記〈沒有的部位不要走完整條路〉）。
@@ -3622,6 +3763,15 @@ const ENG = (function () {
                               : bowLift(BOW_Y + 0.04 * dk, 0.20 - 0.30 * dk, -1.34 + 0.58 * dk);
           scratchB.rotation.x = L.r;
           scratchB.position.y = L.y; scratchB.position.z = L.z;
+        } else if (w.gun) {
+          /* 火槍兵（v1.227）：從肩膀朝握點伸過去（握點見 gunPose），手掌中心剛好落在握點上。
+             手臂是一整根不會彎的方塊，所以握點比手臂短的時候肩膀那一頭會往後退一點——
+             袖子蓋著，看不出來。 */
+          const H = b.arm > 0 ? _hR : _hL;
+          _gV3.set(b.arm * ARM_X, GUN_SH, 0);
+          _gV3.subVectors(H, _gV3).normalize();
+          scratchB.quaternion.setFromUnitVectors(_gDown, _gV3);
+          scratchB.position.set(H.x - _gV3.x * HAND_ON, H.y - _gV3.y * HAND_ON, H.z - _gV3.z * HAND_ON);
         } else if (w.hail) {                // 慶祝：雙手舉高、跟著跳的節奏晃
           scratchB.rotation.x = -2.75 + Math.sin(w.ph) * 0.22;
           scratchB.rotation.z = b.arm * 0.30;
@@ -3782,6 +3932,14 @@ const ENG = (function () {
           if (sy) scratchB.scale.set(b.s[0], sy, b.s[2]);
         }
       }
+      /* 火繩槍（v1.227）：槍身座標 → 身體座標（_gP／_gQ，見 gunPose）。槊杖沿著槍管往外抽。 */
+      if (b.gun) {
+        _gV3.set(b.p[0], b.p[1], b.rod ? GUN_L + _gRodP - ROD_L / 2 : b.p[2]);
+        _gV3.applyQuaternion(_gQ).add(_gP);
+        scratchB.position.copy(_gV3);
+        scratchB.quaternion.copy(_gQ);
+        if (b.gr) scratchB.quaternion.multiply(_gRx.setFromAxisAngle(_gAX, b.gr));
+      }
       /* 巫師帽與法杖只有魔法師有（安全帽那幾塊在上面就跳掉了——兩頂疊在同一顆頭上
          會直接穿模）。杖與寶珠跟著施法深淺（w.cast 0～1）抬起來，
          寶珠的位置是用杖的傾角算出來的：寫死的話一抬杖它就脫離杖頂飄在旁邊。 */
@@ -3806,6 +3964,8 @@ const ENG = (function () {
       tmpC.setHex(pal[w.tone % pal.length]);
       // 寶珠在施法時亮起來，還帶一點明滅——這是「他正在施法」最省事的那個訊號
       if (b.orb && w.cast) tmpC.lerp(ORB_LIT, w.cast * (0.55 + 0.3 * Math.sin(w.ph * 3)));
+      /* 火繩頭一直在明滅（每個人錯開一點相位，一整排才不會同一拍閃） */
+      if (b.ember) tmpC.lerp(EMBER_HI, 0.35 + 0.35 * Math.sin(performance.now() * 0.013 + i * 1.7));
       if (w.burnK) tmpC.lerp(CHAR, w.burnK);
       // wetK：被水噴到之後整個人要乘的倍率（沒濕就不給）。深淺是規則那邊定的，不在這裡寫死
       if (w.wetK) tmpC.multiplyScalar(w.wetK);
@@ -5758,6 +5918,9 @@ const ENG = (function () {
     /* 箭雨（v1.171）：ARROW_K 是箭在造型表裡的索引、BOW_TIP 是箭離開弓的位置
        （同 WAND_TIP／DIG_TIP：畫出來的弓與飛出去的箭要從同一個點對起來）。 */
     ARROW_K, BOW_TIP,
+    /* 火槍兵（v1.227）：槍口在哪（照現在的姿勢／照「擺成構え抬 el」），子彈從這一點沿著槍管
+       出去——畫出來的槍口與子彈的起點只有一份數字（同 BOW_TIP／canMuzzle）。 */
+    gunMuzzle, gunAim,
     /* 投石機（v1.193）：甩臂的三個定位角，與「投石索末端在哪」。
        規則那邊拿 trebSling 當石頭的出手點——畫出來的索末端就是飛出去的起點
        （同 BOW_TIP／SWORD_TIP／giantFoot），各寫一份的話石頭會從機台肚子裡冒出來。

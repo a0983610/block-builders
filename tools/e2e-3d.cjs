@@ -444,6 +444,7 @@ const installClean = page => page.evaluate(() => {
        弓箭手是接在 workers 後面畫的，所以清掉之後還要把小人的 count 收回來，
        不然這一段留下的 40 個位子會被下一條測試量到（它們讀的是 workerMesh.count）。 */
     archers = null; arrows = null;
+    musket = null; bullets = null;    // 火槍兵（v1.227）：一隊人與飛著的子彈，同箭雨兩份都收
     ENG.setWorkerCount(workers.length); ENG.putWeapons([]);
     /* 幽浮（v1.167）：一趟十六秒，而且它把積木收在地板底下、還借了鏡頭的高度。
        ufoClear() 是那兩件事的出口（同 gateEnd 的角色），不能只把 ufos 設成 null。 */
@@ -16998,6 +16999,296 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   }   // ── 〈箭雨〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 火槍兵（v1.227）══════════
+     使用者：「新增破壞道具 火槍兵 操作方式參考箭雨 但是只能水平火槍射擊(槍口射擊後有煙)
+     射擊模式參考信長的三段射擊(三段擊)」；看過預覽之後定的：陣笠、A 輪替、60 人（3 × 20）、
+     每排輪到 3 次、一排寬同箭雨、仰角照點的高度自動抬（上限 30°，點地面水平）。
+     一條守一件事，**全是規則型**：誰在第幾輪開、每人開幾發、水平／仰角、槍口與子彈的起點
+     都是規則，不賭骰子。會吃骰子的只有落點散布與開槍錯開——要驗「子彈經過瞄的那一點」
+     與「打得到人和牛」的那兩條把 Math.random 押成 0（散布歸零），量完還回去。 */
+  SEC: { if (!(await head('火槍兵', T_COMMIT))) break SEC;
+  await reset(page, { shape: '巴黎聖母院', cnt: 3000, workers: 6 });
+
+  const mkCast = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    tool = 'musket';
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
+    const one = { aim: !!aim, men: musket ? musket.men.length : 0 };
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    const M = musket.men, xs = musket.slot[0].map(p => p.x);
+    draw();                                   // 要畫過才讀得到這一幀的 instance 數
+    return {
+      one, aim2: !!aim, n: M.length, N: MK_N, col: MK_COL,
+      byRow: [0, 1, 2].map(r => M.filter(m => m.row === r).length),
+      wide: +(Math.max(...xs) - Math.min(...xs)).toFixed(2),
+      arWide: +((AR_COL - 1) * AR_GAP).toFixed(2),
+      inSolid: M.filter(m => footBlocked(m.x, m.z) || homeFoot(m.x, m.z)).length,
+      wcount: ENG.three.workerMesh.count, want: (workers.length + M.length) * ENG.WPARTS,
+      inWorkers: workers.filter(w => w.gun).length,
+      gear: M.filter(m => m.gun && m.kasa).length
+    };
+  });
+  /* 正面寬拿箭雨的常數算期望值（使用者：「一排的寬度大概同箭雨就好」），不寫死 33。 */
+  ok('點兩下：第一下只在地上畫瞄準環，第二下才站出一隊火槍兵（3 排、一排寬同箭雨）',
+     mkCast.one.aim && !mkCast.one.men && !mkCast.aim2 && mkCast.n === mkCast.N &&
+     mkCast.byRow.every(c => c === mkCast.col) &&
+     Math.abs(mkCast.wide - mkCast.arWide) < 0.6 && mkCast.inSolid === 0,
+     '第一下：光環在、人 ' + mkCast.one.men + '；第二下：' + mkCast.n + ' 人（' +
+     mkCast.byRow.join('／') + '）、正面寬 ' + mkCast.wide + '（箭雨 ' + mkCast.arWide +
+     '）、踩在固體裡 ' + mkCast.inSolid + ' 人');
+  ok('火槍兵接在小人後面用同一顆網格畫、不混進 workers，全隊戴陣笠拿火繩槍',
+     mkCast.wcount === mkCast.want && mkCast.inWorkers === 0 && mkCast.gear === mkCast.N,
+     'workerMesh.count ' + mkCast.wcount + ' ＝ (小人 ＋ 火槍兵) × 每人部位數 ＝ ' + mkCast.want +
+     '；workers 裡拿槍的 ' + mkCast.inWorkers + ' 個；陣笠 ＋ 槍 ' + mkCast.gear + ' 人');
+
+  /* 一整趟：九輪、每一輪是哪一排開、開的人是不是站在最前面、每人幾發、間隔、
+     水平、煙、不爆不震、收不收乾淨。30 秒的窗：最後一輪在第 15.4 秒左右，
+     第 17.6 秒立て銃、第 19.3 秒撤完。 */
+  const mkRun = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const s0 = stats.smashed, shots = [];
+    const of = mkFire, ob = mkBlast;
+    let T = 0, smokeMin = 1e9, smokeN = 0;
+    mkFire = (g, m, n) => {
+      of(g, m, n);
+      const b = bullets[bullets.length - 1], S = g.slot[0][m.col];
+      shots.push({ t: T, n, row: m.row, col: m.col, dy: b.dy, el: m.el,
+                   front: Math.hypot(m.x - S.x, m.z - S.z) });
+    };
+    /* 煙：每一發都要冒（使用者點名的）。量「這一發往塵霧池裡加了幾團」。 */
+    mkBlast = (x, y, z, fx, fy, fz) => {
+      const d0 = dust.length;
+      ob(x, y, z, fx, fy, fz);
+      smokeN++; smokeMin = Math.min(smokeMin, dust.length - d0);
+    };
+    tool = 'musket';
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
+    useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+    const a0 = musket.a0;
+    ENG.cam.shake = 0;
+    let shake = 0, flashMax = 0, kMax = 0, kLast = 0, quit = -1, gone = -1;
+    const load = {}, walk = {}, turn = {};
+    for (let i = 0; i < 60 * 30; i++) {
+      step(1 / 60); T += 1 / 60;
+      if (ENG.cam.shake > shake) shake = ENG.cam.shake;
+      if (flashes.length > flashMax) flashMax = flashes.length;
+      if (musket) for (const m of musket.men) {
+        const id = m.row + ':' + m.col, k = m.scale / m.base;
+        if (k > kMax) kMax = k;
+        kLast = k;
+        if (m.gp === 'load' && !m.gq) load[id] = (load[id] || 0) + 1 / 60;
+        if (m.gait) walk[id] = 1;
+        const d = Math.abs(Math.atan2(Math.sin(m.a - a0), Math.cos(m.a - a0)));
+        if (d > (turn[id] || 0)) turn[id] = d;
+      }
+      if (!musket && quit < 0) quit = +T.toFixed(2);
+      if (quit >= 0 && !bullets && gone < 0) gone = +T.toFixed(2);
+    }
+    mkFire = of; mkBlast = ob;
+    draw();
+    const vols = [];
+    for (const s of shots) (vols[s.n] = vols[s.n] || []).push(s);
+    const per = {};
+    for (const s of shots) per[s.row + ':' + s.col] = (per[s.row + ':' + s.col] || 0) + 1;
+    const first = vols.map(v => Math.min(...v.map(s => s.t)));
+    const gaps = first.slice(1).map((t, i) => t - first[i]);
+    const ld = Object.values(load);
+    return {
+      shots: shots.length, want: MK_N * MK_RND, vols: vols.length, VOL: MK_VOL, col: MK_COL,
+      perVol: vols.map(v => v.length), volRows: vols.map(v => v[0].row).join(''),
+      oneRow: vols.every((v, n) => v.every(s => s.row === n % MK_ROWS)),
+      perMan: Object.keys(per).length, perManMin: Math.min(...Object.values(per)),
+      perManMax: Math.max(...Object.values(per)), rnd: MK_RND, N: MK_N,
+      front: Math.max(...shots.map(s => s.front)),
+      gapMin: +Math.min(...gaps).toFixed(3), gapMax: +Math.max(...gaps).toFixed(3),
+      P: MK_P, spread: MK_SPREAD,
+      flat: shots.filter(s => s.dy !== 0 || s.el !== 0).length,
+      smokeN, smokeMin, smokeWant: MK_SMOKE + 1,
+      loadMen: ld.length, loadMin: ld.length ? +Math.min(...ld).toFixed(2) : 0,
+      walkMen: Object.keys(walk).length,
+      turnMin: +Math.min(...Object.values(turn)).toFixed(2),
+      shake: +shake.toFixed(3), flashMax, burning: fires ? fires.length : 0, nSpread,
+      smashed: stats.smashed - s0,
+      kMax: +kMax.toFixed(3), kLast: +kLast.toFixed(3), quit, gone,
+      wcount: ENG.three.workerMesh.count / ENG.WPARTS
+    };
+  });
+  ok('三段擊：九輪，每一輪只有站在最前面的那一排開，排的順序一輪換一排',
+     mkRun.vols === mkRun.VOL && mkRun.perVol.every(c => c === mkRun.col) && mkRun.oneRow &&
+     mkRun.front < 1e-6 &&
+     mkRun.gapMin > mkRun.P - mkRun.spread - 0.04 && mkRun.gapMax < mkRun.P + mkRun.spread + 0.04,
+     mkRun.vols + ' 輪（期望 ' + mkRun.VOL + '）、每輪 ' + mkRun.perVol.join('／') +
+     ' 發；開槍的排依序 ' + mkRun.volRows + '；開槍那一刻離第一排的格子最遠 ' +
+     mkRun.front.toExponential(1) + '；輪與輪間隔 ' + mkRun.gapMin + '～' + mkRun.gapMax +
+     ' 秒（MK_P ' + mkRun.P + ' ± 錯開 ' + mkRun.spread + '）');
+  ok('每個人都輪到一樣多次（每排 3 次），輪到之間都有裝填、都轉身走回後面過',
+     mkRun.shots === mkRun.want && mkRun.perMan === mkRun.N &&
+     mkRun.perManMin === mkRun.rnd && mkRun.perManMax === mkRun.rnd &&
+     mkRun.loadMen === mkRun.N && mkRun.loadMin > 0.5 &&
+     mkRun.walkMen === mkRun.N && mkRun.turnMin > 3,
+     mkRun.shots + ' 發（期望 ' + mkRun.want + '）、' + mkRun.perMan + ' 人每人 ' +
+     mkRun.perManMin + '～' + mkRun.perManMax + ' 發；' + mkRun.loadMen + ' 人裝填過（最少 ' +
+     mkRun.loadMin + ' 秒）、' + mkRun.walkMen + ' 人走過、轉身最少 ' + mkRun.turnMin + ' 弧度');
+  ok('點地面：每一發都水平射；每一發槍口都冒煙（火光之外還有白煙 ＋ 火皿那一口）',
+     mkRun.flat === 0 && mkRun.smokeN === mkRun.shots && mkRun.smokeMin === mkRun.smokeWant,
+     '不水平的 ' + mkRun.flat + ' 發；' + mkRun.smokeN + ' 發每一發加進塵霧池 ' +
+     mkRun.smokeMin + ' 團以上（期望 ' + mkRun.smokeWant + '）');
+  ok('子彈咬掉積木，但不點火、不爆炸、不震畫面',
+     mkRun.smashed > 30 && mkRun.burning === 0 && mkRun.nSpread === 0 &&
+     mkRun.flashMax === 0 && mkRun.shake === 0,
+     '打掉 ' + mkRun.smashed + ' 塊；燒起來 ' + mkRun.burning + ' 塊、爆炸光 ' +
+     mkRun.flashMax + ' 顆、震動 ' + mkRun.shake);
+  ok('整隊只會長出來與縮回去，打完撤走、子彈收乾淨，小人的 count 回來',
+     mkRun.kMax <= 1.001 && mkRun.kLast < 0.35 && mkRun.quit > 15 &&
+     mkRun.gone >= mkRun.quit && mkRun.wcount === 6,
+     '縮放係數最大 ' + mkRun.kMax + '、消失前最後一幀 ' + mkRun.kLast + '；第 ' + mkRun.quit +
+     ' 秒撤走、第 ' + mkRun.gone + ' 秒子彈收完；count 回到 ' + mkRun.wcount);
+
+  /* 造型與出手點：擺一個構え的火槍兵直接畫（不跑模擬），量畫出來那一截槍管——
+     ① 朝上的角度＝仰角、朝向＝他面向的方向 ② 槍管前緣的中心＝ENG.gunMuzzle（子彈的起點）
+     ③ 槍、陣笠只有火槍兵身上有，他身上的安全帽縮成 0；槊杖只在裝填時才畫。 */
+  const mkPose = await page.evaluate(() => {
+    draw();
+    const W = ENG.WPARTS, parts = ENG.MODELS.man, A = ENG.three.workerMesh.instanceMatrix.array;
+    const idx = f => parts.map((b, i) => f(b) ? i : -1).filter(i => i >= 0);
+    const gunK = idx(b => b.gun && !b.rod), kasaK = idx(b => b.kasa), hatK = idx(b => b.hard && b.c === 'hat');
+    const barrel = parts.findIndex(b => b.c === 'iron'), rod = parts.findIndex(b => b.rod);
+    const sc = (inst, k) => { const at = (inst * W + k) * 16; return Math.hypot(A[at], A[at + 1], A[at + 2]); };
+    const q = { x: 0, y: 0, z: 0 }, rows = [];
+    const man = el => ({ x: 3, y: 0, z: -2, a: 0.7, ph: 0, gait: 0, tone: 0, scale: 1.7,
+                         gun: 1, kasa: 1, gp: 'aim', gq: null, gk: 0, rec: 0, rod: 0, el });
+    for (const deg of [0, 15, 30]) {
+      const m = man(deg * Math.PI / 180);
+      ENG.putWorker(1, m);
+      const at = (W + barrel) * 16, ax = [A[at + 8], A[at + 9], A[at + 10]], L = Math.hypot(...ax);
+      ENG.gunMuzzle(m, q);
+      rows.push({ deg, got: +(Math.asin(ax[1] / L) * 180 / Math.PI).toFixed(3),
+                  yaw: +Math.atan2(ax[0], ax[2]).toFixed(4),
+                  off: Math.hypot(A[at + 12] + ax[0] / 2 - q.x, A[at + 13] + ax[1] / 2 - q.y,
+                                  A[at + 14] + ax[2] / 2 - q.z) });
+    }
+    const worker = Math.max(...gunK.concat(kasaK).map(k => sc(0, k)));
+    const gunMin = Math.min(...gunK.map(k => sc(1, k))), kasaMin = Math.min(...kasaK.map(k => sc(1, k)));
+    const hatMax = Math.max(...hatK.map(k => sc(1, k))), rodAim = sc(1, rod);
+    const lm = man(0); lm.gp = 'load'; lm.rod = 0.5;
+    ENG.putWorker(1, lm);
+    const rodLoad = sc(1, rod);
+    draw();                                          // 動過的那一格還回去
+    return { rows, worker: +worker.toFixed(6), gunMin: +gunMin.toFixed(3), kasaMin: +kasaMin.toFixed(3),
+             hatMax: +hatMax.toFixed(6), rodAim: +rodAim.toFixed(6), rodLoad: +rodLoad.toFixed(3),
+             nGun: gunK.length + 1, nKasa: kasaK.length, last: !!parts[parts.length - 1].orb };
+  });
+  ok('畫出來的槍管：朝上的角度就是仰角、槍口前緣就是子彈的起點',
+     mkPose.rows.every(r => Math.abs(r.got - r.deg) < 0.01 && Math.abs(r.yaw - 0.7) < 1e-4 && r.off < 1e-4),
+     mkPose.rows.map(r => '仰角 ' + r.deg + '° → 畫出來 ' + r.got + '°、朝向 ' + r.yaw +
+                          '、槍口差 ' + r.off.toExponential(1)).join('　·　'));
+  ok('火繩槍與陣笠只有火槍兵身上有（別人縮成 0），他不戴安全帽；槊杖只在裝填時才畫',
+     mkPose.nGun === 7 && mkPose.nKasa === 4 && mkPose.worker < 1e-6 && mkPose.gunMin > 0.01 &&
+     mkPose.kasaMin > 0.01 && mkPose.hatMax < 1e-6 && mkPose.rodAim < 1e-6 &&
+     mkPose.rodLoad > 0.01 && mkPose.last,
+     '槍 ' + mkPose.nGun + ' 塊、陣笠 ' + mkPose.nKasa + ' 塊：一般小人身上最大 ' + mkPose.worker +
+     '、火槍兵身上最小 ' + mkPose.gunMin + '／' + mkPose.kasaMin + '；他的安全帽 ' + mkPose.hatMax +
+     '；槊杖 構え ' + mkPose.rodAim + ' → 裝填 ' + mkPose.rodLoad);
+
+  /* 仰角照第二下點的高度自動抬、上限 30°（使用者第三輪）。散布押成 0：每一發瞄的就是那一點，
+     所以「子彈經過那一點」直接量得出來（量的是那一點到彈道直線的距離；彈道從槍口出發，
+     槍口在身體中線右邊 0.1 格，所以不是 0）。三種點法各跑前幾輪。 */
+  const mkAimChk = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    let pick = null;
+    for (const b of blocks) {
+      if (b.st !== SET || b.y < 6 || b.y > 10) continue;
+      if (!pick || b.z > pick.z) pick = b;             // 朝 +z 那一面最外側、6～10 高的一塊
+    }
+    const P = { x: pick.x, y: pick.y, z: pick.z };
+    const rnd = Math.random;
+    Math.random = () => 0;
+    const run = (pt, onBlock) => {
+      cleanTools();
+      const shots = [], of = mkFire;
+      mkFire = (g, m, n) => {
+        of(g, m, n);
+        const b = bullets[bullets.length - 1];
+        const vx = pt.x - b.x, vy = pt.y - b.y, vz = pt.z - b.z;
+        const t = vx * b.dx + vy * b.dy + vz * b.dz;
+        shots.push({ el: m.el, miss: Math.hypot(vx - b.dx * t, vy - b.dy * t, vz - b.dz * t) });
+      };
+      tool = 'musket';
+      useTool({ kind: 'ground', point: { x: P.x, y: 0, z: P.z + 24 } });
+      useTool({ kind: onBlock ? 'block' : 'ground', point: pt });
+      for (let i = 0; i < 60 * 5; i++) step(1 / 60);
+      mkFire = of;
+      const deg = v => +(v * 180 / Math.PI).toFixed(2);
+      return { n: shots.length, lo: deg(Math.min(...shots.map(s => s.el))),
+               hi: deg(Math.max(...shots.map(s => s.el))),
+               miss: +Math.max(...shots.map(s => s.miss)).toFixed(3),
+               atMax: shots.filter(s => s.el === MK_EL_MAX).length };
+    };
+    let mid, top, gnd;
+    try {
+      mid = run(P, true);
+      top = run({ x: P.x, y: P.y + 60, z: P.z }, true);
+      gnd = run({ x: P.x, y: 0, z: P.z }, false);
+    } finally { Math.random = rnd; cleanTools(); }
+    return { y: +P.y.toFixed(2), mid, top, gnd, max: +(MK_EL_MAX * 180 / Math.PI).toFixed(2) };
+  });
+  ok('點建築就瞄那一點（仰角照高度自動抬、子彈經過那一點）；太高的停在 30°；點地面水平',
+     mkAimChk.mid.n > 0 && mkAimChk.mid.lo > 0 && mkAimChk.mid.hi < mkAimChk.max &&
+     mkAimChk.mid.miss < 0.3 &&
+     mkAimChk.top.n > 0 && mkAimChk.top.atMax === mkAimChk.top.n &&
+     mkAimChk.gnd.n > 0 && mkAimChk.gnd.hi === 0,
+     '點 ' + mkAimChk.y + ' 高的牆：' + mkAimChk.mid.n + ' 發仰角 ' + mkAimChk.mid.lo + '～' +
+     mkAimChk.mid.hi + '°、離那一點最遠 ' + mkAimChk.mid.miss + '；點高 60 格：' +
+     mkAimChk.top.atMax + '／' + mkAimChk.top.n + ' 發停在上限 ' + mkAimChk.max + '°；點地面：' +
+     mkAimChk.gnd.n + ' 發最大仰角 ' + mkAimChk.gnd.hi + '°');
+
+  /* 打得到小人與生物（同箭雨），自己隊上的人不在 workers 裡所以打不到。
+     散布押成 0：每一發都瞄第二點那一點，小人就擺在那一點上；牛擺在某一行彈道的半路上
+     （彈道朝那一點收攏，半路上的牛只擋得到附近幾行，後面的照樣飛到小人那裡）。 */
+  const mkLives = await page.evaluate(() => {
+    cleanTools();
+    const rnd = Math.random;
+    Math.random = () => 0;
+    let manAir = 0, cowAir = 0, kind = '', n = workers.length;
+    try {
+      tool = 'musket';
+      useTool({ kind: 'ground', point: { x: 44, y: 0, z: 44 } });
+      useTool({ kind: 'ground', point: { x: 44, y: 0, z: 0 } });
+      workers.forEach((w, i) => {
+        w.x = 44 + (i % 3 - 1) * 0.4; w.z = (i < 3 ? -0.3 : 0.3); w.tx = w.x; w.tz = w.z;
+        w.st = 'idle'; w.load = []; w.carry = false; w.air = 0; w.fall = 0; w.burn = 0;
+      });
+      beasts = null;
+      const cow = spawnCattle(), p = musket.slot[0][2];
+      cow.x = (p.x + 44) / 2; cow.z = p.z / 2; cow.tx = cow.x; cow.tz = cow.z; cow.pause = 999;
+      cow.air = 0; cow.fall = 0; cow.burn = 0;
+      kind = cow.kind;
+      for (let i = 0; i < 60 * 3; i++) {
+        step(1 / 60);
+        manAir = Math.max(manAir, workers.filter(w => w.air).length);
+        if (beasts) cowAir = Math.max(cowAir, beasts.filter(b => b.air).length);
+      }
+    } finally {
+      Math.random = rnd;
+      setWorkerCount(0); setWorkerCount(n);          // 動過的小人整批重新生一次
+      beasts = null; ENG.putBeasts([]);
+      cleanTools();
+    }
+    return { manAir, cowAir, kind, men: n };
+  });
+  ok('子彈打得到小人與生物：撞飛',
+     mkLives.manAir > 0 && mkLives.cowAir > 0,
+     '同時最多 ' + mkLives.manAir + '／' + mkLives.men + ' 個小人被撞飛、' + mkLives.kind +
+     ' 被撞飛 ' + mkLives.cowAir + ' 隻');
+
+  /* 容量：人數開到最大、一隊弓箭手與一隊火槍兵同時在場也要畫得下（MAXW 140 → 200 的理由）。 */
+  const mkCap = await page.evaluate(() => ({ maxw: ENG.MAXW, wk: Math.max(...WK_OPTS), ar: AR_N, mk: MK_N }));
+  ok('小人上限裝得下最多人數 ＋ 一隊弓箭手 ＋ 一隊火槍兵',
+     mkCap.maxw >= mkCap.wk + mkCap.ar + mkCap.mk,
+     '小人上限 ' + mkCap.maxw + ' ≥ ' + mkCap.wk + ' ＋ ' + mkCap.ar + ' ＋ ' + mkCap.mk);
+
+  }   // ── 〈火槍兵〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 加農砲 ══════════
      v1.204 新增（使用者：「新增破壞道具 加農砲　參考圖(造型水準 同投石機)　操作方法
      類似投石機 但是拋物線是更直線很多的砲彈…並帶有燃燒效果」）。
@@ -25923,8 +26214,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       window[n] = function (...a) { seen++; return orig[n].apply(null, a); };
     }
     /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機、v1.204 加加農砲、v1.218 加彈跳球、
-       v1.220 加天降鐵球：只點一下的話只會畫個瞄準環，一台機器／一隊人都不會出來）。 */
-    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb', 'cannon', 'bounce', 'drop'];
+       v1.220 加天降鐵球、v1.227 加火槍兵：只點一下的話只會畫個瞄準環，一台機器／一隊人都不會出來）。 */
+    const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb', 'cannon', 'bounce', 'drop',
+                 'musket'];
     const out = [];
     try {
       for (const t of TOOLS) {
@@ -26327,15 +26619,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
     const r = { n: sab.length, fun: m.fun, st: m.st, da: Math.abs(da), r: Math.hypot(m.x, m.z),
                 want: debrisR + DOOM_OUT, call: !!m.call && m.call.x === p.x && m.call.z === p.z,
-                last: TOOLS[TOOLS.length - 1].id, ground: !!GROUND_TOOL.excalibur };
+                /* 接在 v1.224 那時的最後面＝緊跟在小黑洞後面。本來寫「TOOLS 最後一把就是它」，
+                   v1.227 火槍兵接到後面之後那句就不成立了——要守的是「新道具接在後面、
+                   舊的不往前插」，不是「它永遠是最後一把」。 */
+                at: TOOLS.findIndex(t => t.id === 'excalibur'), hole: TOOLS.findIndex(t => t.id === 'hole'),
+                ground: !!GROUND_TOOL.excalibur };
     beasts = null; tool = 'hammer';
     return r;
   });
   ok('點下去：場上沒有 Saber 就從那一點的方位進場，是吉祥物、手上拿著那一點',
      xin.n === 1 && xin.fun === 1 && xin.st === 'call' && xin.da < 1e-9 &&
-     Math.abs(xin.r - xin.want) < 1e-6 && xin.call && xin.last === 'excalibur' && xin.ground,
+     Math.abs(xin.r - xin.want) < 1e-6 && xin.call && xin.hole >= 0 && xin.at === xin.hole + 1 &&
+     xin.ground,
      xin.n + ' 位、fun ' + xin.fun + '、' + xin.st + '；進場方位差 ' + xin.da.toExponential(1) +
-     ' 弧度、半徑 ' + xin.r.toFixed(2) + '（debrisR + DOOM_OUT ' + xin.want.toFixed(2) + '）；TOOLS 最後一把 ' + xin.last);
+     ' 弧度、半徑 ' + xin.r.toFixed(2) + '（debrisR + DOOM_OUT ' + xin.want.toFixed(2) + '）；TOOLS 第 ' +
+     xin.at + ' 把（緊跟在第 ' + xin.hole + ' 把小黑洞後面）');
 
   /* ── 一整趟：走過去、停在那一點前面（被擋住就停在擋住的地方）、轉過去對著它斬、斬完回去逛 ── */
   await fillAll(page);
