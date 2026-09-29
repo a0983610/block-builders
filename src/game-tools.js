@@ -8012,8 +8012,11 @@ function spawnBeast(kind, fun, bad, ang) {
        「還沒砸」與「砸的是誰」是兩件事：砸完 bad 歸零回去逛，home 也一起清掉。 */
     bad: bad ? 1 : 0, home: bad ? 1 : 0,
     /* 被打到就改變主意那一套（v1.208，見 beastHit）：hurt＝這一趟被打幾次了，
-       quit＝天災被打幾次就放棄（吉祥物不看這個，牠是一擊切換一次）。 */
-    hurt: 0, quit: Math.round(rr(DOOM_QUIT[0], DOOM_QUIT[1])),
+       quit＝天災被打幾次就放棄（吉祥物不看這個，牠是一擊切換一次）。
+       hcd＝冷卻還剩幾秒（v1.229，這段時間再被打不算）；owe＝被打出來、還欠著幾處沒砸
+       （含眼前這一處，只有表上標 more 的吉祥物會有，見 moreMascot）；spots＝欠帳那幾趟
+       砸過的地方（下一處要避開，見 moreSkip）；aim＝欠帳這一趟認準的地標那一處（見 doomTarget）。 */
+    hurt: 0, quit: Math.round(rr(DOOM_QUIT[0], DOOM_QUIT[1])), hcd: 0, owe: 0, spots: null, aim: null,
     /* 被破壞工具打到之後要用的（v1.146）。spin 是躺平角、roll 是打滾角，
        其餘欄位跟小人同名同義（見檔案最後那一節的 hurtBeast）。 */
     spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
@@ -8044,11 +8047,13 @@ function spawnBeast(kind, fun, bad, ang) {
   return m;
 }
 /* 離這個位置最近的那一塊地標（還站著的）。天災那幾隻拿它當「要砸哪裡」。
-   小人的家不算：使用者指定的是「對地標」動手。 */
-function nearSet(x, z) {
+   小人的家不算：使用者指定的是「對地標」動手。
+   skip（v1.229，可不給）：回 true 的那幾塊不算——還欠著幾處的那一隻拿它跳過燒過的地方（見 moreSkip）。 */
+function nearSet(x, z, skip) {
   let best = null, bd = Infinity;
   for (const b of blocks) {
     if (b.st !== SET || b.hh >= 0) continue;
+    if (skip && skip(b)) continue;
     const d = (b.x - x) ** 2 + (b.z - z) ** 2;
     if (d < bd) { bd = d; best = b; }
   }
@@ -8061,10 +8066,11 @@ function nearSet(x, z) {
    v1.166.1 起**樹也算**（使用者：「樹也算 地標建築以外就可以了」）——原本擋掉樹的
    那個 h.tree 判斷已經拿掉，這個述詞留著是給 igniteAround 的 only 用的。 */
 const isVillage = b => b.hh >= 0;
-function nearHome(x, z) {
+function nearHome(x, z, skip) {           // skip 同 nearSet（v1.229）
   let best = null, bd = Infinity;
   for (const b of blocks) {
     if (b.st !== SET || !isVillage(b)) continue;
+    if (skip && skip(b)) continue;
     const d = (b.x - x) ** 2 + (b.z - z) ** 2;
     if (d < bd) { bd = d; best = b; }
   }
@@ -8092,6 +8098,7 @@ function homeMid(b) {
    吉祥物本來就是「來逛一圈」的，砸完那一間回去把剩下的 stay 逛完再走。 */
 function funBack(m) {
   m.bad = 0; m.home = 0;
+  m.owe = 0;                                 // 還欠著的也一筆勾銷（v1.229，見 moreMascot）
   m.bust = null; m.bn = 0;                   // 清擋路那一腳的旗標（v1.207，同 leaveBeast）
   m.st = 'fun';
   strollPause(m); idleSpot(m);
@@ -8108,6 +8115,9 @@ function leaveBeast(m) {
   /* 「正在拆擋路的那一段牆」那個旗標也收掉（v1.194）：拆一下就是一趟，收掉之後
      上面那條 away 的豁免才只罩著這一趟（還是走不出去的話，go 下一行會再立一次）。 */
   m.home = 0;
+  /* 還欠著的也收掉（v1.229，見 moreMascot）：走人那一段沒門可繞時會轉進 near → act
+     拆牆出去（見 stepBeast 的 go），不收的話拆完那一下會被當成欠帳接著砸下一處。 */
+  m.owe = 0;
   m.st = 'go';
   const d = Math.hypot(m.x, m.z) || 1;
   m.tx = m.x / d * (debrisR + DOOM_OUT);
@@ -8199,6 +8209,9 @@ function gateNeed(m, tx, tz) {
    丟香蕉與放火瞄的是座標、巨人那一腳要先等 DOOM_AIM 1.1 秒（比這個窗口長）、
    獅鷲噴火前要等 GR_AIM 1.0 秒（同上），都在窗口之外。 */
 function stepBeast(m, dt) {
+  /* 被打到的冷卻（v1.229，見 beastHit）。擺在最前面：三種狀態機（走路、飛龍、獅鷲）
+     都從這裡進去，被幽浮吸走、躺在地上那幾段也照數。 */
+  if (m.hcd > 0) m.hcd -= dt;
   if (!m.lie) return stepBeast0(m, dt);
   const a0 = m.a;
   const r = stepBeast0(m, dt);
@@ -8301,8 +8314,10 @@ function stepBeast0(m, dt) {
          （例外：上面那條「被城牆擋住」，使用者要吉祥物也動手，見 v1.186）。
          **被打到之後生氣、這一趟改砸地標的那一隻也直接進 near**（v1.208，見 madSet）：
          fun 那一段的「要動手」只認村子那一邊（下面那段的 m.bad），
-         推進 fun 的話牠會轉頭去砸房子，不是牠現在盯上的那一座。 */
-      m.st = (m.fun && !madSet(m)) ? 'fun' : 'near';
+         推進 fun 的話牠會轉頭去砸房子，不是牠現在盯上的那一座。
+         **還欠著幾處的那一隻例外**（v1.229，見 moreMascot）：牠要先沿著外圈繞到下一處
+         沒燒過的地方，那一段在 fun 裡（near 沒有繞路，見那一段）。 */
+      m.st = (m.fun && (!madSet(m) || m.owe > 0)) ? 'fun' : 'near';
       /* 進場那一段路不算進「站多久」：strollPause 是照剛走完那段路算的，
          不歸零的話牠一到工地就會照著「從場外走進來的那五十幾格」站著發呆十幾秒。 */
       m.leg = 0;
@@ -8327,7 +8342,12 @@ function stepBeast0(m, dt) {
     /* 牛羊沒有這個倒數（v1.154）：逛完不走人，這一段就是牠們的日常。 */
     if (!m.herd) {
       m.stay -= dt;
-      if (m.stay <= 0) { leaveBeast(m); return false; }
+      /* 被打出來的欠帳砸完才走（v1.229，使用者選的「燒完才走」：打幾下就燒幾次，
+         不會因為逛的時間到了就少燒）。沒被打過的那一趟照舊，時間到就走。
+         保險 MORE_WAIT：這裡本來是這一段唯一的出口，欠帳的目標剛好走不到的話牠會永遠不走
+         （那一款的鐘也跟著停，見 stepMascot 的 beastOn）。stay 只在這一段扣，所以要超過的是
+         「逛的時間過了之後，又在外圈晃了這麼久」——一趟三處、stay 給 0.5 秒，兩輪量到超過 8.8、10.5 秒。 */
+      if (m.stay <= 0 && (!(m.owe > 0) || m.stay < -MORE_WAIT)) { leaveBeast(m); return false; }
     }
     /* 抽中要動手的那一趟（v1.166）：逛的目標換成牠盯上的那一間，走到門口就進 near
        那一段動手。走法照舊借 strollTo（繞開別人家、不穿建築都是它在管）。
@@ -8338,10 +8358,23 @@ function stepBeast0(m, dt) {
       /* 生氣那一趟砸的是地標（v1.208，見 madSet）：交給 near 那一段，它瞄的就是
          最近的一塊地標（m.home 是 0）。走位不必在這裡處理——會走到這裡的一定已經
          在工地外圈上了（生氣那一刻還在外面逛的，madMascot 會先把牠推回 come）。 */
-      if (madSet(m)) { m.st = 'near'; m.leg = 0; return false; }
-      const t = nearHome(m.x, m.z);
-      if (!t) { m.bad = 0; m.home = 0; }
-      else {
+      if (madSet(m)) {
+        /* 還欠著幾處的（v1.229，見 moreMascot）：先**沿著外圈繞到**挑好的那一處
+           （doomTarget 認的 m.aim）再進 near。near 沒有繞路，從上一處直線切過去會撞上地標，
+           隔著好幾格就點火。strollTo 會把落在建築裡的目標推到外圈上，所以直接給那一塊的位置就好。 */
+        if (m.owe > 0) {
+          const t = doomTarget(m);
+          if (!t) { if (!moreNext(m)) funBack(m); return false; }   // 地標這邊沒得砸了：換一邊
+          m.tx = t.x; m.tz = t.z;
+          if (!strollTo(m, dt, spd, stp, kp)) return false;
+        }
+        m.st = 'near'; m.leg = 0; return false;
+      }
+      const t = doomTarget(m);                         // m.home 是 1：村子那邊最近的一塊（v1.229 起跳過燒過的）
+      if (!t) {
+        if (m.owe > 0 && moreNext(m)) return false;   // 還欠著的換一邊（v1.229）
+        m.bad = 0; m.home = 0; m.owe = 0;
+      } else {
         const h = homes.list[t.hh];
         /* 盯上的那一間在城牆另一邊，而且真的被牆擋住了（v1.186）：有門走門，
            沒門就改砸擋路的這一段（牠本來就在砸村子那一邊，m.home 已經是 1）。 */
@@ -8398,8 +8431,9 @@ function stepBeast0(m, dt) {
   }
   if (m.st === 'near') {
     /* 瞄地標還是瞄村子那邊（v1.166）：m.home 是吉祥物那一趟才有的旗標。 */
-    const b = m.home ? nearHome(m.x, m.z) : nearSet(m.x, m.z);
+    const b = doomTarget(m);
     if (!b) {                                         // 沒東西可砸了（都被拆光）
+      if (m.owe > 0 && moreNext(m)) return false;     // 還欠著的換一邊（v1.229）
       if (m.fun) funBack(m); else leaveBeast(m);
       return false;
     }
@@ -8454,7 +8488,18 @@ function stepBeast0(m, dt) {
     /* Saber（v1.222）同巨人：act 只是站定架劍瞄一下，接著轉進自己那一段（舉劍、蓄力、劈）。
        一趟就一招（使用者選的「1 次」），天災與吉祥物砸村子那一趟都一樣。 */
     if (m.kind === 'saber') { m.st = 'excal'; m.xt = 0; m.hit = 0; m.th0 = null; return false; }
+    /* 還欠著幾處的（v1.229，見 moreMascot）：砸之前先認好這一塊（砸完最近的那一塊就換人了），
+       **砸完才記進 spots**——先記的話 apeStrike 找目標時會把這一處當成「砸過的」跳過，
+       改點 8 格外的另一塊（實測點火距離 9.8～18.9 格，隔空點火）。
+       村子那邊記的是那一間的 id 不是 hh：燒到廢棄的那一間會從 homes.list 拿掉，
+       後面幾間的 hh 跟著往前挪，記 hh 會記錯間。砸完還欠著就接著去下一處，不回去逛。 */
+    const tb = m.owe > 0 ? doomTarget(m) : null;
     DOOM_ACT[m.kind](m);
+    if (tb) {
+      const h = tb.hh >= 0 && homes ? homes.list[tb.hh] : null;
+      (m.spots || (m.spots = [])).push({ x: tb.x, z: tb.z, id: h ? h.id : -1 });
+    }
+    if (m.owe > 0 && --m.owe > 0 && moreNext(m)) return false;
     if (m.fun) funBack(m); else leaveBeast(m);        // 吉祥物砸完回去逛（v1.166）
     return false;
   }
@@ -8484,8 +8529,9 @@ const DOOM_FIRE_R = 4, DOOM_FIRE_N = 5;
 function apeStrike(m) {
   /* 吉祥物那一趟點的是村子那邊（v1.166）：連撒出去的那幾塊也只認村子的積木——
      村子離地標至少 HOME_NEAR 遠，半徑 4 本來就摸不到地標，但寫死比較保險。
-     火自己蔓延那一段也不會跳過去：那邊燒的是自己那份格子表（見 spreadHomeFire）。 */
-  const b = m.home ? nearHome(m.x, m.z) : nearSet(m.x, m.z);
+     火自己蔓延那一段也不會跳過去：那邊燒的是自己那份格子表（見 spreadHomeFire）。
+     找法跟 near 那一段同一支（doomTarget）：還欠著幾處的跳過燒過的，點的才是牠走過來的那一處。 */
+  const b = doomTarget(m);
   if (!b) return 0;
   const p = { x: b.x, y: b.y, z: b.z };
   let n = igniteAt(p.x, p.y, p.z) ? 1 : 0;
@@ -8505,7 +8551,7 @@ function nanaThrow(m) {
   let tx, tz;
   /* 吉祥物那一趟丟的是村子那邊（v1.166）：瞄**那一間（那一棵）的中央**不是牠面前
      那面牆——牆邊離地標最近，半徑 9 的爆炸會擦到地標外圈。 */
-  const hb = m.home ? nearHome(m.x, m.z) : null;
+  const hb = m.home ? doomTarget(m) : null;           // 找法同 apeStrike（v1.229）
   /* 瞄的那一個中途沒了（站定到出手之間那一秒被別的東西砸光）：這一根就不丟——
      丟了的話落點會退回地標中心那一帶，而那是天災那一版才做的事。 */
   if (m.home && !hb) return null;
@@ -9049,6 +9095,9 @@ function stepDoom(dt) {
   /* 抽到的剛好是場上那隻吉祥物的同一種：讓牠**就地翻臉**，不要再從場外放一隻同款的
      進來（不然畫面上會是兩隻一模一樣的猴子，一隻在放火、一隻在散步）。見 turnBad。 */
   if (turnBad(d.id)) return;
+  /* 同款的吉祥物**已經動不了手了**（v1.229，白猴子丟完香蕉，見 MASCOTS 的 spent）：turnBad 不轉牠，
+     這一件也作廢（使用者選的），不另外從場外放一隻進來。已經在走人的那一隻不算，照舊放新的（同 turnBad）。 */
+  if (beasts && beasts.some(m => m.kind === d.id && mascSpent(m) && !beastLeaving(m))) return;
   /* **Saber 只有一位**（v1.224，使用者：「saber是特定角色」）：她在場上卻轉不過來（正被 Excalibur
      叫著、或已經在走回場外）就這一件作廢，不另外放一位進來。doomT 已經是 −1，下一幀重抽時間再數。 */
   if (d.id === 'saber' && beastOn('saber')) return;
@@ -9117,6 +9166,7 @@ function spawnDragon(fun, bad) {
               : Math.round(rr(DRA_SHOT[0], DRA_SHOT[1])),
     fun: fun ? 1 : 0, bad: bad ? 1 : 0, home: bad ? 1 : 0,
     hurt: 0, quit: Math.round(rr(DOOM_QUIT[0], DOOM_QUIT[1])),   // 被打到就改變主意（v1.208，見 beastHit）
+    hcd: 0,                                                       // 被打到的冷卻（v1.229，同 spawnBeast）
     /* 被打下來之後要用的（v1.146，見 crashDragon）：was 是摔之前在哪一段、
        t 是趴著的倒數、tsp 是摔下去時的翻滾角速度。 */
     was: '', t: 0, tsp: 0, vx: 0, vy: 0, vz: 0, lie: 0, wet: 0, burn: 0, air: 0, fall: 0,
@@ -9504,6 +9554,7 @@ function spawnGryph(fun, bad) {
     left: fun ? (bad ? 1 : 0) : 1,
     fun: fun ? 1 : 0, bad: bad ? 1 : 0, home: bad ? 1 : 0,
     hurt: 0, quit: Math.round(rr(DOOM_QUIT[0], DOOM_QUIT[1])),   // 被打到就改變主意（v1.208，見 beastHit）
+    hcd: 0,                                                       // 被打到的冷卻（v1.229，同 spawnBeast）
     stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
     jx: 0, jy: 0, jz: 0, jr: 0, a0: 0, em: 0, ign: 0, hem: 0, back: 0,
     tx: 0, tz: 0, lx: 0, lz: 0,          // tx/tz 站定的位置、lx/lz 落地的位置（見 grSpot）
@@ -9785,10 +9836,17 @@ const MASC_STAY = [25, 45];           // 走到工地邊之後逛幾秒才走人
 const MASC_BAD = 0.25;                // 出場的每四隻大約一隻是來砸房子的
 const MASC_BAD_SHOT = [1, 2];         // 飛龍那一版吐幾顆（天災那一版是 DRA_SHOT 3~5）
 /* 一隻一列。加第四隻吉祥物＝往這張表再放一列，別處一個字都不必動（同 DOOMS）。
-   ground＝用走的，整地那一段先不放進來；龍在天上，推土機碰不到牠，照樣可以來。 */
+   ground＝用走的，整地那一段先不放進來；龍在天上，推土機碰不到牠，照樣可以來。
+   **被打到的個別脾氣也寫在這一列**（v1.229，使用者：「程式結構上可以調整成 可能有其他吉祥物
+   要個別設定」）。沒寫的照預設：一擊切換一次（見 beastHit）。
+     more   被打不收手，**每打一下多砸一處**（見 moreMascot）。接得起來的只有走 act 那一段的
+            （DOOM_ACT 那兩款）：巨人、Saber、飛的那兩款各有自己的收尾，要給牠們得在那邊補接點。
+     spent  m → true＝這一隻已經動不了手了：被打不再生氣，抽到同一件天災也不翻臉（見 turnBad）。 */
 const MASCOTS = [
-  { id: 'ape', ground: 1, spawn: bad => spawnBeast('ape', 1, bad) },
-  { id: 'snow', ground: 1, spawn: bad => spawnBeast('snow', 1, bad) },
+  /* 黑獼猴（v1.229）：「不會被打退 打他幾下(3秒冷卻)就會燒幾次建築」 */
+  { id: 'ape', ground: 1, spawn: bad => spawnBeast('ape', 1, bad), more: 1 },
+  /* 白猴子（v1.229）：「只能攻擊一次(因為香蕉丟了 就沒了)」——手上那根就是 m.bomb（見 nanaThrow） */
+  { id: 'snow', ground: 1, spawn: bad => spawnBeast('snow', 1, bad), spent: m => !m.bomb },
   { id: 'dragon', ground: 0, spawn: bad => spawnDragon(1, bad) },
   /* 獅鷲雖然是飛進來的，ground 還是給 1（v1.176）：牠會**降落**在建築外圈那一環上，
      整地那一段推土機正在掃的就是那一帶，不要在那時候放牠進來。 */
@@ -9799,6 +9857,13 @@ const MASCOTS = [
   { id: 'saber', ground: 1, spawn: bad => spawnBeast('saber', 1, bad) }
 ];
 const mascT = MASCOTS.map(() => -1);  // 每隻各自的倒數（−1＝還沒抽），跟 MASCOTS 同索引
+/* 這一款在表上那一列（v1.229，拿來查個別脾氣）。只有六列，每次被打才查一次，不必另外建索引。 */
+const mascRow = kind => MASCOTS.find(k => k.id === kind) || null;
+/* 這一隻是動不了手的吉祥物嗎（表上的 spent，見上面）。翻臉過的（m.fun 0）算天災，不看這個。 */
+function mascSpent(m) {
+  const k = m.fun ? mascRow(m.kind) : null;
+  return !!(k && k.spent && k.spent(m));
+}
 /* 這一種現在在不在場上。**不分吉祥物還是天災**：同款的已經在場上了就別再放一隻進來，
    不然會看到兩隻一模一樣的猴子並排走過去。 */
 function beastOn(id) {
@@ -9832,6 +9897,8 @@ function turnBad(id) {
     if (m.kind !== id || !m.fun) continue;
     /* Excalibur 叫去斬的那一位不轉（v1.224）：那一趟是玩家的。她只有一位，所以這一件天災作廢（見 stepDoom） */
     if (m.call || m.cq) continue;
+    /* 動不了手的不轉（v1.229，白猴子丟完香蕉）：轉了牠會再丟一根手上沒有的香蕉。這一件作廢見 stepDoom */
+    if (mascSpent(m)) continue;
     if (m.kind === 'dragon') {
       if (m.st === 'out') continue;             // 已經在飛出場了
       /* 在地上那一段的（v1.182：摔下來或自己降落）：起飛之後要接回盤旋，
@@ -9883,6 +9950,7 @@ function turnBad(id) {
        拿掉之後牠就算天災那一件了——stepDoom 的「一次一件」跟著擋住下一件。
        砸房子那一趟的旗標也要一起清掉（v1.166）：牠現在是天災，目標是地標不是村子。 */
     m.fun = 0; m.bad = 0; m.home = 0;
+    m.owe = 0;                                   // 被打出來的欠帳也作廢（v1.229）：天災那一趟一次就走
     return true;
   }
   return false;
@@ -9906,9 +9974,24 @@ function turnBad(id) {
    呼叫點在**道具真的打中了**那幾條（那幾支回傳 true 的那一刻），不是塞進 tossBeast／
    igniteBeast／fellBeast 裡面：炸飛帶火的那一發落地還會再點著一次（見 flyBeast 的
    落地判定），塞在裡面的話一發會數成兩次；而自己絆的那一跤（v1.178）與澆水
-   也就自然不在裡面。 */
+   也就自然不在裡面。
+
+   **v1.229 加兩件事**（使用者：「吉祥物&天災 被攻擊切換攻擊行為 增加冷卻時間3秒 避免被連續
+   攻擊一直切換／吉祥物個別調整」）：
+     · **冷卻 BEAST_HIT_CD**：算進去的那一下之後 3 秒內再被打不算——吉祥物不會被一陣連打
+       切過去又切回來，天災也不會被一發連鎖打到門檻。吉祥物、天災都吃這一條。
+     · **吉祥物各自的脾氣寫在 MASCOTS 那一列**（more／spent，見那張表）：黑獼猴不收手、
+       每打一下多燒一處；白猴子香蕉丟了就不再生氣。沒寫的照上面那套一擊切換一次。 */
 const DOOM_QUIT = [2, 3];             // 天災被打幾次就放棄（出場時抽一個，使用者選的「隨機 2~3 次」）
 const MASC_MAD_SET = 0.5;             // 生氣那一趟改砸地標的機率，其餘砸村子那邊
+const BEAST_HIT_CD = 3;               // 被打到之後幾秒內再被打不算（v1.229，使用者定的「冷卻時間3秒」）
+/* 欠帳的下一處要離砸過的地方多遠（v1.229，使用者選的「每次重抽，換一處沒著火的」）。
+   給火把撒餘火的半徑兩倍（DOOM_FIRE_R 4 → 8 格）：兩處撒出去的那兩圈才不會疊在一起，
+   看起來是兩處火，不是同一處多點幾下。村子那邊不看距離，看的是「不是同一間」（見 moreSkip）。 */
+const MORE_GAP = DOOM_FIRE_R * 2;
+/* 「燒完才走」的保險：逛的時間過了還欠著，又在外圈晃了這麼久就算了（見 stepBeast 的 fun）。
+   給逛的時間的上限（45 秒）：正常一處只在外圈走幾秒到二十秒，碰得到這條的只有走不到的那種。 */
+const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 黑獼猴', snow: '🐵 白猴子', dragon: '🐉 飛龍',
                    gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber' };
 /* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」——其餘那幾款照舊是牠 */
@@ -9948,14 +10031,26 @@ function calmMascot(m) {
   beastCry(m);
   toast((BEAST_NM[m.kind] || '牠') + '被打退了', itOf(m) + '不砸了，回去把剩下的路逛完');
 }
-/* 吉祥物生氣：隨手挑一邊砸。挑到的那一邊沒東西可砸就換另一邊，兩邊都沒有就算了
-   （村子還沒蓋、地標拆光都可能）。 */
-function madMascot(m) {
+/* 隨手挑一邊砸：立起 bad／home，回傳挑到的那一塊。挑到的那一邊沒東西可砸就換另一邊，
+   兩邊都沒有就回 null（村子還沒蓋、地標拆光都可能）。
+   還欠著幾處的那一隻，燒過的地方不算「有東西可砸」（見 moreSkip），挑到地標的話
+   **那一處就認準了**（m.aim，理由見 doomTarget）。 */
+function madPick(m) {
   const dice = Math.random() < MASC_MAD_SET;           // true＝抽到地標，false＝抽到村子那邊
-  const canSet = !!nearSet(m.x, m.z), canVill = !!nearHome(m.x, m.z);
-  if (!canSet && !canVill) return;                     // 兩邊都沒東西可砸：不改牠的主意
-  const set = canSet && (dice || !canVill);            // 抽到的那一邊沒東西可砸就換另一邊
+  const skip = moreSkip(m);
+  const s = skip ? moreSetPick(m, skip) : nearSet(m.x, m.z), v = nearHome(m.x, m.z, skip);
+  if (!s && !v) return null;
+  const set = !!s && (dice || !v);                     // 抽到的那一邊沒東西可砸就換另一邊
   m.bad = 1; m.home = set ? 0 : 1;
+  m.aim = set && skip ? { x: s.x, z: s.z } : null;
+  return set ? s : v;
+}
+/* 吉祥物生氣：隨手挑一邊砸（madPick），兩邊都沒東西可砸就不改牠的主意。 */
+function madMascot(m) {
+  /* 表上標 more 的（v1.229）：這一下就是欠的第一處。先記上再挑，挑的時候才會跳過燒過的地方 */
+  const k = mascRow(m.kind);
+  if (k && k.more) m.owe = 1;
+  if (!madPick(m)) { m.owe = 0; return; }
   if (m.kind === 'dragon') {
     m.left = Math.round(rr(MASC_BAD_SHOT[0], MASC_BAD_SHOT[1]));
     /* 圈數歸零＝再繞一圈（這一圈是來吐火球的）、gap 重給，兩件事的理由同 turnBad。
@@ -9978,6 +10073,82 @@ function madMascot(m) {
   beastCry(m);
   toast((BEAST_NM[m.kind] || '牠') + '被惹毛了',
         itOf(m) + (madSet(m) ? '不逛了，轉頭朝地標動手' : '不逛了，轉頭朝村子那邊動手'));
+}
+/* ── 被打不收手、每打一下多砸一處（v1.229，表上的 more）─────────────
+   使用者：「黑獼猴 被攻擊切換攻擊行為 不會被打退 打他幾下(3秒冷卻)就會燒幾次建築」，
+   形態當場問過：下一處**每次重抽、換一處沒著火的**，欠帳**燒完才走**，**只改吉祥物那一版**
+   （天災黑獼猴照舊被打 2~3 下就放棄）。
+   m.owe 是還欠幾處（含眼前這一處）：生氣那一下記 1（madMascot），之後每一下 +1，
+   砸完一處 −1（見 stepBeast 的 act），還有就重抽下一處（moreNext），歸零才回去逛。 */
+function moreMascot(m) {
+  /* 出場就是來砸房子的那一隻（v1.166，owe 還是 0）：本來那一處算一處，這一下再加一處 */
+  m.owe = (m.owe || 1) + 1;
+  beastCry(m);
+  toast((BEAST_NM[m.kind] || '牠') + '越打越火大',
+        itOf(m) + '不但沒被打退，還要多砸一處（還有 ' + m.owe + ' 處）');
+}
+/* 欠帳的下一處：重抽一邊（同生氣那一下，madPick），回傳 false＝兩邊都沒東西可砸了。
+   地標那邊從進場那一段走（come 會繞城門／拆牆，走到外圈再進 fun 繞到那一處，見那一段）；
+   村子那邊 fun 那一段本來就會找過去。 */
+function moreNext(m) {
+  if (!madPick(m)) return false;
+  m.st = madSet(m) ? 'come' : 'fun';
+  m.tx = 0; m.tz = 0; m.leg = 0;
+  return true;
+}
+/* 還欠著幾處的那一隻，哪幾塊不算（回 null＝沒欠帳，照舊找最近的）：
+     · 已經在燒的（「換一處沒著火的」）
+     · 村子那邊：欠帳那幾趟點過的**那一間**（整間都不算：剛點著那幾秒只燒了幾塊，
+       照「最近一塊沒著火的」找的話會找回同一間隔壁那一塊）
+     · 地標那邊：離砸過的地方不到 MORE_GAP 的（地標是一整座，只能照距離分「另一處」） */
+function moreSkip(m) {
+  if (!(m.owe > 0)) return null;
+  const sp = m.spots, g2 = MORE_GAP * MORE_GAP;
+  return b => {
+    if (b.burn) return true;
+    if (!sp) return false;
+    /* 村子那邊比的是那一間的 id（spots 記的就是 id，理由見 stepBeast 的 act） */
+    const vill = b.hh >= 0, h = vill && homes ? homes.list[b.hh] : null;
+    for (const s of sp) {
+      if (vill ? (!!h && s.id === h.id)
+               : s.id < 0 && (b.x - s.x) ** 2 + (b.z - s.z) ** 2 < g2) return true;
+    }
+    return false;
+  };
+}
+/* 這一塊在不在地標的**外緣**（腳邊那三層，前後左右至少有一格空著）。挑地標那一處只挑這種：
+   「離砸過的都有 MORE_GAP、又離牠最近」的那一塊可能在裡面，牠繞到外圈、直直走過去就被
+   外面那一圈擋住，隔著 9.3 格點火（實測 8 趟碰到 1 趟，挑到的是外緣往內 4 格那一塊）。 */
+const setEdge = b => !footBlocked(b.x + 1, b.z) || !footBlocked(b.x - 1, b.z) ||
+                     !footBlocked(b.x, b.z + 1) || !footBlocked(b.x, b.z - 1);
+/* 還欠著的那一隻挑地標那一處（見 madPick）：moreSkip 之外再要兩條——
+     · 在外緣（setEdge，走得到旁邊）
+     · 離正在燒的也有 MORE_GAP：「換一處沒著火的」在挑的那一刻就不挑挨著火的地方。
+       **實測幫得不多**：地標上的火延燒得比牠走得快，沒這一條時第二處以後 4 處全部走到時已經
+       在燒，加了之後 7 處裡還有 6 處（見 開發筆記〈沒修的：地標上的火比牠走得快〉）
+   挑不到就一條一條放寬（先放掉離火、再放掉外緣）。要掃過每一塊正在燒的，所以**只在挑的那一刻
+   算一次**，不放進每幀都在問的 moreSkip。 */
+function moreSetPick(m, skip) {
+  const hot = [];
+  for (const b of blocks) if (b.burn && b.st === SET && b.hh < 0) hot.push(b);
+  const g2 = MORE_GAP * MORE_GAP;
+  const nearHot = b => hot.some(h => (b.x - h.x) ** 2 + (b.z - h.z) ** 2 < g2);
+  return nearSet(m.x, m.z, b => skip(b) || !setEdge(b) || nearHot(b)) ||
+         nearSet(m.x, m.z, b => skip(b) || !setEdge(b)) ||
+         nearSet(m.x, m.z, skip);
+}
+/* 這一趟要砸的那一塊：m.home 決定村子那邊還是地標（v1.166），還欠著幾處的跳過砸過的（v1.229）。
+   fun／near 那兩段走過去、act 記下這一處、apeStrike 點火問的都是這一支，幾邊才會是同一塊。
+   **地標那邊還欠著的，認準挑的那一刻那一處**（m.aim，燒著了也照樣走過去）：地標上的火
+   往外燒得比牠走路快（腳程 2.2），照「最近一塊沒著火的」每幀重找的話目標會跟著火線跑——
+   實測繞著地標追了 20 秒沒追上、地標燒光就走了；追上了也常是原本那塊剛被延燒到，
+   改點 10.6 格外的另一塊。村子那邊照舊每幀找（那一間最近的一塊）：擋路的城牆也是
+   村子那邊的積木，拆牆那條路就是靠「最近的一塊＝面前這段牆」接起來的。 */
+function doomTarget(m) {
+  const skip = moreSkip(m);
+  if (m.home) return nearHome(m.x, m.z, skip);
+  if (skip && m.aim) return nearSet(m.aim.x, m.aim.z);
+  return nearSet(m.x, m.z, skip);
 }
 /* 天災放棄這一趟：轉身走人（使用者選的「直接走人離場」）。 */
 function quitDoom(m) {
@@ -10003,7 +10174,19 @@ let hitBy = null;
 function beastHit(m) {
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
   if (!m || m === hitBy || m.herd || beastLeaving(m) || m.call || m.cq) return;
-  if (m.fun) { if (m.bad) calmMascot(m); else madMascot(m); return; }
+  /* 動不了手的吉祥物（v1.229，表上的 spent：白猴子丟完香蕉）：照樣會倒，只是不再改主意 */
+  if (mascSpent(m)) return;
+  /* 冷卻中（v1.229）：上一下算進去還不到 BEAST_HIT_CD 秒，這一下不算。
+     只有算進去的那一下才起算——一直被打的那一隻每 3 秒還是會算一下，不會被連打「鎖住」。 */
+  if (m.hcd > 0) return;
+  m.hcd = BEAST_HIT_CD;
+  if (m.fun) {
+    const k = mascRow(m.kind);
+    if (!m.bad) madMascot(m);
+    else if (k && k.more) moreMascot(m);               // 不收手，多砸一處（v1.229，見 MASCOTS）
+    else calmMascot(m);
+    return;
+  }
   m.hurt = (m.hurt || 0) + 1;
   if (m.hurt >= (m.quit || DOOM_QUIT[1])) quitDoom(m);
 }

@@ -24906,7 +24906,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const m = spawnBeast(kind);
       m.quit = 3;                                   // 門檻自己給，這一條不賭骰子
       const trail = [];
-      for (let i = 0; i < 3; i++) { beastHit(m); trail.push(m.st + '/' + m.hurt); }
+      /* 每一下之前把冷卻清掉（v1.229）：這一條驗的是門檻，冷卻另外一條驗 */
+      for (let i = 0; i < 3; i++) { m.hcd = 0; beastHit(m); trail.push(m.st + '/' + m.hurt); }
       walk.push({ kind, trail: trail.join(' → '), go: m.st === 'go', hurt: m.hurt,
                   early: trail.slice(0, 2).every(s => s.indexOf('go') < 0) });
       beasts = null;
@@ -24930,13 +24931,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const d = spawnDragon(); d.quit = 2;
     beastHit(d);
     const d1 = { st: d.st, hurt: d.hurt, left: d.left };
-    beastHit(d);
+    d.hcd = 0; beastHit(d);                         // 冷卻清掉再打（v1.229，冷卻另外一條驗）
     const d2 = { st: d.st, left: d.left };
     beasts = null;
     const g = spawnGryph(); g.quit = 2;
     beastHit(g);
     const g1 = { st: g.st, hurt: g.hurt };
-    beastHit(g);
+    g.hcd = 0; beastHit(g);
     const g2 = { st: g.st, left: g.left, sky: g.sky };
     beasts = null;
     /* 已經降落、站在地上的那一隻（被打下來的也是這個樣子）：放棄＝拍翅起飛。 */
@@ -24956,12 +24957,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '天上那隻 ' + hfly.g1.st + ' → ' + hfly.g2.st + '，站著那隻 aim → ' + hfly.g3o.st);
 
   /* ── 吉祥物：一擊切換一次 ── */
+  /* 用巨人驗：黑獼猴從 v1.229 起不收手（表上的 more，下面另一條驗），白猴子丟完香蕉就不改主意
+     （spent）——這一條驗的是**表上沒寫個別脾氣的那幾隻**照預設走。 */
   const htog = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
-    const m = spawnBeast('ape', 1);                 // 乖的那一版（bad 0）
+    const m = spawnBeast('giant', 1);               // 乖的那一版（bad 0）
     m.st = 'fun';                                   // 當牠已經走進來在逛了
     const trail = [{ bad: m.bad, home: m.home, st: m.st, fun: m.fun }];
     for (let i = 0; i < 4; i++) {
+      m.hcd = 0;                                    // 冷卻清掉再打（v1.229，冷卻另外一條驗）
       beastHit(m);
       trail.push({ bad: m.bad, home: m.home, st: m.st, fun: m.fun });
     }
@@ -25065,7 +25069,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     explode({ x: m.x + 1, y: 0.5, z: m.z }, 10, 20);
     const hit1 = { hurt: m.hurt, air: m.air, lit: m.lit };
     let burned = 0;
-    for (let i = 0; i < 240; i++) { stepDoom(0.05); burned = Math.max(burned, m.burn); }
+    /* 每幀把冷卻清掉（v1.229）：落地那一下在 3 秒內，不清的話就算有人把計數塞回 igniteBeast，
+       也會被冷卻擋掉而驗不出來——這一條守的是「呼叫點擺在道具那一條」，不是冷卻。 */
+    for (let i = 0; i < 240; i++) { m.hcd = 0; stepDoom(0.05); burned = Math.max(burned, m.burn); }
     const out = { hit1, hurt: m.hurt, burned: +burned.toFixed(1) };
     cleanTools();
     return out;
@@ -25133,6 +25139,191 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hrun.burn > 0 && hrun.ph === 'wreck',
      '生氣那一刻 bad1／home0／狀態推回 ' + hrun.mad.st + '，' + hrun.secs +
      ' 秒後點著 ' + hrun.burn + ' 塊、phase ' + hrun.ph + '，自己回到 ' + hrun.st);
+
+  /* ── 冷卻 3 秒（v1.229）── */
+  /* 使用者：「吉祥物&天災 被攻擊切換攻擊行為 增加冷卻時間3秒 避免被連續攻擊一直切換」。
+     冷卻是 stepBeast 在倒數，所以這一條真的走 stepDoom（不是直接改 hcd）：打一下、同一幀
+     再打、差一幀到冷卻結束再打（都不算）、再走兩幀打（算）。幀數照 BEAST_HIT_CD 算，不寫死。 */
+  const hcool = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const F = 0.05, n = Math.round(BEAST_HIT_CD / F);
+    const run = m => {
+      const trail = [], mark = () => trail.push(m.fun ? m.bad : m.hurt);
+      beastHit(m); mark();
+      beastHit(m); mark();                            // 同一幀連打
+      for (let i = 0; i < n - 1; i++) stepDoom(F);
+      beastHit(m); mark();                            // 還差一幀
+      for (let i = 0; i < 2; i++) stepDoom(F);
+      beastHit(m); mark();                            // 過了
+      return trail.join(',');
+    };
+    const g = spawnBeast('giant', 1); g.st = 'fun'; g.stay = 60;   // 表上沒寫個別脾氣的吉祥物
+    const mas = run(g);
+    beasts = null;
+    const d = spawnBeast('giant'); d.quit = 9;                      // 天災，門檻給高不讓牠走
+    const doom = run(d);
+    cleanTools();
+    return { mas, doom, cd: BEAST_HIT_CD };
+  });
+  ok('被打到之後冷卻 3 秒：冷卻中再被打不算，吉祥物、天災都一樣',
+     hcool.mas === '1,1,1,0' && hcool.doom === '1,1,1,2',
+     '吉祥物 bad ' + hcool.mas + '、天災 hurt ' + hcool.doom +
+     '（打、同一幀再打、差一幀到 ' + hcool.cd + ' 秒再打、過了再打）');
+
+  /* ── 黑獼猴：不會被打退，打幾下就燒幾處（v1.229，MASCOTS 那一列的 more）── */
+  /* 形態當場問過：只改吉祥物版（天災黑獼猴照舊被打到門檻就走）、下一處每次重抽換一處沒著火的、
+     燒完才走。這一條驗旗標，真的一處一處燒過去見下下條。 */
+  const hape = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const m = spawnBeast('ape', 1); m.st = 'fun';
+    const trail = [];
+    for (let i = 0; i < 3; i++) { m.hcd = 0; beastHit(m); trail.push(m.bad + '/' + m.owe); }
+    beasts = null;
+    /* 出場就是來燒房子的那一隻（v1.166）：本來那一處算一處，打一下變兩處 */
+    const b = spawnBeast('ape', 1, 1); b.st = 'fun';
+    beastHit(b);
+    const born = { bad: b.bad, owe: b.owe };
+    beasts = null;
+    const d = spawnBeast('ape'); d.quit = 2;
+    beastHit(d); d.hcd = 0; beastHit(d);
+    const doom = { st: d.st, hurt: d.hurt, owe: d.owe };
+    cleanTools();
+    return { trail: trail.join(' → '), born, doom };
+  });
+  ok('吉祥物黑獼猴被打不收手，每打一下多欠一處；天災版照舊被打到門檻就走',
+     hape.trail === '1/1 → 1/2 → 1/3' && hape.born.bad === 1 && hape.born.owe === 2 &&
+     hape.doom.st === 'go' && hape.doom.hurt === 2 && hape.doom.owe === 0,
+     '連打三下 bad/owe ' + hape.trail + '；出場就要燒房子的那一隻打一下 owe ' + hape.born.owe +
+     '；天災版兩下之後 ' + hape.doom.st + '（hurt ' + hape.doom.hurt + '）');
+
+  /* ── 下一處：換一處沒著火的（規則本身，不跑模擬）── */
+  /* 自己塞 spots、自己點一塊火，直接問 nearSet／nearHome／madPick／doomTarget。
+     村子那邊把兩塊地標積木暫時掛到兩間假房子上（同「砸哪一邊」那條的借法），**量完還回去**
+     （cleanTools 會把 hh >= 0 的積木清成碎料，所以要在它之前還）。 */
+  const hnext = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9); clearFires();
+    const site = blocks.filter(b => b.st === SET && b.hh < 0);
+    const far = site.reduce((a, b) => Math.hypot(b.x, b.z) > Math.hypot(a.x, a.z) ? b : a);
+    const m = spawnBeast('ape', 1);
+    m.x = far.x * 1.4; m.z = far.z * 1.4;           // 站在最外圈那一塊外面
+    m.owe = 2;
+    const a0 = nearSet(m.x, m.z, moreSkip(m));
+    m.spots = [{ x: a0.x, z: a0.z, id: -1 }];       // 當作那一處燒過了
+    const a1 = nearSet(m.x, m.z, moreSkip(m));
+    const gap = Math.hypot(a1.x - a0.x, a1.z - a0.z);
+    a1.burn = 1;                                    // 只借旗標給述詞看，不進 fires
+    const a2 = nearSet(m.x, m.z, moreSkip(m));
+    a1.burn = 0;
+    /* 挑地標那一處也要離正在燒的 MORE_GAP、而且在外緣（moreSetPick），挑了就認準（m.aim）：
+       走到對面還是那一處 */
+    m.spots = null; m.owe = 1;
+    const hot = nearSet(m.x, m.z);
+    hot.burn = 1;
+    const or = Math.random;
+    Math.random = () => 0;                          // < MASC_MAD_SET ＝ 挑地標
+    madPick(m);
+    Math.random = or;
+    hot.burn = 0;
+    const aim = m.aim ? { x: m.aim.x, z: m.aim.z } : null;
+    const hotGap = aim ? Math.hypot(aim.x - hot.x, aim.z - hot.z) : -1;
+    m.x = -m.x; m.z = -m.z;
+    const t = doomTarget(m);
+    const held = aim && t ? Math.hypot(t.x - aim.x, t.z - aim.z) : -1;
+    const edge = !!t && setEdge(t);
+    /* 村子那邊：燒過的那一間整間不算；記的是 id，那一間被拿掉、後面的往前挪也不會記錯間 */
+    const va = site[0], vb = site[site.length - 1], wa = va.hh, wb = vb.hh, keep = homes;
+    homes = { list: [{ id: 901, x: va.x, z: va.z, r: 1 }, { id: 902, x: vb.x, z: vb.z, r: 1 }] };
+    va.hh = 0; vb.hh = 1;
+    m.x = va.x + 0.5; m.z = va.z; m.owe = 2;        // 站在 901 旁邊：沒欠帳的話最近的就是它
+    m.spots = [{ x: va.x, z: va.z, id: 901 }];
+    const v1 = nearHome(m.x, m.z, moreSkip(m));
+    homes.list.shift(); va.hh = -1; vb.hh = 0;      // 901 廢棄拿掉，902 往前挪成 hh 0
+    const v2 = nearHome(m.x, m.z, moreSkip(m));
+    va.hh = wa; vb.hh = wb; homes = keep;
+    cleanTools();
+    return { gap: +gap.toFixed(1), want: MORE_GAP, sameBurn: a2 === a1,
+             hotGap: +hotGap.toFixed(1), held: +held.toFixed(1), edge,
+             v1: v1 === vb, v2: v2 === vb };
+  });
+  ok('下一處換一處沒著火的：地標離砸過的地方與正在燒的都有 MORE_GAP、在外緣、挑了就認準；村子換一間',
+     hnext.gap >= hnext.want && !hnext.sameBurn && hnext.hotGap >= hnext.want && hnext.edge &&
+     hnext.held >= 0 && hnext.held < 1 && hnext.v1 && hnext.v2,
+     '離砸過那一處 ' + hnext.gap + '、離正在燒那一塊 ' + hnext.hotGap + '（MORE_GAP ' + hnext.want +
+     '），在燒的那塊跳過 ' + !hnext.sameBurn + '、挑到的在外緣 ' + hnext.edge +
+     '、走到對面目標還離認準那一處 ' + hnext.held +
+     '；村子挑到另一間 ' + hnext.v1 + '、那一間拿掉之後還認得 ' + hnext.v2);
+
+  /* ── 真的一處一處燒過去，燒完才走 ── */
+  /* 火把換成只記帳不點火（DOOM_ACT.ape 換掉、量完還回去）：真的點下去的話，地標上的火
+     二三十秒就把吉薩整座燒光（實測只燒地標的四趟有三趟換場時只燒到 2／3、2／3、3／4 處），那是火的事，
+     不是這一條要驗的。逛的時間只給 0.5 秒：沒有「燒完才走」的話第一處燒完就該走了。
+     點火那一刻量「離目標多遠」守的是隔空點火：記帳順序錯的那一版量到 9.8～18.9 格，
+     挑到地標裡面那一塊的那一版量到 9.3 格（這一條第一次跑就紅在這裡，見 setEdge）。 */
+  const hchain = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9); clearFires();
+    const oa = DOOM_ACT.ape, acts = [];
+    DOOM_ACT.ape = m => {
+      const t = doomTarget(m);
+      acts.push({ x: t.x, z: t.z, reach: Math.hypot(t.x - m.x, t.z - m.z), stay: m.stay });
+      return 0;
+    };
+    const m = spawnBeast('ape', 1); m.st = 'fun'; m.stay = 0.5;
+    for (let i = 0; i < 3; i++) { m.hcd = 0; beastHit(m); }
+    let n = 0;
+    while (n < 4000 && beasts && beasts.indexOf(m) >= 0 && m.st !== 'go') { step(0.05); n++; }
+    DOOM_ACT.ape = oa;
+    let gap = Infinity;
+    for (let i = 0; i < acts.length; i++)
+      for (let j = i + 1; j < acts.length; j++)
+        gap = Math.min(gap, Math.hypot(acts[i].x - acts[j].x, acts[i].z - acts[j].z));
+    const out = { n: acts.length, gap: +gap.toFixed(1), want: MORE_GAP, near: DOOM_NEAR,
+                  reach: +Math.max(...acts.map(a => a.reach)).toFixed(1),
+                  stay: +Math.min(...acts.map(a => a.stay)).toFixed(1),
+                  st: m.st, owe: m.owe, secs: +(n * 0.05).toFixed(1) };
+    cleanTools();
+    return out;
+  });
+  ok('黑獼猴打三下就燒三處，每一處離別處至少 MORE_GAP、走到旁邊才點，燒完才走',
+     hchain.n === 3 && hchain.gap >= hchain.want && hchain.reach < hchain.near * 2 &&
+     hchain.st === 'go' && hchain.owe === 0 && hchain.stay <= 0,
+     hchain.secs + ' 秒燒了 ' + hchain.n + ' 處，彼此最近 ' + hchain.gap + ' 格（MORE_GAP ' +
+     hchain.want + '）、點火時離目標最遠 ' + hchain.reach + ' 格；燒的時候逛的時間已經剩 ' +
+     hchain.stay + ' 秒，燒完才 ' + hchain.st);
+
+  /* ── 白猴子：香蕉丟了就沒了，只能動手一次（v1.229，MASCOTS 那一列的 spent）── */
+  const hsnow = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const m = spawnBeast('snow', 1); m.st = 'fun'; m.bomb = 0;   // 丟完了
+    beastHit(m);
+    const spent = m.bad;
+    beasts = null;
+    const k = spawnBeast('snow', 1); k.st = 'fun';               // 香蕉還在手上的對照組
+    beastHit(k);
+    const keep = k.bad;
+    beasts = null;
+    /* 抽到白猴子那件天災：沒香蕉的那一隻不翻臉、這一件作廢（使用者選的），不另外放一隻進來。
+       rollDoom 押成那一件、量完還回去。 */
+    const orl = rollDoom;
+    rollDoom = () => DOOMS.find(d => d.id === 'snow');
+    const draw = bomb => {
+      const s = spawnBeast('snow', 1); s.st = 'fun'; s.stay = 60; s.bomb = bomb;
+      doomT = 0.01; stepDoom(0.05);
+      const out = { fun: s.fun, n: beasts ? beasts.filter(b => b.kind === 'snow').length : 0 };
+      beasts = null; nanas = null;
+      return out;
+    };
+    const none = draw(0), full = draw(1);
+    rollDoom = orl;
+    doomT = 1e9;
+    cleanTools();
+    return { spent, keep, none, full };
+  });
+  ok('白猴子丟完香蕉被打不再生氣；抽到白猴子那件天災也不翻臉、這一件作廢',
+     hsnow.spent === 0 && hsnow.keep === 1 &&
+     hsnow.none.fun === 1 && hsnow.none.n === 1 && hsnow.full.fun === 0 && hsnow.full.n === 1,
+     '沒香蕉被打 bad ' + hsnow.spent + '（有香蕉的對照組 ' + hsnow.keep + '）；抽到那件天災：' +
+     '沒香蕉的 fun ' + hsnow.none.fun + '、場上白猴子 ' + hsnow.none.n + ' 隻，' +
+     '有香蕉的 fun ' + hsnow.full.fun + '（就地翻臉）、' + hsnow.full.n + ' 隻');
 
   await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
 
