@@ -23441,8 +23441,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const want = [s.x + s.dx * 0.44 * m.sc, s.y + s.dy * 0.44 * m.sc, s.z + s.dz * 0.44 * m.sc];
     const pos = Math.hypot(e[12] - want[0], e[13] - want[1], e[14] - want[2]);
     const dir = Math.acos(Math.min(1, (e[4] * s.dx + e[5] * s.dy + e[6] * s.dz) / L));
-    // 光柱最遠那一段（外暈那一層的最後一格）的中心離劍身那條線多遠
-    const segs = 5;
+    /* 光柱最遠那一段（外暈那一層）的中心離劍身那條線多遠。一位的格數＝count（只畫了她一位）：
+       光柱 count − 1 段 ＋ 最後一格是集氣時劍身那一層光（v1.226），所以最遠那一段是 count − 2 */
+    const segs = ENG.three.excMeshes[2].count - 1;
     ENG.three.excMeshes[2].getMatrixAt(segs - 1, mat);
     const q = mat.elements, vx = q[12] - s.x, vy = q[13] - s.y, vz = q[14] - s.z;
     const t = vx * s.dx + vy * s.dy + vz * s.dz;
@@ -26584,6 +26585,184 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('沒燒灼痕就不吃 draw call；光柱是圓柱（不是方塊）、三層共用一顆幾何體',
      !xdraw.off && xdraw.on && !xdraw.gone && xdraw.cyl.split(',').every(t => t === 'CylinderGeometry') && xdraw.shared,
      '沒有 ' + xdraw.off + '／有一道 ' + xdraw.on + '／收掉 ' + xdraw.gone + '；光柱三層 ' + xdraw.cyl);
+
+  /* ══ v1.226：跑過去、先集氣再出光柱、光柱尾部淡、不被焦痕蓋住 ══
+     使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」「增快saber一般走路移動速度(同小人)」
+     「saber攻擊光束 會被地面的痕跡覆蓋」「集氣延長一點時間 可能約3秒」「攻擊光束的位置大約在saber劍刃處」，
+     看預覽之後：「先集氣 然後光束才出現 光束出現後才砍下去」「集氣的光芒要再明顯 更多光集中到劍上」
+     「光柱的部分能夠尾部比較淡嗎 然後集氣特效加些光芒往上方飄」。全部規則型：直接推 stepBeast／stepExcal、
+     直接讀 putSabers 寫進去的矩陣與 aFade，期望值讀常數（WALK／EXC_RUN／ENG.EXC／ENG.EXC_BASE）。 */
+
+  /* ── 叫她過去用跑的：一步＝WALK × EXC_RUN × dt、腿擺同倍率、m.run 推到 1；平常逛照小人的 WALK ──
+     strollTo 會繞路，但一步的長度就是 spd × dt（還離目標很遠的時候），所以量位移就是量腳程。 */
+  const xspd = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('saber', 1), R = siteR + 30, dt = 0.02;
+    m.x = R; m.z = 0; m.st = 'fun'; m.pause = 0; m.rev = 99; m.tx = R; m.tz = 30; m.stay = 99;
+    let x0 = m.x, z0 = m.z, p0 = m.ph;
+    stepBeast(m, dt);
+    const walk = { d: Math.hypot(m.x - x0, m.z - z0), ph: m.ph - p0 };
+    callSaber({ x: R, y: 0, z: -40 });
+    const st = m.st;
+    let d = 0, ph = 0;
+    for (let i = 0; i < 40; i++) {
+      x0 = m.x; z0 = m.z; p0 = m.ph;
+      stepBeast(m, dt);
+      d = Math.max(d, Math.hypot(m.x - x0, m.z - z0)); ph = m.ph - p0;
+    }
+    const run = m.run;
+    let g = 0;
+    while (m.st === 'call' && g++ < 2000) stepBeast(m, dt);
+    const act = m.st;
+    for (let i = 0; i < 40; i++) stepBeast(m, dt);   // 站定瞄的那 0.8 秒（DOOM_AIM 還沒數完）
+    const r = { walk, st, d, ph, run, act, after: m.run, st2: m.st, W: WALK, K: EXC_RUN, dt };
+    beasts = null;
+    return r;
+  });
+  ok('叫她過去用跑的：腳程與腿擺都是走路的 EXC_RUN 倍、跑姿推到 1，到了就收；平常逛照小人的 WALK',
+     Math.abs(xspd.walk.d - xspd.W * xspd.dt) < 1e-9 && Math.abs(xspd.walk.ph - 11 * xspd.dt) < 1e-9 &&
+     xspd.st === 'call' && Math.abs(xspd.d - xspd.W * xspd.K * xspd.dt) < 1e-9 &&
+     Math.abs(xspd.ph - 11 * xspd.K * xspd.dt) < 1e-9 && xspd.run > 0.99 &&
+     xspd.act === 'act' && xspd.st2 === 'act' && xspd.after < 0.01,
+     '逛：一步 ' + xspd.walk.d.toFixed(4) + '（WALK × dt ' + (xspd.W * xspd.dt).toFixed(4) + '）；叫過去：一步 ' +
+     xspd.d.toFixed(4) + '（× EXC_RUN ' + xspd.K + '）、腿擺一幀 ' + xspd.ph.toFixed(3) + '、跑姿 ' + xspd.run.toFixed(3) +
+     '；站定 ' + xspd.act + ' 0.8 秒後跑姿 ' + xspd.after.toFixed(4));
+
+  /* ── 奔跑姿勢（使用者在預覽上選的「A 拖劍衝刺」）：劍尖拖在身後下方、身體往前傾 ──
+     讀 sabMesh 畫出去的劍身那一塊（第二欄＝劍身方向）與頭那一塊的位置；她面向 +z。 */
+  const xpose = await page.evaluate(() => {
+    const S = ENG.SABER, mat = new THREE.Matrix4();
+    const blade = S.findIndex(b => b.g === 6 && b.p[1] === 0.44), head = S.findIndex(b => b.g === 1 && b.p[1] === 0.96);
+    const look = o => {
+      const m = Object.assign({ kind: 'saber', x: 0, y: 0, z: 0, a: 0, sc: DOOM_SC, gait: 0.85, ph: Math.PI / 2,
+                                arm: 0, st: 'call' }, o);
+      ENG.putSabers([m]);
+      ENG.three.sabMesh.getMatrixAt(blade, mat);
+      const e = mat.elements, L = Math.hypot(e[4], e[5], e[6]);
+      const r = { dy: +(e[5] / L).toFixed(3), dz: +(e[6] / L).toFixed(3) };
+      ENG.three.sabMesh.getMatrixAt(head, mat);
+      r.hz = +mat.elements[14].toFixed(3);
+      return r;
+    };
+    const r = { walk: look({ run: 0 }), run: look({ run: 1 }), lie: look({ run: 1, lie: 1 }) };
+    ENG.putSabers([]);
+    return r;
+  });
+  ok('奔跑姿勢（拖劍衝刺）：劍尖拖在身後下方、身體往前傾；走路時劍尖朝前，躺著不套跑姿',
+     xpose.walk.dz > 0.3 && xpose.run.dz < -0.5 && xpose.run.dy < -0.3 && xpose.run.hz > xpose.walk.hz + 0.2 &&
+     xpose.lie.dz === xpose.walk.dz && xpose.lie.hz === xpose.walk.hz,
+     '劍身方向（往上、往前）走路 (' + xpose.walk.dy + ', ' + xpose.walk.dz + ')／跑 (' + xpose.run.dy + ', ' +
+     xpose.run.dz + ')；頭往前 ' + xpose.walk.hz + ' → ' + xpose.run.hz + ' 格；躺著 (' + xpose.lie.dy + ', ' + xpose.lie.dz + ')');
+
+  /* ── 先集氣、光柱才出現、出現後才斬 ──
+     畫面讀外暈那一層每一格的粗（第一欄的長度，0＝沒畫），規則推 stepExcal 看第一刀在哪一刻。 */
+  const xseq = await page.evaluate(() => {
+    const E = ENG.EXC, T3 = ENG.three, mat = new THREE.Matrix4();
+    const m = { kind: 'saber', x: 0, y: 0, z: 0, a: 0, sc: DOOM_SC, gait: 0, arm: 1, st: 'excal' };
+    const at = u => {
+      m.xt = u; ENG.putSabers([m]);
+      const bar = T3.excMeshes[2], ni = bar.count, w = [];
+      for (let i = 0; i < ni; i++) { bar.getMatrixAt(i, mat); const e = mat.elements; w.push(Math.hypot(e[0], e[1], e[2])); }
+      return { beam: w.slice(0, ni - 1).filter(x => x > 1e-6).length, segs: ni - 1, aura: +w[ni - 1].toFixed(3),
+               sp: T3.sparkMesh.count };
+    };
+    const g = at((E.raise + E.gather) / 2), g0 = at(E.raise + 0.3), g1 = at(E.gather - 0.2),
+          s = at((E.grow + E.charge) / 2), a = at(E.charge + 0.05);
+    ENG.putSabers([]);
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const b0 = nearSet(0, -600), q = spawnBeast('saber');
+    q.x = b0.x; q.z = b0.z - DOOM_NEAR; q.a = 0; q.st = 'excal'; q.xt = 0; q.hit = 0; q.th0 = null;
+    let first = null, k = 0;
+    while (q.st === 'excal' && k++ < 400) { stepExcal(q, 0.02); if (q.hit && first === null) first = q.xt; }
+    beasts = null; clearFires();
+    return { E: Object.assign({}, E), g, g0, g1, s, a, first };
+  });
+  const XE = xseq.E;
+  ok('先集氣、光柱才出現、出現後才斬：集氣 3 秒只有光點與劍身那層光（越集越亮），光柱長滿停一下才開斬',
+     Math.abs(XE.gather - XE.raise - 3) < 1e-9 && XE.raise < XE.gather && XE.gather < XE.grow &&
+     XE.charge - XE.grow >= 0.3 && xseq.g.beam === 0 && xseq.g.aura > 0 && xseq.g.sp > 0 &&
+     xseq.g1.aura > xseq.g0.aura * 2 && xseq.s.beam === xseq.s.segs && xseq.s.aura === 0 && xseq.s.sp > 0 &&
+     xseq.a.sp === 0 && xseq.first >= XE.charge && xseq.first < XE.charge + 0.021,
+     '集氣 ' + (XE.gather - XE.raise).toFixed(2) + ' 秒：光柱 ' + xseq.g.beam + ' 段、劍身那層光粗 ' + xseq.g0.aura + ' → ' +
+     xseq.g1.aura + '、光點 ' + xseq.g.sp + ' 顆；光柱長滿停著：' + xseq.s.beam + '／' + xseq.s.segs + ' 段、往上飄的光 ' +
+     xseq.s.sp + ' 顆；第一刀在 ' + (xseq.first == null ? '—' : xseq.first.toFixed(2)) + ' 秒（EXC.charge ' + XE.charge +
+     '，光柱 ' + XE.grow.toFixed(2) + ' 秒就長滿了）');
+
+  /* ── 光柱從劍身中段長出去：第一段的中心在劍那條線上、離握把 EXC_BASE × sc ＋ 半段 ── */
+  const xbase = await page.evaluate(() => {
+    const blade = ENG.SABER.find(b => b.g === 6 && b.p[1] === 0.44), mat = new THREE.Matrix4();
+    const m = { kind: 'saber', x: 2, y: 0, z: -5, a: 0.4, sc: DOOM_SC, gait: 0, arm: 1, st: 'excal',
+                xt: (ENG.EXC.grow + ENG.EXC.charge) / 2 };
+    ENG.putSabers([m]);
+    const s = Object.assign({}, ENG.excSword(m));
+    ENG.three.excMeshes[0].getMatrixAt(0, mat);
+    const e = mat.elements, t = ENG.EXC_BASE * m.sc + Math.hypot(e[4], e[5], e[6]) / 2;
+    const off = Math.hypot(e[12] - (s.x + s.dx * t), e[13] - (s.y + s.dy * t), e[14] - (s.z + s.dz * t));
+    ENG.putSabers([]);
+    return { base: ENG.EXC_BASE, lo: blade.p[1] - blade.s[1] / 2, hi: blade.p[1] + blade.s[1] / 2, mid: blade.p[1],
+             off, rule: excGeo(Object.assign(m, { st: 'excal' })).base / m.sc };
+  });
+  ok('光柱從劍身中段長出去（畫面與判定同一個起點）',
+     xbase.base > xbase.lo && xbase.base < xbase.hi && Math.abs(xbase.base - xbase.mid) < 0.01 &&
+     xbase.off < 1e-6 && Math.abs(xbase.rule - xbase.base) < 1e-9,
+     '起點離握把 ' + xbase.base + '（劍身 ' + xbase.lo.toFixed(2) + '～' + xbase.hi.toFixed(2) + '、中段 ' + xbase.mid +
+     '）；第一段離那一點 ' + xbase.off.toExponential(1) + '；規則那邊的起點 ' + xbase.rule);
+
+  /* ── 光柱尾部比較淡：每一段下緣／上緣的濃淡（aFade，真的送進 GPU 的那一份）；圓柱不帶蓋子 ──
+     接縫在天上（16、40 格），帶蓋子的話上下兩段的蓋子在加亮混色下疊成一圈亮盤（預覽第四版截圖看到的）。 */
+  const xtail = await page.evaluate(() => {
+    cleanTools();
+    const m = spawnBeast('saber');
+    m.x = siteR + 20; m.z = 0; m.st = 'excal'; m.xt = (ENG.EXC.grow + ENG.EXC.charge) / 2; m.hit = 1; m.arm = 1;
+    draw(); ENG.render();
+    const T3 = ENG.three, geo = T3.excMeshes[0].geometry, f = geo.attributes.aFade, ni = T3.excMeshes[0].count;
+    const seg = [];
+    for (let i = 0; i < ni - 1; i++) seg.push([+f.getX(i).toFixed(3), +f.getY(i).toFixed(3)]);
+    const r = { seg, open: geo.parameters.openEnded, cuts: T3.excMeshes.map(x => x.material.userData.cuts).join(','),
+                shared: T3.excMeshes.every(x => x.geometry.attributes.aFade === f) };
+    beasts = null; draw();
+    return r;
+  });
+  const XS = xtail.seg;
+  ok('光柱尾部比較淡：靠劍那一段全濃、一段接一段淡下去、尾端一成；圓柱不帶蓋子、shader 四刀都換到了',
+     XS.length > 2 && XS[0][0] === 1 && XS[0][1] === 1 && XS[XS.length - 1][1] <= 0.1 + 1e-6 &&
+     XS.every((s, i) => s[1] <= s[0] && (i === 0 || s[0] === XS[i - 1][1])) &&
+     xtail.open === true && xtail.cuts === '4,4,4' && xtail.shared,
+     '每一段（下緣→上緣）' + XS.map(s => s.join('→')).join('｜') + '；不帶蓋子＝' + xtail.open + '、shader 換到 ' + xtail.cuts + ' 刀');
+
+  /* ── 光柱排在燒灼痕與地面痕跡後面畫：量**實際畫的順序**（onBeforeRender），不是只看 renderOrder ──
+     三個都不寫深度、透明物件先比 renderOrder：v1.224～v1.225 光柱（0）一定先畫，焦痕（1）再整片塗上去。 */
+  const xorder = await page.evaluate(() => {
+    cleanTools();
+    const T3 = ENG.three, order = [];
+    const m = spawnBeast('saber');
+    m.x = siteR + 20; m.z = 0; m.st = 'excal'; m.xt = (ENG.EXC.grow + ENG.EXC.charge) / 2; m.hit = 1; m.arm = 1;
+    spawnSear(m.x + 3, m.z - 20, 0, 1, 40, 7.5);
+    spawnMark({ x: m.x + 2, y: 0.5, z: m.z }, 3, false);
+    const tag = [[T3.searMesh, 'sear'], [T3.markMesh, 'mark']].concat(T3.excMeshes.map((x, i) => [x, 'beam' + i]));
+    for (const [x, n] of tag) x.onBeforeRender = () => order.push(n);
+    draw(); ENG.render();
+    for (const [x] of tag) delete x.onBeforeRender;
+    cleanTools(); draw();
+    return order;
+  });
+  const XB = xorder.filter(n => n.startsWith('beam')).map(n => xorder.indexOf(n));
+  ok('光柱排在燒灼痕與地面痕跡後面畫（量實際畫的順序），不會被斬過的焦痕蓋住',
+     XB.length === 3 && xorder.indexOf('sear') >= 0 && xorder.indexOf('mark') >= 0 &&
+     XB.every(i => i > xorder.indexOf('sear') && i > xorder.indexOf('mark')),
+     '畫的順序 ' + xorder.join('→'));
+
+  /* ── 集氣的嗡鳴從舉到頂一路爬到開斬（長度讀 ENG.EXC，v1.225 以前寫死 1.6 秒）── */
+  const xsnd = await page.evaluate(() => {
+    const real = tone, got = [];
+    tone = (f, d) => { got.push(d); };
+    sndCharge();
+    tone = real;
+    return { got, want: ENG.EXC.charge - ENG.EXC.raise };
+  });
+  ok('集氣的嗡鳴從舉到頂一路爬到開斬（長度照時間軸算）',
+     xsnd.got.length === 2 && xsnd.got.every(d => Math.abs(d - xsnd.want) < 1e-9),
+     '兩聲各 ' + xsnd.got.map(d => d.toFixed(2)).join('／') + ' 秒（EXC.charge − raise ' + xsnd.want.toFixed(2) + '）');
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈破壞道具：Excalibur〉結束（--tier 跳過時從這裡出來）

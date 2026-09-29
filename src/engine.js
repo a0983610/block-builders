@@ -20,6 +20,7 @@ const ENG = (function () {
   let poolGeo, poolPos, poolFoam, poolUni;
   let markMesh, markGeo, markPos, markCol;
   let searMesh, searGeo, searPos, searCol;   // Excalibur 的燒灼痕（v1.224，見 putSears）
+  let excFade;                               // 光柱每一格下緣／上緣的濃淡（v1.226，見 putBar）
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
@@ -899,26 +900,50 @@ const ENG = (function () {
     for (let i = 0; i < MAXSAB; i++)
       for (let k = 0; k < SAB_PARTS; k++) sabMesh.setColorAt(i * SAB_PARTS + k, tmpC.setHex(SABER[k].c));
     scene.add(sabMesh);
-    /* 蓄力時往劍身收的金色光點：不透明、不吃光（第一版預覽用加亮混色，疊在天空上直接變白） */
-    sparkMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: 0xffffff }), MAXSAB * SAB_SPARK);
+    /* 蓄力時的金色光點：往劍身收的那一批 ＋ 四周往上飄的那一批（v1.226），同一顆網格。
+       不透明、不吃光（第一版預覽用加亮混色，疊在天空上直接變白） */
+    sparkMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: 0xffffff }), MAXSAB * (SAB_SPARK + SAB_RISE));
     sparkMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     sparkMesh.count = 0;
     sparkMesh.visible = false;
     sparkMesh.frustumCulled = false;
-    for (let i = 0; i < MAXSAB * SAB_SPARK; i++) sparkMesh.setColorAt(i, tmpC.setHex(SAB_SPARK_C[i % 4]));
+    for (let i = 0; i < MAXSAB * (SAB_SPARK + SAB_RISE); i++) sparkMesh.setColorAt(i, tmpC.setHex(SAB_SPARK_C[i % 4]));
     scene.add(sparkMesh);
-    /* 光柱三層：亮芯（一般混色）、金、外暈（後兩層加亮）。都不寫深度、不投影。一位一條。
+    /* 光柱三層：亮芯（一般混色）、金、外暈（後兩層加亮）。都不寫深度、不投影。
+       一位 EXC_SEG.length 格：光柱 EXC_SEG.length − 1 段 ＋ 集氣時劍身那一層光（見 putBar）。
        **圓柱不是方塊**（v1.224，使用者：「太方了 應該要偏圓柱狀」）：直徑 1、沿 y 軸，
        縮放照舊是 (粗, 長, 粗)，所以直徑就是 EXC_W——判定量的是離直立面多遠，跟截面的形狀無關。
        （靠劍那一截拉長、做成平順的錐形也試過，預覽 10～40 格四組，使用者：「好像都不如原本的」，
-       所以照舊是 3 格內一段一段長到全粗，見 開發筆記〈破壞道具：Excalibur〉。） */
-    const barGeo = new T.CylinderGeometry(0.5, 0.5, 1, 24);
+       所以照舊是 3 格內一段一段長到全粗，見 開發筆記〈破壞道具：Excalibur〉。）
+       **不帶蓋子**（v1.226）：尾部變淡多切了 16、40 格兩個接縫在天上，上下兩段的蓋子在加亮混色下
+       疊成一圈亮盤。**尾部變淡**靠 aFade：每一格兩個數（這一段下緣、上緣的濃淡），沿著圓柱的長度
+       內插進 alpha——三層共用一顆幾何體連同這一份（同黑色火球殼的 aFade）。
+       **排在燒灼痕後面畫**（renderOrder 2，焦痕是 1）：兩個都不寫深度，透明物件先比 renderOrder，
+       原本同是 0 以下的光柱一定先畫，焦痕（濃 0.96）再整片塗在光柱上面——使用者：「光束會低於地面痕跡」
+       （見 開發筆記〈Excalibur：跑過去、先集氣再出光柱〉）。 */
+    const barGeo = new T.CylinderGeometry(0.5, 0.5, 1, 24, 1, true);
+    excFade = new T.InstancedBufferAttribute(new Float32Array(MAXSAB * EXC_SEG.length * 2).fill(1), 2);
+    excFade.setUsage(T.DynamicDrawUsage);
+    barGeo.setAttribute('aFade', excFade);
     for (const L of EXC_LAYERS) {
-      const m = new T.InstancedMesh(barGeo, new T.MeshBasicMaterial({
+      const mat = new T.MeshBasicMaterial({
         color: L.c, transparent: true, opacity: L.op, depthWrite: false,
-        blending: L.add ? T.AdditiveBlending : T.NormalBlending }), MAXSAB * (EXC_SEG.length - 1));
+        blending: L.add ? T.AdditiveBlending : T.NormalBlending });
+      mat.onBeforeCompile = s => {
+        const cut = injector();
+        s.vertexShader = cut(s.vertexShader, '#include <common>',
+          '\nattribute vec2 aFade;\nvarying float vFade;');
+        s.vertexShader = cut(s.vertexShader, '#include <begin_vertex>',
+          '\nvFade = mix(aFade.x, aFade.y, position.y + 0.5);');
+        s.fragmentShader = cut(s.fragmentShader, '#include <common>', '\nvarying float vFade;');
+        s.fragmentShader = cut(s.fragmentShader, '#include <color_fragment>', '\ndiffuseColor.a *= vFade;');
+        mat.userData.cuts = cut.count();          // 給測試看：四刀都換到了嗎
+      };
+      mat.customProgramCacheKey = () => 'exc-bar';
+      const m = new T.InstancedMesh(barGeo, mat, MAXSAB * EXC_SEG.length);
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
       m.count = 0; m.visible = false; m.frustumCulled = false;
+      m.renderOrder = 2;
       scene.add(m);
       excMeshes.push(m);
     }
@@ -4880,8 +4905,9 @@ const ENG = (function () {
      搆不到的差額**先把護手那一截拉長**（最多 SAB_EXT：前臂那一塊變長、腕帶與手往下挪，
      袖子、袖口、肘甲不動——預覽的 B 版整支等比拉長，藍袖子被拉成兩條長翅膀），
      還不夠才整支往那一點挪過去（同小人那邊的註解「手臂太短要整支挪」）。
-     三種姿勢混在一起：
+     四種姿勢混在一起：
        站／走    m.gait：右手垂著握劍、左手往外張（原圖那個站姿），走起來擺手擺腳
+       奔跑      m.run 0～1（v1.226）：Excalibur 叫她過去那一段，拖劍衝刺（見 sabRun）
        架劍      m.arm 0～1：站定瞄的那一秒雙手握劍在腰前（規則那邊 act／excal 時推到 1）
        Excalibur m.st === 'excal'、m.xt 秒：照 sabKey 的關鍵格 舉過頭頂 → 蓄力 → 斬下 → 收回架劍 */
   const SAB_PIV = [[0, 0, 0], [0, 0.74, 0], [-0.32, 0.72, 0], [0.32, 0.72, 0], [-0.11, 0.33, 0], [0.11, 0.33, 0]];
@@ -4895,10 +4921,14 @@ const ENG = (function () {
                                  : b.p[1] === 0.475 ? 1 : b.p[1] <= 0.43 ? 2 : 0);
   /* 一招的時間軸（秒，從 act 站定瞄完那一刻算）。規則那邊照同一份表：charge 那一刻開斬、
      slash 斬到底點火、end 收工——畫出來的斬下去跟削掉的必須是同一個時間（同 giantFoot 的道理）。
-       raise 舉過頭頂（0.8 秒）→ grow 光柱從劍上長到天上（0.6 秒）→ charge 蓄力到這一刻
-       slash 斬到底（0.4 秒，越斬越快；比預覽第一版的 0.22 慢，看得到整條光柱掃下來）
-       hold  光柱停在前下方 → fade 淡掉 → back 收回架劍（＝end 收工） */
-  const EXC = { raise: 0.8, grow: 1.4, charge: 2.4, slash: 2.8, hold: 3.2, fade: 3.8, back: 4.6, end: 4.6 };
+       raise  舉過頭頂（0.8 秒）
+       gather 集氣到這一刻（3 秒）：只有光點往劍身收、四周的光往上飄、劍身越來越亮，**還沒有光柱**
+       grow   光柱從劍身長到天上（0.6 秒）→ charge 停一下（0.4 秒）就開斬
+       slash  斬到底（0.4 秒，越斬越快；比預覽第一版的 0.22 慢，看得到整條光柱掃下來）
+       hold   光柱停在前下方 → fade 淡掉 → back 收回架劍（＝end 收工）
+     v1.226 把集氣從 1.6 秒拉到 3 秒、光柱改到集氣完才長出來（使用者：「集氣延長一點時間 可能約3秒」
+     「先集氣 然後光束才出現 光束出現後才砍下去」）。v1.223～v1.225 是舉到頂就長出光柱、一邊閃一邊蓄力。 */
+  const EXC = { raise: 0.8, gather: 3.8, grow: 4.4, charge: 4.8, slash: 5.2, hold: 5.6, fade: 6.2, back: 7.0, end: 7.0 };
   /* 關鍵格：握把位置、劍身方向、左右手要伸到哪、身體前傾、低頭 */
   const sabK = (g, d, r, l, lean, head) => ({
     grip: new T.Vector3(g[0], g[1], g[2]), dir: new T.Vector3(d[0], d[1], d[2]).normalize(),
@@ -4977,20 +5007,48 @@ const ENG = (function () {
     _sLean = 0;
     /* 架劍／出招：照 m.arm 混過去（出招那幾秒一律是 1） */
     const w = m.st === 'excal' ? 1 : Math.min(1, Math.max(0, m.arm || 0));
-    if (w <= 0) return;
-    const k = m.st === 'excal' ? sabKey(m.xt || 0) : SAB_K.guard;
-    const e2 = sabAim(SAB_PIV[2], k.hR, _sQ1[2], _sOff1[2]);
-    const e3 = sabAim(SAB_PIV[3], k.hL, _sQ1[3], _sOff1[3]);
-    _sQ1[1].setFromEuler(_sE.set(k.head, 0, 0));
-    _sQ1[4].setFromEuler(_sE.set(-0.28, 0, 0));     // 右腳往前一步
-    _sQ1[5].setFromEuler(_sE.set(0.22, 0, 0));
-    for (let i = 1; i < 6; i++) { _sQ[i].slerp(_sQ1[i], w); _sOff[i].lerp(_sOff1[i], w); }
-    _sExt[2] = e2 * w; _sExt[3] = e3 * w;
-    _sAt.lerp(k.grip, w);
-    _sDir.lerp(k.dir, w).normalize();
-    _sRoll *= 1 - w;
-    _sLean = k.lean * w;
-    _sBob *= 1 - w;
+    if (w > 0) {
+      const k = m.st === 'excal' ? sabKey(m.xt || 0) : SAB_K.guard;
+      const e2 = sabAim(SAB_PIV[2], k.hR, _sQ1[2], _sOff1[2]);
+      const e3 = sabAim(SAB_PIV[3], k.hL, _sQ1[3], _sOff1[3]);
+      _sQ1[1].setFromEuler(_sE.set(k.head, 0, 0));
+      _sQ1[4].setFromEuler(_sE.set(-0.28, 0, 0));     // 右腳往前一步
+      _sQ1[5].setFromEuler(_sE.set(0.22, 0, 0));
+      for (let i = 1; i < 6; i++) { _sQ[i].slerp(_sQ1[i], w); _sOff[i].lerp(_sOff1[i], w); }
+      _sExt[2] = e2 * w; _sExt[3] = e3 * w;
+      _sAt.lerp(k.grip, w);
+      _sDir.lerp(k.dir, w).normalize();
+      _sRoll *= 1 - w;
+      _sLean = k.lean * w;
+      _sBob *= 1 - w;
+    }
+    /* 奔跑（v1.226）混在最上面：跑到了轉進 act 那一秒 m.run 往 0、m.arm 往 1，兩邊交叉淡過去。
+       躺著、飛著、出招中都不跑（躺平角加上前傾會把她壓進地裡） */
+    const r = m.lie || m.air || m.st === 'excal' ? 0 : Math.min(1, Math.max(0, m.run || 0));
+    if (r > 0) sabRun(m, r);
+  }
+  /* 奔跑的姿勢（v1.226，使用者：「點擊後saber用跑…需要做出跑的動作」，預覽給了三種，選「A 拖劍衝刺」）：
+     身體前傾、腿擺加大、上下起伏、頭往上抬（前傾之後臉才朝前）；右手把劍拖在身後下方、左手大力前後擺。
+     另兩種是「兩手前後大擺、劍跟著右手擺」與「雙手架劍衝」，見 開發筆記〈Excalibur：跑過去、先集氣再出光柱〉。 */
+  const SAB_RUN = { lean: 0.30, leg: 0.85, bob: 0.07, head: -0.22, trail: 0.75, pump: 1.0 };
+  const SAB_DIR_TRAIL = new T.Vector3(-0.22, -0.62, -0.75).normalize();   // 劍尖朝後下方（身體前傾之後約往下 30 度）
+  const _sRq = [0, 1, 2, 3, 4, 5].map(() => new T.Quaternion());
+  function sabRun(m, r) {
+    const R = SAB_RUN, s = Math.sin(m.ph || 0);
+    _sRq[1].setFromEuler(_sE.set(R.head, 0, 0.04 * s));
+    _sRq[2].setFromEuler(_sE.set(R.trail + 0.08 * s, 0, -0.3));
+    _sRq[3].setFromEuler(_sE.set(-R.pump * s, 0, 0.2));
+    _sRq[4].setFromEuler(_sE.set(-R.leg * s, 0, 0));
+    _sRq[5].setFromEuler(_sE.set(R.leg * s, 0, 0));
+    for (let i = 1; i < 6; i++) _sQ[i].slerp(_sRq[i], r);
+    _sOff[2].multiplyScalar(1 - r); _sOff[3].multiplyScalar(1 - r);
+    _sExt[2] *= 1 - r; _sExt[3] *= 1 - r;
+    _sv.copy(SAB_HAND).applyMatrix4(sabPivot(_sm2, SAB_PIV[2], _sQ[2], _sOff[2]));   // 劍在右手心
+    _sAt.lerp(_sv, r);
+    _sDir.lerp(SAB_DIR_TRAIL, r).normalize();
+    _sLean = Math.max(_sLean, R.lean * r);
+    /* 起伏 ＋ 前傾時裙擺前緣（離中線 0.26）不插進地裡要抬的那一點（繞腳底轉，前緣會往下沉） */
+    _sBob = Math.max(_sBob, Math.abs(Math.cos(m.ph || 0)) * R.bob * r) + 0.26 * Math.sin(R.lean * r);
   }
   /* 算出這一位每一組的世界矩陣（_sG）。putSabers 與 excSword 共用，所以畫面與判定是同一份。 */
   function sabRig(m) {
@@ -5019,16 +5077,23 @@ const ENG = (function () {
   /* 光柱（使用者看過第二版預覽選的：**甲 整條光柱斬下來、粗 6 格**；30 格長）。
      v1.224 加粗加長到 **15 × 80**（使用者：「加長加粗saber攻擊的光柱(破壞範圍也要符合)」，
      在 Excalibur 預覽頁上 6～15 × 30～80 挑的）：吉薩大金字塔同一個位置一斬 631 → 1417 塊。
-     **場上的格子**，不乘她的 sc。從護手那裡（握把往劍身 EXC_BASE，模型單位）長出去，
-     劍身整把包在光裡；靠近劍的那一小截比較細（0.25 起跳，3 格內長到全粗：光從劍上長出來）。
+     **場上的格子**，不乘她的 sc。從劍身中段（握把往劍身 EXC_BASE，模型單位）長出去；
+     靠近劍的那一小截比較細（0.25 起跳，3 格內長到全粗：光從劍上長出來）。
+     起點 v1.223～v1.225 是護手（0.1）：起跳就 3.75 格粗，舉過頭頂時整顆頭包在光裡、劍身整把看不見。
+     v1.226 挪到劍身中段 0.44（使用者：「攻擊光束的位置大約在saber劍刃處」，預覽給護手／中段／劍尖三種）。
      規則那邊判定的粗細也是這一支（excWidth），位置與方向讀 excSword（跟畫出去的劍同一支 sabRig），
      所以畫出來的光柱掃過哪裡，斬掉的就是哪裡。 */
-  const EXC_W = 15, EXC_L = 80, EXC_BASE = 0.1;
-  const EXC_SEG = [0, 0.75, 1.5, 2.25, 3, EXC_L];
+  const EXC_W = 15, EXC_L = 80, EXC_BASE = 0.44;
+  /* 分段：3 格內那四段是長到全粗的斜坡；16、40 那兩刀是尾部變淡的轉折（v1.226，見 excTail） */
+  const EXC_SEG = [0, 0.75, 1.5, 2.25, 3, 16, 40, EXC_L];
   const excWidth = d => Math.min(1, Math.max(0.25, 0.25 + d / 3));
-  /* 這一刻的光柱多長（格）、多亮（0～1）：舉到頂之後長出來，蓄力時一明一暗，斬完停一下就淡掉 */
-  const excLen = u => u < EXC.raise || u >= EXC.fade ? 0
-                    : u < EXC.grow ? EXC_L * sEase((u - EXC.raise) / (EXC.grow - EXC.raise)) : EXC_L;
+  /* 離光柱起點 d 格的濃淡（v1.226，使用者：「光柱的部分能夠尾部比較淡嗎」）：16 格內全濃，
+     16 → 40 淡到 0.55，40 → 尾端淡到 0.1。**只是看起來淡**，斬的範圍照舊到 EXC_L */
+  const excTail = d => d <= 16 ? 1 : d <= 40 ? 1 - 0.45 * (d - 16) / 24
+                     : Math.max(0.1, 0.55 - 0.45 * (d - 40) / (EXC_L - 40));
+  /* 這一刻的光柱多長（格）、多亮（0～1）：集氣完才長出來，停一下的時候一明一暗，斬完停一下就淡掉 */
+  const excLen = u => u < EXC.gather || u >= EXC.fade ? 0
+                    : u < EXC.grow ? EXC_L * sEase((u - EXC.gather) / (EXC.grow - EXC.gather)) : EXC_L;
   const excWk = u => u < EXC.charge ? 0.72 + 0.1 * Math.sin(u * 14)
                    : u < EXC.hold ? 1 : Math.max(0, 1 - (u - EXC.hold) / (EXC.fade - EXC.hold));
   /* 三層同心：亮芯偏金、半透明、收窄——預覽第一版是不透明的近白色，從側面看是一大片白板，像牆不像光 */
@@ -5048,40 +5113,82 @@ const ENG = (function () {
     _sword.dx = _sv2.x; _sword.dy = _sv2.y; _sword.dz = _sv2.z;
     return _sword;
   }
-  /* 蓄力的光點：一位 SAB_SPARK 顆，從半徑 1.3 的一圈往劍身中段收。參數開機時定好
-     （黃金角＋小數部分，不抽 Math.random：這一支每幀都跑，也不該吃掉規則那邊的骰子） */
-  const SAB_SPARK = 48;
+  /* 集氣的光點（參數開機時定好，不抽 Math.random：這一支每幀都跑，也不該吃掉規則那邊的骰子）。
+     v1.226 使用者：「集氣的光芒要再明顯 更多光集中到劍上」「集氣特效加些光芒往上方飄」［附圖：高舉發光的劍、
+     四周一片往上升的金色光點］。兩批，同一顆 sparkMesh：
+       往劍上收  SAB_SPARK 顆（48 → 96、大一倍），從半徑 SAB_SPR（1.3 → 2.2）的一圈旋進來，
+                 收到**整把劍身**上（at：劍的座標 0.18～0.74；原本全收到中段一點），集氣越久顆越大
+       往上飄    SAB_RISE 顆，她四周半徑 0.6～2.2 的一圈上從地面飄到 RISE_H，邊飄邊晃，中段最大、兩端收掉
+     方位與相位用 R2 序列（0.7549／0.5698）：原本黃金角配 0.618 的小數部分，兩個剛好互補，
+     全部落在同一條螺旋上，看起來是一條彩帶——要的是整圈都有光往劍上收。 */
+  const SAB_SPARK = 96, SAB_SPR = 2.2;
   const SAB_SPARK_C = [0xffd23c, 0xffe27a, 0xffb81e, 0xfff1b0];
   const SAB_SP = [];
   for (let i = 0; i < SAB_SPARK; i++)
-    SAB_SP.push({ th: i * 2.39996, off: (i * 0.618034) % 1, s: 0.02 + 0.025 * ((i * 2.673) % 1) });
+    SAB_SP.push({ th: ((i * 0.7548777) % 1) * Math.PI * 2, off: (i * 0.5698403) % 1,
+                  s: 0.04 + 0.04 * ((i * 2.673) % 1), at: 0.18 + 0.56 * ((i * 0.381966) % 1) });
+  const SAB_RISE = 64, RISE_H = 4.2;
+  const SAB_RS = [];
+  for (let i = 0; i < SAB_RISE; i++)
+    SAB_RS.push({ th: ((i * 0.7548777) % 1) * Math.PI * 2, off: (i * 0.5698403) % 1,
+                  r: 0.6 + 1.6 * ((i * 0.381966) % 1), v: 0.28 + 0.2 * ((i * 0.7236) % 1),
+                  s: 0.03 + 0.035 * ((i * 2.673) % 1) });
+  /* 集氣時劍身包的那一層光（v1.226，同上那兩句）：握把往劍身 AURA_Y0～AURA_Y1 那一截，
+     寬是場上的格（三層各照自己的粗細比例）。舉到頂起從三成亮到全亮，光柱長出來那 0.6 秒淡掉交棒 */
+  const AURA_W = 1.2, AURA_Y0 = 0.05, AURA_Y1 = 0.85;
+  const sabAura = u => u <= EXC.raise || u >= EXC.grow ? 0
+                     : u < EXC.gather ? 0.3 + 0.7 * sEase((u - EXC.raise) / (EXC.gather - EXC.raise))
+                     : 1 - (u - EXC.gather) / (EXC.grow - EXC.gather);
   const sabAt = [];                         // 這一幀第幾格畫的是清單裡的第幾個（點選用，同 giftAt）
   const _bG = new T.Vector3(), _bD = new T.Vector3(), _bP = new T.Vector3(), _bS = new T.Vector3();
   const _bQ = new T.Quaternion();
-  /* 第 slot 位的光柱（沒有的話那幾格塞零矩陣）。三層同一個方向、同一組段，只差粗細 */
+  /* 第 slot 位的光柱（沒有的話那幾格塞零矩陣）。三層同一個方向、同一組段，只差粗細。
+     一位 ni 格：前 segs 格是光柱，最後一格是集氣時劍身那一層光 */
   function putBar(slot, u, on) {
-    const segs = EXC_SEG.length - 1;
+    const segs = EXC_SEG.length - 1, ni = EXC_SEG.length;
     const len = on ? excLen(u) : 0, wk = on ? excWk(u) : 0;
+    const af = on ? sabAura(u) : 0;
+    let al = 0;
+    if (af > 0) {
+      _bG.set(0, AURA_Y0, 0).applyMatrix4(_sG[6]);
+      _bP.set(0, AURA_Y1, 0).applyMatrix4(_sG[6]);
+      al = _bG.distanceTo(_bP);
+      _bD.subVectors(_bP, _bG).normalize();
+      _bQ.setFromUnitVectors(_sUP, _bD);
+      _bP.add(_bG).multiplyScalar(0.5);
+    }
+    for (let L = 0; L < excMeshes.length; L++) {
+      if (!(af > 0)) { excMeshes[L].setMatrixAt(slot * ni + segs, ZERO_M); continue; }
+      const w = AURA_W * EXC_LAYERS[L].w * af * (1 + 0.12 * Math.sin(u * 23 + L));
+      tmpM.compose(_bP, _bQ, _bS.set(w, al, w));
+      excMeshes[L].setMatrixAt(slot * ni + segs, tmpM);
+    }
+    excFade.setXY(slot * ni + segs, 1, 1);
     if (len > 0.01 && wk > 0) {
       _bG.set(0, 0, 0).applyMatrix4(_sG[6]);                  // 握把
-      _bP.set(0, EXC_BASE, 0).applyMatrix4(_sG[6]);           // 光柱起點（護手）
+      _bP.set(0, EXC_BASE, 0).applyMatrix4(_sG[6]);           // 光柱起點（劍身中段）
       _bD.subVectors(_bP, _bG).normalize();
       _bG.copy(_bP);
       _bQ.setFromUnitVectors(_sUP, _bD);
+    }
+    // 每一段下緣與上緣的濃淡（還在長的那一段，上緣照畫到的地方算）
+    for (let s = 0; s < segs; s++) {
+      const a = EXC_SEG[s], l = Math.max(0, Math.min(EXC_SEG[s + 1], len) - a);
+      excFade.setXY(slot * ni + s, excTail(a), excTail(a + l));
     }
     for (let L = 0; L < excMeshes.length; L++) {
       const lay = EXC_LAYERS[L];
       for (let s = 0; s < segs; s++) {
         const a = EXC_SEG[s], l = Math.max(0, Math.min(EXC_SEG[s + 1], len) - a);
-        if (!(l > 0 && wk > 0)) { excMeshes[L].setMatrixAt(slot * segs + s, ZERO_M); continue; }
+        if (!(l > 0 && wk > 0)) { excMeshes[L].setMatrixAt(slot * ni + s, ZERO_M); continue; }
         const w = EXC_W * excWidth((EXC_SEG[s] + EXC_SEG[s + 1]) / 2) * lay.w * wk *
                   (1 + 0.06 * Math.sin(u * 43 + s * 1.7 + L));        // 光在抖
         _bP.copy(_bG).addScaledVector(_bD, a + l / 2);
         tmpM.compose(_bP, _bQ, _bS.set(w, l, w));
-        excMeshes[L].setMatrixAt(slot * segs + s, tmpM);
+        excMeshes[L].setMatrixAt(slot * ni + s, tmpM);
       }
     }
-    return len > 0.01 && wk > 0;
+    return (len > 0.01 && wk > 0) || af > 0;
   }
   /* list：規則那邊的 beastList()（跟 putBeasts 同一份），只畫 kind === 'saber' 的那幾個 */
   function putSabers(list) {
@@ -5103,15 +5210,28 @@ const ENG = (function () {
         sabMesh.setMatrixAt(n * SAB_PARTS + k, _sm2);
       }
       const u = m.xt || 0, ex = m.st === 'excal';
-      if (ex && u > EXC.raise && u < EXC.charge) {
-        const msc = m.sc || 1;
-        _sv2.set(0, 0.45, 0).applyMatrix4(_sG[6]);     // 劍身中段（世界）
+      // 往劍上收的那一批：集氣那 3 秒，一邊旋一邊收到劍身上各自那一點
+      if (ex && u > EXC.raise && u < EXC.gather) {
+        const msc = m.sc || 1, big = 0.7 + 0.6 * (u - EXC.raise) / (EXC.gather - EXC.raise);
         for (let j = 0; j < SAB_SPARK; j++) {
-          const p = SAB_SP[j], l = (u * 0.9 + p.off) % 1, r = 1.3 * (1 - l) * msc;
-          _sv.set(_sv2.x + Math.cos(p.th) * r,
-                  _sv2.y + (-0.7 * (1 - l) + 0.3 * Math.sin(p.th * 3)) * msc,
-                  _sv2.z + Math.sin(p.th) * r);
-          const sc = p.s * msc * Math.min(1, l * 4) * Math.min(1, (EXC.charge - u) * 4);
+          const p = SAB_SP[j], l = (u * 1.1 + p.off) % 1, r = SAB_SPR * (1 - l) * msc, th = p.th + 1.6 * l;
+          _sv2.set(0, p.at, 0).applyMatrix4(_sG[6]);   // 收到劍身上的那一點（世界）
+          _sv.set(_sv2.x + Math.cos(th) * r,
+                  _sv2.y + (-1.0 * (1 - l) + 0.45 * Math.sin(p.th * 3)) * (1 - l) * msc,
+                  _sv2.z + Math.sin(th) * r);
+          const sc = p.s * msc * big * Math.min(1, l * 4) * Math.min(1, (EXC.gather - u) * 4);
+          tmpM.compose(_sv, _sq.identity(), _sAt.set(sc, sc, sc));
+          sparkMesh.setMatrixAt(sp++, tmpM);
+        }
+      }
+      // 往上飄的那一批：舉到頂起淡入、開斬前淡掉（光柱長出來、停住那一段也還在飄）
+      if (ex && u > EXC.raise && u < EXC.charge) {
+        const msc = m.sc || 1, k = Math.min(1, (u - EXC.raise) * 1.6, (EXC.charge - u) * 3);
+        for (let j = 0; j < SAB_RISE; j++) {
+          const p = SAB_RS[j], l = (u * p.v + p.off) % 1, sway = 0.12 * Math.sin(u * 2.3 + p.th * 5);
+          _sv.set(m.x + (Math.cos(p.th) * p.r + sway) * msc, (m.y || 0) + l * RISE_H * msc,
+                  m.z + (Math.sin(p.th) * p.r - sway) * msc);
+          const sc = p.s * msc * k * Math.sin(Math.PI * l);
           tmpM.compose(_sv, _sq.identity(), _sAt.set(sc, sc, sc));
           sparkMesh.setMatrixAt(sp++, tmpM);
         }
@@ -5126,10 +5246,11 @@ const ENG = (function () {
     sparkMesh.visible = sp > 0;
     if (sp) sparkMesh.instanceMatrix.needsUpdate = true;
     for (const mesh of excMeshes) {
-      mesh.count = n * (EXC_SEG.length - 1);
+      mesh.count = n * EXC_SEG.length;
       mesh.visible = bars > 0;
       if (bars) mesh.instanceMatrix.needsUpdate = true;
     }
+    if (bars) excFade.needsUpdate = true;
   }
 
   /* 場上同時畫得下幾個（含飛在半空的香蕉與火球）。v1.144 從 8 加到 12：吉祥物那三隻

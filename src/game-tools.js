@@ -76,8 +76,8 @@ const TOOLS = [
     /* v1.221：點地面或建築都算，見 castHole。 */
     tip: '點一下：範圍內的積木、小人動物被吸進黑洞消失，5 秒後從天上撒滿整座島' },
   { id: 'excalibur', n: 'Excalibur', k: '✨',
-    /* v1.224：點地面或建築都算，叫 Saber 走過去斬那一招（見 callSaber）。 */
-    tip: '點一下：叫 Saber 走過來，朝那一點舉劍斬下光柱（她在場上就直接叫過去）' }
+    /* v1.224：點地面或建築都算，叫 Saber 過去斬那一招（見 callSaber）。v1.226 起用跑的（EXC_RUN） */
+    tip: '點一下：叫 Saber 跑過來，朝那一點舉劍斬下光柱（她在場上就直接叫過去）' }
 ];
 /* 說明最多幾個字（v1.220.2，使用者：「破壞工具說明不要太長」）。選好一把之後它會接在
    底部那條操作提示的最前面，而那條不換行、後半段固定的操作說明自己就佔掉約 514px——
@@ -7866,8 +7866,10 @@ const GIA_BUST = 8;
 const doomNear = m => m.kind === 'giant' ? GIA_NEAR
                     : (m.home && m.kind === 'snow') ? DOOM_TOSS_NEAR : DOOM_NEAR;
 /* 每一款自己的腳程、腿擺倍率、跟建築要保持的距離。沒列到的照 DOOM_WALK 那一組走
-   （兩隻猴子）——加下一款走地上的天災時在這三張表各加一格就好。 */
-const DOOM_SPD = { giant: GIA_WALK };
+   （兩隻猴子）——加下一款走地上的天災時在這三張表各加一格就好。
+   Saber 走路同小人（v1.226，使用者：「增快saber一般走路移動速度(同小人)」；v1.222～v1.225 照猴子的 2.2），
+   腿擺照小人那一份（stp 不給＝1，小人走 WALK 也是 11 弧度／秒）。 */
+const DOOM_SPD = { giant: GIA_WALK, saber: WALK };
 const DOOM_STEP = { giant: GIA_STEP };
 const DOOM_KEEP = { giant: GIA_KEEP };
 /* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
@@ -7945,7 +7947,7 @@ function spawnBeast(kind, fun, bad, ang) {
     /* 擋路就踹那一段的狀態（v1.207，只有巨人在用）：bust＝踹完要回哪一段
        （null＝不是在清路），bn＝這個障礙物已經踹幾腳了，bskip＝踹不通、放它一馬的那一個。 */
     bust: null, bn: 0, bskip: null,
-    arm: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,
+    arm: 0, run: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,   // run：Saber 跑多用力（v1.226）
     fun: fun ? 1 : 0, stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
     /* bad＝這一趟要動手，home＝動手的目標在村子那邊（v1.166）。兩個分開是因為
        「還沒砸」與「砸的是誰」是兩件事：砸完 bad 歸零回去逛，home 也一起清掉。 */
@@ -8214,7 +8216,11 @@ function stepBeast0(m, dt) {
      站著發呆的那幾秒（m.pause）也不算「行走」，不去踹面前的東西。 */
   if (m.kind === 'giant' && !(m.pause > 0) &&
       (m.st === 'come' || m.st === 'fun' || m.st === 'go') && giantBust(m)) return false;
-  if (m.st === 'call') return stepCall(m, dt, spd, stp, kp);    // Excalibur 叫她過去（v1.224）
+  /* Excalibur 叫她過去那一段**用跑的**（v1.226，使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」）：
+     腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
+  if (m.kind === 'saber')
+    m.run += ((m.call && (m.st === 'call' || m.st === 'gate') ? 1 : 0) - m.run) * Math.min(1, dt * 8);
+  if (m.st === 'call') return stepCall(m, dt, spd * EXC_RUN, (stp || 1) * EXC_RUN, kp);   // v1.224
   if (m.st === 'come') {
     m.tx = 0; m.tz = 0;
     /* 城牆擋在前面才處理（v1.186，見 wallAhead）：還沒蓋起來、或有缺口就直直走過去。
@@ -8250,7 +8256,8 @@ function stepBeast0(m, dt) {
      「走完了回原本那一段」。走到一半開口沒了（門樓被打爛、缺口被砌起來）也是走這一條，
      回去走原本那一條（那邊會改成就地拆牆）。 */
   if (m.st === 'gate') {
-    if (crossStep(m, dt, spd, stp)) gateBack(m);
+    const k = m.call ? EXC_RUN : 1;            // Excalibur 叫她過去那一趟連穿城門也用跑的（v1.226）
+    if (crossStep(m, dt, spd * k, m.call ? (stp || 1) * k : stp)) gateBack(m);
     return false;
   }
   /* 吉祥物：在工地那一帶晃，晃夠 m.stay 秒就走人（使用者：「只是出現逛一逛
@@ -8637,8 +8644,8 @@ function giantSteam(m, dt) {
    使用者：「你這次沒讓我看效果就做完 我是想說舉過頭頂 然後整條大光炮般的斬下來 同時也有燃燒效果
    然後比現在再粗一點」。第二版預覽給了兩種斬法，使用者選 **甲 整條光柱斬下來、粗 6 格**。
 
-   **走路那一整套一個字都沒重刻**：她是小人大小、走地上，DOOM_SC／DOOM_WALK／DOOM_NEAR
-   全部照猴子那一組；come／fun／near／act／go、走城門、被打倒、著火、翻臉都是現成的。
+   **走路那一整套一個字都沒重刻**：她是小人大小、走地上，DOOM_SC／DOOM_NEAR 照猴子那一組
+   （腳程 v1.226 起同小人，見 DOOM_SPD）；come／fun／near／act／go、走城門、被打倒、著火、翻臉都是現成的。
    新的只有出招這一段（excal，stepExcal）。
 
    斬法同大劍（swordCut）：光柱在她面對的那個直立面上，從「朝天」轉到「前下方」，
@@ -8671,7 +8678,7 @@ function stepExcal(m, dt) {
   m.gait += (0 - m.gait) * Math.min(1, dt * 8);
   const E = ENG.EXC, t0 = m.xt;
   m.xt += dt;
-  if (t0 < E.raise && m.xt >= E.raise) sndCharge();         // 舉到頂，光柱長出來、開始蓄力
+  if (t0 < E.raise && m.xt >= E.raise) sndCharge();         // 舉到頂，開始集氣（光柱集氣完才長出來，v1.226）
   /* 開斬那一刻：這一招算出手了（m.hit，同巨人那一腳），記下光柱這時候那一條線＝斬的起點。
      th0／thS 是那條線的角度（0＝朝天、π/2＝朝前），給點火與測試看的 */
   if (!m.hit && m.xt >= E.charge) {
@@ -8836,6 +8843,10 @@ function excScorch(m) {
 /* 停在目標前面幾格。光柱從護手長出去要 2.25 格才到全粗（excWidth），斬到底那一刻握把在她身前
    約 0.6 格，所以站 4 格時那一點離光柱起點 3 格出頭——剛好是全粗那一段。 */
 const EXC_STAND = 4;
+/* 叫她過去那一段跑幾倍（v1.226，使用者：「速度是一般的三倍」＝走路 WALK 6.8 的三倍 20.4，
+   腿擺跟著同一個倍率）。從場邊跑到目標實測 2.9 秒（62 格）；走路的時候是 20 多秒 */
+const EXC_RUN = 3;
+const CALL_PROBE = 0.05;        // 最後那幾步一小步走多遠就往前探一次（v1.226，見 stepCall）
 /* 挑一位。場上只會有一位（見 stepDoom），挑「最近的」只是保險；
    被幽浮／小黑洞收著的排最後（也叫得到，掉回來爬起來就去）。 */
 function pickSaber(p) {
@@ -8855,12 +8866,12 @@ function callSaber(p) {
     /* 點在場心附近就沒有「最近的那一邊」可言，隨機挑一個方位（同天災） */
     const a = Math.hypot(at.x, at.z) > 1 ? Math.atan2(at.z, at.x) : Math.random() * Math.PI * 2;
     m = spawnBeast('saber', 1, 0, a);
-    toast(BEAST_NM.saber + '應召而來', '她朝你點的地方走過去，到了就舉劍斬下去');
+    toast(BEAST_NM.saber + '應召而來', '她朝你點的地方跑過去，到了就舉劍斬下去');
   } else {
     beastCry(m);
     const doom = ownSaber(m);
     toast(BEAST_NM.saber + (doom ? '放下了天災那一趟' : '聽到了'),
-          m.st === 'excal' ? '這一招斬完就過去' : '她轉身朝你點的地方走過去');
+          m.st === 'excal' ? '這一招斬完就過去' : '她轉身朝你點的地方跑過去');
   }
   if (m.st === 'excal') m.cq = at;            // 正在出招：這一招斬完再過去（使用者選的）
   else sendSaber(m, at);
@@ -8913,20 +8924,28 @@ function stepCall(m, dt, spd, stp, kp) {
       if (wallFoot(m, tx, tz)) { m.cn = 1; return false; }
     }
     m.tx = tx; m.tz = tz;
-    if (strollTo(m, dt, spd, stp, kp)) { m.cn = 1; m.leg = 0; }
+    /* 一步不跨進 EXC_STAND 那一圈（v1.226）：跑 3 倍時一幀 0.4 格，開頭那一條「到了沒」是走之前判的，
+       不擋的話她會停在 3.65 格（實測）。d − EXC_STAND 一定 > 0.05（開頭那一條擋掉了），不會是 0 */
+    if (strollTo(m, dt, Math.min(spd, (d - EXC_STAND) / dt), stp, kp)) { m.cn = 1; m.leg = 0; }
     return false;
   }
   m.a = Math.atan2(dx, dz);
-  const adv = Math.max(0, d - EXC_STAND);
-  const sp = Math.min(spd * dt, adv);
+  const adv = Math.max(0, d - EXC_STAND), ux = dx / d, uz = dz / d;
+  let sp = Math.min(spd * dt, adv), stop = adv < 0.05;
   /* 往前探半格（等踩進去才判斷的話，這一幀已經站在牆裡面了）。探的是**這一步**，不是 near 那樣
      探「走到底那一點」：near 走到底是最近那一塊外面 DOOM_NEAR 格、一定是空地，這裡走到底是
      點到的那一點前面 EXC_STAND 格——點的是牆的話那一點常常在建築裡面，照 near 那樣探她會一進這一段
-     就原地站定（測試抓到的：停在工地外圈那一環上，離目標 10.5 格、前面根本沒東西擋）。 */
-  const ex = m.x + dx / d * (sp + 0.5), ez = m.z + dz / d * (sp + 0.5);
-  if (adv < 0.05 || footBlocked(ex, ez) || homeFoot(ex, ez)) { callAim(m); return false; }
-  m.x += dx / d * sp; m.z += dz / d * sp;
+     就原地站定（測試抓到的：停在工地外圈那一環上，離目標 10.5 格、前面根本沒東西擋）。
+     **切成 CALL_PROBE 一小步一小步探**（v1.226）：跑 3 倍時一幀 0.41 格，一口氣探「這一步＋半格」的話
+     前面 0.91 格內有東西就停，她會停在離牆還有 0.4 格的地方（測試抓到的：5.12 格、前面半格其實是空的）。
+     走路 2.2 那時候一步 0.044，這一段等於沒切。 */
+  while (!stop && sp > 1e-9) {
+    const s = Math.min(CALL_PROBE, sp), ex = m.x + ux * (s + 0.5), ez = m.z + uz * (s + 0.5);
+    if (footBlocked(ex, ez) || homeFoot(ex, ez)) { stop = true; break; }
+    m.x += ux * s; m.z += uz * s; sp -= s;
+  }
   pushOutHome(m);
+  if (stop) { callAim(m); return false; }
   m.ph += dt * 11 * (stp || 1);
   m.gait += (0.85 - m.gait) * Math.min(1, dt * 8);
   return false;
