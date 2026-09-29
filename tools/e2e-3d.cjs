@@ -4847,7 +4847,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      押死：剩下的格子全部先記在工程師名下（他只看圖不搬料，不會真的去蓋），
      findSlot 就一格都派不出來；rollShow 那一下押骰子（Math.random 只在那一次呼叫裡是 0），
      三成那一關一定中。**不整段押 0**：tripWalk 也吃同一顆骰子，整段押 0 的話走一步絆一跤。
-     量完把格子還回去，看他回去發料。 */
+     量完把格子還回去，看他回去發料。
+     v1.229.1：對照組的一般工人以前會賭骰子（--seed 2600752300 那 20 秒裡聊 10 秒、打 2 秒，
+     一次都沒走到會叫 rollShow 的那一步）。現在兩個人的聊天冷卻都撐住（打架只從聊天接下去，
+     一起沒了），一般工人再比照魔法師接上閒晃那一幀——目標設在腳下、pause 歸零，
+     第一幀就站定抽表演（見 開發筆記〈魔法師閒晃那條的對照組改成規則型〉）。 */
   const wzIdle = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 900; setWorkerCount(6); startBuild(true);
@@ -4868,6 +4872,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       Math.random = () => 0;
       try { rs(w); } finally { Math.random = rnd; }
     };
+    const cd = [m.chatCd, p.chatCd];
+    m.chatCd = p.chatCd = Infinity;                    // 不讓他們聊天（量完還回去）
+    p.tx = p.x; p.tz = p.z; p.pause = 0;               // 同魔法師：接上閒晃那一幀目標在腳下
     let mShow = 0, pShow = 0, busy = 0, mw = 0, walked = 0, px = m.x, pz = m.z;
     for (let i = 0; i < 400; i++) {
       step(0.05);
@@ -4878,6 +4885,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       walked += Math.hypot(m.x - px, m.z - pz); px = m.x; pz = m.z;
     }
     rollShow = rs;                                     // 動過的全域狀態還回去
+    m.chatCd = cd[0]; p.chatCd = cd[1];
     for (const i of held) freeClaim(i);
     let back = -1;
     for (let i = 0; i < 600; i++) {
