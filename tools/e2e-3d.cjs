@@ -3035,6 +3035,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                             繞身體中段轉，量到的身高就不是站著的身高。量外觀之前
                             要把姿勢歸零，不然量到的是「他剛好在做什麼」。 */
                          danc: 0, guard: 0, punch: 0, air: 0, flip: 0,
+                         /* v1.206 的表演與休息也是姿勢（v1.225 補上）：正在喘氣的人彎腰
+                            0.5 弧度，量到的帽頂從 1.31 掉到 1.127（〈肌肉小人〉實測紅過）。 */
+                         stre: 0, twirl: 0, jack: 0, clap: 0, wave: 0, bow: 0, draw: 0,
+                         lean: 0, tire: 0,
                          dig: 0 }, extra);
       ENG.putWorker(1, w);
       const m = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -4668,7 +4672,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         launches++;
         const a = blocks[m.fly[m.fly.length - 1].b].arc;
         if (a) {
-          reach.push(Math.hypot(a.x0 - m.x, a.z0 - m.z));        // 出手那一刻那塊料離他多遠
+          /* 出手那一刻那塊料離他多遠。量法照規則本身（mageReach2，v1.225）：
+             工地圈裡的料往外投影到他站的那一圈上再量，圈外的就是真實距離。 */
+          reach.push(Math.sqrt(mageReach2(m, { x: a.x0, z: a.z0 })));
           arc.push(Math.hypot(a.x1 - a.x0, a.z1 - a.z0));        // 那塊料飛過去的水平距離
           spots.add(Math.round(m.x / 6) + ':' + Math.round(m.z / 6));   // 他在幾個地方發過料
         }
@@ -4709,7 +4715,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* v1.89（使用者指定「只能搬運一定範圍的積木……是為了讓他比較靠近積木堆，
      看得出來是他在施法搬運」）：搆得到的只有腳邊 MAGE_REACH 格內的料，
      **拋出去那一段不受限**——所以「出手距離」要小、「那條拋物線」要長。
-     這一條同時是 v1.88 的紅檢：那時他站在工地外圈、料在哪就吸哪，出手距離沒有上限。 */
+     這一條同時是 v1.88 的紅檢：那時他站在工地外圈、料在哪就吸哪，出手距離沒有上限。
+     v1.225 起工地圈裡的料往外投影到外圈再量（見 mageReach2），出手距離照同一把尺量。 */
   ok('只拉得動腳邊那一圈的料，拋出去的那一段不受限',
      wz.reachMax <= wz.REACH + 0.01 && wz.reach < wz.REACH * 0.8 && wz.arc > wz.REACH * 1.5,
      '出手時那塊料離他 ' + wz.reach + ' 格（最遠 ' + wz.reachMax + '，上限 ' + wz.REACH +
@@ -4780,6 +4787,113 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('兩堆料一樣遠就站到塊數多的那一堆', wzPick.big < wzPick.small && wzPick.secs < 30,
      wzPick.secs + ' 秒後離 60 塊那堆 ' + wzPick.big + ' 格、離 12 塊那堆 ' +
      wzPick.small + ' 格（兩堆都在半徑 ' + wzPick.R + '，他從等距的地方出發）');
+
+  /* v1.225（使用者：「放寬魔法師，讓他能伸手拿工地圈裡的料」，範圍選「整個工地圈」）：
+     料全躺在工地圈裡的時候，他站在外圈往裡伸手拉，不走進建築。按「換一座來蓋」之後就是
+     這個場面——整棟打散成碎料落在新工地裡、推土機沒開（v1.224 實測 678 塊裡 678 塊在圈裡，
+     40 人那一座魔法師只有 15% 的時間在施法）。
+     場面押死：場上只留一坨料、擺在工地中心附近，其他人全部偷懶不上工（不跟他搶）。
+     A/B：把 mageReach2 換回真實距離就是 v1.224 的他——一塊都拉不到。 */
+  const wzIn = await page.evaluate(() => {
+    const run = on => {
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 900; setWorkerCount(6); startBuild(true);
+      for (let i = 0; i < 160; i++) step(0.05);        // 先讓上一輪的碎料全部落定
+      const m = workers.find(w => w.mage);
+      for (const w of workers) { releaseWorker(w); if (w !== m) w.lazy = 1; }
+      const free = blocks.filter(b => b.st === 0 && b.rest);
+      for (const b of blocks) b.holder = 0;            // 全部藏起來（誰都認不到）
+      for (const b of free.slice(0, 40)) {             // 一坨料擺在離中心 3 格的地方
+        if (b.cell) gridDel(b);
+        b.x = 3 + rr(-2, 2); b.z = rr(-2, 2); b.y = HB;
+        b.vx = b.vy = b.vz = 0; b.rest = true; b.snap = 0; b.holder = -1;
+        gridAdd(b);
+      }
+      const R = siteR + MAGE_KEEP;
+      m.x = 0; m.z = R + 6; m.mang = Math.PI / 2; m.mrad = R + 6; m.mre = 0;
+      m.fly.length = 0; m.st = 'idle';
+      const keep = mageReach2;
+      if (!on) mageReach2 = (w, b) => (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
+      let launches = 0, rMin = Infinity, dMax = 0, lastN = 0;
+      for (let i = 0; i < 600; i++) {
+        step(0.05);
+        if (m.fly.length > lastN) {                    // 這一幀他又發了一塊
+          launches++;
+          const a = blocks[m.fly[m.fly.length - 1].b].arc;
+          if (a) dMax = Math.max(dMax, Math.hypot(a.x0 - m.x, a.z0 - m.z));
+        }
+        lastN = m.fly.length;
+        if (m.load.length) rMin = Math.min(rMin, Math.hypot(m.x, m.z));   // 施法中站在哪
+      }
+      mageReach2 = keep;                               // 動過的全域狀態還回去
+      for (const w of workers) w.lazy = 0;
+      return { launches, rMin: rMin === Infinity ? -1 : +rMin.toFixed(1), dMax: +dMax.toFixed(1),
+               R: +R.toFixed(1) };
+    };
+    return { on: run(true), off: run(false), REACH: MAGE_REACH };
+  });
+  ok('料全在工地圈裡：站在外圈往裡伸手拉，不走進建築（v1.225）',
+     wzIn.on.launches > 10 && wzIn.on.rMin >= wzIn.on.R - 1 &&
+     wzIn.on.dMax > wzIn.REACH && wzIn.off.launches === 0,
+     '一坨 40 塊擺在工地中心附近：30 秒發了 ' + wzIn.on.launches + ' 塊，施法時站在半徑 ' +
+     wzIn.on.rMin + ' 以外（外圈 ' + wzIn.on.R + '），出手時料離他最遠 ' + wzIn.on.dMax +
+     ' 格（圈外的上限是 ' + wzIn.REACH + '）；照真實距離量（v1.224）發了 ' +
+     wzIn.off.launches + ' 塊');
+
+  /* v1.225（使用者：「是原本魔法師缺了嗎 照理說小人們都一樣?是的話就補」）：
+     沒格子可蓋時他跟大家走同一條閒晃路——走一段、站定發呆、抽表演。
+     v1.89～v1.224 他是原地面向建築站著等，一次都不會表演。
+     押死：剩下的格子全部先記在工程師名下（他只看圖不搬料，不會真的去蓋），
+     findSlot 就一格都派不出來；rollShow 那一下押骰子（Math.random 只在那一次呼叫裡是 0），
+     三成那一關一定中。**不整段押 0**：tripWalk 也吃同一顆骰子，整段押 0 的話走一步絆一跤。
+     量完把格子還回去，看他回去發料。 */
+  const wzIdle = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(6); startBuild(true);
+    scatterFree();                                     // 建材鋪回工地外面（見 installClean）
+    for (let i = 0; i < 100; i++) step(0.05);
+    const m = workers.find(w => w.mage);
+    const p = workers.find(w => !w.mage && !w.eng && !w.mus);
+    const eng = workers.findIndex(w => w.eng);
+    for (const w of workers) releaseWorker(w);
+    const held = [];
+    bp.slots.forEach((s, i) => { if (!s.filled && s.claimed < 0) { s.claimed = eng; held.push(i); } });
+    const rs = rollShow;
+    let mRoll = 0, pRoll = 0;
+    rollShow = w => {
+      if (w === m) mRoll++;
+      if (w === p) pRoll++;
+      const rnd = Math.random;
+      Math.random = () => 0;
+      try { rs(w); } finally { Math.random = rnd; }
+    };
+    let mShow = 0, pShow = 0, busy = 0, mw = 0, walked = 0, px = m.x, pz = m.z;
+    for (let i = 0; i < 400; i++) {
+      step(0.05);
+      if (m.show) mShow++;
+      if (p.show) pShow++;
+      if (m.load.length || m.fly.length) busy++;
+      if (m.mw) mw++;
+      walked += Math.hypot(m.x - px, m.z - pz); px = m.x; pz = m.z;
+    }
+    rollShow = rs;                                     // 動過的全域狀態還回去
+    for (const i of held) freeClaim(i);
+    let back = -1;
+    for (let i = 0; i < 600; i++) {
+      step(0.05);
+      if (m.fly.length) { back = +((i + 1) * 0.05).toFixed(1); break; }
+    }
+    return { held: held.length, mRoll, pRoll, mShow: +(mShow * 0.05).toFixed(1),
+             pShow: +(pShow * 0.05).toFixed(1), busy, mw: +(mw * 0.05).toFixed(1),
+             walked: +walked.toFixed(1), back };
+  });
+  ok('沒格子可蓋時魔法師跟大家一樣閒晃、會表演，有格子就回去發料（v1.225）',
+     wzIdle.held > 0 && wzIdle.mRoll > 0 && wzIdle.mShow > 0 && wzIdle.pShow > 0 &&
+     wzIdle.busy === 0 && wzIdle.walked > 3 && wzIdle.back > 0,
+     '剩下 ' + wzIdle.held + ' 格全被佔住的 20 秒裡：魔法師在閒晃 ' + wzIdle.mw + ' 秒、走了 ' +
+     wzIdle.walked + ' 格、抽表演 ' + wzIdle.mRoll + ' 次、表演 ' + wzIdle.mShow +
+     ' 秒（一般工人抽 ' + wzIdle.pRoll + ' 次、表演 ' + wzIdle.pShow + ' 秒），手上有料 ' +
+     wzIdle.busy + ' 幀；格子還回去之後 ' + wzIdle.back + ' 秒發出第一塊');
 
   /* v1.95：碎料被轟到場外的時候，他還是會走過去發料。
      這個分布是實測「玩家丟一發核彈」之後的樣子——2978 塊裡有 2880 塊落在 siteR + 27 之外，
@@ -4862,6 +4976,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                             繞身體中段轉，量到的身高就不是站著的身高。量外觀之前
                             要把姿勢歸零，不然量到的是「他剛好在做什麼」。 */
                          danc: 0, guard: 0, punch: 0, air: 0, flip: 0,
+                         /* v1.206 的表演與休息也是姿勢（v1.225 補上）：正在喘氣的人彎腰
+                            0.5 弧度，量到的帽頂從 1.31 掉到 1.127（〈肌肉小人〉實測紅過）。 */
+                         stre: 0, twirl: 0, jack: 0, clap: 0, wave: 0, bow: 0, draw: 0,
+                         lean: 0, tire: 0,
                          cast: 0, dig: 0 }, extra);
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -4931,6 +5049,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                             繞身體中段轉，量到的身高就不是站著的身高。量外觀之前
                             要把姿勢歸零，不然量到的是「他剛好在做什麼」。 */
                          danc: 0, guard: 0, punch: 0, air: 0, flip: 0,
+                         /* v1.206 的表演與休息也是姿勢（v1.225 補上）：正在喘氣的人彎腰
+                            0.5 弧度，量到的帽頂從 1.31 掉到 1.127（〈肌肉小人〉實測紅過）。 */
+                         stre: 0, twirl: 0, jack: 0, clap: 0, wave: 0, bow: 0, draw: 0,
+                         lean: 0, tire: 0,
                          cast: 0, burnK: 0, wetK: 0, dig });
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -5275,6 +5397,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                             繞身體中段轉，量到的身高就不是站著的身高。量外觀之前
                             要把姿勢歸零，不然量到的是「他剛好在做什麼」。 */
                          danc: 0, guard: 0, punch: 0, air: 0, flip: 0,
+                         /* v1.206 的表演與休息也是姿勢（v1.225 補上）：正在喘氣的人彎腰
+                            0.5 弧度，量到的帽頂從 1.31 掉到 1.127（〈肌肉小人〉實測紅過）。 */
+                         stre: 0, twirl: 0, jack: 0, clap: 0, wave: 0, bow: 0, draw: 0,
+                         lean: 0, tire: 0,
                          cast: 0, burnK: 0, wetK: 0, dig: 0 });
       ENG.putWorker(i, w);
       const M = new THREE.Matrix4(), v = new THREE.Vector3(), out = [];
@@ -8294,6 +8420,53 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      farGrab.ghost.got + ' 秒（穿透 ' + farGrab.ghost.ghost +
      ' 幀）；兩個都沒有（v1.107）→ 60 秒撿到的是 ' + farGrab.off.got + '（−1＝沒撿到）');
 
+  /* 追一塊料追太久都沒更近，就放掉那一筆（v1.225，見 PICK_GIVE）。最後一道保險：
+     他認的那一格這段時間一直鎖著，v1.224 實測城牆繞圈讓 12 個人鎖住最後 22 格，
+     其餘 48 個人一格都領不到。放掉之後這一座他不再認同一塊（w.gvb），
+     不然下一幀他又把同一塊、同一格認回來。
+     押死：料擺在 25 格外（伸手範圍 GRAB_FAR 之外），「最近到過多近」直接寫成 0.01——
+     之後怎麼走都不算更近，gbt 只會一直加。兩組只差「離門檻還剩幾秒」。 */
+  const giveUp = await page.evaluate(() => {
+    const run = left => {
+      cleanTools(); clearHomes(); stopIdleEvent();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 300; setWorkerCount(1); startBuild(true);   // 施工中：走 pick 那條狀態機
+      const w = workers[0];
+      releaseWorker(w); w.hm = -1;
+      for (let i = 1; i < blocks.length; i++) { blocks[i].rest = false; blocks[i].holder = -1; }
+      const bi = 0, b = blocks[bi];
+      if (b.cell) gridDel(b);
+      b.st = 0; b.rest = true; b.holder = -1; b.slot = -1; b.hh = -1; b.arc = null; b.snap = 0;
+      b.x = siteR + 20; b.z = 0; b.y = HB; b.vx = b.vy = b.vz = 0;
+      gridAdd(b);
+      w.x = siteR + 20; w.z = 25; w.y = 0; w.sx = w.x; w.sz = w.z; w.stk = 0; w.ghost = 0;
+      const s = findSlot(w.x, w.z);
+      bp.slots[s].claimed = 0; b.holder = 0;
+      w.load.push({ b: bi, s }); w.li = 0; w.st = 'pick';
+      w.tx = b.x; w.tz = b.z; w.chk = 0;
+      w.gbi = bi; w.gbd = 0.01; w.gbt = PICK_GIVE - left;
+      let dropAt = -1, again = 0;
+      for (let i = 0; i < 20; i++) {
+        step(0.05);
+        const has = w.load.some(j => j.b === bi);
+        if (dropAt < 0 && !has) dropAt = +((i + 1) * 0.05).toFixed(2);
+        else if (dropAt >= 0 && has) again++;          // 放掉之後又把同一塊認回來
+      }
+      const out = { dropAt, again, gvb: w.gvb, bi, holder: blocks[bi].holder,
+                    claim: bp.slots[s].claimed, st: w.st };
+      cleanTools(); clearHomes();
+      return out;
+    };
+    return { over: run(0.12), under: run(5), GIVE: PICK_GIVE };
+  });
+  ok('追一塊料追太久都沒更近，就放掉那一格讓別人接手，而且不再認同一塊（v1.225）',
+     giveUp.over.dropAt > 0 && giveUp.over.gvb === giveUp.over.bi &&
+     giveUp.over.holder === -1 && giveUp.over.again === 0 && giveUp.under.dropAt < 0,
+     '離門檻（' + giveUp.GIVE + ' 秒）剩 0.12 秒：' + giveUp.over.dropAt + ' 秒後放掉，' +
+     '那一塊沒人認（holder ' + giveUp.over.holder + '）、之後又認回來 ' + giveUp.over.again +
+     ' 幀、他接著在做 ' + giveUp.over.st + '；剩 5 秒的那一組 1 秒內 ' +
+     (giveUp.under.dropAt < 0 ? '沒有放掉' : giveUp.under.dropAt + ' 秒就放掉了'));
+
   /* ══════════ 完工之後把多餘的碎料收掉（v1.109） ══════════
      使用者：「地標建築完工後 可以讓多餘的碎料消失」。多出來的幾乎都是小人的家
      帶進場的（家的積木是從地上挖出來的新塊，那一間被廢棄／被下一座工地徵收之後
@@ -9474,9 +9647,42 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       idleSpot(w0);
       if (wallBlocked(w0.x, w0.z, w0.tx, w0.tz)) bad++;
     }
+    /* ── ⑤ 城外到城外、中間隔著城：沿城外繞，不再從缺口進出繞圈（v1.225）──
+       v1.224 實測踩到的形狀：−z 那一面靠東南角那一段還沒砌（缺口），其他整圈砌好；
+       人在城裡，目標貼在東牆外、靠東南角。走出缺口之後照直線朝目標走，那條斜線
+       從同一段缺口切回城裡，又被東牆擋住、又去走那段缺口……來回到天荒地老。
+       撿料（buildWalk）與其他上工的路（workTo）都驗。
+       A/B：把 wallCut 換成永遠 false 就是 v1.224。押死的場面：沒有骰子。 */
+    const W3 = wallRing();
+    ring(h => h.thin === 'z' && h.z < 0 && h.wx0 < W3 - 8 && h.wx1 > W3 - 8);
+    const segs3 = homes.list.filter(q => q.wall);
+    const inSeg3 = (x, z) => segs3.some(q => x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1);
+    const cut = wallCut;
+    const loop = (fn, on) => {
+      wallCut = on ? cut : () => false;
+      const w = workers[0];
+      w.x = W3 - 14; w.z = -(W3 - 6); w.sx = w.x; w.sz = w.z;
+      w.gw = null; w.stk = 0; w.ghost = 0; w.gait = 0; w.leg = 0; w.pause = 0; w.chk = 0; w.clear = 0;
+      w.tx = W3 + 4; w.tz = -(W3 - 12);
+      let n = 0, done = 0, ghost = 0, thru = 0, flips = 0, was = inWall(w.x, w.z);
+      while (n++ < 3000) {
+        stuckWatch(w, 0.05);
+        if (fn(w, 0.05)) { done = n; break; }
+        if (w.ghost > 0) { ghost++; if (inSeg3(w.x, w.z)) thru++; }
+        const now = inWall(w.x, w.z);
+        if (now !== was) { flips++; was = now; }
+      }
+      wallCut = cut;
+      return { secs: done ? +(done * 0.05).toFixed(1) : -1, ghost, thru, flips };
+    };
+    const around = {
+      build: { on: loop(buildWalk, true), off: loop(buildWalk, false) },
+      work: { on: loop((w, dt) => workTo(w, dt, WALK), true), off: loop((w, dt) => workTo(w, dt, WALK), false) },
+      W: W3
+    };
     phase = keepPh;                                  // 動過的全域狀態還回去
     cleanTools(); clearHomes();
-    return { honest, open, man, idleBad: bad, W };
+    return { honest, open, man, idleBad: bad, W, around };
   });
   ok('城牆擋不擋看**砌好的那幾格**，不是幾何方框（v1.195）',
      !wallWalk.honest.gap && wallWalk.honest.built &&
@@ -9503,6 +9709,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wallWalk.idleBad === 0,
      `整圈砌滿、人在城內，挑 200 次閒晃點，挑到牆另一邊的 ${wallWalk.idleBad} 次` +
      `（v1.194 是第 8 次強制接受，那一次就會塞一個走不到的點）`);
+  {
+    const A = wallWalk.around, fine = r => r.secs > 0 && r.ghost === 0 && r.flips <= 2;
+    const stuck = r => r.secs < 0 && r.flips > 20;
+    ok('目標在另一面牆外、靠轉角：走出缺口後沿城外繞過去，不再從同一段缺口進出繞圈（v1.225）',
+       fine(A.build.on) && fine(A.work.on) && stuck(A.build.off) && stuck(A.work.off),
+       `牆半徑 ${A.W}、缺口在 −z 面靠東南角、目標在東牆外：` +
+       `撿料那條路 ${A.build.on.secs} 秒到（城內外換邊 ${A.build.on.flips} 次、穿透 ${A.build.on.ghost} 幀）、` +
+       `其他上工的路 ${A.work.on.secs} 秒到（換邊 ${A.work.on.flips} 次、穿透 ${A.work.on.ghost} 幀）；` +
+       `沒有沿城外繞（v1.224）150 秒 ${A.build.off.secs}／${A.work.off.secs}（−1＝沒到），` +
+       `換邊 ${A.build.off.flips}／${A.work.off.flips} 次`);
+  }
 
   /* ⑦-b 砸完**走得出去**（v1.190.2，使用者：「有觀察到猴子會被城牆卡住 走不出去」）。
      v1.186~v1.190.1 有四條路都會把牠關在城裡（實測四種配置各跑 400 秒，一隻都沒走掉）：

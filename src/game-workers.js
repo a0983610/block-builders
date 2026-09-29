@@ -83,8 +83,8 @@ function newWorker(i) {
        mang／mrad 是他要站的地方（極座標：角度與半徑；v1.89 起會跟著料堆跑），
        mre 是還有多久重挑一坨料，
        fly 是已經送出去、還在半空的那幾塊（連發，所以是一份清單），
-       trail 是下一顆星還有多久。 */
-    mage: 0, cast: 0, mang: 0, mrad: 0, mre: 0, ct: 0, fly: [], trail: 0,
+       trail 是下一顆星還有多久，mw 是「沒格子可蓋、正在閒晃」（v1.225，見 updMage）。 */
+    mage: 0, cast: 0, mang: 0, mrad: 0, mre: 0, ct: 0, fly: [], trail: 0, mw: 0,
     /* 肌肉小人（mus，v1.112）：撿料跟一般工人一樣走過去撿，撿起來就地掄起來扔
        （見 updWorker 的 hurl）。掄的倒數借魔法師那個 ct——沒有人同時是兩種。 */
     mus: 0,
@@ -106,8 +106,9 @@ function newWorker(i) {
     /* 卡住脫困（v1.108）：sx/sz 是「上一次真的前進到的位置」（錨點），
        stk 是「腿在擺卻沒離開那個錨點」累積幾秒，ghost 是還要穿透幾秒（見 stuckWatch）。
        伸手拿（v1.108）：gbi 是正在走去撿的那一塊，gbd 是離它最近到過多少，
-       gbt 是「沒有再更近」幾秒了（見 nearGrab）。 */
-    sx: 0, sz: 0, stk: 0, ghost: 0, gbi: -1, gbd: 0, gbt: 0,
+       gbt 是「沒有再更近」幾秒了（見 nearGrab）。
+       gvb 是追太久放掉的那一塊（v1.225，見 PICK_GIVE）：這一座他不再認它。 */
+    sx: 0, sz: 0, stk: 0, ghost: 0, gbi: -1, gbd: 0, gbt: 0, gvb: -1,
     /* 自己那間家的編號（v1.109）。−1＝還沒有家。這個**跨輪留著**（w.hm 每輪會被
        stopHomes 清掉），下一次事件才知道誰已經有家、不必再蓋一間。
        記 id 不記索引：索引會被 dropHomes 重編。 */
@@ -519,6 +520,13 @@ function pickSpot(b) {
 const GRAB_WAIT = 1.5;              // 沒有再更近超過這麼久，就當作搆不到了
 const GRAB_FAR = 7;                 // 最遠伸手拿多遠。再遠就繼續走，不要隔半個場撿東西
 const GRAB_GAIN = 0.1;              // 近了這麼多才算「有進展」（浮點抖動不算）
+/* 追一塊料追這麼久都沒更近，就放掉那一筆（v1.225）。這是**最後一道保險**，不是繞路機制：
+   他認的那一格在這段時間一直鎖著，別人領不到——v1.224 實測城牆繞圈（見 crossNeed）
+   讓 12 個人把最後 22 格鎖了 60～143 秒以上，其餘 48 個人一格都領不到，整座停在 99%。
+   門檻照實測訂：正常施工一趟最久多久沒更近——3000 塊的四座 2.05～8.7 秒，
+   9000 塊的美國白宮 27.45 秒（大工地繞外圈）。放掉的那一塊記在 w.gvb，這一座他不再認它，
+   不然下一幀他又把同一塊、同一格認回來。 */
+const PICK_GIVE = 60;
 function nearGrab(w, bi, dt) {
   const b = blocks[bi];
   if (!b) return false;
@@ -541,12 +549,13 @@ function walledIn(x, z) {
    然後手上那塊被埋住、只能退回去走回工地（實測吉薩金字塔有 17% 的時間在走那條）。
    一律跳過**不行**：料被蓋進去之後就沒人撿得出來了，那是 v1.97～v1.106 踩過的坑
    （見下面那段註解）。所以是「外面還有就挑外面的，只剩裡面的照撿」。 */
-function findBlock(wx, wz, maxD, outside) {
+/* skip（v1.225）：這一塊不挑——他追太久放掉的那一塊（見 PICK_GIVE）。 */
+function findBlock(wx, wz, maxD, outside, skip) {
   let best = -1, bd = maxD ? maxD * maxD : Infinity;   // 給了 maxD 就只找那麼遠以內的
   let out = -1, od = bd;
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
-    if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
+    if (b.st !== FREE || !b.rest || b.holder >= 0 || i === skip) continue;
     const d = (b.x - wx) ** 2 + (b.z - wz) ** 2;
     /* 躺在房子占地上的照撿（v1.107）：站到外框旁邊伸手拿（見 pickSpot），
        跟小人撿自己家的碎料同一套。
@@ -1329,6 +1338,10 @@ function updWorker(w, wi, dt) {
           if (nb) { const p = pickSpot(nb); w.tx = p.x; w.tz = p.z; w.chk = 0; }
         } else if (w.mus) { w.li = 0; w.st = 'hurl'; w.ct = MUS_WIND; }   // 就地扔（v1.112）
         else { w.li = 0; toSlot(w); }                 // 拿滿了才回工地
+      } else if (w.gbt >= PICK_GIVE) {
+        // 追太久都沒更近：放掉這一筆，格子讓給別人（v1.225，見 PICK_GIVE）
+        w.gvb = j.b;
+        dropJob(w, w.li);
       }
       carryPose(w);                                   // 立刻舉起來，不然有一幀還黏在地上
       break;
@@ -1408,8 +1421,9 @@ function loadUp(w, wi, cap) {
   for (let k = 0; k < (cap || w.cap); k++) {
     const s = findSlot(w.x, w.z);    // 派離他現在站的地方最近的那一格
     if (s < 0) break;
-    // 魔法師只搆得到身邊那一圈的料（v1.89，見 MAGE_REACH）；工人是走過去撿，不限距離
-    const bi = findBlock(sx, sz, w.mage ? MAGE_REACH : 0, w.mus ? 1 : 0);
+    /* 魔法師只搆得到身邊那一圈的料（v1.89，見 MAGE_REACH；工地圈裡的料見 mageReach2）；
+       工人是走過去撿，不限距離 */
+    const bi = w.mage ? findMageBlock(w) : findBlock(sx, sz, 0, w.mus ? 1 : 0, w.gvb);
     if (bi < 0) { short = 1; break; }
     bp.slots[s].claimed = wi;        // 認領也算「這格有東西了」，會影響上面能不能蓋
     blocks[bi].holder = wi;
@@ -1995,6 +2009,32 @@ const MAGE_REACH = 11;              // 搆得到多遠的建材
    接下來那一座他 300 秒發 0 塊（工人不受影響，他們本來就走到哪撿到哪）。
    既然要他走到料旁邊，那就跟一般工人一樣：料在哪就走到哪，不再有上限。
    下限（MAGE_KEEP）保留——那不是行動範圍，是「不能站進建築裡伸手」。 */
+/* 工地圈裡的料怎麼量（v1.225，使用者：「放寬魔法師，讓他能伸手拿工地圈裡的料」，
+   範圍選「整個工地圈」）。他還是站在外圈（siteR + MAGE_KEEP）不走進建築，
+   所以圈裡的料**往外投影到那一圈上**再量：投影點在他 MAGE_REACH 格內就拉得動。
+   也就是「隔著建築往裡伸手那一段不算距離，只算沿著外圈的那 11 格」——
+   走到離那坨料最近的外圈站好，再深都拉得到。圈外的料照舊量真實距離。
+   v1.89～v1.224 圈裡的一律量真實距離，而他站不進去：實測按「換一座來蓋」之後
+   （整棟打散成碎料落在新工地裡、推土機沒開），場上 678 塊料 678 塊都在圈裡，
+   40 人那一座魔法師只有 15% 的時間在施法、21% 站著搆不到料。
+   正中央（半徑 0）那一塊沒有方向可以投影，拿他自己的角度——從哪一邊伸手都一樣近。 */
+function mageReach2(w, b) {
+  const R = siteR + MAGE_KEEP, r = Math.hypot(b.x, b.z);
+  if (r >= R) return (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
+  const a = r < 0.001 ? Math.atan2(w.z, w.x) : Math.atan2(b.z, b.x);
+  return (Math.cos(a) * R - w.x) ** 2 + (Math.sin(a) * R - w.z) ** 2;
+}
+/* 他搆得到的料裡挑最近的那一塊（量法見 mageReach2），同 findBlock 的條件。 */
+function findMageBlock(w) {
+  let best = -1, bd = MAGE_REACH * MAGE_REACH;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
+    const d = mageReach2(w, b);
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
 const MAGE_CELL = 9;                // 數料堆用的粗格邊長。要小於 MAGE_REACH，站在中心才整格都搆得到
 const MAGE_TRIP = 0.06;             // 路程折價：每遠一格，那一坨的吸引力打幾折
 const MAGE_APART = 9;               // 別的魔法師已經站在這麼近就換一坨，不然幾個人會疊在同一堆上
@@ -2050,7 +2090,12 @@ function mageSpot(w) {
   return { x: Math.cos(w.mang) * w.mrad, z: Math.sin(w.mang) * w.mrad };
 }
 /* 挑一坨料站過去：塊數多的優先，路程遠的折價（判準見上面 MAGE_REACH 那段）。
-   兩個條件會刷掉候選：站定之後整坨搆不到的（在建築裡的那種）、別的魔法師已經在那一帶的。
+   兩個條件會刷掉候選：別的魔法師已經在那一帶的、站的點壓在人家屋子裡的。
+   v1.89～v1.224 還有第三個：「站定之後整坨搆不到的（在建築裡的那種）」——圈裡那一坨的
+   中心離他站的點超過 MAGE_REACH × 0.6 就跳過。v1.225 起圈裡的料往外投影到他站的那一圈
+   量（見 mageReach2），站的點就是那一坨中心的投影，那一刀永遠不會成立，拿掉了。
+   路程量的是**走到站的點**多遠（v1.225）：圈外那一坨站的點就是它的中心，跟以前一樣；
+   圈裡那一坨他只走到外圈，量到中心的話會把「伸手進去那一段」也算成路程。
    回傳 false = 沒有值得走過去的，站在原地等就好。 */
 function pickMageSpot(w) {
   const heaps = listMageHeaps();
@@ -2060,11 +2105,9 @@ function pickMageSpot(w) {
     const r = Math.max(siteR + MAGE_KEEP, hr);        // 多遠都去，只是不站進工地裡（v1.95）
     const a = hr < 0.001 ? w.mang : Math.atan2(h.z, h.x);
     const sx = Math.cos(a) * r, sz = Math.sin(a) * r;
-    // 站定之後那一坨的中心要在搆得到的範圍內，不然走過去也是白站
-    if (Math.hypot(h.x - sx, h.z - sz) > MAGE_REACH * 0.6) continue;
     if (mageTaken(w, sx, sz)) continue;
     if (homeAt(sx, sz)) continue;                     // 別站到人家屋子裡（v1.97）
-    const s = h.n / (1 + Math.hypot(h.x - w.x, h.z - w.z) * MAGE_TRIP);
+    const s = h.n / (1 + Math.hypot(sx - w.x, sz - w.z) * MAGE_TRIP);
     if (s > best) { best = s; bx = a; bz = r; bn = h.n; }
   }
   if (best < 0) return false;
@@ -2102,14 +2145,27 @@ function updMage(w, wi, dt) {
   /* 站位只夾下限：換一座建築時 siteR 會變，上一輪挑的那個半徑可能落在新工地裡面
      （他會站進牆裡），所以每幀夾一次。上限 v1.95 拿掉了（見 MAGE_KEEP 上面那段）。 */
   if (w.mrad < siteR + MAGE_KEEP) w.mrad = siteR + MAGE_KEEP;
+  /* 沒格子可蓋就跟大家一樣去閒晃（v1.225，使用者：「是原本魔法師缺了嗎 照理說小人們都一樣?
+     是的話就補」）：站定發呆、三成機率來一段表演、走近了跟人聊天，全是 wander 那一套。
+     v1.89～v1.224 他是原地面向建築站著等，理由是閒晃那條路會沿用上一輪留下的目標點
+     （慶祝散場取的是整片草地），他一沒工作就往四十幾格外走。所以**接上閒晃的那一幀
+     把目標設在腳下**：跟一般工人剛丟完料、在原地接上 wander 是同一個起點
+     （到了 → 發呆＋抽表演 → 照 idleSpot 挑下一個點）。
+     還有在飛的就先別走，舉著杖送它們到定位（下面那條路本來就這樣）。 */
+  if (!w.load.length && !w.fly.length && findSlot(w.x, w.z) < 0) {
+    if (!w.mw) { w.mw = 1; w.tx = w.x; w.tz = w.z; w.leg = 0; }
+    w.st = 'idle';
+    wander(w, dt);
+    return;
+  }
+  w.mw = 0;
   // 一幀只能走這一次（ringWalk 會真的移動人）；下面「站定了嗎」全部看這一個值
   const stand = ringWalk(w, w.mang, w.mrad, dt);
   if (!w.load.length) {
     // 站定了才認料：搆得到的範圍是以「他站的地方」算的，走位途中認的那塊會被拖著走
     const short = stand ? loadUp(w, wi, 1) : 0;      // 一次只領一格一塊
-    /* 沒格子可蓋、或身邊搆不到料：去找一坨料站過去（v1.89，見 pickMageSpot），
-       不跟一般人一樣去閒晃——閒晃那條路會沿用上一輪留下的目標點（慶祝散場時取的是
-       整片草地），他一沒工作就往四十幾格外走，蓋完要圍圈時得從場外跑回來。
+    /* 身邊搆不到料：去找一坨料站過去（v1.89，見 pickMageSpot）。還在飛的那幾塊送到之前、
+       或走位途中也會進到這裡（沒格子可蓋、手上也沒在飛的，上面那段已經接去閒晃了）。
        換地方**只在搆不到料的時候**做：不管有沒有料每隔幾秒就重挑一次的話，腳邊還有
        一整片料他也會被別處那坨大的拉走（實測他沿著外圈走十秒，路上最近的料只有 2.7 格）。
        找不到值得走過去的一坨（料被搬光了、都被別人認走了）就站在原地等。 */
@@ -3462,7 +3518,11 @@ function segBox(x0, z0, x1, z1, bx0, bz0, bx1, bz1) {
    不必沿線取樣（pathClear 那一套）：城牆段都是軸對齊矩形、一圈才二十幾段，
    直接算線段／矩形相交又準又便宜。前篩擋掉同一側的那些之後，成本可以忽略。 */
 function wallBlocked(x0, z0, x1, z1) {
-  if (!wallSplits(x0, z0, x1, z1)) return false;
+  return wallSplits(x0, z0, x1, z1) && wallHit(x0, z0, x1, z1);
+}
+/* 這條線段撞不撞得到砌好的那幾格（門洞扣掉）。只算相交、不管兩端在哪一側——
+   前篩是呼叫端的事：wallBlocked 篩「一內一外」，wallCut 篩「兩端都在城外」（v1.225 拆出來）。 */
+function wallHit(x0, z0, x1, z1) {
   for (const h of wallList()) {
     if (!segBox(x0, z0, x1, z1, h.x0, h.z0, h.x1, h.z1)) continue;
     if (!h.gap) return true;
@@ -3540,9 +3600,32 @@ const CROSS_WAY = 5;                // 開口內／外那一個落腳點離開�
    已經在繞的（w.gw）一律回 true——**繞到一半不能被打斷**，那是一段不可分割的位移
    （見 開發筆記〈猴子被城牆關在城裡〉：呼叫端每幀把它推回去、它每幀又發現被擋住，
    兩邊互推的話位移程式碼永遠跑不到，人就定在原地了）。 */
+/* 兩端都在城外、直線卻切過城裡撞上砌好的牆（v1.225）。wallBlocked 的前篩是「一內一外」，
+   這種它一律說不擋——於是走下去會從還沒砌的那一段進城、在城裡被砌好的另一面擋住、
+   再照「城裡往外」繞開口，而最近的開口就是剛剛進來的那一段（見 crossNeed）。
+   先拿整圈的方框篩一次：這條線碰都沒碰到城，就不必一段一段比。 */
+function wallCut(x0, z0, x1, z1) {
+  const W = wallNow();
+  if (!W || inWall(x0, z0) || inWall(x1, z1)) return false;
+  if (!segBox(x0, z0, x1, z1, -W, -W, W, W)) return false;
+  return wallHit(x0, z0, x1, z1);
+}
+/* 城外到城外、中間隔著城的那一種（v1.225）：不走開口，**沿著城外那個圓弧繞到目標那一側**，
+   直線不再切過城裡就交還（見 crossStep 的 c.ar）。
+   v1.195～v1.224 沒有這一種，實測踩到的是：料貼在東牆外、靠東南角，人在城裡——
+   從南面那段還沒砌的缺口走出去（① 這一步是對的），出去之後呼叫端照直線朝料走，
+   那條斜線從**同一段缺口**又切回城裡，城裡被砌好的東牆擋住，又去走南面那段缺口……
+   5 秒軌跡一直在缺口內外來回，stuckWatch 看的是「腿在擺卻沒前進」，他一直在動所以不觸發。
+   施工中偷懶的人開了城牆事件、剩下的格子剛好都被這幾個人認走時，整座停在 99%
+   （60 人的一場：12 個人鎖著最後 22 格，其餘 48 個人一格都領不到）。
+   目標會跟著呼叫端換（撿料的人每幀重算站位），所以每次問都把它更新進 gw。 */
 function crossNeed(w, tx, tz) {
-  if (w.gw) return true;
-  if (!wallBlocked(w.x, w.z, tx, tz)) return false;
+  if (w.gw) { if (w.gw.ar) { w.gw.tx = tx; w.gw.tz = tz; } return true; }
+  if (!wallBlocked(w.x, w.z, tx, tz)) {
+    if (!wallCut(w.x, w.z, tx, tz)) return false;
+    w.gw = { ar: 1, tx, tz };
+    return true;
+  }
   const g = wallOpenSpot(w.x, w.z);
   if (!g) return false;                            // 一個開口都不剩：由呼叫端決定怎麼辦
   w.gw = { id: g.h.id, out: inWall(w.x, w.z) ? -1 : 1, step: 0 };
@@ -3551,20 +3634,34 @@ function crossNeed(w, tx, tz) {
 /* 繞的這一幀。回傳 true＝這一段結束了（w.gw 已經清掉），呼叫端接回自己那一段。 */
 function crossStep(w, dt, spd, stp) {
   const c = w.gw, W = wallNow();
-  const g = W ? wallOpenSpot(w.x, w.z, c.id) : null;
-  if (!g) { w.gw = null; return true; }            // 走到一半開口沒了：交還給呼叫端
-  const side = c.step ? -c.out : c.out;
-  let tx = g.x + g.nx * CROSS_WAY * side, tz = g.z + g.nz * CROSS_WAY * side;
-  let arc = false;
-  if (!c.step && c.out > 0) {
+  let g = null, tx, tz, arc = false;
+  if (c.ar) {
+    /* 沿城外繞（v1.225，見 crossNeed）：跟下面「城外走到開口的方位」同一個圓弧、同一個走法，
+       差別只在要轉到的是**目標**的方位，而且不必走到哪一點——直線一不再切過城裡就交還。
+       轉到目標的方位時一定已經不切了：目標在城外，從它往外同一條半徑上的點連過去不會進城。 */
+    if (!W || !wallCut(w.x, w.z, c.tx, c.tz)) { w.gw = null; return true; }
     const R = W * 1.45 + 4, a0 = Math.atan2(w.z, w.x);
-    let da = Math.atan2(g.z, g.x) - a0;
+    let da = Math.atan2(c.tz, c.tx) - a0;
     while (da > Math.PI) da -= Math.PI * 2;
     while (da < -Math.PI) da += Math.PI * 2;
-    if (Math.abs(da) > 0.12) {                     // 還沒轉到開口的方位：往圓弧上前面一點走
-      const q = Math.sign(da) * Math.min(Math.abs(da), 0.3);
-      tx = Math.cos(a0 + q) * R; tz = Math.sin(a0 + q) * R;
-      arc = true;
+    const q = Math.sign(da) * Math.min(Math.abs(da), 0.3);
+    tx = Math.cos(a0 + q) * R; tz = Math.sin(a0 + q) * R;
+    arc = true;
+  } else {
+    g = W ? wallOpenSpot(w.x, w.z, c.id) : null;
+    if (!g) { w.gw = null; return true; }            // 走到一半開口沒了：交還給呼叫端
+    const side = c.step ? -c.out : c.out;
+    tx = g.x + g.nx * CROSS_WAY * side; tz = g.z + g.nz * CROSS_WAY * side;
+    if (!c.step && c.out > 0) {
+      const R = W * 1.45 + 4, a0 = Math.atan2(w.z, w.x);
+      let da = Math.atan2(g.z, g.x) - a0;
+      while (da > Math.PI) da -= Math.PI * 2;
+      while (da < -Math.PI) da += Math.PI * 2;
+      if (Math.abs(da) > 0.12) {                     // 還沒轉到開口的方位：往圓弧上前面一點走
+        const q = Math.sign(da) * Math.min(Math.abs(da), 0.3);
+        tx = Math.cos(a0 + q) * R; tz = Math.sin(a0 + q) * R;
+        arc = true;
+      }
     }
   }
   /* 落腳點壓在人家的外框裡就挪到框外。**城內不是空的**：事件二本來就會在城裡蓋
@@ -3584,8 +3681,9 @@ function crossStep(w, dt, spd, stp) {
   }
   const gs = Math.min((spd || WALK) * dt, gd);
   /* 擋路的房子繞過去，跟小人同一支 dodgeHome。**要穿的那一段不繞**：斜著進門時
-     2.2 格的探針會打到兩側的墩座，一繞就永遠進不去（見 blockHome 的 skip）。 */
-  const gu = dodgeHome(w, gx / gd, gz / gd, g.h);
+     2.2 格的探針會打到兩側的墩座，一繞就永遠進不去（見 blockHome 的 skip）。
+     沿城外繞的那一種不穿任何一段，全部照繞（g 是 null）。 */
+  const gu = dodgeHome(w, gx / gd, gz / gd, g && g.h);
   w.a = Math.atan2(gu.x, gu.z);                    // 面向真正在走的方向，不是目標方向
   w.x += gu.x * gs; w.z += gu.z * gs;
   pushOutHome(w);
