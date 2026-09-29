@@ -81,7 +81,10 @@ const TOOLS = [
     tip: '點一下：叫 Saber 跑過來，朝那一點舉劍斬下光柱（她在場上就直接叫過去）' },
   { id: 'musket', n: '火槍兵', k: '🎌',
     /* v1.227：點兩下，同箭雨（見 aimMusket）。點地面水平射、點建築就瞄那裡（最多抬 30°） */
-    tip: '點兩下：先點火槍兵站的位置，再點要打的地方（點建築就瞄那裡）——六十人三段擊九輪齊射' }
+    tip: '點兩下：先點火槍兵站的位置，再點要打的地方（點建築就瞄那裡）——六十人三段擊九輪齊射' },
+  { id: 'levi', n: '兵長砍猴', k: '🌀',
+    /* v1.230：點建築、地上的生物或小人就飛過去砍，點空地就跑到那裡待命（見 callLevi） */
+    tip: '點建築、生物或小人：叫里維跑來射鋼索飛過去一頓狂砍；點空地：跑到那裡待命' }
 ];
 /* 說明最多幾個字（v1.220.2，使用者：「破壞工具說明不要太長」）。選好一把之後它會接在
    底部那條操作提示的最前面，而那條不換行、後半段固定的操作說明自己就佔掉約 514px——
@@ -119,7 +122,7 @@ const toolOk = t => !t.lock || t.lock.ok() || stats.gift.indexOf(t.id) >= 0;
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
                       storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1,
-                      bounce: 1, hole: 1, excalibur: 1, musket: 1 };
+                      bounce: 1, hole: 1, excalibur: 1, musket: 1, levi: 1 };   // 兵長砍猴點空地＝跑到那裡（v1.230）
 let tool = 'hammer';
 
 /* ── 破壞道具泡泡（v1.214）───────────────────────────────
@@ -5748,6 +5751,7 @@ function ufoSuck(u, dt) {
   }
   if (beasts) for (const m of beasts) {
     if (m.ufo || m.sky) continue;         // 在天上飛的那幾隻不吸（見檔頭 ④）
+    if (levBusy(m)) continue;             // 立體機動中的里維、正在氣化的巨人（v1.230，見 levBusy）
     const rad = ufoRad(u, m.y || 0);
     if ((m.x - u.x) ** 2 + (m.z - u.z) ** 2 > rad * rad) continue;
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m);   // v1.208
@@ -6080,7 +6084,7 @@ function holeTake(h) {
     holeGrab(h, w, 1);
   }
   if (beasts) for (const m of beasts) {
-    if (m.ufo || m.sky) continue;
+    if (m.ufo || m.sky || levBusy(m)) continue;          // levBusy（v1.230）同幽浮那一條
     if ((m.x - h.x) ** 2 + ((m.y || 0) + 1 - h.y) ** 2 + (m.z - h.z) ** 2 > R2) continue;
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m);   // v1.208
     holeGrab(h, m, 2);
@@ -7759,6 +7763,8 @@ function useTool(hit) {
   if (tool === 'ufo') { callUfo({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'hole') { castHole(hit.point, onGround); return 0; }   // 小黑洞（v1.221）
   if (tool === 'excalibur') { callSaber(hit.point); return 0; }       // Excalibur（v1.224）
+  // 兵長砍猴（v1.230）：點建築＝飛過去砍、點空地＝跑到那裡待命；點生物與小人在 game-ui.js 那邊就接走了
+  if (tool === 'levi') { callLevi(hit.point, hit.dir, null, false, onGround); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   // 火槍兵（v1.227）：同箭雨；第二下點在建築上就瞄那一點（仰角自動抬，上限 30°）
@@ -7928,7 +7934,7 @@ const doomNear = m => m.kind === 'giant' ? GIA_NEAR
    （兩隻猴子）——加下一款走地上的天災時在這三張表各加一格就好。
    Saber 走路同小人（v1.226，使用者：「增快saber一般走路移動速度(同小人)」；v1.222～v1.225 照猴子的 2.2），
    腿擺照小人那一份（stp 不給＝1，小人走 WALK 也是 11 弧度／秒）。 */
-const DOOM_SPD = { giant: GIA_WALK, saber: WALK };
+const DOOM_SPD = { giant: GIA_WALK, saber: WALK, levi: WALK };   // 里維兵長同 Saber（v1.230）
 const DOOM_STEP = { giant: GIA_STEP };
 const DOOM_KEEP = { giant: GIA_KEEP };
 /* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
@@ -8027,6 +8033,7 @@ function spawnBeast(kind, fun, bad, ang) {
   beasts.push(m);
   if (kind === 'giant') sndGiant();
   else if (kind === 'saber') sndSaber();
+  else if (kind === 'levi') sndLevi();
   else sndBeast(kind === 'snow');
   if (ang !== undefined) return m;               // Excalibur 叫來的：提示由 callSaber 講（v1.224）
   const nm = BEAST_NM[kind];
@@ -8225,6 +8232,7 @@ function stepBeast0(m, dt) {
   /* 被幽浮吸走了（v1.167）：牠這一段完全交給 stepUfo 管（在光裡飄、在艙裡等、
      從天上掉回來），這裡整段跳過。擺在最前面：下面每一條分支都會動到位置。 */
   if (m.ufo) return false;
+  if (m.dead) return stepDie(m, dt);                      // 被里維斬殺的巨人：躺著冒蒸氣、氣化消失（v1.230）
   if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   if (m.kind === 'gryphon') return stepGryph(m, dt);      // 飛進來降落再起飛，自己一套（v1.176）
   /* 卡住了就脫困（v1.190.2，使用者：「小人 牛羊 猴子這類盡量同一套走位判定」）。
@@ -8290,9 +8298,10 @@ function stepBeast0(m, dt) {
       (m.st === 'come' || m.st === 'fun' || m.st === 'go') && giantBust(m)) return false;
   /* Excalibur 叫她過去那一段**用跑的**（v1.226，使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」）：
      腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
-  if (m.kind === 'saber')
+  if (m.kind === 'saber' || m.kind === 'levi')          // 里維兵長同 Saber 用跑的（v1.230）
     m.run += ((m.call && (m.st === 'call' || m.st === 'gate') ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   if (m.st === 'call') return stepCall(m, dt, spd * EXC_RUN, (stp || 1) * EXC_RUN, kp);   // v1.224
+  if (m.st === 'odm') return stepOdm(m, dt);              // 兵長砍猴：立體機動那一招（v1.230）
   if (m.st === 'come') {
     m.tx = 0; m.tz = 0;
     /* 城牆擋在前面才處理（v1.186，見 wallAhead）：還沒蓋起來、或有缺口就直直走過去。
@@ -8488,6 +8497,9 @@ function stepBeast0(m, dt) {
     /* Saber（v1.222）同巨人：act 只是站定架劍瞄一下，接著轉進自己那一段（舉劍、蓄力、劈）。
        一趟就一招（使用者選的「1 次」），天災與吉祥物砸村子那一趟都一樣。 */
     if (m.kind === 'saber') { m.st = 'excal'; m.xt = 0; m.hit = 0; m.th0 = null; return false; }
+    /* 里維兵長（v1.230）：站定架刀之後射鋼索飛過去（見 stepOdm）。他只做玩家叫的事，
+       沒有命令就走到這裡（照理不會）直接回去逛——DOOM_ACT 裡沒有他，往下走會叫到 undefined */
+    if (m.kind === 'levi') { if (m.call) odmStart(m); else funBack(m); return false; }
     /* 還欠著幾處的（v1.229，見 moreMascot）：砸之前先認好這一塊（砸完最近的那一塊就換人了），
        **砸完才記進 spots**——先記的話 apeStrike 找目標時會把這一處當成「砸過的」跳過，
        改點 8 格外的另一塊（實測點火距離 9.8～18.9 格，隔空點火）。
@@ -9006,8 +9018,21 @@ function sendSaber(m, p) {
    就停（同 near）——停在離那一點 EXC_STAND 格，或是被擋住的地方，轉過去對著那一點出招。 */
 function stepCall(m, dt, spd, stp, kp) {
   const c = m.call;
+  /* 里維兵長（v1.230）那一道命令多三樣：sd 停在離那一點幾格（沒給＝EXC_STAND）、b 點到的那一隻生物
+     （牠會走，每一幀照牠現在的位置追；不在場上了就收工）、ax／az 站定之後要面向的那一點 */
+  if (c.b) {
+    if (!levTargetOk(c.b, c.bw)) { excDone(m); return false; }          // bw＝點的是小人（v1.230）
+    c.x = c.b.x; c.z = c.b.z; c.ax = c.b.x; c.az = c.b.z;
+  }
+  const sd = c.sd !== undefined ? c.sd : EXC_STAND;
   const dx = c.x - m.x, dz = c.z - m.z, d = Math.hypot(dx, dz) || 1;
-  if (d <= EXC_STAND + 0.05) { callAim(m); return false; }
+  if (d <= sd + 0.05) { callAim(m); return false; }
+  /* 兵長砍猴點建築（v1.230）：路上一走進射程（rg）、又站在那一面的外側（hx／hz 是那一面朝外的方向，
+     夾角 60° 內）就射鋼索，不必走到站的那一點（使用者：「增加丟出繩索的距離 讓他更遠就能飛過去」） */
+  if (c.rg) {
+    const vx = m.x - c.ax, vz = m.z - c.az, vd = Math.hypot(vx, vz);
+    if (vd <= c.rg && vx * c.hx + vz * c.hz >= LEV_FACE * vd) { callAim(m); return false; }
+  }
   if (!m.cn) {
     let tx = c.x, tz = c.z;
     /* 點在房子（或樹、城牆）上：目標不能給那一點——pushOutHome 把她擋在外框外面，
@@ -9031,11 +9056,11 @@ function stepCall(m, dt, spd, stp, kp) {
     m.tx = tx; m.tz = tz;
     /* 一步不跨進 EXC_STAND 那一圈（v1.226）：跑 3 倍時一幀 0.4 格，開頭那一條「到了沒」是走之前判的，
        不擋的話她會停在 3.65 格（實測）。d − EXC_STAND 一定 > 0.05（開頭那一條擋掉了），不會是 0 */
-    if (strollTo(m, dt, Math.min(spd, (d - EXC_STAND) / dt), stp, kp)) { m.cn = 1; m.leg = 0; }
+    if (strollTo(m, dt, Math.min(spd, (d - sd) / dt), stp, kp)) { m.cn = 1; m.leg = 0; }
     return false;
   }
   m.a = Math.atan2(dx, dz);
-  const adv = Math.max(0, d - EXC_STAND), ux = dx / d, uz = dz / d;
+  const adv = Math.max(0, d - sd), ux = dx / d, uz = dz / d;
   let sp = Math.min(spd * dt, adv), stop = adv < 0.05;
   /* 往前探半格（等踩進去才判斷的話，這一幀已經站在牆裡面了）。探的是**這一步**，不是 near 那樣
      探「走到底那一點」：near 走到底是最近那一塊外面 DOOM_NEAR 格、一定是空地，這裡走到底是
@@ -9058,9 +9083,12 @@ function stepCall(m, dt, spd, stp, kp) {
 /* 站定、轉過去對著那一點、架劍瞄一下（act 那一段，DOOM_AIM 之後轉進 excal，同天災那一招）。
    點在她腳邊的話就照原本的朝向斬（那一點的方向算不出來）。 */
 function callAim(m) {
-  const c = m.call, dx = c.x - m.x, dz = c.z - m.z;
+  // 兵長砍猴點空地（v1.230）：跑到了就是到了，不出招
+  if (m.call.go) { levArrive(m); return; }
+  // 里維兵長（v1.230）站的是目標前面那一點，面向的是要砍的那一點（c.ax／c.az）
+  const c = m.call, dx = (c.ax !== undefined ? c.ax : c.x) - m.x, dz = (c.az !== undefined ? c.az : c.z) - m.z;
   if (Math.hypot(dx, dz) > 0.3) m.a = Math.atan2(dx, dz);
-  m.st = 'act'; m.t = DOOM_AIM;
+  m.st = 'act'; m.t = m.kind === 'levi' ? LEV_AIM : DOOM_AIM;
 }
 /* 一招收完（斬完、或開斬之後被打斷）要去哪裡。排著的下一道命令先做；
    叫來的那一招收完回去逛（叫到的一定已經是吉祥物，見 ownSaber）；她自己那一招照舊（吉祥物回去逛、天災走人）。 */
@@ -9071,6 +9099,417 @@ function excDone(m) {
   funBack(m);                                   // 它會把 bad／home 清掉，還原要排在它後面
   m.bad = m.cbad; m.home = m.chome;
   m.stay = Math.max(m.stay, rr(MASC_STAY[0], MASC_STAY[1]));   // 「留下來逛一陣子」
+}
+
+/* ── 破壞道具：兵長砍猴（v1.230）────────────────────────────
+   使用者：「想做個兵長砍猴的破壞工具 類似excalibur點擊後 里維跑過來 用機動裝置飛上去再目標表面一頓狂砍
+   能點建築&生物 先做一版給我看看」（造型先做過預覽，見 engine.js〈里維兵長〉）。問過三件，使用者選：
+     · 點到生物：**其他生物只會倒地，巨人會被砍死（倒地 氣化消失）**
+     · 砍完：**留下來逛一陣子**（同 Saber，這段時間再點就直接叫他過去）
+     · 天上的飛龍／獅鷲：**先不算**（點了當牠是透明的，算後面的建築或地面，見 game-ui.js 的 onUp）
+   看過預覽之後：「兵長點小人無效 然後巨人氣化不應該是縮小的氣化 而是冒煙消失 其他OK
+   砍的範圍小 & 中 & 大 隨機」——
+     · 小人也點得到，同生物**只會倒地**（命令裡的 bw＝這一個是小人）
+     · 巨人不縮小，改成冒煙消失（「冒煙消失」有兩種讀法，預覽頁兩種都能切，見 LEV_DIE）
+     · 砍建築那一刀每次在小／中／大三檔裡**隨機抽一檔**（LEV_SIZES，odmStart 抽）
+   再看一次之後：「乙 兵長增加丟出繩索的距離 讓他更遠就能飛過去 如果點空地 就走到空地那個位置」——
+     · 巨人選乙（一塊一塊散掉），甲那一套拿掉
+     · 一走進射程（LEV_RANGE）就射鋼索，不必走到那一面前方那一點（見 stepCall 的 rg）
+     · 點空地：跑到那一點待命 LEV_WAIT 秒再回去逛（命令裡的 go，見 callAim／levArrive）
+
+   **走過去那一段整套是 Excalibur 那一套**（callSaber 的做法、sendSaber／stepCall／callAim／excDone 共用）：
+   他就是一隻吉祥物（kind 'levi'），手上多一道命令 m.call。差別在命令裡多帶的幾樣：
+     · 點建築：站的那一點（x／z）是**那一面朝外、LEV_STAND 格外**的地上，面向（ax／az）是點到的那一點，
+       那一面朝哪（nx／ny／nz）照鏡頭看過去的反方向——「你看得到的那一面」。
+     · 點生物：命令帶著那一隻（b），stepCall 每一幀照牠現在的位置追，跑到 LEV_RANGE.c 格內就射鋼索。
+   站定架刀瞄 LEV_AIM 秒之後轉進 odm（stepOdm），時間軸讀引擎那一份（ENG.LEV），姿勢照同一份擺：
+     shoot 射鋼索 → fly 被拉過去 → cut 轉圈狂砍 → drop 蹬開後空翻 → land 落地蹲一下 → 回去逛（excDone）。
+   **立體機動那幾秒打不動他**（levBusy：炸不飛、點不著、吸不走），那是一整段不可分割的位移，
+   中途被掀飛的話鋼索、飛行路線、落地點全部對不上。見 開發筆記〈破壞道具：兵長砍猴〉 */
+const LEV_STAND = 8;             // 點建築：往那一面前方幾格的地方跑（路上一進射程就射鋼索，見 LEV_RANGE）
+const LEV_SD = 0.6;              // 走到站的那一點多近就算到了（點空地也是這一個）
+/* 射程：離要砍的那一點幾格內就射鋼索飛過去（使用者：「增加丟出繩索的距離 讓他更遠就能飛過去」；
+   第一版是跑到那一面前方 8 格、生物 6 格才射）。b 建築、c 生物與小人。預覽頁上有 12／20／30 三檔可切 */
+const LEV_RANGE = { b: 20, c: 16 };
+/* 建築還要站在那一面的外側才射：跟那一面朝外的水平方向夾角在 60° 內（cos 0.5）——
+   從建築背面繞過來的那一段不算，不然他會隔著整座建築射過去、從建築裡面穿出來 */
+const LEV_FACE = 0.5;
+const LEV_WAIT = [8, 12];        // 點空地：跑到之後站著待命幾秒，再回去逛
+const LEV_AIM = 0.35;            // 站定架刀瞄多久（Saber 是 DOOM_AIM 1.1：他出手快）
+const LEV_OUT = 0.9;             // 飛到離那一面幾格的地方開砍（身體中段）
+const LEV_FLY_V = 24;            // 被拉過去多快（格／秒），夾在 LEV_FLY_T 秒之間
+const LEV_FLY_T = [0.45, 1.3];
+const LEV_SPIN = 15;             // 轉圈砍的角速度（弧度／秒，約 2.4 圈／秒）
+/* 砍多大一片：三檔，每一刀隨機抽一檔（使用者：「砍的範圍小 & 中 & 大 隨機」）。
+     r     刀搆得到身體中段幾格（小＝手臂 0.36 ＋ 刀 0.82 ≈ 1.2 模型單位 × DOOM_SC，再多一點刀風）
+     path  在那一面上來回飛的幅度（橫／直，格）
+     dig   砍的那幾秒一路往裡鑽多深
+   吉薩金字塔（2925 塊）同一面實測：小 90、中 295、大 619 塊 */
+const LEV_SIZES = [
+  { n: '小', r: 1.9, path: [2.8, 2.2], dig: 2.2 },
+  { n: '中', r: 2.8, path: [4.2, 3.2], dig: 3.6 },
+  { n: '大', r: 3.8, path: [6.0, 4.5], dig: 5.5 }
+];
+const LEV_PATH_W = [1.3, 0.9];   // 來回幾趟／秒（橫／直）
+const LEV_HIT = [8, 14];         // 碎料沿著刀轉的方向甩出去多快
+const LEV_KICK = [5, 5];         // 蹬開那一下：水平往外、往上（格／秒）
+const LEV_GRAV = 22;             // 落下的重力
+const LEV_SND = 0.1;             // 轉圈砍那一段幾秒一聲刀響
+const LEV_DUST = 0.2;            // 幾秒揚一次塵（每幀都揚的話塵霧那一池一下就滿）
+/* 巨人被斬殺（使用者：「巨人會被砍死(倒地 氣化消失)」）：砍的是後頸（GIA_NAPE，模型單位的高度），
+   倒地躺 hold 秒、冒著蒸氣，接著邊冒煙邊**一塊一塊散掉**（照固定的亂序收掉，引擎的 m.melt），melt 秒散完。
+   第一版是邊冒邊縮小（使用者：「不應該是縮小的氣化 而是冒煙消失」），預覽給了兩種讀法——
+   甲「濃煙罩住、煙最濃那一刻整隻不見」、乙「邊冒煙邊一塊一塊散掉」，使用者選**乙** */
+const GIA_NAPE = 4.2;
+const LEV_DIE = { hold: 1.4, melt: 3.2 };
+const LEV_DIE_STEAM = [45, 110]; // 每秒冒幾顆蒸氣：躺著那一段／散的那一段（自己的配額照 GIA_STEAM_MAX）
+const lvSm = f => f * f * (3 - 2 * f);
+/* 立體機動中的里維、正在氣化的巨人：一般道具打不動（見檔頭那一段） */
+function levBusy(m) { return !!m && (m.st === 'odm' || !!m.dead); }
+/* 點得到、追得到的生物：還在場上、在地上（天上的先不算）、不是他自己、不是正在化掉的那一隻 */
+function leviCanCut(m) {
+  return !!m && m.kind !== 'levi' && m.kind !== 'dragon' && !m.sky && !m.ufo && !m.dead;
+}
+/* 小人（使用者：「兵長點小人無效」）：在地上、沒被吸走的都砍得到（弓箭手、火槍兵不在 workers 裡，點不到） */
+function leviCanCutW(w) { return !!w && !w.air && !w.ufo; }
+/* 命令裡那一個還在不在（w＝這一個是小人） */
+function levTargetOk(b, w) {
+  return w ? leviCanCutW(b) && workers.indexOf(b) >= 0
+           : leviCanCut(b) && !!beasts && beasts.indexOf(b) >= 0;
+}
+function pickLevi(p) {
+  let best = null, bd = Infinity;
+  if (beasts) for (const m of beasts) {
+    if (m.kind !== 'levi') continue;
+    const d = Math.hypot(m.x - p.x, m.z - p.z) + (m.ufo ? 1e6 : 0);
+    if (d < bd) { bd = d; best = m; }
+  }
+  return best;
+}
+/* 點建築的那一道命令：那一面朝哪＝鏡頭看過去的反方向；站的那一點在那一面朝外的水平方向上。
+   點在屋頂上（幾乎朝天）就沒有「朝外」可言，改用「從場心往那一點」 */
+function levFace(p, dir) {
+  let nx = dir ? -dir.x : 0, ny = dir ? -dir.y : 1, nz = dir ? -dir.z : 0;
+  const nl = Math.hypot(nx, ny, nz) || 1;
+  nx /= nl; ny /= nl; nz /= nl;
+  let hx = nx, hz = nz, hl = Math.hypot(hx, hz);
+  if (hl < 0.25) {
+    hx = p.x; hz = p.z; hl = Math.hypot(hx, hz);
+    if (hl < 1) { hx = 1; hz = 0; hl = 1; }
+  }
+  hx /= hl; hz /= hl;
+  return { x: p.x + hx * LEV_STAND, y: 0, z: p.z + hz * LEV_STAND, sd: LEV_SD, rg: LEV_RANGE.b, hx, hz,
+           ax: p.x, az: p.z, px: p.x, py: p.y || 0, pz: p.z, nx, ny, nz, b: null };
+}
+/* 點下去的那一下（useTool／game-ui.js 點生物、點小人那兩條）。tb＝點到的那一隻（或那一個小人，
+   isW 給 true）；ground＝點的是空地（跑到那裡待命）。回傳被叫去的那一位（測試在讀）。 */
+function callLevi(p, dir, tb, isW, ground) {
+  const at = tb ? { x: tb.x, y: 0, z: tb.z, sd: LEV_RANGE.c, ax: tb.x, az: tb.z, b: tb, bw: isW ? 1 : 0 }
+           : ground ? { x: p.x, y: 0, z: p.z, sd: LEV_SD, go: 1, b: null }
+           : levFace(p, dir);
+  let m = pickLevi(at);
+  const whom = !tb ? '' : isW ? '那個小人' : (BEAST_NM[tb.kind] || '那一隻');
+  if (!m) {
+    /* 從站的那一點的方位上進場（同 Excalibur）；點在場心附近就隨機挑一個方位 */
+    const a = Math.hypot(at.x, at.z) > 1 ? Math.atan2(at.z, at.x) : Math.random() * Math.PI * 2;
+    m = spawnBeast('levi', 1, 0, a);
+    toast(BEAST_NM.levi + '應召而來', tb ? '他朝' + whom + '跑過去，射鋼索飛過去砍'
+                                      : ground ? '他跑到你點的地方待命'
+                                      : '他朝你點的地方跑過去，射鋼索飛過去一頓狂砍');
+  } else {
+    beastCry(m);
+    toast(BEAST_NM.levi + '聽到了', m.st === 'odm' ? '這一輪砍完就過去'
+                                   : tb ? '他轉身朝' + whom + '跑過去'
+                                   : ground ? '他轉身跑到你點的地方待命' : '他轉身朝你點的地方跑過去');
+  }
+  if (m.st === 'odm') m.cq = at;               // 正在飛／砍：這一輪收完再過去（同 Excalibur）
+  else sendSaber(m, at);
+  return m;
+}
+/* 這一刻要砍的那一點（p）、從哪一側撲過去（n）、兩個鉤爪勾在哪（m.wa），寫進 m.call。
+   點生物的話每一幀照牠現在的位置重算（牠會走）；牠不在了就停在最後那一刻的位置。 */
+function levAim(m) {
+  const c = m.call;
+  if (c.b && c.bw && levTargetOk(c.b, 1)) {
+    /* 小人：胸口，從他這一側的上方撲過去，鉤爪勾在他身上 */
+    const w = c.b, ws = w.scale || 1;
+    c.px = w.x; c.py = (w.y || 0) + 0.7 * ws; c.pz = w.z;
+    const hx = m.x - w.x, hz = m.z - w.z, hl = Math.hypot(hx, hz) || 1;
+    c.nx = hx / hl; c.ny = 0.8; c.nz = hz / hl;
+    const nl = Math.hypot(c.nx, c.ny, c.nz) || 1;
+    c.nx /= nl; c.ny /= nl; c.nz /= nl;
+    for (const j of [0, 1]) { m.wa[j].x = c.px + (j ? -0.15 : 0.15) * c.nz; m.wa[j].y = c.py + 0.2; m.wa[j].z = c.pz - (j ? -0.15 : 0.15) * c.nx; }
+  } else if (c.b && !c.bw && levTargetOk(c.b)) {
+    const b = c.b, bs = b.sc || 1, fx = Math.sin(b.a || 0), fz = Math.cos(b.a || 0);
+    if (b.kind === 'giant') {
+      /* 巨人：砍後頸，從牠背後撲過去，鉤爪勾在兩肩 */
+      c.px = b.x - fx * 0.35 * bs; c.py = (b.y || 0) + GIA_NAPE * bs; c.pz = b.z - fz * 0.35 * bs;
+      c.nx = -fx; c.ny = 0.35; c.nz = -fz;
+    } else {
+      /* 其餘：身體中段，從他這一側的上方撲過去 */
+      c.px = b.x; c.py = (b.y || 0) + ENG.BEAST_MID[b.kind] * bs; c.pz = b.z;
+      const hx = m.x - b.x, hz = m.z - b.z, hl = Math.hypot(hx, hz) || 1;
+      c.nx = hx / hl; c.ny = 0.8; c.nz = hz / hl;
+    }
+    const nl = Math.hypot(c.nx, c.ny, c.nz) || 1;
+    c.nx /= nl; c.ny /= nl; c.nz /= nl;
+    const w = (b.kind === 'giant' ? 0.6 : 0.15) * bs;
+    m.wa[0].x = c.px + fz * w; m.wa[0].y = c.py + 0.2 * bs; m.wa[0].z = c.pz - fx * w;
+    m.wa[1].x = c.px - fz * w; m.wa[1].y = c.py + 0.2 * bs; m.wa[1].z = c.pz + fx * w;
+  } else if (!c.b) {
+    /* 建築：鉤爪勾在那一點左右各 1.6 格、高 0.8 格的地方（那一面上） */
+    const hl = Math.hypot(c.nx, c.nz) || 1, tx = -c.nz / hl, tz = c.nx / hl;
+    m.wa[0].x = c.px + tx * 1.6; m.wa[0].y = c.py + 0.8; m.wa[0].z = c.pz + tz * 1.6;
+    m.wa[1].x = c.px - tx * 1.6; m.wa[1].y = c.py + 0.8; m.wa[1].z = c.pz - tz * 1.6;
+  }
+  return c;
+}
+/* 站定瞄完那一刻：射鋼索 */
+function odmStart(m) {
+  m.st = 'odm'; m.op = 'shoot'; m.ot = 0; m.wk = 0; m.lp = 0; m.lr = 0;
+  m.gait = 0; m.run = 0; m.arm = 0;
+  m.on = 0; m.oh = 0; m.osd = 0; m.odu = 0; m.oda = 0; m.oshk = 0;
+  if (!m.wa) m.wa = [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }];
+  if (m.call.b && !levTargetOk(m.call.b, m.call.bw)) { excDone(m); return; }
+  /* 砍建築這一刀多大：三檔隨機抽一檔（使用者：「砍的範圍小 & 中 & 大 隨機」）。測試要押哪一檔就先給 m.cz */
+  m.cz = m.call.b ? null : LEV_SIZES[Math.floor(Math.random() * LEV_SIZES.length)];
+  levAim(m);
+  sndOdm();
+}
+/* 他身體中段在哪（規則那邊的「他在哪」；引擎也是繞這一點轉） */
+const levMid = m => ENG.BEAST_MID.levi * (m.sc || 1);
+/* 腳底不低於地面：點在牆腳附近的話，往裡鑽、往下來回飛那幾段會把他壓進草皮裡 */
+function levPlace(m, x, y, z) { m.x = x; m.y = Math.max(0, y - levMid(m)); m.z = z; }
+/* 背上噴的氣（塵霧那一池，白的、往上散） */
+function levPuff(m, n) {
+  const sc = m.sc || 1;
+  for (let i = 0; i < n; i++) {
+    if (dust.length > 380) break;
+    dust.push({
+      x: m.x + rr(-0.25, 0.25) * sc, y: (m.y || 0) + rr(0.35, 0.6) * sc, z: m.z + rr(-0.25, 0.25) * sc,
+      vx: rr(-1.2, 1.2), vy: rr(-0.4, 1.2), vz: rr(-1.2, 1.2),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      g: -0.6, keep: 0.94, fade: 1, life: rr(0.3, 0.65), s: rr(0.12, 0.3), c: 1
+    });
+  }
+}
+function stepOdm(m, dt) {
+  const L = ENG.LEV, c = m.call;
+  if (!c) { levEnd(m); return false; }
+  m.ot += dt;
+  m.gait = 0; m.run = 0;
+  if (m.op === 'shoot' || m.op === 'fly') levAim(m);
+  const mid = levMid(m);
+  if (m.op === 'shoot') {
+    m.wk = Math.min(1, m.ot / L.shoot);
+    if (m.ot < L.shoot) return false;
+    m.op = 'fly'; m.ot = 0;
+    m.S = { x: m.x, y: (m.y || 0) + mid, z: m.z };
+    const d = Math.hypot(c.px + c.nx * LEV_OUT - m.S.x, c.py + c.ny * LEV_OUT - m.S.y, c.pz + c.nz * LEV_OUT - m.S.z);
+    m.fT = clamp(d / LEV_FLY_V, LEV_FLY_T[0], LEV_FLY_T[1]);
+    levPuff(m, 10);
+    return false;
+  }
+  if (m.op === 'fly') {
+    /* 被鋼索拉過去：起點到（還在動的）那一點，中間往上拱一點；頭朝前、身體順著飛的方向倒下去 */
+    const S = m.S, tx = c.px + c.nx * LEV_OUT, ty = c.py + c.ny * LEV_OUT, tz = c.pz + c.nz * LEV_OUT;
+    const u = Math.min(1, m.ot / m.fT), e = lvSm(u);
+    const dx = tx - S.x, dy = ty - S.y, dz = tz - S.z, dh = Math.hypot(dx, dz);
+    const arc = 0.12 * Math.hypot(dh, dy) * 4 * u * (1 - u);
+    levPlace(m, S.x + dx * e, S.y + dy * e + arc, S.z + dz * e);
+    if (dh > 0.2) m.a = Math.atan2(dx, dz);
+    m.lp = clamp((Math.PI / 2 - Math.atan2(dy, dh)) * 0.75, 0.2, 1.25) * Math.min(1, u * 4);
+    m.wk = 1;
+    m.oda += dt;
+    if (m.oda > 0.03) { m.oda = 0; levPuff(m, 2); }
+    if (u < 1) return false;
+    m.op = 'cut'; m.ot = 0; m.lp = 0.15;
+    m.C0 = { x: tx, y: ty, z: tz };
+    /* 那一面上的兩個方向（橫的 U、直的 V），來回飛就在這兩個方向上 */
+    let ux = -c.nz, uz = c.nx, ul = Math.hypot(ux, uz);
+    if (ul < 0.05) { ux = 1; uz = 0; ul = 1; }
+    ux /= ul; uz /= ul;
+    m.U = { x: ux, y: 0, z: uz };
+    m.V = { x: c.ny * uz, y: c.nz * ux - c.nx * uz, z: -c.ny * ux };     // n × U
+    m.oa0 = m.a;
+    return false;
+  }
+  if (m.op === 'cut') {
+    m.wk = Math.max(0, m.wk - dt * 5);            // 鋼索收回來
+    m.a += LEV_SPIN * dt;
+    const T = c.b ? L.cutB : L.cut;
+    let C;
+    if (c.b) {
+      /* 生物／小人：繞著那一點轉一圈（巨人繞著後頸），轉到 0.55 秒那一刀砍中 */
+      if (levTargetOk(c.b, c.bw)) levAim(m);
+      const bs = c.b.sc || 1, r = !c.bw && c.b.kind === 'giant' ? 0.3 * bs + 0.9 : 1.2;
+      const th = m.oa0 + Math.PI + m.ot * Math.PI * 2 / 0.7;
+      C = { x: c.px + Math.sin(th) * r, y: c.py + 0.25 * Math.sin(m.ot * 18), z: c.pz + Math.cos(th) * r };
+      if (!m.oh && m.ot >= 0.55) { m.oh = 1; levStrike(m, c.b, c.bw); }
+    } else {
+      /* 建築：在那一面上來回飛、一路往裡鑽，身邊 cz.r 格內的全部砍飛 */
+      const z = m.cz || LEV_SIZES[0];
+      const env = Math.min(1, m.ot / 0.3, Math.max(0, (T - m.ot) / 0.3));
+      const a = Math.sin(m.ot * Math.PI * 2 * LEV_PATH_W[0]) * z.path[0] * env;
+      const b = Math.sin(m.ot * Math.PI * 2 * LEV_PATH_W[1] + 0.7) * z.path[1] * env;
+      const dig = z.dig * m.ot / T;
+      C = { x: m.C0.x + m.U.x * a + m.V.x * b - c.nx * dig,
+            y: m.C0.y + m.U.y * a + m.V.y * b - c.ny * dig,
+            z: m.C0.z + m.U.z * a + m.V.z * b - c.nz * dig };
+      C.y = Math.max(C.y, mid);                   // 砍的那一圈跟著他（levPlace 不讓腳底低於地面）
+      levCut(m, C, dt);
+    }
+    levPlace(m, C.x, C.y, C.z);
+    m.osd += dt;
+    if (m.osd > LEV_SND) { m.osd = 0; sndLevCut(); }
+    if (m.ot < T) return false;
+    /* 蹬開：往那一面的外面、往上；背對著飛出去的方向後空翻 */
+    let ox = c.nx, oz = c.nz, ol = Math.hypot(ox, oz);
+    if (c.b) { ox = m.x - c.px; oz = m.z - c.pz; ol = Math.hypot(ox, oz); }
+    if (ol < 0.05) { ox = Math.sin(m.a); oz = Math.cos(m.a); ol = 1; }
+    ox /= ol; oz /= ol;
+    m.op = 'drop'; m.ot = 0;
+    m.vx = ox * LEV_KICK[0]; m.vz = oz * LEV_KICK[0]; m.vy = LEV_KICK[1];
+    m.a = Math.atan2(-ox, -oz);
+    return false;
+  }
+  if (m.op === 'drop') {
+    m.wk = Math.max(0, m.wk - dt * 5);
+    m.vy -= LEV_GRAV * dt;
+    m.x += m.vx * dt; m.y += m.vy * dt; m.z += m.vz * dt;
+    m.lp = -Math.PI * 2 * Math.min(1, m.ot / 0.8);
+    if (m.y > 0 && m.ot < 8) return false;
+    m.y = 0; m.lp = 0;
+    levClear(m, m.vx, m.vz);
+    m.vx = m.vy = m.vz = 0;
+    m.op = 'land'; m.ot = 0;
+    sndFall();
+    return false;
+  }
+  if (m.op === 'land') {
+    if (m.ot < L.land) return false;
+    levEnd(m);
+    return false;
+  }
+  levEnd(m);
+  return false;
+}
+/* 落地那一點在建築或房子裡面：順著蹬出去的方向往外找一塊空地（從那麼高落下來，不能站在牆裡面） */
+function levClear(m, vx, vz) {
+  let ux = vx, uz = vz, ul = Math.hypot(ux, uz);
+  if (ul < 0.05) { ux = m.x; uz = m.z; ul = Math.hypot(ux, uz) || 1; }
+  ux /= ul; uz /= ul;
+  for (let i = 0; i < 120 && (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)); i++) { m.x += ux * 0.5; m.z += uz * 0.5; }
+  pushOutHome(m);
+}
+/* 點空地那一道命令跑到了（使用者：「如果點空地 就走到空地那個位置」）：同砍完那一套收命令
+   （排著的下一道先做），回去逛之前先站著待命 LEV_WAIT 秒——不然他一到就走開，點那一下看起來像沒用 */
+function levArrive(m) {
+  excDone(m);
+  if (m.st === 'fun') { m.pause = rr(LEV_WAIT[0], LEV_WAIT[1]); m.gait = 0; }
+}
+/* 這一招收完：姿勢從架刀混回站姿（m.arm 從 1 慢慢退），照 Excalibur 那一套回去逛／去排著的下一點 */
+function levEnd(m) {
+  m.op = null; m.ot = 0; m.wk = 0; m.lp = 0; m.lr = 0; m.y = 0;
+  m.vx = m.vy = m.vz = 0; m.arm = 1;
+  excDone(m);
+}
+/* 建築：這一幀身邊 cz.r 格內的積木全部砍飛（還站著的算破壞；地上的碎料一起掃飛但不算，同大劍）。
+   碎料沿著刀轉的方向甩出去（m.a 往上加＝繞 +y 逆時針，(dx, dz) 那一點的切線是 (dz, −dx)），再往那一面外面推一點 */
+function levCut(m, C, dt) {
+  const c = m.call, R = (m.cz || LEV_SIZES[0]).r, R2 = R * R;
+  let n = 0, own = 0, cx = 0, cy = 0, cz = 0;
+  for (const b of blocks) {
+    if (b.st !== SET && b.st !== FREE) continue;
+    const dx = b.x - C.x, dy = b.y - C.y, dz = b.z - C.z;
+    if (dx * dx + dy * dy + dz * dz > R2) continue;
+    const set = b.st === SET, ow = set && b.hh < 0;
+    const hl = Math.hypot(dx, dz) || 1, sp = rr(LEV_HIT[0], LEV_HIT[1]);
+    breakBlock(b, dz / hl * sp + c.nx * rr(2, 5), rr(2, 6) + c.ny * 3, -dx / hl * sp + c.nz * rr(2, 5));
+    if (!set) continue;
+    n++; if (ow) own++;
+    cx += b.x; cy += b.y; cz += b.z;
+  }
+  levLives(m, C, R);
+  m.odu += dt;
+  if (!n) return 0;
+  const at = { x: cx / n, y: cy / n, z: cz / n };
+  afterHit(n, at, R, own, m);
+  m.on += n;
+  if (m.odu > LEV_DUST) { m.odu = 0; spawnDust(at, R, n); }
+  if (!m.oshk) { m.oshk = 1; ENG.shake(0.7); }
+  return n;
+}
+/* 刀掃到的人與動物（砍建築那一段順手掃到的）：人被甩飛，動物只會倒地（使用者：「其他生物只會倒地」） */
+function levLives(m, C, cutR) {
+  const R = cutR + 0.4;
+  for (const w of workers) {
+    if (w.air) continue;
+    const dx = w.x - C.x, dz = w.z - C.z;
+    if (Math.hypot(dx, (w.y || 0) + 0.9 * (w.scale || 1) - C.y, dz) > R) continue;
+    const hl = Math.hypot(dx, dz) || 1, sp = rr(LEV_HIT[0], LEV_HIT[1]) * 0.5;
+    tossWorker(w, dz / hl * sp, rr(4, 7), -dx / hl * sp, false);
+  }
+  if (beasts) for (const o of beasts) {
+    if (o === m || o.air || o.sky || levBusy(o)) continue;
+    const mid = ENG.BEAST_MID[o.kind] * (o.sc || 1);
+    if (Math.hypot(o.x - C.x, (o.y || 0) + mid - C.y, o.z - C.z) > R + mid * 0.8) continue;
+    if (fellBeast(o, rr(2.2, 3.4))) sndFall();
+  }
+}
+/* 生物：轉一圈砍中那一刀。巨人斬殺；其餘只會倒地（使用者選的）。牠已經不在了就只是揮空。
+   小人（w）同戳倒那一下（手上的積木掉下來），**不算 stats.poked**——那是「手指戳倒幾個小人」的成就 */
+function levStrike(m, b, w) {
+  if (!levTargetOk(b, w)) return false;
+  if (w) {
+    if (b.fall > 0 || b.burn > 0) return false;
+    b.fall = rr(1.6, 2.8); releaseWorker(b); sndFall(); ENG.shake(0.4);
+    return true;
+  }
+  ENG.shake(b.kind === 'giant' ? 1.2 : 0.5);
+  if (b.kind === 'giant') { giantDie(b); return true; }
+  if (fellBeast(b, rr(2.4, 3.6))) { sndFall(); return true; }
+  return false;
+}
+/* 巨人被斬殺（使用者：「巨人會被砍死(倒地 氣化消失)」）：當場倒地（往後仰躺），手上在做的全部收掉。
+   之後交給 stepDie：躺著冒蒸氣，LEV_DIE.hold 秒後一塊一塊散掉，散完從場上拿掉（stepBeast 回 true）。
+   天災那一件就算結束了（stepDoom 數的是場上還有沒有天災），吉祥物那一隻也是。 */
+function giantDie(b) {
+  b.dead = 1e-6; b.st = 'dead'; b.call = null; b.cq = null;
+  b.kick = 0; b.kt = 0; b.hit = 0; b.kleft = 0; b.bust = null; b.gait = 0; b.pause = 0;
+  b.air = 0; b.burn = 0; b.brl = 0; b.fall = 1; b.face = 0; b.roll = 0;
+  b.lie = lieLift(b); b.melt = 0;
+  sndGiant();
+  toast(BEAST_NM.giant + '被里維兵長斬殺', '後頸一刀，倒在地上冒著蒸氣，一塊一塊散掉');
+}
+/* 一顆蒸氣，冒在躺平的身體上隨便一處（仰躺時頭在牠原本朝向的反方向，身長 5 模型單位） */
+function dieSteam(m) {
+  const sc = m.sc || 1, fx = Math.sin(m.a || 0), fz = Math.cos(m.a || 0);
+  const s = Math.random() * 5 * sc, side = rr(-0.9, 0.9) * sc;
+  dust.push({
+    gia: 1,
+    x: m.x - fx * s + fz * side, y: rr(0.3, 1.6) * sc, z: m.z - fz * s - fx * side,
+    vx: rr(-0.8, 0.8), vy: rr(2.4, 5), vz: rr(-0.8, 0.8),
+    rx: Math.random() * 6, ry: Math.random() * 6,
+    g: -1.7, keep: 0.985, fade: 1.1, life: rr(1.2, 2.2), s: rr(0.5, 1.1), c: rr(0.93, 1)
+  });
+}
+function stepDie(m, dt) {
+  m.dead += dt;
+  m.fall = 1; m.gait = 0;
+  m.spin += (lieAng(m) - m.spin) * Math.min(1, dt * 3);        // 十五格高的，倒得慢一點
+  const t = m.dead - LEV_DIE.hold, u = t <= 0 ? 0 : Math.min(1, t / LEV_DIE.melt);
+  m.melt = u;                                                   // 引擎照它一塊一塊收掉
+  /* 蒸氣：躺著那一段就冒，散的時候越冒越兇 */
+  m.puff = (m.puff || 0) + dt * (LEV_DIE_STEAM[0] + (LEV_DIE_STEAM[1] - LEV_DIE_STEAM[0]) * u);
+  let mine = 0;
+  for (const d of dust) if (d.gia) mine++;
+  while (m.puff >= 1) {
+    m.puff--;
+    if (mine++ >= GIA_STEAM_MAX || dust.length > 380) break;
+    dieSteam(m);
+  }
+  return u >= 1;
 }
 
 /* 天災的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）。 */
@@ -9993,14 +10432,15 @@ const MORE_GAP = DOOM_FIRE_R * 2;
    給逛的時間的上限（45 秒）：正常一處只在外圈走幾秒到二十秒，碰得到這條的只有走不到的那種。 */
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 黑獼猴', snow: '🐵 白猴子', dragon: '🐉 飛龍',
-                   gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber' };
-/* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」——其餘那幾款照舊是牠 */
-const itOf = m => m.kind === 'saber' ? '她' : '牠';
+                   gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber', levi: '🗡 里維兵長' };
+/* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）用「他」——其餘那幾款照舊是牠 */
+const itOf = m => m.kind === 'saber' ? '她' : m.kind === 'levi' ? '他' : '牠';
 /* 叫一聲。哪一種叫哪一聲照 spawnBeast／spawnDragon 那邊的分法，不另訂一套。 */
 function beastCry(m) {
   if (m.kind === 'dragon' || m.kind === 'gryphon') sndRoar();
   else if (m.kind === 'giant') sndGiant();
   else if (m.kind === 'saber') sndSaber();
+  else if (m.kind === 'levi') sndLevi();
   else sndBeast(m.kind === 'snow');
 }
 /* 這一隻已經在走人了嗎（那就別再改牠的主意，同 turnBad 的規矩：都走到一半了
@@ -10174,6 +10614,8 @@ let hitBy = null;
 function beastHit(m) {
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
   if (!m || m === hitBy || m.herd || beastLeaving(m) || m.call || m.cq) return;
+  /* 里維兵長（v1.230）不會生氣：他只做玩家叫他做的事（吉祥物那一套翻臉、砸地標他都沒有） */
+  if (m.kind === 'levi' || m.dead) return;
   /* 動不了手的吉祥物（v1.229，表上的 spent：白猴子丟完香蕉）：照樣會倒，只是不再改主意 */
   if (mascSpent(m)) return;
   /* 冷卻中（v1.229）：上一下算進去還不到 BEAST_HIT_CD 秒，這一下不算。
@@ -10361,6 +10803,7 @@ const B_UP_EPS = 0.01;
    （牠們是 m.lit 記著、落地那一刻才燒），只是龍在天上，當場就開始拖火。
    點不著（已經在燒／剛被澆濕）就照舊只把牠打下來。 */
 function tossBeast(m, vx, vy, vz, lit) {
+  if (levBusy(m)) return false;                      // 立體機動中／正在氣化（v1.230，見 levBusy）
   if (m.kind === 'dragon') return (lit && igniteBeast(m, 1)) || crashDragon(m);
   /* 在天上的獅鷲（v1.176）：先切成「地上那一隻」，接著就照猴子那一套被掀出去
      （彈道 → 落地那一刻才判定燒不燒 → 躺一下 → 爬起來，見 flyBeast）。
@@ -10398,7 +10841,7 @@ function tossBeast(m, vx, vy, vz, lit) {
    飛龍自己一套（v1.154，見 burnDragon）：牠在天上，著火是「拖著火飛一段 → 墜地 →
    在地上燒完 → 拍翅起飛」。v1.153 以前牠是完全點不著的（回 false ＝ 改成打倒牠）。 */
 function igniteBeast(m, roll) {
-  if (m.burn > 0 || m.wet > 0) return false;
+  if (m.burn > 0 || m.wet > 0 || levBusy(m)) return false;   // levBusy（v1.230）
   if (m.kind === 'dragon') return burnDragon(m);
   /* 在天上被點著的獅鷲（v1.176）：帶著火摔下來，**落地那一刻才開始燒**——
      m.lit 這條就是猴子被爆炸掀到半空時走的同一條（見 flyBeast 的落地判定）。 */
@@ -10426,6 +10869,7 @@ function igniteBeast(m, roll) {
 }
 /* 被震倒／被戳倒／被水柱打到。t 是躺幾秒，face＝往前趴（v1.178，自己絆的那一跤）。 */
 function fellBeast(m, t, face) {
+  if (levBusy(m)) return false;                      // 立體機動中／正在氣化（v1.230，見 levBusy）
   if (m.kind === 'dragon') return crashDragon(m);
   if (m.sky) return grDown(m);                       // 在天上的獅鷲：打下來（v1.176）
   if (m.air || m.burn > 0 || m.fall > 0) return false;

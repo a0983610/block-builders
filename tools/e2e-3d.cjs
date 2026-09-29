@@ -457,6 +457,7 @@ const installClean = page => page.evaluate(() => {
     mascT.fill(-1);                   // 吉祥物那三個鐘（v1.144）也要歸零，同上
     ENG.putBeasts([]);
     ENG.putSabers([]);                // 她自己那顆 mesh、光點、光柱也藏起來（v1.222）
+    ENG.putLevis([]);                 // 里維兵長自己那顆 mesh（v1.230），同上
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
@@ -26543,8 +26544,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         useTool(hit);
         /* 10 秒夠慢的那幾支走完：魔法 6 秒引信、王之財寶射 7 秒、龍捲風掃 10 秒。
            **Excalibur（v1.224）例外**：Saber 從場邊照天災的步伐走進來，站定、蓄力要二十幾秒，
-           所以最多推 60 秒、沾到就停（它斬到那隻猴子的那一刻就是 excLives／afterHit 那一條）。 */
-        const slow = t.id === 'excalibur';
+           所以最多推 60 秒、沾到就停（它斬到那隻猴子的那一刻就是 excLives／afterHit 那一條）。
+           **兵長砍猴（v1.230）同理**：里維從場邊跑進來、射鋼索飛過去才開砍（levLives／afterHit 那一條） */
+        const slow = t.id === 'excalibur' || t.id === 'levi';
         for (let i = 0; i < (slow ? 1200 : 200); i++) { step(0.05); if (slow && seen) break; }
         out.push({ id: t.id, seen });
       }
@@ -27355,6 +27357,350 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈破壞道具：Excalibur〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 破壞道具：兵長砍猴（v1.230）══════════
+     使用者：「想做個兵長砍猴的破壞工具 類似excalibur點擊後 里維跑過來 用機動裝置飛上去再目標表面一頓狂砍
+     能點建築&生物」，看預覽之後又補：小人也點得到、巨人斬殺後一塊一塊散掉（不縮小）、砍的範圍小中大隨機、
+     丟繩索的距離拉遠、點空地就跑到那裡。**全部規則型**：該押骰子的押骰子（砍多大那一檔），
+     射程、點選、打不動、散掉的那幾塊都直接呼叫那一支驗規則本身；只有「一整趟」真的讓他從場邊跑進來。 */
+  SEC: { if (!(await head('破壞道具：兵長砍猴', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 他走路是 stepDoom 在推
+  await fillAll(page);
+
+  /* ── 點建築：從站的那一點的方位進場、是吉祥物、命令帶著那一面；接在火槍兵後面、點空地也算數 ── */
+  const lin = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    let P = null;                                  // 金字塔 +x 那一面、3 格高的外殼
+    for (const b of blocks) if (b.st === SET && Math.abs(b.y - 3) < 0.6 && (!P || b.x > P.x)) P = b;
+    tool = 'levi';
+    useTool({ kind: 'block', point: { x: P.x, y: P.y, z: P.z }, dir: { x: -1, y: 0, z: 0 } });
+    const lv = (beasts || []).filter(b => b.kind === 'levi'), m = lv[0], c = m.call;
+    let da = Math.atan2(m.z, m.x) - Math.atan2(c.z, c.x);
+    while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+    const r = { n: lv.length, fun: m.fun, st: m.st, da: Math.abs(da), nx: c.nx, rg: c.rg, want: LEV_RANGE.b,
+                sx: c.x - P.x, stand: LEV_STAND, ax: c.ax === P.x && c.az === P.z,
+                at: TOOLS.findIndex(t => t.id === 'levi'), musket: TOOLS.findIndex(t => t.id === 'musket'),
+                ground: !!GROUND_TOOL.levi };
+    beasts = null; tool = 'hammer';
+    return r;
+  });
+  ok('點建築：從站的那一點的方位進場、是吉祥物、命令帶著那一面與射程；接在火槍兵後面、點空地也算數',
+     lin.n === 1 && lin.fun === 1 && lin.st === 'call' && lin.da < 1e-9 && Math.abs(lin.nx - 1) < 1e-9 &&
+     lin.rg === lin.want && Math.abs(lin.sx - lin.stand) < 1e-9 && lin.ax &&
+     lin.musket >= 0 && lin.at === lin.musket + 1 && lin.ground,
+     lin.n + ' 位、fun ' + lin.fun + '、' + lin.st + '；進場方位差 ' + lin.da.toExponential(1) + '；那一面朝 +x（nx ' +
+     lin.nx.toFixed(3) + '）、射程 ' + lin.rg + '、站的那一點在前方 ' + lin.sx.toFixed(2) + ' 格（LEV_STAND ' + lin.stand +
+     '）；TOOLS 第 ' + lin.at + ' 把（火槍兵第 ' + lin.musket + ' 把）');
+
+  /* ── 一整趟（建築）：跑進射程就射鋼索 → 飛過去 → 轉圈砍 → 蹬開後空翻落地 → 回去逛 ── */
+  await fillAll(page);
+  const lrun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    let P = null;
+    for (const b of blocks) if (b.st === SET && Math.abs(b.y - 3) < 0.6 && (!P || b.x > P.x)) P = b;
+    const m = callLevi({ x: P.x, y: P.y, z: P.z }, { x: -1, y: 0, z: 0 }, null);
+    const seen = [];
+    let n = 0, act = null, below = 0, size = null, inSite = 0;
+    while (n < 6000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.02); n++;
+      const k = m.st + (m.st === 'odm' ? ':' + m.op : '');
+      if (seen[seen.length - 1] !== k) seen.push(k);
+      if (!act && m.st === 'act') {
+        const vx = m.x - P.x, vz = m.z - P.z, d = Math.hypot(vx, vz);
+        act = { d: +d.toFixed(2), cos: +(vx / d).toFixed(3), secs: +(n * 0.02).toFixed(1) };
+      }
+      if ((m.y || 0) < -1e-9) below++;
+      if (m.st === 'odm' && m.cz) size = m.cz.n;
+      if (m.st !== 'odm' && footBlocked(m.x, m.z)) inSite++;
+      if (m.st === 'fun' && seen.indexOf('odm:land') >= 0) break;
+    }
+    const r = { seen: seen.join('→'), act, cut: P.st !== SET, on: m.on, below, size, inSite,
+                sizes: LEV_SIZES.map(z => z.n), end: { st: m.st, call: m.call, y: m.y, stay: m.stay, op: m.op },
+                lo: MASC_STAY[0], rg: LEV_RANGE.b, face: LEV_FACE };
+    beasts = null; clearFires();
+    return r;
+  });
+  ok('一整趟（建築）：跑進射程就射鋼索 → 飛過去 → 轉圈砍 → 蹬開落地 → 回去逛，點到的那一塊砍掉了',
+     lrun.seen === 'call→act→odm:shoot→odm:fly→odm:cut→odm:drop→odm:land→fun' && lrun.act &&
+     lrun.act.d <= lrun.rg + 0.5 && lrun.act.cos >= lrun.face - 1e-3 &&
+     lrun.cut && lrun.on > 0 && lrun.sizes.indexOf(lrun.size) >= 0 &&
+     lrun.end.call === null && lrun.end.y === 0 && lrun.end.op === null && lrun.end.stay >= lrun.lo,
+     lrun.seen + '；' + (lrun.act ? lrun.act.secs + ' 秒射鋼索、離那一點 ' + lrun.act.d + ' 格（射程 ' + lrun.rg +
+     '）、跟那一面朝外的方向 cos ' + lrun.act.cos : '沒射') + '；抽到「' + lrun.size + '」、砍掉 ' + lrun.on +
+     ' 塊、點到的那一塊砍掉＝' + lrun.cut + '；收完還要逛 ' + (lrun.end.stay || 0).toFixed(1) + ' 秒');
+  ok('那一整趟腳底不低於地面、落地不站在建築裡',
+     lrun.below === 0 && lrun.inSite === 0,
+     '低於地面 ' + lrun.below + ' 幀、（立體機動以外）站在建築的格子裡 ' + lrun.inSite + ' 幀');
+
+  /* ── 射程：進射程、站在那一面外側（60° 內）才射；沒進射程、在背面、太斜都不射；生物照 LEV_RANGE.c ── */
+  const lrg = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    let P = null;
+    for (const b of blocks) if (b.st === SET && Math.abs(b.y - 3) < 0.6 && (!P || b.x > P.x)) P = b;
+    const R = LEV_RANGE.b, out = {};
+    const tryAt = (name, x, z, call) => {
+      beasts = null;
+      const m = spawnBeast('levi', 1, 0, 0);
+      m.x = x; m.z = z; m.st = 'fun';
+      sendSaber(m, call());
+      stepCall(m, 1e-6, WALK * EXC_RUN, EXC_RUN, 0);
+      out[name] = m.st;
+    };
+    const face = () => levFace({ x: P.x, y: P.y, z: P.z }, { x: -1, y: 0, z: 0 });
+    tryAt('in', P.x + R - 1, P.z, face);                       // 正前方、射程內
+    tryAt('far', P.x + R + 3, P.z, face);                      // 正前方、射程外
+    tryAt('back', P.x - 10, P.z + 14, face);                   // 17.2 格，但在那一面的背面
+    tryAt('slant', P.x + 5, P.z + 14, face);                   // 14.9 格，跟朝外的方向夾 70°
+    const a = spawnBeast('ape', 1); a.x = 40; a.z = 40; a.st = 'fun'; a.pause = 999;
+    const ape = () => ({ x: a.x, y: 0, z: a.z, sd: LEV_RANGE.c, ax: a.x, az: a.z, b: a, bw: 0 });
+    beasts = null;
+    const put = (name, d) => {
+      beasts = [a]; const m = spawnBeast('levi', 1, 0, 0);
+      m.x = a.x + d; m.z = a.z; m.st = 'fun';
+      sendSaber(m, ape()); stepCall(m, 1e-6, WALK * EXC_RUN, EXC_RUN, 0);
+      out[name] = m.st;
+    };
+    put('bIn', LEV_RANGE.c - 0.5); put('bFar', LEV_RANGE.c + 2);
+    beasts = null;
+    return { out, R, c: LEV_RANGE.c };
+  });
+  ok('射程：進射程、站在那一面外側 60° 內才射鋼索；射程外、背面、太斜都不射；生物照 LEV_RANGE.c',
+     lrg.out.in === 'act' && lrg.out.far === 'call' && lrg.out.back === 'call' && lrg.out.slant === 'call' &&
+     lrg.out.bIn === 'act' && lrg.out.bFar === 'call',
+     '建築（射程 ' + lrg.R + '）：正前方射程內 ' + lrg.out.in + '、射程外 ' + lrg.out.far + '、背面 ' + lrg.out.back +
+     '、夾 70° ' + lrg.out.slant + '；生物（射程 ' + lrg.c + '）：射程內 ' + lrg.out.bIn + '、射程外 ' + lrg.out.bFar);
+
+  /* ── 砍多大：每一刀在三檔裡隨機抽一檔（押骰子：0 → 小、0.5 → 中、0.99 → 大）；點生物不抽 ── */
+  const lsz = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    let P = null;
+    for (const b of blocks) if (b.st === SET && Math.abs(b.y - 3) < 0.6 && (!P || b.x > P.x)) P = b;
+    const real = Math.random, got = [];
+    for (const v of [0, 0.5, 0.99]) {
+      beasts = null;
+      const m = spawnBeast('levi', 1, 0, 0);
+      sendSaber(m, levFace({ x: P.x, y: P.y, z: P.z }, { x: -1, y: 0, z: 0 }));
+      Math.random = () => v; odmStart(m); Math.random = real;
+      got.push(m.cz && m.cz.n);
+    }
+    beasts = null;
+    const a = spawnBeast('ape', 1); a.x = 40; a.z = 40;
+    const m = spawnBeast('levi', 1, 0, 0);
+    sendSaber(m, { x: a.x, y: 0, z: a.z, sd: LEV_RANGE.c, ax: a.x, az: a.z, b: a, bw: 0 });
+    odmStart(m);
+    const beastCz = m.cz;
+    beasts = null;
+    return { got, names: LEV_SIZES.map(z => z.n), r: LEV_SIZES.map(z => z.r), beastCz };
+  });
+  ok('砍建築那一刀：三檔裡隨機抽一檔（押骰子驗三檔都抽得到），點生物不抽',
+     lsz.got.join(',') === lsz.names.join(',') && lsz.r[0] < lsz.r[1] && lsz.r[1] < lsz.r[2] && lsz.beastCz === null,
+     '骰子 0／0.5／0.99 → ' + lsz.got.join('／') + '（刀圈半徑 ' + lsz.r.join('／') + '）；點生物 cz＝' + lsz.beastCz);
+
+  /* ── 點生物：追過去、轉一圈砍中，牠只會倒地（不改主意）；巨人斬殺、一塊一塊散掉、散完從場上拿掉 ── */
+  const lbeast = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const a = spawnBeast('ape', 1);
+    a.x = siteR + 22; a.z = 6; a.st = 'fun'; a.pause = 999; a.stay = 999;
+    const bad0 = a.bad;
+    const m = callLevi({ x: a.x, y: 0, z: a.z }, null, a);
+    let n = 0, fell = 0, seen = [];
+    while (n < 3000) {
+      step(0.02); n++;
+      const k = m.st + (m.st === 'odm' ? ':' + m.op : '');
+      if (seen[seen.length - 1] !== k) seen.push(k);
+      if (a.fall > 0) fell = 1;
+      if (m.st === 'fun' && seen.indexOf('odm:land') >= 0) break;
+    }
+    const ape = { seen: seen.join('→'), fell, alive: beasts.indexOf(a) >= 0, bad: a.bad, bad0, call: m.call };
+    beasts = null;
+    const g = spawnBeast('giant', 1);
+    g.x = siteR + 26; g.z = -8; g.st = 'fun'; g.pause = 999; g.stay = 999;
+    const sc0 = g.sc, L = callLevi({ x: g.x, y: 0, z: g.z }, null, g);
+    let dead = -1, gone = -1, scMin = sc0, scMax = sc0, meltUp = 1, melt0 = 0, lie = 0;
+    n = 0;
+    while (n < 6000) {
+      step(0.02); n++;
+      const on = beasts && beasts.indexOf(g) >= 0;
+      if (g.dead && dead < 0) dead = n * 0.02;
+      if (on && g.dead) {
+        scMin = Math.min(scMin, g.sc); scMax = Math.max(scMax, g.sc);
+        if (g.melt < melt0 - 1e-12) meltUp = 0;
+        melt0 = g.melt;
+        lie = Math.max(lie, Math.abs(g.spin));
+      }
+      if (!on && gone < 0) gone = n * 0.02;
+      if (gone > 0 && L.st === 'fun') break;
+    }
+    const giant = { dead, gone, span: +(gone - dead).toFixed(2), want: LEV_DIE.hold + LEV_DIE.melt,
+                    sc0, scMin, scMax, meltUp, lie: +lie.toFixed(2), levi: L.st };
+    beasts = null;
+    return { ape, giant };
+  });
+  ok('點生物：追過去、轉一圈砍中，牠只會倒地、不改主意，砍完他回去逛',
+     lbeast.ape.fell && lbeast.ape.alive && lbeast.ape.bad === lbeast.ape.bad0 && lbeast.ape.call === null &&
+     lbeast.ape.seen === 'call→act→odm:shoot→odm:fly→odm:cut→odm:drop→odm:land→fun',
+     lbeast.ape.seen + '；黑獼猴倒地＝' + !!lbeast.ape.fell + '、還在場上＝' + lbeast.ape.alive + '、bad ' + lbeast.ape.bad);
+  ok('巨人被斬殺：倒地、大小不變、一塊一塊散掉（melt 一路往上），hold ＋ melt 秒後從場上拿掉',
+     lbeast.giant.dead > 0 && lbeast.giant.gone > 0 && Math.abs(lbeast.giant.span - lbeast.giant.want) <= 0.05 &&
+     lbeast.giant.scMin === lbeast.giant.sc0 && lbeast.giant.scMax === lbeast.giant.sc0 && lbeast.giant.meltUp &&
+     lbeast.giant.lie > 1.2,
+     lbeast.giant.dead.toFixed(2) + ' 秒斬中、' + lbeast.giant.gone.toFixed(2) + ' 秒拿掉（隔 ' + lbeast.giant.span +
+     ' 秒，hold ＋ melt ' + lbeast.giant.want + '）；sc ' + lbeast.giant.scMin + '～' + lbeast.giant.scMax + '（原本 ' +
+     lbeast.giant.sc0 + '）；躺平角 ' + lbeast.giant.lie);
+
+  /* ── 一塊一塊散掉：引擎照 m.melt 把那幾塊收掉（固定的亂序：k × 黃金比例的小數部分 < melt） ── */
+  const lmelt = await page.evaluate(() => {
+    cleanTools();
+    const g = spawnBeast('giant', 1);
+    g.x = siteR + 20; g.z = 0; g.melt = 0.5;
+    const P = ENG.BEASTS.giant, list = beastList(), i = list.indexOf(g);
+    ENG.putBeasts(list);
+    const E = ENG.three.beastMesh.instanceMatrix.array, B = ENG.BEAST_PARTS;
+    let gone = 0, want = 0;
+    for (let k = 0; k < P.length; k++) {
+      const e = (i * B + k) * 16, zero = Math.abs(E[e]) + Math.abs(E[e + 5]) + Math.abs(E[e + 10]) < 1e-9;
+      if (zero) gone++;
+      if ((k * 0.6180339887) % 1 < 0.5 || (P[k].bomb && !g.bomb)) want++;
+    }
+    g.melt = 0; ENG.putBeasts(list);
+    let none = 0;
+    for (let k = 0; k < P.length; k++) {
+      const e = (i * B + k) * 16;
+      if (Math.abs(E[e]) + Math.abs(E[e + 5]) + Math.abs(E[e + 10]) < 1e-9) none++;
+    }
+    beasts = null; ENG.putBeasts([]);
+    return { gone, want, none, all: P.length };
+  });
+  ok('一塊一塊散掉：melt 0.5 收掉的就是亂序裡排前一半的那幾塊，melt 0 一塊都不收',
+     lmelt.gone === lmelt.want && lmelt.gone > lmelt.all * 0.3 && lmelt.gone < lmelt.all * 0.7 && lmelt.none === 0,
+     'melt 0.5：收掉 ' + lmelt.gone + '／' + lmelt.all + ' 塊（照亂序該收 ' + lmelt.want + '）；melt 0：收掉 ' + lmelt.none);
+
+  /* ── 點小人：追過去砍倒（手上的積木掉下來），不算手指戳倒的成就 ── */
+  const lman = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const w = workers[0], poked = stats.poked;
+    const m = callLevi({ x: w.x, y: 0, z: w.z }, null, w, true);
+    const bw = m.call && m.call.bw;
+    let n = 0, fell = 0;
+    while (n < 3000) {
+      step(0.02); n++;
+      if (w.fall > 0) fell = 1;
+      if (m.st === 'fun' && fell) break;
+    }
+    const r = { bw, fell, poked: stats.poked - poked, call: m.call };
+    beasts = null;
+    return r;
+  });
+  ok('點小人：追過去轉一圈砍倒他，不算手指戳倒的成就',
+     lman.bw === 1 && lman.fell && lman.poked === 0 && lman.call === null,
+     '命令 bw ' + lman.bw + '、砍倒＝' + !!lman.fell + '、戳倒的成就多了 ' + lman.poked);
+
+  /* ── 點空地：跑到那一點、待命 LEV_WAIT 秒再回去逛（不出招） ── */
+  const lgo = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('levi', 1);
+    m.x = siteR + 8; m.z = 0; m.st = 'fun'; m.pause = 99;
+    const a = 1.1, G = { x: Math.cos(a) * (siteR + 16), y: 0, z: Math.sin(a) * (siteR + 16) };
+    tool = 'levi'; useTool({ kind: 'ground', point: G, dir: { x: 0, y: -1, z: 0 } }); tool = 'hammer';
+    const go = !!(m.call && m.call.go);
+    let n = 0, arr = null, odm = 0;
+    while (n < 3000 && !arr) {
+      step(0.02); n++;
+      if (m.st === 'odm') odm++;
+      if (m.st === 'fun') arr = { d: Math.hypot(m.x - G.x, m.z - G.z), pause: m.pause, call: m.call };
+    }
+    beasts = null;
+    return { go, arr, odm, sd: LEV_SD, wait: LEV_WAIT };
+  });
+  ok('點空地：跑到那一點待命 LEV_WAIT 秒再回去逛，不出招',
+     lgo.go && lgo.arr && lgo.arr.d <= lgo.sd + 0.1 && lgo.arr.call === null && lgo.odm === 0 &&
+     lgo.arr.pause >= lgo.wait[0] && lgo.arr.pause <= lgo.wait[1],
+     '命令 go＝' + lgo.go + '；' + (lgo.arr ? '到了離那一點 ' + lgo.arr.d.toFixed(2) + ' 格（LEV_SD ' + lgo.sd +
+     '）、待命 ' + lgo.arr.pause.toFixed(1) + ' 秒（' + lgo.wait.join('～') + '）' : '沒到') + '；立體機動 ' + lgo.odm + ' 幀');
+
+  /* ── 點選：這一把點得到生物與小人（skip 那一檔是透明的）；砍不了的那幾隻不算 ── */
+  const lpick = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const e = ENG.camEye(), hl = Math.hypot(e.x, e.z), hx = e.x / hl, hz = e.z / hl;
+    const a = spawnBeast('ape', 1);
+    a.x = hx * (bp.radius + 6); a.z = hz * (bp.radius + 6); a.a = 0; a.st = 'fun'; a.pause = 999;
+    const w = workers[0];
+    w.x = hx * (bp.radius + 6) - hz * 5; w.z = hz * (bp.radius + 6) + hx * 5; w.y = 0; w.air = 0; w.fall = 0;
+    draw(); ENG.render();
+    const c = ENG.three.renderer.domElement.getBoundingClientRect(), cam = ENG.three.camera;
+    const at = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam);
+                              return [(v.x + 1) / 2 * c.width, (1 - v.y) / 2 * c.height]; };
+    const pa = at(a.x, ENG.BEAST_MID.ape * a.sc, a.z), pw = at(w.x, 0.7 * (w.scale || 1), w.z);
+    const la = ENG.pick(pa[0], pa[1], 'levi'), sa = ENG.pick(pa[0], pa[1], 'skip');
+    const lw = ENG.pick(pw[0], pw[1], 'levi'), sw = ENG.pick(pw[0], pw[1], 'skip');
+    const r = { la: la && la.kind, laOk: la && beastAt(la.idx) === a, sa: sa && sa.kind,
+                lw: lw && lw.kind, lwOk: lw && workers[lw.idx] === w, sw: sw && sw.kind };
+    const L = spawnBeast('levi', 1), D = { kind: 'dragon' }, Gs = { kind: 'gryphon', sky: 1 };
+    r.cut = [leviCanCut(a), leviCanCut(L), leviCanCut(D), leviCanCut(Gs), leviCanCutW(w)].join(',');
+    beasts = null;
+    return r;
+  });
+  ok('點選：這一把點得到地上的生物與小人（其他道具那一檔是透明的）；天上的、他自己不算',
+     lpick.la === 'beast' && lpick.laOk && lpick.sa !== 'beast' && lpick.lw === 'worker' && lpick.lwOk &&
+     lpick.sw !== 'worker' && lpick.cut === 'true,false,false,false,true',
+     '黑獼猴：兵長砍猴點到 ' + lpick.la + '（是牠＝' + lpick.laOk + '）、其他道具點到 ' + lpick.sa + '；小人：點到 ' +
+     lpick.lw + '（是他＝' + lpick.lwOk + '）、其他道具點到 ' + lpick.sw + '；砍得了嗎（猴／里維／飛龍／天上的獅鷲／小人）' +
+     lpick.cut);
+
+  /* ── 立體機動那幾秒打不動他（炸不飛、點不著、推不倒），正在散掉的巨人也是 ── */
+  const lbusy = await page.evaluate(() => {
+    cleanTools();
+    const m = spawnBeast('levi', 1);
+    m.st = 'odm'; m.op = 'fly'; m.x = 30; m.z = 30; m.y = 4;
+    const r = { toss: tossBeast(m, 5, 5, 5, true), fell: fellBeast(m, 2), fire: igniteBeast(m, 0),
+                air: m.air, fall: m.fall, burn: m.burn, busy: levBusy(m) };
+    const g = spawnBeast('giant', 1); g.dead = 0.5;
+    r.giant = [tossBeast(g, 5, 5, 5, false), fellBeast(g, 2), igniteBeast(g, 0), levBusy(g)].join(',');
+    m.st = 'fun'; r.free = levBusy(m);
+    beasts = null;
+    return r;
+  });
+  ok('立體機動那幾秒打不動他、正在散掉的巨人也打不動',
+     !lbusy.toss && !lbusy.fell && !lbusy.fire && !lbusy.air && !lbusy.fall && !lbusy.burn && lbusy.busy &&
+     lbusy.giant === 'false,false,false,true' && !lbusy.free,
+     '里維：炸飛 ' + lbusy.toss + '、推倒 ' + lbusy.fell + '、點著 ' + lbusy.fire + '；散掉中的巨人 ' + lbusy.giant +
+     '；落地之後 levBusy ' + lbusy.free);
+
+  /* ── 畫面：鉤爪就在錨點上、轉圈砍才拖刀光、沒他在場整顆 mesh 不畫 ── */
+  const ldraw = await page.evaluate(() => {
+    cleanTools();
+    draw();
+    const T3 = ENG.three, off = T3.levMesh.visible;
+    const m = spawnBeast('levi', 1);
+    m.x = siteR + 20; m.z = 0; m.st = 'odm'; m.op = 'fly'; m.ot = 0.3; m.wk = 1;
+    m.wa = [{ x: m.x - 6, y: 9, z: 3 }, { x: m.x - 6, y: 9, z: -3 }];
+    draw();
+    const E = T3.levMesh.instanceMatrix.array, K = ENG.LEV_PARTS, S = ENG.LEV_SLOT;
+    const pos = j => [E[j * 16 + 12], E[j * 16 + 13], E[j * 16 + 14]];
+    const zero = j => Math.abs(E[j * 16]) + Math.abs(E[j * 16 + 5]) + Math.abs(E[j * 16 + 10]) < 1e-9;
+    let hook = 0;
+    for (const j of [0, 1]) {
+      const p = pos(K + 2 + j), A = m.wa[j];
+      hook = Math.max(hook, Math.hypot(p[0] - A.x, p[1] - A.y, p[2] - A.z));
+    }
+    const trailFly = [0, 1, 2, 3, 4, 5].every(t => zero(K + 4 + t));
+    m.op = 'cut'; m.wk = 0; draw();
+    const trailCut = [0, 1, 2, 3, 4, 5].every(t => !zero(K + 4 + t)), wireCut = zero(K) && zero(K + 1);
+    const vis = T3.levMesh.visible, cnt = T3.levMesh.count;
+    beasts = null; draw();
+    return { off, hook: +hook.toFixed(4), trailFly, trailCut, wireCut, vis, cnt, S, after: T3.levMesh.visible };
+  });
+  ok('畫面：鉤爪就在錨點上、只有轉圈砍才拖刀光、鋼索收回就不畫、沒他在場整顆 mesh 不畫',
+     !ldraw.off && ldraw.hook < 1e-4 && ldraw.trailFly && ldraw.trailCut && ldraw.wireCut &&
+     ldraw.vis && ldraw.cnt === ldraw.S && !ldraw.after,
+     '沒他在場 visible ' + ldraw.off + '；鉤爪離錨點 ' + ldraw.hook + ' 格；飛的時候刀光全收＝' + ldraw.trailFly +
+     '、轉圈砍時六道全畫＝' + ldraw.trailCut + '、鋼索收回＝' + ldraw.wireCut + '；一位 ' + ldraw.cnt + ' 格（LEV_SLOT ' +
+     ldraw.S + '）；收掉之後 visible ' + ldraw.after);
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+  }   // ── 〈破壞道具：兵長砍猴〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 隕石 ══════════ */
   SEC: { if (!(await head('隕石', T_COMMIT))) break SEC;
   /* 靶要**比爆炸範圍大**（v1.151，本來是新天鵝堡 3000）。新天鵝堡的 siteR 只有 17，
@@ -27904,8 +28250,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 幽浮（v1.167）：一趟十六秒（含飛走後那五秒），而且它會借鏡頭的高度。
        ufoClear() 才會把借去的高度還回去、把艙裡的積木放掉（見 game-tools）。 */
     ufoClear();
-    /* Excalibur（v1.224）叫來的 Saber：這一段沒裝天災的鐘（她不會走），留著會站在場邊一路被後面幾條畫到 */
-    beasts = null; ENG.putSabers([]);
+    /* Excalibur（v1.224）叫來的 Saber：這一段沒裝天災的鐘（她不會走），留著會站在場邊一路被後面幾條畫到。
+       兵長砍猴（v1.230）叫來的里維同理 */
+    beasts = null; ENG.putSabers([]); ENG.putLevis([]);
     const got = stats.badges.indexOf('allTools') >= 0;
     // 同一種道具用兩次不會重複記
     tool = 'hammer'; useTool(hit);
