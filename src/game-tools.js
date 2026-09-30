@@ -8115,9 +8115,9 @@ function spawnBeast(kind, fun, bad, ang) {
     /* 卡住了就脫困那一套的欄位（v1.190.2，跟小人同一組：見 game-workers.js 的 stuckWatch）。
        sx／sz 是「上次確定有前進」的錨點，開場就是牠站的地方。 */
     sx: Math.cos(a) * d, sz: Math.sin(a) * d, stk: 0,
-    /* 繞城牆走開口那一段的狀態（v1.195，跟小人同一組：見 game-workers.js 的 crossStep）。
-       gw＝正在繞的那一段（null＝沒在繞），rev＝逛的目標還有多久複驗一次（idleRecheck）。 */
-    gw: null, rev: 0,
+    /* 繞城牆那一段（v1.186 起的 gate 狀態）：gw＝要繞去的那一點（null＝沒在繞，見 gateNeed）。
+       nav／navWait＝巡路規則的路線與「找不到路還要等幾秒」（v1.235，跟小人同一組：見 game-workers.js 的 navAim）。 */
+    gw: null, nav: null, navWait: 0,
     /* 巨人自己一個倍率（v1.192）：牠的模型是拿 5.00 當高畫的，不是拿小人的 1.31，
        所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。 */
     sc: kind === 'giant' ? GIA_SC : DOOM_SC,
@@ -8258,7 +8258,7 @@ function leaveBeast(m) {
    （見 開發筆記〈猴子被城牆關在城裡〉）。逛（fun）那一段的目標被這一段借去了，
    也要重挑一個，不然牠會回頭往門口走。 */
 function gateBack(m) {
-  m.gw = null;                               // 繞的那一段收乾淨（v1.195，見 crossStep）
+  m.gw = null;                               // 繞的那一段收乾淨（見 gateNeed）
   m.st = m.gback || 'near';
   m.leg = 0;
   if (m.st === 'go') leaveBeast(m);          // 從現在站的地方重挑場外那一點
@@ -8269,7 +8269,7 @@ function gateBack(m) {
 
    走法**借小人那一套**（使用者：「可以按照小人行走邏輯 不要穿越地標建築&小房子」）：
      come  strollTo：它會把「工地中心」這個目標推到建築外圈那一環上，所以牠停在
-           建築邊上不會走進去；路上有小人的家也是它繞開的（dodgeHome／pushOutHome）。
+           建築邊上不會走進去；路上有小人的家也是它繞開的（v1.235 起照巡路規則，見 navAim）。
      fun   吉祥物在建築外圈那一環上逛（見檔案最後那一節）。抽中要動手的那一趟
            （v1.166）也走這一段，只是把逛的目標換成牠盯上的那一間房子（或那一棵樹）。
      near  那一環是照 siteR 畫的圓，而 siteR 有 7 的下限，小一點的地標離環還有幾格。
@@ -8308,18 +8308,22 @@ function wallFoot(m, tx, tz) {
   return !!(h && h.wall);
 }
 /* 改成先走城門（v1.186，使用者：「白猴子&黑獼猴可能被擋路(可以繞路走城門
-   或他自己動手破壞)」，兩個都要）。回 false 有兩種：本來就走得過去，或者**沒有開口可以繞**
+   或他自己動手破壞)」，兩個都要）。回 false 有兩種：本來就走得過去，或者**規劃不出路**
    （門樓被打爛、缺口也補起來了）——後者由呼叫端決定怎麼辦，那邊會改成就地拆牆。
-   v1.195 起走的是跟小人共用的那一支（crossNeed／crossStep），這裡只管天災自己那個
-   狀態機的部分：記下穿過去之後要回哪一段、把 st 推進 gate。 */
+   v1.235 起「有沒有路」問的是巡路規則（navReach：從這裡照規則走不走得到那一點），
+   怎麼繞也是規則在走（gate 那一段就是 strollTo 往那一點走）；v1.195～v1.234 是
+   crossNeed／crossStep 那一套「挑最近的開口、三段繞」（見 開發筆記〈巡路規則〉）。
+   這裡只管天災自己那個狀態機的部分：記下要繞去哪、繞完回哪一段、把 st 推進 gate。 */
 function gateNeed(m, tx, tz) {
   /* **巨人不走門**（v1.207，使用者：「巨人太高不能走城門」）：門洞五層高、牠十五格，
      繞過去也鑽不過。牠那一套是「擋路的踹掉再走」（見 giantBust），
      wallFoot 那一條對牠也一起關掉，所以城牆那三處分支對牠整組不動作。 */
   if (m.kind === 'giant') return false;
-  if (m.st === 'gate' || !crossNeed(m, tx, tz)) return false;
+  if (m.st === 'gate') return false;
+  const kp = m.herd ? 0 : (DOOM_KEEP[m.kind] || 0);    // 同 stepBeast0 的 kp
+  if (!navReach(m, tx, tz, kp)) return false;
   m.gback = m.st;                   // 穿過去之後回哪一段
-  m.st = 'gate'; m.leg = 0;
+  m.st = 'gate'; m.leg = 0; m.gw = { tx, tz };
   return true;
 }
 /* 爬起來那一段**朝向要限速轉**（v1.202.2）。躺著的時候 hurtBeast 會把底下整段跳掉、
@@ -8454,14 +8458,21 @@ function stepBeast0(m, dt) {
     }
     return false;
   }
-  /* 繞城牆走開口（v1.186 只會走城門，v1.195 起連缺口也算，而且**跟小人共用同一支**
-     ——使用者：「行走行為邏輯照理說 大部分生物都一樣」）。位移整段在 crossStep
-     （game-workers.js，跟 strollTo／dodgeHome／stuckWatch 同一層），這裡只剩
-     「走完了回原本那一段」。走到一半開口沒了（門樓被打爛、缺口被砌起來）也是走這一條，
-     回去走原本那一條（那邊會改成就地拆牆）。 */
+  /* 繞城牆走開口（v1.186 只會走城門，v1.195 起連缺口也算，而且**跟小人共用同一套**
+     ——使用者：「行走行為邏輯照理說 大部分生物都一樣」）。v1.235 起就是照巡路規則
+     往那一點走（strollTo，門洞與沒砌的段是地圖上的洞），**牆不再擋住那條直線就回原本那一段**。
+     走到一半路沒了（門樓被打爛、缺口被砌起來）規劃不出路，照直線走到牆邊，
+     回原本那一段之後那邊會改成就地拆牆（見 gateNeed）。 */
   if (m.st === 'gate') {
     const k = m.call ? EXC_RUN : 1;            // Excalibur 叫她過去那一趟連穿城門也用跑的（v1.226）
-    if (crossStep(m, dt, spd * k, m.call ? (stp || 1) * k : stp)) gateBack(m);
+    const g = m.gw;
+    if (!g) { gateBack(m); return false; }
+    const ox = m.tx, oz = m.tz;
+    m.tx = g.tx; m.tz = g.tz;
+    const done = strollTo(m, dt, spd * k, m.call ? (stp || 1) * k : stp, kp);
+    m.tx = ox; m.tz = oz;                      // 那一點是這一段借用的，原本那一段的目標照舊
+    if (done || (!wallBlocked(m.x, m.z, g.tx, g.tz) && !wallCut(m.x, m.z, g.tx, g.tz)) ||
+        (m.navWait > 0 && !m.nav)) gateBack(m);
     return false;
   }
   /* 吉祥物：在工地那一帶晃，晃夠 m.stay 秒就走人（使用者：「只是出現逛一逛
@@ -8567,7 +8578,7 @@ function stepBeast0(m, dt) {
       m.gait += (0 - m.gait) * Math.min(1, dt * 8);
       return false;
     }
-    idleRecheck(m, dt);        // 逛的目標還走得到嗎（牆是之後才長起來的，v1.195；同 wander）
+    /* 逛的目標被城牆隔開就照規則規劃過去（v1.235，同 wander）；v1.195～v1.234 是隔一秒複驗、重挑一個這一側的點 */
     if (strollTo(m, dt, spd, stp, kp)) {
       /* 站多久：猴子照剛走完那段路算（strollPause），牛羊改成固定抽——
          牠們一趟只走幾格，照比例算的話停不到一秒，看起來是一直在繞圈。 */
@@ -9190,8 +9201,8 @@ function stepCall(m, dt, spd, stp, kp) {
     /* 城牆擋在前面：有門走門，沒門就走到牆腳下改走最後那幾步（牆在中間，那一刀連牆一起斬）。
        **城外到城外、直線卻切過城裡的也算**（v1.233.0，wallCut）：wallAhead 的前篩是「一內一外」，這種它說不擋，
        於是從還沒砌的那一段直直跑進城、在城裡被另一面擋住、照「城裡往外」走最近的開口——就是剛剛進來那一段，
-       出去又照直線跑回來：實測點城外的房子，四趟都在那個缺口內外來回 40 秒、一次都沒射到（同小人 v1.225 那一個，
-       見 crossNeed）。gateNeed 問的 crossNeed 本來就認得這一種，會沿城外繞到目標那一側 */
+       出去又照直線跑回來：實測點城外的房子，四趟都在那個缺口內外來回 40 秒、一次都沒射到（同小人 v1.225 那一個）。
+       v1.235 起繞法交給巡路規則（見 gateNeed）：規劃出來的路本來就不會從缺口鑽回城裡再出來 */
     if (wallAhead(m, tx, tz) || wallCut(m.x, m.z, tx, tz)) {
       if (gateNeed(m, tx, tz)) return false;
       if (wallFoot(m, tx, tz)) { m.cn = 1; return false; }

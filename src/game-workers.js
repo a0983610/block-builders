@@ -45,9 +45,8 @@ function newWorker(i) {
        只有這個旗標分得出來——偷懶的人被工具打倒要收心上工，自己絆一跤不算。 */
     trip: 0,
     /* 上工的路：clear 是「直線走得通」，chk 是還有多久要重算一次（見 buildWalk）。
-       gw 是「正在繞城牆走開口」那一段的狀態（v1.195，見 crossStep；null＝沒在繞），
-       rev 是閒晃目標還有多久要複驗一次（見 idleRecheck）。 */
-    chk: 0, clear: 0, gw: null, rev: 0,
+       gw 是「正在先繞過城牆」那一段的旗標（v1.195；v1.235 起怎麼繞交給巡路規則，見 buildWalk）。 */
+    chk: 0, clear: 0, gw: null,
     /* 被工具波及時才用得到：air 是正在飛，vx/vy/vz 是彈道，spin 是翻滾角速度，
        lit 是「落地要著火」的記號，burn 是還要燒幾秒，burnK 是身上焦黑的深淺。 */
     air: 0, vx: 0, vy: 0, vz: 0, spin: 0, lit: 0, burn: 0, burnK: 0,
@@ -109,6 +108,10 @@ function newWorker(i) {
        gbt 是「沒有再更近」幾秒了（見 nearGrab）。
        gvb 是追太久放掉的那一塊（v1.225，見 PICK_GIVE）：這一座他不再認它。 */
     sx: 0, sz: 0, stk: 0, ghost: 0, gbi: -1, gbd: 0, gbt: 0, gvb: -1,
+    /* 巡路（v1.235，見 navAim）：nav 是規劃出來、還沒走完的那一條路線，
+       navWait 是「剛規劃過、找不到路」還要等幾秒才再規劃一次，spd 是最近一次走路用的腳程
+       （stuckWatch 照它判「走不動」）。 */
+    nav: null, navWait: 0, spd: 0,
     /* 自己那間家的編號（v1.109）。−1＝還沒有家。這個**跨輪留著**（w.hm 每輪會被
        stopHomes 清掉），下一次事件才知道誰已經有家、不必再蓋一間。
        記 id 不記索引：索引會被 dropHomes 重編。 */
@@ -282,9 +285,10 @@ function releaseWorker(w) {
   }
   homeUnclaim(w);                    // 家的那一格也要放掉（v1.97）
   w.load.length = 0; w.li = 0; w.carry = false; w.st = 'idle';
-  /* 繞城牆那一段也收掉（v1.195）：他要去的那個目標已經不算數了，
-     再繞過去就是白走一趟（見 crossStep）。 */
+  /* 繞城牆那一段也收掉（v1.195；v1.235 起 w.gw 只是 buildWalk「先繞過城牆」的旗標）：
+     他要去的那個目標已經不算數了，再繞過去就是白走一趟。 */
   w.gw = null;
+  w.nav = null; w.navWait = 0;       // 規劃好的路線同理（v1.235，見 navAim）
   /* 魔法師還在半空的那幾塊也從清單上劃掉。積木本身不管（它自己會落定），
      但編號要清掉——換藍圖時整池積木會重編，留著會指到別人的積木上。 */
   w.fly.length = 0;
@@ -521,7 +525,7 @@ const GRAB_WAIT = 1.5;              // 沒有再更近超過這麼久，就當�
 const GRAB_FAR = 7;                 // 最遠伸手拿多遠。再遠就繼續走，不要隔半個場撿東西
 const GRAB_GAIN = 0.1;              // 近了這麼多才算「有進展」（浮點抖動不算）
 /* 追一塊料追這麼久都沒更近，就放掉那一筆（v1.225）。這是**最後一道保險**，不是繞路機制：
-   他認的那一格在這段時間一直鎖著，別人領不到——v1.224 實測城牆繞圈（見 crossNeed）
+   他認的那一格在這段時間一直鎖著，別人領不到——v1.224 實測城牆繞圈（見 開發筆記〈目標在另一面牆外、靠轉角：走出缺口又切回城裡〉）
    讓 12 個人把最後 22 格鎖了 60～143 秒以上，其餘 48 個人一格都領不到，整座停在 99%。
    門檻照實測訂：正常施工一趟最久多久沒更近——3000 塊的四座 2.05～8.7 秒，
    9000 塊的美國白宮 27.45 秒（大工地繞外圈）。放掉的那一塊記在 w.gvb，這一座他不再認它，
@@ -595,26 +599,26 @@ function standPos(s) {
   return { x: ux * r, z: uz * r };
 }
 function walkTo(w, dt) { return stepTo(w, w.tx, w.tz, dt); }
+/* 直線走（上工時 buildWalk 判斷「直線通得過」、拆除／整地退場在用）。
+   v1.102～v1.234 是「直直走 ＋ dodgeHome 每幀掰切線 ＋ pushOutHome 推出來」，
+   v1.235 起照巡路規則走（見 navAim）：目標壓在框裡先挪到框外、直線不通就規劃、
+   每一步不准踩進或切過障礙。這一支走在工地圈**裡面**也合法（走進去放的那種格子），
+   所以規劃不把工地圈當牆（keep 給 0）。 */
 function stepTo(w, tx, tz, dt) {
-  const dx = tx - w.x, dz = tz - w.z;
-  const d = Math.hypot(dx, dz);
+  const g = navGoal(w, tx, tz, false);              // 規則 2
+  if (g) { tx = g.x; tz = g.z; }
+  const d = Math.hypot(tx - w.x, tz - w.z);
   /* 抵達也要推一次（v1.97）：推只掛在「有移動」那條路徑上的話，
      一個站在屋子裡不動的人永遠不會被推出來。 */
   if (d < REACH) { pushOutHome(w); w.gait += (0 - w.gait) * Math.min(1, dt * 8); return true; }
-  /* 直線走也要繞開房子（v1.102）。這條路是上工（buildWalk 判斷「直線通得過」時）
-     與拆除／整地退場在用的。
-     原註解寫的理由是「pathClear 只認得藍圖的格子表，房子不在裡面」——**那是 v1.102
-     當下的狀況，v1.103 起就不成立了**（pathClear 自己會問 homeFoot，見那一支）。
-     真正還需要 dodgeHome 的理由是另外兩件事，兩件都還在：
-       · **有呼叫端根本沒問過 pathClear**：buildWalk 最後那一段（w.clear ＝ 0 才走到）
-         與退場閒晃的 walkTo 都是直接走，沒有「這條路通不通」這一關。
-       · **問過的也只有 PATH_CHK（0.25 秒）那麼新**：房子會在這中間長出來。
-     所以 pathClear 是每 0.25 秒一次的路線層，dodgeHome 是每一幀的反應層，兩層都要有。 */
-  const g = dodgeHome(w, dx / d, dz / d);
-  const sp = WALK * dt;
-  w.x += g.x * Math.min(sp, d); w.z += g.z * Math.min(sp, d);
-  pushOutHome(w);
-  w.a = Math.atan2(g.x, g.z);                       // 面向真正在走的方向
+  w.spd = WALK;
+  const a = navAim(w, tx, tz, 0, false, dt);        // 規則 3～5：這一步往哪裡走
+  const ax = a ? a.x : tx, az = a ? a.z : tz;
+  const da = Math.hypot(ax - w.x, az - w.z) || 1;
+  const ux = (ax - w.x) / da, uz = (az - w.z) / da;
+  const sp = Math.min(WALK * dt, a ? da : d);
+  navMove(w, ux * sp, uz * sp, false);
+  navFace(w, ux, uz);
   w.ph += dt * 11;
   w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
   return false;
@@ -652,17 +656,22 @@ function buildWalk(w, dt) {
      要重算是因為建築正在長：走到一半可能被新蓋起來的一面牆擋住。整條路每 0.25 秒
      重算一次，另外每一幀看一眼正前方——不看的話，那 0.25 秒足夠他走進牆裡 1.7 格。 */
   w.chk -= dt;
-  /* 目標在城牆另一邊、而且那條路真的被砌好的牆擋住了（v1.195）：繞去最近的開口，
-     走的是跟天災同一支（使用者：「行走行為邏輯照理說 大部分生物都一樣」，見 crossStep）。
-     擺在最前面：下面每一條分支都會動到位置。
-     **照 PATH_CHK 那個 0.25 秒的節奏判**，不是每幀判——跟「直線通不通」同一個道理，
-     而且繞的當下（w.gw）一定要每幀進得來，那一段不能被打斷。
-     繞完把 w.chk 歸零，讓下一幀重判一次直線通不通（人已經在另一側了）。 */
+  /* 目標在城牆另一邊、而且那條路真的被砌好的牆擋住了（v1.195；城外到城外、直線切過城裡的也算，v1.225）：
+     **先照巡路規則走到工地圈上**（v1.235，見 navAim）——strollTo 會把工地圈裡的目標推到圈上，
+     門洞與還沒砌的那一段就是地圖上的洞，規劃自己會穿過去。v1.195～v1.234 這裡是 crossNeed／crossStep
+     那一套三段繞（徑向出去、沿圓弧轉到開口、再穿過去），v1.235 收掉了。
+     下面那幾條（直線通不通、繞工地外圈、走進去）是地標那一層，第二輪才換成規則。
+     擺在最前面：下面每一條分支都會動到位置。**照 PATH_CHK 那個 0.25 秒的節奏判**，
+     繞的當下（w.gw）每幀都進得來；牆不再隔著了就把 w.chk 歸零，讓下一幀重判直線通不通。 */
   if (w.gw || w.chk <= 0) {
-    if (crossNeed(w, w.tx, w.tz)) {
-      if (crossStep(w, dt, WALK)) { w.chk = 0; w.clear = 0; }
+    if (wallBlocked(w.x, w.z, w.tx, w.tz) || wallCut(w.x, w.z, w.tx, w.tz)) {
+      w.gw = 1;
+      const tx = w.tx, tz = w.tz;
+      strollTo(w, dt);
+      w.tx = tx; w.tz = tz;                          // strollTo 會把目標推到工地圈上：那是這一段借用的
       return false;
     }
+    if (w.gw) { w.gw = null; w.chk = 0; w.clear = 0; }
   }
   if (w.clear) {
     const dx = w.tx - w.x, dz = w.tz - w.z, d = Math.hypot(dx, dz);
@@ -720,8 +729,14 @@ function buildWalk(w, dt) {
         （pushOutHome／blockHome／pathClear／ringWalk 都認這個旗標）。
    為什麼不一開始就穿透：穿牆很醒目，多數卡住重找一次路線就解了；
    為什麼一定要有穿透這一段：使用者已經指定過「真的修不好的話，小房子就不要擋住小人了，
-   讓他直接穿越」（v1.105），而重找路線對「四面被圍住」那種殘局沒有用。 */
-const STUCK_R = 1.2;                // 這麼久之內還沒離開錨點這麼遠，就算沒前進
+   讓他直接穿越」（v1.105），而重找路線對「四面被圍住」那種殘局沒有用。
+   v1.235 起這一段就是巡路規則的第 6 條（見 navAim）：① 的「重新找路線」真的是重新規劃一次，
+   不再只是重判直線／繞外圈；「沒前進」照**自己的腳程**判（見 STUCK_R）。 */
+/* 這麼久之內還沒離開錨點這麼遠，就算沒前進。**這是小人（WALK）的數字**，
+   實際用的是 STUCK_R × 腳程 ÷ WALK（v1.235）：寫死 1.2 格的話，最慢的羊（1.3）1.5 秒
+   最多也才 1.95 格，沿著牆邊滑的時候實際前進 0.69 格——明明一直在前進卻被判成卡住，
+   3 秒後就穿牆過去了（見 開發筆記〈巡路規則〉）。小人照比例算回來剛好還是 1.2。 */
+const STUCK_R = 1.2;
 const STUCK_T = 1.5;                // 每一段各撐多久（腳程 6.8，正常走 1.5 秒是 10 格）
 const GHOST_T = 3;                  // 穿透幾秒。要夠他走穿一間房子（最寬的約 10 格）
 function stuckWatch(w, dt) {
@@ -734,21 +749,322 @@ function stuckWatch(w, dt) {
   /* 腿沒在擺就不算（站著聊天、發呆、等下一塊都是合法的不動）；
      被炸飛與著火那兩條走的是自己的軌跡（彈道、打滾繞圈），不歸這裡管。 */
   if (w.gait <= 0.6 || w.air || w.burn > 0) { w.sx = w.x; w.sz = w.z; w.stk = 0; return; }
-  if ((w.x - w.sx) ** 2 + (w.z - w.sz) ** 2 > STUCK_R * STUCK_R) {
+  const R = STUCK_R * (w.spd || WALK) / WALK;
+  if ((w.x - w.sx) ** 2 + (w.z - w.sz) ** 2 > R * R) {
     w.sx = w.x; w.sz = w.z; w.stk = 0; return;      // 真的前進了：錨點跟上去
   }
+  const first = w.stk < STUCK_T;
   w.stk += dt;
   if (w.stk < STUCK_T) return;
   if (w.stk < STUCK_T * 2) {                        // ① 重新找路線
-    w.chk = 0;                                      // 直線／繞外圈重判一次
+    w.chk = 0;                                      // 直線／繞外圈重判一次（地標那一層）
     showEmo(w, 'quest');                            // 走不動了：頭上冒個問號（v1.121）
-    /* 目標點本身壓在人家的外框裡（閒晃的目標被推到外圈、剛好推進屋子裡就會這樣）：
-       挪到外框最近的那一面外邊。走得到的目標才有得走。 */
-    const h = footHome(w.tx, w.tz);
-    if (h) { const g = grabStand(h, w.tx, w.tz); w.tx = g.x; w.tz = g.z; }
+    /* 路線作廢、馬上重新規劃（規則 4，見 navAim）：剛好卡在「剛規劃過找不到路、還在等」的時候
+       也不等。**只在進 ① 的那一幀做**：這一段每幀都會進來，每幀作廢的話路線永遠走不到第二步。
+       v1.108～v1.234 這裡還會把壓在人家外框裡的目標挪出來——那件事現在是規則 2，
+       strollTo／stepTo 每幀都在做（見 navGoal）。 */
+    if (first) { w.nav = null; w.navWait = 0; }
     return;
   }
   w.ghost = GHOST_T; w.chk = 0;                     // ② 穿透
+  w.nav = null;
+}
+
+/* ── 巡路規則（v1.235）─────────────────────────────────────
+   > 使用者：「巡路能力 是要寫出巡路規則 而盡量不該有一推根據特例去修」
+   規則全文、定案過程與量到的數字見 開發筆記〈巡路規則〉。這一段是**房子與城牆那一層**（第一輪）；
+   地標那一層（柱子淨空、還沒蓋的不擋）是第二輪，現在還是 strollTo 開頭那一圈與 buildWalk／ringWalk。
+     1 可走地圖：不在房子／樹幹外框、砌好的城牆（門洞與沒砌的段除外）裡的地方（footHome）。
+       框碰在一起就是連成一塊——格子地圖上它們本來就是連著的，不必另外認
+     2 目標不在可走區域裡 → 改成離它最近的可走點（navGoal）
+     3 直線走得通就直走，不通就在格子地圖上找最短路、拉直成幾個轉角（navAim → navPlan）
+     4 目標換了、眼前這一段被新長出來的東西擋住（每 NAV_CHK 看一次）、卡住（stuckWatch ①）就重新規劃
+     5 每一步不准踩進或切過障礙，碰到就沿邊滑（navMove）；看得到再下一段才跳到下一個轉角（navAim）
+     6 真的沒路才穿透（stuckWatch ②）
+   strollTo／stepTo 照這個順序叫：navGoal → navAim → navMove。走的人換腳程就是換一種生物。 */
+const NAV_CELL = 0.5;               // 格子多大：最窄的縫（窄巷 1 格、城門洞 5 格）要分得出來
+const NAV_MAX = 160;                // 一邊最多幾格：範圍再大就把格子放粗，一次最多 160×160
+const NAV_PAD = [10, 25, 45];       // 兩端外接框往外多看幾格；找不到路就放大再找（U 形口袋的出口在背面）
+const NAV_SOFT = 4;                 // 貼著牆那一圈的代價倍率：路線寧可離牆半格，窄巷才貼著走
+const NAV_HIT = REACH + 0.1;        // 離轉角多近算走到了。要比 REACH 大：不然走到 REACH 以內時
+                                    // strollTo 說「到了」、這裡說「還沒」，他就站在那裡不動
+const NAV_MOVE = 1.5;               // 目標挪了這麼遠就不算同一個目標（路線作廢）
+const NAV_CHK = 0.25;               // 多久看一次眼前那一段還通不通（同 PATH_CHK）
+const NAV_RETRY = 1;                // 規劃不出路之後隔多久再試（每幀重算一次失敗的 A* 太貴）
+const NAV_GOAL_R = 20;              // 目標壓在框裡時往外找可走點找多遠（最大的房子半寬 8）
+const NAV_EPS = 1e-3;               // 判斷「切過框」時框往外擴一點點：角碰角那一點本身不在任何一間裡
+/* 這一段直線有沒有碰到障礙（規則 1）。門洞走得過：命中門樓的外框之後改拿兩側墩座去比（同 wallHit）。
+   noGap＝門洞也算擋住（巨人，見 footHome）。框往外擴 NAV_EPS：正對著角碰角那一點的線段不擴就量不到。 */
+function navSeg(x0, z0, x1, z1, noGap) {
+  if (!homes) return true;
+  const E = NAV_EPS;
+  for (const h of homes.list) {
+    if (!(h.x0 < h.x1 && h.z0 < h.z1)) continue;              // 一塊都還沒砌的空框
+    if (!segBox(x0, z0, x1, z1, h.x0 - E, h.z0 - E, h.x1 + E, h.z1 + E)) continue;
+    const g = h.gap;
+    if (noGap || !g) return false;
+    if (g.x1 - g.x0 < h.x1 - h.x0) {                           // 門洞窄的是 x 軸＝這一面沿 x 走
+      if (segBox(x0, z0, x1, z1, h.x0 - E, h.z0 - E, g.x0 + E, h.z1 + E) ||
+          segBox(x0, z0, x1, z1, g.x1 - E, h.z0 - E, h.x1 + E, h.z1 + E)) return false;
+    } else if (segBox(x0, z0, x1, z1, h.x0 - E, h.z0 - E, h.x1 + E, g.z0 + E) ||
+               segBox(x0, z0, x1, z1, h.x0 - E, g.z1 - E, h.x1 + E, h.z1 + E)) return false;
+  }
+  return true;
+}
+/* 走一步（規則 5）：這一步的終點不在障礙裡、而且從起點到終點不切過任何障礙才走；
+   不行就沿邊滑——先留走得比較多的那一軸，不行換另一軸，兩軸都不行就這一幀不動。
+   v1.97～v1.234 是「先走進去、再從最近的那一面推出來」（pushOutHome）：框碰在一起時
+   推出這一間剛好落進隔壁、一來一回順著接縫鑽過去；兩間只有角碰角時一步就跨過那個點，推都推不到。
+   pushOutHome 還是留在最後當保險：房子剛好在這一幀長到他腳下（這一步規則管不到）。
+   實際走了多少記在 _nm（navFace 與閒晃里程要用）。 */
+const _nm = { x: 0, z: 0 };
+function navMove(w, dx, dz, noGap) {
+  const px = w.x, pz = w.z;
+  const ok = (x, z) => w.ghost > 0 || (!footHome(x, z, noGap) && navSeg(px, pz, x, z, noGap));
+  if (ok(px + dx, pz + dz)) { w.x = px + dx; w.z = pz + dz; }
+  else {
+    const xFirst = Math.abs(dx) >= Math.abs(dz);
+    for (let k = 0; k < 2; k++) {
+      const keepX = (k === 0) === xFirst;
+      const qx = keepX ? px + dx : px, qz = keepX ? pz : pz + dz;
+      if (ok(qx, qz)) { w.x = qx; w.z = qz; break; }
+    }
+  }
+  pushOutHome(w);
+  _nm.x = w.x - px; _nm.z = w.z - pz;
+}
+/* 面向真正在走的方向（沿邊滑的時候不是想走的方向）；這一幀沒動就面向想走的方向 */
+function navFace(w, ux, uz) {
+  w.a = _nm.x * _nm.x + _nm.z * _nm.z > 1e-8 ? Math.atan2(_nm.x, _nm.z) : Math.atan2(ux, uz);
+}
+/* 規則 2：目標壓在障礙裡就改走到離它最近的可走點。一圈一圈往外找（半格一圈），
+   同一圈上一樣近的挑離自己近的那一邊（從哪邊來就停在哪邊）。不在障礙裡就 null。
+   v1.108～v1.234 這件事是 stuckWatch 在管（卡 1.5 秒才挪），可是目標壓得深的時候他**不算卡**——
+   繞著那間房子一直轉（實測 30 秒走了 198 格）；呼叫端每幀重算目標的（吉祥物砸村子那一趟的站位，
+   見 game-tools.js 的 fun），挪完下一幀又被蓋回去。所以改在走路這一層每幀問。
+   同一點算過就不再找（stepTo 的呼叫端每幀傳同一點進來）。回傳同一個暫存物件，呼叫端當場抄走。 */
+/* 「可走點」要離障礙至少四分之一格（規則 1 的「縫小於身位也算牆」）：兩間貼在一起時，
+   接縫那一條線本身不在任何一間裡（footHome 是開區間），不留這一點餘裕的話目標會被挪到縫上——
+   那是走不到的一條線（實測目標壓在接縫旁邊：每一種走法都卡住、靠穿透才到）。 */
+const NAV_ROOM = NAV_CELL / 2;
+const navRoom = (x, z, noGap) =>
+  !footHome(x, z, noGap) && !footHome(x - NAV_ROOM, z, noGap) && !footHome(x + NAV_ROOM, z, noGap) &&
+  !footHome(x, z - NAV_ROOM, noGap) && !footHome(x, z + NAV_ROOM, noGap);
+const _ng = { x: 0, z: 0 };
+function navGoal(w, x, z, noGap) {
+  if (!homes || w.ghost > 0 || !footHome(x, z, noGap)) return null;
+  if (w.ngx === x && w.ngz === z) { _ng.x = w.ngX; _ng.z = w.ngZ; return _ng; }
+  let bx = x, bz = z, bd = Infinity;
+  for (let r = NAV_CELL; r <= NAV_GOAL_R && bd === Infinity; r += NAV_CELL) {
+    const n = Math.ceil(2 * Math.PI * r / NAV_CELL);
+    for (let k = 0; k < n; k++) {
+      const a = k / n * Math.PI * 2, qx = x + Math.cos(a) * r, qz = z + Math.sin(a) * r;
+      if (!navRoom(qx, qz, noGap)) continue;
+      const d = Math.hypot(qx - w.x, qz - w.z);
+      if (d < bd) { bd = d; bx = qx; bz = qz; }
+    }
+  }
+  if (bd === Infinity) return null;
+  w.ngx = x; w.ngz = z; w.ngX = bx; w.ngZ = bz;
+  _ng.x = bx; _ng.z = bz;
+  return _ng;
+}
+/* 規則 3～5：這一幀往哪裡走。回傳路線上的下一個轉角，直走（直線通、或規劃不出路）就 null。
+   keep 是工地圈的半徑（規劃時當牆，0＝不管工地圈，stepTo 用）。
+   直線一通就把路線丟掉（繞過轉角之後常常就看得到目標了）；「直線通不通」只問房子與城牆，
+   工地圈照舊交給 strollTo 那兩段掰方向——第一輪不動地標那一層。 */
+function navAim(w, tx, tz, keep, noGap, dt) {
+  if (!homes || w.ghost > 0) { w.nav = null; return null; }
+  let n = w.nav;
+  if (n && (n.keep !== keep || Math.hypot(n.tx - tx, n.tz - tz) > NAV_MOVE)) n = w.nav = null;   // 目標換了
+  if (navSeg(w.x, w.z, tx, tz, noGap)) { w.nav = null; return null; }
+  if (!n) {
+    if (w.navWait > 0) { w.navWait -= dt; return null; }
+    n = navPlan(w, tx, tz, keep, noGap);
+    if (!n) { w.navWait = NAV_RETRY; return null; }   // 沒路：照直線走，卡住了由規則 6 接手
+    w.nav = n;
+  }
+  /* 跳到下一個轉角的條件：**看得到再下一段**（從現在的位置到下下一點直線走得通），或已經走到了。
+     只看「走進一格內就跳」的話會在還沒繞過屋角時就跳，下一段直線切進那一間，
+     只好貼著牆慢慢滑（L 形留兩格縫那一場，羊就是這樣被當成卡住、3 秒後穿牆）。 */
+  while (n.i < n.p.length) {
+    const q = n.p[n.i], last = n.i + 1 >= n.p.length;
+    const qx = last ? tx : n.p[n.i + 1].x, qz = last ? tz : n.p[n.i + 1].z;
+    if (navSeg(w.x, w.z, qx, qz, noGap) || Math.hypot(q.x - w.x, q.z - w.z) < NAV_HIT) n.i++;
+    else break;
+  }
+  if (n.i >= n.p.length) { w.nav = null; return null; }
+  const q = n.p[n.i];
+  n.chk -= dt;
+  if (n.chk <= 0) {                                   // 規則 4：眼前這一段被新長出來的東西擋住了
+    n.chk = NAV_CHK;
+    if (!navSeg(w.x, w.z, q.x, q.z, noGap)) { w.nav = null; w.navWait = 0; }
+  }
+  return q;
+}
+/* 規劃一條路（規則 3）。找到回傳 { p: 轉角們, i: 走到第幾個, tx, tz, keep, chk }；
+   找不到、或格子上根本是直線（不必繞）就 null。起點或終點在工地圈裡不規劃（keep > 0 時）：
+   那是地標那一層（ringWalk／standPos），第二輪才併進來（使用者 v1.235 定的範圍）。 */
+function navPlan(w, tx, tz, keep, noGap) {
+  if (!homes || !homes.list.length) return null;
+  if (keep > 0 && (Math.hypot(w.x, w.z) < keep - 1e-6 || Math.hypot(tx, tz) < keep - 1e-6)) return null;
+  for (const pad of NAV_PAD) {
+    const p = navGrid(w.x, w.z, tx, tz, pad, keep, noGap);
+    if (p) return p.length ? { p, i: 0, tx, tz, keep, chk: NAV_CHK } : null;
+  }
+  return null;
+}
+/* 一次 A*。格子半格一格，擋住＝格子中心在障礙裡或工地圈裡，貼著牆那一圈加價（NAV_SOFT），
+   不准斜切兩個擋住的格子之間（角碰角那道縫就是這樣關起來的）。找到回傳拉直過的轉角陣列
+   （可能是空的＝格子上是直線），找不到回傳 null。 */
+function navGrid(sx, sz, tx, tz, pad, keep, noGap) {
+  const X0 = Math.min(sx, tx) - pad, Z0 = Math.min(sz, tz) - pad;
+  const W = Math.max(sx, tx) + pad - X0, H = Math.max(sz, tz) + pad - Z0;
+  const c = Math.max(NAV_CELL, Math.max(W, H) / NAV_MAX);
+  const nx = Math.ceil(W / c), nz = Math.ceil(H / c), N = nx * nz;
+  const blk = new Uint8Array(N);                   // 0 空地、1 貼著牆、2 擋住
+  const k2 = keep * keep;
+  for (let j = 0, k = 0; j < nz; j++) {
+    const z = Z0 + (j + 0.5) * c;
+    for (let i = 0; i < nx; i++, k++) {
+      const x = X0 + (i + 0.5) * c;
+      if ((keep > 0 && x * x + z * z < k2) || footHome(x, z, noGap)) blk[k] = 2;
+    }
+  }
+  for (let j = 0, k = 0; j < nz; j++) for (let i = 0; i < nx; i++, k++) {
+    if (blk[k]) continue;
+    for (let dj = -1; dj <= 1 && !blk[k]; dj++) for (let di = -1; di <= 1; di++) {
+      const a = i + di, b = j + dj;
+      if (a >= 0 && b >= 0 && a < nx && b < nz && blk[b * nx + a] === 2) { blk[k] = 1; break; }
+    }
+  }
+  const ci = x => Math.min(nx - 1, Math.max(0, Math.floor((x - X0) / c)));
+  const cj = z => Math.min(nz - 1, Math.max(0, Math.floor((z - Z0) / c)));
+  /* 起點與終點接到「離那一點最近、中間真的走得過去」的那一格，**不是那一點所在的那一格**：
+     格子中心跟人不一定在同一邊。角碰角那一場，人站在縫的東南側，他那一格的中心卻落在
+     東北那一間裡——從那一格往西一步就過了縫（原型第一版就是這樣算出一條穿過角縫的路）。 */
+  const snap = (x, z) => {
+    const i0 = ci(x), j0 = cj(z);
+    let best = -1, bd = Infinity;
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      const i = i0 + di, j = j0 + dj;
+      if (i < 0 || j < 0 || i >= nx || j >= nz || blk[j * nx + i] === 2) continue;
+      const qx = X0 + (i + 0.5) * c, qz = Z0 + (j + 0.5) * c, d = Math.hypot(qx - x, qz - z);
+      if (d < bd && !footHome(qx, qz, noGap) && navSeg(x, z, qx, qz, noGap)) { bd = d; best = j * nx + i; }
+    }
+    return best;
+  };
+  const S = snap(sx, sz), G = snap(tx, tz);
+  if (S < 0 || G < 0) return null;
+  const gi = G % nx, gj = (G - gi) / nx;
+  const g = new Float32Array(N).fill(Infinity), from = new Int32Array(N).fill(-1);
+  const hk = [], hf = [];                          // 二元堆：格子編號／f 值
+  const push = (k, f) => {
+    let n = hk.length; hk.push(k); hf.push(f);
+    while (n > 0) {
+      const p = (n - 1) >> 1;
+      if (hf[p] <= f) break;
+      hk[n] = hk[p]; hf[n] = hf[p]; n = p;
+    }
+    hk[n] = k; hf[n] = f;
+  };
+  const pop = () => {
+    const top = hk[0], lk = hk.pop(), lf = hf.pop();
+    if (hk.length) {
+      let n = 0;
+      for (;;) {
+        const l = 2 * n + 1, r = l + 1;
+        let m = -1;
+        if (l < hk.length && hf[l] < lf) m = l;
+        if (r < hk.length && hf[r] < (m < 0 ? lf : hf[l])) m = r;
+        if (m < 0) break;
+        hk[n] = hk[m]; hf[n] = hf[m]; n = m;
+      }
+      hk[n] = lk; hf[n] = lf;
+    }
+    return top;
+  };
+  const hh = k => {
+    const i = k % nx, dx = Math.abs(i - gi), dz = Math.abs((k - i) / nx - gj);
+    return Math.max(dx, dz) + 0.4142 * Math.min(dx, dz);
+  };
+  g[S] = 0; push(S, hh(S));
+  let found = false;
+  while (hk.length) {
+    const k = pop();
+    if (k === G) { found = true; break; }
+    const i = k % nx, j = (k - i) / nx;
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      if (!di && !dj) continue;
+      const a = i + di, b = j + dj;
+      if (a < 0 || b < 0 || a >= nx || b >= nz) continue;
+      const q = b * nx + a;
+      if (blk[q] === 2) continue;
+      if (di && dj && (blk[j * nx + a] === 2 || blk[b * nx + i] === 2)) continue;   // 不斜切
+      const st = g[k] + (di && dj ? 1.4142 : 1) * (blk[q] ? NAV_SOFT : 1);
+      if (st < g[q]) { g[q] = st; from[q] = k; push(q, st + hh(q)); }
+    }
+  }
+  if (!found) return null;
+  const cells = [];
+  for (let k = G; k >= 0; k = from[k]) cells.push(k);
+  cells.reverse();
+  const px = k => X0 + (k % nx + 0.5) * c, pz = k => Z0 + ((k - k % nx) / nx + 0.5) * c;
+  /* 拉直：從現在這一格往前看，看得到的最遠那一格才是下一個轉角。「看得到」要兩個都成立：
+     中間的格子沒有擋住、也不貼牆（留半格餘裕），而且真的幾何上不切過障礙（navSeg：格子只取樣）。 */
+  const see = (ax, az, bx, bz) => {
+    const n = Math.ceil(Math.hypot(bx - ax, bz - az) / (c / 2));
+    for (let s = 1; s < n; s++) {
+      const t = s / n;
+      if (blk[cj(az + (bz - az) * t) * nx + ci(ax + (bx - ax) * t)]) return false;
+    }
+    return navSeg(ax, az, bx, bz, noGap);
+  };
+  /* **從接上去的那一格開始拉，不是從人站的那一點**：人常常貼著牆站（剛沿邊滑過來），
+     從那一點起算的話第一段會被跳過驗證，直接連到第二格——那一段會切過屋角
+     （寫測試時量到的：轉角之間走不通的有 6 段，全是第一段）。人看得到第一個轉角就直接過去，
+     看不到就先走到接上去的那一格（snap 保證那一段走得通）。 */
+  const out = [];
+  let cx = px(S), cz = pz(S);
+  for (let a = 0; a < cells.length - 1;) {
+    let b = a + 1;
+    while (b + 1 < cells.length && see(cx, cz, px(cells[b + 1]), pz(cells[b + 1]))) b++;
+    cx = px(cells[b]); cz = pz(cells[b]); a = b;
+    out.push({ x: cx, z: cz });
+  }
+  out.pop();                        // 最後一格＝目標那一格：交給呼叫端直接走向真正的目標
+  const fx = out.length ? out[0].x : tx, fz = out.length ? out[0].z : tz;
+  if (!navSeg(sx, sz, fx, fz, noGap)) out.unshift({ x: px(S), z: pz(S) });
+  return out;
+}
+/* 工地圈把目標推到圈上（strollTo 開頭那一段，抽出來給 navReach 共用）。回傳暫存物件。 */
+const _kp = { x: 0, z: 0 };
+function keepOut(w, x, z, keep) {
+  const tr = Math.hypot(x, z);
+  _kp.x = x; _kp.z = z;
+  if (tr < keep) {
+    const a = tr < 0.001 ? Math.atan2(w.z, w.x) : Math.atan2(z, x);
+    _kp.x = Math.cos(a) * keep; _kp.z = Math.sin(a) * keep;
+  }
+  return _kp;
+}
+/* 從這裡照規則走不走得到那一點（天災「有門走門、沒門破牆而入」要問的，見 game-tools.js 的 gateNeed）。
+   目標照 strollTo 的算法先換過（推到工地圈上、壓在框裡就挪出來），走得到就把路線記在 w.nav，
+   接著走的那一段（gate）直接沿用。走不到的記下來，隔 NAV_RETRY 秒才再算
+   （呼叫端每幀都會問，而失敗的 A* 最貴：整個範圍都搜過一遍）。 */
+function navReach(w, tx, tz, keepMore) {
+  const keep = siteR + KEEP + (keepMore || 0);
+  const k = keepOut(w, tx, tz, keep);
+  let gx = k.x, gz = k.z;
+  const g = navGoal(w, gx, gz, false);
+  if (g) { gx = g.x; gz = g.z; }
+  if (navSeg(w.x, w.z, gx, gz, false)) return true;
+  if (w.nav && w.nav.keep === keep && Math.hypot(w.nav.tx - gx, w.nav.tz - gz) <= NAV_MOVE) return true;
+  if (w.nrf > frameNo && Math.hypot(w.nrx - gx, w.nrz - gz) <= NAV_MOVE) return false;
+  const p = navPlan(w, gx, gz, keep, false);
+  if (p) { w.nav = p; return true; }
+  w.nrf = frameNo + Math.round(NAV_RETRY / 0.05); w.nrx = gx; w.nrz = gz;
+  return false;
 }
 
 /* ── 逃命 ─────────────────────────────────────────────────
@@ -1479,7 +1795,7 @@ function digSite(w, dt) {
   /* 走去挖的路不算閒晃里程（那是拿來算發呆多久的，見 strollPause）——同 digTrip。
      不扣掉的話，一座地標挖上百趟的里程全算在一起，蓋完站定就發呆好幾分鐘。 */
   const leg = w.leg;
-  const walking = !workTo(w, dt);
+  const walking = !strollTo(w, dt);
   w.leg = leg;
   if (walking) return;
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
@@ -1642,15 +1958,30 @@ function strollTo(w, dt, spd, step, keepMore) {
   const keep = siteR + KEEP + (keepMore || 0);
   /* 目標點落在建築裡就先推到外圈。不推的話他會繞著建築打轉永遠抵達不了，
      也就永遠不換下一個目標，等於卡死在那一圈上。 */
-  const tr = Math.hypot(w.tx, w.tz);
-  if (tr < keep) {
-    const a = tr < 0.001 ? Math.atan2(w.z, w.x) : Math.atan2(w.tz, w.tx);
-    w.tx = Math.cos(a) * keep; w.tz = Math.sin(a) * keep;
+  {
+    const k = keepOut(w, w.tx, w.tz, keep);        // navReach 也照這一份算（見 keepOut）
+    w.tx = k.x; w.tz = k.z;
   }
-  const dx = w.tx - w.x, dz = w.tz - w.z, d = Math.hypot(dx, dz);
+  /* 房子與城牆那一層照巡路規則走（v1.235，見 navAim）：目標壓在框裡先挪到框外（規則 2）、
+     直線不通就規劃（規則 3、4）、每一步不准踩進或切過障礙（規則 5）。
+     v1.99～v1.234 是 dodgeHome 每幀掰切線 ＋ pushOutHome 推出來，那一套只看眼前一步，
+     外框貼在一起、U 形口袋、目標壓在框裡都解不開（見 開發筆記〈巡路規則〉）。
+     **巨人例外**（使用者 v1.207：「行走有障礙物就發動攻擊踢掉」）：牠不規劃、直直走，
+     擋路的由 giantBust 踹掉；踹滿放過的那一間照舊靠 dodgeHome 繞開——這一段一個位元都沒改。
+     工地那一圈（上面推目標、下面兩段掰方向）是地標那一層，第二輪才換成規則。 */
+  const bull = w.kind === 'giant';
+  if (!bull) {
+    const g = navGoal(w, w.tx, w.tz, false);
+    if (g) { w.tx = g.x; w.tz = g.z; }
+  }
+  const d = Math.hypot(w.tx - w.x, w.tz - w.z);
   if (d < REACH) { pushOutHome(w); w.gait += (0 - w.gait) * Math.min(1, dt * 8); return true; }
+  w.spd = spd || WALK;
+  const aim = bull ? null : navAim(w, w.tx, w.tz, keep, false, dt);
+  const ax = aim ? aim.x : w.tx, az = aim ? aim.z : w.tz;
+  const da = Math.hypot(ax - w.x, az - w.z) || 1;
 
-  let ux = dx / d, uz = dz / d;
+  let ux = (ax - w.x) / da, uz = (az - w.z) / da;
   const pr = Math.hypot(w.x, w.z);
   const nx = pr < 0.001 ? 1 : w.x / pr, nz = pr < 0.001 ? 0 : w.z / pr;   // 由工地中心往外
   if (pr < keep) {
@@ -1664,9 +1995,9 @@ function strollTo(w, dt, spd, step, keepMore) {
     const k = (keep + 3 - pr) / 3;
     ux += (sx - ux) * k; uz += (sz - uz) * k;
   }
-  /* 房子擋路就繞過去（見 dodgeHome）。先正規化：dodgeHome 是照「往前探幾格」找牆的，
+  /* 巨人：房子擋路就繞過去（見 dodgeHome）。先正規化：dodgeHome 是照「往前探幾格」找牆的，
      方向向量沒歸一的話探的距離會跟著放大（上面那兩段會把它拉到 2.5 倍長）。 */
-  {
+  if (bull) {
     const m0 = Math.hypot(ux, uz) || 1;
     const g = dodgeHome(w, ux / m0, uz / m0);
     ux = g.x; uz = g.z;
@@ -1674,11 +2005,17 @@ function strollTo(w, dt, spd, step, keepMore) {
   const m = Math.hypot(ux, uz) || 1;
   ux /= m; uz /= m;
 
-  const sp = Math.min((spd || WALK) * dt, d);
-  w.x += ux * sp; w.z += uz * sp;
-  pushOutHome(w);
-  w.leg += sp;                         // 這趟閒晃走了多遠，抵達後拿來算站多久
-  w.a = Math.atan2(ux, uz);            // 面向真正在走的方向，不是目標方向
+  const sp = Math.min((spd || WALK) * dt, aim ? da : d);
+  if (bull) {
+    w.x += ux * sp; w.z += uz * sp;
+    pushOutHome(w);
+    w.leg += sp;                       // 這趟閒晃走了多遠，抵達後拿來算站多久
+    w.a = Math.atan2(ux, uz);          // 面向真正在走的方向，不是目標方向
+  } else {
+    navMove(w, ux * sp, uz * sp, false);
+    w.leg += Math.hypot(_nm.x, _nm.z);
+    navFace(w, ux, uz);
+  }
   w.ph += dt * 11 * (step || 1);
   w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
   return false;
@@ -1725,33 +2062,17 @@ function idleSpot(w, near) {
       x = Math.cos(a) * d; z = Math.sin(a) * d;
     }
     if (homeAt(x, z)) continue;               // 別挑在人家屋子裡（v1.97）
-    /* 也別挑在城牆的另一邊（v1.186）：那個點走不到（牆擋著），而 strollTo 要走到了
-       才會換下一個目標——挑到的話他會對著牆磨到這一輪結束。牛羊、吉祥物借的是同一支。
-       v1.195 起問的是 wallBlocked（砌好的那幾格）不是 wallSplits（幾何方框）：
-       牆上還有缺口的話那個點**走得到**，不必濾掉。 */
-    if (wallBlocked(w.x, w.z, x, z)) continue;
+    /* 城牆的另一邊**照挑**（v1.235，使用者：閒晃的目標被牆隔開就「照規則規劃過去」）。
+       v1.186～v1.234 會濾掉，理由是「那個點走不到、strollTo 要走到了才換下一個目標」——
+       strollTo 現在會規劃路線從門洞走過去（見 navAim），那個理由沒了。 */
     w.tx = x; w.tz = z; return;
   }
-  /* 8 次都挑不到（城牆把他圍在一小塊地裡就會這樣）：**沿著自己現在那一圈走一小段**，
-     那一定在同一側、也一定不在人家屋子裡的機會大得多。
-     v1.186~v1.194 是第 8 次**強制接受**（`t < 7` 才驗），那會塞一個走不到的點給他——
-     目標在牆另一邊，而 strollTo 要走到了才換下一個，他就對著牆磨到這一輪結束，
-     最後靠 stuckWatch 穿牆過去。near 給了就不再往下遞迴（那一支挑的就是同一圈上的點）。 */
+  /* 8 次都挑在人家屋子裡（村子很擠的時候）：**沿著自己現在那一圈走一小段**。
+     near 給了就不再往下遞迴（那一支挑的就是同一圈上的點）。 */
   if (!near) idleSpot(w, [3, 8]);
-}
-/* 上工的走法（v1.195）：跟 strollTo 一模一樣，只多一件事——**目標非去不可**，
-   所以被砌好的城牆隔開時要繞去最近的開口（見 crossStep），不能像閒晃那樣重挑一個。
-   蓋自己的家、挖料、撿料、走回去砌那幾條都走這一支：城外本來就會有小人的家
-   （見 startWall），而那幾條路本來只有 strollTo——它撞到牆只會往旁邊掰，
-   人就貼著牆磨到 stuckWatch 穿牆過去（見 crossStep 的實測）。
-   地標那條（buildWalk）自己在開頭問過了，不走這一支。 */
-function workTo(w, dt, spd, step, keepMore) {
-  if (crossNeed(w, w.tx, w.tz)) { crossStep(w, dt, spd, step); return false; }
-  return strollTo(w, dt, spd, step, keepMore);
 }
 function wander(w, dt) {
   if (w.show || w.pause > 0) { idleWait(w, dt); return; }
-  idleRecheck(w, dt);          // 目標還走得到嗎（牆是之後才長起來的，v1.195）
   if (strollTo(w, dt)) { strollPause(w); rollShow(w); idleSpot(w); }
 }
 
@@ -3362,8 +3683,8 @@ function gateTower(fix, horiz) {
                     horiz ? { x0: g0, x1: g1, z0: d0, z1: d1 }
                           : { x0: d0, x1: d1, z0: g0, z1: g1 });
   /* 門洞中心那一點（在**牆線上**，不是外框的中心）：門樓往城外凸出去之後，
-     外框的中心就偏到牆外一格，拿它當「門在哪」的話天災的落腳點會整組往外偏
-     （見 wallOpenSpot）。 */
+     外框的中心就偏到牆外一格，拿它當「門在哪」的話落腳點會整組往外偏
+     （v1.195～v1.234 的 wallOpenSpot 在用；v1.235 起巡路走格子地圖，門洞就是地圖上的洞）。 */
   h.gmid = horiz ? { x: 0, z: fix } : { x: fix, z: 0 };
   return h;
 }
@@ -3537,173 +3858,17 @@ function wallHit(x0, z0, x1, z1) {
   }
   return false;
 }
-/* 走哪一個開口：開口中心 ＋ 由場中心往外的法線（開在 +z 那一面，法線就是 (0,1)）。
-   一個開口都不剩、或還沒有城牆就回 null——那時候就沒有路可以繞（見 stepBeast、crossStep）。
-
-   **開口有兩種**（v1.195；v1.186~v1.194 只認門洞）：
-     · 門樓的門洞（h.gap）。中心拿 gmid＝牆線上那一點（見 gateTower），不是外框中心：
-       門樓往城外凸一格之後，外框的中心會偏到牆外去。
-     · **整段一塊都還沒砌、或被打平了的那一段**（外框是空的，x0 > x1，見 homeBox）。
-       這就是使用者說的「還沒蓋起來的地方」——那裡地上什麼都沒有，本來就走得過去。
-       粒度是「一整段」（WALL_RUN 16 格）：砌法是一層掃到底、下一層倒著回來，
-       所以蓋到一半是「矮但整段長」，不會出現半段有半段沒有。
-       中心拿**整段的外框**（wx0~wz1）算——已砌的那個框是空的，拿它算會得到 NaN。
-       直牆的格子是 fix−1~fix+1 三格厚，所以整段外框的中心剛好落在牆線上。
-
-   給了 (x, z) 就挑**離那一點最近的**（繞路從半圈縮到最多四分之一圈）。
-   id 是「已經在走的那一個」——挑好就釘住，不然走到兩個之間時每幀換一個目標，
-   會卡在中線上左右擺；那一個不見了（牆補起來了／門樓被打爛了）就自動退回最近的。 */
-function wallOpenSpot(x, z, id) {
-  if (!homes) return null;
-  const open = h => h.gap || h.x0 > h.x1;
-  const mid = h => h.gap ? (h.gmid || { x: (h.gap.x0 + h.gap.x1) / 2,
-                                        z: (h.gap.z0 + h.gap.z1) / 2 })
-                         : { x: (h.wx0 + h.wx1) / 2, z: (h.wz0 + h.wz1) / 2 };
-  let best = null, bd = Infinity;
-  for (const h of wallList()) {
-    if (!open(h)) continue;
-    if (id !== undefined && h.id === id) { best = h; break; }
-    if (x === undefined) { best = h; break; }
-    const m = mid(h), d = Math.hypot(m.x - x, m.z - z);
-    if (d < bd) { bd = d; best = h; }
-  }
-  if (!best) return null;
-  const m = mid(best), d = Math.hypot(m.x, m.z) || 1;
-  // h 是那一段本身：穿過去的時候不繞它（v1.190.2，見 crossStep）
-  return { x: m.x, z: m.z, nx: m.x / d, nz: m.z / d, h: best };
-}
-
-/* ── 繞牆走開口（v1.195）──────────────────────────────────
-   > 使用者：「行走行為邏輯照理說 大部分生物都一樣」
-
-   所以這一段擺在這裡、跟 strollTo／dodgeHome／stuckWatch 同一層，**小人與動物走同一份**。
-   v1.186~v1.194 只有天災那幾隻會走城門（整套寫在 game-tools.js 的 gate 狀態裡），
-   小人根本沒有這個能力——而城外本來就會有小人的家（見 startWall：只有壓在牆線上的
-   才拆成碎料，外面的留著）。城裡的人被派去蓋那一間時，homeStand 四個角度全被牆否掉、
-   退回原本那一點，那是走不到的點，他只能磨到 stuckWatch 穿牆過去。
-   實測（6 個人、完整一圈牆、家在城外 200 秒）：穿透 366 人-幀、其中 91 人-幀身體
-   真的在牆身裡，整間 103 格**只砌得上 1 格**。
-
-   差別**照情境分，不照物種分**：目標可以換的（閒晃、逛）就重挑一個這一側的點
-   （見 idleRecheck），非去不可的那些（上工、砌那一格、撿認定的那一塊、天災要進城）
-   才走這一支繞開口。
-
-   走法是三段，每一段都保證是空地：
-     ① 徑向走到外接圓外（方形的角在 W√2，所以繞行半徑要比 W 大四成半）
-     ② 沿著那個圓弧轉到開口的方位
-     ③ 徑向走到開口外那一點，再直直穿過去
-   **不借 strollTo**：它只會「往目標走、撞到東西就往旁邊掰」，而城牆是方的一大圈——
-   從對面過來的那一個會一路貼著牆磨，在角上卡住（實測 400 秒還沒繞到門口）。
-   從城裡往外走不必繞（城內是空的），所以那一種直接走開口內側那一點。 */
-const CROSS_WAY = 5;                // 開口內／外那一個落腳點離開口多遠
-/* 要不要繞：目標真的被砌好的牆擋住，而且場上還有開口可以走。
-   已經在繞的（w.gw）一律回 true——**繞到一半不能被打斷**，那是一段不可分割的位移
-   （見 開發筆記〈猴子被城牆關在城裡〉：呼叫端每幀把它推回去、它每幀又發現被擋住，
-   兩邊互推的話位移程式碼永遠跑不到，人就定在原地了）。 */
 /* 兩端都在城外、直線卻切過城裡撞上砌好的牆（v1.225）。wallBlocked 的前篩是「一內一外」，
-   這種它一律說不擋——於是走下去會從還沒砌的那一段進城、在城裡被砌好的另一面擋住、
-   再照「城裡往外」繞開口，而最近的開口就是剛剛進來的那一段（見 crossNeed）。
-   先拿整圈的方框篩一次：這條線碰都沒碰到城，就不必一段一段比。 */
+   這種它一律說不擋。先拿整圈的方框篩一次：這條線碰都沒碰到城，就不必一段一段比。
+   v1.235 起它只剩「要不要先繞過城牆」的判斷（buildWalk 開頭、天災的 gateNeed 那幾處）；
+   怎麼繞交給巡路規則（見 navAim）。v1.195～v1.234 的 wallOpenSpot／crossNeed／crossStep
+   （挑最近的開口、徑向出去沿圓弧轉過去再穿進去的三段繞）都收掉了——
+   那一套在「城裡往對面城門外走」會在背後那一座門進進出出、永遠走不到（見 開發筆記〈巡路規則〉）。 */
 function wallCut(x0, z0, x1, z1) {
   const W = wallNow();
   if (!W || inWall(x0, z0) || inWall(x1, z1)) return false;
   if (!segBox(x0, z0, x1, z1, -W, -W, W, W)) return false;
   return wallHit(x0, z0, x1, z1);
-}
-/* 城外到城外、中間隔著城的那一種（v1.225）：不走開口，**沿著城外那個圓弧繞到目標那一側**，
-   直線不再切過城裡就交還（見 crossStep 的 c.ar）。
-   v1.195～v1.224 沒有這一種，實測踩到的是：料貼在東牆外、靠東南角，人在城裡——
-   從南面那段還沒砌的缺口走出去（① 這一步是對的），出去之後呼叫端照直線朝料走，
-   那條斜線從**同一段缺口**又切回城裡，城裡被砌好的東牆擋住，又去走南面那段缺口……
-   5 秒軌跡一直在缺口內外來回，stuckWatch 看的是「腿在擺卻沒前進」，他一直在動所以不觸發。
-   施工中偷懶的人開了城牆事件、剩下的格子剛好都被這幾個人認走時，整座停在 99%
-   （60 人的一場：12 個人鎖著最後 22 格，其餘 48 個人一格都領不到）。
-   目標會跟著呼叫端換（撿料的人每幀重算站位），所以每次問都把它更新進 gw。 */
-function crossNeed(w, tx, tz) {
-  if (w.gw) { if (w.gw.ar) { w.gw.tx = tx; w.gw.tz = tz; } return true; }
-  if (!wallBlocked(w.x, w.z, tx, tz)) {
-    if (!wallCut(w.x, w.z, tx, tz)) return false;
-    w.gw = { ar: 1, tx, tz };
-    return true;
-  }
-  const g = wallOpenSpot(w.x, w.z);
-  if (!g) return false;                            // 一個開口都不剩：由呼叫端決定怎麼辦
-  w.gw = { id: g.h.id, out: inWall(w.x, w.z) ? -1 : 1, step: 0 };
-  return true;
-}
-/* 繞的這一幀。回傳 true＝這一段結束了（w.gw 已經清掉），呼叫端接回自己那一段。 */
-function crossStep(w, dt, spd, stp) {
-  const c = w.gw, W = wallNow();
-  let g = null, tx, tz, arc = false;
-  if (c.ar) {
-    /* 沿城外繞（v1.225，見 crossNeed）：跟下面「城外走到開口的方位」同一個圓弧、同一個走法，
-       差別只在要轉到的是**目標**的方位，而且不必走到哪一點——直線一不再切過城裡就交還。
-       轉到目標的方位時一定已經不切了：目標在城外，從它往外同一條半徑上的點連過去不會進城。 */
-    if (!W || !wallCut(w.x, w.z, c.tx, c.tz)) { w.gw = null; return true; }
-    const R = W * 1.45 + 4, a0 = Math.atan2(w.z, w.x);
-    let da = Math.atan2(c.tz, c.tx) - a0;
-    while (da > Math.PI) da -= Math.PI * 2;
-    while (da < -Math.PI) da += Math.PI * 2;
-    /* **還沒走到那個圓上就先徑向往外走**（v1.233.0，同開口那一種的 ①②）：剛從缺口出來還貼著牆，
-       直接朝圓弧上前面那一點走的話，那條弦會擦過轉角的角樓，dodgeHome 挑的是「靠目標那一側」的切線——
-       剛好從缺口鑽回城裡，這一段就收掉了，出去又照直線切回來。實測牆半徑 36、缺口是緊鄰東南角樓那一段：
-       小人 150 秒換邊 91 次沒走到，里維 60 秒換邊 86～106 次（牆半徑 27 那一種缺口離角樓遠，碰不到） */
-    const q = Math.hypot(w.x, w.z) < R - 1 ? 0 : Math.sign(da) * Math.min(Math.abs(da), 0.3);
-    tx = Math.cos(a0 + q) * R; tz = Math.sin(a0 + q) * R;
-    arc = true;
-  } else {
-    g = W ? wallOpenSpot(w.x, w.z, c.id) : null;
-    if (!g) { w.gw = null; return true; }            // 走到一半開口沒了：交還給呼叫端
-    const side = c.step ? -c.out : c.out;
-    tx = g.x + g.nx * CROSS_WAY * side; tz = g.z + g.nz * CROSS_WAY * side;
-    if (!c.step && c.out > 0) {
-      const R = W * 1.45 + 4, a0 = Math.atan2(w.z, w.x);
-      let da = Math.atan2(g.z, g.x) - a0;
-      while (da > Math.PI) da -= Math.PI * 2;
-      while (da < -Math.PI) da += Math.PI * 2;
-      if (Math.abs(da) > 0.12) {                     // 還沒轉到開口的方位：往圓弧上前面一點走
-        const q = Math.sign(da) * Math.min(Math.abs(da), 0.3);
-        tx = Math.cos(a0 + q) * R; tz = Math.sin(a0 + q) * R;
-        arc = true;
-      }
-    }
-  }
-  /* 落腳點壓在人家的外框裡就挪到框外。**城內不是空的**：事件二本來就會在城裡蓋
-     2~5 間房子與 2~4 棵樹，開口內側那一點壓在其中一間上的話，走過去每幀被
-     pushOutHome 推開、永遠到不了「1.5 格內」那個過關條件（實測 7952 幀只走了 48 格）。
-     v1.190.2 那時候是把目標寫進 m.tx／m.tz、借 stuckWatch 順手挪的；抽出來共用之後
-     不再借用呼叫端的目標欄位（小人的 w.tx／w.tz 是他自己那一段在用的），所以自己挪。 */
-  const hb = footHome(tx, tz);
-  if (hb) { const s = grabStand(hb, tx, tz); tx = s.x; tz = s.z; }
-  const gx = tx - w.x, gz = tz - w.z, gd = Math.hypot(gx, gz) || 1;
-  /* 只有真的走到開口那一點才算過一關——圓弧上的中繼點離自己本來就很近，
-     拿它當「到了」的話，會在半路上就以為自己已經到門口（實測從對面進場的那一隻
-     8 秒就跳到第二段，然後對著牆走了 400 秒）。 */
-  if (!arc && gd < 1.5) {
-    if (!c.step) { c.step = 1; return false; }
-    w.gw = null; return true;
-  }
-  const gs = Math.min((spd || WALK) * dt, gd);
-  /* 擋路的房子繞過去，跟小人同一支 dodgeHome。**要穿的那一段不繞**：斜著進門時
-     2.2 格的探針會打到兩側的墩座，一繞就永遠進不去（見 blockHome 的 skip）。
-     沿城外繞的那一種不穿任何一段，全部照繞（g 是 null）。 */
-  const gu = dodgeHome(w, gx / gd, gz / gd, g && g.h);
-  w.a = Math.atan2(gu.x, gu.z);                    // 面向真正在走的方向，不是目標方向
-  w.x += gu.x * gs; w.z += gu.z * gs;
-  pushOutHome(w);
-  w.ph += dt * 11 * (stp || 1);
-  w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
-  return false;
-}
-/* 閒晃的目標還走得到嗎（v1.195）。挑的當下驗過（見 idleSpot），但**城牆是之後才長起來的**
-   ——事件二就在人身邊蓋牆。隔一秒複驗一次，被牆隔開了就重挑一個這一側的點：
-   閒晃的目標本來就可以換，不必為它繞半圈。小人閒晃（wander）與動物逛（fun）共用這一支。 */
-const IDLE_REV = 1;
-function idleRecheck(w, dt) {
-  w.rev = (w.rev || 0) - dt;
-  if (w.rev > 0) return;
-  w.rev = IDLE_REV;
-  if (wallBlocked(w.x, w.z, w.tx, w.tz)) idleSpot(w);
 }
 /* 這一段城牆跟「以場中心為圓心、半徑 r 的圓」碰到了沒有（v1.186）。
    換場要靠它決定舊城牆留不留：拿外接圓比的話（房子那條 hypot(h.x,h.z) − h.r），
@@ -4357,7 +4522,7 @@ function castTrip(w, wi, h, dt) {
     w.tx = g.x; w.tz = g.z;
   }
   const leg = w.leg;                                    // 上工的路不算閒晃里程
-  const walking = !workTo(w, dt);
+  const walking = !strollTo(w, dt);
   w.leg = leg;
   if (walking) { w.ct = MAGE_GAP; return; }             // 蓄力從站定才開始算
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
@@ -4549,7 +4714,7 @@ function grabTrip(w, wi, h, dt) {
   const g = pickSpot(b);            // 躺在房子外框裡的，站到框外伸手拿
   w.tx = g.x; w.tz = g.z;
   const leg = w.leg;                                     // 上工的路不算閒晃里程（同 digTrip）
-  const walking = !workTo(w, dt);
+  const walking = !strollTo(w, dt);
   w.leg = leg;
   if (walking && !nearGrab(w, w.gb, dt)) return;         // 搆不到就伸手拿（v1.108）
   if (!takeHomeBlock(w, wi, h, w.gb) || w.load.length >= w.hcap) { endTrip(w, h); return; }
@@ -4578,7 +4743,7 @@ function digTrip(w, h, dt) {
      跟 buildWalk 對搬料那條路的處理一樣。不扣掉的話，蓋一間房子來回幾十趟的里程
      全算在一起，蓋完第一次站定就會發呆好幾分鐘（實測抽到 147.8 秒）。 */
   const leg = w.leg;
-  const walking = !workTo(w, dt);
+  const walking = !strollTo(w, dt);
   w.leg = leg;
   if (walking) return;                                   // 還在走去挖的路上
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
@@ -4661,7 +4826,7 @@ function layTrip(w, h, dt) {
   const g = homeStand(h, sl, w, HOME_STAND);   // 站在格子外面丟，不走進牆裡（見 homeStand）
   w.tx = g.x; w.tz = g.z;
   const leg = w.leg;                                     // 同上：上工的路不算里程
-  const done = workTo(w, dt);
+  const done = strollTo(w, dt);
   w.leg = leg;
   if (!done) return;
   // 站定就原地把手上的丟完（跟工人一樣，見 toSlot 的 stay）：那幾格本來就在附近

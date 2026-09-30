@@ -7766,8 +7766,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      v1.98 只有 pushOutHome 硬把人推出屋外，沒有「繞開」那一步，於是他直直走進房子、
      每幀被推回來——腿一直在擺，人在原地。蓋完在家附近晃的人最常遇到，
      因為那些目標點就環繞著自己家。
-     這條擺一間蓋好的房子，人站一側、目標放正對面，看他十秒內走不走得到；
-     對照組把 blockHome 換成空的（＝v1.98 的行為）。 */
+     這條擺一間蓋好的房子，人站一側、目標放正對面，看他十秒內走不走得到。
+     v1.99～v1.234 繞法是 dodgeHome 掰切線，對照組把 blockHome 換成空的（＝v1.98 的行為）；
+     v1.235 起繞法是巡路規則（見 navAim），對照組改成**關掉規劃**（navPlan 永遠找不到路：
+     只剩直走＋沿邊滑，正對著牆的時候滑不動，跟 v1.98 一樣頂著牆原地走）。 */
   const around = await page.evaluate(() => {
     stopIdleEvent();
     homes = { list: [] };
@@ -7785,8 +7787,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     homeBox(h); markHomeF6(h);
     homes.list.push(h);
     const run = on => {
-      const orig = blockHome;
-      if (!on) blockHome = () => null;
+      const orig = navPlan;
+      if (!on) navPlan = () => null;
       const w = workers[0];
       releaseWorker(w);
       w.hm = -1; w.flee = 0; w.air = 0; w.burn = 0; w.pause = 0; w.leg = 0; w.gait = 0;
@@ -7802,7 +7804,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (w.gait > 0.6 && d1 > d0 - 0.02) stuck++;      // 腿在擺、卻沒靠近目標
         if (arrived < 0 && d1 < REACH) arrived = +((i + 1) * 0.05).toFixed(2);
       }
-      blockHome = orig;
+      navPlan = orig;
       return { arrived, walked: +walked.toFixed(1), stuck };
     };
     const on = run(true), off = run(false);
@@ -7834,7 +7836,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      around.line.arrived > 0 && around.line.arrived < 4 && around.line.stuck < 20,
      '繞：' + around.on.arrived + ' 秒到（走了 ' + around.on.walked + '，直線 ' +
      around.straight + '），腿在擺卻沒前進 ' + around.on.stuck + ' 幀；' +
-     '不繞（v1.98）：十秒' + (around.off.arrived < 0 ? '到不了' : '到了') +
+     '關掉規劃：十秒' + (around.off.arrived < 0 ? '到不了' : '到了') +
      '、只走了 ' + around.off.walked + '，原地走 ' + around.off.stuck + ' 幀；' +
      '直線走法（stepTo）' + around.line.arrived + ' 秒到、原地走 ' + around.line.stuck + ' 幀');
 
@@ -8374,10 +8376,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 格、' + ghostThru.off.arrive + ' 秒到');
 
   /* 搆不到的積木，走到最近能到的距離就伸手拿（v1.108，使用者指定）。
-     造一個**真的走不到**的站位：A 屋外框裡躺著一塊料，grabStand 會挑 A 最近的
-     那一面（下緣）往外 1.4 格，而 B 屋的外框剛好壓在那個站位上，
-     而且壓得比「走到多近算抵達」（REACH 0.9）還深——所以他永遠抵達不了。
-     三組對照：
+     v1.108～v1.234 造的「走不到」是站位被別間壓住：A 屋外框裡躺著一塊料，grabStand 挑 A 下緣
+     往外 1.4 格，B 屋的外框剛好壓在那個站位上。**v1.235 起那已經不是走不到了**：
+     巡路規則 2 把壓在框裡的目標挪到最近的可走點（見 navGoal），連伸手拿與穿透都關掉也撿得到——
+     這一格（stand）驗的就是這件事。
+     伸手拿要管的是**真的走不到**的那一種：料躺在四面圍住的一小塊空地裡（shut），
+     規劃不出路，他走到牆邊就再也近不了。三組對照：
        full  ＝ v1.108（伸手拿 + 卡住脫困）
        ghost ＝ 只留卡住脫困（穿牆走進去撿，慢很多）
        none  ＝ v1.107（兩個都沒有）——那個人一直卡在 pick 上，那塊料永遠回收不了 */
@@ -8385,14 +8389,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const box = (x0, x1, z0, z1) => ({ x: (x0 + x1) / 2, z: (z0 + z1) / 2,
       r: Math.max(x1 - x0, z1 - z0) / 2, x0, x1, z0, z1,
       slots: [], left: 0, done: false, at: new Map() });
-    const run = mode => {                                    // 2＝v1.108、1＝只有脫困、0＝v1.107
+    const SCENE = {
+      stand: [box(-5, 5, 20, 30), box(-5, 5, 13, 19.6)],       // 料在 A 屋裡、站位壓在 B 屋上
+      shut: [box(-4, 4, 23, 25), box(-4, 4, 17, 19),           // 料在四面貼著圍住的 4×4 空地正中央
+             box(-4, -2, 19, 23), box(2, 4, 19, 23)],
+    };
+    const run = (mode, sc) => {                              // 2＝v1.108、1＝只有脫困、0＝v1.107
       cleanTools(); clearHomes(); stopIdleEvent();
       shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
       targetCnt = 300; setWorkerCount(1); startBuild(true);   // 施工中：走 pick 那條狀態機
       const w = workers[0];
       w.hm = -1; w.st = 'idle'; w.load.length = 0; w.li = 0;
-      homes = { list: [box(-5, 5, 20, 30), box(-5, 5, 13, 19.6)] };
-      // 場上只留一塊撿得到的碎料，就擺在 A 屋外框裡
+      homes = { list: SCENE[sc] };
+      // 場上只留一塊撿得到的碎料
       const bi = 0;
       for (let i = 1; i < blocks.length; i++) { blocks[i].rest = false; blocks[i].holder = -1; }
       const b = blocks[bi];
@@ -8419,15 +8428,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return { got, near: +near.toFixed(2), stand, ghost: gh,
                far: GRAB_FAR, wait: GRAB_WAIT, R: REACH };
     };
-    return { on: run(2), ghost: run(1), off: run(0) };
+    return { on: run(2, 'shut'), ghost: run(1, 'shut'), off: run(0, 'shut'), stand: run(0, 'stand') };
   });
+  ok('站位壓在另一間的外框裡：挪到最近的可走點（巡路規則 2），不必伸手、不必穿牆就撿得到',
+     farGrab.stand.stand.inB && farGrab.stand.got > 0 && farGrab.stand.ghost === 0,
+     '站位 (' + farGrab.stand.stand.x + ', ' + farGrab.stand.stand.z + ') 壓在另一間的外框裡：' +
+     '伸手拿與卡住脫困都關掉，' + farGrab.stand.got + ' 秒撿起來（穿透 ' + farGrab.stand.ghost + ' 幀）');
   ok('搆不到的積木，走到最近能到的距離就伸手拿',
-     farGrab.on.stand.inB && farGrab.on.got > 0 && farGrab.on.got < 20 &&
+     farGrab.on.got > 0 && farGrab.on.got < 20 &&
      farGrab.on.near > farGrab.on.R && farGrab.on.near <= farGrab.on.far &&
      farGrab.off.got < 0 && farGrab.ghost.got > farGrab.on.got,
-     '站位 (' + farGrab.on.stand.x + ', ' + farGrab.on.stand.z + ') 壓在另一間的外框裡，' +
-     '最近只走得到離那塊料 ' + farGrab.on.near + ' 格（伸手範圍 ' + farGrab.on.far +
-     '、等 ' + farGrab.on.wait + ' 秒）：伸手拿 ' + farGrab.on.got +
+     '料躺在四面圍住的空地裡（規劃不出路），最近只走得到離那塊料 ' + farGrab.on.near + ' 格（伸手範圍 ' +
+     farGrab.on.far + '、等 ' + farGrab.on.wait + ' 秒）：伸手拿 ' + farGrab.on.got +
      ' 秒撿起來（用掉穿透 ' + farGrab.on.ghost + ' 幀）；只靠卡住脫困穿牆進去 ' +
      farGrab.ghost.got + ' 秒（穿透 ' + farGrab.ghost.ghost +
      ' 幀）；兩個都沒有（v1.107）→ 60 秒撿到的是 ' + farGrab.off.got + '（−1＝沒撿到）');
@@ -9164,7 +9176,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        · 磚身往城外凸出 WALL_JUT 格、城內那面跟牆齊
        · 缺口（h.gap）**整段深度都要蓋到**：漏掉托架挑出去那一格的話，
          人走到托架下面會被外框擋住、進不了門
-       · 門洞中心 gmid 落在牆線上（不是外框中心，見 wallOpenSpot）
+       · 門洞中心 gmid 落在牆線上（不是外框中心，見 gateTower）
        · 門樓的外框不跟隔壁那一段疊在一起（疊在一起的兩個框會互推，見〈四個坑〉①）
        · 牆線上每一格都有人認領（門樓兩側的直牆從 P+1 起算，不能差一格開個洞） */
   const gateGeo = await page.evaluate(() => {
@@ -9456,7 +9468,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 這一段要測的就是天災，把 installClean 關掉的那支裝回去（同「天災」那一段的做法）。
        牠們不是自己來的：每一輪都是這裡 spawnBeast 放一隻進場，倒數的鐘還沒響就演完了。 */
     stepDoom = window.doomStep;
-    /* keep(h)：true＝這一段砌起來、false＝格子在但還沒砌（＝缺口）、'drop'＝整段不在。 */
+    /* keep(h)：true＝這一段砌起來、false＝格子在但還沒砌（＝缺口）、'drop'＝整段不在、
+       'shut'＝砌起來而且門洞堵死（＝整圈沒有路）。
+       「四座門都沒了」v1.186～v1.234 用的是 'drop'（門樓打爛、整段廢棄）——可是廢棄的那一段
+       **地上什麼都沒有**（wreckHomes：「那塊地不再擋路」），那是一個 11 格寬的洞，
+       巡路規則（v1.235）照可走地圖走，會從那個洞進城，不必破牆。v1.234 的 wallOpenSpot
+       只認清單上的門洞與空框，看不到這種洞，才會在洞旁邊就地拆牆。
+       「走不過就破牆而入」要測的是**真的沒路**，所以改成 'shut'。 */
     const run = (keep, a0) => {
       if (typeof fires !== 'undefined' && fires) fires.length = 0;
       for (const b of blocks) b.burn = 0;
@@ -9469,6 +9487,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const h of wallPlan()) {
         const k = keep(h);
         if (k === 'drop') continue;                      // 門樓被打爛了：整段不在
+        if (k === 'shut') h.gap = null;                  // 門洞堵死：整座門樓都擋路
         const hi = homes.list.length;
         homes.list.push(h);
         if (!k) continue;                                // 還沒蓋起來：格子在、積木沒有
@@ -9484,24 +9503,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const m = spawnBeast('ape');
       m.x = Math.cos(a0) * (arenaR + 8); m.z = Math.sin(a0) * (arenaR + 8);
       const seen = {};
-      let act = null, n = 0, pick = null;
+      let act = null, n = 0, pick = null, was = inWall(m.x, m.z);
+      /* 門洞中心（在牆線上，見 gateTower 的 gmid） */
+      const gates = homes.list.filter(h => h.gap).map(h => h.gmid ||
+        { x: (h.gap.x0 + h.gap.x1) / 2, z: (h.gap.z0 + h.gap.z1) / 2 });
       while (n++ < 4000 && beasts && beasts.includes(m)) {
         const st = m.st;
         step(0.05);
         seen[st] = (seen[st] || 0) + 1;
-        /* 牠挑的是哪一個開口（v1.194 只有門，v1.195 起連缺口也算）：釘在 m.gw.id 上
-           （v1.194 是 m.ghid，抽出來跟小人共用之後搬進 m.gw，見 crossStep），
-           第一次進 gate 那一刻問一次。這一輪整圈都砌好了，所以開口就只有四座門——
-           這一條就是「有沒有挑最近的」的證據。 */
-        if (!pick && m.st === 'gate' && m.gw) {
-          const s = wallOpenSpot(m.x, m.z, m.gw.id);
-          if (s) {
-            let d = Math.atan2(s.z, s.x) - a0;          // 跟進場方位差幾度
-            while (d > Math.PI) d -= Math.PI * 2;
-            while (d < -Math.PI) d += Math.PI * 2;
-            pick = { x: s.x, z: s.z, deg: +(Math.abs(d) * 180 / Math.PI).toFixed(0) };
-          }
+        /* 牠**實際從哪一座門進城**（第一次由城外變城裡的那一幀，離那一點最近的門洞）。
+           v1.195～v1.234 問的是 m.gw.id（crossStep 挑好釘住的那一座），v1.235 起繞法是巡路規則，
+           沒有「挑門」這一步了——最短路本來就會走最近的那一座，所以量結果不量挑法。
+           這一輪整圈都砌好了，所以開口就只有四座門。 */
+        const now = inWall(m.x, m.z);
+        if (!pick && now && !was && gates.length) {
+          const s = gates.reduce((a, q) => (Math.hypot(q.x - m.x, q.z - m.z) < Math.hypot(a.x - m.x, a.z - m.z) ? q : a));
+          let d = Math.atan2(s.z, s.x) - a0;            // 跟進場方位差幾度
+          while (d > Math.PI) d -= Math.PI * 2;
+          while (d < -Math.PI) d += Math.PI * 2;
+          pick = { x: s.x, z: s.z, deg: +(Math.abs(d) * 180 / Math.PI).toFixed(0) };
         }
+        was = now;
         if (!act && m.st === 'act')
           act = { inWall: inWall(m.x, m.z), home: m.home || 0 };
       }
@@ -9520,7 +9542,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const W = wallRing();
     const near = run(all, Math.PI / 2);          // 正對著南門進場：門就在正前方
     const corner = run(all, Math.PI / 4);        // 從牆角那一側進場：要繞去最近的門
-    const none = run(h => (h.gap ? 'drop' : true), Math.PI / 4);   // 四座門都沒了：就地拆牆
+    const none = run(h => (h.gap ? 'shut' : true), Math.PI / 4);   // 四座門都堵死：就地拆牆
+    const wreck = run(h => (h.gap ? 'drop' : true), Math.PI / 4);  // 四座門樓打爛（整段廢棄）：從洞進城
     /* 正前方那一段還沒蓋起來：不該繞路，直直走過去。走的是「撞在 +z 牆 x≈14 那一段」
        的方位（不是正對門，那條由 near 顧），把那一段留成「格子在、還沒砌」。
        比的是 **wx0／wx1**（整段蓋起來會占到哪）不是 x0／x1：後者只框**已經砌好**的格子，
@@ -9535,7 +9558,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const eye = x => !!wallAhead({ x, z: W2 + 2, ghost: 0 }, 0, 0);
     const rule = { unbuilt: eye(14), built: eye(20), W: W2 };
     cleanTools(); clearHomes();
-    return { near, corner, none, gap, W, rule };
+    return { near, corner, none, wreck, gap, W, rule };
   });
   ok('牆還沒蓋起來就不算擋路，走得過去就直接走（使用者：「能走過去就走」）',
      !apeWall.rule.unbuilt && apeWall.rule.built &&
@@ -9562,21 +9585,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `${apeWall.corner.pick && apeWall.corner.pick.deg}°，繞了 ${apeWall.corner.gate} 幀` +
      `（${(apeWall.corner.gate * 0.05).toFixed(0)} 秒），總共 ${apeWall.corner.secs} 秒後在` +
      `${apeWall.corner.act && apeWall.corner.act.inWall ? '城裡' : '城外'}動手`);
-  ok('四座門樓都被打爛了就就地拆牆（使用者選的「兩個都要」）',
+  ok('四座門都堵死（整圈沒有路）就就地拆牆（使用者選的「兩個都要」）',
      apeWall.none.gate === 0 && apeWall.none.act && apeWall.none.act.home === 1 &&
      apeWall.none.wallBurn > 0 && apeWall.none.siteBurn === 0 &&
      apeWall.none.secs < 120,
      `沒門可繞（${apeWall.none.gate} 幀）、${apeWall.none.secs} 秒後在` +
      `${apeWall.none.act && apeWall.none.act.inWall ? '城裡' : '城外'}動手，` +
      `燒起來 ${apeWall.none.burn} 塊（城牆 ${apeWall.none.wallBurn} 塊、地標 ${apeWall.none.siteBurn} 塊）`);
+  /* 門樓打爛、整段廢棄之後那裡是空地（wreckHomes：「那塊地不再擋路」）：從那個洞進城，不必破牆
+     （v1.235，使用者 v1.186 的原話「主要是能走過去就走…走不過就破牆而入」）。
+     v1.234 看不到這種洞（wallOpenSpot 只認清單上的門洞與空框），會在洞旁邊就地拆牆。 */
+  ok('四座門樓打爛（整段廢棄）之後那裡是空地：從那個洞進城，不必破牆（v1.235）',
+     apeWall.wreck.act && apeWall.wreck.act.inWall && !apeWall.wreck.act.home &&
+     apeWall.wreck.wallBurn === 0 && apeWall.wreck.secs < 120,
+     `${apeWall.wreck.secs} 秒後在${apeWall.wreck.act && apeWall.wreck.act.inWall ? '城裡' : '城外'}動手、` +
+     `砸的是${apeWall.wreck.act && apeWall.wreck.act.home ? '村子那邊（拆牆）' : '地標'}、燒起來的城牆 ${apeWall.wreck.wallBurn} 塊` +
+     `（繞 ${apeWall.wreck.gate} 幀）`);
 
-  /* ⑦-a2 走路那一層的規則（v1.195）。全部是**自己組一個最小場面直接呼叫那支函式**、
-     不跑模擬賭骰子——照〈規則：垮塌、補洞、廢棄〉那個樣子寫。
-     要守的四條規則：
+  /* ⑦-a2 走路那一層的規則（v1.195；v1.235 起繞法是巡路規則，見 game-workers.js 的〈巡路規則〉）。
+     全部是**自己組一個最小場面直接呼叫那支函式**、不跑模擬賭骰子——照〈規則：垮塌、補洞、廢棄〉那個樣子寫。
+     要守的五條規則：
        ① wallBlocked 誠實：擋不擋看**砌好的那幾格**，不是幾何方框
-       ② wallOpenSpot 把「整段還沒砌」也算開口，而且挑最近的（不是只認門）
+       ② 「整段還沒砌」也是開口（可走地圖上的洞）：旁邊就有缺口時從缺口過，不是繞去更遠的門
        ③ 小人也繞得過去，而且**不必靠穿牆**（城外本來就有小人的家，見 startWall）
-       ④ idleSpot 不再硬塞一個走不到的點（v1.194 是第 8 次強制接受） */
+       ④ 閒晃的目標在牆另一邊也走得到（v1.235 使用者：閒晃的目標被牆隔開就「照規則規劃過去」；
+          v1.195～v1.234 是挑的時候濾掉牆另一邊的點）
+       ⑤ 城外到城外、中間隔著城：繞過去，不在缺口內外來回（v1.225）
+     v1.195～v1.234 的 A/B 是把 crossNeed／wallCut 換成永遠 false（那一套收掉了），
+     v1.235 起對照組是**關掉規劃**（navPlan 永遠找不到路＝只剩直走＋沿邊滑）。
+     每一幀 frameNo++：wallList／wallNow 是照幀快取的，這一段在同一幀裡換了好幾圈牆。 */
   const wallWalk = await page.evaluate(() => {
     const keepPh = phase;
     cleanTools(); clearHomes(); stopIdleEvent();
@@ -9602,7 +9639,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (!(skip && skip(h))) fill(homes.list.length - 1);
       }
       ENG.setBlockCount(blocks.length);
+      frameNo++;
       return wallRing();
+    };
+    const plan = navPlan;
+    /* 走一趟：fn 是走法，回傳秒數（−1＝時限內沒到）、穿透幀數、穿在牆身裡的幀數、城內外換邊幾次、
+       第一次換邊的那一點。on＝false 是對照組（關掉規劃）。 */
+    const trip = (fn, on, sx, sz, tx, tz, n0) => {
+      navPlan = on ? plan : () => null;
+      const segs = homes.list.filter(q => q.wall);
+      const inSeg = (x, z) => segs.some(q => x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1);
+      const w = workers[0];
+      releaseWorker(w);
+      w.hm = -1; w.x = sx; w.z = sz; w.sx = w.x; w.sz = w.z;
+      w.gw = null; w.stk = 0; w.ghost = 0; w.gait = 0; w.leg = 0; w.pause = 0; w.chk = 0; w.clear = 0;
+      w.tx = tx; w.tz = tz;
+      let n = 0, done = 0, ghost = 0, thru = 0, flips = 0, first = null, was = inWall(w.x, w.z);
+      while (n++ < (n0 || 3000)) {
+        frameNo++;
+        stuckWatch(w, 0.05);
+        if (fn(w, 0.05)) { done = n; break; }
+        if (w.ghost > 0) { ghost++; if (inSeg(w.x, w.z)) thru++; }
+        const now = inWall(w.x, w.z);
+        if (now !== was) { flips++; was = now; if (!first) first = { x: +w.x.toFixed(1), z: +w.z.toFixed(1) }; }
+      }
+      navPlan = plan;
+      return { secs: done ? +(done * 0.05).toFixed(1) : -1, ghost, thru, flips, first };
     };
 
     /* ── ① 誠實：缺口那一段走得過去，砌好的那一段走不過去 ── */
@@ -9618,83 +9680,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       mid: wallBlocked(0, W - 8, 0, W + 8),         // 對準門洞正中間：穿得過
       pier: wallBlocked(G + 2, W - 8, G + 2, W + 8) // 偏到墩座上：擋住
     };
-    /* ── ② 開口清單：缺口就在旁邊時挑的是缺口，不是更遠的門 ── */
-    const near = wallOpenSpot(14, W + 8);
-    const open = { x: near ? +near.x.toFixed(1) : null,
-                   z: near ? +near.z.toFixed(1) : null,
-                   isGap: !!(near && Math.abs(near.x) > P + 1),
-                   gateX: 0, P };
+    /* ── ② 缺口就在旁邊時從缺口過，不是繞去更遠的門 ──
+       v1.195～v1.234 問的是 wallOpenSpot 挑了哪一個開口；v1.235 起沒有「挑開口」這一步了，
+       量的是**他實際從哪裡進城**（第一次換邊那一點）。 */
+    const gapT = trip((w, dt) => strollTo(w, dt, WALK), true, 14, W + 8, 0, 0, 1200);
+    const open = { x: gapT.first ? gapT.first.x : null, z: gapT.first ? gapT.first.z : null,
+                   isGap: !!(gapT.first && Math.abs(gapT.first.x) > P + 1), ghost: gapT.ghost, P };
     /* ── ③ 小人繞得過去，而且不必穿牆 ──
-       整圈砌滿（沒有缺口，只剩四座門），人在城內、目標在城外而且**不對著門**。
-       A/B：把 crossNeed 換成永遠 false 就是 v1.194 的小人（只有 strollTo ＋ 穿透）。
-       押死的場面：起點、目標、整圈都是寫死的，沒有骰子。 */
+       整圈砌滿（沒有缺口，只剩四座門），人在城內、目標在城外而且**不對著門**。 */
     const W2 = ring(null);
-    const segs = homes.list.filter(q => q.wall);
-    const inSeg = (x, z) => segs.some(q => x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1);
-    const need = crossNeed;
-    const walkRun = cross => {
-      crossNeed = cross ? need : () => false;
-      const w = workers[0];
-      w.x = W2 - 8; w.z = 12; w.sx = w.x; w.sz = w.z;
-      w.gw = null; w.stk = 0; w.ghost = 0; w.gait = 0; w.leg = 0; w.pause = 0;
-      w.tx = W2 + 12; w.tz = 14;
-      let n = 0, ghost = 0, thru = 0, done = 0;
-      while (n++ < 3000) {
-        stuckWatch(w, 0.05);
-        if (workTo(w, 0.05, WALK)) { done = n; break; }
-        if (w.ghost > 0) { ghost++; if (inSeg(w.x, w.z)) thru++; }
-      }
-      crossNeed = need;
-      return { secs: done ? +(done * 0.05).toFixed(1) : -1, ghost, thru };
-    };
+    const walkRun = on => trip((w, dt) => strollTo(w, dt, WALK), on, W2 - 8, 12, W2 + 12, 14);
     const man = { on: walkRun(true), off: walkRun(false), W: W2 };
-    /* ── ④ idleSpot 挑的點一定走得到 ──
-       整圈砌滿、人在城內。閒晃的範圍到 arenaR（比牆遠），所以大半的候選在牆外；
-       v1.194 第 8 次強制接受，那時候就會塞一個牆外的點給他。
-       這一條不押骰子也成立：**不管抽到什麼**，挑完的目標都不該被牆擋住。 */
-    const w0 = workers[0];
-    w0.x = 0; w0.z = 6; w0.tx = 0; w0.tz = 6;
-    let bad = 0;
-    for (let i = 0; i < 200; i++) {
-      idleSpot(w0);
-      if (wallBlocked(w0.x, w0.z, w0.tx, w0.tz)) bad++;
+    /* ── ④ 閒晃的目標在牆另一邊也走得到 ──
+       整圈砌滿、人在城內，目標是城外一圈八個點（每 45° 一個、都不對著門）：
+       走的是 wander 用的 strollTo，全部要走到、而且不必穿牆。寫死的點，不抽骰子。 */
+    const idle = [];
+    for (let k = 0; k < 8; k++) {
+      const a = k * Math.PI / 4 + 0.35, R = W2 + 10;
+      idle.push(trip((w, dt) => strollTo(w, dt), true, 0, 6 + W2 / 2, Math.cos(a) * R, Math.sin(a) * R, 2400));
     }
-    /* ── ⑤ 城外到城外、中間隔著城：沿城外繞，不再從缺口進出繞圈（v1.225）──
+    /* ── ⑤ 城外到城外、中間隔著城：繞過去，不再從缺口進出繞圈（v1.225）──
        v1.224 實測踩到的形狀：−z 那一面靠東南角那一段還沒砌（缺口），其他整圈砌好；
        人在城裡，目標貼在東牆外、靠東南角。走出缺口之後照直線朝目標走，那條斜線
        從同一段缺口切回城裡，又被東牆擋住、又去走那段缺口……來回到天荒地老。
-       撿料（buildWalk）與其他上工的路（workTo）都驗。
-       A/B：把 wallCut 換成永遠 false 就是 v1.224。押死的場面：沒有骰子。 */
+       撿料（buildWalk）與其他上工的路（v1.235 起就是 strollTo）都驗。 */
     const W3 = wallRing();
     ring(h => h.thin === 'z' && h.z < 0 && h.wx0 < W3 - 8 && h.wx1 > W3 - 8);
-    const segs3 = homes.list.filter(q => q.wall);
-    const inSeg3 = (x, z) => segs3.some(q => x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1);
-    const cut = wallCut;
-    const loop = (fn, on) => {
-      wallCut = on ? cut : () => false;
-      const w = workers[0];
-      w.x = W3 - 14; w.z = -(W3 - 6); w.sx = w.x; w.sz = w.z;
-      w.gw = null; w.stk = 0; w.ghost = 0; w.gait = 0; w.leg = 0; w.pause = 0; w.chk = 0; w.clear = 0;
-      w.tx = W3 + 4; w.tz = -(W3 - 12);
-      let n = 0, done = 0, ghost = 0, thru = 0, flips = 0, was = inWall(w.x, w.z);
-      while (n++ < 3000) {
-        stuckWatch(w, 0.05);
-        if (fn(w, 0.05)) { done = n; break; }
-        if (w.ghost > 0) { ghost++; if (inSeg3(w.x, w.z)) thru++; }
-        const now = inWall(w.x, w.z);
-        if (now !== was) { flips++; was = now; }
-      }
-      wallCut = cut;
-      return { secs: done ? +(done * 0.05).toFixed(1) : -1, ghost, thru, flips };
-    };
+    const loop = (fn, on) => trip(fn, on, W3 - 14, -(W3 - 6), W3 + 4, -(W3 - 12));
     const around = {
       build: { on: loop(buildWalk, true), off: loop(buildWalk, false) },
-      work: { on: loop((w, dt) => workTo(w, dt, WALK), true), off: loop((w, dt) => workTo(w, dt, WALK), false) },
+      work: { on: loop((w, dt) => strollTo(w, dt, WALK), true), off: loop((w, dt) => strollTo(w, dt, WALK), false) },
       W: W3
     };
     phase = keepPh;                                  // 動過的全域狀態還回去
     cleanTools(); clearHomes();
-    return { honest, open, man, idleBad: bad, W, around };
+    return { honest, open, man, idle, W, around };
   });
   ok('城牆擋不擋看**砌好的那幾格**，不是幾何方框（v1.195）',
      !wallWalk.honest.gap && wallWalk.honest.built &&
@@ -9703,34 +9723,33 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `砌好的那一段＝${wallWalk.honest.built}（幾何方框對前者的說法是 ` +
      `${wallWalk.honest.oldGap}，那就是 v1.194 之前繞去走門的原因）；` +
      `門洞正中間＝${wallWalk.honest.mid}、偏到墩座上＝${wallWalk.honest.pier}`);
-  ok('缺口也算開口：旁邊有一段還沒蓋起來時，挑的是缺口不是更遠的門（v1.195）',
-     wallWalk.open.isGap,
-     `牆外 (14, W+8) 問到的開口在 (${wallWalk.open.x}, ${wallWalk.open.z})——` +
-     `門在 x=0、墩座外緣 ±${wallWalk.open.P}，所以 |x| > ${wallWalk.open.P + 1} 就是缺口`);
+  ok('缺口也算開口：旁邊有一段還沒蓋起來時，走的是缺口不是更遠的門（v1.195）',
+     wallWalk.open.isGap && !wallWalk.open.ghost,
+     `從牆外 (14, W+8) 往場心走，進城那一點在 (${wallWalk.open.x}, ${wallWalk.open.z})——` +
+     `門在 x=0、墩座外緣 ±${wallWalk.open.P}，所以 |x| > ${wallWalk.open.P + 1} 就是缺口；穿透 ${wallWalk.open.ghost} 幀`);
   /* 使用者：「小人走出城牆 過不去硬是用穿的 所以才想來調整行走邏輯」。
      **走得到**與**不穿牆**兩件事都要：只驗走得到的話，穿牆過去也算過。 */
   ok('小人被城牆隔開時繞得過去，而且不必靠穿牆（v1.195）',
      wallWalk.man.on.secs > 0 && wallWalk.man.on.thru === 0 &&
      wallWalk.man.on.ghost === 0 && wallWalk.man.off.thru > 0,
      `人在城內、目標在城外而且不對著門（牆半徑 ${wallWalk.man.W}）：` +
-     `繞開口 ${wallWalk.man.on.secs} 秒到、脫困穿透 ${wallWalk.man.on.ghost} 幀` +
+     `${wallWalk.man.on.secs} 秒到、脫困穿透 ${wallWalk.man.on.ghost} 幀` +
      `（穿在牆身裡 ${wallWalk.man.on.thru} 幀）；` +
-     `沒有繞開口那條路（v1.194 的小人）${wallWalk.man.off.secs} 秒到、穿透 ` +
+     `關掉規劃 ${wallWalk.man.off.secs} 秒到、穿透 ` +
      `${wallWalk.man.off.ghost} 幀（穿在牆身裡 ${wallWalk.man.off.thru} 幀）`);
-  ok('閒晃挑的目標一定走得到：不會再硬塞一個牆另一邊的點（v1.195）',
-     wallWalk.idleBad === 0,
-     `整圈砌滿、人在城內，挑 200 次閒晃點，挑到牆另一邊的 ${wallWalk.idleBad} 次` +
-     `（v1.194 是第 8 次強制接受，那一次就會塞一個走不到的點）`);
+  ok('閒晃的目標在牆另一邊也走得到：照規則從開口過去，不靠穿牆（v1.235）',
+     wallWalk.idle.every(r => r.secs > 0 && r.ghost === 0 && r.flips === 1),
+     `整圈砌滿、人在城內，城外一圈 ${wallWalk.idle.length} 個點：` +
+     wallWalk.idle.map(r => r.secs + ' 秒（換邊 ' + r.flips + '、穿透 ' + r.ghost + '）').join('、'));
   {
     const A = wallWalk.around, fine = r => r.secs > 0 && r.ghost === 0 && r.flips <= 2;
-    const stuck = r => r.secs < 0 && r.flips > 20;
     ok('目標在另一面牆外、靠轉角：走出缺口後沿城外繞過去，不再從同一段缺口進出繞圈（v1.225）',
-       fine(A.build.on) && fine(A.work.on) && stuck(A.build.off) && stuck(A.work.off),
+       fine(A.build.on) && fine(A.work.on) && !fine(A.build.off) && !fine(A.work.off),
        `牆半徑 ${A.W}、缺口在 −z 面靠東南角、目標在東牆外：` +
        `撿料那條路 ${A.build.on.secs} 秒到（城內外換邊 ${A.build.on.flips} 次、穿透 ${A.build.on.ghost} 幀）、` +
        `其他上工的路 ${A.work.on.secs} 秒到（換邊 ${A.work.on.flips} 次、穿透 ${A.work.on.ghost} 幀）；` +
-       `沒有沿城外繞（v1.224）150 秒 ${A.build.off.secs}／${A.work.off.secs}（−1＝沒到），` +
-       `換邊 ${A.build.off.flips}／${A.work.off.flips} 次`);
+       `關掉規劃 150 秒 ${A.build.off.secs}／${A.work.off.secs}（−1＝沒到），` +
+       `換邊 ${A.build.off.flips}／${A.work.off.flips} 次、穿透 ${A.build.off.ghost}／${A.work.off.ghost} 幀`);
   }
 
   /* ⑦-b 砸完**走得出去**（v1.190.2，使用者：「有觀察到猴子會被城牆卡住 走不出去」）。
@@ -9766,8 +9785,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         }
         h.done = true; homeBox(h);
       };
-      for (const h of wallPlan())
-        if (gate || !h.gap) { homes.list.push(h); fill(homes.list.length - 1); }
+      /* 沒門的那一種：門樓照樣砌起來、門洞堵死（＝整圈沒有路）。v1.186～v1.234 是整段拿掉門樓，
+         可是那樣牆線上是四個十幾格寬的洞（地上什麼都沒有），巡路規則（v1.235）會從洞走出去，
+         測不到「沒路才破牆」（見〈天災遇到城牆〉那一條的 'shut'）。 */
+      for (const h of wallPlan()) {
+        if (!gate && h.gap) h.gap = null;
+        homes.list.push(h); fill(homes.list.length - 1);
+      }
       const W = wallRing();
       for (let k = 0; k < city; k++) {                    // 城內的小房子與樹
         const hi = wallInside([], Math.cos(k * 1.7) * (siteR + 8),
@@ -9821,7 +9845,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        哪一種場面就變成前面改了什麼決定的——實測改了 ⑦ 的分支之後留下來的變成 build，
        nogate 那一條就從「拆牆出去」變成在驗「開工中的 away」，紅了也看不出是哪裡壞。 */
     const city = run('ape', true, 3, 'done');             // 城內有房子與樹
-    const nogate = run('ape', false, 3, 'done');          // 門樓被打爛：會動手的拆牆出去
+    const nogate = run('ape', false, 3, 'done');          // 門洞都堵死：會動手的拆牆出去
     const build = run('ape', true, 3, 'build');           // 地標又開工了（away 那一條）
     /* 開工中 ＋ 一座門都沒有（v1.194）：away 每幀把牠拉回 go、go 又把牠推回 near 去拆牆，
        兩邊互推的話 DOOM_AIM 永遠數不完（實測 8000 幀只走了 1.2 格、一次都沒動手）。 */
@@ -9834,7 +9858,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('城裡的生物砸完走得出去（城內有房子、門樓沒了、地標又開工，三種都一樣）',
      apeOut.city.gone && apeOut.nogate.gone && apeOut.build.gone,
      `城內有房子與樹 ${apeOut.city.secs} 秒走掉（${apeOut.city.gone}）；` +
-     `門樓被打爛 ${apeOut.nogate.secs} 秒（${apeOut.nogate.gone}）；` +
+     `門洞都堵死（拆牆出去）${apeOut.nogate.secs} 秒（${apeOut.nogate.gone}）；` +
      `地標開工中 ${apeOut.build.secs} 秒（${apeOut.build.gone}）` +
      `——修掉之前這三種各跑滿 400 秒都走不掉` +
      [apeOut.city, apeOut.nogate, apeOut.build].filter(r => !r.gone)
@@ -9845,7 +9869,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      一邊被澆熄，400 秒未必真的破得出去——那是消防車該做的事，不是這一條要管的。 */
   ok('開工中又一座門都沒有：不會被「放棄走人」凍住，照樣一趟一趟動手拆牆',
      apeOut.noneBuild.acts > 0 && apeOut.noneBuild.wallLost > 0,
-     `開工中、四座門樓都沒了：動手 ${apeOut.noneBuild.acts} 次、拆掉 ` +
+     `開工中、四座門洞都堵死：動手 ${apeOut.noneBuild.acts} 次、拆掉 ` +
      `${apeOut.noneBuild.wallLost} 塊牆（${apeOut.noneBuild.secs} 秒，走掉＝` +
      `${apeOut.noneBuild.gone}；消防車會來澆熄）——修之前是動手 0 次`);
   /* 牛羊那一半 v1.194 起**不驗穿透**：四面各一座門樓，整段被打爛之後牆線上是
@@ -9875,7 +9899,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     stopIdleEvent(); clearHomes();
     homes = { list: [] };
     for (const h of wallPlan()) {
-      if (h.gap) continue;                                     // 沒有門的一圈：一定會擋到
+      /* 沒有門的一圈：一定會擋到。門樓照樣砌、門洞堵死——v1.186～v1.234 是整段拿掉門樓，
+         那樣牆線上是四個洞，巡路規則（v1.235）會從洞走進去（見 apeOut 那一段的註解）。 */
+      h.gap = null;
       const hi = homes.list.length;
       homes.list.push(h);
       for (let i = 0; i < h.slots.length; i++) {
@@ -10151,7 +10177,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ⑬ 吉祥物走去砸房子那一段（v1.233.1，使用者：「吉祥物走去砸房子那一段 … 程式寫法跟這次的洞類似 調查一下」）。
      兩條規則，都是自己組最小場面、押死的（見 開發筆記〈吉祥物砸房子：城外到城外、目標一幀換一間〉）：
        · 城外到城外、直線切過城裡也繞城外：牆半徑 36、只留 −z 面緊鄰東南角樓那一段沒砌，東牆外一間房子，
-         黑獼猴在南牆外、欠帳兩處、整圈牆都算燒過（逼牠挑那一間）。A/B 把 wallCut 換成永遠 false ＝ v1.233.0。
+         黑獼猴在南牆外、欠帳兩處、整圈牆都算燒過（逼牠挑那一間）。v1.233.1 的 A/B 是把 wallCut 換成永遠 false；
+         v1.235 起繞法是巡路規則（gateNeed 問 navReach），對照組改成**關掉規劃**（navPlan 永遠找不到路）。
          目標是城牆那一種（只有附近幾段算燒過）也要照樣動手——照「那一段的中心」問 wallCut 的話會永遠在繞。
        · 走過去那一段認準一間：只砌東北角樓、城外北邊一間大長屋，白猴子站在兩者之間。
          A/B 每一步之前把 m.vh 清掉＝每幀重挑最近的一塊（v1.233.0 的做法），那樣牠在兩個目標之間原地抖。 */
@@ -10201,11 +10228,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       return { secs: act ? +(act * 0.05).toFixed(1) : -1, flips };
     };
-    const W = wallRing(), cut = wallCut, out = { W };
+    const W = wallRing(), plan = navPlan, out = { W };
     const gapSE = h => !(h.thin === 'z' && h.z < 0 && h.wx0 < W - 8 && h.wx1 > W - 8);
     for (const [nm, allWalls, on] of [['house', 1, 1], ['off', 1, 0], ['wall', 0, 1]]) {
       const hh = scene(gapSE, HOME_KIND[0], W + 14, -22);
-      wallCut = on ? cut : () => false;
+      navPlan = on ? plan : () => null;
       beasts = null;
       const m = spawnBeast('ape', 1, 1, 0);
       m.x = 22; m.z = -(W + 8); m.sx = m.x; m.sz = m.z;
@@ -10213,10 +10240,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       m.spots = homes.list.filter(q => q.wall && (allWalls || Math.hypot(q.x - m.x, q.z - m.z) < 35))
                           .map(q => ({ x: q.x, z: q.z, id: q.id }));
       const t0 = doomTarget(m), h0 = homes.list[t0.hh];
-      const cut0 = cut(m.x, m.z, h0.x, h0.z);          // 出發那一刻（sx／sz 之後會被 stuckWatch 當錨點改掉）
+      const cut0 = wallCut(m.x, m.z, h0.x, h0.z);      // 出發那一刻（sx／sz 之後會被 stuckWatch 當錨點改掉）
       const r = walk(m, 120);
       r.house = h0 === hh; r.cut = cut0;
-      wallCut = cut;
+      navPlan = plan;
       out[nm] = r;
     }
     const neCorner = h => h.kind === '角樓' && h.x > 0 && h.z > 0;
@@ -10238,11 +10265,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     homes = null; frameNo++;
     return out;
   });
-  ok('吉祥物砸房子：城外到城外、直線切過城裡也沿城外繞過去；目標是城牆那一種照樣動手（A/B：關掉 wallCut 就是 v1.233.0）',
+  ok('吉祥物砸房子：城外到城外、直線切過城裡也沿城外繞過去；目標是城牆那一種照樣動手（A/B：關掉規劃）',
      mascVill.house.house && mascVill.house.cut && mascVill.house.secs > 0 && mascVill.house.flips === 0 &&
-     mascVill.off.secs < 0 && mascVill.off.flips > 3 && !mascVill.wall.house && mascVill.wall.secs > 0,
+     !(mascVill.off.secs > 0 && mascVill.off.flips === 0) && !mascVill.wall.house && mascVill.wall.secs > 0,
      `牆半徑 ${mascVill.W}：挑到城外那一間（直線切過城裡＝${mascVill.house.cut}）${mascVill.house.secs} 秒動手、` +
-     `進出城 ${mascVill.house.flips} 次；關掉 wallCut：${mascVill.off.secs < 0 ? '120 秒沒動手' : mascVill.off.secs + ' 秒動手'}、` +
+     `進出城 ${mascVill.house.flips} 次；關掉規劃：${mascVill.off.secs < 0 ? '120 秒沒動手' : mascVill.off.secs + ' 秒動手'}、` +
      `進出城 ${mascVill.off.flips} 次；目標是城牆那一種 ${mascVill.wall.secs} 秒動手`);
   ok('吉祥物砸房子：走過去那一段認準一間，不在兩個差不多近的目標之間原地抖（A/B：每幀重挑就是 v1.233.0）',
      mascVill.snow.secs > 0 && mascVill.snow.pinned === 1 && mascVill.snowOld.secs < 0,
@@ -22918,7 +22945,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('全程沒有一幀站在地標的格子裡',
      bwalk.inSite === 0 && bwalk.reach < 4,
      '踩進去 ' + bwalk.inSite + ' 幀，停在離最近那塊 ' + bwalk.reach + ' 格');
-  /* 房子擋在正前方：走法是借小人那一套（strollTo → dodgeHome／pushOutHome），
+  /* 房子擋在正前方：走法是借小人那一套（strollTo → 巡路規則，v1.235 之前是 dodgeHome／pushOutHome），
      所以牠會繞過去，不會直直穿過人家的屋子。 */
   const bhome = await page.evaluate(() => {
     beasts = null; nanas = null;
@@ -23869,7 +23896,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ——一段正中央開著門洞的牆——直接呼叫 gateNeed／wallFoot／footHome／giantBust／
      stepKick 驗規則本身，所以一個骰子都沒有。動過的全域最後都還回去。 */
   const jgate = await page.evaluate(() => {
-    const keep = { homes, cross: crossNeed, boom: explode, ig: igniteAround };
+    const keep = { homes, reach: navReach, boom: explode, ig: igniteAround };
     /* 一段 16 格長、3 格厚、正中央 5 格寬門洞的牆（照城門樓那個形狀寫的）。 */
     const wall = { wall: 1, id: 1, ring: 30, x0: -8, x1: 8, z0: -1.5, z1: 1.5,
                    gap: { x0: -2.5, x1: 2.5, z0: -1.5, z1: 1.5 } };
@@ -23879,15 +23906,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       pause: 0, ghost: 0, gait: 0.85, sc: GIA_SC, fun: 0, home: 0,
       kick: 0, kleft: 0, kt: 0, hit: 0, spin: 0, bust: null, bn: 0, bskip: null
     }, o);
-    /* ① 城門：牠連問都不問（gateNeed 第一行就回 false）。crossNeed 換成一律
-       「被擋住而且有開口可繞」，才分得出「不繞」是牠自己決定的，
-       不是因為場上剛好沒有門可繞。 */
+    /* ① 城門：牠連問都不問（gateNeed 第一行就回 false）。navReach（v1.235 起「有沒有路可繞」
+       問的是巡路規則，v1.195～v1.234 是 crossNeed）換成一律「走得到」，
+       才分得出「不繞」是牠自己決定的，不是因為場上剛好沒有門可繞。 */
     let asked = 0;
-    crossNeed = () => { asked++; return true; };
+    navReach = () => { asked++; return true; };
     const gi = mk({}), ap = mk({ kind: 'ape' });
     const gGate = gateNeed(gi, 0, 20), gAsk = asked;
     const aGate = gateNeed(ap, 0, 20), aAsk = asked - gAsk;
-    crossNeed = keep.cross;
+    navReach = keep.reach;
     /* ② 門洞那一點：別人走得過去，牠不行（footHome 的 noGap）。 */
     const holeOpen = !footHome(0, 0), holeShut = footHome(0, 0, true) === wall;
     /* ③ 「走到牆邊就地拆牆」那一條對牠也關掉（那條會改掉牠這一趟的目標）：
@@ -27491,7 +27518,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const xspd = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     const m = spawnBeast('saber', 1), R = siteR + 30, dt = 0.02;
-    m.x = R; m.z = 0; m.st = 'fun'; m.pause = 0; m.rev = 99; m.tx = R; m.tz = 30; m.stay = 99;
+    m.x = R; m.z = 0; m.st = 'fun'; m.pause = 0; m.tx = R; m.tz = 30; m.stay = 99;
     let x0 = m.x, z0 = m.z, p0 = m.ph;
     stepBeast(m, dt);
     const walk = { d: Math.hypot(m.x - x0, m.z - z0), ph: m.ph - p0 };
@@ -28010,7 +28037,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         v1.232 實測（開了城牆事件的場子，點城外的房子）：24 趟裡 4 趟在同一個缺口進出 40 秒、一次都沒射到。
         場面同〈閒晃事件：城牆〉⑤（−z 那一面靠東南角那一段沒砌、其他整圈砌好）：他在城裡，
         要去東牆外靠東南角那一點（點空地那一道命令，不出招，量的就是走過去那一段）。
-        A/B：把 wallCut 換成永遠 false 就是 v1.232。押死的場面：沒有骰子 ── */
+        v1.233.0 的 A/B 是把 wallCut 換成永遠 false（＝v1.232：60 秒沒到、進出城 104 次，
+        見 開發筆記〈兵長砍猴：砍倒算被攻擊、城牆邊來回跑、巨人跪下往前倒〉）。
+        v1.235 起繞法是巡路規則（gateNeed 問 navReach），那一套整段收掉了，v1.232 重現不出來；
+        「關掉規劃」當對照也沒有意義——他會在射程裡直接射鋼索飛過去（實測 0.7 秒、進出城 0 次），
+        根本不必走。所以這一條只驗規則那一半。押死的場面：沒有骰子 ── */
   const lwall = await page.evaluate(() => {
     cleanTools(); clearHomes(); phase = 'done';
     const fill = hi => {
@@ -28031,9 +28062,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     ENG.setBlockCount(blocks.length);
     frameNo++;                                      // wallNow／wallList 照幀快取：這一圈是這一幀才有的
-    const cut = wallCut;
-    const run = on => {
-      wallCut = on ? cut : () => false;
+    const run = () => {
       beasts = null;
       const m = spawnBeast('levi', 1, 0, 0);
       m.x = W - 14; m.z = -(W - 6); m.sx = m.x; m.sz = m.z; m.st = 'fun'; m.pause = 0;
@@ -28048,12 +28077,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (now !== was) { flips++; was = now; }
         if (!m.call) { done = n; break; }
       }
-      wallCut = cut;
       const r = { secs: done ? +(done * 0.05).toFixed(1) : -1, flips, gate, d: +Math.hypot(m.x - G.x, m.z - G.z).toFixed(2) };
       beasts = null;
       return r;
     };
-    const r = { on: run(true), off: run(false), W, sd: LEV_SD };
+    const r = { on: run(), W, sd: LEV_SD };
     /* 這一圈牆的積木整批拿掉（動過的全域狀態還回去）：只 clearHomes 的話它們會變成懸在牆的位置上的碎料，
        後面〈點選〉那一條的射線會先打到它們 */
     cleanTools();
@@ -28062,12 +28090,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     frameNo++;
     return r;
   });
-  ok('城外到城外、直線切過城裡：他沿城外繞過去，不在缺口內外來回（A/B：關掉 wallCut 就是 v1.232）',
-     lwall.on.secs > 0 && lwall.on.flips === 1 && lwall.on.d <= lwall.sd + 0.1 &&
-     (lwall.off.secs < 0 || lwall.off.flips > 3),
+  ok('城外到城外、直線切過城裡：他沿城外繞過去，不在缺口內外來回',
+     lwall.on.secs > 0 && lwall.on.flips === 1 && lwall.on.d <= lwall.sd + 0.1,
      '牆半徑 ' + lwall.W + '：' + lwall.on.secs + ' 秒到、進出城 ' + lwall.on.flips + ' 次、繞了 ' + lwall.on.gate +
-     ' 幀、停在離那一點 ' + lwall.on.d + ' 格；關掉 wallCut：' + (lwall.off.secs < 0 ? '60 秒沒到' : lwall.off.secs + ' 秒到') +
-     '、進出城 ' + lwall.off.flips + ' 次');
+     ' 幀、停在離那一點 ' + lwall.on.d + ' 格（v1.232：60 秒沒到、進出城 104 次）');
 
   /* ── 點小人：追過去砍倒（手上的積木掉下來），不算手指戳倒的成就 ── */
   const lman = await page.evaluate(() => {
@@ -31285,6 +31311,486 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('反覆重建不會累積物件', memGrow.after < memGrow.before * 2 + 200,
      memGrow.before + ' → ' + memGrow.after);
   }   // ── 〈連續操作壓力〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 巡路能力 ══════════ */
+  await head('巡路能力', T_MUST);
+  /* v1.235，使用者：「設計增加一些測試來測試人物巡路能力」；做到一半改成
+     「巡路能力 是要寫出巡路規則 而盡量不該有一推根據特例去修」「測試可以留著 重寫規則剛好拿來測試」。
+     所以這一段是**巡路規則的驗收**（規則見 game-workers.js 的〈巡路規則〉、開發筆記〈巡路規則〉）：
+     一組障礙場 × 每一種會走路的一起跑，每一條條目對應規則的一條判準——走得到、不靠穿透、
+     身體不進障礙、沒有比合法最短路還短（＝沒從哪裡鑽過去）、進出城只從門洞過一次、
+     直線不通第一幀就規劃、路上長出新東西會改道、慢的動物不被當成卡住、真的沒路才穿透。
+     走的人一律是一個小人，換腳程就是換一種生物：strollTo 本來就是「借這一支、只換速度」
+     （見 game-tools.js 的 DOOM_WALK），牛羊、猴子（天災與吉祥物同一個腳程）、飛龍走的都是它。
+     **全部是規則型**：造最小場面、直接呼叫走路那一層（strollTo／stepTo ＋ stuckWatch），
+     起點終點寫死、不抽骰子，同一版程式跑幾次數字都一樣。
+     對照組是「關掉規劃」（navPlan 永遠找不到路＝只剩直走＋沿邊滑）：證明走得到靠的是規則，
+     不是場面剛好簡單。v1.234（規則之前）在同一組場面上的數字記在 開發筆記〈巡路規則〉。
+     第一輪只管房子與城牆；地標那一層（柱子淨空、還沒蓋的不擋）第二輪再補場面。 */
+  await installClean(page);          // 〈自動存檔〉重載過頁面：cleanTools 那幾支要補掛回去
+  await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(2); startBuild(true); completeNow();
+    stopIdleEvent(); homes = null;
+    const N = window.navT = { keep: [siteR, arenaR] };
+    /* 人造場景擺在工地外面：規劃只管工地圈外（第一輪的範圍，見 navPlan），
+       場景最寬 15 格，中心放在 50 就離工地圈（吉薩 300 塊約 9.6）很遠。 */
+    N.OX = 0; N.OZ = 50;
+    /* 外框就夠了：走路只看外框（見 footHome），造型不重要（同〈閒晃事件：小人的家〉的穿透那一條） */
+    N.B = (x0, x1, z0, z1) => ({ x: N.OX + (x0 + x1) / 2, z: N.OZ + (z0 + z1) / 2,
+      r: Math.hypot(x1 - x0, z1 - z0) / 2, x0: N.OX + x0, x1: N.OX + x1, z0: N.OZ + z0, z1: N.OZ + z1,
+      slots: [], left: 0, done: true, at: new Map() });
+    const slow = Math.min(...Object.values(HERD_WALK));
+    /* wall＝城牆那一組也跑。直線走法（stepTo）在工地圈裡也合法（走進去放的那種格子），
+       規劃不把工地圈當牆，所以不拿它去穿城。 */
+    N.who = [
+      { n: '小人', spd: WALK, go: (w, dt) => strollTo(w, dt), wall: 1 },
+      { n: '小人（直線走法）', spd: WALK, go: (w, dt) => stepTo(w, w.tx, w.tz, dt) },
+      { n: '猴子', spd: DOOM_WALK, go: (w, dt) => strollTo(w, dt, DOOM_WALK), wall: 1 },
+      { n: '牛羊（最慢 ' + slow + '）', spd: slow, go: (w, dt) => strollTo(w, dt, slow), wall: 1 },
+      { n: '飛龍', spd: DRA_WALK, go: (w, dt) => strollTo(w, dt, DRA_WALK, DRA_STEP, DRA_KEEP), wall: 1 },
+    ];
+    /* 跑一趟。s／g 是世界座標。時限照腳程放寬（最慢的羊 1.3，120 格要 92 秒）。
+       frameNo 每幀加一：wallList／wallNow 是「一幀算一次」的快取，
+       這裡不走 step()，不自己加的話整趟都拿到第一幀那一份（換場景時也是）。
+       at(i, w) 給了就每幀叫一次（路上長出新東西那一條用）。 */
+    N.run = (list, s, g, go, spd, T0, at) => {
+      homes = { list };
+      frameNo++;
+      const w = workers[0];
+      releaseWorker(w);
+      w.hm = -1; w.flee = 0; w.air = 0; w.burn = 0; w.pause = 0; w.leg = 0; w.gait = 0; w.y = 0;
+      w.fall = 0; w.trip = 0; w.ghost = 0; w.stk = 0; w.chk = 0; w.clear = 0;
+      w.x = s[0]; w.z = s[1]; w.sx = w.x; w.sz = w.z; w.tx = g[0]; w.tz = g[1];
+      const dt = 0.05, T = Math.max(T0 || 30, (T0 ? 4 : 1) * 120 / spd);
+      let t = -1, ghost = 0, inBox = 0, walked = 0, plan = 0, planAt = -1, navBad = 0, re = 0;
+      let px = w.x, pz = w.z, inW = inWall(w.x, w.z);
+      const cross = [];
+      for (let i = 0; i < T / dt; i++) {
+        frameNo++;
+        if (at) at(i, w);
+        const had = !!w.nav, sx = w.x, sz = w.z;
+        stuckWatch(w, dt);
+        if (w.stk >= STUCK_T) re = 1;
+        if (w.ghost > 0) ghost++;
+        const done = go(w, dt);
+        /* 剛規劃出來的那一條：每個轉角都在空地上、從起點起兩兩之間走得通（不進框、不切過障礙） */
+        if (!had && w.nav) {
+          plan++;
+          if (planAt < 0) planAt = +((i + 1) * dt).toFixed(2);
+          let ax = sx, az = sz;
+          for (const p of w.nav.p) {
+            const n = Math.ceil(Math.hypot(p.x - ax, p.z - az) / 0.1);
+            for (let k = 1; k <= n; k++)
+              if (footHome(ax + (p.x - ax) * k / n, az + (p.z - az) * k / n)) { navBad++; break; }
+            if (!navSeg(ax, az, p.x, p.z, false)) navBad++;
+            ax = p.x; az = p.z;
+          }
+        }
+        if (w.ghost <= 0 && footHome(w.x, w.z)) inBox++;
+        const iw = inWall(w.x, w.z);
+        if (iw !== inW) { cross.push({ x: w.x, z: w.z }); inW = iw; }
+        walked += Math.hypot(w.x - px, w.z - pz); px = w.x; pz = w.z;
+        if (done) { t = +((i + 1) * dt).toFixed(2); break; }
+      }
+      const r = { t, ghost, inBox, walked: +walked.toFixed(1), plan, planAt, navBad, re, cross,
+                  x: w.x, z: w.z, tx: w.tx, tz: w.tz };
+      releaseWorker(w); w.ghost = 0; w.stk = 0;
+      return r;
+    };
+    /* 合法最短路（可見性圖）：外框各往外擴 0.15（貼著的兩間就連成一塊、角縫也關起來），
+       節點是每個角再往外 0.3。起點或終點在擴過的框裡回 −1（不比），走不到回 Infinity。
+       拿來判「鑽過去了沒」：沒穿透卻走得比這個還短，一定是從哪裡鑽過去的。 */
+    N.geo = (list, s, g) => {
+      const D = 0.3, E = 0.15;
+      const ex = list.map(b => [b.x0 - E, b.z0 - E, b.x1 + E, b.z1 + E]);
+      const inAny = (x, z) => ex.some(e => x > e[0] && x < e[2] && z > e[1] && z < e[3]);
+      const S = { x: s[0], z: s[1] }, G = { x: g[0], z: g[1] };
+      if (inAny(S.x, S.z) || inAny(G.x, G.z)) return -1;
+      const nd = [S, G];
+      for (const b of list)
+        for (const [x, z] of [[b.x0 - D, b.z0 - D], [b.x1 + D, b.z0 - D], [b.x0 - D, b.z1 + D], [b.x1 + D, b.z1 + D]])
+          if (!inAny(x, z)) nd.push({ x, z });
+      const see = (p, q) => !ex.some(e => segBox(p.x, p.z, q.x, q.z, e[0], e[1], e[2], e[3]));
+      const dist = nd.map(() => Infinity), done = nd.map(() => false);
+      dist[0] = 0;
+      for (;;) {
+        let u = -1;
+        for (let i = 0; i < nd.length; i++) if (!done[i] && (u < 0 || dist[i] < dist[u])) u = i;
+        if (u < 0 || dist[u] === Infinity || u === 1) break;
+        done[u] = true;
+        for (let v = 0; v < nd.length; v++)
+          if (!done[v] && see(nd[u], nd[v]))
+            dist[v] = Math.min(dist[v], dist[u] + Math.hypot(nd[u].x - nd[v].x, nd[u].z - nd[v].z));
+      }
+      return dist[1];
+    };
+    /* 鑽過去＝沒穿透、卻比合法最短路短。扣掉 REACH：走到離目標 REACH 內就算到了，
+       本來就會比最短路少一截（窄巷裡的羊實測 15.1 對 16）。 */
+    N.leak = (r, geo) => r.t > 0 && !r.ghost && geo > 0 && geo < Infinity && r.walked < (geo - REACH) * 0.9;
+    /* 一組場景 × 每一種走法。 */
+    N.group = sc => {
+      const runs = [];
+      for (const [name, [bs, s, g]] of Object.entries(sc)) {
+        const list = () => bs.map(b => N.B(...b));
+        const S = [N.OX + s[0], N.OZ + s[1]], G = [N.OX + g[0], N.OZ + g[1]];
+        const geo = N.geo(list(), S, G);
+        for (const wk of N.who) {
+          const r = N.run(list(), S, G, wk.go, wk.spd);
+          r.name = name; r.who = wk.n; r.geo = geo; r.leak = N.leak(r, geo);
+          runs.push(r);
+        }
+      }
+      return runs;
+    };
+    N.bad = r => r.t < 0 || r.ghost || r.inBox || r.leak || r.navBad;
+    N.sum = runs => {
+      const bad = runs.filter(N.bad);
+      const slowest = runs.reduce((a, r) => (r.t > a.t ? r : a), { t: -1 });
+      return { n: runs.length, arrived: runs.filter(r => r.t > 0).length,
+               ghost: runs.filter(r => r.ghost).length, inBox: runs.reduce((a, r) => a + r.inBox, 0),
+               leak: runs.filter(r => r.leak).length, plan: runs.filter(r => r.plan).length,
+               navBad: runs.reduce((a, r) => a + r.navBad, 0), re: runs.filter(r => r.re).length,
+               slow: slowest.t + ' 秒（' + slowest.name + '・' + slowest.who + '）',
+               bad: bad.slice(0, 4).map(r => r.name + '・' + r.who + '：到 ' + r.t + '、穿透 ' + r.ghost +
+                                              ' 幀、在框裡 ' + r.inBox + ' 幀、走 ' + r.walked +
+                                              '（合法最短 ' + (r.geo > 0 && r.geo < Infinity ? r.geo.toFixed(1) : r.geo) + '）') };
+    };
+    /* 對照組：關掉規則 3（規劃）／規則 2（目標可達化）。回傳還原用的那一支。 */
+    N.noPlan = () => { const o = navPlan; navPlan = () => null; return () => { navPlan = o; }; };
+    N.noGoal = () => { const o = navGoal; navGoal = () => null; return () => { navGoal = o; }; };
+  });
+
+  /* ① 分開的框（正常玩的時候房子就是這樣：pickHomeSite 要兩家隔 h.r + rad + 3 以上）。
+     窄巷一格要**直接穿過去**，不是繞外面——一格寬的縫是真的走得過去。
+     L 形留兩格縫配最慢的羊，是規則 5「看得到再下一段才跳」與規則 6「照自己的腳程判走不動」的那一場：
+     特例版在這裡紅過（羊還沒繞過屋角就跳下一個轉角、貼牆慢慢滑、被當成卡住、3 秒後穿牆）。 */
+  const navApart = await page.evaluate(() => {
+    const N = window.navT;
+    const runs = N.group({
+      '單間正面': [[[-4, 4, -3, 3]], [0, -8], [0, 8]],
+      '窄巷一格': [[[-12, -0.5, -3, 3], [0.5, 12, -3, 3]], [0, -8], [0, 8]],
+      '對角斜穿正方形': [[[-4, 4, -4, 4]], [-8, -8], [8, 8]],
+      '起點在屋裡': [[[-4, 4, -3, 3]], [0, 1], [0, 12]],
+      'Z 字兩道牆': [[[-15, 5, -6, -3], [-5, 15, 3, 6]], [0, -12], [0, 12]],
+      'L 形留兩格縫': [[[-8, 8, 2, 6], [4, 8, -8, 0]], [2, -2], [12, 12]],
+    });
+    const alley = runs.filter(r => r.name === '窄巷一格');
+    return { s: N.sum(runs), alleyMax: Math.max(...alley.map(r => r.walked)), alleyGeo: alley[0].geo };
+  });
+  ok('分開的框：窄巷、斜穿、Z 字、起點在屋裡…每一種走法都走得到，不穿透、不進框、不鑽縫',
+     navApart.s.arrived === navApart.s.n && !navApart.s.ghost && !navApart.s.inBox &&
+     !navApart.s.leak && !navApart.s.navBad && navApart.alleyMax < navApart.alleyGeo + 1,
+     navApart.s.n + ' 趟：到了 ' + navApart.s.arrived + '、用到穿透 ' + navApart.s.ghost +
+     '、在框裡 ' + navApart.s.inBox + ' 幀、比合法最短路短 ' + navApart.s.leak + '、規劃了 ' + navApart.s.plan +
+     ' 趟（轉角不在空地上或走不通 ' + navApart.s.navBad + '）；最慢 ' + navApart.s.slow +
+     '；窄巷最多走 ' + navApart.alleyMax + ' 格（直穿 ' + navApart.alleyGeo.toFixed(1) + '）' +
+     (navApart.s.bad.length ? '；壞的：' + navApart.s.bad.join('；') : ''));
+
+  /* ② 貼在一起的框（長牆、疊在一起、L／U 口袋）：格子地圖上它們本來就連成一塊（規則 1），
+     規劃繞外面（規則 3），每一步不准切過接縫（規則 5）。L／U 口袋是「從口袋裡要去口袋背後」：
+     只看眼前一步的走法（往目標走、撞到就沿邊滑）一定出不來，非得有路線不可。
+     v1.234 在這一組是順著接縫鑽過去（三間排成一道長牆：3.3 秒到對面、18 幀身體在框裡）。 */
+  const navGlued = await page.evaluate(() => {
+    const N = window.navT;
+    const sc = {
+      '三間貼成長牆': [[[-15, -5, -3, 3], [-5, 5, -3, 3], [5, 15, -3, 3]], [0, -8], [0, 8]],
+      '三間疊成長牆': [[[-15, -4, -3, 3], [-6, 6, -3, 3], [4, 15, -3, 3]], [0, -8], [0, 8]],
+      '長牆偏一側出發': [[[-15, -5, -3, 3], [-5, 5, -3, 3], [5, 15, -3, 3]], [-8, -8], [-8, 8]],
+      'L 形口袋（貼著）': [[[-8, 8, 2, 6], [4, 8, -8, 2]], [2, 0], [12, 12]],
+      'U 形口袋裡往背後': [[[-8, 8, 4, 8], [4, 8, -8, 4], [-8, -4, -8, 4]], [0, 0], [0, 14]],
+      'U 形外面繞到背後': [[[-8, 8, 4, 8], [4, 8, -8, 4], [-8, -4, -8, 4]], [0, -14], [0, 14]],
+    };
+    const now = N.group(sc);
+    const back = N.noPlan();
+    let off;
+    try { off = N.group(sc); } finally { back(); }
+    return { s: N.sum(now), offN: off.length, offBad: off.filter(N.bad).length,
+             offGhost: off.filter(r => r.ghost).length, offLeak: off.filter(r => r.leak).length };
+  });
+  ok('貼在一起的框（長牆、疊在一起、L／U 口袋）：不從接縫鑽過去，規劃一條路繞出去',
+     navGlued.s.arrived === navGlued.s.n && !navGlued.s.ghost && !navGlued.s.inBox &&
+     !navGlued.s.leak && !navGlued.s.navBad && navGlued.s.plan === navGlued.s.n &&
+     navGlued.offBad === navGlued.offN && !navGlued.offLeak,
+     navGlued.s.n + ' 趟：到了 ' + navGlued.s.arrived + '、用到穿透 ' + navGlued.s.ghost +
+     '、在框裡 ' + navGlued.s.inBox + ' 幀、比合法最短路短 ' + navGlued.s.leak + '、規劃了 ' +
+     navGlued.s.plan + ' 趟（轉角不在空地上或走不通 ' + navGlued.s.navBad + '）；最慢 ' + navGlued.s.slow +
+     '；關掉規劃：' + navGlued.offN + ' 趟裡 ' + navGlued.offBad + ' 趟走不到或靠穿透（穿透 ' +
+     navGlued.offGhost + '），鑽縫 ' + navGlued.offLeak + ' 趟（每一步不准切過障礙，規則 5）' +
+     (navGlued.s.bad.length ? '；壞的：' + navGlued.s.bad.join('；') : ''));
+
+  /* ③ 角碰角：兩間只有一個角碰在一起，那一點本身不在任何一間裡（footHome 是開區間）。
+     規則 5 的「這一步不准切過障礙」把那一步擋下來（切過的判斷框往外擴 NAV_EPS），
+     規劃不准斜切兩個擋住的格子之間，所以繞外面。v1.234 是一步就跨過去（走 16 格，合法最短 29）。 */
+  const navCorner = await page.evaluate(() => {
+    const N = window.navT;
+    const sc = {
+      '正對著角縫': [[[-8, 0, -8, 0], [0, 8, 0, 8]], [6, -6], [-6, 6]],
+      '偏一點（繞一間的時候滑到縫口）': [[[-8, 0, -8, 0], [0, 8, 0, 8]], [5, -7], [-7, 5]],
+    };
+    const now = N.group(sc);
+    const back = N.noPlan();
+    let off;
+    try { off = N.group(sc); } finally { back(); }
+    return { s: N.sum(now), offN: off.length, offBad: off.filter(N.bad).length,
+             offLeak: off.filter(r => r.leak).length,
+             geo: now[0].geo, walked: Math.min(...now.map(r => r.walked)) };
+  });
+  ok('角碰角的縫鑽不過去，繞外面走',
+     navCorner.s.arrived === navCorner.s.n && !navCorner.s.ghost && !navCorner.s.inBox &&
+     !navCorner.s.leak && !navCorner.s.navBad && !navCorner.offLeak,
+     navCorner.s.n + ' 趟：到了 ' + navCorner.s.arrived + '、用到穿透 ' + navCorner.s.ghost +
+     '、比合法最短路短 ' + navCorner.s.leak + '，最少也走了 ' + navCorner.walked + ' 格（合法最短 ' +
+     navCorner.geo.toFixed(1) + '）；關掉規劃也鑽不過去（鑽縫 ' + navCorner.offLeak + ' 趟、' +
+     navCorner.offBad + '/' + navCorner.offN + ' 趟走不到或靠穿透）' +
+     (navCorner.s.bad.length ? '；壞的：' + navCorner.s.bad.join('；') : ''));
+
+  /* ④ 規則 2：目標壓在障礙裡就改走到離它最近的可走點，走到就算到。
+     「可走點」離障礙至少四分之一格（NAV_ROOM）：目標壓在兩間貼著的接縫旁邊時，接縫那條線本身不在任何一間裡，
+     挪到縫上就是一個走不到的點（寫規則時量到的：每一種走法都卡住、靠穿透才到）。
+     v1.234 目標在屋子正中央：30 秒走了 198 格沒到（繞著房子轉，stuckWatch 一次都沒觸發）。
+     吉祥物砸村子那一趟的站位真的會落在別間的框裡（見 game-tools.js 的 fun），而且每幀重算。 */
+  const navGoalR = await page.evaluate(() => {
+    const N = window.navT;
+    const sc = {
+      '目標在屋子正中央': [[[-4, 4, -3, 3]], [0, -10], [0, 0]],
+      '目標在貼著的兩間接縫旁邊': [[[-8, 0, -3, 3], [0, 8, -3, 3]], [0, -10], [-0.5, 0]],
+    };
+    const now = N.group(sc);
+    /* 到了之後站在哪：框外、離框邊不超過 NAV_ROOM ＋ NAV_CELL ＋ REACH（可走點離障礙至少 NAV_ROOM、
+       一圈一圈往外找的解析度、抵達的容差） */
+    const off = now.map(r => {
+      const bs = sc[r.name][0].map(b => N.B(...b));
+      let d = Infinity;
+      for (const b of bs) {
+        const dx = Math.max(b.x0 - r.x, 0, r.x - b.x1), dz = Math.max(b.z0 - r.z, 0, r.z - b.z1);
+        d = Math.min(d, Math.hypot(dx, dz));
+      }
+      homes = { list: bs };
+      return { d, inside: !!footHome(r.x, r.z) };
+    });
+    homes = null;
+    const back = N.noGoal();
+    let old;
+    try { old = N.run([N.B(-4, 4, -3, 3)], [N.OX, N.OZ - 10], [N.OX, N.OZ], N.who[0].go, WALK); }
+    finally { back(); }
+    return { s: N.sum(now), far: Math.max(...off.map(o => o.d)), inside: off.filter(o => o.inside).length,
+             lim: NAV_ROOM + NAV_CELL + REACH + 0.05, old };   // 0.05 是浮點餘裕
+  });
+  ok('目標壓在人家外框裡：走到框邊就算到，不會繞著房子一直轉、不會停在接縫上',
+     navGoalR.s.arrived === navGoalR.s.n && !navGoalR.s.ghost && !navGoalR.s.inBox &&
+     !navGoalR.inside && navGoalR.far <= navGoalR.lim && (navGoalR.old.t < 0 || navGoalR.old.ghost > 0),
+     navGoalR.s.n + ' 趟：到了 ' + navGoalR.s.arrived + '、用到穿透 ' + navGoalR.s.ghost + '、最慢 ' +
+     navGoalR.s.slow + '，站的地方離框邊最遠 ' + navGoalR.far.toFixed(2) + '（上限 ' + navGoalR.lim.toFixed(2) +
+     '）、站在框裡 ' + navGoalR.inside + ' 趟；關掉規則 2、目標在屋子正中央：' +
+     (navGoalR.old.t < 0 ? '到時限沒走到' : navGoalR.old.t + ' 秒到') + '、穿透 ' + navGoalR.old.ghost + ' 幀' +
+     (navGoalR.s.bad.length ? '；壞的：' + navGoalR.s.bad.join('；') : ''));
+
+  /* ⑤ 規則 3 的時機與規則 6 的時程。把人釘在原地（腿照樣在擺），同〈閒晃事件：小人的家〉那一條的做法：
+       · 直線不通就規劃——**第一幀**就規劃，不是等卡住（v1.108～v1.234 根本沒有規劃這一步）
+       · 規劃不出路（四面圍死）就照直線走，卡住了照 v1.108 的時程：1.5 秒重找、3 秒穿透
+       · 規劃得出路但照著走還是卡（這裡是被釘住），一樣 3 秒穿透——
+         〈整輪下來沒有人腿在擺卻走不動超過四秒〉那條守的上限不能被規劃這一層拉長
+     「只能晚不能早」：門檻沒到就介入才是錯的，晚幾幀是量測的解析度（一幀 0.05 秒）。 */
+  const navPin = await page.evaluate(() => {
+    const N = window.navT;
+    const pin = bs => {
+      homes = { list: bs.map(b => N.B(...b)) };
+      frameNo++;
+      const w = workers[0];
+      releaseWorker(w);
+      w.hm = -1; w.flee = 0; w.air = 0; w.burn = 0; w.pause = 0; w.fall = 0; w.trip = 0;
+      const X = N.OX, Z = N.OZ;                          // 口袋正中央
+      w.x = X; w.z = Z; w.sx = X; w.sz = Z; w.tx = N.OX; w.tz = N.OZ + 14;
+      w.stk = 0; w.ghost = 0; w.gait = 0.85;
+      let re = -1, plan = -1, gh = -1;
+      for (let i = 0; i < 120; i++) {
+        frameNo++;
+        w.chk = 99;
+        stuckWatch(w, 0.05);
+        strollTo(w, 0.05);
+        w.x = X; w.z = Z; w.gait = 0.85;                  // 釘住：走路狀態卻位置一樣
+        const s = +((i + 1) * 0.05).toFixed(2);
+        if (re < 0 && w.chk !== 99) re = s;
+        if (plan < 0 && w.nav) plan = s;
+        if (gh < 0 && w.ghost > 0) gh = s;
+      }
+      releaseWorker(w); w.ghost = 0; w.stk = 0;
+      homes = null;
+      return { re, plan, gh };
+    };
+    return {
+      shut: pin([[-8, 8, 4, 8], [4, 8, -8, 4], [-8, -4, -8, 4], [-4, 4, -8, -4]]),
+      cup: pin([[-8, 8, 4, 8], [4, 8, -8, 4], [-8, -4, -8, 4]]),
+      T: STUCK_T,
+    };
+  });
+  const inWin = (v, lo) => v >= lo && v <= lo + 0.25;
+  ok('直線不通第一幀就規劃；規劃不出路或照著走還是卡，照舊 1.5 秒重找、3 秒穿透（不多等）',
+     navPin.cup.plan > 0 && navPin.cup.plan <= 0.05 && navPin.shut.plan < 0 &&
+     inWin(navPin.shut.re, navPin.T) && inWin(navPin.shut.gh, navPin.T * 2) &&
+     inWin(navPin.cup.re, navPin.T) && inWin(navPin.cup.gh, navPin.T * 2),
+     'U 形口袋：' + navPin.cup.plan + ' 秒規劃、' + navPin.cup.re + ' 秒重找、' + navPin.cup.gh +
+     ' 秒穿透；四面圍死：規劃' + (navPin.shut.plan < 0 ? '不出路' : '＝' + navPin.shut.plan + ' 秒') + '、' +
+     navPin.shut.re + ' 秒重找、' + navPin.shut.gh + ' 秒穿透（門檻 ' + navPin.T + ' 秒，兩段合計 ' +
+     navPin.T * 2 + ' 秒）');
+
+  /* ⑥ 規則 4：路上長出新的牆會改道。直線出發（前面什麼都沒有），走了一秒之後正前方長出一道
+     20 格長的牆（房子剛好在他面前蓋起來就是這樣）：他要改規劃繞過去，不是頂著牆等 3 秒穿過去。 */
+  const navGrow = await page.evaluate(() => {
+    const N = window.navT;
+    const wall = N.B(-10, 10, -1, 1);
+    const out = [];
+    for (const wk of N.who) {
+      const list = [];
+      const r = N.run(list, [N.OX, N.OZ - 12], [N.OX, N.OZ + 12], wk.go, wk.spd, 0,
+                      (i, w) => { if (!list.length && w.z > N.OZ - 7) list.push(wall); });
+      r.who = wk.n; r.grew = list.length > 0;
+      out.push(r);
+    }
+    return out.map(r => ({ who: r.who, t: r.t, ghost: r.ghost, inBox: r.inBox, plan: r.plan, grew: r.grew,
+                           walked: r.walked }));
+  });
+  ok('路上長出新的牆會改道：不頂著牆等到穿透',
+     navGrow.every(r => r.grew && r.t > 0 && !r.ghost && !r.inBox && r.plan > 0),
+     navGrow.map(r => r.who + (r.grew ? '' : '（牆沒長出來）') + ' ' + r.t + ' 秒到、走 ' + r.walked +
+                      ' 格、規劃 ' + r.plan + ' 次、穿透 ' + r.ghost + ' 幀、在框裡 ' + r.inBox + ' 幀').join('；'));
+
+  /* ⑦ 規劃只管工地圈外（第一輪的範圍）：起點或目標在工地圈裡就不規劃，交給 ringWalk／standPos
+     那一套（地標那一層，第二輪）。同一組外框、兩端都在圈外時是規劃得出來的（對照）。 */
+  const navScope = await page.evaluate(() => {
+    const N = window.navT;
+    homes = { list: [[-8, 8, 4, 8], [4, 8, -8, 4], [-8, -4, -8, 4]].map(b => N.B(...b)) };
+    frameNo++;
+    const keep = siteR + KEEP;
+    const at = (x, z) => ({ x, z, ghost: 0 });
+    const out = {
+      both: !!navPlan(at(N.OX, N.OZ), N.OX, N.OZ + 14, keep, false),
+      fromIn: !!navPlan(at(keep * 0.5, 0), N.OX, N.OZ + 14, keep, false),
+      toIn: !!navPlan(at(N.OX, N.OZ), keep * 0.5, 0, keep, false),
+      keep: +keep.toFixed(1),
+    };
+    homes = null;
+    return out;
+  });
+  ok('規劃只管工地圈外：起點或目標在工地圈裡就不規劃（兩端都在圈外才規劃）',
+     navScope.both && !navScope.fromIn && !navScope.toIn,
+     '工地圈半徑 ' + navScope.keep + '：兩端都在圈外 → ' + (navScope.both ? '規劃得出' : '規劃不出') +
+     '；起點在圈裡 → ' + (navScope.fromIn ? '規劃了' : '不規劃') + '；目標在圈裡 → ' + (navScope.toIn ? '規劃了' : '不規劃'));
+
+  /* ⑧ 真實尺寸的房子：九款（照 homeSlots 生、homeBox 算外框，含門廊與圍籬）× 四種來向
+     （正面長邊、偏三成、短邊、斜對角）× 每一種走法。這是正常玩的時候會遇到的樣子。
+     規則 6 的「走不動照自己的腳程判」也在這裡驗：一次重找路線都不該有——寫死 1.2 格的時候
+     牛羊在大長屋前 8 趟有 6～8 趟被當成卡住（1.5 秒最多也才走 1.95 格）。 */
+  const navReal = await page.evaluate(() => {
+    const N = window.navT;
+    const runs = [];
+    for (const kind of HOME_KIND) {
+      const slots = homeSlots(N.OX, N.OZ, kind, HOME_PAL[0]);
+      for (const sl of slots) sl.filled = true;
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { x: N.OX, z: N.OZ, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                  oz: (kind.d - 1) / 2, slots, left: 0, n: 1, done: true };
+      homeBox(h); markHomeF6(h);
+      const W = h.x1 - h.x0, D = h.z1 - h.z0;
+      const ways = {
+        正面: [[N.OX, h.z0 - 4], [N.OX, h.z1 + 4]],
+        偏三成: [[N.OX + 0.3 * W, h.z0 - 4], [N.OX + 0.3 * W, h.z1 + 4]],
+        短邊: [[h.x0 - 4, N.OZ + 0.2 * D], [h.x1 + 4, N.OZ + 0.2 * D]],
+        斜對角: [[h.x0 - 4, h.z0 - 4], [h.x1 + 4, h.z1 + 4]],
+      };
+      for (const [wn, [s, g]] of Object.entries(ways)) {
+        const geo = N.geo([h], s, g);
+        for (const wk of N.who) {
+          const r = N.run([h], s, g, wk.go, wk.spd);
+          r.name = kind.id + wn; r.who = wk.n; r.geo = geo; r.leak = N.leak(r, geo);
+          runs.push(r);
+        }
+      }
+    }
+    homes = null;
+    return { s: N.sum(runs), kinds: HOME_KIND.length };
+  });
+  ok('真實尺寸的房子（九款 × 四種來向 × 每一種走法）：全部走到、不穿透、不進框，也沒有被當成卡住',
+     navReal.s.arrived === navReal.s.n && !navReal.s.ghost && !navReal.s.inBox &&
+     !navReal.s.leak && !navReal.s.navBad && !navReal.s.re,
+     navReal.kinds + ' 款 ' + navReal.s.n + ' 趟：到了 ' + navReal.s.arrived + '、用到穿透 ' + navReal.s.ghost +
+     '、在框裡 ' + navReal.s.inBox + ' 幀、比合法最短路短 ' + navReal.s.leak + '、被當成卡住（重找路線）' +
+     navReal.s.re + ' 趟、規劃了 ' + navReal.s.plan + ' 趟；最慢 ' + navReal.s.slow +
+     (navReal.s.bad.length ? '；壞的：' + navReal.s.bad.join('；') : ''));
+
+  /* ⑨ 城牆＋城內房子。整圈現成的城牆（四座門），門洞與沒砌的段是可走地圖上的洞（規則 1），
+     走的是 strollTo（小人上工的 workTo 與天災的 gate 那一段 v1.235 起都是它）。
+     驗「走得到、不穿透、不進框（牆也算）、進出城只有一次而且是從門洞過」：
+       · 城外進城、門內擋一間：進門之後還要繞過那一間
+       · 城內出城、對面門外擋一間：v1.234 在背後那一座門進進出出（9 次）、269 格沒走到
+       · 城內出城、斜對角外面：同一件事，v1.234 只有小人繞 161 格走到
+       · 城外進城、門內三間貼成一排：進了門還要繞過那一道長牆
+     工地圈放大到 siteR 12（同〈閒晃事件：城牆〉的 mkWall），牆半徑 32，城裡才有地方擺房子。 */
+  const navWall = await page.evaluate(() => {
+    const N = window.navT;
+    siteR = 12; arenaR = 52;
+    const W = wallRing(), walls = [];
+    for (const h of wallPlan()) {
+      for (const sl of h.slots) { sl.filled = true; h.left--; }
+      h.done = true; homeBox(h); walls.push(h);
+    }
+    const gates = walls.filter(h => h.gap).map(h => h.gmid ||
+      { x: (h.gap.x0 + h.gap.x1) / 2, z: (h.gap.z0 + h.gap.z1) / 2 });
+    const box = (x0, x1, z0, z1) => ({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, r: Math.hypot(x1 - x0, z1 - z0) / 2,
+      x0, x1, z0, z1, slots: [], left: 0, done: true, at: new Map() });
+    const sc = {
+      '城外進城、門內擋一間': [[box(-4, 4, -W + 4, -W + 8)], [0, -W - 12], [0, -W + 14]],
+      '城內出城、對面門外擋一間': [[box(W + 4, W + 8, -4, 4)], [-W + 14, 6], [W + 14, 0]],
+      '城內出城、斜對角外面': [[], [-W + 14, -W + 14], [W + 10, W + 10]],
+      '城外進城、門內三間貼成一排': [[box(-15, -5, -W + 4, -W + 8), box(-5, 5, -W + 4, -W + 8),
+                                       box(5, 15, -W + 4, -W + 8)], [0, -W - 12], [0, -W + 14]],
+    };
+    const go = only => {
+      const runs = [];
+      for (const [name, [bs, s, g]] of Object.entries(sc)) {
+        if (only && name !== only) continue;
+        for (const wk of N.who) {
+          if (!wk.wall) continue;
+          const r = N.run(walls.concat(bs), s, g, wk.go, wk.spd, 40);
+          r.name = name; r.who = wk.n; r.geo = -1; r.leak = false;
+          /* 進出城的那一點離最近的門洞中心多遠：門洞 WALL_GATE 格寬，過門的那一幀一定在那附近 */
+          r.far = Math.max(0, ...r.cross.map(c => Math.min(...gates.map(q => Math.hypot(c.x - q.x, c.z - q.z)))));
+          runs.push(r);
+          if (only) break;                               // 對照組只跑小人
+        }
+      }
+      return runs;
+    };
+    const now = go();
+    const back = N.noPlan();
+    let off;
+    try { off = go('城內出城、對面門外擋一間')[0]; } finally { back(); }
+    siteR = N.keep[0]; arenaR = N.keep[1];
+    homes = null;
+    return { s: N.sum(now), W, gate: WALL_GATE, once: now.filter(r => r.cross.length === 1).length,
+             far: Math.max(...now.map(r => r.far)), off };
+  });
+  ok('城牆＋城內房子：城外進城、城內出城、門內擋著貼成一排的房子，都走到，而且只從門洞進出一次',
+     navWall.s.arrived === navWall.s.n && !navWall.s.ghost && !navWall.s.inBox &&
+     navWall.once === navWall.s.n && navWall.far <= navWall.gate &&
+     (navWall.off.t < 0 || navWall.off.ghost > 0),
+     navWall.s.n + ' 趟（牆半徑 ' + navWall.W + '）：到了 ' + navWall.s.arrived + '、用到穿透 ' + navWall.s.ghost +
+     '、在框裡 ' + navWall.s.inBox + ' 幀、進出城剛好一次的 ' + navWall.once + ' 趟、過門那一點離門洞中心最遠 ' +
+     navWall.far.toFixed(1) + '（門寬 ' + navWall.gate + '）、規劃了 ' + navWall.s.plan + ' 趟；最慢 ' +
+     navWall.s.slow + '；關掉規劃、城內往對面門外：' +
+     (navWall.off.t < 0 ? '到時限沒走到' : navWall.off.t + ' 秒到') + '、穿透 ' + navWall.off.ghost + ' 幀' +
+     (navWall.s.bad.length ? '；壞的：' + navWall.s.bad.join('；') : ''));
+
+  /* 這一段動過的全域還回去（見 開發筆記〈測試動過的全域狀態要還回去〉） */
+  await page.evaluate(() => {
+    homes = null; frameNo++;
+    for (const w of workers) { releaseWorker(w); w.ghost = 0; w.stk = 0; }
+    cleanTools(); clearHomes();
+    delete window.navT;
+  });
 
   /* ══════════ 檔案沒放齊的防呆 ══════════ */
   await head('檔案沒放齊的防呆', T_MUST);
