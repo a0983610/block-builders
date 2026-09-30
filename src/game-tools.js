@@ -80,8 +80,9 @@ const TOOLS = [
     /* v1.224：點地面或建築都算，叫 Saber 過去斬那一招（見 callSaber）。v1.226 起用跑的（EXC_RUN） */
     tip: '點一下：叫 Saber 跑過來，朝那一點舉劍斬下光柱（她在場上就直接叫過去）' },
   { id: 'musket', n: '火槍兵', k: '🎌',
-    /* v1.227：點兩下，同箭雨（見 aimMusket）。點地面水平射、點建築就瞄那裡（最多抬 30°） */
-    tip: '點兩下：先點火槍兵站的位置，再點要打的地方（點建築就瞄那裡）——六十人三段擊九輪齊射' },
+    /* v1.227：點兩下，同箭雨（見 aimMusket）。點地面水平射、點建築就瞄那裡（最多抬 30°）。
+       v1.232 起第二下是方向：整排朝那邊平行射，點建築是抬到那個高度（見 mkAim） */
+    tip: '點兩下：先點火槍兵站的位置，再點要打的方向（點建築就瞄那個高度）——六十人三段擊九輪齊射' },
   { id: 'levi', n: '兵長砍猴', k: '🌀',
     /* v1.230：點建築、地上的生物或小人就飛過去砍，點空地就跑到那裡待命（見 callLevi） */
     tip: '點建築、生物或小人：叫里維跑來射鋼索飛過去一頓狂砍；點空地：跑到那裡待命' }
@@ -7871,8 +7872,16 @@ function useTool(hit) {
   if (tool === 'levi') { callLevi(hit.point, hit.dir, null, false, onGround); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
-  // 火槍兵（v1.227）：同箭雨；第二下點在建築上就瞄那一點（仰角自動抬，上限 30°）
-  if (tool === 'musket') { aimMusket(hit.point, hit.kind === 'block'); return 0; }
+  /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
+     **點到地上的碎料算點地面**（v1.232，使用者：「點擊地面應該是水平的射擊(往建築點才調整仰角)」）：
+     碎料也畫在 blockMesh 上，pick 回報的是 'block'——v1.227～v1.231 點碎料場打出來的 180 發裡
+     有 45 發往上抬了最多 1.9°（探針）。還立著的（SET：地標、房子、城牆）才算建築；
+     fixHit 改判出來的那一下沒有 idx，它是在格子裡找到實心才改的，所以照樣算建築。 */
+  if (tool === 'musket') {
+    const b = hit.kind === 'block' && hit.idx >= 0 ? blocks[hit.idx] : null;
+    aimMusket(hit.point, hit.kind === 'block' && !(b && b.st !== SET));
+    return 0;
+  }
   return 0;
 }
 
@@ -11512,8 +11521,17 @@ const AR_GAP = 2.2, AR_ROWGAP = 2.6;    // 同一排的人隔多遠／排與排�
 const AR_JIT = 0.3;              // 站位再抖多少（不抖就是一個標準的方陣）
 const AR_LIFT = 0.45;            // 出場：整隊由小長到原尺寸要多久
 const AR_DRAW = 0.7;             // 拉一次弓要多久（弦從 0 拉到滿）
-const AR_SPREAD = 0.45;          // 同一輪裡每個人的放箭時刻各自錯開多少（不錯開像一個人在射）
+/* 同一輪裡每個人的放箭時刻各自錯開多少（不錯開像一個人在射）。**v1.232 起 0.45 → 0.65，
+   而且每放一支就重抽一次**（使用者：「目前一起發射太過整齊 小人射擊要有小小時間差(箭雨也是一起改)」）：
+   v1.171～v1.231 是出場時抽一次就定了，五輪的先後順序一模一樣（探針量到同一個人每輪慢多少差 0）。
+   上限是 AR_CYCLE − AR_DRAW（1.0）：重抽之後同一個人兩支之間最短只隔 AR_CYCLE − AR_SPREAD，
+   比拉一次弓還短的話弦會拉到一半就放。輪與輪之間的空檔最少也是這個數（0.65 → 1.05 秒）。 */
+const AR_SPREAD = 0.65;
 const AR_CYCLE = 1.7;            // 一輪到下一輪多久（要大於 AR_DRAW ＋ AR_SPREAD 才有空檔）
+/* 弦聲：v1.232 起每支一聲、每聲只給 k 倍音量（使用者：「聲音或許也該配合?」，看過預覽選
+   「每支一聲（很小聲）」；「注意別讓聲音爆太大聲&刺耳」）。同一支音效 0.06 秒內最多疊 3 聲
+   （voiceOK），所以一輪 80 支實際響得出來的約一半。量法與數字見 開發筆記〈火槍兵平行射、開槍錯開〉。 */
+const AR_SND_K = 0.3;
 const AR_IDLE = 1.3;             // 射完站多久才撤
 const AR_OUT = 0.45;             // 撤走：整隊縮回去要多久
 /* 出場／撤走的縮放下限。**不能給 0**：putWorker 讀的是 `w.scale || 1`，0 會被當成
@@ -11590,12 +11608,12 @@ function castArrows(from, toward, aimY) {
          tone 決定膚色與工作服（同 newWorker 拿編號當色號），base 是自己的身高倍率。 */
       ph: 0, gait: 0, tone: i, base: rr(W_LO, W_HI), scale: 0,
       bow: 1, draw: 0,                           // draw＝弦拉了多滿（引擎照它擺弦與箭）
-      done: 0, off: rr(0, AR_SPREAD)             // done＝已經射幾輪、off＝自己慢多少放箭
+      done: 0, off: rr(0, AR_SPREAD)             // done＝已經射幾輪、off＝自己這一輪慢多少放箭（每輪重抽）
     });
   }
   // ty＝瞄的高度：點建築就是那一塊的高度，點空地就是地面上一點點（v1.172）
   archers = { men, t: 0, tx: toward.x, ty: aimY > 0 ? aimY : AR_AIM_Y, tz: toward.z,
-              end: -1, snd: 0 };
+              end: -1 };
   sndWind();                                    // 一隊人到位（同投石機架好那一聲）
 }
 /* 站位落在建築或小人的家裡面的話，先沿著背對目標的方向往後退到空地（退幾格就好，
@@ -11626,7 +11644,8 @@ function arSpot(x, z, ux, uz) {
   return p;
 }
 /* 一隊人的一生：出場（由小長大）→ AR_VOL 輪齊射 → 站一下 → 撤走（縮回去）。
-   每個人各自算自己的鐘（m.off／m.done），所以一輪裡那四十支箭是散開的、不是一起彈出去。 */
+   每個人各自算自己的鐘（m.off／m.done），所以一輪裡那八十支箭是散開的、不是一起彈出去；
+   m.off 放完一支就重抽（v1.232），每一輪誰先誰後都不一樣。 */
 function stepArchers(dt) {
   if (!archers) return;
   const g = archers;
@@ -11648,9 +11667,9 @@ function stepArchers(dt) {
       // 這一支什麼時候離手：出場 ＋ 拉一次弓 ＋ 前面幾輪 ＋ 自己的錯開量
       if (g.t >= AR_LIFT + AR_DRAW + m.done * AR_CYCLE + m.off) {
         shootArrow(g, m);
-        // 一輪只出一聲弦（這一輪最快的那個人出手時）：四十聲疊起來也只聽得到一聲
-        if (m.done === g.snd) { sndBow(); g.snd++; }
+        sndBow(AR_SND_K);                            // 每支一聲、小聲（v1.232，見 AR_SND_K）
         m.done++;
+        m.off = rr(0, AR_SPREAD);                    // 下一輪自己慢多少：重抽（v1.232，見 AR_SPREAD）
       }
       const nt = AR_LIFT + AR_DRAW + m.done * AR_CYCLE + m.off;   // 下一支（用更新後的 done）
       m.draw = clamp(1 - (nt - g.t) / AR_DRAW, 0, 1);
@@ -11881,7 +11900,9 @@ function weapList() {
      ② **子彈走直線**，沿著畫出來的槍管出去（起點是 ENG.gunMuzzle，同箭的 BOW_TIP），
         打到第一個東西就停：積木咬掉一小片（同箭）、小人與動物撞倒。
      ③ **槍口冒煙**（使用者點名的）：火光 ＋ 一團往前噴、慢慢往上飄的白煙（同加農砲的
-        canBlast，份量是一把槍的）。 */
+        canBlast，份量是一把槍的）。
+   v1.232 看過第二份預覽之後改的（見 開發筆記〈火槍兵平行射、開槍錯開〉）：一排開槍錯開 0.14 → 0.6 秒、
+   每一發重抽（MK_SPREAD）；整排朝隊伍正前方平行射、散布 ±2°（mkAim）；點到地上的碎料算點地面。 */
 const MK_COL = 20, MK_ROWS = 3;          // 一排 20 人 × 3 排（使用者選 60 人）
 const MK_N = MK_COL * MK_ROWS;
 const MK_RND = 3;                        // 每一排輪到幾次（使用者選）
@@ -11890,25 +11911,41 @@ const MK_VOL = MK_ROWS * MK_RND;         // 整趟齊射幾次
    一排 20 人的間距就是 33 ÷ 19 ≈ 1.74。寫成算式，箭雨那兩個常數再調這裡自己跟著走。 */
 const MK_GAP = (AR_COL - 1) * AR_GAP / (MK_COL - 1);
 const MK_ROW = 1.9;                      // 排與排之間隔多遠
-const MK_P = 1.8;                        // 一排齊射到下一排齊射（一輪）
 const MK_LIFT = 0.45;                    // 出場：由小長到原尺寸（同 AR_LIFT）
 const MK_RAISE = 0.5;                    // 出場之後第一排舉槍要多久
-const MK_SPREAD = 0.14;                  // 同一排每個人開槍時刻各自錯開多少（不錯開像一把槍）
+/* 同一排每個人開槍時刻各自錯開多少（不錯開像一把槍）。**v1.232 起 0.14 → 0.6，而且每一發舉槍時
+   重抽**（使用者：「目前一起發射太過整齊 小人射擊要有小小時間差」，看過預覽選 0.6）：
+   0.14 的時候一排二十發擠在 0.08～0.13 秒裡、一幀最多五把一起開（探針），看起來就是一起開。 */
+const MK_SPREAD = 0.6;
+/* 開槍那一段因此拉長多少（v1.232）：v1.227 的時間表是照錯開 0.14 排的——最後一個人開完到收槍
+   留 0.31 秒（後座 MK_REC_T 彈得回來）。錯開變大，這一段照樣要留那 0.31，所以第一排多瞄 MK_DH、
+   後兩排多裝填 MK_DH，之後每一格都往後挪 MK_DH，一輪也長 MK_DH（1.8 → 2.26，九輪 16.2 → 20.3 秒）。
+   只挪不縮：走回去、往前一步的速度、第二排舉好之後瞄多久（0.3）都跟 v1.227 一樣。 */
+const MK_DH = MK_SPREAD - 0.14;
+const MK_P = 1.8 + MK_DH;                // 一排齊射到下一排齊射（一輪）
 const MK_SETTLE = 0.4;                   // 最後一輪走完 → 全隊立て銃
 const MK_IDLE = 1.3, MK_OUT = 0.45;      // 站一下、撤走（同箭雨的 AR_IDLE／AR_OUT）
 const MK_REC_T = 0.22;                   // 後座彈回去要多久
-/* 一輪之內的時間表（照 MK_P ＝ 1.8 排的，秒）。第一排：瞄著 → 開槍 → 放下 → 往旁邊一步進縫 →
-   往後走兩排 → 回到自己那一行 → 開始裝填。後兩排：裝填 → 收槍 → 往前一步 → 第二排舉槍。 */
-const MK_TL = { hold: 0.45, lower: 0.62, side: 0.8, back: 1.45, home: 1.62,
-                load: 0.35, pack: 0.5, step: 1.1, raise: 0.4, rest: 0.4, reload: 0.15 };
+/* 一輪之內的時間表（秒，v1.227 照 MK_P ＝ 1.8 排的，v1.232 起 raise／rest／reload 以外都加 MK_DH）。
+   第一排：瞄著 → 開槍 → 放下 → 往旁邊一步進縫 → 往後走兩排 → 回到自己那一行 → 開始裝填。
+   後兩排：裝填 → 收槍 → 往前一步 → 第二排舉槍。raise／rest／reload 是長度不是時刻。 */
+const MK_TL = { hold: 0.45 + MK_DH, lower: 0.62 + MK_DH, side: 0.8 + MK_DH, back: 1.45 + MK_DH,
+                home: 1.62 + MK_DH, load: 0.35 + MK_DH, pack: 0.5 + MK_DH, step: 1.1 + MK_DH,
+                raise: 0.4, rest: 0.4, reload: 0.15 };
+/* 槊杖搗一整趟多長：第三排從「往前一步、收完槍」搗到下一輪「收槍」為止（MK_DH ＝ 0 時就是 0.9） */
+const MK_LOAD_T = MK_P - MK_TL.step - MK_TL.reload + MK_TL.load;
 /* 仰角（使用者第三輪）：照第二下點的高度自動抬，上限 30°；點地面＝水平。 */
 const MK_EL_MAX = 30 * Math.PI / 180;
 const MK_V = 75;                         // 子彈多快（一幀 1.25 格，所以一定要掃掠判定）
 const MK_RANGE = 90;                     // 飛多遠沒打到東西就收掉（碎料場直徑 80 出頭）
 const MK_LEN = 0.3;                      // 判定用的彈長（weaponVsWorker／sweepRock 往前多探這一截）
-/* 落點散多開：目標附近一個圓盤，半徑照射程走（同箭雨的 AR_SPRAY，只給一半：
-   直射比拋射準）。垂直方向另外抖這個半徑的一半。 */
-const MK_SPRAY = 2.5, MK_SPRAY_D = 0.06;
+/* 每一發的方向散布（v1.232，使用者看過預覽選 ±2°）：一個小圓錐，半徑 MK_JIT。
+   v1.227～v1.231 是「瞄第二點附近一個圓盤」（半徑 2.5 ＋ 0.06 × 射程），整排朝那一點收成扇形，
+   兩端的人偏 ±27°；v1.232 起整排朝隊伍正前方平行射（見 mkAim）。上下那一份只在點建築時才有。 */
+const MK_JIT = 2 * Math.PI / 180;
+/* 槍聲：v1.232 起每一發一聲、每聲只給 k 倍音量（使用者選「每一發一聲」，「注意別讓聲音爆太大聲&刺耳」）。
+   v1.227～v1.231 是一排只在第一發響一聲。量法與數字見 開發筆記〈火槍兵平行射、開槍錯開〉。 */
+const MK_SND_K = 0.35;
 const MK_HIT_R = AR_HIT_R, MK_HIT_POW = AR_HIT_POW;   // 打到積木咬掉多大一片（同箭）
 const MK_BLOW = AR_BLOW;                 // 撞倒小人／動物的力道（同箭）
 const MK_KEEP = MK_N;                    // 場上最多幾顆子彈（一排才二十顆在飛，給一整隊的量）
@@ -11924,7 +11961,8 @@ let musket = null;               // 在場的火槍隊（同時只有一隊，�
 let bullets = null;              // 飛在半空的子彈
 
 /* 第一下記位置、畫個光環，第二下才叫人（同箭雨）。第二下點在建築上：那一點的高度就是目標
-   （仰角照它解）；點空地：ty ＝ −1 ＝ 水平射。 */
+   （仰角照它解）；點空地：ty ＝ −1 ＝ 水平射。第二下點的是**方向**（v1.232）：整排朝
+   第一點 → 第二點平行射，不是每個人都瞄那一點（見 mkAim）。 */
 function aimMusket(point, onBlock) {
   if (!aim) { aimFirst(point, MK_AIM_R, MK_AIM_C); return; }
   castMusket(aim, point, onBlock ? point.y : -1);
@@ -11959,10 +11997,10 @@ function castMusket(from, toward, ty) {
       ph: 0, gait: 0, tone: r * MK_COL + c, base: rr(W_LO, W_HI), scale: AR_K0,
       gun: 1, kasa: 1, gp: 'shoul', gq: null, gk: 0, rec: 0, rod: 0, el: 0,
       aa: a0,                                    // 這一發瞄的方向（見 mkAim）
-      off: rr(0, MK_SPREAD), shot: -1, aimN: -1  // off＝自己慢多少開槍、shot／aimN＝第幾輪做過了
+      off: 0, shot: -1, aimN: -1                 // off＝這一發自己慢多少開槍（舉槍時抽，見 mkAim）、shot／aimN＝第幾輪做過了
     });
   }
-  musket = { men, slot, t: 0, a0, sx, sz, tx: toward.x, tz: toward.z, ty, snd: -1 };
+  musket = { men, slot, t: 0, a0, sx, sz, tx: toward.x, tz: toward.z, ty };
   sndWind();                                     // 一隊人到位（同箭雨）
 }
 const mkEase = u => { u = clamp(u, 0, 1); return u * u * (3 - 2 * u); };
@@ -11985,28 +12023,33 @@ function mkWalk(m, p0, p1, u, dt) {
 }
 /* 走回去那條縫：自己那一行往旁邊半個間距（剛好在兩個人中間） */
 function mkLane(g, p) { return { x: p.x + g.sx * MK_GAP / 2, z: p.z + g.sz * MK_GAP / 2 }; }
-/* 這一發瞄哪（舉槍那一刻決定，舉的時候整個人跟著轉過去）：目標附近散開一點，
-   方向就是自己 → 那一點；仰角從**抬完的槍口**解（抬頭槍口會跟著動，所以解兩次，同加農砲）。 */
+/* 這一發怎麼打（舉槍那一刻決定）。**v1.232 起朝隊伍正前方平行射**（使用者：「火槍射擊應該是往點擊
+   第二點方向發射而不是瞄準第二點(射擊方向與隊伍垂直)」）：方向 ＝ g.a0（第一點 → 第二點），
+   再加一個 MK_JIT 的小圓錐散布；v1.227～v1.231 是各自瞄第二點附近，整排收成扇形。
+   仰角只有點建築才抬（g.ty ≥ 0）：照「正前方到目標那一面有多遠」解——整排平行，每個人要的
+   是在那一面打到那個高度，不是打到那一點。目標比槍口低就水平、也不加上下散布（「點擊地面應該是
+   水平的射擊(往建築點才調整仰角)」）。仰角從**抬完的槍口**解（抬頭槍口會跟著動，所以解兩次，同加農砲）。
+   開槍的錯開量 m.off 也在這裡重抽：每個人每一發慢多少都不一樣（v1.232，見 MK_SPREAD）。 */
 const _mkQ = { x: 0, y: 0, z: 0 };
 function mkAim(g, m, n) {
   m.aimN = n;
-  const far = Math.hypot(g.tx - m.x, g.tz - m.z);
-  const ang = Math.random() * Math.PI * 2;
-  const rad = Math.sqrt(Math.random()) * (MK_SPRAY + MK_SPRAY_D * far);
-  const tx = g.tx + Math.cos(ang) * rad, tz = g.tz + Math.sin(ang) * rad;
-  m.aa = Math.atan2(tx - m.x, tz - m.z);
+  m.off = rr(0, MK_SPREAD);
+  // 開根號讓圓錐裡分布均勻（同 AR_SPRAY）；押 Math.random = () => 0 的測試拿到的就是正前方
+  const rad = Math.sqrt(Math.random()) * MK_JIT, ang = Math.random() * Math.PI * 2;
+  m.aa = g.a0 + Math.cos(ang) * rad;
   let el = 0;
   if (g.ty >= 0) {
-    const ty = g.ty + (Math.random() * 2 - 1) * rad * 0.5;
     /* 照**原身高**解：第一排是出場那一刻就瞄的，那時候整隊還在由小長大（scale 趨近 0），
        照當下的 scale 算的話槍口等於貼在地上，仰角會多抬好幾度。 */
-    const sc = m.scale;
+    const sc = m.scale, ux = Math.sin(g.a0), uz = Math.cos(g.a0);
     m.scale = m.base;
     for (let pass = 0; pass < 2; pass++) {
       const q = ENG.gunAim(m, m.aa, el, _mkQ);
-      el = clamp(Math.atan2(ty - q.y, Math.hypot(tx - q.x, tz - q.z)), 0, MK_EL_MAX);
+      const fwd = (g.tx - q.x) * ux + (g.tz - q.z) * uz;      // 正前方到目標那一面（下限 1，免得貼臉時爆掉）
+      el = clamp(Math.atan2(g.ty - q.y, Math.max(1, fwd)), 0, MK_EL_MAX);
     }
     m.scale = sc;
+    if (el > 0) el = clamp(el + Math.sin(ang) * rad, 0, MK_EL_MAX);
   }
   m.el = el;
 }
@@ -12080,7 +12123,7 @@ function mkMan(g, m, t, t0, dt) {
     m.a = g.a0;
     if (tau < L.load) {
       mkAt(m, B0); mkPose(m, 'load');
-      m.rod = mkStroke((tau + MK_P - L.step - L.reload) / 0.9, 1.5);
+      m.rod = mkStroke((tau + MK_P - L.step - L.reload) / MK_LOAD_T, 1.5);
     } else if (tau < L.pack) {
       mkAt(m, B0); mkPose(m, 'load', 'shoul', (tau - L.load) / (L.pack - L.load));
     } else if (tau < L.step) {
@@ -12093,12 +12136,12 @@ function mkMan(g, m, t, t0, dt) {
       mkRaise(g, m, (tau - L.step) / L.raise);
     } else {
       mkAt(m, B1); mkPose(m, 'shoul', 'load', (tau - L.step) / L.reload);
-      if (tau > L.step + L.reload) m.rod = mkStroke((tau - L.step - L.reload) / 0.9, 1.5);
+      if (tau > L.step + L.reload) m.rod = mkStroke((tau - L.step - L.reload) / MK_LOAD_T, 1.5);
     }
   }
 }
 /* 開一槍。出手點是**這一刻畫出來的槍口**（ENG.gunMuzzle：構え、抬好仰角、後座還沒踢），
-   方向就是槍管的方向——畫出來的槍指哪，子彈就往哪飛。一排只出一聲（同箭雨一輪一聲弦）。 */
+   方向就是槍管的方向——畫出來的槍指哪，子彈就往哪飛。每一發一聲（v1.232，見 MK_SND_K）。 */
 function mkFire(g, m, n) {
   m.rec = 0;
   const q = ENG.gunMuzzle(m, _mkQ);
@@ -12106,7 +12149,7 @@ function mkFire(g, m, n) {
   const fx = Math.sin(m.a) * ce, fy = Math.sin(el), fz = Math.cos(m.a) * ce;
   pushBullet(q.x, q.y, q.z, fx, fy, fz);
   mkBlast(q.x, q.y, q.z, fx, fy, fz);
-  if (g.snd !== n) { g.snd = n; sndMusket(); }
+  sndMusket(MK_SND_K);
   m.rec = 1;
 }
 /* 槍口那一口火光與白煙（使用者：「槍口射擊後有煙」）。同加農砲的 canBlast 分兩批：

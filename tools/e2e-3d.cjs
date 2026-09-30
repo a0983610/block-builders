@@ -16715,7 +16715,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      arCast.want + '；workers 裡帶弓的有 ' + arCast.inWorkers + ' 個');
 
   /* 一整趟：射滿 AR_VOL 輪、每一支出手的角度、弧高、有沒有爆／燒／震、收不收乾淨。
-     24 秒的窗夠長：最後一支離手在第 8.4 秒（AR_LIFT ＋ AR_DRAW ＋ 4×AR_CYCLE ＋ 錯開），
+     24 秒的窗夠長：最後一支離手最晚在第 8.6 秒（AR_LIFT ＋ AR_DRAW ＋ 4×AR_CYCLE ＋ 錯開，v1.232 錯開 0.65），
      整隊第 10 秒撤走，最後一支箭插著淡完約第 17 秒。 */
   const arRun = await page.evaluate(() => {
     cleanTools(); completeNow();
@@ -16808,6 +16808,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      arRun.wcount === 6,
      '第 ' + arRun.quit + ' 秒整隊撤走、第 ' + arRun.gone +
      ' 秒最後一支箭消失；兵器網格關掉、小人的 count 回到 ' + arRun.wcount);
+
+  /* 放箭錯開（v1.232，使用者：「目前一起發射太過整齊 小人射擊要有小小時間差(箭雨也是一起改)」）：
+     每一支都落在這一輪開始之後 0～AR_SPREAD（多一幀）之內；每個人每一輪慢多少都重抽——
+     v1.171～v1.231 是出場抽一次就定了，五輪的先後順序一模一樣（那一版 varied 是 0）。
+     每一輪都要有空檔：這一輪最晚那一支到下一輪最早那一支 ≥ AR_CYCLE − AR_SPREAD。
+     亂數換成固定序列，結果每次一樣（規則型，上面那幾條 arRun 的是統計型）。 */
+  const arSpr = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const rnd = Math.random, os = shootArrow;
+    let seed = 777;
+    Math.random = () => (seed = seed * 16807 % 2147483647) / 2147483647;
+    const shots = [];
+    try {
+      shootArrow = (g, m) => { const n = m.done; os(g, m); shots.push({ i: g.men.indexOf(m), n, t: g.t }); };
+      tool = 'arrow';
+      useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
+      useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
+      for (let i = 0; i < 60 * 12; i++) step(1 / 60);
+    } finally { shootArrow = os; Math.random = rnd; cleanTools(); }
+    const tau = s => s.t - (AR_LIFT + AR_DRAW + s.n * AR_CYCLE);
+    const per = {};
+    for (const s of shots) (per[s.i] = per[s.i] || []).push(tau(s));
+    const varied = Object.values(per).filter(a => Math.max(...a) - Math.min(...a) > 2 / 60 + 1e-6).length;
+    const lastOf = n => Math.max(...shots.filter(s => s.n === n).map(s => s.t));
+    const firstOf = n => Math.min(...shots.filter(s => s.n === n).map(s => s.t));
+    const gaps = [];
+    for (let n = 0; n + 1 < AR_VOL; n++) gaps.push(firstOf(n + 1) - lastOf(n));
+    return { n: shots.length, want: AR_N * AR_VOL, S: AR_SPREAD, C: AR_CYCLE, N: AR_N,
+             lo: +Math.min(...shots.map(tau)).toFixed(4), hi: +Math.max(...shots.map(tau)).toFixed(4),
+             varied, gap: +Math.min(...gaps).toFixed(3) };
+  });
+  ok('箭雨：一輪的人放箭前後錯開（0～AR_SPREAD 秒），每個人每一輪都重抽，輪與輪之間留著空檔',
+     arSpr.n === arSpr.want && arSpr.lo > -1e-6 && arSpr.hi <= arSpr.S + 1 / 60 + 1e-6 &&
+     arSpr.hi > arSpr.S * 0.8 && arSpr.varied >= arSpr.N * 0.9 && arSpr.gap >= arSpr.C - arSpr.S - 1 / 60,
+     arSpr.n + ' 支，每支比這一輪開始晚 ' + arSpr.lo + '～' + arSpr.hi + ' 秒（AR_SPREAD ' + arSpr.S +
+     '）；五輪各慢多少不一樣的 ' + arSpr.varied + '／' + arSpr.N + ' 人；輪與輪之間最短空檔 ' + arSpr.gap +
+     ' 秒（AR_CYCLE − AR_SPREAD ＝ ' + (arSpr.C - arSpr.S).toFixed(2) + '）');
 
   /* 落在空地上：插著不動、撐一段時間才淡掉（使用者第三句）。 */
   const arGnd = await page.evaluate(() => {
@@ -17143,8 +17180,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '；workers 裡拿槍的 ' + mkCast.inWorkers + ' 個；陣笠 ＋ 槍 ' + mkCast.gear + ' 人');
 
   /* 一整趟：九輪、每一輪是哪一排開、開的人是不是站在最前面、每人幾發、間隔、
-     水平、煙、不爆不震、收不收乾淨。30 秒的窗：最後一輪在第 15.4 秒左右，
-     第 17.6 秒立て銃、第 19.3 秒撤完。 */
+     水平、煙、不爆不震、收不收乾淨。30 秒的窗：v1.232 起一輪 MK_P 2.26 秒，最後一輪在第 19.0 秒開始，
+     第 21.7 秒立て銃、第 23.4 秒撤完。 */
   const mkRun = await page.evaluate(() => {
     cleanTools(); completeNow();
     const s0 = stats.smashed, shots = [];
@@ -17153,8 +17190,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     mkFire = (g, m, n) => {
       of(g, m, n);
       const b = bullets[bullets.length - 1], S = g.slot[0][m.col];
+      const d = Math.atan2(b.dx, b.dz) - g.a0;
       shots.push({ t: T, n, row: m.row, col: m.col, dy: b.dy, el: m.el,
-                   front: Math.hypot(m.x - S.x, m.z - S.z) });
+                   front: Math.hypot(m.x - S.x, m.z - S.z),
+                   /* v1.232：這一發比這一輪開始晚多少、方向偏離隊伍正前方多少 */
+                   tau: g.t - (MK_LIFT + MK_RAISE + n * MK_P), dev: Math.atan2(Math.sin(d), Math.cos(d)) });
     };
     /* 煙：每一發都要冒（使用者點名的）。量「這一發往塵霧池裡加了幾團」。 */
     mkBlast = (x, y, z, fx, fy, fz) => {
@@ -17194,7 +17234,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const first = vols.map(v => Math.min(...v.map(s => s.t)));
     const gaps = first.slice(1).map((t, i) => t - first[i]);
     const ld = Object.values(load);
+    /* 每個人自己那三發各慢多少：重抽的話三發不會都一樣（差兩幀以上才算不一樣，一幀 1/60 秒） */
+    const taus = {};
+    for (const s of shots) (taus[s.row + ':' + s.col] = taus[s.row + ':' + s.col] || []).push(s.tau);
+    const varied = Object.values(taus).filter(a => Math.max(...a) - Math.min(...a) > 2 / 60 + 1e-6).length;
+    const devs = shots.map(s => Math.abs(s.dev));
     return {
+      tauMin: +Math.min(...shots.map(s => s.tau)).toFixed(4), tauMax: +Math.max(...shots.map(s => s.tau)).toFixed(4),
+      varied, devMax: +(Math.max(...devs) * 180 / Math.PI).toFixed(3), JIT: +(MK_JIT * 180 / Math.PI).toFixed(3),
       shots: shots.length, want: MK_N * MK_RND, vols: vols.length, VOL: MK_VOL, col: MK_COL,
       perVol: vols.map(v => v.length), volRows: vols.map(v => v[0].row).join(''),
       oneRow: vols.every((v, n) => v.every(s => s.row === n % MK_ROWS)),
@@ -17230,6 +17277,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mkRun.shots + ' 發（期望 ' + mkRun.want + '）、' + mkRun.perMan + ' 人每人 ' +
      mkRun.perManMin + '～' + mkRun.perManMax + ' 發；' + mkRun.loadMen + ' 人裝填過（最少 ' +
      mkRun.loadMin + ' 秒）、' + mkRun.walkMen + ' 人走過、轉身最少 ' + mkRun.turnMin + ' 弧度');
+  /* v1.232（使用者：「目前一起發射太過整齊 小人射擊要有小小時間差」「火槍射擊應該是往點擊第二點方向發射
+     而不是瞄準第二點(射擊方向與隊伍垂直)」）。兩條都是**上下限**，不賭骰子：
+     ① 每一發都落在這一輪開始之後 0～MK_SPREAD（多一幀）之內，而且真的散開（最晚那一發超過八成：
+        180 發全擠在八成以內的機率是 0.8^180）、每個人三發各慢多少不一樣（每一發重抽，
+        v1.227～v1.231 是出場抽一次就定了，那一版這裡是 0）。
+     ② 每一發偏離隊伍正前方（第一點 → 第二點）都不超過 MK_JIT；v1.227～v1.231 各自瞄第二點，兩端偏 ±27°。 */
+  ok('一排的人開槍前後錯開（0～MK_SPREAD 秒），每個人每一發都重抽',
+     mkRun.tauMin > -1e-6 && mkRun.tauMax <= mkRun.spread + 1 / 60 + 1e-6 &&
+     mkRun.tauMax > mkRun.spread * 0.8 && mkRun.varied >= mkRun.N * 0.9,
+     '每一發比這一輪開始晚 ' + mkRun.tauMin + '～' + mkRun.tauMax + ' 秒（MK_SPREAD ' + mkRun.spread +
+     '）；三發各慢多少不一樣的 ' + mkRun.varied + '／' + mkRun.N + ' 人');
+  ok('整排朝隊伍正前方（第一點 → 第二點）平行射，不是各自瞄第二點',
+     mkRun.devMax <= mkRun.JIT + 1e-3 && mkRun.devMax > mkRun.JIT * 0.5,
+     mkRun.shots + ' 發偏離正前方最多 ' + mkRun.devMax + '°（散布 MK_JIT ±' + mkRun.JIT + '°）');
   ok('點地面：每一發都水平射；每一發槍口都冒煙（火光之外還有白煙 ＋ 火皿那一口）',
      mkRun.flat === 0 && mkRun.smokeN === mkRun.shots && mkRun.smokeMin === mkRun.smokeWant,
      '不水平的 ' + mkRun.flat + ' 發；' + mkRun.smokeN + ' 發每一發加進塵霧池 ' +
@@ -17291,9 +17352,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、火槍兵身上最小 ' + mkPose.gunMin + '／' + mkPose.kasaMin + '；他的安全帽 ' + mkPose.hatMax +
      '；槊杖 構え ' + mkPose.rodAim + ' → 裝填 ' + mkPose.rodLoad);
 
-  /* 仰角照第二下點的高度自動抬、上限 30°（使用者第三輪）。散布押成 0：每一發瞄的就是那一點，
-     所以「子彈經過那一點」直接量得出來（量的是那一點到彈道直線的距離；彈道從槍口出發，
-     槍口在身體中線右邊 0.1 格，所以不是 0）。三種點法各跑前幾輪。 */
+  /* 仰角照第二下點的高度自動抬、上限 30°（使用者第三輪）。散布押成 0（v1.232 起散布是 MK_JIT 的
+     圓錐，押 0 就是正前方）：每一發都朝隊伍正前方、仰角照「正前方到目標那一面的距離」解，
+     所以量的是**子彈走到那一面時的高度**跟那一點差多少（v1.227～v1.231 量的是那一點到彈道直線的
+     距離——那時候每個人都瞄那一點，v1.232 起整排平行，只有正對著的那一兩行經過那一點）。
+     四種點法各跑前幾輪：牆、太高、地面、**地上的碎料**（v1.232：碎料也畫在 blockMesh 上，
+     點到它 pick 回報的是 'block'，但它算點地面——拿一塊還立著的積木暫時標成碎料，點在它上面高 3 格的
+     地方，漏了這條規則的話那一下會被當成點建築、仰角抬起來）。 */
   const mkAimChk = await page.evaluate(() => {
     cleanTools(); completeNow();
     let pick = null;
@@ -17304,48 +17369,59 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const P = { x: pick.x, y: pick.y, z: pick.z };
     const rnd = Math.random;
     Math.random = () => 0;
-    const run = (pt, onBlock) => {
+    const run = (pt, onBlock, idx) => {
       cleanTools();
       const shots = [], of = mkFire;
       mkFire = (g, m, n) => {
         of(g, m, n);
         const b = bullets[bullets.length - 1];
-        const vx = pt.x - b.x, vy = pt.y - b.y, vz = pt.z - b.z;
-        const t = vx * b.dx + vy * b.dy + vz * b.dz;
-        shots.push({ el: m.el, miss: Math.hypot(vx - b.dx * t, vy - b.dy * t, vz - b.dz * t) });
+        const ux = Math.sin(g.a0), uz = Math.cos(g.a0);
+        const f = (pt.x - b.x) * ux + (pt.z - b.z) * uz, c = b.dx * ux + b.dz * uz;
+        const d = Math.atan2(b.dx, b.dz) - g.a0;
+        shots.push({ el: m.el, off: Math.abs(b.y + b.dy * f / c - pt.y),
+                     dev: Math.abs(Math.atan2(Math.sin(d), Math.cos(d))) });
       };
       tool = 'musket';
       useTool({ kind: 'ground', point: { x: P.x, y: 0, z: P.z + 24 } });
-      useTool({ kind: onBlock ? 'block' : 'ground', point: pt });
+      if (idx >= 0) {                                  // 暫時標成碎料，點完就還回去
+        const st = blocks[idx].st;
+        blocks[idx].st = FREE;
+        try { useTool({ kind: 'block', idx, point: pt }); } finally { blocks[idx].st = st; }
+      } else useTool({ kind: onBlock ? 'block' : 'ground', point: pt });
       for (let i = 0; i < 60 * 5; i++) step(1 / 60);
       mkFire = of;
       const deg = v => +(v * 180 / Math.PI).toFixed(2);
       return { n: shots.length, lo: deg(Math.min(...shots.map(s => s.el))),
                hi: deg(Math.max(...shots.map(s => s.el))),
-               miss: +Math.max(...shots.map(s => s.miss)).toFixed(3),
+               off: +Math.max(...shots.map(s => s.off)).toFixed(3),
+               dev: +Math.max(...shots.map(s => s.dev)).toExponential(1),
                atMax: shots.filter(s => s.el === MK_EL_MAX).length };
     };
-    let mid, top, gnd;
+    let mid, top, gnd, deb;
     try {
       mid = run(P, true);
       top = run({ x: P.x, y: P.y + 60, z: P.z }, true);
       gnd = run({ x: P.x, y: 0, z: P.z }, false);
+      deb = run({ x: P.x, y: 3, z: P.z }, true, blocks.indexOf(pick));
     } finally { Math.random = rnd; cleanTools(); }
-    return { y: +P.y.toFixed(2), mid, top, gnd, max: +(MK_EL_MAX * 180 / Math.PI).toFixed(2) };
+    return { y: +P.y.toFixed(2), mid, top, gnd, deb, max: +(MK_EL_MAX * 180 / Math.PI).toFixed(2) };
   });
-  ok('點建築就瞄那一點（仰角照高度自動抬、子彈經過那一點）；太高的停在 30°；點地面水平',
+  ok('點建築就抬到那一點的高度（整排平行，子彈飛到那一面剛好在那個高度）；太高的停在 30°；點地面與碎料水平',
      mkAimChk.mid.n > 0 && mkAimChk.mid.lo > 0 && mkAimChk.mid.hi < mkAimChk.max &&
-     mkAimChk.mid.miss < 0.3 &&
+     mkAimChk.mid.off < 0.1 && mkAimChk.mid.dev < 1e-9 &&
      mkAimChk.top.n > 0 && mkAimChk.top.atMax === mkAimChk.top.n &&
-     mkAimChk.gnd.n > 0 && mkAimChk.gnd.hi === 0,
+     mkAimChk.gnd.n > 0 && mkAimChk.gnd.hi === 0 && mkAimChk.deb.n > 0 && mkAimChk.deb.hi === 0,
      '點 ' + mkAimChk.y + ' 高的牆：' + mkAimChk.mid.n + ' 發仰角 ' + mkAimChk.mid.lo + '～' +
-     mkAimChk.mid.hi + '°、離那一點最遠 ' + mkAimChk.mid.miss + '；點高 60 格：' +
+     mkAimChk.mid.hi + '°、飛到那一面時差那個高度最多 ' + mkAimChk.mid.off + ' 格、偏離正前方 ' +
+     mkAimChk.mid.dev + ' 弧度；點高 60 格：' +
      mkAimChk.top.atMax + '／' + mkAimChk.top.n + ' 發停在上限 ' + mkAimChk.max + '°；點地面：' +
-     mkAimChk.gnd.n + ' 發最大仰角 ' + mkAimChk.gnd.hi + '°');
+     mkAimChk.gnd.n + ' 發最大仰角 ' + mkAimChk.gnd.hi + '°；點碎料（高 3 格處）：' +
+     mkAimChk.deb.n + ' 發最大仰角 ' + mkAimChk.deb.hi + '°');
 
   /* 打得到小人與生物（同箭雨），自己隊上的人不在 workers 裡所以打不到。
-     散布押成 0：每一發都瞄第二點那一點，小人就擺在那一點上；牛擺在某一行彈道的半路上
-     （彈道朝那一點收攏，半路上的牛只擋得到附近幾行，後面的照樣飛到小人那裡）。 */
+     散布押成 0：每一發都朝隊伍正前方直直飛（v1.232 起整排平行），所以小人擺在第 7～12 行的
+     正前方、跟第二點同一條線上；牛擺在第 2 行正前方的半路上（v1.227～v1.231 彈道朝第二點收攏，
+     那時候小人擺在那一點上就好）。槍口在人的中線右邊 0.1，擋得到（GATE_MAN_R 0.75）。 */
   const mkLives = await page.evaluate(() => {
     cleanTools();
     const rnd = Math.random;
@@ -17356,12 +17432,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       useTool({ kind: 'ground', point: { x: 44, y: 0, z: 44 } });
       useTool({ kind: 'ground', point: { x: 44, y: 0, z: 0 } });
       workers.forEach((w, i) => {
-        w.x = 44 + (i % 3 - 1) * 0.4; w.z = (i < 3 ? -0.3 : 0.3); w.tx = w.x; w.tz = w.z;
+        w.x = musket.slot[0][7 + i % 6].x; w.z = 0; w.tx = w.x; w.tz = w.z;
         w.st = 'idle'; w.load = []; w.carry = false; w.air = 0; w.fall = 0; w.burn = 0;
       });
       beasts = null;
       const cow = spawnCattle(), p = musket.slot[0][2];
-      cow.x = (p.x + 44) / 2; cow.z = p.z / 2; cow.tx = cow.x; cow.tz = cow.z; cow.pause = 999;
+      cow.x = p.x; cow.z = p.z / 2; cow.tx = cow.x; cow.tz = cow.z; cow.pause = 999;
       cow.air = 0; cow.fall = 0; cow.burn = 0;
       kind = cow.kind;
       for (let i = 0; i < 60 * 3; i++) {
@@ -17381,6 +17457,77 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mkLives.manAir > 0 && mkLives.cowAir > 0,
      '同時最多 ' + mkLives.manAir + '／' + mkLives.men + ' 個小人被撞飛、' + mkLives.kind +
      ' 被撞飛 ' + mkLives.cowAir + ' 隻');
+
+  /* 槍聲與弦聲（v1.232，使用者：「聲音或許也該配合?」→ 選「每一發一聲」「每支一聲（很小聲）」，
+     「注意別讓聲音爆太大聲&刺耳」）。開槍錯開之後一排二十聲、一輪八十聲散在半秒多裡，要守三件事：
+       ① 最響的那一瞬間（50 毫秒）不比改之前那一聲（k ＝ 1 的單聲）大；
+       ② 一整排加起來不超過核彈（同王之財寶「一秒份不超過核彈」那條），一整輪弦聲不超過一記槌子；
+       ③ 高頻占比不比單聲高（「刺耳」看的是 2kHz 以上，同〈音效〉那一段），也不打到滿刻度。
+     離線算波形（同〈音效〉那一段），但每一聲要排在**它自己的時刻**：proxy 讓 currentTime 與
+     start() 落在那個時刻，voiceOK 也照那個時刻算（0.06 秒內最多疊 3 聲）。出手時刻用等間隔
+     排滿 MK_SPREAD／AR_SPREAD——比真的亂數更密（實測真的時刻火槍 54 聲過得了 voiceOK、等間隔 60 聲），
+     是偏嚴的那一邊。噪音是 Math.random 填的，量的時候換成固定的亂數序列，所以每次算出來一樣（規則型）。 */
+  const mkSnd = await page.evaluate(async () => {
+    const SR = 44100, SEC = 3, realAudio = audio, wasMuted = muted, wasRunning = running, rnd = Math.random;
+    running = false;
+    const render = async (plan, hi) => {
+      let seed = 12345;
+      Math.random = () => (seed = seed * 16807 % 2147483647) / 2147483647;
+      const ctx = new OfflineAudioContext(1, SR * SEC, SR);
+      let dest = ctx.destination, at = 0;
+      if (hi) { const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 2000; f.Q.value = 0.7; f.connect(dest); dest = f; }
+      const proxy = new Proxy(ctx, { get(t, k) {
+        if (k === 'destination') return dest;
+        if (k === 'currentTime') return at;
+        if (k === 'createOscillator' || k === 'createBufferSource') return () => {
+          const nd = t[k](), st = nd.start.bind(nd);
+          nd.start = w => st(w === undefined ? at : w);
+          return nd;
+        };
+        const v = t[k]; return typeof v === 'function' ? v.bind(t) : v;
+      } });
+      audio = () => proxy; muted = false;
+      try { for (const [t, fn] of plan) { at = t; fn(); } }
+      finally { audio = realAudio; muted = wasMuted; Math.random = rnd; }   // 理由見〈音效〉的 render
+      const d = (await ctx.startRendering()).getChannelData(0);
+      const W = Math.floor(SR * 0.05);
+      let s = 0, peak = 0, over = 0, loud = 0;
+      for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i]); if (v > peak) peak = v; if (v >= 0.999) over++; s += d[i] * d[i]; }
+      for (let i = 0; i + W <= d.length; i += W) {
+        let q = 0; for (let j = 0; j < W; j++) q += d[i + j] * d[i + j];
+        loud = Math.max(loud, Math.sqrt(q / W));
+      }
+      return { rms: Math.sqrt(s / d.length), peak, over, loud };
+    };
+    const one = async plan => {
+      const a = await render(plan, false), h = await render(plan, true);
+      return { rms: +a.rms.toFixed(4), peak: +a.peak.toFixed(3), loud: +a.loud.toFixed(4), over: a.over,
+               hiPct: +(h.rms / a.rms * 100).toFixed(1) };
+    };
+    const spread = (n, S, fn) => Array.from({ length: n }, (_, i) => [i * S / (n - 1), fn]);
+    try {
+      return {
+        mk1: await one([[0, () => sndMusket()]]),
+        mkRow: await one(spread(MK_COL, MK_SPREAD, () => sndMusket(MK_SND_K))),
+        bow1: await one([[0, () => sndBow()]]),
+        bowVol: await one(spread(AR_N, AR_SPREAD, () => sndBow(AR_SND_K))),
+        nuke: await one([[0, () => sndBoom(30)]]),
+        smash: await one([[0, () => sndSmash()]]),
+        kMk: MK_SND_K, kAr: AR_SND_K
+      };
+    } finally { running = wasRunning; }
+  });
+  ok('一排槍聲、一輪弦聲（每發一聲）：最響的瞬間不比改之前那一聲大，加起來不超過核彈／槌子，也不更刺',
+     mkSnd.mkRow.loud <= mkSnd.mk1.loud && mkSnd.mkRow.rms < mkSnd.nuke.rms &&
+     mkSnd.mkRow.hiPct <= mkSnd.mk1.hiPct + 2 && mkSnd.mkRow.over === 0 &&
+     mkSnd.bowVol.loud <= mkSnd.bow1.loud && mkSnd.bowVol.rms < mkSnd.smash.rms &&
+     mkSnd.bowVol.hiPct <= mkSnd.bow1.hiPct + 2 && mkSnd.bowVol.over === 0,
+     '火槍一排 20 聲 ×' + mkSnd.kMk + '：最響 50ms ' + mkSnd.mkRow.loud + '（單聲 ' + mkSnd.mk1.loud +
+     '）、整排 rms ' + mkSnd.mkRow.rms + '（核彈 ' + mkSnd.nuke.rms + '）、2kHz 以上 ' + mkSnd.mkRow.hiPct +
+     '%（單聲 ' + mkSnd.mk1.hiPct + '%）、peak ' + mkSnd.mkRow.peak + '；箭雨一輪 80 聲 ×' + mkSnd.kAr +
+     '：最響 ' + mkSnd.bowVol.loud + '（單聲 ' + mkSnd.bow1.loud + '）、整輪 rms ' + mkSnd.bowVol.rms +
+     '（槌子 ' + mkSnd.smash.rms + '）、2kHz 以上 ' + mkSnd.bowVol.hiPct + '%（單聲 ' + mkSnd.bow1.hiPct +
+     '%）、peak ' + mkSnd.bowVol.peak);
 
   /* 容量：人數開到最大、一隊弓箭手與一隊火槍兵同時在場也要畫得下（MAXW 140 → 200 的理由）。 */
   const mkCap = await page.evaluate(() => ({ maxw: ENG.MAXW, wk: Math.max(...WK_OPTS), ar: AR_N, mk: MK_N }));
@@ -29083,7 +29230,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   for (let i = 0; i < 45; i++) sndStab();
                 }, 3, 5),
                 /* 箭雨的弦聲（v1.171）：配方就是 sndBlade 上面那一版被拿掉的「弓箭聲」
-                   ——對王之財寶是缺點，對真的弓箭正好。一輪只放一聲。
+                   ——對王之財寶是缺點，對真的弓箭正好。這裡量的是單聲（k ＝ 1）；v1.232 起
+                   一輪每支一聲、音量 × AR_SND_K，整輪加起來的量在〈火槍兵〉那一段的聲音那條。
                    **一定要擺在最後面**：這些量測的噪音是用 Math.random() 填 buffer 的，
                    插在中間會把整條亂數序列往後推，後面每一發量到的數字全部跟著換
                    （加這一發時就踩到：插在 bladeOld 後面 → 王之財寶命中聲那一條紅了，
