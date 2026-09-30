@@ -27699,7 +27699,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      lsz.got.join(',') === lsz.names.join(',') && lsz.r[0] < lsz.r[1] && lsz.r[1] < lsz.r[2] && lsz.beastCz === null,
      '骰子 0／0.5／0.99 → ' + lsz.got.join('／') + '（刀圈半徑 ' + lsz.r.join('／') + '）；點生物 cz＝' + lsz.beastCz);
 
-  /* ── 點生物：追過去、轉一圈砍中，牠只會倒地（不改主意）；巨人斬殺、一塊一塊散掉、散完從場上拿掉 ── */
+  /* ── 點生物：追過去、轉一圈砍中，牠只會倒地、倒了就算被攻擊（v1.233.0：吉祥物翻臉）；
+        巨人斬殺、跪下往前倒、一塊一塊散掉、散完從場上拿掉 ── */
   const lbeast = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
     const a = spawnBeast('ape', 1);
@@ -27714,7 +27715,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (a.fall > 0) fell = 1;
       if (m.st === 'fun' && seen.indexOf('odm:land') >= 0) break;
     }
-    const ape = { seen: seen.join('→'), fell, alive: beasts.indexOf(a) >= 0, bad: a.bad, bad0, call: m.call };
+    const ape = { seen: seen.join('→'), fell, alive: beasts.indexOf(a) >= 0, bad: a.bad, bad0, call: m.call, hcd: a.hcd };
     beasts = null;
     const g = spawnBeast('giant', 1);
     g.x = siteR + 26; g.z = -8; g.st = 'fun'; g.pause = 999; g.stay = 999;
@@ -27734,21 +27735,24 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (!on && gone < 0) gone = n * 0.02;
       if (gone > 0 && L.st === 'fun') break;
     }
-    const giant = { dead, gone, span: +(gone - dead).toFixed(2), want: LEV_DIE.hold + LEV_DIE.melt,
+    const D = LEV_DIE;
+    const giant = { dead, gone, span: +(gone - dead).toFixed(2), want: D.kneel + D.wait + D.fall + D.hold + D.melt,
                     sc0, scMin, scMax, meltUp, lie: +lie.toFixed(2), levi: L.st };
     beasts = null;
     return { ape, giant };
   });
-  ok('點生物：追過去、轉一圈砍中，牠只會倒地、不改主意，砍完他回去逛',
-     lbeast.ape.fell && lbeast.ape.alive && lbeast.ape.bad === lbeast.ape.bad0 && lbeast.ape.call === null &&
+  ok('點生物：追過去、轉一圈砍中，牠只會倒地、倒了就算被攻擊（吉祥物被惹毛），砍完他回去逛',
+     lbeast.ape.fell && lbeast.ape.alive && lbeast.ape.bad0 === 0 && lbeast.ape.bad === 1 && lbeast.ape.hcd > 0 &&
+     lbeast.ape.call === null &&
      lbeast.ape.seen === 'call→act→odm:shoot→odm:fly→odm:cut→odm:drop→odm:land→fun',
-     lbeast.ape.seen + '；黑獼猴倒地＝' + !!lbeast.ape.fell + '、還在場上＝' + lbeast.ape.alive + '、bad ' + lbeast.ape.bad);
-  ok('巨人被斬殺：倒地、大小不變、一塊一塊散掉（melt 一路往上），hold ＋ melt 秒後從場上拿掉',
+     lbeast.ape.seen + '；黑獼猴倒地＝' + !!lbeast.ape.fell + '、還在場上＝' + lbeast.ape.alive + '、bad ' +
+     lbeast.ape.bad0 + ' → ' + lbeast.ape.bad + '、冷卻還剩 ' + (+lbeast.ape.hcd).toFixed(2) + ' 秒');
+  ok('巨人被斬殺：大小不變、跪下往前倒、一塊一塊散掉（melt 一路往上），整條時間軸走完從場上拿掉',
      lbeast.giant.dead > 0 && lbeast.giant.gone > 0 && Math.abs(lbeast.giant.span - lbeast.giant.want) <= 0.05 &&
      lbeast.giant.scMin === lbeast.giant.sc0 && lbeast.giant.scMax === lbeast.giant.sc0 && lbeast.giant.meltUp &&
      lbeast.giant.lie > 1.2,
      lbeast.giant.dead.toFixed(2) + ' 秒斬中、' + lbeast.giant.gone.toFixed(2) + ' 秒拿掉（隔 ' + lbeast.giant.span +
-     ' 秒，hold ＋ melt ' + lbeast.giant.want + '）；sc ' + lbeast.giant.scMin + '～' + lbeast.giant.scMax + '（原本 ' +
+     ' 秒，跪下＋跪著＋倒下＋趴著＋散掉 ' + lbeast.giant.want + '）；sc ' + lbeast.giant.scMin + '～' + lbeast.giant.scMax + '（原本 ' +
      lbeast.giant.sc0 + '）；躺平角 ' + lbeast.giant.lie);
 
   /* ── 一塊一塊散掉：引擎照 m.melt 把那幾塊收掉（固定的亂序：k × 黃金比例的小數部分 < melt） ── */
@@ -27777,6 +27781,191 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('一塊一塊散掉：melt 0.5 收掉的就是亂序裡排前一半的那幾塊，melt 0 一塊都不收',
      lmelt.gone === lmelt.want && lmelt.gone > lmelt.all * 0.3 && lmelt.gone < lmelt.all * 0.7 && lmelt.none === 0,
      'melt 0.5：收掉 ' + lmelt.gone + '／' + lmelt.all + ' 塊（照亂序該收 ' + lmelt.want + '）；melt 0：收掉 ' + lmelt.none);
+
+  /* ── 跪下往前倒（v1.233.0，使用者：「巨人被里維攻擊後 調整成跪地然後往前倒下」）：讀 beastMesh 真的畫出去的矩陣——
+        散掉之前每一幀最低那一個角貼著草皮、倒下去膝蓋不滑走、頭頂一路往下（跪下那一段不能先被腳尖撐高，
+        離線比排程時量到的就是這個坑）、跪著比站著矮、最後臉朝前趴著。姿勢沒有骰子 ── */
+  const lpose = await page.evaluate(() => {
+    cleanTools();
+    const g = spawnBeast('giant', 1);
+    g.x = siteR + 24; g.z = 3; g.a = 0.7; g.st = 'fun'; g.pause = 999; g.stay = 999;
+    const P = ENG.BEASTS.giant, B = ENG.BEAST_PARTS, mesh = ENG.three.beastMesh, KY = ENG.GIA_KNEE[0];
+    /* 右膝那一塊：右腿上中心離膝蓋樞紐最近的；頭頂那一塊：上緣最高的 */
+    let kneeK = -1, headK = -1, kd = Infinity, top = -Infinity;
+    P.forEach((b, k) => {
+      if (b.sw > 0 && Math.abs(b.p[1] - KY) < kd) { kd = Math.abs(b.p[1] - KY); kneeK = k; }
+      if (b.p[1] + b.s[1] / 2 > top) { top = b.p[1] + b.s[1] / 2; headK = k; }
+    });
+    const M = new THREE.Matrix4(), v = new THREE.Vector3();
+    const read = () => {
+      const i = beasts.indexOf(g);
+      ENG.putBeasts(beastList());
+      let lo = Infinity;
+      for (let k = 0; k < P.length; k++) {
+        mesh.getMatrixAt(i * B + k, M);
+        for (let c = 0; c < 8; c++) {
+          v.set(c & 1 ? 0.5 : -0.5, c & 2 ? 0.5 : -0.5, c & 4 ? 0.5 : -0.5).applyMatrix4(M);
+          lo = Math.min(lo, v.y);
+        }
+      }
+      mesh.getMatrixAt(i * B + kneeK, M); v.set(0, 0, 0).applyMatrix4(M); const knee = { x: v.x, z: v.z };
+      mesh.getMatrixAt(i * B + headK, M); v.set(0, 0.5, 0).applyMatrix4(M); const head = { x: v.x, y: v.y, z: v.z };
+      return { lo, knee, head };
+    };
+    const s0 = read();
+    giantDie(g);
+    const D = LEV_DIE, t2 = D.kneel + D.wait, t3 = t2 + D.fall, t4 = t3 + D.hold;
+    let t = 0, lowMax = 0, rise = 0, hMin = s0.head.y, kneel = null, prone = null;
+    while (t < t4 - 1e-9) {
+      step(0.05); t += 0.05;
+      const s = read();
+      lowMax = Math.max(lowMax, Math.abs(s.lo));
+      /* 往上彈：頭頂比「到目前為止最低的那一刻」高多少（累積的，不是一幀一幀比） */
+      if (t <= t3 + 1e-9) { hMin = Math.min(hMin, s.head.y); rise = Math.max(rise, s.head.y - hMin); }
+      if (!kneel && t >= t2 - 1e-9) kneel = s;
+      if (t >= t3 + 1e-9) prone = s;
+    }
+    const fx = Math.sin(g.a), fz = Math.cos(g.a);
+    const r = { H: +s0.head.y.toFixed(2), lowMax: +lowMax.toFixed(4), rise: +rise.toFixed(3),
+                kneelY: +kneel.head.y.toFixed(2), proneY: +prone.head.y.toFixed(2),
+                slide: +Math.hypot(prone.knee.x - kneel.knee.x, prone.knee.z - kneel.knee.z).toFixed(3),
+                ahead: +((prone.head.x - prone.knee.x) * fx + (prone.head.z - prone.knee.z) * fz).toFixed(2),
+                spin: g.spin, want: ENG.GIA_PRONE };
+    beasts = null; ENG.putBeasts([]);
+    return r;
+  });
+  /* 往上彈的門檻給身高的 1.5%：只折膝蓋那一版是 4.4%（腳尖先插進地裡、整隻被撐高 0.66 格），
+     現在剩腳背伸直那一下腳尖往下掃的 0.7%（排程試過三十組，見
+     開發筆記〈兵長砍猴：砍倒算被攻擊、城牆邊來回跑、巨人跪下往前倒〉） */
+  ok('跪下往前倒：最低那一塊一直貼著草皮、頭頂不會先被撐高、跪著比站著矮、倒下去膝蓋不滑走、最後臉朝前趴著',
+     lpose.lowMax < 1e-3 && lpose.rise < lpose.H * 0.015 && lpose.kneelY < lpose.H * 0.9 && lpose.kneelY > lpose.H * 0.5 &&
+     lpose.proneY < lpose.H * 0.2 && lpose.slide < 0.3 && lpose.ahead > lpose.H * 0.5 &&
+     Math.abs(lpose.spin - lpose.want) < 1e-9 && lpose.want > 0,
+     '站著頭頂 ' + lpose.H + ' 格 → 跪著 ' + lpose.kneelY + ' → 趴著 ' + lpose.proneY + '（頭頂最多往上 ' + lpose.rise +
+     '）；最低那一角離地最多 ' + lpose.lowMax + ' 格；倒下去膝蓋滑了 ' + lpose.slide + ' 格；頭在膝蓋前方 ' + lpose.ahead +
+     ' 格；趴到底 ' + (+lpose.spin).toFixed(3) + ' 弧度（GIA_PRONE ' + (+lpose.want).toFixed(3) + '）');
+
+  /* ── 蒸氣：一塊散掉那一刻，從那一塊冒 LEV_STEAM.burst 團（使用者：「目前他的煙不夠多」）。
+        平常那一份每秒幾顆先關掉，只留「散掉那一塊冒一團」——冒幾團、冒在哪都是規則，不看骰子 ── */
+  const lsteam = await page.evaluate(() => {
+    cleanTools();
+    const g = spawnBeast('giant', 1);
+    g.x = siteR + 24; g.z = -6; g.st = 'fun'; g.pause = 999; g.stay = 999;
+    giantDie(g);
+    const D = LEV_DIE, t4 = D.kneel + D.wait + D.fall + D.hold, S = LEV_STEAM, rate = S.rate;
+    while (g.dead < t4 - 1e-9) stepDie(g, 0.05);
+    S.rate = [0, 0, 0];
+    dust.length = 0;
+    const P = ENG.BEASTS.giant, u0 = g.melt, sc = g.sc;
+    stepDie(g, 0.2);
+    const u1 = g.melt, at = [];
+    for (let k = 0; k < P.length; k++) {
+      const f = (k * 0.6180339887) % 1;
+      if (f >= u0 && f < u1) at.push(Object.assign({}, ENG.giaPartAt(g, k, { x: 0, y: 0, z: 0 })));
+    }
+    const puffs = dust.filter(d => d.gia), e = 1e-9;
+    const near = d => at.some(p => Math.abs(d.x - p.x) <= 0.35 * sc + e && Math.abs(d.z - p.z) <= 0.35 * sc + e &&
+                                   d.y - p.y >= -0.2 * sc - e && d.y - p.y <= 0.3 * sc + e);
+    const r = { parts: at.length, puffs: puffs.length, want: at.length * S.burst, far: puffs.filter(d => !near(d)).length,
+                burst: S.burst };
+    S.rate = rate;                                  // 動過的全域狀態還回去
+    dust.length = 0; beasts = null;
+    return r;
+  });
+  ok('蒸氣：一塊散掉那一刻，從那一塊的位置冒 LEV_STEAM.burst 團',
+     lsteam.parts > 0 && lsteam.burst > 0 && lsteam.puffs === lsteam.want && lsteam.far === 0,
+     '0.2 秒散掉 ' + lsteam.parts + ' 塊、冒了 ' + lsteam.puffs + ' 團（該冒 ' + lsteam.want + '，一塊 ' + lsteam.burst +
+     ' 團）；不在散掉那幾塊身上的 ' + lsteam.far + ' 團');
+
+  /* ── 砍建築時刀圈掃到的也算被攻擊（v1.233.0，使用者選的「點到的＋刀圈掃到的都算」「吉祥物＋天災都算」）：
+        吉祥物被惹毛、天災數一下，冷卻中馬上再掃到一次不算。直接呼叫 levLives，不跑他那一整趟 ── */
+  const lside = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const L = spawnBeast('levi', 1);
+    const C = { x: siteR + 20, y: ENG.BEAST_MID.ape * DOOM_SC, z: 0 };
+    const A = spawnBeast('ape', 1);
+    A.x = C.x + 0.5; A.z = C.z; A.st = 'fun'; A.pause = 999; A.stay = 999;
+    const T = spawnBeast('ape', 0);
+    T.x = C.x - 0.5; T.z = C.z; T.st = 'come';
+    const r1Before = { a: A.bad, t: T.hurt };
+    levLives(L, C, LEV_SIZES[0].r);
+    const r1 = { aFell: A.fall > 0, aBad: A.bad, aCd: A.hcd, tFell: T.fall > 0, tHurt: T.hurt, tQuit: T.quit };
+    for (const o of [A, T]) { o.fall = 0; o.lie = 0; o.spin = 0; }
+    levLives(L, C, LEV_SIZES[0].r);
+    const r2 = { aFell: A.fall > 0, aBad: A.bad, tFell: T.fall > 0, tHurt: T.hurt };
+    beasts = null;
+    return { r1Before, r1, r2 };
+  });
+  ok('砍建築時刀圈掃到的也算被攻擊：吉祥物被惹毛、天災數一下，冷卻中再掃到只倒地不算',
+     lside.r1Before.a === 0 && lside.r1Before.t === 0 &&
+     lside.r1.aFell && lside.r1.aBad === 1 && lside.r1.aCd > 0 && lside.r1.tFell && lside.r1.tHurt === 1 &&
+     lside.r2.aFell && lside.r2.aBad === 1 && lside.r2.tFell && lside.r2.tHurt === 1,
+     '第一刀：吉祥物倒地＝' + lside.r1.aFell + '、bad 0 → ' + lside.r1.aBad + '；天災倒地＝' + lside.r1.tFell + '、被打 ' +
+     lside.r1.tHurt + ' 次（' + lside.r1.tQuit + ' 次放棄）；馬上再一刀：倒地 ' + lside.r2.aFell + '／' + lside.r2.tFell +
+     '、bad ' + lside.r2.aBad + '、被打 ' + lside.r2.tHurt + ' 次');
+
+  /* ── 城外到城外、直線切過城裡（v1.233.0）：沿城外繞過去，不在缺口內外來回 ──
+        v1.232 實測（開了城牆事件的場子，點城外的房子）：24 趟裡 4 趟在同一個缺口進出 40 秒、一次都沒射到。
+        場面同〈閒晃事件：城牆〉⑤（−z 那一面靠東南角那一段沒砌、其他整圈砌好）：他在城裡，
+        要去東牆外靠東南角那一點（點空地那一道命令，不出招，量的就是走過去那一段）。
+        A/B：把 wallCut 換成永遠 false 就是 v1.232。押死的場面：沒有骰子 ── */
+  const lwall = await page.evaluate(() => {
+    cleanTools(); clearHomes(); phase = 'done';
+    const fill = hi => {
+      const h = homes.list[hi];
+      for (let i = 0; i < h.slots.length; i++) {
+        const sl = h.slots[i], b = newBlock();
+        b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      h.done = true; homeBox(h);
+    };
+    const W = wallRing(), n0 = blocks.length;
+    homes = { list: [] };
+    for (const h of wallPlan()) {
+      homes.list.push(h);
+      if (!(h.thin === 'z' && h.z < 0 && h.wx0 < W - 8 && h.wx1 > W - 8)) fill(homes.list.length - 1);
+    }
+    ENG.setBlockCount(blocks.length);
+    frameNo++;                                      // wallNow／wallList 照幀快取：這一圈是這一幀才有的
+    const cut = wallCut;
+    const run = on => {
+      wallCut = on ? cut : () => false;
+      beasts = null;
+      const m = spawnBeast('levi', 1, 0, 0);
+      m.x = W - 14; m.z = -(W - 6); m.sx = m.x; m.sz = m.z; m.st = 'fun'; m.pause = 0;
+      const G = { x: W + 4, y: 0, z: -(W - 12), sd: LEV_SD, go: 1, b: null };
+      sendSaber(m, G);
+      let n = 0, done = 0, flips = 0, was = inWall(m.x, m.z), gate = 0;
+      while (n++ < 1200) {                          // 60 秒
+        frameNo++;                                  // 同主迴圈（step 每一幀加一）
+        stepBeast(m, 0.05);
+        if (m.st === 'gate') gate++;
+        const now = inWall(m.x, m.z);
+        if (now !== was) { flips++; was = now; }
+        if (!m.call) { done = n; break; }
+      }
+      wallCut = cut;
+      const r = { secs: done ? +(done * 0.05).toFixed(1) : -1, flips, gate, d: +Math.hypot(m.x - G.x, m.z - G.z).toFixed(2) };
+      beasts = null;
+      return r;
+    };
+    const r = { on: run(true), off: run(false), W, sd: LEV_SD };
+    /* 這一圈牆的積木整批拿掉（動過的全域狀態還回去）：只 clearHomes 的話它們會變成懸在牆的位置上的碎料，
+       後面〈點選〉那一條的射線會先打到它們 */
+    cleanTools();
+    for (let i = n0; i < blocks.length; i++) if (blocks[i].cell) gridDel(blocks[i]);
+    blocks.length = n0; ENG.setBlockCount(n0);
+    frameNo++;
+    return r;
+  });
+  ok('城外到城外、直線切過城裡：他沿城外繞過去，不在缺口內外來回（A/B：關掉 wallCut 就是 v1.232）',
+     lwall.on.secs > 0 && lwall.on.flips === 1 && lwall.on.d <= lwall.sd + 0.1 &&
+     (lwall.off.secs < 0 || lwall.off.flips > 3),
+     '牆半徑 ' + lwall.W + '：' + lwall.on.secs + ' 秒到、進出城 ' + lwall.on.flips + ' 次、繞了 ' + lwall.on.gate +
+     ' 幀、停在離那一點 ' + lwall.on.d + ' 格；關掉 wallCut：' + (lwall.off.secs < 0 ? '60 秒沒到' : lwall.off.secs + ' 秒到') +
+     '、進出城 ' + lwall.off.flips + ' 次');
 
   /* ── 點小人：追過去砍倒（手上的積木掉下來），不算手指戳倒的成就 ── */
   const lman = await page.evaluate(() => {

@@ -4883,6 +4883,74 @@ const ENG = (function () {
        不然踹點會整整偏一格，畫面上腳踩在這裡、積木炸在那裡。 */
     return { x: GI_SOLE[0], y, z };
   }
+  /* 被斬殺的巨人：先跪下、再往前倒（v1.233.0，使用者：「巨人被里維攻擊後 調整成跪地然後往前倒下」）。
+     規則那邊給四個角度（m.knee 膝蓋彎多少、m.ank 腳踝轉多少、m.hip 大腿繞髖轉多少、m.spin 整隻往前趴多少），
+     m.kpv 立起來：
+       · 膝蓋以下那幾塊（腿上 kk 的、中心低於 GIA_KNEE 的：小腿、脛前腱、踝腱、腳掌、腳趾）繞膝蓋往後折；
+         腳掌與腳趾再繞腳踝轉；整條腿再繞髖轉（負的＝往前，同踢腿）
+       · 往前趴是**繞膝蓋轉**，不是繞腳底：跪著的時候膝蓋就是著地的那一點，倒下去膝蓋不會滑走
+       · 整隻抬到「最低那一塊剛好貼著草皮」（giaMinY，每幀算一次，只有正在倒的那一隻）
+     **跪下那一段不能只折膝蓋**（離線比過五種排程）：大腿直直不動、小腿往後折的話，腳尖會先往下插、
+     整隻被撐高 0.66 格才往下掉。規則那邊照「膝蓋往前頂、腳掌先平貼地面、最後才伸直腳背」擺
+     （見 game-tools.js 的 stepDie），只剩腳背伸直那一下腳尖往下掃、頭頂彈 0.1 格（身高的 0.7%）。
+     倒下去的時候膝蓋照「小腿一直平貼地面」一路伸直。 */
+  const GIA_KNEE = [1.20, 0.02];              // 膝蓋的樞紐（y, z）：大腿下緣 1.35、小腿上緣 1.16
+  const GIA_ANKLE = [0.30, -0.02];            // 腳踝的樞紐：踝腱 0.22～0.50、腳掌 0～0.22
+  const GIA_HIPP = [GIA_HIP, JOINT_Z];        // 髖的樞紐（同走路擺腿那一個）
+  const GIA_SLUMP = 0.12;                     // 跪著的時候上身往前垮幾度
+  const _dp = { y: 0, z: 0, rx: 0 };
+  function giaDownPart(b, kn, an, hp) {
+    let y = b.p[1], z = b.p[2], rx = 0;
+    if (b.sw && b.kk) {
+      const rot = (P, t) => {
+        const dy = y - P[0], dz = z - P[1], c = Math.cos(t), s = Math.sin(t);
+        y = P[0] + dy * c - dz * s; z = P[1] + dy * s + dz * c; rx += t;
+      };
+      if (y < GIA_KNEE[0]) {
+        if (an && y < GIA_ANKLE[0]) rot(GIA_ANKLE, an);
+        if (kn) rot(GIA_KNEE, kn);
+      }
+      if (hp) rot(GIA_HIPP, hp);
+    }
+    _dp.y = y; _dp.z = z; _dp.rx = rx;
+    return _dp;
+  }
+  /* 這個姿勢最低那一點多高（模型單位，繞膝蓋往前趴 ph 之後、還沒抬）。which：0 全部、1 只算腿、2 腿以外。
+     巨人每一塊都沒有自己的轉角（沒有 r），所以一塊的最低點就是中心減掉「轉過 t 之後的半高」。 */
+  function giaMinY(kn, an, hp, ph, which) {
+    let lo = Infinity;
+    const c = Math.cos(ph), s = Math.sin(ph);
+    for (const b of GIANT) {
+      if ((which === 1 && !b.sw) || (which === 2 && b.sw)) continue;
+      const d = giaDownPart(b, kn, an, hp);
+      const cy = GIA_KNEE[0] + (d.y - GIA_KNEE[0]) * c - (d.z - GIA_KNEE[1]) * s, t = d.rx + ph;
+      lo = Math.min(lo, cy - b.s[1] / 2 * Math.abs(Math.cos(t)) - b.s[2] / 2 * Math.abs(Math.sin(t)));
+    }
+    return lo;
+  }
+  /* 趴到底是幾度：往前倒到胸口（腿以外最低的那一塊）碰到地面那一刻。照造型表掃出來，不寫死——
+     改了造型不必回來改這個數 */
+  const GIA_PRONE = (() => {
+    for (let ph = GIA_SLUMP; ph < Math.PI * 0.75; ph += 0.002) {
+      const kn = Math.max(0, Math.PI / 2 - ph);
+      if (giaMinY(kn, Math.PI / 2, 0, ph, 2) <= giaMinY(kn, Math.PI / 2, 0, ph, 1)) return ph;
+    }
+    return Math.PI / 2;
+  })();
+  /* 第 k 塊現在在世界的哪裡（中心）。規則那邊拿它決定蒸氣從哪裡冒（一塊散掉那一刻就從那一塊冒一團），
+     算法同 putBeasts 的那一段：腳踝／膝蓋／髖 → 繞膝蓋往前趴 → 朝向 → 抬到貼地 → 乘 sc */
+  function giaPartAt(m, k, out) {
+    const b = GIANT[k], sc = m.sc || 1, ph = m.spin || 0;
+    const d = giaDownPart(b, m.knee || 0, m.ank || 0, m.hip || 0);
+    const dy = d.y - GIA_KNEE[0], dz = d.z - GIA_KNEE[1];
+    const y = GIA_KNEE[0] + dy * Math.cos(ph) - dz * Math.sin(ph);
+    const z = GIA_KNEE[1] + dy * Math.sin(ph) + dz * Math.cos(ph);
+    const lo = giaMinY(m.knee || 0, m.ank || 0, m.hip || 0, ph, 0), a = m.a || 0;
+    out.x = m.x + (b.p[0] * Math.cos(a) + z * Math.sin(a)) * sc;
+    out.y = (m.y || 0) + (y - lo) * sc;
+    out.z = m.z + (-b.p[0] * Math.sin(a) + z * Math.cos(a)) * sc;
+    return out;
+  }
 
   const BEASTS = { ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
                    cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
@@ -5953,6 +6021,14 @@ const ENG = (function () {
         scratch.position.y += (BEAST_MID[m.kind] - _piv.y) * msc;
         scratch.position.z -= _piv.z * msc;
       }
+      /* 被斬殺的巨人跪下、往前倒（v1.233.0，見 giaDownPart）：繞膝蓋轉，再抬到最低那一塊貼著草皮 */
+      if (m.kpv) {
+        const a = m.a || 0;
+        _piv.set(0, GIA_KNEE[0], GIA_KNEE[1]).applyEuler(scratch.rotation);
+        scratch.position.x += (Math.sin(a) * GIA_KNEE[1] - _piv.x) * msc;
+        scratch.position.y += (GIA_KNEE[0] - _piv.y - giaMinY(m.knee || 0, m.ank || 0, m.hip || 0, m.spin || 0, 0)) * msc;
+        scratch.position.z += (Math.cos(a) * GIA_KNEE[1] - _piv.z) * msc;
+      }
       scratch.scale.setScalar(msc);
       scratch.updateMatrix();
       const wc = WING_CFG[m.kind];                      // 這一幀的翼弧，整隻共用
@@ -6019,6 +6095,11 @@ const ENG = (function () {
           scratchB.position.y = b.pv + dy * c - dz * s2;
           scratchB.position.z = jz + dy * s2 + dz * c;
           scratchB.rotation.x = (b.r ? b.r[0] : 0) + ang;
+        }
+        if (m.kpv && b.sw) {                         // 跪下：膝蓋以下往後折、腳背伸直（v1.233.0）
+          const d = giaDownPart(b, m.knee || 0, m.ank || 0, m.hip || 0);
+          scratchB.position.y = d.y; scratchB.position.z = d.z;
+          scratchB.rotation.x += d.rx;
         }
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
@@ -6428,6 +6509,9 @@ const ENG = (function () {
     /* 巨人（v1.192）：規則那邊要拿它算「這一腳踹到哪一點」。
        畫出來的腳掌跟判定用的那一點是同一條式子算的（同 SWORD_HIT／UFO_MOUTH）。 */
     giantFoot,
+    /* 被斬殺的巨人跪下往前倒（v1.233.0）：跪著上身垮幾度、趴到底幾度（照造型表掃出來的），
+       第 k 塊在世界的哪裡（蒸氣從那裡冒）、這個姿勢最低那一點多高（測試驗貼地） */
+    GIA_SLUMP, GIA_PRONE, GIA_KNEE, giaPartAt, giaMinY,
     /* Saber（v1.222，v1.223 改成整條光柱斬下來）：她自己一顆 mesh、光柱跟著劍畫（putSabers）。
        規則那邊照 EXC 的時間軸開斬、照 excSword 讀劍在哪朝哪、照 EXC_W／excWidth／EXC_L／EXC_BASE
        判定斬到哪——跟畫出來的同一份數字。 */

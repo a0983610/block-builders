@@ -9161,8 +9161,12 @@ function stepCall(m, dt, spd, stp, kp) {
       }
       tx = h.x + ax * stand; tz = h.z + az * stand;
     }
-    /* 城牆擋在前面：有門走門，沒門就走到牆腳下改走最後那幾步（牆在中間，那一刀連牆一起斬） */
-    if (wallAhead(m, tx, tz)) {
+    /* 城牆擋在前面：有門走門，沒門就走到牆腳下改走最後那幾步（牆在中間，那一刀連牆一起斬）。
+       **城外到城外、直線卻切過城裡的也算**（v1.233.0，wallCut）：wallAhead 的前篩是「一內一外」，這種它說不擋，
+       於是從還沒砌的那一段直直跑進城、在城裡被另一面擋住、照「城裡往外」走最近的開口——就是剛剛進來那一段，
+       出去又照直線跑回來：實測點城外的房子，四趟都在那個缺口內外來回 40 秒、一次都沒射到（同小人 v1.225 那一個，
+       見 crossNeed）。gateNeed 問的 crossNeed 本來就認得這一種，會沿城外繞到目標那一側 */
+    if (wallAhead(m, tx, tz) || wallCut(m.x, m.z, tx, tz)) {
       if (gateNeed(m, tx, tz)) return false;
       if (wallFoot(m, tx, tz)) { m.cn = 1; return false; }
     }
@@ -9272,10 +9276,24 @@ const LEV_DUST = 0.2;            // 幾秒揚一次塵（每幀都揚的話塵�
 /* 巨人被斬殺（使用者：「巨人會被砍死(倒地 氣化消失)」）：砍的是後頸（GIA_NAPE，模型單位的高度），
    倒地躺 hold 秒、冒著蒸氣，接著邊冒煙邊**一塊一塊散掉**（照固定的亂序收掉，引擎的 m.melt），melt 秒散完。
    第一版是邊冒邊縮小（使用者：「不應該是縮小的氣化 而是冒煙消失」），預覽給了兩種讀法——
-   甲「濃煙罩住、煙最濃那一刻整隻不見」、乙「邊冒煙邊一塊一塊散掉」，使用者選**乙** */
+   甲「濃煙罩住、煙最濃那一刻整隻不見」、乙「邊冒煙邊一塊一塊散掉」，使用者選**乙**。
+   v1.233.0 使用者：「巨人被里維攻擊後 調整成跪地然後往前倒下 另外目前他的煙不夠多」——
+   v1.230 是斬中當場往後仰躺。現在照這條時間軸（姿勢在引擎，見 engine.js 的 giaDownPart）：
+     kneel 膝蓋一軟跪下去（膝蓋著地那一下震一下）
+     wait  跪著、上身垮在那裡
+     fall  往前倒，越倒越快（繞膝蓋轉，胸口著地那一下震一下、揚一圈塵）
+     hold  趴著冒蒸氣
+     melt  邊冒煙邊一塊一塊散掉，散完從場上拿掉 */
 const GIA_NAPE = 4.2;
-const LEV_DIE = { hold: 1.4, melt: 3.2 };
-const LEV_DIE_STEAM = [45, 110]; // 每秒冒幾顆蒸氣：躺著那一段／散的那一段（自己的配額照 GIA_STEAM_MAX）
+const LEV_DIE = { kneel: 0.8, wait: 0.45, fall: 1.0, hold: 1.0, melt: 3.2 };
+const GIA_BUCKLE = 0.45;         // 跪下那一段膝蓋往前頂：大腿繞髖最多往前幾度（中途最大、跪好時回到直的）
+/* 蒸氣（v1.233.0 使用者：「目前他的煙不夠多」；v1.230 是每秒 45／110 顆、一顆 0.5～1.1、配額照走路冒的 150）。
+     rate  每秒幾顆：跪下與倒下那一段／趴著／散的那一段
+     burst 一塊散掉那一刻，從那一塊的位置冒幾團（「冒煙消失」：哪裡不見了哪裡就冒煙）
+     cap   自己的配額（塵霧那一池 MAXDUST 5600；走路冒的那一份還是 GIA_STEAM_MAX）
+     s／life 一團多大、活多久 */
+const LEV_STEAM = { rate: [70, 120, 260], burst: 4, cap: 500, s: [0.7, 1.6], life: [1.5, 2.8] };
+const LEV_STEAM_ALL = 2400;      // 塵霧那一池已經這麼多就不冒了（蘑菇雲那一類在場時讓給它們）
 const lvSm = f => f * f * (3 - 2 * f);
 /* 立體機動中的里維、正在氣化的巨人：一般道具打不動（見檔頭那一段） */
 function levBusy(m) { return !!m && (m.st === 'odm' || !!m.dead); }
@@ -9553,7 +9571,9 @@ function levCut(m, C, dt) {
   if (!m.oshk) { m.oshk = 1; ENG.shake(0.7); }
   return n;
 }
-/* 刀掃到的人與動物（砍建築那一段順手掃到的）：人被甩飛，動物只會倒地（使用者：「其他生物只會倒地」） */
+/* 刀掃到的人與動物（砍建築那一段順手掃到的）：人被甩飛，動物只會倒地（使用者：「其他生物只會倒地」）。
+   **砍倒了就算被攻擊**（v1.233.0，使用者：「觀察發現里維攻擊不會切換吉祥物攻擊行為」）：同其他道具叫 beastHit——
+   吉祥物照自己的脾氣翻臉或收手（MASCOTS），天災數一下被打幾次，冷卻 BEAST_HIT_CD 照算。v1.230 是不叫的 */
 function levLives(m, C, cutR) {
   const R = cutR + 0.4;
   for (const w of workers) {
@@ -9567,10 +9587,11 @@ function levLives(m, C, cutR) {
     if (o === m || o.air || o.sky || levBusy(o)) continue;
     const mid = ENG.BEAST_MID[o.kind] * (o.sc || 1);
     if (Math.hypot(o.x - C.x, (o.y || 0) + mid - C.y, o.z - C.z) > R + mid * 0.8) continue;
-    if (fellBeast(o, rr(2.2, 3.4))) sndFall();
+    if (fellBeast(o, rr(2.2, 3.4))) { sndFall(); beastHit(o); }
   }
 }
-/* 生物：轉一圈砍中那一刀。巨人斬殺；其餘只會倒地（使用者選的）。牠已經不在了就只是揮空。
+/* 生物：轉一圈砍中那一刀。巨人斬殺；其餘只會倒地（使用者選的），倒了就算被攻擊（beastHit，見 levLives）。
+   牠已經不在了就只是揮空。
    小人（w）同戳倒那一下（手上的積木掉下來），**不算 stats.poked**——那是「手指戳倒幾個小人」的成就 */
 function levStrike(m, b, w) {
   if (!levTargetOk(b, w)) return false;
@@ -9581,46 +9602,85 @@ function levStrike(m, b, w) {
   }
   ENG.shake(b.kind === 'giant' ? 1.2 : 0.5);
   if (b.kind === 'giant') { giantDie(b); return true; }
-  if (fellBeast(b, rr(2.4, 3.6))) { sndFall(); return true; }
+  if (fellBeast(b, rr(2.4, 3.6))) { sndFall(); beastHit(b); return true; }
   return false;
 }
-/* 巨人被斬殺（使用者：「巨人會被砍死(倒地 氣化消失)」）：當場倒地（往後仰躺），手上在做的全部收掉。
-   之後交給 stepDie：躺著冒蒸氣，LEV_DIE.hold 秒後一塊一塊散掉，散完從場上拿掉（stepBeast 回 true）。
-   天災那一件就算結束了（stepDoom 數的是場上還有沒有天災），吉祥物那一隻也是。 */
+/* 巨人被斬殺（使用者：「巨人會被砍死(倒地 氣化消失)」）：手上在做的全部收掉，交給 stepDie——
+   跪下、往前倒、趴著冒蒸氣，一塊一塊散掉，散完從場上拿掉（stepBeast 回 true）。
+   天災那一件就算結束了（stepDoom 數的是場上還有沒有天災），吉祥物那一隻也是。
+   姿勢那四個角度（knee／ank／hip／spin）是 stepDie 每幀給的，kpv 叫引擎改用跪倒那一套畫（見 giaDownPart）；
+   lie 給 0：往後仰躺那一套的抬升不用了（引擎那邊照這個姿勢最低那一塊貼地）。 */
 function giantDie(b) {
   b.dead = 1e-6; b.st = 'dead'; b.call = null; b.cq = null;
   b.kick = 0; b.kt = 0; b.hit = 0; b.kleft = 0; b.bust = null; b.gait = 0; b.pause = 0;
-  b.air = 0; b.burn = 0; b.brl = 0; b.fall = 1; b.face = 0; b.roll = 0;
-  b.lie = lieLift(b); b.melt = 0;
+  b.air = 0; b.burn = 0; b.brl = 0; b.fall = 1; b.face = 0; b.roll = 0; b.arm = 0; b.y = 0;
+  b.lie = 0; b.spin = 0; b.kpv = 1; b.knee = 0; b.ank = 0; b.hip = 0; b.thud = 0; b.melt = 0; b.puff = 0;
   sndGiant();
-  toast(BEAST_NM.giant + '被里維兵長斬殺', '後頸一刀，倒在地上冒著蒸氣，一塊一塊散掉');
+  toast(BEAST_NM.giant + '被里維兵長斬殺', '後頸一刀，跪倒在地、往前倒下，冒著蒸氣一塊一塊散掉');
 }
-/* 一顆蒸氣，冒在躺平的身體上隨便一處（仰躺時頭在牠原本朝向的反方向，身長 5 模型單位） */
-function dieSteam(m) {
-  const sc = m.sc || 1, fx = Math.sin(m.a || 0), fz = Math.cos(m.a || 0);
-  const s = Math.random() * 5 * sc, side = rr(-0.9, 0.9) * sc;
+/* 一團蒸氣。at 給了就冒在那一點（一塊散掉的那一刻），沒給就冒在身上隨便一塊 */
+const _dieAt = { x: 0, y: 0, z: 0 };
+function dieSteam(m, at) {
+  const P = ENG.BEASTS.giant, sc = m.sc || 1, S = LEV_STEAM;
+  const p = at || ENG.giaPartAt(m, Math.floor(Math.random() * P.length), _dieAt);
   dust.push({
     gia: 1,
-    x: m.x - fx * s + fz * side, y: rr(0.3, 1.6) * sc, z: m.z - fz * s - fx * side,
-    vx: rr(-0.8, 0.8), vy: rr(2.4, 5), vz: rr(-0.8, 0.8),
+    x: p.x + rr(-0.35, 0.35) * sc, y: p.y + rr(-0.2, 0.3) * sc, z: p.z + rr(-0.35, 0.35) * sc,
+    vx: rr(-0.9, 0.9), vy: rr(2.0, 4.6), vz: rr(-0.9, 0.9),
     rx: Math.random() * 6, ry: Math.random() * 6,
-    g: -1.7, keep: 0.985, fade: 1.1, life: rr(1.2, 2.2), s: rr(0.5, 1.1), c: rr(0.93, 1)
+    g: -1.7, keep: 0.985, fade: 1.1, life: rr(S.life[0], S.life[1]), s: rr(S.s[0], S.s[1]), c: rr(0.93, 1)
   });
+}
+/* 著地那兩下：膝蓋（big 0）、胸口（big 1）。胸口那一下在身前——膝蓋往前約半個身長 */
+function dieThud(m, big) {
+  const sc = m.sc || 1, d = big ? 2.4 * sc : 0;
+  const at = { x: m.x + Math.sin(m.a || 0) * d, y: 0.3, z: m.z + Math.cos(m.a || 0) * d };
+  spawnDust(at, 3, big ? 60 : 20);
+  if (big) spawnRing(at, 6);
+  ENG.shake(big ? 1.1 : 0.6);
+  sndFall();
+  noise(big ? 0.5 : 0.3, big ? 0.14 : 0.08, 240);
 }
 function stepDie(m, dt) {
   m.dead += dt;
   m.fall = 1; m.gait = 0;
-  m.spin += (lieAng(m) - m.spin) * Math.min(1, dt * 3);        // 十五格高的，倒得慢一點
-  const t = m.dead - LEV_DIE.hold, u = t <= 0 ? 0 : Math.min(1, t / LEV_DIE.melt);
+  const D = LEV_DIE, t = m.dead, SL = ENG.GIA_SLUMP, PR = ENG.GIA_PRONE, H = Math.PI / 2;
+  const t1 = D.kneel, t2 = t1 + D.wait, t3 = t2 + D.fall, t4 = t3 + D.hold;
+  if (t < t1) {
+    /* 跪下：膝蓋往後折到小腿平貼地面（knee ＋ spin ＝ 90°）、上身往前垮 SL。
+       **膝蓋先往前頂、腳掌先平貼地面，最後四成才伸直腳背**（見 engine.js 的 giaDownPart）：
+       只折膝蓋的話腳尖先往下插，整隻被撐高 0.66 格才往下掉；這樣排剩腳背伸直那一下的 0.1 格 */
+    const u = lvSm(t / t1), w = lvSm(clamp((t / t1 - 0.6) / 0.4, 0, 1));
+    m.spin = SL * u; m.knee = (H - SL) * u; m.hip = -GIA_BUCKLE * Math.sin(Math.PI * u);
+    m.ank = -(m.knee + m.spin + m.hip) * (1 - w) + H * w;
+  } else {
+    /* 往前倒：越倒越快（u²），膝蓋跟著伸直——小腿一直平貼地面，只有膝蓋以上在轉 */
+    const u = t < t2 ? 0 : Math.min(1, (t - t2) / D.fall);
+    m.spin = SL + (PR - SL) * u * u; m.knee = Math.max(0, H - m.spin); m.ank = H; m.hip = 0;
+  }
+  if (m.thud < 1 && t >= t1) { m.thud = 1; dieThud(m, 0); }
+  if (m.thud < 2 && t >= t3) { m.thud = 2; dieThud(m, 1); }
+  const u0 = m.melt || 0, u = t <= t4 ? 0 : Math.min(1, (t - t4) / D.melt);
   m.melt = u;                                                   // 引擎照它一塊一塊收掉
-  /* 蒸氣：躺著那一段就冒，散的時候越冒越兇 */
-  m.puff = (m.puff || 0) + dt * (LEV_DIE_STEAM[0] + (LEV_DIE_STEAM[1] - LEV_DIE_STEAM[0]) * u);
+  /* 蒸氣：倒下那一段就冒，趴著多一點，散的時候最兇；一塊散掉那一刻從那一塊冒一團 */
+  const S = LEV_STEAM, rate = t < t3 ? S.rate[0] : u <= 0 ? S.rate[1] : S.rate[2];
   let mine = 0;
   for (const d of dust) if (d.gia) mine++;
+  const room = () => mine < S.cap && dust.length < LEV_STEAM_ALL;
+  if (u > u0 && S.burst) {
+    const P = ENG.BEASTS.giant;
+    for (let k = 0; k < P.length; k++) {
+      const f = (k * 0.6180339887) % 1;                        // 引擎收掉那幾塊的亂序（見 putBeasts 的 m.melt）
+      if (f < u0 || f >= u) continue;
+      const at = ENG.giaPartAt(m, k, _dieAt);
+      for (let j = 0; j < S.burst && room(); j++) { dieSteam(m, at); mine++; }
+    }
+  }
+  m.puff += dt * rate;
   while (m.puff >= 1) {
     m.puff--;
-    if (mine++ >= GIA_STEAM_MAX || dust.length > 380) break;
-    dieSteam(m);
+    if (!room()) break;
+    dieSteam(m); mine++;
   }
   return u >= 1;
 }

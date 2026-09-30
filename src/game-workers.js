@@ -3644,7 +3644,11 @@ function crossStep(w, dt, spd, stp) {
     let da = Math.atan2(c.tz, c.tx) - a0;
     while (da > Math.PI) da -= Math.PI * 2;
     while (da < -Math.PI) da += Math.PI * 2;
-    const q = Math.sign(da) * Math.min(Math.abs(da), 0.3);
+    /* **還沒走到那個圓上就先徑向往外走**（v1.233.0，同開口那一種的 ①②）：剛從缺口出來還貼著牆，
+       直接朝圓弧上前面那一點走的話，那條弦會擦過轉角的角樓，dodgeHome 挑的是「靠目標那一側」的切線——
+       剛好從缺口鑽回城裡，這一段就收掉了，出去又照直線切回來。實測牆半徑 36、缺口是緊鄰東南角樓那一段：
+       小人 150 秒換邊 91 次沒走到，里維 60 秒換邊 86～106 次（牆半徑 27 那一種缺口離角樓遠，碰不到） */
+    const q = Math.hypot(w.x, w.z) < R - 1 ? 0 : Math.sign(da) * Math.min(Math.abs(da), 0.3);
     tx = Math.cos(a0 + q) * R; tz = Math.sin(a0 + q) * R;
     arc = true;
   } else {
