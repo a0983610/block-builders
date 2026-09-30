@@ -1750,7 +1750,7 @@ function stepBall(dt) {
            （持續破壞不震畫面，v1.58 那條）。 */
         if (o.drop && !o.hops) {
           spawnRing({ x: o.x, y: 0, z: o.z }, o.r * 2);
-          spawnMark({ x: o.x, y: 0, z: o.z }, o.r * 1.6, true);   // 坑洞，跟隕石同一種
+          spawnMark({ x: o.x, y: 0, z: o.z }, o.r * 1.6, true);   // 坑洞（v1.230 以前跟隕石同一種）
           ENG.shake(1.1); sndThud(o.r * 3);
         }
         o.vy = -o.vy * (o.drop ? DROP_BOUNCE : BALL_BOUNCE); o.hops++;
@@ -2150,11 +2150,12 @@ const Y_BOOST = 0.85;               // 抬升占衝擊力道的比例（重力 2
 /* quiet＝這一發不震畫面（v1.204 加農砲）。同 smash() 的 quiet，理由也一樣：
    一輪 18 發、每半秒落一顆，每顆都晃的話畫面會一路抖到整輪打完
    （見 開發筆記〈會持續破壞的不震畫面〉）。**只管震動，不管聲音**——砲擊要聽得到。 */
-/* markR＝地上那塊痕跡改用這個半徑算（不給就用爆炸半徑）。v1.205 只有隕石在用：
-   使用者要「坑跟破壞範圍一樣大」，而痕跡的半徑是 spawnMark 拿 R 乘出來的
-   （坑 ×MARK_CRATER_R 0.5、焦黑 ×0.55），所以把「要拿去乘的那個 R」單獨傳進來，
-   不去動那兩個大家共用的倍率——動它們會把炸彈、核彈、雷、鐵球的痕跡一起放大。 */
-function explode(point, R, power, magic, wind, crash, self, quiet, markR) {
+/* scorchR＝地上改留一塊焦痕（spawnScorch，Excalibur 燒灼痕那個長相），半徑就是這個數。
+   v1.231 核彈、爆裂魔法、隕石在用（使用者：「強大爆炸的道具地面坑改為焦痕(excalibur痕跡)」）。
+   不給就照舊留一般的痕跡（焦黑／坑洞，半徑是爆炸半徑乘 MARK_SCORCH_R／MARK_CRATER_R）。
+   v1.205～v1.230 這一格是 markR（只有隕石在用：使用者要「坑跟破壞範圍一樣大」，把要拿去乘的那個 R
+   單獨傳進來）；改成直接給半徑之後，隕石給 MET_R 就是同一件事，共用的那兩個倍率照舊沒動。 */
+function explode(point, R, power, magic, wind, crash, self, quiet, scorchR) {
   const R2 = R * R;
   let n = 0, ownN = 0;                          // ownN＝其中有幾塊是地標的（見 afterHit）
   for (const b of blocks) {
@@ -2231,10 +2232,13 @@ function explode(point, R, power, magic, wind, crash, self, quiet, markR) {
   igniteAround(point, R * 1.5, Math.round(R * 1.2), SET);
   // 火球與衝擊環是「爆炸」的長相，crash 那條只留下被砸飛的積木與揚起來的塵土
   if (!crash) { spawnBlast(point, R, magic); spawnRing(point, R); }
-  /* 地上留一塊痕跡：一般爆炸是焦黑，砸下來的（隕石）是坑洞。
-     「炸在半空就不留」那條要照**真的爆炸半徑**判（spawnMark 自己那條會拿 markR 判，
-     放大過的話會讓炸在屋頂上的那一發也留下痕跡）。 */
-  if (point.y <= R) spawnMark(point, markR || R, crash);
+  /* 地上留一塊痕跡：一般爆炸是焦黑，砸下來的是坑洞，強爆炸（給了 scorchR）是焦痕。
+     「炸在半空就不留」照**真的爆炸半徑**判：爆點比 R 還高＝炸在屋頂上，地面沒被燒到
+     （魔法陣陣心 12.1、火球半徑 45，照樣留）。 */
+  if (point.y <= R) {
+    if (scorchR) spawnScorch(point.x, point.z, scorchR);
+    else spawnMark(point, R, crash);
+  }
   spawnDust(point, R, n);
   // 風壓排在最後：它吃的塵霧配額比較兇，先讓爆炸本身那些拿到自己的份
   if (wind) spawnWind(point, R, magic);
@@ -4062,10 +4066,9 @@ function meteorHit(m) {
   /* 第六個參數＝crash：掃飛積木、揚塵、震動、點火都照舊，但不生火球與衝擊環，
      聲音也換成悶響——隕石是「砸下來燒起來」，不是又一發爆炸。
      倒數期間地上那一圈一圈的預告環不受影響，那是預告不是爆炸。 */
-  /* 最後一個參數：地上那個坑照 MET_R ÷ MARK_CRATER_R 算，等於坑的半徑剛好 ＝ 破壞半徑
-     （v1.205 使用者：「坑放大到 9.2」＝ 跟破壞範圍一樣大）。寫成除回去而不是寫死 9.2，
-     MET_R 哪天再調、或共用的 MARK_CRATER_R 改了，這個關係都還對。 */
-  explode(p, MET_R, MET_POW, false, false, true, null, false, MET_R / MARK_CRATER_R);
+  /* 最後一個參數：地上留一塊焦痕、半徑 ＝ 破壞半徑（v1.231 起是焦痕不是坑，使用者：「強大爆炸的道具
+     地面坑改為焦痕(excalibur痕跡)」；「跟破壞範圍一樣大」是 v1.205 使用者定的「坑放大到 9.2」）。 */
+  explode(p, MET_R, MET_POW, false, false, true, null, false, MET_R);
   /* 爆炸本身已經帶一點餘火，但隕石是「燃燒」的——落點一帶再多點幾塊起來。
      這是它跟同尺寸的普通爆炸最明顯的差別。 */
   igniteAround(p, MET_R * 1.6, Math.round(MET_R * 1.6), SET);
@@ -4174,7 +4177,8 @@ function callNuke(point) {
   sndSiren();
 }
 function nukeHit(p) {
-  explode(p, NUKE_R, NUKE_POW, false, true);      // true = 加風壓
+  // 第二個 true = 加風壓；最後一個 = 地上留焦痕（v1.231，大小同以前那塊焦黑：爆炸半徑 × MARK_SCORCH_R）
+  explode(p, NUKE_R, NUKE_POW, false, true, false, null, false, NUKE_R * MARK_SCORCH_R);
   startCloud(p, NUKE_R);
 }
 /* 畫面上要畫的那幾顆（倒數中的還在天上等，不畫）。重用同一個陣列，不要每幀配一個新的 */
@@ -4325,7 +4329,8 @@ function stepOneMagic(magic, dt) {
   const el = MAG_TIME - magic.t;
   if (magic.t <= 0) {
     const p = { x: magic.x, y: MAG_CORE_Y, z: magic.z };   // 爆點＝最低那層的圓心
-    explode(p, MAG_R, MAG_POW, true, true);       // 第二個 true = 加風壓
+    // 第二個 true = 加風壓；最後一個 = 地上留焦痕（v1.231，同核彈）
+    explode(p, MAG_R, MAG_POW, true, true, false, null, false, MAG_R * MARK_SCORCH_R);
     startCloud(p, MAG_R);             // 魔法爆完也留一朵，跟核彈同一種
     startArcs(p, MAG_R);              // 火球收乾之後，爆點還會劈三秒的藍電
     return true;
@@ -5021,6 +5026,7 @@ function stepMarks(dt) {
     m.a = Math.min(1, m.t / MARK_FADE);
   }
   stepSears(dt);
+  stepScorches(dt);
 }
 /* ── Excalibur 的燒灼痕（v1.224）──
    使用者：「接觸到的地面也要加上焦黑」→ 看過之後「焦痕再黑一點 可以活久一點(可以中心先深紅色再變黑
@@ -5029,15 +5035,18 @@ function stepMarks(dt) {
        實測 3 秒那一版在第 2.5 秒就被擠掉兩塊——活久一點只會被擠得更早。所以自己一池（ENG.SEAR_MAX）。
      · **暗紅發不了光**：那一池吃光（Lambert），紅的那幾處在陰影裡會變成暗褐色。
    所以長相另外一支（引擎的 putSears：一條長帶，不吃光）；這裡生的時候把細節抽好：
-   每一刀左右緣的寬度（邊是燒開的形狀）、每一刀冷得多慢（hot：冷得慢的那幾段多紅一陣＝餘燼）。
+   每一刀左右緣的寬度（邊是燒開的形狀）、每一刀冷得多慢（hot：沿著長度一點點起伏，v1.231 起不再分段熄）。
    兩道正弦疊出來再加一點點亂數，理由同 spawnMark 的輪廓：各抽各的話相鄰兩刀沒有關聯，邊會長刺。
-   還燙的那幾段冒煙（塵霧那一池，額度同火的煙 BURN_SMOKE）。 */
+   冒煙跟強爆炸的焦痕同一套（ventSmoke，v1.231 使用者：「saber砍完的地面也記得要加 這類焦痕都一樣的」）：
+   沿著中線每 10 格左右一個口，挑那一段冷得最慢的那一刀。v1.224～v1.230 是在還燙的那幾刀上整條隨機灑的深灰煙，
+   而且那幾版焦痕排在煙後面畫（量到的順序，見 開發筆記〈光柱被焦痕蓋住〉），疊到的地方煙會被帶子蓋掉。 */
 const SEAR_LIFE = 10;          // 一道活幾秒（使用者：「可以活久一點」；一般的痕跡是 MARK_LIFE 3 秒）
 const SEAR_FADE = 4;           // 最後幾秒淡掉
-/* 冷成焦黑的時間尺：一刀冷完要 SEAR_HOT × (0.45 + 1.1 × hot) 秒，最快約 1.1 秒、最慢約 3.9 秒 */
+/* 冷成焦黑的時間尺：一刀的中線冷完要 SEAR_HOT × (0.45 + 1.1 × hot) 秒，約 2.8～3.9 秒
+   （橫的方向外面那幾圈 hot 再乘引擎的 SEAR_LAST，先冷） */
 const SEAR_HOT = 2.5;
 const SEAR_STEP = 1;           // 沿著長度幾格切一刀
-const SEAR_SMOKE = 26;         // 還燙的時候每秒冒幾縷煙（抽到已經冷掉的那一刀就不冒）
+const SEAR_VENT_GAP = 10;      // 冒煙的口沿著中線幾格一個（光柱 80 格 → 8 個，同爆裂魔法那塊的口數）
 const sears = [];
 function spawnSear(x, z, fx, fz, len, w) {
   if (sears.length >= ENG.SEAR_MAX) sears.shift();
@@ -5048,13 +5057,26 @@ function spawnSear(x, z, fx, fz, len, w) {
   for (let k = 0; k <= n; k++) {
     jl.push(1 + 0.16 * Math.sin(k * 0.41 + p[0]) + 0.09 * Math.sin(k * 1.27 + p[1]) + rr(-0.04, 0.04));
     jr.push(1 + 0.16 * Math.sin(k * 0.37 + p[2]) + 0.09 * Math.sin(k * 1.19 + p[3]) + rr(-0.04, 0.04));
-    hot.push(clamp(0.5 + 0.55 * Math.sin(k * 0.23 + p[4]) * Math.sin(k * 0.61 + p[5]) + rr(-0.08, 0.08), 0, 1));
+    /* 沿著長度只留一點起伏（v1.231）：v1.224～v1.230 是 0.5 ± 0.55 的兩道正弦相乘，冷得快的那幾刀整刀先黑，
+       實測第 2 秒紅的斷成 7 段——使用者：「現在看起來像分段消失 應該一條的中心最後消失」。
+       往中線收的那一層在引擎（SEAR_LAST：橫的方向外面先冷）。 */
+    hot.push(clamp(0.8 + 0.12 * Math.sin(k * 0.23 + p[4]) + 0.06 * Math.sin(k * 0.61 + p[5]) + rr(-0.02, 0.02), 0, 1));
   }
-  const s = { x, z, fx, fz, len, w, n, jl, jr, hot, t: SEAR_LIFE, cool: 0, a: 1, smoke: 0 };
+  /* 冒煙的口：切成 nv 段，每段挑冷得最慢的那一刀，口在中線上。
+     w＝中線吃幾成熱度（ENG.SEAR_GLOW[0]，引擎上色用的同一份） */
+  const nv = clamp(Math.round(len / SEAR_VENT_GAP), 2, 9), vents = [];
+  for (let v = 0; v < nv; v++) {
+    let best = -1;
+    for (let k = Math.floor(v * n / nv); k < Math.floor((v + 1) * n / nv); k++)
+      if (best < 0 || hot[k] > hot[best]) best = k;
+    const f = len * best / n;
+    vents.push({ i: best, w: ENG.SEAR_GLOW[0], x: x + fx * f, z: z + fz * f, e: 0 });
+  }
+  const s = { x, z, fx, fz, len, w, n, jl, jr, hot, vents, t: SEAR_LIFE, cool: 0, a: 1 };
   sears.push(s);
   return s;
 }
-/* 這一刀還有多燙（0～1）。引擎 putSears 那一行是同一條式子 */
+/* 這一刀的中線還有多燙（0～1）。引擎 putSears 那一行是同一條式子（中線的 SEAR_LAST 是 1） */
 const searHeat = (s, k) => clamp(1 - s.cool / (0.45 + 1.1 * s.hot[k]), 0, 1);
 function stepSears(dt) {
   for (let i = sears.length - 1; i >= 0; i--) {
@@ -5063,21 +5085,93 @@ function stepSears(dt) {
     if (s.t <= 0) { sears.splice(i, 1); continue; }
     s.a = Math.min(1, s.t / SEAR_FADE);
     s.cool = (SEAR_LIFE - s.t) / SEAR_HOT;
-    if (s.cool > 1.55) continue;                       // 最慢那一刀也冷了（0.45 + 1.1）
-    s.smoke += dt * SEAR_SMOKE;
-    while (s.smoke >= 1) {
-      s.smoke--;
-      const k = Math.floor(Math.random() * s.n);
-      if (searHeat(s, k) <= 0) continue;
-      if (dust.length >= BURN_SMOKE) { s.smoke = 0; break; }
-      const f = s.len * (k + Math.random()) / s.n, off = rr(-0.5, 0.5) * s.w;
-      dust.push({
-        x: s.x + s.fx * f - s.fz * off, y: 0.3, z: s.z + s.fz * f + s.fx * off,
-        vx: rr(-0.4, 0.4), vy: rr(1.0, 2.2), vz: rr(-0.4, 0.4),
-        rx: Math.random() * 6, ry: Math.random() * 6,
-        life: rr(1.4, 2.6), s: rr(0.45, 0.95), c: rr(0.16, 0.3), g: -0.6, fade: 2.2
-      });
+    for (const v of s.vents) ventSmoke(v, searHeat(s, v.i) * v.w, dt);
+  }
+}
+/* ── 強爆炸的焦痕（v1.231）──
+   使用者：「強大爆炸的道具地面坑改為焦痕(excalibur痕跡) 先改爆裂魔法&核彈&隕石 焦痕增加冒煙效果」。
+   長相照上面那一道燒灼痕：一樣黑（0.96，不是一般痕跡「要淡」的那個 0.45）、一樣中心先暗紅再一處一處冷成焦黑、
+   一樣活 SEAR_LIFE 秒，只是形狀是一塊圓的（引擎 putSears 的第二份清單）。自己一池（ENG.SCORCH_MAX）：
+   燒灼痕那一池才 3 道，六顆隕石一起掉就會互擠；一般痕跡那一池會被挖料的土痕擠掉（見上面燒灼痕那段）。
+   細節是生的時候抽好的（每幀重抽會一直抖）：輪廓 j 同 spawnMark 那一套；hot 是每一點冷得多慢，
+   照位置疊幾道平面波（見下面），冷得慢的那幾處就是一塊一塊的餘燼。中心那一點每片同一個數（不然尖端會是一朵風車）。
+   **煙**從幾個「口」冒成幾柱：一圈切幾個扇區，每區挑冷得最慢的那一點（最後熄的那處餘燼）。
+   照燒灼痕以前（v1.230 以前）那樣整片均勻灑的話，一縷一縷散在十幾格寬的焦痕上，截圖上幾乎看不到（第一版就是）。
+   **煙跟著紅的走**：一個口冒多少照它**看起來多紅**（熱度 × 那一圈的 ENG.SCORCH_GLOW，就是引擎上色用的同一個數）
+   的平方——越暗冒得越少，暗到看不出紅就差不多停了（使用者看過預覽：「冒煙不用那麼久 大約跟深紅色差不多」。
+   預覽那一版冷了之後還細細冒到焦痕淡完；只照熱度線性收的話實測紅的 4.5～5 秒就沒了、煙拖到 8.5～9 秒）。
+   閘門不能用火煙那個 BURN_SMOKE：核彈與爆裂魔法的塵霧要 7 秒多才散（實測炸完 7.3 秒才降到 700 以下），
+   照那個閘門紅的那幾秒一縷都擠不進去；用蘑菇雲自己的 CLOUD_CAP（雲最多也就到那裡，實測核彈最高 1356、魔法 1371）。 */
+/* 冷成焦黑的時間尺：一處冷完要 SCORCH_HOT × (0.45 + 1.1 × hot) 秒，最快 1.8 秒、最慢 6.2 秒。
+   比燒灼痕的 SEAR_HOT 2.5 慢：蘑菇雲底下那幾秒地面是被煙蓋著的（截圖：照 2.5 算的話第 5 秒雲一散，
+   地上已經全黑，紅的那一段整段在雲裡燒完）。 */
+const SCORCH_HOT = 4;
+const SCORCH_VENT = 18;        // 一個口全紅（熱度 × 那一圈的紅＝1）的時候每秒冒幾縷，之後照紅的平方收
+const scorches = [];
+function spawnScorch(x, z, r) {
+  if (scorches.length >= ENG.SCORCH_MAX) scorches.shift();
+  const SEG = ENG.SCORCH_SEG, NR = ENG.SCORCH_U.length;
+  const j = [], hot = [];
+  const p1 = rr(0, 6.28), p2 = rr(0, 6.28), h = Math.random() < 0.5 ? 3 : 4;
+  for (let k = 0; k < SEG; k++) {
+    const a = k / SEG * Math.PI * 2;
+    j.push(1 + MARK_JIT * (Math.sin(a * 2 + p1) * 0.6 + Math.sin(a * h + p2) * 0.4));
+  }
+  /* 三道方向各抽的平面波疊起來（照這一點在焦痕上的位置算，不是照角度）：第一版照角度抽，
+     每一圈同一個角度的那幾點冷得一樣慢，截圖是一根一根從中心射出去的紅條。波長約半個半徑，一塊餘燼約那麼大。 */
+  const wv = [];
+  for (let n = 0; n < 3; n++) { const d = rr(0, 6.28); wv.push([Math.cos(d) * 11, Math.sin(d) * 11, rr(0, 6.28)]); }
+  const hc = rr(0.75, 1);
+  for (let b = 0; b < NR; b++)
+    for (let k = 0; k < SEG; k++) {
+      if (b === 0) { hot.push(hc); continue; }
+      const a = k / SEG * Math.PI * 2, u = ENG.SCORCH_U[b], px = Math.cos(a) * u, pz = Math.sin(a) * u;
+      let w = 0;
+      for (const q of wv) w += Math.sin(q[0] * px + q[1] * pz + q[2]);
+      hot.push(clamp(0.5 + 0.3 * w + rr(-0.06, 0.06), 0, 1));
     }
+  /* 冒煙的口：半徑每 3 格一個（隕石 3、核彈 6、爆裂魔法 8），第 1～3 圈（紅得起來的那幾圈）裡挑。
+     w＝那一圈吃幾成熱度（同一份 ENG.SCORCH_GLOW），冒多少用得到 */
+  const nv = clamp(Math.round(r / 3), 3, 9), vents = [];
+  for (let v = 0; v < nv; v++) {
+    let best = -1;
+    for (let b = 1; b <= 3; b++)
+      for (let k = Math.floor(v * SEG / nv); k < Math.floor((v + 1) * SEG / nv); k++)
+        if (best < 0 || hot[b * SEG + k] > hot[best]) best = b * SEG + k;
+    const b = Math.floor(best / SEG), k = best % SEG;
+    const ang = k / SEG * Math.PI * 2, rad = r * ENG.SCORCH_U[b] * j[k];
+    vents.push({ i: best, w: ENG.SCORCH_GLOW[b], x: x + Math.cos(ang) * rad, z: z + Math.sin(ang) * rad, e: 0 });
+  }
+  const s = { x, z, r, j, hot, vents, t: SEAR_LIFE, cool: 0, a: 1 };
+  scorches.push(s);
+  return s;
+}
+/* 第 i 點（b × SCORCH_SEG + k）還有多燙（0～1）。引擎 putSears 那一行是同一條式子 */
+const scorchHeat = (s, i) => clamp(1 - s.cool / (0.45 + 1.1 * s.hot[i]), 0, 1);
+function stepScorches(dt) {
+  for (let i = scorches.length - 1; i >= 0; i--) {
+    const s = scorches[i];
+    s.t -= dt;
+    if (s.t <= 0) { scorches.splice(i, 1); continue; }
+    s.a = Math.min(1, s.t / SEAR_FADE);
+    s.cool = (SEAR_LIFE - s.t) / SCORCH_HOT;
+    for (const v of s.vents) ventSmoke(v, scorchHeat(s, v.i) * v.w, dt);
+  }
+}
+/* 一個冒煙的口冒這一幀的煙（燒灼痕與強爆炸的焦痕共用，v1.231 使用者：「這類焦痕都一樣的」）。
+   red＝這一點看起來多紅（熱度 × 那一圈的 GLOW，引擎上色用的同一個數），冒多少照它的平方。
+   煙要細小、不搶眼（使用者看過預覽：「煙細小一點 不要這麼明顯」——預覽那一版一縷 0.9～1.7 格、灰 0.34～0.5）。 */
+function ventSmoke(v, red, dt) {
+  v.e += dt * SCORCH_VENT * red * red;
+  while (v.e >= 1) {
+    v.e--;
+    if (dust.length >= CLOUD_CAP) { v.e = 0; break; }
+    dust.push({
+      x: v.x + rr(-0.4, 0.4), y: 0.3, z: v.z + rr(-0.4, 0.4),
+      vx: rr(-0.3, 0.3), vy: rr(1.6, 2.8), vz: rr(-0.3, 0.3),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(1.6, 2.8), s: rr(0.4, 0.8), c: rr(0.3, 0.44), g: -0.6, fade: 2.6
+    });
   }
 }
 

@@ -405,8 +405,8 @@ const installClean = page => page.evaluate(() => {
     }
     homes = null;
     for (const w of workers) { w.hm = -1; w.hst = ''; }
-    /* 挖料的土痕也清掉（v1.100）：它跟隕石坑、焦黑共用同一份 marks，
-       一個村落挖下來滴滴答答幾百塊，留著會被後面「隕石留下的是坑洞」那一段摸到。 */
+    /* 挖料的土痕也清掉（v1.100）：它跟炸彈的焦黑、鐵球的坑共用同一份 marks，
+       一個村落挖下來滴滴答答幾百塊，留著會被後面〈地面痕跡〉那一段（數 marks 有幾塊）摸到。 */
     marks.length = 0;
   };
   /* 王之財寶從 v1.135 起是兩段點擊（第一下門陣、第二下目標），castGate 也跟著吃兩個點。
@@ -463,7 +463,9 @@ const installClean = page => page.evaluate(() => {
     fworks = null; fwSparks = null; fwWait = null;
     quake = null;
     marks.length = 0;                 // 地上的焦黑／坑洞：留著會多吃一個 draw call
-    sears.length = 0; ENG.putSears([]);   // Excalibur 的燒灼痕（v1.224）：一道活 10 秒，同上
+    sears.length = 0;                     // Excalibur 的燒灼痕（v1.224）：一道活 10 秒，同上
+    scorches.length = 0;                  // 強爆炸的焦痕（v1.231）：核彈／魔法／隕石留的，一塊也活 10 秒
+    ENG.putSears([], []);                 // 兩種畫在同一顆網格，一起藏
     clearFires();
     // 弄乾：濕的積木點不著，留給下一條測試會讓它「放火放不起來」（踩過）
     for (const b of blocks) b.wet = 0;
@@ -27114,11 +27116,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      xown.sear.len.toFixed(2) + '（R ' + xown.R.toFixed(2) + '）、方向 (' + xown.sear.fx.toFixed(3) + ', ' +
      xown.sear.fz.toFixed(3) + ')、起點離她 ' + xown.sear.off.toFixed(2) + ' 格' : '沒有'));
 
-  /* ── 燒灼痕本身：中線先暗紅、一段一段冷成焦黑，比一般的痕跡濃，SEAR_LIFE 秒後收掉 ──
+  /* ── 燒灼痕本身：中線先暗紅、紅的往中線收成一條、中線最後熄，比一般的痕跡濃，SEAR_LIFE 秒後收掉 ──
      讀的是真的送進 GPU 的頂點顏色（searMesh 的 color attribute，線性空間）。
      「發紅」＝ r > 0.1 而且 r > 3g（焦黑那幾色 r 都在 0.02 以下、r／g 不到 2）。
      「全冷了」＝不透明的那些頂點最亮的一色 < 0.12（暗紅 SEAR_RED 的 r 是 0.19，焦黑是 0.01；
-     門檻取在中間，不去貼著 three 的色彩空間換算）。 */
+     門檻取在中間，不去貼著 three 的色彩空間換算）。
+     v1.231 使用者：「紅色消失的部分 現在看起來像分段消失 應該一條的中心最後消失」——所以每 0.05 秒量一次：
+     紅的離中線最遠多少（只能一路收）、第一次**只剩中線**紅的那一刻，紅的還是**一整條**（沿著長度每格一桶，
+     連著的只有一段、蓋滿九成五以上）。v1.230 以前那一版在這裡會紅：第 2 秒斷成 7 段、寬度一直沒收。 */
   const xsear = await page.evaluate(() => {
     cleanTools();
     const s = spawnSear(0, 0, 1, 0, 60, 7.5);        // 沿 +x、半寬 7.5：橫的方向就是 z
@@ -27127,20 +27132,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const g = ENG.three.searMesh.geometry, n = g.drawRange.count;
       const P = g.attributes.position.array, C = g.attributes.color.array;
       let red = 0, redZ = 0, maxA = 0, maxRgb = 0;
+      const along = new Array(61).fill(0);
       for (let i = 0; i < n; i++) {
         const r = C[i * 4], gg = C[i * 4 + 1], a = C[i * 4 + 3];
         maxA = Math.max(maxA, a);
         if (a > 0.5) maxRgb = Math.max(maxRgb, r, gg, C[i * 4 + 2]);
-        if (r > 0.1 && r > 3 * gg) { red++; redZ = Math.max(redZ, Math.abs(P[i * 3 + 2])); }
+        if (r > 0.1 && r > 3 * gg) {
+          red++; redZ = Math.max(redZ, Math.abs(P[i * 3 + 2]));
+          along[Math.max(0, Math.min(60, Math.round(P[i * 3])))] = 1;
+        }
       }
+      let runs = 0;
+      for (let x = 0; x <= 60; x++) if (along[x] && (x === 0 || !along[x - 1])) runs++;
       return { n, red, redZ: +redZ.toFixed(2), maxA: +maxA.toFixed(2), maxRgb: +maxRgb.toFixed(3),
-               vis: ENG.three.searMesh.visible };
+               runs, cover: along.reduce((a, b) => a + b, 0) / 61, vis: ENG.three.searMesh.visible };
     };
     const run = secs => { for (let t = 0; t < secs - 1e-9; t += 0.02) stepMarks(0.02); };
     run(0.3); const hot = read();
-    run(0.9 * SEAR_HOT - 0.3);                       // cool ≈ 0.9：冷得快的那幾刀已經黑了、慢的還紅
-    const hotN = s.hot.filter((h, k) => searHeat(s, k) > 0).length;
-    run(0.66 * SEAR_HOT); const cold = read();       // cool ≈ 1.56：最慢那一刀也冷了
+    let t = 0.3, shrink = true, last = hot.redZ, line = null;
+    while (t < 1.56 * SEAR_HOT) {                   // cool ≈ 1.56：最慢那一刀的中線也冷了
+      stepMarks(0.05); t += 0.05;
+      const q = read();
+      if (q.redZ > last + 1e-6) shrink = false;
+      last = q.redZ;
+      if (!line && q.red > 0 && q.redZ === 0) line = { t: +t.toFixed(2), runs: q.runs, cover: +q.cover.toFixed(2) };
+    }
+    const cold = read();
     const jl = s.jl, avg = jl.reduce((a, b) => a + b, 0) / jl.length;
     const sd = Math.sqrt(jl.reduce((a, b) => a + (b - avg) ** 2, 0) / jl.length);
     // 自己一池：一般痕跡塞滿也擠不掉它
@@ -27148,15 +27165,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const kept = sears.length;
     run(SEAR_LIFE); const gone = { n: sears.length, vis: read().vis };
     marks.length = 0;
-    return { hot, hotN, all: s.n + 1, cold, sd: +sd.toFixed(3), kept, gone, core: +(0.2 * 7.5 * 1.3).toFixed(2),
+    return { hot, shrink, line, cold, sd: +sd.toFixed(3), kept, gone, core: +(0.2 * 7.5 * 1.3).toFixed(2),
              life: SEAR_LIFE };
   });
-  ok('燒灼痕：中線先暗紅、一段一段冷成焦黑（只有中線那一窄條紅），邊是燒開的形狀',
-     xsear.hot.red > 0 && xsear.hot.redZ <= xsear.core && xsear.hotN > 0 && xsear.hotN < xsear.all &&
+  ok('燒灼痕：中線先暗紅、紅的往中線收成一條、中線最後熄（不分段），邊是燒開的形狀',
+     xsear.hot.red > 0 && xsear.hot.redZ <= xsear.core && xsear.hot.redZ > 1 && xsear.shrink &&
+     !!xsear.line && xsear.line.runs === 1 && xsear.line.cover >= 0.95 &&
      xsear.cold.red === 0 && xsear.cold.maxRgb < 0.12 && xsear.sd > 0.05,
      '剛斬完發紅的頂點 ' + xsear.hot.red + ' 個、離中線最遠 ' + xsear.hot.redZ + ' 格（上限 ' + xsear.core +
-     '）；冷到一半還燙的 ' + xsear.hotN + '／' + xsear.all + ' 刀；全冷之後發紅 ' + xsear.cold.red +
-     ' 個、最亮 ' + xsear.cold.maxRgb + '；邊緣寬度的散布 ' + xsear.sd);
+     '），之後一路收＝' + xsear.shrink + '；' + (xsear.line ? '第 ' + xsear.line.t + ' 秒只剩中線紅，斷成 ' +
+     xsear.line.runs + ' 段、蓋住長度的 ' + xsear.line.cover : '沒量到只剩中線紅的那一刻') +
+     '；全冷之後發紅 ' + xsear.cold.red + ' 個、最亮 ' + xsear.cold.maxRgb + '；邊緣寬度的散布 ' + xsear.sd);
   ok('燒灼痕比一般的痕跡濃、自己一池不被擠掉，SEAR_LIFE 秒後收掉',
      xsear.hot.maxA >= 0.9 && xsear.kept === 1 && xsear.gone.n === 0 && !xsear.gone.vis,
      '最濃的頂點 alpha ' + xsear.hot.maxA + '（一般的痕跡上限 0.5）；一般痕跡塞滿之後還在 ' + xsear.kept +
@@ -27935,7 +27954,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       targetCnt = 800; startBuild(true); completeNow();
       shapePick = -1;
       fire();
-      return marks.map(m => ({ crater: m.crater, r: +m.r.toFixed(1) }));
+      /* 一般痕跡與強爆炸的焦痕（v1.231）分兩池，兩池都回報 */
+      return { mk: marks.map(m => ({ crater: m.crater, r: +m.r.toFixed(1) })), sc: scorches.map(s => +s.r.toFixed(2)) };
     };
     const bomb = one(() => {
       placeBomb({ x: siteR * 0.8, y: 0.5, z: 0 });
@@ -27947,23 +27967,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       let g = 0;
       while (meteors && g++ < 400) step(0.05);
     });
-    return { bomb, met, bombR: BOMB_R, metR: MET_R,
-             scorch: MARK_SCORCH_R, crat: MARK_CRATER_R };
+    const nuke = one(() => {
+      callNuke({ x: 0, z: siteR + 22 });
+      let g = 0;
+      while (nukes && nukes.length && g++ < 400) step(0.05);
+    });
+    return { bomb, met, nuke, bombR: BOMB_R, metR: MET_R, nukeR: +(NUKE_R * MARK_SCORCH_R).toFixed(2),
+             scorch: MARK_SCORCH_R };
   });
-  ok('炸彈炸過的地上留一塊焦黑',
-     mkKind.bomb.length === 1 && mkKind.bomb[0].crater === 0 &&
-     Math.abs(mkKind.bomb[0].r - mkKind.bombR * mkKind.scorch) < 0.1,
-     '一塊焦黑，半徑 ' + (mkKind.bomb[0] ? mkKind.bomb[0].r : '—') +
-     '（爆炸半徑 ' + mkKind.bombR + ' × ' + mkKind.scorch + '）');
-  /* 坑的半徑**跟破壞半徑一樣大**（v1.205 使用者：「坑放大到 9.2」）：
-     隕石傳給 spawnMark 的是 MET_R ÷ MARK_CRATER_R，乘回去剛好就是 MET_R。
-     炸彈那一條照舊（焦黑 ＝ 爆炸半徑 × MARK_SCORCH_R），所以共用的那兩個倍率沒被動到
-     ——上面那一條就是在守這件事。 */
-  ok('隕石留下的是坑洞，不是焦黑，而且坑跟破壞範圍一樣大',
-     mkKind.met.length === 1 && mkKind.met[0].crater === 1 &&
-     Math.abs(mkKind.met[0].r - mkKind.metR) < 0.1,
-     '一個坑洞，半徑 ' + (mkKind.met[0] ? mkKind.met[0].r : '—') +
-     '（破壞半徑 ' + mkKind.metR + '；一般爆炸的坑是 ×' + mkKind.crat + '）');
+  ok('炸彈炸過的地上留一塊焦黑（一般痕跡，不是強爆炸的焦痕）',
+     mkKind.bomb.mk.length === 1 && mkKind.bomb.mk[0].crater === 0 && mkKind.bomb.sc.length === 0 &&
+     Math.abs(mkKind.bomb.mk[0].r - mkKind.bombR * mkKind.scorch) < 0.1,
+     '一塊焦黑，半徑 ' + (mkKind.bomb.mk[0] ? mkKind.bomb.mk[0].r : '—') +
+     '（爆炸半徑 ' + mkKind.bombR + ' × ' + mkKind.scorch + '）；焦痕 ' + mkKind.bomb.sc.length + ' 塊');
+  /* v1.231 使用者：「強大爆炸的道具地面坑改為焦痕(excalibur痕跡) 先改爆裂魔法&核彈&隕石」。
+     隕石的焦痕**跟破壞半徑一樣大**（v1.205 使用者：「坑放大到 9.2」那時定的關係，照舊）；
+     核彈的焦痕跟以前那塊焦黑一樣大（爆炸半徑 × MARK_SCORCH_R）。一般痕跡那一池一塊都不留。 */
+  ok('隕石與核彈留下的是焦痕，不是坑洞或焦黑：隕石的跟破壞範圍一樣大、核彈的跟以前那塊焦黑一樣大',
+     mkKind.met.mk.length === 0 && mkKind.met.sc.length === 1 && Math.abs(mkKind.met.sc[0] - mkKind.metR) < 0.01 &&
+     mkKind.nuke.mk.length === 0 && mkKind.nuke.sc.length === 1 && Math.abs(mkKind.nuke.sc[0] - mkKind.nukeR) < 0.01,
+     '隕石：焦痕 ' + mkKind.met.sc.join('／') + '（破壞半徑 ' + mkKind.metR + '）、一般痕跡 ' + mkKind.met.mk.length +
+     ' 塊；核彈：焦痕 ' + mkKind.nuke.sc.join('／') + '（' + mkKind.nukeR + '）、一般痕跡 ' + mkKind.nuke.mk.length + ' 塊');
 
   /* 「會漸漸消失」：前面那一段維持全濃，最後 MARK_FADE 秒才淡，時間到整塊收掉、
      那顆網格也要跟著 visible=false（不然沒痕跡還在吃一個 draw call）。 */
@@ -28002,17 +28026,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     castMagic({ x: 0, z: 0 });
     let g = 0;
     while (magics && g++ < 200) step(0.05);
-    return { air, low, mag: marks.length, airY: BOMB_R + 4, bombR: BOMB_R,
+    /* 爆裂魔法 v1.231 起留的是焦痕（跟核彈、隕石一樣），半徑同以前那塊焦黑 */
+    return { air, low, mag: scorches.length, magMk: marks.length, magSc: scorches.length ? +scorches[0].r.toFixed(2) : 0,
+             want: +(MAG_R * MARK_SCORCH_R).toFixed(2), airY: BOMB_R + 4, bombR: BOMB_R,
              coreY: +MAG_CORE_Y.toFixed(1), magR: MAG_R };
   });
   ok('炸在半空中不留痕跡，貼著地面炸才留',
      mkAir.air === 0 && mkAir.low === 1,
      '炸在 y=' + mkAir.airY + '（半徑 ' + mkAir.bombR + '）→ ' + mkAir.air +
      ' 塊；炸在 y=0.6 → ' + mkAir.low + ' 塊');
-  ok('魔法陣飄在半空還是會燒到地面',
-     mkAir.mag === 1,
-     '陣心 y=' + mkAir.coreY + '、火球半徑 ' + mkAir.magR + ' → 地上留了 ' +
-     mkAir.mag + ' 塊');
+  ok('魔法陣飄在半空還是會燒到地面（留焦痕，大小同以前那塊焦黑）',
+     mkAir.mag === 1 && mkAir.magMk === 0 && Math.abs(mkAir.magSc - mkAir.want) < 0.01,
+     '陣心 y=' + mkAir.coreY + '、火球半徑 ' + mkAir.magR + ' → 地上留了焦痕 ' +
+     mkAir.mag + ' 塊（半徑 ' + mkAir.magSc + '，應為 ' + mkAir.want + '）、一般痕跡 ' + mkAir.magMk + ' 塊');
 
   /* 痕跡是浮在地面上方一點的一片三角形，超出草皮的部分底下什麼都沒有，
      會變成一塊飄在天空上的黑影（改之前實測就是這樣：核彈炸在邊緣、或換到小建築
@@ -28063,6 +28089,120 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('痕跡是淡的，不會把煙塵蓋掉',
      mkEdge.ink > 0.15 && mkEdge.ink <= 0.5,
      '最濃的頂點 alpha = ' + mkEdge.ink + '（改之前是 0.96）');
+
+  /* ══ v1.231：強爆炸的焦痕（核彈、爆裂魔法、隕石） ══
+     使用者：「強大爆炸的道具地面坑改為焦痕(excalibur痕跡) 先改爆裂魔法&核彈&隕石 焦痕增加冒煙效果」，
+     看預覽之後：「冒煙不用那麼久 大約跟深紅色差不多」「saber砍完的地面也記得要加 這類焦痕都一樣的
+     然後煙細小一點 不要這麼明顯」。全部規則型：直接呼叫 spawnScorch／spawnSear／stepMarks，
+     讀 searMesh 真的送進 GPU 的頂點（「發紅」的門檻同〈破壞道具：Excalibur〉那一條）。 */
+  const scLook = await page.evaluate(() => {
+    cleanTools();
+    const R = 16.5;
+    const s = spawnScorch(0, 0, R);
+    const read = () => {
+      ENG.putSears(sears, scorches);
+      const g = ENG.three.searMesh.geometry, n = g.drawRange.count;
+      const P = g.attributes.position.array, C = g.attributes.color.array;
+      let red = 0, redR = 0, maxA = 0, maxRgb = 0;
+      for (let i = 0; i < n; i++) {
+        const r = C[i * 4], gg = C[i * 4 + 1], a = C[i * 4 + 3];
+        maxA = Math.max(maxA, a);
+        if (a > 0.5) maxRgb = Math.max(maxRgb, r, gg, C[i * 4 + 2]);
+        if (r > 0.1 && r > 3 * gg) { red++; redR = Math.max(redR, Math.hypot(P[i * 3], P[i * 3 + 2])); }
+      }
+      return { n, red, redR: +redR.toFixed(2), maxA: +maxA.toFixed(2), maxRgb: +maxRgb.toFixed(3),
+               vis: ENG.three.searMesh.visible, room: g.attributes.position.array.length / 3 };
+    };
+    const run = secs => { for (let t = 0; t < secs - 1e-9; t += 0.05) stepMarks(0.05); };
+    run(0.3); const hot = read();
+    run(1.56 * SCORCH_HOT - 0.3); const cold = read();   // cool ≈ 1.56：最慢那一處也冷了
+    // 自己一池：一般痕跡、燒灼痕都塞滿也擠不掉它
+    for (let i = 0; i < MARK_MAX + 6; i++) spawnMark({ x: 0, y: 0.5, z: 0 }, 3, i % 2 === 0);
+    for (let i = 0; i < ENG.SEAR_MAX + 1; i++) spawnSear(0, 0, 1, 0, 40, 7.5);
+    const kept = scorches.length === 1 && scorches[0] === s;
+    run(SEAR_LIFE); const gone = { n: scorches.length, vis: read().vis };
+    marks.length = 0;
+    // 上限：滿了擠掉最舊那塊；兩池都滿的時候頂點剛好用完整個緩衝區（同一般痕跡那一條的理由，用 ===）
+    cleanTools();
+    for (let i = 0; i < ENG.SEAR_MAX; i++) spawnSear(0, i * 10, 1, 0, ENG.SEAR_SEC * SEAR_STEP, 7.5);
+    const first = spawnScorch(0, 0, 8);
+    for (let i = 0; i < ENG.SCORCH_MAX + 2; i++) spawnScorch(i * 3 - 15, 20, 8);
+    const full = read();
+    const cap = { kept: scorches.length, max: ENG.SCORCH_MAX, firstOut: scorches.indexOf(first) < 0,
+                  verts: full.n, room: full.room };
+    cleanTools(); const off = read().vis;
+    return { hot, cold, kept, gone, cap, off, R, core: +(R * 0.46 * (1 + MARK_JIT)).toFixed(2), life: SEAR_LIFE };
+  });
+  ok('強爆炸的焦痕：剛炸完中間那一塊暗紅（外圈不紅）、之後冷成焦黑，比一般的痕跡濃',
+     scLook.hot.red > 0 && scLook.hot.redR <= scLook.core && scLook.hot.maxA >= 0.9 &&
+     scLook.cold.red === 0 && scLook.cold.maxRgb < 0.12,
+     '剛炸完發紅的頂點 ' + scLook.hot.red + ' 個、離爆點最遠 ' + scLook.hot.redR + ' 格（半徑 ' + scLook.R +
+     '，會紅的最外一圈到 ' + scLook.core + '）、最濃 alpha ' + scLook.hot.maxA + '；全冷之後發紅 ' +
+     scLook.cold.red + ' 個、最亮 ' + scLook.cold.maxRgb);
+  ok('強爆炸的焦痕自己一池（一般痕跡、燒灼痕塞滿都擠不掉），滿了擠掉最舊那塊、每一塊都畫得出來，SEAR_LIFE 秒後收掉',
+     scLook.kept && scLook.gone.n === 0 && !scLook.gone.vis &&
+     scLook.cap.kept === scLook.cap.max && scLook.cap.firstOut && scLook.cap.verts === scLook.cap.room && !scLook.off,
+     '別的兩池塞滿之後還在＝' + scLook.kept + '；' + scLook.life + ' 秒後剩 ' + scLook.gone.n + ' 塊、網格 visible＝' +
+     scLook.gone.vis + '；丟 ' + (scLook.cap.max + 3) + ' 塊 → 留 ' + scLook.cap.kept + ' 塊（上限 ' + scLook.cap.max +
+     '，最舊那塊擠掉＝' + scLook.cap.firstOut + '），畫出 ' + scLook.cap.verts + ' 個頂點（緩衝區 ' + scLook.cap.room +
+     '）；清掉之後 visible＝' + scLook.off);
+
+  /* 冒煙：兩種焦痕都走 ventSmoke（包一層數它推了幾顆進塵霧），量三段時間冒了幾縷。
+     塵霧先塞 1000 顆不會動的假粒子——比火煙的閘門 BURN_SMOKE 700 還多，就是蘑菇雲還在的那幾秒
+     （實測炸完 7.3 秒才降到 700 以下）；只推 stepMarks，塵霧不會自己減少。 */
+  const scSmoke = await page.evaluate(() => {
+    const real = ventSmoke; let got = 0;
+    ventSmoke = function (v, red, dt) { const d0 = dust.length; real(v, red, dt); got += dust.length - d0; };
+    const pad = () => {
+      dust.length = 0;
+      for (let i = 0; i < 1000; i++) dust.push({ x: 0, y: 50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, life: 1e6, s: 0.1, c: 0.5, g: 0 });
+    };
+    const span =(from, to, now) => {                 // 從 now 推到 from、再數 from → to 冒了幾縷
+      while (now.t < from - 1e-9) { stepMarks(0.05); now.t += 0.05; }
+      got = 0;
+      while (now.t < to - 1e-9) { stepMarks(0.05); now.t += 0.05; }
+      return got;
+    };
+    try {
+      cleanTools(); pad();
+      spawnScorch(0, 0, 16.5);
+      const c = { t: 0 };
+      const sc = [span(0, 1, c), span(3, 4, c), span(1.56 * SCORCH_HOT, 1.56 * SCORCH_HOT + 1, c)];
+      cleanTools(); pad();
+      spawnSear(0, 0, 1, 0, 60, 7.5);
+      const e = { t: 0 };
+      const se = [span(0, 1, e), span(1.56 * SEAR_HOT, 1.56 * SEAR_HOT + 1, e)];
+      return { sc, se, pad: 1000, gate: BURN_SMOKE };
+    } finally {
+      ventSmoke = real; dust.length = 0; cleanTools();
+    }
+  });
+  ok('焦痕冒煙跟著紅的走：越暗冒越少、紅的沒了就不冒；蘑菇雲在也冒得出來；Excalibur 的燒灼痕同一套',
+     scSmoke.sc[0] > 0 && scSmoke.sc[0] > scSmoke.sc[1] && scSmoke.sc[2] === 0 &&
+     scSmoke.se[0] > 0 && scSmoke.se[1] === 0,
+     '塵霧已經有 ' + scSmoke.pad + ' 顆（火煙的閘門 ' + scSmoke.gate + '）；強爆炸的焦痕第 0～1 秒 ' + scSmoke.sc[0] +
+     ' 縷、第 3～4 秒 ' + scSmoke.sc[1] + ' 縷、全冷之後一秒 ' + scSmoke.sc[2] + ' 縷；燒灼痕第 0～1 秒 ' +
+     scSmoke.se[0] + ' 縷、中線全冷之後一秒 ' + scSmoke.se[1] + ' 縷');
+
+  /* 畫的順序：量**實際畫的順序**（onBeforeRender）。三個都不寫深度、透明物件先比 renderOrder：
+     v1.230 以前焦痕（1）排在塵霧（0）後面，焦痕（濃 0.96）整片塗在煙上面。 */
+  const scOrder = await page.evaluate(() => {
+    cleanTools();
+    const T3 = ENG.three, order = [];
+    spawnScorch(0, 0, 16.5);
+    spawnMark({ x: 2, y: 0.5, z: 0 }, 3, false);
+    dust.push({ x: 0, y: 3, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, life: 5, s: 1, c: 0.5 });
+    const tag = [[T3.searMesh, 'sear'], [T3.markMesh, 'mark'], [T3.dustMesh, 'dust']];
+    for (const [x, n] of tag) x.onBeforeRender = () => order.push(n);
+    draw(); ENG.render();
+    for (const [x] of tag) delete x.onBeforeRender;
+    dust.length = 0; cleanTools(); draw();
+    return order;
+  });
+  ok('地上的痕跡排在所有透明物件前面畫（煙塵畫在焦痕上面，不會被蓋掉）',
+     scOrder.indexOf('mark') >= 0 && scOrder.indexOf('sear') > scOrder.indexOf('mark') &&
+     scOrder.indexOf('dust') > scOrder.indexOf('sear'),
+     '畫的順序 ' + scOrder.join('→'));
   }   // ── 〈地面痕跡〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 人力金額 ══════════ */

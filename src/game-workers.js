@@ -2700,7 +2700,7 @@ const HOME_CARRY = [1, 3];
 const LAY_GAP = 0.26;               // 站定之後每隔幾秒丟一塊（工人是 0.28）
 const HOME_REACH = 3;               // 同一趟認的格子最多隔多遠（見 takeHomeBlock）
 const DIG_ARC = 0.8;                // 挖料點偏離「他現在站的方位」多少弧度（見 digSpot）
-const DIG_MARK = 1.7;              // 土痕的大小（跟隕石坑同一套，3 秒淡掉）
+const DIG_MARK = 1.7;              // 土痕的大小（跟鐵球的坑同一套，3 秒淡掉）
 /* 挖出來那一塊怎麼蹦到地上（v1.129，使用者：「先用鏟子挖出積木 動作完成後
    積木在地面上（這樣就能去撿了）」）。DIG_POP 是往上的初速、DIG_SIDE 是往旁邊的，
    DIG_SET 是最後一塊挖完之後等它落定幾秒。0.8 秒上下是照物理算的（飛 0.32 秒、
@@ -4204,7 +4204,7 @@ function digBlock(w, own) {
   b.vx = Math.sin(a) * sp; b.vz = Math.cos(a) * sp; b.vy = rr(DIG_POP[0], DIG_POP[1]);
   b.ax = rr(-4, 4); b.ay = rr(-4, 4); b.az = rr(-4, 4);
   blocks.push(b);
-  spawnMark({ x: gx, y: 0, z: gz }, DIG_MARK, 1);        // 挖過的土痕（跟隕石坑同一套）
+  spawnMark({ x: gx, y: 0, z: gz }, DIG_MARK, 1);        // 挖過的土痕（跟鐵球的坑同一套）
   digPuff(w, g); digPuff(w, g); digPuff(w, g);
   ENG.setBlockCount(blocks.length);
   return true;

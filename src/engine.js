@@ -19,7 +19,7 @@ const ENG = (function () {
   let canMesh, shellMesh;           // 加農砲與燒著的砲彈（v1.204）
   let poolGeo, poolPos, poolFoam, poolUni;
   let markMesh, markGeo, markPos, markCol;
-  let searMesh, searGeo, searPos, searCol;   // Excalibur 的燒灼痕（v1.224，見 putSears）
+  let searMesh, searGeo, searPos, searCol;   // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），見 putSears
   let excFade;                               // 光柱每一格下緣／上緣的濃淡（v1.226，見 putBar）
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
@@ -104,6 +104,12 @@ const ENG = (function () {
   const SEAR_MAX = 3, SEAR_SEC = 100;
   const SEAR_U = [-1, -0.75, -0.45, -0.18, 0, 0.18, 0.45, 0.75, 1];
   const SEARV = SEAR_MAX * SEAR_SEC * (SEAR_U.length - 1) * 6;
+  /* 強爆炸的焦痕（v1.231：核彈、爆裂魔法、隕石）：跟燒灼痕同一顆網格、同一套顏色，形狀是一塊圓的。
+     同時最多幾塊、一圈切幾片、SCORCH_U 是每一圈的半徑倍率（中心 → 邊緣）。
+     一片從中心往外 (圈數−1) 格、一格兩個三角形，所以頂點上限＝塊數 × 片數 × (圈數−1) × 6。 */
+  const SCORCH_MAX = 10, SCORCH_SEG = 36;
+  const SCORCH_U = [0, 0.14, 0.3, 0.46, 0.62, 0.78, 0.9, 1];
+  const SCORCHV = SCORCH_MAX * SCORCH_SEG * (SCORCH_U.length - 1) * 6;
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
@@ -933,7 +939,7 @@ const ENG = (function () {
        **不帶蓋子**（v1.226）：尾部變淡多切了 16、40 格兩個接縫在天上，上下兩段的蓋子在加亮混色下
        疊成一圈亮盤。**尾部變淡**靠 aFade：每一格兩個數（這一段下緣、上緣的濃淡），沿著圓柱的長度
        內插進 alpha——三層共用一顆幾何體連同這一份（同黑色火球殼的 aFade）。
-       **排在燒灼痕後面畫**（renderOrder 2，焦痕是 1）：兩個都不寫深度，透明物件先比 renderOrder，
+       **排在燒灼痕後面畫**（renderOrder 2，焦痕是 1；v1.231 起焦痕是 −1）：兩個都不寫深度，透明物件先比 renderOrder，
        原本同是 0 以下的光柱一定先畫，焦痕（濃 0.96）再整片塗在光柱上面——使用者：「光束會低於地面痕跡」
        （見 開發筆記〈Excalibur：跑過去、先集氣再出光柱〉）。 */
     const barGeo = new T.CylinderGeometry(0.5, 0.5, 1, 24, 1, true);
@@ -1130,14 +1136,20 @@ const ENG = (function () {
     }));
     markMesh.receiveShadow = true;
     markMesh.frustumCulled = false; markMesh.visible = false;
+    /* 地面上的兩種痕跡排在**所有透明物件最前面**畫（v1.231，負的 renderOrder）：三個都不寫深度、
+       透明物件先比 renderOrder，同是 0 的時候塵霧先畫、焦痕（濃 0.96）再整片塗在煙上面——
+       v1.226 量到過（見 開發筆記〈光柱被焦痕蓋住〉最後那段），強爆炸改留焦痕之後整朵蘑菇雲的下半截都會被蓋掉。
+       地上的東西一律在最底下，先畫它們才是由遠到近。 */
+    markMesh.renderOrder = -2;
     scene.add(markMesh);
     /* Excalibur 的燒灼痕（v1.224）：跟上面同一套（每幀重組、逐頂點 RGBA、一顆網格一個 draw call），
        差兩件：**不吃光**（MeshBasic）——中線那一條暗紅是自己在發光，照 Lambert 算的話在建築的陰影裡
        會變成暗褐色；黑的部分吃不吃光看起來都一樣黑。**兩面都畫**：長帶的三角形是一格一格拼的，
-       不必逐一對頂點順序。排在地面痕跡後面畫（renderOrder），貼得比它高一點點才不會搶深度。 */
+       不必逐一對頂點順序。排在地面痕跡後面畫（renderOrder），貼得比它高一點點才不會搶深度。
+       強爆炸的焦痕（v1.231）也畫在這一顆裡，接在長帶後面（見 putSears）。 */
     searGeo = new T.BufferGeometry();
-    searPos = new Float32Array(SEARV * 3);
-    searCol = new Float32Array(SEARV * 4);
+    searPos = new Float32Array((SEARV + SCORCHV) * 3);
+    searCol = new Float32Array((SEARV + SCORCHV) * 4);
     const searPosAttr = new T.BufferAttribute(searPos, 3);
     const searColAttr = new T.BufferAttribute(searCol, 4);
     searPosAttr.setUsage(T.DynamicDrawUsage);
@@ -1148,7 +1160,7 @@ const ENG = (function () {
     searMesh = new T.Mesh(searGeo, new T.MeshBasicMaterial({
       vertexColors: true, transparent: true, depthWrite: false, side: T.DoubleSide
     }));
-    searMesh.renderOrder = 1;
+    searMesh.renderOrder = -1;
     searMesh.frustumCulled = false; searMesh.visible = false;
     scene.add(searMesh);
 
@@ -2260,7 +2272,8 @@ const ENG = (function () {
      一道是一條**長帶**，不是一串圓：沿著光柱掃過的那一條，每一刀（規則那邊切好的 n 刀）橫著從左緣到右緣
      SEAR_U 那幾個點，兩刀之間鋪成格子。細節全是規則那邊生的時候抽好的（每幀重抽的話會一直抖）：
        jl／jr  每一刀左右緣各自的寬度倍率——邊是燒開的形狀，不是直尺畫的
-       hot     每一刀冷得多慢——中線先是發著光的暗紅，冷得慢的那幾段會多紅一陣，看起來是幾處還沒熄的餘燼
+       hot     每一刀冷得多慢——中線先是發著光的暗紅，橫的方向再乘 SEAR_LAST：外面先冷、中線最後熄
+               （v1.230 以前 hot 沿著長度起伏很大、冷得慢的那幾段整段多紅一陣，看起來是分段消失，v1.231 收小）
      冷到哪了看 cool（燒了幾秒 ÷ SEAR_HOT），濃淡看 a（最後那幾秒淡掉）。兩端收細：光柱是從她腳前開始碰到地的，
      遠的那一端是光柱的尾巴。
      **比一般的痕跡濃得多**：一般的痕跡「要淡、不能把煙塵蓋掉」（v1.88.1 使用者定的，有測試守著），
@@ -2273,6 +2286,10 @@ const ENG = (function () {
   const SEAR_CHAR = [searC(0x070403, 0.96), searC(0x0a0604, 0.96), searC(0x0e0906, 0.93),
                      searC(0x1a120b, 0.82), searC(0x261c13, 0)];
   const SEAR_GLOW = [1, 0.6, 0.12, 0, 0];
+  /* 每一圈冷得多慢（中線是 1，乘在 hot 上）：外面先冷、紅的一路往中線收，**中線最後熄**
+     （v1.231 使用者：「紅色消失的部分 現在看起來像分段消失 應該一條的中心最後消失」——v1.224～v1.230
+     一刀裡橫的那幾點同一個熱度，冷得快的那幾刀整刀先黑，實測第 2 秒斷成 7 段、紅的寬度一直沒收）。 */
+  const SEAR_LAST = [1, 0.7, 0.5, 0.4, 0.4];
   const SEAR_RED = searC(0x7a1004, 1), SEAR_EMBER = searC(0xd8380c, 1);   // 暗紅 → 最燙那幾處偏橘
   const _sc = { r: 0, g: 0, b: 0, a: 0 };
   /* 這一點的顏色：h＝這一點還有多燙（0～1）。0.5 以下從焦黑往暗紅，以上從暗紅往餘燼的橘 */
@@ -2283,8 +2300,16 @@ const ENG = (function () {
     _sc.a = base.a;
     return _sc;
   }
-  /* list 每一項 {x, z 起點, fx, fz 方向, len 長, w 半寬, n 刀數, jl, jr, hot（各 n+1 個）, cool, a}。 */
-  function putSears(list) {
+  /* 強爆炸的焦痕（v1.231）：中心 → 邊緣每一圈的焦黑色與吃幾成熱度（SCORCH_U 那幾圈）。
+     跟長帶同一個意思——紅的只有中間那一塊，外面兩圈不紅（第一版長帶紅得太寬的教訓，見 SEAR_GLOW）。
+     SCORCH_GLOW 規則那邊也讀：冒煙的口照「這一點看起來多紅」決定冒多少。 */
+  const SCORCH_CHAR = [searC(0x070403, 0.96), searC(0x080504, 0.96), searC(0x0a0604, 0.96), searC(0x0c0705, 0.95),
+                       searC(0x0e0906, 0.93), searC(0x140d08, 0.88), searC(0x1a120b, 0.72), searC(0x261c13, 0)];
+  const SCORCH_GLOW = [1, 0.9, 0.7, 0.45, 0.22, 0.08, 0, 0];
+  /* list 每一項 {x, z 起點, fx, fz 方向, len 長, w 半寬, n 刀數, jl, jr, hot（各 n+1 個）, cool, a}。
+     rounds（強爆炸的焦痕，v1.231）每一項 {x, z 爆點, r 半徑, j 每一片的半徑倍率（SCORCH_SEG 個）,
+     hot 每一點冷得多慢（第 b 圈第 k 片在 b × SCORCH_SEG + k）, cool, a}。熱度同一條式子。 */
+  function putSears(list, rounds) {
     const cnt = Math.min(list.length, SEAR_MAX);
     const P = searPos, C = searCol, lim = groundHalf - 0.4, mid = (SEAR_U.length - 1) / 2;
     let v = 0;
@@ -2297,7 +2322,7 @@ const ENG = (function () {
       P[v * 3 + 1] = SEAR_Y;
       P[v * 3 + 2] = Math.max(-lim, Math.min(lim, s.z + s.fz * f + s.fx * w));
       const ring = Math.abs(b - mid);                 // 0 中線 … 4 邊緣
-      const heat = Math.max(0, Math.min(1, 1 - s.cool / (0.45 + 1.1 * s.hot[k])));
+      const heat = Math.max(0, Math.min(1, 1 - s.cool / (0.45 + 1.1 * s.hot[k] * SEAR_LAST[ring])));
       const c = searTint(SEAR_CHAR[ring], heat * SEAR_GLOW[ring]);
       C[v * 4] = c.r; C[v * 4 + 1] = c.g; C[v * 4 + 2] = c.b; C[v * 4 + 3] = c.a * s.a;
       v++;
@@ -2308,6 +2333,25 @@ const ENG = (function () {
         for (let b = 0; b + 1 < SEAR_U.length; b++) {
           put(s, k, b); put(s, k, b + 1); put(s, k + 1, b + 1);
           put(s, k, b); put(s, k + 1, b + 1); put(s, k + 1, b);
+        }
+    }
+    const rn = rounds ? Math.min(rounds.length, SCORCH_MAX) : 0;
+    const putR = (s, k, b) => {
+      const kk = k % SCORCH_SEG, rad = s.r * SCORCH_U[b] * s.j[kk], ang = k / SCORCH_SEG * Math.PI * 2;
+      P[v * 3] = Math.max(-lim, Math.min(lim, s.x + Math.cos(ang) * rad));
+      P[v * 3 + 1] = SEAR_Y;
+      P[v * 3 + 2] = Math.max(-lim, Math.min(lim, s.z + Math.sin(ang) * rad));
+      const heat = Math.max(0, Math.min(1, 1 - s.cool / (0.45 + 1.1 * s.hot[b * SCORCH_SEG + kk])));
+      const c = searTint(SCORCH_CHAR[b], heat * SCORCH_GLOW[b]);
+      C[v * 4] = c.r; C[v * 4 + 1] = c.g; C[v * 4 + 2] = c.b; C[v * 4 + 3] = c.a * s.a;
+      v++;
+    };
+    for (let i = 0; i < rn; i++) {
+      const s = rounds[i];
+      for (let k = 0; k < SCORCH_SEG; k++)
+        for (let b = 0; b + 1 < SCORCH_U.length; b++) {
+          putR(s, k, b); putR(s, k + 1, b); putR(s, k + 1, b + 1);
+          putR(s, k, b); putR(s, k + 1, b + 1); putR(s, k, b + 1);
         }
     }
     searMesh.visible = v > 0;
@@ -6347,7 +6391,7 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
-    putStars, putBolts, putMarks, putSears, SEAR_MAX, SEAR_SEC, putGates, putWeapons, putSwords, putBeasts, putUfos,
+    putStars, putBolts, putMarks, putSears, SEAR_MAX, SEAR_SEC, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
     putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,
