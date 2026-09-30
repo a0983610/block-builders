@@ -2368,6 +2368,9 @@ const ENG = (function () {
     }
     if (v) { pa.needsUpdate = true; ca.needsUpdate = true; }
   }
+
+  /* ── 破壞道具（續）─────────────────────────────────── */
+  /* 上面〈破壞道具〉之後隔了〈加農砲〉〈砲管〉〈Excalibur 的燒灼痕〉三段，其餘道具的 put* 接在這裡 */
   /* 飛在天上的石頭 ＋ **還在石兜裡待發的那幾顆**（v1.199）。
      以前石頭是放索那一刻才生出來的，所以待發與整段甩臂都看不到石頭，
      石頭是從索末端憑空冒出來的。載彈那幾顆直接畫在石兜上（同一顆球、同一個尺寸，
@@ -3035,6 +3038,7 @@ const ENG = (function () {
     if (boltMesh.instanceColor) boltMesh.instanceColor.needsUpdate = true;
   }
 
+  /* ── 草地島大小與視窗尺寸 ───────────────────────────── */
   /* 草地島做成三層：草皮 → 一圈淺土切邊 → 深土層，邊緣才有等角風格的層次 */
   function setGroundSize(r) {
     groundHalf = r;                    // 地面痕跡要拿它把自己夾在草皮上（見 putMarks）

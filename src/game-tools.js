@@ -7781,7 +7781,13 @@ function swordCut(s, aFrom, aTo, dt) {
   }
 }
 
-/* 玩家在畫面上點一下的入口。tool 決定用哪個道具 */
+/* ── 玩家點一下的入口（useTool）──────────────────────────────
+   玩家在畫面上點一下的入口。tool 決定用哪個道具：每一把在 useTool 裡一行分支，實作在各自那一段。
+   **沿用別段做法的道具接在被沿用的那一段後面**，不在上面這一區：
+     · Excalibur、兵長砍猴 接在天災〈事件六：Saber 的 Excalibur〉後面（沿用那一招與 sendSaber／stepCall）
+     · 箭雨、閒著的小人對牛羊射一箭、火槍兵 三段連在閒逛動物後面（後兩段整套借箭雨；
+       火槍兵的 MK_GAP 載入時就讀箭雨的 AR_COL／AR_GAP，不能排到箭雨前面）
+   見 開發筆記〈game-tools.js 長到一萬二千行：只補標題，不拆也不搬（v1.233.2）〉 */
 /* 記下「這一把用過了」。成就〈工具箱清空〉要的是每一種都試過，
    而水桶按住不放那條路不經過 useTool（見 startPourAt），所以抽成一支共用。 */
 function markTool(id) {
@@ -7885,6 +7891,7 @@ function useTool(hit) {
   return 0;
 }
 
+/* ── 塵霧 ─────────────────────────────────────────────── */
 function spawnDust(p, R, n) {
   const count = Math.min(90, 22 + n);
   for (let i = 0; i < count; i++) {
