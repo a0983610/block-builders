@@ -10148,6 +10148,107 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `整圈 ${homeVsWall.segs} 段、一塊都沒砌（homeBox 的框是空的＝${homeVsWall.boxEmpty}）：` +
      `挑 600 次 → ${homeVsWall.got} 次挑得到位置、其中 ${homeVsWall.hit} 次落在牆的占地內`);
 
+  /* ⑬ 吉祥物走去砸房子那一段（v1.233.1，使用者：「吉祥物走去砸房子那一段 … 程式寫法跟這次的洞類似 調查一下」）。
+     兩條規則，都是自己組最小場面、押死的（見 開發筆記〈吉祥物砸房子：城外到城外、目標一幀換一間〉）：
+       · 城外到城外、直線切過城裡也繞城外：牆半徑 36、只留 −z 面緊鄰東南角樓那一段沒砌，東牆外一間房子，
+         黑獼猴在南牆外、欠帳兩處、整圈牆都算燒過（逼牠挑那一間）。A/B 把 wallCut 換成永遠 false ＝ v1.233.0。
+         目標是城牆那一種（只有附近幾段算燒過）也要照樣動手——照「那一段的中心」問 wallCut 的話會永遠在繞。
+       · 走過去那一段認準一間：只砌東北角樓、城外北邊一間大長屋，白猴子站在兩者之間。
+         A/B 每一步之前把 m.vh 清掉＝每幀重挑最近的一塊（v1.233.0 的做法），那樣牠在兩個目標之間原地抖。 */
+  const mascVill = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩大金字塔');
+    targetCnt = 1800; startBuild(true); completeNow();
+    phase = 'done'; beasts = null;
+    const n0 = blocks.length;
+    const fill = hi => {
+      const h = homes.list[hi];
+      for (let i = 0; i < h.slots.length; i++) {
+        const sl = h.slots[i], b = newBlock();
+        b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      h.done = true; homeBox(h);
+    };
+    const house = (kind, hx, hz) => {
+      const slots = homeSlots(hx, hz, kind, HOME_PAL[0]), at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: hx, z: hz, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                  slots, left: slots.length, n: 1, tree: 0, done: false };
+      homes.list.push(h); fill(homes.list.length - 1); markHomeF6(h);
+      return h;
+    };
+    /* 一個場面：keep(h) 回 true 的那幾段城牆砌起來，再擺房子；每一次都從乾淨的積木池重來 */
+    const scene = (keep, hk, hx, hz) => {
+      for (let i = n0; i < blocks.length; i++) if (blocks[i].cell) gridDel(blocks[i]);
+      blocks.length = n0;
+      homes = { list: [] };
+      for (const h of wallPlan()) { homes.list.push(h); if (keep(h)) fill(homes.list.length - 1); }
+      const hh = house(hk, hx, hz);
+      ENG.setBlockCount(blocks.length);
+      frameNo++;                                      // wallNow／wallList 照幀快取
+      return hh;
+    };
+    const walk = (m, T, each) => {
+      let n = 0, act = 0, flips = 0, was = inWall(m.x, m.z);
+      while (n++ < T / 0.05) {
+        frameNo++;                                    // 同主迴圈（step 每一幀加一）
+        if (each) each(m);
+        stepBeast(m, 0.05);
+        const now = inWall(m.x, m.z); if (now !== was) { flips++; was = now; }
+        if (m.st === 'act') { act = n; break; }
+      }
+      return { secs: act ? +(act * 0.05).toFixed(1) : -1, flips };
+    };
+    const W = wallRing(), cut = wallCut, out = { W };
+    const gapSE = h => !(h.thin === 'z' && h.z < 0 && h.wx0 < W - 8 && h.wx1 > W - 8);
+    for (const [nm, allWalls, on] of [['house', 1, 1], ['off', 1, 0], ['wall', 0, 1]]) {
+      const hh = scene(gapSE, HOME_KIND[0], W + 14, -22);
+      wallCut = on ? cut : () => false;
+      beasts = null;
+      const m = spawnBeast('ape', 1, 1, 0);
+      m.x = 22; m.z = -(W + 8); m.sx = m.x; m.sz = m.z;
+      m.st = 'fun'; m.bad = 1; m.home = 1; m.pause = 0; m.stay = 999; m.owe = 2;
+      m.spots = homes.list.filter(q => q.wall && (allWalls || Math.hypot(q.x - m.x, q.z - m.z) < 35))
+                          .map(q => ({ x: q.x, z: q.z, id: q.id }));
+      const t0 = doomTarget(m), h0 = homes.list[t0.hh];
+      const cut0 = cut(m.x, m.z, h0.x, h0.z);          // 出發那一刻（sx／sz 之後會被 stuckWatch 當錨點改掉）
+      const r = walk(m, 120);
+      r.house = h0 === hh; r.cut = cut0;
+      wallCut = cut;
+      out[nm] = r;
+    }
+    const neCorner = h => h.kind === '角樓' && h.x > 0 && h.z > 0;
+    for (const old of [0, 1]) {
+      scene(neCorner, HOME_KIND.find(k => k.id === '大長屋'), 22, W + 14);
+      beasts = null;
+      const m = spawnBeast('snow', 1, 1, 0);
+      m.x = 26.5; m.z = W + 2.8; m.sx = m.x; m.sz = m.z;
+      m.st = 'fun'; m.bad = 1; m.home = 1; m.pause = 0; m.stay = 999;
+      const seen = new Set();
+      const r = walk(m, 60, q => { if (old) q.vh = 0; else if (q.vh) seen.add(q.vh); });
+      r.pinned = seen.size;
+      out[old ? 'snowOld' : 'snow'] = r;
+    }
+    /* 動過的全域狀態還回去：自己砌的積木整批拿掉 */
+    beasts = null;
+    for (let i = n0; i < blocks.length; i++) if (blocks[i].cell) gridDel(blocks[i]);
+    blocks.length = n0; ENG.setBlockCount(n0);
+    homes = null; frameNo++;
+    return out;
+  });
+  ok('吉祥物砸房子：城外到城外、直線切過城裡也沿城外繞過去；目標是城牆那一種照樣動手（A/B：關掉 wallCut 就是 v1.233.0）',
+     mascVill.house.house && mascVill.house.cut && mascVill.house.secs > 0 && mascVill.house.flips === 0 &&
+     mascVill.off.secs < 0 && mascVill.off.flips > 3 && !mascVill.wall.house && mascVill.wall.secs > 0,
+     `牆半徑 ${mascVill.W}：挑到城外那一間（直線切過城裡＝${mascVill.house.cut}）${mascVill.house.secs} 秒動手、` +
+     `進出城 ${mascVill.house.flips} 次；關掉 wallCut：${mascVill.off.secs < 0 ? '120 秒沒動手' : mascVill.off.secs + ' 秒動手'}、` +
+     `進出城 ${mascVill.off.flips} 次；目標是城牆那一種 ${mascVill.wall.secs} 秒動手`);
+  ok('吉祥物砸房子：走過去那一段認準一間，不在兩個差不多近的目標之間原地抖（A/B：每幀重挑就是 v1.233.0）',
+     mascVill.snow.secs > 0 && mascVill.snow.pinned === 1 && mascVill.snowOld.secs < 0,
+     `白猴子在東北角樓與城外那一間大長屋之間：認準一間 ${mascVill.snow.secs} 秒動手（這一趟認過 ${mascVill.snow.pinned} 間）；` +
+     `每幀重挑 ${mascVill.snowOld.secs < 0 ? '60 秒沒動手' : mascVill.snowOld.secs + ' 秒動手'}`);
+
   /* 天災裝回去過（上面那幾條要牠），這裡要關回去——不關的話後面每一段都會跑到
      隨機來訪的猴子（同天災那幾段的收尾）。 */
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); clearHomes(); });
@@ -27849,13 +27950,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         平常那一份每秒幾顆先關掉，只留「散掉那一塊冒一團」——冒幾團、冒在哪都是規則，不看骰子 ── */
   const lsteam = await page.evaluate(() => {
     cleanTools();
+    dust.length = 0;                                // 上一條留下來的蒸氣會佔掉配額（cleanTools 不清塵霧）
     const g = spawnBeast('giant', 1);
     g.x = siteR + 24; g.z = -6; g.st = 'fun'; g.pause = 999; g.stay = 999;
     giantDie(g);
     const D = LEV_DIE, t4 = D.kneel + D.wait + D.fall + D.hold, S = LEV_STEAM, rate = S.rate;
     while (g.dead < t4 - 1e-9) stepDie(g, 0.05);
     S.rate = [0, 0, 0];
-    dust.length = 0;
+    dust.length = 0; g.puff = 0;                    // 平常那一份還沒冒完的零頭也清掉，只留「散掉那一塊冒一團」
     const P = ENG.BEASTS.giant, u0 = g.melt, sc = g.sc;
     stepDie(g, 0.2);
     const u1 = g.melt, at = [];

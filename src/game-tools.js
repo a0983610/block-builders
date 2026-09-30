@@ -8220,6 +8220,7 @@ function funBack(m) {
   m.bad = 0; m.home = 0;
   m.owe = 0;                                 // 還欠著的也一筆勾銷（v1.229，見 moreMascot）
   m.bust = null; m.bn = 0;                   // 清擋路那一腳的旗標（v1.207，同 leaveBeast）
+  m.vh = 0;                                  // 這一趟認準的那一間（v1.233.1）也收掉
   m.st = 'fun';
   strollPause(m); idleSpot(m);
 }
@@ -8492,19 +8493,23 @@ function stepBeast0(m, dt) {
         }
         m.st = 'near'; m.leg = 0; return false;
       }
-      const t = doomTarget(m);                         // m.home 是 1：村子那邊最近的一塊（v1.229 起跳過燒過的）
+      /* m.home 是 1：村子那邊最近的一塊（v1.229 起跳過燒過的）。
+         **走過去這一段認準這一趟挑的那一間**（v1.233.1，m.vh 記那一間的 id；那一間還有沒被跳過的積木就一直找它）：
+         每幀重找最近的一塊的話，兩間差不多近時會一幀換一間——白猴子站得遠（那一間的半徑 ＋ 10.5 格），
+         往這一間的站位走就離另一間更近，往那一間走又換回來，實測原地抖了 120 秒沒動手（房子與角樓之間）。
+         near 那一段照舊每幀找最近的一塊：拆擋路的牆那條路就是靠「最近的一塊＝面前這段牆」接起來的。 */
+      let t = null;
+      if (m.vh) {
+        const hi = homes ? homes.list.findIndex(q => q.id === m.vh) : -1;
+        const skip = moreSkip(m);
+        if (hi >= 0) t = nearHome(m.x, m.z, b => b.hh !== hi || (!!skip && skip(b)));
+      }
+      if (!t) { t = doomTarget(m); m.vh = t ? homes.list[t.hh].id : 0; }
       if (!t) {
         if (m.owe > 0 && moreNext(m)) return false;   // 還欠著的換一邊（v1.229）
         m.bad = 0; m.home = 0; m.owe = 0;
       } else {
         const h = homes.list[t.hh];
-        /* 盯上的那一間在城牆另一邊，而且真的被牆擋住了（v1.186）：有門走門，
-           沒門就改砸擋路的這一段（牠本來就在砸村子那一邊，m.home 已經是 1）。 */
-        if (wallAhead(m, h.x, h.z)) {
-          if (gateNeed(m, h.x, h.z)) return false;
-          // 沒有開口可以繞：走到牆邊才動手（v1.195，見 wallFoot）
-          if (wallFoot(m, h.x, h.z)) { m.st = 'near'; m.leg = 0; return false; }
-        }
         const d = Math.hypot(m.x - h.x, m.z - h.z) || 1;
         const stand = h.r + doomNear(m);
         let ax = (m.x - h.x) / d, az = (m.z - h.z) / d;
@@ -8517,8 +8522,22 @@ function stepBeast0(m, dt) {
         if (Math.hypot(h.x + ax * stand, h.z + az * stand) < siteR + KEEP) {
           ax = h.x / hr; az = h.z / hr;
         }
-        m.tx = h.x + ax * stand;
-        m.tz = h.z + az * stand;
+        const sx = h.x + ax * stand, sz = h.z + az * stand;
+        /* 盯上的那一間在城牆另一邊，而且真的被牆擋住了（v1.186）：有門走門，
+           沒門就改砸擋路的這一段（牠本來就在砸村子那一邊，m.home 已經是 1）。 */
+        if (wallAhead(m, h.x, h.z)) {
+          if (gateNeed(m, h.x, h.z)) return false;
+          // 沒有開口可以繞：走到牆邊才動手（v1.195，見 wallFoot）
+          if (wallFoot(m, h.x, h.z)) { m.st = 'near'; m.leg = 0; return false; }
+        } else if (!footHome(sx, sz) && wallCut(m.x, m.z, sx, sz)) {
+          /* **城外到城外、直線切過城裡**（v1.233.1，同 stepCall 那一個）：沿城外繞到那一側。
+             問的是**站的那一點**、不是那一間的中心：目標是一段城牆的時候中心就在牆上，拿中心問永遠是「切過」，
+             沿城外繞那一段就收不掉（實測 120 秒都在繞）。站位落在別人的外框裡的不走這一條（那一點本身就撞牆，
+             照舊交給 strollTo 與 stuckWatch 挪）。
+             實測硬湊出來的場面（整圈牆都算燒過、只剩城外那一間）：改之前 120 秒沒動手、城內外進出 25 次 */
+          if (gateNeed(m, sx, sz)) return false;
+        }
+        m.tx = sx; m.tz = sz;
         if (strollTo(m, dt, spd, stp, kp)) { m.st = 'near'; m.leg = 0; }
         return false;
       }
@@ -9679,7 +9698,8 @@ function stepDie(m, dt) {
   m.puff += dt * rate;
   while (m.puff >= 1) {
     m.puff--;
-    if (!room()) break;
+    /* 配額滿了就把欠的整筆作廢：不作廢的話它一直累積，等配額一空出來就連著補冒一大串 */
+    if (!room()) { m.puff = 0; break; }
     dieSteam(m); mine++;
   }
   return u >= 1;
@@ -10656,6 +10676,7 @@ function madPick(m) {
   const set = !!s && (dice || !v);                     // 抽到的那一邊沒東西可砸就換另一邊
   m.bad = 1; m.home = set ? 0 : 1;
   m.aim = set && skip ? { x: s.x, z: s.z } : null;
+  m.vh = 0;                                            // 新的一趟：村子那邊重挑一間（v1.233.1，見 stepBeast 的 fun）
   return set ? s : v;
 }
 /* 吉祥物生氣：隨手挑一邊砸（madPick），兩邊都沒東西可砸就不改牠的主意。 */
