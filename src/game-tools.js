@@ -4753,15 +4753,17 @@ function spawnWind(p, R, magic) {
       op: 0.65 - 0.14 * k, fade, c, add: 1, spin: rr(0, 6.28), wind: 1
     });
   }
-  for (let i = 0; i < WIND_DUST; i++) {
+  /* 塵牆跟蘑菇雲同一個旋鈕（v1.231.1，見 CLOUD_GRAIN）：顆數 × 1/k²、單顆 × k */
+  const wn = Math.round(cloudN(WIND_DUST));
+  for (let i = 0; i < wn; i++) {
     if (dust.length > WIND_DUST_CAP) break;         // 見 WIND_DUST_CAP
-    const a = i / WIND_DUST * Math.PI * 2 + rr(-0.06, 0.06);
+    const a = i / wn * Math.PI * 2 + rr(-0.06, 0.06);
     const sp = R * rr(1.1, 1.9);                    // 追得上光環的速度，才像同一股風
     dust.push({
       x: p.x + Math.cos(a) * R * 0.3, y: rr(0.3, 1.8), z: p.z + Math.sin(a) * R * 0.3,
       vx: Math.cos(a) * sp, vy: rr(0.4, 2.6), vz: Math.sin(a) * sp,
       // 顏色壓得比一般煙塵暗一點：這是被掀起來的土，太白會像整片起霧
-      rx: 0, ry: a, life: rr(0.9, 1.7), s: rr(0.9, 2.4), c: rr(0.55, 0.82),
+      rx: 0, ry: a, life: rr(0.9, 1.7), s: rr(0.9, 2.4) * CLOUD_GRAIN.k, c: rr(0.55, 0.82),
       keep: 0.985                                   // 預設 0.94 會讓它原地就停住
     });
   }
@@ -4806,6 +4808,13 @@ const SKIRT_T = 1.7;            // 腳下那圈煙要往外鋪多久
    煙裙要是先把配額吃光，蘑菇就會變成一根沒有頭的柱子。 */
 const CLOUD_TOP = 440, CLOUD_STEM = 160, CLOUD_SKIRT = 165;
 const CLOUD_CAP = 1550, CLOUD_SKIRT_CAP = 1350;
+/* 顆粒再細一級（v1.231.1，使用者：「更新爆裂魔法&核彈的煙 現在比起來不夠精緻了」——比的是 v1.231 焦痕的細煙，
+   一縷 0.4～0.8 格，蘑菇雲的傘蓋一團還是 1.6～3.2）。整朵雲（傘蓋、柱子、煙裙、雲裡的火光）與風壓的塵牆
+   同一個旋鈕 k：**單顆 × k、顆數 × 1/k²**，總覆蓋度不動（同 v1.123 那一條）。上面那幾個數字與兩個關卡
+   都是 k = 1 那一檔的，用的時候過 cloudN（關卡跟著放大：留給碎料火苗煙的那一截也要跟著寬）。
+   寫成一個欄位是給預覽頁切換用的（同 LEV_RANGE）。 */
+const CLOUD_GRAIN = { k: 0.6 };   // 預覽給了 1／0.7／0.6／0.5 四檔，使用者選 0.6
+const cloudN = n => n / (CLOUD_GRAIN.k * CLOUD_GRAIN.k);
 /* 核彈與爆裂魔法共用同一朵。魔法版原本是紅的、還會撒星光，v1.48 併回來——
    使用者要的是同一種雲，兩套配色只是讓同一件事看起來像兩件事。 */
 function startCloud(p, R) {
@@ -4825,53 +4834,54 @@ function stepClouds(dt) {
        而是「傘蓋往上升，沿路留下來的那一條」。
        兩邊都從地面往上噴的話會混成一團胖雲，看不出蘑菇的頸子。 */
     const capY = R * 0.4 + Math.max(0, c.t - 0.45) * 8.5;
+    const G = CLOUD_GRAIN.k, cap = cloudN(CLOUD_CAP), hotCap = cloudN(HOT_MAX);   // 見 CLOUD_GRAIN
     if (c.t < 2.2) {                              // 柱子要一路補到傘蓋升上去為止
-      c.emit += dt * CLOUD_STEM;
+      c.emit += dt * cloudN(CLOUD_STEM);
       while (c.emit >= 1) {
         c.emit--;
         const a = Math.random() * Math.PI * 2, rad = rr(0.2, R * 0.07);
         const x = c.x + Math.cos(a) * rad, z = c.z + Math.sin(a) * rad;
-        if (c.t < 0.8 && hot.length < HOT_MAX)      // 柱心的火光
+        if (c.t < 0.8 && hot.length < hotCap)       // 柱心的火光
           hot.push({ x, y: rr(0.6, Math.max(3, capY * 0.7)), z,
             vx: Math.cos(a) * 0.6, vy: rr(2, 5), vz: Math.sin(a) * 0.6,
             rx: Math.random() * 6, ry: Math.random() * 6,
-            s: rr(1, 2.2), life: rr(0.5, 1.1), g: 1.4, grow: 1.04, cool: rr(0.4, 0.8),
+            s: rr(1, 2.2) * G, life: rr(0.5, 1.1), g: 1.4, grow: 1.04, cool: rr(0.4, 0.8),
             cr: 1, cg: rr(0.62, 0.86), cb: rr(0.16, 0.4),
             to: [0.6, 0.16, 0.04] });
-        if (dust.length < CLOUD_CAP)                 // 柱子的煙：沿著整根柱子生
+        if (dust.length < cap)                       // 柱子的煙：沿著整根柱子生
           dust.push({ x, y: rr(0.6, capY * 0.92), z,
             vx: Math.cos(a) * rr(0.2, 1.2), vy: rr(0.8, 2.4), vz: Math.sin(a) * rr(0.2, 1.2),
             rx: Math.random() * 6, ry: Math.random() * 6,
-            life: rr(6, 8.5), s: rr(0.95, 1.9), c: rr(0.34, 0.56), g: 1.4, fade: 4 });
+            life: rr(6, 8.5), s: rr(0.95, 1.9) * G, c: rr(0.34, 0.56), g: 1.4, fade: 4 });
       }
     }
     /* 傘蓋：0.45 秒時一次撐開，然後自己往上升。
        生在柱子上方、給比柱子快的初速，收尾就是「上面一團、下面一根」。 */
     if (t0 < 0.45 && c.t >= 0.45) {
       const H = R * 0.4;
-      for (let k = 0; k < CLOUD_TOP; k++) {
-        if (dust.length >= CLOUD_CAP) break;
+      for (let k = 0; k < cloudN(CLOUD_TOP); k++) {
+        if (dust.length >= cap) break;
         const a = Math.random() * Math.PI * 2;
         const rad = Math.sqrt(rr(0.03, 1)) * R * 0.5;
         dust.push({
           x: c.x + Math.cos(a) * rad, y: H + rr(-R * 0.06, R * 0.12), z: c.z + Math.sin(a) * rad,
           vx: Math.cos(a) * rr(0.4, 2), vy: rr(8, 10.5), vz: Math.sin(a) * rr(0.4, 2),
           rx: Math.random() * 6, ry: Math.random() * 6,
-          life: rr(6.5, 9), s: rr(1.6, 3.2), c: rr(0.18, 0.42), g: 1.8, fade: 4.5
+          life: rr(6.5, 9), s: rr(1.6, 3.2) * G, c: rr(0.18, 0.42), g: 1.8, fade: 4.5
         });
       }
       /* 傘蓋裡的火光，燒一下就冷掉。v1.123 跟著煙一起變細（60 顆 × 1.1～2.2，
          本來是 34 顆 × 1.6～3.2）：煙細了之後，兩三顆大的橘色方塊會從一團碎煙裡
          整個凸出來，反而更顯眼——量的不是絕對大小，是跟旁邊那些的落差。 */
-      for (let k = 0; k < 60; k++) {
-        if (hot.length >= HOT_MAX) break;
+      for (let k = 0; k < cloudN(60); k++) {
+        if (hot.length >= hotCap) break;
         const a = Math.random() * Math.PI * 2;
         const rad = Math.sqrt(rr(0.02, 1)) * R * 0.34;
         hot.push({
           x: c.x + Math.cos(a) * rad, y: H + rr(0, R * 0.06), z: c.z + Math.sin(a) * rad,
           vx: Math.cos(a) * rr(0.3, 1.5), vy: rr(8, 10.5), vz: Math.sin(a) * rr(0.3, 1.5),
           rx: Math.random() * 6, ry: Math.random() * 6,
-          s: rr(1.1, 2.2), life: rr(0.7, 1.5), g: 1.8, grow: 1.04, cool: rr(0.6, 1.1),
+          s: rr(1.1, 2.2) * G, life: rr(0.7, 1.5), g: 1.8, grow: 1.04, cool: rr(0.6, 1.1),
           cr: 1, cg: rr(0.68, 0.9), cb: rr(0.2, 0.45),
           to: [0.55, 0.14, 0.04]
         });
@@ -4887,7 +4897,7 @@ function stepClouds(dt) {
        一顆頂多滾 3 個單位，鋪不出半徑 30 那麼寬。所以「生成半徑隨時間往外擴」，
        速度只負責近處的翻滾感；重力給大一點，噴起來就會壓回地面貼著滾。 */
     if (c.t < SKIRT_T) {
-      c.semit = (c.semit || 0) + dt * CLOUD_SKIRT;
+      c.semit = (c.semit || 0) + dt * cloudN(CLOUD_SKIRT);
       while (c.semit >= 1) {
         c.semit--;
         /* 這裡的上限（CLOUD_SKIRT_CAP）壓得比柱子與傘蓋的 CLOUD_CAP 低：
@@ -4896,7 +4906,7 @@ function stepClouds(dt) {
            兩個數字都比整朵雲自己要的（v1.123 起：柱 352 + 傘 440 + 裙 280）高一截，
            是留給碎料的火苗煙——核彈會點著整棟，那些煙先搶走兩百多格，配額不夠寬的話
            煙裙就鋪不出來（量過：99 團 → 27 團，只剩柱子腳邊一小圈）。 */
-        if (dust.length > CLOUD_SKIRT_CAP) break;
+        if (dust.length > cloudN(CLOUD_SKIRT_CAP)) break;
         const a = Math.random() * Math.PI * 2;
         const k = Math.min(1, c.t / (SKIRT_T * 0.8));
         const rad = R * (0.12 + 0.36 * k) * rr(0.75, 1.15);
@@ -4904,7 +4914,7 @@ function stepClouds(dt) {
           x: c.x + Math.cos(a) * rad, y: rr(0.3, R * 0.09), z: c.z + Math.sin(a) * rad,
           vx: Math.cos(a) * rr(1.2, 4), vy: rr(1, 3), vz: Math.sin(a) * rr(1.2, 4),
           rx: Math.random() * 6, ry: Math.random() * 6,
-          life: rr(5, 7.5), s: rr(1.45, 2.7), c: rr(0.26, 0.46), g: 3.2, fade: 3.4
+          life: rr(5, 7.5), s: rr(1.45, 2.7) * G, c: rr(0.26, 0.46), g: 3.2, fade: 3.4
         });
       }
     }
@@ -5165,7 +5175,7 @@ function ventSmoke(v, red, dt) {
   v.e += dt * SCORCH_VENT * red * red;
   while (v.e >= 1) {
     v.e--;
-    if (dust.length >= CLOUD_CAP) { v.e = 0; break; }
+    if (dust.length >= cloudN(CLOUD_CAP)) { v.e = 0; break; }   // 雲變細之後關卡跟著寬（見 CLOUD_GRAIN）
     dust.push({
       x: v.x + rr(-0.4, 0.4), y: 0.3, z: v.z + rr(-0.4, 0.4),
       vx: rr(-0.3, 0.3), vy: rr(1.6, 2.8), vz: rr(-0.3, 0.3),

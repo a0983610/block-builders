@@ -21102,7 +21102,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     fxRings.length = 0; dust.length = 0; hot.length = 0; flashes.length = 0;
     clearFires();
     return { still, rings, wd, ringMax: +ringMax.toFixed(0), dustMax: +dustMax.toFixed(0),
-             nukeWind, bombWind, R: NUKE_R, mult: WIND_R, want: WIND_RINGS, dustN: WIND_DUST };
+             nukeWind, bombWind, R: NUKE_R, mult: WIND_R, want: WIND_RINGS,
+             dustN: Math.round(cloudN(WIND_DUST)) };      // 塵牆的顆數跟蘑菇雲同一個旋鈕（v1.231.1，見 CLOUD_GRAIN）
   });
   ok('風壓掃出爆炸範圍外，不是貼在火球邊上',
      wind.rings === wind.want && wind.ringMax > wind.R * 1.8,
@@ -21115,6 +21116,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('只有核彈與魔法有風壓，炸彈那種小爆炸沒有',
      wind.nukeWind === wind.dustN && wind.bombWind === 0,
      '核彈 ' + wind.nukeWind + ' 顆、炸彈 ' + wind.bombWind + ' 顆');
+
+  /* 顆粒再細一級（v1.231.1，使用者：「更新爆裂魔法&核彈的煙 現在比起來不夠精緻了」，預覽四檔選了 k 0.6）：
+     整朵雲與風壓的塵牆同一個旋鈕 CLOUD_GRAIN——單顆 × k、顆數 × 1/k²。規則型：直接呼叫 stepClouds／spawnWind，
+     不跑模擬。傘蓋是 0.45 秒那一下整批撐開的，推一步 0.5 秒就量得到整批；柱子與煙裙這 0.5 秒各生
+     floor(0.5 × 每秒幾顆)；柱心的火光每生一顆柱子的煙就跟一顆（t < 0.8），傘蓋的火光 cloudN(60) 顆。
+     哪一顆是哪一部分照 fade 分（4.5 傘蓋、4 柱子、3.4 煙裙），期望值全讀常數算。 */
+  const grain = await page.evaluate(() => {
+    const k = CLOUD_GRAIN.k;
+    const rng = a => a.length ? [+Math.min(...a.map(d => d.s)).toFixed(3), +Math.max(...a.map(d => d.s)).toFixed(3)] : [0, 0];
+    const inR = (r, lo, hi) => r[0] >= lo * k - 1e-6 && r[1] <= hi * k + 1e-6;
+    dust.length = 0; hot.length = 0; clouds.length = 0; fxRings.length = 0;
+    startCloud({ x: 0, y: 0, z: 0 }, 30);
+    stepClouds(0.5);                                 // 跨過 0.45 秒：傘蓋整批撐開
+    const top = dust.filter(d => d.fade === 4.5), stem = dust.filter(d => d.fade === 4), skirt = dust.filter(d => d.fade === 3.4);
+    const want = { top: Math.ceil(cloudN(CLOUD_TOP)), stem: Math.floor(0.5 * cloudN(CLOUD_STEM)),
+                   skirt: Math.floor(0.5 * cloudN(CLOUD_SKIRT)) };
+    want.hot = want.stem + Math.ceil(cloudN(60));
+    const r = { k, want, top: top.length, stem: stem.length, skirt: skirt.length, hot: hot.length,
+                topS: rng(top), stemS: rng(stem), skirtS: rng(skirt), hotS: rng(hot) };
+    r.sizeOk = inR(r.topS, 1.6, 3.2) && inR(r.stemS, 0.95, 1.9) && inR(r.skirtS, 1.45, 2.7) && inR(r.hotS, 1, 2.2);
+    dust.length = 0; hot.length = 0; clouds.length = 0; fxRings.length = 0;
+    spawnWind({ x: 0, y: 1, z: 0 }, 30, false);
+    const wd = dust.filter(d => d.keep);
+    r.wind = wd.length; r.wantWind = Math.round(cloudN(WIND_DUST)); r.windS = rng(wd);
+    r.windOk = inR(r.windS, 0.9, 2.4);
+    dust.length = 0; fxRings.length = 0;             // 動過的全域還回去
+    return r;
+  });
+  ok('蘑菇雲與風壓塵牆變細：單顆 × k、顆數 × 1/k²（傘蓋、柱子、煙裙、雲裡的火光、塵牆）',
+     grain.top === grain.want.top && grain.stem === grain.want.stem && grain.skirt === grain.want.skirt &&
+     grain.hot === grain.want.hot && grain.sizeOk && grain.wind === grain.wantWind && grain.windOk,
+     'k ' + grain.k + '：傘蓋 ' + grain.top + '／' + grain.want.top + ' 顆（' + grain.topS.join('～') + '）、柱子 ' +
+     grain.stem + '／' + grain.want.stem + '（' + grain.stemS.join('～') + '）、煙裙 ' + grain.skirt + '／' +
+     grain.want.skirt + '（' + grain.skirtS.join('～') + '）、火光 ' + grain.hot + '／' + grain.want.hot + '（' +
+     grain.hotS.join('～') + '）；塵牆 ' + grain.wind + '／' + grain.wantWind + '（' + grain.windS.join('～') + '）');
 
   /* 腳下那圈煙：柱子不能從一塊乾淨的草地長出來。
      光看「貼地的煙有幾團」不夠——柱子底部本來就有煙。要看的是它有沒有往外鋪開，
@@ -21862,7 +21898,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const wd = dust.filter(d => d.keep).length;
     for (let i = 0; i < 60; i++) step(0.05);
     clearFires();
-    return { wd, want: WIND_DUST };
+    return { wd, want: Math.round(cloudN(WIND_DUST)) };
   });
   ok('魔法爆炸也會掃出風壓', mgWind.wd === mgWind.want,
      '被風吹著跑的塵土 ' + mgWind.wd + ' 顆');
@@ -21883,7 +21919,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const cloudy = shot(1200);                    // 場上有一朵雲那種量
     const packed = shot(ENG.MAXDUST - 50);        // 池子真的快滿了
     dust.length = 0; fxRings.length = 0;          // 動過的全域還回去
-    return { cloudy, packed, want: WIND_DUST, cap: WIND_DUST_CAP, max: ENG.MAXDUST };
+    return { cloudy, packed, want: Math.round(cloudN(WIND_DUST)), cap: WIND_DUST_CAP, max: ENG.MAXDUST };
   });
   ok('場上已經有一朵雲的煙，風壓的塵牆照樣生得出來',
      windCap.cloudy === windCap.want && windCap.packed === 0,
