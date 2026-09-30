@@ -29838,6 +29838,147 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('滾輪可以縮放', zoomOut > camBefore.dist && zoomIn < zoomOut,
      camBefore.dist.toFixed(1) + ' → ' + zoomOut.toFixed(1) + ' → ' + zoomIn.toFixed(1));
 
+  /* ── 滾輪朝游標縮放（v1.234） ──
+     使用者：「拉近觀察小人 就不太好移動鏡頭」。以前一律往旋轉中心（畫面正中央）縮：
+     指著畫面右邊的小人滾 12 格，他從 (908, 360) 被推到 (1436, 198)，出了畫面；
+     實心的吉薩金字塔拉到最近，鏡頭落在積木裡面。見 開發筆記〈滾輪朝游標縮放〉。
+     全部是規則型：時間停住（running = false，updateCamera 自己餵），小人與生物收掉
+     （count 0）——錨點是「游標底下第一個碰到的東西」，剛好有人走到那個像素上的話，
+     量到的就是他而不是那塊地，這裡要的是一個不會動的點。 */
+  const zKeep = await page.evaluate(() => {
+    const k = { run: running, sp: shapePick, tc: targetCnt, yaw: ENG.cam.yaw, pitch: ENG.cam.pitch };
+    running = false;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔'); targetCnt = 900;
+    startBuild(true);
+    return k;
+  });
+  await fillAll(page);
+  const zHome = () => page.evaluate(() => {        // 回到開場取景、角度也擺回開場那一組
+    draw(); ENG.three.workerMesh.count = 0; ENG.three.beastMesh.count = 0;
+    ENG.resetCamera(); const c = ENG.cam, t = ENG.camTarget;
+    c.dist = t.dist; c.tx = t.tx; c.tz = t.tz; c.ty = t.ty; c.yaw = 0.9; c.pitch = 0.42;
+    ENG.updateCamera(0); ENG.three.camera.updateMatrixWorld();
+  });
+  /* 從畫面座標打一條射線，回傳第一個碰到的積木／地面（測試自己打，不借引擎的錨點） */
+  const zRay = `(px, py) => {
+    const T3 = ENG.three, rc = new THREE.Raycaster();
+    T3.camera.updateMatrixWorld();
+    rc.setFromCamera(new THREE.Vector2(px / innerWidth * 2 - 1, -(py / innerHeight * 2 - 1)), T3.camera);
+    const h = rc.intersectObjects([T3.blockMesh, T3.ground], false)[0];
+    return h ? { p: h.point.clone(), ground: h.object === T3.ground } : null;
+  }`;
+
+  /* 真的滾輪事件（listener 有沒有把 clientX／Y 傳進去一起測到）：游標放在右下那片地上，
+     滾 6 格之後逐幀推到收斂，每一幀都把那一點投回畫面，量它離游標多遠。 */
+  await zHome();
+  const ZX = 1000, ZY = 560;
+  const zQ = await page.evaluate(([f, px, py]) => {
+    const h = eval(f)(px, py);
+    window.__zq = h && h.p;
+    return h ? { ground: h.ground, d0: ENG.camTarget.dist } : null;
+  }, [zRay, ZX, ZY]);
+  await page.mouse.move(ZX, ZY);
+  for (let i = 0; i < 6; i++) await page.mouse.wheel(0, -100);
+  await page.waitForTimeout(60);
+  const zCur = await page.evaluate(([px, py]) => {
+    const C = ENG.three.camera, Q = window.__zq;
+    let worst = 0;
+    for (let i = 0; i < 300; i++) {
+      ENG.updateCamera(0.05); C.updateMatrixWorld();
+      const v = Q.clone().project(C);
+      worst = Math.max(worst, Math.hypot((v.x + 1) / 2 * innerWidth - px, (1 - v.y) / 2 * innerHeight - py));
+    }
+    delete window.__zq;
+    return { worst, d: ENG.camTarget.dist, moved: Math.hypot(ENG.camTarget.tx, ENG.camTarget.tz) };
+  }, [ZX, ZY]);
+  ok('滾輪朝游標縮放：游標底下那一點從頭到尾留在原地',
+     zQ && zQ.ground && zCur.worst < 1 && zCur.d < zQ.d0 * 0.6 && zCur.moved > 2,
+     '游標 (' + ZX + ',' + ZY + ') 底下那塊地，滾 6 格（視距 ' + (zQ ? zQ.d0.toFixed(1) : '?') +
+     ' → ' + zCur.d.toFixed(1) + '）逐幀最多偏 ' + zCur.worst.toFixed(3) + ' px，旋轉中心跟著移了 ' +
+     zCur.moved.toFixed(1));
+
+  /* 游標在畫面正中央（金字塔的斜面）一路拉到最近。舊做法（不給座標＝雙指那條）同一個起點
+     拉到最近當對照：鏡頭會落在積木裡，這一條要量得出這個差別才算數。 */
+  const zIn = async (withXY) => {
+    await zHome();
+    return page.evaluate(([f, withXY]) => {
+      const cx = innerWidth / 2, cy = innerHeight / 2;
+      const h = eval(f)(cx, cy);
+      for (let k = 0; k < 40; k++) {
+        if (withXY) ENG.zoom(0.9, cx, cy); else ENG.zoom(0.9);
+        for (let i = 0; i < 4; i++) ENG.updateCamera(0.05);
+      }
+      for (let i = 0; i < 300; i++) ENG.updateCamera(0.05);
+      const C = ENG.three.camera; C.updateMatrixWorld();
+      const e = C.position;
+      let cells = 0;
+      for (const s of bp.slots)
+        if (s.filled && Math.abs(e.x - s.x) < 0.5 && Math.abs(e.y - (s.y + HB)) < 0.5 && Math.abs(e.z - s.z) < 0.5) cells++;
+      return { onBlock: !!h && !h.ground, d: ENG.camTarget.dist, cells, gap: h ? e.distanceTo(h.p) : -1 };
+    }, [zRay, withXY]);
+  };
+  const zNew = await zIn(true), zOld = await zIn(false);
+  ok('朝游標拉到最近，鏡頭停在建築外面（實心的金字塔不會把鏡頭吞進去）',
+     zNew.onBlock && zNew.d === 6 && zNew.cells === 0 && zNew.gap > 1 && zOld.cells > 0,
+     '指著金字塔的斜面拉到視距 ' + zNew.d + '：鏡頭在 ' + zNew.cells + ' 格積木裡、離那一面 ' +
+     zNew.gap.toFixed(2) + '（對照：往中心縮的舊做法在 ' + zOld.cells + ' 格積木裡）');
+
+  /* 縮到底（視距 6）再往近滾：什麼都沒變，中心也不能動——不然滾輪壓在底下會變成平移 */
+  const zFloor = await page.evaluate(() => {
+    const t = ENG.camTarget, a = [t.tx, t.tz, t.ty, t.dist];
+    ENG.zoom(0.9, 1000, 560);
+    for (let i = 0; i < 100; i++) ENG.updateCamera(0.05);
+    return { a, b: [t.tx, t.tz, t.ty, t.dist] };
+  });
+  ok('縮到最近再往近滾，旋轉中心不會跟著滑',
+     zFloor.a[3] === 6 && zFloor.a.every((v, i) => v === zFloor.b[i]),
+     '中心 (' + zFloor.a.slice(0, 3).map(v => v.toFixed(2)).join(',') + ') → (' +
+     zFloor.b.slice(0, 3).map(v => v.toFixed(2)).join(',') + ')');
+
+  /* 雙指縮放沒給座標：照舊往畫面中央縮，旋轉中心一點都不動 */
+  const zPinch = await page.evaluate(() => {
+    const c = ENG.cam, t = ENG.camTarget;
+    t.dist = c.dist = 40; t.tx = c.tx = 3; t.tz = c.tz = -2; t.ty = c.ty = 1;
+    ENG.zoom(0.5);
+    for (let i = 0; i < 300; i++) ENG.updateCamera(0.05);
+    return { d: c.dist, tx: t.tx, tz: t.tz, ty: t.ty };
+  });
+  ok('雙指（沒給游標位置）照舊往畫面中央縮，旋轉中心不動',
+     Math.abs(zPinch.d - 20) < 0.01 && zPinch.tx === 3 && zPinch.tz === -2 && zPinch.ty === 1,
+     '視距 40 → ' + zPinch.d.toFixed(2) + '，中心 (' + zPinch.tx + ',' + zPinch.tz + ',' + zPinch.ty + ')');
+
+  /* 拉遠也繞著游標退，所以中心會被往外推。兩道界線：水平夾在碎料圈（跟 WASD 同一支 clampDisk），
+     視線高跟 Z／X 同一套下界。指著畫面下緣的地面拉遠＝中心往前推到場地邊上；
+     指著塔身（比中心高）拉遠＝中心往地底下沉。兩條都要推到碰得到界線才算數。 */
+  const zOut = async (px, py) => {
+    await zHome();
+    return page.evaluate(([px, py]) => {
+      const c = ENG.cam, t = ENG.camTarget;
+      let dMax = 0, tyMin = Infinity;
+      for (let k = 0; k < 40; k++) {
+        ENG.zoom(1.11, px, py);
+        for (let i = 0; i < 4; i++) {
+          ENG.updateCamera(0.05);
+          dMax = Math.max(dMax, Math.hypot(t.tx, t.tz), Math.hypot(c.tx, c.tz));
+          tyMin = Math.min(tyMin, t.ty, c.ty);
+        }
+      }
+      return { d: t.dist, dMax, tyMin, lim: debrisR, lo: -(bp.height * 0.25 + 4) };
+    }, [px, py]);
+  };
+  const zEdge = await zOut(640, 790), zDeep = await zOut(640, 340);
+  ok('繞著游標拉遠：中心推不出場地、視線高沉不出下界',
+     zEdge.d === 360 && zEdge.dMax <= zEdge.lim + 1e-6 && zEdge.dMax > zEdge.lim - 0.5 &&
+     zDeep.tyMin >= zDeep.lo - 1e-6 && zDeep.tyMin < zDeep.lo + 0.5,
+     '指著下緣地面拉到 ' + zEdge.d + '：中心最遠 ' + zEdge.dMax.toFixed(2) + '（碎料圈 ' +
+     zEdge.lim.toFixed(2) + '）；指著塔身拉遠：視線高最低 ' + zDeep.tyMin.toFixed(2) +
+     '（下界 ' + zDeep.lo.toFixed(2) + '）');
+
+  // 還原：回到這一段原本那座（艾菲爾鐵塔、蓋好的）、時間與角度都擺回去
+  await page.evaluate(k => { shapePick = k.sp; targetCnt = k.tc; startBuild(true); }, zKeep);
+  await fillAll(page);
+  await page.evaluate(k => { draw(); running = k.run; ENG.cam.yaw = k.yaw; ENG.cam.pitch = k.pitch; }, zKeep);
+
   /* 震動是固定的世界座標位移，畫面上晃多少全看視距：同樣的一發，視距 10 時鏡頭偏 22°、
      視距 66 只有 3.6°——貼著建築看的時候會晃到看不清楚。所以近距離不震，遠了才是全額。
      量的是「同一發震動造成的鏡頭位移」：把 cam 與 camTarget 對齊，lerp 就不會動，

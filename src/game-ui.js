@@ -892,7 +892,9 @@ function boot() {
   cv.addEventListener('touchstart', onDown, { passive: false });
   cv.addEventListener('touchmove', onMove, { passive: false });
   cv.addEventListener('touchend', onUp);
-  cv.addEventListener('wheel', e => { hidePanelOnPlay(); ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9); e.preventDefault(); }, { passive: false });
+  /* 滾輪朝游標縮放（v1.234）：游標底下那一點縮放時留在原地，見 engine.js 的 zoom。
+     雙指（onMove 那條）沒給座標，照舊往畫面中央縮。 */
+  cv.addEventListener('wheel', e => { hidePanelOnPlay(); ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9, e.clientX, e.clientY); e.preventDefault(); }, { passive: false });
   cv.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKey);

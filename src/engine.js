@@ -519,6 +519,7 @@ const ENG = (function () {
   /* 開場的角度留一份給復位用（C）。只寫在 cam 那行一處，兩邊不會對不起來 */
   const CAM0 = { yaw: cam.yaw, pitch: cam.pitch };
   let camGo = null;                        // 復位中的角度過渡，見 resetCamera
+  let zoomAt = null;                       // 滾輪縮放的錨點（游標底下那一點），見 zoom
   /* 平移速度跟目前視距成正比——拉遠之後還用同一個速度會像在爬。
      視距 60 時約每秒 36 單位，橫越整片工地約兩秒。 */
   const PAN_SPD = 0.6;
@@ -6211,6 +6212,7 @@ const ENG = (function () {
          換場不收道具（v1.59），所以煙火可能跨場繼續放——那時候記著的是**上一座**
          的視線高，還回去等於拿舊建築的取景蓋掉新的。重新取景本來就蓋過一切。 */
       tyHold = 0; tyBack = 0; tyTop = 0;
+      zoomAt = null;                          // 重新取景蓋過一切，縮到一半的滾輪也作廢
       if (instant) { cam.dist = camTarget.dist; cam.ty = camTarget.ty; cam.tx = cam.tz = 0; }
     }
     // 陰影相機要蓋住整片工地，不然大建築跟遠處碎料的影子會被裁掉
@@ -6286,6 +6288,9 @@ const ENG = (function () {
     const halfV = camera.fov * Math.PI / 360;
     const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
     const need = Math.max(top * 0.5 / Math.sin(halfV), radius / Math.sin(halfH)) * HOLD_MARGIN;
+    /* 退開是我們在拉視距，不是玩家的滾輪：錨點留著的話，這一段退開也會被當成
+       「繞著游標拉遠」，旋轉中心跟著往外滑（見 zoom） */
+    zoomAt = null;
     camTarget.dist = Math.max(camTarget.dist, need);
     if (temp) { if (!tyHold) { tyBack = camTarget.ty; tyTop = 0; } tyHold++; }
     else if (tyHold) tyBack = Math.max(tyBack, top * 0.5);
@@ -6314,7 +6319,9 @@ const ENG = (function () {
   }
 
   function updateCamera(dt) {
+    const d0 = cam.dist;
     cam.dist += (camTarget.dist - cam.dist) * Math.min(1, dt * 2.2);
+    if (zoomAt) zoomStep(cam.dist / d0);     // 這一幀縮了幾倍，中心就繞著錨點縮幾倍（見 zoom）
     cam.ty += (camTarget.ty - cam.ty) * Math.min(1, dt * 2.2);
     /* 平移跟得比縮放緊。用 2.2 的話等速平移時鏡頭會落後目標約 16 單位——
        那跟整座建築的半徑同一個量級，按下去會有一段明顯的空檔。8 大約落後 4.5 單位。 */
@@ -6358,14 +6365,17 @@ const ENG = (function () {
   function pan(fwd, side, dt) {
     const fx = -Math.cos(cam.yaw), fz = -Math.sin(cam.yaw);   // 畫面往前
     const k = PAN_SPD * cam.dist * dt;
-    let x = camTarget.tx + (fx * fwd - fz * side) * k;        // 往右 = 往前轉 90°
-    let z = camTarget.tz + (fz * fwd + fx * side) * k;
-    /* 草地是有限的圓島，中心固定在原點（setGroundSize 只設 scale，位置永遠是 0），
-       不夾住就會平移出去看到虛空。夾在碎料散落範圍內，剛好能看到料場。 */
+    camTarget.tx += (fx * fwd - fz * side) * k;               // 往右 = 往前轉 90°
+    camTarget.tz += (fz * fwd + fx * side) * k;
+    clampDisk(camTarget);
+  }
+  /* 草地是有限的圓島，中心固定在原點（setGroundSize 只設 scale，位置永遠是 0），
+     不夾住就會平移出去看到虛空。夾在碎料散落範圍內，剛好能看到料場。
+     平移與滾輪（zoom 會把中心往游標那邊帶）共用這一支，界線只有一份。 */
+  function clampDisk(o) {
     const lim = lastFit ? lastFit.arena : 40;
-    const d = Math.hypot(x, z);
-    if (d > lim) { x = x / d * lim; z = z / d * lim; }
-    camTarget.tx = x; camTarget.tz = z;
+    const d = Math.hypot(o.tx, o.tz);
+    if (d > lim) { o.tx = o.tx / d * lim; o.tz = o.tz / d * lim; }
   }
   /* 上下升降視線（Z／X）。跟 pan 同一套：吃真實時間、速度跟視距成正比，
      動的是**旋轉中心**——相機高度 = 視線高 + sin(pitch) × 視距，中心升上去相機也跟著升，
@@ -6395,7 +6405,57 @@ const ENG = (function () {
     camGo = { yaw: CAM0.yaw, pitch: CAM0.pitch };
   }
 
-  function zoom(f) { camTarget.dist = Math.max(6, Math.min(360, camTarget.dist * f)); }
+  /* 滾輪朝游標縮放（v1.234，使用者：「拉近觀察小人 就不太好移動鏡頭」）。
+     以前一律往旋轉中心（畫面正中央）縮：指著畫面右邊的小人滾 12 格，他就被推出畫面；
+     旋轉中心留在實心建築的底部中央時，拉到最近鏡頭會鑽進建築裡；
+     被魔法、龍捲風抬到半空的視線高沒還回來時，拉近就是往半空中拉。
+     現在給了畫面座標（px, py）就先找游標底下**第一個碰到的東西**當錨點 Q，
+     之後每一幀照視距實際縮了幾倍（r），把旋轉中心以 Q 為圓心一起縮：P' = Q + r(P − Q)。
+     鏡頭到中心的方向不變、距離也乘 r，等於整個取景以 Q 為中心縮放，
+     所以 Q 在畫面上一幀都不會動（每幀做而不是一次做完，是因為視距有 2.2 的緩動、
+     平移是 8，兩邊一次各自追的話 Q 會先滑到畫面中央再滑回來）。
+     Q 是看得到的那一面，鏡頭沿著那條沒被擋住的射線前進，拉到最近也不會鑽進建築。
+     拉遠也照同一條繞著 Q 退（拉近再拉遠會回到原本的取景）。
+     沒給座標（雙指、測試）就照舊往中心縮；縮到底（6／360）那一下中心也不動。
+     見 開發筆記〈滾輪朝游標縮放〉。 */
+  function zoom(f, px, py) {
+    const d0 = camTarget.dist;
+    camTarget.dist = Math.max(6, Math.min(360, d0 * f));
+    if (camTarget.dist === d0) return;      // 縮到底了：什麼都沒變，縮到一半的錨點也照舊
+    zoomAt = px === undefined ? null : zoomAnchor(px, py);
+  }
+  /* 游標底下第一個碰到的東西（積木、小人、生物、地面）。打到天空或島外面就是 null
+     ——那一下就照舊往中心縮。跟 pick 不同，這裡不排優先序：錨點要的是「畫面上看到的那一點」，
+     站在建築前面的小人就是他，不是他背後的牆。 */
+  function zoomAnchor(px, py) {
+    ndc.set(px / W * 2 - 1, -(py / H * 2 - 1));
+    camera.updateMatrixWorld();              // updateCamera 之後還沒 render 過的話矩陣是舊的
+    raycaster.setFromCamera(ndc, camera);
+    const objs = [blockMesh, workerMesh, beastMesh, ground];
+    if (sabMesh && sabMesh.visible) objs.push(sabMesh);
+    if (levMesh && levMesh.visible) objs.push(levMesh);
+    const hits = raycaster.intersectObjects(objs, false);
+    return hits.length ? { x: hits[0].point.x, y: hits[0].point.y, z: hits[0].point.z } : null;
+  }
+  /* cam 與 camTarget 兩份一起縮：平移的緩動是拿 cam 追 camTarget，只縮一份的話
+     兩份之間的差會被當成一段平移，下一幀又追回去。 */
+  function zoomStep(r) {
+    const [lo, hi] = liftRange();
+    zoomOne(cam, r, lo, hi);
+    zoomOne(camTarget, r, lo, hi);
+    if (Math.abs(camTarget.dist - cam.dist) < cam.dist * 1e-4) zoomAt = null;   // 縮完了
+  }
+  function zoomOne(o, r, lo, hi) {
+    const q = zoomAt;
+    o.tx = q.x + (o.tx - q.x) * r;
+    o.tz = q.z + (o.tz - q.z) * r;
+    /* 視線高跟 lift 同一套界線，而且一樣只夾「往界外走」那半邊：
+       拉近時中心是往 Q 靠，本來就在 Q 與原本的高度之間，碰不到界線；
+       會出界的是拉遠——指著塔頂拉遠，中心要往地底下沉才留得住塔頂。 */
+    const y = q.y + (o.ty - q.y) * r;
+    o.ty = y > o.ty ? Math.min(y, Math.max(hi, o.ty)) : Math.max(y, Math.min(lo, o.ty));
+    clampDisk(o);
+  }
   function shake(a) { cam.shake = Math.min(2.6, cam.shake + a); }
 
   /* ── 點選 ─────────────────────────────────────────── */
