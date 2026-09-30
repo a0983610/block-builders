@@ -523,9 +523,17 @@ const ENG = (function () {
   /* 平移速度跟目前視距成正比——拉遠之後還用同一個速度會像在爬。
      視距 60 時約每秒 36 單位，橫越整片工地約兩秒。 */
   const PAN_SPD = 0.6;
+  /* 但拉近之後有保底（v1.234.1，使用者：「WASD 拉近以後很慢 這調整一下」）。
+     光照視距算的話，視距 6 只剩每秒 3.6 格，比小人走路（WALK 6.8）還慢，
+     拉近看人時追不上正在走的那一個。保底 8（使用者從 8／12／16 裡挑的）：
+     視距 13.3 以下才生效，拉遠完全照舊。代價是畫面捲得比較快——視距 6 時每秒 0.94 個畫面寬
+     （照視距算的話不管多近都是 0.42）。見 開發筆記〈拉近之後 WASD／ZX 有保底速度〉。 */
+  const PAN_MIN = 8;
   /* 升降（Z／X）比平移慢一半：上下要走的路本來就比橫越整片工地短得多。
-     視距 312（艾菲爾鐵塔的取景距離）時每秒 94 單位，整段上下界走完約 1.4 秒。 */
+     視距 312（艾菲爾鐵塔的取景距離）時每秒 94 單位，整段上下界走完約 1.4 秒。
+     保底也照同一個比例（每秒 4 格）：視距 6 從地面升到 20 格高的屋頂，11 秒 → 5 秒。 */
   const LIFT_SPD = 0.3;
+  const LIFT_MIN = PAN_MIN * LIFT_SPD / PAN_SPD;
   /* 取景留白。1 = 建築剛好貼齊畫面邊，越大退越遠、四周留白越多。
      1.27 是量出來的：36 座 × 4 個角度掃過去，最擠的一座（3000 塊的美國國會大廈）
      佔畫面 0.80，一般的落在 0.74，上緣不會頂到工具列。 */
@@ -6364,7 +6372,7 @@ const ENG = (function () {
      照世界軸走的話，轉過視角之後按 W 會往螢幕的斜後方跑。 */
   function pan(fwd, side, dt) {
     const fx = -Math.cos(cam.yaw), fz = -Math.sin(cam.yaw);   // 畫面往前
-    const k = PAN_SPD * cam.dist * dt;
+    const k = Math.max(PAN_SPD * cam.dist, PAN_MIN) * dt;     // 拉近有保底，見 PAN_MIN
     camTarget.tx += (fx * fwd - fz * side) * k;               // 往右 = 往前轉 90°
     camTarget.tz += (fz * fwd + fx * side) * k;
     clampDisk(camTarget);
@@ -6377,7 +6385,7 @@ const ENG = (function () {
     const d = Math.hypot(o.tx, o.tz);
     if (d > lim) { o.tx = o.tx / d * lim; o.tz = o.tz / d * lim; }
   }
-  /* 上下升降視線（Z／X）。跟 pan 同一套：吃真實時間、速度跟視距成正比，
+  /* 上下升降視線（Z／X）。跟 pan 同一套：吃真實時間、速度跟視距成正比（拉近有保底 LIFT_MIN），
      動的是**旋轉中心**——相機高度 = 視線高 + sin(pitch) × 視距，中心升上去相機也跟著升，
      像搭電梯，不是抬頭。上下界跟著這一座建築走：上界是頂端再高一點（要能俯視屋頂），
      下界只給高度的四分之一——視線落到地面以下之後看到的就只剩草地與天空，
@@ -6389,7 +6397,7 @@ const ENG = (function () {
   }
   function lift(dir, dt) {
     const [lo, hi] = liftRange();
-    const y = camTarget.ty + dir * LIFT_SPD * cam.dist * dt;
+    const y = camTarget.ty + dir * Math.max(LIFT_SPD * cam.dist, LIFT_MIN) * dt;
     /* 只夾住「往界外走」的那半邊：爆炸運鏡（holdWide）本來就會把視線抬到上界之上，
        那時候按 X 不動、按 Z 照樣降得下來，不會被硬拉回界內閃一下。 */
     camTarget.ty = dir > 0 ? Math.min(y, Math.max(hi, camTarget.ty))

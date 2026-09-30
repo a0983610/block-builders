@@ -30052,6 +30052,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('平移不會跑出場地', clamped.d <= clamped.arena + 0.01,
      '一直推 → 停在 ' + clamped.d.toFixed(1) + '，碎料圈半徑 ' + clamped.arena.toFixed(1));
 
+  /* 拉近之後有保底速度（v1.234.1，使用者：「WASD 拉近以後很慢 這調整一下」）。
+     照視距算的話，視距 6 只剩每秒 3.6 格，比小人走路（WALK）還慢，拉近看人時追不上。
+     期望值不寫死保底是幾：最近的視距要追得上走路的小人、拉遠照舊跟視距成正比、
+     升降跟平移的比例近遠都一樣（保底照同一個比例給）。直接呼叫 pan／lift、dt 給定值，不看 fps；
+     dt 取 0.1 是為了升降不要頂到上界（視距 120 一步 3.6 格）。 */
+  const panFloor = await page.evaluate(() => {
+    const c = ENG.cam, t = ENG.camTarget;
+    const keep = { d: c.dist, td: t.dist, ty: t.ty, cty: c.ty };
+    ENG.zoom(1e-6); const dMin = t.dist;              // 最近是多少讀引擎的，不寫死
+    const at = d => {
+      c.dist = d;
+      t.tx = t.tz = 0; ENG.pan(1, 0, 0.1);
+      const p = Math.hypot(t.tx, t.tz) / 0.1;
+      t.ty = 0; ENG.lift(1, 0.1);
+      return { p, l: t.ty / 0.1 };
+    };
+    const r = { dMin, near: at(dMin), d60: at(60), d120: at(120), walk: WALK };
+    c.dist = keep.d; t.dist = keep.td; t.ty = keep.ty; c.ty = keep.cty; t.tx = t.tz = 0;
+    return r;
+  });
+  ok('拉近到最近，WASD 追得上走路的小人（有保底速度）', panFloor.near.p > panFloor.walk,
+     '視距 ' + panFloor.dMin + ' 平移每秒 ' + panFloor.near.p.toFixed(2) + ' 格（小人走路 ' +
+     panFloor.walk + '；照視距算的話是 ' + (panFloor.d60.p / 60 * panFloor.dMin).toFixed(2) + '）');
+  ok('拉遠照舊跟視距成正比；升降跟平移的比例近遠都一樣',
+     Math.abs(panFloor.d120.p / panFloor.d60.p - 2) < 1e-9 &&
+     Math.abs(panFloor.near.l / panFloor.near.p - panFloor.d60.l / panFloor.d60.p) < 1e-9,
+     '視距 60／120 平移每秒 ' + panFloor.d60.p.toFixed(1) + '／' + panFloor.d120.p.toFixed(1) +
+     '；升降÷平移：最近 ' + (panFloor.near.l / panFloor.near.p).toFixed(3) + '、視距 60 ' +
+     (panFloor.d60.l / panFloor.d60.p).toFixed(3));
+
   /* ── Q／E 轉視角 ── */
   await page.evaluate(() => { ENG.cam.yaw = 0; });
   const qe = { };
