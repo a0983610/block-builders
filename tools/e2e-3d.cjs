@@ -28162,7 +28162,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (m.st === 'fun' && seen.indexOf('excal') >= 0) break;
     }
     const r = { bw, b, act, air, seen: seen.join('→'), call: m.call, reach: EXC_REACH };
-    w.fall = 0; beasts = null; clearFires();
+    /* 他被光柱沖飛、落地就被點著（lit），這一刻**還躺在地上滾著燒**：探針 30 次 30 次都是 burn 1.4～1.7、tilt 1.57。
+       clearFires 只收積木上的火，所以火與躺平的姿勢要照「燒完站起來」那一行（updWorker 的 burn 收尾）自己還原——
+       漏掉的話下一條〈點選〉點他 0.7 身高那一點，有一成多會從躺著的身上穿過去點到地面（v1.241.0 紅過一次：命令帶的是 -1 號）。 */
+    w.fall = 0; w.burn = 0; w.roll = 0; w.tilt = 0; w.rspin = 0; w.rph = 0;
+    beasts = null; clearFires();
     return r;
   });
   ok('點小人：命令帶著他、追到射程一半站定斬下去，光柱把他沖飛',
