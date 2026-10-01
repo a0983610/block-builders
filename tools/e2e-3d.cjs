@@ -4033,6 +4033,49 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '查格子表 ' + supInc.incCalls + ' 次（整張重算要 ' + supInc.refCalls + ' 次，' +
      (supInc.incCalls / Math.max(1, supInc.refCalls) * 100).toFixed(1) + '%）');
 
+  /* ── 房子的鄰居表（v1.237.4，見 開發筆記〈畫面沒變就不重寫〉）──
+     homeNbr 第一次問到才把 26 個方向一次算好、留在格子上。要守三件事：
+     ① 每一款房子與樹的每一格、每一個方向（NBR 26 個＋NBR6 6 個＋一個不在表裡的方向），
+        答案跟 v1.237.3 那樣現組字串查 h.at **逐一相同**；
+     ② 算過一次之後再問不再查 h.at（canPlaceHome 整間掃第二遍，h.at.get 0 次）；
+     ③ 換一份 h.at（同一批格子掛到另一份表上）會重算，不會拿到舊那份的答案。 */
+  const hNbr = await page.evaluate(() => {
+    const ODD = [2, 0, 0];                                   // 不在 NBR／NBR6 裡：照舊現查
+    const dirs = NBR.concat(NBR6, [ODD]);
+    const old = (at, s, d) => at.get((s.i + d[0]) + ':' + (s.gy + d[1]) + ':' + (s.k + d[2]));
+    const mk = slots => {
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      return { at, slots, done: false };
+    };
+    let homes0 = 0, cells = 0, asks = 0, bad = 0, second = -1, swapBad = 0, swapAsks = 0;
+    const kinds = HOME_KIND.map(k => homeSlots(0, 0, k, HOME_PAL[0]))
+      .concat(TREE_KIND.map(k => treeSlots(0, 0, k, TREE_PAL[0])));
+    for (const slots of kinds) {
+      const h = mk(slots);
+      homes0++; cells += slots.length;
+      for (const s of slots) for (const d of dirs) { asks++; if (homeNbr(h, s, d) !== old(h.at, s, d)) bad++; }
+      /* ② 整間再掃一遍 canPlaceHome（蓋好前 26 鄰接、蓋好後 6 鄰接兩種都掃），數 h.at.get */
+      const get0 = h.at.get;
+      let n = 0;
+      h.at.get = function (k) { n++; return get0.call(this, k); };
+      for (const dn of [false, true]) { h.done = dn; for (let i = 0; i < slots.length; i++) canPlaceHome(h, i); }
+      delete h.at.get;
+      second = Math.max(second, n);
+      /* ③ 同一批格子掛到另一份表上：拿掉最上面一層，答案要跟著那一份變 */
+      const top = Math.max(...slots.map(s => s.gy));
+      const h2 = { at: new Map([...h.at].filter(([, i]) => slots[i].gy !== top)), slots };
+      for (const s of slots) for (const d of dirs) { swapAsks++; if (homeNbr(h2, s, d) !== old(h2.at, s, d)) swapBad++; }
+    }
+    return { homes0, cells, asks, bad, second, swapBad, swapAsks };
+  });
+  ok('房子的鄰居表：每一款的每一格、每個方向，答案跟現查 h.at 逐一相同',
+     hNbr.bad === 0 && hNbr.asks > 1000 && hNbr.swapBad === 0,
+     hNbr.homes0 + ' 款（房子＋樹）' + hNbr.cells + ' 格 × 33 個方向：問 ' + hNbr.asks + ' 次、對不上 ' + hNbr.bad +
+     '；換一份表之後問 ' + hNbr.swapAsks + ' 次、對不上 ' + hNbr.swapBad);
+  ok('房子的鄰居表：算過一次之後，整間再掃一遍 canPlaceHome 不再查 h.at',
+     hNbr.second === 0, '第二遍 h.at.get 最多 ' + hNbr.second + ' 次（一款一間）');
+
   /* ══════════ 遊戲流程：蓋好 → 拆掉 → 蓋下一座 ══════════ */
   await head('流程：蓋好 → 拆掉 → 蓋下一座', T_MUST);
   await reset(page, { shape: '吉薩金字塔', cnt: 700, workers: 12 });

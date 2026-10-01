@@ -3404,9 +3404,29 @@ function homePeak(x0, y0, z0, sl, h) {
                  (x, z) => homeColTop(h, x, z),
                  Math.max(1.1, (sl.y - y0) * 0.45 + 1.1));
 }
-/* 這一格的某個鄰居（26 鄰接，跟地標的支撐判定同一套）。回傳格子編號或 undefined。 */
+/* 這一格的某個鄰居（26 鄰接，跟地標的支撐判定同一套）。回傳格子編號或 undefined。
+   **鄰居表第一次問到才算，算好留在格子上**（v1.237.4，見 開發筆記〈畫面沒變就不重寫〉）：
+   s.nbr 是 26 個方向（NBR 的順序）各是第幾格、沒有就 −1。v1.237.3 以前每問一次就組一次
+   'i:gy:k' 字串去查 h.at——魔法師蓋家時 homeFree 每幀把整間的空格掃一遍、每一格 canPlaceHome
+   問 6～26 次，實測那一幕每幀 0.05～0.07 ms，一大半花在組字串。
+   h.at 都是開新家那一刻一次建好、之後不再改（wallSeg 與三處開新家的地方），所以算一次就夠；
+   s.nbrAt 記算的時候是哪一份 h.at，換了一份就重算。不在 NBR／NBR6 裡的方向照舊現查。 */
+const NBR_IX = new Map();
+NBR.forEach((d, k) => NBR_IX.set(d, k));
+for (const d of NBR6) NBR_IX.set(d, NBR.findIndex(e => e[0] === d[0] && e[1] === d[1] && e[2] === d[2]));
 function homeNbr(h, s, d) {
-  return h.at.get((s.i + d[0]) + ':' + (s.gy + d[1]) + ':' + (s.k + d[2]));
+  const k = NBR_IX.get(d);
+  if (k === undefined) return h.at.get((s.i + d[0]) + ':' + (s.gy + d[1]) + ':' + (s.k + d[2]));
+  if (s.nbrAt !== h.at) {
+    const nb = s.nbr || (s.nbr = new Int32Array(NBR.length));
+    for (let q = 0; q < NBR.length; q++) {
+      const e = NBR[q], j = h.at.get((s.i + e[0]) + ':' + (s.gy + e[1]) + ':' + (s.k + e[2]));
+      nb[q] = j === undefined ? -1 : j;
+    }
+    s.nbrAt = h.at;
+  }
+  const j = s.nbr[k];
+  return j < 0 ? undefined : j;
 }
 /* 占地的外框（v1.103）：把這一間所有格子的世界座標框起來，含門廊與圍籬。
    走路的擋路判定看這個（見 footHome），一次算好放著——每格 ±0.5 是積木的半邊長。 */
