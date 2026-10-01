@@ -8013,9 +8013,10 @@ const GIA_WALK = 4.0;                 // 腳程（猴子 2.2、牛羊 1.5、獅�
      一條腿一趟掃 2 × 6.90 × sin(0.527) ＝ 6.94 格，兩條腿一個週期 13.88 格
      週期 ＝ 2π ÷ (11 × step)，要 GIA_WALK × 週期 ≒ 13.88  →  step ＝ 0.165 */
 const GIA_STEP = 0.165;
-/* 走路時要離建築外圈再遠幾格（strollTo 的 keepMore，同飛龍的 DRA_KEEP）。
+/* 走路時要離建築外圈再遠幾格（strollTo 的 keepMore，見 strollGiant）。
    牠肩寬 5.3 格（半寬 2.65），而 KEEP 只有 1.5——不推出去的話肩膀會插進地標裡。
-   比飛龍的 8.5 小得多：龍是「身長 10 格橫著擺」，巨人是直的，佔地只有肩寬那一圈。 */
+   比飛龍當年的 DRA_KEEP 8.5 小得多：龍是「身長 10 格橫著擺」，巨人是直的，佔地只有肩寬那一圈。
+   v1.236 起只剩牠還繞工地圈（牠不規劃，見 strollGiant），飛龍改照身位（見 navBody）。 */
 const GIA_KEEP = 2.5;
 /* 站定要離最近那一塊多遠才踹。腳掌踹出去離身體中線 4.7 格（量出來的，見 giantKick），
    站 4.0 的話腳掌會落在那一塊再往裡 0.7 格——**看得到腳真的踩在牆上**。
@@ -8116,8 +8117,9 @@ function spawnBeast(kind, fun, bad, ang) {
        sx／sz 是「上次確定有前進」的錨點，開場就是牠站的地方。 */
     sx: Math.cos(a) * d, sz: Math.sin(a) * d, stk: 0,
     /* 繞城牆那一段（v1.186 起的 gate 狀態）：gw＝要繞去的那一點（null＝沒在繞，見 gateNeed）。
-       nav／navWait＝巡路規則的路線與「找不到路還要等幾秒」（v1.235，跟小人同一組：見 game-workers.js 的 navAim）。 */
-    gw: null, nav: null, navWait: 0,
+       nav／navWait＝巡路規則的路線與「找不到路還要等幾秒」（v1.235，跟小人同一組：見 game-workers.js 的 navAim）。
+       nb／nbS＝照身高與身長算的身體（v1.236，見 navBody）。 */
+    gw: null, nav: null, navWait: 0, nb: null, nbS: 0,
     /* 巨人自己一個倍率（v1.192）：牠的模型是拿 5.00 當高畫的，不是拿小人的 1.31，
        所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。 */
     sc: kind === 'giant' ? GIA_SC : DOOM_SC,
@@ -8320,8 +8322,7 @@ function gateNeed(m, tx, tz) {
      wallFoot 那一條對牠也一起關掉，所以城牆那三處分支對牠整組不動作。 */
   if (m.kind === 'giant') return false;
   if (m.st === 'gate') return false;
-  const kp = m.herd ? 0 : (DOOM_KEEP[m.kind] || 0);    // 同 stepBeast0 的 kp
-  if (!navReach(m, tx, tz, kp)) return false;
+  if (!navReach(m, tx, tz)) return false;
   m.gback = m.st;                   // 穿過去之後回哪一段
   m.st = 'gate'; m.leg = 0; m.gw = { tx, tz };
   return true;
@@ -8387,8 +8388,8 @@ function stepBeast0(m, dt) {
      （也免得牠站在推土機的路線上）。
      吉祥物只避整地（v1.144）：牠不挑地標的狀態，施工中照樣可以來逛（使用者選的），
      但整地那一段推土機會把整片工地掃過去，走路的先讓開。
-     牛羊哪一段都不避（v1.154）：牠們住在這裡，沒有「走人」這件事——而且 strollTo
-     會把目標推到建築外圈之外，推土機掃的是圈內。 */
+     牛羊哪一段都不避（v1.154）：牠們住在這裡，沒有「走人」這件事——而且牠們逛的點
+     （idleSpot）都挑在建築外圈之外，推土機掃的是圈內（v1.235 以前還有 strollTo 把目標推到圈外）。 */
   const away = m.herd ? false
              : m.fun ? phase === 'clear' : (phase === 'build' || phase === 'clear');
   /* **正在穿城門的不要打斷**（v1.190.2）：穿門是一段不可分割的位移（走到門口那一點 →
@@ -8428,11 +8429,15 @@ function stepBeast0(m, dt) {
   if (m.st === 'call') return stepCall(m, dt, spd * EXC_RUN, (stp || 1) * EXC_RUN, kp);   // v1.224
   if (m.st === 'odm') return stepOdm(m, dt);              // 兵長砍猴：立體機動那一招（v1.230）
   if (m.st === 'come') {
-    m.tx = 0; m.tz = 0;
+    /* 走到工地外圈、自己這一側那一點就算到了（「去哪」）。v1.235 以前給的是工地中心 (0, 0)，
+       由 strollTo 推到圈上；v1.236 起走法不再推（地標在地圖上了，見 navBody），這裡自己給圈上那一點——
+       給中心的話牠會照規則走到離中心最近的空地：建築底下空的就鑽到正中央，中心被圍住的（巨石陣）還得穿牆。 */
+    const c = keepOut(m, 0, 0, siteR + KEEP + kp);
+    m.tx = c.x; m.tz = c.z;
     /* 城牆擋在前面才處理（v1.186，見 wallAhead）：還沒蓋起來、或有缺口就直直走過去。
        擋住了就照使用者的順序來——**有門走門，沒門破牆而入**。 */
     if (wallAhead(m, 0, 0)) {
-      if (gateNeed(m, 0, 0)) return false;
+      if (gateNeed(m, m.tx, m.tz)) return false;
       /* 沒有開口可以繞：**走到牆邊才動手**（v1.195，見 wallFoot）。
          **牛羊不動手**（使用者：「牛羊走不過就不進去過出去 繼續在閒逛」；而且 `DOOM_ACT`
          裡根本沒有牛羊那幾款，真讓牠們進 act 會叫到 undefined）：就在城外逛。
@@ -8500,9 +8505,10 @@ function stepBeast0(m, dt) {
          最近的一塊地標（m.home 是 0）。走位不必在這裡處理——會走到這裡的一定已經
          在工地外圈上了（生氣那一刻還在外面逛的，madMascot 會先把牠推回 come）。 */
       if (madSet(m)) {
-        /* 還欠著幾處的（v1.229，見 moreMascot）：先**沿著外圈繞到**挑好的那一處
+        /* 還欠著幾處的（v1.229，見 moreMascot）：先**走到**挑好的那一處
            （doomTarget 認的 m.aim）再進 near。near 沒有繞路，從上一處直線切過去會撞上地標，
-           隔著好幾格就點火。strollTo 會把落在建築裡的目標推到外圈上，所以直接給那一塊的位置就好。 */
+           隔著好幾格就點火。直接給那一塊的位置就好：它在地標裡，strollTo 會挪到旁邊最近的空地
+           （v1.236 起照規則 2，見 navGoal；v1.229～v1.235 是推到工地外圈上）。 */
         if (m.owe > 0) {
           const t = doomTarget(m);
           if (!t) { if (!moreNext(m)) funBack(m); return false; }   // 地標這邊沒得砸了：換一邊
@@ -11473,9 +11479,9 @@ function draWings(m, to, dt, k) {
 /* 落地點與站定的位置：整套借獅鷲那支（見 grSpot），只換兩個距離。 */
 function draSpot(m) { grSpot(m, DRA_STAND, DRA_WALK_IN); }
 /* 在地上逛的下一個點：借牛羊那支 idleSpot（隨機挑、避開人家的屋子）。
-   挑出來的是 siteR+2～siteR+9，比龍站得住的位置近得多——那一段交給 strollTo 的
-   keepMore（見下面 DRA_KEEP）：它會把目標推到圈外，連路線都繞在圈外。 */
-const DRA_KEEP = DRA_STAND - KEEP;   // 走路時要離建築再遠幾格（KEEP 1.5 → 總共 siteR+10）
+   挑出來的離建築比龍站得住的位置近得多——那一段交給巡路規則的身位（v1.236，見 navBody：
+   身長 18 格的一半往外擴，太近的目標挪到最近站得下的地方，路線也照擴過的地圖繞）。
+   v1.182～v1.235 是 DRA_KEEP（DRA_STAND − KEEP，總共 siteR+10）：strollTo 把目標推到那一圈外、路線繞在圈外。 */
 /* 收翅滑降。高度照**剩下的時間**收，不寫死每秒掉幾格（同獅鷲的 land：寫死的話
    遠一點的落地點會先落地再滑過去、近一點的會還在半空就到了）。 */
 function landDragon(m, dt) {
@@ -11512,7 +11518,7 @@ function walkDragon(m, dt) {
   /* 走到了還有時間就換下一個點。**用 idleSpot 不用 draSpot**：grSpot 挑的是
      「牠現在這個方位、外圈上那一點」，站定之後再叫一次會挑到同一點，
      於是每一幀都「已經到了」，龍就杵在原地不動了。 */
-  if (strollTo(m, dt, DRA_WALK, DRA_STEP, DRA_KEEP) && m.t > 0) idleSpot(m);
+  if (strollTo(m, dt, DRA_WALK, DRA_STEP) && m.t > 0) idleSpot(m);
   if (m.t > 0) return false;
   m.st = 'rise'; m.gait = 0; sndRoar();
   return false;
