@@ -279,12 +279,42 @@ function supported(i) {
   const s = bp.slots[i];
   return s.anchor ? !!supSeen[i] : (s.fg >= 0 ? !!supStand[s.fg] : true);
 }
+/* 上一次算的時候每一格在不在（isHere），算的是哪一座（v1.237.3）。
+   施工中每認一批料、每砌一塊都會標髒，下一塊落地就整張重算——9000 格的藍圖一次 0.23～0.28 ms，
+   六十個人在蓋的時候幾乎每幀都要付。可是這兩件事都只會**多出**格子：多出來的格子只會讓連得到
+   地面的範圍變大，所以從新的那幾格往外補就好（新格子貼地、或碰到已經連上的才當起點），
+   結果跟整張重算是同一個集合。**少了任何一格**（被打掉、認領被放掉）才整張重算。
+   比對靠的是當下逐格看 isHere，不是靠改的地方通知——測試直接改 slot.filled 也照樣抓得到。
+   見 開發筆記〈畫面沒變就不重寫〉。 */
+let supHere = null, supOf = null;
 function computeSupport() {
   if (!bp || !bp.at) return;
   const S = bp.slots, n = S.length;
-  if (!supSeen || supSeen.length !== n) supSeen = new Uint8Array(n); else supSeen.fill(0);
   const stack = [];
-  for (let i = 0; i < n; i++) if (S[i].gy === 0 && isHere(i)) { supSeen[i] = 1; stack.push(i); }
+  let full = !(supOf === bp && supSeen && supSeen.length === n && supHere && supHere.length === n);
+  for (let i = 0; !full && i < n; i++) {
+    const h = isHere(i) ? 1 : 0;
+    if (h === supHere[i]) continue;
+    if (!h) { full = true; break; }                   // 少了一格：補算不出來，整張重算
+    supHere[i] = 1;
+    let on = S[i].gy === 0;
+    for (let k = 0; !on && k < NBR.length; k++) {
+      const d = NBR[k];
+      const j = bp.at.get(gkeyOf(S[i].gx + d[0], S[i].gy + d[1], S[i].gz + d[2]));
+      if (j !== undefined && supSeen[j]) on = true;
+    }
+    if (on && !supSeen[i]) { supSeen[i] = 1; stack.push(i); }
+  }
+  if (full) {
+    if (!supSeen || supSeen.length !== n) supSeen = new Uint8Array(n); else supSeen.fill(0);
+    if (!supHere || supHere.length !== n) supHere = new Uint8Array(n);
+    stack.length = 0;
+    for (let i = 0; i < n; i++) {
+      supHere[i] = isHere(i) ? 1 : 0;
+      if (S[i].gy === 0 && supHere[i]) { supSeen[i] = 1; stack.push(i); }
+    }
+    supOf = bp;
+  }
   while (stack.length) {
     const s = S[stack.pop()];
     for (let k = 0; k < NBR.length; k++) {

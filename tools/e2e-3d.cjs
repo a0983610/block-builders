@@ -3932,6 +3932,107 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '廢棄 ' + rule.gone + ' 間、剩 ' + rule.leftN + ' 間、留下的是完好那間＝' +
      rule.leftDone + '、w.hm 1 → ' + rule.hmMoved);
 
+  /* ── 支撐的補算（v1.237.3，見 開發筆記〈畫面沒變就不重寫〉）──
+     只多出格子（認領、砌上去）時 computeSupport 從新的那幾格往外補，少了格子才整張重算。
+     要守的是**結果跟整張重算逐格相同**。對照組是 v1.237 那一版原封不動（REF），
+     不是同一支函式裡「整張重算」那條路——那樣兩條路一起改歪的時候守不住。
+     用一座真的藍圖（挑有靠山的懸空部件的，supStand 那一段才有東西比），亂數是自己押好的一串，
+     不抽 Math.random：先清空，照層數由下往上一批一批加（認領、砌好各一半），偶爾一格不照順序
+     （懸在半空、之後才被接上的那種），每八步拿掉幾格（走整張重算那條）。
+     另外數 bp.at.get 被叫幾次：只加格子的那幾步要比整張重算少得多，不然就是補算那條路沒走到。 */
+  const supInc = await page.evaluate(() => {
+    const keepBp = bp;
+    let seed = 20261001;
+    const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
+    for (let i = 0; i < SHAPES.length; i++) {
+      bp = makeBlueprint(i, 1600);
+      if (bp.floats.some(g => g.props.length)) break;
+    }
+    const S = bp.slots, n = S.length, F = bp.floats;
+    for (const s of S) { s.filled = false; s.claimed = -1; }
+    computeSupport();
+    /* v1.237 的 computeSupport，結果寫到自己的陣列 */
+    const REF = () => {
+      const seen = new Uint8Array(n), stand = new Uint8Array(F.length), stack = [];
+      for (let i = 0; i < n; i++) if (S[i].gy === 0 && isHere(i)) { seen[i] = 1; stack.push(i); }
+      while (stack.length) {
+        const s = S[stack.pop()];
+        for (let k = 0; k < NBR.length; k++) {
+          const d = NBR[k];
+          const j = bp.at.get(gkeyOf(s.gx + d[0], s.gy + d[1], s.gz + d[2]));
+          if (j === undefined || seen[j] || !isHere(j)) continue;
+          seen[j] = 1; stack.push(j);
+        }
+      }
+      const sup = i => !isHere(i) ? false
+        : S[i].anchor ? !!seen[i] : (S[i].fg >= 0 ? !!stand[S[i].fg] : true);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (let gi = 0; gi < F.length; gi++) {
+          if (stand[gi]) continue;
+          const g = F[gi];
+          if (!g.props.length) { stand[gi] = 1; changed = true; continue; }
+          let alive = 0;
+          for (let k = 0; k < g.props.length; k++) if (sup(g.props[k])) alive++;
+          if (alive > g.props.length * PROP_ALIVE) { stand[gi] = 1; changed = true; }
+        }
+      }
+      return { seen, stand };
+    };
+    const at = bp.at, get0 = at.get;
+    let calls = 0;
+    at.get = function (k) { calls++; return get0.call(this, k); };
+    const key = S.map(() => rnd());
+    const order = S.map((s, i) => i).sort((a, b) => S[a].gy - S[b].gy || key[a] - key[b]);
+    let next = 0, adds = 0, cuts = 0, bad = 0, firstBad = '', incCalls = 0, refCalls = 0;
+    for (let step = 0; step < 48; step++) {
+      const cut = step % 8 === 7;
+      if (cut) {
+        const h = [];
+        for (let i = 0; i < n; i++) if (isHere(i)) h.push(i);
+        for (let k = 0; k < 6 && h.length; k++) {
+          const i = h[Math.floor(rnd() * h.length)];
+          S[i].filled = false; S[i].claimed = -1;
+        }
+        cuts++;
+      } else {
+        const k = 1 + Math.floor(rnd() * n / 30);
+        for (let q = 0; q < k && next < n; q++) {
+          const i = order[next++];
+          if (rnd() < 0.5) S[i].filled = true; else S[i].claimed = 0;
+        }
+        if (rnd() < 0.5) S[Math.floor(rnd() * n)].claimed = 0;
+        adds++;
+      }
+      calls = 0; computeSupport(); const c1 = calls;
+      calls = 0; const ref = REF(); const c2 = calls;
+      if (!cut) { incCalls += c1; refCalls += c2; }
+      let same = true;
+      for (let i = 0; same && i < n; i++) if (ref.seen[i] !== supSeen[i]) same = false;
+      for (let g = 0; same && g < F.length; g++) if (ref.stand[g] !== supStand[g]) same = false;
+      if (!same) { bad++; if (!firstBad) firstBad = '第 ' + step + ' 步（' + (cut ? '拿掉' : '加上') + '）'; }
+    }
+    let seenN = 0, standN = 0;
+    for (let i = 0; i < n; i++) seenN += supSeen[i];
+    for (let g = 0; g < F.length; g++) standN += supStand[g];
+    delete at.get;
+    const name = bp.name;
+    bp = keepBp; computeSupport();
+    return { name, n, floats: F.length, adds, cuts, bad, firstBad, incCalls, refCalls, seenN, standN };
+  });
+  ok('支撐補算：只多出格子時從新的那幾格往外補，跟整張重算逐格相同',
+     supInc.bad === 0 && supInc.adds > 0 && supInc.cuts > 0 && supInc.seenN > supInc.n * 0.3 &&
+     supInc.floats > 0,
+     supInc.name + ' ' + supInc.n + ' 格、懸空部件 ' + supInc.floats + ' 組：加 ' + supInc.adds +
+     ' 步、拿掉 ' + supInc.cuts + ' 步，對不上 ' + supInc.bad + ' 步' +
+     (supInc.firstBad ? '（第一次在' + supInc.firstBad + '）' : '') +
+     '；最後連得到地面 ' + supInc.seenN + ' 格、撐住的懸空部件 ' + supInc.standN + ' 組');
+  ok('支撐補算：只多出格子的那幾步真的沒有整張重算',
+     supInc.refCalls > 0 && supInc.incCalls < supInc.refCalls * 0.5,
+     '查格子表 ' + supInc.incCalls + ' 次（整張重算要 ' + supInc.refCalls + ' 次，' +
+     (supInc.incCalls / Math.max(1, supInc.refCalls) * 100).toFixed(1) + '%）');
+
   /* ══════════ 遊戲流程：蓋好 → 拆掉 → 蓋下一座 ══════════ */
   await head('流程：蓋好 → 拆掉 → 蓋下一座', T_MUST);
   await reset(page, { shape: '吉薩金字塔', cnt: 700, workers: 12 });
@@ -28778,6 +28879,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mkEdge.ink > 0.15 && mkEdge.ink <= 0.5,
      '最濃的頂點 alpha = ' + mkEdge.ink + '（改之前是 0.96）');
 
+  /* 形狀只在換了一批痕跡時才重鋪（v1.237.3，見 開發筆記〈畫面沒變就不重寫〉）：同樣那幾塊、
+     草皮沒換大小就只改 alpha，連 alpha 都沒變就整個不動。要守兩件事——
+     ① 只改 alpha 那條路寫出來的，跟從頭重鋪一次**逐位相同**（逼它重鋪：先丟一份空清單進去，
+        下一次就一定是「換了一批」）；② 什麼都沒變的那一次真的沒有重傳、淡的時候只傳顏色那一條。 */
+  const mkCache = await page.evaluate(() => {
+    cleanTools(); marks.length = 0;
+    for (let i = 0; i < 8; i++) spawnMark({ x: i * 3 - 10, y: 0.5, z: (i % 3) * 4 - 4 }, 6, i % 2 === 0);
+    const g = ENG.three.markMesh.geometry, pa = g.attributes.position, ca = g.attributes.color;
+    ENG.putMarks(marks);                           // 換了一批：整個鋪
+    const pv0 = pa.version, cv0 = ca.version;
+    ENG.putMarks(marks);                           // 什麼都沒變
+    const still = { p: pa.version - pv0, c: ca.version - cv0 };
+    for (let t = 0; t < MARK_LIFE - MARK_FADE / 2 - 1e-9; t += 0.05) stepMarks(0.05);   // 淡到一半
+    const pv1 = pa.version, cv1 = ca.version;
+    ENG.putMarks(marks);
+    const fade = { p: pa.version - pv1, c: ca.version - cv1, a: +marks[0].a.toFixed(2) };
+    const n = g.drawRange.count;
+    const P = Array.from(pa.array.subarray(0, n * 3)), C = Array.from(ca.array.subarray(0, n * 4));
+    ENG.putMarks([]); ENG.putMarks(marks);         // 逼它從頭鋪一次
+    let diff = 0;
+    for (let i = 0; i < n * 3; i++) if (pa.array[i] !== P[i]) diff++;
+    for (let i = 0; i < n * 4; i++) if (ca.array[i] !== C[i]) diff++;
+    const r = { still, fade, n, n2: g.drawRange.count, diff, k: marks.length };
+    marks.length = 0; ENG.putMarks(marks);
+    return r;
+  });
+  ok('痕跡沒變就不重傳，淡的時候只重傳顏色那一條',
+     mkCache.still.p === 0 && mkCache.still.c === 0 && mkCache.fade.p === 0 && mkCache.fade.c === 1 &&
+     mkCache.fade.a > 0 && mkCache.fade.a < 1,
+     '同一批再畫一次：位置 +' + mkCache.still.p + '、顏色 +' + mkCache.still.c +
+     '；淡到 a=' + mkCache.fade.a + ' 時：位置 +' + mkCache.fade.p + '、顏色 +' + mkCache.fade.c);
+  ok('痕跡只改濃淡寫出來的頂點，跟從頭重鋪一次逐位相同',
+     mkCache.diff === 0 && mkCache.n > 0 && mkCache.n2 === mkCache.n && mkCache.k === 8,
+     mkCache.k + ' 塊、' + mkCache.n + ' 個頂點，位置＋顏色對不上 ' + mkCache.diff + ' 個數');
+
   /* ══ v1.231：強爆炸的焦痕（核彈、爆裂魔法、隕石） ══
      使用者：「強大爆炸的道具地面坑改為焦痕(excalibur痕跡) 先改爆裂魔法&核彈&隕石 焦痕增加冒煙效果」，
      看預覽之後：「冒煙不用那麼久 大約跟深紅色差不多」「saber砍完的地面也記得要加 這類焦痕都一樣的
@@ -31490,6 +31626,53 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（退避之下最多 ' + perfWater.want + '、改版前最多 ' + perfWater.NP * perfWater.NF +
      '），injectWater 共 ' + perfWater.calls + ' 次；桶裡剩的水 ' + perfWater.left0 +
      ' → ' + perfWater.left1 + ' 格、還有 ' + perfWater.pours + ' 桶在等');
+
+  /* 積木沒變就不重寫（v1.237.3，見 開發筆記〈畫面沒變就不重寫〉）。draw 每幀對每一塊呼叫 putBlock，
+     跟上一次寫進那一格的十個數字一樣就跳過。要守兩件事——
+     ① 跳著寫出來的緩衝區，跟每一格都重寫一次**逐位相同**。逼它全部重寫：先拿 NaN 把每一格的快取
+        蓋掉（NaN 跟什麼都不相等），下一次 draw 就一格都跳不掉。場面要有不動的也有在動的
+        （打飛、落地轉正、淋濕變色、淡出），所以先打飛一批再跑一段。
+     ② 兩次 draw 之間什麼都沒動，第二次就不重傳；挪了一塊就只有那一格變。 */
+  const blkSkip = await page.evaluate(() => {
+    running = false;
+    cleanTools(); targetCnt = 1800; shapePick = 0; startBuild(true); completeNow(); shapePick = -1;
+    const set = blocks.filter(b => b.st === SET);
+    for (let i = 0; i < set.length; i += 9) breakBlock(set[i], 3, 4, -2);
+    for (let i = 4; i < set.length; i += 11) wetBlock(set[i]);
+    for (let i = 0; i < 40; i++) { step(1 / 60); draw(); }
+    const M = ENG.three.blockMesh, im = M.instanceMatrix, ic = M.instanceColor, N = blocks.length;
+    const fly = blocks.filter(b => b.st === FLY || b.snap > 0).length;
+    const P = Array.from(im.array.subarray(0, N * 16)), C = Array.from(ic.array.subarray(0, N * 3));
+    const Z = new THREE.Euler();
+    for (let i = 0; i < N; i++) ENG.putBlock(i, NaN, 0, 0, Z, 1, 0, 0, 0);
+    draw();                                        // 每一格都重寫
+    let diff = 0;
+    for (let i = 0; i < N * 16; i++) if (im.array[i] !== P[i]) diff++;
+    for (let i = 0; i < N * 3; i++) if (ic.array[i] !== C[i]) diff++;
+    const v0 = im.version, c0 = ic.version;
+    draw();                                        // 什麼都沒動
+    const still = { m: im.version - v0, c: ic.version - c0 };
+    const k = blocks.findIndex(b => b.st === SET), b = blocks[k], x0 = b.x;
+    const before = Array.from(im.array.subarray(0, N * 16));
+    b.x = x0 + 0.5;
+    draw();
+    const moved = [];
+    for (let i = 0; i < N; i++)
+      for (let q = 0; q < 16; q++) if (im.array[i * 16 + q] !== before[i * 16 + q]) { moved.push(i); break; }
+    const up = im.version - v0;
+    b.x = x0; draw();
+    targetCnt = 3000; startBuild(true); completeNow();
+    return { N, fly, diff, still, up, moved: moved.slice(0, 5), nMoved: moved.length, k };
+  });
+  ok('積木沒變就不重寫：跳著寫出來的跟每一格都重寫一次逐位相同',
+     blkSkip.diff === 0 && blkSkip.fly > 0,
+     blkSkip.N + ' 塊（其中 ' + blkSkip.fly + ' 塊還在飛／轉正）：矩陣＋顏色對不上 ' + blkSkip.diff + ' 個數');
+  ok('積木沒變就不重傳，挪了一塊就只有那一格變',
+     blkSkip.still.m === 0 && blkSkip.still.c === 0 && blkSkip.up === 1 &&
+     blkSkip.nMoved === 1 && blkSkip.moved[0] === blkSkip.k,
+     '什麼都沒動：矩陣 +' + blkSkip.still.m + '、顏色 +' + blkSkip.still.c +
+     '；挪第 ' + blkSkip.k + ' 塊：重傳 ' + blkSkip.up + ' 次、變的格子 ' + blkSkip.nMoved +
+     ' 格 [' + blkSkip.moved.join(',') + ']');
 
   const bpTime = await page.evaluate(() => {
     let worst = 0, name = '';

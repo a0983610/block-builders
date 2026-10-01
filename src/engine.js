@@ -2238,7 +2238,13 @@ const ENG = (function () {
   ]);
   const MARK_Y = 0.04;              // 離地一點點：貼在 0 會跟草皮頂面搶深度，糊成一片
   /* list 每一項 {x, z, r 半徑, a 濃度 0–1, crater 是不是坑洞,
-     j 每一片的半徑倍率（生的時候抽好存著——每幀重抽輪廓會一直抖）}。 */
+     j 每一片的半徑倍率（生的時候抽好存著——每幀重抽輪廓會一直抖）}。
+     **形狀只在換了一批痕跡時才重鋪**（v1.237.3，見 開發筆記〈畫面沒變就不重寫〉）：一塊痕跡生出來之後
+     x／z／r／j／crater 都不再變，每幀在變的只有 a（最後 MARK_FADE 秒在淡）。所以清單裡還是同樣那幾塊、
+     草皮也沒換大小，就只重寫每個頂點的 alpha；連 a 都沒變就整個不動。小人挖料一秒好幾塊土痕，
+     這一池幾乎一直有東西——實測 12～19 塊在場時（五千到八千多個頂點），每幀重鋪要 0.10～0.16 ms。 */
+  const markLast = [], markA = [];
+  let markLim = NaN;
   function putMarks(list) {
     const n = Math.min(list.length, MARK_MAX);
     const P = markPos, C = markCol;
@@ -2248,6 +2254,13 @@ const ENG = (function () {
        之後草地縮小，就會看到）。夾住之後多出來的部分會擠在邊上收成一條直邊，
        看起來就是「燒到邊就沒了」。 */
     const lim = groundHalf - 0.4;
+    let geo = n !== markLast.length || lim !== markLim;
+    for (let i = 0; !geo && i < n; i++) if (markLast[i] !== list[i]) geo = true;
+    if (!geo) {
+      let fade = false;
+      for (let i = 0; i < n; i++) if (markA[i] !== list[i].a) { fade = true; break; }
+      if (!fade) return;                           // 跟上一次一模一樣：一個頂點都不用動
+    }
     const put = (m, ring, ang, jj) => {
       const rad = m.r * ring.r * jj;
       P[v * 3] = Math.max(-lim, Math.min(lim, m.x + Math.cos(ang) * rad));
@@ -2257,6 +2270,8 @@ const ENG = (function () {
       C[v * 4 + 3] = ring.a * m.a;
       v++;
     };
+    const putA = (m, ring) => { C[v * 4 + 3] = ring.a * m.a; v++; };   // 只有濃淡在變
+    const f = geo ? put : putA;
     for (let i = 0; i < n; i++) {
       const m = list[i];
       const rings = m.crater ? MARK_CRATER : MARK_SCORCH;
@@ -2268,23 +2283,31 @@ const ENG = (function () {
           const A = rings[k], B = rings[k + 1];
           /* 這兩個三角形的頂點順序算出來的法線是朝上的（+Y）。順序寫反的話面朝下，
              從上面看就只看到背面——Lambert 會拿翻過來的法線算光，畫成一團黑。 */
-          put(m, A, a0, j0); put(m, A, a1, j1); put(m, B, a1, j1);
-          put(m, A, a0, j0); put(m, B, a1, j1); put(m, B, a0, j0);
+          f(m, A, a0, j0); f(m, A, a1, j1); f(m, B, a1, j1);
+          f(m, A, a0, j0); f(m, B, a1, j1); f(m, B, a0, j0);
         }
       }
+      markA[i] = m.a;
+    }
+    if (geo) {
+      markLast.length = n;
+      for (let i = 0; i < n; i++) markLast[i] = list[i];
+      markA.length = n;
+      markLim = lim;
     }
     markMesh.visible = v > 0;
     markGeo.setDrawRange(0, v);
     const pa = markGeo.attributes.position, ca = markGeo.attributes.color;
-    // 只上傳真的用到的那一段（跟水那顆同一個理由）
+    // 只上傳真的用到的那一段（跟水那顆同一個理由）；形狀沒換就只傳顏色那一條
     if (pa.clearUpdateRanges) {
-      pa.clearUpdateRanges(); pa.addUpdateRange(0, v * 3);
+      if (geo) { pa.clearUpdateRanges(); pa.addUpdateRange(0, v * 3); }
       ca.clearUpdateRanges(); ca.addUpdateRange(0, v * 4);
     } else if (pa.updateRange) {
-      pa.updateRange.offset = 0; pa.updateRange.count = v * 3;
+      if (geo) { pa.updateRange.offset = 0; pa.updateRange.count = v * 3; }
       ca.updateRange.offset = 0; ca.updateRange.count = v * 4;
     }
-    pa.needsUpdate = true; ca.needsUpdate = true;
+    if (geo) pa.needsUpdate = true;
+    ca.needsUpdate = true;
   }
   /* ── Excalibur 的燒灼痕（v1.224）──
      使用者：「接觸到的地面也要加上焦黑」→「焦痕再黑一點 可以活久一點(可以中心先深紅色再變黑 增加細節)」。
@@ -3129,8 +3152,22 @@ const ENG = (function () {
      這兩個 mesh 都 frustumCulled = false，本來就不靠包圍球決定畫不畫。 */
   function dropSphere(m) { m.boundingSphere = null; }
 
-  /* 遊戲層每幀對每塊積木呼叫一次。rot 是 THREE.Euler，s 是縮放（放置彈跳用） */
+  /* 遊戲層每幀對每塊積木呼叫一次。rot 是 THREE.Euler，s 是縮放（放置彈跳用）
+     **跟上一次寫進這一格的值一模一樣就跳過**（v1.237.3，見 開發筆記〈畫面沒變就不重寫〉）：
+     矩陣與顏色只由這十個數字（加上 rot 的軸序）決定，一樣就代表緩衝區裡那一格本來就是對的。
+     蓋好的建築、躺平的碎料每幀都一樣——實測 9113 塊時 draw 裡這一段佔 0.8 ms，
+     大半是在把同一個矩陣再算一次（Euler → 四元數那一步的三角函數最貴）。
+     快取跟著**格位**（i）走、不跟著積木：池子重排（dropBlocks）之後這一格換了別塊，
+     值不一樣自然會重寫；換來的那塊剛好值相同，緩衝區裡的也本來就是對的。 */
+  const BLK_K = 10;
+  const blkLast = new Float64Array(MAXB * BLK_K).fill(NaN);   // NaN ≠ 任何數：第一次一定寫
+  let blkOrd = '', blkCall = '', blkDirty = false;
   function putBlock(i, x, y, z, rot, s, r, g, b) {
+    blkCall = rot.order;
+    if (rot.order !== blkOrd) { blkLast.fill(NaN); blkOrd = rot.order; }   // 軸序變了，整份作廢
+    const L = blkLast, o = i * BLK_K;
+    if (L[o] === x && L[o + 1] === y && L[o + 2] === z && L[o + 3] === rot.x && L[o + 4] === rot.y &&
+        L[o + 5] === rot.z && L[o + 6] === s && L[o + 7] === r && L[o + 8] === g && L[o + 9] === b) return;
     scratch.position.set(x, y, z);
     scratch.rotation.copy(rot);
     scratch.scale.setScalar(BS * s);
@@ -3138,10 +3175,21 @@ const ENG = (function () {
     blockMesh.setMatrixAt(i, scratch.matrix);
     tmpC.setRGB(r, g, b);
     blockMesh.setColorAt(i, tmpC);
+    L[o] = x; L[o + 1] = y; L[o + 2] = z; L[o + 3] = rot.x; L[o + 4] = rot.y;
+    L[o + 5] = rot.z; L[o + 6] = s; L[o + 7] = r; L[o + 8] = g; L[o + 9] = b;
+    blkDirty = true;
   }
   function commitBlocks() {
-    blockMesh.instanceMatrix.needsUpdate = true;
-    if (blockMesh.instanceColor) blockMesh.instanceColor.needsUpdate = true;
+    /* 以前每一塊都 rotation.copy(rot)，這一幀結束時 scratch 的軸序一定是 rot 的；
+       後面幾支只 rotation.set(x, y, z) 不給軸序的（putTrees、putDust…）會沿用它。
+       現在可能一塊都沒寫，所以照樣補回去，不讓那幾支的結果跟著變。 */
+    if (blkCall && scratch.rotation.order !== blkCall) scratch.rotation.order = blkCall;
+    blkCall = '';
+    if (blkDirty) {                   // 一格都沒變就不重傳（整條緩衝區每幀上傳一次也是錢）
+      blockMesh.instanceMatrix.needsUpdate = true;
+      if (blockMesh.instanceColor) blockMesh.instanceColor.needsUpdate = true;
+      blkDirty = false;
+    }
     dropSphere(blockMesh);
   }
 
