@@ -7950,13 +7950,10 @@ function useTool(hit) {
   if (tool === 'ufo') { callUfo({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'hole') { castHole(hit.point, onGround); return 0; }   // 小黑洞（v1.221）
   /* Excalibur（v1.224）：點建築＝跑到射程一半斬下去、點空地＝跑到那裡待命（v1.238）；點生物與小人在 game-ui.js
-     那邊就接走了。**點到地上的碎料算點地面**（同火槍兵 v1.232 那一條：還立著的 SET 才算建築） */
-  if (tool === 'excalibur') {
-    const b = hit.kind === 'block' && hit.idx >= 0 ? blocks[hit.idx] : null;
-    callSaber(hit.point, null, false, onGround || !!(b && b.st !== SET));
-    return 0;
-  }
-  // 兵長砍猴（v1.230）：點建築＝飛過去砍、點空地＝跑到那裡待命；點生物與小人在 game-ui.js 那邊就接走了
+     那邊就接走了。碎料在點選那一層就是透明的（v1.239.0，同兵長砍猴，見 onUp），走到這裡的 block 都是還立著的 */
+  if (tool === 'excalibur') { callSaber(hit.point, null, false, onGround); return 0; }
+  /* 兵長砍猴（v1.230）：點建築＝飛過去砍、點空地＝跑到那裡待命；點生物與小人在 game-ui.js 那邊就接走了。
+     碎料在點選那一層是透明的（v1.239.0，見 onUp）：v1.230～v1.238 點到碎料他會當成建築飛過去砍那一塊 */
   if (tool === 'levi') { callLevi(hit.point, hit.dir, null, false, onGround); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
@@ -9201,7 +9198,7 @@ function excScorch(m) {
    （之後牠走開就斬空）、**小人也點得到**（同里維）、天上的**先不算**（同里維）。所以命令跟里維那一份同一個樣子：
      · 點建築：跑到離那一點 EXC_REACH 格內就站定出招（sd），已經在圈內就原地轉身斬
      · 點生物、小人：命令帶著那一隻（b／bw），stepCall 每一幀照牠現在的位置追，進圈就站定（callAim 那一刻鎖方向）
-     · 點空地（點到地上的碎料也算，同火槍兵 v1.232）：跑到那一點待命（go，見 levArrive），不出招
+     · 點空地：跑到那一點待命（go，見 levArrive），不出招。碎料在點選那一層是透明的（v1.239.0，見 onUp）
    見 開發筆記〈Excalibur 改操作：點建築、生物、小人跑到射程一半斬，點地面跑過去待命〉 */
 /* 站多遠斬（v1.238，使用者：「到能攻擊到的適當距離攻擊(最遠距離的一半)」）：光柱搆得到 EXC_L 格
    （從劍身中段量，見 excGeo 的 R），站在一半的地方——點到的那一點落在光柱長度的正中間。
@@ -9441,18 +9438,20 @@ const LEV_STEAM_ALL = 2400;      // 塵霧那一池已經這麼多就不冒了�
 const lvSm = f => f * f * (3 - 2 * f);
 /* 立體機動中的里維、正在氣化的巨人：一般道具打不動（見檔頭那一段） */
 function levBusy(m) { return !!m && (m.st === 'odm' || !!m.dead); }
-/* 點得到、追得到的生物：還在場上、在地上（天上的先不算）、不是他自己、不是正在化掉的那一隻 */
+/* 在地上嗎（點得到、追得到的那一條，里維與 Saber 共用）。飛龍的 sky 從進場到飛走一路是 1（連在地上那幾段也是），
+   所以牠照狀態認：在草皮上走（gwalk）、摔下來趴著（down）的算在地上；其餘照 sky（獅鷲降落時歸零） */
+const onGroundBeast = m => m.kind === 'dragon' ? m.st === 'gwalk' || m.st === 'down' : !m.sky;
+/* 點得到、追得到的生物：還在場上、在地上（天上的先不算）、不是他自己、不是正在化掉的那一隻。
+   地上的飛龍 v1.239.0 起也算（使用者：「里維的部分也應該要能點得到地上的飛龍那些」；v1.230～v1.238 飛龍整隻不算） */
 function leviCanCut(m) {
-  return !!m && m.kind !== 'levi' && m.kind !== 'dragon' && !m.sky && !m.ufo && !m.dead;
+  return !!m && m.kind !== 'levi' && onGroundBeast(m) && !m.ufo && !m.dead;
 }
 /* 小人（使用者：「兵長點小人無效」）：在地上、沒被吸走的都砍得到（弓箭手、火槍兵不在 workers 裡，點不到） */
 function leviCanCutW(w) { return !!w && !w.air && !w.ufo; }
 /* Excalibur 點得到、追得到的生物（v1.238）：她自己、被吸走的、立體機動中的里維與正在化掉的巨人（levBusy）不算；
-   天上的不算（使用者選「先不算，同里維」）。飛龍的 sky 從進場到飛走一路是 1（連在地上那幾段），
-   所以牠照狀態認：在草皮上走（gwalk）、摔下來趴著（down）的點得到——里維那一份是整隻不算（leviCanCut） */
+   天上的不算（使用者選「先不算，同里維」），地上的飛龍算（onGroundBeast，里維 v1.239.0 起也一樣） */
 function sabCanCut(m) {
-  if (!m || m.kind === 'saber' || m.ufo || levBusy(m)) return false;
-  return m.kind === 'dragon' ? m.st === 'gwalk' || m.st === 'down' : !m.sky;
+  return !!m && m.kind !== 'saber' && !m.ufo && !levBusy(m) && onGroundBeast(m);
 }
 /* 命令裡那一個還在不在（w＝這一個是小人；can＝生物那邊照誰的規矩認，沒給＝里維的） */
 function levTargetOk(b, w, can) {

@@ -27653,7 +27653,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '躺／飛 ' + xrun.down + ' 幀、站在建築的格子裡 ' + xrun.inSite + ' 幀、站在房子裡 ' + xrun.inHome + ' 幀');
 
   /* ── 點地面（v1.238，使用者選「跑過去、待命 8～12 秒」同里維）：她在場上就叫同一位跑到那一點，
-        待命 LEV_WAIT 秒再回去逛、不出招。點到地上的碎料也算點地面（同火槍兵 v1.232），還立著的才算建築 ── */
+        待命 LEV_WAIT 秒再回去逛、不出招（碎料是透明的那一條見下面〈點選：碎料是透明的〉） ── */
   await fillAll(page);
   const xgnd = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
@@ -27669,26 +27669,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (m.st === 'act' || m.st === 'excal') exc++;
       if (m.st === 'fun') arr = { d: Math.hypot(m.x - G.x, m.z - G.z), pause: m.pause, call: m.call, secs: +(n * 0.02).toFixed(2) };
     }
-    /* 碎料：借一塊還立著的暫時當成躺在地上的（useTool 只看 blocks[idx].st），點完還回去 */
-    const B = blocks.findIndex(b => b.st === SET), P = { x: blocks[B].x, y: blocks[B].y, z: blocks[B].z };
-    blocks[B].st = FREE;
-    useTool({ kind: 'block', idx: B, point: P, dir });
-    const deb = !!(m.call && m.call.go);
-    blocks[B].st = SET;
-    useTool({ kind: 'block', idx: B, point: P, dir });
-    const set = !!(m.call && !m.call.go && m.call.sd === EXC_REACH);
     tool = 'hammer';
-    const out = { go, arr, exc, deb, set, n: beasts.filter(b => b.kind === 'saber').length, sd: LEV_SD, wait: LEV_WAIT };
+    const out = { go, arr, exc, n: beasts.filter(b => b.kind === 'saber').length, sd: LEV_SD, wait: LEV_WAIT };
     beasts = null;
     return out;
   });
-  ok('點地面：她在場上就叫同一位跑到那一點，待命 LEV_WAIT 秒再回去逛、不出招；點到地上的碎料也算點地面',
+  ok('點地面：她在場上就叫同一位跑到那一點，待命 LEV_WAIT 秒再回去逛、不出招',
      xgnd.go && xgnd.n === 1 && xgnd.arr && xgnd.arr.d <= xgnd.sd + 0.1 && xgnd.arr.call === null && xgnd.exc === 0 &&
-     xgnd.arr.pause >= xgnd.wait[0] && xgnd.arr.pause <= xgnd.wait[1] && xgnd.deb && xgnd.set,
+     xgnd.arr.pause >= xgnd.wait[0] && xgnd.arr.pause <= xgnd.wait[1],
      '命令 go＝' + xgnd.go + '、場上 ' + xgnd.n + ' 位；' + (xgnd.arr ? xgnd.arr.secs + ' 秒到、離那一點 ' +
      xgnd.arr.d.toFixed(2) + ' 格（LEV_SD ' + xgnd.sd + '）、待命 ' + xgnd.arr.pause.toFixed(1) + ' 秒（' +
-     xgnd.wait.join('～') + '）' : '沒到') + '；出招 ' + xgnd.exc + ' 幀；點碎料＝點地面 ' + xgnd.deb +
-     '、點還立著的＝點建築 ' + xgnd.set);
+     xgnd.wait.join('～') + '）' : '沒到') + '；出招 ' + xgnd.exc + ' 幀');
 
   /* ── 射程一半：EXC_REACH 就是光柱長度的一半；已經在射程內就原地轉身斬，不往前也不往回（同里維一進射程就射） ── */
   const xnear = await page.evaluate(() => {
@@ -27840,6 +27831,61 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '點猴子→叫她去斬牠 ' + xpick.ape + '；點小人→叫她去斬他 ' + xpick.man + '（沒被戳倒＝' + !xpick.fell + '、戳倒成就 +' +
      xpick.poked + '）；砍得了嗎（猴／她自己／里維／立體機動中的里維／地上走的飛龍／趴著的飛龍／天上的飛龍／' +
      '天上的獅鷲／地上的獅鷲／化掉中的巨人）' + xpick.cut);
+
+  /* ── 點選：碎料是透明的（v1.239.0，使用者：「它可以點到碎料(不該可以點)」）——Excalibur 與兵長砍猴兩把都是 ──
+     真的走 onDown／onUp：朝鏡頭那一面打掉一批，等它們落地躺好，挑一塊「不給透明的話 pick('levi') 點到的就是它」的碎料
+     （這一條才有意義），點它的上緣：兩把都穿過去打在後面的地上（go）。v1.238 里維點碎料會當成建築飛過去砍那一塊。
+     交叉：點還立著的那一面照舊是建築（Saber 帶 EXC_REACH、里維帶射程）。 */
+  await fillAll(page);
+  const xdeb = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const e = ENG.camEye(), hl = Math.hypot(e.x, e.z), hx = e.x / hl, hz = e.z / hl;
+    const face = blocks.filter(b => b.st === SET).sort((a, b) => (b.x * hx + b.z * hz) - (a.x * hx + a.z * hz));
+    for (const b of face.slice(0, 80)) breakBlock(b, hx * rr(4, 9), rr(2, 5), hz * rr(4, 9));
+    for (let i = 0; i < 120; i++) step(0.05);
+    draw(); ENG.render();
+    const c = ENG.three.renderer.domElement.getBoundingClientRect(), cam = ENG.three.camera;
+    const at = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam);
+                              return [(v.x + 1) / 2 * c.width + c.left, (1 - v.y) / 2 * c.height + c.top]; };
+    /* 挑的那一塊後面要是地面（不是剛好站在後面的小人），這一條才不賭骰子 */
+    const thru = (k, i) => k === 'block' && !!blocks[i] && blocks[i].st !== SET;
+    let D = null, S = null;
+    for (let i = 0; i < blocks.length && !D; i++) {
+      const b = blocks[i];
+      if (b.st !== FREE || b.y > 1.2) continue;
+      const p = at(b.x, b.y + 0.45, b.z), h = ENG.pick(p[0], p[1], 'levi'), g = ENG.pick(p[0], p[1], 'levi', thru);
+      if (h && h.kind === 'block' && h.idx === i && g && g.kind === 'ground') D = p;
+    }
+    for (let i = 0; i < blocks.length && !S; i++) {          // 還立著、而且點得到的一塊（交叉那一條）
+      const b = blocks[i];
+      if (b.st !== SET) continue;
+      const p = at(b.x, b.y, b.z), h = ENG.pick(p[0], p[1], 'levi');
+      if (h && h.kind === 'block' && h.idx === i) S = p;
+    }
+    const panel = document.getElementById('panel'), hid = panel.classList.contains('hide'), was = tool;
+    const click = p => { onDown({ clientX: p[0], clientY: p[1] }); onUp({}); };
+    const cmd = k => { const m = (beasts || []).find(b => b.kind === k); return m && m.call ? m.call : null; };
+    const r = { found: !!D && !!S };
+    if (r.found) {
+      tool = 'excalibur'; click(D); const sd = cmd('saber');
+      r.sabD = !!sd && !!sd.go;
+      click(S); const ss = cmd('saber');
+      r.sabS = !!ss && !ss.go && ss.sd === EXC_REACH;
+      beasts = null;
+      tool = 'levi'; click(D); const ld = cmd('levi');
+      r.levD = !!ld && !!ld.go && !ld.rg;
+      click(S); const ls = cmd('levi');
+      r.levS = !!ls && !ls.go && ls.rg === LEV_RANGE.b;
+    }
+    tool = was;
+    if (!hid) panel.classList.remove('hide');      // onDown 會把設定面板收下去，還回去
+    beasts = null;
+    return r;
+  });
+  ok('點選：碎料是透明的——Excalibur 與兵長砍猴點到地上的碎料都穿過去算點地面；點還立著的照舊是建築',
+     xdeb.found && xdeb.sabD && xdeb.levD && xdeb.sabS && xdeb.levS,
+     '找到碎料與立著的一塊＝' + xdeb.found + '；點碎料：Saber 跑去待命 ' + xdeb.sabD + '、里維跑去待命 ' + xdeb.levD +
+     '（v1.238 他會飛過去砍那一塊）；點立著的：Saber 斬 ' + xdeb.sabS + '、里維飛過去砍 ' + xdeb.levS);
 
   /* ── Saber 只有一位：叫到天災那一位就取消她的天災任務；她被叫著時天災抽到 Saber 就作廢 ── */
   const xone = await page.evaluate(() => {
@@ -28689,17 +28735,56 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const lw = ENG.pick(pw[0], pw[1], 'levi'), sw = ENG.pick(pw[0], pw[1], 'skip');
     const r = { la: la && la.kind, laOk: la && beastAt(la.idx) === a, sa: sa && sa.kind,
                 lw: lw && lw.kind, lwOk: lw && workers[lw.idx] === w, sw: sw && sw.kind };
-    const L = spawnBeast('levi', 1), D = { kind: 'dragon' }, Gs = { kind: 'gryphon', sky: 1 };
-    r.cut = [leviCanCut(a), leviCanCut(L), leviCanCut(D), leviCanCut(Gs), leviCanCutW(w)].join(',');
+    /* 飛龍的 sky 一路是 1，照狀態認（v1.239.0 使用者：「里維的部分也應該要能點得到地上的飛龍那些」）：
+       天上飛的（in）不算、在草皮上走（gwalk）與摔下來趴著（down）的算；v1.230～v1.238 飛龍整隻不算 */
+    const L = spawnBeast('levi', 1), D = { kind: 'dragon', sky: 1, st: 'in' }, Gs = { kind: 'gryphon', sky: 1 };
+    const Dw = { kind: 'dragon', sky: 1, st: 'gwalk' }, Dd = { kind: 'dragon', sky: 1, st: 'down' };
+    r.cut = [leviCanCut(a), leviCanCut(L), leviCanCut(D), leviCanCut(Gs), leviCanCutW(w),
+             leviCanCut(Dw), leviCanCut(Dd)].join(',');
     beasts = null;
     return r;
   });
-  ok('點選：這一把點得到地上的生物與小人（其他道具那一檔是透明的）；天上的、他自己不算',
+  ok('點選：這一把點得到地上的生物與小人（其他道具那一檔是透明的）；天上的、他自己不算，地上的飛龍算',
      lpick.la === 'beast' && lpick.laOk && lpick.sa !== 'beast' && lpick.lw === 'worker' && lpick.lwOk &&
-     lpick.sw !== 'worker' && lpick.cut === 'true,false,false,false,true',
+     lpick.sw !== 'worker' && lpick.cut === 'true,false,false,false,true,true,true',
      '黑獼猴：兵長砍猴點到 ' + lpick.la + '（是牠＝' + lpick.laOk + '）、其他道具點到 ' + lpick.sa + '；小人：點到 ' +
-     lpick.lw + '（是他＝' + lpick.lwOk + '）、其他道具點到 ' + lpick.sw + '；砍得了嗎（猴／里維／飛龍／天上的獅鷲／小人）' +
-     lpick.cut);
+     lpick.lw + '（是他＝' + lpick.lwOk + '）、其他道具點到 ' + lpick.sw + '；砍得了嗎（猴／里維／天上的飛龍／天上的獅鷲／小人／' +
+     '地上走的飛龍／趴著的飛龍）' + lpick.cut);
+
+  /* ── 點地上的飛龍（v1.239.0）：真的走 onDown／onUp 點牠，他追過去整套砍下去，牠被砍倒（gwalk → down）、算被攻擊 ──
+     牠的 t（還要走多久）押長，別在他到之前就起飛（起飛了就不在地上，那一趟本來就該收工） */
+  const ldra = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const e = ENG.camEye(), hl = Math.hypot(e.x, e.z), hx = e.x / hl, hz = e.z / hl;
+    const g = spawnDragon(1, 0);
+    g.st = 'gwalk'; g.t = 99; g.y = 0; g.spin = 0; g.roll = 0;
+    g.x = hx * (bp.radius + 10); g.z = hz * (bp.radius + 10);
+    draw(); ENG.render();
+    const c = ENG.three.renderer.domElement.getBoundingClientRect(), v = new THREE.Vector3(g.x, ENG.BEAST_MID.dragon * g.sc, g.z);
+    v.project(ENG.three.camera);
+    const panel = document.getElementById('panel'), hid = panel.classList.contains('hide'), was = tool;
+    tool = 'levi';
+    onDown({ clientX: (v.x + 1) / 2 * c.width + c.left, clientY: (1 - v.y) / 2 * c.height + c.top }); onUp({});
+    tool = was;
+    if (!hid) panel.classList.remove('hide');      // onDown 會把設定面板收下去，還回去
+    const L = (beasts || []).find(b => b.kind === 'levi'), b = !!(L && L.call && L.call.b === g);
+    const bad0 = g.bad, ds = [], ls = [];
+    let n = 0;
+    while (L && n < 3000) {
+      step(0.02); n++;
+      if (ds[ds.length - 1] !== g.st) ds.push(g.st);
+      const k = L.st + (L.st === 'odm' ? ':' + L.op : '');
+      if (ls[ls.length - 1] !== k) ls.push(k);
+      if (L.st === 'fun' && ls.indexOf('odm:land') >= 0) break;
+    }
+    const r = { b, dra: ds.join('→'), lev: ls.join('→'), bad0, bad: g.bad, secs: +(n * 0.02).toFixed(2) };
+    beasts = null;
+    return r;
+  });
+  ok('點地上的飛龍：他追過去整套砍下去，牠被砍倒、算被攻擊',
+     ldra.b && ldra.lev === 'call→act→odm:shoot→odm:fly→odm:cut→odm:drop→odm:land→fun' &&
+     ldra.dra.indexOf('down') >= 0 && ldra.bad0 === 0 && ldra.bad === 1,
+     '點到牠＝' + ldra.b + '；' + ldra.lev + '（' + ldra.secs + ' 秒）；飛龍 ' + ldra.dra + '、bad ' + ldra.bad0 + ' → ' + ldra.bad);
 
   /* ── 立體機動那幾秒打不動他（炸不飛、點不著、推不倒），正在散掉的巨人也是 ── */
   const lbusy = await page.evaluate(() => {

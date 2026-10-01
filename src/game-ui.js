@@ -355,15 +355,20 @@ function onUp(e) {
   /* pick 的結果要用格子重驗一次（見 fixHit）：射線鑽得過積木之間的縫，
      不驗的話這一下會落在牆後面那一塊、或牆後面的地上。 */
   /* Excalibur（v1.238，使用者：「類似里維 點建築&生物」）跟兵長砍猴同一檔：建築、生物、小人同一級，射線先碰到誰就是誰 */
-  let hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man' : tool === 'levi' || tool === 'excalibur' ? 'levi'
-                                  : tool === 'fire' || tool === 'bucket' ? '' : 'skip'));
+  const canCut = tool === 'levi' ? leviCanCut : tool === 'excalibur' ? sabCanCut : null;
+  /* 這兩把**碎料是透明的**（v1.239.0，使用者：「它可以點到碎料(不該可以點)」）：點的是要斬的東西，
+     地上的碎料、小人手上搬的、飛在半空的都不算，射線照樣往後找生物、建築或地面（碎料堆後面的猴子也點得到）。
+     還立著的（SET：地標、房子、城牆）才算建築，同火槍兵 v1.232。v1.238 是 useTool 那邊把碎料改判成地面，
+     里維那一把沒有——點碎料他會飛過去砍那一塊 */
+  const debris = canCut ? (k, i) => k === 'block' && !!blocks[i] && blocks[i].st !== SET : null;
+  let hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man' : canCut ? 'levi'
+                                  : tool === 'fire' || tool === 'bucket' ? '' : 'skip', debris));
   /* 兵長砍猴（v1.230）點到砍不了的（天上的飛龍／獅鷲、里維自己、飛在半空的小人、弓箭手與火槍兵）：
      當他是透明的，照其他道具那樣看後面是建築還是地面。Excalibur 同理，生物照她自己那一份認（sabCanCut） */
-  const canCut = tool === 'levi' ? leviCanCut : tool === 'excalibur' ? sabCanCut : null;
   if (hit && canCut &&
       ((hit.kind === 'beast' && !canCut(beastAt(hit.idx))) ||
        (hit.kind === 'worker' && !leviCanCutW(workers[hit.idx]))))
-    hit = fixHit(ENG.pick(x, y, 'skip'));
+    hit = fixHit(ENG.pick(x, y, 'skip', debris));
   if (!hit) return;
   /* 道具泡泡（v1.214）：撿起來就解鎖，跟手上拿哪一把無關，也不會用掉那一發
      ——引擎那邊已經把它排在所有東西前面（見 pick）。 */

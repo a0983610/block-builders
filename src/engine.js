@@ -6633,7 +6633,9 @@ const ENG = (function () {
      第二版補上生物、小人還是透明的（使用者：「兵長點小人無效」）。
      Excalibur（v1.238，使用者：「類似里維 點建築&生物」）也點這一檔 */
   const PICK_LEVI = { gift: 0, block: 1, beast: 1, worker: 1, ground: 2 };
-  function pick(px, py, mode) {
+  /* skip(kind, idx)：規則那邊說「這一個當它是透明的」，射線照樣往後找（v1.239.0：兵長砍猴、Excalibur 點的是
+     要斬的東西，地上的碎料不算——哪一塊是碎料引擎不知道，所以由規則那邊給）。沒給就全部照算 */
+  function pick(px, py, mode, skip) {
     const rankOf = mode === 'man' ? PICK_MAN : mode === 'skip' ? PICK_SKIP
                  : mode === 'levi' ? PICK_LEVI : PICK_RANK;
     ndc.set(px / W * 2 - 1, -(py / H * 2 - 1));
@@ -6656,17 +6658,19 @@ const ENG = (function () {
          hits 是照距離排的，所以「排在最前面」＝ 前面沒有東西擋著。 */
       if (kind === 'gift' && i > 0) continue;
       if (kind === null || rankOf[kind] === undefined || !(rankOf[kind] < rank)) continue;
+      const idx = kind === 'block' ? h.instanceId
+                : kind === 'worker' ? Math.floor(h.instanceId / WPARTS)
+                : kind === 'beast' ? (h.object === sabMesh ? sabAt[Math.floor(h.instanceId / SAB_PARTS)]
+                                      : h.object === levMesh ? levAt[Math.floor(h.instanceId / LEV_SLOT)]
+                                                           : Math.floor(h.instanceId / BEAST_PARTS))
+                /* 泡泡是一整片貼圖網格（不是 instanced）：一顆兩個三角形，
+                   而 giftAt 記著這一幀第幾片畫的是清單裡的第幾顆（見 putGifts）。 */
+                : kind === 'gift' ? giftAt[Math.floor(h.faceIndex / 2)] : -1;
+      if (skip && skip(kind, idx)) continue;
       rank = rankOf[kind];
       best = {
         kind: kind,
-        idx: kind === 'block' ? h.instanceId
-           : kind === 'worker' ? Math.floor(h.instanceId / WPARTS)
-           : kind === 'beast' ? (h.object === sabMesh ? sabAt[Math.floor(h.instanceId / SAB_PARTS)]
-                                 : h.object === levMesh ? levAt[Math.floor(h.instanceId / LEV_SLOT)]
-                                                      : Math.floor(h.instanceId / BEAST_PARTS))
-           /* 泡泡是一整片貼圖網格（不是 instanced）：一顆兩個三角形，
-              而 giftAt 記著這一幀第幾片畫的是清單裡的第幾顆（見 putGifts）。 */
-           : kind === 'gift' ? giftAt[Math.floor(h.faceIndex / 2)] : -1,
+        idx: idx,
         /* dist ＝ 射線飛了多遠才打到。規則那邊要拿它沿著射線往回走
            （水桶就靠這個把出水點退到牆的正確那一側，見 pourWater）。 */
         point: h.point, dir: raycaster.ray.direction.clone(), dist: h.distance
