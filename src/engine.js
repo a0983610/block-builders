@@ -24,7 +24,7 @@ const ENG = (function () {
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
   let starMesh, boltMesh;
-  let emoMesh, emoGeo, emoPos, emoUv;      // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
+  let emoMesh, emoGeo, emoPos, emoUv, emoCol;   // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
   let giftMesh, giftGeo, giftPos, giftUv;  // 掉在地上的道具泡泡（v1.214，見 setGiftIcons／putGifts）
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
      一顆七個部位，全部在同一顆 InstancedMesh 裡。 */
@@ -1279,23 +1279,31 @@ const ENG = (function () {
     const emoTex = new T.CanvasTexture(paintEmoAtlas());
     emoTex.colorSpace = T.SRGBColorSpace;    // 不設的話 canvas 畫的顏色會被當成線性值，整片偏亮
     emoGeo = new T.BufferGeometry();
-    emoPos = new Float32Array(MAXW * 4 * 3);
-    emoUv = new Float32Array(MAXW * 4 * 2);
+    emoPos = new Float32Array(EMO_MAX * 4 * 3);
+    emoUv = new Float32Array(EMO_MAX * 4 * 2);
+    /* 每個角一組 RGBA（v1.237）：RGB 固定是白（不改貼圖的顏色），A 是那一片的透明度——
+       太陽穴那一滴滑到底要淡掉（見 putEmotes）。一顆 mesh 共用一份材質，
+       要一片一片淡就只能掛在頂點上。 */
+    emoCol = new Float32Array(EMO_MAX * 4 * 4).fill(1);
     const emoPosAttr = new T.BufferAttribute(emoPos, 3);
     const emoUvAttr = new T.BufferAttribute(emoUv, 2);
+    const emoColAttr = new T.BufferAttribute(emoCol, 4);
     emoPosAttr.setUsage(T.DynamicDrawUsage);
     emoUvAttr.setUsage(T.DynamicDrawUsage);
+    emoColAttr.setUsage(T.DynamicDrawUsage);
     emoGeo.setAttribute('position', emoPosAttr);
     emoGeo.setAttribute('uv', emoUvAttr);
+    emoGeo.setAttribute('color', emoColAttr);
     const emoIdx = [];
-    for (let i = 0; i < MAXW; i++) {
+    for (let i = 0; i < EMO_MAX; i++) {
       const v = i * 4;
       emoIdx.push(v, v + 3, v + 2, v, v + 2, v + 1);
     }
     emoGeo.setIndex(emoIdx);
     emoGeo.setDrawRange(0, 0);
     emoMesh = new T.Mesh(emoGeo, new T.MeshBasicMaterial({
-      map: emoTex, transparent: true, alphaTest: 0.1, depthWrite: false, side: T.DoubleSide
+      map: emoTex, transparent: true, alphaTest: 0.1, depthWrite: false, side: T.DoubleSide,
+      vertexColors: true
     }));
     emoMesh.frustumCulled = false; emoMesh.visible = false;
     scene.add(emoMesh);
@@ -3369,14 +3377,33 @@ const ENG = (function () {
 
      畫的部分故意只用「平塗的路徑」：這個遊戲整個是平面著色的方塊，貼圖要是帶漸層
      或描邊陰影，那一片會像貼了張別的遊戲的圖。 */
-  const EMO_KINDS = ['bang', 'quest', 'heart', 'anger'];   // 貼圖上的順序，規則那邊用這幾個字
+  /* v1.237 多一種 sweat（累了在喘，💦）。貼圖上再多一格 drop：它不是一種表情，
+     是 sweat 附帶的「太陽穴旁一大滴汗」（見 putEmotes），規則那邊不會拿它當 w.emo。 */
+  const EMO_KINDS = ['bang', 'quest', 'heart', 'anger', 'sweat'];   // 規則那邊用這幾個字
+  const EMO_CELLS = EMO_KINDS.concat(['drop']);                     // 貼圖上的順序
   const EMO_IDX = {};
-  EMO_KINDS.forEach((k, i) => { EMO_IDX[k] = i; });
+  EMO_CELLS.forEach((k, i) => { EMO_IDX[k] = i; });
   const EMO_CELL = 128;              // 貼圖一格幾像素（圖示在畫面上最多四十幾像素，128 夠）
   const EMO_Y = 1.80;                // 圖示底邊的高度（帽頂 1.31、巫師帽尖 1.75）
   const EMO_SIZE = 0.62;             // 那一片有多大（模型單位）。圖只占格子的八成，看起來約 0.5
   const EMO_BOB = 0.03;              // 上下浮多少（跟聊天泡泡一樣會呼吸）
-  const EMO_COL = { bang: '#ffd23c', quest: '#54c7f0', heart: '#ff5f8a', anger: '#e8342a' };
+  const EMO_HAT = 1.31;              // 帽頂：彎腰時圖示跟著它走（v1.237，見 putEmotes）
+  /* 太陽穴那一滴（v1.237）。數字是預覽頁上使用者看過點頭的那一版。 */
+  const DROP_H = 0.92;               // 掛在身體多高（頭的中心是 0.96，略低一點才像太陽穴）
+  const DROP_SIDE = 0.42;            // 往鏡頭右手邊偏多遠（頭半寬 0.25、帽緣半寬 0.32，要閃過帽緣）
+  const DROP_SIZE = 0.36;            // 那一片多大
+  const DROP_SLIDE = 0.24;           // 一輪往下滑多遠
+  const EMO_MAX = MAXW * 2;          // 一個人最多兩片（💦 ＋ 那一滴）
+  const EMO_COL = { bang: '#ffd23c', quest: '#54c7f0', heart: '#ff5f8a', anger: '#e8342a',
+                    sweat: '#6cd2ff', drop: '#6cd2ff' };
+  /* 一顆水滴：圓的那頭圓心在 (x, y)、半徑 r，尖端朝 ang 那個方向拉出去 2.1r（兩條切線收成尖） */
+  function emoTear(g, x, y, r, ang) {
+    const d = 2.1 * r, h = Math.acos(r / d);
+    g.beginPath();
+    g.moveTo(x + Math.cos(ang) * d, y + Math.sin(ang) * d);
+    g.arc(x, y, r, ang + h, ang - h + Math.PI * 2, false);
+    g.closePath(); g.fill();
+  }
   /* 一格一格畫。座標都以「這一格的左上角」為原點，格子是 EMO_CELL 見方，
      圖的實際範圍留在 14～114 之間（四邊各留一成的邊，縮放時才不會被鄰格切到）。 */
   function paintEmo(g, kind, x0) {
@@ -3412,6 +3439,15 @@ const ENG = (function () {
       g.bezierCurveTo(cx - 58, 54, cx - 58, 28, cx - 40, 20);
       g.bezierCurveTo(cx - 26, 14, cx - 8, 22, cx, 40);
       g.fill();
+    } else if (kind === 'sweat') {
+      /* 汗（💦，v1.237）：三顆從頭頂噴出去的水滴，圓頭在外、尖端都指回下面那一點
+         （噴出去的水滴，尾巴拖在後面）。中間那顆大一點；左右兩顆的外緣剛好收在 14～114。 */
+      const ox = cx, oy = 120;
+      [[-2.25, 57, 14], [-Math.PI / 2, 68, 17], [-Math.PI + 2.25, 57, 14]].forEach(([a, d, r]) => {
+        emoTear(g, ox + Math.cos(a) * d, oy + Math.sin(a) * d, r, a + Math.PI);
+      });
+    } else if (kind === 'drop') {
+      emoTear(g, cx, 80, 30, -Math.PI / 2);   // 太陽穴那一大滴：尖端朝上的一顆（v1.237）
     } else {
       /* 生氣：漫畫的怒氣符號（💢）。四道弧圍成一圈、缺口在四個斜角——但**弧是往內凹的**：
          每一道的中間凹向圓心、兩頭往斜角撐出去，整體是一個「角在斜角、邊往內縮」的方框，
@@ -3440,10 +3476,10 @@ const ENG = (function () {
   }
   function paintEmoAtlas() {
     const cv = document.createElement('canvas');
-    cv.width = EMO_CELL * EMO_KINDS.length;
+    cv.width = EMO_CELL * EMO_CELLS.length;
     cv.height = EMO_CELL;
     const g = cv.getContext('2d');
-    for (let i = 0; i < EMO_KINDS.length; i++) paintEmo(g, EMO_KINDS[i], i * EMO_CELL);
+    for (let i = 0; i < EMO_CELLS.length; i++) paintEmo(g, EMO_CELLS[i], i * EMO_CELL);
     return cv;
   }
   /* ── 身體各部位（相對小人原點）────────────────────────────────
@@ -4054,13 +4090,28 @@ const ENG = (function () {
      每一片是四個頂點，位置直接用**鏡頭的右向量與上向量**拼出來——這樣它永遠正對鏡頭，
      連俯角都跟著（十字星光是同一套，只是那邊用四元數轉整個 instance）。
      用鏡頭的**四元數**不是 matrixWorld：矩陣要等 render() 才重算，
-     這裡是 render 之前跑的，拿到的會是上一幀的角度，轉鏡頭時圖示會慢一拍。 */
+     這裡是 render 之前跑的，拿到的會是上一幀的角度，轉鏡頭時圖示會慢一拍。
+     v1.237 起冒汗的人多一片（太陽穴那一滴），所以容量是 EMO_MAX＝兩倍人數。 */
   const EMO_SX = [-1, 1, 1, -1], EMO_SY = [1, 1, -1, -1];   // 左上、右上、右下、左下
+  /* 第 n 片：中心 (x, y, z)、半邊長 hs、貼圖第 cell 格、透明度 alpha */
+  function emoQuad(n, x, y, z, hs, cell, alpha) {
+    const u0 = cell / EMO_CELLS.length, u1 = (cell + 1) / EMO_CELLS.length;
+    const o = n * 12, t = n * 8, q = n * 16;
+    for (let c = 0; c < 4; c++) {
+      const a = EMO_SX[c] * hs, b = EMO_SY[c] * hs;
+      emoPos[o + c * 3] = x + _emoR.x * a + _emoU.x * b;
+      emoPos[o + c * 3 + 1] = y + _emoR.y * a + _emoU.y * b;
+      emoPos[o + c * 3 + 2] = z + _emoR.z * a + _emoU.z * b;
+      emoUv[t + c * 2] = c === 1 || c === 2 ? u1 : u0;
+      emoUv[t + c * 2 + 1] = c < 2 ? 1 : 0;      // canvas 的上緣是 v=1（貼圖預設 flipY）
+      emoCol[q + c * 4 + 3] = alpha;
+    }
+  }
   function putEmotes(list) {
     let n = 0;
     _emoR.set(1, 0, 0).applyQuaternion(camera.quaternion);
     _emoU.set(0, 1, 0).applyQuaternion(camera.quaternion);
-    for (let i = 0; i < list.length && n < MAXW; i++) {
+    for (let i = 0; i < list.length && n < EMO_MAX; i++) {
       const w = list[i];
       const k = w.emoK || 0, cell = EMO_IDX[w.emo];
       /* 身體不是站直的就不畫：圖示是「掛在頭上」的，人躺著、打滾的時候那一片還飄在
@@ -4072,22 +4123,31 @@ const ENG = (function () {
          不是原地放大（半高 = 中心高 − EMO_Y，兩個都乘 k 就永遠對得起來）。
          整組再乘上這個人的身高——矮的人頭上那個圖也該小一點。 */
       const s = w.scale || 1, hs = EMO_SIZE * 0.5 * k * s;
-      const cy = w.y + (EMO_Y + EMO_SIZE * 0.5 * k) * s + Math.sin(w.ph * 2.2) * EMO_BOB * s;
-      const u0 = cell / EMO_KINDS.length, u1 = (cell + 1) / EMO_KINDS.length;
-      const o = n * 12, t = n * 8;
-      for (let c = 0; c < 4; c++) {
-        const a = EMO_SX[c] * hs, b = EMO_SY[c] * hs;
-        emoPos[o + c * 3] = w.x + _emoR.x * a + _emoU.x * b;
-        emoPos[o + c * 3 + 1] = cy + _emoR.y * a + _emoU.y * b;
-        emoPos[o + c * 3 + 2] = w.z + _emoR.z * a + _emoU.z * b;
-        emoUv[t + c * 2] = c === 1 || c === 2 ? u1 : u0;
-        emoUv[t + c * 2 + 1] = c < 2 ? 1 : 0;      // canvas 的上緣是 v=1（貼圖預設 flipY）
+      /* 錨點跟著頭走（v1.237）：身體是繞腳底轉 w.lean 的（putWorker，正＝前傾），
+         彎腰喘的時候帽頂往前挪 EMO_HAT·sin、往下掉 EMO_HAT·(1 − cos)。
+         不跟的話彎 0.5 弧度時圖示會飄在他背後上方 0.63 格。站直時 lean 是 0，跟以前一模一樣。 */
+      const L = w.lean || 0, fx = Math.sin(w.a || 0), fz = Math.cos(w.a || 0);
+      const fw = Math.sin(L) * EMO_HAT * s;
+      const cy = w.y + (EMO_Y - EMO_HAT * (1 - Math.cos(L)) + EMO_SIZE * 0.5 * k) * s +
+                 Math.sin(w.ph * 2.2) * EMO_BOB * s;
+      emoQuad(n++, w.x + fx * fw, cy, w.z + fz * fw, hs, cell, 1);
+      /* 太陽穴旁一大滴汗（v1.237，使用者挑「頭頂 💦 ＋ 太陽穴一大滴」）：掛在頭的
+         **鏡頭右手邊**那一側（哪個角度看都在臉旁，不會轉到頭後面去）。w.swt 是這一輪滑到哪
+         （規則那邊推，見 REST_DROP_T）：前 15% 冒出來、之後一路往下滑，最後 18% 淡掉。
+         大小也乘 emoK，喘完收掉時跟 💦 一起縮回去。 */
+      if (w.emo === 'sweat' && n < EMO_MAX) {
+        const u = w.swt || 0, grow = Math.min(1, u / 0.15);
+        const fh = Math.sin(L) * DROP_H * s;
+        const dy = w.y + (Math.cos(L) * DROP_H + 0.04 - DROP_SLIDE * Math.max(0, (u - 0.15) / 0.85)) * s;
+        emoQuad(n++, w.x + fx * fh + _emoR.x * DROP_SIDE * s, dy + _emoR.y * DROP_SIDE * s,
+                w.z + fz * fh + _emoR.z * DROP_SIDE * s, DROP_SIZE * 0.5 * grow * k * s,
+                EMO_IDX.drop, u > 0.82 ? Math.max(0, (1 - u) / 0.18) : 1);
       }
-      n++;
     }
     emoGeo.setDrawRange(0, n * 6);
     emoGeo.attributes.position.needsUpdate = true;
     emoGeo.attributes.uv.needsUpdate = true;
+    emoGeo.attributes.color.needsUpdate = true;
     emoMesh.visible = n > 0;
   }
 
@@ -6551,7 +6611,7 @@ const ENG = (function () {
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,
     DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
-    MARK_SEG, EMO_KINDS, EMO_Y, EMO_SIZE, MAXDUST, MAXFIRE, WEAP_KIND, WEAP_MAX, GATE_MAX,
+    MARK_SEG, EMO_KINDS, EMO_CELLS, EMO_Y, EMO_SIZE, EMO_HAT, MAXDUST, MAXFIRE, WEAP_KIND, WEAP_MAX, GATE_MAX,
     /* 箭雨（v1.171）：ARROW_K 是箭在造型表裡的索引、BOW_TIP 是箭離開弓的位置
        （同 WAND_TIP／DIG_TIP：畫出來的弓與飛出去的箭要從同一個點對起來）。 */
     ARROW_K, BOW_TIP,

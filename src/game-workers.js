@@ -69,8 +69,9 @@ function newWorker(i) {
     show: '', showT: 0, showA: 0, showN: 0, showM: null, shot: 0,
     danc: 0, flip: 0, stre: 0, twirl: 0, jack: 0, clap: 0, wave: 0, lean: 0, bow: 0, draw: 0,
     /* 做久了停下來喘一口氣（v1.206，見 stepRest）：toil 是連續工作幾秒了、
-       rst 是這一次還要喘幾秒，tire 是畫出來的呼吸深淺（每幀重算）。 */
-    toil: 0, rst: 0, tire: 0,
+       rst 是這一次還要喘幾秒，tire 是畫出來的呼吸深淺（每幀重算），
+       swt 是太陽穴那一滴汗滑到哪 0～1（v1.237，見 REST_DROP_T）。 */
+    toil: 0, rst: 0, tire: 0, swt: 0,
     /* 頭上的表情圖示（v1.121，見 showEmo）：emo 是哪一種（EMO_KINDS 裡的字，''＝沒有）、
        emoT 是還要冒幾秒、emoK 是畫出來的大小 0～1。 */
     emo: '', emoT: 0, emoK: 0,
@@ -1851,15 +1852,15 @@ function updWorker(w, wi, dt) {
      idle 不算（那一幀不是在領下一張工作單，就是根本沒工作可做在閒晃），
      rest 自己更不算。工程師與魔法師走的是上面那兩條 return，本來就數不到這裡。 */
   if (w.st !== 'idle' && w.st !== 'rest') w.toil += dt;
+  /* 做滿了就當場停下來喘（v1.237，見 tireOut）：不管這一刻在做什麼——搬著走、空手去撿、
+     挖到一半、剛丟完、閒著——手上有積木就先放下。v1.206～v1.236 只在 idle 那一刻判，
+     而一般工人進 idle 的那一刻剛丟完最後一塊、站在建築旁邊，所以喘的地方幾乎都貼著牆。
+     唯一要等的是**站的地方走不到**（穿地標的牆進去撿料、人還在牆裡，見 lmReach）：
+     走出來再停，不然人卡在牆裡彎腰、放下的積木也埋在牆裡。
+     轉成 rest 之後下面的 switch 這一幀就跑到 stepRest，姿勢當場擺好，不會先站直一幀。 */
+  if (w.toil >= REST_AT && w.st !== 'rest' && lmReach(w.x, w.z)) tireOut(w);
   switch (w.st) {
     case 'idle': {
-      /* 做久了先喘一口氣再領下一張工作單（v1.206）。判在這裡而不是隨便哪一幀：
-         這一刻手上一定沒貨（上一趟剛丟完），停下來不會把積木擱在半空。 */
-      if (w.toil >= REST_AT) {
-        w.st = 'rest'; w.rst = rr(REST_T[0], REST_T[1]);
-        stepRest(w, dt);              // 這一幀就擺好姿勢，不要先站直一幀再彎下去
-        break;
-      }
       // 肌肉小人一趟只領一塊（v1.112，見 MUS_WIND）
       const short = loadUp(w, wi, w.mus ? 1 : 0);
       if (!w.load.length) {
@@ -1874,7 +1875,7 @@ function updWorker(w, wi, dt) {
       break;
     }
     case 'dig': digSite(w, dt); break;      // 缺料：走幾步挖出來（v1.141）
-    case 'rest': stepRest(w, dt); break;    // 做久了就地喘一口氣（v1.206）
+    case 'rest': stepRest(w, dt); break;    // 做久了當場喘一口氣（v1.206，v1.237 起到點就停）
     case 'pick': {
       // 要撿的那幾塊中途被抽掉，剩下的已經都在手上了：直接回工地
       if (w.li >= w.load.length) { w.li = 0; toSlot(w); break; }
@@ -2522,10 +2523,13 @@ function stepShow(w, dt) {
 /* ── 做久了停下來喘一口氣（v1.206）───────────────────────────
    使用者：「持續工作一陣子後會休息(要有勞累動作 可以先給我看過)」，
    門檻與地點都是他挑的：**連續工作 60 秒 → 就地站著喘 4~6 秒**，不走開、不坐下。
+   姿勢是彎腰撐膝（engine.js 的 w.tire ＋ w.lean），三版預覽給使用者挑過
+   （見 開發筆記〈「累了在喘」三版挑一版〉）。
 
-   接在現成的工作狀態機上，不另開一條路：倒數在「一趟做完回來領下一張工作單」那一刻
-   （case 'idle'）才看，所以停下來的時候手上一定沒貨。姿勢是彎腰撐膝（engine.js 的
-   w.tire ＋ w.lean），三版預覽給使用者挑過（見 開發筆記〈累了在喘：三版挑一版〉）。
+   v1.237 改成**到點就當場停**（見 tireOut 與 updWorker 那一行），頭上冒汗。
+   v1.206～v1.236 是等「一趟做完回來領下一張工作單」那一刻（case 'idle'）才看——
+   使用者：「為什麼小人累了 都在建築旁邊休息」，量下來剛丟完積木就喘的 30 次全在
+   最近一塊已砌積木 2.5 格內（見 開發筆記〈累了當場停、手上的先放下、頭上冒汗〉）。
 
    **會拖慢工期，那是這件事的定義**：一輪 60 ＋ 5 秒裡有 5 秒沒在搬，約 8%。 */
 const REST_AT = 60;                 // 連續工作幾秒就該喘一下
@@ -2534,6 +2538,38 @@ const REST_LEAN = 0.50;             // 彎腰幾弧度（正的＝前傾）
 const REST_BREATH = 0.045;          // 呼吸時腰再上下起伏幾弧度
 const REST_HZ = 5;                  // 呼吸的節拍
 const REST_FLOOR = 0.08;            // 呼吸的下限（理由見 stepRest：0 那一幀姿勢會閃掉）
+/* 放下手上的積木：往他面向的方向送出去，落在腳前（v1.237，使用者挑「往前放在腳前」）。
+   鬆手直直掉（逃命那一套）會落在自己腳底 0.05 格，積木跟人疊在一起；
+   送 2.5 格/秒實測落在腳前 0.9～2.4 格（遠的那個是一疊裡上面那塊），他彎腰撐膝正好對著那幾塊。
+   一疊裡上面那幾塊再多送一點，不然三塊會落回同一點疊成一柱。 */
+const REST_PUT = 2.5;               // 往前送的速度（格/秒）
+const REST_PUT_STEP = 0.6;          // 一疊裡每往上一塊再多送多少
+const REST_DROP_T = 1.5;            // 太陽穴那一滴汗：冒出來、滑下去、淡掉，一輪幾秒（畫法見 engine.js 的 putEmotes）
+/* 累了就停（v1.237）。這一趟作廢：認領放掉、規劃好的路線收掉——走的是 releaseWorker，
+   跟逃命丟下手上東西、換一座收工同一支，所以放下的積木就是一般碎料，**誰近誰撿**
+   （使用者選的；多半是他喘完自己撿回面前這幾塊）。挖到一半那一鏟也作廢，
+   已經挖出來的就躺在那裡，跟 digSite 挖完回 idle 一樣讓 loadUp 照常認領。 */
+function tireOut(w) {
+  const held = [];
+  for (const j of w.load) {
+    const b = blocks[j.b];
+    if (b && b.st === CARRY) held.push(b);
+  }
+  if (w.st === 'dig') { w.dug = 0; w.hdt = 0; }
+  releaseWorker(w);
+  const fx = Math.sin(w.a), fz = Math.cos(w.a);
+  for (let k = 0; k < held.length; k++) {
+    const sp = REST_PUT + REST_PUT_STEP * k;
+    held[k].vx = fx * sp + rr(-0.25, 0.25);
+    held[k].vz = fz * sp + rr(-0.25, 0.25);
+    held[k].vy = 0.6;                         // releaseWorker 給的是 2（往上彈），放下用不著
+  }
+  /* 腳當場站定：v1.206 是從 idle 進來的（人本來就站著），現在可能是走到一半停下來。
+     stepRest 那條每幀收掉 gait 的話，頭幾幀上半身已經彎下去、腳還在擺（e2e 量到 0.49）——
+     跟「進休息那一幀姿勢就擺好」同一個理由（見 開發筆記〈「累了在喘」三版挑一版〉）。 */
+  w.gait = 0;
+  w.st = 'rest'; w.rst = rr(REST_T[0], REST_T[1]); w.swt = 0;
+}
 function stepRest(w, dt) {
   w.rst -= dt;
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
@@ -2543,6 +2579,10 @@ function stepRest(w, dt) {
   const b = REST_FLOOR + (1 - REST_FLOOR) * (Math.sin(w.ph) + 1) / 2;
   w.tire = b;                                 // 手撐在膝上、肩膀跟著起伏（engine）
   w.lean = REST_LEAN + REST_BREATH * b;
+  /* 頭上冒汗（v1.237，使用者挑「頭頂 💦 ＋ 太陽穴一大滴」）：喘多久冒多久。每幀推回
+     倒數（同一種連著觸發不會重彈，見 showEmo），喘完那一刻起 EMO_T.sweat 秒內收掉。 */
+  showEmo(w, 'sweat');
+  w.swt = (w.swt + dt / REST_DROP_T) % 1;
   // 喘完了：連續工作的鐘重新算，回去領下一張工作單
   if (w.rst <= 0) { w.rst = 0; w.toil = 0; w.st = 'idle'; }
 }
@@ -3013,12 +3053,15 @@ function stepFight(w, wi, dt) {
      生氣   anger  ① 跌倒爬起來那一刻（被戳、被掀飛、被水柱打倒，v1.178 起也包含
                       自己走路絆一跤，見 tripWalk）② 聊完天談不攏（stepChat）
                       ③ 打完一場架（v1.178，見 stepFight）
+     汗     sweat  做久了停下來喘的那幾秒（v1.237，見 stepRest）：唯一一種「掛整段」的，
+                      喘多久冒多久；引擎那邊會在太陽穴旁再多畫一大滴往下滑（見 putEmotes）
    v1.131 動了兩處（都是使用者指定）：碰到水不再生氣（見 wetWorker）、
    聊完天不再一律愛心（四分之一是生氣，見 CHAT_MAD）。
 
    冒多久：都是一兩秒。太短來不及看（鏡頭多半沒對著那個人），太長就會一直掛在頭上，
    下一件事發生時反而看不出來是在反應新的那件。 */
-const EMO_T = { bang: 1.6, quest: 1.8, heart: 2.2, anger: 1.8 };
+/* sweat 每幀都被 stepRest 推回來，這個數字只管「喘完之後還掛多久才收」 */
+const EMO_T = { bang: 1.6, quest: 1.8, heart: 2.2, anger: 1.8, sweat: 0.3 };
 const EMO_POP = 9;                  // 冒出來／收回去的快慢（聊天泡泡是 12，圖示慢一點才看得到它長出來）
 /* 冒一個圖示。同一種連著觸發只是把倒數推回去（工作單被抽掉三筆、卡住的那一秒半每幀都在
    喊），不會重新彈一次——重彈的話那個圖會一直停在剛冒出來的大小。 */

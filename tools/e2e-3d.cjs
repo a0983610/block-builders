@@ -5562,13 +5562,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 300; setWorkerCount(8); startBuild(true);
     ENG.cam.shake = 0; ENG.orbit(0, 0);            // 甩掉前面測試留下的震動與鏡頭動畫
-    const KINDS = ENG.EMO_KINDS, geo = ENG.three.emoMesh.geometry;
-    /* 貼圖：一張橫條圖，一格一種表情。這裡把每一格的像素撈出來看
-       ——有沒有畫東西、四格是不是四個顏色。 */
+    const KINDS = ENG.EMO_KINDS, CELLS = ENG.EMO_CELLS, geo = ENG.three.emoMesh.geometry;
+    /* 貼圖：一張橫條圖，一格一種表情（v1.237 起多一格 drop：冒汗時太陽穴那一滴，
+       不是一種表情）。這裡把每一格的像素撈出來看——有沒有畫東西、每種表情是不是各一個顏色。 */
     const cv = ENG.three.emoMesh.material.map.image;
     const cell = cv.height, g2 = cv.getContext('2d');
     const ink = [], hue = [];
-    for (let i = 0; i < KINDS.length; i++) {
+    for (let i = 0; i < CELLS.length; i++) {
       const d = g2.getImageData(i * cell, 0, cell, cell).data;
       let n = 0, r = 0, gg = 0, b = 0;
       for (let j = 0; j < d.length; j += 4) {
@@ -5581,8 +5581,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 擺一個人、看那一片畫在哪裡。回傳的是「相對這個人的腳底、除掉身高」的四個角。 */
     const pose = extra => {
       const w = workers[0];
-      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, tilt: 0, roll: 0,
-                         emo: 'heart', emoT: 1, emoK: 1 }, extra);
+      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, tilt: 0, roll: 0, lean: 0,
+                         emo: 'heart', emoT: 1, emoK: 1, swt: 0 }, extra);
       ENG.putEmotes([w]);
       const n = geo.drawRange.count / 6, p = geo.attributes.position.array;
       const uv = geo.attributes.uv.array, s = w.scale;
@@ -5603,8 +5603,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const none = pose({ emo: '', emoT: 0, emoK: 0 });
     const flat = pose({ tilt: -Math.PI * 0.5 });
     const rolling = pose({ roll: 1, tilt: 0.4 });
-    // 四種表情各自吃貼圖的哪一格（u0 應該是 0、0.25、0.5、0.75）
+    // 每種表情各自吃貼圖的哪一格（u0 應該是 第幾格 ÷ 格數）
     const cells = KINDS.map(k => pose({ emo: k }).u0);
+    /* 彎腰時錨點跟著頭走（v1.237）：朝 +z（a = 0）彎 0.5 弧度，帽頂往前挪 1.31·sin0.5、
+       往下掉 1.31·(1 − cos0.5)，那一片整個跟著平移。 */
+    const ctr = c => ({ y: c.reduce((a, p) => a + p.y, 0) / 4, z: c.reduce((a, p) => a + p.z, 0) / 4 });
+    const up0 = ctr(full.corner), bent = ctr(pose({ lean: 0.5 }).corner);
+    const leanFwd = +(bent.z - up0.z).toFixed(3), leanDown = +(up0.y - bent.y).toFixed(3);
+    /* 冒汗（v1.237）：💦 ＋ 太陽穴那一滴，一個人兩片。第二片吃 drop 那一格、掛在頭的
+       鏡頭右手邊、比帽頂低；滑到最後那一段淡掉（頂點的透明度）。 */
+    const sweat = (() => {
+      const w = workers[0];
+      pose({ emo: 'sweat', swt: 0.5 });
+      const p = geo.attributes.position.array, uv = geo.attributes.uv.array;
+      const col = geo.attributes.color.array;
+      const c = q => { let x = 0, y = 0, z = 0;
+        for (let i = q * 4; i < q * 4 + 4; i++) { x += p[i * 3]; y += p[i * 3 + 1]; z += p[i * 3 + 2]; }
+        return { x: x / 4, y: y / 4, z: z / 4 }; };
+      const d = c(1), R = new THREE.Vector3(1, 0, 0).applyQuaternion(ENG.three.camera.quaternion);
+      const out = { n: geo.drawRange.count / 6, u1: +uv[8].toFixed(4), a1: col[16 + 3],
+                    side: +((d.x - w.x) * R.x + (d.z - w.z) * R.z).toFixed(3),
+                    dropY: +(d.y / (w.scale || 1)).toFixed(3) };
+      pose({ emo: 'sweat', swt: 0.97 });
+      out.fade = +col[16 + 3].toFixed(3);
+      pose({});
+      return out;
+    })();
     /* 正對鏡頭：那一片的法線要跟**鏡頭的正前方**平行（公告板就是這個定義——整片跟
        近平面平行，不是每一片各自朝鏡頭的位置轉；偏離視軸的那幾片才不會歪來歪去）。
        故意連小人自己的朝向一起換——一片掛在頭上的圖，不該跟著人轉。 */
@@ -5627,7 +5651,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 3; i++) { workers[i].emo = 'bang'; workers[i].emoT = 1; workers[i].emoK = 1; }
     ENG.putEmotes(workers);
     const many = ENG.three.emoMesh.geometry.drawRange.count / 6;
-    return { ink, hue, cells, face, many, n: workers.length,
+    return { ink, hue, cells, face, many, n: workers.length, nKinds: KINDS.length, nCells: CELLS.length,
+             cellsWant: KINDS.map((k, i) => +(i / CELLS.length).toFixed(4)),
+             dropU: +(CELLS.indexOf('drop') / CELLS.length).toFixed(4), sweat, leanFwd, leanDown,
+             hat: ENG.EMO_HAT,
              isCanvas: cv.tagName === 'CANVAS', texW: cv.width, texH: cv.height,
              fullN: full.n, noneN: none.n, noneVis: none.vis, flatN: flat.n, rollN: rolling.n,
              fullBox: box(full.corner), halfBox: box(half.corner),
@@ -5636,15 +5663,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 貼圖是**啟動時用 canvas 現畫的**，不是外部檔案：file:// 下外部圖片拿去當 WebGL 貼圖
      會被當成跨來源而失敗（這支遊戲要能雙擊開檔），而且不必多帶一個檔案。
      四格要各自有東西、而且是四個顏色——畫壞成空白格的話，畫面上就是「什麼都沒冒」。 */
-  ok('四種表情圖示畫在同一張程式產生的貼圖上，四格都有圖、顏色各不相同',
-     emoDraw.isCanvas && emoDraw.texW === emoDraw.texH * 4 &&
+  ok('表情圖示畫在同一張程式產生的貼圖上，每一格都有圖、每種表情顏色各不相同',
+     emoDraw.isCanvas && emoDraw.texW === emoDraw.texH * emoDraw.nCells &&
      emoDraw.ink.every(v => v > 0.03 && v < 0.5) &&
-     new Set(emoDraw.hue).size === 4,
+     new Set(emoDraw.hue.slice(0, emoDraw.nKinds)).size === emoDraw.nKinds,
      (emoDraw.isCanvas ? 'canvas ' : '外部圖檔 ') + emoDraw.texW + '×' + emoDraw.texH +
-     '，各格著色比例 ' + emoDraw.ink.join('／') + '；顏色 ' + emoDraw.hue.join(' '));
-  ok('四種表情各自吃貼圖的一格',
-     emoDraw.cells.join(',') === '0,0.25,0.5,0.75',
-     'u 起點 ' + emoDraw.cells.join('、') + '（一格 0.25）');
+     '（' + emoDraw.nKinds + ' 種表情 ＋ ' + (emoDraw.nCells - emoDraw.nKinds) + ' 格附帶），各格著色比例 ' +
+     emoDraw.ink.join('／') + '；顏色 ' + emoDraw.hue.join(' '));
+  ok('每種表情各自吃貼圖的一格',
+     emoDraw.cells.join(',') === emoDraw.cellsWant.join(','),
+     'u 起點 ' + emoDraw.cells.join('、') + '（應為 ' + emoDraw.cellsWant.join('、') + '）');
   /* 一個人最多一片，沒表情的人不占位子；全場都沒表情時整片關掉——
      關掉才是 0 個 draw call，只把 count 設 0 的話那顆 mesh 還是會被送去畫。 */
   ok('一個人一片，沒表情的不畫，全場都沒有就整片關掉',
@@ -5672,6 +5700,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '五組角度：法線與鏡頭正前方的內積 ' + emoDraw.face.join('、') + '（1＝正對）');
   ok('躺著、打滾的時候不畫圖示', emoDraw.flatN === 0 && emoDraw.rollN === 0,
      '躺平 ' + emoDraw.flatN + ' 片、打滾 ' + emoDraw.rollN + ' 片');
+  /* 身體是繞腳底轉 w.lean 的（彎腰喘、伸懶腰），圖示「掛在頭上」就要跟著頭走（v1.237）。 */
+  ok('彎腰時圖示跟著頭走（往前挪、往下掉，跟帽頂同一段弧）',
+     Math.abs(emoDraw.leanFwd - emoDraw.hat * Math.sin(0.5)) < 0.01 &&
+     Math.abs(emoDraw.leanDown - emoDraw.hat * (1 - Math.cos(0.5))) < 0.01,
+     '彎 0.5 弧度：往前 ' + emoDraw.leanFwd + '（應為 ' + (emoDraw.hat * Math.sin(0.5)).toFixed(3) +
+     '）、往下 ' + emoDraw.leanDown + '（應為 ' + (emoDraw.hat * (1 - Math.cos(0.5))).toFixed(3) + '）');
+  ok('冒汗是兩片：頭頂 💦 ＋ 太陽穴旁一大滴（臉的鏡頭右手邊、比帽頂低，滑到底淡掉）',
+     emoDraw.sweat.n === 2 && emoDraw.sweat.u1 === emoDraw.dropU && emoDraw.sweat.side > 0.3 &&
+     emoDraw.sweat.dropY < emoDraw.hat && emoDraw.sweat.a1 === 1 && emoDraw.sweat.fade < 0.5,
+     emoDraw.sweat.n + ' 片；第二片 u 起點 ' + emoDraw.sweat.u1 + '（drop 那一格 ' + emoDraw.dropU +
+     '）、往鏡頭右手邊 ' + emoDraw.sweat.side + '、高 ' + emoDraw.sweat.dropY + '（帽頂 ' + emoDraw.hat +
+     '）；透明度 滑到一半 ' +
+     emoDraw.sweat.a1 + '、滑到 0.97 剩 ' + emoDraw.sweat.fade);
 
   /* 情境：哪一刻冒哪一個。每一條都直接觸發那個入口（不是等它自己碰巧發生），
      這樣紅了就知道是那個掛鉤斷了。 */
@@ -6306,6 +6347,86 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      rest.tireMin + '~' + rest.tireMax);
   ok('工程師與魔法師不休息（他們本來就沒在搬）', rest.engRest === 0,
      '看圖／施法的人進休息 ' + rest.engRest + ' 幀');
+
+  /* ── 累了當場停（v1.237）：不等這一趟做完，手上的先放下 ──
+     使用者：「如果正在搬 就原地把積木放下再喘 順便加個符號(流汗)讓人看出來他在累」。
+     v1.206～v1.236 只在 idle 那一刻判，喘的地方幾乎都貼著建築（見 開發筆記〈累了當場停…〉）。
+     規則型：每一條都是直接把鐘推到門檻，下一幀看結果，不等它自己碰巧發生。 */
+  const tire = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 900; setWorkerCount(6); startBuild(true);
+    const out = {};
+    const can = x => !x.eng && !x.mage && !x.lazy && !x.air && !(x.fall > 0) && !(x.burn > 0) &&
+                     x.st !== 'rest' && lmReach(x.x, x.z);
+    const find = f => {
+      for (let i = 0; i < 600; i++) { const w = workers.find(x => can(x) && f(x)); if (w) return w; step(0.05); }
+      return null;
+    };
+    // ① 搬著走回工地：放下、認領放掉、這一幀就在喘
+    let w = find(x => x.st === 'build' && x.carry && x.load.length);
+    if (w) {
+      const wi = workers.indexOf(w);
+      const ids = w.load.map(j => j.b).filter(b => blocks[b].st === CARRY), slots = w.load.map(j => j.s);
+      const x0 = w.x, z0 = w.z, fx = Math.sin(w.a), fz = Math.cos(w.a);
+      w.toil = REST_AT;
+      step(0.05);
+      const c = out.carry = { st: w.st, load: w.load.length, carry: w.carry, n: ids.length,
+        free: ids.every(b => blocks[b].holder < 0 && (blocks[b].st === FLY || blocks[b].st === FREE)),
+        mine: slots.filter(s => bp.slots[s].claimed === wi).length };
+      /* 落點記「第一次落定」那一刻：落定之後就是一般碎料，別人撿走的話位置就不算數了。
+         看 3 秒（喘最短 4 秒，這段一定還在喘） */
+      const land = ids.map(() => null);
+      let sweat = 0, swt0 = w.swt;
+      for (let i = 0; i < 60; i++) {
+        step(0.05);
+        ids.forEach((b, k) => {
+          const B = blocks[b];
+          if (land[k] === null && B.st === FREE && B.rest)
+            land[k] = +((B.x - w.x) * fx + (B.z - w.z) * fz).toFixed(2);
+        });
+        if (w.st === 'rest' && w.emo === 'sweat' && w.emoK > 0.5) sweat++;
+      }
+      c.land = land; c.moved = +Math.hypot(w.x - x0, w.z - z0).toFixed(3);
+      c.sweat = sweat; c.swtMoved = w.swt !== swt0;
+    }
+    // ② 空手走去撿料：也當場停
+    w = find(x => x.st === 'pick' && !x.carry);
+    if (w) { w.toil = REST_AT; step(0.05); out.pick = { st: w.st, load: w.load.length }; }
+    /* ③ 站的地方走不到（穿地標的牆進去撿料、人還在牆裡）：先不停，走得到的那一刻才停。
+       只押這一個人腳下那一點走不到，別人照常（lmReach 是全域，量完還回去）。 */
+    w = find(x => x.st === 'pick' || x.st === 'build');
+    if (w) {
+      const lm0 = lmReach;
+      lmReach = (x, z) => (x === w.x && z === w.z ? false : lm0(x, z));
+      w.toil = REST_AT;
+      let rested = 0;
+      for (let i = 0; i < 5; i++) { step(0.05); if (w.st === 'rest') rested++; }
+      lmReach = lm0;
+      step(0.05);
+      out.wall = { rested, after: w.st };
+    }
+    return out;
+  });
+  const tc = tire.carry || {};
+  ok('累了當場停：搬到一半就放下、認領放掉，這一幀就在喘（不等這一趟做完）',
+     tc.st === 'rest' && tc.load === 0 && !tc.carry && tc.n > 0 && tc.free && tc.mine === 0,
+     tire.carry ? '狀態 ' + tc.st + '、工作單剩 ' + tc.load + ' 筆、手上 ' + (tc.carry ? '有' : '沒') +
+       '貨；放下 ' + tc.n + ' 塊、都變碎料 ' + tc.free + '、還掛在他名下的格子 ' + tc.mine
+       : '找不到正在搬的人');
+  /* 「腳前」：一塊積木寬 1，落點離他超過半塊才不會跟腳疊在一起；
+     太遠就不是放下是丟出去了（他彎腰撐膝對著的就是面前那一兩格）。 */
+  ok('放下的積木落在腳前（不壓在自己腳底、也不是丟出去），人站著不動',
+     Array.isArray(tc.land) && tc.land.every(v => v !== null && v > 0.5 && v < 3) && tc.moved < 0.01,
+     '落點在他面前 ' + (tc.land || []).join('、') + ' 格；喘的時候移動 ' + tc.moved + ' 格');
+  ok('喘的時候頭上冒汗（💦 ＋ 太陽穴那一滴往下滑）', tc.sweat >= 55 && tc.swtMoved,
+     '3 秒 60 幀裡冒汗 ' + tc.sweat + ' 幀（前幾幀是圖示長出來）、那一滴有在滑 ' + tc.swtMoved);
+  ok('空手走去撿料的路上到點也當場停',
+     tire.pick && tire.pick.st === 'rest' && tire.pick.load === 0,
+     tire.pick ? '狀態 ' + tire.pick.st + '、工作單剩 ' + tire.pick.load + ' 筆' : '找不到空手去撿的人');
+  ok('人在走不到的地方（牆裡）先不停，走得到的那一刻才停',
+     tire.wall && tire.wall.rested === 0 && tire.wall.after === 'rest',
+     tire.wall ? '走不到的 5 幀裡喘了 ' + tire.wall.rested + ' 幀；走得到那一幀 → ' + tire.wall.after
+       : '找不到在上工的人');
 
   /* ══════════ 閒晃事件：小人的家 ══════════ */
   await head('閒晃事件：小人的家', T_MUST);
