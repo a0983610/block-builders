@@ -446,12 +446,13 @@ function afterHit(n, point, R, own, self) {
     const dy = (point.y || 0) - (w.y || 0) - 0.9;     // 衝擊點在他胸口上方多高
     if (Math.hypot(w.x - point.x, dy, w.z - point.z) < R * 1.7 && w.fall <= 0) {
       w.fall = rr(1.1, 2.3); releaseWorker(w); sndFall();
+      lifeHit(w, 'quake');                            // 被打死（v1.240）：這一下算一次
     }
   }
   /* 那幾隻生物同樣被震倒（v1.146）；飛龍被震到就是從天上摔下來（見 crashDragon）。 */
   eachBeastNear(point, R * 1.7, m => {
     if (m.air || m.burn > 0 || m.fall > 0 || m === self) return;   // 正在飛／正在燒／自己打的不用再掀
-    if (fellBeast(m, rr(B_FALL[0], B_FALL[1]))) { sndFall(); beastHit(m); }   // v1.208
+    if (fellBeast(m, rr(B_FALL[0], B_FALL[1]))) { sndFall(); beastHit(m, 'quake'); }   // v1.208
   });
   shakeTrees(point, R);
   markSupportDirty();
@@ -1749,13 +1750,14 @@ function ballShove(o, R) {
   /* 擋在球路上的人被撞開：方向是「球的行進方向 ＋ 從球心往外推」，
      所以正面被撞的往前飛，擦邊的往旁邊彈開。球不會點火，純粹是被推走。 */
   for (const w of workers) {
-    if (w.air) continue;
+    if (w.air || w.dead) continue;                   // dead：屍體不再被打動（v1.240，見 stepCorpse）
     // 高度也要算：球還在半空中飛過頭頂時不該把下面的人撞飛
     const dx = w.x - o.x, dy = o.y - 0.9, dz = w.z - o.z;
     const dd = dx * dx + dy * dy + dz * dz;
     if (dd > (R + 0.8) * (R + 0.8)) continue;
     const d = Math.max(0.4, Math.hypot(dx, dz));
     tossWorker(w, o.vx * 0.6 + dx / d * 6, rr(4, 7), o.vz * 0.6 + dz / d * 6, false);
+    lifeHit(w, 'ball');
   }
   /* 球也撞得動那幾隻（v1.146）。飛龍在天上，球滾不到牠——eachBeastNear 對牠算的是
      三維距離，天上那條線本來就在半徑外。 */
@@ -1763,7 +1765,7 @@ function ballShove(o, R) {
     if (m.air) return;
     const dd = Math.max(0.4, Math.hypot(m.x - o.x, m.z - o.z));
     if (tossBeast(m, o.vx * 0.6 + (m.x - o.x) / dd * 6, rr(4, 7),
-                  o.vz * 0.6 + (m.z - o.z) / dd * 6, false)) beastHit(m);   // v1.208
+                  o.vz * 0.6 + (m.z - o.z) / dd * 6, false)) beastHit(m, 'ball');   // v1.208
   });
 }
 function stepBall(dt) {
@@ -2134,11 +2136,12 @@ function stepTwist(dt) {
        第一次掃到才 tossWorker（把工作脫手、進入飛行），之後每幀只改速度——
        每幀都呼叫的話速度會被歸零，人就黏在漏斗底部原地抖。 */
     for (const p of workers) {
+      if (p.dead) continue;                        // 屍體不捲（v1.240）
       const dx = p.x - w.x, dz = p.z - w.z;
       const d2 = dx * dx + dz * dz;
       if (d2 > R2 || p.y > w.h) continue;
       const d = Math.max(0.5, Math.sqrt(d2));
-      if (!p.air) tossWorker(p, 0, 0, 0, false);
+      if (!p.air) { tossWorker(p, 0, 0, 0, false); lifeHit(p, 'twister'); }
       twSwirl(w, p, dx, dz, d, dt, 1);
     }
     /* 那幾隻也一起被捲上去（v1.146）：同一組力，第一次掃到才 tossBeast。
@@ -2152,7 +2155,7 @@ function stepTwist(dt) {
       const d2 = dx * dx + dz * dz;
       if (d2 > R2 || p.y > w.h) continue;
       const d = Math.max(0.5, Math.sqrt(d2));
-      if (!p.air && tossBeast(p, 0, 0, 0, false)) beastHit(p);   // v1.208
+      if (!p.air && tossBeast(p, 0, 0, 0, false)) beastHit(p, 'twister');   // v1.208
       twSwirl(w, p, dx, dz, d, dt, B_BLOW);        // 大隻的捲得慢一點（同掀飛照體型打折）
     }
     if (n) {
@@ -2231,7 +2234,7 @@ function explode(point, R, power, magic, wind, crash, self, quiet, scorchR) {
      炸在屋頂時地面那一圈人照樣被炸飛。**方向仍然取水平單位向量**：
      人是被往外推，不是被往地裡壓。 */
   for (const w of workers) {
-    if (w.air) continue;
+    if (w.air || w.dead) continue;                             // 屍體不炸飛（v1.240）
     const dx = w.x - point.x, dz = w.z - point.z;
     const dy = (point.y || 0) - (w.y || 0) - 0.9;              // 炸點在他胸口上方多高
     const hd = Math.hypot(dx, dz);                             // 水平距離（只用來決方向）
@@ -2243,6 +2246,7 @@ function explode(point, R, power, magic, wind, crash, self, quiet, scorchR) {
     let nx = dx / ol, nz = dz / ol;
     if (hd < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
     tossWorker(w, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true);
+    lifeHit(w, 'blast');                                       // 落地那一下的點著不再數一次（同 beastHit）
   }
   /* 生物也一起掀（v1.146）。同一條公式，只是力道打個折——牠們比人重一些。 */
   eachBeastNear(point, R, (m, d) => {
@@ -2254,7 +2258,7 @@ function explode(point, R, power, magic, wind, crash, self, quiet, scorchR) {
     let nx = (m.x - point.x) / ol, nz = (m.z - point.z) / ol;
     if (hd < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
     if (tossBeast(m, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true))
-      beastHit(m);                                 // v1.208（落地那一下的點著不再數一次）
+      beastHit(m, 'blast');                        // v1.208（落地那一下的點著不再數一次）
   });
   afterHit(n, point, R, ownN, self);
   /* 還站著的（SET）餘火：半徑放到 1.5 倍去找——衝擊圈內幾乎都被炸飛了，
@@ -3815,7 +3819,7 @@ function fwBurn(x, y, z) {
     const h = 1.5 * (w.scale || 1);                  // 頭頂（同 weaponVsWorker）
     if (y < (w.y || 0) || y > (w.y || 0) + h) continue;
     if ((w.x - x) ** 2 + (w.z - z) ** 2 > FW_MAN_R * FW_MAN_R) continue;
-    if (igniteWorker(w, 0)) return true;
+    if (igniteWorker(w, 0)) { lifeHit(w, 'spark'); return true; }   // igniteWorker 擋掉屍體（v1.240）
   }
   if (beasts) for (const m of beasts) {
     if (m.air || m.burn > 0) continue;
@@ -3825,7 +3829,7 @@ function fwBurn(x, y, z) {
     if (y < lo || y > hi) continue;
     const R = FW_MAN_R + mid * 0.8;
     if ((m.x - x) ** 2 + (m.z - z) ** 2 > R * R) continue;
-    if (igniteBeast(m, 0)) { beastHit(m); return true; }        // v1.208
+    if (igniteBeast(m, 0)) { beastHit(m, 'spark'); return true; }   // v1.208
   }
   return false;
 }
@@ -5061,17 +5065,20 @@ function spawnMark(point, R, crater) {
      （魔法陣照樣留——火球半徑 30、陣心才 12.1，地面在火球裡面。） */
   if (point.y > R) return;
   if (marks.length >= MARK_MAX) marks.shift();
-  /* 輪廓：兩道正弦疊起來，不是每片各抽一個亂數——各抽的話相鄰兩片沒有關聯，
-     邊緣會長出一根一根的尖刺（實測就是一顆海星）。兩道諧波疊出來是圓潤的幾瓣，
-     像燒開的一塊地。次數取整數圈才接得回起點。 */
+  marks.push({ x: point.x, z: point.z, j: markJit(), crater: crater ? 1 : 0, t: MARK_LIFE, a: 1,
+               r: R * (crater ? MARK_CRATER_R : MARK_SCORCH_R) });
+}
+/* 輪廓：兩道正弦疊起來，不是每片各抽一個亂數——各抽的話相鄰兩片沒有關聯，
+   邊緣會長出一根一根的尖刺（實測就是一顆海星）。兩道諧波疊出來是圓潤的幾瓣，
+   像燒開的一塊地。次數取整數圈才接得回起點。血泊（v1.240）也用這一支。 */
+function markJit() {
   const j = [];
   const p1 = rr(0, 6.28), p2 = rr(0, 6.28), h = Math.random() < 0.5 ? 3 : 4;
   for (let i = 0; i < ENG.MARK_SEG; i++) {
     const a = i / ENG.MARK_SEG * Math.PI * 2;
     j.push(1 + MARK_JIT * (Math.sin(a * 2 + p1) * 0.6 + Math.sin(a * h + p2) * 0.4));
   }
-  marks.push({ x: point.x, z: point.z, j, crater: crater ? 1 : 0, t: MARK_LIFE, a: 1,
-               r: R * (crater ? MARK_CRATER_R : MARK_SCORCH_R) });
+  return j;
 }
 function stepMarks(dt) {
   for (let i = marks.length - 1; i >= 0; i--) {
@@ -5082,6 +5089,7 @@ function stepMarks(dt) {
   }
   stepSears(dt);
   stepScorches(dt);
+  stepBloods(dt);                                  // 屍體身下的血泊（v1.240）
 }
 /* ── Excalibur 的燒灼痕（v1.224）──
    使用者：「接觸到的地面也要加上焦黑」→ 看過之後「焦痕再黑一點 可以活久一點(可以中心先深紅色再變黑
@@ -5689,6 +5697,7 @@ function strike(s) {
     if (Math.hypot(w.x - p.x, w.z - p.z) > BOLT_MAN_R) continue;
     if (!igniteWorker(w, 1)) { releaseWorker(w); w.tilt = 0; w.fall = rr(1.1, 2.3); }
     sndFall();
+    lifeHit(w, 'bolt');                       // 屍體在上面那行 fall > 0 就跳掉了（v1.240，見 stepCorpse）
   }
   /* 劈到的生物同理（v1.146）。**飛龍 v1.154 起劈得著火**（igniteBeast 走 burnDragon）：
      牠會拖著火飛一段再摔下來；已經在燒或剛被澆濕的回 false，那就走「只打倒」這條——
@@ -5697,7 +5706,7 @@ function strike(s) {
      這條線上。照三維距離算的話牠飛在 30 格高、雷的判定半徑才 5 格，等於永遠劈不到。 */
   eachBeastNear(p, BOLT_MAN_R, m => {
     if (m.air || m.burn > 0 || m.fall > 0) return;
-    if (igniteBeast(m, 1) || fellBeast(m, rr(B_FALL[0], B_FALL[1]))) beastHit(m);   // v1.208
+    if (igniteBeast(m, 1) || fellBeast(m, rr(B_FALL[0], B_FALL[1]))) beastHit(m, 'bolt');   // v1.208
     sndFall();
   }, true);
   spawnMark(p, BOLT_MARK, false);           // 焦黑不是坑洞：雷是燒不是砸（劈在屋頂就不留）
@@ -5920,10 +5929,11 @@ function ufoSuck(u, dt) {
     if (wasSet) { n++; if (wasOwn) own++; }
   }
   for (const w of workers) {
-    if (w.ufo || w.air) continue;          // 已經在別人光裡／已經飛在半空的不吸
+    if (w.ufo || w.air || w.dead) continue;   // 已經在別人光裡／已經飛在半空的不吸，屍體也不吸（v1.240）
     const rad = ufoRad(u, w.y || 0);
     if ((w.x - u.x) ** 2 + (w.z - u.z) ** 2 > rad * rad) continue;
     tossWorker(w, 0, 0, 0, false);         // 手上的工作先脫手（同被龍捲風捲走）
+    lifeHit(w, 'ufo');
     ufoGrab(u, w, 1);
   }
   if (beasts) for (const m of beasts) {
@@ -5931,7 +5941,7 @@ function ufoSuck(u, dt) {
     if (levBusy(m)) continue;             // 立體機動中的里維、正在氣化的巨人（v1.230，見 levBusy）
     const rad = ufoRad(u, m.y || 0);
     if ((m.x - u.x) ** 2 + (m.z - u.z) ** 2 > rad * rad) continue;
-    if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m);   // v1.208
+    if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'ufo');   // v1.208
     ufoGrab(u, m, 2);
   }
   if (n) { u.hit += n; afterHit(n, { x: u.x, y: u.y, z: u.z }, UFO_R * 0.6, own); }
@@ -6259,15 +6269,16 @@ function holeTake(h) {
     if (wasSet) { n++; if (wasOwn) own++; }
   }
   for (const w of workers) {
-    if (w.ufo || w.air) continue;          // 已經被收走／正飛在半空的不吸（落地還在範圍裡就收）
+    if (w.ufo || w.air || w.dead) continue;   // 已經被收走／正飛在半空的不吸（落地還在範圍裡就收）；屍體不吸（v1.240）
     if ((w.x - h.x) ** 2 + ((w.y || 0) + HOLE_MID[1] - h.y) ** 2 + (w.z - h.z) ** 2 > R2) continue;
     tossWorker(w, 0, 0, 0, false);         // 手上的工作先脫手（同被龍捲風捲走）
+    lifeHit(w, 'hole');
     holeGrab(h, w, 1);
   }
   if (beasts) for (const m of beasts) {
     if (m.ufo || m.sky || levBusy(m)) continue;          // levBusy（v1.230）同幽浮那一條
     if ((m.x - h.x) ** 2 + ((m.y || 0) + HOLE_MID[2] - h.y) ** 2 + (m.z - h.z) ** 2 > R2) continue;
-    if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m);   // v1.208
+    if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'hole');   // v1.208
     holeGrab(h, m, 2);
   }
   if (n) { h.hit += n; afterHit(n, h, 0, own); }
@@ -7201,6 +7212,7 @@ function manWeapon(w, p) {
   const pt = { x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t };
   weaponSpark(pt, w);
   tossWorker(p, w.dx * 16 + rr(-2, 2), rr(5, 8), w.dz * 16 + rr(-2, 2), false);
+  lifeHit(p, 'weapon');                   // 屍體 weaponVsWorker 就挑不到（fall > 0，v1.240）
   weaponBlast(pt, w);
   sndFall();
   fallWeapon(w);
@@ -7762,7 +7774,7 @@ function swordLives(s, aFrom, aTo, om) {
              sp: Math.min(SW_HIT_MAX, om * r * SW_HIT_K) };
   };
   for (const w of workers) {
-    if (w.air) continue;                       // 已經飛在半空的不用再掀一次（同爆炸那邊）
+    if (w.air || w.dead) continue;             // 已經飛在半空的不用再掀一次（同爆炸那邊）；屍體不掀（v1.240）
     const g = swept(w.x, w.y || 0, w.z, 1.5 * (w.scale || 1), GATE_MAN_R);
     if (!g) continue;
     /* 抬升一律往上：斜著往下砍的那一刀切線本身是朝下的，照切線給的話人會被壓進地面
@@ -7770,6 +7782,7 @@ function swordLives(s, aFrom, aTo, om) {
     tossWorker(w, g.tx * g.sp + rr(-1.5, 1.5),
                Math.abs(g.ty * g.sp) * 0.35 + rr(3, 6) + g.sp * 0.1,
                g.tz * g.sp + rr(-1.5, 1.5), false);
+    lifeHit(w, 'blade');
     hit++;
   }
   if (beasts) for (const m of beasts) {
@@ -7781,7 +7794,7 @@ function swordLives(s, aFrom, aTo, om) {
     if (!g) continue;
     if (tossBeast(m, (g.tx * g.sp + rr(-1.5, 1.5)) * B_BLOW,
                   Math.abs(g.ty * g.sp) * 0.35 + rr(3, 6) + g.sp * 0.1,
-                  (g.tz * g.sp + rr(-1.5, 1.5)) * B_BLOW, false)) beastHit(m);   // v1.208
+                  (g.tz * g.sp + rr(-1.5, 1.5)) * B_BLOW, false)) beastHit(m, 'blade');   // v1.208
     hit++;
   }
   if (hit) sndFall();                          // 一幀一聲（afterHit 那邊是一個人一聲）
@@ -8437,7 +8450,8 @@ function stepBeast0(m, dt) {
   /* 被幽浮吸走了（v1.167）：牠這一段完全交給 stepUfo 管（在光裡飄、在艙裡等、
      從天上掉回來），這裡整段跳過。擺在最前面：下面每一條分支都會動到位置。 */
   if (m.ufo) return false;
-  if (m.dead) return stepDie(m, dt);                      // 被里維斬殺的巨人：躺著冒蒸氣、氣化消失（v1.230）
+  /* 被里維斬殺的巨人：躺著冒蒸氣、氣化消失（v1.230）；被打死的牛羊：躺著流血、淡掉（v1.240） */
+  if (m.dead) return m.herd ? stepCarcass(m, dt) : stepDie(m, dt);
   if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   if (m.kind === 'gryphon') return stepGryph(m, dt);      // 飛進來降落再起飛，自己一套（v1.176）
   /* 卡住了就脫困（v1.190.2，使用者：「小人 牛羊 猴子這類盡量同一套走位判定」）。
@@ -9120,10 +9134,11 @@ function excLives(m, g, P, C) {
   const tf = Math.max(0.35, C.dv);                     // 刃前進的方向往前那一份（同 excSweep）
   let hit = 0;
   for (const w of workers) {
-    if (w.air) continue;
+    if (w.air || w.dead) continue;                     // 屍體不掀（v1.240）
     if (!excCross(g, P, C, w.x, (w.y || 0) + 0.9 * (w.scale || 1), w.z, GATE_MAN_R)) continue;
     const sp = rr(EXC_HIT[0], EXC_HIT[1]) * 0.6;
     tossWorker(w, g.fx * tf * sp + rr(-1.5, 1.5), rr(4, 8), g.fz * tf * sp + rr(-1.5, 1.5), true);
+    lifeHit(w, 'excal');
     hit++;
   }
   if (beasts) for (const o of beasts) {
@@ -9132,7 +9147,7 @@ function excLives(m, g, P, C) {
     if (!excCross(g, P, C, o.x, (o.y || 0) + (o.sky ? 0 : mid), o.z, GATE_MAN_R + mid * 0.8)) continue;
     const sp = rr(EXC_HIT[0], EXC_HIT[1]) * 0.6;
     if (tossBeast(o, (g.fx * tf * sp + rr(-1.5, 1.5)) * B_BLOW, rr(4, 8),
-                  (g.fz * tf * sp + rr(-1.5, 1.5)) * B_BLOW, true)) beastHit(o);   // v1.208
+                  (g.fz * tf * sp + rr(-1.5, 1.5)) * B_BLOW, true)) beastHit(o, 'excal');   // v1.208
     hit++;
   }
   if (hit) sndFall();
@@ -9728,17 +9743,18 @@ function levCut(m, C, dt) {
 function levLives(m, C, cutR) {
   const R = cutR + 0.4;
   for (const w of workers) {
-    if (w.air) continue;
+    if (w.air || w.dead) continue;                   // 屍體不甩（v1.240）
     const dx = w.x - C.x, dz = w.z - C.z;
     if (Math.hypot(dx, (w.y || 0) + 0.9 * (w.scale || 1) - C.y, dz) > R) continue;
     const hl = Math.hypot(dx, dz) || 1, sp = rr(LEV_HIT[0], LEV_HIT[1]) * 0.5;
     tossWorker(w, dz / hl * sp, rr(4, 7), -dx / hl * sp, false);
+    lifeHit(w, 'levi');
   }
   if (beasts) for (const o of beasts) {
     if (o === m || o.air || o.sky || levBusy(o)) continue;
     const mid = ENG.BEAST_MID[o.kind] * (o.sc || 1);
     if (Math.hypot(o.x - C.x, (o.y || 0) + mid - C.y, o.z - C.z) > R + mid * 0.8) continue;
-    if (fellBeast(o, rr(2.2, 3.4))) { sndFall(); beastHit(o); }
+    if (fellBeast(o, rr(2.2, 3.4))) { sndFall(); beastHit(o, 'levi'); }
   }
 }
 /* 生物：轉一圈砍中那一刀。巨人斬殺；其餘只會倒地（使用者選的），倒了就算被攻擊（beastHit，見 levLives）。
@@ -9747,13 +9763,14 @@ function levLives(m, C, cutR) {
 function levStrike(m, b, w) {
   if (!levTargetOk(b, w)) return false;
   if (w) {
-    if (b.fall > 0 || b.burn > 0) return false;
+    if (b.fall > 0 || b.burn > 0) return false;      // 屍體也在這裡擋掉（fall 一直是 1，見 stepCorpse）
     b.fall = rr(1.6, 2.8); releaseWorker(b); sndFall(); ENG.shake(0.4);
+    lifeHit(b, 'levi');
     return true;
   }
   ENG.shake(b.kind === 'giant' ? 1.2 : 0.5);
   if (b.kind === 'giant') { giantDie(b); return true; }
-  if (fellBeast(b, rr(2.4, 3.6))) { sndFall(); beastHit(b); return true; }
+  if (fellBeast(b, rr(2.4, 3.6))) { sndFall(); beastHit(b, 'levi'); return true; }
   return false;
 }
 /* 巨人被斬殺（使用者：「巨人會被砍死(倒地 氣化消失)」）：手上在做的全部收掉，交給 stepDie——
@@ -10936,10 +10953,14 @@ function quitDoom(m) {
    用一個旗標而不是多傳一層參數：中間隔著 explode → afterHit → eachBeastNear 三層，
    而要傳的東西只有這一種情況在用。 */
 let hitBy = null;
-/* 道具打中一隻的那一刻。呼叫點見上面那一段的說明。 */
-function beastHit(m) {
+/* 道具打中一隻的那一刻。呼叫點見上面那一段的說明。
+   src＝這一下是什麼打的（v1.240，見 HIT_DMG）：牛羊照它記幾次、記滿 KILL_HITS 就死；
+   吉祥物與天災用不到它（那一套數的是「被打幾下」，不分是什麼打的）。 */
+function beastHit(m, src) {
+  /* 牛羊（v1.240）：沒有「來意」可以改（v1.208），但會被打死——只記一筆，其餘都不吃 */
+  if (m && m.herd) { lifeHit(m, src); return; }
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
-  if (!m || m === hitBy || m.herd || beastLeaving(m) || m.call || m.cq) return;
+  if (!m || m === hitBy || beastLeaving(m) || m.call || m.cq) return;
   /* 里維兵長（v1.230）不會生氣：他只做玩家叫他做的事（吉祥物那一套翻臉、砸地標他都沒有） */
   if (m.kind === 'levi' || m.dead) return;
   /* 動不了手的吉祥物（v1.229，表上的 spent：白猴子丟完香蕉）：照樣會倒，只是不再改主意 */
@@ -10957,6 +10978,119 @@ function beastHit(m) {
   }
   m.hurt = (m.hurt || 0) + 1;
   if (m.hurt >= (m.quit || DOOM_QUIT[1])) quitDoom(m);
+}
+
+/* ── 被打死（v1.240）───────────────────────────────────────
+   使用者：「小人&閒逛動物會被打死(累積3次 先預設所有道具都是打中累積1次 後續可能會調整算多次的)／
+   打死會倒在地上流血(地面一攤血) 然後漸漸消失／消失後從地圖邊界走進一隻新的」。
+   動手前問完的四件事：消失的方式**變淡**；除了玩家的道具，**天災／吉祥物的攻擊、小人閒著射箭射中牛羊**也算
+   （水柱、淹水不算——那是滅火的，同 v1.208 的 beastHit）；**不要冷卻**；被打過的次數**一直累積**、不會恢復。
+   只有小人與牛羊會死（吉祥物、天災是另一套：被打幾下改主意或走人，見 beastHit）。
+
+   **「一次」掛在道具那一條，不掛在 tossWorker／igniteWorker 裡**——理由同 v1.208 的 beastHit：
+   爆炸是先掀飛、落地那一刻才點著，塞在裡面一發炸彈會數成兩次。所以每一個「真的打中了」的呼叫點
+   各叫一次 lifeHit（小人）或 beastHit（牛羊，那一支開頭轉進 lifeHit）。
+   不要冷卻的意思是：**那一下真的把他打倒／打飛／點著了就算**；已經在飛、在燒、躺著的本來就打不動
+   （各呼叫點自己擋著），所以同一發不會連算。
+
+   **第三下的反應照演完才死**：被炸飛的飛完落地、被點著的燒完、被震倒的就地——「該爬起來的那一刻」
+   改成倒地不起（小人見 updWorker 的 stepCorpse，牛羊見 hurtBeast 的 dieHerd）。這樣一條規則蓋掉所有道具，
+   不必一把一把寫死法。死了之後：
+     · 屍體躺 DIE_HOLD 秒、再花 DIE_FADE 秒淡掉（引擎那邊換一顆半透明的網格畫，見 engine 的 FADE_W）。
+     · 身下一攤血，BLOOD_GROW 秒從 BLOOD_R0 漫開到整攤，跟屍體一起淡掉（見 bloods）。
+     · fall 一直是 1、dead 是死了幾秒：fall > 0 那幾道門（聊天、蓋家、偷懶、兵器／雷／戳倒的命中判定）
+       本來就把他當成躺著的人擋掉；牛羊另外有 levBusy（m.dead）擋著所有被打的函式——同被里維斬殺的巨人。
+       剩下那幾個只看 air 的呼叫點各自多擋一個 dead（屍體不再被炸飛、捲走、吸走）。
+     · 淡完了：小人那一格換一個新的人（身分照編號，見 respawnWorker），牛羊從清單拿掉、stepHerd 補一隻；
+       **兩邊都從島的邊上走進來**（edgeSpot）。 */
+const KILL_HITS = 3;                 // 被打幾次會死（使用者：「累積3次」）
+/* 每一種打法算幾次。鍵是呼叫點報上來的名字，**表上沒有的就是 1**（使用者：「先預設所有道具都是
+   打中累積1次」）——之後要讓某一種一下算兩次，在這裡加一行就好，不必回頭改呼叫點。
+   quake 震倒／ball 鐵球／twister 龍捲風／blast 爆炸／spark 煙火／bolt 雷／ufo 幽浮／hole 小黑洞／
+   weapon 王之財寶／blade 大劍／excal Excalibur／levi 兵長／arrow 箭雨／bullet 火槍／torch 火把／
+   poke 手指／play 小人閒著射箭。天災與吉祥物的攻擊走的是同一批呼叫點（香蕉、火球是 blast，巨人那一腳是 quake…）。 */
+const HIT_DMG = {};
+function lifeHit(o, src) {
+  if (!o || o.dead) return;
+  o.hits = (o.hits || 0) + (src in HIT_DMG ? HIT_DMG[src] : 1);
+}
+/* 已經死了，或已經被打滿、正在演最後那一下的反應（飛、燒）。 */
+function slain(o) { return !!o && (o.dead > 0 || (o.hits || 0) >= KILL_HITS); }
+const DIE_HOLD = 4;                  // 倒地之後全濃躺幾秒
+const DIE_FADE = 2;                  // 再花幾秒淡掉（同痕跡的 MARK_FADE：前面一段全濃，看起來才是「在消失」）
+const BLOOD_GROW = 2.2;              // 血從身下漫開要幾秒
+const BLOOD_R0 = 0.25;               // 剛倒下那一刻是整攤的幾成
+/* 這一具這一刻多濃（屍體與血泊共用，兩邊才會一起淡完）。 */
+function corpseAlpha(t) { return t <= DIE_HOLD ? 1 : Math.max(0, 1 - (t - DIE_HOLD) / DIE_FADE); }
+/* 血泊。**自己的鐘**（同痕跡），跟屍體用同一條時間軸——屍體被拿掉、換場、測試清場都不會留下一攤
+   沒人管的血。上限是引擎的 BLOOD_MAX（自己一池，不跟焦黑搶，理由見那邊）；滿了新的那一具就沒有血泊。 */
+const bloods = [];
+function spawnBlood(x, z, R) {
+  if (bloods.length >= ENG.BLOOD_MAX) return null;
+  const o = { x, z, R, r: R * BLOOD_R0, a: 1, t: 0, j: markJit() };
+  bloods.push(o);
+  return o;
+}
+function stepBloods(dt) {
+  for (let i = bloods.length - 1; i >= 0; i--) {
+    const o = bloods[i];
+    o.t += dt;
+    /* 1e-6：屍體那邊的鐘是從 1e-6 起算的（見 dieWorker／dieHerd），兩邊同一個基準，浮點累加才不會讓血泊多拖一幀 */
+    if (o.t >= DIE_HOLD + DIE_FADE - 1e-6) { bloods.splice(i, 1); continue; }
+    const u = Math.min(1, o.t / BLOOD_GROW);
+    o.r = o.R * (BLOOD_R0 + (1 - BLOOD_R0) * (1 - (1 - u) * (1 - u)));   // 先快後慢：剛倒下湧出來最多
+    o.a = corpseAlpha(o.t);
+  }
+}
+/* 島的邊上隨便一點（新的那一個從這裡走進來）。島是方的（見 engine 的 setGroundSize），
+   所以是方框上的一點，往內縮 EDGE_IN 格站在草皮上。 */
+const EDGE_IN = 1.5;
+function edgeSpot() {
+  const h = debrisR + ENG.GROUND_PAD - EDGE_IN, a = Math.random() * Math.PI * 2;
+  const c = Math.cos(a), s = Math.sin(a), k = h / Math.max(Math.abs(c), Math.abs(s));
+  return { x: c * k, z: s * k };
+}
+/* 牛羊那一份。第三下的反應演完（落地、燒完）那一刻 hurtBeast 叫這一支：就地倒下、身下漫一攤血，
+   之後每幀走 stepCarcass（stepBeast0 那條 m.dead）。站著死的（燒完跑圈那種）往哪一邊倒現在才抽。 */
+let herdOwed = 0;                    // 死掉、還沒補回來的幾隻：stepHerd 補的時候從邊上走進來
+function dieHerd(m) {
+  m.dead = 1e-6; m.alpha = 1; m.fall = 1; m.gait = 0; m.pause = 0; m.spook = 0; m.face = 0;
+  if (!m.lie) { lieSide(m); m.lie = lieLift(m); }
+  /* 血漫在身體底下，中心是**身體的重心**倒下去之後落在哪：側躺的那一隻，背朝 −sdir 那一側倒過去
+     （roll ＝ sdir·90° 把「上」轉到牠的 −x）；兩條腿的照仰躺算（往背後倒）。牛羊全是側躺的。 */
+  const g = herdBody(m.kind), sc = m.sc || 1, a = m.a || 0;
+  const ux = m.side ? -m.sdir * Math.cos(a) : -Math.sin(a), uz = m.side ? m.sdir * Math.sin(a) : -Math.cos(a);
+  spawnBlood(m.x + (ux * g.cy + Math.sin(a) * g.cz) * sc, m.z + (uz * g.cy + Math.cos(a) * g.cz) * sc,
+             g.len * sc * BLOOD_BEAST);
+}
+/* 牛羊身下那一攤多大：**身長**的幾成（造型表裡最前到最後那一塊）。不照身高——鹿角讓牠高出一截，
+   照身高算的話鹿那一攤是牛的一倍半（探針量的，見 開發筆記〈被打死〉）。 */
+const BLOOD_BEAST = 0.55;
+/* 一款的身長與重心（模型單位，照造型表算一次就記著）：重心照每一塊的體積加權，cy 是離腳底多高、
+   cz 是離原點往前多少——倒下去之後，cy 那一段變成往背的那一側躺過去的水平距離。 */
+const _herdBody = {};
+function herdBody(kind) {
+  let g = _herdBody[kind];
+  if (g) return g;
+  let lo = 0, hi = 0, v = 0, cy = 0, cz = 0;
+  for (const b of ENG.BEASTS[kind]) {
+    lo = Math.min(lo, b.p[2] - b.s[2] / 2); hi = Math.max(hi, b.p[2] + b.s[2] / 2);
+    const k = b.s[0] * b.s[1] * b.s[2];
+    v += k; cy += b.p[1] * k; cz += b.p[2] * k;
+  }
+  g = _herdBody[kind] = { len: hi - lo, cy: cy / (v || 1), cz: cz / (v || 1) };
+  return g;
+}
+function stepCarcass(m, dt) {
+  m.dead += dt;
+  m.fall = 1; m.gait = 0;
+  const k = Math.min(1, dt * 9);                     // 同 hurtBeast 躺平那一行
+  if (m.side) { m.roll += (lieAng(m) - m.roll) * k; m.lie += (lieLift(m) - m.lie) * k; }
+  else m.spin += (lieAng(m) - m.spin) * k;
+  m.alpha = corpseAlpha(m.dead);
+  if (m.dead < DIE_HOLD + DIE_FADE) return false;
+  herdOwed++;
+  return true;                                       // stepDoom 把牠從清單拿掉
 }
 
 /* ── 閒逛的動物（v1.154 牛羊，v1.182 加鹿與豬）──────────────
@@ -11011,8 +11145,10 @@ let herdN = 0;                       // 這一場養幾隻（第一次叫 stepHe
 /* 放一隻進來。**直接站在場上**（落腳點借 idleSpot 挑，那一支本來就會避開小人的家），
    不像猴子那樣從場外走進來：牠們是這片草地的住戶不是訪客，而且走那麼慢的話
    （最慢的綿羊 1.3），從碎料場外緣走到工地要一分鐘——開場那一分鐘場上一隻動物都沒有。
-   先挑一個站著、再挑一個當第一個目標。 */
-function spawnCattle() {
+   先挑一個站著、再挑一個當第一個目標。
+   edge＝補死掉的那一隻（v1.240，使用者：「消失後從地圖邊界走進一隻新的」）：開場那幾隻照舊直接站在場上，
+   補進來的從島的邊上出現、面向工地，第一個目標照樣是 idleSpot 挑的那一點——走過去那一段就是「走進來」。 */
+function spawnCattle(edge) {
   const kind = HERD_KIND[Math.floor(Math.random() * HERD_KIND.length)];
   const m = {
     kind, x: 0, y: 0, z: 0, a: Math.random() * Math.PI * 2,
@@ -11024,23 +11160,34 @@ function spawnCattle() {
     fun: 1, herd: 1, stay: 0, side: 1, sdir: 1,
     spook: 0,                                      // 中箭爬起來之後還要跑開幾秒（v1.206）
     spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
-    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0
+    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0,
+    /* 被打幾次了、死了幾秒（v1.240，見 lifeHit／dieHerd）。alpha 只有死了才有（引擎看到它就搬去淡掉那一顆畫） */
+    hits: 0, dead: 0
   };
-  idleSpot(m);
-  m.x = m.tx; m.z = m.tz;
-  pushOutHome(m);                                  // 剛好挑在人家屋子裡：推出來
+  if (edge) {
+    const p = edgeSpot();
+    m.x = p.x; m.z = p.z; m.a = Math.atan2(-p.x, -p.z); m.pause = 0;
+  } else {
+    idleSpot(m);
+    m.x = m.tx; m.z = m.tz;
+    pushOutHome(m);                                // 剛好挑在人家屋子裡：推出來
+  }
   idleSpot(m);
   if (!beasts) beasts = [];
   beasts.push(m);
   return m;
 }
 /* 牛羊的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）：場上不足就補一隻進來。
-   平常這一支什麼都不做——牛羊不會走人，所以只有開場那幾幀真的放人。 */
+   平常這一支什麼都不做——牛羊不會走人，所以只有開場那幾幀、與**有一隻被打死淡完之後**（v1.240）才真的放人。
+   死掉的那幾隻淡完之前還在清單上（算在 n 裡），所以是「消失後才走進一隻新的」；補的那一隻從邊上走進來。 */
 function stepHerd(dt) {
   if (!herdN) herdN = Math.round(rr(HERD_N[0], HERD_N[1]));
   let n = 0;
   if (beasts) for (const m of beasts) if (m.herd) n++;
-  if (n < herdN) spawnCattle();
+  if (n < herdN) {
+    spawnCattle(herdOwed > 0);
+    if (herdOwed > 0) herdOwed--;
+  }
 }
 
 /* ── 破壞工具打得到那幾隻（v1.146）────────────────────────
@@ -11268,6 +11415,8 @@ function hurtBeast(m, dt) {
   if (m.wet > 0) m.wet = Math.max(0, m.wet - dt);
   if (m.air) { flyBeast(m, dt); return true; }
   if (m.burn > 0) { burnBeast(m, dt); return true; }
+  /* 被打滿 KILL_HITS 次的牛羊（v1.240）：最後那一下的反應演完了（落地、燒完），躺著的就這樣不起來 */
+  if (m.herd && slain(m)) { dieHerd(m); return true; }
   if (m.fall > 0) {
     /* 躺平就是躺平：兩條腿的往後仰躺（負角）——同小人，往前趴的話臉那幾塊會插進草地裡；
        四條腿的往側邊倒（見 lieAng）。 */
@@ -11323,6 +11472,8 @@ function burnBeast(m, dt) {
   m.burn -= dt;
   burnBeastFx(m, dt);
   if (m.burn <= 0) {                                 // 燒完拍拍灰站起來
+    /* 被打滿那一隻躺著燒完（v1.240）：就這樣躺著死（見 dieHerd），不先站起來再倒下去 */
+    if (m.brl && m.herd && slain(m)) { m.burn = 0; m.brl = 0; m.rph = 0; m.gait = 0; return; }
     m.burn = 0; m.brl = 0; m.spin = 0; m.roll = 0; m.rph = 0; m.gait = 0; m.lie = 0;
     return;
   }
@@ -11686,7 +11837,7 @@ function beastWeapon(w, m) {
   const pt = { x: w.x + w.dx * t, y: Math.max(0.5, w.y + w.dy * t), z: w.z + w.dz * t };
   weaponSpark(pt, w);
   if (tossBeast(m, w.dx * 16 * B_BLOW + rr(-2, 2), rr(5, 8),
-                w.dz * 16 * B_BLOW + rr(-2, 2), false)) beastHit(m);   // v1.208
+                w.dz * 16 * B_BLOW + rr(-2, 2), false)) beastHit(m, 'weapon');   // v1.208
   weaponBlast(pt, w);
   sndFall();
   fallWeapon(w);
@@ -12010,6 +12161,7 @@ function arrowGround(r) {
    也不炸旁邊的積木。 */
 function arrowMan(r, p) {
   tossWorker(p, r.dx * AR_BLOW + rr(-1, 1), rr(3, 6), r.dz * AR_BLOW + rr(-1, 1), false);
+  lifeHit(p, 'arrow');
   sndFall();
 }
 /* 打到動物。**只有一種例外**：小人玩鬧射的那一支打中牛羊時不是掀飛，
@@ -12019,7 +12171,7 @@ function arrowMan(r, p) {
 function arrowBeast(r, m) {
   if (r.play && m.herd) { playHit(r, m); return; }
   if (tossBeast(m, r.dx * AR_BLOW * B_BLOW + rr(-1, 1), rr(3, 6),
-                r.dz * AR_BLOW * B_BLOW + rr(-1, 1), false)) beastHit(m);   // v1.208
+                r.dz * AR_BLOW * B_BLOW + rr(-1, 1), false)) beastHit(m, 'arrow');   // v1.208
   sndFall();
 }
 /* ── 閒著的小人對牛羊射一箭（v1.206）──────────────────────────
@@ -12080,6 +12232,9 @@ function playShot(w, m) {
 function playHit(r, m) {
   if (!fellBeast(m, PLAY_LIE)) return;
   sndFall();
+  /* 也算被打一次（v1.240，使用者勾的「小人閒著射箭射中牛羊」）：小人閒晃久了會慢慢把牛羊射死。
+     第三箭射中的那一隻躺下去就不會再爬起來跑開（見 hurtBeast 的 dieHerd），spook 給了也用不到。 */
+  beastHit(m, 'play');
   m.spook = rr(PLAY_RUN[0], PLAY_RUN[1]);
   const d = Math.hypot(r.dx, r.dz) || 1;
   const ax = m.x + r.dx / d * PLAY_RUN_D, az = m.z + r.dz / d * PLAY_RUN_D;
@@ -12451,12 +12606,13 @@ function bulletBlock(r) {
 /* 打到小人：撞倒（力道沿飛行方向，同箭的 arrowMan）。 */
 function bulletMan(r, p) {
   tossWorker(p, r.dx * MK_BLOW + rr(-1, 1), rr(3, 6), r.dz * MK_BLOW + rr(-1, 1), false);
+  lifeHit(p, 'bullet');
   sndFall();
 }
 /* 打到動物：撞飛（同箭雨的 arrowBeast 不是玩鬧那一支）。 */
 function bulletBeast(r, m) {
   if (tossBeast(m, r.dx * MK_BLOW * B_BLOW + rr(-1, 1), rr(3, 6),
-                r.dz * MK_BLOW * B_BLOW + rr(-1, 1), false)) beastHit(m);
+                r.dz * MK_BLOW * B_BLOW + rr(-1, 1), false)) beastHit(m, 'bullet');
   sndFall();
 }
 /* 火槍隊要畫的那一份（接在弓箭手後面，見 game-ui.js 的 draw）。 */

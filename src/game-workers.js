@@ -119,6 +119,9 @@ function newWorker(i) {
     /* 逃命：flee 是還要逃幾秒，fdel 是還愣著沒起步幾秒，fex/fez 是爆心，
        frem 是還要跑多遠，fdir 是起跑時定好的逃跑方向。 */
     flee: 0, fdel: 0, fex: 0, fez: 0, frem: 0, fdir: 0,
+    /* 被打死（v1.240，見 game-tools.js 的 lifeHit）：hits 是被打幾次了、dead 是死了幾秒。
+       alpha 只有死了才有（引擎看到它就搬去淡掉那一顆畫，見 stepCorpse）。 */
+    hits: 0, dead: 0,
     scale: scale
   };
 }
@@ -359,6 +362,7 @@ function tossWorker(w, vx, vy, vz, lit) {
 /* roll=1 是摔在地上燒（就地打滾），roll=0 是站著被點著（抱頭跑圈圈） */
 function igniteWorker(w, roll) {
   if (w.burn > 0 || w.wet > 0) return false;      // 剛被消防車噴過的點不著
+  if (w.dead) return false;                       // 屍體點不著（v1.240，見 stepCorpse）
   releaseWorker(w);
   w.burn = W_BURN; w.roll = roll ? 1 : 0; w.bem = Math.random(); w.fall = 0; w.flee = 0;
   w.trip = 0;                                     // 燒起來就不是「自己絆的」那一跤了（v1.178）
@@ -466,6 +470,51 @@ function burnMove(w, dt) {
     w.gait = 1;
     w.tilt += (0 - w.tilt) * Math.min(1, dt * 8);
   }
+}
+
+/* ── 被打死（v1.240）───────────────────────────────────────
+   規則、計數、血泊與時間軸在 game-tools.js 那一段（KILL_HITS／lifeHit／bloods／corpseAlpha）；
+   這裡是小人那一份。updWorker 在飛／燒之後看到 slain(w) 就交給 stepCorpse，每幀一次。 */
+const BLOOD_MAN = 0.75;             // 小人身下那一攤多大（身高倍率 scale 的幾倍）
+function stepCorpse(w, wi, dt) {
+  if (!w.dead) dieWorker(w);
+  w.dead += dt;
+  /* fall 一直撐著：聊天、蓋家、偷懶、兵器／雷／戳倒的命中判定都把 fall > 0 的人當成躺著的擋掉
+     （同被里維斬殺的巨人，見 game-tools.js 的 stepDie） */
+  w.fall = 1;
+  w.gait += (0 - w.gait) * Math.min(1, dt * 6);
+  const k = Math.min(1, dt * 9);                     // 同倒地那一行
+  /* 滾著燒完的那一種（roll）：停在最近的那一面（趴著或仰著），不翻回去；其餘的往後仰躺（同被打倒）。 */
+  if (w.roll) w.rspin += (Math.round(w.rspin / Math.PI) * Math.PI - w.rspin) * k;
+  else w.tilt += (-Math.PI * 0.5 - w.tilt) * k;
+  w.alpha = corpseAlpha(w.dead);
+  if (w.dead >= DIE_HOLD + DIE_FADE) respawnWorker(wi);
+}
+function dieWorker(w) {
+  releaseWorker(w);
+  w.dead = 1e-6; w.alpha = 1; w.fall = 1; w.flee = 0; w.trip = 0; w.pause = 0; w.lazy = 0;
+  w.emo = ''; w.emoT = 0; w.emoK = 0;              // 頭上的圖示收掉（同換場那一段）
+  /* 血漫在身體底下：躺平的人頭朝 ±(sin a, cos a) 那一邊——仰躺是往背後倒（tilt −90°），
+     滾著燒完的那一種 tilt 是 +90°（見 burnMove），頭在前面。身體中段離腳底大約 0.6 個身高倍率。 */
+  const s = w.roll ? 1 : -1, sc = w.scale || 1, a = w.a || 0;
+  spawnBlood(w.x + Math.sin(a) * s * 0.6 * sc, w.z + Math.cos(a) * s * 0.6 * sc, BLOOD_MAN * sc);
+}
+/* 淡完了：這一格換一個新的人，從島的邊上走進來（使用者：「消失後從地圖邊界走進一隻新的」）。
+   **換掉整個物件**，不是把欄位一個一個清回去：身上有些欄位是別處用到才長出來的（龍捲風、巡路、射箭那幾段），
+   漏清一個就是一個鬼。身分照編號（工程師 0 號、魔法師、肌肉小人，見 tagEngineer 那三支），所以重新貼一次——
+   死的是工程師，新來的那一個就接著當工程師。從上一個人那裡接過來的只有三件：
+     · own：住的那間家空下來給新來的住。不接的話死一個人村子就多蓋一間（已經有家的人不再蓋，見 v1.109）。
+     · tone：換一組衣服顏色，同一格的新人不要長得跟剛死的那一個一模一樣（色組是 1 或 4 個，見 WCOL）。
+     · 完工之後才進來的不慶祝：同逃命跑完那一行，直接算散場、挑一個閒晃點往裡走。 */
+function respawnWorker(i) {
+  const old = workers[i], w = newWorker(i), p = edgeSpot();
+  w.tone = old.tone + 1 + Math.floor(Math.random() * 3);
+  w.own = old.own;
+  w.x = p.x; w.z = p.z; w.a = Math.atan2(-p.x, -p.z);   // 面向工地
+  w.sx = w.x; w.sz = w.z;                          // 卡住脫困的錨點從這裡起算（見 stuckWatch）
+  workers[i] = w;
+  tagEngineer(); tagMage(); tagMuscle();
+  if (idlePhase()) { w.cheer = CHEER_T + w.cout; idleSpot(w); }
 }
 
 /* ── 派格子 ───────────────────────────────────────────────
@@ -1348,6 +1397,7 @@ const FLEE_REACT = [0.15, 0.55];    // 反應時間。全員同一幀起跑像�
 function alertFlee(point, t) {
   for (const w of workers) {
     if (w.air || w.burn > 0) continue;              // 在飛／在燒的動不了，不用喊
+    if (slain(w)) continue;                         // 死了、或被打滿正要倒下的也不用喊（v1.240）
     startFlee(w, { x: point.x, z: point.z, t });
   }
 }
@@ -1725,7 +1775,10 @@ function updWorker(w, wi, dt) {
     burnFx(w, dt);
     // 燒完就拍拍灰站起來，顏色自己褪回原色
     if (w.burn <= 0) {
-      w.burn = 0; w.roll = 0; w.tilt = 0; w.rspin = 0; w.rph = 0; w.gait = 0; w.st = 'idle';
+      /* 被打滿的那一個在地上滾著燒完（v1.240）：就這樣躺著死（見 stepCorpse），
+         不先站直再倒下去——那一下 tilt 歸零是整個人從躺平瞬間立起來。 */
+      if (w.roll && slain(w)) { w.burn = 0; w.rph = 0; w.gait = 0; }
+      else { w.burn = 0; w.roll = 0; w.tilt = 0; w.rspin = 0; w.rph = 0; w.gait = 0; w.st = 'idle'; }
     }
   }
   if (w.burn > 0 || w.burnK > 0.002) {
@@ -1750,6 +1803,10 @@ function updWorker(w, wi, dt) {
   if (w.lazy && ((w.fall > 0 && !w.trip) || w.roll)) quitLazy(w);
   if (w.air) { flyWorker(w, dt); return; }            // 被吹飛／炸飛：走彈道
   if (w.burn > 0) { burnMove(w, dt); return; }        // 燒起來：打滾或跑圈圈
+  /* 被打死（v1.240）：被打滿 KILL_HITS 次、最後那一下的反應演完了（落地、燒完；被震倒的就是當下）——
+     躺著流血、淡掉、換一個新的人從邊上走進來。擺在飛／燒之後、倒地之前：躺著那幾秒直接接過來，
+     不讓他爬起來那一刻冒個生氣。擺在上面那幾個鐘**之後**：慶祝的鐘照走，全場散場的判定不會被他卡住。 */
+  if (slain(w)) { stepCorpse(w, wi, dt); return; }
 
   if (w.fall > 0) {                                   // 被震倒／被戳倒／自己絆倒（v1.178）
     /* 躺平就是躺平（v1.60）：以前只倒到 0.44π（79°），停在一個「快躺平又還撐著」的

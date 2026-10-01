@@ -280,7 +280,7 @@ function draw() {
   if (dozers) ENG.putDozers(dozRender(dozers));
   ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
   ENG.putPools(water ? poolList() : EMPTY, water ? water.wave : 0);   // 水窪同理
-  ENG.putMarks(marks);                              // 地上的焦黑與坑洞（沒有就 visible=false）
+  ENG.putMarks(marks, bloods);                      // 地上的焦黑與坑洞、屍體身下的血泊（v1.240）（沒有就 visible=false）
   ENG.putSears(sears, scorches);                    // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），同上
   /* 王之財寶（v1.132）：門與兵器是兩份清單——門收掉之後兵器還在飛、還躺在地上慢慢淡，
      所以兩邊各自判斷有沒有東西要畫。 */
@@ -375,17 +375,19 @@ function onUp(e) {
   if (hit.kind === 'gift') { takeGift(hit.idx); return; }
   if (hit.kind === 'worker') {            // 戳小人：跌倒、手上的積木掉下來
     const w = workers[hit.idx];
-    if (!w || w.air) return;
+    /* 屍體（v1.240）畫在 fadeMesh、本來就點不到，這一條是保險 */
+    if (!w || w.air || w.dead) return;
     /* 兵長砍猴（v1.230，使用者：「兵長點小人無效」）：叫里維飛過去砍他——同生物，只會倒地 */
     if (tool === 'levi') { markTool(tool); callLevi(hit.point, hit.dir, w, true); return; }
     // Excalibur（v1.238）：叫 Saber 追著他跑到射程一半斬下去（使用者選「點得到，同里維」）
     if (tool === 'excalibur') { markTool(tool); callSaber(hit.point, w, true); return; }
     // 拿著火把戳人就是點他：站著被點著的會抱頭跑圈圈
-    if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); return; }
+    if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); lifeHit(w, 'torch'); return; }
     // 拿水桶澆人：濕 5 秒（身上有火的當場熄），不會把人打倒
     if (tool === 'bucket') { wetWorker(w); splashFx(w.x, w.y + 1.4, w.z); sndWater(); return; }
     if (w.fall <= 0 && w.burn <= 0) {
       w.fall = rr(1.2, 2.4); releaseWorker(w); sndFall();
+      lifeHit(w, 'poke');                 // 被打死（v1.240）：戳一下也算一次
       stats.poked++; checkBadges();
     }
     return;
@@ -406,9 +408,9 @@ function onUp(e) {
     if (tool === 'fire') {
       /* 戳／點也算「被攻擊」（v1.208，見 game-tools.js 的 beastHit）：吉祥物切換
          要不要動手、天災被打幾次就放棄。 */
-      if (igniteBeast(m, 0)) { sndFire(); beastHit(m); }
-      else if (m.kind === 'dragon') { if (crashDragon(m)) beastHit(m); }
-      else if (m.sky) { if (grDown(m)) beastHit(m); }
+      if (igniteBeast(m, 0)) { sndFire(); beastHit(m, 'torch'); }
+      else if (m.kind === 'dragon') { if (crashDragon(m)) beastHit(m, 'torch'); }
+      else if (m.sky) { if (grDown(m)) beastHit(m, 'torch'); }
       return;
     }
     // 拿水桶澆牠：濕 5 秒（身上有火的當場熄），不會把牠打倒
@@ -418,7 +420,7 @@ function onUp(e) {
       sndWater();
       return;
     }
-    if (fellBeast(m, rr(1.2, 2.4))) { sndFall(); beastHit(m); }   // v1.208
+    if (fellBeast(m, rr(1.2, 2.4))) { sndFall(); beastHit(m, 'poke'); }   // v1.208
     return;
   }
   // 這幾種點空地也算（本來就是「選一個地點」）；其他工具要點到建築

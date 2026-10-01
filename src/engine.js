@@ -98,7 +98,12 @@ const ENG = (function () {
      一塊痕跡是幾個同心圈疊出來的，圈與圈之間鋪一圈四邊形，
      所以頂點上限＝塊數 × 片數 × (圈數−1) × 6。 */
   const MARK_MAX = 24, MARK_SEG = 18, MARK_RING = 5;
-  const MARKV = MARK_MAX * MARK_SEG * (MARK_RING - 1) * 6;
+  /* 血泊（v1.240，被打死的小人與牛羊身下那一攤）：同一顆網格、接在痕跡後面畫，但**自己一份上限**——
+     痕跡那一池小人挖料一秒就好幾塊，混在一起的話屍體還躺著，身下那攤血就先被擠掉了
+     （同 Excalibur 的燒灼痕自己一池的理由，見 game-tools.js 的 SEAR_LIFE）。
+     48＝人數最大那一檔（60 人）一發炸彈炸死一大半也還夠；再多的那幾具就沒有血泊。 */
+  const BLOOD_MAX = 48;
+  const MARKV = (MARK_MAX + BLOOD_MAX) * MARK_SEG * (MARK_RING - 1) * 6;
   /* Excalibur 的燒灼痕（v1.224）：同時最多幾道、一道最多切幾刀（沿著長度）、橫的方向從左緣到右緣幾個點。
      一刀跟下一刀之間每一格鋪兩個三角形，所以頂點上限＝道數 × 刀數 × (點數−1) × 6。 */
   const SEAR_MAX = 3, SEAR_SEC = 100;
@@ -319,6 +324,20 @@ const ENG = (function () {
      「原地慢慢淡掉」，而那邊現成就是「整把化成金光」。 */
   const SWORD_MAX = 3, SWORD_PARTS = 14;
   let swordMesh = null, swordFade = null, swordGlow = null;
+  /* ── 被打死、慢慢淡掉的那幾具（v1.240）──────────────────
+     使用者：「小人&閒逛動物會被打死(累積3次)／打死會倒在地上流血(地面一攤血) 然後漸漸消失」，
+     消失的方式選的是「變淡」（同兵器 v1.132.1，不是縮小）。
+     **自己一顆網格**，不是讓 workerMesh／beastMesh 本身變透明：那兩顆一透明就整顆搬進透明那一趟畫，
+     跟塵霧、火苗搶先後——站在煙前面的人會被煙蓋掉。所以只有屍體搬過來（規則那邊給了 alpha 的那一個，
+     見 putWorker／putBeasts），原本那一格塞全 0 的矩陣；活著的一個位元都沒變。
+     材質與陰影材質**直接借兵器那一份**（weapShader／weapDepth，同大劍）：aCut 填一次「不切」、aGlow 留 0，
+     要的就只有 aFade；陰影淡到 45% 以下整具不投影（理由同兵器）。
+     前段是小人（一具 WPARTS 格、最多 FADE_W 具）、後段是動物（一具 BEAST_PARTS 格、最多 FADE_B 具），
+     每幀從頭排、用到哪畫到哪；**沒有屍體就 visible = false**（沒東西在場就不吃 draw call）。
+     超過上限的那幾具照舊畫在原本那一顆、不淡（直接消失）——60 人那一檔全死在同一幀才碰得到。 */
+  const FADE_W = 60, FADE_B = 24;
+  let fadeMesh = null, fadeAlpha = null;
+  let fadeWn = 0, fadeWUsed = 0, fadeBUsed = 0;   // 這一幀排到第幾具小人／上一幀用到幾具
   /* 造型座標上的幾個高度／寬度。**規則那邊直接讀這幾個**算刃掃到哪（同 DOZ_W 的用意）：
      畫出來的刃跟判定用的扇形必須是同一塊，不然玩家會看到刃掃過去卻有積木沒動。
        PIVOT 樞紐（旋轉圓心）、EDGE 刃根（護手上緣）、HIT 攻擊點、TIP 刃尖、W 刃最寬處
@@ -1487,6 +1506,29 @@ const ENG = (function () {
         swordMesh.setColorAt(i * SWORD_PARTS + k, tmpC.setHex(SWORD_PART[k].c));
     scene.add(swordMesh);
 
+    /* 被打死、慢慢淡掉的那幾具（v1.240，見 FADE_W）：shader 與陰影材質借兵器那一份（同大劍）。
+       顏色每幀照那一具重寫（小人有膚色／衣色、動物有各自的造型表），不是開場寫死。 */
+    const FADE_N = FADE_W * WPARTS + FADE_B * BEAST_PARTS;
+    const fadeGeo = new T.BoxGeometry(1, 1, 1);
+    const fadeCut = new T.InstancedBufferAttribute(new Float32Array(FADE_N * 4), 4);
+    for (let i = 0; i < FADE_N; i++) fadeCut.array[i * 4 + 3] = -1;   // 不切（同大劍）
+    fadeAlpha = new T.InstancedBufferAttribute(new Float32Array(FADE_N), 1);
+    fadeAlpha.setUsage(T.DynamicDrawUsage);
+    fadeGeo.setAttribute('aCut', fadeCut);
+    fadeGeo.setAttribute('aFade', fadeAlpha);
+    fadeGeo.setAttribute('aGlow', new T.InstancedBufferAttribute(new Float32Array(FADE_N), 1));
+    fadeMesh = new T.InstancedMesh(fadeGeo,
+      voxelMaterial({ color: 0xffffff, transparent: true }, weapShader), FADE_N);
+    fadeMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    fadeMesh.castShadow = true;
+    fadeMesh.customDepthMaterial = weapDepth;
+    fadeMesh.count = 0; fadeMesh.frustumCulled = false; fadeMesh.visible = false;
+    /* 開場整池塞 0：InstancedMesh 生出來每一格是單位矩陣（一塊擺在原點的方塊）。
+       後段有動物時前段整段都會被畫到，沒排到的那幾格不能是一塊方塊。 */
+    for (let i = 0; i < FADE_N; i++) fadeMesh.setMatrixAt(i, ZERO_M);
+    fadeMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(fadeMesh);
+
     /* 幽浮（v1.167）。外殼跟投石機同一套：整台的部位塞進一顆 InstancedMesh，
        所以一台跟兩台一樣貴。顏色開場寫一次就好（同大劍，造型只有這一種）。 */
     ufoMesh = new T.InstancedMesh(unit, voxelMaterial({}), UFO_MAX * UFO_PARTS);
@@ -2236,6 +2278,20 @@ const ENG = (function () {
     { r: 0.9, c: 0x6b573d, a: 0.9 },
     { r: 1, c: 0x6b573d, a: 0 }
   ]);
+  /* 血泊（v1.240）：中心最深的暗紅 → 一圈稍亮的鮮紅 → 收邊。**不乘 MARK_INK**——那個旋鈕是
+     「焦黑要淡、別把煙蓋掉」（v1.88.1），血泊淡了就看不出是血，所以自己一個濃度 BLOOD_INK。
+     吃光（同一顆 Lambert 網格）：躺在建築影子裡那一攤會跟著暗下去，不會像一張發光的貼紙。 */
+  const BLOOD_INK = 0.92;
+  const MARK_BLOOD = [
+    { r: 0, c: 0x4a0405, a: 1 },
+    { r: 0.55, c: 0x5c0607, a: 1 },
+    { r: 0.82, c: 0x74100c, a: 0.96 },
+    { r: 0.93, c: 0x6a0c0a, a: 0.7 },
+    { r: 1, c: 0x5a0808, a: 0 }
+  ].map(o => {
+    const c = new T.Color(o.c);
+    return { r: o.r, a: o.a * BLOOD_INK, cr: c.r, cg: c.g, cb: c.b };
+  });
   const MARK_Y = 0.04;              // 離地一點點：貼在 0 會跟草皮頂面搶深度，糊成一片
   /* list 每一項 {x, z, r 半徑, a 濃度 0–1, crater 是不是坑洞,
      j 每一片的半徑倍率（生的時候抽好存著——每幀重抽輪廓會一直抖）}。
@@ -2245,8 +2301,13 @@ const ENG = (function () {
      這一池幾乎一直有東西——實測 12～19 塊在場時（五千到八千多個頂點），每幀重鋪要 0.10～0.16 ms。 */
   const markLast = [], markA = [];
   let markLim = NaN;
-  function putMarks(list) {
+  /* 血泊那一份（v1.240）：跟痕跡同一套快取，只是**半徑會變**（剛死那兩秒在擴散），
+     所以多記一份半徑——變了就要重鋪形狀，不是只改濃淡。 */
+  const bloodLast = [], bloodA = [], bloodR = [];
+  /* pools：血泊清單（v1.240，{x, z, r, a, j} 同痕跡），接在痕跡後面、頂點上限另外算（見 BLOOD_MAX）。 */
+  function putMarks(list, pools) {
     const n = Math.min(list.length, MARK_MAX);
+    const nb = pools ? Math.min(pools.length, BLOOD_MAX) : 0;
     const P = markPos, C = markCol;
     let v = 0;                                     // 已經寫到第幾個頂點
     /* 夾在草皮裡面：痕跡是浮在地面上方 MARK_Y 的一片三角形，超出草皮邊緣的部分
@@ -2254,11 +2315,13 @@ const ENG = (function () {
        之後草地縮小，就會看到）。夾住之後多出來的部分會擠在邊上收成一條直邊，
        看起來就是「燒到邊就沒了」。 */
     const lim = groundHalf - 0.4;
-    let geo = n !== markLast.length || lim !== markLim;
+    let geo = n !== markLast.length || nb !== bloodLast.length || lim !== markLim;
     for (let i = 0; !geo && i < n; i++) if (markLast[i] !== list[i]) geo = true;
+    for (let i = 0; !geo && i < nb; i++) if (bloodLast[i] !== pools[i] || bloodR[i] !== pools[i].r) geo = true;
     if (!geo) {
       let fade = false;
       for (let i = 0; i < n; i++) if (markA[i] !== list[i].a) { fade = true; break; }
+      for (let i = 0; !fade && i < nb; i++) if (bloodA[i] !== pools[i].a) fade = true;
       if (!fade) return;                           // 跟上一次一模一樣：一個頂點都不用動
     }
     const put = (m, ring, ang, jj) => {
@@ -2272,9 +2335,7 @@ const ENG = (function () {
     };
     const putA = (m, ring) => { C[v * 4 + 3] = ring.a * m.a; v++; };   // 只有濃淡在變
     const f = geo ? put : putA;
-    for (let i = 0; i < n; i++) {
-      const m = list[i];
-      const rings = m.crater ? MARK_CRATER : MARK_SCORCH;
+    const one = (m, rings) => {
       for (let s = 0; s < MARK_SEG; s++) {
         const a0 = s / MARK_SEG * Math.PI * 2, a1 = (s + 1) / MARK_SEG * Math.PI * 2;
         const j0 = m.j[s], j1 = m.j[(s + 1) % MARK_SEG];
@@ -2287,12 +2348,19 @@ const ENG = (function () {
           f(m, A, a0, j0); f(m, B, a1, j1); f(m, B, a0, j0);
         }
       }
+    };
+    for (let i = 0; i < n; i++) {
+      const m = list[i];
+      one(m, m.crater ? MARK_CRATER : MARK_SCORCH);
       markA[i] = m.a;
     }
+    for (let i = 0; i < nb; i++) { one(pools[i], MARK_BLOOD); bloodA[i] = pools[i].a; }
     if (geo) {
       markLast.length = n;
       for (let i = 0; i < n; i++) markLast[i] = list[i];
       markA.length = n;
+      bloodLast.length = nb; bloodA.length = nb; bloodR.length = nb;
+      for (let i = 0; i < nb; i++) { bloodLast[i] = pools[i]; bloodR[i] = pools[i].r; }
       markLim = lim;
     }
     markMesh.visible = v > 0;
@@ -3831,6 +3899,14 @@ const ENG = (function () {
         emo 頭上的表情圖示是哪一種（EMO_KINDS 裡的字，空的就是沒有）,emoK 圖示大小 0～1
         ——這兩個是 putEmotes 在用的，putWorker 本身不畫圖示} */
   function putWorker(i, w) {
+    /* 被打死的（v1.240，規則那邊給了 w.alpha）搬到 fadeMesh 畫：原本那一格整格塞 0，
+       這一具排在 fadeMesh 的下一個空位（見 FADE_W）。底下三處寫矩陣／顏色都寫進 M 的 base 起那一格。 */
+    let M = workerMesh, base = i * WPARTS;
+    if (w.alpha !== undefined && fadeWn < FADE_W) {
+      for (let k = 0; k < WPARTS; k++) workerMesh.setMatrixAt(base + k, ZERO_M);
+      M = fadeMesh; base = fadeWn++ * WPARTS;
+      fadeAlpha.array.fill(w.alpha, base, base + WPARTS);
+    }
     const piv = w.roll ? ROLL_PIVOT : 0;
     /* 這一鏟的相位（v1.129）：一鏟的頭尾都是 0（鏟子撬起來）、中間是 1（插到底），
        所以一塊挖完接下一塊時是連續的。手、鏟子、身體前傾三處共用同一個值。 */
@@ -3894,7 +3970,7 @@ const ENG = (function () {
          ——而一個人身上有一半以上的部位是「別人的東西」（58 塊裡一般工人只畫 33 塊）。
          省掉的是那些塊的 compose ＋ 4×4 相乘 ＋ 顏色，只留 16 個 float 的寫入。 */
       if (REQ[k] & ~has) {
-        workerMesh.setMatrixAt(i * WPARTS + k, ZERO_M);
+        M.setMatrixAt(base + k, ZERO_M);
         continue;
       }
       const b = BODY[k];
@@ -4143,7 +4219,7 @@ const ENG = (function () {
       scratchB.position.y -= piv;      // 打滾時整具身體往下挪，旋轉中心才落在身體中段
       scratchB.updateMatrix();
       tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
-      workerMesh.setMatrixAt(i * WPARTS + k, tmpM);
+      M.setMatrixAt(base + k, tmpM);
       /* alt：魔法師身上那一塊改用另一組色（工作服→長袍、腰帶→腰繩、頭髮→白的、
          手套→露出的手，見 BODY 的 alt）。多開一塊的話那一塊對其他人就是
          「看不見卻照樣要算」的成本，換色只是一次比較。 */
@@ -4156,13 +4232,28 @@ const ENG = (function () {
       if (w.burnK) tmpC.lerp(CHAR, w.burnK);
       // wetK：被水噴到之後整個人要乘的倍率（沒濕就不給）。深淺是規則那邊定的，不在這裡寫死
       if (w.wetK) tmpC.multiplyScalar(w.wetK);
-      workerMesh.setColorAt(i * WPARTS + k, tmpC);
+      M.setColorAt(base + k, tmpC);
     }
   }
   function commitWorkers() {
     workerMesh.instanceMatrix.needsUpdate = true;
     if (workerMesh.instanceColor) workerMesh.instanceColor.needsUpdate = true;
     dropSphere(workerMesh);
+    /* 淡掉的那幾具（v1.240）：上一幀排得比這一幀多的那幾格清成 0——後段的動物還在的話，
+       前段整段都會被畫到（count 是照「用到的最後一格」給的，見 fadeCommit）。 */
+    for (let s = fadeWn * WPARTS; s < fadeWUsed * WPARTS; s++) fadeMesh.setMatrixAt(s, ZERO_M);
+    fadeWUsed = fadeWn; fadeWn = 0;
+    fadeCommit();
+  }
+  /* fadeMesh 畫到哪一格：有動物的話畫到後段用到的最後一格，沒有就只畫前段用到的那幾具。 */
+  function fadeCommit() {
+    const n = fadeBUsed ? FADE_W * WPARTS + fadeBUsed * BEAST_PARTS : fadeWUsed * WPARTS;
+    fadeMesh.count = n;
+    fadeMesh.visible = n > 0;
+    if (!n) return;
+    fadeMesh.instanceMatrix.needsUpdate = true;
+    fadeMesh.instanceColor.needsUpdate = true;
+    fadeAlpha.needsUpdate = true;
   }
 
   /* ── 頭上的表情圖示（v1.122）───────────────────────────────
@@ -6142,6 +6233,7 @@ const ENG = (function () {
   function putBeasts(list) {
     const n = Math.min(list.length, MAXBEAST);
     beastMesh.count = n * BEAST_PARTS;
+    let fb = 0;                                // 這一幀排進 fadeMesh 後段的第幾具（v1.240）
     for (let i = 0; i < n; i++) {
       const m = list[i], parts = BEASTS[m.kind];
       /* 沒有造型表的那一種（Saber，v1.222）自己一顆 mesh 畫（見 putSabers）：這一格留空，
@@ -6149,6 +6241,13 @@ const ENG = (function () {
       if (!parts) {
         for (let k = 0; k < BEAST_PARTS; k++) beastMesh.setMatrixAt(i * BEAST_PARTS + k, ZERO_M);
         continue;
+      }
+      /* 被打死的牛羊（v1.240，規則那邊給了 m.alpha）搬到 fadeMesh 後段畫，同 putWorker 那一段 */
+      let M = beastMesh, base = i * BEAST_PARTS;
+      if (m.alpha !== undefined && fb < FADE_B) {
+        for (let k = 0; k < BEAST_PARTS; k++) beastMesh.setMatrixAt(base + k, ZERO_M);
+        M = fadeMesh; base = FADE_W * WPARTS + fb++ * BEAST_PARTS;
+        fadeAlpha.array.fill(m.alpha, base, base + BEAST_PARTS);
       }
       /* 順序跟小人一樣用 YZX：R = Ry(朝向)·Rz(側傾)·Rx(俯仰／翻滾)。
          香蕉飛出去時是繞自己橫軸翻，所以翻滾放 x；飛龍的俯仰也放 x、
@@ -6196,7 +6295,7 @@ const ENG = (function () {
           scratchB.scale.setScalar(0);
           scratchB.updateMatrix();
           tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
-          beastMesh.setMatrixAt(i * BEAST_PARTS + k, tmpM);
+          M.setMatrixAt(base + k, tmpM);
           continue;
         }
         scratchB.position.set(b.p[0], b.p[1], b.p[2]);
@@ -6217,8 +6316,8 @@ const ENG = (function () {
           scratchB.rotation.z = ((b.r ? b.r[2] : 0) + aa) * b.wg;
           scratchB.updateMatrix();
           tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
-          beastMesh.setMatrixAt(i * BEAST_PARTS + k, tmpM);
-          beastMesh.setColorAt(i * BEAST_PARTS + k, tmpC.setHex(b.c));
+          M.setMatrixAt(base + k, tmpM);
+          M.setColorAt(base + k, tmpC.setHex(b.c));
           continue;
         }
         if (b.tl || b.nk) {
@@ -6256,13 +6355,18 @@ const ENG = (function () {
         }
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
-        beastMesh.setMatrixAt(i * BEAST_PARTS + k, tmpM);
-        beastMesh.setColorAt(i * BEAST_PARTS + k, tmpC.setHex(b.c));
+        M.setMatrixAt(base + k, tmpM);
+        M.setColorAt(base + k, tmpC.setHex(b.c));
       }
     }
     beastMesh.instanceMatrix.needsUpdate = true;
     if (beastMesh.instanceColor) beastMesh.instanceColor.needsUpdate = true;
     dropSphere(beastMesh);
+    // 淡掉的那幾具（v1.240）：上一幀排得比這一幀多的那幾格清成 0（同 commitWorkers）
+    const b0 = FADE_W * WPARTS;
+    for (let s = b0 + fb * BEAST_PARTS; s < b0 + fadeBUsed * BEAST_PARTS; s++) fadeMesh.setMatrixAt(s, ZERO_M);
+    fadeBUsed = fb;
+    fadeCommit();
   }
 
   /* ── 樹 ───────────────────────────────────────────── */
@@ -6697,6 +6801,9 @@ const ENG = (function () {
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,
     DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_CELLS, EMO_Y, EMO_SIZE, EMO_HAT, MAXDUST, MAXFIRE, WEAP_KIND, WEAP_MAX, GATE_MAX,
+    /* 被打死（v1.240）：血泊同時最多幾攤、淡掉的屍體最多幾具；GROUND_PAD 是島比碎料圈多出來那一圈
+       （新的那一個從島的邊上走進來，規則那邊照 debrisR ＋ 這個算邊在哪） */
+    BLOOD_MAX, FADE_W, FADE_B, GROUND_PAD,
     /* 箭雨（v1.171）：ARROW_K 是箭在造型表裡的索引、BOW_TIP 是箭離開弓的位置
        （同 WAND_TIP／DIG_TIP：畫出來的弓與飛出去的箭要從同一個點對起來）。 */
     ARROW_K, BOW_TIP,
@@ -6753,6 +6860,6 @@ const ENG = (function () {
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, fadeMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh }; }
   };
 })();

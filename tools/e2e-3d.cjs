@@ -392,6 +392,12 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那幾條自己把它裝回去（見「破壞道具與解鎖」裡的泡泡那一段）。 */
   if (!window.giftRollFn) window.giftRollFn = giftRoll;
   giftRoll = () => 0;
+  /* 被打死（v1.240）也預設關掉。被打的次數一直累積、不會恢復（使用者定的），而這支測試是**同一場遊戲**
+     一段接一段跑下去——開著的話前面幾段炸過、戳過的人到了後面不相干的那一段就一個一個死掉、換人從邊上走進來，
+     量位置、人數、慶祝、事件的條目全部會歪。關的是「記一次」那一支，所以誰都不會被打滿。
+     要測這件事本身的那一段自己裝回去（見「被打死」）。 */
+  if (!window.lifeHitFn) window.lifeHitFn = lifeHit;
+  lifeHit = () => {};
   /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
      清成一般碎料就好，下一次 startBuild 的 reconcilePool 會把多的收掉。 */
   window.clearHomes = () => {
@@ -408,6 +414,7 @@ const installClean = page => page.evaluate(() => {
     /* 挖料的土痕也清掉（v1.100）：它跟炸彈的焦黑、鐵球的坑共用同一份 marks，
        一個村落挖下來滴滴答答幾百塊，留著會被後面〈地面痕跡〉那一段（數 marks 有幾塊）摸到。 */
     marks.length = 0;
+    bloods.length = 0;                     // 屍體身下的血泊（v1.240）同理
   };
   /* 王之財寶從 v1.135 起是兩段點擊（第一下門陣、第二下目標），castGate 也跟著吃兩個點。
      多數測試只在意「朝這個目標開一發」，所以這支照 v1.135 之前的取景擺門陣：
@@ -27213,6 +27220,340 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈破壞工具打得到那幾隻〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 被打死（v1.240）══════════
+     使用者：「小人&閒逛動物會被打死(累積3次 先預設所有道具都是打中累積1次 後續可能會調整算多次的)／
+     打死會倒在地上流血(地面一攤血) 然後漸漸消失／消失後從地圖邊界走進一隻新的」。
+     **全是規則型**：打第幾下直接押 hits、時間軸的期望值照 DIE_HOLD／DIE_FADE／BLOOD_GROW 算，
+     「走進來」量的是離中心變近了多少，不是走得多快。installClean 把 lifeHit 換成空的（理由見那邊），
+     這一段自己裝回去、收尾再拔掉，死掉的那幾格換回一般的新人——不然下一段開場會有人從島邊走進來。 */
+  SEC: { if (!(await head('被打死', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 8 });
+  await page.evaluate(() => { lifeHit = window.lifeHitFn; stepDoom = window.doomStep; });
+  await fillAll(page);
+
+  /* ── 記幾次：一下一次、表上寫了才不是 1、不會恢復、吉祥物不記 ── */
+  const kc = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9;
+    const w = workers[1];
+    w.hits = 0;
+    const seq = [];
+    lifeHit(w, 'poke'); seq.push(w.hits);
+    lifeHit(w, 'blast'); seq.push(w.hits);
+    HIT_DMG.blast = 2; w.hits = 0; lifeHit(w, 'blast'); const two = w.hits; delete HIT_DMG.blast;
+    w.hits = 2;
+    for (let i = 0; i < 600; i++) step(0.05);       // 被打兩下之後放著走 30 秒
+    const keep = w.hits, alive = !w.dead;
+    const m = spawnBeast('ape', 1); m.st = 'fun';
+    beastHit(m, 'poke');
+    const masc = m.hits;
+    beasts = null; w.hits = 0;
+    cleanTools();
+    return { seq, two, keep, alive, masc, K: KILL_HITS, tbl: Object.keys(HIT_DMG).length };
+  });
+  ok('打中一次記一次，表上沒寫的就是 1，寫了幾就記幾（HIT_DMG）',
+     kc.seq.join() === '1,2' && kc.two === 2 && kc.tbl === 0,
+     '戳 → 炸：' + kc.seq.join(' → ') + '；表上暫時給 blast 2 就記 ' + kc.two +
+     '；表上現在 ' + kc.tbl + ' 筆（使用者：「先預設所有道具都是打中累積1次」）');
+  ok('被打過的次數不會恢復，打不滿 KILL_HITS 不會死；吉祥物不記這一筆',
+     kc.keep === 2 && kc.alive && kc.masc === undefined,
+     '被打兩下放著走 30 秒還是 ' + kc.keep + '（門檻 ' + kc.K + '）、還活著；吉祥物 hits ' + kc.masc);
+
+  /* ── 小人一整趟：第三下倒下 → 血漫開 → 淡掉 → 換一個新的從島邊走進來 ── */
+  const kw = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9;
+    const i = 2, w = workers[i];
+    releaseWorker(w); w.x = siteR + 8; w.z = 3; w.a = 0.7; w.fall = 0; w.tilt = 0;
+    w.own = 5;                                        // 假裝他有一間家，看新來的接不接
+    w.hits = 1;
+    w.fall = 1.5; releaseWorker(w); lifeHit(w, 'poke');   // 第二下：躺一下會爬起來
+    let up = false;
+    for (let k = 0; k < 80 && !up; k++) { step(0.05); if (w.fall <= 0 && !w.dead) up = true; }
+    w.fall = 1.5; releaseWorker(w); lifeHit(w, 'poke');   // 第三下
+    const nb0 = bloods.length;
+    step(0.05);
+    const first = { dead: w.dead > 0, fall: w.fall, alpha: w.alpha, blood: bloods.length - nb0 };
+    const pool = bloods[bloods.length - 1];
+    const r0 = pool.r / pool.R;
+    draw();
+    /* 血泊真的畫出來了：接在痕跡後面那一段，顏色是紅的 */
+    const mg = ENG.three.markMesh.geometry, per = ENG.MARK_SEG * 24;
+    const drawn = mg.drawRange.count === (Math.min(marks.length, 24) + bloods.length) * per;
+    const co = Math.min(marks.length, 24) * per * 4, col = mg.attributes.color.array;
+    const red = col[co] > col[co + 1] * 3 && col[co] > col[co + 2] * 3;
+    const H = DIE_HOLD, F = DIE_FADE;
+    let t = 0.05, tFlat = null, tGrown = null, aMid = null, fall1 = true, zeroW = true, fadeOk = true;
+    let born = null, under = null;
+    for (let k = 0; k < 200; k++) {
+      step(0.05); t += 0.05;
+      if (workers[i] !== w) { born = t; break; }
+      draw();
+      if (tFlat === null && Math.abs(w.tilt + Math.PI / 2) < 0.02) tFlat = t;
+      if (tGrown === null && pool.r >= pool.R - 1e-9) tGrown = t;
+      if (w.fall !== 1) fall1 = false;
+      if (aMid === null && w.dead >= H + F / 2) aMid = { a: w.alpha, pa: pool.a };
+      /* 原本那一格整格是 0（點不到、也不畫），fadeMesh 那一格的濃度就是 alpha */
+      const M = ENG.three.workerMesh.instanceMatrix.array;
+      for (let p = 0; p < ENG.WPARTS; p++) {
+        const e = (i * ENG.WPARTS + p) * 16;
+        if (M[e] !== 0 || M[e + 5] !== 0) zeroW = false;
+      }
+      const fm = ENG.three.fadeMesh, fa = fm.geometry.attributes.aFade.array;
+      if (!fm.visible || fm.count < ENG.WPARTS || Math.abs(fa[0] - w.alpha) > 1e-6) fadeOk = false;
+      /* 躺平之後：fadeMesh 畫出來的身體（照每一塊的體積加權）重心跟血泊的中心差多遠 */
+      if (under === null && t >= 1) {
+        const A = fm.instanceMatrix.array;
+        let v = 0, x = 0, z = 0;
+        for (let p = 0; p < ENG.WPARTS; p++) {
+          const e = p * 16;
+          const k3 = Math.hypot(A[e], A[e + 1], A[e + 2]) * Math.hypot(A[e + 4], A[e + 5], A[e + 6]) *
+                     Math.hypot(A[e + 8], A[e + 9], A[e + 10]);
+          v += k3; x += A[e + 12] * k3; z += A[e + 14] * k3;
+        }
+        under = Math.hypot(x / v - pool.x, z / v - pool.z) / pool.R;
+      }
+    }
+    const nw = workers[i];
+    const edge = debrisR + ENG.GROUND_PAD - EDGE_IN;
+    const onEdge = Math.abs(Math.max(Math.abs(nw.x), Math.abs(nw.z)) - edge) < 1e-6;
+    const rA = Math.hypot(nw.x, nw.z);
+    /* 血泊是自己的鐘（stepMarks 那邊）：換人那一幀它可能還剩 alpha 零點零幾，數它晚幾幀收（最多 2 幀） */
+    const poolA = pool.a;
+    let lag = 0;
+    while (bloods.includes(pool) && lag < 10) { step(0.05); lag++; }
+    draw();
+    const fresh = { hits: nw.hits, dead: nw.dead, alpha: nw.alpha, own: nw.own, tone: nw.tone !== w.tone, onEdge,
+                    cheer: cheerOn(nw), lag, poolA, fadeOff: !ENG.three.fadeMesh.visible };
+    for (let k = 0; k < 400; k++) step(0.05);       // 再走 20 秒
+    const rB = Math.hypot(nw.x, nw.z);
+    nw.own = -1;
+    cleanTools();
+    return { up, first, r0, R0: BLOOD_R0, drawn, red, tFlat, tGrown, aMid, fall1, zeroW, fadeOk, born, under,
+             fresh, rA: +rA.toFixed(1), rB: +rB.toFixed(1), edge: +edge.toFixed(1), debrisR: +debrisR.toFixed(1),
+             H, F, G: BLOOD_GROW, R: +pool.R.toFixed(2) };
+  });
+  ok('第二下躺完照舊爬起來，第三下就倒地不起（fall 撐著、alpha 從 1 起算、身下一攤血）',
+     kw.up && kw.first.dead && kw.first.fall === 1 && kw.first.alpha === 1 && kw.first.blood === 1,
+     '第二下爬起來 ' + kw.up + '；第三下：dead ' + kw.first.dead + '、fall ' + kw.first.fall +
+     '、alpha ' + kw.first.alpha + '、血泊多 ' + kw.first.blood + ' 攤');
+  ok('仰躺下去、血從 BLOOD_R0 漫開到整攤、躺滿 DIE_HOLD 秒再花 DIE_FADE 秒淡掉，血跟著一起淡',
+     kw.tFlat !== null && kw.tFlat <= 0.6 && kw.r0 >= kw.R0 - 1e-9 && kw.r0 <= kw.R0 + 0.1 &&
+     Math.abs(kw.tGrown - kw.G) <= 0.11 && kw.fall1 &&
+     Math.abs(kw.aMid.a - 0.5) <= 0.03 && Math.abs(kw.aMid.pa - kw.aMid.a) <= 0.03 &&
+     Math.abs(kw.born - (kw.H + kw.F)) <= 0.06,
+     '躺平 ' + kw.tFlat.toFixed(2) + ' 秒；血 ' + kw.r0.toFixed(2) + ' 成起算、' + kw.tGrown.toFixed(2) +
+     ' 秒漫到整攤 ' + kw.R + ' 格（BLOOD_GROW ' + kw.G + '）；淡到一半 alpha ' + kw.aMid.a.toFixed(2) +
+     '、血 ' + kw.aMid.pa.toFixed(2) + '；' + kw.born.toFixed(2) + ' 秒換人（' + kw.H + ' ＋ ' + kw.F + '）');
+  ok('屍體搬到 fadeMesh 畫（原本那一格整格是 0），血泊接在痕跡後面畫、是紅的、中心在身體底下',
+     kw.zeroW && kw.fadeOk && kw.drawn && kw.red && kw.under < 0.35,
+     '原本那一格全 0 ' + kw.zeroW + '、fadeMesh 濃度＝alpha ' + kw.fadeOk + '、頂點數對 ' + kw.drawn +
+     '、紅的 ' + kw.red + '、身體重心離血泊中心 ' + kw.under.toFixed(2) + ' 個半徑');
+  ok('淡完換一個新的人：從島的邊上出現、走進來，接住那間家、換一組衣服、不跟著慶祝',
+     kw.fresh.hits === 0 && kw.fresh.dead === 0 && kw.fresh.alpha === undefined && kw.fresh.onEdge &&
+     kw.fresh.own === 5 && kw.fresh.tone && !kw.fresh.cheer && kw.fresh.lag <= 2 && kw.fresh.poolA <= 0.05 &&
+     kw.fresh.fadeOff && kw.rB < kw.debrisR && kw.rB < kw.rA - 20,
+     '出現在離中心 ' + kw.rA + '（島邊 ' + kw.edge + '，方的）、20 秒後 ' + kw.rB + '（碎料圈 ' + kw.debrisR +
+     '）；hits ' + kw.fresh.hits + '、家 ' + kw.fresh.own + '、換色 ' + kw.fresh.tone + '、慶祝 ' + kw.fresh.cheer +
+     '；血泊換人那一幀剩 ' + kw.fresh.poolA.toFixed(3) + '、晚 ' + kw.fresh.lag + ' 幀收、fadeMesh 收掉 ' + kw.fresh.fadeOff);
+
+  /* ── 最後那一下的反應照演完才死：飛完落地、燒完才倒，滾著燒的不先站起來 ── */
+  const kl = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9;
+    const run = (i, fn) => {
+      const w = workers[i];
+      releaseWorker(w); w.x = siteR + 8 + i * 2.5; w.z = -6; w.fall = 0; w.tilt = 0; w.hits = KILL_HITS - 1;
+      fn(w);
+      const o = { airDead: 0, burnDead: 0, jump: 0, minTilt: 9, rs: null, deadAt: null, landed: null, burnEnd: null };
+      let t = 0, last = w.tilt;
+      for (let k = 0; k < 140 && workers[i] === w; k++) {
+        const wa = w.air, wb = w.burn > 0;
+        step(0.05); t += 0.05;
+        if (w.air && w.dead) o.airDead++;
+        if (w.burn > 0 && w.dead) o.burnDead++;
+        if (wa && !w.air && o.landed === null) o.landed = t;
+        if (wb && !(w.burn > 0) && o.burnEnd === null) o.burnEnd = t;
+        if (w.dead && o.deadAt === null) o.deadAt = t;
+        if (w.dead) { o.jump = Math.max(o.jump, Math.abs(w.tilt - last)); o.minTilt = Math.min(o.minTilt, w.tilt); o.rs = w.rspin; }
+        last = w.tilt;
+        if (w.dead > 1) break;
+      }
+      o.tilt = w.tilt;
+      return o;
+    };
+    const toss = run(3, w => { tossWorker(w, 2, 7, 0, false); lifeHit(w, 'blast'); });
+    const stand = run(4, w => { igniteWorker(w, false); lifeHit(w, 'torch'); });
+    const roll = run(6, w => { igniteWorker(w, true); lifeHit(w, 'bolt'); });
+    cleanTools();
+    return { toss, stand, roll, ease: Math.PI / 2 * Math.min(1, 0.05 * 9) };
+  });
+  ok('被炸飛的第三下：飛完落地那一刻才死（半空中不死）',
+     kl.toss.airDead === 0 && kl.toss.landed !== null && kl.toss.deadAt - kl.toss.landed <= 0.051 &&
+     Math.abs(kl.toss.tilt + Math.PI / 2) < 0.02,
+     '落地 ' + (kl.toss.landed || 0).toFixed(2) + ' 秒、死 ' + (kl.toss.deadAt || 0).toFixed(2) + ' 秒、半空中死了 ' +
+     kl.toss.airDead + ' 幀');
+  ok('站著被點著的第三下：跑完圈、火滅那一刻才往後倒（漸漸倒下，不是一幀躺平）',
+     kl.stand.burnDead === 0 && kl.stand.deadAt !== null && Math.abs(kl.stand.deadAt - kl.stand.burnEnd) <= 0.051 &&
+     kl.stand.jump <= kl.ease + 1e-6 && Math.abs(kl.stand.tilt + Math.PI / 2) < 0.02,
+     '火滅 ' + (kl.stand.burnEnd || 0).toFixed(2) + ' 秒、死 ' + (kl.stand.deadAt || 0).toFixed(2) +
+     ' 秒；倒下時一幀最多轉 ' + kl.stand.jump.toFixed(3) + '（倒地那一套一幀 ' + kl.ease.toFixed(3) + '）');
+  ok('在地上滾著燒的第三下：燒完就這樣躺著，不先站直再倒下去，停在趴著或仰著那一面',
+     kl.roll.burnDead === 0 && kl.roll.deadAt !== null && kl.roll.minTilt >= Math.PI / 2 - 1e-6 &&
+     Math.abs(kl.roll.rs - Math.round(kl.roll.rs / Math.PI) * Math.PI) < 0.02,
+     '死了之後躺平角最小 ' + kl.roll.minTilt.toFixed(3) + '（站直是 0）、滾的角停在 ' + kl.roll.rs.toFixed(3));
+
+  /* ── 一發炸彈只記一次（落地那一下的點著不再記），屍體什麼都打不動 ── */
+  const ki = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9;
+    const w = workers[7];
+    releaseWorker(w); w.x = siteR + 12; w.z = 12; w.fall = 0; w.tilt = 0; w.hits = 0;
+    explode({ x: w.x, y: 0.5, z: w.z }, 5, 14);
+    const h0 = w.hits, air0 = w.air;
+    let burned = false;
+    for (let k = 0; k < 160; k++) { step(0.05); if (w.burn > 0) burned = true; }
+    const once = w.hits;
+    w.hits = KILL_HITS;
+    for (let k = 0; k < 4; k++) step(0.05);         // 進到 stepCorpse
+    const x0 = w.x, z0 = w.z, h1 = w.hits;
+    explode({ x: w.x, y: 0.5, z: w.z }, 5, 14);
+    const air1 = w.air;
+    const ign = igniteWorker(w, false);
+    const wv = weaponVsWorker({ x: w.x, y: 0.9, z: w.z, dx: 0, dy: 0, dz: 0, len: 0 }, w.x, 0.9, w.z) === w;
+    alertFlee({ x: w.x + 5, z: w.z }, 2);
+    ballShove({ x: w.x, y: 0.9, z: w.z, vx: 0, vz: 0 }, 2);
+    step(0.05);
+    const imm = { air: air1 || w.air, moved: Math.hypot(w.x - x0, w.z - z0), ign, wv, flee: w.flee, more: w.hits - h1 };
+    cleanTools();
+    return { h0, air0, burned, once, imm };
+  });
+  ok('一發炸彈只記一次：炸飛那一下記、落地被點著那一下不再記（同 v1.208 的 beastHit）',
+     ki.h0 === 1 && ki.air0 && ki.burned && ki.once === 1,
+     '炸到那一刻 ' + ki.h0 + '（在飛 ' + !!ki.air0 + '），落地燒完 ' + ki.once + '（燒過 ' + ki.burned + '）');
+  ok('屍體打不動：炸不飛、點不著、兵器挑不到、不會被喊去逃命、鐵球撞不開、不再記次',
+     !ki.imm.air && ki.imm.moved < 1e-9 && !ki.imm.ign && !ki.imm.wv && !ki.imm.flee && ki.imm.more === 0,
+     '炸完在飛 ' + !!ki.imm.air + '、挪了 ' + ki.imm.moved.toFixed(3) + '、點著 ' + ki.imm.ign + '、兵器挑到 ' +
+     ki.imm.wv + '、逃命 ' + ki.imm.flee + '、多記 ' + ki.imm.more);
+
+  /* ── 身分照編號：死的是工程師，新來的接著當工程師（魔法師同理） ── */
+  const kid = await page.evaluate(() => {
+    const out = {};
+    for (const i of [0, MAGE_AT]) {
+      const old = workers[i];
+      respawnWorker(i);
+      const w = workers[i];
+      out[i] = { neu: w !== old, eng: w.eng, mage: w.mage, was: old.eng + '/' + old.mage };
+    }
+    for (const i of [0, MAGE_AT]) { const w = workers[i]; w.x = siteR + 4; w.z = 0; }   // 擺回工地邊，下面幾條不等他走進來
+    return { out, mage: MAGE_AT };
+  });
+  ok('換人照編號貼身分：工程師那一格換上來的還是工程師，魔法師那一格還是魔法師',
+     kid.out[0].neu && kid.out[0].eng === 1 && kid.out[kid.mage].neu && kid.out[kid.mage].mage === 1,
+     '0 號 eng ' + kid.out[0].eng + '（原本 ' + kid.out[0].was + '）、' + kid.mage + ' 號 mage ' +
+     kid.out[kid.mage].mage + '（原本 ' + kid.out[kid.mage].was + '）');
+
+  /* ── 牛羊一整趟：第三下倒地不起、淡完才補、補的那一隻從島邊走進來；燒完才倒；小人射箭也算 ── */
+  const kh = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9;
+    stepHerd = window.herdStep; herdN = 0; herdOwed = 0;
+    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    const n0 = beasts.filter(o => o.herd).length;
+    const m = beasts.find(o => o.herd);
+    m.pause = 99; m.hits = KILL_HITS - 1;
+    const fell = fellBeast(m, 1.5);
+    beastHit(m, 'poke');
+    const nb0 = bloods.length;
+    step(0.05);
+    const first = { dead: m.dead > 0, fall: m.fall, busy: levBusy(m), blood: bloods.length - nb0 };
+    const pool = bloods[bloods.length - 1];
+    let gone = null, t = 0.05, flat = null, early = false, aMid = null, imm = null, under = null;
+    for (let k = 0; k < 200; k++) {
+      step(0.05); t += 0.05;
+      if (!beasts.includes(m)) { gone = t; break; }
+      if (beasts.filter(o => o.herd).length !== n0) early = true;   // 淡完之前不補
+      if (flat === null && Math.abs(m.roll - lieAng(m)) < 0.02) flat = t;
+      if (aMid === null && m.dead >= DIE_HOLD + DIE_FADE / 2) aMid = m.alpha;
+      if (k === 20) {
+        imm = !tossBeast(m, 2, 6, 0, true) && !fellBeast(m, 1) && !igniteBeast(m, 0) && !m.air;
+        draw();
+        /* fadeMesh 後段畫出來的身體重心離血泊中心多遠（同小人那一條） */
+        const A = ENG.three.fadeMesh.instanceMatrix.array, b0 = ENG.FADE_W * ENG.WPARTS;
+        let v = 0, x = 0, z = 0;
+        for (let p = 0; p < ENG.BEAST_PARTS; p++) {
+          const e = (b0 + p) * 16;
+          const k3 = Math.hypot(A[e], A[e + 1], A[e + 2]) * Math.hypot(A[e + 4], A[e + 5], A[e + 6]) *
+                     Math.hypot(A[e + 8], A[e + 9], A[e + 10]);
+          v += k3; x += A[e + 12] * k3; z += A[e + 14] * k3;
+        }
+        under = Math.hypot(x / v - pool.x, z / v - pool.z) / pool.R;
+      }
+    }
+    const herd = beasts.filter(o => o.herd), nw = herd[herd.length - 1];
+    const edge = debrisR + ENG.GROUND_PAD - EDGE_IN;
+    const back = { n1: herd.length, owed: herdOwed, neu: nw !== m && !nw.dead && nw.hits === 0,
+                   onEdge: Math.abs(Math.max(Math.abs(nw.x), Math.abs(nw.z)) - edge) < 1e-6,
+                   inward: Math.hypot(nw.tx, nw.tz) < debrisR + 1e-6 };
+    /* 站著被點著的：燒完才倒 */
+    const s = herd[0];
+    s.pause = 99; s.hits = KILL_HITS - 1;
+    igniteBeast(s, 0); beastHit(s, 'torch');
+    let burnDead = 0, deadAt = null, burnEnd = null;
+    t = 0;
+    for (let k = 0; k < 140; k++) {
+      const wb = s.burn > 0;
+      step(0.05); t += 0.05;
+      if (s.burn > 0 && s.dead) burnDead++;
+      if (wb && !(s.burn > 0) && burnEnd === null) burnEnd = t;
+      if (s.dead && deadAt === null) { deadAt = t; break; }
+    }
+    /* 小人閒著射箭射中的那一下也記（使用者勾的） */
+    const p = herd[1];
+    p.hits = 0; p.pause = 99; p.fall = 0;
+    playHit({ dx: 1, dz: 0 }, p);
+    const play = p.hits;
+    stepHerd = () => {};
+    return { n0, fell, first, gone, flat, early, aMid, imm, under, back, burnDead, deadAt, burnEnd, play,
+             H: DIE_HOLD, F: DIE_FADE, kind: m.kind, edge: +edge.toFixed(1) };
+  });
+  ok('牛羊第三下倒地不起：側躺下去、身下一攤血、什麼都打不動，淡完才從清單拿掉',
+     kh.fell && kh.first.dead && kh.first.fall === 1 && kh.first.busy && kh.first.blood === 1 &&
+     kh.flat !== null && kh.flat <= 0.6 && kh.imm && Math.abs(kh.aMid - 0.5) <= 0.03 &&
+     Math.abs(kh.gone - (kh.H + kh.F)) <= 0.11 && kh.under < 0.35,
+     kh.kind + '：側躺 ' + kh.flat.toFixed(2) + ' 秒、打不動 ' + kh.imm + '、淡到一半 ' + kh.aMid.toFixed(2) +
+     '、' + kh.gone.toFixed(2) + ' 秒拿掉；身體重心離血泊中心 ' + kh.under.toFixed(2) + ' 個半徑');
+  ok('牛羊淡完才補一隻，補的那一隻從島的邊上走進來（開場那幾隻照舊直接站在場上）',
+     !kh.early && kh.back.n1 === kh.n0 && kh.back.owed === 0 && kh.back.neu && kh.back.onEdge && kh.back.inward,
+     '淡完之前隻數一直是 ' + kh.n0 + '（多補 ' + kh.early + '）、補完 ' + kh.back.n1 + ' 隻；新的那隻站在島邊（' +
+     kh.edge + '，方的）' + kh.back.onEdge + '、第一個目標在碎料圈裡 ' + kh.back.inward);
+  ok('牛羊站著被點著的第三下：燒完才倒；小人閒著射箭射中也記一次',
+     kh.burnDead === 0 && kh.deadAt !== null && kh.deadAt - kh.burnEnd <= 0.051 && kh.play === 1,
+     '火滅 ' + (kh.burnEnd || 0).toFixed(2) + ' 秒、死 ' + (kh.deadAt || 0).toFixed(2) + ' 秒；射中一箭記 ' + kh.play);
+
+  /* ── 換一座的時候屍體照躺著淡完（startBuild 會把每個人的 tilt 歸零） ── */
+  const ksw = await page.evaluate(() => {
+    const w = workers[1];
+    releaseWorker(w); w.hits = KILL_HITS; w.fall = 1; w.air = 0; w.burn = 0;
+    for (let k = 0; k < 12; k++) step(0.05);
+    const t0 = w.tilt, d0 = w.dead;
+    startBuild(true);
+    step(0.05);
+    return { t0, t1: w.tilt, d0, d1: w.dead, same: workers[1] === w };
+  });
+  ok('換一座的時候屍體照躺著淡完，不會在換場那一幀先站起來',
+     ksw.same && Math.abs(ksw.t1 + Math.PI / 2) < 0.02 && ksw.d1 > ksw.d0,
+     '換場前躺平角 ' + ksw.t0.toFixed(3) + '、換場後 ' + ksw.t1.toFixed(3) + '，死了 ' + ksw.d0.toFixed(2) +
+     ' → ' + ksw.d1.toFixed(2) + ' 秒');
+
+  /* 收尾：拔掉、死的那幾格換回一般的新人（站在工地旁，不是從島邊走進來） */
+  await page.evaluate(() => {
+    lifeHit = () => {}; stepDoom = () => {}; stepHerd = () => {};
+    for (let i = 0; i < workers.length; i++) {
+      if (workers[i].dead) workers[i] = newWorker(i);
+      workers[i].hits = 0;
+    }
+    tagEngineer(); tagMage(); tagMuscle();
+    herdOwed = 0; beasts = null;
+    cleanTools();
+  });
+  }   // ── 〈被打死〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 小黑洞（v1.221）══════════
      使用者：「新增破壞工具 小黑洞／可以點在地面或建築上 然後將一定範圍內積木&生物&碎料往內部吸
      積木先微幅震動 然後慢慢移動 忽然一瞬間吸到中心點消失(可以加上黑色的類似爆炸的火球)
@@ -27801,6 +28142,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const w = workers[0];
     releaseWorker(w);
     w.x = hx * (bp.radius + 6) - hz * 5; w.z = hz * (bp.radius + 6) + hx * 5; w.y = 0; w.air = 0; w.fall = 0;
+    /* 其他小人點的那一下先挪到建築的另一邊（點完還回去）：他們在閒晃，剛好走到鏡頭與 0 號之間的話
+       射線點到的是那一個，這一條就在賭站位（v1.240 一輪紅過一次、同種子重跑重現不出來）。 */
+    const park = workers.filter(o => o !== w).map(o => [o, o.x, o.z]);
+    for (const [o] of park) { o.x = -hx * (bp.radius + 12); o.z = -hz * (bp.radius + 12); }
     draw(); ENG.render();
     const c = ENG.three.renderer.domElement.getBoundingClientRect(), cam = ENG.three.camera;
     const at = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam);
@@ -27814,6 +28159,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const r = { ape: !!(S && S.call && S.call.b === a && !S.call.bw) };
     click(at(w.x, 0.7 * (w.scale || 1), w.z));
     r.man = !!(S && S.call && S.call.b === w && S.call.bw === 1);
+    r.who = S && S.call && S.call.b ? workers.indexOf(S.call.b) : -1;   // 點到的是幾號（紅了看是誰擋在前面）
+    for (const [o, x, z] of park) { o.x = x; o.z = z; }
     r.fell = w.fall > 0; r.poked = stats.poked - poked;
     tool = was;
     if (!hid) panel.classList.remove('hide');      // onDown 會把設定面板收下去，還回去
@@ -27828,7 +28175,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('點選：拿 Excalibur 點得到地上的生物與小人（真的走 onUp）；天上的、她自己、立體機動中的里維、化掉中的巨人不算',
      xpick.ape && xpick.man && !xpick.fell && xpick.poked === 0 &&
      xpick.cut === 'true,false,true,false,true,true,false,false,true,false',
-     '點猴子→叫她去斬牠 ' + xpick.ape + '；點小人→叫她去斬他 ' + xpick.man + '（沒被戳倒＝' + !xpick.fell + '、戳倒成就 +' +
+     '點猴子→叫她去斬牠 ' + xpick.ape + '；點小人→叫她去斬他 ' + xpick.man + '（命令帶的是 ' + xpick.who + ' 號、沒被戳倒＝' + !xpick.fell + '、戳倒成就 +' +
      xpick.poked + '）；砍得了嗎（猴／她自己／里維／立體機動中的里維／地上走的飛龍／趴著的飛龍／天上的飛龍／' +
      '天上的獅鷲／地上的獅鷲／化掉中的巨人）' + xpick.cut);
 
@@ -29177,7 +29524,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         d = Math.max(d, Math.abs(pos[i * 3]), Math.abs(pos[i * 3 + 2]));
         a = Math.max(a, col[i * 4 + 3]);
       }
-      return { d, a, n, room: pos.length / 3 };
+      /* 緩衝區後段是血泊那一份（v1.240，見 engine 的 BLOOD_MAX），痕跡用的是前段 */
+      return { d, a, n, room: pos.length / 3 - ENG.BLOOD_MAX * ENG.MARK_SEG * 24 };
     };
     /* 邊緣那條要**先量**：下面測上限時會把它擠掉（先擠最舊的），
        量到的就變成別塊，那條就永遠是綠的（踩過一次）。 */

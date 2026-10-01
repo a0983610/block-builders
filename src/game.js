@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.239.0';
+const VERSION = '1.240.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -788,6 +788,8 @@ function startBuild(instant) {
   /* 小人身上的火跟碎料的火一起收：積木待會要回收去蓋新的那座，
      人也一樣得回去上工，不能有人還在新工地旁邊打滾。 */
   for (const w of workers) {
+    /* 屍體（v1.240）照躺著淡完：這裡把 tilt 歸零的話他會在換場那一幀從地上直直立起來再倒下去 */
+    if (w.dead) continue;
     releaseWorker(w);
     w.air = 0; w.burn = 0; w.burnK = 0; w.lit = 0; w.roll = 0; w.fall = 0; w.trip = 0;
     w.wet = 0; w.wetK = 0;
