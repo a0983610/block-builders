@@ -4038,8 +4038,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const px = workers.map(w => w.x), pz = workers.map(w => w.z);
     let moved = 0, samples = 0, near = Infinity, far = 0, empty = 0, frames = 0, inLm = 0;
     /* 「會不會空出一圈」v1.183 分兩層量，因為這兩件事的穩定度差很多：
-         ① **目標點**照 idleSpot 自己的上下界切三個等面積的環，抽 2000 次——
+         ① **目標點**照 idleSpot 自己的上下界切三個等面積的環，抽 tN 次——
             按面積平均抽的定義就是三環各三分之一，這一層很穩（門檻可以收緊）。
+            v1.237.2 從 2000 抽拉到 2 萬抽：2000 抽的話就算三環剛好各三分之一，「最少÷最多 > 0.85」
+            也有約 1% 的輪次會紅（照比例模擬 2 萬輪紅 196 輪，最差 0.803；--seed 1643252545 抽到 605／681／714
+            ＝0.847 就是這樣紅的）。idleSpot 本身沒有偏：8 個村子各抽 10 萬次，三環都在 0.330～0.337。
+            2 萬抽模擬 5000 輪 0 輪紅、最差 0.94，門檻不動。見 開發筆記〈閒晃目標點那一條拉長取樣〉
          ② **實際待的位置**：每一環都要有人。這一層**不比大小**——60 秒的取樣會被
             「人剛好在哪」帶著走（實測同一份程式換一顆種子，最少÷最多 0.51 → 0.30），
             而且過路的會往內切，內環本來就會多吃一份過境流量。
@@ -4047,8 +4051,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const tLo = siteR + IDLE_NEAR, tHi = Math.max(tLo + 1, debrisR);   // v1.211：外緣是碎料圈
     const tCut = f => Math.sqrt(tLo * tLo + (tHi * tHi - tLo * tLo) * f);
     const tEdge = [tCut(1 / 3), tCut(2 / 3)];
-    const tBand = [0, 0, 0], probe = { tx: 0, tz: 0 };
-    for (let i = 0; i < 2000; i++) {
+    const tBand = [0, 0, 0], probe = { tx: 0, tz: 0 }, tN = 20000;
+    for (let i = 0; i < tN; i++) {
       idleSpot(probe);
       const r = Math.hypot(probe.tx, probe.tz);
       tBand[r < tEdge[0] ? 0 : r < tEdge[1] ? 1 : 2]++;
@@ -4083,7 +4087,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              near: +near.toFixed(2), siteR: +siteR.toFixed(2), inLm,
              far: +far.toFixed(2), empty, frames, arenaR: +debrisR.toFixed(1),
              band, edge: edge.map(v => +v.toFixed(1)),
-             tBand, tEven: +(Math.min(...tBand) / Math.max(...tBand)).toFixed(2),
+             tBand, tN, tEven: +(Math.min(...tBand) / Math.max(...tBand)).toFixed(2),
              thin: +(Math.min(...band) / band.reduce((a, b) => a + b, 0)).toFixed(3) };
   });
   ok('遊蕩時會不時停下來站一會兒', idle.median >= 1.1,
@@ -4105,14 +4109,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ——見 idleSpot 的註解。所以這一條從「守上限」改成「守密度均勻」：
      三個等面積的環，最少的那一環不該少於最多那一環的一半。
      舊版方形亂挑會在第一環上現形（貼著建築那一圈抽不太到）。 */
-  /* 兩層的門檻差很多，理由見上面那段註解：目標點那一層是抽樣定義（2000 抽、門檻 0.85），
+  /* 兩層的門檻差很多，理由見上面那段註解：目標點那一層是抽樣定義（2 萬抽、門檻 0.85；v1.237.2 以前 2000 抽，約 1% 會紅），
      實際位置那一層只守「沒有一環空掉」（最少的一環至少占 5%，三環平均是 33%）。
      第一版把兩件事混成一條「最少÷最多 > 0.35」，換一顆種子就掉到 0.30——
      那是把門檻建在會抖的量上，跟〈九條偶爾飄的測試〉是同一個坑。 */
   ok('閒晃鋪滿整片碎料場，而且哪一圈都不會空掉（目標點按面積平均，三環都有人）',
      idle.tEven > 0.85 && idle.thin > 0.05 &&
      idle.far > idle.arenaR * 0.6 && idle.empty === 0,
-     '目標點三環 ' + idle.tBand.join('／') + '（2000 抽，最少÷最多 ' + idle.tEven +
+     '目標點三環 ' + idle.tBand.join('／') + '（' + idle.tN + ' 抽，最少÷最多 ' + idle.tEven +
      '）；實際人-幀 ' + idle.band.join('／') + '（分界 ' + idle.edge.join('、') +
      '，最少的一環占 ' + (idle.thin * 100).toFixed(0) + '%）；最遠走到 ' + idle.far +
      '（碎料場外緣 ' + idle.arenaR + '）');
@@ -21293,10 +21297,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const sample = hot.filter(d => d.to);
     const avgG = a => a.reduce((s, d) => s + d.cg, 0) / Math.max(1, a.length);
     const lit0 = avgG(sample);
-    /* 蘑菇雲那幾團的 fade 是 3.4／4／4.5，燒起來的煙是 2.2、隕石的尾煙 1.8。
+    /* 蘑菇雲那幾團的 fade 是 4／4.5 與煙裙的 SKIRT_FADE（v1.237.2 起 2.04，以前 3.4），
+       燒起來的煙是 2.2、隕石的尾煙 1.8。
        只認 d.fade 的話，爆炸點著的上千塊碎料冒的煙會被算成蘑菇雲——
        那個數字爆炸當下就有好幾十團，「雲是慢慢長出來的」就測不出來了。 */
-    const cloudy = () => dust.filter(d => d.fade >= 3);
+    const cloudy = () => dust.filter(d => d.fade >= 3 || d.fade === SKIRT_FADE);
     const cloud0 = cloudy().length;
     /* 冷卻量在 0.25 秒（v1.200 從 0.6 秒收短）：火星改細之後壽命是 0.12～0.48 秒，
        0.6 秒時這一批已經全數退光，filter 出來是空的——那樣這條會「通過」但什麼都沒驗到。
@@ -21532,7 +21537,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      整朵雲與風壓的塵牆同一個旋鈕 CLOUD_GRAIN——單顆 × k、顆數 × 1/k²。規則型：直接呼叫 stepClouds／spawnWind，
      不跑模擬。傘蓋是 0.45 秒那一下整批撐開的，推一步 0.5 秒就量得到整批；柱子與煙裙這 0.5 秒各生
      floor(0.5 × 每秒幾顆)；柱心的火光每生一顆柱子的煙就跟一顆（t < 0.8），傘蓋的火光 cloudN(60) 顆。
-     哪一顆是哪一部分照 fade 分（4.5 傘蓋、4 柱子、3.4 煙裙），期望值全讀常數算。 */
+     哪一顆是哪一部分照 fade 分（4.5 傘蓋、4 柱子、SKIRT_FADE 煙裙），期望值全讀常數算。 */
   const grain = await page.evaluate(() => {
     const k = CLOUD_GRAIN.k;
     const rng = a => a.length ? [+Math.min(...a.map(d => d.s)).toFixed(3), +Math.max(...a.map(d => d.s)).toFixed(3)] : [0, 0];
@@ -21540,7 +21545,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     dust.length = 0; hot.length = 0; clouds.length = 0; fxRings.length = 0;
     startCloud({ x: 0, y: 0, z: 0 }, 30);
     stepClouds(0.5);                                 // 跨過 0.45 秒：傘蓋整批撐開
-    const top = dust.filter(d => d.fade === 4.5), stem = dust.filter(d => d.fade === 4), skirt = dust.filter(d => d.fade === 3.4);
+    const top = dust.filter(d => d.fade === 4.5), stem = dust.filter(d => d.fade === 4), skirt = dust.filter(d => d.fade === SKIRT_FADE);
     const want = { top: Math.ceil(cloudN(CLOUD_TOP)), stem: Math.floor(0.5 * cloudN(CLOUD_STEM)),
                    skirt: Math.floor(0.5 * cloudN(CLOUD_SKIRT)) };
     want.hot = want.stem + Math.ceil(cloudN(60));
@@ -21589,6 +21594,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('腳下的煙沒有把傘蓋的配額吃掉', skirt.high > 60,
      '雲上半部仍有 ' + skirt.high + ' 團');
 
+  /* v1.237.2：蘑菇雲底部的煙少一點，焦痕看得到——使用者：「爆裂魔法&核彈的蘑菇雲煙會擋到 可能底部的煙要減少一點」。
+     規則型：只推 stepClouds＋stepDust（不跑整場模擬），量兩件事：
+       · 柱子的煙不往下掉：以前重力 1.4，往上冒一秒多就開始掉，六秒內掉回地上堆在爆心（探針：貼地 842 顆）；
+         現在重力 0.3，最慢的那一顆（離地 0.6、初速 0.8）爆後 4 秒也還在 1.4 高——貼地（y < 1）的 0 顆
+       · 煙裙快散：SKIRT_T 秒之後不再生，再過 SKIRT_LIFE 的上限就收乾淨（以前一團活到 7.5 秒） */
+  const lowSmoke = await page.evaluate(() => {
+    dust.length = 0; hot.length = 0; clouds.length = 0; fxRings.length = 0;
+    startCloud({ x: 0, y: 0, z: 0 }, NUKE_R);
+    let t = 0, stemN = 0, stemLow = 0;
+    while (t < 4 - 1e-9) { stepClouds(0.05); stepDust(0.05); t += 0.05; }
+    for (const d of dust) if (d.fade === 4) { stemN++; if (d.y < 1) stemLow++; }
+    while (t < SKIRT_T + SKIRT_LIFE[1] + 0.1) { stepClouds(0.05); stepDust(0.05); t += 0.05; }
+    const skirtLeft = dust.filter(d => d.fade === SKIRT_FADE).length;
+    dust.length = 0; hot.length = 0; clouds.length = 0; fxRings.length = 0;   // 動過的全域還回去
+    return { stemN, stemLow, skirtLeft, t: +t.toFixed(2) };
+  });
+  ok('蘑菇雲底部的煙少一點：柱子的煙不掉回地上、煙裙 SKIRT_LIFE 秒內散乾淨',
+     lowSmoke.stemN > 0 && lowSmoke.stemLow === 0 && lowSmoke.skirtLeft === 0,
+     '爆後 4 秒柱子的煙 ' + lowSmoke.stemN + ' 顆、貼地（y < 1）' + lowSmoke.stemLow + ' 顆；第 ' + lowSmoke.t +
+     ' 秒煙裙還剩 ' + lowSmoke.skirtLeft + ' 顆');
+
   const mg = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
@@ -21624,10 +21650,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const b of blocks) if (b.st === 4 || b.st === 0) hitMax = Math.max(hitMax, Math.hypot(b.x, b.z));
     const flew1 = meanOf(b => b.st === 4 || b.st === 0);
     for (let i = 0; i < 4; i++) step(0.05);             // 補到爆後 1.2 秒：雲該長齊了
-    const cloud = dust.filter(d => d.fade >= 3).length;
+    const isCloud = d => d.fade >= 3 || d.fade === SKIRT_FADE;   // 認雲的方法同上面核彈那一組的 cloudy
+    const cloud = dust.filter(isCloud).length;
     /* v1.48 起魔法的雲跟核彈同一種：灰白煙（不給 cr，引擎就走預設的灰）。
        以前整朵染紅、雲裡還撒粉白星光，使用者要的是同一種雲。 */
-    const tinted = dust.filter(d => d.fade >= 3 && d.cr !== undefined).length;
+    const tinted = dust.filter(d => isCloud(d) && d.cr !== undefined).length;
     return { set0, calm, suck, seq, full, magTime: MAG_TIME, coreY: MAG_CORE_Y,
              up: +(MAG_R * FLASH_UP).toFixed(2),
              alive, flashY, flew, flew1,
@@ -22813,7 +22840,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      49 座裡有 13 座會剩超過 25%（掃過一輪：艾菲爾鐵塔剩 89%、巨石陣 62%、
      帝國大廈 58%、金門大橋、倫敦眼、鳥居……），抽到那些這條就會無故失敗。 */
   const keepFx = await page.evaluate(() => {
-    const puffs = () => dust.filter(d => d.fade >= 3).length;   // 只算雲，碎料的火苗煙是 2.2
+    // 只算雲（4／4.5 與煙裙的 SKIRT_FADE），碎料的火苗煙是 2.2
+    const puffs = () => dust.filter(d => d.fade >= 3 || d.fade === SKIRT_FADE).length;
     shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
     startBuild(true); completeNow();
     const ph0 = phase;
