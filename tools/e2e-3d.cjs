@@ -26027,16 +26027,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const cnum = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     herdN = 0;                                        // 重抽這一場要養幾隻
-    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    for (let i = 0; i < HERD_N[1] + 2; i++) stepHerd(0.05);
     const n = beasts ? beasts.length : 0;
     const allHerd = beasts ? beasts.every(m => m.herd === 1 && m.st === 'fun') : false;
     const onRing = beasts ? beasts.every(m => Math.hypot(m.x, m.z) > siteR + KEEP) : false;
     const more = (() => { for (let i = 0; i < 20; i++) stepHerd(0.05); return beasts.length; })();
-    /* 抽 800 隻看每一款都出得來、大小也不是每一隻都一樣。**取樣數要跟著款數走**
+    /* 抽 N 隻看每一款都出得來、大小也不是每一隻都一樣。**取樣數要跟著款數走**
        （v1.182 從 400 加到 800）：八款平分 400 隻的話每一款平均只有 50，
-       抽樣的起伏就會壓到下限上。800 隻 → 平均 100、標準差 9.4，下限 60 是 4 個標準差外。 */
-    const kinds = {}, sc = [];
-    for (let i = 0; i < 800; i++) {
+       抽樣的起伏就會壓到下限上。每款平均 100 隻、標準差約 9.5，下限 60 是 4 個標準差外。
+       v1.241 起直接照 HERD_KIND 的款數算（14 款 → 1400 隻），不再跟著款數回來改。 */
+    const kinds = {}, sc = [], NS = HERD_KIND.length * 100;
+    for (let i = 0; i < NS; i++) {
       beasts = null;
       const m = spawnCattle();
       kinds[m.kind] = (kinds[m.kind] || 0) + 1;
@@ -26045,7 +26046,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const ns = [];
     for (let i = 0; i < 200; i++) { herdN = 0; beasts = null; stepHerd(0.05); ns.push(herdN); }
     cleanTools();
-    return { n, more, allHerd, onRing, kinds, ids: HERD_KIND.slice(),
+    return { n, more, allHerd, onRing, kinds, ids: HERD_KIND.slice(), nSample: NS,
              lo: Math.min(...sc), hi: Math.max(...sc),
              nLo: Math.min(...ns), nHi: Math.max(...ns),
              want: HERD_N.slice(), base: DOOM_SC, k: HERD_SC.slice() };
@@ -26063,7 +26064,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.min(...cnum.ids.map(k => cnum.kinds[k])) > 60 &&
      cnum.lo >= cnum.base * cnum.k[0] - 1e-6 && cnum.hi <= cnum.base * cnum.k[1] + 1e-6 &&
      cnum.hi - cnum.lo > 0.1,
-     '800 隻裡 ' + cnum.ids.map(k => k + ' ' + cnum.kinds[k]).join('／') +
+     cnum.nSample + ' 隻裡 ' + cnum.ids.map(k => k + ' ' + cnum.kinds[k]).join('／') +
      '；放大倍率 ' + cnum.lo.toFixed(2) + '～' + cnum.hi.toFixed(2));
   const HERD_KINDS = cnum.ids;            // 下面幾條照這份掃過每一款
 
@@ -26071,7 +26072,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const cwalk = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     herdN = 0;
-    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    for (let i = 0; i < HERD_N[1] + 2; i++) stepHerd(0.05);
     const herd = beasts.slice();
     for (const m of herd) m.pause = 0;
     let inside = 0, inLm = 0, moved = 0, rMin = 1e9, rMax = 0, gait = 0, grazed = 0, frames = 0;
@@ -26173,7 +26174,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const cin = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     herdN = 0;
-    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    for (let i = 0; i < HERD_N[1] + 2; i++) stepHerd(0.05);
     const m = beasts[0];
     m.x = 0; m.z = -(siteR + 4); m.sx = m.x; m.sz = m.z; m.stk = 0; m.ghost = 0; m.nav = null;
     let inside = 0, inLm = 0, rMin = 1e9;
@@ -26201,7 +26202,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const cstay = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     herdN = 0;
-    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    for (let i = 0; i < HERD_N[1] + 2; i++) stepHerd(0.05);
     const herd = beasts.slice(), n0 = herd.length;
     const live = () => herd.every(m => beasts && beasts.indexOf(m) >= 0 && m.st !== 'go');
     for (let i = 0; i < 2000; i++) { stepDoom(0.05); stepHerd(0.05); }   // 100 秒
@@ -26230,7 +26231,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const cdoom = await page.evaluate(() => {
     cleanTools(); phase = 'done';
     herdN = 0;
-    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    for (let i = 0; i < HERD_N[1] + 2; i++) stepHerd(0.05);
     const n0 = beasts.length;
     doomT = -1; stepDoom(0.05);                      // 場上有牛羊，天災的鐘照樣起跳
     const armed = doomT > 0;
@@ -27491,7 +27492,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const kh = await page.evaluate(() => {
     cleanTools(); doomT = 1e9;
     stepHerd = window.herdStep; herdN = 0; herdOwed = 0;
-    for (let i = 0; i < 10; i++) stepHerd(0.05);
+    for (let i = 0; i < HERD_N[1] + 2; i++) stepHerd(0.05);
     const n0 = beasts.filter(o => o.herd).length;
     const m = beasts.find(o => o.herd);
     m.pause = 99; m.hits = KILL_HITS - 1;
