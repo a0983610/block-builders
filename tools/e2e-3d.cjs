@@ -6073,6 +6073,40 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('搬料中的人不會跳舞（表演只發生在閒晃那條路上）', tripRate.busyShow === 0,
      '搬運中在表演 ' + tripRate.busyShow + ' 幀');
 
+  /* ── 演到一半接到工作單（v1.240.1，見 endShow）：上面那條是跑模擬數的，要剛好有人演到一半時冒出工作
+     才抓得到（同一顆種子完整輪三輪紅一輪）。這一條押好：開工那一刻（地上有料、格子沒人認）讓一個人
+     站在 idle 翻跟斗翻到一半，跑他一幀；再把 findBlock 換成「一塊都撿不到」，走去挖料那一條 ── */
+  const showJob = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; setWorkerCount(6); startBuild(true);
+    // 剛開工那一刻料還在落（findBlock 只撿落定的），跑到地上有一塊落定、沒人認的
+    for (let i = 0; i < 400 && !blocks.some(b => b.st === FREE && b.rest && b.holder < 0); i++) step(0.05);
+    const wi = workers.findIndex(q => !q.eng && !q.mage && !q.lazy && !q.dead);
+    if (wi < 0) return null;
+    const w = workers[wi];
+    const set = () => {
+      releaseWorker(w);
+      w.air = 0; w.burn = 0; w.fall = 0; w.flee = 0; w.chat = 0; w.fig = 0; w.gait = 0; w.toil = 0;
+      w.show = 'flip'; w.showN = 1; w.showT = 1; w.tilt = -Math.PI; w.pause = 1;
+    };
+    const ph = phase;
+    set(); updWorker(w, wi, 0.02);
+    const pick = { st: w.st, load: w.load.length, show: w.show, showT: w.showT, tilt: w.tilt };
+    const fb = findBlock;
+    findBlock = () => -1;
+    set(); updWorker(w, wi, 0.02);
+    findBlock = fb;
+    const dig = { st: w.st, show: w.show, showT: w.showT, tilt: w.tilt };
+    releaseWorker(w);
+    return { ph, pick, dig };
+  });
+  const sjOk = j => j.show === '' && j.showT === 0 && j.tilt === 0;
+  ok('演到一半接到工作單：表演當場收掉（去撿料、去挖料兩條都是），翻跟斗的角度歸零',
+     !!showJob && showJob.ph === 'build' && showJob.pick.st === 'pick' && showJob.pick.load > 0 && sjOk(showJob.pick) &&
+     showJob.dig.st === 'dig' && sjOk(showJob.dig),
+     showJob ? '階段 ' + showJob.ph + '；撿料：' + JSON.stringify(showJob.pick) + '；挖料：' + JSON.stringify(showJob.dig)
+             : '找不到一般工人');
+
   /* ── 表演與打架：蓋完之後量一輪 ── */
   const fun = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
@@ -6542,6 +6576,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         if (w.st === 'rest' && w.emo === 'sweat' && w.emoK > 0.5) sweat++;
       }
       c.land = land; c.moved = +Math.hypot(w.x - x0, w.z - z0).toFixed(3);
+      /* 上限照出手速度等比放大（v1.240.1 使用者定案）：一疊裡每往上一塊多送 REST_PUT_STEP，落點本來就跟著遠。
+         寫死 3 的話抽到搬 3 塊的人就紅（實測最上面那塊 3.48 格，速度 3.7±0.25），見 開發筆記〈累了放下的積木：上限照出手速度放大〉 */
+      c.hi = ids.map((_, k) => +(3 * (REST_PUT + REST_PUT_STEP * k) / REST_PUT).toFixed(2));
       c.sweat = sweat; c.swtMoved = w.swt !== swt0;
     }
     // ② 空手走去撿料：也當場停
@@ -6569,10 +6606,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        '貨；放下 ' + tc.n + ' 塊、都變碎料 ' + tc.free + '、還掛在他名下的格子 ' + tc.mine
        : '找不到正在搬的人');
   /* 「腳前」：一塊積木寬 1，落點離他超過半塊才不會跟腳疊在一起；
-     太遠就不是放下是丟出去了（他彎腰撐膝對著的就是面前那一兩格）。 */
+     太遠就不是放下是丟出去了（他彎腰撐膝對著的就是面前那一兩格）。
+     上限是一疊最下面那塊 3 格，往上每一塊照出手速度等比放大（tc.hi，見上面那段） */
   ok('放下的積木落在腳前（不壓在自己腳底、也不是丟出去），人站著不動',
-     Array.isArray(tc.land) && tc.land.every(v => v !== null && v > 0.5 && v < 3) && tc.moved < 0.01,
-     '落點在他面前 ' + (tc.land || []).join('、') + ' 格；喘的時候移動 ' + tc.moved + ' 格');
+     Array.isArray(tc.land) && tc.land.every((v, k) => v !== null && v > 0.5 && v < tc.hi[k]) && tc.moved < 0.01,
+     '落點在他面前 ' + (tc.land || []).join('、') + ' 格（上限 ' + (tc.hi || []).join('、') + '）；喘的時候移動 ' + tc.moved + ' 格');
   ok('喘的時候頭上冒汗（💦 ＋ 太陽穴那一滴往下滑）', tc.sweat >= 55 && tc.swtMoved,
      '3 秒 60 幀裡冒汗 ' + tc.sweat + ' 幀（前幾幀是圖示長出來）、那一滴有在滑 ' + tc.swtMoved);
   ok('空手走去撿料的路上到點也當場停',
@@ -29073,6 +29111,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     a.x = hx * (bp.radius + 6); a.z = hz * (bp.radius + 6); a.a = 0; a.st = 'fun'; a.pause = 999;
     const w = workers[0];
     w.x = hx * (bp.radius + 6) - hz * 5; w.z = hz * (bp.radius + 6) + hx * 5; w.y = 0; w.air = 0; w.fall = 0;
+    /* 其他小人點的那一下先挪到建築的另一邊（點完還回去），同〈破壞道具：Excalibur〉那條點選：這一檔是
+       「射線先碰到誰就是誰」，有人剛好走在鏡頭與猴子之間就點到他（v1.240.1 完整輪同一顆種子連兩輪「點猴子拿到 worker」，第三輪又是綠的） */
+    const park = workers.filter(o => o !== w).map(o => [o, o.x, o.z]);
+    for (const [o] of park) { o.x = -hx * (bp.radius + 12); o.z = -hz * (bp.radius + 12); }
     draw(); ENG.render();
     const c = ENG.three.renderer.domElement.getBoundingClientRect(), cam = ENG.three.camera;
     const at = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam);
@@ -29082,6 +29124,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const lw = ENG.pick(pw[0], pw[1], 'levi'), sw = ENG.pick(pw[0], pw[1], 'skip');
     const r = { la: la && la.kind, laOk: la && beastAt(la.idx) === a, sa: sa && sa.kind,
                 lw: lw && lw.kind, lwOk: lw && workers[lw.idx] === w, sw: sw && sw.kind };
+    for (const [o, x, z] of park) { o.x = x; o.z = z; }
     /* 飛龍的 sky 一路是 1，照狀態認（v1.239.0 使用者：「里維的部分也應該要能點得到地上的飛龍那些」）：
        天上飛的（in）不算、在草皮上走（gwalk）與摔下來趴著（down）的算；v1.230～v1.238 飛龍整隻不算 */
     const L = spawnBeast('levi', 1), D = { kind: 'dragon', sky: 1, st: 'in' }, Gs = { kind: 'gryphon', sky: 1 };
@@ -29106,12 +29149,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const g = spawnDragon(1, 0);
     g.st = 'gwalk'; g.t = 99; g.y = 0; g.spin = 0; g.roll = 0;
     g.x = hx * (bp.radius + 10); g.z = hz * (bp.radius + 10);
+    const park = workers.map(o => [o, o.x, o.z]);    // 小人點的那一下先挪到建築的另一邊、點完還回去（v1.240.1，同上一條）
+    for (const [o] of park) { o.x = -hx * (bp.radius + 12); o.z = -hz * (bp.radius + 12); }
     draw(); ENG.render();
     const c = ENG.three.renderer.domElement.getBoundingClientRect(), v = new THREE.Vector3(g.x, ENG.BEAST_MID.dragon * g.sc, g.z);
     v.project(ENG.three.camera);
     const panel = document.getElementById('panel'), hid = panel.classList.contains('hide'), was = tool;
     tool = 'levi';
     onDown({ clientX: (v.x + 1) / 2 * c.width + c.left, clientY: (1 - v.y) / 2 * c.height + c.top }); onUp({});
+    for (const [o, x, z] of park) { o.x = x; o.z = z; }
     tool = was;
     if (!hid) panel.classList.remove('hide');      // onDown 會把設定面板收下去，還回去
     const L = (beasts || []).find(b => b.kind === 'levi'), b = !!(L && L.call && L.call.b === g);

@@ -1922,9 +1922,10 @@ function updWorker(w, wi, dt) {
       const short = loadUp(w, wi, w.mus ? 1 : 0);
       if (!w.load.length) {
         // 有格子要蓋卻沒料可撿：自己挖（v1.141，見 digSite）。沒格子可蓋才是閒晃
-        if (short) { startSiteDig(w); break; }
+        if (short) { endShow(w); startSiteDig(w); break; }
         wander(w, dt); return;
       }
+      endShow(w);                    // 演到一半接到工作單：表演當場收掉（v1.240.1，見 endShow）
       w.st = 'pick'; w.li = 0;
       w.leg = 0;                     // 接到工作就把閒晃里程歸零，別把它算進下次的發呆時間
       const p = pickSpot(blocks[w.load[0].b]);
@@ -2485,6 +2486,15 @@ function rollShow(w) {
   else w.showT = rr(s.t[0], s.t[1]);
   w.showA = w.a;                    // 繞著現在的朝向演，演完還是朝這邊
   w.pause = Math.max(w.pause, w.showT);
+}
+/* 演到一半接到工作單（v1.240.1）：表演當場收掉。updWorker 那個「鐘照走、自己過期」是給
+   被炸飛、跌倒那幾條 return 出去的路徑用的；上工這一條明確知道不演了，旗標留著就是
+   「人在搬料、身上還掛著 show」（完整輪量到搬運中在表演 20 幀，見 開發筆記〈演到一半接到工作單〉）。
+   翻跟斗的角度同那個鐘到期那一行歸零，不留給 tilt 的漸收。 */
+function endShow(w) {
+  if (!w.show) return;
+  if (w.show === 'flip') w.tilt = 0;
+  w.show = ''; w.showT = 0; w.showM = null; w.shot = 0;
 }
 /* 站定不動的那一段：抽中的話這幾秒在表演，沒抽中就純站著（原本的行為）。
    **演完之前不算站完**（w.show 那個條件，見 wander／liveHome）：pause 有可能一開始
