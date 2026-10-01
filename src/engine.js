@@ -6630,7 +6630,8 @@ const ENG = (function () {
   /* 兵長砍猴（v1.230）：建築、生物、小人都點得到，**同一級**＝射線先碰到哪一個就是哪一個
      （站在金字塔前面的巨人點得到，躲在牆後面的牛點不到）。
      第一版照 skip 那一檔點，生物整個是透明的：點巨人拿到的是牠背後的金字塔、點猴子拿到的是地面；
-     第二版補上生物、小人還是透明的（使用者：「兵長點小人無效」） */
+     第二版補上生物、小人還是透明的（使用者：「兵長點小人無效」）。
+     Excalibur（v1.238，使用者：「類似里維 點建築&生物」）也點這一檔 */
   const PICK_LEVI = { gift: 0, block: 1, beast: 1, worker: 1, ground: 2 };
   function pick(px, py, mode) {
     const rankOf = mode === 'man' ? PICK_MAN : mode === 'skip' ? PICK_SKIP

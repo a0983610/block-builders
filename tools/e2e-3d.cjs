@@ -27571,7 +27571,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      就直接用天災那隻 然後取消他的天災任務」、光柱 15 × 80 圓柱、「接觸到的地面也要加上焦黑」→
      「焦痕再黑一點 可以活久一點(可以中心先深紅色再變黑 增加細節)」。
      一條守一句，**全是規則型**：規則直接呼叫（callSaber／sendSaber／excDone／reaim／spawnSear），
-     只有「一整趟」那一條真的讓她從場邊走進來；期望值一律讀常數（EXC_STAND／SEAR_LIFE／MASC_STAY…）。 */
+     只有「一整趟」那一條真的讓她從場邊走進來；期望值一律讀常數（EXC_REACH／SEAR_LIFE／MASC_STAY…）。
+     v1.238 使用者：「調整saber操作 類似里維 點建築&生物則到能攻擊到的適當距離攻擊(最遠距離的一半) 點地面則走過去」
+     ——站定的距離從 4 格改成 EXC_REACH（光柱長度的一半）、點得到生物與小人、點地面改成跑過去待命。 */
   SEC: { if (!(await head('破壞道具：Excalibur', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; });   // 她走路是 stepDoom 在推（beasts 的迴圈在它裡面）
@@ -27606,7 +27608,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 弧度、半徑 ' + xin.r.toFixed(2) + '（debrisR + DOOM_OUT ' + xin.want.toFixed(2) + '）；TOOLS 第 ' +
      xin.at + ' 把（緊跟在第 ' + xin.hole + ' 把小黑洞後面）');
 
-  /* ── 一整趟：走過去、停在那一點前面（被擋住就停在擋住的地方）、轉過去對著它斬、斬完回去逛 ── */
+  /* ── 一整趟：跑過去、一進射程一半（EXC_REACH）就站定（被擋住就停在擋住的地方）、轉過去對著它斬、斬完回去逛 ── */
   await fillAll(page);
   const xrun = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
@@ -27634,15 +27636,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (m.st === 'fun' && seen.indexOf('excal') >= 0) break;
     }
     const r = { seen: seen.join('→'), act, cut: P.st !== SET, xn: m.xn, down, inSite, inHome,
-                st: m.st, call: m.call, stay: m.stay, lo: MASC_STAY[0], stand: EXC_STAND };
+                st: m.st, call: m.call, stay: m.stay, lo: MASC_STAY[0], stand: EXC_REACH };
     beasts = null; clearFires();
     return r;
   });
-  ok('一整趟：走過去 → 停在那一點前面 → 轉過去對著它斬 → 點到的那一塊斬掉了 → 回去逛',
+  ok('一整趟：跑過去 → 進了射程一半就站定 → 轉過去對著它斬 → 點到的那一塊斬掉了 → 回去逛',
      xrun.seen === 'call→act→excal→fun' && xrun.act && xrun.act.face < 0.01 &&
      xrun.act.d >= xrun.stand - 0.1 && (xrun.act.d <= xrun.stand + 0.1 || xrun.act.blk) &&
      xrun.cut && xrun.xn > 0 && xrun.call === null && xrun.stay >= xrun.lo,
-     xrun.seen + '；' + (xrun.act ? xrun.act.secs + ' 秒站定、離那一點 ' + xrun.act.d + ' 格（EXC_STAND ' +
+     xrun.seen + '；' + (xrun.act ? xrun.act.secs + ' 秒站定、離那一點 ' + xrun.act.d + ' 格（EXC_REACH ' +
      xrun.stand + '，被擋住＝' + xrun.act.blk + '）、朝向差 ' + xrun.act.face.toFixed(4) : '沒站定') +
      '；那一斬斬掉 ' + xrun.xn + ' 塊、點到的那一塊斬掉＝' + xrun.cut + '；斬完還要逛 ' +
      (xrun.stay || 0).toFixed(1) + ' 秒（MASC_STAY 下限 ' + xrun.lo + '）');
@@ -27650,38 +27652,202 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      xrun.down === 0 && xrun.inSite === 0 && xrun.inHome === 0,
      '躺／飛 ' + xrun.down + ' 幀、站在建築的格子裡 ' + xrun.inSite + ' 幀、站在房子裡 ' + xrun.inHome + ' 幀');
 
-  /* ── 她在場上：點地面就叫同一位過去，停在離那一點 EXC_STAND 格、朝它斬 ── */
+  /* ── 點地面（v1.238，使用者選「跑過去、待命 8～12 秒」同里維）：她在場上就叫同一位跑到那一點，
+        待命 LEV_WAIT 秒再回去逛、不出招。點到地上的碎料也算點地面（同火槍兵 v1.232），還立著的才算建築 ── */
   await fillAll(page);
   const xgnd = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
     const m = spawnBeast('saber', 1);
     m.x = siteR + 8; m.z = 0; m.st = 'fun'; m.pause = 99;
     const a = 1.1, G = { x: Math.cos(a) * (siteR + 14), y: 0, z: Math.sin(a) * (siteR + 14) };
-    const r = callSaber(G);
-    let n = 0, act = null;
-    while (n < 3000 && !act) {
+    const dir = { x: 0, y: -1, z: 0 };
+    tool = 'excalibur'; useTool({ kind: 'ground', point: G, dir });
+    const go = !!(m.call && m.call.go);
+    let n = 0, arr = null, exc = 0;
+    while (n < 3000 && !arr) {
       step(0.02); n++;
-      if (m.st === 'act') {
-        let e = m.a - Math.atan2(G.x - m.x, G.z - m.z);
-        while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI;
-        act = { d: Math.hypot(G.x - m.x, G.z - m.z), face: Math.abs(e) };
-      }
+      if (m.st === 'act' || m.st === 'excal') exc++;
+      if (m.st === 'fun') arr = { d: Math.hypot(m.x - G.x, m.z - G.z), pause: m.pause, call: m.call, secs: +(n * 0.02).toFixed(2) };
     }
-    const out = { same: r === m, n: beasts.filter(b => b.kind === 'saber').length, act, stand: EXC_STAND };
+    /* 碎料：借一塊還立著的暫時當成躺在地上的（useTool 只看 blocks[idx].st），點完還回去 */
+    const B = blocks.findIndex(b => b.st === SET), P = { x: blocks[B].x, y: blocks[B].y, z: blocks[B].z };
+    blocks[B].st = FREE;
+    useTool({ kind: 'block', idx: B, point: P, dir });
+    const deb = !!(m.call && m.call.go);
+    blocks[B].st = SET;
+    useTool({ kind: 'block', idx: B, point: P, dir });
+    const set = !!(m.call && !m.call.go && m.call.sd === EXC_REACH);
+    tool = 'hammer';
+    const out = { go, arr, exc, deb, set, n: beasts.filter(b => b.kind === 'saber').length, sd: LEV_SD, wait: LEV_WAIT };
     beasts = null;
     return out;
   });
-  ok('她在場上：點地面就叫同一位過去，停在離那一點 EXC_STAND 格、轉過去對著它',
-     xgnd.same && xgnd.n === 1 && xgnd.act && Math.abs(xgnd.act.d - xgnd.stand) <= 0.1 && xgnd.act.face < 0.01,
-     '同一位＝' + xgnd.same + '、場上 ' + xgnd.n + ' 位；' + (xgnd.act ? '站定時離那一點 ' +
-     xgnd.act.d.toFixed(3) + ' 格（EXC_STAND ' + xgnd.stand + '）、朝向差 ' + xgnd.act.face.toFixed(4) : '沒站定'));
+  ok('點地面：她在場上就叫同一位跑到那一點，待命 LEV_WAIT 秒再回去逛、不出招；點到地上的碎料也算點地面',
+     xgnd.go && xgnd.n === 1 && xgnd.arr && xgnd.arr.d <= xgnd.sd + 0.1 && xgnd.arr.call === null && xgnd.exc === 0 &&
+     xgnd.arr.pause >= xgnd.wait[0] && xgnd.arr.pause <= xgnd.wait[1] && xgnd.deb && xgnd.set,
+     '命令 go＝' + xgnd.go + '、場上 ' + xgnd.n + ' 位；' + (xgnd.arr ? xgnd.arr.secs + ' 秒到、離那一點 ' +
+     xgnd.arr.d.toFixed(2) + ' 格（LEV_SD ' + xgnd.sd + '）、待命 ' + xgnd.arr.pause.toFixed(1) + ' 秒（' +
+     xgnd.wait.join('～') + '）' : '沒到') + '；出招 ' + xgnd.exc + ' 幀；點碎料＝點地面 ' + xgnd.deb +
+     '、點還立著的＝點建築 ' + xgnd.set);
+
+  /* ── 射程一半：EXC_REACH 就是光柱長度的一半；已經在射程內就原地轉身斬，不往前也不往回（同里維一進射程就射） ── */
+  const xnear = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('saber', 1);
+    m.x = siteR + 20; m.z = 0; m.a = 0; m.st = 'fun'; m.pause = 99;
+    const P = { x: m.x - EXC_REACH * 0.5, y: 2, z: m.z + 3 };
+    callSaber(P);
+    const sd = m.call.sd, x0 = m.x, z0 = m.z;
+    stepBeast(m, 0.02);
+    let e = m.a - Math.atan2(P.x - m.x, P.z - m.z);
+    while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI;
+    const r = { sd, reach: EXC_REACH, L: ENG.EXC_L, st: m.st, moved: Math.hypot(m.x - x0, m.z - z0), face: Math.abs(e) };
+    beasts = null;
+    return r;
+  });
+  ok('射程一半：站定的距離是光柱長度的一半；已經在射程內就原地轉身斬，不往前也不往回',
+     xnear.sd === xnear.reach && xnear.reach === xnear.L / 2 && xnear.st === 'act' && xnear.moved < 1e-9 && xnear.face < 1e-9,
+     '命令 sd ' + xnear.sd + '（EXC_REACH ' + xnear.reach + '、光柱 EXC_L ' + xnear.L + '）；離那一點 ' + (xnear.reach * 0.5) +
+     ' 格點下去：一幀後 ' + xnear.st + '、位移 ' + xnear.moved.toExponential(1) + '、朝向差 ' + xnear.face.toExponential(1));
+
+  /* ── 點生物（v1.238，使用者選「站定那一刻就鎖定方向」）：
+        ① 會走的（押著牠沿著一圈走，不靠牠自己逛的骰子）：追著牠跑，牠一進射程一半就站定、轉過去對著牠，
+           之後瞄、舉劍、集氣、斬都不再轉身
+        ② 站著不動的：光柱把牠沖飛 ── */
+  await fillAll(page);
+  const xbst = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const ang = e => { while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI; return Math.abs(e); };
+    /* 兩個都站在同一圈上（工地外圈外面的空地），她在弦長 EXC_REACH + 20 的地方——圈要夠大才放得下那一條弦 */
+    const R0 = Math.max(siteR + 20, (EXC_REACH + 20) / 1.6), V = 2.5;
+    const a = spawnBeast('ape', 1);
+    a.x = R0; a.z = 0; a.st = 'fun'; a.pause = 999; a.stay = 999;
+    const m = spawnBeast('saber', 1);
+    const th1 = -2 * Math.asin((EXC_REACH + 20) / (2 * R0));    // 同一圈上、弦長 EXC_REACH + 20 的地方
+    m.x = R0 * Math.cos(th1); m.z = R0 * Math.sin(th1); m.st = 'fun'; m.pause = 99;
+    const d0 = Math.hypot(m.x - a.x, m.z - a.z);
+    callSaber({ x: a.x, y: 0, z: a.z }, a);
+    const b = m.call && m.call.b === a;
+    let n = 0, th = 0, act = null, lock = null, turned = 0;
+    const seen = [];
+    while (n < 3000) {
+      th += V * 0.02 / R0;                       // 牠沿著那一圈往遠離她的方向走
+      a.x = R0 * Math.cos(th); a.z = R0 * Math.sin(th);
+      step(0.02); n++;
+      if (seen[seen.length - 1] !== m.st) seen.push(m.st);
+      if (!act && m.st === 'act') {
+        act = { d: Math.hypot(a.x - m.x, a.z - m.z), face: ang(m.a - Math.atan2(a.x - m.x, a.z - m.z)), secs: +(n * 0.02).toFixed(2) };
+        lock = m.a;
+      }
+      if (lock !== null && (m.st === 'act' || m.st === 'excal') && Math.abs(m.a - lock) > 1e-9) turned++;
+      if (m.st === 'fun' && seen.indexOf('excal') >= 0) break;
+    }
+    const walk = { b, d0, act, turned, seen: seen.join('→'), off: ang(m.a - Math.atan2(a.x - m.x, a.z - m.z)), call: m.call };
+    beasts = null; clearFires();
+    const s = spawnBeast('ape', 1);
+    s.x = R0; s.z = 0; s.st = 'fun'; s.pause = 999; s.stay = 999;
+    const q = spawnBeast('saber', 1);
+    q.x = R0 * Math.cos(th1); q.z = R0 * Math.sin(th1); q.st = 'fun'; q.pause = 99;
+    callSaber({ x: s.x, y: 0, z: s.z }, s);
+    let k = 0, hit = 0, ex = 0;
+    while (k < 3000) {
+      step(0.02); k++;
+      if (s.air || s.fall > 0) hit = 1;
+      if (q.st === 'excal') ex = 1;
+      if (q.st === 'fun' && ex) break;
+    }
+    beasts = null; clearFires();
+    return { walk, hit, reach: EXC_REACH, V };
+  });
+  const XW = xbst.walk;
+  ok('點生物：追著牠跑，牠一進射程一半就站定、轉過去對著牠；方向鎖在那一刻，之後不再轉身',
+     XW.b && XW.d0 > xbst.reach + 10 && XW.seen === 'call→act→excal→fun' && XW.act &&
+     Math.abs(XW.act.d - xbst.reach) < 0.2 && XW.act.face < 0.01 && XW.turned === 0 && XW.off > 0.05 && XW.call === null,
+     '起點離牠 ' + XW.d0.toFixed(1) + ' 格；' + XW.seen + '；' + (XW.act ? XW.act.secs + ' 秒站定、離牠 ' +
+     XW.act.d.toFixed(2) + ' 格（EXC_REACH ' + xbst.reach + '）、朝向差 ' + XW.act.face.toFixed(4) : '沒站定') +
+     '；之後轉身 ' + XW.turned + ' 幀，牠走了 ' + xbst.V + ' 格／秒，斬完時跟牠差 ' + XW.off.toFixed(2) + ' 弧度');
+  ok('點生物：站著不動的那一隻被光柱沖飛', xbst.hit === 1, '沖飛／倒地＝' + !!xbst.hit);
+
+  /* ── 點小人（v1.238，使用者選「點得到，同里維」）：命令帶著他（bw）、追著他進射程一半、光柱把他沖飛。
+        他躺著（w.fall 押住）才不會自己走開——鎖了方向，走開的就斬空（那是使用者選的） ── */
+  await fillAll(page);
+  const xman = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const R0 = Math.max(siteR + 20, (EXC_REACH + 20) / 1.6), w = workers[0];   // 同上一條的擺法
+    releaseWorker(w);
+    w.x = R0; w.z = 0; w.y = 0; w.air = 0; w.fall = 99;
+    const m = spawnBeast('saber', 1);
+    const th1 = -2 * Math.asin((EXC_REACH + 20) / (2 * R0));
+    m.x = R0 * Math.cos(th1); m.z = R0 * Math.sin(th1); m.st = 'fun'; m.pause = 99;
+    callSaber({ x: w.x, y: 0, z: w.z }, w, true);
+    const bw = m.call && m.call.bw, b = m.call && m.call.b === w;
+    let n = 0, act = null, air = 0;
+    const seen = [];
+    while (n < 3000) {
+      step(0.02); n++;
+      if (seen[seen.length - 1] !== m.st) seen.push(m.st);
+      if (!act && m.st === 'act') act = { d: Math.hypot(w.x - m.x, w.z - m.z) };
+      if (w.air) air = 1;
+      if (m.st === 'fun' && seen.indexOf('excal') >= 0) break;
+    }
+    const r = { bw, b, act, air, seen: seen.join('→'), call: m.call, reach: EXC_REACH };
+    w.fall = 0; beasts = null; clearFires();
+    return r;
+  });
+  ok('點小人：命令帶著他、追到射程一半站定斬下去，光柱把他沖飛',
+     xman.bw === 1 && xman.b && xman.seen === 'call→act→excal→fun' && xman.act &&
+     Math.abs(xman.act.d - xman.reach) < 0.2 && xman.air === 1 && xman.call === null,
+     '命令 bw ' + xman.bw + '；' + xman.seen + '；' + (xman.act ? '站定時離他 ' + xman.act.d.toFixed(2) + ' 格（EXC_REACH ' +
+     xman.reach + '）' : '沒站定') + '；沖飛＝' + !!xman.air);
+
+  /* ── 點選（v1.238）：真的走 onDown／onUp 那一條——拿 Excalibur 點得到地上的生物與小人（以前那一檔是透明的）；
+        天上的、她自己、立體機動中的里維、正在化掉的巨人不算；飛龍照狀態認（在地上走、趴著的算） ── */
+  const xpick = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const e = ENG.camEye(), hl = Math.hypot(e.x, e.z), hx = e.x / hl, hz = e.z / hl;
+    const a = spawnBeast('ape', 1);
+    a.x = hx * (bp.radius + 6); a.z = hz * (bp.radius + 6); a.a = 0; a.st = 'fun'; a.pause = 999;
+    const w = workers[0];
+    releaseWorker(w);
+    w.x = hx * (bp.radius + 6) - hz * 5; w.z = hz * (bp.radius + 6) + hx * 5; w.y = 0; w.air = 0; w.fall = 0;
+    draw(); ENG.render();
+    const c = ENG.three.renderer.domElement.getBoundingClientRect(), cam = ENG.three.camera;
+    const at = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam);
+                              return [(v.x + 1) / 2 * c.width + c.left, (1 - v.y) / 2 * c.height + c.top]; };
+    const panel = document.getElementById('panel'), hid = panel.classList.contains('hide');
+    const click = p => { onDown({ clientX: p[0], clientY: p[1] }); onUp({}); };
+    const poked = stats.poked, was = tool;
+    tool = 'excalibur';
+    click(at(a.x, ENG.BEAST_MID.ape * a.sc, a.z));
+    const S = (beasts || []).find(b => b.kind === 'saber');
+    const r = { ape: !!(S && S.call && S.call.b === a && !S.call.bw) };
+    click(at(w.x, 0.7 * (w.scale || 1), w.z));
+    r.man = !!(S && S.call && S.call.b === w && S.call.bw === 1);
+    r.fell = w.fall > 0; r.poked = stats.poked - poked;
+    tool = was;
+    if (!hid) panel.classList.remove('hide');      // onDown 會把設定面板收下去，還回去
+    const L = spawnBeast('levi', 1);
+    r.cut = [sabCanCut(a), sabCanCut(S), sabCanCut(L), sabCanCut(Object.assign({}, L, { st: 'odm' })),
+             sabCanCut({ kind: 'dragon', sky: 1, st: 'gwalk' }), sabCanCut({ kind: 'dragon', sky: 1, st: 'down' }),
+             sabCanCut({ kind: 'dragon', sky: 1, st: 'in' }), sabCanCut({ kind: 'gryphon', sky: 1 }),
+             sabCanCut({ kind: 'gryphon', sky: 0 }), sabCanCut({ kind: 'giant', dead: 0.5 })].join(',');
+    beasts = null;
+    return r;
+  });
+  ok('點選：拿 Excalibur 點得到地上的生物與小人（真的走 onUp）；天上的、她自己、立體機動中的里維、化掉中的巨人不算',
+     xpick.ape && xpick.man && !xpick.fell && xpick.poked === 0 &&
+     xpick.cut === 'true,false,true,false,true,true,false,false,true,false',
+     '點猴子→叫她去斬牠 ' + xpick.ape + '；點小人→叫她去斬他 ' + xpick.man + '（沒被戳倒＝' + !xpick.fell + '、戳倒成就 +' +
+     xpick.poked + '）；砍得了嗎（猴／她自己／里維／立體機動中的里維／地上走的飛龍／趴著的飛龍／天上的飛龍／' +
+     '天上的獅鷲／地上的獅鷲／化掉中的巨人）' + xpick.cut);
 
   /* ── Saber 只有一位：叫到天災那一位就取消她的天災任務；她被叫著時天災抽到 Saber 就作廢 ── */
   const xone = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     const nSab = () => (beasts || []).filter(b => b.kind === 'saber').length;
     const d = spawnBeast('saber');                    // 天災那一位（fun 0），走進來的半路
-    const r = callSaber({ x: 30, y: 0, z: -30 });
+    /* 叫她去場子另一邊（v1.238 起進了射程一半就站定：點得近的話下面 stepDoom 推那一幀她就轉進 act 了） */
+    const r = callSaber({ x: -d.x * 0.5, y: 0, z: -d.z * 0.5 });
     const a = { same: r === d, fun: d.fun, bad: d.bad, home: d.home, st: d.st, n: nSab(),
                 busy: beasts.some(b => !b.fun && !b.herd) };
     const realRoll = rollDoom;
@@ -27733,7 +27899,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     const m = spawnBeast('saber', 1);
     m.x = siteR + 20; m.z = 0;
-    callSaber({ x: siteR + 30, y: 0, z: 10 });
+    // 點在射程一半外面（v1.238 起進了射程就站定，整地那一幀就會轉進 act）
+    callSaber({ x: siteR + 20, y: 0, z: -(EXC_REACH + 20) });
     beastHit(m);                                     // 吉祥物本來會「一擊切換一次」（v1.208）
     const hit = { bad: m.bad, st: m.st, call: !!m.call };
     phase = 'clear'; stepBeast(m, 0.02);             // 整地：吉祥物本來會走人
@@ -27888,7 +28055,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let x0 = m.x, z0 = m.z, p0 = m.ph;
     stepBeast(m, dt);
     const walk = { d: Math.hypot(m.x - x0, m.z - z0), ph: m.ph - p0 };
-    callSaber({ x: R, y: 0, z: -40 });
+    // 點在射程一半外面還有一段（v1.238 起進了射程就站定；下面要量 40 步的腳程）
+    callSaber({ x: R, y: 0, z: -(EXC_REACH + 30) });
     const st = m.st;
     let d = 0, ph = 0;
     for (let i = 0; i < 40; i++) {

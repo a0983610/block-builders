@@ -77,8 +77,9 @@ const TOOLS = [
     /* v1.221：點地面或建築都算，見 castHole。 */
     tip: '點一下：範圍內的積木、小人動物被吸進黑洞消失，5 秒後從天上撒滿整座島' },
   { id: 'excalibur', n: 'Excalibur', k: '✨',
-    /* v1.224：點地面或建築都算，叫 Saber 過去斬那一招（見 callSaber）。v1.226 起用跑的（EXC_RUN） */
-    tip: '點一下：叫 Saber 跑過來，朝那一點舉劍斬下光柱（她在場上就直接叫過去）' },
+    /* v1.224：點地面或建築都算，叫 Saber 過去斬那一招（見 callSaber）。v1.226 起用跑的（EXC_RUN）。
+       v1.238 起同兵長砍猴：點建築、生物、小人就跑到光柱射程的一半（EXC_REACH）斬下去，點空地跑到那裡待命 */
+    tip: '點建築、生物或小人：叫 Saber 跑來，在光柱射程一半處斬下；點空地：跑到那裡待命' },
   { id: 'musket', n: '火槍兵', k: '🎌',
     /* v1.227：點兩下，同箭雨（見 aimMusket）。點地面水平射、點建築就瞄那裡（最多抬 30°）。
        v1.232 起第二下是方向：整排朝那邊平行射，點建築是抬到那個高度（見 mkAim） */
@@ -118,7 +119,8 @@ const toolOk = t => !t.lock || t.lock.ok() || stats.gift.indexOf(t.id) >= 0;
 /* 加農砲兩下都是點地面（第一下擺砲、第二下是要轟的地方），同投石機。
    這三把的第二下**點在建築上也算數**（本來就算），v1.212 起那一下點到的高度
    就是要轟的高度（見 useTool）——在這張表裡只是「點空地也不會沒反應」。 */
-/* Excalibur（v1.224）點地面就是「斬那一點」（Saber 停在那一點前面朝它斬），所以也在這裡。 */
+/* Excalibur（v1.224）點地面就是「斬那一點」（Saber 停在那一點前面朝它斬），所以也在這裡。
+   v1.238 起點地面改成跑到那裡待命（同兵長砍猴），照樣要在這裡。 */
 /* 火槍兵（v1.227）同箭雨：第一下站人、第二下點地面就是水平朝那個方向打。 */
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
@@ -7947,7 +7949,13 @@ function useTool(hit) {
   if (tool === 'sword') { aimSword(hit.point); return 0; }
   if (tool === 'ufo') { callUfo({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'hole') { castHole(hit.point, onGround); return 0; }   // 小黑洞（v1.221）
-  if (tool === 'excalibur') { callSaber(hit.point); return 0; }       // Excalibur（v1.224）
+  /* Excalibur（v1.224）：點建築＝跑到射程一半斬下去、點空地＝跑到那裡待命（v1.238）；點生物與小人在 game-ui.js
+     那邊就接走了。**點到地上的碎料算點地面**（同火槍兵 v1.232 那一條：還立著的 SET 才算建築） */
+  if (tool === 'excalibur') {
+    const b = hit.kind === 'block' && hit.idx >= 0 ? blocks[hit.idx] : null;
+    callSaber(hit.point, null, false, onGround || !!(b && b.st !== SET));
+    return 0;
+  }
   // 兵長砍猴（v1.230）：點建築＝飛過去砍、點空地＝跑到那裡待命；點生物與小人在 game-ui.js 那邊就接走了
   if (tool === 'levi') { callLevi(hit.point, hit.dir, null, false, onGround); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
@@ -9186,10 +9194,20 @@ function excScorch(m) {
      · 斬完回去逛（excDone），至少再逛 MASC_STAY 那麼久（這段時間再點就直接叫過去）。
      · 走過去那一趟**被打到只是拖延**：照樣倒、爬起來接著走，不改主意（beastHit）、
        不被換場趕走（stepBeast 的 away）。天災這時候抽到 Saber：不把她就地翻臉（turnBad），
-       也不另外放一位進來——**那一件天災作廢**（stepDoom）。 */
-/* 停在目標前面幾格。光柱從護手長出去要 2.25 格才到全粗（excWidth），斬到底那一刻握把在她身前
-   約 0.6 格，所以站 4 格時那一點離光柱起點 3 格出頭——剛好是全粗那一段。 */
-const EXC_STAND = 4;
+       也不另外放一位進來——**那一件天災作廢**（stepDoom）。
+
+   v1.238 改操作，使用者：「調整saber操作 類似里維 點建築&生物則到能攻擊到的適當距離攻擊(最遠距離的一半)
+   點地面則走過去」。問過四件，使用者選：點地面**跑過去待命 LEV_WAIT 秒**（同里維）、點生物**站定那一刻就鎖定方向**
+   （之後牠走開就斬空）、**小人也點得到**（同里維）、天上的**先不算**（同里維）。所以命令跟里維那一份同一個樣子：
+     · 點建築：跑到離那一點 EXC_REACH 格內就站定出招（sd），已經在圈內就原地轉身斬
+     · 點生物、小人：命令帶著那一隻（b／bw），stepCall 每一幀照牠現在的位置追，進圈就站定（callAim 那一刻鎖方向）
+     · 點空地（點到地上的碎料也算，同火槍兵 v1.232）：跑到那一點待命（go，見 levArrive），不出招
+   見 開發筆記〈Excalibur 改操作：點建築、生物、小人跑到射程一半斬，點地面跑過去待命〉 */
+/* 站多遠斬（v1.238，使用者：「到能攻擊到的適當距離攻擊(最遠距離的一半)」）：光柱搆得到 EXC_L 格
+   （從劍身中段量，見 excGeo 的 R），站在一半的地方——點到的那一點落在光柱長度的正中間。
+   路上一進這一圈就站定；已經在圈內就原地轉身斬，不往回退（同里維一進射程就射）。
+   v1.224～v1.237 是停在那一點前面 4 格（光柱 2.25 格才到全粗，站 4 格剛好是全粗那一段）。 */
+const EXC_REACH = ENG.EXC_L / 2;
 /* 叫她過去那一段跑幾倍（v1.226，使用者：「速度是一般的三倍」＝走路 WALK 6.8 的三倍 20.4，
    腿擺跟著同一個倍率）。從場邊跑到目標實測 2.9 秒（62 格）；走路的時候是 20 多秒 */
 const EXC_RUN = 3;
@@ -9205,20 +9223,27 @@ function pickSaber(p) {
   }
   return best;
 }
-/* 點下去的那一下（useTool）。回傳被叫去的那一位（測試在讀）。 */
-function callSaber(p) {
-  const at = { x: p.x, y: p.y || 0, z: p.z };
+/* 點下去的那一下（useTool／game-ui.js 點生物、點小人那兩條）。tb＝點到的那一隻（或那一個小人，
+   isW 給 true）；ground＝點的是空地（跑到那裡待命）。回傳被叫去的那一位（測試在讀）。 */
+function callSaber(p, tb, isW, ground) {
+  const at = tb ? { x: tb.x, y: 0, z: tb.z, sd: EXC_REACH, ax: tb.x, az: tb.z, b: tb, bw: isW ? 1 : 0 }
+           : ground ? { x: p.x, y: 0, z: p.z, sd: LEV_SD, go: 1, b: null }
+           : { x: p.x, y: p.y || 0, z: p.z, sd: EXC_REACH };
+  const whom = !tb ? '' : isW ? '那個小人' : (BEAST_NM[tb.kind] || '那一隻');
   let m = pickSaber(at);
   if (!m) {
     /* 點在場心附近就沒有「最近的那一邊」可言，隨機挑一個方位（同天災） */
     const a = Math.hypot(at.x, at.z) > 1 ? Math.atan2(at.z, at.x) : Math.random() * Math.PI * 2;
     m = spawnBeast('saber', 1, 0, a);
-    toast(BEAST_NM.saber + '應召而來', '她朝你點的地方跑過去，到了就舉劍斬下去');
+    toast(BEAST_NM.saber + '應召而來', ground ? '她跑到你點的地方待命'
+                                      : '她朝' + (whom || '你點的地方') + '跑過去，進了光柱的射程就舉劍斬下去');
   } else {
     beastCry(m);
     const doom = ownSaber(m);
     toast(BEAST_NM.saber + (doom ? '放下了天災那一趟' : '聽到了'),
-          m.st === 'excal' ? '這一招斬完就過去' : '她轉身朝你點的地方跑過去');
+          m.st === 'excal' ? '這一招斬完就過去'
+          : tb ? '她轉身朝' + whom + '跑過去'
+          : ground ? '她轉身跑到你點的地方待命' : '她轉身朝你點的地方跑過去');
   }
   if (m.st === 'excal') m.cq = at;            // 正在出招：這一招斬完再過去（使用者選的）
   else sendSaber(m, at);
@@ -9245,16 +9270,17 @@ function sendSaber(m, p) {
 }
 /* 走過去的一幀。遠的那一段借 strollTo（繞開別人家、不穿建築，同進場那一段）；
    走到了（或走到城牆腳下又沒門可繞）改成最後那幾步：直直走過去，下一步會踩進建築或房子
-   就停（同 near）——停在離那一點 EXC_STAND 格，或是被擋住的地方，轉過去對著那一點出招。 */
+   就停（同 near）——停在離那一點 sd 格，或是被擋住的地方，轉過去對著那一點出招。 */
 function stepCall(m, dt, spd, stp, kp) {
   const c = m.call;
-  /* 里維兵長（v1.230）那一道命令多三樣：sd 停在離那一點幾格（沒給＝EXC_STAND）、b 點到的那一隻生物
-     （牠會走，每一幀照牠現在的位置追；不在場上了就收工）、ax／az 站定之後要面向的那一點 */
+  /* 命令裡的 sd 停在離那一點幾格（Saber 斬建築與生物是 EXC_REACH，見 callSaber；里維見 callLevi）、
+     b 點到的那一隻生物（牠會走，每一幀照牠現在的位置追；不在場上了就收工）、ax／az 站定之後要面向的那一點。
+     b／ax／az 是里維（v1.230）先開的，Saber 點生物（v1.238）同一套，只是點得到的那幾隻各認各的（sabCanCut） */
   if (c.b) {
-    if (!levTargetOk(c.b, c.bw)) { excDone(m); return false; }          // bw＝點的是小人（v1.230）
+    if (!levTargetOk(c.b, c.bw, m.kind === 'saber' ? sabCanCut : leviCanCut)) { excDone(m); return false; }
     c.x = c.b.x; c.z = c.b.z; c.ax = c.b.x; c.az = c.b.z;
   }
-  const sd = c.sd !== undefined ? c.sd : EXC_STAND;
+  const sd = c.sd;
   const dx = c.x - m.x, dz = c.z - m.z, d = Math.hypot(dx, dz) || 1;
   if (d <= sd + 0.05) { callAim(m); return false; }
   /* 兵長砍猴點建築（v1.230）：路上一走進射程（rg）、又站在那一面的外側（hx／hz 是那一面朝外的方向，
@@ -9288,8 +9314,8 @@ function stepCall(m, dt, spd, stp, kp) {
       if (wallFoot(m, tx, tz)) { m.cn = 1; return false; }
     }
     m.tx = tx; m.tz = tz;
-    /* 一步不跨進 EXC_STAND 那一圈（v1.226）：跑 3 倍時一幀 0.4 格，開頭那一條「到了沒」是走之前判的，
-       不擋的話她會停在 3.65 格（實測）。d − EXC_STAND 一定 > 0.05（開頭那一條擋掉了），不會是 0 */
+    /* 一步不跨進 sd 那一圈（v1.226）：跑 3 倍時一幀 0.4 格，開頭那一條「到了沒」是走之前判的，
+       不擋的話她會停在 3.65 格（實測，那時站 4 格）。d − sd 一定 > 0.05（開頭那一條擋掉了），不會是 0 */
     if (strollTo(m, dt, Math.min(spd, (d - sd) / dt), stp, kp)) { m.cn = 1; m.leg = 0; }
     return false;
   }
@@ -9298,7 +9324,7 @@ function stepCall(m, dt, spd, stp, kp) {
   let sp = Math.min(spd * dt, adv), stop = adv < 0.05;
   /* 往前探半格（等踩進去才判斷的話，這一幀已經站在牆裡面了）。探的是**這一步**，不是 near 那樣
      探「走到底那一點」：near 走到底是最近那一塊外面 DOOM_NEAR 格、一定是空地，這裡走到底是
-     點到的那一點前面 EXC_STAND 格——點的是牆的話那一點常常在建築裡面，照 near 那樣探她會一進這一段
+     點到的那一點前面 sd 格——點的是牆的話那一點常常在建築裡面，照 near 那樣探她會一進這一段
      就原地站定（測試抓到的：停在工地外圈那一環上，離目標 10.5 格、前面根本沒東西擋）。
      **切成 CALL_PROBE 一小步一小步探**（v1.226）：跑 3 倍時一幀 0.41 格，一口氣探「這一步＋半格」的話
      前面 0.91 格內有東西就停，她會停在離牆還有 0.4 格的地方（測試抓到的：5.12 格、前面半格其實是空的）。
@@ -9315,9 +9341,10 @@ function stepCall(m, dt, spd, stp, kp) {
   return false;
 }
 /* 站定、轉過去對著那一點、架劍瞄一下（act 那一段，DOOM_AIM 之後轉進 excal，同天災那一招）。
-   點在她腳邊的話就照原本的朝向斬（那一點的方向算不出來）。 */
+   點在她腳邊的話就照原本的朝向斬（那一點的方向算不出來）。
+   點生物的話方向就鎖在這一刻牠在的地方（v1.238 使用者選的「站定那一刻就鎖定方向」）：act／excal 不再追牠 */
 function callAim(m) {
-  // 兵長砍猴點空地（v1.230）：跑到了就是到了，不出招
+  // 點空地（兵長砍猴 v1.230、Excalibur v1.238）：跑到了就是到了，不出招
   if (m.call.go) { levArrive(m); return; }
   // 里維兵長（v1.230）站的是目標前面那一點，面向的是要砍的那一點（c.ax／c.az）
   const c = m.call, dx = (c.ax !== undefined ? c.ax : c.x) - m.x, dz = (c.az !== undefined ? c.az : c.z) - m.z;
@@ -9420,10 +9447,17 @@ function leviCanCut(m) {
 }
 /* 小人（使用者：「兵長點小人無效」）：在地上、沒被吸走的都砍得到（弓箭手、火槍兵不在 workers 裡，點不到） */
 function leviCanCutW(w) { return !!w && !w.air && !w.ufo; }
-/* 命令裡那一個還在不在（w＝這一個是小人） */
-function levTargetOk(b, w) {
+/* Excalibur 點得到、追得到的生物（v1.238）：她自己、被吸走的、立體機動中的里維與正在化掉的巨人（levBusy）不算；
+   天上的不算（使用者選「先不算，同里維」）。飛龍的 sky 從進場到飛走一路是 1（連在地上那幾段），
+   所以牠照狀態認：在草皮上走（gwalk）、摔下來趴著（down）的點得到——里維那一份是整隻不算（leviCanCut） */
+function sabCanCut(m) {
+  if (!m || m.kind === 'saber' || m.ufo || levBusy(m)) return false;
+  return m.kind === 'dragon' ? m.st === 'gwalk' || m.st === 'down' : !m.sky;
+}
+/* 命令裡那一個還在不在（w＝這一個是小人；can＝生物那邊照誰的規矩認，沒給＝里維的） */
+function levTargetOk(b, w, can) {
   return w ? leviCanCutW(b) && workers.indexOf(b) >= 0
-           : leviCanCut(b) && !!beasts && beasts.indexOf(b) >= 0;
+           : (can || leviCanCut)(b) && !!beasts && beasts.indexOf(b) >= 0;
 }
 function pickLevi(p) {
   let best = null, bd = Infinity;
@@ -9651,7 +9685,8 @@ function levClear(m, vx, vz) {
   pushOutHome(m);
 }
 /* 點空地那一道命令跑到了（使用者：「如果點空地 就走到空地那個位置」）：同砍完那一套收命令
-   （排著的下一道先做），回去逛之前先站著待命 LEV_WAIT 秒——不然他一到就走開，點那一下看起來像沒用 */
+   （排著的下一道先做），回去逛之前先站著待命 LEV_WAIT 秒——不然他一到就走開，點那一下看起來像沒用。
+   Excalibur 點地面（v1.238，使用者選「跑過去、待命 8～12 秒」同里維）也走這一支 */
 function levArrive(m) {
   excDone(m);
   if (m.st === 'fun') { m.pause = rr(LEV_WAIT[0], LEV_WAIT[1]); m.gait = 0; }

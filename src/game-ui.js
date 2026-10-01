@@ -354,12 +354,14 @@ function onUp(e) {
      其餘破壞道具**一律不理小人**——那些是對著建築用的，被路過的人擋掉那一下就白點了。 */
   /* pick 的結果要用格子重驗一次（見 fixHit）：射線鑽得過積木之間的縫，
      不驗的話這一下會落在牆後面那一塊、或牆後面的地上。 */
-  let hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man' : tool === 'levi' ? 'levi'
+  /* Excalibur（v1.238，使用者：「類似里維 點建築&生物」）跟兵長砍猴同一檔：建築、生物、小人同一級，射線先碰到誰就是誰 */
+  let hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man' : tool === 'levi' || tool === 'excalibur' ? 'levi'
                                   : tool === 'fire' || tool === 'bucket' ? '' : 'skip'));
   /* 兵長砍猴（v1.230）點到砍不了的（天上的飛龍／獅鷲、里維自己、飛在半空的小人、弓箭手與火槍兵）：
-     當他是透明的，照其他道具那樣看後面是建築還是地面 */
-  if (hit && tool === 'levi' &&
-      ((hit.kind === 'beast' && !leviCanCut(beastAt(hit.idx))) ||
+     當他是透明的，照其他道具那樣看後面是建築還是地面。Excalibur 同理，生物照她自己那一份認（sabCanCut） */
+  const canCut = tool === 'levi' ? leviCanCut : tool === 'excalibur' ? sabCanCut : null;
+  if (hit && canCut &&
+      ((hit.kind === 'beast' && !canCut(beastAt(hit.idx))) ||
        (hit.kind === 'worker' && !leviCanCutW(workers[hit.idx]))))
     hit = fixHit(ENG.pick(x, y, 'skip'));
   if (!hit) return;
@@ -371,6 +373,8 @@ function onUp(e) {
     if (!w || w.air) return;
     /* 兵長砍猴（v1.230，使用者：「兵長點小人無效」）：叫里維飛過去砍他——同生物，只會倒地 */
     if (tool === 'levi') { markTool(tool); callLevi(hit.point, hit.dir, w, true); return; }
+    // Excalibur（v1.238）：叫 Saber 追著他跑到射程一半斬下去（使用者選「點得到，同里維」）
+    if (tool === 'excalibur') { markTool(tool); callSaber(hit.point, w, true); return; }
     // 拿著火把戳人就是點他：站著被點著的會抱頭跑圈圈
     if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); return; }
     // 拿水桶澆人：濕 5 秒（身上有火的當場熄），不會把人打倒
@@ -389,6 +393,8 @@ function onUp(e) {
     /* 兵長砍猴（v1.230）：點地上的生物＝叫里維飛過去砍牠。砍不了的那幾隻上面已經改點後面的東西了，
        這裡的 leviCanCut 只是保險 */
     if (tool === 'levi' && leviCanCut(m)) { markTool(tool); callLevi(hit.point, hit.dir, m); return; }
+    // Excalibur（v1.238）：點地上的生物＝叫 Saber 追著牠跑到射程一半，站定那一刻鎖定方向斬下去
+    if (tool === 'excalibur' && sabCanCut(m)) { markTool(tool); callSaber(hit.point, m); return; }
     /* 拿著火把點牠：站著被點著的會抱頭跑圈圈；飛龍是拖著火飛一段再摔下來
        （v1.154，見 burnDragon）。已經在燒或剛被澆濕的點不著，那就改成打倒／打下來
        （v1.176 起在天上的獅鷲也一樣，改成把牠打下來——見 grDown）。 */
