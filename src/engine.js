@@ -2301,22 +2301,50 @@ const ENG = (function () {
   const searC = (c, a) => { const k = new T.Color(c); return { r: k.r, g: k.g, b: k.b, a }; };
   /* 橫切面：中線 → 邊緣（|u| 對應 SEAR_U 的 0、0.18、0.45、0.75、1）。
      SEAR_GLOW 是每一圈吃幾成熱度：**只有中線那一窄條會紅**（第一版中線到 0.45 都紅，整條 15 格寬幾乎全紅，
-     冷得慢的那幾刀還變成一條一條豎的紅條——不是「中心先深紅」）。 */
+     冷得慢的那幾刀還變成一條一條豎的紅條——不是「中心先深紅」）。
+     SEAR_CHAR 是**還燙的時候**那一層焦黑（暗紅從它長出來），冷掉之後褪成 SEAR_COLD（v1.237.1，見 searTint）。 */
   const SEAR_CHAR = [searC(0x070403, 0.96), searC(0x0a0604, 0.96), searC(0x0e0906, 0.93),
                      searC(0x1a120b, 0.82), searC(0x261c13, 0)];
+  /* 冷掉之後那一層（v1.237.1 使用者：「焦痕的效果顏色可以稍微淡一點 黑色的地方顏色目前太單一」，
+     預覽選了「稍淡、斑駁輕、層次開」）：SEAR_CHAR 往炭灰褐 0x3a322b 提亮一半、濃度 × 0.95，
+     中心再往灰燼 0x605a53 拉、外緣往燒焦的褐草 0x4a3826 拉——中心灰白、中間焦黑、外緣焦褐。
+     色碼是照那條式子算好寫死的（見 開發筆記〈焦痕淡一點、黑的地方有深淺〉）；
+     最亮的灰燼也壓在線性 0.12 以下，〈地面痕跡〉那條「全冷了」的門檻照舊成立。 */
+  const SEAR_COLD = [searC(0x403b35, 0.91), searC(0x352f29, 0.91), searC(0x241d19, 0.88),
+                     searC(0x34291f, 0.78), searC(0x413224, 0)];
   const SEAR_GLOW = [1, 0.6, 0.12, 0, 0];
   /* 每一圈冷得多慢（中線是 1，乘在 hot 上）：外面先冷、紅的一路往中線收，**中線最後熄**
      （v1.231 使用者：「紅色消失的部分 現在看起來像分段消失 應該一條的中心最後消失」——v1.224～v1.230
      一刀裡橫的那幾點同一個熱度，冷得快的那幾刀整刀先黑，實測第 2 秒斷成 7 段、紅的寬度一直沒收）。 */
   const SEAR_LAST = [1, 0.7, 0.5, 0.4, 0.4];
   const SEAR_RED = searC(0x7a1004, 1), SEAR_EMBER = searC(0xd8380c, 1);   // 暗紅 → 最燙那幾處偏橘
+  /* 斑駁（v1.237.1）：每一點的深淺 tone（−1～+1，規則那邊照位置抽好的，見 game-tools 的 charTone）。
+     往 + 拉向灰燼（最多三成，濃度少 7%：草地從淺的那幾塊透上來一點），往 − 拉向煤灰（最多 36%）。 */
+  const CHAR_ASH = searC(0x605a53, 1), CHAR_SOOT = searC(0x050302, 1);
+  const TONE_ASH = 0.3, TONE_SOOT = 0.36, TONE_THIN = 0.072;
   const _sc = { r: 0, g: 0, b: 0, a: 0 };
-  /* 這一點的顏色：h＝這一點還有多燙（0～1）。0.5 以下從焦黑往暗紅，以上從暗紅往餘燼的橘 */
-  function searTint(base, h) {
-    if (h <= 0) { _sc.r = base.r; _sc.g = base.g; _sc.b = base.b; _sc.a = base.a; return _sc; }
-    const A = h < 0.5 ? base : SEAR_RED, B = h < 0.5 ? SEAR_RED : SEAR_EMBER, f = h < 0.5 ? h * 2 : (h - 0.5) * 2;
-    _sc.r = A.r + (B.r - A.r) * f; _sc.g = A.g + (B.g - A.g) * f; _sc.b = A.b + (B.b - A.b) * f;
-    _sc.a = base.a;
+  /* 這一點的顏色：cold＝冷掉之後那一圈的顏色、dark＝還燙的時候那一圈的焦黑、tone＝這一點的深淺、
+     h＝這一點還有多燙（0～1）。先疊深淺；還燙的地方再拉回原本那層焦黑（熱度 0.125 以上就全是原本那一套），
+     所以燙的那幾秒跟 v1.237 以前一樣「中心先深紅」，冷下來才褪成淡一點、有斑駁的那一層
+     （預覽第一版直接從淡的那層往紅走，紅被洗成灰灰的、紅的範圍看起來也變小）。
+     熱度 0.5 以下從焦黑往暗紅，以上從暗紅往餘燼的橘 */
+  function searTint(cold, dark, tone, h) {
+    let r = cold.r, g = cold.g, b = cold.b, a = cold.a;
+    if (tone > 0) {
+      const f = tone * TONE_ASH;
+      r += (CHAR_ASH.r - r) * f; g += (CHAR_ASH.g - g) * f; b += (CHAR_ASH.b - b) * f; a *= 1 - tone * TONE_THIN;
+    } else if (tone < 0) {
+      const f = -tone * TONE_SOOT;
+      r += (CHAR_SOOT.r - r) * f; g += (CHAR_SOOT.g - g) * f; b += (CHAR_SOOT.b - b) * f;
+    }
+    if (h > 0) {
+      const e = Math.min(1, h * 8);
+      r += (dark.r - r) * e; g += (dark.g - g) * e; b += (dark.b - b) * e; a += (dark.a - a) * e;
+      if (h >= 0.5) { r = SEAR_RED.r; g = SEAR_RED.g; b = SEAR_RED.b; }
+      const B = h < 0.5 ? SEAR_RED : SEAR_EMBER, f = h < 0.5 ? h * 2 : (h - 0.5) * 2;
+      r += (B.r - r) * f; g += (B.g - g) * f; b += (B.b - b) * f;
+    }
+    _sc.r = r; _sc.g = g; _sc.b = b; _sc.a = a;
     return _sc;
   }
   /* 強爆炸的焦痕（v1.231）：中心 → 邊緣每一圈的焦黑色與吃幾成熱度（SCORCH_U 那幾圈）。
@@ -2324,10 +2352,14 @@ const ENG = (function () {
      SCORCH_GLOW 規則那邊也讀：冒煙的口照「這一點看起來多紅」決定冒多少。 */
   const SCORCH_CHAR = [searC(0x070403, 0.96), searC(0x080504, 0.96), searC(0x0a0604, 0.96), searC(0x0c0705, 0.95),
                        searC(0x0e0906, 0.93), searC(0x140d08, 0.88), searC(0x1a120b, 0.72), searC(0x261c13, 0)];
+  // 冷掉之後那一層（v1.237.1，同 SEAR_COLD 那條式子，照 SCORCH_U 每一圈的半徑倍率算）
+  const SCORCH_COLD = [searC(0x403b35, 0.91), searC(0x37312c, 0.91), searC(0x2c2621, 0.91), searC(0x231d18, 0.9),
+                       searC(0x28201a, 0.88), searC(0x34291e, 0.84), searC(0x3d2f21, 0.68), searC(0x413224, 0)];
   const SCORCH_GLOW = [1, 0.9, 0.7, 0.45, 0.22, 0.08, 0, 0];
-  /* list 每一項 {x, z 起點, fx, fz 方向, len 長, w 半寬, n 刀數, jl, jr, hot（各 n+1 個）, cool, a}。
+  /* list 每一項 {x, z 起點, fx, fz 方向, len 長, w 半寬, n 刀數, jl, jr, hot（各 n+1 個）,
+     tone（第 k 刀第 b 點在 k × SEAR_U.length + b）, cool, a}。
      rounds（強爆炸的焦痕，v1.231）每一項 {x, z 爆點, r 半徑, j 每一片的半徑倍率（SCORCH_SEG 個）,
-     hot 每一點冷得多慢（第 b 圈第 k 片在 b × SCORCH_SEG + k）, cool, a}。熱度同一條式子。 */
+     hot 每一點冷得多慢、tone 每一點的深淺（第 b 圈第 k 片都在 b × SCORCH_SEG + k）, cool, a}。熱度同一條式子。 */
   function putSears(list, rounds) {
     const cnt = Math.min(list.length, SEAR_MAX);
     const P = searPos, C = searCol, lim = groundHalf - 0.4, mid = (SEAR_U.length - 1) / 2;
@@ -2342,7 +2374,7 @@ const ENG = (function () {
       P[v * 3 + 2] = Math.max(-lim, Math.min(lim, s.z + s.fz * f + s.fx * w));
       const ring = Math.abs(b - mid);                 // 0 中線 … 4 邊緣
       const heat = Math.max(0, Math.min(1, 1 - s.cool / (0.45 + 1.1 * s.hot[k] * SEAR_LAST[ring])));
-      const c = searTint(SEAR_CHAR[ring], heat * SEAR_GLOW[ring]);
+      const c = searTint(SEAR_COLD[ring], SEAR_CHAR[ring], s.tone[k * SEAR_U.length + b], heat * SEAR_GLOW[ring]);
       C[v * 4] = c.r; C[v * 4 + 1] = c.g; C[v * 4 + 2] = c.b; C[v * 4 + 3] = c.a * s.a;
       v++;
     };
@@ -2361,7 +2393,7 @@ const ENG = (function () {
       P[v * 3 + 1] = SEAR_Y;
       P[v * 3 + 2] = Math.max(-lim, Math.min(lim, s.z + Math.sin(ang) * rad));
       const heat = Math.max(0, Math.min(1, 1 - s.cool / (0.45 + 1.1 * s.hot[b * SCORCH_SEG + kk])));
-      const c = searTint(SCORCH_CHAR[b], heat * SCORCH_GLOW[b]);
+      const c = searTint(SCORCH_COLD[b], SCORCH_CHAR[b], s.tone[b * SCORCH_SEG + kk], heat * SCORCH_GLOW[b]);
       C[v * 4] = c.r; C[v * 4 + 1] = c.g; C[v * 4 + 2] = c.b; C[v * 4 + 3] = c.a * s.a;
       v++;
     };
@@ -6606,7 +6638,7 @@ const ENG = (function () {
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
-    putStars, putBolts, putMarks, putSears, SEAR_MAX, SEAR_SEC, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
+    putStars, putBolts, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
     putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,

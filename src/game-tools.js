@@ -5059,6 +5059,23 @@ const SEAR_HOT = 2.5;
 const SEAR_STEP = 1;           // 沿著長度幾格切一刀
 const SEAR_VENT_GAP = 10;      // 冒煙的口沿著中線幾格一個（光柱 80 格 → 8 個，同爆裂魔法那塊的口數）
 const sears = [];
+/* 焦痕每一點的深淺（v1.237.1，−1 煤灰 … +1 灰燼，引擎 searTint 照它疊斑駁；燒灼痕與強爆炸的焦痕共用）：
+   使用者：「焦痕的效果顏色可以稍微淡一點 黑色的地方顏色目前太單一」。
+   照位置疊兩層平面波：大塊的（波長 big）三道、細一點的（small）三道，各抽方向與相位。
+   **只照位置、不每一點各抽亂數**：圓的那塊內圈一圈 36 點擠在兩格半徑裡，各抽各的話預覽上是一圈
+   從中心射出去的條紋（細長的三角形把相鄰兩點的差拉成放射狀）。生的時候抽好（每幀重抽會一直閃）。 */
+function charTone(big, small) {
+  const wv = [];
+  for (const [len, amp] of [[big, 0.42], [small, 0.26]]) {
+    const kf = 2 * Math.PI / len;
+    for (let n = 0; n < 3; n++) { const d = rr(0, 6.28); wv.push([Math.cos(d) * kf, Math.sin(d) * kf, rr(0, 6.28), amp]); }
+  }
+  return (x, z) => {
+    let w = 0;
+    for (const q of wv) w += q[3] * Math.sin(q[0] * x + q[1] * z + q[2]);
+    return clamp(w, -1, 1);
+  };
+}
 function spawnSear(x, z, fx, fz, len, w) {
   if (sears.length >= ENG.SEAR_MAX) sears.shift();
   const n = Math.max(2, Math.min(ENG.SEAR_SEC, Math.ceil(len / SEAR_STEP)));
@@ -5083,7 +5100,11 @@ function spawnSear(x, z, fx, fz, len, w) {
     const f = len * best / n;
     vents.push({ i: best, w: ENG.SEAR_GLOW[0], x: x + fx * f, z: z + fz * f, e: 0 });
   }
-  const s = { x, z, fx, fz, len, w, n, jl, jr, hot, vents, t: SEAR_LIFE, cool: 0, a: 1 };
+  // 每一點的深淺：沿著長度、橫的方向各照實際格數算，一大塊約 7 格、細的 4.5 格（第 k 刀第 b 點在 k × SEAR_U.length + b）
+  const tf = charTone(7, 4.5), NU = ENG.SEAR_U.length, tone = [];
+  for (let k = 0; k <= n; k++)
+    for (let b = 0; b < NU; b++) tone.push(tf(len * k / n, ENG.SEAR_U[b] * w));
+  const s = { x, z, fx, fz, len, w, n, jl, jr, hot, tone, vents, t: SEAR_LIFE, cool: 0, a: 1 };
   sears.push(s);
   return s;
 }
@@ -5153,7 +5174,14 @@ function spawnScorch(x, z, r) {
     const ang = k / SEG * Math.PI * 2, rad = r * ENG.SCORCH_U[b] * j[k];
     vents.push({ i: best, w: ENG.SCORCH_GLOW[b], x: x + Math.cos(ang) * rad, z: z + Math.sin(ang) * rad, e: 0 });
   }
-  const s = { x, z, r, j, hot, vents, t: SEAR_LIFE, cool: 0, a: 1 };
+  // 每一點的深淺（同 hot 的排法）：一大塊約 0.45 個半徑、細的 0.24 個，隕石到爆裂魔法看起來一樣碎
+  const tf = charTone(0.45 * r, 0.24 * r), tone = [];
+  for (let b = 0; b < NR; b++)
+    for (let k = 0; k < SEG; k++) {
+      const a = k / SEG * Math.PI * 2, rad = r * ENG.SCORCH_U[b] * j[k];
+      tone.push(tf(Math.cos(a) * rad, Math.sin(a) * rad));
+    }
+  const s = { x, z, r, j, hot, tone, vents, t: SEAR_LIFE, cool: 0, a: 1 };
   scorches.push(s);
   return s;
 }

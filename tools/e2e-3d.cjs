@@ -28807,6 +28807,58 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '，最舊那塊擠掉＝' + scLook.cap.firstOut + '），畫出 ' + scLook.cap.verts + ' 個頂點（緩衝區 ' + scLook.cap.room +
      '）；清掉之後 visible＝' + scLook.off);
 
+  /* v1.237.1：冷掉之後淡一點、黑的地方有深淺——使用者：「焦痕的效果顏色可以稍微淡一點 黑色的地方顏色目前太單一」。
+     讀 searMesh 真的送進 GPU 的頂點，線性換回 sRGB 再算亮度（畫面上看到的那個數）。
+     圓的那塊照頂點位置反推第幾圈（距離 ÷（半徑 × 那一片的輪廓倍率）最接近哪個 SCORCH_U）；
+     Excalibur 那道沿 +x 擺，取中線那一排（z 剛好在中線上）中間那四十格。
+       · 淡：不透明（a > 0.5）的頂點平均亮度 ≥ 0.1（v1.237 以前的焦黑每一圈都在 0.08 以下）
+       · 有深淺：圓的第 1～5 圈每一圈、長帶的中線，最亮與最暗差 ≥ 0.02（以前同一圈同一色，差 0）
+       · 層次：中心兩圈比中間兩圈亮（灰燼）、外緣那圈比中間偏褐（r − b 大）
+     亂數押住（固定一條 LCG），花紋每次一樣，這一條不賭骰子。 */
+  const scCold = await page.evaluate(() => {
+    const keep = Math.random; let sd = 7;
+    Math.random = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+    try {
+      cleanTools();
+      const R = 16.5, sc = spawnScorch(0, 0, R);
+      spawnSear(-30, 60, 1, 0, 60, 7.5);
+      for (let t = 0; t < 1.56 * SCORCH_HOT; t += 0.05) stepMarks(0.05);   // 兩種都冷了（SEAR_HOT 比較短）
+      ENG.putSears(sears, scorches);
+      const g = ENG.three.searMesh.geometry, n = g.drawRange.count;
+      const P = g.attributes.position.array, C = g.attributes.color.array;
+      const toS = c => c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+      const U = ENG.SCORCH_U, SEG = ENG.SCORCH_SEG;
+      const ring = U.map(() => ({ lo: 9, hi: -9, sum: 0, rb: 0, n: 0 })), line = { lo: 9, hi: -9, n: 0 };
+      let sum = 0, cnt = 0;
+      for (let i = 0; i < n; i++) {
+        if (C[i * 4 + 3] <= 0.5) continue;
+        const r = toS(C[i * 4]), gg = toS(C[i * 4 + 1]), b = toS(C[i * 4 + 2]);
+        const L = 0.2126 * r + 0.7152 * gg + 0.0722 * b, x = P[i * 3], z = P[i * 3 + 2];
+        sum += L; cnt++;
+        if (z > 30) {                                   // 長帶
+          if (Math.abs(z - 60) < 1e-4 && x > -20 && x < 20) { line.lo = Math.min(line.lo, L); line.hi = Math.max(line.hi, L); line.n++; }
+          continue;
+        }
+        const kk = ((Math.round(Math.atan2(z, x) / (Math.PI * 2) * SEG) % SEG) + SEG) % SEG;
+        const u = Math.hypot(x, z) / (R * sc.j[kk]);
+        let bi = 0;
+        for (let q = 1; q < U.length; q++) if (Math.abs(U[q] - u) < Math.abs(U[bi] - u)) bi = q;
+        const o = ring[bi];
+        o.lo = Math.min(o.lo, L); o.hi = Math.max(o.hi, L); o.sum += L; o.rb += r - b; o.n++;
+      }
+      const avg = b => ring[b].sum / ring[b].n, rb = b => ring[b].rb / ring[b].n;
+      return { mean: +(sum / cnt).toFixed(3), spread: ring.slice(1, 6).map(o => +(o.hi - o.lo).toFixed(3)),
+               line: +(line.hi - line.lo).toFixed(3), lineN: line.n,
+               mid: [avg(0), avg(1), avg(3), avg(4)].map(v => +v.toFixed(3)), rb: [rb(3), rb(6)].map(v => +v.toFixed(3)) };
+    } finally { Math.random = keep; cleanTools(); }
+  });
+  ok('焦痕冷掉之後淡一點、同一圈有深淺、中心偏灰外緣偏褐（強爆炸的焦痕與燒灼痕都是）',
+     scCold.mean >= 0.1 && scCold.spread.every(v => v >= 0.02) && scCold.lineN > 0 && scCold.line >= 0.02 &&
+     (scCold.mid[0] + scCold.mid[1]) / 2 > (scCold.mid[2] + scCold.mid[3]) / 2 && scCold.rb[1] > scCold.rb[0],
+     '不透明頂點平均亮度 ' + scCold.mean + '（v1.237 以前 0.08 以下）；第 1～5 圈各自最亮減最暗 ' + scCold.spread.join('／') +
+     '，長帶中線 ' + scCold.line + '（' + scCold.lineN + ' 點）；亮度 中心 ' + scCold.mid[0] + '、第 1 圈 ' + scCold.mid[1] +
+     '、第 3 圈 ' + scCold.mid[2] + '、第 4 圈 ' + scCold.mid[3] + '；r − b 第 3 圈 ' + scCold.rb[0] + '、外緣第 6 圈 ' + scCold.rb[1]);
+
   /* 冒煙：兩種焦痕都走 ventSmoke（包一層數它推了幾顆進塵霧），量三段時間冒了幾縷。
      塵霧先塞 1000 顆不會動的假粒子——比火煙的閘門 BURN_SMOKE 700 還多，就是蘑菇雲還在的那幾秒
      （實測炸完 7.3 秒才降到 700 以下）；只推 stepMarks，塵霧不會自己減少。 */
