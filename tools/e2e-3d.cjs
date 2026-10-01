@@ -27262,7 +27262,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       at: +(f * dt).toFixed(3),
       grabbed: set0.filter(b => b.ufo === 1 && b.st === CARRY).length,
       leftIn: blocks.filter(b => b.st === SET && inR(b)).length,
-      far: +Math.max(...h.up.map(it => Math.hypot(it.dx, it.dy, it.dz))).toFixed(3),
+      /* 照收的判準量（v1.237.5）：holeGrab 記的是腳底那一點的偏移，小人與動物收不收看的卻是胸口（HOLE_MID）。
+         v1.221～v1.237.4 直接拿偏移比 HOLE_R，站在邊緣被收進來的那一個就會多一點點（12.04／12.07），
+         紅不紅看那一刻有沒有人剛好站在邊緣——見 開發筆記〈小黑洞那條紅燈：收的判準與量的參考點不同一點〉 */
+      far: +Math.max(...h.up.map(it => Math.hypot(it.dx, it.dy + HOLE_MID[it.kind], it.dz))).toFixed(3),
       calm: set0.filter(b => b.qk).length,
       keepCol: set0.filter((b, i) => b.tr === col0[i][0] && b.tg === col0[i][1] &&
                                      b.tb === col0[i][2]).length
@@ -27369,6 +27372,37 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        '）、重心離場心 ' + d.off + '（黑洞離場心 ' + d.hole + '）；落完地板底下 ' + hl.under +
        ' 塊、還帶旗標 ' + hl.flagged + ' 塊');
   }
+
+  /* 範圍邊緣的人：收不收照胸口（HOLE_MID）算（v1.237.5）。上面「範圍外的一塊都不碰」那一條要剛好有人站在邊緣
+     才量得到這件事，這裡押好位置直接造：點在地面（球心抬到 HOLE_R × HOLE_LIFT），一個人胸口離球心 HOLE_R − 0.02、
+     另一個 HOLE_R + 0.02，兩個都站在地上——腳底比胸口離球心更遠，拿腳底量的話兩個都在範圍外。
+     每一幀都擺回原位（收的那一下在 stepHoles，排在小人自己走路之前），不必壓著他們不動。 */
+  const hlEdge = await page.evaluate(() => {
+    cleanTools();
+    const h = castHole({ x: 0, y: 0, z: -debrisR * 0.6 }, true);
+    const dyC = HOLE_MID[1] - h.y;                       // 站在地上的人，胸口比球心低多少
+    const ring = d => Math.sqrt(d * d - dyC * dyC);       // 胸口離球心 d 的那一圈，水平半徑
+    const A = workers[0], B = workers[1];
+    const put = (w, x, z) => { releaseWorker(w); w.x = x; w.z = z; w.y = 0; w.air = 0; w.ufo = 0; w.fall = 0; w.gait = 0; };
+    let f = 0;
+    while (h.st === 'quake' && f < 600) {
+      put(A, h.x + ring(HOLE_R - 0.02), h.z);
+      put(B, h.x, h.z + ring(HOLE_R + 0.02));
+      step(1 / 60); f++;
+    }
+    const it = h.up.find(u => u.o === A);
+    const r = { st: h.st, inA: A.ufo === 1, inB: B.ufo === 1,
+                chest: it ? +Math.hypot(it.dx, it.dy + HOLE_MID[1], it.dz).toFixed(3) : -1,
+                feet: it ? +Math.hypot(it.dx, it.dy, it.dz).toFixed(3) : -1, R: HOLE_R };
+    for (let i = 0; i < 1200 && holes; i++) step(1 / 60);   // 收完、撒完，不留給後面
+    cleanTools();
+    return r;
+  });
+  ok('範圍邊緣的人照胸口算：胸口在範圍裡就收、在外面就不收，量的時候也照胸口',
+     hlEdge.st === 'pull' && hlEdge.inA && !hlEdge.inB && hlEdge.chest <= hlEdge.R + 1e-9 && hlEdge.feet > hlEdge.R,
+     '胸口離球心 ' + (hlEdge.R - 0.02) + ' 的那一個收了＝' + hlEdge.inA + '、' + (hlEdge.R + 0.02) +
+     ' 的那一個收了＝' + hlEdge.inB + '；收進來那一個照胸口量 ' + hlEdge.chest + '、照腳底量 ' + hlEdge.feet +
+     '（半徑 ' + hlEdge.R + '）');
 
   /* 小人與動物（「將一定範圍內積木&生物&碎料往內部吸」），與球心放在哪。
      小人用 fall 壓在原地（躺著也照吸：holeTake 只跳過飛在半空的），免得一秒內走出範圍。 */

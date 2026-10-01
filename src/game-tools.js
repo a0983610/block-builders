@@ -6143,6 +6143,10 @@ function ufoList() {
    範圍外的人什麼都沒被打到（使用者選的是「純特效」）——計分與「開始拆了」照樣記。 */
 const HOLE_MAX = ENG.MAXHOLE;    // 同時最多幾顆「還在吸」的（再點就擠掉最早那顆，見 castHole）
 const HOLE_R = 12;               // 吸入範圍：一顆球的半徑（使用者選的）
+/* 量「在不在範圍裡」的那一點離腳底多高，照 holeGrab 的 kind 排：積木 0（中心本身）、小人胸口 0.9、動物 1。
+   holeGrab 記的偏移是腳底那一點（之後的位置照它算），所以要拿接手的東西跟 HOLE_R 比，得把這一截加回去
+   （v1.237.5 取名，數字沒動，見 開發筆記〈小黑洞那條紅燈：收的判準與量的參考點不同一點〉）。 */
+const HOLE_MID = [0, 0.9, 1];
 /* 點地面的時候球心抬到地面上方 HOLE_R × 這個數：不抬的話半顆球埋在地下（那一半什麼都吸不到），
    黑球也只露出半個。抬半個半徑，地面那一圈還搆得到 √(12² − 6²) ≈ 10.4。
    點建築就照點到的那一點（使用者：「可以點在地面或建築上」）。 */
@@ -6254,13 +6258,13 @@ function holeTake(h) {
   }
   for (const w of workers) {
     if (w.ufo || w.air) continue;          // 已經被收走／正飛在半空的不吸（落地還在範圍裡就收）
-    if ((w.x - h.x) ** 2 + ((w.y || 0) + 0.9 - h.y) ** 2 + (w.z - h.z) ** 2 > R2) continue;
+    if ((w.x - h.x) ** 2 + ((w.y || 0) + HOLE_MID[1] - h.y) ** 2 + (w.z - h.z) ** 2 > R2) continue;
     tossWorker(w, 0, 0, 0, false);         // 手上的工作先脫手（同被龍捲風捲走）
     holeGrab(h, w, 1);
   }
   if (beasts) for (const m of beasts) {
     if (m.ufo || m.sky || levBusy(m)) continue;          // levBusy（v1.230）同幽浮那一條
-    if ((m.x - h.x) ** 2 + ((m.y || 0) + 1 - h.y) ** 2 + (m.z - h.z) ** 2 > R2) continue;
+    if ((m.x - h.x) ** 2 + ((m.y || 0) + HOLE_MID[2] - h.y) ** 2 + (m.z - h.z) ** 2 > R2) continue;
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m);   // v1.208
     holeGrab(h, m, 2);
   }
