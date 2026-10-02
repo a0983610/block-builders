@@ -141,6 +141,13 @@
   .tool.lock{opacity:.5;filter:grayscale(1)}
   /* 大槌跟槌子同一個圖示，靠尺寸區分 */
   .tool[data-tool="bighammer"] .k{font-size:25px}
+  /* 綁了快捷鍵的那把（v1.242.0）：左上角標數字。拿在手上那把是橘底，數字反過來白底橘字 */
+  .tool{position:relative}
+  .tool .hk{position:absolute;top:3px;left:4px;min-width:15px;height:15px;padding:0 3px;
+    border-radius:5px;background:var(--ink);color:#fff;
+    font:700 10px/15px system-ui,sans-serif;font-variant-numeric:tabular-nums;text-align:center}
+  .tool.on .hk{background:#fff;color:var(--accent)}
+  #tools .hkTip{grid-column:1/-1;text-align:center;font-size:11px;opacity:.55;padding-top:2px}
   /* 小人模式的三檔：一檔一列，右邊寫出比例（照 LAZY_MODES 的 part 算，見 renderModes） */
   #modes{
     display:flex;flex-direction:column;gap:3px;padding:6px;
@@ -170,13 +177,19 @@
   #toast .t b{font-size:14px}
   #toast .t span{font-size:11px;opacity:.72}
 
-  #badgeWrap,#impWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
+  #badgeWrap,#impWrap,#keyWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
              background:rgba(12,18,26,.72)}
-  #badgeWrap.on,#impWrap.on{display:grid}
-  #badgeBox,#impBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
+  #badgeWrap.on,#impWrap.on,#keyWrap.on{display:grid}
+  #badgeBox,#impBox,#keyBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
             max-height:82vh;overflow:auto}
-  #badgeBox h2,#impBox h2{margin:0 0 2px;font-size:17px}
-  #badgeBox .sub,#impBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
+  #badgeBox h2,#impBox h2,#keyBox h2{margin:0 0 2px;font-size:17px}
+  #badgeBox .sub,#impBox .sub,#keyBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
+  /* 快捷鍵設定頁（v1.242.0）：九格排兩欄，左邊一顆深色的數字、右邊下拉 */
+  #keys{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:7px 12px}
+  #keys label{display:flex;align-items:center;gap:8px}
+  #keys b{flex:0 0 26px;height:26px;border-radius:8px;background:var(--ink);color:#fff;
+    font:700 13px/26px system-ui,sans-serif;text-align:center}
+  #keys select{flex:1;min-width:0}
   /* 成就多了就排兩欄，不然要一直捲 */
   #badgeBox #badges{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:7px}
   #badgeLoss{color:var(--bad);font-weight:700}
@@ -190,8 +203,8 @@
   .badge.got{background:#fdf1e2;opacity:1}
   .badge b{font-size:13px}
   .badge span{font-size:11.5px;opacity:.7}
-  #badgeBox .row,#impBox .row{display:flex;gap:8px;margin-top:12px}
-  #badgeBox .row button,#impBox .row button{flex:1}
+  #badgeBox .row,#impBox .row,#keyBox .row{display:flex;gap:8px;margin-top:12px}
+  #badgeBox .row button,#impBox .row button,#keyBox .row button{flex:1}
 
   /* 匯入建築：先去拿一份藍圖（四顆入口）→ 貼進來 → 匯入 → 下面是存下來的清單 */
   #impInfo{width:21px;height:21px;padding:0;border-radius:99px;line-height:1;
@@ -255,7 +268,9 @@
   @media (max-width:640px){
     /* 限寬，不然統計那一行會把卡片撐到右上角的時鐘底下。
        扣掉的是時鐘那張卡的寬度＋兩邊留白：它的寬度是裡面最寬那顆按鈕撐出來的，
-       v1.57 多了「📥 匯入建築」之後從 186 變成 193px（220 那版會剛好疊到 1px）。 */
+       v1.57 多了「📥 匯入建築」之後從 186 變成 193px（220 那版會剛好疊到 1px）。
+       （v1.242.0 量出來：193 其實是成就與匯入兩顆 inline-block 按鈕的寬度**加總**撐出來的，
+       見 #keyBtn 那一行的註解。） */
     #head{min-width:0;padding:8px 11px;max-width:calc(100vw - 232px)}
     #head h1{font-size:15px}
     #stat{font-size:10px;gap:2px 8px}
@@ -265,6 +280,7 @@
     #hint{display:none}
     #toast{top:14px}
     #badgeBox #badges{grid-template-columns:1fr}   /* 手機排不下兩欄 */
+    #keys{grid-template-columns:1fr}
   }
 
   /* 相依檔沒載到／啟動失敗時蓋上來的說明。平常不存在（由最後那段 script 現做），
@@ -301,6 +317,10 @@
   <div class="row" id="fps">— fps</div>
   <button id="badgeBtn" style="margin-top:7px;width:100%">🏅 成就</button>
   <button id="impBtn" style="margin-top:6px;width:100%">📥 匯入建築</button>
+  <!-- 這一顆要 display:block（v1.242.0 量過）：按鈕是 inline-block，卡片算「要多寬」時會把同一段
+       裡的按鈕當成排在同一行、寬度加總——上面兩顆加起來 163px 就是卡片 193px 的由來。
+       第三顆照樣 inline 的話卡片撐到 272px，手機上壓到左上的資訊卡（見 #head 的 max-width）。 -->
+  <button id="keyBtn" style="margin-top:6px;width:100%;display:block">⌨ 快捷鍵</button>
 </div>
 
 <div id="toast"></div>
@@ -354,6 +374,20 @@
     <div class="row">
       <button id="resetBtn">清空紀錄</button>
       <button class="primary" id="badgeClose">關閉</button>
+    </div>
+  </div>
+</div>
+
+<!-- 快捷鍵（v1.242.0）：1～9 各綁一把道具，存在 pref.keys。九格下拉是 renderKeys() 照 TOOLS 生的 -->
+<div id="keyWrap">
+  <div id="keyBox">
+    <h2>⌨ 快捷鍵</h2>
+    <div class="sub">按 1～9 直接換成那把道具。也可以打開上方的道具選單，指著某一把按數字鍵設定（再按一次同一個數字就取消）。</div>
+    <div class="sub">一把道具只綁一個數字：選了已經綁在別的數字上的道具，原本那格會清掉。</div>
+    <div id="keys"></div>
+    <div class="row">
+      <button id="keyClear">全部清空</button>
+      <button class="primary" id="keyClose">關閉</button>
     </div>
   </div>
 </div>

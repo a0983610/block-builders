@@ -31591,6 +31591,194 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      shimmer.white + ' 個（共 ' + shimmer.px + ' 像素；改之前是 380～592）');
   }   // ── 〈視角操作〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 快捷鍵 ══════════
+     v1.242.0（使用者：「破壞工具快捷鍵 1~9可以自訂 按了會切到哪一個工具 存檔會存」）。
+     兩條路設定（使用者選「兩種都做」）：⌨ 快捷鍵設定頁的九格下拉、道具選單裡指著某一把按數字。
+     整段是規則型：鍵盤用真的 page.keyboard（listener 有沒有接上一起測到）；
+     Ctrl／按住重送／在下拉裡按這幾種「不算」的直接餵 onKey（Ctrl＋數字真按下去是瀏覽器切分頁）。
+     收尾把 pref.keys 清回預設、存一次，後面重開頁面的那幾段才不會讀到這裡綁的。 */
+  SEC: { if (!(await head('快捷鍵', T_COMMIT))) break SEC;
+  await page.mouse.move(900, 500);
+  await page.evaluate(() => {
+    stats = freshStats(); pref.keys = freshPref().keys; save();
+    tool = 'hammer'; aim = null; renderTools(); toasts = []; renderToasts();
+  });
+  const hkMarks = () => page.evaluate(() => [...document.querySelectorAll('#tools .tool')]
+    .filter(b => b.querySelector('.hk')).map(b => b.dataset.tool + b.querySelector('.hk').textContent).join(','));
+  const hkLast = () => page.evaluate(() => toasts.length ? toasts[toasts.length - 1].txt : '');
+
+  /* ── 設定頁 ── */
+  await page.click('#keyBtn');
+  const hkDlg = await page.evaluate(() => {
+    const sels = [...document.querySelectorAll('#keys select')];
+    return { open: document.getElementById('keyWrap').classList.contains('on'), n: sels.length,
+             opts: sels.map(s => s.options.length).join(','), want: TOOLS.length + 1,
+             lock: [...sels[0].options].filter(o => o.textContent.indexOf('🔒') === 0).length,
+             lockWant: TOOLS.filter(t => !toolOk(t)).length,
+             empty: sels.every(s => s.value === '') };
+  });
+  ok('⌨ 快捷鍵打得開：九格下拉，每格是「不綁」加整張道具表，沒解鎖的標 🔒，預設全空',
+     hkDlg.open && hkDlg.n === 9 && hkDlg.opts.split(',').every(v => +v === hkDlg.want) &&
+     hkDlg.lock === hkDlg.lockWant && hkDlg.lock > 0 && hkDlg.empty,
+     '打開 ' + hkDlg.open + '、' + hkDlg.n + ' 格、每格選項 ' + hkDlg.opts + '（應為 ' + hkDlg.want +
+     '）、標 🔒 的 ' + hkDlg.lock + '（沒解鎖 ' + hkDlg.lockWant + ' 把）、全空 ' + hkDlg.empty);
+
+  await page.selectOption('#keys select[data-key="2"]', 'bucket');
+  await page.selectOption('#keys select[data-key="8"]', 'cannon');      // 還沒解鎖的也綁得上去
+  const hkSet = await page.evaluate(() => ({
+    keys: pref.keys.join(','), saved: unpackSave(localStorage.getItem(SAVE_KEY)).p.keys.join(',') }));
+  const hkSetMarks = await hkMarks();
+  ok('設定頁選了就寫進 pref.keys、當場存檔，選單裡那把左上角標上數字（沒解鎖的也綁得上）',
+     hkSet.keys === ',,bucket,,,,,,cannon' && hkSet.saved === hkSet.keys && hkSetMarks === 'bucket3,cannon9',
+     'pref.keys ' + hkSet.keys + '、存檔裡 ' + hkSet.saved + '、角落 ' + hkSetMarks);
+
+  await page.selectOption('#keys select[data-key="4"]', 'bucket');
+  const hkMove = await page.evaluate(() => ({
+    keys: pref.keys.join(','), v3: document.querySelector('#keys select[data-key="2"]').value }));
+  ok('一把道具只綁一個數字：選了已經綁在別格的，原本那格清掉（下拉也跟著變回不綁）',
+     hkMove.keys === ',,,,bucket,,,,cannon' && hkMove.v3 === '',
+     '5 選水桶之後 pref.keys ' + hkMove.keys + '、3 那格的下拉 "' + hkMove.v3 + '"');
+  await page.selectOption('#keys select[data-key="2"]', 'bucket');        // 搬回 3，下面照 3 按
+  await page.click('#keyClose');
+  const hkClosed = await page.evaluate(() => {
+    if (document.activeElement) document.activeElement.blur();
+    return !document.getElementById('keyWrap').classList.contains('on');
+  });
+  ok('設定頁關得掉', hkClosed);
+
+  /* ── 按數字換道具 ── */
+  await page.evaluate(() => { aim = { x: 0, z: 0, ph: 0, r: 2, c: 0xffffff }; });   // 點兩下瞄到一半
+  await page.keyboard.press('Digit3');
+  const hkPick = await page.evaluate(() => ({
+    tool, aim: aim === null, cur: document.getElementById('toolNow').dataset.cur,
+    hint: document.getElementById('hint').textContent.indexOf(TOOLS.find(t => t.id === 'bucket').tip) === 0 }));
+  ok('按 3 換成 3 綁的那把：小窗跟著換、瞄到一半的第一點收掉、底下提示換成它的說明',
+     hkPick.tool === 'bucket' && hkPick.aim && hkPick.cur === 'bucket' && hkPick.hint,
+     'tool=' + hkPick.tool + '、aim 收掉 ' + hkPick.aim + '、小窗 ' + hkPick.cur + '、提示換了 ' + hkPick.hint);
+
+  await page.keyboard.press('Digit9');
+  const hkLock = { tool: await page.evaluate(() => tool), msg: await hkLast(),
+                   want: await page.evaluate(() => '🔒 ' + TOOLS.find(t => t.id === 'cannon').n + ' 還沒解鎖') };
+  ok('按到還沒解鎖的那把：不換，跳的提示跟點選單一樣',
+     hkLock.tool === 'bucket' && hkLock.msg === hkLock.want,
+     'tool=' + hkLock.tool + '、提示「' + hkLock.msg + '」');
+
+  await page.keyboard.press('Digit7');
+  const hkNone = { tool: await page.evaluate(() => tool), msg: await hkLast() };
+  ok('按到沒綁的數字：不換，提示去哪裡設', hkNone.tool === 'bucket' && hkNone.msg === '⌨ 7 還沒綁道具',
+     'tool=' + hkNone.tool + '、提示「' + hkNone.msg + '」');
+
+  const hkSkip = await page.evaluate(() => {
+    const ev = o => Object.assign({ type: 'keydown', code: 'Digit3', target: document.body }, o);
+    const out = {};
+    for (const [k, o] of [['Ctrl', { ctrlKey: true }], ['⌘', { metaKey: true }], ['Alt', { altKey: true }],
+                          ['按住重送', { repeat: true }], ['在下拉裡', { target: { tagName: 'SELECT' } }],
+                          ['在輸入框裡', { target: { tagName: 'INPUT' } }], ['放開', { type: 'keyup' }]]) {
+      tool = 'hammer'; onKey(ev(o)); out[k] = tool;
+    }
+    tool = 'hammer'; onKey(ev({})); out['對照：直接按'] = tool;
+    return out;
+  });
+  ok('這幾種按數字不算：Ctrl／⌘／Alt、按住重送、在下拉或輸入框裡、放開那一下',
+     Object.keys(hkSkip).every(k => hkSkip[k] === (k.indexOf('對照') === 0 ? 'bucket' : 'hammer')),
+     Object.keys(hkSkip).map(k => k + '→' + hkSkip[k]).join('、'));
+
+  /* ── 選單裡指著按數字 ── */
+  await page.evaluate(() => { tool = 'hammer'; renderTools(); });
+  await page.hover('#toolNow');
+  await page.hover('#tools [data-tool="finger"]');
+  await page.keyboard.press('Digit5');
+  const hkHov = await page.evaluate(() => ({ keys: pref.keys.join(','), tool,
+    saved: unpackSave(localStorage.getItem(SAVE_KEY)).p.keys.join(',') }));
+  const hkHovMarks = await hkMarks();
+  ok('選單展開、指著一把按數字＝綁給它（不換道具、當場存檔、角落標上數字）',
+     hkHov.keys === ',,bucket,,finger,,,,cannon' && hkHov.tool === 'hammer' && hkHov.saved === hkHov.keys &&
+     hkHovMarks === 'finger5,bucket3,cannon9',
+     'pref.keys ' + hkHov.keys + '、tool=' + hkHov.tool + '、角落 ' + hkHovMarks);
+
+  await page.keyboard.press('Digit3');
+  const hkTake = { keys: await page.evaluate(() => pref.keys.join(',')), marks: await hkMarks() };
+  ok('指著它按別的數字：搬過去，原本的數字清掉；那個數字原本綁的那把被擠掉',
+     hkTake.keys === ',,finger,,,,,,cannon' && hkTake.marks === 'finger3,cannon9',
+     'pref.keys ' + hkTake.keys + '、角落 ' + hkTake.marks);
+
+  await page.keyboard.press('Digit3');
+  const hkUn = { keys: await page.evaluate(() => pref.keys.join(',')), marks: await hkMarks() };
+  ok('同一個數字再按一次＝取消', hkUn.keys === ',,,,,,,,cannon' && hkUn.marks === 'cannon9',
+     'pref.keys ' + hkUn.keys + '、角落 ' + hkUn.marks);
+
+  /* 點完一把，選單當場收起來（.shut），指標卻還停在剛點的那顆按鈕原位——
+     這時按數字是換道具，不能被當成「指著那顆綁定」。hotKey 認的是 `.tool:hover`，
+     所以這一條同時量那顆按鈕這時還算不算 :hover（v1.242.0 量到 false）。 */
+  await page.evaluate(() => bindKey(3, 'bucket'));
+  await page.hover('#toolNow');
+  await page.click('#tools [data-tool="finger"]');
+  const hkStale = await page.evaluate(() => ({
+    menu: getComputedStyle(document.getElementById('toolMenu')).visibility,
+    hov: !!document.querySelector('#tools .tool:hover') }));
+  await page.keyboard.press('Digit4');
+  const hkStale2 = await page.evaluate(() => ({ tool, keys: pref.keys.join(',') }));
+  ok('點完一把、指標沒移開就按數字：是換道具，不是綁給剛點的那把',
+     hkStale.menu === 'hidden' && hkStale2.tool === 'bucket' && hkStale2.keys === ',,,bucket,,,,,cannon',
+     '點完選單 ' + hkStale.menu + '（那顆按鈕還算 :hover ' + hkStale.hov + '）；按 4 之後 tool=' +
+     hkStale2.tool + '、pref.keys ' + hkStale2.keys);
+  await page.mouse.move(900, 500);
+
+  /* ── 存檔 ── */
+  const hkLoad = await page.evaluate(() => {
+    save();
+    const before = pref.keys.join(',');
+    pref = freshPref(); const blank = pref.keys.join(',');
+    load(); renderTools();
+    return { before, blank, after: pref.keys.join(',') };
+  });
+  const hkLoadMarks = await hkMarks();
+  ok('存下來的快捷鍵讀得回來，選單照讀回來的重畫',
+     hkLoad.after === hkLoad.before && hkLoad.blank === ',,,,,,,,' && hkLoadMarks === 'bucket4,cannon9',
+     '存 ' + hkLoad.before + ' → 讀回 ' + hkLoad.after + '（讀之前清成 ' + hkLoad.blank + '）、角落 ' + hkLoadMarks);
+
+  /* 改壞的存檔、沒有這個欄位的舊存檔：applySave 整理過才進 pref（同小人模式那條） */
+  const hkClean = await page.evaluate(() => {
+    const keep = JSON.parse(JSON.stringify(pref));
+    const via = keys => {
+      const p = JSON.parse(JSON.stringify(keep));
+      if (keys === undefined) delete p.keys; else p.keys = keys;
+      applySave({ s: freshStats(), p });
+      return pref.keys.join(',');
+    };
+    const out = {
+      old: via(undefined),
+      obj: via({ 0: 'bucket' }),
+      mix: via(['bucket', 'nope', 5, 'bucket', 'cannon']),
+      long: via(['', '', '', '', '', '', '', '', 'finger', 'bucket', 'hammer'])
+    };
+    pref = keep;
+    return out;
+  });
+  ok('存檔裡的快捷鍵整理過才用：沒有這欄＝全空、不是陣列＝全空、認不得的與重複的清掉、多的截掉',
+     hkClean.old === ',,,,,,,,' && hkClean.obj === ',,,,,,,,' &&
+     hkClean.mix === 'bucket,,,,cannon,,,,' && hkClean.long === ',,,,,,,,finger',
+     '舊存檔 ' + hkClean.old + '、物件 ' + hkClean.obj + '、[bucket,nope,5,bucket,cannon] → ' + hkClean.mix +
+     '、11 格 → ' + hkClean.long);
+
+  await page.click('#keyBtn');
+  await page.click('#keyClear');
+  const hkClr = await page.evaluate(() => ({ keys: pref.keys.join(','),
+    saved: unpackSave(localStorage.getItem(SAVE_KEY)).p.keys.join(','),
+    sel: [...document.querySelectorAll('#keys select')].every(s => s.value === '') }));
+  const hkClrMarks = await hkMarks();
+  ok('全部清空：九格都回到不綁、存檔、選單的數字都拿掉',
+     hkClr.keys === ',,,,,,,,' && hkClr.saved === hkClr.keys && hkClr.sel && hkClrMarks === '',
+     'pref.keys ' + hkClr.keys + '、存檔 ' + hkClr.saved + '、下拉全空 ' + hkClr.sel + '、角落 "' + hkClrMarks + '"');
+  await page.click('#keyClose');
+
+  await page.evaluate(() => {
+    if (document.activeElement) document.activeElement.blur();
+    stats = freshStats(); pref.keys = freshPref().keys; save();
+    tool = 'hammer'; aim = null; renderTools(); toasts = []; renderToasts();
+  });
+  }   // ── 〈快捷鍵〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 視窗縮放 ══════════ */
   SEC: { if (!(await head('視窗縮放', T_COMMIT))) break SEC;
   await page.setViewportSize({ width: 900, height: 620 });

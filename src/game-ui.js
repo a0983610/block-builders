@@ -439,8 +439,13 @@ const ORBIT_RATE = 220;
 const LIFT_KEY = { KeyZ: -1, KeyX: 1 };
 const RESET_KEY = 'KeyC';
 const keyDown = Object.create(null);
+/* 1～9 換道具（v1.242.0）：上排的數字鍵，右邊的數字鍵盤不算（使用者沒選）。
+   綁哪一把存在 pref.keys，見 開發筆記〈破壞道具快捷鍵 1～9〉。 */
+const HOT_KEY = /^Digit([1-9])$/;
 
 function onKey(e) {
+  const hk = HOT_KEY.exec(e.code);
+  if (hk) { if (e.type === 'keydown') hotKey(e, +hk[1] - 1); return; }
   if (!PAN_KEY[e.code] && !ORBIT_KEY[e.code] && !LIFT_KEY[e.code] && e.code !== RESET_KEY) return;
   /* 只擋下拉選單與輸入框：字母鍵在 select 上是拿來跳選項的，在「匯入建築」的
      貼上框裡是真的在打字（不擋的話貼一段藍圖進去，鏡頭會跟著 WASD 一路飄走）。
@@ -464,6 +469,32 @@ function onKey(e) {
 }
 // 按著 W 切去別的視窗，keyup 收不到，切回來鏡頭會自己一直飄
 function clearKeys() { for (const k in keyDown) keyDown[k] = false; }
+
+/* 數字鍵：平常是換成那一格綁的道具；道具選單展開、指標停在某一把上時是「把這個數字綁給它」。
+   Ctrl／⌘／Alt＋數字是瀏覽器切分頁；按住不放的重送（e.repeat）不算；
+   在輸入框、下拉選單裡（快捷鍵設定頁本身就是九個下拉）按的不算，理由同 onKey。 */
+function hotKey(e, i) {
+  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'INPUT') return;
+  /* 選單收著的時候指不到：點完一把、選單當場收起來（.shut），指標還停在剛點的那顆原位，
+     那顆按鈕已經不算 :hover 了（e2e〈快捷鍵〉量過），所以那時按數字是換道具 */
+  const over = document.querySelector('#tools .tool:hover');
+  if (over) { bindKey(i, over.dataset.tool); return; }
+  const id = pref.keys[i];
+  if (!id) { toast('⌨ ' + (i + 1) + ' 還沒綁道具', '按右上 ⌨ 快捷鍵，或在道具選單指著道具按數字'); return; }
+  pickTool(TOOLS.find(t => t.id === id));
+}
+/* 把第 i 格（0 起算）綁給 id。一把道具只綁一個數字：它原本在別格的話那一格清掉。
+   同一個數字按回原本綁的那把＝取消（選單裡沒有別的辦法解除）。id 是空字串＝這格不綁。
+   不跳提示：提示的位置剛好蓋在展開的選單上，角落的數字出現或消失就是回饋。 */
+function bindKey(i, id) {
+  const k = pref.keys;
+  if (id && k[i] === id) k[i] = '';
+  else { for (let j = 0; j < KEY_N; j++) if (k[j] === id) k[j] = ''; k[i] = id; }
+  save(); renderTools();
+  if ($('keyWrap').classList.contains('on')) renderKeys();
+}
 
 /* 用真實時間推進，不吃時間倍率——開四倍速不該讓鏡頭也快四倍 */
 function panStep(dt) {
@@ -541,21 +572,30 @@ function syncHud() {
   syncSeg('spd', timeScale);
 }
 
+/* 換成 t 這把：點選單與按數字鍵（v1.242.0）都走這裡。沒解鎖就跳提示、不換，回傳 false。 */
+function pickTool(t) {
+  if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return false; }
+  tool = t.id; aim = null; renderTools();           // 換道具就把瞄一半的第一點收掉
+  $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移、ZX 升降、C 復位　｜　滾輪縮放　｜　點小人會跌倒';
+  return true;
+}
 /* 工具選單：沒解鎖的畫成鎖住並寫出解鎖條件。
-   平常收在小窗裡（滑鼠指上去才展開），所以這裡順便把小窗更新成目前拿的那把。 */
+   平常收在小窗裡（滑鼠指上去才展開），所以這裡順便把小窗更新成目前拿的那把。
+   綁了快捷鍵的在左上角標數字（v1.242.0）；最下面那行字說怎麼綁（指著按數字，見 hotKey）。 */
 function renderTools() {
   const box = $('tools');
   box.innerHTML = '';
   for (const t of TOOLS) {
     const okNow = toolOk(t);
+    const hk = pref.keys.indexOf(t.id);
     const b = document.createElement('button');
     b.className = 'tool' + (tool === t.id ? ' on' : '') + (okNow ? '' : ' lock');
     b.dataset.tool = t.id;
-    b.innerHTML = '<span class="k">' + (okNow ? t.k : '🔒') + '</span><span class="n">' + t.n + '</span>';
+    b.innerHTML = (hk >= 0 ? '<span class="hk">' + (hk + 1) + '</span>' : '') +
+                  '<span class="k">' + (okNow ? t.k : '🔒') + '</span><span class="n">' + t.n + '</span>';
     b.title = okNow ? t.tip : t.lock.txt;
     b.addEventListener('click', () => {
-      if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return; }
-      tool = t.id; aim = null; renderTools();       // 換道具就把瞄一半的第一點收掉
+      if (!pickTool(t)) return;
       /* 選好就收起來，不要一直擋著畫面。兩個 class 都要動（v1.123，使用者：
          「選擇工具點擊後 就可以把工具清單收起來 目前要把滑鼠移開才會收」）：
          只拿掉 .open 的話 CSS 那條 `#toolbox:hover` 還按著它——指標就停在剛點的
@@ -563,10 +603,13 @@ function renderTools() {
          等指標離開小窗再撤掉（見下面的 pointerleave）。 */
       $('toolbox').classList.remove('open');
       $('toolbox').classList.add('shut');
-      $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移、ZX 升降、C 復位　｜　滾輪縮放　｜　點小人會跌倒';
     });
     box.appendChild(b);
   }
+  const tip = document.createElement('div');
+  tip.className = 'hkTip';
+  tip.textContent = '指著道具按 1～9 設快捷鍵';
+  box.appendChild(tip);
   const cur = TOOLS.find(t => t.id === tool) || TOOLS[0];
   $('toolNow').innerHTML = '<span class="k">' + cur.k + '</span><span class="n">' + cur.n +
                            '</span><span class="c">▾</span>';
@@ -605,6 +648,25 @@ function renderModes() {
                            '</span><span class="c">▾</span>';
   $('modeNow').title = '小人模式：' + modeTip(cur);
   $('modeNow').dataset.cur = cur.id;       // 同 toolNow：不掛 data-mode，免得 querySelector 先撈到小窗
+}
+/* 快捷鍵設定頁（v1.242.0）：九格下拉，每格「（不綁）」加整張 TOOLS。沒解鎖的也列、
+   前面標 🔒（使用者選「可以綁，按了提示沒解鎖」）。改了走 bindKey，所以「一把只綁一格」
+   跟選單裡指著按數字是同一條規則，存檔也是那裡存。 */
+function renderKeys() {
+  const box = $('keys');
+  box.innerHTML = '';
+  for (let i = 0; i < KEY_N; i++) {
+    const lab = document.createElement('label');
+    lab.innerHTML = '<b>' + (i + 1) + '</b>';
+    const sel = document.createElement('select');
+    sel.dataset.key = String(i);
+    sel.innerHTML = '<option value="">（不綁）</option>' + TOOLS.map(t =>
+      '<option value="' + t.id + '">' + (toolOk(t) ? t.k : '🔒') + ' ' + t.n + '</option>').join('');
+    sel.value = pref.keys[i];
+    sel.addEventListener('change', () => bindKey(i, sel.value));
+    lab.appendChild(sel);
+    box.appendChild(lab);
+  }
 }
 function renderBadges() {
   const box = $('badges');
@@ -968,6 +1030,17 @@ function boot() {
   });
   $('resetBtn').addEventListener('click', () => {
     if (confirm('清掉所有紀錄與成就？（建築不受影響）')) { resetSave(); toast('紀錄已清空'); }
+  });
+  // 快捷鍵設定頁（v1.242.0）：開合照成就那一頁
+  $('keyBtn').addEventListener('click', () => {
+    renderKeys();
+    $('keyWrap').classList.add('on');
+  });
+  $('keyWrap').addEventListener('click', e => {
+    if (e.target.id === 'keyWrap' || e.target.id === 'keyClose') $('keyWrap').classList.remove('on');
+  });
+  $('keyClear').addEventListener('click', () => {
+    pref.keys = freshPref().keys; save(); renderTools(); renderKeys();
   });
   $('saveOut').addEventListener('click', exportSave);
   // 真正的 <input type=file> 藏起來，按鈕代點：它自己的樣子在各瀏覽器長得都不一樣

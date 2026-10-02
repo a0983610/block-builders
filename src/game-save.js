@@ -30,7 +30,11 @@ let stats = freshStats();
 /* 面板上的設定也一起存，不然每次打開都要重調一輪 */
 /* v 是設定檔版本。舊存檔沒有這個欄位，load() 靠它認出「這份存檔是預設值改掉之前存的」 */
 /* lazy＝小人模式選哪一檔（v1.219，見 game-workers.js 的 LAZY_MODES），存的是 id */
-const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm', v: 1 });
+/* keys＝快捷鍵 1～9 各綁哪一把道具（v1.242.0），存道具 id，空字串＝沒綁。
+   預設全空（使用者選的），見 開發筆記〈破壞道具快捷鍵 1～9〉 */
+const KEY_N = 9;
+const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
+                           keys: Array(KEY_N).fill(''), v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -193,7 +197,20 @@ function applySave(o) {
   g.spd = snapOpt(g.spd, SPD_OPTS);
   // 小人模式認不得的 id（被改壞的存檔）回到預設那一檔，不然選單上三檔都不亮
   if (!LAZY_MODES.some(m => m.id === g.lazy)) g.lazy = freshPref().lazy;
+  g.keys = cleanKeys(g.keys);
   pref = g;
+}
+/* 快捷鍵（v1.242.0）：merge 只比 typeof，陣列跟物件都是 'object'，所以這裡再整理一次——
+   不是陣列就整組回預設；認不得的 id（改壞的存檔、之後拿掉的道具）清成沒綁；
+   同一把出現在兩格只留前面那格（一把道具只綁一個數字，見 game-ui.js 的 bindKey）。 */
+function cleanKeys(a) {
+  const out = freshPref().keys;
+  if (!Array.isArray(a)) return out;
+  for (let i = 0; i < KEY_N; i++) {
+    const id = a[i];
+    if (TOOLS.some(t => t.id === id) && out.indexOf(id) < 0) out[i] = id;
+  }
+  return out;
 }
 /* 數字吸到最近的一檔。壞掉的存檔（NaN、字串）當 0 處理，會吸到最小的那一檔 */
 function snapOpt(v, opts) {
