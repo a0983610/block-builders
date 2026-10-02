@@ -27319,6 +27319,68 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (tMissed.length ? '；**沒沾到動物的：' + tMissed.join('、') + '**' : '') +
      (tWrong.length ? '；**不該沾到卻沾到的：' + tWrong.join('、') + '**' : ''));
 
+  /* ── 核彈、爆裂魔法、Excalibur 斬殺巨人（v1.245.0，使用者：「調整爆裂魔法 核彈 excalibur可以擊殺巨人」；
+        死法選「同里維斬殺那一套」（giantDie）、爆炸範圍選「整個爆炸半徑」、Saber 自己出招也算）。
+        爆炸那兩把直接呼叫爆的那一刻（nukeHit／stepOneMagic 給 t 剩一點點）：半徑內差 1 格那隻斬殺、沒被掀，
+        半徑外差 1 格那隻照舊活著；同一發裡的黑獼猴照舊被掀飛（只有巨人會死）。
+        Excalibur 走整趟：叫 Saber 去斬一隻站著不動的巨人（擺法同〈破壞道具：Excalibur〉點生物那一條）。
+        提示那一句是誰殺的（GIA_SLAIN）也一起驗：把 toast 包一層，只記結尾是「斬殺／炸死」的標題
+        （進場、Saber 出發那幾則不算進來） ── */
+  const hSlay = await page.evaluate(() => {
+    const said = [], toast0 = window.toast;
+    window.toast = (a, b) => { if (/(斬殺|炸死)$/.test(a)) said.push(a); return toast0(a, b); };
+    const out = { nm: BEAST_NM.giant };
+    try {
+      const blast = (fire, R, cy) => {
+        cleanTools(); clearFires(); beasts = null; phase = 'done'; doomT = 1e9; said.length = 0;
+        const X = siteR + 60, hr = Math.sqrt(R * R - cy * cy);     // 爆點離地 cy：三維距離剛好 R 的那個水平距離
+        const gin = spawnBeast('giant', 1), gout = spawnBeast('giant', 1), ape = spawnBeast('ape', 1);
+        for (const [m, z] of [[gin, hr - 1], [gout, -(hr + 1)], [ape, 6]]) {
+          m.x = X; m.z = z; m.y = 0; m.st = 'fun'; m.pause = 999; m.stay = 999;
+        }
+        fire(X);
+        return { inDead: gin.dead > 0 && gin.st === 'dead', inAir: gin.air, outDead: !!gout.dead, outSt: gout.st,
+                 apeAir: ape.air, apeDead: !!ape.dead, said: said.join('／') };
+      };
+      out.nuke = blast(X => nukeHit({ x: X, y: 0, z: 0 }), NUKE_R, 0);
+      out.magic = blast(X => stepOneMagic({ x: X, z: 0, t: 1e-6 }, 0.01), MAG_R, MAG_CORE_Y);
+      cleanTools(); clearFires(); beasts = null; phase = 'done'; doomT = 1e9; said.length = 0;
+      const R0 = Math.max(siteR + 20, (EXC_REACH + 20) / 1.6);
+      const g = spawnBeast('giant', 1);
+      g.x = R0; g.z = 0; g.y = 0; g.st = 'fun'; g.pause = 999; g.stay = 999;
+      const s = spawnBeast('saber', 1);
+      const th1 = -2 * Math.asin((EXC_REACH + 20) / (2 * R0));
+      s.x = R0 * Math.cos(th1); s.z = R0 * Math.sin(th1); s.st = 'fun'; s.pause = 99;
+      callSaber({ x: g.x, y: 0, z: g.z }, g);
+      let n = 0, dead = -1, air = 0, ex = 0;
+      const seen = [];
+      while (n < 3000) {
+        step(0.02); n++;
+        if (seen[seen.length - 1] !== s.st) seen.push(s.st);
+        if (g.air) air = 1;
+        if (g.dead && dead < 0) dead = +(n * 0.02).toFixed(2);
+        if (s.st === 'excal') ex = 1;
+        if (s.st === 'fun' && ex) break;
+      }
+      out.exc = { dead, air, seen: seen.join('→'), said: said.join('／') };
+    } finally {
+      window.toast = toast0;
+      cleanTools(); clearFires(); beasts = null;
+    }
+    return out;
+  });
+  for (const [k, nm, by] of [['nuke', '核彈', '被核彈炸死'], ['magic', '爆裂魔法', '被爆裂魔法炸死']]) {
+    const r = hSlay[k];
+    ok(nm + '炸死巨人：整個爆炸半徑內的斬殺（同里維那一套、不再被掀），半徑外的活著，同一發裡的黑獼猴照舊被掀飛',
+       r.inDead && !r.inAir && !r.outDead && r.apeAir === 1 && !r.apeDead && r.said === hSlay.nm + by,
+       '半徑內差 1 格：斬殺＝' + r.inDead + '、被掀＝' + !!r.inAir + '；半徑外差 1 格：死＝' + r.outDead + '（' + r.outSt +
+       '）；黑獼猴被掀＝' + !!r.apeAir + '、死＝' + r.apeDead + '；提示「' + r.said + '」');
+  }
+  ok('Excalibur 斬殺巨人：叫 Saber 去斬站著不動的那一隻，光柱掃到當場斬殺、沒被沖飛',
+     hSlay.exc.dead > 0 && !hSlay.exc.air && hSlay.exc.seen === 'call→act→excal→fun' &&
+     hSlay.exc.said === hSlay.nm + '被 Excalibur 斬殺',
+     hSlay.exc.seen + '；' + hSlay.exc.dead + ' 秒斬殺、被沖飛＝' + !!hSlay.exc.air + '；提示「' + hSlay.exc.said + '」');
+
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈破壞工具打得到那幾隻〉結束（--tier 跳過時從這裡出來）
 

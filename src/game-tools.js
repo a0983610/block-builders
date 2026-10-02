@@ -4214,6 +4214,7 @@ function callNuke(point) {
   sndSiren();
 }
 function nukeHit(p) {
+  slayGiants(p, NUKE_R, 'nuke');            // 範圍內的巨人當場斬殺（v1.245.0），要排在 explode 前面
   // 第二個 true = 加風壓；最後一個 = 地上留焦痕（v1.231，大小同以前那塊焦黑：爆炸半徑 × MARK_SCORCH_R）
   explode(p, NUKE_R, NUKE_POW, false, true, false, null, false, NUKE_R * MARK_SCORCH_R);
   startCloud(p, NUKE_R);
@@ -4366,6 +4367,7 @@ function stepOneMagic(magic, dt) {
   const el = MAG_TIME - magic.t;
   if (magic.t <= 0) {
     const p = { x: magic.x, y: MAG_CORE_Y, z: magic.z };   // 爆點＝最低那層的圓心
+    slayGiants(p, MAG_R, 'magic');          // 同核彈（v1.245.0）
     // 第二個 true = 加風壓；最後一個 = 地上留焦痕（v1.231，同核彈）
     explode(p, MAG_R, MAG_POW, true, true, false, null, false, MAG_R * MARK_SCORCH_R);
     startCloud(p, MAG_R);             // 魔法爆完也留一朵，跟核彈同一種
@@ -8535,7 +8537,8 @@ function stepBeast0(m, dt) {
   /* 被幽浮吸走了（v1.167）：牠這一段完全交給 stepUfo 管（在光裡飄、在艙裡等、
      從天上掉回來），這裡整段跳過。擺在最前面：下面每一條分支都會動到位置。 */
   if (m.ufo) return false;
-  /* 被里維斬殺的巨人：躺著冒蒸氣、氣化消失（v1.230）；被打死的牛羊：躺著流血、淡掉（v1.240） */
+  /* 被斬殺的巨人：躺著冒蒸氣、氣化消失（里維 v1.230；核彈、爆裂魔法、Excalibur v1.245.0，見 giantDie）；
+     被打死的牛羊：躺著流血、淡掉（v1.240） */
   if (m.dead) return m.herd ? stepCarcass(m, dt) : stepDie(m, dt);
   if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   if (m.kind === 'gryphon') return stepGryph(m, dt);      // 飛進來降落再起飛，自己一套（v1.176）
@@ -9241,6 +9244,9 @@ function excLives(m, g, P, C) {
     if (o === m || o.air) continue;
     const mid = ENG.BEAST_MID[o.kind] * (o.sc || 1);
     if (!excCross(g, P, C, o.x, (o.y || 0) + (o.sky ? 0 : mid), o.z, GATE_MAN_R + mid * 0.8)) continue;
+    /* 巨人斬殺（v1.245.0，見 slayGiants）：Saber 當天災／吉祥物自己出的那一招也算（使用者選的）。
+       已經在化掉的照舊往下走（tossBeast 回 false，同以前） */
+    if (o.kind === 'giant' && !o.ufo && !levBusy(o)) { giantDie(o, 'excal'); hit++; continue; }
     const sp = rr(EXC_HIT[0], EXC_HIT[1]) * 0.6;
     if (tossBeast(o, (g.fx * tf * sp + rr(-1.5, 1.5)) * B_BLOW, rr(4, 8),
                   (g.fz * tf * sp + rr(-1.5, 1.5)) * B_BLOW, true)) beastHit(o, 'excal');   // v1.208
@@ -9873,14 +9879,30 @@ function levStrike(m, b, w) {
    跪下、往前倒、趴著冒蒸氣，一塊一塊散掉，散完從場上拿掉（stepBeast 回 true）。
    天災那一件就算結束了（stepDoom 數的是場上還有沒有天災），吉祥物那一隻也是。
    姿勢那四個角度（knee／ank／hip／spin）是 stepDie 每幀給的，kpv 叫引擎改用跪倒那一套畫（見 giaDownPart）；
-   lie 給 0：往後仰躺那一套的抬升不用了（引擎那邊照這個姿勢最低那一塊貼地）。 */
-function giantDie(b) {
+   lie 給 0：往後仰躺那一套的抬升不用了（引擎那邊照這個姿勢最低那一塊貼地）。
+   by＝誰殺的（GIA_SLAIN 的鍵，沒給＝里維）：v1.245.0 起核彈、爆裂魔法（slayGiants）、Excalibur（excLives）也殺得死，
+   死法同一套（使用者選的「同里維斬殺那一套」），只有提示那一句不同。 */
+const GIA_SLAIN = {
+  levi: ['被里維兵長斬殺', '後頸一刀，'], nuke: ['被核彈炸死', ''], magic: ['被爆裂魔法炸死', ''],
+  excal: ['被 Excalibur 斬殺', '光柱掃過，']
+};
+function giantDie(b, by) {
   b.dead = 1e-6; b.st = 'dead'; b.call = null; b.cq = null;
   b.kick = 0; b.kt = 0; b.hit = 0; b.kleft = 0; b.bust = null; b.gait = 0; b.pause = 0;
   b.air = 0; b.burn = 0; b.brl = 0; b.fall = 1; b.face = 0; b.roll = 0; b.arm = 0; b.y = 0;
   b.lie = 0; b.spin = 0; b.kpv = 1; b.knee = 0; b.ank = 0; b.hip = 0; b.thud = 0; b.melt = 0; b.puff = 0;
   sndGiant();
-  toast(BEAST_NM.giant + '被里維兵長斬殺', '後頸一刀，跪倒在地、往前倒下，冒著蒸氣一塊一塊散掉');
+  const s = GIA_SLAIN[by] || GIA_SLAIN.levi;
+  toast(BEAST_NM.giant + s[0], s[1] + '跪倒在地、往前倒下，冒著蒸氣一塊一塊散掉');
+}
+/* 核彈、爆裂魔法炸到的巨人當場斬殺（v1.245.0，使用者：「調整爆裂魔法 核彈 excalibur可以擊殺巨人」，
+   範圍選的是「整個爆炸半徑」）。範圍就是 explode 掀飛的那一圈（同一支 eachBeastNear、同一個 R），
+   所以呼叫端排在 explode **前面**：斬殺的那一隻 levBusy，explode 那一段就不會再掀牠、再算一下被攻擊。
+   已經飛在半空的照 explode 的規矩不算（那邊也不掀），被幽浮吸著的不算（同 leviCanCut）。 */
+function slayGiants(p, R, by) {
+  eachBeastNear(p, R, m => {
+    if (m.kind === 'giant' && !m.air && !m.ufo && !levBusy(m)) giantDie(m, by);
+  });
 }
 /* 一團蒸氣。at 給了就冒在那一點（一塊散掉的那一刻），沒給就冒在身上隨便一塊 */
 const _dieAt = { x: 0, y: 0, z: 0 };
