@@ -33454,6 +33454,58 @@ const toScreen = (page, sel) => page.evaluate(sel => {
          (r.a !== undefined ? r.a + '°' : '(' + r.s + ')') + ' ' + r.t + ' 秒、穿透 ' + r.gh + '、在框裡 ' + r.inBox).join('；') : ''));
   }
 
+  /* ⑮ 貼著門洞墩座、角樓外角轉彎（使用者：「城門外口那個洞要做」，v1.243 寫 ⑫～⑭ 時探針抓到的）。
+     站在門洞外口靠墩座那一側、目標在城外幾乎平行城牆（出門馬上轉彎沿牆走）：規劃出來的轉角就在身邊 0.7 格，
+     v1.235～v1.243 的 navAim 把「離轉角不到 NAV_HIT（1 格）」也當成到了、整條路線跳掉，改成直線撞墩座，
+     沿邊滑只剩前進方向在那一軸的一點點分量——規則 5 寫的是「看得到再下一段才跳」（見 開發筆記〈巡路規則〉），
+     「走到一格內就跳下一個會切屋角」v1.235 寫規則時就記過。場面取探針抓到的那幾種：門洞外口兩側、門洞內口、
+     角樓外角（換骰子掃牛羊閒逛，240 趟裡 6 趟卡在這幾種地方）。走法同 ①～⑧，城牆照 ⑧ 的擺法。 */
+  const navCorner2 = await page.evaluate(() => {
+    const N = window.navT;
+    homes = null; frameNo++;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; startBuild(true); completeNow();
+    homes = null;
+    siteR = 12; arenaR = 52;
+    const W = wallRing(), walls = [];
+    for (const h of wallPlan()) {
+      for (const sl of h.slots) { sl.filled = true; h.left--; }
+      h.done = true; homeBox(h); walls.push(h);
+    }
+    const gN = walls.find(h => h.gap && h.z > 0), gS = walls.find(h => h.gap && h.z < 0);
+    const tNE = walls.find(h => h.kind === '角樓' && h.x > 0 && h.z > 0);
+    const tSW = walls.find(h => h.kind === '角樓' && h.x < 0 && h.z < 0);
+    const g = gN.gap, gs = gS.gap;
+    const sc = {
+      '北門外口靠西、出門往西沿牆': [[g.x0 + 0.2, gN.z1 - 0.2], [-W + 2, gN.z1 + 1.2]],
+      '北門外口靠東、出門往東沿牆': [[g.x1 - 0.2, gN.z1 - 0.2], [W - 2, gN.z1 + 1.2]],
+      '北門內口靠西、進門往西沿內牆': [[g.x0 + 0.2, gN.z0 + 0.2], [-W + 6, gN.z0 - 1.2]],
+      '西南角樓西面靠南、繞外角去南門': [[tSW.x0 - 0.05, tSW.z0 + 0.1], [(gs.x0 + gs.x1) / 2, (gS.z0 + gS.z1) / 2]],
+      '東北角樓北面靠東、繞外角往南': [[tNE.x1 - 0.3, tNE.z1 + 0.05], [tNE.x1 + 1.2, 8]],
+    };
+    const runs = [];
+    for (const [name, [s, t]] of Object.entries(sc))
+      for (const wk of N.who) {
+        if (!wk.wall) continue;                         // 同 ⑧：直線走法那一條是上工在用的，城牆這一組交給 strollTo
+        const r = N.run(walls, s, t, wk, 40);
+        r.name = name; r.who = wk.n; r.geo = -1; r.leak = false;
+        runs.push(r);
+      }
+    siteR = N.keep[0]; arenaR = N.keep[1];
+    homes = null; frameNo++;
+    return { s: N.sum(runs), W,
+             bad: runs.filter(r => r.t < 0 || r.ghost || r.inBox || r.re || r.navBad)
+                      .map(r => r.name + '・' + r.who + '：' + (r.t < 0 ? '沒走到' : r.t + ' 秒') + (r.re ? '、被當成卡住' : '') +
+                                 '、穿透 ' + r.ghost + ' 幀、規劃 ' + r.plan + ' 次'),
+             plans: Math.max(...runs.map(r => r.plan)) };
+  });
+  ok('貼著門洞墩座、角樓外角轉彎：轉角真的走到（或看得到下一段）才跳，不被當成卡住、不穿透',
+     navCorner2.s.arrived === navCorner2.s.n && !navCorner2.s.ghost && !navCorner2.s.inBox && !navCorner2.s.re &&
+     !navCorner2.s.navBad,
+     navCorner2.s.n + ' 趟（牆半徑 ' + navCorner2.W + '）：到了 ' + navCorner2.s.arrived + '、用到穿透 ' + navCorner2.s.ghost +
+     '、在框裡 ' + navCorner2.s.inBox + ' 幀、被當成卡住 ' + navCorner2.s.re + ' 趟、一趟最多規劃 ' + navCorner2.plans +
+     ' 次；最慢 ' + navCorner2.s.slow + (navCorner2.bad.length ? '；壞的：' + navCorner2.bad.slice(0, 6).join('；') : ''));
+
   /* 這一段動過的全域還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）：地標換回這一段開頭那一座 */
   await page.evaluate(() => {
     homes = null; frameNo++;

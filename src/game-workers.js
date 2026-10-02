@@ -765,8 +765,12 @@ const NAV_CELL = 0.5;               // 格子多大：最窄的縫（窄巷 1 �
 const NAV_MAX = 160;                // 一邊最多幾格：範圍再大就把格子放粗，一次最多 160×160
 const NAV_PAD = [10, 25, 45];       // 兩端外接框往外多看幾格；找不到路就放大再找（U 形口袋的出口在背面）
 const NAV_SOFT = 4;                 // 貼著牆那一圈的代價倍率：路線寧可離牆半格，窄巷才貼著走
-const NAV_HIT = REACH + 0.1;        // 離轉角多近算走到了。要比 REACH 大：不然走到 REACH 以內時
-                                    // strollTo 說「到了」、這裡說「還沒」，他就站在那裡不動
+/* 離轉角多近算「站在轉角上」（v1.243.1）。往轉角走的那一步是 min(腳程 × dt, 離轉角多遠)，走得到就剛好踩在上面，
+   這個數只是浮點餘裕；它存在是為了「站在轉角上、下一段剛好擦邊看不到」那一種，不然他會停在轉角上不動。
+   v1.235～v1.243 是 NAV_HIT＝REACH ＋ 0.1（1 格）：轉角在身邊一格內就當成到了——門洞外口靠墩座那一側出門轉彎，
+   規劃出來的兩個轉角都在 0.7 格內，一起被跳掉、路線丟掉，改成直線撞墩座，下一幀又重新規劃一次、又跳掉
+   （牛羊卡滿 3 秒穿透，見 開發筆記〈轉角要真的走到才跳〉）。規則 5 寫的是「看得到再下一段才跳」。 */
+const NAV_ON = 0.05;
 const NAV_MOVE = 1.5;               // 目標挪了這麼遠就不算同一個目標（路線作廢）
 const NAV_CHK = 0.25;               // 多久看一次眼前那一段還通不通（同 v1.235 以前 buildWalk 的 PATH_CHK）
 const NAV_RETRY = 1;                // 規劃不出路之後隔多久再試（每幀重算一次失敗的 A* 太貴）
@@ -881,13 +885,13 @@ function navAim(w, tx, tz, bd, dt) {
     if (!n) { w.navWait = NAV_RETRY; return null; }   // 沒路：照直線走，卡住了由規則 6 接手
     w.nav = n;
   }
-  /* 跳到下一個轉角的條件：**看得到再下一段**（從現在的位置到下下一點直線走得通），或已經走到了。
+  /* 跳到下一個轉角的條件：**看得到再下一段**（從現在的位置到下下一點直線走得通），或已經站在轉角上（NAV_ON）。
      只看「走進一格內就跳」的話會在還沒繞過屋角時就跳，下一段直線切進那一間，
      只好貼著牆慢慢滑（L 形留兩格縫那一場，羊就是這樣被當成卡住、3 秒後穿牆）。 */
   while (n.i < n.p.length) {
     const q = n.p[n.i], last = n.i + 1 >= n.p.length;
     const qx = last ? tx : n.p[n.i + 1].x, qz = last ? tz : n.p[n.i + 1].z;
-    if (navSeg(w.x, w.z, qx, qz, bd) || Math.hypot(q.x - w.x, q.z - w.z) < NAV_HIT) n.i++;
+    if (navSeg(w.x, w.z, qx, qz, bd) || Math.hypot(q.x - w.x, q.z - w.z) < NAV_ON) n.i++;
     else break;
   }
   if (n.i >= n.p.length) { w.nav = null; return null; }
