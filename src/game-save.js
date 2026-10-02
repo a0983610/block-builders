@@ -34,7 +34,7 @@ let stats = freshStats();
    預設全空（使用者選的），見 開發筆記〈破壞道具快捷鍵 1～9〉 */
 const KEY_N = 9;
 const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
-                           keys: Array(KEY_N).fill(''), v: 1 });
+                           keys: Array(KEY_N).fill(''), cap: true, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -220,10 +220,11 @@ function snapOpt(v, opts) {
 /* 把存回來的設定套進變數與面板 */
 function applyPref() {
   targetCnt = pref.cnt; timeScale = pref.spd; muted = pref.mute; spinOn = pref.spin;
-  lazyMode = pref.lazy;
+  lazyMode = pref.lazy; cap60 = pref.cap;
   setWorkerCount(pref.wk);
   $('mute').checked = pref.mute;
   $('spin').checked = pref.spin;
+  $('cap60').checked = pref.cap;
   syncHud();
   renderModes();
 }

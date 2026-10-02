@@ -4973,6 +4973,11 @@ function stepClouds(dt) {
 
 /* 火球粒子。跟塵霧分開走一套：會冷卻（顏色往暗紅收）、會膨脹或縮小 */
 function stepHot(dt) {
+  /* 水平阻尼的 keep 是照 60fps「一幀乘一次」調的，換算成這一幀的 keep^(dt×60)（v1.244.0）——
+     直接每幀乘的話 120fps 乘兩倍次數，火星只飛一半遠（見 開發筆記〈鎖 60fps〉）。
+     自帶 keep 的同一批是連著生的，記住上一個就幾乎不必重算。 */
+  const f60 = dt * 60;
+  let lk = 0.9, lv = Math.pow(0.9, f60);
   for (let i = hot.length - 1; i >= 0; i--) {
     const d = hot[i];
     d.life -= dt;
@@ -4999,7 +5004,7 @@ function stepHot(dt) {
       continue;
     }
     /* 獅鷲噴出去的火痕（v1.176）：直線飛到目標就熄，不吃重力、也不吃下面那道阻尼。
-       那道阻尼是**每一幀** ×0.9（不是每秒）：照它走的話，60fps 下 0.35 秒只飛得到
+       那道阻尼是**60fps 的每一幀** ×0.9（不是每秒；v1.244.0 起照 dt 換算）：照它走的話，0.35 秒只飛得到
        4.5 格，而火柱要打到十幾格外——整條會在半路停成一團。 */
     if (d.jet) { d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt; continue; }
     d.vy -= (d.g === undefined ? -1.5 : d.g) * dt;
@@ -5016,7 +5021,8 @@ function stepHot(dt) {
        ——甩出去的那批火星（spawnBlast 的短條）自己帶一個比較鬆的 keep，
        才飛得出爆炸半徑那麼遠。同塵霧那邊的 keep（見 spawnWind）。 */
     const kp = d.keep === undefined ? 0.9 : d.keep;
-    d.vx *= kp; d.vz *= kp;
+    if (kp !== lk) { lk = kp; lv = Math.pow(kp, f60); }
+    d.vx *= lv; d.vz *= lv;
     d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
     if (d.y < 0.4) { d.y = 0.4; d.vy = Math.max(0, d.vy); }
     d.rx += dt * 1.6; d.ry += dt * 2.2;
@@ -8035,6 +8041,9 @@ function spawnTwistDust(t, dt, n) {
   }
 }
 function stepDust(dt) {
+  // 水平阻力與貼地摩擦照 60fps 一幀調的，換算成這一幀的（v1.244.0，同 stepHot）
+  const f60 = dt * 60, g80 = Math.pow(0.8, f60);
+  let lk = 0.94, lv = Math.pow(0.94, f60);
   for (let i = dust.length - 1; i >= 0; i--) {
     const d = dust[i];
     d.life -= dt;
@@ -8044,9 +8053,10 @@ function stepDust(dt) {
     /* 水平阻力。預設 0.94 是「爆起來一團、幾乎就地停住」的煙塵；
        風壓那道塵牆要一路掃出去，所以它自己帶一個比較鬆的 keep。 */
     const kp = d.keep === undefined ? 0.94 : d.keep;
-    d.vx *= kp; d.vz *= kp;
+    if (kp !== lk) { lk = kp; lv = Math.pow(kp, f60); }
+    d.vx *= lv; d.vz *= lv;
     d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
-    if (d.y < 0.1) { d.y = 0.1; d.vy = 0; d.vx *= 0.8; d.vz *= 0.8; }
+    if (d.y < 0.1) { d.y = 0.1; d.vy = 0; d.vx *= g80; d.vz *= g80; }
     // 要慢慢淡掉的（蘑菇雲）用縮的。單靠 life 到期會「啪」地整團同時不見
     if (d.fade) d.s *= Math.pow(0.5, dt / d.fade);
     /* hold 的不自轉（v1.175）：消防車那條水柱的每一顆是「沿飛行方向拉長的水痕」，

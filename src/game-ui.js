@@ -31,6 +31,15 @@ function shakeTrees(p, R) {
 /* ── 主迴圈 ─────────────────────────────────────────────── */
 function frame(now) {
   requestAnimationFrame(frame);
+  /* 鎖 60（v1.244.0）：不是「滿 16.7ms 才畫」——144Hz 會變成隔 2、3 個 vsync 交錯，幀距一長一短會抖。
+     改成隔整數個 vsync 畫一次：n 取「畫出來還有 52fps 以上」的最大那個——
+     120Hz → 60、144 → 72、165 → 55、240 → 60；60／75／90／100Hz 的 n 是 1，照舊每幀畫
+     （100Hz 隔一個是 50，太頓）。門檻給 n − 0.5 個 vsync：時間戳抖一點、或上一幀拖到下一個
+     vsync 才來，都不會多跳一次。dt 照舊從上一次真的畫的那一幀算，所以遊戲速度不變。
+     見 開發筆記〈鎖 60fps〉。 */
+  if (rafT) { const v = now - rafT; if (v > 2 && v < 50) vsyncMs += (v - vsyncMs) * 0.05; }
+  rafT = now;
+  if (cap60 && lastT && now - lastT < vsyncMs * (Math.max(1, Math.floor(1000 / 52 / vsyncMs)) - 0.5)) return;
   if (!lastT) lastT = now;
   let raw = (now - lastT) / 1000;
   lastT = now;
@@ -999,6 +1008,7 @@ function boot() {
   });
   $('spin').addEventListener('change', e => { spinOn = pref.spin = e.target.checked; save(); });
   $('mute').addEventListener('change', e => { muted = pref.mute = e.target.checked; save(); });
+  $('cap60').addEventListener('change', e => { cap60 = pref.cap = e.target.checked; save(); });
   $('panelBtn').addEventListener('click', () => $('panel').classList.toggle('hide'));
   /* 工具選單平常靠 :hover 展開。觸控沒有 hover，所以小窗自己也能點開；
      開著的時候點畫面上任何別的地方就收起來，不然它會一直擋著。 */

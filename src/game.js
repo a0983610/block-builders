@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.243.1';
+const VERSION = '1.244.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -82,6 +82,10 @@ let shapePick = -1;                 // -1 = 隨機
 let running = true;
 let lastT = 0;
 let fps = 0;
+/* 鎖 60（v1.244.0，面板上的勾選，預設開）：高刷螢幕隔整數個 vsync 才畫一幀。
+   vsyncMs 是量出來的 rAF 間隔（跳過的那幾次也算），見 frame() 與 開發筆記〈鎖 60fps〉。 */
+let cap60 = true;
+let rafT = 0, vsyncMs = 1000 / 60;
 let recent = [];                    // 最近蓋過的，避免連續重複
 
 const restGrid = new Map();         // 空間雜湊：只放躺在地上的 FREE 積木
@@ -706,8 +710,11 @@ function stepBlock(b, dt) {
       b.ax *= 0.5; b.ay *= 0.5; b.az *= 0.5;
       if (Math.random() < 0.22) noise(0.05, 0.03, 2200);
     } else {
-      b.vy = 0; b.vx *= 0.82; b.vz *= 0.82;
-      b.ax *= 0.7; b.ay *= 0.7; b.az *= 0.7;
+      /* 貼地滑的摩擦是照 60fps「一幀乘一次」調的，換算成這一幀的（v1.244.0）——
+         直接每幀乘的話 120fps 只滑一半遠（見 開發筆記〈鎖 60fps〉）。上面彈一下那條是一次性的，不必換。 */
+      const f60 = dt * 60, fv = Math.pow(0.82, f60), fa = Math.pow(0.7, f60);
+      b.vy = 0; b.vx *= fv; b.vz *= fv;
+      b.ax *= fa; b.ay *= fa; b.az *= fa;
       if (Math.hypot(b.vx, b.vz) < 0.55 && Math.abs(b.ax) + Math.abs(b.ay) + Math.abs(b.az) < 1.2)
         startSnap(b);
     }

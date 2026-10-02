@@ -348,6 +348,10 @@
   <div class="checks">
     <label><input type="checkbox" id="spin"> 自轉</label>
     <label><input type="checkbox" id="mute"> 靜音</label>
+    <!-- 高刷螢幕隔整數個 vsync 才畫一幀（v1.244.0，預設開），見 game-ui.js 的 frame()。
+         寬度要自己放開：#panel label 的 54px 比 .checks label 的 auto 優先，這幾個字塞不下會折成兩行
+         （前兩格本來就是 54px，不動它們，間距才跟原本一樣） -->
+    <label style="flex:0 0 auto"><input type="checkbox" id="cap60"> 鎖 60fps</label>
   </div>
 </div>
 

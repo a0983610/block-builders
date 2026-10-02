@@ -30158,7 +30158,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     document.querySelector('#modes [data-mode="rush"]').click();       // 小人模式（v1.219）
     document.getElementById('mute').checked = true;
     document.getElementById('mute').dispatchEvent(new Event('change', { bubbles: true }));
-    return { pref: JSON.parse(JSON.stringify(pref)) };
+    document.getElementById('cap60').checked = false;                  // 鎖 60fps（v1.244.0）
+    document.getElementById('cap60').dispatchEvent(new Event('change', { bubbles: true }));
+    return { pref: JSON.parse(JSON.stringify(pref)), cap: cap60 };
   });
   ok('改設定會寫進 pref', prefSaved.pref.cnt === 1800 && prefSaved.pref.wk === 40 &&
      prefSaved.pref.spd === 0.5 && prefSaved.pref.mute === true, JSON.stringify(prefSaved.pref));
@@ -30173,7 +30175,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       onCnt: on('cnt'), onWk: on('wk'), onSpd: on('spd'),
       domMute: document.getElementById('mute').checked,
       lazy: lazyMode, lazyPref: pref.lazy, lazyCur: document.getElementById('modeNow').dataset.cur,
-      lazyOn: [...document.querySelectorAll('#modes .mode.on')].map(e => e.dataset.mode).join(',')
+      lazyOn: [...document.querySelectorAll('#modes .mode.on')].map(e => e.dataset.mode).join(','),
+      cap: cap60, capPref: pref.cap, domCap: document.getElementById('cap60').checked, capFresh: freshPref().cap
     };
   });
   ok('重開後小人模式也跟著回來（小窗與選單亮的那一檔一起）',
@@ -30188,6 +30191,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      String(prefBack.onCnt) === '1800' && String(prefBack.onWk) === '40' &&
      String(prefBack.onSpd) === '0.5' && prefBack.domMute,
      '亮的是 ' + prefBack.onCnt + '/' + prefBack.onWk + '/' + prefBack.onSpd);
+  ok('鎖 60fps 預設勾著；取消勾選會存起來，重開後跟著回來',
+     prefBack.capFresh === true && prefSaved.cap === false && prefSaved.pref.cap === false &&
+     prefBack.cap === false && prefBack.capPref === false && prefBack.domCap === false,
+     '預設 ' + prefBack.capFresh + '；取消之後 cap60=' + prefSaved.cap + '、pref.cap=' + prefSaved.pref.cap +
+     '；重開 cap60=' + prefBack.cap + '、pref.cap=' + prefBack.capPref + '、勾選框 ' + prefBack.domCap);
+  await page.evaluate(() => {                    // 還回預設，後面走真 rAF 的那幾條照預設跑
+    cap60 = pref.cap = true; document.getElementById('cap60').checked = true; save();
+  });
 
   /* 面板只剩三檔，中間值選不出來了：存檔裡不是那三檔的值一律吸到最近的一檔
      （壞掉的存檔也一樣，不然畫面上會三顆都不亮、跑的卻是第四個數字）。 */
@@ -32612,6 +32623,86 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('換建築不會卡住畫面（最慢的藍圖 < 250ms）', bpTime.worst < 250,
      bpTime.name + ' ' + bpTime.worst.toFixed(0) + 'ms');
+
+  /* 鎖 60fps（v1.244.0，使用者：「有些電腦是更高FPS如果都固定60如何?(120有時會降)」→ 選「面板加選項、預設 60」）。
+     規則型：不靠真的 rAF（headless 的刷新率是固定的），拿假的時間戳一拍一拍餵 frame()，數 step 被叫幾次。
+     時間戳帶 ±0.3ms 的確定性抖動——抖在每一拍自己的位置上（vsync 不會累積漂移），不是加在間隔上，
+     第一版加在間隔上，隔 4 拍的 240Hz 幀距就差到 2.1ms，量到的是假的不均。
+     step／draw／render／HUD／rAF 換成空的，量完全部還回去。
+     期望表就是這個功能的規格：隔整數個 vsync、畫出來還有 52fps 以上的最大那個（見 frame()）。 */
+  const capRun = await page.evaluate(() => {
+    const keep = { step, draw, render: ENG.render, hudTick, raf: window.requestAnimationFrame,
+                   running, lastT, rafT, vsyncMs, cap60, timeScale, fps };
+    let n = 0, cur = 0, sumDt = 0;
+    const ts = [];
+    step = dt => { n++; sumDt += dt; ts.push(cur); };
+    draw = () => {}; ENG.render = () => {}; hudTick = () => {};
+    window.requestAnimationFrame = () => 0;
+    running = true; timeScale = 1;
+    const run = (hz, on) => {
+      cap60 = on; lastT = 0; rafT = 0; vsyncMs = 1000 / 60;
+      let k = 0;
+      const tick = () => { k++; cur = 1e6 + k * 1000 / hz + Math.sin(k * 12.9898) * 0.3; frame(cur); };
+      for (let i = 0; i < hz * 2; i++) tick();         // 兩秒暖機：vsyncMs 收斂
+      n = 0; sumDt = 0; ts.length = 0;
+      for (let i = 0; i < hz * 2; i++) tick();         // 量兩秒
+      const gaps = ts.slice(1).map((v, i) => v - ts[i]);
+      return { hz, on, fps: n / 2, spread: +(Math.max(...gaps) - Math.min(...gaps)).toFixed(2),
+               sim: +(sumDt / 2).toFixed(3) };            // 量的這兩秒裡模擬每秒推進幾秒，應該 ≈ 1
+    };
+    const out = [];
+    for (const hz of [60, 75, 90, 100, 120, 144, 165, 240]) out.push(run(hz, true), run(hz, false));
+    step = keep.step; draw = keep.draw; ENG.render = keep.render; hudTick = keep.hudTick;
+    window.requestAnimationFrame = keep.raf;
+    running = keep.running; lastT = keep.lastT; rafT = keep.rafT; vsyncMs = keep.vsyncMs;
+    cap60 = keep.cap60; timeScale = keep.timeScale; fps = keep.fps;
+    return out;
+  });
+  const CAP_WANT = { 60: 60, 75: 75, 90: 90, 100: 100, 120: 60, 144: 72, 165: 55, 240: 60 };
+  const capOn = capRun.filter(r => r.on), capOff = capRun.filter(r => !r.on);
+  ok('鎖 60fps：高刷螢幕隔整數個 vsync 畫一幀，60～100Hz 照舊每幀畫',
+     capOn.every(r => Math.abs(r.fps - CAP_WANT[r.hz]) <= 1),
+     capOn.map(r => r.hz + 'Hz→' + r.fps).join('、'));
+  ok('鎖 60fps：畫出來的幀距一樣長（沒有 2、3 個 vsync 交錯），遊戲速度不變',
+     capOn.every(r => r.spread < 1.5 && Math.abs(r.sim - 1) < 0.02),
+     capOn.map(r => r.hz + 'Hz 幀距差 ' + r.spread + 'ms、模擬每秒 ' + r.sim + ' 秒').join('；'));
+  ok('取消勾選就跟著螢幕刷新率畫', capOff.every(r => Math.abs(r.fps - r.hz) <= 1),
+     capOff.map(r => r.hz + 'Hz→' + r.fps).join('、'));
+
+  /* 「每幀乘一次」的阻尼照 dt 換算（v1.244.0，使用者：「要改」）。規則型：同一顆粒子、同一塊碎料，
+     用 30／60／120／144fps 的 dt 各推兩秒，看走多遠。改之前走的距離跟幀率成反比——探針實測
+     煙塵 5.10／2.61／1.31／1.09、火星 3.00／1.50／0.75／0.63、碎料貼地滑 1.39／0.70／0.35／0.29，
+     改之後只剩離散化的誤差（「先走再乘」的次序本身就有：連 60fps 都比連續解多一成），
+     實測最多是 30fps 的碎料 +9.8%，所以門檻給一成五——改壞的樣子是差一倍，分得很開。
+     碎料用 blocks[0] 的複本推，不動池子裡那一塊。 */
+  const per60 = await page.evaluate(() => {
+    const keepDust = dust.slice(), keepHot = hot.slice();
+    const out = [];
+    for (const hz of [30, 60, 120, 144]) {
+      const dt = 1 / hz, n = Math.round(2 * hz);
+      dust.length = 0;
+      dust.push({ x: 0, y: 3, z: 0, vx: 10, vy: 0, vz: 0, life: 9, s: 1, rx: 0, ry: 0, r: 1, g: 1, b: 1 });
+      const d = dust[0];
+      for (let i = 0; i < n; i++) stepDust(dt);
+      hot.length = 0;
+      hot.push({ x: 0, y: 3, z: 0, vx: 10, vy: 0, vz: 0, life: 9, s: 1, rx: 0, ry: 0, cr: 1, cg: 1, cb: 1 });
+      const h = hot[0];
+      for (let i = 0; i < n; i++) stepHot(dt);
+      const b = Object.assign({}, blocks[0], { st: FLY, x: 0, z: 0, vx: 8, vy: 0, vz: 0,
+                                               rx: 0, ry: 0, rz: 0, ax: 0, ay: 0, az: 0, snap: 0 });
+      b.y = halfY(b);
+      for (let i = 0; i < n; i++) stepBlock(b, dt);
+      out.push({ hz, dust: +d.x.toFixed(3), hot: +h.x.toFixed(3), block: +b.x.toFixed(3) });
+    }
+    dust.length = 0; dust.push(...keepDust);
+    hot.length = 0; hot.push(...keepHot);
+    return out;
+  });
+  const p60 = per60.find(r => r.hz === 60);
+  const p60worst = Math.max(...per60.map(r => Math.max(...['dust', 'hot', 'block'].map(k => Math.abs(r[k] / p60[k] - 1)))));
+  ok('煙塵、火星、碎料貼地滑在 30／120／144fps 下走得跟 60fps 一樣遠（差一成五以內）', p60worst < 0.15,
+     per60.map(r => r.hz + 'fps 煙塵 ' + r.dust + '、火星 ' + r.hot + '、碎料 ' + r.block).join('；') +
+     '（最多差 ' + (p60worst * 100).toFixed(1) + '%）');
   }   // ── 〈效能〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 連續操作壓力 ══════════ */
