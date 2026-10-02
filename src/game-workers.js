@@ -110,8 +110,9 @@ function newWorker(i) {
        navWait 是「剛規劃過、找不到路」還要等幾秒才再規劃一次，spd 是最近一次走路用的腳程
        （stuckWatch 照它判「走不動」）。
        地標那一層（v1.236，見 navBody）：nb／nbS 是照身高與身長算出來的身體（跟著 scale 重算），
-       lmg 是「這一段穿地標的牆」（料在建築裡走不到、或人自己被圍在裡面，見 updWorker 的 pick）。 */
-    nav: null, navWait: 0, spd: 0, nb: null, nbS: 0, lmg: 0,
+       lmg 是「這一段穿地標的牆」（料在建築裡走不到、或人自己被圍在裡面，見 updWorker 的 pick）。
+       pls 是隔空拿那一塊要站的點（v1.246，見 pullSpot）。 */
+    nav: null, navWait: 0, spd: 0, nb: null, nbS: 0, lmg: 0, pls: null,
     /* 自己那間家的編號（v1.109）。−1＝還沒有家。這個**跨輪留著**（w.hm 每輪會被
        stopHomes 清掉），下一次事件才知道誰已經有家、不必再蓋一間。
        記 id 不記索引：索引會被 dropHomes 重編。 */
@@ -587,6 +588,40 @@ function nearGrab(w, bi, dt) {
   if (d < w.gbd - GRAB_GAIN) { w.gbd = d; w.gbt = 0; return false; }
   w.gbt += dt;
   return w.gbt >= GRAB_WAIT && d <= GRAB_FAR;
+}
+/* ── 埋在建築裡的料：站在外面隔空拿（v1.246） ─────────────
+   使用者：「如果改成在能走到的位置把料直接拿到手上呢」，料怎麼到手上選「飛過來」、
+   太遠的選「看不見的才隔空拿，看得見的照舊穿牆」，看過預覽選「站著等料飛到手上」。
+   碎料只撞地面不撞建築（stepBlock），砸下來落在建築上的會穿下去、埋在實心裡——
+   **那一格本身被砌滿**（blockAt）就是看不見的那種。這種站到「走得到、離它最近」的點（lmNearReach），
+   走到了就讓它從原地飛進手裡（startPull）；看得見的（被圍住的空地上）照 v1.236 穿牆進去撿。
+   實測（施工中砸 8 下、20 人補完）：撿料趟數有 75～87% 的料從工地外走不到，
+   實心的地標（吉薩、競技場、姬路城、白宮）其中 96～99% 是埋在實心裡的，
+   穿牆版補完那段時間小人有 46～55% 的時間身體在牆裡。見 開發筆記〈埋在建築裡的料：站在外面隔空拿〉。 */
+const PULL_V = 18;                  // 飛多快（格／秒）
+const PULL_T = [0.3, 0.75];         // 飛行時間夾在這之間：近的別一閃就到、遠的別飄太久
+const PULL_LIFT = 0.1;              // 弧頂比直線高出「距離 × 這個」
+/* 隔空拿那一塊要站在哪。lmNearReach 是一圈一圈往外找，每幀找太貴：
+   照「走得到的範圍」那張表（lmReachMap 換新的才重算）與那塊料的位置快取在人身上。 */
+function pullSpot(w, b) {
+  const m = lmReachMap(), c = w.pls;
+  if (c && c.m === m && c.bx === b.x && c.bz === b.z) return c;
+  const p = lmNearReach(b.x, b.z);
+  if (!p) return null;
+  w.pls = { m, bx: b.x, bz: b.z, x: p.x, z: p.z };
+  return w.pls;
+}
+/* 從躺著的地方飛到手上：起點記下來，carryPose 每幀照進度從起點內插到手的位置（手會動，終點跟著走）。
+   只有 CARRY 時有人讀它：飛到一半被打掉（freeBlock 變成 FLY）就沒人理，下次被拿起來時重給。 */
+function startPull(w, b) {
+  const d = Math.hypot(b.x - w.x, b.z - w.z);
+  b.pull = { t: 0, dur: clamp(d / PULL_V, PULL_T[0], PULL_T[1]), x0: b.x, y0: b.y, z0: b.z, peak: d * PULL_LIFT };
+}
+function stepPull(w, dt) {
+  for (const j of w.load) {
+    const b = blocks[j.b];
+    if (b && b.st === CARRY && b.pull) b.pull.t += dt;
+  }
 }
 /* 這個位置是不是被蓋好的部分圍住了（v1.113）：腳下就是牆，或者兩側各有一道牆
    （躺在實心建築中間那個空柱子裡的料就是這樣——它自己的柱子是空的，但四周都填起來了）。
@@ -1920,6 +1955,7 @@ function updWorker(w, wi, dt) {
      走出來再停，不然人卡在牆裡彎腰、放下的積木也埋在牆裡。
      轉成 rest 之後下面的 switch 這一幀就跑到 stepRest，姿勢當場擺好，不會先站直一幀。 */
   if (w.toil >= REST_AT && w.st !== 'rest' && lmReach(w.x, w.z)) tireOut(w);
+  stepPull(w, dt);                   // 隔空拿的那塊還在飛（v1.246，見 startPull）
   switch (w.st) {
     case 'idle': {
       // 肌肉小人一趟只領一塊（v1.112，見 MUS_WIND）
@@ -1943,21 +1979,48 @@ function updWorker(w, wi, dt) {
       if (w.li >= w.load.length) { w.li = 0; toSlot(w); break; }
       const j = w.load[w.li];
       const b = j && blocks[j.b];
-      if (!b || b.st !== FREE) { dropJob(w, w.li); break; }
-      {
+      /* 隔空拿的那塊（v1.246，見 startPull）：站在原地、面向它，等它飛進手裡再往下走。
+         w.li 指到的那一筆是 CARRY 只有這一種情況：幽浮、黑洞拿走工作單上的積木都先經過 freeBlock，
+         那一筆已經被 dropJob 抽掉了 */
+      let got = false;
+      if (b && b.st === CARRY) {
+        if (b.pull) {
+          w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+          w.a = Math.atan2(b.pull.x0 - w.x, b.pull.z0 - w.z);
+          carryPose(w);
+          break;
+        }
+        got = true;
+      }
+      if (!got && (!b || b.st !== FREE)) { dropJob(w, w.li); break; }
+      let hid = false;
+      if (!got) {
         const p = pickSpot(b);                        // 躺在房子占地上的站到框外拿
         w.tx = p.x; w.tz = p.z;
         /* 料在地標裡、從工地外走不到（躺在牆裡、或被蓋好的部分圍住）：**穿地標的牆進去撿**（v1.236，
            使用者：「有時候碎料掉在已經建起來的建築內 這時可以穿牆進去撿」）。人自己在裡面、走不出來
            （上一塊就是這樣撿的、或是站著的時候四周被砌起來）也一樣穿出來。只穿地標：房子照擋（見 navBody）。
-           肌肉小人那個「有外面的就先挑外面的」（findBlock 的 outside）照舊。 */
-        w.lmg = !lmReach(p.x, p.z) || !lmReach(w.x, w.z) ? 1 : 0;
+           肌肉小人那個「有外面的就先挑外面的」（findBlock 的 outside）照舊。
+           埋在實心裡、看不見的那種改成站在外面隔空拿（v1.246，見 pullSpot）：看得見的才穿牆。 */
+        const far = !lmReach(p.x, p.z);
+        if (far && blockAt(b.x, b.y, b.z)) {
+          const q = pullSpot(w, b);
+          if (q) { w.tx = q.x; w.tz = q.z; hid = true; }
+        }
+        w.lmg = (far && !hid) || !lmReach(w.x, w.z) ? 1 : 0;
       }
       // 走不過去就在最近能到的距離伸手拿（v1.108，見 nearGrab）
-      if (walkTo(w, dt) || nearGrab(w, j.b, dt)) {
+      if (!got && (walkTo(w, dt) || nearGrab(w, j.b, dt))) {
         if (b.cell) gridDel(b);
         douse(b);                                     // 撿起來的碎料還在燒的話，先熄掉
         b.st = CARRY; b.rest = false; w.carry = true; stats.carried++;
+        /* pull 只在 CARRY 時有人讀，所以拿起來這一刻重給（同 takeHomeBlock 清 arc）：
+           飛到一半被打掉（freeBlock）、或按「立刻建成」（completeNow 直接改狀態）留下來的舊的不能接著用 */
+        b.pull = null;
+        if (hid) { startPull(w, b); carryPose(w); break; }   // 下一幀起由上面那段等它飛到
+        got = true;
+      }
+      if (got) {
         w.li++;
         if (w.li < w.load.length) {                   // 還沒拿滿：直接去下一塊
           /* 下一塊可能已經不在了（v1.146.2）：上面那道 `!b` 只看得到
@@ -2238,10 +2301,19 @@ function carryPose(w) {
   for (const j of w.load) {
     const b = blocks[j.b];
     if (!b || b.st !== CARRY) continue;
-    b.x = w.x + Math.sin(w.a) * 0.05;
-    b.z = w.z + Math.cos(w.a) * 0.05;
+    const x = w.x + Math.sin(w.a) * 0.05, z = w.z + Math.cos(w.a) * 0.05;
     // 舉的高度要跟著身高走，不然高個子的積木會陷進自己的安全帽裡
-    b.y = (1.45 + Math.abs(Math.sin(w.ph)) * 0.05) * w.scale + k;
+    const y = (1.45 + Math.abs(Math.sin(w.ph)) * 0.05) * w.scale + k;
+    const f = b.pull;
+    if (f) {
+      /* 隔空拿的還在飛（v1.246，見 startPull）：從躺著的地方照進度內插到手上那一格，
+         中段往上拱一點（跟拋上工地那條拋物線同一個樣子：4u(1−u)） */
+      const u = Math.min(1, f.t / f.dur), e = u * u * (3 - 2 * u);
+      b.x = f.x0 + (x - f.x0) * e;
+      b.z = f.z0 + (z - f.z0) * e;
+      b.y = f.y0 + (y - f.y0) * e + f.peak * 4 * u * (1 - u);
+      if (u >= 1) b.pull = null;
+    } else { b.x = x; b.z = z; b.y = y; }
     b.rx += (0 - b.rx) * 0.2; b.rz += (0 - b.rz) * 0.2;
     k++;
   }
@@ -5097,7 +5169,7 @@ function takeHomeBlock(w, wi, h, i) {
   douse(b);                                             // 還在燒的先熄掉（同工人撿料）
   if (b.cell) gridDel(b);
   b.st = CARRY; b.rest = false; b.holder = wi; b.hh = w.hm; b.hk = k;
-  b.snap = 0; b.arc = null; b.scale = 1; b.wet = 0;
+  b.snap = 0; b.arc = null; b.pull = null; b.scale = 1; b.wet = 0;
   const c = h.slots[k].c;
   b.tr = c[0]; b.tg = c[1]; b.tb = c[2];
   h.slots[k].claimed = wi;

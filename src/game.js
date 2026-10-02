@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.245.0';
+const VERSION = '1.246.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -617,6 +617,7 @@ function newBlock() {
     dug: 0,
     fresh: 0,                            // 1 = 村子剛挖出來、還沒落地（見 separate）
     scale: 1, snap: 0, snapFrom: null, arc: null, wob: 0, al: 1, fallIn: 0,
+    pull: null,                          // 隔空拿、正在飛進手裡（v1.246，見 game-workers.js 的 startPull）
     gone: 0,                             // >0＝完工後多餘的碎料正在淡出（v1.109，見 clearSpare）
     burn: 0,                             // 1 = 正在燒（狀態本體在 fires 那筆裡）
     wet: 0                               // 還濕幾秒（>0 就點不著，顏色也壓深一點）

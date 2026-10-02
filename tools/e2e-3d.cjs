@@ -2800,8 +2800,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let f = 0; f < 60; f++) {
       for (const w of workers) {
         if (!w.carry) continue;
-        // 一趟可以搬好幾塊（v1.60）：整疊由下往上檢查
-        const held = w.load.map(j => blocks[j.b]).filter(b => b && b.st === 1);
+        /* 一趟可以搬好幾塊（v1.60）：整疊由下往上檢查。
+           正在飛進手裡的那塊（v1.246 隔空拿，b.pull）還沒到手上，不算這一疊：他等它飛到才去拿下一塊，
+           所以它一定是最上面那一塊，拿掉之後底下那幾塊照樣要剛好一格一格 */
+        const held = w.load.map(j => blocks[j.b]).filter(b => b && b.st === 1 && !b.pull);
         if (!held.length) continue;
         const head = HAT * w.scale;
         n++;
@@ -33423,7 +33425,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   }
 
   /* ⑪ 料在建築裡、從外面走不到：**穿地標的牆進去撿**（v1.236，使用者：「有時候碎料掉在已經建起來的建築內
-     這時可以穿牆進去撿」）。一圈 1 格厚、整根砌滿的方牆圍住 5×5 的空地，料躺在正中央，人從外面去撿。
+     這時可以穿牆進去撿」）。v1.246 起只剩看得見的這種（料那一格是空的）照舊穿牆，埋在實心裡的見 ⑪-b。
+     一圈 1 格厚、整根砌滿的方牆圍住 5×5 的空地，料躺在正中央，人從外面去撿。
      走的是真的狀態機（updWorker 的 pick），伸手拿關掉（量的是穿牆這條路，不是隔牆伸手）：
        · 規則版：這一趟直接穿牆進去（w.lmg），不必等「卡住 3 秒才穿透」，撿到之後照樣穿出來
        · 對照：當成走得到（lmReach 永遠說是）→ 規劃不出路，走到牆邊卡住，靠 3 秒穿透才進得去 */
@@ -33478,6 +33481,100 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 秒撿到（穿地標的牆 ' + navPick.on.lmg + ' 幀、卡住穿透 ' + navPick.on.ghost + ' 幀），撿完 ' + navPick.on.out +
      ' 秒回到走得到的地方；當成走得到（對照）：' + (navPick.off.got < 0 ? '30 秒沒撿到' : navPick.off.got + ' 秒撿到') +
      '、卡住穿透 ' + navPick.off.ghost + ' 幀');
+
+  /* ⑪-b 料埋在實心裡（那一格本身被砌滿、看不見）：**站在牆外、等它飛進手裡**（v1.246，使用者：「如果改成在能走到的位置
+     把料直接拿到手上呢」→ 選「飛過來」「看不見的才隔空拿，看得見的照舊穿牆」，看過預覽選「站著等料飛到手上」）。
+     ⑪ 那一圈牆圍的是空地（看得見）→ 照舊穿牆；這一條把 7×7 整根砌滿，料埋在正中央那一格裡。
+     走的是真的狀態機（updWorker 的 pick），伸手拿關掉（量的是「走到站位就拿」這條路，不是 nearGrab）。
+     第二件：拿起來那一刻 pull 重給——身上留著舊的 pull（飛到一半被打掉、或立刻建成留下的）的料，
+     照一般的路撿起來要當場就在手上，不能從舊的起點再飛一次。見 開發筆記〈埋在建築裡的料：站在外面隔空拿〉。 */
+  const navPull = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 3000; setWorkerCount(1); startBuild(true);
+    homes = null;
+    const c = Math.round(0 - gOffX), cz = Math.round(0 - gOffZ);
+    for (const s of bp.slots) s.filled = Math.max(Math.abs(s.gx - c), Math.abs(s.gz - cz)) <= 3;
+    frameNo++;
+    const w = workers[0];
+    releaseWorker(w); w.hm = -1;
+    for (let i = 2; i < blocks.length; i++) { blocks[i].rest = false; blocks[i].holder = -1; }
+    const put = (bi, x, z) => {
+      const b = blocks[bi];
+      if (b.cell) gridDel(b);
+      b.st = 0; b.rest = true; b.holder = -1; b.slot = -1; b.hh = -1; b.arc = null; b.pull = null; b.snap = 0;
+      b.x = x; b.y = HB; b.z = z; b.vx = b.vy = b.vz = 0;
+      gridAdd(b);
+      return b;
+    };
+    const give = bi => {                // 工作單直接給這一塊（同 ⑪）
+      const s = findSlot(w.x, w.z);
+      bp.slots[s].claimed = 0; blocks[bi].holder = 0;
+      w.load.push({ b: bi, s }); w.li = 0; w.st = 'pick'; w.tx = blocks[bi].x; w.tz = blocks[bi].z;
+    };
+    const hand = b => Math.hypot(b.x - w.x, b.z - w.z) < 0.1 && Math.abs(b.y - 1.45 * w.scale) < 0.2;
+    const b = put(0, c + gOffX, cz + gOffZ);
+    const r = { inside: !lmReach(b.x, b.z), hidden: blockAt(b.x, b.y, b.z) };
+    const og = nearGrab;
+    nearGrab = () => false;
+    try {
+      w.x = b.x; w.z = b.z - 12; w.y = 0; w.sx = w.x; w.sz = w.z; w.stk = 0; w.ghost = 0;
+      give(0);
+      let lmg = 0, gh = 0, inWall = 0, got = -1, land = -1, moved = 0, jump = 0, face = 0, after = '';
+      let o = null, px = 0, py = 0, pz = 0, wx = 0, wz = 0, span = 0;
+      for (let i = 0; i < 600; i++) {
+        step(0.05);
+        if (w.lmg) lmg++;
+        if (w.ghost > 0) gh++;
+        if (!lmReach(w.x, w.z)) inWall++;
+        if (got < 0 && b.st === CARRY && b.pull) {
+          got = i; o = { ...b.pull }; wx = w.x; wz = w.z;
+          span = Math.hypot(o.x0 - w.x, o.y0 - 1.45 * w.scale, o.z0 - w.z);
+          px = b.x; py = b.y; pz = b.z;
+          r.gap = +Math.hypot(o.x0 - w.x, o.z0 - w.z).toFixed(2); r.dur = +o.dur.toFixed(2);
+          r.atOrigin = Math.hypot(b.x - o.x0, b.y - o.y0, b.z - o.z0) < 1e-6;   // 拿起來那一幀還在原地，沒有瞬移
+          continue;
+        }
+        if (got >= 0 && land < 0) {
+          jump = Math.max(jump, Math.hypot(b.x - px, b.y - py, b.z - pz));
+          px = b.x; py = b.y; pz = b.z;
+          moved = Math.max(moved, Math.hypot(w.x - wx, w.z - wz));
+          let da = Math.abs(w.a - Math.atan2(o.x0 - w.x, o.z0 - w.z)) % (Math.PI * 2);
+          face = Math.max(face, Math.min(da, Math.PI * 2 - da));
+          if (!b.pull) { land = i; r.atHand = hand(b); }
+          continue;
+        }
+        if (land >= 0) { after = w.st; break; }     // 飛到的下一幀就往下走（這一趟只領一塊：回工地）
+      }
+      Object.assign(r, { lmg, gh, inWall, got: got >= 0 ? +((got + 1) * 0.05).toFixed(2) : -1,
+                         fly: land >= 0 ? +((land - got) * 0.05).toFixed(2) : -1,
+                         moved: +moved.toFixed(3), jump: +jump.toFixed(2), span: +span.toFixed(2), face: +face.toFixed(3), after });
+      /* 第二件：同一個人空手，牆外空地上一塊身上留著舊 pull（起點在 30 格外）的料 */
+      releaseWorker(w);
+      const b1 = put(1, w.x + 3, w.z);
+      b1.pull = { t: 0, dur: 0.5, x0: b1.x + 30, y0: HB, z0: b1.z, peak: 3 };
+      give(1);
+      r.stale = -1;
+      for (let i = 0; i < 200; i++) {
+        step(0.05);
+        if (b1.st === CARRY) { r.stale = hand(b1) && !b1.pull ? 1 : 0; r.staleD = +Math.hypot(b1.x - w.x, b1.z - w.z).toFixed(2); break; }
+      }
+    } finally { nearGrab = og; }
+    cleanTools(); clearHomes();
+    return r;
+  });
+  ok('料埋在實心裡（看不見）：站在牆外、等它飛進手裡——人不進牆、站著不動、料不瞬移，飛到才往下走',
+     navPull.inside && navPull.hidden && navPull.got > 0 && navPull.lmg === 0 && navPull.gh === 0 &&
+     navPull.inWall === 0 && navPull.atOrigin && navPull.fly > 0 && Math.abs(navPull.fly - navPull.dur) <= 0.1 &&
+     navPull.moved < 0.01 && navPull.face < 0.01 && navPull.jump <= 0.35 * navPull.span && navPull.atHand &&
+     navPull.after === 'build',
+     '料在 7×7 實心正中央（走不到：' + navPull.inside + '、那一格被砌滿：' + navPull.hidden + '）：' + navPull.got +
+     ' 秒拿到、隔 ' + navPull.gap + ' 格，飛 ' + navPull.fly + ' 秒（照距離給 ' + navPull.dur + '）；穿地標的牆 ' + navPull.lmg +
+     ' 幀、卡住穿透 ' + navPull.gh + ' 幀、身體在牆裡 ' + navPull.inWall + ' 幀；飛的時候人挪了 ' + navPull.moved +
+     '、面向偏 ' + navPull.face + ' rad；料一幀最多移 ' + navPull.jump + '（整段 ' + navPull.span + '）；到手上：' + navPull.atHand +
+     '，接著 ' + navPull.after);
+  ok('拿起來那一刻 pull 重給：身上留著舊 pull 的料照一般的路撿起來，當場就在手上',
+     navPull.stale === 1, '撿起來那一幀離手 ' + navPull.staleD + ' 格（舊的起點在 30 格外）');
 
   /* ⑫～⑭ 狀態機那一層：天災與吉祥物「去動手的那一趟」（使用者：「觀察發現還是有卡牆情況 案例是一隻黑獼猴往城牆(單片)方向走
      然後卡在牆邊 推測是要去放火」「e2e增加設計各種測試情況去看目前巡路還有什麼問題」）。
