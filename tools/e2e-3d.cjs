@@ -10508,9 +10508,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        · 城外到城外、直線切過城裡也繞城外：牆半徑 36、只留 −z 面緊鄰東南角樓那一段沒砌，東牆外一間房子，
          黑獼猴在南牆外、欠帳兩處、整圈牆都算燒過（逼牠挑那一間）。v1.233.1 的 A/B 是把 wallCut 換成永遠 false；
          v1.235 起繞法是巡路規則（gateNeed 問 navReach），對照組改成**關掉規劃**（navPlan 永遠找不到路）。
+         v1.243 起砸村子那一趟不再問 wallCut／gateNeed，照〈去動手的那一趟〉走（站位走得到就規劃過去，見 actWalk）。
          目標是城牆那一種（只有附近幾段算燒過）也要照樣動手——照「那一段的中心」問 wallCut 的話會永遠在繞。
        · 走過去那一段認準一間：只砌東北角樓、城外北邊一間大長屋，白猴子站在兩者之間。
-         A/B 每一步之前把 m.vh 清掉＝每幀重挑最近的一塊（v1.233.0 的做法），那樣牠在兩個目標之間原地抖。 */
+         A/B 每一步之前把 m.vh 清掉＝每幀重挑最近的一塊（v1.233.0 的做法），那樣牠在兩個目標之間原地抖；
+         v1.243 起這個 A/B 只印不守（站位改了之後每幀重挑也不抖，見那一條的註解）。 */
   const mascVill = await page.evaluate(() => {
     cleanTools(); clearHomes(); stopIdleEvent();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩大金字塔');
@@ -10580,7 +10582,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       scene(neCorner, HOME_KIND.find(k => k.id === '大長屋'), 22, W + 14);
       beasts = null;
       const m = spawnBeast('snow', 1, 1, 0);
-      m.x = 26.5; m.z = W + 2.8; m.sx = m.x; m.sz = m.z;
+      /* 起點要離兩邊都超過 DOOM_TOSS_NEAR（v1.243）：站位改成「離那一間中央 10.5 格內」之後，原本那一點 (26.5, W + 2.8)
+         離角樓中央只有 9.9 格，一開始就丟得到、不必走（兩邊都 0.1 秒動手，量不到「走過去那一段」） */
+      m.x = 10; m.z = 35; m.sx = m.x; m.sz = m.z;
       m.st = 'fun'; m.bad = 1; m.home = 1; m.pause = 0; m.stay = 999;
       const seen = new Set();
       const r = walk(m, 60, q => { if (old) q.vh = 0; else if (q.vh) seen.add(q.vh); });
@@ -10600,10 +10604,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `牆半徑 ${mascVill.W}：挑到城外那一間（直線切過城裡＝${mascVill.house.cut}）${mascVill.house.secs} 秒動手、` +
      `進出城 ${mascVill.house.flips} 次；關掉規劃：${mascVill.off.secs < 0 ? '120 秒沒動手' : mascVill.off.secs + ' 秒動手'}、` +
      `進出城 ${mascVill.off.flips} 次；目標是城牆那一種 ${mascVill.wall.secs} 秒動手`);
-  ok('吉祥物砸房子：走過去那一段認準一間，不在兩個差不多近的目標之間原地抖（A/B：每幀重挑就是 v1.233.0）',
-     mascVill.snow.secs > 0 && mascVill.snow.pinned === 1 && mascVill.snowOld.secs < 0,
+  /* A/B（每幀重挑）v1.243 起只印不守：站位改成「搆得到那一間、離自己最近」之後，往那一間走只會越走越近，
+     不會再被另一間拉走——寫這一版時同一個場面掃 78 個起點，每幀重挑也全部動手、秒數跟認準一模一樣
+     （見 開發筆記〈去動手的那一趟〉）。v1.233.0 那一版（站位是 h.r ＋ 10.5、往這一間的站位走就離另一間更近）是 60 秒沒動手。 */
+  ok('吉祥物砸房子：走過去那一段認準一間，不在兩個差不多近的目標之間原地抖',
+     mascVill.snow.secs > 0 && mascVill.snow.pinned === 1,
      `白猴子在東北角樓與城外那一間大長屋之間：認準一間 ${mascVill.snow.secs} 秒動手（這一趟認過 ${mascVill.snow.pinned} 間）；` +
-     `每幀重挑 ${mascVill.snowOld.secs < 0 ? '60 秒沒動手' : mascVill.snowOld.secs + ' 秒動手'}`);
+     `每幀重挑（只印）${mascVill.snowOld.secs < 0 ? '60 秒沒動手' : mascVill.snowOld.secs + ' 秒動手'}`);
 
   /* 天災裝回去過（上面那幾條要牠），這裡要關回去——不關的話後面每一段都會跑到
      隨機來訪的猴子（同天災那幾段的收尾）。 */
@@ -25354,7 +25361,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      站位本來是「從房子中心往牠的方向推 h.r + doomNear」——牠比房子更靠近場心時那一點
      會落在 siteR + KEEP 圈內，接著被 strollTo 開頭推到圈上，**那個點跟「房子旁邊」
      已經沒關係了**（實測那一間 r = 28.4、算出來 r ≈ 13.3、被推到 20.11，追了 887 幀）。
-     押死的場面：房子、牠的位置、款式全部寫死，不跑模擬也不賭骰子。 */
+     押死的場面：房子、牠的位置、款式全部寫死，不跑模擬也不賭骰子。
+     v1.243 起這個站位算式**只剩巨人在用**（其餘照〈去動手的那一趟〉挑搆得到那一塊的站位，見 game-tools.js 的 actWalk），
+     這一條本來就是拿巨人驗的，照舊。 */
   const badStand = await page.evaluate(() => {
     const keepPh = phase;
     beasts = null; nanas = null; fballs = null; clearFires();
@@ -33262,6 +33271,188 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 秒撿到（穿地標的牆 ' + navPick.on.lmg + ' 幀、卡住穿透 ' + navPick.on.ghost + ' 幀），撿完 ' + navPick.on.out +
      ' 秒回到走得到的地方；當成走得到（對照）：' + (navPick.off.got < 0 ? '30 秒沒撿到' : navPick.off.got + ' 秒撿到') +
      '、卡住穿透 ' + navPick.off.ghost + ' 幀');
+
+  /* ⑫～⑭ 狀態機那一層：天災與吉祥物「去動手的那一趟」（使用者：「觀察發現還是有卡牆情況 案例是一隻黑獼猴往城牆(單片)方向走
+     然後卡在牆邊 推測是要去放火」「e2e增加設計各種測試情況去看目前巡路還有什麼問題」）。
+     ①～⑪ 驗的是走路那一層（strollTo／stepTo），這三條驗的是**接在它上面那一層**：game-tools.js 的 stepBeast0
+     （come／fun／gate／near／act／go）決定去哪、什麼時候算到、什麼時候動手，那幾段自己還有一套判斷
+     （wallAhead／gateNeed 的「被牆隔開了沒」、站位「從那一間中心往自己推 h.r ＋ DOOM_NEAR」、near 最後幾步直直走），
+     走路那一層的規則管不到那裡。走的是真的 stepBeast（每幀 frameNo++，同〈閒晃事件：城牆〉⑬ 的 walk），場面自己組，
+     **骰子押死**（Math.random 給定值：猴子不會半路絆倒，同一版程式跑幾次數字都一樣，全部是規則型）：
+       ⑫ 站位走得到就走過去動手：不在兩個狀態之間來回、不原地站著、不靠穿透
+       ⑬ 動手那一刻搆得到：黑獼猴的火把離點的那一塊不超過 DOOM_NEAR（＋半格浮點餘裕）
+       ⑭ 天災進場與走人：只砌一段牆、整圈有門、整圈沒門都走得到、走得出去
+     場面（吉薩大金字塔 1800 當地標，城牆照 wallPlan 整圈排好、只砌指定的那幾段＝蓋到一半的樣子）：
+     只砌一段直牆／一座角樓／一座門樓／整圈；整圈＋貼著城牆內側那一間（城牆都算燒過＝只剩那一間可挑）；
+     整圈＋城內一間、猴子在城外；整圈＋城外那一間、猴子在城裡；空地上兩間一排、前面那間算燒過。起點在牆（房子）兩側各一圈。 */
+  const navDoom = await page.evaluate(() => {
+    cleanTools(); clearHomes(); stopIdleEvent();
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩大金字塔');
+    targetCnt = 1800; startBuild(true); completeNow();
+    phase = 'done'; beasts = null; homes = null;
+    const n0 = blocks.length, R0 = Math.random;
+    Math.random = () => 0.5;                         // 押死：B_TRIP_P × dt 永遠抽不到（不會絆倒）
+    const fill = hi => {
+      const h = homes.list[hi];
+      for (let i = 0; i < h.slots.length; i++) {
+        const sl = h.slots[i], b = newBlock();
+        b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      h.done = true; homeBox(h);
+    };
+    const house = (hx, hz) => {
+      const kind = HOME_KIND.find(k => k.id === '大長屋');
+      const slots = homeSlots(hx, hz, kind, HOME_PAL[0]), at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: hx, z: hz, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                  slots, left: slots.length, n: 1, tree: 0, done: false };
+      homes.list.push(h); fill(homes.list.length - 1); markHomeF6(h);
+      return h;
+    };
+    /* 一個場面：keep(h) 回 true 的那幾段城牆砌起來（null＝沒有牆），noGap＝門洞堵死，再擺房子；每一次都從乾淨的積木池重來 */
+    const scene = (keep, hs, noGap) => {
+      for (let i = n0; i < blocks.length; i++) if (blocks[i].cell) gridDel(blocks[i]);
+      blocks.length = n0;
+      homes = { list: [] };
+      if (keep) for (const h of wallPlan()) {
+        homes.list.push(h);
+        if (keep(h)) { fill(homes.list.length - 1); if (noGap) h.gap = null; }
+      }
+      const made = (hs || []).map(([x, z]) => house(x, z));
+      ENG.setBlockCount(blocks.length);
+      frameNo++;                                      // wallNow／wallList 照幀快取
+      return made;
+    };
+    /* 走到 done(m, ret) 成立為止：記秒數、狀態切換幾次、穿透幾幀、身體在框裡幾幀 */
+    const walk = (m, T, done) => {
+      let n = 0, fin = -1, tr = 0, gh = 0, inBox = 0, last = m.st;
+      while (n++ < T / 0.05) {
+        frameNo++;                                    // 同主迴圈（step 每一幀加一）
+        const ret = stepBeast(m, 0.05);
+        if (m.ghost > 0) gh++;
+        else if (footHome(m.x, m.z)) inBox++;
+        if (m.st !== last) { tr++; last = m.st; }
+        if (done(m, ret)) { fin = +(n * 0.05).toFixed(2); break; }
+      }
+      return { t: fin, tr, gh, inBox, x: +m.x.toFixed(1), z: +m.z.toFixed(1), st: m.st };
+    };
+    const ring = (cx, cz, R, n) => {
+      const s = [];
+      for (let k = 0; k < n; k++) { const a = k / n * Math.PI * 2; s.push([+(cx + Math.cos(a) * R).toFixed(2), +(cz + Math.sin(a) * R).toFixed(2)]); }
+      return s;
+    };
+    const W = wallRing(), plan = wallPlan();
+    const same = p => h => h.kind === p.kind && h.x === p.x && h.z === p.z;   // wallPlan 每次生新的物件：照種類與位置認
+    const pS = plan.find(h => h.kind === '城牆' && h.thin === 'z' && h.z < 0);
+    const pC = plan.find(h => h.kind === '角樓' && h.x > 0 && h.z > 0);
+    const pG = plan.find(h => h.kind === '城門樓' && h.z < 0);
+    /* 吉祥物砸村子那一趟（fun ＋ m.bad ＋ m.home，同 v1.166 那一路）：走到動手（st 第一次變 act）。
+       burnt(list, made)＝哪幾間算燒過（逼牠挑剩下那一間，同 v1.229 的欠帳）。 */
+    const runs = [];
+    const masc = (grp, kind, keep, hs, starts, burnt) => {
+      for (const [sx, sz] of starts) {
+        const made = scene(keep, hs);
+        if (footHome(sx, sz) || Math.hypot(sx, sz) < siteR + KEEP + 1) continue;   // 起點不在框裡、不在工地圈裡
+        beasts = null;
+        const m = spawnBeast(kind, 1, 1, 0);
+        m.x = sx; m.z = sz; m.sx = sx; m.sz = sz;
+        m.st = 'fun'; m.bad = 1; m.home = 1; m.pause = 0; m.stay = 999; m.gait = 0; m.leg = 0;
+        if (burnt) { m.owe = 2; m.spots = burnt(homes.list, made).map(q => ({ x: q.x, z: q.z, id: q.id })); }
+        const t0 = doomTarget(m);
+        let d = -1, tk = '';
+        const r = walk(m, 60, q => {
+          if (q.st !== 'act') return false;
+          const b = doomTarget(q);
+          if (b) { d = +Math.hypot(b.x - q.x, b.z - q.z).toFixed(2); tk = homes.list[b.hh].kind; }
+          return true;
+        });
+        Object.assign(r, { grp, kind, s: [sx, sz], d, tk, inW: inWall(sx, sz), t0: t0 ? homes.list[t0.hh].kind : '' });
+        runs.push(r);
+      }
+    };
+    for (const kind of ['ape', 'snow', 'saber']) {
+      masc('只砌一段直牆', kind, same(pS), [], ring(pS.x, pS.z, pS.r + 6, 12));
+      masc('只砌一座角樓', kind, same(pC), [], ring(pC.x, pC.z, pC.r + 6, 12));
+      masc('只砌一座門樓', kind, same(pG), [], ring(pG.x, pG.z, pG.r + 6, 12));
+      masc('整圈', kind, () => true, [], ring(0, 0, W + 8, 8).concat(ring(0, 0, W - 8, 8)));
+    }
+    const walls = L => L.filter(q => q.wall);
+    for (const kind of ['ape', 'snow'])
+      masc('整圈＋貼著城牆內側那一間（牆都算燒過）', kind, () => true, [[0, -W + 7]], ring(0, -W, 14, 8), walls);
+    /* 從城外經城門去燒城裡那一間：走到門口之後 near 是直直走，有一個來向剛好貼著門洞墩座的邊走進去（寫這一條時探針量到的） */
+    masc('整圈＋城內一間、從城外（牆都算燒過）', 'ape', () => true, [[0, -W + 9]], ring(0, 0, W + 9, 16), walls);
+    masc('整圈＋城外那一間、從城裡（牆都算燒過）', 'ape', () => true, [[W + 12, 0]], ring(0, 0, W - 8, 8), walls);
+    masc('空地上兩間一排、前面那間燒過', 'ape', null, [[-6, 45], [6, 45]], ring(0, 45, 18, 8), (L, made) => [made[0]]);
+
+    /* ⑭ 天災進場（come → near → act）與走人（go → 出場）。進場從場邊 16 個方位、走人從城裡 8 個點 */
+    const come = [], leave = [];
+    for (const [grp, keep, noGap] of [['只砌一段直牆', same(pS), 0], ['整圈有門', () => true, 0], ['整圈沒門（門洞堵死）', () => true, 1]])
+      for (let k = 0; k < 16; k++) {
+        scene(keep, [], noGap);
+        beasts = null;
+        const m = spawnBeast('ape', 0, 0, k / 16 * Math.PI * 2);
+        const r = walk(m, 160, q => q.st === 'act');
+        r.grp = grp; r.a = k * 22.5;
+        come.push(r);
+      }
+    for (const [sx, sz] of ring(0, 0, W - 8, 8)) {
+      scene(() => true, []);
+      beasts = null;
+      const m = spawnBeast('ape', 0, 0, 0);
+      m.x = sx; m.z = sz; m.sx = sx; m.sz = sz; m.gait = 0;
+      leaveBeast(m);
+      const r = walk(m, 120, (q, ret) => ret);       // stepBeast 回 true＝走出場外了
+      r.s = [sx, sz];
+      leave.push(r);
+    }
+    /* 動過的全域狀態還回去：骰子、自己砌的積木整批拿掉 */
+    Math.random = R0;
+    beasts = null;
+    for (let i = n0; i < blocks.length; i++) if (blocks[i].cell) gridDel(blocks[i]);
+    blocks.length = n0; ENG.setBlockCount(n0);
+    homes = null; frameNo++;
+    return { runs, come, leave, W, near: DOOM_NEAR };
+  });
+  {
+    const D = navDoom;
+    const NM = { ape: '黑獼猴', snow: '白猴子', saber: 'Saber' };
+    const TR_MAX = 8;                                // 正常一趟最多 fun→gate→fun→near→act 四次，給一倍
+    const bad12 = r => r.t < 0 || r.tr > TR_MAX || r.gh > 0 || r.inBox > 0;
+    const fmt = r => NM[r.kind] + '・' + r.grp + '・起點 (' + r.s + ')' + (r.inW ? '城裡' : '') + '：' +
+                     (r.t < 0 ? '60 秒沒動手、停在 (' + r.x + ', ' + r.z + ') ' + r.st : r.t + ' 秒動手') +
+                     '、狀態切換 ' + r.tr + ' 次、穿透 ' + r.gh + ' 幀、在框裡 ' + r.inBox + ' 幀';
+    const grp = {};
+    for (const r of D.runs) { const k = NM[r.kind] + '・' + r.grp; (grp[k] || (grp[k] = [])).push(r); }
+    const per = Object.entries(grp).map(([k, rs]) => k + ' ' + rs.filter(r => !bad12(r)).length + '/' + rs.length);
+    const b12 = D.runs.filter(bad12);
+    ok('站位走得到就走過去動手：只砌一段牆、角樓、門樓、整圈、貼牆的房子…不在兩個狀態之間來回、不原地站著、不靠穿透',
+       b12.length === 0,
+       D.runs.length + ' 趟（牆半徑 ' + D.W + '），正常的：' + per.join('、') +
+       (b12.length ? '；壞的 ' + b12.length + ' 趟（60 秒沒動手 ' + b12.filter(r => r.t < 0).length + '、其中起點在城裡 ' +
+                     b12.filter(r => r.t < 0 && r.inW).length + '），例：' + b12.slice(0, 3).map(fmt).join('；') : ''));
+    const ape = D.runs.filter(r => r.kind === 'ape' && r.t > 0);
+    const far = ape.filter(r => r.d > D.near + 0.5);
+    const dMax = ape.reduce((a, r) => (r.d > a.d ? r : a), { d: -1 });
+    ok('動手那一刻搆得到：黑獼猴點火時離點的那一塊不超過 DOOM_NEAR（＋半格）',
+       ape.length > 0 && far.length === 0,
+       '動了手的 ' + ape.length + ' 趟，最遠 ' + dMax.d + ' 格（' + dMax.grp + '・起點 (' + dMax.s + ')→' + dMax.tk +
+       '，DOOM_NEAR ' + D.near + '）' + (far.length ? '；超過的 ' + far.length + ' 趟：' +
+       [...new Set(far.map(r => r.grp))].map(g => g + ' ' + far.filter(r => r.grp === g).length + ' 趟、最遠 ' +
+         Math.max(...far.filter(r => r.grp === g).map(r => r.d)) + ' 格').join('；') : ''));
+    const cg = {};
+    for (const r of D.come) (cg[r.grp] || (cg[r.grp] = [])).push(r);
+    const cBad = D.come.filter(r => r.t < 0 || r.gh > 0 || r.inBox > 0), lBad = D.leave.filter(r => r.t < 0 || r.gh > 0 || r.inBox > 0);
+    const slow = rs => Math.max(...rs.filter(r => r.t > 0).map(r => r.t));
+    ok('天災進場與走人：只砌一段牆、整圈有門、整圈沒門都走到地標動手；城裡走人走得出場，不靠穿透',
+       cBad.length === 0 && lBad.length === 0,
+       '進場（從場邊 16 個方位）：' + Object.entries(cg).map(([k, rs]) => k + ' ' + rs.filter(r => r.t > 0).length + '/' +
+         rs.length + ' 動手、最慢 ' + slow(rs) + ' 秒').join('；') +
+       '；整圈有門、從城裡走人：' + D.leave.filter(r => r.t > 0).length + '/' + D.leave.length + ' 出場、最慢 ' + slow(D.leave) + ' 秒' +
+       (cBad.length + lBad.length ? '；壞的：' + cBad.concat(lBad).slice(0, 3).map(r => (r.grp || '走人') + ' ' +
+         (r.a !== undefined ? r.a + '°' : '(' + r.s + ')') + ' ' + r.t + ' 秒、穿透 ' + r.gh + '、在框裡 ' + r.inBox).join('；') : ''));
+  }
 
   /* 這一段動過的全域還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）：地標換回這一段開頭那一座 */
   await page.evaluate(() => {

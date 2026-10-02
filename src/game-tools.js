@@ -8366,9 +8366,9 @@ function gateBack(m) {
            建築邊上不會走進去；路上有小人的家也是它繞開的（v1.235 起照巡路規則，見 navAim）。
      fun   吉祥物在建築外圈那一環上逛（見檔案最後那一節）。抽中要動手的那一趟
            （v1.166）也走這一段，只是把逛的目標換成牠盯上的那一間房子（或那一棵樹）。
-     near  那一環是照 siteR 畫的圓，而 siteR 有 7 的下限，小一點的地標離環還有幾格。
-           所以再往最近那一塊走幾步——但**下一步會踩進建築或房子的格子就停**，
-           「不要穿越」在這裡是硬條件，不是靠繞路碰運氣。
+     near  走到搆得到最近那一塊的地方（v1.243 起照〈去動手的那一趟〉，見 actWalk：站位挑在搆得到、
+           站得下、走得到的點，怎麼走交給巡路規則）。v1.138～v1.242 是直直往那一塊走、下一步會踩進
+           建築或房子的格子就停（巨人照舊是這樣）。
      act   站定、轉向、抬手，停 DOOM_AIM 秒才動手（看得出牠在瞄）。
      go    原路走回場外（吉祥物砸完是回 fun 把剩下的時間逛完，見 funBack）。 */
 /* 前面真的被城牆擋住了嗎（v1.186）。**還沒蓋起來、或者剛好有個缺口就直直走過去**
@@ -8418,6 +8418,81 @@ function gateNeed(m, tx, tz) {
   m.gback = m.st;                   // 穿過去之後回哪一段
   m.st = 'gate'; m.leg = 0; m.gw = { tx, tz };
   return true;
+}
+/* ── 去動手的那一趟（v1.243）─────────────────────────────
+   > 使用者：「觀察發現還是有卡牆情況 案例是一隻黑獼猴往城牆(單片)方向走然後卡在牆邊 推測是要去放火」
+   要動手的那一塊 b、瞄的那一點 aim（丟香蕉砸村子瞄那一間的中央，其餘瞄那一塊）、搆得到的距離 R（doomNear）：
+     1 站位＝離 aim 不超過 R、站得下（navRoom）、中間不隔著別人的框（火把要搆得到；丟香蕉不看，香蕉是拋過去的）的點
+     2 挑離自己最近、走得到（navReach）的那一個；怎麼走全交給巡路規則（strollTo：城門、缺口、繞房子都在規劃裡）
+     3 搆得到（離 aim ≤ R、中間不隔著別人的框）才動手
+     4 一個走得到的站位都沒有＝沒有路：照直線走到擋路的那一段牆腳下，改拆那一段（使用者 v1.186「走不過就破牆而入」）
+   v1.166～v1.242 是三段各管各的，三個洞都量到過（見 開發筆記〈去動手的那一趟〉）：
+     · fun 先問「被城牆隔開了沒」（wallAhead 問那一間的**中心**）——一段城牆的中心就在牆線上，inWall 算它在城外，
+       城裡的猴子問直牆、角樓都是「隔開了」→ gate → 一走就說到了 → 回 fun → 又是 gate，每幀互切、原地不動
+       （e2e〈巡路能力〉⑫ 在 v1.242 上 60 秒沒動手的 42 趟全是這一種）
+     · 站位是「從那一間中心往自己推 h.r ＋ DOOM_NEAR」那一圈，不看路上有什麼：房子貼著城牆內側、猴子在城外時算到牆外，
+       隔著門洞 8 格點火
+     · near 最後幾步直直走、碰到東西就地動手，貼著門洞墩座的邊走時每幀被推回來，卡 3 秒才穿透
+   巨人不走這一套（使用者 v1.207「擋路就踹」，牠不規劃，見 strollGiant）。 */
+const ACT_TRY = 3;                  // 挑站位時最多問幾個走不走得到（不通的那一個要跑一次 A*）
+const ACT_SEP = 2;                  // 問過不通的那一點附近這麼近的就不再問（同一個口袋）
+const ACT_RETRY = 20;               // 一個走得到的都沒有：隔幾幀重挑一次（門剛好被打通、牆剛好被燒穿）
+/* 這一段直線有沒有隔著別人的框（自己要動手的那一間 own 不算；門洞走得過，同 wallHit） */
+function actClear(x0, z0, x1, z1, own) {
+  if (!homes) return true;
+  const L = homes.list;
+  for (let i = 0; i < L.length; i++) {
+    const h = L[i];
+    if (i === own || !segBox(x0, z0, x1, z1, h.x0, h.z0, h.x1, h.z1)) continue;
+    const g = h.gap;
+    if (!g) return false;
+    if (g.x1 - g.x0 < h.x1 - h.x0) {
+      if (segBox(x0, z0, x1, z1, h.x0, h.z0, g.x0, h.z1) || segBox(x0, z0, x1, z1, g.x1, h.z0, h.x1, h.z1)) return false;
+    } else if (segBox(x0, z0, x1, z1, h.x0, h.z0, h.x1, g.z0) || segBox(x0, z0, x1, z1, h.x0, g.z1, h.x1, h.z1)) return false;
+  }
+  return true;
+}
+/* 規則 1、2：挑站位。一圈一圈往裡找（半格一圈，從 R − REACH 起：走到離站位 REACH 內就一定搆得到），
+   照離自己多近排，最多問 ACT_TRY 個走不走得到。回傳 { x, z, ok }（ok＝走得到），一個站得下的都沒有回 null。
+   同一個 aim 算過就沿用（每幀都會問）；站位剛好被砌上東西、或上次一個都走不到（隔 ACT_RETRY 幀）才重挑。 */
+function actSpot(m, ax, az, R, own, bd, toss) {
+  const s0 = m.as;
+  if (m.asx === ax && m.asz === az && m.asr === R && m.asb === bd &&
+      (s0 ? navRoom(s0.x, s0.z, bd) && (s0.ok || frameNo - m.asf < ACT_RETRY) : frameNo - m.asf < ACT_RETRY)) return s0;
+  const c = [];
+  for (let r = R - REACH; r >= NAV_ROOM; r -= NAV_CELL) {
+    const n = Math.ceil(2 * Math.PI * r / NAV_CELL);
+    for (let k = 0; k < n; k++) {
+      const a = k / n * Math.PI * 2, x = ax + Math.cos(a) * r, z = az + Math.sin(a) * r;
+      if (!navRoom(x, z, bd) || (!toss && !actClear(x, z, ax, az, own))) continue;
+      c.push({ x, z, d: Math.hypot(x - m.x, z - m.z) });
+    }
+  }
+  c.sort((p, q) => p.d - q.d);
+  let s = null;
+  const fail = [];
+  for (const p of c) {
+    if (fail.length >= ACT_TRY) break;
+    if (fail.some(f => Math.hypot(f.x - p.x, f.z - p.z) < ACT_SEP)) continue;
+    if (navReach(m, p.x, p.z)) { s = { x: p.x, z: p.z, ok: 1 }; break; }
+    fail.push(p);
+  }
+  if (!s && c.length) s = { x: c[0].x, z: c[0].z, ok: 0 };
+  m.asx = ax; m.asz = az; m.asr = R; m.asb = bd; m.as = s; m.asf = frameNo;
+  return s;
+}
+/* 往那一塊走一步（規則 2～4）。回 true＝搆得到了，呼叫端接著動手。 */
+function actWalk(m, b, aim, dt, spd, stp, kp) {
+  const R = doomNear(m), toss = !!m.home && m.kind === 'snow';
+  const own = b.hh >= 0 ? b.hh : -1;
+  if (Math.hypot(aim.x - m.x, aim.z - m.z) <= R + 0.05 &&            // 規則 3（0.05 是浮點餘裕，見 near 那一段）
+      (toss || actClear(m.x, m.z, aim.x, aim.z, own))) return true;
+  const s = actSpot(m, aim.x, aim.z, R, own, navBody(m), toss);
+  const gx = s ? s.x : aim.x, gz = s ? s.z : aim.z;
+  /* 規則 4：沒有路，走到擋路那一段牆腳下就改拆它（m.home 一立起來，doomTarget 瞄的就是村子那邊最近的一塊＝面前這段牆） */
+  if (!(s && s.ok) && canFight(m) && wallFoot(m, gx, gz)) { m.home = 1; return true; }
+  m.tx = gx; m.tz = gz;
+  return strollTo(m, dt, spd, stp, kp);    // 走到站位了（離它 REACH 內）一定也搆得到：站位挑在 R − REACH 以內
 }
 /* 爬起來那一段**朝向要限速轉**（v1.202.2）。躺著的時候 hurtBeast 會把底下整段跳掉、
    朝向 m.a 整段不更新；m.fall 一歸零，正常那一套第一幀就**直接賦值**——猴子與巨人是
@@ -8588,10 +8663,9 @@ function stepBeast0(m, dt) {
          「逛的時間過了之後，又在外圈晃了這麼久」——一趟三處、stay 給 0.5 秒，兩輪量到超過 8.8、10.5 秒。 */
       if (m.stay <= 0 && (!(m.owe > 0) || m.stay < -MORE_WAIT)) { leaveBeast(m); return false; }
     }
-    /* 抽中要動手的那一趟（v1.166）：逛的目標換成牠盯上的那一間，走到門口就進 near
-       那一段動手。走法照舊借 strollTo（繞開別人家、不穿建築都是它在管）。
-       目標**不能給屋子中心**：pushOutHome 把牠擋在牆外，永遠走不到中心，
-       strollTo 就永遠回不了 true——牠會頂著牆原地發抖。所以給外框再外面那一點點。
+    /* 抽中要動手的那一趟（v1.166）：逛的目標換成牠盯上的那一間，走到搆得到就進 near
+       那一段動手。走法是〈去動手的那一趟〉（v1.243，見 actWalk）：站位挑在搆得到那一塊的地方，
+       怎麼走交給 strollTo（繞開別人家、不穿建築、走城門都是巡路規則在管）。
        一間房子都沒有（還沒蓋、或都被砸光了）就照舊只是來逛的。 */
     if (m.bad) {
       /* 生氣那一趟砸的是地標（v1.208，見 madSet）：交給 near 那一段，它瞄的就是
@@ -8599,14 +8673,13 @@ function stepBeast0(m, dt) {
          在工地外圈上了（生氣那一刻還在外面逛的，madMascot 會先把牠推回 come）。 */
       if (madSet(m)) {
         /* 還欠著幾處的（v1.229，見 moreMascot）：先**走到**挑好的那一處
-           （doomTarget 認的 m.aim）再進 near。near 沒有繞路，從上一處直線切過去會撞上地標，
-           隔著好幾格就點火。直接給那一塊的位置就好：它在地標裡，strollTo 會挪到旁邊最近的空地
-           （v1.236 起照規則 2，見 navGoal；v1.229～v1.235 是推到工地外圈上）。 */
+           （doomTarget 認的 m.aim）再進 near。走法照〈去動手的那一趟〉（v1.243，見 actWalk）；
+           v1.229～v1.242 是直接拿那一塊當目標交給 strollTo（v1.236 起由 navGoal 挪到旁邊最近的空地）。
+           留在這一段走、不直接交給 near：走不到的那一種要吃得到上面那條 MORE_WAIT 保險。 */
         if (m.owe > 0) {
           const t = doomTarget(m);
           if (!t) { if (!moreNext(m)) funBack(m); return false; }   // 地標這邊沒得砸了：換一邊
-          m.tx = t.x; m.tz = t.z;
-          if (!strollTo(m, dt, spd, stp, kp)) return false;
+          if (!actWalk(m, t, t, dt, spd, stp, kp)) return false;
         }
         m.st = 'near'; m.leg = 0; return false;
       }
@@ -8626,6 +8699,17 @@ function stepBeast0(m, dt) {
         if (m.owe > 0 && moreNext(m)) return false;   // 還欠著的換一邊（v1.229）
         m.bad = 0; m.home = 0; m.owe = 0;
       } else {
+        /* 走過去照〈去動手的那一趟〉的規則（v1.243，見 actWalk）：站位是「搆得到那一塊、站得下、走得到」的點，
+           城門、缺口、繞房子都是巡路規則在走；沒有路才走到擋路那一段牆腳下改拆它。
+           v1.166～v1.242 這裡是「從那一間中心往自己推 h.r ＋ doomNear」的站位、先問 wallAhead（那一間的中心）要不要走門、
+           v1.233.1 再補「城外到城外、直線切過城裡」（wallCut 問站位）——城裡的猴子盯上一段城牆時，那一段的中心
+           在牆線上、算在城外，每幀 fun↔gate 互切、原地不動（見 開發筆記〈去動手的那一趟〉）。
+           **巨人照舊走底下那一段**（使用者 v1.207「擋路就踹」：牠不規劃）。v1.242 以前底下還有 wallAhead／gateNeed／wallCut
+           三條，那幾支對巨人一律不動作（gateNeed、wallFoot 開頭就對巨人回 false），所以拿掉也一個位元都沒變。 */
+        if (m.kind !== 'giant') {
+          if (actWalk(m, t, m.kind === 'snow' ? homeMid(t) : t, dt, spd, stp, kp)) { m.st = 'near'; m.leg = 0; }
+          return false;
+        }
         const h = homes.list[t.hh];
         const d = Math.hypot(m.x - h.x, m.z - h.z) || 1;
         const stand = h.r + doomNear(m);
@@ -8640,20 +8724,6 @@ function stepBeast0(m, dt) {
           ax = h.x / hr; az = h.z / hr;
         }
         const sx = h.x + ax * stand, sz = h.z + az * stand;
-        /* 盯上的那一間在城牆另一邊，而且真的被牆擋住了（v1.186）：有門走門，
-           沒門就改砸擋路的這一段（牠本來就在砸村子那一邊，m.home 已經是 1）。 */
-        if (wallAhead(m, h.x, h.z)) {
-          if (gateNeed(m, h.x, h.z)) return false;
-          // 沒有開口可以繞：走到牆邊才動手（v1.195，見 wallFoot）
-          if (wallFoot(m, h.x, h.z)) { m.st = 'near'; m.leg = 0; return false; }
-        } else if (!footHome(sx, sz) && wallCut(m.x, m.z, sx, sz)) {
-          /* **城外到城外、直線切過城裡**（v1.233.1，同 stepCall 那一個）：沿城外繞到那一側。
-             問的是**站的那一點**、不是那一間的中心：目標是一段城牆的時候中心就在牆上，拿中心問永遠是「切過」，
-             沿城外繞那一段就收不掉（實測 120 秒都在繞）。站位落在別人的外框裡的不走這一條（那一點本身就撞牆，
-             照舊交給 strollTo 與 stuckWatch 挪）。
-             實測硬湊出來的場面（整圈牆都算燒過、只剩城外那一間）：改之前 120 秒沒動手、城內外進出 25 次 */
-          if (gateNeed(m, sx, sz)) return false;
-        }
         m.tx = sx; m.tz = sz;
         if (strollTo(m, dt, spd, stp, kp)) { m.st = 'near'; m.leg = 0; }
         return false;
@@ -8700,6 +8770,16 @@ function stepBeast0(m, dt) {
        實測擺在一棵半徑 4.2 的闊葉樹旁邊，炸點只離牠 10.3 格（NANA_R 是 9）。
        其餘的照舊看面前那一塊：火把是搆得到才點得著。 */
     const aim = m.home && m.kind === 'snow' ? homeMid(b) : b;
+    /* 走到搆得到才動手（v1.243，見 actWalk）：站位挑在搆得到那一塊、站得下、走得到的地方，怎麼走交給巡路規則。
+       v1.166～v1.242 是底下那一段：直直往最近那一塊走、下一步會踩進東西就地動手——被別間擋住就隔著 5～8 格點火、
+       貼著門洞墩座的邊走會每幀被推回來、卡 3 秒才穿透（見 開發筆記〈去動手的那一趟〉）。
+       **巨人照舊走底下那一段**（使用者 v1.207「擋路就踹」：牠不規劃，最後幾步踩到東西就停下來踹）。 */
+    if (m.kind !== 'giant') {
+      if (!actWalk(m, b, aim, dt, spd, stp, kp)) return false;
+      m.a = Math.atan2(aim.x - m.x, aim.z - m.z);
+      m.st = 'act'; m.t = DOOM_AIM;
+      return false;
+    }
     const dx = aim.x - m.x, dz = aim.z - m.z, d = Math.hypot(dx, dz) || 1;
     m.a = Math.atan2(dx, dz);
     /* 還想再走多遠。**要留一格浮點的餘裕**：走到剩下剛好 DOOM_NEAR 時，
