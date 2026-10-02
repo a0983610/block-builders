@@ -6621,6 +6621,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      tire.wall ? '走不到的 5 幀裡喘了 ' + tire.wall.rested + ' 幀；走得到那一幀 → ' + tire.wall.after
        : '找不到在上工的人');
 
+  /* ── 開工時喘氣的鐘錯開（v1.244.2）──
+     使用者：「有時還在蓋 小人也在發呆」。全部從 0 起算的話整隊幾乎同時做滿 REST_AT——
+     實測每一波 10～13 人在 5～20 秒內陸續開始喘、同時最多 10/14 人（見 開發筆記〈喘氣錯開〉）。
+     使用者選「第一次喘落在開工後 30～60 秒」：起點在 0～REST_AT × REST_SPREAD 之間各抽一個。
+     規則型：只看開工那一刻每個人的鐘（不跑模擬數誰幾秒喘）。
+     「起點拉得夠開」要 0.3 倍的範圍：20 個均勻亂數全擠在三成以內的機率約 2×10⁻⁹，紅了就是沒在錯開。 */
+  const rspread = await page.evaluate(() => {
+    const n0 = workers.length;
+    setWorkerCount(20); startBuild(true);
+    const ts = workers.filter(w => !w.dead).map(w => w.toil);
+    const lo = Math.min(...ts), hi = Math.max(...ts), cap = REST_AT * REST_SPREAD;
+    const out = { n: ts.length, uniq: new Set(ts).size, cap, lo: +lo.toFixed(2), hi: +hi.toFixed(2),
+                  first: +(REST_AT - hi).toFixed(1), last: +(REST_AT - lo).toFixed(1) };
+    setWorkerCount(n0);
+    return out;
+  });
+  ok('開工時每個人喘氣的鐘錯開，不會整隊同時喘',
+     rspread.lo >= 0 && rspread.hi <= rspread.cap && rspread.uniq === rspread.n &&
+     rspread.hi - rspread.lo >= rspread.cap * 0.3,
+     rspread.n + ' 人的起點 ' + rspread.lo + '～' + rspread.hi + ' 秒（範圍 0～' + rspread.cap + '）、各不相同 ' +
+     rspread.uniq + ' 個 → 做滿 ' + rspread.first + '～' + rspread.last + ' 秒才第一次喘');
+
   /* ══════════ 閒晃事件：小人的家 ══════════ */
   await head('閒晃事件：小人的家', T_MUST);
   // 這一段要測的就是它，把 installClean 關掉的那支裝回去
@@ -25979,6 +26001,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hchain.secs + ' 秒燒了 ' + hchain.n + ' 處，彼此最近 ' + hchain.gap + ' 格（MORE_GAP ' +
      hchain.want + '）、點火時離目標最遠 ' + hchain.reach + ' 格；燒的時候逛的時間已經剩 ' +
      hchain.stay + ' 秒，燒完才 ' + hchain.st);
+
+  /* ── 欠帳的保險每一處重算（v1.244.2）──
+     使用者問「45 秒是什麼」之後選「每燒完一處重算」。v1.229～v1.244.1 的 MORE_WAIT 是幾處加起來算的：
+     每一處在外圈要繞 3～17 秒，打 10 下的三趟只燒了 3、6、8 處就被切掉（見 開發筆記〈欠帳的保險每一處重算〉）。
+     規則型：直接擺在 act 那一刻／fun 那一刻，下一幀看結果。火把換成只記帳不點火，量完還回去。
+       ① 超時 MORE_WAIT − 1 秒時燒完一處（還欠著）：超時歸零、欠帳 −1、沒走人
+       ② 保險本身還在：同一處超時剛過 MORE_WAIT 就走（走不到的那種還是有出口）；差一秒的不走 */
+  const hwait = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9); clearFires();
+    const oa = DOOM_ACT.ape;
+    DOOM_ACT.ape = () => 0;
+    const one = (st, stay) => {
+      beasts = null;
+      const m = spawnBeast('ape', 1);
+      m.bad = 1; m.home = 0; m.owe = 3; m.gait = 0;
+      m.st = st; m.t = 0; m.stay = stay;
+      stepBeast(m, 0.05);
+      return { st: m.st, stay: +m.stay.toFixed(2), owe: m.owe };
+    };
+    const act = one('act', -(MORE_WAIT - 1));
+    const over = one('fun', -MORE_WAIT);
+    const under = one('fun', -(MORE_WAIT - 1));
+    DOOM_ACT.ape = oa;
+    beasts = null;
+    cleanTools();
+    return { act, over, under, wait: MORE_WAIT };
+  });
+  ok('黑獼猴欠帳的保險每燒完一處重算：燒完一處超時歸零，同一處超過 MORE_WAIT 才放棄走人',
+     hwait.act.stay === 0 && hwait.act.owe === 2 && hwait.act.st !== 'go' &&
+     hwait.over.st === 'go' && hwait.under.st !== 'go',
+     '超時 ' + (hwait.wait - 1) + ' 秒時燒完一處 → 超時 ' + hwait.act.stay + '、還欠 ' + hwait.act.owe + ' 處、' +
+     hwait.act.st + '；同一處超時剛過 ' + hwait.wait + ' 秒 → ' + hwait.over.st + '、差一秒 → ' + hwait.under.st);
 
   /* ── 白猴子：香蕉丟了就沒了，只能動手一次（v1.229，MASCOTS 那一列的 spent）── */
   const hsnow = await page.evaluate(() => {

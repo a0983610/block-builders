@@ -8670,7 +8670,8 @@ function stepBeast0(m, dt) {
          不會因為逛的時間到了就少燒）。沒被打過的那一趟照舊，時間到就走。
          保險 MORE_WAIT：這裡本來是這一段唯一的出口，欠帳的目標剛好走不到的話牠會永遠不走
          （那一款的鐘也跟著停，見 stepMascot 的 beastOn）。stay 只在這一段扣，所以要超過的是
-         「逛的時間過了之後，又在外圈晃了這麼久」——一趟三處、stay 給 0.5 秒，兩輪量到超過 8.8、10.5 秒。 */
+         「逛的時間過了之後，又在外圈晃了這麼久」——一趟三處、stay 給 0.5 秒，兩輪量到超過 8.8、10.5 秒。
+         **每燒完一處重算**（v1.244.2，見 act 那一段）：v1.229～v1.244.1 是幾處加起來算的，打 10 下只燒了 3、6、8 處就走了。 */
       if (m.stay <= 0 && (!(m.owe > 0) || m.stay < -MORE_WAIT)) { leaveBeast(m); return false; }
     }
     /* 抽中要動手的那一趟（v1.166）：逛的目標換成牠盯上的那一間，走到搆得到就進 near
@@ -8850,6 +8851,11 @@ function stepBeast0(m, dt) {
       const h = tb.hh >= 0 && homes ? homes.list[tb.hh] : null;
       (m.spots || (m.spots = [])).push({ x: tb.x, z: tb.z, id: h ? h.id : -1 });
     }
+    /* 燒完一處，「燒完才走」的保險重算（v1.244.2，使用者選的「每燒完一處重算」）：逛的時間已經用完的，
+       超時從這裡重新數，下一處又有 MORE_WAIT 那麼久。v1.229～v1.244.1 沒有這一行，超時是幾處加起來算的——
+       每一處在外圈要繞 3～17 秒，打 10 下的三趟只燒了 3、6、8 處就被保險切掉（見 開發筆記〈欠帳的保險每一處重算〉）。
+       最後一處燒完也照歸零：stay 剛好是 0，回去逛那一段的出口（stay <= 0、沒欠帳）下一幀就走，跟以前一樣。 */
+    if (m.owe > 0 && m.stay < 0) m.stay = 0;
     if (m.owe > 0 && --m.owe > 0 && moreNext(m)) return false;
     if (m.fun) funBack(m); else leaveBeast(m);        // 吉祥物砸完回去逛（v1.166）
     return false;
@@ -10861,7 +10867,8 @@ const BEAST_HIT_CD = 3;               // 被打到之後幾秒內再被打不算
    看起來是兩處火，不是同一處多點幾下。村子那邊不看距離，看的是「不是同一間」（見 moreSkip）。 */
 const MORE_GAP = DOOM_FIRE_R * 2;
 /* 「燒完才走」的保險：逛的時間過了還欠著，又在外圈晃了這麼久就算了（見 stepBeast 的 fun）。
-   給逛的時間的上限（45 秒）：正常一處只在外圈走幾秒到二十秒，碰得到這條的只有走不到的那種。 */
+   給逛的時間的上限（45 秒）：正常一處只在外圈走幾秒到二十秒，碰得到這條的只有走不到的那種。
+   **一處一處算**（v1.244.2）：每燒完一處從頭數（見 stepBeast 的 act），不是幾處加起來 45 秒。 */
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 黑獼猴', snow: '🐵 白猴子', dragon: '🐉 飛龍',
                    gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber', levi: '🗡 里維兵長' };
