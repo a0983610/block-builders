@@ -3904,6 +3904,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     out.w25 = wrecked(W(75, true));        // 剛好 25 格：不是「不到」→ 留著
     out.w26 = wrecked(W(74, true));
     out.wHalfBuilt = wrecked(W(100, false));   // 從沒蓋好過的打光了也不廢棄
+    /* 城牆段不廢棄（v1.253）：蓋好過、打到剩一成也留著等人補（整圈的去留看換事件那條） */
+    out.wWall = wrecked(Object.assign(W(90, true), { wall: 1 }));
     /* left 是「還缺幾格」，所以站著的是 slots.length − left：80／0／90 ＝ 剩 20%／100%／10% */
     homes = { list: [W(80, true), W(0, true), W(90, true)] };     // 第 0、2 間該廢棄
     workers[0].hm = 1;                     // 這個人正在顧中間那間（沒被打爛的）
@@ -3947,6 +3949,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      rule.wHalfBuilt === false && rule.wreckAt === 0.25,
      '剩 24% ' + rule.w24 + '／25% ' + rule.w25 + '／26% ' + rule.w26 +
      '、沒蓋好過的打光 ' + rule.wHalfBuilt + '（WRECK_AT ' + rule.wreckAt + '）');
+  ok('廢棄：城牆段不算（蓋好過、打到剩一成也留著等人補）',
+     rule.wWall === false, '城牆段剩 10% → 廢棄＝' + rule.wWall);
   ok('廢棄之後清單收合，正在顧那間的人索引跟著補回去',
      rule.gone === 2 && rule.leftN === 1 && rule.leftDone === true && rule.hmMoved === 0,
      '廢棄 ' + rule.gone + ' 間、剩 ' + rule.leftN + ' 間、留下的是完好那間＝' +
@@ -9463,7 +9467,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* v1.186，使用者：「小人蓋城牆把地標建築圍起來／城牆內只有幾間小房子&小樹（比事件一少
      看起來稀疏的感覺）／城牆依地標大小會不同範圍 會擋生物移動 積木組成 能被道具等破壞
      （同小房子）」。整圈切成好幾段掛在同一份 homes.list 上（見 game-workers.js 的 wallPlan），
-     所以支撐與垮塌、被道具打壞、補洞、打到剩兩成五整段廢棄那一整套跟小房子共用，
+     所以支撐與垮塌、被道具打壞、補洞那一整套跟小房子共用（打到剩兩成五整段廢棄那一條
+     v1.253 起不收城牆段，見 ⑤），
      這一段驗的是**城牆自己的那幾件事**：範圍跟著地標走、整圈的組成、擋誰不擋誰、
      真的蓋得起來、城內稀疏、換場留不留。 */
 
@@ -9822,13 +9827,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `90 秒砌好 ${digOrphan.done} 塊，地上還躺著自己挖出來的 ${digOrphan.dug} 塊，` +
      `其中沒有任何一段搆得到的 ${digOrphan.orphan} 塊`);
 
-  /* ⑤ 打得壞、打到剩兩成五整段廢棄（使用者：「能被道具等破壞（同小房子）」）。
-     跟小房子共用同一套（wreckHomes 的 WRECK_AT），所以這裡只驗「城牆也吃這一套」。
+  /* ⑤ 打得壞（使用者：「能被道具等破壞（同小房子）」），但**打到剩不到兩成五也不廢棄**
+     （v1.253，使用者：「蓋城牆時就算那一小段完工 整組城牆 如果還沒蓋好 那一小段被破壞的
+     也還是要蓋起來」）：wreckHomes 不收城牆段，那一段留在清單上、缺的格子算回 h.left，
+     蓋牆的人蓋完自己那一段照 pickUnfinished 接過來補。v1.186～v1.252 這裡驗的是反過來的
+     「整段廢棄（同小房子）」——實測廢棄掉的那一段永遠不會再生出來（wallPlan 一圈只跑一次），
+     牆線上就永遠缺一段。
      ⑥ 換場：牆會不會被下一座地標徵收，看的是**整段的外框**跟新工地圓有沒有碰到
      （wallHitsSite）。拿外接圓比的話每換一座就整圈拆光。 */
   const wallHurt = await page.evaluate(() => {
     mkWall(12, 52);
     const segs = () => homes.list.filter(h => h.wall);
+    const segs0 = segs().length;
     // 挑一段直牆，打到只剩兩成
     const hi = homes.list.findIndex(h => h.wall && h.thin);
     const h = homes.list[hi];
@@ -9840,7 +9850,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       breakBlock(b, 0, 0, 0); hit++;
     }
     for (let i = 0; i < 60; i++) step(0.05);
-    const after = { segs: segs().length, gone: !homes.list.some(q => q.id === h.id) };
+    /* 整圈只剩這一段有缺：從城的另一頭問「下一段接哪裡」，挑到的就該是它 */
+    const at = homes.list.indexOf(h);
+    const after = { segs: segs().length, segs0, kept: at >= 0, left: h.left,
+                    next: at >= 0 && pickUnfinished(-h.x, -h.z, NO_TAKEN, 2) === at };
     /* 換場：小地標留著；大到蓋過牆線的那幾段解成碎料。
        **方形的四個角在 W√2**，所以圓形的新工地吃到四面牆的時候還吃不到角樓——
        那正是「拿外框比、不拿外接圓比」要的結果，所以中間再取樣一次。 */
@@ -9856,10 +9869,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools(); clearHomes();
     return { n0, keepN, hit, after, before, small, mid, big, W };
   });
-  ok('城牆打到剩不到兩成五，那一段整段廢棄（同小房子）',
-     wallHurt.after.gone,
+  ok('城牆打到剩不到兩成五也不廢棄：那一段留在清單上，缺的格子等人接過來補',
+     wallHurt.after.kept && wallHurt.after.segs === wallHurt.after.segs0 &&
+     wallHurt.after.left >= wallHurt.hit && wallHurt.after.next,
      `一段 ${wallHurt.n0} 塊打掉 ${wallHurt.hit} 塊（只留 ${wallHurt.keepN}）→ ` +
-     `那一段還在清單上：${!wallHurt.after.gone}`);
+     `還在清單上：${wallHurt.after.kept}（${wallHurt.after.segs0} 段 → ${wallHurt.after.segs} 段）、` +
+     `缺 ${wallHurt.after.left} 格；從城的另一頭找下一段，挑到的是它：${wallHurt.after.next}`);
   ok('換場：小地標時城牆留著，大到蓋過牆線才一段一段解成碎料',
      wallHurt.small === wallHurt.before && wallHurt.big === 0 &&
      wallHurt.mid > 0 && wallHurt.mid < wallHurt.before,
@@ -9952,7 +9967,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const near = run(all, Math.PI / 2);          // 正對著南門進場：門就在正前方
     const corner = run(all, Math.PI / 4);        // 從牆角那一側進場：要繞去最近的門
     const none = run(h => (h.gap ? 'shut' : true), Math.PI / 4);   // 四座門都堵死：就地拆牆
-    const wreck = run(h => (h.gap ? 'drop' : true), Math.PI / 4);  // 四座門樓打爛（整段廢棄）：從洞進城
+    const wreck = run(h => (h.gap ? 'drop' : true), Math.PI / 4);  // 四座門樓整段不在：從洞進城
     /* 正前方那一段還沒蓋起來：不該繞路，直直走過去。走的是「撞在 +z 牆 x≈14 那一段」
        的方位（不是正對門，那條由 near 顧），把那一段留成「格子在、還沒砌」。
        比的是 **wx0／wx1**（整段蓋起來會占到哪）不是 x0／x1：後者只框**已經砌好**的格子，
@@ -10001,10 +10016,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `沒門可繞（${apeWall.none.gate} 幀）、${apeWall.none.secs} 秒後在` +
      `${apeWall.none.act && apeWall.none.act.inWall ? '城裡' : '城外'}動手，` +
      `燒起來 ${apeWall.none.burn} 塊（城牆 ${apeWall.none.wallBurn} 塊、地標 ${apeWall.none.siteBurn} 塊）`);
-  /* 門樓打爛、整段廢棄之後那裡是空地（wreckHomes：「那塊地不再擋路」）：從那個洞進城，不必破牆
+  /* 門樓整段不在清單上，那裡就是空地：從那個洞進城，不必破牆
      （v1.235，使用者 v1.186 的原話「主要是能走過去就走…走不過就破牆而入」）。
-     v1.234 看不到這種洞（wallOpenSpot 只認清單上的門洞與空框），會在洞旁邊就地拆牆。 */
-  ok('四座門樓打爛（整段廢棄）之後那裡是空地：從那個洞進城，不必破牆（v1.235）',
+     v1.234 看不到這種洞（wallOpenSpot 只認清單上的門洞與空框），會在洞旁邊就地拆牆。
+     v1.253 起城牆段打爛了不再廢棄（見 ⑤），整段不在只剩**被新工地徵收**這條路——
+     而工地圈先吃到的正是四面正中間的門樓（見 ⑥ 的 wallHitsSite），就是這一條擺的場面。 */
+  ok('四座門樓整段不在（被新工地徵收）之後那裡是空地：從那個洞進城，不必破牆（v1.235）',
      apeWall.wreck.act && apeWall.wreck.act.inWall && !apeWall.wreck.act.home &&
      apeWall.wreck.wallBurn === 0 && apeWall.wreck.secs < 120,
      `${apeWall.wreck.secs} 秒後在${apeWall.wreck.act && apeWall.wreck.act.inWall ? '城裡' : '城外'}動手、` +
@@ -10493,6 +10510,91 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      evTrack.have < evTrack.built && evTrack.peak2 === evTrack.peak,
      `蓋出 ${evTrack.built} 塊、最高點 ${evTrack.peak}；打掉一半剩 ${evTrack.have} 塊，` +
      `最高點還是 ${evTrack.peak2}`);
+
+  /* ⑩-b 換成另一件事時，上一件蓋的整批解成碎料（v1.253，使用者：「閒晃事件切換的時候
+     前一個事件建造的東西自動解體(如果隨機到同個事件就不用)」；城內的房子與樹問過，他選
+     「一起拆」）。規則型：押骰子決定抽到哪一件、拿 evPeak 擺出「已經拆到剩不到四分之一」，
+     不跑模擬。三種都驗——
+       · 城牆換成小人的家 → 整圈連城內那一間一起解成碎料
+       · 同一個場面抽到城牆 → 一塊都不動
+       · 村子換成城牆 → 整片村子解成碎料
+     解成碎料是留在場上給下一件用的，所以積木總數不能變。 */
+  const evSwap = await page.evaluate(() => {
+    const wallEv = IDLE_EVENTS.find(e => e.id === 'wall');
+    const homeEv = IDLE_EVENTS.find(e => e.id === 'home');
+    const keepRnd = Math.random;
+    cleanTools(); clearHomes(); stopIdleEvent(); evArm = 0;
+    const nb0 = blocks.length;                            // 這一條造的積木最後要收乾淨（同⑪）
+    /* rollIdleEvent 照權重挑：r = Math.random() × 總權重，照表的順序一件一件扣。
+       要抽到 e 就把骰子押在它那一段的正中間——照表算，不寫死，表多一件也照樣對。 */
+    const force = e => {
+      let tot = 0, lo = 0;
+      for (const x of IDLE_EVENTS) tot += x.wt;
+      for (const x of IDLE_EVENTS) { if (x === e) break; lo += x.wt; }
+      const v = (lo + e.wt / 2) / tot;
+      Math.random = () => v;
+    };
+    /* 一間砌滿的房子（同⑪的 mk） */
+    const mkHome = (hx, hz) => {
+      const kind = HOME_KIND[0];
+      const slots = homeSlots(hx, hz, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: hx, z: hz, r: homeR(kind), kind: kind.id, at,
+                  ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                  slots, left: slots.length, n: 1, tree: 0, done: true };
+      const hi = homes.list.length;
+      for (let i = 0; i < slots.length; i++) {
+        const sl = slots[i], b = newBlock();
+        b.x = sl.x; b.y = sl.y; b.z = sl.z; b.st = 3; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      homeBox(h); markHomeF6(h); homes.list.push(h);
+      ENG.setBlockCount(blocks.length);
+    };
+    /* 上一件是 last、它蓋的東西已經拆到剩不到四分之一（最高點擺在現在的四倍多），抽到 pick */
+    const swap = (last, pick) => {
+      const had = blocks.filter(b => b.hh >= 0).length, n0 = blocks.length;
+      const before = homes.list.length;
+      evLast = last; evPeak = evBlocks(last) / WRECK_AT + 1;
+      force(pick);
+      const got = rollIdleEvent().id;
+      Math.random = keepRnd;
+      return { got, before, left: homes.list.length, had, n0, n: blocks.length,
+               owned: blocks.filter(b => b.hh >= 0).length,
+               loose: blocks.filter(b => b.hh < 0 && b.st === FLY).length };
+    };
+    mkWall(12, 52); mkHome(0, 20);                        // 整圈城牆 ＋ 城內一間
+    const toHome = swap(wallEv, homeEv);
+    mkWall(12, 52); mkHome(0, 20);
+    const same = swap(wallEv, wallEv);
+    clearHomes(); homes = { list: [] };
+    mkHome(26, 0); mkHome(-26, 0);                        // 一片村子（兩間）
+    const toWall = swap(homeEv, wallEv);
+    for (let i = blocks.length - 1; i >= nb0; i--) { const b = blocks[i]; if (b.cell) gridDel(b); }
+    blocks.length = nb0;
+    ENG.setBlockCount(blocks.length);
+    stopIdleEvent(); clearHomes(); evLast = null; evArm = 1; evPeak = 0;
+    return { toHome, same, toWall };
+  });
+  ok('換成另一件事：上一件蓋的整批解成碎料（城牆換成小人的家，城內那一間一起拆）',
+     evSwap.toHome.got === 'home' && evSwap.toHome.left === 0 && evSwap.toHome.owned === 0 &&
+     evSwap.toHome.n === evSwap.toHome.n0 && evSwap.toHome.loose >= evSwap.toHome.had,
+     `城牆 ＋ 城內一間共 ${evSwap.toHome.before} 筆、${evSwap.toHome.had} 塊 → 抽到 ${evSwap.toHome.got}：` +
+     `剩 ${evSwap.toHome.left} 筆、還掛在建物上的 ${evSwap.toHome.owned} 塊、飛出去的碎料 ` +
+     `${evSwap.toHome.loose} 塊；積木 ${evSwap.toHome.n0} → ${evSwap.toHome.n}`);
+  ok('抽到同一件事就不拆（城牆拆到剩不到四分之一，又抽到城牆）',
+     evSwap.same.got === 'wall' && evSwap.same.left === evSwap.same.before &&
+     evSwap.same.owned === evSwap.same.had,
+     `${evSwap.same.before} 筆、${evSwap.same.had} 塊 → 抽到 ${evSwap.same.got}：` +
+     `剩 ${evSwap.same.left} 筆、${evSwap.same.owned} 塊`);
+  ok('換成另一件事：小人的家換成城牆，整片村子解成碎料',
+     evSwap.toWall.got === 'wall' && evSwap.toWall.left === 0 && evSwap.toWall.owned === 0 &&
+     evSwap.toWall.n === evSwap.toWall.n0,
+     `村子 ${evSwap.toWall.before} 間、${evSwap.toWall.had} 塊 → 抽到 ${evSwap.toWall.got}：` +
+     `剩 ${evSwap.toWall.left} 間、還掛在房子上的 ${evSwap.toWall.owned} 塊；` +
+     `積木 ${evSwap.toWall.n0} → ${evSwap.toWall.n}`);
 
   /* ⑪ 擋在牆線上的小房子，蓋牆前就整間拆成碎料（v1.189，使用者：「應該蓋牆前就把小房子
      拆成碎料」）。v1.186~v1.188 是讓它嵌進牆裡（壓到的那幾格不生出來），

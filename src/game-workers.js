@@ -3293,6 +3293,14 @@ function rollIdleEvent() {
   let r = Math.random() * tot;
   let e = IDLE_EVENTS[IDLE_EVENTS.length - 1];     // 浮點誤差的保險
   for (const x of IDLE_EVENTS) { r -= x.wt; if (r < 0) { e = x; break; } }
+  /* 換成另一件，上一件蓋的東西整批解成碎料（v1.253，使用者：「閒晃事件切換的時候
+     前一個事件建造的東西自動解體(如果隨機到同個事件就不用)」）。走到這裡表示上一件已經
+     被拆到剩不到四分之一（evAlive）；抽到同一件就留著，讓人接著補。
+     **清單上的每一筆都是上一件蓋的**：房子、樹、城牆段只在事件的 start 裡生出來，
+     而 start 只跟在這裡後面跑——所以「上一件蓋的」就是整份 homes.list，城內那幾間房子
+     與樹也在裡面（使用者選的「一起拆」）。解法跟廢棄、被新工地徵收同一條（dropHomes）：
+     積木變成地上的碎料，下一件的人撿去用（見 開發筆記〈換成另一件事，上一件蓋的整批解體〉）。 */
+  if (evLast && e !== evLast) dropHomes(() => false);
   /* 換一件事，最高點就跟著換成「這一類現在有多少」（見 evAlive）。
      這兩個一定要一起動：只歸零 evPeak、evLast 留給呼叫端設的話，
      中間那一瞬間 evAlive 拿 peak 0 去比，什麼都會判成「還活著」。 */
@@ -4735,8 +4743,16 @@ function dropHomes(keep) {
 /* 打到剩不到兩成五就整間廢棄，解成碎料（v1.105，使用者：「小房子被破壞剩下 25%
    比照地標建築直接被破壞廢棄」）。門檻用地標那條同一個 WRECK_AT。
    只算**蓋好過一次的**（h.done）：第一次蓋本來就是從 0 長起來的，不然一開工就被廢棄。
-   廢棄的好處是連鎖的：那塊地不再擋路，倒在裡面撿不到的碎料也一起變成撿得到的料。 */
-const wrecked = h => h.done && h.slots.length - h.left < h.slots.length * WRECK_AT;
+   廢棄的好處是連鎖的：那塊地不再擋路，倒在裡面撿不到的碎料也一起變成撿得到的料。
+
+   **城牆段不算在裡面**（v1.253，使用者：「蓋城牆時就算那一小段完工 整組城牆 如果還沒蓋好
+   那一小段被破壞的也還是要蓋起來」）。城牆是整圈一件事：一段打爛了就留在清單上、
+   格子算回 h.left，蓋牆的人蓋完自己那一段會照 pickUnfinished 接過來補。
+   整圈的去留交給換事件那一條（見 rollIdleEvent）。不排除的話：wallPlan 一圈只跑一次，
+   廢棄掉的那一段沒有任何地方會再生出來——實測蓋好的一段 122 塊整段打光，1 秒內從清單上
+   消失（24 段 → 23 段），150 秒後還是缺著，牆線上永遠少一段
+   （見 開發筆記〈城牆段打爛了不廢棄，留著等人補〉）。 */
+const wrecked = h => h.done && !h.wall && h.slots.length - h.left < h.slots.length * WRECK_AT;
 function wreckHomes() {
   if (!homes) return 0;
   for (const h of homes.list) if (wrecked(h)) return dropHomes(q => !wrecked(q));
