@@ -1552,6 +1552,28 @@ function ringHold(na, cr, want, budget) {
   return Math.min(ringClear(na, cr), cr + budget);
 }
 function ringWalk(w, ta, rad, dt, spd) {
+  /* 要跨過城牆那條線才到得了（一邊在城裡、一邊在城外），或直線過去會碰到砌好的牆：照巡路規則走
+     （v1.248，見 navAim），走到看得到目標、同一側了才照下面繞圈。後面那一條是給「剛穿過門洞、
+     人還在門樓的通道裡」那幾步：那時候已經算城裡了，換回繞圈的話會斜著往墩座上擠。
+     繞圈這一套只會往外鼓閃房子，**不知道城門在哪**——
+     人在牆外、站位在牆裡時，往內收的那一步被牆擋住（ringHold ①：半徑不動、只沿圈滑），
+     角度一對上就回報「到了」，人就停在牆外側；腿沒在擺，stuckWatch 也不會觸發。
+     使用者：「魔法小人要去蓋地標的時候被城牆卡住」。實測（六座地標、整圈城牆、照「拆完 → 推土機 → 開工」跑 120 秒）：
+     魔法師貼牆停超過一半時間的 9／24 人、丟出的料 1747 塊（沒有牆 0／24、2873 塊）；
+     慶祝時牆外 11 人只有 3～4 人走得到圈上；工程師貼牆之後靠穿透進城。
+     三種都走這一支，所以規則寫在這裡（使用者選「規則版」，不是只修魔法師）。
+     strollTo 走到目標（或它挪到的最近可走點，規則 2）就算到了，同 ringWalk 自己「目標被占著、角度到了就算到位」。
+     路上走的不算閒晃里程（同 castTrip）。見 開發筆記〈繞著工地圈走遇到城牆（魔法師、工程師、慶祝）〉 */
+  {
+    const gx = Math.cos(ta) * rad, gz = Math.sin(ta) * rad;
+    if (wallSplits(w.x, w.z, gx, gz) || wallHit(w.x, w.z, gx, gz)) {
+      w.tx = gx; w.tz = gz;
+      const leg = w.leg;
+      const at = strollTo(w, dt, spd, (spd || WALK) / WALK);
+      w.leg = leg;
+      return at;
+    }
+  }
   const cr = Math.hypot(w.x, w.z);
   const ca = cr < 0.001 ? ta : Math.atan2(w.z, w.x);
   const TAU = Math.PI * 2;
@@ -1805,10 +1827,11 @@ function updWorker(w, wi, dt) {
       idleSpot(w, CHEER_SPREAD);
     }
   }
-  /* 被吹飛／點著／推倒／要逃命，或是換場要清工地了——聊天一律中斷。
-     蓋完的那一刻也中斷：慶祝要全員到齊，不然聊到一半的那兩個會晚五秒才入圈。 */
+  /* 被吹飛／點著／推倒／要逃命——聊天一律中斷。
+     蓋完的那一刻也中斷：慶祝要全員到齊，不然聊到一半的那兩個會晚五秒才入圈。
+     整地中照聊（v1.248，見 idlePhase）；v1.247 以前「換場要清工地了」也在這裡中斷。 */
   if ((w.chat > 0 || w.fig > 0) && (w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
-      (phase !== 'build' && !idlePhase()) || (idlePhase() && cheerOn(w)))) {
+      (idlePhase() && cheerOn(w)))) {
     endChat(w); endFight(w);         // 打架（v1.178）用同一個判準：它是那場對話的下半場
   }
   if (w.burn > 0) {
@@ -1882,30 +1905,11 @@ function updWorker(w, wi, dt) {
   if (w.fig > 0) { stepFight(w, wi, dt); return; }   // 談不攏就打起來（v1.178）
   if (tripWalk(w, dt)) return;                       // 走著走著絆一跤（v1.178）
 
-  if (phase === 'clear') {
-    /* 整地中退到旁邊等——推土機還在推，這時候進場只會被鏟到。
-       **拆除中（wreck）v1.106 起不再退場**：使用者「敲一下持續驚嚇不合理」。
-       敲完工的建築一下就會把 phase 推進 wreck，而這條分支會讓全場二十個人立刻
-       往外跑、而且一直待在外圈不做事——實測敲一下之後 60 秒裡 24000/24000 人-幀
-       都停在這裡，平均半徑從 23.7 被推到 28.1，沒有人回去做自己的事。
-       現在拆除中照 `done` 那條走（閒晃、蓋自己的家、慶祝），玩家在拆、小人過自己的生活。
-       「不會偷偷把它修回去」還是成立——那條是 build 的狀態機，這裡走不到。 */
-    w.cheer = 0;
-    const d = Math.hypot(w.x, w.z);
-    if (d < debrisR * 0.62) {
-      const a = d < 0.01 ? Math.random() * Math.PI * 2 : Math.atan2(w.z, w.x);
-      w.tx = Math.cos(a) * debrisR * 0.78; w.tz = Math.sin(a) * debrisR * 0.78;
-    }
-    if (walkTo(w, dt)) {
-      /* 下一個閒晃點取在自己附近的角度，不是整圈亂挑。挑到對面去的話
-         他會直接穿過工地正中央——拆到一半的建築裡、推土機的車道上都照走。 */
-      const a = Math.atan2(w.z, w.x) + rr(-0.8, 0.8), r2 = debrisR * rr(0.6, 0.85);
-      w.tx = Math.cos(a) * r2; w.tz = Math.sin(a) * r2;
-    }
-    w.y += (0 - w.y) * Math.min(1, dt * 6);
-    return;
-  }
-
+  /* 整地中（clear）**不再退場**（v1.248）：跟拆除中、完工一樣走下面這條（見 idlePhase）。
+     v1.61～v1.247 這裡有一條「退到碎料場外圈（debrisR × 0.62～0.85）繞圈等」的分支，
+     理由是「推土機還在推，進場只會被鏟到」；使用者：「推土機來的時候小人不需要再到外圍繞圈
+     繼續做原本的事就好」，車道上的人讓車直接穿過去（使用者選的，同消防車）。
+     拆除中（wreck）早在 v1.106 就拿掉退場了（使用者「敲一下持續驚嚇不合理」）。 */
   if (idlePhase()) {                                  // 蓋完了，圍成一圈慶祝
     if (cheerOn(w)) {
       /* 先各自跑到自己那一格（等分一圈，所以站得開），到位就轉身面向建築
@@ -3055,7 +3059,6 @@ function chatFree(w) {
   return phase === 'build' && w.st === 'idle' && (w.lazy || !w.eng);
 }
 function pairChat() {
-  if (phase !== 'build' && !idlePhase()) return;
   for (let i = 0; i < workers.length; i++) {
     const a = workers[i];
     if (!chatFree(a)) continue;
@@ -3310,7 +3313,8 @@ function stopIdleEvent() {
 }
 /* 現在該不該有事件、是哪一種場合（v1.134）。'idle'＝蓋完了全場沒事幹（v1.97 那個），
    'build'＝施工中而且場上有人偷懶（那幾個人的事件，誰參加在 startHomes 那邊擋）。
-   整地中（clear）兩個都不是：那時候全場都被推土機趕到外圈。 */
+   整地中（clear）算 'idle'（v1.248，見 idlePhase）：換場前在跑的那一件接著跑，推土機推完才收
+   （見 beginBuild）。v1.134～v1.247 整地中兩個都不是：那時候全場都被推土機趕到外圈。 */
 function evPhase() {
   if (idlePhase()) return 'idle';
   if (phase === 'build' && workers.some(w => w.lazy)) return 'build';

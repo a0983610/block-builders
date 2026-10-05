@@ -7183,7 +7183,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (home.why.length ? '；踩到的那幾幀：' + JSON.stringify(home.why) : ''));
 
   /* 一開始建造就回去上工（使用者：「如果要再建造時 直接恢復進入建造模式」），
-     房子留在場上（使用者選的）。推土機只推工地內的 FREE 碎料，所以碰不到房子。 */
+     房子留在場上（使用者選的）。推土機只推工地內的 FREE 碎料，所以碰不到房子。
+     **v1.248 起整地中照常過日子**（使用者：「推土機來的時候小人不需要再到外圍繞圈 繼續做原本的事就好」）：
+     換場那一刻事件不收、蓋家的人接著蓋（整地後的塊數只會多不會少），推土機推完、真的開工才收。
+     料池照舊是換場那一刻配好的（整地中蓋家會拿掉一些碎料，所以量的是換場那一刻）。 */
   const homeSwap = await page.evaluate(() => {
     /* 先跑兩秒：上一條測試每間房子砸了一下，垮塔是分好幾波採的（fallIn），
        還有幾塊在路上——没落定就量的話，整地那一段前後的數字會差幾塊。 */
@@ -7200,26 +7203,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(false);
     const onEvent = workers.filter(w => w.hm >= 0).length;
     const ev = idleEv;
+    const pool = blocks.filter(b => b.hh < 0).length;    // 換場那一刻的料池（reconcilePool 配好的）
     let clear = 0;
     for (let i = 0; i < 400 && phase === 'clear'; i++) { step(0.05); clear++; }
+    const onEvent1 = workers.filter(w => w.hm >= 0).length, ev1 = idleEv;   // 推完、開工那一刻
     const setAfterClear = blocks.filter(b => b.hh >= 0 && b.st === 3).length;
     for (let i = 0; i < 600; i++) step(0.05);
-    return { kept0, set0, onEvent, ev: ev ? ev.id : null, clear, dirty,
+    return { kept0, set0, onEvent, ev: ev ? ev.id : null, onEvent1, ev1: ev1 ? ev1.id : null, clear, dirty,
              kept1: homes.list.length, setAfterClear,
              set1: blocks.filter(b => b.hh >= 0 && b.st === 3).length,
-             pool: blocks.filter(b => b.hh < 0).length, need: bp.slots.length,
+             pool, need: bp.slots.length,
              placed: placedCnt, phase,
              carrying: workers.filter(w => w.carry || w.load.length).length };
   });
   ok('一開始建造就回去上工，房子留在場上（整地推土機也不推它）',
-     homeSwap.onEvent === 0 && homeSwap.ev === null &&
-     homeSwap.kept1 === homeSwap.kept0 && homeSwap.setAfterClear === homeSwap.set0 &&
-     homeSwap.set1 === homeSwap.set0 && homeSwap.pool === homeSwap.need &&
+     /* 「換場那一刻事件還在」這個場面量不到（前面幾條把事件收掉了，印出來是 0 人），由〈整地推土機〉
+        〈整地中照常過日子〉④ 守；這裡只守開工那一刻收掉 */
+     homeSwap.onEvent1 === 0 && homeSwap.ev1 === null &&
+     homeSwap.kept1 === homeSwap.kept0 && homeSwap.setAfterClear >= homeSwap.set0 &&
+     homeSwap.set1 === homeSwap.setAfterClear && homeSwap.pool === homeSwap.need &&
      homeSwap.placed > 100 && homeSwap.clear > 100,
      '房子 ' + homeSwap.kept0 + ' 間 / ' + homeSwap.set0 + ' 塊 → 整地後 ' +
      homeSwap.setAfterClear + ' 塊、蓋 30 秒後 ' + homeSwap.set1 + ' 塊（工地裡有 ' +
      homeSwap.dirty + ' 塊碎料要清，整地跑了 ' + homeSwap.clear +
-     ' 幀）；還在跑事件的 ' + homeSwap.onEvent + ' 人，料池 ' +
+     ' 幀）；換場那一刻還在跑事件的 ' + homeSwap.onEvent + ' 人（' + homeSwap.ev + '）、開工那一刻 ' +
+     homeSwap.onEvent1 + ' 人，料池 ' +
      homeSwap.pool + '／藍圖 ' + homeSwap.need + '，已蓋 ' + homeSwap.placed + ' 塊');
 
   /* 唯一會拆房子的情況：下一座工地正好蓋到它身上。留著的話新建築會跟它長在同一個位置。
@@ -10945,7 +10953,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const origKick = kickOut; let kicked = 0;
     kickOut = b => { kicked++; origKick(b); };
     const trail = [];
-    let peak = dirtyOf(), heap0 = 0, lastIn = 0, built = 0, guard = 0;
+    let peak = dirtyOf(), heap0 = 0, built = 0, guard = 0;
     let sawPush = 0, maxSpd = 0, mFrames = 0;
     let inSite = 0, blDown = 0;
     while (phase === 'clear' && guard++ < 900) {
@@ -10972,11 +10980,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (placedCnt > built) built = placedCnt;
       // 留一張整地中的畫面：畫完就不再畫，後面截到的就是這一幀
       if (guard === 55) { for (let i = 0; i < 8; i++) ENG.updateCamera(1); draw(); ENG.render(); }
-      /* 小人本來就可能剛好站在工地正中央（上一秒還在遊蕩），走出去要好幾秒，
-         所以不能要求「整段期間都不在裡面」。要驗的是他們有往外走、而且整完時人不在裡面。 */
-      for (const w of workers) if (Math.hypot(w.x, w.z) < R) { lastIn = guard; break; }
+      /* v1.247 以前這裡還量「小人退出工地圈了沒」：整地中全場退到外圈等。v1.248 起整地中照常過日子
+         （使用者：「推土機來的時候小人不需要再到外圍繞圈 繼續做原本的事就好」），那件事不成立了，
+         規則改由下面〈整地中照常過日子〉那幾條驗。 */
     }
-    const stillIn = workers.filter(w => Math.hypot(w.x, w.z) < R).length;
     const pushedOut = cohort.filter(b => Math.hypot(b.x, b.z) >= R).length;
     kickOut = origKick;
     const dirty1 = dirtyOf(), secs = +(guard * 0.05).toFixed(1);
@@ -10995,13 +11002,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const m of L) if (Math.hypot(m.x, m.z) < dozWorkR()) { outFrames++; if (m.bl < 0.35) outDown++; }
     }
     window.pushWithBlade = opw;
-    return { born, drawn, peak, dirty1, trail, secs, built, stillIn, heap0,
+    return { born, drawn, peak, dirty1, trail, secs, built, heap0,
              cohort: cohort.length, pushedOut, kicked, outFrames, outDown, outPush,
              heapEnd: trail.length ? trail[trail.length - 1] : 0,
              sawPush, wantN, inSite, blDown, mFrames, maxSpd: +maxSpd.toFixed(1),
              lane: +lane.toFixed(2), edge: +edge.toFixed(2), dw: ENG.DOZ_W,
              lats: lats.map(v => +v.toFixed(1)),
-             lastIn: +(lastIn * 0.05).toFixed(1),
              gone: !dozers, phase, drove: +(g2 * 0.05).toFixed(1) };
   });
   /* 台數照**地標寬度**算（v1.142，使用者指定）：工地寬度 ÷ 一把鏟子的寬度。
@@ -11025,9 +11031,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '整段有 ' + (doze.sawPush / doze.mFrames * 100).toFixed(0) + '% 的機器時間在推');
   ok('車速在合理範圍，不會用飛的', doze.maxSpd > 3 && doze.maxSpd < 12,
      '最快 ' + doze.maxSpd + ' 單位／秒（小人走路是 6.8）');
-  ok('整地時小人退出工地等，不會提早開工', doze.stillIn === 0 && doze.built === 0,
-     '整完時還站在工地裡的有 ' + doze.stillIn + ' 人（最後一次有人在裡面是第 ' +
-     doze.lastIn + ' 秒／共 ' + doze.secs + ' 秒），期間蓋了 ' + doze.built + ' 塊');
+  ok('整地時不會提早開工', doze.built === 0,
+     '整地 ' + doze.secs + ' 秒，期間蓋了 ' + doze.built + ' 塊');
   /* 清得掉多少很看堆的位置，但門檻要有意義：繞內側那版是平均 27～33%
      （中世紀城堡（v1.66 換掉的那份）四輪 15/18/32/43%），對穿之後 51～69%，時限拉到 10 秒（v1.61.1）
      之後是 82～87%，v1.142 照寬度並排掃一趟之後是 92%（同一份藍圖同一支測試；
@@ -11429,6 +11434,72 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '全程 ' + dozStep.samples + ' 次位移，單幀最大 ' + dozStep.worst + '、超過半格的占 ' +
      (dozStep.frac * 100).toFixed(2) + '%（車子一幀走 ' + dozStep.cap +
      '；改用每幀 separate 的話是 2.9 與 8.4%）');
+
+  /* 整地中照常過日子（v1.248，使用者：「推土機來的時候小人不需要再到外圍繞圈 繼續做原本的事就好」；
+     車道上的人讓車直接穿過去，使用者選的）。v1.61～v1.247 整地中有一條「退到碎料場外圈繞圈」的分支：
+     實測 83～96% 的人-幀擠在那一環，換場前在蓋家／城牆的人（20 人裡 14～20 人）也被叫停。
+     規則型：造最小的場面直接呼叫那幾支（同〈規則：垮塌、補洞、廢棄〉），不跑模擬、不賭骰子。
+       ① 站著發呆的人照樣站著（舊的分支會叫他往外圈走）
+       ② 湊得成對的照樣聊天、聊著不會被打斷
+       ③ 閒晃事件的場合是 'idle'（舊的是 ''＝收掉）
+       ④ 換場要整地時事件不收（舊的是 startBuild 第一行就收）
+       ⑤ 推土機推完、真的開工（beginBuild）才收事件、聊到一半的也收掉（使用者 v1.97：「直接恢復進入建造模式」） */
+  const clearLife = await page.evaluate(() => {
+    startBuild(true);
+    phase = 'clear';
+    const [, a, b, c] = workers;                       // 0 號是工程師；整地中他也走閒晃那條，但挑一般人比較單純
+    workers.forEach((w, i) => {
+      releaseWorker(w);
+      w.hm = -1; w.flee = 0; w.air = 0; w.burn = 0; w.fall = 0; w.trip = 0; w.ghost = 0; w.stk = 0;
+      w.show = ''; w.showT = 0; w.pause = 0; w.chatCd = 0; w.gait = 0; w.y = 0;
+      w.cheer = CHEER_T + w.cout;                       // 散場了（startBuild 換場那一刻也是這樣設的）
+      w.x = (siteR + 30) * Math.cos(i * 1.7); w.z = (siteR + 30) * Math.sin(i * 1.7);   // 彼此離遠，免得湊成對
+      w.tx = w.x; w.tz = w.z;
+    });
+    // ① 工地圈邊上站著發呆的人
+    c.x = siteR + 3; c.z = 0; c.tx = c.x; c.tz = c.z; c.pause = 3;
+    for (let i = 0; i < 20; i++) updWorker(c, 3, 0.05);
+    const stay = +Math.hypot(c.x - (siteR + 3), c.z).toFixed(3);
+    // ② 兩個人站在一起
+    a.x = 0; a.z = siteR + 10; b.x = 1.5; b.z = siteR + 10;
+    pairChat();
+    const paired = a.chat > 0 && b.chat > 0;
+    for (let i = 0; i < 10; i++) { updWorker(a, 1, 0.05); updWorker(b, 2, 0.05); }
+    const talking = a.chat > 0 && b.chat > 0;
+    // ③
+    const evp = evPhase();
+    // ⑤ 開工
+    let stopped = 0;
+    idleEv = { id: 'probe', stop() { stopped++; } };
+    beginBuild();
+    const begun = { phase, ev: idleEv, stopped, chat: a.chat + b.chat };
+    // ④ 換場要整地：工地裡先擺 20 塊躺著的碎料（countDirty 要 8 塊以上才會叫推土機）
+    completeNow();
+    for (let i = 0; i < 20; i++) {
+      const q = blocks[i];
+      if (q.cell) gridDel(q);
+      q.st = 0; q.slot = -1; q.rest = true; q.y = HB; q.x = rr(-2, 2); q.z = rr(-2, 2);
+      q.vx = q.vy = q.vz = 0; gridAdd(q);
+    }
+    stopped = 0;
+    const fake = { id: 'probe', stop() { stopped++; } };
+    idleEv = fake;
+    startBuild(false);
+    const swap = { phase, kept: idleEv === fake, stopped };
+    // 還回去
+    idleEv = null; dozers = null; ENG.putDozers([]);
+    startBuild(true);
+    return { stay, paired, talking, evp, begun: { phase: begun.phase, ev: !!begun.ev, stopped: begun.stopped, chat: begun.chat },
+             swap };
+  });
+  ok('整地中照常過日子：發呆的照站、聊天照聊，閒晃事件推土機推完才收',
+     clearLife.stay < 1e-6 && clearLife.paired && clearLife.talking && clearLife.evp === 'idle' &&
+     clearLife.swap.phase === 'clear' && clearLife.swap.kept && clearLife.swap.stopped === 0 &&
+     clearLife.begun.phase === 'build' && !clearLife.begun.ev && clearLife.begun.stopped === 1 && clearLife.begun.chat === 0,
+     '① 發呆一秒挪了 ' + clearLife.stay + ' 格（v1.247 會往碎料場外圈走）；② 湊成對 ' + clearLife.paired +
+     '、半秒後還在聊 ' + clearLife.talking + '；③ 事件場合「' + clearLife.evp + '」；④ 換場進 ' + clearLife.swap.phase +
+     '、事件還在 ' + clearLife.swap.kept + '（收了 ' + clearLife.swap.stopped + ' 次）；⑤ 開工進 ' + clearLife.begun.phase +
+     '、事件收了 ' + clearLife.begun.stopped + ' 次、聊天剩 ' + clearLife.begun.chat.toFixed(2) + ' 秒');
 
   const dozeSkip = await page.evaluate(() => {
     startBuild(true);
@@ -21788,6 +21859,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      grain.stem + '／' + grain.want.stem + '（' + grain.stemS.join('～') + '）、煙裙 ' + grain.skirt + '／' +
      grain.want.skirt + '（' + grain.skirtS.join('～') + '）、火光 ' + grain.hot + '／' + grain.want.hot + '（' +
      grain.hotS.join('～') + '）；塵牆 ' + grain.wind + '／' + grain.wantWind + '（' + grain.windS.join('～') + '）');
+
+  /* 三顆核彈一起丟，三朵的傘蓋都撐得開（v1.248，使用者：「如果一起丟三個核彈 第三個蘑菇雲 應該是煙霧數量不足」）。
+     雲的關卡（CLOUD_CAP）是全場共用的，傘蓋又是 0.45 秒那一下整批要 cloudN(CLOUD_TOP) 顆、生不出來也不補：
+     v1.247 實測前兩朵各 1223 顆、第三朵 0～13 顆。照遊戲那樣丟（callNuke、間隔 0.3 秒、真的 step），
+     照離哪一顆近把傘蓋（fade 4.5）分給三朵，每一朵都要是整批。期望值讀常數算。 */
+  const nukeTrio = await page.evaluate(() => {
+    startBuild(true); completeNow();
+    dust.length = 0; hot.length = 0; clouds.length = 0; fxRings.length = 0;
+    const P = [{ x: -25, z: 0 }, { x: 25, z: 0 }, { x: 0, z: 25 }];
+    const seen = new WeakSet(), top = [0, 0, 0];
+    let k = 0;
+    for (let i = 0; i < 120; i++) {                      // 6 秒：三顆都落地、三朵都撐開傘蓋
+      if (k < 3 && i === k * 6) { callNuke({ x: P[k].x, y: 0, z: P[k].z }); k++; }
+      step(0.05);
+      for (const d of dust) {
+        if (seen.has(d)) continue;
+        seen.add(d);
+        if (d.fade !== 4.5) continue;
+        let bi = 0, bd = Infinity;
+        P.forEach((q, j) => { const e = (d.x - q.x) ** 2 + (d.z - q.z) ** 2; if (e < bd) { bd = e; bi = j; } });
+        top[bi]++;
+      }
+    }
+    const want = Math.ceil(cloudN(CLOUD_TOP));
+    cleanTools();                                        // 動過的全域還回去：核彈的火、焦痕、雲與塵
+    dust.length = 0; hot.length = 0; clouds.length = 0; fxRings.length = 0;
+    for (const w of workers) { w.flee = 0; w.fdel = 0; }
+    return { top, want };
+  });
+  ok('三顆核彈一起丟，三朵蘑菇雲的傘蓋都撐得開',
+     nukeTrio.top.every(n => n === nukeTrio.want),
+     '三朵的傘蓋 ' + nukeTrio.top.join('／') + ' 顆（一朵是 ' + nukeTrio.want + ' 顆；v1.247 第三朵 0～13 顆）');
 
   /* 腳下那圈煙：柱子不能從一塊乾淨的草地長出來。
      光看「貼地的煙有幾團」不夠——柱子底部本來就有煙。要看的是它有沒有往外鋪開，
@@ -34154,6 +34257,81 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      navCorner2.s.n + ' 趟（牆半徑 ' + navCorner2.W + '）：到了 ' + navCorner2.s.arrived + '、用到穿透 ' + navCorner2.s.ghost +
      '、在框裡 ' + navCorner2.s.inBox + ' 幀、被當成卡住 ' + navCorner2.s.re + ' 趟、一趟最多規劃 ' + navCorner2.plans +
      ' 次；最慢 ' + navCorner2.s.slow + (navCorner2.bad.length ? '；壞的：' + navCorner2.bad.slice(0, 6).join('；') : ''));
+
+  /* ⑯ 繞著工地圈走（ringWalk）遇到城牆（v1.248，使用者：「魔法小人要去蓋地標的時候被城牆卡住」）。
+     魔法師、工程師、慶祝走位都是這一支：只會往外鼓閃房子、不知道城門在哪，人在牆外、站位在牆裡時
+     往內那一步被牆擋住、只沿圈滑，角度一對上就回報「到了」——停在牆外側，腿沒在擺，stuckWatch 也不觸發。
+     規則：要跨過城牆那條線、或直線過去會碰到砌好的牆，就照巡路規則走（strollTo），到了同一側才繞圈。
+     場面：整圈城牆（同 ⑮），三種站位各從牆外 8 個方位走進來，加上魔法師從城裡走到城外的料堆（反方向 8 趟）。
+     對照組把城牆當成一般房子（h.wall = 0：footHome 照擋、城牆那幾支看不到它）＝ v1.247 的走法。 */
+  const navRing = await page.evaluate(() => {
+    const N = window.navT;
+    homes = null; frameNo++;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 300; startBuild(true); completeNow();
+    homes = null;
+    siteR = 12; arenaR = 52;
+    const W = wallRing(), walls = [];
+    for (const h of wallPlan()) {
+      for (const sl of h.slots) { sl.filled = true; h.left--; }
+      h.done = true; homeBox(h); walls.push(h);
+    }
+    const dt = 0.05, T = 40;
+    const one = (s, ta, rad) => {
+      const w = workers[0];
+      releaseWorker(w); N.wear(w, null);
+      w.hm = -1; w.flee = 0; w.air = 0; w.burn = 0; w.pause = 0; w.leg = 0; w.gait = 0; w.y = 0;
+      w.fall = 0; w.trip = 0; w.ghost = 0; w.stk = 0;
+      w.x = s[0]; w.z = s[1]; w.sx = w.x; w.sz = w.z;
+      const gx = Math.cos(ta) * rad, gz = Math.sin(ta) * rad;
+      let t = -1, ghost = 0, inBox = 0;
+      for (let i = 0; i < T / dt; i++) {
+        frameNo++;
+        stuckWatch(w, dt);                              // updWorker 每幀第一件事
+        if (w.ghost > 0) ghost++;
+        const done = ringWalk(w, ta, rad, dt);
+        if (w.ghost <= 0 && footHome(w.x, w.z)) inBox++;
+        if (done) { t = +((i + 1) * dt).toFixed(2); break; }
+      }
+      /* 「到了」要真的在目標那一側、站在那一點上（同一側、2 格內） */
+      const ok = t >= 0 && inWall(w.x, w.z) === inWall(gx, gz) && Math.hypot(w.x - gx, w.z - gz) < 2;
+      const r = { t, ok, ghost, inBox, x: +w.x.toFixed(1), z: +w.z.toFixed(1) };
+      releaseWorker(w); w.ghost = 0; w.stk = 0;
+      return r;
+    };
+    const who = [['魔法師', siteR + MAGE_KEEP, 1], ['工程師', siteR + ENG_KEEP, 1], ['慶祝', cheerR(), 1],
+                 ['魔法師（城外的料堆）', W + 8, 0]];
+    const pass = list => {
+      homes = { list }; frameNo++;
+      const runs = [];
+      for (const [n, rad, fromOut] of who)
+        for (let k = 0; k < 8; k++) {
+          const a = k * Math.PI / 4 + 0.2;
+          const s = fromOut ? [Math.cos(a) * (W + 6), Math.sin(a) * (W + 6)] : [Math.cos(a) * (siteR + 6), Math.sin(a) * (siteR + 6)];
+          const r = one(s, a + 0.5, rad);
+          r.n = n + '・方位 ' + k; runs.push(r);
+        }
+      return runs;
+    };
+    const runs = pass(walls);
+    /* 對照：同一圈牆當成一般房子（只有 footHome 擋得到它）＝ v1.247 */
+    for (const h of walls) h.wall = 0;
+    const old = pass(walls);
+    for (const h of walls) h.wall = 1;
+    siteR = N.keep[0]; arenaR = N.keep[1];
+    homes = null; frameNo++;
+    const sum = rs => ({ n: rs.length, ok: rs.filter(r => r.ok).length, ghost: rs.reduce((a, r) => a + r.ghost, 0),
+                         inBox: rs.reduce((a, r) => a + r.inBox, 0),
+                         slow: Math.max(...rs.map(r => r.t)) });
+    return { W, s: sum(runs), o: sum(old),
+             bad: runs.filter(r => !r.ok || r.ghost || r.inBox).map(r => r.n + '：' + (r.t < 0 ? '沒到' : r.t + ' 秒') +
+                                                                    '、停在 (' + r.x + ', ' + r.z + ')、穿透 ' + r.ghost + ' 幀') };
+  });
+  ok('繞著工地圈走遇到城牆：照巡路規則穿過門洞，走到站位那一側（魔法師／工程師／慶祝）',
+     navRing.s.ok === navRing.s.n && !navRing.s.ghost && !navRing.s.inBox && navRing.o.ok < navRing.o.n,
+     navRing.s.n + ' 趟（牆半徑 ' + navRing.W + '）：走到站位 ' + navRing.s.ok + '、用到穿透 ' + navRing.s.ghost +
+     ' 幀、在牆框裡 ' + navRing.s.inBox + ' 幀、最慢 ' + navRing.s.slow + ' 秒；對照（牆當一般房子＝v1.247）走到 ' +
+     navRing.o.ok + '／' + navRing.o.n + (navRing.bad.length ? '；壞的：' + navRing.bad.slice(0, 6).join('；') : ''));
 
   /* 這一段動過的全域還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）：地標換回這一段開頭那一座 */
   await page.evaluate(() => {

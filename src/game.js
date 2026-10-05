@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.247.1';
+const VERSION = '1.248.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -56,10 +56,15 @@ let siteR = 12;                     // 建築占地半徑
 let arenaR = 40;                    // 生活圈半徑（v1.211 起只剩小房子與城牆綁它，見 DEBRIS_X）
 let debrisR = 40 * DEBRIS_X;        // 碎料圈半徑＝場地邊緣（碎塊、草地島、樹、生物、進退場圈）
 let phase = 'build';                // clear（整地）| build | done | wreck
-/* 小人「沒有工地要顧」的兩個階段。拆除中（wreck）純粹是換場的記帳狀態：
+/* 小人「沒有工地要顧」的三個階段。拆除中（wreck）純粹是換場的記帳狀態：
    拆到剩不到 WRECK_AT 就換下一座（見 step 尾巴）。v1.106 之前拆除中還會讓全場退場，
-   使用者：「敲一下持續驚嚇不合理」——現在拆除中小人照樣過自己的生活。 */
-const idlePhase = () => phase === 'done' || phase === 'wreck';
+   使用者：「敲一下持續驚嚇不合理」——現在拆除中小人照樣過自己的生活。
+   **整地中（clear）也算**（v1.248，使用者：「推土機來的時候小人不需要再到外圍繞圈 繼續做原本的事就好」）：
+   v1.61～v1.247 整地那十幾秒全場退到碎料場外圈繞圈，實測 83～96% 的人-幀擠在那一環，
+   換場前正在蓋家／城牆的人（20 人裡 14～20 人）也被叫停。現在照拆除中那樣閒晃、聊天、表演，
+   閒晃事件也照跑，推土機推完、真的開工才收（見 beginBuild）。推土機照舊直接穿過人（使用者選的）。
+   見 開發筆記〈整地中照常過日子〉 */
+const idlePhase = () => phase === 'done' || phase === 'wreck' || phase === 'clear';
 let buildStart = 0, buildElapsed = 0;
 let timeScale = 1;
 /* 面板上的三檔。做成按鈕不是滑桿：這三檔就是「小場地／標準／大場面」，
@@ -799,7 +804,8 @@ function pickShape() {
 }
 
 function startBuild(instant) {
-  stopIdleEvent();                   // 閒晃事件收掉，人叫回去上工（v1.97）
+  /* 閒晃事件**不在這裡收**（v1.248）：要整地的話那十幾秒照常過日子，蓋家／城牆的人接著蓋，
+     推土機推完、真的開工才收（見 beginBuild）。v1.97～v1.247 是這一行就收掉。 */
   /* 順序有講究：先把小人和舊建築解開（他們的 slot 指的是「舊」藍圖），
      再換 bp，最後才調整積木池——反過來做的話，
      reconcilePool 的 splice 會讓工作單（w.load）上的編號指到別塊積木上。 */
@@ -816,6 +822,11 @@ function startBuild(instant) {
        **起點每人錯開**（v1.244.2，見 REST_SPREAD）：全部從 0 起算的話，整隊每 65 秒左右一起喘。 */
     w.toil = rr(0, REST_AT * REST_SPREAD); w.rst = 0;
     w.gvb = -1;                      // 上一座追太久放掉的那一塊，編號到新的一座就不算數了（v1.225）
+    /* 蓋家要去撿的那一塊同理（v1.248）：閒晃事件撐過換場之後，下面 reconcilePool 會把積木重排 */
+    w.gb = -1;
+    /* 換場那一刻算散場（v1.248）：整地中走閒晃那條路（見 idlePhase），慶祝窗口還開著的話
+       他會繞著新工地那一圈跳——那裡什麼都還沒有。施工那條路每幀會把它歸零，不影響下一座完工的慶祝。 */
+    w.cheer = CHEER_T + w.cout;
     w.emo = ''; w.emoT = 0; w.emoK = 0;   // 上一座留下的表情圖示不要跟著進新工地（v1.121）
     w.y = 0; w.tilt = 0; w.vx = w.vy = w.vz = 0;
   }
@@ -945,6 +956,12 @@ function kickOutSite() {
   for (const b of blocks) if (b.st === FREE && Math.hypot(b.x, b.z) < r) kickOut(b);
 }
 function beginBuild() {
+  /* 閒晃事件收掉，人叫回去上工（v1.97，使用者：「如果要再建造時 直接恢復進入建造模式」）。
+     v1.248 起從 startBuild 第一行挪到這裡：整地那段照常過日子，真的開工才收（見 idlePhase）。 */
+  stopIdleEvent();
+  /* 聊到一半、打到一半的也收掉（v1.248）：整地中現在照聊，不收的話開工之後他會把那五秒聊完才去上工。
+     v1.247 以前整地那一段會中斷聊天，開工那一刻不會有人還在聊。 */
+  for (const w of workers) { endChat(w); endFight(w); }
   phase = 'build';
   buildStart = performance.now();     // 施工計時從真正開工才起算，不含整地
 }
