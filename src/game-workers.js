@@ -3388,9 +3388,12 @@ const HOME_NEARBY = 8;              // 多近算「附近的小人」，會被�
             五層以上還會在半高處把整圈牆換成屋頂色當腰線，看得出樓層
      porch  門口一個小門廊：兩根兩格高的柱子 ＋ 上面一片雨遮
      fence  外面一圈及膝的圍籬，門那一側留一個出入口
+     form   換輪廓的那幾款（v1.254）：外型由 formSlots 的那一個 case 決定，
+            w／d 是整款的外框（門廊、圍籬除外），h 是牆身幾層
 
    人多蓋大的。房子大了蓋的時間也長（實測一間 100～280 塊要兩三分鐘），
-   所以同一趟改成搬好幾塊（見 HOME_CARRY）——一塊一趟的話八成時間在走路。 */
+   所以同一趟改成搬好幾塊（見 HOME_CARRY）——一塊一趟的話八成時間在走路。
+   **新款一律接在最後面**：測試有好幾條照索引拿原本那九款（HOME_KIND[3] 是大屋那種）。 */
 const HOME_KIND = [
   { n: 1, id: '小屋', w: 6, d: 5, h: 3, porch: 1 },
   { n: 1, id: '塔屋', w: 4, d: 4, h: 8 },
@@ -3400,7 +3403,17 @@ const HOME_KIND = [
   { n: 2, id: '兩層樓', w: 6, d: 5, h: 5, porch: 1 },
   { n: 3, id: '三層樓', w: 8, d: 6, h: 7, porch: 1, fence: 1 },
   { n: 3, id: '大長屋', w: 12, d: 4, h: 4, porch: 1, fence: 1 },
-  { n: 3, id: '農莊', w: 9, d: 6, h: 4, porch: 1, fence: 1 }
+  { n: 3, id: '農莊', w: 9, d: 6, h: 4, porch: 1, fence: 1 },
+  // v1.254：換輪廓的九款（見 formSlots），塊數不超過同人數那幾款的最大一間
+  { n: 1, id: '尖頂屋', form: 'gable', w: 7, d: 6, h: 2, porch: 1 },     // 105
+  { n: 1, id: '圓頂屋', form: 'dome', w: 7, d: 7, h: 2, porch: 1 },      // 103
+  { n: 1, id: '風車', form: 'mill', w: 7, d: 6, h: 5 },                  // 101
+  { n: 2, id: 'L 形屋', form: 'ell', w: 8, d: 8, h: 3, porch: 1 },       // 143
+  { n: 2, id: '穀倉', form: 'barn', w: 9, d: 8, h: 2 },                  // 146
+  { n: 2, id: '小教堂', form: 'chapel', w: 5, d: 9, h: 3 },              // 151
+  { n: 3, id: '合院', form: 'court', w: 11, d: 10, h: 3 },               // 239
+  { n: 3, id: '塔樓宅邸', form: 'manor', w: 10, d: 6, h: 3 },            // 249
+  { n: 3, id: '平頂樓', form: 'flat', w: 8, d: 7, h: 7 }                 // 238
 ];
 /* 幾個人合蓋就從那一組裡隨機挑一款（房子與樹共用，兩張表都照 n 分組）。
    人數超過表上最多的那組就用最大那組。 */
@@ -3854,31 +3867,42 @@ function homeUnclaim(w) {
      · 選配：門口的門廊、外面一圈圍籬
 
    屋頂只做兩層階梯、不做一層一層縮的真斜頂：同樣的塊數（使用者給的上限）
-   只蓋得起更小的房子。
-   門開在**朝著大建築那一面**：背對著開的話，從鏡頭看過去就只是一面平牆。
+   只蓋得起更小的房子（v1.254 加的那幾款才有真的斜頂，見 formSlots）。
    順序是牆一層一層往上 → 屋頂 → 屋脊 → 煙囪 → 門廊 → 圍籬，
-   照這個順序砌看起來才是「蓋起來」的（圍籬最後圍，不會擋住自己搬料的路）。 */
-function homeSlots(hx, hz, k, pal) {
+   照這個順序砌看起來才是「蓋起來」的（圍籬最後圍，不會擋住自己搬料的路）。
+
+   **門開在設計座標 v = 0 那一面的正中間，整棟照 rot 轉四個方向**（v1.254，使用者：
+   「增加更多小房子種類(一種小房子可以有四種方向) 避免視覺上一眼就重複」，問過選
+   「整棟隨機轉，連門一起轉」）。rot 0 門朝 −z（鏡頭那一側，同藍圖的正面）、1 朝 +x、
+   2 朝 +z、3 朝 −x，不給就是 0。v1.98～v1.253 門一律開在朝著大建築那一面
+   （看房子中心離場心是 x 遠還是 z 遠），同一款蓋在同一側永遠長得一模一樣。
+   回傳的 i／k 是**轉完之後**的格座標，h.ox／h.oz 要照 homeOff 給（homeSolid、homeColTop
+   拿它們把世界座標換回來查 h.at），所以後面那一整套不必知道房子轉過。 */
+function homeOff(k, rot) {
+  const sw = (rot || 0) & 1;                       // 轉 90° 或 270°：寬深對調
+  return { ox: ((sw ? k.d : k.w) - 1) / 2, oz: ((sw ? k.w : k.d) - 1) / 2 };
+}
+function homeSlots(hx, hz, k, pal, rot) {
+  const r = (rot || 0) & 3;
+  const { ox, oz } = homeOff(k, r);
   const out = [];
-  const ox = (k.w - 1) / 2, oz = (k.d - 1) / 2;
-  const put = (i, kk, gy, c) =>
+  // 設計座標 (u, v) → 轉完的格座標 (i, k)：繞平面中心轉 r × 90°
+  const put = (u, v, gy, c) => {
+    const i = r === 0 ? u : r === 1 ? k.d - 1 - v : r === 2 ? k.w - 1 - u : v;
+    const kk = r === 0 ? v : r === 1 ? u : r === 2 ? k.d - 1 - v : k.w - 1 - u;
     out.push({ x: hx + i - ox, y: gy + HB, z: hz + kk - oz, c, i, k: kk, gy,
                filled: false, claimed: -1 });
+  };
+  if (k.form) { formSlots(k, pal, put); return out; }   // v1.254 換輪廓的那幾款
   const mi = Math.floor((k.w - 1) / 2), mk = Math.floor((k.d - 1) / 2);
-  // 哪一面朝場中心：看房子中心相對場中心是 x 遠還是 z 遠
-  const xFace = Math.abs(hx) > Math.abs(hz);
-  const door = xFace ? { i: hx > 0 ? 0 : k.w - 1, k: mk }
-                     : { i: mi, k: hz > 0 ? 0 : k.d - 1 };
+  const door = { i: mi, k: 0 };
   /* 窗開在跟門垂直的那兩面牆上。牆長 6 格以上開兩扇（三分之一、三分之二處），
      短牆開正中間一扇——長牆只開一扇的話，一面九格的牆看起來是實心的。 */
-  const along = xFace ? k.w : k.d;                  // 那兩面牆有多長
+  const along = k.d;                                // 那兩面牆有多長
   const spots = along >= 6 ? [Math.floor(along / 3), Math.floor(along * 2 / 3)]
                            : [Math.floor((along - 1) / 2)];
   const win = [];
-  for (const q of spots) {
-    if (xFace) { win.push({ i: q, k: 0 }); win.push({ i: q, k: k.d - 1 }); }
-    else { win.push({ i: 0, k: q }); win.push({ i: k.w - 1, k: q }); }
-  }
+  for (const q of spots) { win.push({ i: 0, k: q }); win.push({ i: k.w - 1, k: q }); }
   /* 每隔一層開一排（1、3、5…）。不另外把「最上面那一層」也算進來：
      牆高 3 的房子那就是 1 跟 2 兩排黏在一起，兩排窗戶黏成一個大洞。 */
   const winRow = gy => gy % 2 === 1;
@@ -3914,19 +3938,7 @@ function homeSlots(hx, hz, k, pal) {
       put(i, kk, k.h + 1, pal[1]);                                       // 屋脊
     }
   put(0, mk, k.h + 2, pal[2]);                                           // 煙囪
-  /* 門廊：門外那一格的左右兩根柱子（兩格高）＋ 上面一片三格的雨遮。
-     柱子不擺在門正前方——那樣就把門堵住了。 */
-  const oi = door.i === 0 ? -1 : door.i === k.w - 1 ? 1 : 0;
-  const ok = door.k === 0 ? -1 : door.k === k.d - 1 ? 1 : 0;
-  if (k.porch) {
-    const ai = ok ? 1 : 0, ak = oi ? 1 : 0;              // 沿著牆的方向
-    for (const sgn of [-1, 1]) {
-      put(door.i + oi + ai * sgn, door.k + ok + ak * sgn, 0, pal[0]);
-      put(door.i + oi + ai * sgn, door.k + ok + ak * sgn, 1, pal[0]);
-    }
-    for (const sgn of [-1, 0, 1])
-      put(door.i + oi + ai * sgn, door.k + ok + ak * sgn, 2, pal[1]);
-  }
+  if (k.porch) homePorch(put, door.i, pal);
   /* 圍籬：外面兩格的一圈，只有一層高，門那一側留一格出入口。
      用屋頂的顏色，看起來是同一戶人家的。 */
   if (k.fence) {
@@ -3934,11 +3946,217 @@ function homeSlots(hx, hz, k, pal) {
       for (let kk = -2; kk < k.d + 2; kk++) {
         const edge = i === -2 || i === k.w + 1 || kk === -2 || kk === k.d + 1;
         if (!edge) continue;
-        if (i === door.i + oi * 2 && kk === door.k + ok * 2) continue;    // 出入口
+        if (i === door.i && kk === -2) continue;                          // 出入口
         put(i, kk, 0, pal[1]);
       }
   }
   return out;
+}
+/* 門廊：門外那一格（v = −1）的左右兩根柱子（兩格高）＋ 上面一片三格的雨遮。
+   柱子不擺在門正前方——那樣就把門堵住了。du 是門在第幾格。 */
+function homePorch(put, du, pal) {
+  for (const s of [-1, 1]) { put(du + s, -1, 0, pal[0]); put(du + s, -1, 1, pal[0]); }
+  for (const s of [-1, 0, 1]) put(du + s, -1, 2, pal[1]);
+}
+/* 換輪廓的九款（v1.254，使用者：「增加更多小房子種類…避免視覺上一眼就重複」，
+   預覽 tools/.e2e-out/小房子款式預覽.html 過目後「都不錯」）。原本那九款都是同一個樣板
+   （方盒子 ＋ 兩層屋頂 ＋ 煙囪），只換尺寸，所以這九款換的是**輪廓**：人字斜頂、圓頂、
+   風車、L 形、折線頂的穀倉、帶鐘塔的教堂、口字缺一面的合院、兩座角塔的宅邸、平頂樓。
+   塊數在 100～300（使用者 v1.100 定的），而且不超過原本同人數那幾款的最大一間
+   （1 人 105、2 人 153、3 人 276）：村子最多會有幾塊就沒變，積木池（MAXB）不必動。
+
+   每一款先把格子收進一張表（同一格只留一塊，後放的蓋過先放的），最後照
+   「由下往上、同一層先外圈再往裡、繞著中心轉、一層換一個方向」排好再交給 put。
+   先外後內是因為裡面那幾格（屋頂、圓頂的中間）要靠外圈撐著才放得上去（canPlaceHome）；
+   繞一圈是同 treeSlots 的理由：小人照順序認格子，跳來跳去就是在走路。
+   門一律開在 v = 0 那一面（合院例外：三個門都朝院子），要轉向的是 homeSlots 的 put。 */
+function formSlots(k, pal, put) {
+  const cells = new Map();
+  const key = (u, v, gy) => u + ':' + v + ':' + gy;
+  const set = (u, v, gy, c) => cells.set(key(u, v, gy), { u, v, gy, c });
+  const del = (u, v, gy) => cells.delete(key(u, v, gy));
+  const rect = (a0, a1, b0, b1) => (u, v) => u >= a0 && u <= a1 && v >= b0 && v <= b1;
+  // 一圈牆：平面 inM 的邊界格（四鄰有一格在平面外），gy0 起 h 層。c 可以是「第幾層 → 顏色」
+  const walls = (inM, u0, u1, v0, v1, h, c) => {
+    for (let u = u0; u <= u1; u++)
+      for (let v = v0; v <= v1; v++) {
+        if (!inM(u, v)) continue;
+        if (inM(u + 1, v) && inM(u - 1, v) && inM(u, v + 1) && inM(u, v - 1)) continue;
+        for (let gy = 0; gy < h; gy++) set(u, v, gy, typeof c === 'function' ? c(gy) : c);
+      }
+  };
+  const door = (u, v, gy0 = 0, hh = 2) => { for (let gy = gy0; gy < gy0 + hh; gy++) del(u, v, gy); };
+  const win = (u, v, gy) => del(u, v, gy);
+  /* 屋頂鋪滿一層、再把裡面那一圈（四鄰都在平面裡的）疊一層當屋脊——原本那九款的做法，
+     搬到任意平面上（L 形、合院） */
+  const ridge = (inM, u0, u1, v0, v1, base) => {
+    for (let u = u0; u <= u1; u++)
+      for (let v = v0; v <= v1; v++) {
+        if (!inM(u, v)) continue;
+        set(u, v, base, pal[1]);
+        if (inM(u + 1, v) && inM(u - 1, v) && inM(u, v + 1) && inM(u, v - 1)) set(u, v, base + 1, pal[1]);
+      }
+  };
+  /* 人字頂：屋脊沿 v，每往上一層兩邊各收一格，前後兩面補成三角形的山牆（牆色）。 */
+  const gable = (u0, u1, v0, v1, base) => {
+    for (let s = 0; u0 + s <= u1 - s; s++) {
+      const gy = base + s, a = u0 + s, b = u1 - s;
+      for (let v = v0; v <= v1; v++) { set(a, v, gy, pal[1]); set(b, v, gy, pal[1]); }
+      for (let u = a + 1; u < b; u++) { set(u, v0, gy, pal[0]); set(u, v1, gy, pal[0]); }
+    }
+  };
+  const W = k.w - 1, D = k.d - 1, mu = Math.floor(W / 2);
+  switch (k.form) {
+    case 'gable': {
+      /* 尖頂屋：兩層矮牆 ＋ 45° 的人字頂一路收到屋脊，正面是三角形的山牆 */
+      walls(rect(0, W, 0, D), 0, W, 0, D, k.h, pal[0]);
+      gable(0, W, 0, D, k.h);
+      door(mu, 0);
+      win(0, 2, 1); win(0, D - 2, 1); win(W, 2, 1); win(W, D - 2, 1);
+      win(mu, 0, 3);                                    // 山牆上一扇小窗
+      set(1, D - 1, k.h + 2, pal[2]);                   // 煙囪站在斜頂上
+      if (k.porch) homePorch(set, mu, pal);
+      break;
+    }
+    case 'dome': {
+      /* 圓頂屋：圓形平面、兩層牆、上面一層一層收的圓頂，頂上一顆尖。
+         **每一層都鋪滿**：只鋪外殼的話，往裡縮的那一圈底下是空的，只剩對角勾著（試過，懸空 10 塊） */
+      const R = W / 2;
+      const disc = r => (u, v) => Math.hypot(u - R, v - R) <= r + 0.35;
+      walls(disc(R), 0, W, 0, D, k.h, pal[0]);
+      [R, R - 0.9, R - 1.9].forEach((r, j) => {
+        const m = disc(r);
+        for (let u = 0; u <= W; u++) for (let v = 0; v <= D; v++) if (m(u, v)) set(u, v, k.h + j, pal[1]);
+      });
+      set(mu, mu, k.h + 3, pal[2]);
+      door(mu, 0);
+      win(0, mu, 1); win(W, mu, 1);
+      if (k.porch) homePorch(set, mu, pal);
+      break;
+    }
+    case 'mill': {
+      /* 風車：八角塔身 ＋ 尖頂 ＋ 正面一個十字葉片（輪轂在 v = 0、塔身在 v 1~5） */
+      const oct = (u, v) => u >= 1 && u <= 5 && v >= 1 && v <= 5 &&
+                            !((u === 1 || u === 5) && (v === 1 || v === 5));
+      walls(oct, 1, 5, 1, 5, k.h, pal[0]);
+      for (let u = 1; u <= 5; u++) for (let v = 1; v <= 5; v++) if (oct(u, v)) set(u, v, k.h, pal[1]);
+      for (let u = 2; u <= 4; u++) for (let v = 2; v <= 4; v++) set(u, v, k.h + 1, pal[1]);
+      set(3, 3, k.h + 2, pal[1]);
+      door(3, 1);
+      win(1, 3, 2); win(5, 3, 2);
+      /* 葉片：輪轂跟屋簷同一層，四支筆直的臂（往上 4、左右與往下 3）。
+         **不做偏一邊的帆面**：四支各往同一個轉向多一排的話，這麼粗的格子看起來是個卍字。
+         輪轂再低一格的話，往下那一支會擋在門口（門兩格高）。 */
+      const hy = k.h;
+      set(3, 0, hy, pal[2]);
+      for (let t = 1; t <= 4; t++) set(3, 0, hy + t, pal[2]);
+      for (let t = 1; t <= 3; t++) {
+        set(3 - t, 0, hy, pal[2]); set(3 + t, 0, hy, pal[2]); set(3, 0, hy - t, pal[2]);
+      }
+      break;
+    }
+    case 'ell': {
+      /* L 形屋：主屋 8×4 ＋ 側翼 3×4 往後伸 */
+      const M = (u, v) => (u >= 0 && u <= W && v >= 0 && v <= 3) || (u >= W - 2 && u <= W && v >= 4 && v <= D);
+      walls(M, 0, W, 0, D, k.h, pal[0]);
+      ridge(M, 0, W, 0, D, k.h);
+      set(W - 1, D - 1, k.h + 2, pal[2]);
+      door(2, 0);
+      win(W - 2, 0, 1); win(0, 1, 1); win(0, 2, 1); win(W, 5, 1); win(W - 2, D - 1, 1);
+      if (k.porch) homePorch(set, 2, pal);
+      break;
+    }
+    case 'barn': {
+      /* 穀倉：兩層矮牆 ＋ 折線頂（下段陡、上段緩），正面一扇三格寬三格高的大門 ＋ 上面一個草料口 */
+      walls(rect(0, W, 0, D), 0, W, 0, D, k.h, pal[0]);
+      [[0], [1], [2, 3], [4]].forEach((us, j) => {      // 每一層屋頂落在從外面數第幾格
+        const gy = k.h + j;
+        for (const a of us)
+          for (let v = 0; v <= D; v++) { set(a, v, gy, pal[1]); set(W - a, v, gy, pal[1]); }
+        const a = Math.max(...us);
+        for (let u = a + 1; u < W - a; u++) { set(u, 0, gy, pal[0]); set(u, D, gy, pal[0]); }
+      });
+      for (let u = mu - 1; u <= mu + 1; u++) door(u, 0, 0, 3);
+      win(mu, 0, k.h + 2);                              // 草料口
+      win(0, 3, 1); win(W, 3, 1);
+      break;
+    }
+    case 'chapel': {
+      /* 小教堂：長條的中殿 ＋ 人字頂，正面一座 3×3 的鐘塔比屋脊高、頂上尖帽 */
+      walls(rect(0, W, 2, D), 0, W, 2, D, k.h, pal[0]);
+      gable(0, W, 2, D, k.h);
+      const TH = k.h + 5;
+      walls(rect(1, 3, 0, 2), 1, 3, 0, 2, TH, pal[0]);
+      for (let u = 1; u <= 3; u++) for (let v = 0; v <= 2; v++) set(u, v, TH, pal[1]);
+      set(2, 1, TH + 1, pal[1]); set(2, 1, TH + 2, pal[2]);
+      door(2, 0);
+      door(2, 2);                                       // 塔底接中殿那一面也開一格，進得去
+      win(1, 1, TH - 2); win(3, 1, TH - 2); win(2, 0, TH - 2);   // 鐘樓三面的開口
+      for (let v = 4; v <= D - 1; v += 2) { win(0, v, 1); win(W, v, 1); }
+      break;
+    }
+    case 'court': {
+      /* 合院：後面一排正屋、左右兩廂，中間一方院子朝前面開；三個門都朝院子 */
+      const M = (u, v) => u >= 0 && u <= W && v >= 0 && v <= D && !(u >= 3 && u <= W - 3 && v <= D - 3);
+      walls(M, 0, W, 0, D, k.h, pal[0]);
+      ridge(M, 0, W, 0, D, k.h);
+      set(1, D - 1, k.h + 2, pal[2]);
+      door(mu, D - 2); door(2, 2); door(W - 2, 2);
+      win(mu - 2, D - 2, 1); win(mu + 2, D - 2, 1);
+      win(0, 2, 1); win(0, D - 3, 1); win(W, 2, 1); win(W, D - 3, 1);
+      break;
+    }
+    case 'manor': {
+      /* 塔樓宅邸：主屋（屋頂鋪滿再收一圈）＋ 正面兩角各一座 3×3 的塔、四坡尖帽。
+         塔包在主屋的角上，重疊的那幾格照樣是牆 */
+      walls(rect(0, W, 0, D), 0, W, 0, D, k.h, pal[0]);
+      // 屋脊照原本那九款：只沿短邊縮一格，兩頭不收（預覽裡那一版）
+      for (let u = 0; u <= W; u++) for (let v = 0; v <= D; v++) set(u, v, k.h, pal[1]);
+      for (let u = 0; u <= W; u++) for (let v = 1; v < D; v++) set(u, v, k.h + 1, pal[1]);
+      const TH = k.h + 4;
+      for (const t0 of [0, W - 2]) {
+        walls(rect(t0, t0 + 2, 0, 2), t0, t0 + 2, 0, 2, TH, pal[0]);
+        for (let u = t0; u <= t0 + 2; u++) for (let v = 0; v <= 2; v++) set(u, v, TH, pal[1]);
+        set(t0 + 1, 1, TH + 1, pal[1]);
+        win(t0 + 1, 0, TH - 2);
+        door(t0 + 1, 2);                                // 塔底朝屋裡開一格，不然塔裡那一格是關死的
+      }
+      door(mu, 0);
+      win(mu - 2, 0, 1); win(mu + 2, 0, 1);
+      win(0, 4, 1); win(W, 4, 1);
+      set(mu + 2, D - 1, k.h + 2, pal[2]);
+      break;
+    }
+    case 'flat': {
+      /* 平頂樓：三層樓（兩道腰線）、平屋頂 ＋ 隔一格一個的女兒牆、屋頂一間樓梯間、二樓正面一個陽台 */
+      walls(rect(0, W, 0, D), 0, W, 0, D, k.h, gy => gy === 2 || gy === 4 ? pal[1] : pal[0]);
+      for (let u = 0; u <= W; u++) for (let v = 0; v <= D; v++) {
+        set(u, v, k.h, pal[0]);
+        const edge = u === 0 || u === W || v === 0 || v === D;
+        if (edge && (u + v) % 2 === 0) set(u, v, k.h + 1, pal[1]);
+      }
+      for (const [u, v] of [[W - 2, D - 2], [W - 1, D - 2], [W - 2, D - 1], [W - 1, D - 1]]) {
+        set(u, v, k.h + 1, pal[0]); set(u, v, k.h + 2, pal[1]);
+      }
+      door(mu, 0);
+      for (const gy of [1, 3, 5]) {
+        for (const u of [1, W - 1]) win(u, 0, gy);
+        for (const u of [2, W - 2]) win(u, D, gy);
+        win(0, 2, gy); win(0, D - 2, gy); win(W, 2, gy); win(W, D - 2, gy);
+      }
+      for (const u of [mu - 1, mu, mu + 1]) { set(u, -1, 2, pal[1]); set(u, -1, 3, pal[0]); }
+      del(mu, 0, 3);                                    // 陽台門
+      break;
+    }
+  }
+  const cu = W / 2, cv = D / 2;
+  const list = [...cells.values()];
+  for (const c of list) {
+    c.d = Math.max(Math.abs(c.u - cu), Math.abs(c.v - cv));
+    c.a = Math.atan2(c.v - cv, c.u - cu) * (c.gy % 2 ? -1 : 1);
+  }
+  list.sort((a, b) => (a.gy - b.gy) || (b.d - a.d) || (a.a - b.a));
+  for (const c of list) put(c.u, c.v, c.gy, c.c);
 }
 /* 一棵樹的格子清單（v1.153）。回傳的東西跟 homeSlots 一模一樣，後面那一整套才接得上。
    讀得出是樹靠這幾件事：
@@ -4481,13 +4699,15 @@ function startHomes() {
       const spot = pickHomeSite(cx, cz, homeR(kind));
       if (!spot) continue;                             // 沒空地了，這一組就照常閒晃
       const pal = HOME_PAL[Math.floor(Math.random() * HOME_PAL.length)];
-      const slots = homeSlots(spot.x, spot.z, kind, pal);
+      const rot = Math.floor(Math.random() * 4);       // 四個方向隨機（v1.254，見 homeSlots）
+      const slots = homeSlots(spot.x, spot.z, kind, pal, rot);
       /* at 是「格子座標 → 第幾格」的表，垮塌、火勢蔓延、放不放得上去都要查它。
          鍵用房子自己的格座標（i／gy／k），所以圍籬與門廊那些負的座標也放得進去。 */
       const at = new Map();
       slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const { ox, oz } = homeOff(kind, rot);           // 見 homeSolid（轉 90° 寬深對調）
       const h = { id: homeSeq++, x: spot.x, z: spot.z, r: homeR(kind), kind: kind.id, at,
-                  ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,    // 見 homeSolid
+                  ox, oz, rot,
                   slots, left: slots.length, n: crew.length,
                   done: false };          // 蓋好過一次了嗎（見 dropHungHome）
       homeBox(h);                          // 走路擋不擋看這個外框（見 footHome）
@@ -4672,12 +4892,14 @@ function wallInside(crew, cx, cz, tree, W) {
   if (!spot) return -1;
   const pal = tree ? TREE_PAL[Math.floor(Math.random() * TREE_PAL.length)]
                    : HOME_PAL[Math.floor(Math.random() * HOME_PAL.length)];
-  const slots = (tree ? treeSlots : homeSlots)(spot.x, spot.z, kind, pal);
+  const rot = tree ? 0 : Math.floor(Math.random() * 4);   // 房子四個方向隨機（v1.254，同 startHomes）
+  const slots = (tree ? treeSlots : homeSlots)(spot.x, spot.z, kind, pal, rot);
   const at = new Map();
   slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
-  const w0 = tree ? kind.tw : kind.w, d0 = tree ? kind.tw : kind.d;
+  const { ox, oz } = tree ? { ox: (kind.tw - 1) / 2, oz: (kind.tw - 1) / 2 }
+                          : homeOff(kind, rot);         // 見 homeSolid
   const h = { id: homeSeq++, x: spot.x, z: spot.z, r: rad, kind: kind.id, at,
-              ox: (w0 - 1) / 2, oz: (d0 - 1) / 2,            // 見 homeSolid
+              ox, oz, rot,
               slots, left: slots.length, n: crew.length,
               tree: tree ? 1 : 0, done: false };
   homeBox(h);

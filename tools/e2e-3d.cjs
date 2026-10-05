@@ -6773,9 +6773,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        前面幾條測試炸出來的焦黑也還在，拿總數比會被它們洗掉（實測塵霧 17 → 15）。
        挖出來那一撮土是照顏色認的（見 digPuff）。 */
     marks.length = 0; dust.length = 0;
+    /* 轉向（v1.254）：開新家那條路給的 ox／oz 要照 homeOff(款式, rot)，每一格才換得回自己的
+       格座標（homeSolid、homeColTop 靠這個查表）。接手舊房子的那幾間是上一輪留下來的，照樣要對。 */
+    const offOk = h => {
+      const k = HOME_KIND.find(q => q.id === h.kind), o = homeOff(k, h.rot);
+      return h.rot >= 0 && h.rot <= 3 && o.ox === h.ox && o.oz === h.oz &&
+             h.slots.every(sl => Math.round(sl.x - h.x + h.ox) === sl.i && Math.round(sl.z - h.z + h.oz) === sl.k);
+    };
     const list = homes.list.map(h => ({ n: h.n, slots: h.slots.length, kind: h.kind,
                                         rad: +Math.hypot(h.x, h.z).toFixed(1), r: h.r,
-                                        x: h.x, z: h.z, tree: h.tree ? 1 : 0 }));
+                                        x: h.x, z: h.z, tree: h.tree ? 1 : 0,
+                                        rot: h.rot, offOk: h.tree ? true : offOk(h) }));
     /* 挖的那一下要有土痕與土塵（使用者：「積木可以就近地面上挖一挖拿出來」——
        看得出是挖出來的，不是憑空出現）。土痕跟隕石坑同一套，3 秒淡掉。 */
     let marks1 = 0, dirt1 = 0, digs = 0;
@@ -6924,6 +6932,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   const houses = home.list.filter(h => !h.tree);
   const grove = home.list.filter(h => h.tree);
+  ok('開新家照抽到的方向轉：ox／oz 照 homeOff 給，每一格都換得回自己的格座標',
+     houses.length > 0 && houses.every(h => h.offOk),
+     /* detail 不放每間轉了幾：那個每輪都不一樣，放進去這一條就變成浮動條目了（同 kindMix） */
+     houses.some(h => !h.offOk)
+       ? '換不回去：' + houses.filter(h => !h.offOk).map(h => h.kind + ' 轉 ' + h.rot).join('、')
+       : '每一間都換得回去');
   ok('一半左右的人離隊去蓋，附近的人合蓋大一點的',
      home.crew >= home.n * 0.3 && home.crew <= home.n * 0.7 &&
      houses.length > 1 && houses.every(h => h.n >= 1 && h.n <= 3) &&
@@ -7027,12 +7041,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      再說「增加小房子種類 增加豐富性」。**掃過款式表裡的每一款**，不是只看這一輪剛好
      蓋出來的那幾間——不然覆蓋率要靠運氣。每一款都要有：
      兩格高的門、至少兩扇窗、屋頂縮一圈剩一道屋脊、站在屋脊上的煙囪、
-     以及該有的門廊／圍籬；而且同一個格子不能放兩塊。 */
+     以及該有的門廊／圍籬；而且同一個格子不能放兩塊。
+     v1.254 起這一條只管**樣板那九款**（沒有 form 的）：換輪廓的九款沒有屋脊煙囪那一套，
+     它們跟樣板款共用的通則在下一條。門固定開在 v = 0 那一面，不給 rot 就是朝 −z（doorFront）。 */
   const shape = await page.evaluate(() => {
     const out = [];
-    for (const k of HOME_KIND) {
-      const sl = homeSlots(0, -30, k, HOME_PAL[0]);          // 門朝場中心（+z）
+    for (const k of HOME_KIND.filter(q => !q.form)) {
+      const sl = homeSlots(0, -30, k, HOME_PAL[0]);          // 不給 rot＝0：門朝 −z
       const has = new Set(sl.map(q => q.i + ':' + q.k + ':' + q.gy));
+      const mi = Math.floor((k.w - 1) / 2);
+      const doorFront = !has.has(mi + ':0:0') && !has.has(mi + ':0:1');
       let door = 0, win = 0;
       for (let i = 0; i < k.w; i++)
         for (let kk = 0; kk < k.d; kk++) {
@@ -7062,15 +7080,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
          數的是「牆的高度裡、用屋頂色的那些」。 */
       const belt = sl.filter(q => q.gy < k.h && inBox(q) && q.c === HOME_PAL[0][1]).length;
       out.push({ id: k.id, n: k.n, size: k.w + '×' + k.d + '×' + k.h, total: sl.length,
-                 door, win, roof, ridge, chim: chim.length, onRidge, ring, canopy, dup,
+                 door, doorFront, win, roof, ridge, chim: chim.length, onRidge, ring, canopy, dup,
                  belt, wantBelt: k.h >= 5,
                  wantFence: !!k.fence, wantPorch: !!k.porch });
     }
     return out;
   });
-  ok('每一款都有兩格高的門、窗、屋脊、屋脊上的煙囪，該有的門廊圍籬也在',
+  ok('樣板那九款都有兩格高的門（開在 −z 那一面）、窗、屋脊、屋脊上的煙囪，該有的門廊圍籬也在',
      shape.length >= 9 &&
-     shape.every(o => o.door === 1 && o.win >= 2 && o.ridge > 0 && o.ridge < o.roof &&
+     shape.every(o => o.door === 1 && o.doorFront && o.win >= 2 && o.ridge > 0 && o.ridge < o.roof &&
                       o.chim === 1 && o.onRidge && o.dup === 0 &&
                       (o.wantFence ? o.ring > 8 : o.ring === 0) &&
                       (o.wantPorch ? o.canopy === 3 : o.canopy === 0) &&
@@ -7081,15 +7099,107 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        (o.wantBelt ? '、腰線 ' + o.belt : '') +
        (o.wantPorch ? '、門廊 ' + o.canopy : '') +
        (o.wantFence ? '、圍籬 ' + o.ring : '') + '）').join('；'));
+  /* 每一款（含 v1.254 換輪廓的九款）× 四個方向的通則（v1.254，使用者：「增加更多小房子種類
+     (一種小房子可以有四種方向) 避免視覺上一眼就重複」）。規則型：不跑模擬，掃整張 HOME_KIND——
+       · rot 1~3 是 rot 0 繞中心轉 90° × rot（世界座標 (dx, dz) → (−dz, dx) …），顏色跟著格子走；
+         ox／oz 照 homeOff 給的話，每一格都換得回自己的格座標（homeSolid、homeColTop 靠這個查表）
+       · 塊數在 100～300（使用者 v1.100 定的），而且**不超過樣板款同人數那幾款的最大值**：
+         村子最多會有幾塊（積木池 MAXB 那條帳，見〈積木池上限〉）看的是每一組人蓋得出的最大一間。
+         上限照表算，不寫死。下限不比——塊數少不會撐爆池子（風車 101、圓頂屋 103 比樣板的 104 少）
+       · 同一格不放兩塊、每一塊六面連得回地面（連不到的完好時 f6 就是 false，之後吊在半空也不會掉，
+         見 markHomeF6）、照 canPlaceHome 第一次蓋的規則（26 鄰接）一格一格砌得完
+       · 屋簷底下那些「頭上有東西」的空格，從外面沿著兩格高的空格都走得進去（＝有門、門沒被堵）
+     預覽階段踩過的就是後兩條：圓頂只鋪外殼時懸空 10 塊、風車輪轂低一格時往下那支葉片堵住門口。 */
+  const homeAll = await page.evaluate(() => {
+    const top = {};                                     // 樣板款每一組人數的最大一間
+    for (const k of HOME_KIND)
+      if (!k.form) top[k.n] = Math.max(top[k.n] || 0, homeSlots(0, 0, k, HOME_PAL[0]).length);
+    const turn = (x, z, r) => r === 0 ? [x, z] : r === 1 ? [-z, x] : r === 2 ? [-x, -z] : [z, -x];
+    const out = [];
+    for (const k of HOME_KIND) {
+      const s0 = homeSlots(0, 0, k, HOME_PAL[0], 0);
+      const o = { id: k.id, n: k.n, total: s0.length, rotBad: 0, offBad: 0 };
+      for (let r = 0; r < 4; r++) {
+        const sl = homeSlots(0, 0, k, HOME_PAL[0], r), off = homeOff(k, r);
+        const A = s0.map(s => { const p = turn(s.x, s.z, r); return p[0] + ',' + s.gy + ',' + p[1] + ',' + s.c.join(); });
+        const B = sl.map(s => s.x + ',' + s.gy + ',' + s.z + ',' + s.c.join());
+        if (A.sort().join(';') !== B.sort().join(';')) o.rotBad++;
+        if (sl.some(s => Math.round(s.x + off.ox) !== s.i || Math.round(s.z + off.oz) !== s.k)) o.offBad++;
+      }
+      const at = new Map();
+      let dup = 0;
+      s0.forEach((s, i) => { const id = s.i + ':' + s.gy + ':' + s.k; if (at.has(id)) dup++; at.set(id, i); });
+      const nb = (s, d) => at.get((s.i + d[0]) + ':' + (s.gy + d[1]) + ':' + (s.k + d[2]));
+      // 六面連回地面
+      const f6 = new Uint8Array(s0.length), st = [];
+      s0.forEach((s, i) => { if (s.gy === 0) { f6[i] = 1; st.push(i); } });
+      while (st.length) {
+        const s = s0[st.pop()];
+        for (const d of NBR6) { const j = nb(s, d); if (j !== undefined && !f6[j]) { f6[j] = 1; st.push(j); } }
+      }
+      // 照順序砌：每一步挑第一個放得上去的（同 homeFree），砌不下去就停
+      const fill = new Uint8Array(s0.length);
+      let built = 0;
+      for (;;) {
+        let pick = -1;
+        for (let i = 0; i < s0.length && pick < 0; i++) {
+          if (fill[i]) continue;
+          if (s0[i].gy === 0 || NBR.some(d => { const j = nb(s0[i], d); return j !== undefined && fill[j]; })) pick = i;
+        }
+        if (pick < 0) break;
+        fill[pick] = 1; built++;
+      }
+      // 門：兩格高的空格從外框外面淹進去，屋簷底下的空格都要淹得到
+      const I0 = Math.min(...s0.map(s => s.i)) - 2, I1 = Math.max(...s0.map(s => s.i)) + 2;
+      const K0 = Math.min(...s0.map(s => s.k)) - 2, K1 = Math.max(...s0.map(s => s.k)) + 2;
+      const open = (i, kk) => !at.has(i + ':0:' + kk) && !at.has(i + ':1:' + kk);
+      const roofed = new Set(s0.filter(s => s.gy >= 2).map(s => s.i + ',' + s.k));
+      const seen = new Set(), q = [];
+      for (let i = I0; i <= I1; i++) for (const kk of [K0, K1]) { seen.add(i + ',' + kk); q.push([i, kk]); }
+      for (let kk = K0; kk <= K1; kk++) for (const i of [I0, I1]) { seen.add(i + ',' + kk); q.push([i, kk]); }
+      while (q.length) {
+        const [i, kk] = q.pop();
+        for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const ni = i + a, nk = kk + b, id = ni + ',' + nk;
+          if (ni < I0 || ni > I1 || nk < K0 || nk > K1 || seen.has(id) || !open(ni, nk)) continue;
+          seen.add(id); q.push([ni, nk]);
+        }
+      }
+      let room = 0, shut = 0;
+      for (const id of roofed) {
+        const [i, kk] = id.split(',').map(Number);
+        if (!open(i, kk)) continue;
+        room++;
+        if (!seen.has(id)) shut++;
+      }
+      Object.assign(o, { dup, hang: s0.length - f6.reduce((a, v) => a + v, 0), built, room, shut,
+                         hi: top[k.n], inBand: s0.length >= 100 && s0.length <= 300 && s0.length <= top[k.n] });
+      out.push(o);
+    }
+    return out;
+  });
+  ok('每一款 × 四個方向：轉過去的格子一一對應、ox／oz 照 homeOff 給就換得回格座標',
+     homeAll.length >= 18 && homeAll.every(o => o.rotBad === 0 && o.offBad === 0),
+     homeAll.length + ' 款 × 4 向：轉錯 ' + homeAll.reduce((a, o) => a + o.rotBad, 0) + ' 向、換不回去 ' +
+     homeAll.reduce((a, o) => a + o.offBad, 0) + ' 向');
+  ok('每一款：100～300 塊、不超過樣板款同人數的最大一間、不重疊、六面連得回地面、照規則砌得完',
+     homeAll.every(o => o.inBand && o.dup === 0 && o.hang === 0 && o.built === o.total),
+     homeAll.map(o => o.id + ' ' + o.total + '（' + o.n + ' 人上限 ' + o.hi + '）' +
+       (o.dup || o.hang || o.built !== o.total ? '：重疊 ' + o.dup + '、懸空 ' + o.hang + '、砌得完 ' + o.built : ''))
+       .join('、'));
+  ok('每一款：屋簷底下的空格都從門走得進去（有門、門沒被堵）',
+     homeAll.every(o => o.room > 0 && o.shut === 0),
+     homeAll.map(o => o.id + ' 屋內 ' + o.room + ' 格' + (o.shut ? '、關死 ' + o.shut : '')).join('、'));
   /* 款式是隨機挑的（不是每次都蓋同一種）。
      v1.180 修**量法**（門檻沒動）：原本是「這一輪蓋出來的房子至少三款」，而一輪只有
      五到八間、款式又是**照人數分組**抽的（`pickKind`：n=1/2/3 各三款），所以幾間房子
      的人數一偏，款式數就跟著掉——實測抽到「5 間：長屋、長屋、兩層樓、兩層樓、長屋」，
      兩款，紅。那不是程式壞了，是樣本數在賭（同一份程式、同一顆種子的另外幾輪都是 7～8 間
      4～5 款，綠）。
-     改成直接問抽籤：每一組人數抽 200 次，**那一組的三款都要出現、而且不會抽到別組的**。
+     改成直接問抽籤：每一組人數抽 200 次，**那一組的每一款都要出現、而且不會抽到別組的**。
      這比原本的門檻嚴（原本只要求「三款」，抽到別組的也算數）。
-     「九款都真的蓋得出正確造型」由上一條守著（它是把九款全部蓋一遍）。
+     「每一款都真的蓋得出正確造型」由上面兩條守著（它們是把整張表全部蓋一遍）。
+     v1.254 起每組六款（樣板三款 ＋ 換輪廓三款）：一款 200 次都沒抽到的機率是 (5/6)^200 ≈ 1e−16。
      detail 只放款名不放次數：次數每輪都不一樣，放進去這一條就變成浮動條目了。 */
   const kindMix = await page.evaluate(() => [1, 2, 3].map(n => {
     const seen = {};
@@ -7097,8 +7207,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { n, got: Object.keys(seen).sort(),
              want: HOME_KIND.filter(k => k.n === n).map(k => k.id).sort() };
   }));
-  ok('房子款式是照人數分組隨機挑的（每一組的三款都抽得到）',
-     kindMix.every(g => g.want.length === 3 && g.got.join() === g.want.join()),
+  ok('房子款式是照人數分組隨機挑的（每一組的每一款都抽得到）',
+     kindMix.every(g => g.want.length > 0 && g.got.join() === g.want.join()),
      kindMix.map(g => g.n + ' 人 ' + g.got.join('／')).join('；') + '（每組抽 200 次）');
   /* 蓋在工地外圈那一帶（使用者選的），彼此不重疊、不壓到樹。 */
   /* 範圍是「地標建築範圍外～小樹圈內」（v1.98，使用者指定「應該分散一點」）。
@@ -7838,7 +7948,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                                        sl.z > h.z0 && sl.z < h.z1) };
   }));
   ok('擋路的是房子自己那份格子的外框，不是外接圓（含門廊與圍籬）',
-     homeBoxes.length === 9 && homeBoxes.every(r => r.covers && r.box < r.disc),
+     homeBoxes.length >= 18 && homeBoxes.every(r => r.covers && r.box < r.disc),
      homeBoxes.map(r => r.id + ' ' + r.size + '＝' + r.box + '（外接圓 ' + r.disc + '）')
        .join('、'));
 
@@ -8258,12 +8368,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     homes = { list: [] };
     const kind = HOME_KIND[3];                         // 大屋 7×5×4
     const R = siteR + KEEP;                            // 走路的圈就在這個半徑上
-    const slots = homeSlots(R, 0, kind, HOME_PAL[0]);
+    /* 方向要自己給（v1.254 起門照 rot 轉，不再看房子在哪一側）。v1.253 以前這個位置
+       （正東）門朝場心，人進場撞上的那一面在 z = −2.5；rot 2（門朝 +z、門廊在出場那一側）
+       進場那一面一樣在 −2.5。四個方向都量過：會鼓出去繞的那一組 4.3～4.55 秒到、原地走 0 幀，
+       四向都成立；對照組（只有硬推）在 rot 0／1／3 會在 6.5～9.4 秒擠過去，rot 2 才跟以前一樣
+       卡死（122 幀、十秒到不了）——對照組要的是「卡得住的那個場面」，所以釘 rot 2。 */
+    const slots = homeSlots(R, 0, kind, HOME_PAL[0], 2);
     for (const sl of slots) sl.filled = true;
     const map = new Map();
     slots.forEach((sl, i) => map.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
     const h = { x: R, z: 0, r: homeR(kind), kind: kind.id, at: map,
-                ox: (kind.w - 1) / 2, oz: (kind.d - 1) / 2,
+                ...homeOff(kind, 2),
                 slots, left: 0, n: 1, done: true };
     homeBox(h); markHomeF6(h);
     homes.list.push(h);
@@ -10608,7 +10723,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const full0 = wallPlan().reduce((a, s) => a + s.slots.length, 0);
     /* 一間房子，fill＝已經砌好的比例（0＝打光的殘骸，格子還在清單上但一塊都不剩） */
     const mk = (hx, hz, fill) => {
-      const kind = HOME_KIND[HOME_KIND.length - 1];       // 最大的一款，確定跨得過牆線
+      // 帶圍籬最大的一款，確定跨得過牆線（v1.254 起表尾接的是換輪廓的新款，不能再拿最後一個）
+      const kind = HOME_KIND.find(k => k.id === '農莊');
       const slots = homeSlots(hx, hz, kind, HOME_PAL[0]);
       const at = new Map();
       slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
@@ -34399,7 +34515,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      navGrow.map(r => r.who + (r.grew ? '' : '（牆沒長出來）') + ' ' + r.t + ' 秒到、走 ' + r.walked +
                       ' 格、規劃 ' + r.plan + ' 次、穿透 ' + r.ghost + ' 幀、在框裡 ' + r.inBox + ' 幀').join('；'));
 
-  /* ⑦ 真實尺寸的房子：九款（照 homeSlots 生、homeBox 算外框，含門廊與圍籬）× 四種來向
+  /* ⑦ 真實尺寸的房子：每一款（照 homeSlots 生、homeBox 算外框，含門廊與圍籬；v1.254 起
+     含換輪廓的九款——L 形、合院那種外框框住空地的也在裡面）× 四種來向
      （正面長邊、偏三成、短邊、斜對角）× 每一種走法。這是正常玩的時候會遇到的樣子。
      規則 6 的「走不動照自己的腳程判」也在這裡驗：一次重找路線都不該有——寫死 1.2 格的時候
      牛羊在大長屋前 8 趟有 6～8 趟被當成卡住（1.5 秒最多也才走 1.95 格）。 */
@@ -34433,7 +34550,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     homes = null;
     return { s: N.sum(runs), kinds: HOME_KIND.length };
   });
-  ok('真實尺寸的房子（九款 × 四種來向 × 每一種走法）：全部走到、不穿透、不進框，也沒有被當成卡住',
+  ok('真實尺寸的房子（每一款 × 四種來向 × 每一種走法）：全部走到、不穿透、不進框，也沒有被當成卡住',
      navReal.s.arrived === navReal.s.n && !navReal.s.ghost && !navReal.s.inBox &&
      !navReal.s.leak && !navReal.s.navBad && !navReal.s.re,
      navReal.kinds + ' 款 ' + navReal.s.n + ' 趟：到了 ' + navReal.s.arrived + '、用到穿透 ' + navReal.s.ghost +
