@@ -304,7 +304,10 @@ const head = async (t, tier = T_COMMIT) => {
 const ok = (name, pass, detail) => {
   /* 統計型條目只記數值、不判成敗（v1.191.0）。夾具照跑、detail 照算——
      要的就是那個數字：印出來給人看，完整輪跑完寫成統計表跟基準比（見 report）。
-     `pass` 照樣留著寫進統計表，之後回頭翻「那一輪落在帶內還是帶外」用。 */
+     `pass` 照樣留著寫進統計表，之後回頭翻「那一輪落在帶內還是帶外」用。
+     **規則型條目的 detail 只帶不會飄的東西**：--update-varying 是拿 detail 比的，
+     印了「抽到哪一座、跑了幾秒」的規則型會被收進統計型、從此不判成敗（v1.250.1 撈回 26 條，
+     見 開發筆記〈統計型清單裡混進的規則型〉）。背景資料放在 `通過 ? '' : …`，紅了才印。 */
   if (VARY && VARY.has(varyKey(section, name))) {
     STATS.push({ section, name, pass: !!pass, detail });
     console.log('  \x1b[90mSTAT\x1b[0m  ' + name + (detail ? '  → ' + detail : ''));
@@ -656,7 +659,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('InstancedMesh 可用', boot.inst);
   ok('藍圖數量 = 內建 ' + SHAPE_COUNT + ' + 自訂 ' + CUSTOM_COUNT,
      boot.shapes === ALL_SHAPES, '實際 ' + boot.shapes);
-  ok('開場就選好一座建築', !!boot.bp, boot.bp || '');
+  ok('開場就選好一座建築', !!boot.bp, boot.bp ? '' : '沒有選到');     // 抽到哪一座印在下一條
   ok('開場就是一座蓋好的建築', boot.phase === 'done' && boot.placed === boot.total && boot.total > 100,
      boot.bp + ' ' + boot.placed + '/' + boot.total + '，phase=' + boot.phase);
   ok('積木池已建立', boot.blocks > 100, boot.blocks + ' 塊');
@@ -1595,8 +1598,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      vpBoot.workers === 0 && vpBoot.ghosts === 0,
      '小人 ' + vpBoot.workers + ' 個、還有 ' + vpBoot.ghosts +
      ' 顆 InstancedMesh 沒清乾淨（積木那顆不算）');
-  ok('預覽頁的統計行寫出塊數與尺寸',
-     /\d+ 塊/.test(vpBoot.stat) && /尺寸 \d+×\d+×\d+/.test(vpBoot.stat), vpBoot.stat);
+  const vpStatOk = /\d+ 塊/.test(vpBoot.stat) && /尺寸 \d+×\d+×\d+/.test(vpBoot.stat);
+  ok('預覽頁的統計行寫出塊數與尺寸', vpStatOk, vpStatOk ? '' : '統計行是「' + vpBoot.stat + '」');
   // 自轉預設關：對照參考圖時畫面一直轉反而不好比
   ok('預覽頁的自轉預設是關著的', vpBoot.spin === false,
      '開場 spin=' + vpBoot.spin);
@@ -3735,8 +3738,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { mid, cleared, end: placedCnt, placed, bad };
   });
   ok('地基被敲掉後不會蓋出浮空的積木', midBuild.bad === 0,
-     '蓋到 ' + midBuild.mid + ' 塊時挖掉地基 ' + midBuild.cleared + ' 塊；之後新放上去 ' +
-     midBuild.placed + ' 塊，落地當下連不到地面的有 ' + midBuild.bad + ' 塊（重建到 ' + midBuild.end + '）');
+     '落地當下連不到地面的有 ' + midBuild.bad + ' 塊' + (midBuild.bad ? '（蓋到 ' + midBuild.mid +
+     ' 塊時挖掉地基 ' + midBuild.cleared + ' 塊；之後新放上去 ' + midBuild.placed + ' 塊，重建到 ' +
+     midBuild.end + '）' : ''));
 
   /* 破壞打出來的洞排在派工游標「後面」，findSlot 是從游標往後掃、掃不到才回頭，
      所以不把游標退回去的話小人會先在上面蓋一大段才回頭補
@@ -4130,7 +4134,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '砸 ' + wreck.hits + ' 槌後 phase=' + wreck.at + '，進度歸零到 ' + wreck.placed);
   ok('整地完才換成施工中', wreck.phase === 'build' && wreck.wait > 0 && wreck.wait < 800,
      '整地 ' + (wreck.wait * 0.05).toFixed(1) + ' 秒後 phase=' + wreck.phase);
-  ok('拆掉的座數有計進紀錄', wreck.gained === 1, '+' + wreck.gained + '（累計 ' + wreck.destroyed + '）');
+  ok('拆掉的座數有計進紀錄', wreck.gained === 1,
+     '+' + wreck.gained + (wreck.gained === 1 ? '' : '（累計 ' + wreck.destroyed + '）'));
 
   const rebuild = await page.evaluate(() => {
     setWorkerCount(30);
@@ -4177,8 +4182,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '150 秒最遠走到 ' + roam.far.toFixed(0) + '（碎料場半徑 ' + roam.a0.toFixed(0) +
      '、建築半徑 ' + roam.siteR.toFixed(0) + '）');
   ok('但不會走出草地', roam.out === 0,
-     '越界 ' + roam.out + ' 次；草地半邊長 ' + roam.lim.toFixed(0) +
-     '；進場時最遠的三個小人 ' + JSON.stringify(roam.pre) +
+     '越界 ' + roam.out + ' 次' +
+     (roam.out ? '；草地半邊長 ' + roam.lim.toFixed(0) +
+       '；進場時最遠的三個小人 ' + JSON.stringify(roam.pre) : '') +
      (roam.worst ? '；第一次越界 ' + JSON.stringify(roam.worst) : ''));
 
   /* 遊蕩要有停頓，不然一群人一路走不停，看起來像螞蟻在竄。
@@ -4722,9 +4728,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              placed: placedCnt, carriedAll: stats.carried };
   });
   ok('工程師只有一個，而且不搬積木', engr.others === 0 && engr.carried === 0 && engr.claimed === 0,
-     '其他人當工程師的 ' + engr.others + ' 個；' + (engr.n * 0.05).toFixed(0) +
-     ' 秒內他搬了 ' + engr.carried + ' 幀、認領了 ' + engr.claimed + ' 格（其他人共搬了 ' +
-     engr.carriedAll + ' 趟）');
+     '其他人當工程師的 ' + engr.others + ' 個；他搬了 ' + engr.carried + ' 幀、認領了 ' +
+     engr.claimed + ' 格' + (engr.others || engr.carried || engr.claimed ? '（' +
+     (engr.n * 0.05).toFixed(0) + ' 秒內；其他人共搬了 ' + engr.carriedAll + ' 趟）' : ''));
   ok('施工中一直拿著設計圖在看', engr.planPct === 1,
      '拿著圖的幀數占 ' + (engr.planPct * 100).toFixed(0) + '%（自己絆倒趴著的 ' +
      engr.down + ' 幀不算，見上面）');
@@ -5579,12 +5585,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return { buried, hurled, st: w.st, hold: b.st, at: [+spot.x.toFixed(1), +spot.z.toFixed(1)] };
   });
-  ok('手上那塊被牆埋住就不硬扔，退回一般工人那條路（走到工地邊上再丟）',
-     musWall.skip ? false : (musWall.buried === 1 && !musWall.hurled &&
-       musWall.st === 'build' && musWall.hold === 1),
+  const musWallOk = !musWall.skip && musWall.buried === 1 && !musWall.hurled &&
+                    musWall.st === 'build' && musWall.hold === 1;
+  ok('手上那塊被牆埋住就不硬扔，退回一般工人那條路（走到工地邊上再丟）', musWallOk,
      musWall.skip ? '（沒抓到掄到一半的人，skip=' + musWall.skip + '）'
-       : '站到 (' + musWall.at.join(', ') + ') 之後手上那塊在牆裡，他沒出手（st=' +
-         musWall.st + '，那塊還在手上）');
+       : '手上那塊在牆裡，他沒出手（st=' + musWall.st + '，那塊還在手上）' +
+         (musWallOk ? '' : '；站在 (' + musWall.at.join(', ') + ')，buried=' + musWall.buried +
+           '、hurled=' + musWall.hurled + '、hold=' + musWall.hold));
 
   /* 外觀：裸上半身、上半身比別人大一圈，安全帽照戴（他是工人，不是魔法師）。
      用「哪幾塊看得見」認部位——位置會隨姿勢跑，看得見／看不見不會。 */
@@ -6228,14 +6235,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('聊完天談不攏，有時候會打起來（聊得來的不會）',
      fun.fights >= 2 && fun.angry === fun.fights,
      '400 秒裡打了 ' + fun.fights + ' 場，開打那一刻兩個人都剛冒生氣的 ' + fun.angry + ' 場');
-  ok('打架是兩個人面對面、輪流出拳，一場六拳',
-     fun.both === fun.fightF && fun.faceBad === 0 && fun.punches === fun.fights * 6,
-     '互指 ' + fun.both + '/' + fun.fightF + ' 幀、沒面對面 ' + fun.faceBad +
-     ' 幀、' + fun.punches + ' 拳 ÷ ' + fun.fights + ' 場');
+  const fightOk = fun.both === fun.fightF && fun.faceBad === 0 && fun.punches === fun.fights * 6;
+  ok('打架是兩個人面對面、輪流出拳，一場六拳', fightOk,
+     '沒互指的 ' + (fun.fightF - fun.both) + ' 幀、沒面對面 ' + fun.faceBad + ' 幀、拳數比一場六拳多 ' +
+     (fun.punches - fun.fights * 6) + (fightOk ? '' : '（互指 ' + fun.both + '/' + fun.fightF + ' 幀、' +
+     fun.punches + ' 拳 ÷ ' + fun.fights + ' 場）'));
   ok('打架的兩個人站得開（收在 1.35 格），不會疊在一起', fun.minD >= 1.3,
      '最近 ' + fun.minD + ' 格（設定 FIGHT_D 1.35）');
   ok('打完兩個人都冒生氣', fun.anger === fun.fights,
-     '打完冒生氣 ' + fun.anger + ' 場 ÷ ' + fun.fights + ' 場');
+     '打完沒冒生氣的 ' + (fun.fights - fun.anger) + ' 場' +
+     (fun.anger === fun.fights ? '' : '（共 ' + fun.fights + ' 場）'));
 
   /* ── 猴子也會絆一跤，牛羊不會 ── */
   const apeTrip = await page.evaluate(() => {
@@ -7197,9 +7206,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      推出去那一下掛在每一種走法的位移之後，所以在走的人同一幀就被推出來，這個數該是 0。
      站著不動／飛在空中／穿透中的不吃這一條，那些留在訊息裡當參考。 */
   ok('沒有人從房子中間穿過去', home.insideWalk === 0,
-     '走路中踩在房子地基上 ' + home.insideWalk + ' 幀（含站著不動與被掀飛的共 ' +
-     home.inside + ' 幀；' + home.list.length + ' 間、量了 ' +
-     (home.secs + 20).toFixed(0) + ' 秒）' +
+     '走路中踩在房子地基上 ' + home.insideWalk + ' 幀' +
+     (home.insideWalk ? '（含站著不動與被掀飛的共 ' + home.inside + ' 幀；' + home.list.length +
+       ' 間、量了 ' + (home.secs + 20).toFixed(0) + ' 秒）' : '') +
      (home.why.length ? '；踩到的那幾幀：' + JSON.stringify(home.why) : ''));
 
   /* 一開始建造就回去上工（使用者：「如果要再建造時 直接恢復進入建造模式」），
@@ -10764,9 +10773,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('村子不吃地標的建材，地標照樣蓋得完（魔法師隔空拉的那些也算村子自己的）',
      lazyRun.stolen === 0 && lazyRun.mage === 1 && lazyRun.phase === 'done' &&
      lazyRun.placed === lazyRun.total,
-     '村子那 ' + lazyRun.homeSet + ' 塊裡，不是自己挖的有 ' + lazyRun.stolen +
-     ' 塊（偷懶的那幾個裡有魔法師：' + (lazyRun.mage ? '是' : '否') + '）；地標 ' +
-     lazyRun.placed + '/' + lazyRun.total + '（' + lazyRun.phase + '）');
+     '村子用的料裡不是自己挖的有 ' + lazyRun.stolen + ' 塊' +
+     (lazyRun.stolen ? '（村子共 ' + lazyRun.homeSet + ' 塊）' : '') +
+     '；偷懶的那幾個裡有魔法師：' + (lazyRun.mage ? '是' : '否') + '；地標' +
+     (lazyRun.placed === lazyRun.total ? '蓋完了' : '只蓋到 ' + lazyRun.placed + '/' + lazyRun.total) +
+     '（' + lazyRun.phase + '）');
 
   /* 被工具打倒才會收心上工。順便驗「倒地」的界線：站著被點著、抱頭跑圈圈的那種不算。 */
   const lazyHit = await page.evaluate(() => {
@@ -11060,7 +11071,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('車速在合理範圍，不會用飛的', doze.maxSpd > 3 && doze.maxSpd < 12,
      '最快 ' + doze.maxSpd + ' 單位／秒（小人走路是 6.8）');
   ok('整地時不會提早開工', doze.built === 0,
-     '整地 ' + doze.secs + ' 秒，期間蓋了 ' + doze.built + ' 塊');
+     '整地期間蓋了 ' + doze.built + ' 塊' + (doze.built ? '（整地 ' + doze.secs + ' 秒）' : ''));
   /* 清得掉多少很看堆的位置，但門檻要有意義：繞內側那版是平均 27～33%
      （中世紀城堡（v1.66 換掉的那份）四輪 15/18/32/43%），對穿之後 51～69%，時限拉到 10 秒（v1.61.1）
      之後是 82～87%，v1.142 照寬度並排掃一趟之後是 92%（同一份藍圖同一支測試；
@@ -11071,7 +11082,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (doze.pushedOut / doze.cohort * 100).toFixed(0) + '%），收尾彈掉 ' + doze.kicked +
      ' 塊；最密的一格 ' + JSON.stringify(doze.trail.slice(0, 12)));
   ok('整地完工地範圍是空的', doze.dirty1 === 0,
-     '整地 ' + doze.secs + ' 秒，範圍內從最多 ' + doze.peak + ' 塊清到 ' + doze.dirty1 + ' 塊');
+     '範圍內剩 ' + doze.dirty1 + ' 塊' +
+     (doze.dirty1 ? '（整地 ' + doze.secs + ' 秒，最多時 ' + doze.peak + ' 塊）' : ''));
   ok('整完會自己開出場', doze.gone && doze.phase === 'build',
      doze.drove + ' 秒後開走，phase=' + doze.phase);
   /* v1.64.2：以前時限一到就 `m.bl = 1`（鏟子當場抬起來）再直線開出去，
@@ -14325,12 +14337,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              soloSkip: soloSkip && soloSkip.kind, man: manHit && manHit.kind,
              skip: skipHit && skipHit.kind, manIdx: manHit && manHit.idx };
   });
-  ok('小人擋在建築前面時，點下去打的是建築',
-     pickOrder.clean === 'block' && pickOrder.order[0] === 'w' && pickOrder.blocked === 'block',
-     '射線先碰到的是「' + pickOrder.order + '」，判定仍然給 ' + pickOrder.blocked);
-  ok('小人背後沒有建築時照樣戳得到他',
-     pickOrder.solo === 'worker' && pickOrder.only.indexOf('b') < 0,
-     '射線上只有「' + pickOrder.only + '」 → 判定給 ' + pickOrder.solo);
+  /* 射線碰到的順序隨當下那座藍圖的形狀而定（「wwww」或「wwbb」），通過時只印第一個 */
+  const pickFrontOk = pickOrder.clean === 'block' && pickOrder.order[0] === 'w' &&
+                      pickOrder.blocked === 'block';
+  ok('小人擋在建築前面時，點下去打的是建築', pickFrontOk,
+     '射線先碰到的是「' + pickOrder.order[0] + '」，判定仍然給 ' + pickOrder.blocked +
+     (pickFrontOk ? '' : '（射線順序「' + pickOrder.order + '」，沒有人擋時給 ' + pickOrder.clean + '）'));
+  const pickSoloOk = pickOrder.solo === 'worker' && pickOrder.only.indexOf('b') < 0;
+  ok('小人背後沒有建築時照樣戳得到他', pickSoloOk,
+     '射線上' + (pickOrder.only.indexOf('b') < 0 ? '沒有' : '有') + '建築 → 判定給 ' + pickOrder.solo +
+     (pickSoloOk ? '' : '（射線上「' + pickOrder.only + '」）'));
   /* v1.60：手指以外的破壞道具不理小人。點在人身上（背後是空地）也要打到地板，
      不然那一發就白點了——想炸的地方剛好有人走過就吃掉一次操作。 */
   ok('破壞道具點在小人身上，打的是他背後的東西',
@@ -14656,7 +14672,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('龍捲風可以同時存在好幾道', twMany.born === twMany.max && twMany.alive === twMany.max,
      '連丟 6 道 → 場上 ' + twMany.born + ' 道（上限 ' + twMany.max + '，多的把最早那道擠掉）');
   ok('每一道各轉各的', twMany.same === twMany.born,
-     '起始角度 ' + JSON.stringify(twMany.spins) + '（都一樣的話幾道會擺出同一個姿勢）');
+     '起始角度互不相同的 ' + twMany.same + '/' + twMany.born + ' 道（都一樣的話幾道會擺出同一個姿勢）' +
+     (twMany.same === twMany.born ? '' : '：' + JSON.stringify(twMany.spins)));
   ok('幾道不會疊在同一點', twMany.gap > 6,
      '0.6 秒後最近的兩道相距 ' + twMany.gap + ' 單位（v1.150 之前是量 1.2 秒，' +
      '那時候的速度走一樣的路）');
@@ -15070,8 +15087,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      （一朵雲劈完還有二十幾塊在燒），所以這條驗的是「一塊都沒有」。 */
   ok('沒有燃燒效果：整趟打完一塊都沒燒起來',
      gate1.fires === 0 && gate1.burn === 0,
-     '打完 ' + gate1.n + ' 發，還在燒的積木 ' + gate1.burn + ' 塊、火源清單 ' +
-     gate1.fires + ' 筆');
+     '還在燒的積木 ' + gate1.burn + ' 塊、火源清單 ' + gate1.fires + ' 筆' +
+     (gate1.fires || gate1.burn ? '（打完 ' + gate1.n + ' 發）' : ''));
   /* 「慢慢變淡消失」（v1.132.1，使用者回報：本來是縮小）。同一把兵器一路追：
      長度不能變，變的是送進 shader 的那個不透明度。 */
   const gateFadeT = await page.evaluate(() => {
@@ -17369,10 +17386,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              kMax: +kMax.toFixed(3), kLast: +kLast.toFixed(3),
              wcount: ENG.three.workerMesh.count / ENG.WPARTS };
   });
-  ok('一隊人把設定的輪數射滿，每個人每輪一支，一支都不少',
-     arRun.men === arRun.N && arRun.n === arRun.want && arRun.vol === arRun.vols,
-     arRun.men + ' 人 × ' + arRun.vol + ' 輪 ＝ ' + arRun.n + ' 支（期望 ' +
-     arRun.want + '，同時最多 ' + arRun.peakN + ' 支在場）');
+  const arFullOk = arRun.men === arRun.N && arRun.n === arRun.want && arRun.vol === arRun.vols;
+  ok('一隊人把設定的輪數射滿，每個人每輪一支，一支都不少', arFullOk,
+     arRun.men + ' 人 × ' + arRun.vol + ' 輪 ＝ ' + arRun.n + ' 支（期望 ' + arRun.want + '）' +
+     (arFullOk ? '' : '，同時最多 ' + arRun.peakN + ' 支在場'));
   ok('每一支都是 45 度出手',
      arRun.degMin > 44.9 && arRun.degMax < 45.1,
      arRun.n + ' 支的出手角度 ' + arRun.degMin + '～' + arRun.degMax + ' 度');
@@ -18554,8 +18571,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('掉下來之後還是焦黑的，不會恢復原色', fire.burnt.onGround > 10,
      '地上有 ' + fire.burnt.onGround + ' 塊目標色還是黑的');
   ok('同時在燒的塊數有上限', fire.cap.fires === fire.cap.FIRE_MAX,
-     '還站著的 ' + fire.cap.fires + ' / ' + fire.cap.FIRE_MAX + ' 塊（連碎料共 ' +
-     fire.cap.all + ' 塊在燒）');
+     '還站著的 ' + fire.cap.fires + ' / ' + fire.cap.FIRE_MAX + ' 塊' +
+     (fire.cap.fires === fire.cap.FIRE_MAX ? '' : '（連碎料共 ' + fire.cap.all + ' 塊在燒）'));
   /* 火苗跟爆炸的火球共用同一個 hot 陣列。整棟在燒時把它塞爆的話，這時候丟一發核彈
      就會沒有火球，所以燃燒有自己的一檔 BURN_HOT（v1.210.1，以前是跟別人共用 HOT_MAX−40），
      配額再除以 √(在燒的塊數)。兩件事要成立：燒的不超過自己那一檔，而且那一檔
@@ -18836,11 +18853,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { burning, n0, char, after };
   });
-  ok('水澆在燒著的積木上會當場滅火，燒黑的痕跡留著',
-     wetDouse.burning === 1 && wetDouse.after.burn === 0 &&
-     wetDouse.after.n === wetDouse.n0 - 1 && wetDouse.after.tr === wetDouse.char,
-     '澆水前 ' + wetDouse.n0 + ' 處在燒 → 澆水後 ' + wetDouse.after.n +
-     '，那一塊的目標色停在 ' + wetDouse.after.tr + '（燒黑的）');
+  const douseOk = wetDouse.burning === 1 && wetDouse.after.burn === 0 &&
+                  wetDouse.after.n === wetDouse.n0 - 1 && wetDouse.after.tr === wetDouse.char;
+  ok('水澆在燒著的積木上會當場滅火，燒黑的痕跡留著', douseOk,
+     '澆水後在燒的少了 ' + (wetDouse.n0 - wetDouse.after.n) + ' 處，那一塊的目標色' +
+     (wetDouse.after.tr === wetDouse.char ? '停在燒黑的' : '是 ' + wetDouse.after.tr + '（燒黑的是 ' + wetDouse.char + '）') +
+     (douseOk ? '' : '（澆水前 ' + wetDouse.n0 + ' 處在燒、那一塊 burning=' + wetDouse.burning +
+       '、澆水後 burn=' + wetDouse.after.burn + '）'));
 
   /* 派車：只有建造中。拆除中你自己點的火不該被 AI 滅掉（使用者指定）。 */
   const ftCall = await page.evaluate(() => {
@@ -22226,9 +22245,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              // 每層都要有填滿的盤與放射紋路，只有環的話看起來是「地上畫了一個圈」
              solid: all.filter(o => o.fill).length, lace: all.filter(o => o.sp).length };
   });
-  ok('魔法陣是亮黃鑲邊配紅橘的場，而且一層一層往上疊',
-     mgRing.n === 6 && mgRing.halo === 6 && mgRing.rising && mgRing.red,
-     mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、') + '，外圈暈 ' + mgRing.halo + ' 個');
+  /* 半徑每次施法都抖一下（下一條在驗），所以通過時不印 y／r */
+  const ringOk = mgRing.n === 6 && mgRing.halo === 6 && mgRing.rising && mgRing.red;
+  ok('魔法陣是亮黃鑲邊配紅橘的場，而且一層一層往上疊', ringOk,
+     mgRing.n + ' 層' + (mgRing.rising ? '、一層比一層高' : '、沒有往上疊') +
+     (mgRing.red ? '、紅橘' : '、不是紅橘') + '，外圈暈 ' + mgRing.halo + ' 個' +
+     (ringOk ? '' : '；' + mgRing.rings.map(o => 'y' + o.y + '/r' + o.r).join('、')));
   ok('每一層都是填滿的盤加螺旋紋路，不只是一個圈',
      mgRing.solid === 6 && mgRing.lace === 6,
      '填滿的盤 ' + mgRing.solid + ' 片、帶紋路的層 ' + mgRing.lace + ' 層');
@@ -22249,7 +22271,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { a, b, differ: a.some((v, i) => Math.abs(v - b[i]) > 0.3), steady: c.join() === d.join() };
   });
   ok('每次施法的層半徑都不一樣', mgVary.differ,
-     '第一次 ' + mgVary.a.map(v => v.toFixed(1)).join('/') +
+     mgVary.differ ? '兩次施法的層半徑不一樣' : '兩次一樣：第一次 ' + mgVary.a.map(v => v.toFixed(1)).join('/') +
      '、第二次 ' + mgVary.b.map(v => v.toFixed(1)).join('/'));
   ok('但同一次施法內不會逐幀跳動', mgVary.steady);
 
@@ -22614,8 +22636,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mgArc.n + ' 道的起點都在爆點上（最遠 ' + mgArc.from + '），落點平均 ' + mgArc.mid +
      '、最遠 ' + mgArc.reach + '（範圍 ' + mgArc.R + '）');
   ok('閃電純特效，不拆房子也不點火', mgArc.set1 === mgArc.set0 && mgArc.burn === 0,
-     '放電三秒後還是 ' + mgArc.set1 + ' 塊站著（原本 ' + mgArc.set0 + '），起火 ' +
-     mgArc.burn + ' 處');
+     '放電三秒後倒了 ' + (mgArc.set0 - mgArc.set1) + ' 塊、起火 ' + mgArc.burn + ' 處' +
+     (mgArc.set1 === mgArc.set0 ? '' : '（原本 ' + mgArc.set0 + ' 塊站著）'));
   ok('電是真的藍、而且看得到',
      mgArc.px > 200 && mgArc.blue > mgArc.px * 0.5 &&
      mgArc.mode[2] > mgArc.mode[0] + 50 && mgArc.mode[2] > mgArc.mode[1] + 25,
@@ -25451,9 +25473,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('樹也算「地標建築以外」：標成樹的那一個照樣挑得到',
      mtree.ok,
-     '把「' + mtree.kind + '」標成樹（本來 tree=' + mtree.wasTree + '）之後，' +
-     'nearHome 挑到 ' + mtree.nearHH + '（要 ' + mtree.hh + '）、anyHome 挑到 ' +
-     mtree.anyHH);
+     mtree.ok ? '標成樹之後 nearHome 挑到的還是它、anyHome 也挑得到'
+       : mtree.why || '把「' + mtree.kind + '」標成樹（本來 tree=' + mtree.wasTree + '）之後，' +
+         'nearHome 挑到 ' + mtree.nearHH + '（要 ' + mtree.hh + '）、anyHome 挑到 ' + mtree.anyHH);
 
   /* 三隻各用自己那一套。共用的量法：
        站著的地標塊（st === SET && hh < 0）與站著的村子塊（hh >= 0）分開數——
@@ -31048,8 +31070,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('一按就整座蓋好',
      instant.after.placed === instant.after.total && instant.after.phase === 'done' &&
      instant.after.carry === 0,
-     instant.mid.placed + ' → ' + instant.after.placed + '/' + instant.after.total +
-     '，phase=' + instant.after.phase);
+     '按下去' + (instant.after.placed === instant.after.total ? '整座蓋好'
+       : '只到 ' + instant.after.placed + '/' + instant.after.total + '（按之前 ' + instant.mid.placed + '）') +
+     '，phase=' + instant.after.phase + '、還在搬的 ' + instant.after.carry);
   ok('立刻建成不加人力費（按不出花錢成就）',
      instant.after.spent === instant.mid.spent && instant.spentLater === instant.mid.spent,
      '按之前累計 $' + instant.mid.spent.toFixed(0) + '，按完 $' + instant.after.spent.toFixed(0) +
@@ -31110,7 +31133,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     bar: document.getElementById('bar').style.width,
     name: document.getElementById('bname').textContent
   }));
-  ok('HUD 顯示真實時鐘', /^\d{2}:\d{2}:\d{2}$/.test(hud.clock), hud.clock);
+  const clockOk = /^\d{2}:\d{2}:\d{2}$/.test(hud.clock);
+  ok('HUD 顯示真實時鐘', clockOk, clockOk ? '' : '顯示的是「' + hud.clock + '」');   // 時刻本身每輪不同
   ok('HUD 顯示施工計時', /^\d+:\d{2}$/.test(hud.timer), hud.timer);
   ok('HUD 顯示進度與建築名稱', /\d+ \/ \d+/.test(hud.prog) && hud.name.length > 0,
      hud.name + ' ' + hud.prog);
