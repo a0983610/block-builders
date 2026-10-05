@@ -23,6 +23,7 @@ const ENG = (function () {
   let excFade;                               // 光柱每一格下緣／上緣的濃淡（v1.226，見 putBar）
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
+  let torchMesh;                    // 小獼猴火把頭上的火（v1.249.0，見 putTorch）
   let starMesh, boltMesh;
   let emoMesh, emoGeo, emoPos, emoUv, emoCol;   // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
   let giftMesh, giftGeo, giftPos, giftUv;  // 掉在地上的道具泡泡（v1.214，見 setGiftIcons／putGifts）
@@ -932,6 +933,16 @@ const ENG = (function () {
     beastMesh.frustumCulled = false;
     scene.add(beastMesh);
     beastMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
+    /* 火把頭上的火（v1.249.0）：不進 beastMesh——那顆是受光的方塊材質，火放在裡面會被打出
+       陰影與深色邊，看起來像一根薯條（使用者原話）。改成跟爆炸火球同一種不受光的材質，
+       只有拿著火把的那幾隻在場才畫（見 putTorch）。 */
+    torchMesh = new T.InstancedMesh(unit,
+      new T.MeshBasicMaterial({ transparent: true, opacity: 0.95 }), TORCH_MAX * TORCH_N);
+    torchMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    torchMesh.count = 0; torchMesh.frustumCulled = false; torchMesh.visible = false;
+    scene.add(torchMesh);
+    torchMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
     /* Saber（v1.222）：自己一顆，不進 beastMesh（理由見〈Saber〉那一節）。
        顏色開機時寫死——每一格的顏色永遠是造型表那一格，不必每幀重寫。 */
@@ -4462,8 +4473,8 @@ const ENG = (function () {
        · 擺動改成「繞關節轉」：sw 是腰下那兩條、am 是手，pv 是那個關節的高度。
          小人的手腳各只有一塊，繞自己中心轉看不太出來；這幾隻的手腳是三塊接起來的
          （上臂／前臂／手），各轉各的中心會散開成三截，所以要指定關節。
-     右手（am > 0）還會跟著 m.arm 抬起來 m.raise 那麼多：黑獸獵把火把送到牆邊、
-     白猴子把香蕉舉過頭。這一段平常是 0，只有站定要動手那兩秒才有值。 */
+     右手（am > 0）還會跟著 m.arm 抬起來 m.raise 那麼多：小獼猴把火把送到牆邊、
+     小猴子把香蕉舉過頭。這一段平常是 0，只有站定要動手那兩秒才有值。 */
   const JOINT_Z = 0.03;                    // 關節的 z（肩與髖都在身體中線附近）
   /* 四條腿的（牛、羊，v1.154）：前腳的肩在身體前段、後腳的髖在後段，兩個關節差了大半個
      身長，共用 JOINT_Z 的話前腳會繞著肚子中間轉——擺起來是整條腿前後平移，不是踏步。
@@ -4486,7 +4497,7 @@ const ENG = (function () {
     }
     return out;
   }
-  /* 把一組部位掛到別的地方去（白猴子手上那根香蕉炋彈）。位置、大小、角度
+  /* 把一組部位掛到別的地方去（小猴子手上那根香蕉炋彈）。位置、大小、角度
      在載入時就先乘進去，畫的時候就不必多一層矩陣。掛上去的轉法只有 Y 與 Z、
      部位自己的轉法只有 Z，而預設的 XYZ 順序就是 R = Rx·Ry·Rz——
      所以兩個 Z 相加、x 那一格留給擺動，合起來剛好是「先掛上去、再跟著手擺」。 */
@@ -4528,7 +4539,7 @@ const ENG = (function () {
     return out;
   })();
 
-  /* 黑獸獵：頭頂 1.31——跟小人連安全帽一樣高（使用者：「小人大小」）。
+  /* 小獼猴：頭頂 1.31——跟小人連安全帽一樣高（使用者：「小人大小」）。
      跟小人區隔靠的是剪影不是顏色：駝背前傾、手垂過膝、頭頂一撮冠毛、一條翘起來的尾巴。 */
   const APE_SH = 0.90, APE_HIP = 0.51;          // 肩／髀的高度
   const FUR = 0x24242a, FUR2 = 0x33333c, PAW = 0x17171b, FACE = 0xc0625c;
@@ -4557,20 +4568,24 @@ const ENG = (function () {
     { p: [0.15, 0.05, 0.08], s: [0.17, 0.10, 0.26], c: PAW, sw: 1, pv: APE_HIP }      // 腳
   ])).concat([
     /* 手上那支火把（「對地標點火」總要有個火源）。掛在右手上，
-       所以跟那隻手一起擺、一起抬。 */
-    { p: [0.29, 0.44, 0.14], s: [0.05, 0.52, 0.05], c: 0x6a4a30, r: [0.30, 0, 0], am: 1, pv: APE_SH },
-    { p: [0.29, 0.63, 0.20], s: [0.09, 0.09, 0.09], c: 0x5a3a22, am: 1, pv: APE_SH },
-    { p: [0.29, 0.75, 0.24], s: [0.13, 0.14, 0.13], c: 0xff7a1e, am: 1, pv: APE_SH },
-    { p: [0.29, 0.85, 0.25], s: [0.08, 0.10, 0.08], c: 0xffd24a, am: 1, pv: APE_SH }
+       所以跟那隻手一起擺、一起抬。
+       **橫握、跟前臂垂直往前伸**（v1.249.0，使用者：「平時手拿火把也要火把跟手臂垂直」）：
+       舉起來點火時手臂往前平舉，火把就變成往上豎。往前伸多遠有上限——趴著打滾時
+       這一截會轉到下面去，火把頭最遠只能到 z 0.345，再長就陷進草皮（見 開發筆記〈火把橫握、頭上冒火〉）。
+       火不在這張表裡：標了 ft 的那一塊（火把頭）是火的錨點，火另外一顆 mesh 畫（見 putTorch）。 */
+    { p: [0.29, 0.245, 0.14], s: [0.05, 0.05, 0.38], c: 0x6a4a30, am: 1, pv: APE_SH },          // 柄（穿過拳頭）
+    { p: [0.29, 0.245, 0.30], s: [0.08, 0.08, 0.09], c: 0x3a2a1c, am: 1, pv: APE_SH, ft: 1 }    // 頭（纏布）
   ]);
 
-  /* 白猴子：頭頂 1.45（黑獸獵 ×1.11，使用者：「比黑獸獵略大」）。
+  /* 小猴子：頭頂 1.45（小獼猴 ×1.11，使用者：「比黑獼猴略大」）。
      **毛一樣是黑的**，白的是皮膚——臉、耳、手、腳（使用者指定）。
      所以兩隻的分野不在毛色，在「白臉配深眼 vs 紅臉」、「白手白腳 vs 黑手黑腳」，
-     再加上頸圈長毛（黑獸獵沒有）、頭頂是平的沒冠毛、尾巴長一截。
-     拿炋彈的那隻手不跟著走路擺（沒有 am）：手上有東西的人本來就不會甲手。 */
+     再加上頸圈長毛（小獼猴沒有）、頭頂是平的沒冠毛、尾巴長一截。
+     拿炋彈的那隻手不跟著走路擺（沒有 am）：手上有東西的人本來就不會甲手。
+     臉、吻部、耳朵 v1.249.0 往粉紅推一點（使用者：「面部顏色微調偏白粉色」，預覽頁三組裡選 B）：
+     SK F2ECE0 → F4D3CB、吻部另開 SKM（原本跟手腳共用 SK2 E3D8C6）→ E8B8AD，手腳照舊米白。 */
   const SNOW_SH = 1.00, SNOW_HIP = 0.55;
-  const B1 = 0x22222a, B2 = 0x3c3c46, SK = 0xf2ece0, SK2 = 0xe3d8c6;
+  const B1 = 0x22222a, B2 = 0x3c3c46, SK = 0xf4d3cb, SKM = 0xe8b8ad, SK2 = 0xe3d8c6;
   const SNOW = [
     { p: [0, 0.74, 0.02], s: [0.50, 0.52, 0.40], c: B1, r: [0.16, 0, 0] },
     { p: [0, 0.70, 0.23], s: [0.30, 0.36, 0.05], c: B2, r: [0.16, 0, 0] },
@@ -4579,7 +4594,7 @@ const ENG = (function () {
     { p: [0, 1.24, 0.10], s: [0.36, 0.34, 0.34], c: B1 },      // 頭
     { p: [0, 1.42, 0.09], s: [0.32, 0.06, 0.30], c: B2 },      // 頭頂平毛（頂到 1.45）
     { p: [0, 1.22, 0.285], s: [0.28, 0.26, 0.04], c: SK },     // 白臉
-    { p: [0, 1.15, 0.335], s: [0.19, 0.13, 0.10], c: SK2 },    // 吻部
+    { p: [0, 1.15, 0.335], s: [0.19, 0.13, 0.10], c: SKM },    // 吻部
     { p: [0, 1.11, 0.385], s: [0.11, 0.03, 0.02], c: 0x5a4c42 },
     { p: [0, 1.335, 0.29], s: [0.30, 0.05, 0.07], c: B2 },     // 眉脊（黑毛壓在白臉上緣）
     { p: [0, 0.82, -0.30], s: [0.12, 0.12, 0.18], c: B1 },     // 尾巴五節
@@ -4789,7 +4804,7 @@ const ENG = (function () {
     /* 眼睛與眉脊都要**凸出頭的外面**才畫得到：頭半寬 0.25、前緣 1.27，v1.176 第一版
        擺在頭裡面，正面側面都看不到眼睛（實際截圖抓到的）。 */
     { p: [0.25, 2.52, 1.24], s: [0.10, 0.12, 0.14], c: G_EYE },   // 眼
-    /* 白頭配白眉的話，正面看過去眼睛整個糊在頭上（同白猴子那張白臉的教訓）。 */
+    /* 白頭配白眉的話，正面看過去眼睛整個糊在頭上（同小猴子那張白臉的教訓）。 */
     { p: [0.26, 2.62, 1.20], s: [0.10, 0.07, 0.16], c: G_HD2 },   // 眉脊
     { p: [0.40, 1.52, 0.26], s: [0.36, 0.34, 0.60], c: G_WING2 }, // 肩（蓋住翼與身體的接縫）
     /* 前腳是**鷹爪**：羽毛大腿 ＋ 黃色跗骨 ＋ 三趾的腳，樞紐取肩（pv 1.30／pz 0.62）。
@@ -6954,12 +6969,60 @@ const ENG = (function () {
      （那正是要的：踹得一樣遠，只是不再把腿抬到腰上去）。 */
   const BEAST_KICK = 0.80;
 
+  /* ── 火把的火（v1.249.0）──────────────────────────────
+     使用者：「火把前端要加上燃燒特效(目前看起來像根薯條)」。一支火把 TORCH_N 塊，
+     **全部用世界座標擺、永遠往上**——火是往上竄的，不跟著火把轉（舉起來點火、被打倒趴著，
+     火照樣往上）。錨點是造型表裡標 ft 的那一塊（火把頭）畫出去的中心，在 putBeasts 裡順手拿。
+       0   火芯：亮黃白，原地閃
+       1   火身：橘，原地閃、慢慢轉
+       2…  火苗：相位錯開，一塊一塊從火把頭往上竄、越竄越小、黃 → 橘 → 暗紅，
+           竄到頂再從底下重來；走路時往身後拖（照朝向與 gait）
+     時間拿 performance.now()（同燒紅的碎料那一閃，見 EMBER_HI）：只是閃，不必跟遊戲時間走；
+     這顆 mesh 也不在造型基準裡（那一段只讀 beastMesh），所以不會讓基準每次對不上。 */
+  const TORCH_N = 8;
+  const TORCH_MAX = 4;                     // 同時幾支（場上的小獼猴正常一兩隻；超過的那幾支靜靜地不畫火，不報錯）
+  const TORCH_C = [[1, 0.84, 0.30], [1, 0.46, 0.08], [0.62, 0.13, 0.03]];   // 火苗從底到頂的三段色
+  const _torchO = new T.Object3D();
+  let torchN = 0;                          // 這一幀排了幾支
+  function putTorch(x, y, z, s, a, gait) {
+    if (torchN >= TORCH_MAX) return;
+    const t = performance.now() / 1000, i0 = torchN++ * TORCH_N;
+    for (let j = 0; j < TORCH_N; j++) {
+      let px = x, py = y, pz = z, w, rx = 0, ry = 0;
+      if (j === 0) {
+        py += 0.045 * s; w = 0.075 * s * (1 + 0.10 * Math.sin(t * 21)); ry = t * 1.7;
+        tmpC.setRGB(1, 0.93, 0.62);
+      } else if (j === 1) {
+        py += 0.095 * s; w = 0.105 * s * (1 + 0.14 * Math.sin(t * 15 + 1.3));
+        ry = 0.785 + 0.35 * Math.sin(t * 2.3);
+        tmpC.setRGB(1, 0.60, 0.14);
+      } else {
+        const k = j - 2, v = t * 1.6 + k / 6 + 0.13 * Math.sin(k * 7.1), u = v - Math.floor(v);
+        const drag = u * u * 0.2 * s * gait;
+        px += 0.035 * s * Math.sin(t * 5.1 + k * 2.3) - Math.sin(a) * drag;
+        pz += 0.035 * s * Math.cos(t * 4.3 + k * 1.9) - Math.cos(a) * drag;
+        py += (0.08 + 0.36 * u) * s;
+        w = s * (0.095 * (1 - u) + 0.022);
+        rx = u * 2.4 + k; ry = t * 1.9 + k * 1.3;
+        const q = u < 0.45 ? 0 : 1, f = q ? (u - 0.45) / 0.55 : u / 0.45, P = TORCH_C[q], R = TORCH_C[q + 1];
+        tmpC.setRGB(P[0] + (R[0] - P[0]) * f, P[1] + (R[1] - P[1]) * f, P[2] + (R[2] - P[2]) * f);
+      }
+      _torchO.position.set(px, py, pz);
+      _torchO.rotation.set(rx, ry, 0);
+      _torchO.scale.setScalar(w);
+      _torchO.updateMatrix();
+      torchMesh.setMatrixAt(i0 + j, _torchO.matrix);
+      torchMesh.setColorAt(i0 + j, tmpC);
+    }
+  }
+
   /* m：{kind 哪一種（BEASTS 的 key）, x, y, z, a 朝向, ph 步伐相位,
         gait 走得多快（0＝站著）, sc 放多大, arm 右手抬多高（0～1）,
         raise 抬到底是幾度（省略就用 BEAST_RAISE）, spin 翻滾角（飛在半空的香蕉才有）} */
   function putBeasts(list) {
     const n = Math.min(list.length, MAXBEAST);
     beastMesh.count = n * BEAST_PARTS;
+    torchN = 0;
     let fb = 0;                                // 這一幀排進 fadeMesh 後段的第幾具（v1.240）
     for (let i = 0; i < n; i++) {
       const m = list[i], parts = BEASTS[m.kind];
@@ -7084,11 +7147,20 @@ const ENG = (function () {
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
         M.setMatrixAt(base + k, tmpM);
         M.setColorAt(base + k, tmpC.setHex(b.c));
+        // 火把頭（v1.249.0）：這一塊畫出去的中心就是火的錨點
+        if (b.ft) putTorch(tmpM.elements[12], tmpM.elements[13], tmpM.elements[14], msc, m.a || 0, m.gait || 0);
       }
     }
     beastMesh.instanceMatrix.needsUpdate = true;
     if (beastMesh.instanceColor) beastMesh.instanceColor.needsUpdate = true;
     dropSphere(beastMesh);
+    // 火把的火：沒有拿火把的在場就整顆藏起來（不吃 draw call）
+    torchMesh.count = torchN * TORCH_N;
+    torchMesh.visible = torchN > 0;
+    if (torchN) {
+      torchMesh.instanceMatrix.needsUpdate = true;
+      if (torchMesh.instanceColor) torchMesh.instanceColor.needsUpdate = true;
+    }
     // 淡掉的那幾具（v1.240）：上一幀排得比這一幀多的那幾格清成 0（同 commitWorkers）
     const b0 = FADE_W * WPARTS;
     for (let s = b0 + fb * BEAST_PARTS; s < b0 + fadeBUsed * BEAST_PARTS; s++) fadeMesh.setMatrixAt(s, ZERO_M);
@@ -7559,6 +7631,7 @@ const ENG = (function () {
     UFO_MAX, UFO_PARTS, UFO_LITS, UFO_TAPER, UFO_MOUTH_Y, UFO_PART, UFO_LIT,
     UFO_SLAB, UFO_SLAB_W,                   /* 圓盤一層幾片、每片要多寬才補得滿夾角 */
     MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
+    TORCH_N,                                /* 一支火把的火幾塊（v1.249.0，測試要對 torchMesh 的數量） */
     /* 巨人（v1.192）：規則那邊要拿它算「這一腳踹到哪一點」。
        畫出來的腳掌跟判定用的那一點是同一條式子算的（同 SWORD_HIT／UFO_MOUTH）。 */
     giantFoot,
@@ -7593,6 +7666,6 @@ const ENG = (function () {
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, fadeMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, fadeMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh }; }
   };
 })();

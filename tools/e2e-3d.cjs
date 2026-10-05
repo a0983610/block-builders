@@ -6255,7 +6255,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              trips, cow, back, up, late, face,
              per: trips ? Math.round(apeF * 0.05 / trips) : -1 };
   });
-  ok('黑獼猴與白猴子走路也會絆一跤（比小人常，場上只有一兩隻）',
+  ok('小獼猴與小猴子走路也會絆一跤（比小人常，場上只有一兩隻）',
      apeTrip.trips >= 1 && apeTrip.per >= 15 && apeTrip.per <= 300,
      '三隻走了 ' + apeTrip.walkSecs + ' 隻-秒，其中猴子 ' + apeTrip.apeSecs +
      ' 隻-秒（牛不會絆，不算分母）：絆了 ' + apeTrip.trips +
@@ -9593,7 +9593,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ②-c 兩段之間的接縫不能是洞（v1.186 踩過）。整圈是切成好幾段的，而 pushOutHome
      原本是「四面挑最近的那一面推出去」——踩在接縫上的那一個會被推進隔壁那一段的框裡、
-     隔壁再把他推回來，一來一回之間就順著接縫鑽過牆了（實測黑獼猴 9.4 秒穿牆進城）。
+     隔壁再把他推回來，一來一回之間就順著接縫鑽過牆了（實測小獼猴 9.4 秒穿牆進城）。
      現在直牆段只准往厚度那一軸推。 */
   const seam = await page.evaluate(() => {
     mkWall(12, 52);
@@ -10539,11 +10539,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ⑬ 吉祥物走去砸房子那一段（v1.233.1，使用者：「吉祥物走去砸房子那一段 … 程式寫法跟這次的洞類似 調查一下」）。
      兩條規則，都是自己組最小場面、押死的（見 開發筆記〈吉祥物砸房子：城外到城外、目標一幀換一間〉）：
        · 城外到城外、直線切過城裡也繞城外：牆半徑 36、只留 −z 面緊鄰東南角樓那一段沒砌，東牆外一間房子，
-         黑獼猴在南牆外、欠帳兩處、整圈牆都算燒過（逼牠挑那一間）。v1.233.1 的 A/B 是把 wallCut 換成永遠 false；
+         小獼猴在南牆外、欠帳兩處、整圈牆都算燒過（逼牠挑那一間）。v1.233.1 的 A/B 是把 wallCut 換成永遠 false；
          v1.235 起繞法是巡路規則（gateNeed 問 navReach），對照組改成**關掉規劃**（navPlan 永遠找不到路）。
          v1.243 起砸村子那一趟不再問 wallCut／gateNeed，照〈去動手的那一趟〉走（站位走得到就規劃過去，見 actWalk）。
          目標是城牆那一種（只有附近幾段算燒過）也要照樣動手——照「那一段的中心」問 wallCut 的話會永遠在繞。
-       · 走過去那一段認準一間：只砌東北角樓、城外北邊一間大長屋，白猴子站在兩者之間。
+       · 走過去那一段認準一間：只砌東北角樓、城外北邊一間大長屋，小猴子站在兩者之間。
          A/B 每一步之前把 m.vh 清掉＝每幀重挑最近的一塊（v1.233.0 的做法），那樣牠在兩個目標之間原地抖；
          v1.243 起這個 A/B 只印不守（站位改了之後每幀重挑也不抖，見那一條的註解）。 */
   const mascVill = await page.evaluate(() => {
@@ -10642,7 +10642,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      （見 開發筆記〈去動手的那一趟〉）。v1.233.0 那一版（站位是 h.r ＋ 10.5、往這一間的站位走就離另一間更近）是 60 秒沒動手。 */
   ok('吉祥物砸房子：走過去那一段認準一間，不在兩個差不多近的目標之間原地抖',
      mascVill.snow.secs > 0 && mascVill.snow.pinned === 1,
-     `白猴子在東北角樓與城外那一間大長屋之間：認準一間 ${mascVill.snow.secs} 秒動手（這一趟認過 ${mascVill.snow.pinned} 間）；` +
+     `小猴子在東北角樓與城外那一間大長屋之間：認準一間 ${mascVill.snow.secs} 秒動手（這一趟認過 ${mascVill.snow.pinned} 間）；` +
      `每幀重挑（只印）${mascVill.snowOld.secs < 0 ? '60 秒沒動手' : mascVill.snowOld.secs + ' 秒動手'}`);
 
   /* 天災裝回去過（上面那幾條要牠），這裡要關回去——不關的話後面每一段都會跑到
@@ -23263,7 +23263,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      小人大小的黑獼猴慢慢從邊緣走過來 對地標點火／事件二 一隻
      小人大小的白猴子(比黑獼猴略大)慢慢從邊緣走過來 對地標丟出香蕉形狀炸彈」，
      後續追加「可以按照小人行走邏輯 不要穿越地標建築&小房子」。
-     造型是先做成預覽給使用者看過才落地的（白猴子改成「毛依然是黑的，只有皮膚比較白」）。 */
+     造型是先做成預覽給使用者看過才落地的（小猴子改成「毛依然是黑的，只有皮膚比較白」）。 */
   }   // ── 〈倒數型道具〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('天災：猴子與飛龍', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 2600, workers: 12 });
@@ -23276,28 +23276,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const has = (k, c) => B[k].some(b => b.c === c);
     return {
       apeTop: +top('ape').toFixed(3), snowTop: +top('snow').toFixed(3),
-      apeFace: has('ape', 0xc0625c), apePaw: has('ape', 0x17171b), apeTorch: has('ape', 0xff7a1e),
+      /* 火把（v1.249.0 起）：火不在造型表裡了（另一顆 mesh 畫），表上認的是標 ft 的火把頭 */
+      apeFace: has('ape', 0xc0625c), apePaw: has('ape', 0x17171b), apeTorch: B.ape.some(b => b.ft),
       snowBody: B.snow[0].c,
-      snowSkin: B.snow.filter(b => b.c === 0xf2ece0 || b.c === 0xe3d8c6).length,
-      snowFace: has('snow', 0xf2ece0), snowPaw: has('snow', 0xe3d8c6),
+      /* 臉、耳朵 F4D3CB，吻部 E8B8AD，手腳 E3D8C6（v1.249.0 臉往粉紅推一點，手腳不動） */
+      snowSkin: B.snow.filter(b => b.c === 0xf4d3cb || b.c === 0xe8b8ad || b.c === 0xe3d8c6).length,
+      snowFace: has('snow', 0xf4d3cb) && has('snow', 0xe8b8ad), snowPaw: has('snow', 0xe3d8c6),
       nanaSeg: B.nana.filter(b => b.c === 0xf0c53a).length,
       tape: B.nana.filter(b => b.c === 0xc8322a).length,
       fuse: has('nana', 0x2c2620), spark: has('nana', 0xff8a24),
       bent: B.nana.filter(b => b.r && b.r[2]).length
     };
   });
-  /* 「小人大小」：小人連安全帽是 1.31（engine.js 的 BODY），黑獼猴照這個數字畫，
-     白猴子「略大」抓 +11%。兩隻在場上乘的是同一個身高倍率（DOOM_SC），
+  /* 「小人大小」：小人連安全帽是 1.31（engine.js 的 BODY），小獼猴照這個數字畫，
+     小猴子「略大」抓 +11%。兩隻在場上乘的是同一個身高倍率（DOOM_SC），
      所以模型高的比例就是場上的比例。 */
-  ok('黑獼猴跟小人一樣高、白猴子高一成',
+  ok('小獼猴跟小人一樣高、小猴子高一成',
      bfig.apeTop === 1.31 && Math.abs(bfig.snowTop / bfig.apeTop - 1.11) < 0.01,
-     '黑 ' + bfig.apeTop + '／白 ' + bfig.snowTop);
+     '小獼猴 ' + bfig.apeTop + '／小猴子 ' + bfig.snowTop);
   /* 使用者第二版指定：「毛色依然是黑的 只是皮膚的地方比較白」。
-     所以白的只有八塊：臉、兩隻耳朵、吻部、兩隻手、兩隻腳。 */
-  ok('白猴子的毛是黑的，白的只有皮膚那幾塊',
+     所以白的只有八塊：臉、兩隻耳朵、吻部、兩隻手、兩隻腳。
+     v1.249.0 臉、耳朵、吻部往粉紅推（使用者：「面部顏色微調偏白粉色」），還是那八塊。 */
+  ok('小猴子的毛是黑的，白的只有皮膚那幾塊',
      bfig.snowBody === 0x22222a && bfig.snowSkin === 8 && bfig.snowFace && bfig.snowPaw,
      '軀幹 ' + bfig.snowBody.toString(16) + '／淺色 ' + bfig.snowSkin + ' 塊');
-  ok('黑獼猴是紅臉黑手腳、手上有火把',
+  ok('小獼猴是紅臉黑手腳、手上有火把',
      bfig.apeFace && bfig.apePaw && bfig.apeTorch);
   /* 純黃的香蕉在場上只是一根水果，所以要有膠帶與引信才讀得出是炸彈。
      弧線是六塊各自轉一個角度排出來的——方塊排不出弧線，只能這樣排。 */
@@ -23351,6 +23354,61 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('丟出去之後手上那根就不見了',
      bdraw.held > 0.03 && bdraw.gone === 0,
      '拿著 ' + bdraw.held + ' → 丟了 ' + bdraw.gone);
+
+  /* ── 火把（v1.249.0）──
+     使用者：「平時手拿火把也要火把跟手臂垂直／火把前端要加上燃燒特效(目前看起來像根薯條)」。
+     規則型，不吃亂數：擺好姿勢直接讀畫出去的矩陣。
+       · 垂直：前臂的長軸（模型 y）與火把柄的長軸（模型 z）畫出去之後內積 ≈ 0，走一輪 12 個相位、舉起來那一刻都量
+       · 火：只有拿火把的在場才畫，一支 TORCH_N 塊，全部在火把頭正上方一小圈裡、不低於火把頭——
+         站著、舉起來、趴著都一樣（火永遠往上，不跟著火把轉）；舉起來時火把頭跟著升高 */
+  const btorch = await page.evaluate(() => {
+    beasts = null; nanas = null;
+    const A = ENG.BEASTS.ape, mesh = ENG.three.beastMesh, tm = ENG.three.torchMesh;
+    const arm = A.findIndex(b => b.am === 1 && b.c === 0x33333c);        // 右前臂
+    const stick = A.findIndex(b => b.am === 1 && b.s[2] > b.s[1] * 3);   // 火把柄（沿 z 長）
+    const head = A.findIndex(b => b.ft);
+    const m4 = new THREE.Matrix4(), u = new THREE.Vector3(), w = new THREE.Vector3();
+    const hv = new THREE.Vector3(), p = new THREE.Vector3();
+    const a = spawnBeast('ape');
+    a.x = 30; a.z = 0; a.a = 0.7; a.gait = 0; a.ph = 0;
+    const axis = (k, col, out) => { mesh.getMatrixAt(k, m4); return out.setFromMatrixColumn(m4, col).normalize(); };
+    let dot = 0;
+    const perp = () => { draw(); dot = Math.max(dot, Math.abs(axis(arm, 1, u).dot(axis(stick, 2, w)))); };
+    for (let i = 0; i < 12; i++) { a.gait = 0.85; a.ph = i * 0.5; perp(); }
+    a.gait = 0; a.ph = 0; a.arm = 1; perp(); a.arm = 0;
+    const sc = a.sc || 1;
+    const flame = () => {
+      draw();
+      mesh.getMatrixAt(head, m4); hv.setFromMatrixPosition(m4);
+      const o = { on: tm.visible, n: tm.count, hy: +hv.y.toFixed(3), off: 0, low: Infinity, top: -Infinity };
+      for (let i = 0; i < tm.count; i++) {
+        tm.getMatrixAt(i, m4); p.setFromMatrixPosition(m4);
+        o.off = Math.max(o.off, Math.hypot(p.x - hv.x, p.z - hv.z) / sc);
+        o.low = Math.min(o.low, (p.y - hv.y) / sc);
+        o.top = Math.max(o.top, (p.y - hv.y) / sc);
+      }
+      for (const k of ['off', 'low', 'top']) o[k] = +o[k].toFixed(3);
+      return o;
+    };
+    const stand = flame();
+    a.arm = 1; const up = flame(); a.arm = 0;
+    a.spin = Math.PI / 2; a.lie = 1; const prone = flame(); a.spin = 0; a.lie = 0;
+    beasts = null;
+    const s = spawnBeast('snow'); s.x = 30; s.z = 0; draw();
+    const snowOnly = tm.visible;
+    beasts = null; draw();
+    const none = tm.visible;
+    return { dot: +dot.toFixed(4), N: ENG.TORCH_N, stand, up, prone, snowOnly, none };
+  });
+  ok('小獼猴的火把跟前臂垂直（走一輪、舉起來點火都是）',
+     btorch.dot < 0.01, '前臂與火把柄長軸的內積最大 ' + btorch.dot);
+  const fOk = f => f.on && f.n === btorch.N && f.off < 0.06 && f.low > 0 && f.top > 0.2 && f.top < 0.5;
+  ok('火把頭上冒火：只有小獼猴在場才畫，站著／舉起來／趴著火都在火把頭正上方往上竄',
+     fOk(btorch.stand) && fOk(btorch.up) && fOk(btorch.prone) && btorch.up.hy > btorch.stand.hy + 0.5 &&
+     !btorch.snowOnly && !btorch.none,
+     ['stand', 'up', 'prone'].map(k => k + ' ' + btorch[k].n + ' 塊、偏 ' + btorch[k].off + '、高 ' +
+       btorch[k].low + '～' + btorch[k].top + '、火把頭 ' + btorch[k].hy).join('；') +
+     '；只有小猴子 ' + btorch.snowOnly + '、沒有猴子 ' + btorch.none);
 
   /* ── 倒數 ── */
   const btime = await page.evaluate(() => {
@@ -23473,7 +23531,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { ph0, lit, phase, set0, spread: blocks.filter(b => b.burn > 0).length,
              set1: blocks.filter(b => b.st === SET).length };
   });
-  ok('黑獼猴走到就點火，地標燒起來',
+  ok('小獼猴走到就點火，地標燒起來',
      bfire.ph0 === 'done' && bfire.lit >= 3 && bfire.phase === 'wreck',
      '點著 ' + bfire.lit + ' 塊，phase ' + bfire.ph0 + ' → ' + bfire.phase);
   ok('火會自己往鄰居蔓延（10 秒後燒得更兇）',
@@ -23504,13 +23562,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              hr: hit ? +Math.hypot(hit.x, hit.z).toFixed(1) : -1,
              smashed: set0 - set1, set0 };
   });
-  ok('白猴子把香蕉炸彈拋到建築上（手上那根跟著不見）',
+  ok('小猴子把香蕉炸彈拋到建築上（手上那根跟著不見）',
      bnana.hold0 === 1 && bnana.hold1 === 0 && bnana.flew > 5 &&
      bnana.hy > 0.4 && bnana.hr < 30,
      '飛了 ' + bnana.flew + ' 幀、最高 ' + bnana.top + '，炸在高度 ' +
      bnana.hy + '、離中心 ' + bnana.hr);
   /* 使用者定的規則：「測試炸彈重點在是否正常作用，因為隨機位置而炸掉幾塊，
-     炸了幾塊完全不重要」。這一條原本是 smashed > 100——而香蕉是白猴子往地標中心
+     炸了幾塊完全不重要」。這一條原本是 smashed > 100——而香蕉是小猴子往地標中心
      一帶**隨機**拋的，炸掉幾塊全看落在哪：十個種子量到 277～966 塊，不給種子那一輪
      量到過 88 塊（門檻 100，紅）。門檻正好卡在分布中間，跟飛龍火球是同一個病。
      量級本來就有下面那條在守（同一座、同一點，石頭／香蕉／炸彈各炸一次比），
@@ -24743,7 +24801,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '地標 ' + shome.set0 + ' → ' + shome.set1 + ' 塊、在燒 ' + shome.lit + ' 塊（這一招斬掉村子那邊 ' + shome.xn + ' 塊）');
 
   /* ── 一整趟：走進來、斬一招、走人 ──
-     斬口的火會自己蔓延（同黑獼猴那一把火），所以這一條只看「那一斬」本身斬掉幾塊（m.xn），
+     斬口的火會自己蔓延（同小獼猴那一把火），所以這一條只看「那一斬」本身斬掉幾塊（m.xn），
      不看收工時還剩幾塊。 */
   await fillAll(page);
   const srun = await page.evaluate(() => {
@@ -24920,7 +24978,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const mind = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
     stepMascot(0.05);                                 // 三個鐘都抽好
-    mascT[0] = 0.01;                                  // 黑獼猴那個先到
+    mascT[0] = 0.01;                                  // 小獼猴那個先到
     stepMascot(0.05);
     const came = beasts ? beasts.map(m => m.kind) : [];
     const fun = beasts ? beasts[0].fun : -1;
@@ -24935,7 +24993,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mind.came.join() === 'ape' && mind.fun === 1, '出場的是 ' + mind.came.join('／'));
   ok('一隻在場上時只有牠自己的鐘停著，另外兩隻照數',
      mind.apeClock === -1 && mind.moved.every(v => Math.abs(v - 10) < 0.01),
-     '黑獼猴 ' + mind.apeClock + '（＝等牠走了再重抽）／另外兩隻各扣掉 ' + mind.moved.join('／'));
+     '小獼猴 ' + mind.apeClock + '（＝等牠走了再重抽）／另外兩隻各扣掉 ' + mind.moved.join('／'));
 
   /* 「所以有機會一起出沒」：三個鐘同時到就三隻同時在場上。
      順便驗畫得下——beastMesh 有 MAXBEAST 這個上限，超出的是靜靜地不畫。 */
@@ -25188,7 +25246,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let n = 0;
     while (m.st !== 'fun' && n < 2000) { stepDoom(0.05); n++; }
     const roaming = m.st, n0 = beasts.length;
-    const turned = turnBad('ape');                    // 天災的鐘到了，抽到的就是黑獼猴那件
+    const turned = turnBad('ape');                    // 天災的鐘到了，抽到的就是小獼猴那件
     const flip = { n: beasts.length, same: beasts[0] === m, fun: m.fun, st: m.st };
     /* 翻臉之後照天災那條路走完：走到最近那一塊 → 站定瞄 → 放火 → 走人。
        這一段要走完整的 step，不能只走 stepDoom：點著只是把 b.burn 設起來，
@@ -25226,7 +25284,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 三種不該轉的：別種、已經在走回場外的、本來就是天災那一隻。 */
   const mkeep = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
-    const s = spawnBeast('snow', 1);                  // ① 場上是白猴子，抽到黑獼猴那件
+    const s = spawnBeast('snow', 1);                  // ① 場上是小猴子，抽到小獼猴那件
     const other = turnBad('ape');
     const snowFun = s.fun;
     cleanTools();
@@ -25408,7 +25466,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              site0, site: site(), home0, low, ph: phase,
              gone: !beasts || beasts.indexOf(m) < 0 };
   });
-  ok('黑獼猴那一趟：走過去把村子那邊點著，地標一塊都沒燒到、一塊都沒少',
+  ok('小獼猴那一趟：走過去把村子那邊點著，地標一塊都沒燒到、一塊都沒少',
      mape.acted > 0 && mape.burnHome > 0 && mape.low < mape.home0 &&
      mape.burnSite === 0 && mape.hiSite === 0 && mape.site === mape.site0 &&
      mape.ph === 'done',
@@ -25471,7 +25529,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      波及到地標邊上是可能的（使用者 v1.186：「不小心燒到地標沒關係 但是遊戲要察覺
      &燒完換場」）。所以這裡守的改成**兩者擇一**：沒被波及就該還在 done；
      被波及了就不該還停在 done（少一塊就進拆除中，見 freeBlock）。 */
-  ok('白猴子那一趟：香蕉丟的是村子那邊；波及到地標的話遊戲要察覺',
+  ok('小猴子那一趟：香蕉丟的是村子那邊；波及到地標的話遊戲要察覺',
      msnow.nana > 0 && msnow.low < msnow.home0 && msnow.st === 'fun' &&
      (msnow.site >= msnow.site0 - 4 ? msnow.ph === 'done' : msnow.ph !== 'done'),
      '丟了 ' + msnow.nana + ' 根，還站著的村子 ' + msnow.home0 + ' → ' + msnow.low +
@@ -25775,7 +25833,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '天上那隻 ' + hfly.g1.st + ' → ' + hfly.g2.st + '，站著那隻 aim → ' + hfly.g3o.st);
 
   /* ── 吉祥物：一擊切換一次 ── */
-  /* 用巨人驗：黑獼猴從 v1.229 起不收手（表上的 more，下面另一條驗），白猴子丟完香蕉就不改主意
+  /* 用巨人驗：小獼猴從 v1.229 起不收手（表上的 more，下面另一條驗），小猴子丟完香蕉就不改主意
      （spent）——這一條驗的是**表上沒寫個別脾氣的那幾隻**照預設走。 */
   const htog = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
@@ -25901,7 +25959,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      honce.burned + ' 秒之後還是 hurt ' + honce.hurt);
 
   /* ── 自己丟的那一根不算被攻擊 ── */
-  /* 白猴子站在 11 格外丟香蕉（爆炸半徑 9 摸不到牠），但震倒的判定是 1.7 倍（15.3）
+  /* 小猴子站在 11 格外丟香蕉（爆炸半徑 9 摸不到牠），但震倒的判定是 1.7 倍（15.3）
      ——**牠幾乎每次都會被自己那一根震倒**（v1.168 使用者：「白猴子炸到自己也沒關係」）。
      不擋的話吉祥物那一版砸完回去逛的下一秒就被自己惹毛，一根接一根丟下去。
      同一根香蕉換成別人丟的就照樣算一擊，兩邊對照著驗。 */
@@ -25988,8 +26046,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '吉祥物 bad ' + hcool.mas + '、天災 hurt ' + hcool.doom +
      '（打、同一幀再打、差一幀到 ' + hcool.cd + ' 秒再打、過了再打）');
 
-  /* ── 黑獼猴：不會被打退，打幾下就燒幾處（v1.229，MASCOTS 那一列的 more）── */
-  /* 形態當場問過：只改吉祥物版（天災黑獼猴照舊被打到門檻就走）、下一處每次重抽換一處沒著火的、
+  /* ── 小獼猴：不會被打退，打幾下就燒幾處（v1.229，MASCOTS 那一列的 more）── */
+  /* 形態當場問過：只改吉祥物版（天災小獼猴照舊被打到門檻就走）、下一處每次重抽換一處沒著火的、
      燒完才走。這一條驗旗標，真的一處一處燒過去見下下條。 */
   const hape = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
@@ -26008,7 +26066,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { trail: trail.join(' → '), born, doom };
   });
-  ok('吉祥物黑獼猴被打不收手，每打一下多欠一處；天災版照舊被打到門檻就走',
+  ok('吉祥物小獼猴被打不收手，每打一下多欠一處；天災版照舊被打到門檻就走',
      hape.trail === '1/1 → 1/2 → 1/3' && hape.born.bad === 1 && hape.born.owe === 2 &&
      hape.doom.st === 'go' && hape.doom.hurt === 2 && hape.doom.owe === 0,
      '連打三下 bad/owe ' + hape.trail + '；出場就要燒房子的那一隻打一下 owe ' + hape.born.owe +
@@ -26101,7 +26159,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return out;
   });
-  ok('黑獼猴打三下就燒三處，每一處離別處至少 MORE_GAP、走到旁邊才點，燒完才走',
+  ok('小獼猴打三下就燒三處，每一處離別處至少 MORE_GAP、走到旁邊才點，燒完才走',
      hchain.n === 3 && hchain.gap >= hchain.want && hchain.reach < hchain.near * 2 &&
      hchain.st === 'go' && hchain.owe === 0 && hchain.stay <= 0,
      hchain.secs + ' 秒燒了 ' + hchain.n + ' 處，彼此最近 ' + hchain.gap + ' 格（MORE_GAP ' +
@@ -26134,13 +26192,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { act, over, under, wait: MORE_WAIT };
   });
-  ok('黑獼猴欠帳的保險每燒完一處重算：燒完一處超時歸零，同一處超過 MORE_WAIT 才放棄走人',
+  ok('小獼猴欠帳的保險每燒完一處重算：燒完一處超時歸零，同一處超過 MORE_WAIT 才放棄走人',
      hwait.act.stay === 0 && hwait.act.owe === 2 && hwait.act.st !== 'go' &&
      hwait.over.st === 'go' && hwait.under.st !== 'go',
      '超時 ' + (hwait.wait - 1) + ' 秒時燒完一處 → 超時 ' + hwait.act.stay + '、還欠 ' + hwait.act.owe + ' 處、' +
      hwait.act.st + '；同一處超時剛過 ' + hwait.wait + ' 秒 → ' + hwait.over.st + '、差一秒 → ' + hwait.under.st);
 
-  /* ── 白猴子：香蕉丟了就沒了，只能動手一次（v1.229，MASCOTS 那一列的 spent）── */
+  /* ── 小猴子：香蕉丟了就沒了，只能動手一次（v1.229，MASCOTS 那一列的 spent）── */
   const hsnow = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
     const m = spawnBeast('snow', 1); m.st = 'fun'; m.bomb = 0;   // 丟完了
@@ -26151,7 +26209,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     beastHit(k);
     const keep = k.bad;
     beasts = null;
-    /* 抽到白猴子那件天災：沒香蕉的那一隻不翻臉、這一件作廢（使用者選的），不另外放一隻進來。
+    /* 抽到小猴子那件天災：沒香蕉的那一隻不翻臉、這一件作廢（使用者選的），不另外放一隻進來。
        rollDoom 押成那一件、量完還回去。 */
     const orl = rollDoom;
     rollDoom = () => DOOMS.find(d => d.id === 'snow');
@@ -26168,11 +26226,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { spent, keep, none, full };
   });
-  ok('白猴子丟完香蕉被打不再生氣；抽到白猴子那件天災也不翻臉、這一件作廢',
+  ok('小猴子丟完香蕉被打不再生氣；抽到小猴子那件天災也不翻臉、這一件作廢',
      hsnow.spent === 0 && hsnow.keep === 1 &&
      hsnow.none.fun === 1 && hsnow.none.n === 1 && hsnow.full.fun === 0 && hsnow.full.n === 1,
      '沒香蕉被打 bad ' + hsnow.spent + '（有香蕉的對照組 ' + hsnow.keep + '）；抽到那件天災：' +
-     '沒香蕉的 fun ' + hsnow.none.fun + '、場上白猴子 ' + hsnow.none.n + ' 隻，' +
+     '沒香蕉的 fun ' + hsnow.none.fun + '、場上小猴子 ' + hsnow.none.n + ' 隻，' +
      '有香蕉的 fun ' + hsnow.full.fun + '（就地翻臉）、' + hsnow.full.n + ' 隻');
 
   await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
@@ -26249,7 +26307,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      (gmad.safe + gmad.ring) + '），爆炸範圍到地面是 ' + gmad.hr + ' 格');
 
   /* ── 自己這一發炸不到自己（castMagic 的 by 當 explode 的 self）──
-     她站在火球裡面（離炸點 30 格），同一圈另一邊擺一隻黑獼猴當對照：牠要被炸飛、她不能。
+     她站在火球裡面（離炸點 30 格），同一圈另一邊擺一隻小獼猴當對照：牠要被炸飛、她不能。
      炸點放在地標外面很遠（siteR ＋ 48），不動到地標 */
   const gself = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
@@ -26269,9 +26327,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     toast = otoast; cleanTools();
     return r;
   });
-  ok('自己這一發炸不飛、震不倒她自己（同巨人那一腳的 self），同一圈的黑獼猴照樣被炸飛；炸完她往後倒',
+  ok('自己這一發炸不飛、震不倒她自己（同巨人那一腳的 self），同一圈的小獼猴照樣被炸飛；炸完她往後倒',
      !gself.meAir && !gself.meFall && gself.apeAir === 1 && gself.left === 0 && gself.st === 'mfall',
-     '她 air ' + gself.meAir + '、被震倒 ' + gself.meFall + '；黑獼猴 air ' + gself.apeAir + '；陣還剩 ' + gself.left +
+     '她 air ' + gself.meAir + '、被震倒 ' + gself.meFall + '；小獼猴 air ' + gself.apeAir + '；陣還剩 ' + gself.left +
      ' 個；她下一幀 ' + gself.st);
 
   /* ── 詠唱中被打：算進去的那一下收手、冷卻中那一下只被打倒（爬起來重念）──
@@ -27365,7 +27423,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('天災那幾隻同樣打得倒（同一種生物、同一份程式），躺完會爬起來繼續走',
      hDoomHit.fell && hDoomHit.st.fun === 0 && hDoomHit.st.fall &&
      hDoomHit.after.fall === 0 && hDoomHit.after.lie === 0,
-     '打倒天災版的黑獼猴：躺著 ' + hDoomHit.st.fall + ' → 爬起來回到 ' +
+     '打倒天災版的小獼猴：躺著 ' + hDoomHit.st.fall + ' → 爬起來回到 ' +
      hDoomHit.after.st + '（倒數 ' + hDoomHit.after.fall + '、抬升 ' + hDoomHit.after.lie + '）');
 
   /* ── 每一種姿勢都貼著草皮，不會陷進去也不會浮起來 ── */
@@ -27472,7 +27530,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       /* 躺著壓火晃一整圈取最低：側躺的前後晃（B_SIDE_ROCK），仰躺的沿長軸滾（B_ROLL_AMP）。
          **這一項只印不守**：實測獅鷲 −0.52、巨人 −1.07，是**既有的另一個缺陷**，
          不是 v1.202.1 改出來的——巨人走的是 B_ROLL_LIFT 那條（v1.202.1 一個字都沒動），
-         獅鷲那條因為 sideLift 的底被墊高反而變淺了。根因是那兩個抬升倍率都是**照黑獼猴
+         獅鷲那條因為 sideLift 的底被墊高反而變淺了。根因是那兩個抬升倍率都是**照小獼猴
          量出來的定值**（B_ROLL_LIFT = 1.3 的來歷見 開發筆記〈姿勢都要貼著草皮〉），
          套到身形比例差很多的這兩款就不夠——要修得照造型表算，那會動到現在正常的
          猴子與牛羊，是另一件事。先把數字擺在這裡，不要讓它沉下去。 */
@@ -27533,7 +27591,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ── 爬起來那一段朝向是限速轉的，不會一幀甩過去（v1.202.2）──
      **規則型，骰子押死**：躺著的每一幀都包一層 stepBeast0，讓牠跑完之後「想轉 180°」，
      限速那一層排在它後面（見 game-tools 的 stepBeast），所以整段窗口每一幀都該被咬到上限。
-     改之前實測那一幀 巨人轉 61.5°、獅鷲 117.7°、黑獼猴 111.3°（單發箭打中追 300 幀），
+     改之前實測那一幀 巨人轉 61.5°、獅鷲 117.7°、小獼猴 111.3°（單發箭打中追 300 幀），
      巨人畫出去那一團的重心一幀跳 8.98 格。
 
      **v1.205 把「想轉多少」從幾何改成包一層**（原本是 `m.a = atan2(−x, −z) + π`，
@@ -27772,7 +27830,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ── 核彈、爆裂魔法、Excalibur 斬殺巨人（v1.245.0，使用者：「調整爆裂魔法 核彈 excalibur可以擊殺巨人」；
         死法選「同里維斬殺那一套」（giantDie）、爆炸範圍選「整個爆炸半徑」、Saber 自己出招也算）。
         爆炸那兩把直接呼叫爆的那一刻（nukeHit／stepOneMagic 給 t 剩一點點）：半徑內差 1 格那隻斬殺、沒被掀，
-        半徑外差 1 格那隻照舊活著；同一發裡的黑獼猴照舊被掀飛（只有巨人會死）。
+        半徑外差 1 格那隻照舊活著；同一發裡的小獼猴照舊被掀飛（只有巨人會死）。
         Excalibur 走整趟：叫 Saber 去斬一隻站著不動的巨人（擺法同〈破壞道具：Excalibur〉點生物那一條）。
         提示那一句是誰殺的（GIA_SLAIN）也一起驗：把 toast 包一層，只記結尾是「斬殺／炸死」的標題
         （進場、Saber 出發那幾則不算進來） ── */
@@ -27821,10 +27879,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   for (const [k, nm, by] of [['nuke', '核彈', '被核彈炸死'], ['magic', '爆裂魔法', '被爆裂魔法炸死']]) {
     const r = hSlay[k];
-    ok(nm + '炸死巨人：整個爆炸半徑內的斬殺（同里維那一套、不再被掀），半徑外的活著，同一發裡的黑獼猴照舊被掀飛',
+    ok(nm + '炸死巨人：整個爆炸半徑內的斬殺（同里維那一套、不再被掀），半徑外的活著，同一發裡的小獼猴照舊被掀飛',
        r.inDead && !r.inAir && !r.outDead && r.apeAir === 1 && !r.apeDead && r.said === hSlay.nm + by,
        '半徑內差 1 格：斬殺＝' + r.inDead + '、被掀＝' + !!r.inAir + '；半徑外差 1 格：死＝' + r.outDead + '（' + r.outSt +
-       '）；黑獼猴被掀＝' + !!r.apeAir + '、死＝' + r.apeDead + '；提示「' + r.said + '」');
+       '）；小獼猴被掀＝' + !!r.apeAir + '、死＝' + r.apeDead + '；提示「' + r.said + '」');
   }
   ok('Excalibur 斬殺巨人：叫 Saber 去斬站著不動的那一隻，光柱掃到當場斬殺、沒被沖飛',
      hSlay.exc.dead > 0 && !hSlay.exc.air && hSlay.exc.seen === 'call→act→excal→fun' &&
@@ -29418,7 +29476,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      lbeast.ape.fell && lbeast.ape.alive && lbeast.ape.bad0 === 0 && lbeast.ape.bad === 1 && lbeast.ape.hcd > 0 &&
      lbeast.ape.call === null &&
      lbeast.ape.seen === 'call→act→odm:shoot→odm:fly→odm:cut→odm:drop→odm:land→fun',
-     lbeast.ape.seen + '；黑獼猴倒地＝' + !!lbeast.ape.fell + '、還在場上＝' + lbeast.ape.alive + '、bad ' +
+     lbeast.ape.seen + '；小獼猴倒地＝' + !!lbeast.ape.fell + '、還在場上＝' + lbeast.ape.alive + '、bad ' +
      lbeast.ape.bad0 + ' → ' + lbeast.ape.bad + '、冷卻還剩 ' + (+lbeast.ape.hcd).toFixed(2) + ' 秒');
   ok('巨人被斬殺：大小不變、跪下往前倒、一塊一塊散掉（melt 一路往上），整條時間軸走完從場上拿掉',
      lbeast.giant.dead > 0 && lbeast.giant.gone > 0 && Math.abs(lbeast.giant.span - lbeast.giant.want) <= 0.05 &&
@@ -29717,7 +29775,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('點選：這一把點得到地上的生物與小人（其他道具那一檔是透明的）；天上的、他自己不算，地上的飛龍算',
      lpick.la === 'beast' && lpick.laOk && lpick.sa !== 'beast' && lpick.lw === 'worker' && lpick.lwOk &&
      lpick.sw !== 'worker' && lpick.cut === 'true,false,false,false,true,true,true',
-     '黑獼猴：兵長砍猴點到 ' + lpick.la + '（是牠＝' + lpick.laOk + '）、其他道具點到 ' + lpick.sa + '；小人：點到 ' +
+     '小獼猴：兵長砍猴點到 ' + lpick.la + '（是牠＝' + lpick.laOk + '）、其他道具點到 ' + lpick.sa + '；小人：點到 ' +
      lpick.lw + '（是他＝' + lpick.lwOk + '）、其他道具點到 ' + lpick.sw + '；砍得了嗎（猴／里維／天上的飛龍／天上的獅鷲／小人／' +
      '地上走的飛龍／趴著的飛龍）' + lpick.cut);
 
@@ -34032,7 +34090,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      走路那一層的規則管不到那裡。走的是真的 stepBeast（每幀 frameNo++，同〈閒晃事件：城牆〉⑬ 的 walk），場面自己組，
      **骰子押死**（Math.random 給定值：猴子不會半路絆倒，同一版程式跑幾次數字都一樣，全部是規則型）：
        ⑫ 站位走得到就走過去動手：不在兩個狀態之間來回、不原地站著、不靠穿透
-       ⑬ 動手那一刻搆得到：黑獼猴的火把離點的那一塊不超過 DOOM_NEAR（＋半格浮點餘裕）
+       ⑬ 動手那一刻搆得到：小獼猴的火把離點的那一塊不超過 DOOM_NEAR（＋半格浮點餘裕）
        ⑭ 天災進場與走人：只砌一段牆、整圈有門、整圈沒門都走得到、走得出去
      場面（吉薩大金字塔 1800 當地標，城牆照 wallPlan 整圈排好、只砌指定的那幾段＝蓋到一半的樣子）：
      只砌一段直牆／一座角樓／一座門樓／整圈；整圈＋貼著城牆內側那一間（城牆都算燒過＝只剩那一間可挑）；
@@ -34169,7 +34227,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   {
     const D = navDoom;
-    const NM = { ape: '黑獼猴', snow: '白猴子', saber: 'Saber' };
+    const NM = { ape: '小獼猴', snow: '小猴子', saber: 'Saber' };
     const TR_MAX = 8;                                // 正常一趟最多 fun→gate→fun→near→act 四次，給一倍
     const bad12 = r => r.t < 0 || r.tr > TR_MAX || r.gh > 0 || r.inBox > 0;
     const fmt = r => NM[r.kind] + '・' + r.grp + '・起點 (' + r.s + ')' + (r.inW ? '城裡' : '') + '：' +
@@ -34187,7 +34245,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const ape = D.runs.filter(r => r.kind === 'ape' && r.t > 0);
     const far = ape.filter(r => r.d > D.near + 0.5);
     const dMax = ape.reduce((a, r) => (r.d > a.d ? r : a), { d: -1 });
-    ok('動手那一刻搆得到：黑獼猴點火時離點的那一塊不超過 DOOM_NEAR（＋半格）',
+    ok('動手那一刻搆得到：小獼猴點火時離點的那一塊不超過 DOOM_NEAR（＋半格）',
        ape.length > 0 && far.length === 0,
        '動了手的 ' + ape.length + ' 趟，最遠 ' + dMax.d + ' 格（' + dMax.grp + '・起點 (' + dMax.s + ')→' + dMax.tk +
        '，DOOM_NEAR ' + D.near + '）' + (far.length ? '；超過的 ' + far.length + ' 趟：' +
