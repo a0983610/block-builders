@@ -4329,14 +4329,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              farD: Math.max.apply(null, at0.map(o => o.d)),
              rad: { lo: Math.min(...ds), hi: Math.max(...ds), want: +cheerR().toFixed(2) },
              gap: { lo: Math.min(...gaps), hi: Math.max(...gaps), want: +(360 / workers.length).toFixed(1) },
-             after, spread, siteR: +siteR.toFixed(1) };
+             after, spread, siteR: +siteR.toFixed(1), win: CHEER_T };
   });
-  /* 門檻 3.2 秒（v1.89 從 2.5 放寬）：這條原本假設「蓋完那一刻所有人都還在工地邊上」，
-     而魔法師現在站在建材堆裡（v1.95 起料在多遠就走多遠），走回圈上要兩秒。
-     實測 1.9～3.1 秒，慶祝總共 7 秒——他還跳得到四秒以上。
-     再放寬就沒有意義了：那表示有人是趕到才散場。真的從碎料場外緣走回來那個場景
-     由下面「蓋完時站在場外的人也趕得回慶祝圈」守（v1.95 起遠的人會跑，見 CHEER_IN）。 */
-  ok('蓋完後很快就圍成一圈', cheer.allAt > 0 && cheer.allAt < 3.2,
+  /* 門檻是慶祝窗口 CHEER_T（v1.250）：進場改回平常的腳程、來不及的就來不及之後，
+     「3.2 秒內全員到齊」不再是規則（v1.89～v1.249 的門檻，那時候遠的人用跑的趕回來）。
+     這個場面（300 塊、自然蓋完）照走路實測最後一個人 3.0～3.75 秒到。
+     從碎料場外緣走回來、來不及的那一種由下面〈從場外走回慶祝圈〉守。 */
+  ok('蓋完後很快就圍成一圈', cheer.allAt > 0 && cheer.allAt < cheer.win,
      cheer.allAt + ' 秒全員就位（照現況分配位置，不是照編號硬分）；最後到的那個蓋完時站在 ' +
      cheer.slow.d + '（' + (cheer.slow.mage ? '魔法師' : '工人') + '），全場最遠 ' +
      cheer.farD + '，圈半徑 ' + cheer.rad.want);
@@ -4352,11 +4351,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      cheer.maxY > 0.4 && cheer.drift === 0,
      '慶祝的六秒半裡跳 ' + cheer.jumps + ' 次、落地 ' + cheer.landed + ' 次，最高 ' +
      cheer.maxY + '；就位後還在水平移動的人次 ' + cheer.drift);
-  /* 蓋完那一刻站在場外的人也要趕得回圈上（v1.95）。魔法師現在會跟著料走到碎料場外緣
-     （實測半徑 63），用平常的腳程 6.8 要走六秒半，而慶祝總共只有七秒——v1.94 之前
-     在這個場景是「十秒內從來沒有全員到齊」，四個人整段都在路上。
-     修法是進場那一趟照距離算腳程（CHEER_IN），遠的人跑回來。 */
+  /* 從場外走回慶祝圈：照平常的腳程走，來不及的就不跳（v1.250）。
+     使用者：「小人跑速固定成原本走路速度(目前會超快速跑成一圈 看起來很奇怪)
+     來不及的就來不及(走過去 然後慶祝就原地跳)」。v1.95～v1.249 這一條守的是反過來那件事
+     ——「從碎料場外緣也要 3.2 秒內趕回來」，做法是進場那一趟照距離算腳程（CHEER_IN），
+     遠的人用跑的（這個場面最快 10.5，900 塊自然蓋完的最快到 22）。
+     規則型，三件事都不靠骰子：
+       ① 進場路上最快那一幀不超過走路速度。房子先清掉（clearHomes）：繞房子往外鼓那一步
+          會是 √2 倍走路速度，那是 ringWalk 本來就有的、使用者選先不動
+          （見 開發筆記〈慶祝進場改回走路速度、來不及的就不跳〉）。
+       ② 來得及的照跳：碎料場外緣走回圈上要四秒，窗口七秒，其餘的人都舉得到手。
+       ③ 來不及的不跳：0 號的窗口推到「就算散場延遲抽到最大，也比走到圈上少半秒」
+          ＝蓋完時被別的事耽擱、窗口快關了還在外緣。他要有往圈上走（不是站著等），
+          但從頭到尾沒舉過手——窗口一關就散場去閒晃，不會走到圈上補跳。 */
   const cheerFar = await page.evaluate(() => {
+    clearHomes();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 900; setWorkerCount(20); startBuild(true);
     for (let i = 0; i < 40; i++) step(0.05);
@@ -4366,24 +4375,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       w.x = Math.cos(a) * R; w.z = Math.sin(a) * R;
       releaseWorker(w); w.cheer = 0; w.st = 'idle'; w.mang = a; w.mrad = R;
     });
-    const from = Math.max.apply(null, workers.map(w => Math.hypot(w.x, w.z)));
     completeNow();                                   // 「立刻建成」→ 進慶祝
-    let allAt = -1, jumps = 0, up = false;
+    const late = workers[0];
+    const d0 = Math.hypot(late.x, late.z);
+    const need = (d0 - cheerR()) / WALK;             // 光徑向就要走這麼久（還沒算弧長）
+    late.cheer = CHEER_T - (need - CHEER_OUT - 0.5);
+    const dt = 0.05;
+    let fast = 0, lateHail = 0, dClose = -1;
+    const hailed = workers.map(() => false);
+    const px = workers.map(w => w.x), pz = workers.map(w => w.z);
     for (let i = 0; i < 200; i++) {
-      step(0.05);
-      if (allAt < 0 && workers.every(w => w.hail)) allAt = +(i * 0.05).toFixed(2);
-      const w0 = workers[0];
-      if (w0.y > 0.02 && !up) jumps++;
-      up = w0.y > 0.02;
+      const on = workers.map(w => cheerOn(w) && !w.hail);
+      step(dt);
+      workers.forEach((w, k) => {
+        if (on[k] && cheerOn(w)) fast = Math.max(fast, Math.hypot(w.x - px[k], w.z - pz[k]) / dt);
+        if (w.hail) hailed[k] = true;
+        px[k] = w.x; pz[k] = w.z;
+      });
+      if (late.hail) lateHail++;
+      if (dClose < 0 && !cheerOn(late)) dClose = Math.hypot(late.x, late.z);
     }
-    return { allAt, jumps, from: +from.toFixed(1), ring: +cheerR().toFixed(1),
-             fast: +Math.max.apply(null, workers.map(w => w.crun)).toFixed(1), walk: WALK };
+    return { fast: +fast.toFixed(1), walk: WALK, lateHail, walked: dClose > 0 && dClose < d0 - 1,
+             others: hailed.slice(1).filter(Boolean).length, n: workers.length - 1 };
   });
-  ok('蓋完時站在場外的人也趕得回慶祝圈',
-     cheerFar.allAt > 0 && cheerFar.allAt < 3.2 && cheerFar.jumps >= 4,
-     '從半徑 ' + cheerFar.from + ' 走回半徑 ' + cheerFar.ring + ' 的圈上花 ' +
-     cheerFar.allAt + ' 秒（最快的人腳程 ' + cheerFar.fast + '，平常走路是 ' +
-     cheerFar.walk + '），第一個人在慶祝的十秒裡跳了 ' + cheerFar.jumps + ' 次');
+  ok('從場外走回慶祝圈：照平常的腳程走，來不及的就不跳',
+     cheerFar.fast <= cheerFar.walk && cheerFar.others === cheerFar.n &&
+     cheerFar.walked && cheerFar.lateHail === 0,
+     '進場最快 ' + cheerFar.fast + '（走路 ' + cheerFar.walk + '）；來得及的 ' + cheerFar.others + '／' +
+     cheerFar.n + ' 都到圈上跳了；來不及的那個' + (cheerFar.walked ? '有往圈上走' : '沒往圈上走') +
+     '、舉手 ' + cheerFar.lateHail + ' 幀');
   ok('慶祝完就散開去閒晃', cheer.after === 0 && cheer.spread > cheer.rad.hi + 3,
      '還在舉手的 ' + cheer.after + ' 人，最遠走到 ' + cheer.spread);
 
@@ -9657,7 +9677,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const wallRun = await page.evaluate(() => {
     cleanTools(); clearHomes(); stopIdleEvent();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
-    targetCnt = 600; setWorkerCount(20); startBuild(true); completeNow();
+    targetCnt = 600; setWorkerCount(20); startBuild(true);
+    /* 人先擺回工地邊（v1.250）：上面 mkWall 把人停在 (300, 300)，v1.249 以前是靠慶祝進場
+       「照距離算腳程」2.5 秒內衝回圈上（從 424 格外＝每秒一百七十格），這裡等於順手收人。
+       進場改成照平常走之後，開工那一刻人還在半徑 343～382，45 秒走不到牆邊、砌 0 塊。 */
+    for (const w of workers) {
+      const a = Math.random() * Math.PI * 2, d = siteR + rr(3, 9);   // 同 newWorker 的站法
+      w.x = Math.cos(a) * d; w.z = Math.sin(a) * d;
+    }
+    completeNow();
     for (let i = 0; i < 240; i++) step(0.05);
     stopIdleEvent(); clearHomes(); evArm = 0;
     idleEv = IDLE_EVENTS.find(e => e.id === 'wall');

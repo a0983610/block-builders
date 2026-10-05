@@ -53,9 +53,9 @@ function newWorker(i) {
     bem: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0,
     /* 工程師（eng）：拿藍圖 plan、站的角度 eang、下一個動作倒數 et、指揮動作剩幾秒 point。
        聊天：剩幾秒 chat、對象編號 cw、輪到誰講 side、講完多久才會再聊 chatCd、
-       泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手，crun 是進場那一趟的腳程（見 CHEER_IN），
+       泡泡大小 bub、正在講話 talk。hail 是慶祝時的舉手，
        cout 是散場錯開多久（見 CHEER_OUT），cft 是下一束彩帶還有幾秒（見 CONF_GAP）。 */
-    eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0, crun: 0, cout: 0, cft: 0,
+    eng: 0, plan: 0, eang: 0, et: 0, point: 0, hail: 0, spot: 0, cout: 0, cft: 0,
     chat: 0, cw: -1, side: 0, chatCd: 0, bub: 0, talk: 0,
     /* 談不攏就打起來（v1.178，見 startFight）：fig 是還要打幾秒、fw 是對手編號、
        guard 是舉拳的架勢、punch 是這一拳揮到哪 0～1（後兩個是畫的時候用的）。 */
@@ -1505,8 +1505,8 @@ function stepFlee(w, dt) {
    不改成「半徑先走完再轉角度」是因為那樣繞遠路：慶祝進場實測會慢一秒。
    「從建築裡走出來」那條路不受影響——它傳進來的目標角度就是人自己現在的角度
    （dA = 0），整份腳程本來就全給徑向。 */
-/* spd 給了就用那個腳程（單位／秒），沒給就照平常走。慶祝進場會給——
-   遠的人要跑（見 CHEER_IN）。 */
+/* 腳程一律 WALK（v1.250）。v1.95～v1.249 有第五個參數 spd 給慶祝進場用（遠的人用跑的趕回來），
+   拿掉了，見〈完工慶祝〉那段的註解。 */
 /* 繞外圈的路上有房子：往外鼓出去繞過它（v1.104）。
    圈子的**內側是地標**，所以只能往外閃——往內閃會走進建築裡。
    為什麼一定要在這裡算，光靠 pushOutHome 不行：ringWalk 每一幀是用極座標
@@ -1551,7 +1551,7 @@ function ringHold(na, cr, want, budget) {
   if (!footHome(Math.cos(na) * cr, Math.sin(na) * cr)) return cr;
   return Math.min(ringClear(na, cr), cr + budget);
 }
-function ringWalk(w, ta, rad, dt, spd) {
+function ringWalk(w, ta, rad, dt) {
   /* 要跨過城牆那條線才到得了（一邊在城裡、一邊在城外），或直線過去會碰到砌好的牆：照巡路規則走
      （v1.248，見 navAim），走到看得到目標、同一側了才照下面繞圈。後面那一條是給「剛穿過門洞、
      人還在門樓的通道裡」那幾步：那時候已經算城裡了，換回繞圈的話會斜著往墩座上擠。
@@ -1569,7 +1569,7 @@ function ringWalk(w, ta, rad, dt, spd) {
     if (wallSplits(w.x, w.z, gx, gz) || wallHit(w.x, w.z, gx, gz)) {
       w.tx = gx; w.tz = gz;
       const leg = w.leg;
-      const at = strollTo(w, dt, spd, (spd || WALK) / WALK);
+      const at = strollTo(w, dt);
       w.leg = leg;
       return at;
     }
@@ -1579,8 +1579,7 @@ function ringWalk(w, ta, rad, dt, spd) {
   const TAU = Math.PI * 2;
   // 取最短那一邊繞。ta 可能是累加出來的（工程師換位置一次加一點），先折回 ±π
   const dA = ((((ta - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
-  const sp = spd || WALK;
-  const budget = sp * dt;
+  const budget = WALK * dt;
   /* 這一步的目標半徑：現在的角度、以及**往前看一段**的角度，兩個要的半徑取大的。
      一定要往前看，不能等踩到了才往外挪——把算好的位置事後往外推是一次好幾格的傳送，
      下一幀又被「半徑差」拉回來，等於原地震盪（實測 200 幀裡有 116 幀在原地）。
@@ -1612,7 +1611,7 @@ function ringWalk(w, ta, rad, dt, spd) {
   const mx = w.x - px, mz = w.z - pz;
   if (Math.hypot(mx, mz) > 1e-4) {
     w.a = Math.atan2(mx, mz);
-    w.ph += dt * 11 * sp / WALK;                      // 跑起來腳步也要快（同 FLEE_STEP 的道理）
+    w.ph += dt * 11;
     w.gait += (0.85 - w.gait) * Math.min(1, dt * 8);
   } else {
     // 沒在動就把腿收掉（v1.104）。不收的話站定之後腿還在原地擺——就是使用者說的那個樣子
@@ -1626,7 +1625,13 @@ function ringWalk(w, ta, rad, dt, spd) {
 
 /* ── 完工慶祝 ─────────────────────────────────────────────
    七秒（維持原本的長度）。原本是繞著建築跑一圈就結束，看起來只是在趕路；
-   現在改成「跑到定位 → 站定面向建築原地跳」，跳才有慶祝感。 */
+   現在改成「走到定位 → 站定面向建築原地跳」，跳才有慶祝感。
+   **進場一律照平常的腳程走，來不及的就來不及**（v1.250，使用者：「小人跑速固定成原本走路速度
+   (目前會超快速跑成一圈 看起來很奇怪) 來不及的就來不及(走過去 然後慶祝就原地跳)」）。
+   v1.95～v1.249 是照距離算腳程、2.5 秒內全員到齊（CHEER_IN），實測 900 塊的金字塔每輪有 5～22 人
+   比走路快、最快 22（走路 6.8 的 3.2 倍）。改回走路之後最後一個人 3～6.4 秒才到、還跳得到 1.85 秒以上；
+   窗口關了還沒到的人就不跳了，直接散場去閒晃（cheerOn 一過，下面那條分支就不再帶他往圈上走）。
+   見 開發筆記〈慶祝進場改回走路速度、來不及的就不跳〉 */
 const CHEER_T = 7;
 const JUMP_T = 0.62;                // 一次跳躍的週期
 const JUMP_AIR = 0.72;              // 週期裡有多少比例在空中，剩下的是落地停頓
@@ -1635,11 +1640,6 @@ const JUMP_H = 0.55;                // 跳多高
    半徑本來寫死 siteR + 2.6：最小的建築 siteR 只有 7，圈長 60 格分給 60 個人
    等於每人 1 格——放大之後整圈的人會互相插在一起。 */
 const CHEER_GAP = 1.9;
-/* 幾秒內要就位。離得遠的人自己加速——v1.95 起魔法師會跟著料走到碎料場外緣，
-   實測蓋完那一刻四個人都站在半徑 63，用平常的腳程要走六秒半，慶祝總共只有七秒
-   （趕到就散場，四個人整段都在路上）。腳程在 assignSpots 那裡照距離算一次就固定：
-   每幀用「剩下的距離 ÷ 秒數」重算會越走越慢，永遠差最後一點。 */
-const CHEER_IN = 2.5;
 /* 散場時間每個人各抽 0～這麼多秒的延遲（v1.96）。w.cheer 是每個人各自從 0 累加的，
    完工那一刻全員歸零，所以七秒是**同一幀**到期：實測 20 個人第一次動起來全落在
    散場後第 5 幀，一圈人整齊往外走（使用者回報）。抽個延遲就散得開了。
@@ -1723,16 +1723,9 @@ function assignSpots() {
     sx += Math.cos(d); sz += Math.sin(d);
   }
   const base = Math.atan2(sz, sx);
-  const R = cheerR();
   for (let k = 0; k < n; k++) {
     const w = workers[ord[k]];
     w.spot = base + k * gap;
-    /* 這一趟要用多快才 CHEER_IN 秒內進得了圈。距離用 ringWalk 的同一份算法
-       （弧長 + 徑向），不然遠的人會算短、還是趕不到。 */
-    const cr = Math.hypot(w.x, w.z);
-    const ca = cr < 0.001 ? w.spot : Math.atan2(w.z, w.x);
-    const dA = ((((w.spot - ca) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
-    w.crun = Math.max(WALK, Math.hypot(dA * cr, R - cr) / CHEER_IN);
     /* 散場錯開多久（見 CHEER_OUT）。**已經散場的人不重抽**（v1.120）：這裡在慶祝中
        加減人也會跑一次，抽到比較大的延遲就等於把已經關掉的窗口重新打開，那個人會
        走回圈上再跳一下（同「慶祝只有完工後那一次」那條規則）。 */
@@ -1761,10 +1754,9 @@ const TRIP_T = [0.7, 1.3];          // 趴幾秒才爬起來
 /* 這一幀絆倒了嗎。true＝他已經躺下去了，這一幀底下整段跳過（同被戳倒）。 */
 function tripWalk(w, dt) {
   if (w.carry || w.load.length || w.gait < 0.6) return false;
-  /* 慶祝進場那一趟不絆（v1.178）：那一段是「全員要在幾秒內到齊」才成立的（見 CHEER_IN，
-     遠的人會用跑的趕回來），絆一跤就有人趕不上，圈子缺一角。實測從碎料場外緣趕回來
-     那一輪，全員到齊從 2.x 秒被拖到 3.7 秒。 */
-  if (idlePhase() && cheerOn(w)) return false;
+  /* 慶祝進場那一趟照絆（v1.250）。v1.178～v1.249 這裡有一條「慶祝中不絆」：那時候進場是
+     「全員 2.5 秒內到齊」，絆一跤就有人趕不上。v1.250 起進場照平常走、來不及的就來不及
+     （見〈完工慶祝〉），這條的理由沒了，使用者選拿掉。 */
   if (Math.random() >= TRIP_P * dt) return false;
   w.fall = rr(TRIP_T[0], TRIP_T[1]);
   w.trip = 1;                       // 自己絆的，不是被工具打倒（見 quitLazy 那條）
@@ -1912,10 +1904,10 @@ function updWorker(w, wi, dt) {
      拆除中（wreck）早在 v1.106 就拿掉退場了（使用者「敲一下持續驚嚇不合理」）。 */
   if (idlePhase()) {                                  // 蓋完了，圍成一圈慶祝
     if (cheerOn(w)) {
-      /* 先各自跑到自己那一格（等分一圈，所以站得開），到位就轉身面向建築
+      /* 先各自走到自己那一格（等分一圈，所以站得開），到位就轉身面向建築
          原地跳。跳的相位照編號錯開 0.09 秒，一圈看過去是一道波浪，
          不是全場同手同腳。 */
-      if (ringWalk(w, w.spot, cheerR(), dt, w.crun)) {
+      if (ringWalk(w, w.spot, cheerR(), dt)) {
         w.a = Math.atan2(-w.x, -w.z);                 // 面向建築
         w.gait += (0 - w.gait) * Math.min(1, dt * 8);
         w.ph += dt * 9;                               // 舉起來的手跟著擺
