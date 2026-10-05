@@ -43,7 +43,8 @@ const TOOLS = [
   { id: 'meteor', n: '隕石', k: '☄', tip: '點一下：3 秒後從斜上方砸下一顆燃燒隕石，可以同時來好幾顆' },
   { id: 'nuke', n: '核彈', k: '☢', tip: '點一下：2 秒後天上掉核彈下來' },
   { id: 'magic', n: '爆裂魔法', k: '💥', tip: '點一下：魔法陣一層層展開，6 秒後爆炸' },
-  { id: 'storm', n: '打雷', k: '⚡',
+  /* 圖示 v1.251.0 起跟霹靂一閃對調（使用者：「圖示跟打雷對調」），⚡ 給善逸 */
+  { id: 'storm', n: '打雷', k: '🌩',
     /* v1.165 起一次三朵：從周圍飄進來、往中心靠攏，各自劈自己的雷（見 STORM_TRIO）。
        v1.177 一朵劈 15～20 道（使用者要求加次數，見 STORM_N）。
        v1.228 起點兩下：在第一點聚攏，邊劈邊飄到第二點（見 aimStorm）。 */
@@ -86,7 +87,11 @@ const TOOLS = [
     tip: '點兩下：先點火槍兵站的位置，再點要打的方向（點建築就瞄那個高度）——六十人三段擊九輪齊射' },
   { id: 'levi', n: '兵長砍猴', k: '🌀',
     /* v1.230：點建築、地上的生物或小人就飛過去砍，點空地就跑到那裡待命（見 callLevi） */
-    tip: '點建築、生物或小人：叫里維跑來射鋼索飛過去一頓狂砍；點空地：跑到那裡待命' }
+    tip: '點建築、生物或小人：叫里維跑來射鋼索飛過去一頓狂砍；點空地：跑到那裡待命' },
+  { id: 'zenitsu', n: '霹靂一閃', k: '⚡',
+    /* v1.251.0：點建築、地上的生物或小人就跑過去蹲低一閃（八連，在那一點四周的範圍裡亂竄、貼地削過去），
+       點空地就跑到那裡待命（見 callZen）。圖示第一版是 🌩、打雷是 ⚡，使用者看過預覽：「圖示跟打雷對調」 */
+    tip: '點建築、生物或小人：叫善逸跑來，霹靂一閃八連在範圍內亂竄、貼地削過去；點空地：跑到那裡待命' }
 ];
 /* 說明最多幾個字（v1.220.2，使用者：「破壞工具說明不要太長」）。選好一把之後它會接在
    底部那條操作提示的最前面，而那條不換行、後半段固定的操作說明自己就佔掉約 514px——
@@ -125,7 +130,8 @@ const toolOk = t => !t.lock || t.lock.ok() || stats.gift.indexOf(t.id) >= 0;
 const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw: 1,
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
                       storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1,
-                      bounce: 1, hole: 1, excalibur: 1, musket: 1, levi: 1 };   // 兵長砍猴點空地＝跑到那裡（v1.230）
+                      bounce: 1, hole: 1, excalibur: 1, musket: 1, levi: 1,     // 兵長砍猴點空地＝跑到那裡（v1.230）
+                      zenitsu: 1 };                                             // 霹靂一閃同上（v1.251.0）
 let tool = 'hammer';
 
 /* ── 破壞道具泡泡（v1.214）───────────────────────────────
@@ -7989,6 +7995,8 @@ function useTool(hit) {
   /* 兵長砍猴（v1.230）：點建築＝飛過去砍、點空地＝跑到那裡待命；點生物與小人在 game-ui.js 那邊就接走了。
      碎料在點選那一層是透明的（v1.239.0，見 onUp）：v1.230～v1.238 點到碎料他會當成建築飛過去砍那一塊 */
   if (tool === 'levi') { callLevi(hit.point, hit.dir, null, false, onGround); return 0; }
+  // 霹靂一閃（v1.251.0）：同上，點建築＝跑過去一閃、點空地＝跑到那裡待命（碎料在點選那一層同樣是透明的）
+  if (tool === 'zenitsu') { callZen(hit.point, null, false, onGround); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
@@ -8172,7 +8180,8 @@ const doomNear = m => m.kind === 'giant' ? GIA_NEAR
    （兩隻猴子）——加下一款走地上的天災時在這三張表各加一格就好。
    Saber 走路同小人（v1.226，使用者：「增快saber一般走路移動速度(同小人)」；v1.222～v1.225 照猴子的 2.2），
    腿擺照小人那一份（stp 不給＝1，小人走 WALK 也是 11 弧度／秒）。 */
-const DOOM_SPD = { giant: GIA_WALK, saber: WALK, levi: WALK, megumin: WALK };   // 里維兵長（v1.230）、惠惠（v1.247.0）同 Saber
+const DOOM_SPD = { giant: GIA_WALK, saber: WALK, levi: WALK, megumin: WALK,     // 里維兵長（v1.230）、惠惠（v1.247.0）同 Saber
+                   zenitsu: WALK };                                             // 善逸（v1.251.0）也是
 const DOOM_STEP = { giant: GIA_STEP };
 const DOOM_KEEP = { giant: GIA_KEEP };
 /* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
@@ -8274,6 +8283,7 @@ function spawnBeast(kind, fun, bad, ang) {
   else if (kind === 'saber') sndSaber();
   else if (kind === 'levi') sndLevi();
   else if (kind === 'megumin') sndMegumin();
+  else if (kind === 'zenitsu') sndZen();
   else sndBeast(kind === 'snow');
   if (ang !== undefined) return m;               // Excalibur 叫來的：提示由 callSaber 講（v1.224）
   /* 惠惠（v1.247.0）只當吉祥物、只有被打才動手，提示講她會怎樣 */
@@ -8627,12 +8637,13 @@ function stepBeast0(m, dt) {
       (m.st === 'come' || m.st === 'fun' || m.st === 'go') && giantBust(m)) return false;
   /* Excalibur 叫她過去那一段**用跑的**（v1.226，使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」）：
      腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
-  if (m.kind === 'saber' || m.kind === 'levi')          // 里維兵長同 Saber 用跑的（v1.230）
+  if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu')   // 里維兵長（v1.230）、善逸（v1.251.0）同 Saber 用跑的
     m.run += ((m.call && (m.st === 'call' || m.st === 'gate') ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   /* 惠惠退到安全距離那一段也用跑的（v1.247.0，使用者：「退到安全距離用跑的(三倍速度 要有奔跑動作)」） */
   else if (m.kind === 'megumin') m.run += ((m.st === 'mwalk' ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   if (m.st === 'call') return stepCall(m, dt, spd * EXC_RUN, (stp || 1) * EXC_RUN, kp);   // v1.224
   if (m.st === 'odm') return stepOdm(m, dt);              // 兵長砍猴：立體機動那一招（v1.230）
+  if (m.st === 'zen') return stepZen(m, dt);              // 霹靂一閃：架勢、一閃、收刀（v1.251.0）
   if (m.st === 'mwalk' || m.st === 'mcast') return stepMeg(m, dt, spd, stp, kp);   // 惠惠（v1.247.0）
   if (m.st === 'come') {
     /* 走到工地外圈、自己這一側那一點就算到了（「去哪」）。v1.235 以前給的是工地中心 (0, 0)，
@@ -8869,6 +8880,8 @@ function stepBeast0(m, dt) {
     /* 里維兵長（v1.230）：站定架刀之後射鋼索飛過去（見 stepOdm）。他只做玩家叫的事，
        沒有命令就走到這裡（照理不會）直接回去逛——DOOM_ACT 裡沒有他，往下走會叫到 undefined */
     if (m.kind === 'levi') { if (m.call) odmStart(m); else funBack(m); return false; }
+    /* 善逸（v1.251.0）同里維：只做玩家叫的事，站定之後蹲成居合架勢（見 stepZen） */
+    if (m.kind === 'zenitsu') { if (m.call) zenStart(m); else funBack(m); return false; }
     /* 還欠著幾處的（v1.229，見 moreMascot）：砸之前先認好這一塊（砸完最近的那一塊就換人了），
        **砸完才記進 spots**——先記的話 apeStrike 找目標時會把這一處當成「砸過的」跳過，
        改點 8 格外的另一塊（實測點火距離 9.8～18.9 格，隔空點火）。
@@ -9417,7 +9430,9 @@ function stepCall(m, dt, spd, stp, kp) {
      b 點到的那一隻生物（牠會走，每一幀照牠現在的位置追；不在場上了就收工）、ax／az 站定之後要面向的那一點。
      b／ax／az 是里維（v1.230）先開的，Saber 點生物（v1.238）同一套，只是點得到的那幾隻各認各的（sabCanCut） */
   if (c.b) {
-    if (!levTargetOk(c.b, c.bw, m.kind === 'saber' ? sabCanCut : leviCanCut)) { excDone(m); return false; }
+    if (!levTargetOk(c.b, c.bw, m.kind === 'saber' ? sabCanCut : m.kind === 'zenitsu' ? zenCanCut : leviCanCut)) {
+      excDone(m); return false;
+    }
     c.x = c.b.x; c.z = c.b.z; c.ax = c.b.x; c.az = c.b.z;
   }
   const sd = c.sd;
@@ -9489,7 +9504,7 @@ function callAim(m) {
   // 里維兵長（v1.230）站的是目標前面那一點，面向的是要砍的那一點（c.ax／c.az）
   const c = m.call, dx = (c.ax !== undefined ? c.ax : c.x) - m.x, dz = (c.az !== undefined ? c.az : c.z) - m.z;
   if (Math.hypot(dx, dz) > 0.3) m.a = Math.atan2(dx, dz);
-  m.st = 'act'; m.t = m.kind === 'levi' ? LEV_AIM : DOOM_AIM;
+  m.st = 'act'; m.t = m.kind === 'levi' ? LEV_AIM : m.kind === 'zenitsu' ? ZEN_AIM : DOOM_AIM;
 }
 /* 一招收完（斬完、或開斬之後被打斷）要去哪裡。排著的下一道命令先做；
    叫來的那一招收完回去逛（叫到的一定已經是吉祥物，見 ownSaber）；她自己那一招照舊（吉祥物回去逛、天災走人）。 */
@@ -9580,8 +9595,9 @@ const LEV_STEAM = { rate: [70, 120, 260], burst: 4, cap: 500, s: [0.7, 1.6], lif
 const LEV_STEAM_ALL = 2400;      // 塵霧那一池已經這麼多就不冒了（蘑菇雲那一類在場時讓給它們）
 const lvSm = f => f * f * (3 - 2 * f);
 /* 立體機動中的里維、正在氣化的巨人：一般道具打不動（見檔頭那一段）。
-   倒下、暈著、爬起來的惠惠也是（v1.247.0，使用者：「躺著暈不會被打到」）：炸不飛、點不著、吸不走 */
-function levBusy(m) { return !!m && (m.st === 'odm' || !!m.dead || megDown(m)); }
+   倒下、暈著、爬起來的惠惠也是（v1.247.0，使用者：「躺著暈不會被打到」）：炸不飛、點不著、吸不走。
+   出招中的善逸也是（v1.251.0：一閃是一整段不可分割的位移，見〈霹靂一閃〉那一節） */
+function levBusy(m) { return !!m && (m.st === 'odm' || m.st === 'zen' || !!m.dead || megDown(m)); }
 /* 在地上嗎（點得到、追得到的那一條，里維與 Saber 共用）。飛龍的 sky 從進場到飛走一路是 1（連在地上那幾段也是），
    所以牠照狀態認：在草皮上走（gwalk）、摔下來趴著（down）的算在地上；其餘照 sky（獅鷲降落時歸零） */
 const onGroundBeast = m => m.kind === 'dragon' ? m.st === 'gwalk' || m.st === 'down' : !m.sky;
@@ -9997,6 +10013,258 @@ function stepDie(m, dt) {
     dieSteam(m); mine++;
   }
   return u >= 1;
+}
+
+/* ── 破壞道具：霹靂一閃（v1.251.0）────────────────────────────
+   使用者：「先做這個角色造型 給我確認能做多像 越像越好 夠像會預計加破壞道具 霹靂一閃 操作方式會類似saber & 里維」
+   （造型兩輪預覽，見 engine.js〈善逸〉），看過之後：「右前方 藍白 然後可以做進遊戲了 可以點建築&小人
+   做成霹靂一閃 Z字形 在地面上破壞」。問過四件，使用者選：
+     · Z 字折幾筆：**六連**（參考圖那一張寫的就是「霹靂一閃 六連」）
+     · 點到的、Z 字路上掃到的小人與動物：**全部沖飛 但是不斬殺巨人**（推薦的是「人沖飛、動物倒地、巨人斬殺」）
+     · 生物點得到嗎：**點得到（同 Saber／里維）**
+     · 點空地：**跑過去待命（同 Saber／里維）**
+   看過預覽之後：「圖示跟打雷對調 衝的路徑 改成隨機在一個破壞範圍內衝／衝過的痕跡還是金黃 不是藍白／
+   衝過的路線帶有微小閃掉特效」（「閃掉」讀成閃電，回報時講過）。第一版是固定的 Z 字（往目標方向走 18 格、左右交錯偏 8 格），
+   現在是**以那一點為圓心、半徑 ZEN_Z.r 的圓裡隨機亂竄**，其中一筆一定穿過那一點（見 zenPath）；
+   光痕是金黃的（架勢的雷光照舊藍白，見 engine.js 的 zenBolts）。
+   再看一次之後挑了尺寸：「半徑16 寬8 高5 六連改成八連」——所以是**八連**（預覽上預設是 12／3／3、六筆）。
+   再看一次：「衝過以後路線上的閃電特效 我的意思是加在地面上(藍白) 衝過的金黃痕跡從尾部慢慢淡掉」——
+   小閃電改成貼著地面、藍白的；光痕從尾巴開始淡：衝完之後尾巴沿著路線往頭那邊縮（上一版是衝完之後整條一起變細）。
+
+   **走過去那一段整套是 Excalibur／兵長砍猴那一套**（sendSaber／stepCall／callAim／excDone 共用）：他就是一隻吉祥物
+   （kind 'zenitsu'），只能用道具叫來（同里維，不在 MASCOTS 裡），收完刀留下來逛一陣子，這段時間再點就直接叫他過去。
+     · 點建築：跑到離那一點 zenReach() 格（破壞範圍的外緣再外面一點）就站定
+     · 點生物、小人：命令帶著那一隻（b／bw），stepCall 每一幀照牠現在的位置追；衝出去那一刻再照牠當時的位置排路線
+     · 點空地：跑到那一點待命（go，見 levArrive）
+   站定那一刻（callAim → act → zenStart）轉進 zen，時間軸讀引擎那一份（ENG.ZEN），姿勢照同一份擺：
+     iai     蹲成居合架勢、閉眼，四周藍白的雷光越來越密
+     dash    一閃：在破壞範圍裡亂竄 ZEN_Z.n 筆（一筆 ZEN.stroke 秒），**這一幀衝過的那一段貼地削掉**（zenCut，同 Excalibur
+             一段一段往前削：首尾相接，每一塊剛好被算到一次）。削的是最底下 ZEN_Z.h 層、寬 ZEN_Z.w——上面接不到地的
+             照支撐規則垮下來（afterHit → markSupportDirty），所以叫「在地面上破壞」
+     slash   停在終點、刀揮在右前方（衝完還在建築底下就順著最後一筆再衝出去到空地，見 zenInside）
+     noto    刀尖對進鞘口
+     sheath  刀滑進鞘裡、「鏘」一聲，回去逛（excDone）
+   **那一整招打不動他**（levBusy）：衝刺是一整段不可分割的位移，中途被掀飛的話路線與削掉的那一條對不上（同里維）。
+   見 開發筆記〈破壞道具：霹靂一閃〉 */
+/* 一閃多大：n 幾筆、r 破壞範圍的半徑（以點到的那一點為圓心）、w 削多寬、h 削到第幾層。
+   使用者看過預覽挑的：「半徑16 寬8 高5 六連改成八連」。
+   **物件不是常數**：預覽頁要邊看邊挑（同 Saber 那次粗與長兩排按鈕），程式只讀不寫 */
+const ZEN_Z = { n: 8, r: 16, w: 8, h: 5 };
+const ZEN_EDGE = 1.5;            // 站定在破壞範圍外緣再外面幾格（第一筆從那裡衝進去）
+const ZEN_HOP = 0.9;             // 相鄰兩點至少隔幾個半徑（亂竄也要一筆一筆橫過整個範圍，不是原地抖）
+const ZEN_AIM = 0.15;            // 站定那一下（act）多久就蹲下去（他出手比里維還快，架勢那 1.2 秒才是蓄力）
+const ZEN_HIT = [14, 24];        // 削飛的積木沿著衝的方向飛多快（同一把尺：槌子 15、Excalibur 16～26）
+const ZEN_DUST = 0.08;           // 衝的那 0.6 秒幾秒揚一次塵（每幀都揚的話塵霧那一池一下就滿，同 LEV_DUST）
+const ZEN_OUT_MAX = 240;         // 衝到底還在建築底下：最多再往外衝幾步（一步半格，見 stepZen）
+const ZEN_ROOF = 16;             // 頭上幾層內還有積木就算還在建築底下
+/* 站在這裡算不算還在建築底下：腳邊三層被擋（footBlocked）、在房子的外框裡，或頭上 ZEN_ROOF 層內還有就位的積木 */
+function zenInside(x, z) {
+  if (footBlocked(x, z) || homeFoot(x, z)) return true;
+  for (let k = 0; k < ZEN_ROOF; k++) if (blockAt(x, k + HB, z)) return true;
+  return false;
+}
+/* 站多遠：破壞範圍的外緣再外面 ZEN_EDGE 格（已經在圈內就原地蹲下去，同 Excalibur 一進射程就站定） */
+const zenReach = () => ZEN_Z.r + ZEN_EDGE;
+function pickZen(p) {
+  let best = null, bd = Infinity;
+  if (beasts) for (const m of beasts) {
+    if (m.kind !== 'zenitsu') continue;
+    const d = Math.hypot(m.x - p.x, m.z - p.z) + (m.ufo ? 1e6 : 0);
+    if (d < bd) { bd = d; best = m; }
+  }
+  return best;
+}
+/* 點得到、追得到的生物：同 sabCanCut（他自己、被吸走的、打不動的、天上的不算） */
+function zenCanCut(m) {
+  return !!m && m.kind !== 'zenitsu' && !m.ufo && !levBusy(m) && onGroundBeast(m);
+}
+/* 點下去的那一下（useTool／game-ui.js 點生物、點小人那兩條）。tb＝點到的那一隻（或那一個小人，
+   isW 給 true）；ground＝點的是空地（跑到那裡待命）。回傳被叫去的那一位（測試在讀）。 */
+function callZen(p, tb, isW, ground) {
+  const R = zenReach();
+  const at = tb ? { x: tb.x, y: 0, z: tb.z, sd: R, ax: tb.x, az: tb.z, b: tb, bw: isW ? 1 : 0 }
+           : ground ? { x: p.x, y: 0, z: p.z, sd: LEV_SD, go: 1, b: null }
+           : { x: p.x, y: p.y || 0, z: p.z, sd: R };
+  const whom = !tb ? '' : isW ? '那個小人' : (BEAST_NM[tb.kind] || '那一隻');
+  let m = pickZen(at);
+  if (!m) {
+    /* 從那一點的方位上進場（同 Excalibur）；點在場心附近就隨機挑一個方位 */
+    const a = Math.hypot(at.x, at.z) > 1 ? Math.atan2(at.z, at.x) : Math.random() * Math.PI * 2;
+    m = spawnBeast('zenitsu', 1, 0, a);
+    toast(BEAST_NM.zenitsu + '應召而來', ground ? '他跑到你點的地方待命'
+                                         : '他朝' + (whom || '你點的地方') + '跑過去，蹲低之後霹靂一閃八連');
+  } else {
+    beastCry(m);
+    toast(BEAST_NM.zenitsu + '聽到了', m.st === 'zen' ? '這一招收完刀就過去'
+                                     : tb ? '他轉身朝' + whom + '跑過去'
+                                     : ground ? '他轉身跑到你點的地方待命' : '他轉身朝你點的地方跑過去');
+  }
+  if (m.st === 'zen') m.cq = at;               // 正在出招：這一招收完刀再過去（同 Excalibur）
+  else sendSaber(m, at);
+  return m;
+}
+/* 站定那一刻：蹲成居合架勢、面向那一點（點生物的話面向牠這一刻在的地方） */
+function zenStart(m) {
+  const c = m.call;
+  if (c.b && !levTargetOk(c.b, c.bw, zenCanCut)) { excDone(m); return; }
+  m.st = 'zen'; m.op = 'iai'; m.ot = 0; m.zt = 0;
+  m.zp = null; m.zc = null; m.zs = 0; m.zt0 = undefined; m.zt1 = undefined; m.zn = 0; m.zdu = 0; m.zsh = 0;
+  m.gait = 0; m.run = 0;
+  const tx = c.b ? c.b.x : c.ax !== undefined ? c.ax : c.x, tz = c.b ? c.b.z : c.az !== undefined ? c.az : c.z;
+  if (Math.hypot(tx - m.x, tz - m.z) > 0.3) m.a = Math.atan2(tx - m.x, tz - m.z);
+  sndZenCharge();
+}
+/* 一閃的路線（世界座標的幾點）：第 0 點在他腳下，之後 n 點都落在以 (tx, tz) 為圓心、半徑 ZEN_Z.r 的圓裡（照面積均勻抽），
+   相鄰兩點至少隔 ZEN_HOP 個半徑（抽 20 次都太近就取最遠的那一次）——一筆一筆橫過整個範圍。
+   **點到的那一點一定被削到**：第 2 筆（第 2 點 → 第 3 點）直直穿過圓心，第 3 點抽在第 2 點的對面
+   （同一條直線上、離圓心 0.6～1 個半徑，不出圈）。點的是會走的生物、小人，那一刻牠就在圓心。
+   亂數用 Math.random（規則那邊的骰子；測試要押就押它） */
+function zenPath(m, tx, tz) {
+  const R = ZEN_Z.r, n = ZEN_Z.n, pts = [{ x: m.x, z: m.z }];
+  const inDisk = () => { const r = R * Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
+                         return { x: tx + Math.cos(a) * r, z: tz + Math.sin(a) * r }; };
+  for (let i = 1; i <= n; i++) {
+    const L = pts[i - 1];
+    if (i === 3 && n >= 3) {
+      const P = pts[2], vx = P.x - tx, vz = P.z - tz, vl = Math.hypot(vx, vz) || 1;
+      const k = R * (0.6 + 0.4 * Math.random()) / vl;
+      pts.push({ x: tx - vx * k, z: tz - vz * k });
+      continue;
+    }
+    let best = null, bd = -1;
+    for (let t = 0; t < 20; t++) {
+      const q = inDisk();
+      /* 第 2 點要離圓心夠遠，穿過圓心那一筆才長（下一點抽在它對面） */
+      if (i === 2 && Math.hypot(q.x - tx, q.z - tz) < R * 0.5) continue;
+      const d = Math.hypot(q.x - L.x, q.z - L.z);
+      if (d > bd) { bd = d; best = q; }
+      if (d >= R * ZEN_HOP) break;
+    }
+    pts.push(best || inDisk());
+  }
+  return pts;
+}
+function stepZen(m, dt) {
+  const c = m.call, Z = ENG.ZEN;
+  if (!c) { zenEnd(m); return false; }
+  m.ot += dt; m.zt += dt;
+  m.gait = 0; m.run = 0;
+  if (m.op === 'iai') {
+    if (m.ot < Z.iai) return false;
+    /* 衝出去：照目標這一刻的位置排路線（點的是會走的就追到牠現在在的地方；牠不在了就收手） */
+    let tx = c.ax !== undefined ? c.ax : c.x, tz = c.az !== undefined ? c.az : c.z;
+    if (c.b) {
+      if (!levTargetOk(c.b, c.bw, zenCanCut)) { zenEnd(m); return false; }
+      tx = c.b.x; tz = c.b.z;
+    }
+    m.zp = zenPath(m, tx, tz);
+    m.zc = [0];
+    for (let i = 1; i < m.zp.length; i++)
+      m.zc.push(m.zc[i - 1] + Math.hypot(m.zp[i].x - m.zp[i - 1].x, m.zp[i].z - m.zp[i - 1].z));
+    /* 光痕從尾巴開始淡（見引擎的 zenTrailK）：引擎照開始衝的那一刻（m.zt0）、衝這一條要幾秒（m.zT）算衝完多久了，
+       尾巴照那個秒數沿著路線往頭那邊縮 */
+    m.zt0 = m.zt; m.zT = Z.stroke * (m.zp.length - 1);
+    m.zs = 0; m.zt1 = -1; m.op = 'dash'; m.ot = 0;
+    sndZenDash();
+    return false;
+  }
+  if (m.op === 'dash') {
+    const P = m.zp, C = m.zc, Lt = C[C.length - 1], T = Z.stroke * (P.length - 1);
+    const s1 = Math.min(Lt, Lt * m.ot / T);
+    zenCut(m, m.zs, s1, dt);
+    m.zs = s1;
+    let i = 0;
+    while (i < C.length - 2 && C[i + 1] < s1) i++;
+    const A = P[i], B = P[i + 1], f = (s1 - C[i]) / ((C[i + 1] - C[i]) || 1);
+    m.x = A.x + (B.x - A.x) * f; m.z = A.z + (B.z - A.z) * f; m.y = 0;
+    m.a = Math.atan2(B.x - A.x, B.z - A.z);
+    if (s1 < Lt) return false;
+    /* 衝到底還在建築底下（腳邊被擋、站在房子的外框裡、或頭上還壓著沒削到的那幾層）：順著最後一筆再衝出去，
+       到空地為止。那一截不削、光痕照畫（接在 m.zp 後面）——停在樓底下的削口裡看起來是卡在牆裡
+       （只削掉最底下 h 層，終點落在樓底下就會這樣：實測四座裡商銀凹折雙翼大樓那一趟用到了；見 開發筆記〈破壞道具：霹靂一閃〉） */
+    const ux = B.x - A.x, uz = B.z - A.z, ul = Math.hypot(ux, uz) || 1;
+    let k = 0;
+    while (k < ZEN_OUT_MAX && zenInside(m.x, m.z)) { m.x += ux / ul * 0.5; m.z += uz / ul * 0.5; k++; }
+    if (k) { m.zp.push({ x: m.x, z: m.z }); m.zc.push(Lt + k * 0.5); m.zs = Lt + k * 0.5; }
+    pushOutHome(m);
+    m.a = Math.atan2(ux, uz); m.zt1 = m.zt; m.op = 'slash'; m.ot = 0;   // 停下來面向最後那一筆衝的方向
+    return false;
+  }
+  if (m.op === 'slash') { if (m.ot >= Z.slash) { m.op = 'noto'; m.ot = 0; } return false; }
+  if (m.op === 'noto') { if (m.ot >= Z.noto) { m.op = 'sheath'; m.ot = 0; } return false; }
+  if (m.ot < Z.sheath) return false;
+  sndZenSheath();
+  zenEnd(m);
+  return false;
+}
+/* 這一招收完：姿勢從收刀那一格慢慢站起來（m.arm 推到 1、慢慢退回 0，見引擎的 zenPose），照 Excalibur 那一套回去逛／去排著的下一點 */
+function zenEnd(m) {
+  m.op = null; m.ot = 0; m.y = 0; m.arm = 1;
+  excDone(m);
+}
+/* 這一幀衝過的那一段（路長 s0 → s1）：每一筆跟這一段重疊的那一截，離那一截 w/2 以內、最底下 h 層的積木全部削飛
+   （還立著的算破壞，地上的碎料一起掃飛但不算，同 Excalibur）；同一截上的人與動物沖飛。回傳削掉幾塊 */
+function zenCut(m, s0, s1, dt) {
+  const P = m.zp, C = m.zc, W2 = ZEN_Z.w / 2, H = ZEN_Z.h;
+  let n = 0, own = 0, cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i + 1 < P.length; i++) {
+    const a0 = Math.max(s0, C[i]), a1 = Math.min(s1, C[i + 1]);
+    if (!(a1 > a0)) continue;
+    const len = (C[i + 1] - C[i]) || 1, ux = (P[i + 1].x - P[i].x) / len, uz = (P[i + 1].z - P[i].z) / len;
+    const ax = P[i].x + ux * (a0 - C[i]), az = P[i].z + uz * (a0 - C[i]), L = Math.max(0, a1 - a0);
+    for (const b of blocks) {
+      if ((b.st !== SET && b.st !== FREE) || b.y >= H) continue;
+      const vx = b.x - ax, vz = b.z - az, t = vx * ux + vz * uz;
+      if (t < -W2 || t > L + W2) continue;
+      const tc = t < 0 ? 0 : t > L ? L : t, dx = vx - ux * tc, dz = vz - uz * tc;
+      if (dx * dx + dz * dz > W2 * W2) continue;
+      const set = b.st === SET, ow = set && b.hh < 0;   // 同 smash：breakBlock 會把 hh 清掉，要先看
+      /* 沿著衝的方向飛、往被削開的那一側甩一點、一律往上（同 Excalibur 的 excSweep） */
+      const sp = rr(ZEN_HIT[0], ZEN_HIT[1]), sd = (ux * dz - uz * dx) < 0 ? 1 : -1;
+      breakBlock(b, ux * sp - uz * sd * rr(1, 4), rr(3, 8), uz * sp + ux * sd * rr(1, 4));
+      if (!set) continue;
+      n++; if (ow) own++;
+      cx += b.x; cy += b.y; cz += b.z;
+    }
+    zenLives(m, ax, az, ux, uz, L, W2);
+  }
+  m.zdu += dt;
+  if (!n) return 0;
+  const at = { x: cx / n, y: cy / n, z: cz / n };
+  /* self 給他自己：削的那一截就在他腳下，afterHit 震倒的半徑（W2 × 1.7）會罩到他（同巨人那一腳的 self） */
+  afterHit(n, at, W2, own, m);
+  if (m.zdu > ZEN_DUST) { m.zdu = 0; spawnDust(at, W2, n); }
+  m.zn += n;
+  if (!m.zsh) { m.zsh = 1; ENG.shake(1.0 + Math.min(1.2, n * 0.01)); }   // 一招只震一次（同 Excalibur）
+  return n;
+}
+/* 同一截上的人與動物：**全部沖飛**（使用者選的），沿著衝的方向飛出去；巨人**不斬殺**，照樣是沖飛（大的被推得少，
+   tossBeast 照體型打折）。天上的不算（衝的是地面）；他自己不算。沖飛了就算被攻擊（同 Excalibur 的 excLives） */
+function zenLives(m, ax, az, ux, uz, L, W2) {
+  const near = (x, z, pad) => {
+    const vx = x - ax, vz = z - az, t = Math.max(0, Math.min(L, vx * ux + vz * uz));
+    return Math.hypot(vx - ux * t, vz - uz * t) <= W2 + pad;
+  };
+  let hit = 0;
+  for (const w of workers) {
+    if (w.air || w.dead || (w.y || 0) >= ZEN_Z.h) continue;            // 屍體不掀（v1.240）
+    if (!near(w.x, w.z, GATE_MAN_R)) continue;
+    const sp = rr(ZEN_HIT[0], ZEN_HIT[1]) * 0.6;
+    tossWorker(w, ux * sp + rr(-1.5, 1.5), rr(4, 8), uz * sp + rr(-1.5, 1.5), false);
+    lifeHit(w, 'zen');
+    hit++;
+  }
+  if (beasts) for (const o of beasts) {
+    if (o === m || o.air || !onGroundBeast(o) || (o.y || 0) >= ZEN_Z.h) continue;
+    const mid = ENG.BEAST_MID[o.kind] * (o.sc || 1);
+    if (!near(o.x, o.z, GATE_MAN_R + mid * 0.3)) continue;
+    const sp = rr(ZEN_HIT[0], ZEN_HIT[1]) * 0.6;
+    if (tossBeast(o, (ux * sp + rr(-1.5, 1.5)) * B_BLOW, rr(4, 8), (uz * sp + rr(-1.5, 1.5)) * B_BLOW, false)) {
+      beastHit(o, 'zen'); hit++;
+    }
+  }
+  if (hit) sndFall();
+  return hit;
 }
 
 /* 天災的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）。 */
@@ -11121,9 +11389,10 @@ const MORE_GAP = DOOM_FIRE_R * 2;
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 小獼猴', snow: '🐵 小猴子', dragon: '🐉 飛龍',
                    gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber', levi: '🗡 里維兵長',
-                   megumin: '💥 惠惠' };
-/* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）用「他」；惠惠（v1.247.0）用「她」——其餘那幾款照舊是牠 */
-const itOf = m => m.kind === 'saber' || m.kind === 'megumin' ? '她' : m.kind === 'levi' ? '他' : '牠';
+                   megumin: '💥 惠惠', zenitsu: '⚡ 善逸' };
+/* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）、善逸（v1.251.0）用「他」；
+   惠惠（v1.247.0）用「她」——其餘那幾款照舊是牠 */
+const itOf = m => m.kind === 'saber' || m.kind === 'megumin' ? '她' : m.kind === 'levi' || m.kind === 'zenitsu' ? '他' : '牠';
 /* 叫一聲。哪一種叫哪一聲照 spawnBeast／spawnDragon 那邊的分法，不另訂一套。 */
 function beastCry(m) {
   if (m.kind === 'dragon' || m.kind === 'gryphon') sndRoar();
@@ -11131,6 +11400,7 @@ function beastCry(m) {
   else if (m.kind === 'saber') sndSaber();
   else if (m.kind === 'levi') sndLevi();
   else if (m.kind === 'megumin') sndMegumin();
+  else if (m.kind === 'zenitsu') sndZen();
   else sndBeast(m.kind === 'snow');
 }
 /* 這一隻已經在走人了嗎（那就別再改牠的主意，同 turnBad 的規矩：都走到一半了
@@ -11329,7 +11599,7 @@ function beastHit(m, src) {
   if (!m || m === hitBy || beastLeaving(m) || m.call || m.cq) return;
   /* 里維兵長（v1.230）不會生氣：他只做玩家叫他做的事（吉祥物那一套翻臉、砸地標他都沒有）。
      倒下、暈著、爬起來的惠惠（v1.247.0，使用者：「躺著暈不會被打到」）也不算：那幾段 levBusy 擋著，照理打不到 */
-  if (m.kind === 'levi' || m.dead || megDown(m)) return;
+  if (m.kind === 'levi' || m.kind === 'zenitsu' || m.dead || megDown(m)) return;   // 善逸（v1.251.0）同里維
   /* 動不了手的吉祥物（v1.229，表上的 spent：小猴子丟完香蕉）：照樣會倒，只是不再改主意 */
   if (mascSpent(m)) return;
   /* 冷卻中（v1.229）：上一下算進去還不到 BEAST_HIT_CD 秒，這一下不算。

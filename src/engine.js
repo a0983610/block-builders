@@ -477,6 +477,8 @@ const ENG = (function () {
   const excMeshes = [];
   let levMesh = null;               // 里維兵長（v1.230），見〈里維兵長〉那一節的 putLevis
   let megMesh = null, megLineMesh = null;   // 惠惠（v1.247.0）與她集氣的藍色魔力線條，見〈惠惠〉那一節的 putMegs
+  let zenMesh = null, zenZapCore = null, zenZapGlow = null;   // 善逸（v1.251.0）與他的雷光（亮芯／光暈），見〈善逸〉那一節的 putZens
+  let zenTrailCore = null, zenTrailGlow = null;               // 一閃衝過的光痕與上面的小閃電（金黃，同上）
   /* 小黑洞（v1.221）。規則那邊只給位置、黑球半徑、亮度與自轉角，長相全在這裡。
      使用者：「黑色球是要表現得往內吸的感覺」——所以會動的那幾樣**全部往內走**：
      ① 黑球：純黑、不吃光（MeshBasic），它就是一個洞。
@@ -986,6 +988,32 @@ const ENG = (function () {
     for (let i = 0; i < MAXMEG * MEG_LINE * MEG_LINE_SEG; i++)       // 同一條的幾段同一個顏色
       megLineMesh.setColorAt(i, tmpC.setHex(MEG_LINE_C[Math.floor(i / MEG_LINE_SEG) % MEG_LINE_C.length]));
     scene.add(megLineMesh);
+    /* 善逸（v1.251.0）：同惠惠自己一顆，一位 ZEN_SLOT 格（就是造型表），顏色開機時寫死 */
+    zenMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXZEN * ZEN_SLOT);
+    zenMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    zenMesh.castShadow = true;
+    zenMesh.count = 0;
+    zenMesh.visible = false;
+    zenMesh.frustumCulled = false;
+    for (let i = 0; i < MAXZEN; i++)
+      for (let k = 0; k < ZEN_SLOT; k++) zenMesh.setColorAt(i * ZEN_SLOT + k, tmpC.setHex(ZENITSU[k].c));
+    scene.add(zenMesh);
+    /* 雷光（藍白）與一閃的光痕（金黃）：各一對不吃光、不投影的網格，亮芯不透明、光暈半透明（同造型預覽）。
+       光暈排在地上的痕跡與塵霧後面畫（同 Excalibur 的光柱，見〈光柱被焦痕蓋住〉） */
+    const zPair = (C, cap) => {
+      const core = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: C[0] }), cap);
+      const glow = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: C[1], transparent: true,
+                                                                       opacity: C[2], depthWrite: false }), cap);
+      for (const z of [core, glow]) {
+        z.instanceMatrix.setUsage(T.DynamicDrawUsage);
+        z.count = 0; z.visible = false; z.frustumCulled = false;
+        scene.add(z);
+      }
+      glow.renderOrder = 2;
+      return [core, glow];
+    };
+    [zenZapCore, zenZapGlow] = zPair(ZEN_ZAP_C, MAXZEN * ZEN_ZAP_SLOT);
+    [zenTrailCore, zenTrailGlow] = zPair(ZEN_TRAIL_C, MAXZEN * ZEN_TRAIL_SLOT);
     /* 蓄力時的金色光點：往劍身收的那一批 ＋ 四周往上飄的那一批（v1.226），同一顆網格。
        不透明、不吃光（第一版預覽用加亮混色，疊在天空上直接變白） */
     sparkMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: 0xffffff }), MAXSAB * (SAB_SPARK + SAB_RISE));
@@ -6940,6 +6968,614 @@ const ENG = (function () {
     if (lines) { megLineMesh.instanceMatrix.needsUpdate = true; dropSphere(megLineMesh); }
   }
 
+  /* ══ 善逸（v1.251.0）══════════════════════════════════════════
+     使用者：「先做這個角色造型 給我確認能做多像 越像越好／夠像會預計加破壞道具 霹靂一閃 操作方式會類似saber & 里維」
+     ［附四張圖：立繪、拔刀飛撲、霹靂一閃六連的 Z 字、居合架勢四周打雷］。造型預覽 tools/.e2e-out/善逸造型預覽.html 兩輪，
+     看過：「還不錯 但是造型還要調整 斬完刀揮出去 刀太後面了 居合架式的閃電太醜」→「右前方 藍白 然後可以做進遊戲了」。
+
+     **同 Saber／里維／惠惠自己一顆 mesh、不進 BEASTS**（207 塊）。規則那邊他照樣是 beasts 裡的一隻（kind 'zenitsu'），
+     畫的時候 putBeasts 把他那一格留空、putZens 用這一顆畫，點選照樣回報成 beast（zenAt 對回索引）。
+     造型表格式同 MEGUMIN（p 位置、s 尺寸、c 顏色、g 掛在哪一組、r 自己的轉角；面向 +z、**右手在 −x**），多兩欄：
+       z    手臂上的：1＝羽織袖子（手伸不到時往下拉長）、2＝它下面的袖口與手（跟著往下挪）
+       e    1＝平常的眼睛與嘴、2＝閉眼與閉嘴（出招那一整段閉著：他是睡著才打的）
+     羽織上的白三角形是一片菱形斜插進布面、上半截露在布外（見 TRI）。
+     刀與鞘是兩件**道具**：鞘掛在左腰（自己的座標：鞘口在原點、往 +y 是鞘尾），刀不是插在鞘裡就是拿在右手
+     （鍔在原點、刀身往 +y、刃朝 +x）；**手是去追刀柄的**，不是刀跟著手。腳掌另成一組，蹲低劈腿時永遠貼平地面。
+     上身前傾、扭腰繞腰（ZEN_WAIST），腿掛在胯、不跟著倒。比例同小人：頭 0.50 寬、三頭身、頭頂 1.18、頭髮頂 1.29。
+     見 開發筆記〈善逸的造型〉 */
+  const ZNC = {
+    skin: 0xffe3d0, skinD: 0xf0c3ab,
+    hairY: 0xffcc40, hairYD: 0xe9b03a, hairO: 0xf38a2a,
+    white: 0xffffff, iris: 0x7a4a30, irisL: 0xbd7f48, pupil: 0x3a2016, lash: 0x3a2418, brow: 0xd0812f,
+    mouth: 0x9c4848, teeth: 0xffffff,
+    uni: 0x2b2320, btn: 0xbab9cc, belt: 0xeeedee, buckle: 0xaeacb8,
+    pants: 0x3b3029, pantsD: 0x2a211c,
+    haoY: 0xffc843, haoM: 0xf9a636, haoO: 0xf48a28, haoOD: 0xd96a1e, haoI: 0xe9e6de, tri: 0xffffff,
+    cuff: 0xf4f3ef, wrapY: 0xffc843, wrapO: 0xf48a28, tie: 0xf4f3ef,
+    shoe: 0x3a302c, sole: 0xf0efec,
+    blade: 0xf3c94c, bladeZ: 0xfff7d8, mune: 0xc98a26, tsuba: 0xf1dc8e, gold: 0xe9b443,
+    hilt: 0xefeeea, hiltD: 0xf0bf3e, saya: 0xc4c6d6, sayaL: 0xe4e6ef, sayaM: 0x8e90a2
+  };
+  const ZEN_G = { body: 0, head: 1, armR: 2, armL: 3, legR: 4, legL: 5, footR: 6, footL: 7,
+                  hao1: 8, hao2: 9, haoSR: 10, haoSL: 11, saya: 12, sword: 13 };
+  const ZEN_NG = 14;
+  /* 每一組的樞紐（站直時的絕對座標）。鞘與刀兩件道具的矩陣另算（見 zenRig） */
+  const ZEN_PIV = [[0, 0, 0], [0, 0.74, 0], [-0.28, 0.71, 0], [0.28, 0.71, 0], [-0.10, 0.34, 0], [0.10, 0.34, 0],
+                   [-0.10, 0.065, 0], [0.10, 0.065, 0], [0, 0.75, -0.15], [0, 0.40, -0.155],
+                   [-0.20, 0.47, -0.03], [0.20, 0.47, -0.03], [0, 0, 0], [0, 0, 0]];
+  const zenProp = g => g === ZEN_G.saya || g === ZEN_G.sword;
+  const ZENITSU = (() => {
+    const out = [];
+    const P = (g, p, s, c, r, f) => out.push(Object.assign({ g: ZEN_G[g], p, s, c: ZNC[c], r: r || [0, 0, 0] }, f || {}));
+    const SIDE = { arm: 1, leg: 1, foot: 1, haoS: 1 };
+    /* 左右一次放兩塊：x 反號、繞 Y／Z 的角度反號；arm／leg／foot／haoS 自動分成 L（+x）與 R（−x） */
+    const M = (g, p, s, c, r, f) => {
+      r = r || [0, 0, 0];
+      P(SIDE[g] ? g + 'L' : g, p, s, c, r, f);
+      P(SIDE[g] ? g + 'R' : g, [-p[0], p[1], p[2]], s, c, [r[0], -r[1], -r[2]], f);
+    };
+    /* 白色三角形：一片菱形斜插進布面，上半截露在布外、下半截埋在布裡，看起來就是尖朝上的三角形
+       （dir −1 反過來＝尖朝下）。n 是那一面朝外的方向、c 是布面上的那一點。轉角換成 XYZ 的歐拉角存，
+       格式才跟別的塊一樣（M 鏡射時把 Y／Z 反號，對這種轉角一樣成立） */
+    const _e = new T.Euler();
+    const triR = (n, dir) => {
+      const m = new T.Matrix4().makeRotationY(Math.atan2(n[0], n[2]))
+        .multiply(new T.Matrix4().makeRotationX(0.22 * dir)).multiply(new T.Matrix4().makeRotationZ(Math.PI / 4));
+      _e.setFromRotationMatrix(m, 'XYZ');
+      return [_e.x, _e.y, _e.z];
+    };
+    const TRI = (fn, g, c, n, w, dir) =>
+      fn(g, [c[0] - 0.002 * n[0], c[1], c[2] - 0.002 * n[2]], [w, w, 0.004], 'tri', triR(n, dir || 1));
+    /* 刀用：從 a 到 b 一條細線（刀自己的座標，xy 平面），z 是貼在哪一面 */
+    const L = (g, a, b, w, t, z, c) => {
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      P(g, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, z], [w, Math.hypot(dx, dy) + w * 0.6, t], c, [0, 0, Math.atan2(-dx, dy)]);
+    };
+
+    /* ── 頭（樞紐在脖子 0.74）── */
+    P('head', [0, 0.96, 0], [0.50, 0.44, 0.48], 'skin');
+    // 睜眼（e:1）：眼白 → 褐色虹膜 → 下半亮色 → 瞳孔 → 高光；上眼線粗、眼尾一勾
+    M('head', [0.115, 0.89, 0.2415], [0.13, 0.15, 0.02], 'white', 0, { e: 1 });
+    M('head', [0.115, 0.88, 0.2465], [0.10, 0.125, 0.02], 'iris', 0, { e: 1 });
+    M('head', [0.115, 0.84, 0.2525], [0.08, 0.035, 0.012], 'irisL', 0, { e: 1 });
+    M('head', [0.115, 0.885, 0.2525], [0.05, 0.065, 0.012], 'pupil', 0, { e: 1 });
+    P('head', [0.093, 0.913, 0.258], [0.032, 0.038, 0.01], 'white', 0, { e: 1 });
+    P('head', [-0.137, 0.913, 0.258], [0.032, 0.038, 0.01], 'white', 0, { e: 1 });
+    M('head', [0.115, 0.968, 0.25], [0.15, 0.022, 0.02], 'lash', 0, { e: 1 });
+    M('head', [0.185, 0.957, 0.25], [0.04, 0.014, 0.02], 'lash', [0, 0, -0.5], { e: 1 });
+    // 閉眼（e:2，睡著出招）：往下彎的一道弧
+    M('head', [0.087, 0.884, 0.25], [0.066, 0.02, 0.012], 'lash', [0, 0, -0.3], { e: 2 });
+    M('head', [0.143, 0.884, 0.25], [0.066, 0.02, 0.012], 'lash', [0, 0, 0.3], { e: 2 });
+    M('head', [0.112, 0.992, 0.251], [0.12, 0.018, 0.012], 'brow', [0, 0, -0.16]);   // 八字眉：眉頭往上
+    P('head', [0, 0.85, 0.2415], [0.02, 0.016, 0.004], 'skinD');                     // 鼻
+    P('head', [0, 0.79, 0.2435], [0.06, 0.03, 0.012], 'mouth', 0, { e: 1 });          // 嘴微張、露一點牙
+    P('head', [0, 0.80, 0.2495], [0.05, 0.01, 0.004], 'teeth', 0, { e: 1 });
+    P('head', [0, 0.79, 0.2445], [0.055, 0.013, 0.012], 'mouth', 0, { e: 2 });        // 閉嘴
+    /* 頭髮：上黃下橘、髮尾一撮一撮的尖（菱形一半埋進去）。
+       頭頂一階一階收上去：預覽第一版頂上兩片斜板像屋頂、兩角翹起來像貓耳 */
+    P('head', [0, 1.175, -0.01], [0.56, 0.10, 0.55], 'hairY');                       // 頂
+    P('head', [0, 1.245, -0.02], [0.46, 0.04, 0.46], 'hairY');
+    P('head', [0, 1.275, -0.03], [0.30, 0.025, 0.30], 'hairYD');
+    P('head', [0, 1.0, -0.265], [0.56, 0.30, 0.06], 'hairY');                        // 後腦
+    P('head', [0, 0.80, -0.262], [0.55, 0.10, 0.06], 'hairO');
+    for (const [x, w, y] of [[-0.23, 0.07, 0.765], [-0.12, 0.09, 0.75], [0, 0.065, 0.77], [0.10, 0.095, 0.748], [0.215, 0.075, 0.762]])
+      P('head', [x, y, -0.262], [w, w, 0.05], 'hairO', [0, 0, 0.785]);               // 髮尾的尖一長一短
+    for (const x of [-0.18, -0.06, 0.06, 0.18])                                      // 後腦的髮流
+      P('head', [x, 0.97, -0.2955], [0.022, 0.20, 0.006], 'hairYD', [0, 0, x * 0.5]);
+    M('head', [0.268, 1.0, -0.02], [0.05, 0.28, 0.48], 'hairY');                     // 兩側
+    M('head', [0.27, 0.82, -0.02], [0.052, 0.10, 0.48], 'hairO');
+    for (const z of [-0.17, -0.02, 0.13]) M('head', [0.27, 0.77, z], [0.044, 0.065, 0.065], 'hairO', [0.785, 0, 0]);
+    M('head', [0.29, 0.79, 0.10], [0.06, 0.06, 0.12], 'hairO', [0, 0, 0.785]);       // 兩側下緣往外翹（正面看輪廓是一撮一撮的）
+    M('head', [0.29, 0.785, -0.14], [0.065, 0.065, 0.16], 'hairO', [0, 0, 0.785]);
+    M('head', [0.24, 0.97, 0.215], [0.075, 0.24, 0.07], 'hairY');                    // 鬢髮（往上接到瀏海，太陽穴不露縫）
+    M('head', [0.24, 0.82, 0.215], [0.07, 0.07, 0.066], 'hairO');
+    M('head', [0.236, 0.775, 0.218], [0.05, 0.05, 0.05], 'hairO', [0, 0, 0.785]);
+    P('head', [0, 1.12, 0.255], [0.52, 0.07, 0.05], 'hairY');                        // 瀏海：橫帶＋往下垂的五束
+    P('head', [0, 1.05, 0.262], [0.07, 0.09, 0.034], 'hairY');
+    P('head', [0, 0.995, 0.262], [0.065, 0.03, 0.033], 'hairO');
+    P('head', [0, 0.975, 0.262], [0.045, 0.045, 0.03], 'hairO', [0, 0, 0.785]);
+    M('head', [0.085, 1.06, 0.26], [0.085, 0.08, 0.032], 'hairY');
+    M('head', [0.085, 1.01, 0.26], [0.08, 0.03, 0.031], 'hairO');
+    M('head', [0.09, 0.99, 0.26], [0.05, 0.05, 0.028], 'hairO', [0, 0, 0.785]);
+    M('head', [0.17, 1.065, 0.255], [0.09, 0.07, 0.03], 'hairY');
+    M('head', [0.17, 1.02, 0.255], [0.085, 0.03, 0.029], 'hairO');
+    M('head', [0.18, 1.0, 0.255], [0.05, 0.05, 0.026], 'hairO', [0, 0, 0.785]);
+
+    /* ── 身體：黑隊服、銀扣、白腰帶 ── */
+    P('body', [0, 0.585, 0], [0.36, 0.31, 0.27], 'uni');                             // 上身 0.43～0.74
+    for (const y of [0.665, 0.585]) P('body', [0, y, 0.137], [0.035, 0.035, 0.008], 'btn');
+    P('body', [0, 0.45, 0], [0.37, 0.06, 0.28], 'belt');
+    P('body', [0, 0.45, 0.142], [0.06, 0.045, 0.006], 'buckle');
+    P('body', [0, 0.39, 0], [0.36, 0.08, 0.27], 'pants');                            // 褲頭
+    /* 羽織上半：披在肩上、胸前兩片前襟（中間敞開）、兩側（手垂下來時藏在袖子裡） */
+    P('body', [0, 0.748, -0.005], [0.56, 0.04, 0.30], 'haoY');
+    M('body', [0.1375, 0.595, 0.148], [0.105, 0.29, 0.02], 'haoY');
+    M('body', [0.195, 0.595, 0], [0.025, 0.29, 0.30], 'haoY');
+    TRI(M, 'body', [0.13, 0.665, 0.158], [0, 0, 1], 0.05, 1);
+    TRI(M, 'body', [0.15, 0.53, 0.158], [0, 0, 1], 0.05, -1);
+
+    /* ── 羽織背後兩段（hao1 掛肩膀、hao2 掛 hao1）── */
+    P('hao1', [0, 0.66, -0.15], [0.42, 0.18, 0.02], 'haoY');
+    P('hao1', [0, 0.485, -0.15], [0.42, 0.17, 0.02], 'haoM');
+    for (const [x, y, d] of [[-0.13, 0.69, 1], [0.04, 0.70, 1], [0.16, 0.64, -1], [-0.05, 0.595, -1],
+                             [0.11, 0.535, 1], [-0.15, 0.50, 1], [0.02, 0.45, 1], [0.17, 0.435, -1]])
+      TRI(P, 'hao1', [x, y, -0.16], [0, 0, -1], 0.053, d);
+    P('hao2', [0, 0.295, -0.155], [0.46, 0.21, 0.02], 'haoO');                      // 下襬停在褲管鼓起來那一圈
+    P('hao2', [0, 0.17, -0.155], [0.47, 0.04, 0.022], 'haoOD');
+    for (const [x, y, d] of [[-0.17, 0.355, 1], [-0.02, 0.335, -1], [0.14, 0.35, 1], [-0.10, 0.25, 1],
+                             [0.06, 0.24, 1], [0.19, 0.255, -1], [-0.19, 0.225, -1]])
+      TRI(P, 'hao2', [x, y, -0.165], [0, 0, -1], 0.053, d);
+    /* ── 羽織下半兩側（掛在腰側後面，像兩扇門：姿勢的 cS＝[往後, 往外, 打開]）：側面＋前襟下半＋白內裡。
+       下襬停在 0.165（褲管鼓起來那一圈），綁腿整截露出來，同原圖 ── */
+    M('haoS', [0.215, 0.395, 0], [0.025, 0.15, 0.31], 'haoM');
+    M('haoS', [0.215, 0.2625, 0], [0.025, 0.115, 0.31], 'haoO');
+    M('haoS', [0.215, 0.185, 0], [0.027, 0.04, 0.312], 'haoOD');
+    M('haoS', [0.16, 0.395, 0.155], [0.11, 0.15, 0.02], 'haoM');
+    M('haoS', [0.16, 0.2625, 0.155], [0.11, 0.115, 0.02], 'haoO');
+    M('haoS', [0.16, 0.185, 0.155], [0.112, 0.04, 0.022], 'haoOD');
+    M('haoS', [0.16, 0.33, 0.1435], [0.10, 0.27, 0.004], 'haoI');                   // 內裡
+    M('haoS', [0.2005, 0.33, 0], [0.004, 0.27, 0.29], 'haoI');
+    TRI(M, 'haoS', [0.2275, 0.40, -0.06], [1, 0, 0], 0.05, 1);
+    TRI(M, 'haoS', [0.2275, 0.31, 0.07], [1, 0, 0], 0.05, -1);
+    TRI(M, 'haoS', [0.2275, 0.245, -0.09], [1, 0, 0], 0.05, 1);
+    TRI(M, 'haoS', [0.15, 0.41, 0.165], [0, 0, 1], 0.05, 1);
+    TRI(M, 'haoS', [0.17, 0.32, 0.165], [0, 0, 1], 0.05, 1);
+    TRI(M, 'haoS', [0.145, 0.245, 0.165], [0, 0, 1], 0.05, -1);
+
+    /* ── 手（樞紐在肩膀 ±0.28, 0.71）：羽織寬袖＋往下垂的袖袋、黑袖口、白袖口、手 ── */
+    M('arm', [0.28, 0.60, -0.01], [0.17, 0.22, 0.20], 'haoY', 0, { z: 1 });
+    M('arm', [0.285, 0.46, -0.06], [0.155, 0.10, 0.11], 'haoM', 0, { z: 2 });
+    M('arm', [0.28, 0.465, 0.025], [0.12, 0.05, 0.12], 'uni', 0, { z: 2 });
+    M('arm', [0.28, 0.433, 0.025], [0.125, 0.018, 0.125], 'cuff', 0, { z: 2 });
+    M('arm', [0.28, 0.385, 0.025], [0.10, 0.08, 0.11], 'skin', 0, { z: 2 });
+    TRI(M, 'arm', [0.365, 0.645, 0.03], [1, 0, 0], 0.05, 1);
+    TRI(M, 'arm', [0.365, 0.555, -0.05], [1, 0, 0], 0.05, -1);
+
+    /* ── 腳（樞紐在胯 ±0.10, 0.34）：寬褲管在小腿上鼓一圈、黃橘綁腿＋白三角＋白綁繩 ── */
+    M('leg', [0.10, 0.265, 0], [0.17, 0.15, 0.19], 'pants');
+    M('leg', [0.10, 0.185, 0.005], [0.19, 0.05, 0.21], 'pantsD');
+    M('leg', [0.10, 0.135, 0], [0.13, 0.05, 0.14], 'wrapY');
+    M('leg', [0.10, 0.09, 0], [0.125, 0.045, 0.135], 'wrapO');
+    M('leg', [0.10, 0.152, 0], [0.134, 0.01, 0.144], 'tie');
+    M('leg', [0.10, 0.098, 0], [0.13, 0.008, 0.14], 'tie');
+    TRI(M, 'leg', [0.10, 0.127, 0.07], [0, 0, 1], 0.035, 1);
+    TRI(M, 'leg', [0.10, 0.078, 0.0675], [0, 0, 1], 0.033, 1);
+    /* ── 腳掌（樞紐在腳踝 ±0.10, 0.065）：深色草履、白鞋底、V 字白鼻緒 ── */
+    M('foot', [0.10, 0.037, 0.035], [0.125, 0.05, 0.20], 'shoe');
+    M('foot', [0.10, 0.007, 0.035], [0.13, 0.014, 0.205], 'sole');
+    M('foot', [0.075, 0.064, 0.09], [0.012, 0.006, 0.08], 'sole', [0, 0.56, 0]);
+    M('foot', [0.125, 0.064, 0.09], [0.012, 0.006, 0.08], 'sole', [0, -0.56, 0]);
+
+    /* ── 鞘（自己的座標：鞘口在原點、往 +y 是鞘尾；+x 是刀刃那一側）── */
+    P('saya', [0, 0.365, 0], [0.05, 0.71, 0.028], 'saya');
+    P('saya', [-0.01, 0.36, 0], [0.012, 0.64, 0.0305], 'sayaL');
+    P('saya', [0, 0.018, 0], [0.056, 0.036, 0.034], 'sayaM');                        // 鯉口
+    P('saya', [0, 0.70, 0], [0.056, 0.05, 0.034], 'gold');                           // 鞘尾
+
+    /* ── 刀（自己的座標：鍔在原點、刀身往 +y、刃朝 +x）── */
+    P('sword', [0, 0, 0], [0.07, 0.012, 0.07], 'tsuba');                             // 八角鍔＝兩片疊轉 45°
+    P('sword', [0, 0, 0], [0.07, 0.012, 0.07], 'tsuba', [0, 0.785, 0]);
+    P('sword', [0, 0.018, 0], [0.036, 0.024, 0.016], 'gold');                        // 鎺
+    P('sword', [0, 0.34, 0], [0.032, 0.62, 0.010], 'blade');                         // 刀身 0.03～0.65
+    P('sword', [-0.0125, 0.34, 0], [0.008, 0.62, 0.0115], 'mune');                   // 刀背
+    P('sword', [-0.002, 0.672, 0], [0.024, 0.06, 0.0095], 'blade', [0, 0, 0.45]);    // 刀尖（尖在刀背那一側）
+    const ZIG = [[0.008, 0.06], [-0.006, 0.14], [0.010, 0.22], [-0.005, 0.30], [0.010, 0.38], [-0.005, 0.46], [0.009, 0.54], [0.0, 0.62]];
+    for (const z of [0.0055, -0.0055])                                               // 刀身上的閃電紋（兩面）
+      for (let i = 0; i < ZIG.length - 1; i++) L('sword', ZIG[i], ZIG[i + 1], 0.0055, 0.002, z, 'bladeZ');
+    P('sword', [0, -0.105, 0], [0.034, 0.17, 0.028], 'hilt');                        // 白柄
+    for (const y of [-0.05, -0.10, -0.15]) for (const z of [0.0145, -0.0145])        // 柄卷之間露出來的黃菱
+      P('sword', [0, y, z], [0.017, 0.017, 0.004], 'hiltD', [0, 0, 0.785]);
+    P('sword', [0, -0.198, 0], [0.038, 0.024, 0.032], 'gold');                       // 柄頭
+    return out;
+  })();
+  const ZEN_PARTS = ZENITSU.length;
+  const ZEN_SLOT = ZEN_PARTS;
+  const MAXZEN = 2;                  // 同 Saber：場上只會有一位，留一格餘裕
+  /* 每一塊站直時相對自己那一組（道具：相對自己的原點）的位置、尺寸、轉角，開機時算一次（同 MEG_PV） */
+  const ZEN_PV = ZENITSU.map(b => { const v = zenProp(b.g) ? [0, 0, 0] : ZEN_PIV[b.g]; return new T.Vector3(b.p[0] - v[0], b.p[1] - v[1], b.p[2] - v[2]); });
+  const ZEN_SV = ZENITSU.map(b => new T.Vector3(b.s[0], b.s[1], b.s[2]));
+  const ZEN_QV = ZENITSU.map(b => new T.Quaternion().setFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2])));
+  const ZEN_LM = ZENITSU.map((b, k) => new T.Matrix4().compose(ZEN_PV[k], ZEN_QV[k], ZEN_SV[k]));
+  /* 模型範圍（同里維，刀與鞘兩件道具不算） */
+  {
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
+    for (const b of ZENITSU) {
+      if (zenProp(b.g)) continue;
+      ylo = Math.min(ylo, b.p[1] - b.s[1] / 2);
+      yhi = Math.max(yhi, b.p[1] + b.s[1] / 2);
+      zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
+      xhi = Math.max(xhi, Math.abs(b.p[0]) + b.s[0] / 2);
+    }
+    BEAST_FLOOR.zenitsu = Math.max(0, -ylo);
+    BEAST_MID.zenitsu = (ylo + yhi) / 2;
+    BEAST_LIFT.zenitsu = -zlo;
+    BEAST_SIDE.zenitsu = xhi;
+  }
+  /* ── 霹靂一閃的時間軸（秒）。規則那邊（stepZen）照同一份表走，姿勢照它擺 ──
+       iai     蹲成居合架勢（ease 秒混過去），閉眼，四周的雷光越來越密
+       stroke  一閃：在破壞範圍裡亂竄，一筆衝多久（整條 = stroke × 筆數）
+       slash   停在終點、刀揮在右前方
+       noto    刀尖對進鞘口（左手把鞘口往前拉）
+       sheath  刀滑進鞘裡，收完回去逛
+       trail   光痕**從尾巴開始淡**：衝完停 trailHold 秒，之後 trail 秒內尾巴沿著路線縮到終點（見 zenTrailK）。
+               兩個加起來要比衝完到收完刀（slash ＋ noto ＋ sheath）短：收完刀就不畫了，沒淡完的會一下子不見 */
+  const ZEN = { iai: 1.2, ease: 0.3, stroke: 0.08, slash: 0.9, noto: 0.5, sheath: 0.55, trail: 1.3, trailHold: 0.25 };
+  /* ── 他的姿勢（同造型預覽）──
+     手是「伸向某一點」擺的（身體座標）：搆不到先把袖子拉長（最多 ZEN_EXT），還不夠才整支挪。
+     握刀、扶鞘的那幾格手要去的點照那一格自己的刀與鞘算好（'grip' 右手握在鍔下 ZEN_GRIP、'grip2' 雙手握時左手、
+     'saya' 左手扶在鞘口後面），開機時就換成一個點——混兩格的時候手跟刀各自內插，中途差一點點，兩端都剛好。 */
+  const ZEN_ARM = 0.32, ZEN_EXT = 0.14, ZEN_WAIST = 0.40, ZEN_GRIP = 0.07, ZEN_GRIP2 = 0.155;
+  const zenBasis = (d, e) => {
+    const Y = new T.Vector3(d[0], d[1], d[2]).normalize();
+    const X = new T.Vector3(e[0], e[1], e[2]);
+    X.addScaledVector(Y, -X.dot(Y)).normalize();
+    return new T.Matrix4().makeBasis(X, Y, new T.Vector3().crossVectors(X, Y));
+  };
+  const ZEN_SAYA = { o: [0.13, 0.465, 0.17], d: [0.30, -0.36, -1], e: [0, 1, 0] };
+  /* 蹲低前傾時鞘要壓低一點，前傾之後在世界裡才是平的（不然鞘尾往上翹，預覽第一版就是） */
+  const ZEN_SAYA_IAI = { o: [0.12, 0.47, 0.17], d: [0.25, -0.45, -1], e: [0, 1, 0] };
+  function zenK(o) {
+    const sy = o.sy || ZEN_SAYA, sw = o.sw || { f: 'saya', off: 0 };
+    const sL = new T.Matrix4().makeTranslation(sy.o[0], sy.o[1], sy.o[2]).multiply(zenBasis(sy.d, sy.e));
+    const wL = sw.f === 'saya' ? sL.clone().multiply(new T.Matrix4().makeTranslation(0, sw.off || 0, 0))
+             : new T.Matrix4().makeTranslation(sw.o[0], sw.o[1], sw.o[2]).multiply(zenBasis(sw.d, sw.e))
+                 .multiply(new T.Matrix4().makeTranslation(0, ZEN_GRIP, 0));
+    const hand = h => Array.isArray(h) ? new T.Vector3(h[0], h[1], h[2])
+                    : h === 'grip' ? new T.Vector3(0, -ZEN_GRIP, 0).applyMatrix4(wL)
+                    : h === 'grip2' ? new T.Vector3(0, -ZEN_GRIP2, 0).applyMatrix4(wL)
+                    : new T.Vector3(0, 0.06, 0).applyMatrix4(sL);
+    const k = { lift: o.lift || 0, bob: 0, lean: o.lean || 0, twist: o.twist || 0, head: (o.head || [0, 0, 0]).slice(),
+                hR: hand(o.hR), hL: hand(o.hL), lR: (o.lR || [0, 0]).slice(), lL: (o.lL || [0, 0]).slice(),
+                c1: o.c1 || 0, c2: o.c2 || 0, cS: (o.cS || [0, 0, 0]).slice(),
+                sp: new T.Vector3(), sq: new T.Quaternion(), wp: new T.Vector3(), wq: new T.Quaternion() };
+    const sc = new T.Vector3();
+    sL.decompose(k.sp, k.sq, sc); wL.decompose(k.wp, k.wq, sc);
+    return k;
+  }
+  const ZEN_STAND = { head: [0.04, 0, 0], hR: [-0.31, 0.42, 0.06], hL: [0.31, 0.41, 0.03],
+                      c1: 0.03, c2: 0.02, cS: [0.02, 0.04, 0.12] };
+  const ZEN_K = {
+    stand: zenK(ZEN_STAND),
+    /* 跑（叫過去那一段，同 Saber／里維用跑的）：上身前傾、羽織整片往後揚，兩手跟著腿前後擺（擺幅在 zenPose） */
+    run: zenK({ lean: 0.32, head: [-0.26, 0, 0], hR: [-0.31, 0.47, 0.02], hL: [0.31, 0.46, 0],
+                c1: 0.85, c2: 0.40, cS: [0.50, 0.12, 0.30] }),
+    /* 居合架勢：蹲低、右腳在前、上身前傾，右手握柄、左手扶鞘 */
+    iai: zenK({ lift: -0.06, lean: 0.42, twist: 0.2, head: [-0.32, -0.1, 0], hR: 'grip', hL: 'saya',
+                lR: [-0.62, -0.06], lL: [0.55, 0.10], c1: 0.0, c2: 0.40, cS: [0.30, 0.10, 0.25], sy: ZEN_SAYA_IAI }),
+    /* 一閃：比架勢更低、更往前撲，羽織被風整片掀起來 */
+    dash: zenK({ lift: -0.08, lean: 0.62, twist: 0.15, head: [-0.5, 0, 0], hR: 'grip', hL: 'saya',
+                 lR: [-0.82, -0.08], lL: [0.75, 0.12], c1: 0.55, c2: 0.75, cS: [0.75, 0.2, 0.4],
+                 sy: { o: [0.12, 0.47, 0.17], d: [0.25, -0.6, -1], e: [0, 1, 0] } }),
+    /* 斬完：刀從左腰拔出來往右揮，停在右前方、刀身打平（使用者看過預覽選的「右前方」；第一版停在右後方，
+       使用者：「斬完刀揮出去 刀太後面了」）。上身前傾 0.30，刀身在身體座標裡的 y 要抬到 z × 0.3 左右，世界裡才是平的 */
+    slash: zenK({ lift: -0.07, lean: 0.30, twist: 0.05, head: [-0.2, 0.15, 0], hR: 'grip', hL: 'saya',
+                  lR: [-0.7, -0.12], lL: [0.6, 0.15], c1: 0.25, c2: 0.5, cS: [0.38, 0.2, 0.5], sy: ZEN_SAYA_IAI,
+                  sw: { f: 'hand', o: [-0.36, 0.52, 0.34], d: [-0.72, 0.21, 0.70], e: [-0.70, 0, -0.72] } }),
+    /* 納刀前：左手把鞘口往前拉、鞘打斜，刀尖對進鞘口 */
+    noto: zenK({ lift: -0.03, lean: 0.12, head: [-0.05, 0, 0], hR: 'grip', hL: 'saya', lR: [-0.3, -0.06], lL: [0.3, 0.08],
+                 c1: 0.05, c2: 0.08, cS: [0.1, 0.12, 0.2],
+                 sy: { o: [0.18, 0.47, 0.22], d: [0.75, -0.25, -0.6], e: [0, 1, 0] }, sw: { f: 'saya', off: -0.45 } }),
+    /* 刀滑進鞘裡：同上那個站法，鞘回到左腰 */
+    sheath: zenK({ lift: -0.03, lean: 0.12, head: [-0.05, 0, 0], hR: 'grip', hL: 'saya', lR: [-0.3, -0.06], lL: [0.3, 0.08],
+                   c1: 0.05, c2: 0.08, cS: [0.1, 0.12, 0.2] })
+  };
+  const zenNew = () => zenK(ZEN_STAND);
+  const _zk = zenNew(), _zk2 = zenNew();
+  function zenCopy(d, s) {
+    d.lift = s.lift; d.bob = s.bob; d.lean = s.lean; d.twist = s.twist; d.c1 = s.c1; d.c2 = s.c2;
+    for (let i = 0; i < 3; i++) { d.head[i] = s.head[i]; d.cS[i] = s.cS[i]; }
+    for (let i = 0; i < 2; i++) { d.lR[i] = s.lR[i]; d.lL[i] = s.lL[i]; }
+    d.hR.copy(s.hR); d.hL.copy(s.hL); d.sp.copy(s.sp); d.sq.copy(s.sq); d.wp.copy(s.wp); d.wq.copy(s.wq);
+    return d;
+  }
+  function zenMix(d, s, w) {
+    if (!(w > 0)) return d;
+    const f = (a, b) => a + (b - a) * w;
+    d.lift = f(d.lift, s.lift); d.bob = f(d.bob, s.bob); d.lean = f(d.lean, s.lean); d.twist = f(d.twist, s.twist);
+    d.c1 = f(d.c1, s.c1); d.c2 = f(d.c2, s.c2);
+    for (let i = 0; i < 3; i++) { d.head[i] = f(d.head[i], s.head[i]); d.cS[i] = f(d.cS[i], s.cS[i]); }
+    for (let i = 0; i < 2; i++) { d.lR[i] = f(d.lR[i], s.lR[i]); d.lL[i] = f(d.lL[i], s.lL[i]); }
+    d.hR.lerp(s.hR, w); d.hL.lerp(s.hL, w); d.sp.lerp(s.sp, w); d.sq.slerp(s.sq, w); d.wp.lerp(s.wp, w); d.wq.slerp(s.wq, w);
+    return d;
+  }
+  const zClamp = v => Math.min(1, Math.max(0, v || 0));
+  /* 這一幀的姿勢（寫進 _zk）：
+       站／走  m.gait、m.ph：兩手前後擺、兩腿擺、羽織跟著晃（同造型預覽的「走路」）
+       跑      m.run 0～1：叫過去那一段
+       出招    m.st === 'zen'：照 m.op（iai／dash／slash／noto／sheath）與這一段的秒數 m.ot
+       收刀    出招收完規則那邊把 m.arm 推到 1、慢慢退回 0：從收刀那一格慢慢站起來；
+               站定瞄的那一下（act，m.arm 往 1 走）也往這一格靠，接著蹲進架勢 */
+  function zenPose(m) {
+    const k = zenCopy(_zk, ZEN_K.stand);
+    const g = zClamp((m.gait || 0) / 0.85), ph = m.ph || 0, s = Math.sin(ph);
+    if (g > 0) {
+      k.lR[0] = 0.45 * s * g; k.lL[0] = -0.45 * s * g;
+      k.hR.z += 0.09 * s * g; k.hL.z -= 0.10 * s * g;
+      k.bob = 0.018 * Math.abs(Math.cos(ph)) * g; k.lean += 0.05 * g;
+      k.c1 += (0.09 + 0.03 * Math.sin(ph * 2)) * g; k.c2 += 0.08 * g; k.cS[0] += 0.12 * g;
+    }
+    const zen = m.st === 'zen';
+    const r = m.lie || m.air || zen ? 0 : zClamp(m.run);
+    if (r > 0) {
+      const q = zenCopy(_zk2, ZEN_K.run);
+      q.lR[0] = 0.85 * s; q.lL[0] = -0.85 * s;
+      q.hR.z += 0.18 * s; q.hL.z -= 0.18 * s;
+      q.c1 += 0.12 * Math.sin(ph * 2.3); q.c2 += 0.10 * Math.sin(ph * 2.3 - 1); q.cS[0] += 0.08 * Math.sin(ph * 2.3 - 2);
+      q.bob = Math.abs(Math.cos(ph)) * 0.06;
+      zenMix(k, q, r);
+    }
+    zenMix(k, ZEN_K.sheath, zClamp(m.arm));
+    if (!zen) return k;
+    const t = m.ot || 0;
+    if (m.op === 'iai') zenMix(k, ZEN_K.iai, sEase(zClamp(t / ZEN.ease)));
+    else if (m.op === 'dash') zenCopy(k, ZEN_K.dash);
+    else if (m.op === 'slash') { zenCopy(k, ZEN_K.dash); zenMix(k, ZEN_K.slash, zClamp(t / 0.06)); }
+    else if (m.op === 'noto') { zenCopy(k, ZEN_K.slash); zenMix(k, ZEN_K.noto, sEase(zClamp(t / ZEN.noto))); }
+    else { zenCopy(k, ZEN_K.noto); const f = zClamp(t / ZEN.sheath); zenMix(k, ZEN_K.sheath, f * f); }   // 越滑越快
+    if (m.op === 'dash' || m.op === 'slash') {              // 衝出去的風把羽織一直掀
+      const u = m.zt || 0;
+      k.c1 += 0.10 * Math.sin(u * 31); k.c2 += 0.12 * Math.sin(u * 31 - 1.2); k.cS[0] += 0.08 * Math.sin(u * 27);
+    }
+    return k;
+  }
+  const _zG = [...Array(ZEN_NG)].map(() => new T.Matrix4());
+  const _zExt = new Array(ZEN_NG).fill(0);
+  const _zHip = new T.Matrix4(), _zm = new T.Matrix4(), _zm2 = new T.Matrix4();
+  const _zv = new T.Vector3(), _zv2 = new T.Vector3(), _zq = new T.Quaternion(), _zE = new T.Euler();
+  const _zONE = new T.Vector3(1, 1, 1), _zDOWN = new T.Vector3(0, -1, 0);
+  /* 算出這一位每一組的世界矩陣（_zG）。根同 putBeasts（YZX：朝向 → 打滾 → 躺平）；飛在半空繞身體中段轉（同 levRig）。
+     上身前傾、扭腰繞腰那一點（同造型預覽的 solve），腿掛在胯、腳掌轉回來貼平地面 */
+  function zenRig(m) {
+    const k = zenPose(m), msc = m.sc || 1, mid = BEAST_MID.zenitsu;
+    scratch.rotation.set(m.spin || 0, m.a || 0, m.roll || 0, 'YZX');
+    const lift = !m.lie ? 0
+      : m.side ? BEAST_SIDE.zenitsu * m.lie * Math.abs(Math.sin(m.roll || 0))
+               : BEAST_LIFT.zenitsu * m.lie * Math.abs(Math.sin(m.spin || 0));
+    scratch.position.set(m.x || 0, (m.y || 0) + lift * msc, m.z || 0);
+    if (m.air) {
+      _zv.set(0, mid, 0).applyEuler(scratch.rotation);
+      scratch.position.x -= _zv.x * msc;
+      scratch.position.y += (mid - _zv.y) * msc;
+      scratch.position.z -= _zv.z * msc;
+    }
+    scratch.scale.setScalar(msc);
+    scratch.updateMatrix();
+    _zHip.copy(scratch.matrix).multiply(_zm.makeTranslation(0, k.lift + k.bob, 0));
+    const B = _zG[ZEN_G.body].copy(_zHip).multiply(_zm.makeTranslation(0, ZEN_WAIST, 0))
+      .multiply(_zm.makeRotationY(k.twist)).multiply(_zm.makeRotationX(k.lean)).multiply(_zm.makeTranslation(0, -ZEN_WAIST, 0));
+    /* 歐拉角的順序每一處都寫明（理由同 megRig：three 的 Euler.set 沒給順序就沿用上一次的） */
+    _zG[ZEN_G.head].multiplyMatrices(B, _zm.compose(_zv.set(0, ZEN_PIV[ZEN_G.head][1], 0),
+      _zq.setFromEuler(_zE.set(k.head[0], k.head[1], k.head[2], 'XYZ')), _zONE));
+    _zG[ZEN_G.saya].multiplyMatrices(B, _zm.compose(k.sp, k.sq, _zONE));
+    _zG[ZEN_G.sword].multiplyMatrices(B, _zm.compose(k.wp, k.wq, _zONE));
+    /* 兩手伸向 hR／hL（同 megRig：袖子先拉長，還不夠才整支挪） */
+    for (const g of [ZEN_G.armR, ZEN_G.armL]) {
+      const pv = ZEN_PIV[g], tg = g === ZEN_G.armR ? k.hR : k.hL;
+      _zv.set(tg.x - pv[0], tg.y - pv[1], tg.z - pv[2]);
+      const len = _zv.length() || 1;
+      _zv.multiplyScalar(1 / len);
+      const ext = Math.min(ZEN_EXT, Math.max(0, len - ZEN_ARM)), shift = Math.max(0, len - ZEN_ARM - ZEN_EXT);
+      _zExt[g] = ext;
+      _zq.setFromUnitVectors(_zDOWN, _zv);
+      _zv2.set(pv[0], pv[1], pv[2]).addScaledVector(_zv, shift);
+      _zG[g].multiplyMatrices(B, _zm.compose(_zv2, _zq, _zONE));
+    }
+    for (const [g, gf, l] of [[ZEN_G.legR, ZEN_G.footR, k.lR], [ZEN_G.legL, ZEN_G.footL, k.lL]]) {
+      const pv = ZEN_PIV[g];
+      _zG[g].multiplyMatrices(_zHip, _zm.compose(_zv.set(pv[0], pv[1], pv[2]), _zq.setFromEuler(_zE.set(l[0], 0, l[1], 'XYZ')), _zONE));
+      _zG[gf].multiplyMatrices(_zG[g], _zm.compose(_zv.set(0, ZEN_PIV[gf][1] - pv[1], 0),
+        _zq.setFromEuler(_zE.set(-l[0], 0, -l[1], 'ZYX')), _zONE));
+    }
+    const p1 = ZEN_PIV[ZEN_G.hao1], p2 = ZEN_PIV[ZEN_G.hao2];
+    _zG[ZEN_G.hao1].multiplyMatrices(B, _zm.compose(_zv.set(p1[0], p1[1], p1[2]), _zq.setFromEuler(_zE.set(k.c1, 0, 0, 'XYZ')), _zONE));
+    _zG[ZEN_G.hao2].multiplyMatrices(_zG[ZEN_G.hao1],
+      _zm.compose(_zv.set(0, p2[1] - p1[1], p2[2] - p1[2]), _zq.setFromEuler(_zE.set(k.c2, 0, 0, 'XYZ')), _zONE));
+    for (const g of [ZEN_G.haoSR, ZEN_G.haoSL]) {
+      const pv = ZEN_PIV[g], sg = g === ZEN_G.haoSL ? 1 : -1;
+      _zG[g].multiplyMatrices(B, _zm.compose(_zv.set(pv[0], pv[1], pv[2]),
+        _zq.setFromEuler(_zE.set(k.cS[0], sg * k.cS[2], sg * k.cS[1], 'YXZ')), _zONE));
+    }
+  }
+
+  /* ── 雷光與一閃的光痕 ──
+     細的亮芯（不透明）＋外面一圈半透明的光暈，同一段寫進兩顆網格。路徑是左右交錯的急轉彎（鋸齒）、中段會分岔：
+       小的  ZEN_BOLT_S 道，貼著腳邊到腰側竄，一道各自閃 0.05～0.13 秒
+       大的  ZEN_BOLT_B 道，從頭頂上方劈到他身邊（參考圖 4），一道 0.12～0.24 秒
+     **不抽 Math.random**（這一支每幀都跑，不該吃掉規則那邊的骰子，同 SAB_SP）：每一道照自己的週期切成一代一代，
+     這一代的形狀、閃多久都用（第幾位、第幾道、第幾代）當種子算出來——不必記狀態，慢動作也照規則那邊的時間走。
+     雷光多密照 zenZapQ（架勢那 1.2 秒越來越密、衝的時候最密、停下來 0.4 秒內收掉）。
+     光痕（金黃）：衝過的那一路畫成一條橫的亮帶（m.zp 那幾點、衝到 m.zs），切成一小截一小截好讓粗細沿著路線變；
+     **從尾巴（最早衝過的那一頭）開始慢慢淡掉**：尾巴沿著路線往頭那邊縮（見 zenTrailK）。
+     地上的小閃電（藍白）：ZEN_GROUND_N 道，落在光痕還看得到的那一段、**貼著地面**往兩側竄（一道 0.04～0.09 秒），
+     跟著那一截一起變細。
+     **兩種顏色、各自一對網格**——光暈的濃淡是材質上的一個數，金黃在天空與草地前面要濃一點才看得到（同造型預覽）。
+     使用者一路改過來的：造型預覽選了架勢的雷光藍白；遊戲預覽第一輪「衝過的痕跡還是金黃 不是藍白 衝過的路線帶有微小閃掉特效」
+     （那一版小閃電是金黃的、劈在光痕上）；第三輪「衝過以後路線上的閃電特效 我的意思是加在地面上(藍白)
+     衝過的金黃痕跡從尾部慢慢淡掉」（那一版光痕是衝完之後 0.8 秒整條一起變細）。見 開發筆記〈破壞道具：霹靂一閃〉 */
+  const ZEN_ZAP_C = [0xf2faff, 0x58b8ff, 0.5];        // 雷光與地上的小閃電：亮芯、光暈、光暈濃度
+  const ZEN_TRAIL_C = [0xfff3b0, 0xffb000, 0.7];      // 光痕
+  /* 地上的小閃電 30 道（光痕那一版先是 14 道：整條九十格長，同一刻只亮一半左右，拉近看常常一道都沒有）。
+     光痕最多切 ZEN_TRAIL_CH 截（一截至少 2 格）。一位的格數照最多的時候算：
+     雷光 7 道小的 ×（6 節 ＋ 分岔 3）＋ 2 道大的 ×（8 ＋ 2 × 3）＋ 地上的 40 ×（6 ＋ 3）；
+     光痕 90 截 ＋ 尾端 28 截 ＋ 每一筆多出來的零頭 */
+  /* 尾端變細那一截（ZEN_TRAIL_TAPER 格）另外切成半格一截：照一般的 2 格切，近看是一階一階的，像一支伸縮天線。
+     地上的小閃電第一版 30 道、一節 0.12、粗 0.014，草地上拉近也只找得到一道，改成 40 道、一節 0.18、粗 0.02。 */
+  const ZEN_BOLT_S = 7, ZEN_BOLT_B = 2, ZEN_GROUND_N = 40, ZEN_ZAP_SLOT = 460, ZEN_TRAIL_CH = 90, ZEN_TRAIL_SLOT = 140;
+  let _zs = 1;
+  const zr = () => {                                   // mulberry32
+    _zs = (_zs + 0x6D2B79F5) | 0;
+    let t = Math.imul(_zs ^ (_zs >>> 15), 1 | _zs);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const zSeed = (a, b, c) => { _zs = (Math.imul(a + 1, 73856093) ^ Math.imul(b + 1, 19349663) ^ Math.imul(c + 7, 83492791)) | 0; zr(); };
+  /* 畫到哪一對網格（_zPen：0 雷光、1 光痕），各自數到第幾格、這一位最多畫到第幾格 */
+  let _zPen = 0;
+  const _zI = [0, 0], _zCap = [0, 0];
+  const _zzq = new T.Quaternion(), _zzv = new T.Vector3(), _zzd = new T.Vector3(), _zzs = new T.Vector3(), _zzUP = new T.Vector3(0, 1, 0);
+  /* 一段（亮芯＋光暈）。光暈頭尾各多畫一點，鋸齒的急轉彎才接得起來；ext 0＝不多畫（光痕那幾截：一截接一截排成直線，
+     多畫的那一點會跟下一截重疊、半透明疊兩次，整條是一圈一圈的明暗紋） */
+  function zenSeg(ax, ay, az, bx, by, bz, w, ext) {
+    const p = _zPen, i = _zI[p];
+    if (i >= _zCap[p]) return;
+    _zzd.set(bx - ax, by - ay, bz - az);
+    const len = _zzd.length();
+    if (len < 1e-4 || !(w > 0)) return;
+    const e = ext === undefined ? 1 : ext;
+    _zzq.setFromUnitVectors(_zzUP, _zzd.multiplyScalar(1 / len));
+    _zzv.set((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2);
+    (p ? zenTrailCore : zenZapCore).setMatrixAt(i, tmpM.compose(_zzv, _zzq, _zzs.set(w, len + w * e, w)));
+    (p ? zenTrailGlow : zenZapGlow).setMatrixAt(i, tmpM.compose(_zzv, _zzq, _zzs.set(w * 3.4, len + w * 2.5 * e, w * 3.4)));
+    _zI[p] = i + 1;
+  }
+  /* 一條鋸齒：從 (x, y, z) 沿著 (dx, dy, dz)（單位向量）走 n 節，每一節往側邊正反交錯偏 25°～65°
+     （側邊的方向也慢慢轉），中段偶爾分岔一支短的。同造型預覽的 zig，只是全部用純量、亂數照種子。
+     flat：貼著地面竄（側邊只在水平面上轉、不往下鑽進草皮，地上的小閃電用） */
+  function zenZig(x, y, z, dx, dy, dz, n, len, th, br, flat) {
+    let sx = zr() - 0.5, sy = flat ? 0 : zr() - 0.5, sz = zr() - 0.5, s = zr() < 0.5 ? 1 : -1;
+    for (let i = 0; i < n; i++) {
+      const ang = 0.45 + zr() * 0.7, ca = Math.cos(ang), sa = Math.sin(ang);
+      sx += (zr() - 0.5) * 0.5; sz += (zr() - 0.5) * 0.5;
+      if (!flat) sy += (zr() - 0.5) * 0.5;
+      const dt = sx * dx + sy * dy + sz * dz;
+      sx -= dt * dx; sy -= dt * dy; sz -= dt * dz;
+      const sl = Math.hypot(sx, sy, sz) || 1;
+      sx /= sl; sy /= sl; sz /= sl;
+      const ex = dx * ca + sx * s * sa, ey = dy * ca + sy * s * sa, ez = dz * ca + sz * s * sa;
+      const L = len * (0.6 + zr() * 0.8), w = th * (1 - 0.55 * i / n);
+      const qx = x + ex * L, qz = z + ez * L;
+      let qy = y + ey * L;
+      if (flat && qy < ZEN_GROUND_Y) qy = ZEN_GROUND_Y;
+      zenSeg(x, y, z, qx, qy, qz, w);
+      if (br > 0 && i > 0 && i < n - 1 && zr() < 0.4) {
+        br--;
+        let bx = dx - sx * s * 0.9, by = dy - sy * s * 0.9, bz = dz - sz * s * 0.9;
+        const bl = Math.hypot(bx, by, bz) || 1;
+        zenZig(qx, qy, qz, bx / bl, by / bl, bz / bl, 2 + Math.floor(zr() * 2), len * 0.7, w * 0.6, 0, flat);
+      }
+      x = qx; y = qy; z = qz; s = -s;
+    }
+  }
+  const ZEN_GROUND_Y = 0.03;         // 地上的小閃電離草皮多高（貼著，又不跟草皮打架）
+  const ZEN_TRAIL_TAPER = 14;        // 光痕的尾端從細到全粗那一截多長（格）
+  /* 光痕上離起點 a 那一點現在多粗（0～1）：**尾巴沿著路線往頭那邊縮**——衝完停 ZEN.trailHold 秒，
+     之後 ZEN.trail 秒內尾巴從起點一路縮到終點；尾端 ZEN_TRAIL_TAPER 格是細細的一截，越往頭越粗。
+     第一版照「每一截衝到那一刻鋪下去、各自全粗 0.5 秒再 1.1 秒收細」算：整條只衝 0.64 秒，頭尾鋪下去的時刻只差 0.64 秒，
+     截圖上是整條一起變細、尾巴早一點點沒掉，看不出「從尾部慢慢淡掉」 */
+  function zenTrailK(m, a) {
+    const L = m.zc[m.zc.length - 1];
+    const tail = L * zClamp(((m.zt || 0) - m.zt0 - (m.zT || 0) - ZEN.trailHold) / ZEN.trail);
+    return zClamp((a - tail) / ZEN_TRAIL_TAPER);
+  }
+  /* 雷光多密（0～1）：架勢那一段從 0.25 爬到 1、衝的時候 1、停下來 0.4 秒內收掉，其餘 0 */
+  function zenZapQ(m) {
+    if (m.st !== 'zen') return 0;
+    const t = m.ot || 0;
+    return m.op === 'iai' ? 0.25 + 0.75 * zClamp(t / ZEN.iai)
+         : m.op === 'dash' ? 1 : m.op === 'slash' ? Math.max(0, 1 - t / 0.4) : 0;
+  }
+  function zenBolts(m, n) {
+    _zCap[0] = (n + 1) * ZEN_ZAP_SLOT; _zCap[1] = (n + 1) * ZEN_TRAIL_SLOT;
+    _zPen = 0;
+    const q = zenZapQ(m), t = m.zt || 0, msc = m.sc || 1;
+    const cx = m.x || 0, cy = m.y || 0, cz = m.z || 0;
+    if (q > 0.02) {
+      const ns = Math.round(ZEN_BOLT_S * q);
+      for (let j = 0; j < ns; j++) {
+        const P = 0.13 + 0.05 * ((j * 0.618034) % 1), u = t / P + ((j * 0.754877) % 1), gen = Math.floor(u), f = u - gen;
+        zSeed(n, j, gen);
+        if (f > (0.05 + 0.08 * zr()) / P || Math.sin(f * P * 70 + j) < -0.7) continue;
+        const a = zr() * Math.PI * 2, r = (0.14 + zr() * 0.16) * msc, y = cy + (0.03 + zr() * 0.55) * msc;
+        const ox = Math.cos(a), oz = Math.sin(a), tg = zr() < 0.5 ? 1 : -1, up = 0.5 + zr();
+        let dx = -oz * tg + ox * 0.5, dz = ox * tg + oz * 0.5;
+        const dl = Math.hypot(dx, up, dz);
+        zenZig(cx + ox * r, y, cz + oz * r, dx / dl, up / dl, dz / dl, 4 + Math.floor(zr() * 3), 0.06 * msc, 0.009 * msc, 1);
+      }
+      const nb = Math.round(ZEN_BOLT_B * q * q);
+      for (let j = 0; j < nb; j++) {
+        const P = 0.42 + 0.1 * j, u = t / P + 0.37 * j, gen = Math.floor(u), f = u - gen;
+        zSeed(n + 7, j, gen);
+        if (f > (0.12 + 0.12 * zr()) / P || Math.sin(f * P * 70 + j * 3) < -0.7) continue;
+        const a = zr() * Math.PI * 2, r = (0.35 + zr() * 0.35) * msc;
+        const tx = cx + Math.cos(a) * r * 1.3, ty = cy + (1.5 + zr() * 0.4) * msc, tz = cz + Math.sin(a) * r * 1.3;
+        const dx = cx + Math.cos(a) * r - tx, dy = cy - ty, dz = cz + Math.sin(a) * r - tz, dl = Math.hypot(dx, dy, dz);
+        zenZig(tx, ty, tz, dx / dl, dy / dl, dz / dl, 8, dl / 8 / 0.72, 0.016 * msc, 2);   // 鋸齒平均偏 0.8 rad，每節只前進七成
+      }
+    }
+    /* 光痕（m.zp：路線那幾點的世界座標、m.zc 每一點從起點量的路長、m.zs 已經衝到哪；m.zt0 開始衝的那一刻、
+       m.zT 衝原本那一條要幾秒、m.zL0 原本那一條多長）。只在出招那一段畫：收完刀 m.zt 就不走了，鋪著的那幾截會停在半粗 */
+    const P = m.zp, C = m.zc;
+    if (!P || !C || m.zt0 === undefined || m.st !== 'zen') return;
+    const s = m.zs || 0;
+    if (!(s > 0) || zenTrailK(m, s) <= 0) return;                // 連最新的那一頭都淡完了
+    _zPen = 1;
+    const y = 0.45 * msc, stp = Math.max(2, C[C.length - 1] / ZEN_TRAIL_CH);
+    for (let i = 0; i + 1 < P.length && C[i] < s; i++) {
+      const A = P[i], B = P[i + 1], len = (C[i + 1] - C[i]) || 1, end = Math.min(len, s - C[i]);
+      for (let a0 = 0, a1; a0 < end; a0 = a1) {
+        const k0 = zenTrailK(m, C[i] + a0);
+        a1 = Math.min(end, a0 + (k0 < 1 ? 0.5 : stp));         // 尾端變細那一截切細一點
+        const k = zenTrailK(m, C[i] + (a0 + a1) / 2);
+        if (k <= 0) continue;                                   // 尾巴那幾截已經淡完
+        zenSeg(A.x + (B.x - A.x) * a0 / len, y, A.z + (B.z - A.z) * a0 / len,
+               A.x + (B.x - A.x) * a1 / len, y, A.z + (B.z - A.z) * a1 / len, 0.10 * msc * k, 0);
+      }
+    }
+    /* 地上的小閃電（藍白，同雷光那一對網格）：每一道照自己的週期切成一代一代（同上），落在光痕還看得到的那一段上，
+       **貼著地面往兩側竄**，一代只亮 0.04～0.09 秒，所以整條是一閃一閃的；跟著那一截一起變細、淡完就不冒了 */
+    _zPen = 0;
+    for (let j = 0; j < ZEN_GROUND_N; j++) {
+      const Pd = 0.09 + 0.05 * ((j * 0.618034) % 1), u = t / Pd + ((j * 0.381966) % 1), gen = Math.floor(u), f0 = u - gen;
+      zSeed(n + 13, j, gen);
+      if (f0 > (0.04 + 0.05 * zr()) / Pd) continue;
+      const at = zr() * s, k = zenTrailK(m, at);
+      if (k <= 0) continue;
+      let i = 0;
+      while (i + 2 < C.length && C[i + 1] < at) i++;
+      const A = P[i], B = P[i + 1], len = (C[i + 1] - C[i]) || 1;
+      const f = Math.min(1, Math.max(0, (at - C[i]) / len)), ux = (B.x - A.x) / len, uz = (B.z - A.z) / len;
+      const sd = zr() < 0.5 ? 1 : -1, al = (zr() - 0.5) * 0.8, up = zr() * 0.1, off = (zr() - 0.5) * 3;   // 起點散在路線兩側 1.5 格內
+      const dx = -uz * sd + ux * al, dz = ux * sd + uz * al, dl = Math.hypot(dx, up, dz) || 1;
+      zenZig(A.x + (B.x - A.x) * f - uz * off, ZEN_GROUND_Y, A.z + (B.z - A.z) * f + ux * off, dx / dl, up / dl, dz / dl,
+             4 + Math.floor(zr() * 3), 0.18 * msc, 0.02 * msc * (0.4 + 0.6 * k), 1, 1);
+    }
+  }
+  const zenAt = [];                  // 這一幀第幾格畫的是清單裡的第幾個（點選用，同 sabAt）
+  /* list：規則那邊的 beastList()（跟 putBeasts 同一份），只畫 kind === 'zenitsu' 的那幾個 */
+  function putZens(list) {
+    let n = 0;
+    _zI[0] = _zI[1] = 0;
+    for (let i = 0; i < list.length && n < MAXZEN; i++) {
+      const m = list[i];
+      if (m.kind !== 'zenitsu') continue;
+      zenAt[n] = i;
+      zenRig(m);
+      const base = n * ZEN_SLOT, shut = m.st === 'zen';
+      for (let k = 0; k < ZEN_PARTS; k++) {
+        const b = ZENITSU[k];
+        if ((b.e === 1 && shut) || (b.e === 2 && !shut)) { zenMesh.setMatrixAt(base + k, ZERO_M); continue; }
+        const e = b.z ? _zExt[b.g] : 0;
+        if (e) {
+          // 袖子往下長 e（上緣不動），它下面的袖口與手整組往下挪 e（同 putMegs）
+          _zv.copy(ZEN_PV[k]); _zv2.copy(ZEN_SV[k]);
+          if (b.z === 1) { _zv.y -= e / 2; _zv2.y += e; } else _zv.y -= e;
+          tmpM.compose(_zv, ZEN_QV[k], _zv2);
+          zenMesh.setMatrixAt(base + k, _zm.multiplyMatrices(_zG[b.g], tmpM));
+        } else zenMesh.setMatrixAt(base + k, _zm.multiplyMatrices(_zG[b.g], ZEN_LM[k]));
+      }
+      zenBolts(m, n);
+      n++;
+    }
+    zenMesh.count = n * ZEN_SLOT;
+    zenMesh.visible = n > 0;
+    if (n) { zenMesh.instanceMatrix.needsUpdate = true; dropSphere(zenMesh); }
+    for (const [z, c] of [[zenZapCore, _zI[0]], [zenZapGlow, _zI[0]], [zenTrailCore, _zI[1]], [zenTrailGlow, _zI[1]]]) {
+      z.count = c;
+      z.visible = c > 0;
+      if (c) { z.instanceMatrix.needsUpdate = true; dropSphere(z); }
+    }
+  }
+
   /* 場上同時畫得下幾個（含飛在半空的香蕉與火球）。v1.144 從 8 加到 12：吉祥物那三隻
      可以跟天災那一件同時在場（最多 4 隻），再加上龍嘴裡連著吐的火球，8 個會不夠——
      超出的那幾個是**靜靜地不畫**，不會報錯，所以留點餘裕。
@@ -7549,13 +8185,15 @@ const ENG = (function () {
     if (sabMesh && sabMesh.visible) objs.push(sabMesh);   // Saber 算 beast（v1.222，見 putSabers）
     if (levMesh && levMesh.visible) objs.push(levMesh);   // 里維兵長也算 beast（v1.230，見 putLevis）
     if (megMesh && megMesh.visible) objs.push(megMesh);   // 惠惠也算 beast（v1.247.0，見 putMegs）
+    if (zenMesh && zenMesh.visible) objs.push(zenMesh);   // 善逸也算 beast（v1.251.0，見 putZens）
     const hits = raycaster.intersectObjects(objs, false);
     let best = null, rank = 9;
     for (let i = 0; i < hits.length; i++) {
       const h = hits[i];
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
-                 : h.object === beastMesh || h.object === sabMesh || h.object === levMesh || h.object === megMesh ? 'beast'
+                 : h.object === beastMesh || h.object === sabMesh || h.object === levMesh || h.object === megMesh ||
+                   h.object === zenMesh ? 'beast'
                  : h.object === giftMesh ? 'gift'
                  : h.object === ground ? 'ground' : null;
       /* 泡泡被牆擋住就點不到（畫面上本來就看不見它：泡泡不寫深度，但仍然吃深度測試）。
@@ -7567,6 +8205,7 @@ const ENG = (function () {
                 : kind === 'beast' ? (h.object === sabMesh ? sabAt[Math.floor(h.instanceId / SAB_PARTS)]
                                       : h.object === levMesh ? levAt[Math.floor(h.instanceId / LEV_SLOT)]
                                       : h.object === megMesh ? megAt[Math.floor(h.instanceId / MEG_SLOT)]
+                                      : h.object === zenMesh ? zenAt[Math.floor(h.instanceId / ZEN_SLOT)]
                                                            : Math.floor(h.instanceId / BEAST_PARTS))
                 /* 泡泡是一整片貼圖網格（不是 instanced）：一顆兩個三角形，
                    而 giftAt 記著這一幀第幾片畫的是清單裡的第幾顆（見 putGifts）。 */
@@ -7648,6 +8287,9 @@ const ENG = (function () {
     /* 惠惠（v1.247.0）：自己一顆 mesh（putMegs）。規則那邊照 MEGT 的時間軸走詠唱、倒下、爬起來，
        詠唱時的火環與吸過來的魔力對著 megOrb（跟畫出去的寶珠同一支 megRig） */
     putMegs, MEGUMIN, MEG_PARTS, MEG_SLOT, MAXMEG, MEGT, MEG_G, megOrb,
+    /* 善逸（v1.251.0）：自己一顆 mesh（putZens）。規則那邊照 ZEN 的時間軸走架勢、一閃、收刀；
+       雷光與光痕照規則那邊寫在他身上的 m.zt／m.zp／m.zs 畫 */
+    putZens, ZENITSU, ZEN_PARTS, ZEN_SLOT, MAXZEN, ZEN, ZEN_G, ZEN_ZAP_SLOT, ZEN_TRAIL_SLOT,
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
     /* 全部造型表（v1.149）：測試把這一份整個存成基準檔（tools/model-baseline.json），
@@ -7662,10 +8304,11 @@ const ENG = (function () {
                ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
                deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, saber: SABER, levi: LEVI, megumin: MEGUMIN,
+               zenitsu: ZENITSU,
                shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY, tabby: TABBY, blackcat: BLACKCAT };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, fadeMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, fadeMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow }; }
   };
 })();

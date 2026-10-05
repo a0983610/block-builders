@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.250.1';
+const VERSION = '1.251.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -322,6 +322,25 @@ function sndLevi() { noise(0.28, 0.07, 3600); tone(980, 0.12, 'square', 0.018, 1
 function sndMegumin() {
   tone(880, 0.18, 'sine', 0.04, 1.3, 'megumin');
   setTimeout(() => tone(1175, 0.26, 'triangle', 0.03, 1.1, 'megumin'), 110);
+}
+/* 善逸（v1.251.0）：登場是一聲短的電流「滋」＋一顆往上的亮音——跟 Saber（兩顆亮音往上）、里維（噴氣＋短的金屬）分得開 */
+function sndZen() { noise(0.16, 0.05, 6000); tone(1560, 0.16, 'square', 0.016, 1.8, 'zen'); }
+/* 居合架勢：一聲往上爬的嗡鳴 ＋ 一直劈啪的電流聲，從蹲下去一路爬到衝出去（長度讀 ENG.ZEN.iai，不寫死） */
+function sndZenCharge() {
+  const d = ENG.ZEN.iai;
+  tone(220, d, 'sawtooth', 0.03, 3, 'zenCharge', 0.3);
+  noise(d, 0.03, 4200);
+}
+/* 一閃：雷劈下來那一聲（噪音的轟 ＋ 往下掃的亮音 ＋ 低頻） */
+function sndZenDash() {
+  noise(0.5, 0.22, 2400);
+  tone(1800, 0.35, 'square', 0.03, 0.2, 'zenDash');
+  tone(90, 0.6, 'sawtooth', 0.07, 0.5, 'zenDash2');
+}
+/* 刀滑進鞘裡那一聲「鏘」 */
+function sndZenSheath() {
+  tone(2400, 0.22, 'triangle', 0.04, 1, 'zenSheath');
+  setTimeout(() => tone(3200, 0.14, 'sine', 0.025, 1, 'zenSheath2'), 40);
 }
 /* 詠唱：一聲往上爬的嗡鳴，從放出魔法陣一路爬到爆炸（道具那一發的 MAG_TIME 秒） */
 function sndChant() {

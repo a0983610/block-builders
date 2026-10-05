@@ -469,6 +469,7 @@ const installClean = page => page.evaluate(() => {
     ENG.putSabers([]);                // 她自己那顆 mesh、光點、光柱也藏起來（v1.222）
     ENG.putLevis([]);                 // 里維兵長自己那顆 mesh（v1.230），同上
     ENG.putMegs([]);                  // 惠惠自己那顆 mesh（v1.247.0），同上
+    ENG.putZens([]);                  // 善逸自己那顆 mesh、雷光、光痕（v1.251.0），同上
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
@@ -3479,6 +3480,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '往 +X 砸平均 vx=' + angle.a.vx.toFixed(2) + '，往 −X 砸 vx=' + angle.b.vx.toFixed(2));
 
   const land = await page.evaluate(() => {
+    /* 這 35 秒裡不能有人累到放料（v1.251.0，見 開發筆記〈落定那條在賭有沒有人剛好喘氣〉）。
+       v1.244.2 起開工時連續工作的鐘每人抽 0～REST_AT × REST_SPREAD 起算（〈喘氣錯開〉），上面 run() 的
+       startBuild 抽到 25 秒以上的人，量測期間就會做滿 REST_AT、當場把手上的料往前放（tireOut）——
+       收尾那一刻剛出手的幾塊還在飛，量到的就不是砸出來的碎塊落不落定。歸零之後 35 秒做不滿 REST_AT。 */
+    for (const w of workers) w.toil = 0;
     for (let i = 0; i < 700; i++) step(0.05);
     let flying = 0, outside = 0, sunk = 0, float = 0, worstY = 0, freeN = 0;
     for (const b of blocks) {
@@ -5073,6 +5079,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const cd = [m.chatCd, p.chatCd];
     m.chatCd = p.chatCd = Infinity;                    // 不讓他們聊天（量完還回去）
     p.tx = p.x; p.tz = p.z; p.pause = 0;               // 同魔法師：接上閒晃那一幀目標在腳下
+    /* 魔法師身上之前留著的發呆也歸零（v1.251.0）：--seed 3683692677 量測一開始他就帶著 21.72 秒的 pause
+       （strollPause：上一趟走多遠就停那段路程的 1.7～3.1 倍），20 秒的量測窗口裡一直站著數那一段，
+       一步都沒走、也沒輪到抽表演（見 開發筆記〈兩條舊測試在賭別人的骰子〉） */
+    m.pause = 0;
     let mShow = 0, pShow = 0, busy = 0, mw = 0, walked = 0, px = m.x, pz = m.z;
     for (let i = 0; i < 400; i++) {
       step(0.05);
@@ -17153,32 +17163,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 塊、視線高度還回去（' + ufoEdge.cam + '）');
 
   /* 畫面：碟身、邊燈、光柱三顆 mesh。沒幽浮在場時一律 visible=false
-     （沒東西在場就不吃 draw call，開發筆記〈效能〉那條規矩）。 */
+     （沒東西在場就不吃 draw call，開發筆記〈效能〉那條規矩）。
+     **draw call 只算那三顆自己吃的**（v1.251.0）：照常畫一次、把三顆藏起來再畫一次，相減。以前拿整個畫面的總數比
+     「叫之前」與「收工之後」——--seed 3683692677 叫之前剛好有小人頭上冒著表情圖示（emoMesh）、收工之後沒有，總數 14 對 12，
+     三顆幽浮網格兩個時候其實都沒畫（見 開發筆記〈兩條舊測試在賭別人的骰子〉） */
   const ufoDraw = await page.evaluate(() => {
     cleanTools(); completeNow();
     for (let i = 0; i < 60; i++) step(0.05);
-    draw(); ENG.render();
-    const base = ENG.info().calls;
-    const t = ENG.three;
+    const t = ENG.three, ms = [t.ufoMesh, t.ufoLitMesh, t.ufoBeamMesh];
+    const own = () => {
+      draw(); ENG.render();
+      const a = ENG.info().calls, v = ms.map(o => o.visible);
+      for (const o of ms) o.visible = false;
+      ENG.render();
+      const b = ENG.info().calls;
+      ms.forEach((o, i) => { o.visible = v[i]; });
+      return a - b;
+    };
+    const base = own();
     const off = { hull: t.ufoMesh.visible, lit: t.ufoLitMesh.visible, beam: t.ufoBeamMesh.visible };
     callUfo({ x: 0, z: 0 });
     let f = 0, on = null, calls = 0;
     while (f < 300) {
       step(0.05); f++;
       if (ufos && ufos[0].st === 'beam' && ufos[0].beam >= 1) {
-        draw(); ENG.render();
+        calls = own();
         on = { hull: t.ufoMesh.visible, hullN: t.ufoMesh.count,
                lit: t.ufoLitMesh.visible, litN: t.ufoLitMesh.count,
                beam: t.ufoBeamMesh.visible, beamN: t.ufoBeamMesh.count };
-        calls = ENG.info().calls;
         break;
       }
     }
     ufoClear();
-    draw(); ENG.render();
+    const afterCalls = own();
     const after = { hull: t.ufoMesh.visible, lit: t.ufoLitMesh.visible, beam: t.ufoBeamMesh.visible,
-                    calls: ENG.info().calls };
-    /* 該畫幾塊直接讀造型表（v1.169 造型改成圓盤、塊數從 6／7 變成 36／24——
+                    calls: afterCalls };    /* 該畫幾塊直接讀造型表（v1.169 造型改成圓盤、塊數從 6／7 變成 36／24——
        寫死數字的話每次調造型都要回來改，同「全部道具」那條的用意）。 */
     return { base, off, on, calls, after,
              want: { hull: ENG.UFO_PARTS, lit: ENG.UFO_LITS } };
@@ -17186,16 +17205,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('沒幽浮在場時三顆 mesh 都不畫（一個 draw call 都不吃）',
      !ufoDraw.off.hull && !ufoDraw.off.lit && !ufoDraw.off.beam &&
      !ufoDraw.after.hull && !ufoDraw.after.lit && !ufoDraw.after.beam &&
-     ufoDraw.after.calls === ufoDraw.base,
-     '沒在場 ' + ufoDraw.base + ' 個 draw call，收工後也是 ' + ufoDraw.after.calls);
-  ok('在場時碟身、邊燈與艙罩、光柱三顆都畫出來（塊數照造型表，一台的份）',
+     ufoDraw.base === 0 && ufoDraw.after.calls === 0,
+     '沒在場時那三顆吃 ' + ufoDraw.base + ' 個 draw call，收工後 ' + ufoDraw.after.calls);  ok('在場時碟身、邊燈與艙罩、光柱三顆都畫出來（塊數照造型表，一台的份）',
      ufoDraw.on.hull && ufoDraw.on.hullN === ufoDraw.want.hull &&
      ufoDraw.on.lit && ufoDraw.on.litN === ufoDraw.want.lit &&
      ufoDraw.on.beam && ufoDraw.on.beamN === 1 &&
-     ufoDraw.calls - ufoDraw.base <= 6,
+     ufoDraw.calls > 0 && ufoDraw.calls <= 6,
      '碟身 ' + ufoDraw.on.hullN + '／' + ufoDraw.want.hull + ' 塊 ＋ 燈 ' +
      ufoDraw.on.litN + '／' + ufoDraw.want.lit + ' 塊 ＋ 光柱 ' +
-     ufoDraw.on.beamN + ' 根，draw call ' + ufoDraw.base + ' → ' + ufoDraw.calls);
+     ufoDraw.on.beamN + ' 根，那三顆吃 ' + ufoDraw.calls + ' 個 draw call');
 
   /* v1.169.2 使用者：「烏雲(UFO也一起改)高度改成根據目前目標高度(有些塔很高沒蓋完
      出現時看起來太高)」。拿台北 101（蓋完 65 高）測：照 `bp.height` 算的話雲固定飄在
@@ -19144,8 +19162,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     trucks = null; cleanTools(); clearFires();
     return r;
   });
+  /* 「火全滅」不判（v1.251.0，使用者選的，見 開發筆記〈消防車那條在賭火燒多大〉）：滅不滅得完看的是
+     第一滴水落地前火已經燒成多大一片，那是火勢的骰子，不是車有沒有繞過去。實測 --seed 3160214857
+     車第 6 秒開噴時火已經燒到 150 塊（第 4 秒就 145 塊），之後一路噴到 30 秒、第 15 秒照 FT_MORE 加派第 2 台，
+     30 秒時還剩 34 塊。秒數照舊印出來看。 */
   ok('火在建築另一頭：車會沿著工地圈繞過去，不是頂在圈邊不動',
-     ftRound.sprayed > 3 && ftRound.out > 0 && ftRound.minR > ftRound.site - 0.5 &&
+     ftRound.sprayed > 3 && ftRound.minR > ftRound.site - 0.5 &&
      ftRound.reach < ftRound.reach0 * 0.7,
      '車從對面進場：方位角繞了 ' + ftRound.turn + ' rad（火場在 ' + ftRound.need +
      ' rad 外）、離火場從 ' + ftRound.reach0 + ' 拉近到 ' + ftRound.reach +
@@ -21248,11 +21270,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
       return { top: +top.toFixed(1), fw: +fw.toFixed(1), fb: +fb.toFixed(1), land };
     };
-    const now = run();
-    const orig = eachBeastNear;
-    eachBeastNear = (p, R, cb) => orig(p, R, cb, true);      // 舊規則：只算水平距離
-    const was = run();
-    eachBeastNear = orig;
+    /* 量測期間不讓人自己絆倒（v1.251.0，見 開發筆記〈鐵球那兩條在賭有沒有人剛好絆倒〉）。
+       completeNow 之後他們正走去慶祝圈，每幀被釘回原位但腿還在擺，而 v1.250 起慶祝進場照絆（見 tripWalk）——
+       有人在球落地前自己趴下，fw 量到的就是那一跤的高度（實測舊規則那一趟 1 號在球 32.2 高時 trip = 1）。
+       猴子不必押：牠在這裡站著（gait 0），走路那一跤抽不到。跑完還回去。 */
+    const trip = tripWalk;
+    tripWalk = () => false;
+    let now, was;
+    try {
+      now = run();
+      const orig = eachBeastNear;
+      eachBeastNear = (p, R, cb) => orig(p, R, cb, true);      // 舊規則：只算水平距離
+      was = run();
+      eachBeastNear = orig;
+    } finally { tripWalk = trip; }
     cleanTools(); beasts = null;
     return { now, was };
   });
@@ -27857,8 +27888,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         /* 10 秒夠慢的那幾支走完：魔法 6 秒引信、王之財寶射 7 秒、龍捲風掃 10 秒。
            **Excalibur（v1.224）例外**：Saber 從場邊照天災的步伐走進來，站定、蓄力要二十幾秒，
            所以最多推 60 秒、沾到就停（它斬到那隻猴子的那一刻就是 excLives／afterHit 那一條）。
-           **兵長砍猴（v1.230）同理**：里維從場邊跑進來、射鋼索飛過去才開砍（levLives／afterHit 那一條） */
-        const slow = t.id === 'excalibur' || t.id === 'levi';
+           **兵長砍猴（v1.230）同理**：里維從場邊跑進來、射鋼索飛過去才開砍（levLives／afterHit 那一條）；
+           **霹靂一閃（v1.251.0）也是**：善逸跑進來、蹲 1.2 秒才衝（zenLives／afterHit 那一條） */
+        const slow = t.id === 'excalibur' || t.id === 'levi' || t.id === 'zenitsu';
         for (let i = 0; i < (slow ? 1200 : 200); i++) { step(0.05); if (slow && seen) break; }
         out.push({ id: t.id, seen });
       }
@@ -29920,6 +29952,382 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈破壞道具：兵長砍猴〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 破壞道具：霹靂一閃（v1.251.0）══════════
+     使用者：「先做這個角色造型 給我確認能做多像 越像越好 夠像會預計加破壞道具 霹靂一閃 操作方式會類似saber & 里維」
+     → 造型預覽兩輪 →「右前方 藍白 然後可以做進遊戲了 可以點建築&小人 做成霹靂一閃 Z字形 在地面上破壞」→ 問四件
+     （六連、全部沖飛但不斬殺巨人、生物點得到、點空地跑過去待命）→ 遊戲預覽三輪（圖示跟打雷對調、路線改成在破壞範圍裡
+     隨機亂竄、光痕金黃、路線上的小閃電；尺寸挑「半徑16 寬8 高5 六連改成八連」）。
+     **全部規則型**：路線、削的範圍、掃到的人與動物、衝出建築、打不動、畫面都直接呼叫那一支驗規則本身（路線抽 300 次，
+     驗的是每一次都成立的規矩，不是統計）；只有「一整趟」那幾條真的讓他從場邊跑進來。detail 只在紅的時候印變動的數字。 */
+  SEC: { if (!(await head('破壞道具：霹靂一閃', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 他走路是 stepDoom 在推
+  await fillAll(page);
+
+  /* ── 造型與表：自己一顆 mesh、跟小人同一個比例；道具接在兵長砍猴後面、只能用道具叫來 ── */
+  const zfig = await page.evaluate(() => {
+    const M = ENG.ZENITSU, G = ENG.ZEN_G;
+    const body = M.filter(b => b.g !== G.sword && b.g !== G.saya);
+    const lo = Math.min(...body.map(b => b.p[1] - b.s[1] / 2)), top = Math.max(...body.map(b => b.p[1] + b.s[1] / 2));
+    const m = spawnBeast('zenitsu', 1, 0, 0), sc = m.sc;
+    beasts = null;
+    const iz = TOOLS.findIndex(t => t.id === 'zenitsu'), il = TOOLS.findIndex(t => t.id === 'levi');
+    return { parts: M.length, zp: ENG.ZEN_PARTS, inBeasts: 'zenitsu' in ENG.BEASTS, beastParts: ENG.BEAST_PARTS,
+             maxOther: Math.max(...Object.values(ENG.BEASTS).map(a => a.length)), model: ENG.MODELS.zenitsu === M,
+             lo: +lo.toFixed(3), top: +top.toFixed(3), sc, doomSc: DOOM_SC,
+             at: iz, levi: il, ground: !!GROUND_TOOL.zenitsu,
+             masc: MASCOTS.some(k => k.id === 'zenitsu'), doom: DOOMS.some(d => d.id === 'zenitsu'),
+             nm: !!BEAST_NM.zenitsu, it: itOf({ kind: 'zenitsu' }),
+             icon: TOOLS[iz].k, storm: TOOLS.find(t => t.id === 'storm').k };
+  });
+  ok('善逸自己一顆 mesh：不進 BEASTS，別的動物一隻還是照原本最多塊那一款付成本',
+     zfig.parts === zfig.zp && !zfig.inBeasts && zfig.beastParts === zfig.maxOther && zfig.model,
+     '他 ' + zfig.parts + ' 塊、BEAST_PARTS 還是 ' + zfig.beastParts + '（BEASTS 裡最多塊那一款 ' + zfig.maxOther + '）');
+  ok('跟小人同一個比例：原點在腳底、頭髮頂 1.25～1.32、放大倍率同猴子（DOOM_SC）',
+     Math.abs(zfig.lo) < 0.01 && zfig.top > 1.25 && zfig.top < 1.32 && zfig.sc === zfig.doomSc,
+     '最低 ' + zfig.lo + '、頭髮頂 ' + zfig.top + '（小人帽頂 1.31）× ' + zfig.sc.toFixed(2));
+  ok('道具表：接在兵長砍猴後面、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「他」；圖示 ⚡、打雷換成 🌩',
+     zfig.levi >= 0 && zfig.at === zfig.levi + 1 && zfig.ground && !zfig.masc && !zfig.doom && zfig.nm &&
+     zfig.it === '他' && zfig.icon === '⚡' && zfig.storm === '🌩',
+     'TOOLS 第 ' + zfig.at + ' 把（兵長砍猴第 ' + zfig.levi + ' 把）；吉祥物 ' + zfig.masc + '、天災 ' + zfig.doom + '；' +
+     zfig.it + '；圖示 ' + zfig.icon + '／打雷 ' + zfig.storm);
+
+  /* ── 路線：抽 300 次，每一次都要成立的三件——n 筆、第 0 點在他腳下；其餘每一點都在半徑 r 的圓裡；
+        第 2 筆（第 2 點 → 第 3 點）穿過點到的那一點（點到的東西一定被削到） ── */
+  const zpath = await page.evaluate(() => {
+    const R = ZEN_Z.r, n = ZEN_Z.n, cx = 40, cz = -20;
+    let bad = 0, far = 0, cross = 0;
+    for (let k = 0; k < 300; k++) {
+      const a = Math.random() * Math.PI * 2, m = { x: cx + Math.cos(a) * zenReach(), z: cz + Math.sin(a) * zenReach(), a: 0 };
+      const P = zenPath(m, cx, cz);
+      if (P.length !== n + 1 || P[0].x !== m.x || P[0].z !== m.z) bad++;
+      for (let i = 1; i < P.length; i++) far = Math.max(far, Math.hypot(P[i].x - cx, P[i].z - cz));
+      const A = P[2], B = P[3], ux = B.x - A.x, uz = B.z - A.z, t = ((cx - A.x) * ux + (cz - A.z) * uz) / (ux * ux + uz * uz);
+      cross = Math.max(cross, t < 0 || t > 1 ? 1e9 : Math.hypot(A.x + ux * t - cx, A.z + uz * t - cz));
+    }
+    return { bad, far, cross, R, n, reach: zenReach(), edge: ZEN_EDGE };
+  });
+  const zpOk = zpath.bad === 0 && zpath.far <= zpath.R + 1e-9 && zpath.cross < 1e-9 && zpath.reach === zpath.R + zpath.edge;
+  ok('路線：n 筆、第 0 點在他腳下、其餘每一點都在破壞範圍（半徑 r）裡，第 2 筆一定穿過點到的那一點（抽 300 次）',
+     zpOk, zpath.n + ' 筆、半徑 ' + zpath.R + '、站在離那一點 ' + zpath.reach + ' 格' +
+     (zpOk ? '' : '；筆數或起點不對 ' + zpath.bad + ' 次、最遠 ' + zpath.far.toFixed(3) + '、第 2 筆離那一點 ' + zpath.cross));
+
+  /* ── 削的範圍：一條直線橫過金字塔，離那一條 w/2 以內、最底下 h 層的還立著的積木全部削掉，範圍外的一塊都不少
+        （分兩段呼叫，驗「一段一段往前削、首尾相接」；只叫 zenCut、不推主迴圈，所以還不會垮） ── */
+  const zcut = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; clearFires();
+    const W2 = ZEN_Z.w / 2, H = ZEN_Z.h, Z = 2.25;                    // z 取在格子中間，邊界上不會剛好壓著一塊
+    const A = { x: bp.radius + 8, z: Z }, B = { x: -bp.radius - 8, z: Z }, L = A.x - B.x;
+    const inSw = b => b.y < H && Math.abs(b.z - Z) <= W2 && b.x <= A.x + W2 && b.x >= B.x - W2;
+    const cnt = f => blocks.filter(b => b.st === SET && f(b)).length;
+    const in0 = cnt(inSw), out0 = cnt(b => !inSw(b));
+    const m = spawnBeast('zenitsu', 1, 0, 0);
+    m.x = A.x; m.z = A.z; m.zp = [A, B]; m.zc = [0, L]; m.zn = 0; m.zdu = 0; m.zsh = 0;
+    zenCut(m, 0, L * 0.4, 0.02); zenCut(m, L * 0.4, L, 0.02);
+    const r = { in0, in1: cnt(inSw), out0, out1: cnt(b => !inSw(b)), zn: m.zn };
+    beasts = null; supportDirty = false;
+    return r;
+  });
+  const zcOk = zcut.in0 > 0 && zcut.in1 === 0 && zcut.out1 === zcut.out0 && zcut.zn === zcut.in0;
+  ok('削的範圍：離那一條 w/2 以內、最底下 h 層的全部削掉，範圍外的一塊都不少（分兩段削、首尾相接）',
+     zcOk, zcOk ? '範圍內全削、範圍外不動' : '範圍內 ' + zcut.in0 + ' → ' + zcut.in1 + '、範圍外 ' + zcut.out0 + ' → ' +
+     zcut.out1 + '、算進去 ' + zcut.zn);
+
+  /* ── 掃到的人與動物：全部沖飛（使用者選的），巨人只沖飛、不斬殺；天上的、範圍外的、他自己不算 ── */
+  await fillAll(page);
+  const zlife = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const X = siteR + 30, W2 = ZEN_Z.w / 2;
+    const A = { x: X, z: -30 }, B = { x: X, z: 30 };
+    const m = spawnBeast('zenitsu', 1, 0, 0);
+    m.x = X; m.z = -40; m.zp = [A, B]; m.zc = [0, 60]; m.zn = 0; m.zdu = 0; m.zsh = 0;
+    const put = (o, x, z) => { o.x = x; o.z = z; o.y = 0; o.air = 0; o.fall = 0; o.burn = 0; };
+    const w = workers[0], w2 = workers[1];
+    put(w, X + 1, -10); put(w2, X + W2 + 3, -10);
+    const ape = spawnBeast('ape', 1); put(ape, X - 1, 0); ape.st = 'fun'; ape.pause = 999;
+    const g = spawnBeast('giant', 1); put(g, X, 12); g.st = 'fun'; g.pause = 999;
+    const far = spawnBeast('ape', 1); put(far, X + W2 + 12, 4); far.st = 'fun'; far.pause = 999;
+    const sky = { kind: 'gryphon', sky: 1, x: X, y: 20, z: 20, a: 0, sc: 1, air: 0 };
+    beasts.push(sky);
+    zenCut(m, 0, 60, 0.02);
+    const r = { w: w.air, w2: w2.air, ape: ape.air, giant: g.air, dead: !!g.dead, far: far.air, sky: sky.air, me: m.air };
+    beasts = null;
+    for (const o of [w, w2]) { o.air = 0; o.vx = o.vy = o.vz = 0; o.y = 0; }
+    return r;
+  });
+  ok('掃到的人與動物全部沖飛，巨人只沖飛、不斬殺；天上的、範圍外的、他自己不算',
+     zlife.w === 1 && !zlife.w2 && zlife.ape === 1 && zlife.giant === 1 && !zlife.dead && !zlife.far && !zlife.sky && !zlife.me,
+     '小人 範圍內 ' + zlife.w + '／範圍外 ' + zlife.w2 + '；小獼猴 ' + zlife.ape + '；巨人 沖飛 ' + zlife.giant + '、斬殺 ' +
+     zlife.dead + '；範圍外的猴子 ' + zlife.far + '；天上的獅鷲 ' + zlife.sky + '；他自己 ' + zlife.me);
+
+  /* ── 一整趟（建築）：從那一點的方位進場、跑到破壞範圍外 zenReach 格站定 → 架勢 → 一閃 → 斬完 → 刀尖對鞘口 → 收刀 → 回去逛 ── */
+  await fillAll(page);
+  const zrun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    let P = null;                                  // 金字塔 +x 那一面、3 格高的外殼（同〈破壞道具：兵長砍猴〉）
+    for (const b of blocks) if (b.st === SET && Math.abs(b.y - 3) < 0.6 && (!P || b.x > P.x)) P = b;
+    const px = P.x, pz = P.z;
+    tool = 'zenitsu';
+    useTool({ kind: 'block', point: { x: P.x, y: P.y, z: P.z }, dir: { x: -1, y: 0, z: 0 } });
+    tool = 'hammer';
+    const zs = (beasts || []).filter(b => b.kind === 'zenitsu'), m = zs[0], c = m.call;
+    let da = Math.atan2(m.z, m.x) - Math.atan2(c.z, c.x);
+    while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+    const entry = { n: zs.length, fun: m.fun, st: m.st, da: Math.abs(da), sd: c.sd, reach: zenReach() };
+    const seen = [];
+    let n = 0, act = null, below = 0, soft = 0;
+    while (n < 6000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.02); n++;
+      const k = m.st + (m.st === 'zen' ? ':' + m.op : '');
+      if (seen[seen.length - 1] !== k) seen.push(k);
+      if (!act && m.st === 'act') act = Math.hypot(m.x - px, m.z - pz);
+      if ((m.y || 0) < -1e-9) below++;
+      if (m.st === 'zen' && !levBusy(m)) soft++;
+      if (m.st === 'fun' && seen.indexOf('zen:sheath') >= 0) break;
+    }
+    const r = { entry, seen: seen.join('→'), act, below, soft, cut: P.st !== SET, zn: m.zn, inside: zenInside(m.x, m.z),
+                end: { call: m.call, op: m.op, y: m.y, stay: m.stay }, lo: MASC_STAY[0] };
+    beasts = null; clearFires();
+    return r;
+  });
+  const zrIn = zrun.entry.n === 1 && zrun.entry.fun === 1 && zrun.entry.st === 'call' && zrun.entry.da < 1e-9 &&
+               zrun.entry.sd === zrun.entry.reach;
+  ok('點建築：從那一點的方位進場、是吉祥物，命令停在破壞範圍外（zenReach 格）', zrIn,
+     zrIn ? '一位、站在離那一點 zenReach 格' : JSON.stringify(zrun.entry));
+  const zrOk = zrun.seen === 'call→act→zen:iai→zen:dash→zen:slash→zen:noto→zen:sheath→fun' && zrun.act !== null &&
+               Math.abs(zrun.act - zrun.entry.reach) < 0.15 && zrun.cut && zrun.zn > 0 &&
+               zrun.end.call === null && zrun.end.op === null && zrun.end.y === 0 && zrun.end.stay >= zrun.lo;
+  ok('一整趟（建築）：站定 → 架勢 → 一閃 → 斬完 → 刀尖對鞘口 → 收刀 → 回去逛，點到的那一塊削掉了',
+     zrOk, zrOk ? zrun.seen : zrun.seen + '；站定時離那一點 ' + zrun.act + '（zenReach ' + zrun.entry.reach + '）、點到的削掉 ' +
+     zrun.cut + '、削掉 ' + zrun.zn + '、收完 ' + JSON.stringify(zrun.end));
+  ok('那一整招打不動他、腳底不低於地面、收完刀不站在建築底下',
+     zrun.soft === 0 && zrun.below === 0 && !zrun.inside,
+     '出招中打得動 ' + zrun.soft + ' 幀、低於地面 ' + zrun.below + ' 幀、收完站在建築底下＝' + zrun.inside);
+
+  /* ── 衝到底還在建築底下：順著最後一筆再衝出去到空地（那一截接在路線後面、光痕照畫）。
+        終點押在塔頂那一欄：削掉最底下 h 層，頭上還壓著 ── */
+  await fillAll(page);
+  const zout = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    let top = null;
+    for (const b of blocks) if (b.st === SET && (!top || b.y > top.y)) top = b;
+    const B = { x: top.x, z: top.z }, A = { x: top.x + bp.radius + 20, z: top.z }, L = A.x - B.x;
+    const m = spawnBeast('zenitsu', 1, 0, 0);
+    m.x = A.x; m.z = A.z; m.call = { x: B.x, y: 0, z: B.z, sd: 1 }; m.st = 'zen'; m.op = 'dash'; m.ot = 0; m.zt = 0;
+    m.zp = [A, B]; m.zc = [0, L]; m.zs = 0; m.zt1 = -1; m.zn = 0; m.zdu = 0; m.zsh = 0;
+    const tall = top.y > ZEN_Z.h + 1;
+    let n = 0;
+    while (m.op === 'dash' && n < 500) { stepZen(m, 0.02); n++; }
+    const r = { tall, op: m.op, pts: m.zp.length, inside: zenInside(m.x, m.z), past: m.x < B.x - 0.4, zs: m.zs,
+                L: m.zc[m.zc.length - 1], zt1: m.zt1 };
+    beasts = null; supportDirty = false;
+    return r;
+  });
+  const zoOk = zout.tall && zout.op === 'slash' && zout.pts === 3 && !zout.inside && zout.past && zout.zs === zout.L && zout.zt1 >= 0;
+  ok('衝到底還在建築底下：順著最後一筆再衝出去到空地，那一截接在路線後面（光痕照畫）',
+     zoOk, zoOk ? '衝出去了' : JSON.stringify(zout));
+
+  /* ── 點生物、巨人、小人：追過去一閃，全部沖飛；巨人不斬殺；小人不算手指戳倒的成就 ── */
+  await fillAll(page);
+  const zhit = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const run = (tb, isW) => {
+      const m = callZen({ x: tb.x, y: 0, z: tb.z }, tb, isW);
+      const b = !!m.call && m.call.b === tb && m.call.bw === (isW ? 1 : 0), seen = [];
+      let n = 0, air = 0, dead = 0;
+      while (n < 3000) {
+        step(0.02); n++;
+        const k = m.st + (m.st === 'zen' ? ':' + m.op : '');
+        if (seen[seen.length - 1] !== k) seen.push(k);
+        if (tb.air) air = 1;
+        if (tb.dead) dead = 1;
+        if (m.st === 'fun' && seen.indexOf('zen:sheath') >= 0) break;
+      }
+      return { b, air, dead, call: m.call, done: seen.indexOf('zen:sheath') >= 0 };
+    };
+    const a = spawnBeast('ape', 1); a.x = siteR + 26; a.z = 6; a.st = 'fun'; a.pause = 999; a.stay = 999;
+    const ape = run(a, false); ape.alive = beasts.indexOf(a) >= 0;
+    beasts = null;
+    const g = spawnBeast('giant', 1); g.x = siteR + 30; g.z = -8; g.st = 'fun'; g.pause = 999; g.stay = 999;
+    const giant = run(g, false); giant.alive = beasts.indexOf(g) >= 0;
+    beasts = null;
+    const w = workers[0], poked = stats.poked;
+    w.x = siteR + 20; w.z = 12; w.y = 0; w.air = 0; w.fall = 99;          // 押著他躺著，不然他一走開就削空
+    const man = run(w, true); man.poked = stats.poked - poked;
+    w.fall = 0; beasts = null;
+    return { ape, giant, man };
+  });
+  ok('點生物：追過去一閃，牠被沖飛、還在場上，收完刀命令收掉',
+     zhit.ape.b && zhit.ape.done && zhit.ape.air && zhit.ape.alive && zhit.ape.call === null, JSON.stringify(zhit.ape));
+  ok('點巨人：沖飛、不斬殺（使用者：「全部沖飛 但是不斬殺巨人」）',
+     zhit.giant.b && zhit.giant.done && zhit.giant.air && !zhit.giant.dead && zhit.giant.alive, JSON.stringify(zhit.giant));
+  ok('點小人：追過去一閃把他沖飛，不算手指戳倒的成就',
+     zhit.man.b && zhit.man.done && zhit.man.air && zhit.man.poked === 0, JSON.stringify(zhit.man));
+
+  /* ── 點空地：跑到那一點、待命 LEV_WAIT 秒再回去逛（不出招，同 Saber／里維） ── */
+  const zgo = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('zenitsu', 1, 0, 0);
+    m.x = siteR + 8; m.z = 0; m.st = 'fun'; m.pause = 99;
+    const a = 1.1, G = { x: Math.cos(a) * (siteR + 16), y: 0, z: Math.sin(a) * (siteR + 16) };
+    tool = 'zenitsu'; useTool({ kind: 'ground', point: G, dir: { x: 0, y: -1, z: 0 } }); tool = 'hammer';
+    const go = !!(m.call && m.call.go);
+    let n = 0, arr = null, zen = 0;
+    while (n < 3000 && !arr) {
+      step(0.02); n++;
+      if (m.st === 'zen') zen++;
+      if (m.st === 'fun') arr = { d: Math.hypot(m.x - G.x, m.z - G.z), pause: m.pause, call: m.call };
+    }
+    beasts = null;
+    return { go, arr, zen, sd: LEV_SD, wait: LEV_WAIT };
+  });
+  ok('點空地：跑到那一點待命 LEV_WAIT 秒再回去逛，不出招',
+     zgo.go && zgo.arr && zgo.arr.d <= zgo.sd + 0.1 && zgo.arr.call === null && zgo.zen === 0 &&
+     zgo.arr.pause >= zgo.wait[0] && zgo.arr.pause <= zgo.wait[1], JSON.stringify(zgo));
+
+  /* ── 出招那一整段打不動他（炸不飛、推不倒、點不著），收完就打得動 ── */
+  const zbusy = await page.evaluate(() => {
+    cleanTools();
+    const m = spawnBeast('zenitsu', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0;
+    const r = {};
+    for (const op of ['iai', 'dash', 'sheath']) {
+      m.st = 'zen'; m.op = op;
+      r[op] = [tossBeast(m, 5, 5, 5, true), fellBeast(m, 2), igniteBeast(m, 0), levBusy(m)].join(',');
+    }
+    m.st = 'fun'; m.op = null; r.free = levBusy(m);
+    beasts = null;
+    return r;
+  });
+  ok('出招那一整段（架勢、一閃、收刀）打不動他，收完就打得動',
+     ['iai', 'dash', 'sheath'].every(k => zbusy[k] === 'false,false,false,true') && !zbusy.free, JSON.stringify(zbusy));
+
+  /* ── 畫面：沒他在場不吃 draw call；雷光（藍白）只在出招時、光痕（金黃）與地上的小閃電（藍白）只在光痕還沒淡完的時候；
+        出招那一整段閉眼；不抽 Math.random（只叫 putZens，別的東西抽的不算進來）。
+        光痕**從尾巴開始淡**（使用者：「衝過的金黃痕跡從尾部慢慢淡掉」）：一條 60 格的直線、衝 0.64 秒，
+        衝完沒多久整條都在，再過一陣子尾巴那一頭先不見、留下來的那一頭比較粗；地上的小閃電貼著地面 ── */
+  const zdraw = await page.evaluate(() => {
+    cleanTools();
+    const T3 = ENG.three, M = ENG.ZENITSU, Z = ENG.ZEN;
+    const vis = () => [T3.zenMesh, T3.zenZapCore, T3.zenTrailCore].map(o => o.visible ? 1 : 0).join('');
+    const mat = new THREE.Matrix4(), on = k => {
+      T3.zenMesh.getMatrixAt(k, mat);
+      const e = mat.elements;
+      return Math.abs(e[0]) + Math.abs(e[5]) + Math.abs(e[10]) > 1e-9;
+    };
+    /* 光痕那幾截：中心離起點多遠（這一條是沿 −x 的直線）、多粗（亮芯那一軸的長度） */
+    const chunks = X => {
+      const out = [];
+      for (let i = 0; i < T3.zenTrailCore.count; i++) {
+        T3.zenTrailCore.getMatrixAt(i, mat);
+        const e = mat.elements;
+        out.push({ a: X - e[12], w: Math.hypot(e[0], e[1], e[2]) });
+      }
+      return out;
+    };
+    const topY = () => {
+      let y = -1e9;
+      for (let i = 0; i < T3.zenZapCore.count; i++) { T3.zenZapCore.getMatrixAt(i, mat); y = Math.max(y, mat.elements[13]); }
+      return y;
+    };
+    const eye = M.findIndex(b => b.e === 1), shut = M.findIndex(b => b.e === 2);
+    ENG.putZens([]);
+    const off = vis();
+    const m = spawnBeast('zenitsu', 1, 0, 0), X = siteR + 20;
+    m.x = X; m.z = 0; m.st = 'fun';
+    const real = Math.random;
+    let rnd = 0;
+    Math.random = () => { rnd++; return real(); };
+    ENG.putZens([m]);
+    const stand = vis(), eyeStand = on(eye) && !on(shut), cnt = T3.zenMesh.count;
+    m.st = 'zen'; m.op = 'iai'; m.ot = 1.0; m.zt = 1.0; m.call = { x: 0, y: 0, z: 0 };
+    ENG.putZens([m]);
+    const iai = vis(), eyeZen = !on(eye) && on(shut);
+    m.zp = [{ x: X, z: 0 }, { x: X - 60, z: 0 }]; m.zc = [0, 60]; m.zt0 = 1.2; m.zT = 0.64;
+    m.op = 'dash'; m.ot = 0.3; m.zt = 1.5; m.zs = 60 * 0.3 / 0.64;
+    ENG.putZens([m]);
+    const dash = vis();
+    m.op = 'slash'; m.ot = 0.06; m.zs = 60; m.zt = 1.2 + 0.7;      // 衝完 0.06 秒：整條都在
+    ENG.putZens([m]);
+    const fresh = chunks(X);
+    m.op = 'noto'; m.ot = 0.1; m.zt = 1.2 + 1.0;                    // 開始衝之後 1.0 秒：尾巴才剛開始縮，地上的小閃電冒在整條上
+    ENG.putZens([m]);
+    const noto = vis(), groundTop = topY();
+    m.zt = 1.2 + 1.9;                                               // 開始衝之後 1.9 秒：尾巴已經縮了一大段
+    ENG.putZens([m]);
+    const late = chunks(X);
+    m.zt = 1.2 + 0.64 + Z.trailHold + Z.trail + 0.05;               // 尾巴縮到終點了：整條淡完
+    ENG.putZens([m]);
+    const done = vis();
+    Math.random = real;
+    ENG.putZens([]);
+    const gone = vis();
+    beasts = null;
+    const lo = a => Math.min(...a.map(c => c.a)), hi = a => Math.max(...a.map(c => c.a));
+    const wAt = (a, f) => a.reduce((b, c) => f(c, b) ? c : b).w;
+    /* 照 trailHold／trail 算尾巴該縮到哪：衝完（0.64 秒）停 trailHold 秒，之後 trail 秒縮完整條 60 格 */
+    const cutA = 60 * Math.min(1, Math.max(0, (1.9 - 0.64 - Z.trailHold) / Z.trail));
+    return { off, stand, iai, dash, noto, done, gone, eyeStand, eyeZen, cnt, parts: ENG.ZEN_PARTS, rnd,
+             fresh: { n: fresh.length, lo: fresh.length ? lo(fresh) : 99, hi: fresh.length ? hi(fresh) : -1 },
+             late: { n: late.length, lo: late.length ? lo(late) : 99, hi: late.length ? hi(late) : -1,
+                     wHead: late.length ? wAt(late, (c, b) => c.a > b.a) : 0, wTail: late.length ? wAt(late, (c, b) => c.a < b.a) : 0 },
+             cutA, groundTop, gY: 0.6 };
+  });
+  const zdOk = zdraw.off === '000' && zdraw.stand === '100' && zdraw.iai === '110' && zdraw.dash === '111' &&
+               zdraw.noto === '111' && zdraw.done === '100' && zdraw.gone === '000' && zdraw.cnt === zdraw.parts;
+  ok('沒他在場就不吃 draw call：mesh、雷光、光痕平常都藏著；雷光只在出招時，光痕與地上的小閃電到光痕淡完為止',
+     zdOk, '沒他 ' + zdraw.off + '；站 ' + zdraw.stand + '；架勢 ' + zdraw.iai + '；衝 ' + zdraw.dash + '；收刀前（還沒淡完） ' +
+     zdraw.noto + '；淡完 ' + zdraw.done + '；走了 ' + zdraw.gone + '（mesh／雷光／光痕）；一位 ' + zdraw.cnt + ' 格');
+  const ztOk = zdraw.fresh.n > 0 && zdraw.fresh.lo < 3 && zdraw.fresh.hi > 57 &&
+               zdraw.late.n > 0 && zdraw.late.n < zdraw.fresh.n && zdraw.late.lo > zdraw.cutA && zdraw.late.lo < zdraw.cutA + 3 &&
+               zdraw.late.hi > 57 &&
+               zdraw.late.wHead > zdraw.late.wTail;
+  ok('光痕從尾巴開始慢慢淡掉：衝完整條都在，過一陣子最早衝過的那一頭先不見，留下來的那一頭比較粗',
+     ztOk, ztOk ? '尾巴先淡' : JSON.stringify({ fresh: zdraw.fresh, late: zdraw.late, cutA: zdraw.cutA }));
+  ok('地上的小閃電貼著地面（藍白，跟架勢的雷光同一對網格）', zdraw.noto[1] === '1' && zdraw.groundTop < zdraw.gY,
+     zdraw.groundTop < zdraw.gY ? '貼著地面' : '最高那一段的中心在 ' + zdraw.groundTop);
+  ok('出招那一整段閉眼（他是睡著才打的），平常睜眼', zdraw.eyeStand && zdraw.eyeZen,
+     '平常睜眼＝' + zdraw.eyeStand + '；出招閉眼＝' + zdraw.eyeZen);
+  ok('雷光與光痕不抽 Math.random（每幀都畫，不該吃掉規則那邊的骰子）', zdraw.rnd === 0, '畫六幀抽了 ' + zdraw.rnd + ' 次');
+
+  /* ── 點選：真的走 onDown／onUp 點一隻小獼猴，叫到他、命令帶著那一隻；點得到他自己（回報成 beast、索引對得回來） ── */
+  const zpick = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const e = ENG.camEye(), hl = Math.hypot(e.x, e.z), hx = e.x / hl, hz = e.z / hl;
+    const park = workers.map(o => [o, o.x, o.z]);     // 小人先挪到建築的另一邊、點完還回去（同〈破壞道具：兵長砍猴〉那條點選）
+    for (const [o] of park) { o.x = -hx * (bp.radius + 12); o.z = -hz * (bp.radius + 12); }
+    const a = spawnBeast('ape', 1);
+    a.x = hx * (bp.radius + 8); a.z = hz * (bp.radius + 8); a.a = 0; a.st = 'fun'; a.pause = 999;
+    draw(); ENG.render();
+    const c = ENG.three.renderer.domElement.getBoundingClientRect(), cam = ENG.three.camera;
+    const at = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam);
+                              return [(v.x + 1) / 2 * c.width + c.left, (1 - v.y) / 2 * c.height + c.top]; };
+    const pa = at(a.x, ENG.BEAST_MID.ape * a.sc, a.z);
+    const panel = document.getElementById('panel'), hid = panel.classList.contains('hide'), was = tool;
+    tool = 'zenitsu';
+    onDown({ clientX: pa[0], clientY: pa[1] }); onUp({});
+    tool = was;
+    if (!hid) panel.classList.remove('hide');        // onDown 會把設定面板收下去，還回去
+    const Z = (beasts || []).find(b => b.kind === 'zenitsu');
+    const r = { called: !!Z, b: !!(Z && Z.call && Z.call.b === a) };
+    /* 點得到他自己：他前面先擺一隻遠在場外的牛（同 Saber 那一條），點選回報的索引要對回他 */
+    beasts = [{ kind: 'cow', x: 900, y: 0, z: 900, a: 0, sc: 1, ph: 0, gait: 0 }];
+    const m = spawnBeast('zenitsu', 1, 0, 0);
+    m.x = hx * (bp.radius + 8); m.z = hz * (bp.radius + 8); m.st = 'fun';
+    draw(); ENG.render();
+    const pm = at(m.x, 0.6 * m.sc, m.z), hit = ENG.pick(pm[0] - c.left, pm[1] - c.top, 'levi');
+    r.kind = hit && hit.kind; r.idx = hit ? hit.idx : -1; r.me = !!hit && beastAt(hit.idx) === m;
+    for (const [o, x, z] of park) { o.x = x; o.z = z; }
+    beasts = null; ENG.putBeasts([]); ENG.putZens([]);
+    return r;
+  });
+  ok('點選：真的點一隻小獼猴叫得到他、命令帶著那一隻；點得到他自己（索引對回 beasts 裡的他）',
+     zpick.called && zpick.b && zpick.kind === 'beast' && zpick.idx === 1 && zpick.me, JSON.stringify(zpick));
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+  }   // ── 〈破壞道具：霹靂一閃〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 隕石 ══════════ */
   SEC: { if (!(await head('隕石', T_COMMIT))) break SEC;
   /* 靶要**比爆炸範圍大**（v1.151，本來是新天鵝堡 3000）。新天鵝堡的 siteR 只有 17，
@@ -30679,8 +31087,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        ufoClear() 才會把借去的高度還回去、把艙裡的積木放掉（見 game-tools）。 */
     ufoClear();
     /* Excalibur（v1.224）叫來的 Saber：這一段沒裝天災的鐘（她不會走），留著會站在場邊一路被後面幾條畫到。
-       兵長砍猴（v1.230）叫來的里維同理 */
-    beasts = null; ENG.putSabers([]); ENG.putLevis([]);
+       兵長砍猴（v1.230）叫來的里維、霹靂一閃（v1.251.0）叫來的善逸同理 */
+    beasts = null; ENG.putSabers([]); ENG.putLevis([]); ENG.putZens([]);
     const got = stats.badges.indexOf('allTools') >= 0;
     // 同一種道具用兩次不會重複記
     tool = 'hammer'; useTool(hit);
