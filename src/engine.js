@@ -475,6 +475,7 @@ const ENG = (function () {
   let sabMesh = null, sparkMesh = null;
   const excMeshes = [];
   let levMesh = null;               // 里維兵長（v1.230），見〈里維兵長〉那一節的 putLevis
+  let megMesh = null, megLineMesh = null;   // 惠惠（v1.247.0）與她集氣的藍色魔力線條，見〈惠惠〉那一節的 putMegs
   /* 小黑洞（v1.221）。規則那邊只給位置、黑球半徑、亮度與自轉角，長相全在這裡。
      使用者：「黑色球是要表現得往內吸的感覺」——所以會動的那幾樣**全部往內走**：
      ① 黑球：純黑、不吃光（MeshBasic），它就是一個洞。
@@ -951,6 +952,26 @@ const ENG = (function () {
     for (let i = 0; i < MAXLEV; i++)
       for (let k = 0; k < LEV_SLOT; k++) levMesh.setColorAt(i * LEV_SLOT + k, tmpC.setHex(levColor(k)));
     scene.add(levMesh);
+    /* 惠惠（v1.247.0）：同里維自己一顆。一位 MEG_SLOT 格（就是造型表），
+       顏色開機時寫死；只有寶珠那幾格詠唱時會重寫（見 putMegs） */
+    megMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXMEG * MEG_SLOT);
+    megMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    megMesh.castShadow = true;
+    megMesh.count = 0;
+    megMesh.visible = false;
+    megMesh.frustumCulled = false;
+    for (let i = 0; i < MAXMEG; i++)
+      for (let k = 0; k < MEG_SLOT; k++) megMesh.setColorAt(i * MEG_SLOT + k, tmpC.setHex(MEGUMIN[k].c));
+    scene.add(megMesh);
+    /* 集氣的藍色魔力線條：不吃光、不投影，顏色開機時照 MEG_LINE_C 輪著寫死（見〈惠惠〉那一節） */
+    megLineMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: 0xffffff }), MAXMEG * MEG_LINE * MEG_LINE_SEG);
+    megLineMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    megLineMesh.count = 0;
+    megLineMesh.visible = false;
+    megLineMesh.frustumCulled = false;
+    for (let i = 0; i < MAXMEG * MEG_LINE * MEG_LINE_SEG; i++)       // 同一條的幾段同一個顏色
+      megLineMesh.setColorAt(i, tmpC.setHex(MEG_LINE_C[Math.floor(i / MEG_LINE_SEG) % MEG_LINE_C.length]));
+    scene.add(megLineMesh);
     /* 蓄力時的金色光點：往劍身收的那一批 ＋ 四周往上飄的那一批（v1.226），同一顆網格。
        不透明、不吃光（第一版預覽用加亮混色，疊在天空上直接變白） */
     sparkMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: 0xffffff }), MAXSAB * (SAB_SPARK + SAB_RISE));
@@ -6354,6 +6375,553 @@ const ENG = (function () {
     if (n) { levMesh.instanceMatrix.needsUpdate = true; dropSphere(levMesh); }
   }
 
+  /* ══ 惠惠（v1.247.0）══════════════════════════════════════════
+     使用者：「先做這個角色 一樣越像越好 先給我看過 夠像的話 預計加進吉祥物 但是他完全不主動攻擊的
+     攻擊方式是在安全距離使用爆裂魔法 使用完後在地上往後倒 暈30秒」（造型預覽 tools/.e2e-out/惠惠造型預覽.html，
+     看過：「可以做 夠像」）。
+     **同 Saber／里維自己一顆 mesh、不進 BEASTS**（178 塊）。規則那邊她照樣是 beasts 裡的一隻（kind 'megumin'），
+     畫的時候 putBeasts 把她那一格留空、putMegs 用這一顆畫，點選照樣回報成 beast（megAt 對回索引）。
+     造型表格式同 LEVI（p 位置、s 尺寸、c 顏色、g 掛在哪一組、r 自己的轉角；面向 +z、**右手在 −x**），多三欄：
+       z    手臂上的：1＝袖子（手伸不到時往下拉長）、2＝它下面的袖口、手套、手指（跟著往下挪）
+       e    眼睛：1＝平常那一套（暈的時候收掉）、2＝暈的時候那兩個 ×
+       orb  法杖上的藍寶珠（詠唱時越來越亮）
+     帽子與法杖是兩件**道具**：站著時一個戴在頭上、一個握在右手，倒在地上時掉到旁邊（見 megRig）。
+     兩件的座標是自己的：帽子相對帽簷中心、法杖相對握點（杖身朝 +y、彎鉤往 −x）。
+     比例同小人：頭 0.50 寬、三頭身、頭頂 1.18、帽尖 1.63。見 開發筆記〈惠惠的造型〉 */
+  const MGC = {
+    skin: 0xffe3d0, skinD: 0xf0c3ab, blush: 0xf5a39c,
+    hair: 0x4e3540, hairD: 0x2c1d25,
+    white: 0xffffff, iris: 0xc22a38, irisL: 0xf2706a, pupil: 0x5a0d18, lash: 0x2a1618, mouth: 0xb44a55,
+    hat: 0x553b4a, hatO: 0xee8a34, hatR: 0xc62f2b, hatG: 0xf6c35e, medR: 0xcc3a2c, tasO: 0xf08a30, tasY: 0xffd25e,
+    red: 0xc23a40, redD: 0x6e1e24, gold: 0xf2b555, lace: 0xf6f4f0,
+    belt: 0x2c242a, buckle: 0xc9ccd4, glove: 0x3a3248,
+    cape: 0x684555, capeD: 0x4a2f3c, capeI: 0x5a3949, capeG: 0xf0b250, capeO: 0xb0603a,
+    band: 0xf7f5f2, bandD: 0xb9b2b0, sock: 0x433848,
+    boot: 0xd8663c, bootC: 0xf2a24c, bootD: 0xa4452a,
+    wood: 0x8a6252, woodD: 0x634d46, woodL: 0x9e7868, ring: 0xf2b04a, orb: 0x3f7fd0, orbL: 0xd2e8ff
+  };
+  const MEG_G = { body: 0, head: 1, hat: 2, armR: 3, armL: 4, legR: 5, legL: 6, staff: 7,
+                  cape1: 8, cape2: 9, capeSR: 10, capeSL: 11 };
+  const MEG_NG = 12;
+  /* 每一組的樞紐（站直時的絕對座標）。帽子是帽簷中心、法杖是握點（兩件道具的矩陣另算，見 megRig） */
+  const MEG_PIV = [[0, 0, 0], [0, 0.74, 0], [0, 1.15, 0], [-0.28, 0.71, 0], [0.28, 0.71, 0],
+                   [-0.09, 0.34, 0], [0.09, 0.34, 0], [0, 0, 0], [0, 0.745, -0.175], [0, 0.385, -0.19],
+                   [-0.30, 0.745, -0.06], [0.30, 0.745, -0.06]];
+  const megProp = g => g === MEG_G.hat || g === MEG_G.staff;
+  const MEGUMIN = (() => {
+    const out = [];
+    const P = (g, p, s, c, r, f) => out.push(Object.assign({ g: MEG_G[g], p, s, c: MGC[c], r: r || [0, 0, 0] }, f || {}));
+    /* 左右一次放兩塊：x 反號、繞 Y／Z 的角度反號；arm／leg／capeS 自動分成 L（+x）與 R（−x） */
+    const SIDE = { arm: 1, leg: 1, capeS: 1 };
+    const M = (g, p, s, c, r, f) => {
+      r = r || [0, 0, 0];
+      P(SIDE[g] ? g + 'L' : g, p, s, c, r, f);
+      P(SIDE[g] ? g + 'R' : g, [-p[0], p[1], p[2]], s, c, [r[0], -r[1], -r[2]], f);
+    };
+    /* 法杖用：從 a 到 b 一根（法杖自己的座標，xy 平面），兩頭多留一點才接得起來 */
+    const S = (a, b, w, c) => {
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      P('staff', [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 0], [w, Math.hypot(dx, dy) + w * 0.6, w], c,
+        [0, 0, Math.atan2(-dx, dy)]);
+    };
+
+    /* ── 頭（樞紐在脖子 0.74）── */
+    P('head', [0, 0.96, 0], [0.50, 0.44, 0.48], 'skin');
+    // 眼睛：眼白 → 紅虹膜 → 虹膜下半的亮色 → 瞳孔 → 高光（e:1＝平常的眼睛，暈的時候收掉）
+    M('head', [0.115, 0.895, 0.2415], [0.13, 0.15, 0.02], 'white', 0, { e: 1 });
+    M('head', [0.118, 0.885, 0.2465], [0.10, 0.13, 0.02], 'iris', 0, { e: 1 });
+    M('head', [0.118, 0.843, 0.2525], [0.08, 0.035, 0.012], 'irisL', 0, { e: 1 });
+    M('head', [0.118, 0.892, 0.2525], [0.05, 0.07, 0.012], 'pupil', 0, { e: 1 });
+    P('head', [0.096, 0.92, 0.258], [0.035, 0.04, 0.01], 'white', 0, { e: 1 });
+    P('head', [-0.14, 0.92, 0.258], [0.035, 0.04, 0.01], 'white', 0, { e: 1 });
+    M('head', [0.117, 0.973, 0.25], [0.15, 0.02, 0.02], 'lash', 0, { e: 1 });
+    M('head', [0.19, 0.962, 0.25], [0.04, 0.014, 0.02], 'lash', [0, 0, -0.5], { e: 1 });
+    // 暈：兩眼各一個 ×（e:2，只有暈著的時候出現）
+    M('head', [0.118, 0.90, 0.25], [0.13, 0.024, 0.012], 'lash', [0, 0, 0.785], { e: 2 });
+    M('head', [0.118, 0.90, 0.25], [0.13, 0.024, 0.012], 'lash', [0, 0, -0.785], { e: 2 });
+    P('head', [0, 0.848, 0.2415], [0.022, 0.018, 0.004], 'skinD');          // 鼻
+    P('head', [0, 0.79, 0.2445], [0.05, 0.016, 0.012], 'mouth');            // 嘴：微笑（中間＋兩邊往上翹）
+    M('head', [0.035, 0.797, 0.2445], [0.03, 0.013, 0.012], 'mouth', [0, 0, 0.55]);
+    M('head', [0.17, 0.83, 0.2425], [0.07, 0.035, 0.012], 'blush');
+    /* 頭髮：頂（藏在帽子裡）、後腦齊後頸、兩側、垂過下巴的鬢髮、瀏海 */
+    P('head', [0, 1.17, -0.005], [0.55, 0.08, 0.54], 'hair');
+    P('head', [0, 0.95, -0.262], [0.54, 0.42, 0.05], 'hair');
+    for (const x of [-0.2, -0.067, 0.067, 0.2]) P('head', [x, 0.745, -0.262], [0.07, 0.07, 0.044], 'hair', [0, 0, 0.785]);
+    P('head', [0, 0.87, -0.2875], [0.02, 0.17, 0.006], 'hairD');            // 後腦的髮流
+    M('head', [0.11, 0.87, -0.2875], [0.02, 0.17, 0.006], 'hairD', [0, 0, 0.12]);
+    M('head', [0.265, 0.975, -0.02], [0.05, 0.35, 0.46], 'hair');
+    M('head', [0.268, 0.80, -0.14], [0.044, 0.06, 0.06], 'hair', [0.785, 0, 0]);
+    M('head', [0.268, 0.80, 0.02], [0.044, 0.06, 0.06], 'hair', [0.785, 0, 0]);
+    M('head', [0.236, 0.865, 0.21], [0.07, 0.33, 0.08], 'hair');            // 鬢髮
+    M('head', [0.232, 0.695, 0.215], [0.05, 0.05, 0.06], 'hair', [0, 0, 0.785]);
+    P('head', [0, 1.115, 0.252], [0.50, 0.07, 0.05], 'hair');               // 瀏海：橫帶＋往下分的幾束
+    P('head', [0, 1.045, 0.262], [0.065, 0.10, 0.03], 'hair');
+    M('head', [0.078, 1.05, 0.26], [0.075, 0.09, 0.03], 'hair', [0, 0, 0.12]);
+    M('head', [0.165, 1.045, 0.258], [0.08, 0.10, 0.03], 'hair', [0, 0, 0.2]);
+
+    /* ── 帽子（自己的座標：帽簷中心在 1.15）── */
+    P('hat', [0, 1.15, 0.01], [0.92, 0.035, 0.90], 'hat');                  // 帽簷
+    P('hat', [0, 1.127, 0.01], [0.95, 0.018, 0.93], 'hatG');                // 帽簷底下一圈金（側面看得到）
+    P('hat', [0, 1.1695, 0.45], [0.92, 0.006, 0.03], 'hatG');               // 帽簷上面的金邊（俯看看得到）
+    P('hat', [0, 1.1695, -0.43], [0.92, 0.006, 0.03], 'hatG');
+    M('hat', [0.445, 1.1695, 0.01], [0.03, 0.006, 0.90], 'hatG');
+    P('hat', [0, 1.22, 0], [0.56, 0.10, 0.56], 'hatO');                     // 帽帶
+    P('hat', [0, 1.176, 0], [0.57, 0.014, 0.57], 'hatR');
+    P('hat', [0, 1.264, 0], [0.57, 0.014, 0.57], 'hatR');
+    for (let i = 0; i < 4; i++) P('hat', [-0.18 + i * 0.12, 1.22, 0.2825], [0.014, 0.10, 0.006], 'hatR', [0, 0, i % 2 ? 0.55 : -0.55]);
+    P('hat', [0.005, 1.32, -0.01], [0.48, 0.10, 0.48], 'hat');              // 帽身：一層一層往上收
+    P('hat', [0.02, 1.41, -0.02], [0.40, 0.09, 0.40], 'hat');
+    P('hat', [0.04, 1.49, -0.03], [0.31, 0.08, 0.31], 'hat');
+    P('hat', [0.07, 1.56, -0.04], [0.23, 0.07, 0.23], 'hat');
+    P('hat', [0.13, 1.615, -0.05], [0.17, 0.07, 0.16], 'hat', [0, 0, -0.5]); // 帽尖往她左邊（+x）彎下去
+    P('hat', [0.22, 1.615, -0.055], [0.13, 0.06, 0.12], 'hat', [0, 0, -1.05]);
+    P('hat', [0.275, 1.565, -0.06], [0.09, 0.05, 0.09], 'hat', [0, 0, -1.4]);
+    P('hat', [0.29, 1.50, -0.06], [0.07, 0.09, 0.07], 'tasO');              // 穗
+    P('hat', [0.272, 1.44, -0.06], [0.035, 0.07, 0.035], 'tasY', [0, 0, 0.3]);
+    P('hat', [0.31, 1.445, -0.06], [0.03, 0.06, 0.03], 'tasY', [0, 0, -0.3]);
+    for (const x of [-0.11, 0.12]) {                                        // 兩顆紅色圓章（八角＝兩塊疊轉 45°）＋金色 ×
+      P('hat', [x, 1.315, 0.237], [0.10, 0.10, 0.012], 'medR');
+      P('hat', [x, 1.315, 0.237], [0.10, 0.10, 0.012], 'medR', [0, 0, 0.785]);
+      P('hat', [x, 1.315, 0.245], [0.085, 0.016, 0.006], 'hatG', [0, 0, 0.785]);
+      P('hat', [x, 1.315, 0.245], [0.085, 0.016, 0.006], 'hatG', [0, 0, -0.785]);
+    }
+
+    /* ── 身體 ── */
+    P('body', [0, 0.605, 0], [0.38, 0.27, 0.27], 'red');                    // 洋裝上身 0.47～0.74
+    P('body', [0, 0.70, 0.1375], [0.07, 0.075, 0.006], 'skin');             // V 領露出來的一塊
+    M('body', [0.045, 0.697, 0.139], [0.016, 0.10, 0.006], 'gold', [0, 0, 0.35]);
+    M('body', [0.09, 0.722, 0.139], [0.09, 0.04, 0.008], 'gold', [0, 0, -0.3]);   // 金色翻領
+    for (const y of [0.648, 0.607]) {                                       // 胸前白色交叉綁帶
+      P('body', [0, y, 0.139], [0.06, 0.011, 0.006], 'lace', [0, 0, 0.6]);
+      P('body', [0, y, 0.139], [0.06, 0.011, 0.006], 'lace', [0, 0, -0.6]);
+    }
+    P('body', [0, 0.47, 0], [0.39, 0.055, 0.28], 'belt');                   // 黑皮帶＋銀色方扣
+    P('body', [0, 0.47, 0.1425], [0.085, 0.062, 0.006], 'buckle');
+    P('body', [0, 0.47, 0.1465], [0.05, 0.03, 0.004], 'belt');
+    P('body', [0, 0.405, 0], [0.41, 0.08, 0.30], 'red');                    // 裙子兩層往外擴
+    P('body', [0, 0.32, 0], [0.47, 0.09, 0.36], 'red');
+    P('body', [0, 0.2735, 0], [0.43, 0.004, 0.32], 'redD');                 // 裙底（躺下時從腳那頭看得到）
+    /* 裙襬金邊是繞一圈的四條，不是一整片：預覽第一版整片墊在裙子底下，躺下來從腳那頭看是一面金色的牆 */
+    P('body', [0, 0.29, 0.1815], [0.48, 0.022, 0.006], 'gold');
+    P('body', [0, 0.29, -0.1815], [0.48, 0.022, 0.006], 'gold');
+    M('body', [0.2365, 0.29, 0], [0.006, 0.022, 0.37], 'gold');
+    for (let i = 0; i < 7; i++) {                                           // 裙襬上面的金色鋸齒（前後各一排）
+      const x = (i - 3) * 0.064, rz = i % 2 ? 0.85 : -0.85;
+      P('body', [x, 0.33, 0.1815], [0.013, 0.085, 0.006], 'gold', [0, 0, rz]);
+      P('body', [x, 0.33, -0.1815], [0.013, 0.085, 0.006], 'gold', [0, 0, -rz]);
+    }
+    P('body', [0, 0.752, -0.03], [0.64, 0.045, 0.30], 'cape');              // 斗篷披在肩上那一圈
+    P('body', [0, 0.752, 0.123], [0.64, 0.047, 0.012], 'capeG');            // 前緣金邊
+
+    /* ── 斗篷背後兩段（cape1 掛肩膀、cape2 掛 cape1）── */
+    P('cape1', [0, 0.565, -0.175], [0.60, 0.36, 0.03], 'cape');
+    M('cape1', [0.29, 0.565, -0.175], [0.02, 0.36, 0.034], 'capeG');
+    M('cape1', [0.12, 0.565, -0.1915], [0.014, 0.30, 0.004], 'capeD');
+    P('cape2', [0, 0.225, -0.19], [0.70, 0.32, 0.03], 'cape');
+    M('cape2', [0.34, 0.225, -0.19], [0.02, 0.32, 0.034], 'capeG');
+    P('cape2', [0, 0.075, -0.19], [0.71, 0.022, 0.036], 'capeG');
+    P('cape2', [0, 0.23, -0.2065], [0.014, 0.26, 0.004], 'capeD');
+    M('cape2', [0.17, 0.23, -0.2065], [0.014, 0.26, 0.004], 'capeD');
+    /* ── 斗篷兩側（掛在肩膀後面，像兩扇門往前外側打開：姿勢的 cS[2]）。
+       預覽第一版是貼著身體兩側的直板，正面看只看到 0.03 厚的那一條邊，像兩根柱子 ── */
+    M('capeS', [0.37, 0.43, -0.07], [0.03, 0.62, 0.34], 'cape');
+    M('capeS', [0.37, 0.43, 0.105], [0.034, 0.62, 0.02], 'capeG');          // 前緣金邊
+    M('capeS', [0.37, 0.125, -0.07], [0.034, 0.022, 0.36], 'capeG');        // 下襬金邊
+    M('capeS', [0.3535, 0.44, -0.07], [0.004, 0.58, 0.32], 'capeI');        // 內裡（朝身體那一面）
+    M('capeS', [0.3535, 0.145, -0.07], [0.005, 0.02, 0.32], 'capeO');       // 內裡下襬露出來的橘褐
+
+    /* ── 手（樞紐在肩膀 ±0.28, 0.71）。z:1 袖子會被拉長、z:2 跟著往下挪 ── */
+    M('arm', [0.28, 0.60, 0], [0.14, 0.22, 0.155], 'red', 0, { z: 1 });
+    M('arm', [0.28, 0.475, 0], [0.15, 0.04, 0.165], 'gold', 0, { z: 2 });   // 金袖口
+    M('arm', [0.28, 0.415, 0], [0.125, 0.08, 0.14], 'glove', 0, { z: 2 });  // 黑手套
+    M('arm', [0.28, 0.365, 0.005], [0.105, 0.025, 0.12], 'skin', 0, { z: 2 }); // 露出來的手指
+
+    /* ── 腳（樞紐在胯 ±0.09, 0.34）：右腿繃帶、左腿黑過膝襪、橘長靴 ── */
+    P('legR', [-0.09, 0.25, 0], [0.135, 0.18, 0.145], 'band');
+    for (const [y, rz] of [[0.19, 0.3], [0.225, -0.25], [0.26, 0.3], [0.295, -0.2]])
+      P('legR', [-0.09, y, 0.0745], [0.137, 0.007, 0.004], 'bandD', [0, 0, rz]);
+    P('legL', [0.09, 0.25, 0], [0.135, 0.18, 0.145], 'sock');
+    M('leg', [0.09, 0.09, 0], [0.155, 0.15, 0.165], 'boot');
+    M('leg', [0.09, 0.165, 0], [0.165, 0.035, 0.175], 'bootC');             // 靴口反摺
+    M('leg', [0.09, 0.183, 0.085], [0.06, 0.06, 0.008], 'bootC', [0, 0, 0.785]);   // 前面的尖角
+    M('leg', [0.09, 0.03, 0.04], [0.15, 0.06, 0.23], 'boot');
+    M('leg', [0.09, 0.006, 0.04], [0.153, 0.014, 0.233], 'bootD');
+
+    /* ── 法杖（自己的座標：握點在原點、杖身朝 +y；彎鉤往 −x，拿在右手時就是往外）── */
+    S([0, -0.40], [0, 0.80], 0.04, 'wood');
+    P('staff', [0, -0.385, 0], [0.048, 0.03, 0.048], 'woodD');
+    P('staff', [0, 0.50, 0], [0.052, 0.018, 0.052], 'ring', [0, 0, 0.25]);
+    P('staff', [0, 0.555, 0], [0.052, 0.018, 0.052], 'ring', [0, 0, 0.25]);
+    S([0, 0.80], [-0.02, 0.90], 0.04, 'wood');                              // 倒 U 的彎鉤
+    S([-0.02, 0.90], [-0.10, 0.935], 0.04, 'wood');
+    S([-0.10, 0.935], [-0.14, 0.86], 0.04, 'wood');
+    S([-0.14, 0.86], [-0.15, 0.76], 0.038, 'wood');
+    S([-0.15, 0.76], [-0.27, 1.08], 0.038, 'woodL');                        // 往上的尖刺
+    S([-0.27, 1.08], [-0.31, 1.19], 0.024, 'woodL');
+    P('staff', [-0.075, 0.80, 0], [0.09, 0.075, 0.075], 'orb', 0, { orb: 1 });   // 藍寶珠：三塊交叉疊成一顆
+    P('staff', [-0.075, 0.80, 0], [0.075, 0.09, 0.075], 'orb', 0, { orb: 1 });
+    P('staff', [-0.075, 0.80, 0], [0.075, 0.075, 0.09], 'orb', 0, { orb: 1 });
+    P('staff', [-0.06, 0.82, 0.042], [0.025, 0.025, 0.008], 'orbL');
+    P('staff', [-0.06, 0.82, -0.042], [0.025, 0.025, 0.008], 'orbL');
+    return out;
+  })();
+  const MEG_PARTS = MEGUMIN.length;
+  /* 一位幾格（點選照這個對回索引）。第一版多開三格當「暈的時候臉上方轉的三顆星星」，
+     使用者看過預覽：「倒下後不需要三顆星星在轉 要有類似魔法的十字星光特效」——拿掉，十字星光在規則那邊撒（見 megSparkle） */
+  const MEG_SLOT = MEG_PARTS;
+  const MAXMEG = 2;                  // 同 Saber：場上只會有一位，留一格餘裕
+  const MEG_ORB = [-0.075, 0.80, 0];  // 寶珠中心（法杖的座標）：詠唱時那一圈火環與吸過來的魔力都對著這一點（見 megOrb）
+  /* 集氣時往法杖前端收的藍色魔力線條（使用者：「集氣時有藍色的魔力線條集中到法杖前端」，附了一張
+     四面八方的藍色光束往發光的杖頭收的參考圖）。一位 MEG_LINE 條，自己一顆不吃光的網格（megLineMesh）：
+     每一條從離寶珠 MEG_LINE_R 的地方往寶珠衝，線身順著衝的方向拉長，到了就換下一趟。
+     方向、相位、速度、長短照 R2 序列定好（同 SAB_SP），不抽 Math.random——這一支每幀都跑。
+     **不透明、不加亮**：同 Saber 蓄力的光點，加亮混色疊在天空上直接變白 */
+  /* 長短與弧度：第一版從 2.8 衝進來、一條 0.45～0.95 的直棒，近看散滿整個畫面；第二版收成 2.2、0.3～0.65，
+     使用者：「藍色魔力線條長度長一點(有點弧度更好)」——第三版一條 0.8～1.4、從 2.8 衝進來，
+     **沿著一道螺旋弧**收進寶珠（離寶珠 r 的那一點往側邊轉 bend×r 弧度，越外面彎得越多，像被捲進去的），
+     一條切成 MEG_LINE_SEG 段短棒沿弧擺（同魔法陣盤面的螺旋臂那一套組法），線頭粗、線尾收細 */
+  const MEG_LINE = 40, MEG_LINE_R = 2.8, MEG_LINE_SEG = 5;
+  const MEG_LINE_C = [0x2f9bff, 0x52c8ff, 0x8fe6ff, 0x3a6dff, 0xc8f4ff];
+  const MEG_LN = [];
+  for (let i = 0; i < MEG_LINE; i++)
+    MEG_LN.push({ th: ((i * 0.7548777) % 1) * Math.PI * 2, el: -0.5 + 1.5 * ((i * 0.5698403) % 1),
+                  off: (i * 0.381966) % 1, v: 0.8 + 0.5 * ((i * 0.7236) % 1),
+                  len: 0.8 + 0.6 * ((i * 2.673) % 1), w: 0.018 + 0.014 * ((i * 1.618) % 1),
+                  bend: (i % 2 ? 1 : -1) * (0.3 + 0.25 * ((i * 0.3819) % 1)) });
+  /* 每一塊站直時相對自己那一組（道具：相對自己的原點）的位置、尺寸、轉角，開機時算一次。
+     不掛在 MEGUMIN 上（理由同 SAB_PV：那一份整個存進造型基準檔） */
+  const megPv = b => b.g === MEG_G.staff ? [0, 0, 0] : MEG_PIV[b.g];
+  const MEG_PV = MEGUMIN.map(b => { const v = megPv(b); return new T.Vector3(b.p[0] - v[0], b.p[1] - v[1], b.p[2] - v[2]); });
+  const MEG_SV = MEGUMIN.map(b => new T.Vector3(b.s[0], b.s[1], b.s[2]));
+  const MEG_QV = MEGUMIN.map(b => new T.Quaternion().setFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2])));
+  const MEG_LM = MEGUMIN.map((b, k) => new T.Matrix4().compose(MEG_PV[k], MEG_QV[k], MEG_SV[k]));
+  const MEG_ORBS = MEGUMIN.map((b, k) => b.orb ? k : -1).filter(k => k >= 0);
+  /* 模型範圍（同 Saber，帽子與法杖兩件道具不算——倒地時它們掉在旁邊）。
+     **躺平要抬多高（BEAST_LIFT）只照身體與背後那兩段斗篷量**：頭在躺著那一格是往前收下巴的（MEG_K.lie 的 head），
+     後腦剛好貼地；兩側斗篷躺下時攤平到背後（cSz）。照頭量的話後腦 0.29 會把整個人抬離地面 0.14 格 */
+  {
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
+    const back = [MEG_G.body, MEG_G.cape1, MEG_G.cape2];
+    for (const b of MEGUMIN) {
+      if (megProp(b.g)) continue;
+      ylo = Math.min(ylo, b.p[1] - b.s[1] / 2);
+      yhi = Math.max(yhi, b.p[1] + b.s[1] / 2);
+      if (back.includes(b.g)) zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
+      xhi = Math.max(xhi, Math.abs(b.p[0]) + b.s[0] / 2);
+    }
+    BEAST_FLOOR.megumin = Math.max(0, -ylo);
+    BEAST_MID.megumin = (ylo + yhi) / 2;
+    BEAST_LIFT.megumin = -zlo;
+    BEAST_SIDE.megumin = xhi;
+  }
+  /* ── 一招的時間軸（秒）。規則那邊（stepMeg）照同一份表走，姿勢照它擺 ──
+       raise  站定舉杖指向目標（舉到位那一刻規則那邊放出道具那一發 castMagic，之後就是道具的 6 秒倒數）
+       fall   爆炸那一刻往後倒，越倒越快
+       up     暈完爬起來
+     暈幾秒是規則那邊的事（MEG_STUN，使用者：「暈30秒」）。 */
+  const MEGT = { raise: 0.6, fall: 0.7, up: 1.2 };
+  /* ── 她的姿勢（同造型預覽）──
+     手是「伸向某一點」擺的（身體座標）：搆不到先把袖子拉長（最多 MEG_EXT，手扶帽簷那種要 0.11），
+     還不夠才整支挪；法杖給杖身朝哪（sd），握點就是右手心。混法：
+       站／走  m.gait、m.ph：右手拄著法杖，走起來擺手擺腳、斗篷跟著晃
+       跑      m.run 0～1：退到安全距離那一段（見 megRunPose）
+       詠唱    m.st === 'mcast'（倒下那一段慢慢收掉）：舉杖指向前上方，規則那邊讓她面向目標
+       躺著    躺平角越接近 90° 越往這一格靠（_mWd）：兩手攤開、兩側斗篷攤平、收下巴；
+               帽子掉到頭旁邊、法杖脫手放在右手邊（見 megRig）。自己倒的（mfall／mstun／mup）
+               跟被道具打倒的是同一套，被炸飛落地躺著也是這個樣子
+     cS：兩側斗篷 [往後掀, 往外掀, 往前打開]，cSz 兩側往背後挪多少 */
+  const MEG_ARM = 0.32, MEG_EXT = 0.14;
+  /* 法杖的中段（法杖座標的 y）：杖尾到杖頭尖刺兩端的中點，照造型表量。走路時橫著拿就握在這裡 */
+  const MEG_GRIP_MID = (() => {
+    let lo = Infinity, hi = -Infinity;
+    for (const b of MEGUMIN) if (b.g === MEG_G.staff) { lo = Math.min(lo, b.p[1] - b.s[1] / 2); hi = Math.max(hi, b.p[1] + b.s[1] / 2); }
+    return (lo + hi) / 2;
+  })();
+  /* wp：法杖跟右手臂垂直的權重（1＝杖身轉到跟手臂垂直、朝前；走路那一格才有，見 megPose）；
+     sg：握在杖身哪裡（法杖座標的 y，0＝原本的握點、靠下那三分之一；橫著拿要握在中段才平衡） */
+  const megK = o => ({
+    lean: o.lean || 0, bob: 0, head: o.head || [0, 0, 0],
+    hR: new T.Vector3(...o.hR), hL: new T.Vector3(...o.hL), lR: o.lR || [0, 0], lL: o.lL || [0, 0],
+    c1: o.c1 || 0, c2: o.c2 || 0, cS: o.cS || [0, 0, 0], cSz: o.cSz || 0, sd: new T.Vector3(...o.sd).normalize(),
+    wp: o.wp || 0, sg: o.sg || 0
+  });
+  const MEG_K = {
+    stand: megK({ head: [0.04, 0, 0], hR: [-0.31, 0.42, 0.07], hL: [0.31, 0.41, 0.02],
+                  c1: 0.03, c2: 0.02, cS: [0.03, 0.10, 0.75], sd: [0, 1, 0.02] }),
+    cast: megK({ lean: -0.06, head: [-0.14, 0, 0], hR: [-0.20, 0.82, 0.30], hL: [0.30, 0.80, 0.31],
+                 lR: [0.22, -0.10], lL: [-0.25, 0.12], c1: 0.35, c2: 0.25, cS: [0.25, 0.40, 1.0],
+                 sd: [-0.15, 0.75, 0.65] }),
+    lie: megK({ head: [0.30, 0, 0], hR: [-0.56, 0.62, -0.13], hL: [0.56, 0.66, -0.13],
+                lR: [0, -0.10], lL: [0, 0.12], cS: [0, 0, 1.35], cSz: -0.13, sd: [0, 1, 0] })
+  };
+  const megNew = () => ({ lean: 0, bob: 0, head: [0, 0, 0], hR: new T.Vector3(), hL: new T.Vector3(),
+                          lR: [0, 0], lL: [0, 0], c1: 0, c2: 0, cS: [0, 0, 0], cSz: 0, sd: new T.Vector3(),
+                          wp: 0, sg: 0 });
+  const _mk = megNew();
+  function megCopy(d, s) {
+    d.lean = s.lean; d.bob = s.bob; d.c1 = s.c1; d.c2 = s.c2; d.cSz = s.cSz; d.wp = s.wp; d.sg = s.sg;
+    for (let i = 0; i < 3; i++) { d.head[i] = s.head[i]; d.cS[i] = s.cS[i]; }
+    for (let i = 0; i < 2; i++) { d.lR[i] = s.lR[i]; d.lL[i] = s.lL[i]; }
+    d.hR.copy(s.hR); d.hL.copy(s.hL); d.sd.copy(s.sd);
+    return d;
+  }
+  function megMix(d, s, w) {
+    if (!(w > 0)) return d;
+    const f = (a, b) => a + (b - a) * w;
+    d.lean = f(d.lean, s.lean); d.bob = f(d.bob, s.bob); d.c1 = f(d.c1, s.c1); d.c2 = f(d.c2, s.c2); d.cSz = f(d.cSz, s.cSz);
+    d.wp = f(d.wp, s.wp); d.sg = f(d.sg, s.sg);
+    for (let i = 0; i < 3; i++) { d.head[i] = f(d.head[i], s.head[i]); d.cS[i] = f(d.cS[i], s.cS[i]); }
+    for (let i = 0; i < 2; i++) { d.lR[i] = f(d.lR[i], s.lR[i]); d.lL[i] = f(d.lL[i], s.lL[i]); }
+    d.hR.lerp(s.hR, w); d.hL.lerp(s.hL, w); d.sd.lerp(s.sd, w).normalize();
+    return d;
+  }
+  const megClamp = v => Math.min(1, Math.max(0, v || 0));
+  /* 跑（使用者看過預覽：「退到安全距離用跑的(三倍速度 要有奔跑動作)」）：同 Saber 跑過去那一套的幅度
+     （前傾 0.30、腿擺 0.85、起伏、頭往上抬讓臉朝前），左手大力前後擺、右手握著法杖往前斜舉，斗篷整片往後揚、一直抖 */
+  /* 兩側斗篷收著往後拖（cS 小）：第一版照站姿再往外掀（0.45／0.30／0.85），截圖裡是背上張開一對翅膀 */
+  const MEG_RUN_K = megK({ lean: 0.30, head: [-0.22, 0, 0], hR: [-0.27, 0.50, 0.14], hL: [0.30, 0.47, 0.02],
+                           c1: 0.75, c2: 0.35, cS: [0.35, 0.08, 0.35], sd: [-0.18, 0.85, 0.5] });
+  const _mkr = megNew();
+  function megRunPose(m) {
+    const k = megCopy(_mkr, MEG_RUN_K), ph = m.ph || 0, s = Math.sin(ph);
+    k.lR[0] = 0.85 * s; k.lL[0] = -0.85 * s;
+    k.hL.z += -0.24 * s; k.hL.y += 0.06 * Math.max(0, -s);
+    k.hR.z += 0.10 * s;
+    k.c1 += 0.12 * Math.sin(ph * 2.3); k.c2 += 0.10 * Math.sin(ph * 2.3 - 1); k.cS[0] += 0.08 * Math.sin(ph * 2.3 - 2);
+    /* 起伏 ＋ 前傾時靴尖（離中線 0.155）不插進地裡要抬的那一點（繞腳底轉，前緣會往下沉；同 sabRun） */
+    k.bob = Math.abs(Math.cos(ph)) * 0.06 + 0.16 * Math.sin(k.lean);
+    return k;
+  }
+  let _mWd = 0;                      // 這一幀「躺著」那一格的權重（megPose 算、megRig 拿去決定帽子與法杖掉了沒）
+  function megPose(m) {
+    const k = megCopy(_mk, MEG_K.stand);
+    /* 走：同造型預覽的「走路」 */
+    const g = megClamp((m.gait || 0) / 0.85), ph = m.ph || 0, s = Math.sin(ph);
+    if (g > 0) {
+      k.lR[0] = 0.45 * s * g; k.lL[0] = -0.45 * s * g;
+      k.hL.z += -0.11 * s * g; k.hR.y += 0.01 * g; k.hR.z += (0.01 + 0.08 * s) * g;
+      /* 法杖跟手臂垂直、橫著握在中段（使用者看過第二版預覽：「人物一般走路時法杖拿法 調整成跟手臂垂直」；
+         第一、二版是照站姿直直拄著、跟手臂平行，走起來杖尾離地亂晃）。站著照舊直直拄在地上 */
+      k.wp = g; k.sg = MEG_GRIP_MID * g;
+      k.lean += 0.05 * g; k.bob = 0.018 * Math.abs(Math.cos(ph)) * g;
+      k.c1 += (0.13 + 0.03 * Math.sin(ph * 2)) * g; k.c2 += 0.10 * g; k.cS[0] += 0.09 * g; k.cS[2] -= 0.05 * g;
+    }
+    /* 跑：規則那邊的 m.run 0～1（退到安全距離那一段推到 1，慢慢混過去）。躺著、飛著不跑 */
+    const r = m.lie || m.air ? 0 : megClamp(m.run);
+    if (r > 0) megMix(k, megRunPose(m), r);
+    const t = m.mt || 0;
+    const wc = m.st === 'mcast' ? sEase(megClamp(t / MEGT.raise))
+             : m.st === 'mfall' ? 1 - megClamp(t / MEGT.fall) : 0;
+    megMix(k, MEG_K.cast, wc);
+    _mWd = m.lie && !m.air ? megClamp((Math.abs(Math.sin(m.spin || 0)) - 0.45) / 0.5) : 0;
+    megMix(k, MEG_K.lie, _mWd);
+    return k;
+  }
+  const _mG = [...Array(MEG_NG)].map(() => new T.Matrix4());
+  const _mExt = new Array(MEG_NG).fill(0);
+  const _mHand = new T.Vector3(), _mDOWN = new T.Vector3(0, -1, 0), _mONE = new T.Vector3(1, 1, 1);
+  const _mArm = new T.Vector3(0, -1, 0), _mSd = new T.Vector3(), _mX = new T.Vector3(1, 0, 0);
+  const _mv = new T.Vector3(), _mv2 = new T.Vector3(), _mv3 = new T.Vector3();
+  const _mq = new T.Quaternion(), _mE = new T.Euler();
+  const _mm = new T.Matrix4(), _mm2 = new T.Matrix4(), _mm3 = new T.Matrix4();
+  /* 法杖的轉角：杖身朝 d、彎鉤朝 s（彎鉤在法杖的 −x，所以 +x 朝 s 的反方向）——同造型預覽的 basis */
+  const _mbX = new T.Vector3(), _mbY = new T.Vector3(), _mbZ = new T.Vector3(), _mbM = new T.Matrix4();
+  function megBasis(d, s, q) {
+    _mbY.copy(d).normalize();
+    _mbX.set(-s[0], -s[1], -s[2]);
+    _mbX.addScaledVector(_mbY, -_mbX.dot(_mbY)).normalize();
+    _mbZ.crossVectors(_mbX, _mbY);
+    return q.setFromRotationMatrix(_mbM.makeBasis(_mbX, _mbY, _mbZ));
+  }
+  /* 兩個姿勢之間的道具（位置照比例、轉角走球面內插） */
+  const _mpa = new T.Vector3(), _mpb = new T.Vector3(), _mqa = new T.Quaternion(), _mqb = new T.Quaternion();
+  const _msa = new T.Vector3(), _msb = new T.Vector3();
+  function megMixM(a, b, f, out) {
+    a.decompose(_mpa, _mqa, _msa); b.decompose(_mpb, _mqb, _msb);
+    return out.compose(_mpa.lerp(_mpb, f), _mqa.slerp(_mqb, f), _msa.lerp(_msb, f));
+  }
+  const MEG_CURL = [-1, 0, 0];       // 法杖的彎鉤朝外（她的右手邊）
+  /* 掉在地上那兩件的位置（她自己那一套座標，不跟著躺平角轉）：仰躺時頭朝 −z，帽子掉在頭頂再過去一點；
+     法杖放在右手邊、杖頭朝頭那一側（同造型預覽的「掉在頭旁邊」，使用者看過的預設）。往前趴的照 z 反過來 */
+  const MEG_HAT_DOWN = { p: [0.12, 0.05, -1.72], r: [0.10, 0.5, 0.06] };
+  const MEG_STAFF_DOWN = { p: [-0.92, 0.05, 0.05], d: [0.22, 0, -1] };
+  /* 算出這一位每一組的世界矩陣（_mG）。根同 putBeasts（YZX：朝向 → 打滾 → 躺平／前傾）；
+     飛在半空繞身體中段轉（同 levRig）。帽子、法杖兩件照躺著的權重在「身上」與「地上」之間內插 */
+  function megRig(m) {
+    const k = megPose(m), msc = m.sc || 1, mid = BEAST_MID.megumin;
+    scratch.rotation.set((m.spin || 0) + k.lean, m.a || 0, m.roll || 0, 'YZX');
+    const lift = !m.lie ? 0
+      : m.side ? BEAST_SIDE.megumin * m.lie * Math.abs(Math.sin(m.roll || 0))
+               : BEAST_LIFT.megumin * m.lie * Math.abs(Math.sin(m.spin || 0));
+    scratch.position.set(m.x || 0, (m.y || 0) + (lift + k.bob) * msc, m.z || 0);
+    if (m.air) {
+      _mv.set(0, mid, 0).applyEuler(scratch.rotation);
+      scratch.position.x -= _mv.x * msc;
+      scratch.position.y += (mid - _mv.y) * msc;
+      scratch.position.z -= _mv.z * msc;
+    }
+    scratch.scale.setScalar(msc);
+    scratch.updateMatrix();
+    const G0 = _mG[MEG_G.body].copy(scratch.matrix);
+    /* 歐拉角的順序每一處都寫明：three 的 Euler.set 沒給順序就沿用上一次的，而兩側斗篷那一組用的是 YXZ */
+    _mG[MEG_G.head].multiplyMatrices(G0, _mm.compose(_mv.set(0, MEG_PIV[MEG_G.head][1], 0),
+      _mq.setFromEuler(_mE.set(k.head[0], k.head[1], k.head[2], 'XYZ')), _mONE));
+    /* 兩手伸向 hR／hL（同 sabAim：袖子先拉長，還不夠才整支挪） */
+    for (const g of [MEG_G.armR, MEG_G.armL]) {
+      const pv = MEG_PIV[g], tg = g === MEG_G.armR ? k.hR : k.hL;
+      _mv.set(tg.x - pv[0], tg.y - pv[1], tg.z - pv[2]);
+      const len = _mv.length() || 1;
+      _mv.multiplyScalar(1 / len);
+      const ext = Math.min(MEG_EXT, Math.max(0, len - MEG_ARM)), shift = Math.max(0, len - MEG_ARM - MEG_EXT);
+      _mExt[g] = ext;
+      _mq.setFromUnitVectors(_mDOWN, _mv);
+      _mv2.set(pv[0], pv[1], pv[2]).addScaledVector(_mv, shift);
+      _mG[g].multiplyMatrices(G0, _mm.compose(_mv2, _mq, _mONE));
+      if (g === MEG_G.armR) {
+        _mHand.copy(_mv2).addScaledVector(_mv, MEG_ARM + ext);   // 握點（身體座標）
+        _mArm.copy(_mv);                                           // 右手臂朝哪（法杖要跟它垂直時用）
+      }
+    }
+    for (const g of [MEG_G.legR, MEG_G.legL]) {
+      const pv = MEG_PIV[g], l = g === MEG_G.legR ? k.lR : k.lL;
+      _mG[g].multiplyMatrices(G0, _mm.compose(_mv.set(pv[0], pv[1], pv[2]), _mq.setFromEuler(_mE.set(l[0], 0, l[1], 'XYZ')), _mONE));
+    }
+    const p1 = MEG_PIV[MEG_G.cape1], p2 = MEG_PIV[MEG_G.cape2];
+    _mG[MEG_G.cape1].multiplyMatrices(G0, _mm.compose(_mv.set(p1[0], p1[1], p1[2]), _mq.setFromEuler(_mE.set(k.c1, 0, 0, 'XYZ')), _mONE));
+    _mG[MEG_G.cape2].multiplyMatrices(_mG[MEG_G.cape1],
+      _mm.compose(_mv.set(0, p2[1] - p1[1], p2[2] - p1[2]), _mq.setFromEuler(_mE.set(k.c2, 0, 0, 'XYZ')), _mONE));
+    for (const g of [MEG_G.capeSR, MEG_G.capeSL]) {
+      const pv = MEG_PIV[g], sg = g === MEG_G.capeSL ? 1 : -1;
+      _mG[g].multiplyMatrices(G0, _mm.compose(_mv.set(pv[0], pv[1], pv[2] + k.cSz),
+        _mq.setFromEuler(_mE.set(k.cS[0], sg * k.cS[2], sg * k.cS[1], 'YXZ')), _mONE));
+    }
+    /* 兩件道具。仰躺（負角）頭朝 −z、往前趴頭朝 +z；帽子比法杖晚掉（倒到一半多才飛出去） */
+    const sgn = (m.spin || 0) > 0 ? -1 : 1;
+    const wh = sEase(megClamp((_mWd - 0.35) / 0.65)), ws = megClamp((_mWd - 0.15) / 0.85);
+    if (wh > 0 || ws > 0) {
+      scratchB.position.set(m.x || 0, m.y || 0, m.z || 0);
+      scratchB.rotation.set(0, m.a || 0, 0);
+      scratchB.scale.setScalar(msc);
+      scratchB.updateMatrix();
+    }
+    const hatOn = _mm2.multiplyMatrices(_mG[MEG_G.head], _mm.makeTranslation(0, MEG_PIV[MEG_G.hat][1] - MEG_PIV[MEG_G.head][1], 0));
+    if (wh > 0) {
+      const H = MEG_HAT_DOWN;
+      _mm3.multiplyMatrices(scratchB.matrix, _mm.compose(_mv.set(H.p[0], H.p[1], H.p[2] * sgn),
+        _mq.setFromEuler(_mE.set(H.r[0], H.r[1], H.r[2], 'XYZ')), _mONE));
+      megMixM(hatOn, _mm3, wh, _mG[MEG_G.hat]);
+    } else _mG[MEG_G.hat].copy(hatOn);
+    /* 拿在手上：杖身朝 sd；走路那一格往「跟右手臂垂直、朝前」靠（手臂 × x 軸：手臂直直垂下時正好是 +z），
+       手握的地方從原本的握點挪到杖身中段（sg） */
+    _mSd.crossVectors(_mArm, _mX).normalize();
+    _mSd.lerpVectors(k.sd, _mSd, k.wp).normalize();
+    const staffOn = _mm2.multiplyMatrices(G0, _mm.compose(_mHand, megBasis(_mSd, MEG_CURL, _mq), _mONE))
+      .multiply(_mm.makeTranslation(0, -k.sg, 0));
+    if (ws > 0) {
+      const S = MEG_STAFF_DOWN;
+      _mm3.multiplyMatrices(scratchB.matrix, _mm.compose(_mv.set(S.p[0], S.p[1], S.p[2] * sgn),
+        megBasis(_mv3.set(S.d[0], S.d[1], S.d[2] * sgn), MEG_CURL, _mq), _mONE));
+      megMixM(staffOn, _mm3, ws, _mG[MEG_G.staff]);
+    } else _mG[MEG_G.staff].copy(staffOn);
+  }
+  /* 規則那邊用：寶珠現在在世界的哪裡（詠唱時那一圈火環、吸過來的魔力都對著這一點）。
+     跟畫出去的同一支 megRig（同 excSword）。回傳共用一個物件，呼叫端先把值讀走 */
+  const _orb = { x: 0, y: 0, z: 0 };
+  function megOrb(m) {
+    megRig(m);
+    _mv.set(MEG_ORB[0], MEG_ORB[1], MEG_ORB[2]).applyMatrix4(_mG[MEG_G.staff]);
+    _orb.x = _mv.x; _orb.y = _mv.y; _orb.z = _mv.z;
+    return _orb;
+  }
+  const megAt = [];                  // 這一幀第幾格畫的是清單裡的第幾個（點選用，同 sabAt）
+  const megGlow = [0, 0];            // 每一格寶珠現在寫進去的亮度（變了才重寫顏色）
+  const MEG_ORB_C = new T.Color(MGC.orb), MEG_GLOW_C = new T.Color(0x9fdcff);
+  /* 第 n 位的藍色魔力線條（不在集氣的話那幾格塞零矩陣）。寶珠放出去之後才有（舉杖那 MEGT.raise 秒沒有），
+     一秒內從稀疏的細線變滿；每一條從 MEG_LINE_R 往寶珠衝，進場那一截從外面長出來、快到時變細收掉。
+     弧：離寶珠 r 的那一點在「往外那個方向 D」與「側邊 S（D 繞垂直軸轉 90°）」之間轉 bend×r 弧度——
+     越外面轉得越多，整條是一道往寶珠捲進去的螺旋 */
+  const _mlq = new T.Quaternion(), _mlD = new T.Vector3(), _mlS2 = new T.Vector3(), _mlS = new T.Vector3();
+  const _mlA = new T.Vector3(), _mlB = new T.Vector3(), _mlM = new T.Vector3(), _mlUP = new T.Vector3(0, 1, 0);
+  const megArc = (out, r, bend, msc) => {
+    const a = bend * r;
+    return out.copy(_mlD).multiplyScalar(Math.cos(a)).addScaledVector(_mlS2, Math.sin(a))
+              .multiplyScalar(r * msc).add(_mv3);
+  };
+  function megLines(m, n) {
+    const NS = MEG_LINE_SEG, base = n * MEG_LINE * NS, u = (m.mt || 0) - MEGT.raise;
+    if (m.st !== 'mcast' || !(u > 0)) {
+      for (let j = 0; j < MEG_LINE * NS; j++) megLineMesh.setMatrixAt(base + j, ZERO_M);
+      return false;
+    }
+    const msc = m.sc || 1, k = megClamp(u / 1.0);
+    _mv3.set(MEG_ORB[0], MEG_ORB[1], MEG_ORB[2]).applyMatrix4(_mG[MEG_G.staff]);   // 寶珠（世界）
+    for (let j = 0; j < MEG_LINE; j++) {
+      const p = MEG_LN[j], l = (u * p.v + p.off) % 1;
+      const head = MEG_LINE_R * (1 - l);                        // 線頭離寶珠多遠（模型單位）
+      const L = Math.min(p.len, MEG_LINE_R - head);             // 進場那一截從外面長出來
+      if (head < 0.12 || L < 0.02) {
+        for (let s = 0; s < NS; s++) megLineMesh.setMatrixAt(base + j * NS + s, ZERO_M);
+        continue;
+      }
+      const ce = Math.cos(p.el), th = p.th + (m.a || 0);
+      _mlD.set(ce * Math.sin(th), Math.sin(p.el), ce * Math.cos(th));
+      _mlS2.set(Math.cos(th), 0, -Math.sin(th));                // 側邊（水平、跟 D 垂直）
+      const w0 = p.w * msc * (0.4 + 0.6 * k) * Math.min(1, head / 0.6);
+      megArc(_mlA, head, p.bend, msc);
+      for (let s = 0; s < NS; s++) {
+        megArc(_mlB, head + L * (s + 1) / NS, p.bend, msc);
+        const len = _mlA.distanceTo(_mlB);
+        _mlM.subVectors(_mlB, _mlA).divideScalar(len || 1);
+        _mlq.setFromUnitVectors(_mlUP, _mlM);
+        const w = w0 * (1 - 0.6 * s / NS);                        // 線頭粗、線尾收細
+        tmpM.compose(_mlM.copy(_mlA).add(_mlB).multiplyScalar(0.5), _mlq, _mlS.set(w, len * 1.12, w));
+        megLineMesh.setMatrixAt(base + j * NS + s, tmpM);
+        _mlA.copy(_mlB);
+      }
+    }
+    return true;
+  }
+  /* list：規則那邊的 beastList()（跟 putBeasts 同一份），只畫 kind === 'megumin' 的那幾個 */
+  function putMegs(list) {
+    let n = 0, col = false, lines = 0;
+    for (let i = 0; i < list.length && n < MAXMEG; i++) {
+      const m = list[i];
+      if (m.kind !== 'megumin') continue;
+      megAt[n] = i;
+      megRig(m);
+      const base = n * MEG_SLOT, dizzy = m.st === 'mstun';
+      for (let k = 0; k < MEG_PARTS; k++) {
+        const b = MEGUMIN[k];
+        if ((b.e === 1 && dizzy) || (b.e === 2 && !dizzy)) { megMesh.setMatrixAt(base + k, ZERO_M); continue; }
+        const e = b.z ? _mExt[b.g] : 0;
+        if (e) {
+          // 袖子往下長 e（上緣不動），它下面的袖口、手套、手指整組往下挪 e
+          _mv.copy(MEG_PV[k]); _mv2.copy(MEG_SV[k]);
+          if (b.z === 1) { _mv.y -= e / 2; _mv2.y += e; } else _mv.y -= e;
+          tmpM.compose(_mv, MEG_QV[k], _mv2);
+          megMesh.setMatrixAt(base + k, _mm.multiplyMatrices(_mG[b.g], tmpM));
+        } else megMesh.setMatrixAt(base + k, _mm.multiplyMatrices(_mG[b.g], MEG_LM[k]));
+      }
+      if (megLines(m, n)) lines++;
+      /* 寶珠：詠唱時越來越亮、一閃一閃 */
+      const t = m.mt || 0;
+      const gl = m.st === 'mcast' ? Math.min(1, t / (MEGT.raise + 1.5)) * (0.85 + 0.15 * Math.sin(t * 18)) : 0;
+      if (Math.abs(gl - megGlow[n]) > 0.01) {
+        megGlow[n] = gl;
+        for (const k of MEG_ORBS) megMesh.setColorAt(base + k, tmpC.copy(MEG_ORB_C).lerp(MEG_GLOW_C, gl));
+        col = true;
+      }
+      n++;
+    }
+    megMesh.count = n * MEG_SLOT;
+    megMesh.visible = n > 0;
+    if (n) { megMesh.instanceMatrix.needsUpdate = true; dropSphere(megMesh); }
+    if (col) megMesh.instanceColor.needsUpdate = true;
+    megLineMesh.count = n * MEG_LINE * MEG_LINE_SEG;
+    megLineMesh.visible = lines > 0;
+    if (lines) { megLineMesh.instanceMatrix.needsUpdate = true; dropSphere(megLineMesh); }
+  }
+
   /* 場上同時畫得下幾個（含飛在半空的香蕉與火球）。v1.144 從 8 加到 12：吉祥物那三隻
      可以跟天災那一件同時在場（最多 4 隻），再加上龍嘴裡連著吐的火球，8 個會不夠——
      超出的那幾個是**靜靜地不畫**，不會報錯，所以留點餘裕。
@@ -6905,13 +7473,14 @@ const ENG = (function () {
     if (giftMesh && giftMesh.visible) objs.push(giftMesh);
     if (sabMesh && sabMesh.visible) objs.push(sabMesh);   // Saber 算 beast（v1.222，見 putSabers）
     if (levMesh && levMesh.visible) objs.push(levMesh);   // 里維兵長也算 beast（v1.230，見 putLevis）
+    if (megMesh && megMesh.visible) objs.push(megMesh);   // 惠惠也算 beast（v1.247.0，見 putMegs）
     const hits = raycaster.intersectObjects(objs, false);
     let best = null, rank = 9;
     for (let i = 0; i < hits.length; i++) {
       const h = hits[i];
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
-                 : h.object === beastMesh || h.object === sabMesh || h.object === levMesh ? 'beast'
+                 : h.object === beastMesh || h.object === sabMesh || h.object === levMesh || h.object === megMesh ? 'beast'
                  : h.object === giftMesh ? 'gift'
                  : h.object === ground ? 'ground' : null;
       /* 泡泡被牆擋住就點不到（畫面上本來就看不見它：泡泡不寫深度，但仍然吃深度測試）。
@@ -6922,6 +7491,7 @@ const ENG = (function () {
                 : kind === 'worker' ? Math.floor(h.instanceId / WPARTS)
                 : kind === 'beast' ? (h.object === sabMesh ? sabAt[Math.floor(h.instanceId / SAB_PARTS)]
                                       : h.object === levMesh ? levAt[Math.floor(h.instanceId / LEV_SLOT)]
+                                      : h.object === megMesh ? megAt[Math.floor(h.instanceId / MEG_SLOT)]
                                                            : Math.floor(h.instanceId / BEAST_PARTS))
                 /* 泡泡是一整片貼圖網格（不是 instanced）：一顆兩個三角形，
                    而 giftAt 記著這一幀第幾片畫的是清單裡的第幾顆（見 putGifts）。 */
@@ -6999,6 +7569,9 @@ const ENG = (function () {
     EXC, EXC_W, EXC_L, EXC_BASE, excWidth, excSword,
     /* 里維兵長（v1.230）：自己一顆 mesh（putLevis）。規則那邊照 LEV 的時間軸走立體機動那一招 */
     putLevis, LEVI, LEV_PARTS, LEV_SLOT, MAXLEV, LEV,
+    /* 惠惠（v1.247.0）：自己一顆 mesh（putMegs）。規則那邊照 MEGT 的時間軸走詠唱、倒下、爬起來，
+       詠唱時的火環與吸過來的魔力對著 megOrb（跟畫出去的寶珠同一支 megRig） */
+    putMegs, MEGUMIN, MEG_PARTS, MEG_SLOT, MAXMEG, MEGT, MEG_G, megOrb,
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
     /* 全部造型表（v1.149）：測試把這一份整個存成基準檔（tools/model-baseline.json），
@@ -7012,11 +7585,11 @@ const ENG = (function () {
                ufo: UFO_PART, ufoLit: UFO_LIT,
                ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
-               deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, saber: SABER, levi: LEVI,
+               deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, saber: SABER, levi: LEVI, megumin: MEGUMIN,
                shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY, tabby: TABBY, blackcat: BLACKCAT };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, fadeMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, fadeMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh }; }
   };
 })();

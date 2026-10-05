@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.246.1';
+const VERSION = '1.247.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -313,6 +313,16 @@ function sndExcal() {
 }
 /* 里維兵長（v1.230）：登場是機動裝置噴氣的「嘶」＋一聲短的金屬（拔刀）——跟 Saber 那一聲分得開（她是兩顆亮音往上） */
 function sndLevi() { noise(0.28, 0.07, 3600); tone(980, 0.12, 'square', 0.018, 1.6, 'levi'); }
+/* 惠惠（v1.247.0）：登場／被惹毛是兩顆往上的亮音（像施法前那一下），跟 Saber 的拔劍聲（1320／1760 ＋ 噪音）分得開 */
+function sndMegumin() {
+  tone(880, 0.18, 'sine', 0.04, 1.3, 'megumin');
+  setTimeout(() => tone(1175, 0.26, 'triangle', 0.03, 1.1, 'megumin'), 110);
+}
+/* 詠唱：一聲往上爬的嗡鳴，從放出魔法陣一路爬到爆炸（道具那一發的 MAG_TIME 秒） */
+function sndChant() {
+  tone(150, MAG_TIME, 'triangle', 0.045, 3.2, 'megChant', 0.6);
+  tone(300, MAG_TIME, 'sine', 0.022, 3.2, 'megChant2', 0.9);
+}
 /* 射鋼索：一聲往上拉的噴氣 ＋ 鋼索捲動的鋸齒 */
 function sndOdm() { noise(0.45, 0.1, 2400); tone(260, 0.4, 'sawtooth', 0.03, 2.8, 'odm'); }
 /* 轉圈砍那一段每 LEV_SND 秒一聲：很短的金屬刮過（自己的 key，不跟碎料的聲音搶名額） */

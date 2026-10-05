@@ -4330,7 +4330,10 @@ const MAG_TOP = 0.12 + MAG_R * MAG_LAYER[MAG_LAYER.length - 1].y;
 /* 半徑要算進每層的抖動上限（rj 最多 1+MAG_JITTER），還要算進邊上那些筆觸
    掃出去的那一截（引擎的 MAG_RIM_OUT，目前 1.2 倍）——不然最寬那圈的筆觸偶爾會被切到。 */
 const MAG_WIDE = MAG_R * Math.max(...MAG_LAYER.map(l => l.r)) * (1 + MAG_JITTER) * ENG.MAG_RIM_OUT;
-function castMagic(point) {
+/* by＝誰放的（v1.247.0，只有惠惠會給）：爆的時候當 explode 的 self，自己這一發炸不飛、震不倒她自己
+   （同巨人那一腳、Saber 的光柱）——她站在 MEG_SAFE 外是火球外面，但 afterHit 震倒的那一圈是 1.7 倍半徑。
+   玩家點的道具不給，行為一個位元都沒變。 */
+function castMagic(point, by) {
   /* 由下往上一層一層長，中間靠一個小火圈把火帶上去：
      先出現最下面那層 → 小火圈從它的圓心升到上一層的高度 → 抵達才擴張成新的一層。
      （原本是把六層的出現順序洗牌，每層各自憑空亮起來；改成固定順序＋看得見的火種，
@@ -4339,7 +4342,7 @@ function castMagic(point) {
   if (!magics) magics = [];
   if (magics.length >= MAG_CAST) magics.shift();     // 放太多個就把最早那個擠掉
   magics.push({
-    x: point.x, z: point.z, t: MAG_TIME, shown: 0,
+    x: point.x, z: point.z, t: MAG_TIME, shown: 0, by: by || null,
     // 每層的半徑抖動：施法當下抽一次存起來，每幀重抽的話整疊會一直閃
     rj: MAG_LAYER.map(() => rr(1 - MAG_JITTER, 1 + MAG_JITTER)),
     /* 每層的紋路起始角度各抽一個定值：六層都從同一個角度起跳的話，
@@ -4363,13 +4366,16 @@ function stepMagic(dt) {
 }
 /* 一個陣的一幀。回傳 true = 這個陣炸掉了、可以從清單移除。 */
 function stepOneMagic(magic, dt) {
+  /* 詠唱被打斷的那一陣（v1.247.0，見 megCancel）：在這裡才從清單拿掉——打斷她的那一下可能就是
+     stepMagic 這一圈裡另一陣爆炸震倒的，當場 splice 會把正在跑的這個迴圈弄亂 */
+  if (magic.gone) return true;
   magic.t -= dt;
   const el = MAG_TIME - magic.t;
   if (magic.t <= 0) {
     const p = { x: magic.x, y: MAG_CORE_Y, z: magic.z };   // 爆點＝最低那層的圓心
     slayGiants(p, MAG_R, 'magic');          // 同核彈（v1.245.0）
-    // 第二個 true = 加風壓；最後一個 = 地上留焦痕（v1.231，同核彈）
-    explode(p, MAG_R, MAG_POW, true, true, false, null, false, MAG_R * MARK_SCORCH_R);
+    // 第二個 true = 加風壓；最後一個 = 地上留焦痕（v1.231，同核彈）；by＝放這一發的（惠惠，見 castMagic）
+    explode(p, MAG_R, MAG_POW, true, true, false, magic.by, false, MAG_R * MARK_SCORCH_R);
     startCloud(p, MAG_R);             // 魔法爆完也留一朵，跟核彈同一種
     startArcs(p, MAG_R);              // 火球收乾之後，爆點還會劈三秒的藍電
     return true;
@@ -8159,7 +8165,7 @@ const doomNear = m => m.kind === 'giant' ? GIA_NEAR
    （兩隻猴子）——加下一款走地上的天災時在這三張表各加一格就好。
    Saber 走路同小人（v1.226，使用者：「增快saber一般走路移動速度(同小人)」；v1.222～v1.225 照猴子的 2.2），
    腿擺照小人那一份（stp 不給＝1，小人走 WALK 也是 11 弧度／秒）。 */
-const DOOM_SPD = { giant: GIA_WALK, saber: WALK, levi: WALK };   // 里維兵長同 Saber（v1.230）
+const DOOM_SPD = { giant: GIA_WALK, saber: WALK, levi: WALK, megumin: WALK };   // 里維兵長（v1.230）、惠惠（v1.247.0）同 Saber
 const DOOM_STEP = { giant: GIA_STEP };
 const DOOM_KEEP = { giant: GIA_KEEP };
 /* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
@@ -8260,8 +8266,14 @@ function spawnBeast(kind, fun, bad, ang) {
   if (kind === 'giant') sndGiant();
   else if (kind === 'saber') sndSaber();
   else if (kind === 'levi') sndLevi();
+  else if (kind === 'megumin') sndMegumin();
   else sndBeast(kind === 'snow');
   if (ang !== undefined) return m;               // Excalibur 叫來的：提示由 callSaber 講（v1.224）
+  /* 惠惠（v1.247.0）只當吉祥物、只有被打才動手，提示講她會怎樣 */
+  if (kind === 'megumin') {
+    toast(BEAST_NM.megumin + '來工地逛逛', '她不會主動動手；惹毛她的話，她會退到炸不到自己的地方放一發爆裂魔法');
+    return m;
+  }
   const nm = BEAST_NM[kind];
   /* 提示照「真的有東西可砸嗎」講（v1.166）：村子還沒蓋起來的時候牠什麼都不會做
      （見 stepBeast 的 fun 那一段），這時候還說牠盯上了村子就是騙人。
@@ -8540,6 +8552,8 @@ function stepBeast0(m, dt) {
   /* 被斬殺的巨人：躺著冒蒸氣、氣化消失（里維 v1.230；核彈、爆裂魔法、Excalibur v1.245.0，見 giantDie）；
      被打死的牛羊：躺著流血、淡掉（v1.240） */
   if (m.dead) return m.herd ? stepCarcass(m, dt) : stepDie(m, dt);
+  /* 惠惠爆完往後倒、暈著、爬起來（v1.247.0）：那幾段打不到她，被打倒、卡住那兩套都不必跑 */
+  if (megDown(m)) return stepMegDown(m, dt);
   if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   if (m.kind === 'gryphon') return stepGryph(m, dt);      // 飛進來降落再起飛，自己一套（v1.176）
   /* 卡住了就脫困（v1.190.2，使用者：「小人 牛羊 猴子這類盡量同一套走位判定」）。
@@ -8590,8 +8604,9 @@ function stepBeast0(m, dt) {
      清路那一路會立起來（踹地標走的是 kleft 那一路，不在這一條裡）。 */
   /* **Excalibur 叫她去斬的那一趟也不趕**（v1.224）：那是玩家點的，斬完才照原本的規矩
      （吉祥物、天災各自那一條）走。 */
+  /* **惠惠詠唱中也不趕**（v1.247.0）：魔法陣已經放出去了，念完、倒下、爬起來才照吉祥物那一條走 */
   if (away && m.st !== 'go' && m.st !== 'gate' && !(m.home && !m.fun) && !m.bust &&
-      !m.call && !m.cq) leaveBeast(m);
+      !m.call && !m.cq && !megBusy(m)) leaveBeast(m);
   /* Saber 出招那幾秒（excal）也撐著：她的 m.arm 是「雙手握劍架在腰前」（見引擎的 sabPose），
      出招的關鍵格從架劍開始、收回架劍結束，中途掉回 0 的話收招那一下會垂手。別的款不會走到 excal。 */
   m.arm += ((m.st === 'act' || m.st === 'excal' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
@@ -8607,8 +8622,11 @@ function stepBeast0(m, dt) {
      腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
   if (m.kind === 'saber' || m.kind === 'levi')          // 里維兵長同 Saber 用跑的（v1.230）
     m.run += ((m.call && (m.st === 'call' || m.st === 'gate') ? 1 : 0) - m.run) * Math.min(1, dt * 8);
+  /* 惠惠退到安全距離那一段也用跑的（v1.247.0，使用者：「退到安全距離用跑的(三倍速度 要有奔跑動作)」） */
+  else if (m.kind === 'megumin') m.run += ((m.st === 'mwalk' ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   if (m.st === 'call') return stepCall(m, dt, spd * EXC_RUN, (stp || 1) * EXC_RUN, kp);   // v1.224
   if (m.st === 'odm') return stepOdm(m, dt);              // 兵長砍猴：立體機動那一招（v1.230）
+  if (m.st === 'mwalk' || m.st === 'mcast') return stepMeg(m, dt, spd, stp, kp);   // 惠惠（v1.247.0）
   if (m.st === 'come') {
     /* 走到工地外圈、自己這一側那一點就算到了（「去哪」）。v1.235 以前給的是工地中心 (0, 0)，
        由 strollTo 推到圈上；v1.236 起走法不再推（地標在地圖上了，見 navBody），這裡自己給圈上那一點——
@@ -8624,7 +8642,8 @@ function stepBeast0(m, dt) {
          裡根本沒有牛羊那幾款，真讓牠們進 act 會叫到 undefined）：就在城外逛。
          **吉祥物會動手**（使用者：「吉祥物會破壞」）：跟天災同一條路。 */
       if (wallFoot(m, 0, 0)) {
-        if (m.herd) { m.st = 'fun'; m.leg = 0; }
+        /* 惠惠也不拆（v1.247.0，使用者：「他完全不主動攻擊的」）：同牛羊，就在城外逛 */
+        if (m.herd || m.kind === 'megumin') { m.st = 'fun'; m.leg = 0; }
         else { m.home = 1; m.st = 'near'; m.leg = 0; }
         return false;
       }
@@ -9553,8 +9572,9 @@ const GIA_BUCKLE = 0.45;         // 跪下那一段膝蓋往前頂：大腿繞�
 const LEV_STEAM = { rate: [70, 120, 260], burst: 4, cap: 500, s: [0.7, 1.6], life: [1.5, 2.8] };
 const LEV_STEAM_ALL = 2400;      // 塵霧那一池已經這麼多就不冒了（蘑菇雲那一類在場時讓給它們）
 const lvSm = f => f * f * (3 - 2 * f);
-/* 立體機動中的里維、正在氣化的巨人：一般道具打不動（見檔頭那一段） */
-function levBusy(m) { return !!m && (m.st === 'odm' || !!m.dead); }
+/* 立體機動中的里維、正在氣化的巨人：一般道具打不動（見檔頭那一段）。
+   倒下、暈著、爬起來的惠惠也是（v1.247.0，使用者：「躺著暈不會被打到」）：炸不飛、點不著、吸不走 */
+function levBusy(m) { return !!m && (m.st === 'odm' || !!m.dead || megDown(m)); }
 /* 在地上嗎（點得到、追得到的那一條，里維與 Saber 共用）。飛龍的 sky 從進場到飛走一路是 1（連在地上那幾段也是），
    所以牠照狀態認：在草皮上走（gwalk）、摔下來趴著（down）的算在地上；其餘照 sky（獅鷲降落時歸零） */
 const onGroundBeast = m => m.kind === 'dragon' ? m.st === 'gwalk' || m.st === 'down' : !m.sky;
@@ -10702,6 +10722,203 @@ function stepGryph(m, dt) {
   return Math.hypot(m.x, m.z) > debrisR + GR_OUT;
 }
 
+/* ── 惠惠（v1.247.0）─────────────────────────────────────
+   使用者：「先做這個角色 … 預計加進吉祥物 但是他完全不主動攻擊的 攻擊方式是在安全距離使用爆裂魔法
+   使用完後在地上往後倒 暈30秒」，看過造型預覽之後：「可以做 夠像／詠唱法術 要加上配合爆裂魔法的特效／
+   安全距離是不要被爆裂魔法炸到 威力沿用道具／躺著暈不會被打到」。動手前問完的三件：
+     炸哪裡       地標、村子各半（同吉祥物生氣那一套 madPick）；炸村子那一發照道具原樣，範圍裡的地標照樣被炸
+     詠唱中被打   收手，魔法陣散掉（同吉祥物「一擊切換」，見 calmMascot）
+     暈完之後     回去逛完再走（同砸完那一趟 funBack）；逛的時候再被打一下就再放一發
+   看過第一版預覽（附三張動畫截圖）：「倒下後不需要三顆星星在轉 要有類似魔法的十字星光特效／
+   集氣時有藍色的魔力線條集中到法杖前端／退到安全距離用跑的(三倍速度 要有奔跑動作)」；
+   第二版：「施放完倒地 不要星光(只有施法集氣時有) 施法時法杖前端那個圈拿掉 藍色魔力線條長度長一點(有點弧度更好)
+   人物一般走路時法杖拿法 調整成跟手臂垂直」。
+   她就是一隻吉祥物（kind 'megumin'，同 Saber 自己一顆 mesh、不進 BEASTS），**只在被打的時候動手**：
+   出場永遠是來逛的那一版（鐘抽到「來砸房子」也不理，見 MASCOTS 那一列），被城牆擋住也不拆（同牛羊，見 stepBeast0 的 come）。
+   生氣之後：
+     mwalk  **跑**到離目標 MEG_SAFE 格外的站位（megSpot：站得下、走得到、在島上），腳程與腿擺 ×MEG_RUN
+     mcast  面向目標舉杖，MEGT.raise 秒舉到位那一刻放出**道具那一發**（castMagic：同一個陣、同一個威力、同一套運鏡與逃命），
+            之後就是道具的 MAG_TIME 秒倒數。四周的魔力往寶珠收、身邊冒七彩的十字星光（megChant／megSparkle），
+            藍色的魔力線條從四面八方帶著弧度往寶珠衝（引擎那邊畫，見 megLines）。
+            預覽前幾輪她腳下還有一個小魔法陣、寶珠外一圈火環（照道具那疊陣的配色），使用者先後拿掉：
+            「施法時法杖前端那個圈拿掉」「腳下的小魔法陣 也拿掉好了」
+     mfall  爆炸那一刻往後倒（MEGT.fall，越倒越快）；帽子掉到頭旁邊、法杖脫手（姿勢在引擎，見 megRig）
+     mstun  躺 MEG_STUN 秒，兩眼換成 ×；**這一段什麼都打不到她**（levBusy）
+     mup    爬起來（MEGT.up），回去把剩下的時間逛完
+   見 開發筆記〈惠惠：吉祥物，被惹毛了退到安全距離放爆裂魔法〉 */
+/* 安全距離（使用者：「不要被爆裂魔法炸到」）：爆炸掃生物是三維的 MAG_R、爆點在陣心（離地 MAG_CORE_Y），
+   換成地面上的水平半徑再往外 MEG_PAD 格。MAG_R 45 時是 ceil(41.2) ＋ 6 ＝ 48 */
+const MEG_PAD = 6;
+const MEG_SAFE = Math.ceil(Math.sqrt(MAG_R * MAG_R - MAG_CORE_Y * MAG_CORE_Y)) + MEG_PAD;
+const MEG_RING = 6;                 // 站位從 MEG_SAFE 往外再找幾格（一圈一格）
+/* 退到站位用跑的（使用者：「三倍速度 要有奔跑動作」）：走路 WALK 的三倍、腿擺同倍率——同 Saber 被叫過去那一段的 EXC_RUN。
+   跑的姿勢在引擎（megRunPose），照 m.run 0～1 混過去 */
+const MEG_RUN = 3;
+const MEG_EDGE = 3;                 // 站位離島邊至少幾格
+const MEG_STUN = 30;                // 暈幾秒（使用者：「暈30秒」）
+/* 走了這麼久還沒到站位（走不到的那種）：夠遠就地放，不夠遠就算了、回去逛。保險不是門檻——
+   最遠的站位離她不過一百格上下，照小人的腳程 WALK 走十幾秒 */
+const MEG_WALK_MAX = 30;
+const MEG_SUCK = 26;                // 往寶珠收的魔力每秒幾顆（舉到位之前少一點，見 megChant）
+const megDown = m => !!m && m.kind === 'megumin' && (m.st === 'mfall' || m.st === 'mstun' || m.st === 'mup');
+const megBusy = m => megDown(m) || (!!m && m.kind === 'megumin' && m.st === 'mcast');
+/* 生氣那一下（madMascot 挑好了目標 b）：炸點是那一塊（地標）或那一間的中央（村子，同丟香蕉瞄的那一點） */
+function megMad(m, b) {
+  const p = m.home ? homeMid(b) : { x: b.x, z: b.z };
+  m.mp = { x: p.x, z: p.z };
+  m.ms = null; m.mwt = 0; m.mt = 0; m.mg = null;
+  m.st = 'mwalk'; m.gw = null; m.leg = 0; m.pause = 0;
+}
+/* 站位：離炸點 MEG_SAFE～MEG_SAFE＋MEG_RING 那一圈、在島上、站得下（navRoom）的點，照離她多近排，
+   最多問 ACT_TRY 個走不走得到（同 actSpot）。一個都走不到就給最近的那一個（strollTo 照樣會試著走） */
+function megSpot(m) {
+  const P = m.mp, bd = navBody(m), lim = debrisR + ENG.GROUND_PAD - MEG_EDGE;
+  const c = [];
+  for (let r = MEG_SAFE; r <= MEG_SAFE + MEG_RING; r++) {
+    const n = Math.ceil(2 * Math.PI * r / 1.5);
+    for (let k = 0; k < n; k++) {
+      const a = k / n * Math.PI * 2, x = P.x + Math.cos(a) * r, z = P.z + Math.sin(a) * r;
+      if (Math.abs(x) > lim || Math.abs(z) > lim || !navRoom(x, z, bd)) continue;
+      c.push({ x, z, d: Math.hypot(x - m.x, z - m.z) });
+    }
+  }
+  c.sort((p, q) => p.d - q.d);
+  const fail = [];
+  for (const p of c) {
+    if (fail.length >= ACT_TRY) break;
+    if (fail.some(f => Math.hypot(f.x - p.x, f.z - p.z) < ACT_SEP)) continue;
+    if (navReach(m, p.x, p.z)) return { x: p.x, z: p.z };
+    fail.push(p);
+  }
+  return c.length ? { x: c[0].x, z: c[0].z } : null;
+}
+/* mwalk／mcast 那兩段的一幀（stepBeast0 叫的，被打倒那幾段在它前面先跳掉了） */
+function stepMeg(m, dt, spd, stp, kp) {
+  const P = m.mp;
+  const far = () => Math.hypot(m.x - P.x, m.z - P.z) >= MEG_SAFE - 1;
+  if (m.st === 'mwalk') {
+    if (!m.ms) m.ms = megSpot(m);
+    m.mwt += dt;
+    let got = false;
+    if (m.ms) { m.tx = m.ms.x; m.tz = m.ms.z; got = strollTo(m, dt, spd * MEG_RUN, (stp || 1) * MEG_RUN, kp); }
+    if (got || m.mwt > MEG_WALK_MAX) {
+      if (far()) { m.st = 'mcast'; m.mt = 0; m.mg = null; m.leg = 0; }
+      else if (m.mwt > MEG_WALK_MAX) {
+        funBack(m);
+        toast(BEAST_NM.megumin + '不放了', '她找不到炸不到自己的地方，回去逛');
+      } else m.ms = null;          // 走到了卻不夠遠（站位被挪到旁邊）：重挑一次
+    }
+    return false;
+  }
+  /* mcast：站定、面向炸點；舉到位那一刻放出道具那一發 */
+  m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+  m.a = Math.atan2(P.x - m.x, P.z - m.z);
+  m.mt += dt;
+  if (!m.mg && m.mt >= ENG.MEGT.raise) {
+    castMagic({ x: P.x, z: P.z }, m);       // 給 by：自己這一發不會把自己炸飛、震倒
+    m.mg = magics[magics.length - 1];
+    sndChant();
+  }
+  if (m.mg) {
+    if (m.mg.t <= 0) { megBoom(m); return false; }               // 道具那一發炸了：往後倒
+    /* 還沒炸就不在清單上了：玩家連放道具把它擠掉（MAG_CAST 個以上會擠掉最早那個，見 castMagic） */
+    if (!magics || magics.indexOf(m.mg) < 0) { m.mg = null; funBack(m); return false; }
+  }
+  megChant(m, dt);
+  return false;
+}
+/* 詠唱的魔力：四周冷色的光點往寶珠收（同道具那一疊陣的魔力粒子 magSuck，縮成她的大小）、
+   身邊一直冒七彩的十字星光（megSparkle） */
+function megChant(m, dt) {
+  const sc = m.sc || 1, k = Math.min(1, m.mt / (ENG.MEGT.raise + 1.5));
+  const o = ENG.megOrb(m);
+  m.mz = (m.mz || 0) + dt * MEG_SUCK * (0.4 + 0.6 * k);
+  while (m.mz >= 1) {
+    m.mz--;
+    if (hot.length >= HOT_MAX - 60) break;    // 留給爆炸的火球與還在燒的碎料
+    const a = Math.random() * Math.PI * 2, rad = rr(2.0, 4.0) * sc, cyan = Math.random() < 0.55;
+    hot.push({
+      x: m.x + Math.cos(a) * rad, y: rr(0.1, 1.8) * sc, z: m.z + Math.sin(a) * rad,
+      vx: 0, vy: 0, vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.04, 0.09) * sc, life: 1.5,      // 第一版 0.07～0.15：近看是一顆顆浮在半空的大方塊
+      cr: cyan ? rr(0.2, 0.45) : rr(0.75, 1), cg: cyan ? rr(0.75, 1) : rr(0.3, 0.5), cb: 1,
+      suck: [o.x, o.y, o.z], spd: rr(6, 9) * sc
+    });
+  }
+  megSparkle(m, dt);
+}
+/* 七彩的十字星光：參考圖是一片青、黃、洋紅、紫的四角星光，中間夾著青色的小光點。
+   v1.247.0 預覽第二輪是撒在倒地那 30 秒（使用者：「倒下後不需要三顆星星在轉 要有類似魔法的十字星光特效」，
+   參考圖其實是詠唱時的畫面，所以預覽上放了一顆「詠唱時也撒」給他切），第三輪定案：
+   「施放完倒地 不要星光(只有施法集氣時有)」——**只在詠唱時撒**，撒在她上半身四周。
+   原本腳下那一圈撒的道具配色星光（粉紫與金黃，spawnStars）一起換成這一種，兩種疊在一起太雜。
+   星光走道具那一套（stars：公告板、一閃就收），只是顏色換成這幾種、大小縮成她的比例；
+   小光點是往上飄的冷色火星（hot，不吸、不吃重力，同魔力粒子那一種配色）。 */
+const MEG_SPARK = 7;                // 每秒幾顆星光（小光點再多一倍）
+/* 顏色要推到全飽和：星光是加亮混色，疊在綠草上會往白洗。第一版給 [0.45, 0.95, 1] 那種淡色加一顆白的，
+   截圖裡整片是淡青淡黃，看不出參考圖那種七彩 */
+const MEG_SPARK_C = [[0, 0.8, 1], [1, 0.8, 0], [1, 0, 0.8], [0.5, 0.2, 1], [0.2, 1, 0.6]];
+function megSparkle(m, dt) {
+  const sc = m.sc || 1;
+  m.msp = (m.msp || 0) + dt * MEG_SPARK;
+  while (m.msp >= 1) {
+    m.msp--;
+    for (let i = 0; i < 2; i++) {               // 青色小光點：往上飄
+      if (hot.length >= HOT_MAX - 60) break;
+      const a = Math.random() * Math.PI * 2, r = rr(0.2, 1.3) * sc;
+      hot.push({ x: m.x + Math.cos(a) * r, y: rr(0.2, 1.6) * sc, z: m.z + Math.sin(a) * r,
+                 vx: 0, vy: rr(0.2, 0.6), vz: 0, rx: Math.random() * 6, ry: Math.random() * 6,
+                 s: rr(0.05, 0.1) * sc, life: rr(0.8, 1.4), g: 0,
+                 cr: rr(0.25, 0.5), cg: rr(0.85, 1), cb: 1 });
+    }
+    if (stars.length >= STAR_MAX) continue;
+    const a = Math.random() * Math.PI * 2, r = rr(0.3, 1.3) * sc;
+    const c = MEG_SPARK_C[Math.floor(Math.random() * MEG_SPARK_C.length)];
+    stars.push({ x: m.x + Math.cos(a) * r, y: rr(0.6, 1.9) * sc, z: m.z + Math.sin(a) * r,
+                 s0: rr(0.5, 1.1) * sc, s: 0, rot: rr(0, 6.28), spin: rr(-0.8, 0.8),
+                 vy: rr(0.15, 0.5) * sc, t: 0, life: rr(0.6, 1.1), op: 0, cr: c[0], cg: c[1], cb: c[2] });
+  }
+}
+/* 爆炸那一刻：這一趟動完手了（bad／home 收掉），往後倒 */
+function megBoom(m) {
+  m.mg = null; m.bad = 0; m.home = 0;
+  m.st = 'mfall'; m.mt = 0; m.gait = 0; m.pause = 0;
+  m.lie = 1; m.spin = 0; m.roll = 0; m.fall = 0; m.face = 0;
+  toast(BEAST_NM.megumin + '把魔力用光了', '她往後一倒，躺在地上 ' + MEG_STUN + ' 秒動不了');
+}
+/* 倒下、暈、爬起來那三段（stepBeast0 最前面就轉進來：這幾段打不到她，被打倒那一套整段不必跑） */
+function stepMegDown(m, dt) {
+  const E = ENG.MEGT;
+  m.mt += dt;
+  m.gait = 0;
+  if (m.st === 'mfall') {
+    const f = Math.min(1, m.mt / E.fall);
+    m.spin = -Math.PI / 2 * f * f;                    // 越倒越快（仰躺是負角，同被打倒的那一套）
+    if (f >= 1) { m.st = 'mstun'; m.mt = 0; sndFall(); }
+    return false;
+  }
+  if (m.st === 'mstun') {
+    m.spin = -Math.PI / 2;
+    if (m.mt >= MEG_STUN) { m.st = 'mup'; m.mt = 0; }
+    return false;
+  }
+  const f = Math.min(1, m.mt / E.up);
+  m.spin = -Math.PI / 2 * (1 - f * f * (3 - 2 * f));
+  if (f >= 1) { m.spin = 0; m.lie = 0; m.mt = 0; funBack(m); }
+  return false;
+}
+/* 詠唱到一半被打斷：魔法陣散掉（長出來的那幾層各撒一把星光，下一次 stepMagic 從清單拿掉）。
+   **只做記號、不當場 splice**：打斷她的那一下可能是 stepMagic 那一圈裡另一陣爆炸震倒的，
+   當場改清單會把那個倒著跑的迴圈弄亂（探針第一版就是在那裡讀到 null）。
+   被打的那一下算進去（beastHit → calmMascot）就回去逛；冷卻中那一下只是被打倒（reaim），爬起來重走、重念 */
+function megCancel(m) {
+  const g = m.mg;
+  m.mg = null; m.mt = 0;
+  if (!g || g.gone || g.t <= 0) return;
+  g.gone = 1; g.rings = null;
+  for (let j = 0; j < g.shown; j++) starsOn(g, j, 6);
+}
+
 /* ── 吉祥物（v1.144）─────────────────────────────────────
    使用者：「黑獼猴 白猴子 飛龍 列為吉祥物／吉祥物一段時間就會出來刷存在感
    （不搞破壞 只是出現逛一逛 一段時間又走了）／各吉祥物出來刷存在感的事件各自獨立
@@ -10753,7 +10970,10 @@ const MASCOTS = [
   /* 巨人（v1.192）：用走的，整地那一段先不放進來（同兩隻猴子）。 */
   { id: 'giant', ground: 1, spawn: bad => spawnBeast('giant', 1, bad) },
   /* Saber（v1.222）：用走的，同上。砸村子那一趟也是一招 Excalibur，但地標一塊都不斬、不燒（見 excSweep）。 */
-  { id: 'saber', ground: 1, spawn: bad => spawnBeast('saber', 1, bad) }
+  { id: 'saber', ground: 1, spawn: bad => spawnBeast('saber', 1, bad) },
+  /* 惠惠（v1.247.0）：用走的，同上。**鐘抽到「來砸房子」也不理**（使用者：「他完全不主動攻擊的」）：
+     只有被打的時候才動手（生氣 → 退到安全距離放爆裂魔法，見〈惠惠〉那一節） */
+  { id: 'megumin', ground: 1, spawn: () => spawnBeast('megumin', 1, 0) }
 ];
 const mascT = MASCOTS.map(() => -1);  // 每隻各自的倒數（−1＝還沒抽），跟 MASCOTS 同索引
 /* 這一款在表上那一列（v1.229，拿來查個別脾氣）。只有六列，每次被打才查一次，不必另外建索引。 */
@@ -10893,15 +11113,17 @@ const MORE_GAP = DOOM_FIRE_R * 2;
    **一處一處算**（v1.244.2）：每燒完一處從頭數（見 stepBeast 的 act），不是幾處加起來 45 秒。 */
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 黑獼猴', snow: '🐵 白猴子', dragon: '🐉 飛龍',
-                   gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber', levi: '🗡 里維兵長' };
-/* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）用「他」——其餘那幾款照舊是牠 */
-const itOf = m => m.kind === 'saber' ? '她' : m.kind === 'levi' ? '他' : '牠';
+                   gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber', levi: '🗡 里維兵長',
+                   megumin: '💥 惠惠' };
+/* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）用「他」；惠惠（v1.247.0）用「她」——其餘那幾款照舊是牠 */
+const itOf = m => m.kind === 'saber' || m.kind === 'megumin' ? '她' : m.kind === 'levi' ? '他' : '牠';
 /* 叫一聲。哪一種叫哪一聲照 spawnBeast／spawnDragon 那邊的分法，不另訂一套。 */
 function beastCry(m) {
   if (m.kind === 'dragon' || m.kind === 'gryphon') sndRoar();
   else if (m.kind === 'giant') sndGiant();
   else if (m.kind === 'saber') sndSaber();
   else if (m.kind === 'levi') sndLevi();
+  else if (m.kind === 'megumin') sndMegumin();
   else sndBeast(m.kind === 'snow');
 }
 /* 這一隻已經在走人了嗎（那就別再改牠的主意，同 turnBad 的規矩：都走到一半了
@@ -10919,6 +11141,15 @@ function beastLeaving(m) {
 const madSet = m => !!m.bad && !m.home;
 /* 吉祥物收手：回去把剩下的 stay 逛完，跟砸完那一趟同一個出口（funBack）。 */
 function calmMascot(m) {
+  /* 惠惠（v1.247.0，使用者選的「收手，魔法陣散掉」）：還在走過去或詠唱到一半的，陣收掉、回去逛 */
+  if (m.kind === 'megumin') {
+    megCancel(m);
+    m.bad = 0; m.home = 0;
+    if (m.st === 'mwalk' || m.st === 'mcast') funBack(m);
+    beastCry(m);
+    toast(BEAST_NM.megumin + '被打斷了', '詠唱被打斷、魔法陣散掉了，她回去把剩下的路逛完');
+    return;
+  }
   m.bad = 0; m.home = 0;
   if (m.kind === 'dragon') m.left = 0;                 // 配額收掉＝這一圈不吐了
   else if (m.kind === 'gryphon') {
@@ -10952,7 +11183,16 @@ function madMascot(m) {
   /* 表上標 more 的（v1.229）：這一下就是欠的第一處。先記上再挑，挑的時候才會跳過燒過的地方 */
   const k = mascRow(m.kind);
   if (k && k.more) m.owe = 1;
-  if (!madPick(m)) { m.owe = 0; return; }
+  const tb = madPick(m);
+  if (!tb) { m.owe = 0; return; }
+  /* 惠惠（v1.247.0）：退到炸不到自己的地方，對著挑到的那一塊放一發爆裂魔法（見〈惠惠〉那一節） */
+  if (m.kind === 'megumin') {
+    megMad(m, tb);
+    beastCry(m);
+    toast(BEAST_NM.megumin + '被惹毛了',
+          '她退到 ' + MEG_SAFE + ' 格外，要對著' + (madSet(m) ? '地標' : '村子那邊') + '放一發爆裂魔法');
+    return;
+  }
   if (m.kind === 'dragon') {
     m.left = Math.round(rr(MASC_BAD_SHOT[0], MASC_BAD_SHOT[1]));
     /* 圈數歸零＝再繞一圈（這一圈是來吐火球的）、gap 重給，兩件事的理由同 turnBad。
@@ -11080,8 +11320,9 @@ function beastHit(m, src) {
   if (m && m.herd) { lifeHit(m, src); return; }
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
   if (!m || m === hitBy || beastLeaving(m) || m.call || m.cq) return;
-  /* 里維兵長（v1.230）不會生氣：他只做玩家叫他做的事（吉祥物那一套翻臉、砸地標他都沒有） */
-  if (m.kind === 'levi' || m.dead) return;
+  /* 里維兵長（v1.230）不會生氣：他只做玩家叫他做的事（吉祥物那一套翻臉、砸地標他都沒有）。
+     倒下、暈著、爬起來的惠惠（v1.247.0，使用者：「躺著暈不會被打到」）也不算：那幾段 levBusy 擋著，照理打不到 */
+  if (m.kind === 'levi' || m.dead || megDown(m)) return;
   /* 動不了手的吉祥物（v1.229，表上的 spent：白猴子丟完香蕉）：照樣會倒，只是不再改主意 */
   if (mascSpent(m)) return;
   /* 冷卻中（v1.229）：上一下算進去還不到 BEAST_HIT_CD 秒，這一下不算。
@@ -11532,6 +11773,9 @@ function reaim(m) {
   else if (m.st === 'aim' || m.st === 'fire' || m.st === 'walk') {
     m.st = 'aim'; m.t = GR_AIM; m.jr = 0;              // jr 歸零＝爬起來重新挑一次目標
   }
+  /* 惠惠詠唱到一半被打倒（v1.247.0）：魔法陣散掉，爬起來重走到站位再念一次。
+     這一下有算進去的話（beastHit 緊接著叫 calmMascot）就是收手回去逛——使用者選的「收手，魔法陣散掉」 */
+  else if (m.st === 'mcast') { megCancel(m); m.st = 'mwalk'; m.ms = null; m.mwt = 0; }
 }
 
 /* 一幀的「被打到」處理。回傳 true＝這一幀牠動不了，正常那一套整段跳過（同 updWorker）。 */

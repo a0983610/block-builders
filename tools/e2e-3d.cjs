@@ -465,6 +465,7 @@ const installClean = page => page.evaluate(() => {
     ENG.putBeasts([]);
     ENG.putSabers([]);                // 她自己那顆 mesh、光點、光柱也藏起來（v1.222）
     ENG.putLevis([]);                 // 里維兵長自己那顆 mesh（v1.230），同上
+    ENG.putMegs([]);                  // 惠惠自己那顆 mesh（v1.247.0），同上
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
@@ -26073,6 +26074,290 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; stepMascot = () => {}; cleanTools(); });
 
+  /* ══════════ 吉祥物：惠惠的爆裂魔法 ══════════ */
+  /* v1.247.0。使用者：「先做這個角色 … 預計加進吉祥物 但是他完全不主動攻擊的 攻擊方式是在安全距離使用爆裂魔法
+     使用完後在地上往後倒 暈30秒」→ 造型預覽 →「可以做 夠像／詠唱法術 要加上配合爆裂魔法的特效／安全距離是不要被
+     爆裂魔法炸到 威力沿用道具／躺著暈不會被打到」→ 遊戲裡的預覽頁三輪（跑過去、藍色魔力線條、只在詠唱時冒的十字星光、
+     走路時法杖跟手臂垂直；杖頭火環、腳下小魔法陣、倒地的星光拿掉）。
+     **規則那幾條不跑模擬**（同〈規則：垮塌、補洞、廢棄〉）：直接組她的狀態、呼叫 beastHit／megSpot／stepMagic／reaim
+     驗規則本身；只有「一整趟」那一條真的讓她跑完（生氣時抽地標還是村子那一下押成地標，同 Math.random 那一招）。 */
+  }   // ── 〈被打到就改變主意〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('吉祥物：惠惠的爆裂魔法', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 生物的迴圈在它裡面（見〈吉祥物〉那一段）
+  await fillAll(page);
+
+  /* ── 造型：她自己一顆 mesh，不把別的動物拖累 ── */
+  const gfig = await page.evaluate(() => {
+    const M = ENG.MEGUMIN, G = ENG.MEG_G;
+    const body = M.filter(b => b.g !== G.hat && b.g !== G.staff), hat = M.filter(b => b.g === G.hat);
+    const top = a => Math.max(...a.map(b => b.p[1] + b.s[1] / 2));
+    const lo = Math.min(...body.map(b => b.p[1] - b.s[1] / 2));
+    const m = spawnBeast('megumin', 1, 0), sc = m.sc;
+    beasts = null;
+    return { parts: M.length, mp: ENG.MEG_PARTS, inBeasts: 'megumin' in ENG.BEASTS, beastParts: ENG.BEAST_PARTS,
+             maxOther: Math.max(...Object.values(ENG.BEASTS).map(a => a.length)), model: ENG.MODELS.megumin === M,
+             lo: +lo.toFixed(3), head: +top(body).toFixed(3), hat: +top(hat).toFixed(3), sc, doomSc: DOOM_SC };
+  });
+  ok('惠惠自己一顆 mesh：不進 BEASTS，別的動物一隻還是照原本最多塊那一款付成本',
+     gfig.parts === gfig.mp && !gfig.inBeasts && gfig.beastParts === gfig.maxOther && gfig.model,
+     '她 ' + gfig.parts + ' 塊、BEAST_PARTS 還是 ' + gfig.beastParts + '（BEASTS 裡最多塊那一款 ' + gfig.maxOther + '）');
+  ok('跟小人同一個比例：原點在腳底、頭髮頂 1.15～1.25、帽尖 1.55～1.7、放大倍率同猴子（DOOM_SC）',
+     Math.abs(gfig.lo) < 0.01 && gfig.head > 1.15 && gfig.head < 1.25 && gfig.hat > 1.55 && gfig.hat < 1.7 &&
+     gfig.sc === gfig.doomSc,
+     '最低 ' + gfig.lo + '、頭髮頂 ' + gfig.head + '、帽尖 ' + gfig.hat + '（小人帽頂 1.31）× ' + gfig.sc.toFixed(2));
+
+  /* ── 表：吉祥物多一列、不進天災；鐘抽到「來砸房子」也是來逛的那一版 ── */
+  const gtab = await page.evaluate(() => {
+    const row = MASCOTS.find(k => k.id === 'megumin') || {};
+    const otoast = toast; toast = () => {};
+    const m = row.spawn ? row.spawn(1) : null;                     // 鐘抽中「偶而是來砸房子的那一隻」那一下
+    const r = { masc: MASCOTS.map(k => k.id), doom: DOOMS.map(d => d.id), ground: row.ground,
+                fun: m && m.fun, bad: m && m.bad, home: m && m.home, nm: BEAST_NM.megumin,
+                it: itOf({ kind: 'megumin' }) + itOf({ kind: 'ape' }), fight: canFight({ kind: 'megumin' }) };
+    toast = otoast; beasts = null;
+    return r;
+  });
+  ok('MASCOTS 多一列、不進 DOOMS；鐘抽到「來砸房子」也是來逛的那一版（完全不主動攻擊），提示裡是「她」',
+     gtab.masc.indexOf('megumin') >= 0 && gtab.doom.indexOf('megumin') < 0 && gtab.ground === 1 &&
+     gtab.fun === 1 && gtab.bad === 0 && gtab.home === 0 && !!gtab.nm && gtab.it === '她牠' && !gtab.fight,
+     '吉祥物 ' + gtab.masc.join('／') + '；天災 ' + gtab.doom.join('／') + '；抽到來砸房子 → fun ' + gtab.fun +
+     '、bad ' + gtab.bad + '；' + gtab.nm + '：' + gtab.it + '、canFight ' + gtab.fight);
+
+  /* ── 被打一下：生氣、跑去爆炸範圍外的站位 ── */
+  const gmad = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const otoast = toast; toast = () => {};
+    const m = spawnBeast('megumin', 1, 0);
+    const a = 0.7; m.x = Math.cos(a) * (siteR + 4); m.z = Math.sin(a) * (siteR + 4); m.st = 'fun';
+    beastHit(m);
+    const r = { st: m.st, bad: m.bad, mp: !!m.mp };
+    const s = megSpot(m);
+    r.d = s ? +Math.hypot(s.x - m.mp.x, s.z - m.mp.z).toFixed(2) : -1;
+    r.safe = MEG_SAFE; r.ring = MEG_RING;
+    r.hr = +Math.sqrt(MAG_R * MAG_R - MAG_CORE_Y * MAG_CORE_Y).toFixed(2);   // 爆炸範圍換到地面的水平半徑
+    toast = otoast; cleanTools();
+    return r;
+  });
+  ok('被打一下就生氣：要去的站位離炸點 MEG_SAFE～MEG_SAFE＋MEG_RING 格，在爆炸範圍（換到地面）外面',
+     gmad.st === 'mwalk' && gmad.bad === 1 && gmad.mp && gmad.d >= gmad.safe - 0.01 &&
+     gmad.d <= gmad.safe + gmad.ring + 0.01 && gmad.safe > gmad.hr,
+     '被打之後 ' + gmad.st + '（bad ' + gmad.bad + '）；站位離炸點 ' + gmad.d + ' 格（' + gmad.safe + '～' +
+     (gmad.safe + gmad.ring) + '），爆炸範圍到地面是 ' + gmad.hr + ' 格');
+
+  /* ── 自己這一發炸不到自己（castMagic 的 by 當 explode 的 self）──
+     她站在火球裡面（離炸點 30 格），同一圈另一邊擺一隻黑獼猴當對照：牠要被炸飛、她不能。
+     炸點放在地標外面很遠（siteR ＋ 48），不動到地標 */
+  const gself = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const otoast = toast; toast = () => {};
+    const P = { x: 0, z: -(siteR + 48) };
+    const m = spawnBeast('megumin', 1, 0);
+    m.x = P.x + 30; m.z = P.z; m.st = 'mcast'; m.mp = P; m.mt = 5; m.bad = 1;
+    const ape = spawnBeast('ape', 1, 0);
+    ape.x = P.x - 30; ape.z = P.z; ape.st = 'fun';
+    castMagic(P, m);
+    m.mg = magics[magics.length - 1];
+    m.mg.t = 1e-6;                                  // 下一幀就炸
+    stepMagic(0.05);
+    const r = { meAir: m.air, meFall: m.fall > 0, apeAir: ape.air, left: magics ? magics.length : 0 };
+    stepBeast(m, 0.05);
+    r.st = m.st;
+    toast = otoast; cleanTools();
+    return r;
+  });
+  ok('自己這一發炸不飛、震不倒她自己（同巨人那一腳的 self），同一圈的黑獼猴照樣被炸飛；炸完她往後倒',
+     !gself.meAir && !gself.meFall && gself.apeAir === 1 && gself.left === 0 && gself.st === 'mfall',
+     '她 air ' + gself.meAir + '、被震倒 ' + gself.meFall + '；黑獼猴 air ' + gself.apeAir + '；陣還剩 ' + gself.left +
+     ' 個；她下一幀 ' + gself.st);
+
+  /* ── 詠唱中被打：算進去的那一下收手、冷卻中那一下只被打倒（爬起來重念）──
+     兩種都要讓魔法陣散掉、從清單拿掉（megCancel 只做記號，stepMagic 那一圈才拿掉） */
+  const gint = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const otoast = toast; toast = () => {};
+    const P = { x: 0, z: -(siteR + 48) };
+    const mk = hcd => {
+      const m = spawnBeast('megumin', 1, 0);
+      m.x = P.x; m.z = P.z + MEG_SAFE; m.st = 'mcast'; m.mp = P; m.mt = 3; m.bad = 1; m.hcd = hcd;
+      castMagic(P, m);
+      m.mg = magics[magics.length - 1];
+      const g = m.mg;
+      if (fellBeast(m, 1)) beastHit(m, 'poke');
+      stepMagic(0.05);
+      return { st: m.st, bad: m.bad, gone: !!g.gone, inList: !!(magics && magics.indexOf(g) >= 0), mg: m.mg };
+    };
+    const a = mk(0), b = mk(2);
+    toast = otoast; cleanTools();
+    return { a, b };
+  });
+  ok('詠唱中被打（算進去的那一下）：收手，魔法陣散掉、從清單拿掉，回去逛',
+     gint.a.st === 'fun' && gint.a.bad === 0 && gint.a.gone && !gint.a.inList && gint.a.mg === null,
+     gint.a.st + '、bad ' + gint.a.bad + '、陣散掉 ' + gint.a.gone + '、還在清單上 ' + gint.a.inList);
+  ok('詠唱中被打倒（冷卻中那一下不算被攻擊）：魔法陣散掉，爬起來重跑到站位再念一次',
+     gint.b.st === 'mwalk' && gint.b.bad === 1 && gint.b.gone && !gint.b.inList,
+     gint.b.st + '、bad ' + gint.b.bad + '、陣散掉 ' + gint.b.gone + '、還在清單上 ' + gint.b.inList);
+
+  /* ── 躺著暈：什麼都打不到、不改主意；暈滿 MEG_STUN 秒才爬起來，爬完回去逛；
+     十字星光只在詠唱時冒（使用者：「施放完倒地 不要星光(只有施法集氣時有)」）——
+     詠唱那一段只推她自己（stepBeast），不推 stepMagic：道具那一疊陣長層時也會撒星光，推了就分不出是誰撒的 ── */
+  const gstun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const otoast = toast; toast = () => {};
+    stars.length = 0;
+    const c = spawnBeast('megumin', 1, 0);
+    const P = { x: 0, z: -(siteR + 48) };
+    c.x = P.x; c.z = P.z + MEG_SAFE; c.st = 'mcast'; c.mp = P; c.mt = 0; c.bad = 1;
+    for (let i = 0; i < 40; i++) stepBeast(c, 0.05);    // 舉杖、放出道具那一發、念兩秒
+    const castStars = stars.length;
+    cleanTools();
+    stars.length = 0;
+    const m = spawnBeast('megumin', 1, 0);
+    m.st = 'mstun'; m.mt = 0; m.lie = 1; m.spin = -Math.PI / 2; m.hcd = 0;
+    const r = { busy: levBusy(m), toss: tossBeast(m, 5, 5, 5, true), fell: fellBeast(m, 1), fire: igniteBeast(m, 1) };
+    beastHit(m);
+    r.st = m.st; r.bad = m.bad;
+    let t = 0, up = -1, fun = -1;
+    for (let i = 0; i < 2000 && fun < 0; i++) {
+      stepBeast(m, 0.05); t += 0.05;
+      if (up < 0 && m.st === 'mup') up = t;
+      if (m.st === 'fun') fun = t;
+      if (i === 40) r.stars = stars.length;          // 暈了兩秒
+    }
+    r.up = +up.toFixed(2); r.rise = +(fun - up).toFixed(2); r.lie = m.lie; r.spin = m.spin;
+    r.want = MEG_STUN; r.wantUp = ENG.MEGT.up; r.castStars = castStars;
+    toast = otoast; cleanTools();
+    return r;
+  });
+  ok('躺著暈的時候炸不飛、震不倒、點不著，被打也不改主意（使用者：「躺著暈不會被打到」）',
+     gstun.busy && !gstun.toss && !gstun.fell && !gstun.fire && gstun.st === 'mstun' && gstun.bad === 0,
+     'levBusy ' + gstun.busy + '；炸飛 ' + gstun.toss + '、震倒 ' + gstun.fell + '、點著 ' + gstun.fire +
+     '；被打之後 ' + gstun.st + '（bad ' + gstun.bad + '）');
+  ok('暈滿 MEG_STUN 秒才爬起來、爬完回去逛（躺平角與抬升收乾淨）；星光只在詠唱時冒，暈著的時候沒有',
+     Math.abs(gstun.up - gstun.want) < 0.11 && Math.abs(gstun.rise - gstun.wantUp) < 0.11 &&
+     gstun.lie === 0 && gstun.spin === 0 && gstun.stars === 0 && gstun.castStars > 0,
+     gstun.up + ' 秒開始爬（MEG_STUN ' + gstun.want + '）、' + gstun.rise + ' 秒爬完（MEGT.up ' + gstun.wantUp +
+     '）；詠唱兩秒星光 ' + gstun.castStars + ' 顆、暈兩秒 ' + gstun.stars + ' 顆');
+
+  /* ── 一整趟：被打一下 → 跑到站位 → 詠唱放出道具那一發 → 爆炸時不在範圍裡 → 往後倒、暈、爬起來回去逛 ── */
+  const grun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const otoast = toast, ocast = castMagic, orand = Math.random;
+    toast = () => {};
+    let casts = 0, by = null;
+    castMagic = (p, b) => { casts++; by = b; return ocast(p, b); };
+    stars.length = 0;
+    const m = spawnBeast('megumin', 1, 0);
+    const a = 0.7; m.x = Math.cos(a) * (siteR + 4); m.z = Math.sin(a) * (siteR + 4); m.st = 'fun'; m.stay = 600;
+    Math.random = () => 0;                          // 生氣那一下抽到地標（MASC_MAD_SET 那一顆骰子）
+    beastHit(m);
+    Math.random = orand;
+    const seq = [m.st];
+    let t = 0, runV = 0, run = 0, air = 0, dBoom = -1;
+    for (let i = 0; i < 1600; i++) {
+      const px = m.x, pz = m.z;
+      step(0.05); t += 0.05;
+      if (m.st === 'mwalk') { runV = Math.max(runV, Math.hypot(m.x - px, m.z - pz) / 0.05); run = Math.max(run, m.run); }
+      if (m.air) air = 1;
+      if (m.st !== seq[seq.length - 1]) {
+        seq.push(m.st);
+        if (m.st === 'mfall') dBoom = Math.hypot(m.x - m.mp.x, m.z - m.mp.z);
+      }
+      if (m.st === 'fun' && seq.length > 3) break;
+    }
+    toast = otoast; castMagic = ocast;
+    const r = { seq: seq.join('→'), casts, self: by === m, runV: +runV.toFixed(1), run: +run.toFixed(2),
+                walk: WALK, k: MEG_RUN, air, dBoom: +dBoom.toFixed(1), safe: MEG_SAFE,
+                hr: +Math.sqrt(MAG_R * MAG_R - MAG_CORE_Y * MAG_CORE_Y).toFixed(1), secs: +t.toFixed(1) };
+    cleanTools();
+    return r;
+  });
+  ok('一整趟：被打一下 → 跑到站位 → 詠唱 → 爆炸 → 往後倒 → 暈 → 爬起來回去逛，道具那一發放一次、記著是她放的',
+     grun.seq === 'mwalk→mcast→mfall→mstun→mup→fun' && grun.casts === 1 && grun.self,
+     grun.seq + '（' + grun.secs + ' 秒）；castMagic ' + grun.casts + ' 次、by 是她 ' + grun.self);
+  ok('退到站位用跑的：腳程是走路的 MEG_RUN 倍、跑姿推到 1；爆炸時她在範圍外、沒被炸飛',
+     grun.runV > grun.walk * (grun.k - 0.5) && grun.runV <= grun.walk * grun.k * 1.1 && grun.run > 0.95 &&
+     !grun.air && grun.dBoom > grun.hr,
+     '最快 ' + grun.runV + ' 格／秒（走路 ' + grun.walk + ' × ' + grun.k + '）、m.run 最高 ' + grun.run +
+     '；爆炸時離炸點 ' + grun.dBoom + ' 格（範圍到地面 ' + grun.hr + '、站位 ' + grun.safe + ' 起）、飛起來過 ' + grun.air);
+
+  /* ── 畫面：沒她在場不吃 draw call；藍色魔力線條只在集氣時出來；暈的時候兩眼換成 ×、帽子掉在地上；
+     走路時法杖跟右手臂垂直、站著時直直拄著（讀的是 megMesh 真的寫進去的矩陣）── */
+  const gdraw = await page.evaluate(() => {
+    cleanTools();
+    const T3 = ENG.three, M = ENG.MEGUMIN, G = ENG.MEG_G;
+    const vis = () => T3.megMesh.visible + '／' + T3.megLineMesh.visible;
+    const mat = new THREE.Matrix4(), col = (k, c) => {
+      T3.megMesh.getMatrixAt(k, mat);
+      const e = mat.elements, v = new THREE.Vector3(e[c * 4], e[c * 4 + 1], e[c * 4 + 2]);
+      return v;
+    };
+    const eye = M.findIndex(b => b.e === 1), cross = M.findIndex(b => b.e === 2);
+    const brim = M.findIndex(b => b.g === G.hat && b.p[1] === 1.15);
+    const shaft = M.findIndex(b => b.g === G.staff);                    // 第一塊就是杖身
+    const sleeve = M.findIndex(b => b.g === G.armR && b.z === 1);
+    draw();
+    const off = vis();
+    const m = spawnBeast('megumin', 1, 0);
+    m.st = 'fun'; m.gait = 0; m.ph = 0;
+    draw();
+    const stand = vis(), standUp = col(shaft, 1).normalize().y, standHat = col(brim, 3).y;
+    m.gait = 0.85; m.ph = 0.7;
+    draw();
+    const walk = vis(), dot = Math.abs(col(shaft, 1).normalize().dot(col(sleeve, 1).normalize()));
+    const eyeOn = col(eye, 0).length() > 0, crossOn = col(cross, 0).length() > 0;
+    m.gait = 0; m.st = 'mcast'; m.mt = ENG.MEGT.raise + 1; m.mp = { x: m.x + 50, z: m.z };
+    draw();
+    const cast = vis(), cnt = T3.megMesh.count;
+    m.st = 'mstun'; m.mt = 1; m.lie = 1; m.spin = -Math.PI / 2;
+    draw();
+    const stun = vis(), eyeLie = col(eye, 0).length() > 0, crossLie = col(cross, 0).length() > 0;
+    const lieHat = col(brim, 3).y;
+    beasts = null;
+    draw();
+    const gone = vis();
+    return { off, stand, walk, cast, stun, gone, cnt, parts: ENG.MEG_PARTS, standUp: +standUp.toFixed(3),
+             dot: +dot.toFixed(3), eyeOn, crossOn, eyeLie, crossLie,
+             standHat: +standHat.toFixed(2), lieHat: +lieHat.toFixed(2) };
+  });
+  ok('沒她在場就不吃 draw call：她那顆 mesh、藍色魔力線條平常都藏著，線條只在集氣時出來',
+     gdraw.off === 'false／false' && gdraw.stand === 'true／false' && gdraw.walk === 'true／false' &&
+     gdraw.cast === 'true／true' && gdraw.stun === 'true／false' && gdraw.gone === 'false／false' &&
+     gdraw.cnt === gdraw.parts,
+     '沒她 ' + gdraw.off + '；站 ' + gdraw.stand + '；走 ' + gdraw.walk + '；集氣 ' + gdraw.cast + '（' + gdraw.cnt +
+     ' 塊）；暈 ' + gdraw.stun + '；走了 ' + gdraw.gone + '（mesh／線條）');
+  ok('暈的時候兩眼換成 ×、帽子掉到地上；平常是眼睛、帽子戴在頭上',
+     gdraw.eyeOn && !gdraw.crossOn && !gdraw.eyeLie && gdraw.crossLie && gdraw.standHat > 1.5 && gdraw.lieHat < 0.3,
+     '平常 眼睛 ' + gdraw.eyeOn + '／× ' + gdraw.crossOn + '、帽簷高 ' + gdraw.standHat + '；暈 眼睛 ' + gdraw.eyeLie +
+     '／× ' + gdraw.crossLie + '、帽簷高 ' + gdraw.lieHat);
+  ok('法杖：站著直直拄在地上，走路時跟右手臂垂直（使用者：「人物一般走路時法杖拿法 調整成跟手臂垂直」）',
+     gdraw.standUp > 0.99 && gdraw.dot < 0.02,
+     '站著杖身朝上 ' + gdraw.standUp + '；走路時杖身與右手臂夾角的 cos ' + gdraw.dot);
+
+  /* ── 點得到她：點選回報成 beast，索引對回 beasts 裡的她（她前面先擺一隻遠在場外的牛，同 Saber 那一條）── */
+  const gpick = await page.evaluate(() => {
+    cleanTools();
+    const cam = ENG.three.camera.position;
+    const d = Math.hypot(cam.x, cam.z) || 1;
+    beasts = [{ kind: 'cow', x: 900, y: 0, z: 900, a: 0, sc: 1, ph: 0, gait: 0 }];
+    const m = spawnBeast('megumin', 1, 0);
+    m.x = cam.x / d * (siteR + 6); m.z = cam.z / d * (siteR + 6); m.st = 'fun';
+    draw(); ENG.render();
+    const v = new THREE.Vector3(m.x, 0.6 * m.sc, m.z).project(ENG.three.camera);
+    const cv = ENG.three.renderer.domElement;
+    const px = (v.x + 1) / 2 * cv.clientWidth, py = (1 - v.y) / 2 * cv.clientHeight;
+    const hit = ENG.pick(px, py, 'man');
+    const r = { kind: hit && hit.kind, idx: hit ? hit.idx : -1, me: !!hit && beastAt(hit.idx) === m,
+                px: Math.round(px), py: Math.round(py) };
+    beasts = null; ENG.putBeasts([]); ENG.putMegs([]);
+    return r;
+  });
+  ok('點得到她：回報成 beast、索引對回 beasts 裡的她（不是排在她前面那一隻）',
+     gpick.kind === 'beast' && gpick.idx === 1 && gpick.me,
+     '點畫面 (' + gpick.px + ', ' + gpick.py + ')：' + gpick.kind + ' #' + gpick.idx + (gpick.me ? '，就是她' : '，不是她'));
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+
   /* ══════════ 閒逛的動物 ══════════ */
   /* v1.154。使用者：「增加場上幾隻閒逛的動物(會被破壞工具作用 也會著火類似小人)／
      牛羊2~3隻 依照小人行走邏輯不要走進建物裡面」，看過造型之後追加「也可以牛羊多種造型
@@ -26082,7 +26367,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      段名也從〈閒逛的牛羊〉改成〈閒逛的動物〉（裡面已經不只牛羊了）。
      整套借吉祥物那條路（同一份 beasts 清單、同一套走路、同一套被打到的反應），
      所以這一段驗的是**差在哪裡**：不走人、不挑階段、不佔天災的名額、四條腿繞自己的關節轉。 */
-  }   // ── 〈被打到就改變主意〉結束（--tier 跳過時從這裡出來）
+  }   // ── 〈吉祥物：惠惠的爆裂魔法〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('閒逛的動物', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; stepHerd = window.herdStep; });

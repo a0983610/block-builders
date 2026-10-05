@@ -248,6 +248,7 @@ function draw() {
   ENG.putBeasts(bl);
   ENG.putSabers(bl);
   ENG.putLevis(bl);                  // 里維兵長（v1.230）同 Saber：自己一顆 mesh、索引對齊
+  ENG.putMegs(bl);                   // 惠惠（v1.247.0）同上
 
   ENG.putTrees(trees);
   ENG.putDust(dustList());
