@@ -12527,7 +12527,11 @@ const AR_N = 80;
 const AR_VOL = 5;                // 射幾輪（使用者指定）
 const AR_COL = 16;               // 一排幾人（80 ＝ 5 排 × 16，正面寬 33 ≈ 工地直徑）
 const AR_GAP = 2.2, AR_ROWGAP = 2.6;    // 同一排的人隔多遠／排與排之間隔多遠
-const AR_JIT = 0.3;              // 站位再抖多少（不抖就是一個標準的方陣）
+/* 站位再抖多少、朝向再偏多少（不抖就是一個標準的方陣）。**v1.252 起 0.3 → 0.6、±0.05 弧度 → ±6°**
+   （使用者：「火槍兵&箭雨 小人排隊有點過於整齊」，看過預覽選的）：0.3 不到間距 2.2 的一成四，
+   遠看還是一格一格的方陣。量法與數字見 開發筆記〈火槍兵與箭雨的隊形抖亂一點〉。 */
+const AR_JIT = 0.6;
+const AR_FACE = 6 * Math.PI / 180;
 const AR_LIFT = 0.45;            // 出場：整隊由小長到原尺寸要多久
 const AR_DRAW = 0.7;             // 拉一次弓要多久（弦從 0 拉到滿）
 /* 同一輪裡每個人的放箭時刻各自錯開多少（不錯開像一個人在射）。**v1.232 起 0.45 → 0.65，
@@ -12612,7 +12616,7 @@ function castArrows(from, toward, aimY) {
                      from.z + sz * off * AR_GAP - uz * row * AR_ROWGAP + rr(-AR_JIT, AR_JIT),
                      ux, uz);
     men.push({
-      x: p.x, y: 0, z: p.z, a: a0 + rr(-0.05, 0.05),
+      x: p.x, y: 0, z: p.z, a: a0 + rr(-AR_FACE, AR_FACE),
       /* putWorker 會讀到的欄位都要有值：ph／gait 是走路擺動用的（站著不動給 0），
          tone 決定膚色與工作服（同 newWorker 拿編號當色號），base 是自己的身高倍率。 */
       ph: 0, gait: 0, tone: i, base: rr(W_LO, W_HI), scale: 0,
@@ -12901,7 +12905,7 @@ function weapList() {
    使用者：「新增破壞道具 火槍兵 操作方式參考箭雨 但是只能水平火槍射擊(槍口射擊後有煙)
    射擊模式參考信長的三段射擊(三段擊) 小人拿火槍造型先做給我看過」。
    造型與動作先做了預覽（tools/.e2e-out/火槍兵預覽.html），看過之後使用者定了：
-     · 陣笠、**A 輪替**（三段擊有兩種讀法，另一種是三排原地輪流開，兩種都做給他挑）
+     · 陣笠（v1.252 改回一般小人的安全帽）、**A 輪替**（三段擊有兩種讀法，另一種是三排原地輪流開，兩種都做給他挑）
      · **60 人**（3 排 × 20）、**每一排輪到 3 次**＝整趟 9 次齊射
      · 「一排的寬度大概同箭雨就好」→ 間距照箭雨的正面寬 (AR_COL − 1) × AR_GAP 反算
      · 「火槍也要能有一定的仰角射擊角度」→ **照第二下點的高度自動抬、上限 30°**，
@@ -12915,7 +12919,9 @@ function weapList() {
      ③ **槍口冒煙**（使用者點名的）：火光 ＋ 一團往前噴、慢慢往上飄的白煙（同加農砲的
         canBlast，份量是一把槍的）。
    v1.232 看過第二份預覽之後改的（見 開發筆記〈火槍兵平行射、開槍錯開〉）：一排開槍錯開 0.14 → 0.6 秒、
-   每一發重抽（MK_SPREAD）；整排朝隊伍正前方平行射、散布 ±2°（mkAim）；點到地上的碎料算點地面。 */
+   每一發重抽（MK_SPREAD）；整排朝隊伍正前方平行射、散布 ±2°（mkAim）；點到地上的碎料算點地面。
+   v1.252（見 開發筆記〈火槍兵與箭雨的隊形抖亂一點〉）：格子抖一點、沒在瞄時朝向各偏一點、換位起步錯開
+   （MK_SPOT／MK_FACE／MK_LAG）；帽子改回一般小人的安全帽。 */
 const MK_COL = 20, MK_ROWS = 3;          // 一排 20 人 × 3 排（使用者選 60 人）
 const MK_N = MK_COL * MK_ROWS;
 const MK_RND = 3;                        // 每一排輪到幾次（使用者選）
@@ -12924,6 +12930,17 @@ const MK_VOL = MK_ROWS * MK_RND;         // 整趟齊射幾次
    一排 20 人的間距就是 33 ÷ 19 ≈ 1.74。寫成算式，箭雨那兩個常數再調這裡自己跟著走。 */
 const MK_GAP = (AR_COL - 1) * AR_GAP / (MK_COL - 1);
 const MK_ROW = 1.9;                      // 排與排之間隔多遠
+/* 隊形抖亂一點（v1.252，使用者：「火槍兵&箭雨 小人排隊有點過於整齊」，看過預覽選的）：
+   v1.227～v1.251 格子一點都沒抖、沒在瞄的時候全隊朝同一個方向、換位整排同一刻起步。
+     · MK_SPOT：每一格再抖多少（格子出場時算好就不動，所以人照樣在格子之間走）。間距只有 1.74、
+       一個人連手臂寬 1.43，抖 0.35 量到同一排相鄰 57 對裡平均每隊 7.3 對手臂疊到（最多 0.39）
+     · MK_FACE：沒在瞄的時候身體朝哪偏（每個人出場抽一次）。瞄準開槍照舊是整排平行 ±2°（MK_JIT）
+     · MK_LAG：換位那幾段（前排轉身走回去、後排往前一步）每個人晚多少才起步，每一輪重抽。
+       上限是走回去之後轉成裝填姿勢那一段（MK_P − home ＝ 0.18 秒），晚超過就被吃光，一輪的長度不動
+   量法與數字見 開發筆記〈火槍兵與箭雨的隊形抖亂一點〉。 */
+const MK_SPOT = 0.35;
+const MK_FACE = 8 * Math.PI / 180;
+const MK_LAG = 0.08;
 const MK_LIFT = 0.45;                    // 出場：由小長到原尺寸（同 AR_LIFT）
 const MK_RAISE = 0.5;                    // 出場之後第一排舉槍要多久
 /* 同一排每個人開槍時刻各自錯開多少（不錯開像一把槍）。**v1.232 起 0.14 → 0.6，而且每一發舉槍時
@@ -12981,7 +12998,7 @@ function aimMusket(point, onBlock) {
   castMusket(aim, point, onBlock ? point.y : -1);
 }
 /* 站位：第一排站在第一點那一條線上、另外兩排往後排，整隊面向目標。
-   **格子先算好**（slot[排][行]）：輪替時人在格子之間走，格子不動——站位的防呆
+   **格子先算好**（slot[排][行]，每一格抖 MK_SPOT，v1.252）：輪替時人在格子之間走，格子不動——站位的防呆
    （踩在建築或房子裡就往外推、夾回草地內）走箭雨那一支 arSpot。 */
 function castMusket(from, toward, ty) {
   aim = null;
@@ -12995,22 +13012,25 @@ function castMusket(from, toward, ty) {
     const row = [];
     for (let c = 0; c < MK_COL; c++) {
       const off = c - (MK_COL - 1) / 2;
-      row.push(arSpot(from.x + sx * off * MK_GAP - ux * r * MK_ROW,
-                      from.z + sz * off * MK_GAP - uz * r * MK_ROW, ux, uz));
+      row.push(arSpot(from.x + sx * off * MK_GAP - ux * r * MK_ROW + rr(-MK_SPOT, MK_SPOT),
+                      from.z + sz * off * MK_GAP - uz * r * MK_ROW + rr(-MK_SPOT, MK_SPOT), ux, uz));
     }
     slot.push(row);
   }
   const men = [];
   for (let r = 0; r < MK_ROWS; r++) for (let c = 0; c < MK_COL; c++) {
-    const p = slot[r][c];
+    const p = slot[r][c], lag = [];
+    for (let n = 0; n < MK_VOL; n++) lag.push(rr(0, MK_LAG));
     men.push({
       x: p.x, y: 0, z: p.z, a: a0, row: r, col: c,
       /* putWorker 會讀到的欄位（同弓箭手）：ph／gait 走路擺動、tone 膚色與衣色、base 身高。
-         gun／kasa 讓引擎畫火繩槍與陣笠；gp／gq／gk 是姿勢（見引擎的 GUN_POSE）。 */
+         gun 讓引擎畫火繩槍；gp／gq／gk 是姿勢（見引擎的 GUN_POSE）。
+         帽子是一般小人的安全帽（v1.252 使用者：「火槍兵帽子改回原本一般小人帽子」，v1.227～v1.251 戴陣笠）。 */
       ph: 0, gait: 0, tone: r * MK_COL + c, base: rr(W_LO, W_HI), scale: AR_K0,
-      gun: 1, kasa: 1, gp: 'shoul', gq: null, gk: 0, rec: 0, rod: 0, el: 0,
+      gun: 1, gp: 'shoul', gq: null, gk: 0, rec: 0, rod: 0, el: 0,
       aa: a0,                                    // 這一發瞄的方向（見 mkAim）
-      off: 0, shot: -1, aimN: -1                 // off＝這一發自己慢多少開槍（舉槍時抽，見 mkAim）、shot／aimN＝第幾輪做過了
+      off: 0, shot: -1, aimN: -1,                // off＝這一發自己慢多少開槍（舉槍時抽，見 mkAim）、shot／aimN＝第幾輪做過了
+      fa: rr(-MK_FACE, MK_FACE), lag             // fa＝沒在瞄時朝向偏多少、lag[n]＝第 n 輪換位晚多少起步（v1.252）
     });
   }
   musket = { men, slot, t: 0, a0, sx, sz, tx: toward.x, tz: toward.z, ty };
@@ -13066,10 +13086,10 @@ function mkAim(g, m, n) {
   }
   m.el = el;
 }
-/* 舉槍：担え銃 → 構え，同時從隊伍的方向轉到這一發瞄的方向 */
+/* 舉槍：担え銃 → 構え，同時從自己站的方向（隊伍的方向 ＋ m.fa）轉到這一發瞄的方向 */
 function mkRaise(g, m, u) {
   const k = mkPose(m, 'shoul', 'aim', u);
-  m.a = mkAngLerp(g.a0, m.aa, k);
+  m.a = mkAngLerp(g.a0 + m.fa, m.aa, k);
 }
 /* 一整隊：出場（由小長大）→ 第一排舉槍 → MK_VOL 輪齊射（三段擊輪替）→ 立て銃 → 撤走。 */
 function stepMusket(dt) {
@@ -13093,11 +13113,13 @@ function stepMusket(dt) {
   }
 }
 /* 一個人這一刻在做什麼。n ＝ 第幾輪、tau ＝ 這一輪走到哪、s0 ＝ 這一輪開始時他在第幾排
-   （0 ＝ 最前面）。每一輪第一排退到最後、其餘各往前一排，所以 s0 ＝ (自己那一排 − n) mod 3。 */
+   （0 ＝ 最前面）。每一輪第一排退到最後、其餘各往前一排，所以 s0 ＝ (自己那一排 − n) mod 3。
+   v1.252：沒在瞄的時候朝 A（隊伍的方向 ＋ m.fa）；開槍之後的那幾段照 tw（＝ tau 晚 lag[n] 秒）走，
+   開槍時刻照舊算在這一輪的開頭（m.off）。裝填那一段的槊杖接上一輪的 lag，換輪那一幀才不會跳。 */
 function mkMan(g, m, t, t0, dt) {
-  const S = g.slot, L = MK_TL, R = MK_ROWS;
+  const S = g.slot, L = MK_TL, R = MK_ROWS, A = g.a0 + m.fa;
   if (t < t0) {                                  // 出場：第一排舉槍，後兩排先裝填
-    mkAt(m, S[m.row][m.col]); m.a = g.a0;
+    mkAt(m, S[m.row][m.col]); m.a = A;
     const u = (t - MK_LIFT) / MK_RAISE;
     if (m.row === 0) { if (m.aimN !== 0) mkAim(g, m, 0); mkRaise(g, m, u); }
     else { mkPose(m, 'shoul', 'load', u); if (u > 0) m.rod = mkStroke(u, 1); }
@@ -13106,50 +13128,51 @@ function mkMan(g, m, t, t0, dt) {
   const n = Math.min(MK_VOL - 1, Math.floor((t - t0) / MK_P)), tau = t - t0 - n * MK_P;
   const last = n === MK_VOL - 1;                 // 最後一輪：走完不再裝填／舉槍，改成立て銃
   if (tau >= MK_P) {                             // 全部打完：站在換完位的格子上立て銃
-    mkAt(m, S[((m.row - MK_VOL) % R + R) % R][m.col]); m.a = g.a0;
+    mkAt(m, S[((m.row - MK_VOL) % R + R) % R][m.col]); m.a = A;
     mkPose(m, 'rest');
     return;
   }
   const s0 = ((m.row - n) % R + R) % R;
+  const lg = m.lag[n], tw = tau - lg;            // 這一輪換位晚 lg 秒起步（v1.252，見 MK_LAG）
   if (s0 === 0) {                                // 這一輪的第一排：開槍 → 轉身走到最後面
     const A0 = S[0][m.col], A3 = S[R - 1][m.col];
-    if (tau < L.hold) {
+    if (tw < L.hold) {
       mkAt(m, A0); mkPose(m, 'aim'); m.a = m.aa;
       if (tau >= m.off && m.shot !== n) { m.shot = n; mkFire(g, m, n); }
-    } else if (tau < L.lower) {
+    } else if (tw < L.lower) {
       mkAt(m, A0);
-      const e = mkPose(m, 'aim', 'shoul', (tau - L.hold) / (L.lower - L.hold));
-      m.a = mkAngLerp(m.aa, g.a0, e);
+      const e = mkPose(m, 'aim', 'shoul', (tw - L.hold) / (L.lower - L.hold));
+      m.a = mkAngLerp(m.aa, A, e);
     } else {
       mkPose(m, 'shoul');
       const A1 = mkLane(g, A0), A2 = mkLane(g, A3);
-      if (tau < L.side) mkWalk(m, A0, A1, (tau - L.lower) / (L.side - L.lower), dt);
-      else if (tau < L.back) mkWalk(m, A1, A2, (tau - L.side) / (L.back - L.side), dt);
-      else if (tau < L.home) mkWalk(m, A2, A3, (tau - L.back) / (L.home - L.back), dt);
-      else { mkAt(m, A3); mkPose(m, 'shoul', last ? 'rest' : 'load', (tau - L.home) / (MK_P - L.home)); }
+      if (tw < L.side) mkWalk(m, A0, A1, (tw - L.lower) / (L.side - L.lower), dt);
+      else if (tw < L.back) mkWalk(m, A1, A2, (tw - L.side) / (L.back - L.side), dt);
+      else if (tw < L.home) mkWalk(m, A2, A3, (tw - L.back) / (L.home - L.back), dt);
+      else { mkAt(m, A3); mkPose(m, 'shoul', last ? 'rest' : 'load', (tw - L.home) / (MK_P - lg - L.home)); }
       /* 往後走那一段轉身朝後（真的是轉過去走，不是倒退），到了再轉回來 */
-      const turn = mkEase((tau - L.lower) / 0.12) - mkEase((tau - L.back) / 0.14);
-      m.a = g.a0 + Math.PI * turn;
+      const turn = mkEase((tw - L.lower) / 0.12) - mkEase((tw - L.back) / 0.14);
+      m.a = A + Math.PI * turn;
     }
   } else {                                       // 第二、三排：裝填 → 往前一步 → 第二排舉槍
     const B0 = S[s0][m.col], B1 = S[s0 - 1][m.col];
-    m.a = g.a0;
-    if (tau < L.load) {
+    m.a = A;
+    if (tw < L.load) {
       mkAt(m, B0); mkPose(m, 'load');
-      m.rod = mkStroke((tau + MK_P - L.step - L.reload) / MK_LOAD_T, 1.5);
-    } else if (tau < L.pack) {
-      mkAt(m, B0); mkPose(m, 'load', 'shoul', (tau - L.load) / (L.pack - L.load));
-    } else if (tau < L.step) {
-      mkPose(m, 'shoul'); mkWalk(m, B0, B1, (tau - L.pack) / (L.step - L.pack), dt);
+      m.rod = mkStroke((tau + MK_P - L.step - L.reload - (n > 0 ? m.lag[n - 1] : 0)) / MK_LOAD_T, 1.5);
+    } else if (tw < L.pack) {
+      mkAt(m, B0); mkPose(m, 'load', 'shoul', (tw - L.load) / (L.pack - L.load));
+    } else if (tw < L.step) {
+      mkPose(m, 'shoul'); mkWalk(m, B0, B1, (tw - L.pack) / (L.step - L.pack), dt);
     } else if (last) {
-      mkAt(m, B1); mkPose(m, 'shoul', 'rest', (tau - L.step) / L.rest);
+      mkAt(m, B1); mkPose(m, 'shoul', 'rest', (tw - L.step) / L.rest);
     } else if (s0 === 1) {                       // 下一輪的第一排：舉槍瞄好
       mkAt(m, B1);
       if (m.aimN !== n + 1) mkAim(g, m, n + 1);
-      mkRaise(g, m, (tau - L.step) / L.raise);
+      mkRaise(g, m, (tw - L.step) / L.raise);
     } else {
-      mkAt(m, B1); mkPose(m, 'shoul', 'load', (tau - L.step) / L.reload);
-      if (tau > L.step + L.reload) m.rod = mkStroke((tau - L.step - L.reload) / MK_LOAD_T, 1.5);
+      mkAt(m, B1); mkPose(m, 'shoul', 'load', (tw - L.step) / L.reload);
+      if (tw > L.step + L.reload) m.rod = mkStroke((tw - L.step - L.reload) / MK_LOAD_T, 1.5);
     }
   }
 }

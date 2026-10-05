@@ -621,8 +621,9 @@ const ENG = (function () {
      ＋ v1.198 Q 版補的二十二塊：五官（眼白兩塊、眉兩塊、瀏海、後髮、嘴、耳兩塊、
        腮紅兩塊）、衣著（領口、圍兜、袖兩塊、手套兩塊）、肌肉小人的腹、
        魔法師的袍下襬、帽帶、鬍子兩塊
-     ＋ v1.227 火槍兵的十一塊：火繩槍七塊（床尾、台木、槍管、金箍、火挾、火繩頭、槊杖）、陣笠四塊
-     （v1.121 曾經有表情圖示的八塊，v1.122 換成貼圖之後收掉了，見 paintEmoAtlas）。
+     ＋ v1.227 火槍兵的火繩槍七塊（床尾、台木、槍管、金箍、火挾、火繩頭、槊杖）
+     （v1.121 曾經有表情圖示的八塊，v1.122 換成貼圖之後收掉了，見 paintEmoAtlas；
+     火槍兵的陣笠四塊 v1.227～v1.251 有，v1.252 改回一般小人的安全帽之後收掉了）。
      全部共用同一個 InstancedMesh，不多一個 draw call。
 
      **這個人身上沒有的那幾塊只付一個全 0 矩陣的錢**（v1.198，見 putWorker 開頭與 REQ）：
@@ -633,7 +634,7 @@ const ENG = (function () {
        58 塊、跳過且條件查 REQ 表          0.79～0.86ms   ← 現在這個
      也就是**部位多了六成、一般工人畫的從 14 塊變 33 塊，每幀成本跟改版前同一個帶**。
      同一個場景的 draw 也一樣（改版前 1.61～2.01ms，現在 1.56～1.99ms）。 */
-  const WPARTS = 69;
+  const WPARTS = 65;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。
      v1.118 從 720 加到 900：打雷的烏雲也借這顆 mesh 畫（一朵 150 團），
@@ -3824,12 +3825,8 @@ const ENG = (function () {
     { p: [0.056, 0.075, 0.25], s: [0.032, 0.10, 0.05], c: 'brass', gun: 1, gr: -0.5 }, // 火挾（往後斜）
     { p: [0.058, 0.12, 0.222], s: [0.05, 0.05, 0.05], c: 'ember', gun: 1, ember: 1 },  // 火繩頭（會明滅）
     { p: [0, GUN_BORE, GUN_L], s: [0.026, 0.026, ROD_L], c: 'staff', gun: 1, rod: 1 },   // 槊杖
-    /* 陣笠（使用者選的）：三層往上收的平錐 ＋ 正面一塊金紋。戴這頂的人不戴安全帽
-       （hard 那幾塊整塊跳過，同巫師帽——兩頂疊在同一顆頭上會直接穿模）。 */
-    { p: [0, 1.15, 0], s: [0.86, 0.05, 0.86], c: 'kasa', kasa: 1 },
-    { p: [0, 1.205, 0], s: [0.60, 0.07, 0.60], c: 'kasa', kasa: 1 },
-    { p: [0, 1.265, 0], s: [0.30, 0.06, 0.30], c: 'kasa', kasa: 1 },
-    { p: [0, 1.205, 0.302], s: [0.16, 0.05, 0.012], c: 'brass', kasa: 1 },
+    /* v1.227～v1.251 這裡還有陣笠四塊（戴的人安全帽整塊跳過）。v1.252 使用者：「火槍兵帽子改回原本
+       一般小人帽子」，火槍兵戴回安全帽、那四塊收掉（見 開發筆記〈火槍兵與箭雨的隊形抖亂一點〉）。 */
     /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
        巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
        只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
@@ -3889,13 +3886,12 @@ const ENG = (function () {
     sash: [0xd8b23a],
     wizD: [0x352a66],
     beard: [0xeae6e0],
-    /* 火槍兵（v1.227）：槍管黑鐵、台木紅褐（種子島的樫木）、金具黃銅、火繩頭橘紅、陣笠黑漆。
+    /* 火槍兵（v1.227）：槍管黑鐵、台木紅褐（種子島的樫木）、金具黃銅、火繩頭橘紅。
        鐵與木比第一版預覽各亮一階——太暗的話槍在草地上看起來只是一道影子。 */
     iron: [0x3d434b],
     gwood: [0x7e3f22],
     brass: [0xc9a03e],
-    ember: [0xff5a1a],
-    kasa: [0x26211f]
+    ember: [0xff5a1a]
   };
   const ORB_LIT = new T.Color(0xffffff);   // 施法時寶珠往這個亮色靠（要跟金色差得夠開才看得出亮起來）
   const EMBER_HI = new T.Color(0xffd27a);  // 火繩頭明滅往這個亮色靠
@@ -3912,14 +3908,14 @@ const ENG = (function () {
      實測 60 人擺一輪：0.96～1.14ms → 0.79～0.86ms。 */
   const RQ_MAGE = 1, RQ_PLAIN = 2, RQ_MUS = 4, RQ_CLOTH = 8, RQ_PLAN = 16,
         RQ_BUB = 32, RQ_DIG = 64, RQ_BOW = 128, RQ_DRAW = 256,
-        RQ_GUN = 512, RQ_ROD = 1024, RQ_KASA = 2048;       // v1.227 火槍兵
+        RQ_GUN = 512, RQ_ROD = 1024;                       // v1.227 火槍兵
   const REQ = new Uint16Array(WPARTS);
   for (let k = 0; k < WPARTS; k++) {
     const b = BODY[k];
     REQ[k] = (b.wiz ? RQ_MAGE : 0) | (b.hard ? RQ_PLAIN : 0) | (b.mus ? RQ_MUS : 0) |
              (b.cloth ? RQ_CLOTH : 0) | (b.plan ? RQ_PLAN : 0) | (b.bub ? RQ_BUB : 0) |
              (b.dig ? RQ_DIG : 0) | (b.bow ? RQ_BOW : 0) | (b.nock ? RQ_DRAW : 0) |
-             (b.gun ? RQ_GUN : 0) | (b.rod ? RQ_ROD : 0) | (b.kasa ? RQ_KASA : 0);
+             (b.gun ? RQ_GUN : 0) | (b.rod ? RQ_ROD : 0);
   }
 
   function setWorkerCount(n) { workerMesh.count = Math.min(n, MAXW) * WPARTS; }
@@ -4017,13 +4013,12 @@ const ENG = (function () {
     scratch.scale.setScalar(wsc);
     scratch.updateMatrix();
     /* 這個人滿足哪些條件（見 REQ）。一個人算一次，不是一塊算一次。 */
-    /* 戴陣笠的（v1.227 火槍兵）同魔法師：安全帽那幾塊整塊跳過。
-       槊杖只在「這一刻主要是裝填」時畫（兩個姿勢之間走到一半以上才換）。 */
-    const has = (w.mage ? RQ_MAGE : w.kasa ? 0 : RQ_PLAIN) | (w.mus ? RQ_MUS : RQ_CLOTH) |
+    /* 火槍兵（v1.227）的槊杖只在「這一刻主要是裝填」時畫（兩個姿勢之間走到一半以上才換）。 */
+    const has = (w.mage ? RQ_MAGE : RQ_PLAIN) | (w.mus ? RQ_MUS : RQ_CLOTH) |
                 (w.plan ? RQ_PLAN : 0) | (w.bub >= 0.02 ? RQ_BUB : 0) |
                 (w.dig ? RQ_DIG : 0) | (w.bow ? RQ_BOW : 0) |
                 (w.draw >= 0.05 ? RQ_DRAW : 0) |
-                (w.gun ? RQ_GUN : 0) | (w.kasa ? RQ_KASA : 0) |
+                (w.gun ? RQ_GUN : 0) |
                 (w.gun && ((w.gk || 0) < 0.5 ? w.gp : w.gq || w.gp) === 'load' ? RQ_ROD : 0);
     if (w.gun) gunPose(w);
     for (let k = 0; k < WPARTS; k++) {

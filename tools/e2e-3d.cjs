@@ -17304,11 +17304,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     draw();                                   // 要畫過才讀得到這一幀的 instance 數
     return {
       one, aim2: !!aim, n: M.length, N: AR_N, col: AR_COL,
-      wantRows: Math.ceil(AR_N / AR_COL), wantWide: (AR_COL - 1) * AR_GAP,
+      wantRows: Math.ceil(AR_N / AR_COL), wantWide: (AR_COL - 1) * AR_GAP, jit: AR_JIT,
+      face: +AR_FACE.toFixed(3),
       rows: new Set(M.map(m => Math.round((m.z - z0) / AR_ROWGAP))).size,
       wide: +(Math.max(...xs) - Math.min(...xs)).toFixed(1),
       deep: +(Math.max(...zs) - z0).toFixed(1),
-      /* 整隊面向「第一點 → 第二點」那個方向（每個人再抖 ±0.05）：
+      /* 整隊面向「第一點 → 第二點」那個方向（每個人再抖 ±AR_FACE，v1.252 起 ±6°）：
          不是各自朝目標轉，所以這裡比的是同一個 a0。 */
       faceMax: +Math.max(...M.map(m => Math.abs(m.a - Math.PI))).toFixed(3),
       inSolid: M.filter(m => footBlocked(m.x, m.z) || homeFoot(m.x, m.z)).length,
@@ -17323,10 +17324,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '第一下：光環在、人 ' + arCast.one.men + '、箭 ' + arCast.one.arrows +
      '；第二下：' + arCast.n + ' 個人站出來（AR_N ' + arCast.N + '），光環收掉');
   /* 排數與正面寬都照 AR_N／AR_COL／AR_GAP 算出來比（那三個一改這條自己跟著對，
-     不寫死數字，見 開發筆記〈不要寫死會隨改動變動的數字〉）。 */
-  ok('一隊排成整齊的橫列、整隊面向目標，沒有人站在建築或房子裡',
-     arCast.rows === arCast.wantRows && arCast.faceMax < 0.06 && arCast.inSolid === 0 &&
-     Math.abs(arCast.wide - arCast.wantWide) < 1.2 &&
+     不寫死數字，見 開發筆記〈不要寫死會隨改動變動的數字〉）。正面寬的容許量是兩端各抖 AR_JIT ＋ 0.6
+     （v1.251 以前 AR_JIT 0.3 時寫死 1.2，就是這條式子）；朝向讀 AR_FACE（v1.252 起站位與朝向都抖大了，
+     使用者：「小人排隊有點過於整齊」，條目名同時拿掉「整齊的」）。 */
+  ok('一隊排成一排排的橫列、整隊面向目標，沒有人站在建築或房子裡',
+     arCast.rows === arCast.wantRows && arCast.faceMax <= arCast.face + 1e-3 && arCast.inSolid === 0 &&
+     Math.abs(arCast.wide - arCast.wantWide) < 2 * arCast.jit + 0.6 &&
      arCast.deep > (arCast.wantRows - 1) * 2 && arCast.deep < arCast.wantRows * 3,
      arCast.rows + ' 排 × ' + arCast.col + '（期望 ' + arCast.wantRows +
      ' 排）、正面寬 ' + arCast.wide + '（期望 ' + arCast.wantWide.toFixed(1) +
@@ -17336,6 +17339,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      arCast.wcount === arCast.want && arCast.inWorkers === 0,
      'workerMesh.count ' + arCast.wcount + ' ＝ (小人 ＋ 弓箭手) × 每人部位數 ＝ ' +
      arCast.want + '；workers 裡帶弓的有 ' + arCast.inWorkers + ' 個');
+  /* v1.252（使用者：「火槍兵&箭雨 小人排隊有點過於整齊」）：站位每軸抖 ±AR_JIT、朝向抖 ±AR_FACE。
+     只驗隊形規則本身：arSpot（踩到建築就往外推、夾回草地）暫時換成原地不動，量完還回去。
+     上限是規則；「真的有抖開」看平均——均勻分布的 |偏移| 平均是上限的一半，門檻給四分之一
+     （80 人平均的標準差約上限的 0.03，離門檻七個標準差以上，不是在賭骰子）。 */
+  const arJit = await page.evaluate(() => {
+    cleanTools();
+    const os = arSpot;
+    arSpot = (x, z) => ({ x, z });
+    try { castArrows({ x: 0, z: 42 }, { x: 0, z: 0 }, 0); }
+    finally { arSpot = os; }
+    const M = archers.men, a0 = Math.PI, dx = [], dz = [], da = [];
+    M.forEach((m, i) => {
+      const row = Math.floor(i / AR_COL), col = i % AR_COL;
+      const off = col - (Math.min(AR_COL, AR_N - row * AR_COL) - 1) / 2;
+      dx.push(Math.abs(m.x - off * AR_GAP)); dz.push(Math.abs(m.z - (42 + row * AR_ROWGAP)));
+      da.push(Math.abs(Math.atan2(Math.sin(m.a - a0), Math.cos(m.a - a0))));
+    });
+    cleanTools();
+    const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
+    return { jit: AR_JIT, face: AR_FACE, n: M.length,
+             dMax: +Math.max(...dx, ...dz).toFixed(4), dAvg: +avg(dx.concat(dz)).toFixed(3),
+             aMax: +Math.max(...da).toFixed(4), aAvg: +avg(da).toFixed(4) };
+  });
+  ok('站位與朝向各抖一點：每軸不超過 AR_JIT、朝向不超過 AR_FACE，而且真的有抖開',
+     arJit.dMax <= arJit.jit + 1e-9 && arJit.dAvg > arJit.jit / 4 &&
+     arJit.aMax <= arJit.face + 1e-9 && arJit.aAvg > arJit.face / 4,
+     arJit.n + ' 人離自己那一格最多 ' + arJit.dMax + '、平均 ' + arJit.dAvg + '（AR_JIT ±' + arJit.jit +
+     '）；朝向偏最多 ' + arJit.aMax + '、平均 ' + arJit.aAvg + ' 弧度（AR_FACE ±' + arJit.face.toFixed(4) + '）');
 
   /* 一整趟：射滿 AR_VOL 輪、每一支出手的角度、弧高、有沒有爆／燒／震、收不收乾淨。
      24 秒的窗夠長：最後一支離手最晚在第 8.6 秒（AR_LIFT ＋ AR_DRAW ＋ 4×AR_CYCLE ＋ 錯開，v1.232 錯開 0.65），
@@ -17782,25 +17813,60 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       one, aim2: !!aim, n: M.length, N: MK_N, col: MK_COL,
       byRow: [0, 1, 2].map(r => M.filter(m => m.row === r).length),
       wide: +(Math.max(...xs) - Math.min(...xs)).toFixed(2),
-      arWide: +((AR_COL - 1) * AR_GAP).toFixed(2),
+      arWide: +((AR_COL - 1) * AR_GAP).toFixed(2), spot: MK_SPOT,
       inSolid: M.filter(m => footBlocked(m.x, m.z) || homeFoot(m.x, m.z)).length,
       wcount: ENG.three.workerMesh.count, want: (workers.length + M.length) * ENG.WPARTS,
       inWorkers: workers.filter(w => w.gun).length,
-      gear: M.filter(m => m.gun && m.kasa).length
+      gear: M.filter(m => m.gun).length
     };
   });
-  /* 正面寬拿箭雨的常數算期望值（使用者：「一排的寬度大概同箭雨就好」），不寫死 33。 */
+  /* 正面寬拿箭雨的常數算期望值（使用者：「一排的寬度大概同箭雨就好」），不寫死 33。
+     v1.252 起每一格抖 MK_SPOT，兩端各多抖一份（同箭雨那條的寫法）。 */
   ok('點兩下：第一下只在地上畫瞄準環，第二下才站出一隊火槍兵（3 排、一排寬同箭雨）',
      mkCast.one.aim && !mkCast.one.men && !mkCast.aim2 && mkCast.n === mkCast.N &&
      mkCast.byRow.every(c => c === mkCast.col) &&
-     Math.abs(mkCast.wide - mkCast.arWide) < 0.6 && mkCast.inSolid === 0,
+     Math.abs(mkCast.wide - mkCast.arWide) < 2 * mkCast.spot + 0.6 && mkCast.inSolid === 0,
      '第一下：光環在、人 ' + mkCast.one.men + '；第二下：' + mkCast.n + ' 人（' +
      mkCast.byRow.join('／') + '）、正面寬 ' + mkCast.wide + '（箭雨 ' + mkCast.arWide +
      '）、踩在固體裡 ' + mkCast.inSolid + ' 人');
-  ok('火槍兵接在小人後面用同一顆網格畫、不混進 workers，全隊戴陣笠拿火繩槍',
+  ok('火槍兵接在小人後面用同一顆網格畫、不混進 workers，全隊拿火繩槍',
      mkCast.wcount === mkCast.want && mkCast.inWorkers === 0 && mkCast.gear === mkCast.N,
      'workerMesh.count ' + mkCast.wcount + ' ＝ (小人 ＋ 火槍兵) × 每人部位數 ＝ ' + mkCast.want +
-     '；workers 裡拿槍的 ' + mkCast.inWorkers + ' 個；陣笠 ＋ 槍 ' + mkCast.gear + ' 人');
+     '；workers 裡拿槍的 ' + mkCast.inWorkers + ' 個；拿槍 ' + mkCast.gear + ' 人');
+  /* v1.252（使用者：「火槍兵&箭雨 小人排隊有點過於整齊」）：格子每軸抖 ±MK_SPOT、每個人沒在瞄時朝向偏
+     ±MK_FACE、每一輪換位晚 0～MK_LAG 秒起步。同箭雨那一條：arSpot 暫時換成原地不動，只驗規則本身；
+     「真的有抖開」看平均過上限的四分之一（均勻分布的期望是一半，60 格／60 人／540 個 lag 都離門檻六個標準差以上）。 */
+  const mkJitChk = await page.evaluate(() => {
+    cleanTools();
+    const os = arSpot;
+    arSpot = (x, z) => ({ x, z });
+    try { castMusket({ x: 0, z: 42 }, { x: 0, z: 0 }, -1); }
+    finally { arSpot = os; }
+    const d = [], fa = [], lag = [];
+    musket.slot.forEach((row, r) => row.forEach((p, c) => {
+      d.push(Math.abs(p.x - (c - (MK_COL - 1) / 2) * MK_GAP), Math.abs(p.z - (42 + r * MK_ROW)));
+    }));
+    let redraw = 0;
+    for (const m of musket.men) {
+      fa.push(Math.abs(m.fa)); lag.push(...m.lag);
+      if (m.lag.length === MK_VOL && Math.max(...m.lag) > Math.min(...m.lag)) redraw++;
+    }
+    cleanTools();
+    const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
+    return { spot: MK_SPOT, face: MK_FACE, lagMax: MK_LAG, n: MK_N, redraw,
+             dMax: +Math.max(...d).toFixed(4), dAvg: +avg(d).toFixed(3),
+             fMax: +Math.max(...fa).toFixed(4), fAvg: +avg(fa).toFixed(4),
+             lLo: Math.min(...lag), lHi: +Math.max(...lag).toFixed(4), lAvg: +avg(lag).toFixed(4) };
+  });
+  ok('隊形抖一點：格子每軸不超過 MK_SPOT、朝向不超過 MK_FACE、換位晚 0～MK_LAG 秒（每一輪重抽），而且真的有抖開',
+     mkJitChk.dMax <= mkJitChk.spot + 1e-9 && mkJitChk.dAvg > mkJitChk.spot / 4 &&
+     mkJitChk.fMax <= mkJitChk.face + 1e-9 && mkJitChk.fAvg > mkJitChk.face / 4 &&
+     mkJitChk.lLo >= 0 && mkJitChk.lHi <= mkJitChk.lagMax + 1e-9 && mkJitChk.lAvg > mkJitChk.lagMax / 4 &&
+     mkJitChk.redraw === mkJitChk.n,
+     '格子離原位最多 ' + mkJitChk.dMax + '、平均 ' + mkJitChk.dAvg + '（MK_SPOT ±' + mkJitChk.spot + '）；朝向偏最多 ' +
+     mkJitChk.fMax + '、平均 ' + mkJitChk.fAvg + ' 弧度（MK_FACE ±' + mkJitChk.face.toFixed(4) + '）；lag ' +
+     mkJitChk.lLo.toFixed(4) + '～' + mkJitChk.lHi + '、平均 ' + mkJitChk.lAvg + '（MK_LAG ' + mkJitChk.lagMax +
+     '）；九輪 lag 不全一樣的 ' + mkJitChk.redraw + '／' + mkJitChk.n + ' 人');
 
   /* 一整趟：九輪、每一輪是哪一排開、開的人是不是站在最前面、每人幾發、間隔、
      水平、煙、不爆不震、收不收乾淨。30 秒的窗：v1.232 起一輪 MK_P 2.26 秒，最後一輪在第 19.0 秒開始，
@@ -17832,6 +17898,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     ENG.cam.shake = 0;
     let shake = 0, flashMax = 0, kMax = 0, kLast = 0, quit = -1, gone = -1;
     const load = {}, walk = {}, turn = {};
+    /* v1.252：換位那一段每個人晚 lag[n] 秒起步、沒在瞄時朝 a0 ＋ fa。記每個人每一輪第一次邁步的時刻
+       （這一輪開始之後幾秒）減掉時間表上的起步點（前排 MK_TL.lower、後排 MK_TL.pack）再減 lag[n]——
+       照規則走的話落在一幀之內；裝填站著的那幾幀量朝向離 a0 ＋ fa 多遠。 */
+    const go = {}, t0 = MK_LIFT + MK_RAISE;
+    let goLo = Infinity, goHi = -Infinity, goN = 0, faceErr = 0, faceN = 0;
     for (let i = 0; i < 60 * 30; i++) {
       step(1 / 60); T += 1 / 60;
       if (ENG.cam.shake > shake) shake = ENG.cam.shake;
@@ -17840,8 +17911,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         const id = m.row + ':' + m.col, k = m.scale / m.base;
         if (k > kMax) kMax = k;
         kLast = k;
-        if (m.gp === 'load' && !m.gq) load[id] = (load[id] || 0) + 1 / 60;
-        if (m.gait) walk[id] = 1;
+        if (m.gp === 'load' && !m.gq) {
+          load[id] = (load[id] || 0) + 1 / 60;
+          faceErr = Math.max(faceErr, Math.abs(Math.atan2(Math.sin(m.a - a0 - m.fa), Math.cos(m.a - a0 - m.fa)))); faceN++;
+        }
+        if (m.gait) {
+          walk[id] = 1;
+          const n = Math.floor((musket.t - t0) / MK_P), tau = musket.t - t0 - n * MK_P;
+          if (n >= 0 && n < MK_VOL && !go[id + ':' + n]) {
+            go[id + ':' + n] = 1;
+            const s0 = ((m.row - n) % MK_ROWS + MK_ROWS) % MK_ROWS;
+            const e = tau - (s0 === 0 ? MK_TL.lower : MK_TL.pack) - m.lag[n];
+            goLo = Math.min(goLo, e); goHi = Math.max(goHi, e); goN++;
+          }
+        }
         const d = Math.abs(Math.atan2(Math.sin(m.a - a0), Math.cos(m.a - a0)));
         if (d > (turn[id] || 0)) turn[id] = d;
       }
@@ -17877,7 +17960,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       smokeN, smokeMin, smokeWant: MK_SMOKE + 1,
       loadMen: ld.length, loadMin: ld.length ? +Math.min(...ld).toFixed(2) : 0,
       walkMen: Object.keys(walk).length,
-      turnMin: +Math.min(...Object.values(turn)).toFixed(2),
+      turnMin: +Math.min(...Object.values(turn)).toFixed(2), face: MK_FACE,
+      goLo: +goLo.toFixed(5), goHi: +goHi.toFixed(5), goN, goWant: MK_N * MK_VOL,
+      faceErr: +faceErr.toExponential(1), faceN,
       shake: +shake.toFixed(3), flashMax, burning: fires ? fires.length : 0, nSpread,
       smashed: stats.smashed - s0,
       kMax: +kMax.toFixed(3), kLast: +kLast.toFixed(3), quit, gone,
@@ -17896,10 +17981,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mkRun.shots === mkRun.want && mkRun.perMan === mkRun.N &&
      mkRun.perManMin === mkRun.rnd && mkRun.perManMax === mkRun.rnd &&
      mkRun.loadMen === mkRun.N && mkRun.loadMin > 0.5 &&
-     mkRun.walkMen === mkRun.N && mkRun.turnMin > 3,
+     /* 轉身量的是離隊伍方向多遠：v1.252 起每個人站的方向本來就偏 MK_FACE，轉過去是 π − MK_FACE 起跳 */
+     mkRun.walkMen === mkRun.N && mkRun.turnMin > Math.PI - mkRun.face - 0.05,
      mkRun.shots + ' 發（期望 ' + mkRun.want + '）、' + mkRun.perMan + ' 人每人 ' +
      mkRun.perManMin + '～' + mkRun.perManMax + ' 發；' + mkRun.loadMen + ' 人裝填過（最少 ' +
      mkRun.loadMin + ' 秒）、' + mkRun.walkMen + ' 人走過、轉身最少 ' + mkRun.turnMin + ' 弧度');
+  /* v1.252（使用者：「火槍兵&箭雨 小人排隊有點過於整齊」）：換位那一段每個人照自己這一輪的 lag[n] 晚起步
+     （差距落在一幀之內：mkWalk 要走出第一步才算在走），沒在瞄、站著裝填時朝 a0 ＋ fa。lag／fa 抽多大另一條守。 */
+  ok('三段擊換位：每個人每一輪照自己的 lag 晚起步，站著裝填時朝隊伍方向 ＋ 自己的偏角',
+     mkRun.goN === mkRun.goWant && mkRun.goLo > -1e-6 && mkRun.goHi <= 1 / 60 + 1e-6 &&
+     mkRun.faceN > 0 && mkRun.faceErr < 1e-9,
+     mkRun.goN + ' 次起步（期望 ' + mkRun.goWant + '）比時間表 ＋ lag 晚 ' + mkRun.goLo + '～' + mkRun.goHi +
+     ' 秒（一幀 ' + (1 / 60).toFixed(5) + '）；裝填 ' + mkRun.faceN + ' 幀朝向離 a0 ＋ fa 最多 ' + mkRun.faceErr);
   /* v1.232（使用者：「目前一起發射太過整齊 小人射擊要有小小時間差」「火槍射擊應該是往點擊第二點方向發射
      而不是瞄準第二點(射擊方向與隊伍垂直)」）。兩條都是**上下限**，不賭骰子：
      ① 每一發都落在這一輪開始之後 0～MK_SPREAD（多一幀）之內，而且真的散開（最晚那一發超過八成：
@@ -17931,17 +18024,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 造型與出手點：擺一個構え的火槍兵直接畫（不跑模擬），量畫出來那一截槍管——
      ① 朝上的角度＝仰角、朝向＝他面向的方向 ② 槍管前緣的中心＝ENG.gunMuzzle（子彈的起點）
-     ③ 槍、陣笠只有火槍兵身上有，他身上的安全帽縮成 0；槊杖只在裝填時才畫。 */
+     ③ 槍只有火槍兵身上有，他戴一般小人的安全帽（v1.252 起；v1.227～v1.251 戴陣笠、安全帽縮成 0）；
+        槊杖只在裝填時才畫。 */
   const mkPose = await page.evaluate(() => {
     draw();
     const W = ENG.WPARTS, parts = ENG.MODELS.man, A = ENG.three.workerMesh.instanceMatrix.array;
     const idx = f => parts.map((b, i) => f(b) ? i : -1).filter(i => i >= 0);
-    const gunK = idx(b => b.gun && !b.rod), kasaK = idx(b => b.kasa), hatK = idx(b => b.hard && b.c === 'hat');
+    const gunK = idx(b => b.gun && !b.rod), hatK = idx(b => b.hard && b.c === 'hat');
     const barrel = parts.findIndex(b => b.c === 'iron'), rod = parts.findIndex(b => b.rod);
     const sc = (inst, k) => { const at = (inst * W + k) * 16; return Math.hypot(A[at], A[at + 1], A[at + 2]); };
     const q = { x: 0, y: 0, z: 0 }, rows = [];
     const man = el => ({ x: 3, y: 0, z: -2, a: 0.7, ph: 0, gait: 0, tone: 0, scale: 1.7,
-                         gun: 1, kasa: 1, gp: 'aim', gq: null, gk: 0, rec: 0, rod: 0, el });
+                         gun: 1, gp: 'aim', gq: null, gk: 0, rec: 0, rod: 0, el });
     for (const deg of [0, 15, 30]) {
       const m = man(deg * Math.PI / 180);
       ENG.putWorker(1, m);
@@ -17952,27 +18046,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                   off: Math.hypot(A[at + 12] + ax[0] / 2 - q.x, A[at + 13] + ax[1] / 2 - q.y,
                                   A[at + 14] + ax[2] / 2 - q.z) });
     }
-    const worker = Math.max(...gunK.concat(kasaK).map(k => sc(0, k)));
-    const gunMin = Math.min(...gunK.map(k => sc(1, k))), kasaMin = Math.min(...kasaK.map(k => sc(1, k)));
-    const hatMax = Math.max(...hatK.map(k => sc(1, k))), rodAim = sc(1, rod);
+    const worker = Math.max(...gunK.map(k => sc(0, k)));
+    const gunMin = Math.min(...gunK.map(k => sc(1, k)));
+    const hatMin = Math.min(...hatK.map(k => sc(1, k))), rodAim = sc(1, rod);
     const lm = man(0); lm.gp = 'load'; lm.rod = 0.5;
     ENG.putWorker(1, lm);
     const rodLoad = sc(1, rod);
     draw();                                          // 動過的那一格還回去
-    return { rows, worker: +worker.toFixed(6), gunMin: +gunMin.toFixed(3), kasaMin: +kasaMin.toFixed(3),
-             hatMax: +hatMax.toFixed(6), rodAim: +rodAim.toFixed(6), rodLoad: +rodLoad.toFixed(3),
-             nGun: gunK.length + 1, nKasa: kasaK.length, last: !!parts[parts.length - 1].orb };
+    return { rows, worker: +worker.toFixed(6), gunMin: +gunMin.toFixed(3),
+             hatMin: +hatMin.toFixed(3), nHat: hatK.length, rodAim: +rodAim.toFixed(6), rodLoad: +rodLoad.toFixed(3),
+             nGun: gunK.length + 1, last: !!parts[parts.length - 1].orb };
   });
   ok('畫出來的槍管：朝上的角度就是仰角、槍口前緣就是子彈的起點',
      mkPose.rows.every(r => Math.abs(r.got - r.deg) < 0.01 && Math.abs(r.yaw - 0.7) < 1e-4 && r.off < 1e-4),
      mkPose.rows.map(r => '仰角 ' + r.deg + '° → 畫出來 ' + r.got + '°、朝向 ' + r.yaw +
                           '、槍口差 ' + r.off.toExponential(1)).join('　·　'));
-  ok('火繩槍與陣笠只有火槍兵身上有（別人縮成 0），他不戴安全帽；槊杖只在裝填時才畫',
-     mkPose.nGun === 7 && mkPose.nKasa === 4 && mkPose.worker < 1e-6 && mkPose.gunMin > 0.01 &&
-     mkPose.kasaMin > 0.01 && mkPose.hatMax < 1e-6 && mkPose.rodAim < 1e-6 &&
+  ok('火繩槍只有火槍兵身上有（別人縮成 0），他戴一般小人的安全帽；槊杖只在裝填時才畫',
+     mkPose.nGun === 7 && mkPose.worker < 1e-6 && mkPose.gunMin > 0.01 &&
+     mkPose.nHat > 0 && mkPose.hatMin > 0.01 && mkPose.rodAim < 1e-6 &&
      mkPose.rodLoad > 0.01 && mkPose.last,
-     '槍 ' + mkPose.nGun + ' 塊、陣笠 ' + mkPose.nKasa + ' 塊：一般小人身上最大 ' + mkPose.worker +
-     '、火槍兵身上最小 ' + mkPose.gunMin + '／' + mkPose.kasaMin + '；他的安全帽 ' + mkPose.hatMax +
+     '槍 ' + mkPose.nGun + ' 塊：一般小人身上最大 ' + mkPose.worker +
+     '、火槍兵身上最小 ' + mkPose.gunMin + '；他的安全帽 ' + mkPose.nHat + ' 塊最小 ' + mkPose.hatMin +
      '；槊杖 構え ' + mkPose.rodAim + ' → 裝填 ' + mkPose.rodLoad);
 
   /* 仰角照第二下點的高度自動抬、上限 30°（使用者第三輪）。散布押成 0（v1.232 起散布是 MK_JIT 的

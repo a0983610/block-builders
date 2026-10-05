@@ -1315,7 +1315,7 @@ function navDims() {
     }
     return { len: z1 - z0, h: y1 - y0 };
   };
-  navDim = { man: scan(M.man, b => b.plan || b.bub || b.dig || b.bow || b.gun || b.kasa || b.wiz || b.mus) };
+  navDim = { man: scan(M.man, b => b.plan || b.bub || b.dig || b.bow || b.gun || b.wiz || b.mus) };
   for (const k in M) if (ENG.BEASTS[k] || k === 'saber' || k === 'levi') navDim[k] = scan(M[k]);
   /* 惠惠（v1.247.0）：法杖那幾塊是法杖自己的座標（握點在原點），不算；帽子算（戴在頭上那一圈帽簷就是最寬的） */
   navDim.megumin = scan(M.megumin, b => b.g === ENG.MEG_G.staff);
