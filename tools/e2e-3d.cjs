@@ -26198,6 +26198,66 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gint.b.st === 'mwalk' && gint.b.bad === 1 && gint.b.gone && !gint.b.inList,
      gint.b.st + '、bad ' + gint.b.bad + '、陣散掉 ' + gint.b.gone + '、還在清單上 ' + gint.b.inList);
 
+  /* ── 詠唱被打斷時，魔法陣清單不會在 stepMagic 那一圈裡被改掉（v1.247.1 補）──
+     上面那兩條是在 stepMagic **外面**打斷她；探針第一版出事的是**裡面**：stepMagic 倒著跑那一圈、某一發炸開
+     震倒詠唱中的她 → reaim／calmMascot → megCancel 當場 splice，迴圈接著拿 magics 就讀到 null 報錯。兩個場面：
+       A 她自己那一發炸開震到她（g.by 拿掉＝沒有 self 的那一版）——第一版就是這樣報錯的
+       B 玩家另一發爆裂魔法在她旁邊炸開（她那一陣排在清單前面）
+     每一種都用第一版的 megCancel（當場 splice）再跑一次當對照：對照組要真的出事，這一條才有在守東西
+     （A 報錯；B 不報錯，但同一發被 stepOneMagic 跑兩次＝炸兩次）。炸點放在地標外面很遠，不動到地標 */
+  const gloop = await page.evaluate(() => {
+    const otoast = toast, oexp = explode, ocancel = megCancel;
+    const first = m => {                           // 第一版的 megCancel：當場從清單拿掉
+      const g = m.mg;
+      m.mg = null; m.mt = 0;
+      if (!g || !magics) return;
+      const i = magics.indexOf(g);
+      if (i < 0) return;
+      magics.splice(i, 1);
+      if (!magics.length) magics = null;
+      for (let j = 0; j < g.shown; j++) starsOn(g, j, 6);
+    };
+    const run = (scene, useFirst) => {
+      cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+      toast = () => {};
+      let booms = 0, err = '';
+      explode = function () { booms++; return oexp.apply(this, arguments); };
+      if (useFirst) megCancel = first;
+      const P = { x: 0, z: -(siteR + 110) };
+      const m = spawnBeast('megumin', 1, 0);
+      m.st = 'mcast'; m.mp = P; m.mt = 3; m.bad = 1; m.hcd = 0;
+      try {
+        if (scene === 'A') {
+          m.x = P.x; m.z = P.z + 30;                  // 站在自己那一發的火球裡
+          castMagic(P, m);
+          m.mg = magics[magics.length - 1];
+          m.mg.by = null; m.mg.t = 1e-6;
+        } else {
+          m.x = P.x; m.z = P.z + MEG_SAFE;
+          castMagic(P, m);
+          m.mg = magics[magics.length - 1];
+          castMagic({ x: m.x + 20, z: m.z });         // 玩家的道具（沒有 by），這一幀就炸
+          magics[magics.length - 1].t = 1e-6;
+        }
+        stepMagic(0.05);
+      } catch (e) { err = String(e && e.message || e); }
+      const r = { err, booms, left: magics ? magics.length : 0, hit: !!(m.air || m.fall > 0) };
+      explode = oexp; megCancel = ocancel; toast = otoast;
+      cleanTools();
+      return r;
+    };
+    return { A: run('A', 0), B: run('B', 0), A0: run('A', 1), B0: run('B', 1) };
+  });
+  ok('詠唱中在 stepMagic 那一圈裡被震倒（自己那一發、旁邊另一發都試）：不報錯、那一發只炸一次、清單收乾淨',
+     !gloop.A.err && gloop.A.booms === 1 && gloop.A.left === 0 && gloop.A.hit &&
+     !gloop.B.err && gloop.B.booms === 1 && gloop.B.left === 0 && gloop.B.hit,
+     'A 自己那一發：報錯「' + (gloop.A.err || '無') + '」、炸 ' + gloop.A.booms + ' 次、清單剩 ' + gloop.A.left +
+     '、她被震到 ' + gloop.A.hit + '；B 旁邊另一發：報錯「' + (gloop.B.err || '無') + '」、炸 ' + gloop.B.booms +
+     ' 次、清單剩 ' + gloop.B.left + '、她被震到 ' + gloop.B.hit);
+  ok('對照組：換回第一版的 megCancel（當場 splice）同一個場面就出事（所以上面那一條有在守東西）',
+     !!gloop.A0.err && gloop.B0.booms > 1,
+     'A 報錯「' + (gloop.A0.err || '無') + '」；B 同一發炸了 ' + gloop.B0.booms + ' 次');
+
   /* ── 躺著暈：什麼都打不到、不改主意；暈滿 MEG_STUN 秒才爬起來，爬完回去逛；
      十字星光只在詠唱時冒（使用者：「施放完倒地 不要星光(只有施法集氣時有)」）——
      詠唱那一段只推她自己（stepBeast），不推 stepMagic：道具那一疊陣長層時也會撒星光，推了就分不出是誰撒的 ── */
