@@ -30803,10 +30803,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
       const entry = { n: gs.length, fun: m.fun, st: m.st, da: Math.abs(da), sd: c.sd, reach: GJ_REACH, ay: c.ay, py };
       const seen = [];
-      let n = 0, act = null, below = 0, soft = 0, fired = 0, p = null, off = 0, dmax = 0, miss = null;
+      let n = 0, act = null, below = 0, soft = 0, fired = 0, p = null, off = 0, dmax = 0, miss = null, end = null;
       while (n < 8000 && beasts && beasts.indexOf(m) >= 0) {
         step(0.02); n++;
         if (seen[seen.length - 1] !== m.st) seen.push(m.st);
+        /* 收完那一刻的樣子：球還要再飛幾秒，等它收掉才停的話 stay 已經倒數掉一截（v1.255.1 量到 25～45 抽到偏低的那一次掉到 23.2） */
+        if (!end && m.st === 'fun' && seen.indexOf('pur') >= 0) end = { call: m.call, y: m.y, stay: m.stay };
         if (!act && m.st === 'act') act = Math.hypot(m.x - px, m.z - pz);
         if ((m.y || 0) < -1e-9) below++;
         if (!levBusy(m)) soft++;
@@ -30824,7 +30826,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const hl = p ? Math.hypot(p.ux, p.uz) : 1;
       const mkOff = p ? Math.max(0, ...mk.map(q => Math.abs((q.x - p.ox) * p.uz - (q.z - p.oz) * p.ux) / hl)) : -1;
       return { entry, seen: seen.join('→'), act, below, soft, fired, off, dmax, range: PURP_RANGE, miss, cut: P.st !== SET,
-               hit: p ? p.hit : 0, end: { call: m.call, y: m.y, stay: m.stay }, lo: MASC_STAY[0],
+               hit: p ? p.hit : 0, end: end || {}, lo: MASC_STAY[0],
                mk: { n: mk.length, off: mkOff, y: Math.max(0, ...mk.map(q => Math.abs(q.y))), cr: mk.every(q => q.cr),
                      high: mk.filter(q => q.py >= PURP_R).length },
                zap: { n: zd.length, min: zd.length ? Math.min(...zd) : null, lift: PURP_LIFT } };
@@ -30852,6 +30854,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const gzOk = grun.zap.n > 0 && grun.zap.min >= grun.zap.lift;
   ok('藍電離手 PURP_LIFT 格才開始劈（剛出手那一段劈的電會穿過他身上）',
      gzOk, gzOk ? '劈了，都在離手 PURP_LIFT 格之後' : JSON.stringify(grun.zap));
+
+  /* ── 往上斜著飛：球心高過吸的半徑（碰不到地）就不劈藍電、不留痕跡（v1.255.1，使用者：「往高處飛 太高還是有閃電
+        一點高度後就不需要球的閃電」）。直接推 stepPurps：一顆從 PURP_Y0 往場外斜斜往上飛的球 ── */
+  const ghigh = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const X = siteR + 20, L = Math.hypot(1, 0.1);
+    const p = { ox: X, oy: PURP_Y0, oz: 0, ux: 1 / L, uy: 0.1 / L, uz: 0, x: X, y: PURP_Y0, z: 0, d: 0, t: 0, st: 'fly', bt: 0,
+                mk: 0, zt: 0, r: PURP_VIS, r0: PURP_VIS, by: null, up: [], hit: 0 };
+    purps = [p];
+    const realZap = purpZap, realPM = purpMark, realMark = spawnMark, zy = [], my = [];
+    let cur = null, maxY = 0;
+    purpZap = function (q) { zy.push(q.y); return realZap(q); };
+    purpMark = function (q) { cur = q; try { return realPM(q); } finally { cur = null; } };
+    spawnMark = function () { if (cur) my.push(cur.y); return realMark.apply(this, arguments); };
+    try {
+      for (let n = 0; purps && n < 2000; n++) { stepPurps(0.02); if (p.st === 'fly') maxY = Math.max(maxY, p.y); }
+    } finally { purpZap = realZap; purpMark = realPM; spawnMark = realMark; purpClear(); }
+    return { zapN: zy.length, zapMax: zy.length ? Math.max(...zy) : null, mkN: my.length, mkMax: my.length ? Math.max(...my) : null,
+             maxY, R: PURP_R };
+  });
+  const ghOk = ghigh.zapN > 0 && ghigh.zapMax < ghigh.R && ghigh.mkN > 0 && ghigh.mkMax < ghigh.R && ghigh.maxY > ghigh.R + 3;
+  ok('往上斜著飛：球心高過吸的半徑（碰不到地）就不劈藍電、不留痕跡，低的那一段照樣有',
+     ghOk, ghOk ? '低的那一段有、高過 PURP_R 之後沒有' : JSON.stringify(ghigh));
 
   /* ── 點生物、巨人、小人：追著牠瞄，放出去那一刻照牠當時的位置**平射**（使用者：「射巨人可以往前射就好」）；
         小獼猴與小人吸進去、甩出來；巨人抹消；小人不算手指戳倒的成就 ── */

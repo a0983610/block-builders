@@ -10588,8 +10588,9 @@ function stepPurps(dt) {
     purpTake(p, _pa, _pb);
     purpMove(p, dt);
     purpMark(p);
-    // 離手 PURP_LIFT 格才開始劈：剛出手那一段劈的電會從他手邊穿過他身上
-    if (p.d >= PURP_LIFT) for (p.zt -= dt; p.zt <= 0; p.zt += rr(PURP_ZAP_GAP[0], PURP_ZAP_GAP[1])) purpZap(p);
+    /* 離手 PURP_LIFT 格才開始劈：剛出手那一段劈的電會從他手邊穿過他身上。
+       球心高過吸的半徑（碰不到地，同 purpMark）就不劈（v1.255.1，使用者：「往高處飛 太高還是有閃電 一點高度後就不需要球的閃電」） */
+    if (p.d >= PURP_LIFT && p.y < PURP_R) for (p.zt -= dt; p.zt <= 0; p.zt += rr(PURP_ZAP_GAP[0], PURP_ZAP_GAP[1])) purpZap(p);
     if (p.d >= PURP_RANGE) purpBurst(p);
   }
   if (purps && !purps.length) purps = null;
@@ -10604,7 +10605,7 @@ function purpMark(p) {
 /* 球劈到地上的藍色閃電：打雷那一套（boltPts 折線丟進 bolts，引擎的 putBolts 畫成淺藍；純特效，不打東西）。
    使用者看過第二版：「球的閃電不對 先拿掉 是像打雷的那種藍色電到地面上(但是不要全都從球心出發)」——
    第二版是紫白的、沿著飛過的那一路往四周竄（善逸雷光那一套），那一套搬去他丟出去之前的身上（引擎的 gjAura）。
-   飛的那幾秒每 PURP_ZAP_GAP 秒劈一道：起點 PURP_ZAP_CORE 成在球心，其餘散在球心周圍 PURP_ZAP_FROM 格內（不低於離地 1.5 格）；
+   飛的那幾秒（離手 PURP_LIFT 格之後、球心低於吸的半徑的那一段，見 stepPurps）每 PURP_ZAP_GAP 秒劈一道：起點 PURP_ZAP_CORE 成在球心，其餘散在球心周圍 PURP_ZAP_FROM 格內（不低於離地 1.5 格）；
    落點是起點往外 PURP_ZAP_OUT 格的地上。一道 9 折、兩條分岔往下劈，一道亮多久比打雷（0.16～0.26 秒）短一點；
    粗細第一版 0.3～0.45（打雷 0.42～0.6），使用者：「球的藍色閃電太粗了」→ 主幹 0.12～0.18、分岔 0.06～0.1 */
 const PURP_ZAP_GAP = [0.06, 0.14];
@@ -10630,7 +10631,7 @@ function purpZap(p) {
 }
 const purpList = () => purps || EMPTY_PURPS;
 const EMPTY_PURPS = [];
-/* 一次收乾淨（清場用，同 holeClear）：手上的全部放掉 */
+/* 一次收乾淨，手上的全部放掉：測試的 cleanTools 清場用，遊戲裡沒有人叫（同 holeClear／ufoClear） */
 function purpClear() { while (purps && purps.length) purpBurst(purps[0], true); purps = null; }
 
 /* 天災的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）。 */
