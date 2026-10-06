@@ -4621,11 +4621,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 3000; setWorkerCount(20); startBuild(true);
     /* 圈上的位置是照「完工那一刻各自站的角度」分的，所以要在 completeNow() 之前
-       先把人擺回工地旁邊（同上一段 crowd 的理由），不然量到的是「走回來多久」。 */
-    for (const w of workers) {
-      const a = Math.random() * Math.PI * 2, d = siteR + rr(3, 9);
+       先把人擺回工地旁邊（同上一段 crowd 的理由），不然量到的是「走回來多久」。
+       **等分一圈擺、不抽角度**（v1.257.0）：只有走到自己那一格的人才舉手（ringWalk 到位才
+       hail），隨機擺的話有幾個人三秒內還在沿著圈走，「嚇跑前 >15 人在跳」這個前提就在賭骰子——
+       乾淨頁面上同一段跑 60 次有 2 次只有 15 人（沒到位的五個全是 cheerOn、還在走），
+       完整的 --tier commit 也紅過一次（15/20）。等分擺之後 80 次都是 20/20。
+       不能改成「多等幾秒」：逃命 3.4 秒、窗口 8.6 秒，等太久人跑回來時窗口已經關了，
+       這一條就驗不到「窗口還開著也不會再跳」。見 開發筆記〈舊版 21 座重畫、偏白的 5 座調色〉。 */
+    workers.forEach((w, i) => {
+      const a = i / workers.length * Math.PI * 2, d = siteR + 3;
       w.x = Math.cos(a) * d; w.z = Math.sin(a) * d;
-    }
+    });
     completeNow();
     for (let i = 0; i < 60; i++) step(0.05);           // 慶祝三秒：圈站起來了，正在跳
     const jumping = workers.filter(w => w.hail).length;
