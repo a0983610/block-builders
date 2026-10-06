@@ -7216,8 +7216,10 @@ const ENG = (function () {
        noto    刀尖對進鞘口（左手把鞘口往前拉）
        sheath  刀滑進鞘裡，收完回去逛
        trail   光痕**從尾巴開始淡**：衝完停 trailHold 秒，之後 trail 秒內尾巴沿著路線縮到終點（見 zenTrailK）。
-               兩個加起來要比衝完到收完刀（slash ＋ noto ＋ sheath）短：收完刀就不畫了，沒淡完的會一下子不見 */
-  const ZEN = { iai: 1.2, ease: 0.3, stroke: 0.08, slash: 0.9, noto: 0.5, sheath: 0.55, trail: 1.3, trailHold: 0.25 };
+               兩個加起來要比衝完到收完刀（slash ＋ noto ＋ sheath）短：收完刀就不畫了，沒淡完的會一下子不見。
+               v1.255.2 停 0.25＋縮 1.3 → 停 0.05＋縮 0.4（使用者：「光痕消失速度稍微加快 讓他看起來像是因為速度太快的殘影」，
+               預覽四檔挑了最快那一檔），見 開發筆記〈光痕淡得更快，像殘影（v1.255.2）〉 */
+  const ZEN = { iai: 1.2, ease: 0.3, stroke: 0.08, slash: 0.9, noto: 0.5, sheath: 0.55, trail: 0.4, trailHold: 0.05 };
   /* ── 他的姿勢（同造型預覽）──
      手是「伸向某一點」擺的（身體座標）：搆不到先把袖子拉長（最多 ZEN_EXT），還不夠才整支挪。
      握刀、扶鞘的那幾格手要去的點照那一格自己的刀與鞘算好（'grip' 右手握在鍔下 ZEN_GRIP、'grip2' 雙手握時左手、

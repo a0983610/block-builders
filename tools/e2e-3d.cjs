@@ -30563,13 +30563,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     m.op = 'dash'; m.ot = 0.3; m.zt = 1.5; m.zs = 60 * 0.3 / 0.64;
     ENG.putZens([m]);
     const dash = vis();
-    m.op = 'slash'; m.ot = 0.06; m.zs = 60; m.zt = 1.2 + 0.7;      // 衝完 0.06 秒：整條都在
+    /* 這幾個時刻都照 trailHold／trail 算（v1.255.2 縮短之前寫死成衝完 0.06、開始衝之後 1.0／1.9 秒，
+       縮短之後 1.9 秒那時整條早就淡完了，見〈不要寫死會隨改動變動的數字〉） */
+    const tFresh = 0.64 + Z.trailHold * 0.5, tLate = 0.64 + Z.trailHold + Z.trail * 0.5;
+    m.op = 'slash'; m.ot = tFresh - 0.64; m.zs = 60; m.zt = 1.2 + tFresh;   // 衝完、還停著：整條都在
     ENG.putZens([m]);
     const fresh = chunks(X);
-    m.op = 'noto'; m.ot = 0.1; m.zt = 1.2 + 1.0;                    // 開始衝之後 1.0 秒：尾巴才剛開始縮，地上的小閃電冒在整條上
+    m.op = 'noto'; m.ot = 0.1; m.zt = 1.2 + 0.64 + Z.trailHold + Z.trail * 0.1;   // 尾巴才剛開始縮，地上的小閃電冒在整條上
     ENG.putZens([m]);
     const noto = vis(), groundTop = topY();
-    m.zt = 1.2 + 1.9;                                               // 開始衝之後 1.9 秒：尾巴已經縮了一大段
+    m.zt = 1.2 + tLate;                                             // 尾巴已經縮了一半
     ENG.putZens([m]);
     const late = chunks(X);
     m.zt = 1.2 + 0.64 + Z.trailHold + Z.trail + 0.05;               // 尾巴縮到終點了：整條淡完
@@ -30582,7 +30585,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const lo = a => Math.min(...a.map(c => c.a)), hi = a => Math.max(...a.map(c => c.a));
     const wAt = (a, f) => a.reduce((b, c) => f(c, b) ? c : b).w;
     /* 照 trailHold／trail 算尾巴該縮到哪：衝完（0.64 秒）停 trailHold 秒，之後 trail 秒縮完整條 60 格 */
-    const cutA = 60 * Math.min(1, Math.max(0, (1.9 - 0.64 - Z.trailHold) / Z.trail));
+    const cutA = 60 * Math.min(1, Math.max(0, (tLate - 0.64 - Z.trailHold) / Z.trail));
     return { off, stand, iai, dash, noto, done, gone, eyeStand, eyeZen, cnt, parts: ENG.ZEN_PARTS, rnd,
              fresh: { n: fresh.length, lo: fresh.length ? lo(fresh) : 99, hi: fresh.length ? hi(fresh) : -1 },
              late: { n: late.length, lo: late.length ? lo(late) : 99, hi: late.length ? hi(late) : -1,
