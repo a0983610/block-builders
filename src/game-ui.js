@@ -115,6 +115,7 @@ function step(dt) {
   stepSwords(dt);
   stepUfo(dt);                           // 幽浮（v1.167）：飛進來、照光吸、飛走、五秒後丟下來
   stepHoles(dt);                         // 小黑洞（v1.221）：抖、慢慢吸、一口吞掉、五秒後撒回來
+  stepPurps(dt);                         // 虛式「茈」（v1.255.0）：飛出去的紫球沿路吸、飛到射程盡頭甩出去
   /* 箭雨（v1.171）：一隊人與飛在半空的箭是兩份清單——隊伍撤走之後箭還在飛、
      還插在牆上慢慢淡，所以兩邊各走各的（同王之財寶的門與兵器）。 */
   stepArchers(dt);
@@ -250,6 +251,8 @@ function draw() {
   ENG.putLevis(bl);                  // 里維兵長（v1.230）同 Saber：自己一顆 mesh、索引對齊
   ENG.putMegs(bl);                   // 惠惠（v1.247.0）同上
   ENG.putZens(bl);                   // 善逸（v1.251.0）同上，雷光與光痕也在這一支畫
+  ENG.putGojos(bl);                  // 五條悟（v1.255.0）同上，手上的赫／蒼／茈也在這一支畫
+  ENG.putPurps(purpList());          // 飛出去的紫球（自己一份清單：放出去就是自己的東西）
 
   ENG.putTrees(trees);
   ENG.putDust(dustList());
@@ -367,7 +370,9 @@ function onUp(e) {
      不驗的話這一下會落在牆後面那一塊、或牆後面的地上。 */
   /* Excalibur（v1.238，使用者：「類似里維 點建築&生物」）跟兵長砍猴同一檔：建築、生物、小人同一級，射線先碰到誰就是誰 */
   /* 霹靂一閃（v1.251.0，使用者選「點得到，同 Saber／里維」）也是這一檔，生物照他自己那一份認（zenCanCut） */
-  const canCut = tool === 'levi' ? leviCanCut : tool === 'excalibur' ? sabCanCut : tool === 'zenitsu' ? zenCanCut : null;
+  /* 虛式「茈」（v1.255.0）同上，生物照他自己那一份認（gjCanCut） */
+  const canCut = tool === 'levi' ? leviCanCut : tool === 'excalibur' ? sabCanCut : tool === 'zenitsu' ? zenCanCut
+               : tool === 'gojo' ? gjCanCut : null;
   /* 這兩把**碎料是透明的**（v1.239.0，使用者：「它可以點到碎料(不該可以點)」）：點的是要斬的東西，
      地上的碎料、小人手上搬的、飛在半空的都不算，射線照樣往後找生物、建築或地面（碎料堆後面的猴子也點得到）。
      還立著的（SET：地標、房子、城牆）才算建築，同火槍兵 v1.232。v1.238 是 useTool 那邊把碎料改判成地面，
@@ -395,6 +400,8 @@ function onUp(e) {
     if (tool === 'excalibur') { markTool(tool); callSaber(hit.point, w, true); return; }
     // 霹靂一閃（v1.251.0，使用者：「可以點建築&小人」）：叫善逸追著他跑過去，八連其中一筆從他身上穿過去
     if (tool === 'zenitsu') { markTool(tool); callZen(hit.point, w, true); return; }
+    // 虛式「茈」（v1.255.0）：叫五條悟追著他跑到射程一半，放出去那一刻照他當時的位置瞄
+    if (tool === 'gojo') { markTool(tool); callGojo(hit.point, w, true); return; }
     // 拿著火把戳人就是點他：站著被點著的會抱頭跑圈圈
     if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); lifeHit(w, 'torch'); return; }
     // 拿水桶澆人：濕 5 秒（身上有火的當場熄），不會把人打倒
@@ -418,6 +425,8 @@ function onUp(e) {
     if (tool === 'excalibur' && sabCanCut(m)) { markTool(tool); callSaber(hit.point, m); return; }
     // 霹靂一閃（v1.251.0）：點地上的生物＝叫善逸追著牠跑過去，衝出去那一刻照牠當時的位置排路線
     if (tool === 'zenitsu' && zenCanCut(m)) { markTool(tool); callZen(hit.point, m); return; }
+    // 虛式「茈」（v1.255.0）：點地上的生物＝叫五條悟追著牠跑過去，放出去那一刻照牠當時的位置瞄
+    if (tool === 'gojo' && gjCanCut(m)) { markTool(tool); callGojo(hit.point, m); return; }
     /* 拿著火把點牠：站著被點著的會抱頭跑圈圈；飛龍是拖著火飛一段再摔下來
        （v1.154，見 burnDragon）。已經在燒或剛被澆濕的點不著，那就改成打倒／打下來
        （v1.176 起在天上的獅鷲也一樣，改成把牠打下來——見 grDown）。 */

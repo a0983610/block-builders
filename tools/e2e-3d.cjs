@@ -470,6 +470,8 @@ const installClean = page => page.evaluate(() => {
     ENG.putLevis([]);                 // 里維兵長自己那顆 mesh（v1.230），同上
     ENG.putMegs([]);                  // 惠惠自己那顆 mesh（v1.247.0），同上
     ENG.putZens([]);                  // 善逸自己那顆 mesh、雷光、光痕（v1.251.0），同上
+    /* 虛式「茈」（v1.255.0）：飛著的茈手上掛著積木與生物（ufo 旗標），要走 purpClear() 放掉，同 holeClear */
+    purpClear(); ENG.putGojos([]); ENG.putPurps([]);
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
@@ -28201,8 +28203,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
            **Excalibur（v1.224）例外**：Saber 從場邊照天災的步伐走進來，站定、蓄力要二十幾秒，
            所以最多推 60 秒、沾到就停（它斬到那隻猴子的那一刻就是 excLives／afterHit 那一條）。
            **兵長砍猴（v1.230）同理**：里維從場邊跑進來、射鋼索飛過去才開砍（levLives／afterHit 那一條）；
-           **霹靂一閃（v1.251.0）也是**：善逸跑進來、蹲 1.2 秒才衝（zenLives／afterHit 那一條） */
-        const slow = t.id === 'excalibur' || t.id === 'levi' || t.id === 'zenitsu';
+           **霹靂一閃（v1.251.0）也是**：善逸跑進來、蹲 1.2 秒才衝（zenLives／afterHit 那一條）；
+           **虛式「茈」（v1.255.0）也是**：五條悟跑進來、結印 3.65 秒才放出去（purpTake 掀那一下的 tossBeast） */
+        const slow = t.id === 'excalibur' || t.id === 'levi' || t.id === 'zenitsu' || t.id === 'gojo';
         for (let i = 0; i < (slow ? 1200 : 200); i++) { step(0.05); if (slow && seen) break; }
         out.push({ id: t.id, seen });
       }
@@ -30640,6 +30643,375 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈破壞道具：霹靂一閃〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 破壞道具：虛式「茈」（v1.255.0） ══════════
+     使用者：「操作方式同saber等 打出去的紫球 帶著旋轉 積木或生物吸進去轉 不用越來越大顆」，選了直線穿過去、球收掉時甩出去、
+     巨人被抹消其他甩飛；看過預覽之後：「無下限 什麼時候都打不動」「球 改大改遠 走過的地面增加普通痕跡」「射巨人可以往前射就好」
+     「是像打雷的那種藍色電到地面上(但是不要全都從球心出發)」「人物丟出前也有一點特效」「人物好像看起來還是比小人小一圈」→ 等比 ×1.2。
+     全部是規則型：吸的範圍、甩出去、平射、無下限、劈電的起點都直接呼叫那一支或押住骰子驗。見 開發筆記〈破壞道具：虛式「茈」〉 */
+  SEC: { if (!(await head('破壞道具：虛式「茈」', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 他走路是 stepDoom 在推
+  await fillAll(page);
+
+  /* ── 造型與表：自己一顆 mesh；縮放是小人平均的 1.2 倍（使用者選的「等比 ×1.2」）；道具接在霹靂一閃後面、只能用道具叫來 ── */
+  const gfig = await page.evaluate(() => {
+    const M = ENG.GOJO;
+    const m = spawnBeast('gojo', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0; m.a = 0; m.st = 'fun'; m.gait = 0; m.ph = 0; m.run = 0;
+    ENG.putGojos([m]);
+    const mat = new THREE.Matrix4(), v = new THREE.Vector3();
+    let lo = 1e9, hi = -1e9;
+    for (let i = 0; i < ENG.GJ_SLOT; i++) {
+      ENG.three.gjMesh.getMatrixAt(i, mat);
+      const e = mat.elements;
+      if (Math.abs(e[0]) + Math.abs(e[5]) + Math.abs(e[10]) < 1e-9) continue;
+      for (let c = 0; c < 8; c++) {
+        v.set(c & 1 ? 0.5 : -0.5, c & 2 ? 0.5 : -0.5, c & 4 ? 0.5 : -0.5).applyMatrix4(mat);
+        lo = Math.min(lo, v.y); hi = Math.max(hi, v.y);
+      }
+    }
+    const sc = m.sc;
+    beasts = null; ENG.putGojos([]);
+    const ig = TOOLS.findIndex(t => t.id === 'gojo'), iz = TOOLS.findIndex(t => t.id === 'zenitsu');
+    return { parts: M.length, gp: ENG.GJ_PARTS, inBeasts: 'gojo' in ENG.BEASTS, beastParts: ENG.BEAST_PARTS,
+             maxOther: Math.max(...Object.values(ENG.BEASTS).map(a => a.length)), model: ENG.MODELS.gojo === M,
+             lo: +lo.toFixed(3), top: +((hi - lo) / sc).toFixed(3), sc, gjSc: GJ_SC, doomSc: DOOM_SC,
+             at: ig, zen: iz, n: TOOLS.length, ground: !!GROUND_TOOL.gojo,
+             masc: MASCOTS.some(k => k.id === 'gojo'), doom: DOOMS.some(d => d.id === 'gojo'),
+             nm: !!BEAST_NM.gojo, it: itOf({ kind: 'gojo' }), icon: TOOLS[ig].k };
+  });
+  ok('五條悟自己一顆 mesh：不進 BEASTS，別的動物一隻還是照原本最多塊那一款付成本',
+     gfig.parts === gfig.gp && !gfig.inBeasts && gfig.beastParts === gfig.maxOther && gfig.model,
+     '他 ' + gfig.parts + ' 塊、BEAST_PARTS 還是 ' + gfig.beastParts + '（BEASTS 裡最多塊那一款 ' + gfig.maxOther + '）');
+  ok('身形：原點在腳底、模型高 1.40～1.46（小人帽頂 1.31），縮放是小人平均（DOOM_SC）的 1.2 倍（使用者選「等比 ×1.2」）',
+     Math.abs(gfig.lo) < 0.02 && gfig.top > 1.40 && gfig.top < 1.46 && gfig.sc === gfig.gjSc &&
+     Math.abs(gfig.gjSc / gfig.doomSc - 1.2) < 1e-9,
+     '最低 ' + gfig.lo + '、模型高 ' + gfig.top + ' × ' + gfig.sc.toFixed(3) + '（DOOM_SC ' + gfig.doomSc.toFixed(3) + '）');
+  ok('道具表：接在霹靂一閃後面（最後一把）、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「他」；圖示 🟣',
+     gfig.zen >= 0 && gfig.at === gfig.zen + 1 && gfig.at === gfig.n - 1 && gfig.ground && !gfig.masc && !gfig.doom && gfig.nm &&
+     gfig.it === '他' && gfig.icon === '🟣',
+     'TOOLS 第 ' + gfig.at + ' 把（霹靂一閃第 ' + gfig.zen + ' 把、共 ' + gfig.n + ' 把）；吉祥物 ' + gfig.masc + '、天災 ' + gfig.doom +
+     '；' + gfig.it + '；圖示 ' + gfig.icon);
+
+  /* ── 吸的範圍：一條直線橫過金字塔（球心在 PURP_Y0 的高度），離那一條 PURP_R 以內（兩端是半球）還立著的積木全部吸走，
+        範圍外的一塊都不少（分兩段呼叫，驗「一段一段往前吸、首尾相接」；只叫 purpTake、不推主迴圈） ── */
+  const gsuck = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; clearFires();
+    const R = PURP_R, Y = PURP_Y0, Z = 2.25;                           // z 取在格子中間，邊界上不會剛好壓著一塊
+    const A = { x: bp.radius + 8, y: Y, z: Z }, B = { x: -bp.radius - 8, y: Y, z: Z }, L = A.x - B.x;
+    const inC = b => { const t = Math.max(0, Math.min(1, (A.x - b.x) / L)), px = A.x - L * t;
+                       return (b.x - px) ** 2 + (b.y - Y) ** 2 + (b.z - Z) ** 2 <= R * R; };
+    const cnt = f => blocks.filter(b => b.st === SET && f(b)).length;
+    const in0 = cnt(inC), out0 = cnt(b => !inC(b));
+    const p = { ox: A.x, oy: Y, oz: Z, ux: -1, uy: 0, uz: 0, x: A.x, y: Y, z: Z, d: 0, t: 0, st: 'fly', bt: 0, mk: 0, zt: 0,
+                r: PURP_VIS, r0: PURP_VIS, by: null, up: [], hit: 0 };
+    purps = [p];
+    const Mid = { x: A.x - L * 0.4, y: Y, z: Z };
+    purpBasis(p); purpTake(p, A, Mid); purpTake(p, Mid, B);
+    const r = { in0, in1: cnt(inC), out0, out1: cnt(b => !inC(b)), hit: p.hit, held: p.up.length, cap: PURP_CAP };
+    purpClear(); supportDirty = false;
+    return r;
+  });
+  const gsOk = gsuck.in0 > 0 && gsuck.in1 === 0 && gsuck.out1 === gsuck.out0 && gsuck.hit === gsuck.in0;
+  ok('吸的範圍：離球路 PURP_R 以內還立著的全部吸走、算進破壞，範圍外的一塊都不少（分兩段吸、首尾相接）',
+     gsOk, gsOk ? '範圍內全吸、範圍外不動' : JSON.stringify(gsuck));
+
+  /* ── 沿路的人與動物：吸進去（巨人當場抹消、不吸）；天上的、範圍外的、他自己（無下限）不吸。
+        收掉那一刻全部往外甩：從球心往外飛、手上一件都不剩 ── */
+  await fillAll(page);
+  const glife = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const X = siteR + 30, Y = PURP_Y0, R = PURP_R;
+    const A = { x: X, y: Y, z: -30 }, B = { x: X, y: Y, z: 30 };
+    const put = (o, x, z) => { o.x = x; o.z = z; o.y = 0; o.air = 0; o.fall = 0; o.burn = 0; };
+    const w = workers[0], w2 = workers[1];
+    put(w, X + 1, -10); put(w2, X + R + GATE_MAN_R + 2, -10);
+    const me = spawnBeast('gojo', 1); put(me, X + 1, -20); me.st = 'fun'; me.pause = 999;
+    const ape = spawnBeast('ape', 1); put(ape, X - 1, 0); ape.st = 'fun'; ape.pause = 999;
+    const g = spawnBeast('giant', 1); put(g, X, 12); g.st = 'fun'; g.pause = 999;
+    const far = spawnBeast('ape', 1); put(far, X + R + 8, 4); far.st = 'fun'; far.pause = 999;
+    const sky = { kind: 'gryphon', sky: 1, x: X, y: 20, z: 20, a: 0, sc: 1, air: 0 };
+    beasts.push(sky);
+    const p = { ox: X, oy: Y, oz: -30, ux: 0, uy: 0, uz: 1, x: X, y: Y, z: -30, d: 0, t: 0, st: 'fly', bt: 0, mk: 0, zt: 0,
+                r: PURP_VIS, r0: PURP_VIS, by: me, up: [], hit: 0 };
+    purps = [p];
+    purpBasis(p); purpTake(p, A, B);
+    const r = { w: w.ufo || 0, w2: w2.ufo || 0, ape: ape.ufo || 0, giant: g.ufo || 0, dead: !!g.dead, far: far.ufo || 0,
+                sky: sky.ufo || 0, me: me.ufo || 0, meAir: me.air || 0 };
+    /* 收掉：球停在路的正中間，手上的照「從球心往外」甩出去 */
+    p.x = X; p.y = Y; p.z = 0;
+    purpBurst(p);
+    r.st = p.st; r.left = p.up.length;
+    r.wOut = { ufo: w.ufo || 0, air: w.air || 0 };
+    r.apeOut = { ufo: ape.ufo || 0, air: ape.air || 0, dot: +((ape.x - p.x) * ape.vx + (ape.z - p.z) * ape.vz).toFixed(3) };
+    beasts = null; purps = null;
+    for (const o of [w, w2]) { o.air = 0; o.ufo = 0; o.vx = o.vy = o.vz = 0; o.y = 0; }
+    return r;
+  });
+  ok('沿路吸進去：範圍內的小人與小獼猴吸進來，巨人當場抹消（不吸）；天上的、範圍外的、他自己（無下限）不吸',
+     glife.w === 1 && !glife.w2 && glife.ape === 1 && !glife.giant && glife.dead && !glife.far && !glife.sky && !glife.me && !glife.meAir,
+     '小人 範圍內 ' + glife.w + '／範圍外 ' + glife.w2 + '；小獼猴 ' + glife.ape + '；巨人 吸進去 ' + glife.giant + '、抹消 ' +
+     glife.dead + '；範圍外的猴子 ' + glife.far + '；天上的獅鷲 ' + glife.sky + '；他自己 ' + glife.me + '／' + glife.meAir);
+  const glOut = glife.st === 'burst' && glife.left === 0 && !glife.wOut.ufo && glife.wOut.air === 1 &&
+                !glife.apeOut.ufo && glife.apeOut.air === 1 && glife.apeOut.dot > 0;
+  ok('球收掉那一刻全部甩出去：手上一件不剩，小人與小獼猴放開、飛在半空，小獼猴從球心往外飛',
+     glOut, glOut ? '全部甩出去了' : JSON.stringify(glife));
+
+  /* ── 劈到地上的藍電（打雷那一套，純特效）：押住骰子直接呼叫 purpZap。骰子小（≤ PURP_ZAP_CORE）從球心劈，
+        大的從球心周圍 PURP_ZAP_FROM 格內、不低於離地 1.5 格（使用者：「不要全都從球心出發」）；主幹＋兩條分岔，落點都在地上 ── */
+  const gzap = await page.evaluate(() => {
+    cleanTools();
+    const p = { x: 10, y: PURP_Y0, z: 5 };
+    const real = Math.random;
+    try {
+      Math.random = () => 0.1; purpZap(p);
+      const a = bolts.slice(); bolts.length = 0;
+      Math.random = () => 0.9; purpZap(p);
+      const b = bolts.slice(); bolts.length = 0;
+      const s0 = a[0].pts[0], s1 = b[0].pts[0], ends = a.concat(b).map(o => o.pts[o.pts.length - 1].y);
+      return { na: a.length, nb: b.length, core: Math.hypot(s0.x - p.x, s0.y - p.y, s0.z - p.z),
+               off: Math.hypot(s1.x - p.x, s1.z - p.z), offY: s1.y, from: PURP_ZAP_FROM,
+               ground: Math.max(...ends.map(y => Math.abs(y - 0.1))), src: a.concat(b).every(o => o.src === p),
+               w: a[0].w, br: Math.max(a[1].w, a[2].w) };
+    } finally { Math.random = real; }
+  });
+  ok('劈到地上的藍電：骰子小的從球心、其餘從球心周圍劈（不全從球心出發）；主幹＋兩條分岔、落點都在地上、主幹比分岔粗',
+     gzap.na === 3 && gzap.nb === 3 && gzap.core < 1e-9 && gzap.off > 0.29 * gzap.from && gzap.off <= gzap.from + 1e-9 &&
+     gzap.offY >= 1.5 && gzap.ground < 1e-9 && gzap.src && gzap.w > gzap.br, JSON.stringify(gzap));
+
+  /* ── 一整趟（建築）：從那一點的方位進場、跑到離那一點 GJ_REACH 格（射程一半）站定 → 結印、放出茈 → 回去逛。
+        球從指尖直線穿過點到的那一點、飛滿射程收掉；地上的痕跡沿著球路、球碰得到地才留；藍電離手 PURP_LIFT 格才開始劈 ── */
+  await fillAll(page);
+  const grun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    let P = null;                                  // 金字塔 +x 那一面、3 格高的外殼（同〈破壞道具：霹靂一閃〉）
+    for (const b of blocks) if (b.st === SET && Math.abs(b.y - 3) < 0.6 && (!P || b.x > P.x)) P = b;
+    const px = P.x, pz = P.z, py = P.y;
+    /* 痕跡與藍電只記球自己留的（小人挖料也會留痕跡）：包住 purpMark／purpZap，呼叫期間的 spawnMark 才記 */
+    const realMark = spawnMark, realPM = purpMark, realZap = purpZap, mk = [], zd = [];
+    let inPM = null;
+    purpMark = function (p) { inPM = p; try { return realPM(p); } finally { inPM = null; } };
+    spawnMark = function (pt, R, cr) { if (inPM) mk.push({ x: pt.x, y: pt.y, z: pt.z, cr: !!cr, py: inPM.y }); return realMark.apply(this, arguments); };
+    purpZap = function (p) { zd.push(p.d); return realZap(p); };
+    try {
+      tool = 'gojo';
+      useTool({ kind: 'block', point: { x: px, y: py, z: pz }, dir: { x: -1, y: 0, z: 0 } });
+      tool = 'hammer';
+      const gs = (beasts || []).filter(b => b.kind === 'gojo'), m = gs[0], c = m.call;
+      let da = Math.atan2(m.z, m.x) - Math.atan2(c.z, c.x);
+      while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+      const entry = { n: gs.length, fun: m.fun, st: m.st, da: Math.abs(da), sd: c.sd, reach: GJ_REACH, ay: c.ay, py };
+      const seen = [];
+      let n = 0, act = null, below = 0, soft = 0, fired = 0, p = null, off = 0, dmax = 0, miss = null;
+      while (n < 8000 && beasts && beasts.indexOf(m) >= 0) {
+        step(0.02); n++;
+        if (seen[seen.length - 1] !== m.st) seen.push(m.st);
+        if (!act && m.st === 'act') act = Math.hypot(m.x - px, m.z - pz);
+        if ((m.y || 0) < -1e-9) below++;
+        if (!levBusy(m)) soft++;
+        if (purps && purps[0] && purps[0] !== p) {
+          p = purps[0]; fired++;
+          const hl = Math.hypot(p.ux, p.uz);
+          miss = Math.abs((px - p.ox) * p.uz - (pz - p.oz) * p.ux) / hl;   // 點到的那一點離球路（水平）多遠
+        }
+        if (p) {
+          dmax = Math.max(dmax, p.d);                // 飛到盡頭那一幀就轉成 burst，所以不只看 fly
+          if (p.st === 'fly') off = Math.max(off, Math.abs((p.x - p.ox) * p.uz - (p.z - p.oz) * p.ux));
+        }
+        if (m.st === 'fun' && fired && !purps) break;
+      }
+      const hl = p ? Math.hypot(p.ux, p.uz) : 1;
+      const mkOff = p ? Math.max(0, ...mk.map(q => Math.abs((q.x - p.ox) * p.uz - (q.z - p.oz) * p.ux) / hl)) : -1;
+      return { entry, seen: seen.join('→'), act, below, soft, fired, off, dmax, range: PURP_RANGE, miss, cut: P.st !== SET,
+               hit: p ? p.hit : 0, end: { call: m.call, y: m.y, stay: m.stay }, lo: MASC_STAY[0],
+               mk: { n: mk.length, off: mkOff, y: Math.max(0, ...mk.map(q => Math.abs(q.y))), cr: mk.every(q => q.cr),
+                     high: mk.filter(q => q.py >= PURP_R).length },
+               zap: { n: zd.length, min: zd.length ? Math.min(...zd) : null, lift: PURP_LIFT } };
+    } finally {
+      spawnMark = realMark; purpMark = realPM; purpZap = realZap;
+      beasts = null; clearFires();
+    }
+  });
+  const grIn = grun.entry.n === 1 && grun.entry.fun === 1 && grun.entry.st === 'call' && grun.entry.da < 1e-9 &&
+               grun.entry.sd === grun.entry.reach && grun.entry.ay === grun.entry.py;
+  ok('點建築：從那一點的方位進場、是吉祥物，命令停在射程一半（GJ_REACH 格），記著那一點的高度',
+     grIn, grIn ? '一位、站在離那一點 GJ_REACH 格' : JSON.stringify(grun.entry));
+  const grOk = grun.seen === 'call→act→pur→fun' && grun.act !== null && grun.act <= grun.entry.reach + 0.15 &&
+               grun.fired === 1 && grun.off < 1e-9 && grun.dmax === grun.range && grun.miss < 1e-6 && grun.cut && grun.hit > 0 &&
+               grun.end.call === null && grun.end.y === 0 && grun.end.stay >= grun.lo;
+  ok('一整趟（建築）：站定 → 結印、放出一顆茈 → 回去逛；球直線穿過點到的那一點、飛滿射程才收，點到的那一塊吸走了',
+     grOk, grOk ? grun.seen : grun.seen + '；站定時離那一點 ' + grun.act + '（GJ_REACH ' + grun.entry.reach + '）、放了 ' + grun.fired +
+     ' 顆、偏離直線 ' + grun.off + '、飛了 ' + grun.dmax + '／' + grun.range + '、點到的那一點離球路 ' + grun.miss + '、點到的吸走 ' +
+     grun.cut + '、吸了 ' + grun.hit + '、收完 ' + JSON.stringify(grun.end));
+  ok('無下限：一整趟（跑過去、結印、放出去、回去逛）每一幀都打不動他，腳底不低於地面',
+     grun.soft === 0 && grun.below === 0, '打得動 ' + grun.soft + ' 幀、低於地面 ' + grun.below + ' 幀');
+  ok('走過的地面留一般的痕跡（坑）：沿著球路、只在球碰得到地的那一段留',
+     grun.mk.n > 0 && grun.mk.off < 1e-6 && grun.mk.y < 1e-9 && grun.mk.cr && grun.mk.high === 0,
+     grun.mk.n > 0 && grun.mk.off < 1e-6 ? '留了，都在球路上' : JSON.stringify(grun.mk));
+  const gzOk = grun.zap.n > 0 && grun.zap.min >= grun.zap.lift;
+  ok('藍電離手 PURP_LIFT 格才開始劈（剛出手那一段劈的電會穿過他身上）',
+     gzOk, gzOk ? '劈了，都在離手 PURP_LIFT 格之後' : JSON.stringify(grun.zap));
+
+  /* ── 點生物、巨人、小人：追著牠瞄，放出去那一刻照牠當時的位置**平射**（使用者：「射巨人可以往前射就好」）；
+        小獼猴與小人吸進去、甩出來；巨人抹消；小人不算手指戳倒的成就 ── */
+  await fillAll(page);
+  const ghit = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const run = (tb, isW) => {
+      const m = callGojo({ x: tb.x, y: 0, z: tb.z }, tb, isW);
+      const b = !!m.call && m.call.b === tb && m.call.bw === (isW ? 1 : 0), seen = [];
+      let n = 0, air = 0, ufo = 0, dead = 0, uy = null, p = null;
+      while (n < 8000) {
+        step(0.02); n++;
+        if (seen[seen.length - 1] !== m.st) seen.push(m.st);
+        if (purps && purps[0] && !p) { p = purps[0]; uy = p.uy; }
+        if (tb.ufo) ufo = 1;
+        if (tb.air && !tb.ufo) air = 1;
+        if (tb.dead) dead = 1;
+        if (m.st === 'fun' && p && !purps) break;
+      }
+      return { b, ufo, air, dead, uy, call: m.call, done: seen.indexOf('pur') >= 0 };
+    };
+    const a = spawnBeast('ape', 1); a.x = siteR + 26; a.z = 6; a.st = 'fun'; a.pause = 999; a.stay = 999;
+    const ape = run(a, false); ape.alive = beasts.indexOf(a) >= 0;
+    beasts = null;
+    const g = spawnBeast('giant', 1); g.x = siteR + 30; g.z = -8; g.st = 'fun'; g.pause = 999; g.stay = 999;
+    const giant = run(g, false);
+    beasts = null;
+    const w = workers[0], poked = stats.poked;
+    w.x = siteR + 20; w.z = 12; w.y = 0; w.air = 0; w.fall = 99;          // 押著他躺著，不然他一走開就打空
+    const man = run(w, true); man.poked = stats.poked - poked;
+    w.fall = 0; w.air = 0; w.ufo = 0; w.y = 0; beasts = null;
+    return { ape, giant, man };
+  });
+  ok('點生物：追著牠放出去，牠被吸進去轉、甩出來，還在場上，命令收掉',
+     ghit.ape.b && ghit.ape.done && ghit.ape.ufo && ghit.ape.air && ghit.ape.alive && ghit.ape.call === null && ghit.ape.uy === 0,
+     JSON.stringify(ghit.ape));
+  ok('點巨人：往前平射（不往上瞄牠的身體中段），巨人被抹消、不吸進去',
+     ghit.giant.b && ghit.giant.done && ghit.giant.dead && !ghit.giant.ufo && ghit.giant.uy === 0, JSON.stringify(ghit.giant));
+  ok('點小人：吸進去、甩出來，不算手指戳倒的成就',
+     ghit.man.b && ghit.man.done && ghit.man.ufo && ghit.man.air && ghit.man.poked === 0, JSON.stringify(ghit.man));
+
+  /* ── 點空地：跑到那一點、待命 LEV_WAIT 秒再回去逛（不出招，同 Saber／里維／善逸） ── */
+  const ggo = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('gojo', 1, 0, 0);
+    m.x = siteR + 8; m.z = 0; m.st = 'fun'; m.pause = 99;
+    const a = 1.1, G = { x: Math.cos(a) * (siteR + 16), y: 0, z: Math.sin(a) * (siteR + 16) };
+    tool = 'gojo'; useTool({ kind: 'ground', point: G, dir: { x: 0, y: -1, z: 0 } }); tool = 'hammer';
+    const go = !!(m.call && m.call.go);
+    let n = 0, arr = null, pur = 0;
+    while (n < 3000 && !arr) {
+      step(0.02); n++;
+      if (m.st === 'pur') pur++;
+      if (m.st === 'fun') arr = { d: Math.hypot(m.x - G.x, m.z - G.z), pause: m.pause, call: m.call };
+    }
+    beasts = null;
+    return { go, arr, pur, purps: !!purps, sd: LEV_SD, wait: LEV_WAIT };
+  });
+  const ggOk = ggo.go && ggo.arr && ggo.arr.d <= ggo.sd + 0.1 && ggo.arr.call === null && ggo.pur === 0 && !ggo.purps &&
+               ggo.arr.pause >= ggo.wait[0] && ggo.arr.pause <= ggo.wait[1];
+  ok('點空地：跑到那一點待命 LEV_WAIT 秒再回去逛，不出招',
+     ggOk, ggOk ? '到了、待命、沒出招' : JSON.stringify(ggo));
+
+  /* ── 無下限（使用者：「無下限 什麼時候都打不動」）：逛、跑、站定、出招都炸不飛、推不倒、點不著；
+        Saber、善逸、里維點得到他、只是打不動（使用者：「點得到 只是沒受傷」），他點不到自己 ── */
+  const gbusy = await page.evaluate(() => {
+    cleanTools();
+    const m = spawnBeast('gojo', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0;
+    const r = {};
+    for (const st of ['fun', 'call', 'act', 'pur']) {
+      m.st = st;
+      r[st] = [tossBeast(m, 5, 5, 5, true), fellBeast(m, 2), igniteBeast(m, 0), levBusy(m)].join(',');
+    }
+    m.st = 'fun';
+    const z = spawnBeast('zenitsu', 1, 0, 0); z.st = 'zen';
+    r.can = [sabCanCut(m), zenCanCut(m), leviCanCut(m), gjCanCut(m)].join(',');
+    r.zenBusy = sabCanCut(z);                                       // 別人打不動的照舊點不到（出招中的善逸）
+    r.hurt = [m.air || 0, m.burn || 0, m.fall || 0].join(',');
+    beasts = null;
+    return r;
+  });
+  ok('無下限：逛、跑、站定、出招都炸不飛、推不倒、點不著；Saber、善逸、里維點得到他（打不動而已），他點不到自己',
+     ['fun', 'call', 'act', 'pur'].every(k => gbusy[k] === 'false,false,false,true') && gbusy.can === 'true,true,true,false' &&
+     gbusy.zenBusy === false && gbusy.hurt === '0,0,0', JSON.stringify(gbusy));
+
+  /* ── 畫面：沒他在場不吃 draw call；手上的赫／蒼／茈照時間軸；出手前身上的紫電只在兩顆球撞在一起之後到放出去之後一小段；
+        飛著的茈、收掉之後藏起來；不抽 Math.random（只叫 putGojos／putPurps） ── */
+  const gdraw = await page.evaluate(() => {
+    cleanTools();
+    const T3 = ENG.three, G = ENG.GJ, F = T3.gjFx[0], PF = T3.purpFx[0];
+    const vis = () => [T3.gjMesh, T3.gjZapCore].map(o => o.visible ? 1 : 0).join('') +
+                      [F.red.g, F.blue.g, F.purple.g].map(o => o.visible ? 1 : 0).join('');
+    ENG.putGojos([]); ENG.putPurps([]);
+    const off = vis(), poff = PF.orb.g.visible;
+    const m = spawnBeast('gojo', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0; m.st = 'fun';
+    const real = Math.random;
+    let rnd = 0;
+    Math.random = () => { rnd++; return real(); };
+    const at = t => { if (t === null) { m.st = 'fun'; m.ot = 0; } else { m.st = 'pur'; m.ot = t; } ENG.putGojos([m]); return vis(); };
+    const r = { off, stand: at(null), orbs: at((G.blue + G.gather) / 2), meet: at((G.meet + G.charge) / 2),
+                push: at((G.push + G.fire) / 2), after: at(G.hold), cnt: T3.gjMesh.count, slot: ENG.GJ_SLOT };
+    const p = { ox: m.x, oy: 1.2, oz: 0, ux: 1, uy: 0, uz: 0, x: m.x + 5, y: PURP_Y0, z: 0, d: 5, t: 0.4, st: 'fly', bt: 0,
+                r: PURP_VIS, r0: 0.5, up: [] };
+    ENG.putPurps([p]); r.fly = PF.orb.g.visible;
+    p.st = 'burst'; p.bt = ENG.PURP_BURST * 0.9; ENG.putPurps([p]); r.burst = PF.orb.g.visible;
+    ENG.putPurps([]); r.gone = PF.orb.g.visible;
+    Math.random = real;
+    ENG.putGojos([]);
+    r.end = vis(); r.poff = poff; r.rnd = rnd;
+    beasts = null;
+    return r;
+  });
+  ok('沒他在場就不吃 draw call；手上的赫與蒼、撞在一起之後的茈照時間軸出現；出手前身上的紫電從撞在一起到放出去，之後收掉',
+     gdraw.off === '00000' && gdraw.stand === '10000' && gdraw.orbs === '10110' && gdraw.meet === '11001' &&
+     gdraw.push === '11001' && gdraw.after === '10000' && gdraw.end === '00000' && gdraw.cnt === gdraw.slot,
+     '沒他 ' + gdraw.off + '；站 ' + gdraw.stand + '；赫與蒼 ' + gdraw.orbs + '；撞在一起之後 ' + gdraw.meet + '；推出去 ' + gdraw.push +
+     '；放完 ' + gdraw.after + '；走了 ' + gdraw.end + '（他／紫電／赫／蒼／茈）；一位 ' + gdraw.cnt + ' 格');
+  ok('飛著的茈畫得出來，收掉那一下球淡掉、拿掉之後藏起來', !gdraw.poff && gdraw.fly && !gdraw.burst && !gdraw.gone,
+     '沒有 ' + gdraw.poff + '；飛 ' + gdraw.fly + '；收掉 ' + gdraw.burst + '；拿掉 ' + gdraw.gone);
+  ok('手上的球、紫電、飛著的茈不抽 Math.random（每幀都畫，不該吃掉規則那邊的骰子）', gdraw.rnd === 0, '抽了 ' + gdraw.rnd + ' 次');
+
+  /* ── 點選：真的走 onDown／onUp 點一隻小獼猴，叫到他、命令帶著那一隻；點得到他自己（回報成 beast、索引對得回來） ── */
+  const gpick = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const e = ENG.camEye(), hl = Math.hypot(e.x, e.z), hx = e.x / hl, hz = e.z / hl;
+    const park = workers.map(o => [o, o.x, o.z]);     // 小人先挪到建築的另一邊、點完還回去（同〈破壞道具：霹靂一閃〉那條點選）
+    for (const [o] of park) { o.x = -hx * (bp.radius + 12); o.z = -hz * (bp.radius + 12); }
+    const a = spawnBeast('ape', 1);
+    a.x = hx * (bp.radius + 8); a.z = hz * (bp.radius + 8); a.a = 0; a.st = 'fun'; a.pause = 999;
+    draw(); ENG.render();
+    const c = ENG.three.renderer.domElement.getBoundingClientRect(), cam = ENG.three.camera;
+    const at = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam);
+                              return [(v.x + 1) / 2 * c.width + c.left, (1 - v.y) / 2 * c.height + c.top]; };
+    const pa = at(a.x, ENG.BEAST_MID.ape * a.sc, a.z);
+    const panel = document.getElementById('panel'), hid = panel.classList.contains('hide'), was = tool;
+    tool = 'gojo';
+    onDown({ clientX: pa[0], clientY: pa[1] }); onUp({});
+    tool = was;
+    if (!hid) panel.classList.remove('hide');        // onDown 會把設定面板收下去，還回去
+    const Gm = (beasts || []).find(b => b.kind === 'gojo');
+    const r = { called: !!Gm, b: !!(Gm && Gm.call && Gm.call.b === a) };
+    /* 點得到他自己：他前面先擺一隻遠在場外的牛（同 Saber 那一條），點選回報的索引要對回他 */
+    beasts = [{ kind: 'cow', x: 900, y: 0, z: 900, a: 0, sc: 1, ph: 0, gait: 0 }];
+    const m = spawnBeast('gojo', 1, 0, 0);
+    m.x = hx * (bp.radius + 8); m.z = hz * (bp.radius + 8); m.st = 'fun';
+    draw(); ENG.render();
+    const pm = at(m.x, 0.6 * m.sc, m.z), hit = ENG.pick(pm[0] - c.left, pm[1] - c.top, 'levi');
+    r.kind = hit && hit.kind; r.idx = hit ? hit.idx : -1; r.me = !!hit && beastAt(hit.idx) === m;
+    for (const [o, x, z] of park) { o.x = x; o.z = z; }
+    beasts = null; ENG.putBeasts([]); ENG.putGojos([]);
+    return r;
+  });
+  ok('點選：真的點一隻小獼猴叫得到他、命令帶著那一隻；點得到他自己（索引對回 beasts 裡的他）',
+     gpick.called && gpick.b && gpick.kind === 'beast' && gpick.idx === 1 && gpick.me, JSON.stringify(gpick));
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+  }   // ── 〈破壞道具：虛式「茈」〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 隕石 ══════════ */
   SEC: { if (!(await head('隕石', T_COMMIT))) break SEC;
   /* 靶要**比爆炸範圍大**（v1.151，本來是新天鵝堡 3000）。新天鵝堡的 siteR 只有 17，
@@ -31401,6 +31773,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* Excalibur（v1.224）叫來的 Saber：這一段沒裝天災的鐘（她不會走），留著會站在場邊一路被後面幾條畫到。
        兵長砍猴（v1.230）叫來的里維、霹靂一閃（v1.251.0）叫來的善逸同理 */
     beasts = null; ENG.putSabers([]); ENG.putLevis([]); ENG.putZens([]);
+    purpClear(); ENG.putGojos([]); ENG.putPurps([]);   // 虛式「茈」（v1.255.0）叫來的五條悟與飛著的茈，同上
     const got = stats.badges.indexOf('allTools') >= 0;
     // 同一種道具用兩次不會重複記
     tool = 'hammer'; useTool(hit);

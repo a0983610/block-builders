@@ -91,7 +91,11 @@ const TOOLS = [
   { id: 'zenitsu', n: '霹靂一閃', k: '⚡',
     /* v1.251.0：點建築、地上的生物或小人就跑過去蹲低一閃（八連，在那一點四周的範圍裡亂竄、貼地削過去），
        點空地就跑到那裡待命（見 callZen）。圖示第一版是 🌩、打雷是 ⚡，使用者看過預覽：「圖示跟打雷對調」 */
-    tip: '點建築、生物或小人：叫善逸跑來，霹靂一閃八連在範圍內亂竄、貼地削過去；點空地：跑到那裡待命' }
+    tip: '點建築、生物或小人：叫善逸跑來，霹靂一閃八連在範圍內亂竄、貼地削過去；點空地：跑到那裡待命' },
+  { id: 'gojo', n: '虛式「茈」', k: '🟣',
+    /* v1.255.0：點建築、地上的生物或小人就跑到射程一半，赫＋蒼合成茈放出去（直線穿過去、沿路吸進去轉、飛 30 格甩出去），
+       點空地就跑到那裡待命（見 callGojo） */
+    tip: '點建築、生物或小人：叫五條悟跑來放出茈，沿路吸進去轉、最後甩出去；點空地：跑到那裡待命' }
 ];
 /* 說明最多幾個字（v1.220.2，使用者：「破壞工具說明不要太長」）。選好一把之後它會接在
    底部那條操作提示的最前面，而那條不換行、後半段固定的操作說明自己就佔掉約 514px——
@@ -131,7 +135,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       bomb: 1, meteor: 1, nuke: 1, magic: 1, bucket: 1,
                       storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1,
                       bounce: 1, hole: 1, excalibur: 1, musket: 1, levi: 1,     // 兵長砍猴點空地＝跑到那裡（v1.230）
-                      zenitsu: 1 };                                             // 霹靂一閃同上（v1.251.0）
+                      zenitsu: 1,                                               // 霹靂一閃同上（v1.251.0）
+                      gojo: 1 };                                                // 虛式「茈」同上（v1.255.0）
 let tool = 'hammer';
 
 /* ── 破壞道具泡泡（v1.214）───────────────────────────────
@@ -7997,6 +8002,8 @@ function useTool(hit) {
   if (tool === 'levi') { callLevi(hit.point, hit.dir, null, false, onGround); return 0; }
   // 霹靂一閃（v1.251.0）：同上，點建築＝跑過去一閃、點空地＝跑到那裡待命（碎料在點選那一層同樣是透明的）
   if (tool === 'zenitsu') { callZen(hit.point, null, false, onGround); return 0; }
+  // 虛式「茈」（v1.255.0）：同上，點建築＝跑到射程一半放出去（直線穿過那一點）、點空地＝跑到那裡待命
+  if (tool === 'gojo') { callGojo(hit.point, null, false, onGround); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
@@ -8181,7 +8188,7 @@ const doomNear = m => m.kind === 'giant' ? GIA_NEAR
    Saber 走路同小人（v1.226，使用者：「增快saber一般走路移動速度(同小人)」；v1.222～v1.225 照猴子的 2.2），
    腿擺照小人那一份（stp 不給＝1，小人走 WALK 也是 11 弧度／秒）。 */
 const DOOM_SPD = { giant: GIA_WALK, saber: WALK, levi: WALK, megumin: WALK,     // 里維兵長（v1.230）、惠惠（v1.247.0）同 Saber
-                   zenitsu: WALK };                                             // 善逸（v1.251.0）也是
+                   zenitsu: WALK, gojo: WALK };                                 // 善逸（v1.251.0）、五條悟（v1.255.0）也是
 const DOOM_STEP = { giant: GIA_STEP };
 const DOOM_KEEP = { giant: GIA_KEEP };
 /* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
@@ -8247,8 +8254,8 @@ function spawnBeast(kind, fun, bad, ang) {
        nb／nbS＝照身高與身長算的身體（v1.236，見 navBody）。 */
     gw: null, nav: null, navWait: 0, nb: null, nbS: 0,
     /* 巨人自己一個倍率（v1.192）：牠的模型是拿 5.00 當高畫的，不是拿小人的 1.31，
-       所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。 */
-    sc: kind === 'giant' ? GIA_SC : DOOM_SC,
+       所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。五條悟也自己一個（v1.255.0，見 GJ_SC）。 */
+    sc: kind === 'giant' ? GIA_SC : kind === 'gojo' ? GJ_SC : DOOM_SC,
     kick: 0, kleft: 0, kt: 0, hit: 0, puff: 0,
     /* Saber 出招到第幾秒（v1.222，見 stepExcal）；th0 上一幀光柱的角度（null＝不在斬）、
        thS 開斬那一刻的角度，xn／xb 這一招斬掉幾塊／點著幾塊（測試在讀），xs 震過畫面了沒 */
@@ -8284,6 +8291,7 @@ function spawnBeast(kind, fun, bad, ang) {
   else if (kind === 'levi') sndLevi();
   else if (kind === 'megumin') sndMegumin();
   else if (kind === 'zenitsu') sndZen();
+  else if (kind === 'gojo') sndGojo();
   else sndBeast(kind === 'snow');
   if (ang !== undefined) return m;               // Excalibur 叫來的：提示由 callSaber 講（v1.224）
   /* 惠惠（v1.247.0）只當吉祥物、只有被打才動手，提示講她會怎樣 */
@@ -8637,13 +8645,14 @@ function stepBeast0(m, dt) {
       (m.st === 'come' || m.st === 'fun' || m.st === 'go') && giantBust(m)) return false;
   /* Excalibur 叫她過去那一段**用跑的**（v1.226，使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」）：
      腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
-  if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu')   // 里維兵長（v1.230）、善逸（v1.251.0）同 Saber 用跑的
+  if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo')   // 里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）同 Saber 用跑的
     m.run += ((m.call && (m.st === 'call' || m.st === 'gate') ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   /* 惠惠退到安全距離那一段也用跑的（v1.247.0，使用者：「退到安全距離用跑的(三倍速度 要有奔跑動作)」） */
   else if (m.kind === 'megumin') m.run += ((m.st === 'mwalk' ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   if (m.st === 'call') return stepCall(m, dt, spd * EXC_RUN, (stp || 1) * EXC_RUN, kp);   // v1.224
   if (m.st === 'odm') return stepOdm(m, dt);              // 兵長砍猴：立體機動那一招（v1.230）
   if (m.st === 'zen') return stepZen(m, dt);              // 霹靂一閃：架勢、一閃、收刀（v1.251.0）
+  if (m.st === 'pur') return stepGojo(m, dt);             // 虛式「茈」：赫＋蒼合成茈、放出去（v1.255.0）
   if (m.st === 'mwalk' || m.st === 'mcast') return stepMeg(m, dt, spd, stp, kp);   // 惠惠（v1.247.0）
   if (m.st === 'come') {
     /* 走到工地外圈、自己這一側那一點就算到了（「去哪」）。v1.235 以前給的是工地中心 (0, 0)，
@@ -8882,6 +8891,8 @@ function stepBeast0(m, dt) {
     if (m.kind === 'levi') { if (m.call) odmStart(m); else funBack(m); return false; }
     /* 善逸（v1.251.0）同里維：只做玩家叫的事，站定之後蹲成居合架勢（見 stepZen） */
     if (m.kind === 'zenitsu') { if (m.call) zenStart(m); else funBack(m); return false; }
+    /* 五條悟（v1.255.0）同上：只做玩家叫的事，站定之後結印放出茈（見 stepGojo） */
+    if (m.kind === 'gojo') { if (m.call) gjStart(m); else funBack(m); return false; }
     /* 還欠著幾處的（v1.229，見 moreMascot）：砸之前先認好這一塊（砸完最近的那一塊就換人了），
        **砸完才記進 spots**——先記的話 apeStrike 找目標時會把這一處當成「砸過的」跳過，
        改點 8 格外的另一塊（實測點火距離 9.8～18.9 格，隔空點火）。
@@ -9430,7 +9441,8 @@ function stepCall(m, dt, spd, stp, kp) {
      b 點到的那一隻生物（牠會走，每一幀照牠現在的位置追；不在場上了就收工）、ax／az 站定之後要面向的那一點。
      b／ax／az 是里維（v1.230）先開的，Saber 點生物（v1.238）同一套，只是點得到的那幾隻各認各的（sabCanCut） */
   if (c.b) {
-    if (!levTargetOk(c.b, c.bw, m.kind === 'saber' ? sabCanCut : m.kind === 'zenitsu' ? zenCanCut : leviCanCut)) {
+    if (!levTargetOk(c.b, c.bw, m.kind === 'saber' ? sabCanCut : m.kind === 'zenitsu' ? zenCanCut
+                                : m.kind === 'gojo' ? gjCanCut : leviCanCut)) {
       excDone(m); return false;
     }
     c.x = c.b.x; c.z = c.b.z; c.ax = c.b.x; c.az = c.b.z;
@@ -9504,7 +9516,7 @@ function callAim(m) {
   // 里維兵長（v1.230）站的是目標前面那一點，面向的是要砍的那一點（c.ax／c.az）
   const c = m.call, dx = (c.ax !== undefined ? c.ax : c.x) - m.x, dz = (c.az !== undefined ? c.az : c.z) - m.z;
   if (Math.hypot(dx, dz) > 0.3) m.a = Math.atan2(dx, dz);
-  m.st = 'act'; m.t = m.kind === 'levi' ? LEV_AIM : m.kind === 'zenitsu' ? ZEN_AIM : DOOM_AIM;
+  m.st = 'act'; m.t = m.kind === 'levi' ? LEV_AIM : m.kind === 'zenitsu' ? ZEN_AIM : m.kind === 'gojo' ? GJ_AIM : DOOM_AIM;
 }
 /* 一招收完（斬完、或開斬之後被打斷）要去哪裡。排著的下一道命令先做；
    叫來的那一招收完回去逛（叫到的一定已經是吉祥物，見 ownSaber）；她自己那一招照舊（吉祥物回去逛、天災走人）。 */
@@ -9597,7 +9609,8 @@ const lvSm = f => f * f * (3 - 2 * f);
 /* 立體機動中的里維、正在氣化的巨人：一般道具打不動（見檔頭那一段）。
    倒下、暈著、爬起來的惠惠也是（v1.247.0，使用者：「躺著暈不會被打到」）：炸不飛、點不著、吸不走。
    出招中的善逸也是（v1.251.0：一閃是一整段不可分割的位移，見〈霹靂一閃〉那一節） */
-function levBusy(m) { return !!m && (m.st === 'odm' || m.st === 'zen' || !!m.dead || megDown(m)); }
+/* 五條悟**什麼時候都是**（v1.255.0，無下限；使用者：「無下限 什麼時候都打不動」）：不只結印、放出茈那一招 */
+function levBusy(m) { return !!m && (m.st === 'odm' || m.st === 'zen' || m.kind === 'gojo' || !!m.dead || megDown(m)); }
 /* 在地上嗎（點得到、追得到的那一條，里維與 Saber 共用）。飛龍的 sky 從進場到飛走一路是 1（連在地上那幾段也是），
    所以牠照狀態認：在草皮上走（gwalk）、摔下來趴著（down）的算在地上；其餘照 sky（獅鷲降落時歸零） */
 const onGroundBeast = m => m.kind === 'dragon' ? m.st === 'gwalk' || m.st === 'down' : !m.sky;
@@ -9609,9 +9622,10 @@ function leviCanCut(m) {
 /* 小人（使用者：「兵長點小人無效」）：在地上、沒被吸走的都砍得到（弓箭手、火槍兵不在 workers 裡，點不到） */
 function leviCanCutW(w) { return !!w && !w.air && !w.ufo; }
 /* Excalibur 點得到、追得到的生物（v1.238）：她自己、被吸走的、立體機動中的里維與正在化掉的巨人（levBusy）不算；
-   天上的不算（使用者選「先不算，同里維」），地上的飛龍算（onGroundBeast，里維 v1.239.0 起也一樣） */
+   天上的不算（使用者選「先不算，同里維」），地上的飛龍算（onGroundBeast，里維 v1.239.0 起也一樣）。
+   五條悟打不動但點得到（v1.255.0，使用者：「點得到 只是沒受傷」）：她照樣跑過去斬，斬中的那一下 tossBeast 回 false */
 function sabCanCut(m) {
-  return !!m && m.kind !== 'saber' && !m.ufo && !levBusy(m) && onGroundBeast(m);
+  return !!m && m.kind !== 'saber' && !m.ufo && (m.kind === 'gojo' || !levBusy(m)) && onGroundBeast(m);
 }
 /* 命令裡那一個還在不在（w＝這一個是小人；can＝生物那邊照誰的規矩認，沒給＝里維的） */
 function levTargetOk(b, w, can) {
@@ -9927,7 +9941,8 @@ function levStrike(m, b, w) {
    死法同一套（使用者選的「同里維斬殺那一套」），只有提示那一句不同。 */
 const GIA_SLAIN = {
   levi: ['被里維兵長斬殺', '後頸一刀，'], nuke: ['被核彈炸死', ''], magic: ['被爆裂魔法炸死', ''],
-  excal: ['被 Excalibur 斬殺', '光柱掃過，']
+  excal: ['被 Excalibur 斬殺', '光柱掃過，'],
+  purp: ['被虛式「茈」抹消', '紫球掃過，']             // v1.255.0（使用者選「巨人被抹消，其他甩飛」）
 };
 function giantDie(b, by) {
   b.dead = 1e-6; b.st = 'dead'; b.call = null; b.cq = null;
@@ -10074,9 +10089,9 @@ function pickZen(p) {
   }
   return best;
 }
-/* 點得到、追得到的生物：同 sabCanCut（他自己、被吸走的、打不動的、天上的不算） */
+/* 點得到、追得到的生物：同 sabCanCut（他自己、被吸走的、打不動的、天上的不算；五條悟點得到、砍不動） */
 function zenCanCut(m) {
-  return !!m && m.kind !== 'zenitsu' && !m.ufo && !levBusy(m) && onGroundBeast(m);
+  return !!m && m.kind !== 'zenitsu' && !m.ufo && (m.kind === 'gojo' || !levBusy(m)) && onGroundBeast(m);
 }
 /* 點下去的那一下（useTool／game-ui.js 點生物、點小人那兩條）。tb＝點到的那一隻（或那一個小人，
    isW 給 true）；ground＝點的是空地（跑到那裡待命）。回傳被叫去的那一位（測試在讀）。 */
@@ -10266,6 +10281,357 @@ function zenLives(m, ax, az, ux, uz, L, W2) {
   if (hit) sndFall();
   return hit;
 }
+
+/* ── 破壞道具：虛式「茈」（v1.255.0）────────────────────────────
+   使用者（造型過了之後）：「應該差不多了 再來說他如何攻擊 操作方式同saber等 打出去的紫球 帶著旋轉
+   積木或生物吸進去轉 不用越來越大顆」（造型三輪預覽，見 engine.js〈五條悟〉）。問過四件，使用者選：
+     · 紫球怎麼走：**直線穿過去**（從指尖往點的那一點直線飛、一路穿過建築、沿路吸，飛到射程盡頭才收掉）
+     · 吸進去的積木最後：**球收掉時甩出去**（一路跟著球轉，收掉那一刻全部往四周甩出去、落地變碎料）
+     · 多大多遠：**小：吸半徑 3、飛 30 格**（看過預覽之後「球 改大改遠」→ 改成「中：吸半徑 5、飛 40 格」，
+       再看過「距離應該再更長」→ 飛 60 格、「射程再更長」→ 100 格，見 PURP_R）
+     · 沿路的小人與動物：**巨人被抹消，其他甩飛**（巨人同兵長斬殺那一套：跪下、往前倒、冒煙一塊一塊散掉；
+       其餘一起吸進去轉、最後甩飛，算被攻擊）
+   **走過去那一段整套是 Excalibur／兵長砍猴／霹靂一閃那一套**（sendSaber／stepCall／callAim／excDone 共用）：他就是一隻吉祥物
+   （kind 'gojo'），只能用道具叫來（同里維、善逸，不在 MASCOTS 裡），出完招留下來逛一陣子，這段時間再點就直接叫他過去。
+     · 點建築：跑到離那一點 GJ_REACH 格（射程的一半，同 Excalibur）就站定
+     · 點生物、小人：命令帶著那一隻（b／bw），stepCall 每一幀照牠現在的位置追；放出去那一刻照牠當時的位置瞄
+     · 點空地：跑到那一點待命（go，見 levArrive）
+   站定那一刻（callAim → act → gjStart）轉進 pur，時間軸讀引擎那一份（ENG.GJ），姿勢照同一份擺：
+     雙手張開、右手長出赫、左手長出蒼 → 兩手往中間收、兩顆球互相繞著轉撞在一起，白光一閃、茈長出來 → 集氣 →
+     右手往前推，**GJ.fire 那一刻放出去**（firePurp；出手點讀 ENG.gjTip，手上那一顆畫在哪就從哪裡起跳）→ 停一下、手插回口袋，回去逛（excDone）。
+   **什麼時候都打不動他**（levBusy 認 kind 'gojo'——無下限，使用者看過第一版預覽：「無下限 什麼時候都打不動」；
+   第一版同善逸、里維，只有出招那幾秒）。
+   紫球一放出去就是自己的東西（purps，同 Excalibur 的光刃、香蕉跟猴子分開）：他那一刻被打倒也不會把球收回來。
+   見 開發筆記〈破壞道具：虛式「茈」〉 */
+/* 吸的半徑、飛多遠：第一版是使用者選的「小：吸半徑 3、飛 30 格」，看過預覽之後「球 改大改遠」→ 改成當時的「中」那一檔
+   （吸半徑 5、飛 40 格）；再看過「球大小可以 但是距離應該再更長」→ 飛 60 格；「射程再更長」→ 100 格 */
+const PURP_R = 5;
+const PURP_RANGE = 100;            // 飛多遠才收掉
+const PURP_V = 16;                 // 飛多快（格／秒）：100 格六秒出頭，看得到它一路穿過去
+/* 底下這幾個都跟著吸的半徑走（球大、繞的那一圈大、飛得高，三件一起，只改 PURP_R 就好）：
+   球心飛的高度：出手那一點（指尖，約 1.2 格）在頭三格內抬到 PURP_Y0，之後照「從 PURP_Y0 那一點往目標」那條直線飛——
+   球心太低的話半顆球埋在地裡、吸的那一圈在地面只剩一點點；點建築就照那一點的高度瞄（直線穿過那一點），
+   點得比 PURP_Y0 低也不會往地裡鑽（目標高度墊到 PURP_Y0）。吸到的積木繞著球轉，最外圈 PURP_ORB[1] 也不碰地 */
+const PURP_Y0 = PURP_R * 0.64;
+const PURP_LIFT = 3;               // 頭幾格內從指尖抬到那條直線上
+const PURP_VIS = PURP_R * 0.32;    // 畫出來的球多大（半徑，固定——使用者：「不用越來越大顆」）
+const PURP_ORB = [PURP_R * 0.3, PURP_R * 0.64];   // 吸到的東西繞著球心轉的半徑（一件一件各抽一個，接手之後慢慢收到這一圈）
+/* 繞多快（弧度／秒，一件一件各抽一個，方向一致）與吸進來多快（半徑收到那一圈的速率，1／秒）：
+   第一版 [5, 9]、3.5，使用者：「吸進去轉得更快」 */
+const PURP_SPIN = [11, 17];
+const PURP_PULL = 6;
+const PURP_FLING = [10, 18];       // 收掉那一刻往外甩多快（從球心往外）；再加一點順著飛的方向、往上
+const PURP_CAP = 1500;             // 一顆最多手上掛幾件（再多的照樣削飛、不掛在球上）
+/* 走過的地面留一般的痕跡（spawnMark 的坑，使用者：「走過的地面增加普通痕跡」）：吸的那一顆球碰得到地才留，
+   一塊的半徑是球碰到地面那一圈的 PURP_MARK_R 成，每飛過一塊的半徑那麼遠就留一塊（前後疊一半，連成一條） */
+const PURP_MARK_R = 0.8;
+const PURP_MAX = ENG.PURP_MAX;     // 同時最多幾顆在飛（再放就把最早那顆當場收掉）
+const GJ_REACH = PURP_RANGE / 2;   // 站多遠出招：射程的一半（同 Excalibur 的 EXC_REACH），點到的那一點落在球路的正中間
+/* 他的縮放：小人平均（DOOM_SC）的 1.2 倍。使用者看過遊戲預覽：「人物好像看起來還是比小人小一圈」——
+   量到同縮放站著他高 2.46、寬 1.21、頭寬 1.04，小人高 2.26～2.39、寬 1.46～1.60、頭寬 1.06～1.20：不是矮，是瘦。
+   造型預覽給了五檔（現在／等比 1.1／等比 1.2／加寬 1.25／加寬 1.2 高 1.08），使用者選「等比 ×1.2」：
+   高 2.95、寬 1.46，寬跟小人一樣、比例不變，比小人高一截。放在 sc 上，手上的球、閃電、出手點、打中的高度全部跟著走 */
+const GJ_SC = DOOM_SC * 1.2;
+const GJ_AIM = 0.2;                // 站定那一下（act）多久就開始結印
+let purps = null;
+function pickGojo(p) {
+  let best = null, bd = Infinity;
+  if (beasts) for (const m of beasts) {
+    if (m.kind !== 'gojo') continue;
+    const d = Math.hypot(m.x - p.x, m.z - p.z) + (m.ufo ? 1e6 : 0);
+    if (d < bd) { bd = d; best = m; }
+  }
+  return best;
+}
+/* 點得到、追得到的生物：同 zenCanCut（他自己、被吸走的、打不動的、天上的不算） */
+function gjCanCut(m) {
+  return !!m && m.kind !== 'gojo' && !m.ufo && !levBusy(m) && onGroundBeast(m);
+}
+/* 點下去的那一下（useTool／game-ui.js 點生物、點小人那兩條）。tb＝點到的那一隻（或那一個小人，isW 給 true）；
+   ground＝點的是空地（跑到那裡待命）。點建築記下那一點的高度（ay：直線穿過那一點）。回傳被叫去的那一位（測試在讀）。 */
+function callGojo(p, tb, isW, ground) {
+  const at = tb ? { x: tb.x, y: 0, z: tb.z, sd: GJ_REACH, ax: tb.x, az: tb.z, b: tb, bw: isW ? 1 : 0 }
+           : ground ? { x: p.x, y: 0, z: p.z, sd: LEV_SD, go: 1, b: null }
+           : { x: p.x, y: p.y || 0, z: p.z, sd: GJ_REACH, ay: p.y || 0 };
+  const whom = !tb ? '' : isW ? '那個小人' : (BEAST_NM[tb.kind] || '那一隻');
+  let m = pickGojo(at);
+  if (!m) {
+    /* 從那一點的方位上進場（同 Excalibur）；點在場心附近就隨機挑一個方位 */
+    const a = Math.hypot(at.x, at.z) > 1 ? Math.atan2(at.z, at.x) : Math.random() * Math.PI * 2;
+    m = spawnBeast('gojo', 1, 0, a);
+    toast(BEAST_NM.gojo + '應召而來', ground ? '他跑到你點的地方待命'
+                                    : '他朝' + (whom || '你點的地方') + '跑過去，赫與蒼合在一起，放出虛式「茈」');
+  } else {
+    beastCry(m);
+    toast(BEAST_NM.gojo + '聽到了', m.st === 'pur' ? '這一招放完就過去'
+                                  : tb ? '他轉身朝' + whom + '跑過去'
+                                  : ground ? '他轉身跑到你點的地方待命' : '他轉身朝你點的地方跑過去');
+  }
+  if (m.st === 'pur') m.cq = at;               // 正在出招：這一招放完再過去（同 Excalibur）
+  else sendSaber(m, at);
+  return m;
+}
+/* 站定那一刻：轉進 pur、面向那一點（點生物的話面向牠這一刻在的地方） */
+function gjStart(m) {
+  const c = m.call;
+  if (c.b && !levTargetOk(c.b, c.bw, gjCanCut)) { excDone(m); return; }
+  m.st = 'pur'; m.ot = 0; m.gfire = 0; m.gait = 0; m.run = 0;
+  const tx = c.b ? c.b.x : c.ax !== undefined ? c.ax : c.x, tz = c.b ? c.b.z : c.az !== undefined ? c.az : c.z;
+  if (Math.hypot(tx - m.x, tz - m.z) > 0.3) m.a = Math.atan2(tx - m.x, tz - m.z);
+  sndGjCharge();
+}
+const GJ_TURN = 3;                 // 結印那幾秒追著會走的目標轉身多快（弧度／秒）
+function stepGojo(m, dt) {
+  const c = m.call, G = ENG.GJ;
+  if (!c) { gjEnd(m); return false; }
+  m.ot += dt;
+  m.gait = 0; m.run = 0;
+  /* 點的是會走的：放出去之前一路轉身追著牠（放出去那一刻才定方向，見 firePurp）；牠不在了就照原本的方向放 */
+  const live = c.b && levTargetOk(c.b, c.bw, gjCanCut);
+  if (live && !m.gfire) {
+    const want = Math.atan2(c.b.x - m.x, c.b.z - m.z);
+    let d = want - m.a;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    m.a += Math.max(-GJ_TURN * dt, Math.min(GJ_TURN * dt, d));
+  }
+  if (m.ot >= G.meet && !m.gmeet) { m.gmeet = 1; sndGjMeet(); }
+  if (!m.gfire && m.ot >= G.fire) {
+    m.gfire = 1;
+    /* 點生物、小人是平射（目標高度 0 → 墊到 PURP_Y0，見 firePurp）：第一版瞄牠身體中段，巨人的中段高，球會斜斜往上飛，
+       使用者：「射巨人可以往前射就好」。球心那個高度掃得到巨人（purpTake 量牠身上跟球心同高的那一點） */
+    const tx = live ? c.b.x : c.ax !== undefined ? c.ax : c.x, tz = live ? c.b.z : c.az !== undefined ? c.az : c.z;
+    firePurp(m, tx, live ? 0 : (c.ay || 0), tz);
+  }
+  if (m.ot < G.end) return false;
+  gjEnd(m);
+  return false;
+}
+/* 這一招收完：照 Excalibur 那一套回去逛／去排著的下一點 */
+function gjEnd(m) {
+  m.ot = 0; m.gfire = 0; m.gmeet = 0; m.y = 0;
+  excDone(m);
+}
+/* 放出去：從指尖（ENG.gjTip，同手上那一顆畫的位置）往 (tx, ty, tz) 那條直線飛。方向照「從 PURP_Y0 高度的那一點往目標」算
+   （見 PURP_Y0），目標太近或就在腳邊就照他面向的方向。同時最多 PURP_MAX 顆，再放就把最早那顆當場收掉 */
+function firePurp(m, tx, ty, tz) {
+  const o = ENG.gjTip(m);
+  let dx = tx - o.x, dz = tz - o.z, dh = Math.hypot(dx, dz);
+  if (dh < 1.5) { dx = Math.sin(m.a); dz = Math.cos(m.a); dh = 1; }
+  const dy = Math.max(PURP_Y0, ty) - PURP_Y0, L = Math.hypot(dx, dy, dz) || 1;
+  if (!purps) purps = [];
+  while (purps.length >= PURP_MAX) purpBurst(purps.find(p => p.st === 'fly') || purps[0], true);
+  const p = {
+    ox: o.x, oy: o.y, oz: o.z, ux: dx / L, uy: dy / L, uz: dz / L,
+    x: o.x, y: o.y, z: o.z, d: 0, t: 0, st: 'fly', bt: 0, mk: 0, zt: 0,
+    r: PURP_VIS, r0: ENG.GJ_HELD_R * (m.sc || 1), by: m, up: [], hit: 0
+  };
+  purps.push(p);
+  sndPurpFire();
+  ENG.shake(0.6);
+  return p;
+}
+/* 飛了 d 格時球心在哪：水平照直線走；高度照「PURP_Y0 那條直線」，頭 PURP_LIFT 格內從指尖的高度慢慢接上去 */
+function purpAt(p, d, out) {
+  const k = Math.min(1, d / PURP_LIFT), e = k * k * (3 - 2 * k);
+  out.x = p.ox + p.ux * d; out.z = p.oz + p.uz * d;
+  out.y = p.oy + (PURP_Y0 + p.uy * d - p.oy) * e;
+  return out;
+}
+/* (x, y, z) 離這一幀掃過的那一段（a → b，兩端是半圓）多遠的平方 */
+function purpD2(a, b, x, y, z) {
+  const vx = b.x - a.x, vy = b.y - a.y, vz = b.z - a.z, L2 = vx * vx + vy * vy + vz * vz;
+  const wx = x - a.x, wy = y - a.y, wz = z - a.z;
+  const t = L2 > 1e-9 ? Math.max(0, Math.min(1, (wx * vx + wy * vy + wz * vz) / L2)) : 0;
+  const ex = wx - vx * t, ey = wy - vy * t, ez = wz - vz * t;
+  return ex * ex + ey * ey + ez * ez;
+}
+/* 接手一件（kind：0 積木、1 小人、2 動物）：旗標沿用 ufo（意思是「這一件被某個道具收著」，同小黑洞，見那一節），
+   積木改 CARRY。記下接手那一刻離球心的偏移（沿著飛的方向那一份 al、繞著飛的方向那一圈的角度 th 與半徑 rr），
+   之後每一幀照「繞著球轉、半徑慢慢收到 rf、前後那一份慢慢收到 0」算出來（見 purpMove）——
+   繞的軸就是飛的方向，球一路往前鑽、東西一路繞著它轉（使用者：「帶著旋轉 積木或生物吸進去轉」） */
+/* 繞的軸（飛的方向 U）與跟它垂直的兩個方向（B1 水平、B2 ＝ U × B1） */
+const _pU = { x: 0, y: 0, z: 1 }, _pB1 = { x: 1, y: 0, z: 0 }, _pB2 = { x: 0, y: 1, z: 0 };
+function purpBasis(p) {
+  _pU.x = p.ux; _pU.y = p.uy; _pU.z = p.uz;
+  let bx = -p.uz, bz = p.ux, bl = Math.hypot(bx, bz);
+  if (bl < 1e-3) { bx = 1; bz = 0; bl = 1; }
+  _pB1.x = bx / bl; _pB1.y = 0; _pB1.z = bz / bl;
+  const cx = _pU.y * _pB1.z - _pU.z * _pB1.y, cy = _pU.z * _pB1.x - _pU.x * _pB1.z, cz = _pU.x * _pB1.y - _pU.y * _pB1.x;
+  const cl = Math.hypot(cx, cy, cz) || 1;
+  _pB2.x = cx / cl; _pB2.y = cy / cl; _pB2.z = cz / cl;
+}
+const pDot = (a, x, y, z) => a.x * x + a.y * y + a.z * z;
+function purpGrab(p, o, kind) {
+  o.ufo = 1;
+  if (kind === 0) { o.st = CARRY; o.holder = -1; o.rest = false; o.snap = 0; o.qk = 0; }
+  const ry = kind === 1 ? 0.9 : kind === 2 ? 1 : 0;           // 小人量胸口、動物量身體中段（同 HOLE_MID）
+  const vx = o.x - p.x, vy = (o.y || 0) + ry - p.y, vz = o.z - p.z;
+  const al = pDot(_pU, vx, vy, vz), q1 = pDot(_pB1, vx, vy, vz), q2 = pDot(_pB2, vx, vy, vz);
+  const it = { o, kind, ry, al, th: Math.atan2(q2, q1), rr: Math.hypot(q1, q2),
+               rf: rr(PURP_ORB[0], PURP_ORB[1]), w: rr(PURP_SPIN[0], PURP_SPIN[1]), af: rr(-0.5, 0.5),
+               tx: rr(-6, 6), ty: rr(-6, 6), tz: rr(-6, 6), dust: null };
+  p.up.push(it);
+  return it;
+}
+/* 這一幀掃過的那一段（a → b）裡的全部接手：積木（還立著的算破壞，地上的碎料一起吸但不算，同小黑洞）、
+   小人、動物（天上的不吸、打不動的不吸——他自己也是打不動的那一位）。巨人當場抹消（giantDie，同兵長斬殺：跪下、往前倒、
+   冒煙一塊一塊散掉——使用者選的「巨人被抹消」），不吸進來。回傳這一幀吸到幾塊（還立著的） */
+function purpTake(p, a, b) {
+  const R2 = PURP_R * PURP_R;
+  let n = 0, own = 0;
+  for (const bl of blocks) {
+    if ((bl.st !== SET && bl.st !== FREE) || bl.ufo) continue;
+    if (purpD2(a, b, bl.x, bl.y, bl.z) > R2) continue;
+    const wasSet = bl.st === SET, wasOwn = bl.hh < 0;          // breakBlock 會把 hh 清掉，要先看
+    if (p.up.length >= PURP_CAP) {                              // 掛滿了：照樣削飛，不掛在球上（保險）
+      breakBlock(bl, p.ux * 12, rr(3, 7), p.uz * 12);
+      if (wasSet) { n++; if (wasOwn) own++; }
+      continue;
+    }
+    const tr = bl.tr, tg = bl.tg, tb = bl.tb;
+    breakBlock(bl, 0, 0, 0);                  // 照正規出口離場：進度、損失、支撐都靠它
+    douse(bl);                                // 燒著的先熄（同小黑洞）
+    /* 顏色先留著原本的（同小黑洞）：碎料色記在手上，甩出去那一刻才換（見 purpBurst） */
+    purpGrab(p, bl, 0).dust = [bl.tr, bl.tg, bl.tb];
+    bl.tr = tr; bl.tg = tg; bl.tb = tb;
+    if (wasSet) { n++; if (wasOwn) own++; }
+  }
+  for (const w of workers) {
+    if (w.ufo || w.air || w.dead) continue;   // 已經被收著／飛在半空的不吸；屍體不吸（v1.240）
+    if (purpD2(a, b, w.x, (w.y || 0) + 0.9 * (w.scale || 1), w.z) > (PURP_R + GATE_MAN_R) ** 2) continue;
+    tossWorker(w, 0, 0, 0, false);            // 手上的工作先脫手（同小黑洞）
+    lifeHit(w, 'purp');
+    purpGrab(p, w, 1);
+  }
+  if (beasts) for (const m of beasts) {
+    if (m.ufo || !onGroundBeast(m) || levBusy(m)) continue;
+    const mid = ENG.BEAST_MID[m.kind] * (m.sc || 1), pad = GATE_MAN_R + mid * 0.3;
+    if (purpD2(a, b, m.x, (m.y || 0) + Math.min(mid, p.y), m.z) > (PURP_R + pad) ** 2) continue;
+    if (m.kind === 'giant') { if (!m.air) { giantDie(m, 'purp'); ENG.shake(1.0); } continue; }
+    if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'purp');
+    m.air = 1;                                // 掛在球上：落地判定那一套先停（ufo 擋住 stepBeast），甩出去才接著算
+    purpGrab(p, m, 2);
+  }
+  if (n) {
+    p.hit += n;
+    afterHit(n, { x: b.x, y: b.y, z: b.z }, 0, own);   // 半徑 0：範圍裡的本來就全部吸走了（同小黑洞）
+  }
+  return n;
+}
+/* 手上那些這一幀在哪：繞著飛的方向轉 w、半徑從接手時的 rr 慢慢收到 rf、前後那一份 al 收到 af（同一層裡前後錯開一點）。
+   位置照這幾個數**算出來**（同小黑洞的 holeMove），不是一幀一幀推。積木自己翻、小人與動物跟著翻（tilt） */
+function purpMove(p, dt) {
+  const k = 1 - Math.exp(-dt * PURP_PULL);
+  for (let i = p.up.length - 1; i >= 0; i--) {
+    const it = p.up[i], o = it.o;
+    if (!ufoHas(it)) { ufoLose(it); p.up.splice(i, 1); continue; }
+    it.th += it.w * dt;
+    it.rr += (it.rf - it.rr) * k;
+    it.al += (it.af - it.al) * k;
+    const c = Math.cos(it.th) * it.rr, s = Math.sin(it.th) * it.rr;   // _pU／_pB1／_pB2 是 stepPurps 這一幀先算好的
+    o.x = p.x + _pU.x * it.al + _pB1.x * c + _pB2.x * s;
+    o.y = p.y + _pU.y * it.al + _pB1.y * c + _pB2.y * s - it.ry;
+    o.z = p.z + _pU.z * it.al + _pB1.z * c + _pB2.z * s;
+    if (o.y < 0.05) o.y = 0.05;
+    if (it.kind === 0) { o.rx += dt * it.tx; o.ry += dt * it.ty; o.rz += dt * it.tz; }
+    else o.tilt = ((o.tilt || 0) + dt * Math.abs(it.tx)) % 6.283;
+  }
+}
+/* 收掉那一刻：手上的全部往外甩（從球心往外 PURP_FLING、再加一點順著飛的方向、往上），積木換成碎料色、
+   小人與動物飛出去（落地照被炸飛那一套爬起來）。now＝被擠掉的（同時太多顆），一樣甩、只是不留收掉那一下的特效 */
+function purpBurst(p, now) {
+  purpBasis(p);
+  for (const it of p.up) {
+    if (!ufoHas(it)) { ufoLose(it); continue; }
+    const o = it.o;
+    o.ufo = 0;
+    const ox = o.x - p.x, oy = o.y + it.ry - p.y, oz = o.z - p.z;
+    const L = Math.hypot(ox, oy, oz) || 1, sp = rr(PURP_FLING[0], PURP_FLING[1]);
+    const vx = ox / L * sp + p.ux * rr(3, 7), vy = Math.abs(oy / L) * sp * 0.5 + rr(3, 7), vz = oz / L * sp + p.uz * rr(3, 7);
+    if (it.kind === 0) {
+      o.st = FLY; o.rest = false; o.snap = 0; o.al = 1; o.scale = 1;
+      if (it.dust) { o.tr = it.dust[0]; o.tg = it.dust[1]; o.tb = it.dust[2]; }   // 甩出去就是碎料了
+      o.vx = vx; o.vy = vy; o.vz = vz;
+    } else if (it.kind === 1) tossWorker(o, vx * 0.6, vy, vz * 0.6, false);
+    else {
+      /* 動物接手時已經是 air（tossBeast 掀過），再叫 tossBeast 會直接回 false——速度自己給（同小黑洞的 holeBail），
+         大的照 tossBeast 那一條打折（bk） */
+      const bk = Math.min(1, DOOM_SC / (o.sc || 1));
+      o.air = 1; o.vx = vx * 0.6 * B_BLOW * bk; o.vy = vy * bk; o.vz = vz * 0.6 * B_BLOW * bk;
+      o.tsp = rr(4, 9) * bk * (Math.random() < 0.5 ? -1 : 1);
+    }
+  }
+  p.up.length = 0;
+  if (now) { const i = purps.indexOf(p); if (i >= 0) purps.splice(i, 1); if (!purps.length) purps = null; return; }
+  p.st = 'burst'; p.bt = 0;
+  sndPurpBurst();
+  ENG.shake(1.0);
+  spawnDust({ x: p.x, y: Math.max(0.5, p.y - 1), z: p.z }, PURP_R, 40);
+}
+const _pa = { x: 0, y: 0, z: 0 }, _pb = { x: 0, y: 0, z: 0 };
+function stepPurps(dt) {
+  if (!purps) return;
+  for (let i = purps.length - 1; i >= 0; i--) {
+    const p = purps[i];
+    p.t += dt;
+    if (p.st === 'burst') {
+      p.bt += dt;
+      if (p.bt >= ENG.PURP_BURST) purps.splice(i, 1);
+      continue;
+    }
+    purpAt(p, p.d, _pa);
+    p.d = Math.min(PURP_RANGE, p.d + PURP_V * dt);
+    purpAt(p, p.d, _pb);
+    p.x = _pb.x; p.y = _pb.y; p.z = _pb.z;
+    purpBasis(p);
+    purpTake(p, _pa, _pb);
+    purpMove(p, dt);
+    purpMark(p);
+    // 離手 PURP_LIFT 格才開始劈：剛出手那一段劈的電會從他手邊穿過他身上
+    if (p.d >= PURP_LIFT) for (p.zt -= dt; p.zt <= 0; p.zt += rr(PURP_ZAP_GAP[0], PURP_ZAP_GAP[1])) purpZap(p);
+    if (p.d >= PURP_RANGE) purpBurst(p);
+  }
+  if (purps && !purps.length) purps = null;
+}
+/* 地上留一塊痕跡（見 PURP_MARK_R）：球心低於吸的半徑（碰得到地）才留，離上一塊（mk 記著飛到哪裡要再留）夠遠才留 */
+function purpMark(p) {
+  if (p.y >= PURP_R || p.d < p.mk) return;
+  const r = Math.sqrt(PURP_R * PURP_R - p.y * p.y) * PURP_MARK_R;
+  p.mk = p.d + r;
+  spawnMark({ x: p.x, y: 0, z: p.z }, r / MARK_CRATER_R, true);
+}
+/* 球劈到地上的藍色閃電：打雷那一套（boltPts 折線丟進 bolts，引擎的 putBolts 畫成淺藍；純特效，不打東西）。
+   使用者看過第二版：「球的閃電不對 先拿掉 是像打雷的那種藍色電到地面上(但是不要全都從球心出發)」——
+   第二版是紫白的、沿著飛過的那一路往四周竄（善逸雷光那一套），那一套搬去他丟出去之前的身上（引擎的 gjAura）。
+   飛的那幾秒每 PURP_ZAP_GAP 秒劈一道：起點 PURP_ZAP_CORE 成在球心，其餘散在球心周圍 PURP_ZAP_FROM 格內（不低於離地 1.5 格）；
+   落點是起點往外 PURP_ZAP_OUT 格的地上。一道 9 折、兩條分岔往下劈，一道亮多久比打雷（0.16～0.26 秒）短一點；
+   粗細第一版 0.3～0.45（打雷 0.42～0.6），使用者：「球的藍色閃電太粗了」→ 主幹 0.12～0.18、分岔 0.06～0.1 */
+const PURP_ZAP_GAP = [0.06, 0.14];
+const PURP_ZAP_CORE = 0.3;
+const PURP_ZAP_FROM = PURP_R * 0.6;
+const PURP_ZAP_OUT = [1.5, 6];
+function purpZap(p) {
+  let x = p.x, y = p.y, z = p.z;
+  if (Math.random() > PURP_ZAP_CORE) {
+    const a = Math.random() * Math.PI * 2, rad = rr(0.3, 1) * PURP_ZAP_FROM;
+    x += Math.cos(a) * rad; z += Math.sin(a) * rad; y = Math.max(1.5, y + rr(-0.5, 1.5));
+  }
+  const b = Math.random() * Math.PI * 2, out = rr(PURP_ZAP_OUT[0], PURP_ZAP_OUT[1]);
+  const life = rr(0.14, 0.24);
+  const main = boltPts(x, y, z, x + Math.cos(b) * out, 0.1, z + Math.sin(b) * out, 0.9, 9);
+  bolts.push({ pts: main, t: 0, life, op: 1, w: rr(0.12, 0.18), src: p });
+  for (let k = 0; k < 2; k++) {
+    const q = main[2 + Math.floor(Math.random() * (main.length - 4))];
+    const c = Math.random() * Math.PI * 2, br = rr(1, 3);
+    bolts.push({ pts: boltPts(q.x, q.y, q.z, q.x + Math.cos(c) * br, 0.1, q.z + Math.sin(c) * br, 0.5, 4),
+                 t: 0, life: life * 0.75, op: 1, w: rr(0.06, 0.1), src: p });
+  }
+}
+const purpList = () => purps || EMPTY_PURPS;
+const EMPTY_PURPS = [];
+/* 一次收乾淨（清場用，同 holeClear）：手上的全部放掉 */
+function purpClear() { while (purps && purps.length) purpBurst(purps[0], true); purps = null; }
 
 /* 天災的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）。 */
 function stepDoom(dt) {
@@ -11389,10 +11755,11 @@ const MORE_GAP = DOOM_FIRE_R * 2;
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 小獼猴', snow: '🐵 小猴子', dragon: '🐉 飛龍',
                    gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber', levi: '🗡 里維兵長',
-                   megumin: '💥 惠惠', zenitsu: '⚡ 善逸' };
-/* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）、善逸（v1.251.0）用「他」；
+                   megumin: '💥 惠惠', zenitsu: '⚡ 善逸', gojo: '🟣 五條悟' };
+/* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）用「他」；
    惠惠（v1.247.0）用「她」——其餘那幾款照舊是牠 */
-const itOf = m => m.kind === 'saber' || m.kind === 'megumin' ? '她' : m.kind === 'levi' || m.kind === 'zenitsu' ? '他' : '牠';
+const itOf = m => m.kind === 'saber' || m.kind === 'megumin' ? '她'
+                : m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' ? '他' : '牠';
 /* 叫一聲。哪一種叫哪一聲照 spawnBeast／spawnDragon 那邊的分法，不另訂一套。 */
 function beastCry(m) {
   if (m.kind === 'dragon' || m.kind === 'gryphon') sndRoar();
@@ -11401,6 +11768,7 @@ function beastCry(m) {
   else if (m.kind === 'levi') sndLevi();
   else if (m.kind === 'megumin') sndMegumin();
   else if (m.kind === 'zenitsu') sndZen();
+  else if (m.kind === 'gojo') sndGojo();
   else sndBeast(m.kind === 'snow');
 }
 /* 這一隻已經在走人了嗎（那就別再改牠的主意，同 turnBad 的規矩：都走到一半了
@@ -11599,7 +11967,7 @@ function beastHit(m, src) {
   if (!m || m === hitBy || beastLeaving(m) || m.call || m.cq) return;
   /* 里維兵長（v1.230）不會生氣：他只做玩家叫他做的事（吉祥物那一套翻臉、砸地標他都沒有）。
      倒下、暈著、爬起來的惠惠（v1.247.0，使用者：「躺著暈不會被打到」）也不算：那幾段 levBusy 擋著，照理打不到 */
-  if (m.kind === 'levi' || m.kind === 'zenitsu' || m.dead || megDown(m)) return;   // 善逸（v1.251.0）同里維
+  if (m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.dead || megDown(m)) return;   // 善逸（v1.251.0）、五條悟（v1.255.0）同里維
   /* 動不了手的吉祥物（v1.229，表上的 spent：小猴子丟完香蕉）：照樣會倒，只是不再改主意 */
   if (mascSpent(m)) return;
   /* 冷卻中（v1.229）：上一下算進去還不到 BEAST_HIT_CD 秒，這一下不算。

@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.254.0';
+const VERSION = '1.255.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -342,6 +342,25 @@ function sndZenSheath() {
   tone(2400, 0.22, 'triangle', 0.04, 1, 'zenSheath');
   setTimeout(() => tone(3200, 0.14, 'sine', 0.025, 1, 'zenSheath2'), 40);
 }
+/* 五條悟（v1.255.0）：登場是一聲低的嗡＋一顆很輕的高音（像空間被拉了一下）——跟 Saber（兩顆亮音往上）、
+   里維（噴氣＋短的金屬）、善逸（電流的滋）分得開 */
+function sndGojo() { tone(140, 0.35, 'sine', 0.05, 0.6, 'gojo'); tone(2100, 0.22, 'sine', 0.012, 1.4, 'gojoHi'); }
+/* 結印到放出去那幾秒：一聲往上爬的嗡鳴（長度讀 ENG.GJ.fire，不寫死），赫與蒼兩聲錯開疊在上面 */
+function sndGjCharge() {
+  const d = ENG.GJ.fire;
+  tone(110, d, 'triangle', 0.04, 3, 'gjCharge', 0.5);
+  tone(330, d, 'sine', 0.02, 2.5, 'gjCharge2', 0.8);
+}
+/* 赫與蒼撞在一起：一聲悶的轟＋往下掃的亮音 */
+function sndGjMeet() { noise(0.35, 0.12, 900); tone(1200, 0.4, 'sine', 0.03, 0.3, 'gjMeet'); }
+/* 茈放出去：低頻的轟（同 Excalibur 那一類）＋一聲往上拉的嗡 */
+function sndPurpFire() {
+  noise(0.7, 0.2, 500);
+  tone(60, 1.1, 'sawtooth', 0.08, 0.5, 'purp');
+  tone(220, 1.6, 'triangle', 0.04, 2.2, 'purpHum', 0.6);
+}
+/* 收掉那一下：吸著的全部甩出去，一聲炸開的噪音＋低頻 */
+function sndPurpBurst() { noise(0.6, 0.22, 1200); tone(80, 0.6, 'sawtooth', 0.07, 0.4, 'purpBurst'); }
 /* 詠唱：一聲往上爬的嗡鳴，從放出魔法陣一路爬到爆炸（道具那一發的 MAG_TIME 秒） */
 function sndChant() {
   tone(150, MAG_TIME, 'triangle', 0.045, 3.2, 'megChant', 0.6);

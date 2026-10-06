@@ -1321,6 +1321,8 @@ function navDims() {
   navDim.megumin = scan(M.megumin, b => b.g === ENG.MEG_G.staff);
   /* 善逸（v1.251.0）：刀與鞘那幾塊是它們自己的座標（鍔、鞘口在原點），不算 */
   navDim.zenitsu = scan(M.zenitsu, b => b.g === ENG.ZEN_G.sword || b.g === ENG.ZEN_G.saya);
+  /* 五條悟（v1.255.0）：伸出來的手指只有比手勢才畫，不算 */
+  navDim.gojo = scan(M.gojo, b => b.f);
   return navDim;
 }
 /* 這個人（這隻）走路的身體：H 是幾層高的柱子擋得住他、r 是離柱子至少多遠。
