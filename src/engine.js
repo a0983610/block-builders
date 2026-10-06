@@ -339,6 +339,15 @@ const ENG = (function () {
   const FADE_W = 60, FADE_B = 24;
   let fadeMesh = null, fadeAlpha = null;
   let fadeWn = 0, fadeWUsed = 0, fadeBUsed = 0;   // 這一幀排到第幾具小人／上一幀用到幾具
+  /* ── 人形角色淡入淡出（v1.256.0）──────────────────────────
+     從林帶進出場要淡（規則那邊給 alpha，見 game.js 的 woodFade）。小人、牛羊、猴子這些走上面那顆 fadeMesh；
+     Saber、里維、惠惠、善逸、五條悟各自一顆網格、不進 beastMesh，所以另外一顆：五支 putXxx 照常畫完，
+     有 alpha 的那一位整格（矩陣與顏色）照抄過來、原本那一格塞 0（見 fadeHumans）——同屍體搬去 fadeMesh 的做法。
+     材質直接共用 fadeMesh 那一份。一位一格 HUM_SLOT（五款裡塊數最多的那一款），最多 HUM_MAX 位同時在淡，
+     超過的照舊畫在原本那一顆、不淡。五條悟頭髮的法線偏移（upBias）這一顆沒有，淡的那幾格頭髮明暗會差一點。
+     **沒有人在淡就 visible = false**。 */
+  const HUM_MAX = 4;
+  let humMesh = null, humAlpha = null, HUM_SLOT = 0;
   /* 造型座標上的幾個高度／寬度。**規則那邊直接讀這幾個**算刃掃到哪（同 DOZ_W 的用意）：
      畫出來的刃跟判定用的扇形必須是同一塊，不然玩家會看到刃掃過去卻有積木沒動。
        PIVOT 樞紐（旋轉圓心）、EDGE 刃根（護手上緣）、HIT 攻擊點、TIP 刃尖、W 刃最寬處
@@ -1615,6 +1624,26 @@ const ENG = (function () {
     for (let i = 0; i < FADE_N; i++) fadeMesh.setMatrixAt(i, ZERO_M);
     fadeMesh.setColorAt(0, tmpC.setHex(0xffffff));
     scene.add(fadeMesh);
+
+    /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）：幾何體同 fadeMesh 那一套（不切、不發光），材質共用那一份 */
+    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT);
+    const HUM_N = HUM_MAX * HUM_SLOT;
+    const humGeo = new T.BoxGeometry(1, 1, 1);
+    const humCut = new T.InstancedBufferAttribute(new Float32Array(HUM_N * 4), 4);
+    for (let i = 0; i < HUM_N; i++) humCut.array[i * 4 + 3] = -1;
+    humAlpha = new T.InstancedBufferAttribute(new Float32Array(HUM_N), 1);
+    humAlpha.setUsage(T.DynamicDrawUsage);
+    humGeo.setAttribute('aCut', humCut);
+    humGeo.setAttribute('aFade', humAlpha);
+    humGeo.setAttribute('aGlow', new T.InstancedBufferAttribute(new Float32Array(HUM_N), 1));
+    humMesh = new T.InstancedMesh(humGeo, fadeMesh.material, HUM_N);
+    humMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    humMesh.castShadow = true;
+    humMesh.customDepthMaterial = weapDepth;
+    humMesh.count = 0; humMesh.frustumCulled = false; humMesh.visible = false;
+    for (let i = 0; i < HUM_N; i++) humMesh.setMatrixAt(i, ZERO_M);
+    humMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(humMesh);
 
     /* 幽浮（v1.167）。外殼跟投石機同一套：整台的部位塞進一顆 InstancedMesh，
        所以一台跟兩台一樣貴。顏色開場寫一次就好（同大劍，造型只有這一種）。 */
@@ -8276,6 +8305,37 @@ void main() {
       if (_zI[2]) { z.instanceMatrix.needsUpdate = true; dropSphere(z); }
     }
   }
+  /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）。五支 putXxx 畫完之後叫一次：
+     有 alpha 的那一位整格照抄到 humMesh、原本那一格塞 0。xxxAt 是「第幾位畫的是清單裡的第幾隻」。 */
+  function fadeHumans(list) {
+    let n = 0;
+    const move = (src, at, slot) => {
+      const cnt = src.visible ? src.count / slot : 0;
+      for (let j = 0; j < cnt && n < HUM_MAX; j++) {
+        const m = list[at[j]];
+        if (!m || m.alpha === undefined) continue;
+        const s0 = j * slot, d0 = n++ * HUM_SLOT;
+        humMesh.instanceMatrix.array.set(src.instanceMatrix.array.subarray(s0 * 16, (s0 + slot) * 16), d0 * 16);
+        humMesh.instanceColor.array.set(src.instanceColor.array.subarray(s0 * 3, (s0 + slot) * 3), d0 * 3);
+        for (let k = slot; k < HUM_SLOT; k++) humMesh.setMatrixAt(d0 + k, ZERO_M);
+        humAlpha.array.fill(m.alpha, d0, d0 + HUM_SLOT);
+        for (let k = 0; k < slot; k++) src.setMatrixAt(s0 + k, ZERO_M);
+        src.instanceMatrix.needsUpdate = true;
+      }
+    };
+    move(sabMesh, sabAt, SAB_PARTS);
+    move(levMesh, levAt, LEV_SLOT);
+    move(megMesh, megAt, MEG_SLOT);
+    move(zenMesh, zenAt, ZEN_SLOT);
+    move(gjMesh, gjAt, GJ_SLOT);
+    humMesh.count = n * HUM_SLOT;
+    humMesh.visible = n > 0;
+    if (!n) return;
+    humMesh.instanceMatrix.needsUpdate = true;
+    humMesh.instanceColor.needsUpdate = true;
+    humAlpha.needsUpdate = true;
+    dropSphere(humMesh);
+  }
   /* 飛出去的那幾顆（規則那邊的 purps，見 game-tools.js〈虛式「茈」〉）。每一顆的欄位：
        x／y／z 球心、ox／oy／oz 出手那一點、ux／uy／uz 飛的方向、d 飛了多遠、t 出手幾秒了、
        st 'fly'（飛）／'burst'（收掉那一下，bt 秒）、r 畫出來的半徑（規則那邊給，固定一個大小——使用者：「不用越來越大顆」）、
@@ -8534,8 +8594,10 @@ void main() {
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
         M.setMatrixAt(base + k, tmpM);
         M.setColorAt(base + k, tmpC.setHex(b.c));
-        // 火把頭（v1.249.0）：這一塊畫出去的中心就是火的錨點
-        if (b.ft) putTorch(tmpM.elements[12], tmpM.elements[13], tmpM.elements[14], msc, m.a || 0, m.gait || 0);
+        // 火把頭（v1.249.0）：這一塊畫出去的中心就是火的錨點。
+        // 從林帶淡進來／淡出去那一段（v1.256.0）火苗跟著縮放——火是亮的、不吃 alpha，不縮的話會比牠先出現
+        if (b.ft) putTorch(tmpM.elements[12], tmpM.elements[13], tmpM.elements[14],
+                           msc * (m.alpha === undefined ? 1 : m.alpha), m.a || 0, m.gait || 0);
       }
     }
     beastMesh.instanceMatrix.needsUpdate = true;
@@ -8995,8 +9057,9 @@ void main() {
     DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
     MARK_SEG, EMO_KINDS, EMO_CELLS, EMO_Y, EMO_SIZE, EMO_HAT, MAXDUST, MAXFIRE, WEAP_KIND, WEAP_MAX, GATE_MAX,
     /* 被打死（v1.240）：血泊同時最多幾攤、淡掉的屍體最多幾具；GROUND_PAD 是島比碎料圈多出來那一圈
-       （新的那一個從島的邊上走進來，規則那邊照 debrisR ＋ 這個算邊在哪） */
-    BLOOD_MAX, FADE_W, FADE_B, GROUND_PAD,
+       （規則那邊拿它算林帶的外緣，見 game.js 的 WOOD_OUT）。
+       fadeHumans／HUM_MAX：人形角色從林帶進出場的淡入淡出（v1.256.0） */
+    BLOOD_MAX, FADE_W, FADE_B, GROUND_PAD, fadeHumans, HUM_MAX,
     /* 箭雨（v1.171）：ARROW_K 是箭在造型表裡的索引、BOW_TIP 是箭離開弓的位置
        （同 WAND_TIP／DIG_TIP：畫出來的弓與飛出去的箭要從同一個點對起來）。 */
     ARROW_K, BOW_TIP,
@@ -9065,6 +9128,6 @@ void main() {
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, fadeMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow }; }
   };
 })();

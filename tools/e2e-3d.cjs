@@ -7560,7 +7560,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const b2 = makeBlueprint(i, CNT_MAX), n = b2.slots.length;
       if (n > big) { big = n; bigN = SHAPES[i].n; }
       siteR = Math.max(7, b2.radius);
-      arenaR = Math.sqrt((siteR + 2) ** 2 + SPREAD * n / Math.PI) + 8;
+      arenaR = arenaOf(siteR, n, CNT_MAX);         // 跟 startBuild 同一支（v1.256.0 起每一檔固定，見 ARENA_FIX）
       const wn = wallPlan().reduce((a, h) => a + h.slots.length, 0);
       if (wn > wall) { wall = wn; wallN = SHAPES[i].n; }
     }
@@ -10044,7 +10044,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const m = spawnBeast('ape');
       m.x = Math.cos(a0) * (arenaR + 8); m.z = Math.sin(a0) * (arenaR + 8);
       const seen = {};
-      let act = null, n = 0, pick = null, was = inWall(m.x, m.z);
+      let act = null, n = 0, pick = null, was = inWall(m.x, m.z), wallHit = 0;
       /* 門洞中心（在牆線上，見 gateTower 的 gmid） */
       const gates = homes.list.filter(h => h.gap).map(h => h.gmid ||
         { x: (h.gap.x0 + h.gap.x1) / 2, z: (h.gap.z0 + h.gap.z1) / 2 });
@@ -10067,8 +10067,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         was = now;
         if (!act && m.st === 'act')
           act = { inWall: inWall(m.x, m.z), home: m.home || 0 };
+        /* 城牆有沒有被點著：**這一趟裡任何一刻**（v1.256.0）。v1.255 以前是量牠走掉那一刻還掛在牆上、
+           還在燒的有幾塊——退場點搬到林帶中線之後牠多走四秒才收掉，那時候燒著的牆早就脫落成碎料
+           （hh 變 −1，同下面 siteBurn 那段註解），量到 0 塊。要守的是「就地拆牆」，不是「走的時候還在燒」。 */
+        if (!wallHit && blocks.some(b => b.burn && b.hh >= 0)) wallHit = n;
       }
-      return { gate: seen.gate || 0, act, pick, secs: +(n * 0.05).toFixed(0),
+      return { gate: seen.gate || 0, act, pick, secs: +(n * 0.05).toFixed(0), wallHit,
                wallBurn: blocks.filter(b => b.burn && b.hh >= 0).length,
                burn: blocks.filter(b => b.burn).length,
                /* 「有沒有跑去砸地標」要看**地標的格子**在不在燒：藍圖的積木 slot >= 0，
@@ -10128,11 +10132,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      `${apeWall.corner.act && apeWall.corner.act.inWall ? '城裡' : '城外'}動手`);
   ok('四座門都堵死（整圈沒有路）就就地拆牆（使用者選的「兩個都要」）',
      apeWall.none.gate === 0 && apeWall.none.act && apeWall.none.act.home === 1 &&
-     apeWall.none.wallBurn > 0 && apeWall.none.siteBurn === 0 &&
+     apeWall.none.wallHit > 0 && apeWall.none.siteBurn === 0 &&
      apeWall.none.secs < 120,
-     `沒門可繞（${apeWall.none.gate} 幀）、${apeWall.none.secs} 秒後在` +
-     `${apeWall.none.act && apeWall.none.act.inWall ? '城裡' : '城外'}動手，` +
-     `燒起來 ${apeWall.none.burn} 塊（城牆 ${apeWall.none.wallBurn} 塊、地標 ${apeWall.none.siteBurn} 塊）`);
+     `沒門可繞（${apeWall.none.gate} 幀）、在` +
+     `${apeWall.none.act && apeWall.none.act.inWall ? '城裡' : '城外'}動手、` +
+     `第 ${(apeWall.none.wallHit * 0.05).toFixed(1)} 秒點著城牆；走掉那一刻燒著 ${apeWall.none.burn} 塊` +
+     `（還掛在牆上 ${apeWall.none.wallBurn} 塊、地標 ${apeWall.none.siteBurn} 塊）`);
   /* 門樓整段不在清單上，那裡就是空地：從那個洞進城，不必破牆
      （v1.235，使用者 v1.186 的原話「主要是能走過去就走…走不過就破牆而入」）。
      v1.234 看不到這種洞（wallOpenSpot 只認清單上的門洞與空框），會在洞旁邊就地拆牆。
@@ -25462,7 +25467,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      秒數是一幀一幀（0.05）數出來的，剛好抽到 45 的那一趟會量到 45.05，
      拿邊界當門檻等於埋一顆偶爾才爆的雷。 */
   /* 「走回去」那一段的下限 v1.183 從 5 秒放寬到 1 秒：閒晃範圍放到整片碎料場之後，
-     牠可能剛好逛到場邊才到時間，離出口只剩幾格（退場點是 arenaR + DOOM_OUT）。
+     牠可能剛好逛到場邊才到時間，離出口只剩幾格（退場點 v1.256.0 起是林帶中線 woodR）。
      這一條要驗的是「有走出去這一段、不是原地消失」，不是「走了多久」。 */
   ok('走進來 → 逛一逛 → 走人，逛的長度就是這一趟抽到的 MASC_STAY',
      mwalk.gone && mwalk.come > 5 && mwalk.go > 1 &&
@@ -26915,7 +26920,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     draw();
     const off = vis();
     const m = spawnBeast('megumin', 1, 0);
-    m.st = 'fun'; m.gait = 0; m.ph = 0;
+    /* 量的是姿勢，不是進場那一段：當她已經走進來了（v1.256.0 起剛出現在林帶中線是全透明、
+       整格搬到 humMesh 畫，megMesh 那一格是 0，見 woodFade／fadeHumans） */
+    m.st = 'fun'; m.gait = 0; m.ph = 0; m.wIn = 0;
     draw();
     const stand = vis(), standUp = col(shaft, 1).normalize().y, standHat = col(brim, 3).y;
     m.gait = 0.85; m.ph = 0.7;
@@ -28327,7 +28334,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      kc.keep === 2 && kc.alive && kc.masc === undefined,
      '被打兩下放著走 30 秒還是 ' + kc.keep + '（門檻 ' + kc.K + '）、還活著；吉祥物 hits ' + kc.masc);
 
-  /* ── 小人一整趟：第三下倒下 → 血漫開 → 淡掉 → 換一個新的從島邊走進來 ── */
+  /* ── 小人一整趟：第三下倒下 → 血漫開 → 淡掉 → 換一個新的從林帶走進來（v1.255 以前是島邊） ── */
   const kw = await page.evaluate(() => {
     cleanTools(); doomT = 1e9;
     const i = 2, w = workers[i];
@@ -28382,17 +28389,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
     }
     const nw = workers[i];
-    const edge = debrisR + ENG.GROUND_PAD - EDGE_IN;
-    const onEdge = Math.abs(Math.max(Math.abs(nw.x), Math.abs(nw.z)) - edge) < 1e-6;
+    /* v1.256.0 起從林帶中線（woodR）出現、邊走邊淡入（v1.240～v1.255 是方形島邊） */
+    const edge = woodR();
+    const onEdge = Math.abs(Math.hypot(nw.x, nw.z) - edge) < 1e-6;
+    draw();                                          // alpha 是畫之前照位置算的（見 woodFade）
+    const a0 = nw.alpha, in0 = nw.wIn;
     const rA = Math.hypot(nw.x, nw.z);
     /* 血泊是自己的鐘（stepMarks 那邊）：換人那一幀它可能還剩 alpha 零點零幾，數它晚幾幀收（最多 2 幀） */
     const poolA = pool.a;
     let lag = 0;
     while (bloods.includes(pool) && lag < 10) { step(0.05); lag++; }
-    draw();
-    const fresh = { hits: nw.hits, dead: nw.dead, alpha: nw.alpha, own: nw.own, tone: nw.tone !== w.tone, onEdge,
-                    cheer: cheerOn(nw), lag, poolA, fadeOff: !ENG.three.fadeMesh.visible };
+    const fresh = { hits: nw.hits, dead: nw.dead, a0, in0, own: nw.own, tone: nw.tone !== w.tone, onEdge,
+                    cheer: cheerOn(nw), lag, poolA };
     for (let k = 0; k < 400; k++) step(0.05);       // 再走 20 秒
+    /* 走進來淡完了：alpha 拿掉、fadeMesh 收掉（屍體早就沒了，新的這一個也淡完了） */
+    draw();
+    fresh.alpha = nw.alpha; fresh.fadeOff = !ENG.three.fadeMesh.visible;
     const rB = Math.hypot(nw.x, nw.z);
     nw.own = -1;
     cleanTools();
@@ -28416,13 +28428,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      kw.zeroW && kw.fadeOk && kw.drawn && kw.red && kw.under < 0.35,
      '原本那一格全 0 ' + kw.zeroW + '、fadeMesh 濃度＝alpha ' + kw.fadeOk + '、頂點數對 ' + kw.drawn +
      '、紅的 ' + kw.red + '、身體重心離血泊中心 ' + kw.under.toFixed(2) + ' 個半徑');
-  ok('淡完換一個新的人：從島的邊上出現、走進來，接住那間家、換一組衣服、不跟著慶祝',
-     kw.fresh.hits === 0 && kw.fresh.dead === 0 && kw.fresh.alpha === undefined && kw.fresh.onEdge &&
-     kw.fresh.own === 5 && kw.fresh.tone && !kw.fresh.cheer && kw.fresh.lag <= 2 && kw.fresh.poolA <= 0.05 &&
-     kw.fresh.fadeOff && kw.rB < kw.debrisR && kw.rB < kw.rA - 20,
-     '出現在離中心 ' + kw.rA + '（島邊 ' + kw.edge + '，方的）、20 秒後 ' + kw.rB + '（碎料圈 ' + kw.debrisR +
-     '）；hits ' + kw.fresh.hits + '、家 ' + kw.fresh.own + '、換色 ' + kw.fresh.tone + '、慶祝 ' + kw.fresh.cheer +
-     '；血泊換人那一幀剩 ' + kw.fresh.poolA.toFixed(3) + '、晚 ' + kw.fresh.lag + ' 幀收、fadeMesh 收掉 ' + kw.fresh.fadeOff);
+  const kwFresh = kw.fresh.hits === 0 && kw.fresh.dead === 0 && kw.fresh.onEdge && kw.fresh.a0 === 0 &&
+                  kw.fresh.in0 === 1 && kw.fresh.alpha === undefined && kw.fresh.own === 5 && kw.fresh.tone &&
+                  !kw.fresh.cheer && kw.fresh.lag <= 2 && kw.fresh.poolA <= 0.05 && kw.fresh.fadeOff && kw.rB < kw.debrisR;
+  ok('淡完換一個新的人：從林帶出現、邊走邊淡入，接住那間家、換一組衣服、不跟著慶祝', kwFresh,
+     '出現在林帶中線（' + kw.edge + '）、alpha 從 0 起，20 秒後走進碎料圈、淡完、fadeMesh 收掉；接住那間家、換色、不慶祝' +
+     (kwFresh ? '' : '：離中心 ' + kw.rA + ' → ' + kw.rB + '（碎料圈 ' + kw.debrisR + '）、alpha ' + kw.fresh.a0 +
+      ' → ' + kw.fresh.alpha + '、wIn ' + kw.fresh.in0 + '、在林帶中線 ' + kw.fresh.onEdge + '；hits ' + kw.fresh.hits +
+      '、家 ' + kw.fresh.own + '、換色 ' + kw.fresh.tone + '、慶祝 ' + kw.fresh.cheer + '；血泊換人那一幀剩 ' +
+      kw.fresh.poolA.toFixed(3) + '、晚 ' + kw.fresh.lag + ' 幀收、fadeMesh 收掉 ' + kw.fresh.fadeOff));
 
   /* ── 最後那一下的反應照演完才死：飛完落地、燒完才倒，滾著燒的不先站起來 ── */
   const kl = await page.evaluate(() => {
@@ -28555,9 +28569,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       }
     }
     const herd = beasts.filter(o => o.herd), nw = herd[herd.length - 1];
-    const edge = debrisR + ENG.GROUND_PAD - EDGE_IN;
+    const edge = woodR();                            // v1.256.0 起從林帶中線進來（v1.240～v1.255 是方形島邊）
     const back = { n1: herd.length, owed: herdOwed, neu: nw !== m && !nw.dead && nw.hits === 0,
-                   onEdge: Math.abs(Math.max(Math.abs(nw.x), Math.abs(nw.z)) - edge) < 1e-6,
+                   onEdge: Math.abs(Math.hypot(nw.x, nw.z) - edge) < 1e-6 && nw.wIn === 1,
                    inward: Math.hypot(nw.tx, nw.tz) < debrisR + 1e-6 };
     /* 站著被點著的：燒完才倒 */
     const s = herd[0];
@@ -28587,10 +28601,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(kh.gone - (kh.H + kh.F)) <= 0.11 && kh.under < 0.35,
      kh.kind + '：側躺 ' + kh.flat.toFixed(2) + ' 秒、打不動 ' + kh.imm + '、淡到一半 ' + kh.aMid.toFixed(2) +
      '、' + kh.gone.toFixed(2) + ' 秒拿掉；身體重心離血泊中心 ' + kh.under.toFixed(2) + ' 個半徑');
-  ok('牛羊淡完才補一隻，補的那一隻從島的邊上走進來（開場那幾隻照舊直接站在場上）',
+  ok('牛羊淡完才補一隻，補的那一隻從林帶淡進來（開場那幾隻照舊直接站在場上）',
      !kh.early && kh.back.n1 === kh.n0 && kh.back.owed === 0 && kh.back.neu && kh.back.onEdge && kh.back.inward,
-     '淡完之前隻數一直是 ' + kh.n0 + '（多補 ' + kh.early + '）、補完 ' + kh.back.n1 + ' 隻；新的那隻站在島邊（' +
-     kh.edge + '，方的）' + kh.back.onEdge + '、第一個目標在碎料圈裡 ' + kh.back.inward);
+     '淡完之前隻數一直是 ' + kh.n0 + '（多補 ' + kh.early + '）、補完 ' + kh.back.n1 + ' 隻；新的那隻在林帶中線（' +
+     kh.edge + '）、正在淡入 ' + kh.back.onEdge + '、第一個目標在碎料圈裡 ' + kh.back.inward);
   ok('牛羊站著被點著的第三下：燒完才倒；小人閒著射箭射中也記一次',
      kh.burnDead === 0 && kh.deadAt !== null && kh.deadAt - kh.burnEnd <= 0.051 && kh.play === 1,
      '火滅 ' + (kh.burnEnd || 0).toFixed(2) + ' 秒、死 ' + (kh.deadAt || 0).toFixed(2) + ' 秒；射中一箭記 ' + kh.play);
@@ -28610,7 +28624,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '換場前躺平角 ' + ksw.t0.toFixed(3) + '、換場後 ' + ksw.t1.toFixed(3) + '，死了 ' + ksw.d0.toFixed(2) +
      ' → ' + ksw.d1.toFixed(2) + ' 秒');
 
-  /* 收尾：拔掉、死的那幾格換回一般的新人（站在工地旁，不是從島邊走進來） */
+  /* 收尾：拔掉、死的那幾格換回一般的新人（站在工地旁，不是從林帶走進來） */
   await page.evaluate(() => {
     lifeHit = () => {}; stepDoom = () => {}; stepHerd = () => {};
     for (let i = 0; i < workers.length; i++) {
@@ -28622,6 +28636,213 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
   });
   }   // ── 〈被打死〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 場地固定與林帶進出場（v1.256.0）══════════
+     使用者：「會想改是因為換地標 感覺地圖會閃一下的改變」→ 選「各檔取最大」；
+     「A＋ 樹在同一個場地大小下只種一次，換檔位時才重種 54顆 散成林帶」；
+     「死掉小人復活&吉祥物&天災都從大概林帶 進出場」→ 選「林帶中線」「淡入淡出」、五位人形角色也一起淡。
+     **全是規則型**：場地與樹是照表算的、進出場那一圈是一個數字、淡入淡出是位置的函數，
+     不必跑模擬看統計——直接叫那幾支、量完把全域還回去。 */
+  SEC: { if (!(await head('場地固定與林帶進出場', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 3000, workers: 8 });
+
+  /* ── 場地：每一檔的生活圈就是 ARENA_FIX，沒有一座的算式超過它 ── */
+  const fxA = await page.evaluate(() => {
+    const over = [], top = {};
+    for (const cnt of CNT_OPTS) {
+      top[cnt] = 0;
+      for (let i = 0; i < SHAPES.length; i++) {
+        const b2 = makeBlueprint(i, cnt), sr = Math.max(7, b2.radius);
+        const f = arenaOf(sr, b2.slots.length, 0);   // 不在三檔裡＝只有算式
+        if (f > top[cnt]) top[cnt] = f;
+        if (arenaOf(sr, b2.slots.length, cnt) !== ARENA_FIX[cnt]) over.push(cnt + ' ' + SHAPES[i].n + ' ' + f.toFixed(2));
+      }
+    }
+    return { over, n: SHAPES.length, top, fix: ARENA_FIX, opts: CNT_OPTS, has: CNT_OPTS.every(c => ARENA_FIX[c] > 0) };
+  });
+  ok('每一檔的生活圈固定成 ARENA_FIX，內建＋自訂藍圖沒有一座的算式超過它',
+     fxA.has && fxA.over.length === 0,
+     fxA.n + ' 座 × ' + fxA.opts.join('／') + ' 檔都等於固定值 ' + fxA.opts.map(c => fxA.fix[c]).join('／') +
+     (fxA.has && !fxA.over.length ? '' : '；超過的：' + fxA.over.join('、') + '（各檔算式最大 ' +
+      fxA.opts.map(c => fxA.top[c].toFixed(2)).join('／') + '）'));
+
+  /* ── 同一檔換地標：島、霧、樹都不動；換檔位才重種 ── */
+  const fxS = await page.evaluate(() => {
+    const key = () => trees.map(t => t.x + ',' + t.z + ',' + t.h + ',' + t.r).join(';');
+    const look = () => ({ a: arenaR, d: debrisR, g: ENG.three.ground.scale.x, f: ENG.three.scene.fog.far, t: key() });
+    const s0 = look(), diff = [];
+    for (const n of ['金門大橋', '比薩斜塔', '倫敦大笨鐘', '萬里長城']) {
+      shapePick = SHAPES.findIndex(s => s.n === n);
+      startBuild(false);
+      const s = look();
+      for (const k of ['a', 'd', 'g', 'f', 't']) if (s[k] !== s0[k]) diff.push(n + ' ' + k);
+    }
+    targetCnt = 9000; startBuild(false);
+    const big = { d: debrisR, moved: key() !== s0.t, n: trees.length };
+    targetCnt = 3000; shapePick = SHAPES.findIndex(s => s.n === '吉薩大金字塔'); startBuild(true);
+    cleanTools();
+    return { diff, big, d0: s0.d, N: TREE_N };
+  });
+  ok('同一檔換地標：生活圈、碎料圈、島、霧、每一棵樹都不動；換建材檔位才重種一片',
+     fxS.diff.length === 0 && fxS.big.d !== fxS.d0 && fxS.big.moved && fxS.big.n === fxS.N,
+     '3000 檔換四座都一樣；換到 9000 檔碎料圈變了、樹重種了 ' + fxS.N + ' 棵' +
+     (fxS.diff.length ? '；變了的：' + fxS.diff.join('、') : ''));
+
+  /* ── 林帶：棵數、種在哪、含樹冠不出島、兩棵至少隔平均間距的六成 ── */
+  const fxT = await page.evaluate(() => {
+    const r0 = debrisR + WOOD_IN, r1 = debrisR + WOOD_OUT, edge = debrisR + ENG.GROUND_PAD;
+    const gap = Math.sqrt(Math.PI * (r1 * r1 - r0 * r0) / TREE_N) * 0.6;
+    let band = 0, out = 0, close = 0;
+    for (let i = 0; i < trees.length; i++) {
+      const t = trees[i], r = Math.hypot(t.x, t.z);
+      if (r < r0 - 1e-9 || r > r1 + 1e-9) band++;
+      if (Math.max(Math.abs(t.x), Math.abs(t.z)) + t.r > edge + 1e-9) out++;
+      for (let j = i + 1; j < trees.length; j++)
+        if (Math.hypot(t.x - trees[j].x, t.z - trees[j].z) < gap - 1e-9) close++;
+    }
+    return { n: trees.length, N: TREE_N, band, out, close, cap: WOOD_OUT + TREE_R[1] === ENG.GROUND_PAD };
+  });
+  ok('林帶：TREE_N 棵全部種在碎料圈外 WOOD_IN～WOOD_OUT，含樹冠不出島，兩棵至少隔平均間距的六成',
+     fxT.n === fxT.N && fxT.band === 0 && fxT.out === 0 && fxT.close === 0 && fxT.cap,
+     fxT.n + ' 棵（TREE_N ' + fxT.N + '）' +
+     (fxT.band || fxT.out || fxT.close || !fxT.cap ? '；出帶 ' + fxT.band + '、出島 ' + fxT.out + '、太近 ' + fxT.close + ' 對、WOOD_OUT＋樹冠＝島邊 ' + fxT.cap : ''));
+
+  /* ── 從外面進來的全部在林帶中線出現、alpha 從 0 起；走人的目標也是那一圈 ── */
+  const fxE = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9; beasts = null;
+    const R = woodR(), bad = [], all = [];
+    const chk = (nm, o) => {
+      all.push([nm, o]);
+      if (Math.abs(Math.hypot(o.x, o.z) - R) > 1e-6 || o.wIn !== 1)
+        bad.push(nm + ' 離中心 ' + Math.hypot(o.x, o.z).toFixed(3) + '／wIn ' + o.wIn);
+    };
+    chk('猴子（天災）', spawnBeast('ape'));
+    chk('巨人（吉祥物）', spawnBeast('giant', 1));
+    chk('Saber（道具叫來的）', spawnBeast('saber', 1, 0, 0.7));
+    chk('五條悟（道具叫來的）', spawnBeast('gojo', 1, 0, 2.1));
+    spawnDragon(); chk('飛龍', beasts[beasts.length - 1]);
+    spawnGryph(1); chk('獅鷲', beasts[beasts.length - 1]);
+    chk('牛羊（補進來的）', spawnCattle(true));
+    const i = 3;
+    respawnWorker(i); chk('小人（補進來的）', workers[i]);
+    draw();                                          // alpha 是畫之前照位置算的：剛出現那一刻是 0
+    for (const [nm, o] of all) if (o.alpha !== 0) bad.push(nm + ' 畫出來 alpha ' + o.alpha);
+    const m = spawnBeast('snow', 1);
+    m.x = 30; m.z = 0; m.st = 'fun';
+    leaveBeast(m);
+    const go = Math.hypot(m.tx, m.tz);
+    workers[i] = newWorker(i); tagEngineer(); tagMage(); tagMuscle();
+    beasts = null;
+    return { bad, go, R, off: R - debrisR, mid: (WOOD_IN + WOOD_OUT) / 2 };
+  });
+  ok('小人、牛羊補進來，天災、吉祥物（走的、飛的、道具叫來的）都在林帶中線出現、alpha 從 0 起；走人的目標也是那一圈',
+     fxE.bad.length === 0 && Math.abs(fxE.go - fxE.R) < 1e-6 && Math.abs(fxE.off - fxE.mid) < 1e-9,
+     '林帶中線在碎料圈外 ' + fxE.mid + '，八種都在那一圈、走人的目標也是' +
+     (fxE.bad.length || Math.abs(fxE.go - fxE.R) >= 1e-6 ? '；不對的：' + fxE.bad.join('、') + '；走人目標 ' + fxE.go.toFixed(3) : ''));
+
+  /* ── 淡入淡出是位置的函數（直接叫 woodFade，不跑模擬） ── */
+  const fxF = await page.evaluate(() => {
+    const R = woodR(), full = R - REACH - WOOD_FADE, half = R - REACH - WOOD_FADE / 2;
+    const at = (x, o) => Object.assign({ x, z: 0 }, o);
+    const a = at(R, { wIn: 1 }); woodFade(a, 0);
+    const b = at(half, { wIn: 1 }); woodFade(b, 0);
+    const c = at(full - 0.01, { wIn: 1 }); woodFade(c, 0);
+    const d = at(half, { wIn: 0, alpha: 0.3 }); woodFade(d, 0);
+    const e = at(half, { wIn: 0 }); woodFade(e, 1);
+    const f = at(R + 5, { wIn: 0 }); woodFade(f, 1);
+    const g = at(half, { wIn: 1, dead: 2, alpha: 0.7 }); woodFade(g, 0);
+    return { a: a.alpha, b: b.alpha, bIn: b.wIn, c: c.alpha, cIn: c.wIn, d: d.alpha, e: e.alpha, f: f.alpha, g: g.alpha };
+  });
+  ok('淡入淡出照離林帶中線多遠算：中線往內 REACH 是 0、再往內 WOOD_FADE 格是 1；不在進出場那兩段就拿掉、屍體不碰',
+     fxF.a === 0 && Math.abs(fxF.b - 0.5) < 1e-9 && fxF.bIn === 1 && fxF.c === undefined && fxF.cIn === 0 &&
+     fxF.d === undefined && Math.abs(fxF.e - 0.5) < 1e-9 && fxF.f === 0 && fxF.g === 0.7,
+     '中線 ' + fxF.a + '、一半 ' + fxF.b + '、淡完 ' + fxF.c + '（wIn ' + fxF.cIn + '）、沒在進出場 ' + fxF.d +
+     '、走人一半 ' + fxF.e + '、走過中線 ' + fxF.f + '、屍體 ' + fxF.g);
+
+  /* ── 走人走到林帶中線收掉的那一刻已經淡完；飛的飛走也是；獅鷲起飛那幾秒就算走人 ── */
+  const fxL = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9; beasts = null; phase = 'done';
+    stepDoom = window.doomStep;
+    /* alpha 是畫之前算的（draw 裡那一行）：這裡每一步照同一條規則算一次，不必真的畫。
+       收掉之後再照牠最後站的位置算一次＝「收掉那一刻畫出來是多少」 */
+    const fade = m => woodFade(m, beastOut(m));
+    const walk = spawnBeast('saber', 1);
+    walk.x = 30; walk.z = 0; walk.sx = 30; walk.sz = 0; walk.st = 'fun'; walk.wIn = 0;
+    leaveBeast(walk);
+    let wGone = -1, wMid = false;
+    for (let t = 0; t < 60; t += 0.05) {
+      step(0.05);
+      fade(walk);
+      if (walk.alpha > 0 && walk.alpha < 1) wMid = true;
+      if (!beasts || beasts.indexOf(walk) < 0) { wGone = t; break; }
+    }
+    const wA = walk.alpha, wR = Math.hypot(walk.x, walk.z);
+    beasts = null;
+    spawnDragon(1);
+    const dr = beasts[beasts.length - 1];
+    let dGone = -1, dIn = false, dOut = false;
+    for (let t = 0; t < 120; t += 0.05) {
+      step(0.05);
+      fade(dr);
+      if (dr.alpha > 0 && dr.alpha < 1) { if (dr.st === 'out') dOut = true; else dIn = true; }
+      if (!beasts || beasts.indexOf(dr) < 0) { dGone = t; break; }
+    }
+    const dA = dr.alpha;
+    /* 獅鷲起飛（up）：不是要再降落一次的那一趟就是走人，在林帶裡起飛也照位置淡 */
+    beasts = null;
+    spawnGryph(1);
+    const g = beasts[beasts.length - 1], half = woodR() - REACH - WOOD_FADE / 2;
+    g.x = half; g.z = 0; g.wIn = 0; g.alpha = undefined; g.st = 'up'; g.back = 0; g.sky = 1;
+    fade(g);
+    const gUp = g.alpha;
+    g.alpha = undefined; g.back = 1;
+    fade(g);
+    const gBack = g.alpha;
+    beasts = null; stepDoom = () => {};
+    return { wGone, wMid, wA, wR, R: woodR(), REACH, dGone, dIn, dOut, dA, gUp, gBack };
+  });
+  ok('走人走回林帶中線、收掉那一刻 alpha 是 0；飛龍兩頭都有淡的那一段；獅鷲起飛走人那幾秒也照位置淡',
+     fxL.wGone > 0 && fxL.wMid && fxL.wA === 0 && fxL.wR > fxL.R - fxL.REACH - 1e-6 &&
+     fxL.dGone > 0 && fxL.dIn && fxL.dOut && fxL.dA === 0 &&
+     Math.abs(fxL.gUp - 0.5) < 0.02 && fxL.gBack === undefined,
+     'Saber 收掉那一刻 alpha ' + fxL.wA + '、飛龍 ' + fxL.dA + '；獅鷲起飛走人 alpha ' +
+     (fxL.gUp === undefined ? '—' : fxL.gUp.toFixed(2)) + '、起飛要再降落的 ' + fxL.gBack +
+     (fxL.wGone > 0 && fxL.dGone > 0 ? '' : '；Saber ' + fxL.wGone + ' 秒、飛龍 ' + fxL.dGone + ' 秒收掉'));
+
+  /* ── 人形角色淡的時候整格搬到 humMesh：原本那一格塞 0；超過 HUM_MAX 位的照舊畫、不淡；沒人在淡就不畫 ── */
+  const fxH = await page.evaluate(() => {
+    cleanTools(); beasts = null;
+    const kinds = ['saber', 'levi', 'megumin', 'zenitsu', 'gojo'];
+    /* alpha 是畫之前照位置算的（見 woodFade）：要牠淡到 a 就把牠擺在剛進來、離中線那麼遠的地方；
+       a 給 undefined＝擺在場中間、不在進出場那一段 */
+    const R = woodR();
+    const put = (m, i, a) => {
+      const r = a === undefined ? 30 : R - REACH - a * WOOD_FADE;
+      m.x = Math.cos(i * 1.2) * r; m.z = Math.sin(i * 1.2) * r; m.wIn = a === undefined ? 0 : 1;
+    };
+    const list = kinds.map((k, i) => { const m = spawnBeast(k, 1, 0, i * 1.2); put(m, i); return m; });
+    const T = ENG.three, H = T.humMesh;
+    const zero = (M, j) => { const A = M.instanceMatrix.array; return A[j * 16] === 0 && A[j * 16 + 5] === 0 && A[j * 16 + 10] === 0; };
+    draw();
+    const off0 = !H.visible, solid = !zero(T.sabMesh, 0);
+    put(list[0], 0, 0.4);
+    draw();
+    const one = H.count, sabZero = zero(T.sabMesh, 0), fa = H.geometry.attributes.aFade.array[0];
+    list.forEach((m, i) => put(m, i, 0.5));
+    draw();
+    const all = H.count, last = !zero(T.gjMesh, 0);    // 第五位（五條悟）排不進去：照舊畫在自己那一顆
+    list.forEach((m, i) => put(m, i));
+    draw();
+    const off1 = !H.visible;
+    beasts = null; draw();
+    return { off0, solid, one, sabZero, fa, all, last, off1, MAX: ENG.HUM_MAX };
+  });
+  ok('人形角色淡的時候整格搬到 humMesh（原本那一格塞 0、濃度＝alpha），超過 HUM_MAX 位照舊畫，沒人在淡就不畫',
+     fxH.off0 && fxH.solid && fxH.one > 0 && fxH.sabZero && Math.abs(fxH.fa - 0.4) < 1e-6 &&
+     fxH.all === fxH.one * fxH.MAX && fxH.last && fxH.off1,
+     '一位在淡 ' + fxH.one + ' 格、五位在淡 ' + fxH.all + ' 格（HUM_MAX ' + fxH.MAX + '，第五位照舊畫）' +
+     (fxH.off0 && fxH.off1 && fxH.sabZero ? '' : '；沒人在淡時不畫 ' + fxH.off0 + '／' + fxH.off1 + '、原本那一格塞 0 ' + fxH.sabZero));
+  }   // ── 〈場地固定與林帶進出場〉結束
 
   /* ══════════ 小黑洞（v1.221）══════════
      使用者：「新增破壞工具 小黑洞／可以點在地面或建築上 然後將一定範圍內積木&生物&碎料往內部吸
@@ -29001,7 +29222,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let da = Math.atan2(m.z, m.x) - Math.atan2(p.z, p.x);
     while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
     const r = { n: sab.length, fun: m.fun, st: m.st, da: Math.abs(da), r: Math.hypot(m.x, m.z),
-                want: debrisR + DOOM_OUT, call: !!m.call && m.call.x === p.x && m.call.z === p.z,
+                want: woodR(), call: !!m.call && m.call.x === p.x && m.call.z === p.z,   // 林帶中線（v1.256.0）
                 /* 接在 v1.224 那時的最後面＝緊跟在小黑洞後面。本來寫「TOOLS 最後一把就是它」，
                    v1.227 火槍兵接到後面之後那句就不成立了——要守的是「新道具接在後面、
                    舊的不往前插」，不是「它永遠是最後一把」。 */
@@ -29015,7 +29236,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(xin.r - xin.want) < 1e-6 && xin.call && xin.hole >= 0 && xin.at === xin.hole + 1 &&
      xin.ground,
      xin.n + ' 位、fun ' + xin.fun + '、' + xin.st + '；進場方位差 ' + xin.da.toExponential(1) +
-     ' 弧度、半徑 ' + xin.r.toFixed(2) + '（debrisR + DOOM_OUT ' + xin.want.toFixed(2) + '）；TOOLS 第 ' +
+     ' 弧度、半徑 ' + xin.r.toFixed(2) + '（林帶中線 woodR ' + xin.want.toFixed(2) + '）；TOOLS 第 ' +
      xin.at + ' 把（緊跟在第 ' + xin.hole + ' 把小黑洞後面）');
 
   /* ── 一整趟：跑過去、一進射程一半（EXC_REACH）就站定（被擋住就停在擋住的地方）、轉過去對著它斬、斬完回去逛 ── */
@@ -29269,12 +29490,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                               return [(v.x + 1) / 2 * c.width + c.left, (1 - v.y) / 2 * c.height + c.top]; };
     /* 挑的那一塊後面要是地面（不是剛好站在後面的小人），這一條才不賭骰子 */
     const thru = (k, i) => k === 'block' && !!blocks[i] && blocks[i].st !== SET;
-    let D = null, S = null;
+    /* 點下去走的是 onUp 那條：pick 之後還會用格子重驗一次（fixHit）——射線從建築的縫鑽過去打到地上的，
+       會被改判成擋在前面那一塊。挑的時候也要過那一關，不然挑到的那一塊點下去本來就不是地面（v1.256.0 補，
+       種子 974271082 實測挑到這種的）。rej＝因為這一關被換掉幾塊 */
+    let D = null, S = null, rej = 0;
     for (let i = 0; i < blocks.length && !D; i++) {
       const b = blocks[i];
       if (b.st !== FREE || b.y > 1.2) continue;
       const p = at(b.x, b.y + 0.45, b.z), h = ENG.pick(p[0], p[1], 'levi'), g = ENG.pick(p[0], p[1], 'levi', thru);
-      if (h && h.kind === 'block' && h.idx === i && g && g.kind === 'ground') D = p;
+      if (h && h.kind === 'block' && h.idx === i && g && g.kind === 'ground') {
+        const f = fixHit(g);
+        if (f && f.kind === 'ground') D = p; else rej++;
+      }
     }
     for (let i = 0; i < blocks.length && !S; i++) {          // 還立著、而且點得到的一塊（交叉那一條）
       const b = blocks[i];
@@ -29285,7 +29512,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const panel = document.getElementById('panel'), hid = panel.classList.contains('hide'), was = tool;
     const click = p => { onDown({ clientX: p[0], clientY: p[1] }); onUp({}); };
     const cmd = k => { const m = (beasts || []).find(b => b.kind === k); return m && m.call ? m.call : null; };
-    const r = { found: !!D && !!S };
+    const r = { found: !!D && !!S, rej };
     if (r.found) {
       tool = 'excalibur'; click(D); const sd = cmd('saber');
       r.sabD = !!sd && !!sd.go;
@@ -29305,7 +29532,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('點選：碎料是透明的——Excalibur 與兵長砍猴點到地上的碎料都穿過去算點地面；點還立著的照舊是建築',
      xdeb.found && xdeb.sabD && xdeb.levD && xdeb.sabS && xdeb.levS,
      '找到碎料與立著的一塊＝' + xdeb.found + '；點碎料：Saber 跑去待命 ' + xdeb.sabD + '、里維跑去待命 ' + xdeb.levD +
-     '（v1.238 他會飛過去砍那一塊）；點立著的：Saber 斬 ' + xdeb.sabS + '、里維飛過去砍 ' + xdeb.levS);
+     '（v1.238 他會飛過去砍那一塊）；點立著的：Saber 斬 ' + xdeb.sabS + '、里維飛過去砍 ' + xdeb.levS +
+     (xdeb.found && xdeb.sabD && xdeb.levD && xdeb.sabS && xdeb.levS ? '' : '；fixHit 換掉的候選 ' + xdeb.rej + ' 塊'));
 
   /* ── Saber 只有一位：叫到天災那一位就取消她的天災任務；她被叫著時天災抽到 Saber 就作廢 ── */
   const xone = await page.evaluate(() => {

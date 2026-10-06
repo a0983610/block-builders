@@ -500,7 +500,8 @@ function dieWorker(w) {
   const s = w.roll ? 1 : -1, sc = w.scale || 1, a = w.a || 0;
   spawnBlood(w.x + Math.sin(a) * s * 0.6 * sc, w.z + Math.cos(a) * s * 0.6 * sc, BLOOD_MAN * sc);
 }
-/* 淡完了：這一格換一個新的人，從島的邊上走進來（使用者：「消失後從地圖邊界走進一隻新的」）。
+/* 淡完了：這一格換一個新的人，從林帶走進來、邊走邊淡入（v1.256.0 起，見 woodFade；
+   v1.240～v1.255 照使用者那句「消失後從地圖邊界走進一隻新的」從方形島邊進來）。
    **換掉整個物件**，不是把欄位一個一個清回去：身上有些欄位是別處用到才長出來的（龍捲風、巡路、射箭那幾段），
    漏清一個就是一個鬼。身分照編號（工程師 0 號、魔法師、肌肉小人，見 tagEngineer 那三支），所以重新貼一次——
    死的是工程師，新來的那一個就接著當工程師。從上一個人那裡接過來的只有三件：
@@ -508,10 +509,11 @@ function dieWorker(w) {
      · tone：換一組衣服顏色，同一格的新人不要長得跟剛死的那一個一模一樣（色組是 1 或 4 個，見 WCOL）。
      · 完工之後才進來的不慶祝：同逃命跑完那一行，直接算散場、挑一個閒晃點往裡走。 */
 function respawnWorker(i) {
-  const old = workers[i], w = newWorker(i), p = edgeSpot();
+  const old = workers[i], w = newWorker(i), p = woodSpot();
   w.tone = old.tone + 1 + Math.floor(Math.random() * 3);
   w.own = old.own;
   w.x = p.x; w.z = p.z; w.a = Math.atan2(-p.x, -p.z);   // 面向工地
+  w.wIn = 1;                                       // 從林帶淡進來（見 woodFade）
   w.sx = w.x; w.sz = w.z;                          // 卡住脫困的錨點從這裡起算（見 stuckWatch）
   workers[i] = w;
   tagEngineer(); tagMage(); tagMuscle();

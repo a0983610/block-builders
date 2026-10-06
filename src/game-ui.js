@@ -6,13 +6,26 @@
 'use strict';
 
 /* ── 樹 ───────────────────────────────────────────────── */
+/* 林帶（v1.256.0，使用者選「54 顆、散成林帶」）：碎料圈外 WOOD_IN～WOOD_OUT 那一整圈等面積亂撒，
+   兩棵至少隔平均間距的六成——不會擠成一坨，也不會排成一圈。
+   **同一個場地大小只種一次**（使用者：「樹在同一個場地大小下只種一次，換檔位時才重種」）：
+   場地每一檔固定之後（見 ARENA_FIX）換地標時碎料圈不變，樹也就不動；換建材檔位、
+   或匯入一座撐大場地的，碎料圈變了才重種。v1.210～v1.255 是每換一座重抽一次
+   （18 棵、碎料圈外 3～15、平均排一圈），島固定了樹還是整圈跳一下。
+   棵數的上限是引擎那邊樹幹那一顆的 64 格。見 開發筆記〈林帶：54 棵、換地標不重種〉 */
+const TREE_N = 54;
+let treeAt = -1;                      // 現在這片林帶是照哪一個碎料圈種的
 function makeTrees() {
+  if (trees.length && treeAt === debrisR) return;
+  treeAt = debrisR;
   trees = [];
-  const n = 18;
-  for (let i = 0; i < n; i++) {
-    const a = i / n * Math.PI * 2 + rr(-0.18, 0.18);
-    const d = debrisR + rr(3, 15);      // 種在碎料圈外圍（v1.210 起，見 DEBRIS_X），不擋工地
-    trees.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, h: rr(2.2, 4.2), r: rr(1.7, 3), rot: rr(0, 1), wob: 0, wv: 0 });
+  const r0 = debrisR + WOOD_IN, r1 = debrisR + WOOD_OUT;
+  const gap = Math.sqrt(Math.PI * (r1 * r1 - r0 * r0) / TREE_N) * 0.6;
+  for (let k = 0; trees.length < TREE_N && k < TREE_N * 80; k++) {
+    const r = Math.sqrt(r0 * r0 + Math.random() * (r1 * r1 - r0 * r0)), a = Math.random() * Math.PI * 2;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    if (trees.some(t => (t.x - x) ** 2 + (t.z - z) ** 2 < gap * gap)) continue;
+    trees.push({ x, z, h: rr(2.2, 4.2), r: rr(TREE_R[0], TREE_R[1]), rot: rr(0, 1), wob: 0, wv: 0 });
   }
 }
 function stepTrees(dt) {
@@ -237,6 +250,10 @@ function draw() {
   /* 火槍兵（v1.227）再接在弓箭手後面，同一顆網格（引擎的 MAXW 已經留好這 60 個位子）。 */
   const guns = musketList(), g0 = workers.length + arms.length;
   ENG.setWorkerCount(g0 + guns.length);
+  /* 從林帶進出場那一段淡入淡出（v1.256.0，見 woodFade）：**畫之前照當下的位置算**。alpha 只是畫法，
+     在 step 裡算的話畫出來的是「上一次 step 時站在哪」的濃淡——step 之後才被搬過位置的
+     （測試直接把牠搬到場中間、道具直接改位置）就對不上。動物那一份在下面 putBeasts 前面。 */
+  for (const w of workers) woodFade(w, 0);
   for (let i = 0; i < workers.length; i++) ENG.putWorker(i, workers[i]);
   for (let i = 0; i < arms.length; i++) ENG.putWorker(workers.length + i, arms[i]);
   for (let i = 0; i < guns.length; i++) ENG.putWorker(g0 + i, guns[i]);
@@ -246,12 +263,14 @@ function draw() {
      putBeasts 把她那一格留空、putSabers 用她自己那顆 mesh 畫（索引對齊，點選才對得回去）；
      她的光柱跟著劍一起畫（v1.223），不另外一份清單。 */
   const bl = beastList();
+  if (beasts) for (const m of beasts) woodFade(m, beastOut(m));   // 見上面小人那一段（v1.256.0）
   ENG.putBeasts(bl);
   ENG.putSabers(bl);
   ENG.putLevis(bl);                  // 里維兵長（v1.230）同 Saber：自己一顆 mesh、索引對齊
   ENG.putMegs(bl);                   // 惠惠（v1.247.0）同上
   ENG.putZens(bl);                   // 善逸（v1.251.0）同上，雷光與光痕也在這一支畫
   ENG.putGojos(bl);                  // 五條悟（v1.255.0）同上，手上的赫／蒼／茈也在這一支畫
+  ENG.fadeHumans(bl);                // 上面五位裡正在淡入淡出的那幾位搬到半透明那一顆（v1.256.0，見 woodFade）
   ENG.putPurps(purpList());          // 飛出去的紫球（自己一份清單：放出去就是自己的東西）
 
   ENG.putTrees(trees);

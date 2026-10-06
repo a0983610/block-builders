@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.255.2';
+const VERSION = '1.256.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -38,6 +38,16 @@ const SPREAD = 2.9;                 // 建材散落區的鬆緊：每塊積木�
    所以拿 arenaR 當「場地邊緣」用的地方全部改讀 debrisR，只有那兩樣留在生活圈。
    見 開發筆記〈場地有兩圈：生活圈與碎料圈〉〈生活圈只剩房子與城牆〉。 */
 const DEBRIS_X = 1.3;
+/* 林帶（v1.256.0，使用者：「死掉小人復活&吉祥物&天災都從大概林帶 進出場」）。
+   碎料圈外 WOOD_IN～WOOD_OUT 那一圈種樹（見 makeTrees）；從外面走進來、走回外面去的
+   ——小人與牛羊死掉補進來的、天災、吉祥物（走的飛的都算）——一律從**林帶中線**那一圈進出（woodR），
+   那一圈往內 WOOD_FADE 格之間淡入淡出（見 woodFade）。v1.255 以前是三套：補進來的從方形島邊
+   （碎料圈外 24.5～68.9）、走的天災吉祥物 +3、飛的 +14。推土機、消防車、幽浮是機器，不在裡面（使用者選的）。
+   WOOD_OUT＝島邊往內一個樹冠（TREE_R 的上限）：種在最外面那一棵也不會凸出島。
+   見 開發筆記〈從林帶進出場〉 */
+const TREE_R = [1.7, 3];            // 樹冠半徑
+const WOOD_IN = 3, WOOD_OUT = ENG.GROUND_PAD - TREE_R[1];
+const WOOD_FADE = 6;
 const WALK = 6.8;                   // 小人走路速度
 const REACH = 0.9;                  // 走到多近算抵達
 const CELL = 1.25;                  // 空間雜湊格子大小（分離碎塊用）
@@ -78,6 +88,12 @@ let timeScale = 1;
    真的長得到上萬的是金字塔、長城、城堡，加上 v1.143 換上的那十座（見 開發筆記〈換掉十座藍圖〉）。
    （藍圖體檢仍然照 300／1600／3000／10000 四個目標量，那是藍圖的事，跟面板無關。） */
 const CNT_OPTS = [1800, 3000, 9000];
+/* 每一檔的生活圈固定成這麼大（v1.256.0，使用者選「各檔取最大」）：換地標的時候島、霧、樹不再跟著縮放
+   （使用者：「會想改是因為換地標 感覺地圖會閃一下的改變」）。數字是 87 座（內建 48 ＋ blueprints/ 39）
+   照 arenaOf 那條算式量出來的最大值往上取整：1800 檔 64.93（復活節島摩艾）、3000 檔 78.48、
+   9000 檔 127.40（都是金門大橋）。取 max(固定值, 算式)：匯入一座比這還寬的，那一座才會自己撐大。
+   e2e〈場地固定與林帶進出場〉守著「沒有一座超過」。見 開發筆記〈換地標時場地固定〉 */
+const ARENA_FIX = { 1800: 65, 3000: 79, 9000: 128 };
 const WK_OPTS = [20, 40, 60];
 const SPD_OPTS = [0.5, 1, 4];
 const CNT_MAX = CNT_OPTS[CNT_OPTS.length - 1];
@@ -100,6 +116,26 @@ const _m = new THREE.Matrix4();
 
 const rr = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+/* 林帶中線（見 WOOD_IN）：從外面進來、走回外面去的都在這一圈 */
+const woodR = () => debrisR + (WOOD_IN + WOOD_OUT) / 2;
+function woodSpot(a) {
+  if (a === undefined) a = Math.random() * Math.PI * 2;
+  const d = woodR();
+  return { x: Math.cos(a) * d, z: Math.sin(a) * d };
+}
+/* 進出場那一段的淡入淡出（v1.256.0，使用者選「淡入淡出」）：離林帶中線越近越淡。
+   中線往內 REACH 以外是 0——走人的走到離中線 REACH 以內就算到了、當場收掉，那一刻要已經淡完；
+   再往內 WOOD_FADE 格是 1。只管兩段：剛進來還沒淡完（o.wIn），與正在走人（leaving）。
+   其餘時間有 alpha 就拿掉（走人走到一半被叫回去的那一隻）。屍體自己管 alpha（見 corpseAlpha），這裡不碰。
+   **畫之前叫**（game-ui.js 的 draw）：alpha 只是畫法，照「現在站在哪」算，生出來的時候只記 wIn。
+   引擎看到 alpha 就搬去半透明那一顆畫（小人、牛羊、猴子這些是 fadeMesh，人形角色是 humMesh）。 */
+function woodFade(o, leaving) {
+  if (o.dead) return;
+  if (!o.wIn && !leaving) { if (o.alpha !== undefined) o.alpha = undefined; return; }
+  const a = clamp((woodR() - REACH - Math.hypot(o.x, o.z)) / WOOD_FADE, 0, 1);
+  if (a >= 1) { o.wIn = 0; o.alpha = undefined; } else o.alpha = a;
+}
 
 /* ── 音效（純合成，不外掛音檔） ───────────────────────────── */
 let AC = null, muted = false;
@@ -841,6 +877,13 @@ function pickShape() {
   return Math.floor(Math.random() * SHAPES.length);
 }
 
+/* 生活圈多大（v1.256.0 起抽成一支，startBuild 與 e2e 共用同一份）。算式是原本那一條：
+   建材散落區從工地邊緣往外鋪，面積跟積木數成正比 → 不管 300 塊還 3000 塊都一樣鬆。
+   外面再套這一檔的固定值（見 ARENA_FIX）；不在三檔裡的建材數（舊存檔）就照算式。 */
+function arenaOf(sr, n, cnt) {
+  return Math.max(ARENA_FIX[cnt] || 0, Math.sqrt((sr + 2) ** 2 + SPREAD * n / Math.PI) + 8);
+}
+
 function startBuild(instant) {
   /* 閒晃事件**不在這裡收**（v1.248）：要整地的話那十幾秒照常過日子，蓋家／城牆的人接著蓋，
      推土機推完、真的開工才收（見 beginBuild）。v1.97～v1.247 是這一行就收掉。 */
@@ -913,8 +956,7 @@ function startBuild(instant) {
   buildElapsed = 0; spentThis = 0; lossThis = 0;
 
   siteR = Math.max(7, bp.radius);
-  // 建材散落區從工地邊緣往外鋪，面積跟積木數成正比 → 不管 300 塊還 3000 塊都一樣鬆
-  arenaR = Math.sqrt((siteR + 2) ** 2 + SPREAD * bp.slots.length / Math.PI) + 8;
+  arenaR = arenaOf(siteR, bp.slots.length, targetCnt);   // 每一檔固定（v1.256.0，見 ARENA_FIX）
   debrisR = arenaR * DEBRIS_X;       // 碎料可以飛到生活圈外面那一圈（見 DEBRIS_X）
   clearHomesInSite();                // 新工地蓋到誰家，那一間解成碎料（v1.97）
   reconcilePool();

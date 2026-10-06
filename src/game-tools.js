@@ -8112,7 +8112,6 @@ const DOOM_LO = 480, DOOM_HI = 720;   // 8~12 分鐘（v1.166 收短）。照模
    本來就是拿小人連安全帽的 1.31 當尺畫的，所以乘同一個倍率，站在一起就是那個比例。 */
 const DOOM_SC = (W_LO + W_HI) / 2;
 const DOOM_WALK = 2.2;                // 「慢慢走過來」：小人走路是 WALK 6.8，這是三分之一
-const DOOM_OUT = 3;                   // 從碎料場外緣再往外幾格出現／退場
 const DOOM_AIM = 1.1;                 // 站定到動手之間停幾秒（看得出牠在瞄）
 const DOOM_ARM = 4;                   // 抬手的快慢
 const DOOM_NEAR = 3.2;                // 走到離目標這麼近就夠了（火把搆得到）
@@ -8234,16 +8233,18 @@ const DOOM_ACT = { ape: apeStrike, snow: nanaThrow };
 /* Saber（v1.222）同巨人：不是「動一次手就走」那張表，act 之後轉進自己的 excal 段，所以也另外認 */
 const canFight = m => !!DOOM_ACT[m.kind] || m.kind === 'giant' || m.kind === 'saber';
 
-/* 從場邊放一隻進來。方位隨機——固定一邊的話，鏡頭剛好對著另一邊就永遠看不到牠走過來。
+/* 從林帶放一隻進來（v1.256.0 起在林帶中線、邊走邊淡入，見 woodFade；v1.255 以前是碎料圈外 3 格冒出來）。
+   方位隨機——固定一邊的話，鏡頭剛好對著另一邊就永遠看不到牠走過來。
    fun＝這一隻是吉祥物（v1.144）：同一份造型、同一套走路，只是不動手（見檔案最後那一節）。
    bad＝吉祥物那一趟順手砸村子那邊一間房子或一棵樹（v1.166，只有 fun 那一版會給，
    見 stepMascot）。
    ang＝從哪個方位進場（v1.224，只有 Excalibur 叫來的那一位會給：從離目標最近的那一邊進來，
    見 callSaber）。給了方位的不在這裡講提示，由叫她的那一支講。 */
 function spawnBeast(kind, fun, bad, ang) {
-  const a = ang === undefined ? Math.random() * Math.PI * 2 : ang, d = debrisR + DOOM_OUT;
+  const a = ang === undefined ? Math.random() * Math.PI * 2 : ang, d = woodR();
   const m = {
     kind, x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d,
+    wIn: 1,                                         // 從林帶淡進來（v1.256.0，見 woodFade）
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就面向工地
     ph: 0, gait: 0, leg: 0, tx: 0, tz: 0, ghost: 0, pause: 0,
     /* 卡住了就脫困那一套的欄位（v1.190.2，跟小人同一組：見 game-workers.js 的 stuckWatch）。
@@ -8390,9 +8391,11 @@ function leaveBeast(m) {
      拆牆出去（見 stepBeast 的 go），不收的話拆完那一下會被當成欠帳接著砸下一處。 */
   m.owe = 0;
   m.st = 'go';
-  const d = Math.hypot(m.x, m.z) || 1;
-  m.tx = m.x / d * (debrisR + DOOM_OUT);
-  m.tz = m.z / d * (debrisR + DOOM_OUT);
+  /* 徑向往外走回林帶中線（v1.256.0，進場也是那一圈；v1.255 以前是碎料圈外 3 格）。
+     走到離它 REACH 以內 strollTo 回 true、這一隻就收掉，那一刻已經淡完（見 woodFade）。 */
+  const d = Math.hypot(m.x, m.z) || 1, R = woodR();
+  m.tx = m.x / d * R;
+  m.tz = m.z / d * R;
 }
 /* 穿門那一段結束了，回原本在做的事（v1.190.2）。
    **目標一定要重算**：走人（go）那一段的目標是「從牠當時站的地方徑向往外」那個場外點，
@@ -8570,6 +8573,10 @@ function stepBeast(m, dt) {
   m.a = a0 + clamp(e, -B_RISE_YAW * dt, B_RISE_YAW * dt);
   return r;
 }
+/* 這一隻正在走回林帶嗎（v1.256.0，淡出用，見 woodFade；畫之前算，見 game-ui.js 的 draw）。
+   走的「走人」是 go、飛的是 out。獅鷲起飛（up）那幾秒也會往前飛，不是要再降落一次（m.back）的那一趟
+   就已經是走人——不算的話牠起飛時剛好飛進林帶，轉進 out 那一幀會從全實直接跳到快淡完。 */
+const beastOut = m => m.st === 'go' || (!!m.sky && (m.st === 'out' || (m.st === 'up' && !m.back)));
 function stepBeast0(m, dt) {
   /* 被幽浮吸走了（v1.167）：牠這一段完全交給 stepUfo 管（在光裡飄、在艙裡等、
      從天上掉回來），這裡整段跳過。擺在最前面：下面每一條分支都會動到位置。 */
@@ -10696,7 +10703,6 @@ const DRA_RING = 1.35;               // 在工地上空繞幾圈（「稍微盤�
 const DRA_ROLL = 0.42;               // 轉到最急時往內側傾斜幾弧度
 const DRA_FLAP = 3.1;                // 拍翅的快慢（弧度／秒）
 const DRA_PITCH = 0.11, DRA_BOB = 0.32;   // 身體跟著拍翅俯仰／上下浮（相位比翅膀晚一點）
-const DRA_OUT = 14;                  // 從場外多遠進來／飛到多遠收掉
 const DRA_SHOT = [3, 5];             // 一趟吐幾顆
 const DRA_GAP = [1.1, 2.2];          // 兩顆之間隔幾秒（「不要連噴」）
 let fballs = null;                   // 飛在半空的火球
@@ -10705,7 +10711,8 @@ let fballs = null;                   // 飛在半空的火球
    fun＝吉祥物那一版（v1.144）：航線一模一樣，只是 left 給 0，一顆火球都不吐。
    bad＝吉祥物那一趟順手噴村子（v1.166）：配額給 MASC_BAD_SHOT，落點改瞄村子那邊。 */
 function spawnDragon(fun, bad) {
-  const a = Math.random() * Math.PI * 2, d = debrisR + DRA_OUT;
+  /* 從林帶中線上空飛進來、飛出那一圈就收掉，兩頭淡入淡出（v1.256.0，見 woodFade；v1.255 以前是碎料圈外 14 格） */
+  const a = Math.random() * Math.PI * 2, d = woodR();
   /* 巡航高度**進場時算一次就存起來**（v1.172）。改讀 siteTopNow()（現在蓋到多高）
      而不是 bp.height（蓋完多高）——同烏雲與幽浮那一版的理由，使用者指名這三支一起改。
      為什麼要存：siteTopNow() 是掃一遍積木池（幾千筆），飛龍的高度是**每一幀**都在算的
@@ -10715,6 +10722,7 @@ function spawnDragon(fun, bad) {
   const m = {
     kind: 'dragon', x: Math.cos(a) * d, z: Math.sin(a) * d,
     y: cruise, cruise: cruise,
+    wIn: 1,                                         // 從林帶淡進來（見 woodFade）
     /* 「這一隻現在走飛行那一套」（v1.176）：龍從進場到飛走一路都是 1（連摔在地上
        趴著那一段也算——牠還在那條狀態機裡）。獅鷲降落時會歸零，起飛時再給回來。
        龍捲風、幽浮、命中判定的高度都問這個旗標，不再問「牠是不是龍」。 */
@@ -10802,7 +10810,7 @@ function stepDragon(m, dt) {
   /* 身體跟著拍翅俯仰與上下浮，相位比翅膀晚一點——先拍翅，身體才被抬起來。 */
   m.spin = DRA_PITCH * Math.sin(m.ph + 0.8);
   m.y = m.cruise + DRA_BOB * Math.sin(m.ph - 1.0);     // 巡航高度是進場時算好的（見 spawnDragon）
-  return m.st === 'out' && Math.hypot(m.x, m.z) > debrisR + DRA_OUT;
+  return m.st === 'out' && Math.hypot(m.x, m.z) > woodR();
 }
 
 /* ── 火球 ───────────────────────────────────────────────
@@ -10925,7 +10933,6 @@ const GR_TURN = 0.9;                 // 每秒最多轉幾弧度 → 盤旋半�
 const GR_ROLL = 0.34;                // 轉到最急時往內側傾斜幾弧度
 const GR_YAW = 2.2;                  // 站在地上轉身多快（弧度／秒）
 const GR_UP = 14, GR_MIN = 32;       // 巡航高度：建築頂上多高、最低多高（同飛龍）
-const GR_OUT = 14;                   // 從場外多遠進來／飛到多遠收掉
 const GR_FLARE = 26;                 // 離降落點多遠開始往下收
 const GR_STAND = 5.5;                // 降落在建築外圈再往外幾格（同猴子站的那一環）
 const GR_FLAP = 3.4;                 // 拍翅的快慢（弧度／秒）
@@ -11101,12 +11108,14 @@ function grHitFx(m, dt) {
    fun＝吉祥物那一版：一模一樣的一趟，只是 left 給 0、一道火都不噴，站著晃完就走。
    bad＝吉祥物那一趟順手燒村子（同 v1.166 那三隻）：噴，但目標換成村子那邊。 */
 function spawnGryph(fun, bad) {
-  const a = Math.random() * Math.PI * 2, d = debrisR + GR_OUT;
+  /* 從林帶中線上空飛進來、飛出那一圈就收掉，兩頭淡入淡出（v1.256.0，同飛龍） */
+  const a = Math.random() * Math.PI * 2, d = woodR();
   /* 巡航高度進場時算一次就存起來（同飛龍 v1.172 的理由：siteTopNow 要掃一遍積木池，
      而高度是每一幀都在用的）。 */
   const cruise = Math.max(GR_MIN, siteTopNow() + GR_UP);
   const m = {
     kind: 'gryphon', x: Math.cos(a) * d, y: cruise, z: Math.sin(a) * d, cruise,
+    wIn: 1,                                         // 從林帶淡進來（見 woodFade）
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就朝著工地
     sky: 1, st: 'in', t: 0, ph: 0, gait: 0, leg: 0, pause: 0, ghost: 0,
     sc: GR_SC, spin: 0, roll: 0,
@@ -11361,7 +11370,7 @@ function stepGryph(m, dt) {
   m.roll += (0 - m.roll) * Math.min(1, dt * 3);
   m.x += Math.sin(m.a) * GR_SPD * dt;
   m.z += Math.cos(m.a) * GR_SPD * dt;
-  return Math.hypot(m.x, m.z) > debrisR + GR_OUT;
+  return Math.hypot(m.x, m.z) > woodR();
 }
 
 /* ── 惠惠（v1.247.0）─────────────────────────────────────
@@ -12008,7 +12017,7 @@ function beastHit(m, src) {
        本來就把他當成躺著的人擋掉；牛羊另外有 levBusy（m.dead）擋著所有被打的函式——同被里維斬殺的巨人。
        剩下那幾個只看 air 的呼叫點各自多擋一個 dead（屍體不再被炸飛、捲走、吸走）。
      · 淡完了：小人那一格換一個新的人（身分照編號，見 respawnWorker），牛羊從清單拿掉、stepHerd 補一隻；
-       **兩邊都從島的邊上走進來**（edgeSpot）。 */
+       **兩邊都從林帶走進來、邊走邊淡入**（woodSpot／woodFade，v1.256.0；v1.240～v1.255 是方形島邊）。 */
 const KILL_HITS = 3;                 // 被打幾次會死（使用者：「累積3次」）
 /* 每一種打法算幾次。鍵是呼叫點報上來的名字，**表上沒有的就是 1**（使用者：「先預設所有道具都是
    打中累積1次」）——之後要讓某一種一下算兩次，在這裡加一行就好，不必回頭改呼叫點。
@@ -12048,17 +12057,9 @@ function stepBloods(dt) {
     o.a = corpseAlpha(o.t);
   }
 }
-/* 島的邊上隨便一點（新的那一個從這裡走進來）。島是方的（見 engine 的 setGroundSize），
-   所以是方框上的一點，往內縮 EDGE_IN 格站在草皮上。 */
-const EDGE_IN = 1.5;
-function edgeSpot() {
-  const h = debrisR + ENG.GROUND_PAD - EDGE_IN, a = Math.random() * Math.PI * 2;
-  const c = Math.cos(a), s = Math.sin(a), k = h / Math.max(Math.abs(c), Math.abs(s));
-  return { x: c * k, z: s * k };
-}
 /* 牛羊那一份。第三下的反應演完（落地、燒完）那一刻 hurtBeast 叫這一支：就地倒下、身下漫一攤血，
    之後每幀走 stepCarcass（stepBeast0 那條 m.dead）。站著死的（燒完跑圈那種）往哪一邊倒現在才抽。 */
-let herdOwed = 0;                    // 死掉、還沒補回來的幾隻：stepHerd 補的時候從邊上走進來
+let herdOwed = 0;                    // 死掉、還沒補回來的幾隻：stepHerd 補的時候從林帶走進來（v1.256.0）
 function dieHerd(m) {
   m.dead = 1e-6; m.alpha = 1; m.fall = 1; m.gait = 0; m.pause = 0; m.spook = 0; m.face = 0;
   if (!m.lie) { lieSide(m); m.lie = lieLift(m); }
@@ -12158,7 +12159,8 @@ let herdN = 0;                       // 這一場養幾隻（第一次叫 stepHe
    （最慢的綿羊 1.3），從碎料場外緣走到工地要一分鐘——開場那一分鐘場上一隻動物都沒有。
    先挑一個站著、再挑一個當第一個目標。
    edge＝補死掉的那一隻（v1.240，使用者：「消失後從地圖邊界走進一隻新的」）：開場那幾隻照舊直接站在場上，
-   補進來的從島的邊上出現、面向工地，第一個目標照樣是 idleSpot 挑的那一點——走過去那一段就是「走進來」。 */
+   補進來的從林帶出現（v1.256.0 起，邊走邊淡入；v1.240～v1.255 是方形島邊）、面向工地，
+   第一個目標照樣是 idleSpot 挑的那一點——走過去那一段就是「走進來」。 */
 function spawnCattle(edge) {
   const kind = HERD_KIND[Math.floor(Math.random() * HERD_KIND.length)];
   const m = {
@@ -12176,8 +12178,10 @@ function spawnCattle(edge) {
     hits: 0, dead: 0
   };
   if (edge) {
-    const p = edgeSpot();
+    /* 補進來的那一隻從林帶淡進來（v1.256.0，同小人，見 woodFade；v1.240～v1.255 是方形島邊） */
+    const p = woodSpot();
     m.x = p.x; m.z = p.z; m.a = Math.atan2(-p.x, -p.z); m.pause = 0;
+    m.wIn = 1;
   } else {
     idleSpot(m);
     m.x = m.tx; m.z = m.tz;
