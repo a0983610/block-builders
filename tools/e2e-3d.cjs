@@ -30890,7 +30890,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { stepDoom = window.doomStep; });   // 他走路是 stepDoom 在推
   await fillAll(page);
 
-  /* ── 造型與表：自己一顆 mesh；縮放是小人平均的 1.2 倍（使用者選的「等比 ×1.2」）；道具接在霹靂一閃後面、只能用道具叫來 ── */
+  /* ── 造型與表：自己一顆 mesh；縮放是小人平均的 1.1 倍（v1.258.0 使用者選的「等比 ×1.1」，之前 1.2）；道具接在霹靂一閃後面、只能用道具叫來 ── */
   const gfig = await page.evaluate(() => {
     const M = ENG.GOJO;
     const m = spawnBeast('gojo', 1, 0, 0);
@@ -30920,9 +30920,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('五條悟自己一顆 mesh：不進 BEASTS，別的動物一隻還是照原本最多塊那一款付成本',
      gfig.parts === gfig.gp && !gfig.inBeasts && gfig.beastParts === gfig.maxOther && gfig.model,
      '他 ' + gfig.parts + ' 塊、BEAST_PARTS 還是 ' + gfig.beastParts + '（BEASTS 裡最多塊那一款 ' + gfig.maxOther + '）');
-  ok('身形：原點在腳底、模型高 1.40～1.46（小人帽頂 1.31），縮放是小人平均（DOOM_SC）的 1.2 倍（使用者選「等比 ×1.2」）',
-     Math.abs(gfig.lo) < 0.02 && gfig.top > 1.40 && gfig.top < 1.46 && gfig.sc === gfig.gjSc &&
-     Math.abs(gfig.gjSc / gfig.doomSc - 1.2) < 1e-9,
+  /* v1.258.0 頭整顆重做（頭髮放下來，模型高 1.43 → 1.306）、縮放 ×1.2 → ×1.1，條目名裡的數字跟著換
+     （這一條是規則型，不在 e2e-varying.json 裡，沒有鍵要搬）。第一輪寫成 1.33～1.39 是照預覽頁算的 1.36——
+     那是把每一根尖片當成直立的算，斜著的沒那麼高；這一條量的是畫出來的方塊角點，1.306 才是真的 */
+  ok('身形：原點在腳底、模型高 1.28～1.34（小人帽頂 1.31），縮放是小人平均（DOOM_SC）的 1.1 倍（使用者選「等比 ×1.1」）',
+     Math.abs(gfig.lo) < 0.02 && gfig.top > 1.28 && gfig.top < 1.34 && gfig.sc === gfig.gjSc &&
+     Math.abs(gfig.gjSc / gfig.doomSc - 1.1) < 1e-9,
      '最低 ' + gfig.lo + '、模型高 ' + gfig.top + ' × ' + gfig.sc.toFixed(3) + '（DOOM_SC ' + gfig.doomSc.toFixed(3) + '）');
   ok('道具表：接在霹靂一閃後面（最後一把）、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「他」；圖示 🟣',
      gfig.zen >= 0 && gfig.at === gfig.zen + 1 && gfig.at === gfig.n - 1 && gfig.ground && !gfig.masc && !gfig.doom && gfig.nm &&
@@ -32705,12 +32708,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 /* 箭雨的弦聲（v1.171）：配方就是 sndBlade 上面那一版被拿掉的「弓箭聲」
                    ——對王之財寶是缺點，對真的弓箭正好。這裡量的是單聲（k ＝ 1）；v1.232 起
                    一輪每支一聲、音量 × AR_SND_K，整輪加起來的量在〈火槍兵〉那一段的聲音那條。
-                   **一定要擺在最後面**：這些量測的噪音是用 Math.random() 填 buffer 的，
+                   **新加的一律接在最後面**（v1.258.0 的點火那兩發接在它後面）：這些量測的噪音是用 Math.random() 填 buffer 的，
                    插在中間會把整條亂數序列往後推，後面每一發量到的數字全部跟著換
                    （加這一發時就踩到：插在 bladeOld 後面 → 王之財寶命中聲那一條紅了，
                    「一秒份 rms 0.0077 → 0.0070」變成 0.0075 → 0.0075）。
                    跟引擎多一顆網格會位移 generateUUID 那條序列是同一件事，見檔頭。 */
-                bow: await one(() => sndBow()) };
+                bow: await one(() => sndBow()),
+                /* 點火（v1.258.0，使用者：「燃燒聲音有點刺耳」）。接在弦聲後面：插在前面會位移整條亂數序列（見上面那條）。
+                   噪音打底，五次取中位數（同雷聲，見 many）。舊的那一版就地復刻當對照組 */
+                fire: await many(() => sndFire(), 3, 5),
+                fireOld: await many(() => { noise(0.55, 0.16, 1600); tone(150, 0.4, 'sawtooth', 0.05, 2.4); }, 3, 5) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
   });
@@ -32993,6 +33000,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '爆炸＋20 人跌倒 rms ' + snd.nukeHit.rms + '、peak ' + snd.nukeHit.peak +
      '、打到滿刻度 ' + snd.nukeHit.over + ' 個取樣（爆炸自己 peak ' +
      snd.nuke.peak + '）');
+  /* 點火那一聲（v1.258.0）：刺的是噪音那一層（切在 1600），只把鋸齒換三角波 2 kHz 以上幾乎不變。
+     換成噪音切 800、三角波之後：高頻占比要比舊的少一半以上，但不能只是變小聲——整段 rms 至少留七成 */
+  ok('點火那一聲不刺耳：2kHz 以上比舊配方少一半以上，音量沒跟著縮',
+     snd.fire.hiPct < snd.fireOld.hiPct * 0.5 && snd.fire.hiPct < 30 && snd.fire.rms > snd.fireOld.rms * 0.7,
+     '2kHz 以上 ' + snd.fireOld.hiPct + '% → ' + snd.fire.hiPct + '%；rms ' + snd.fireOld.rms + ' → ' + snd.fire.rms);
   }   // ── 〈音效〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 視角操作 ══════════ */
