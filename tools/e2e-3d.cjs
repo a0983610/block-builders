@@ -26825,7 +26825,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      !!gloop.A0.err && gloop.B0.booms > 1,
      'A 報錯「' + (gloop.A0.err || '無') + '」；B 同一發炸了 ' + gloop.B0.booms + ' 次');
 
-  /* ── 躺著暈：什麼都打不到、不改主意；暈滿 MEG_STUN 秒才爬起來，爬完回去逛；
+  /* ── 躺著暈：照一般倒地打得到（炸得飛、點得著；本來就躺著所以震不倒），被打也不生氣；
+     落地／燒完躺回去把剩下的秒數暈完，MEG_STUN 秒才爬起來，爬完回去逛
+     （v1.260.0 使用者：「惠惠攻擊後倒地 調整成能被攻擊(同一般倒地)」，選的「把剩下的秒數暈完」「不算，不生氣」；
+     v1.247.0～v1.259.0 是什麼都打不到）。押骰子：tossBeast 給定速度、沒有火，飛多久只看 vy 與 GRAV；
      十字星光只在詠唱時冒（使用者：「施放完倒地 不要星光(只有施法集氣時有)」）——
      詠唱那一段只推她自己（stepBeast），不推 stepMagic：道具那一疊陣長層時也會撒星光，推了就分不出是誰撒的 ── */
   const gstun = await page.evaluate(() => {
@@ -26839,32 +26842,58 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const castStars = stars.length;
     cleanTools();
     stars.length = 0;
-    const m = spawnBeast('megumin', 1, 0);
-    m.st = 'mstun'; m.mt = 0; m.lie = 1; m.spin = -Math.PI / 2; m.hcd = 0;
-    const r = { busy: levBusy(m), toss: tossBeast(m, 5, 5, 5, true), fell: fellBeast(m, 1), fire: igniteBeast(m, 1) };
+    const lie = () => {
+      const o = spawnBeast('megumin', 1, 0);
+      o.st = 'mstun'; o.mt = 0; o.lie = 1; o.spin = -Math.PI / 2; o.hcd = 0;
+      return o;
+    };
+    const m = lie();
+    const r = { busy: levBusy(m), fell: fellBeast(m, 1), toss: tossBeast(m, 5, 5, 5, false) };
+    r.air = m.air;
     beastHit(m);
     r.st = m.st; r.bad = m.bad;
-    let t = 0, up = -1, fun = -1;
+    let t = 0, land = -1, back = -1, up = -1, fun = -1, stAir = '';
     for (let i = 0; i < 2000 && fun < 0; i++) {
       stepBeast(m, 0.05); t += 0.05;
+      if (m.air) stAir = m.st;
+      if (land < 0 && !m.air) land = t;
+      if (land >= 0 && back < 0 && m.st === 'mstun' && Math.abs(m.spin + Math.PI / 2) < MEG_LIE_EPS) back = t;
       if (up < 0 && m.st === 'mup') up = t;
       if (m.st === 'fun') fun = t;
       if (i === 40) r.stars = stars.length;          // 暈了兩秒
     }
-    r.up = +up.toFixed(2); r.rise = +(fun - up).toFixed(2); r.lie = m.lie; r.spin = m.spin;
-    r.want = MEG_STUN; r.wantUp = ENG.MEGT.up; r.castStars = castStars;
+    r.stAir = stAir; r.land = +land.toFixed(2); r.back = +back.toFixed(2);
+    r.up = +up.toFixed(2); r.rise = +(fun - up).toFixed(2); r.lie = m.lie; r.spin = m.spin; r.fall = m.fall;
+    /* 躺著被點著：就地打滾燒 B_BURN 秒，燒完躺回去，時間到才爬 */
+    const f = lie();
+    r.fire = igniteBeast(f, 1);
+    r.burn = f.burn;
+    let ft = 0, fout = '', fup = -1;
+    for (let i = 0; i < 2000 && fup < 0; i++) {
+      const was = f.burn > 0;
+      stepBeast(f, 0.05); ft += 0.05;
+      if (was && !(f.burn > 0)) { stepBeast(f, 0.05); ft += 0.05; fout = f.st + '／lie ' + f.lie; }
+      if (f.st === 'mup') fup = ft;
+    }
+    r.fout = fout; r.fup = +fup.toFixed(2);
+    r.want = MEG_STUN; r.wantUp = ENG.MEGT.up; r.castStars = castStars; r.B = B_BURN;
     toast = otoast; cleanTools();
     return r;
   });
-  ok('躺著暈的時候炸不飛、震不倒、點不著，被打也不改主意（使用者：「躺著暈不會被打到」）',
-     gstun.busy && !gstun.toss && !gstun.fell && !gstun.fire && gstun.st === 'mstun' && gstun.bad === 0,
-     'levBusy ' + gstun.busy + '；炸飛 ' + gstun.toss + '、震倒 ' + gstun.fell + '、點著 ' + gstun.fire +
-     '；被打之後 ' + gstun.st + '（bad ' + gstun.bad + '）');
-  ok('暈滿 MEG_STUN 秒才爬起來、爬完回去逛（躺平角與抬升收乾淨）；星光只在詠唱時冒，暈著的時候沒有',
+  ok('躺著暈的時候照一般倒地打得到：炸得飛、點得著（本來就躺著，震不倒），被打也不生氣（使用者：「惠惠攻擊後倒地 調整成能被攻擊(同一般倒地)」）',
+     !gstun.busy && !gstun.fell && gstun.toss && gstun.air === 1 && gstun.fire && gstun.burn > 0 &&
+     gstun.st === 'mstun' && gstun.bad === 0 && gstun.stAir === 'mstun',
+     'levBusy ' + gstun.busy + '；震倒 ' + gstun.fell + '、炸飛 ' + gstun.toss + '（air ' + gstun.air + '）、點著 ' + gstun.fire +
+     '；被打之後 ' + gstun.st + '（bad ' + gstun.bad + '）、飛著的時候 ' + gstun.stAir);
+  ok('被炸飛落地躺回去，把剩下的秒數暈完：MEG_STUN 秒才爬、爬完回去逛（躺平角與抬升收乾淨）；星光只在詠唱時冒，暈著的時候沒有',
+     gstun.land > 0 && gstun.back > gstun.land && gstun.back < 2 &&
      Math.abs(gstun.up - gstun.want) < 0.11 && Math.abs(gstun.rise - gstun.wantUp) < 0.11 &&
-     gstun.lie === 0 && gstun.spin === 0 && gstun.stars === 0 && gstun.castStars > 0,
-     gstun.up + ' 秒開始爬（MEG_STUN ' + gstun.want + '）、' + gstun.rise + ' 秒爬完（MEGT.up ' + gstun.wantUp +
-     '）；詠唱兩秒星光 ' + gstun.castStars + ' 顆、暈兩秒 ' + gstun.stars + ' 顆');
+     gstun.lie === 0 && gstun.spin === 0 && gstun.fall === 0 && gstun.stars === 0 && gstun.castStars > 0,
+     gstun.land + ' 秒落地、' + gstun.back + ' 秒躺回去；' + gstun.up + ' 秒開始爬（MEG_STUN ' + gstun.want + '）、' +
+     gstun.rise + ' 秒爬完（MEGT.up ' + gstun.wantUp + '）；詠唱兩秒星光 ' + gstun.castStars + ' 顆、暈兩秒 ' + gstun.stars + ' 顆');
+  ok('躺著被點著：就地燒完躺回去接著暈，時間到才爬（燒的那幾秒照數）',
+     gstun.fout === 'mstun／lie 1' && Math.abs(gstun.fup - gstun.want) < 0.11,
+     '燒 ' + gstun.B + ' 秒、燒完 ' + gstun.fout + '；' + gstun.fup + ' 秒開始爬（MEG_STUN ' + gstun.want + '）');
 
   /* ── 一整趟：被打一下 → 跑到站位 → 詠唱放出道具那一發 → 爆炸時不在範圍裡 → 往後倒、暈、爬起來回去逛 ── */
   const grun = await page.evaluate(() => {
@@ -31561,6 +31590,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('叫她：點空地跑到那一點（命令 go）、從那一點的方位在林帶中線進場、是來逛的吉祥物；再點建築是同一位轉身過去',
      fcall.n === 1 && fcall.go && fcall.at && fcall.st === 'call' && fcall.da < 1e-6 && Math.abs(fcall.r - fcall.want) < 1e-6 &&
      fcall.fun === 1 && fcall.n2 === 1 && fcall.again, JSON.stringify(fcall));
+
+  /* ── 腳程：平常逛同小人的 WALK；叫過去用跑的，腳程與腿擺都是走路的 FR_RUN 倍（v1.260.0，使用者：「芙莉蓮 惠惠 都調整奔跑只有走路的兩倍速
+     因為他們是法師」；v1.259.0 漏列 DOOM_SPD，照猴子的 2.2 走、跑 EXC_RUN 3 倍）。量法同〈Excalibur〉那一條：還離目標很遠時一步就是 spd × dt ── */
+  const fspd = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const R = siteR + 30, dt = 0.02;
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = R; m.z = 0; m.st = 'fun'; m.pause = 0; m.tx = R; m.tz = 30; m.stay = 99;
+    let x0 = m.x, z0 = m.z, p0 = m.ph;
+    stepBeast(m, dt);
+    const walk = { d: Math.hypot(m.x - x0, m.z - z0), ph: m.ph - p0 };
+    callFrieren({ x: R, y: 0, z: -60 });
+    const st = m.st;
+    let d = 0, ph = 0;
+    for (let i = 0; i < 40; i++) {
+      x0 = m.x; z0 = m.z; p0 = m.ph;
+      stepBeast(m, dt);
+      d = Math.max(d, Math.hypot(m.x - x0, m.z - z0)); ph = m.ph - p0;
+    }
+    const r = { walk, st, d, ph, run: m.run, W: WALK, K: FR_RUN, dt };
+    beasts = null;
+    return r;
+  });
+  ok('腳程：平常逛同小人的 WALK，叫過去用跑的是走路的 FR_RUN 倍（腳程與腿擺）、跑姿推到 1（使用者：「奔跑只有走路的兩倍速」）',
+     Math.abs(fspd.walk.d - fspd.W * fspd.dt) < 1e-9 && Math.abs(fspd.walk.ph - 11 * fspd.dt) < 1e-9 &&
+     fspd.st === 'call' && Math.abs(fspd.d - fspd.W * fspd.K * fspd.dt) < 1e-9 &&
+     Math.abs(fspd.ph - 11 * fspd.K * fspd.dt) < 1e-9 && fspd.run > 0.99,
+     '逛：一步 ' + fspd.walk.d.toFixed(4) + '（WALK × dt ' + (fspd.W * fspd.dt).toFixed(4) + '）；叫過去：一步 ' +
+     fspd.d.toFixed(4) + '（× FR_RUN ' + fspd.K + '）、腿擺一幀 ' + fspd.ph.toFixed(3) + '、跑姿 ' + fspd.run.toFixed(3));
 
   /* ── 畫面：沒她在場不吃 draw call；沒開罩只畫她；開罩畫罩子（一位 FR_NE 條邊）；不抽 Math.random ── */
   const fdraw = await page.evaluate(() => {

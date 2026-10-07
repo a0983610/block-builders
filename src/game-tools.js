@@ -8229,7 +8229,8 @@ const doomNear = m => m.kind === 'giant' ? GIA_NEAR
    Saber 走路同小人（v1.226，使用者：「增快saber一般走路移動速度(同小人)」；v1.222～v1.225 照猴子的 2.2），
    腿擺照小人那一份（stp 不給＝1，小人走 WALK 也是 11 弧度／秒）。 */
 const DOOM_SPD = { giant: GIA_WALK, saber: WALK, levi: WALK, megumin: WALK,     // 里維兵長（v1.230）、惠惠（v1.247.0）同 Saber
-                   zenitsu: WALK, gojo: WALK };                                 // 善逸（v1.251.0）、五條悟（v1.255.0）也是
+                   zenitsu: WALK, gojo: WALK,                                   // 善逸（v1.251.0）、五條悟（v1.255.0）也是
+                   frieren: WALK };   // 芙莉蓮 v1.259.0 漏列（照猴子的 2.2 走、跑 6.6），v1.260.0 補上（使用者選的「走路補成 6.8，跑 13.6」）
 const DOOM_STEP = { giant: GIA_STEP };
 const DOOM_KEEP = { giant: GIA_KEEP };
 /* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
@@ -8627,7 +8628,7 @@ function stepBeast0(m, dt) {
   /* 被斬殺的巨人：躺著冒蒸氣、氣化消失（里維 v1.230；核彈、爆裂魔法、Excalibur v1.245.0，見 giantDie）；
      被打死的牛羊：躺著流血、淡掉（v1.240） */
   if (m.dead) return m.herd ? stepCarcass(m, dt) : stepDie(m, dt);
-  /* 惠惠爆完往後倒、暈著、爬起來（v1.247.0）：那幾段打不到她，被打倒、卡住那兩套都不必跑 */
+  /* 惠惠爆完往後倒、暈著、爬起來（v1.247.0）：被打倒、卡住那兩套都不必跑（v1.260.0 起被炸飛、點著的那幾秒在裡面照一般那一套） */
   if (megDown(m)) return stepMegDown(m, dt);
   /* 芙莉蓮（v1.259.0）：防護罩的計時與舉杖；罩子張開到收完那幾秒她站定（見 frStep） */
   if (m.kind === 'frieren' && frStep(m, dt)) return false;
@@ -8701,7 +8702,7 @@ function stepBeast0(m, dt) {
     m.run += ((m.call && (m.st === 'call' || m.st === 'gate') ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   /* 惠惠退到安全距離那一段也用跑的（v1.247.0，使用者：「退到安全距離用跑的(三倍速度 要有奔跑動作)」） */
   else if (m.kind === 'megumin') m.run += ((m.st === 'mwalk' ? 1 : 0) - m.run) * Math.min(1, dt * 8);
-  if (m.st === 'call') return stepCall(m, dt, spd * EXC_RUN, (stp || 1) * EXC_RUN, kp);   // v1.224
+  if (m.st === 'call') { const k = callRun(m); return stepCall(m, dt, spd * k, (stp || 1) * k, kp); }   // v1.224；芙莉蓮兩倍（v1.260.0）
   if (m.st === 'odm') return stepOdm(m, dt);              // 兵長砍猴：立體機動那一招（v1.230）
   if (m.st === 'zen') return stepZen(m, dt);              // 霹靂一閃：架勢、一閃、收刀（v1.251.0）
   if (m.st === 'pur') return stepGojo(m, dt);             // 虛式「茈」：赫＋蒼合成茈、放出去（v1.255.0）
@@ -8748,7 +8749,7 @@ function stepBeast0(m, dt) {
      走到一半路沒了（門樓被打爛、缺口被砌起來）規劃不出路，照直線走到牆邊，
      回原本那一段之後那邊會改成就地拆牆（見 gateNeed）。 */
   if (m.st === 'gate') {
-    const k = m.call ? EXC_RUN : 1;            // Excalibur 叫她過去那一趟連穿城門也用跑的（v1.226）
+    const k = m.call ? callRun(m) : 1;         // Excalibur 叫她過去那一趟連穿城門也用跑的（v1.226）
     const g = m.gw;
     if (!g) { gateBack(m); return false; }
     const ox = m.tx, oz = m.tz;
@@ -9429,6 +9430,8 @@ const EXC_REACH = ENG.EXC_L / 2;
 /* 叫她過去那一段跑幾倍（v1.226，使用者：「速度是一般的三倍」＝走路 WALK 6.8 的三倍 20.4，
    腿擺跟著同一個倍率）。從場邊跑到目標實測 2.9 秒（62 格）；走路的時候是 20 多秒 */
 const EXC_RUN = 3;
+/* 這一位叫過去跑幾倍：芙莉蓮是法師，只跑兩倍（v1.260.0，見 FR_RUN）；其餘同 Saber */
+const callRun = m => m.kind === 'frieren' ? FR_RUN : EXC_RUN;
 const CALL_PROBE = 0.05;        // 最後那幾步一小步走多遠就往前探一次（v1.226，見 stepCall）
 /* 挑一位。場上只會有一位（見 stepDoom），挑「最近的」只是保險；
    被幽浮／小黑洞收著的排最後（也叫得到，掉回來爬起來就去）。 */
@@ -9661,10 +9664,11 @@ const LEV_STEAM = { rate: [70, 120, 260], burst: 4, cap: 500, s: [0.7, 1.6], lif
 const LEV_STEAM_ALL = 2400;      // 塵霧那一池已經這麼多就不冒了（蘑菇雲那一類在場時讓給它們）
 const lvSm = f => f * f * (3 - 2 * f);
 /* 立體機動中的里維、正在氣化的巨人：一般道具打不動（見檔頭那一段）。
-   倒下、暈著、爬起來的惠惠也是（v1.247.0，使用者：「躺著暈不會被打到」）：炸不飛、點不著、吸不走。
-   出招中的善逸也是（v1.251.0：一閃是一整段不可分割的位移，見〈霹靂一閃〉那一節） */
+   出招中的善逸也是（v1.251.0：一閃是一整段不可分割的位移，見〈霹靂一閃〉那一節）。
+   倒下、暈著、爬起來的惠惠 v1.247.0～v1.259.0 也在這裡（「躺著暈不會被打到」）；v1.260.0 拿掉，
+   使用者：「惠惠攻擊後倒地 調整成能被攻擊(同一般倒地)」（見 stepMegDown） */
 /* 五條悟**什麼時候都是**（v1.255.0，無下限；使用者：「無下限 什麼時候都打不動」）：不只結印、放出茈那一招 */
-function levBusy(m) { return !!m && (m.st === 'odm' || m.st === 'zen' || m.kind === 'gojo' || !!m.dead || megDown(m)); }
+function levBusy(m) { return !!m && (m.st === 'odm' || m.st === 'zen' || m.kind === 'gojo' || !!m.dead); }
 /* 在地上嗎（點得到、追得到的那一條，里維與 Saber 共用）。飛龍的 sky 從進場到飛走一路是 1（連在地上那幾段也是），
    所以牠照狀態認：在草皮上走（gwalk）、摔下來趴著（down）的算在地上；其餘照 sky（獅鷲降落時歸零） */
 const onGroundBeast = m => m.kind === 'dragon' ? m.st === 'gwalk' || m.st === 'down' : !m.sky;
@@ -10759,6 +10763,9 @@ const FR_R = 8;                    // 罩子半徑（格）：使用者選的「
 const FR_SC = DOOM_SC;
 const FR_HOLD = 2.5;               // 多久沒再被打就開始收罩（秒）
 const FR_CAST = 5;                 // 舉杖／放下多快（m.fc 每秒往目標追幾成）
+/* 叫她過去那一段跑幾倍（v1.260.0，使用者：「芙莉蓮 惠惠 都調整奔跑只有走路的兩倍速 因為他們是法師」）：
+   走路 WALK 的兩倍、腿擺同倍率。v1.259.0 是照 Saber 的 EXC_RUN 3（見 callRun） */
+const FR_RUN = 2;
 /* 亮紋（m.bh）：FR_HIT_GAP 秒內、方向差不到 FR_HIT_ANG 弧度的算同一下（一顆炸彈打到幾百塊只亮一圈）；同時最多 FR_HIT_MAX 圈 */
 const FR_HIT_GAP = 0.15, FR_HIT_ANG = 0.4, FR_HIT_MAX = 6;
 function pickFrieren() {
@@ -11599,7 +11606,8 @@ function stepGryph(m, dt) {
             預覽前幾輪她腳下還有一個小魔法陣、寶珠外一圈火環（照道具那疊陣的配色），使用者先後拿掉：
             「施法時法杖前端那個圈拿掉」「腳下的小魔法陣 也拿掉好了」
      mfall  爆炸那一刻往後倒（MEGT.fall，越倒越快）；帽子掉到頭旁邊、法杖脫手（姿勢在引擎，見 megRig）
-     mstun  躺 MEG_STUN 秒，兩眼換成 ×；**這一段什麼都打不到她**（levBusy）
+     mstun  躺 MEG_STUN 秒，兩眼換成 ×。v1.247.0 這一段什麼都打不到她；v1.260.0 起照一般倒地被炸飛、點著，
+            只是不生氣、暈的秒數照算（見 stepMegDown）
      mup    爬起來（MEGT.up），回去把剩下的時間逛完
    見 開發筆記〈惠惠：吉祥物，被惹毛了退到安全距離放爆裂魔法〉 */
 /* 安全距離（使用者：「不要被爆裂魔法炸到」）：爆炸掃生物是三維的 MAG_R、爆點在陣心（離地 MAG_CORE_Y），
@@ -11607,9 +11615,9 @@ function stepGryph(m, dt) {
 const MEG_PAD = 6;
 const MEG_SAFE = Math.ceil(Math.sqrt(MAG_R * MAG_R - MAG_CORE_Y * MAG_CORE_Y)) + MEG_PAD;
 const MEG_RING = 6;                 // 站位從 MEG_SAFE 往外再找幾格（一圈一格）
-/* 退到站位用跑的（使用者：「三倍速度 要有奔跑動作」）：走路 WALK 的三倍、腿擺同倍率——同 Saber 被叫過去那一段的 EXC_RUN。
-   跑的姿勢在引擎（megRunPose），照 m.run 0～1 混過去 */
-const MEG_RUN = 3;
+/* 退到站位用跑的（使用者：「三倍速度 要有奔跑動作」）：腿擺同倍率。跑的姿勢在引擎（megRunPose），照 m.run 0～1 混過去。
+   v1.260.0 改兩倍（使用者：「芙莉蓮 惠惠 都調整奔跑只有走路的兩倍速 因為他們是法師」）；v1.247.0～v1.259.0 是三倍 */
+const MEG_RUN = 2;
 const MEG_EDGE = 3;                 // 站位離島邊至少幾格
 const MEG_STUN = 30;                // 暈幾秒（使用者：「暈30秒」）
 /* 走了這麼久還沒到站位（走不到的那種）：夠遠就地放，不夠遠就算了、回去逛。保險不是門檻——
@@ -11742,10 +11750,24 @@ function megBoom(m) {
   m.lie = 1; m.spin = 0; m.roll = 0; m.fall = 0; m.face = 0;
   toast(BEAST_NM.megumin + '把魔力用光了', '她往後一倒，躺在地上 ' + MEG_STUN + ' 秒動不了');
 }
-/* 倒下、暈、爬起來那三段（stepBeast0 最前面就轉進來：這幾段打不到她，被打倒那一套整段不必跑） */
+/* 倒下、暈、爬起來那三段（stepBeast0 最前面就轉進來，被打倒、卡住那兩套整段不必跑）。
+   v1.247.0～v1.259.0 這幾段什麼都打不到她（levBusy）；v1.260.0 使用者：「惠惠攻擊後倒地 調整成能被攻擊(同一般倒地)」——
+   炸飛、點著、吸走都照一般那一套（飛、落地、燒是 hurtBeast），震倒、戳倒不算（本來就躺著，見 fellBeast）、被打也不生氣（見 beastHit）。
+   **暈的秒數照算**（使用者選的「把剩下的秒數暈完」）：飛著、燒著那幾秒 m.mt 照數，落地／燒完（m.mhit）躺回去暈到時間才爬——
+   倒下那一段被打斷的扣掉倒下那 MEGT.fall 秒接著暈，爬到一半被打斷的躺回去再爬一次。
+   被幽浮、小黑洞、紫球收著那幾秒不數（m.ufo，stepBeast0 更前面就跳掉了；放掉是 m.air，落地照上面那一條）。
+   見 開發筆記〈法師只跑兩倍：芙莉蓮、惠惠；惠惠爆完倒地打得到（v1.260.0）〉 */
+const MEG_LIE_EPS = 0.02;           // 躺回去：躺平角離 −π/2 剩不到這麼多（弧度）才爬
 function stepMegDown(m, dt) {
   const E = ENG.MEGT;
   m.mt += dt;
+  if (m.air || m.burn > 0) { m.mhit = 1; hurtBeast(m, dt); return false; }
+  if (m.wet > 0) m.wet = Math.max(0, m.wet - dt);   // 同 hurtBeast：躺著淋濕的照樣會乾（不然暈完之前都點不著）
+  if (m.mhit) {
+    if (m.st === 'mfall') m.mt = Math.max(0, m.mt - E.fall);
+    else if (m.st === 'mup') m.mt = MEG_STUN;
+    m.st = 'mstun'; m.mhit = 0; m.fall = 0; m.lie = 1;   // 落地那一下 flyBeast 給的 m.fall 收掉：躺多久是這裡數的
+  }
   m.gait = 0;
   if (m.st === 'mfall') {
     const f = Math.min(1, m.mt / E.fall);
@@ -11754,8 +11776,9 @@ function stepMegDown(m, dt) {
     return false;
   }
   if (m.st === 'mstun') {
-    m.spin = -Math.PI / 2;
-    if (m.mt >= MEG_STUN) { m.st = 'mup'; m.mt = 0; }
+    /* 落地、燒完躺回去是慢慢倒下去的（同 hurtBeast 躺平那一行）；平常倒下那一段收在剛好 −π/2，這一行不動 */
+    m.spin += (-Math.PI / 2 - m.spin) * Math.min(1, dt * 9);
+    if (m.mt >= MEG_STUN && Math.abs(m.spin + Math.PI / 2) < MEG_LIE_EPS) { m.st = 'mup'; m.mt = 0; }
     return false;
   }
   const f = Math.min(1, m.mt / E.up);
@@ -12182,7 +12205,8 @@ function beastHit(m, src) {
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
   if (!m || m === hitBy || beastLeaving(m) || m.call || m.cq) return;
   /* 里維兵長（v1.230）不會生氣：他只做玩家叫他做的事（吉祥物那一套翻臉、砸地標他都沒有）。
-     倒下、暈著、爬起來的惠惠（v1.247.0，使用者：「躺著暈不會被打到」）也不算：那幾段 levBusy 擋著，照理打不到 */
+     倒下、暈著、爬起來的惠惠（v1.247.0）也不算：v1.260.0 起那幾段打得到她了（被炸飛、點著），但使用者選的是
+     「不算，不生氣」——爬起來照原本回去逛，不會再放一發 */
   if (m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'frieren' || m.dead || megDown(m)) return;   // 善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0，她在自己的罩子裡、照理打不到）同里維
   /* 動不了手的吉祥物（v1.229，表上的 spent：小猴子丟完香蕉）：照樣會倒，只是不再改主意 */
   if (mascSpent(m)) return;
@@ -12570,7 +12594,8 @@ function fellBeast(m, t, face) {
   if (face ? levBusy(m) : beastSafe(m)) return false;
   if (m.kind === 'dragon') return crashDragon(m);
   if (m.sky) return grDown(m);                       // 在天上的獅鷲：打下來（v1.176）
-  if (m.air || m.burn > 0 || m.fall > 0) return false;
+  /* 爆完倒地的惠惠（v1.260.0）：本來就躺著，同已經躺著的那一隻（m.fall > 0）推不倒第二次 */
+  if (m.air || m.burn > 0 || m.fall > 0 || megDown(m)) return false;
   m.fall = t; m.lie = lieLift(m); m.gait = 0; m.pause = 0;
   m.face = face ? 1 : 0;                             // 被工具打倒的照舊往後仰
   if (!m.side) m.roll = 0;                           // 側躺的那個角度就是 roll，別歸零
