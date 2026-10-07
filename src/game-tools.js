@@ -99,7 +99,10 @@ const TOOLS = [
   { id: 'frieren', n: '防禦魔法', k: '🛡',
     /* v1.259.0：不是破壞道具，是保護用的——叫芙莉蓮跑到那一點、站一下再四處逛，她身邊 FR_R 格內
        有攻擊打過來就自動張開防護罩擋住（見 callFrieren）。照樣接在最後面、照等差階梯解鎖 */
-    tip: '點一下：叫芙莉蓮跑過去再四處逛；她身邊 8 格內被攻擊就自動張開防護罩' }
+    tip: '點一下：叫芙莉蓮跑過去再四處逛；她身邊 8 格內被攻擊就自動張開防護罩' },
+  { id: 'meat', n: '肉', k: '🍖',
+    /* v1.261.0：也不是破壞道具——丟一塊肉，最近的幾隻閒逛動物小跑過來圍著吃（見 dropMeat）。照樣接在最後面、照等差階梯解鎖 */
+    tip: '點一下：丟一塊肉，40 格內最近的 3 隻閒逛動物小跑過來圍著吃，吃完才散' }
 ];
 /* 說明最多幾個字（v1.220.2，使用者：「破壞工具說明不要太長」）。選好一把之後它會接在
    底部那條操作提示的最前面，而那條不換行、後半段固定的操作說明自己就佔掉約 514px——
@@ -141,7 +144,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       bounce: 1, hole: 1, excalibur: 1, musket: 1, levi: 1,     // 兵長砍猴點空地＝跑到那裡（v1.230）
                       zenitsu: 1,                                               // 霹靂一閃同上（v1.251.0）
                       gojo: 1,                                                  // 虛式「茈」同上（v1.255.0）
-                      frieren: 1 };                                             // 防禦魔法：點哪裡都是叫她跑過去（v1.259.0）
+                      frieren: 1,                                               // 防禦魔法：點哪裡都是叫她跑過去（v1.259.0）
+                      meat: 1 };                                                // 肉：點哪裡都是丟在那裡（v1.261.0）
 let tool = 'hammer';
 
 /* ── 破壞道具泡泡（v1.214）───────────────────────────────
@@ -8046,6 +8050,8 @@ function useTool(hit) {
   /* 防禦魔法（v1.259.0）：點哪裡都是叫芙莉蓮跑到那一點（點建築就跑到它旁邊），站一下再四處逛。
      生物、小人在點選那一層是透明的（拿這一把照「skip」那一檔點），點到的就是後面的建築或地面 */
   if (tool === 'frieren') { callFrieren(hit.point); return 0; }
+  /* 肉（v1.261.0）：點哪裡就丟在那裡，點到建築就掉在它旁邊的空地（見 dropMeat）。生物、小人同上是透明的 */
+  if (tool === 'meat') { dropMeat(hit.point); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
@@ -8855,6 +8861,9 @@ function stepBeast0(m, dt) {
       }
       return false;
     }
+    /* 被肉叫過去的（v1.261.0，見 stepMeats）：小跑過去、圍著吃，吃完 meatFree 放回來接著逛。
+       排在中箭跑開後面：路上中箭的先跑開，跑完接著過去 */
+    if (m.meat) { meatWalk(m, dt, spd, stp, kp); return false; }
     if (m.pause > 0) {
       m.pause -= dt;
       m.gait += (0 - m.gait) * Math.min(1, dt * 8);
@@ -12306,7 +12315,8 @@ function dieHerd(m) {
    照身高算的話鹿那一攤是牛的一倍半（探針量的，見 開發筆記〈被打死〉）。 */
 const BLOOD_BEAST = 0.55;
 /* 一款的身長與重心（模型單位，照造型表算一次就記著）：重心照每一塊的體積加權，cy 是離腳底多高、
-   cz 是離原點往前多少——倒下去之後，cy 那一段變成往背的那一側躺過去的水平距離。 */
+   cz 是離原點往前多少——倒下去之後，cy 那一段變成往背的那一側躺過去的水平距離。
+   nose 是最前面那一塊的前緣離原點多遠（v1.261.0，圍著肉站的時候鼻尖要碰到肉，見 meatWalk）。 */
 const _herdBody = {};
 function herdBody(kind) {
   let g = _herdBody[kind];
@@ -12317,7 +12327,7 @@ function herdBody(kind) {
     const k = b.s[0] * b.s[1] * b.s[2];
     v += k; cy += b.p[1] * k; cz += b.p[2] * k;
   }
-  g = _herdBody[kind] = { len: hi - lo, cy: cy / (v || 1), cz: cz / (v || 1) };
+  g = _herdBody[kind] = { len: hi - lo, cy: cy / (v || 1), cz: cz / (v || 1), nose: hi };
   return g;
 }
 function stepCarcass(m, dt) {
@@ -12435,6 +12445,160 @@ function stepHerd(dt) {
     spawnCattle(herdOwed > 0);
     if (herdOwed > 0) herdOwed--;
   }
+}
+
+/* ── 肉（v1.261.0）───────────────────────────────────────
+   使用者：「增加道具 肉 吸引閒晃動物 能誘導動物移動」。動手前問了四件，選的是：
+   一塊叫**最近的幾隻**（MEAT_N）、**圍著吃，吃完才散**、**可以好幾塊**（最多 MEAT_MAX，再丟擠掉最早那塊）、**小跑過去**。
+   規則只有一條（stepMeats 每幀問）：**還沒吃完的每一塊，叫來的不到 MEAT_N 隻，就再叫一隻 MEAT_FAR 格內離它最近、
+   身上沒掛著別塊肉的閒逛動物**。丟下去那一刻叫滿、路上被打死的有別隻補上、被別塊叫走的不搶回來、
+   範圍裡都被叫光了就等前面那幾塊吃完或有別隻逛進來——都是這一條。
+   走過去（繞房子、穿城門）是巡路規則在走（strollTo，見 meatWalk）；被打倒、點著、吹飛那幾秒照舊
+   （hurtBeast 排在前面），爬起來接著過去。 */
+const MEAT_MAX = ENG.MAXMEAT;      // 場上最多幾塊（引擎的上限，再丟就擠掉最早那塊，同定時炸彈）
+const MEAT_N = 3;                  // 一塊叫幾隻（使用者選「最近的幾隻」，選項寫的是 3 隻）
+/* 多遠以內的才叫（看過預覽之後使用者定的：「加 40 格上限」）。沒有上限的時候第三近的那一隻在 111.6 格外，
+   跑到的時候肉早就被吃完了。範圍裡不夠 MEAT_N 隻就先吃著，之後逛進來的照樣叫得到（stepMeats 每幀都在問） */
+const MEAT_FAR = 40;
+const MEAT_EAT = 8;                // 圍滿 MEAT_N 隻的話幾秒吃完（選項寫的「約 8 秒」）；圍得少就吃得慢
+const MEAT_GAP = 0.1;              // 鼻尖離肉塊多遠
+/* 走到離站位這麼近才開吃。巡路那一層走到 REACH（0.9 格）內就算到了，那樣停下來鼻子離肉還有一截，
+   剩下那一點 meatWalk 自己用走的挪過去 */
+const MEAT_NEAR = 0.12;
+const MEAT_Y0 = 6;                 // 從多高掉下來
+const MEAT_BOUNCE = 0.25;          // 第一下落地彈回幾成
+const MEAT_BONE = 1.2;             // 吃完剩骨頭擺幾秒
+const MEAT_POP = 0.3;              // 骨頭縮掉要幾秒
+const MEAT_WOB = 0.12;             // 有人在咬的時候左右扯幾弧度
+const MEAT_WOB_HZ = 9;
+/* 掉在哪：點到建築（地標、房子）的話挪到旁邊最近的空地——留骨頭那麼長的身位，
+   掉進建築裡的話看不到、也沒有一隻走得到。navGoal 就是巡路規則 2（目標壓在障礙裡就挪到最近的可走點） */
+const MEAT_BD = { H: 1, r: 1.2 };
+let meats = null;
+/* 丟一塊。挪的時候「從哪邊來就停在哪邊」照的是鏡頭：點建築的話掉在朝著鏡頭那一側 */
+function dropMeat(p) {
+  if (!meats) meats = [];
+  if (meats.length >= MEAT_MAX) meatFree(meats.shift());        // 擠掉最早那塊：圍著它的放回去逛
+  const e = ENG.camEye();
+  const g = navGoal({ x: e.x, z: e.z, ghost: 0 }, p.x, p.z, MEAT_BD);
+  const a = rr(0, Math.PI * 2);
+  const f = { x: g ? g.x : p.x, y: MEAT_Y0, z: g ? g.z : p.z, vy: 0, hit: 0,
+              a, a0: a, base: rr(0, Math.PI * 2), left: 1, k: 1, s: 1, t: 0, ph: 0 };
+  meats.push(f);
+  return f;
+}
+/* 站位：MEAT_N 個位子平均圍一圈 */
+const meatAng = (f, k) => f.base + k * Math.PI * 2 / MEAT_N;
+/* 底下那塊碎料的頂面（沒有就是地面）。碎料只鋪一層（separate 把它們推開、不疊），
+   所以中間那一段底下有一塊就擺在它上面；那一塊被搬走就再往下掉 */
+function meatFloor(f) {
+  const cx = Math.floor(f.x / CELL), cz = Math.floor(f.z / CELL), R = HB + ENG.MEAT_R;
+  let y = 0;
+  for (let i = -1; i <= 1; i++) for (let k = -1; k <= 1; k++) {
+    const a = restGrid.get(gcell(cx + i, cz + k)); if (!a) continue;
+    for (const b of a) if (Math.abs(b.x - f.x) < R && Math.abs(b.z - f.z) < R) y = Math.max(y, b.y + HB);
+  }
+  return y;
+}
+/* 叫一隻：MEAT_FAR 格內離這塊最近、還活著、身上沒掛著別塊肉、沒被吸走的閒逛動物。
+   站哪個位子：空著的那幾個裡，離牠來的方向最近的那一個（從哪邊來就站哪邊，不必繞到另一頭） */
+function meatCall(f) {
+  if (!beasts) return null;
+  let m = null, bd = MEAT_FAR;
+  for (const q of beasts) {
+    if (!q.herd || q.dead || q.meat || q.ufo) continue;
+    const d = Math.hypot(q.x - f.x, q.z - f.z);
+    if (d < bd) { bd = d; m = q; }
+  }
+  if (!m) return null;
+  const used = [];
+  for (const q of beasts) if (q.meat === f && !q.dead) used[q.mk] = 1;
+  const from = Math.atan2(m.z - f.z, m.x - f.x);
+  let mk = 0, best = Infinity;
+  for (let k = 0; k < MEAT_N; k++) {
+    if (used[k]) continue;
+    let e = Math.abs(from - meatAng(f, k)) % (Math.PI * 2);
+    if (e > Math.PI) e = Math.PI * 2 - e;
+    if (e < best) { best = e; mk = k; }
+  }
+  m.meat = f; m.mk = mk; m.mEat = 0; m.pause = 0; m.leg = 0;
+  return m;
+}
+/* 放掉圍著這塊的：吃飽了站一下（同走到一個點站著吃草），再照常逛 */
+function meatFree(f) {
+  if (!beasts) return;
+  for (const m of beasts) {
+    if (m.meat !== f) continue;
+    m.meat = null; m.mEat = 0;
+    if (m.dead) continue;
+    m.pause = rr(HERD_STAY[0], HERD_STAY[1]); m.leg = 0;
+    idleSpot(m);
+  }
+}
+function stepMeats(dt) {
+  if (!meats) return;
+  for (let i = meats.length - 1; i >= 0; i--) {
+    const f = meats[i];
+    const fl = meatFloor(f);
+    if (f.y > fl || f.vy > 0) {                                   // 掉下來（第一下彈一點點）
+      f.vy -= GRAV * dt; f.y += f.vy * dt;
+      if (f.y <= fl) {
+        f.y = fl;
+        if (!f.hit) { f.hit = 1; f.vy = -f.vy * MEAT_BOUNCE; sndStab(); } else f.vy = 0;
+      }
+    } else { f.y = fl; f.vy = 0; }                                // 底下剛好滾進來一塊：墊上去
+    if (f.left <= 0) {                                            // 吃完了：骨頭擺一下、縮掉
+      f.t += dt;
+      f.a = f.a0; f.k = 0; f.s = 1 - clamp((f.t - MEAT_BONE) / MEAT_POP, 0, 1);
+      if (f.t >= MEAT_BONE + MEAT_POP) meats.splice(i, 1);
+      continue;
+    }
+    let n = 0, eat = 0;
+    if (beasts) for (const m of beasts) {
+      if (m.meat !== f || m.dead) continue;
+      n++;
+      if (m.mEat && !m.air && !m.lie && !(m.burn > 0)) eat++;     // 被打倒、在燒的那幾秒不算在吃
+    }
+    if (n < MEAT_N) meatCall(f);
+    f.left -= eat * dt / (MEAT_EAT * MEAT_N);
+    f.ph += dt;
+    f.a = f.a0 + (eat ? Math.sin(f.ph * MEAT_WOB_HZ) * MEAT_WOB : 0);
+    /* 剩幾成照體積縮：長寬高各乘立方根，剩一半時看起來還有八成大，最後幾口才一下子小下去 */
+    f.k = Math.cbrt(Math.max(0, f.left));
+    if (f.left <= 0) { f.left = 0; f.t = 0; f.k = 0; meatFree(f); }
+  }
+  if (!meats.length) meats = null;
+}
+/* 被叫過去的那一隻這一幀怎麼走（stepBeast0 的 fun 那一段叫）：小跑到自己那個位子、轉過去面向肉、站定吃 */
+function meatWalk(m, dt, spd, stp, kp) {
+  const f = m.meat;
+  if (!meats || meats.indexOf(f) < 0) { m.meat = null; m.mEat = 0; return; }   // 那一塊已經不在了
+  const a = meatAng(f, m.mk), r = ENG.MEAT_R + MEAT_GAP + herdBody(m.kind).nose * (m.sc || 1);
+  m.tx = f.x + Math.cos(a) * r; m.tz = f.z + Math.sin(a) * r;
+  m.pause = 0;
+  /* 吃到一半被推開（被打飛、炸開，爬起來已經不在原地）就再走回去 */
+  if (m.mEat && Math.hypot(m.x - m.mx, m.z - m.mz) > REACH) m.mEat = 0;
+  if (!m.mEat) {
+    if (!strollTo(m, dt, spd * PLAY_RUN_K, stp * PLAY_RUN_K, kp)) return;
+    /* 剩下那一點用走的挪過去（照樣 navMove，不穿東西）；挪不動（站位被房子擋住）就地吃 */
+    const dx = m.tx - m.x, dz = m.tz - m.z, d = Math.hypot(dx, dz);
+    if (d > MEAT_NEAR) {
+      const sp = Math.min(d, spd * dt);
+      navMove(m, dx / d * sp, dz / d * sp, navBody(m));
+      if (Math.hypot(_nm.x, _nm.z) > sp * 0.5) {
+        navFace(m, dx / d, dz / d);
+        m.ph += dt * 11 * stp;
+        m.gait += (0.85 - m.gait) * Math.min(1, dt * 8);
+        return;
+      }
+    }
+    m.mEat = 1; m.mx = m.x; m.mz = m.z;
+  }
+  let e = Math.atan2(f.x - m.x, f.z - m.z) - m.a;
+  while (e > Math.PI) e -= Math.PI * 2;
+  while (e < -Math.PI) e += Math.PI * 2;
+  m.a += clamp(e, -B_RISE_YAW * dt, B_RISE_YAW * dt);
+  m.gait += (0 - m.gait) * Math.min(1, dt * 8);
 }
 
 /* ── 破壞工具打得到那幾隻（v1.146）────────────────────────

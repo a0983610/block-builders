@@ -23,7 +23,8 @@ const ENG = (function () {
   let excFade;                               // 光柱每一格下緣／上緣的濃淡（v1.226，見 putBar）
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
-  let torchMesh;                    // 小獼猴火把頭上的火（v1.249.0，見 putTorch）
+  let meatMesh;                     // 丟在地上的肉（v1.261.0，見 putMeats）
+  let torchMesh;                   // 小獼猴火把頭上的火（v1.249.0，見 putTorch）
   let starMesh, boltMesh;
   let emoMesh, emoGeo, emoPos, emoUv, emoCol;   // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
   let giftMesh, giftGeo, giftPos, giftUv;  // 掉在地上的道具泡泡（v1.214，見 setGiftIcons／putGifts）
@@ -117,7 +118,8 @@ const ENG = (function () {
   const SCORCH_U = [0, 0.14, 0.3, 0.46, 0.62, 0.78, 0.9, 1];
   const SCORCHV = SCORCH_MAX * SCORCH_SEG * (SCORCH_U.length - 1) * 6;
   const MAXBOMB = 6, BOMB_PARTS = 3;
-  const MAXMET = 6;                        // 同時最多幾顆隕石（一顆一個 instance）
+  const MAXMEAT = 6;                       // 同時最多幾塊肉（規則那邊 MEAT_MAX 直接讀這個，v1.261.0）
+  const MAXMET = 6;                       // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
      四層就吃掉八個，再加上爆炸衝擊環與蘑菇雲腰環。 */
   /* 同時能畫幾個圓環。一個魔法陣最多六層×2 個環＝12，那顆一直在的小火圈再吃 3 個
@@ -1300,6 +1302,14 @@ const ENG = (function () {
     bombMesh.frustumCulled = false; bombMesh.visible = false;
     scene.add(bombMesh);
     bombMesh.setColorAt(0, tmpC.setHex(0xffffff));
+
+    /* 肉（v1.261.0）：同定時炸彈，一塊 MEAT_PARTS 個 instance，沒丟就 visible=false */
+    meatMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXMEAT * MEAT_PARTS);
+    meatMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    meatMesh.castShadow = true; meatMesh.count = 0;
+    meatMesh.frustumCulled = false; meatMesh.visible = false;
+    scene.add(meatMesh);
+    meatMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
     /* 隕石：一顆一個 instance。石頭本體走 instance color，越接近落地燒得越紅
        （火焰本身是 hot 那批粒子拖出來的，這裡只負責那顆石頭）。
@@ -2689,6 +2699,57 @@ const ENG = (function () {
     }
     bombMesh.instanceMatrix.needsUpdate = true;
     if (bombMesh.instanceColor) bombMesh.instanceColor.needsUpdate = true;
+  }
+
+  /* 肉（v1.261.0）：漫畫裡那種帶骨肉——一塊烤得焦紅的肉、骨頭橫著穿過去、兩端各兩顆圓頭。
+     原點在地面、骨頭沿 x。m：1 是肉（被吃的時候照剩幾成往骨頭那條軸縮），其餘是骨頭（吃完還擺一下才收）。 */
+  const MEAT_CY = 0.5;                     // 骨頭那條軸多高（肉縮的時候往這條軸收）
+  /* 肉是**六塊巢狀方塊**疊成一顆橢球（長 1.5、高寬 1.0）：越長的越細，側看、俯看、剖面都是
+     一階一階收進去的圓；**越往外凸的那一層越亮**，每一面都是中間亮、往邊緣一圈一圈變深，看起來才是鼓起來的。
+     看過三版才定：第一版三塊差不多大、只凸出 0.06；第二版側面那塊顏色深一階、頂上兩道烤痕；
+     第三版六塊同一個顏色——三版近看都還是一個紅木箱 */
+  const MEAT_PART = [
+    { p: [0, MEAT_CY, 0], s: [1.5, 0.56, 0.56], c: 0x84331f, m: 1 },      // 最長最細（兩頭的尖）
+    { p: [0, MEAT_CY, 0], s: [1.3, 0.8, 0.6], c: 0x963b25, m: 1 },
+    { p: [0, MEAT_CY, 0], s: [1.3, 0.6, 0.8], c: 0x963b25, m: 1 },
+    { p: [0, MEAT_CY, 0], s: [1.1, 0.86, 0.86], c: 0xa5432b, m: 1 },
+    { p: [0, MEAT_CY, 0], s: [1.0, 1.0, 0.56], c: 0xb54d31, m: 1 },       // 最短最胖（中間那一圈）
+    { p: [0, MEAT_CY, 0], s: [1.0, 0.56, 1.0], c: 0xb54d31, m: 1 },
+    { p: [-0.1, 1.005, 0.06], s: [0.46, 0.02, 0.28], c: 0xcc7046, m: 1 }, // 頂上的油光
+    { p: [0, MEAT_CY, 0], s: [2.2, 0.2, 0.2], c: 0xeee6d2 },              // 骨頭（整支穿過去）
+    { p: [1.13, MEAT_CY, 0.1], s: [0.22, 0.26, 0.24], c: 0xf6f0e2 },      // 骨頭兩端的圓頭
+    { p: [1.13, MEAT_CY, -0.1], s: [0.22, 0.26, 0.24], c: 0xf6f0e2 },
+    { p: [-1.13, MEAT_CY, 0.1], s: [0.22, 0.26, 0.24], c: 0xf6f0e2 },
+    { p: [-1.13, MEAT_CY, -0.1], s: [0.22, 0.26, 0.24], c: 0xf6f0e2 }
+  ];
+  const MEAT_PARTS = MEAT_PART.length;
+  /* 肉塊左右的半寬（規則那邊照它算動物站多近，見 game-tools.js 的 meatSpot） */
+  const MEAT_R = Math.max(...MEAT_PART.filter(p => p.m).map(p => Math.abs(p.p[2]) + p.s[2] / 2));
+  /* f：{x, y, z, a 骨頭朝哪, k 肉剩多大（0～1，往骨頭收）, s 整塊多大（收掉那一下）} */
+  function putMeats(list) {
+    const n = Math.min(list.length, MAXMEAT);
+    meatMesh.visible = n > 0;
+    meatMesh.count = n * MEAT_PARTS;
+    for (let i = 0; i < n; i++) {
+      const f = list[i];
+      const k = Math.max(1e-3, f.k == null ? 1 : f.k);
+      scratch.position.set(f.x, f.y, f.z);
+      scratch.rotation.set(0, f.a || 0, 0);
+      scratch.scale.setScalar(Math.max(1e-3, f.s == null ? 1 : f.s));
+      scratch.updateMatrix();
+      for (let j = 0; j < MEAT_PARTS; j++) {
+        const p = MEAT_PART[j], q = p.m ? k : 1;
+        scratchB.position.set(p.p[0] * q, MEAT_CY + (p.p[1] - MEAT_CY) * q, p.p[2] * q);
+        scratchB.rotation.set(0, 0, 0);
+        scratchB.scale.set(p.s[0] * q, p.s[1] * q, p.s[2] * q);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        meatMesh.setMatrixAt(i * MEAT_PARTS + j, tmpM);
+        meatMesh.setColorAt(i * MEAT_PARTS + j, tmpC.setHex(p.c));
+      }
+    }
+    meatMesh.instanceMatrix.needsUpdate = true;
+    if (meatMesh.instanceColor) meatMesh.instanceColor.needsUpdate = true;
   }
 
   /* 隕石。m：{x, y, z, rx, ry, s, hot 0–1 燒得多紅}
@@ -9716,6 +9777,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
+    putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
     putStars, putBolts, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
     putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
@@ -9787,7 +9849,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
        NUKE_PARTS 是 init 時才填的，所以整份用 getter 取，不能在建物件那一刻就取值。 */
     get MODELS() {
       return { man: BODY, treb: TREB_PART, cannon: CAN_PART, doz: DOZ_PART, truck: TRK_PART,
-               bomb: BOMB_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
+               bomb: BOMB_PART, meat: MEAT_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
                ufo: UFO_PART, ufoLit: UFO_LIT,
                ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
@@ -9797,6 +9859,6 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill }; }
   };
 })();

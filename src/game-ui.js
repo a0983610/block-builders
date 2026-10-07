@@ -111,6 +111,7 @@ function step(dt) {
   stepTrebs(dt);
   stepCannons(dt);
   stepBombs(dt);
+  stepMeats(dt);                         // 肉（v1.261.0）：掉下來、叫最近的幾隻來吃、吃完收掉
   stepMeteors(dt);
   stepFw(dt);
   stepFire(dt);
@@ -284,6 +285,7 @@ function draw() {
   ENG.putCannons(cannons ? cannons.list : EMPTY);      // 加農砲（v1.204）
   ENG.putShells(cannons ? cannons.shells : EMPTY);
   ENG.putBombs(bombs || EMPTY);
+  ENG.putMeats(meats || EMPTY);                     // 肉（v1.261.0）：沒有就 visible=false
   /* 只把真的在天上飛的隕石丟過去（還在倒數的那幾顆連影子都不該有）。
      重用同一個陣列，不要每幀配置一個新的。 */
   metFly.length = 0;

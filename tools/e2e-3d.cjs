@@ -436,6 +436,7 @@ const installClean = page => page.evaluate(() => {
     trebs = null; ENG.putTrebs([]); ENG.putRocks([]);
     cannons = null; ENG.putCannons([]); ENG.putShells([]);   // 加農砲（v1.204）：砲與飛在空中的彈
     bombs = null; ENG.putBombs([]);
+    meats = null; ENG.putMeats([]);                          // 肉（v1.261.0）：吃完才收，沒有動物在吃就一直擺著
     meteors = null; ENG.putMeteors([]);
     nukes = null; ENG.putNukes([]);
     magics = null;
@@ -23926,20 +23927,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     clearFires();
     for (const b of blocks) b.wet = 0;
     beasts = null; nanas = null;
+    /* **押骰子**（v1.261.0）：只在往旁邊撒火那一下（igniteAround）把 Math.random 押成 0，35% 的稀疏點火全部抽中——
+       這一條驗的是規則（走到就點最近那一塊 ＋ 半徑 DOOM_FIRE_R 內再點 DOOM_FIRE_N 塊），不是骰子。
+       v1.260 以前要「點著 ≥ 3 塊」是在賭那 35%：--seed 1759369420 附近能點的 16 塊只抽中 1 塊（這種籤約 1%）就紅了，
+       同種子重跑一定重現（每一段開頭照段名重下種子），見 開發筆記〈小獼猴點火那一條在賭骰子〉。
+       near 是撒火那一刻半徑內還能點的塊數（最近那一塊已經點著、不算），同 igniteAround 的條件 */
+    const real = Math.random, ia = igniteAround;
+    let near = -1;
+    igniteAround = (p, R, n, st, only) => {
+      near = blocks.filter(b => b.st === st && !b.burn && (!only || only(b)) &&
+                                (b.x - p.x) ** 2 + (b.y - p.y) ** 2 + (b.z - p.z) ** 2 <= R * R).length;
+      Math.random = () => 0;
+      try { return ia(p, R, n, st, only); } finally { Math.random = real; }
+    };
     const m = spawnBeast('ape');
-    let frames = 0;
-    while (m.st !== 'act' && frames < 3600) { stepDoom(0.05); frames++; }
-    const ph0 = phase;
-    while (m.st === 'act' && frames < 3800) { stepDoom(0.05); frames++; }
-    const lit = blocks.filter(b => b.burn > 0).length;
+    let frames = 0, ph0, lit;
+    try {
+      while (m.st !== 'act' && frames < 3600) { stepDoom(0.05); frames++; }
+      ph0 = phase;
+      while (m.st === 'act' && frames < 3800) { stepDoom(0.05); frames++; }
+      lit = blocks.filter(b => b.burn > 0).length;
+    } finally { igniteAround = ia; }
     const set0 = blocks.filter(b => b.st === SET).length;
     for (let i = 0; i < 200; i++) step(0.05);        // 10 秒讓火自己蔓延
-    return { ph0, lit, phase, set0, spread: blocks.filter(b => b.burn > 0).length,
+    return { ph0, lit, near, N: DOOM_FIRE_N, phase, set0, spread: blocks.filter(b => b.burn > 0).length,
              set1: blocks.filter(b => b.st === SET).length };
   });
+  /* detail 只帶不會飄的東西（near 跟著小獼猴走到哪裡變）：對了只印規則，錯了才印數字 */
+  const bfireOk = bfire.near > 0 && bfire.lit === 1 + Math.min(bfire.N, bfire.near);
   ok('小獼猴走到就點火，地標燒起來',
-     bfire.ph0 === 'done' && bfire.lit >= 3 && bfire.phase === 'wreck',
-     '點著 ' + bfire.lit + ' 塊，phase ' + bfire.ph0 + ' → ' + bfire.phase);
+     bfire.ph0 === 'done' && bfireOk && bfire.phase === 'wreck',
+     '點著 ' + (bfireOk ? '1 ＋ min(DOOM_FIRE_N, 半徑內還能點的) 塊' : bfire.lit + ' 塊（半徑內還能點的 ' + bfire.near + ' 塊）') +
+     '，phase ' + bfire.ph0 + ' → ' + bfire.phase);
   ok('火會自己往鄰居蔓延（10 秒後燒得更兇）',
      bfire.spread > bfire.lit * 3 && bfire.set1 < bfire.set0,
      bfire.lit + ' 塊 → ' + bfire.spread + ' 塊，還站著的 ' +
@@ -28257,7 +28276,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return out;
   });
-  const NO_BEAST = ['finger', 'fire'];
+  /* 肉（v1.261.0）也在這裡：它不是傷害道具，丟下去只是叫幾隻閒逛動物過來吃，**不該**經過那幾支。
+     條目名沒跟著改（它在 e2e-varying.json 裡，改名要搬鍵；名字講的是「破壞道具」，肉本來就不是） */
+  const NO_BEAST = ['finger', 'fire', 'meat'];
   const tMissed = hTools.filter(r => NO_BEAST.indexOf(r.id) < 0 && r.seen === 0).map(r => r.id);
   const tWrong = hTools.filter(r => NO_BEAST.indexOf(r.id) >= 0 && r.seen > 0).map(r => r.id);
   ok('每一支破壞道具的傷害都經過認得動物的那幾支（手指與放火例外，理由見註解）',
@@ -31318,7 +31339,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { stepDoom = window.doomStep; });
   await fillAll(page);
 
-  /* ── 造型與表：自己一顆 mesh；縮放同小人平均；道具接在虛式「茈」後面（最後一把）、只能用道具叫來 ── */
+  /* ── 造型與表：自己一顆 mesh；縮放同小人平均；道具接在虛式「茈」後面、只能用道具叫來 ── */
   const ffig = await page.evaluate(() => {
     const M = ENG.FRIEREN, G = ENG.FR_G;
     const m = spawnBeast('frieren', 1, 0, 0);
@@ -31349,8 +31370,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('身形：原點在腳底、模型高 1.19～1.24（小人帽頂 1.31，原作她就嬌小），縮放同小人平均（DOOM_SC）',
      Math.abs(ffig.lo) < 0.02 && ffig.top > 1.19 && ffig.top < 1.24 && ffig.sc === ffig.frSc && ffig.frSc === ffig.doomSc,
      '最低 ' + ffig.lo + '、模型高 ' + ffig.top + ' × ' + ffig.sc.toFixed(3));
-  ok('道具表：接在虛式「茈」後面（最後一把）、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「她」；圖示 🛡；說明寫的半徑就是 FR_R',
-     ffig.gojo >= 0 && ffig.at === ffig.gojo + 1 && ffig.at === ffig.n - 1 && ffig.ground && !ffig.masc && !ffig.doom && ffig.nm &&
+  /* v1.261.0 肉接到它後面之後「最後一把」那一句不成立了（同虛式「茈」那一條的說法）：
+     要守的是「新道具接在後面、舊的不往前插」，條目名跟著拿掉「（最後一把）」（規則型，不在 e2e-varying.json 裡，沒有鍵要搬） */
+  ok('道具表：接在虛式「茈」後面、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「她」；圖示 🛡；說明寫的半徑就是 FR_R',
+     ffig.gojo >= 0 && ffig.at === ffig.gojo + 1 && ffig.ground && !ffig.masc && !ffig.doom && ffig.nm &&
      ffig.it === '她' && ffig.icon === '🛡' && ffig.tipR,
      'TOOLS 第 ' + ffig.at + ' 把（虛式「茈」第 ' + ffig.gojo + ' 把、共 ' + ffig.n + ' 把）；吉祥物 ' + ffig.masc + '、天災 ' + ffig.doom +
      '；' + ffig.it + '；圖示 ' + ffig.icon + '；說明的半徑 ' + ffig.tipR);
@@ -31650,6 +31673,223 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈道具：防禦魔法〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 道具：肉（v1.261.0）══════════
+     使用者：「增加道具 肉 吸引閒晃動物 能誘導動物移動」，選了最近的幾隻（看過預覽之後加 40 格上限）、圍著吃吃完才散、
+     可以好幾塊、小跑過去。全部規則型：不跑整場模擬，自己擺動物與肉、直接叫 dropMeat／stepMeats／stepBeast 量規則本身。
+     動物在測試裡預設是關的（stepHerd 是空的），這一段的動物全是自己 spawnCattle 擺上去的 */
+  SEC: { if (!(await head('道具：肉', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await fillAll(page);
+
+  /* ── 造型與表：接在防禦魔法後面、點空地也算數；說明寫的隻數與範圍就是 MEAT_N、MEAT_FAR；
+        造型底貼地、站位用的半寬照造型表算、上限讀引擎 ── */
+  const mtab = await page.evaluate(() => {
+    const im = TOOLS.findIndex(t => t.id === 'meat'), ifr = TOOLS.findIndex(t => t.id === 'frieren');
+    const P = ENG.MODELS.meat, t = TOOLS[im];
+    return { at: im, fr: ifr, ground: !!GROUND_TOOL.meat, icon: t.k,
+             tipN: t.tip.indexOf(' ' + MEAT_N + ' 隻') >= 0, tipFar: t.tip.indexOf(MEAT_FAR + ' 格內') >= 0,
+             parts: P.length, meat: P.filter(p => p.m).length,
+             lo: Math.min(...P.map(p => p.p[1] - p.s[1] / 2)),
+             R: ENG.MEAT_R, r: Math.max(...P.filter(p => p.m).map(p => Math.abs(p.p[2]) + p.s[2] / 2)),
+             max: MEAT_MAX, eng: ENG.MAXMEAT };
+  });
+  ok('道具表：接在防禦魔法後面、點空地也算數；圖示 🍖；說明寫的隻數與範圍就是 MEAT_N、MEAT_FAR',
+     mtab.fr >= 0 && mtab.at === mtab.fr + 1 && mtab.ground && mtab.icon === '🍖' && mtab.tipN && mtab.tipFar,
+     'TOOLS 第 ' + mtab.at + ' 把（防禦魔法第 ' + mtab.fr + ' 把）；說明的隻數 ' + mtab.tipN + '、範圍 ' + mtab.tipFar);
+  ok('造型：底貼地、肉與骨頭分開標（吃的時候只縮肉）；站位用的半寬 MEAT_R 照造型表算、場上上限就是引擎的 MAXMEAT',
+     Math.abs(mtab.lo) < 1e-9 && mtab.meat > 0 && mtab.meat < mtab.parts && Math.abs(mtab.R - mtab.r) < 1e-9 && mtab.max === mtab.eng,
+     mtab.parts + ' 塊（肉 ' + mtab.meat + '）、最低 ' + mtab.lo + '；MEAT_R ' + mtab.R + '；上限 ' + mtab.max);
+
+  /* ── 叫誰：MEAT_FAR 格內最近的 MEAT_N 隻，死的、被吸走的不算；叫來的被打死就再叫下一隻；
+        範圍裡沒有閒著的就先等，之後逛進來的照樣叫得到 ── */
+  const mcall = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30;
+    const put = (d, a) => { const m = spawnCattle(); m.x = X + Math.cos(a) * d; m.z = Math.sin(a) * d; m.pause = 999; return m; };
+    const dead = put(3, 0.3), sucked = put(4, 0.9);
+    dead.dead = 1; sucked.ufo = 1;
+    const a = put(6, 0), b = put(12, 2.2), c = put(18, 4.1), d = put(MEAT_FAR - 5, 1.2), far = put(MEAT_FAR + 5, 3);
+    const f = dropMeat({ x: X, y: 0, z: 0 });
+    for (let i = 0; i < MEAT_N + 3; i++) stepMeats(0.001);                    // 一幀叫一隻，多跑幾幀看會不會多叫
+    const who = beasts.filter(m => m.meat === f);
+    const r = { n: who.length, abc: [a, b, c].every(m => m.meat === f), skip: [dead, sucked, d, far].every(m => !m.meat),
+                slots: new Set(who.map(m => m.mk)).size, pause: who.every(m => m.pause === 0) };
+    a.dead = 1; stepMeats(0.001); stepMeats(0.001);
+    r.refill = d.meat === f; r.farOut = !far.meat;
+    r.slots2 = new Set(beasts.filter(m => m.meat === f && !m.dead).map(m => m.mk)).size;
+    const g = dropMeat({ x: -X, y: 0, z: 0 });                                // 另一邊：40 格內一隻都沒有
+    stepMeats(0.001);
+    r.none = beasts.filter(m => m.meat === g).length;
+    far.x = -X + MEAT_FAR - 5; far.z = 0; stepMeats(0.001);
+    r.walkIn = far.meat === g;
+    cleanTools(); beasts = null;
+    return r;
+  });
+  ok('叫誰：MEAT_FAR 格內最近的 MEAT_N 隻（死的、被吸走的、更遠的不叫）、各站一個位子、不停下來吃草；叫來的被打死就叫範圍裡的下一隻，範圍外的照樣不叫',
+     mcall.n === 3 && mcall.abc && mcall.skip && mcall.slots === 3 && mcall.pause && mcall.refill && mcall.farOut && mcall.slots2 === 3,
+     JSON.stringify(mcall));
+  ok('範圍裡沒有閒著的就先等，之後逛進範圍的照樣叫得到（每一幀都在問）', mcall.none === 0 && mcall.walkIn, JSON.stringify(mcall));
+
+  /* ── 走過去吃：三隻擺在 8／12／16 格外（款式寫死：最慢的綿羊、鼻子最長的馬、最小的貓），整段只叫 stepMeats 與 stepBeast。
+        第一步是小跑（HERD_WALK × PLAY_RUN_K）；到了鼻尖就碰到肉（離肉心 MEAT_R ＋ MEAT_GAP，誤差不超過 MEAT_NEAR）、
+        面向肉、腳停下來；吃到一半被推開 3 格會自己走回去；吃完放回去逛（站著吃草 HERD_STAY 那麼久），骨頭擺一下才收 ── */
+  const mwalk = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30, dt = 0.05;
+    const ms = [['sheep', 16, 0], ['horse', 12, 2.1], ['tabby', 8, 4.2]].map(([k, d, a]) => {
+      const m = spawnCattle(); m.kind = k; m.nb = null; m.x = X + Math.cos(a) * d; m.z = Math.sin(a) * d; m.pause = 0; return m;
+    });
+    const f = dropMeat({ x: X, y: 0, z: 0 });
+    for (let i = 0; i < MEAT_N; i++) stepMeats(0.001);
+    const r = { called: ms.every(m => m.meat === f) };
+    const s = ms[0], x0 = s.x, z0 = s.z, p0 = s.ph;
+    stepBeast(s, dt);
+    r.run = { d: Math.hypot(s.x - x0, s.z - z0), want: HERD_WALK.sheep * PLAY_RUN_K * dt,
+              ph: s.ph - p0, wph: 11 * HERD_STEP.sheep * PLAY_RUN_K * dt };
+    const at = [-1, -1, -1];
+    let t = 0, snap = null, push = -1, back = -1, done = -1, gone = -1, rel = null;
+    const want = ENG.MEAT_R + MEAT_GAP;
+    while (t < 60) {
+      stepMeats(dt);
+      for (const m of ms) stepBeast(m, dt);
+      t += dt;
+      ms.forEach((m, k) => { if (at[k] < 0 && m.mEat) at[k] = +t.toFixed(2); });
+      if (!snap && at.every(a => a >= 0) && t > Math.max(...at) + 2) {
+        snap = ms.map(m => {
+          const nose = herdBody(m.kind).nose * m.sc;
+          let e = Math.atan2(f.x - m.x, f.z - m.z) - m.a;
+          while (e > Math.PI) e -= Math.PI * 2; while (e < -Math.PI) e += Math.PI * 2;
+          return { k: m.kind, nose: +(Math.hypot(m.x + Math.sin(m.a) * nose - f.x, m.z + Math.cos(m.a) * nose - f.z) - want).toFixed(3),
+                   face: +Math.abs(e).toFixed(3), gait: +m.gait.toFixed(3) };
+        });
+        const m = ms[2], u = Math.hypot(m.x - f.x, m.z - f.z);
+        m.x += (m.x - f.x) / u * 3; m.z += (m.z - f.z) / u * 3;               // 推開 3 格（同被炸開、爬起來不在原地）
+        push = t;
+      }
+      if (push >= 0 && back < 0 && t > push && ms[2].mEat === 0) back = 0;     // 先停吃、走回去
+      if (back === 0 && ms[2].mEat) back = +(t - push).toFixed(2);
+      if (done < 0 && f.left <= 0) {
+        done = t;
+        rel = ms.every(m => !m.meat && !m.mEat && m.pause >= HERD_STAY[0] - dt && m.pause <= HERD_STAY[1]);
+      }
+      if (done >= 0 && (!meats || meats.indexOf(f) < 0)) { gone = +(t - done).toFixed(2); break; }
+    }
+    Object.assign(r, { at, snap, back, done: +done.toFixed(2), rel, gone, bone: MEAT_BONE + MEAT_POP, near: MEAT_NEAR, dt });
+    cleanTools(); beasts = null;
+    return r;
+  });
+  ok('走過去用小跑：第一步就是 HERD_WALK × PLAY_RUN_K，腿擺跟著同一個倍率',
+     mwalk.called && Math.abs(mwalk.run.d - mwalk.run.want) < 1e-9 && Math.abs(mwalk.run.ph - mwalk.run.wph) < 1e-9,
+     '一步 ' + mwalk.run.d.toFixed(4) + '（要 ' + mwalk.run.want.toFixed(4) + '）、腿擺 ' + mwalk.run.ph.toFixed(4) + '（要 ' + mwalk.run.wph.toFixed(4) + '）');
+  ok('圍著吃：三隻都到、鼻尖碰到肉（離肉心 MEAT_R ＋ MEAT_GAP，差不到 MEAT_NEAR）、面向肉、腳停下來',
+     !!mwalk.snap && mwalk.snap.every(s => Math.abs(s.nose) <= mwalk.near + 0.01 && s.face < 0.02 && s.gait < 0.02),
+     '開吃 ' + mwalk.at.join('／') + ' 秒；' + (mwalk.snap || []).map(s => s.k + ' 鼻尖差 ' + s.nose + '、偏 ' + s.face + '、腳 ' + s.gait).join('／'));
+  ok('吃到一半被推開 3 格：先停吃、自己走回去接著吃',
+     mwalk.back > 0, '推開之後 ' + mwalk.back + ' 秒回到位子上');
+  ok('吃完才散：吃完那一刻三隻都放回去逛（站著吃草 HERD_STAY 那麼久），骨頭擺 MEAT_BONE ＋ MEAT_POP 才收',
+     mwalk.done > 0 && mwalk.rel && Math.abs(mwalk.gone - mwalk.bone) <= mwalk.dt + 1e-6,
+     '第 ' + mwalk.done + ' 秒吃完；放回去 ' + mwalk.rel + '；骨頭擺了 ' + mwalk.gone + ' 秒（要 ' + mwalk.bone + '）');
+
+  /* ── 吃多快：圍滿 MEAT_N 隻 MEAT_EAT 秒吃完；被打倒（lie）、在燒、還在走過去的那一隻不算在吃；有人在咬就扯一下；
+        肉照體積縮（長寬高乘剩幾成的立方根） ── */
+  const meat = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30, dt = 0.1, one = dt / (MEAT_EAT * MEAT_N);
+    const f = dropMeat({ x: X, y: 0, z: 0 });
+    f.y = 0; f.vy = 0; f.hit = 1;
+    const ms = [0, 1, 2].map(k => {
+      const m = spawnCattle(); m.x = X + 3 * Math.cos(meatAng(f, k)); m.z = 3 * Math.sin(meatAng(f, k));
+      m.meat = f; m.mk = k; m.mEat = 1; m.mx = m.x; m.mz = m.z; return m;
+    });
+    const bite = () => { const l = f.left; stepMeats(dt); return +((l - f.left) / one).toFixed(6); };
+    const r = { full: bite(), wob: f.a !== f.a0 };
+    ms[0].lie = 1; r.lie = bite(); ms[0].lie = 0;
+    ms[1].burn = 1; r.burn = bite(); ms[1].burn = 0;
+    ms[2].mEat = 0; r.walk = bite(); ms[2].mEat = 1;
+    r.k = Math.abs(f.k - Math.cbrt(f.left)) < 1e-12;
+    cleanTools(); beasts = null;
+    return r;
+  });
+  ok('吃多快：圍滿 MEAT_N 隻是 MEAT_EAT 秒吃完；被打倒、在燒、還在走過去的那一隻不算在吃；有人在咬就扯一下；肉照體積縮',
+     meat.full === 3 && meat.lie === 2 && meat.burn === 2 && meat.walk === 2 && meat.wob && meat.k, JSON.stringify(meat));
+
+  /* ── 丟在哪：點空地就丟在那裡（從 MEAT_Y0 掉下來）；點建築就挪到旁邊最近的空地（不在房子裡、地標擋不到骨頭那麼長的身位）；
+        好幾塊：上限 MEAT_MAX，再丟擠掉最早那塊、圍著它的放回去逛 ── */
+  const mdrop = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30, t0 = tool;
+    tool = 'meat';
+    useTool({ kind: 'ground', point: { x: X, y: 0, z: 5 }, dir: { x: 0, y: -1, z: 0 } });
+    const g = meats[0];
+    const r = { ground: meats.length === 1 && g.x === X && g.z === 5 && g.y === MEAT_Y0 };
+    const b = blocks.find(q => q.st === SET && q.hh < 0 && Math.hypot(q.x, q.z) < siteR * 0.5);
+    useTool({ kind: 'block', point: { x: b.x, y: b.y, z: b.z }, dir: { x: 0, y: -1, z: 0 } });
+    const f = meats[1];
+    r.moved = +Math.hypot(f.x - b.x, f.z - b.z).toFixed(2);
+    r.free = !footHome(f.x, f.z) && !footBlocked(f.x, f.z) && lmFree(f.x, f.z, MEAT_BD);
+    tool = t0; meats = null;
+    const m = spawnCattle(); m.x = X + 3; m.z = 0; m.pause = 0;
+    const first = dropMeat({ x: X, y: 0, z: 0 });
+    stepMeats(0.001);
+    r.first = m.meat === first;
+    for (let i = 1; i <= MEAT_MAX; i++) dropMeat({ x: X, y: 0, z: 4 * i });
+    r.n = meats.length; r.max = MEAT_MAX; r.shift = meats.indexOf(first) < 0; r.freed = !m.meat && m.pause > 0;
+    cleanTools(); beasts = null;
+    return r;
+  });
+  ok('丟在哪：點空地就從 MEAT_Y0 掉在那裡；點建築就挪到旁邊最近的空地（不在建築與房子裡、地標擋不到骨頭那麼長的身位）',
+     mdrop.ground && mdrop.moved > 0 && mdrop.free, JSON.stringify(mdrop));
+  ok('好幾塊：最多 MEAT_MAX 塊，再丟就擠掉最早那塊，圍著它的放回去逛',
+     mdrop.first && mdrop.n === mdrop.max && mdrop.shift && mdrop.freed, JSON.stringify(mdrop));
+
+  /* ── 落地：掉下來第一下彈一點點、落在碎料頂上；底下那塊被搬走就再往下掉、底下滾進一塊就墊上去。
+        碎料是自己塞一塊進 restGrid（只有 meatFloor 讀它），量完拿掉。丟在碎料場外緣再往外 3 格，那裡本來沒有碎料（base 驗這件事） ── */
+  const mfloor = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; beasts = null;
+    const X = debrisR + 3, Z = 0, dt = 0.02;
+    const f = dropMeat({ x: X, y: 0, z: Z });
+    const base = meatFloor(f);
+    const fake = { x: X + 0.3, y: HB, z: Z - 0.2 };
+    gridAdd(fake);
+    let up = 0;
+    for (let i = 0; i < 150; i++) { stepMeats(dt); if (f.vy > 0) up = 1; }
+    const r = { base, on: f.y, top: HB * 2, hit: f.hit, up };
+    gridDel(fake);
+    for (let i = 0; i < 50; i++) stepMeats(dt);
+    r.off = f.y;
+    gridAdd(fake); stepMeats(dt); r.pop = f.y; gridDel(fake);
+    cleanTools();
+    return r;
+  });
+  ok('落地：第一下彈一點點、落在碎料頂上；底下那塊被搬走就掉回地面，底下滾進一塊就墊上去',
+     mfloor.base === 0 && mfloor.hit === 1 && mfloor.up === 1 && Math.abs(mfloor.on - mfloor.top) < 1e-9 && mfloor.off === 0 &&
+     Math.abs(mfloor.pop - mfloor.top) < 1e-9,
+     JSON.stringify(mfloor));
+
+  /* ── 畫面：沒肉不吃 draw call；一塊 MEAT_PARTS 個 instance；吃到剩一半大時肉縮成一半、骨頭不縮；畫的時候不抽 Math.random ── */
+  const mdraw = await page.evaluate(() => {
+    cleanTools();
+    const mesh = ENG.three.meatMesh, P = ENG.MODELS.meat;
+    const r = { off: mesh.visible };
+    const real = Math.random;
+    let rnd = 0;
+    Math.random = () => { rnd++; return real(); };
+    try { ENG.putMeats([{ x: siteR + 30, y: 0, z: 0, a: 0.7, k: 0.5, s: 1 }]); } finally { Math.random = real; }
+    r.on = mesh.visible; r.count = mesh.count; r.parts = P.length; r.rnd = rnd;
+    const mat = new THREE.Matrix4(), pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+    const im = P.findIndex(p => p.m), ib = P.findIndex(p => !p.m);
+    mesh.getMatrixAt(im, mat); mat.decompose(pos, q, sc); r.meat = +(sc.x / P[im].s[0]).toFixed(6);
+    mesh.getMatrixAt(ib, mat); mat.decompose(pos, q, sc); r.bone = +(sc.x / P[ib].s[0]).toFixed(6);
+    ENG.putMeats([]); r.end = mesh.visible;
+    return r;
+  });
+  ok('畫面：沒肉不吃 draw call；一塊 MEAT_PARTS 個 instance，剩一半大時肉縮一半、骨頭不縮；畫的時候不抽 Math.random',
+     !mdraw.off && mdraw.on && mdraw.count === mdraw.parts && mdraw.meat === 0.5 && mdraw.bone === 1 && !mdraw.end && mdraw.rnd === 0,
+     JSON.stringify(mdraw));
+
+  await page.evaluate(() => { cleanTools(); });
+  }   // ── 〈道具：肉〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 隕石 ══════════ */
   SEC: { if (!(await head('隕石', T_COMMIT))) break SEC;
@@ -32413,6 +32653,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        兵長砍猴（v1.230）叫來的里維、霹靂一閃（v1.251.0）叫來的善逸同理 */
     beasts = null; ENG.putSabers([]); ENG.putLevis([]); ENG.putZens([]);
     purpClear(); ENG.putGojos([]); ENG.putPurps([]);   // 虛式「茈」（v1.255.0）叫來的五條悟與飛著的茈，同上
+    meats = null; ENG.putMeats([]);                    // 肉（v1.261.0）：這一段沒養動物，沒人吃就一直擺著
     const got = stats.badges.indexOf('allTools') >= 0;
     // 同一種道具用兩次不會重複記
     tool = 'hammer'; useTool(hit);
