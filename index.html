@@ -95,7 +95,11 @@
      滑鼠指上去才展開整份選單。選單是會自動換行的網格，所以之後再加道具
      不用重新安排版面，也不會把整排推到壓住別的卡片。
      小人模式那顆（v1.219，#modeNow）長相與開合照抄這一套，擺的位置見下面的 #corner。 */
-  #toolbox{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:6}
+  /* v1.262.0 起小窗左邊多一顆破壞模式的開關（#rageBtn），兩顆並排、一起置中
+     （第一版放右邊，使用者看過預覽：「破壞模式開關 放在工具左邊」）。
+     選單照舊以整個 #toolbox 置中（#toolPick 沒有 position，選單的定位基準還是 #toolbox）。 */
+  #toolbox{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:6;
+    display:flex;align-items:stretch;gap:6px;width:max-content}
   #toolNow,#modeNow{
     display:flex;align-items:center;gap:8px;padding:7px 13px;border-radius:12px;
     background:var(--panel);border:1px solid var(--line);color:var(--ink);
@@ -104,8 +108,23 @@
   #toolNow .k,#modeNow .k{font-size:19px;line-height:1.1}
   #toolNow .n,#modeNow .n{font-size:12.5px;font-weight:700}
   #toolNow .c,#modeNow .c{font-size:9px;opacity:.4}
-  #toolbox:hover:not(.shut) #toolNow,#toolbox.open #toolNow,
+  #toolbox:not(.shut) #toolPick:hover #toolNow,#toolbox.open #toolNow,
   #modebox:hover:not(.shut) #modeNow,#modebox.open #modeNow{border-color:var(--accent)}
+  /* 破壞模式的開關（v1.262.0）：長相同小窗，左邊一顆撥桿、右邊字。開著是橘的撥桿＋橘框；
+     拿的不是那五把就灰掉（.na），照樣點得動（使用者選「一直顯示，不適用時灰掉」）。 */
+  #rageBtn{
+    display:flex;align-items:center;gap:7px;padding:7px 11px;border-radius:12px;
+    background:var(--panel);border:1px solid var(--line);color:var(--ink);
+    box-shadow:0 4px 16px rgba(20,32,48,.16);cursor:pointer;font:inherit;white-space:nowrap;
+  }
+  #rageBtn .n{font-size:12.5px;font-weight:700}
+  #rageBtn .sw{position:relative;flex:0 0 26px;height:15px;border-radius:99px;background:#c9c4bd;transition:background .12s}
+  #rageBtn .sw::after{content:'';position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;
+    background:#fff;transition:left .12s}
+  #rageBtn.on{border-color:var(--accent)}
+  #rageBtn.on .sw{background:var(--accent)}
+  #rageBtn.on .sw::after{left:13px}
+  #rageBtn.na{opacity:.45}
   /* padding 那一段是刻意留的「橋」：小窗與選單之間不能有真空的縫，
      不然滑鼠往下移到縫上就 mouseleave，選單會在半路收掉。 */
   #toolMenu,#modeMenu{
@@ -118,7 +137,7 @@
      目前要把滑鼠移開才會收」）。選完只把 .open 拿掉的話，:hover 還按著它——
      指標本來就停在剛點的那顆按鈕上，選單等於原地不動。加一個「這次先別展開」的
      旗標把 :hover 那條擋掉，滑鼠指回小窗時再撤掉（見 game-ui.js 的 pointerover）。 */
-  #toolbox:hover:not(.shut) #toolMenu,#toolbox.open #toolMenu,
+  #toolbox:not(.shut) #toolPick:hover #toolMenu,#toolbox.open #toolMenu,
   #modebox:hover:not(.shut) #modeMenu,#modebox.open #modeMenu{opacity:1;visibility:visible}
   /* 這裡不用 --panel（86% 半透明白）：選單底下常常剛好是操作提示那條深色藥丸，
      透上來會把字襯得看不清楚。其他卡片是靜態的所以透一點沒關係，這個是蓋在上面的選單。 */
@@ -277,6 +296,10 @@
     #clock{font-size:20px}
     #panel{width:calc(100vw - 28px)}
     #tools{grid-template-columns:repeat(3,74px)}   /* 四欄 338px 在 390 的螢幕上太貼邊 */
+    /* 破壞模式的開關疊在工具小窗上面（v1.262.0）：底排擺不下兩顆並排——390 寬時名字最長的那把
+       （虛式「茈」小窗 141px）＋間距 6＋開關 107px，置中後右緣 322，壓到設定鈕（312 起）。
+       見 開發筆記〈破壞模式：點一下放好幾份（v1.262.0）〉 */
+    #toolbox{flex-direction:column;align-items:center}
     #hint{display:none}
     #toast{top:14px}
     #badgeBox #badges{grid-template-columns:1fr}   /* 手機排不下兩欄 */
@@ -325,8 +348,12 @@
 
 <div id="toast"></div>
 <div id="toolbox">
-  <button id="toolNow" type="button"><span class="k">🔨</span><span class="n">槌子</span><span class="c">▾</span></button>
-  <div id="toolMenu"><div id="tools"></div></div>
+  <!-- 指著 #toolPick 才展開選單；破壞模式那顆在它外面（左邊），指著它不會把選單叫出來（v1.262.0） -->
+  <button id="rageBtn" type="button" aria-pressed="false"><span class="sw"></span><span class="n">破壞模式</span></button>
+  <div id="toolPick">
+    <button id="toolNow" type="button"><span class="k">🔨</span><span class="n">槌子</span><span class="c">▾</span></button>
+    <div id="toolMenu"><div id="tools"></div></div>
+  </div>
 </div>
 
 <div id="corner">

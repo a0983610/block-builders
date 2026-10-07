@@ -148,6 +148,22 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       meat: 1 };                                                // 肉：點哪裡都是丟在那裡（v1.261.0）
 let tool = 'hammer';
 
+/* ── 破壞模式（v1.262.0）──────────────────────────────────
+   > 使用者：「破壞模式開關放在選工具旁邊　開啟後部分破壞工具會在附近一次丟出多個
+   > 隕石(一起掉下來的同方向) 龍捲風 投石機 加農砲 煙火」
+   問過之後定的：「大約*3 如果到上限就用上限的量」、場上上限**不動**（連點就照舊擠掉最早那批）、
+   點兩下的那三把多出來的幾份「並排、平行推過去」、開關一直顯示（拿別把時灰掉，照樣切得動，見 game-ui.js 的 renderRage）。
+   所以實際的份數是照上限算出來的：龍捲風 3 道、投石機 2 隊（上限 8 台）、加農砲 2 隊（上限 6 門）、煙火 8 發（上限 8 發）。
+   **隕石例外**：看過預覽之後（「3隕石太靠近了(也增加同時更多顆 位置隨機)」）改成一下放滿上限 6 顆、
+   隨機散開（見 callMeteor）——上限照舊不動，所以連點第二下時上一批還沒落地的會整批被擠掉（使用者選的）。
+   **只有玩家點的那一下會乘**：份數在 useTool 那一條（與 aimTrebs 那幾支）才算，出手的函式本身預設照舊一份——
+   e2e 與別的地方直接叫它們的，行為一點都沒變。見 開發筆記〈破壞模式：點一下放好幾份（v1.262.0）〉 */
+const RAGE_N = 3;
+const RAGE_TOOLS = { meteor: 1, tornado: 1, treb: 1, cannon: 1, fw: 1 };   // 會乘的那五把（開關灰不灰照這張表）
+let rageOn = false;                 // 開關（存在 pref.rage，見 game-save.js）
+/* 這一下放幾份：one 是平常一下放多少，cap 是場上同時最多幾個（同一個單位）。沒開就是 one */
+const rageN = (one, cap) => rageOn ? Math.max(one, Math.min(RAGE_N * one, cap)) : one;
+
 /* ── 破壞道具泡泡（v1.214）───────────────────────────────
    > 使用者：「破壞積木有機率 掉出一個隨機的破壞道具泡泡 點了以後直接解鎖該道具
    > (記得觸發儲存)　機率大約是破壞一個9000積木建築掉一個
@@ -728,13 +744,18 @@ let trebs = null;
    第二下點在**建築**上時那一點的高度也算目標（v1.212，同 aimArrows）。 */
 function aimTrebs(point, onBlock) {
   if (!aim) { aimFirst(point, TREB_AIM_R, TREB_AIM_C); return; }
-  castTrebs(aim, point, onBlock ? point.y : 0);
+  // 破壞模式（v1.262.0）：幾隊照場上上限算（8 台 ＝ 2 隊）
+  castTrebs(aim, point, onBlock ? point.y : 0, rageN(1, Math.floor(TREB_MAX / TREB_TEAM)));
 }
 /* 一隊排成一列、整隊面向目標（橫向 ＝ 指向目標那個方向轉 90 度，同 castArrows）。
    同一個地方連點兩下就沒有方向可用，跟箭雨一樣退回「朝場心」。
-   aimY ＝ 要轟的那一點多高（點空地是 0，同 castArrows 的第三個參數）。 */
-function castTrebs(from, toward, aimY) {
+   aimY ＝ 要轟的那一點多高（點空地是 0，同 castArrows 的第三個參數）。
+   teams ＝ 幾隊（破壞模式，v1.262.0；不給就是一隊）：幾隊**接成一長排**、間距照舊，
+   每一隊轟的是「第二點往橫向挪那一隊離中心那麼遠」——平行打過去（使用者選「並排、平行推過去」）。 */
+function castTrebs(from, toward, aimY, teams) {
   aim = null;
+  teams = teams || 1;
+  const N = TREB_TEAM * teams;
   /* 第一下點在建築上的話**整隊**先推到外圍（機台不能長在牆裡面，同 v1.102 那條規則）。
      推的是隊伍的中心、不是一台一台推：一台一台推會把四台壓到同一個半徑上，
      排在同一側的兩台等於疊在一起（第一下點在建築正中央時整隊只剩兩個位置）。
@@ -760,8 +781,8 @@ function castTrebs(from, toward, aimY) {
     const cr = Math.hypot(cx, cz) || 1, ux = cx / cr, uz = cz / cr;
     const lim = minD + 0.05;                        // 留一點餘裕，別卡在 placeTreb 的邊界上
     let push = 0;
-    for (let i = 0; i < TREB_TEAM; i++) {
-      const off = (i - (TREB_TEAM - 1) / 2) * TREB_GAP;
+    for (let i = 0; i < N; i++) {
+      const off = (i - (N - 1) / 2) * TREB_GAP;
       const px = cx + sx * off, pz = cz + sz * off;
       const b = px * ux + pz * uz, c2 = px * px + pz * pz - lim * lim;
       if (c2 >= 0) continue;                        // 這一台本來就在圈外
@@ -769,11 +790,12 @@ function castTrebs(from, toward, aimY) {
     }
     cx += ux * push; cz += uz * push;
   }
-  for (let i = 0; i < TREB_TEAM; i++) {
-    const off = (i - (TREB_TEAM - 1) / 2) * TREB_GAP;
-    placeTreb({ x: cx + sx * off, z: cz + sz * off }, toward, aimY);
+  for (let i = 0; i < N; i++) {
+    const off = (i - (N - 1) / 2) * TREB_GAP;
+    const sh = (Math.floor(i / TREB_TEAM) - (teams - 1) / 2) * TREB_TEAM * TREB_GAP;   // 這一隊的目標往橫向挪多少（一隊是 0）
+    placeTreb({ x: cx + sx * off, z: cz + sz * off }, { x: toward.x + sx * sh, z: toward.z + sz * sh }, aimY);
   }
-  sndWind();                        // 一隊架好那一聲（一隊一次，不是四台各一聲）
+  sndWind();                        // 一隊架好那一聲（一隊一次，不是四台各一聲；破壞模式幾隊也是一聲）
 }
 /* 架一台：站在 spot、轟 aimAt。
    兩道保險（castTrebs 已經先推過隊伍的中心，這裡是給單台呼叫與斜著站的那一隊用的）：
@@ -1013,15 +1035,18 @@ let cannons = null;
    第二下點在**建築**上時那一點的高度也算目標（v1.212，同 aimArrows）。 */
 function aimCannons(point, onBlock) {
   if (!aim) { aimFirst(point, CAN_AIM_R, CAN_AIM_C); return; }
-  castCannons(aim, point, onBlock ? point.y : 0);
+  // 破壞模式（v1.262.0）：幾隊照場上上限算（6 門 ＝ 2 隊），排法同 castTrebs
+  castCannons(aim, point, onBlock ? point.y : 0, rageN(1, Math.floor(CAN_MAX / CAN_TEAM)));
 }
 /* 一隊排成一列、整隊面向目標。**整段隊形的算法與理由跟 castTrebs 一模一樣**
    （推隊伍的中心而不是一台一台推、推完才算方向、排完再整隊往外挪到每一門都在圈外、
    最後夾回島內）——那邊的註解就是這一段的說明，不重抄一遍。
    照 castArrows／castTrebs 的先例各留一份：這三把的隊形細節（幾台、間距、退多遠）
-   各不相同，抽成共用的話參數會比程式還長。 */
-function castCannons(from, toward, aimY) {
+   各不相同，抽成共用的話參數會比程式還長。teams（破壞模式，v1.262.0）也同 castTrebs。 */
+function castCannons(from, toward, aimY, teams) {
   aim = null;
+  teams = teams || 1;
+  const N = CAN_TEAM * teams;
   let cx = from.x, cz = from.z;
   const d0 = Math.hypot(cx, cz), minD = siteR + CAN_STAND;
   if (d0 < minD) {
@@ -1037,8 +1062,8 @@ function castCannons(from, toward, aimY) {
     const cr = Math.hypot(cx, cz) || 1, ux = cx / cr, uz = cz / cr;
     const lim = minD + 0.05;
     let push = 0;
-    for (let i = 0; i < CAN_TEAM; i++) {
-      const off = (i - (CAN_TEAM - 1) / 2) * CAN_GAP;
+    for (let i = 0; i < N; i++) {
+      const off = (i - (N - 1) / 2) * CAN_GAP;
       const px = cx + sx * off, pz = cz + sz * off;
       const b = px * ux + pz * uz, c2 = px * px + pz * pz - lim * lim;
       if (c2 >= 0) continue;
@@ -1046,9 +1071,10 @@ function castCannons(from, toward, aimY) {
     }
     cx += ux * push; cz += uz * push;
   }
-  for (let i = 0; i < CAN_TEAM; i++) {
-    const off = (i - (CAN_TEAM - 1) / 2) * CAN_GAP;
-    placeCannon({ x: cx + sx * off, z: cz + sz * off }, toward, aimY);
+  for (let i = 0; i < N; i++) {
+    const off = (i - (N - 1) / 2) * CAN_GAP;
+    const sh = (Math.floor(i / CAN_TEAM) - (teams - 1) / 2) * CAN_TEAM * CAN_GAP;     // 同 castTrebs：這一隊的目標往橫向挪多少
+    placeCannon({ x: cx + sx * off, z: cz + sz * off }, { x: toward.x + sx * sh, z: toward.z + sz * sh }, aimY);
   }
   sndWind();                        // 一隊架好那一聲（同投石機，一隊一次）
 }
@@ -2102,23 +2128,37 @@ function twSwirl(w, o, dx, dz, d, dt, k) {
    出發方向照指的走，之後仍然一路亂竄（見 stepTwist），所以不會是一條直線。 */
 function aimTornado(point) {
   if (!aim) { aimFirst(point, TW_R, 0xd6e6f0); return; }
-  launchTornado(aim, point);
+  launchTornado(aim, point, rageN(1, TW_MAX));      // 破壞模式（v1.262.0）一次 3 道
 }
-function launchTornado(from, toward) {
+/* n ＝ 幾道（破壞模式，v1.262.0；不給就是一道）：並排在第一點左右、間隔 RAGE_TW_GAP，
+   **全部朝同一個方向出發**（方向只抽一次，使用者選「並排、平行推過去」），之後各自亂竄。
+   旁邊那幾道要夾回 debrisR 以內：stepTwist 是「出界就把速度反過來」，生在界外的那一道
+   每一幀都還在界外，會原地來回翻。中間那一道（＝原本那一道）不動它。 */
+/* 看過預覽改的：第一版是 TW_R × 2（12，兩道底下的作用圈剛好碰在一起），「龍捲風也起始太靠近」——
+   漏斗頂端半徑約 10，12 的話上半截是疊在一起的。問過之後使用者選 24（頂端之間也有空隙，三道整排寬 48）。 */
+const RAGE_TW_GAP = TW_R * 4;
+function launchTornado(from, toward, n) {
   const a = aimDir(from, toward, TW_SPREAD);
   aim = null;
   if (!twists) twists = [];
-  if (twists.length >= TW_MAX) twists.shift();     // 放太多道就把最早那道擠掉
-  twists.push({
-    x: from.x, z: from.z, r: TW_R, h: TW_H, life: TW_LIFE,
-    /* 起始角度隨機：漏斗的扭曲完全是 spin 的函數，都從 0 開始的話
-       同時在場的幾道會擺出一模一樣的姿勢，看起來像複製貼上。 */
-    spin: rr(0, 6.28), vx: Math.cos(a) * TW_SPD0, vz: Math.sin(a) * TW_SPD0, hit: 0,
-    /* 擺動的相位與頻率各自抽（見 stepTwist）：同時來好幾道時，
-       都用同一組的話它們會擺得一模一樣，看起來像複製貼上。 */
-    ph: rr(0, 6.28), sw: rr(0.9, 1.5),
-    snd: WIND_GAP                     // 出場那一聲在下面放了，下一段等 WIND_GAP 秒
-  });
+  n = n || 1;
+  for (let i = 0; i < n; i++) {
+    if (twists.length >= TW_MAX) twists.shift();     // 放太多道就把最早那道擠掉
+    const off = (i - (n - 1) / 2) * RAGE_TW_GAP;
+    let x = from.x - Math.sin(a) * off, z = from.z + Math.cos(a) * off;   // 往出發方向的橫向挪
+    const dd = Math.hypot(x, z), lim = debrisR - 2;
+    if (off && dd > lim) { x = x / dd * lim; z = z / dd * lim; }
+    twists.push({
+      x, z, r: TW_R, h: TW_H, life: TW_LIFE,
+      /* 起始角度隨機：漏斗的扭曲完全是 spin 的函數，都從 0 開始的話
+         同時在場的幾道會擺出一模一樣的姿勢，看起來像複製貼上。 */
+      spin: rr(0, 6.28), vx: Math.cos(a) * TW_SPD0, vz: Math.sin(a) * TW_SPD0, hit: 0,
+      /* 擺動的相位與頻率各自抽（見 stepTwist）：同時來好幾道時，
+         都用同一組的話它們會擺得一模一樣，看起來像複製貼上。 */
+      ph: rr(0, 6.28), sw: rr(0.9, 1.5),
+      snd: WIND_GAP                     // 出場那一聲在下面放了，下一段等 WIND_GAP 秒
+    });
+  }
   /* 拉高之後漏斗頂會超出畫面上緣（矮建築取景近，量到 NDC 1.45），
      跟核彈的蘑菇雲同一個處理：鏡頭退到整支漏斗進得了畫面的距離，之後就停在那裡不收回來。
      漏斗很瘦（半徑才 6），所以決定距離的一定是高度那一邊。 */
@@ -3685,14 +3725,24 @@ let fwWait = null;                  // 已經點下去、還沒出膛的那幾�
    不給就是地面。齊射的三發**共用同一個高度**：點在屋頂上就是三發都從屋頂那一帶射，
    各自照 FW_OFF 散開——散出去那兩發可能落在建築外緣的半空中，那看起來就是
    「從屋頂那一區放的一輪」，比「一發從屋頂、兩發從地面」讀得懂。 */
-function launchFw(p) {
+/* n ＝ 總共幾發（破壞模式，v1.262.0；不給就是一輪 FW_SHOT 發）。超過一輪就分成好幾輪
+   （一輪 FW_SHOT 發、最後一輪放剩下的），每一輪的中心平均圍在點的那一點四周 RAGE_FW_OFF 格，
+   一輪裡面照舊各自散開、錯開出膛。一輪的時候中心就是點的那一點，跟原本一模一樣。 */
+const RAGE_FW_OFF = FW_OFF * 1.5;   // 比一輪自己散的範圍（FW_OFF）再外面一點，三輪才分得出來
+function launchFw(p, n) {
   const y = (p.y || 0) + FW_Y0;
-  fireShell(p.x, p.z, y);
-  for (let i = 1; i < FW_SHOT; i++) {
-    if (!fwWait) fwWait = [];
-    const a = rr(0, Math.PI * 2), d = rr(FW_OFF * 0.4, FW_OFF);
-    fwWait.push({ x: p.x + Math.cos(a) * d, z: p.z + Math.sin(a) * d, y,
-                  t: i * rr(FW_GAP[0], FW_GAP[1]) });
+  n = n || FW_SHOT;
+  const k = Math.ceil(n / FW_SHOT), b = k > 1 ? rr(0, Math.PI * 2) : 0;
+  for (let j = 0; j < k; j++) {
+    let cx = p.x, cz = p.z;
+    if (k > 1) { const q = b + j * Math.PI * 2 / k; cx += Math.cos(q) * RAGE_FW_OFF; cz += Math.sin(q) * RAGE_FW_OFF; }
+    fireShell(cx, cz, y);
+    for (let i = 1; i < Math.min(FW_SHOT, n - j * FW_SHOT); i++) {
+      if (!fwWait) fwWait = [];
+      const a = rr(0, Math.PI * 2), d = rr(FW_OFF * 0.4, FW_OFF);
+      fwWait.push({ x: cx + Math.cos(a) * d, z: cz + Math.sin(a) * d, y,
+                    t: i * rr(FW_GAP[0], FW_GAP[1]) });
+    }
   }
   /* 跟龍捲風、蘑菇雲同一套：不退鏡頭的話整發都在畫面外。
      量過：貼著中世紀城堡的取景，炸開那一刻火星的 NDC y 是 1.5（1 就已經出界了）。
@@ -3703,8 +3753,9 @@ function launchFw(p) {
      視距不還，只還高度：把建築推出畫面的是仰角不是距離（見 ENG.holdWide）。 */
   fwHold++;
   /* 取景要**連出膛高度一起算**（v1.137）：從屋頂射上去的話炸開的位置就高了那一截
-     （台北 101 的屋頂 65 ＋ 竄高 42 ＋ 火星自己再往上十幾單位），不加的話整發在畫面外。 */
-  ENG.holdWide(FW_HOLD_TOP + y - FW_Y0, FW_HOLD_R, true);
+     （台北 101 的屋頂 65 ＋ 竄高 42 ＋ 火星自己再往上十幾單位），不加的話整發在畫面外。
+     破壞模式好幾輪的話橫向再寬一個 RAGE_FW_OFF（輪的中心離點的那一點那麼遠），一樣只退一次、只還一次。 */
+  ENG.holdWide(FW_HOLD_TOP + y - FW_Y0, FW_HOLD_R + (k > 1 ? RAGE_FW_OFF : 0), true);
 }
 /* 還欠幾次「把視線高度還回去」。一次點下去是三發、還可以連點，
    所以要記次數——見 fwEnd()。 */
@@ -4125,18 +4176,54 @@ const MET_HOT_CAP = 340, MET_SMOKE_CAP = 700;
    揚塵與震動——那些本來就是照半徑算的。 */
 const MET_R = ROCK_R * 2;
 const MET_POW = 16;             // 介於石頭（12）與定時炸彈（17）之間
-function callMeteor(point) {
+/* n ＝ 一次幾顆（破壞模式，v1.262.0；不給就是一顆）。好幾顆的時候**共用同一個方位、同一個倒數**
+   （使用者：「一起掉下來的同方向」），落點**隨機**散在點的那一點周圍 RAGE_MET_R 格內、兩顆至少隔 MET_R
+   （看過預覽改的：第一版是三顆平均圍在 5.5 格上，「3隕石太靠近了(也增加同時更多顆 位置隨機)」；
+   範圍 20、至少隔一個破壞半徑都是問過之後使用者選的，見 metSpots）。
+   好幾顆的時候瞄的是**地面**（不是點到的高度）：點在屋頂上的話，散出去的那一點底下可能是空的，
+   瞄屋頂那個高度就會在半空中炸開；瞄地面的話路上有建築就照舊在建築上炸（sweepRock）。 */
+const RAGE_MET_R = 20;
+function callMeteor(point, n) {
   if (!meteors) meteors = [];
-  if (meteors.length >= MET_MAX) meteors.shift();   // 超過就把最早那顆擠掉，跟定時炸彈一樣
-  const m = {
-    tx: point.x, ty: Math.max(0.6, point.y), tz: point.z,
-    a: rr(0, Math.PI * 2),       // 從哪個方位斜進來，每顆各抽一個
-    t: MET_WAIT + MET_FALL, mark: 0, lit: 0, em: 0,
-    x: 0, y: 0, z: 0, rx: rr(0, 6), ry: rr(0, 6), s: MET_S, hot: 0, smoke: 0
-  };
-  posMeteor(m, 1);               // 先擺到出現的位置：第一幀掃掠要有正確的起點
-  meteors.push(m);
+  n = n || 1;
+  const a = rr(0, Math.PI * 2);   // 從哪個方位斜進來：一次點的那一批抽一個（一顆的時候就是每顆各抽一個）
+  const spots = n > 1 ? metSpots(n, point.x, point.z) : null;
+  for (let i = 0; i < n; i++) {
+    if (meteors.length >= MET_MAX) meteors.shift();   // 超過就把最早那顆擠掉，跟定時炸彈一樣
+    let tx = point.x, ty = Math.max(0.6, point.y), tz = point.z;
+    if (spots) { tx = spots[i].x; tz = spots[i].z; ty = 0.6; }
+    const m = {
+      tx, ty, tz, a,
+      t: MET_WAIT + MET_FALL, mark: 0, lit: 0, em: 0,
+      x: 0, y: 0, z: 0, rx: rr(0, 6), ry: rr(0, 6), s: MET_S, hot: 0, smoke: 0
+    };
+    posMeteor(m, 1);               // 先擺到出現的位置：第一幀掃掠要有正確的起點
+    meteors.push(m);
+  }
   sndTick();
+}
+/* 破壞模式那一批的落點：(cx, cz) 周圍 RAGE_MET_R 格內均勻抽（開根號，同 fireRock），
+   跟已經抽好的任何一顆近於 MET_R 就重抽——兩顆砸在同一個洞裡等於少一顆。
+   一顆抽 30 次都塞不進去（前面幾顆剛好把空位切碎了）就**整批重抽**；
+   6 顆、半徑 20、間距 9.2 實測幾乎都是一批就成（數字見 開發筆記〈破壞模式：點一下放好幾份（v1.262.0）〉）。
+   整批重抽 20 次還不成只會是常數被改到根本放不下，缺的就疊在中心，不讓它卡死。 */
+function metSpots(n, cx, cz) {
+  let pts = [];
+  for (let k = 0; k < 20 && pts.length < n; k++) {
+    pts = [];
+    for (let i = 0; i < n; i++) {
+      let p = null;
+      for (let t = 0; t < 30 && !p; t++) {
+        const a = rr(0, Math.PI * 2), r = RAGE_MET_R * Math.sqrt(Math.random());
+        const q = { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r };
+        if (pts.every(o => Math.hypot(o.x - q.x, o.z - q.z) >= MET_R)) p = q;
+      }
+      if (!p) break;
+      pts.push(p);
+    }
+  }
+  while (pts.length < n) pts.push({ x: cx, z: cz });
+  return pts;
 }
 /* k：1 = 剛出現在天上，0 = 落到目標點。
    45° 的意思就是「水平還要飛的距離＝還沒掉的高度」，所以兩邊共用同一個 up。 */
@@ -8018,13 +8105,13 @@ function useTool(hit) {
     const q = hit.point, d = hit.dir;
     launchFw(hit.kind === 'block' && d
       ? { x: q.x - d.x * FW_OUT, y: Math.max(0, q.y - d.y * FW_OUT), z: q.z - d.z * FW_OUT }
-      : { x: q.x, z: q.z });
+      : { x: q.x, z: q.z }, rageN(FW_SHOT, FW_MAX));   // 破壞模式（v1.262.0）：三輪 9 發，天上上限 8 發所以放 8 發
     return 0;
   }
   if (tool === 'fire') { torch(hit); return 0; }
   if (tool === 'bucket') { pourWater(hit); return 0; }
   if (tool === 'bomb') { placeBomb(hit.point); return 0; }
-  if (tool === 'meteor') { callMeteor(hit.point); return 0; }
+  if (tool === 'meteor') { callMeteor(hit.point, rageOn ? MET_MAX : 1); return 0; }   // 破壞模式（v1.262.0）一下放滿上限 6 顆
   if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'storm') { aimStorm({ x: hit.point.x, z: hit.point.z }); return 0; }   // v1.228 點兩下

@@ -666,6 +666,17 @@ function renderTools() {
   /* 這裡刻意不是 data-tool：選單裡的按鈕才是 data-tool，
      小窗也掛的話 querySelector('[data-tool=x]') 會先撈到小窗（它排在前面）。 */
   $('toolNow').dataset.cur = cur.id;
+  renderRage();                       // 換了道具，開關要不要灰掉跟著變
+}
+/* 破壞模式的開關（v1.262.0，見 game-tools.js 的 RAGE_N）：一直顯示在工具小窗左邊（手機疊在上面），
+   拿的不是 RAGE_TOOLS 那五把就灰掉（.na）——灰掉照樣切得動（使用者選「一直顯示，不適用時灰掉」）。 */
+function renderRage() {
+  const b = $('rageBtn'), use = !!RAGE_TOOLS[tool];
+  b.classList.toggle('on', rageOn);
+  b.classList.toggle('na', !use);
+  b.setAttribute('aria-pressed', String(rageOn));
+  b.title = '破壞模式（' + (rageOn ? '開' : '關') + '）：隕石、龍捲風、投石機、加農砲、煙火點一下放好幾份，' +
+            '碰到場上的上限就放到上限' + (use ? '' : '——現在拿的這一把不受影響');
 }
 /* 小人模式選單（v1.219，見 game-workers.js 的 LAZY_MODES）：使用者選「跟工具一樣的小窗」，
    所以長相與開合都照 renderTools——平常只留「現在是哪一檔」，指上去或點一下才展開，
@@ -1064,6 +1075,13 @@ function boot() {
      它就一直記著「指標還在 #toolbox 裡」，之後再指回來連 pointerenter 也不會響。
      pointerover 是每次越過元素邊界都補一發，所以指回小窗那一下一定收得到。 */
   $('toolbox').addEventListener('pointerover', () => $('toolbox').classList.remove('shut'));
+  /* 破壞模式（v1.262.0）：點一下切換、存進 pref。它在 #toolbox 裡、#toolPick 外——指著它不會叫出選單；
+     觸控點開選單之後再點它，選單也一起收（上面那條 pointerdown 認的是整個 #toolbox，不會幫它收） */
+  $('rageBtn').addEventListener('click', () => {
+    audio();
+    rageOn = pref.rage = !rageOn; save(); renderRage();
+    $('toolbox').classList.remove('open');
+  });
   // 小人模式的小窗（v1.219）：開合跟工具小窗同一套，理由見上面那三段
   $('modeNow').addEventListener('click', () => $('modebox').classList.toggle('open'));
   document.addEventListener('pointerdown', e => {

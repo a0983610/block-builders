@@ -31891,6 +31891,197 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { cleanTools(); });
   }   // ── 〈道具：肉〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 破壞模式（v1.262.0）══════════
+     工具小窗左邊那顆開關：開著的時候隕石、龍捲風、投石機、加農砲、煙火點一下放好幾份。
+     全部規則型：直接叫 useTool／launchTornado／metSpots／launchFw，份數照上限常數算、不寫死。
+     開關重開頁面還在不在，量在〈自動存檔〉那一段（那裡才有重開）。 */
+  SEC: { if (!(await head('破壞模式', T_COMMIT))) break SEC;
+  await page.setViewportSize(VIEW);
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+
+  /* ── 開關：在 #toolbox 裡、#toolPick 外、在小窗左邊同一排；指著它選單不展開；點一下切換、寫進 pref；
+        拿 RAGE_TOOLS 那五把時亮著、拿別把時灰掉，灰掉照樣切得動 ── */
+  await page.evaluate(() => { tool = 'meteor'; renderTools(); });
+  await page.mouse.move(900, 500);
+  await page.hover('#rageBtn');
+  await page.waitForTimeout(200);
+  const rui = await page.evaluate(() => {
+    const b = document.getElementById('rageBtn');
+    const now = document.getElementById('toolNow').getBoundingClientRect(), me = b.getBoundingClientRect();
+    const r = { menu: getComputedStyle(document.getElementById('toolMenu')).visibility,
+                inBox: document.getElementById('toolbox').contains(b), inPick: document.getElementById('toolPick').contains(b),
+                left: me.right <= now.left, row: Math.abs(me.top - now.top) < 1, start: rageOn };
+    b.click();
+    r.on = rageOn === true && pref.rage === true && b.classList.contains('on') && b.getAttribute('aria-pressed') === 'true';
+    r.ids = Object.keys(RAGE_TOOLS).sort().join(',');
+    r.five = Object.keys(RAGE_TOOLS).every(id => { tool = id; renderTools(); return !b.classList.contains('na'); });
+    tool = 'hammer'; renderTools();
+    r.na = b.classList.contains('na');
+    b.click();
+    r.naClick = rageOn === false && pref.rage === false && !b.classList.contains('on');
+    return r;
+  });
+  await page.mouse.move(900, 500);
+  ok('開關在工具小窗左邊、指著它不會叫出選單；點一下切換並寫進 pref',
+     rui.inBox && !rui.inPick && rui.left && rui.row && rui.menu === 'hidden' && rui.start === false && rui.on, JSON.stringify(rui));
+  ok('拿那五把時亮著、拿別把時灰掉（灰掉照樣切得動）',
+     rui.ids === 'cannon,fw,meteor,tornado,treb' && rui.five && rui.na && rui.naClick, JSON.stringify(rui));
+
+  /* ── 份數：關著每把照舊一份；開著照上限算（使用者：「大約*3 如果到上限就用上限的量」，隕石看過預覽改成放滿上限）。
+        定時炸彈、核彈不受影響；開著的時候直接叫出手函式（不經 useTool）照舊一份——只有玩家點的那一下會乘 ── */
+  const rcount = await page.evaluate(() => {
+    const t0 = tool, X = siteR + 30, G = (x, z) => ({ kind: 'ground', point: { x, y: 0, z }, dir: { x: 0, y: -1, z: 0 } });
+    const fire = () => {
+      const n = {};
+      cleanTools(); tool = 'meteor'; useTool(G(0, 0)); n.met = meteors.length;
+      cleanTools(); tool = 'tornado'; useTool(G(-X, 0)); useTool(G(0, 0)); n.tw = twists.length;
+      cleanTools(); tool = 'treb'; useTool(G(X, 0)); useTool(G(0, 0)); n.treb = trebs.list.length;
+      cleanTools(); tool = 'cannon'; useTool(G(X, 0)); useTool(G(0, 0)); n.can = cannons.list.length;
+      cleanTools(); tool = 'fw'; useTool(G(0, 0)); n.fw = (fworks || []).length + (fwWait || []).length;
+      cleanTools(); tool = 'bomb'; useTool(G(0, 0)); n.bomb = bombs.length;
+      cleanTools(); tool = 'nuke'; useTool(G(0, 0)); n.nuke = nukes.length;
+      return n;
+    };
+    rageOn = false; const off = fire();
+    rageOn = true; const on = fire();
+    cleanTools();
+    callMeteor({ x: 0, y: 0, z: 0 }); launchTornado({ x: -X, z: 0 }, { x: 0, z: 0 });
+    castTrebs({ x: X, z: 0 }, { x: 0, z: 0 }); castCannons({ x: X, z: 0 }, { x: 0, z: 0 }); launchFw({ x: 0, z: 0 });
+    const direct = { met: meteors.length, tw: twists.length, treb: trebs.list.length, can: cannons.list.length,
+                     fw: fworks.length + (fwWait || []).length };
+    rageOn = false; cleanTools(); fwEnd(); tool = t0;
+    const base = { met: 1, tw: 1, treb: TREB_TEAM, can: CAN_TEAM, fw: FW_SHOT, bomb: 1, nuke: 1 };
+    const want = { met: MET_MAX, tw: Math.min(RAGE_N, TW_MAX),
+                   treb: Math.min(RAGE_N, Math.floor(TREB_MAX / TREB_TEAM)) * TREB_TEAM,
+                   can: Math.min(RAGE_N, Math.floor(CAN_MAX / CAN_TEAM)) * CAN_TEAM,
+                   fw: Math.min(RAGE_N * FW_SHOT, FW_MAX), bomb: 1, nuke: 1 };
+    const same = (a, b) => Object.keys(b).every(k => a[k] === b[k]);     // 比 b 有的那幾鍵
+    return { off, on, base, want, direct, okOff: same(off, base), okOn: same(on, want), okDirect: same(base, direct) };
+  });
+  ok('份數：關著每把照舊一份；開著照上限算——隕石放滿 MET_MAX、龍捲風 RAGE_N 道、投石機與加農砲 RAGE_N 隊夾到上限、煙火 RAGE_N 輪夾到 FW_MAX',
+     rcount.okOff && rcount.okOn,
+     '關 ' + JSON.stringify(rcount.off) + '；開 ' + JSON.stringify(rcount.on) + '（要 ' + JSON.stringify(rcount.want) + '）');
+  ok('只有玩家點的那一下會乘：開著的時候直接叫出手函式照舊一份；定時炸彈、核彈不受影響',
+     rcount.okDirect && rcount.on.bomb === 1 && rcount.on.nuke === 1, JSON.stringify(rcount.direct));
+
+  /* ── 隕石：同一批共用一個方位、一個倒數，瞄地面；落點都在 RAGE_MET_R 內、兩兩至少隔 MET_R（使用者選的）。
+        真骰子跑 300 批，每一批都要成立（抽不進去就整批重抽，見 metSpots）。
+        骰子全押 0 時一顆都塞不進去：抽不滿也不能卡死，缺的疊在中心。沒開的時候照舊砸點到的那一點（連高度） ── */
+  const rmet = await page.evaluate(() => {
+    const t0 = tool, P = { kind: 'block', point: { x: 3, y: 12, z: -2 }, dir: { x: 0, y: -1, z: 0 } };
+    cleanTools(); tool = 'meteor'; rageOn = true;
+    let dir = 0, cd = 0, ground = 0, worst = 1e9, far = 0;
+    for (let k = 0; k < 300; k++) {
+      meteors = null;
+      useTool(P);
+      const ms = meteors;
+      if (new Set(ms.map(m => m.a)).size === 1) dir++;
+      if (new Set(ms.map(m => m.t)).size === 1) cd++;
+      if (ms.every(m => m.ty === 0.6)) ground++;
+      for (let i = 0; i < ms.length; i++) {
+        far = Math.max(far, Math.hypot(ms[i].tx - 3, ms[i].tz + 2));
+        for (let j = i + 1; j < ms.length; j++) worst = Math.min(worst, Math.hypot(ms[i].tx - ms[j].tx, ms[i].tz - ms[j].tz));
+      }
+    }
+    const real = Math.random;
+    let stuck;
+    Math.random = () => 0;
+    try { stuck = metSpots(MET_MAX, 5, 7); } finally { Math.random = real; }
+    rageOn = false; meteors = null; useTool(P);
+    const one = meteors.length === 1 && meteors[0].tx === 3 && meteors[0].tz === -2 && meteors[0].ty === 12;
+    cleanTools(); tool = t0;
+    return { dir, cd, ground, worst: +worst.toFixed(3), far: +far.toFixed(3), R: RAGE_MET_R, gap: MET_R,
+             stuck: stuck.length === MET_MAX && stuck.every(p => p.x === 5 && p.z === 7), one };
+  });
+  ok('隕石：同一批共用一個方位、一個倒數，瞄地面；落點都在 RAGE_MET_R 內、兩兩至少隔 MET_R（真骰子 300 批）',
+     rmet.dir === 300 && rmet.cd === 300 && rmet.ground === 300 && rmet.far <= rmet.R + 1e-9 && rmet.worst >= rmet.gap - 1e-9,
+     '同方位 ' + rmet.dir + '／同倒數 ' + rmet.cd + '／瞄地面 ' + rmet.ground + ' 批；最遠 ' + rmet.far + '（≤ ' + rmet.R +
+     '）、最近的兩顆 ' + rmet.worst + '（≥ ' + rmet.gap + '）');
+  ok('隕石的落點抽不滿也不會卡死（骰子全押 0：缺的疊在中心）；沒開的時候照舊一顆砸點到的那一點、連高度',
+     rmet.stuck && rmet.one, JSON.stringify({ stuck: rmet.stuck, one: rmet.one }));
+
+  /* ── 龍捲風：同一個速度（平行出發）、沿出發方向的橫向排開、間隔 RAGE_TW_GAP，中間那道就在第一點；
+        旁邊那道出了 debrisR − 2 就夾回來（生在界外的那一道會原地來回翻，見 launchTornado） ── */
+  const rtw = await page.evaluate(() => {
+    cleanTools();
+    launchTornado({ x: -30, z: 5 }, { x: -30, z: 40 }, 3);
+    const w = twists, sp = Math.hypot(w[0].vx, w[0].vz), ux = w[0].vx / sp, uz = w[0].vz / sp;
+    const r = { same: w.every(o => o.vx === w[0].vx && o.vz === w[0].vz),
+                lat: w.map(o => +((o.x + 30) * -uz + (o.z - 5) * ux).toFixed(6)),
+                fwd: w.map(o => +Math.abs((o.x + 30) * ux + (o.z - 5) * uz).toFixed(6)), gap: RAGE_TW_GAP };
+    cleanTools();
+    const e = debrisR - 3;
+    launchTornado({ x: e, z: 0 }, { x: e, z: 30 }, 3);
+    r.edge = twists.map(o => +Math.hypot(o.x, o.z).toFixed(6)); r.lim = debrisR - 2; r.mid = twists[1].x === e && twists[1].z === 0;
+    cleanTools();
+    return r;
+  });
+  ok('龍捲風：同一個方向平行出發、橫向排開間隔 RAGE_TW_GAP、中間那道在第一點；出界的那道夾回 debrisR − 2',
+     rtw.same && rtw.lat.join() === [-rtw.gap, 0, rtw.gap].join() && rtw.fwd.every(v => v === 0) &&
+     rtw.mid && rtw.edge.every(d => d <= rtw.lim + 1e-6) && rtw.edge.some(d => Math.abs(d - rtw.lim) < 1e-6),
+     JSON.stringify(rtw));
+
+  /* ── 投石機／加農砲：幾隊接成一長排（間距照舊 TREB_GAP／CAN_GAP），同一隊瞄同一點，
+        每一隊的目標沿著排的方向挪「那一隊的中心離整排中心多遠」——平行打過去（使用者選「並排、平行推過去」） ── */
+  const rline = await page.evaluate(() => {
+    const X = siteR + 30, t0 = tool, G = (x, z) => ({ kind: 'ground', point: { x, y: 0, z }, dir: { x: 0, y: -1, z: 0 } });
+    const chk = (list, team, gap) => {
+      const a = list[0], b = list[list.length - 1], L = Math.hypot(b.x - a.x, b.z - a.z), ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
+      const mx = list.reduce((s, m) => s + m.x, 0) / list.length, mz = list.reduce((s, m) => s + m.z, 0) / list.length;
+      const gaps = list.slice(1).map((m, i) => Math.hypot(m.x - list[i].x, m.z - list[i].z));
+      const teams = [];
+      for (let k = 0; k * team < list.length; k++) {
+        const g = list.slice(k * team, (k + 1) * team);
+        const cx = g.reduce((s, m) => s + m.x, 0) / g.length, cz = g.reduce((s, m) => s + m.z, 0) / g.length;
+        teams.push({ one: g.every(m => m.tx === g[0].tx && m.tz === g[0].tz),
+                     shift: +(g[0].tx * ux + g[0].tz * uz).toFixed(6), at: +((cx - mx) * ux + (cz - mz) * uz).toFixed(6),
+                     side: +Math.abs(g[0].tx * -uz + g[0].tz * ux).toFixed(6) });
+      }
+      return { n: list.length, gap: gaps.every(d => Math.abs(d - gap) < 1e-6), teams,
+               ok: teams.length > 1 && teams.every(t => t.one && Math.abs(t.shift - t.at) < 1e-6 && t.side < 1e-6) };
+    };
+    rageOn = true;
+    cleanTools(); tool = 'treb'; useTool(G(X, 0)); useTool(G(0, 0));
+    const treb = chk(trebs.list, TREB_TEAM, TREB_GAP);
+    cleanTools(); tool = 'cannon'; useTool(G(X, 0)); useTool(G(0, 0));
+    const can = chk(cannons.list, CAN_TEAM, CAN_GAP);
+    rageOn = false; cleanTools(); tool = t0;
+    return { treb, can };
+  });
+  ok('投石機與加農砲：幾隊接成一長排、間距照舊，同一隊瞄同一點，每一隊的目標跟著那一隊挪（平行打過去）',
+     rline.treb.ok && rline.treb.gap && rline.can.ok && rline.can.gap, JSON.stringify(rline));
+
+  /* ── 煙火：分成 ceil(n ÷ FW_SHOT) 輪，每輪中心先出膛一發、其餘排隊；輪的中心平均圍在點的那一點四周 RAGE_FW_OFF；
+        一輪裡排隊的散在那一輪中心的 FW_OFF 內；最後一輪放剩下的；鏡頭只借一次（fwHold 只加 1） ── */
+  const rfw = await page.evaluate(() => {
+    cleanTools();
+    const h0 = fwHold, n = Math.min(RAGE_N * FW_SHOT, FW_MAX), k = Math.ceil(n / FW_SHOT);
+    launchFw({ x: 4, z: -6 }, n);
+    const cs = fworks.map(f => ({ x: f.x, z: f.z }));
+    const ring = cs.map(c => +Math.hypot(c.x - 4, c.z + 6).toFixed(6));
+    const ang = cs.map(c => Math.atan2(c.z + 6, c.x - 4)).sort((a, b) => a - b);
+    const step = ang.map((a, i) => +(((i ? a - ang[i - 1] : a - ang[ang.length - 1] + Math.PI * 2)) % (Math.PI * 2)).toFixed(6));
+    const per = cs.map(() => 1);
+    let inR = true;
+    for (const w of fwWait) {
+      let bi = 0, bd = 1e9;
+      cs.forEach((c, i) => { const d = Math.hypot(w.x - c.x, w.z - c.z); if (d < bd) { bd = d; bi = i; } });
+      per[bi]++; if (bd > FW_OFF + 1e-9) inR = false;
+    }
+    const hold = fwHold - h0;
+    cleanTools(); fwEnd();
+    const wantPer = Array.from({ length: k }, (_, j) => Math.min(FW_SHOT, n - j * FW_SHOT)).sort((a, b) => b - a);
+    return { n, k, shells: cs.length, ring, step, want: { off: RAGE_FW_OFF, step: +(Math.PI * 2 / k).toFixed(6), per: wantPer.join() },
+             per: per.sort((a, b) => b - a).join(), inR, hold };
+  });
+  ok('煙火：分成好幾輪，輪的中心平均圍在 RAGE_FW_OFF 上、一輪裡散在 FW_OFF 內、最後一輪放剩下的；鏡頭只借一次',
+     rfw.k > 1 && rfw.shells === rfw.k && rfw.ring.every(d => Math.abs(d - rfw.want.off) < 1e-6) &&
+     rfw.step.every(s => Math.abs(s - rfw.want.step) < 2e-6) && rfw.inR && rfw.hold === 1 && rfw.per === rfw.want.per,
+     JSON.stringify(rfw));
+
+  await page.evaluate(() => { rageOn = pref.rage = false; cleanTools(); renderTools(); });
+  }   // ── 〈破壞模式〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 隕石 ══════════ */
   SEC: { if (!(await head('隕石', T_COMMIT))) break SEC;
   /* 靶要**比爆炸範圍大**（v1.151，本來是新天鵝堡 3000）。新天鵝堡的 siteR 只有 17，
@@ -32807,7 +32998,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     document.getElementById('mute').dispatchEvent(new Event('change', { bubbles: true }));
     document.getElementById('cap60').checked = false;                  // 鎖 60fps（v1.244.0）
     document.getElementById('cap60').dispatchEvent(new Event('change', { bubbles: true }));
-    return { pref: JSON.parse(JSON.stringify(pref)), cap: cap60 };
+    document.getElementById('rageBtn').click();                        // 破壞模式（v1.262.0）：預設關，點一下打開
+    return { pref: JSON.parse(JSON.stringify(pref)), cap: cap60, rage: rageOn, rageFresh: freshPref().rage };
   });
   ok('改設定會寫進 pref', prefSaved.pref.cnt === 1800 && prefSaved.pref.wk === 40 &&
      prefSaved.pref.spd === 0.5 && prefSaved.pref.mute === true, JSON.stringify(prefSaved.pref));
@@ -32823,7 +33015,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       domMute: document.getElementById('mute').checked,
       lazy: lazyMode, lazyPref: pref.lazy, lazyCur: document.getElementById('modeNow').dataset.cur,
       lazyOn: [...document.querySelectorAll('#modes .mode.on')].map(e => e.dataset.mode).join(','),
-      cap: cap60, capPref: pref.cap, domCap: document.getElementById('cap60').checked, capFresh: freshPref().cap
+      cap: cap60, capPref: pref.cap, domCap: document.getElementById('cap60').checked, capFresh: freshPref().cap,
+      rage: rageOn, ragePref: pref.rage, rageDom: document.getElementById('rageBtn').classList.contains('on')
     };
   });
   ok('重開後小人模式也跟著回來（小窗與選單亮的那一檔一起）',
@@ -32843,8 +33036,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      prefBack.cap === false && prefBack.capPref === false && prefBack.domCap === false,
      '預設 ' + prefBack.capFresh + '；取消之後 cap60=' + prefSaved.cap + '、pref.cap=' + prefSaved.pref.cap +
      '；重開 cap60=' + prefBack.cap + '、pref.cap=' + prefBack.capPref + '、勾選框 ' + prefBack.domCap);
+  ok('破壞模式的開關預設關；打開會存起來，重開後跟著回來（開關也亮著）',
+     prefSaved.rageFresh === false && prefSaved.rage === true && prefSaved.pref.rage === true &&
+     prefBack.rage === true && prefBack.ragePref === true && prefBack.rageDom === true,
+     '預設 ' + prefSaved.rageFresh + '；點開之後 rageOn=' + prefSaved.rage + '、pref.rage=' + prefSaved.pref.rage +
+     '；重開 rageOn=' + prefBack.rage + '、pref.rage=' + prefBack.ragePref + '、開關亮著 ' + prefBack.rageDom);
   await page.evaluate(() => {                    // 還回預設，後面走真 rAF 的那幾條照預設跑
-    cap60 = pref.cap = true; document.getElementById('cap60').checked = true; save();
+    cap60 = pref.cap = true; document.getElementById('cap60').checked = true;
+    rageOn = pref.rage = false; renderRage();    // 破壞模式也關回去：後面幾段點道具都是照一份算的
+    save();
   });
 
   /* 面板只剩三檔，中間值選不出來了：存檔裡不是那三檔的值一律吸到最近的一檔
