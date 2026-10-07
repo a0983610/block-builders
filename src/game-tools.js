@@ -95,7 +95,11 @@ const TOOLS = [
   { id: 'gojo', n: '虛式「茈」', k: '🟣',
     /* v1.255.0：點建築、地上的生物或小人就跑到射程一半，赫＋蒼合成茈放出去（直線穿過去、沿路吸進去轉、飛 30 格甩出去），
        點空地就跑到那裡待命（見 callGojo） */
-    tip: '點建築、生物或小人：叫五條悟跑來放出茈，沿路吸進去轉、最後甩出去；點空地：跑到那裡待命' }
+    tip: '點建築、生物或小人：叫五條悟跑來放出茈，沿路吸進去轉、最後甩出去；點空地：跑到那裡待命' },
+  { id: 'frieren', n: '防禦魔法', k: '🛡',
+    /* v1.259.0：不是破壞道具，是保護用的——叫芙莉蓮跑到那一點、站一下再四處逛，她身邊 FR_R 格內
+       有攻擊打過來就自動張開防護罩擋住（見 callFrieren）。照樣接在最後面、照等差階梯解鎖 */
+    tip: '點一下：叫芙莉蓮跑過去再四處逛；她身邊 8 格內被攻擊就自動張開防護罩' }
 ];
 /* 說明最多幾個字（v1.220.2，使用者：「破壞工具說明不要太長」）。選好一把之後它會接在
    底部那條操作提示的最前面，而那條不換行、後半段固定的操作說明自己就佔掉約 514px——
@@ -136,7 +140,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       storm: 1, drop: 1, gate: 1, sword: 1, ufo: 1, arrow: 1, cannon: 1,
                       bounce: 1, hole: 1, excalibur: 1, musket: 1, levi: 1,     // 兵長砍猴點空地＝跑到那裡（v1.230）
                       zenitsu: 1,                                               // 霹靂一閃同上（v1.251.0）
-                      gojo: 1 };                                                // 虛式「茈」同上（v1.255.0）
+                      gojo: 1,                                                  // 虛式「茈」同上（v1.255.0）
+                      frieren: 1 };                                             // 防禦魔法：點哪裡都是叫她跑過去（v1.259.0）
 let tool = 'hammer';
 
 /* ── 破壞道具泡泡（v1.214）───────────────────────────────
@@ -240,11 +245,15 @@ const flashes = [];   // 爆炸正中央那顆火球本體（好幾發一起炸�
 const fxRings = [];   // 地面衝擊環與蘑菇雲腰環
 const clouds = [];    // 正在成形的蘑菇雲（會隨時間往上長，不是一次生出來）
 
+/* 回 true＝打掉了。芙莉蓮的防護罩罩著的、還站著的那一塊打不動（v1.259.0，見〈道具：防禦魔法〉）：回 false，
+   呼叫端照這個跳過後面那幾件（計數、點火、吸進去）——不看的話罩著的積木會被點著、被抓進幽浮 */
 function breakBlock(b, vx, vy, vz) {
+  if (blockSafe(b, vx, vy, vz)) { b.fallIn = 0; return false; }
   freeBlock(b);
   b.fallIn = 0;
   b.vx = vx; b.vy = vy; b.vz = vz;
   b.ax = rr(-9, 9); b.ay = rr(-9, 9); b.az = rr(-9, 9);
+  return true;
 }
 
 /* 「**現在**」的屋頂有多高（v1.169.2 使用者：「烏雲(UFO也一起改)高度改成根據目前目標
@@ -386,6 +395,7 @@ function collapseUnsupported() {
     if (k < 0) return 0;
     const b = blocks[k];
     if (b.fallIn > 0) return 0;
+    if (blockSafe(b)) { frHang = 1; return 0; }   // 防護罩撐著（v1.259.0）：罩子走開之後 stepFrHang 再算一次
     // 越高的越晚鬆脫，垮下來才有由下往上的層次，不是整團同時消失
     b.fallIn = 0.02 + S[i].gy * 0.012 + Math.random() * 0.06;
     return 1;
@@ -455,7 +465,7 @@ function afterHit(n, point, R, own, self) {
   for (const w of workers) {
     if (w.air || w.burn > 0) continue;                // 正在飛／正在燒的不用再掀一次
     const dy = (point.y || 0) - (w.y || 0) - 0.9;     // 衝擊點在他胸口上方多高
-    if (Math.hypot(w.x - point.x, dy, w.z - point.z) < R * 1.7 && w.fall <= 0) {
+    if (Math.hypot(w.x - point.x, dy, w.z - point.z) < R * 1.7 && w.fall <= 0 && !workerSafe(w)) {   // 罩子裡的震不倒（v1.259.0）
       w.fall = rr(1.1, 2.3); releaseWorker(w); sndFall();
       lifeHit(w, 'quake');                            // 被打死（v1.240）：這一下算一次
     }
@@ -495,10 +505,10 @@ function smash(point, dir, R0, pow0, quiet, hush) {
          （積木離開房子就不屬於它了），之後再看就每一塊都像地標的。 */
       const own = b.hh < 0;
       // 六成沿著揮擊方向、四成沿著離衝擊點的徑向——才有「往那個方向被打飛」的感覺
-      breakBlock(b,
+      if (!breakBlock(b,
         (dir.x * 0.62 + dx / ol * 0.55) * f + rr(-1.4, 1.4),
         (dir.y * 0.32 + dy / ol * 0.62) * f + rr(2.2, 6.2),
-        (dir.z * 0.62 + dz / ol * 0.55) * f + rr(-1.4, 1.4));
+        (dir.z * 0.62 + dz / ol * 0.55) * f + rr(-1.4, 1.4))) continue;   // 防護罩擋下（v1.259.0）
       hitN++;
       if (own) ownN++;
     } else if (d2 <= R2 * 3.4) {
@@ -565,7 +575,7 @@ function stepQuake(dt) {
     const b = blocks[q.list[q.cur++]];
     if (!b || b.st !== SET) continue;               // 這中間被別的東西打掉了
     const wasOwn = b.hh < 0;                        // breakBlock 會把 hh 清掉
-    breakBlock(b, rr(-1.2, 1.2), rr(-0.5, 1.2), rr(-1.2, 1.2));
+    if (!breakBlock(b, rr(-1.2, 1.2), rr(-0.5, 1.2), rr(-1.2, 1.2))) continue;   // 防護罩擋下（v1.259.0）
     n++; if (wasOwn) own++;
   }
   // 還沒掉的也要跟著抖：地震看的是整棟在晃，不是幾塊在掉
@@ -1682,6 +1692,10 @@ function bncTouch(o, h, R) {
       sndBoing(o.vy);
     } else { if (o.vy < 0) o.vy = 0; rest = true; }
   }
+  /* 防護罩（v1.259.0，見 frBall）：同撞到積木那一套，只是不咬 */
+  const fv = frBall(o);
+  if (fv < -BNC_SOFT) { bncReflect(o, FR_N[0], FR_N[1], FR_N[2]); sndBoing(-fv); }
+  else if (fv < 0) { o.vx -= fv * FR_N[0]; o.vy -= fv * FR_N[1]; o.vz -= fv * FR_N[2]; rest = true; }
   const R2 = R * R;
   let hx = 0, hy = 0, hz = 0;
   BNC_NEAR.length = 0; BNC_D2.length = 0;
@@ -1708,10 +1722,10 @@ function bncTouch(o, h, R) {
         const dx = b.x - o.x, dy = b.y - o.y, dz = b.z - o.z;
         const d = Math.max(0.4, Math.sqrt(BNC_D2[idx[k]]));
         const wasSet = b.st === SET, wasOwn = b.hh < 0;   // 同鐵球：breakBlock 之後就分不出來
-        breakBlock(b,
+        if (!breakBlock(b,
           o.vx * 0.3 + dx / d * 4 + rr(-1.5, 1.5),
           Math.max(2, sp * 0.15) + dy / d * 2 + rr(1, 3),
-          o.vz * 0.3 + dz / d * 4 + rr(-1.5, 1.5));
+          o.vz * 0.3 + dz / d * 4 + rr(-1.5, 1.5))) continue;   // 防護罩擋下（v1.259.0），球照樣彈開
         if (wasSet) { n++; if (wasOwn) own++; }         // 地上的散料被撞開不算破壞
       }
       bncReflect(o, nx, ny, nz);
@@ -1804,6 +1818,14 @@ function stepBall(dt) {
         sndSmash();                                // 不震畫面（v1.58），理由同下面撞到積木那段
       } else o.vy = 0;
     }
+    /* 撞到防護罩（v1.259.0，見 frBall）：照罩子的法線彈開，法線那一份留多少同撞牆（保齡球 BALL_REST）／
+       落地（鐵球 DROP_BOUNCE）。鐵球砸下來的第一下落在罩子上就在這裡震（hops 記一下），滾下罩子落地不再震、不留坑 */
+    const fv = frBall(o);
+    if (fv < 0) {
+      const k = (1 + (o.drop ? DROP_BOUNCE : BALL_REST)) * fv;
+      o.vx -= k * FR_N[0]; o.vy -= k * FR_N[1]; o.vz -= k * FR_N[2];
+      if (o.drop && !o.hops && fv < -FR_BALL_SOFT) { ENG.shake(1.1); sndThud(o.r * 3); o.hops++; }
+    }
     let sp = Math.hypot(o.vx, o.vz);
     o.ang += sp / o.r * dt;                        // 滾動角度：走多遠就轉多少
     const R = o.r + 0.7, R2 = R * R;
@@ -1833,10 +1855,10 @@ function stepBall(dt) {
       touch++;
       const wasSet = b.st === SET;
       const wasOwn = b.hh < 0;                   // 同 smash：breakBlock 會把 hh 清掉
-      breakBlock(b,
+      if (!breakBlock(b,
         o.vx * 0.5 + dx / d * 7 + rr(-2, 2),
         Math.max(3, sp * 0.26) + dy / d * 3 + rr(1, 5),
-        o.vz * 0.5 + dz / d * 7 + rr(-2, 2));
+        o.vz * 0.5 + dz / d * 7 + rr(-2, 2))) continue;   // 防護罩擋下（v1.259.0）
       if (wasSet) { n++; if (wasOwn) own++; }      // 地上的散料被撞開不算破壞
     }
     ballShove(o, R);
@@ -2137,7 +2159,8 @@ function stepTwist(dt) {
       if (b.st === SET) {
         if (Math.random() >= take) continue;
         const wasOwn = b.hh < 0;                    // breakBlock 會把 hh 清掉
-        breakBlock(b, 0, 0, 0); n++; if (wasOwn) own++;
+        if (!breakBlock(b, 0, 0, 0)) continue;      // 防護罩擋下（v1.259.0）
+        n++; if (wasOwn) own++;
       }
       if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
       twSwirl(w, b, dx, dz, d, dt, 1);
@@ -2153,6 +2176,7 @@ function stepTwist(dt) {
       if (d2 > R2 || p.y > w.h) continue;
       const d = Math.max(0.5, Math.sqrt(d2));
       if (!p.air) { tossWorker(p, 0, 0, 0, false); lifeHit(p, 'twister'); }
+      if (!p.air && frCover(p.x, p.y || 0, p.z)) continue;   // 防護罩擋下（v1.259.0）：沒被捲起來就不推
       twSwirl(w, p, dx, dz, d, dt, 1);
     }
     /* 那幾隻也一起被捲上去（v1.146）：同一組力，第一次掃到才 tossBeast。
@@ -2167,6 +2191,7 @@ function stepTwist(dt) {
       if (d2 > R2 || p.y > w.h) continue;
       const d = Math.max(0.5, Math.sqrt(d2));
       if (!p.air && tossBeast(p, 0, 0, 0, false)) beastHit(p, 'twister');   // v1.208
+      if (!p.air && frCover(p.x, p.y || 0, p.z)) continue;   // 防護罩擋下（v1.259.0）：沒被捲起來就不推
       twSwirl(w, p, dx, dz, d, dt, B_BLOW);        // 大隻的捲得慢一點（同掀飛照體型打折）
     }
     if (n) {
@@ -2227,10 +2252,10 @@ function explode(point, R, power, magic, wind, crash, self, quiet, scorchR) {
        會整團直直往上噴成一根柱子。這種時候方向改抽一個隨機的水平角。 */
     let nx = dx / ol, nz = dz / ol;
     if (d < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
-    breakBlock(b,
+    if (!breakBlock(b,
       nx * f + rr(-2, 2),
       Math.abs(dy) / ol * f * 0.5 + lift + rr(1, 4),
-      nz * f + rr(-2, 2));
+      nz * f + rr(-2, 2))) continue;            // 防護罩擋下（v1.259.0）：不點火、不算
     /* 爆炸打出來的碎料一律點著：拖著火飛出去、落地是一塊焦炭。
        點在這裡而不是事後用 igniteAround 撈，是因為「被這一發炸到的」就是這個迴圈掃到的這些，
        事後撈還要再掃一次全部積木、還分不出哪些是別發炸出來早就躺在那裡的。 */
@@ -2350,6 +2375,7 @@ function blockOn(gx, gy, gz) {
    （它已經離開建築了，沒有鄰居可傳，也不用再打掉一次）。 */
 function igniteBlock(b) {
   if (!b || b.burn || b.wet > 0 || (b.st !== SET && b.st !== FLY)) return false;
+  if (blockSafe(b)) return false;                    // 防護罩罩著的點不著（v1.259.0），火也就傳不進罩子裡
   const sp = b.st === SET;
   /* 兩種火各有各的額度。共用一個的話，一發爆炸打出來的幾百塊碎料會把額度整個吃光，
      旁邊還站著的那半棟就再也燒不起來——那才是這個道具最該看到的畫面。 */
@@ -3927,6 +3953,13 @@ function stepFire(dt) {
   if (bp && nSpread) buildSlotOwner();
   for (let i = fires.length - 1; i >= 0; i--) {
     const f = fires[i], b = f.b;
+    /* 已經在燒的還站著那一塊進了防護罩（她走過來、或罩子剛張開，v1.259.0）：火熄掉、顏色還原 */
+    if (f.sp && b.st === SET && blockSafe(b)) {
+      b.burn = 0; nSpread--;
+      b.tr = f.c0[0]; b.tg = f.c0[1]; b.tb = f.c0[2];
+      fires.splice(i, 1);
+      continue;
+    }
     f.t += dt * f.rate;
     const k = Math.min(1, f.t / f.dur);
     // 焦黑：只動目標色，實際顏色每幀自己往目標靠（見 step 裡的 b.r += (b.tr − b.r) × …）
@@ -4601,7 +4634,8 @@ function implode(m, dt) {
     if (b.st === SET) {
       if (Math.random() >= take) continue;
       const wasOwn = b.hh < 0;                      // breakBlock 會把 hh 清掉
-      breakBlock(b, 0, 0, 0); n++; if (wasOwn) own++;
+      if (!breakBlock(b, 0, 0, 0)) continue;       // 防護罩擋下（v1.259.0）
+      n++; if (wasOwn) own++;
       if (fast) { aimCore(m, b); continue; }     // 快吸那一段剝下來的：當場甩向陣心
     }
     /* 快吸開始之後，已經在彈道上的就別再加力——再推一把會提早對穿過陣心，
@@ -5727,6 +5761,7 @@ function strike(s) {
   for (const w of workers) {
     if (w.air || w.burn > 0 || w.fall > 0) continue;
     if (Math.hypot(w.x - p.x, w.z - p.z) > BOLT_MAN_R) continue;
+    if (workerSafe(w)) continue;              // 防護罩裡的劈不到（v1.259.0）
     if (!igniteWorker(w, 1)) { releaseWorker(w); w.tilt = 0; w.fall = rr(1.1, 2.3); }
     sndFall();
     lifeHit(w, 'bolt');                       // 屍體在上面那行 fall > 0 就跳掉了（v1.240，見 stepCorpse）
@@ -5955,7 +5990,7 @@ function ufoSuck(u, dt) {
     if (dx * dx + dz * dz > rad * rad) continue;
     if (Math.random() >= take) continue;
     const wasSet = b.st === SET, wasOwn = b.hh < 0;   // breakBlock 會把 hh 清掉
-    breakBlock(b, 0, 0, 0);                // 照正規出口離場：進度、損失、支撐都靠它
+    if (!breakBlock(b, 0, 0, 0)) continue;  // 照正規出口離場：進度、損失、支撐都靠它；防護罩擋下就不吸（v1.259.0）
     douse(b);                              // 燒著的先熄，不然它在艙裡燒完會自己鬆脫
     ufoGrab(u, b, 0);
     if (wasSet) { n++; if (wasOwn) own++; }
@@ -5964,6 +5999,7 @@ function ufoSuck(u, dt) {
     if (w.ufo || w.air || w.dead) continue;   // 已經在別人光裡／已經飛在半空的不吸，屍體也不吸（v1.240）
     const rad = ufoRad(u, w.y || 0);
     if ((w.x - u.x) ** 2 + (w.z - u.z) ** 2 > rad * rad) continue;
+    if (workerSafe(w)) continue;           // 防護罩裡的吸不走（v1.259.0）
     tossWorker(w, 0, 0, 0, false);         // 手上的工作先脫手（同被龍捲風捲走）
     lifeHit(w, 'ufo');
     ufoGrab(u, w, 1);
@@ -5973,6 +6009,7 @@ function ufoSuck(u, dt) {
     if (levBusy(m)) continue;             // 立體機動中的里維、正在氣化的巨人（v1.230，見 levBusy）
     const rad = ufoRad(u, m.y || 0);
     if ((m.x - u.x) ** 2 + (m.z - u.z) ** 2 > rad * rad) continue;
+    if (beastSafe(m)) continue;           // 防護罩裡的吸不走（v1.259.0；排在光圈判斷後面，光圈外的不算被打）
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'ufo');   // v1.208
     ufoGrab(u, m, 2);
   }
@@ -6291,7 +6328,7 @@ function holeTake(h) {
     if ((b.x - h.x) ** 2 + (b.y - h.y) ** 2 + (b.z - h.z) ** 2 > R2) continue;
     const wasSet = b.st === SET, wasOwn = b.hh < 0;   // breakBlock 會把 hh 清掉
     const tr = b.tr, tg = b.tg, tb = b.tb;
-    breakBlock(b, 0, 0, 0);                // 照正規出口離場：進度、損失、支撐都靠它
+    if (!breakBlock(b, 0, 0, 0)) continue;  // 照正規出口離場：進度、損失、支撐都靠它；防護罩擋下就不吸（v1.259.0）
     douse(b);                              // 燒著的先熄，不然它收起來之後燒完會自己鬆脫
     /* 顏色先留著原本的：freeBlock 會把它換成碎料的米白，那樣被吸過去的是一團白雲，
        看不出是「那一塊建築」在動。碎料色記在手上，收起來那一刻才換（見 holePark），
@@ -6303,6 +6340,7 @@ function holeTake(h) {
   for (const w of workers) {
     if (w.ufo || w.air || w.dead) continue;   // 已經被收走／正飛在半空的不吸（落地還在範圍裡就收）；屍體不吸（v1.240）
     if ((w.x - h.x) ** 2 + ((w.y || 0) + HOLE_MID[1] - h.y) ** 2 + (w.z - h.z) ** 2 > R2) continue;
+    if (workerSafe(w)) continue;           // 防護罩裡的吸不走（v1.259.0）
     tossWorker(w, 0, 0, 0, false);         // 手上的工作先脫手（同被龍捲風捲走）
     lifeHit(w, 'hole');
     holeGrab(h, w, 1);
@@ -6310,6 +6348,7 @@ function holeTake(h) {
   if (beasts) for (const m of beasts) {
     if (m.ufo || m.sky || levBusy(m)) continue;          // levBusy（v1.230）同幽浮那一條
     if ((m.x - h.x) ** 2 + ((m.y || 0) + HOLE_MID[2] - h.y) ** 2 + (m.z - h.z) ** 2 > R2) continue;
+    if (beastSafe(m)) continue;           // 防護罩裡的吸不走（v1.259.0；排在範圍判斷後面）
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'hole');   // v1.208
     holeGrab(h, m, 2);
   }
@@ -7874,10 +7913,10 @@ function swordCut(s, aFrom, aTo, dt) {
     /* 主要沿著刃前進的方向飛，另外帶兩成五的徑向（削出去的碎料才會散成一把扇形，
        不是一整排平移），再加一股往上的抬升——抬升一律往上：斜著往下砍的那一刀，
        切線本身是朝下的，照切線給的話碎料會被壓進地面。 */
-    breakBlock(b,
+    if (!breakBlock(b,
       tx * sp + gx * sp * 0.25 + rr(-1.6, 1.6),
       Math.abs(ty * sp + gy * sp * 0.25) * 0.35 + rr(2.4, 6.8) + sp * 0.12,
-      tz * sp + gz * sp * 0.25 + rr(-1.6, 1.6));
+      tz * sp + gz * sp * 0.25 + rr(-1.6, 1.6))) continue;   // 防護罩擋下（v1.259.0）
     // 地上的碎料被掃開不算破壞：不進塊數、也不把揚塵與 afterHit 的中心拉過去
     if (!set) continue;
     n++; if (ow) own++;
@@ -8004,6 +8043,9 @@ function useTool(hit) {
   if (tool === 'zenitsu') { callZen(hit.point, null, false, onGround); return 0; }
   // 虛式「茈」（v1.255.0）：同上，點建築＝跑到射程一半放出去（直線穿過那一點）、點空地＝跑到那裡待命
   if (tool === 'gojo') { callGojo(hit.point, null, false, onGround); return 0; }
+  /* 防禦魔法（v1.259.0）：點哪裡都是叫芙莉蓮跑到那一點（點建築就跑到它旁邊），站一下再四處逛。
+     生物、小人在點選那一層是透明的（拿這一把照「skip」那一檔點），點到的就是後面的建築或地面 */
+  if (tool === 'frieren') { callFrieren(hit.point); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
@@ -8256,7 +8298,7 @@ function spawnBeast(kind, fun, bad, ang) {
     gw: null, nav: null, navWait: 0, nb: null, nbS: 0,
     /* 巨人自己一個倍率（v1.192）：牠的模型是拿 5.00 當高畫的，不是拿小人的 1.31，
        所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。五條悟也自己一個（v1.255.0，見 GJ_SC）。 */
-    sc: kind === 'giant' ? GIA_SC : kind === 'gojo' ? GJ_SC : DOOM_SC,
+    sc: kind === 'giant' ? GIA_SC : kind === 'gojo' ? GJ_SC : kind === 'frieren' ? FR_SC : DOOM_SC,
     kick: 0, kleft: 0, kt: 0, hit: 0, puff: 0,
     /* Saber 出招到第幾秒（v1.222，見 stepExcal）；th0 上一幀光柱的角度（null＝不在斬）、
        thS 開斬那一刻的角度，xn／xb 這一招斬掉幾塊／點著幾塊（測試在讀），xs 震過畫面了沒 */
@@ -8293,6 +8335,7 @@ function spawnBeast(kind, fun, bad, ang) {
   else if (kind === 'megumin') sndMegumin();
   else if (kind === 'zenitsu') sndZen();
   else if (kind === 'gojo') sndGojo();
+  else if (kind === 'frieren') sndFrieren();
   else sndBeast(kind === 'snow');
   if (ang !== undefined) return m;               // Excalibur 叫來的：提示由 callSaber 講（v1.224）
   /* 惠惠（v1.247.0）只當吉祥物、只有被打才動手，提示講她會怎樣 */
@@ -8586,6 +8629,8 @@ function stepBeast0(m, dt) {
   if (m.dead) return m.herd ? stepCarcass(m, dt) : stepDie(m, dt);
   /* 惠惠爆完往後倒、暈著、爬起來（v1.247.0）：那幾段打不到她，被打倒、卡住那兩套都不必跑 */
   if (megDown(m)) return stepMegDown(m, dt);
+  /* 芙莉蓮（v1.259.0）：防護罩的計時與舉杖；罩子張開到收完那幾秒她站定（見 frStep） */
+  if (m.kind === 'frieren' && frStep(m, dt)) return false;
   if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   if (m.kind === 'gryphon') return stepGryph(m, dt);      // 飛進來降落再起飛，自己一套（v1.176）
   /* 卡住了就脫困（v1.190.2，使用者：「小人 牛羊 猴子這類盡量同一套走位判定」）。
@@ -8652,7 +8697,7 @@ function stepBeast0(m, dt) {
       (m.st === 'come' || m.st === 'fun' || m.st === 'go') && giantBust(m)) return false;
   /* Excalibur 叫她過去那一段**用跑的**（v1.226，使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」）：
      腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
-  if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo')   // 里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）同 Saber 用跑的
+  if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'frieren')   // 里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0）同 Saber 用跑的
     m.run += ((m.call && (m.st === 'call' || m.st === 'gate') ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   /* 惠惠退到安全距離那一段也用跑的（v1.247.0，使用者：「退到安全距離用跑的(三倍速度 要有奔跑動作)」） */
   else if (m.kind === 'megumin') m.run += ((m.st === 'mwalk' ? 1 : 0) - m.run) * Math.min(1, dt * 8);
@@ -8676,8 +8721,8 @@ function stepBeast0(m, dt) {
          裡根本沒有牛羊那幾款，真讓牠們進 act 會叫到 undefined）：就在城外逛。
          **吉祥物會動手**（使用者：「吉祥物會破壞」）：跟天災同一條路。 */
       if (wallFoot(m, 0, 0)) {
-        /* 惠惠也不拆（v1.247.0，使用者：「他完全不主動攻擊的」）：同牛羊，就在城外逛 */
-        if (m.herd || m.kind === 'megumin') { m.st = 'fun'; m.leg = 0; }
+        /* 惠惠也不拆（v1.247.0，使用者：「他完全不主動攻擊的」）：同牛羊，就在城外逛。芙莉蓮也是（v1.259.0，她只保護） */
+        if (m.herd || m.kind === 'megumin' || m.kind === 'frieren') { m.st = 'fun'; m.leg = 0; }
         else { m.home = 1; m.st = 'near'; m.leg = 0; }
         return false;
       }
@@ -8900,6 +8945,8 @@ function stepBeast0(m, dt) {
     if (m.kind === 'zenitsu') { if (m.call) zenStart(m); else funBack(m); return false; }
     /* 五條悟（v1.255.0）同上：只做玩家叫的事，站定之後結印放出茈（見 stepGojo） */
     if (m.kind === 'gojo') { if (m.call) gjStart(m); else funBack(m); return false; }
+    /* 芙莉蓮（v1.259.0）不動手：命令一律是「跑到那一點」（go，見 callAim），照理走不到這裡；走到了就回去逛 */
+    if (m.kind === 'frieren') { funBack(m); return false; }
     /* 還欠著幾處的（v1.229，見 moreMascot）：砸之前先認好這一塊（砸完最近的那一塊就換人了），
        **砸完才記進 spots**——先記的話 apeStrike 找目標時會把這一處當成「砸過的」跳過，
        改點 8 格外的另一塊（實測點火距離 9.8～18.9 格，隔空點火）。
@@ -9265,8 +9312,8 @@ function excSweep(m, P, C) {
     /* 沿著刃前進的方向飛（往前那一份至少留三成五：斬過水平之後刃是往下、往她那一側走的），
        抬升一律往上——往下斬的切線是朝下的，照切線給的話碎料會被壓進地面（同大劍） */
     const sp = rr(EXC_HIT[0], EXC_HIT[1]), tf = Math.max(0.35, tu);
-    breakBlock(b, g.fx * tf * sp + rr(-1.5, 1.5), Math.abs(tv) * sp * 0.35 + rr(2.4, 6.8),
-               g.fz * tf * sp + rr(-1.5, 1.5));
+    if (!breakBlock(b, g.fx * tf * sp + rr(-1.5, 1.5), Math.abs(tv) * sp * 0.35 + rr(2.4, 6.8),
+                    g.fz * tf * sp + rr(-1.5, 1.5))) continue;   // 防護罩擋下（v1.259.0）
     if (!set) continue;
     igniteBlock(b);                          // 帶火飛出去（碎料那一份額度，見 EMBER_MAX）
     n++; if (ow) own++;
@@ -9303,7 +9350,7 @@ function excLives(m, g, P, C) {
     if (!excCross(g, P, C, o.x, (o.y || 0) + (o.sky ? 0 : mid), o.z, GATE_MAN_R + mid * 0.8)) continue;
     /* 巨人斬殺（v1.245.0，見 slayGiants）：Saber 當天災／吉祥物自己出的那一招也算（使用者選的）。
        已經在化掉的照舊往下走（tossBeast 回 false，同以前） */
-    if (o.kind === 'giant' && !o.ufo && !levBusy(o)) { giantDie(o, 'excal'); hit++; continue; }
+    if (o.kind === 'giant' && !o.ufo && !beastSafe(o)) { giantDie(o, 'excal'); hit++; continue; }   // beastSafe：罩子裡的斬不死（v1.259.0）
     const sp = rr(EXC_HIT[0], EXC_HIT[1]) * 0.6;
     if (tossBeast(o, (g.fx * tf * sp + rr(-1.5, 1.5)) * B_BLOW, rr(4, 8),
                   (g.fz * tf * sp + rr(-1.5, 1.5)) * B_BLOW, true)) beastHit(o, 'excal');   // v1.208
@@ -9888,7 +9935,7 @@ function levCut(m, C, dt) {
     if (dx * dx + dy * dy + dz * dz > R2) continue;
     const set = b.st === SET, ow = set && b.hh < 0;
     const hl = Math.hypot(dx, dz) || 1, sp = rr(LEV_HIT[0], LEV_HIT[1]);
-    breakBlock(b, dz / hl * sp + c.nx * rr(2, 5), rr(2, 6) + c.ny * 3, -dx / hl * sp + c.nz * rr(2, 5));
+    if (!breakBlock(b, dz / hl * sp + c.nx * rr(2, 5), rr(2, 6) + c.ny * 3, -dx / hl * sp + c.nz * rr(2, 5))) continue;   // 防護罩擋下（v1.259.0）
     if (!set) continue;
     n++; if (ow) own++;
     cx += b.x; cy += b.y; cz += b.z;
@@ -9930,12 +9977,13 @@ function levStrike(m, b, w) {
   if (!levTargetOk(b, w)) return false;
   if (w) {
     if (b.fall > 0 || b.burn > 0) return false;      // 屍體也在這裡擋掉（fall 一直是 1，見 stepCorpse）
+    if (workerSafe(b)) return false;                 // 防護罩擋下（v1.259.0）
     b.fall = rr(1.6, 2.8); releaseWorker(b); sndFall(); ENG.shake(0.4);
     lifeHit(b, 'levi');
     return true;
   }
   ENG.shake(b.kind === 'giant' ? 1.2 : 0.5);
-  if (b.kind === 'giant') { giantDie(b); return true; }
+  if (b.kind === 'giant') { if (beastSafe(b)) return false; giantDie(b); return true; }   // beastSafe：罩子裡的斬不死（v1.259.0）
   if (fellBeast(b, rr(2.4, 3.6))) { sndFall(); beastHit(b, 'levi'); return true; }
   return false;
 }
@@ -9966,7 +10014,7 @@ function giantDie(b, by) {
    已經飛在半空的照 explode 的規矩不算（那邊也不掀），被幽浮吸著的不算（同 leviCanCut）。 */
 function slayGiants(p, R, by) {
   eachBeastNear(p, R, m => {
-    if (m.kind === 'giant' && !m.air && !m.ufo && !levBusy(m)) giantDie(m, by);
+    if (m.kind === 'giant' && !m.air && !m.ufo && !beastSafe(m)) giantDie(m, by);   // beastSafe：罩子裡的炸不死（v1.259.0）
   });
 }
 /* 一團蒸氣。at 給了就冒在那一點（一塊散掉的那一刻），沒給就冒在身上隨便一塊 */
@@ -10243,7 +10291,7 @@ function zenCut(m, s0, s1, dt) {
       const set = b.st === SET, ow = set && b.hh < 0;   // 同 smash：breakBlock 會把 hh 清掉，要先看
       /* 沿著衝的方向飛、往被削開的那一側甩一點、一律往上（同 Excalibur 的 excSweep） */
       const sp = rr(ZEN_HIT[0], ZEN_HIT[1]), sd = (ux * dz - uz * dx) < 0 ? 1 : -1;
-      breakBlock(b, ux * sp - uz * sd * rr(1, 4), rr(3, 8), uz * sp + ux * sd * rr(1, 4));
+      if (!breakBlock(b, ux * sp - uz * sd * rr(1, 4), rr(3, 8), uz * sp + ux * sd * rr(1, 4))) continue;   // 防護罩擋下（v1.259.0）
       if (!set) continue;
       n++; if (ow) own++;
       cx += b.x; cy += b.y; cz += b.z;
@@ -10494,12 +10542,11 @@ function purpTake(p, a, b) {
     if (purpD2(a, b, bl.x, bl.y, bl.z) > R2) continue;
     const wasSet = bl.st === SET, wasOwn = bl.hh < 0;          // breakBlock 會把 hh 清掉，要先看
     if (p.up.length >= PURP_CAP) {                              // 掛滿了：照樣削飛，不掛在球上（保險）
-      breakBlock(bl, p.ux * 12, rr(3, 7), p.uz * 12);
-      if (wasSet) { n++; if (wasOwn) own++; }
+      if (breakBlock(bl, p.ux * 12, rr(3, 7), p.uz * 12) && wasSet) { n++; if (wasOwn) own++; }   // 防護罩擋下的不算（v1.259.0）
       continue;
     }
     const tr = bl.tr, tg = bl.tg, tb = bl.tb;
-    breakBlock(bl, 0, 0, 0);                  // 照正規出口離場：進度、損失、支撐都靠它
+    if (!breakBlock(bl, 0, 0, 0)) continue;   // 照正規出口離場：進度、損失、支撐都靠它；防護罩擋下就不吸（v1.259.0）
     douse(bl);                                // 燒著的先熄（同小黑洞）
     /* 顏色先留著原本的（同小黑洞）：碎料色記在手上，甩出去那一刻才換（見 purpBurst） */
     purpGrab(p, bl, 0).dust = [bl.tr, bl.tg, bl.tb];
@@ -10509,6 +10556,7 @@ function purpTake(p, a, b) {
   for (const w of workers) {
     if (w.ufo || w.air || w.dead) continue;   // 已經被收著／飛在半空的不吸；屍體不吸（v1.240）
     if (purpD2(a, b, w.x, (w.y || 0) + 0.9 * (w.scale || 1), w.z) > (PURP_R + GATE_MAN_R) ** 2) continue;
+    if (workerSafe(w)) continue;              // 防護罩裡的吸不走（v1.259.0）
     tossWorker(w, 0, 0, 0, false);            // 手上的工作先脫手（同小黑洞）
     lifeHit(w, 'purp');
     purpGrab(p, w, 1);
@@ -10517,6 +10565,7 @@ function purpTake(p, a, b) {
     if (m.ufo || !onGroundBeast(m) || levBusy(m)) continue;
     const mid = ENG.BEAST_MID[m.kind] * (m.sc || 1), pad = GATE_MAN_R + mid * 0.3;
     if (purpD2(a, b, m.x, (m.y || 0) + Math.min(mid, p.y), m.z) > (PURP_R + pad) ** 2) continue;
+    if (beastSafe(m)) continue;               // 防護罩裡的吸不走、抹消不了（v1.259.0；排在範圍判斷後面）
     if (m.kind === 'giant') { if (!m.air) { giantDie(m, 'purp'); ENG.shake(1.0); } continue; }
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'purp');
     m.air = 1;                                // 掛在球上：落地判定那一套先停（ufo 擋住 stepBeast），甩出去才接著算
@@ -10682,6 +10731,160 @@ function beastList() {
   if (nanas) for (const n of nanas) _beasts.push(n);
   if (fballs) for (const f of fballs) _beasts.push(f);
   return _beasts;
+}
+
+/* ── 道具：防禦魔法（v1.259.0）────────────────────────────
+   使用者：「先做這個角色模型 預計是道具 會叫他到指定地點 只要有攻擊打過去會自動開啟防護罩 保護範圍內的積木或生物」
+   （造型先做過預覽，見 engine.js〈芙莉蓮〉）。動手前問了四件，使用者選：
+     · 罩子多大：**小：半徑 8**（以她為中心）
+     · 擋哪些攻擊：**全部都擋**（破壞道具、天災與吉祥物的攻擊）
+     · 打不打得破：**打不破**（罩著的時候範圍內一塊積木都不掉、生物都打不動）
+     · 叫過去之後：「跟一般人物一樣 過去站幾秒 然後到處走 走到的地方被打都防護罩」
+   **走過去那一段整套是 Excalibur／兵長砍猴那一套**（sendSaber／stepCall／callAim／excDone 共用）：她就是一隻吉祥物
+   （kind 'frieren'），只能用道具叫來（不在 MASCOTS 裡）。點哪裡都一樣是跑到那一點（點空地那一道命令 go，見 levArrive）、
+   站 LEV_WAIT 秒，再回去逛（MASC_STAY 秒後走人，同吉祥物）；這段時間再點就直接叫她過去。她不動手（被城牆擋住也不拆，同惠惠）。
+   **罩子**：離她 FR_R 格內（一個半球，中心在她腳下）還站著的積木、小人、生物，什麼打過來都不動（frShield）。
+   平常看不到；有東西打進來那一刻張開（引擎從法杖寶石那一點往外一格一格亮起來），打到的那一點白光一閃、一圈亮紋往外擴，
+   FR_HOLD 秒沒再被打就收掉。張開到收完那幾秒她站定、把法杖舉在身前（m.fc），罩子不跟著走。
+   擋的做法是每一條路的咽喉點各問一次 frShield：
+     積木  breakBlock 回 false（呼叫端照它跳過計數、點火、吸走）、igniteBlock 點不著、已經在燒的熄掉；
+           垮塌時罩著的那幾塊不掉（frHang，罩子走開之後重算一次支撐）
+     生物  beastSafe（levBusy 之外再加罩子）：炸不飛、點不著、震不倒、吸不走、巨人斬不死。**點得到**——Saber、善逸、
+           五條悟照樣跑過去出招，打中那一下被罩子擋住（同五條悟的無下限，那次使用者選「點得到 只是沒受傷」）
+     小人  workerSafe：丟不飛、點不著、震不倒、吸不走、手指戳不倒
+     球    frBall：保齡球、天降鐵球、彈跳球碰到殼就彈開，不進罩子
+   見 開發筆記〈道具：防禦魔法〉 */
+const FR_R = 8;                    // 罩子半徑（格）：使用者選的「小：半徑 8」
+/* 她的縮放：同小人平均。原作她就嬌小——站著高 2.1（模型 1.215 × DOOM_SC），小人 2.26～2.39 */
+const FR_SC = DOOM_SC;
+const FR_HOLD = 2.5;               // 多久沒再被打就開始收罩（秒）
+const FR_CAST = 5;                 // 舉杖／放下多快（m.fc 每秒往目標追幾成）
+/* 亮紋（m.bh）：FR_HIT_GAP 秒內、方向差不到 FR_HIT_ANG 弧度的算同一下（一顆炸彈打到幾百塊只亮一圈）；同時最多 FR_HIT_MAX 圈 */
+const FR_HIT_GAP = 0.15, FR_HIT_ANG = 0.4, FR_HIT_MAX = 6;
+function pickFrieren() {
+  if (beasts) for (const m of beasts) if (m.kind === 'frieren' && !m.dead) return m;
+  return null;
+}
+/* 點下去的那一下（useTool／game-ui.js 點生物、點小人那兩條）：點哪裡都是跑到那一點。回傳被叫去的那一位（測試在讀）。 */
+function callFrieren(p) {
+  const at = { x: p.x, y: 0, z: p.z, sd: LEV_SD, go: 1, b: null };
+  let m = pickFrieren();
+  if (!m) {
+    /* 從那一點的方位上進場（同 Excalibur）；點在場心附近就隨機挑一個方位 */
+    const a = Math.hypot(at.x, at.z) > 1 ? Math.atan2(at.z, at.x) : Math.random() * Math.PI * 2;
+    m = spawnBeast('frieren', 1, 0, a);
+    toast(BEAST_NM.frieren + '應召而來', '她跑到你點的地方站一下，再四處逛；身邊 ' + FR_R + ' 格內被攻擊就張開防護罩');
+  } else {
+    beastCry(m);
+    toast(BEAST_NM.frieren + '聽到了', m.bt != null ? '防護罩收掉就過去' : '她轉身跑到你點的地方');
+  }
+  sendSaber(m, at);
+  return m;
+}
+/* (x, y, z) 在哪一位的罩子裡（沒有就回 null）。半球：中心在她腳下（張開的時候是張開那一刻的位置，罩子不跟著走），半徑 FR_R */
+function frCover(x, y, z) {
+  if (!beasts) return null;
+  for (const m of beasts) {
+    if (m.kind !== 'frieren' || m.dead) continue;
+    const cx = m.bt != null ? m.bx : m.x, cz = m.bt != null ? m.bz : m.z;
+    const dx = x - cx, dz = z - cz;
+    if (dx * dx + y * y + dz * dz <= FR_R * FR_R) return m;
+  }
+  return null;
+}
+/* 打到罩子裡的東西：擋下來（回 true），順手開罩、記一下打在哪裡（見 frHit）。
+   (vx, vy, vz) 是那一下本來要把它打飛的速度——攻擊從反方向來；沒給（點火、垮塌、震倒）就當它從正上方外面來 */
+function frShield(x, y, z, vx, vy, vz) {
+  const m = frCover(x, y, z || 0);
+  if (!m) return false;
+  frHit(m, x, y, z, vx || 0, vy || 0, vz || 0);
+  return true;
+}
+/* 罩子這一位被打了一下：沒開就張開（中心定在她這一刻腳下）、正在收就撐回來、計時歸零；
+   亮紋畫在「從那一點沿著攻擊來的方向（−v）走、穿出罩子」那一點（v 是 0 就沿著「中心 → 那一點」，正中心就是頂上）。
+   m.bh 一筆 [方向 x, y, z（單位）, 打到後幾秒]，引擎照它畫亮紋與白光。soft＝球貼著罩子滾（見 frBall）：撐著不收，不另外亮一圈 */
+function frHit(m, x, y, z, vx, vy, vz, soft) {
+  if (m.bt == null) { m.bt = 0; m.bx = m.x; m.bz = m.z; m.bR = FR_R; m.bh = []; sndFrOpen(); }
+  m.bc = null; m.bq = 0;
+  if (soft) return;
+  const px = x - m.bx, py = y, pz = z - m.bz;
+  let ux = -vx, uy = -vy, uz = -vz, ul = Math.hypot(ux, uy, uz);
+  if (ul < 1e-6) { ux = px; uy = py; uz = pz; ul = Math.hypot(ux, uy, uz); }
+  if (ul < 1e-6) { ux = 0; uy = 1; uz = 0; ul = 1; }
+  ux /= ul; uy /= ul; uz /= ul;
+  const b = px * ux + py * uy + pz * uz, c = px * px + py * py + pz * pz - FR_R * FR_R;
+  const s = -b + Math.sqrt(Math.max(0, b * b - c));
+  let hx = px + s * ux, hy = Math.max(0, py + s * uy), hz = pz + s * uz;
+  const hl = Math.hypot(hx, hy, hz) || 1;
+  hx /= hl; hy /= hl; hz /= hl;
+  for (const h of m.bh)
+    if (h[3] < FR_HIT_GAP && h[0] * hx + h[1] * hy + h[2] * hz > Math.cos(FR_HIT_ANG)) return;
+  if (m.bh.length >= FR_HIT_MAX) m.bh.shift();
+  m.bh.push([hx, hy, hz, 0]);
+  sndFrHit();
+}
+/* 球撞到罩子（保齡球、天降鐵球、彈跳球）。使用者：「保齡球、天降鐵球 這類目前不會撞到防護罩就彈開」——
+   以前罩子只擋「罩子裡的東西被打」，球本身整顆穿進罩子、從另一邊滾出去。
+   球從外面碰到哪一位的半球殼（球心離中心不到 FR_R＋球半徑），就推回殼外貼著；往裡撞的才開罩、
+   回傳撞進殼的速度（負的；沒碰到回 0），法線放在 FR_N——怎麼彈由呼叫端照自己那一套（stepBall／bncTouch）。
+   撞進殼的速度不到 FR_BALL_SOFT 算貼著滾：撐著罩子不收，不另外亮一圈、不出聲。
+   球心已經在罩子裡的不管（她走到球旁邊、或罩子張開以前就滾進來的）：裡面的東西本來就打不動。
+   正頂上（法線差不多朝正上方）隨機往旁邊帶 DROP_AWAY：鐵球直直砸在她頭頂的話，不帶就一直停在罩子頂上（正中間）、
+   或要 2～4 秒才慢慢滾下去（偏一點點）；帶了不管偏多少都是 1.3 秒上下就滾下去（見 開發筆記〈道具：防禦魔法〉） */
+const FR_BALL_SOFT = BNC_SOFT;
+const FR_N = [0, 0, 0];
+function frBall(o) {
+  if (!beasts) return 0;
+  for (const m of beasts) {
+    if (m.kind !== 'frieren' || m.dead) continue;
+    const cx = m.bt != null ? m.bx : m.x, cz = m.bt != null ? m.bz : m.z;
+    const dx = o.x - cx, dy = o.y, dz = o.z - cz, d = Math.hypot(dx, dy, dz), R = FR_R + o.r;
+    if (d >= R || d < FR_R) continue;
+    const nx = dx / d, ny = dy / d, nz = dz / d;
+    /* 先推回殼外再看速度：順著罩子往下滑的那幾幀，這一步是往裡走的，但走到的那一點法線已經轉過來、
+       速度看起來是往外——只看速度的話就漏推，球心卡進殼裡（實測最多 0.007） */
+    o.x = cx + nx * R; o.y = ny * R; o.z = cz + nz * R;
+    const vn = o.vx * nx + o.vy * ny + o.vz * nz;
+    if (vn >= 0) continue;                         // 正在離開（剛彈開、順著殼面滑）：推回殼外就好，不算撞
+    frHit(m, cx + nx * FR_R, ny * FR_R, cz + nz * FR_R, o.vx, o.vy, o.vz, vn > -FR_BALL_SOFT);
+    if (nx * nx + nz * nz < 0.0144) {
+      const a = Math.random() * Math.PI * 2;
+      o.vx += Math.cos(a) * DROP_AWAY; o.vz += Math.sin(a) * DROP_AWAY;
+    }
+    FR_N[0] = nx; FR_N[1] = ny; FR_N[2] = nz;
+    return vn;
+  }
+  return 0;
+}
+/* 生物打不打得動：levBusy（立體機動中的里維、出招中的善逸、五條悟、死掉的、倒下的惠惠）之外，罩子裡的也打不動。
+   只用在「打」的那幾處（炸飛、點火、震倒、吸走、斬殺）；「點得到」那幾支（sabCanCut 等）照舊只看 levBusy */
+function beastSafe(m, vx, vy, vz) { return levBusy(m) || (!!m && !m.sky && frShield(m.x, m.y || 0, m.z, vx, vy, vz)); }
+/* 小人：沒有 levBusy 那一套，只有罩子 */
+function workerSafe(w) { return !!w && frShield(w.x, w.y || 0, w.z); }
+/* 積木：還站著的才算（碎料、手上的不擋） */
+const blockSafe = (b, vx, vy, vz) => b.st === SET && frShield(b.x, b.y, b.z, vx, vy, vz);
+/* 每一幀：罩子的計時、舉杖。罩子張開到收完那幾秒她站定（回 true：stepBeast0 底下整段跳過，不走路、不轉身） */
+function frStep(m, dt) {
+  m.fc = (m.fc || 0) + ((m.bt != null ? 1 : 0) - (m.fc || 0)) * Math.min(1, dt * FR_CAST);
+  if (m.bt == null) return false;
+  m.bt += dt;
+  for (let i = m.bh.length - 1; i >= 0; i--) if ((m.bh[i][3] += dt) >= ENG.FR_BAR_RIP) m.bh.splice(i, 1);
+  if (m.bc != null) {
+    if ((m.bc += dt) >= ENG.FR_BAR_CLOSE) { m.bt = m.bc = null; m.bh.length = 0; }
+  } else if ((m.bq += dt) >= FR_HOLD) m.bc = 0;
+  m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+  m.run += (0 - m.run) * Math.min(1, dt * 8);
+  return true;
+}
+/* 垮塌時被罩子撐住的（collapseUnsupported 的 drop、到時間的 fallIn）：罩子走開之後要重算一次支撐，
+   不然它們會一直吊在半空。有撐住過就每 FR_HANG_T 秒重算一次（還罩著的照樣不掉、再記一次） */
+let frHang = 0, frHangT = 0;
+const FR_HANG_T = 1;
+function stepFrHang(dt) {
+  if (!frHang || (frHangT -= dt) > 0) return;
+  frHang = 0; frHangT = FR_HANG_T;
+  markSupportDirty();
+  markHomeDirty();                   // 房子那邊同一套（collapseHome、wreckHomes 也會被罩子撐住）
 }
 
 /* ── 事件三：飛龍（v1.139）───────────────────────────────
@@ -11767,10 +11970,10 @@ const MORE_GAP = DOOM_FIRE_R * 2;
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 小獼猴', snow: '🐵 小猴子', dragon: '🐉 飛龍',
                    gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber', levi: '🗡 里維兵長',
-                   megumin: '💥 惠惠', zenitsu: '⚡ 善逸', gojo: '🟣 五條悟' };
+                   megumin: '💥 惠惠', zenitsu: '⚡ 善逸', gojo: '🟣 五條悟', frieren: '🛡 芙莉蓮' };
 /* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）用「他」；
-   惠惠（v1.247.0）用「她」——其餘那幾款照舊是牠 */
-const itOf = m => m.kind === 'saber' || m.kind === 'megumin' ? '她'
+   惠惠（v1.247.0）、芙莉蓮（v1.259.0）用「她」——其餘那幾款照舊是牠 */
+const itOf = m => m.kind === 'saber' || m.kind === 'megumin' || m.kind === 'frieren' ? '她'
                 : m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' ? '他' : '牠';
 /* 叫一聲。哪一種叫哪一聲照 spawnBeast／spawnDragon 那邊的分法，不另訂一套。 */
 function beastCry(m) {
@@ -11781,6 +11984,7 @@ function beastCry(m) {
   else if (m.kind === 'megumin') sndMegumin();
   else if (m.kind === 'zenitsu') sndZen();
   else if (m.kind === 'gojo') sndGojo();
+  else if (m.kind === 'frieren') sndFrieren();
   else sndBeast(m.kind === 'snow');
 }
 /* 這一隻已經在走人了嗎（那就別再改牠的主意，同 turnBad 的規矩：都走到一半了
@@ -11979,7 +12183,7 @@ function beastHit(m, src) {
   if (!m || m === hitBy || beastLeaving(m) || m.call || m.cq) return;
   /* 里維兵長（v1.230）不會生氣：他只做玩家叫他做的事（吉祥物那一套翻臉、砸地標他都沒有）。
      倒下、暈著、爬起來的惠惠（v1.247.0，使用者：「躺著暈不會被打到」）也不算：那幾段 levBusy 擋著，照理打不到 */
-  if (m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.dead || megDown(m)) return;   // 善逸（v1.251.0）、五條悟（v1.255.0）同里維
+  if (m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'frieren' || m.dead || megDown(m)) return;   // 善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0，她在自己的罩子裡、照理打不到）同里維
   /* 動不了手的吉祥物（v1.229，表上的 spent：小猴子丟完香蕉）：照樣會倒，只是不再改主意 */
   if (mascSpent(m)) return;
   /* 冷卻中（v1.229）：上一下算進去還不到 BEAST_HIT_CD 秒，這一下不算。
@@ -12029,6 +12233,8 @@ const KILL_HITS = 3;                 // 被打幾次會死（使用者：「累�
 const HIT_DMG = {};
 function lifeHit(o, src) {
   if (!o || o.dead) return;
+  /* 防護罩裡的不算被打（v1.259.0）：呼叫端多半是「先丟、再記一筆」，丟的那一下被罩子擋掉了，這一筆也不記 */
+  if (!o.air && frCover(o.x, o.y || 0, o.z)) return;
   o.hits = (o.hits || 0) + (src in HIT_DMG ? HIT_DMG[src] : 1);
 }
 /* 已經死了，或已經被打滿、正在演最後那一下的反應（飛、燒）。 */
@@ -12293,7 +12499,7 @@ const B_UP_EPS = 0.01;
    （牠們是 m.lit 記著、落地那一刻才燒），只是龍在天上，當場就開始拖火。
    點不著（已經在燒／剛被澆濕）就照舊只把牠打下來。 */
 function tossBeast(m, vx, vy, vz, lit) {
-  if (levBusy(m)) return false;                      // 立體機動中／正在氣化（v1.230，見 levBusy）
+  if (beastSafe(m, vx, vy, vz)) return false;        // 立體機動中／正在氣化（v1.230，見 levBusy）；防護罩裡的（v1.259.0）
   if (m.kind === 'dragon') return (lit && igniteBeast(m, 1)) || crashDragon(m);
   /* 在天上的獅鷲（v1.176）：先切成「地上那一隻」，接著就照猴子那一套被掀出去
      （彈道 → 落地那一刻才判定燒不燒 → 躺一下 → 爬起來，見 flyBeast）。
@@ -12331,7 +12537,7 @@ function tossBeast(m, vx, vy, vz, lit) {
    飛龍自己一套（v1.154，見 burnDragon）：牠在天上，著火是「拖著火飛一段 → 墜地 →
    在地上燒完 → 拍翅起飛」。v1.153 以前牠是完全點不著的（回 false ＝ 改成打倒牠）。 */
 function igniteBeast(m, roll) {
-  if (m.burn > 0 || m.wet > 0 || levBusy(m)) return false;   // levBusy（v1.230）
+  if (m.burn > 0 || m.wet > 0 || beastSafe(m)) return false;   // levBusy（v1.230）；防護罩裡的點不著（v1.259.0）
   if (m.kind === 'dragon') return burnDragon(m);
   /* 在天上被點著的獅鷲（v1.176）：帶著火摔下來，**落地那一刻才開始燒**——
      m.lit 這條就是猴子被爆炸掀到半空時走的同一條（見 flyBeast 的落地判定）。 */
@@ -12359,7 +12565,9 @@ function igniteBeast(m, roll) {
 }
 /* 被震倒／被戳倒／被水柱打到。t 是躺幾秒，face＝往前趴（v1.178，自己絆的那一跤）。 */
 function fellBeast(m, t, face) {
-  if (levBusy(m)) return false;                      // 立體機動中／正在氣化（v1.230，見 levBusy）
+  /* 立體機動中／正在氣化（v1.230，見 levBusy）；防護罩裡的推不倒（v1.259.0）——
+     自己絆一跤（face）不是被打，不問罩子（問了會把罩子打開） */
+  if (face ? levBusy(m) : beastSafe(m)) return false;
   if (m.kind === 'dragon') return crashDragon(m);
   if (m.sky) return grDown(m);                       // 在天上的獅鷲：打下來（v1.176）
   if (m.air || m.burn > 0 || m.fall > 0) return false;

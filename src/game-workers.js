@@ -350,6 +350,9 @@ const W_PANIC_OPEN = 0.5;           // 圈子撐到滿要幾秒
 let burningW = 0;                   // 這一幀有幾個人在燒：火苗配額要分給他們
 
 function tossWorker(w, vx, vy, vz, lit) {
+  /* 站在芙莉蓮的防護罩裡的丟不飛（v1.259.0，見 game-tools.js〈道具：防禦魔法〉）。被吸著、飛在半空的那幾個不問
+     （紫球收掉時甩出去的那一批是從球上放開，不是站在罩子裡被打） */
+  if (!w.air && !w.ufo && frShield(w.x, w.y || 0, w.z, vx, vy, vz)) return;
   releaseWorker(w);
   const sp = Math.hypot(vx, vz);
   if (sp > W_TOSS_MAX) { const k = W_TOSS_MAX / sp; vx *= k; vz *= k; }
@@ -364,6 +367,7 @@ function tossWorker(w, vx, vy, vz, lit) {
 function igniteWorker(w, roll) {
   if (w.burn > 0 || w.wet > 0) return false;      // 剛被消防車噴過的點不著
   if (w.dead) return false;                       // 屍體點不著（v1.240，見 stepCorpse）
+  if (workerSafe(w)) return false;                // 防護罩裡的點不著（v1.259.0）
   releaseWorker(w);
   w.burn = W_BURN; w.roll = roll ? 1 : 0; w.bem = Math.random(); w.fall = 0; w.flee = 0;
   w.trip = 0;                                     // 燒起來就不是「自己絆的」那一跤了（v1.178）
@@ -3698,6 +3702,7 @@ function collapseHome(hi) {
     const k = own.get(hi + ':' + i);
     const b = k === undefined ? null : blocks[k];
     if (!b || b.fallIn > 0) return 0;
+    if (blockSafe(b)) { frHang = 1; return 0; }   // 防護罩撐著（v1.259.0，同地標那邊的 collapseUnsupported）
     b.fallIn = 0.02 + S[i].gy * 0.012 + Math.random() * 0.06;
     return 1;
   };
@@ -4978,7 +4983,15 @@ function dropHomes(keep) {
    廢棄掉的那一段沒有任何地方會再生出來——實測蓋好的一段 122 塊整段打光，1 秒內從清單上
    消失（24 段 → 23 段），150 秒後還是缺著，牆線上永遠少一段
    （見 開發筆記〈城牆段打爛了不廢棄，留著等人補〉）。 */
-const wrecked = h => h.done && !h.wall && h.slots.length - h.left < h.slots.length * WRECK_AT;
+const wrecked = h => h.done && !h.wall && h.slots.length - h.left < h.slots.length * WRECK_AT && !frHomeHeld(h);
+/* 罩著的那一間先不廢棄（v1.259.0，見 game-tools.js〈道具：防禦魔法〉：罩子裡一塊都不掉）：
+   還站著的有一塊在芙莉蓮的防護罩裡就留著，罩子走開之後（stepFrHang）再判一次 */
+function frHomeHeld(h) {
+  if (!pickFrieren()) return false;
+  const hi = homes.list.indexOf(h);
+  for (const b of blocks) if (b.st === SET && b.hh === hi && frCover(b.x, b.y, b.z)) { frHang = 1; return true; }
+  return false;
+}
 function wreckHomes() {
   if (!homes) return 0;
   for (const h of homes.list) if (wrecked(h)) return dropHomes(q => !wrecked(q));

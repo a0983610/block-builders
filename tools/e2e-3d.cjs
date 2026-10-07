@@ -30927,8 +30927,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(gfig.lo) < 0.02 && gfig.top > 1.28 && gfig.top < 1.34 && gfig.sc === gfig.gjSc &&
      Math.abs(gfig.gjSc / gfig.doomSc - 1.1) < 1e-9,
      '最低 ' + gfig.lo + '、模型高 ' + gfig.top + ' × ' + gfig.sc.toFixed(3) + '（DOOM_SC ' + gfig.doomSc.toFixed(3) + '）');
-  ok('道具表：接在霹靂一閃後面（最後一把）、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「他」；圖示 🟣',
-     gfig.zen >= 0 && gfig.at === gfig.zen + 1 && gfig.at === gfig.n - 1 && gfig.ground && !gfig.masc && !gfig.doom && gfig.nm &&
+  /* v1.259.0 防禦魔法接到它後面之後「最後一把」那一句不成立了（同 Excalibur 那一條的說法）：
+     要守的是「新道具接在後面、舊的不往前插」，條目名跟著拿掉「（最後一把）」（規則型，不在 e2e-varying.json 裡，沒有鍵要搬） */
+  ok('道具表：接在霹靂一閃後面、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「他」；圖示 🟣',
+     gfig.zen >= 0 && gfig.at === gfig.zen + 1 && gfig.ground && !gfig.masc && !gfig.doom && gfig.nm &&
      gfig.it === '他' && gfig.icon === '🟣',
      'TOOLS 第 ' + gfig.at + ' 把（霹靂一閃第 ' + gfig.zen + ' 把、共 ' + gfig.n + ' 把）；吉祥物 ' + gfig.masc + '、天災 ' + gfig.doom +
      '；' + gfig.it + '；圖示 ' + gfig.icon);
@@ -31276,6 +31278,320 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈破壞道具：虛式「茈」〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 道具：防禦魔法（v1.259.0）══════════
+     > 使用者：「先做這個角色模型 預計是道具 會叫他到指定地點 只要有攻擊打過去會自動開啟防護罩 保護範圍內的積木或生物」
+     使用者選的：罩子半徑 8（小）、全部都擋、打不破、「跟一般人物一樣 過去站幾秒 然後到處走 走到的地方被打都防護罩」。
+     整段寫成**規則型**：不跑模擬，擺好她與目標、直接叫 explode／holeTake／slayGiants／frStep 那幾支量規則本身
+     （同〈規則：垮塌、補洞、廢棄〉的寫法），量完把全域還回去。見 開發筆記〈道具：防禦魔法〉 */
+  SEC: { if (!(await head('道具：防禦魔法', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });
+  await fillAll(page);
+
+  /* ── 造型與表：自己一顆 mesh；縮放同小人平均；道具接在虛式「茈」後面（最後一把）、只能用道具叫來 ── */
+  const ffig = await page.evaluate(() => {
+    const M = ENG.FRIEREN, G = ENG.FR_G;
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0; m.a = 0; m.st = 'fun'; m.gait = 0; m.ph = 0; m.run = 0;
+    ENG.putFrierens([m]);
+    const mat = new THREE.Matrix4(), v = new THREE.Vector3();
+    let lo = 1e9, hi = -1e9;
+    for (let i = 0; i < ENG.FR_SLOT; i++) {
+      if (M[i].g === G.staff || M[i].g === G.ribbon) continue;          // 法杖與紅繩是道具，不算身高
+      ENG.three.frMesh.getMatrixAt(i, mat);
+      for (let c = 0; c < 8; c++) {
+        v.set(c & 1 ? 0.5 : -0.5, c & 2 ? 0.5 : -0.5, c & 4 ? 0.5 : -0.5).applyMatrix4(mat);
+        lo = Math.min(lo, v.y); hi = Math.max(hi, v.y);
+      }
+    }
+    const sc = m.sc;
+    beasts = null; ENG.putFrierens([]);
+    const ifr = TOOLS.findIndex(t => t.id === 'frieren'), ig = TOOLS.findIndex(t => t.id === 'gojo');
+    return { parts: M.length, slot: ENG.FR_SLOT, inBeasts: 'frieren' in ENG.BEASTS, model: ENG.MODELS.frieren === M,
+             lo: +lo.toFixed(3), top: +((hi - lo) / sc).toFixed(3), sc, frSc: FR_SC, doomSc: DOOM_SC,
+             at: ifr, gojo: ig, n: TOOLS.length, ground: !!GROUND_TOOL.frieren,
+             masc: MASCOTS.some(k => k.id === 'frieren'), doom: DOOMS.some(d => d.id === 'frieren'),
+             nm: !!BEAST_NM.frieren, it: itOf({ kind: 'frieren' }), icon: TOOLS[ifr].k,
+             tipR: TOOLS[ifr].tip.indexOf(' ' + FR_R + ' 格') >= 0 };
+  });
+  ok('芙莉蓮自己一顆 mesh：不進 BEASTS、在造型表總表裡',
+     ffig.parts === ffig.slot && !ffig.inBeasts && ffig.model, '她 ' + ffig.parts + ' 塊');
+  ok('身形：原點在腳底、模型高 1.19～1.24（小人帽頂 1.31，原作她就嬌小），縮放同小人平均（DOOM_SC）',
+     Math.abs(ffig.lo) < 0.02 && ffig.top > 1.19 && ffig.top < 1.24 && ffig.sc === ffig.frSc && ffig.frSc === ffig.doomSc,
+     '最低 ' + ffig.lo + '、模型高 ' + ffig.top + ' × ' + ffig.sc.toFixed(3));
+  ok('道具表：接在虛式「茈」後面（最後一把）、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「她」；圖示 🛡；說明寫的半徑就是 FR_R',
+     ffig.gojo >= 0 && ffig.at === ffig.gojo + 1 && ffig.at === ffig.n - 1 && ffig.ground && !ffig.masc && !ffig.doom && ffig.nm &&
+     ffig.it === '她' && ffig.icon === '🛡' && ffig.tipR,
+     'TOOLS 第 ' + ffig.at + ' 把（虛式「茈」第 ' + ffig.gojo + ' 把、共 ' + ffig.n + ' 把）；吉祥物 ' + ffig.masc + '、天災 ' + ffig.doom +
+     '；' + ffig.it + '；圖示 ' + ffig.icon + '；說明的半徑 ' + ffig.tipR);
+
+  /* ── 握杖不穿模（造型預覽第一版使用者：「各動作的拿著法杖的部分有點穿模感(手跟法杖)」）：
+        站、走一整步、跑一整步、開罩、站↔開罩之間的內插，每一幀量杖身（中軸＋表面四條線）穿過哪些方塊——
+        只准穿過握著的那個拳頭；拳頭的握軸對齊杖身、拳心在杖身中心線上。量的是真的畫出去的矩陣（frMesh） ── */
+  const fgrip = await page.evaluate(() => {
+    const M = ENG.FRIEREN, G = ENG.FR_G, mesh = ENG.three.frMesh;
+    const shaft = M.findIndex(b => b.g === G.staff && b.cn === 'staff');
+    const fist = M.findIndex(b => b.g === G.handR && b.s[0] === 0.085);
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0; m.a = 0.7; m.st = 'fun';
+    const frames = [];
+    for (let k = 0; k < 12; k++) frames.push({ gait: 0.85, run: 0, fc: 0, ph: k / 12 * Math.PI * 2 });
+    for (let k = 0; k < 12; k++) frames.push({ gait: 0.85, run: 1, fc: 0, ph: k / 12 * Math.PI * 2 });
+    for (const c of [0, 0.15, 0.3, 0.5, 0.7, 0.85, 1]) frames.push({ gait: 0, run: 0, fc: c, ph: 0 });
+    for (const r of [0.3, 0.6]) frames.push({ gait: 0.85, run: r, fc: 0, ph: 1 });
+    const S = new THREE.Matrix4(), mm = new THREE.Matrix4(), inv = new THREE.Matrix4(), p = new THREE.Vector3(), l = new THREE.Vector3();
+    const OFS = [[0, 0], [0.5, 0], [-0.5, 0], [0, 0.5], [0, -0.5]];
+    let bad = 0, worst = '', angMax = 0, offMax = 0;
+    for (const f of frames) {
+      Object.assign(m, f);
+      ENG.putFrierens([m]);
+      mesh.getMatrixAt(shaft, S);
+      for (let i = 0; i < ENG.FR_SLOT; i++) {
+        if (M[i].g === G.staff || M[i].g === G.ribbon || i === fist) continue;
+        mesh.getMatrixAt(i, mm); inv.copy(mm).invert();
+        let n = 0;
+        for (const [ox, oz] of OFS) for (let s = -0.5; s <= 0.5; s += 0.01) {
+          l.copy(p.set(ox, s, oz).applyMatrix4(S)).applyMatrix4(inv);
+          if (Math.abs(l.x) < 0.5 && Math.abs(l.y) < 0.5 && Math.abs(l.z) < 0.5) n++;
+        }
+        if (n) { bad += n; if (!worst) worst = JSON.stringify(f) + ' → ' + M[i].cn + '#' + i; }
+      }
+      /* 拳頭：握軸（手的本地 z）跟杖身（杖身那一塊的本地 y）夾幾度；拳心離杖身中心線多遠（換回模型單位） */
+      mesh.getMatrixAt(fist, mm);
+      const hz = new THREE.Vector3().setFromMatrixColumn(mm, 2).normalize(), sy = new THREE.Vector3().setFromMatrixColumn(S, 1).normalize();
+      angMax = Math.max(angMax, Math.acos(Math.min(1, Math.abs(hz.dot(sy)))) * 180 / Math.PI);
+      const hc = new THREE.Vector3().setFromMatrixPosition(mm), so = new THREE.Vector3().setFromMatrixPosition(S);
+      const rel = hc.sub(so);
+      offMax = Math.max(offMax, rel.addScaledVector(sy, -rel.dot(sy)).length() / m.sc);
+    }
+    beasts = null; ENG.putFrierens([]);
+    return { frames: frames.length, bad, worst, ang: +angMax.toFixed(2), off: +offMax.toFixed(4) };
+  });
+  ok('握杖不穿模：站、走、跑、開罩與中間的內插，杖身只穿過握著的拳頭（袖子、斗篷、身體一點都不碰）',
+     fgrip.bad === 0, fgrip.frames + ' 幀' + (fgrip.bad ? '；穿到 ' + fgrip.bad + ' 點，第一個：' + fgrip.worst : ''));
+  ok('握杖：拳頭的握軸對齊杖身（< 1°）、拳心在杖身中心線上（< 0.005）',
+     fgrip.ang < 1 && fgrip.off < 0.005, '最多差 ' + fgrip.ang + '°、拳心偏 ' + fgrip.off);
+
+  /* ── 擋積木：她站在金字塔腳邊（站外面 3 格），往建築裡 6 格、離地 2 炸一發半徑 9——炸的那一圈跟罩子一半疊在一起。
+        罩子裡還站著的一塊都不少、也沒有燒起來；罩子外照樣炸掉；罩子張開了（中心定在她腳下）、記到打在哪 ── */
+  const fblk = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; clearFires();
+    let best = null, bd = -1;
+    for (const b of blocks) if (b.st === SET && b.hh < 0 && b.y < 1) { const d = Math.hypot(b.x, b.z); if (d > bd) { bd = d; best = b; } }
+    const a = Math.atan2(best.z, best.x), X = best.x + Math.cos(a) * 3, Z = best.z + Math.sin(a) * 3;
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = X; m.z = Z; m.st = 'fun'; m.pause = 999;
+    const inD = b => (b.x - X) ** 2 + b.y ** 2 + (b.z - Z) ** 2 <= FR_R * FR_R;
+    const cnt = f => blocks.filter(b => b.st === SET && f(b)).length;
+    const r = { in0: cnt(inD), out0: cnt(b => !inD(b)), bt0: m.bt == null };
+    explode({ x: X - Math.cos(a) * 6, y: 2, z: Z - Math.sin(a) * 6 }, 9, 22);
+    r.in1 = cnt(inD); r.out1 = cnt(b => !inD(b));
+    r.burnIn = blocks.filter(b => b.st === SET && b.burn && inD(b)).length;
+    r.bt = m.bt; r.c = Math.hypot(m.bx - X, m.bz - Z); r.bh = m.bh.length; r.bR = m.bR;
+    /* 點火：罩子裡那一塊點不著；罩子外隔壁那一塊點得著 */
+    const ins = blocks.find(b => b.st === SET && inD(b) && !b.burn), outs = blocks.find(b => b.st === SET && !inD(b) && !b.burn);
+    r.ignIn = igniteBlock(ins); r.ignOut = igniteBlock(outs);
+    /* 已經在燒的走進罩子：stepFire 一幀就熄掉、顏色還原 */
+    const far = blocks.find(b => b.st === SET && !b.burn && !inD(b) && b.y < 4 && Math.hypot(b.x - X, b.z - Z) > FR_R + 4);
+    const c0 = [far.tr, far.tg, far.tb];
+    igniteBlock(far); const t0 = far.tr;
+    m.x = far.x; m.z = far.z; m.bt = null; m.bh = [];            // 她走到那一塊旁邊（罩子沒開，跟著她）
+    stepFire(0.02);
+    r.douse = !far.burn && far.st === SET && far.tr === c0[0];
+    clearFires(); beasts = null; supportDirty = false;
+    return r;
+  });
+  ok('擋積木：罩子裡還站著的一塊都不少、也沒燒起來，罩子外照樣炸掉；打進來那一刻罩子張開（中心在她腳下）、記到打在哪',
+     fblk.in0 > 20 && fblk.in1 === fblk.in0 && fblk.out1 < fblk.out0 && fblk.burnIn === 0 && fblk.bt0 &&
+     fblk.bt === 0 && fblk.c < 1e-9 && fblk.bh >= 1 && fblk.bR === 8,
+     '罩子裡 ' + fblk.in0 + ' → ' + fblk.in1 + '、罩子外 ' + fblk.out0 + ' → ' + fblk.out1 + '；在燒 ' + fblk.burnIn +
+     '；開罩 ' + fblk.bt + '、亮紋 ' + fblk.bh + ' 圈、半徑 ' + fblk.bR);
+  ok('火：罩子裡的點不著、罩子外的點得著；已經在燒的走進罩子就熄掉、顏色還原',
+     fblk.ignIn === false && fblk.ignOut === true && fblk.douse, JSON.stringify({ ignIn: fblk.ignIn, ignOut: fblk.ignOut, douse: fblk.douse }));
+
+  /* ── 擋生物與小人：罩子裡一個小人、一隻小獼猴、一隻巨人，罩子外一個小人。
+        炸不飛、點不著、吸不走（小黑洞）、巨人炸不死（slayGiants）、手指戳不倒；罩子外的照樣被炸飛。
+        Saber 照樣點得到罩子裡的猴子（sabCanCut，同五條悟的無下限「點得到 只是沒受傷」） ── */
+  await fillAll(page);
+  const flife = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; clearFires();
+    const X = siteR + 30, Z = 0;
+    const put = (o, x, z) => { o.x = x; o.z = z; o.y = 0; o.air = 0; o.fall = 0; o.burn = 0; o.hits = 0; o.wet = 0; };
+    const m = spawnBeast('frieren', 1, 0, 0); put(m, X, Z); m.st = 'fun'; m.pause = 999;
+    /* 罩子裡的那幾個都擺在炸點 9 格內（炸心在罩子邊上 X − FR_R），罩子外那一個在炸心另一邊 3 格 */
+    const w = workers[0], w2 = workers[1];
+    put(w, X - 3, Z + 1.5); put(w2, X - FR_R - 3, Z);
+    const ape = spawnBeast('ape', 1); put(ape, X - 3.5, Z - 2); ape.st = 'fun'; ape.pause = 999;
+    const g = spawnBeast('giant', 1); put(g, X - 1, Z + 4); g.st = 'fun'; g.pause = 999;
+    const r = {};
+    r.can = sabCanCut(ape);
+    r.inR = [w, ape, g, m].every(o => Math.hypot(o.x - (X - FR_R), o.z - Z) < 9);
+    explode({ x: X - FR_R, y: 1, z: Z }, 9, 22);                  // 炸心在罩子邊上：罩子裡外各一半
+    r.w = [w.air || 0, w.hits || 0]; r.w2 = w2.air || 0; r.ape = [ape.air || 0, ape.hits || 0]; r.me = m.air || 0;
+    r.ign = [igniteWorker(w, 0), igniteBeast(ape, 0)];
+    slayGiants({ x: X, y: 0, z: Z }, 20, 'nuke'); r.giant = !!g.dead;
+    /* 小黑洞：洞心在她跟罩子外那個小人中間，罩子裡的一個都不吸 */
+    put(w2, X - FR_R - 3, Z);
+    const h = { x: X - FR_R, y: 1, z: Z, up: [], hit: 0 };
+    holeTake(h);
+    r.hole = [w.ufo || 0, ape.ufo || 0, g.ufo || 0, m.ufo || 0];
+    r.holeOut = w2.ufo || 0;
+    for (const it of h.up) if (it.kind === 0) { it.o.ufo = 0; it.o.st = FLY; }   // 順手吸到的碎料放回去（讓它自己落地）
+    /* 手指戳小人（同 game-ui.js 那一行的判斷：罩子裡的戳不倒） */
+    r.poke = workerSafe(w);
+    for (const o of [w, w2]) { o.air = 0; o.ufo = 0; o.vx = o.vy = o.vz = 0; o.y = 0; o.hits = 0; }
+    beasts = null; clearFires();
+    return r;
+  });
+  ok('擋生物與小人：罩子裡的小人與小獼猴（都在炸的半徑內）炸不飛、不算被打，罩子外的小人照樣炸飛；她自己也不動',
+     flife.inR && flife.w[0] === 0 && flife.w[1] === 0 && flife.w2 === 1 && flife.ape[0] === 0 && flife.ape[1] === 0 && flife.me === 0,
+     JSON.stringify({ inR: flife.inR, w: flife.w, w2: flife.w2, ape: flife.ape, me: flife.me }));
+  ok('罩子裡的點不著、巨人炸不死、小黑洞吸不走（罩子外的照吸）、手指戳不倒；Saber 照樣點得到罩子裡的猴子',
+     flife.ign[0] === false && flife.ign[1] === false && !flife.giant && flife.hole.every(v => !v) && flife.holeOut === 1 &&
+     flife.poke === true && flife.can === true,
+     JSON.stringify({ ign: flife.ign, giant: flife.giant, hole: flife.hole, holeOut: flife.holeOut, poke: flife.poke, can: flife.can }));
+
+  /* ── 球撞罩子（使用者：「保齡球、天降鐵球 這類目前不會撞到防護罩就彈開」）：空地上她站著，只叫 stepBall／stepBncs——
+        保齡球正對著她滾過去、天降鐵球直直砸在她頭頂正中間、彈跳球平著丟過去。每一幀之後球心都在「FR_R＋球半徑」外面（沒有穿進殼）、
+        撞完往回走、罩子張開、亮紋記在撞的那一側；鐵球不停在罩子頂上（15 秒內滾下去落到罩子外的地上）；
+        球心已經在罩子裡的不管（frBall 回 0、位置不動） ── */
+  const fball = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const X = siteR + 30, Z = 0, dt = 1 / 60;
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = X; m.z = Z; m.st = 'fun'; m.pause = 999;
+    /* 換下一種球：只收球、把罩子收回去（不能叫 cleanTools——它連 beasts 一起清，她就不在了） */
+    const next = () => { balls = null; bncs = null; m.bt = null; m.bc = null; m.bh = []; };
+    const gap = o => Math.hypot(o.x - X, o.y, o.z - Z) - (FR_R + o.r);   // 負的＝穿進殼
+    const r = {};
+    /* 保齡球：從 20 格外正對著她（出手的散布押在正中間） */
+    const real = Math.random;
+    Math.random = () => 0.5;
+    try { launchBall({ x: X - 20, z: Z }, { x: X, z: Z }); } finally { Math.random = real; }
+    let o = balls[0], lo = 1e9, back = false;
+    for (let i = 0; i < 120 && balls; i++) { stepBall(dt); lo = Math.min(lo, gap(o)); if (o.vx < -1) back = true; }
+    r.bowl = { lo: +lo.toFixed(4), back, open: m.bt != null, side: m.bh.length ? +m.bh[0][0].toFixed(2) : null };
+    next();
+    /* 天降鐵球：直直砸在她頭頂正中間（法線正朝上：不往旁邊帶的話會一直停在罩子頂上，見 frBall） */
+    dropBall({ x: X, y: 0, z: Z });
+    o = balls[0]; lo = 1e9;
+    let hit = false, ground = false, top = 0, hops = 0;
+    for (let i = 0; i < 900 && balls && !ground; i++) {
+      stepBall(dt); lo = Math.min(lo, gap(o));
+      if (!hit && m.bt != null) { hit = true; top = o.y; hops = o.hops; }     // 砸在罩子上那一下就算第一下（震、不留坑）
+      if (hit && o.y <= o.r + 1e-6) ground = true;
+    }
+    r.drop = { lo: +lo.toFixed(4), hit, top: +top.toFixed(2), hops, ground, h: +Math.hypot(o.x - X, o.z - Z).toFixed(2), up: m.bh.length ? +m.bh[0][1].toFixed(2) : null };
+    next();
+    /* 彈跳球：15 格外平著丟過去 */
+    o = spawnBnc(X - 15, 4, Z, 30, 0, 0);
+    lo = 1e9; back = false;
+    for (let i = 0; i < 90 && bncs; i++) { stepBncs(dt); lo = Math.min(lo, gap(o)); if (o.vx < -1) back = true; }
+    r.bnc = { lo: +lo.toFixed(4), back, bn: o.bn, open: m.bt != null };
+    next();
+    /* 球心已經在罩子裡：不推、不開罩 */
+    const q = { x: X + 5, y: BALL_R, z: Z, vx: -10, vy: 0, vz: 0, r: BALL_R };
+    r.inside = frBall(q) === 0 && q.x === X + 5 && q.y === BALL_R && m.bt == null;
+    r.me = Math.hypot(m.x - X, m.z - Z); r.R = FR_R;
+    cleanTools();
+    return r;
+  });
+  ok('球撞罩子：保齡球、天降鐵球、彈跳球都在殼外彈開（球心一幀都沒進「FR_R＋球半徑」）、罩子張開、亮紋在撞的那一側；鐵球滾下罩子落到罩子外的地上',
+     fball.bowl.lo > -1e-6 && fball.bowl.back && fball.bowl.open && fball.bowl.side < -0.8 &&
+     fball.drop.lo > -1e-6 && fball.drop.hit && fball.drop.top > fball.R && fball.drop.hops === 1 && fball.drop.ground && fball.drop.h > fball.R && fball.drop.up > 0.95 &&
+     fball.bnc.lo > -1e-6 && fball.bnc.back && fball.bnc.bn >= 1 && fball.bnc.open && fball.inside && fball.me === 0,
+     JSON.stringify(fball));
+
+  /* ── 罩子的時間軸（只叫 frStep）：沒被打就不開；打一下張開、她站定、舉杖；FR_HOLD 秒沒再被打開始收、
+        FR_BAR_CLOSE 秒收完；收到一半又被打就撐回來；自己絆一跤（fellBeast 的 face）不算被打 ── */
+  const ftime = await page.evaluate(() => {
+    cleanTools();
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = siteR + 30; m.z = 0; m.st = 'fun'; m.pause = 0; m.gait = 0.85; m.run = 0;
+    const run = s => { for (let t = 0; t < s - 1e-9; t += 0.05) frStep(m, 0.05); };
+    const r = {};
+    run(3); r.idle = m.bt == null;
+    const ape = spawnBeast('ape', 1); ape.x = m.x + 2; ape.z = 0; ape.st = 'fun'; ape.air = 0; ape.fall = 0;
+    fellBeast(ape, 1, 1); r.trip = m.bt == null && ape.fall > 0;  // 自己絆倒：照樣倒，罩子不開
+    frShield(m.x + 1, 1, 0);
+    r.open = m.bt === 0; r.hold = frStep(m, 0.05); r.gait = m.gait < 0.85;
+    run(1); r.fc = m.fc > 0.9;
+    run(FR_HOLD - 1 + 0.1); r.closing = m.bc != null && m.bt != null;
+    frShield(m.x + 1, 1, 0); r.back = m.bc == null;
+    run(FR_HOLD + 0.1 + ENG.FR_BAR_CLOSE + 0.1); r.closed = m.bt == null && m.bc == null && m.bh.length === 0;
+    r.walk = !frStep(m, 0.05);
+    run(2); r.down = m.fc < 0.05;
+    beasts = null;
+    return r;
+  });
+  ok('罩子的時間軸：沒被打不開、絆一跤不算；打一下就張開、她站定舉杖；FR_HOLD 秒沒再被打開始收、收到一半再被打撐回來、收完放下法杖接著走',
+     Object.values(ftime).every(v => v === true), JSON.stringify(ftime));
+
+  /* ── 垮塌：罩子裡那一塊照理要垮（fallIn 到時間）也不掉，記下來等罩子走開再算一次支撐 ── */
+  const fhang = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const b = blocks.find(q => q.st === SET && q.hh < 0 && q.y > 2 && q.y < 6);
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = b.x; m.z = b.z; m.st = 'fun'; m.pause = 999;
+    frHang = 0; b.fallIn = 0.01;
+    step(0.03);
+    const r = { set: b.st === SET, hang: frHang === 1 || supportDirty, fallIn: b.fallIn };
+    beasts = null; b.fallIn = 0; frHang = 0; supportDirty = false;
+    return r;
+  });
+  ok('垮塌：罩子裡到時間要垮的那一塊不掉，記下來等罩子走開之後重算支撐', fhang.set && fhang.hang, JSON.stringify(fhang));
+
+  /* ── 叫她：點哪裡都是跑到那一點（命令是 go），第二次點是同一位轉身過去；從那一點的方位、林帶中線進場 ── */
+  const fcall = await page.evaluate(() => {
+    cleanTools(); beasts = null;
+    const p = { x: siteR + 12, y: 0, z: 5 };
+    tool = 'frieren';
+    useTool({ kind: 'ground', point: p, dir: { x: 0, y: -1, z: 0 } });
+    const a = (beasts || []).filter(b => b.kind === 'frieren'), m = a[0];
+    let da = Math.atan2(m.z, m.x) - Math.atan2(p.z, p.x);
+    while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+    const r = { n: a.length, go: !!(m.call && m.call.go), at: !!m.call && m.call.x === p.x && m.call.z === p.z, st: m.st,
+                da: +Math.abs(da).toFixed(3), r: +Math.hypot(m.x, m.z).toFixed(2), want: +woodR().toFixed(2), fun: m.fun };
+    useTool({ kind: 'block', point: { x: -bp.radius, y: 3, z: 0 }, dir: { x: 1, y: 0, z: 0 } });
+    r.n2 = beasts.filter(b => b.kind === 'frieren').length; r.again = m.call && m.call.x === -bp.radius;
+    tool = 'hammer'; beasts = null;
+    return r;
+  });
+  ok('叫她：點空地跑到那一點（命令 go）、從那一點的方位在林帶中線進場、是來逛的吉祥物；再點建築是同一位轉身過去',
+     fcall.n === 1 && fcall.go && fcall.at && fcall.st === 'call' && fcall.da < 1e-6 && Math.abs(fcall.r - fcall.want) < 1e-6 &&
+     fcall.fun === 1 && fcall.n2 === 1 && fcall.again, JSON.stringify(fcall));
+
+  /* ── 畫面：沒她在場不吃 draw call；沒開罩只畫她；開罩畫罩子（一位 FR_NE 條邊）；不抽 Math.random ── */
+  const fdraw = await page.evaluate(() => {
+    cleanTools();
+    const T3 = ENG.three;
+    const vis = () => [T3.frMesh, T3.frBarCore, T3.frBarGlow, T3.frBarFill[0]].map(o => o.visible ? 1 : 0).join('');
+    ENG.putFrierens([]);
+    const r = { off: vis() };
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0; m.st = 'fun';
+    /* 只數畫的那一下抽了幾次（開罩那一聲 tone 在規則那邊，不算） */
+    const real = Math.random;
+    let rnd = 0;
+    const put = list => { Math.random = () => { rnd++; return real(); }; try { ENG.putFrierens(list); } finally { Math.random = real; } };
+    put([m]); r.idle = vis();
+    frShield(m.x + 2, 1, 0); frStep(m, 0.3);
+    put([m]); r.open = vis(); r.cnt = T3.frBarCore.count; r.ne = ENG.FR_NE;
+    m.bt = null; m.bc = null;
+    put([m]); r.shut = vis();
+    put([]); r.end = vis(); r.rnd = rnd;
+    beasts = null;
+    return r;
+  });
+  ok('畫面：沒她在場不吃 draw call；沒開罩只畫她、開罩才畫罩子（一位 FR_NE 條邊）、收完藏起來；畫的時候不抽 Math.random',
+     fdraw.off === '0000' && fdraw.idle === '1000' && fdraw.open === '1111' && fdraw.cnt === fdraw.ne && fdraw.shut === '1000' &&
+     fdraw.end === '0000' && fdraw.rnd === 0,
+     '沒她 ' + fdraw.off + '；沒開罩 ' + fdraw.idle + '；開罩 ' + fdraw.open + '（' + fdraw.cnt + ' 條邊）；收掉 ' + fdraw.shut +
+     '；走了 ' + fdraw.end + '（她／線芯／光暈／面）；抽了 ' + fdraw.rnd + ' 次');
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+  }   // ── 〈道具：防禦魔法〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 隕石 ══════════ */
   SEC: { if (!(await head('隕石', T_COMMIT))) break SEC;

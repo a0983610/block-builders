@@ -151,17 +151,19 @@ function step(dt) {
     if (supportT <= 0) { supportDirty = false; collapseUnsupported(); }
   }
   stepHomeFall(dt);                    // 小人的家：撐不住的也要垮（v1.102）
+  stepFrHang(dt);                      // 被防護罩撐住沒垮的：罩子走開之後重算支撐（v1.259.0）
 
   let spareDead = false;              // 這一幀有沒有碎料淡完了（見 clearSpare）
   for (const b of blocks) {
     if (b.fallIn > 0) {                 // 已判定要垮，等它的鬆脫時間到
       b.fallIn -= dt;
       if (b.fallIn <= 0) {
-        breakBlock(b, rr(-2.6, 2.6), rr(-1.6, 0.8), rr(-2.6, 2.6));
-        stats.smashed++;                // 垮下來的也算擊飛
-        giftRoll(1, b.x, b.y, b.z);     // 也一樣有機率掉道具泡泡（v1.214）
-        // 這塊垮掉之後，原本靠它撐住的鄰居可能也懸空了，再算一次
-        markSupportDirty(0.05);
+        if (breakBlock(b, rr(-2.6, 2.6), rr(-1.6, 0.8), rr(-2.6, 2.6))) {
+          stats.smashed++;                // 垮下來的也算擊飛
+          giftRoll(1, b.x, b.y, b.z);     // 也一樣有機率掉道具泡泡（v1.214）
+          // 這塊垮掉之後，原本靠它撐住的鄰居可能也懸空了，再算一次
+          markSupportDirty(0.05);
+        } else frHang = 1;                // 防護罩撐著（v1.259.0）：罩子走開之後 stepFrHang 再算一次
       }
     }
     // 落定轉正期間 st 還是 FLY，所以 snap 要排在 FLY 前面判斷，否則重力會一直把它壓下去
@@ -270,7 +272,8 @@ function draw() {
   ENG.putMegs(bl);                   // 惠惠（v1.247.0）同上
   ENG.putZens(bl);                   // 善逸（v1.251.0）同上，雷光與光痕也在這一支畫
   ENG.putGojos(bl);                  // 五條悟（v1.255.0）同上，手上的赫／蒼／茈也在這一支畫
-  ENG.fadeHumans(bl);                // 上面五位裡正在淡入淡出的那幾位搬到半透明那一顆（v1.256.0，見 woodFade）
+  ENG.putFrierens(bl);               // 芙莉蓮（v1.259.0）同上，防護罩也在這一支畫
+  ENG.fadeHumans(bl);                // 上面六位裡正在淡入淡出的那幾位搬到半透明那一顆（v1.256.0，見 woodFade）
   ENG.putPurps(purpList());          // 飛出去的紫球（自己一份清單：放出去就是自己的東西）
 
   ENG.putTrees(trees);
@@ -425,7 +428,7 @@ function onUp(e) {
     if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); lifeHit(w, 'torch'); return; }
     // 拿水桶澆人：濕 5 秒（身上有火的當場熄），不會把人打倒
     if (tool === 'bucket') { wetWorker(w); splashFx(w.x, w.y + 1.4, w.z); sndWater(); return; }
-    if (w.fall <= 0 && w.burn <= 0) {
+    if (w.fall <= 0 && w.burn <= 0 && !workerSafe(w)) {   // 防護罩裡的戳不倒（v1.259.0）
       w.fall = rr(1.2, 2.4); releaseWorker(w); sndFall();
       lifeHit(w, 'poke');                 // 被打死（v1.240）：戳一下也算一次
       stats.poked++; checkBadges();

@@ -1030,6 +1030,7 @@ const ENG = (function () {
         gjMesh.setColorAt(i * GJ_SLOT + k, tmpC.setHex(GOJO[k].c).multiplyScalar(gjHair(GOJO[k]) ? GJ_HAIR_GAIN : 1));
     scene.add(gjMesh);
     gjInit(unit);                    // 赫、蒼、茈的光球與白光、衝擊波（全部先 visible = false）
+    frInit(unit);                    // 芙莉蓮（v1.259.0）與她的防護罩；打到那一點的白光借上面那一行開的球（gjSph）
     /* 雷光（藍白）與一閃的光痕（金黃）：各一對不吃光、不投影的網格，亮芯不透明、光暈半透明（同造型預覽）。
        光暈排在地上的痕跡與塵霧後面畫（同 Excalibur 的光柱，見〈光柱被焦痕蓋住〉） */
     const zPair = (C, cap) => {
@@ -1626,7 +1627,7 @@ const ENG = (function () {
     scene.add(fadeMesh);
 
     /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）：幾何體同 fadeMesh 那一套（不切、不發光），材質共用那一份 */
-    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT);
+    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT, FR_SLOT);
     const HUM_N = HUM_MAX * HUM_SLOT;
     const humGeo = new T.BoxGeometry(1, 1, 1);
     const humCut = new T.InstancedBufferAttribute(new Float32Array(HUM_N * 4), 4);
@@ -8340,6 +8341,633 @@ void main() {
       if (_zI[2]) { z.instanceMatrix.needsUpdate = true; dropSphere(z); }
     }
   }
+
+  /* ══ 芙莉蓮（v1.259.0）══════════════════════════════════════════
+     使用者：「先做這個角色模型 預計是道具 會叫他到指定地點 只要有攻擊打過去會自動開啟防護罩 保護範圍內的積木或生物」
+     ［附兩張圖：立繪（雙手斜握法杖）、六角格的防護罩］。
+     造型預覽 tools/.e2e-out/芙莉蓮造型預覽.html 三輪：第一版 →「各動作的拿著法杖的部分有點穿模感(手跟法杖)」→
+     「現在瀏海看起來像妹妹頭」→「OK」。
+     **同五條悟自己一顆 mesh、不進 BEASTS**（kind 'frieren'，putFrierens 畫、frAt 對回索引）。造型表格式同 GOJO
+     （p 位置、s 尺寸、c 顏色、g 掛在哪一組、r 自己的轉角；面向 +z、**右手在 −x**），多兩欄：
+       k  菱形片：方塊先轉 45° 成正方菱形、再沿 y 拉長 k 倍（頭髮的尖、精靈耳、撥開的瀏海）
+       z  1＝袖子（手伸不到時往下拉長）、2＝袖口（跟著往下挪）
+     比五條悟多四組：雙馬尾（tailR／tailL，樞紐在綁起來的地方，跟著頭、再自己擺）、
+     法杖（staff，自己的座標：杖尾在原點、杖身朝 +y，月牙在 xy 平面上）、紅繩（ribbon，掛在杖上綁繩那一點、方向照根、永遠往下垂）。
+     **手去追杖上的握點**（frRig，同善逸的刀）：拳心套在杖上——握軸（手的本地 z）對齊杖身、拇指在杖頭那一側，
+     手指順著手臂、扳到跟杖身垂直；姿勢的握點都擺在手臂跟杖身接近垂直的地方（Q 版手臂只有一節、沒有手肘，
+     手臂順著杖身的話杖身會一路戳進喇叭袖口）；握點離肩膀不能近過 FR_GRIP_MIN，近了整支杖往外推。
+     材質同五條悟那一顆（GJ_FIX：逆轉置法線＋upBias）：頭髮 1、白衣 0.5（斗篷與長衣的側面吃到一半地面的綠，整件灰綠灰綠的）。
+     **防護罩**畫在這裡（frBar），開不開、開了幾秒、被打在哪裡全是規則那邊寫在她身上的（m.bt／m.bc／m.bh），見 putFrierens。
+     見 開發筆記〈芙莉蓮的造型〉 */
+  /* 配色從參考圖 1 取樣（PowerShell System.Drawing，每一區量化分桶取最多的幾桶）：頭髮 #eeedee／影 #c0bcc4、膚 #fff2ea、
+     綠眼 #3c5651～#5c7f72、白衣 #fcfcfc／影 #bfbdc6、金邊 #dbbd7f／暗 #9d865d、條紋 #3c3d40、腰帶 #393e46、黑褲襪 #242635、
+     靴 #816957／暗 #56483b、杖身 #5a2120、寶石 #830809、紅繩 #b74341。膚色、褲襪、杖身往亮推一點（照抄在遊戲光下是灰的、只剩剪影） */
+  const FRC = {
+    skin: 0xffe0cc, skinD: 0xf3c3ae,
+    hair: 0xf6f3fc, hairD: 0xd6d0e6,
+    eyeW: 0xffffff, iris: 0x4f9e86, irisL: 0xa2dcc6, pupil: 0x1f4a40, lash: 0x3d3843, brow: 0xd6cfe0, mouth: 0xcf8a80,
+    wht: 0xf7f6fb,
+    gold: 0xdcb866, goldD: 0x9c7d48,
+    strD: 0x3a3b44, strW: 0xf1f1f5,
+    belt: 0x3a3f4b,
+    tights: 0x2e3144, tightsL: 0x4b4f66,
+    boot: 0x8b6f58, bootL: 0xa08470, bootD: 0x5a4a3e, sole: 0x3a302a,
+    staff: 0x74242b, gem: 0xb8141e, gemD: 0x6e0a0f, gemL: 0xff8a86,
+    ribbon: 0xb8403e, ribbonD: 0x8a2c2a
+  };
+  const FR_HAIR_GAIN = 1.1, FR_UP = { hair: 1, hairD: 1, wht: 0.5 };
+  const FR_G = { body: 0, head: 1, armR: 2, armL: 3, handR: 4, handL: 5, legR: 6, legL: 7, footR: 8, footL: 9,
+                 tailR: 10, tailL: 11, staff: 12, ribbon: 13 };
+  const FR_NG = 14;
+  /* 每一組的樞紐（站直時的絕對座標）：手的樞紐在手腕；馬尾在綁起來的地方；法杖、紅繩用自己的座標（樞紐 0） */
+  const FR_PIV = [[0, 0, 0], [0, 0.74, 0], [-0.27, 0.665, 0], [0.27, 0.665, 0], [-0.27, 0.415, 0], [0.27, 0.415, 0],
+                  [-0.095, 0.34, 0], [0.095, 0.34, 0], [-0.095, 0.065, 0], [0.095, 0.065, 0],
+                  [-0.22, 1.08, -0.14], [0.22, 1.08, -0.14], [0, 0, 0], [0, 0, 0]];
+  const FR_WAIST = 0.40, FR_WRIST = 0.25, FR_EXT = 0.14, FR_HAND_C = 0.043;
+  const FR_GRIP_MIN = FR_WRIST + FR_HAND_C + 0.005;
+  const FR_GEM_Y = 1.20, FR_RIB_S = 1.03;      // 法杖上：寶石中心、綁紅繩那一點（杖尾往上量）
+  const _frbx = new T.Vector3(), _frby = new T.Vector3(), _frbz = new T.Vector3(), _frbm = new T.Matrix4(), _frbe = new T.Euler();
+  /* 長軸朝 d、片子朝 n 的轉角（XYZ 歐拉角）：菱形片與斜著擺的長方塊共用 */
+  function frBasis(d, n) {
+    _frby.set(d[0], d[1], d[2]).normalize();
+    _frbz.set(n[0], n[1], n[2]);
+    _frbz.addScaledVector(_frby, -_frby.dot(_frbz)).normalize();
+    _frbx.crossVectors(_frby, _frbz);
+    _frbe.setFromRotationMatrix(_frbm.makeBasis(_frbx, _frby, _frbz), 'XYZ');
+    return [_frbe.x, _frbe.y, _frbe.z];
+  }
+  const FRIEREN = (() => {
+    const out = [];
+    const P = (g, p, s, c, r, f) => out.push(Object.assign({ g: FR_G[g], p, s, c: FRC[c], cn: c, r: r || [0, 0, 0] }, f || {}));
+    const SIDE = { arm: 1, hand: 1, leg: 1, foot: 1, tail: 1 };
+    const M = (g, p, s, c, r, f) => {
+      r = r || [0, 0, 0];
+      P(SIDE[g] ? g + 'L' : g, p, s, c, r, f);
+      P(SIDE[g] ? g + 'R' : g, [-p[0], p[1], p[2]], s, c, [r[0], -r[1], -r[2]], f);
+    };
+    /* 菱形片：中心 c、長軸 d、全長 len、最寬 wid、片子朝 n、厚 t（fn 傳 P 或 M；菱形左右對稱，M 把轉角 y／z 反號照樣成立） */
+    const DIA = (fn, g, c, d, len, wid, n, t, col) => {
+      const w = wid / Math.SQRT2;
+      fn(g, c.slice(), [w, w, t], col, frBasis(d, n), { k: len / wid });
+    };
+    /* 一撮往下垂的頭髮：中心貼在髮團表面，下半截垂出來成一根尖、上半截往上鑽進髮團（菱形上下對稱，見〈五條悟〉） */
+    const LOCK = (fn, g, c, d, L, W, n, t, col) => DIA(fn, g, c, d, 2 * L, W, n, t || 0.03, col || 'hair');
+    /* 從 a 到 b 的一根長方塊（寬 w、厚 t、片子朝 n） */
+    const SEG = (fn, g, a, b, w, t, n, col) => {
+      const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(d[0], d[1], d[2]);
+      fn(g, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2], [w, L, t], col, frBasis(d, n));
+    };
+
+    /* ── 頭（樞紐在脖子 0.74）。膚色 0.74～1.08：瀏海中分往兩邊撥，額頭中間露出來 ── */
+    P('head', [0, 0.91, 0], [0.48, 0.34, 0.46], 'skin');
+    /* 眼睛：綠、平靜、上眼皮壓低一點（半睜）。眼白 → 虹膜 → 下半亮色 → 瞳孔 → 高光；上眼線、眼尾往下一小撇 */
+    M('head', [0.105, 0.866, 0.231], [0.115, 0.074, 0.004], 'eyeW');
+    M('head', [0.098, 0.861, 0.2325], [0.068, 0.07, 0.004], 'iris');
+    M('head', [0.098, 0.843, 0.234], [0.056, 0.026, 0.004], 'irisL');
+    M('head', [0.098, 0.866, 0.2355], [0.03, 0.038, 0.004], 'pupil');
+    M('head', [0.084, 0.878, 0.237], [0.016, 0.016, 0.004], 'eyeW');
+    M('head', [0.105, 0.902, 0.234], [0.13, 0.018, 0.006], 'lash');
+    M('head', [0.172, 0.893, 0.234], [0.035, 0.012, 0.006], 'lash', [0, 0, -0.5]);
+    M('head', [0.105, 0.829, 0.232], [0.08, 0.006, 0.004], 'skinD');                  // 下眼瞼一筆
+    M('head', [0.105, 0.948, 0.2315], [0.08, 0.008, 0.004], 'brow', [0, 0, -0.08]);  // 細眉（額頭露出來看得到，淡一點）
+    P('head', [0, 0.825, 0.232], [0.012, 0.01, 0.004], 'skinD');                       // 鼻
+    P('head', [0, 0.79, 0.232], [0.036, 0.008, 0.004], 'mouth');                       // 嘴：一條平的
+    /* 精靈耳：從頭側往外、微微往上往後的一片長尖（中心在頭的表面，裡面那一半埋進頭裡）＋前面一片淡的耳窩；片子朝前上 */
+    DIA(M, 'head', [0.235, 0.875, -0.01], [1, 0.38, -0.3], 0.56, 0.115, [0, 0.3, 1], 0.035, 'skin');
+    DIA(M, 'head', [0.31, 0.903, 0.006], [1, 0.38, -0.3], 0.30, 0.05, [0, 0.3, 1], 0.012, 'skinD');
+    M('head', [0.262, 0.842, 0.03], [0.02, 0.02, 0.02], 'gold');                       // 耳環：金珠＋往下垂的紅色一滴
+    M('head', [0.262, 0.812, 0.03], [0.02, 0.04, 0.02], 'gem');
+
+    /* ── 頭髮：銀白、直順。頭頂兩階收上去；瀏海中分往兩邊撥；兩鬢的長髮垂到下巴；後腦到後頸 ── */
+    P('head', [0, 1.125, -0.03], [0.53, 0.09, 0.465], 'hair');                       // 1.08～1.17，前緣退到 0.2025，前面那一截由瀏海補
+    P('head', [0, 1.18, -0.01], [0.45, 0.03, 0.43], 'hair');
+    P('head', [0, 1.20, -0.01], [0.32, 0.02, 0.30], 'hair');
+    P('head', [0, 0.91, -0.2425], [0.53, 0.34, 0.04], 'hair');                       // 後腦 0.74～1.08
+    for (const x of [-0.2, -0.1, 0, 0.1, 0.2]) LOCK(P, 'head', [x, 0.765, -0.245], [0, -1, -0.15], 0.045, 0.1, [0, 0, -1], 0.03);
+    M('head', [0.2525, 1.03, -0.005], [0.035, 0.10, 0.49], 'hair');                  // 兩側 0.98～1.08（耳朵上面）
+    M('head', [0.2525, 0.925, -0.15], [0.035, 0.17, 0.19], 'hair');                  // 耳朵後面那一片
+    M('head', [0.2525, 0.935, 0.148], [0.035, 0.11, 0.175], 'hair');                 // 耳朵前面（鬢）0.88～0.99
+    for (const s of [1, -1]) {
+      LOCK(P, 'head', [0.2525 * s, 0.885, 0.195], [0.06 * s, -1, 0.04], 0.14, 0.075, [s, 0, 0.25], 0.03);          // 鬢髮垂到下巴
+      LOCK(P, 'head', [0.2525 * s, 0.885, 0.11], [0.03 * s, -1, -0.02], 0.10, 0.08, [s, 0, 0], 0.03, 'hairD');
+      LOCK(P, 'head', [0.226 * s, 0.955, 0.236], [0.07 * s, -1, 0.02], 0.17, 0.065, [0.2 * s, 0, 1], 0.025);     // 臉側一撮框住臉
+    }
+    /* 瀏海：中分（分線在 BANG_PART，略偏她右邊，同參考圖），從頭頂的分線往兩邊斜斜撥下去、到太陽穴；額頭中間露出一個倒 V。
+       分線兩側一階一階補滿（頂上那一階一路到 1.17，前緣 0.2475），中間留一條淡紫的分線；
+       外面再蓋四撮順著撥的方向的長菱形（前緣 0.2545）把階梯的邊蓋掉，最後兩撮細的從分線垂過額頭（參考圖兩張都有）。
+       預覽第一、二版是額前一條齊的橫帶再垂一排尖，使用者：「現在瀏海看起來像妹妹頭」 */
+    const BANG_PART = -0.02;
+    P('head', [BANG_PART, 1.125, 0.2195], [0.024, 0.09, 0.034], 'hairD');            // 分線
+    for (const s of [1, -1]) {
+      for (const [y0, y1, xin] of [[1.08, 1.17, 0.012], [1.045, 1.08, 0.03], [1.01, 1.045, 0.08], [0.975, 1.01, 0.13], [0.94, 0.975, 0.18]]) {
+        const xa = BANG_PART + s * xin, xb = s * 0.265;
+        P('head', [(xa + xb) / 2, (y0 + y1) / 2, 0.225], [Math.abs(xb - xa), y1 - y0, 0.045], 'hair');
+      }
+      for (const [cx, cy, dx, dy, len, wid] of [[0.145, 1.11, 0.23, -0.1, 0.27, 0.08], [0.13, 1.04, 0.22, -0.22, 0.33, 0.10],
+                                                [0.135, 0.99, 0.19, -0.18, 0.27, 0.075], [0.195, 0.95, 0.45, -0.9, 0.20, 0.06]])
+        DIA(P, 'head', [BANG_PART + s * cx, cy, 0.2445], [s * dx, dy, 0], len, wid, [0, 0, 1], 0.02, 'hair');
+    }
+    DIA(P, 'head', [BANG_PART - 0.03, 1.0, 0.2465], [-0.3, -1, 0], 0.18, 0.035, [0, 0, 1], 0.012, 'hair');
+    DIA(P, 'head', [BANG_PART + 0.065, 0.97, 0.2465], [0.25, -1, 0], 0.13, 0.03, [0, 0, 1], 0.012, 'hair');
+
+    /* ── 雙馬尾（樞紐在綁起來的地方 ±0.22, 1.08, −0.14）：沿一條平滑的曲線（Catmull-Rom）切 12 節，
+       出了頭之後一路斜斜往外、往下垂到大腿；每一節一根長方塊、前後互相多疊一點，寬度中段鼓起來、往下收 ── */
+    const TCV = new T.CatmullRomCurve3([[0.22, 1.08, -0.14], [0.31, 1.035, -0.19], [0.37, 0.93, -0.22], [0.41, 0.78, -0.24],
+                                         [0.445, 0.62, -0.25], [0.475, 0.46, -0.25], [0.50, 0.33, -0.24]].map(a => new T.Vector3(a[0], a[1], a[2])));
+    const TN = 12, TWD = u => 0.08 + 0.055 * Math.pow(Math.sin(Math.PI * u), 0.7);
+    M('tail', [0.225, 1.08, -0.14], [0.085, 0.085, 0.085], 'hairD');                  // 綁起來那一團
+    for (let i = 0; i < TN; i++) {
+      const a = TCV.getPoint(i / TN), b = TCV.getPoint((i + 1) / TN), w = TWD((i + 0.5) / TN);
+      const ex = b.clone().sub(a).normalize().multiplyScalar(0.018);
+      SEG(M, 'tail', a.clone().sub(ex).toArray(), b.clone().add(ex).toArray(), w, w * 0.8, [1, 0, -0.35], 'hair');
+    }
+    {
+      const e = TCV.getPoint(1).toArray(), d = TCV.getTangent(1).toArray();             // 髮尾：收成三撮尖
+      DIA(M, 'tail', e, d, 0.22, 0.08, [1, 0, -0.35], 0.04, 'hair');
+      DIA(M, 'tail', [e[0] + 0.02, e[1] + 0.01, e[2] - 0.01], [d[0] + 0.15, d[1], d[2]], 0.17, 0.06, [1, 0, -0.35], 0.035, 'hairD');
+      DIA(M, 'tail', [e[0] - 0.02, e[1] + 0.01, e[2] + 0.01], [d[0] - 0.15, d[1], d[2]], 0.15, 0.06, [1, 0, -0.35], 0.035, 'hair');
+    }
+
+    /* ── 身體：白色長衣，腰帶以下外擴三層、下襬一道粗金邊＋上面一道細金線 ── */
+    P('body', [0, 0.505, 0], [0.34, 0.33, 0.24], 'wht');                             // 0.34～0.67
+    P('body', [0, 0.445, 0], [0.355, 0.04, 0.255], 'belt');
+    P('body', [0, 0.385, 0], [0.40, 0.08, 0.29], 'wht');
+    P('body', [0, 0.315, 0], [0.46, 0.07, 0.33], 'wht');
+    P('body', [0, 0.255, 0], [0.52, 0.06, 0.37], 'wht');                             // 0.225～0.285
+    P('body', [0, 0.2375, 0], [0.526, 0.035, 0.376], 'gold');                        // 下襬 0.22～0.255
+    P('body', [0, 0.272, 0], [0.523, 0.008, 0.373], 'gold');
+    /* ── 小斗篷：蓋住肩膀到胸口（0.55～0.715），下緣金邊＋一道細金線；前面開一個 V 露出黑白條紋襯衫、V 的兩邊鑲金；領口紅寶石胸針 ── */
+    P('body', [0, 0.625, 0], [0.72, 0.13, 0.36], 'wht');
+    P('body', [0, 0.70, 0], [0.54, 0.03, 0.31], 'wht');
+    P('body', [0, 0.5625, 0], [0.726, 0.025, 0.366], 'gold');
+    P('body', [0, 0.594, 0], [0.723, 0.008, 0.363], 'gold');
+    P('body', [0, 0.728, 0], [0.30, 0.03, 0.27], 'wht');                             // 領口（多半被下巴擋住）
+    for (let i = 0; i < 6; i++) P('body', [0, 0.677 - i * 0.0235, 0.1815], [0.03 + i * 0.026, 0.0235, 0.006], i % 2 ? 'strW' : 'strD');
+    M('body', [0.054, 0.6185, 0.1855], [0.014, 0.158, 0.006], 'gold', [0, 0, 0.432]);
+    P('body', [0, 0.705, 0.186], [0.05, 0.05, 0.012], 'gold', [0, 0, Math.PI / 4]);
+    P('body', [0, 0.705, 0.192], [0.03, 0.03, 0.01], 'gem', [0, 0, Math.PI / 4]);
+    P('body', [-0.006, 0.711, 0.198], [0.01, 0.01, 0.004], 'gemL');
+
+    /* ── 手臂（樞紐在肩膀 ±0.27, 0.665）：白色寬袖、袖口外擴＋金邊 ── */
+    M('arm', [0.27, 0.555, 0], [0.15, 0.25, 0.17], 'wht', 0, { z: 1 });
+    M('arm', [0.27, 0.43, 0], [0.185, 0.05, 0.195], 'wht', 0, { z: 2 });
+    M('arm', [0.27, 0.41, 0], [0.19, 0.02, 0.20], 'gold', 0, { z: 2 });
+    /* ── 手（樞紐在手腕）：握拳＋拇指 ── */
+    M('hand', [0.27, 0.372, 0.005], [0.085, 0.08, 0.095], 'skin');
+    M('hand', [0.235, 0.385, 0.045], [0.028, 0.045, 0.028], 'skin');
+
+    /* ── 腳（樞紐在胯 ±0.095, 0.34）：黑褲襪、及膝的褐色長靴（靴口反摺一圈） ── */
+    M('leg', [0.095, 0.245, 0], [0.12, 0.19, 0.13], 'tights');
+    M('leg', [0.11, 0.19, 0.0655], [0.03, 0.06, 0.004], 'tightsL');                // 膝蓋一點反光
+    M('leg', [0.095, 0.105, 0.005], [0.14, 0.10, 0.15], 'boot');
+    M('leg', [0.095, 0.162, 0.005], [0.152, 0.034, 0.162], 'bootL');
+    M('leg', [0.095, 0.10, 0.0805], [0.1, 0.006, 0.004], 'bootD');                  // 靴筒一道摺痕
+    /* ── 腳掌（樞紐在腳踝）── */
+    M('foot', [0.095, 0.035, 0.02], [0.135, 0.07, 0.19], 'boot');
+    M('foot', [0.095, 0.006, 0.025], [0.14, 0.012, 0.20], 'sole');
+
+    /* ── 法杖（自己的座標：杖尾在原點、杖身朝 +y；月牙在 xy 平面上、從杖頭右下繞過右邊與頂上，開口朝左上）──
+       參考圖：杖身深紅、杖尾金色的尖、杖頭下面一截金色＋綁著紅繩、頂上一顆金框紅寶石被金色月牙半包著。全長約等於她的身高 */
+    P('staff', [0, 0.012, 0], [0.022, 0.024, 0.022], 'gold');
+    P('staff', [0, 0.04, 0], [0.034, 0.035, 0.034], 'gold');
+    P('staff', [0, 0.066, 0], [0.046, 0.018, 0.046], 'goldD');
+    P('staff', [0, 0.57, 0], [0.034, 1.0, 0.034], 'staff');                          // 0.07～1.07
+    P('staff', [0, FR_RIB_S, 0], [0.044, 0.035, 0.044], 'ribbon');                   // 紅繩繞一圈
+    P('staff', [0, 1.072, 0], [0.05, 0.012, 0.05], 'goldD');
+    P('staff', [0, 1.095, 0], [0.042, 0.04, 0.042], 'gold');
+    P('staff', [0, 1.118, 0], [0.05, 0.012, 0.05], 'goldD');
+    P('staff', [0, 1.138, 0], [0.03, 0.03, 0.03], 'gold');
+    for (const r of [0, Math.PI / 4]) P('staff', [0, FR_GEM_Y, 0], [0.12, 0.12, 0.03], 'gold', [0, 0, r]);       // 金框（八角）
+    for (const r of [0, Math.PI / 4]) P('staff', [0, FR_GEM_Y, 0], [0.086, 0.086, 0.046], 'gem', [0, 0, r]);     // 紅寶石
+    for (const z of [0.0235, -0.0235]) {
+      P('staff', [0.014, FR_GEM_Y - 0.014, z], [0.04, 0.04, 0.004], 'gemD', [0, 0, Math.PI / 4]);
+      P('staff', [-0.018, FR_GEM_Y + 0.016, z * 1.02], [0.022, 0.022, 0.004], 'gemL');
+    }
+    {
+      const N = 11, a0 = -Math.PI / 2, a1 = 155 * Math.PI / 180, RC = 0.135, cx = 0.035, cy = FR_GEM_Y + 0.015;
+      for (let i = 0; i < N; i++) {
+        const u = (i + 0.5) / N, a = a0 + (a1 - a0) * u, w = 0.012 + 0.042 * Math.sin(Math.PI * u);
+        P('staff', [cx + Math.cos(a) * RC, cy + Math.sin(a) * RC, 0], [w, RC * (a1 - a0) / N * 1.15, 0.03], 'gold', [0, 0, a]);
+      }
+    }
+    /* ── 紅繩垂下來的兩條（自己一組：原點在綁繩那一點，往 −y 垂）── */
+    P('ribbon', [0.012, -0.085, 0.026], [0.024, 0.17, 0.006], 'ribbon', [0, 0, 0.12]);
+    P('ribbon', [-0.012, -0.11, 0.026], [0.024, 0.22, 0.006], 'ribbonD', [0, 0, -0.08]);
+    return out;
+  })();
+  const FR_PARTS = FRIEREN.length;
+  const FR_SLOT = FR_PARTS;
+  const MAXFR = 2;                   // 同五條悟：場上只會有一位，留一格餘裕
+  const FR_PV = FRIEREN.map(b => new T.Vector3(b.p[0] - FR_PIV[b.g][0], b.p[1] - FR_PIV[b.g][1], b.p[2] - FR_PIV[b.g][2]));
+  const FR_SV = FRIEREN.map(b => new T.Vector3(b.s[0], b.s[1], b.s[2]));
+  const FR_QV = FRIEREN.map(b => new T.Quaternion().setFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2])));
+  const FR_LM = FRIEREN.map((b, k) => b.k
+    ? new T.Matrix4().compose(FR_PV[k], FR_QV[k], new T.Vector3(1, 1, 1)).multiply(new T.Matrix4().makeScale(1, b.k, 1))
+        .multiply(new T.Matrix4().makeRotationZ(Math.PI / 4)).multiply(new T.Matrix4().makeScale(b.s[0], b.s[1], b.s[2]))
+    : new T.Matrix4().compose(FR_PV[k], FR_QV[k], FR_SV[k]));
+  /* 模型範圍（同五條悟；法杖與紅繩是道具、自己的座標，不算）：菱形片的高度照它真的長度 */
+  {
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
+    for (const b of FRIEREN) {
+      if (b.g === FR_G.staff || b.g === FR_G.ribbon) continue;
+      const hy = b.k ? b.s[0] * Math.SQRT2 * b.k / 2 : b.s[1] / 2;
+      ylo = Math.min(ylo, b.p[1] - hy);
+      yhi = Math.max(yhi, b.p[1] + hy);
+      zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
+      xhi = Math.max(xhi, Math.abs(b.p[0]) + b.s[0] / 2);
+    }
+    BEAST_FLOOR.frieren = Math.max(0, -ylo);
+    BEAST_MID.frieren = (ylo + yhi) / 2;
+    BEAST_LIFT.frieren = -zlo;
+    BEAST_SIDE.frieren = xhi;
+  }
+  /* ── 姿勢（身體座標）：手伸向 h、手指朝 d；法杖 sb（杖尾）／sd（杖身朝哪）／sroll（繞杖身轉），
+     握點 gR／gL（從杖尾往上量）、握的權重 wR／wL（0＝不握，照 hR／hL、dR／dL 擺）。
+     每一組 sb 都是從「手要在哪」與 sd、gR 反算的（sb ＝ 手 − gR × sd），手臂跟杖身都在 83°～90° ── */
+  const frV = a => new T.Vector3(a[0], a[1], a[2]);
+  const FR_KF = ['lift', 'bob', 'lean', 'twist', 'rollR', 'rollL', 'sroll', 'gR', 'gL', 'wR', 'wL', 'rib'];
+  const FR_KA = ['head', 'lR', 'lL', 'tR', 'tL'];
+  const FR_KV = ['hR', 'hL', 'dR', 'dL', 'sb', 'sd'];
+  function frK(o) {
+    const k = { lift: o.lift || 0, bob: 0, lean: o.lean || 0, twist: o.twist || 0, head: (o.head || [0, 0, 0]).slice(),
+                hR: frV(o.hR || [-0.30, 0.372, 0.02]), hL: frV(o.hL || [0.30, 0.372, 0.02]), rollR: o.rollR || 0, rollL: o.rollL || 0,
+                lR: (o.lR || [0, 0]).slice(), lL: (o.lL || [0, 0]).slice(), tR: (o.tR || [0.04, 0.05]).slice(), tL: (o.tL || [0.04, 0.05]).slice(),
+                sb: frV(o.sb), sd: frV(o.sd).normalize(), sroll: o.sroll || 0, gR: o.gR ?? 0.4, gL: o.gL ?? 0.6, wR: o.wR ?? 1, wL: o.wL ?? 0, rib: 0 };
+    k.dR = o.dR ? frV(o.dR).normalize() : k.hR.clone().sub(frV(FR_PIV[FR_G.armR])).normalize();
+    k.dL = o.dL ? frV(o.dL).normalize() : k.hL.clone().sub(frV(FR_PIV[FR_G.armL])).normalize();
+    return k;
+  }
+  function frCopy(d, s) {
+    for (const f of FR_KF) d[f] = s[f];
+    for (const f of FR_KA) for (let i = 0; i < s[f].length; i++) d[f][i] = s[f][i];
+    for (const f of FR_KV) d[f].copy(s[f]);
+    return d;
+  }
+  function frMix(d, s, w) {
+    if (!(w > 0)) return d;
+    const f = (a, b) => a + (b - a) * w;
+    for (const x of FR_KF) d[x] = f(d[x], s[x]);
+    for (const x of FR_KA) for (let i = 0; i < s[x].length; i++) d[x][i] = f(d[x][i], s[x][i]);
+    for (const x of FR_KV) d[x].lerp(s[x], w);
+    for (const x of ['dR', 'dL', 'sd']) d[x].normalize();
+    return d;
+  }
+  const FR_K = {
+    /* 站著：右手往前外側握著法杖、杖尾著地（杖身略往外前斜），左手垂著。手在 (−0.46, 0.64, 0.25)，手臂幾乎是平的 */
+    stand: frK({ head: [0.03, 0, 0], sb: [-0.4217, 0.002, 0.2245], sd: [-0.06, 1, 0.04], gR: 0.64 }),
+    /* 跑：右手往前握著法杖、杖頭往前倒，像扛著旗子往前衝；上身前傾、雙馬尾往後飄。手在 (−0.40, 0.60, 0.26) */
+    run: frK({ lean: 0.30, head: [-0.24, 0, 0], sb: [-0.378, 0.155, 0.193], sd: [-0.05, 1, 0.15], gR: 0.45,
+               hL: [0.31, 0.44, 0], tR: [0.75, 0.15], tL: [0.75, 0.15] }),
+    /* 開防護罩：右手往前伸、把法杖直直舉在身前，寶石高過頭頂；左手往前張開（手指朝上）。手在 (−0.2, 0.66, 0.30) */
+    cast: frK({ lean: -0.03, head: [-0.06, 0, 0], sb: [-0.233, 0.112, 0.273], sd: [0.06, 1, 0.05], gR: 0.55,
+                hL: [0.25, 0.60, 0.30], dL: [0.1, 1, 0.35], lR: [-0.1, 0.06], lL: [0.12, -0.04], tR: [0.12, 0.12], tL: [0.12, 0.12] })
+  };
+  const _frk = frCopy(frK({ sb: [0, 0, 0], sd: [0, 1, 0] }), FR_K.stand), _frk2 = frCopy(frK({ sb: [0, 0, 0], sd: [0, 1, 0] }), FR_K.stand);
+  const frC01 = v => Math.min(1, Math.max(0, v || 0));
+  const frE = x => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x);
+  /* 這一幀的姿勢（寫進 _frk）：
+       站／走  m.gait、m.ph 擺腿；左手跟著右腳擺，右手握著杖、杖尾離地跟著擺；雙馬尾一甩一甩
+       跑      m.run 0～1：叫過去那一段
+       開罩    m.fc 0～1：規則那邊開罩時拉到 1（舉杖、左手往前張開），收罩時退回 0 */
+  function frPose(m) {
+    const k = frCopy(_frk, FR_K.stand);
+    const g = frC01((m.gait || 0) / 0.85), ph = m.ph || 0, s = Math.sin(ph);
+    if (g > 0) {
+      k.lR[0] = 0.42 * s * g; k.lL[0] = -0.42 * s * g;
+      k.bob = 0.016 * Math.abs(Math.cos(ph)) * g; k.twist = 0.05 * s * g;
+      k.hL.z -= 0.12 * s * g;
+      k.dL.copy(k.hL).sub(frV(FR_PIV[FR_G.armL])).normalize();
+      k.sb.y += 0.035 * g; k.sb.z += 0.025 * s * g;
+      k.tR[0] += (0.08 + 0.06 * Math.sin(2 * ph)) * g; k.tL[0] += (0.08 + 0.06 * Math.sin(2 * ph + 0.6)) * g;
+      k.rib = 0.15 * s * g;
+    }
+    const r = m.lie || m.air ? 0 : frC01(m.run);
+    if (r > 0) {
+      const q = frCopy(_frk2, FR_K.run);
+      q.lR[0] = 0.85 * s; q.lL[0] = -0.85 * s;
+      q.hL.z -= 0.18 * s;
+      q.dL.copy(q.hL).sub(frV(FR_PIV[FR_G.armL])).normalize();
+      q.sb.z += 0.03 * s;
+      q.tR[0] += 0.1 * Math.sin(2 * ph); q.tL[0] += 0.1 * Math.sin(2 * ph + 0.6);
+      q.bob = Math.abs(Math.cos(ph)) * 0.05;
+      q.rib = 0.15 * s;
+      frMix(k, q, r);
+    }
+    const c = frC01(m.fc);
+    if (c > 0) frMix(k, FR_K.cast, frE(c));
+    return k;
+  }
+  const _frG = [...Array(FR_NG)].map(() => new T.Matrix4());
+  const _frExt = new Array(FR_NG).fill(0);
+  const _frHip = new T.Matrix4(), _frm = new T.Matrix4(), _frm2 = new T.Matrix4(), _frmb = new T.Matrix4();
+  const _frv = new T.Vector3(), _frv2 = new T.Vector3(), _frq = new T.Quaternion(), _frq2 = new T.Quaternion(), _frE = new T.Euler();
+  const _frqh = new T.Quaternion(), _frqg = new T.Quaternion(), _frgx = new T.Vector3(), _frgy = new T.Vector3(), _frdd = new T.Vector3();
+  const _frhR = new T.Vector3(), _frhL = new T.Vector3(), _frsp = new T.Vector3(), _frsb = new T.Vector3();
+  const _frONE = new T.Vector3(1, 1, 1), _frDOWN = new T.Vector3(0, -1, 0), _frY = new T.Vector3(0, 1, 0);
+  /* 算出這一位每一組的世界矩陣（_frG）。根同 gjRig（YZX：朝向 → 打滾 → 躺平；飛在半空繞身體中段轉）；
+     上身繞腰前傾、扭腰；法杖照 sb／sd 擺在身上、手去追杖上的握點（見檔頭）；腿掛在胯、腳掌轉回來貼平地面；
+     雙馬尾跟著頭再自己擺（tR／tL＝[往後擺, 往外張]）；紅繩掛在綁繩那一點、方向照根 */
+  function frRig(m) {
+    const k = frPose(m), msc = m.sc || 1, mid = BEAST_MID.frieren;
+    scratch.rotation.set(m.spin || 0, m.a || 0, m.roll || 0, 'YZX');
+    const lift = !m.lie ? 0
+      : m.side ? BEAST_SIDE.frieren * m.lie * Math.abs(Math.sin(m.roll || 0))
+               : BEAST_LIFT.frieren * m.lie * Math.abs(Math.sin(m.spin || 0));
+    scratch.position.set(m.x || 0, (m.y || 0) + lift * msc, m.z || 0);
+    if (m.air) {
+      _frv.set(0, mid, 0).applyEuler(scratch.rotation);
+      scratch.position.x -= _frv.x * msc;
+      scratch.position.y += (mid - _frv.y) * msc;
+      scratch.position.z -= _frv.z * msc;
+    }
+    scratch.scale.setScalar(msc);
+    scratch.updateMatrix();
+    _frHip.copy(scratch.matrix).multiply(_frm.makeTranslation(0, k.lift + k.bob, 0));
+    const B = _frG[FR_G.body].copy(_frHip).multiply(_frm.makeTranslation(0, FR_WAIST, 0))
+      .multiply(_frm.makeRotationY(k.twist)).multiply(_frm.makeRotationX(k.lean)).multiply(_frm.makeTranslation(0, -FR_WAIST, 0));
+    _frG[FR_G.head].multiplyMatrices(B, _frm.compose(_frv.set(0, FR_PIV[FR_G.head][1], 0),
+      _frq.setFromEuler(_frE.set(k.head[0], k.head[1], k.head[2], 'XYZ')), _frONE));
+    /* 右手的握點離肩膀不能近過 FR_GRIP_MIN：手臂只有一節、縮不回來，再近手會越過握點——杖身不在拳心裡、還會戳進袖口
+       （造型預覽探針量到兩個姿勢之間內插、走路擺手時手偏 0.010～0.013、杖身擦過袖口金邊 0.2）。近了就把整支杖沿著「肩膀 → 握點」往外推 */
+    _frsb.copy(k.sb);
+    if (k.wR > 0) {
+      const pa = FR_PIV[FR_G.armR];
+      _frv.copy(k.sb).addScaledVector(k.sd, k.gR).sub(_frv2.set(pa[0], pa[1], pa[2]));
+      const d = _frv.length();
+      if (d < FR_GRIP_MIN) _frsb.addScaledVector(_frv, (FR_GRIP_MIN - d) / d);
+    }
+    _frq.setFromUnitVectors(_frY, k.sd).multiply(_frq2.setFromAxisAngle(_frY, k.sroll));
+    _frG[FR_G.staff].multiplyMatrices(B, _frm.compose(_frsb, _frq, _frONE));
+    _frhR.copy(k.hR).lerp(_frsp.copy(_frsb).addScaledVector(k.sd, k.gR), k.wR);
+    _frhL.copy(k.hL).lerp(_frsp.copy(_frsb).addScaledVector(k.sd, k.gL), k.wL);
+    for (const [ga, gh, h, d0, w, roll] of [[FR_G.armR, FR_G.handR, _frhR, k.dR, k.wR, k.rollR], [FR_G.armL, FR_G.handL, _frhL, k.dL, k.wL, k.rollL]]) {
+      const pv = FR_PIV[ga];
+      _frqh.setFromUnitVectors(_frDOWN, d0).multiply(_frq2.setFromAxisAngle(_frY, roll));       // 不握：手指朝姿勢給的 d
+      if (w > 0) {
+        /* 握著杖：拳心套在杖上（握軸＝手的本地 z 對齊杖身、拇指在杖頭那一側），手指順著手臂、扳到跟杖身垂直 */
+        _frgy.copy(h).sub(_frv2.set(pv[0], pv[1], pv[2])).normalize();
+        _frgy.addScaledVector(k.sd, -_frgy.dot(k.sd));
+        if (_frgy.lengthSq() < 1e-6) _frgy.set(0, 0, 1).addScaledVector(k.sd, -k.sd.z);
+        _frgy.normalize().negate();                                                            // 手的本地 +y ＝ 手指的反方向
+        _frgx.crossVectors(_frgy, k.sd).normalize();
+        _frv.crossVectors(_frgx, _frgy);
+        _frqh.slerp(_frqg.setFromRotationMatrix(_frmb.makeBasis(_frgx, _frgy, _frv)), w);
+      }
+      _frdd.set(0, -1, 0).applyQuaternion(_frqh);                                              // 手腕 → 手心
+      _frv.copy(h).addScaledVector(_frdd, -FR_HAND_C).sub(_frv2.set(pv[0], pv[1], pv[2]));   // 手腕要到的點 − 肩膀
+      const len = _frv.length() || 1;
+      _frv.multiplyScalar(1 / len);
+      const ext = Math.min(FR_EXT, Math.max(0, len - FR_WRIST)), shift = Math.max(0, len - FR_WRIST - FR_EXT);
+      _frExt[ga] = ext;
+      _frq.setFromUnitVectors(_frDOWN, _frv);
+      _frv2.set(pv[0], pv[1], pv[2]).addScaledVector(_frv, shift);
+      _frG[ga].multiplyMatrices(B, _frm.compose(_frv2, _frq, _frONE));
+      _frv2.addScaledVector(_frv, FR_WRIST + ext);                                             // 手腕
+      _frG[gh].multiplyMatrices(B, _frm.compose(_frv2, _frqh, _frONE));
+    }
+    for (const [g, gf, l] of [[FR_G.legR, FR_G.footR, k.lR], [FR_G.legL, FR_G.footL, k.lL]]) {
+      const pv = FR_PIV[g];
+      _frG[g].multiplyMatrices(_frHip, _frm.compose(_frv.set(pv[0], pv[1], pv[2]), _frq.setFromEuler(_frE.set(l[0], 0, l[1], 'XYZ')), _frONE));
+      _frG[gf].multiplyMatrices(_frG[g], _frm.compose(_frv.set(0, FR_PIV[gf][1] - pv[1], 0),
+        _frq.setFromEuler(_frE.set(-l[0], 0, -l[1], 'ZYX')), _frONE));
+    }
+    /* 雙馬尾：右邊那一條往外是 −x，所以 z 轉角反號 */
+    for (const [g, tl, sg] of [[FR_G.tailR, k.tR, -1], [FR_G.tailL, k.tL, 1]]) {
+      const pv = FR_PIV[g];
+      _frG[g].multiplyMatrices(_frG[FR_G.head], _frm.compose(_frv.set(pv[0], pv[1] - FR_PIV[FR_G.head][1], pv[2]),
+        _frq.setFromEuler(_frE.set(tl[0], 0, tl[1] * sg, 'XYZ')), _frONE));
+    }
+    /* 紅繩：綁繩那一點跟著杖走，方向照根的朝向（不跟著杖斜），自己左右晃一點 */
+    _frv.set(0, FR_RIB_S, 0).applyMatrix4(_frG[FR_G.staff]);
+    _frG[FR_G.ribbon].makeTranslation(_frv.x, _frv.y, _frv.z).multiply(_frm.makeRotationY(m.a || 0))
+      .multiply(_frm2.makeScale(msc, msc, msc)).multiply(_frm.makeRotationZ(k.rib)).multiply(_frm2.makeRotationX(k.rib * 0.6));
+  }
+  /* 法杖寶石中心在世界的哪裡（要先 frRig 過）：防護罩從這一點往外張開 */
+  const frGemPt = out => out.set(0, FR_GEM_Y, 0).applyMatrix4(_frG[FR_G.staff]);
+
+  /* ── 防護罩（frBar）：測地球的對偶——六角形為主、十二個五角形，頂上轉成一格六角；只留地面以上那半球（造型預覽參考圖 2 那一張）──
+     單位球上的邊開機時算一次（FR_BAR_EDGES），每一位畫的時候照罩子中心與半徑（規則那邊給 m.bx／m.bz／m.bR）放大搬過去。
+     光不用加亮混色（疊在天空上整片變白，見〈Saber〉那次）：線是不透明度照亮度走的普通混色，亮到某個程度才往白偏；
+     外面再一層照「表面朝不朝著鏡頭」淡掉的光暈管；面是一層半球殼，越靠輪廓越濃。
+     規則那邊寫在她身上的：
+       bt   開罩之後幾秒（null＝沒開）：每一條邊照「離寶石那一點的角度」先後亮起來（張開 FR_BAR_OPEN 秒），先亮一下再穩下來
+       bc   開始收之後幾秒（null＝沒在收）：一條一條各自錯開一點淡掉（FR_BAR_CLOSE 秒）
+       bh   被打到的那幾下 [方向 x, y, z, 打到後幾秒]：打到的那幾格最亮、一圈亮紋往外擴（FR_BAR_RIP 秒），那一點白光一閃 */
+  const FR_BAR_F = 5;                // 每一面切幾等分（越大六角越小）
+  const FR_BAR_OPEN = 0.4, FR_BAR_CLOSE = 0.5, FR_BAR_RIP = 0.9, FR_BAR_FLASH = 0.35, FR_BAR_HITS = 6;
+  const FR_BAR_CORE = 0.0055, FR_BAR_GLOW = 0.03;   // 線芯、光暈管的半徑（單位球上；罩子半徑 8 時約 0.044／0.24）
+  const FR_BAR_EDGES = (() => {
+    const t = (1 + Math.sqrt(5)) / 2;
+    const V = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+               [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map(v => new T.Vector3(v[0], v[1], v[2]).normalize());
+    const F = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+               [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+    /* 轉一下讓第 0 面的中心朝上：切成 3 的倍數等分時面中心是一格六角的中心，頂上就是一格六角 */
+    const c0 = V[F[0][0]].clone().add(V[F[0][1]]).add(V[F[0][2]]).normalize();
+    const rq = new T.Quaternion().setFromUnitVectors(c0, _frY);
+    V.forEach(v => v.applyQuaternion(rq));
+    const pts = [], key = new Map(), tris = [];
+    const vid = v => { const kk = [v.x, v.y, v.z].map(x => Math.round(x * 1e4)).join(); if (!key.has(kk)) { key.set(kk, pts.length); pts.push(v); } return key.get(kk); };
+    for (const [a, b, c] of F) {
+      const A = V[a], AB = V[b].clone().sub(A), AC = V[c].clone().sub(A);
+      const at = (i, j) => vid(A.clone().addScaledVector(AB, i / FR_BAR_F).addScaledVector(AC, j / FR_BAR_F).normalize());
+      for (let i = 0; i < FR_BAR_F; i++) for (let j = 0; i + j < FR_BAR_F; j++) {
+        tris.push([at(i, j), at(i + 1, j), at(i, j + 1)]);
+        if (i + j < FR_BAR_F - 1) tris.push([at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)]);
+      }
+    }
+    /* 對偶：每一條三角形的邊換成「兩邊三角形的中心」連起來的那一條 */
+    const cen = tris.map(([a, b, c]) => pts[a].clone().add(pts[b]).add(pts[c]).normalize());
+    const em = new Map();
+    tris.forEach((tr, ti) => {
+      for (let e = 0; e < 3; e++) {
+        const a = tr[e], b = tr[(e + 1) % 3], kk = a < b ? a + '_' + b : b + '_' + a;
+        if (!em.has(kk)) em.set(kk, []);
+        em.get(kk).push(ti);
+      }
+    });
+    const out = [];
+    for (const l of em.values()) {
+      if (l.length !== 2) continue;
+      let p = cen[l[0]].clone(), q = cen[l[1]].clone();
+      if (p.y < 0 && q.y < 0) continue;
+      if (p.y < 0 || q.y < 0) {                  // 跨過地面的那幾條切在地面上
+        if (p.y < 0) [p, q] = [q, p];
+        const s = p.y / (p.y - q.y);
+        q = p.clone().lerp(q, s); q.y = 0;
+        const r = Math.hypot(q.x, q.z); q.x /= r; q.z /= r;
+      }
+      const mid = p.clone().add(q).multiplyScalar(0.5), d = q.clone().sub(p), L = d.length();
+      const rot = new T.Quaternion().setFromUnitVectors(_frY, d.normalize());
+      out.push({ dir: mid.clone().normalize(), mid, rot, L });
+    }
+    return out;
+  })();
+  const FR_NE = FR_BAR_EDGES.length;
+  const FR_BAR_VS = `attribute float aB; varying float vB; varying vec3 vN; varying vec3 vV;
+void main() {
+  vB = aB;
+  vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+  vN = normalize(normalMatrix * mat3(instanceMatrix) * normal); vV = normalize(-mv.xyz);
+  gl_Position = projectionMatrix * mv;
+}`;
+  function frBarMat(glow, a, b) {
+    return new T.ShaderMaterial({
+      uniforms: { a: { value: new T.Color(a) }, b: { value: new T.Color(b) } },
+      vertexShader: FR_BAR_VS,
+      fragmentShader: 'uniform vec3 a; uniform vec3 b; varying float vB; varying vec3 vN; varying vec3 vV;\n' +
+        'void main() { float f = max(dot(normalize(vN), normalize(vV)), 0.0); vec3 c = mix(b, a, clamp(vB - 0.7, 0.0, 1.0));\n' +
+        (glow ? 'gl_FragColor = vec4(c, clamp(vB, 0.0, 1.6) * 0.32 * f * f);' : 'gl_FragColor = vec4(c, clamp(vB * 1.4, 0.0, 1.0));') +
+        '\n#include <colorspace_fragment>\n}',
+      transparent: true, depthWrite: false
+    });
+  }
+  let frMesh = null, frBarCore = null, frBarGlow = null, frBarAB = null, frBarAG = null;
+  const frBarFill = [], frHitFx = [];
+  function frInit(unit) {
+    {
+      const geo = new T.BoxGeometry(1, 1, 1), up = new Float32Array(MAXFR * FR_SLOT);
+      for (let i = 0; i < MAXFR; i++) for (let k = 0; k < FR_SLOT; k++) up[i * FR_SLOT + k] = FR_UP[FRIEREN[k].cn] || 0;
+      geo.setAttribute('upBias', new T.InstancedBufferAttribute(up, 1));
+      frMesh = new T.InstancedMesh(geo, voxelMaterial({}, GJ_FIX, 'voxel-edge-gojo'), MAXFR * FR_SLOT);
+    }
+    frMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    frMesh.castShadow = true;
+    frMesh.count = 0;
+    frMesh.visible = false;
+    frMesh.frustumCulled = false;
+    for (let i = 0; i < MAXFR; i++)
+      for (let k = 0; k < FR_SLOT; k++) {
+        const b = FRIEREN[k];
+        frMesh.setColorAt(i * FR_SLOT + k, tmpC.setHex(b.c).multiplyScalar(b.cn === 'hair' || b.cn === 'hairD' ? FR_HAIR_GAIN : 1));
+      }
+    scene.add(frMesh);
+    const tube = new T.CylinderGeometry(1, 1, 1, 6, 1, true), core = tube.clone(), glow = tube.clone();
+    frBarAB = new T.InstancedBufferAttribute(new Float32Array(MAXFR * FR_NE), 1);
+    frBarAG = new T.InstancedBufferAttribute(new Float32Array(MAXFR * FR_NE), 1);
+    frBarAB.setUsage(T.DynamicDrawUsage); frBarAG.setUsage(T.DynamicDrawUsage);
+    core.setAttribute('aB', frBarAB); glow.setAttribute('aB', frBarAG);
+    frBarCore = new T.InstancedMesh(core, frBarMat(false, 0xffffff, 0x8fe9f4), MAXFR * FR_NE);
+    frBarGlow = new T.InstancedMesh(glow, frBarMat(true, 0xe8ffff, 0x4fd2e6), MAXFR * FR_NE);
+    frBarCore.renderOrder = 3; frBarGlow.renderOrder = 2;
+    for (const z of [frBarCore, frBarGlow]) {
+      z.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      z.count = 0; z.visible = false; z.frustumCulled = false;
+      scene.add(z);
+    }
+    const fillGeo = new T.SphereGeometry(0.995, 48, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+    for (let i = 0; i < MAXFR; i++) {
+      const f = new T.Mesh(fillGeo, new T.ShaderMaterial({
+        uniforms: { op: { value: 0 }, c: { value: new T.Color(0x7fdfee) } },
+        vertexShader: GJ_FX_VS,
+        fragmentShader: `uniform float op; uniform vec3 c; varying vec3 vN; varying vec3 vV;
+void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragColor = vec4(c, op * (0.07 + 0.4 * pow(f, 3.0)));
+#include <colorspace_fragment>
+}`,
+        transparent: true, depthWrite: false, side: T.DoubleSide
+      }));
+      f.renderOrder = 1; f.visible = false; f.frustumCulled = false;
+      scene.add(f); frBarFill.push(f);
+      /* 打到那一點的白光：一顆白芯＋外面一團青色的暈（同五條悟合起來那一下的白光，gjFxMat） */
+      const hs = [];
+      for (let j = 0; j < FR_BAR_HITS; j++) {
+        const a = new T.Mesh(gjSph, gjFxMat('core', 0xffffff, 0xbff6ff, 1)), b = new T.Mesh(gjSph, gjFxMat('haze', 0xeaffff, 0x5fd8ea, 1));
+        a.renderOrder = 6; b.renderOrder = 5; a.visible = b.visible = false;
+        scene.add(a, b); hs.push([a, b]);
+      }
+      frHitFx.push(hs);
+    }
+  }
+  const frAt = [];                   // 這一幀第 n 位畫的是 beasts 的第幾隻（點選要對回去，同 gjAt）
+  const _frbc = new T.Vector3(), _frbs = new T.Vector3(), _frbv = new T.Vector3(), _frbq = new T.Quaternion();
+  const frHz = i => { const s = Math.sin(i * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  /* 第 n 位的罩子：沒開（m.bt 是 null）就整組藏起來 */
+  function frBar(m, n) {
+    const fill = frBarFill[n], hs = frHitFx[n];
+    for (const [a, b] of hs) a.visible = b.visible = false;
+    if (m.bt == null) { fill.visible = false; return false; }
+    const R = m.bR || 1, t = m.bt, base = n * FR_NE;
+    _frbc.set(m.bx, 0, m.bz);
+    frGemPt(_frbs).sub(_frbc);
+    if (_frbs.lengthSq() < 1e-6) _frbs.set(0, 1, 0);
+    _frbs.normalize();
+    for (let i = 0; i < FR_NE; i++) {
+      const E = FR_BAR_EDGES[i];
+      _frbv.copy(E.mid).multiplyScalar(R).add(_frbc);
+      frBarCore.setMatrixAt(base + i, _frm.compose(_frbv, E.rot, _frv.set(FR_BAR_CORE * R, E.L * R + FR_BAR_CORE * R, FR_BAR_CORE * R)));
+      frBarGlow.setMatrixAt(base + i, _frm.compose(_frbv, E.rot, _frv.set(FR_BAR_GLOW * R, E.L * R + FR_BAR_GLOW * R * 0.5, FR_BAR_GLOW * R)));
+      const te = FR_BAR_OPEN * Math.acos(Math.max(-1, Math.min(1, E.dir.dot(_frbs)))) / Math.PI;
+      let b = 0;
+      if (t >= te) {
+        b = 0.62 + 1.1 * Math.exp(-(t - te) * 6);                                 // 張開時那一格先亮一下再穩下來
+        b += 0.12 * Math.sin(t * 2.1 + i * 0.7);                                   // 平常微微閃
+        if (m.bh) for (const h of m.bh) {
+          const u = h[3] / FR_BAR_RIP;
+          if (u < 0 || u > 1) continue;
+          const ang = Math.acos(Math.max(-1, Math.min(1, E.dir.x * h[0] + E.dir.y * h[1] + E.dir.z * h[2])));
+          b += 1.5 * Math.exp(-Math.pow((ang - 2.4 * u) / 0.17, 2)) * (1 - u);    // 一圈亮紋往外擴
+          b += 1.8 * Math.exp(-Math.pow(ang / 0.3, 2)) * Math.exp(-u * 4);       // 打到的那幾格最亮
+        }
+        if (m.bc != null) b *= 1 - frE((m.bc - 0.3 * frHz(i)) / (FR_BAR_CLOSE * 0.5));
+      }
+      frBarAB.array[base + i] = b; frBarAG.array[base + i] = b;
+    }
+    let op = frE(t / FR_BAR_OPEN);
+    if (m.bc != null) op *= 1 - frE(m.bc / FR_BAR_CLOSE);
+    fill.visible = op > 0.001;
+    fill.position.copy(_frbc); fill.scale.setScalar(R);
+    fill.material.uniforms.op.value = op;
+    if (m.bh) {
+      let j = 0;
+      for (const h of m.bh) {
+        const u = h[3] / FR_BAR_FLASH;
+        if (u < 0 || u >= 1 || j >= FR_BAR_HITS) continue;
+        const e = 1 - (1 - u) * (1 - u), [a, b] = hs[j++];
+        a.visible = b.visible = true;
+        a.position.set(h[0], h[1], h[2]).multiplyScalar(R).add(_frbc); b.position.copy(a.position);
+        a.scale.setScalar(R * (0.03 + 0.08 * e)); a.material.uniforms.op.value = u < 0.4 ? 1 : (1 - u) / 0.6;
+        b.scale.setScalar(R * (0.1 + 0.4 * e)); b.material.uniforms.op.value = 0.9 * (1 - u);
+      }
+    }
+    return true;
+  }
+  function putFrierens(list) {
+    let n = 0, nb = 0;
+    for (let i = 0; i < list.length && n < MAXFR; i++) {
+      const m = list[i];
+      if (m.kind !== 'frieren') continue;
+      frAt[n] = i;
+      frRig(m);
+      const base = n * FR_SLOT;
+      for (let j = 0; j < FR_PARTS; j++) {
+        const b = FRIEREN[j];
+        const e = b.z ? _frExt[b.g] : 0;
+        if (e) {
+          // 袖子往下長 e（上緣不動），它下面的袖口整塊往下挪 e（同 putGojos）
+          _frv.copy(FR_PV[j]); _frv2.copy(FR_SV[j]);
+          if (b.z === 1) { _frv.y -= e / 2; _frv2.y += e; } else _frv.y -= e;
+          tmpM.compose(_frv, FR_QV[j], _frv2);
+          frMesh.setMatrixAt(base + j, _frm.multiplyMatrices(_frG[b.g], tmpM));
+        } else frMesh.setMatrixAt(base + j, _frm.multiplyMatrices(_frG[b.g], FR_LM[j]));
+      }
+      if (frBar(m, n)) nb = n + 1;
+      else for (let k = 0; k < FR_NE; k++) { frBarCore.setMatrixAt(n * FR_NE + k, ZERO_M); frBarGlow.setMatrixAt(n * FR_NE + k, ZERO_M); }
+      n++;
+    }
+    for (let i = n; i < MAXFR; i++) {
+      frBarFill[i].visible = false;
+      for (const [a, b] of frHitFx[i]) a.visible = b.visible = false;
+    }
+    frMesh.count = n * FR_SLOT;
+    frMesh.visible = n > 0;
+    if (n) { frMesh.instanceMatrix.needsUpdate = true; dropSphere(frMesh); }
+    for (const z of [frBarCore, frBarGlow]) {
+      z.count = nb * FR_NE;
+      z.visible = nb > 0;
+      if (nb) z.instanceMatrix.needsUpdate = true;
+    }
+    if (nb) frBarAB.needsUpdate = frBarAG.needsUpdate = true;
+  }
   /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）。五支 putXxx 畫完之後叫一次：
      有 alpha 的那一位整格照抄到 humMesh、原本那一格塞 0。xxxAt 是「第幾位畫的是清單裡的第幾隻」。 */
   function fadeHumans(list) {
@@ -8363,6 +8991,7 @@ void main() {
     move(megMesh, megAt, MEG_SLOT);
     move(zenMesh, zenAt, ZEN_SLOT);
     move(gjMesh, gjAt, GJ_SLOT);
+    move(frMesh, frAt, FR_SLOT);
     humMesh.count = n * HUM_SLOT;
     humMesh.visible = n > 0;
     if (!n) return;
@@ -9035,6 +9664,7 @@ void main() {
     if (megMesh && megMesh.visible) objs.push(megMesh);   // 惠惠也算 beast（v1.247.0，見 putMegs）
     if (zenMesh && zenMesh.visible) objs.push(zenMesh);   // 善逸也算 beast（v1.251.0，見 putZens）
     if (gjMesh && gjMesh.visible) objs.push(gjMesh);      // 五條悟也算 beast（v1.255.0，見 putGojos）
+    if (frMesh && frMesh.visible) objs.push(frMesh);      // 芙莉蓮也算 beast（v1.259.0，見 putFrierens）
     const hits = raycaster.intersectObjects(objs, false);
     let best = null, rank = 9;
     for (let i = 0; i < hits.length; i++) {
@@ -9042,7 +9672,7 @@ void main() {
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
                  : h.object === beastMesh || h.object === sabMesh || h.object === levMesh || h.object === megMesh ||
-                   h.object === zenMesh || h.object === gjMesh ? 'beast'
+                   h.object === zenMesh || h.object === gjMesh || h.object === frMesh ? 'beast'
                  : h.object === giftMesh ? 'gift'
                  : h.object === ground ? 'ground' : null;
       /* 泡泡被牆擋住就點不到（畫面上本來就看不見它：泡泡不寫深度，但仍然吃深度測試）。
@@ -9056,6 +9686,7 @@ void main() {
                                       : h.object === megMesh ? megAt[Math.floor(h.instanceId / MEG_SLOT)]
                                       : h.object === zenMesh ? zenAt[Math.floor(h.instanceId / ZEN_SLOT)]
                                       : h.object === gjMesh ? gjAt[Math.floor(h.instanceId / GJ_SLOT)]
+                                      : h.object === frMesh ? frAt[Math.floor(h.instanceId / FR_SLOT)]
                                                            : Math.floor(h.instanceId / BEAST_PARTS))
                 /* 泡泡是一整片貼圖網格（不是 instanced）：一顆兩個三角形，
                    而 giftAt 記著這一幀第幾片畫的是清單裡的第幾顆（見 putGifts）。 */
@@ -9144,6 +9775,9 @@ void main() {
     /* 五條悟（v1.255.0）：自己一顆 mesh（putGojos），手上的赫／蒼／茈照 GJ 的時間軸畫；
        規則那邊照 GJ.fire 那一刻放出紫球、出手點讀 gjTip（同一支 gjRig 擺的姿勢）；飛出去的那幾顆 putPurps 畫 */
     putGojos, putPurps, GOJO, GJ_PARTS, GJ_SLOT, MAXGOJO, GJ, GJ_G, GJ_HELD_R, gjTip, PURP_MAX, PURP_BURST,
+    /* 芙莉蓮（v1.259.0）：自己一顆 mesh（putFrierens），防護罩照規則那邊寫在她身上的 bt／bc／bh 畫；
+       FR_BAR_OPEN／FR_BAR_CLOSE／FR_BAR_RIP 是罩子張開、收掉、亮紋擴完要幾秒（規則那邊照這幾個收狀態） */
+    putFrierens, FRIEREN, FR_PARTS, FR_SLOT, MAXFR, FR_G, FR_NE, FR_BAR_OPEN, FR_BAR_CLOSE, FR_BAR_RIP,
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
     /* 全部造型表（v1.149）：測試把這一份整個存成基準檔（tools/model-baseline.json），
@@ -9158,11 +9792,11 @@ void main() {
                ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
                deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, saber: SABER, levi: LEVI, megumin: MEGUMIN,
-               zenitsu: ZENITSU, gojo: GOJO,
+               zenitsu: ZENITSU, gojo: GOJO, frieren: FRIEREN,
                shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY, tabby: TABBY, blackcat: BLACKCAT };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill }; }
   };
 })();

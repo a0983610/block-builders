@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.258.0';
+const VERSION = '1.259.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -385,6 +385,15 @@ function sndZenSheath() {
 /* 五條悟（v1.255.0）：登場是一聲低的嗡＋一顆很輕的高音（像空間被拉了一下）——跟 Saber（兩顆亮音往上）、
    里維（噴氣＋短的金屬）、善逸（電流的滋）分得開 */
 function sndGojo() { tone(140, 0.35, 'sine', 0.05, 0.6, 'gojo'); tone(2100, 0.22, 'sine', 0.012, 1.4, 'gojoHi'); }
+/* 芙莉蓮（v1.259.0）：登場是三顆往上的柔和鐘音（像念了一句咒文）——跟惠惠（兩顆亮音）、Saber（拔劍聲）分得開 */
+function sndFrieren() {
+  tone(660, 0.3, 'sine', 0.03, 1, 'frieren');
+  setTimeout(() => tone(880, 0.3, 'sine', 0.025, 1, 'frieren2'), 90);
+  setTimeout(() => tone(1320, 0.4, 'sine', 0.02, 1, 'frieren3'), 180);
+}
+/* 防護罩張開：一聲往上掃的玻璃音＋很輕的嗡；被打到：一聲短的「叮」（同一個鍵，連著打只響一聲） */
+function sndFrOpen() { tone(520, 0.45, 'sine', 0.04, 2.4, 'frOpen'); tone(1560, 0.3, 'triangle', 0.015, 1.2, 'frOpen2'); }
+function sndFrHit() { tone(2200, 0.12, 'sine', 0.025, 0.7, 'frHit'); }
 /* 結印到放出去那幾秒：一聲往上爬的嗡鳴（長度讀 ENG.GJ.fire，不寫死），赫與蒼兩聲錯開疊在上面 */
 function sndGjCharge() {
   const d = ENG.GJ.fire;
