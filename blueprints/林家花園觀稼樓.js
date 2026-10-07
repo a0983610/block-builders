@@ -3,6 +3,7 @@
    或在遊戲裡按「📥 匯入建築」把整份貼進去。 */
 
 // 檔名：林家花園觀稼樓.js
+// v1.263.0：二樓牆頂補一圈簷下木椽接到出簷、前景雲牆落地，屋頂與雲牆不再懸空（見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉）
 customBlueprint({
   name: '林家花園觀稼樓',
   pal: [
@@ -87,6 +88,9 @@ customBlueprint({
     const rfW = u2W + eaveExt * 2 + 2;
     const rfD = u2D + eaveExt * 2 + 2;
     v.eave(0, roofY, 0, rfW + 2, rfD + 2, 2, 1); // 二樓出簷
+    /* 簷下木椽：出簷只畫外圈，內緣離二樓牆面還有 eaveExt + 1 格，屋頂又從上一層才開始——
+       整片屋頂連同出簷原本是懸空的（v1.263.0）。補一圈從牆頂接到出簷內緣 */
+    v.walls(0, roofY, 0, u2W + eaveExt * 2, 1, u2D + eaveExt * 2, 1, eaveExt + 1);
     hipRoof(v, 0, roofY + 1, 0, rfW, rfD, 2);    // 歇山頂瓦面收坡
     // 正脊與翹角裝飾
     const ridgeH = Math.max(1, Math.round(rfD / 2));
@@ -114,11 +118,11 @@ customBlueprint({
     const wallZ = frontZ - dim(s, 0.70, 3);
     const wallH = dim(s, 0.65, 3);
     const wallSpan = Math.round(bw * 0.65);
-    // 雲牆主體粉灰泥面與起伏曲線
+    // 雲牆主體粉灰泥面與起伏曲線（牆腳從 y=0 起：雲牆在庭院地坪前面，原本從 y=1 起是懸空的，v1.263.0）
     for (let x = -wallSpan; x <= wallSpan; x++) {
       const curve = Math.round(Math.sin((x / wallSpan) * Math.PI * 2) * 1);
       const curH = Math.max(2, wallH + curve);
-      v.box(x, 1, wallZ, 1, curH, 1, 5);
+      v.box(x, 0, wallZ, 1, curH + 1, 1, 5);
       v.box(x, 1 + curH, wallZ, 1, 1, 1, 2); // 黑瓦壓頂（雲牆背脊）
     }
     // 雲牆中央與兩翼幾何透空漏窗

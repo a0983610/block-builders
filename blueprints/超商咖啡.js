@@ -3,6 +3,7 @@
    或在遊戲裡按「📥 匯入建築」把整份貼進去。 */
 
 // 檔名：超商咖啡.js
+// v1.263.0：吸管從 v.line 改成 limb（有粗細，不再斷成一截一截的階梯）（見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉）
 customBlueprint({
   name: '超商咖啡',
   pal: [
@@ -73,12 +74,20 @@ customBlueprint({
     const strawLen = dim(s, 1.3, 5);
     const strawStartX = Math.round(rTop * 0.35);
     const strawStartZ = Math.round(rTop * 0.35);
-    v.line(
-      strawStartX, lidY + lidH, strawStartZ,
-      strawStartX + Math.round(rTop * 0.4), lidY + lidH + strawLen, strawStartZ + Math.round(rTop * 0.4),
-      5
-    );
-    // 吸管頂端微紅警示圈
-    paintFrom(v, strawStartX + Math.round(rTop * 0.4), lidY + lidH + strawLen, strawStartZ + Math.round(rTop * 0.4), 0, -1, 0, 2, 2);
+    const strawEndX = strawStartX + Math.round(rTop * 0.4);
+    const strawEndY = lidY + lidH + strawLen;
+    const strawEndZ = strawStartZ + Math.round(rTop * 0.4);
+    /* 用 limb 長成一根有粗細的管子：v.line 斜著畫只有一格粗、格子只在角上碰到，四視圖看是斷成一截一截的階梯。
+       r 下限 0.75：吸管 x、z 同時往外跨一格的那一層，軸心落在四格中間（水平距離 0.71），
+       r 給 0.64 那四格一格都沒算進去，階梯原封不動（實測 3000 塊那檔格子跟 v.line 一模一樣） */
+    limb(v, { x: strawStartX, y: lidY + lidH, z: strawStartZ,
+              x1: strawEndX, y1: strawEndY, z1: strawEndZ, r: Math.max(0.75, s * 0.08), c: 5 });
+    // 吸管頂端微紅警示圈：原本只塗到離頂端 2 格的那一格，管子有粗細之後改成那個高度整圈塗紅
+    // （那幾層高度上只有吸管，用 tint 掃一個小方框就只會塗到吸管）
+    const ringY = strawEndY - 2, ringH = Math.max(1, Math.round(strawLen * 0.08));
+    for (let y = ringY; y < ringY + ringH; y++)
+      for (let x = Math.min(strawStartX, strawEndX) - 2; x <= Math.max(strawStartX, strawEndX) + 2; x++)
+        for (let z = Math.min(strawStartZ, strawEndZ) - 2; z <= Math.max(strawStartZ, strawEndZ) + 2; z++)
+          tint(v, x, y, z, 2);
   }
 });

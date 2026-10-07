@@ -3,6 +3,7 @@
    或在遊戲裡按「📥 匯入建築」把整份貼進去。 */
 
 // 檔名：清水寺本堂與舞台.js
+// v1.263.0：本堂後半與左翼廊底下補上山坡（正面石垣＋兩側與背面土坡、樹叢），本堂整座坐在坡上不再懸空（見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉）
 customBlueprint({
   name: '清水寺本堂與舞台',
   pal: [
@@ -11,14 +12,18 @@ customBlueprint({
     '#54443b', // 2 本堂木造主殿身與外廊樑架
     '#43372f', // 3 巨大寄棟造檜皮葺屋頂瓦
     '#827568', // 4 翼廊出簷與破風木裝飾
-    '#c85038'  // 5 遠景三重塔朱紅（點綴後方迴廊）
+    '#c85038', // 5 遠景三重塔朱紅（點綴後方迴廊）
+    '#8a8476', // 6 山坡石垣（亮）
+    '#696357', // 7 山坡石垣（暗，風化的那幾塊）
+    '#5d773b', // 8 山坡草地
+    '#3d5a2b'  // 9 坡上樹叢
   ],
   lo: 2.5, hi: 15.0,
 
   gen(v, s) {
     // 尺度規劃：清水寺以橫長雄偉的檜皮葺大屋頂與高聳懸造（Kakezukuri）舞台著稱
     const mainW = dim(s, 3.2, 13, true);   // 本堂寬度
-    const mainD = dim(s, 2.2, 9, true);    // 本堂進深
+    const mainD = dim(s, 2.2, 7, true);    // 本堂進深（下限 9 → 7：補了山坡之後最小那一版變大，1600 塊壓不下來，v1.263.0）
     const hallH = dim(s, 1.2, 4);          // 本堂殿身高
     const stageD = dim(s, 1.3, 5, true);   // 懸空向外突出的舞台進深
     const stageH = dim(s, 1.6, 6);         // 懸空崖壁木架高度
@@ -93,5 +98,27 @@ customBlueprint({
     const ridgeLen = Math.max(3, mainW - mainD + 2);
     const roofTopY = roofY + 1 + Math.max(2, Math.round((mainD + 6) / 2));
     v.box(0, roofTopY, 0, ridgeLen, 1, 1, 3);
+
+    /* 8. 山坡（v1.263.0）：本堂後半與左翼廊坐在山坡上，只有前面伸出去的舞台靠柱林撐著（懸造）。
+       原本本堂後半底下是空的、左翼廊整組懸空，整座只靠舞台的柱腳站著。
+       正面緊貼柱林後面是一道直立的石垣，兩側與背面是越往下越寬的土坡（2:1）；
+       只蓋外殼（坡頂除了本堂裡面那塊也鋪滿），看不到的內部不填。
+       顏色一邊蓋一邊挑：石垣用固定雜湊挑兩階深淺，土坡用雜湊撒樹叢 */
+    const hash = (x, y, z) => (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) % 100;
+    const hz0 = stageZ + (stageD - 1) / 2 + 1;                              // 石垣立面：舞台柱林最後一排的後面
+    const hzB = (mainD + 1) / 2;                                            // 坡頂後緣：本堂後牆再往後一格
+    const hxL = -Math.round((mainW + wingW) / 2) - Math.ceil(wingW / 2);    // 坡頂左緣：翼廊外側再一格
+    const hxR = (mainW - 1) / 2;                                            // 坡頂右緣：本堂側牆再往外一格
+    const inX = (mainW - 3) / 2, inZ = (mainD - 1) / 2;                     // 本堂四面牆的位置（牆裡面的坡頂看不到）
+    for (let y = 0; y < stageH; y++) {
+      const e = Math.round((stageH - 1 - y) * 0.5);
+      const xl = hxL - e, xr = hxR + e, zb = hzB + e, top = y === stageH - 1;
+      for (let x = xl; x <= xr; x++) for (let z = hz0; z <= zb; z++) {
+        if (top ? (Math.abs(x) < inX && Math.abs(z) < inZ && z > hz0)        // 石垣那一排要砌到頂
+                : !(x === xl || x === xr || z === hz0 || z === zb)) continue;
+        const h = hash(x, y, z);
+        v.set(x, y, z, z === hz0 ? (h < 35 ? 7 : 6) : (h < 30 ? 9 : 8));
+      }
+    }
   }
 });

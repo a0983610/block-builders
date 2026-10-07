@@ -2214,6 +2214,13 @@ const SHAPES = [
 
       // 深遠和式屋簷（出簷與四坡斜頂）
       v.eave(0, currentY + floorH + 1, 0, ew, ed, 1, 1);
+      /* 出簷挑得比斗栱遠的時候，斗栱要再往外挑一圈接到簷口（v1.263.0）。簷環是兩格厚的一圈，
+         斗栱層只到 fw+1；出簷那個係數取整到 7 以上（s ≥ 8.48，也就是 9000 那一檔起）時，兩者
+         中間空一格、又差一層，連斜角都碰不到——每一層屋頂連同上面整截都懸空（9000 那一檔
+         9353 格裡 8105 格）。只補中間缺的那一圈：沒有空隙的尺寸（1800、3000）一格都不加。
+         見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉 */
+      const gapT = Math.floor((ew - fw - 5) / 2);
+      if (gapT > 0) v.walls(0, currentY + floorH + 1, 0, ew - 4, 1, ed - 4, 0, gapT);
       hipRoof(v, 0, currentY + floorH + 2, 0, ew, ed, 1);
 
       // 更新下一層底部的 Y 座標
@@ -4174,6 +4181,20 @@ const SHAPES = [
     const e2 = dim(s, 1.95, 5);   // 中層藍簷半徑
     const e3 = dim(s, 1.55, 4);   // 上層頂簷半徑
 
+    /* 收坡的藍簷：一層一層的環（原本是 v.taper 給 shell 1），照原本的半徑算法。
+       每一層的內緣伸到往上那一層的外緣，最上面那一層伸到接著要蓋的殿身（rNext）（v1.263.0）。
+       原本一格厚的殼，相鄰兩層半徑一縮超過一格就上下疊不到：9000 那一檔中層藍簷以上 875 格
+       懸空；收坡只有一層的小尺寸（s 2.84～3.22 那一段）頂層殿身也是浮的。
+       試過「斜角碰得到就好、差兩格以內維持 1 格厚」：圓的取整讓那個估法不準，還有 343 個 s 懸空。
+       見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉 */
+    const slope = (y0, rA, rB, h, rNext) => {
+      for (let k = 0; k < h; k++) {
+        const r = rA + (rB - rA) * (h <= 1 ? 0 : k / (h - 1));
+        const up = k < h - 1 ? rA + (rB - rA) * ((k + 1) / (h - 1)) : rNext;
+        v.taper(0, y0 + k, 0, r, r, 1, 1, Math.max(1, r - up));
+      }
+    };
+
     // --- 1. 三層漢白玉圓形台基（含外圍欄杆望柱與四方踏道） ---
     let y = 0;
     const stW = dim(s, 0.65, 2, true);
@@ -4185,7 +4206,12 @@ const SHAPES = [
     stairs(v, 0, 0, bR1 + 1, bH + 1, stW, '-z', 0);
     stairs(v, -bR1 - bH, 0, 0, bH + 1, stW, 'x', 0);
     stairs(v, bR1 + 1, 0, 0, bH + 1, stW, '-x', 0);
-    y += bH + 1;
+    /* 上一層從這一層的欄杆那一層起蓋，坐在這一層的實心頂面上，欄杆與上一層之間留著走道
+       （v1.263.0）。原本是 y += bH + 1，上一層浮在欄杆那一層的上面——欄杆只是一圈環、
+       裡面是空的，所以每一層都跟下一層空了一層：欄杆離得近的小尺寸靠斜角接著，s 一大就斷，
+       整座殿連同上面的台基與三層藍簷懸空（10000 那一檔 3661 格；9000 那一檔是靠側面
+       從地面蓋上來的踏道剛好接住）。殿座基腳也是同一件事，所以三處一起改。 */
+    y += bH;
 
     // 第二層（中層）
     v.cyl(0, y, 0, bR2, bH, 0);
@@ -4194,7 +4220,7 @@ const SHAPES = [
     stairs(v, 0, y, bR2 + 1, bH + 1, stW, '-z', 0);
     stairs(v, -bR2 - bH, 0, 0, bH + 1, stW, 'x', 0);
     stairs(v, bR2 + 1, 0, 0, bH + 1, stW, '-x', 0);
-    y += bH + 1;
+    y += bH;
 
     // 第三層（上層）
     v.cyl(0, y, 0, bR3, bH, 0);
@@ -4203,10 +4229,10 @@ const SHAPES = [
     stairs(v, 0, y, bR3 + 1, bH + 1, stW, '-z', 0);
     stairs(v, -bR3 - bH, 0, 0, bH + 1, stW, 'x', 0);
     stairs(v, bR3 + 1, 0, 0, bH + 1, stW, '-x', 0);
-    y += bH + 1;
+    y += bH;
 
     // --- 2. 底層殿身（朱紅立柱、金格扇門窗、斗栱青綠彩畫）與下層大藍簷 ---
-    // 殿座基腳
+    // 殿座基腳（坐在上層台基面上，跟欄杆同一層）
     v.cyl(0, y, 0, r0, 1, 1);
     y += 1;
 
@@ -4233,13 +4259,16 @@ const SHAPES = [
     v.cyl(0, y + flH - 1, 0, r0 + 0.8, 1, 3, 1);
     y += flH;
 
+    // 中層、上層殿身半徑（收坡要知道上面接的是多大的殿身，所以先算）
+    const r1 = Math.max(4, r0 - dim(s, 0.35, 1));
+    const r2 = Math.max(3, r1 - dim(s, 0.35, 1));
+
     // 下層圓形大藍簷（雙層收坡，顯出飛簷出挑的弧度與平緩度）
     v.cyl(0, y, 0, e1, 1, 1);
-    v.taper(0, y + 1, 0, e1 - 0.5, r0, dim(s, 0.40, 1), 1, 1);
+    slope(y + 1, e1 - 0.5, r0, dim(s, 0.40, 1), r1);
     y += dim(s, 0.40, 1) + 1;
 
     // --- 3. 中層殿身與中層藍簷 ---
-    const r1 = Math.max(4, r0 - dim(s, 0.35, 1));
     const flH2 = Math.max(2, dim(s, 0.55, 1));
 
     // 中層殿身朱紅立柱
@@ -4250,11 +4279,10 @@ const SHAPES = [
 
     // 中層圓形藍簷
     v.cyl(0, y, 0, e2, 1, 1);
-    v.taper(0, y + 1, 0, e2 - 0.5, r1, dim(s, 0.35, 1), 1, 1);
+    slope(y + 1, e2 - 0.5, r1, dim(s, 0.35, 1), r2);
     y += dim(s, 0.35, 1) + 1;
 
     // --- 4. 上層殿身、穹頂頂簷與鎏金寶頂 ---
-    const r2 = Math.max(3, r1 - dim(s, 0.35, 1));
     const flH3 = Math.max(2, dim(s, 0.50, 1));
 
     // 上層殿身
@@ -7736,10 +7764,57 @@ const BP_SLOW_MS = 250;         // 產一份藍圖的時間預算（換建築不
    一格積木印成**兩個字元**，等寬字型下才是正方形（字元本身高是寬的兩倍）。 */
 const BP_ART_W = 32, BP_ART_H = 24;
 /* 門檻是拿內建 48 座校準過的，只留「真的是缺陷」的那幾條：
-   包圍盒大小與懸空比例都**不**示警——金門大橋單邊 163、京都五重塔懸空 61%、
+   包圍盒大小與懸空**總量**都**不**示警——金門大橋單邊 163、京都五重塔懸空 61%、
    倫敦眼有 156 組小孤島，那些是吊索與輻條，本來就長那樣。示警了只會逼 AI
    去「修」沒壞的東西。最小尺寸做不到 300 塊也一樣：48 座裡有 15 座如此，
-   而照著那個示警去縮部件，換來的是部件在小尺寸整組消失——反而更糟。 */
+   而照著那個示警去縮部件，換來的是部件在小尺寸整組消失——反而更糟。
+
+   **唯一示警的是「一大組」**（v1.263.0）：單獨一組連不到地面的格子佔整座 BP_FLOAT_BIG 以上。
+   拿 87 座（48 內建＋39 自訂）在 1800／3000／10000 三檔重量過：小組懸空最大一組
+   只佔 0.6%（俄式白石大教堂一組金色 10 格、大頭像 55 格），而接縫沒接上的是 9%～88%
+   （特製叉燒拉麵整個碗身沒接到碗腳 88%、林家花園觀稼樓的屋頂 23%、日式醬油糰子只在
+   3000 那一檔浮起來 16%、清水寺的左翼廊 9%）。中間空得很開，5% 不會誤報吊索與裝飾。
+   內建的北京天壇（27%）與京都五重塔（22%）在 10000 那一檔也是這一類（五重塔 9000 那一檔
+   9353 格裡 8105 格懸空），是加了這一條才看到的，同一版一起修了。
+   這一類以前報告只寫「懸空 N 格」，下面還接一句「懸空本身沒問題」——AI 照字面就略過了。
+   見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉。 */
+const BP_FLOAT_BIG = 0.05;
+
+/* 連不到地面的格子分組（26 鄰居、從最低那層往上長——跟 makeBlueprint 的 anchor 同一個判法），
+   由大到小排。體檢四個尺寸都要量：醬油糰子那種「只在某幾個 s 差一格」的，只看 10000 那一檔抓不到。
+   鍵自己算（+512）：cells 是 gen 的原始座標，x／z 可以是負的，gkeyOf 只收非負的整數格。 */
+function bpFloatGroups(cells) {
+  const key = (x, y, z) => (x + 512) + (y + 512) * 1024 + (z + 512) * 1048576;
+  let minY = Infinity;
+  for (const c of cells) if (c.y < minY) minY = c.y;
+  const at = new Map();
+  cells.forEach((c, i) => at.set(key(c.x, c.y, c.z), i));
+  const seen = new Uint8Array(cells.length);
+  const grow = (st, g) => {
+    while (st.length) {
+      const c = cells[st.pop()];
+      if (g) { g.n++; g.lo = Math.min(g.lo, c.y - minY); g.hi = Math.max(g.hi, c.y - minY);
+               g.hist[c.c] = (g.hist[c.c] || 0) + 1; }
+      for (const d of NBR) {
+        const j = at.get(key(c.x + d[0], c.y + d[1], c.z + d[2]));
+        if (j === undefined || seen[j]) continue;
+        seen[j] = 1; st.push(j);
+      }
+    }
+  };
+  const ground = [];
+  cells.forEach((c, i) => { if (c.y === minY) { seen[i] = 1; ground.push(i); } });
+  grow(ground, null);
+  const groups = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (seen[i]) continue;
+    seen[i] = 1;
+    const g = { n: 0, lo: Infinity, hi: -Infinity, hist: {} };
+    grow([i], g);
+    groups.push(g);
+  }
+  return groups.sort((a, b) => b.n - a.n);
+}
 
 function bpIndexOf(which) {
   if (typeof which === 'number') return which >= 0 && which < SHAPES.length ? which : -1;
@@ -7917,9 +7992,11 @@ function checkBlueprint(which, opt) {
   }
 
   /* 連通性：拿遊戲自己的那份判定（26 鄰居、從最低層往上長），報告才跟實際行為一致。
-     這一段**只報數字不示警**：懸空是允許的，48 座裡倫敦眼有 156 組
+     總量**只報數字不示警**：懸空是允許的，48 座裡倫敦眼有 156 組
      小孤島（輻條與車廂），都是故意的。要判斷「這是意外嗎」只有作者自己知道，
-     所以附一句怎麼看，讓 AI 自己對照它畫了什麼。 */
+     所以附一句怎麼看，讓 AI 自己對照它畫了什麼。
+     例外是「一大組」（BP_FLOAT_BIG，見上面）：四個尺寸裡任一檔有一組佔整座 5% 以上，
+     就示警並附修法——那幾乎都是接縫差一格，不是刻意的懸空件。 */
   L.push('');
   try {
     const b = makeBlueprint(idx, BP_TARGETS[BP_TARGETS.length - 1]);
@@ -7928,6 +8005,25 @@ function checkBlueprint(which, opt) {
     L.push('連通性（' + b.count + ' 格）：連到地面 ' + (b.count - float) + ' 格、懸空 ' +
            float + ' 格' + (b.floats.length ? '（' + b.floats.length + ' 組，其中 ' +
            tiny.length + ' 組只有 ≤4 格）' : ''));
+    /* 四個尺寸裡最嚴重的那一組（佔比最高）。只報一次：同一條接縫在好幾檔都會出現。 */
+    let worst = null;
+    for (const r of rows) {
+      if (r.err || !r.n) continue;
+      const g = bpFloatGroups(r.cells)[0];
+      if (g && g.n / r.n >= BP_FLOAT_BIG && (!worst || g.n / r.n > worst.g.n / worst.r.n))
+        worst = { r, g };
+    }
+    if (worst) {
+      const pct = Math.round(worst.g.n / worst.r.n * 100);
+      const top = Object.keys(worst.g.hist).sort((a, c) => worst.g.hist[c] - worst.g.hist[a])[0];
+      warn('一大組懸空 ' + worst.g.n + ' 格（' + worst.r.t + ' 塊那一檔，佔 ' + pct + '%）');
+      L.push('  ⚠ ' + worst.r.t + ' 塊那一檔有一組 ' + worst.g.n + ' 格連不到地面（佔整座 ' + pct +
+             '%，在第 ' + worst.g.lo + '～' + worst.g.hi + ' 層，大多是 pal[' + top + ']）');
+      L.push('    修法：這麼大一組多半不是故意的懸空件，而是接縫差了一格——兩個部件各自算位置，'
+           + '取整之後中間空了一層（常常只在某幾個尺寸出現）。讓上面那一件從下面那一件的頂面往上量'
+           + '（y0 ＝ 下面那件的 y0 ＋ 它的高），或往下多疊一層壓住接縫，再看一次這一行還在不在。'
+           + '真的是故意懸空的（吊著的招牌、浮在空中的雲）才不必改。');
+    }
     if (tiny.length)
       L.push('  懸空本身沒問題（扇葉、吊索、拱下的空洞都是）。但如果你沒有故意做懸空部件，'
            + '那些幾格的小孤島通常是在曲面上用 v.set 點裝飾造成的——改用 tint() / paintFrom()，'

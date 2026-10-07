@@ -1417,6 +1417,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       v.box(0, 0, 0, w, w, w, 0);                  // 主量體
       v.box(0, w, 0, 1, dim(s, 1, 3), 1, 0);       // 頂上 1 格粗的旗桿
     } });
+    /* ⑧ 接縫差一格（v1.263.0）：上面那一整塊從 h+1 開始蓋，跟下面空了一層，整組浮著。
+       真實案例是特製叉燒拉麵的碗身沒接到碗腳（88%）、日式醬油糰子只在 3000 那一檔浮起來。 */
+    mk('__壞 接縫', { pal: ['#fff', '#c00'], lo: 2, hi: 9, gen(v, s) {
+      const w = dim(s, 2, 5), h = dim(s, 1, 3);
+      v.box(0, 0, 0, w, h, w, 0);
+      v.box(0, h + 1, 0, w, h, w, 1);
+    } });
+    // ⑨ 不是壞法：頂上空兩格吊一小塊招牌，那是刻意的小件懸空，不該被當成「一大組」
+    mk('__測 吊牌', { pal: ['#fff', '#c00'], lo: 2, hi: 9, gen(v, s) {
+      const w = dim(s, 2, 5);
+      v.box(0, 0, 0, w, w, w, 0);
+      v.box(0, w + 2, 0, 2, 1, 1, 1);
+    } });
     const r = {
       good: { fails: good.fails.length, warns: good.warns.length, text: good.text },
       thin: checkBlueprint('__測 薄片', { ver: VERSION }),
@@ -1427,9 +1440,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       pal: checkBlueprint('__壞 配色', { ver: VERSION }),
       gone: checkBlueprint('__壞 消失', { ver: VERSION }),
       pin: checkBlueprint('__壞 針尖', { ver: VERSION }),
+      seam: checkBlueprint('__壞 接縫', { ver: VERSION }),
+      sign: checkBlueprint('__測 吊牌', { ver: VERSION }),
       missing: checkBlueprint('根本沒有這座', { ver: VERSION })
     };
-    for (const k of ['boom', 'args', 'nan', 'pal', 'gone', 'pin', 'missing', 'thin', 'pyr'])
+    r.good.big = good.warns.filter(w => w.indexOf('一大組懸空') === 0).length;
+    for (const k of ['boom', 'args', 'nan', 'pal', 'gone', 'pin', 'seam', 'sign', 'missing', 'thin', 'pyr'])
       r[k] = { fails: r[k].fails, warns: r[k].warns, text: r[k].text };
     r.targets = BP_TARGETS.slice();
     SHAPES.length = n0;                 // 測完收掉，別影響後面掃全部 SHAPES 的測試
@@ -1471,6 +1487,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('整棟只靠一格站在地上會被提醒',
      diag.pin.warns.length + diag.pin.fails.length > 0 && diag.pin.text.indexOf('最底層 1 格⚠') > 0,
      diag.pin.text.split('\n').find(l => l.indexOf('最底層') > 0) || '(沒寫到最底層)');
+  /* v1.263.0：懸空總量照舊只報數字，但「一大組」（佔整座 5% 以上）要示警並附修法——
+     那幾乎都是接縫差一格。反過來，刻意的小件懸空（吊牌、扇葉）與好的藍圖不能被誤報。 */
+  const seamWarn = diag.seam.warns.find(w => w.indexOf('一大組懸空') === 0);
+  ok('一大組懸空（接縫差一格）會被提醒，修法講的是接縫',
+     !!seamWarn && diag.seam.text.indexOf('接縫差了一格') > 0,
+     seamWarn || '(沒有一大組懸空的提醒)');
+  ok('刻意的小件懸空與好的藍圖不會被當成「一大組懸空」',
+     !diag.sign.warns.some(w => w.indexOf('一大組懸空') === 0) && diag.good.big === 0 &&
+     /懸空 [1-9]\d* 格/.test(diag.sign.text),
+     '吊牌：' + (diag.sign.text.split('\n').find(l => l.indexOf('連通性') === 0) || '?') +
+     '；範例小教堂 ' + diag.good.big + ' 條');
   ok('名字打錯時報告會教怎麼修，而不是丟例外',
      diag.missing.fails.length === 1 && diag.missing.text.indexOf('list.js') > 0,
      diag.missing.text.split('\n')[1]);

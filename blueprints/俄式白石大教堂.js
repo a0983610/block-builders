@@ -3,19 +3,54 @@
    或在遊戲裡按「📥 匯入建築」把整份貼進去。 */
 
 // 檔名：俄式白石大教堂.js
+// v1.263.0：只調色（格子一格都沒動）：白石牆與鼓座改三階灰白（固定雜湊，每一塊各自風化）、壓頂下一排陰影，金頂照舊（見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉）
 customBlueprint({
   name: '俄式白石大教堂',
   pal: [
-    '#eef2f5', // 0 主體白石牆面
+    '#e3ddd0', // 0 主體白石牆面（帶一點暖的石灰岩白，原本 #eef2f5 在遊戲光照下近乎全白）
     '#9ea8b3', // 1 淺灰底座、盲柱廊飾帶、線腳
     '#d4a23b', // 2 主金頂與小金頂
     '#3c4146', // 3 圓拱深色窗洞 / 陰影
     '#704a2c', // 4 入口拱門框與細部裝飾
-    '#e0c460'  // 5 十字架與頂部亮金飾條
+    '#e0c460', // 5 十字架與頂部亮金飾條
+    '#d2ccbe', // 6 白石第二階（固定雜湊）
+    '#aaa496'  // 7 白石陰影：風化的石塊（固定雜湊）、壓頂下面那一排
   ],
   lo: 2.2, hi: 15.0,
 
   gen(v, s) {
+    // 固定雜湊（座標的純函式，同一個 s 每次一樣）：0～99
+    const hash = (x, y, z) => {
+      let h = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791);
+      h = Math.imul(h ^ (h >>> 13), 1274126177);
+      return ((h ^ (h >>> 16)) >>> 0) % 100;
+    };
+    // 白石三階：五成五留主色、三成換第二階、一成二換陰影（tint 只換已經有的格子）
+    const stone = (x, y, z) => {
+      const h = hash(x, y, z);
+      if (h >= 88) tint(v, x, y, z, 7);
+      else if (h >= 55) tint(v, x, y, z, 6);
+    };
+    // walls() 的外框一圈（照它的取整）；top 給了就把最上一層換成陰影（壓頂底下）
+    const shadeWalls = (x0, y0, z0, w, h, d, top) => {
+      const xa = Math.round(x0 - (w - 1) / 2), xb = Math.round(x0 + (w - 1) / 2);
+      const za = Math.round(z0 - (d - 1) / 2), zb = Math.round(z0 + (d - 1) / 2);
+      for (let y = y0; y < y0 + h; y++) {
+        const p = (top && y === y0 + h - 1) ? (x, yy, z) => tint(v, x, yy, z, 7) : stone;
+        for (let x = xa; x <= xb; x++) { p(x, y, za); p(x, y, zb); }
+        for (let z = za + 1; z < zb; z++) { p(xa, y, z); p(xb, y, z); }
+      }
+    };
+    // cyl(…, hollow 1) 的那一圈（照它的半徑判斷）
+    const shadeRing = (cx, y0, cz, R, h) => {
+      const n = Math.ceil(R);
+      for (let y = y0; y < y0 + h; y++) for (let i = -n; i <= n; i++) for (let k = -n; k <= n; k++) {
+        const d = Math.hypot(i, k);
+        if (d > R + 0.35 || d < R - 1) continue;
+        stone(cx + i, y, cz + k);
+      }
+    };
+
     // 1. 尺度參數計算
     const mw = dim(s, 2.0, 9, true);     // 主殿寬度（奇數便於中軸對稱）
     const md = dim(s, 2.0, 9);           // 主殿深度
@@ -30,8 +65,10 @@ customBlueprint({
 
     // 3. 主殿與前廳牆體
     v.walls(0, 1, 0, mw, mh, md, 0, 1);
+    shadeWalls(0, 1, 0, mw, mh, md, true);
     const az = -Math.round(md / 2 + ad / 2);
     v.walls(0, 1, az, aw, ah, ad, 0, 1);
+    shadeWalls(0, 1, az, aw, ah, ad, true);
 
     // 4. 正面入口拱門與側壁拱券線腳
     const dw = dim(s, 0.45, 3, true);
@@ -77,6 +114,7 @@ customBlueprint({
 
     // 中央主鼓座與大洋蔥金頂
     v.cyl(0, mainDrumY, 0, drumR + 1, drumH + 1, 0, 1);
+    shadeRing(0, mainDrumY, 0, drumR + 1, drumH + 1);
     // 鼓座窄拱窗
     ringOf(v, 4, drumR + 1, (vv, rx, rz) => {
       paintFrom(vv, rx, mainDrumY + Math.round(drumH * 0.4), rz, -Math.sign(rx || 1), 0, -Math.sign(rz || 1), 2, 3);
@@ -97,6 +135,7 @@ customBlueprint({
         const subR = Math.max(1, Math.round(drumR * 0.65));
         const subH = Math.max(2, Math.round(drumH * 0.8));
         vv.cyl(cx, mainDrumY, cz, subR, subH, 0, 1);
+        shadeRing(cx, mainDrumY, cz, subR, subH);
         vv.cyl(cx, mainDrumY + subH, cz, subR + 1, 1, 2);
         vv.onion(cx, mainDrumY + subH + 1, cz, subR + 1, dim(s, 0.5, 3), 2);
         // 小十字架

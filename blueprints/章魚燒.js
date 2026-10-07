@@ -3,6 +3,7 @@
    或在遊戲裡按「📥 匯入建築」把整份貼進去。 */
 
 // 檔名：章魚燒.js
+// v1.263.0：兩根竹籤從 v.line 改成 limb（有粗細，不再斷成一截一截的階梯）（見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉）
 customBlueprint({
   name: '章魚燒',
   pal: [
@@ -82,17 +83,17 @@ customBlueprint({
     const startX = xOffsets[1] + br * 0.2;
     const startZ = zOffsets[2] + br * 0.2;
     const startY = ballY + br * 0.4;
+    /* 用 limb 長成有粗細的籤：v.line 斜著畫只有一格粗、格子只在角上碰到，四視圖看是斷成一截一截的階梯。
+       r 下限 0.75：籤是 x、z 同時往外斜，兩軸同一層一起跨一格的地方軸心落在四格中間（水平距離 0.71），
+       r 比這個小那幾格不會被算進去，階梯就還在。兩端座標照原本的 v.line。 */
+    const pickR = Math.max(0.75, s * 0.07);
     // 籤 1
-    v.line(
-      Math.round(startX), Math.round(startY), Math.round(startZ),
-      Math.round(startX + pLen * 0.55), Math.round(startY + pLen * 1.1), Math.round(startZ + pLen * 0.4),
-      6
-    );
+    limb(v, { x: Math.round(startX), y: Math.round(startY), z: Math.round(startZ),
+              x1: Math.round(startX + pLen * 0.55), y1: Math.round(startY + pLen * 1.1), z1: Math.round(startZ + pLen * 0.4),
+              r: pickR, c: 6 });
     // 籤 2
-    v.line(
-      Math.round(startX - 1), Math.round(startY), Math.round(startZ + 1),
-      Math.round(startX + pLen * 0.5), Math.round(startY + pLen * 1.15), Math.round(startZ + pLen * 0.5),
-      6
-    );
+    limb(v, { x: Math.round(startX - 1), y: Math.round(startY), z: Math.round(startZ + 1),
+              x1: Math.round(startX + pLen * 0.5), y1: Math.round(startY + pLen * 1.15), z1: Math.round(startZ + pLen * 0.5),
+              r: pickR, c: 6 });
   }
 });
