@@ -8777,6 +8777,8 @@ function stepBeast0(m, dt) {
   /* 被幽浮吸走了（v1.167）：牠這一段完全交給 stepUfo 管（在光裡飄、在艙裡等、
      從天上掉回來），這裡整段跳過。擺在最前面：下面每一條分支都會動到位置。 */
   if (m.ufo) return false;
+  /* 雁（v1.272.0）：飛、被打下來、摔在地上淡掉都是自己一套（見 stepGoose），擺在 m.dead 那一條前面 */
+  if (m.kind === 'goose') return stepGoose(m, dt);
   /* 被斬殺的巨人：躺著冒蒸氣、氣化消失（里維 v1.230；核彈、爆裂魔法、Excalibur v1.245.0，見 giantDie）；
      被打死的牛羊：躺著流血、淡掉（v1.240） */
   if (m.dead) return m.herd ? stepCarcass(m, dt) : stepDie(m, dt);
@@ -10891,7 +10893,8 @@ function stepDoom(dt) {
   if (phase !== 'done') { doomT = -1; return; }     // 沒有一座完好的地標可砸
   /* 一次一件，等這一件演完。**吉祥物不算**（v1.144）：那是另一條線，場上有牠在逛的
      時候天災的鐘照數——不排除的話，三隻輪流來逛就等於把天災關掉了。 */
-  if (nanas || fballs || (beasts && beasts.some(m => !m.fun && !m.herd))) return;
+  /* 閒逛動物（v1.154）與雁（v1.272.0）是常駐／路過的，也不算（不排除的話場上一直有牠們，天災就再也不會來） */
+  if (nanas || fballs || (beasts && beasts.some(m => !m.fun && !m.herd && m.kind !== 'goose'))) return;
   if (doomT < 0) { doomT = rr(DOOM_LO, DOOM_HI); return; }
   doomT -= dt;
   if (doomT > 0) return;
@@ -11635,6 +11638,9 @@ function grFace(m, x, z, dt) {
    接著丟成一條彈道——摔下去、落地判燒、躺一下、爬起來全是猴子那一份程式（flyBeast）。
    爬起來之後接哪一段：還沒噴的就再瞄一次（打倒只是拖延，同猴子），噴過了就走人。 */
 function grDown(m) {
+  /* 雁（v1.272.0）也掛 sky，打下來的那幾條路（tossBeast／igniteBeast／fellBeast／火把點牠）都走到這裡：
+     轉進牠自己那一支（掉下來就死，見 gooseDown） */
+  if (m.kind === 'goose') return gooseDown(m);
   m.sky = 0;
   m.st = m.left > 0 ? 'aim' : 'up';
   m.t = GR_AIM; m.jr = 0;                  // 落地爬起來要重新挑一次目標（見 stepGryph 的 aim）
@@ -12448,6 +12454,8 @@ let hitBy = null;
 function beastHit(m, src) {
   /* 牛羊（v1.240）：沒有「來意」可以改（v1.208），但會被打死——只記一筆，其餘都不吃 */
   if (m && m.herd) { lifeHit(m, src); return; }
+  /* 雁（v1.272.0）：打中那一下 gooseDown 已經讓牠掉下來了（掉下來就死），沒有別的要記 */
+  if (m && m.kind === 'goose') return;
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
   if (!m || m === hitBy || beastLeaving(m) || m.call || m.cq) return;
   /* 五條悟（v1.255.0）、芙莉蓮（v1.259.0）不會生氣：一個什麼時候都打不動（無下限）、一個站在自己的罩子裡，
@@ -12601,20 +12609,28 @@ function stepCarcass(m, dt) {
    看過造型之後選 5~8 隻。款數從 4 變 8（鹿與豬各兩款，見 engine.js 的 deerParts／pigParts）——
    兩個一起加才有意義：8 款只養 2~3 隻的話，一場遊戲大半的款式根本不會出現。
    v1.241 使用者：「增加閒逛動物種類 也增加場上數量 狗&馬&貓」，選了各兩款、8~12 隻——
-   款數 8 → 14（柴犬、邊境牧羊犬、棗紅馬、白馬、橘貓、黑貓，見 engine.js 的 dogParts／horseParts／catParts）。 */
+   款數 8 → 14（柴犬、邊境牧羊犬、棗紅馬、白馬、橘貓、黑貓，見 engine.js 的 dogParts／horseParts／catParts）。
+   v1.272.0 使用者：「增加閒晃動物種類 吉伊卡哇 企鵝 鳥(在空中飛過)」，選了吉伊卡哇三主角、隻數維持 8~12——
+   款數 14 → 19（吉伊卡哇、小八、烏薩奇、皇帝企鵝、阿德利企鵝，見 engine.js 的 chiParts／pengParts）。
+   這五款是**兩條腿**的（左右反相，走路整隻左右搖，見 engine 的 WADDLE），其餘照舊，倒下來一樣往側邊倒。
+   鳥是另一條線（從天上飛過，不在地上逛），見下面〈雁群〉。 */
 const HERD_N = [8, 12];              // 場上養幾隻（v1.154 是 2~3，使用者：「牛羊2~3隻」；v1.182 5~8）
 const HERD_KIND = ['cow', 'ox', 'sheep', 'ram', 'deer', 'stag', 'hog', 'boar',
-                   'shiba', 'collie', 'horse', 'grey', 'tabby', 'blackcat'];
+                   'shiba', 'collie', 'horse', 'grey', 'tabby', 'blackcat',
+                   'chiikawa', 'hachiware', 'usagi', 'emperor', 'adelie'];
 /* 走多快，**一款一個**（v1.183 使用者：「根據動物種類給速度」；小人 6.8、猴子 2.2）。
    牛慢、羊更慢、豬短腿小跑、鹿最快——v1.154～v1.182 是八款共用 1.5。
-   v1.241 使用者選「狗最快」：狗 2.8（小跑）、馬 2.2（散步，比牛快）、貓 1.7（慢慢晃），同一種的兩款同速。 */
+   v1.241 使用者選「狗最快」：狗 2.8（小跑）、馬 2.2（散步，比牛快）、貓 1.7（慢慢晃），同一種的兩款同速。
+   v1.272.0 預覽頁看過的數字：吉伊卡哇 1.3、小八 1.5、烏薩奇 2.6（最好動）、皇帝企鵝 0.9（全場最慢）、阿德利 1.2。 */
 const HERD_WALK = { cow: 1.5, ox: 1.6, sheep: 1.3, ram: 1.35,
                     deer: 2.4, stag: 2.1, hog: 1.4, boar: 1.9,
-                    shiba: 2.8, collie: 2.8, horse: 2.2, grey: 2.2, tabby: 1.7, blackcat: 1.7 };
+                    shiba: 2.8, collie: 2.8, horse: 2.2, grey: 2.2, tabby: 1.7, blackcat: 1.7,
+                    chiikawa: 1.3, hachiware: 1.5, usagi: 2.6, emperor: 0.9, adelie: 1.2 };
 /* 腿擺多快（倍率，見 strollTo 的 step）**不是自由參數**：一步跨多遠是腿長與擺幅決定的，
    跟不上速度就是原地空踩、擺太快就是碎步。所以照造型表算，不一款一款寫死——
 
      一條腿一趟掃 2·腿長·sin(擺幅)，四條腿對角同步 → 一個週期走 4·腿長·sin(擺幅)
+     （兩條腿左右反相的也一樣：一個週期左右腳各踩一趟，v1.272.0 那五款照同一條式子）
      週期 ＝ 2π ÷ (11·step)（見 strollTo 那行 w.ph += dt * 11 * step）
      要 速度 × 週期 ≒ 一個週期走的距離  →  step ∝ 速度 ÷ (腿長·sin(擺幅))
 
@@ -12685,6 +12701,133 @@ function stepHerd(dt) {
     spawnCattle(herdOwed > 0);
     if (herdOwed > 0) herdOwed--;
   }
+}
+
+/* ── 雁群（v1.272.0）──────────────────────────────────────
+   使用者：「增加閒晃動物種類 吉伊卡哇 企鵝 鳥(在空中飛過)」，鳥的部分選了「雁群排 V 字」「打得到」。
+   每隔 GOOSE_GAP 秒來一群 GOOSE_N 隻，排成 V 字從林帶一頭直直飛到另一頭，兩頭在林帶淡入淡出
+   （同飛龍：進場 wIn、過了中線是 out，見 beastOut／woodFade）。
+   **從建築旁邊飛過、不從頂上**：航線離場心 GOOSE_CLEAR 格以外（建築半徑再加上隊形的半寬），
+   高度 GOOSE_ALT 格。預覽頁第一版照飛龍那樣飛在建築頂上 8 格（新天鵝堡 35 格高 → 43 格），
+   開場的鏡頭裡整群在畫面上緣外面——要把鏡頭拉遠往上看才看得到。
+   牠們跟飛龍、獅鷲一樣在 beasts 清單裡、**一直掛著 sky**（原點在身體中段，命中判定照身體中段上下抓）——
+   所以「打不打得到」整套沿用天上那幾隻的規則：爆炸照三維距離掃得到、雷照水平距離劈得到（從雲底到地面一條線）、
+   拿火把或手指直接點得到；幽浮不吸、兵長與 Saber 不追（同飛龍）。石頭、砲彈、隕石飛行途中只認積木
+   （sweepRock），要在落點炸開時剛好掃到才算；箭、子彈、兵器飛行途中認生物（weaponVsBeast），
+   但那一支在天上是照「原點 ± BEAST_MID」抓上下範圍，雁的原點就在身體正中（BEAST_MID 是 0），上下範圍是 0、
+   等於射不中——沒改它（那是飛龍、獅鷲共用的一支，要不要改先問使用者）。
+   **被打中就掉下來**：tossBeast／igniteBeast／fellBeast 碰到 sky 都走 grDown，那一支開頭轉進 gooseDown——
+   一條規則蓋掉所有打法。摔到草皮上翅膀攤開、身下一攤血，躺 DIE_HOLD 秒、花 DIE_FADE 秒淡掉
+   （跟閒逛動物被打死同一套數字，見〈被打死〉）。同一群剩下的照原本的隊形飛走。
+   不算天災、不算吉祥物、不算閒逛動物（stepDoom 的「一次一件」、beastHit 的改主意都不理牠們）。
+   見 開發筆記〈閒逛的動物加吉伊卡哇、企鵝，天上飛過一群雁（v1.272.0）〉 */
+const GOOSE_N = [5, 9];              // 一群幾隻
+const GOOSE_FIRST = [10, 25];        // 開場之後第一群幾秒來
+const GOOSE_GAP = [40, 80];          // 之後隔幾秒來一群
+const GOOSE_SPD = 9;                 // 飛多快（格／秒；小人走 6.8）
+const GOOSE_ALT = [14, 20];          // 飛多高（格；小人 2.26）
+const GOOSE_OFF = 0.6;               // 航線偏離場心最多幾成林帶半徑
+const GOOSE_BACK = 2.6, GOOSE_SIDE = 2.2;   // 隊形：每往後一排退幾格、往旁邊開幾格
+/* 航線離場心至少幾格：建築半徑 ＋ 隊形最寬那一排的半寬（9 隻是第 4 排，4 × GOOSE_SIDE）＋ 留 4 格 */
+const goClear = () => siteR + Math.ceil((GOOSE_N[1] - 1) / 2) * GOOSE_SIDE + 4;
+const GOOSE_SC = [0.95, 1.05];       // 一群一個大小（乘 DOOM_SC）
+const GOOSE_FLAP = 9;                // 拍翅（弧度／秒）
+const GOOSE_BOB = 0.25, GOOSE_BOB_W = 1.3;   // 上下浮多少、多快（每一隻相位錯開）
+const GOOSE_FALL_WA = 0.9;           // 被打中往下掉的時候亂拍多大
+const GOOSE_DEAD_WB = -0.06;         // 摔在地上翅膀攤開、翼尖垂一點點
+let geeseT = -1;                     // 下一群還有幾秒（−1＝還沒抽）
+function spawnGeese() {
+  const n = Math.round(rr(GOOSE_N[0], GOOSE_N[1]));
+  const a = Math.random() * Math.PI * 2, R = woodR();
+  /* 航線偏離場心多遠：建築旁邊（goClear）到 GOOSE_OFF 成林帶半徑之間，哪一邊隨機。
+     建築大到兩頭夾不出空間（goClear 比上限還遠）就貼著 goClear 飛 */
+  const lo = goClear(), off = (Math.random() < 0.5 ? -1 : 1) * rr(lo, Math.max(lo, GOOSE_OFF * R));
+  const L = Math.sqrt(Math.max(0, R * R - off * off));
+  const dx = -Math.cos(a), dz = -Math.sin(a);      // 航向：從 a 那個方位飛向對面
+  const nx = -dz, nz = dx;                         // 航線的側向
+  const x0 = -dx * L + nx * off, z0 = -dz * L + nz * off;   // 領頭那一隻從林帶中線上出發
+  const cruise = rr(GOOSE_ALT[0], GOOSE_ALT[1]);
+  const sc = DOOM_SC * rr(GOOSE_SC[0], GOOSE_SC[1]);
+  const out = [];
+  if (!beasts) beasts = [];
+  for (let k = 0; k < n; k++) {
+    /* V 字：第 k 隻排在第 ceil(k/2) 排，單數在右翼、雙數在左翼。後面那幾排一開始在林帶外面，
+       照離林帶多近淡進來（woodFade），所以是一隻一隻飛進畫面 */
+    const r = Math.ceil(k / 2), back = r * GOOSE_BACK, lat = (k % 2 ? 1 : -1) * r * GOOSE_SIDE;
+    const m = {
+      kind: 'goose', sky: 1, st: 'in', wIn: 1,
+      x: x0 - dx * back + nx * lat, z: z0 - dz * back + nz * lat,
+      y: cruise, cruise, dx, dz, a: Math.atan2(dx, dz), sc,
+      ph: rr(0, Math.PI * 2), bo: rr(0, Math.PI * 2), t: 0,
+      gait: 0, spin: 0, roll: 0, lie: 0, air: 0, fall: 0, burn: 0, wet: 0, lit: 0,
+      vx: 0, vy: 0, vz: 0, tsp: 0, hcd: 0, dead: 0
+    };
+    beasts.push(m);
+    out.push(m);
+  }
+  return out;
+}
+/* 雁群的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step）：時間到就放一群進來 */
+function stepGeese(dt) {
+  if (geeseT < 0) geeseT = rr(GOOSE_FIRST[0], GOOSE_FIRST[1]);
+  geeseT -= dt;
+  if (geeseT > 0) return;
+  geeseT = rr(GOOSE_GAP[0], GOOSE_GAP[1]);
+  spawnGeese();
+}
+/* 正下方最高那一塊就位積木的頂面（沒有就是地面 0）。被打中往前帶著速度掉，可能落在地標上——
+   照 flyBeast 那樣一律落在 y 0 的話，摔進建築裡面就看不到了（預覽頁第一版截到的：掉進城堡的牆腳裡） */
+function gooseFloor(x, y, z) {
+  for (let gy = Math.min(gMaxY, Math.floor(y)); gy >= 0; gy--)
+    if (blockAt(x, gy + HB, z)) return gy + 2 * HB;
+  return 0;
+}
+/* 一隻的一幀（stepBeast0 轉進來）。回傳 true＝飛出林帶或淡完了，收掉 */
+function stepGoose(m, dt) {
+  const fl = ENG.BEAST_FLOOR.goose * m.sc;           // 原點在身體中段：肚子貼著地面時原點離地這麼高
+  if (m.dead) {                                      // 摔在地上／屋頂上：躺著、淡掉（同 stepCarcass 的鐘）
+    m.dead += dt;
+    m.alpha = corpseAlpha(m.dead);
+    /* 屋頂被打掉了就再往下掉（同碎料：底下沒東西就掉） */
+    const g = gooseFloor(m.x, m.y - fl + 0.01, m.z) + fl;
+    if (m.y > g + 1e-3) { m.vy -= GRAV * dt; m.y = Math.max(g, m.y + m.vy * dt); }
+    else m.vy = 0;
+    return m.dead >= DIE_HOLD + DIE_FADE;
+  }
+  if (m.air) {                                       // 被打下來：往下掉、一路亂拍、翻滾
+    const y0 = m.y;
+    m.vy -= GRAV * dt;
+    m.x += m.vx * dt; m.y += m.vy * dt; m.z += m.vz * dt;
+    m.spin += m.tsp * dt;
+    m.ph += dt * GOOSE_FLAP * 1.8;
+    /* 從**這一幀動之前**的高度往下找：從 30 格掉下來一幀走 1.3 格，照動完的位置找的話已經穿過頂上那一層，
+       會停在它底下那一層（測試抓到的：肚子 2.94、那一柱頂面 3.94） */
+    const g = gooseFloor(m.x, y0 - fl, m.z);
+    if (m.y > g + fl) return false;
+    /* 落地那一刻翻滾角歸零（理由同 flyBeast：空中繞身體中段轉、地上的姿勢是另一套） */
+    m.y = g + fl; m.air = 0; m.spin = 0; m.roll = 0; m.vx = m.vy = m.vz = 0;
+    m.dead = 1e-6; m.alpha = 1;                      // 1e-6 同 dieHerd：血泊的鐘跟屍體同一個基準
+    m.wa = 0; m.wc = 0; m.wb = GOOSE_DEAD_WB;
+    /* 血泊是貼著草皮畫的：落在屋頂上的就不漫（不然血會出現在樓下的地上） */
+    if (!g) spawnBlood(m.x, m.z, herdBody('goose').len * m.sc * BLOOD_BEAST);
+    sndFall();
+    return false;
+  }
+  m.t += dt;
+  m.ph += dt * GOOSE_FLAP;
+  m.x += m.dx * GOOSE_SPD * dt; m.z += m.dz * GOOSE_SPD * dt;
+  m.y = m.cruise + Math.sin(m.t * GOOSE_BOB_W + m.bo) * GOOSE_BOB;
+  if (m.st === 'in' && m.x * m.dx + m.z * m.dz > 0) m.st = 'out';   // 過了中線就是在飛走（beastOut 照離林帶多近淡掉）
+  return m.st === 'out' && Math.hypot(m.x, m.z) > woodR();
+}
+/* 被打中（grDown 轉進來，所有打法都走這一條）：往前帶著一點速度掉下去。回傳 true＝真的打下來了 */
+function gooseDown(m) {
+  if (m.air || m.dead) return false;
+  m.air = 1; m.st = 'fall';
+  m.vx = m.dx * GOOSE_SPD * 0.7; m.vz = m.dz * GOOSE_SPD * 0.7; m.vy = 3;
+  m.tsp = rr(3, 6) * (Math.random() < 0.5 ? -1 : 1);
+  m.wa = GOOSE_FALL_WA;
+  return true;
 }
 
 /* ── 肉（v1.261.0）───────────────────────────────────────

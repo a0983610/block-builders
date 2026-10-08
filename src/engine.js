@@ -4780,7 +4780,9 @@ const ENG = (function () {
     dragon: { px: 0.30, py: 0.46, tip: 4.85, mid: 0.18, amp: 0.62, lag: 1.05, curl: 0 },
     /* v1.177 改成四足之後翼根跟著背降下來（py 2.00 → 1.62）：牠不再是站直的，
        翼面要壓在背脊上，不是浮在頭的兩側。 */
-    gryphon: { px: 0.52, py: 1.62, tip: 3.30, mid: 0.24, amp: 0.58, lag: 0.95, curl: 0 }
+    gryphon: { px: 0.52, py: 1.62, tip: 3.30, mid: 0.24, amp: 0.58, lag: 0.95, curl: 0 },
+    /* 雁（v1.272.0）：原點在身體中段（同飛龍），翼根貼著背、翼尖 1.07 */
+    goose: { px: 0.13, py: 0.05, tip: 1.07, mid: 0.08, amp: 0.55, lag: 0.70, curl: 0 }
   };
   const TAIL_SW = 0.60, TAIL_K = 0.52, TAIL_W = 0.62;      // 尾巴：擺幅、波長、比翅膀慢幾成
   const NECK_SW = 0.22, NECK_W = 0.45;                     // 脖子：擺幅、快慢
@@ -5351,6 +5353,139 @@ const ENG = (function () {
     eye: 0xe8c234, leg: 0x1c1a1d, paw: 0x1c1a1d, tip: 0x1c1a1d, inner: 0x3a2e30
   });
 
+  /* ── 吉伊卡哇（v1.272.0）──────────────────────────────────
+     使用者：「增加閒晃動物種類 吉伊卡哇 企鵝 鳥(在空中飛過)」，附了一張八隻的圖，選了**三主角**：
+     吉伊卡哇（白、小圓耳、八字眉）、小八（白身、頭頂藍色的「八」字分線、藍色尖耳、藍尾巴）、
+     烏薩奇（淡黃、一對長兔耳）。
+     整隻是一顆頭身不分的麻糬：**一層一層疊出來的圓頂**（底 0.40 寬 → 主體 0.62 → 0.54 → 頂 0.38），
+     主體與次一層各是兩塊交叉（寬淺一塊、窄深一塊），哪一面看過去轉角都是缺的。
+     第一版是三塊同中心的大方塊交叉，截圖是**一塊豆腐**（只有轉角缺一小角，輪廓還是方的）。
+     臉貼在主體前面那一面（z 0.26）上。頭頂那幾層（o.top）小八是藍的，其餘兩隻跟身體同色。
+     **兩條腿**，左右反相（同猴子；四條腿那幾隻是對角同步）。腿短到只剩一雙腳掌，走起來靠整隻
+     左右搖（見 WADDLE）。辨識靠耳朵的剪影與顏色：圓耳的白、尖耳的白配藍、長耳的黃。
+     見 開發筆記〈閒逛的動物加吉伊卡哇、企鵝，天上飛過一群雁（v1.272.0）〉 */
+  const CHI_HIP = 0.14, CHI_SH = 0.34;                   // 髖／肩的高度
+  const CHI_EYE = 0x1a1416, CHI_MOUTH = 0x4a2c2c;
+  function chiParts(o) {
+    const top = o.top || o.hide;
+    const mid = [
+      { p: [0, 0.08, 0], s: [0.40, 0.08, 0.30], c: o.hide },          // 底（收圓）
+      { p: [0, 0.30, 0], s: [0.62, 0.40, 0.44], c: o.hide },          // 主體：寬淺
+      { p: [0, 0.30, 0], s: [0.54, 0.40, 0.52], c: o.hide },          // 　　　窄深（臉這一面 z 0.26）
+      { p: [0, 0.54, 0], s: [0.62, 0.08, 0.44], c: top },             // 主體上緣（小八從這裡起是藍的）
+      { p: [0, 0.54, 0], s: [0.54, 0.08, 0.52], c: top },
+      { p: [0, 0.605, 0], s: [0.56, 0.09, 0.42], c: top },            // 往上一層一層收（每層兩邊各收 0.03～0.04）
+      { p: [0, 0.605, 0], s: [0.48, 0.09, 0.50], c: top },
+      { p: [0, 0.67, 0], s: [0.48, 0.08, 0.36], c: top },
+      { p: [0, 0.67, 0], s: [0.40, 0.08, 0.44], c: top },
+      { p: [0, 0.725, 0], s: [0.34, 0.07, 0.28], c: top },            // 頂（0.76）
+      { p: [0, 0.385, 0.266], s: [0.045, 0.016, 0.01], c: CHI_MOUTH } // 嘴
+    ];
+    /* 小八額頭中間那塊白：「八」字分線，一層比一層窄（下寬上尖），貼在每一層藍的前面 */
+    if (o.split) mid.push(
+      { p: [0, 0.54, 0.263], s: [0.16, 0.08, 0.01], c: o.hide },
+      { p: [0, 0.605, 0.253], s: [0.10, 0.09, 0.01], c: o.hide },
+      { p: [0, 0.67, 0.223], s: [0.05, 0.08, 0.01], c: o.hide });
+    if (o.tail === 'stick')                                           // 小八的藍尾巴（往後下垂）
+      mid.push({ p: [0, 0.14, -0.28], s: [0.07, 0.16, 0.07], c: o.top, r: [0.5, 0, 0] });
+    if (o.tail === 'puff')                                            // 烏薩奇的短尾（一小團）
+      mid.push({ p: [0, 0.16, -0.275], s: [0.12, 0.10, 0.06], c: o.puff });
+    const side = [
+      { p: [0.10, 0.44, 0.265], s: [0.055, 0.07, 0.02], c: CHI_EYE },       // 眼（黑豆）
+      { p: [0.088, 0.455, 0.276], s: [0.022, 0.022, 0.006], c: 0xffffff },  // 眼裡的亮點
+      { p: [0.18, 0.38, 0.264], s: [0.10, 0.05, 0.02], c: o.blush },        // 腮紅
+      { p: [0.33, 0.27, 0.04], s: [0.08, 0.12, 0.10], c: o.hide, am: 0.6, pv: CHI_SH },             // 手
+      { p: [0.13, 0.05, 0.10], s: [0.14, 0.10, 0.16], c: o.hide, sw: 0.6, pv: CHI_HIP, pz: 0.10 }   // 腳（前緣探出肚子底下）
+    ];
+    if (o.brow)                                                       // 八字眉：內側高、外側低
+      side.push({ p: [0.10, 0.515, 0.266], s: [0.06, 0.014, 0.01], c: CHI_EYE, r: [0, 0, -0.3] });
+    if (o.ear === 'round') side.push({ p: [0.19, 0.75, -0.02], s: [0.12, 0.09, 0.09], c: o.hide });
+    if (o.ear === 'cat') side.push(                                   // 尖耳：下寬上尖兩節（同貓耳）
+      { p: [0.17, 0.75, -0.01], s: [0.14, 0.08, 0.09], c: o.top },
+      { p: [0.19, 0.81, -0.01], s: [0.07, 0.06, 0.07], c: o.top });
+    /* 「八」字的兩撇：藍色在臉的外側再往下一截、繞到側面（眼睛外面，不蓋到眼與腮紅） */
+    if (o.split) side.push({ p: [0.25, 0.47, 0], s: [0.13, 0.06, 0.53], c: o.top });
+    if (o.ear === 'long') side.push(                                  // 長兔耳，微微往外張、前面一條粉紅
+      { p: [0.10, 0.88, -0.03], s: [0.10, 0.30, 0.08], c: o.hide, r: [0, 0, -0.10] },
+      { p: [0.10, 0.88, 0.012], s: [0.05, 0.22, 0.01], c: o.inner, r: [0, 0, -0.10] });
+    return mid.concat(bmir(side));
+  }
+  const CHIIKAWA = chiParts({ hide: 0xfaf8f2, blush: 0xf6a6ba, ear: 'round', brow: 1 });
+  const HACHIWARE = chiParts({ hide: 0xfaf8f2, blush: 0xf6a6ba, ear: 'cat', top: 0x5f8fcb, split: 1, tail: 'stick' });
+  const USAGI = chiParts({ hide: 0xf6e2a2, blush: 0xf3a0ae, ear: 'long', inner: 0xf2a3b3,
+                           tail: 'puff', puff: 0xfff5df });
+
+  /* ── 企鵝（v1.272.0）──────────────────────────────────────
+     兩款：皇帝企鵝（大、耳後一抹金黃、上胸淡金、喙下緣一條橘）、阿德利企鵝（小一號、白眼圈、粉紅腳）。
+     黑背白肚：肚子那一塊比背寬一點、往前凸，側面看前半白後半黑。兩條腿，腿短到只露出腳掌——
+     走起來靠**整隻左右搖**（見 WADDLE），鰭往外張著跟著甩。
+     阿德利照皇帝那一份**整份縮 o.k 倍**（座標、尺寸、關節高度一起縮）。 */
+  function pengParts(o) {
+    const B = o.back, W = 0xf4f2ec;
+    /* 由下往上收：下腹最寬（0.46，肚子再凸到 0.48）→ 腰 0.40 → 上胸 0.32 → 頭 0.26。
+       第一版軀幹是一整塊 0.44 的方塊，截圖是**一個黑箱子前面貼一片白**，看不出水滴形 */
+    const mid = [
+      { p: [0, 0.30, -0.05], s: [0.46, 0.36, 0.36], c: B },          // 下腹（背，黑）
+      { p: [0, 0.30, 0.06], s: [0.48, 0.34, 0.26], c: W },           // 　　（肚子，白：前面與兩側凸出一點）
+      { p: [0, 0.55, -0.04], s: [0.40, 0.16, 0.34], c: B },          // 腰
+      { p: [0, 0.55, 0.07], s: [0.42, 0.16, 0.22], c: W },
+      { p: [0, 0.09, 0], s: [0.36, 0.08, 0.30], c: W },              // 肚子底下收圓
+      { p: [0, 0.70, -0.03], s: [0.32, 0.16, 0.30], c: B },          // 上胸
+      { p: [0, 0.69, 0.09], s: [0.28, 0.14, 0.14], c: o.chest },     // 上胸前面那一片
+      { p: [0, 0.86, 0.02], s: [0.26, 0.18, 0.26], c: B },           // 頭
+      { p: [0, 0.96, 0], s: [0.20, 0.05, 0.20], c: B },              // 頭頂收圓
+      { p: [0, 0.85, 0.15 + o.beak / 2], s: [0.06, 0.05, o.beak], c: B, r: [0.22, 0, 0] },   // 喙（往下垂一點）
+      { p: [0, 0.10, -0.22], s: [0.14, 0.05, 0.10], c: B, r: [-0.35, 0, 0] }                // 尾
+    ];
+    if (o.bill) mid.push({ p: [0, 0.835, 0.15 + o.beak / 2], s: [0.065, 0.02, o.beak * 0.7], c: o.bill,
+                           r: [0.22, 0, 0] });                       // 喙下緣那一條橘
+    const side = [
+      { p: [0.26, 0.45, -0.02], s: [0.05, 0.36, 0.14], c: B, r: [0, 0, 0.2], am: 0.5, pv: 0.63 },  // 鰭（往外張）
+      { p: [0.09, 0.10, 0.02], s: [0.10, 0.08, 0.10], c: B, sw: 0.5, pv: 0.16, pz: 0.02 },       // 腿（只露一截）
+      { p: [0.09, 0.025, 0.07], s: [0.12, 0.05, 0.16], c: o.feet, sw: 0.5, pv: 0.16, pz: 0.02 }  // 腳掌
+    ];
+    if (o.ear) side.push({ p: [0.13, 0.82, 0.03], s: [0.025, 0.11, 0.12], c: o.ear });          // 耳後那一抹金黃
+    if (o.ring) side.push(
+      { p: [0.10, 0.885, 0.15], s: [0.05, 0.05, 0.02], c: W },                                   // 白眼圈
+      { p: [0.10, 0.885, 0.162], s: [0.025, 0.03, 0.01], c: 0x111111 });                          // 眼珠
+    const k = o.k || 1;
+    return mid.concat(bmir(side)).map(b => {
+      const q = Object.assign({}, b, { p: b.p.map(v => v * k), s: b.s.map(v => v * k) });
+      if (b.pv !== undefined) q.pv = b.pv * k;
+      if (b.pz !== undefined) q.pz = b.pz * k;
+      return q;
+    });
+  }
+  const EMPEROR = pengParts({ back: 0x22252c, chest: 0xf3dfa0, ear: 0xf0a52e, bill: 0xee8a3a, beak: 0.17,
+                              feet: 0x2b2a2a });
+  const ADELIE = pengParts({ back: 0x1e2026, chest: 0xf4f2ec, ring: 1, beak: 0.08, feet: 0xeaa8a0, k: 0.68 });
+
+  /* 走路時整隻左右搖幾弧度（v1.272.0）：兩條腿又短腿的那幾款，光靠腳前後擺看不出在走——
+     企鵝搖得最兇，吉伊卡哇那三隻搖一點點。引擎照步伐相位算（見 putBeasts），規則那邊不必給。 */
+  const WADDLE = { chiikawa: 0.07, hachiware: 0.07, usagi: 0.07, emperor: 0.17, adelie: 0.17 };
+
+  /* ── 雁（v1.272.0）── 排成 V 字從場上空飛過（規則那邊見 game-tools.js 的〈雁群〉）。
+     加拿大雁的配色：灰褐的身體與翅膀、外側飛羽深褐、黑頸黑頭配一條白頰帶、黑尾、尾下白。
+     原點在身體中段（同飛龍），翅膀是同一套翼弧（WING_CFG.goose）。脖子往前伸直、腳收著（看不到）。 */
+  const GO_BODY = 0x8b7d6b, GO_BACK = 0x6f6252, GO_BREAST = 0xc6b8a0, GO_WHITE = 0xf3f0ea,
+        GO_BLACK = 0x1f1c1b, GO_WING = 0x7f7262, GO_PRI = 0x3d342d;
+  /* 翼面四片：[x 中心, x 長, 前緣 z, 後緣 z, 色]，共平面（同飛龍的 D_WING） */
+  const GO_WINGS = [[0.30, 0.36, 0.18, -0.20, GO_BODY], [0.62, 0.30, 0.15, -0.20, GO_WING],
+                    [0.88, 0.26, 0.08, -0.16, GO_PRI], [1.03, 0.08, 0.02, -0.10, GO_PRI]].map(q =>
+    ({ p: [q[0], WING_CFG.goose.py, (q[2] + q[3]) / 2], s: [q[1], 0.035, q[2] - q[3]], c: q[4] }));
+  const GOOSE = [
+    { p: [0, 0, -0.02], s: [0.28, 0.24, 0.62], c: GO_BODY },          // 身體
+    { p: [0, 0.10, -0.04], s: [0.24, 0.06, 0.50], c: GO_BACK },       // 背（深一階）
+    { p: [0, -0.02, 0.30], s: [0.26, 0.22, 0.14], c: GO_BREAST },     // 胸
+    { p: [0, -0.08, -0.26], s: [0.22, 0.10, 0.24], c: GO_WHITE },     // 尾下（白）
+    { p: [0, 0.035, -0.32], s: [0.21, 0.03, 0.05], c: GO_WHITE },     // 尾上那一道白
+    { p: [0, 0.02, -0.40], s: [0.20, 0.05, 0.14], c: GO_BLACK },      // 尾
+    { p: [0, 0.04, 0.50], s: [0.09, 0.09, 0.32], c: GO_BLACK },       // 頸
+    { p: [0, 0.06, 0.72], s: [0.10, 0.10, 0.15], c: GO_BLACK },       // 頭
+    { p: [0, 0.035, 0.705], s: [0.112, 0.06, 0.09], c: GO_WHITE },    // 白頰帶（比頭寬一點、往下多一截）
+    { p: [0, 0.05, 0.835], s: [0.055, 0.045, 0.09], c: GO_BLACK }     // 喙
+  ].concat(bmir(wing(GO_WINGS, WING_CFG.goose)));
+
   /* ── 巨人（v1.192）───────────────────────────────────────
      使用者給了一張參考圖（進擊的巨人那隻超大型巨人）：沒有皮膚、整身肌肉束外露的紅褐色、
      白色的筋膜與腱、凹陷的眼窩、咧開露出的整排牙齒、寬肩細腰長腿。
@@ -5535,7 +5670,17 @@ const ENG = (function () {
                    cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
                    deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT,
                    shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY,
-                   tabby: TABBY, blackcat: BLACKCAT };
+                   tabby: TABBY, blackcat: BLACKCAT,
+                   chiikawa: CHIIKAWA, hachiware: HACHIWARE, usagi: USAGI,
+                   emperor: EMPEROR, adelie: ADELIE, goose: GOOSE };
+  /* 左右搖的時候繞哪一點轉：重心壓到踩著地的那一隻腳上，繞那隻腳**外緣**轉（v1.272.0）——
+     繞原點轉的話另一隻腳會插進草皮。外緣＝掛 sw 那幾塊最往外的那一邊，照造型表算 */
+  const WADDLE_E = {};
+  for (const k in WADDLE) {
+    let e = 0;
+    for (const b of BEASTS[k]) if (b.sw) e = Math.max(e, Math.abs(b.p[0]) + b.s[0] / 2);
+    WADDLE_E[k] = e;
+  }
   /* 每一種的模型範圍。破壞工具打得到牠們之後（v1.146），規則那邊要拿這三個數字擺姿勢，
      所以照造型表算出來、不寫死——改造型時不必記得回來改常數。
        floor 原點要離地多高，最低的那一塊才剛好貼著草皮（猴子的原點在腳底，所以是 0；
@@ -9166,8 +9311,9 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
      v1.182 再加到 24：閒逛的動物從 2~3 隻變 5~8 隻（HERD_N），上面那筆預算的
      「三隻」要換成「八隻」——18 − 3 ＋ 8 ＝ 23，進位留一點餘裕。
      v1.241 再加到 28：閒逛的動物變 8~12 隻（加了狗、馬、貓），18 − 3 ＋ 12 ＝ 27，同樣進位留一點。
+     v1.272.0 再加到 38：天上多了一群雁（最多 9 隻，見 game-tools.js 的 GOOSE_N），27 ＋ 9 ＝ 36，進位留一點。
      超出的那幾個是**靜靜地不畫**，所以寧可多開：多開的 instance 不多吃 draw call。 */
-  const MAXBEAST = 28;
+  const MAXBEAST = 38;
   /* 一隻最多幾塊。**照 BEASTS 整份算**（v1.154）：本來是把幾種列出來取 max，
      加新的一種時漏掉那一列的話，多出來的部位會被靜靜地切掉（畫不出來也不報錯）。 */
   let BEAST_PARTS = 0;
@@ -9260,7 +9406,11 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
          轉彎往內側傾斜放 z（那兩個值是規則那邊算的，見 game-tools.js 的 stepDragon）。
          被工具打倒之後（v1.146）這兩個角度就是猴子的「躺平角」與「打滾角」——
          跟小人的 tilt／rspin 是同一回事，只是欄位名照這裡原本的叫法。 */
-      scratch.rotation.set(m.spin || 0, m.a || 0, m.roll || 0, 'YZX');
+      /* 兩條短腿的走路左右搖（v1.272.0，見 WADDLE）：重心壓到踩著地的那一隻腳上（右腳 sw > 0，
+         cos(ph) > 0 那半個週期往後掃＝踩著地，所以那半個週期往 +x 倒＝roll 取負）。
+         只在站著走的時候搖：躺著、飛在半空的 roll 是倒地那一套在用。 */
+      const wd = WADDLE[m.kind] && m.gait && !m.lie && !m.air ? -WADDLE[m.kind] * Math.cos(m.ph || 0) * m.gait : 0;
+      scratch.rotation.set(m.spin || 0, m.a || 0, (m.roll || 0) + wd, 'YZX');
       const msc = m.sc || 1;
       /* 躺在草皮上的要照傾角抬起半個身厚，同小人那一套（見 putWorker 的 lift）。
          m.lie 是**倍率**不是旗標（0＝沒躺）：躺著不動時是 1（實測最低點剛好 0），
@@ -9271,7 +9421,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       const mlift = !m.lie ? 0
         : m.side ? BEAST_SIDE[m.kind] * m.lie * Math.abs(Math.sin(m.roll || 0))
                  : BEAST_LIFT[m.kind] * m.lie * Math.abs(Math.sin(m.spin || 0));
-      scratch.position.set(m.x, (m.y || 0) + mlift * msc, m.z);
+      /* 搖的時候繞那隻腳的外緣轉：抬「外緣 × |sin 角|」，另一隻腳才不會插進草皮（見 WADDLE_E） */
+      scratch.position.set(m.x, (m.y || 0) + (mlift + (wd ? WADDLE_E[m.kind] * Math.abs(Math.sin(wd)) : 0)) * msc, m.z);
       /* 被吹飛的在半空翻滾：繞身體中段轉，不是繞腳底（同 putWorker 的 AIR_PIVOT）。 */
       if (m.air) {
         _piv.set(0, BEAST_MID[m.kind], 0).applyEuler(scratch.rotation);
@@ -9899,7 +10050,9 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
                deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, saber: SABER, levi: LEVI, megumin: MEGUMIN,
                zenitsu: ZENITSU, gojo: GOJO, frieren: FRIEREN,
-               shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY, tabby: TABBY, blackcat: BLACKCAT };
+               shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY, tabby: TABBY, blackcat: BLACKCAT,
+               chiikawa: CHIIKAWA, hachiware: HACHIWARE, usagi: USAGI, emperor: EMPEROR, adelie: ADELIE,
+               goose: GOOSE };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */

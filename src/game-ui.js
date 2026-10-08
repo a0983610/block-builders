@@ -212,6 +212,7 @@ function step(dt) {
   stepDoom(dt);                                          // 天災（v1.138）
   stepMascot(dt);                                        // 吉祥物（v1.144，三隻各數各的鐘）
   stepHerd(dt);                                          // 閒逛的動物（v1.154，場上少了就補）
+  stepGeese(dt);                                         // 雁群從空中飛過（v1.272.0）
   pairChat();                                            // 湊對要在更新之前，配到的當幀就停下來
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);

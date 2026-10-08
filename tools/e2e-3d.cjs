@@ -388,6 +388,10 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那一段自己裝回去（見「閒逛的動物」）。 */
   if (!window.herdStep) window.herdStep = stepHerd;
   stepHerd = () => {};
+  /* 雁群（v1.272.0）同理：每 40~80 秒一群 5~9 隻飛進 beasts，數 beasts 的那幾段全部會歪。
+     要測這件事本身的那一段自己裝回去（見「雁群」）。 */
+  if (!window.geeseStep) window.geeseStep = stepGeese;
+  stepGeese = () => {};
   /* 道具泡泡（v1.214）也預設關掉。破壞積木有 1/GIFT_EVERY 的機率掉一顆，而泡泡
      **永遠不會自己消失**（使用者定的）——量 draw call 的那幾條都是「先量沒東西在場的
      數字、打一發再量、收掉再量一次」，中間掉一顆就多一個 draw call，那些條目會偶爾紅；
@@ -27680,35 +27684,294 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const nLeg = new Set(legs.map(o => (o.b.p[0] > 0 ? 'R' : 'L') + o.b.pz.toFixed(2))).size;
       /* 「繞自己的肩」＝那一點在任何步伐相位下都待在同一個世界點。
          照 JOINT_Z 轉的話它會跑掉 2·sin(擺幅/2)·|pz − JOINT_Z|（下面的 ctrl）。 */
-      const o = front[0], b = o.b;
+      /* 兩條腿的（v1.272.0 吉伊卡哇與企鵝）：左右反相——右邊每一塊 sw > 0、左邊每一塊 sw < 0（bmir 翻出來的） */
+      const anti = legs.every(o => (o.b.p[0] > 0) === (o.b.sw > 0));
+      const o = front[0] || legs[0], b = o.b;
       const at = ph => {
         ENG.putBeasts([{ kind, x: 0, y: 0, z: 0, a: 0, ph, gait: 1, sc: 1 }]);
         mesh.getMatrixAt(o.i, m4);
         return v.set(0, (b.pv - b.p[1]) / b.s[1], (b.pz - b.p[2]) / b.s[2])
                 .applyMatrix4(m4).clone();
       };
+      /* 兩條腿的走路整隻會左右搖（WADDLE），整個身體連關節一起動——量關節要扣掉身體那一下，
+         所以拿 gait 1 但「搖」那一項抵掉：直接比同一相位下關節離第 0 塊（身體）多遠 */
+      const rel = ph => {
+        const j = at(ph);
+        mesh.getMatrixAt(0, m4);
+        const c = new THREE.Vector3().setFromMatrixPosition(m4);
+        return j.sub(c).length();
+      };
       const p0 = at(0), p1 = at(Math.PI / 2), p2 = at(-Math.PI / 2);
-      out[kind] = { n: legs.length, nLeg, diag, pzOk, amp: +amp.toFixed(2),
-                    piv: +Math.max(p1.distanceTo(p0), p2.distanceTo(p0)).toFixed(3),
+      const r0 = rel(0), r1 = rel(Math.PI / 2), r2 = rel(-Math.PI / 2);
+      out[kind] = { n: legs.length, nLeg, diag, anti, pzOk, amp: +amp.toFixed(2),
+                    piv: +(nLeg === 4 ? Math.max(p1.distanceTo(p0), p2.distanceTo(p0))
+                                      : Math.max(Math.abs(r1 - r0), Math.abs(r2 - r0))).toFixed(3),
                     ctrl: +(2 * Math.sin(amp / 2) * Math.abs(b.pz - 0.03)).toFixed(3) };
     }
     ENG.putBeasts([]);
     return out;
   });
+  const QUAD = HERD_KINDS.filter(k => clegs[k].nLeg === 4), BIPED = HERD_KINDS.filter(k => clegs[k].nLeg === 2);
+  /* v1.272.0 起 HERD_KIND 裡有兩條腿的（吉伊卡哇三隻、企鵝兩款）：這一條只管四條腿的那幾款，
+     兩條腿的見下一條。條目名不動（浮動清單與累積範圍的鍵）。 */
   ok('四條腿是對角同步的，擺幅比猴子小一半',
-     HERD_KINDS.every(k => clegs[k].nLeg === 4 && clegs[k].n >= 8 &&
-                           clegs[k].diag && clegs[k].amp <= 0.55),
-     HERD_KINDS.map(k => k + ' ' + clegs[k].nLeg + ' 條腿／' + clegs[k].n +
+     QUAD.length >= 14 && QUAD.every(k => clegs[k].n >= 8 && clegs[k].diag && clegs[k].amp <= 0.55),
+     QUAD.map(k => k + ' ' + clegs[k].nLeg + ' 條腿／' + clegs[k].n +
                     ' 塊／擺幅 ' + clegs[k].amp).join('；'));
+  /* 每一款不是兩條腿就是四條腿；兩條腿的左右反相（同猴子），擺幅比猴子的 1 小（短腿碎步） */
+  ok('兩條腿的（吉伊卡哇、企鵝）左右反相，每一款不是兩條腿就是四條腿',
+     QUAD.length + BIPED.length === HERD_KINDS.length && BIPED.length >= 5 &&
+     BIPED.every(k => clegs[k].anti && clegs[k].amp <= 0.65),
+     BIPED.map(k => k + ' ' + clegs[k].nLeg + ' 條腿／' + clegs[k].n + ' 塊／擺幅 ' + clegs[k].amp +
+                    (clegs[k].anti ? '' : '（沒有左右反相）')).join('；'));
   /* ctrl 是「照 JOINT_Z 轉的話那個關節會跑掉多少」＝ 2·sin(擺幅/2)·|pz − JOINT_Z|：
-     牛 0.163、羊 0.076（羊的腳離身體中線比較近、擺幅也小一點）。 */
+     牛 0.163、羊 0.076（羊的腳離身體中線比較近、擺幅也小一點）。
+     兩條腿的髖本來就在身體中線附近（pz 0.01～0.10），對照組量不出差別，只驗「繞自己的髖」那一半。 */
   ok('前腳繞自己的肩、後腳繞自己的髖（pz），不是全部繞肚子中線',
-     HERD_KINDS.every(k => clegs[k].pzOk && clegs[k].piv < 0.01 &&
-                           clegs[k].ctrl > clegs[k].piv + 0.05),
+     HERD_KINDS.every(k => clegs[k].pzOk && clegs[k].piv < 0.01) &&
+     QUAD.every(k => clegs[k].ctrl > clegs[k].piv + 0.05),
      HERD_KINDS.map(k => k + ' 關節跑掉 ' + clegs[k].piv + '（照 JOINT_Z 會跑掉 ' +
                     clegs[k].ctrl + '）').join('；'));
 
+  /* ── 兩條腿的走路整隻左右搖（v1.272.0，見 engine 的 WADDLE）──
+     規則：走起來（gait > 0）身體真的左右傾，往踩著地的那一隻腳那一側倒；搖的時候繞那隻腳的外緣轉，
+     **一整個步伐週期最低點都不插進草皮**；站著（gait 0）不搖；四條腿的不搖。 */
+  const cwad = await page.evaluate(() => {
+    const mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4();
+    const low = () => {
+      let lo = 1e9;
+      for (let i = 0; i < mesh.count; i++) {
+        mesh.getMatrixAt(i, m4);
+        const a = m4.elements;
+        if (Math.hypot(a[0], a[1], a[2]) < 1e-4) continue;
+        lo = Math.min(lo, a[13] - 0.5 * (Math.abs(a[1]) + Math.abs(a[5]) + Math.abs(a[9])));
+      }
+      return lo;
+    };
+    /* 第 0 塊（身體）的 y 軸往 +x 倒了幾弧度（朝向 a 0：+x 就是牠的右手邊那一側） */
+    const tilt = () => { mesh.getMatrixAt(0, m4); const a = m4.elements; return Math.atan2(a[4], a[5]); };
+    const out = {};
+    for (const kind of HERD_KIND) {
+      let lo = 1e9, tMax = 0, side = true;
+      /* 站著那一刻的傾角當基準（第 0 塊自己有轉角的話，量的是「走起來多倒了幾度」） */
+      ENG.putBeasts([{ kind, x: 0, y: 0, z: 0, a: 0, ph: 0, gait: 0, sc: 1 }]);
+      const t0 = tilt();
+      for (let k = 0; k < 24; k++) {
+        const ph = k / 24 * Math.PI * 2;
+        /* 對照組：同一個相位、不搖（air＝飛在半空的不搖；翻滾角是 0，所以樞紐那一段不動任何東西）。
+           腳擺到最前最後時方塊轉斜，下緣本來就會比草皮低一點點（每一款都一樣，跟搖不搖無關），
+           所以驗的是「搖了之後沒有比不搖更低」 */
+        ENG.putBeasts([{ kind, x: 0, y: 0, z: 0, a: 0, ph, gait: 1, sc: 1, air: 1 }]);
+        const ln = low();
+        ENG.putBeasts([{ kind, x: 0, y: 0, z: 0, a: 0, ph, gait: 1, sc: 1 }]);
+        lo = Math.min(lo, low() - ln);
+        const t = tilt() - t0;
+        tMax = Math.max(tMax, Math.abs(t));
+        /* 右腳（sw > 0）在 cos(ph) > 0 那半個週期往後掃＝踩著地：那時候身體要往 +x 倒（y 軸的 x 分量 > 0） */
+        if (Math.abs(Math.cos(ph)) > 0.5 && Math.abs(t) > 1e-4 && (t > 0) !== (Math.cos(ph) > 0)) side = false;
+      }
+      ENG.putBeasts([{ kind, x: 0, y: 0, z: 0, a: 0, ph: 1.0, gait: 0, sc: 1 }]);
+      out[kind] = { lo: +lo.toFixed(3), tilt: +tMax.toFixed(3), side, still: +Math.abs(tilt() - t0).toFixed(4) };
+    }
+    ENG.putBeasts([]);
+    return out;
+  });
+  ok('兩條腿的走起來整隻左右搖、往踩地那一腳倒，搖的時候腳不插進草皮；站著不搖、四條腿的不搖',
+     BIPED.every(k => cwad[k].tilt > 0.05 && cwad[k].side && cwad[k].lo > -0.005 && cwad[k].still === 0) &&
+     QUAD.every(k => cwad[k].tilt === 0),
+     BIPED.map(k => k + ' 搖 ' + cwad[k].tilt + ' 弧度、最低點比不搖時 ' + (cwad[k].lo >= 0 ? '高 ' : '低 ') + Math.abs(cwad[k].lo) +
+                    (cwad[k].side ? '' : '（倒錯邊）')).join('；') +
+     '；四條腿的最大傾角 ' + Math.max(...QUAD.map(k => cwad[k].tilt)));
+
   await page.evaluate(() => { stepDoom = () => {}; stepHerd = () => {}; cleanTools(); });
+
+  /* ══════════ 雁群 ══════════ */
+  /* v1.272.0。使用者：「增加閒晃動物種類 吉伊卡哇 企鵝 鳥(在空中飛過)」，鳥選了「雁群排 V 字」「打得到」。
+     規則都是直接押出來驗的（不跑一場等牠們自己來）：一群幾隻、隊形、航線在建築旁邊、飛多快、
+     過了中線就是在飛走、飛出林帶收掉；被打中（所有打法都走 grDown → gooseDown）就掉下來、
+     落在地面或屋頂上、躺 DIE_HOLD 秒淡 DIE_FADE 秒；不擋天災、不算被打幾次。 */
+  }   // ── 〈閒逛的動物〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('雁群', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 雁是 stepDoom 在推的（同 beasts 裡每一隻）
+  await fillAll(page);
+
+  /* ── 什麼時候來、一群幾隻、隊形、航線 ── */
+  const gform = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    /* 鐘：第一群在 GOOSE_FIRST 秒內來，下一群隔 GOOSE_GAP 秒 */
+    beasts = null; geeseT = -1;
+    let t = 0;
+    while (!beasts && t < 200) { window.geeseStep(0.05); t += 0.05; }
+    const first = +t.toFixed(2), gap = +geeseT.toFixed(2);
+    /* 抽 200 群：隻數、高度、航線離場心多遠 */
+    const ns = [], alt = [], off = [];
+    let vOk = true, oneDir = true;
+    for (let i = 0; i < 200; i++) {
+      beasts = null;
+      const f = spawnGeese(), L = f[0];
+      ns.push(f.length); alt.push(...f.map(m => m.y));
+      off.push(Math.abs(L.x * -L.dz + L.z * L.dx));            // 航線到場心的距離（側向那一分量）
+      for (let k = 1; k < f.length; k++) {
+        const m = f[k], ex = m.x - L.x, ez = m.z - L.z;
+        const along = ex * L.dx + ez * L.dz, lat = ex * -L.dz + ez * L.dx, r = Math.ceil(k / 2);
+        /* V 字：第 k 隻在第 ceil(k/2) 排，往後退 r·GOOSE_BACK、往旁邊開 r·GOOSE_SIDE，單數右翼雙數左翼 */
+        if (Math.abs(along + r * GOOSE_BACK) > 1e-6 || Math.abs(lat - (k % 2 ? 1 : -1) * r * GOOSE_SIDE) > 1e-6) vOk = false;
+        if (m.dx !== L.dx || m.dz !== L.dz || m.y !== L.y || m.sc !== L.sc) oneDir = false;
+      }
+    }
+    const out = { first, gap, fr: GOOSE_FIRST.slice(), gr: GOOSE_GAP.slice(), want: GOOSE_N.slice(), ar: GOOSE_ALT.slice(),
+                  nLo: Math.min(...ns), nHi: Math.max(...ns), aLo: +Math.min(...alt).toFixed(2), aHi: +Math.max(...alt).toFixed(2),
+                  offLo: +Math.min(...off).toFixed(1), clear: +goClear().toFixed(1), siteR: +siteR.toFixed(1),
+                  top: +siteTopNow().toFixed(1), vOk, oneDir };
+    cleanTools();
+    return out;
+  });
+  ok('雁群照 GOOSE_FIRST／GOOSE_GAP 來，一群 GOOSE_N 隻排成 V 字，同一個航向、高度、大小',
+     gform.first >= gform.fr[0] - 0.05 && gform.first <= gform.fr[1] + 0.05 &&
+     gform.gap >= gform.gr[0] && gform.gap <= gform.gr[1] &&
+     gform.nLo === gform.want[0] && gform.nHi === gform.want[1] && gform.vOk && gform.oneDir,
+     '第一群 ' + gform.first + ' 秒（設定 ' + gform.fr.join('～') + '）、下一群 ' + gform.gap + ' 秒後（設定 ' +
+     gform.gr.join('～') + '）；200 群 ' + gform.nLo + '～' + gform.nHi + ' 隻' + (gform.vOk ? '' : '，隊形不是 V 字') +
+     (gform.oneDir ? '' : '，同一群航向／高度不一致'));
+  /* 航線離場心至少 goClear 格（建築半徑 ＋ 隊形最寬的半寬 ＋ 4），所以整群都在建築旁邊、
+     飛的高度跟建築多高無關（GOOSE_ALT）。這一座吉薩大金字塔 13.5 格高 */
+  ok('雁群從建築旁邊飛過（航線離場心超過建築半徑加隊形半寬），高度在 GOOSE_ALT 內',
+     gform.offLo >= gform.clear - 1e-6 && gform.clear > gform.siteR &&
+     gform.aLo >= gform.ar[0] && gform.aHi <= gform.ar[1],
+     '200 群航線離場心最近 ' + gform.offLo + ' 格（至少 ' + gform.clear + '，建築半徑 ' + gform.siteR + '）；高度 ' +
+     gform.aLo + '～' + gform.aHi + '（設定 ' + gform.ar.join('～') + '，建築頂 ' + gform.top + '）');
+
+  /* ── 一路飛過去：直線、等速、拍翅、兩頭淡入淡出、飛出林帶收掉 ── */
+  const gfly = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    beasts = null;
+    const f = spawnGeese(), L = f[0];
+    const x0 = L.x, z0 = L.z, ph0 = L.ph;
+    let t = 0, sts = [], alphaMid = null, alphaIn = null, maxDev = 0, minR = 1e9, gone = null;
+    const seenAlpha = [];
+    for (let i = 0; i < 2000 && beasts && beasts.indexOf(L) >= 0; i++) {
+      stepDoom(0.05); t += 0.05;
+      for (const m of beasts) woodFade(m, beastOut(m));         // 畫之前那一步（同 game-ui 的 draw）
+      if (sts[sts.length - 1] !== L.st) sts.push(L.st);
+      const along = (L.x - x0) * L.dx + (L.z - z0) * L.dz;
+      maxDev = Math.max(maxDev, Math.abs((L.x - x0) * -L.dz + (L.z - z0) * L.dx));
+      minR = Math.min(minR, Math.hypot(L.x, L.z));
+      if (i === 4) { alphaIn = L.alpha === undefined ? 1 : L.alpha; }
+      if (alphaMid === null && L.st === 'out') alphaMid = L.alpha === undefined ? 1 : L.alpha;
+      seenAlpha.push(L.alpha === undefined ? 1 : L.alpha);
+      if (i === 39) var spd = along / t;
+    }
+    gone = beasts ? beasts.indexOf(L) < 0 : true;
+    const out = { sts: sts.join('>'), t: +t.toFixed(1), spd: +spd.toFixed(2), want: GOOSE_SPD,
+                  dev: +maxDev.toFixed(4), minR: +minR.toFixed(1), clear: +goClear().toFixed(1),
+                  alphaIn: +alphaIn.toFixed(2), alphaMid: +alphaMid.toFixed(2),
+                  alphaEnd: +seenAlpha[seenAlpha.length - 2].toFixed(2), gone, flap: L.ph !== ph0,
+                  wood: +woodR().toFixed(1), rest: beasts ? beasts.filter(m => m.kind === 'goose').length : 0 };
+    /* 剩下的幾隻也一隻一隻飛出去收掉 */
+    for (let i = 0; i < 600 && beasts && beasts.some(m => m.kind === 'goose'); i++) stepDoom(0.05);
+    out.left = beasts ? beasts.filter(m => m.kind === 'goose').length : 0;
+    cleanTools();
+    return out;
+  });
+  ok('雁一路直直飛過去：等速 GOOSE_SPD、邊飛邊拍翅，從林帶淡進來、過了中線改成飛走、淡出林帶就收掉',
+     gfly.sts === 'in>out' && Math.abs(gfly.spd - gfly.want) < 0.01 && gfly.dev < 1e-6 && gfly.flap &&
+     gfly.alphaIn < 1 && gfly.alphaMid === 1 && gfly.alphaEnd < 0.2 && gfly.gone && gfly.left === 0 &&
+     gfly.minR >= gfly.clear - 1e-6,
+     '狀態 ' + gfly.sts + '；速度 ' + gfly.spd + '（設定 ' + gfly.want + '）、偏離航線 ' + gfly.dev + '；' +
+     '剛進來 alpha ' + gfly.alphaIn + '、過中線 ' + gfly.alphaMid + '、收掉前 ' + gfly.alphaEnd + '；' +
+     gfly.t + ' 秒飛完（林帶半徑 ' + gfly.wood + '），離場心最近 ' + gfly.minR + ' 格；最後剩 ' + gfly.left + ' 隻');
+
+  /* ── 打得到：哪一種打法都走 grDown → gooseDown，掉下來就死 ── */
+  const ghit = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const one = () => {
+      beasts = null;
+      const f = spawnGeese();
+      for (const m of f) { m.x += m.dx * 60; m.z += m.dz * 60; m.wIn = 0; }   // 挪到場上空（不在林帶淡入那一段）
+      return f;
+    };
+    /* 五條路：爆炸（三維距離掃到）、雷（水平距離：雲底到地面一條線）、點火、震倒、直接丟 */
+    const ways = {};
+    let f = one();
+    explode({ x: f[0].x, y: f[0].y, z: f[0].z }, 3, 12);
+    ways.blast = !!f[0].air;
+    /* 雷押骰子劈在牠正下方（strike 的落點是雲心 ± STRIKE_R，Math.random 0 ＝ 正中），量完還回去 */
+    f = one();
+    const R0 = Math.random;
+    Math.random = () => 0;
+    try { strike({ x: f[0].x, y: 40, z: f[0].z }); } finally { Math.random = R0; }
+    ways.bolt = !!f[0].air;
+    f = one(); ways.fire = igniteBeast(f[0], 0) && !!f[0].air;
+    f = one(); ways.fell = fellBeast(f[0], 2) && !!f[0].air;
+    f = one();
+    const g = f[0], others = f.slice(1);
+    ways.toss = tossBeast(g, 0, 0, 0, false) && !!g.air;
+    /* 已經在掉的打不動第二次；被打不改任何吉祥物／天災的狀態（beastHit 對牠什麼都不記） */
+    const again = tossBeast(g, 3, 3, 3, false);
+    beastHit(g, 'poke');
+    const hurt = g.hurt || 0, st0 = g.st;
+    /* 掉到地上：落點的高度、血泊、躺多久淡多久、收掉 */
+    const blood0 = bloods.length;
+    let land = null, t = 0;
+    for (let i = 0; i < 400 && beasts && beasts.indexOf(g) >= 0; i++) {
+      stepDoom(0.05); t += 0.05;
+      if (land === null && g.dead > 0) land = { t: +t.toFixed(2), y: +g.y.toFixed(3), floor: +(ENG.BEAST_FLOOR.goose * g.sc).toFixed(3),
+                                               blood: bloods.length - blood0, wa: g.wa, alpha: g.alpha,
+                                               hit: tossBeast(g, 5, 5, 5, false) || fellBeast(g, 2),
+                                               /* 落地那一刻同一群其他幾隻還在照飛（再晚一點牠們會飛出林帶收掉） */
+                                               flying: others.every(m => !m.air && !m.dead && m.sky === 1 && beasts.indexOf(m) >= 0) };
+      if (g.dead > 0 && g.dead < DIE_HOLD - 0.1 && g.alpha !== 1) land.early = 1;
+    }
+    const life = land ? +(t - land.t).toFixed(2) : -1, gone = !beasts || beasts.indexOf(g) < 0;
+    const flying = !!land && land.flying;
+    /* 落在地標上：放到金字塔正上方、往下掉，停在那一柱積木的頂面上（不是 y 0），而且不漫血。
+       **從 16 個高度各丟一次**：一幀掉 1 格多，落地那一幀停在哪是看起點的——v1.272.0 第一版照「動完的位置」往下找，
+       有的起點會穿過頂上那一層停在下一層（那一輪紅在這裡），只丟一個高度的話要看運氣才抓得到 */
+    const top = gooseFloor(0, 60, 0), b1 = bloods.length, ys = [];
+    for (let k = 0; k < 16; k++) {
+      f = one();
+      const h = f[0];
+      h.x = 0; h.z = 0; h.y = 20 + k * 0.37;
+      gooseDown(h); h.vx = 0; h.vz = 0;
+      for (let i = 0; i < 200 && !h.dead; i++) stepDoom(0.05);
+      ys.push(+(h.y - ENG.BEAST_FLOOR.goose * h.sc).toFixed(3));
+    }
+    const roof = { ys, top: +top.toFixed(2), blood: bloods.length - b1 };
+    cleanTools();
+    return { ways, again, hurt, st0, land, life, hold: DIE_HOLD + DIE_FADE, gone, flying, roof };
+  });
+  ok('雁打得到：爆炸、雷、點火、震倒、丟飛五條路都讓牠掉下來；在掉的打不動第二次，也不算天災被打幾下',
+     ghit.ways.blast && ghit.ways.bolt && ghit.ways.fire && ghit.ways.fell && ghit.ways.toss && !ghit.again &&
+     ghit.hurt === 0 && ghit.st0 === 'fall' && ghit.flying,
+     '爆炸 ' + ghit.ways.blast + '、雷 ' + ghit.ways.bolt + '、點火 ' + ghit.ways.fire + '、震倒 ' + ghit.ways.fell + '、丟飛 ' + ghit.ways.toss +
+     '；再打一次 ' + ghit.again + '；同一群其他幾隻照飛 ' + ghit.flying);
+  ok('打下來的雁摔在地上翅膀攤開、身下一攤血，躺 DIE_HOLD 秒淡 DIE_FADE 秒收掉，屍體打不動',
+     !!ghit.land && Math.abs(ghit.land.y - ghit.land.floor) < 1e-3 && ghit.land.blood === 1 &&
+     ghit.land.wa === 0 && ghit.land.alpha === 1 && !ghit.land.hit && !ghit.land.early &&
+     ghit.gone && Math.abs(ghit.life - ghit.hold) < 0.11,
+     ghit.land ? '掉了 ' + ghit.land.t + ' 秒落地，原點離地 ' + ghit.land.y + '（肚子貼地是 ' + ghit.land.floor + '）、血泊 +' +
+       ghit.land.blood + '；' + ghit.life + ' 秒後收掉（設定 ' + ghit.hold + '）' : '沒有落地');
+  ok('雁掉在地標上就停在屋頂上（不掉進建築裡），屋頂上不漫血',
+     ghit.roof.top > 1 && ghit.roof.ys.every(y => Math.abs(y - ghit.roof.top) < 1e-3) && ghit.roof.blood === 0,
+     '16 個起點，肚子停在 ' + Math.min(...ghit.roof.ys) + '～' + Math.max(...ghit.roof.ys) + '、那一柱頂面 ' +
+     ghit.roof.top + '；血泊 +' + ghit.roof.blood);
+
+  /* ── 不擋天災：場上有雁的時候天災的鐘照數（stepDoom 的「一次一件」不算牠們）── */
+  const gdoom = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    beasts = null;
+    spawnGeese();
+    doomT = 0.01;
+    for (let i = 0; i < 4; i++) stepDoom(0.05);
+    const came = !!beasts && beasts.some(m => m.kind !== 'goose');
+    cleanTools(); doomT = 1e9;
+    return { came };
+  });
+  ok('場上有雁的時候天災照樣會來（雁不佔「一次一件」的名額）', gdoom.came,
+     gdoom.came ? '天災來了' : '天災沒來');
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 
   /* ══════════ 破壞工具打得到那幾隻 ══════════ */
   /* v1.146。使用者：「破壞工具也能對吉祥物生效(著火或是被吹飛或是倒地)／所以飛龍會需要
@@ -27716,7 +27979,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      修正小人被吹飛的旋轉軸(目前似乎在腳底 看起來很奇怪)」。
      倒地起飛那一段是先出預覽圖給使用者看過才落地的（同天災那幾隻的造型）。
      這一段驗的是「規則跟小人一樣」與「姿勢擺得對」，不重驗小人自己那一套。 */
-  }   // ── 〈閒逛的動物〉結束（--tier 跳過時從這裡出來）
+  }   // ── 〈雁群〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('破壞工具打得到那幾隻', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 8 });
   await page.evaluate(() => { stepDoom = window.doomStep; });
