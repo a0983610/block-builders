@@ -507,7 +507,7 @@ function stampY(v, deg, fn, x0, z0) {
 }
 
 /* 拱門：w 是開口寬（會逼成奇數，不然拱心落在兩格之間），h 是直柱段高度，
-   t 是牆厚（沿 z）。開口總高 = h + (w−1)/2。
+   t 是牆厚（沿 z）。開口總高 = h + (w−1)/2 + 1（拱頂那一格也算）。
    c 給了就先補一片比開口大一圈的牆再挖；不給就只挖洞（用在已經有牆的立面上）。 */
 function arch(v, x0, y0, z0, w, h, t, c) {
   // t 有預設值、c 不給就只挖洞（用在已經有牆的立面上），所以這兩個都可以不給
@@ -7579,7 +7579,12 @@ const CUSTOM_MIN = 180, CUSTOM_MAX = 12000;  // 縮放範圍要蓋住體檢量�
 
 function bpColor(c) {
   if (typeof c === 'number') return c;
-  const s = String(c).replace('#', '').trim();
+  let s = String(c).replace('#', '').trim();
+  /* 3 位簡寫與帶透明度的 8 位（v1.264.0）：AI 很常寫 '#fff'，以前 parseInt('fff') ＝ 0x000fff，
+     靜靜畫成藍色；'#rrggbbaa' 整串讀進來也是亂的。簡寫展開成 6 位，透明度直接丟掉（積木一律不透明）。
+     見 開發筆記〈prompt 拿去盲測（v1.264.0）〉 */
+  if (/^[0-9a-f]{3,4}$/i.test(s)) s = s.slice(0, 3).split('').map(h => h + h).join('');
+  else if (/^[0-9a-f]{8}$/i.test(s)) s = s.slice(0, 6);
   const n = parseInt(s, 16);
   return Number.isFinite(n) ? n : 0xcfc7b8;
 }
@@ -7968,6 +7973,50 @@ function checkBlueprint(which, opt) {
     L.push('  修法：pal 至少要 ' + (maxC + 1) + ' 色（索引從 0 算）。');
   } else {
     L.push('配色 ' + sh.pal.length + ' 色，用到最大索引 ' + maxC + ' ✔');
+  }
+
+  /* 配色比例（v1.264.0）：產藍圖的 AI 看不到程式，「主色不超過五成五」「有顏色的材質亮度壓在 0.65 以下」
+     這兩條它自己量不到——報告是它唯一量得到的地方。量遊戲預設的 3000 那一階。
+     **只印數字不示警**：白宮、白瓷碗本來就白，示警只會逼 AI 把白的東西塗成灰褐色。
+     只有主色或淺色佔一半以上時多一句話指到說明書的規則。
+     **只算露在外面的格子**（六個面至少有一面是空的）：盲測時一杯裝滿的奶茶，杯裡看不到的奶茶
+     把主色撐到五成七，照規則怎麼改都改不掉。見 開發筆記〈prompt 拿去盲測（v1.264.0）〉 */
+  const mid = rows.find(r => r.t === 3000 && !r.err);
+  if (mid && mid.n) {
+    const lum = c => (Math.max((c >> 16) & 255, (c >> 8) & 255, c & 255) +
+                      Math.min((c >> 16) & 255, (c >> 8) & 255, c & 255)) / 510;
+    const key = (x, y, z) => x + ':' + y + ':' + z;
+    const all = new Set(mid.cells.map(c => key(c.x, c.y, c.z)));
+    const seen = {};
+    let nSeen = 0;
+    for (const c of mid.cells) {
+      if (all.has(key(c.x + 1, c.y, c.z)) && all.has(key(c.x - 1, c.y, c.z)) &&
+          all.has(key(c.x, c.y + 1, c.z)) && (c.y === mid.bb.y[0] || all.has(key(c.x, c.y - 1, c.z))) &&
+          all.has(key(c.x, c.y, c.z + 1)) && all.has(key(c.x, c.y, c.z - 1))) continue;   // 貼地那一面不算露出來
+      seen[c.c] = (seen[c.c] || 0) + 1;
+      nSeen++;
+    }
+    // 「不到 1%」而不是 '<1%'：報告是純文字，e2e 守著裡面不能有 '<'（防 HTML 混進來）
+    const pct = k => { const p = k / nSeen * 100; return p > 0 && p < 1 ? '不到 1%' : Math.round(p) + '%'; };
+    let top = -1, light = 0;
+    const parts = [];
+    for (const k of Object.keys(seen).map(Number).sort((a, b) => a - b)) {
+      const c = sh.pal[k];
+      if (c === undefined) continue;                 // pal 不夠那一條上面已經報過
+      if (top < 0 || seen[k] > seen[top]) top = k;
+      if (lum(c) > 0.75) light += seen[k];
+      parts.push('pal[' + k + '] ' + pct(seen[k]) + ' 亮度 ' + lum(c).toFixed(2));
+    }
+    if (top >= 0) {
+      const topShare = seen[top] / nSeen, lightShare = light / nSeen;
+      L.push('配色比例（3000 塊那一階、只算露在外面的 ' + nSeen + ' 格；亮度 ＝ (RGB 最大 ＋ 最小) ÷ 2 ÷ 255，0 黑～1 白）');
+      L.push('  ' + parts.join('　'));
+      L.push('  主色 pal[' + top + '] 佔 ' + pct(seen[top]) + '、亮度 ' + lum(sh.pal[top]).toFixed(2) +
+             '；淺色（亮度 > 0.75）佔 ' + pct(light));
+      if (topShare >= 0.55 || lightShare >= 0.5)
+        L.push('  主色或淺色佔了一半以上：遊戲的光照會把淺色洗得更白，蓋出來容易是一團分不出面的顏色。'
+             + '見〈藍圖製作說明〉第 5 節的配色規則（本來就白的東西照實物，但要配一階灰與陰影色）。');
+    }
   }
 
   /* 小尺寸的部件存活：大尺寸有、小尺寸沒有的顏色，就是「那個部件整組消失了」。
