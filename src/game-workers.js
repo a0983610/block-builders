@@ -164,8 +164,8 @@ function tagMage() {
     const mage = i % MAGE_EVERY === MAGE_AT ? 1 : 0;
     if (mage && !w.mage) {
       releaseWorker(w);                  // 手上還有貨就先放掉，魔法師不搬東西
-      w.mang = Math.atan2(w.z, w.x);     // 從他現在站的位置接手，不用先繞半圈
-      w.mrad = Math.max(siteR + MAGE_KEEP, Math.hypot(w.x, w.z));
+      w.mang = Math.atan2(w.z, w.x);     // 從他現在站的位置接手（不能站的話 updMage 會挪到最近能站的地方）
+      w.mrad = Math.hypot(w.x, w.z);
       w.mre = 0;                         // 下一幀就挑一坨料站過去
       w.ct = 0;
     }
@@ -1381,9 +1381,10 @@ function lmReachMap() {
   lmRm = { of: bp, gen: f.gen, at: frameNo, x0, z0, nx, nz, ok };
   return lmRm;
 }
-/* 這一點從工地外走得到嗎。容許半格：貼著牆躺的料、剛好落在身位裡的站位，旁邊那一格走得到就算 */
-function lmReach(x, z) {
-  const m = lmReachMap();
+/* 這一點從工地外走得到嗎。容許半格：貼著牆躺的料、剛好落在身位裡的站位，旁邊那一格走得到就算。
+   m：已經拿到的那一份表（一次問幾千格的人自己先拿，見 mageField）；不給就當場拿 */
+function lmReach(x, z, m) {
+  if (m === undefined) m = lmReachMap();
   if (!m) return true;
   const i = Math.floor((x - m.x0) / NAV_CELL), j = Math.floor((z - m.z0) / NAV_CELL);
   if (i < 0 || j < 0 || i >= m.nx || j >= m.nz) return true;          // 表外＝工地外
@@ -1572,6 +1573,7 @@ function ringWalk(w, ta, rad, dt) {
      魔法師貼牆停超過一半時間的 9／24 人、丟出的料 1747 塊（沒有牆 0／24、2873 塊）；
      慶祝時牆外 11 人只有 3～4 人走得到圈上；工程師貼牆之後靠穿透進城。
      三種都走這一支，所以規則寫在這裡（使用者選「規則版」，不是只修魔法師）。
+     v1.266.0 起魔法師不走這一支了（站位改照建築真的形狀、照巡路規則走，見 updMage），剩工程師與慶祝。
      strollTo 走到目標（或它挪到的最近可走點，規則 2）就算到了，同 ringWalk 自己「目標被占著、角度到了就算到位」。
      路上走的不算閒晃里程（同 castTrip）。見 開發筆記〈繞著工地圈走遇到城牆（魔法師、工程師、慶祝）〉 */
   {
@@ -1629,7 +1631,7 @@ function ringWalk(w, ta, rad, dt) {
   }
   /* 「到位」是照 rad2（鼓出去之後的目標半徑）算的。另外，目標那一點被房子占著時
      （nr 沒能走到 want），角度到了就算到位——不然他會一直想擠進去。
-     慶祝入圈、工程師走位、魔法師站位都靠這個回傳值。 */
+     慶祝入圈、工程師走位都靠這個回傳值（魔法師 v1.266.0 起改照巡路規則走，見 updMage）。 */
   return arrive || (Math.abs(dA) * cr <= budget && nr !== want);
 }
 
@@ -2779,7 +2781,7 @@ function updEng(w, dt) {
 
    施法特效刻意留得小（使用者要的是「一點點、看得出是他在施法」）：
    杖頭的寶珠亮起來、出手時腳下一圈淡光加杖頭一小撮星，飛行途中每隔一段撒一顆。 */
-const MAGE_KEEP = 5.5;              // 站得離工地外圍至少多遠（工程師 3.4、閒晃的人 1.5，他站最外面）
+const MAGE_KEEP = 5.5;              // 站得離藍圖的占地至少多遠（工程師 3.4、閒晃的人 1.5，他站最外面；v1.266.0 起照真的形狀量，見 mageField）
 /* 隔空拉得動的範圍（v1.89，使用者指定「只能搬運一定範圍的積木，所以變成要走到積木堆附近，
    優先找積木多的地方」）。搆得到的只有身邊 MAGE_REACH 格內躺著的料，**拋出去那一段不受限**——
    還是一條拋物線直接飛到藍圖上，中途不經過任何人的手。
@@ -2801,24 +2803,104 @@ const MAGE_REACH = 11;              // 搆得到多遠的建材
    走到離那坨料最近的外圈站好，再深都拉得到。圈外的料照舊量真實距離。
    v1.89～v1.224 圈裡的一律量真實距離，而他站不進去：實測按「換一座來蓋」之後
    （整棟打散成碎料落在新工地裡、推土機沒開），場上 678 塊料 678 塊都在圈裡，
-   40 人那一座魔法師只有 15% 的時間在施法、21% 站著搆不到料。
-   正中央（半徑 0）那一塊沒有方向可以投影，拿他自己的角度——從哪一邊伸手都一樣近。 */
-function mageReach2(w, b) {
-  const R = siteR + MAGE_KEEP, r = Math.hypot(b.x, b.z);
-  if (r >= R) return (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
-  const a = r < 0.001 ? Math.atan2(w.z, w.x) : Math.atan2(b.z, b.x);
-  return (Math.cos(a) * R - w.x) ** 2 + (Math.sin(a) * R - w.z) ** 2;
+   40 人那一座魔法師只有 15% 的時間在施法、21% 站著搆不到料。 */
+/* 站哪裡、搆得到哪裡改照建築真的形狀（v1.266.0，使用者：「現在尋路應該已經能走進工地 為什麼魔法師應該也能進去拿料了?
+   是之前少改到魔法師嗎?」——是：v1.236 把地標放上巡路地圖時，一般工人照圖走進工地撿料，慶祝、工程師、魔法師的
+   「去哪」沒動，見 開發筆記〈巡路規則：地標那一層〉沒做的那一條）。
+   v1.225～v1.265 的「外圈」是工地外接圓再往外 MAGE_KEEP，對細長的地標是一大片空地：金門大橋 3000 那一檔寬 9 格、
+   外接圓半徑 45，他站在對角線外的草地上，施法時離他拉的那塊料中位 41.9 格（9000 那一檔 69.8 格），腳邊最近的碎料 34.9 格；
+   9000、20 人那一場 63% 的時間站著不動（挑到的那一坨投影到圈上搆不到，每 1.2 秒重挑還是同一坨）。
+   規則（三條，形狀照藍圖的占地、蓋好沒蓋好都算，見 mageField）：
+     ① 能站的地方：從工地外走得到（lmReach），而且離占地至少 MAGE_KEEP
+     ② 一坨料：走到離那一坨最近、能站的地方（照巡路規則走，見 updMage 的 stepTo）
+     ③ 搆不搆得到一塊料：量他到「離那塊料最近、能站的地方」——料就躺在能站的地方就是真距離；
+        躺在建築裡、或貼著建築那 MAGE_KEEP 裡面，伸手進去那一段不算（v1.225 的意思，邊界從外接圓換成真的形狀）。
+   見 開發筆記〈魔法師照建築真的形狀站、照尋路走（v1.266.0）〉 */
+function mageReach2(w, b, f) {
+  const p = mageNear(b.x, b.z, f);
+  return (p.x - w.x) ** 2 + (p.z - w.z) ** 2;
 }
 /* 他搆得到的料裡挑最近的那一塊（量法見 mageReach2），同 findBlock 的條件。 */
 function findMageBlock(w) {
   let best = -1, bd = MAGE_REACH * MAGE_REACH;
+  const f = mageField();                              // 一趟只取一次（料有幾千塊）
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (b.st !== FREE || !b.rest || b.holder >= 0) continue;
-    const d = mageReach2(w, b);
+    const d = mageReach2(w, b, f);
     if (d < bd) { bd = d; best = i; }
   }
   return best;
+}
+/* 能站的地方，與「離某一點最近、能站的地方」（v1.266.0，見上面那三條規則）。
+   一格一格、跟藍圖的柱子對齊，範圍是藍圖外框再往外 MAGE_KEEP＋2——再外面一定能站
+   （離占地夠遠，也在巡路的走得到表外面，lmReach 回 true）。三樣東西：
+     near：離任一根柱子（方塊，不是中心）不到 MAGE_KEEP。只跟藍圖有關，換一座才重算
+     ok：能站＝不在 near 裡、而且從工地外走得到。走得到的範圍會跟著砌上去的積木變（圍起來的中庭），
+         lmReachMap 換了一份才重看，能站的格子真的變了才重算下面那一樣
+     px／pz：每一格離它最近、能站的那一格的世界座標（能站的就是自己）。拿能站的那一圈邊界一格一格量，取最近 */
+let mgF = null;
+function mageField() {
+  if (!bp) return null;
+  const rm = lmReachMap();
+  if (mgF && mgF.of === bp && mgF.rm === rm) return mgF;
+  let f = mgF && mgF.of === bp ? mgF : null;
+  if (!f) {
+    const M = Math.ceil(MAGE_KEEP) + 2, R = Math.ceil(MAGE_KEEP);
+    const nx = gMaxX + 1 + 2 * M, nz = gMaxZ + 1 + 2 * M;
+    const near = new Uint8Array(nx * nz), cols = new Uint8Array((gMaxX + 1) * (gMaxZ + 1));
+    for (const s of bp.slots) cols[s.gz * (gMaxX + 1) + s.gx] = 1;
+    for (let gz = 0; gz <= gMaxZ; gz++) for (let gx = 0; gx <= gMaxX; gx++) {
+      if (!cols[gz * (gMaxX + 1) + gx]) continue;
+      for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++)
+        if (Math.hypot(Math.max(0, Math.abs(dx) - 0.5), Math.max(0, Math.abs(dz) - 0.5)) < MAGE_KEEP)
+          near[(gz + dz + M) * nx + gx + dx + M] = 1;
+    }
+    f = { of: bp, rm: null, M, nx, nz, near, ok: null, px: null, pz: null };
+  }
+  f.rm = rm;
+  mgF = f;
+  const { M, nx, nz, near } = f, N = nx * nz;
+  const ok = new Uint8Array(N);
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const k = j * nx + i;
+    if (!near[k] && lmReach(i - M + gOffX, j - M + gOffZ, rm)) ok[k] = 1;
+  }
+  if (f.ok && f.ok.every((v, k) => v === ok[k])) return f;
+  f.ok = ok;
+  const edge = [];
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const k = j * nx + i;
+    if (ok[k] && ((i > 0 && !ok[k - 1]) || (i < nx - 1 && !ok[k + 1]) || (j > 0 && !ok[k - nx]) || (j < nz - 1 && !ok[k + nx])))
+      edge.push(i, j);
+  }
+  const px = new Float32Array(N), pz = new Float32Array(N);
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const k = j * nx + i;
+    let bi = i, bj = j;
+    if (!ok[k]) {
+      let bd = Infinity;
+      for (let e = 0; e < edge.length; e += 2) {
+        const d = (edge[e] - i) ** 2 + (edge[e + 1] - j) ** 2;
+        if (d < bd) { bd = d; bi = edge[e]; bj = edge[e + 1]; }
+      }
+    }
+    px[k] = bi - M + gOffX; pz[k] = bj - M + gOffZ;
+  }
+  f.px = px; f.pz = pz;
+  return f;
+}
+/* 離 (x, z) 最近、能站的那一點。(x, z) 本身能站（或在表外）就是它自己。回傳同一個暫存物件 */
+const _mn = { x: 0, z: 0 };
+function mageNear(x, z, f) {
+  f = f || mageField();
+  _mn.x = x; _mn.z = z;
+  if (!f) return _mn;
+  const i = Math.round(x - gOffX) + f.M, j = Math.round(z - gOffZ) + f.M;
+  if (i < 0 || j < 0 || i >= f.nx || j >= f.nz) return _mn;
+  const k = j * f.nx + i;
+  if (!f.ok[k]) { _mn.x = f.px[k]; _mn.z = f.pz[k]; }
+  return _mn;
 }
 const MAGE_CELL = 9;                // 數料堆用的粗格邊長。要小於 MAGE_REACH，站在中心才整格都搆得到
 const MAGE_TRIP = 0.06;             // 路程折價：每遠一格，那一坨的吸引力打幾折
@@ -2869,8 +2951,8 @@ function listMageHeaps() {
   for (const c of cnt.values()) mageHeapList.push({ n: c.n, x: c.x / c.n, z: c.z / c.n });
   return mageHeapList;
 }
-/* 他要站的那個點（極座標轉回世界座標）。站位一律在工地外圈以外——
-   一坨料躺在建築裡（玩家自己打出來的碎料）的時候，他要站在牆外面伸手，不能走進去。 */
+/* 他要站的那個點（極座標轉回世界座標）。站位一律是「能站的地方」（v1.266.0，見 mageField）——
+   一坨料躺在建築裡（玩家自己打出來的碎料）的時候，他要站在建築外面伸手，不能走進去。 */
 function mageSpot(w) {
   return { x: Math.cos(w.mang) * w.mrad, z: Math.sin(w.mang) * w.mrad };
 }
@@ -2879,24 +2961,24 @@ function mageSpot(w) {
    v1.89～v1.224 還有第三個：「站定之後整坨搆不到的（在建築裡的那種）」——圈裡那一坨的
    中心離他站的點超過 MAGE_REACH × 0.6 就跳過。v1.225 起圈裡的料往外投影到他站的那一圈
    量（見 mageReach2），站的點就是那一坨中心的投影，那一刀永遠不會成立，拿掉了。
-   路程量的是**走到站的點**多遠（v1.225）：圈外那一坨站的點就是它的中心，跟以前一樣；
-   圈裡那一坨他只走到外圈，量到中心的話會把「伸手進去那一段」也算成路程。
+   站的點（v1.266.0）：離那一坨中心最近、能站的地方（mageNear）——躺在空地上的那一坨就是它的中心
+   （多遠都去，v1.95），躺在建築裡或貼著建築的，是建築外面離它最近的那一點。v1.95～v1.265 是
+   「中心往外推到外接圓那一圈上」，細長的地標推出去之後跟那一坨隔著一大片空地。
+   路程量的是**走到站的點**多遠（v1.225）：量到中心的話會把「伸手進去那一段」也算成路程。
    回傳 false = 沒有值得走過去的，站在原地等就好。 */
 function pickMageSpot(w) {
-  const heaps = listMageHeaps();
+  const heaps = listMageHeaps(), f = mageField();
   let bx = 0, bz = 0, bn = 0, best = -1;
   for (const h of heaps) {
-    const hr = Math.hypot(h.x, h.z);
-    const r = Math.max(siteR + MAGE_KEEP, hr);        // 多遠都去，只是不站進工地裡（v1.95）
-    const a = hr < 0.001 ? w.mang : Math.atan2(h.z, h.x);
-    const sx = Math.cos(a) * r, sz = Math.sin(a) * r;
+    const p = mageNear(h.x, h.z, f);
+    const sx = p.x, sz = p.z;
     if (mageTaken(w, sx, sz)) continue;
     if (homeAt(sx, sz)) continue;                     // 別站到人家屋子裡（v1.97）
     const s = h.n / (1 + Math.hypot(sx - w.x, sz - w.z) * MAGE_TRIP);
-    if (s > best) { best = s; bx = a; bz = r; bn = h.n; }
+    if (s > best) { best = s; bx = sx; bz = sz; bn = h.n; }
   }
   if (best < 0) return false;
-  w.mang = bx; w.mrad = bz;
+  w.mang = Math.atan2(bz, bx); w.mrad = Math.hypot(bx, bz);
   return bn > 0;
 }
 /* 這一帶是不是已經有別的魔法師認走了。比的是**他們要站的點**不是現在的位置：
@@ -2927,9 +3009,6 @@ function mageTrail(w, dt) {
 }
 function updMage(w, wi, dt) {
   mageTrail(w, dt);
-  /* 站位只夾下限：換一座建築時 siteR 會變，上一輪挑的那個半徑可能落在新工地裡面
-     （他會站進牆裡），所以每幀夾一次。上限 v1.95 拿掉了（見 MAGE_KEEP 上面那段）。 */
-  if (w.mrad < siteR + MAGE_KEEP) w.mrad = siteR + MAGE_KEEP;
   /* 沒格子可蓋就跟大家一樣去閒晃（v1.225，使用者：「是原本魔法師缺了嗎 照理說小人們都一樣?
      是的話就補」）：站定發呆、三成機率來一段表演、走近了跟人聊天，全是 wander 那一套。
      v1.89～v1.224 他是原地面向建築站著等，理由是閒晃那條路會沿用上一輪留下的目標點
@@ -2944,8 +3023,12 @@ function updMage(w, wi, dt) {
     return;
   }
   w.mw = 0;
-  // 一幀只能走這一次（ringWalk 會真的移動人）；下面「站定了嗎」全部看這一個值
-  const stand = ringWalk(w, w.mang, w.mrad, dt);
+  /* 走到站位：照巡路規則走（v1.266.0，stepTo，同上工的人）。v1.89～v1.265 是 ringWalk 繞著外接圓走。
+     站位每幀照 mageNear 挪一次：換一座建築、或旁邊圍起來走不到了，上一輪挑的那一點可能已經不能站
+     （v1.95～v1.265 這裡是「半徑夾到外圈」那一行）。
+     一幀只能走這一次（stepTo 會真的移動人）；下面「站定了嗎」全部看這一個值 */
+  const sp = mageSpot(w), g = mageNear(sp.x, sp.z);
+  const stand = stepTo(w, g.x, g.z, dt);
   if (!w.load.length) {
     // 站定了才認料：搆得到的範圍是以「他站的地方」算的，走位途中認的那塊會被拖著走
     const short = stand ? loadUp(w, wi, 1) : 0;      // 一次只領一格一塊

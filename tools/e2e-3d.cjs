@@ -5045,6 +5045,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     scatterFree();                     // 建材鋪回工地外面（見 installClean 裡的說明）
     const mi = workers.map((w, i) => w.mage ? i : -1).filter(i => i >= 0);
     const m = workers[mi[0]];
+    /* 離藍圖的占地多遠（v1.266.0 起他照真的形狀站，見 mageField）：每一根柱子當方塊量，蓋好沒蓋好都算。
+       自己照藍圖算，不拿 mageField 那一份——拿規則自己的資料驗規則等於沒驗 */
+    const cols = [...new Set(bp.slots.map(s => s.x + ',' + s.z))].map(k => k.split(',').map(Number));
+    const footD = (x, z) => Math.min(...cols.map(([cx, cz]) =>
+      Math.hypot(Math.max(0, Math.abs(x - cx) - 0.5), Math.max(0, Math.abs(z - cz) - 0.5))));
+    let footMin = Infinity;
     let carried = 0, loadMax = 0, flyMax = 0, cast = 0, near = Infinity, far = 0;
     let starMax = 0, inHand = 0, launches = 0, frames = 0, lastN = 0, lastAt = -1;
     let jobF = 0, castJob = 0, walked = 0;
@@ -5074,6 +5080,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const b of blocks) if (b.st === 1 && mi.indexOf(b.holder) >= 0) inHand++;
       if (m.fly.length > lastN) {                   // 這一幀他又發了一塊
         launches++;
+        footMin = Math.min(footMin, footD(m.x, m.z));   // 出手那一刻一定是站定的（走位途中不出手）
         const a = blocks[m.fly[m.fly.length - 1].b].arc;
         if (a) {
           /* 出手那一刻那塊料離他多遠。量法照規則本身（mageReach2，v1.225）：
@@ -5106,7 +5113,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              mDur: med(mDur), wDur: med(wDur), mY0: med(mY0), wY0: med(wY0),
              reach: med(reach), reachMax: +Math.max.apply(null, reach.concat(0)).toFixed(2),
              REACH: MAGE_REACH, arc: med(arc), walked: +walked.toFixed(0), spots: spots.size,
-             gap: med(gaps), placed: placedCnt };
+             gap: med(gaps), placed: placedCnt,
+             footMin: +footMin.toFixed(2), KEEP: MAGE_KEEP, ARRIVE: REACH };
   });
   ok('魔法師一塊積木都不搬', wz.carried === 0 && wz.inHand === 0 && wz.launches > 20,
      wz.frames + ' 幀裡他舉著積木 ' + wz.carried + ' 幀、名下有積木被舉在手上 ' +
@@ -5140,8 +5148,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wz.flyMax >= 2 && wz.gap < wz.mDur * 0.6 && wz.loadMax === 1,
      '每 ' + wz.gap + ' 秒發一塊、一塊飛 ' + wz.mDur + ' 秒 → 同時在飛的最多 ' +
      wz.flyMax + ' 塊（手上的工作單一次還是只有 ' + wz.loadMax + ' 格）');
-  ok('站在工地旁邊施法，不走進工地', wz.near > wz.siteR + 2,
-     '離工地中心 ' + wz.near + '–' + wz.far + '（建築半徑 ' + wz.siteR + '）');
+  /* v1.266.0 起量的是「離藍圖的占地多遠」（照真的形狀），不再是「離工地中心多遠、比外接圓大」：
+     能站的點離占地至少 MAGE_KEEP，走到離那一點 REACH 以內就算到了，所以下限是 MAGE_KEEP − REACH。
+     這是規則型（每一次出手都要成立）；舊的那條「站在工地旁邊施法，不走進工地」量的是外接圓那一套、
+     在統計型清單裡，跟著改名拿掉了（見 開發筆記〈魔法師照建築真的形狀站、照尋路走（v1.266.0）〉） */
+  ok('站在建築的占地外施法：出手時離占地至少 MAGE_KEEP（照真的形狀，不走進工地）', wz.footMin >= wz.KEEP - wz.ARRIVE - 0.05,
+     '出手時離藍圖的占地最近 ' + wz.footMin + ' 格（站位離占地至少 ' + wz.KEEP + '、走到 ' + wz.ARRIVE +
+     ' 以內算到）；離工地中心 ' + wz.near + '–' + wz.far + '（外接圓半徑 ' + wz.siteR + '）');
   /* 連發之後杖就一直舉著（v1.64.1）：每 0.85 秒發一塊，中間沒有「放下再舉起來」的空檔。
      量的是「手上有料的那幾幀」而不是全部幀數（v1.89）：他現在會走去下一坨料、
      也會在料被工人搬光時站著等，那兩段本來就該收杖，混進來量到的是「場上還有多少料」。 */
@@ -5193,11 +5206,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      wzPick.small + ' 格（兩堆都在半徑 ' + wzPick.R + '，他從等距的地方出發）');
 
   /* v1.225（使用者：「放寬魔法師，讓他能伸手拿工地圈裡的料」，範圍選「整個工地圈」）：
-     料全躺在工地圈裡的時候，他站在外圈往裡伸手拉，不走進建築。按「換一座來蓋」之後就是
+     料全躺在建築裡的時候，他站在外面往裡伸手拉，不走進建築。按「換一座來蓋」之後就是
      這個場面——整棟打散成碎料落在新工地裡、推土機沒開（v1.224 實測 678 塊裡 678 塊在圈裡，
      40 人那一座魔法師只有 15% 的時間在施法）。
-     場面押死：場上只留一坨料、擺在工地中心附近，其他人全部偷懶不上工（不跟他搶）。
-     A/B：把 mageReach2 換回真實距離就是 v1.224 的他——一塊都拉不到。 */
+     v1.266.0 起邊界從外接圓換成建築真的形狀（見 mageField）：站在占地外 MAGE_KEEP，伸手進去那一段不算距離。
+     場面押死：場上只留一坨料、擺在工地正中央（離能站的地方最遠），其他人全部偷懶不上工（不跟他搶）。
+     A/B：把 mageReach2 換回真實距離就是 v1.224 的他——一塊都拉不到。這一條要成立，那一坨離能站的地方
+     得比 MAGE_REACH 遠，所以那段距離（deep）也量出來一起守。 */
   const wzIn = await page.evaluate(() => {
     const run = on => {
       shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
@@ -5207,42 +5222,87 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const w of workers) { releaseWorker(w); if (w !== m) w.lazy = 1; }
       const free = blocks.filter(b => b.st === 0 && b.rest);
       for (const b of blocks) b.holder = 0;            // 全部藏起來（誰都認不到）
-      for (const b of free.slice(0, 40)) {             // 一坨料擺在離中心 3 格的地方
+      for (const b of free.slice(0, 40)) {             // 一坨料擺在工地正中央
         if (b.cell) gridDel(b);
-        b.x = 3 + rr(-2, 2); b.z = rr(-2, 2); b.y = HB;
+        b.x = rr(-1.5, 1.5); b.z = rr(-1.5, 1.5); b.y = HB;
         b.vx = b.vy = b.vz = 0; b.rest = true; b.snap = 0; b.holder = -1;
         gridAdd(b);
       }
-      const R = siteR + MAGE_KEEP;
-      m.x = 0; m.z = R + 6; m.mang = Math.PI / 2; m.mrad = R + 6; m.mre = 0;
+      const p = mageNear(0, 0), deep = Math.hypot(p.x, p.z) - 1.5 * Math.SQRT2;   // 那一坨離能站的地方最近多遠
+      const cols = [...new Set(bp.slots.map(s => s.x + ',' + s.z))].map(k => k.split(',').map(Number));
+      const footD = (x, z) => Math.min(...cols.map(([cx, cz]) =>
+        Math.hypot(Math.max(0, Math.abs(x - cx) - 0.5), Math.max(0, Math.abs(z - cz) - 0.5))));
+      m.x = 0; m.z = siteR + 12; m.mang = Math.PI / 2; m.mrad = siteR + 12; m.mre = 0;
       m.fly.length = 0; m.st = 'idle';
       const keep = mageReach2;
       if (!on) mageReach2 = (w, b) => (b.x - w.x) ** 2 + (b.z - w.z) ** 2;
-      let launches = 0, rMin = Infinity, dMax = 0, lastN = 0;
+      let launches = 0, foot = Infinity, dMax = 0, lastN = 0;
       for (let i = 0; i < 600; i++) {
         step(0.05);
-        if (m.fly.length > lastN) {                    // 這一幀他又發了一塊
+        if (m.fly.length > lastN) {                    // 這一幀他又發了一塊（出手那一刻一定站定）
           launches++;
+          foot = Math.min(foot, footD(m.x, m.z));
           const a = blocks[m.fly[m.fly.length - 1].b].arc;
           if (a) dMax = Math.max(dMax, Math.hypot(a.x0 - m.x, a.z0 - m.z));
         }
         lastN = m.fly.length;
-        if (m.load.length) rMin = Math.min(rMin, Math.hypot(m.x, m.z));   // 施法中站在哪
       }
       mageReach2 = keep;                               // 動過的全域狀態還回去
       for (const w of workers) w.lazy = 0;
-      return { launches, rMin: rMin === Infinity ? -1 : +rMin.toFixed(1), dMax: +dMax.toFixed(1),
-               R: +R.toFixed(1) };
+      return { launches, foot: foot === Infinity ? -1 : +foot.toFixed(2), dMax: +dMax.toFixed(1), deep: +deep.toFixed(1) };
     };
-    return { on: run(true), off: run(false), REACH: MAGE_REACH };
+    return { on: run(true), off: run(false), REACH: MAGE_REACH, KEEP: MAGE_KEEP, ARRIVE: REACH };
   });
-  ok('料全在工地圈裡：站在外圈往裡伸手拉，不走進建築（v1.225）',
-     wzIn.on.launches > 10 && wzIn.on.rMin >= wzIn.on.R - 1 &&
+  ok('料全在建築裡：站在占地外往裡伸手拉，不走進建築（v1.225，v1.266.0 照真的形狀）',
+     wzIn.on.deep > wzIn.REACH && wzIn.on.launches > 10 && wzIn.on.foot >= wzIn.KEEP - wzIn.ARRIVE - 0.05 &&
      wzIn.on.dMax > wzIn.REACH && wzIn.off.launches === 0,
-     '一坨 40 塊擺在工地中心附近：30 秒發了 ' + wzIn.on.launches + ' 塊，施法時站在半徑 ' +
-     wzIn.on.rMin + ' 以外（外圈 ' + wzIn.on.R + '），出手時料離他最遠 ' + wzIn.on.dMax +
-     ' 格（圈外的上限是 ' + wzIn.REACH + '）；照真實距離量（v1.224）發了 ' +
+     '一坨 40 塊擺在工地正中央（離能站的地方 ' + wzIn.on.deep + ' 格）：30 秒發了 ' + wzIn.on.launches +
+     ' 塊，出手時離占地最近 ' + wzIn.on.foot + '（站位離占地至少 ' + wzIn.KEEP + '），出手時料離他最遠 ' +
+     wzIn.on.dMax + ' 格（真實距離的上限是 ' + wzIn.REACH + '）；照真實距離量（v1.224）發了 ' +
      wzIn.off.launches + ' 塊');
+
+  /* v1.266.0（使用者：「調查發現金門大橋 有法師站的位置沒碎料卻好像還在工作或發呆」）：細長的地標，
+     料躺在橋旁邊的空地上（在外接圓裡、離橋十幾格）。v1.225～v1.265 那一坨會被投影到外接圓那一圈上，
+     他站在圈上隔著二十幾格的空地拉（探針：金門大橋 3000 施法時離拉的那塊料中位 41.9 格）。
+     現在那一坨躺的地方就能站，他要走到料旁邊、照真實距離拉（出手時不超過 MAGE_REACH）。
+     場面押死同上一條：只留一坨料，其他人偷懶。 */
+  const wzGG = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '金門大橋');
+    targetCnt = 3000; setWorkerCount(6); startBuild(true);
+    for (let i = 0; i < 160; i++) step(0.05);
+    const m = workers.find(w => w.mage);
+    for (const w of workers) { releaseWorker(w); if (w !== m) w.lazy = 1; }
+    const free = blocks.filter(b => b.st === 0 && b.rest);
+    for (const b of blocks) b.holder = 0;
+    const xs = bp.slots.map(s => s.x), hx = Math.max(...xs) + 12, hz = 20;     // 橋的側邊再往外 12 格
+    for (const b of free.slice(0, 40)) {
+      if (b.cell) gridDel(b);
+      b.x = hx + rr(-2, 2); b.z = hz + rr(-2, 2); b.y = HB;
+      b.vx = b.vy = b.vz = 0; b.rest = true; b.snap = 0; b.holder = -1;
+      gridAdd(b);
+    }
+    m.x = 0; m.z = siteR + 12; m.mang = Math.PI / 2; m.mrad = siteR + 12; m.mre = 0;
+    m.fly.length = 0; m.st = 'idle';
+    let launches = 0, dMax = 0, standMax = 0, lastN = 0;
+    for (let i = 0; i < 900; i++) {
+      step(0.05);
+      if (m.fly.length > lastN) {
+        launches++;
+        standMax = Math.max(standMax, Math.hypot(m.x - hx, m.z - hz));
+        const a = blocks[m.fly[m.fly.length - 1].b].arc;
+        if (a) dMax = Math.max(dMax, Math.hypot(a.x0 - m.x, a.z0 - m.z));
+      }
+      lastN = m.fly.length;
+    }
+    for (const w of workers) w.lazy = 0;
+    return { launches, dMax: +dMax.toFixed(1), standMax: +standMax.toFixed(1), heapR: +Math.hypot(hx, hz).toFixed(1),
+             ring: +(siteR + MAGE_KEEP).toFixed(1), REACH: MAGE_REACH };
+  });
+  ok('細長的地標（金門大橋）：料躺在橋旁的空地上，走到料旁邊照真實距離拉，不站在外接圓上隔空拉',
+     wzGG.launches > 10 && wzGG.dMax <= wzGG.REACH + 0.01 && wzGG.standMax < wzGG.REACH * 0.6,
+     '一坨 40 塊在橋旁空地（離中心 ' + wzGG.heapR + '，v1.265 以前的外圈在 ' + wzGG.ring + '）：45 秒發了 ' +
+     wzGG.launches + ' 塊，出手時離那一坨中心最遠 ' + wzGG.standMax + ' 格、離拉的那塊料最遠 ' + wzGG.dMax +
+     ' 格（上限 ' + wzGG.REACH + '）');
 
   /* v1.225（使用者：「是原本魔法師缺了嗎 照理說小人們都一樣?是的話就補」）：
      沒格子可蓋時他跟大家走同一條閒晃路——走一段、站定發呆、抽表演。
@@ -18379,7 +18439,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       loadMen: ld.length, loadMin: ld.length ? +Math.min(...ld).toFixed(2) : 0,
       walkMen: Object.keys(walk).length,
       turnMin: +Math.min(...Object.values(turn)).toFixed(2), face: MK_FACE,
-      goLo: +goLo.toFixed(5), goHi: +goHi.toFixed(5), goN, goWant: MK_N * MK_VOL,
+      goLo: +goLo.toFixed(5), goHi: +goHi.toFixed(5), goLoRaw: goLo, goHiRaw: goHi, goN, goWant: MK_N * MK_VOL,
       faceErr: +faceErr.toExponential(1), faceN,
       shake: +shake.toFixed(3), flashMax, burning: fires ? fires.length : 0, nSpread,
       smashed: stats.smashed - s0,
@@ -18405,12 +18465,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mkRun.perManMin + '～' + mkRun.perManMax + ' 發；' + mkRun.loadMen + ' 人裝填過（最少 ' +
      mkRun.loadMin + ' 秒）、' + mkRun.walkMen + ' 人走過、轉身最少 ' + mkRun.turnMin + ' 弧度');
   /* v1.252（使用者：「火槍兵&箭雨 小人排隊有點過於整齊」）：換位那一段每個人照自己這一輪的 lag[n] 晚起步
-     （差距落在一幀之內：mkWalk 要走出第一步才算在走），沒在瞄、站著裝填時朝 a0 ＋ fa。lag／fa 抽多大另一條守。 */
+     （差距落在一幀之內：mkWalk 要走出第一步才算在走），沒在瞄、站著裝填時朝 a0 ＋ fa。lag／fa 抽多大另一條守。
+     v1.266.0：比的是**沒捨入的原值**（goLoRaw／goHiRaw），捨入過的只給人看。差距照規則落在 [0, 一幀)，最大值天生貼著 1/60，
+     先 toFixed(5) 再比的話 0.016665～0.0166677 會進位成 0.01667、大於 1/60 + 1e-6 判紅（--seed 3419893863 就是這樣紅的：原值 0.01666628）。
+     見 開發筆記〈火槍兵那條先捨入再比（v1.266.0）〉 */
   ok('三段擊換位：每個人每一輪照自己的 lag 晚起步，站著裝填時朝隊伍方向 ＋ 自己的偏角',
-     mkRun.goN === mkRun.goWant && mkRun.goLo > -1e-6 && mkRun.goHi <= 1 / 60 + 1e-6 &&
+     mkRun.goN === mkRun.goWant && mkRun.goLoRaw > -1e-6 && mkRun.goHiRaw <= 1 / 60 + 1e-6 &&
      mkRun.faceN > 0 && mkRun.faceErr < 1e-9,
      mkRun.goN + ' 次起步（期望 ' + mkRun.goWant + '）比時間表 ＋ lag 晚 ' + mkRun.goLo + '～' + mkRun.goHi +
-     ' 秒（一幀 ' + (1 / 60).toFixed(5) + '）；裝填 ' + mkRun.faceN + ' 幀朝向離 a0 ＋ fa 最多 ' + mkRun.faceErr);
+     ' 秒（最晚的原值 ' + mkRun.goHiRaw.toFixed(8) + '，一幀 ' + (1 / 60).toFixed(8) + '）；裝填 ' + mkRun.faceN + ' 幀朝向離 a0 ＋ fa 最多 ' + mkRun.faceErr);
   /* v1.232（使用者：「目前一起發射太過整齊 小人射擊要有小小時間差」「火槍射擊應該是往點擊第二點方向發射
      而不是瞄準第二點(射擊方向與隊伍垂直)」）。兩條都是**上下限**，不賭骰子：
      ① 每一發都落在這一輪開始之後 0～MK_SPREAD（多一幀）之內，而且真的散開（最晚那一發超過八成：
@@ -36751,7 +36814,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      往內那一步被牆擋住、只沿圈滑，角度一對上就回報「到了」——停在牆外側，腿沒在擺，stuckWatch 也不觸發。
      規則：要跨過城牆那條線、或直線過去會碰到砌好的牆，就照巡路規則走（strollTo），到了同一側才繞圈。
      場面：整圈城牆（同 ⑮），三種站位各從牆外 8 個方位走進來，加上魔法師從城裡走到城外的料堆（反方向 8 趟）。
-     對照組把城牆當成一般房子（h.wall = 0：footHome 照擋、城牆那幾支看不到它）＝ v1.247 的走法。 */
+     對照組把城牆當成一般房子（h.wall = 0：footHome 照擋、城牆那幾支看不到它）＝ v1.247 的走法。
+     v1.266.0 起魔法師不走 ringWalk 了（站位照建築真的形狀、照巡路規則走，見 updMage 的 stepTo），
+     他那兩組改用他自己的走法（stepTo）走同樣的起點與站位，守的還是同一件事：牆外走得到牆裡的站位、牆裡走得到城外的料堆。 */
   const navRing = await page.evaluate(() => {
     const N = window.navT;
     homes = null; frameNo++;
@@ -36765,7 +36830,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       h.done = true; homeBox(h); walls.push(h);
     }
     const dt = 0.05, T = 40;
-    const one = (s, ta, rad) => {
+    const one = (s, ta, rad, nav) => {
       const w = workers[0];
       releaseWorker(w); N.wear(w, null);
       w.hm = -1; w.flee = 0; w.air = 0; w.burn = 0; w.pause = 0; w.leg = 0; w.gait = 0; w.y = 0;
@@ -36777,7 +36842,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         frameNo++;
         stuckWatch(w, dt);                              // updWorker 每幀第一件事
         if (w.ghost > 0) ghost++;
-        const done = ringWalk(w, ta, rad, dt);
+        const done = nav ? stepTo(w, gx, gz, dt) : ringWalk(w, ta, rad, dt);
         if (w.ghost <= 0 && footHome(w.x, w.z)) inBox++;
         if (done) { t = +((i + 1) * dt).toFixed(2); break; }
       }
@@ -36787,16 +36852,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       releaseWorker(w); w.ghost = 0; w.stk = 0;
       return r;
     };
-    const who = [['魔法師', siteR + MAGE_KEEP, 1], ['工程師', siteR + ENG_KEEP, 1], ['慶祝', cheerR(), 1],
-                 ['魔法師（城外的料堆）', W + 8, 0]];
+    const who = [['魔法師', siteR + MAGE_KEEP, 1, 1], ['工程師', siteR + ENG_KEEP, 1, 0], ['慶祝', cheerR(), 1, 0],
+                 ['魔法師（城外的料堆）', W + 8, 0, 1]];
     const pass = list => {
       homes = { list }; frameNo++;
       const runs = [];
-      for (const [n, rad, fromOut] of who)
+      for (const [n, rad, fromOut, nav] of who)
         for (let k = 0; k < 8; k++) {
           const a = k * Math.PI / 4 + 0.2;
           const s = fromOut ? [Math.cos(a) * (W + 6), Math.sin(a) * (W + 6)] : [Math.cos(a) * (siteR + 6), Math.sin(a) * (siteR + 6)];
-          const r = one(s, a + 0.5, rad);
+          const r = one(s, a + 0.5, rad, nav);
           r.n = n + '・方位 ' + k; runs.push(r);
         }
       return runs;
