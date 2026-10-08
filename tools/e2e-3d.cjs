@@ -33599,7 +33599,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 /* 點火（v1.258.0，使用者：「燃燒聲音有點刺耳」）。接在弦聲後面：插在前面會位移整條亂數序列（見上面那條）。
                    噪音打底，五次取中位數（同雷聲，見 many）。舊的那一版就地復刻當對照組 */
                 fire: await many(() => sndFire(), 3, 5),
-                fireOld: await many(() => { noise(0.55, 0.16, 1600); tone(150, 0.4, 'sawtooth', 0.05, 2.4); }, 3, 5) };
+                fireOld: await many(() => { noise(0.55, 0.16, 1600); tone(150, 0.4, 'sawtooth', 0.05, 2.4); }, 3, 5),
+                /* 碎料落地彈一下（v1.264.1，使用者：「燃燒或破壞後 繼續蓋建築還是會有刺耳音效」）。接在點火後面（同上）。
+                   舊的那一版（切 2200、0.03）就地復刻當對照組 */
+                land: await many(() => sndLand(), 3, 5),
+                landOld: await many(() => noise(0.05, 0.03, 2200), 3, 5) };
     audio = realAudio; muted = wasMuted; running = wasRunning;
     return r;
   });
@@ -33887,6 +33891,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('點火那一聲不刺耳：2kHz 以上比舊配方少一半以上，音量沒跟著縮',
      snd.fire.hiPct < snd.fireOld.hiPct * 0.5 && snd.fire.hiPct < 30 && snd.fire.rms > snd.fireOld.rms * 0.7,
      '2kHz 以上 ' + snd.fireOld.hiPct + '% → ' + snd.fire.hiPct + '%；rms ' + snd.fireOld.rms + ' → ' + snd.fire.rms);
+  /* 碎料落地彈一下（v1.264.1）：燒房子、炸完那幾十秒唯一的高頻來源，切點 2200 → 760、音量補回來。
+     同點火那條的兩把尺：高頻占比少一半以上，整段 rms 至少留七成 */
+  ok('碎料落地那一聲不刺耳：2kHz 以上比舊配方少一半以上，音量沒跟著縮',
+     snd.land.hiPct < snd.landOld.hiPct * 0.5 && snd.land.hiPct < 30 && snd.land.rms > snd.landOld.rms * 0.7,
+     '2kHz 以上 ' + snd.landOld.hiPct + '% → ' + snd.land.hiPct + '%；rms ' + snd.landOld.rms + ' → ' + snd.land.rms);
   }   // ── 〈音效〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 視角操作 ══════════ */
