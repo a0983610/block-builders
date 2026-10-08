@@ -89,8 +89,16 @@ function step(dt) {
      （v1.62 之前是「陣一定會先把整棟扯下來捲進陣心，所以一定會跌破這條線」；
      現在整段吸下來只剝得走兩成，跌破多半是玩家在那六秒裡又補了幾發，但要擋的事情一樣。）
      （等待中途離開 wreck——按了「立刻建成」之類——就把秒數丟掉重算） */
-  if (phase !== 'wreck') swapWait = 0;
+  if (phase !== 'wreck') { swapWait = 0; swapNext = null; }
   else if (!magics && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
+    /* 跌破門檻那一刻就先挑好下一座、叫背景去算（v1.265.0，見 askBlueprint）：等滿 SWAP_WAIT 那三秒
+       就是它算的時間，換場那一幀直接拿來用，畫面不等藍圖。還沒回來（Worker 開不起來、或測試一口氣
+       連跑好幾幀不讓出主執行緒）就當場算，跟以前一樣。 */
+    if (!swapNext) {
+      const idx = pickShape();
+      const n = swapNext = { idx, name: SHAPES[idx].n, cnt: targetCnt, bp: null };
+      askBlueprint(idx, n.cnt, got => { n.bp = got; });
+    }
     swapWait += dt;
     if (swapWait >= SWAP_WAIT) {
       stats.destroyed++;
@@ -100,7 +108,10 @@ function step(dt) {
       toast('💥 ' + bp.name + ' 拆除完畢',
             '損失 ' + money(lossThis) + '　·　累計拆掉 ' + stats.destroyed + ' 座');
       checkBadges(); save(); renderTools();
-      startBuild(false);
+      /* 先挑好的那一座在這三秒裡被刪掉（匯入的可以刪）或換了建材檔位，就照舊當場重挑 */
+      const n = swapNext;
+      const keep = SHAPES[n.idx] && SHAPES[n.idx].n === n.name && n.cnt === targetCnt;
+      startBuild(false, keep ? { idx: n.idx, bp: n.bp || makeBlueprint(n.idx, targetCnt) } : undefined);
     }
   }
   stepSwing(dt);
@@ -1038,14 +1049,15 @@ function boot() {
   /* 上次匯進來的藍圖要在建選單之前進 SHAPES，不然這一輪選單裡沒有它們 */
   loadImports();
   refreshShapeMenu();
-  $('shape').addEventListener('change', e => { shapePick = +e.target.value; startBuild(false); });
+  /* 換場的三個入口都先叫背景算藍圖，算好了才換（v1.265.0，見 swapBuild） */
+  $('shape').addEventListener('change', e => { shapePick = +e.target.value; swapBuild(); });
 
   /* 設定改動一律寫回 pref 並存檔——下次打開就不用重調。
      建材改了要重蓋（那是「下一座蓋多大」），小人與速度是當下就生效，不必打斷這一座。 */
-  makeSeg('cnt', CNT_OPTS, v => v, v => { targetCnt = pref.cnt = v; save(); startBuild(false); });
+  makeSeg('cnt', CNT_OPTS, v => v, v => { targetCnt = pref.cnt = v; save(); swapBuild(); });
   makeSeg('wk', WK_OPTS, v => v, v => { setWorkerCount(v); pref.wk = workerCnt; syncHud(); save(); });
   makeSeg('spd', SPD_OPTS, v => v + '×', v => { timeScale = pref.spd = v; syncHud(); save(); });
-  $('again').addEventListener('click', () => { audio(); startBuild(false); });
+  $('again').addEventListener('click', () => { audio(); swapBuild(); });
   /* 立刻建成：不想等小人搬完時用。走的是開場那條 completeNow()，
      所以人力費一毛都不加（stats.spent 只在 step() 裡隨施工時間累積），
      按不出「百萬工程」那類花錢成就；蓋過哪些地標、幾塊的大工程照記。 */
@@ -1178,6 +1190,7 @@ function boot() {
   applyPref();
   renderTools();
   renderBadges();
+  bpWorker();             // 背景算藍圖的 Worker 先開起來，第一次換場才不必等它載藍圖檔（v1.265.0）
   startBuild(true);
   completeNow();          // 開場直接給一座蓋好的建築，砸掉之後才會開始蓋下一座
   requestAnimationFrame(frame);

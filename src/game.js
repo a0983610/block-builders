@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.264.1';
+const VERSION = '1.265.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -903,7 +903,78 @@ function arenaOf(sr, n, cnt) {
   return Math.max(ARENA_FIX[cnt] || 0, Math.sqrt((sr + 2) ** 2 + SPREAD * n / Math.PI) + 8);
 }
 
-function startBuild(instant) {
+/* ── 藍圖丟到背景算（v1.265.0）──────────────────────────────
+   使用者：「換地標建築時有時候好像會卡一下 懷疑是在讀藍圖?(是的話 看看是不是能類似非同步載入藍圖)」
+   →「手動切換也不該卡 理想是算還是算 但是不要讓畫面卡 所以才想要類似多執行緒概念」。
+   換場那一下幾乎全花在 makeBlueprint（fitScale 為了湊塊數試產五六十次），其餘步驟加起來不到 2 ms：
+   3000 那一檔中位 40 ms、最慢 160 ms；9000 中位 137 ms、最慢 410 ms。丟給 Worker 算之後，
+   主執行緒只付收包那幾毫秒（9000 實測 3～7 ms，同步是 69～226 ms）。
+   file:// 的頁面拿檔案路徑開 Worker 會被擋（SecurityError，origin 'null'），**blob 開的可以**，
+   裡面 importScripts 那幾支藍圖檔也可以（實測 Chrome）。所以 Worker 跑的是同一份 blueprints.js
+   ＋同一批 blueprints/*.js（照 document.scripts 的順序載），產出的藍圖逐格相同。
+   開不起來（別的瀏覽器 file:// 的規矩不同）、或要的那座 Worker 裡沒有（遊戲裡匯入的），
+   就退回當場算——跟 v1.264 以前一樣會卡那一下，但不會壞。
+   startBuild() 自己照舊是同步的：測試與這條退路都直接叫它；只有換場的那幾個入口改成先問 Worker。
+   見 開發筆記〈換地標卡一下：藍圖丟到 Worker 算（v1.265.0）〉 */
+let bpWk = null;                    // Worker；null＝還沒開、false＝開不起來（一律當場算）
+let bpWait = null;                  // 正在等的那一份 { id, then }。同一時間只等一份，新的來了舊的回來就丟掉
+let bpSeq = 0;
+function bpWorker() {
+  if (bpWk !== null) return bpWk;
+  try {
+    const base = new URL('.', location.href).href;
+    const src = [...document.scripts].map(s => s.src).filter(u => {
+      const r = u.startsWith(base) ? u.slice(base.length) : '';
+      return r === 'src/blueprints.js' || r.startsWith('blueprints/');
+    });
+    /* 一支一支載、各自接住：跟主執行緒的 <script> 一樣，壞一支只少那一支（customBlueprint 撞名之類的也照樣跳過），
+       兩邊的 SHAPES 才會一模一樣。載不到 blueprints.js 的話每一份都回 null，呼叫端當場算。 */
+    const code =
+      'for (const u of ' + JSON.stringify(src) + ') { try { importScripts(u); } catch (e) {} }\n' +
+      'onmessage = e => {\n' +
+      '  const d = e.data;\n' +
+      '  let bp = null;\n' +
+      '  try { const i = SHAPES.findIndex(s => s.n === d.name); if (i >= 0) bp = makeBlueprint(i, d.cnt); } catch (er) { bp = null; }\n' +
+      '  postMessage({ id: d.id, bp });\n' +
+      '};';
+    bpWk = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+    bpWk.onmessage = e => {
+      const d = e.data;
+      const w = bpWait;
+      if (!w || d.id !== w.id) return;              // 已經被新的那一份取代了
+      bpWait = null;
+      w.then(d.bp);
+    };
+    bpWk.onerror = bpDown;
+  } catch (e) { bpWk = false; }
+  return bpWk;
+}
+/* Worker 掛了：之後一律當場算，正在等的那一份也當場算掉 */
+function bpDown() {
+  bpWk = false;
+  const w = bpWait;
+  bpWait = null;
+  if (w) w.then(null);
+}
+/* 叫背景算一份。then(bp) 收到時呼叫；bp 是 null＝背景算不了（Worker 開不起來、或那座 Worker 裡沒有），
+   呼叫端自己當場算。Worker 開不起來的話 then 是當場同步呼叫的。 */
+function askBlueprint(idx, cnt, then) {
+  const wk = bpWorker();
+  if (!wk) { then(null); return; }
+  bpWait = { id: ++bpSeq, then };
+  wk.postMessage({ id: bpSeq, name: SHAPES[idx].n, cnt });
+}
+/* 換場的入口（下拉選單、建材檔位、「換一座來蓋」）：挑好下一座、背景算好了再換。
+   等的那一下（9000 那一檔 0.1～0.3 秒）畫面照常在跑，舊的那座還在原地。 */
+function swapBuild() {
+  const idx = pickShape(), cnt = targetCnt;
+  askBlueprint(idx, cnt, got => startBuild(false, { idx, bp: got || makeBlueprint(idx, cnt) }));
+}
+
+/* ready：已經算好的那一份 { idx, bp }（背景算的、或換場前先叫背景算好的，見 swapBuild 與 step 的換場）。
+   沒給就跟以前一樣當場挑、當場算。 */
+function startBuild(instant, ready) {
+  bpWait = null;                     // 還在等的那一份作廢：不然它回來時會再換一次場
   /* 閒晃事件**不在這裡收**（v1.248）：要整地的話那十幾秒照常過日子，蓋家／城牆的人接著蓋，
      推土機推完、真的開工才收（見 beginBuild）。v1.97～v1.247 是這一行就收掉。 */
   /* 順序有講究：先把小人和舊建築解開（他們的 slot 指的是「舊」藍圖），
@@ -967,9 +1038,9 @@ function startBuild(instant) {
      清掉的話蘑菇雲會在爆炸後 0.05 秒整朵消失，等於白做。
      塵霧（dust）本來就是這樣處理的，這裡跟它一致。 */
 
-  const idx = pickShape();
+  const idx = ready ? ready.idx : pickShape();
   recent.push(idx); if (recent.length > 8) recent.shift();
-  bp = makeBlueprint(idx, targetCnt);
+  bp = ready ? ready.bp : makeBlueprint(idx, targetCnt);
   indexGrid();
   placedCnt = 0; slotCursor = 0;
   buildElapsed = 0; spentThis = 0; lossThis = 0;

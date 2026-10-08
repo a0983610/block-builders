@@ -4361,6 +4361,125 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '，最少的一環占 ' + (idle.thin * 100).toFixed(0) + '%）；最遠走到 ' + idle.far +
      '（碎料場外緣 ' + idle.arenaR + '）');
 
+  /* 換場的藍圖丟到背景算（v1.265.0，使用者：「換地標建築時有時候好像會卡一下」→「手動切換也不該卡
+     理想是算還是算 但是不要讓畫面卡 所以才想要類似多執行緒概念」）。四條都是規則型：
+       ① Worker 算回來的跟當場算的逐格相同（內建一座、blueprints/ 一座、最寬的金門大橋 9000）
+       ② 換場的入口（swapBuild）不當場換、背景回來才換；等的時候主執行緒最長被占住不到當場算的四分之一
+          （量法：MessageChannel 一直互丟，記最大間隔；畫面那一圈先停掉，只量藍圖）
+       ③ 自動換場：跌破門檻那一刻就叫背景算，等滿 SWAP_WAIT 換上的就是它（換場那一幀 makeBlueprint 0 次）
+       ④ 退路：Worker 開不起來就當場換；Worker 裡沒有的那座（遊戲裡匯入的）回來是 null，照樣當場算出來換上
+     ②③ 要讓出主執行緒等 Worker 回信，所以這幾條是 async 的 evaluate。 */
+  const bgSame = await page.evaluate(async () => {
+    const ask = (i, cnt) => new Promise(res => askBlueprint(i, cnt, res));
+    const pick = [SHAPES.findIndex(s => !s.custom), SHAPES.findIndex(s => s.custom && s.n !== '金門大橋'),
+                  SHAPES.findIndex(s => s.n === '金門大橋')];
+    const rows = [];
+    for (const [i, cnt] of [[pick[0], 3000], [pick[1], 3000], [pick[2], 9000]]) {
+      const got = await ask(i, cnt), mine = makeBlueprint(i, cnt);
+      const same = !!got && JSON.stringify(got.slots) === JSON.stringify(mine.slots) &&
+        JSON.stringify([...got.at]) === JSON.stringify([...mine.at]) &&
+        JSON.stringify(got.floats) === JSON.stringify(mine.floats) &&
+        got.radius === mine.radius && got.height === mine.height && got.idx === mine.idx;
+      rows.push({ n: SHAPES[i].n, custom: !!SHAPES[i].custom, cnt, same, slots: got ? got.slots.length : -1 });
+    }
+    return rows;
+  });
+  ok('換場的藍圖丟到背景算：Worker 算回來的跟當場算的逐格相同',
+     bgSame.length === 3 && bgSame.every(r => r.same) && bgSame.some(r => r.custom) && bgSame.some(r => !r.custom),
+     bgSame.map(r => r.n + (r.custom ? '（blueprints/）' : '（內建）') + ' ' + r.cnt + '：' + r.slots + ' 格 ' +
+                (r.same ? '相同' : '不同')).join('、'));
+
+  const bgSwap = await page.evaluate(async () => {
+    const keep = { shapePick, targetCnt, running, raf: window.requestAnimationFrame };
+    running = false;
+    const i = SHAPES.findIndex(s => s.n === '都會商辦大廈');     // 9000 那一檔當場算最慢的一座（探針量過）
+    let t = performance.now(); makeBlueprint(i, 9000); const sync = performance.now() - t;
+    window.requestAnimationFrame = () => 0;                      // 畫面那一圈停掉，只量藍圖
+    await new Promise(r => setTimeout(r, 100));
+    const ch = new MessageChannel(); let last = performance.now(), worst = 0, on = true;
+    ch.port1.onmessage = () => { const n = performance.now(); worst = Math.max(worst, n - last); last = n; if (on) ch.port2.postMessage(0); };
+    ch.port2.postMessage(0);
+    await new Promise(r => setTimeout(r, 50));
+    worst = 0;
+    const old = bp;
+    shapePick = i; targetCnt = 9000;
+    t = performance.now();
+    swapBuild();
+    const sameFrame = bp !== old;                                // 叫下去那一刻就換了＝沒丟到背景
+    while (bp === old && performance.now() - t < 8000) await new Promise(r => setTimeout(r, 10));
+    const wait = performance.now() - t;
+    await new Promise(r => setTimeout(r, 50));
+    on = false;
+    const got = bp !== old ? bp.name : '';
+    shapePick = keep.shapePick; targetCnt = keep.targetCnt; running = keep.running;
+    window.requestAnimationFrame = keep.raf; requestAnimationFrame(frame);   // 動過的全域狀態還回去
+    return { sync: +sync.toFixed(1), worst: +worst.toFixed(1), wait: +wait.toFixed(0), sameFrame, got, want: SHAPES[i].n };
+  });
+  ok('換場不等藍圖：背景算好了才換，主執行緒最長被占住不到當場算的四分之一',
+     !bgSwap.sameFrame && bgSwap.got === bgSwap.want && bgSwap.worst < bgSwap.sync / 4,
+     bgSwap.want + ' 9000：當場算 ' + bgSwap.sync + ' ms；丟到背景時主執行緒最長被占住 ' + bgSwap.worst +
+     ' ms、' + bgSwap.wait + ' ms 後換上（叫下去那一刻' + (bgSwap.sameFrame ? '就換了' : '還沒換') + '）');
+
+  const bgAuto = await page.evaluate(async () => {
+    const keep = { running };
+    running = false;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 700; startBuild(true); completeNow();
+    shapePick = -1;
+    const thr = Math.floor(bp.slots.length * WRECK_AT);
+    for (const b of blocks) if (b.st === SET && b.hh < 0 && placedCnt > thr) freeBlock(b);
+    const ph0 = phase;
+    step(0.05);                                                  // 跌破門檻的第一幀：挑好下一座、叫背景去算
+    const n = swapNext, asked = !!n && !n.bp;
+    const t = performance.now();
+    while (swapNext === n && n && !n.bp && performance.now() - t < 8000) await new Promise(r => setTimeout(r, 10));
+    const back = !!(n && n.bp);
+    const mk = makeBlueprint;
+    let calls = 0;
+    makeBlueprint = (...a) => { calls++; return mk(...a); };
+    let frames = 0;
+    for (; frames < 200 && phase === 'wreck'; frames++) step(0.05);
+    makeBlueprint = mk;                                          // 動過的全域狀態還回去
+    running = keep.running;
+    return { ph0, asked, back, same: !!n && bp === n.bp, calls, phase, secs: +(frames * 0.05).toFixed(2), SWAP_WAIT,
+             want: n ? n.name : '', name: bp.name };
+  });
+  ok('自動換場：跌破門檻那一刻就叫背景算，等滿 SWAP_WAIT 換上的就是它（換場那一幀不當場算）',
+     bgAuto.ph0 === 'wreck' && bgAuto.asked && bgAuto.back && bgAuto.same && bgAuto.calls === 0 && bgAuto.phase !== 'wreck',
+     '跌破門檻那一幀叫了背景（' + bgAuto.want + '）、' + (bgAuto.back ? '回來了' : '沒回來') + '；再過 ' + bgAuto.secs +
+     ' 秒換場（SWAP_WAIT ' + bgAuto.SWAP_WAIT + '），換上的' + (bgAuto.same ? '就是背景算好的那一份' : '不是背景那一份') +
+     '（' + bgAuto.name + '），換場時當場算了 ' + bgAuto.calls + ' 次');
+
+  const bgOff = await page.evaluate(async () => {
+    const keep = { running, wk: bpWk, shapePick };
+    running = false;
+    targetCnt = 700;
+    // 退路一：Worker 開不起來 → 叫下去那一刻就當場換
+    bpWk = false;
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    const b0 = bp;
+    swapBuild();
+    const syncSwap = bp !== b0 && bp.name === '吉薩金字塔';
+    bpWk = keep.wk;
+    // 退路二：Worker 裡沒有的那座（遊戲裡匯入的，Worker 只載了檔案）→ 回來是 null，照樣當場算出來換上
+    const name = 'e2e 背景沒有的塔';
+    const j = customBlueprint({ name, pal: ['#b08850'], layers: [['111', '111', '111'], ['111', '1.1', '111'], ['.1.', '111', '.1.']] });
+    shapePick = j;
+    const b1 = bp;
+    swapBuild();
+    const pending = bp === b1;
+    const t = performance.now();
+    while (bp === b1 && performance.now() - t < 8000) await new Promise(r => setTimeout(r, 10));
+    const got = bp.name === name;
+    SHAPES.splice(j, 1);                                         // 動過的全域狀態還回去
+    shapePick = keep.shapePick; running = keep.running;
+    return { syncSwap, pending, got, j };
+  });
+  ok('背景算不了就當場算：Worker 開不起來當場換、Worker 裡沒有的那座回來是空的也照樣換上',
+     bgOff.syncSwap && bgOff.pending && bgOff.got,
+     'Worker 關掉：叫下去那一刻' + (bgOff.syncSwap ? '就換了' : '沒換') + '；匯入那種（Worker 裡沒有）：叫下去那一刻' +
+     (bgOff.pending ? '還沒換' : '就換了') + '、等回信之後' + (bgOff.got ? '換上了' : '沒換上'));
+
   /* ══════════ 完工慶祝 ══════════ */
   await head('完工慶祝', T_MUST);
   /* 要讓它自己蓋到完工，不能用 completeNow：上一段測試把人放到地圖邊緣去遊蕩了，
