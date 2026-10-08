@@ -2461,10 +2461,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '匯入的在第 ' + impGood.inMenu + ' 項、資料夾 ' + CUSTOM_COUNT +
      ' 支接著，內建第一座「' + impGood.b0name + '」在第 ' + impGood.builtin0 + ' 項');
 
-  const impBuild = await gp.evaluate(() => {
+  const impBuild = await gp.evaluate(async () => {
     const sel = document.getElementById('shape');
     sel.value = String(SHAPES.findIndex(s => s.n === '貼上來的小屋'));
+    /* v1.265.0 起下拉選單換場是**背景算完才換**（swapBuild → askBlueprint；匯進來的這座 Worker 裡沒有，
+       回來是 null、主執行緒當場算），叫下去那一刻 bp 還是舊的——要等它換上（同〈效能〉那幾條 bgSwap 的等法）。
+       這一條 v1.265.0 之後沒跑過（〈匯入建築〉是完整輪才跑的段），v1.270.0 的完整輪才紅出來，
+       見 開發筆記〈換地標卡一下：藍圖丟到 Worker 算（v1.265.0）〉 */
+    const old = bp, t = performance.now();
     sel.dispatchEvent(new Event('change'));
+    while (bp === old && performance.now() - t < 8000) await new Promise(r => setTimeout(r, 10));
     /* 「真的蓋得出來」＝每一格都填得滿。v1.141 起料池不再預先補滿（缺料的人自己挖，
        見 reconcilePool），所以不能再拿「池子＝格數」當證據——改走憑空建成那條路，
        它會把不夠的當場生出來（開場那一座、⚡ 立刻完工都是這條）。 */
@@ -32441,6 +32447,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ══════════ 破壞模式（v1.262.0）══════════
      工具小窗左邊那顆開關：開著的時候隕石、龍捲風、投石機、加農砲、煙火點一下放好幾份。
      全部規則型：直接叫 useTool／launchTornado／metSpots／launchFw，份數照上限常數算、不寫死。
+     v1.270.0 起好幾份之間錯開 RAGE_LAG（隕石連圈、龍捲風出場、投石機與加農砲第二隊的第一發、煙火每輪的第一發），
+     間隔一律拿 RAGE_LAG 比、不寫死；要走時間的那幾條步長取 RAGE_LAG[0] 的一半，比最短的間隔還短，所以不賭骰子。
      開關重開頁面還在不在，量在〈自動存檔〉那一段（那裡才有重開）。 */
   SEC: { if (!(await head('破壞模式', T_COMMIT))) break SEC;
   await page.setViewportSize(VIEW);
@@ -32511,19 +32519,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('只有玩家點的那一下會乘：開著的時候直接叫出手函式照舊一份；定時炸彈、核彈不受影響',
      rcount.okDirect && rcount.on.bomb === 1 && rcount.on.nuke === 1, JSON.stringify(rcount.direct));
 
-  /* ── 隕石：同一批共用一個方位、一個倒數，瞄地面；落點都在 RAGE_MET_R 內、兩兩至少隔 MET_R（使用者選的）。
+  /* ── 隕石：方位每顆各抽、倒數照 rageLags 一顆接一顆錯開（第一顆就是平常的 MET_WAIT ＋ MET_FALL），瞄地面；
+        落點都在 RAGE_MET_R 內、兩兩至少隔 MET_R（使用者選的；v1.270.0 起方位各抽、範圍 40、錯開 RAGE_LAG）。
         真骰子跑 300 批，每一批都要成立（抽不進去就整批重抽，見 metSpots）。
         骰子全押 0 時一顆都塞不進去：抽不滿也不能卡死，缺的疊在中心。沒開的時候照舊砸點到的那一點（連高度） ── */
   const rmet = await page.evaluate(() => {
     const t0 = tool, P = { kind: 'block', point: { x: 3, y: 12, z: -2 }, dir: { x: 0, y: -1, z: 0 } };
     cleanTools(); tool = 'meteor'; rageOn = true;
-    let dir = 0, cd = 0, ground = 0, worst = 1e9, far = 0;
+    const T0 = MET_WAIT + MET_FALL, inLag = g => g >= RAGE_LAG[0] - 1e-9 && g <= RAGE_LAG[1] + 1e-9;
+    let dir = 0, cd = 0, ground = 0, worst = 1e9, far = 0, gLo = 1e9, gHi = 0;
     for (let k = 0; k < 300; k++) {
       meteors = null;
       useTool(P);
       const ms = meteors;
-      if (new Set(ms.map(m => m.a)).size === 1) dir++;
-      if (new Set(ms.map(m => m.t)).size === 1) cd++;
+      if (new Set(ms.map(m => m.a)).size === ms.length) dir++;
+      const gaps = ms.slice(1).map((m, i) => m.t - ms[i].t);
+      if (ms[0].t === T0 && gaps.every(inLag)) cd++;
+      for (const g of gaps) { gLo = Math.min(gLo, g); gHi = Math.max(gHi, g); }
       if (ms.every(m => m.ty === 0.6)) ground++;
       for (let i = 0; i < ms.length; i++) {
         far = Math.max(far, Math.hypot(ms[i].tx - 3, ms[i].tz + 2));
@@ -32538,14 +32550,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const one = meteors.length === 1 && meteors[0].tx === 3 && meteors[0].tz === -2 && meteors[0].ty === 12;
     cleanTools(); tool = t0;
     return { dir, cd, ground, worst: +worst.toFixed(3), far: +far.toFixed(3), R: RAGE_MET_R, gap: MET_R,
+             gLo: +gLo.toFixed(3), gHi: +gHi.toFixed(3), lag: RAGE_LAG.join('～'),
              stuck: stuck.length === MET_MAX && stuck.every(p => p.x === 5 && p.z === 7), one };
   });
-  ok('隕石：同一批共用一個方位、一個倒數，瞄地面；落點都在 RAGE_MET_R 內、兩兩至少隔 MET_R（真骰子 300 批）',
+  ok('隕石：方位每顆各抽、倒數一顆接一顆錯開 RAGE_LAG（第一顆照舊），瞄地面；落點都在 RAGE_MET_R 內、兩兩至少隔 MET_R（真骰子 300 批）',
      rmet.dir === 300 && rmet.cd === 300 && rmet.ground === 300 && rmet.far <= rmet.R + 1e-9 && rmet.worst >= rmet.gap - 1e-9,
-     '同方位 ' + rmet.dir + '／同倒數 ' + rmet.cd + '／瞄地面 ' + rmet.ground + ' 批；最遠 ' + rmet.far + '（≤ ' + rmet.R +
-     '）、最近的兩顆 ' + rmet.worst + '（≥ ' + rmet.gap + '）');
+     '各自方位 ' + rmet.dir + '／照順序錯開 ' + rmet.cd + '／瞄地面 ' + rmet.ground + ' 批；間隔 ' + rmet.gLo + '～' + rmet.gHi +
+     '（要在 ' + rmet.lag + '）；最遠 ' + rmet.far + '（≤ ' + rmet.R + '）、最近的兩顆 ' + rmet.worst + '（≥ ' + rmet.gap + '）');
   ok('隕石的落點抽不滿也不會卡死（骰子全押 0：缺的疊在中心）；沒開的時候照舊一顆砸點到的那一點、連高度',
      rmet.stuck && rmet.one, JSON.stringify({ stuck: rmet.stuck, one: rmet.one }));
+
+  /* ── 隕石的倒數圈也跟著錯開（v1.270.0，使用者選「圈也跟著錯開」）：還沒輪到的那幾顆連圈都不冒（mark 一直是 0）。
+        走半個 RAGE_LAG[0]（比最短的間隔還短）只有第一顆冒圈；走到最後一顆的 lag 過了才全部冒齊，而且那時第一顆還沒落地 ── */
+  const rring = await page.evaluate(() => {
+    cleanTools(); rageOn = true;
+    callMeteor({ x: 0, y: 0, z: 0 }, MET_MAX);
+    const ms = meteors.slice(), last = ms[ms.length - 1].t - (MET_WAIT + MET_FALL);
+    const h = RAGE_LAG[0] / 2;
+    step(h);
+    const first = ms.map(m => m.mark > 0 ? 1 : 0).join('');
+    let t = h, g = 0;
+    while (ms.some(m => !(m.mark > 0)) && g++ < 200) { step(h); t += h; }
+    const r = { first, want: '1' + '0'.repeat(MET_MAX - 1), all: ms.every(m => m.mark > 0), t: +t.toFixed(3), h,
+                last: +last.toFixed(3), still: ms[0].lit === 0 && !!meteors && meteors.includes(ms[0]) };
+    rageOn = false; cleanTools();
+    return r;
+  });
+  ok('隕石的倒數圈也跟著錯開：當下只有第一顆冒圈，其餘輪到了才冒（冒齊的時間 ＝ 最後一顆的 lag）',
+     rring.first === rring.want && rring.all && rring.t >= rring.last - 1e-6 && rring.t <= rring.last + rring.h + 1e-6 && rring.still,
+     JSON.stringify(rring));
 
   /* ── 龍捲風：同一個速度（平行出發）、沿出發方向的橫向排開、間隔 RAGE_TW_GAP，中間那道就在第一點；
         旁邊那道出了 debrisR − 2 就夾回來（生在界外的那一道會原地來回翻，見 launchTornado） ── */
@@ -32568,6 +32601,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      rtw.mid && rtw.edge.every(d => d <= rtw.lim + 1e-6) && rtw.edge.some(d => Math.abs(d - rtw.lim) < 1e-6),
      JSON.stringify(rtw));
 
+  /* ── 龍捲風出場錯開（v1.270.0）：中間那道 wait 0 當場出場，兩旁照 rageLags 接著出（間隔都在 RAGE_LAG 內）；
+        還在等的那幾道不畫（draw 的 twOn 只有出場的）、不動、不扣壽命；等完才畫、才動 ── */
+  const rtwl = await page.evaluate(() => {
+    cleanTools();
+    launchTornado({ x: -30, z: 5 }, { x: -30, z: 40 }, 3);
+    const w = twists.slice(), lo = RAGE_LAG[0] - 1e-9, hi = RAGE_LAG[1] + 1e-9;
+    const r = { wait: w.map(o => +o.wait.toFixed(4)) };
+    r.order = w[1].wait === 0 && w[0].wait >= lo && w[0].wait <= hi && w[2].wait - w[0].wait >= lo && w[2].wait - w[0].wait <= hi;
+    draw(); r.drawn0 = twOn.length;
+    const x0 = w.map(o => o.x), life0 = w.map(o => o.life), h = RAGE_LAG[0] / 2;
+    step(h);
+    r.frozen = [0, 2].every(i => w[i].x === x0[i] && w[i].life === life0[i]);
+    r.moved = w[1].x !== x0[1] && w[1].life < life0[1];
+    let g = 0;
+    while (w.some(o => o.wait > 0) && g++ < 100) step(h);
+    draw(); r.drawn1 = twOn.length;
+    r.go = [0, 2].every(i => w[i].life < life0[i]);
+    cleanTools(); draw();
+    return r;
+  });
+  ok('龍捲風出場錯開：中間那道先出、兩旁照 RAGE_LAG 接著出；還在等的不畫、不動、不扣壽命，等完才出場',
+     rtwl.order && rtwl.drawn0 === 1 && rtwl.frozen && rtwl.moved && rtwl.drawn1 === 3 && rtwl.go, JSON.stringify(rtwl));
+
   /* ── 投石機／加農砲：幾隊接成一長排（間距照舊 TREB_GAP／CAN_GAP），同一隊瞄同一點，
         每一隊的目標沿著排的方向挪「那一隊的中心離整排中心多遠」——平行打過去（使用者選「並排、平行推過去」） ── */
   const rline = await page.evaluate(() => {
@@ -32582,21 +32638,33 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         const cx = g.reduce((s, m) => s + m.x, 0) / g.length, cz = g.reduce((s, m) => s + m.z, 0) / g.length;
         teams.push({ one: g.every(m => m.tx === g[0].tx && m.tz === g[0].tz),
                      shift: +(g[0].tx * ux + g[0].tz * uz).toFixed(6), at: +((cx - mx) * ux + (cz - mz) * uz).toFixed(6),
-                     side: +Math.abs(g[0].tx * -uz + g[0].tz * ux).toFixed(6) });
+                     side: +Math.abs(g[0].tx * -uz + g[0].tz * ux).toFixed(6),
+                     next: g[0].next, sameNext: g.every(m => m.next === g[0].next) });
       }
       return { n: list.length, gap: gaps.every(d => Math.abs(d - gap) < 1e-6), teams,
                ok: teams.length > 1 && teams.every(t => t.one && Math.abs(t.shift - t.at) < 1e-6 && t.side < 1e-6) };
     };
+    /* 第一發（v1.270.0）：第一隊跟關著時架的那一隊一樣、同一隊同時，第二隊起每隊接在前一隊後面 RAGE_LAG 秒 */
+    const lagOk = (r, one) => r.teams[0].next === one && r.teams.every(t => t.sameNext) &&
+      r.teams.slice(1).every((t, i) => { const d = t.next - r.teams[i].next; return d >= RAGE_LAG[0] - 1e-9 && d <= RAGE_LAG[1] + 1e-9; });
+    rageOn = false;
+    cleanTools(); tool = 'treb'; useTool(G(X, 0)); useTool(G(0, 0));
+    const trebOne = trebs.list[0].next;
+    cleanTools(); tool = 'cannon'; useTool(G(X, 0)); useTool(G(0, 0));
+    const canOne = cannons.list[0].next;
     rageOn = true;
     cleanTools(); tool = 'treb'; useTool(G(X, 0)); useTool(G(0, 0));
     const treb = chk(trebs.list, TREB_TEAM, TREB_GAP);
     cleanTools(); tool = 'cannon'; useTool(G(X, 0)); useTool(G(0, 0));
     const can = chk(cannons.list, CAN_TEAM, CAN_GAP);
     rageOn = false; cleanTools(); tool = t0;
-    return { treb, can };
+    return { treb, can, lag: lagOk(treb, trebOne) && lagOk(can, canOne),
+             next: { treb: treb.teams.map(t => +t.next.toFixed(3)), can: can.teams.map(t => +t.next.toFixed(3)), trebOne, canOne } };
   });
   ok('投石機與加農砲：幾隊接成一長排、間距照舊，同一隊瞄同一點，每一隊的目標跟著那一隊挪（平行打過去）',
      rline.treb.ok && rline.treb.gap && rline.can.ok && rline.can.gap, JSON.stringify(rline));
+  ok('投石機與加農砲：第一隊的第一發跟平常一樣、同一隊同時，第二隊起每隊接在前一隊後面 RAGE_LAG 秒',
+     rline.lag, JSON.stringify(rline.next));
 
   /* ── 煙火：分成 ceil(n ÷ FW_SHOT) 輪，每輪中心先出膛一發、其餘排隊；輪的中心平均圍在點的那一點四周 RAGE_FW_OFF；
         一輪裡排隊的散在那一輪中心的 FW_OFF 內；最後一輪放剩下的；鏡頭只借一次（fwHold 只加 1） ── */
@@ -32604,27 +32672,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     const h0 = fwHold, n = Math.min(RAGE_N * FW_SHOT, FW_MAX), k = Math.ceil(n / FW_SHOT);
     launchFw({ x: 4, z: -6 }, n);
-    const cs = fworks.map(f => ({ x: f.x, z: f.z }));
+    /* 每一輪的第一發（輪的中心）：第一輪當場出膛（在 fworks），後面幾輪排在 fwWait 裡（v1.270.0）——
+       認法是「剛好在 RAGE_FW_OFF 那一圈上」；其餘幾發離自己那一輪的中心 0.4～1 個 FW_OFF，不會剛好落在圈上 */
+    const onRing = w => Math.abs(Math.hypot(w.x - 4, w.z + 6) - RAGE_FW_OFF) < 1e-6;
+    const headQ = (fwWait || []).filter(onRing);
+    const cs = fworks.map(f => ({ x: f.x, z: f.z, t: 0 })).concat(headQ.map(w => ({ x: w.x, z: w.z, t: w.t })));
     const ring = cs.map(c => +Math.hypot(c.x - 4, c.z + 6).toFixed(6));
     const ang = cs.map(c => Math.atan2(c.z + 6, c.x - 4)).sort((a, b) => a - b);
     const step = ang.map((a, i) => +(((i ? a - ang[i - 1] : a - ang[ang.length - 1] + Math.PI * 2)) % (Math.PI * 2)).toFixed(6));
     const per = cs.map(() => 1);
-    let inR = true;
+    let inR = true, after = true;
     for (const w of fwWait) {
+      if (headQ.includes(w)) continue;
       let bi = 0, bd = 1e9;
       cs.forEach((c, i) => { const d = Math.hypot(w.x - c.x, w.z - c.z); if (d < bd) { bd = d; bi = i; } });
       per[bi]++; if (bd > FW_OFF + 1e-9) inR = false;
+      if (w.t < cs[bi].t + FW_GAP[0] - 1e-9) after = false;          // 那一輪其餘幾發整輪跟著那一輪往後挪
     }
+    const lt = cs.map(c => c.t).sort((a, b) => a - b);
+    const lag = fworks.length === 1 && lt[0] === 0 &&
+      lt.slice(1).every((t, i) => t - lt[i] >= RAGE_LAG[0] - 1e-9 && t - lt[i] <= RAGE_LAG[1] + 1e-9);
     const hold = fwHold - h0;
     cleanTools(); fwEnd();
     const wantPer = Array.from({ length: k }, (_, j) => Math.min(FW_SHOT, n - j * FW_SHOT)).sort((a, b) => b - a);
     return { n, k, shells: cs.length, ring, step, want: { off: RAGE_FW_OFF, step: +(Math.PI * 2 / k).toFixed(6), per: wantPer.join() },
-             per: per.sort((a, b) => b - a).join(), inR, hold };
+             per: per.sort((a, b) => b - a).join(), inR, hold, lag, after, headT: lt.map(t => +t.toFixed(3)) };
   });
   ok('煙火：分成好幾輪，輪的中心平均圍在 RAGE_FW_OFF 上、一輪裡散在 FW_OFF 內、最後一輪放剩下的；鏡頭只借一次',
      rfw.k > 1 && rfw.shells === rfw.k && rfw.ring.every(d => Math.abs(d - rfw.want.off) < 1e-6) &&
      rfw.step.every(s => Math.abs(s - rfw.want.step) < 2e-6) && rfw.inR && rfw.hold === 1 && rfw.per === rfw.want.per,
      JSON.stringify(rfw));
+  ok('煙火：第一輪當場出膛，後面每輪的第一發照 RAGE_LAG 一輪接一輪錯開，那一輪其餘幾發整輪跟著往後挪',
+     rfw.lag && rfw.after, JSON.stringify({ headT: rfw.headT, lag: rfw.lag, after: rfw.after }));
 
   await page.evaluate(() => { rageOn = pref.rage = false; cleanTools(); renderTools(); });
   }   // ── 〈破壞模式〉結束（--tier 跳過時從這裡出來）

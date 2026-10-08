@@ -304,7 +304,10 @@ function draw() {
   ENG.putMeteors(metFly);
   ENG.putBalls(balls || EMPTY);
   ENG.putBncs(bncs || EMPTY);
-  ENG.putTornados(twists || EMPTY);
+  /* 龍捲風同理：破壞模式還在等出場的那幾道不畫（v1.270.0，見 launchTornado）。 */
+  twOn.length = 0;
+  if (twists) for (const w of twists) if (!(w.wait > 0)) twOn.push(w);
+  ENG.putTornados(twOn);
   ENG.putFire(fireList());
   ENG.putFlash(flashes);
   ENG.putStars(stars);
@@ -343,6 +346,7 @@ function draw() {
 }
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石
+const twOn = [];                // draw() 每幀重填：這一刻已經出場的龍捲風
 
 /* ── 輸入 ───────────────────────────────────────────────── */
 let spinOn = false;
