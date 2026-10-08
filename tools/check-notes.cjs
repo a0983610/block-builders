@@ -9,6 +9,7 @@
      ① 所有程式／文件裡的「開發筆記〈…〉」（中間可以夾「.md」、空白、反引號）→ 對 開發筆記.md 的標題
      ② 開發筆記.md 自己裡面的「見〈…〉」→ 對 開發筆記.md、CLAUDE.md、README.md、藍圖製作說明.md 的標題
    怎樣算對上（v1.271.0 量過現況定的）：**有一個標題包含段名的整串字**——拿段名 grep 會落在那個標題上。
+   「標題」也算行首的粗體標籤（`**標籤**：內文` 那種段落，v1.271.1 起）。
    現有的引用多半省略標題尾巴的（v1.xxx）、或只寫冒號前半，這兩種照這條都算對上。
    對不上的分兩種印：
      標點不同 ＝ 拿掉「」『』` * 和空白之後才對上（grep 找不到，照印出來的標題改就好）
@@ -25,7 +26,18 @@ const NOTES = '開發筆記.md';
 const OTHER_DOCS = ['CLAUDE.md', 'README.md', 'blueprints/藍圖製作說明.md'];
 
 const read = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
-const headsOf = f => read(f).split(/\r?\n/).filter(l => /^#{1,6} /.test(l)).map(l => l.replace(/^#+\s+/, '').trim());
+/* 引得到的：標題，以及行首（或清單項目開頭）的粗體標籤——筆記裡有些段落是「**標籤**：內文」開頭，
+   拿那個標籤 grep 一樣落得到（v1.271.1 修斷線時量到三處引用的是它：〈三座長不到 3000 的放寬尺度〉、
+   〈為什麼加一支道具會讓不相干的測試改變結果〉、〈拆除門檻是寫死的 25%〉） */
+const headsOf = f => {
+  const out = [];
+  for (const l of read(f).split(/\r?\n/)) {
+    if (/^#{1,6} /.test(l)) out.push(l.replace(/^#+\s+/, '').trim());
+    const m = l.match(/^\s*(?:[-*]\s+|\d+\.\s+)?\*\*([^*]+)\*\*/);
+    if (m) out.push(m[1].trim());
+  }
+  return out;
+};
 const noteHeads = headsOf(NOTES);
 const allHeads = noteHeads.concat(...OTHER_DOCS.filter(f => fs.existsSync(path.join(ROOT, f))).map(headsOf));
 
@@ -84,7 +96,7 @@ for (const f of files) {
 }
 
 if (!bad.length) {
-  console.log('段名全部對得上：' + total + ' 處引用（' + NOTES + ' ' + noteHeads.length + ' 個標題）');
+  console.log('段名全部對得上：' + total + ' 處引用（' + NOTES + ' ' + noteHeads.length + ' 個標題與粗體標籤）');
   process.exit(0);
 }
 console.log(total + ' 處引用，' + bad.length + ' 處對不上：\n');
