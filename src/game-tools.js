@@ -887,12 +887,18 @@ const ROCK_STEP = 0.4;              // 掃掠取樣間距，要小於一格才�
    因為它要用到那一支），這裡直接用。 */
 /* 掃掠判定用的「固體」。預設只認地標藍圖的格子表（blockAt），要連小人的家一起認的
    自己傳一支進來（見 hardAt）。 */
-function sweepRock(r, px, py, pz, solid) {
+/* 芙莉蓮的防護罩也在這裡擋（v1.269.0，見 frWall）：這一幀從外面穿進殼的話先把 r 挪回殼外，下面照舊掃——
+   殼外那一段先撞到積木的照撞積木，沒有才算撞到罩子（回 true、frWallBy 記著是哪一位）。
+   會飛的攻擊全都走這一支判撞，所以以後新加的只要照慣例用它，罩子就自動擋在殼外。
+   fm ＝ 呼叫端已經先截過的結果（箭、子彈要先截再判人，見 stepArrows）；沒給就在這裡截。 */
+function sweepRock(r, px, py, pz, solid, fm) {
+  if (fm === undefined) fm = frWall(r, px, py, pz);
+  frWallBy = null;
   const at = solid || blockAt;
   if (at(r.x, r.y, r.z)) return true;           // 這一幀停的位置本身就埋在積木裡
   const dx = r.x - px, dy = r.y - py, dz = r.z - pz;
   const len = Math.hypot(dx, dy, dz);
-  if (len < 1e-5) return false;
+  if (len < 1e-5) return frWallHit(fm);
   // 掃過這一幀走的線段，末端再多探一個石頭半徑：碰到的該是石頭的正面，
   // 不是等重心埋進積木裡才算
   const total = len + r.s * 0.5;
@@ -906,7 +912,7 @@ function sweepRock(r, px, py, pz, solid) {
       return true;
     }
   }
-  return false;
+  return frWallHit(fm);
 }
 function rockHit(r) {
   const p = { x: r.x, y: Math.max(0.5, r.y), z: r.z };
@@ -4323,8 +4329,10 @@ function stepMeteors(dt) {
       });
     }
     /* 半路撞到建築就當場炸開，跟投石機的石頭共用同一套掃掠判定：
-       只在終點判定的話，斜插進來的隕石會從屋頂穿過去才炸。 */
-    if (m.t <= 0 || sweepRock(m, px, py, pz)) { meteors.splice(i, 1); meteorHit(m); }
+       只在終點判定的話，斜插進來的隕石會從屋頂穿過去才炸。
+       **最後一幀也要掃**（v1.269.0 對調）：以前 `m.t <= 0` 排前面、最後一幀不掃——落點在防護罩裡、沿著來的方向離殼
+       2～3.6 格（往前探的半個石身 2 ＋ 60 fps 一幀約 1.6 格）的話，穿殼那一下剛好落在最後一幀，就直接砸在罩子裡 */
+    if (sweepRock(m, px, py, pz) || m.t <= 0) { meteors.splice(i, 1); meteorHit(m); }
   }
   if (!meteors.length) meteors = null;
 }
@@ -7287,6 +7295,11 @@ function stepWeapons(dt) {
       w.vy -= 26 * dt;
       w.x += w.vx * dt; w.y += w.vy * dt; w.z += w.vz * dt;
       tumbleWeapon(w, dt);
+      /* 防護罩（v1.269.0，使用者選的「滑下落在罩外」）：掉下來這一段撞得到殼，往殼裡那一份速度拿掉、順著殼滑下去
+         （同天降鐵球，見 frBall），躺在罩子外面。**每一把掉下來的都撞**，不只打在殼上的那幾把——打在殼外一點點的牆上、
+         往前翻滾的那幾把，不撞的話一樣穿過殼掉進罩子裡（預覽頁探針量到兩把躺在罩子裡 1.5、2.3 格）。碰撞半徑 w.r 見 fallWeapon */
+      const vn = frBall(w);
+      if (vn < 0) { w.vx -= vn * FR_N[0]; w.vy -= vn * FR_N[1]; w.vz -= vn * FR_N[2]; }
       if (w.y <= 0.4) { lieWeapon(w); }
     } else {
       /* 插著／躺著：撐一段時間再**慢慢變淡**（v1.132.1 使用者回報；本來是縮小）。
@@ -7326,6 +7339,7 @@ function hitWeapon(w) {
    打到積木、射到小人都走這一段（v1.133 拆出來共用）。 */
 function fallWeapon(w) {
   w.st = 'fall';
+  w.r = w.s * 0.5;                 // 掉下來那一段撞防護罩的半徑（v1.269.0，見 stepWeapons）：半個全長，同 sweepRock 往前探的長度
   w.vx = w.dx * rr(1, 5) + rr(-2.5, 2.5);
   w.vy = rr(1, 5);
   w.vz = w.dz * rr(1, 5) + rr(-2.5, 2.5);
@@ -10885,7 +10899,8 @@ function beastList() {
            五條悟照樣跑過去出招，打中那一下被罩子擋住（同五條悟的無下限，那次使用者選「點得到 只是沒受傷」）
      小人  workerSafe：丟不飛、點不著、震不倒、吸不走、手指戳不倒
      球    frBall：保齡球、天降鐵球、彈跳球碰到殼就彈開，不進罩子
-   見 開發筆記〈道具：防禦魔法〉 */
+     會飛的 frWall（v1.269.0）：石頭、砲彈、隕石、核彈、兵器、香蕉、火球、箭、子彈在殼外就撞上（sweepRock 裡）
+   見 開發筆記〈道具：防禦魔法〉〈防護罩擋住會飛的攻擊〉 */
 const FR_R = 8;                    // 罩子半徑（格）：使用者選的「小：半徑 8」
 /* 她的縮放：同小人平均。原作她就嬌小——站著高 2.1（模型 1.215 × DOOM_SC），小人 2.26～2.39 */
 const FR_SC = DOOM_SC;
@@ -10990,6 +11005,46 @@ function frBall(o) {
     return vn;
   }
   return 0;
+}
+/* 會飛的攻擊撞到罩子（v1.269.0）。使用者：「有些例如隕石 加農砲 投石機 弓箭 火槍(實體類)被擊中 應該也不能穿進去
+   應該在防護罩外就撞上爆炸&擋下(射中防護罩壁)⋯⋯最好是以後加新工具也不用再回頭改 就能擋下」——
+   會飛的東西都用 sweepRock 判「這一幀撞到東西沒」（石頭、砲彈、隕石、核彈、兵器、香蕉、火球、箭、子彈），罩子就擺在那一支裡。
+   這一幀走的線段（前端再多探 r.s / 2，同 sweepRock）從外面穿進哪一位的半球殼：把 r 挪回「前端剛好碰到殼」那一點、
+   回傳她，殼上那一點與方向放在 FR_W；沒有回 null。**開罩、亮紋留給 frWallHit**：殼外那一段先撞到積木的照撞積木，那就不算撞到罩子。
+   起點已經在殼裡的不管（同 frBall：從罩子裡面往外打的不擋）；撞在地面以下那半球的不算。見 開發筆記〈防護罩擋住會飛的攻擊〉 */
+const FR_W = [0, 0, 0, 0, 0, 0];
+let frWallBy = null;               // 上一次 sweepRock 撞到的是哪一位的罩子（撞到積木、沒撞到是 null）：箭照它換收尾（斷掉、不插著）
+function frWall(r, px, py, pz) {
+  if (!beasts) return null;
+  const dx = r.x - px, dy = r.y - py, dz = r.z - pz, len = Math.hypot(dx, dy, dz);
+  if (len < 1e-5) return null;
+  const ux = dx / len, uy = dy / len, uz = dz / len, head = (r.s || 0) * 0.5;
+  let hit = null, ht = len + head;
+  for (const m of beasts) {
+    if (m.kind !== 'frieren' || m.dead) continue;
+    const cx = m.bt != null ? m.bx : m.x, cz = m.bt != null ? m.bz : m.z;
+    const ox = px - cx, oz = pz - cz;
+    const c = ox * ox + py * py + oz * oz - FR_R * FR_R;
+    if (c <= 0) continue;                                // 起點在殼裡
+    const b = ox * ux + py * uy + oz * uz, q = b * b - c;
+    if (b >= 0 || q < 0) continue;                       // 往外走、或整條線碰不到殼
+    const t = -b - Math.sqrt(q);                          // 進殼那一點離起點多遠
+    if (t > ht || py + uy * t < 0) continue;             // 這一幀還沒到（或比另一位的殼遠）、撞在地面以下
+    hit = m; ht = t;
+  }
+  if (!hit) return null;
+  const k = Math.max(0, Math.min(len, ht - head));
+  r.x = px + ux * k; r.y = py + uy * k; r.z = pz + uz * k;
+  FR_W[0] = px + ux * ht; FR_W[1] = py + uy * ht; FR_W[2] = pz + uz * ht;
+  FR_W[3] = ux; FR_W[4] = uy; FR_W[5] = uz;
+  return hit;
+}
+/* sweepRock 的出口：殼外沒撞到積木、有穿進殼（fm）就算撞到罩子——開罩、亮紋打在殼上那一點 */
+function frWallHit(fm) {
+  if (!fm) return false;
+  frWallBy = fm;
+  frHit(fm, FR_W[0], FR_W[1], FR_W[2], FR_W[3], FR_W[4], FR_W[5]);
+  return true;
 }
 /* 生物打不打得動：levBusy（立體機動中的里維、出招中的善逸、五條悟、死掉的、倒下的惠惠）之外，罩子裡的也打不動。
    只用在「打」的那幾處（炸飛、點火、震倒、吸走、斬殺）；「點得到」那幾支（sabCanCut 等）照舊只看 levBusy */
@@ -13687,6 +13742,9 @@ function stepArrows(dt) {
     r.vy -= GRAV * dt;
     r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
     arrowDir(r);
+    /* 防護罩先截（v1.269.0，見 frWall）：不截的話殼裡一格內剛好站著人，這一支會先「射中」他（罩子裡的打不動，只是出一聲），
+       穿進殼裡才停 */
+    const fm = frWall(r, px, py, pz);
     /* 打到小人／動物：撞倒，但**箭照原本的弧線繼續飛**。停在半空的話會有一支箭
        掛在那裡——兵器那邊是靠 fallWeapon 掉下去翻滾，箭沒有那一段。
        被撞飛的人下一幀起就是 air，同一支箭不會再打到他一次。 */
@@ -13696,7 +13754,10 @@ function stepArrows(dt) {
       const b = weaponVsBeast(r, px, py, pz);
       if (b) arrowBeast(r, b);
     }
-    if (sweepRock(r, px, py, pz, hardAt)) { arrowBlock(r); continue; }
+    if (sweepRock(r, px, py, pz, hardAt, fm)) {
+      if (frWallBy) { arrowSnap(r); arrows.splice(i, 1); } else arrowBlock(r);
+      continue;
+    }
     if (r.y <= 0) arrowGround(r);
   }
   if (!arrows.length) arrows = null;
@@ -13715,6 +13776,18 @@ function arrowBlock(r) {
   smash(p, { x: r.dx, y: r.dy, z: r.dz }, AR_HIT_R, AR_HIT_POW, true, true);
   sndStab();
   arrowStick(r);
+}
+/* 射在防護罩上（v1.269.0，使用者選的「斷掉消失」）：不插在殼上——插著要撐 3～4.6 秒，罩子最後一發之後 3 秒就收掉，
+   最後那幾支會懸在半空。箭尖那裡濺一小撮碎屑（同子彈打到積木那一撮）就收掉；那一聲是罩子的「叮」（frHit） */
+function arrowSnap(r) {
+  const t = AR_LEN * 0.5;
+  for (let i = 0; i < 3; i++) {
+    if (dust.length > MK_DUST_CAP) break;
+    dust.push({ x: r.x + r.dx * t + rr(-0.2, 0.2), y: r.y + r.dy * t + rr(-0.2, 0.2), z: r.z + r.dz * t + rr(-0.2, 0.2),
+      vx: -r.dx * rr(1, 3) + rr(-1, 1), vy: rr(0.5, 2), vz: -r.dz * rr(1, 3) + rr(-1, 1),
+      rx: Math.random() * 6, ry: Math.random() * 6, life: rr(0.4, 0.8), s: rr(0.14, 0.28),
+      c: rr(0.62, 0.8) });
+  }
 }
 /* 落在空地上：箭尖沒入土裡一點點，沒有東西可拆。 */
 function arrowGround(r) {
@@ -14152,11 +14225,12 @@ function stepBullets(dt) {
     const px = r.x, py = r.y, pz = r.z;
     r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
     r.run += MK_V * dt;
+    const fm = frWall(r, px, py, pz);            // 防護罩先截再判人（v1.269.0，同 stepArrows）
     const p = weaponVsWorker(r, px, py, pz);
     if (p) { mkTrail(r, px, py, pz); bulletMan(r, p); bullets.splice(i, 1); continue; }
     const b = weaponVsBeast(r, px, py, pz);
     if (b) { mkTrail(r, px, py, pz); bulletBeast(r, b); bullets.splice(i, 1); continue; }
-    if (sweepRock(r, px, py, pz, hardAt)) {
+    if (sweepRock(r, px, py, pz, hardAt, fm)) {
       mkTrail(r, px, py, pz); bulletBlock(r); bullets.splice(i, 1); continue;
     }
     mkTrail(r, px, py, pz);

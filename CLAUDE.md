@@ -168,6 +168,9 @@ src/blueprints.js    48 座 voxel 產生器（資料，不依賴 three）
 **加一把破壞道具**：在 `game-tools.js` 的 `TOOLS` **接在最後面**（解鎖門檻是等差階梯
 自動算的，不必挑數字），寫 `tip`（那就是給玩家看的說明）→ 實作 `useTool` 那條分支 →
 e2e 加一段 → `README.md` 的道具名單加一個字 → `開發筆記.md`〈破壞道具〉補一節。
+**會飛的東西一律用 `sweepRock` 判撞**（現有九種都是）：芙莉蓮的防護罩就擋在那一支裡，
+照慣例用它就自動在殼外撞上，不必回頭改罩子（見〈防護罩擋住會飛的攻擊〉）。
+打掉積木走 `breakBlock`、點火走 `igniteBlock`，罩子裡的東西就自動打不動。
 
 **加一款動物**：`engine.js` 的 `BEASTS` 加一組造型（一支 `xxxParts(o)` 函式開一款，
 `bmir()` 鏡射右→左並反相 `sw`）→ 註冊進 `MODELS` → `game-tools.js` 的 `HERD_KIND`

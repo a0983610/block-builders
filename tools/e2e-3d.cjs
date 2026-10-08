@@ -31822,6 +31822,110 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fball.bnc.lo > -1e-6 && fball.bnc.back && fball.bnc.bn >= 1 && fball.bnc.open && fball.inside && fball.me === 0,
      JSON.stringify(fball));
 
+  /* ── 會飛的攻擊撞罩子（v1.269.0，使用者：「隕石 加農砲 投石機 弓箭 火槍(實體類)被擊中 應該也不能穿進去 應該在防護罩外就撞上爆炸&擋下」）：
+        空地上她站著，sweepRock 那一批九種各朝她丟一發，只叫各自的 step；explode／smash 換成只記炸點（不真的炸），量完還回去。
+        炸開／咬一口的那一點都在殼外、罩子張開；隕石落點就在殼裡一點點（穿殼那一下落在最後一幀）也一樣；
+        箭斷掉、不插在殼上；兵器順著殼滑下去、躺在罩子外；殼裡站著一個小人時子彈停在殼上、不先「射中」他（一幀同時穿殼又碰到他）；
+        從罩子裡面往外射的不擋 ── */
+  const fwall = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const X = siteR + 30, Z = 0, dt = 1 / 60;
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = X; m.z = Z; m.st = 'fun'; m.pause = 999;
+    const real = { explode, smash, igniteAround, startCloud, slayGiants };
+    let hits = [];
+    explode = p => { hits.push([p.x, p.y, p.z]); return 0; };
+    smash = p => { hits.push([p.x, p.y, p.z]); return 0; };
+    igniteAround = () => 0; startCloud = () => {}; slayGiants = () => {};
+    const gap = (x, y, z) => +(Math.hypot(x - X, y, z - Z) - FR_R).toFixed(4);   // 負的＝在殼裡
+    const r = {};
+    try {
+      /* 丟一發、只叫它自己那一支 step 到它收掉；記炸點離殼多遠（最近那一點）、炸了幾下、罩子開了沒 */
+      const shot = (name, live, step) => {
+        hits = []; m.bt = null; m.bc = null; m.bh = [];
+        for (let i = 0; i < 600 && live(); i++) step(dt);
+        r[name] = { n: hits.length, lo: hits.length ? Math.min(...hits.map(h => gap(h[0], h[1], h[2]))) : null, open: m.bt != null, gone: !live() };
+      };
+      trebs = { list: [], rocks: [{ x: X - 22, y: 4, z: Z, vx: 30, vy: 4, vz: 0, T: 1, t: 0, rx: 0, ry: 0, s: 1.7 }] };
+      shot('rock', () => !!trebs, stepTrebs);
+      cannons = { list: [], shells: [{ x: X - 22, y: 3, z: Z, vx: 40, vy: 2, vz: 0, T: 1, t: 0, rx: 0, ry: 0, s: CAN_SHELL }] };
+      shot('shell', () => !!cannons, stepCannons);
+      /* 方位押在 +x（背對建築）：抽到朝建築那一側的話，斜插進來那一段可能先擦到建築 */
+      callMeteor({ x: X, y: 0, z: Z });
+      meteors[0].a = 0; posMeteor(meteors[0], 1);
+      shot('meteor', () => !!meteors, stepMeteors);
+      /* 落點在殼裡、沿著來的方向離殼 3 格（往前探的半個石身 2 ＋ 一幀 1.6 之間）：以前最後一幀不掃，這一顆會砸在罩子裡 */
+      callMeteor({ x: X - FR_R + 2.6, y: 0, z: Z });
+      meteors[0].a = Math.PI; posMeteor(meteors[0], 1);
+      shot('meteorEdge', () => !!meteors, stepMeteors);
+      nukes = [{ x: X, y: NUKE_TOP + 3, z: Z, s: NUKE_NOSE, t: NUKE_FALL, mark: 0, spin: 0 }];
+      shot('nuke', () => !!nukes, stepNuke);
+      nanas = [{ kind: 'nana', x: X - 20, y: 3, z: Z, s: 0.7 * DOOM_SC, sc: DOOM_SC, a: 0, spin: 0, t: 0, by: null, vx: 25, vy: 3, vz: 0 }];
+      shot('nana', () => !!nanas, stepNanas);
+      fballs = [{ kind: 'fball', x: X - 20, y: 6, z: Z, sc: FB_SC, s: 1.1, a: 0, spin: 0, em: 0, t: 0, T: 1, home: 0, vx: 25, vy: 0, vz: 0 }];
+      shot('fball', () => !!fballs, stepFballs);
+      /* 箭：斷掉收掉，不插在殼上（不咬東西：一下都不記）。箭尖照速度方向算、截的時候照這一幀的弦，
+         一幀裡那一點弧度讓兩者差幾毫格，所以箭尖離殼的門檻給 0.02 */
+      const ar = pushArrow(X - 15, 3, Z, 25, 3, 0, 0);
+      shot('arrow', () => !!arrows, stepArrows);
+      r.arrow.st = ar.st; r.arrow.at = gap(ar.x + ar.dx * AR_LEN / 2, ar.y + ar.dy * AR_LEN / 2, ar.z + ar.dz * AR_LEN / 2);
+      pushBullet(X - 15, 2, Z, 1, 0, 0);
+      shot('bullet', () => !!bullets, stepBullets);
+      /* 兵器：打在殼上咬一口，接著掉下來那一段順著殼滑下去，躺在罩子外（掉的那一段球心一幀都沒進殼） */
+      hits = []; m.bt = null; m.bc = null; m.bh = [];
+      const w = { x: X - 20, y: 6, z: Z, dx: 1, dy: 0, dz: 0, roll: 0, len: 2, k: 0, s: 2, aimY: 0, cut: null,
+                  st: 'fly', out: 0, vx: GATE_SPD, vy: 0, vz: 0, drop: 0, ax: 0, ay: 0, az: 0, spin: 0, lie: 0, fade: 1, glow: 0, em: 0, age: 0 };
+      weapons = [w];
+      let wlo = 1e9;
+      for (let i = 0; i < 900 && w.st !== 'lie'; i++) { stepWeapons(dt); if (w.st === 'fall') wlo = Math.min(wlo, gap(w.x, w.y, w.z)); }
+      r.weap = { n: hits.length, lo: hits.length ? gap(...hits[0]) : null, open: m.bt != null, st: w.st, fallLo: wlo,
+                 h: +(Math.hypot(w.x - X, w.z - Z) - FR_R).toFixed(3) };
+      /* 打在殼外一點點的牆上、被擋下來往前（往罩子裡）翻滾的那一把（預覽頁探針量到兩把這樣掉進罩子裡）：照樣順著殼滑下去。
+         骰子押到最大（往前 7.5、往上 5）：不撞殼的話它一定翻進罩子裡 */
+      const w2 = Object.assign({}, w, { x: X - FR_R - 1.3, y: 3, z: Z, dx: 1, dy: 0, dz: 0, st: 'fly', r: 0 });
+      weapons = [w2];
+      const rnd = Math.random;
+      Math.random = () => 0.999;
+      try { fallWeapon(w2); } finally { Math.random = rnd; }
+      let w2lo = 1e9;
+      for (let i = 0; i < 900 && w2.st !== 'lie'; i++) { stepWeapons(dt); w2lo = Math.min(w2lo, gap(w2.x, w2.y, w2.z)); }
+      r.weap2 = { st: w2.st, fallLo: w2lo, h: +(Math.hypot(w2.x - X, w2.z - Z) - FR_R).toFixed(3) };
+      /* 殼裡 1.2 格站著一個小人：子彈這一幀同時穿殼、碰到他（不截的話先判人）——要停在殼上咬一口，他沒被打。
+         離地 1 飛（判人只算腳底到頭頂 1.5 × 身高倍率那一段）；一幀走 2.05：不截的話彈尖剛好停在他身上 */
+      const p = workers[0], p0 = [p.x, p.z];
+      p.x = X - FR_R + 1.2; p.z = Z; p.y = 0; p.air = 0; p.fall = 0; p.burn = 0; p.hits = 0;
+      hits = []; m.bt = null; m.bc = null; m.bh = [];
+      pushBullet(X - 9, 1, Z, 1, 0, 0);
+      stepBullets(2.05 / MK_V);
+      r.man = { n: hits.length, lo: hits.length ? gap(...hits[0]) : null, gone: !bullets, hits: p.hits || 0, air: p.air || 0 };
+      bullets = null; p.x = p0[0]; p.z = p0[1];
+      /* 從罩子裡面往外射：不擋，一路飛出殼外（8 幀 10 格，還沒到建築） */
+      hits = []; m.bt = null; m.bc = null; m.bh = [];
+      const b = (pushBullet(X - 3, 2, Z, -1, 0, 0), bullets[0]);
+      for (let i = 0; i < 8 && bullets; i++) stepBullets(dt);
+      r.out = { gap: gap(b.x, b.y, b.z), alive: !!bullets, n: hits.length, open: m.bt != null };
+    } finally {
+      ({ explode, smash, igniteAround, startCloud, slayGiants } = real);
+      cleanTools();
+    }
+    return r;
+  });
+  {
+    const kinds = ['rock', 'shell', 'meteor', 'meteorEdge', 'nuke', 'nana', 'fball', 'bullet'];
+    ok('會飛的攻擊撞罩子：投石機石頭、加農砲彈、隕石（含落點就在殼裡一點點那一顆）、核彈、香蕉、飛龍火球、子彈都在殼外炸開／咬一口、罩子張開',
+       kinds.every(k => fwall[k].n >= 1 && fwall[k].lo > -1e-4 && fwall[k].open && fwall[k].gone),
+       kinds.map(k => k + ' ' + JSON.stringify(fwall[k])).join('；'));
+    ok('箭射在罩子上斷掉收掉（不插在殼上、箭尖停在殼上）；兵器打在殼上咬一口、順著殼滑下去躺在罩子外；打在殼外牆上往罩子裡翻的那一把也一樣',
+       fwall.arrow.gone && fwall.arrow.open && fwall.arrow.n === 0 && fwall.arrow.st === 'fly' && Math.abs(fwall.arrow.at) < 0.02 &&
+       fwall.weap.n === 1 && fwall.weap.lo > -1e-4 && fwall.weap.open && fwall.weap.st === 'lie' && fwall.weap.fallLo > -1e-4 && fwall.weap.h > 0 &&
+       fwall.weap2.st === 'lie' && fwall.weap2.fallLo > -1e-4 && fwall.weap2.h > 0,
+       '箭 ' + JSON.stringify(fwall.arrow) + '；兵器 ' + JSON.stringify(fwall.weap) + '；殼外牆上那一把 ' + JSON.stringify(fwall.weap2));
+    ok('殼裡站著人時子彈停在殼上、不先射中他；從罩子裡面往外射的不擋',
+       fwall.man.n === 1 && fwall.man.lo > -1e-4 && fwall.man.gone && fwall.man.hits === 0 && fwall.man.air === 0 &&
+       fwall.out.alive && fwall.out.gap > 2 && fwall.out.n === 0 && !fwall.out.open,
+       '殼裡有人 ' + JSON.stringify(fwall.man) + '；往外射 ' + JSON.stringify(fwall.out));
+  }
+
   /* ── 罩子的時間軸（只叫 frStep）：沒被打就不開；打一下張開、她站定、舉杖；FR_HOLD 秒沒再被打開始收、
         FR_BAR_CLOSE 秒收完；收到一半又被打就撐回來；自己絆一跤（fellBeast 的 face）不算被打 ── */
   const ftime = await page.evaluate(() => {
