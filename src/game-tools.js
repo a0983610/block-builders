@@ -8253,7 +8253,7 @@ const DOOM_NEAR = 3.2;                // 走到離目標這麼近就夠了（火
 /* 走著走著絆一跤（v1.178，使用者：「白猴子 黑獼猴 小人走路時有時會跌倒」）。
    機率的算法照小人那一份（每走一秒、腿真的在擺才算，見 game-workers.js 的 TRIP_P），
    但**值高一截**：小人一場二十個人在走，猴子一次只有一兩隻，照小人的 0.004 給的話
-   一隻猴子從進場到走人（MASC_STAY 25～45 秒）幾乎不會絆到。 */
+   一隻猴子從進場到走人（MASC_STAY，當時 25～45 秒）幾乎不會絆到。 */
 const B_TRIP_P = 0.02;                // 每走一秒絆倒的機率
 const B_TRIP_T = [0.8, 1.4];          // 躺幾秒才爬起來
 /* 丟香蕉的那一隻砸村子時要站遠一點（v1.166）：那一根的爆炸半徑是 NANA_R 9，
@@ -8448,6 +8448,10 @@ function spawnBeast(kind, fun, bad, ang) {
                  bad && nearHome(m.x, m.z)
                    ? (kind === 'giant' ? '牠盯上了村子那一帶，腳步已經轉過去了'
                     : kind === 'saber' ? '她盯上了村子那一帶，手已經握上劍柄了'
+                    /* 里維、善逸、五條悟（v1.268.0 當上吉祥物）：砸村子那一趟就是道具那一招，見 mascStrike */
+                    : kind === 'levi' ? '他盯上了村子那一帶，雙刀已經出鞘了'
+                    : kind === 'zenitsu' ? '他盯上了村子那一帶，腳邊已經劈啪冒著雷光'
+                    : kind === 'gojo' ? '他盯上了村子那一帶，手從口袋裡抽出來了'
                     : kind === 'ape' ? '牠盯上了村子那一帶，手上那支火把還亮著'
                                      : '牠盯上了村子那一帶，手上那根香蕉還在')
                    : itOf(m) + '不會動手，晃一圈就走');
@@ -9035,13 +9039,14 @@ function stepBeast0(m, dt) {
     /* Saber（v1.222）同巨人：act 只是站定架劍瞄一下，接著轉進自己那一段（舉劍、蓄力、劈）。
        一趟就一招（使用者選的「1 次」），天災與吉祥物砸村子那一趟都一樣。 */
     if (m.kind === 'saber') { m.st = 'excal'; m.xt = 0; m.hit = 0; m.th0 = null; return false; }
-    /* 里維兵長（v1.230）：站定架刀之後射鋼索飛過去（見 stepOdm）。他只做玩家叫的事，
-       沒有命令就走到這裡（照理不會）直接回去逛——DOOM_ACT 裡沒有他，往下走會叫到 undefined */
-    if (m.kind === 'levi') { if (m.call) odmStart(m); else funBack(m); return false; }
-    /* 善逸（v1.251.0）同里維：只做玩家叫的事，站定之後蹲成居合架勢（見 stepZen） */
-    if (m.kind === 'zenitsu') { if (m.call) zenStart(m); else funBack(m); return false; }
-    /* 五條悟（v1.255.0）同上：只做玩家叫的事，站定之後結印放出茈（見 stepGojo） */
-    if (m.kind === 'gojo') { if (m.call) gjStart(m); else funBack(m); return false; }
+    /* 里維兵長（v1.230）：站定架刀之後射鋼索飛過去（見 stepOdm）。DOOM_ACT 裡沒有他，往下走會叫到 undefined。
+       v1.268.0 起他也是吉祥物：沒有玩家的命令、這一趟是來砸的（m.bad），就照道具那一招砸挑到的那一塊（見 mascStrike）；
+       兩樣都沒有（被城牆擋住、沒門可繞走到這裡）照舊回去逛 */
+    if (m.kind === 'levi') { if (m.call) odmStart(m); else if (m.bad) mascStrike(m); else funBack(m); return false; }
+    /* 善逸（v1.251.0）同里維：站定之後蹲成居合架勢（見 stepZen） */
+    if (m.kind === 'zenitsu') { if (m.call) zenStart(m); else if (m.bad) mascStrike(m); else funBack(m); return false; }
+    /* 五條悟（v1.255.0）同上：站定之後結印放出茈（見 stepGojo） */
+    if (m.kind === 'gojo') { if (m.call) gjStart(m); else if (m.bad) mascStrike(m); else funBack(m); return false; }
     /* 芙莉蓮（v1.259.0）不動手：命令一律是「跑到那一點」（go，見 callAim），照理走不到這裡；走到了就回去逛 */
     if (m.kind === 'frieren') { funBack(m); return false; }
     /* 還欠著幾處的（v1.229，見 moreMascot）：砸之前先認好這一塊（砸完最近的那一塊就換人了），
@@ -9676,10 +9681,31 @@ function callAim(m) {
 function excDone(m) {
   if (m.cq) { const q = m.cq; m.cq = null; sendSaber(m, q); return; }
   if (!m.call) { if (m.fun) funBack(m); else leaveBeast(m); return; }
+  const own = m.call.own;
   m.call = null; m.cn = 0;
   funBack(m);                                   // 它會把 bad／home 清掉，還原要排在它後面
   m.bad = m.cbad; m.home = m.chome;
-  m.stay = Math.max(m.stay, rr(MASC_STAY[0], MASC_STAY[1]));   // 「留下來逛一陣子」
+  /* 「留下來逛一陣子」。吉祥物自己砸的那一趟不加（v1.268.0，見 mascStrike）：同其他吉祥物，砸完把剩下的逛完就走 */
+  if (!own) m.stay = Math.max(m.stay, rr(MASC_STAY[0], MASC_STAY[1]));
+}
+/* 吉祥物自己動手的那一趟（v1.268.0）：里維、善逸、五條悟走到 act、手上沒有玩家的命令、這一趟是來砸的
+   （m.bad：出場抽到「來砸房子」，或被打生氣）。照點建築那一道命令的樣子組一份（own＝自己那一趟），
+   打的是 doomTarget 挑的那一塊，接著整段交給道具那一招（odmStart／zenStart／gjStart），收完走 excDone 回去逛。
+     · m.home 不動：砸村子那一趟三招都只認村子那邊的積木（levCut／zenCut／purpTake，同 Saber 的 excSweep）；
+       生氣改砸地標那一趟 m.home 是 0，照道具那一招砸。玩家的命令會把 m.home 歸零（sendSaber），不受這一條影響。
+     · cbad／chome 給 0：收完（或出招中玩家又點了一道、那一道收完）還原成「只是來逛的」，不會再砸一次。
+     · 出招那幾秒他本來就打不動（levBusy），不必另外處理「出招中被打收手」。 */
+function mascStrike(m) {
+  const b = doomTarget(m);
+  if (!b) { funBack(m); return; }
+  /* 里維：那一面朝哪＝從那一塊往他（他看得到的那一面），同點建築時「鏡頭看過去的反方向」 */
+  const c = m.kind === 'levi' ? levFace(b, { x: b.x - m.x, y: 0, z: b.z - m.z })
+                              : { x: b.x, y: b.y, z: b.z, ax: b.x, az: b.z, ay: b.y, b: null };
+  c.own = 1;
+  m.call = c; m.cn = 0; m.cbad = 0; m.chome = 0;
+  if (m.kind === 'levi') odmStart(m);
+  else if (m.kind === 'zenitsu') zenStart(m);
+  else gjStart(m);
 }
 
 /* ── 破壞道具：兵長砍猴（v1.230）────────────────────────────
@@ -10034,6 +10060,7 @@ function levCut(m, C, dt) {
     const dx = b.x - C.x, dy = b.y - C.y, dz = b.z - C.z;
     if (dx * dx + dy * dy + dz * dz > R2) continue;
     const set = b.st === SET, ow = set && b.hh < 0;
+    if (m.home && ow) continue;              // 吉祥物砸村子那一趟（v1.268.0，見 mascStrike）：地標一塊都不准動（同 Saber 的 excSweep）
     const hl = Math.hypot(dx, dz) || 1, sp = rr(LEV_HIT[0], LEV_HIT[1]);
     if (!breakBlock(b, dz / hl * sp + c.nx * rr(2, 5), rr(2, 6) + c.ny * 3, -dx / hl * sp + c.nz * rr(2, 5))) continue;   // 防護罩擋下（v1.259.0）
     if (!set) continue;
@@ -10202,7 +10229,7 @@ function stepDie(m, dt) {
    小閃電改成貼著地面、藍白的；光痕從尾巴開始淡：衝完之後尾巴沿著路線往頭那邊縮（上一版是衝完之後整條一起變細）。
 
    **走過去那一段整套是 Excalibur／兵長砍猴那一套**（sendSaber／stepCall／callAim／excDone 共用）：他就是一隻吉祥物
-   （kind 'zenitsu'），只能用道具叫來（同里維，不在 MASCOTS 裡），收完刀留下來逛一陣子，這段時間再點就直接叫他過去。
+   （kind 'zenitsu'），v1.251.0～v1.267 只能用道具叫來（v1.268.0 起也在 MASCOTS 裡，自己會來逛），收完刀留下來逛一陣子，這段時間再點就直接叫他過去。
      · 點建築：跑到離那一點 zenReach() 格（破壞範圍的外緣再外面一點）就站定
      · 點生物、小人：命令帶著那一隻（b／bw），stepCall 每一幀照牠現在的位置追；衝出去那一刻再照牠當時的位置排路線
      · 點空地：跑到那一點待命（go，見 levArrive）
@@ -10389,6 +10416,7 @@ function zenCut(m, s0, s1, dt) {
       const tc = t < 0 ? 0 : t > L ? L : t, dx = vx - ux * tc, dz = vz - uz * tc;
       if (dx * dx + dz * dz > W2 * W2) continue;
       const set = b.st === SET, ow = set && b.hh < 0;   // 同 smash：breakBlock 會把 hh 清掉，要先看
+      if (m.home && ow) continue;            // 吉祥物砸村子那一趟（v1.268.0，見 mascStrike）：地標一塊都不准動（同 Saber）
       /* 沿著衝的方向飛、往被削開的那一側甩一點、一律往上（同 Excalibur 的 excSweep） */
       const sp = rr(ZEN_HIT[0], ZEN_HIT[1]), sd = (ux * dz - uz * dx) < 0 ? 1 : -1;
       if (!breakBlock(b, ux * sp - uz * sd * rr(1, 4), rr(3, 8), uz * sp + ux * sd * rr(1, 4))) continue;   // 防護罩擋下（v1.259.0）
@@ -10447,7 +10475,7 @@ function zenLives(m, ax, az, ux, uz, L, W2) {
      · 沿路的小人與動物：**巨人被抹消，其他甩飛**（巨人同兵長斬殺那一套：跪下、往前倒、冒煙一塊一塊散掉；
        其餘一起吸進去轉、最後甩飛，算被攻擊）
    **走過去那一段整套是 Excalibur／兵長砍猴／霹靂一閃那一套**（sendSaber／stepCall／callAim／excDone 共用）：他就是一隻吉祥物
-   （kind 'gojo'），只能用道具叫來（同里維、善逸，不在 MASCOTS 裡），出完招留下來逛一陣子，這段時間再點就直接叫他過去。
+   （kind 'gojo'），v1.255.0～v1.267 只能用道具叫來（v1.268.0 起也在 MASCOTS 裡，自己會來逛），出完招留下來逛一陣子，這段時間再點就直接叫他過去。
      · 點建築：跑到離那一點 GJ_REACH 格（射程的一半，同 Excalibur）就站定
      · 點生物、小人：命令帶著那一隻（b／bw），stepCall 每一幀照牠現在的位置追；放出去那一刻照牠當時的位置瞄
      · 點空地：跑到那一點待命（go，見 levArrive）
@@ -10581,7 +10609,10 @@ function firePurp(m, tx, ty, tz) {
   const p = {
     ox: o.x, oy: o.y, oz: o.z, ux: dx / L, uy: dy / L, uz: dz / L,
     x: o.x, y: o.y, z: o.z, d: 0, t: 0, st: 'fly', bt: 0, mk: 0, zt: 0,
-    r: PURP_VIS, r0: ENG.GJ_HELD_R * (m.sc || 1), by: m, up: [], hit: 0
+    r: PURP_VIS, r0: ENG.GJ_HELD_R * (m.sc || 1), by: m, up: [], hit: 0,
+    /* 吉祥物砸村子那一趟放的（v1.268.0，見 mascStrike）：球放出去就是自己的東西，放的那一刻記下來，
+       之後他回去逛（m.home 歸零）也不影響這一顆 */
+    vo: m.home ? 1 : 0
   };
   purps.push(p);
   sndPurpFire();
@@ -10641,6 +10672,7 @@ function purpTake(p, a, b) {
     if ((bl.st !== SET && bl.st !== FREE) || bl.ufo) continue;
     if (purpD2(a, b, bl.x, bl.y, bl.z) > R2) continue;
     const wasSet = bl.st === SET, wasOwn = bl.hh < 0;          // breakBlock 會把 hh 清掉，要先看
+    if (p.vo && wasSet && wasOwn) continue;   // 吉祥物砸村子那一趟（v1.268.0，見 firePurp 的 vo）：地標一塊都不准動，球照樣穿過去（同 Saber）
     if (p.up.length >= PURP_CAP) {                              // 掛滿了：照樣削飛，不掛在球上（保險）
       if (breakBlock(bl, p.ux * 12, rr(3, 7), p.uz * 12) && wasSet) { n++; if (wasOwn) own++; }   // 防護罩擋下的不算（v1.259.0）
       continue;
@@ -10841,7 +10873,7 @@ function beastList() {
      · 打不打得破：**打不破**（罩著的時候範圍內一塊積木都不掉、生物都打不動）
      · 叫過去之後：「跟一般人物一樣 過去站幾秒 然後到處走 走到的地方被打都防護罩」
    **走過去那一段整套是 Excalibur／兵長砍猴那一套**（sendSaber／stepCall／callAim／excDone 共用）：她就是一隻吉祥物
-   （kind 'frieren'），只能用道具叫來（不在 MASCOTS 裡）。點哪裡都一樣是跑到那一點（點空地那一道命令 go，見 levArrive）、
+   （kind 'frieren'），v1.259.0～v1.267 只能用道具叫來（v1.268.0 起也在 MASCOTS 裡，自己會來逛、不動手）。點哪裡都一樣是跑到那一點（點空地那一道命令 go，見 levArrive）、
    站 LEV_WAIT 秒，再回去逛（MASC_STAY 秒後走人，同吉祥物）；這段時間再點就直接叫她過去。她不動手（被城牆擋住也不拆，同惠惠）。
    **罩子**：離她 FR_R 格內（一個半球，中心在她腳下）還站著的積木、小人、生物，什麼打過來都不動（frShield）。
    平常看不到；有東西打進來那一刻張開（引擎從法杖寶石那一點往外一格一格亮起來），打到的那一點白光一閃、一圈亮紋往外擴，
@@ -11909,7 +11941,10 @@ function megCancel(m) {
        那一段走路的先不放進來（推土機會把整片工地掃過去，見 stepBeast 的 away）。
    兩條線互不擋：吉祥物在場上時天災的鐘照數（見 stepDoom），反過來也一樣。 */
 const MASC_LO = 180, MASC_HI = 360;   // 3~6 分鐘。跟天災一樣照模擬時間走，開 4 倍速就快 4 倍
-const MASC_STAY = [25, 45];           // 走到工地邊之後逛幾秒才走人（「一段時間又走了」）
+/* 走到工地邊之後逛幾秒才走人（「一段時間又走了」）。v1.144～v1.267 是 25～45；v1.268.0 使用者：
+   「延長吉祥物閒逛時間約在50秒~60秒」「用工具叫進場也統一一起調逛的秒數」——道具叫來的那幾位做完事
+   「留下來逛一陣子」讀的也是這一個（見 excDone），所以一起變長。飛龍不吃這個（牠是繞 DRA_RING 圈就走，使用者選的「飛龍不動」） */
+const MASC_STAY = [50, 60];
 /* ── 偶而動手（v1.166）────────────────────────────────────
    使用者：「吉祥物出沒偶而也會對不是地標建築破壞（根據吉祥物的破壞模式）」。
      · **「偶而」** ＝出場那一刻抽一次，MASC_BAD 的機率抽中（其餘照舊只是來逛的）。
@@ -11924,7 +11959,6 @@ const MASC_STAY = [25, 45];           // 走到工地邊之後逛幾秒才走人
        小獼猴走過去點火把、小猴子丟香蕉炸彈、飛龍在上空吐火球。
    砸完**不算天災**：m.fun 一直是 1，所以天災的鐘照數（見 stepDoom），牠也照舊
    把剩下的 stay 逛完才走（見 funBack）。 */
-const MASC_BAD = 0.25;                // 出場的每四隻大約一隻是來砸房子的
 const MASC_BAD_SHOT = [1, 2];         // 飛龍那一版吐幾顆（天災那一版是 DRA_SHOT 3~5）
 /* 一隻一列。加第四隻吉祥物＝往這張表再放一列，別處一個字都不必動（同 DOOMS）。
    ground＝用走的，整地那一段先不放進來；龍在天上，推土機碰不到牠，照樣可以來。
@@ -11932,7 +11966,8 @@ const MASC_BAD_SHOT = [1, 2];         // 飛龍那一版吐幾顆（天災那一
    要個別設定」）。沒寫的照預設：一擊切換一次（見 beastHit）。
      more   被打不收手，**每打一下多砸一處**（見 moreMascot）。接得起來的只有走 act 那一段的
             （DOOM_ACT 那兩款）：巨人、Saber、飛的那兩款各有自己的收尾，要給牠們得在那邊補接點。
-     spent  m → true＝這一隻已經動不了手了：被打不再生氣，抽到同一件天災也不翻臉（見 turnBad）。 */
+     spent  m → true＝這一隻已經動不了手了：被打不再生氣，抽到同一件天災也不翻臉（見 turnBad）。
+     calm   不主動動手（v1.268.0）：鐘抽到「來砸房子」也是來逛的那一版（見 stepMascot），也不算進 MASC_BAD 的分母。 */
 const MASCOTS = [
   /* 小獼猴（v1.229）：「不會被打退 打他幾下(3秒冷卻)就會燒幾次建築」 */
   { id: 'ape', ground: 1, spawn: bad => spawnBeast('ape', 1, bad), more: 1 },
@@ -11947,11 +11982,30 @@ const MASCOTS = [
   /* Saber（v1.222）：用走的，同上。砸村子那一趟也是一招 Excalibur，但地標一塊都不斬、不燒（見 excSweep）。 */
   { id: 'saber', ground: 1, spawn: bad => spawnBeast('saber', 1, bad) },
   /* 惠惠（v1.247.0）：用走的，同上。**鐘抽到「來砸房子」也不理**（使用者：「他完全不主動攻擊的」）：
-     只有被打的時候才動手（生氣 → 退到安全距離放爆裂魔法，見〈惠惠〉那一節） */
-  { id: 'megumin', ground: 1, spawn: () => spawnBeast('megumin', 1, 0) }
+     只有被打的時候才動手（生氣 → 退到安全距離放爆裂魔法，見〈惠惠〉那一節）。
+     v1.268.0 使用者：「唯一惠惠不主動動手是特例 他火力太強大」 */
+  { id: 'megumin', ground: 1, calm: 1, spawn: () => spawnBeast('megumin', 1, 0) },
+  /* 里維兵長、善逸、五條悟（v1.268.0，使用者：「加入兵長 善逸 五條悟 芙莉蓮」「都來逛 偶爾動手 被打到會生氣」）：
+     本來只能用道具叫來。來砸房子那一趟用的就是道具那一招，地標一塊都不碰（同 Saber，見 mascStrike）。
+     五條悟什麼時候都打不動（無下限），所以被打生氣那一條他碰不到（使用者選的「照現狀，打不到就不生氣」） */
+  { id: 'levi', ground: 1, spawn: bad => spawnBeast('levi', 1, bad) },
+  { id: 'zenitsu', ground: 1, spawn: bad => spawnBeast('zenitsu', 1, bad) },
+  { id: 'gojo', ground: 1, spawn: bad => spawnBeast('gojo', 1, bad) },
+  /* 芙莉蓮（v1.268.0）：只來逛（使用者選的「她也不主動動手」——她那一把道具只有防護罩，沒有攻擊的招） */
+  { id: 'frieren', ground: 1, calm: 1, spawn: () => spawnBeast('frieren', 1, 0) }
 ];
+/* ── 偶而動手的機率：固定邏輯（v1.268.0）────────────────────────
+   使用者：「降低吉祥物出手攻擊村子的機率(因為越來越多隻 同機率下 被破壞的機會已經大幅上升 可以用一個固定邏輯
+   去計算機率 增加新吉祥物不用再調)」。v1.166～v1.267 是每一隻出場各抽 0.25：當初三隻，每一輪（每一隻各出場一次）
+   平均 0.75 隻是來砸的；到 v1.267 會動手的有六隻，變成 1.5 隻。
+   改成**訂「一輪全場平均幾隻」，每一隻的機率 ＝ 那個數 ÷ 會動手的隻數**（calm 那幾列不算，見上面那張表）。
+   每一隻的鐘都抽同一個區間（MASC_LO～MASC_HI），所以一輪的長度跟有幾隻無關——加一隻，全場被砸的頻率不變。
+   使用者選的是一輪 1 隻：會動手的九隻，每一隻 1/9。
+   見 開發筆記〈四位道具角色也自己來逛、逛 50～60 秒、偶而動手改成固定邏輯（v1.268.0）〉 */
+const MASC_BAD_ROUND = 1;
+const MASC_BAD = MASC_BAD_ROUND / MASCOTS.filter(k => !k.calm).length;
 const mascT = MASCOTS.map(() => -1);  // 每隻各自的倒數（−1＝還沒抽），跟 MASCOTS 同索引
-/* 這一款在表上那一列（v1.229，拿來查個別脾氣）。只有六列，每次被打才查一次，不必另外建索引。 */
+/* 這一款在表上那一列（v1.229，拿來查個別脾氣）。只有十一列，每次被打才查一次，不必另外建索引。 */
 const mascRow = kind => MASCOTS.find(k => k.id === kind) || null;
 /* 這一隻是動不了手的吉祥物嗎（表上的 spent，見上面）。翻臉過的（m.fun 0）算天災，不看這個。 */
 function mascSpent(m) {
@@ -11975,7 +12029,7 @@ function stepMascot(dt) {
     mascT[i] -= dt;
     if (mascT[i] > 0) continue;
     mascT[i] = -1;
-    k.spawn(Math.random() < MASC_BAD ? 1 : 0);        // 偶而是來砸房子的那一隻（v1.166）
+    k.spawn(!k.calm && Math.random() < MASC_BAD ? 1 : 0);   // 偶而是來砸房子的那一隻（v1.166）；calm 的一律來逛（v1.268.0）
   }
 }
 /* 把場上那隻吉祥物就地轉成天災（v1.145，使用者：「如果吉祥物進來剛好抽到天災
@@ -12084,7 +12138,7 @@ const BEAST_HIT_CD = 3;               // 被打到之後幾秒內再被打不算
    看起來是兩處火，不是同一處多點幾下。村子那邊不看距離，看的是「不是同一間」（見 moreSkip）。 */
 const MORE_GAP = DOOM_FIRE_R * 2;
 /* 「燒完才走」的保險：逛的時間過了還欠著，又在外圈晃了這麼久就算了（見 stepBeast 的 fun）。
-   給逛的時間的上限（45 秒）：正常一處只在外圈走幾秒到二十秒，碰得到這條的只有走不到的那種。
+   給逛的時間的上限（v1.268.0 起 60 秒，當初是 45）：正常一處只在外圈走幾秒到二十秒，碰得到這條的只有走不到的那種。
    **一處一處算**（v1.244.2）：每燒完一處從頭數（見 stepBeast 的 act），不是幾處加起來 45 秒。 */
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 小獼猴', snow: '🐵 小猴子', dragon: '🐉 飛龍',
@@ -12300,10 +12354,13 @@ function beastHit(m, src) {
   if (m && m.herd) { lifeHit(m, src); return; }
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
   if (!m || m === hitBy || beastLeaving(m) || m.call || m.cq) return;
-  /* 里維兵長（v1.230）不會生氣：他只做玩家叫他做的事（吉祥物那一套翻臉、砸地標他都沒有）。
+  /* 五條悟（v1.255.0）、芙莉蓮（v1.259.0）不會生氣：一個什麼時候都打不動（無下限）、一個站在自己的罩子裡，
+     照理走不到這裡；v1.268.0 他們當上吉祥物時使用者選的是「照現狀，打不到就不生氣」，這一條留著守住。
+     里維兵長（v1.230）、善逸（v1.251.0）v1.267 以前也在這裡（只做玩家叫的事），v1.268.0 拿掉
+     （使用者：「都來逛 偶爾動手 被打到會生氣」）：照吉祥物那一套，一擊切換一次（見 mascStrike）。
      倒下、暈著、爬起來的惠惠（v1.247.0）也不算：v1.260.0 起那幾段打得到她了（被炸飛、點著），但使用者選的是
      「不算，不生氣」——爬起來照原本回去逛，不會再放一發 */
-  if (m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'frieren' || m.dead || megDown(m)) return;   // 善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0，她在自己的罩子裡、照理打不到）同里維
+  if (m.kind === 'gojo' || m.kind === 'frieren' || m.dead || megDown(m)) return;
   /* 動不了手的吉祥物（v1.229，表上的 spent：小猴子丟完香蕉）：照樣會倒，只是不再改主意 */
   if (mascSpent(m)) return;
   /* 冷卻中（v1.229）：上一下算進去還不到 BEAST_HIT_CD 秒，這一下不算。

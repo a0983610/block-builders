@@ -25749,17 +25749,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              down: +(down * 0.05).toFixed(1),
              rMin: +rMin.toFixed(1), rMax: +rMax.toFixed(1),
              siteR: +siteR.toFixed(1), arena: +arenaR.toFixed(1),
-             burn, nana, fb, set0, minSet, ph: phase };
+             burn, nana, fb, set0, minSet, ph: phase, slo: MASC_STAY[0], shi: MASC_STAY[1] };
   });
-  /* 逛的秒數直接跟「這一趟抽到的 m.stay」對，不是對 25~45 那個範圍的邊界：
-     秒數是一幀一幀（0.05）數出來的，剛好抽到 45 的那一趟會量到 45.05，
-     拿邊界當門檻等於埋一顆偶爾才爆的雷。 */
+  /* 逛的秒數直接跟「這一趟抽到的 m.stay」對，不是對 MASC_STAY 那個範圍的邊界：
+     秒數是一幀一幀（0.05）數出來的，剛好抽到上限的那一趟會多量到 0.05，
+     拿邊界當門檻等於埋一顆偶爾才爆的雷。抽到的那個數落在範圍裡讀常數比（v1.268.0 從 25~45 改成 50~60 之前是寫死的） */
   /* 「走回去」那一段的下限 v1.183 從 5 秒放寬到 1 秒：閒晃範圍放到整片碎料場之後，
      牠可能剛好逛到場邊才到時間，離出口只剩幾格（退場點 v1.256.0 起是林帶中線 woodR）。
      這一條要驗的是「有走出去這一段、不是原地消失」，不是「走了多久」。 */
   ok('走進來 → 逛一逛 → 走人，逛的長度就是這一趟抽到的 MASC_STAY',
      mwalk.gone && mwalk.come > 5 && mwalk.go > 1 &&
-     mwalk.stay0 >= 25 && mwalk.stay0 <= 45 && Math.abs(mwalk.roam - mwalk.stay0) < 0.2,
+     mwalk.stay0 >= mwalk.slo && mwalk.stay0 <= mwalk.shi && Math.abs(mwalk.roam - mwalk.stay0) < 0.2,
      '走進來 ' + mwalk.come + ' 秒、逛了 ' + mwalk.roam + ' 秒（抽到 ' + mwalk.stay0 +
      '）、走回去 ' + mwalk.go + ' 秒（全程 ' + mwalk.secs + ' 秒，其中絆倒趴著 ' +
      mwalk.down + ' 秒不算逛）');
@@ -26047,7 +26047,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { n: got.length, bad: got.reduce((a, v) => a + v, 0), plain, p: MASC_BAD };
   });
-  ok('「偶而」＝出場那一刻抽一次，大約四隻裡一隻是來動手的',
+  /* v1.268.0 條目名從「大約四隻裡一隻是來動手的」改掉：MASC_BAD 不再是寫死的 0.25，是照表算的（見〈吉祥物：四位道具角色也自己來逛〉） */
+  ok('「偶而」＝出場那一刻抽一次，抽中的比例就是 MASC_BAD',
      mrate.p < 0.5 && Math.abs(mrate.bad / mrate.n - mrate.p) < 0.07 && mrate.plain,
      '抽 ' + mrate.n + ' 次有 ' + mrate.bad + ' 次（' +
      (mrate.bad / mrate.n * 100).toFixed(1) + '%，MASC_BAD ' + mrate.p +
@@ -30848,8 +30849,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('跟小人同一個比例：原點在腳底、頭髮頂 1.25～1.32、放大倍率同猴子（DOOM_SC）',
      Math.abs(zfig.lo) < 0.01 && zfig.top > 1.25 && zfig.top < 1.32 && zfig.sc === zfig.doomSc,
      '最低 ' + zfig.lo + '、頭髮頂 ' + zfig.top + '（小人帽頂 1.31）× ' + zfig.sc.toFixed(2));
-  ok('道具表：接在兵長砍猴後面、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「他」；圖示 ⚡、打雷換成 🌩',
-     zfig.levi >= 0 && zfig.at === zfig.levi + 1 && zfig.ground && !zfig.masc && !zfig.doom && zfig.nm &&
+  /* v1.268.0 起他也是吉祥物（使用者：「加入兵長 善逸 五條悟 芙莉蓮」），條目名從「只能用道具叫來（不進吉祥物與天災）」改掉 */
+  ok('道具表：接在兵長砍猴後面、點空地也算數；也進吉祥物、不進天災，提示裡是「他」；圖示 ⚡、打雷換成 🌩',
+     zfig.levi >= 0 && zfig.at === zfig.levi + 1 && zfig.ground && zfig.masc && !zfig.doom && zfig.nm &&
      zfig.it === '他' && zfig.icon === '⚡' && zfig.storm === '🌩',
      'TOOLS 第 ' + zfig.at + ' 把（兵長砍猴第 ' + zfig.levi + ' 把）；吉祥物 ' + zfig.masc + '、天災 ' + zfig.doom + '；' +
      zfig.it + '；圖示 ' + zfig.icon + '／打雷 ' + zfig.storm);
@@ -31241,9 +31243,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(gfig.gjSc / gfig.doomSc - 1.1) < 1e-9,
      '最低 ' + gfig.lo + '、模型高 ' + gfig.top + ' × ' + gfig.sc.toFixed(3) + '（DOOM_SC ' + gfig.doomSc.toFixed(3) + '）');
   /* v1.259.0 防禦魔法接到它後面之後「最後一把」那一句不成立了（同 Excalibur 那一條的說法）：
-     要守的是「新道具接在後面、舊的不往前插」，條目名跟著拿掉「（最後一把）」（規則型，不在 e2e-varying.json 裡，沒有鍵要搬） */
-  ok('道具表：接在霹靂一閃後面、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「他」；圖示 🟣',
-     gfig.zen >= 0 && gfig.at === gfig.zen + 1 && gfig.ground && !gfig.masc && !gfig.doom && gfig.nm &&
+     要守的是「新道具接在後面、舊的不往前插」，條目名跟著拿掉「（最後一把）」（規則型，不在 e2e-varying.json 裡，沒有鍵要搬）。
+     v1.268.0 起他也是吉祥物，「只能用道具叫來（不進吉祥物與天災）」改成「也進吉祥物、不進天災」 */
+  ok('道具表：接在霹靂一閃後面、點空地也算數；也進吉祥物、不進天災，提示裡是「他」；圖示 🟣',
+     gfig.zen >= 0 && gfig.at === gfig.zen + 1 && gfig.ground && gfig.masc && !gfig.doom && gfig.nm &&
      gfig.it === '他' && gfig.icon === '🟣',
      'TOOLS 第 ' + gfig.at + ' 把（霹靂一閃第 ' + gfig.zen + ' 把、共 ' + gfig.n + ' 把）；吉祥物 ' + gfig.masc + '、天災 ' + gfig.doom +
      '；' + gfig.it + '；圖示 ' + gfig.icon);
@@ -31634,9 +31637,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(ffig.lo) < 0.02 && ffig.top > 1.19 && ffig.top < 1.24 && ffig.sc === ffig.frSc && ffig.frSc === ffig.doomSc,
      '最低 ' + ffig.lo + '、模型高 ' + ffig.top + ' × ' + ffig.sc.toFixed(3));
   /* v1.261.0 肉接到它後面之後「最後一把」那一句不成立了（同虛式「茈」那一條的說法）：
-     要守的是「新道具接在後面、舊的不往前插」，條目名跟著拿掉「（最後一把）」（規則型，不在 e2e-varying.json 裡，沒有鍵要搬） */
-  ok('道具表：接在虛式「茈」後面、點空地也算數；只能用道具叫來（不進吉祥物與天災），提示裡是「她」；圖示 🛡；說明寫的半徑就是 FR_R',
-     ffig.gojo >= 0 && ffig.at === ffig.gojo + 1 && ffig.ground && !ffig.masc && !ffig.doom && ffig.nm &&
+     要守的是「新道具接在後面、舊的不往前插」，條目名跟著拿掉「（最後一把）」（規則型，不在 e2e-varying.json 裡，沒有鍵要搬）。
+     v1.268.0 起她也是吉祥物，「只能用道具叫來（不進吉祥物與天災）」改成「也進吉祥物、不進天災」 */
+  ok('道具表：接在虛式「茈」後面、點空地也算數；也進吉祥物、不進天災，提示裡是「她」；圖示 🛡；說明寫的半徑就是 FR_R',
+     ffig.gojo >= 0 && ffig.at === ffig.gojo + 1 && ffig.ground && ffig.masc && !ffig.doom && ffig.nm &&
      ffig.it === '她' && ffig.icon === '🛡' && ffig.tipR,
      'TOOLS 第 ' + ffig.at + ' 把（虛式「茈」第 ' + ffig.gojo + ' 把、共 ' + ffig.n + ' 把）；吉祥物 ' + ffig.masc + '、天災 ' + ffig.doom +
      '；' + ffig.it + '；圖示 ' + ffig.icon + '；說明的半徑 ' + ffig.tipR);
@@ -31936,6 +31940,182 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈道具：防禦魔法〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 吉祥物：四位道具角色也自己來逛（v1.268.0）══════════
+     使用者：「加入兵長 善逸 五條悟 芙莉蓮／延長吉祥物閒逛時間約在50秒~60秒／降低吉祥物出手攻擊村子的機率(因為越來越多隻
+     同機率下 被破壞的機會已經大幅上升 可以用一個固定邏輯去計算機率 增加新吉祥物不用再調)」。問完選的：「都來逛 偶爾動手
+     被打到會生氣 唯一惠惠不主動動手是特例 他火力太強大」、一輪 1 隻、飛龍不動、芙莉蓮「她也不主動動手」、
+     五條悟與芙莉蓮「照現狀，打不到就不生氣」。
+     全部規則型：押骰子（Math.random 換成常數）或自己擺場面直接叫那支函式，不跑整場模擬 */
+  SEC: { if (!(await head('吉祥物：四位道具角色也自己來逛', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await fillAll(page);
+
+  /* ── 表：四位都進 MASCOTS、不進 DOOMS；不主動動手（calm）的只有惠惠與芙莉蓮 ── */
+  const qtab = await page.evaluate(() => {
+    const ids = ['levi', 'zenitsu', 'gojo', 'frieren'];
+    const rows = ids.map(id => MASCOTS.find(k => k.id === id) || null);
+    return { have: rows.map(k => k ? 1 : 0).join(''), ground: rows.map(k => k ? k.ground : 0).join(''),
+             doom: ids.filter(id => DOOMS.some(d => d.id === id)).join(),
+             calm: MASCOTS.filter(k => k.calm).map(k => k.id).join() };
+  });
+  ok('四位都進 MASCOTS（用走的，整地那一段先不放）、不進 DOOMS；不主動動手的只有惠惠與芙莉蓮',
+     qtab.have === '1111' && qtab.ground === '1111' && qtab.doom === '' && qtab.calm === 'megumin,frieren',
+     '在表上 ' + qtab.have + '、ground ' + qtab.ground + '；天災裡有「' + qtab.doom + '」；calm ' + qtab.calm);
+
+  /* ── 機率是固定邏輯：每一隻 ＝ MASC_BAD_ROUND ÷ 會動手的隻數；骰子押 0（一定抽中）時 calm 的照樣是來逛的 ── */
+  const qbad = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const orig = MASCOTS.map(k => k.spawn), got = {};
+    MASCOTS.forEach(k => { k.spawn = bad => { got[k.id] = bad; }; });   // 只攔旗標，不真的放進來
+    const or = Math.random;
+    Math.random = () => 0;
+    mascT.fill(0.01); window.mascStep(0.05);          // 這一段沒裝回 stepMascot（reset 換成空的），直接叫本尊
+    Math.random = or;
+    MASCOTS.forEach((k, i) => { k.spawn = orig[i]; });
+    mascT.fill(-1);
+    const n = MASCOTS.filter(k => !k.calm).length;
+    return { got, n, p: MASC_BAD, round: MASC_BAD_ROUND,
+             badOk: MASCOTS.every(k => got[k.id] === (k.calm ? 0 : 1)) };
+  });
+  ok('機率是固定邏輯：每一隻 ＝ 一輪全場平均幾隻（MASC_BAD_ROUND）÷ 會動手的隻數；鐘抽中了 calm 的還是來逛的',
+     Math.abs(qbad.p * qbad.n - qbad.round) < 1e-9 && qbad.badOk,
+     '會動手的 ' + qbad.n + ' 隻 × ' + qbad.p.toFixed(4) + ' ＝ 一輪 ' + qbad.round + ' 隻；骰子押 0 時各自拿到 ' +
+     JSON.stringify(qbad.got));
+
+  /* ── 三招都守「砸村子那一趟地標一塊都不准動」（同 Saber 的 excSweep）：直接叫砍／削／吸那一支，
+        同一個位置先給 home 1、再給 home 0（對照組：同一刀真的砍得到地標）。三招各用地標的一側，互不干擾 ── */
+  const qcut = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const or = Math.random;
+    Math.random = () => 0.5;
+    const own = () => blocks.filter(b => b.st === SET && b.hh < 0).length;
+    const at = (x, z) => { const b = nearSet(x, z); return { x: b.x, y: b.y, z: b.z }; };
+    const run = (home, f) => { const n0 = own(); f(home); return n0 - own(); };
+    const P1 = at(0, -600), P2 = at(-600, 0), P3 = at(600, 0);
+    const levi = home => {
+      const m = spawnBeast('levi', 1, 0, 0);
+      m.home = home; m.call = { nx: 0, ny: 0, nz: -1 }; m.cz = LEV_SIZES[0]; m.odu = 0; m.on = 0; m.oshk = 0;
+      levCut(m, P1, 0.02); beasts = null;
+    };
+    const zen = home => {
+      const m = spawnBeast('zenitsu', 1, 0, 0);
+      m.home = home; m.zp = [{ x: P2.x, z: P2.z - 3 }, { x: P2.x, z: P2.z + 3 }]; m.zc = [0, 6];
+      m.zdu = 0; m.zn = 0; m.zsh = 0;
+      zenCut(m, 0, 6, 0.02); beasts = null;
+    };
+    const gojo = home => {
+      const m = spawnBeast('gojo', 1, 0, 0);
+      m.home = home; m.x = P3.x + 20; m.z = P3.z; m.a = -Math.PI / 2; m.st = 'pur'; m.ot = ENG.GJ.fire;
+      const p = firePurp(m, P3.x, 0, P3.z);           // vo 照放出去那一刻的 m.home 記（見 firePurp）
+      purpBasis(p);
+      purpTake(p, { x: P3.x, y: PURP_Y0, z: P3.z - 3 }, { x: P3.x, y: PURP_Y0, z: P3.z + 3 });
+      purpClear(); beasts = null;
+    };
+    const r = { levi: [run(1, levi), run(0, levi)], zen: [run(1, zen), run(0, zen)], gojo: [run(1, gojo), run(0, gojo)] };
+    Math.random = or;
+    cleanTools();
+    return r;
+  });
+  ok('砸村子那一趟（home 1）三招都一塊地標不動，同一刀 home 0 就砍得到（兵長的刀圈、善逸的削口、茈的球）',
+     ['levi', 'zen', 'gojo'].every(k => qcut[k][0] === 0 && qcut[k][1] > 0),
+     '地標少了幾塊（home 1／home 0）：兵長 ' + qcut.levi.join('／') + '、善逸 ' + qcut.zen.join('／') + '、五條悟 ' + qcut.gojo.join('／'));
+
+  /* ── 一整趟自己動手（mascStrike）：工地外蓋一間房子，他站在房子外側、這一趟是來砸村子的（bad 1、home 1），
+        從 act 那一刻起只叫他自己的 stepBeast 與紫球的 stepPurps。要守的：打的是那一間、地標一塊不少（五條悟那一顆
+        往裡飛、整條穿過地標）、收完回去逛（bad／home 歸零、命令收掉）、**不加逛的時間**（同其他吉祥物砸完逛剩下的） ── */
+  await fillAll(page);
+  const qrun = await page.evaluate(() => {
+    const keepPh = phase;
+    beasts = null; nanas = null; fballs = null; clearFires();
+    cleanTools(); clearHomes(); stopIdleEvent();
+    phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const or = Math.random;
+    Math.random = () => 0.5;
+    const own = () => blocks.filter(b => b.st === SET && b.hh < 0).length;
+    const one = kind => {
+      homes = { list: [] };
+      /* 房子擺在工地圈外（同〈吉祥物盯上的那一間〉那一條的擺法），砌滿 */
+      const hk = HOME_KIND[0], hx = siteR + KEEP + 8, hz = 0;
+      const slots = homeSlots(hx, hz, hk, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: hx, z: hz, r: homeR(hk), kind: hk.id, at,
+                  ox: (hk.w - 1) / 2, oz: (hk.d - 1) / 2, slots, left: slots.length, n: 1, done: false };
+      homeBox(h); markHomeF6(h); homes.list.push(h);
+      for (let i = 0; i < slots.length; i++) {
+        const sl = slots[i], b = newBlock();
+        b.st = SET; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+        b.hh = 0; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      h.done = true; homeBox(h);
+      ENG.setBlockCount(blocks.length);
+      const vill = () => blocks.filter(b => b.st === SET && b.hh === 0).length;
+      const set0 = own(), v0 = vill();
+      const m = spawnBeast(kind, 1, 1);
+      m.x = hx + h.r + DOOM_NEAR; m.z = 0; m.a = -Math.PI / 2;
+      m.st = 'act'; m.t = 0; m.bad = 1; m.home = 1; m.stay = 5; m.pause = 0;
+      const seen = [];
+      let g = 0, called = 0, done = null, ball = 0;
+      while (g++ < 2500) {
+        stepBeast(m, 0.02); stepPurps(0.02);
+        if (seen[seen.length - 1] !== m.st) seen.push(m.st);
+        if (m.call) called = 1;
+        if (purps) ball = Math.max(ball, ...purps.map(p => p.d));
+        if (called && !m.call && !done) done = { st: m.st, bad: m.bad, home: m.home, stay: +m.stay.toFixed(2) };
+        if (done && !purps) break;
+      }
+      const r = { seen: seen.join('→'), done, set0, set1: own(), v0, v1: vill(), ball: +ball.toFixed(1),
+                  own: !!(m.call && m.call.own) };
+      beasts = null; purpClear(); cleanTools(); clearHomes();
+      return r;
+    };
+    const r = { levi: one('levi'), zen: one('zenitsu'), gojo: one('gojo'), range: PURP_RANGE };
+    Math.random = or;
+    phase = keepPh;
+    return r;
+  });
+  const qrOk = r => !!r.done && r.done.st === 'fun' && r.done.bad === 0 && r.done.home === 0 && r.done.stay <= 5 &&
+                    r.set1 === r.set0 && r.v1 < r.v0;
+  ok('一整趟自己動手：照道具那一招砸那一間，地標一塊不少，收完回去逛、不加逛的時間（兵長／善逸／五條悟）',
+     qrOk(qrun.levi) && qrun.levi.seen.indexOf('odm') >= 0 && qrOk(qrun.zen) && qrun.zen.seen.indexOf('zen') >= 0 &&
+     qrOk(qrun.gojo) && qrun.gojo.seen.indexOf('pur') >= 0 && qrun.gojo.ball >= qrun.range,
+     ['levi', 'zen', 'gojo'].map(k => {
+       const r = qrun[k];
+       return k + '：' + r.seen + '，房子 ' + r.v0 + ' → ' + r.v1 + '、地標 ' + r.set0 + ' → ' + r.set1 +
+              '，收完 ' + JSON.stringify(r.done) + (k === 'gojo' ? '，球飛了 ' + r.ball + ' 格' : '');
+     }).join('；'));
+
+  /* ── 被打：兵長、善逸來逛的時候被打會生氣、來砸的時候被打會收手；五條悟、芙莉蓮照現狀不生氣 ── */
+  const qmad = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const or = Math.random, ot = toast;
+    toast = () => {};
+    const b0 = blocks.find(x => x.st === SET && x.hh < 0);   // 地標還在，生氣那一下押骰子押哪邊都有東西可砸（madPick）
+    Math.random = () => 0;                                   // < MASC_MAD_SET ＝ 砸地標
+    const hit = (kind, bad) => {
+      const m = spawnBeast(kind, 1, bad, 0);
+      m.st = 'fun'; m.x = siteR + 30; m.z = 0; m.hcd = 0;
+      beastHit(m);
+      const r = m.bad + '' + m.home;
+      beasts = null;
+      return r;
+    };
+    const r = { levi: hit('levi', 0), zen: hit('zenitsu', 0), leviCalm: hit('levi', 1), zenCalm: hit('zenitsu', 1),
+                gojo: hit('gojo', 0), frieren: hit('frieren', 0), b0: !!b0 };
+    Math.random = or; toast = ot;
+    cleanTools();
+    return r;
+  });
+  ok('被打：兵長、善逸來逛的會生氣（骰子押砸地標）、來砸的會收手；五條悟、芙莉蓮照現狀不生氣',
+     qmad.b0 && qmad.levi === '10' && qmad.zen === '10' && qmad.leviCalm === '00' && qmad.zenCalm === '00' &&
+     qmad.gojo === '00' && qmad.frieren === '00',
+     '被打之後 bad／home：兵長 ' + qmad.levi + '、善逸 ' + qmad.zen + '；來砸的兵長 ' + qmad.leviCalm + '、善逸 ' + qmad.zenCalm +
+     '；五條悟 ' + qmad.gojo + '、芙莉蓮 ' + qmad.frieren);
+
+  await page.evaluate(() => { cleanTools(); });
+  }   // ── 〈吉祥物：四位道具角色也自己來逛〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 道具：肉（v1.261.0）══════════
      使用者：「增加道具 肉 吸引閒晃動物 能誘導動物移動」，選了最近的幾隻（看過預覽之後加 40 格上限）、圍著吃吃完才散、
