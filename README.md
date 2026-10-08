@@ -1,4 +1,4 @@
-# 積木小人 · 世界地標工地　`v1.270.0`
+# 積木小人 · 世界地標工地　`v1.271.0`
 
 一進來就有一座蓋好的世界地標。你把它砸爛，小人們才會從滿地的碎料裡
 一塊一塊搬出來，慢慢蓋出下一座。被打到的地方才會壞，沒波及的地方原封不動。
@@ -286,6 +286,10 @@ tools/export-game.py    把遊戲跑得起來的檔案匯出成一包（清單�
 tools/export-game.bat   上面那支的雙擊版（切 UTF-8、找 python、跑完停住）
 tools/run-tests.py      跑測試的選單：不必記指令，選一個數字就開跑
 tools/run-tests.bat     上面那支的雙擊版
+tools/bump-version.cjs  改版本號：四個地方一次改齊（patch／minor／x.y.z，不帶參數只檢查）
+tools/check-notes.cjs   查程式與文件裡的「開發筆記〈段名〉」有沒有斷線
+tools/probe.cjs         跑一支探針：開遊戲頁、等開場、執行量測、結果寫成 JSON（--new 產骨架）
+tools/make-preview.cjs  組一頁預覽：遊戲本體 ＋ 一塊面板 → tools/.e2e-out/名稱.html
 dist/                   匯出的成品包（不進 git，隨時能重產）
 ```
 
@@ -307,6 +311,8 @@ dist/                   匯出的成品包（不進 git，隨時能重產）
 | `README.md` 第一行 | 這份 |
 | `藍圖預覽.html` 的 `VIEWER_VER` | 那一頁不載遊戲層，所以自己留一份 |
 
+`node tools/bump-version.cjs patch`（或 `minor`）一次改齊，連 `開發筆記.md` 的抬頭一起；不帶參數只檢查一不一致。
+
 ### 跑測試
 
 ```
@@ -321,6 +327,9 @@ node tools/e2e-3d.cjs --update-models --until 造型基準    改了造型才用
 node tools/e2e-3d.cjs --update-varying a.json b.json     重產統計型條目清單
 node tools/e2e-3d.cjs --reset-stats         統計型的數值範圍從頭累積（改版之後整組位移才用）
 node tools/check-bp.cjs --all               48 座藍圖體檢（幾秒鐘）
+node tools/check-notes.cjs                  「開發筆記〈段名〉」斷線檢查（幾秒鐘）
+node tools/probe.cjs 探針.cjs --out 結果.json   跑一支探針（--seed 同一副骰子、--page 量預覽頁）
+node tools/make-preview.cjs 某某預覽         組一頁預覽（第一次先產面板骨架）
 ```
 
 **不想打指令的話雙擊 `tools\run-tests.bat`**：出一份選單（必要檔／commit 檔／完整輪／
