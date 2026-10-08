@@ -1573,7 +1573,7 @@ function ringWalk(w, ta, rad, dt) {
      魔法師貼牆停超過一半時間的 9／24 人、丟出的料 1747 塊（沒有牆 0／24、2873 塊）；
      慶祝時牆外 11 人只有 3～4 人走得到圈上；工程師貼牆之後靠穿透進城。
      三種都走這一支，所以規則寫在這裡（使用者選「規則版」，不是只修魔法師）。
-     v1.266.0 起魔法師不走這一支了（站位改照建築真的形狀、照巡路規則走，見 updMage），剩工程師與慶祝。
+     v1.266.0 起魔法師、v1.267.0 起工程師不走這一支了（站位改照建築真的形狀、照巡路規則走，見 updMage／updEng），剩慶祝。
      strollTo 走到目標（或它挪到的最近可走點，規則 2）就算到了，同 ringWalk 自己「目標被占著、角度到了就算到位」。
      路上走的不算閒晃里程（同 castTrip）。見 開發筆記〈繞著工地圈走遇到城牆（魔法師、工程師、慶祝）〉 */
   {
@@ -1631,7 +1631,7 @@ function ringWalk(w, ta, rad, dt) {
   }
   /* 「到位」是照 rad2（鼓出去之後的目標半徑）算的。另外，目標那一點被房子占著時
      （nr 沒能走到 want），角度到了就算到位——不然他會一直想擠進去。
-     慶祝入圈、工程師走位都靠這個回傳值（魔法師 v1.266.0 起改照巡路規則走，見 updMage）。 */
+     慶祝入圈靠這個回傳值（魔法師 v1.266.0、工程師 v1.267.0 起改照巡路規則走，見 updMage／updEng）。 */
   return arrive || (Math.abs(dA) * cr <= budget && nr !== want);
 }
 
@@ -2749,13 +2749,28 @@ function stepRest(w, dt) {
 /* ── 工程師 ───────────────────────────────────────────────
    施工中站在建築外圍看藍圖，不搬積木、不認領格子（所以他不占人手，
    蓋的速度就是少一個人）。偶爾抬手指揮一下，偶爾換個角度繼續看。
-   換角度是沿著外圈繞過去的：拉直線的話他會從蓋到一半的建築中間穿過去。 */
-const ENG_KEEP = 3.4;               // 站得比閒晃的人再外面一點，看得到整座
+   換角度那一趟照巡路規則走（v1.267.0，stepTo，同上工的人）：沒蓋的地方直接穿過去、蓋好的繞開。
+   v1.64～v1.266 是 ringWalk 沿著外接圓繞過去（理由是拉直線會從蓋到一半的建築中間穿過去——那是巡路地圖之前的事）。 */
+const ENG_KEEP = 3.4;               // 站得離藍圖的占地多遠（比閒晃的人再外面一點，看得到整座；v1.267.0 起照真的形狀量）
 const ENG_POINT = 0.62;             // 每次換動作有多少機率是「指揮」，其餘是換位置
+/* 他站哪裡（v1.267.0，使用者：「工程師也照建築真的形狀站」，接在魔法師那一版後面，見 mageField）：
+   他這個角度（eang）的方向上，離藍圖的占地剛好 ENG_KEEP 的地方——從外接圓那一圈（一定離占地夠遠）
+   沿半徑往內收，收到再往內一步就離占地不到 ENG_KEEP 為止。占地照每一根柱子算（footDist），蓋好沒蓋好都算。
+   v1.64～v1.266 是外接圓再往外 ENG_KEEP 那一圈：細長的地標那一圈大半是空地，金門大橋 3000 他站定時離橋中位 21.7 格、
+   最遠 43.5 格（9000 那一檔中位 44.1、最遠 72.1）。見 開發筆記〈工程師也照建築真的形狀站（v1.267.0）〉 */
+const ENG_STEP = 0.25;              // 往內收一步多少
+function engSpot(w) {
+  if (w.eS && w.eS.of === bp && w.eS.a === w.eang) return w.eS;
+  const ca = Math.cos(w.eang), sa = Math.sin(w.eang);
+  let r = siteR + ENG_KEEP;
+  while (r > ENG_STEP && footDist(ca * (r - ENG_STEP), sa * (r - ENG_STEP), ENG_KEEP) >= ENG_KEEP) r -= ENG_STEP;
+  return (w.eS = { of: bp, a: w.eang, x: ca * r, z: sa * r });
+}
 
 function updEng(w, dt) {
   w.plan = 1;
-  if (!ringWalk(w, w.eang, siteR + ENG_KEEP, dt)) return;   // 還在走位
+  const p = engSpot(w);
+  if (!stepTo(w, p.x, p.z, dt)) return;                     // 還在走位
   w.a = Math.atan2(-w.x, -w.z);                             // 站定就面向建築
   w.gait += (0 - w.gait) * Math.min(1, dt * 8);
   if (w.point > 0) {
@@ -2839,6 +2854,28 @@ function findMageBlock(w) {
      ok：能站＝不在 near 裡、而且從工地外走得到。走得到的範圍會跟著砌上去的積木變（圍起來的中庭），
          lmReachMap 換了一份才重看，能站的格子真的變了才重算下面那一樣
      px／pz：每一格離它最近、能站的那一格的世界座標（能站的就是自己）。拿能站的那一圈邊界一格一格量，取最近 */
+/* 藍圖的占地：哪幾根柱子有積木（蓋好沒蓋好都算，一格一個 0／1）。藍圖一換才重算。
+   魔法師（mageField）與工程師（engSpot）站位都照它量（v1.266.0／v1.267.0） */
+let ftC = null;
+function footCols() {
+  if (ftC && ftC.of === bp) return ftC;
+  const W = gMaxX + 1, cols = new Uint8Array(W * (gMaxZ + 1));
+  for (const s of bp.slots) cols[s.gz * W + s.gx] = 1;
+  return (ftC = { of: bp, W, cols });
+}
+/* 這一點離占地多遠（柱子當方塊量，不是中心）。只看 lim 以內，再遠就回 lim */
+function footDist(x, z, lim) {
+  const c = footCols(), gx = x - gOffX, gz = z - gOffZ, R = Math.ceil(lim) + 1;
+  const ix = Math.round(gx), iz = Math.round(gz);
+  let d = lim;
+  for (let j = Math.max(0, iz - R); j <= Math.min(gMaxZ, iz + R); j++)
+    for (let i = Math.max(0, ix - R); i <= Math.min(gMaxX, ix + R); i++) {
+      if (!c.cols[j * c.W + i]) continue;
+      const q = Math.hypot(Math.max(0, Math.abs(gx - i) - 0.5), Math.max(0, Math.abs(gz - j) - 0.5));
+      if (q < d) d = q;
+    }
+  return d;
+}
 let mgF = null;
 function mageField() {
   if (!bp) return null;
@@ -2848,8 +2885,7 @@ function mageField() {
   if (!f) {
     const M = Math.ceil(MAGE_KEEP) + 2, R = Math.ceil(MAGE_KEEP);
     const nx = gMaxX + 1 + 2 * M, nz = gMaxZ + 1 + 2 * M;
-    const near = new Uint8Array(nx * nz), cols = new Uint8Array((gMaxX + 1) * (gMaxZ + 1));
-    for (const s of bp.slots) cols[s.gz * (gMaxX + 1) + s.gx] = 1;
+    const near = new Uint8Array(nx * nz), cols = footCols().cols;
     for (let gz = 0; gz <= gMaxZ; gz++) for (let gx = 0; gx <= gMaxX; gx++) {
       if (!cols[gz * (gMaxX + 1) + gx]) continue;
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++)

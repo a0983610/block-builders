@@ -4904,10 +4904,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const e = workers[0];
     let n = 0, carried = 0, claimed = 0, plan = 0, point = 0, near = Infinity, far = 0;
     const angs = [];
+    /* 離藍圖的占地多遠（v1.267.0 起他照真的形狀站，見 engSpot）：每一根柱子當方塊量，蓋好沒蓋好都算。
+       自己照藍圖算，不拿遊戲裡的 footDist——拿規則自己的函式驗規則等於沒驗 */
+    const cols = [...new Set(bp.slots.map(s => s.x + ',' + s.z))].map(k => k.split(',').map(Number));
+    const footD = (x, z) => Math.min(...cols.map(([cx, cz]) =>
+      Math.hypot(Math.max(0, Math.abs(x - cx) - 0.5), Math.max(0, Math.abs(z - cz) - 0.5))));
+    let footMin = Infinity, footMax = 0, standN = 0;
     /* 先等他走到定位再開始量，不然量到的第一段是「走過來」——上一段測試可能
        把他丟在四十單位外遊蕩，用寫死的秒數等會時靈時不靈。 */
-    const ring = siteR + 3.4;
-    for (let i = 0; i < 400 && Math.abs(Math.hypot(e.x, e.z) - ring) > 0.1; i++) step(0.05);
+    const atSpot = () => { const p = engSpot(e); return Math.hypot(e.x - p.x, e.z - p.z) < REACH; };
+    for (let i = 0; i < 400 && !atSpot(); i++) step(0.05);
     let down = 0;
     for (let i = 0; i < 2400 && phase === 'build'; i++) {
       step(0.05);
@@ -4923,10 +4929,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const d = Math.hypot(e.x, e.z);
       if (d < near) near = d;
       if (d > far) far = d;
+      if (atSpot() && i % 5 === 0) {                  // 站定在站位上的時候（走位途中另一條守）
+        const f = footD(e.x, e.z);
+        footMin = Math.min(footMin, f); footMax = Math.max(footMax, f); standN++;
+      }
       if (i % 200 === 0) angs.push(Math.round(Math.atan2(e.z, e.x) * 180 / Math.PI));
     }
     return { n, down, carried, claimed, planPct: +(plan / n).toFixed(2),
              pointPct: +(point / n).toFixed(2),
+             footMin: +footMin.toFixed(2), footMax: +footMax.toFixed(2), standN,
+             KEEP: ENG_KEEP, STEP: ENG_STEP, ARRIVE: REACH,
              near: +near.toFixed(1), far: +far.toFixed(1), siteR: +siteR.toFixed(1),
              moves: new Set(angs).size, samples: angs.length,
              others: workers.slice(1).filter(w => w.eng).length,
@@ -4939,16 +4951,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('施工中一直拿著設計圖在看', engr.planPct === 1,
      '拿著圖的幀數占 ' + (engr.planPct * 100).toFixed(0) + '%（自己絆倒趴著的 ' +
      engr.down + ' 幀不算，見上面）');
-  /* 「站在建築外面」是這一條真正守得住的東西：實測 near／far 是 14.0～14.3 對 siteR 10.9，
-     他貼著 siteR + ENG_KEEP 那一圈站，一步都不進工地。
+  /* 「站在建築外面」是這一條真正守得住的東西。
      **「他會換位置」那一半 v1.128 拆出去了**（見下一條）：本來是「取樣 8～12 次、
      相異角度要 ≥ 2」，但那是在賭骰子——每次決策 ENG_POINT（62%）抽到「指揮」、
      只有 38% 是換位置，整輪蓋 70 秒約 13 次決策，「一次都沒抽到換位置」的機率是
      0.62¹³ ≈ 1/830。實測單獨跑 25 輪是 4～11 個角度（中位數 9），但整輪跑的時候
-     真的開出過 1 個。相異角度數留在訊息裡當參考，不再拿它當斷言。 */
-  ok('站在建築外圍，一步都不進工地',
-     engr.near > engr.siteR && engr.far < engr.siteR + 4,
-     '離工地中心 ' + engr.near + '–' + engr.far + '（建築半徑 ' + engr.siteR +
+     真的開出過 1 個。相異角度數留在訊息裡當參考，不再拿它當斷言。
+     v1.267.0 起量的是「站定時離藍圖的占地多遠」（照真的形狀，見 engSpot）：站位離占地 ENG_KEEP ～ ENG_KEEP ＋ 一步，
+     走到 REACH 以內算到，所以落在 [ENG_KEEP − REACH, ENG_KEEP ＋ ENG_STEP ＋ REACH]——貼著建築站、也不會站到老遠的空地上。
+     規則型；舊的那條「站在建築外圍，一步都不進工地」量的是「離中心介於外接圓與外接圓 + 4」、在統計型清單裡，
+     跟著改名拿掉了（見 開發筆記〈工程師也照建築真的形狀站（v1.267.0）〉） */
+  ok('站在建築外圍：站定時離占地 ENG_KEEP 上下（照真的形狀，一步都不進工地）',
+     engr.standN > 0 && engr.footMin >= engr.KEEP - engr.ARRIVE - 0.05 &&
+     engr.footMax <= engr.KEEP + engr.STEP + engr.ARRIVE + 0.05,
+     '站定時離藍圖的占地 ' + engr.footMin + '～' + engr.footMax + ' 格（' + engr.standN + ' 筆；站位離占地 ' + engr.KEEP +
+     '、走到 ' + engr.ARRIVE + ' 以內算到）；離工地中心 ' + engr.near + '–' + engr.far + '（外接圓半徑 ' + engr.siteR +
      '），' + engr.samples + ' 次取樣裡站過 ' + engr.moves + ' 個不同角度');
 
   /* 「換位置」改成**把骰子固定住**直接驗那一支邏輯（v1.128，理由見上一條）。
@@ -4963,21 +4980,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     targetCnt = 900; setWorkerCount(12); startBuild(true);
     shapePick = -1;
     const e = workers[0];
-    /* **直接把他放到那一圈上**，不要「走到定位為止」。第一版是等
+    /* **直接把他放到站位上**，不要「走到定位為止」。第一版是等
        `|半徑 − (siteR + ENG_KEEP)| ≤ 0.1`，但建材一直在往上疊、`siteR` 跟著長，
        那一圈本身是會動的——他等於一路追著跑，`ringWalk` 永遠回報「還沒到」，
        於是 `updEng` 每幀提早 return，決策那一段根本跑不到（整輪跑的時候踩到過：
-       目標角度加了 0 rad）。放好之後 dA 與 dr 都是 0，`ringWalk` 當幀就回報到位。 */
-    const ring = siteR + ENG_KEEP;
-    e.x = Math.cos(e.eang) * ring; e.z = Math.sin(e.eang) * ring;
-    step(0.05);
-    /* 再擺一次（v1.148.1）：上面那一幀裡小人又疊了幾塊上去、`siteR` 跟著長，
-       他就不在那一圈上了——`ringWalk` 一樣會回報「還沒到」，決策那一段還是跑不到。
-       整輪測試又踩到一次（目標角度加了 0 rad），所以擺的時機要**貼著決策那一行**，
-       不能中間再隔一幀。 */
-    e.x = Math.cos(e.eang) * (siteR + ENG_KEEP);
-    e.z = Math.sin(e.eang) * (siteR + ENG_KEEP);
-    const settled = Math.abs(Math.hypot(e.x, e.z) - (siteR + ENG_KEEP)) < 0.5;
+       目標角度加了 0 rad）。v1.148.1 起擺的時機貼著決策那一行（中間隔一幀又踩到一次）。
+       v1.267.0 起站位是 engSpot（這個角度上離占地 ENG_KEEP 的地方，照藍圖算、不跟著蓋上去的積木動），
+       擺上去之後 stepTo 當幀就回報到位，照舊貼著決策那一行擺。 */
+    const sp0 = engSpot(e);
+    e.x = sp0.x; e.z = sp0.z;
+    const settled = Math.hypot(e.x - sp0.x, e.z - sp0.z) < 0.5;
     const a0 = Math.atan2(e.z, e.x), eang0 = e.eang;
     const real = Math.random;
     Math.random = () => 0.99;
@@ -4988,19 +5000,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 走過去這一段不讓他再做新決策：et 給一個大數，updEng 就只剩走位那一段。
        不這樣的話途中還會抽兩三次籤，抽到往回走的話這一條又變成在賭骰子。 */
     e.et = 999;
-    /* 「有沒有抄捷徑穿過工地」量的是**離那一圈有多遠**，不是絕對半徑：
-       建材一直在往上疊，siteR 會跟著長，拿固定的半徑當界線會被那件事帶著跑。 */
-    let devLo = Infinity, devHi = -Infinity, n = 0;
+    /* 路上照巡路規則走（v1.267.0，同閒晃那一條的量法）：身體有沒有進到擋路柱子的身位裡（穿透中不算）。
+       v1.64～v1.266 量的是「離外接圓那一圈多遠」——那時候他繞著那一圈走 */
+    let inLm = 0, n = 0;
     for (let i = 0; i < 400 && phase === 'build'; i++) {
       step(0.05); n++;
-      const dev = Math.hypot(e.x, e.z) - (siteR + ENG_KEEP);
-      devLo = Math.min(devLo, dev); devHi = Math.max(devHi, dev);
+      const bd = navBody(e);
+      if (!(e.ghost > 0) && lmDist(e.x, e.z, lmField(bd.H)) < bd.r - 1e-6) inLm++;
     }
+    const sp1 = engSpot(e);
     let turned = Math.atan2(e.z, e.x) - a0;
     turned = Math.atan2(Math.sin(turned), Math.cos(turned));
     return { settled, eng: e.eng, dAng: +dAng.toFixed(2), n,
              turned: Math.abs(Math.round(turned * 180 / Math.PI)),
-             devLo: +devLo.toFixed(2), devHi: +devHi.toFixed(2),
+             inLm, arrived: Math.hypot(e.x - sp1.x, e.z - sp1.z) < REACH,
              want: Math.round(Math.abs(dAng) * 180 / Math.PI), keep: ENG_KEEP,
              pt: ENG_POINT };
   });
@@ -5010,10 +5023,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '把骰子固定成 0.99（＞ ENG_POINT ' + engMove.pt + '）→ 目標角度加了 ' +
      engMove.dAng + ' rad（' + engMove.want + '°），' + (engMove.n * 0.05).toFixed(0) +
      ' 秒後人真的轉了 ' + engMove.turned + '°');
-  ok('換位置的路上也是貼著外圈走，不會抄捷徑穿過工地',
-     engMove.devLo > -1 && engMove.devHi < 1,
-     '整段離「工地外圍 + ' + engMove.keep + '」那一圈 ' + engMove.devLo + ' ～ ' +
-     engMove.devHi + ' 單位');
+  /* v1.267.0 起照巡路規則走（沒蓋的地方直接穿過去、蓋好的繞開，同上工的人），不再貼著外接圓繞。
+     舊名「換位置的路上也是貼著外圈走，不會抄捷徑穿過工地」（規則型，不在統計型清單裡）。 */
+  ok('換位置的路上照巡路規則走：身體不進地標的身位裡，走到新的站位',
+     engMove.inLm === 0 && engMove.arrived,
+     engMove.n + ' 幀裡身體進到身位裡 ' + engMove.inLm + ' 幀；' + (engMove.arrived ? '走到了新的站位' : '沒走到新的站位'));
   ok('偶爾會做指揮動作', engr.pointPct > 0.03 && engr.pointPct < 0.5,
      '指揮的幀數占 ' + (engr.pointPct * 100).toFixed(0) + '%');
   /* 只有一個人的時候不能把他派去看圖，不然這座永遠蓋不起來 */
@@ -36816,7 +36830,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      場面：整圈城牆（同 ⑮），三種站位各從牆外 8 個方位走進來，加上魔法師從城裡走到城外的料堆（反方向 8 趟）。
      對照組把城牆當成一般房子（h.wall = 0：footHome 照擋、城牆那幾支看不到它）＝ v1.247 的走法。
      v1.266.0 起魔法師不走 ringWalk 了（站位照建築真的形狀、照巡路規則走，見 updMage 的 stepTo），
-     他那兩組改用他自己的走法（stepTo）走同樣的起點與站位，守的還是同一件事：牆外走得到牆裡的站位、牆裡走得到城外的料堆。 */
+     他那兩組改用他自己的走法（stepTo）走同樣的起點與站位，守的還是同一件事：牆外走得到牆裡的站位、牆裡走得到城外的料堆。
+     v1.267.0 起工程師也是（站位照建築真的形狀，見 engSpot），他那一組同樣改用 stepTo；剩慶祝照舊走 ringWalk。 */
   const navRing = await page.evaluate(() => {
     const N = window.navT;
     homes = null; frameNo++;
@@ -36852,7 +36867,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       releaseWorker(w); w.ghost = 0; w.stk = 0;
       return r;
     };
-    const who = [['魔法師', siteR + MAGE_KEEP, 1, 1], ['工程師', siteR + ENG_KEEP, 1, 0], ['慶祝', cheerR(), 1, 0],
+    const who = [['魔法師', siteR + MAGE_KEEP, 1, 1], ['工程師', siteR + ENG_KEEP, 1, 1], ['慶祝', cheerR(), 1, 0],
                  ['魔法師（城外的料堆）', W + 8, 0, 1]];
     const pass = list => {
       homes = { list }; frameNo++;
