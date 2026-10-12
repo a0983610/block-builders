@@ -36,9 +36,10 @@ let stats = freshStats();
 /* keys＝快捷鍵 1～9 各綁哪一把道具（v1.242.0），存道具 id，空字串＝沒綁。
    預設全空（使用者選的），見 開發筆記〈破壞道具快捷鍵 1～9〉 */
 /* rage＝破壞模式開著沒（v1.262.0，見 game-tools.js 的 RAGE_N），預設關 */
+/* ao＝積木 AO 開著沒（v1.273.0，見 game-ui.js 的 aoOn），預設開 */
 const KEY_N = 9;
 const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
-                           keys: Array(KEY_N).fill(''), cap: true, rage: false, v: 1 });
+                           keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -224,11 +225,12 @@ function snapOpt(v, opts) {
 /* 把存回來的設定套進變數與面板 */
 function applyPref() {
   targetCnt = pref.cnt; timeScale = pref.spd; muted = pref.mute; spinOn = pref.spin;
-  lazyMode = pref.lazy; cap60 = pref.cap; rageOn = pref.rage;
+  lazyMode = pref.lazy; cap60 = pref.cap; rageOn = pref.rage; aoOn = pref.ao;
   setWorkerCount(pref.wk);
   $('mute').checked = pref.mute;
   $('spin').checked = pref.spin;
   $('cap60').checked = pref.cap;
+  $('aoOn').checked = pref.ao;
   syncHud();
   renderModes();
 }

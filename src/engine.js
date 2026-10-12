@@ -767,6 +767,44 @@ const ENG = (function () {
     return m;
   }
 
+  /* ── 積木 AO（v1.273.0）：凹角、牆腳、上面壓著東西的那幾面暗下來 ──
+     每塊帶一份「周圍 3×3×3 哪幾格有積木」的位元（aoMask，規則那邊算好照 putBlock 送進來，見 game-ui.js 的 aoUpdate）。
+     第 i 位 ＝ (dx+1)*9 + (dy+1)*3 + (dz+1)（中間那格 13 不用）；27 位超過 float 能精確存的 24 位，所以拆兩個 float（14／13 位）。
+     片段裡照「這一點在哪一面、離那一面的四條邊與四個角多遠」壓暗：那一面正前方那一層 3×3 裡，
+     邊上有鄰居 → 那條邊往內漸暗（0.5 份）；角上有鄰居 → 那個角往內漸暗（0.35 份）；兩條邊都有就是凹角，加滿 1 份。
+     一份壓暗 AO_K、從邊上漸到 AO_R 格外消失。遮罩全 0（碎料、AO 關掉）整段跳過。
+     **只看鄰居、不看自己**：深色邊照舊是 voxelMaterial 那一刀，這裡只多「旁邊有東西」的那一層。
+     數字是預覽頁看過的（tools/.e2e-out/畫面強化預覽.html），見 開發筆記〈積木 AO：凹角與牆腳暗下來（v1.273.0）〉 */
+  const AO_K = 0.55, AO_R = 0.6;
+  const AO_FIX = (sh, cut) => {
+    sh.vertexShader = cut(sh.vertexShader, '#include <common>', '\nattribute vec2 aoMask;\nflat varying vec2 vAo;');
+    sh.vertexShader = cut(sh.vertexShader, '#include <begin_vertex>', '\nvAo = aoMask;');
+    sh.fragmentShader = cut(sh.fragmentShader, '#include <common>', `
+flat varying vec2 vAo;
+float aoBit(int i) {
+  int a = int(vAo.x + 0.5), b = int(vAo.y + 0.5);
+  return float(i < 14 ? (a >> i) & 1 : (b >> (i - 14)) & 1);
+}`);
+    sh.fragmentShader = cut(sh.fragmentShader, '#include <alphamap_fragment>', `
+if (vAo.x + vAo.y > 0.5) {
+  int ax = ap.x >= ap.y && ap.x >= ap.z ? 0 : (ap.y >= ap.z ? 1 : 2);
+  int au = ax == 0 ? 1 : 0, av = ax == 2 ? 1 : 2;
+  int sg = vLocalPos[ax] >= 0.0 ? 1 : -1;
+  float pu = vLocalPos[au], pv = vLocalPos[av], occ = 0.0;
+  for (int du = -1; du <= 1; du++) for (int dv = -1; dv <= 1; dv++) {
+    if (du == 0 && dv == 0) continue;
+    ivec3 d = ivec3(0); d[ax] = sg; d[au] = du; d[av] = dv;
+    if (aoBit((d.x + 1) * 9 + (d.y + 1) * 3 + (d.z + 1)) < 0.5) continue;
+    float eu = du == 0 ? 9.0 : 0.5 - pu * float(du);
+    float ev = dv == 0 ? 9.0 : 0.5 - pv * float(dv);
+    bool corner = du != 0 && dv != 0;
+    float dd = corner ? length(vec2(eu, ev)) : min(eu, ev);
+    occ += (corner ? 0.35 : 0.5) * (1.0 - smoothstep(0.0, ${AO_R.toFixed(2)}, dd));
+  }
+  diffuseColor.rgb *= 1.0 - ${AO_K.toFixed(2)} * min(occ, 1.0);
+}`);
+  };
+
   /* ── 飛石與隕石的球（v1.193）──
      使用者：「投出去的石頭改成球型」「隕石也順便改成球型」。兩邊以前都掛在 unit
      那顆方塊上，所以天上飛的是一個轉來轉去的木箱。
@@ -926,7 +964,15 @@ const ENG = (function () {
 
     const unit = new T.BoxGeometry(1, 1, 1);
 
-    blockMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXB);
+    /* 積木自己一顆幾何掛 aoMask（v1.273.0，見 AO_FIX）：unit 有二十來顆 mesh 共用，per-instance 的東西掛不上去；
+       材質多注入四刀，所以自己一把 cache key */
+    {
+      const geo = new T.BoxGeometry(1, 1, 1);
+      blkAO = new T.InstancedBufferAttribute(new Float32Array(MAXB * 2), 2);
+      blkAO.setUsage(T.DynamicDrawUsage);
+      geo.setAttribute('aoMask', blkAO);
+      blockMesh = new T.InstancedMesh(geo, voxelMaterial({}, AO_FIX, 'voxel-edge-ao'), MAXB);
+    }
     blockMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     blockMesh.castShadow = blockMesh.receiveShadow = true;
     blockMesh.count = 0;
@@ -965,7 +1011,9 @@ const ENG = (function () {
 
     /* Saber（v1.222）：自己一顆，不進 beastMesh（理由見〈Saber〉那一節）。
        顏色開機時寫死——每一格的顏色永遠是造型表那一格，不必每幀重寫。 */
-    sabMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXSAB * SAB_PARTS);
+    /* 主角那幾顆 v1.273.0 起各自一顆幾何（upBias／edgeK）、材質走 GJ_EDGE_FIX，見 heroGeo */
+    sabMesh = new T.InstancedMesh(heroGeo(SAB_PARTS, MAXSAB, heroUp(SABER, SAB_CN, SAB_G.head), heroEk(SAB_CN)),
+                                  voxelMaterial({}, GJ_EDGE_FIX, 'voxel-edge-gojo-hair'), MAXSAB * SAB_PARTS);
     sabMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     sabMesh.castShadow = true;
     sabMesh.count = 0;
@@ -976,7 +1024,8 @@ const ENG = (function () {
     scene.add(sabMesh);
     /* 里維兵長（v1.230）：同 Saber 自己一顆。一位 LEV_SLOT 格＝造型表 ＋ 兩條鋼索與鉤爪 ＋ 刀光，
        顏色開機時寫死（見〈里維兵長〉那一節）。 */
-    levMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXLEV * LEV_SLOT);
+    levMesh = new T.InstancedMesh(heroGeo(LEV_SLOT, MAXLEV, heroUp(LEVI, LEV_CN, LEV_G.head), heroEk(LEV_CN)),
+                                  voxelMaterial({}, GJ_EDGE_FIX, 'voxel-edge-gojo-hair'), MAXLEV * LEV_SLOT);
     levMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     levMesh.castShadow = true;
     levMesh.count = 0;
@@ -987,7 +1036,8 @@ const ENG = (function () {
     scene.add(levMesh);
     /* 惠惠（v1.247.0）：同里維自己一顆。一位 MEG_SLOT 格（就是造型表），
        顏色開機時寫死；只有寶珠那幾格詠唱時會重寫（見 putMegs） */
-    megMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXMEG * MEG_SLOT);
+    megMesh = new T.InstancedMesh(heroGeo(MEG_SLOT, MAXMEG, heroUp(MEGUMIN, MEG_CN, MEG_G.head), heroEk(MEG_CN)),
+                                  voxelMaterial({}, GJ_EDGE_FIX, 'voxel-edge-gojo-hair'), MAXMEG * MEG_SLOT);
     megMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     megMesh.castShadow = true;
     megMesh.count = 0;
@@ -1006,7 +1056,8 @@ const ENG = (function () {
       megLineMesh.setColorAt(i, tmpC.setHex(MEG_LINE_C[Math.floor(i / MEG_LINE_SEG) % MEG_LINE_C.length]));
     scene.add(megLineMesh);
     /* 善逸（v1.251.0）：同惠惠自己一顆，一位 ZEN_SLOT 格（就是造型表），顏色開機時寫死 */
-    zenMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXZEN * ZEN_SLOT);
+    zenMesh = new T.InstancedMesh(heroGeo(ZEN_SLOT, MAXZEN, heroUp(ZENITSU, ZEN_CN, ZEN_G.head), heroEk(ZEN_CN)),
+                                  voxelMaterial({}, GJ_EDGE_FIX, 'voxel-edge-gojo-hair'), MAXZEN * ZEN_SLOT);
     zenMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     zenMesh.castShadow = true;
     zenMesh.count = 0;
@@ -3414,7 +3465,12 @@ const ENG = (function () {
   const BLK_K = 10;
   const blkLast = new Float64Array(MAXB * BLK_K).fill(NaN);   // NaN ≠ 任何數：第一次一定寫
   let blkOrd = '', blkCall = '', blkDirty = false;
-  function putBlock(i, x, y, z, rot, s, r, g, b) {
+  /* ao：這一塊的 AO 遮罩（v1.273.0，27 位的整數，見 AO_FIX）；沒給就是 0（不壓暗）。
+     自己一條「沒變就不寫」，跟矩陣與顏色那十個數字分開：只有遮罩變了不必重算矩陣，只有矩陣變了也不必重傳遮罩 */
+  let blkAO = null, aoDirty = false;
+  function putBlock(i, x, y, z, rot, s, r, g, b, ao) {
+    const A = blkAO.array, a0 = ao & 0x3fff, a1 = ao >>> 14;
+    if (A[i * 2] !== a0 || A[i * 2 + 1] !== a1) { A[i * 2] = a0; A[i * 2 + 1] = a1; aoDirty = true; }
     blkCall = rot.order;
     if (rot.order !== blkOrd) { blkLast.fill(NaN); blkOrd = rot.order; }   // 軸序變了，整份作廢
     const L = blkLast, o = i * BLK_K;
@@ -3442,6 +3498,7 @@ const ENG = (function () {
       if (blockMesh.instanceColor) blockMesh.instanceColor.needsUpdate = true;
       blkDirty = false;
     }
+    if (aoDirty) { blkAO.needsUpdate = true; aoDirty = false; }
     dropSphere(blockMesh);
   }
 
@@ -5751,9 +5808,12 @@ const ENG = (function () {
     blade: 0xffe68a, bladeL: 0xfff8dc, grip: 0x1f2a66, gem: 0x3a70ea
   };
   const SAB_G = { body: 0, head: 1, armR: 2, armL: 3, legR: 4, legL: 5, sword: 6 };
+  /* 每一塊的顏色名（v1.273.0，臉往上偏、頭髮描邊淡照它認，見 heroGeo）。**另開一份、不掛在 SABER 上**：
+     SABER 整份進造型基準檔（MODELS），多一欄的話基準檔的每一塊都會變（同 SAB_ZONE 的理由） */
+  const SAB_CN = [];
   const SABER = (() => {
     const out = [];
-    const P = (g, p, s, c, r) => out.push({ g: SAB_G[g], p, s, c: SB[c], r: r || [0, 0, 0] });
+    const P = (g, p, s, c, r) => { SAB_CN.push(c); out.push({ g: SAB_G[g], p, s, c: SB[c], r: r || [0, 0, 0] }); };
     /* 左右一次放兩塊：x 反號、繞 Y／Z 的角度反號（鏡射只翻那兩軸），arm／leg 自動分成 L（+x）與 R（−x） */
     const M = (g, p, s, c, r) => {
       r = r || [0, 0, 0];
@@ -6301,9 +6361,10 @@ const ENG = (function () {
                    [-0.30, 0.36, 0.01], [0.30, 0.36, 0.01], [0, 0.765, -0.265], [0, 0.47, -0.27], [0, 0.30, -0.27],
                    [-0.29, 0.765, -0.05], [0.29, 0.765, -0.05]];
   const levOwn = g => g === LEV_G.bladeR || g === LEV_G.bladeL;
+  const LEV_CN = [];                // 每一塊的顏色名（v1.273.0，同 SAB_CN）
   const LEVI = (() => {
     const out = [];
-    const P = (g, p, s, c, r) => out.push({ g: LEV_G[g], p, s, c: LV[c], r: r || [0, 0, 0] });
+    const P = (g, p, s, c, r) => { LEV_CN.push(c); out.push({ g: LEV_G[g], p, s, c: LV[c], r: r || [0, 0, 0] }); };
     /* 左右一次放兩塊：x 反號、繞 Y／Z 的角度反號；arm／leg／capeS 自動分成 L（+x）與 R（−x） */
     const SIDE = { arm: 1, leg: 1, capeS: 1 };
     const M = (g, p, s, c, r) => {
@@ -6714,9 +6775,10 @@ const ENG = (function () {
                    [-0.09, 0.34, 0], [0.09, 0.34, 0], [0, 0, 0], [0, 0.745, -0.175], [0, 0.385, -0.19],
                    [-0.30, 0.745, -0.06], [0.30, 0.745, -0.06]];
   const megProp = g => g === MEG_G.hat || g === MEG_G.staff;
+  const MEG_CN = [];                // 每一塊的顏色名（v1.273.0，同 SAB_CN）
   const MEGUMIN = (() => {
     const out = [];
-    const P = (g, p, s, c, r, f) => out.push(Object.assign({ g: MEG_G[g], p, s, c: MGC[c], r: r || [0, 0, 0] }, f || {}));
+    const P = (g, p, s, c, r, f) => { MEG_CN.push(c); out.push(Object.assign({ g: MEG_G[g], p, s, c: MGC[c], r: r || [0, 0, 0] }, f || {})); };
     /* 左右一次放兩塊：x 反號、繞 Y／Z 的角度反號；arm／leg／capeS 自動分成 L（+x）與 R（−x） */
     const SIDE = { arm: 1, leg: 1, capeS: 1 };
     const M = (g, p, s, c, r, f) => {
@@ -7264,9 +7326,10 @@ const ENG = (function () {
                    [-0.10, 0.065, 0], [0.10, 0.065, 0], [0, 0.75, -0.15], [0, 0.40, -0.155],
                    [-0.20, 0.47, -0.03], [0.20, 0.47, -0.03], [0, 0, 0], [0, 0, 0]];
   const zenProp = g => g === ZEN_G.saya || g === ZEN_G.sword;
+  const ZEN_CN = [];                // 每一塊的顏色名（v1.273.0，同 SAB_CN）
   const ZENITSU = (() => {
     const out = [];
-    const P = (g, p, s, c, r, f) => out.push(Object.assign({ g: ZEN_G[g], p, s, c: ZNC[c], r: r || [0, 0, 0] }, f || {}));
+    const P = (g, p, s, c, r, f) => { ZEN_CN.push(c); out.push(Object.assign({ g: ZEN_G[g], p, s, c: ZNC[c], r: r || [0, 0, 0] }, f || {})); };
     const SIDE = { arm: 1, leg: 1, foot: 1, haoS: 1 };
     /* 左右一次放兩塊：x 反號、繞 Y／Z 的角度反號；arm／leg／foot／haoS 自動分成 L（+x）與 R（−x） */
     const M = (g, p, s, c, r, f) => {
@@ -8106,7 +8169,8 @@ const ENG = (function () {
   };
   /* 五條悟那一顆再多四刀（v1.271.2，見檔頭那一段的③）：每一格一個 edgeK，深色邊照它淡掉（1＝照積木那一套、0＝不描）。
      頭髮給 GJ_HAIR_EDGE——髮束一片疊一片，每一片都描一圈 0.62 的深色邊的話，整頂看起來像碎玻璃（預覽截圖）。
-     芙莉蓮那一顆沒有 edgeK，所以**另一把 cache key**（同一把 key three 只編一次 program，見 voxelMaterial 檔頭） */
+     v1.273.0 起六位主角都走這一份（見 heroGeo），共用 'voxel-edge-gojo-hair' 這一把 key、只編一次 program；
+     v1.271.2～v1.272.0 只有五條悟有 edgeK，芙莉蓮另一把 key 走 GJ_FIX（同一把 key three 只編一次 program，見 voxelMaterial 檔頭） */
   const GJ_EDGE_FIX = (sh, cut) => {
     GJ_FIX(sh, cut);
     sh.vertexShader = cut(sh.vertexShader, '#include <common>', '\nattribute float edgeK;\nvarying float vEdgeK;');
@@ -8116,6 +8180,25 @@ const ENG = (function () {
     sh.fragmentShader = cut(sh.fragmentShader, '#include <alphamap_fragment>',
       '\ndiffuseColor.rgb *= mix(mix(1.0, 0.62, vEdgeK), 1.0, edge) / mix(0.62, 1.0, edge);');
   };
+  /* ── 主角那幾顆的幾何（v1.273.0）：每一格一個 upBias 與 edgeK，材質一律 GJ_EDGE_FIX ──
+     使用者看過預覽（tools/.e2e-out/畫面強化預覽.html）選了「主角臉往上偏＋主角頭髮描邊淡」：
+     Saber／兵長／惠惠／善逸的臉照五條悟、芙莉蓮那一招往上偏 GJ_FACE_UP（照常的臉朝水平，一半吃地面色，畫出來灰卡其），
+     頭髮的描邊留 GJ_HAIR_EDGE（芙莉蓮也一起）。up(k)／ek(k) 給第 k 格的值，超過造型表的格子（兵長的鋼索、刀光）給 0／1。
+     見 開發筆記〈主角的臉往上偏、頭髮描邊淡（v1.273.0）〉 */
+  function heroGeo(slot, max, up, ek) {
+    const geo = new T.BoxGeometry(1, 1, 1), U = new Float32Array(slot * max), E = new Float32Array(slot * max);
+    for (let i = 0; i < max; i++) for (let k = 0; k < slot; k++) { U[i * slot + k] = up(k); E[i * slot + k] = ek(k); }
+    geo.setAttribute('upBias', new T.InstancedBufferAttribute(U, 1));
+    geo.setAttribute('edgeK', new T.InstancedBufferAttribute(E, 1));
+    return geo;
+  }
+  /* 哪幾格算臉：頭那一組的膚色與五官，加上全身的膚色（手；同五條悟的 GJ_FACE「手也是膚色，一起」）。
+     頭那一組才認五官的顏色名，是因為 white 這類名字別處也可能用到 */
+  const HERO_FACE = { skin: 1, skinD: 1, white: 1, iris: 1, irisL: 1, pupil: 1, lash: 1, brow: 1,
+                      mouth: 1, blush: 1, under: 1, teeth: 1 };
+  const heroUp = (table, cn, head) => k =>
+    k < table.length && HERO_FACE[cn[k]] && (table[k].g === head || cn[k] === 'skin' || cn[k] === 'skinD') ? GJ_FACE_UP : 0;
+  const heroEk = cn => k => k < cn.length && /^hair/.test(cn[k]) ? GJ_HAIR_EDGE : 1;
   /* ── 虛式「茈」那一招的時間軸（秒，從站定蹲好那一刻起算）。規則那邊（stepGojo）照同一份表走、照 fire 那一刻放出紫球 ──
        0 ～ open          雙手從口袋裡抽出來、往兩側張開
        red／blue ＋ grow  右手掌上長出赫（紅）、左手掌上長出蒼（藍）
@@ -8602,7 +8685,7 @@ void main() {
      手指順著手臂、扳到跟杖身垂直；姿勢的握點都擺在手臂跟杖身接近垂直的地方（Q 版手臂只有一節、沒有手肘，
      手臂順著杖身的話杖身會一路戳進喇叭袖口）；握點離肩膀不能近過 FR_GRIP_MIN，近了整支杖往外推。
      材質同五條悟那一顆（GJ_FIX：逆轉置法線＋upBias）：頭髮 1、白衣 0.5（斗篷與長衣的側面吃到一半地面的綠，整件灰綠灰綠的）、
-     臉 0.5（v1.271.2，見 FR_UP）。五條悟那一顆 v1.271.2 起多了頭髮描邊那四刀（GJ_EDGE_FIX），她沒有，照舊用 GJ_FIX。
+     臉 0.5（v1.271.2，見 FR_UP）。五條悟那一顆 v1.271.2 起多了頭髮描邊那四刀（GJ_EDGE_FIX）；她 v1.273.0 起也走那一份，頭髮描邊同樣淡（見 heroGeo）。
      **防護罩**畫在這裡（frBar），開不開、開了幾秒、被打在哪裡全是規則那邊寫在她身上的（m.bt／m.bc／m.bh），見 putFrierens。
      見 開發筆記〈芙莉蓮的造型〉 */
   /* 配色從參考圖 1 取樣（PowerShell System.Drawing，每一區量化分桶取最多的幾桶）：頭髮 #eeedee／影 #c0bcc4、膚 #fff2ea、
@@ -9075,12 +9158,9 @@ void main() {
   let frMesh = null, frBarCore = null, frBarGlow = null, frBarAB = null, frBarAG = null;
   const frBarFill = [], frHitFx = [];
   function frInit(unit) {
-    {
-      const geo = new T.BoxGeometry(1, 1, 1), up = new Float32Array(MAXFR * FR_SLOT);
-      for (let i = 0; i < MAXFR; i++) for (let k = 0; k < FR_SLOT; k++) up[i * FR_SLOT + k] = FR_UP[FRIEREN[k].cn] || 0;
-      geo.setAttribute('upBias', new T.InstancedBufferAttribute(up, 1));
-      frMesh = new T.InstancedMesh(geo, voxelMaterial({}, GJ_FIX, 'voxel-edge-gojo'), MAXFR * FR_SLOT);
-    }
+    /* 法線上偏照 FR_UP；v1.273.0 起頭髮的描邊也淡（edgeK），材質跟其他主角同一份 GJ_EDGE_FIX（見 heroGeo） */
+    frMesh = new T.InstancedMesh(heroGeo(FR_SLOT, MAXFR, k => FR_UP[FRIEREN[k].cn] || 0, heroEk(FRIEREN.map(b => b.cn))),
+                                 voxelMaterial({}, GJ_EDGE_FIX, 'voxel-edge-gojo-hair'), MAXFR * FR_SLOT);
     frMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     frMesh.castShadow = true;
     frMesh.count = 0;
@@ -10009,6 +10089,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     UFO_MAX, UFO_PARTS, UFO_LITS, UFO_TAPER, UFO_MOUTH_Y, UFO_PART, UFO_LIT,
     UFO_SLAB, UFO_SLAB_W,                   /* 圓盤一層幾片、每片要多寬才補得滿夾角 */
     MAXBEAST, BEAST_PARTS, BEASTS,          /* 造型表也開出來：測試要驗尺寸與配色 */
+    /* 四位主角每一塊的顏色名（v1.273.0）：測試照它對「臉往上偏、頭髮描邊淡」落在哪幾格（見 heroGeo） */
+    HERO_CN: { saber: SAB_CN, levi: LEV_CN, megumin: MEG_CN, zenitsu: ZEN_CN },
     TORCH_N,                                /* 一支火把的火幾塊（v1.249.0，測試要對 torchMesh 的數量） */
     /* 巨人（v1.192）：規則那邊要拿它算「這一腳踹到哪一點」。
        畫出來的腳掌跟判定用的那一點是同一條式子算的（同 SWORD_HIT／UFO_MOUTH）。 */

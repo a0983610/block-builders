@@ -64,7 +64,7 @@
   select{width:100%}
   button:active{transform:translateY(1px)}
   button.primary{background:var(--accent);color:#fff;border-color:transparent;font-weight:700;width:100%}
-  .checks{display:flex;gap:14px;margin-top:10px;font-size:12px;opacity:.8}
+  .checks{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:12px;opacity:.8}   /* v1.273.0 多一格「積木 AO」，一列塞不下就折到第二列 */
   .checks label{display:flex;align-items:center;gap:5px;flex:0 0 auto}
   /* ⚙ 設定、⚡ 立刻建成與小人模式（v1.219，使用者指定模式小窗擺在設定鈕右邊）：包在 #corner 裡，
      桌機橫排、設定在左；窄螢幕設定鈕搬到右下角，另外兩顆疊在它上面（見下面的 @media）。
@@ -379,6 +379,8 @@
          寬度要自己放開：#panel label 的 54px 比 .checks label 的 auto 優先，這幾個字塞不下會折成兩行
          （前兩格本來就是 54px，不動它們，間距才跟原本一樣） -->
     <label style="flex:0 0 auto"><input type="checkbox" id="cap60"> 鎖 60fps</label>
+    <!-- 積木 AO（v1.273.0，預設開）：凹角、牆腳暗下來，見 game-ui.js 的 aoOn -->
+    <label style="flex:0 0 auto"><input type="checkbox" id="aoOn"> 積木 AO</label>
   </div>
 </div>
 

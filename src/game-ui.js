@@ -243,17 +243,100 @@ function step(dt) {
    只有「躺在地上的自由碎料」要沉——蓋好的建築是照格子擺的、彼此留 0.06 的縫，
    本來就不共面。 */
 const REST_SINK = 0.004;
+
+/* ── 積木 AO 的遮罩（v1.273.0，見 開發筆記〈積木 AO：凹角與牆腳暗下來（v1.273.0）〉）──
+   引擎那邊（AO_FIX）照每一塊「周圍 3×3×3 哪幾格有積木」把貼著鄰居的邊與角壓暗，這裡算那一份位元：
+   第 i 位 ＝ (dx+1)*9 + (dy+1)*3 + (dz+1)；最底層（gy 0）往下那一層當作有東西（地面），牆腳才會暗。
+   只有**砌上去的**（SET）才有遮罩，碎料、飛的、手上拿的給 0。
+   **只算變了的**：每幀逐格比 filled，變了的那格與它的 26 個鄰居重算——比對靠逐格看、不靠改的地方通知
+   （同 computeSupport 的補算，見 開發筆記〈畫面沒變就不重寫〉）。
+   地標那一份照外框開一張密集的格子表，換場那一刻建一次：預覽頁拿 bp.at（Map）查 26 個鄰居，
+   換場第一幀要 6.3～7.3 ms；陣列下標查就沒有那一頓。房子那幾份用 homeNbr 留在格子上的鄰居表。
+   aoOn 是左下面板那一格（pref.ao），關掉就一律送 0（引擎那邊遮罩全 0 整段跳過）。 */
+let aoOn = true;
+const AO_BIT = NBR.map(d => (d[0] + 1) * 9 + (d[1] + 1) * 3 + (d[2] + 1));
+const AO_DOWN = NBR.map(d => d[1] < 0);
+let aoBp = null;                    // 地標那一份
+const aoHomes = new WeakMap();      // 每間房子一份
+const aoBlank = S => ({ S, has: new Int8Array(S.length).fill(-1), m: new Int32Array(S.length),
+                        mark: new Uint8Array(S.length), list: [] });
+function aoGrid(B) {
+  const S = B.slots, G = aoBlank(S);
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (const s of S) {
+    if (s.gx < x0) x0 = s.gx; if (s.gx > x1) x1 = s.gx;
+    if (s.gy < y0) y0 = s.gy; if (s.gy > y1) y1 = s.gy;
+    if (s.gz < z0) z0 = s.gz; if (s.gz > z1) z1 = s.gz;
+  }
+  x0--; y0--; z0--;                                   // 外框各留一圈，鄰居的下標就不會出界
+  const X = x1 - x0 + 2, Y = y1 - y0 + 2, Z = z1 - z0 + 2;
+  G.bp = B;
+  G.at = new Int32Array(X * Y * Z).fill(-1);          // 格子表：這一格是第幾個 slot（−1＝沒有）
+  G.idx = new Int32Array(S.length);
+  for (let i = 0; i < S.length; i++) {
+    G.idx[i] = (S[i].gx - x0) + (S[i].gy - y0) * X + (S[i].gz - z0) * X * Y;
+    G.at[G.idx[i]] = i;
+  }
+  G.off = NBR.map(d => d[0] + d[1] * X + d[2] * X * Y);
+  return G;
+}
+/* nb(i, q)：第 i 格往 NBR[q] 那個方向的鄰居是第幾格（−1＝沒有） */
+function aoRefresh(G, nb) {
+  const S = G.S, has = G.has, mark = G.mark, list = G.list;
+  const add = i => { if (!mark[i]) { mark[i] = 1; list.push(i); } };
+  for (let i = 0; i < S.length; i++) {
+    const h = S[i].filled ? 1 : 0;
+    if (h === has[i]) continue;
+    has[i] = h; add(i);
+    for (let q = 0; q < 26; q++) { const j = nb(i, q); if (j >= 0) add(j); }
+  }
+  for (let t = 0; t < list.length; t++) {
+    const i = list[t], ground = S[i].gy === 0;
+    let m = 0;
+    for (let q = 0; q < 26; q++) {
+      const j = nb(i, q);
+      if ((j >= 0 && has[j] === 1) || (ground && AO_DOWN[q])) m |= 1 << AO_BIT[q];
+    }
+    G.m[i] = m; mark[i] = 0;
+  }
+  list.length = 0;
+}
+function aoUpdate() {
+  if (bp && bp.slots && bp.slots.length) {
+    if (!aoBp || aoBp.bp !== bp || aoBp.S !== bp.slots) aoBp = aoGrid(bp);
+    const G = aoBp;
+    aoRefresh(G, (i, q) => G.at[G.idx[i] + G.off[q]]);
+  }
+  const HL = homes && homes.list;
+  if (HL) for (const h of HL) {
+    if (!h || !h.slots || !h.at) continue;
+    let G = aoHomes.get(h);
+    if (!G || G.S !== h.slots) { G = aoBlank(h.slots); aoHomes.set(h, G); }
+    aoRefresh(G, (i, q) => { const j = homeNbr(h, h.slots[i], NBR[q]); return j === undefined ? -1 : j; });
+  }
+}
+function aoOf(b) {
+  if (b.st !== SET) return 0;
+  if (b.hh >= 0) {
+    const h = homes && homes.list[b.hh], G = h && aoHomes.get(h);
+    return G && b.hk >= 0 && b.hk < G.m.length ? G.m[b.hk] : 0;
+  }
+  return b.slot >= 0 && aoBp && aoBp.bp === bp && b.slot < aoBp.m.length ? aoBp.m[b.slot] : 0;
+}
+
 function draw() {
   ENG.setBlockCount(blocks.length);
+  if (aoOn) aoUpdate();
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     _e.set(b.rx, b.ry, b.rz);
     const wob = b.wob > 0 ? Math.sin(b.wob * 40) * b.wob * 0.06 : 0;
     const sink = b.st === FREE && b.rest ? (i & 7) * REST_SINK : 0;
+    const ao = aoOn ? aoOf(b) : 0;
     /* 小黑洞吸之前那一秒在抖（v1.221）：只加在畫出來的位置上，b.x／y／z 不動（見 holeQuake） */
     if (b.qk) ENG.putBlock(i, b.x + wob + b.qx, b.y - sink + b.qy, b.z + b.qz, _e,
-                           b.scale * b.al, b.r, b.g, b.b);
-    else ENG.putBlock(i, b.x + wob, b.y - sink, b.z, _e, b.scale * b.al, b.r, b.g, b.b);
+                           b.scale * b.al, b.r, b.g, b.b, ao);
+    else ENG.putBlock(i, b.x + wob, b.y - sink, b.z, _e, b.scale * b.al, b.r, b.g, b.b, ao);
   }
   ENG.commitBlocks();
 
@@ -1077,6 +1160,9 @@ function boot() {
   $('spin').addEventListener('change', e => { spinOn = pref.spin = e.target.checked; save(); });
   $('mute').addEventListener('change', e => { muted = pref.mute = e.target.checked; save(); });
   $('cap60').addEventListener('change', e => { cap60 = pref.cap = e.target.checked; save(); });
+  /* 積木 AO（v1.273.0）。再打開時不必從頭算：關著那段時間 aoUpdate 沒跑，has 還是關之前看到的樣子，
+     打開那一幀逐格一比，期間變過的格子自己就會被挑出來重算（換了一座或房子換了一份格子則整份重建） */
+  $('aoOn').addEventListener('change', e => { aoOn = pref.ao = e.target.checked; save(); });
   $('panelBtn').addEventListener('click', () => $('panel').classList.toggle('hide'));
   /* 工具選單平常靠 :hover 展開。觸控沒有 hover，所以小窗自己也能點開；
      開著的時候點畫面上任何別的地方就收起來，不然它會一直擋著。 */

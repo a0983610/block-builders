@@ -785,8 +785,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 積木的深色邊是在 Lambert 的 shader 上注入四刀做出來的（voxelMaterial），
      跟水面那六刀同一個風險：對 three 的 chunk 名字做字串取代，**取代不到不會報錯**，
      積木會默默變成扁平的色塊而測試全綠。所以一樣數刀數。 */
+  /* v1.273.0 起積木多注入 AO 那四刀（AO_FIX：遮罩的宣告、傳遞、解碼、壓暗），合計八刀 */
   const edgeCuts = await page.evaluate(() => ENG.three.blockMesh.material.userData.cuts);
-  ok('積木深色邊的 shader 四個注入點都真的換到了', edgeCuts === 4, edgeCuts + ' / 4 刀');
+  ok('積木深色邊與 AO 的 shader 八個注入點都真的換到了', edgeCuts === 8, edgeCuts + ' / 8 刀');
   ok('三角形數與積木數相稱', p1.tris > 5000, p1.tris + ' 個');
   await page.screenshot({ path: path.join(OUT, '01-金字塔.png') });
 
@@ -877,6 +878,132 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     ok('固定姿勢畫出來的每一塊也都跟基準一模一樣（擺動、翼弧、左右鏡射的數學）',
        rq.bad.length === 0, rq.msg);
   }
+
+  /* ══════════ 畫面：積木 AO、主角的臉與頭髮（v1.273.0）══════════ */
+  /* 規則型，不跑模擬（見 開發筆記〈積木 AO：凹角與牆腳暗下來（v1.273.0）〉〈主角的臉往上偏、頭髮描邊淡（v1.273.0）〉）：
+     ① 送進引擎的遮罩＝周圍 26 格實際有誰（gy 0 往下那一層算地面）——拿 bp.at 另外查一次，逐格對
+     ② 打掉一格：鄰居的遮罩跟著變；補回去回到原樣（只算變了的那幾格，算錯會留舊值）
+     ③ 沒砌上去的一律 0；面板那一格關掉整池送 0，再打開回到同一份
+     ④ 主角：膚色往上偏、頭髮描邊淡，**期望值讀五條悟那一顆**（「照五條悟那一套」就是規格），其他部位不動；六位共用一把 key */
+  SEC: { if (!(await head('畫面：積木 AO、主角的臉與頭髮', T_COMMIT))) break SEC;
+  const look = await page.evaluate(() => {
+    running = false;
+    cleanTools(); targetCnt = 1800; shapePick = 0; startBuild(true); completeNow(); shapePick = -1;
+    draw();
+    const S = bp.slots, A = ENG.three.blockMesh.geometry.attributes.aoMask.array, out = {};
+    const bit = d => (d[0] + 1) * 9 + (d[1] + 1) * 3 + (d[2] + 1);
+    const expect = i => {
+      let m = 0;
+      for (const d of NBR) {
+        const j = bp.at.get(gkeyOf(S[i].gx + d[0], S[i].gy + d[1], S[i].gz + d[2]));
+        if ((j !== undefined && S[j].filled) || (S[i].gy === 0 && d[1] < 0)) m |= 1 << bit(d);
+      }
+      return m;
+    };
+    const sentOf = k => A[k * 2] + A[k * 2 + 1] * 16384;
+    /* 每一格 slot 現在是哪一塊積木在畫（砌上去的、不是房子的） */
+    const check = () => {
+      const blk = new Int32Array(S.length).fill(-1);
+      blocks.forEach((b, k) => { if (b.st === SET && b.hh < 0 && b.slot >= 0) blk[b.slot] = k; });
+      let n = 0, bad = 0, ground = 0, nz = 0, eg = '';
+      for (let i = 0; i < S.length; i++) {
+        if (!S[i].filled || blk[i] < 0) continue;
+        n++;
+        const e = expect(i), s = sentOf(blk[i]);
+        if (e !== s) { bad++; if (!eg) eg = '第 ' + i + ' 格 ' + s + '≠' + e; }
+        if (S[i].gy === 0) ground++;
+        if (s) nz++;
+      }
+      return { n, bad, ground, nz, eg, blk };
+    };
+    const c0 = check();
+    out.all = { n: c0.n, bad: c0.bad, ground: c0.ground, nz: c0.nz, eg: c0.eg };
+    /* ② 挑一格往上那一層有鄰居、自己也不在地面的，打掉它正上方那一格（只改 filled，照 aoRefresh 逐格比的那一欄） */
+    const up = NBR.findIndex(d => d[0] === 0 && d[1] === 1 && d[2] === 0);
+    const i0 = S.findIndex((s, i) => s.filled && s.gy > 0 && c0.blk[i] >= 0 &&
+                                     bp.at.get(gkeyOf(s.gx, s.gy + 1, s.gz)) !== undefined);
+    const j0 = bp.at.get(gkeyOf(S[i0].gx, S[i0].gy + 1, S[i0].gz));
+    const before = sentOf(c0.blk[i0]);
+    S[j0].filled = false; draw();
+    const mid = check();
+    out.cut = { changed: sentOf(c0.blk[i0]) !== before, bad: mid.bad, eg: mid.eg, up };
+    S[j0].filled = true; draw();
+    out.cut.back = sentOf(c0.blk[i0]) === before && check().bad === 0;
+    /* ③ 打飛幾塊：飛的那幾塊送 0，留下來的照舊對得上 */
+    const set = blocks.filter(b => b.st === SET && b.hh < 0);
+    const hit = [];
+    for (let i = 0; i < set.length; i += 23) { breakBlock(set[i], 3, 4, -2); hit.push(blocks.indexOf(set[i])); }
+    draw();
+    out.free = { n: hit.length, nonzero: hit.filter(k => blocks[k].st !== SET && sentOf(k) !== 0).length, bad: check().bad };
+    const snap = Array.from(A.subarray(0, blocks.length * 2));
+    const cb = document.getElementById('aoOn'), keepPref = pref.ao;
+    cb.checked = false; cb.dispatchEvent(new Event('change')); draw();
+    let offNz = 0; for (let k = 0; k < blocks.length * 2; k++) if (A[k]) offNz++;
+    /* 關著的時候場上變了一格：打開那一幀要跟上（不靠打開時整份重算，靠逐格比） */
+    S[j0].filled = false; draw();
+    cb.checked = true; cb.dispatchEvent(new Event('change')); draw();
+    const whileOff = check().bad;
+    S[j0].filled = true; draw();
+    let backDiff = 0; for (let k = 0; k < blocks.length * 2; k++) if (A[k] !== snap[k]) backDiff++;
+    out.toggle = { offNz, whileOff, backDiff, on: aoOn };
+    pref.ao = keepPref; cb.checked = keepPref; aoOn = keepPref;
+    /* ④ 主角 */
+    const T3 = ENG.three, M = ENG.MODELS;
+    const gjU = T3.gjMesh.geometry.attributes.upBias.array, gjE = T3.gjMesh.geometry.attributes.edgeK.array;
+    const faceUp = gjU[M.gojo.findIndex(b => b.cn === 'skin')], hairEk = gjE[M.gojo.findIndex(b => b.cn === 'hair')];
+    const FACE = ['skin', 'skinD', 'white', 'iris', 'irisL', 'pupil', 'lash', 'brow', 'mouth', 'blush', 'under', 'teeth'];
+    const key = T3.gjMesh.material.customProgramCacheKey();
+    out.hero = {};
+    for (const [k, mesh] of [['saber', T3.sabMesh], ['levi', T3.levMesh], ['megumin', T3.megMesh], ['zenitsu', T3.zenMesh]]) {
+      const U = mesh.geometry.attributes.upBias.array, E = mesh.geometry.attributes.edgeK.array, cn = ENG.HERO_CN[k];
+      const r = { n: cn.length, table: M[k].length, skin: 0, skinUp: 0, hair: 0, hairOk: 0, eye: 0, eyeUp: 0, rest: 0,
+                  key: mesh.material.customProgramCacheKey() === key };
+      cn.forEach((c, i) => {
+        if (c === 'skin' || c === 'skinD') { r.skin++; if (U[i] === faceUp && E[i] === 1) r.skinUp++; }
+        else if (/^hair/.test(c)) { r.hair++; if (E[i] === hairEk && U[i] === 0) r.hairOk++; }
+        else if (c === 'iris' || c === 'pupil') { r.eye++; if (U[i] === faceUp) r.eyeUp++; }
+        else if (!FACE.includes(c) && (U[i] !== 0 || E[i] !== 1)) r.rest++;
+      });
+      out.hero[k] = r;
+    }
+    const fE = T3.frMesh.geometry.attributes.edgeK.array;
+    out.fr = { hair: M.frieren.filter(b => /^hair/.test(b.cn)).length,
+               hairOk: M.frieren.filter((b, i) => /^hair/.test(b.cn) && fE[i] === hairEk).length,
+               rest: M.frieren.filter((b, i) => !/^hair/.test(b.cn) && fE[i] !== 1).length,
+               key: T3.frMesh.material.customProgramCacheKey() === key };
+    out.faceUp = faceUp; out.hairEk = hairEk;
+    targetCnt = 3000; startBuild(true); completeNow();
+    return out;
+  });
+  ok('積木 AO：每一塊砌上去的遮罩都等於周圍 26 格（含地面）實際有誰',
+     look.all.n > 0 && look.all.bad === 0 && look.all.ground > 0 && look.all.nz === look.all.n,
+     look.all.n + ' 格對了 ' + (look.all.n - look.all.bad) + ' 格（貼地 ' + look.all.ground + '、遮罩非 0 ' + look.all.nz + '）' +
+     (look.all.eg ? '；' + look.all.eg : ''));
+  ok('積木 AO：打掉一格，鄰居的遮罩跟著變；補回去回到原樣',
+     look.cut.changed && look.cut.bad === 0 && look.cut.back,
+     '正下方那格的遮罩' + (look.cut.changed ? '變了' : '沒變') + '、打掉時對不上 ' + look.cut.bad + ' 格' +
+     (look.cut.eg ? '（' + look.cut.eg + '）' : '') + '、補回去' + (look.cut.back ? '回到原樣' : '沒回到原樣'));
+  ok('積木 AO：沒砌上去的一律 0、留下來的照舊對得上',
+     look.free.n > 0 && look.free.nonzero === 0 && look.free.bad === 0,
+     '打飛 ' + look.free.n + ' 塊：遮罩沒歸 0 的 ' + look.free.nonzero + ' 塊；其他對不上 ' + look.free.bad + ' 格');
+  ok('積木 AO：面板那一格關掉整池送 0，再打開跟得上關著時的變化',
+     look.toggle.offNz === 0 && look.toggle.whileOff === 0 && look.toggle.backDiff === 0 && look.toggle.on,
+     '關掉時非 0 的 ' + look.toggle.offNz + ' 個數；關著時打掉一格、打開後對不上 ' + look.toggle.whileOff +
+     ' 格；補回去跟關之前差 ' + look.toggle.backDiff + ' 個數');
+  const hs = Object.entries(look.hero);
+  ok('主角臉往上偏：四位的膚色與眼睛都跟五條悟的臉偏一樣多',
+     hs.every(([, r]) => r.n === r.table && r.skin > 0 && r.skinUp === r.skin && r.eye > 0 && r.eyeUp === r.eye),
+     hs.map(([k, r]) => k + ' 膚色 ' + r.skinUp + '/' + r.skin + '、眼 ' + r.eyeUp + '/' + r.eye +
+                        (r.n !== r.table ? '（顏色名 ' + r.n + ' 塊≠造型表 ' + r.table + ' 塊）' : '')).join('；') +
+     '（五條悟的臉偏 ' + look.faceUp + '）');
+  ok('主角頭髮描邊淡：五位的頭髮都跟五條悟的頭髮一樣淡、其他部位不動',
+     hs.every(([, r]) => r.hair > 0 && r.hairOk === r.hair && r.rest === 0) &&
+     look.fr.hair > 0 && look.fr.hairOk === look.fr.hair && look.fr.rest === 0,
+     hs.map(([k, r]) => k + ' 頭髮 ' + r.hairOk + '/' + r.hair + '、其他動到 ' + r.rest).join('；') +
+     '；frieren 頭髮 ' + look.fr.hairOk + '/' + look.fr.hair + '、其他動到 ' + look.fr.rest + '（五條悟的頭髮 ' + look.hairEk + '）');
+  ok('主角六位共用同一份材質（一把 cache key、只編一次 program）',
+     hs.every(([, r]) => r.key) && look.fr.key, hs.map(([k, r]) => k + ':' + r.key).join(' ') + ' frieren:' + look.fr.key);
+  }   // ── 〈畫面：積木 AO、主角的臉與頭髮〉結束
 
   SEC: { if (!(await head('藍圖', T_FULL))) break SEC;
   const bpAll = await page.evaluate(cnt => {
