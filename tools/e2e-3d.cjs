@@ -14526,9 +14526,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      stormAB.sameN + ' 朵、要走的時間 ' + stormAB.sameDur.join('／') + '，整趟離點擊處最多 ' +
      stormAB.still.toFixed(4) + ' 格');
 
-  /* 「閃電打到地面不震動」（v1.123 使用者指定）。劈到建築才震——那一下真的有東西被打歪；
-     劈在空地上什麼都沒動，畫面跟著跳反而像打到了什麼。
-     一朵雲現在劈 15～20 道，每一道都震的話畫面會抖上七八秒。 */
+  /* 雷**劈到哪裡都不震畫面**（v1.275.0，使用者：「調整打雷 不在擊建築 震動畫面(會造成畫面連續震動)」）。
+     v1.123～v1.274 是「劈在空地上不震、劈到建築才震」（使用者當時：「閃電打到地面不震動」）——
+     一次點擊三朵雲、一朵劈 15～20 道，劈在建築上的每一道都震，畫面就從頭抖到尾。
+     劈金字塔那一組要真的打掉積木（stats.smashed 有動），不然「沒震」可能只是沒劈到東西。 */
   const stormShake = await page.evaluate(() => {
     cleanTools();
     /* 重蓋一座實心的金字塔：上面那幾條已經在同一座上劈掉好幾百塊、還燒了一陣，
@@ -14539,15 +14540,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let n = 0;
     ENG.shake = v => { n++; return real(v); };
     const count = fn => { n = 0; fn(); bolts.length = 0; return n; };
+    const s0 = stats.smashed;
     const hit = count(() => { for (let k = 0; k < 20; k++) strike({ x: 0, z: 0, y: 40 }); });
+    const smashed = stats.smashed - s0;
     const far = count(() => { for (let k = 0; k < 20; k++) strike({ x: 96, z: 96, y: 40 }); });
     ENG.shake = real;
     cleanTools();
-    return { hit, far };
+    return { hit, far, smashed };
   });
-  ok('雷劈在空地上不震畫面，劈到建築才震',
-     stormShake.far === 0 && stormShake.hit >= 15,
-     '劈金字塔 20 道震了 ' + stormShake.hit + ' 次、劈場外空地 20 道震了 ' +
+  ok('雷劈到哪裡都不震畫面（劈到建築也不震）',
+     stormShake.far === 0 && stormShake.hit === 0 && stormShake.smashed > 0,
+     '劈金字塔 20 道（打掉 ' + stormShake.smashed + ' 塊）震了 ' + stormShake.hit + ' 次、劈場外空地 20 道震了 ' +
      stormShake.far + ' 次');
 
   /* 劈到人（v1.133，使用者：「檢查一下 打雷 天降鐵球 王之財寶 是不是都沒對小人生效」
@@ -15044,7 +15047,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      farPick.fresh);
 
   /* 滾多遠：把積木清空、場地放大，量到的就是摩擦與壽命本身（不含撞到東西的煞車）。
-     v1.39 之前是 6 秒 ×每秒保留 0.82，量到 119.3；現在 7.5 秒 ×0.86，量到 152.7。 */
+     v1.39 之前是 6 秒 ×每秒保留 0.82，量到 119.3；7.5 秒 ×0.86，量到 152.7；
+     v1.275.0 出手速度 34 → 51（BALL_SPD，使用者：「保齡球水平初始速度增加」），量到 229.1。 */
   const ballRun = await page.evaluate(() => {
     /* debrisR 也要一起假裝（v1.211）：球滾出場地就被收掉，而那個界線 v1.211 起
        讀的是 debrisR（見 game-tools.js 的 stepBalls）——只放大 arenaR 的話，
@@ -17879,11 +17883,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                 dy: +dra.cruise.toFixed(2),
                 wantB: +Math.max(DROP_TOP, now + DROP_UP).toFixed(2),
                 wantG: +Math.max(GATE_Y0, now * GATE_UP + GATE_UP_ADD).toFixed(2),
-                wantD: +Math.max(DRA_MIN, now + DRA_UP).toFixed(2),
+                wantD: DRA_CRUISE,
                 floor: DROP_TOP,
                 oldB: Math.max(DROP_TOP, bpH + DROP_UP),
-                oldG: Math.max(GATE_Y0, bpH * GATE_UP + GATE_UP_ADD),
-                oldD: Math.max(DRA_MIN, bpH + DRA_UP) };
+                oldG: Math.max(GATE_Y0, bpH * GATE_UP + GATE_UP_ADD) };
     cleanTools();
     return r;
   });
@@ -17895,18 +17898,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      halfBuilt.now + '：幽浮飛在 ' + halfBuilt.uy + '（照舊會是 ' + halfBuilt.oldU + '）、雲底 ' +
      halfBuilt.sy + '（照舊會是 ' + halfBuilt.oldS + '）');
   /* v1.172 使用者：「DROP_UP／GATE_UP／DRA_UP 三支要不要跟著改成『現在的屋頂』→ 要改」。
-     三支各自的下限（DROP_TOP 58／GATE_Y0 12／DRA_MIN 30）都還在，所以矮的時候會被
+     各自的下限（DROP_TOP 58／GATE_Y0 12）都還在，所以矮的時候會被
      下限接住——鐵球這一座就是（22.94 ＋ 26 ＝ 48.94 < 58，所以還是 58）。
-     那正是下限的用意，這一條要驗的是「不再讀蓋完的高度」，所以三支都跟自己算出來的
-     期望值比，另外要求至少有一支真的比舊算法低（不然這條測試會被下限架空）。 */
-  ok('塔還沒蓋完時，鐵球／門陣／飛龍也照「現在」的高度出場（v1.172 三支一起改）',
+     那正是下限的用意，這一條要驗的是「不再讀蓋完的高度」，所以都跟自己算出來的
+     期望值比，另外要求至少有一支真的比舊算法低（不然這條測試會被下限架空）。
+     **飛龍 v1.275.0 起不跟建築走了**（使用者：「獅鷲&飛龍 飛行高度改為固定高度」，選 40）：
+     這一條改成驗牠就是 DRA_CRUISE，跟屋頂多高無關（另一條在〈吉祥物：獅鷲衝撞〉把屋頂墊到 200 再驗一次） */
+  ok('塔還沒蓋完時，鐵球／門陣照「現在」的高度出場（v1.172）；飛龍固定 DRA_CRUISE（v1.275.0）',
      halfBuilt.by === halfBuilt.wantB && halfBuilt.gy === halfBuilt.wantG &&
      halfBuilt.dy === halfBuilt.wantD &&
-     halfBuilt.by < halfBuilt.oldB && halfBuilt.gy < halfBuilt.oldG - 10 &&
-     halfBuilt.dy < halfBuilt.oldD - 10,
+     halfBuilt.by < halfBuilt.oldB && halfBuilt.gy < halfBuilt.oldG - 10,
      '鐵球從 ' + halfBuilt.by + ' 掉（照舊會是 ' + halfBuilt.oldB + '，這一座撞到下限 ' +
      halfBuilt.floor + '）、門陣 ' + halfBuilt.gy + '（照舊 ' + halfBuilt.oldG +
-     '）、飛龍巡航 ' + halfBuilt.dy + '（照舊 ' + halfBuilt.oldD + '）');
+     '）、飛龍巡航 ' + halfBuilt.dy + '（DRA_CRUISE ' + halfBuilt.wantD + '）');
 
   /* ══════════ 箭雨 ══════════
      v1.171 新增。使用者第一次要的：「點擊地面 兩個位置 第一個位置出現一組小人弓箭手
@@ -22173,7 +22177,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        或者球還沒滾到就停了——整輪跑真的開出過「0 人被撞飛」，同一顆種子重跑卻是 18 人。
        人的 z 也跟著球走（原本寫死 0，球偏出去就全部落空）。 */
     if (ball) {
-      ball.vx = 34; ball.vz = 0;                       // 同 launchBall 的初速，方向正 +x
+      ball.vx = BALL_SPD; ball.vz = 0;                 // 同 launchBall 的初速（v1.275.0 起讀常數，以前寫死 34），方向正 +x
       ball.ax = 0; ball.az = -1;                       // 滾動軸跟著方向（畫面用，見 putBalls）
       ball.life = BALL_LIFE; ball.hit = 0; ball.cd = 0;
     }
@@ -22195,14 +22199,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const push = [...flew].map(k => top[k] - p0[k]).sort((a, b) => b - a);
     balls = null; ENG.putBalls([]);      // 同上：球還在滾，下一條的人就站在它的路上
     return { air, flew: flew.size, best: +(push[0] || 0).toFixed(1), g,
-             ball: !!ball, men: workers.length,
+             ball: !!ball, men: workers.length, spd: BALL_SPD,
              burn: workers.filter(w => w.burn > 0).length };
   });
   ok('保齡球會把擋路的小人推走',
      bowled.ball && bowled.flew > 0 && bowled.best > 4,
      bowled.flew + '／' + bowled.men + ' 人被撞飛（同時最多 ' + bowled.air +
      ' 人在空中），最遠往球的方向推了 ' + bowled.best + ' 單位' +
-     '（球落地花了 ' + bowled.g + ' 幀，排人之前把速度釘回 34）');
+     '（球落地花了 ' + bowled.g + ' 幀，排人之前把速度釘回 ' + bowled.spd + '）');
   ok('保齡球也不會點火', bowled.burn === 0, '著火 ' + bowled.burn + ' 人');
 
   /* 放火點站著的人：抱頭跑圈圈——會一直動，但繞著被點著的那個位置轉，不會跑掉 */
@@ -24907,20 +24911,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 
-  /* ══════════ 天災：獅鷲噴火 ══════════ */
+  /* ══════════ 吉祥物：獅鷲衝撞 ══════════ */
   /* v1.176。使用者：「增加天災吉祥物 獅鷲／攻擊方式是噴火(類似消防車噴出長條狀的火)／
      也要做著火&倒地」，並附了一張參考圖；形態是三個選項裡挑的
      「飛進來 → 降落 → 站定噴火 → 拍翅飛走」。造型與動作是先出實機截圖給使用者看過才落地的
      （同天災那幾隻、同吉祥物、同牛羊、同大劍）。
+     **v1.275.0 改成衝撞、不當天災了**（使用者：「獅鷲移除天災名單並更改攻擊方式 調整成衝撞攻擊」，形態選「空中俯衝撞穿」；
+     「獅鷲&飛龍 飛行高度改為固定高度」選 40）。段名從〈天災：獅鷲噴火〉改過來，火柱那幾條（形狀、到了才點著、燒掉一片、
+     摔到場邊先重降再噴）跟著噴火一起拿掉。
 
      牠是場上第一隻**橫跨天上與地上兩套**的動物（飛龍永遠在天上、猴子永遠在地上），
-     所以這一段驗的重點是那個交界：飛進來降落、火柱的形狀、火柱到了才點著、
+     所以這一段驗的重點是那個交界：飛進來、俯衝撞穿、降落走過去，
      以及被打到之後走的是**地上那一套**（而且照牛羊往側邊倒，不是兩條腿那種仰躺）。
+     衝撞一趟要跑模擬，但驗的都是規則（撞過的地方一塊不剩、撞完照規矩走哪一段），不是統計帶；
+     衝撞的路線怎麼排（方向、高度）、砸村子那一趟碰不碰地標，連模擬都不跑，直接叫 grRamPlan／grRamHit。
      另開一段而不是塞進上面那段，是為了不位移「天災：猴子與飛龍」那一段的骰子。 */
   }   // ── 〈天災：猴子與飛龍〉結束（--tier 跳過時從這裡出來）
-  SEC: { if (!(await head('天災：獅鷲噴火', T_COMMIT))) break SEC;
+  SEC: { if (!(await head('吉祥物：獅鷲衝撞', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
-  await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 牠們每一幀是 stepDoom 在推（見 game-tools.js 的 stepDoom）
   await fillAll(page);
 
   /* ── 造型（讀引擎那份部位表，跟核可過的造型對得起來）── */
@@ -24982,183 +24991,203 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 格（照全部算會變成 ' + gfig.sideAll + '、浮 ' +
      (gfig.sideAll * 2.1).toFixed(1) + ' 格）');
 
-  /* ── 一趟完整的天災獅鷲 ── */
+  /* ── 表：不在天災的表上，吉祥物那一列還在；巡航高度固定，跟屋頂多高無關（把屋頂墊到 200 也一樣）── */
+  const gtab = await page.evaluate(() => {
+    const realTop = siteTopNow;
+    let g, d;
+    siteTopNow = () => 200;
+    try { g = spawnGryph(1, 0); d = spawnDragon(1); } finally { siteTopNow = realTop; }
+    const r = { doom: DOOMS.some(x => x.id === 'gryphon'), masc: MASCOTS.some(k => k.id === 'gryphon'),
+                g: g.cruise, gy: g.y, d: d.cruise, want: DRA_CRUISE, gwant: GR_CRUISE };
+    beasts = null;
+    return r;
+  });
+  ok('獅鷲不在天災的表上（DOOMS），吉祥物那一列（MASCOTS）還在',
+     !gtab.doom && gtab.masc, JSON.stringify({ doom: gtab.doom, masc: gtab.masc }));
+  ok('飛龍與獅鷲的巡航高度固定（GR_CRUISE ＝ DRA_CRUISE），屋頂墊到 200 也一樣',
+     gtab.g === gtab.want && gtab.gy === gtab.want && gtab.d === gtab.want && gtab.gwant === gtab.want,
+     '獅鷲 ' + gtab.g + '、飛龍 ' + gtab.d + '（DRA_CRUISE ' + gtab.want + '）');
+
+  /* ── 衝撞的路線（grRamPlan，不跑模擬）：
+        撞地標的那一趟從牠那一側**朝場心**衝；砸村子那一趟**沿著切線**衝（跟半徑垂直）、起點挑在牠那一側；
+        起點都在目標前方 GR_RAM.run 格；撞的高度取那一柱的一半（最高 GR_RAM.top，見 grRamPlan） ── */
+  const gplan = await page.evaluate(() => {
+    const real = doomTarget;
+    /* 挑離場心 4 格外**最高**的那一塊：那一柱夠高，「取一半」才不會被夾到 0（第一版挑最外圈，那一柱只有 1.5 高，期望值與結果都是 0，等於沒驗） */
+    const T = blocks.filter(b => b.st === SET && b.hh < 0 && Math.hypot(b.x, b.z) > 4).sort((a, b) => b.y - a.y)[0];
+    let top = T.y;
+    for (const o of blocks) if (o.st === SET && o.hh < 0 && Math.abs(o.x - T.x) <= 1.8 && Math.abs(o.z - T.z) <= 1.8 && o.y > top) top = o.y;
+    const nr = Math.hypot(T.x, T.z), nx = T.x / nr, nz = T.z / nr;
+    const M = { x: T.x + nx * 50 - nz * 20, z: T.z + nz * 50 + nx * 20 };              // 牠在目標外面、偏一邊
+    let s, v;
+    doomTarget = () => T;
+    try { s = grRamPlan({ x: M.x, z: M.z, home: 0 }); v = grRamPlan({ x: M.x, z: M.z, home: 1 }); } finally { doomTarget = real; }
+    const want = Math.min(GR_RAM.top, Math.max(0, top / 2 - ENG.BEAST_MID.gryphon * GR_SC));
+    return {
+      inward: +(s.ux * -nx + s.uz * -nz).toFixed(6), sRun: +Math.hypot(s.sx - T.x, s.sz - T.z).toFixed(6),
+      tangent: +Math.abs(v.ux * nx + v.uz * nz).toFixed(6), vRun: +Math.hypot(v.sx - T.x, v.sz - T.z).toFixed(6),
+      vSide: (v.sx - T.x) * (M.x - T.x) + (v.sz - T.z) * (M.z - T.z) > 0,
+      hy: +s.hy.toFixed(6), want: +want.toFixed(6), top: +top.toFixed(1), run: GR_RAM.run
+    };
+  });
+  ok('衝撞的路線：撞地標朝場心衝、砸村子沿切線衝（起點在牠那一側），起點離目標 GR_RAM.run；撞的高度取那一柱的一半',
+     gplan.inward === 1 && Math.abs(gplan.sRun - gplan.run) < 1e-6 && gplan.tangent === 0 && Math.abs(gplan.vRun - gplan.run) < 1e-6 &&
+     gplan.vSide && gplan.hy === gplan.want && gplan.want > 0, JSON.stringify(gplan));
+
+  /* ── 撞的那一下（grRamHit，不跑模擬）：砸村子那一趟（m.home）地標一塊都不碰；撞地標那一趟同一個位置撞得掉 ── */
+  const ghit = await page.evaluate(() => {
+    cleanTools();
+    const wk = workers, bs = beasts;
+    workers = []; beasts = null;                     // 只量積木：人與動物不在場
+    const T = blocks.filter(b => b.st === SET && b.hh < 0).sort((a, b) => Math.abs(a.y - 4) - Math.abs(b.y - 4))[0];
+    const cy = ENG.BEAST_MID.gryphon * GR_SC;
+    /* 擺到撞的那一點剛好在 T 上（grRamAt：身體中段往前 fwd 格，a ＝ 0 是朝 +z） */
+    const fake = home => ({ kind: 'gryphon', x: T.x, y: T.y - cy, z: T.z - GR_RAM.fwd, a: 0, home, rk: {} });
+    const own = () => blocks.filter(b => b.st === SET && b.hh < 0).length;
+    const n0 = own();
+    grRamHit(fake(1), 0.02);
+    const n1 = own();
+    grRamHit(fake(0), 0.02);
+    const n2 = own();
+    workers = wk; beasts = bs;
+    return { n0, n1, n2 };
+  });
+  ok('砸村子那一趟撞到地標一塊都不碰；撞地標那一趟同一個位置撞得掉',
+     ghit.n1 === ghit.n0 && ghit.n2 < ghit.n1,
+     '地標 ' + ghit.n0 + ' 塊 → 砸村子那一趟撞完 ' + ghit.n1 + ' → 撞地標那一趟撞完 ' + ghit.n2);
+
+  /* ── 一趟完整的：生氣抽到地標的吉祥物（同 madMascot 那一下：left 1、bad 1、home 0）──
+        飛進來 → 俯衝撞穿（三段：俯衝、平飛撞穿、拉起來）→ 再飛進來降落 → 走過去 → 走走停停逛完剩下的時間。
+        撞的那幾幀，撞的那一點周圍（r 的八成）一塊站著的都不剩——撞過去就是撞穿了；從頭到尾沒鑽到地底下。
+        小人先請走（補洞會把撞穿的那一條補回去），量完還回去 ── */
   const gtrip = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
-    for (const b of blocks) b.wet = 0;
-    const set0 = blocks.filter(b => b.st === SET).length;
-    const m = spawnGryph();
-    const r0 = Math.hypot(m.x, m.z);
-    /* 這一幀火柱的形狀：多長、有沒有斷、拉長方向對不對、粗細落差。
-       **「斷了」用「空洞」量，不用「相鄰兩顆的縫」**：每一顆火痕蓋住
-       「離喙的距離 ± 自己一半長」這一段，把區間併起來，看從喙口到最遠那一顆之間
-       有多長完全沒被蓋到。用縫量的話，末端幾顆命長的會飛得比本體遠，
-       量到的是「那一顆離本體多遠」而不是柱子斷了（實測整條的縫 2.16，空洞只有 0.75）。 */
-    const snapJet = () => {
-      const nx = m.x + Math.sin(m.a) * GR_MOUTH * GR_SC;
-      const ny = m.y + GR_JAW * GR_SC;
-      const nz = m.z + Math.cos(m.a) * GR_MOUTH * GR_SC;
-      const js = hot.filter(h => h.jet);
-      const at = h => Math.hypot(h.x - nx, h.y - ny, h.z - nz);
-      const iv = js.map(h => [at(h) - h.ln / 2, at(h) + h.ln / 2])
-                   .sort((a, b) => a[0] - b[0]);
-      let end = 0, hole = 0, far = 0;
-      for (const s of iv) {
-        if (s[0] > end) hole = Math.max(hole, s[0] - end);
-        end = Math.max(end, s[1]);
-        far = Math.max(far, s[1]);
-      }
-      let cos = 2, spun = 0, wLo = 9, wHi = 0;
-      for (const h of js) {
-        const sp = Math.hypot(h.vx, h.vy, h.vz) || 1;
-        cos = Math.min(cos, (h.dx * h.vx + h.dy * h.vy + h.dz * h.vz) / sp);
-        if (h.rx !== undefined) spun++;              // jet 那幾顆不該有自轉角
-        wLo = Math.min(wLo, h.s); wHi = Math.max(wHi, h.s);
-      }
-      return { n: js.length, far: +far.toFixed(1), hole: +hole.toFixed(2),
-               cos: +cos.toFixed(4), spun,
-               wLo: +wLo.toFixed(2), wHi: +wHi.toFixed(2) };
-    };
-    const seen = {}, st = {};
-    let n = 0, landR = 0, inside = 0, fireN = 0, litAt = -1, want = 0, jet = null;
-    /* 落地之後那一段是**用走的**（v1.177）：走了多遠、腿有沒有在擺、落地點與站定點
-       各在哪一圈。px/pz 逐幀累加，不是頭尾直線距離——繞開房子的話那兩個不一樣。 */
-    let walked = 0, gait = 0, touchR = 0, px = m.x, pz = m.z;
-    while (beasts && n < 2200) {
-      const was = m.st;
+    const wk = workers;
+    workers = [];
+    const set0 = blocks.filter(b => b.st === SET && b.hh < 0).length;
+    const m = spawnGryph(1, 0);
+    m.left = 1; m.bad = 1; m.home = 0;
+    const seen = {}, ph = {};
+    let n = 0, left = 0, hy = null, ymin = 1e9, below = 0, landR = 0;
+    const R2 = (GR_RAM.r * 0.8) ** 2;
+    while (beasts && beasts.includes(m) && n < 3000) {
       step(0.02); n++;
-      if (!beasts) break;
-      st[m.st] = (st[m.st] || 0) + 1;
       if (seen[m.st] === undefined) seen[m.st] = +(n * 0.02).toFixed(2);
-      if (m.st === 'walk') {
-        if (!touchR) touchR = Math.hypot(m.x, m.z);
-        walked += Math.hypot(m.x - px, m.z - pz);
-        gait = Math.max(gait, m.gait || 0);
+      if (m.st === 'ram' && m.rk) {
+        ph[m.rk.ph] = 1;
+        if (hy === null) hy = m.rk.hy;
+        ymin = Math.min(ymin, m.y);
+        const C = grRamAt(m);
+        for (const b of blocks) if (b.st === SET && (b.x - C.x) ** 2 + (b.y - C.y) ** 2 + (b.z - C.z) ** 2 < R2) left++;
       }
-      px = m.x; pz = m.z;
-      if (was !== 'aim' && m.st === 'aim' && !landR) landR = Math.hypot(m.x, m.z);
-      if (m.st === 'fire') {
-        if (!fireN) want = +grJetT(m).toFixed(3);      // 火柱飛到目標要幾秒
-        fireN++;
-        if (litAt < 0 && fires && fires.length) litAt = +(fireN * 0.02).toFixed(3);
-        if (fireN === 30) jet = snapJet();             // 噴了 0.6 秒那一幀
-      }
-      if (blockAt(m.x, m.y + 1, m.z)) inside++;        // 有沒有插進建築裡
+      if (m.y < -1e-6) below++;
+      if (m.st === 'walk' && !landR) landR = Math.hypot(m.x, m.z);
+      if (m.st === 'stand') break;
     }
-    return { r0: +r0.toFixed(1), arena: +arenaR.toFixed(1), siteR: +siteR.toFixed(1),
-             stand: GR_STAND, walkIn: GR_WALK_IN,
-             walked: +walked.toFixed(1), gait: +gait.toFixed(2),
-             touchR: +touchR.toFixed(1), walkSecs: +((st.walk || 0) * 0.02).toFixed(1),
-             seen, st, landR: +landR.toFixed(1), inside, jet, want, litAt,
-             secs: +(n * 0.02).toFixed(1), gone: !beasts,
-             set0, set: blocks.filter(b => b.st === SET).length,
-             burn: fires ? fires.length : 0 };
+    workers = wk;
+    const set1 = blocks.filter(b => b.st === SET && b.hh < 0).length;
+    return { seen, ph: Object.keys(ph).join(), left, hy, ymin: +ymin.toFixed(3), below, set0, set1,
+             landR: +landR.toFixed(1), siteR: +siteR.toFixed(1), owe: m.left, bad: m.bad, secs: +(n * 0.02).toFixed(1) };
   });
-  const gseq = ['in', 'land', 'walk', 'aim', 'fire', 'up', 'out'];
-  ok('一趟就是「飛進來 → 降落 → 走過去 → 站定瞄 → 噴火 → 起飛 → 飛出場外」，順序不跳',
-     gseq.every((s, i) => gtrip.seen[s] !== undefined &&
-                          (i === 0 || gtrip.seen[s] > gtrip.seen[gseq[i - 1]])) &&
-     gtrip.gone,
-     '出現在半徑 ' + gtrip.r0 + '（場地 ' + gtrip.arena + '）→ ' +
-     gseq.map(s => s + '@' + gtrip.seen[s]).join(' → ') + '，共 ' + gtrip.secs + ' 秒');
-  ok('降落在建築外圈那一環上（同猴子站定的那個距離），而且沒插進建築裡',
-     gtrip.landR > gtrip.siteR + 3 && gtrip.landR < gtrip.siteR + 11 &&
-     gtrip.inside === 0,
-     '站在半徑 ' + gtrip.landR + '（降落點訂在 siteR ' + gtrip.siteR + ' ＋ ' +
-     gtrip.stand + '）、穿模 ' + gtrip.inside + ' 幀');
-  /* v1.177 使用者：「有觀察到獅鷲在地面好像就不會行走」——落地點退到站定位置外面
-     GR_WALK_IN 格，那一段用四條腿走完（第一版給 6 格，走 2.3 秒、不到牠自己的身長，
-     畫面上等於原地落地）。走的距離用逐幀累加，繞開房子時會比直線長。 */
-  ok('落地之後是四足走過去的，不是憑空落在該站的那一格',
-     gtrip.walked > gtrip.walkIn * 0.7 && gtrip.gait > 0.5 &&
-     gtrip.touchR > gtrip.landR + gtrip.walkIn * 0.5,
-     '落在半徑 ' + gtrip.touchR + ' → 走 ' + gtrip.walked + ' 格／' +
-     gtrip.walkSecs + ' 秒（腿的擺幅到 ' + gtrip.gait + '）→ 站定在半徑 ' +
-     gtrip.landR + '（降落點退到外面 ' + gtrip.walkIn + ' 格）');
-  ok('火柱每一顆都沿著自己的飛行方向拉長，而且不自轉',
-     gtrip.jet && gtrip.jet.cos > 0.999 && gtrip.jet.spun === 0,
-     '拉長方向與飛行方向的 cos 最小 ' + gtrip.jet.cos + '（1＝完全一致）、帶自轉角的 ' +
-     gtrip.jet.spun + ' 顆');
-  ok('整條是連續的一柱，中間沒有斷開的空洞',
-     gtrip.jet && gtrip.jet.hole < 1.5 && gtrip.jet.n > 25 && gtrip.jet.far > 6,
-     '同時 ' + gtrip.jet.n + ' 顆、整條長 ' + gtrip.jet.far +
-     ' 格，最長的一段空洞 ' + gtrip.jet.hole + ' 格');
-  ok('粗細落差夠大（全一樣粗的話側面看是一塊平板）',
-     gtrip.jet && gtrip.jet.wHi / gtrip.jet.wLo > 1.8,
-     '最細 ' + gtrip.jet.wLo + '、最粗 ' + gtrip.jet.wHi);
-  /* 同 v1.175 消防車「水到了火才熄」的對偶：噴出去那一刻就燒的話，
-     火會在火柱還在半路的時候就從積木上冒出來。 */
-  ok('火柱到了才點著（不是一噴就燒起來）',
-     gtrip.litAt > gtrip.want * 0.9 && gtrip.litAt < gtrip.want + 0.35,
-     '飛到目標要 ' + gtrip.want + ' 秒，實際第 ' + gtrip.litAt + ' 秒才有第一塊燒起來');
-  ok('一趟燒得掉一片（剩下的交給火自己蔓延）',
-     gtrip.set < gtrip.set0 - 40 && gtrip.burn > 5,
-     '還站著的 ' + gtrip.set0 + ' → ' + gtrip.set + ' 塊、收工時還有 ' +
-     gtrip.burn + ' 塊在燒');
+  const gseq = ['in', 'ram', 'land', 'walk', 'stand'];
+  ok('一趟就是「飛進來 → 俯衝撞穿（俯衝、平飛、拉起來三段）→ 降落 → 走過去 → 走走停停」，順序不跳；撞完就不欠了',
+     gseq.every((s, i) => gtrip.seen[s] !== undefined && (i === 0 || gtrip.seen[s] > gtrip.seen[gseq[i - 1]])) &&
+     gtrip.ph === '0,1,2' && gtrip.owe === 0 && gtrip.bad === 0,
+     gseq.map(s => s + '@' + gtrip.seen[s]).join(' → ') + '；衝撞那幾段 ' + gtrip.ph + '、還欠 ' + gtrip.owe);
+  ok('撞過的地方一塊站著的都不剩（撞穿了）、撞到的高度就是排好的那一個、從頭到尾沒鑽到地底下',
+     gtrip.left === 0 && gtrip.set1 < gtrip.set0 && Math.abs(gtrip.ymin - gtrip.hy) < 1e-3 && gtrip.below === 0,
+     '撞的那幾幀撞的那一點周圍還站著的 ' + gtrip.left + ' 塊；地標 ' + gtrip.set0 + ' → ' + gtrip.set1 +
+     ' 塊；最低 ' + gtrip.ymin + '（排的是 ' + gtrip.hy + '）、地底下 ' + gtrip.below + ' 幀');
+  ok('撞完降落在建築外圈（同猴子站定的那個距離再往外走過去）',
+     gtrip.landR > gtrip.siteR + 3, '落地在半徑 ' + gtrip.landR + '（siteR ' + gtrip.siteR + '）');
 
-  /* ── 吉祥物那一版：一道火都不噴 ── */
+  /* ── 天災那一版（v1.275.0 起只剩測試直接叫）：撞完直接飛出場、不降落 ── */
+  const gdoom = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const m = spawnGryph();
+    const seen = [];
+    let n = 0;
+    while (beasts && beasts.includes(m) && n < 4000) { step(0.02); n++; if (seen[seen.length - 1] !== m.st) seen.push(m.st); }
+    return { seq: seen.join('>'), gone: !beasts || !beasts.includes(m), secs: +(n * 0.02).toFixed(1) };
+  });
+  ok('天災那一版（測試直接叫）：飛進來撞一下就飛出場，不降落',
+     gdoom.seq === 'in>ram>out' && gdoom.gone, gdoom.seq + '，' + gdoom.secs + ' 秒');
+
+  /* ── 吉祥物那一版：一次都不撞 ── */
   const gfun = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
     for (const b of blocks) b.wet = 0;
-    const set0 = blocks.filter(b => b.st === SET).length;
     const m = spawnGryph(1, 0);
     const st = {};
-    let n = 0, jets = 0, burn = 0;
+    let n = 0, rk = 0;
     let roam = 0, px = m.x, pz = m.z;                  // 站著那一段走了多遠（v1.177）
     while (beasts && n < 4000) {
       step(0.05); n++;
       if (!beasts) break;
       st[m.st] = (st[m.st] || 0) + 1;
+      if (m.rk) rk++;
       if (m.st === 'stand') roam += Math.hypot(m.x - px, m.z - pz);
       px = m.x; pz = m.z;
-      for (const h of hot) if (h.jet) jets++;
-      /* 「有沒有點著誰」要**每一幀**量，不能只比頭尾的「還站著幾塊」：
-         上面那幾條把地標燒過一輪，焦黑的積木會在這 47 秒裡陸續鬆脫掉下來
-         （實測換一個種子就少 1 塊），那不是這一隻幹的。 */
-      burn = Math.max(burn, blocks.filter(b => b.burn).length);
     }
-    return { st, jets, burn, fires: fires ? fires.length : 0, set0, gone: !beasts,
-             roam: +roam.toFixed(1),
-             set: blocks.filter(b => b.st === SET).length, secs: +(n * 0.05).toFixed(1) };
+    return { st, rk, gone: !beasts, roam: +roam.toFixed(1), secs: +(n * 0.05).toFixed(1) };
   });
-  ok('吉祥物那一版：照樣飛進來降落，站一段時間就走，一道火都不噴',
-     gfun.jets === 0 && gfun.burn === 0 && gfun.fires === 0 &&
-     gfun.st.stand > 0 && gfun.st.fire === undefined && gfun.gone,
-     '在場 ' + gfun.secs + ' 秒（站著 ' + (gfun.st.stand * 0.05).toFixed(1) +
-     ' 秒）、火柱粒子 ' + gfun.jets + ' 顆、全程在燒的積木最多 ' + gfun.burn +
-     ' 塊、還站著 ' + gfun.set + '／' + gfun.set0 + ' 塊（焦塊會自己掉，只印不守）');
+  ok('吉祥物那一版：照樣飛進來降落，站一段時間就走，一次都不撞',
+     gfun.rk === 0 && gfun.st.ram === undefined && gfun.st.stand > 0 && gfun.gone,
+     '在場 ' + gfun.secs + ' 秒（站著 ' + ((gfun.st.stand || 0) * 0.05).toFixed(1) + ' 秒）、排過衝撞路線的幀 ' + gfun.rk);
   /* 那幾十秒不是站著發呆（v1.177）：在建築外圈走走停停，逛的點借 idleSpot、
      走法借 strollTo，同猴子的 fun 那一段。 */
   ok('吉祥物那一版在地上是走走停停的，不是站著不動把時間晃完',
      gfun.roam > 12,
-     '站著那一段（' + (gfun.st.stand * 0.05).toFixed(1) + ' 秒）走了 ' +
+     '站著那一段（' + ((gfun.st.stand || 0) * 0.05).toFixed(1) + ' 秒）走了 ' +
      gfun.roam + ' 格');
 
-  /* ── 倒地：照牛羊那一條往側邊倒（使用者：「倒地不對 參考牛羊動物」）── */
+  /* ── 倒地：照牛羊那一條往側邊倒（使用者：「倒地不對 參考牛羊動物」）；
+        走最後那幾格被戳倒的，爬起來就從那裡開始逛（v1.275.0 起地上沒有要瞄的了）── */
   const gdown = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
     for (const b of blocks) b.wet = 0;
-    const m = spawnGryph();
-    for (let i = 0; i < 900 && m.st !== 'aim'; i++) step(0.02);
+    const m = spawnGryph(1, 0);
+    for (let i = 0; i < 1500 && m.st !== 'walk'; i++) step(0.02);
     const at = m.st, sky = m.sky;
     const hit = fellBeast(m, 2);
     for (let i = 0; i < 40; i++) step(0.02);
     const out = { at, sky, hit, side: m.side, lie: +m.lie.toFixed(2),
                   roll: +m.roll.toFixed(2), spin: +m.spin.toFixed(2),
                   lift: +(ENG.BEAST_SIDE.gryphon * m.lie *
-                          Math.abs(Math.sin(m.roll)) * m.sc).toFixed(2) };
+                          Math.abs(Math.sin(m.roll)) * m.sc).toFixed(2), stAfterHit: m.st };
     let n = 0;
-    while (m.st !== 'fire' && n < 800) { step(0.02); n++; }
+    while ((m.fall > 0 || m.lie) && n < 800) { step(0.02); n++; }
     out.back = m.st; out.wait = +(n * 0.02).toFixed(1);
     return out;
   });
   ok('倒地照牛羊那一條：往側邊倒（不是兩條腿那種往後仰躺）',
-     gdown.hit && gdown.side === 1 && gdown.lie > 0 &&
+     gdown.at === 'walk' && gdown.hit && gdown.side === 1 && gdown.lie > 0 &&
      Math.abs(Math.abs(gdown.roll) - Math.PI / 2) < 0.05 && Math.abs(gdown.spin) < 0.05,
-     '站著的時候被戳倒：側躺角 ' + gdown.roll + '（±1.57 ＝ 倒到底）、仰躺角 ' +
+     '走最後那幾格時被戳倒：側躺角 ' + gdown.roll + '（±1.57 ＝ 倒到底）、仰躺角 ' +
      gdown.spin + '、引擎把原點抬起 ' + gdown.lift + ' 格');
-  ok('躺完自己爬起來，還沒噴的會重新瞄一次再噴（打倒只是拖延）',
-     gdown.back === 'fire', '躺完 ' + gdown.wait + ' 秒之後回到 ' + gdown.back);
+  ok('走最後那幾格被戳倒的：爬起來就從那裡開始逛（stand）',
+     gdown.stAfterHit === 'stand' && gdown.back === 'stand', '戳倒那一刻轉成 ' + gdown.stAfterHit + '，躺完 ' + gdown.wait + ' 秒之後是 ' + gdown.back);
+
+  /* ── 衝撞之前在天上被打下來：摔下去躺一下，爬起來先起飛（up）、爬到巡航高度接回 in 再去撞（打倒只是拖延）── */
+  const gre = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const m = spawnGryph(1, 0);
+    m.left = 1; m.bad = 1; m.home = 0;
+    for (let i = 0; i < 20; i++) step(0.02);
+    const st0 = m.st, hit = fellBeast(m, 2), st1 = m.st, rk = m.rk;
+    const seq = [];
+    let n = 0, upY = 0;
+    while (n < 4000 && m.st !== 'ram') {
+      step(0.02); n++;
+      if (seq[seq.length - 1] !== m.st) seq.push(m.st);
+      if (m.st === 'up') upY = Math.max(upY, m.y);
+    }
+    return { st0, hit, st1, rk, seq: seq.join('>'), ram: m.st === 'ram', upY: +upY.toFixed(1), cruise: m.cruise };
+  });
+  ok('衝撞之前被打下來：摔下去爬起來先起飛（up）、爬到巡航高度接回 in 再去撞',
+     gre.st0 === 'in' && gre.hit && gre.st1 === 'up' && gre.rk === null && gre.ram && gre.seq === 'up>in>ram' &&
+     gre.upY >= gre.cruise - 1e-6,
+     gre.st0 + ' 被打下來 → ' + gre.st1 + '（路線清掉 ' + (gre.rk === null) + '）→ ' + gre.seq + '；起飛爬到 ' + gre.upY);
 
   /* ── 在天上被打到／被點著：先切成地上那一套再摔下來 ── */
   const gair = await page.evaluate(() => {
@@ -25209,8 +25238,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     twist(a);
     const airA = a.air;
     beasts = null; twists = null;
-    const b = spawnGryph();
-    for (let i = 0; i < 900 && b.st !== 'aim'; i++) step(0.02);
+    const b = spawnGryph(1, 0);
+    for (let i = 0; i < 1500 && b.sky; i++) step(0.02);
     const skyB = b.sky;
     twist(b);
     const airB = b.air;
@@ -25222,30 +25251,40 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '飛行中 sky=' + gsuck.skyA + ' → 被捲 ' + gsuck.airA +
      '；降落後 sky=' + gsuck.skyB + ' → 被捲 ' + gsuck.airB);
 
-  /* ── 摔到很遠才爬起來：先飛起來重新降落一次，不噴一道三十格長的火柱 ── */
-  const gfar = await page.evaluate(() => {
-    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
-    for (const b of blocks) b.wet = 0;
-    const m = spawnGryph();
-    for (let i = 0; i < 900 && m.st !== 'aim'; i++) step(0.02);
-    /* 假裝牠被炸到場邊才爬起來（jr 歸零＝重新挑一次目標，同 reaim） */
-    m.x = arenaR - 4; m.z = 0; m.jr = 0; m.t = GR_AIM; m.left = 1;
-    const r0 = +Math.hypot(m.x, m.z).toFixed(1);
-    let n = 0, up = 0, jets = 0;
-    while (n < 2000) {
-      step(0.02); n++;
-      if (m.st === 'up') up = 1;
-      for (const h of hot) if (h.jet) jets++;
-      if (up && m.st === 'aim') break;
+  /* ── 走人那一段朝背向場心轉（v1.275.0，見 skyAway）：巡航高度固定之後高樓比牠們高，
+        照當下的朝向直直飛的話，鼻子對著建築的那一隻會從建築裡穿過去。
+        從建築旁邊、鼻子正對場心直接進「飛出去」那一段：轉到背向場心（誤差 0.02 弧度內）之後半徑一路變大、飛出林帶收掉；
+        高度一路是巡航高度。飛龍與獅鷲都驗 ── */
+  const gaway = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const res = {};
+    for (const kind of ['gryphon', 'dragon']) {
+      beasts = null;
+      const m = kind === 'gryphon' ? spawnGryph(1, 0) : spawnDragon(1);
+      m.x = siteR + 6; m.z = 0; m.y = m.cruise; m.a = Math.atan2(-m.x, -m.z); m.st = 'out'; m.left = 0; m.wIn = 0; m.roll = 0;
+      let n = 0, turnedAt = -1, shrink = 0, yOff = 0, minR = 1e9;
+      let pr = Math.hypot(m.x, m.z);
+      while (beasts && beasts.includes(m) && n < 4000) {
+        step(0.02); n++;
+        const r = Math.hypot(m.x, m.z);
+        let e = Math.atan2(m.x, m.z) - m.a;
+        while (e > Math.PI) e -= Math.PI * 2;
+        while (e < -Math.PI) e += Math.PI * 2;
+        if (turnedAt < 0 && Math.abs(e) < 0.02) turnedAt = n;
+        if (turnedAt > 0 && r <= pr) shrink++;
+        yOff = Math.max(yOff, Math.abs(m.y - m.cruise));
+        minR = Math.min(minR, r);
+        pr = r;
+      }
+      res[kind] = { turned: turnedAt > 0 ? +(turnedAt * 0.02).toFixed(2) : -1, shrink, gone: !beasts || !beasts.includes(m),
+                    yOff: +yOff.toFixed(2), minR: +minR.toFixed(1), secs: +(n * 0.02).toFixed(1) };
     }
-    return { r0, up, jets, back: m.st, r: +Math.hypot(m.x, m.z).toFixed(1),
-             siteR: +siteR.toFixed(1), range: GR_RANGE, secs: +(n * 0.02).toFixed(1) };
+    beasts = null;
+    return res;
   });
-  ok('摔到場邊才爬起來的那一趟：先飛起來重新降落一次，一路上不噴',
-     gfar.up === 1 && gfar.jets === 0 && gfar.back === 'aim' &&
-     gfar.r < gfar.siteR + 12,
-     '在半徑 ' + gfar.r0 + ' 爬起來（噴得到的上限 ' + gfar.range + '）→ 起飛重降 ' +
-     gfar.secs + ' 秒，落在半徑 ' + gfar.r + '（siteR ' + gfar.siteR + '）');
+  ok('走人那一段朝背向場心轉：鼻子正對場心出發也會轉過去、之後半徑一路變大、飛出林帶收掉（飛龍與獅鷲）',
+     ['gryphon', 'dragon'].every(k => gaway[k].turned > 0 && gaway[k].shrink === 0 && gaway[k].gone),
+     JSON.stringify(gaway));
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 
@@ -25260,7 +25299,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      所以這一段驗的是新的那些：踹的那一段狀態機、踹到哪一點（畫面與判定同一份數字）、
      一腳只結算一次、不會把自己踹倒、量級真的是香蕉那一級、還有牠這麼大一隻
      走起來不插進地標。另開一段而不是塞進上面兩段，是為了不位移那兩段的骰子。 */
-  }   // ── 〈天災：獅鷲噴火〉結束（--tier 跳過時從這裡出來）
+  }   // ── 〈吉祥物：獅鷲衝撞〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('天災：巨人腳踢', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
@@ -26899,7 +26938,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const g2 = { st: g.st, left: g.left, sky: g.sky };
     beasts = null;
     /* 已經降落、站在地上的那一隻（被打下來的也是這個樣子）：放棄＝拍翅起飛。 */
-    const g3 = spawnGryph(); g3.quit = 1; g3.sky = 0; g3.st = 'aim';
+    const g3 = spawnGryph(); g3.quit = 1; g3.sky = 0; g3.st = 'stand';   // v1.275.0 起地上沒有 aim 那一段了
     beastHit(g3);
     const g3o = { st: g3.st, left: g3.left };
     cleanTools();
@@ -26909,10 +26948,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hfly.d1.st === 'in' && hfly.d1.hurt === 1 && hfly.d2.st === 'out' && hfly.d2.left === 0,
      '第一下 ' + hfly.d1.st + '（配額 ' + hfly.d1.left + '）→ 第二下 ' + hfly.d2.st +
      '（配額 ' + hfly.d2.left + '）');
-  ok('獅鷲放棄＝不噴了，在天上的飛出去、站著的先起飛',
+  ok('獅鷲放棄＝不撞了，在天上的飛出去、站著的先起飛',
      hfly.g1.st === 'in' && hfly.g2.st === 'out' && hfly.g2.left === 0 &&
      hfly.g3o.st === 'up' && hfly.g3o.left === 0,
-     '天上那隻 ' + hfly.g1.st + ' → ' + hfly.g2.st + '，站著那隻 aim → ' + hfly.g3o.st);
+     '天上那隻 ' + hfly.g1.st + ' → ' + hfly.g2.st + '，站著那隻 stand → ' + hfly.g3o.st);
 
   /* ── 吉祥物：一擊切換一次 ── */
   /* 用巨人驗：小獼猴從 v1.229 起不收手（表上的 more，下面另一條驗），小猴子丟完香蕉就不改主意
@@ -28507,9 +28546,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await fillAll(page);
   const hDra = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;
-    /* 巡航高度**在進場那一刻**就算好存起來（v1.172 起讀 siteTopNow()，見 spawnDragon），
-       所以期望值要拿「牠出現時的屋頂」算，不能事後再量一次。 */
-    const top0 = siteTopNow();
+    /* 巡航高度 v1.275.0 起固定 DRA_CRUISE（v1.172～v1.274 是進場那一刻照 siteTopNow() 算好存起來） */
     const m = spawnDragon(1);
     const cached = +m.cruise.toFixed(1);
     for (let i = 0; i < 600 && m.st !== 'ring'; i++) stepDoom(0.05);
@@ -28537,7 +28574,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              downY: +downY.toFixed(2), gnd: +draGround().toFixed(2),
              downT: +(downT * 0.05).toFixed(1), riseT: +(riseT * 0.05).toFixed(1),
              back: m.st, y: +m.y.toFixed(1),
-             cached, cruise: +Math.max(DRA_MIN, top0 + DRA_UP).toFixed(1) };
+             cached, cruise: DRA_CRUISE };
   });
   /* v1.182 起中間多一段 gwalk（站起來在草皮上走一段），見〈飛龍：地面行走〉。 */
   ok('飛龍被打下來：摔 → 趴 → 走一段 → 拍翅起飛 → 爬回巡航高度歸隊',
@@ -28982,8 +29019,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const b of blocks) b.wet = 0;
       let m;
       if (kind === 'gryphon') {
-        m = spawnGryph();
-        for (let i = 0; i < 900 && m.sky; i++) step(0.02);   // 等牠降落到草皮上
+        /* 吉祥物那一版（v1.275.0 起天災那一版撞完直接飛走、不降落）：等牠降落到草皮上 */
+        m = spawnGryph(1, 0);
+        for (let i = 0; i < 1500 && m.sky; i++) step(0.02);
       } else {
         m = spawnBeast(kind);
         m.x = 26; m.z = 0; m.y = 0;
@@ -29763,14 +29801,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (!beasts || beasts.indexOf(dr) < 0) { dGone = t; break; }
     }
     const dA = dr.alpha;
-    /* 獅鷲起飛（up）：不是要再降落一次的那一趟就是走人，在林帶裡起飛也照位置淡 */
+    /* 獅鷲起飛（up）：不是還要回去撞的那一趟（m.left，v1.275.0；以前是要再降落一次的 m.back）就是走人，
+       在林帶裡起飛也照位置淡 */
     beasts = null;
     spawnGryph(1);
     const g = beasts[beasts.length - 1], half = woodR() - REACH - WOOD_FADE / 2;
-    g.x = half; g.z = 0; g.wIn = 0; g.alpha = undefined; g.st = 'up'; g.back = 0; g.sky = 1;
+    g.x = half; g.z = 0; g.wIn = 0; g.alpha = undefined; g.st = 'up'; g.left = 0; g.sky = 1;
     fade(g);
     const gUp = g.alpha;
-    g.alpha = undefined; g.back = 1;
+    g.alpha = undefined; g.left = 1;
     fade(g);
     const gBack = g.alpha;
     beasts = null; stepDoom = () => {};
@@ -29781,7 +29820,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fxL.dGone > 0 && fxL.dIn && fxL.dOut && fxL.dA === 0 &&
      Math.abs(fxL.gUp - 0.5) < 0.02 && fxL.gBack === undefined,
      'Saber 收掉那一刻 alpha ' + fxL.wA + '、飛龍 ' + fxL.dA + '；獅鷲起飛走人 alpha ' +
-     (fxL.gUp === undefined ? '—' : fxL.gUp.toFixed(2)) + '、起飛要再降落的 ' + fxL.gBack +
+     (fxL.gUp === undefined ? '—' : fxL.gUp.toFixed(2)) + '、起飛還要回去撞的 ' + fxL.gBack +
      (fxL.wGone > 0 && fxL.dGone > 0 ? '' : '；Saber ' + fxL.wGone + ' 秒、飛龍 ' + fxL.dGone + ' 秒收掉'));
 
   /* ── 人形角色淡的時候整格搬到 humMesh：原本那一格塞 0；超過 HUM_MAX 位的照舊畫、不淡；沒人在淡就不畫 ── */
@@ -30282,10 +30321,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('點地面：她在場上就叫同一位跑到那一點，待命 LEV_WAIT 秒再回去逛、不出招',
      xgnd.go && xgnd.n === 1 && xgnd.arr && xgnd.arr.d <= xgnd.sd + 0.1 && xgnd.arr.call === null && xgnd.exc === 0 &&
-     xgnd.arr.pause >= xgnd.wait[0] && xgnd.arr.pause <= xgnd.wait[1],
+     xgnd.arr.pause > xgnd.wait - 0.05 && xgnd.arr.pause <= xgnd.wait,   // v1.275.0 起固定 20 秒（以前 8～12）
      '命令 go＝' + xgnd.go + '、場上 ' + xgnd.n + ' 位；' + (xgnd.arr ? xgnd.arr.secs + ' 秒到、離那一點 ' +
-     xgnd.arr.d.toFixed(2) + ' 格（LEV_SD ' + xgnd.sd + '）、待命 ' + xgnd.arr.pause.toFixed(1) + ' 秒（' +
-     xgnd.wait.join('～') + '）' : '沒到') + '；出招 ' + xgnd.exc + ' 幀');
+     xgnd.arr.d.toFixed(2) + ' 格（LEV_SD ' + xgnd.sd + '）、待命 ' + xgnd.arr.pause.toFixed(2) + ' 秒（LEV_WAIT ' +
+     xgnd.wait + '）' : '沒到') + '；出招 ' + xgnd.exc + ' 幀');
 
   /* ── 射程一半：EXC_REACH 就是光柱長度的一半；已經在射程內就原地轉身斬，不往前也不往回（同里維一進射程就射） ── */
   const xnear = await page.evaluate(() => {
@@ -31337,9 +31376,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('點空地：跑到那一點待命 LEV_WAIT 秒再回去逛，不出招',
      lgo.go && lgo.arr && lgo.arr.d <= lgo.sd + 0.1 && lgo.arr.call === null && lgo.odm === 0 &&
-     lgo.arr.pause >= lgo.wait[0] && lgo.arr.pause <= lgo.wait[1],
+     lgo.arr.pause > lgo.wait - 0.05 && lgo.arr.pause <= lgo.wait,       // v1.275.0 起固定 20 秒（以前 8～12）
      '命令 go＝' + lgo.go + '；' + (lgo.arr ? '到了離那一點 ' + lgo.arr.d.toFixed(2) + ' 格（LEV_SD ' + lgo.sd +
-     '）、待命 ' + lgo.arr.pause.toFixed(1) + ' 秒（' + lgo.wait.join('～') + '）' : '沒到') + '；立體機動 ' + lgo.odm + ' 幀');
+     '）、待命 ' + lgo.arr.pause.toFixed(2) + ' 秒（LEV_WAIT ' + lgo.wait + '）' : '沒到') + '；立體機動 ' + lgo.odm + ' 幀');
 
   /* ── 點選：這一把點得到生物與小人（skip 那一檔是透明的）；砍不了的那幾隻不算 ── */
   const lpick = await page.evaluate(() => {
@@ -31703,7 +31742,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('點空地：跑到那一點待命 LEV_WAIT 秒再回去逛，不出招',
      zgo.go && zgo.arr && zgo.arr.d <= zgo.sd + 0.1 && zgo.arr.call === null && zgo.zen === 0 &&
-     zgo.arr.pause >= zgo.wait[0] && zgo.arr.pause <= zgo.wait[1], JSON.stringify(zgo));
+     zgo.arr.pause > zgo.wait - 0.05 && zgo.arr.pause <= zgo.wait, JSON.stringify(zgo));   // v1.275.0 起固定 20 秒
 
   /* ── 出招那一整段打不動他（炸不飛、推不倒、點不著），收完就打得動 ── */
   const zbusy = await page.evaluate(() => {
@@ -32149,7 +32188,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { go, arr, pur, purps: !!purps, sd: LEV_SD, wait: LEV_WAIT };
   });
   const ggOk = ggo.go && ggo.arr && ggo.arr.d <= ggo.sd + 0.1 && ggo.arr.call === null && ggo.pur === 0 && !ggo.purps &&
-               ggo.arr.pause >= ggo.wait[0] && ggo.arr.pause <= ggo.wait[1];
+               ggo.arr.pause > ggo.wait - 0.05 && ggo.arr.pause <= ggo.wait;   // v1.275.0 起固定 20 秒
   ok('點空地：跑到那一點待命 LEV_WAIT 秒再回去逛，不出招',
      ggOk, ggOk ? '到了、待命、沒出招' : JSON.stringify(ggo));
 
@@ -32487,6 +32526,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const X = siteR + 30, Z = 0, dt = 1 / 60;
     const m = spawnBeast('frieren', 1, 0, 0);
     m.x = X; m.z = Z; m.st = 'fun'; m.pause = 999;
+    /* 不相干的小人與動物先挪到場子另一頭（v1.275.0）：這一段只叫各自的 step，誰站在彈道上誰就先被打中——
+       子彈、箭是「先判人、再判積木」。--tier commit --seed 3676857436 那一副骰子剛好有一個小人站在子彈那條線上
+       （37.6, 0），子彈打中他、碰不到罩子（加一筆紀錄量到的）。量完照原位擺回去（finally） */
+    const parked = workers.map(o => [o, o.x, o.z]).concat((beasts || []).filter(o => o !== m).map(o => [o, o.x, o.z]));
+    for (const [o] of parked) { o.x = -X; o.z = 0; }
     const real = { explode, smash, igniteAround, startCloud, slayGiants };
     let hits = [];
     explode = p => { hits.push([p.x, p.y, p.z]); return 0; };
@@ -32561,6 +32605,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       r.out = { gap: gap(b.x, b.y, b.z), alive: !!bullets, n: hits.length, open: m.bt != null };
     } finally {
       ({ explode, smash, igniteAround, startCloud, slayGiants } = real);
+      for (const [o, x, z] of parked) { o.x = x; o.z = z; }
       cleanTools();
     }
     return r;
@@ -33094,17 +33139,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   }   // ── 〈道具：肉〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 破壞模式（v1.262.0）══════════
-     工具小窗左邊那顆開關：開著的時候隕石、龍捲風、投石機、加農砲、煙火點一下放好幾份。
-     全部規則型：直接叫 useTool／launchTornado／metSpots／launchFw，份數照上限常數算、不寫死。
-     v1.270.0 起好幾份之間錯開 RAGE_LAG（隕石連圈、龍捲風出場、投石機與加農砲第二隊的第一發、煙火每輪的第一發），
-     間隔一律拿 RAGE_LAG 比、不寫死；要走時間的那幾條步長取 RAGE_LAG[0] 的一半，比最短的間隔還短，所以不賭骰子。
+     工具小窗左邊那顆開關：開著的時候 RAGE_TOOLS 那幾把點一下放好幾份。
+     全部規則型：直接叫 useTool／rageSpots／launchTornado／launchFw／launchBall／dropBall，份數照上限常數算、不寫死。
+     v1.270.0 起好幾份之間錯開 RAGE_LAG（隕石連圈、龍捲風出場、投石機與加農砲第二隊的第一發、煙火每輪的第一發、
+     v1.275.0 起的保齡球與天降鐵球每一顆），間隔一律拿 RAGE_LAG 比、不寫死；要走時間的那幾條步長取 RAGE_LAG[0] 的一半，
+     比最短的間隔還短，所以不賭骰子。
+     **v1.275.0 統一**（使用者：「破壞模式統一調整成各道具的最多數量」「統一都是點擊附帶附近隨機其他位置(各道具間距不同)」
+     「保齡球&天降鐵球加入破壞模式」，點兩下的那幾把選「也是分散在第二點附近」）：份數放到上限；第一份在點的那一點、
+     其餘散在附近（rageSpots，範圍與間距每把一組 RAGE_SPOT）；點兩下的兩頭各自散（rageEnds）。
+     「散在哪」是骰子，所以擺法那幾條驗的是規則本身：攔下 rageSpots／rageEnds 抽出來的那一組，比對每一份真的放在那裡。
      開關重開頁面還在不在，量在〈自動存檔〉那一段（那裡才有重開）。 */
   SEC: { if (!(await head('破壞模式', T_COMMIT))) break SEC;
   await page.setViewportSize(VIEW);
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
 
   /* ── 開關：在 #toolbox 裡、#toolPick 外、在小窗左邊同一排；指著它選單不展開；點一下切換、寫進 pref；
-        拿 RAGE_TOOLS 那五把時亮著、拿別把時灰掉，灰掉照樣切得動 ── */
+        拿 RAGE_TOOLS 那幾把時亮著、拿別把時灰掉，灰掉照樣切得動 ── */
   await page.evaluate(() => { tool = 'meteor'; renderTools(); });
   await page.mouse.move(900, 500);
   await page.hover('#rageBtn');
@@ -33118,7 +33168,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     b.click();
     r.on = rageOn === true && pref.rage === true && b.classList.contains('on') && b.getAttribute('aria-pressed') === 'true';
     r.ids = Object.keys(RAGE_TOOLS).sort().join(',');
-    r.five = Object.keys(RAGE_TOOLS).every(id => { tool = id; renderTools(); return !b.classList.contains('na'); });
+    r.all = Object.keys(RAGE_TOOLS).every(id => { tool = id; renderTools(); return !b.classList.contains('na'); });
     tool = 'hammer'; renderTools();
     r.na = b.classList.contains('na');
     b.click();
@@ -33128,11 +33178,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.mouse.move(900, 500);
   ok('開關在工具小窗左邊、指著它不會叫出選單；點一下切換並寫進 pref',
      rui.inBox && !rui.inPick && rui.left && rui.row && rui.menu === 'hidden' && rui.start === false && rui.on, JSON.stringify(rui));
-  ok('拿那五把時亮著、拿別把時灰掉（灰掉照樣切得動）',
-     rui.ids === 'cannon,fw,meteor,tornado,treb' && rui.five && rui.na && rui.naClick, JSON.stringify(rui));
+  ok('拿那七把時亮著（v1.275.0 加了保齡球、天降鐵球）、拿別把時灰掉（灰掉照樣切得動）',
+     rui.ids === 'ball,cannon,drop,fw,meteor,tornado,treb' && rui.all && rui.na && rui.naClick, JSON.stringify(rui));
 
-  /* ── 份數：關著每把照舊一份；開著照上限算（使用者：「大約*3 如果到上限就用上限的量」，隕石看過預覽改成放滿上限）。
-        定時炸彈、核彈不受影響；開著的時候直接叫出手函式（不經 useTool）照舊一份——只有玩家點的那一下會乘 ── */
+  /* ── 份數：關著每把照舊一份；開著**放到上限**（v1.275.0，使用者：「統一調整成各道具的最多數量(例如龍捲風好像應該是4)」）。
+        定時炸彈、核彈不受影響；開著的時候直接叫出手函式（不經 useTool）照舊一份——只有玩家點的那一下會放好幾份 ── */
   const rcount = await page.evaluate(() => {
     const t0 = tool, X = siteR + 30, G = (x, z) => ({ kind: 'ground', point: { x, y: 0, z }, dir: { x: 0, y: -1, z: 0 } });
     const fire = () => {
@@ -33142,6 +33192,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       cleanTools(); tool = 'treb'; useTool(G(X, 0)); useTool(G(0, 0)); n.treb = trebs.list.length;
       cleanTools(); tool = 'cannon'; useTool(G(X, 0)); useTool(G(0, 0)); n.can = cannons.list.length;
       cleanTools(); tool = 'fw'; useTool(G(0, 0)); n.fw = (fworks || []).length + (fwWait || []).length;
+      cleanTools(); tool = 'ball'; useTool(G(-X, 0)); useTool(G(0, 0)); n.ball = balls.length;
+      cleanTools(); tool = 'drop'; useTool(G(-X, 0)); useTool(G(0, 0)); n.drop = balls.length;
       cleanTools(); tool = 'bomb'; useTool(G(0, 0)); n.bomb = bombs.length;
       cleanTools(); tool = 'nuke'; useTool(G(0, 0)); n.nuke = nukes.length;
       return n;
@@ -33149,65 +33201,106 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     rageOn = false; const off = fire();
     rageOn = true; const on = fire();
     cleanTools();
-    callMeteor({ x: 0, y: 0, z: 0 }); launchTornado({ x: -X, z: 0 }, { x: 0, z: 0 });
-    castTrebs({ x: X, z: 0 }, { x: 0, z: 0 }); castCannons({ x: X, z: 0 }, { x: 0, z: 0 }); launchFw({ x: 0, z: 0 });
-    const direct = { met: meteors.length, tw: twists.length, treb: trebs.list.length, can: cannons.list.length,
-                     fw: fworks.length + (fwWait || []).length };
+    const direct = {};
+    callMeteor({ x: 0, y: 0, z: 0 }); direct.met = meteors.length;
+    launchTornado({ x: -X, z: 0 }, { x: 0, z: 0 }); direct.tw = twists.length;
+    castTrebs({ x: X, z: 0 }, { x: 0, z: 0 }); direct.treb = trebs.list.length;
+    castCannons({ x: X, z: 0 }, { x: 0, z: 0 }); direct.can = cannons.list.length;
+    launchFw({ x: 0, z: 0 }); direct.fw = fworks.length + (fwWait || []).length;
+    cleanTools(); launchBall({ x: -X, z: 0 }, { x: 0, z: 0 }); direct.ball = balls.length;
+    cleanTools(); dropBall({ x: -X, z: 0 }, { x: 0, z: 0 }); direct.drop = balls.length;
     rageOn = false; cleanTools(); fwEnd(); tool = t0;
-    const base = { met: 1, tw: 1, treb: TREB_TEAM, can: CAN_TEAM, fw: FW_SHOT, bomb: 1, nuke: 1 };
-    const want = { met: MET_MAX, tw: Math.min(RAGE_N, TW_MAX),
-                   treb: Math.min(RAGE_N, Math.floor(TREB_MAX / TREB_TEAM)) * TREB_TEAM,
-                   can: Math.min(RAGE_N, Math.floor(CAN_MAX / CAN_TEAM)) * CAN_TEAM,
-                   fw: Math.min(RAGE_N * FW_SHOT, FW_MAX), bomb: 1, nuke: 1 };
+    const base = { met: 1, tw: 1, treb: TREB_TEAM, can: CAN_TEAM, fw: FW_SHOT, ball: 1, drop: 1, bomb: 1, nuke: 1 };
+    const want = { met: MET_MAX, tw: TW_MAX, treb: Math.floor(TREB_MAX / TREB_TEAM) * TREB_TEAM,
+                   can: Math.floor(CAN_MAX / CAN_TEAM) * CAN_TEAM, fw: FW_MAX, ball: BALL_MAX, drop: BALL_MAX, bomb: 1, nuke: 1 };
     const same = (a, b) => Object.keys(b).every(k => a[k] === b[k]);     // 比 b 有的那幾鍵
-    return { off, on, base, want, direct, okOff: same(off, base), okOn: same(on, want), okDirect: same(base, direct) };
+    return { off, on, base, want, direct, okOff: same(off, base), okOn: same(on, want), okDirect: same(base, direct) };   // 只比直接叫的那幾鍵
   });
-  ok('份數：關著每把照舊一份；開著照上限算——隕石放滿 MET_MAX、龍捲風 RAGE_N 道、投石機與加農砲 RAGE_N 隊夾到上限、煙火 RAGE_N 輪夾到 FW_MAX',
+  ok('份數：關著每把照舊一份；開著放到上限——隕石 MET_MAX、龍捲風 TW_MAX、投石機與加農砲幾隊塞滿上限、煙火 FW_MAX、保齡球與天降鐵球 BALL_MAX',
      rcount.okOff && rcount.okOn,
      '關 ' + JSON.stringify(rcount.off) + '；開 ' + JSON.stringify(rcount.on) + '（要 ' + JSON.stringify(rcount.want) + '）');
-  ok('只有玩家點的那一下會乘：開著的時候直接叫出手函式照舊一份；定時炸彈、核彈不受影響',
+  ok('只有玩家點的那一下會放好幾份：開著的時候直接叫出手函式照舊一份；定時炸彈、核彈不受影響',
      rcount.okDirect && rcount.on.bomb === 1 && rcount.on.nuke === 1, JSON.stringify(rcount.direct));
 
-  /* ── 隕石：方位每顆各抽、倒數照 rageLags 一顆接一顆錯開（第一顆就是平常的 MET_WAIT ＋ MET_FALL），瞄地面；
-        落點都在 RAGE_MET_R 內、兩兩至少隔 MET_R（使用者選的；v1.270.0 起方位各抽、範圍 40、錯開 RAGE_LAG）。
-        真骰子跑 300 批，每一批都要成立（抽不進去就整批重抽，見 metSpots）。
-        骰子全押 0 時一顆都塞不進去：抽不滿也不能卡死，缺的疊在中心。沒開的時候照舊砸點到的那一點（連高度） ── */
+  /* ── 散開的規則（rageSpots）：第一份就是點的那一點，其餘都在 r 內、兩兩至少隔 gap——每一把的那一組 RAGE_SPOT 各抽 300 批，
+        份數照那一把開著時放幾份。一份的時候不抽骰子；骰子全押 0 時塞不進去也不能卡死（缺的疊在中心） ── */
+  const rspot = await page.evaluate(() => {
+    const N = { meteor: MET_MAX, tornado: TW_MAX, treb: Math.floor(TREB_MAX / TREB_TEAM), cannon: Math.floor(CAN_MAX / CAN_TEAM),
+                fw: Math.ceil(FW_MAX / FW_SHOT), ball: BALL_MAX, drop: BALL_MAX };
+    const out = {};
+    for (const id of Object.keys(RAGE_TOOLS)) {
+      const s = RAGE_SPOT[id], n = N[id];
+      let first = 0, inR = 0, gapOk = 0, worst = 1e9, far = 0;
+      for (let k = 0; k < 300; k++) {
+        const p = rageSpots(n, 7, -3, s);
+        if (p.length === n && p[0].x === 7 && p[0].z === -3) first++;
+        if (p.every(q => Math.hypot(q.x - 7, q.z + 3) <= s.r + 1e-9)) inR++;
+        let w = 1e9;
+        for (let i = 0; i < p.length; i++) {
+          far = Math.max(far, Math.hypot(p[i].x - 7, p[i].z + 3));
+          for (let j = i + 1; j < p.length; j++) w = Math.min(w, Math.hypot(p[i].x - p[j].x, p[i].z - p[j].z));
+        }
+        if (w >= s.gap - 1e-9) gapOk++;
+        worst = Math.min(worst, w);
+      }
+      out[id] = { n, r: s.r, gap: s.gap, first, inR, gapOk, worst: +worst.toFixed(2), far: +far.toFixed(2) };
+    }
+    const real = Math.random;
+    let calls = 0, one, stuck;
+    Math.random = () => { calls++; return real(); };
+    try { one = rageSpots(1, 5, 7, RAGE_SPOT.meteor); } finally { Math.random = real; }
+    Math.random = () => 0;
+    try { stuck = rageSpots(MET_MAX, 5, 7, RAGE_SPOT.meteor); } finally { Math.random = real; }
+    return { out, one: one.length === 1 && one[0].x === 5 && one[0].z === 7 && calls === 0,
+             stuck: stuck.length === MET_MAX && stuck.every(p => p.x === 5 && p.z === 7) };
+  });
+  ok('散開：每一把第一份在點的那一點、其餘都在 RAGE_SPOT 的 r 內、兩兩至少隔 gap（各 300 批）',
+     Object.values(rspot.out).every(o => o.first === 300 && o.inR === 300 && o.gapOk === 300),
+     Object.entries(rspot.out).map(([id, o]) => id + ' ' + o.n + ' 份：最遠 ' + o.far + '（≤ ' + o.r + '）、最近 ' + o.worst + '（≥ ' + o.gap + '）').join('；'));
+  ok('散開：一份的時候不抽骰子；骰子全押 0 塞不進去也不卡死（缺的疊在中心）',
+     rspot.one && rspot.stuck, JSON.stringify({ one: rspot.one, stuck: rspot.stuck }));
+
+  /* ── 點兩下的兩頭（rageEnds）：兩頭各自散（第二頭第一份就是第二點）；兩下點在同一點就兩頭共用同一組（每一份直直下去） ── */
+  const rends = await page.evaluate(() => {
+    const s = RAGE_SPOT.drop, A = { x: -20, z: 4 }, B = { x: 10, z: -6 };
+    const e = rageEnds(BALL_MAX, A, B, s), same = rageEnds(BALL_MAX, A, { x: A.x + 0.2, z: A.z }, s);
+    return { a0: e.a[0].x === A.x && e.a[0].z === A.z, b0: e.b[0].x === B.x && e.b[0].z === B.z,
+             bIn: e.b.every(q => Math.hypot(q.x - B.x, q.z - B.z) <= s.r + 1e-9),
+             own: e.b.slice(1).some((q, i) => Math.abs((q.x - B.x) - (e.a[i + 1].x - A.x)) > 1e-6),    // 第二頭不是照第一頭平移
+             same: same.a.every((q, i) => Math.abs(same.b[i].x - q.x - 0.2) < 1e-9 && Math.abs(same.b[i].z - q.z) < 1e-9) };
+  });
+  ok('點兩下的兩頭各自散在兩點附近（第一份就是那兩點）；兩下點在同一點就兩頭同一組',
+     rends.a0 && rends.b0 && rends.bIn && rends.own && rends.same, JSON.stringify(rends));
+
+  /* ── 隕石：第一顆砸點的那一點、連高度（同平常點一下，v1.275.0）；其餘的落點就是 rageSpots 抽出來那一組、瞄地面；
+        方位每顆各抽、倒數照 rageLags 一顆接一顆錯開（第一顆就是平常的 MET_WAIT ＋ MET_FALL）。沒開的時候照舊一顆 ── */
   const rmet = await page.evaluate(() => {
     const t0 = tool, P = { kind: 'block', point: { x: 3, y: 12, z: -2 }, dir: { x: 0, y: -1, z: 0 } };
     cleanTools(); tool = 'meteor'; rageOn = true;
+    const real = rageSpots;
+    let got = null;
+    rageSpots = function (...a) { return (got = real(...a)); };
     const T0 = MET_WAIT + MET_FALL, inLag = g => g >= RAGE_LAG[0] - 1e-9 && g <= RAGE_LAG[1] + 1e-9;
-    let dir = 0, cd = 0, ground = 0, worst = 1e9, far = 0, gLo = 1e9, gHi = 0;
-    for (let k = 0; k < 300; k++) {
-      meteors = null;
-      useTool(P);
-      const ms = meteors;
-      if (new Set(ms.map(m => m.a)).size === ms.length) dir++;
-      const gaps = ms.slice(1).map((m, i) => m.t - ms[i].t);
-      if (ms[0].t === T0 && gaps.every(inLag)) cd++;
-      for (const g of gaps) { gLo = Math.min(gLo, g); gHi = Math.max(gHi, g); }
-      if (ms.every(m => m.ty === 0.6)) ground++;
-      for (let i = 0; i < ms.length; i++) {
-        far = Math.max(far, Math.hypot(ms[i].tx - 3, ms[i].tz + 2));
-        for (let j = i + 1; j < ms.length; j++) worst = Math.min(worst, Math.hypot(ms[i].tx - ms[j].tx, ms[i].tz - ms[j].tz));
+    let dir = 0, cd = 0, spot = 0, first = 0;
+    try {
+      for (let k = 0; k < 100; k++) {
+        meteors = null; got = null;
+        useTool(P);
+        const ms = meteors;
+        if (new Set(ms.map(m => m.a)).size === ms.length) dir++;
+        const gaps = ms.slice(1).map((m, i) => m.t - ms[i].t);
+        if (ms[0].t === T0 && gaps.every(inLag)) cd++;
+        if (ms[0].tx === 3 && ms[0].tz === -2 && ms[0].ty === 12) first++;
+        if (got && ms.slice(1).every((m, i) => m.tx === got[i + 1].x && m.tz === got[i + 1].z && m.ty === 0.6)) spot++;
       }
-    }
-    const real = Math.random;
-    let stuck;
-    Math.random = () => 0;
-    try { stuck = metSpots(MET_MAX, 5, 7); } finally { Math.random = real; }
+    } finally { rageSpots = real; }
     rageOn = false; meteors = null; useTool(P);
     const one = meteors.length === 1 && meteors[0].tx === 3 && meteors[0].tz === -2 && meteors[0].ty === 12;
     cleanTools(); tool = t0;
-    return { dir, cd, ground, worst: +worst.toFixed(3), far: +far.toFixed(3), R: RAGE_MET_R, gap: MET_R,
-             gLo: +gLo.toFixed(3), gHi: +gHi.toFixed(3), lag: RAGE_LAG.join('～'),
-             stuck: stuck.length === MET_MAX && stuck.every(p => p.x === 5 && p.z === 7), one };
+    return { dir, cd, spot, first, one, lag: RAGE_LAG.join('～') };
   });
-  ok('隕石：方位每顆各抽、倒數一顆接一顆錯開 RAGE_LAG（第一顆照舊），瞄地面；落點都在 RAGE_MET_R 內、兩兩至少隔 MET_R（真骰子 300 批）',
-     rmet.dir === 300 && rmet.cd === 300 && rmet.ground === 300 && rmet.far <= rmet.R + 1e-9 && rmet.worst >= rmet.gap - 1e-9,
-     '各自方位 ' + rmet.dir + '／照順序錯開 ' + rmet.cd + '／瞄地面 ' + rmet.ground + ' 批；間隔 ' + rmet.gLo + '～' + rmet.gHi +
-     '（要在 ' + rmet.lag + '）；最遠 ' + rmet.far + '（≤ ' + rmet.R + '）、最近的兩顆 ' + rmet.worst + '（≥ ' + rmet.gap + '）');
-  ok('隕石的落點抽不滿也不會卡死（骰子全押 0：缺的疊在中心）；沒開的時候照舊一顆砸點到的那一點、連高度',
-     rmet.stuck && rmet.one, JSON.stringify({ stuck: rmet.stuck, one: rmet.one }));
+  ok('隕石：第一顆砸點的那一點（連高度），其餘落在 rageSpots 那一組、瞄地面；方位各抽、倒數照 RAGE_LAG 錯開（100 批）',
+     rmet.dir === 100 && rmet.cd === 100 && rmet.spot === 100 && rmet.first === 100 && rmet.one, JSON.stringify(rmet));
 
   /* ── 隕石的倒數圈也跟著錯開（v1.270.0，使用者選「圈也跟著錯開」）：還沒輪到的那幾顆連圈都不冒（mark 一直是 0）。
         走半個 RAGE_LAG[0]（比最短的間隔還短）只有第一顆冒圈；走到最後一顆的 lag 過了才全部冒齊，而且那時第一顆還沒落地 ── */
@@ -33229,130 +33322,200 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      rring.first === rring.want && rring.all && rring.t >= rring.last - 1e-6 && rring.t <= rring.last + rring.h + 1e-6 && rring.still,
      JSON.stringify(rring));
 
-  /* ── 龍捲風：同一個速度（平行出發）、沿出發方向的橫向排開、間隔 RAGE_TW_GAP，中間那道就在第一點；
-        旁邊那道出了 debrisR − 2 就夾回來（生在界外的那一道會原地來回翻，見 launchTornado） ── */
+  /* ── 龍捲風：第一道照舊從第一點朝第二點；其餘的出發點就是 rageEnds 第一頭那一組，方向朝自己那一份的第二頭（偏差在 TW_SPREAD 內）；
+        出了 debrisR − 2 就夾回來（生在界外的那一道會原地來回翻，見 launchTornado）——第一道不夾 ── */
   const rtw = await page.evaluate(() => {
     cleanTools();
-    launchTornado({ x: -30, z: 5 }, { x: -30, z: 40 }, 3);
-    const w = twists, sp = Math.hypot(w[0].vx, w[0].vz), ux = w[0].vx / sp, uz = w[0].vz / sp;
-    const r = { same: w.every(o => o.vx === w[0].vx && o.vz === w[0].vz),
-                lat: w.map(o => +((o.x + 30) * -uz + (o.z - 5) * ux).toFixed(6)),
-                fwd: w.map(o => +Math.abs((o.x + 30) * ux + (o.z - 5) * uz).toFixed(6)), gap: RAGE_TW_GAP };
-    cleanTools();
-    const e = debrisR - 3;
-    launchTornado({ x: e, z: 0 }, { x: e, z: 30 }, 3);
-    r.edge = twists.map(o => +Math.hypot(o.x, o.z).toFixed(6)); r.lim = debrisR - 2; r.mid = twists[1].x === e && twists[1].z === 0;
+    const real = rageEnds;
+    let e = null;
+    rageEnds = function (...a) { return (e = real(...a)); };
+    const ang = (vx, vz, dx, dz) => Math.abs(Math.atan2(vx * dz - vz * dx, vx * dx + vz * dz));
+    const F = { x: -30, z: 5 }, T = { x: 10, z: 40 };
+    let r;
+    try {
+      launchTornado(F, T, TW_MAX);
+      const w = twists;
+      r = { n: w.length, first: w[0].x === F.x && w[0].z === F.z && ang(w[0].vx, w[0].vz, T.x - F.x, T.z - F.z) <= TW_SPREAD + 1e-9,
+            at: w.slice(1).every((o, i) => Math.abs(Math.hypot(o.x, o.z) - Math.min(Math.hypot(e.a[i + 1].x, e.a[i + 1].z), debrisR - 2)) < 1e-6),
+            aim: w.slice(1).map((o, i) => +ang(o.vx, o.vz, e.b[i + 1].x - o.x, e.b[i + 1].z - o.z).toFixed(4)), spread: TW_SPREAD };
+      /* 夾回來：讓第二頭那一組的第二份落在島外 20 格（押住 rageEnds，不賭骰子） */
+      cleanTools();
+      const out = { x: debrisR + 20, z: 0 };
+      rageEnds = () => ({ a: [F, out, F, F], b: [T, T, T, T] });
+      launchTornado(F, T, TW_MAX);
+      r.edge = +Math.hypot(twists[1].x, twists[1].z).toFixed(6); r.lim = debrisR - 2;
+      rageEnds = () => ({ a: [out, out, out, out], b: [T, T, T, T] });
+      cleanTools();
+      launchTornado(out, T, TW_MAX);
+      r.keep = twists[0].x === out.x && twists[0].z === out.z;                    // 第一道（＝原本那一道）不動它
+    } finally { rageEnds = real; }
     cleanTools();
     return r;
   });
-  ok('龍捲風：同一個方向平行出發、橫向排開間隔 RAGE_TW_GAP、中間那道在第一點；出界的那道夾回 debrisR − 2',
-     rtw.same && rtw.lat.join() === [-rtw.gap, 0, rtw.gap].join() && rtw.fwd.every(v => v === 0) &&
-     rtw.mid && rtw.edge.every(d => d <= rtw.lim + 1e-6) && rtw.edge.some(d => Math.abs(d - rtw.lim) < 1e-6),
-     JSON.stringify(rtw));
+  ok('龍捲風：第一道從第一點朝第二點，其餘從 rageEnds 那一組出發、各自朝自己的第二頭；散到島外的夾回 debrisR − 2（第一道不夾）',
+     rtw.n === 4 && rtw.first && rtw.at && rtw.aim.every(a => a <= rtw.spread + 1e-6) &&
+     Math.abs(rtw.edge - rtw.lim) < 1e-6 && rtw.keep, JSON.stringify(rtw));
 
-  /* ── 龍捲風出場錯開（v1.270.0）：中間那道 wait 0 當場出場，兩旁照 rageLags 接著出（間隔都在 RAGE_LAG 內）；
+  /* ── 龍捲風出場錯開（v1.270.0）：第一道 wait 0 當場出場，其餘照 rageLags 一道接一道（間隔都在 RAGE_LAG 內）；
         還在等的那幾道不畫（draw 的 twOn 只有出場的）、不動、不扣壽命；等完才畫、才動 ── */
   const rtwl = await page.evaluate(() => {
     cleanTools();
-    launchTornado({ x: -30, z: 5 }, { x: -30, z: 40 }, 3);
+    launchTornado({ x: -30, z: 5 }, { x: -30, z: 40 }, TW_MAX);
     const w = twists.slice(), lo = RAGE_LAG[0] - 1e-9, hi = RAGE_LAG[1] + 1e-9;
     const r = { wait: w.map(o => +o.wait.toFixed(4)) };
-    r.order = w[1].wait === 0 && w[0].wait >= lo && w[0].wait <= hi && w[2].wait - w[0].wait >= lo && w[2].wait - w[0].wait <= hi;
+    r.order = w[0].wait === 0 && w.slice(1).every((o, i) => o.wait - w[i].wait >= lo && o.wait - w[i].wait <= hi);
     draw(); r.drawn0 = twOn.length;
     const x0 = w.map(o => o.x), life0 = w.map(o => o.life), h = RAGE_LAG[0] / 2;
     step(h);
-    r.frozen = [0, 2].every(i => w[i].x === x0[i] && w[i].life === life0[i]);
-    r.moved = w[1].x !== x0[1] && w[1].life < life0[1];
+    r.frozen = w.slice(1).every((o, i) => o.x === x0[i + 1] && o.life === life0[i + 1]);
+    r.moved = w[0].x !== x0[0] && w[0].life < life0[0];
     let g = 0;
     while (w.some(o => o.wait > 0) && g++ < 100) step(h);
-    draw(); r.drawn1 = twOn.length;
-    r.go = [0, 2].every(i => w[i].life < life0[i]);
+    draw(); r.drawn1 = twOn.length; r.n = w.length;
+    r.go = w.every((o, i) => o.life < life0[i]);
     cleanTools(); draw();
     return r;
   });
-  ok('龍捲風出場錯開：中間那道先出、兩旁照 RAGE_LAG 接著出；還在等的不畫、不動、不扣壽命，等完才出場',
-     rtwl.order && rtwl.drawn0 === 1 && rtwl.frozen && rtwl.moved && rtwl.drawn1 === 3 && rtwl.go, JSON.stringify(rtwl));
+  ok('龍捲風出場錯開：第一道先出、其餘照 RAGE_LAG 一道接一道；還在等的不畫、不動、不扣壽命，等完才出場',
+     rtwl.order && rtwl.drawn0 === 1 && rtwl.frozen && rtwl.moved && rtwl.drawn1 === rtwl.n && rtwl.go, JSON.stringify(rtwl));
 
-  /* ── 投石機／加農砲：幾隊接成一長排（間距照舊 TREB_GAP／CAN_GAP），同一隊瞄同一點，
-        每一隊的目標沿著排的方向挪「那一隊的中心離整排中心多遠」——平行打過去（使用者選「並排、平行推過去」） ── */
+  /* ── 投石機／加農砲：第一隊跟關著時架的那一隊一模一樣（位置、目標、瞄的高度）；其餘每一隊照自己那一份的兩頭各架一隊——
+        同一隊瞄同一點、目標就是 rageEnds 第二頭那一份、瞄地面（第二下點在建築上也一樣，同隕石散出去的那幾顆）；
+        第一發：第一隊跟平常一樣、同一隊同時，第二隊起接在前一隊後面 RAGE_LAG 秒 ── */
   const rline = await page.evaluate(() => {
-    const X = siteR + 30, t0 = tool, G = (x, z) => ({ kind: 'ground', point: { x, y: 0, z }, dir: { x: 0, y: -1, z: 0 } });
-    const chk = (list, team, gap) => {
-      const a = list[0], b = list[list.length - 1], L = Math.hypot(b.x - a.x, b.z - a.z), ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
-      const mx = list.reduce((s, m) => s + m.x, 0) / list.length, mz = list.reduce((s, m) => s + m.z, 0) / list.length;
-      const gaps = list.slice(1).map((m, i) => Math.hypot(m.x - list[i].x, m.z - list[i].z));
+    const X = siteR + 30, t0 = tool, Y = 6;
+    const G = (x, z) => ({ kind: 'ground', point: { x, y: 0, z }, dir: { x: 0, y: -1, z: 0 } });
+    const B = (x, z) => ({ kind: 'block', point: { x, y: Y, z }, dir: { x: 0, y: -1, z: 0 } });
+    const real = rageEnds;
+    let e = null;
+    rageEnds = function (...a) { return (e = real(...a)); };
+    const pack = l => l.map(m => [m.x, m.z, m.tx, m.tz, m.ty].map(v => +v.toFixed(6)).join()).join('|');
+    const chk = (list, team, one) => {
       const teams = [];
-      for (let k = 0; k * team < list.length; k++) {
-        const g = list.slice(k * team, (k + 1) * team);
-        const cx = g.reduce((s, m) => s + m.x, 0) / g.length, cz = g.reduce((s, m) => s + m.z, 0) / g.length;
-        teams.push({ one: g.every(m => m.tx === g[0].tx && m.tz === g[0].tz),
-                     shift: +(g[0].tx * ux + g[0].tz * uz).toFixed(6), at: +((cx - mx) * ux + (cz - mz) * uz).toFixed(6),
-                     side: +Math.abs(g[0].tx * -uz + g[0].tz * ux).toFixed(6),
-                     next: g[0].next, sameNext: g.every(m => m.next === g[0].next) });
-      }
-      return { n: list.length, gap: gaps.every(d => Math.abs(d - gap) < 1e-6), teams,
-               ok: teams.length > 1 && teams.every(t => t.one && Math.abs(t.shift - t.at) < 1e-6 && t.side < 1e-6) };
+      for (let k = 0; k * team < list.length; k++) teams.push(list.slice(k * team, (k + 1) * team));
+      return {
+        first: pack(teams[0]) === one,
+        same: teams.every(g => g.every(m => m.tx === g[0].tx && m.tz === g[0].tz && m.ty === g[0].ty)),
+        ends: teams.slice(1).every((g, i) => g[0].tx === e.b[i + 1].x && g[0].tz === e.b[i + 1].z && g[0].ty === 0),
+        next: teams.map(g => g[0].next), sameNext: teams.every(g => g.every(m => m.next === g[0].next)), n: teams.length
+      };
     };
-    /* 第一發（v1.270.0）：第一隊跟關著時架的那一隊一樣、同一隊同時，第二隊起每隊接在前一隊後面 RAGE_LAG 秒 */
-    const lagOk = (r, one) => r.teams[0].next === one && r.teams.every(t => t.sameNext) &&
-      r.teams.slice(1).every((t, i) => { const d = t.next - r.teams[i].next; return d >= RAGE_LAG[0] - 1e-9 && d <= RAGE_LAG[1] + 1e-9; });
-    rageOn = false;
-    cleanTools(); tool = 'treb'; useTool(G(X, 0)); useTool(G(0, 0));
-    const trebOne = trebs.list[0].next;
-    cleanTools(); tool = 'cannon'; useTool(G(X, 0)); useTool(G(0, 0));
-    const canOne = cannons.list[0].next;
-    rageOn = true;
-    cleanTools(); tool = 'treb'; useTool(G(X, 0)); useTool(G(0, 0));
-    const treb = chk(trebs.list, TREB_TEAM, TREB_GAP);
-    cleanTools(); tool = 'cannon'; useTool(G(X, 0)); useTool(G(0, 0));
-    const can = chk(cannons.list, CAN_TEAM, CAN_GAP);
+    const lagOk = (r, one) => r.next[0] === one && r.sameNext &&
+      r.next.slice(1).every((t, i) => { const d = t - r.next[i]; return d >= RAGE_LAG[0] - 1e-9 && d <= RAGE_LAG[1] + 1e-9; });
+    let res;
+    try {
+      rageOn = false;
+      cleanTools(); tool = 'treb'; useTool(G(X, 0)); useTool(B(0, 0));
+      const trebOne = pack(trebs.list), trebNext = trebs.list[0].next;
+      cleanTools(); tool = 'cannon'; useTool(G(X, 0)); useTool(B(0, 0));
+      const canOne = pack(cannons.list), canNext = cannons.list[0].next;
+      rageOn = true;
+      cleanTools(); tool = 'treb'; useTool(G(X, 0)); useTool(B(0, 0));
+      const treb = chk(trebs.list, TREB_TEAM, trebOne);
+      cleanTools(); tool = 'cannon'; useTool(G(X, 0)); useTool(B(0, 0));
+      const can = chk(cannons.list, CAN_TEAM, canOne);
+      res = { treb, can, lag: lagOk(treb, trebNext) && lagOk(can, canNext) };
+    } finally { rageEnds = real; }
     rageOn = false; cleanTools(); tool = t0;
-    return { treb, can, lag: lagOk(treb, trebOne) && lagOk(can, canOne),
-             next: { treb: treb.teams.map(t => +t.next.toFixed(3)), can: can.teams.map(t => +t.next.toFixed(3)), trebOne, canOne } };
+    return res;
   });
-  ok('投石機與加農砲：幾隊接成一長排、間距照舊，同一隊瞄同一點，每一隊的目標跟著那一隊挪（平行打過去）',
-     rline.treb.ok && rline.treb.gap && rline.can.ok && rline.can.gap, JSON.stringify(rline));
+  ok('投石機與加農砲：第一隊跟平常一樣；其餘每一隊架在自己那一份、轟 rageEnds 第二頭那一點、瞄地面；同一隊瞄同一點',
+     rline.treb.n > 1 && rline.can.n > 1 && rline.treb.first && rline.treb.same && rline.treb.ends &&
+     rline.can.first && rline.can.same && rline.can.ends, JSON.stringify(rline));
   ok('投石機與加農砲：第一隊的第一發跟平常一樣、同一隊同時，第二隊起每隊接在前一隊後面 RAGE_LAG 秒',
-     rline.lag, JSON.stringify(rline.next));
+     rline.lag, JSON.stringify({ treb: rline.treb.next, can: rline.can.next }));
 
-  /* ── 煙火：分成 ceil(n ÷ FW_SHOT) 輪，每輪中心先出膛一發、其餘排隊；輪的中心平均圍在點的那一點四周 RAGE_FW_OFF；
-        一輪裡排隊的散在那一輪中心的 FW_OFF 內；最後一輪放剩下的；鏡頭只借一次（fwHold 只加 1） ── */
+  /* ── 煙火：分成 ceil(n ÷ FW_SHOT) 輪，第一輪的中心就是點的那一點、其餘幾輪的中心就是 rageSpots 那一組；
+        每輪中心先出膛一發、其餘排隊散在那一輪中心的 FW_OFF 內；最後一輪放剩下的；鏡頭只借一次（fwHold 只加 1）；
+        第一輪當場出膛，後面每輪的第一發照 RAGE_LAG 一輪接一輪錯開，那一輪其餘幾發整輪跟著往後挪 ── */
   const rfw = await page.evaluate(() => {
     cleanTools();
-    const h0 = fwHold, n = Math.min(RAGE_N * FW_SHOT, FW_MAX), k = Math.ceil(n / FW_SHOT);
-    launchFw({ x: 4, z: -6 }, n);
-    /* 每一輪的第一發（輪的中心）：第一輪當場出膛（在 fworks），後面幾輪排在 fwWait 裡（v1.270.0）——
-       認法是「剛好在 RAGE_FW_OFF 那一圈上」；其餘幾發離自己那一輪的中心 0.4～1 個 FW_OFF，不會剛好落在圈上 */
-    const onRing = w => Math.abs(Math.hypot(w.x - 4, w.z + 6) - RAGE_FW_OFF) < 1e-6;
-    const headQ = (fwWait || []).filter(onRing);
-    const cs = fworks.map(f => ({ x: f.x, z: f.z, t: 0 })).concat(headQ.map(w => ({ x: w.x, z: w.z, t: w.t })));
-    const ring = cs.map(c => +Math.hypot(c.x - 4, c.z + 6).toFixed(6));
-    const ang = cs.map(c => Math.atan2(c.z + 6, c.x - 4)).sort((a, b) => a - b);
-    const step = ang.map((a, i) => +(((i ? a - ang[i - 1] : a - ang[ang.length - 1] + Math.PI * 2)) % (Math.PI * 2)).toFixed(6));
-    const per = cs.map(() => 1);
-    let inR = true, after = true;
-    for (const w of fwWait) {
-      if (headQ.includes(w)) continue;
-      let bi = 0, bd = 1e9;
-      cs.forEach((c, i) => { const d = Math.hypot(w.x - c.x, w.z - c.z); if (d < bd) { bd = d; bi = i; } });
-      per[bi]++; if (bd > FW_OFF + 1e-9) inR = false;
-      if (w.t < cs[bi].t + FW_GAP[0] - 1e-9) after = false;          // 那一輪其餘幾發整輪跟著那一輪往後挪
+    const real = rageSpots;
+    let got = null;
+    rageSpots = function (...a) { return (got = real(...a)); };
+    const h0 = fwHold, n = FW_MAX, k = Math.ceil(n / FW_SHOT);
+    try { launchFw({ x: 4, z: -6 }, n); } finally { rageSpots = real; }
+    /* 每一輪的第一發（輪的中心）：第一輪在 fworks，後面幾輪排在 fwWait 裡、位置剛好就是 rageSpots 那一份 */
+    const heads = [{ x: fworks[0].x, z: fworks[0].z, t: 0 }];
+    for (let j = 1; j < k; j++) {
+      const w = fwWait.find(q => q.x === got[j].x && q.z === got[j].z);
+      heads.push(w ? { x: w.x, z: w.z, t: w.t, w } : null);
     }
-    const lt = cs.map(c => c.t).sort((a, b) => a - b);
-    const lag = fworks.length === 1 && lt[0] === 0 &&
-      lt.slice(1).every((t, i) => t - lt[i] >= RAGE_LAG[0] - 1e-9 && t - lt[i] <= RAGE_LAG[1] + 1e-9);
+    const ok0 = fworks.length === 1 && heads[0].x === 4 && heads[0].z === -6 && heads.every(Boolean);
+    const per = heads.map(() => 1);
+    let inR = true, after = true;
+    if (ok0) for (const w of fwWait) {
+      if (heads.some(h => h.w === w)) continue;
+      let bi = 0, bd = 1e9;
+      heads.forEach((c, i) => { const d = Math.hypot(w.x - c.x, w.z - c.z); if (d < bd) { bd = d; bi = i; } });
+      per[bi]++; if (bd > FW_OFF + 1e-9) inR = false;
+      if (w.t < heads[bi].t + FW_GAP[0] - 1e-9) after = false;          // 那一輪其餘幾發整輪跟著那一輪往後挪
+    }
+    const lt = ok0 ? heads.map(c => c.t) : [];
+    const lag = ok0 && lt[0] === 0 && lt.slice(1).every((t, i) => t - lt[i] >= RAGE_LAG[0] - 1e-9 && t - lt[i] <= RAGE_LAG[1] + 1e-9);
     const hold = fwHold - h0;
     cleanTools(); fwEnd();
-    const wantPer = Array.from({ length: k }, (_, j) => Math.min(FW_SHOT, n - j * FW_SHOT)).sort((a, b) => b - a);
-    return { n, k, shells: cs.length, ring, step, want: { off: RAGE_FW_OFF, step: +(Math.PI * 2 / k).toFixed(6), per: wantPer.join() },
-             per: per.sort((a, b) => b - a).join(), inR, hold, lag, after, headT: lt.map(t => +t.toFixed(3)) };
+    const wantPer = Array.from({ length: k }, (_, j) => Math.min(FW_SHOT, n - j * FW_SHOT)).join();
+    return { n, k, ok0, per: per.join(), wantPer, inR, hold, lag, after, headT: lt.map(t => +t.toFixed(3)) };
   });
-  ok('煙火：分成好幾輪，輪的中心平均圍在 RAGE_FW_OFF 上、一輪裡散在 FW_OFF 內、最後一輪放剩下的；鏡頭只借一次',
-     rfw.k > 1 && rfw.shells === rfw.k && rfw.ring.every(d => Math.abs(d - rfw.want.off) < 1e-6) &&
-     rfw.step.every(s => Math.abs(s - rfw.want.step) < 2e-6) && rfw.inR && rfw.hold === 1 && rfw.per === rfw.want.per,
-     JSON.stringify(rfw));
+  ok('煙火：分成好幾輪，第一輪在點的那一點、其餘幾輪的中心是 rageSpots 那一組、一輪裡散在 FW_OFF 內、最後一輪放剩下的；鏡頭只借一次',
+     rfw.k > 1 && rfw.ok0 && rfw.inR && rfw.hold === 1 && rfw.per === rfw.wantPer, JSON.stringify(rfw));
   ok('煙火：第一輪當場出膛，後面每輪的第一發照 RAGE_LAG 一輪接一輪錯開，那一輪其餘幾發整輪跟著往後挪',
      rfw.lag && rfw.after, JSON.stringify({ headT: rfw.headT, lag: rfw.lag, after: rfw.after }));
+
+  /* ── 保齡球與天降鐵球（v1.275.0）：第一顆照舊從第一點出手；其餘出手點就是 rageEnds 第一頭那一組、
+        保齡球朝自己那一份的第二頭滾（偏差在 BALL_SPREAD 內）、水平速度都是 BALL_SPD；
+        鐵球飛得到自己那一份的第二頭（水平速度 ＝ 兩頭的距離 ÷ 同一個 fly），兩下點在同一點就每一顆都直直砸。
+        出手照 rageLags 一顆接一顆：還在等的不動、不扣壽命、不畫（draw 的 ballOn），等完才出手 ── */
+  const rball = await page.evaluate(() => {
+    cleanTools();
+    const real = rageEnds;
+    let e = null;
+    rageEnds = function (...a) { return (e = real(...a)); };
+    const ang = (vx, vz, dx, dz) => Math.abs(Math.atan2(vx * dz - vz * dx, vx * dx + vz * dz));
+    const F = { x: -40, z: 6 }, T = { x: 5, z: -3 }, r = {};
+    try {
+      launchBall(F, T, BALL_MAX);
+      const bs = balls.slice();
+      r.ball = { n: bs.length, first: bs[0].x === F.x && bs[0].z === F.z && ang(bs[0].vx, bs[0].vz, T.x - F.x, T.z - F.z) <= BALL_SPREAD + 1e-9,
+                 at: bs.slice(1).every((o, i) => o.x === e.a[i + 1].x && o.z === e.a[i + 1].z),
+                 aim: bs.slice(1).every((o, i) => ang(o.vx, o.vz, e.b[i + 1].x - o.x, e.b[i + 1].z - o.z) <= BALL_SPREAD + 1e-9),
+                 spd: bs.every(o => Math.abs(Math.hypot(o.vx, o.vz) - BALL_SPD) < 1e-9) };
+      /* 錯開：等的不動、不扣壽命、不畫 */
+      const lo = RAGE_LAG[0] - 1e-9, hi = RAGE_LAG[1] + 1e-9;
+      r.ball.order = bs[0].wait === 0 && bs.slice(1).every((o, i) => o.wait - bs[i].wait >= lo && o.wait - bs[i].wait <= hi);
+      draw(); r.ball.drawn0 = ballOn.length;
+      const x0 = bs.map(o => o.x), life0 = bs.map(o => o.life), h = RAGE_LAG[0] / 2;
+      step(h);
+      r.ball.frozen = bs.slice(1).every((o, i) => o.x === x0[i + 1] && o.life === life0[i + 1]);
+      r.ball.moved = bs[0].x !== x0[0] && bs[0].life < life0[0];
+      let g = 0;
+      while (bs.some(o => o.wait > 0) && g++ < 200) step(h);
+      draw(); r.ball.drawn1 = ballOn.length;
+      cleanTools();
+      dropBall(F, T, BALL_MAX);
+      const ds = balls.slice(), v0 = Math.hypot(ds[0].vx, ds[0].vz) / Math.hypot(T.x - F.x, T.z - F.z);   // 1 ÷ fly
+      r.drop = { n: ds.length, first: ds[0].x === F.x && ds[0].z === F.z,
+                 at: ds.slice(1).every((o, i) => o.x === e.a[i + 1].x && o.z === e.a[i + 1].z),
+                 aim: ds.slice(1).every((o, i) => Math.abs(o.vx - (e.b[i + 1].x - o.x) * v0) < 1e-6 && Math.abs(o.vz - (e.b[i + 1].z - o.z) * v0) < 1e-6),
+                 order: ds[0].wait === 0 && ds.slice(1).every((o, i) => o.wait > ds[i].wait) };
+      cleanTools();
+      rageEnds = real;
+      dropBall(F, { x: F.x, z: F.z }, BALL_MAX);
+      r.drop.straight = balls.length === BALL_MAX && balls.every(o => o.vx === 0 && o.vz === 0);
+    } finally { rageEnds = real; }
+    cleanTools(); draw();
+    r.max = BALL_MAX;
+    return r;
+  });
+  ok('保齡球：第一顆照舊，其餘從 rageEnds 那一組出手、各自朝自己的第二頭滾，水平速度都是 BALL_SPD',
+     rball.ball.n === rball.max && rball.ball.first && rball.ball.at && rball.ball.aim && rball.ball.spd, JSON.stringify(rball.ball));
+  ok('保齡球一顆接一顆錯開 RAGE_LAG：還在等的不動、不扣壽命、不畫，等完才出手',
+     rball.ball.order && rball.ball.drawn0 === 1 && rball.ball.frozen && rball.ball.moved && rball.ball.drawn1 === rball.max,
+     JSON.stringify(rball.ball));
+  ok('天降鐵球：第一顆照舊，其餘從 rageEnds 那一組出手、飛向自己的第二頭；兩下點在同一點就每一顆都直直砸',
+     rball.drop.n === rball.max && rball.drop.first && rball.drop.at && rball.drop.aim && rball.drop.order && rball.drop.straight,
+     JSON.stringify(rball.drop));
 
   await page.evaluate(() => { rageOn = pref.rage = false; cleanTools(); renderTools(); });
   }   // ── 〈破壞模式〉結束（--tier 跳過時從這裡出來）

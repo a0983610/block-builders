@@ -35,7 +35,7 @@ let stats = freshStats();
 /* lazy＝小人模式選哪一檔（v1.219，見 game-workers.js 的 LAZY_MODES），存的是 id */
 /* keys＝快捷鍵 1～9 各綁哪一把道具（v1.242.0），存道具 id，空字串＝沒綁。
    預設全空（使用者選的），見 開發筆記〈破壞道具快捷鍵 1～9〉 */
-/* rage＝破壞模式開著沒（v1.262.0，見 game-tools.js 的 RAGE_N），預設關 */
+/* rage＝破壞模式開著沒（v1.262.0，見 game-tools.js 的 rageN），預設關 */
 /* ao＝積木 AO 開著沒（v1.273.0，見 game-ui.js 的 aoOn），預設開 */
 const KEY_N = 9;
 const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',

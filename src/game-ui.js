@@ -386,7 +386,10 @@ function draw() {
   metFly.length = 0;
   if (meteors) for (const m of meteors) if (m.lit) metFly.push(m);
   ENG.putMeteors(metFly);
-  ENG.putBalls(balls || EMPTY);
+  /* 球同理：破壞模式還在等出手的那幾顆不畫（v1.275.0，見 launchBall） */
+  ballOn.length = 0;
+  if (balls) for (const o of balls) if (!(o.wait > 0)) ballOn.push(o);
+  ENG.putBalls(ballOn);
   ENG.putBncs(bncs || EMPTY);
   /* 龍捲風同理：破壞模式還在等出場的那幾道不畫（v1.270.0，見 launchTornado）。 */
   twOn.length = 0;
@@ -431,6 +434,7 @@ function draw() {
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石
 const twOn = [];                // draw() 每幀重填：這一刻已經出場的龍捲風
+const ballOn = [];              // draw() 每幀重填：這一刻已經出手的球（保齡球、天降鐵球）
 
 /* ── 輸入 ───────────────────────────────────────────────── */
 let spinOn = false;
@@ -767,15 +771,15 @@ function renderTools() {
   $('toolNow').dataset.cur = cur.id;
   renderRage();                       // 換了道具，開關要不要灰掉跟著變
 }
-/* 破壞模式的開關（v1.262.0，見 game-tools.js 的 RAGE_N）：一直顯示在工具小窗左邊（手機疊在上面），
-   拿的不是 RAGE_TOOLS 那五把就灰掉（.na）——灰掉照樣切得動（使用者選「一直顯示，不適用時灰掉」）。 */
+/* 破壞模式的開關（v1.262.0，見 game-tools.js 的 rageN）：一直顯示在工具小窗左邊（手機疊在上面），
+   拿的不是 RAGE_TOOLS 那幾把就灰掉（.na）——灰掉照樣切得動（使用者選「一直顯示，不適用時灰掉」）。 */
 function renderRage() {
   const b = $('rageBtn'), use = !!RAGE_TOOLS[tool];
   b.classList.toggle('on', rageOn);
   b.classList.toggle('na', !use);
   b.setAttribute('aria-pressed', String(rageOn));
-  b.title = '破壞模式（' + (rageOn ? '開' : '關') + '）：隕石、龍捲風、投石機、加農砲、煙火點一下放好幾份，' +
-            '碰到場上的上限就放到上限' + (use ? '' : '——現在拿的這一把不受影響');
+  b.title = '破壞模式（' + (rageOn ? '開' : '關') + '）：隕石、龍捲風、投石機、加農砲、煙火、保齡球、天降鐵球' +
+            '一下放到場上的上限，點的那一點加附近隨機幾處' + (use ? '' : '——現在拿的這一把不受影響');
 }
 /* 小人模式選單（v1.219，見 game-workers.js 的 LAZY_MODES）：使用者選「跟工具一樣的小窗」，
    所以長相與開合都照 renderTools——平常只留「現在是哪一檔」，指上去或點一下才展開，

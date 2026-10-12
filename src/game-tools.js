@@ -157,12 +157,61 @@ let tool = 'hammer';
    **隕石例外**：看過預覽之後（「3隕石太靠近了(也增加同時更多顆 位置隨機)」）改成一下放滿上限 6 顆、
    隨機散開（見 callMeteor）——上限照舊不動，所以連點第二下時上一批還沒落地的會整批被擠掉（使用者選的）。
    **只有玩家點的那一下會乘**：份數在 useTool 那一條（與 aimTrebs 那幾支）才算，出手的函式本身預設照舊一份——
-   e2e 與別的地方直接叫它們的，行為一點都沒變。見 開發筆記〈破壞模式：點一下放好幾份（v1.262.0）〉 */
-const RAGE_N = 3;
-const RAGE_TOOLS = { meteor: 1, tornado: 1, treb: 1, cannon: 1, fw: 1 };   // 會乘的那五把（開關灰不灰照這張表）
+   e2e 與別的地方直接叫它們的，行為一點都沒變。見 開發筆記〈破壞模式：點一下放好幾份（v1.262.0）〉
+   **v1.275.0 再調整**（使用者：「破壞模式統一調整成各道具的最多數量(例如龍捲風好像應該是4)」
+   「破壞模式統一都是點擊附帶附近隨機其他位置(各道具間距不同)」「保齡球&天降鐵球加入破壞模式」）：
+     · 份數**直接放到上限**（v1.262.0～v1.274 是 ×3 再壓上限）：龍捲風 3 → 4 道，其餘本來就到上限；保齡球、天降鐵球各 6 顆（BALL_MAX）
+     · 擺法**統一一條規則**（rageSpots）：第一份在點的那一點，其餘隨機散在附近、兩兩至少隔一段距離——範圍與間距每把各一組（RAGE_SPOT）
+     · 點兩下的那五把，第二點**也各自散在第二點附近**（使用者選的「也是分散在第二點附近」），不再是並排平行
+   見 開發筆記〈破壞模式統一：放到上限、點的那一點加附近隨機幾處（v1.275.0）〉 */
+const RAGE_TOOLS = { meteor: 1, tornado: 1, treb: 1, cannon: 1, fw: 1, ball: 1, drop: 1 };   // 會放好幾份的那幾把（開關灰不灰照這張表）
 let rageOn = false;                 // 開關（存在 pref.rage，見 game-save.js）
-/* 這一下放幾份：one 是平常一下放多少，cap 是場上同時最多幾個（同一個單位）。沒開就是 one */
-const rageN = (one, cap) => rageOn ? Math.max(one, Math.min(RAGE_N * one, cap)) : one;
+/* 這一下放幾份：one 是平常一下放多少，cap 是場上同時最多幾個（同一個單位）。沒開就是 one，開著就是 cap */
+const rageN = (one, cap) => rageOn ? Math.max(one, cap) : one;
+/* 每一把多出來的那幾份散多開（v1.275.0）：r 散在點的那一點周圍幾格內、gap 兩份之間至少隔幾格。
+   間距照那一把**自己一份多大**定，兩份才不會疊在一起：
+     meteor 破壞半徑 MET_R（v1.270.0 那一組，範圍 40 照舊）
+     tornado 漏斗頂的半徑約 10（v1.262.0 看過預覽挑的間隔 24 照舊）
+     treb／cannon 一隊的正面寬（投石機 21、加農砲 14）再加一台的身寬，兩隊才不會交錯在一起
+     fw 一輪自己散 FW_OFF（7）格，兩輪的中心至少隔一輪的直徑
+     ball／drop 球的直徑 2 × BALL_R 再留一點，擦身而過不是疊在一起
+   點兩下的那幾把，第二點周圍也照同一組散。**物件不是常數**：預覽頁要邊看邊挑（同 ZEN_Z），程式只讀不寫 */
+const RAGE_SPOT = {
+  meteor: { r: 40, gap: 9.2 }, tornado: { r: 36, gap: 24 },
+  treb: { r: 40, gap: 30 }, cannon: { r: 36, gap: 22 },
+  fw: { r: 24, gap: 15 }, ball: { r: 20, gap: 9 }, drop: { r: 20, gap: 9 }
+};
+/* n 份的位置：**第一份就是 (cx, cz)**（＝平常點一下那一份），其餘在 s.r 格內均勻抽（開根號，同 fireRock），
+   跟已經抽好的任何一份（含第一份）近於 s.gap 就重抽。一份抽 30 次都塞不進去（前面幾份剛好把空位切碎了）就**整批重抽**；
+   整批重抽 20 次還不成只會是常數被改到根本放不下，缺的就疊在中心，不讓它卡死（v1.262.0 metSpots 那一套，
+   v1.275.0 起每把共用、第一份固定在點的那一點）。一份的時候不抽骰子 */
+function rageSpots(n, cx, cz, s) {
+  let pts = [{ x: cx, z: cz }];
+  for (let k = 0; k < 20 && pts.length < n; k++) {
+    pts = [{ x: cx, z: cz }];
+    for (let i = 1; i < n; i++) {
+      let p = null;
+      for (let t = 0; t < 30 && !p; t++) {
+        const a = rr(0, Math.PI * 2), r = s.r * Math.sqrt(Math.random());
+        const q = { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r };
+        if (pts.every(o => Math.hypot(o.x - q.x, o.z - q.z) >= s.gap)) p = q;
+      }
+      if (!p) break;
+      pts.push(p);
+    }
+  }
+  while (pts.length < n) pts.push({ x: cx, z: cz });
+  return pts;
+}
+/* 點兩下的那幾把：兩頭各自散（v1.275.0，使用者選的「也是分散在第二點附近」）。
+   **兩下點在同一個地方**（鐵球的「同一點點兩下就直直砸」那一種）就兩頭共用同一組，每一份照舊直直下去 */
+function rageEnds(n, from, toward, s) {
+  const a = rageSpots(n, from.x, from.z, s);
+  /* 位移先算好再加：寫成 p.x + toward.x − from.x 是由左往右算，同一點的時候差出 4e-15（探針量到的），就不是「直直」了 */
+  const dx = toward.x - from.x, dz = toward.z - from.z;
+  return { a, b: Math.hypot(dx, dz) < 0.5 ? a.map(p => ({ x: p.x + dx, z: p.z + dz }))
+                                          : rageSpots(n, toward.x, toward.z, s) };
+}
 /* 好幾份之間錯開一點時間（v1.270.0）。使用者：「破壞模式同時多下增加一些時間差」，
    看過預覽之後選「五把都錯開」「每一份接在前一份後面 0.1～0.25 秒」（另外的選項 0.2～0.5、0.5～1）。
    rageLags(n) ＝ 第 i 份晚幾秒：第一份 0（＝平常點一下那一份），之後每份接在前一份後面 RAGE_LAG 秒。
@@ -759,15 +808,24 @@ function aimTrebs(point, onBlock) {
   // 破壞模式（v1.262.0）：幾隊照場上上限算（8 台 ＝ 2 隊）
   castTrebs(aim, point, onBlock ? point.y : 0, rageN(1, Math.floor(TREB_MAX / TREB_TEAM)));
 }
-/* 一隊排成一列、整隊面向目標（橫向 ＝ 指向目標那個方向轉 90 度，同 castArrows）。
-   同一個地方連點兩下就沒有方向可用，跟箭雨一樣退回「朝場心」。
-   aimY ＝ 要轟的那一點多高（點空地是 0，同 castArrows 的第三個參數）。
-   teams ＝ 幾隊（破壞模式，v1.262.0；不給就是一隊）：幾隊**接成一長排**、間距照舊，
-   每一隊轟的是「第二點往橫向挪那一隊離中心那麼遠」——平行打過去（使用者選「並排、平行推過去」）。 */
+/* aimY ＝ 要轟的那一點多高（點空地是 0，同 castArrows 的第三個參數）。
+   teams ＝ 幾隊（破壞模式，v1.262.0；不給就是一隊）。v1.275.0 起第一隊照舊架在第一點、轟第二點，
+   其餘每一隊**架在第一點附近、轟第二點附近**（rageEnds，範圍與間距見 RAGE_SPOT.treb），各自一隊照下面那一套排
+   （v1.262.0～v1.274 是幾隊接成一長排、目標沿著排的方向平行挪）。散出去的那幾隊瞄**地面**（同隕石：
+   點在屋頂上的話散出去的那一點底下可能是空的，瞄那個高度會在半空中炸開；瞄地面的話路上有建築就照舊打在建築上）。
+   第二隊起第一發往後挪（v1.270.0，見 rageLags）：機台照舊一起架好，之後每台各自裝填本來就會錯開 */
 function castTrebs(from, toward, aimY, teams) {
   aim = null;
   teams = teams || 1;
-  const N = TREB_TEAM * teams;
+  const ends = teams > 1 ? rageEnds(teams, from, toward, RAGE_SPOT.treb) : null, lag = rageLags(teams);
+  for (let t = 0; t < teams; t++)
+    trebTeam(t ? ends.a[t] : from, t ? ends.b[t] : toward, t ? 0 : aimY, lag[t]);
+  sndWind();                        // 一隊架好那一聲（一隊一次，不是四台各一聲；破壞模式幾隊也是一聲）
+}
+/* 一隊排成一列、整隊面向目標（橫向 ＝ 指向目標那個方向轉 90 度，同 castArrows）。
+   同一個地方連點兩下就沒有方向可用，跟箭雨一樣退回「朝場心」。wait ＝ 這一隊的第一發再晚幾秒（見 placeTreb）。 */
+function trebTeam(from, toward, aimY, wait) {
+  const N = TREB_TEAM;
   /* 第一下點在建築上的話**整隊**先推到外圍（機台不能長在牆裡面，同 v1.102 那條規則）。
      推的是隊伍的中心、不是一台一台推：一台一台推會把四台壓到同一個半徑上，
      排在同一側的兩台等於疊在一起（第一下點在建築正中央時整隊只剩兩個位置）。
@@ -802,15 +860,10 @@ function castTrebs(from, toward, aimY, teams) {
     }
     cx += ux * push; cz += uz * push;
   }
-  /* 第二隊起第一發往後挪（v1.270.0，見 rageLags）：機台照舊一起架好，之後每台各自裝填本來就會錯開 */
-  const lag = rageLags(teams);
   for (let i = 0; i < N; i++) {
     const off = (i - (N - 1) / 2) * TREB_GAP;
-    const sh = (Math.floor(i / TREB_TEAM) - (teams - 1) / 2) * TREB_TEAM * TREB_GAP;   // 這一隊的目標往橫向挪多少（一隊是 0）
-    placeTreb({ x: cx + sx * off, z: cz + sz * off }, { x: toward.x + sx * sh, z: toward.z + sz * sh }, aimY,
-              lag[Math.floor(i / TREB_TEAM)]);
+    placeTreb({ x: cx + sx * off, z: cz + sz * off }, toward, aimY, wait);
   }
-  sndWind();                        // 一隊架好那一聲（一隊一次，不是四台各一聲；破壞模式幾隊也是一聲）
 }
 /* 架一台：站在 spot、轟 aimAt。
    兩道保險（castTrebs 已經先推過隊伍的中心，這裡是給單台呼叫與斜著站的那一隊用的）：
@@ -1057,18 +1110,26 @@ let cannons = null;
    第二下點在**建築**上時那一點的高度也算目標（v1.212，同 aimArrows）。 */
 function aimCannons(point, onBlock) {
   if (!aim) { aimFirst(point, CAN_AIM_R, CAN_AIM_C); return; }
-  // 破壞模式（v1.262.0）：幾隊照場上上限算（6 門 ＝ 2 隊），排法同 castTrebs
+  // 破壞模式（v1.262.0）：幾隊照場上上限算（6 門 ＝ 2 隊），擺法同 castTrebs
   castCannons(aim, point, onBlock ? point.y : 0, rageN(1, Math.floor(CAN_MAX / CAN_TEAM)));
 }
-/* 一隊排成一列、整隊面向目標。**整段隊形的算法與理由跟 castTrebs 一模一樣**
-   （推隊伍的中心而不是一台一台推、推完才算方向、排完再整隊往外挪到每一門都在圈外、
-   最後夾回島內）——那邊的註解就是這一段的說明，不重抄一遍。
-   照 castArrows／castTrebs 的先例各留一份：這三把的隊形細節（幾台、間距、退多遠）
-   各不相同，抽成共用的話參數會比程式還長。teams（破壞模式，v1.262.0）也同 castTrebs。 */
+/* teams（破壞模式，v1.262.0）同 castTrebs：v1.275.0 起其餘幾隊架在第一點附近、轟第二點附近
+   （範圍與間距見 RAGE_SPOT.cannon），散出去的那幾隊瞄地面，第二隊起第一發往後挪。 */
 function castCannons(from, toward, aimY, teams) {
   aim = null;
   teams = teams || 1;
-  const N = CAN_TEAM * teams;
+  const ends = teams > 1 ? rageEnds(teams, from, toward, RAGE_SPOT.cannon) : null, lag = rageLags(teams);
+  for (let t = 0; t < teams; t++)
+    canTeam(t ? ends.a[t] : from, t ? ends.b[t] : toward, t ? 0 : aimY, lag[t]);
+  sndWind();                        // 一隊架好那一聲（同投石機，一隊一次）
+}
+/* 一隊排成一列、整隊面向目標。**整段隊形的算法與理由跟 trebTeam 一模一樣**
+   （推隊伍的中心而不是一台一台推、推完才算方向、排完再整隊往外挪到每一門都在圈外、
+   最後夾回島內）——那邊的註解就是這一段的說明，不重抄一遍。
+   照 castArrows／castTrebs 的先例各留一份：這三把的隊形細節（幾台、間距、退多遠）
+   各不相同，抽成共用的話參數會比程式還長。 */
+function canTeam(from, toward, aimY, wait) {
+  const N = CAN_TEAM;
   let cx = from.x, cz = from.z;
   const d0 = Math.hypot(cx, cz), minD = siteR + CAN_STAND;
   if (d0 < minD) {
@@ -1093,14 +1154,10 @@ function castCannons(from, toward, aimY, teams) {
     }
     cx += ux * push; cz += uz * push;
   }
-  const lag = rageLags(teams);                      // 同 castTrebs：第二隊起第一發往後挪（v1.270.0）
   for (let i = 0; i < N; i++) {
     const off = (i - (N - 1) / 2) * CAN_GAP;
-    const sh = (Math.floor(i / CAN_TEAM) - (teams - 1) / 2) * CAN_TEAM * CAN_GAP;     // 同 castTrebs：這一隊的目標往橫向挪多少
-    placeCannon({ x: cx + sx * off, z: cz + sz * off }, { x: toward.x + sx * sh, z: toward.z + sz * sh }, aimY,
-                lag[Math.floor(i / CAN_TEAM)]);
+    placeCannon({ x: cx + sx * off, z: cz + sz * off }, toward, aimY, wait);
   }
-  sndWind();                        // 一隊架好那一聲（同投石機，一隊一次）
 }
 /* 架一門：站在 spot、轟 aimAt。兩道保險同 placeTreb（斜著站時還在牆裡的那一門要推出去、
    站到島外的要夾回來；v1.211 起外緣同樣是 debrisR）。wait 同 placeTreb（v1.270.0）。 */
@@ -1364,8 +1421,11 @@ const BALL_R = 3.1;
    在地上平移的球，看不出是被「丟」出來的。
    方向仍留一點隨機偏差，但從 ±0.22 收到 ±0.08：偏差是丟球的手感，
    不該蓋過玩家指的方向（滾 60 單位的話橫向差 ±4.8）。 */
-/* 出手高度與回彈都要壓著點：球水平是 34 單位/秒，多滯空 0.1 秒就多飛 3.4 單位。
+/* 出手高度與回彈都要壓著點：球水平是 BALL_SPD 單位/秒（34 的時候多滯空 0.1 秒就多飛 3.4 單位）。
    彈太久的話它是「飛」到建築上的，看不出中間那段滾。現在兩下彈完，約 0.9 秒進入滾。 */
+/* 出手的水平速度。v1.275.0 從 34 加到 51（使用者：「保齡球水平初始速度增加」，選的是 ×1.5）：
+   空地上滾得到的距離跟它成正比（BALL_LIFE 7.5 秒 × BALL_ROLL 0.86 的衰減），約 152 → 229 單位 */
+const BALL_SPD = 51;
 const BALL_DROP = 3.4;              // 出手高度（球心離「貼地時的球心」多高）
 const BALL_SPREAD = 0.08;           // 方向偏差 ±rad（約 ±4.6°）
 const BALL_BOUNCE = 0.42;           // 落地回彈保留多少垂直速度
@@ -1466,20 +1526,28 @@ function aimDir(from, toward, spread) {
 /* 第一下記位置，第二下才丟出去。 */
 function aimBall(point) {
   if (!aim) { aimFirst(point, BALL_R, 0x8fe6ff); return; }
-  launchBall(aim, point);
+  launchBall(aim, point, rageN(1, BALL_MAX));       // 破壞模式（v1.275.0）一下放到上限 6 顆
 }
-function launchBall(from, toward) {
-  const a = aimDir(from, toward, BALL_SPREAD);
+/* n ＝ 幾顆（破壞模式，v1.275.0；不給就是一顆）：第一顆照舊從第一點朝第二點滾，其餘出手點散在第一點附近、
+   方向各自朝第二點附近散開的那一點（rageEnds，範圍與間距見 RAGE_SPOT.ball）。
+   一顆接一顆錯開 rageLags（同龍捲風：還沒輪到的掛著 wait，stepBall 跳過、draw 不畫，出手那一刻才揮一聲）。 */
+function launchBall(from, toward, n) {
+  n = n || 1;
+  const ends = n > 1 ? rageEnds(n, from, toward, RAGE_SPOT.ball) : null, lag = rageLags(n);
   if (!balls) balls = [];
-  if (balls.length >= BALL_MAX) balls.shift();     // 放太多顆就把最早那顆擠掉（同龍捲風）
-  balls.push({
-    x: from.x, y: BALL_R + BALL_DROP, z: from.z,
-    vx: Math.cos(a) * 34, vz: Math.sin(a) * 34, vy: rr(-3, -0.5),   // 是往下丟不是往上拋
-    r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 0,
-    cd: 0, pin: 0, pn: 0,            // cd＝彈開後的冷卻、pin＝彈開幾次、pn＝上一幀打掉幾塊
-    // 滾動軸（水平、垂直於前進方向）。畫的時候直接讀這兩個，見 ENG.putBalls
-    ax: Math.sin(a), az: -Math.cos(a)
-  });
+  for (let i = 0; i < n; i++) {
+    const p = i ? ends.a[i] : from, a = aimDir(p, i ? ends.b[i] : toward, BALL_SPREAD);
+    if (balls.length >= BALL_MAX) balls.shift();     // 放太多顆就把最早那顆擠掉（同龍捲風）
+    balls.push({
+      x: p.x, y: BALL_R + BALL_DROP, z: p.z,
+      vx: Math.cos(a) * BALL_SPD, vz: Math.sin(a) * BALL_SPD, vy: rr(-3, -0.5),   // 是往下丟不是往上拋
+      r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE, hops: 0,
+      cd: 0, pin: 0, pn: 0,          // cd＝彈開後的冷卻、pin＝彈開幾次、pn＝上一幀打掉幾塊
+      // 滾動軸（水平、垂直於前進方向）。畫的時候直接讀這兩個，見 ENG.putBalls
+      ax: Math.sin(a), az: -Math.cos(a),
+      wait: lag[i]                   // 破壞模式還要等幾秒才出手（一顆的時候 0）
+    });
+  }
   aim = null;
   sndSwing();
 }
@@ -1567,30 +1635,38 @@ const DROP_HMAX = 8;
    同一個地方連點兩下水平速度就是 0，等於以前那種直直砸下來。 */
 function aimDropBall(point) {
   if (!aim) { aimFirst(point, BALL_R, 0xc0c8d2); return; }
-  dropBall(aim, point);
+  dropBall(aim, point, rageN(1, BALL_MAX));         // 破壞模式（v1.275.0）一下放到上限 6 顆（跟保齡球同一份上限）
 }
-/* toward 不給＝直直掉（測試與「從這一點砸下去」的呼叫端用）。 */
-function dropBall(point, toward) {
+/* toward 不給＝直直掉（測試與「從這一點砸下去」的呼叫端用）。
+   n ＝ 幾顆（破壞模式，v1.275.0；不給就是一顆）：同 launchBall，第一顆照舊，其餘出手點散在第一點附近、
+   落點散在第二點附近（RAGE_SPOT.drop）；兩下點在同一點（或 toward 不給）就每一顆都直直砸（見 rageEnds）。錯開同 launchBall */
+function dropBall(point, toward, n) {
+  n = n || 1;
+  const ends = n > 1 ? rageEnds(n, point, toward || point, RAGE_SPOT.drop) : null, lag = rageLags(n);
   if (!balls) balls = [];
-  if (balls.length >= BALL_MAX) balls.shift();     // 滿了把最早那顆擠掉（同保齡球）
   const top = Math.max(DROP_TOP, siteTopNow() + DROP_UP);
   const T = Math.sqrt(2 * (top - BALL_R) / GRAV);
   const fly = (1 - Math.pow(BALL_ROLL, T)) / Math.log(1 / BALL_ROLL);   // T 秒飛得到幾秒份（見上面）
-  const vx = toward ? (toward.x - point.x) / fly : 0, vz = toward ? (toward.z - point.z) / fly : 0;
-  const h = Math.hypot(vx, vz);
-  balls.push({
-    x: point.x, y: top, z: point.z,
-    vx, vz, vy: 0,                   // 平拋：垂直從 0 開始
-    /* 壽命要把「掉下來那一段」外加進去（v1.119）：起點跟著建築走之後，
-       最高的地標要掉 3.55 秒，那等於先吃掉 BALL_LIFE 的一半——實測大笨鐘 9000
-       落地才第 6.9 秒，剩不到 0.6 秒就被壽命收掉。外加之後不管從多高丟下來，
-       「落地之後還能滾多久」都是同一份預算。 */
-    r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE + Math.sqrt(2 * top / GRAV), hops: 0,
-    // 滾動軸（同保齡球）；直直掉不滾，軸給個定值就好
-    ax: h > 1e-6 ? vz / h : 1, az: h > 1e-6 ? -vx / h : 0,
-    drop: 1, pops: 0,                // pops＝被表面頂過幾幀（跟落地的 hops 分開算）
-    cd: 0, pin: 0, pn: 0             // 跳彈那條（保齡球專用）的欄位，兩種球的形狀留一致
-  });
+  for (let i = 0; i < n; i++) {
+    const p = i ? ends.a[i] : point, q = i ? ends.b[i] : toward;
+    if (balls.length >= BALL_MAX) balls.shift();   // 滿了把最早那顆擠掉（同保齡球）
+    const vx = q ? (q.x - p.x) / fly : 0, vz = q ? (q.z - p.z) / fly : 0;
+    const h = Math.hypot(vx, vz);
+    balls.push({
+      x: p.x, y: top, z: p.z,
+      vx, vz, vy: 0,                 // 平拋：垂直從 0 開始
+      /* 壽命要把「掉下來那一段」外加進去（v1.119）：起點跟著建築走之後，
+         最高的地標要掉 3.55 秒，那等於先吃掉 BALL_LIFE 的一半——實測大笨鐘 9000
+         落地才第 6.9 秒，剩不到 0.6 秒就被壽命收掉。外加之後不管從多高丟下來，
+         「落地之後還能滾多久」都是同一份預算。 */
+      r: BALL_R, ang: 0, hit: 0, life: BALL_LIFE + Math.sqrt(2 * top / GRAV), hops: 0,
+      // 滾動軸（同保齡球）；直直掉不滾，軸給個定值就好
+      ax: h > 1e-6 ? vz / h : 1, az: h > 1e-6 ? -vx / h : 0,
+      drop: 1, pops: 0,              // pops＝被表面頂過幾幀（跟落地的 hops 分開算）
+      cd: 0, pin: 0, pn: 0,          // 跳彈那條（保齡球專用）的欄位，兩種球的形狀留一致
+      wait: lag[i]                   // 破壞模式還要等幾秒才出手（一顆的時候 0，見 launchBall）
+    });
+  }
   aim = null;
   sndSwing();
 }
@@ -1851,6 +1927,11 @@ function stepBall(dt) {
   if (!balls) return;
   for (let i = balls.length - 1; i >= 0; i--) {
     const o = balls[i];
+    if (o.wait > 0) {                // 破壞模式還沒輪到這一顆（v1.275.0，見 launchBall）：不動、不扣壽命
+      o.wait -= dt;
+      if (o.wait > 0) continue;
+      sndSwing();
+    }
     o.life -= dt;
     if (o.cd > 0) o.cd -= dt;        // 彈開之後的冷卻（見 BALL_CD）
     o.vy -= GRAV * dt;
@@ -2152,31 +2233,31 @@ function twSwirl(w, o, dx, dz, d, dt, k) {
    出發方向照指的走，之後仍然一路亂竄（見 stepTwist），所以不會是一條直線。 */
 function aimTornado(point) {
   if (!aim) { aimFirst(point, TW_R, 0xd6e6f0); return; }
-  launchTornado(aim, point, rageN(1, TW_MAX));      // 破壞模式（v1.262.0）一次 3 道
+  launchTornado(aim, point, rageN(1, TW_MAX));      // 破壞模式：放到上限 4 道（v1.275.0；v1.262.0～v1.274 是 3 道）
 }
-/* n ＝ 幾道（破壞模式，v1.262.0；不給就是一道）：並排在第一點左右、間隔 RAGE_TW_GAP，
-   **全部朝同一個方向出發**（方向只抽一次，使用者選「並排、平行推過去」），之後各自亂竄。
-   旁邊那幾道要夾回 debrisR 以內：stepTwist 是「出界就把速度反過來」，生在界外的那一道
-   每一幀都還在界外，會原地來回翻。中間那一道（＝原本那一道）不動它。 */
-/* 看過預覽改的：第一版是 TW_R × 2（12，兩道底下的作用圈剛好碰在一起），「龍捲風也起始太靠近」——
-   漏斗頂端半徑約 10，12 的話上半截是疊在一起的。問過之後使用者選 24（頂端之間也有空隙，三道整排寬 48）。 */
-const RAGE_TW_GAP = TW_R * 4;
-/* 出場錯開（v1.270.0，見 rageLags）：**中間那道（點的那一點）先出**、兩旁的照 rageLags 接著出——
+/* n ＝ 幾道（破壞模式，v1.262.0；不給就是一道）。v1.275.0 起第一道照舊從第一點朝第二點出發，
+   其餘的**出發點散在第一點附近、目標散在第二點附近**（rageEnds，範圍與間距見 RAGE_SPOT.tornado），
+   每一道照自己那兩點抽方向（v1.262.0～v1.274 是並排在第一點左右、方向只抽一次、平行出發）。
+   散出去的那幾道要夾回 debrisR 以內：stepTwist 是「出界就把速度反過來」，生在界外的那一道
+   每一幀都還在界外，會原地來回翻。第一道（＝原本那一道）不動它。 */
+/* 出場錯開（v1.270.0，見 rageLags）：**第一道（點的那一點）先出**、其餘照 rageLags 接著出——
    點下去當下就有一道在點的地方，不會先空一下。還沒輪到的掛著 wait：stepTwist 什麼都不做（不動、不啃、不扣壽命），
    draw 也不畫（game-ui.js 的 twOn）。出場那一刻自己吹一聲風（同時出場的時候是整批一聲）。 */
 function launchTornado(from, toward, n) {
-  const a = aimDir(from, toward, TW_SPREAD);
+  const a0 = aimDir(from, toward, TW_SPREAD);
   aim = null;
   if (!twists) twists = [];
   n = n || 1;
-  const mid = (n - 1) / 2, lag = rageLags(n), wait = [];
-  [...Array(n).keys()].sort((p, q) => Math.abs(p - mid) - Math.abs(q - mid)).forEach((i, k) => { wait[i] = lag[k]; });
+  const ends = n > 1 ? rageEnds(n, from, toward, RAGE_SPOT.tornado) : null, lag = rageLags(n);
   for (let i = 0; i < n; i++) {
     if (twists.length >= TW_MAX) twists.shift();     // 放太多道就把最早那道擠掉
-    const off = (i - mid) * RAGE_TW_GAP;
-    let x = from.x - Math.sin(a) * off, z = from.z + Math.cos(a) * off;   // 往出發方向的橫向挪
-    const dd = Math.hypot(x, z), lim = debrisR - 2;
-    if (off && dd > lim) { x = x / dd * lim; z = z / dd * lim; }
+    let x = from.x, z = from.z, a = a0;
+    if (i) {
+      x = ends.a[i].x; z = ends.a[i].z;
+      const dd = Math.hypot(x, z), lim = debrisR - 2;
+      if (dd > lim) { x = x / dd * lim; z = z / dd * lim; }
+      a = aimDir({ x, z }, ends.b[i], TW_SPREAD);
+    }
     twists.push({
       x, z, r: TW_R, h: TW_H, life: TW_LIFE,
       /* 起始角度隨機：漏斗的扭曲完全是 spin 的函數，都從 0 開始的話
@@ -2186,7 +2267,7 @@ function launchTornado(from, toward, n) {
          都用同一組的話它們會擺得一模一樣，看起來像複製貼上。 */
       ph: rr(0, 6.28), sw: rr(0.9, 1.5),
       snd: WIND_GAP,                    // 出場那一聲在下面放了，下一段等 WIND_GAP 秒
-      wait: wait[i]                     // 破壞模式還要等幾秒才出場（v1.270.0；一道的時候 0）
+      wait: lag[i]                      // 破壞模式還要等幾秒才出場（v1.270.0；一道的時候 0）
     });
   }
   /* 拉高之後漏斗頂會超出畫面上緣（矮建築取景近，量到 NDC 1.45），
@@ -2420,7 +2501,7 @@ const BURN_SPREAD = 0.35;     // 燒到幾成才開始把火傳給鄰居
    以前燒積木／燒小人／燒動物跟王之財寶的拖尾、火球的尾巴共用 `HOT_MAX − 40`（180），
    而每塊的配額還要再除以 √(在燒的塊數)——實測 150 塊在燒只噴 94～111 顆火苗、
    上千塊碎料在燒就被 180 卡死（實測 167～181 顆攤在整座島上，平均十五塊才看得到一顆）。
-   使用者：「觀察到好像燃燒不多」。照 GR_HOT／MET_HOT_CAP／FW_HOT 的慣例給燃燒開自己一檔，
+   使用者：「觀察到好像燃燒不多」。照 GR_HOT（獅鷲火柱，v1.275.0 拿掉）／MET_HOT_CAP／FW_HOT 的慣例給燃燒開自己一檔，
    不動 HOT_MAX（那是十幾個特效共用的常態水位，動它等於全場一起變）。
    400 這個數字的上界是引擎的 MAXFIRE 1280：跟一發核彈的 HOT_BURST 560 同台是 960，
    還畫得下（有一條測試在守這個關係）。煙同理：380 在碎料燃燒時實測 374～378 已經頂滿，
@@ -3761,19 +3842,18 @@ let fwWait = null;                  // 已經點下去、還沒出膛的那幾�
    各自照 FW_OFF 散開——散出去那兩發可能落在建築外緣的半空中，那看起來就是
    「從屋頂那一區放的一輪」，比「一發從屋頂、兩發從地面」讀得懂。 */
 /* n ＝ 總共幾發（破壞模式，v1.262.0；不給就是一輪 FW_SHOT 發）。超過一輪就分成好幾輪
-   （一輪 FW_SHOT 發、最後一輪放剩下的），每一輪的中心平均圍在點的那一點四周 RAGE_FW_OFF 格，
-   一輪裡面照舊各自散開、錯開出膛。一輪的時候中心就是點的那一點，跟原本一模一樣。 */
-const RAGE_FW_OFF = FW_OFF * 1.5;   // 比一輪自己散的範圍（FW_OFF）再外面一點，三輪才分得出來
+   （一輪 FW_SHOT 發、最後一輪放剩下的），一輪裡面照舊各自散開、錯開出膛。一輪的時候中心就是點的那一點，跟原本一模一樣。
+   v1.275.0 起**第一輪的中心就是點的那一點，其餘幾輪隨機散在附近**（rageSpots，範圍與間距見 RAGE_SPOT.fw；
+   v1.262.0～v1.274 是幾輪的中心平均圍在點的那一點四周 10.5 格）。 */
 /* 每一輪的第一發照 rageLags 錯開（v1.270.0）：第一輪照舊當場出膛，後面幾輪連第一發一起排進 fwWait，
    那一輪其餘幾發整輪跟著往後挪（一輪裡面照舊錯開 FW_GAP）。 */
 function launchFw(p, n) {
   const y = (p.y || 0) + FW_Y0;
   n = n || FW_SHOT;
-  const k = Math.ceil(n / FW_SHOT), b = k > 1 ? rr(0, Math.PI * 2) : 0;
+  const k = Math.ceil(n / FW_SHOT), spots = k > 1 ? rageSpots(k, p.x, p.z, RAGE_SPOT.fw) : null;
   const lag = rageLags(k);
   for (let j = 0; j < k; j++) {
-    let cx = p.x, cz = p.z;
-    if (k > 1) { const q = b + j * Math.PI * 2 / k; cx += Math.cos(q) * RAGE_FW_OFF; cz += Math.sin(q) * RAGE_FW_OFF; }
+    const cx = j ? spots[j].x : p.x, cz = j ? spots[j].z : p.z;
     if (lag[j] > 0) { if (!fwWait) fwWait = []; fwWait.push({ x: cx, z: cz, y, t: lag[j] }); }
     else fireShell(cx, cz, y);
     for (let i = 1; i < Math.min(FW_SHOT, n - j * FW_SHOT); i++) {
@@ -3793,8 +3873,8 @@ function launchFw(p, n) {
   fwHold++;
   /* 取景要**連出膛高度一起算**（v1.137）：從屋頂射上去的話炸開的位置就高了那一截
      （台北 101 的屋頂 65 ＋ 竄高 42 ＋ 火星自己再往上十幾單位），不加的話整發在畫面外。
-     破壞模式好幾輪的話橫向再寬一個 RAGE_FW_OFF（輪的中心離點的那一點那麼遠），一樣只退一次、只還一次。 */
-  ENG.holdWide(FW_HOLD_TOP + y - FW_Y0, FW_HOLD_R + (k > 1 ? RAGE_FW_OFF : 0), true);
+     破壞模式好幾輪的話橫向再寬一個 RAGE_SPOT.fw.r（輪的中心最遠離點的那一點那麼遠），一樣只退一次、只還一次。 */
+  ENG.holdWide(FW_HOLD_TOP + y - FW_Y0, FW_HOLD_R + (k > 1 ? RAGE_SPOT.fw.r : 0), true);
 }
 /* 還欠幾次「把視線高度還回去」。一次點下去是三發、還可以連點，
    所以要記次數——見 fwEnd()。 */
@@ -4215,9 +4295,9 @@ const MET_HOT_CAP = 340, MET_SMOKE_CAP = 700;
    揚塵與震動——那些本來就是照半徑算的。 */
 const MET_R = ROCK_R * 2;
 const MET_POW = 16;             // 介於石頭（12）與定時炸彈（17）之間
-/* n ＝ 一次幾顆（破壞模式，v1.262.0；不給就是一顆）。落點**隨機**散在點的那一點周圍 RAGE_MET_R 格內、兩顆至少隔 MET_R
+/* n ＝ 一次幾顆（破壞模式，v1.262.0；不給就是一顆）。落點**隨機**散在點的那一點周圍 RAGE_SPOT.meteor.r 格內、兩顆至少隔一個破壞半徑
    （看過預覽改的：第一版是三顆平均圍在 5.5 格上，「3隕石太靠近了(也增加同時更多顆 位置隨機)」；
-   至少隔一個破壞半徑是問過之後使用者選的，見 metSpots）。
+   至少隔一個破壞半徑是問過之後使用者選的，見 rageSpots）。
    **v1.270.0 再調整**（使用者：「隕石掉落方向不用再同方向 相當於普通的點很多下就好」
    「隕石分布範圍調整大一點 大約*2範圍內隨機 目前太密集」）：
      · 方位**每顆各抽**（v1.262.0 是一批共用一個，「一起掉下來的同方向」）；
@@ -4225,18 +4305,18 @@ const MET_POW = 16;             // 介於石頭（12）與定時炸彈（17）�
      · 倒數照 rageLags 一顆接一顆錯開，**連地上的倒數圈也跟著錯開**（使用者選的，「像一下一下點」）：
        t 多給那一份的 lag，stepMeteors 在 t 還大於 MET_WAIT ＋ MET_FALL 的時候什麼都不做——
        所以每一顆從冒圈到落下都是平常的 3.9 秒。
-   好幾顆的時候瞄的是**地面**（不是點到的高度）：點在屋頂上的話，散出去的那一點底下可能是空的，
-   瞄屋頂那個高度就會在半空中炸開；瞄地面的話路上有建築就照舊在建築上炸（sweepRock）。 */
-const RAGE_MET_R = 40;
+   散出去的那幾顆瞄的是**地面**（不是點到的高度）：點在屋頂上的話，散出去的那一點底下可能是空的，
+   瞄屋頂那個高度就會在半空中炸開；瞄地面的話路上有建築就照舊在建築上炸（sweepRock）。
+   **v1.275.0 起第一顆就砸點的那一點**（連高度，同平常點一下），其餘散在附近（rageSpots，範圍與間距見 RAGE_SPOT.meteor）。 */
 function callMeteor(point, n) {
   if (!meteors) meteors = [];
   n = n || 1;
-  const spots = n > 1 ? metSpots(n, point.x, point.z) : null;
+  const spots = n > 1 ? rageSpots(n, point.x, point.z, RAGE_SPOT.meteor) : null;
   const lag = rageLags(n);
   for (let i = 0; i < n; i++) {
     if (meteors.length >= MET_MAX) meteors.shift();   // 超過就把最早那顆擠掉，跟定時炸彈一樣
     let tx = point.x, ty = Math.max(0.6, point.y), tz = point.z;
-    if (spots) { tx = spots[i].x; tz = spots[i].z; ty = 0.6; }
+    if (i) { tx = spots[i].x; tz = spots[i].z; ty = 0.6; }
     const m = {
       tx, ty, tz, a: rr(0, Math.PI * 2),          // 從哪個方位斜進來：每顆各抽（v1.270.0）
       t: MET_WAIT + MET_FALL + lag[i], mark: 0, lit: 0, em: 0,
@@ -4246,30 +4326,6 @@ function callMeteor(point, n) {
     meteors.push(m);
   }
   sndTick();
-}
-/* 破壞模式那一批的落點：(cx, cz) 周圍 RAGE_MET_R 格內均勻抽（開根號，同 fireRock），
-   跟已經抽好的任何一顆近於 MET_R 就重抽——兩顆砸在同一個洞裡等於少一顆。
-   一顆抽 30 次都塞不進去（前面幾顆剛好把空位切碎了）就**整批重抽**；
-   6 顆、半徑 20、間距 9.2 實測幾乎都是一批就成（數字見 開發筆記〈破壞模式：點一下放好幾份（v1.262.0）〉）；
-   v1.270.0 半徑放到 40 之後面積是四倍，更塞得下。
-   整批重抽 20 次還不成只會是常數被改到根本放不下，缺的就疊在中心，不讓它卡死。 */
-function metSpots(n, cx, cz) {
-  let pts = [];
-  for (let k = 0; k < 20 && pts.length < n; k++) {
-    pts = [];
-    for (let i = 0; i < n; i++) {
-      let p = null;
-      for (let t = 0; t < 30 && !p; t++) {
-        const a = rr(0, Math.PI * 2), r = RAGE_MET_R * Math.sqrt(Math.random());
-        const q = { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r };
-        if (pts.every(o => Math.hypot(o.x - q.x, o.z - q.z) >= MET_R)) p = q;
-      }
-      if (!p) break;
-      pts.push(p);
-    }
-  }
-  while (pts.length < n) pts.push({ x: cx, z: cz });
-  return pts;
 }
 /* k：1 = 剛出現在天上，0 = 落到目標點。
    45° 的意思就是「水平還要飛的距離＝還沒掉的高度」，所以兩邊共用同一個 up。 */
@@ -5203,11 +5259,9 @@ function stepHot(dt) {
       d.rx += dt * 5; d.ry += dt * 6.5;
       continue;
     }
-    /* 獅鷲噴出去的火痕（v1.176）：直線飛到目標就熄，不吃重力、也不吃下面那道阻尼。
-       那道阻尼是**60fps 的每一幀** ×0.9（不是每秒；v1.244.0 起照 dt 換算）：照它走的話，0.35 秒只飛得到
-       4.5 格，而火柱要打到十幾格外——整條會在半路停成一團。 */
-    if (d.jet) { d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt; continue; }
-    d.vy -= (d.g === undefined ? -1.5 : d.g) * dt;
+    /* v1.176～v1.274 這裡還有一條「獅鷲噴出去的火痕（d.jet）直線飛、不吃重力與阻尼」，
+       v1.275.0 獅鷲改成衝撞、沒有火柱了，那一條一起拿掉 */
+    d.vy -=(d.g === undefined ? -1.5 : d.g) * dt;
     /* 被魔法陣吸的光點：往中心加速再加一股切線，走出螺旋。
        只給內吸的話會直直射進中心，看起來像雨點不像在聚集魔力。 */
     if (d.pull) {
@@ -5917,11 +5971,10 @@ function strike(s) {
     sndFall();
   }, true);
   spawnMark(p, BOLT_MARK, false);           // 焦黑不是坑洞：雷是燒不是砸（劈在屋頂就不留）
-  /* 只有劈到建築才震（v1.123，使用者：「閃電打到地面不震動」）。
-     `top` 是那一點上方最高的那塊積木，沒有就是劈在空地上——
-     那一下沒有東西被打歪，畫面跟著跳反而像是打到了什麼。
-     一朵雲現在劈 15～20 道，全部都震的話畫面會抖上七八秒。 */
-  if (top) ENG.shake(0.8);
+  /* **劈到哪裡都不震畫面**（v1.275.0，使用者：「調整打雷 不在擊建築 震動畫面(會造成畫面連續震動)」）。
+     v1.123～v1.274 是「劈到建築才震 0.8」（使用者當時：「閃電打到地面不震動」）——但一次點擊是三朵雲、
+     一朵劈 15～20 道，劈在建築上的那幾十道每一道都震，畫面就從頭抖到尾。
+     跟投石機、保齡球、王之財寶同一個道理（會持續破壞的那幾把不震，震動留給單次撞擊，見 smash 的 quiet） */
   sndThunder();
 }
 function stepStorms(dt) {
@@ -8160,13 +8213,13 @@ function useTool(hit) {
     const q = hit.point, d = hit.dir;
     launchFw(hit.kind === 'block' && d
       ? { x: q.x - d.x * FW_OUT, y: Math.max(0, q.y - d.y * FW_OUT), z: q.z - d.z * FW_OUT }
-      : { x: q.x, z: q.z }, rageN(FW_SHOT, FW_MAX));   // 破壞模式（v1.262.0）：三輪 9 發，天上上限 8 發所以放 8 發
+      : { x: q.x, z: q.z }, rageN(FW_SHOT, FW_MAX));   // 破壞模式：放到天上的上限 8 發（3＋3＋2 三輪）
     return 0;
   }
   if (tool === 'fire') { torch(hit); return 0; }
   if (tool === 'bucket') { pourWater(hit); return 0; }
   if (tool === 'bomb') { placeBomb(hit.point); return 0; }
-  if (tool === 'meteor') { callMeteor(hit.point, rageOn ? MET_MAX : 1); return 0; }   // 破壞模式（v1.262.0）一下放滿上限 6 顆
+  if (tool === 'meteor') { callMeteor(hit.point, rageN(1, MET_MAX)); return 0; }   // 破壞模式（v1.262.0）一下放滿上限 6 顆
   if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'storm') { aimStorm({ x: hit.point.x, z: hit.point.z }); return 0; }   // v1.228 點兩下
@@ -8398,9 +8451,9 @@ const DOOMS = [
   /* 包一層再叫，不要直接把 spawnDragon 掛上去：牠從 v1.144 起吃一個 fun 參數，
      哪天有人改成 start(i) 之類的，天災那條龍就會變成吉祥物版（不吐火球）。 */
   { id: 'dragon', wt: 1, start: () => spawnDragon() },
-  /* 事件四：獅鷲，飛進來降落在建築旁邊，張開翅膀噴一道長火柱（v1.176）。
-     同上包一層再叫：牠也吃 fun／bad 兩個參數。 */
-  { id: 'gryphon', wt: 1, start: () => spawnGryph() },
+  /* 事件四：獅鷲（v1.176～v1.274，飛進來降落在建築旁邊噴一道長火柱）**v1.275.0 拿掉了**
+     （使用者：「獅鷲移除天災名單並更改攻擊方式 調整成衝撞攻擊」）：牠只當吉祥物（MASCOTS 那一列照舊），
+     動手改成空中俯衝撞穿（見 stepRam）。 */
   /* 事件五：巨人，走進來對著地標踹 2~3 腳，踹中那一片炸開並燒起來（v1.192）。 */
   { id: 'giant', wt: 1, start: () => spawnBeast('giant') },
   /* 事件六：Saber，走到地標旁邊把劍舉過頭頂蓄力，整條光柱斬下來把整座劈開（v1.222／v1.223，見 stepExcal）。 */
@@ -8752,7 +8805,7 @@ function actWalk(m, b, aim, dt, spd, stp, kp) {
 }
 /* 爬起來那一段**朝向要限速轉**（v1.202.2）。躺著的時候 hurtBeast 會把底下整段跳掉、
    朝向 m.a 整段不更新；m.fall 一歸零，正常那一套第一幀就**直接賦值**——猴子與巨人是
-   near 段的 `m.a = Math.atan2(dx, dz)`、獅鷲是 grAim 的 `m.a = m.a0`——而這時候身體
+   near 段的 `m.a = Math.atan2(dx, dz)`、獅鷲是 grAim 的 `m.a = m.a0`（v1.274 以前，噴火那一套）——而這時候身體
    還躺著（實測躺平角還在 −79°），躺平的身體就被原地甩到另一個方向去。
    實測（單發箭打中之後追 300 幀）那一幀 **巨人轉 61.5°、獅鷲 117.7°、小獼猴 111.3°**，
    畫出去那一團的重心一幀跳 **8.98 格**（巨人躺平時重心離腳底 8.7 格，轉身就被放大）。
@@ -8763,7 +8816,7 @@ function actWalk(m, b, aim, dt, spd, stp, kp) {
    躺平角收完，見 hurtBeast）。
    **只動看起來的方向，規則面一個字都沒變**：near 段前進走的是 dx／dz 不是 m.a、
    丟香蕉與放火瞄的是座標、巨人那一腳要先等 DOOM_AIM 1.1 秒（比這個窗口長）、
-   獅鷲噴火前要等 GR_AIM 1.0 秒（同上），都在窗口之外。 */
+   獅鷲噴火前要等 GR_AIM 1.0 秒（同上；v1.275.0 起改成衝撞，爬起來一律先起飛），都在窗口之外。 */
 function stepBeast(m, dt) {
   /* 被打到的冷卻（v1.229，見 beastHit）。擺在最前面：三種狀態機（走路、飛龍、獅鷲）
      都從這裡進去，被幽浮吸走、躺在地上那幾段也照數。 */
@@ -8783,9 +8836,10 @@ function stepBeast(m, dt) {
   return r;
 }
 /* 這一隻正在走回林帶嗎（v1.256.0，淡出用，見 woodFade；畫之前算，見 game-ui.js 的 draw）。
-   走的「走人」是 go、飛的是 out。獅鷲起飛（up）那幾秒也會往前飛，不是要再降落一次（m.back）的那一趟
-   就已經是走人——不算的話牠起飛時剛好飛進林帶，轉進 out 那一幀會從全實直接跳到快淡完。 */
-const beastOut = m => m.st === 'go' || (!!m.sky && (m.st === 'out' || (m.st === 'up' && !m.back)));
+   走的「走人」是 go、飛的是 out。獅鷲起飛（up）那幾秒也會往前飛，不是還要回去撞（m.left，v1.275.0；
+   v1.274 以前是「要再降落一次」的 m.back）的那一趟就已經是走人——不算的話牠起飛時剛好飛進林帶，
+   轉進 out 那一幀會從全實直接跳到快淡完。 */
+const beastOut = m => m.st === 'go' || (!!m.sky && (m.st === 'out' || (m.st === 'up' && !(m.left > 0))));
 function stepBeast0(m, dt) {
   /* 被幽浮吸走了（v1.167）：牠這一段完全交給 stepUfo 管（在光裡飄、在艙裡等、
      從天上掉回來），這裡整段跳過。擺在最前面：下面每一條分支都會動到位置。 */
@@ -10029,7 +10083,10 @@ const LEV_RANGE = { b: 20, c: 16 };
 /* 建築還要站在那一面的外側才射：跟那一面朝外的水平方向夾角在 60° 內（cos 0.5）——
    從建築背面繞過來的那一段不算，不然他會隔著整座建築射過去、從建築裡面穿出來 */
 const LEV_FACE = 0.5;
-const LEV_WAIT = [8, 12];        // 點空地：跑到之後站著待命幾秒，再回去逛
+/* 點空地：跑到之後站著待命幾秒，再回去逛。Saber、里維、善逸、五條悟、芙莉蓮共用（見 levArrive）。
+   v1.275.0 從 8～12 秒改成固定 20（使用者：「會叫出人物來動作的道具時 如果是點擊地面的情況
+   人物在該位置待命時間延長到20秒」；芙莉蓮點哪裡都是這一條，問過之後選「一起改成 20 秒」） */
+const LEV_WAIT = 20;
 const LEV_AIM = 0.35;            // 站定架刀瞄多久（Saber 是 DOOM_AIM 1.1：他出手快）
 const LEV_OUT = 0.9;             // 飛到離那一面幾格的地方開砍（身體中段）
 const LEV_FLY_V = 24;            // 被拉過去多快（格／秒），夾在 LEV_FLY_T 秒之間
@@ -10330,7 +10387,7 @@ function levClear(m, vx, vz) {
    Excalibur 點地面（v1.238，使用者選「跑過去、待命 8～12 秒」同里維）也走這一支 */
 function levArrive(m) {
   excDone(m);
-  if (m.st === 'fun') { m.pause = rr(LEV_WAIT[0], LEV_WAIT[1]); m.gait = 0; }
+  if (m.st === 'fun') { m.pause = LEV_WAIT; m.gait = 0; }
 }
 /* 這一招收完：姿勢從架刀混回站姿（m.arm 從 1 慢慢退），照 Excalibur 那一套回去逛／去排著的下一點 */
 function levEnd(m) {
@@ -10533,8 +10590,9 @@ function stepDie(m, dt) {
    見 開發筆記〈破壞道具：霹靂一閃〉 */
 /* 一閃多大：n 幾筆、r 破壞範圍的半徑（以點到的那一點為圓心）、w 削多寬、h 削到第幾層。
    使用者看過預覽挑的：「半徑16 寬8 高5 六連改成八連」。
+   v1.275.0 半徑 16 → 32（使用者：「善逸攻擊的範圍半徑*2」）；筆數、寬、高沒動。
    **物件不是常數**：預覽頁要邊看邊挑（同 Saber 那次粗與長兩排按鈕），程式只讀不寫 */
-const ZEN_Z = { n: 8, r: 16, w: 8, h: 5 };
+const ZEN_Z = { n: 8, r: 32, w: 8, h: 5 };
 const ZEN_EDGE = 1.5;            // 站定在破壞範圍外緣再外面幾格（第一筆從那裡衝進去）
 const ZEN_HOP = 0.9;             // 相鄰兩點至少隔幾個半徑（亂竄也要一筆一筆橫過整個範圍，不是原地抖）
 const ZEN_AIM = 0.15;            // 站定那一下（act）多久就蹲下去（他出手比里維還快，架勢那 1.2 秒才是蓄力）
@@ -11380,8 +11438,12 @@ function stepFrHang(dt) {
 const DRA_SC = 2.1;                  // 模型翼展 9.7 → 場上 20.4 格
 const DRA_SPD = 15;                  // 飛多快（格／秒）
 const DRA_TURN = 0.62;               // 每秒最多轉幾弧度 → 盤旋半徑 ≒ 15 ÷ 0.62 = 24 格
-const DRA_UP = 12;                   // 飛在建築頂上多高
-const DRA_MIN = 30;                  // 最低飛行高度（矮建築也要飛得夠高才像在天上）
+/* 巡航高度：**固定 40**（v1.275.0，使用者：「獅鷲&飛龍 飛行高度改為固定高度(觀察到疑似很高的建築會飛很高
+   降落時忽然快速下降)」，選的是「兩隻都 40」）。v1.172～v1.274 是「現在蓋到多高 ＋ 12、最低 30」——
+   大笨鐘 9000（138 高）那種會飛到 150 上下，降落那一段照剩下的時間收高度（見 landDragon），
+   一兩秒內掉一百多格，看起來就是忽然直直往下掉。固定之後高樓比牠高，所以要走人的那幾段一律先轉成
+   背向場心再走（見 skyAway），不會從建築裡穿過去。 */
+const DRA_CRUISE = 40;
 const DRA_RING = 1.35;               // 在工地上空繞幾圈（「稍微盤旋一下」）
 const DRA_ROLL = 0.42;               // 轉到最急時往內側傾斜幾弧度
 const DRA_FLAP = 3.1;                // 拍翅的快慢（弧度／秒）
@@ -11396,12 +11458,9 @@ let fballs = null;                   // 飛在半空的火球
 function spawnDragon(fun, bad) {
   /* 從林帶中線上空飛進來、飛出那一圈就收掉，兩頭淡入淡出（v1.256.0，見 woodFade；v1.255 以前是碎料圈外 14 格） */
   const a = Math.random() * Math.PI * 2, d = woodR();
-  /* 巡航高度**進場時算一次就存起來**（v1.172）。改讀 siteTopNow()（現在蓋到多高）
-     而不是 bp.height（蓋完多高）——同烏雲與幽浮那一版的理由，使用者指名這三支一起改。
-     為什麼要存：siteTopNow() 是掃一遍積木池（幾千筆），飛龍的高度是**每一幀**都在算的
-     （見 stepDragon 那一行），每幀掃一遍太貴。存下來的副作用是「牠自己噴掉屋頂之後
-     不會跟著下降」——那正好，一趟盤旋中間高度自己往下掉才怪。 */
-  const cruise = Math.max(DRA_MIN, siteTopNow() + DRA_UP);
+  /* 巡航高度 v1.275.0 起固定 DRA_CRUISE（v1.172～v1.274 是進場時照 siteTopNow() 算一次存起來）。
+     照舊存在 m.cruise：起飛、盤旋、飛出去那幾段讀的都是它 */
+  const cruise = DRA_CRUISE;
   const m = {
     kind: 'dragon', x: Math.cos(a) * d, z: Math.sin(a) * d,
     y: cruise, cruise: cruise,
@@ -11480,7 +11539,7 @@ function stepDragon(m, dt) {
       if (m.home && !anyHome()) m.left = 0;
       else { spitFire(m); m.left--; m.gap = rr(DRA_GAP[0], DRA_GAP[1]); }
     }
-  }
+  } else want = Math.atan2(m.x, m.z);    // out：朝背向場心轉了再走（v1.275.0，見 skyAway）
   /* 轉向限速——圓弧是這樣轉出來的。轉多急就側傾多少（往內側倒）。 */
   let d = want - m.a;
   while (d > Math.PI) d -= Math.PI * 2;
@@ -11507,10 +11566,13 @@ const FB_SC = 2.6;                   // 畫多大：模型的芯 0.62 → 場上
 const FB_SPD = 30;                   // 吐出去多快
 const FB_MOUTH = 3.3, FB_JAW = 0.7;  // 嘴巴在模型的哪裡（往前 3.3、往上 0.7）
 function spitFire(m) {
-  /* 隨機挑一個目標：地標中心一帶取一點，高度取那附近最高的一塊——
-     不取高度的話火球會穿過屋頂才炸。
+  /* 隨機挑一個目標：地標中心一帶取一點，**瞄那一點的地面**（v1.275.0）——路上碰到建築就在那裡炸
+     （stepFballs 一路照 sweepRock 判撞），所以打到的是建築朝牠那一面、牠的高度以下那一截。
+     v1.146～v1.274 瞄的是那附近最高的一塊（理由是「不取高度的話火球會穿過屋頂才炸」，那時候還沒一路判撞）：
+     巡航高度固定 40 之後（見 DRA_CRUISE）碰到高樓就變成往上拋——探針在大笨鐘（高 80）吐 12 顆，
+     7 顆飛得比牠自己還高、最高拋到 70。使用者：「可以往建築底部丟」。
      吉祥物那一趟瞄的是村子那邊（v1.166）：整片村子牠都飛得到，所以隨機挑一個、
-     瞄它的中央（同香蕉那一根，理由見 nanaThrow）。 */
+     瞄它的中央（同香蕉那一根，理由見 nanaThrow），一樣瞄地面。 */
   let tx, tz;
   const hb = m.home ? anyHome() : null;
   if (m.home && !hb) return null;          // 一間都不剩：這一顆不吐（同上）
@@ -11519,13 +11581,8 @@ function spitFire(m) {
     const a = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * siteR * 0.8;
     tx = Math.cos(a) * rad; tz = Math.sin(a) * rad;
   }
-  let ty = 0;
-  for (const b of blocks) {
-    if (b.st !== SET) continue;
-    if (Math.abs(b.x - tx) > 1.8 || Math.abs(b.z - tz) > 1.8) continue;
-    if (b.y > ty) ty = b.y;
-  }
-  const sx = m.x + Math.sin(m.a) * FB_MOUTH * DRA_SC;
+  const ty = 0;
+  const sx =m.x + Math.sin(m.a) * FB_MOUTH * DRA_SC;
   const sz = m.z + Math.cos(m.a) * FB_MOUTH * DRA_SC;
   const sy = m.y + FB_JAW * DRA_SC;
   const dist = Math.hypot(tx - sx, ty - sy, tz - sz);
@@ -11595,14 +11652,18 @@ function fballHit(f) {
    也要做著火&倒地」，並附了一張參考圖。形態是從三個選項裡挑的，選的是
    **「飛進來 → 降落 → 站定噴火 → 拍翅飛走」**，所以牠橫跨天上與地上兩套：
 
-     in    展翅飛向降落點（轉向限速，同飛龍——弧線是轉出來的，不是照參數式擺位置）
+   **v1.275.0 攻擊改成衝撞、不再是天災**（使用者：「獅鷲移除天災名單並更改攻擊方式 調整成衝撞攻擊」，
+   形態問過之後選「空中俯衝撞穿」）：牠只當吉祥物（DOOMS 拿掉、MASCOTS 那一列照舊），偶而來砸村子、
+   被打生氣的那幾趟用的就是這一招。噴火那一整套（aim／fire、火柱、站定瞄準）一起拿掉。現在一趟是：
+
+     in    展翅飛向降落點（轉向限速，同飛龍——弧線是轉出來的，不是照參數式擺位置）；
+           要動手的那一趟（m.left）改成飛向俯衝的起點（見 grRamIn）
+     ram   從巡航高度俯衝到目標的高度、平飛撞穿過去、再拉回巡航高度（見 stepRam），沿路撞到的積木全部撞飛
      land  一路收高度、拍翅煞車；腳著地那一刻 m.sky 歸零（從這裡起牠是「地上的一隻」）
-     walk  收翅、**四足走**最後那幾格到噴火的位置（v1.177，見 GR_WALK_IN）
-     aim   站定、轉向目標、張開翅膀，停 GR_AIM 秒才噴（看得出牠在瞄）
-     fire  一道火柱噴 GR_BREATH 秒，邊噴邊把頭掃過去；**火柱到了才點著**
-     stand 吉祥物那一版在建築外圈**走走停停**把剩下的 stay 晃完（天災噴完直接起飛）
-     up    拍翅起飛、爬回巡航高度
-     out   照當下的朝向直直飛出場外
+     walk  收翅、**四足走**最後那幾格（v1.177，見 GR_WALK_IN）
+     stand 吉祥物那一版在建築外圈**走走停停**把剩下的 stay 晃完
+     up    拍翅起飛、爬回巡航高度；還要動手的接回 in（去撞），不然就走人
+     out   轉成背向場心、飛出場外（v1.275.0，見 skyAway）
 
    **著火與倒地整套借猴子那一條**（使用者：「也要做著火&倒地」）：降落之後牠就是一隻
    站在草皮上的動物，hurtBeast／flyBeast／burnBeast／igniteBeast 一個字都不必改
@@ -11615,7 +11676,7 @@ const GR_LAND_SPD = 11;              // 降落那一段慢下來
 const GR_TURN = 0.9;                 // 每秒最多轉幾弧度 → 盤旋半徑 ≒ 19 格
 const GR_ROLL = 0.34;                // 轉到最急時往內側傾斜幾弧度
 const GR_YAW = 2.2;                  // 站在地上轉身多快（弧度／秒）
-const GR_UP = 14, GR_MIN = 32;       // 巡航高度：建築頂上多高、最低多高（同飛龍）
+const GR_CRUISE = DRA_CRUISE;        // 巡航高度：固定 40（v1.275.0，同飛龍；v1.176～v1.274 是建築頂上 14、最低 32）
 const GR_FLARE = 26;                 // 離降落點多遠開始往下收
 const GR_STAND = 5.5;                // 降落在建築外圈再往外幾格（同猴子站的那一環）
 const GR_FLAP = 3.4;                 // 拍翅的快慢（弧度／秒）
@@ -11623,32 +11684,35 @@ const GR_HARD = 2.0;                 // 降落／起飛時拍得比巡航用力�
 const GR_LAND_PITCH = -0.22;         // 降落時鼻子抬起來煞車
 const GR_RISE_PITCH = -0.30;         // 起飛時鼻子抬起來（同飛龍）
 const GR_RISE_UP = 13;               // 爬升速度（格／秒）
-const GR_AIM = 1.0;                  // 站定到噴火之間停幾秒
-const GR_BREATH = 2.6;               // 一道火柱噴幾秒
-/* 站定之後離目標超過這麼遠就不噴，先飛起來重新降落一次（見 stepGryph 的 aim）。
-   會遇到是因為牠**被炸飛之後可能落在很遠的地方**：降落點本來訂在建築外圈
-   （siteR + GR_STAND，離最近那塊地標六到十格），但爬起來的位置沒人保證。
-   不擋的話那一趟會噴出一道三、四十格長的火柱。 */
-const GR_RANGE = 26;
-const GR_SWEEP = 0.34, GR_SWEEP_HZ = 2.0;   // 邊噴邊掃：擺幅與快慢
+/* 衝撞（v1.275.0，見 stepRam）。**物件不是常數**：預覽頁要邊看邊挑（同 ZEN_Z），程式只讀不寫。
+     spd   俯衝、撞穿那一段多快（巡航 GR_SPD 17）
+     run   離目標多遠開始往下衝（也是俯衝起點離目標多遠）
+     turn  俯衝那一段每秒最多轉幾弧度（沒對準的話邊衝邊修）
+     r     撞到哪裡：身體中段前面那一點（fwd）周圍幾格內的積木全部撞飛
+     fwd   那一點在身體中心往前幾格（頭先撞進去）
+     top   撞的高度最多到哪（腳離地幾格）：目標比這高就撞它下半截，俯衝才不會變成往上爬
+     thru  撞穿：過了目標再平飛多遠才拉起來，量到前面還有積木就一路撞到它穿出去，最多這麼遠
+     climb 拉回巡航高度花多少水平距離
+     hit   撞飛的積木沿著衝的方向飛多快（同一把尺：槌子 15、霹靂一閃 14～24） */
+const GR_RAM = { spd: 28, run: 36, turn: 2.2, r: 3.6, fwd: 2, top: 18, thru: 80, climb: 36, hit: [14, 24] };
 /* 走路（v1.177，使用者：「獅鷲應該是四足走」）。**借小人那支 strollTo**（同猴子與牛羊）：
    繞開別人家、不穿建築、走到了回 true 全是它在管，這裡只給速度與腿擺多快。
    走多快：猴子 DOOM_WALK 2.2、牛羊 HERD_WALK 1.5——獅鷲比牠們大一號，給 2.6。
    腿擺的倍率照身長收（同 HERD_STEP 的理由：走得慢又照原速擺腿的話是原地空踩）。
-   WALK_IN＝降落點退到噴火位置的外面幾格，那一段用走的補完：不這樣做的話牠是
+   WALK_IN＝降落點退到站定位置（v1.274 以前是噴火的位置）的外面幾格，那一段用走的補完：不這樣做的話牠是
    「憑空落在該站的那一格」，四條腿一步都不必走。
    **這一段要夠長才看得出來**（使用者：「有觀察到獅鷲在地面好像就不會行走」）：
    第一版給 6 格 ＝ 走 2.3 秒、還不到牠自己的身長（7.9 格），畫面上等於原地落地。
    14 格 ≒ 5.4 秒，是「降落在外圍、一路走過來」看得清楚的長度。 */
 const GR_WALK = 2.6, GR_STEP = 0.55, GR_WALK_IN = 14;
-const GR_WALK_MAX = 14;              // 走不到就別卡著（房子擋路那種），時間到照樣開始瞄
+const GR_WALK_MAX = 14;              // 走不到就別卡著（房子擋路那種），時間到就從那裡開始逛
 const GR_STAY = [2.5, 6];            // 吉祥物那一版走到了站著看幾秒再換下一個點
 /* 三種翅膀姿態（見引擎的 wingAng：中位角／沿翼展的彎曲／擺幅）。
    **每一幀往目標姿態收一點**，不是直接指定：直接跳的話換姿態那一瞬間翅膀會變形。
      flap 飛：中位角小、整條一樣、大擺幅
-     rest 站著／走路：**收成拱起來的一對**（v1.177，見下面那段）
-     open 瞄準與噴火：高舉成 V 字（就是參考圖那個架式）
+     rest 站著／走路：**收成拱起來的一對**（v1.177，見下面那段）；俯衝撞進去那一段也是這一對（v1.275.0，翅膀收著衝）
      down 摔了／躺著／燒著：兩片幾乎立起來（見下面 GR_POSE.down 那一行的理由）
+   v1.176～v1.274 還有一組 open（瞄準與噴火時高舉成 V 字），噴火拿掉之後沒人用，一起拿掉。
    **沒有真正的「收翅」**：翼弧是在 x–y 平面上積出來的（見引擎的 wingArc），
    「往身後折」這個方向做不到。能做的是「翼根往上、沿翼展一路彎回來」——
    積出來是一道拱：從背上升起、到翼尖又落回背高。
@@ -11664,8 +11728,7 @@ const GR_STAY = [2.5, 6];            // 吉祥物那一版走到了站著看幾�
    立起來之後那個寬度剛好跟身體差不多（引擎的 BEAST_SIDE 0.63，翼上那幾塊不算進去），
    側躺才貼得平。 */
 const GR_POSE = {
-  flap: [0.24, 0, 0.58], rest: [1.30, -2.60, 0.06],
-  open: [0.95, -0.30, 0.08], down: [1.58, -0.10, 0.02]
+  flap: [0.24, 0, 0.58], rest: [1.30, -2.60, 0.06], down: [1.58, -0.10, 0.02]
 };
 function grWings(m, to, dt, k) {
   const p = GR_POSE[to], r = Math.min(1, dt * (k || 5));
@@ -11683,119 +11746,185 @@ function grLie(m) {
   m.wb = GR_POSE.down[0]; m.wc = GR_POSE.down[1]; m.wa = GR_POSE.down[2];
 }
 
-/* ── 火柱 ────────────────────────────────────────────────
-   使用者：「類似消防車噴出長條狀的火」——所以整條的做法就是 v1.175 的水柱：
-   **每一顆沿著自己的飛行方向拉長**，連續幾顆首尾接起來才是一道柱子，不是一坨火。
-   這裡連拉長都不必自己算：火粒子那顆材質本來就吃 ln ＋ 單位向量（煙火的火星尾在用，
-   見引擎的 putFire），給了就是「沿著這個方向拉長、橫向壓細」。 */
-const GR_MOUTH = 1.42, GR_JAW = 2.32;   // 喙在模型的哪裡（往前多遠、離地多高）
-const GR_JET_V = 30;                 // 火柱飛多快（決定飛多久，見 grJetT）
-const GR_RATE = 150;                 // 一秒噴幾顆
-const GR_LEN = [1.2, 2.1];           // 一顆火痕多長（沿飛行方向）
-/* 粗細的**落差要夠大**：全部一樣粗的話，整條在側面看是一塊平板（實際截圖抓到的），
-   火要有粗有細才像在翻騰（同煙火那邊「量的是跟旁邊那些的落差」）。 */
-const GR_W = [0.22, 0.60];
-const GR_JIT = 0.20;                 // 出口的位置抖多少
-/* 速度抖多少（垂直方向給一半）。這個值同時決定整條**散多開**：帶橫向速度的那幾顆
-   飛得越久就偏得越遠，所以火柱是從喙口往外撐開的一個錐，不是一根等粗的棍子。 */
-const GR_VJIT = 2.2;
-/* 火柱這一段最多用到火粒子池的第幾顆。**這個池子是共用的**：燒起來的積木、燒著的
-   小人與動物、爆炸的火球都在裡面（通用配額 HOT_MAX 220，煙火自己一組 FW_HOT 240）。
-   一道柱子同時活著的量 ＝ GR_RATE × 飛行時間 ≒ 150 × 0.45 ＝ 68 顆，
-   加上被牠點著的那一片在冒煙，620 留得夠，也還在引擎的 MAXFIRE 960 以內。 */
-const GR_HOT = 620;
-const GR_IGN_R = 3.6, GR_IGN_N = 3;  // 火柱打到的地方每次點幾塊、撒多大
-const GR_IGN_GAP = 0.3;              // 每隔幾秒點一次
-/* 喙的世界座標（火柱的出口）。 */
-const grNoz = m => ({ x: m.x + Math.sin(m.a) * GR_MOUTH * GR_SC,
-                      y: (m.y || 0) + GR_JAW * GR_SC,
-                      z: m.z + Math.cos(m.a) * GR_MOUTH * GR_SC });
-/* 火柱從喙飛到落點要幾秒（同水柱的 jetTime）。 */
-function grJetT(m) {
-  const n = grNoz(m);
-  return Math.max(0.12, Math.hypot(m.jx - n.x, m.jy - n.y, m.jz - n.z) / GR_JET_V);
+/* ── 衝撞（v1.275.0）─────────────────────────────────────
+   使用者：「獅鷲移除天災名單並更改攻擊方式 調整成衝撞攻擊」，形態問過之後選「空中俯衝撞穿」：
+   從巡航高度朝目標俯衝下去、貼著目標的高度平飛撞穿過去，穿出另一頭再拉回巡航高度——一趟撞一次。
+   v1.176～v1.274 是降落在建築外圈、站定噴一道火柱（火柱那一整套連瞄準一起拿掉）。
+   **目標在 in 那一段挑一次**（doomTarget：吉祥物來砸村子那一趟挑村子那邊、生氣抽到地標的挑地標，同猴子那一套），
+   之後就照那一點衝，不每幀重挑（那一塊先被別的東西打掉了也照衝）。
+   **從哪個方向衝進去**：
+     · 地標：從牠那一側**朝場心**衝（沿著半徑往內），撞穿就是從建築的另一頭穿出來
+     · 村子那邊：**沿著切線**衝（跟半徑垂直，起點挑在牠那一側）——朝場心衝的話撞穿那一間之後會一路衝進地標，
+       而吉祥物那一趟地標一塊都不准碰（同 Saber 的 excSweep），看起來就是從地標裡穿過去
+   俯衝的起點在目標前方 GR_RAM.run 格、巡航高度上：牠先飛到那裡，再邊衝邊對準目標（見 stepRam）。 */
+/* 撞的那一點：身體中段往前 fwd 格（頭先撞進去）。身體中段離腳多高讀引擎的 BEAST_MID（照縮放） */
+const grRamY = () => ENG.BEAST_MID.gryphon * GR_SC;
+function grRamAt(m) {
+  return { x: m.x + Math.sin(m.a) * GR_RAM.fwd, y: (m.y || 0) + grRamY(), z: m.z + Math.cos(m.a) * GR_RAM.fwd };
 }
-/* 這一隻現在要燒哪裡：天災瞄地標、吉祥物那一趟瞄村子那邊（同猴子與飛龍）。
-   **這裡算的是離喙最近的那一塊（三維）**，不借 nearSet／nearHome：那兩支算水平距離，
-   同一根柱子上四十層的積木都同樣近——實測挑到高樓層的那一塊，於是火柱是朝天空噴的
-   （量到整條 15 格、目標離地 40 幾）。三維就自然會挑腳邊那一塊，火柱也就大致是平的。 */
-function grTarget(m) {
-  const n = grNoz(m), ok = m.home ? isVillage : (b => b.hh < 0);
-  let best = null, bd = Infinity;
+/* 這一趟的路線：目標那一點（tx／tz）、撞的高度（hy，腳離地幾格）、衝的方向（ux／uz）、俯衝起點（sx／sz）。
+   挑不到目標（兩邊都砸光了）回 null。ph／s／d0／y0／t 是 stepRam 與 grRamIn 一路記的。
+   **撞的高度取那一柱的一半**（最高 GR_RAM.top）：doomTarget 挑的是水平最近的那一塊，同一柱上幾十層都一樣近，
+   照它的高度撞的話幾乎都是地面那一層——第一版探針在大笨鐘（siteR 9.5）就是從底部撞穿、整座垮掉換場。
+   撞腰：矮房子撞的是整間的中段，高樓撞的是下半截，上面那一截照支撐規則自己垮 */
+function grRamPlan(m) {
+  const b = doomTarget(m);
+  if (!b) return null;
+  let top = b.y;
+  for (const o of blocks) {
+    if (o.st !== SET || (m.home && o.hh < 0)) continue;
+    if (Math.abs(o.x - b.x) > 1.8 || Math.abs(o.z - b.z) > 1.8) continue;
+    if (o.y > top) top = o.y;
+  }
+  const nr = Math.hypot(b.x, b.z);
+  let nx = b.x / (nr || 1), nz = b.z / (nr || 1);
+  if (nr < 1) { const g = Math.hypot(m.x, m.z) || 1; nx = m.x / g; nz = m.z / g; }   // 目標就在場心：從牠那一側
+  let ux = -nx, uz = -nz;                                 // 地標：朝場心
+  if (m.home) {
+    ux = -nz; uz = nx;                                    // 村子那邊：切線，起點挑在牠那一側
+    if ((m.x - b.x) * ux + (m.z - b.z) * uz > 0) { ux = -ux; uz = -uz; }
+  }
+  return { tx: b.x, tz: b.z, hy: clamp(top / 2 - grRamY(), 0, GR_RAM.top), ux, uz,
+           sx: b.x - ux * GR_RAM.run, sz: b.z - uz * GR_RAM.run, ph: 0, s: 0, d0: 0, y0: 0, thru: 0, t: 0, shk: 0 };
+}
+/* in 那一段、要動手的那一趟：飛向俯衝起點，到了就轉進 ram。grFly 飛的是 lx／lz（落地點），這一段借來放俯衝起點——
+   撞完要降落時 grRamDone 會照當下的位置重挑一次（grSpot）。
+   **飛不到也別一直繞**：起點剛好落在牠的迴轉圈裡（被打下來、起飛之後就在建築旁邊那種）grFly 會繞著它轉，
+   所以飛了 GR_RAM_IN 秒還沒到、又已經在俯衝距離內，就從這裡開始衝（stepRam 自己會邊衝邊對準）。 */
+const GR_RAM_IN = 6;
+function grRamIn(m, dt) {
+  if (!m.rk) m.rk = grRamPlan(m);
+  const k = m.rk;
+  if (!k) { grRamDone(m); return; }
+  m.lx = k.sx; m.lz = k.sz;
+  k.t += dt;
+  const d = grFly(m, dt, GR_SPD);
+  if (d > 4 && !(k.t > GR_RAM_IN && Math.hypot(k.tx - m.x, k.tz - m.z) < GR_RAM.run * 1.5)) return;
+  m.st = 'ram'; k.ph = 0; k.y0 = m.y; k.d0 = Math.max(1, Math.hypot(k.tx - m.x, k.tz - m.z));
+  sndRoar();
+}
+/* ram 一幀。三段（k.ph）：
+     0 俯衝：朝目標轉（限速 GR_RAM.turn），高度照**離目標還有多遠**收——餘弦曲線，起點與到底都是平的
+       （同降落照剩下的距離收的道理：寫死每秒掉幾格的話遠的會先貼地再飛過去）。
+       過了目標就進 1：剩不到 1.5 格，或是已經衝到一半以內、離目標的距離又開始變大（擦身而過）
+     1 撞穿：照當下的朝向直直衝、高度不動，衝 k.thru 格（進 1 那一刻量，見 grRamThru）
+     2 拉起來：一樣直直飛，高度沿餘弦曲線收回巡航高度（GR_RAM.climb 格），到了就收工（grRamDone）
+   三段都撞（grRamHit）——俯衝那一段擦到屋頂的也算。鼻子照這一幀的升降角度俯仰（往下衝就低頭） */
+function stepRam(m, dt) {
+  const k = m.rk, V = GR_RAM.spd, y0 = m.y;
+  if (k.ph === 0) {
+    grWings(m, 'rest', dt, 6);                           // 翅膀收著衝
+    m.ph += dt * GR_FLAP * 0.4;
+    let e = Math.atan2(k.tx - m.x, k.tz - m.z) - m.a;
+    while (e > Math.PI) e -= Math.PI * 2;
+    while (e < -Math.PI) e += Math.PI * 2;
+    const rate = clamp(e / Math.max(dt, 1e-4), -GR_RAM.turn, GR_RAM.turn);
+    m.a += rate * dt;
+    m.roll += (-rate / GR_RAM.turn * GR_ROLL - m.roll) * Math.min(1, dt * 3);
+    const dPrev = Math.hypot(k.tx - m.x, k.tz - m.z);
+    m.x += Math.sin(m.a) * V * dt; m.z += Math.cos(m.a) * V * dt;
+    const d = Math.hypot(k.tx - m.x, k.tz - m.z), f = Math.min(1, d / k.d0);
+    m.y = k.hy + (k.y0 - k.hy) * (1 - Math.cos(Math.PI * f)) / 2;
+    /* 進撞穿那一刻高度直接放到 hy：餘弦曲線到這裡只剩零點幾格，撞穿那一段就是貼著排好的那個高度平飛 */
+    if (d < 1.5 || (d > dPrev && d < k.d0 * 0.5)) { k.ph = 1; k.s = 0; m.y = k.hy; k.thru = grRamThru(m); }
+  } else {
+    grWings(m, k.ph === 1 ? 'rest' : 'flap', dt, 4);
+    m.ph += dt * GR_FLAP * (k.ph === 1 ? 0.4 : GR_HARD);
+    m.roll += (0 - m.roll) * Math.min(1, dt * 3);
+    m.x += Math.sin(m.a) * V * dt; m.z += Math.cos(m.a) * V * dt;
+    k.s += V * dt;
+    if (k.ph === 1 && k.s >= k.thru) { k.ph = 2; k.s = 0; }
+    if (k.ph === 2) {
+      const f = Math.min(1, k.s / GR_RAM.climb);
+      m.y = k.hy + (m.cruise - k.hy) * (1 - Math.cos(Math.PI * f)) / 2;
+      if (f >= 1) { m.spin = 0; grRamHit(m, dt); grRamDone(m); return; }
+    }
+  }
+  /* 低頭／抬頭：這一幀往下掉多少比上往前走多少（正的是低頭，同 GR_LAND_PITCH 那一邊是負的抬頭） */
+  const pitch = clamp(Math.atan2(y0 - m.y, V * dt), -0.6, 0.8);
+  m.spin += (pitch - m.spin) * Math.min(1, dt * 6);
+  grRamHit(m, dt);
+}
+/* 撞穿要再衝多遠：沿著現在的朝向往前看，衝的那一條（橫向 r 以內、高度在撞的那一點上下 r 以內）裡撞得掉的積木
+   照遠近排，**一塊接一塊、中間空不到 2r ＋ 2 格**就算同一棟、一路算到最後一塊再外面 r；
+   前面已經空了（目標那一間已經撞穿）就只衝 r。最多 GR_RAM.thru。
+   吉祥物砸村子那一趟（m.home）地標的不算（撞不掉，同 grRamHit）。只在進撞穿那一刻量一次（要掃一遍積木池） */
+function grRamThru(m) {
+  const C = grRamAt(m), ux = Math.sin(m.a), uz = Math.cos(m.a), R = GR_RAM.r;
+  const ts = [];
   for (const b of blocks) {
-    if (b.st !== SET || b.burn || !ok(b)) continue;
-    const d = (b.x - n.x) ** 2 + (b.y - n.y) ** 2 + (b.z - n.z) ** 2;
-    if (d < bd) { bd = d; best = b; }
+    if (b.st !== SET || (m.home && b.hh < 0)) continue;
+    const dx = b.x - C.x, dz = b.z - C.z, t = dx * ux + dz * uz;
+    if (t < -R || t > GR_RAM.thru) continue;
+    if (Math.abs(dx * uz - dz * ux) > R || Math.abs(b.y - C.y) > R) continue;
+    ts.push(t);
   }
-  return best;
+  ts.sort((p, q) => p - q);
+  let far = 0;
+  for (const t of ts) { if (t - far > R * 2 + 2) break; if (t > far) far = t; }
+  return Math.min(GR_RAM.thru, far + R);
 }
-/* 噴之前把目標定下來。瞄那一塊中心再往上一點，不然火柱貼著地面掃。
-   jr 是水平距離、a0 是這一刻的朝向——噴的時候身體左右掃，落點就跟著這個半徑轉。 */
-function grAim(m, b) {
-  m.jy = b.y + 0.4;
-  m.jr = Math.max(2, Math.hypot(b.x - m.x, b.z - m.z));
-  m.a0 = Math.atan2(b.x - m.x, b.z - m.z);
-  m.a = m.a0;
-  m.jx = b.x; m.jz = b.z;
-  m.em = 0; m.ign = 0; m.hem = 0;
-}
-/* 噴出去的那一幀。**每一顆都照自己還沒出生的那段時間往前挪**（age）：
-   一幀要生 2.5 顆、全生在喙上的話，畫面是「每 0.5 格一坨」的虛線（同 v1.175 水柱
-   踩過的坑）。挪過去之後才是連續的一條。 */
-function grJet(m, dt) {
-  const n = grNoz(m), t = grJetT(m);
-  m.em += dt * GR_RATE;
-  while (m.em >= 1) {
-    m.em--;
-    if (hot.length > GR_HOT) break;
-    const vx = (m.jx - n.x) / t + rr(-GR_VJIT, GR_VJIT);
-    const vy = (m.jy - n.y) / t + rr(-GR_VJIT, GR_VJIT) * 0.5;
-    const vz = (m.jz - n.z) / t + rr(-GR_VJIT, GR_VJIT);
-    const sp = Math.hypot(vx, vy, vz) || 1;
-    const age = m.em / GR_RATE;
-    /* 四顆裡有一顆給亮黃的芯，其餘是深橘：整條同一個顏色的話看起來是塑膠管不是火。 */
-    const core = Math.random() < 0.26;
-    hot.push({
-      x: n.x + rr(-GR_JIT, GR_JIT) + vx * age,
-      y: n.y + rr(-GR_JIT, GR_JIT) + vy * age,
-      z: n.z + rr(-GR_JIT, GR_JIT) + vz * age,
-      vx, vy, vz, jet: 1,
-      dx: vx / sp, dy: vy / sp, dz: vz / sp,
-      ln: rr(GR_LEN[0], GR_LEN[1]), s: rr(GR_W[0], GR_W[1]),
-      life: t * rr(0.85, 1.1),
-      cr: 1, cg: core ? rr(0.82, 0.96) : rr(0.34, 0.56),
-      cb: core ? rr(0.40, 0.60) : rr(0.02, 0.10)
-    });
+/* 撞的那一幀：撞的那一點周圍 r 格內的積木全部沿著衝的方向撞飛（還站著的算破壞；地上的碎料一起掃飛但不算，同兵長砍那一刀）。
+   吉祥物砸村子那一趟（m.home）地標一塊都不碰（同 levCut）。防護罩裡的撞不動（breakBlock 擋著）。
+   第一次真的撞到東西那一下震一下、悶響一聲 */
+function grRamHit(m, dt) {
+  const C = grRamAt(m), R = GR_RAM.r, R2 = R * R, ux = Math.sin(m.a), uz = Math.cos(m.a);
+  let n = 0, own = 0, cx = 0, cy = 0, cz = 0;
+  for (const b of blocks) {
+    if (b.st !== SET && b.st !== FREE) continue;
+    const dx = b.x - C.x, dy = b.y - C.y, dz = b.z - C.z;
+    if (dx * dx + dy * dy + dz * dz > R2) continue;
+    const set = b.st === SET, ow = set && b.hh < 0;
+    if (m.home && ow) continue;
+    const sp = rr(GR_RAM.hit[0], GR_RAM.hit[1]), hl = Math.hypot(dx, dz) || 1;
+    if (!breakBlock(b, ux * sp + dx / hl * rr(2, 5), rr(2, 6) + dy, uz * sp + dz / hl * rr(2, 5))) continue;
+    if (!set) continue;
+    n++; if (ow) own++;
+    cx += b.x; cy += b.y; cz += b.z;
   }
+  grRamLives(m, C, R);
+  if (!n) return;
+  const at = { x: cx / n, y: cy / n, z: cz / n };
+  afterHit(n, at, R, own, m);
+  m.rk.du = (m.rk.du || 0) + dt;
+  if (m.rk.du > 0.08) { m.rk.du = 0; spawnDust(at, R, n); }
+  if (!m.rk.shk) { m.rk.shk = 1; ENG.shake(0.8); sndThud(R * 2); }
 }
-const GR_HIT_RATE = 30;              // 打到的那一點一秒濺幾顆火花
-/* 打到的那一點濺開的火花（同水柱那一頭的濺水）。少了這一撮的話，火柱看起來是
-   一根插在牆上的棍子，看不出「那個點正在被燒」——實際截圖抓到的。
-   這幾顆走**一般的火粒子**（會往上飄、會冷卻成暗紅），不是 jet 那種直線的。 */
-function grHitFx(m, dt) {
-  m.hem += dt * GR_HIT_RATE;
-  while (m.hem >= 1) {
-    m.hem--;
-    if (hot.length > GR_HOT + 60) break;
-    hot.push({
-      x: m.jx + rr(-0.5, 0.5), y: m.jy + rr(-0.4, 0.7), z: m.jz + rr(-0.5, 0.5),
-      vx: rr(-2.2, 2.2), vy: rr(1, 4.6), vz: rr(-2.2, 2.2),
-      rx: Math.random() * 6, ry: Math.random() * 6,
-      s: rr(0.3, 0.72), life: rr(0.25, 0.55), g: -2.6, grow: 1.05, cool: rr(0.2, 0.42),
-      cr: 1, cg: rr(0.55, 0.86), cb: rr(0.08, 0.3), to: [0.6, 0.12, 0.02]
-    });
+/* 撞到的人與動物：沿著衝的方向撞飛（同保齡球撞開擋路的那一套，ballShove），撞飛了就算被攻擊。
+   自己不算、天上的不算（飛龍、雁、另一隻在飛的獅鷲），打不動的（levBusy）照舊打不動 */
+function grRamLives(m, C, R) {
+  const ux = Math.sin(m.a), uz = Math.cos(m.a), sp = GR_RAM.spd * 0.5;
+  for (const w of workers) {
+    if (w.air || w.dead) continue;
+    const dx = w.x - C.x, dz = w.z - C.z;
+    if (Math.hypot(dx, (w.y || 0) + 0.9 - C.y, dz) > R + 0.8) continue;
+    const hl = Math.hypot(dx, dz) || 1;
+    tossWorker(w, ux * sp + dx / hl * 4, rr(4, 7), uz * sp + dz / hl * 4, false);
+    lifeHit(w, 'ram');
   }
+  eachBeastNear(C, R + 1.5, o => {
+    if (o === m || o.air || o.sky || levBusy(o)) return;
+    const hl = Math.hypot(o.x - C.x, o.z - C.z) || 1;
+    if (tossBeast(o, ux * sp + (o.x - C.x) / hl * 4, rr(4, 7), uz * sp + (o.z - C.z) / hl * 4, false)) beastHit(o, 'ram');
+  });
+}
+/* 這一趟撞完（或挑不到東西撞、被打退）：配額收掉、回到來逛的那一版（同 v1.274 以前噴完那一條），
+   吉祥物還有 stay 就照當下的位置挑個地方降落把它逛完（grSpot → in → land），不然飛出場 */
+function grRamDone(m) {
+  m.rk = null; m.left = 0;
+  if (m.fun) { m.bad = 0; m.home = 0; }
+  if (m.fun && m.stay > 0) { grSpot(m); m.st = 'in'; }
+  else m.st = 'out';
 }
 
 /* 放一隻進來。方位隨機（固定一邊的話鏡頭剛好對著另一邊就永遠看不到牠飛過來）。
-   fun＝吉祥物那一版：一模一樣的一趟，只是 left 給 0、一道火都不噴，站著晃完就走。
-   bad＝吉祥物那一趟順手燒村子（同 v1.166 那三隻）：噴，但目標換成村子那邊。 */
+   fun＝吉祥物那一版：降落下來晃一圈就走，left 給 0、不撞。
+   bad＝吉祥物那一趟順手砸村子（同 v1.166 那三隻）：先撞村子那邊一下，再降落把剩下的時間逛完。
+   fun 不給是天災那一版（撞地標、撞完就走）——v1.275.0 起天災的表上沒有牠了，只剩測試直接叫 */
 function spawnGryph(fun, bad) {
   /* 從林帶中線上空飛進來、飛出那一圈就收掉，兩頭淡入淡出（v1.256.0，同飛龍） */
   const a = Math.random() * Math.PI * 2, d = woodR();
-  /* 巡航高度進場時算一次就存起來（同飛龍 v1.172 的理由：siteTopNow 要掃一遍積木池，
-     而高度是每一幀都在用的）。 */
-  const cruise = Math.max(GR_MIN, siteTopNow() + GR_UP);
+  const cruise = GR_CRUISE;                         // 固定高度（v1.275.0，同飛龍）
   const m = {
     kind: 'gryphon', x: Math.cos(a) * d, y: cruise, z: Math.sin(a) * d, cruise,
     wIn: 1,                                         // 從林帶淡進來（見 woodFade）
@@ -11803,13 +11932,13 @@ function spawnGryph(fun, bad) {
     sky: 1, st: 'in', t: 0, ph: 0, gait: 0, leg: 0, pause: 0, ghost: 0,
     sc: GR_SC, spin: 0, roll: 0,
     wb: GR_POSE.flap[0], wc: GR_POSE.flap[1], wa: GR_POSE.flap[2],
-    /* 噴幾道（吉祥物只有抽中要動手的那一趟才噴，其餘 0）。同飛龍的 m.left。 */
+    /* 撞幾次（吉祥物只有抽中要動手的那一趟才撞，其餘 0）。同飛龍的 m.left。 */
     left: fun ? (bad ? 1 : 0) : 1,
     fun: fun ? 1 : 0, bad: bad ? 1 : 0, home: bad ? 1 : 0,
     hurt: 0, quit: Math.round(rr(DOOM_QUIT[0], DOOM_QUIT[1])),   // 被打到就改變主意（v1.208，見 beastHit）
     hcd: 0,                                                       // 被打到的冷卻（v1.229，同 spawnBeast）
     stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
-    jx: 0, jy: 0, jz: 0, jr: 0, a0: 0, em: 0, ign: 0, hem: 0, back: 0,
+    rk: null,                            // 這一趟衝撞的路線（v1.275.0，見 grRamPlan）
     tx: 0, tz: 0, lx: 0, lz: 0,          // tx/tz 站定的位置、lx/lz 落地的位置（見 grSpot）
     /* 被破壞工具打到之後要用的，欄位跟猴子同名同義（見 hurtBeast）。
        **side＝往側邊倒**（v1.176 使用者：「倒地不對 參考牛羊動物」）：v1.177 改成四足之後
@@ -11824,9 +11953,9 @@ function spawnGryph(fun, bad) {
   sndRoar();
   if (fun) toast('🦅 一隻獅鷲飛到工地來了',
                  bad && nearHome(m.x, m.z)
-                   ? '牠會降落在村子那一帶，那張嘴看起來不太友善'
-                   : '牠會降落下來晃一圈，不噴火');
-  else toast('🦅 一隻獅鷲朝工地飛過來了', '牠會降落在建築旁邊，張開翅膀噴一道火');
+                   ? '牠盯上了村子那一帶，會從空中俯衝撞過去'
+                   : '牠會降落下來晃一圈，不動手');
+  else toast('🦅 一隻獅鷲朝工地飛過來了', '牠會從空中俯衝，撞穿建築再飛走');
   return m;
 }
 /* 站定的位置：建築外圈那一環上、**牠飛進來那一側**（不必繞到別的方向去，看起來就是
@@ -11871,23 +12000,28 @@ function grFly(m, dt, spd, turn, roll) {
   m.z += Math.cos(m.a) * spd * dt;
   return d;
 }
-/* 站在地上轉身面向一個點（轉向限速，不要瞬間打直）。 */
-function grFace(m, x, z, dt) {
-  let e = Math.atan2(x - m.x, z - m.z) - m.a;
+/* 要走人的那幾段（起飛、飛出去）**朝背向場心轉**（v1.275.0）：巡航高度固定之後高樓比牠高
+   （見 DRA_CRUISE），照當下的朝向直直飛的話，剛在建築旁邊逛完、剛撞穿出來那種鼻子還對著建築的，
+   會從建築裡穿過去。一條規則蓋掉飛龍與獅鷲所有走人的出口（飛龍的 out／rise，獅鷲的 up／out）。
+   轉向照樣限速（弧線是轉出來的）、轉多急就往內側傾斜多少，同 grFly。 */
+function skyAway(m, dt, turn, roll) {
+  let e = Math.atan2(m.x, m.z) - m.a;
   while (e > Math.PI) e -= Math.PI * 2;
   while (e < -Math.PI) e += Math.PI * 2;
-  m.a += clamp(e, -GR_YAW * dt, GR_YAW * dt);
+  const rate = clamp(e / Math.max(dt, 1e-4), -turn, turn);
+  m.a += rate * dt;
+  m.roll += (-rate / turn * roll - m.roll) * Math.min(1, dt * 3);
 }
 /* 把在天上的那一隻打下來（v1.176）。做的只有一件事：從飛行那一套切到地上那一套，
    接著丟成一條彈道——摔下去、落地判燒、躺一下、爬起來全是猴子那一份程式（flyBeast）。
-   爬起來之後接哪一段：還沒噴的就再瞄一次（打倒只是拖延，同猴子），噴過了就走人。 */
+   爬起來之後一律起飛（up）：還沒撞的飛上去再撞一次（打倒只是拖延，同猴子；衝到一半被打下來的也是，
+   路線清掉、起飛之後重挑），撞過了就走人。 */
 function grDown(m) {
   /* 雁（v1.272.0）也掛 sky，打下來的那幾條路（tossBeast／igniteBeast／fellBeast／火把點牠）都走到這裡：
      轉進牠自己那一支（掉下來就死，見 gooseDown） */
   if (m.kind === 'goose') return gooseDown(m);
   m.sky = 0;
-  m.st = m.left > 0 ? 'aim' : 'up';
-  m.t = GR_AIM; m.jr = 0;                  // 落地爬起來要重新挑一次目標（見 stepGryph 的 aim）
+  m.st = 'up'; m.rk = null;
   m.air = 1; m.fall = 0; m.lie = 0; m.burn = 0; m.brl = 0; m.gait = 0;
   m.roll = 0;
   m.vx = Math.sin(m.a) * GR_SPD * 0.3;
@@ -11919,18 +12053,21 @@ function stepGryph(m, dt) {
     if (hurtBeast(m, dt)) return false;    // 飛、躺、燒那幾段自己一套，這一幀底下整段跳過
   }
   /* 開工／整地就走人：天災是衝著蓋好的那一座來的，吉祥物只避整地（同 stepBeast 的 away）。
-     已經在起飛或飛出去的就不用再管。 */
+     已經在起飛或飛出去的就不用再管。衝到一半的（ram）在天上，直接飛出去（路線清掉） */
   const away = m.fun ? phase === 'clear' : (phase === 'build' || phase === 'clear');
   if (away && m.st !== 'up' && m.st !== 'out') {
-    m.left = 0; m.st = m.sky ? 'out' : 'up';
+    m.left = 0; m.rk = null; m.st = m.sky ? 'out' : 'up';
   }
   if (m.st === 'in') {
     grWings(m, 'flap', dt);
     m.ph += dt * GR_FLAP;
     m.y += (m.cruise - m.y) * Math.min(1, dt * 2);
+    m.spin += (0 - m.spin) * Math.min(1, dt * 3);
+    if (m.left > 0) { grRamIn(m, dt); return false; }   // 要動手的那一趟：飛向俯衝起點（v1.275.0）
     if (grFly(m, dt, GR_SPD) < GR_FLARE) m.st = 'land';
     return false;
   }
+  if (m.st === 'ram') { stepRam(m, dt); return false; }  // 俯衝撞穿（v1.275.0）
   if (m.st === 'land') {
     grWings(m, 'flap', dt, 4);
     m.ph += dt * GR_FLAP * GR_HARD;        // 拍翅煞車：拍得比巡航用力
@@ -11949,70 +12086,12 @@ function stepGryph(m, dt) {
   }
   /* 落地之後四足走完最後那幾格（v1.177）。走法整套借 strollTo（同猴子與牛羊）：
      繞開別人家、不穿建築都是它在管，這裡只給速度與腿擺多快。
-     m.t 是保險：房子擋在路中間時 strollTo 可能一直到不了，時間到就站在原地開始瞄。 */
+     m.t 是保險：房子擋在路中間時 strollTo 可能一直到不了，時間到就從那裡開始逛。
+     走完：吉祥物走走停停把 stay 晃完；天災那一版不會降落（撞完直接飛走），走到這裡也是直接起飛 */
   if (m.st === 'walk') {
     grWings(m, 'rest', dt, 3);
     m.t -= dt;
-    if (strollTo(m, dt, GR_WALK, GR_STEP) || m.t <= 0) {
-      m.st = 'aim'; m.t = GR_AIM; m.jr = 0; m.gait = 0;
-    }
-    return false;
-  }
-  if (m.st === 'aim') {
-    grWings(m, 'open', dt, 4);
-    m.ph += dt * GR_FLAP * 0.6;
-    /* 目標**一進這一段挑一次**（m.jr 是「挑好了」的記號），不是每一幀挑：grTarget 要掃
-       一遍積木池（幾千筆），每幀掃一次太貴。轉身這一秒就朝著挑好的那個點轉。 */
-    if (!m.jr) {
-      const b0 = m.left > 0 ? grTarget(m) : null;
-      if (b0) grAim(m, b0); else m.left = 0;
-      /* 離目標太遠（被炸飛之後爬起來的那種）：先飛起來、重新降落到建築外圈再瞄。
-         只在挑好目標那一幀判斷一次就夠——牠站著不動，距離不會自己變。 */
-      if (m.jr > GR_RANGE) { m.back = 1; grSpot(m); m.st = 'up'; return false; }
-    }
-    if (m.jr) grFace(m, m.jx, m.jz, dt);
-    m.t -= dt;
-    if (m.t > 0) return false;
-    /* 出手前再確認一次：站定到噴之間被別的東西砸光的話這一趟就不噴。
-       別讓吉祥物那一趟改噴地標——那是天災那一版才做的事（同 nanaThrow／spitFire）。 */
-    const b = m.left > 0 ? grTarget(m) : null;
-    if (b) { grAim(m, b); m.st = 'fire'; m.t = GR_BREATH; sndSpit(); }
-    else { m.left = 0; m.st = 'stand'; }
-    return false;
-  }
-  if (m.st === 'fire') {
-    grWings(m, 'open', dt, 4);
-    m.ph += dt * GR_FLAP * 0.6;
-    m.t -= dt;
-    const el = GR_BREATH - m.t;                 // 已經噴了多久
-    /* 邊噴邊把頭掃過去：落點跟著身體的朝向沿同一個半徑轉，不是定在一個點上。 */
-    m.a = m.a0 + Math.sin(el * GR_SWEEP_HZ) * GR_SWEEP;
-    m.jx = m.x + Math.sin(m.a) * m.jr;
-    m.jz = m.z + Math.cos(m.a) * m.jr;
-    grJet(m, dt);
-    /* **火柱到了才點著**（同 v1.175 消防車的水柱到了火才熄）：噴出去那一刻就燒的話，
-       火會在水柱還在半路時就從積木上冒出來。 */
-    if (el >= grJetT(m)) {
-      grHitFx(m, dt);
-      m.ign -= dt;
-      if (m.ign <= 0) {
-        m.ign = GR_IGN_GAP;
-        const p = { x: m.jx, y: m.jy, z: m.jz };
-        /* 吉祥物那一趟只准燒村子那邊：連撒出去的那幾塊也擋掉地標（同 apeStrike 的 only）。
-           那一趟不叫 igniteAt——它沒有 only 這一關，掃到的最近一塊有可能是地標。 */
-        if (m.home) igniteAround(p, GR_IGN_R, GR_IGN_N, SET, isVillage);
-        else {
-          igniteAt(p.x, p.y, p.z);              // 順手把 phase 從 done 推到 wreck
-          igniteAround(p, GR_IGN_R, GR_IGN_N, SET, null);
-        }
-        sndFire();
-      }
-    }
-    if (m.t > 0) return false;
-    m.left = 0;
-    /* 噴完：吉祥物回去把剩下的 stay 晃完（同 funBack 的意思），天災直接起飛走人。 */
-    if (m.fun) { m.bad = 0; m.home = 0; m.st = 'stand'; }
-    else m.st = 'up';
+    if (strollTo(m, dt, GR_WALK, GR_STEP) || m.t <= 0) { m.st = m.fun ? 'stand' : 'up'; m.gait = 0; }
     return false;
   }
   /* 吉祥物那一版在建築外圈**走走停停**把 stay 晃完（v1.177；v1.176 是站在原地不動——
@@ -12037,6 +12116,7 @@ function stepGryph(m, dt) {
     m.ph += dt * GR_FLAP * GR_HARD;
     m.gait += (0 - m.gait) * Math.min(1, dt * 8);      // 腳離地：步伐收掉（別硬歸零）
     m.spin += (GR_RISE_PITCH - m.spin) * Math.min(1, dt * 3);
+    skyAway(m, dt, GR_TURN, GR_ROLL);       // 邊爬邊轉成背向場心（v1.275.0）：剛在建築旁邊站著，鼻子可能正對著建築
     m.y += GR_RISE_UP * dt;
     /* 爬升的同時把前進速度加回來：原地直上不像鳥，像電梯（同飛龍的 rise）。 */
     const f = Math.min(1, m.y / Math.max(1, m.cruise));
@@ -12044,16 +12124,16 @@ function stepGryph(m, dt) {
     m.z += Math.cos(m.a) * GR_SPD * f * dt;
     if (m.y < m.cruise) return false;
     m.y = m.cruise; m.spin = 0;
-    /* back＝這一趟起飛不是要走人，是要重新降落一次（見上面 aim 那段的 GR_RANGE）。 */
-    m.st = m.back ? 'in' : 'out';
-    m.back = 0;
+    /* 還要動手的（被打下來之前還沒撞、或在地上被惹毛的）接回 in 去撞，不然就走人 */
+    m.st = m.left > 0 ? 'in' : 'out';
     return false;
   }
-  // out：照當下的朝向直直飛出去
+  // out：轉成背向場心（v1.275.0，見 skyAway）、飛出去
   grWings(m, 'flap', dt);
   m.ph += dt * GR_FLAP;
   m.y += (m.cruise - m.y) * Math.min(1, dt * 2);
-  m.roll += (0 - m.roll) * Math.min(1, dt * 3);
+  m.spin += (0 - m.spin) * Math.min(1, dt * 3);
+  skyAway(m, dt, GR_TURN, GR_ROLL);
   m.x += Math.sin(m.a) * GR_SPD * dt;
   m.z += Math.cos(m.a) * GR_SPD * dt;
   return Math.hypot(m.x, m.z) > woodR();
@@ -12393,6 +12473,7 @@ function turnBad(id) {
     if (m.call || m.cq) continue;
     /* 動不了手的不轉（v1.229，小猴子丟完香蕉）：轉了牠會再丟一根手上沒有的香蕉。這一件作廢見 stepDoom */
     if (mascSpent(m)) continue;
+    /* 獅鷲那一條（v1.176～v1.274）v1.275.0 拿掉：牠不在 DOOMS 了，抽不到牠那一件，轉不到牠 */
     if (m.kind === 'dragon') {
       if (m.st === 'out') continue;             // 已經在飛出場了
       /* 在地上那一段的（v1.182：摔下來或自己降落）：起飛之後要接回盤旋，
@@ -12406,17 +12487,6 @@ function turnBad(id) {
       m.gap = rr(0.4, 1.2);
       sndRoar();
       toast('🐉 那條龍又繞回來了', '這一圈牠是來吐火球的');
-    } else if (m.kind === 'gryphon') {
-      /* 獅鷲（v1.176）：已經在起飛或飛出場的不轉（同上，都走到一半了又回來很怪）。
-         配額給回來，站著的就地重新瞄一次——目標從村子換成地標，而 grTarget 是
-         每次進 aim 才問的，所以只要把狀態推回 aim 就換好了。 */
-      if (m.st === 'up' || m.st === 'out') continue;
-      m.left = 1;
-      if (m.st === 'stand' || m.st === 'fire' || m.st === 'aim') {
-        m.st = 'aim'; m.t = GR_AIM; m.jr = 0;      // jr 歸零＝目標從村子換回地標
-      }
-      sndRoar();
-      toast('🦅 那隻獅鷲不逛了', '牠張開翅膀對著地標，要噴一道火');
     } else {
       if (m.st === 'go') continue;              // 已經在走回場外了
       /* 逛到一半就地轉頭去找最近的那一塊。fun 那一段沒有通往 near／act 的路，
@@ -12512,7 +12582,8 @@ function beastCry(m) {
    那一刻 grDown 已經先把狀態推到 up 了（牠原本沒事要做，見那一支），照狀態認的話
    「被打下來的吉祥物」就永遠改不了主意——而那正是使用者要的那一擊。 */
 function beastLeaving(m) {
-  if (m.kind === 'gryphon') return m.fun ? m.stay <= 0 : (m.st === 'up' || m.st === 'out');
+  /* 天災那一版（v1.275.0 起只剩測試叫）：起飛那一段還要回去撞的（m.left）不算走人，同 beastOut */
+  if (m.kind === 'gryphon') return m.fun ? m.stay <= 0 : (m.st === 'out' || (m.st === 'up' && !(m.left > 0)));
   if (m.kind === 'dragon') return m.st === 'out';
   return m.st === 'go';
 }
@@ -12533,9 +12604,10 @@ function calmMascot(m) {
   m.bad = 0; m.home = 0;
   if (m.kind === 'dragon') m.left = 0;                 // 配額收掉＝這一圈不吐了
   else if (m.kind === 'gryphon') {
-    m.left = 0;
-    /* 瞄到一半、噴到一半的就地收手，回去走走停停把 stay 晃完（同噴完那一條）。 */
-    if (m.st === 'aim' || m.st === 'fire') m.st = 'stand';
+    /* 衝到一半的（v1.275.0）收手：不撞了，照撞完那一條挑個地方降落把 stay 晃完（grRamDone）；
+       還在飛向俯衝起點的（in）配額收掉就好，下一幀自己改飛降落點 */
+    if (m.st === 'ram') grRamDone(m);
+    m.left = 0; m.rk = null;
   }
   /* 還在走進來的（come）只要把旗標拿掉：牠走到工地外圈自己會進 fun。
      funBack 會把牠當場推進 fun，那一段是「在外圈逛」，人還在場外就推過去很怪。 */
@@ -12581,11 +12653,11 @@ function madMascot(m) {
     m.turned = 0; m.gap = rr(0.4, 1.2);
   } else if (m.kind === 'gryphon') {
     m.left = 1;
-    /* 站著晃的、瞄到一半的、**剛被打下來的**（grDown 看牠沒事做就推到 up 了）都就地
-       重新瞄一次：grTarget 是每次進 aim 才問的，所以只要把狀態推回 aim，目標就換成
-       這一趟挑的那一邊了（同 turnBad）。還在天上的（in／land）與正走最後那幾格的
-       （walk）不用動，牠們自己會走到 aim。 */
-    if (!m.sky && m.st !== 'walk') { m.st = 'aim'; m.t = GR_AIM; m.jr = 0; }
+    /* v1.275.0 起是在天上撞（見 stepRam）：在地上的（站著晃的、正走最後那幾格的、**剛被打下來的**）
+       起飛（up 爬到巡航高度就接回 in 去撞）；正在降落的拉回 in。路線清掉，in 那一段照這一趟挑的那一邊重挑 */
+    m.rk = null;
+    if (!m.sky) m.st = 'up';
+    else if (m.st === 'land' || m.st === 'out') m.st = 'in';   // 正在飛走的（被打下來又起飛那種）也掉頭回來撞
   } else if (madSet(m) && m.st === 'fun') {
     /* 正在外圈逛、這一趟又改瞄地標：讓牠**重走進場那一段**（走到工地外圈再進 near），
        理由同 turnBad——near 那一段沒有繞路，從碎料場外緣直線切過來的話，
@@ -13419,8 +13491,8 @@ function wetBeast(m) {
   return true;
 }
 /* 站定要動手那一刻被打斷的，爬起來要重新走過去瞄（不然牠一起身就當場放火）。
-   獅鷲（v1.176）沒有 near 那一段（牠是飛進來降落的），所以是就地重新瞄一次；
-   噴到一半被打斷也一樣——配額 m.left 還在，牠爬起來會再噴一道。 */
+   獅鷲 v1.275.0 起是在天上撞的，在地上只有降落之後的 walk／stand：walk 被打斷就從那裡開始逛（同 walk 走完那一條）；
+   還要撞的那一隻在地上時已經是 up（見 madMascot、grDown），爬起來照樣起飛。 */
 function reaim(m) {
   /* Excalibur 叫去的那一招（v1.224）：回 call 重走過去再瞄那一點，不是回 near 去找地標 */
   if (m.st === 'act') { m.st = m.call ? 'call' : 'near'; m.t = DOOM_AIM; m.arm = 0; }
@@ -13448,9 +13520,7 @@ function reaim(m) {
     else if (m.cq) { const q = m.cq; m.cq = null; sendSaber(m, q); }
     else m.st = m.call ? 'call' : 'near';
   }
-  else if (m.st === 'aim' || m.st === 'fire' || m.st === 'walk') {
-    m.st = 'aim'; m.t = GR_AIM; m.jr = 0;              // jr 歸零＝爬起來重新挑一次目標
-  }
+  else if (m.kind === 'gryphon' && m.st === 'walk') m.st = m.fun ? 'stand' : 'up';
   /* 惠惠詠唱到一半被打倒（v1.247.0）：魔法陣散掉，爬起來重走到站位再念一次。
      這一下有算進去的話（beastHit 緊接著叫 calmMascot）就是收手回去逛——使用者選的「收手，魔法陣散掉」 */
   else if (m.st === 'mcast') { megCancel(m); m.st = 'mwalk'; m.ms = null; m.mwt = 0; }
@@ -13658,7 +13728,7 @@ function fallenDragon(m, dt) {
   draWings(m, 'flap', dt, 4);               // 翅膀從收著的那一對張回來（v1.182）
   m.ph += dt * DRA_FLAP * DRA_RISE_FLAP;
   m.spin += (DRA_RISE_PITCH - m.spin) * Math.min(1, dt * 3);
-  m.roll += (0 - m.roll) * Math.min(1, dt * 3);
+  skyAway(m, dt, DRA_TURN, DRA_ROLL);       // 邊爬邊轉成背向場心（v1.275.0）：剛在建築旁邊走完、鼻子可能正對著建築
   m.y += DRA_RISE_UP * dt;
   /* 爬升的同時把前進速度加回來：原地直上直下不像鳥，像電梯。 */
   const f = Math.min(1, Math.max(0, (m.y - gnd) / Math.max(1, top - gnd)));
