@@ -8530,8 +8530,9 @@ function spawnBeast(kind, fun, bad, ang) {
        chome／cbad 接到第一道命令那一刻原本的樣子（斬完要還原，見 excDone） */
     call: null, cq: null, cn: 0, chome: 0, cbad: 0,
     /* 擋路就踹那一段的狀態（v1.207，只有巨人在用）：bust＝踹完要回哪一段
-       （null＝不是在清路），bn＝這個障礙物已經踹幾腳了，bskip＝踹不通、放它一馬的那一個。 */
-    bust: null, bn: 0, bskip: null,
+       （null＝不是在清路），bn＝這個障礙物已經踹幾腳了，bskip＝踹不通、放它一馬的那一個。
+       Diablo 擋路就噴（v1.276）也用 bust；bdir＝噴之前在走的方向（噴完照它探路通了沒，見 diaEnd）。 */
+    bust: null, bn: 0, bskip: null, bdir: 0,
     arm: 0, run: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,   // run：Saber 跑多用力（v1.226）
     fun: fun ? 1 : 0, stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
     /* bad＝這一趟要動手，home＝動手的目標在村子那邊（v1.166）。兩個分開是因為
@@ -9627,10 +9628,12 @@ function stepKick(m, dt) {
 /* 前面五格內擋路的那一個（沒有就 null）。沿**牠實際在走的方向**探（m.a 是 strollTo
    每幀設的「真正在走的方向」，不是目標方向）——會撞上的就是那個方向上的東西。
    探的是中線那一條線，不是肩寬 5.3 格那一整條帶：跟 dodgeHome 同樣的判法
-   （那邊也只探中線），擦邊的照舊繞過去。 */
-function giantBlock(m) {
+   （那邊也只探中線），擦邊的照舊繞過去。
+   a＝沿哪個方向探（預設 m.a）：Diablo 噴完那一刻面向的是**噴的方向**（轉去對著要燒的那一塊），
+   要拿噴之前在走的方向（m.bdir）探，見 diaEnd。 */
+function giantBlock(m, a = m.a) {
   if (m.ghost > 0) return null;                        // 穿透中（見 stuckWatch）
-  const ux = Math.sin(m.a), uz = Math.cos(m.a);
+  const ux = Math.sin(a), uz = Math.cos(a);
   for (let s = GIA_EYE_STEP; s <= GIA_EYE + 1e-6; s += GIA_EYE_STEP) {
     const h = footHome(m.x + ux * s, m.z + uz * s, true);   // true＝門洞也算擋住
     if (h && h !== m.bskip) return h;
@@ -9816,11 +9819,12 @@ function diaHitFx(m, dt, hx, hy, hz) {
 function diaStop(m) { if (m.kind === 'diablo') { m.fb = 0; m.ft = 0; m.fhit = 0; m.jr = 0; } }
 function diaEnd(m) {
   diaStop(m);
-  /* 擋路就噴那一趟：還擋著就再一道，噴滿還不通就放它一馬改繞過去；通了回原本那一段（同 stepKick 的 m.bust） */
+  /* 擋路就噴那一趟：還擋著就再一道、**不設上限**，路通了才回原本那一段（同 stepKick 的 m.bust）。
+     「路通了沒」照**噴之前在走的方向**（m.bdir）探：噴的時候轉去面向要燒的那一塊，照現在的朝向探的話
+     探到的是旁邊不擋路的殘塊，對著它一直噴（見 開發筆記〈Diablo 擋路就一直噴到路通（v1.276.2）〉） */
   if (m.bust) {
-    const h = giantBlock(m);
-    if (h && ++m.bn < DIA_BUST) { m.bhome = h; return; }   // 還擋著：st 還是 fire，下一幀從頭再噴一道
-    if (h) m.bskip = h;
+    const h = giantBlock(m, m.bdir);
+    if (h) { m.bhome = h; return; }                     // 還擋著：st 還是 fire，下一幀從頭再噴一道
     m.st = m.bust; m.bust = null; m.bn = 0; m.bhome = null;
     return;
   }
@@ -9961,13 +9965,16 @@ const bigBeast = m => m.kind === 'giant' || m.kind === 'diablo';
 /* ── Diablo 擋路就噴 ──
    同巨人那一套（見 giantBust）：前面 GIA_EYE 格內擋著的那一個（城牆、小人的家、樹；門洞也算擋住）就停下來對它噴一道。
    差別是火要燒：一塊點著到燒斷掉下來 BURN_TIME 2.2 秒，所以噴完**等那一個燒完**（最多 DIA_BUST_WAIT 秒）再看通了沒，
-   還擋著就再噴一道，噴滿 DIA_BUST 道還不通就放它一馬（m.bskip），改繞過去。通了回原本那一段（m.bust）。 */
-const DIA_BUST = 4;                   // 同一個擋路的最多噴幾道（保險不是門檻，同 GIA_BUST）
+   還擋著就再噴一道，**噴到路通為止、不放它一馬**（v1.276.2，使用者：「Diablo 真的會卡在門樓前 就繼續噴火 除非路通了」；
+   v1.276.0 是噴滿 4 道記進 m.bskip 改繞過去——可是下一幀探路時跳過它、回 null，就被當成「路通了」清掉，又探到同一段再噴，
+   等於從來沒放過）。巨人的 bskip 那一條沒動。通了回原本那一段（m.bust）。
+   小人照樣補燒出來的洞（使用者沒要改）：補得比燒得快的時候牠就一直站在那裡噴。 */
 const DIA_BUST_WAIT = 3;              // 噴完等它燒多久再看
 function diaBust(m) {
   const h = giantBlock(m);
-  if (!h) { m.bskip = null; return false; }
-  m.bust = m.st; m.bn = 0; m.bhome = h;
+  if (!h) return false;
+  m.bust = m.st; m.bhome = h;
+  m.bdir = m.a;                       // 噴之前在走的方向：噴完照它探路通了沒（見 diaEnd）
   diaStop(m); m.st = 'fire';
   return true;
 }

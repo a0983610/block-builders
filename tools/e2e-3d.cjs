@@ -480,6 +480,10 @@ const installClean = page => page.evaluate(() => {
     /* Diablo 自己那顆 mesh 與他噴出來的金幣（金幣跟著屍體收，屍體已經被上面那一行清掉了，下一幀才輪得到 stepCoins） */
     coins.length = 0; ENG.putDiablos([]); ENG.putCoins([]);
     trucks = null;
+    /* 推土機也收（同 startBuild 換場時那一行）：上一條把地標燒光、換了場，整地還在跑的話，
+       這一條推完那一刻 finishClear 會把 phase 推到 build，天災照「施工中離場」走人
+       （〈天災：Diablo 噴火〉整圈城牆那一條就是這樣偶爾紅，見 開發筆記〈Diablo 擋路就一直噴到路通（v1.276.2）〉） */
+    dozers = null; ENG.putDozers([]);
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
     quake = null;
@@ -25837,7 +25841,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* ── 擋路就噴（使用者：「Diablo 要比照巨人 擋路就噴」）：自己組一段正中央開著門洞的牆（同〈天災：巨人腳踢〉那一段），
         直接呼叫 gateNeed／wallFoot／diaBust／stepDiaFire。牆上一塊積木都沒擺（只有框）：每一道都挑不到可燒的那一塊、
-        當場收掉，框還擋著就再一道——驗的就是「噴滿 DIA_BUST 道還不通就放它一馬」那一條 ── */
+        當場收掉，框還擋著就再一道——驗的是「擋著就一直噴、不設上限，路通了才回去走」（v1.276.2，使用者：
+        「Diablo 真的會卡在門樓前 就繼續噴火 除非路通了」；v1.276.0 是噴滿 4 道放它一馬）。
+        另外驗「路通了沒」照噴之前在走的方向探（m.bdir），不照噴的時候轉過去的方向 ── */
   const dgate = await page.evaluate(() => {
     /* 積木池也換成空的：場上真的積木掛的 hh 是原本那份 homes 的編號，留著的話 diaTarget 會把第 0 間的積木當成這段牆的 */
     const keep = { homes, reach: navReach, blocks };
@@ -25847,7 +25853,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mk = o => Object.assign({
       kind: 'diablo', st: 'come', x: 0, z: -6, a: 0, tx: 0, tz: 20,
       pause: 0, ghost: 0, gait: 0.85, sc: DIA_SC, fun: 0, home: 0,
-      fb: 0, ft: 0, fhit: 0, jr: 0, spin: 0, bust: null, bn: 0, bskip: null
+      fb: 0, ft: 0, fhit: 0, jr: 0, spin: 0, bust: null, bn: 0, bskip: null, bdir: 0
     }, o);
     let asked = 0;
     navReach = () => { asked++; return true; };
@@ -25857,14 +25863,27 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const m = mk({});
     const bust = diaBust(m);
     const eye = { st: m.st, back: m.bust, home: m.bhome === wall };
-    /* 一幀就是一道：挑不到目標當場收掉（diaEnd），還擋著的話下一幀從頭再噴 */
+    /* 一幀就是一道：挑不到目標當場收掉（diaEnd），還擋著的話下一幀從頭再噴——50 道（v1.276.0 的上限是 4）都還在噴 */
     let tries = 0;
     while (m.st === 'fire' && tries < 50) { stepDiaFire(m, 0.02); tries++; }
-    const give = { st: m.st, skip: m.bskip === wall, tries, again: diaBust(m) };
+    const keepOn = { st: m.st, tries, back: m.bust, skip: m.bskip };
+    homes = { list: [] };                 // 路通了：那一段整個不見
+    stepDiaFire(m, 0.02);
+    const clear = { st: m.st, bust: m.bust };
+    /* 噴完面向側面（轉去對著旁邊那一塊噴）：側面一段牆、正前方空的 → 路通了；正前方一段牆 → 還擋著 */
+    const dirCase = h => {
+      homes = { list: [h] };
+      const d = mk({ x: 0, z: 0, st: 'fire', bust: 'come', bdir: 0, a: Math.PI / 2, bhome: h });
+      diaEnd(d);
+      return d.st;
+    };
+    const dir = { side: dirCase({ wall: 1, id: 2, ring: 30, x0: 2, x1: 4, z0: -3, z1: 3 }),     // +x 那一側（面向的方向）
+                  ahead: dirCase({ wall: 1, id: 3, ring: 30, x0: -3, x1: 3, z0: 2, z1: 4 }) };  // +z 正前方（在走的方向）
+    homes = { list: [wall] };
     const fun = mk({ fun: 1, st: 'fun' });
     const funBust = diaBust(fun);
     homes = keep.homes; blocks = keep.blocks;
-    return { gate, asked, wf, bust, eye, give, funBust, funBack: fun.bust, max: DIA_BUST };
+    return { gate, asked, wf, bust, eye, keepOn, clear, dir, funBust, funBack: fun.bust };
   });
   ok('Diablo 不走城門：連問都不問，前面擋著就停下來對它噴（噴完回原本那一段）',
      dgate.gate === false && dgate.asked === 0 && dgate.wf === false &&
@@ -25872,10 +25891,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dgate.funBust && dgate.funBack === 'fun',
      '城門問了 ' + dgate.asked + ' 次、走到牆邊拆牆那條 ' + dgate.wf + '；正對著門洞 → ' + dgate.eye.st +
      '（噴完回 ' + dgate.eye.back + '）；逛到一半被擋 → 噴完回 ' + dgate.funBack);
-  ok('噴滿就放它一馬改繞過去（同巨人踹滿那一條）',
-     dgate.give.tries === dgate.max && dgate.give.st === 'come' && dgate.give.skip && dgate.give.again === false,
-     '同一個擋路的噴了 ' + dgate.give.tries + ' 道（上限 ' + dgate.max + '）就回 ' + dgate.give.st +
-     '、記進 bskip，再問一次攔不攔：' + dgate.give.again);
+  ok('擋著就一直噴、不放它一馬，路通了才回原本那一段',
+     dgate.keepOn.st === 'fire' && dgate.keepOn.tries === 50 && dgate.keepOn.back === 'come' && !dgate.keepOn.skip &&
+     dgate.clear.st === 'come' && dgate.clear.bust === null,
+     '同一個擋路的噴了 ' + dgate.keepOn.tries + ' 道還在 ' + dgate.keepOn.st + '（bskip ' + (dgate.keepOn.skip ? '有' : '沒有') +
+     '）；那一段拿掉 → ' + dgate.clear.st);
+  ok('路通了沒照噴之前在走的方向探，不照噴的時候轉過去的方向',
+     dgate.dir.side === 'come' && dgate.dir.ahead === 'fire',
+     '噴完面向側面：側面一段牆（不擋路）→ ' + dgate.dir.side + '；正前方一段牆 → ' + dgate.dir.ahead);
 
   /* 真的一整圈牆圍著（同〈天災：巨人腳踢〉那一條）：一次都沒去繞門，噴到擋路的那一段燒斷就走進城裡 */
   await fillAll(page);
