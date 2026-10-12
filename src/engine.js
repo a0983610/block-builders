@@ -4528,7 +4528,8 @@ if (vAo.x + vAo.y > 0.5) {
       /* 大小與高度**都**乘上 emoK：底邊固定在 EMO_Y，所以是從錨點長出來的，
          不是原地放大（半高 = 中心高 − EMO_Y，兩個都乘 k 就永遠對得起來）。
          整組再乘上這個人的身高——矮的人頭上那個圖也該小一點。 */
-      const s = w.scale || 1, hs = EMO_SIZE * 0.5 * k * s;
+      /* 兩隻猴子聊完也冒（v1.274.0）：動物的身高倍率是 sc，小人的是 scale（同 game-workers.js 的 kind 那一式） */
+      const s = (w.kind ? w.sc : w.scale) || 1, hs = EMO_SIZE * 0.5 * k * s;
       /* 錨點跟著頭走（v1.237）：身體是繞腳底轉 w.lean 的（putWorker，正＝前傾），
          彎腰喘的時候帽頂往前挪 EMO_HAT·sin、往下掉 EMO_HAT·(1 − cos)。
          不跟的話彎 0.5 弧度時圖示會飄在他背後上方 0.63 格。站直時 lean 是 0，跟以前一模一樣。 */
@@ -4740,9 +4741,18 @@ if (vAo.x + vAo.y > 0.5) {
   })();
 
   /* 小獼猴：頭頂 1.31——跟小人連安全帽一樣高（使用者：「小人大小」）。
-     跟小人區隔靠的是剪影不是顏色：駝背前傾、手垂過膝、頭頂一撮冠毛、一條翘起來的尾巴。 */
+     跟小人區隔靠的是剪影不是顏色：駝背前傾、手垂過膝、頭頂一撮冠毛。
+     v1.274.0 尾巴拿掉（使用者：「小獼猴 小猴子尾巴拿掉」）——那四節本來是整隻往後最伸出去的一塊，
+     仰躺抬多高（BEAST_LIFT）是照它算的；拿掉之後背緣只剩軀幹，趴著要另外照前緣抬（見 BEAST_FRONT，
+     與 開發筆記〈尾巴拿掉：躺下要抬多高跟著變〉）。 */
   const APE_SH = 0.90, APE_HIP = 0.51;          // 肩／髀的高度
   const FUR = 0x24242a, FUR2 = 0x33333c, PAW = 0x17171b, FACE = 0xc0625c;
+  /* 聊天泡泡（v1.274.0，兩隻猴子湊在一起聊天時講話的那一隻冒，見 game-tools.js 的〈猴子聊天〉）：
+     照小人那兩塊（BODY 的 bub），白的、偏右手邊；y 從頭頂往上量，所以兩隻各自頂著自己的頭擺。 */
+  const monkBub = top => [
+    { p: [0.20, top + 0.31, 0], s: [0.46, 0.34, 0.38], c: 0xffffff, bub: 1 },
+    { p: [0.11, top + 0.07, 0], s: [0.18, 0.18, 0.16], c: 0xffffff, bub: 1 }
+  ];
   const APE = [
     { p: [0, 0.66, 0.02], s: [0.44, 0.46, 0.36], c: FUR, r: [0.20, 0, 0] },      // 軀幹（前傾）
     { p: [0, 0.62, 0.21], s: [0.26, 0.32, 0.05], c: 0x3d3a42, r: [0.20, 0, 0] }, // 胸腹淡毛
@@ -4752,11 +4762,7 @@ if (vAo.x + vAo.y > 0.5) {
     { p: [0, 1.04, 0.265], s: [0.26, 0.24, 0.04], c: FACE },                     // 臉盤（紅的）
     { p: [0, 0.985, 0.315], s: [0.18, 0.13, 0.10], c: 0xd08a7e },                // 吻部
     { p: [0, 0.945, 0.365], s: [0.10, 0.03, 0.02], c: 0x8a4a44 },                // 嘴縫
-    { p: [0, 1.15, 0.27], s: [0.28, 0.05, 0.07], c: FUR2 },                      // 眉脊
-    { p: [0, 0.74, -0.24], s: [0.11, 0.11, 0.16], c: FUR },                      // 尾巴四節
-    { p: [0, 0.86, -0.31], s: [0.09, 0.17, 0.10], c: FUR },
-    { p: [0, 1.00, -0.32], s: [0.08, 0.15, 0.09], c: FUR },
-    { p: [0, 1.10, -0.26], s: [0.07, 0.08, 0.13], c: FUR2 }
+    { p: [0, 1.15, 0.27], s: [0.28, 0.05, 0.07], c: FUR2 }                       // 眉脊
   ].concat(bmir([
     { p: [0.07, 1.09, 0.285], s: [0.06, 0.07, 0.03], c: 0x140f0d },                   // 眼
     { p: [0.185, 1.07, 0.08], s: [0.05, 0.11, 0.10], c: FACE },                       // 耳
@@ -4770,17 +4776,40 @@ if (vAo.x + vAo.y > 0.5) {
     /* 手上那支火把（「對地標點火」總要有個火源）。掛在右手上，
        所以跟那隻手一起擺、一起抬。
        **橫握、跟前臂垂直往前伸**（v1.249.0，使用者：「平時手拿火把也要火把跟手臂垂直」）：
-       舉起來點火時手臂往前平舉，火把就變成往上豎。往前伸多遠有上限——趴著打滾時
-       這一截會轉到下面去，火把頭最遠只能到 z 0.345，再長就陷進草皮（見 開發筆記〈火把橫握、頭上冒火〉）。
+       舉起來點火時手臂往前平舉，火把就變成往上豎。
+       v1.274.0 加長 1.5 倍（使用者：「火把加長約1.5倍 跌倒時會掉在地上」）：柄 0.38 → 0.57，尾端照舊露在拳頭後 0.045，
+       整支 0.395 → 0.585。v1.249.0 那時火把頭最遠只能到 z 0.345（趴著打滾時這一截轉到下面去會陷進草皮），
+       現在躺下去火把就離手（見 game-tools.js 的〈火把掉在地上〉），手上這一支只剩站著的姿勢，那個上限不在了。
+       tc＝火把那兩塊：掉在地上時（規則那邊給 m.tor）這兩塊收掉，改由 TORCH 那一款畫在地上。
        火不在這張表裡：標了 ft 的那一塊（火把頭）是火的錨點，火另外一顆 mesh 畫（見 putTorch）。 */
-    { p: [0.29, 0.245, 0.14], s: [0.05, 0.05, 0.38], c: 0x6a4a30, am: 1, pv: APE_SH },          // 柄（穿過拳頭）
-    { p: [0.29, 0.245, 0.30], s: [0.08, 0.08, 0.09], c: 0x3a2a1c, am: 1, pv: APE_SH, ft: 1 }    // 頭（纏布）
-  ]);
+    { p: [0.29, 0.245, 0.235], s: [0.05, 0.05, 0.57], c: 0x6a4a30, am: 1, pv: APE_SH, tc: 1 },          // 柄（穿過拳頭）
+    { p: [0.29, 0.245, 0.49], s: [0.08, 0.08, 0.09], c: 0x3a2a1c, am: 1, pv: APE_SH, ft: 1, tc: 1 }      // 頭（纏布）
+  ]).concat(monkBub(1.31));
+  /* 掉在地上的那一支（v1.274.0）：跟手上那兩塊同尺寸，原點在柄的中心、火把頭朝 +z。
+     規則那邊把它當成清單裡的一隻擺（見 game-tools.js 的 beastList），飛出去時繞 x 翻、落地躺平；
+     火把頭照樣標 ft，所以火跟著它畫（putBeasts 拿那一塊的中心當錨點）。 */
+  const TORCH = [
+    { p: [0, 0, 0], s: [0.05, 0.05, 0.57], c: 0x6a4a30 },
+    { p: [0, 0, 0.255], s: [0.08, 0.08, 0.09], c: 0x3a2a1c, ft: 1 }
+  ];
+  /* 彎腰撿火把（v1.274.0，規則那邊給 m.bend 0～1）：上半身繞髖往前彎 PICK_BEND 弧度、兩隻手轉回同樣的角度
+     （彎下去手還是直直垂著），見 putBeasts。只有標在 BEAST_HIP 裡的那幾款會彎。 */
+  const PICK_BEND = 1.0;
+  const BEAST_HIP = { ape: APE_HIP };
+  /* 彎到底時手上那支火把的柄中心在模型的哪一點（火把頭朝 +z）。規則那邊照這一點挑站位：
+     地上那一支跟撿起來那一刻手上那一支疊在一起，換手的那一幀才不會跳。
+     手臂轉 −PICK_BEND、上半身再轉 +PICK_BEND，所以柄相對肩膀那一段不轉，只有肩膀繞髖挪過去。 */
+  function torchGrip() {
+    const h = APE.find(b => b.tc && !b.ft), sy = APE_SH - APE_HIP;
+    return { x: h.p[0],
+             y: APE_HIP + sy * Math.cos(PICK_BEND) + h.p[1] - APE_SH,
+             z: sy * Math.sin(PICK_BEND) + h.p[2] };
+  }
 
   /* 小猴子：頭頂 1.45（小獼猴 ×1.11，使用者：「比黑獼猴略大」）。
      **毛一樣是黑的**，白的是皮膚——臉、耳、手、腳（使用者指定）。
      所以兩隻的分野不在毛色，在「白臉配深眼 vs 紅臉」、「白手白腳 vs 黑手黑腳」，
-     再加上頸圈長毛（小獼猴沒有）、頭頂是平的沒冠毛、尾巴長一截。
+     再加上頸圈長毛（小獼猴沒有）、頭頂是平的沒冠毛。尾巴 v1.274.0 拿掉（同小獼猴）。
      拿炋彈的那隻手不跟著走路擺（沒有 am）：手上有東西的人本來就不會甲手。
      臉、吻部、耳朵 v1.249.0 往粉紅推一點（使用者：「面部顏色微調偏白粉色」，預覽頁三組裡選 B）：
      SK F2ECE0 → F4D3CB、吻部另開 SKM（原本跟手腳共用 SK2 E3D8C6）→ E8B8AD，手腳照舊米白。 */
@@ -4797,11 +4826,6 @@ if (vAo.x + vAo.y > 0.5) {
     { p: [0, 1.15, 0.335], s: [0.19, 0.13, 0.10], c: SKM },    // 吻部
     { p: [0, 1.11, 0.385], s: [0.11, 0.03, 0.02], c: 0x5a4c42 },
     { p: [0, 1.335, 0.29], s: [0.30, 0.05, 0.07], c: B2 },     // 眉脊（黑毛壓在白臉上緣）
-    { p: [0, 0.82, -0.30], s: [0.12, 0.12, 0.18], c: B1 },     // 尾巴五節
-    { p: [0, 0.96, -0.39], s: [0.10, 0.18, 0.11], c: B1 },
-    { p: [0, 1.14, -0.41], s: [0.09, 0.19, 0.10], c: B1 },
-    { p: [0, 1.30, -0.36], s: [0.08, 0.11, 0.14], c: B2 },
-    { p: [0, 1.36, -0.24], s: [0.07, 0.09, 0.13], c: B2 },
     /* 左手（空的）跟著走路擺；右手拿炋彈，不擺，但要能抬——
        所以還是給 am，只是加上 hold（只抬不擺，見 putBeasts）。 */
     { p: [-0.31, 0.80, 0.02], s: [0.14, 0.40, 0.17], c: B1, am: -1, pv: SNOW_SH },
@@ -4816,7 +4840,8 @@ if (vAo.x + vAo.y > 0.5) {
     { p: [0.17, 0.39, -0.02], s: [0.21, 0.32, 0.24], c: B1, sw: 1, pv: SNOW_HIP },
     { p: [0.17, 0.16, 0.02], s: [0.18, 0.24, 0.20], c: B1, sw: 1, pv: SNOW_HIP },
     { p: [0.17, 0.05, 0.09], s: [0.19, 0.10, 0.28], c: SK2, sw: 1, pv: SNOW_HIP }     // 腳（皮膚）
-  ])).concat(attach(NANA, { x: 0.40, y: 0.20, z: 0.13, sc: 0.62, ry: 1.15, rz: 0.2,
+  ])).concat(monkBub(1.45))       // 聊天泡泡（v1.274.0）：擺在香蕉前面，香蕉那幾塊照舊接在最後
+     .concat(attach(NANA, { x: 0.40, y: 0.20, z: 0.13, sc: 0.62, ry: 1.15, rz: 0.2,
                             am: 1, hold: 1, pv: SNOW_SH, bomb: 1 }));
 
 
@@ -5723,7 +5748,7 @@ if (vAo.x + vAo.y > 0.5) {
     return out;
   }
 
-  const BEASTS = { ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
+  const BEASTS = { ape: APE, snow: SNOW, nana: NANA, torch: TORCH, dragon: DRAGON, fball: FBALL,
                    cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
                    deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT,
                    shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY,
@@ -5758,14 +5783,30 @@ if (vAo.x + vAo.y > 0.5) {
              [cos y·cos z, −cos y·sin z, sin y]，三軸各自的投影加起來就是這一塊真正的寬度。
              牛羊與獅鷲那幾款一格都沒變（牠們沒有繞 y／z 轉的部位），飛龍的 side 沒人讀
              （只有 m.side 的才側躺，龍不是）。 */
-  const BEAST_FLOOR = {}, BEAST_MID = {}, BEAST_LIFT = {}, BEAST_SIDE = {};
+  /* front（v1.274.0）趴著（繞 x 轉 +90°，往前趴、著火打滾）時貼地的是**前緣**：
+             「z 最往前伸的那一塊」。v1.146～v1.273 趴著也照 lift（背緣）抬，因為兩隻猴子的背緣（尾巴）
+             與前緣差得很少（見 game-tools.js 的 lieAng）；尾巴拿掉之後背緣只剩軀幹（小獼猴 0.365 → 0.202），
+             照背緣抬的話臉整個埋進草皮。火把（tc）不算：躺下去那一刻火把就離手了（見〈火把掉在地上〉）。
+     聊天泡泡（bub）四個都不算：它是飄在頭頂上的對話框，不是身體。
+     **lift／front 要把 r 轉過的那幾塊算長一點**（v1.274.0，同 side 那一段的做法，這次是 z 那一列）：
+     兩隻猴子的軀幹往前傾 0.20／0.16 弧度，轉過之後背後那一角伸到 −0.202／−0.219，照 p ± s/2 算只有 −0.16／−0.20
+     ——以前背緣是尾巴，這一角被蓋過去；尾巴拿掉之後仰躺就陷進草皮 0.07／0.03 格（探針量的）。
+     照 XYZ 順序，旋轉矩陣第三列是 [sin x·sin z − cos x·sin y·cos z, sin x·cos z + cos x·sin y·sin z, cos x·cos y]。
+     會因此變的只有部位帶轉角的那幾款；其中會讀 lift 的（不是側躺的）只有這兩隻猴子，巨人一塊轉過的都沒有，一個位元不變
+     （見 開發筆記〈尾巴拿掉：躺下要抬多高跟著變〉）。 */
+  const BEAST_FLOOR = {}, BEAST_MID = {}, BEAST_LIFT = {}, BEAST_SIDE = {}, BEAST_FRONT = {};
   for (const k in BEASTS) {
-    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0, zhi = 0;
     for (const b of BEASTS[k]) {
-      if (!b) continue;
+      if (!b || b.bub) continue;
+      const rx = b.r ? b.r[0] : 0, ry0 = b.r ? b.r[1] : 0, rz0 = b.r ? b.r[2] : 0;
+      const hz = (Math.abs(Math.sin(rx) * Math.sin(rz0) - Math.cos(rx) * Math.sin(ry0) * Math.cos(rz0)) * b.s[0] +
+                  Math.abs(Math.sin(rx) * Math.cos(rz0) + Math.cos(rx) * Math.sin(ry0) * Math.sin(rz0)) * b.s[1] +
+                  Math.abs(Math.cos(rx) * Math.cos(ry0)) * b.s[2]) / 2;
+      if (!b.tc) zhi = Math.max(zhi, b.p[2] + hz);
       ylo = Math.min(ylo, b.p[1] - b.s[1] / 2);
       yhi = Math.max(yhi, b.p[1] + b.s[1] / 2);
-      zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
+      zlo = Math.min(zlo, b.p[2] - hz);
       if (!b.wg) {
         const ry = b.r ? b.r[1] : 0, rz = b.r ? b.r[2] : 0;
         const w = Math.abs(Math.cos(ry) * Math.cos(rz)) * b.s[0] +
@@ -5778,7 +5819,14 @@ if (vAo.x + vAo.y > 0.5) {
     BEAST_MID[k] = (ylo + yhi) / 2;
     BEAST_LIFT[k] = -zlo;
     BEAST_SIDE[k] = xhi;
+    BEAST_FRONT[k] = zhi;
   }
+  /* 仰躺／趴著要抬多高（模型單位，乘 |sin(躺平角)| 之前，v1.274.0）：負角往後仰躺照背緣；
+     正角往前趴（絆倒、著火打滾）照前緣與背緣大的那一個——**只有 PRONE_FRONT 那兩隻**：尾巴拿掉的就是牠們，
+     別款照舊用背緣。巨人的前緣 0.54 也比背緣 0.43 長，但套上去牠著火打滾會整隻抬高 0.33 格，
+     那是另一件事（這一版只動猴子），所以不在表上。 */
+  const PRONE_FRONT = { ape: 1, snow: 1 };
+  const beastLift = (k, spin) => spin > 0 && PRONE_FRONT[k] ? Math.max(BEAST_LIFT[k], BEAST_FRONT[k]) : BEAST_LIFT[k];
 
   /* ── Saber（v1.222）─────────────────────────────────────────
      使用者：「如果想加特定知名角色進遊戲中 … 同小人大小 越精緻越像越好」，附了一張 Saber 的圖。
@@ -9500,7 +9548,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
          所以抬的高度也要換成照 roll 與最寬那一塊算。 */
       const mlift = !m.lie ? 0
         : m.side ? BEAST_SIDE[m.kind] * m.lie * Math.abs(Math.sin(m.roll || 0))
-                 : BEAST_LIFT[m.kind] * m.lie * Math.abs(Math.sin(m.spin || 0));
+                 : beastLift(m.kind, m.spin || 0) * m.lie * Math.abs(Math.sin(m.spin || 0));   // 趴著照前緣（v1.274.0）
       /* 搖的時候繞那隻腳的外緣轉：抬「外緣 × |sin 角|」，另一隻腳才不會插進草皮（見 WADDLE_E） */
       scratch.position.set(m.x, (m.y || 0) + (mlift + (wd ? WADDLE_E[m.kind] * Math.abs(Math.sin(wd)) : 0)) * msc, m.z);
       /* 被吹飛的在半空翻滾：繞身體中段轉，不是繞腳底（同 putWorker 的 AIR_PIVOT）。 */
@@ -9528,7 +9576,9 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
            縮成一點，畫不出東西。
            m.melt 0～1（v1.230，被里維斬殺的巨人「邊冒煙邊一塊一塊散掉」那一種）：照一個固定的亂序
            （k × 黃金比例的小數部分）一塊一塊收掉，melt 到 1 就全部不見 */
-        if (!b || (b.bomb && !m.bomb) || (m.melt > 0 && (k * 0.6180339887) % 1 < m.melt)) {
+        /* 火把掉在地上了（v1.274.0，m.tor）：手上那兩塊收掉；聊天泡泡（bub）沒在講話就收掉 */
+        if (!b || (b.bomb && !m.bomb) || (b.tc && m.tor) || (b.bub && !(m.bub > 0.02)) ||
+            (m.melt > 0 && (k * 0.6180339887) % 1 < m.melt)) {
           scratchB.scale.setScalar(0);
           scratchB.updateMatrix();
           tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
@@ -9538,6 +9588,11 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
         scratchB.position.set(b.p[0], b.p[1], b.p[2]);
         scratchB.rotation.set(b.r ? b.r[0] : 0, b.r ? b.r[1] : 0, b.r ? b.r[2] : 0);
         scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
+        /* 聊天泡泡（v1.274.0）：照小人那一段（putWorker 的 b.bub）——講話的那一隻才鼓起來，隨語氣上下浮 */
+        if (b.bub) {
+          scratchB.scale.multiplyScalar(m.bub);
+          scratchB.position.y += Math.sin((m.ph || 0) * 2.6) * 0.05;
+        }
         /* 腰下那兩條前後擺、手反相擺（跟小人同一個式子），右手再加上抬起來那一段。
            轉完要把位置也繞著關節轉過去，不然三塊手臂各自繞自己中心轉會散開。 */
         /* 飛龍那三種擺動（見上面 wingArc）。翼上那幾塊掛在弧線上、尾巴與脖子
@@ -9576,6 +9631,12 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
         } else if (b.am) {
           if (!b.hold) ang = -Math.sin(m.ph || 0) * b.am * (m.gait || 0) * 0.8;
           if (b.am > 0 && m.arm) ang -= (m.raise === undefined ? BEAST_RAISE : m.raise) * m.arm;
+          /* 聊天時講話的那一隻左手比劃（v1.274.0，同小人 putWorker「說話的人單手比劃」那一式）：
+             右手拿著火把／香蕉，所以比劃的是左手。m.gest 0～1 是規則那邊混過去的份量 */
+          if (b.am < 0 && m.gest) ang += (-1.0 - Math.sin((m.ph || 0) * 2.6) * 0.45 - ang) * m.gest;
+          /* 彎腰撿火把（v1.274.0，m.bend）：上半身繞髖往前彎（見下面），兩隻手轉回同樣的角度——
+             彎下去之後手還是直直垂著，手掌才搆得到地上 */
+          if (m.bend) ang -= PICK_BEND * m.bend;
         }
         if (ang) {
           const jz = b.pz === undefined ? JOINT_Z : b.pz;
@@ -9584,6 +9645,16 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
           scratchB.position.y = b.pv + dy * c - dz * s2;
           scratchB.position.z = jz + dy * s2 + dz * c;
           scratchB.rotation.x = (b.r ? b.r[0] : 0) + ang;
+        }
+        /* 彎腰（v1.274.0）：腿以外的每一塊繞髖往前轉 PICK_BEND × m.bend。部位自己的轉法是 XYZ 順序，
+           R = Rx·Ry·Rz，所以外面再套一層繞 x 的轉角就是把它加進 x 那一格（同上面手臂那一段） */
+        if (m.bend && !b.sw && BEAST_HIP[m.kind] !== undefined) {
+          const hy = BEAST_HIP[m.kind], be = PICK_BEND * m.bend;
+          const dy = scratchB.position.y - hy, dz = scratchB.position.z - JOINT_Z;
+          const c = Math.cos(be), s2 = Math.sin(be);
+          scratchB.position.y = hy + dy * c - dz * s2;
+          scratchB.position.z = JOINT_Z + dy * s2 + dz * c;
+          scratchB.rotation.x += be;
         }
         if (m.kpv && b.sw) {                         // 跪下：膝蓋以下往後折、腳背伸直（v1.233.0）
           const d = giaDownPart(b, m.knee || 0, m.ank || 0, m.hip || 0);
@@ -10119,6 +10190,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putFrierens, FRIEREN, FR_PARTS, FR_SLOT, MAXFR, FR_G, FR_NE, FR_BAR_OPEN, FR_BAR_CLOSE, FR_BAR_RIP,
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
+    BEAST_FRONT, beastLift,                 /* 趴著照前緣抬（v1.274.0，猴子的尾巴拿掉之後背緣與前緣差很多） */
+    torchGrip,                              /* 彎腰撿火把時柄中心在模型的哪一點（v1.274.0，規則那邊挑站位用） */
     /* 全部造型表（v1.149）：測試把這一份整個存成基準檔（tools/model-baseline.json），
        之後有人改到任何一個模型就會紅。為什麼需要：飛龍少一片翅膀（v1.146.1，bmir 漏了 wg）
        從 v1.139 一路活到 v1.146——那七版整輪測試每次都全綠，因為翅膀那兩條驗的是
@@ -10128,7 +10201,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       return { man: BODY, treb: TREB_PART, cannon: CAN_PART, doz: DOZ_PART, truck: TRK_PART,
                bomb: BOMB_PART, meat: MEAT_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
                ufo: UFO_PART, ufoLit: UFO_LIT,
-               ape: APE, snow: SNOW, nana: NANA, dragon: DRAGON, fball: FBALL,
+               ape: APE, snow: SNOW, nana: NANA, torch: TORCH, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
                deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, saber: SABER, levi: LEVI, megumin: MEGUMIN,
                zenitsu: ZENITSU, gojo: GOJO, frieren: FRIEREN,

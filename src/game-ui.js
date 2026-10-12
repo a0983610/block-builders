@@ -356,7 +356,7 @@ function draw() {
   for (let i = 0; i < arms.length; i++) ENG.putWorker(workers.length + i, arms[i]);
   for (let i = 0; i < guns.length; i++) ENG.putWorker(g0 + i, guns[i]);
   ENG.commitWorkers();
-  ENG.putEmotes(workers);            // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位）
+  ENG.putEmotes(emoList());          // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位；v1.274.0 起猴子聊完也冒）
   /* 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）。Saber（v1.222）也在這份清單裡，
      putBeasts 把她那一格留空、putSabers 用她自己那顆 mesh 畫（索引對齊，點選才對得回去）；
      她的光柱跟著劍一起畫（v1.223），不另外一份清單。 */

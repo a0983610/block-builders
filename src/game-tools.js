@@ -8474,7 +8474,15 @@ function spawnBeast(kind, fun, bad, ang) {
        其餘欄位跟小人同名同義（見檔案最後那一節的 hurtBeast）。 */
     spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
     face: 0,                                      // 這一跤往前趴（v1.178 自己絆的，見 lieAng）
-    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0
+    lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0,
+    /* 火把掉在地上（v1.274.0，只有小獼猴會用到，見〈火把掉在地上〉）：tor＝掉在地上的那一支（null＝在手上），
+       pick＝撿的那一段還剩幾秒、bend＝彎腰彎到哪（0～1，引擎照它擺） */
+    tor: null, pick: 0, bend: 0,
+    /* 猴子聊天（v1.274.0，見〈猴子聊天〉）：mate＝正在湊過去／聊的那一隻、chatted＝這一趟已經聊過的那一隻、
+       mct＝聊天還剩幾秒（0＝還在走過去）、mcw＝走過去走了幾秒、mside＝先開口的是誰（0／1）、
+       bub＝泡泡鼓多大、gest＝左手比劃的份量。emo／emoT／emoK＝頭上的表情圖示（同小人，見 showEmo） */
+    mate: null, chatted: null, mct: 0, mcw: 0, mside: 0, bub: 0, gest: 0,
+    emo: '', emoT: 0, emoK: 0
   };
   if (!beasts) beasts = [];
   beasts.push(m);
@@ -8760,6 +8768,11 @@ function stepBeast(m, dt) {
   /* 被打到的冷卻（v1.229，見 beastHit）。擺在最前面：三種狀態機（走路、飛龍、獅鷲）
      都從這裡進去，被幽浮吸走、躺在地上那幾段也照數。 */
   if (m.hcd > 0) m.hcd -= dt;
+  /* 火把掉在地上、猴子聊天（v1.274.0）：擺在最前面，理由同上——被幽浮吸走、飛在半空、躺著那幾段也要照算
+     （火把在天上照樣要往下掉，躺下去那一刻就要脫手，聊到一半被打倒就要散） */
+  if (m.kind === 'ape') stepTorch(m, dt);
+  if (m.mate) monkCheck(m);
+  if (m.emo) stepEmo(m, dt);
   if (!m.lie) return stepBeast0(m, dt);
   const a0 = m.a;
   const r = stepBeast0(m, dt);
@@ -8842,6 +8855,9 @@ function stepBeast0(m, dt) {
   /* Saber 出招那幾秒（excal）也撐著：她的 m.arm 是「雙手握劍架在腰前」（見引擎的 sabPose），
      出招的關鍵格從架劍開始、收回架劍結束，中途掉回 0 的話收招那一下會垂手。別的款不會走到 excal。 */
   m.arm += ((m.st === 'act' || m.st === 'excal' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
+  /* 火把掉在地上（v1.274.0）：爬起來先走過去撿，撿回來才接著做原本那一段（正要去點火的、要走人的都一樣）。
+     擺在各段前面、借 tx／tz 走（同 gate 那一段）：原本那一段的狀態與目標一個字都不動 */
+  if ((m.tor || m.pick > 0) && torFetch(m, dt, spd, stp, kp)) return false;
   /* 巨人自己那一套擋路規則（v1.207）：走的那三段（進場、逛、走人）每一幀先探前面
      五格，擋著就停下來踹掉再走。擺在這裡而不是各段裡面：三段共用同一條規則，
      而且要排在下面城牆那三處分支**之前**——那三處對牠已經整組不動作
@@ -8928,7 +8944,8 @@ function stepBeast0(m, dt) {
          （那一款的鐘也跟著停，見 stepMascot 的 beastOn）。stay 只在這一段扣，所以要超過的是
          「逛的時間過了之後，又在外圈晃了這麼久」——一趟三處、stay 給 0.5 秒，兩輪量到超過 8.8、10.5 秒。
          **每燒完一處重算**（v1.244.2，見 act 那一段）：v1.229～v1.244.1 是幾處加起來算的，打 10 下只燒了 3、6、8 處就走了。 */
-      if (m.stay <= 0 && (!(m.owe > 0) || m.stay < -MORE_WAIT)) { leaveBeast(m); return false; }
+      /* 正在聊的那一隻聊完才走（v1.274.0，見〈猴子聊天〉）：走過去那一段不等，時間到就走、那一場就散了 */
+      if (m.stay <= 0 && (!(m.owe > 0) || m.stay < -MORE_WAIT) && !(m.mct > 0)) { leaveBeast(m); return false; }
     }
     /* 抽中要動手的那一趟（v1.166）：逛的目標換成牠盯上的那一間，走到搆得到就進 near
        那一段動手。走法是〈去動手的那一趟〉（v1.243，見 actWalk）：站位挑在搆得到那一塊的地方，
@@ -9012,6 +9029,8 @@ function stepBeast0(m, dt) {
     /* 被肉叫過去的（v1.261.0，見 stepMeats）：小跑過去、圍著吃，吃完 meatFree 放回來接著逛。
        排在中箭跑開後面：路上中箭的先跑開，跑完接著過去 */
     if (m.meat) { meatWalk(m, dt, spd, stp, kp); return false; }
+    /* 兩隻猴子都在場、都閒著：湊過去聊一次（v1.274.0，見〈猴子聊天〉）。排在發呆前面：站著發呆的那一隻也叫得過去 */
+    if ((m.kind === 'ape' || m.kind === 'snow') && monkChat(m, dt, spd, stp, kp)) return false;
     if (m.pause > 0) {
       m.pause -= dt;
       m.gait += (0 - m.gait) * Math.min(1, dt * 8);
@@ -9163,6 +9182,129 @@ function apeStrike(m) {
   return n;
 }
 
+/* ── 火把掉在地上（v1.274.0）──────────────────────────────
+   使用者：「小獼猴手上火把加長約1.5倍 跌倒時會掉在地上 不要還是拿在手上」。動手前問了三件，使用者選：
+     · 哪些倒下要掉：**只要躺下去都掉**——自己絆倒、被道具打倒、被炸飛、著火打滾；
+       著火抱頭跑圈圈還站著，照舊拿在手上
+     · 怎麼回到手上：**走過去撿起來**——爬起來先走到火把旁邊、彎腰撿，再接著做原本的事
+       （正要去點火的、要走人的，都得先撿回來）
+     · 被炸飛時：**跟著甩出去**——火把跟牠一起飛，落在牠落地的地方旁邊
+   **規則只有一條**：每一幀問「牠是不是倒著」（apeDown），倒著又還拿著就脫手。不在 tossBeast／fellBeast／
+   igniteBeast……各補一行：讓牠倒下的路有好幾條（幽浮放下來、小黑洞甩出來、水柱、兵長砍……），
+   補在呼叫端的話漏一條就是「躺著還握著火把」。
+   火把是牠身上的一個欄位（m.tor），不是另一份清單：牠走了、被收掉，火把跟著不見，場上不會留一支沒人撿的火把。
+   畫法：要畫的清單裡多一隻 kind 'torch'（見 beastList 與引擎的 TORCH），火跟著火把頭畫（ft）。
+   見 開發筆記〈火把加長、躺下去就脫手〉〈火把掉在地上、走過去撿〉 */
+const TOR_SPIN = [4, 8];              // 甩出去翻多快（弧度／秒，同 tossBeast 的 tsp 那一檔再慢一點）
+const TOR_DROP_V = 1.4;               // 自己倒下（沒被甩）時火把脫手往外的速度
+const TOR_JIT = 1.2;                  // 被甩出去時多給一點橫向的亂數：不然跟牠落在同一點、疊在身上
+const TOR_PICK = 0.9;                 // 撿一次幾秒：前一半彎下去、正中間換到手上、後一半直起來
+const TOR_NEAR = 0.06;                // 站位走到剩這麼近才彎腰（strollTo 的 REACH 0.9 太鬆，換手那一下會跳）
+/* 倒著＝飛在半空、躺著倒數、著火打滾、躺平角還沒收回來（爬起來那半秒） */
+const apeDown = m => !!m.air || m.fall > 0 || !!m.brl || m.lie > 0;
+/* 手上那支（站著的姿勢）柄中心在模型的哪一點：照造型表讀，不另外抄一份數字 */
+let _torHand = null;
+function torHand() {
+  return _torHand || (_torHand = ENG.BEASTS.ape.find(b => b.tc && !b.ft).p);
+}
+/* 脫手：從手上那一點出發。被甩出去的帶著牠的速度（跟牠走同一條彈道），自己倒下的往持火把那一側掉 */
+function torDrop(m) {
+  const sc = m.sc || 1, h = torHand(), ca = Math.cos(m.a), sa = Math.sin(m.a);
+  const t = {
+    kind: 'torch', sc, a: m.a, spin: 0, gait: 0, ghost: 0, rest: 0,
+    x: m.x + (h[0] * ca + h[2] * sa) * sc, y: (m.y || 0) + h[1] * sc, z: m.z + (-h[0] * sa + h[2] * ca) * sc,
+    vx: 0, vy: 0, vz: 0, sp: 0
+  };
+  if (m.air) {
+    t.vx = m.vx + rr(-TOR_JIT, TOR_JIT); t.vy = m.vy; t.vz = m.vz + rr(-TOR_JIT, TOR_JIT);
+    t.sp = rr(TOR_SPIN[0], TOR_SPIN[1]) * (Math.random() < 0.5 ? -1 : 1);
+  } else {
+    // 往右手那一側（模型 +x）掉
+    t.vx = ca * TOR_DROP_V; t.vz = -sa * TOR_DROP_V; t.vy = TOR_DROP_V;
+    t.sp = rr(-1.5, 1.5);
+  }
+  m.tor = t;
+}
+/* 每一幀：倒著就脫手（撿到一半被打倒也算，彎腰收掉），掉在半空的照重力掉、落地躺平 */
+function stepTorch(m, dt) {
+  if (apeDown(m)) {
+    m.pick = 0; m.bend = 0;
+    if (!m.tor) torDrop(m);
+  }
+  const t = m.tor;
+  if (!t) return;
+  if (t.rest) {
+    /* 落地那一刻還斜著的，倒向最近的那一個躺平角（0 或 π）——邊倒邊把高度跟著放下來，
+       低的那一頭一直貼著草皮（直接放平的話，斜著落地那幾幀另一頭插進地裡，探針量到 −0.15 格） */
+    const goal = Math.round(t.spin / Math.PI) * Math.PI;
+    t.spin += (goal - t.spin) * Math.min(1, dt * 18);
+    t.y = torLow(t);
+    return;
+  }
+  t.vy -= GRAV * dt;
+  t.x += t.vx * dt; t.y += t.vy * dt; t.z += t.vz * dt;
+  t.spin += t.sp * dt;
+  const lim = debrisR + 22;                           // 同 flyBeast：撞到草地邊緣彈回來
+  if (Math.abs(t.x) > lim) { t.x = clamp(t.x, -lim, lim); t.vx *= -0.4; }
+  if (Math.abs(t.z) > lim) { t.z = clamp(t.z, -lim, lim); t.vz *= -0.4; }
+  if (t.y > torLow(t)) return;                        // 斜著的那一頭還沒碰到草皮
+  t.y = torLow(t); t.vx = t.vy = t.vz = 0; t.rest = 1;
+  pushOutHome(t);                                     // 剛好掉進人家屋子裡：推出來（同 flyBeast 落地）
+}
+/* 火把繞 x 轉了 spin 之後，中心要離地多高最低那一頭才剛好貼著草皮：
+   長軸那一半（柄尾 0.285、火把頭那一端 0.30，取長的）乘 |sin|，加上火把頭那一半粗（0.04）乘 |cos|。
+   兩個數字照引擎那份 TORCH 讀（同 BEAST_LIFT 的算法：最往前／往後伸的那一塊）。 */
+function torLow(t) {
+  const h = Math.max(ENG.BEAST_LIFT.torch, ENG.BEAST_FRONT.torch);
+  const r = ENG.BEASTS.torch.reduce((a, b) => Math.max(a, b.s[1] / 2), 0);
+  return (h * Math.abs(Math.sin(t.spin)) + r * Math.abs(Math.cos(t.spin))) * t.sc;
+}
+/* 撿：走到「彎下去手剛好握在地上那一支」的站位、轉成跟火把同一個方向、彎腰，彎到底那一刻換到手上。
+   站位照引擎給的那一點算（torchGrip），換手那一幀地上那一支跟手上那一支是疊在一起的。
+   回傳 true＝這一幀被撿火把佔走了。 */
+function torFetch(m, dt, spd, stp, kp) {
+  const t = m.tor;
+  if (m.pick > 0) {
+    m.pick = Math.max(0, m.pick - dt);
+    const u = 1 - m.pick / TOR_PICK;
+    m.bend = Math.sin(u * Math.PI);
+    if (u >= 0.5 && m.tor) m.tor = null;              // 彎到底：拿起來了
+    m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+    if (m.pick <= 0) m.bend = 0;
+    return true;
+  }
+  if (!t) return false;
+  // 還在飛、或還在爬起來（躺平角還沒收完）：站著等它落地
+  if (!t.rest || m.lie) { m.gait += (0 - m.gait) * Math.min(1, dt * 8); return true; }
+  const g = ENG.torchGrip(), sc = m.sc || 1, ca = Math.cos(t.a), sa = Math.sin(t.a);
+  const sx = t.x - (g.x * ca + g.z * sa) * sc, sz = t.z - (-g.x * sa + g.z * ca) * sc;
+  const ox = m.tx, oz = m.tz;
+  m.tx = sx; m.tz = sz;
+  const done = strollTo(m, dt, spd, stp, kp);
+  m.tx = ox; m.tz = oz;
+  if (!done) return true;
+  /* 剩下那一點用走的挪過去（同 meatWalk：照樣 navMove，不穿東西）；挪不動（站位被房子擋住）就地撿 */
+  const dx = sx - m.x, dz = sz - m.z, d = Math.hypot(dx, dz);
+  if (d > TOR_NEAR) {
+    const sp = Math.min(d, spd * dt);
+    navMove(m, dx / d * sp, dz / d * sp, navBody(m));
+    if (Math.hypot(_nm.x, _nm.z) > sp * 0.5) {
+      navFace(m, dx / d, dz / d);
+      m.ph += dt * 11 * (stp || 1);
+      m.gait += (0.85 - m.gait) * Math.min(1, dt * 8);
+      return true;
+    }
+  }
+  // 轉成跟火把同一個方向（火把頭朝前），轉好了才彎腰
+  let e = t.a - m.a;
+  while (e > Math.PI) e -= Math.PI * 2;
+  while (e < -Math.PI) e += Math.PI * 2;
+  m.a += clamp(e, -B_RISE_YAW * dt, B_RISE_YAW * dt);
+  m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+  if (Math.abs(e) < 0.05) m.pick = TOR_PICK;
+  return true;
+}
+
 /* ── 事件二：小猴子丟香蕉炸彈 ───────────────────────────
    落點與拋物線跟投石機的石頭同一套（見 fireRock）：地標中心一帶隨機取一點、
    高度取那附近最高的一塊，湊出剛好 NANA_T 秒抵達的初速。 */
@@ -9228,6 +9370,95 @@ function stepNanas(dt) {
     }
   }
   if (!nanas.length) nanas = null;
+}
+
+/* ── 猴子聊天（v1.274.0）───────────────────────────────────
+   使用者：「小獼猴 小猴子同時在場上時會靠近聊天(類似小人 但是都是出愛心)」；動手前問過頻率，使用者選
+   **一趟只聊一次**（兩隻碰上聊一次就各逛各的，要等下一次兩隻同時在場才會再聊）。
+   整套照小人的閒聊（見 game-workers.js 的〈閒聊〉）：面對面、輪流講（CHAT_TURN）、講的那一隻冒泡泡、
+   左手比劃，聊 CHAT_T 秒；差在三處：
+     · **走過去**：小人是剛好走到 CHAT_D 以內才聊，猴子一次只有一兩隻、很少剛好碰上，所以是兩隻往中間走，
+       湊到 MC_D 就停下來面對面
+     · **聊完一律冒愛心**：小人有 CHAT_MAD 的機率談不攏冒生氣（還可能打起來），這兩隻沒有
+     · **一趟一次**：記在 m.chatted（聊過的那一隻），不是小人那種冷卻
+   只有「來逛的、閒著的」才聊：天災那一版、這一趟要來砸的（m.bad）、倒著的、火把掉在地上的、
+   被肉叫去的都不算。聊到一半其中一隻被打倒、翻臉、走人，兩邊一起散（monkCheck），散了不算聊過。
+   見 開發筆記〈兩隻湊在一起聊天〉 */
+const MC_D = 1.8;                     // 湊到多近開始聊（模型 0.44 寬 × DOOM_SC，兩隻中間還空一格多）
+const MC_WALK = 25;                   // 走過去最多走幾秒（隔著城牆走不到就算了，這一趟不聊）
+const MC_MIN = CHAT_T + 4;            // 逛的時間剩不到這麼多就不湊過去了（走到一半就要走人）
+/* 還閒著、可以繼續聊（走過去、聊到一半都看這一條） */
+function monkKeep(m) {
+  return !!m.fun && !m.bad && m.st === 'fun' && !m.air && !(m.burn > 0) && !(m.fall > 0) && !m.lie &&
+         !m.tor && !(m.pick > 0) && !m.meat && !(m.spook > 0) && !m.ufo && !(m.owe > 0) && !m.call && !m.dead;
+}
+/* 湊得成一對：一隻小獼猴配一隻小猴子、兩隻都閒著、逛的時間還夠、還沒互相聊過 */
+function monkPair(a, b) {
+  return a.kind !== b.kind && (b.kind === 'ape' || b.kind === 'snow') && !a.mate && !b.mate &&
+         monkKeep(a) && monkKeep(b) && a.stay > MC_MIN && b.stay > MC_MIN && a.chatted !== b && b.chatted !== a;
+}
+function monkStop(m) {
+  m.mate = null; m.mct = 0; m.mcw = 0; m.bub = 0; m.gest = 0;
+}
+/* 每一幀（stepBeast 開頭）：自己或對方不閒了、對方不在場上了、對方已經不指著自己了，就散 */
+function monkCheck(m) {
+  const p = m.mate;
+  if (!monkKeep(m) || p.mate !== m || !monkKeep(p) || !beasts || beasts.indexOf(p) < 0) monkStop(m);
+}
+/* fun 那一段叫：回傳 true＝這一幀被聊天佔走了 */
+function monkChat(m, dt, spd, stp, kp) {
+  let p = m.mate;
+  if (!p) {
+    if (!beasts || !monkKeep(m)) return false;
+    for (const q of beasts) if (q !== m && monkPair(m, q)) { p = q; break; }
+    if (!p) return false;
+    m.mate = p; p.mate = m;
+    m.mct = p.mct = 0; m.mcw = p.mcw = 0;
+    m.mside = 0; p.mside = 1;                         // 先開口的是先找到對方的那一隻
+    m.pause = p.pause = 0;
+  }
+  if (m.mct > 0) { monkTalk(m, p, dt); return true; }
+  /* 走過去：往兩隻中間那一點走（兩隻都在走，中間那一點每一幀跟著挪） */
+  m.mcw += dt;
+  if (m.mcw > MC_WALK) {                              // 走不到：這一趟不聊了，各逛各的
+    m.chatted = p; p.chatted = m;
+    monkStop(m); monkStop(p);
+    return false;
+  }
+  if (Math.hypot(p.x - m.x, p.z - m.z) <= MC_D) {
+    m.mct = p.mct = CHAT_T;
+    monkTalk(m, p, 0);
+    return true;
+  }
+  const ox = m.tx, oz = m.tz;
+  m.tx = (m.x + p.x) / 2; m.tz = (m.z + p.z) / 2;
+  strollTo(m, dt, spd, stp, kp);
+  m.tx = ox; m.tz = oz;
+  return true;
+}
+/* 聊：面對面（轉身照爬起來那個角速度，不要一幀轉過去）、輪流講，講的那一隻泡泡鼓起來、左手比劃 */
+function monkTalk(m, p, dt) {
+  m.mct -= dt;
+  m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+  let e = Math.atan2(p.x - m.x, p.z - m.z) - m.a;
+  while (e > Math.PI) e -= Math.PI * 2;
+  while (e < -Math.PI) e += Math.PI * 2;
+  m.a += clamp(e, -B_RISE_YAW * dt, B_RISE_YAW * dt);
+  const turn = Math.floor((CHAT_T - m.mct) / CHAT_TURN), speak = turn % 2 === m.mside;
+  if (speak) m.ph += dt * 9;
+  /* 講話時頭上冒的是泡泡（同小人）：預覽頁給過「冒泡泡／冒愛心」兩版，使用者選泡泡 */
+  m.gest += ((speak ? 1 : 0) - m.gest) * Math.min(1, dt * 8);
+  m.bub += ((speak ? 1 : 0) - m.bub) * Math.min(1, dt * 12);
+  if (m.mct > 0) return;
+  /* 聊完：兩隻一起冒愛心、記下聊過了、各自挑下一個點去逛。**由先聊完的那一隻兩邊一起收**——
+     兩邊的 mct 是同一幀歸零的，各收各的話後跑到的那一隻會先被 monkCheck 判成「對方不指著自己了」散掉，
+     冒不到愛心（同小人 stepChat 那一段的理由） */
+  for (const q of [m, p]) {
+    q.chatted = q === m ? p : m;
+    monkStop(q);
+    showEmo(q, 'heart');
+    idleSpot(q); q.pause = 0; q.leg = 0;
+  }
 }
 
 /* ── 事件五：巨人腳踢（v1.192）──────────────────────────────
@@ -10918,9 +11149,22 @@ const _beasts = [];
 function beastList() {
   _beasts.length = 0;
   if (beasts) for (const m of beasts) _beasts.push(m);
+  /* 掉在地上的火把（v1.274.0，見〈火把掉在地上〉）接在那幾隻後面：索引照舊對得回 beasts（點選、Saber 那幾位都靠這個），
+     點到它的話 beastAt 回 null（同香蕉） */
+  if (beasts) for (const m of beasts) if (m.tor) _beasts.push(m.tor);
   if (nanas) for (const n of nanas) _beasts.push(n);
   if (fballs) for (const f of fballs) _beasts.push(f);
   return _beasts;
+}
+/* 頭上的表情圖示要畫的清單（v1.274.0）：小人 ＋ 頭上正冒著圖示的猴子（聊完冒愛心，見〈猴子聊天〉）。
+   平常沒有猴子在冒，直接回 workers，不多抄一份 */
+const _emos = [];
+function emoList() {
+  if (!beasts || !beasts.some(m => m.emoK > 0.02)) return workers;
+  _emos.length = 0;
+  for (const w of workers) _emos.push(w);
+  for (const m of beasts) if (m.emoK > 0.02) _emos.push(m);
+  return _emos;
 }
 
 /* ── 道具：防禦魔法（v1.259.0）────────────────────────────
@@ -13005,7 +13249,9 @@ const B_ROLL_AMP = 1.9, B_ROLL_HZ = 0.9, B_ROLL_R = 0.42;   // 打滾（同小�
 const B_BLOW = 0.75;                 // 爆炸掀飛的力道打幾折（牠們比人重一些）
 /* 打滾時要抬幾倍的半身厚（m.lie 的值，見 engine 的 putBeasts）。躺著不動是 1.0；
    沿長軸滾到最側面時肩膀那一帶會轉下去，實測最深陷進草皮 0.178（滾到 −0.86 弧度時），
-   換算回模型是 0.103 ÷ 半身厚 0.365 ＝ 多 28%，所以取 1.3。 */
+   換算回模型是 0.103 ÷ 半身厚 0.365 ＝ 多 28%，所以取 1.3。
+   v1.274.0 尾巴拿掉之後兩隻猴子打滾乘的是前緣（引擎的 beastLift），實測小獼猴最低點浮 0.166 格、小猴子浮 0.20
+   （以前最先碰到草皮的是尾巴與火把），見 開發筆記〈尾巴拿掉：躺下要抬多高跟著變〉。 */
 const B_ROLL_LIFT = 1.3;
 const B_PANIC = 2.6;                 // 抱頭跑圈圈的角速度（小人 W_PANIC 是 3.4）
 /* 爬起來那一段最快轉幾弧度／秒（v1.202.2，見 stepBeast 那層包裝）。
@@ -13025,10 +13271,10 @@ const B_SIDE_ROCK = 0.14;
 function lieSide(m) { if (m.side) m.sdir = Math.random() < 0.5 ? 1 : -1; }
 /* 這一隻躺平時的角度：側躺的是 roll、仰躺的是 spin。
    m.face＝這一跤是**往前趴**的（v1.178 自己絆的那種，見 fellBeast）：兩條腿的才有這回事，
-   四條腿的（牛羊）本來就是往側邊倒。抬的高度**照舊用 BEAST_LIFT**（那是背面那一側的
-   最外緣，仰躺時貼地的就是它），沒有為了趴著另開一份：兩隻猴子的背緣與前緣差得很少
-   （小獼猴 0.365／0.375、小猴子 0.46／0.53），趴著埋進草皮的就是鼻尖那 0.01～0.07，
-   而那正是臉朝下該有的樣子。 */
+   四條腿的（牛羊）本來就是往側邊倒。v1.178～v1.273 抬的高度照舊用 BEAST_LIFT（背面那一側的
+   最外緣，仰躺時貼地的就是它），沒有為了趴著另開一份：當時兩隻猴子的背緣（尾巴）與前緣差得很少
+   （小獼猴 0.365／0.375、小猴子 0.46／0.53）。**v1.274.0 尾巴拿掉之後背緣只剩軀幹**，
+   趴著改照前緣抬（引擎的 beastLift：前緣與背緣取大的那一個）。 */
 function lieAng(m) {
   return m.side ? m.sdir * Math.PI * 0.5 : (m.face ? Math.PI * 0.5 : -Math.PI * 0.5);
 }
@@ -13240,7 +13486,8 @@ function hurtBeast(m, dt) {
      收到抬升剩不到 B_UP_EPS 格才連角度一起歸零：不歸零的話 stepGryph 會一直以為牠躺著、
      翅膀永遠收成立起來的。門檻照這一款的抬升常數換算，不寫死角度。 */
   if (m.lie) {
-    const up = (m.side ? ENG.BEAST_SIDE[m.kind] : ENG.BEAST_LIFT[m.kind]) * m.lie * (m.sc || 1);
+    // 趴著的照前緣（v1.274.0，同引擎的 beastLift）
+    const up = (m.side ? ENG.BEAST_SIDE[m.kind] : ENG.beastLift(m.kind, m.spin)) * m.lie * (m.sc || 1);
     if (Math.abs(m.side ? m.roll : m.spin) * up < B_UP_EPS) {
       m.spin = 0; m.roll = 0; m.lie = 0;
     }

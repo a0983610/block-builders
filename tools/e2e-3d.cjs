@@ -24079,7 +24079,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ── 造型（讀引擎那份部位表，跟核可過的造型稿對得起來）── */
   const bfig = await page.evaluate(() => {
     const B = ENG.BEASTS;
-    const top = k => Math.max(...B[k].map(b => b.p[1] + b.s[1] / 2));
+    // 聊天泡泡（v1.274.0，bub）飄在頭頂上，不是身體，不算進身高
+    const top = k => Math.max(...B[k].filter(b => !b.bub).map(b => b.p[1] + b.s[1] / 2));
     const has = (k, c) => B[k].some(b => b.c === c);
     return {
       apeTop: +top('ape').toFixed(3), snowTop: +top('snow').toFixed(3),
@@ -24167,13 +24168,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      規則型，不吃亂數：擺好姿勢直接讀畫出去的矩陣。
        · 垂直：前臂的長軸（模型 y）與火把柄的長軸（模型 z）畫出去之後內積 ≈ 0，走一輪 12 個相位、舉起來那一刻都量
        · 火：只有拿火把的在場才畫，一支 TORCH_N 塊，全部在火把頭正上方一小圈裡、不低於火把頭——
-         站著、舉起來、趴著都一樣（火永遠往上，不跟著火把轉）；舉起來時火把頭跟著升高 */
+         站著、舉起來、掉在地上都一樣（火永遠往上，不跟著火把轉）；舉起來時火把頭跟著升高。
+         v1.249.0～v1.273 第三種是「趴著還握著」；v1.274.0 起躺下去火把就離手（見 game-tools〈火把掉在地上〉），
+         改量地上那一支——清單裡排在牠後面那一格（見 beastList），手上那一塊縮成 0 */
   const btorch = await page.evaluate(() => {
     beasts = null; nanas = null;
     const A = ENG.BEASTS.ape, mesh = ENG.three.beastMesh, tm = ENG.three.torchMesh;
     const arm = A.findIndex(b => b.am === 1 && b.c === 0x33333c);        // 右前臂
     const stick = A.findIndex(b => b.am === 1 && b.s[2] > b.s[1] * 3);   // 火把柄（沿 z 長）
     const head = A.findIndex(b => b.ft);
+    const P = ENG.BEAST_PARTS, gHead = P + ENG.BEASTS.torch.findIndex(b => b.ft);   // 地上那一支的火把頭
     const m4 = new THREE.Matrix4(), u = new THREE.Vector3(), w = new THREE.Vector3();
     const hv = new THREE.Vector3(), p = new THREE.Vector3();
     const a = spawnBeast('ape');
@@ -24184,9 +24188,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < 12; i++) { a.gait = 0.85; a.ph = i * 0.5; perp(); }
     a.gait = 0; a.ph = 0; a.arm = 1; perp(); a.arm = 0;
     const sc = a.sc || 1;
-    const flame = () => {
+    const flame = (slot = head) => {
       draw();
-      mesh.getMatrixAt(head, m4); hv.setFromMatrixPosition(m4);
+      mesh.getMatrixAt(slot, m4); hv.setFromMatrixPosition(m4);
       const o = { on: tm.visible, n: tm.count, hy: +hv.y.toFixed(3), off: 0, low: Infinity, top: -Infinity };
       for (let i = 0; i < tm.count; i++) {
         tm.getMatrixAt(i, m4); p.setFromMatrixPosition(m4);
@@ -24199,7 +24203,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     };
     const stand = flame();
     a.arm = 1; const up = flame(); a.arm = 0;
-    a.spin = Math.PI / 2; a.lie = 1; const prone = flame(); a.spin = 0; a.lie = 0;
+    fellBeast(a, 9, 1);                                   // 往前趴，躺 9 秒（量完就收掉，不等牠爬起來）
+    for (let i = 0; i < 30; i++) stepBeast(a, 0.05);      // 火把脫手、掉到地上躺平
+    const prone = flame(gHead);
+    mesh.getMatrixAt(head, m4);
+    prone.held = +new THREE.Vector3().setFromMatrixScale(m4).x.toFixed(4);   // 手上那一塊（應該縮成 0）
+    prone.rest = a.tor ? a.tor.rest : -1;
     beasts = null;
     const s = spawnBeast('snow'); s.x = 30; s.z = 0; draw();
     const snowOnly = tm.visible;
@@ -24210,12 +24219,231 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('小獼猴的火把跟前臂垂直（走一輪、舉起來點火都是）',
      btorch.dot < 0.01, '前臂與火把柄長軸的內積最大 ' + btorch.dot);
   const fOk = f => f.on && f.n === btorch.N && f.off < 0.06 && f.low > 0 && f.top > 0.2 && f.top < 0.5;
-  ok('火把頭上冒火：只有小獼猴在場才畫，站著／舉起來／趴著火都在火把頭正上方往上竄',
+  ok('火把頭上冒火：只有小獼猴在場才畫，站著／舉起來／掉在地上火都在火把頭正上方往上竄',
      fOk(btorch.stand) && fOk(btorch.up) && fOk(btorch.prone) && btorch.up.hy > btorch.stand.hy + 0.5 &&
-     !btorch.snowOnly && !btorch.none,
+     btorch.prone.held === 0 && btorch.prone.rest === 1 && !btorch.snowOnly && !btorch.none,
      ['stand', 'up', 'prone'].map(k => k + ' ' + btorch[k].n + ' 塊、偏 ' + btorch[k].off + '、高 ' +
        btorch[k].low + '～' + btorch[k].top + '、火把頭 ' + btorch[k].hy).join('；') +
-     '；只有小猴子 ' + btorch.snowOnly + '、沒有猴子 ' + btorch.none);
+     '（掉在地上時手上那一塊 ' + btorch.prone.held + '）；只有小猴子 ' + btorch.snowOnly + '、沒有猴子 ' + btorch.none);
+
+  /* ── 尾巴拿掉、火把加長、躺下去火把掉在地上、爬起來走過去撿（v1.274.0）──
+     使用者：「小獼猴 小猴子尾巴拿掉／小獼猴手上火把加長約1.5倍 跌倒時會掉在地上 不要還是拿在手上」，
+     問過選的：只要躺下去都掉（著火跑圈圈還站著，照舊拿著）、爬起來走過去撿、被炸飛時火把跟著甩出去。
+     全部規則型：骰子押住（Math.random 0.5／0.999：不讓牠走路自己再絆一跤、甩出去的亂數歸零），量完還回去。 */
+  const bshape = await page.evaluate(() => {
+    const B = ENG.BEASTS;
+    // 尾巴那幾節的中心在軀幹背後 z −0.24～−0.41；身體最後面的是大腿（−0.02）
+    const back = k => Math.min(...B[k].filter(b => !b.bub).map(b => b.p[2]));
+    const tc = B.ape.filter(b => b.tc);
+    const lo = Math.min(...tc.map(b => b.p[2] - b.s[2] / 2)), hi = Math.max(...tc.map(b => b.p[2] + b.s[2] / 2));
+    return { apeBack: +back('ape').toFixed(3), snowBack: +back('snow').toFixed(3), len: +(hi - lo).toFixed(3) };
+  });
+  /* 0.395 是 v1.249.0～v1.273 那一支的整支長（柄尾 −0.05 到火把頭前緣 0.345，git 上的數字）——「約 1.5 倍」是對它說的 */
+  ok('小獼猴、小猴子沒有尾巴；火把整支加長約 1.5 倍',
+     bshape.apeBack > -0.1 && bshape.snowBack > -0.1 && Math.abs(bshape.len / 0.395 - 1.5) < 0.1,
+     '最後面那一塊的中心 小獼猴 ' + bshape.apeBack + '／小猴子 ' + bshape.snowBack +
+     '；火把整支 ' + bshape.len + '（舊的 0.395 的 ' + (bshape.len / 0.395).toFixed(2) + ' 倍）');
+
+  const bdrop = await page.evaluate(() => {
+    const rnd = Math.random;
+    Math.random = () => 0.5;
+    const out = {};
+    const fresh = kind => {
+      beasts = null; nanas = null;
+      const m = spawnBeast(kind, 1);
+      m.x = 30; m.z = 0; m.a = 0; m.st = 'fun'; m.stay = 999; m.pause = 999; m.wIn = 0;
+      return m;
+    };
+    try {
+      // 四種倒法：倒下去之後的第一幀火把就離手
+      for (const [k, hit] of [['trip', m => fellBeast(m, 2, 1)], ['knock', m => fellBeast(m, 2)],
+                              ['toss', m => tossBeast(m, 6, 8, 0)], ['roll', m => igniteBeast(m, 1)]]) {
+        const m = fresh('ape'); hit(m); stepBeast(m, 0.05); out[k] = !!m.tor;
+      }
+      // 著火跑圈圈：還站著，燒完那一整段火把都在手上
+      const r = fresh('ape'); igniteBeast(r, 0);
+      let held = 1;
+      for (let i = 0; i < 120; i++) { stepBeast(r, 0.05); if (r.tor) held = 0; }
+      out.run = held;
+      // 小猴子手上沒有火把，倒了也不會冒出一支
+      const s = fresh('snow'); fellBeast(s, 2); stepBeast(s, 0.05); out.snow = !s.tor;
+      // 被炸飛：火把跟牠走同一條彈道，落在牠落地的地方旁邊
+      const t = fresh('ape'); tossBeast(t, 9, 9, 3);
+      let aL = null, tL = null;
+      for (let i = 0; i < 400 && !(aL && tL); i++) {
+        stepBeast(t, 0.05);
+        if (!aL && !t.air) aL = { x: t.x, z: t.z };
+        if (!tL && t.tor && t.tor.rest) tL = { x: t.tor.x, z: t.tor.z };
+      }
+      out.fly = aL ? +Math.hypot(aL.x - 30, aL.z).toFixed(2) : -1;
+      out.gap = aL && tL ? +Math.hypot(aL.x - tL.x, aL.z - tL.z).toFixed(2) : -1;
+      /* 爬起來走過去撿：撿到那一幀，手上那一支跟上一幀地上那一支疊在一起；撿完接著原本那一段（逛、站著發呆） */
+      const m = fresh('ape');
+      const hand = ENG.BEASTS.ape.findIndex(b => b.tc && !b.ft);         // 手上那一支的柄（牠排第一格，索引就是這個）
+      const mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4(), v = new THREE.Vector3();
+      fellBeast(m, 1.2, 1);
+      let prev = null, swap = -1, at = -1, bentMax = 0;
+      for (let i = 0; i < 600; i++) {
+        const was = m.tor && { x: m.tor.x, y: m.tor.y, z: m.tor.z };
+        stepBeast(m, 0.05);
+        bentMax = Math.max(bentMax, m.bend);
+        if (was && !m.tor && swap < 0) {
+          draw(); mesh.getMatrixAt(hand, m4); v.setFromMatrixPosition(m4);
+          swap = +Math.hypot(v.x - was.x, v.y - was.y, v.z - was.z).toFixed(3); at = +(i * 0.05).toFixed(2);
+        }
+        if (swap >= 0 && !(m.pick > 0)) break;
+      }
+      out.swap = swap; out.at = at; out.bent = +bentMax.toFixed(2);
+      out.after = { st: m.st, tor: !!m.tor, bend: m.bend };
+    } finally { Math.random = rnd; }
+    beasts = null; draw();
+    return out;
+  });
+  ok('躺下去火把就離手：自己絆倒、被打倒、被炸飛、著火打滾都掉；著火跑圈圈還站著，照舊拿著；小猴子沒有火把',
+     bdrop.trip && bdrop.knock && bdrop.toss && bdrop.roll && bdrop.run === 1 && bdrop.snow,
+     '絆倒 ' + bdrop.trip + '、打倒 ' + bdrop.knock + '、炸飛 ' + bdrop.toss + '、打滾 ' + bdrop.roll +
+     '；跑圈圈全程拿著 ' + bdrop.run + '；小猴子沒冒出火把 ' + bdrop.snow);
+  ok('被炸飛時火把跟著甩出去，落在牠落地的地方旁邊',
+     bdrop.fly > 5 && bdrop.gap >= 0 && bdrop.gap < 3,
+     '牠飛了 ' + bdrop.fly + ' 格，火把落在離牠 ' + bdrop.gap + ' 格');
+  ok('爬起來走過去彎腰撿：撿到那一刻手上那一支跟地上那一支疊在一起，撿完接著原本那一段',
+     bdrop.swap >= 0 && bdrop.swap < 0.15 && bdrop.bent > 0.95 &&
+     bdrop.after.st === 'fun' && !bdrop.after.tor && bdrop.after.bend === 0,
+     '倒下後 ' + bdrop.at + ' 秒撿到、換手那一下差 ' + bdrop.swap + ' 格、彎到 ' + bdrop.bent +
+     '；撿完回到 ' + bdrop.after.st);
+
+  /* 趴著照前緣抬（v1.274.0）：尾巴拿掉之後背緣只剩軀幹，趴著、彎腰撿、火把掉下來翻幾圈落地，每一幀都不陷進草皮。
+     〈站著／躺著／打滾／飛龍趴著〉那一條量的是仰躺與打滾，這一條補往前趴與火把（low 同那一條：OBB 投影到 Y）。
+     **走路那幾幀不算**（gait 0.05 以上）：腿擺到前後時腳尖本來就會擦進草皮 0.05 上下（沒拿火把的小猴子一樣），
+     那是走路那一套的事、不是這一條守的，那一條也只量站著不動 */
+  const bprone = await page.evaluate(() => {
+    const low = () => {
+      const mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4();
+      let lo = 1e9;
+      for (let i = 0; i < mesh.count; i++) {
+        mesh.getMatrixAt(i, m4);
+        const a = m4.elements;
+        if (Math.hypot(a[0], a[1], a[2]) < 1e-4 || Math.hypot(a[4], a[5], a[6]) < 1e-4 ||
+            Math.hypot(a[8], a[9], a[10]) < 1e-4) continue;
+        lo = Math.min(lo, a[13] - 0.5 * (Math.abs(a[1]) + Math.abs(a[5]) + Math.abs(a[9])));
+      }
+      return lo;
+    };
+    const rnd = Math.random;
+    Math.random = () => 0.5;
+    const out = {};
+    try {
+      for (const kind of ['ape', 'snow']) {
+        beasts = null; nanas = null;
+        const m = spawnBeast(kind, 1);
+        m.x = 30; m.z = 0; m.a = 0; m.st = 'fun'; m.stay = 999; m.pause = 999; m.wIn = 0;
+        fellBeast(m, 1.2, 1);
+        let lo = 1e9, prone = 1e9;
+        for (let i = 0; i < 400; i++) {
+          stepBeast(m, 0.05); draw();
+          const l = low();
+          if (m.gait < 0.05) lo = Math.min(lo, l);
+          if (m.fall > 0 && Math.abs(m.spin - Math.PI / 2) < 0.01) prone = Math.min(prone, l);
+          if (i > 30 && !m.tor && !(m.pick > 0) && !m.lie) break;
+        }
+        out[kind] = { lo: +lo.toFixed(3), prone: +prone.toFixed(3) };
+      }
+      // 被炸飛那一支：在天上翻、落地躺平，整段都不插進地裡
+      beasts = null; nanas = null;
+      const t = spawnBeast('ape', 1);
+      t.x = 30; t.z = 0; t.a = 0; t.st = 'fun'; t.stay = 999; t.pause = 999; t.wIn = 0;
+      Math.random = () => 0.9;                       // 翻得快一點（TOR_SPIN 的上緣）
+      tossBeast(t, 9, 9, 3);
+      let lo = 1e9;
+      for (let i = 0; i < 120; i++) { stepBeast(t, 0.05); draw(); if (t.gait < 0.05) lo = Math.min(lo, low()); }
+      out.toss = +lo.toFixed(3);
+    } finally { Math.random = rnd; }
+    beasts = null; draw();
+    return out;
+  });
+  ok('往前趴、彎腰撿、火把落地都貼著草皮（不陷進去；趴平了也不浮起來）',
+     ['ape', 'snow'].every(k => bprone[k].lo >= -0.02 && bprone[k].prone < 0.10) && bprone.toss >= -0.02,
+     ['ape', 'snow'].map(k => k + ' 整段最低 ' + bprone[k].lo + '、趴平時 ' + bprone[k].prone).join('；') +
+     '；炸飛那一段 ' + bprone.toss);
+
+  /* ── 兩隻猴子湊過去聊天（v1.274.0）──
+     使用者：「小獼猴 小猴子同時在場上時會靠近聊天(類似小人 但是都是出愛心)」，問過頻率選「一趟只聊一次」；
+     講話時冒泡泡（預覽兩版裡選的，同小人）。規則型：骰子押 0.999（不讓牠們走路絆跤），直接一幀一幀推兩隻。 */
+  const bchat = await page.evaluate(() => {
+    const rnd = Math.random;
+    Math.random = () => 0.999;
+    const out = {};
+    const two = (dx) => {
+      beasts = null; nanas = null;
+      const a = spawnBeast('ape', 1), s = spawnBeast('snow', 1);
+      for (const [q, x] of [[a, 30], [s, 30 + dx]]) {
+        q.x = x; q.z = 6; q.tx = x; q.tz = 6; q.st = 'fun'; q.stay = 999; q.pause = 0; q.wIn = 0;
+      }
+      return [a, s];
+    };
+    const tick = () => { for (let j = beasts.length - 1; j >= 0; j--) stepBeast(beasts[j], 0.05); };
+    try {
+      const [a, s] = two(12);
+      let talk = -1, d0 = 0, end = -1, face = 0, turns = 0, both = 0, last = -1, hearts = null;
+      for (let i = 0; i < 1200; i++) {
+        tick();
+        if (talk < 0 && a.mct > 0) { talk = i; d0 = Math.hypot(a.x - s.x, a.z - s.z); }
+        if (a.mct > 0 && a.mct < CHAT_T - 1) {
+          // 面對面：朝向跟「看向對方」差不到 0.1 弧度
+          const fa = Math.abs(Math.atan2(Math.sin(a.a - Math.atan2(s.x - a.x, s.z - a.z)), Math.cos(a.a - Math.atan2(s.x - a.x, s.z - a.z))));
+          face = Math.max(face, fa);
+          const who = a.bub > 0.5 ? 0 : s.bub > 0.5 ? 1 : -1;
+          if (a.bub > 0.5 && s.bub > 0.5) both++;
+          if (who >= 0 && who !== last) { turns++; last = who; }
+        }
+        if (talk >= 0 && end < 0 && !a.mate) { end = i; hearts = [a.emo, s.emo]; }
+        if (end >= 0) break;
+      }
+      out.talkAt = +(talk * 0.05).toFixed(2); out.d0 = +d0.toFixed(2);
+      out.len = end >= 0 && talk >= 0 ? +((end - talk) * 0.05).toFixed(2) : -1;
+      out.face = +face.toFixed(3); out.turns = turns; out.both = both; out.hearts = hearts;
+      out.chatted = a.chatted === s && s.chatted === a;
+      out.T = CHAT_T; out.D = MC_D;
+      // 一趟只聊一次：再放 30 秒（兩隻都還在逛）不會再湊過去
+      let again = 0;
+      for (let i = 0; i < 600; i++) { tick(); if (a.mate || s.mate) again++; }
+      out.again = again;
+      /* 不閒的不湊：直接問 monkPair（湊不湊得成一對的那一條規則），不跑模擬——跑模擬的話「要來砸的」那一隻
+         找不到村子會自己把 bad 收掉回去逛（見 stepBeast0 fun 那一段），量到的就不是這一條了 */
+      const no = {};
+      for (const [k, set] of [['ok', () => {}], ['doom', q => { q.fun = 0; }], ['bad', q => { q.bad = 1; }],
+                              ['torch', q => { q.tor = { kind: 'torch', rest: 1 }; }], ['down', q => { q.fall = 1; q.lie = 1; }],
+                              ['done', (q, r) => { q.chatted = r; }]]) {
+        const [p, q] = two(8);
+        set(p, q);
+        no[k] = monkPair(p, q) || monkPair(q, p);
+      }
+      out.no = no;
+      // 聊到一半其中一隻被打倒：兩邊一起散、不算聊過，爬起來之後還會再湊過去
+      const [p, q] = two(3);
+      for (let i = 0; i < 200 && !(p.mct > 0 && p.mct < CHAT_T - 1); i++) tick();
+      const mid = p.mct > 0;
+      fellBeast(q, 1.0);
+      tick();
+      out.cut = { mid, mate: !!p.mate || !!q.mate, chatted: p.chatted === q, bub: p.bub + q.bub };
+      let back = 0;
+      for (let i = 0; i < 400 && !back; i++) { tick(); if (p.mct > 0) back = 1; }
+      out.cut.back = back;
+    } finally { Math.random = rnd; }
+    beasts = null; draw();
+    return out;
+  });
+  ok('兩隻都在逛就湊過去聊：走到 MC_D 內面對面、輪流冒泡泡、聊 CHAT_T 秒，聊完兩隻都冒愛心',
+     bchat.talkAt > 0 && bchat.d0 <= bchat.D + 0.01 && Math.abs(bchat.len - bchat.T) < 0.11 &&
+     bchat.face < 0.1 && bchat.turns >= 3 && bchat.both === 0 &&
+     bchat.hearts && bchat.hearts[0] === 'heart' && bchat.hearts[1] === 'heart' && bchat.chatted,
+     '隔 12 格放，' + bchat.talkAt + ' 秒後在 ' + bchat.d0 + ' 格開聊、聊 ' + bchat.len + ' 秒、朝向最多偏 ' + bchat.face +
+     '、輪流 ' + bchat.turns + ' 次（同時冒泡泡 ' + bchat.both + ' 幀）、聊完 ' + JSON.stringify(bchat.hearts));
+  ok('一趟只聊一次；天災那一版、要來砸的、火把掉在地上的、倒著的不湊過去；聊到一半被打倒兩邊一起散、不算聊過',
+     bchat.again === 0 && bchat.no.ok && !bchat.no.doom && !bchat.no.bad && !bchat.no.torch && !bchat.no.down && !bchat.no.done &&
+     bchat.cut.mid && !bchat.cut.mate && !bchat.cut.chatted && bchat.cut.bub === 0 && bchat.cut.back === 1,
+     '聊完再放 30 秒湊過去 ' + bchat.again + ' 幀；不閒的湊過去 ' + JSON.stringify(bchat.no) +
+     '；被打倒那一場 ' + JSON.stringify(bchat.cut));
 
   /* ── 倒數 ── */
   const btime = await page.evaluate(() => {
@@ -24363,6 +24591,34 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      bfire.spread > bfire.lit * 3 && bfire.set1 < bfire.set0,
      bfire.lit + ' 塊 → ' + bfire.spread + ' 塊，還站著的 ' +
      bfire.set0 + ' → ' + bfire.set1);
+
+  /* 火把掉在地上的那一隻撿回來才動手（v1.274.0，見 game-tools〈火把掉在地上〉）：站定瞄著要點火那一刻被打倒
+     （reaim 推回 near），爬起來先走去撿、撿回來才再走過去點——點火那一刻手上一定有火把。
+     規則型：骰子押 0.999（不讓牠走路自己再絆一跤），點火換成只記帳（不真的燒），量完還回去 */
+  await fillAll(page);
+  const btorPick = await page.evaluate(() => {
+    clearFires();
+    beasts = null; nanas = null;
+    const rnd = Math.random, act = DOOM_ACT.ape, log = [];
+    DOOM_ACT.ape = m => { log.push(!m.tor); return 0; };
+    Math.random = () => 0.999;
+    let frames = 0, knocked = 0, picked = -1, f0 = 0;
+    try {
+      const m = spawnBeast('ape');
+      while (m.st !== 'act' && frames < 3600) { stepDoom(0.05); frames++; }
+      knocked = m.st === 'act' && fellBeast(m, 1.0) ? 1 : 0;
+      f0 = frames;
+      while (!log.length && frames < f0 + 2400) {
+        stepDoom(0.05); frames++;
+        if (picked < 0 && knocked && frames > f0 + 2 && !m.tor) picked = frames - f0;
+      }
+    } finally { DOOM_ACT.ape = act; Math.random = rnd; beasts = null; }
+    return { knocked, log, picked: +(picked * 0.05).toFixed(2), acted: +((frames - f0) * 0.05).toFixed(2) };
+  });
+  ok('火把掉在地上的那一隻撿回來才動手：點火那一刻手上一定有火把',
+     btorPick.knocked === 1 && btorPick.log.length === 1 && btorPick.log[0] === true &&
+     btorPick.picked > 0 && btorPick.picked < btorPick.acted,
+     '瞄著要點火時被打倒，' + btorPick.picked + ' 秒撿回火把、' + btorPick.acted + ' 秒點火（點火那一刻拿著 ' + btorPick.log.join() + '）');
 
   /* ── 事件二：香蕉炸彈 ── */
   await fillAll(page);
@@ -28574,6 +28830,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const r = spawnBeast('ape', 1);
     r.x = 26; r.z = 0; r.a = 0; r.st = 'fun'; r.stay = 999;
     igniteBeast(r, 1);
+    /* 躺下去火把就離手（v1.274.0，見 game-tools〈火把掉在地上〉）：那一條規則是 stepBeast 每一幀問的，
+       這裡不跑 stepBeast，照規則叫一次——不然加長之後的火把還握在手上跟著滾，火把頭插進草皮 */
+    stepTorch(r, 0);
     let worst = 1e9;
     for (let k = 0; k < 40; k++) {
       r.rph = k / 40 * Math.PI * 2;
