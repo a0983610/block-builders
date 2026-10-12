@@ -477,6 +477,8 @@ const installClean = page => page.evaluate(() => {
     ENG.putZens([]);                  // 善逸自己那顆 mesh、雷光、光痕（v1.251.0），同上
     /* 虛式「茈」（v1.255.0）：飛著的茈手上掛著積木與生物（ufo 旗標），要走 purpClear() 放掉，同 holeClear */
     purpClear(); ENG.putGojos([]); ENG.putPurps([]);
+    /* Diablo 自己那顆 mesh 與他噴出來的金幣（金幣跟著屍體收，屍體已經被上面那一行清掉了，下一幀才輪得到 stepCoins） */
+    coins.length = 0; ENG.putDiablos([]); ENG.putCoins([]);
     trucks = null;
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
@@ -25731,6 +25733,301 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      跟天災共用同一批動物與同一套走路，所以這一段驗的是**差在哪裡**，不重驗造型。
      兩支鐘都要裝回去：走路那一段是 stepDoom 在跑（beasts 的迴圈在它裡面）。 */
   }   // ── 〈天災：巨人腳踢〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 天災：Diablo 噴火 ══════════ */
+  /* 使用者：「加入新天災吉祥物 diablo 攻擊方式是舊版獅鷲的噴火／同巨人方式會被擊殺 死亡會倒在地上噴出一堆金幣
+     然後慢慢消失」。問過四件：場上 10 格、一趟噴一道、死了趴著（看過預覽改的）、金幣純特效。之後兩輪動作預覽：
+     「Diablo 要比照巨人 擋路就噴 火柱要在芙莉蓮的防護罩外面被擋」、「趴著的樣子 跟倒地還是不行 明顯浮空 & 倒地時位移」。
+     **死法、擋路就噴的狀態機不跑模擬**（同〈規則：垮塌、補洞、廢棄〉）：直接擺姿勢、呼叫函式量；
+     只有一整趟、整圈城牆、防護罩那三條真的讓他噴。見 開發筆記〈Diablo：噴火的天災，同巨人被斬殺、趴倒噴金幣〉 */
+  SEC: { if (!(await head('天災：Diablo 噴火', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 這一段要測它本身
+  await fillAll(page);
+
+  /* ── 造型與兩張表：讀真的畫出去的矩陣（他自己一顆 mesh，不在 BEASTS）── */
+  const dfig = await page.evaluate(() => {
+    cleanTools();
+    const m = spawnBeast('diablo', 1, 0);
+    Object.assign(m, { x: siteR + 30, z: 0, wIn: 0, st: 'fun', stay: 999, pause: 999, a: 0 });
+    ENG.putDiablos([m]);
+    const M = new THREE.Matrix4(), mesh = ENG.three.diaMesh;
+    let lo = Infinity, hi = -Infinity;
+    for (let k = 0; k < ENG.DIA_PARTS; k++) {
+      mesh.getMatrixAt(k, M);
+      const e = M.elements, h = 0.5 * (Math.abs(e[1]) + Math.abs(e[5]) + Math.abs(e[9]));
+      lo = Math.min(lo, e[13] - h); hi = Math.max(hi, e[13] + h);
+    }
+    beasts = null; ENG.putDiablos([]);
+    return { lo: +lo.toFixed(3), hi: +hi.toFixed(2), sc: DIA_SC, parts: ENG.DIA_PARTS, inBeasts: !!ENG.BEASTS.diablo,
+             doom: DOOMS.map(d => d.id), masc: MASCOTS.map(k => k.id),
+             ground: (MASCOTS.find(k => k.id === 'diablo') || {}).ground,
+             fight: canFight({ kind: 'diablo' }), kill: killable({ kind: 'diablo' }), big: bigBeast({ kind: 'diablo' }) };
+  });
+  ok('Diablo 站著 10 格高、腳底貼著草皮，自己一顆 mesh（不在 BEASTS）',
+     Math.abs(dfig.lo) < 0.05 && dfig.hi > 9.5 && dfig.hi < 11 && !dfig.inBeasts,
+     '最低 ' + dfig.lo + '、最高 ' + dfig.hi + ' 格（刺尖，×' + dfig.sc + '），' + dfig.parts + ' 塊');
+  ok('DOOMS 與 MASCOTS 各多一列，殺得死巨人的那幾樣也殺得死他，太高走不了城門（同巨人）',
+     dfig.doom.includes('diablo') && dfig.masc.includes('diablo') && dfig.ground === 1 && dfig.fight && dfig.kill && dfig.big,
+     '天災 ' + dfig.doom.join('／') + '；吉祥物 ' + dfig.masc.join('／') + '（ground ' + dfig.ground + '）；canFight ' +
+     dfig.fight + '、killable ' + dfig.kill + '、bigBeast ' + dfig.big);
+
+  /* ── 一整趟：走進來、噴一道、走人（使用者選的「一趟 1 道」）── */
+  const drun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires(); hot.length = 0;
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    const set0 = blocks.filter(b => b.st === 3).length;
+    const m = spawnBeast('diablo');
+    let n = 0, breaths = 0, busts = 0, last = 0, inSite = 0, inHome = 0, burnMax = 0, jets = 0;
+    while (n < 5000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.02); n++;
+      /* 擋路就噴的那幾道（m.bust）另外數：路上剛好擋著一間小人的家的話他會先噴那一間 */
+      if (m.fhit && !last) { if (m.bust) busts++; else breaths++; }
+      last = m.fhit;
+      if (breaths && n % 5 === 0) burnMax = Math.max(burnMax, blocks.filter(b => b.st === 3 && b.burn > 0).length);
+      if (m.st === 'fire') { let j = 0; for (const h of hot) if (h.jet) j++; if (j > jets) jets = j; }
+      if (footBlocked(m.x, m.z)) inSite++;
+      if (homeFoot(m.x, m.z)) inHome++;
+    }
+    const r = { breaths, busts, burnMax, jets, inSite, inHome, set0, set1: blocks.filter(b => b.st === 3).length,
+                gone: !beasts || beasts.indexOf(m) < 0, secs: +(n * 0.02).toFixed(1) };
+    beasts = null; clearFires(); hot.length = 0;
+    return r;
+  });
+  ok('一趟噴一道就走人，火柱打到的地方燒起來',
+     drun.breaths === 1 && drun.gone && drun.jets > 0 && drun.burnMax > 0,
+     '噴 ' + drun.breaths + ' 道（擋路另外噴 ' + drun.busts + ' 道）、火柱同時最多 ' + drun.jets + ' 顆、最多 ' + drun.burnMax +
+     ' 塊在燒；還站著的 ' + drun.set0 + ' → ' + drun.set1 + ' 塊，全程 ' + drun.secs + ' 秒');
+  ok('十格高的一隻走起來也不插進地標與小房子',
+     drun.inSite === 0 && drun.inHome === 0,
+     '站在建築的格子裡 ' + drun.inSite + ' 幀、站在房子裡 ' + drun.inHome + ' 幀');
+
+  /* ── 防護罩擋火柱（使用者：「火柱要在芙莉蓮的防護罩外面被擋」）：芙莉蓮站在要燒的那一塊前面 3 格，
+        他在 20 格外直接進噴火那一段。每一顆火粒子都停在殼外、罩子裡一塊都不燒 ── */
+  await fillAll(page);
+  const dshield = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires(); hot.length = 0;
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    buildSlotOwner();
+    const b0 = nearSet(siteR + 20, 0);
+    const fr = spawnBeast('frieren', 1, 0);
+    Object.assign(fr, { x: b0.x + 3, z: b0.z, wIn: 0, st: 'fun', stay: 1e9, pause: 1e9 });
+    const m = spawnBeast('diablo');
+    Object.assign(m, { x: b0.x + 20, z: b0.z, wIn: 0, a: -Math.PI / 2 });
+    diaStop(m); m.st = 'fire';
+    let deep = -Infinity, opened = false, n = 0, jets = 0;
+    const ctr = () => fr.bt != null ? { x: fr.bx, z: fr.bz } : { x: fr.x, z: fr.z };
+    while (n < 300 && m.st === 'fire') {
+      step(0.02); n++;
+      const c = ctr();
+      for (const h of hot) if (h.jet) { jets++; deep = Math.max(deep, FR_R - Math.hypot(h.x - c.x, h.y, h.z - c.z)); }
+      if (fr.bt != null) opened = true;
+    }
+    const c = ctr();
+    let inside = 0, burn = 0;
+    for (const b of blocks) if (b.burn) { burn++; if (Math.hypot(b.x - c.x, b.y, b.z - c.z) < FR_R) inside++; }
+    const r = { opened, deep: +deep.toFixed(3), jets, inside, burn, R: FR_R, secs: +(n * 0.02).toFixed(1) };
+    beasts = null; clearFires(); hot.length = 0;
+    return r;
+  });
+  ok('火柱在芙莉蓮的防護罩殼外熄掉，罩子裡一塊都不燒',
+     dshield.opened && dshield.jets > 0 && dshield.deep <= 0.05 && dshield.inside === 0,
+     '罩子打開 ' + dshield.opened + '；火粒子 ' + dshield.jets + ' 顆次、最深鑽進殼裡 ' + dshield.deep + ' 格（半徑 ' + dshield.R +
+     '，負的＝在殼外）；罩子裡燒起來 ' + dshield.inside + ' 塊（全場 ' + dshield.burn + ' 塊）');
+
+  /* ── 擋路就噴（使用者：「Diablo 要比照巨人 擋路就噴」）：自己組一段正中央開著門洞的牆（同〈天災：巨人腳踢〉那一段），
+        直接呼叫 gateNeed／wallFoot／diaBust／stepDiaFire。牆上一塊積木都沒擺（只有框）：每一道都挑不到可燒的那一塊、
+        當場收掉，框還擋著就再一道——驗的就是「噴滿 DIA_BUST 道還不通就放它一馬」那一條 ── */
+  const dgate = await page.evaluate(() => {
+    /* 積木池也換成空的：場上真的積木掛的 hh 是原本那份 homes 的編號，留著的話 diaTarget 會把第 0 間的積木當成這段牆的 */
+    const keep = { homes, reach: navReach, blocks };
+    const wall = { wall: 1, id: 1, ring: 30, x0: -8, x1: 8, z0: -1.5, z1: 1.5,
+                   gap: { x0: -2.5, x1: 2.5, z0: -1.5, z1: 1.5 } };
+    homes = { list: [wall] }; blocks = [];
+    const mk = o => Object.assign({
+      kind: 'diablo', st: 'come', x: 0, z: -6, a: 0, tx: 0, tz: 20,
+      pause: 0, ghost: 0, gait: 0.85, sc: DIA_SC, fun: 0, home: 0,
+      fb: 0, ft: 0, fhit: 0, jr: 0, spin: 0, bust: null, bn: 0, bskip: null
+    }, o);
+    let asked = 0;
+    navReach = () => { asked++; return true; };
+    const gate = gateNeed(mk({}), 0, 20);
+    navReach = keep.reach;
+    const wf = wallFoot(mk({ x: 5, z: -2.6 }), 5, 0);
+    const m = mk({});
+    const bust = diaBust(m);
+    const eye = { st: m.st, back: m.bust, home: m.bhome === wall };
+    /* 一幀就是一道：挑不到目標當場收掉（diaEnd），還擋著的話下一幀從頭再噴 */
+    let tries = 0;
+    while (m.st === 'fire' && tries < 50) { stepDiaFire(m, 0.02); tries++; }
+    const give = { st: m.st, skip: m.bskip === wall, tries, again: diaBust(m) };
+    const fun = mk({ fun: 1, st: 'fun' });
+    const funBust = diaBust(fun);
+    homes = keep.homes; blocks = keep.blocks;
+    return { gate, asked, wf, bust, eye, give, funBust, funBack: fun.bust, max: DIA_BUST };
+  });
+  ok('Diablo 不走城門：連問都不問，前面擋著就停下來對它噴（噴完回原本那一段）',
+     dgate.gate === false && dgate.asked === 0 && dgate.wf === false &&
+     dgate.bust && dgate.eye.st === 'fire' && dgate.eye.back === 'come' && dgate.eye.home &&
+     dgate.funBust && dgate.funBack === 'fun',
+     '城門問了 ' + dgate.asked + ' 次、走到牆邊拆牆那條 ' + dgate.wf + '；正對著門洞 → ' + dgate.eye.st +
+     '（噴完回 ' + dgate.eye.back + '）；逛到一半被擋 → 噴完回 ' + dgate.funBack);
+  ok('噴滿就放它一馬改繞過去（同巨人踹滿那一條）',
+     dgate.give.tries === dgate.max && dgate.give.st === 'come' && dgate.give.skip && dgate.give.again === false,
+     '同一個擋路的噴了 ' + dgate.give.tries + ' 道（上限 ' + dgate.max + '）就回 ' + dgate.give.st +
+     '、記進 bskip，再問一次攔不攔：' + dgate.give.again);
+
+  /* 真的一整圈牆圍著（同〈天災：巨人腳踢〉那一條）：一次都沒去繞門，噴到擋路的那一段燒斷就走進城裡 */
+  await fillAll(page);
+  const dwall = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires(); hot.length = 0;
+    stopIdleEvent(); clearHomes();
+    homes = { list: [] };
+    for (const h of wallPlan()) {
+      const hi = homes.list.length;
+      homes.list.push(h);
+      for (let i = 0; i < h.slots.length; i++) {
+        const sl = h.slots[i], b = newBlock();
+        b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      h.done = true; homeBox(h);
+    }
+    ENG.setBlockCount(blocks.length);
+    const stand = () => homes.list.reduce((n, h) => n + (h.slots.length - h.left), 0);
+    const n0 = stand();
+    const m = spawnBeast('diablo');
+    const W = homes.list[0].ring;          // 不能問 wallNow()（理由同巨人那一條）
+    m.x = 0; m.z = -(W + 12); m.a = 0; m.st = 'come'; m.wIn = 0;
+    let n = 0, gate = 0, busts = 0, last = 0, into = 0;
+    while (n < 4000 && beasts && beasts.includes(m)) {
+      step(0.02); n++;
+      if (m.st === 'gate') gate++;
+      if (m.fhit && !last && m.bust) busts++;
+      last = m.fhit;
+      if (!into && inWall(m.x, m.z)) { into = n; break; }
+    }
+    const n1 = stand();
+    beasts = null;
+    cleanTools(); clearHomes(); hot.length = 0;
+    return { W: +W.toFixed(1), gate, busts, n0, n1, into: +(into * 0.02).toFixed(1) };
+  });
+  ok('整圈牆圍著也不繞門：對擋路的那一段噴到燒斷，走進城裡',
+     dwall.gate === 0 && dwall.into > 0 && dwall.busts >= 1 && dwall.n1 < dwall.n0,
+     '牆半徑 ' + dwall.W + '（' + dwall.n0 + ' 塊）：繞門 ' + dwall.gate + ' 幀、對擋路的噴了 ' + dwall.busts + ' 道、' +
+     dwall.into + ' 秒進到城裡，整圈剩 ' + dwall.n1 + ' 塊');
+
+  /* ── 被斬殺：跪下、往前撲倒、趴著噴金幣、淡掉（使用者：「死亡調整成趴著死」，再看過：「明顯浮空 & 倒地時位移」）。
+        讀 diaMesh 真的畫出去的矩陣，只算 ENG.DIA_GND 那幾塊（刺、尾巴、細長的不算，同引擎貼地那一條）：
+        每一幀最低那一塊剛好貼著草皮、膝蓋整段不滑、趴好之後胸口／大腿／手掌／下巴都貼地（第三輪胸口離地 1.34 格）。
+        死法沒有骰子 ── */
+  const dpose = await page.evaluate(() => {
+    cleanTools(); clearFires(); doomT = 1e9; mascT.fill(1e9);   // 這幾秒裡別有別的天災、吉祥物進場
+    const D = ENG.DIABLO, GN = Object.keys(ENG.DIA_G), GND = ENG.DIA_GND, mesh = ENG.three.diaMesh, M4 = new THREE.Matrix4();
+    const read = m => {
+      ENG.putDiablos([m]);
+      const by = {};
+      let lo = Infinity, kx = 0, kz = 0, kn = 0, sx = 0, sz = 0, sn = 0;
+      for (let k = 0; k < D.length; k++) {
+        mesh.getMatrixAt(k, M4);
+        const e = M4.elements, b = e[13] - 0.5 * (Math.abs(e[1]) + Math.abs(e[5]) + Math.abs(e[9])), g = GN[D[k].g];
+        if (GND[k]) { lo = Math.min(lo, b); by[g] = Math.min(by[g] ?? Infinity, b); }
+        if (D[k].nl && g.startsWith('tail')) by.tail = Math.min(by.tail ?? Infinity, b);
+        if (g.startsWith('shin') && D[k].cn === 'redD') { kx += e[12]; kz += e[14]; kn++; }     // 膝蓋那兩塊
+        if (g.startsWith('foot') && D[k].cn === 'redL') { sx += e[12]; sz += e[14]; sn++; }     // 腳掌那兩塊
+      }
+      return { lo, by, knee: { x: kx / kn, z: kz / kn }, sole: { x: sx / sn, z: sz / sn } };
+    };
+    const mk = (x, z) => {
+      const m = spawnBeast('diablo', 1, 0);
+      Object.assign(m, { x, z, wIn: 0, st: 'fun', stay: 999, pause: 999, a: 0.7 });
+      return m;
+    };
+    const flat = s => ({ body: s.by.body, thigh: Math.max(s.by.thighL, s.by.thighR), hand: Math.max(s.by.handL, s.by.handR),
+                         chin: Math.min(s.by.head, s.by.jaw), tail: s.by.tail });
+    const r2 = v => +v.toFixed(3);
+    /* ① 站著被斬殺 */
+    const m = mk(siteR + 26, 4);
+    const s0 = read(m);
+    diaDie(m, 'levi');
+    const land = diaLand(m);
+    let t = 0, loMax = 0, slide = 0, coinsAt = null, nCoin = 0, alphaAt = null, goneAt = null;
+    while (t < land + DIA_HOLD + DIA_FADE + 1) {
+      step(0.05); t += 0.05;
+      if (!beasts || beasts.indexOf(m) < 0) { goneAt = t; break; }
+      if (t <= land + 0.5) {
+        const s = read(m);
+        loMax = Math.max(loMax, Math.abs(s.lo));
+        slide = Math.max(slide, Math.hypot(s.knee.x - s0.knee.x, s.knee.z - s0.knee.z));
+      }
+      if (coinsAt === null && coins.length) { coinsAt = t; nCoin = coins.length; }
+      if (alphaAt === null && m.alpha !== undefined) alphaAt = t;
+    }
+    step(0.05);
+    const die = { land: r2(land), loMax: r2(loMax), slide: r2(slide), coinsAt: coinsAt === null ? null : r2(coinsAt), nCoin,
+                  alphaAt: alphaAt === null ? null : r2(alphaAt), goneAt: goneAt === null ? null : r2(goneAt), coinsLeft: coins.length };
+    /* 趴好那一刻（另擺一隻，時間直接撥到著地之後）每一組離地多高 */
+    const p = mk(siteR + 26, -6);
+    diaDie(p, 'levi');
+    for (let i = 0; i < Math.ceil((land + 0.3) / 0.05); i++) stepDiaDie(p, 0.05);
+    const prone = flat(read(p));
+    for (const k in prone) prone[k] = r2(prone[k]);
+    beasts = null; coins.length = 0;
+    /* ② 被道具打倒（往前趴，見 lieAng）：繞腳掌倒、腳掌不滑；躺著被殺原地斷氣，那一下不跳 */
+    const k = mk(siteR + 26, 14);
+    const k0 = read(k);
+    fellBeast(k, 3);
+    let kt = 0, kLo = 0, kSlide = 0;
+    while (kt < 1.5) {
+      step(0.05); kt += 0.05;
+      const s = read(k);
+      kLo = Math.max(kLo, Math.abs(s.lo));
+      kSlide = Math.max(kSlide, Math.hypot(s.sole.x - k0.sole.x, s.sole.z - k0.sole.z));
+    }
+    const lying = read(k), spin = k.spin, lie = flat(lying);
+    for (const q in lie) lie[q] = r2(lie[q]);
+    diaDie(k, 'levi');
+    const pr = k.pr;
+    let jump = 0, kc = null, kt2 = 0;
+    while (kt2 < 1) {
+      step(0.05); kt2 += 0.05;
+      const s = read(k);
+      jump = Math.max(jump, Math.hypot(s.knee.x - lying.knee.x, s.knee.z - lying.knee.z), Math.abs(s.lo));
+      if (kc === null && coins.length) kc = kt2;
+    }
+    beasts = null; coins.length = 0; ENG.putDiablos([]);
+    return { die, prone, knock: { loMax: r2(kLo), slide: r2(kSlide), spin: r2(spin), want: r2(Math.PI / 2), lie, pr, jump: r2(jump),
+                                  coinsAt: kc === null ? null : r2(kc), dieAt: DIA_DIE.prone },
+             coinN: DIA_COINS, hold: DIA_HOLD, fade: DIA_FADE };
+  });
+  const dd = dpose.die;
+  ok('被斬殺：跪下、撲倒的每一幀最低那一塊都剛好貼著草皮，膝蓋整段不滑',
+     dd.loMax < 1e-3 && dd.slide < 0.15,
+     '最低那一塊離地最多 ' + dd.loMax + ' 格；膝蓋最多偏 ' + dd.slide + ' 格（上一版撲倒時繞腳底轉，膝蓋往前滑 2.78 格）');
+  ok('趴好之後胸口、大腿、手掌、下巴、尾巴都貼著草皮（不是被手腳撐在半空）',
+     dpose.prone.body < 0.1 && dpose.prone.thigh < 0.1 && dpose.prone.hand < 0.15 && dpose.prone.chin < 0.15 &&
+     Math.abs(dpose.prone.tail) < 0.1,
+     '離地：胸口 ' + dpose.prone.body + '、大腿 ' + dpose.prone.thigh + '、手掌 ' + dpose.prone.hand + '、下巴 ' + dpose.prone.chin +
+     '、尾巴 ' + dpose.prone.tail + ' 格（第三輪胸口 1.34、大腿 1.72、尾巴 2.9）');
+  ok('著地那一刻噴出一把金幣，趴著 DIA_HOLD 秒再淡 DIA_FADE 秒，淡完連金幣一起收掉',
+     dd.coinsAt !== null && Math.abs(dd.coinsAt - dd.land) < 0.051 && dd.nCoin === dpose.coinN &&
+     dd.alphaAt !== null && dd.alphaAt > dd.land + dpose.hold - 0.051 && dd.alphaAt < dd.land + dpose.hold + 0.101 &&
+     dd.goneAt !== null && Math.abs(dd.goneAt - (dd.land + dpose.hold + dpose.fade)) < 0.101 && dd.coinsLeft === 0,
+     '第 ' + dd.coinsAt + ' 秒噴 ' + dd.nCoin + ' 顆（著地 ' + dd.land + '）、第 ' + dd.alphaAt + ' 秒開始淡、第 ' + dd.goneAt +
+     ' 秒收掉，之後場上金幣 ' + dd.coinsLeft + ' 顆');
+  const dk = dpose.knock;
+  ok('被道具打倒也往前趴：繞腳掌倒下去（腳掌不滑、一直貼地），趴著的樣子同死法',
+     Math.abs(dk.spin - dk.want) < 0.01 && dk.loMax < 1e-3 && dk.slide < 0.1 &&
+     dk.lie.body < 0.1 && dk.lie.thigh < 0.1 && dk.lie.hand < 0.15,
+     '躺平角 ' + dk.spin + '（往前趴 ' + dk.want + '）；最低那一塊離地最多 ' + dk.loMax + '、腳掌最多偏 ' + dk.slide +
+     ' 格；趴著離地 胸口 ' + dk.lie.body + '、大腿 ' + dk.lie.thigh + '、手掌 ' + dk.lie.hand);
+  ok('躺著被斬殺就原地斷氣：不再跪一次，那一下不跳',
+     dk.pr === 1 && dk.jump < 0.05 && dk.coinsAt !== null && Math.abs(dk.coinsAt - dk.dieAt) < 0.051,
+     'm.pr ' + dk.pr + '、膝蓋與最低點最多動 ' + dk.jump + ' 格，第 ' + dk.coinsAt + ' 秒噴金幣（DIA_DIE.prone ' + dk.dieAt + '）');
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+  }   // ── 〈天災：Diablo 噴火〉結束
 
   /* ══════════ 天災：Saber 的 Excalibur ══════════ */
   /* v1.222。使用者：「如果想加特定知名角色進遊戲中 … 同小人大小 越精緻越像越好」→ 預覽過目兩輪 →

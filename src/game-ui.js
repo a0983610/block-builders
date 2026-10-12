@@ -210,6 +210,7 @@ function step(dt) {
   mageHeapT -= dt;                                       // 料堆清單的重算計時（見 listMageHeaps）
   stepIdleEvent(dt);                                     // 閒晃事件（v1.97）
   stepDoom(dt);                                          // 天災（v1.138）
+  stepCoins(dt);                                         // Diablo 死掉噴出來的金幣（跟著屍體淡、屍體收掉就收）
   stepMascot(dt);                                        // 吉祥物（v1.144，三隻各數各的鐘）
   stepHerd(dt);                                          // 閒逛的動物（v1.154，場上少了就補）
   stepGeese(dt);                                         // 雁群從空中飛過（v1.272.0）
@@ -369,7 +370,9 @@ function draw() {
   ENG.putZens(bl);                   // 善逸（v1.251.0）同上，雷光與光痕也在這一支畫
   ENG.putGojos(bl);                  // 五條悟（v1.255.0）同上，手上的赫／蒼／茈也在這一支畫
   ENG.putFrierens(bl);               // 芙莉蓮（v1.259.0）同上，防護罩也在這一支畫
-  ENG.fadeHumans(bl);                // 上面六位裡正在淡入淡出的那幾位搬到半透明那一顆（v1.256.0，見 woodFade）
+  ENG.putDiablos(bl);                // Diablo 同上（自己一顆 mesh）
+  ENG.putCoins(coinList());          // Diablo 死掉噴出來的金幣（純特效）
+  ENG.fadeHumans(bl);                // 上面七位裡正在淡入淡出的那幾位搬到半透明那一顆（v1.256.0，見 woodFade）
   ENG.putPurps(purpList());          // 飛出去的紫球（自己一份清單：放出去就是自己的東西）
 
   ENG.putTrees(trees);

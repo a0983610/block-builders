@@ -351,6 +351,9 @@ const ENG = (function () {
      **沒有人在淡就 visible = false**。 */
   const HUM_MAX = 4;
   let humMesh = null, humAlpha = null, HUM_SLOT = 0;
+  /* Diablo 死掉噴出來的金幣：同時最多幾顆（一隻噴 DIA_COINS 顆，天災與吉祥物同時死也放得下）、兩種金色交錯 */
+  const COIN_MAX = 200, COIN_C = 0xf3c23e, COIN_C2 = 0xe0a52a;
+  let coinMesh = null, coinFade = null, coinGlow = null;
   /* 造型座標上的幾個高度／寬度。**規則那邊直接讀這幾個**算刃掃到哪（同 DOZ_W 的用意）：
      畫出來的刃跟判定用的扇形必須是同一塊，不然玩家會看到刃掃過去卻有積木沒動。
        PIVOT 樞紐（旋轉圓心）、EDGE 刃根（護手上緣）、HIT 攻擊點、TIP 刃尖、W 刃最寬處
@@ -1090,6 +1093,7 @@ if (vAo.x + vAo.y > 0.5) {
     scene.add(gjMesh);
     gjInit(unit);                    // 赫、蒼、茈的光球與白光、衝擊波（全部先 visible = false）
     frInit(unit);                    // 芙莉蓮（v1.259.0）與她的防護罩；打到那一點的白光借上面那一行開的球（gjSph）
+    diaInit();                       // Diablo：同上自己一顆（見〈Diablo〉那一節）
     /* 雷光（藍白）與一閃的光痕（金黃）：各一對不吃光、不投影的網格，亮芯不透明、光暈半透明（同造型預覽）。
        光暈排在地上的痕跡與塵霧後面畫（同 Excalibur 的光柱，見〈光柱被焦痕蓋住〉） */
     const zPair = (C, cap) => {
@@ -1694,7 +1698,7 @@ if (vAo.x + vAo.y > 0.5) {
     scene.add(fadeMesh);
 
     /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）：幾何體同 fadeMesh 那一套（不切、不發光），材質共用那一份 */
-    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT, FR_SLOT);
+    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT, FR_SLOT, DIA_SLOT);
     const HUM_N = HUM_MAX * HUM_SLOT;
     const humGeo = new T.BoxGeometry(1, 1, 1);
     const humCut = new T.InstancedBufferAttribute(new Float32Array(HUM_N * 4), 4);
@@ -1712,6 +1716,25 @@ if (vAo.x + vAo.y > 0.5) {
     for (let i = 0; i < HUM_N; i++) humMesh.setMatrixAt(i, ZERO_M);
     humMesh.setColorAt(0, tmpC.setHex(0xffffff));
     scene.add(humMesh);
+
+    /* Diablo 死掉噴出來的金幣（純特效，見 putCoins）：幾何體同 humMesh 那一套（不切），材質與陰影材質借兵器那一份——
+       要的是那邊現成的兩樣：逐顆的淡（aFade，跟著屍體一起淡掉）與金光（aGlow：背光面、影子裡也是金的，不是一片土黃） */
+    const coinGeo = new T.BoxGeometry(1, 1, 1);
+    const coinCut = new T.InstancedBufferAttribute(new Float32Array(COIN_MAX * 4), 4);
+    for (let i = 0; i < COIN_MAX; i++) coinCut.array[i * 4 + 3] = -1;
+    coinFade = new T.InstancedBufferAttribute(new Float32Array(COIN_MAX), 1);
+    coinGlow = new T.InstancedBufferAttribute(new Float32Array(COIN_MAX), 1);
+    coinFade.setUsage(T.DynamicDrawUsage); coinGlow.setUsage(T.DynamicDrawUsage);
+    coinGeo.setAttribute('aCut', coinCut);
+    coinGeo.setAttribute('aFade', coinFade);
+    coinGeo.setAttribute('aGlow', coinGlow);
+    coinMesh = new T.InstancedMesh(coinGeo, fadeMesh.material, COIN_MAX);
+    coinMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    coinMesh.castShadow = true;
+    coinMesh.customDepthMaterial = weapDepth;
+    coinMesh.count = 0; coinMesh.frustumCulled = false; coinMesh.visible = false;
+    for (let i = 0; i < COIN_MAX; i++) coinMesh.setColorAt(i, tmpC.setHex(i % 3 ? COIN_C : COIN_C2));
+    scene.add(coinMesh);
 
     /* 幽浮（v1.167）。外殼跟投石機同一套：整台的部位塞進一顆 InstancedMesh，
        所以一台跟兩台一樣貴。顏色開場寫一次就好（同大劍，造型只有這一種）。 */
@@ -9346,6 +9369,445 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     }
     if (nb) frBarAB.needsUpdate = frBarAG.needsUpdate = true;
   }
+  /* ══ Diablo（暗黑破壞神）════════════════════════════════════════
+     使用者：「加入新天災吉祥物 diablo 攻擊方式是舊版獅鷲的噴火」，附了兩張暗黑破壞神二代的參考圖。
+     第一版塞進 BEASTS（67 塊，同巨人）給使用者看：「太醜 不夠精緻 因為那是暗黑破壞神的經典角色 不能不像」。
+     所以**同 Saber、里維自己一顆 mesh、不進 BEASTS**：塞進去的話每一隻牛羊都要照他的塊數付成本，
+     而且 BEASTS 的手腳只會繞肩、髖整條轉——沒有手肘、反關節的膝與踝、會張開的下顎、一節一節的尾巴。
+     規則那邊他照樣是 beasts 裡的一隻（kind 'diablo'，同巨人走路、被打倒、著火、被吸走），
+     畫的時候 putBeasts 把他那一格留空、putDiablos 用這一顆畫，點選照樣回報成 beast（diaAt 對回索引）。
+     四輪預覽的來龍去脈見 開發筆記〈Diablo：噴火的天災，同巨人被斬殺、趴倒噴金幣〉。
+
+     造型照參考圖：深紅的皮、黃赭色一節一節的胸腹甲、低垂往前探的長吻頭（一對往後掃的角、頭後一排冠刺、
+     黃眼、獠牙）、肩背上一大把往後上方張開的深灰長刺（正面看就是頭後面那一圈）、粗長的手（前臂外側一排刺、
+     三爪加拇指）、反關節的腿（膝刺、腳跟的距、三趾帶爪）、一條三節帶刺的尾巴。
+     **原點在腳底、面向 +z、右手在 −x**（同其他主角），模型高約 5（刺尖 5.15），規則那邊 DIA_SC 2.0 ＝ 場上 10 格。
+     部位表同 FRIEREN 的格式（p 站直時的絕對座標、s 尺寸、c 顏色、g 掛在哪一組、r 自己的轉角），
+     斜的那幾根（刺、角、爪、腿）用 SEG 從 a 拉到 b（轉角照 frBasis 算）。nl＝仰躺（被打倒）時不算進背緣、死了趴著貼地時也不算
+     （刺與尾巴：照它們抬的話整隻會架在刺上、浮在草皮上方三格多）。 */
+  const DC = {
+    red: 0xa31c12, redL: 0xc8341f, redD: 0x6a0f0a, redK: 0x3e0805,      // 皮：主色／肌肉亮面／溝／口腔與眼窩
+    och: 0xd09a38, ochL: 0xe8bb5a, ochD: 0x8f5d1d,                       // 胸腹甲：主色／亮邊／溝
+    spn: 0x4a4644, spnL: 0x77706b, horn: 0x948a7c, hornD: 0x5e574e,     // 背刺（尖／根）、角與身上的刺
+    claw: 0x231d1a, tooth: 0xeadfc6, eye: 0xffe54d
+  };
+  const DIA_G = { body: 0, head: 1, jaw: 2, armR: 3, armL: 4, foreR: 5, foreL: 6, handR: 7, handL: 8,
+                  thighR: 9, thighL: 10, shinR: 11, shinL: 12, footR: 13, footL: 14, tail1: 15, tail2: 16, tail3: 17 };
+  const DIA_NG = 18;
+  /* 掛在哪一組底下（−1＝根，就是腳底原點）：腿掛在根上，上身前傾、扭腰時腿不跟著轉 */
+  const DIA_PAR = [-1, 0, 1, 0, 0, 3, 4, 5, 6, -1, -1, 9, 10, 11, 12, 0, 15, 16];
+  /* 每一組的樞紐（站直時的絕對座標）：上身在髖、頭在頸、下顎在嘴角、手是肩／肘／腕、腿是髖／膝／踝 */
+  const DIA_PIV = [[0, 2.20, 0], [0, 3.82, 0.40], [0, 3.88, 0.70],
+                   [-0.96, 3.60, 0.04], [0.96, 3.60, 0.04], [-1.06, 2.86, 0.08], [1.06, 2.86, 0.08],
+                   [-1.08, 2.06, 0.15], [1.08, 2.06, 0.15],
+                   [-0.44, 2.12, 0], [0.44, 2.12, 0], [-0.48, 1.38, 0.28], [0.48, 1.38, 0.28],
+                   [-0.46, 0.64, -0.16], [0.46, 0.64, -0.16],
+                   [0, 2.15, -0.38], [0, 1.78, -0.95], [0, 1.42, -1.45]];
+  /* 嘴（噴火的出口，頭那一組上的一點）：規則那邊照它算火柱從哪裡出來（見 diaMouth）——**畫的跟用的同一份數字** */
+  const DI_MOUTH = [0, 3.84, 1.04];
+  /* 腳底那幾點（左腳；右腳 x 反號）：每一幀抬到最低那一點貼著草皮（見 diaRig） */
+  const DIA_SOLE = [[0.46, 0, 0.04], [0.46, 0, 0.48], [0.31, 0.02, 0.80], [0.46, 0.02, 0.85], [0.63, 0.02, 0.77]];
+  const DIABLO = (() => {
+    const out = [];
+    const P = (g, p, s, c, r, f) => out.push(Object.assign({ g: DIA_G[g], p, s, c: DC[c], cn: c, r: r || [0, 0, 0] }, f || {}));
+    const SIDE = { arm: 1, fore: 1, hand: 1, thigh: 1, shin: 1, foot: 1 };
+    /* 左右一對：寫左邊（+x），右邊鏡射（同 FRIEREN 的 M；部位是對稱的方塊，轉角 y／z 反號就是鏡射） */
+    const M = (g, p, s, c, r, f) => {
+      r = r || [0, 0, 0];
+      P(SIDE[g] ? g + 'L' : g, p, s, c, r, f);
+      P(SIDE[g] ? g + 'R' : g, [-p[0], p[1], p[2]], s, c, [r[0], -r[1], -r[2]], f);
+    };
+    /* 從 a 到 b 的一根（寬 w、厚 t）。片子朝哪：大致直的朝前、大致橫的朝上（跟長軸平行就算不出轉角） */
+    const SEG = (fn, g, a, b, w, t, c, f) => {
+      const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(d[0], d[1], d[2]);
+      fn(g, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2], [w, L, t], c,
+         frBasis(d, Math.abs(d[1]) > Math.abs(d[2]) ? [0, 0, 1] : [0, 1, 0]), f);
+    };
+
+    /* ── 軀幹（樞紐在髖 2.20）：腹芯是暗紅，前面五片甲一片比一片寬、比一片往前，片與片之間露出芯的暗紅。
+       **要壯**（第二輪使用者：「看起來不壯 原圖很有肌肉感」）：胸寬 1.30、背闊肌往外張成倒三角、
+       脖子後面一座斜方肌的肉丘；肌肉一塊一塊凸出來，亮面（redL）在凸起的頂、暗溝（redD）在兩塊之間 ── */
+    P('body', [0, 2.20, -0.05], [0.96, 0.42, 0.60], 'red');          // 骨盆
+    P('body', [0, 2.12, 0.22], [0.38, 0.26, 0.12], 'ochD');          // 胯前那一塊甲
+    P('body', [0, 2.75, 0.02], [0.88, 0.92, 0.58], 'redD');          // 腹芯
+    [[2.40, 0.19, 0.50, 0.30], [2.56, 0.21, 0.58, 0.32], [2.72, 0.23, 0.64, 0.34],
+     [2.88, 0.25, 0.70, 0.36], [3.04, 0.27, 0.76, 0.38]].forEach(([y, z, w, d], i) => {
+      P('body', [0, y, z], [w, 0.13, d], 'och');
+      if (i) P('body', [0, y + 0.05, z + d / 2 - 0.005], [w * 0.86, 0.03, 0.02], 'ochL');   // 上緣一道亮邊：一節一節才分得出來
+    });
+    P('body', [0, 3.38, 0.22], [1.30, 0.54, 0.62], 'och');           // 胸甲
+    M('body', [0.31, 3.44, 0.52], [0.58, 0.44, 0.14], 'ochL', [0, 0.10, 0]);   // 胸肌兩大塊
+    M('body', [0.31, 3.21, 0.51], [0.54, 0.05, 0.12], 'ochD', [0, 0.10, 0]);   // 胸肌下緣
+    P('body', [0, 3.42, 0.595], [0.06, 0.46, 0.02], 'ochD');         // 胸溝
+    M('body', [0.47, 3.02, 0.27], [0.10, 0.05, 0.20], 'ochD', [0, 0.6, 0]);    // 兩側肋骨
+    M('body', [0.45, 2.88, 0.27], [0.10, 0.05, 0.18], 'ochD', [0, 0.6, 0]);
+    P('body', [0, 3.55, -0.14], [1.44, 0.66, 0.74], 'red');          // 肩背（駝背的頂）
+    P('body', [0, 3.92, -0.08], [0.50, 0.22, 0.50], 'red');          // 斜方肌：脖子後面那一座肉丘
+    M('body', [0.30, 3.86, -0.02], [0.54, 0.34, 0.58], 'redL', [0, 0, -0.40]);  // 斜方肌往肩膀下去的那一坡
+    M('body', [0.56, 3.05, -0.14], [0.24, 0.80, 0.52], 'red', [0, 0, -0.12]);   // 背闊肌（上寬下窄，倒三角）
+    M('body', [0.66, 3.20, -0.10], [0.06, 0.40, 0.36], 'redL', [0, 0, -0.12]);  // 背闊肌的亮面
+    M('body', [0.44, 2.66, 0.12], [0.14, 0.58, 0.34], 'redL');       // 腹外斜肌（甲片兩側一圈紅）
+    P('body', [0, 2.85, -0.32], [0.80, 0.72, 0.22], 'red');          // 背
+    M('body', [0.18, 2.80, -0.42], [0.20, 0.60, 0.08], 'redL');      // 脊柱兩邊的豎脊肌
+    P('body', [0, 3.10, -0.45], [0.08, 1.00, 0.04], 'redD');         // 背脊溝
+    P('body', [0, 3.80, 0.32], [0.56, 0.38, 0.46], 'red');           // 頸（粗、往前探）
+    P('body', [0, 3.70, 0.55], [0.30, 0.20, 0.04], 'ochD');          // 喉前的甲
+    M('body', [0.21, 3.76, 0.47], [0.08, 0.34, 0.10], 'redL', [0.5, 0, 0]);    // 頸側那兩條肌肉
+
+    /* 背刺：根粗色淺、尖細色深，兩段接起來。根都埋在肩背或背裡 */
+    const SPINE = (fn, a, d, L) => {
+      const n = Math.hypot(d[0], d[1], d[2]), u = [d[0] / n, d[1] / n, d[2] / n];
+      const m = [a[0] + u[0] * L * 0.55, a[1] + u[1] * L * 0.55, a[2] + u[2] * L * 0.55];
+      const e = [a[0] + u[0] * L, a[1] + u[1] * L, a[2] + u[2] * L];
+      SEG(fn, 'body', a, m, 0.11, 0.11, 'spnL', { nl: 1 });
+      SEG(fn, 'body', m, e, 0.06, 0.06, 'spn', { nl: 1 });
+    };
+    SPINE(M, [0.14, 3.82, -0.27], [0.15, 1.0, -0.45], 1.5);         // 由內往外、由高往低張開成扇形
+    SPINE(M, [0.32, 3.80, -0.24], [0.45, 1.0, -0.5], 1.45);
+    SPINE(M, [0.50, 3.72, -0.22], [0.85, 0.85, -0.5], 1.3);
+    SPINE(M, [0.60, 3.52, -0.28], [1.0, 0.45, -0.6], 1.1);
+    SPINE(M, [0.32, 3.30, -0.44], [0.4, 0.5, -1.0], 1.0);
+    SPINE(P, [0, 3.78, -0.38], [0, 0.8, -0.7], 1.2);                // 背脊正中兩根
+    SPINE(P, [0, 3.25, -0.46], [0, 0.35, -1.0], 0.9);
+
+    /* ── 頭（樞紐在頸 3.82）：顱＋往前伸的吻，眼睛陷在暗的眼窩裡、眉骨往眉心壓（兇）── */
+    P('head', [0, 4.02, 0.58], [0.48, 0.40, 0.44], 'red');           // 顱
+    M('head', [0.13, 4.15, 0.80], [0.24, 0.07, 0.10], 'redD', [0, 0, 0.35]);   // 眉骨
+    M('head', [0.12, 4.08, 0.795], [0.15, 0.09, 0.03], 'redK');      // 眼窩
+    M('head', [0.12, 4.08, 0.81], [0.10, 0.05, 0.03], 'eye');        // 眼
+    P('head', [0, 3.95, 0.92], [0.34, 0.14, 0.30], 'red');           // 吻（上顎）
+    P('head', [0, 4.03, 0.92], [0.16, 0.03, 0.24], 'redL');          // 吻上那一道脊
+    M('head', [0.07, 3.98, 1.075], [0.05, 0.03, 0.02], 'redK');      // 鼻孔
+    P('head', [0, 3.84, 0.86], [0.30, 0.08, 0.34], 'redK');          // 口腔（下顎張開才看得到）
+    P('head', [0, 3.875, 1.04], [0.22, 0.03, 0.03], 'tooth');        // 上排牙
+    M('head', [0.12, 3.85, 0.98], [0.03, 0.07, 0.03], 'tooth');      // 上獠牙
+    M('head', [0.24, 3.98, 0.66], [0.10, 0.16, 0.26], 'redL');       // 顴骨（臉寬）
+    /* 角：三段往外、往上、再往後掃。要比背刺粗、顏色比背刺淺——第一版跟背刺一樣細，正面看整對角埋在刺堆裡 */
+    SEG(M, 'head', [0.16, 4.18, 0.54], [0.34, 4.46, 0.40], 0.16, 0.16, 'horn');
+    SEG(M, 'head', [0.34, 4.46, 0.40], [0.44, 4.74, 0.16], 0.12, 0.12, 'horn');
+    SEG(M, 'head', [0.44, 4.74, 0.16], [0.42, 4.92, -0.14], 0.07, 0.07, 'hornD');
+    SEG(P, 'head', [0, 4.18, 0.46], [0, 4.50, 0.20], 0.08, 0.08, 'spn');          // 頭頂往後的冠刺
+    SEG(M, 'head', [0.10, 4.14, 0.40], [0.17, 4.38, 0.16], 0.06, 0.06, 'spn');
+    SEG(M, 'head', [0.22, 3.92, 0.62], [0.36, 3.78, 0.40], 0.05, 0.05, 'horn');    // 腮邊往後岔的刺
+    /* 下顎（樞紐在嘴角）：噴火時張開 */
+    P('jaw', [0, 3.79, 0.88], [0.30, 0.08, 0.32], 'redL');
+    P('jaw', [0, 3.76, 1.00], [0.20, 0.07, 0.10], 'red');            // 下巴
+    M('jaw', [0.10, 3.85, 0.99], [0.025, 0.06, 0.025], 'tooth');     // 下獠牙
+    M('jaw', [0.17, 3.81, 0.78], [0.06, 0.10, 0.20], 'red');
+
+    /* ── 手（肩 → 肘 → 腕三組）：粗壯，三角肌、二頭、三頭、前臂各自凸出來；爪尖垂到膝蓋 ── */
+    M('arm', [0.98, 3.64, 0.04], [0.62, 0.62, 0.66], 'red');          // 三角肌
+    M('arm', [1.02, 3.86, 0.06], [0.48, 0.14, 0.52], 'redL');         // 肩頂亮面
+    M('arm', [0.96, 3.60, 0.36], [0.40, 0.40, 0.08], 'redL');         // 前三角肌
+    SEG(M, 'arm', [1.10, 3.92, 0.00], [1.32, 4.22, -0.16], 0.09, 0.09, 'horn');   // 肩刺
+    SEG(M, 'arm', [1.18, 3.80, -0.18], [1.46, 3.94, -0.40], 0.08, 0.08, 'horn');
+    M('arm', [1.04, 3.14, 0.08], [0.48, 0.62, 0.50], 'red');          // 上臂
+    M('arm', [1.04, 3.16, 0.35], [0.36, 0.44, 0.10], 'redL');         // 二頭肌（往前鼓）
+    M('arm', [1.08, 3.20, -0.20], [0.34, 0.48, 0.10], 'red');         // 三頭肌（往後鼓）
+    M('arm', [1.08, 3.00, -0.25], [0.26, 0.06, 0.04], 'redD');        // 三頭肌下緣的溝
+    M('fore', [1.06, 2.84, 0.04], [0.42, 0.18, 0.44], 'redD');        // 肘
+    M('fore', [1.08, 2.58, 0.10], [0.50, 0.42, 0.50], 'red');         // 前臂上段（肘下鼓起來那一截）
+    M('fore', [1.08, 2.24, 0.14], [0.40, 0.30, 0.42], 'red');         // 前臂下段（往腕收）
+    M('fore', [1.12, 2.58, 0.36], [0.32, 0.34, 0.04], 'redL');
+    SEG(M, 'fore', [1.30, 2.74, -0.06], [1.56, 2.86, -0.28], 0.07, 0.07, 'horn');   // 前臂外側一排往後的刺
+    SEG(M, 'fore', [1.32, 2.52, -0.04], [1.56, 2.60, -0.24], 0.065, 0.065, 'horn');
+    SEG(M, 'fore', [1.26, 2.30, -0.02], [1.44, 2.34, -0.18], 0.055, 0.055, 'horn');
+    M('fore', [1.08, 2.08, 0.15], [0.38, 0.06, 0.40], 'redD');        // 腕
+    M('hand', [1.10, 1.92, 0.19], [0.38, 0.28, 0.42], 'red');         // 手掌
+    M('hand', [1.10, 1.79, 0.26], [0.36, 0.06, 0.30], 'redD');        // 指節
+    /* 三根手指＋拇指，各兩段：指節紅、爪黑 */
+    for (const [a, b, c] of [[[1.00, 1.80, 0.34], [0.98, 1.60, 0.45], [0.96, 1.40, 0.50]],
+                             [[1.11, 1.79, 0.36], [1.12, 1.58, 0.49], [1.13, 1.36, 0.56]],
+                             [[1.21, 1.80, 0.30], [1.28, 1.60, 0.38], [1.33, 1.40, 0.42]],
+                             [[0.96, 1.88, 0.12], [0.89, 1.72, 0.20], [0.86, 1.58, 0.28]]]) {
+      SEG(M, 'hand', a, b, 0.09, 0.09, 'red');
+      SEG(M, 'hand', b, c, 0.055, 0.055, 'claw');
+    }
+
+    /* ── 腿（髖 → 膝 → 踝三組）：反關節，大腿往前下、小腿往後下、蹠骨再往前下到腳掌。大腿、小腿肚都要粗 ── */
+    SEG(M, 'thigh', [0.46, 2.12, -0.04], [0.48, 1.40, 0.28], 0.68, 0.70, 'red');   // 大腿
+    SEG(M, 'thigh', [0.46, 2.15, 0.34], [0.48, 1.65, 0.56], 0.40, 0.04, 'redL');   // 股四頭肌的亮面
+    SEG(M, 'thigh', [0.80, 2.02, 0.04], [0.82, 1.56, 0.22], 0.08, 0.44, 'redL');   // 大腿外側鼓起來那一條
+    M('shin', [0.48, 1.38, 0.32], [0.44, 0.24, 0.42], 'redD');                      // 膝
+    SEG(M, 'shin', [0.48, 1.46, 0.50], [0.50, 1.62, 0.80], 0.09, 0.09, 'horn');    // 膝刺（往前）
+    SEG(M, 'shin', [0.48, 1.34, 0.26], [0.46, 0.66, -0.16], 0.44, 0.46, 'red');    // 小腿
+    SEG(M, 'shin', [0.48, 1.33, -0.03], [0.47, 1.06, -0.20], 0.34, 0.10, 'redL');  // 小腿肚（往後鼓）
+    SEG(M, 'shin', [0.48, 1.02, -0.10], [0.50, 0.98, -0.42], 0.06, 0.06, 'horn');  // 小腿後面的刺
+    M('foot', [0.46, 0.64, -0.16], [0.32, 0.22, 0.32], 'redD');                     // 踝
+    SEG(M, 'foot', [0.46, 0.60, -0.28], [0.46, 0.50, -0.50], 0.07, 0.07, 'horn');  // 腳跟的距
+    SEG(M, 'foot', [0.46, 0.62, -0.14], [0.46, 0.16, 0.12], 0.34, 0.36, 'red');    // 蹠骨
+    M('foot', [0.46, 0.10, 0.26], [0.48, 0.20, 0.50], 'redL');                      // 腳掌
+    for (const [a, b, c] of [[[0.34, 0.07, 0.46], [0.32, 0.05, 0.66], [0.31, 0.04, 0.80]],
+                             [[0.46, 0.07, 0.48], [0.46, 0.05, 0.70], [0.46, 0.04, 0.85]],
+                             [[0.58, 0.07, 0.46], [0.61, 0.05, 0.64], [0.63, 0.04, 0.77]]]) {
+      SEG(M, 'foot', a, b, 0.10, 0.10, 'red');                                      // 三趾
+      SEG(M, 'foot', b, c, 0.06, 0.06, 'claw');
+    }
+
+    /* ── 尾巴三節（各自一組，一節比一節晚一點擺）：背上一排刺、末端一片往上勾的尾刺 ── */
+    SEG(P, 'tail1', [0, 2.16, -0.34], [0, 1.78, -0.95], 0.34, 0.32, 'red', { nl: 1 });
+    SEG(P, 'tail1', [0, 2.06, -0.62], [0, 2.26, -0.80], 0.065, 0.065, 'spn', { nl: 1 });
+    SEG(P, 'tail2', [0, 1.78, -0.95], [0, 1.42, -1.45], 0.26, 0.25, 'red', { nl: 1 });
+    SEG(P, 'tail2', [0, 1.68, -1.18], [0, 1.86, -1.32], 0.055, 0.055, 'spn', { nl: 1 });
+    SEG(P, 'tail3', [0, 1.42, -1.45], [0, 1.28, -1.90], 0.18, 0.17, 'redD', { nl: 1 });
+    SEG(P, 'tail3', [0, 1.36, -1.62], [0, 1.52, -1.74], 0.045, 0.045, 'spn', { nl: 1 });
+    SEG(P, 'tail3', [0, 1.28, -1.90], [0, 1.42, -2.22], 0.08, 0.08, 'horn', { nl: 1 });
+    return out;
+  })();
+  const DIA_PARTS = DIABLO.length;
+  /* 倒在地上時算不算「貼地的那一塊」（見 diaRig）：刺與尾巴（nl）不算，**細長的也不算**——兩個短邊都不到 0.15 的
+     （角、膝刺、爪、手指腳趾、牙、甲片上那幾道細邊）。第三輪的趴姿量到最低的是手指尖的爪，整隻架在半空：
+     胸口離地 1.34 格、大腿 1.72、尾巴 2.9——主因是手往地面垂（姿勢重擺了，見 DIA_PRONE），可是照細的那幾塊抬，
+     姿勢再對也會被一根爪尖、一根膝刺撐高。細的插進草皮一點看不出來，被撐高看得一清二楚 */
+  const DIA_GND = DIABLO.map(b => !b.nl && b.s.slice().sort((a, c) => a - c)[1] >= 0.15);
+  const DIA_SLOT = DIA_PARTS;
+  const MAXDIA = 2;                  // 天災一隻＋吉祥物一隻
+  const DIA_LM = DIABLO.map(b => new T.Matrix4().compose(
+    new T.Vector3(b.p[0] - DIA_PIV[b.g][0], b.p[1] - DIA_PIV[b.g][1], b.p[2] - DIA_PIV[b.g][2]),
+    new T.Quaternion().setFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2])), new T.Vector3(b.s[0], b.s[1], b.s[2])));
+  /* 模型範圍（同其他主角，照轉過之後的方塊算）。lift（仰躺抬多高）不算刺與尾巴（nl），見檔頭 */
+  {
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
+    const e = new T.Matrix4();
+    for (const b of DIABLO) {
+      const R = e.makeRotationFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2])).elements;
+      const h = k => (Math.abs(R[k]) * b.s[0] + Math.abs(R[k + 4]) * b.s[1] + Math.abs(R[k + 8]) * b.s[2]) / 2;
+      ylo = Math.min(ylo, b.p[1] - h(1));
+      yhi = Math.max(yhi, b.p[1] + h(1));
+      if (!b.nl) zlo = Math.min(zlo, b.p[2] - h(2));
+      xhi = Math.max(xhi, Math.abs(b.p[0]) + h(0));
+    }
+    BEAST_FLOOR.diablo = Math.max(0, -ylo);
+    BEAST_MID.diablo = (ylo + yhi) / 2;
+    BEAST_LIFT.diablo = -zlo;
+    BEAST_SIDE.diablo = xhi;
+  }
+  /* ── 姿勢：每一組的轉角（XYZ），寫進 _dA ──
+       站     手往外張一點、肘往前彎；頭微微喘、尾巴慢慢晃
+       走     m.gait、m.ph：大腿前後擺、往前擺的那一條膝蓋多彎（抬腳）、腳掌轉回來；手反著擺；尾巴照步伐擺
+       噴火   m.fb 0～1（規則那邊給）：上身前傾、張嘴、雙手往兩邊張開、腿站開壓低、尾巴翹起來 */
+  const _dA = [...Array(DIA_NG)].map(() => [0, 0, 0]);
+  const DIA_HUNCH = 0.18;            // 站著時上身往前駝幾弧度
+  function diaPose(m) {
+    for (const a of _dA) a[0] = a[1] = a[2] = 0;
+    const A = _dA, G = DIA_G;
+    const g = m.lie || m.air ? 0 : frC01((m.gait || 0) / 0.85), ph = m.ph || 0, s = Math.sin(ph), c = Math.cos(ph);
+    const t = performance.now() / 1000, f = m.lie || m.air ? 0 : frE(frC01(m.fb));
+    /* 站姿就是駝著背、膝蓋彎著（參考圖第二張那個往前探的架勢）：上身繞髖前傾 DIA_HUNCH，
+       頭與手反著轉回來（頭才看著前方、手才是垂著的，不是跟著上身往前甩） */
+    A[G.armL][2] = 0.16; A[G.armR][2] = -0.16;
+    A[G.armL][0] = A[G.armR][0] = -DIA_HUNCH + 0.06;
+    A[G.foreL][0] = A[G.foreR][0] = -0.38;
+    A[G.handL][0] = A[G.handR][0] = -0.18;
+    A[G.thighL][0] = -0.12 - 0.42 * s * g; A[G.thighR][0] = -0.12 + 0.42 * s * g;
+    A[G.shinL][0] = 0.20 + 0.55 * Math.max(0, c) * g; A[G.shinR][0] = 0.20 + 0.55 * Math.max(0, -c) * g;
+    A[G.armL][0] += 0.32 * s * g; A[G.armR][0] -= 0.32 * s * g;
+    const w = 0.10 + 0.12 * g, wv = g > 0 ? ph : t * 1.3;
+    A[G.tail1][1] = w * Math.sin(wv); A[G.tail2][1] = w * 1.3 * Math.sin(wv - 0.8); A[G.tail3][1] = w * 1.6 * Math.sin(wv - 1.6);
+    A[G.tail1][0] = 0.04 * Math.sin(t * 0.9);
+    A[G.head][0] = -DIA_HUNCH + 0.03 * Math.sin(t * 1.7);
+    A[G.body][0] = DIA_HUNCH + 0.05 * g; A[G.body][1] = 0.06 * s * g;
+    if (f > 0) {
+      A[G.body][0] += 0.22 * f;
+      A[G.head][0] -= 0.12 * f;                  // 上身前傾之後頭抬回來一點，嘴對著前下方
+      A[G.jaw][0] = 0.50 * f;
+      A[G.armL][2] += 0.75 * f; A[G.armR][2] -= 0.75 * f;
+      A[G.armL][0] -= 0.35 * f; A[G.armR][0] -= 0.35 * f;
+      A[G.foreL][0] -= 0.45 * f; A[G.foreR][0] -= 0.45 * f;
+      A[G.handL][0] -= 0.25 * f; A[G.handR][0] -= 0.25 * f;
+      A[G.tail1][0] += 0.25 * f;
+      A[G.thighL][2] += 0.10 * f; A[G.thighR][2] -= 0.10 * f;
+      A[G.thighL][0] -= 0.15 * f; A[G.thighR][0] -= 0.15 * f;
+      A[G.shinL][0] += 0.30 * f; A[G.shinR][0] += 0.30 * f;
+    }
+    /* 腳掌轉回來（大腿＋小腿轉了多少，腳掌反著轉七成）：不轉的話抬腳那一下腳尖朝天 */
+    A[G.footL][0] = -(A[G.thighL][0] + A[G.shinL][0]) * 0.7;
+    A[G.footR][0] = -(A[G.thighR][0] + A[G.shinR][0]) * 0.7;
+    /* 倒下去的兩個姿勢（第三輪使用者：「現在沒有趴著的感覺 只是模型放上去」——那一版是站姿整隻轉 90°，
+       膝蓋往下頂、手腳懸在半空）。都是**絕對的轉角**，權重 1 時整組蓋掉上面那一套：
+         死了  m.dk 0～1 先跪下（膝蓋著地、上身垮、手垂著）、m.dp 0～1 再往前撲倒成趴姿（規則那邊照時間軸給，見 stepDiaDie）
+         打倒  照躺平角混過去（|sin spin|：倒到一半就是一半）——被道具打倒也是趴著（見 game-tools.js 的 lieAng） */
+    if (m.dead) { diaMix(DIA_KNEEL, frE(frC01(m.dk))); diaMix(DIA_PRONE, frC01(m.dp)); }
+    else if (m.lie) diaMix(DIA_PRONE, Math.min(1, Math.abs(Math.sin(m.spin || 0))));
+  }
+  /* 跪下：膝蓋著地、小腿往後折平貼著草皮、蹠骨與腳掌往後伸（腳底朝上）；上身往前垮、頭垂下來、手軟軟地垂在身前、嘴半開。
+     腿那三段的角度是探針掃出來的（目標：小腿那一組最低點 0、腳掌那一組 0.09 格），不是手挑的——
+     大腿 +0.42 才轉到垂直，0.62 是再往後一點（膝蓋在髖後面），小腿 +0.60 轉平、腳掌 +0.83 轉平 */
+  const DIA_KNEEL = (() => {
+    const G = DIA_G, A = [...Array(DIA_NG)].map(() => [0, 0, 0]);
+    A[G.body] = [0.30, 0, 0]; A[G.head] = [0.25, 0, 0]; A[G.jaw] = [0.30, 0, 0];
+    A[G.armL] = [-0.15, 0, 0.12]; A[G.armR] = [-0.15, 0, -0.12];
+    A[G.foreL] = A[G.foreR] = [-0.20, 0, 0]; A[G.handL] = A[G.handR] = [-0.10, 0, 0];
+    A[G.thighL] = [0.62, 0, 0.08]; A[G.thighR] = [0.62, 0, -0.08];
+    A[G.shinL] = A[G.shinR] = [0.60, 0, 0]; A[G.footL] = A[G.footR] = [0.83, 0, 0];
+    A[G.tail1] = [-0.30, 0, 0];
+    return A;
+  })();
+  /* 趴姿（根轉 +90° 之後，模型的 +z 朝地）：胸口、大腿、下巴、手掌貼著草皮，整隻攤平——
+       上身微微往後仰（−0.10：胸甲比骨盆凸出來，這樣前緣才是一條直線躺平）；
+       頭往上抬、下巴擱在地上、臉轉向一邊歪著（吻往前不往下：照站著的方向趴下去，長吻會整個插進土裡）；
+       雙手往兩邊、往前攤開，手掌貼地（第三輪手往地面垂，十根爪把整隻撐在半空：胸口離地 1.34 格）；
+       腿往後伸，**小腿與腳掌就是跪著那一副**——撲倒的時候小腿一直平貼著草皮不動（同巨人），所以小腿的角度
+       是綁在大腿上算的：跪姿大腿＋跪姿小腿 − 90°（根轉掉的那 90°）− 這裡的大腿，腳掌照抄跪姿
+       （撲倒那一段根的躺平角與趴姿的混合比例是同一個 m.dp、都是線性的，見 stepDiaDie，小腿在地上的方向才會一路不變）；
+       尾巴從屁股往下彎到地上、往一邊拖著。背刺朝天是對的：牠們本來就長在背上。
+     各組的角度是探針照「每一組肉的最低點都貼著草皮」掃出來的：胸口 0、大腿 0、下巴 0.01、手掌 0、
+     前臂 0.12、頭 0.13、小腿 0.14、上臂 0.21（肩膀本來就比胸口高）、腳掌 0.22、尾巴 0 格 */
+  const DIA_PRONE = (() => {
+    const G = DIA_G, A = [...Array(DIA_NG)].map(() => [0, 0, 0]);
+    A[G.body] = [-0.10, 0, 0]; A[G.head] = [-1.44, 0.40, 0.80]; A[G.jaw] = [0.30, 0, 0];
+    A[G.armL] = [0.43, -0.20, 1.40]; A[G.armR] = [0.43, 0.20, -1.40];
+    A[G.foreL] = [0, 0.43, 0]; A[G.foreR] = [0, -0.43, 0]; A[G.handL] = A[G.handR] = [0.12, 0, 0];
+    A[G.thighL] = [0.15, 0, 0.09]; A[G.thighR] = [0.15, 0, -0.09];
+    const K = DIA_KNEEL, sh = K[G.thighL][0] + K[G.shinL][0] - Math.PI / 2 - A[G.thighL][0];
+    A[G.shinL] = [sh, 0, 0]; A[G.shinR] = [sh, 0, 0];
+    A[G.footL] = K[G.footL].slice(); A[G.footR] = K[G.footR].slice();
+    A[G.tail1] = [-2.33, 0.40, 0]; A[G.tail2] = [1.18, 0.38, 0]; A[G.tail3] = [-0.28, 0.36, 0];
+    return A;
+  })();
+  function diaMix(T, w) {
+    if (!(w > 0)) return;
+    for (let g = 0; g < DIA_NG; g++) for (let i = 0; i < 3; i++) _dA[g][i] += (T[g][i] - _dA[g][i]) * w;
+  }
+  const _dG = [...Array(DIA_NG)].map(() => new T.Matrix4());
+  const _dW = new T.Matrix4(), _dm = new T.Matrix4(), _dv = new T.Vector3(), _dq = new T.Quaternion(), _dE = new T.Euler();
+  const _dR = new T.Matrix4(), _dm2 = new T.Matrix4();
+  const _dONE = new T.Vector3(1, 1, 1);
+  /* 頭整組（含下顎、角）繞頸放大這麼多：身體加壯之後（第二輪「看起來不壯」）頭顯得太小，縮在兩座三角肌中間 */
+  const DIA_HEAD_K = 1.15, _dHEAD = new T.Vector3(DIA_HEAD_K, DIA_HEAD_K, DIA_HEAD_K);
+  /* 算出這一位每一組的世界矩陣（_dG）：先在模型座標裡照樹一組一組接起來，量兩隻腳最低那一點抬到草皮上
+     （沒有 IK，走路時撐地那隻腳會滑一點，同 BEASTS 那幾隻），再整組擺到世界（根同 frRig：YZX 朝向 → 打滾 → 躺平）。 */
+  /* 照 _dA 在模型座標裡把骨架一組一組接起來（_dG，還沒擺到世界） */
+  function diaChain() {
+    for (let g = 0; g < DIA_NG; g++) {
+      const p = DIA_PAR[g], pv = DIA_PIV[g], a = _dA[g];
+      const px = p < 0 ? 0 : DIA_PIV[p][0], py = p < 0 ? 0 : DIA_PIV[p][1], pz = p < 0 ? 0 : DIA_PIV[p][2];
+      _dm.compose(_dv.set(pv[0] - px, pv[1] - py, pv[2] - pz), _dq.setFromEuler(_dE.set(a[0], a[1], a[2], 'XYZ')),
+                  g === DIA_G.head ? _dHEAD : _dONE);
+      if (p < 0) _dG[g].copy(_dm); else _dG[g].multiplyMatrices(_dG[p], _dm);
+    }
+  }
+  /* 兩個膝蓋（小腿那一組的樞紐）的中點、兩個腳掌（腳底那一塊的中心）的中點，模型座標（diaChain 之後、擺到世界之前） */
+  const _dK = new T.Vector3();
+  const diaKnee = out => out.setFromMatrixPosition(_dG[DIA_G.shinL]).add(_dK.setFromMatrixPosition(_dG[DIA_G.shinR])).multiplyScalar(0.5);
+  const DIA_SOLE_C = [0.46, 0.10, 0.26];       // 腳掌那一塊的中心（左腳；右腳 x 反號）
+  const diaSole = out => {
+    const pv = DIA_PIV[DIA_G.footL], dx = DIA_SOLE_C[0] - pv[0], dy = DIA_SOLE_C[1] - pv[1], dz = DIA_SOLE_C[2] - pv[2];
+    out.set(dx, dy, dz).applyMatrix4(_dG[DIA_G.footL]);
+    return out.add(_dK.set(-dx, dy, dz).applyMatrix4(_dG[DIA_G.footR])).multiplyScalar(0.5);
+  };
+  function diaRig(m) {
+    diaPose(m);
+    diaChain();
+    let lift = 0;
+    if (!m.lie && !m.air) {
+      let lo = Infinity;
+      for (const g of [DIA_G.footL, DIA_G.footR]) {
+        const pv = DIA_PIV[g], sx = g === DIA_G.footL ? 1 : -1;
+        for (const q of DIA_SOLE) lo = Math.min(lo, _dv.set(q[0] * sx - pv[0], q[1] - pv[1], q[2] - pv[2]).applyMatrix4(_dG[g]).y);
+      }
+      lift = -lo;
+    }
+    const msc = m.sc || 1, mid = BEAST_MID.diablo;
+    /* 死了、被打倒（都是往前趴，第三輪使用者：「死亡調整成趴著死」）照**這個姿勢真的最低那一點**抬到草皮上：
+       跪下去那一段貼地的是膝蓋與小腿、趴下去是胸口與攤開的手，套仰躺那一個常數（背緣）的話整隻陷進草皮。
+       一塊的最低點＝中心的 y 減掉三個軸投影到 y 的半長（矩陣第二列）；只算 DIA_GND 那幾塊（刺、尾巴、細長的不算） */
+    let ly = 0, kx = 0, kz = 0;
+    if (m.dead || m.lie) {
+      _dR.makeRotationFromEuler(_dE.set(m.spin || 0, 0, m.roll || 0, 'YZX'));
+      let lo = Infinity;
+      for (let k = 0; k < DIA_PARTS; k++) {
+        if (!DIA_GND[k]) continue;
+        const e = _dm.multiplyMatrices(_dR, _dm2.multiplyMatrices(_dG[DIABLO[k].g], DIA_LM[k])).elements;
+        lo = Math.min(lo, e[13] - 0.5 * (Math.abs(e[1]) + Math.abs(e[5]) + Math.abs(e[9])));
+      }
+      ly = -lo;
+      /* 倒下去**著地的那一點不能滑**（第四輪使用者：「倒地時位移」）。根的躺平角是繞腳底原點轉的，可是姿勢一路在變，
+         原點早就不在腳上了：上一版被斬殺撲倒時膝蓋在草皮上往前滑 2.78 格。所以每一幀把著地那一點水平拉回站著時的位置——
+           被斬殺（跪下、撲倒）  釘膝蓋（同巨人的 giaDownPart）：跪下去膝蓋直直往下、撲倒時膝蓋不動
+           被打倒、已經趴著才被殺  釘腳掌：像一根木頭繞腳往前倒；躺著被殺（m.pr）照這一條，斷氣那一下才不會跳 */
+      const knee = m.dead && !m.pr, at = knee ? DIA_KNEE0 : DIA_SOLE0;
+      (knee ? diaKnee : diaSole)(_dv).applyMatrix4(_dR);
+      kx = at.x - _dv.x; kz = at.z - _dv.z;
+    }
+    const ca = Math.cos(m.a || 0), sa = Math.sin(m.a || 0);
+    scratch.rotation.set(m.spin || 0, m.a || 0, m.roll || 0, 'YZX');
+    scratch.position.set((m.x || 0) + (kx * ca + kz * sa) * msc, (m.y || 0) + ly * msc, (m.z || 0) + (kz * ca - kx * sa) * msc);
+    if (m.air) {
+      _dv.set(0, mid, 0).applyEuler(scratch.rotation);
+      scratch.position.x -= _dv.x * msc;
+      scratch.position.y += (mid - _dv.y) * msc;
+      scratch.position.z -= _dv.z * msc;
+    }
+    scratch.scale.setScalar(msc);
+    scratch.updateMatrix();
+    _dW.copy(scratch.matrix).multiply(_dm.makeTranslation(0, lift, 0));
+    for (let g = 0; g < DIA_NG; g++) _dG[g].premultiply(_dW);
+  }
+  /* 站著時膝蓋、腳掌在哪（模型座標）：斬殺、打倒那一刻的姿勢就是站姿（diaDie、fellBeast 把步伐、噴火都收掉），
+     倒下去照這兩點釘住（見 diaRig） */
+  diaPose({}); diaChain();
+  const DIA_KNEE0 = diaKnee(new T.Vector3()), DIA_SOLE0 = diaSole(new T.Vector3());
+  /* 某一組上的某一點（站直時的絕對座標 p）現在在世界的哪裡（會重算一次骨架，只有一兩隻、很便宜） */
+  function diaPt(m, g, p, out) {
+    diaRig(m);
+    const pv = DIA_PIV[g];
+    return out.set(p[0] - pv[0], p[1] - pv[1], p[2] - pv[2]).applyMatrix4(_dG[g]);
+  }
+  /* 嘴（噴火的出口，規則那邊每一幀叫）、胸口（趴倒那一下揚塵、金幣從這裡噴出來） */
+  const DI_CHEST = [0, 3.3, 0.3];
+  const diaMouth = (m, out) => diaPt(m, DIA_G.head, DI_MOUTH, out);
+  const diaChest = (m, out) => diaPt(m, DIA_G.body, DI_CHEST, out);
+  let diaMesh = null;
+  function diaInit() {
+    /* 眼睛的法線往上偏（同主角的臉）：陷在眼窩裡，照常的法線朝前水平、吃不到天光，黃眼睛會變成土黃 */
+    diaMesh = new T.InstancedMesh(heroGeo(DIA_SLOT, MAXDIA, k => DIABLO[k].cn === 'eye' ? 1 : 0, () => 1),
+                                  voxelMaterial({}, GJ_EDGE_FIX, 'voxel-edge-gojo-hair'), MAXDIA * DIA_SLOT);
+    diaMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    diaMesh.castShadow = true;
+    diaMesh.count = 0;
+    diaMesh.visible = false;
+    diaMesh.frustumCulled = false;
+    for (let i = 0; i < MAXDIA; i++)
+      for (let k = 0; k < DIA_SLOT; k++) diaMesh.setColorAt(i * DIA_SLOT + k, tmpC.setHex(DIABLO[k].c));
+    scene.add(diaMesh);
+  }
+  const diaAt = [];                  // 這一幀第 n 位畫的是 beasts 的第幾隻（點選要對回去，同 frAt）
+  function putDiablos(list) {
+    let n = 0;
+    for (let i = 0; i < list.length && n < MAXDIA; i++) {
+      const m = list[i];
+      if (m.kind !== 'diablo') continue;
+      diaAt[n] = i;
+      diaRig(m);
+      const base = n * DIA_SLOT;
+      for (let k = 0; k < DIA_PARTS; k++) diaMesh.setMatrixAt(base + k, _dm.multiplyMatrices(_dG[DIABLO[k].g], DIA_LM[k]));
+      n++;
+    }
+    diaMesh.count = n * DIA_SLOT;
+    diaMesh.visible = n > 0;
+    if (n) { diaMesh.instanceMatrix.needsUpdate = true; dropSphere(diaMesh); }
+  }
+  /* 金幣（規則那邊的 coins）：一顆一個扁方塊 s × s·COIN_T × s，照 rx／ry／rz 翻；a 跟著屍體淡、亮度一閃一閃。
+     **沒有金幣就 visible = false**（不吃 draw call） */
+  const COIN_T = 0.2;
+  const _cq = new T.Quaternion(), _cE = new T.Euler(), _cv = new T.Vector3(), _cs = new T.Vector3();
+  function putCoins(list) {
+    const n = Math.min(list.length, COIN_MAX), t = performance.now() / 1000;
+    for (let i = 0; i < n; i++) {
+      const c = list[i];
+      _cq.setFromEuler(_cE.set(c.rx, c.ry, c.rz));
+      coinMesh.setMatrixAt(i, _dm.compose(_cv.set(c.x, c.y, c.z), _cq, _cs.set(c.s, c.s * COIN_T, c.s)));
+      coinFade.array[i] = c.a;
+      coinGlow.array[i] = 0.32 + 0.22 * Math.max(0, Math.sin(t * 7 + i * 1.7));
+    }
+    coinMesh.count = n;
+    coinMesh.visible = n > 0;
+    if (!n) return;
+    coinMesh.instanceMatrix.needsUpdate = true;
+    coinFade.needsUpdate = true; coinGlow.needsUpdate = true;
+    dropSphere(coinMesh);
+  }
   /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）。五支 putXxx 畫完之後叫一次：
      有 alpha 的那一位整格照抄到 humMesh、原本那一格塞 0。xxxAt 是「第幾位畫的是清單裡的第幾隻」。 */
   function fadeHumans(list) {
@@ -9370,6 +9832,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     move(zenMesh, zenAt, ZEN_SLOT);
     move(gjMesh, gjAt, GJ_SLOT);
     move(frMesh, frAt, FR_SLOT);
+    move(diaMesh, diaAt, DIA_SLOT);              // Diablo：從林帶進出場、死了變淡都走這一顆
     humMesh.count = n * HUM_SLOT;
     humMesh.visible = n > 0;
     if (!n) return;
@@ -10072,6 +10535,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     if (zenMesh && zenMesh.visible) objs.push(zenMesh);   // 善逸也算 beast（v1.251.0，見 putZens）
     if (gjMesh && gjMesh.visible) objs.push(gjMesh);      // 五條悟也算 beast（v1.255.0，見 putGojos）
     if (frMesh && frMesh.visible) objs.push(frMesh);      // 芙莉蓮也算 beast（v1.259.0，見 putFrierens）
+    if (diaMesh && diaMesh.visible) objs.push(diaMesh);   // Diablo 也算 beast（見 putDiablos）
     const hits = raycaster.intersectObjects(objs, false);
     let best = null, rank = 9;
     for (let i = 0; i < hits.length; i++) {
@@ -10079,7 +10543,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
                  : h.object === beastMesh || h.object === sabMesh || h.object === levMesh || h.object === megMesh ||
-                   h.object === zenMesh || h.object === gjMesh || h.object === frMesh ? 'beast'
+                   h.object === zenMesh || h.object === gjMesh || h.object === frMesh || h.object === diaMesh ? 'beast'
                  : h.object === giftMesh ? 'gift'
                  : h.object === ground ? 'ground' : null;
       /* 泡泡被牆擋住就點不到（畫面上本來就看不見它：泡泡不寫深度，但仍然吃深度測試）。
@@ -10094,6 +10558,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
                                       : h.object === zenMesh ? zenAt[Math.floor(h.instanceId / ZEN_SLOT)]
                                       : h.object === gjMesh ? gjAt[Math.floor(h.instanceId / GJ_SLOT)]
                                       : h.object === frMesh ? frAt[Math.floor(h.instanceId / FR_SLOT)]
+                                      : h.object === diaMesh ? diaAt[Math.floor(h.instanceId / DIA_SLOT)]
                                                            : Math.floor(h.instanceId / BEAST_PARTS))
                 /* 泡泡是一整片貼圖網格（不是 instanced）：一顆兩個三角形，
                    而 giftAt 記著這一幀第幾片畫的是清單裡的第幾顆（見 putGifts）。 */
@@ -10188,6 +10653,10 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 芙莉蓮（v1.259.0）：自己一顆 mesh（putFrierens），防護罩照規則那邊寫在她身上的 bt／bc／bh 畫；
        FR_BAR_OPEN／FR_BAR_CLOSE／FR_BAR_RIP 是罩子張開、收掉、亮紋擴完要幾秒（規則那邊照這幾個收狀態） */
     putFrierens, FRIEREN, FR_PARTS, FR_SLOT, MAXFR, FR_G, FR_NE, FR_BAR_OPEN, FR_BAR_CLOSE, FR_BAR_RIP,
+    /* Diablo：自己一顆 mesh（putDiablos）；diaMouth 是噴火的出口（世界座標，畫的跟用的同一份）。
+       跪姿、趴姿與「算不算貼地」那一份遮罩（DIA_GND）也開出來：測試照它量倒在地上時每一塊離地多高 */
+    putDiablos, DIABLO, DIA_PARTS, DIA_SLOT, MAXDIA, DIA_G, diaMouth, diaChest, DIA_KNEEL, DIA_PRONE, DIA_GND,
+    putCoins, COIN_MAX,                     /* 金幣：純特效（見 game-tools.js〈Diablo〉的 spawnCoins） */
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
     BEAST_FRONT, beastLift,                 /* 趴著照前緣抬（v1.274.0，猴子的尾巴拿掉之後背緣與前緣差很多） */
@@ -10203,7 +10672,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
                ufo: UFO_PART, ufoLit: UFO_LIT,
                ape: APE, snow: SNOW, nana: NANA, torch: TORCH, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
-               deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, saber: SABER, levi: LEVI, megumin: MEGUMIN,
+               deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, diablo: DIABLO, saber: SABER, levi: LEVI, megumin: MEGUMIN,
                zenitsu: ZENITSU, gojo: GOJO, frieren: FRIEREN,
                shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY, tabby: TABBY, blackcat: BLACKCAT,
                chiikawa: CHIIKAWA, hachiware: HACHIWARE, usagi: USAGI, emperor: EMPEROR, adelie: ADELIE,
@@ -10211,6 +10680,6 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, diaMesh, coinMesh }; }
   };
 })();

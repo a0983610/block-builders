@@ -5259,8 +5259,10 @@ function stepHot(dt) {
       d.rx += dt * 5; d.ry += dt * 6.5;
       continue;
     }
-    /* v1.176～v1.274 這裡還有一條「獅鷲噴出去的火痕（d.jet）直線飛、不吃重力與阻尼」，
-       v1.275.0 獅鷲改成衝撞、沒有火柱了，那一條一起拿掉 */
+    /* Diablo 噴出去的火痕（v1.176～v1.274 是獅鷲的，v1.275.0 跟著獅鷲改衝撞拿掉，這一版 Diablo 撈回來用）：
+       直線飛到目標就熄，不吃重力、也不吃下面那道阻尼。那道阻尼是 **60fps 的每一幀** ×0.9（不是每秒）：
+       照它走的話 0.35 秒只飛得到 4.5 格，而火柱要打到十幾格外——整條會在半路停成一團。 */
+    if (d.jet) { d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt; continue; }
     d.vy -=(d.g === undefined ? -1.5 : d.g) * dt;
     /* 被魔法陣吸的光點：往中心加速再加一股切線，走出螺旋。
        只給內吸的話會直直射進中心，看起來像雨點不像在聚集魔力。 */
@@ -8423,20 +8425,36 @@ const GIA_EYE = 5.0, GIA_EYE_STEP = 0.5;
    外框不會縮，照「還探得到就再踹」判的話牠會對著一個永遠不通的框踹到天亮。
    踹滿還不通就放它一馬（記進 m.bskip），改用原本那套繞過去。 */
 const GIA_BUST = 8;
-const doomNear = m => m.kind === 'giant' ? GIA_NEAR
+/* ── 暗黑破壞神（Diablo）──────────────────────────────────
+   使用者：「加入新天災吉祥物 diablo 攻擊方式是舊版獅鷲的噴火／同巨人方式會被擊殺 死亡會倒在地上噴出一堆金幣
+   然後慢慢消失」，附了兩張參考圖。造型見 engine.js〈Diablo〉（自己一顆 mesh，不在 BEASTS）。問過四件，使用者選：
+   場上 10 格高、一趟噴一道火、死了整隻變淡（看過預覽改成趴著死）、金幣純特效（不算錢）。
+   走路同巨人：come／fun／near／go 全部沿用 stepBeast 既有的那幾段。見 開發筆記〈Diablo：噴火的天災，同巨人被斬殺、趴倒噴金幣〉 */
+const DIA_SC = 2.0;                   // 模型高 5.00 × 2.0 ＝ 場上 10 格（使用者選的：巨人的三分之二）
+const DIA_WALK = 3.2;                 // 腳程（巨人 4.0、獅鷲 2.6）
+/* 腿擺多快，照「一步跨多遠」湊（同 GIA_STEP 那一段算式），數字是第一版造型（掛在 BEASTS、sw 0.62）算的：
+     髖到腳底 2.20 × 2.0 ＝ 4.40 格，擺幅 ＝ sw 0.62 × gait 0.85 ＝ 0.527 弧度
+     一條腿一趟掃 2 × 4.40 × sin(0.527) ＝ 4.43 格，兩條腿一個週期 8.85 格
+     週期 ＝ 2π ÷ (11 × step)，要 DIA_WALK × 週期 ≒ 8.85  →  step ＝ 0.206
+   改成自己一顆 mesh 之後大腿擺幅是 0.42（engine 的 diaPose），照式子要 0.264；探針量過「撐地那隻腳每走一格滑多少」，
+   0.206／0.24／0.264／0.29／0.32 是 0.45／0.36／0.44／0.43／0.48，分不出好壞（腳掌還會跟著轉、沒有 IK），所以沒動 */
+const DIA_STEP = 0.206;
+/* 走路要離建築外圈再遠幾格：肩背那排長刺伸到 x 0.91（場上 1.8 格），KEEP 1.5 不夠擋 */
+const DIA_KEEP = 1.0;
+const doomNear = m => m.kind === 'giant' ? GIA_NEAR : m.kind === 'diablo' ? DIA_NEAR
                     : (m.home && m.kind === 'snow') ? DOOM_TOSS_NEAR : DOOM_NEAR;
 /* 每一款自己的腳程、腿擺倍率、跟建築要保持的距離。沒列到的照 DOOM_WALK 那一組走
    （兩隻猴子）——加下一款走地上的天災時在這三張表各加一格就好。
    Saber 走路同小人（v1.226，使用者：「增快saber一般走路移動速度(同小人)」；v1.222～v1.225 照猴子的 2.2），
    腿擺照小人那一份（stp 不給＝1，小人走 WALK 也是 11 弧度／秒）。 */
-const DOOM_SPD = { giant: GIA_WALK, saber: WALK, levi: WALK, megumin: WALK,     // 里維兵長（v1.230）、惠惠（v1.247.0）同 Saber
+const DOOM_SPD = { giant: GIA_WALK, diablo: DIA_WALK, saber: WALK, levi: WALK, megumin: WALK,     // 里維兵長（v1.230）、惠惠（v1.247.0）同 Saber
                    zenitsu: WALK, gojo: WALK,                                   // 善逸（v1.251.0）、五條悟（v1.255.0）也是
                    frieren: WALK };   // 芙莉蓮 v1.259.0 漏列（照猴子的 2.2 走、跑 6.6），v1.260.0 補上（使用者選的「走路補成 6.8，跑 13.6」）
-const DOOM_STEP = { giant: GIA_STEP };
-const DOOM_KEEP = { giant: GIA_KEEP };
+const DOOM_STEP = { giant: GIA_STEP, diablo: DIA_STEP };
+const DOOM_KEEP = { giant: GIA_KEEP, diablo: DIA_KEEP };
 /* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
    不該把手舉起來（不給的話 putBeasts 會套預設的 BEAST_RAISE 2.6，變成舉手投降）。 */
-const DOOM_RAISE = { ape: 1.5, snow: 2.6, giant: 0 };
+const DOOM_RAISE = { ape: 1.5, snow: 2.6, giant: 0, diablo: 0 };   // Diablo 是用噴的，同巨人不舉手
 let beasts = null;                    // 場上那幾隻（天災來的 ＋ 吉祥物，差在 m.fun）
 let nanas = null;                     // 飛在半空的香蕉炸彈
 let doomT = -1;                       // 倒數（−1＝沒在數）
@@ -8457,7 +8475,9 @@ const DOOMS = [
   /* 事件五：巨人，走進來對著地標踹 2~3 腳，踹中那一片炸開並燒起來（v1.192）。 */
   { id: 'giant', wt: 1, start: () => spawnBeast('giant') },
   /* 事件六：Saber，走到地標旁邊把劍舉過頭頂蓄力，整條光柱斬下來把整座劈開（v1.222／v1.223，見 stepExcal）。 */
-  { id: 'saber', wt: 1, start: () => spawnBeast('saber') }
+  { id: 'saber', wt: 1, start: () => spawnBeast('saber') },
+  /* 事件七：Diablo，走到地標旁邊前傾張嘴，噴一道長火柱（見 stepDiaFire）。 */
+  { id: 'diablo', wt: 1, start: () => spawnBeast('diablo') }
 ];
 /* 照權重挑一件。回傳 null 只有一種情況：表是空的。（同 rollIdleEvent） */
 function rollDoom() {
@@ -8475,7 +8495,7 @@ function rollDoom() {
    牛羊不動手），那兩處要認得牠，所以另外列一張。 */
 const DOOM_ACT = { ape: apeStrike, snow: nanaThrow };
 /* Saber（v1.222）同巨人：不是「動一次手就走」那張表，act 之後轉進自己的 excal 段，所以也另外認 */
-const canFight = m => !!DOOM_ACT[m.kind] || m.kind === 'giant' || m.kind === 'saber';
+const canFight = m => !!DOOM_ACT[m.kind] || m.kind === 'giant' || m.kind === 'saber' || m.kind === 'diablo';
 
 /* 從林帶放一隻進來（v1.256.0 起在林帶中線、邊走邊淡入，見 woodFade；v1.255 以前是碎料圈外 3 格冒出來）。
    方位隨機——固定一邊的話，鏡頭剛好對著另一邊就永遠看不到牠走過來。
@@ -8500,7 +8520,7 @@ function spawnBeast(kind, fun, bad, ang) {
     gw: null, nav: null, navWait: 0, nb: null, nbS: 0,
     /* 巨人自己一個倍率（v1.192）：牠的模型是拿 5.00 當高畫的，不是拿小人的 1.31，
        所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。五條悟也自己一個（v1.255.0，見 GJ_SC）。 */
-    sc: kind === 'giant' ? GIA_SC : kind === 'gojo' ? GJ_SC : kind === 'frieren' ? FR_SC : DOOM_SC,
+    sc: kind === 'giant' ? GIA_SC : kind === 'diablo' ? DIA_SC : kind === 'gojo' ? GJ_SC : kind === 'frieren' ? FR_SC : DOOM_SC,
     kick: 0, kleft: 0, kt: 0, hit: 0, puff: 0,
     /* Saber 出招到第幾秒（v1.222，見 stepExcal）；th0 上一幀光柱的角度（null＝不在斬）、
        thS 開斬那一刻的角度，xn／xb 這一招斬掉幾塊／點著幾塊（測試在讀），xs 震過畫面了沒 */
@@ -8540,6 +8560,7 @@ function spawnBeast(kind, fun, bad, ang) {
   if (!beasts) beasts = [];
   beasts.push(m);
   if (kind === 'giant') sndGiant();
+  else if (kind === 'diablo') sndDiablo();
   else if (kind === 'saber') sndSaber();
   else if (kind === 'levi') sndLevi();
   else if (kind === 'megumin') sndMegumin();
@@ -8558,11 +8579,13 @@ function spawnBeast(kind, fun, bad, ang) {
      （見 stepBeast 的 fun 那一段），這時候還說牠盯上了村子就是騙人。
      Saber 用「她」（v1.222）：場上就她一個不是野獸。 */
   const hand = kind === 'giant' ? '牠有十五格高，一腳就能踹垮一面牆'
+             : kind === 'diablo' ? '牠會走到地標旁邊，前傾張嘴噴出一道長長的火柱'
              : kind === 'saber' ? '她把劍舉過頭頂蓄力，整條光柱斬下來能把整座地標劈成兩半'
              : kind === 'ape' ? '牠手上有一支火把' : '牠手上有一根綁著膠帶的香蕉';
   if (fun) toast(nm + '來工地逛逛',
                  bad && nearHome(m.x, m.z)
                    ? (kind === 'giant' ? '牠盯上了村子那一帶，腳步已經轉過去了'
+                    : kind === 'diablo' ? '牠盯上了村子那一帶，嘴角已經冒著火光'
                     : kind === 'saber' ? '她盯上了村子那一帶，手已經握上劍柄了'
                     /* 里維、善逸、五條悟（v1.268.0 當上吉祥物）：砸村子那一趟就是道具那一招，見 mascStrike */
                     : kind === 'levi' ? '他盯上了村子那一帶，雙刀已經出鞘了'
@@ -8625,6 +8648,7 @@ function homeMid(b) {
 /* 砸完（或目標中途沒了）就回去逛（v1.166）。天災那幾隻動完手是走人（leaveBeast），
    吉祥物本來就是「來逛一圈」的，砸完那一間回去把剩下的 stay 逛完再走。 */
 function funBack(m) {
+  diaStop(m);                                // Diablo 噴火的姿勢收乾淨（被打退、翻臉都從這裡出去）
   m.bad = 0; m.home = 0;
   m.owe = 0;                                 // 還欠著的也一筆勾銷（v1.229，見 moreMascot）
   m.bust = null; m.bn = 0;                   // 清擋路那一腳的旗標（v1.207，同 leaveBeast）
@@ -8638,6 +8662,7 @@ function leaveBeast(m) {
      clear（整地），而 stepBeast 開頭那條 away 就會把牠推進 go。
      擺在這裡而不是各呼叫端：leaveBeast 是所有「走人」的共同出口。 */
   if (m.kick) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; }
+  diaStop(m);                                // Diablo 噴到一半被叫走（地標垮到換場那種）：前傾張嘴的姿勢同上要收掉
   /* 清擋路那一腳的旗標也收掉（v1.207）：走人是一趟的結束，那一腳要回的那一段
      已經不存在了；放過的那一個（bskip）也跟著這一趟作廢。 */
   m.bust = null; m.bn = 0; m.bskip = null;
@@ -8705,7 +8730,7 @@ const wallAhead = (m, tx, tz) => wallBlocked(m.x, m.z, tx, tz);
    動手 334 次、拆掉 0 塊牆）。破牆而入要破的是擋路的那一段，所以這一步照舊要走到牆邊。 */
 const WALL_EYE = 1.5;
 function wallFoot(m, tx, tz) {
-  if (m.kind === 'giant') return false;                  // 巨人自己一套（v1.207，見 giantBust）
+  if (bigBeast(m)) return false;                         // 巨人自己一套（v1.207，見 giantBust）；Diablo 同（見 diaBust）
   const dx = tx - m.x, dz = tz - m.z, d = Math.hypot(dx, dz) || 1;
   const h = footHome(m.x + dx / d * WALL_EYE, m.z + dz / d * WALL_EYE);
   return !!(h && h.wall);
@@ -8721,7 +8746,7 @@ function gateNeed(m, tx, tz) {
   /* **巨人不走門**（v1.207，使用者：「巨人太高不能走城門」）：門洞五層高、牠十五格，
      繞過去也鑽不過。牠那一套是「擋路的踹掉再走」（見 giantBust），
      wallFoot 那一條對牠也一起關掉，所以城牆那三處分支對牠整組不動作。 */
-  if (m.kind === 'giant') return false;
+  if (bigBeast(m)) return false;      // Diablo 同巨人（使用者：「Diablo 要比照巨人 擋路就噴」，見 diaBust）
   if (m.st === 'gate') return false;
   if (!navReach(m, tx, tz)) return false;
   m.gback = m.st;                   // 穿過去之後回哪一段
@@ -8848,7 +8873,7 @@ function stepBeast0(m, dt) {
   if (m.kind === 'goose') return stepGoose(m, dt);
   /* 被斬殺的巨人：躺著冒蒸氣、氣化消失（里維 v1.230；核彈、爆裂魔法、Excalibur v1.245.0，見 giantDie）；
      被打死的牛羊：躺著流血、淡掉（v1.240） */
-  if (m.dead) return m.herd ? stepCarcass(m, dt) : stepDie(m, dt);
+  if (m.dead) return m.herd ? stepCarcass(m, dt) : m.kind === 'diablo' ? stepDiaDie(m, dt) : stepDie(m, dt);   // Diablo 趴倒、噴金幣、淡掉
   /* 惠惠爆完往後倒、暈著、爬起來（v1.247.0）：被打倒、卡住那兩套都不必跑（v1.260.0 起被炸飛、點著的那幾秒在裡面照一般那一套） */
   if (megDown(m)) return stepMegDown(m, dt);
   /* 芙莉蓮（v1.259.0）：防護罩的計時與舉杖；罩子張開到收完那幾秒她站定（見 frStep） */
@@ -8918,8 +8943,8 @@ function stepBeast0(m, dt) {
      （gateNeed／wallFoot 都回 false），這一條才是牠遇到牆時真正在走的路。
      near／act／kick 不在裡面：那是「走到地標旁邊動手」那一段，牠本來就會踹。
      站著發呆的那幾秒（m.pause）也不算「行走」，不去踹面前的東西。 */
-  if (m.kind === 'giant' && !(m.pause > 0) &&
-      (m.st === 'come' || m.st === 'fun' || m.st === 'go') && giantBust(m)) return false;
+  if (bigBeast(m) && !(m.pause > 0) &&
+      (m.st === 'come' || m.st === 'fun' || m.st === 'go') && (m.kind === 'diablo' ? diaBust(m) : giantBust(m))) return false;
   /* Excalibur 叫她過去那一段**用跑的**（v1.226，使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」）：
      腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
   if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'frieren')   // 里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0）同 Saber 用跑的
@@ -9044,7 +9069,7 @@ function stepBeast0(m, dt) {
            在牆線上、算在城外，每幀 fun↔gate 互切、原地不動（見 開發筆記〈去動手的那一趟〉）。
            **巨人照舊走底下那一段**（使用者 v1.207「擋路就踹」：牠不規劃）。v1.242 以前底下還有 wallAhead／gateNeed／wallCut
            三條，那幾支對巨人一律不動作（gateNeed、wallFoot 開頭就對巨人回 false），所以拿掉也一個位元都沒變。 */
-        if (m.kind !== 'giant') {
+        if (!bigBeast(m)) {                  // Diablo 同巨人走底下那一段
           if (actWalk(m, t, m.kind === 'snow' ? homeMid(t) : t, dt, spd, stp, kp)) { m.st = 'near'; m.leg = 0; }
           return false;
         }
@@ -9117,7 +9142,7 @@ function stepBeast0(m, dt) {
        v1.166～v1.242 是底下那一段：直直往最近那一塊走、下一步會踩進東西就地動手——被別間擋住就隔著 5～8 格點火、
        貼著門洞墩座的邊走會每幀被推回來、卡 3 秒才穿透（見 開發筆記〈去動手的那一趟〉）。
        **巨人照舊走底下那一段**（使用者 v1.207「擋路就踹」：牠不規劃，最後幾步踩到東西就停下來踹）。 */
-    if (m.kind !== 'giant') {
+    if (!bigBeast(m)) {                      // Diablo 同巨人走底下那一段（不規劃，擋路的已經在路上噴掉了）
       if (!actWalk(m, b, aim, dt, spd, stp, kp)) return false;
       m.a = Math.atan2(aim.x - m.x, aim.z - m.z);
       m.st = 'act'; m.t = DOOM_AIM;
@@ -9169,6 +9194,8 @@ function stepBeast0(m, dt) {
     /* Saber（v1.222）同巨人：act 只是站定架劍瞄一下，接著轉進自己那一段（舉劍、蓄力、劈）。
        一趟就一招（使用者選的「1 次」），天災與吉祥物砸村子那一趟都一樣。 */
     if (m.kind === 'saber') { m.st = 'excal'; m.xt = 0; m.hit = 0; m.th0 = null; return false; }
+    /* Diablo 同上：站定瞄完轉進噴火那一段（前傾張嘴、噴一道、收回來，見 stepDiaFire）。一趟一道（使用者選的） */
+    if (m.kind === 'diablo') { diaStop(m); m.st = 'fire'; return false; }
     /* 里維兵長（v1.230）：站定架刀之後射鋼索飛過去（見 stepOdm）。DOOM_ACT 裡沒有他，往下走會叫到 undefined。
        v1.268.0 起他也是吉祥物：沒有玩家的命令、這一趟是來砸的（m.bad），就照道具那一招砸挑到的那一塊（見 mascStrike）；
        兩樣都沒有（被城牆擋住、沒門可繞走到這裡）照舊回去逛 */
@@ -9201,6 +9228,7 @@ function stepBeast0(m, dt) {
   }
   if (m.st === 'kick') return stepKick(m, dt);
   if (m.st === 'excal') return stepExcal(m, dt);
+  if (m.st === 'fire') return stepDiaFire(m, dt);
   /* 走人（go）也要走城門（v1.186）：砸完之後牠站在城裡，不繞門的話就被自己
      剛剛路過的那道牆關住（實測小獼猴在城裡磨了 400 秒還出不去）。
      同樣是**擋住了才繞**：牆上有缺口就直接從缺口出去。 */
@@ -9651,6 +9679,364 @@ function giantSteam(m, dt) {
   }
 }
 
+/* ── 事件七：Diablo 噴火 ─────────────────────────────────────
+   使用者：「加入新天災吉祥物 diablo 攻擊方式是舊版獅鷲的噴火／同巨人方式會被擊殺 死亡會倒在地上噴出一堆金幣
+   然後慢慢消失」。問過四件：場上 10 格、**一趟噴一道**、死了**整隻變淡**（看過預覽改成趴著死）、金幣**純特效**（不算錢）。
+   造型見 engine.js〈Diablo〉（自己一顆 mesh，兩輪預覽：「太醜 不夠精緻」→ 重做，「看起來不壯」→ 加壯）。
+
+   走路同巨人（不走城門、不規劃，擋路就停下來噴，見 bigBeast、diaBust），走到搆得到的站位才動手。動手那一段：
+     act   站定、轉向，停 DOOM_AIM 秒（同猴子）
+     fire  stepDiaFire：前傾張嘴 DIA_WIND → 噴一道火柱 DIA_BREATH（邊噴邊把頭掃過去）→ 收回來 DIA_BACK，噴完走人
+           （吉祥物砸村子那一趟回去逛）
+   **火柱就是 v1.176～v1.274 獅鷲那一道**（v1.275.0 獅鷲改衝撞時拿掉，這一版從 git 撈回來）：一顆一顆沿飛行方向拉長的
+   火痕（引擎 putFire 吃 ln）、照「還沒出生的那段時間」往前挪才不會是虛線、直線飛不吃阻尼（stepHot 的 d.jet）、
+   **火柱到了才點著**、打到的那一點濺火花、瞄「離嘴最近的那一塊（三維）」火柱才是平的。
+   差別只有出口：嘴的位置照骨架算（ENG.diaMouth，畫的跟用的同一份），粗細照體型放大一號。 */
+const DIA_NEAR = 9;                   // 站多遠噴：離要燒的那一塊 9 格內（火把是 DOOM_NEAR 3.2；獅鷲當年站建築外圈 5.5 格、火柱十格長）
+const DIA_WIND = 0.7;                 // 前傾、張嘴幾秒才噴（看得出牠在蓄）
+const DIA_BREATH = 2.6;               // 一道火柱噴幾秒（同獅鷲的 GR_BREATH）
+const DIA_BACK = 0.6;                 // 噴完收回來幾秒
+const DIA_YAW = 2.2;                  // 前傾那一段轉向多快（弧度／秒）
+/* 挑好的那一塊水平離牠超過這麼遠就不噴、回 near 重走過去（同獅鷲的 GR_RANGE：被炸飛之後爬起來的地方沒人保證） */
+const DIA_RANGE = 26;
+const DIA_SWEEP = 0.34, DIA_SWEEP_HZ = 2.0;   // 邊噴邊掃：擺幅與快慢（同獅鷲）
+/* 火柱（同獅鷲那一組，粗細與長短照體型放大：牠 10 格、獅鷲 5.7 格） */
+const DIA_JET_V = 30;                 // 飛多快（決定飛多久，見 diaJetT）
+const DIA_RATE = 160;                 // 一秒噴幾顆
+const DIA_LEN = [1.4, 2.4];           // 一顆火痕多長
+const DIA_W = [0.30, 0.80];           // 粗細的落差要夠大，不然側面看是一塊平板（獅鷲踩過）
+const DIA_JIT = 0.3, DIA_VJIT = 2.6;  // 出口的位置抖多少、速度抖多少（後者決定整條散多開）
+const DIA_HOT = 620;                  // 火粒子池最多用到第幾顆（共用的池子，同獅鷲的 GR_HOT）
+const DIA_IGN_R = 3.6, DIA_IGN_N = 3, DIA_IGN_GAP = 0.3;   // 打到的地方每 0.3 秒點一次、周圍撒幾塊
+const DIA_HIT_RATE = 30;              // 打到的那一點一秒濺幾顆火花
+const _diaN = new THREE.Vector3();
+const diaNoz = m => ENG.diaMouth(m, _diaN);
+/* 火柱從嘴飛到落點要幾秒 */
+function diaJetT(m) {
+  const n = diaNoz(m);
+  return Math.max(0.12, Math.hypot(m.jx - n.x, m.jy - n.y, m.jz - n.z) / DIA_JET_V);
+}
+/* 這一趟要燒哪一塊：天災瞄地標、吉祥物那一趟瞄村子那邊。**離嘴最近的那一塊（三維）**——水平最近的話
+   同一根柱子上幾十層一樣近，挑到高樓層就朝天噴（獅鷲量到過）。已經在燒的先不挑；不燒的那一塊太遠
+   （附近全燒起來了）就照樣挑最近的那一塊，不然牠會在「走過去 → 太遠 → 再走過去」裡打轉。 */
+function diaTarget(m) {
+  /* 擋路就噴那一趟（見 diaBust）只瞄擋路的那一間 */
+  const hi = m.bust && homes ? homes.list.indexOf(m.bhome) : -1;
+  const n = diaNoz(m), ok = m.bust ? (b => b.hh === hi && hi >= 0) : m.home ? isVillage : (b => b.hh < 0);
+  let best = null, bd = Infinity, any = null, ad = Infinity;
+  for (const b of blocks) {
+    if (b.st !== SET || !ok(b)) continue;
+    const d = (b.x - n.x) ** 2 + (b.y - n.y) ** 2 + (b.z - n.z) ** 2;
+    if (d < ad) { ad = d; any = b; }
+    if (!b.burn && d < bd) { bd = d; best = b; }
+  }
+  return best && Math.hypot(best.x - m.x, best.z - m.z) <= DIA_RANGE ? best : any;
+}
+/* 定下目標：瞄那一塊中心再往上一點；jr 水平距離、a0 正對它的朝向（噴的時候身體左右掃，落點沿這個半徑轉） */
+function diaAim(m, b) {
+  m.jy = b.y + 0.4;
+  m.jr = Math.max(2, Math.hypot(b.x - m.x, b.z - m.z));
+  m.a0 = Math.atan2(b.x - m.x, b.z - m.z);
+  m.jx = b.x; m.jz = b.z;
+  m.em = 0; m.ign = 0; m.hem = 0;
+}
+/* 噴出去的那一幀（同獅鷲的 grJet）：每一顆照自己還沒出生的那段時間往前挪（age），一幀生兩三顆全生在嘴上的話是虛線。
+   m.jf＝火柱在全長的幾成被防護罩擋下（1＝沒擋，見 diaShield）：每一顆飛到殼上就熄，不穿進罩子裡 */
+function diaJet(m, dt) {
+  const n = diaNoz(m), t = diaJetT(m), f = m.jf === undefined ? 1 : m.jf, fr = m.jsh;
+  /* 擋下來的那一顆罩子：**每一顆照自己的路線**算多久撞到殼（速度抖過、出口也抖過，散開的那幾顆走的不是中線；
+     只照中線那一個比例收的話，外圍那幾顆探針量到鑽進殼裡 1.29 格） */
+  const cx = fr ? (fr.bt != null ? fr.bx : fr.x) : 0, cz = fr ? (fr.bt != null ? fr.bz : fr.z) : 0;
+  m.em += dt * DIA_RATE;
+  while (m.em >= 1) {
+    m.em--;
+    if (hot.length > DIA_HOT) break;
+    const vx = (m.jx - n.x) / t + rr(-DIA_VJIT, DIA_VJIT);
+    const vy = (m.jy - n.y) / t + rr(-DIA_VJIT, DIA_VJIT) * 0.5;
+    const vz = (m.jz - n.z) / t + rr(-DIA_VJIT, DIA_VJIT);
+    const sp = Math.hypot(vx, vy, vz) || 1, age = m.em / DIA_RATE;
+    const core = Math.random() < 0.26;         // 四顆裡一顆亮黃的芯，其餘深橘：整條同一色看起來是塑膠管
+    const px = n.x + rr(-DIA_JIT, DIA_JIT), py = n.y + rr(-DIA_JIT, DIA_JIT), pz = n.z + rr(-DIA_JIT, DIA_JIT);
+    let life = f < 1 ? t * f * rr(0.85, 1) : t * rr(0.85, 1.1);
+    if (fr) {
+      /* 出口那一點到殼：解 |p + v·s − c|² ＝ R²，取第一個正根（出口已經在殼裡的不收，見 diaShield） */
+      const ox = px - cx, oy = py, oz = pz - cz, A = vx * vx + vy * vy + vz * vz;
+      const B = ox * vx + oy * vy + oz * vz, C = ox * ox + oy * oy + oz * oz - FR_R * FR_R, D = B * B - A * C;
+      if (C > 0 && D >= 0) { const s = (-B - Math.sqrt(D)) / A; if (s > 0) life = Math.min(life, s); }
+    }
+    if (life <= age) continue;                 // 還沒出生就已經撞到殼了
+    hot.push({
+      x: px + vx * age, y: py + vy * age, z: pz + vz * age,
+      vx, vy, vz, jet: 1,
+      dx: vx / sp, dy: vy / sp, dz: vz / sp,
+      ln: rr(DIA_LEN[0], DIA_LEN[1]), s: rr(DIA_W[0], DIA_W[1]),
+      life: life - age,
+      cr: 1, cg: core ? rr(0.82, 0.96) : rr(0.34, 0.56), cb: core ? rr(0.40, 0.60) : rr(0.02, 0.10)
+    });
+  }
+}
+/* 火柱有沒有被芙莉蓮的防護罩擋下（使用者：「火柱要在芙莉蓮的防護罩外面被擋」）：從嘴 n 到落點那一段，
+   第一個從外面撞進去的半球殼（中心在她腳下、半徑 FR_R，同 frCover），回 { s 在全長的幾成, m 那一位 }，沒擋到回 null。
+   嘴已經在罩子裡的不算（裡面的東西本來就點不著，見 igniteBlock 的 blockSafe）。
+   做法同〈防護罩擋住會飛的攻擊〉：別的會飛的東西是 sweepRock 一路判撞，火柱是一條直線，直接解線段與球的交點 */
+function diaShield(n, jx, jy, jz) {
+  if (!beasts) return null;
+  const dx = jx - n.x, dy = jy - n.y, dz = jz - n.z, A = dx * dx + dy * dy + dz * dz;
+  if (A < 1e-9) return null;
+  let best = null;
+  for (const f of beasts) {
+    if (f.kind !== 'frieren' || f.dead) continue;
+    const cx = f.bt != null ? f.bx : f.x, cz = f.bt != null ? f.bz : f.z;
+    const ox = n.x - cx, oy = n.y, oz = n.z - cz, C = ox * ox + oy * oy + oz * oz - FR_R * FR_R;
+    if (C <= 0) continue;
+    const B = ox * dx + oy * dy + oz * dz, disc = B * B - A * C;
+    if (disc < 0) continue;
+    const s = (-B - Math.sqrt(disc)) / A;
+    if (s <= 0 || s >= 1 || n.y + s * dy < 0) continue;      // 交點在嘴後面、落點外面、或在地底下（下半球不算）
+    if (!best || s < best.s) best = { s, m: f };
+  }
+  return best;
+}
+/* 打到的那一點（hx, hy, hz）濺開的火花（走一般的火粒子：會往上飄、會冷卻）。少了這一撮，火柱看起來是一根插在牆上的棍子 */
+function diaHitFx(m, dt, hx, hy, hz) {
+  m.hem += dt * DIA_HIT_RATE;
+  while (m.hem >= 1) {
+    m.hem--;
+    if (hot.length > DIA_HOT + 60) break;
+    hot.push({
+      x: hx + rr(-0.6, 0.6), y: hy + rr(-0.4, 0.8), z: hz + rr(-0.6, 0.6),
+      vx: rr(-2.4, 2.4), vy: rr(1, 5), vz: rr(-2.4, 2.4),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.35, 0.8), life: rr(0.25, 0.55), g: -2.6, grow: 1.05, cool: rr(0.2, 0.42),
+      cr: 1, cg: rr(0.55, 0.86), cb: rr(0.08, 0.3), to: [0.6, 0.12, 0.02]
+    });
+  }
+}
+/* 噴火那幾個欄位收乾淨（走人、回去逛、被打斷、被斬殺都要叫：不收的話牠維持著前傾張嘴的姿勢一路走） */
+function diaStop(m) { if (m.kind === 'diablo') { m.fb = 0; m.ft = 0; m.fhit = 0; m.jr = 0; } }
+function diaEnd(m) {
+  diaStop(m);
+  /* 擋路就噴那一趟：還擋著就再一道，噴滿還不通就放它一馬改繞過去；通了回原本那一段（同 stepKick 的 m.bust） */
+  if (m.bust) {
+    const h = giantBlock(m);
+    if (h && ++m.bn < DIA_BUST) { m.bhome = h; return; }   // 還擋著：st 還是 fire，下一幀從頭再噴一道
+    if (h) m.bskip = h;
+    m.st = m.bust; m.bust = null; m.bn = 0; m.bhome = null;
+    return;
+  }
+  if (m.fun) funBack(m); else leaveBeast(m);
+}
+function stepDiaFire(m, dt) {
+  m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+  m.ft += dt;
+  const t = m.ft, t1 = DIA_WIND, t2 = t1 + DIA_BREATH;
+  m.fb = t < t1 ? t / t1 : t < t2 ? 1 : Math.max(0, 1 - (t - t2) / DIA_BACK);   // 引擎照它擺前傾、張嘴、張手
+  /* 目標一進這一段挑一次（m.jr 是「挑好了」的記號）：diaTarget 要掃一遍積木池，不每幀挑 */
+  if (!m.jr) {
+    const b = diaTarget(m);
+    if (!b) { diaEnd(m); return false; }
+    diaAim(m, b);
+    if (!m.bust && m.jr > DIA_RANGE) { diaStop(m); m.st = 'near'; return false; }   // 擋路就噴那一趟不看（擋路的就在面前）
+    sndDiablo();
+  }
+  if (t < t1) {
+    let e = m.a0 - m.a;
+    while (e > Math.PI) e -= Math.PI * 2;
+    while (e < -Math.PI) e += Math.PI * 2;
+    m.a += clamp(e, -DIA_YAW * dt, DIA_YAW * dt);
+    return false;
+  }
+  if (t < t2) {
+    /* 出手那一刻再挑一次：前傾那 0.7 秒裡被別的東西砸光的話這一趟就不噴（同獅鷲、香蕉、火球） */
+    if (!m.fhit) {
+      const b = diaTarget(m);
+      if (!b) { diaEnd(m); return false; }
+      diaAim(m, b);
+      m.fhit = 1;
+      sndSpit();
+    }
+    const el = t - t1;                       // 已經噴了多久
+    m.a = m.a0 + Math.sin(el * DIA_SWEEP_HZ) * DIA_SWEEP;
+    m.jx = m.x + Math.sin(m.a) * m.jr;
+    m.jz = m.z + Math.cos(m.a) * m.jr;
+    /* 防護罩擋在中間就照殼上那一點算：火柱飛到殼上就熄、火花濺在殼上、罩子亮一圈，那一下不點火 */
+    const n = diaNoz(m), sh = diaShield(n, m.jx, m.jy, m.jz);
+    m.jf = sh ? sh.s : 1; m.jsh = sh ? sh.m : null;
+    diaJet(m, dt);
+    /* **火柱到了才點著**：噴出去那一刻就燒的話，火會在火柱還在半路時就從積木上冒出來 */
+    if (el >= diaJetT(m) * m.jf) {
+      const hx = sh ? n.x + (m.jx - n.x) * sh.s : m.jx, hy = sh ? n.y + (m.jy - n.y) * sh.s : m.jy,
+            hz = sh ? n.z + (m.jz - n.z) * sh.s : m.jz;
+      diaHitFx(m, dt, hx, hy, hz);
+      m.ign -= dt;
+      if (m.ign <= 0) {
+        m.ign = DIA_IGN_GAP;
+        if (sh) frHit(sh.m, hx, hy, hz, m.jx - n.x, m.jy - n.y, m.jz - n.z);
+        else {
+          const p = { x: m.jx, y: m.jy, z: m.jz };
+          /* 吉祥物砸村子、擋路就噴那兩種只准燒村子那邊，也不叫 igniteAt（它沒有 only 這一關，掃到的最近一塊可能是地標） */
+          if (m.home || m.bust) igniteAround(p, DIA_IGN_R, DIA_IGN_N, SET, isVillage);
+          else {
+            igniteAt(p.x, p.y, p.z);           // 順手把 phase 從 done 推到 wreck
+            igniteAround(p, DIA_IGN_R, DIA_IGN_N, SET, null);
+          }
+          sndFire();
+        }
+      }
+    }
+    return false;
+  }
+  if (t < t2 + DIA_BACK) return false;
+  /* 擋路就噴那一趟：擋路的還在燒就等它燒斷（BURN_TIME 2.2 秒一塊）再看通了沒，不然剛噴完它還站著、又噴一道 */
+  if (m.bust && t < t2 + DIA_BACK + DIA_BUST_WAIT && diaBurning(m)) return false;
+  diaEnd(m);
+  return false;
+}
+/* ── Diablo 被擊殺：往前趴倒、噴出一堆金幣、慢慢淡掉 ──
+   殺得死他的同巨人那五樣（使用者：「同巨人方式會被擊殺」）：里維斬後頸、核彈、爆裂魔法、Excalibur、虛式「茈」
+   （呼叫端都改問 killable／slayBeast，見那兩支）。死法一開始問的時候使用者選「往後仰倒＋整隻變淡」，
+   看過動作預覽之後改成**趴著死**（使用者：「死亡調整成趴著死」），再看一次：「現在沒有趴著的感覺 只是模型放上去」
+   ——那一版是站姿整隻往前轉 90°，所以改成同巨人那樣**先跪下再往前撲倒**、趴下去手腳攤在地上（姿勢在引擎，見 diaPose）。
+   淡法同小人、牛羊被打死那一套（淡的那一段搬去 humMesh 畫，見引擎的 fadeHumans），金幣選的是純特效。
+     0 ～ kneel             膝蓋一軟跪下去（m.dk；膝蓋與小腿著地，貼地照實際姿勢抬，見 diaRig）
+     ＋ wait                跪著、上身垮在那裡
+     ＋ fall                往前撲倒：越倒越快（m.dp 是 u²，根的躺平角同步收到 +90°），手攤開、臉側過去
+     著地那一刻             胸口著地：震一下、揚一圈塵、從胸口底下噴出 DIA_COINS 顆金幣
+     ＋ DIA_HOLD            趴著（金幣在身邊彈跳、落定）
+     ＋ DIA_FADE            整隻連同金幣一起淡掉，淡完從場上拿掉（stepBeast 回 true，天災那一件就結束了）
+   **已經被打倒趴在地上的**（lieAng 他也是趴著，見那一支）不必再跪：直接收成死掉的趴姿，DIA_DIE.prone 秒後就算著地 */
+const DIA_DIE = { kneel: 0.55, wait: 0.3, fall: 0.75, prone: 0.3 };
+const DIA_HOLD = 4, DIA_FADE = 3;
+const DIA_NAPE = 3.9;                 // 後頸多高（模型單位）：里維撲過去砍的那一點（同巨人的 GIA_NAPE）
+function diaDie(m, by) {
+  diaStop(m);
+  m.dead = 1e-6; m.st = 'dead'; m.call = null; m.cq = null;
+  m.air = 0; m.burn = 0; m.brl = 0; m.fall = 1; m.gait = 0; m.pause = 0; m.roll = 0; m.face = 0; m.arm = 0; m.y = 0;
+  m.side = 0; m.lie = 1; m.dk = 0; m.dp = 0; m.coin = 0;
+  /* 躺平角折回 (−π, π]（飛在半空翻過的那種可能轉了好幾圈）；已經趴著（被打倒、著火打滾）的不必再跪 */
+  m.s0 = Math.atan2(Math.sin(m.spin || 0), Math.cos(m.spin || 0));
+  m.pr = m.s0 > 1.0 ? 1 : 0;
+  sndDiablo();
+  const s = GIA_SLAIN[by] || GIA_SLAIN.levi;
+  toast(BEAST_NM.diablo + s[0], s[1] + '跪倒在地、往前撲倒，噴出一地金幣，慢慢消失');
+}
+const _diaC = new THREE.Vector3();
+/* 著地那一刻是死後第幾秒 */
+const diaLand = m => m.pr ? DIA_DIE.prone : DIA_DIE.kneel + DIA_DIE.wait + DIA_DIE.fall;
+function stepDiaDie(m, dt) {
+  m.dead += dt;
+  m.fall = 1; m.gait = 0;
+  const t = m.dead, D = DIA_DIE;
+  if (m.pr) {
+    const u = Math.min(1, t / D.prone);
+    m.dk = 0; m.dp = 1;
+    m.spin = m.s0 + (Math.PI / 2 - m.s0) * u;
+  } else {
+    m.dk = Math.min(1, t / D.kneel);
+    const u = clamp((t - D.kneel - D.wait) / D.fall, 0, 1);
+    m.dp = u * u;                                        // 越倒越快
+    m.spin = m.s0 + (Math.PI / 2 - m.s0) * m.dp;
+  }
+  if (!m.coin && t >= diaLand(m)) {
+    m.coin = 1;
+    const c = ENG.diaChest(m, _diaC);
+    const at = { x: c.x, y: 0.3, z: c.z };
+    spawnDust(at, 4, 70);
+    spawnRing(at, 7);
+    ENG.shake(1.0);
+    sndFall();
+    noise(0.5, 0.14, 240);
+    spawnCoins(m);
+  }
+  const k = t - diaLand(m);
+  /* 淡之前不給 alpha：給了就搬去半透明那一顆畫（fadeHumans），全濃那四秒沒必要 */
+  m.alpha = k <= DIA_HOLD ? undefined : Math.max(0, 1 - (k - DIA_HOLD) / DIA_FADE);
+  return k >= DIA_HOLD + DIA_FADE;
+}
+/* 殺得死的那兩款（巨人、Diablo）：五個呼叫點（里維、核彈、爆裂魔法、Excalibur、茈）都問這一支，死法各走各的 */
+const killable = m => m.kind === 'giant' || m.kind === 'diablo';
+/* 太高走不了城門、擋路就動手的那兩款（使用者：「Diablo 要比照巨人 擋路就噴」）：不走城門、不規劃（strollGiant 直直走），
+   前面五格擋著就停下來動手——巨人踹（giantBust），Diablo 噴（diaBust）。gateNeed／wallFoot／strollTo／near 那幾處都問這一支 */
+const bigBeast = m => m.kind === 'giant' || m.kind === 'diablo';
+/* ── Diablo 擋路就噴 ──
+   同巨人那一套（見 giantBust）：前面 GIA_EYE 格內擋著的那一個（城牆、小人的家、樹；門洞也算擋住）就停下來對它噴一道。
+   差別是火要燒：一塊點著到燒斷掉下來 BURN_TIME 2.2 秒，所以噴完**等那一個燒完**（最多 DIA_BUST_WAIT 秒）再看通了沒，
+   還擋著就再噴一道，噴滿 DIA_BUST 道還不通就放它一馬（m.bskip），改繞過去。通了回原本那一段（m.bust）。 */
+const DIA_BUST = 4;                   // 同一個擋路的最多噴幾道（保險不是門檻，同 GIA_BUST）
+const DIA_BUST_WAIT = 3;              // 噴完等它燒多久再看
+function diaBust(m) {
+  const h = giantBlock(m);
+  if (!h) { m.bskip = null; return false; }
+  m.bust = m.st; m.bn = 0; m.bhome = h;
+  diaStop(m); m.st = 'fire';
+  return true;
+}
+/* 擋路的那一間還在燒嗎 */
+function diaBurning(m) {
+  const hi = homes ? homes.list.indexOf(m.bhome) : -1;
+  if (hi < 0) return false;
+  for (const b of blocks) if (b.hh === hi && b.burn && b.st === SET) return true;
+  return false;
+}
+function slayBeast(m, by) { if (m.kind === 'diablo') diaDie(m, by); else giantDie(m, by); }
+
+/* ── 金幣（純特效，使用者選的：不算錢）──
+   背著地那一刻從胸口往上噴出一把，四散落下、在草皮上彈兩下、平躺。**跟著屍體淡、屍體收掉就收**（c.o 是那一具）：
+   同血泊跟屍體共用一條時間軸的道理，換場、測試清場都不會留下一地沒人管的金幣。
+   畫法見引擎的 putCoins（借兵器那一份金光材質，背光面也是金的）。 */
+const DIA_COINS = 80;                 // 一隻噴幾顆
+const COIN_S = [0.42, 0.6];           // 一顆多大（扁方塊的邊長，厚是兩成）
+const COIN_VY = [7, 14], COIN_VH = [1.2, 6];   // 往上噴多快、往四周散多快
+const COIN_SPIN = [5, 13];            // 翻多快
+const COIN_BOUNCE = 0.38;             // 落地彈回來幾成
+const COIN_LAG = 0.5;                 // 一顆一顆在這幾秒內陸續噴出來（不是一幀整把）
+const coins = [];
+function spawnCoins(m) {
+  const sc = m.sc || 1, c = ENG.diaChest(m, _diaC), cx = c.x, cz = c.z;   // 從趴著的胸口底下噴出來
+  for (let i = 0; i < DIA_COINS && coins.length < ENG.COIN_MAX; i++) {
+    const th = Math.random() * Math.PI * 2, h = rr(COIN_VH[0], COIN_VH[1]), sg = () => (Math.random() < 0.5 ? -1 : 1);
+    coins.push({
+      o: m, d: rr(0, COIN_LAG), rest: 0, a: 1, s: rr(COIN_S[0], COIN_S[1]),
+      x: cx + rr(-0.6, 0.6) * sc, y: rr(0.9, 1.4) * sc, z: cz + rr(-0.6, 0.6) * sc,
+      vx: Math.cos(th) * h, vy: rr(COIN_VY[0], COIN_VY[1]), vz: Math.sin(th) * h,
+      rx: rr(0, Math.PI * 2), ry: rr(0, Math.PI * 2), rz: rr(0, Math.PI * 2),
+      wx: rr(COIN_SPIN[0], COIN_SPIN[1]) * sg(), wz: rr(COIN_SPIN[0], COIN_SPIN[1]) * sg()
+    });
+  }
+  sndCoins();
+}
+function stepCoins(dt) {
+  for (let i = coins.length - 1; i >= 0; i--) {
+    const c = coins[i], o = c.o;
+    if (!beasts || beasts.indexOf(o) < 0) { coins.splice(i, 1); continue; }
+    c.a = o.alpha === undefined ? 1 : o.alpha;
+    if (c.d > 0) { c.d -= dt; continue; }
+    const h = c.s * 0.1;                     // 半厚（引擎的 COIN_T 0.2）
+    if (c.rest) {
+      /* 平躺：翻到最近的那一個平面（0 或 π），跟火把落地同一招 */
+      const k = Math.min(1, dt * 12);
+      c.rx += (Math.round(c.rx / Math.PI) * Math.PI - c.rx) * k;
+      c.rz += (Math.round(c.rz / Math.PI) * Math.PI - c.rz) * k;
+      continue;
+    }
+    c.vy -= GRAV * dt;
+    c.x += c.vx * dt; c.y += c.vy * dt; c.z += c.vz * dt;
+    c.rx += c.wx * dt; c.rz += c.wz * dt;
+    if (c.y > h) continue;
+    c.y = h;
+    if (c.vy < -2.5) {
+      c.vy *= -COIN_BOUNCE; c.vx *= 0.55; c.vz *= 0.55; c.wx *= 0.5; c.wz *= 0.5;
+    } else { c.vx = c.vy = c.vz = 0; c.rest = 1; }
+  }
+}
+/* 要畫的那幾顆（還沒噴出來的不畫）：重用同一個陣列 */
+const _coins = [];
+function coinList() {
+  _coins.length = 0;
+  for (const c of coins) if (!(c.d > 0)) _coins.push(c);
+  return _coins;
+}
+
 /* ── 事件六：Saber 的 Excalibur（v1.222，v1.223 改成整條光柱斬下來）─────────────
    使用者：「做成天災吉祥物 攻擊是excalibur舉劍往前轟」（造型先做預覽過目，見 engine.js〈Saber〉）。
    v1.222 那一版是「劈下之後貼地往前轟一道光刃」，而且**問完選項就落地、沒讓使用者看效果**。
@@ -9794,7 +10180,7 @@ function excLives(m, g, P, C) {
     if (!excCross(g, P, C, o.x, (o.y || 0) + (o.sky ? 0 : mid), o.z, GATE_MAN_R + mid * 0.8)) continue;
     /* 巨人斬殺（v1.245.0，見 slayGiants）：Saber 當天災／吉祥物自己出的那一招也算（使用者選的）。
        已經在化掉的照舊往下走（tossBeast 回 false，同以前） */
-    if (o.kind === 'giant' && !o.ufo && !beastSafe(o)) { giantDie(o, 'excal'); hit++; continue; }   // beastSafe：罩子裡的斬不死（v1.259.0）
+    if (killable(o) && !o.ufo && !beastSafe(o)) { slayBeast(o, 'excal'); hit++; continue; }   // beastSafe：罩子裡的斬不死（v1.259.0）
     const sp = rr(EXC_HIT[0], EXC_HIT[1]) * 0.6;
     if (tossBeast(o, (g.fx * tf * sp + rr(-1.5, 1.5)) * B_BLOW, rr(4, 8),
                   (g.fz * tf * sp + rr(-1.5, 1.5)) * B_BLOW, true)) beastHit(o, 'excal');   // v1.208
@@ -10221,9 +10607,10 @@ function levAim(m) {
     for (const j of [0, 1]) { m.wa[j].x = c.px + (j ? -0.15 : 0.15) * c.nz; m.wa[j].y = c.py + 0.2; m.wa[j].z = c.pz - (j ? -0.15 : 0.15) * c.nx; }
   } else if (c.b && !c.bw && levTargetOk(c.b)) {
     const b = c.b, bs = b.sc || 1, fx = Math.sin(b.a || 0), fz = Math.cos(b.a || 0);
-    if (b.kind === 'giant') {
-      /* 巨人：砍後頸，從牠背後撲過去，鉤爪勾在兩肩 */
-      c.px = b.x - fx * 0.35 * bs; c.py = (b.y || 0) + GIA_NAPE * bs; c.pz = b.z - fz * 0.35 * bs;
+    if (killable(b)) {
+      /* 巨人：砍後頸，從牠背後撲過去，鉤爪勾在兩肩（Diablo 同，後頸在 DIA_NAPE） */
+      const np = b.kind === 'diablo' ? DIA_NAPE : GIA_NAPE;
+      c.px = b.x - fx * 0.35 * bs; c.py = (b.y || 0) + np * bs; c.pz = b.z - fz * 0.35 * bs;
       c.nx = -fx; c.ny = 0.35; c.nz = -fz;
     } else {
       /* 其餘：身體中段，從他這一側的上方撲過去 */
@@ -10233,7 +10620,7 @@ function levAim(m) {
     }
     const nl = Math.hypot(c.nx, c.ny, c.nz) || 1;
     c.nx /= nl; c.ny /= nl; c.nz /= nl;
-    const w = (b.kind === 'giant' ? 0.6 : 0.15) * bs;
+    const w = (killable(b) ? 0.6 : 0.15) * bs;
     m.wa[0].x = c.px + fz * w; m.wa[0].y = c.py + 0.2 * bs; m.wa[0].z = c.pz - fx * w;
     m.wa[1].x = c.px - fz * w; m.wa[1].y = c.py + 0.2 * bs; m.wa[1].z = c.pz + fx * w;
   } else if (!c.b) {
@@ -10322,7 +10709,7 @@ function stepOdm(m, dt) {
     if (c.b) {
       /* 生物／小人：繞著那一點轉一圈（巨人繞著後頸），轉到 0.55 秒那一刀砍中 */
       if (levTargetOk(c.b, c.bw)) levAim(m);
-      const bs = c.b.sc || 1, r = !c.bw && c.b.kind === 'giant' ? 0.3 * bs + 0.9 : 1.2;
+      const bs = c.b.sc || 1, r = !c.bw && killable(c.b) ? 0.3 * bs + 0.9 : 1.2;
       const th = m.oa0 + Math.PI + m.ot * Math.PI * 2 / 0.7;
       C = { x: c.px + Math.sin(th) * r, y: c.py + 0.25 * Math.sin(m.ot * 18), z: c.pz + Math.cos(th) * r };
       if (!m.oh && m.ot >= 0.55) { m.oh = 1; levStrike(m, c.b, c.bw); }
@@ -10454,8 +10841,8 @@ function levStrike(m, b, w) {
     lifeHit(b, 'levi');
     return true;
   }
-  ENG.shake(b.kind === 'giant' ? 1.2 : 0.5);
-  if (b.kind === 'giant') { if (beastSafe(b)) return false; giantDie(b); return true; }   // beastSafe：罩子裡的斬不死（v1.259.0）
+  ENG.shake(killable(b) ? 1.2 : 0.5);
+  if (killable(b)) { if (beastSafe(b)) return false; slayBeast(b, 'levi'); return true; }   // beastSafe：罩子裡的斬不死（v1.259.0）
   if (fellBeast(b, rr(2.4, 3.6))) { sndFall(); beastHit(b, 'levi'); return true; }
   return false;
 }
@@ -10486,7 +10873,7 @@ function giantDie(b, by) {
    已經飛在半空的照 explode 的規矩不算（那邊也不掀），被幽浮吸著的不算（同 leviCanCut）。 */
 function slayGiants(p, R, by) {
   eachBeastNear(p, R, m => {
-    if (m.kind === 'giant' && !m.air && !m.ufo && !beastSafe(m)) giantDie(m, by);   // beastSafe：罩子裡的炸不死（v1.259.0）
+    if (killable(m) && !m.air && !m.ufo && !beastSafe(m)) slayBeast(m, by);   // beastSafe：罩子裡的炸不死（v1.259.0）
   });
 }
 /* 一團蒸氣。at 給了就冒在那一點（一塊散掉的那一刻），沒給就冒在身上隨便一塊 */
@@ -11044,7 +11431,7 @@ function purpTake(p, a, b) {
     const mid = ENG.BEAST_MID[m.kind] * (m.sc || 1), pad = GATE_MAN_R + mid * 0.3;
     if (purpD2(a, b, m.x, (m.y || 0) + Math.min(mid, p.y), m.z) > (PURP_R + pad) ** 2) continue;
     if (beastSafe(m)) continue;               // 防護罩裡的吸不走、抹消不了（v1.259.0；排在範圍判斷後面）
-    if (m.kind === 'giant') { if (!m.air) { giantDie(m, 'purp'); ENG.shake(1.0); } continue; }
+    if (killable(m)) { if (!m.air) { slayBeast(m, 'purp'); ENG.shake(1.0); } continue; }
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'purp');
     m.air = 1;                                // 掛在球上：落地判定那一套先停（ufo 擋住 stepBeast），甩出去才接著算
     purpGrab(p, m, 2);
@@ -12405,6 +12792,8 @@ const MASCOTS = [
   { id: 'gryphon', ground: 1, spawn: bad => spawnGryph(1, bad) },
   /* 巨人（v1.192）：用走的，整地那一段先不放進來（同兩隻猴子）。 */
   { id: 'giant', ground: 1, spawn: bad => spawnBeast('giant', 1, bad) },
+  /* Diablo：用走的，同巨人。砸村子那一趟也是噴一道火，只燒村子那邊（見 stepDiaFire） */
+  { id: 'diablo', ground: 1, spawn: bad => spawnBeast('diablo', 1, bad) },
   /* Saber（v1.222）：用走的，同上。砸村子那一趟也是一招 Excalibur，但地標一塊都不斬、不燒（見 excSweep）。 */
   { id: 'saber', ground: 1, spawn: bad => spawnBeast('saber', 1, bad) },
   /* 惠惠（v1.247.0）：用走的，同上。**鐘抽到「來砸房子」也不理**（使用者：「他完全不主動攻擊的」）：
@@ -12497,15 +12886,18 @@ function turnBad(id) {
       /* 正踹到一半被翻臉的（v1.192）：這一腳先收乾淨——腿還舉在半空就被推去走路的話，
          牠會用那個姿勢一路滑過去。收完再照下面那兩行決定接哪一段。 */
       /* Saber 出招到一半被翻臉的（v1.222）同上：那一招收乾淨（xt／hit 歸零）再去走地標那一段 */
-      const mid = m.st === 'kick' || m.st === 'excal';
-      if (mid) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; m.xt = 0; m.th0 = null; }
+      /* Diablo 噴到一半被翻臉的同上：前傾張嘴那個姿勢收乾淨（diaStop），再去走地標那一段 */
+      const mid = m.st === 'kick' || m.st === 'excal' || m.st === 'fire';
+      if (mid) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; m.xt = 0; m.th0 = null; diaStop(m); }
       if (m.home) m.st = 'come';
       else if (m.st === 'fun' || mid) m.st = 'near';
       beastCry(m);
       toast(m.kind === 'giant' ? '🗿 那隻巨人不逛了'
+          : m.kind === 'diablo' ? '😈 Diablo 不逛了'
           : m.kind === 'saber' ? '⚔ Saber 不逛了'
           : m.kind === 'ape' ? '🐒 小獼猴不逛了' : '🐵 小猴子不逛了',
             m.kind === 'giant' ? '牠轉過身，朝地標走過去'
+          : m.kind === 'diablo' ? '牠咧開嘴，朝地標走過去'
           : m.kind === 'saber' ? '她雙手握劍，朝地標走過去'
           : m.kind === 'ape' ? '牠舉起手上那支火把，朝地標走過去'
                              : '牠舉起手上那根香蕉，朝地標走過去');
@@ -12558,7 +12950,7 @@ const MORE_GAP = DOOM_FIRE_R * 2;
    **一處一處算**（v1.244.2）：每燒完一處從頭數（見 stepBeast 的 act），不是幾處加起來 45 秒。 */
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 小獼猴', snow: '🐵 小猴子', dragon: '🐉 飛龍',
-                   gryphon: '🦅 獅鷲', giant: '🗿 巨人', saber: '⚔ Saber', levi: '🗡 里維兵長',
+                   gryphon: '🦅 獅鷲', giant: '🗿 巨人', diablo: '😈 Diablo', saber: '⚔ Saber', levi: '🗡 里維兵長',
                    megumin: '💥 惠惠', zenitsu: '⚡ 善逸', gojo: '🟣 五條悟', frieren: '🛡 芙莉蓮' };
 /* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）用「他」；
    惠惠（v1.247.0）、芙莉蓮（v1.259.0）用「她」——其餘那幾款照舊是牠 */
@@ -12568,6 +12960,7 @@ const itOf = m => m.kind === 'saber' || m.kind === 'megumin' || m.kind === 'frie
 function beastCry(m) {
   if (m.kind === 'dragon' || m.kind === 'gryphon') sndRoar();
   else if (m.kind === 'giant') sndGiant();
+  else if (m.kind === 'diablo') sndDiablo();
   else if (m.kind === 'saber') sndSaber();
   else if (m.kind === 'levi') sndLevi();
   else if (m.kind === 'megumin') sndMegumin();
@@ -13348,7 +13741,9 @@ function lieSide(m) { if (m.side) m.sdir = Math.random() < 0.5 ? 1 : -1; }
    （小獼猴 0.365／0.375、小猴子 0.46／0.53）。**v1.274.0 尾巴拿掉之後背緣只剩軀幹**，
    趴著改照前緣抬（引擎的 beastLift：前緣與背緣取大的那一個）。 */
 function lieAng(m) {
-  return m.side ? m.sdir * Math.PI * 0.5 : (m.face ? Math.PI * 0.5 : -Math.PI * 0.5);
+  /* Diablo 被打倒也往前趴（第三輪使用者看過「先打倒再斬殺」：「看起來很奇怪 為什麼是往後倒」）：他死的時候是趴著的，
+     打倒時照兩條腿那一條往後仰躺的話，躺著被殺就得從仰躺翻成趴著。趴姿與貼地照引擎的 diaPose／diaRig */
+  return m.side ? m.sdir * Math.PI * 0.5 : (m.face || m.kind === 'diablo' ? Math.PI * 0.5 : -Math.PI * 0.5);
 }
 /* 側躺時**翼上那幾塊還是比身體寬一點**，要多抬這麼多（模型單位，v1.202.1）。
    `BEAST_SIDE` 刻意不把翼上那幾塊算進去（見 engine 那一段：牠們表上的 p[0] 是
@@ -13521,6 +13916,14 @@ function reaim(m) {
     else m.st = m.call ? 'call' : 'near';
   }
   else if (m.kind === 'gryphon' && m.st === 'walk') m.st = m.fun ? 'stand' : 'up';
+  /* Diablo 噴到一半被打倒：同 Saber——**已經噴出去了（m.fhit）就算這一趟做完了**（一趟一道，使用者選的），
+     爬起來走人（吉祥物回去逛）；還在前傾張嘴、沒噴出去的，回 near 重走過去再噴 */
+  else if (m.st === 'fire') {
+    /* 擋路就噴那一道被打斷（同巨人清路那一腳）：回原本在走的那一段，還擋著的話下一幀 diaBust 會再攔一次 */
+    if (m.bust) { diaStop(m); m.st = m.bust; m.bust = null; m.bn = 0; m.bhome = null; }
+    else if (m.fhit) diaEnd(m);
+    else { diaStop(m); m.st = 'near'; }
+  }
   /* 惠惠詠唱到一半被打倒（v1.247.0）：魔法陣散掉，爬起來重走到站位再念一次。
      這一下有算進去的話（beastHit 緊接著叫 calmMascot）就是收手回去逛——使用者選的「收手，魔法陣散掉」 */
   else if (m.st === 'mcast') { megCancel(m); m.st = 'mwalk'; m.ms = null; m.mwt = 0; }

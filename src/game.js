@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.275.0';
+const VERSION = '1.276.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -335,6 +335,18 @@ function sndGiant() {
   tone(64, 1.6, 'sawtooth', 0.085, 0.62, 'giant');
   noise(0.7, 0.14, 300);
   setTimeout(() => tone(48, 1.1, 'sawtooth', 0.06, 0.7, 'giant'), 380);
+}
+/* Diablo：一聲帶顫的嘶吼。要跟巨人（64 滑到 40）、龍吼（88 滑到 48）分得開：基音拉到 110、方波墊一層刺耳的上半，
+   噪音切在 900（比龍的 420 亮）——巨人是悶、龍是氣息，這一聲是「吼」 */
+function sndDiablo() {
+  tone(110, 1.25, 'sawtooth', 0.08, 0.5, 'diablo');
+  tone(165, 0.9, 'square', 0.03, 0.55, 'diablo2');
+  noise(0.9, 0.12, 900);
+}
+/* 金幣噴出來：一串高音的叮叮噹噹，錯開一點、音高亂一點 */
+function sndCoins() {
+  for (let i = 0; i < 7; i++)
+    setTimeout(() => tone(rr(1700, 2700), 0.13, 'triangle', 0.028, rr(0.95, 1.08), 'coin'), i * 55 + rr(0, 30));
 }
 function sndBeast(hi) {
   const f = hi ? 330 : 220;

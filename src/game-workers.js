@@ -1329,6 +1329,9 @@ function navDims() {
   navDim.zenitsu = scan(M.zenitsu, b => b.g === ENG.ZEN_G.sword || b.g === ENG.ZEN_G.saya);
   /* 五條悟（v1.255.0）：伸出來的手指只有比手勢才畫，不算 */
   navDim.gojo = scan(M.gojo, b => b.f);
+  /* Diablo：自己一顆 mesh、不在 BEASTS 裡，上面那一圈掃不到。背刺與尾巴不算（nl）：往後拖兩格的尾巴算進身長的話，
+     牠在巡路規則裡是一隻圓周五格的東西，門洞與房子之間的路全部走不過 */
+  navDim.diablo = scan(M.diablo, b => b.nl);
   return navDim;
 }
 /* 這個人（這隻）走路的身體：H 是幾層高的柱子擋得住他、r 是離柱子至少多遠。
@@ -2364,7 +2367,7 @@ function strollPause(w) { w.pause = w.leg / WALK * rr(1.7, 3.1); w.leg = 0; }
 /* keepMore 只剩巨人在給（見 strollGiant）。v1.182～v1.235 飛龍也給（DRA_KEEP 8.5：身長 10 格上下，
    站在 siteR+1.5 上頭跟尾巴會插進地標裡），v1.236 起那件事是身位（身長一半往外擴，見 navBody）。 */
 function strollTo(w, dt, spd, step, keepMore) {
-  if (w.kind === 'giant') return strollGiant(w, dt, spd, step, keepMore);
+  if (w.kind === 'giant' || w.kind === 'diablo') return strollGiant(w, dt, spd, step, keepMore);   // Diablo 比照巨人（見 game-tools.js 的 bigBeast）
   const bd = navBody(w);
   const g = navGoal(w, w.tx, w.tz, bd);
   if (g) { w.tx = g.x; w.tz = g.z; }
