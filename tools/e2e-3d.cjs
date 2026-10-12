@@ -38061,6 +38061,63 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('拿起來那一刻 pull 重給：身上留著舊 pull 的料照一般的路撿起來，當場就在手上',
      navPull.stale === 1, '撿起來那一幀離手 ' + navPull.staleD + ' 格（舊的起點在 30 格外）');
 
+  /* ⑪-c 料在封住的空腔裡（那一格是空的、頭頂被蓋住）：**一樣算看不見，站在牆外隔空拿**（v1.276.1，使用者：
+     「判斷看不看得見的判斷方法錯誤」）。拉麵的圈足是空心的一圈、上面蓋著碗底封板，中間一層高的空腔裡的料
+     v1.246～v1.276 因為「那一格是空的」被當成看得見，人鑽進碗底去撿。
+     場面：⑪ 那一圈方牆（整根砌滿）再從第 1 層往上整片蓋住，地面那一層的 5×5 是封死的空腔，料躺在正中央。
+     對照：判法換回 v1.276 的「只看那一格」（blockAt）→ 穿地標的牆進去撿。見 開發筆記〈封住的空腔：頭頂蓋著就算看不見（v1.276.1）〉。 */
+  const navCav = await page.evaluate(() => {
+    const run = on => {
+      cleanTools(); clearHomes(); stopIdleEvent();
+      shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+      targetCnt = 3000; setWorkerCount(1); startBuild(true);
+      homes = null;
+      const c = Math.round(0 - gOffX), cz = Math.round(0 - gOffZ);
+      for (const s of bp.slots) {
+        const d = Math.max(Math.abs(s.gx - c), Math.abs(s.gz - cz));
+        s.filled = d === 3 || (d < 3 && s.gy >= 1);
+      }
+      frameNo++;
+      const w = workers[0];
+      releaseWorker(w); w.hm = -1;
+      for (let i = 1; i < blocks.length; i++) { blocks[i].rest = false; blocks[i].holder = -1; }
+      const bi = 0, b = blocks[bi];
+      if (b.cell) gridDel(b);
+      b.st = 0; b.rest = true; b.holder = -1; b.slot = -1; b.hh = -1; b.arc = null; b.pull = null; b.snap = 0;
+      b.x = c + gOffX; b.z = cz + gOffZ; b.y = HB; b.vx = b.vy = b.vz = 0;
+      gridAdd(b);
+      const r = { inside: !lmReach(b.x, b.z), cell: blockAt(b.x, b.y, b.z), cover: lmCover(b) };
+      const og = nearGrab, oc = lmCover;
+      nearGrab = () => false;
+      if (!on) lmCover = b => blockAt(b.x, b.y, b.z);
+      w.x = b.x; w.z = b.z - 12; w.y = 0; w.sx = w.x; w.sz = w.z; w.stk = 0; w.ghost = 0;
+      const s = findSlot(w.x, w.z);                      // 工作單直接給這一塊（同 ⑪）
+      bp.slots[s].claimed = 0; b.holder = 0;
+      w.load.push({ b: bi, s }); w.li = 0; w.st = 'pick'; w.tx = b.x; w.tz = b.z;
+      let got = -1, pulled = false, lmg = 0, gh = 0, inWall = 0;
+      try {
+        for (let i = 0; i < 600; i++) {
+          step(0.05);
+          if (w.lmg) lmg++;
+          if (w.ghost > 0) gh++;
+          if (!lmReach(w.x, w.z)) inWall++;
+          if (got < 0 && b.st === CARRY) { got = +((i + 1) * 0.05).toFixed(2); pulled = !!b.pull; break; }
+        }
+      } finally { nearGrab = og; lmCover = oc; }
+      return Object.assign(r, { got, pulled, lmg, gh, inWall });
+    };
+    const res = { on: run(true), off: run(false) };
+    cleanTools(); clearHomes();
+    return res;
+  });
+  ok('料在封住的空腔裡（那一格空、頭頂蓋著）：一樣算看不見，站在牆外隔空拿，不穿牆',
+     navCav.on.inside && !navCav.on.cell && navCav.on.cover && navCav.on.got > 0 && navCav.on.pulled &&
+     navCav.on.lmg === 0 && navCav.on.gh === 0 && navCav.on.inWall === 0 && navCav.off.lmg > 0,
+     '5×5 空腔正中央（走不到：' + navCav.on.inside + '、那一格砌了：' + navCav.on.cell + '、頭頂蓋著：' + navCav.on.cover + '）：' +
+     navCav.on.got + ' 秒拿到（隔空拿：' + navCav.on.pulled + '），穿地標的牆 ' + navCav.on.lmg + ' 幀、卡住穿透 ' + navCav.on.gh +
+     ' 幀、身體在牆裡 ' + navCav.on.inWall + ' 幀；只看那一格（v1.276 對照）：穿地標的牆 ' + navCav.off.lmg + ' 幀、' +
+     (navCav.off.got < 0 ? '30 秒沒拿到' : navCav.off.got + ' 秒拿到'));
+
   /* ⑫～⑭ 狀態機那一層：天災與吉祥物「去動手的那一趟」（使用者：「觀察發現還是有卡牆情況 案例是一隻黑獼猴往城牆(單片)方向走
      然後卡在牆邊 推測是要去放火」「e2e增加設計各種測試情況去看目前巡路還有什麼問題」）。
      ①～⑪ 驗的是走路那一層（strollTo／stepTo），這三條驗的是**接在它上面那一層**：game-tools.js 的 stepBeast0
