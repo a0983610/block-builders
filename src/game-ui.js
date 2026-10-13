@@ -42,23 +42,31 @@ function shakeTrees(p, R) {
 }
 
 /* ── 動態解析度（v1.280.0，見 開發筆記〈三個爆裂魔法同時炸卡在顯示卡：動態解析度、畫面設定小窗（v1.280.0）〉）──
-   顯示卡一幀超過 DYN_BUDGET 連續 DYN_DOWN 秒 → 渲染解析度降到 DYN_K 倍；降了之後「換算回原本要花多久」
-   （÷ DYN_K²，填色量跟像素數成正比）< 預算的八成連續 DYN_UP 秒 → 升回來。兩次切換至少隔 DYN_COOL 秒，
-   免得來回跳（切換那一下畫布要重配，實測下一幀隔 18～94ms，會頓一下）。
+   顯示卡一幀超過 DYN_BUDGET 連續 DYN_DOWN 秒 → 渲染解析度降到 DYN_K 倍；降著的時候顯示卡低於預算的 DYN_QUIET
+   連續 DYN_UP 秒 → **試著升回去**：原本解析度還是跟不上的話照上一條再降回來，下一次試升等 DYN_TRY 那一串
+   （2、4、8、16 秒一路加倍，免得在邊緣來回試）；升回去之後撐過 DYN_HOLD 秒就算成功、加倍歸零。
+   兩次切換至少隔 DYN_COOL 秒。切換本身不重配任何東西（畫布大小不動，低解析那一張事先配好，見 engine.js 的 prepareRes），
+   所以試一下是便宜的。
+   **為什麼是「試」不是「猜」**：v1.280.0 第一版拿「0.75 倍的時間 ÷ 0.75²」猜原本要多久，但這筆不全跟像素數成正比
+   （陰影那一趟、貼回畫布那一下是固定的）——猜得太高：dpr 2 閒晃原本只要 10.9ms（預算內），0.75 倍走小畫布 11.9ms，
+   ÷ 0.5625 猜成 21ms，就永遠停在又糊、又沒比較快的那一檔。
    量的是顯示卡時間不是幀距（理由見 engine.js 的 render）；瀏覽器量不到（gpuMs 一直是 0）就整個不動作——
    只看幀距的話鎖 60 開著時分不出有沒有餘裕，會降下去升不回來、或來回切換一直頓。
-   高解析螢幕一樣照顯示卡時間決定（使用者選的）：平常就跟不上的顯示卡會一直停在降過的那一檔。
-   三個爆裂魔法同時炸（Intel UHD 770、一般螢幕、鎖 60）：炸開後那幾秒 31～35 → 45～55fps，炸完 5 秒升回原本。 */
+   高解析螢幕一樣照顯示卡時間決定（使用者選的）：原本解析度就跟不上的顯示卡，試升會一直失敗、停在降過的那一檔。 */
 const DYN_K = 0.75;
 const DYN_BUDGET = 1000 / 60 - 2.5;   // 鎖 60 的一幀扣掉 CPU 那一段（step＋draw 平常 1～3.5ms）
-const DYN_DOWN = 0.25, DYN_UP = 1.5, DYN_COOL = 1.5;
+const DYN_DOWN = 0.25, DYN_UP = 1.5, DYN_COOL = 1.5, DYN_QUIET = 0.9, DYN_HOLD = 3;
+const DYN_TRY = [2, 4, 8, 16];
 let dynOn = true;                     // 畫面設定那一格（pref.dyn）
 let dynSlow = 0, dynFast = 0, dynWait = 0;
+let dynTry = 0, dynUpT = -1;          // 試升連續失敗幾次；升回去之後過了幾秒（-1＝不是剛試升上來的）
 function setDyn(on) {
   dynOn = on;
   ENG.gpuTiming(on);
   if (!on) ENG.setResScale(1);
-  dynSlow = dynFast = 0;
+  /* 低解析那一張畫布開著就先配好，切換那一下才不必當場配（見 engine.js 的 prepareRes）；量不到顯示卡時間的不配，反正不會降 */
+  ENG.prepareRes(on && ENG.gpuSupported ? DYN_K : 0);
+  dynSlow = dynFast = 0; dynTry = 0; dynUpT = -1;
 }
 /* 畫面設定小窗裡「動態解析度」底下那一行現況 */
 function dispStat() {
@@ -72,12 +80,22 @@ function dynStep(dt, gpu) {
   dynWait = Math.max(0, dynWait - dt);
   if (!dynOn || !(gpu > 0)) { dynSlow = dynFast = 0; return; }
   const k = ENG.resScale;
+  if (k === 1 && dynUpT >= 0) {
+    dynUpT += dt;
+    if (dynUpT > DYN_HOLD) { dynUpT = -1; dynTry = 0; }       // 試升成功：撐過 DYN_HOLD 秒，加倍歸零
+  }
   if (gpu > DYN_BUDGET) { dynSlow += dt; dynFast = 0; }
-  else if (gpu / (k * k) < DYN_BUDGET * 0.8) { dynFast += dt; dynSlow = 0; }
+  else if (gpu < DYN_BUDGET * DYN_QUIET) { dynFast += dt; dynSlow = 0; }
   else { dynSlow = dynFast = 0; }
   if (dynWait > 0) return;
-  if (k === 1 && dynSlow > DYN_DOWN) { ENG.setResScale(DYN_K); dynSlow = 0; dynWait = DYN_COOL; }
-  else if (k < 1 && dynFast > DYN_UP) { ENG.setResScale(1); dynFast = 0; dynWait = DYN_COOL; }
+  if (k === 1 && dynSlow > DYN_DOWN) {
+    ENG.setResScale(DYN_K); dynSlow = 0;
+    /* 剛試升上來又跟不上＝這一次試失敗：下一次試升等久一點 */
+    if (dynUpT >= 0) { dynWait = DYN_TRY[Math.min(dynTry, DYN_TRY.length - 1)]; dynTry++; dynUpT = -1; }
+    else dynWait = DYN_COOL;
+  } else if (k < 1 && dynFast > DYN_UP) {
+    ENG.setResScale(1); dynFast = 0; dynWait = DYN_COOL; dynUpT = 0;
+  }
 }
 
 /* ── 主迴圈 ─────────────────────────────────────────────── */

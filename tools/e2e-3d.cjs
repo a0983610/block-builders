@@ -37860,40 +37860,49 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 動態解析度（v1.280.0，使用者：「測試爆裂魔法同時爆炸的效能 看會不會卡 會的話看能不能優化」→ 看過預覽選「落地」、
      高解析螢幕「照顯示卡時間自動決定」、「加開關 預設開」）。規則型：測試用的 SwiftShader 量不到顯示卡時間，
      所以不跑主迴圈，直接拿假的顯示卡毫秒數一拍一拍餵 dynStep（同上面〈鎖 60〉餵假時間戳），期望值全讀常數：
-     ① 超過 DYN_BUDGET 要連續 DYN_DOWN 秒才降（短短一下不降）② 降到 DYN_K、引擎的倍率真的跟著變
-     ③ 降了之後要「換算回原本」也夠快（÷ DYN_K²）連續 DYN_UP 秒才升；只是現在夠快、換算回去不夠快的不升
-     ④ 兩次切換至少隔 DYN_COOL 秒 ⑤ 量不到（0）就不動 ⑥ 關掉立刻回原本、之後再慢也不降。量完全部還回去。 */
+     ① 超過 DYN_BUDGET 要連續 DYN_DOWN 秒才降（短短一下不降）② 降到 DYN_K，**畫布大小不動**（v1.280.0 改成畫到
+     事先配好的低解析畫布再貼回去，切換那一下才不會頓——直接改畫布 pixelRatio 那一版，最忙的時候那一行要等 40～313ms）
+     ③ 降著但還在預算邊緣（≥ DYN_QUIET）不試升；低於 DYN_QUIET 連續 DYN_UP 秒才試升
+     ④ 試升上來又跟不上 → 降回去，下一次試升等 DYN_TRY（2、4…一路加倍）；升回去撐過 DYN_HOLD 秒就歸零、回到一般的冷卻
+     ⑤ 量不到（0）就不動 ⑥ 關掉立刻回原本、之後再慢也不降。量完全部還回去。 */
   const dyn = await page.evaluate(() => {
     const keep = { on: dynOn, k: ENG.resScale };
-    const r = ENG.three.renderer, base = Math.min(2, window.devicePixelRatio || 1);
-    const reset = () => { setDyn(true); ENG.setResScale(1); dynSlow = dynFast = dynWait = 0; };
+    const r = ENG.three.renderer, gl = r.getContext(), pr0 = r.getPixelRatio(), cw0 = gl.drawingBufferWidth;
+    const reset = () => { setDyn(true); ENG.setResScale(1); dynSlow = dynFast = dynWait = 0; dynTry = 0; dynUpT = -1; };
     const feed = (gpu, sec) => { let t = 0; while (t < sec - 1e-9) { dynStep(0.05, gpu); t += 0.05; } };
     const until = (gpu, want, max) => { let t = 0; while (ENG.resScale !== want && t < max) { dynStep(0.05, gpu); t += 0.05; } return +t.toFixed(2); };
     const slow = DYN_BUDGET + 3, out = {};
     reset();
     feed(slow, DYN_DOWN - 0.1); out.blip = ENG.resScale;                 // ① 短短一下
     reset();
-    out.down = until(slow, DYN_K, 5); out.ratio = +(r.getPixelRatio() / base).toFixed(3);   // ②
-    /* ③ 現在夠快、但換算回原本（÷ K²）超過預算八成 → 不升 */
-    feed(DYN_BUDGET * 0.8 * DYN_K * DYN_K * 1.2, 4); out.notUp = ENG.resScale;
-    /* ③④ 真的有餘裕 → 升；從降下去那一刻起算，冷卻與 DYN_UP 兩個條件都要滿 */
-    reset(); until(slow, DYN_K, 5);
-    out.up = until(1, 1, 6);
-    /* ④ 剛升回來又變慢：要等冷卻過了才再降 */
-    out.reDown = until(slow, DYN_K, 6);
+    out.down = until(slow, DYN_K, 5);                                    // ②
+    out.canvas = r.getPixelRatio() === pr0 && gl.drawingBufferWidth === cw0;
+    feed(DYN_BUDGET * (DYN_QUIET + 1) / 2, 4); out.notUp = ENG.resScale;  // ③ 在邊緣
+    out.up = until(1, 1, 6);                                             // ③ 有餘裕（冷卻早就過了）
+    /* ④ 試升上來又跟不上：等冷卻過了降回去，算失敗一次 */
+    out.fail1 = until(slow, DYN_K, 6);
+    out.try1 = until(1, 1, 12);                                          // 下一次試升等 DYN_TRY[0]
+    until(slow, DYN_K, 6);
+    out.try2 = until(1, 1, 12);                                          // 再失敗一次，等 DYN_TRY[1]
+    feed(1, DYN_HOLD + 0.2); out.held = ENG.resScale; out.tryAfterHold = dynTry;   // 撐過 DYN_HOLD：成功、歸零
+    until(slow, DYN_K, 6);
+    out.afterHold = until(1, 1, 12);                                     // 回到一般的冷卻
     /* ⑤ 量不到 */
     reset(); feed(0, 3); out.zero = ENG.resScale;
     /* ⑥ 關掉 */
     reset(); until(slow, DYN_K, 5); setDyn(false); out.offNow = ENG.resScale; feed(slow, 3); out.offStay = ENG.resScale;
-    setDyn(keep.on); ENG.setResScale(keep.k); dynSlow = dynFast = dynWait = 0;   // 還回去
-    return { ...out, K: DYN_K, DOWN: DYN_DOWN, UP: DYN_UP, COOL: DYN_COOL };
+    setDyn(keep.on); ENG.setResScale(keep.k); dynSlow = dynFast = dynWait = 0; dynTry = 0; dynUpT = -1;   // 還回去
+    return { ...out, K: DYN_K, DOWN: DYN_DOWN, UP: DYN_UP, COOL: DYN_COOL, TRY: DYN_TRY };
   });
-  ok('動態解析度：顯示卡跟不上連續一小段才降、有餘裕才升回來、兩次切換之間有冷卻',
-     dyn.blip === 1 && dyn.down >= dyn.DOWN && dyn.down <= dyn.DOWN + 0.1 && Math.abs(dyn.ratio - dyn.K) < 1e-6 &&
-     dyn.notUp === dyn.K && dyn.up >= Math.max(dyn.UP, dyn.COOL) && dyn.up <= Math.max(dyn.UP, dyn.COOL) + 0.1 &&
-     dyn.reDown >= dyn.COOL && dyn.reDown <= dyn.COOL + 0.1,
-     '超過預算 ' + (dyn.DOWN - 0.1).toFixed(2) + ' 秒還是 ' + dyn.blip + ' 倍、' + dyn.down + ' 秒降到 ' + dyn.ratio +
-     ' 倍；換算回去不夠快 4 秒仍是 ' + dyn.notUp + '；有餘裕 ' + dyn.up + ' 秒升回、剛升回又變慢 ' + dyn.reDown + ' 秒才再降（冷卻 ' + dyn.COOL + '）');
+  const near = (v, w) => v >= w && v <= w + 0.1;
+  const upCool = Math.max(dyn.UP, dyn.COOL);
+  ok('動態解析度：跟不上連續一小段才降、畫布大小不動、有餘裕才試升、試升失敗一次比一次等久',
+     dyn.blip === 1 && near(dyn.down, dyn.DOWN) && dyn.canvas && dyn.notUp === dyn.K && near(dyn.up, dyn.UP) &&
+     near(dyn.fail1, dyn.COOL) && near(dyn.try1, dyn.TRY[0]) && near(dyn.try2, dyn.TRY[1]) &&
+     dyn.held === 1 && dyn.tryAfterHold === 0 && near(dyn.afterHold, upCool),
+     '超過預算 ' + (dyn.DOWN - 0.1).toFixed(2) + ' 秒還是 ' + dyn.blip + ' 倍、' + dyn.down + ' 秒降到 ' + dyn.K +
+     '（畫布不動 ' + dyn.canvas + '）；在邊緣 4 秒仍是 ' + dyn.notUp + '、有餘裕 ' + dyn.up + ' 秒試升；試升失敗 ' + dyn.fail1 +
+     ' 秒降回，下一次等 ' + dyn.try1 + ' 秒、再下一次 ' + dyn.try2 + ' 秒；撐過之後歸零（' + dyn.tryAfterHold + '），再降之後 ' + dyn.afterHold + ' 秒試升');
   ok('動態解析度：量不到顯示卡時間就不動作，關掉立刻回原本',
      dyn.zero === 1 && dyn.offNow === 1 && dyn.offStay === 1,
      '量不到 3 秒後 ' + dyn.zero + ' 倍；關掉當下 ' + dyn.offNow + ' 倍、之後再慢 3 秒仍是 ' + dyn.offStay + ' 倍');
