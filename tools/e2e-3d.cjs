@@ -37857,78 +37857,121 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('取消勾選就跟著螢幕刷新率畫', capOff.every(r => Math.abs(r.fps - r.hz) <= 1),
      capOff.map(r => r.hz + 'Hz→' + r.fps).join('、'));
 
-  /* 動態解析度（v1.280.0，使用者：「測試爆裂魔法同時爆炸的效能 看會不會卡 會的話看能不能優化」→ 看過預覽選「落地」、
-     高解析螢幕「照顯示卡時間自動決定」、「加開關 預設開」）。規則型：測試用的 SwiftShader 量不到顯示卡時間，
-     所以不跑主迴圈，直接拿假的顯示卡毫秒數一拍一拍餵 dynStep（同上面〈鎖 60〉餵假時間戳），期望值全讀常數：
-     ① 超過 DYN_BUDGET 要連續 DYN_DOWN 秒才降（短短一下不降）② 降到 DYN_K，**畫布大小不動**（v1.280.0 改成畫到
-     事先配好的低解析畫布再貼回去，切換那一下才不會頓——直接改畫布 pixelRatio 那一版，最忙的時候那一行要等 40～313ms）
-     ③ 降著但還在預算邊緣（≥ DYN_QUIET）不試升；低於 DYN_QUIET 連續 DYN_UP 秒才試升
-     ④ 試升上來又跟不上 → 降回去，下一次試升等 DYN_TRY（2、4…一路加倍）；升回去撐過 DYN_HOLD 秒就歸零、回到一般的冷卻
-     ⑤ 量不到（0）就不動 ⑥ 關掉立刻回原本、之後再慢也不降。量完全部還回去。 */
+  /* 跟不上時降畫質（v1.280.0 動態解析度，使用者：「測試爆裂魔法同時爆炸的效能 看會不會卡 會的話看能不能優化」；
+     v1.281.0 加「跟不上時關抗鋸齒」「降了就不升回去」，使用者：開關「兩格，各自開關」、升回去「兩種都做，小窗裡選」、
+     「要動態的話切換一樣不要有卡頓」）。規則型：測試用的 SwiftShader 量不到顯示卡時間，所以不跑主迴圈，
+     直接拿假的顯示卡毫秒數一拍一拍餵 dynStep（同上面〈鎖 60〉餵假時間戳），偷量的結果也是餵的
+     （ENG.probe 換成只記參數；真的顯示卡上偷量那幾幀不頓是探針量的，見 開發筆記〈跟不上時先關抗鋸齒、升回去改成分幀偷量（v1.281.0）〉）。
+     期望值全讀常數：
+     ① 兩格決定排哪幾級：都開＝原尺寸不取樣→DYN_K 倍不取樣；只開關抗鋸齒＝原尺寸不取樣；只開動態解析度＝DYN_K 倍 4 次；都關＝沒有
+     ② 超過 DYN_BUDGET 要連續 DYN_DOWN 秒才降（短短一下不降）③ 降到第 1 級，引擎真的換了那一種、**畫布大小不動**
+     ④ 還跟不上，冷卻 DYN_COOL 秒之後再降一級，到底就停 ⑤ 在預算邊緣（≥ DYN_QUIET）不偷量
+     ⑥ 有餘裕連續 DYN_UP 秒才請引擎偷量**上一級**（參數：上一級、這一幀剩下的預算、預算九成），量著的時候不重複請、也不換級
+     ⑦ 偷量說不夠：不升，過 DYN_PROBE 秒再量 ⑧ 夠：當場升一級
+     ⑨ 升上來 DYN_HOLD 秒內又跟不上 → 降回去，下一次偷量等 DYN_TRY（2、4…一路加倍）；撐過 DYN_HOLD 就歸零
+     ⑩ 引擎那一輪作廢了（沒結果、也不在量了）→ 過 DYN_PROBE 秒重量 ⑪ 「降了就不升回去」：照樣降，但永遠不偷量
+     ⑫ 開場／改設定之後頭 DYN_WARM 秒不算 ⑬ 量不到（0）就不動；三格關掉立刻回原本、之後再慢也不降。量完全部還回去。 */
   const dyn = await page.evaluate(() => {
-    const keep = { on: dynOn, k: ENG.resScale };
+    const keep = { aa: pref.aa, dyn: pref.dyn, once: pref.once }, probe0 = ENG.probe;
+    const calls = [];
+    ENG.probe = function () { calls.push([...arguments]); };
     const r = ENG.three.renderer, gl = r.getContext(), pr0 = r.getPixelRatio(), cw0 = gl.drawingBufferWidth;
-    const reset = () => { setDyn(true); ENG.setResScale(1); dynSlow = dynFast = dynWait = 0; dynTry = 0; dynUpT = -1; };
-    const feed = (gpu, sec) => { let t = 0; while (t < sec - 1e-9) { dynStep(0.05, gpu); t += 0.05; } };
-    const until = (gpu, want, max) => { let t = 0; while (ENG.resScale !== want && t < max) { dynStep(0.05, gpu); t += 0.05; } return +t.toFixed(2); };
-    const slow = DYN_BUDGET + 3, out = {};
-    reset();
-    feed(slow, DYN_DOWN - 0.1); out.blip = ENG.resScale;                 // ① 短短一下
-    reset();
-    out.down = until(slow, DYN_K, 5);                                    // ②
+    /* SwiftShader 量不到顯示卡時間，setDyn 不會配那幾張畫布——這裡自己配，「引擎真的換了」那一條才量得到 */
+    const reset = (aa, res, once) => { setDyn(aa, res, once); ENG.prepareLows(dynLevels); dynWarm = 0; calls.length = 0; };
+    const tick = (gpu, pr) => dynStep(0.05, gpu, pr || null, dynProbing && !pr);   // 請了偷量、還沒餵結果＝引擎還在量
+    const feed = (gpu, sec) => { let t = 0; while (t < sec - 1e-9) { tick(gpu); t += 0.05; } };
+    const until = (gpu, cond, max) => { let t = 0; while (!cond() && t < max) { tick(gpu); t += 0.05; } return +t.toFixed(2); };
+    const slow = DYN_BUDGET + 3, edge = DYN_BUDGET * (DYN_QUIET + 1) / 2, out = {};
+    out.lv = [[true, true], [true, false], [false, true], [false, false]].map(([a, b]) => { setDyn(a, b, false); return JSON.stringify(dynLevels); });
+    reset(true, true, false); feed(slow, DYN_DOWN - 0.1); out.blip = dynLvl;                         // ② 短短一下
+    reset(true, true, false);
+    out.down1 = until(slow, () => dynLvl === 1, 5); out.low1 = ENG.low;                               // ③
     out.canvas = r.getPixelRatio() === pr0 && gl.drawingBufferWidth === cw0;
-    feed(DYN_BUDGET * (DYN_QUIET + 1) / 2, 4); out.notUp = ENG.resScale;  // ③ 在邊緣
-    out.up = until(1, 1, 6);                                             // ③ 有餘裕（冷卻早就過了）
-    /* ④ 試升上來又跟不上：等冷卻過了降回去，算失敗一次 */
-    out.fail1 = until(slow, DYN_K, 6);
-    out.try1 = until(1, 1, 12);                                          // 下一次試升等 DYN_TRY[0]
-    until(slow, DYN_K, 6);
-    out.try2 = until(1, 1, 12);                                          // 再失敗一次，等 DYN_TRY[1]
-    feed(1, DYN_HOLD + 0.2); out.held = ENG.resScale; out.tryAfterHold = dynTry;   // 撐過 DYN_HOLD：成功、歸零
-    until(slow, DYN_K, 6);
-    out.afterHold = until(1, 1, 12);                                     // 回到一般的冷卻
-    /* ⑤ 量不到 */
-    reset(); feed(0, 3); out.zero = ENG.resScale;
-    /* ⑥ 關掉 */
-    reset(); until(slow, DYN_K, 5); setDyn(false); out.offNow = ENG.resScale; feed(slow, 3); out.offStay = ENG.resScale;
-    setDyn(keep.on); ENG.setResScale(keep.k); dynSlow = dynFast = dynWait = 0; dynTry = 0; dynUpT = -1;   // 還回去
-    return { ...out, K: DYN_K, DOWN: DYN_DOWN, UP: DYN_UP, COOL: DYN_COOL, TRY: DYN_TRY };
+    out.down2 = until(slow, () => dynLvl === 2, 5); out.low2 = ENG.low;                               // ④
+    feed(slow, 3); out.stayMax = dynLvl;
+    feed(edge, 4); out.edgeCalls = calls.length;                                                    // ⑤
+    out.probeAt = until(1, () => calls.length > 0, 5); out.args = calls[0];                          // ⑥
+    feed(1, 2); out.oneProbe = calls.length; out.lvWhile = dynLvl;
+    tick(1, { ms: DYN_BUDGET }); out.lvNo = dynLvl;                                                  // ⑦
+    out.nextAt = until(1, () => calls.length > 1, 5);
+    tick(1, { ms: 1 }); out.lvYes = dynLvl; out.lowYes = ENG.low;                                    // ⑧
+    out.fail1 = until(slow, () => dynLvl === 2, 5);                                                  // ⑨ 升上來又掉
+    calls.length = 0; out.try1 = until(1, () => calls.length > 0, 12);
+    tick(1, { ms: 1 }); until(slow, () => dynLvl === 2, 5);
+    calls.length = 0; out.try2 = until(1, () => calls.length > 0, 12);
+    tick(1, { ms: 1 }); feed(1, DYN_HOLD + 0.2); out.held = dynLvl; out.tryAfterHold = dynTry;
+    until(slow, () => dynLvl === 2, 5);
+    calls.length = 0; out.afterHold = until(1, () => calls.length > 0, 12);
+    dynStep(0.05, 1, null, false); out.dropped = dynProbing;                                         // ⑩
+    calls.length = 0; out.redo = until(1, () => calls.length > 0, 5);
+    reset(true, true, true);                                                                        // ⑪
+    until(slow, () => dynLvl === 1, 5); feed(1, 10); out.onceCalls = calls.length; out.onceLvl = dynLvl;
+    out.onceDown = until(slow, () => dynLvl === 2, 5);
+    setDyn(true, true, false); ENG.prepareLows(dynLevels);                                          // ⑫ 不清 dynWarm
+    feed(slow, DYN_WARM - 0.1); out.warmLvl = dynLvl; out.warmDown = until(slow, () => dynLvl === 1, 5);
+    reset(true, true, false); feed(0, 3); out.zero = dynLvl;                                         // ⑬
+    reset(true, true, false); until(slow, () => dynLvl === 1, 5);
+    setDyn(false, false, false); out.offNow = [dynLvl, ENG.low]; feed(slow, 3); out.offStay = dynLvl;
+    ENG.probe = probe0; setDyn(keep.aa, keep.dyn, keep.once);                                      // 還回去
+    return { ...out, K: DYN_K, BUDGET: DYN_BUDGET, QUIET: DYN_QUIET, DOWN: DYN_DOWN, UP: DYN_UP, COOL: DYN_COOL,
+             TRY: DYN_TRY, PROBE: DYN_PROBE, WARM: DYN_WARM };
   });
   const near = (v, w) => v >= w && v <= w + 0.1;
   const upCool = Math.max(dyn.UP, dyn.COOL);
-  ok('動態解析度：跟不上連續一小段才降、畫布大小不動、有餘裕才試升、試升失敗一次比一次等久',
-     dyn.blip === 1 && near(dyn.down, dyn.DOWN) && dyn.canvas && dyn.notUp === dyn.K && near(dyn.up, dyn.UP) &&
-     near(dyn.fail1, dyn.COOL) && near(dyn.try1, dyn.TRY[0]) && near(dyn.try2, dyn.TRY[1]) &&
-     dyn.held === 1 && dyn.tryAfterHold === 0 && near(dyn.afterHold, upCool),
-     '超過預算 ' + (dyn.DOWN - 0.1).toFixed(2) + ' 秒還是 ' + dyn.blip + ' 倍、' + dyn.down + ' 秒降到 ' + dyn.K +
-     '（畫布不動 ' + dyn.canvas + '）；在邊緣 4 秒仍是 ' + dyn.notUp + '、有餘裕 ' + dyn.up + ' 秒試升；試升失敗 ' + dyn.fail1 +
-     ' 秒降回，下一次等 ' + dyn.try1 + ' 秒、再下一次 ' + dyn.try2 + ' 秒；撐過之後歸零（' + dyn.tryAfterHold + '），再降之後 ' + dyn.afterHold + ' 秒試升');
-  ok('動態解析度：量不到顯示卡時間就不動作，關掉立刻回原本',
-     dyn.zero === 1 && dyn.offNow === 1 && dyn.offStay === 1,
-     '量不到 3 秒後 ' + dyn.zero + ' 倍；關掉當下 ' + dyn.offNow + ' 倍、之後再慢 3 秒仍是 ' + dyn.offStay + ' 倍');
+  const lvWant = [[{ k: 1, s: 0 }, { k: dyn.K, s: 0 }], [{ k: 1, s: 0 }], [{ k: dyn.K, s: 4 }], []].map(a => JSON.stringify(a));
+  ok('跟不上時降畫質：兩格決定排哪幾級，跟不上連續一小段才降、一級一級往下、畫布大小不動',
+     dyn.lv.every((v, i) => v === lvWant[i]) && dyn.blip === 0 && near(dyn.down1, dyn.DOWN) && dyn.low1 === 0 && dyn.canvas &&
+     near(dyn.down2, dyn.COOL) && dyn.low2 === 1 && dyn.stayMax === 2,
+     '排法 ' + dyn.lv.join('／') + '；超過預算 ' + (dyn.DOWN - 0.1).toFixed(2) + ' 秒還是第 ' + dyn.blip + ' 級、' + dyn.down1 +
+     ' 秒降到第 1 級（引擎第 ' + dyn.low1 + ' 種、畫布不動 ' + dyn.canvas + '）、再 ' + dyn.down2 + ' 秒第 2 級，到底停在 ' + dyn.stayMax);
+  ok('跟不上時降畫質：升回去靠分幀偷量——有餘裕才偷量上一級、量著不重複、不夠就過一陣子再量、夠了才升',
+     dyn.edgeCalls === 0 && near(dyn.probeAt, dyn.UP) && dyn.args[0] === 0 && Math.abs(dyn.args[1] - (dyn.BUDGET - 1)) < 1e-9 &&
+     Math.abs(dyn.args[2] - dyn.BUDGET * dyn.QUIET) < 1e-9 && dyn.oneProbe === 1 && dyn.lvWhile === 2 &&
+     dyn.lvNo === 2 && near(dyn.nextAt, dyn.PROBE) && dyn.lvYes === 1 && dyn.lowYes === 0 &&
+     dyn.dropped === false && near(dyn.redo, dyn.PROBE),
+     '在邊緣 4 秒偷量 ' + dyn.edgeCalls + ' 次；有餘裕 ' + dyn.probeAt + ' 秒請偷量（上一級＝引擎第 ' + dyn.args[0] + ' 種、一條最多 ' +
+     dyn.args[1].toFixed(2) + 'ms、估超過 ' + dyn.args[2].toFixed(2) + ' 就停）、量著 2 秒共請 ' + dyn.oneProbe + ' 次；說不夠還在第 ' + dyn.lvNo +
+     ' 級、' + dyn.nextAt + ' 秒後再量；說夠當場到第 ' + dyn.lvYes + ' 級；引擎作廢那一輪之後 ' + dyn.redo + ' 秒重量');
+  ok('跟不上時降畫質：升上來又掉一次比一次等久、撐過就歸零；降了就不升回去只降不量；開場頭幾秒不算',
+     near(dyn.fail1, dyn.COOL) && near(dyn.try1, dyn.TRY[0]) && near(dyn.try2, dyn.TRY[1]) && dyn.held === 1 &&
+     dyn.tryAfterHold === 0 && near(dyn.afterHold, upCool) &&
+     dyn.onceCalls === 0 && dyn.onceLvl === 1 && near(dyn.onceDown, dyn.DOWN) &&
+     dyn.warmLvl === 0 && dyn.warmDown >= dyn.DOWN && dyn.warmDown <= dyn.DOWN + 0.25,   // 剩下那 0.1 秒＋DYN_DOWN（各差一拍）
+     '升上來 ' + dyn.fail1 + ' 秒又掉，下一次偷量等 ' + dyn.try1 + ' 秒、再下一次 ' + dyn.try2 + ' 秒；撐過之後歸零（' + dyn.tryAfterHold +
+     '），再掉之後 ' + dyn.afterHold + ' 秒偷量；不升回去：有餘裕 10 秒偷量 ' + dyn.onceCalls + ' 次、停在第 ' + dyn.onceLvl + ' 級、照樣再降（' +
+     dyn.onceDown + ' 秒）；開場 ' + (dyn.WARM - 0.1).toFixed(1) + ' 秒內一直超過預算還是第 ' + dyn.warmLvl + ' 級、之後 ' + dyn.warmDown + ' 秒才降');
+  ok('跟不上時降畫質：量不到顯示卡時間就不動作，三格關掉立刻回原本',
+     dyn.zero === 0 && dyn.offNow[0] === 0 && dyn.offNow[1] === -1 && dyn.offStay === 0,
+     '量不到 3 秒後第 ' + dyn.zero + ' 級；關掉當下第 ' + dyn.offNow[0] + ' 級（引擎 ' + dyn.offNow[1] + '）、之後再慢 3 秒仍是第 ' + dyn.offStay + ' 級');
 
-  /* 畫面設定小窗（v1.280.0，使用者：「把跟畫面相關的設定 在設定中點選後加個獨立窗來設定」，看過預覽「可以」）：
-     鎖 60fps、積木 AO、動態解析度三格在小窗裡，左下面板那一排只剩自轉、靜音；按鈕開、關閉收；
-     動態解析度預設開，取消勾選會寫回 pref。點的是元素本身（element.click／change 事件），量完還回去。 */
+  /* 畫面設定小窗（v1.280.0，使用者：「把跟畫面相關的設定 在設定中點選後加個獨立窗來設定」，看過預覽「可以」；
+     v1.281.0 加「跟不上時關抗鋸齒」「降了就不升回去」兩格）：五格在小窗裡，左下面板那一排只剩自轉、靜音；按鈕開、關閉收；
+     預設關抗鋸齒與動態解析度開、不升回去不勾；每一格改了都寫回 pref、重排那幾級。點的是元素本身（change 事件），量完還回去。 */
   const disp = await page.evaluate(() => {
-    const $ = id => document.getElementById(id), keep = pref.dyn;
-    const inBox = ['cap60', 'aoOn', 'dynRes'].every(id => $('dispBox').contains($(id)));
+    const $ = id => document.getElementById(id), keep = { aa: pref.aa, dyn: pref.dyn, once: pref.once };
+    const inBox = ['cap60', 'aoOn', 'aaDyn', 'dynRes', 'dynOnce'].every(id => $('dispBox').contains($(id)));
     const panelChecks = [...$('panel').querySelectorAll('input[type=checkbox]')].map(i => i.id);
     $('dispBtn').click();
     const opened = $('dispWrap').classList.contains('on');
     $('dispClose').click();
     const closed = !$('dispWrap').classList.contains('on');
-    const dr = $('dynRes');
-    dr.checked = false; dr.dispatchEvent(new Event('change', { bubbles: true }));
-    const off = { pref: pref.dyn, on: dynOn };
-    dr.checked = keep; dr.dispatchEvent(new Event('change', { bubbles: true }));
-    return { inBox, panelChecks, opened, closed, fresh: freshPref().dyn, off, back: pref.dyn === keep };
+    const set = (id, v) => { $(id).checked = v; $(id).dispatchEvent(new Event('change', { bubbles: true })); };
+    set('aaDyn', true); set('dynRes', true); set('dynOnce', false);
+    set('aaDyn', false); const aaOff = { pref: pref.aa, lv: JSON.stringify(dynLevels) }; set('aaDyn', true);
+    set('dynRes', false); const resOff = { pref: pref.dyn, lv: JSON.stringify(dynLevels) }; set('dynRes', true);
+    set('dynOnce', true); const onceOn = { pref: pref.once, once: dynOnce }; set('dynOnce', false);
+    set('aaDyn', keep.aa); set('dynRes', keep.dyn); set('dynOnce', keep.once);
+    const fp = freshPref();
+    return { inBox, panelChecks, opened, closed, fresh: [fp.aa, fp.dyn, fp.once], aaOff, resOff, onceOn, K: DYN_K,
+             back: pref.aa === keep.aa && pref.dyn === keep.dyn && pref.once === keep.once };
   });
-  ok('畫面設定小窗：鎖 60fps、積木 AO、動態解析度在小窗裡，按鈕開、關閉收，動態解析度預設開',
+  ok('畫面設定小窗：鎖 60fps、積木 AO、跟不上時降畫質三格在小窗裡，按鈕開、關閉收，預設與勾選都寫回 pref',
      disp.inBox && disp.panelChecks.join() === 'spin,mute' && disp.opened && disp.closed &&
-     disp.fresh === true && disp.off.pref === false && disp.off.on === false && disp.back,
-     '三格在小窗裡 ' + disp.inBox + '、面板剩 ' + disp.panelChecks.join('／') + '；開 ' + disp.opened + '、收 ' + disp.closed +
-     '；預設 ' + disp.fresh + '、取消勾選後 pref.dyn=' + disp.off.pref);
+     disp.fresh.join() === 'true,true,false' && disp.aaOff.pref === false && disp.aaOff.lv === JSON.stringify([{ k: disp.K, s: 4 }]) &&
+     disp.resOff.pref === false && disp.resOff.lv === JSON.stringify([{ k: 1, s: 0 }]) && disp.onceOn.pref === true && disp.onceOn.once === true && disp.back,
+     '五格在小窗裡 ' + disp.inBox + '、面板剩 ' + disp.panelChecks.join('／') + '；開 ' + disp.opened + '、收 ' + disp.closed +
+     '；預設（關抗鋸齒／動態解析度／不升回去）' + disp.fresh.join('／') + '；取消關抗鋸齒 → ' + disp.aaOff.lv + '、取消動態解析度 → ' + disp.resOff.lv +
+     '、勾不升回去 → ' + disp.onceOn.once);
 
   /* 「每幀乘一次」的阻尼照 dt 換算（v1.244.0，使用者：「要改」）。規則型：同一顆粒子、同一塊碎料，
      用 30／60／120／144fps 的 dt 各推兩秒，看走多遠。改之前走的距離跟幀率成反比——探針實測

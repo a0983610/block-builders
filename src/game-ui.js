@@ -41,60 +41,90 @@ function shakeTrees(p, R) {
   }
 }
 
-/* ── 動態解析度（v1.280.0，見 開發筆記〈三個爆裂魔法同時炸卡在顯示卡：動態解析度、畫面設定小窗（v1.280.0）〉）──
-   顯示卡一幀超過 DYN_BUDGET 連續 DYN_DOWN 秒 → 渲染解析度降到 DYN_K 倍；降著的時候顯示卡低於預算的 DYN_QUIET
-   連續 DYN_UP 秒 → **試著升回去**：原本解析度還是跟不上的話照上一條再降回來，下一次試升等 DYN_TRY 那一串
-   （2、4、8、16 秒一路加倍，免得在邊緣來回試）；升回去之後撐過 DYN_HOLD 秒就算成功、加倍歸零。
-   兩次切換至少隔 DYN_COOL 秒。切換本身不重配任何東西（畫布大小不動，低解析那一張事先配好，見 engine.js 的 prepareRes），
-   所以試一下是便宜的。
-   **為什麼是「試」不是「猜」**：v1.280.0 第一版拿「0.75 倍的時間 ÷ 0.75²」猜原本要多久，但這筆不全跟像素數成正比
-   （陰影那一趟、貼回畫布那一下是固定的）——猜得太高：dpr 2 閒晃原本只要 10.9ms（預算內），0.75 倍走小畫布 11.9ms，
-   ÷ 0.5625 猜成 21ms，就永遠停在又糊、又沒比較快的那一檔。
+/* ── 跟不上時降畫質（v1.280.0 動態解析度，見 開發筆記〈三個爆裂魔法同時炸卡在顯示卡：動態解析度、畫面設定小窗（v1.280.0）〉；
+   v1.281.0 加「跟不上時關抗鋸齒」「降了就不升回去」，見 開發筆記〈跟不上時先關抗鋸齒、升回去改成分幀偷量（v1.281.0）〉）──
+   畫面設定那兩格決定降下去有哪幾級（dynLevels，{k 倍解析度, s 次取樣}，一級一級往下）：
+     兩格都開：關抗鋸齒（1 倍 0 次）→ 還跟不上再 0.75 倍（0.75 倍 0 次）
+     只開「跟不上時關抗鋸齒」：1 倍 0 次；只開「動態解析度」：0.75 倍 4 次（v1.280.0 那一種）
+   貴的是抗鋸齒疊在幾十層半透明上，不是解析度（三個陣一起炸最重那一幀 44ms：0.75 倍保留抗鋸齒 29、原尺寸關抗鋸齒 5.2），所以關抗鋸齒排第一級。
+   顯示卡一幀超過 DYN_BUDGET 連續 DYN_DOWN 秒 → 往下一級；兩次切換至少隔 DYN_COOL 秒。
+   切換本身不重配任何東西（畫布大小不動，每一級的畫布事先配好，見 engine.js 的 prepareLows）。
+   **升回去是「分幀偷量」，不是切回去試**（使用者：「要動態的話切換一樣不要有卡頓」）：降著的時候顯示卡低於預算的 DYN_QUIET 連續 DYN_UP 秒，
+   就請引擎每一幀偷畫一條上一級的畫面量時間（engine.js 的 probe），量完一整張估出來低於預算九成才升，不夠就過 DYN_PROBE 秒再量。
+   v1.280.1 是真的切回去試——關了抗鋸齒之後降著那一級太便宜（9ms）看起來很有餘裕，會在爆炸中途切回 44ms 那一種、卡一幀 111ms。
+   升上去 DYN_HOLD 秒內又掉下來（估錯了）＝失敗一次，下一次偷量等 DYN_TRY 那一串（2、4、8、16 秒）；撐過就歸零。
+   「降了就不升回去」（pref.once）勾著就不偷量、只會往下（使用者：「也可以是不要動態只要一量到需要降 就降低然後不用升回去」），
+   重新勾選畫面設定那幾格（setDyn）才回到原本。
+   開場（還有改了那幾格之後）頭 DYN_WARM 秒不算：第一次開頁那一秒顯示卡在暖機（實測 0.75 秒時 32.8ms、1.25 秒才回到 11），
+   不跳過的話一開場就被判成跟不上——動態的話兩秒後偷量會升回來，「降了就不升回去」就一直卡在降著的樣子。
+   **不用猜的**：v1.280.0 第一版拿「0.75 倍的時間 ÷ 0.75²」猜原本要多久，猜得太高（陰影、貼回畫布那一下是固定的），
+   dpr 2 永遠停在又糊又沒變快的那一檔；關抗鋸齒差的倍數更是隨場面在變（閒晃幾乎 1 倍、爆炸 8 倍），只能量。
    量的是顯示卡時間不是幀距（理由見 engine.js 的 render）；瀏覽器量不到（gpuMs 一直是 0）就整個不動作——
    只看幀距的話鎖 60 開著時分不出有沒有餘裕，會降下去升不回來、或來回切換一直頓。
-   高解析螢幕一樣照顯示卡時間決定（使用者選的）：原本解析度就跟不上的顯示卡，試升會一直失敗、停在降過的那一檔。 */
+   高解析螢幕一樣照顯示卡時間決定（使用者選的）：原本就跟不上的顯示卡，偷量會一直說不夠、停在降過的那一級。 */
 const DYN_K = 0.75;
 const DYN_BUDGET = 1000 / 60 - 2.5;   // 鎖 60 的一幀扣掉 CPU 那一段（step＋draw 平常 1～3.5ms）
-const DYN_DOWN = 0.25, DYN_UP = 1.5, DYN_COOL = 1.5, DYN_QUIET = 0.9, DYN_HOLD = 3;
+const DYN_DOWN = 0.25, DYN_UP = 1.5, DYN_COOL = 1.5, DYN_QUIET = 0.9, DYN_HOLD = 3, DYN_PROBE = 2, DYN_WARM = 3;
 const DYN_TRY = [2, 4, 8, 16];
-let dynOn = true;                     // 畫面設定那一格（pref.dyn）
-let dynSlow = 0, dynFast = 0, dynWait = 0;
-let dynTry = 0, dynUpT = -1;          // 試升連續失敗幾次；升回去之後過了幾秒（-1＝不是剛試升上來的）
-function setDyn(on) {
-  dynOn = on;
-  ENG.gpuTiming(on);
-  if (!on) ENG.setResScale(1);
-  /* 低解析那一張畫布開著就先配好，切換那一下才不必當場配（見 engine.js 的 prepareRes）；量不到顯示卡時間的不配，反正不會降 */
-  ENG.prepareRes(on && ENG.gpuSupported ? DYN_K : 0);
-  dynSlow = dynFast = 0; dynTry = 0; dynUpT = -1;
+let dynLevels = [];                   // 降下去有哪幾級（不含原本那一級），照畫面設定那兩格排
+let dynLvl = 0;                       // 現在第幾級（0＝原本）
+let dynOnce = false;                  // 降了就不升回去（pref.once）
+let dynSlow = 0, dynFast = 0, dynWait = 0, dynNext = 0;   // dynWait＝切換的冷卻；dynNext＝離下一次偷量還有幾秒
+let dynWarm = 0;                      // 開場／改設定之後還有幾秒不算（DYN_WARM）
+let dynTry = 0, dynUpT = -1, dynProbing = false;          // 升上來又掉連續幾次；升上來之後過了幾秒（-1＝不是剛升上來的）；在等偷量
+/* 畫面設定那三格（pref.aa／pref.dyn／pref.once）改了就重排、回到原本那一級 */
+function setDyn(aa, res, once) {
+  dynLevels = [];
+  if (aa) dynLevels.push({ k: 1, s: 0 });
+  if (res) dynLevels.push({ k: DYN_K, s: aa ? 0 : 4 });
+  dynOnce = !!once;
+  ENG.gpuTiming(dynLevels.length > 0);
+  /* 每一級的畫布開著就先配好，切換那一下才不必當場配（見 engine.js 的 prepareLows）；量不到顯示卡時間的不配，反正不會降 */
+  ENG.prepareLows(dynLevels.length && ENG.gpuSupported ? dynLevels : []);
+  ENG.setLow(-1);
+  dynLvl = 0; dynSlow = dynFast = dynWait = dynNext = 0; dynTry = 0; dynUpT = -1; dynProbing = false;
+  dynWarm = DYN_WARM;
 }
-/* 畫面設定小窗裡「動態解析度」底下那一行現況 */
+function dynGo(l) { dynLvl = l; ENG.setLow(l - 1); dynProbing = false; }
+/* 畫面設定小窗最底下那一行現況 */
 function dispStat() {
-  $('dispStat').textContent = !ENG.gpuSupported ? '這個瀏覽器量不到顯示卡時間，這一格不會動作'
-    : !dynOn ? '關著'
-    : '現在：' + (ENG.resScale < 1 ? '降到 ' + DYN_K + ' 倍' : '原本解析度') + '（顯示卡一幀 ' + ENG.gpuMs.toFixed(1) + 'ms）';
+  const L = dynLevels[dynLvl - 1];
+  $('dispStat').textContent = !ENG.gpuSupported ? '這個瀏覽器量不到顯示卡時間，這幾格不會動作'
+    : !dynLevels.length ? '關著'
+    : '現在：' + (!L ? '原本畫質' : [L.s ? '' : '關掉抗鋸齒', L.k < 1 ? '降到 ' + L.k + ' 倍' : ''].filter(Boolean).join('＋')) +
+      '（顯示卡一幀 ' + ENG.gpuMs.toFixed(1) + 'ms）' + (dynOnce && dynLvl ? '，不會升回去' : '');
 }
-/* 一幀的判斷。拆成一支吃 (dt, 顯示卡毫秒) 的函式：測試用的 SwiftShader 量不到顯示卡時間，
-   規則要靠直接餵數字驗（同〈鎖 60〉那條餵假時間戳）。 */
-function dynStep(dt, gpu) {
+/* 一幀的判斷。拆成一支吃 (dt, 顯示卡毫秒, 偷量結果, 是不是還在偷量) 的函式：測試用的 SwiftShader 量不到顯示卡時間，
+   規則要靠直接餵數字驗（同〈鎖 60〉那條餵假時間戳）。pr 是 engine.js 的 takeProbe：null＝這一幀沒有結果，{ms}＝估計上一級要多久 */
+function dynStep(dt, gpu, pr, probing) {
   dynWait = Math.max(0, dynWait - dt);
-  if (!dynOn || !(gpu > 0)) { dynSlow = dynFast = 0; return; }
-  const k = ENG.resScale;
-  if (k === 1 && dynUpT >= 0) {
+  dynNext = Math.max(0, dynNext - dt);
+  dynWarm = Math.max(0, dynWarm - dt);
+  const max = dynLevels.length;
+  if (!max || !(gpu > 0) || dynWarm > 0) { dynSlow = dynFast = 0; return; }
+  if (dynUpT >= 0) {
     dynUpT += dt;
-    if (dynUpT > DYN_HOLD) { dynUpT = -1; dynTry = 0; }       // 試升成功：撐過 DYN_HOLD 秒，加倍歸零
+    if (dynUpT > DYN_HOLD) { dynUpT = -1; dynTry = 0; }       // 升上來撐過 DYN_HOLD 秒：估得對，歸零
   }
   if (gpu > DYN_BUDGET) { dynSlow += dt; dynFast = 0; }
   else if (gpu < DYN_BUDGET * DYN_QUIET) { dynFast += dt; dynSlow = 0; }
   else { dynSlow = dynFast = 0; }
+  if (dynProbing) {
+    if (pr) {
+      dynProbing = false;
+      if (pr.ms < DYN_BUDGET * DYN_QUIET && dynWait <= 0) { dynGo(dynLvl - 1); dynUpT = 0; dynWait = DYN_COOL; dynFast = 0; return; }
+      dynNext = DYN_PROBE;                                      // 不夠：過一陣子再量
+    } else if (!probing) { dynProbing = false; dynNext = DYN_PROBE; }   // 引擎那一輪作廢了（被打斷、換級）
+  }
   if (dynWait > 0) return;
-  if (k === 1 && dynSlow > DYN_DOWN) {
-    ENG.setResScale(DYN_K); dynSlow = 0;
-    /* 剛試升上來又跟不上＝這一次試失敗：下一次試升等久一點 */
-    if (dynUpT >= 0) { dynWait = DYN_TRY[Math.min(dynTry, DYN_TRY.length - 1)]; dynTry++; dynUpT = -1; }
-    else dynWait = DYN_COOL;
-  } else if (k < 1 && dynFast > DYN_UP) {
-    ENG.setResScale(1); dynFast = 0; dynWait = DYN_COOL; dynUpT = 0;
+  if (dynSlow > DYN_DOWN && dynLvl < max) {
+    dynGo(dynLvl + 1); dynSlow = 0;
+    /* 剛升上來又跟不上＝估錯一次：下一次偷量等久一點 */
+    if (dynUpT >= 0) { dynNext = DYN_TRY[Math.min(dynTry, DYN_TRY.length - 1)]; dynTry++; dynUpT = -1; }
+    dynWait = DYN_COOL;
+  } else if (!dynOnce && dynLvl > 0 && !dynProbing && dynNext <= 0 && dynFast > DYN_UP) {
+    ENG.probe(dynLvl - 2, DYN_BUDGET - gpu, DYN_BUDGET * DYN_QUIET);   // 上一級：dynLvl − 1 級＝引擎的第 dynLvl − 2 種（−1＝畫布本身）
+    dynProbing = true;
   }
 }
 
@@ -121,7 +151,7 @@ function frame(now) {
   step(dt);
   draw();
   ENG.render();
-  dynStep(Math.min(0.1, raw), ENG.gpuMs);   // 動態解析度（v1.280.0）：照真的時間走，不吃時間倍率
+  dynStep(Math.min(0.1, raw), ENG.gpuMs, ENG.takeProbe(), ENG.probing);   // 跟不上時降畫質（v1.280.0／v1.281.0）：照真的時間走，不吃時間倍率
   hudTick(now);
 }
 
@@ -1242,7 +1272,9 @@ function boot() {
   /* 積木 AO（v1.273.0）。再打開時不必從頭算：關著那段時間 aoUpdate 沒跑，has 還是關之前看到的樣子，
      打開那一幀逐格一比，期間變過的格子自己就會被挑出來重算（換了一座或房子換了一份格子則整份重建） */
   $('aoOn').addEventListener('change', e => { aoOn = pref.ao = e.target.checked; save(); });
-  $('dynRes').addEventListener('change', e => { pref.dyn = e.target.checked; setDyn(pref.dyn); save(); dispStat(); });
+  /* 跟不上時降畫質那三格（v1.280.0 動態解析度；v1.281.0 加關抗鋸齒、降了就不升回去）：改哪一格都重排、回到原本那一級 */
+  for (const [id, k] of [['aaDyn', 'aa'], ['dynRes', 'dyn'], ['dynOnce', 'once']])
+    $(id).addEventListener('change', e => { pref[k] = e.target.checked; setDyn(pref.aa, pref.dyn, pref.once); save(); dispStat(); });
   /* 畫面設定小窗（v1.280.0，使用者：「把跟畫面相關的設定 在設定中點選後加個獨立窗來設定」）：
      鎖 60fps、積木 AO 從面板那一排搬進來，再加動態解析度。開合照快捷鍵那一頁；開著的時候每 0.3 秒更新一次現況 */
   let dispT = 0;

@@ -38,9 +38,10 @@ let stats = freshStats();
 /* rage＝破壞模式開著沒（v1.262.0，見 game-tools.js 的 rageN），預設關 */
 /* ao＝積木 AO 開著沒（v1.273.0，見 game-ui.js 的 aoOn），預設開 */
 /* dyn＝動態解析度開著沒（v1.280.0，見 game-ui.js 的 dynStep），預設開（使用者選的）；舊存檔沒有這一格，merge 自動補 true */
+/* aa＝跟不上時關抗鋸齒（v1.281.0），預設開；once＝降了就不升回去（v1.281.0），預設關。舊存檔一樣靠 merge 補 */
 const KEY_N = 9;
 const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
-                           keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, dyn: true, v: 1 });
+                           keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, dyn: true, aa: true, once: false, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -232,8 +233,10 @@ function applyPref() {
   $('spin').checked = pref.spin;
   $('cap60').checked = pref.cap;
   $('aoOn').checked = pref.ao;
+  $('aaDyn').checked = pref.aa;
   $('dynRes').checked = pref.dyn;
-  setDyn(pref.dyn);
+  $('dynOnce').checked = pref.once;
+  setDyn(pref.aa, pref.dyn, pref.once);
   syncHud();
   renderModes();
 }

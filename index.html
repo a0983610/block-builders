@@ -428,10 +428,16 @@
     <!-- 積木 AO（v1.273.0，預設開）：凹角、牆腳暗下來，見 game-ui.js 的 aoOn -->
     <div class="opt"><label><input type="checkbox" id="aoOn">
       <div><b>積木 AO</b><span>積木的凹角、牆腳暗下來，立體感比較好。關掉省一點效能。</span></div></label></div>
-    <!-- 動態解析度（v1.280.0，預設開）：見 game-ui.js 的 dynStep -->
+    <!-- 跟不上時降畫質那三格（v1.280.0 動態解析度；v1.281.0 加關抗鋸齒、降了就不升回去）：見 game-ui.js 的 dynStep -->
+    <div class="opt"><label><input type="checkbox" id="aaDyn">
+      <div><b>跟不上時關抗鋸齒</b><span>畫面跟不上 60fps 時（例如好幾個爆裂魔法一起炸），先把 3D 畫面的抗鋸齒關掉——這一步最省，
+        降的那幾秒積木、煙、圓環的邊緣會有一點鋸齒。</span></div></label></div>
     <div class="opt"><label><input type="checkbox" id="dynRes">
-      <div><b>動態解析度</b><span>畫面跟不上 60fps 時（例如好幾個爆裂魔法一起炸），自動把 3D 畫面的解析度降到 0.75 倍，順了再升回來。
-        降的那幾秒會稍微糊一點，文字與面板不受影響。</span><div id="dispStat"></div></div></label></div>
+      <div><b>動態解析度</b><span>還是跟不上就把 3D 畫面的解析度降到 0.75 倍，會稍微糊一點。文字與面板不受影響。</span></div></label></div>
+    <div class="opt"><label><input type="checkbox" id="dynOnce">
+      <div><b>降了就不升回去</b><span>勾著的話降下去就一直維持那個樣子，重新整理或改上面兩格才回來。
+        不勾的話順了會自己升回來：降著的時候每一幀偷偷用原本的畫質畫一小條、量多久，量完一整張夠快才升，不必切回去試。</span>
+        <div id="dispStat"></div></div></label></div>
     <div class="row">
       <button class="primary" id="dispClose">關閉</button>
     </div>

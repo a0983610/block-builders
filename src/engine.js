@@ -3466,7 +3466,7 @@ if (vAo.x + vAo.y > 0.5) {
     H = Math.max(1, window.innerHeight);
     renderer.setPixelRatio(basePR());
     renderer.setSize(W, H);          // 要讓 three 一併設 style 寬高，canvas 的內建尺寸靠不住
-    if (lowK) prepareRes(lowK);      // 動態解析度那一張跟著視窗重配（v1.280.0；拉視窗本來就會頓一下，不是切換那一下）
+    if (lows.length) prepareLows(lows);   // 降下去用的那幾張跟著視窗重配（v1.280.0；拉視窗本來就會頓一下，不是切換那一下）
     camera.aspect = W / H;
     camera.updateProjectionMatrix();
     // 取景距離跟畫面比例有關，轉向或拉視窗都要重算：不然直式轉橫式會空一大片，反過來會被切掉
@@ -10991,14 +10991,14 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
      卡的是顯示卡——半透明疊太多層的填色量（三個陣炸開後 0.5 秒單算圖 43ms，塵霧那一顆就吃 35）。
      看過預覽之後定案：跟不上 60fps 就把渲染解析度降到 0.75 倍、有餘裕再升回來（升降的判斷在 game-ui.js 的 dynStep），
      高解析螢幕也照顯示卡時間決定（平常就跟不上的話會一直停在 1.5 倍）。
-     這裡只管三件事：照 resScale 畫、事先把低解析那一張畫布配好、量每一幀顯示卡花多久。
+     這裡只管四件事：照 lowAt 畫、事先把降下去要用的那幾張畫布配好、量每一幀顯示卡花多久、分幀偷量上一級（v1.281.0）。
      **為什麼要量顯示卡、不看幀距**：鎖 60 開著的時候幀距永遠是 16.7ms，看不出還剩多少餘裕——預覽第一版只看幀距，
      降下去就升不回來。計時器一次只掛一個，結果幾幀之後才拿得到（非同步），所以不是每一幀都有一筆，平滑成 gpuMs 就夠用。
 
      **畫布大小永遠不動，降的時候畫到事先配好的低解析畫布（lowRT）再放大貼上**（使用者：「切換那一下會頓的問題也一起解掉」）。
      v1.280.0 第一版是直接改畫布的 pixelRatio：改畫布大小要先等顯示卡把排隊中那幾幀畫完、再重配整張（含 MSAA）緩衝，
      **越忙越慢**——實測 setPixelRatio 那一行本身閒晃 4～6ms、三個陣炸開後 40～85ms（dpr 2 是 110～313ms），
-     偏偏降解析度一定發生在最忙的那一刻。lowRT 開著動態解析度就先配好（prepareRes），切換只是「這一幀畫到哪一張」，沒有東西要重配
+     偏偏降解析度一定發生在最忙的那一刻。lowRT 開著動態解析度就先配好（prepareLows），切換只是「這一幀畫到哪一張」，沒有東西要重配
      （切換那一行 0～0.2ms，跨過切換的那一幀跟不切換分不出來）。代價：畫布一直是全尺寸，瀏覽器合成整張 4 次取樣畫布那一段沒縮小，
      降下去那幾秒比改畫布那一版少 3～7fps（dpr 1）。見 開發筆記〈動態解析度切換不頓：畫到事先配好的低解析畫布再貼回去（v1.280.1）〉。
      ① lowRT 標成 isXRRenderTarget、texture.colorSpace＝sRGB、internalFormat 強制 RGBA8：three 畫到一般 render target 時
@@ -11006,36 +11006,48 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
         標成 XR 的那一種 three 會照 texture.colorSpace 輸出（outputColorSpace 那一格）、MSAA 緩衝用 RGBA8 不讓硬體再轉一次
         ——跟畫到畫布是同一套算法，shader 的快取鍵也一樣，第一次切過去不必重編。打包的這一份 three 裡 isXRRenderTarget
         只牽動四處：輸出色彩空間、tone mapping（這裡沒開）、MSAA 緩衝的內部格式、XR 管理器自己設它，沒有碰 framebuffer 綁定。
-     ② MSAA 4 次取樣（同畫布的 antialias），不然降的那幾秒鋸齒會跑出來。
+     ② 取樣數照那一種畫法給：只開動態解析度的話是 4 次（同畫布的 antialias），開了「跟不上時關抗鋸齒」就是 0（見下一段）。
      ③ 貼回畫布用一片全螢幕的四邊形、不混色（NoBlending）連 alpha 一起照抄：畫布是透明的（天空是後面的 CSS），
-        混色的話天空那一片會被蓋暗。放大是 LinearFilter。 */
+        混色的話天空那一片會被蓋暗。放大是 LinearFilter。
+
+     **跟不上時關抗鋸齒（v1.281.0）**：三個陣一起炸那一幀貴的其實是**抗鋸齒（4 次取樣）疊在幾十層半透明上**，不是解析度——
+     同一幀原尺寸不取樣 44 → 5.2ms（0.75 倍保留取樣才到 29），高解析螢幕 0.75 倍不取樣 153 → 10.5。所以降下去可以用的畫法
+     不只一種（lows：{k 倍解析度, s 次取樣}），game-ui.js 照畫面設定那兩格排成一串、一級一級往下降，全部事先配好，切換照樣不頓。
+     **升回去改成「分幀偷量」（probe）**：關了抗鋸齒之後降著的那一幀太便宜（9ms），「有餘裕就切回去試」會在爆炸中途切回 44ms 的那一種、
+     實測卡了一幀 111ms（使用者：「要動態的話切換一樣不要有卡頓」）。改成降著的時候每一幀在畫完之後，用上一級的畫法偷畫畫面的
+     一條（1/PROBE_N 高）、單獨計時，PROBE_N 幀量完一整張才估上一級要多久：估計＝現在這一級的 gpuMs＋每一條扣掉固定成本之後的總和
+     （固定成本先拿一格 1×1 的量；這樣估會偏高一點——現在這一級自己的填色也算進去了——寧可晚升，不要升了又掉）。
+     上一級是畫布本身的話那一條就直接畫在畫布上（同一幀、同一個位置，顏色一樣，只是那一條有抗鋸齒，看不出來）；
+     是另一張 render target 的話就畫在那一張上，不會被看到。一條超過 head（這一幀剩下的預算）就當場放棄，偷量本身不會讓那一幀爆掉。 */
   const basePR = () => Math.min(2, window.devicePixelRatio || 1);
-  let resScale = 1;
   let gpuExt = null, gpuOn = false, gpuQ = null, gpuBusy = false, gpuMs = 0;
-  let lowRT = null, lowK = 0, blitScene = null, blitCam = null;
+  let lows = [], lowAt = -1, blitScene = null, blitCam = null;   // 降下去可以用的畫法 {k, s, rt}；lowAt＝現在用第幾種（−1＝直接畫到畫布）
   /* 四捨五入：k 趨近 1 時要剛好等於畫布大小——測試拿這個比「走 lowRT 那條路」跟直接畫逐像素一樣 */
   function lowSize(k) { return [Math.max(1, Math.round(W * basePR() * k)), Math.max(1, Math.round(H * basePR() * k))]; }
-  /* 先把 k 倍那一張配好（0＝收掉）。開著動態解析度、而且量得到顯示卡時間才配——高解析螢幕上這一張不小
-     （1600×900 的視窗、dpr 2、0.75 倍是 2400×1350 × 4 次取樣），用不到就不佔著。 */
-  function prepareRes(k) {
-    if (!k) {
-      if (lowRT) { lowRT.dispose(); lowRT = null; }
-      lowK = 0;
-      if (resScale < 1) resScale = 1;
-      return;
+  /* 先把降下去要用的那幾種畫法配好（modes 是 [{k 倍解析度, s 次取樣}]，空的＝全部收掉）。開著、而且量得到顯示卡時間才配——
+     高解析螢幕上這幾張不小（1600×900 的視窗、dpr 2：0.75 倍 4 次取樣約 117MB；原尺寸不取樣＋0.75 倍不取樣約 72MB），用不到就不佔著。
+     跟已經配好的一樣（拉視窗那一種）就只改大小，現在用哪一種不變。 */
+  function prepareLows(modes) {
+    probeStop();
+    const same = modes.length === lows.length && modes.every((m, i) => m.k === lows[i].k && m.s === lows[i].s);
+    if (!same) {
+      for (const L of lows) L.rt.dispose();
+      lows = modes.map(m => ({ k: m.k, s: m.s, rt: null }));
+      lowAt = -1;
     }
-    lowK = k;
-    const [w, h] = lowSize(k);
-    if (!lowRT) {
+    if (!lows.length) return;
+    for (const L of lows) {
+      const [w, h] = lowSize(L.k);
+      if (L.rt) { L.rt.setSize(w, h); continue; }
       /* resolveDepthBuffer／Stencil 關掉：three 每一幀畫完會把多重取樣的緩衝合成成一般的，預設連深度一起合成，
          而深度畫完就沒人用了——實測畫到這一張的成本 dpr 1 是 6.59 → 3.75ms、dpr 2 是 20.75 → 10.29ms（閒晃）。 */
-      lowRT = new T.WebGLRenderTarget(w, h, { samples: 4, type: T.UnsignedByteType, depthBuffer: true,
-                                              resolveDepthBuffer: false, resolveStencilBuffer: false,
-                                              minFilter: T.LinearFilter, magFilter: T.LinearFilter, generateMipmaps: false });
-      lowRT.isXRRenderTarget = true;                    // ①
-      lowRT.texture.colorSpace = T.SRGBColorSpace;
-      lowRT.texture.internalFormat = 'RGBA8';
-    } else lowRT.setSize(w, h);
+      L.rt = new T.WebGLRenderTarget(w, h, { samples: L.s, type: T.UnsignedByteType, depthBuffer: true,
+                                             resolveDepthBuffer: false, resolveStencilBuffer: false,
+                                             minFilter: T.LinearFilter, magFilter: T.LinearFilter, generateMipmaps: false });
+      L.rt.isXRRenderTarget = true;                     // ①
+      L.rt.texture.colorSpace = T.SRGBColorSpace;
+      L.rt.texture.internalFormat = 'RGBA8';
+    }
     if (!blitScene) {
       const mat = new T.ShaderMaterial({
         uniforms: { map: { value: null } },
@@ -11050,37 +11062,98 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     }
     /* 緩衝與貼回去那一支 shader 都現在就準備好，第一次切過去才不會在那一幀才配、才編。
        光 initRenderTarget＋compile 不夠：dpr 2 第一次切過去那一幀實測還是 165ms（之後都正常）——
-       驅動要等第一次真的畫到才配那一大張、shader 也是第一次真的畫才編完。所以這裡真的清一次 lowRT，
+       驅動要等第一次真的畫到才配那一大張、shader 也是第一次真的畫才編完。所以這裡每一張都真的清一次，
        再拿一張 1×1、同樣標成 XR 的畫布把貼回去那一支真的畫一次（標成 XR 才會編到跟畫到畫布同一版，見 ①）。 */
-    renderer.initRenderTarget(lowRT);
     const keepRT = renderer.getRenderTarget();
-    renderer.setRenderTarget(lowRT); renderer.clear();
+    for (const L of lows) { renderer.initRenderTarget(L.rt); renderer.setRenderTarget(L.rt); renderer.clear(); }
     const warm = new T.WebGLRenderTarget(1, 1);
     warm.isXRRenderTarget = true; warm.texture.colorSpace = T.SRGBColorSpace; warm.texture.internalFormat = 'RGBA8';
-    blitScene.children[0].material.uniforms.map.value = lowRT.texture;
+    blitScene.children[0].material.uniforms.map.value = lows[0].rt.texture;
     renderer.setRenderTarget(warm); renderer.render(blitScene, blitCam);
     renderer.setRenderTarget(keepRT);
     warm.dispose();
   }
-  function setResScale(k) {
-    if (k === resScale) return;
-    if (k < 1 && lowK !== k) prepareRes(k);           // 沒先配好（不該發生）才當場配
-    resScale = k;
+  /* 這一幀起改用第 i 種畫法（−1＝直接畫到畫布）。偷量到一半就換的話那一輪作廢 */
+  function setLow(i) {
+    if (!(i >= 0 && i < lows.length)) i = -1;
+    if (i === lowAt) return;
+    lowAt = i;
+    probeStop();
   }
   /* 開關計時：回傳這個瀏覽器量不量得到（量不到的話動態解析度整個不動作，見 dynStep） */
   function gpuTiming(on) {
     gpuOn = !!(on && gpuExt);
-    if (!gpuOn) gpuMs = 0;
+    if (!gpuOn) { gpuMs = 0; probeStop(); }
     return !!gpuExt;
   }
-  /* 畫一幀：原本解析度直接畫到畫布；降著的話先畫到 lowRT、再貼回畫布 */
+  /* 畫一幀：原本直接畫到畫布；降著的話先畫到那一種的 render target、再貼回畫布 */
   function draw3d() {
-    if (resScale < 1 && lowRT) {
-      renderer.setRenderTarget(lowRT);
+    const L = lowAt >= 0 ? lows[lowAt] : null;
+    if (L) {
+      renderer.setRenderTarget(L.rt);
       renderer.render(scene, camera);
       renderer.setRenderTarget(null);
+      blitScene.children[0].material.uniforms.map.value = L.rt.texture;
       renderer.render(blitScene, blitCam);
     } else renderer.render(scene, camera);
+  }
+  /* ── 分幀偷量（v1.281.0，見上面那一大段）── */
+  const PROBE_N = 16;
+  let prb = null, prbOut = null;
+  /* 開始偷量第 target 種畫法（−1＝畫布本身）要多久。head＝一條最多能花多久（超過就放棄）、limit＝估計超過它就不必量完 */
+  function probe(target, head, limit) {
+    probeStop();
+    if (!gpuOn || !(target >= -1 && target < lows.length) || target === lowAt) return;
+    prb = { target, head, limit, next: -1, fix: 0, sum: 0, got: 0, pend: [] };
+  }
+  function probeStop() {
+    if (!prb) return;
+    const gl = renderer.getContext();
+    for (const p of prb.pend) gl.deleteQuery(p.q);
+    prb = null;
+  }
+  /* 偷量的結果，拿一次就清掉：null＝還沒有；{ms}＝估計上一級一幀要多久（Infinity＝某一條就超過 head） */
+  function takeProbe() { const r = prbOut; prbOut = null; return r; }
+  /* 偷畫一條：band −1 是只量固定成本的那一格（1×1），其他是第 band 條。陰影這一幀已經畫過了，不再畫一次 */
+  function probePass(gl, band) {
+    const q = gl.createQuery();
+    gl.beginQuery(gpuExt.TIME_ELAPSED_EXT, q);
+    const sm = renderer.shadowMap, au = sm.autoUpdate;
+    sm.autoUpdate = false;
+    if (prb.target < 0) {
+      if (band < 0) renderer.setScissor(0, 0, 1, 1);
+      else renderer.setScissor(0, H * band / PROBE_N, W, H / PROBE_N);
+      renderer.setScissorTest(true);
+      renderer.setRenderTarget(null);
+      renderer.render(scene, camera);
+      renderer.setScissorTest(false);
+    } else {
+      const rt = lows[prb.target].rt;
+      if (band < 0) rt.scissor.set(0, 0, 1, 1);
+      else rt.scissor.set(0, rt.height * band / PROBE_N, rt.width, rt.height / PROBE_N);
+      rt.scissorTest = true;
+      renderer.setRenderTarget(rt);
+      renderer.render(scene, camera);
+      rt.scissorTest = false;
+      renderer.setRenderTarget(null);
+    }
+    sm.autoUpdate = au;
+    gl.endQuery(gpuExt.TIME_ELAPSED_EXT);
+    prb.pend.push({ q, band });
+  }
+  function probeStep(gl) {
+    while (prb.pend.length && gl.getQueryParameter(prb.pend[0].q, gl.QUERY_RESULT_AVAILABLE)) {
+      const p = prb.pend.shift();
+      const ms = gl.getQueryParameter(p.q, gl.QUERY_RESULT) / 1e6;
+      gl.deleteQuery(p.q);
+      if (gl.getParameter(gpuExt.GPU_DISJOINT_EXT)) { probeStop(); return; }   // 被打斷過：這一輪不準，作廢（之後會再試）
+      if (p.band < 0) { prb.fix = ms; continue; }
+      if (ms > prb.head) { prbOut = { ms: Infinity }; probeStop(); return; }
+      prb.sum += Math.max(0, ms - prb.fix); prb.got++;
+      const est = gpuMs + prb.sum;
+      if (prb.got === PROBE_N || est > prb.limit) { prbOut = { ms: prb.got === PROBE_N ? est : Infinity }; probeStop(); return; }
+    }
+    if (prb.next < PROBE_N) probePass(gl, prb.next++);
   }
   function render() {
     if (!gpuOn) { draw3d(); return; }
@@ -11090,18 +11163,22 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       if (!gl.getParameter(gpuExt.GPU_DISJOINT_EXT)) gpuMs += (gl.getQueryParameter(gpuQ, gl.QUERY_RESULT) / 1e6 - gpuMs) * 0.2;
       gpuBusy = false;
     }
-    if (gpuBusy) { draw3d(); return; }
-    gpuQ = gpuQ || gl.createQuery();
-    gl.beginQuery(gpuExt.TIME_ELAPSED_EXT, gpuQ);
-    draw3d();
-    gl.endQuery(gpuExt.TIME_ELAPSED_EXT);
-    gpuBusy = true;
+    if (gpuBusy) draw3d();
+    else {
+      gpuQ = gpuQ || gl.createQuery();
+      gl.beginQuery(gpuExt.TIME_ELAPSED_EXT, gpuQ);
+      draw3d();
+      gl.endQuery(gpuExt.TIME_ELAPSED_EXT);
+      gpuBusy = true;
+    }
+    if (prb) probeStep(gl);           // 畫完這一幀才偷畫，所以 gpuMs 量的還是這一級本身
   }
   function info() { const r = renderer.info.render; return { calls: r.calls, tris: r.triangles }; }
 
   return {
     init, resize, render, info, pick, camEye,
-    setResScale, prepareRes, gpuTiming, get resScale() { return resScale; }, get gpuMs() { return gpuMs; },   /* 動態解析度（v1.280.0） */
+    prepareLows, setLow, gpuTiming, get low() { return lowAt; }, get gpuMs() { return gpuMs; },   /* 跟不上時降畫質（v1.280.0 動態解析度、v1.281.0 關抗鋸齒） */
+    probe, takeProbe, get probing() { return !!prb; },
     get gpuSupported() { return !!gpuExt; },
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers, putEmotes,
