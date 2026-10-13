@@ -34931,8 +34931,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('面板留在打開的狀態（後面幾條要真的點得到它）', autoHide.open);
 
   await page.evaluate(() => { running = true; });
+  /* 叫換場之後**等它真的換上**再讀（v1.276.3 的完整輪紅了才改，見 開發筆記〈完整輪紅的那一條：控制項那幾條換場只等幾百毫秒〉）：
+     下拉、建材檔位、「換一座來蓋」三個入口 v1.265.0 起都是背景 Worker 算完才換
+     （見 開發筆記〈換地標卡一下：藍圖丟到 Worker 算（v1.265.0）〉），固定等 400／500 ms 是在賭 Worker 的回信——
+     量到暖好的頁面 303～311 ms、剛重載完 297～476 ms，而這一段緊接在〈存檔〉重載頁面之後（同種子重跑也紅，連下面建材那條一起）。
+     等法同〈匯入建築〉那一條（v1.270.0）：等 bp 換掉、最多 8 秒。點的照舊是真的 selectOption／click，listener 有沒有接上一樣測得到。 */
+  const bpMark = () => page.evaluate(() => { window.__bp0 = bp; });
+  const bpSwapped = () => page.evaluate(async () => {
+    const t = performance.now();
+    while (bp === window.__bp0 && performance.now() - t < 8000) await new Promise(r => setTimeout(r, 10));
+    delete window.__bp0;
+  });
+  await bpMark();
   await page.selectOption('#shape', String(await page.evaluate(() => SHAPES.findIndex(s => s.n === '倫敦眼摩天輪'))));
-  await page.waitForTimeout(400);
+  await bpSwapped();
   ok('藍圖下拉可以指定建築', (await st(page)).name === '倫敦眼摩天輪', (await st(page)).name);
 
   /* 三檔按鈕：點下去要真的生效。用真的 click，才連 listener 有沒有接上都一起測到。 */
@@ -34958,8 +34970,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     ENG.setBlockCount(blocks.length);
     return blocks.length;
   });
+  await bpMark();
   await hitSeg('cnt', 1800);
-  await page.waitForTimeout(500);
+  await bpSwapped();                      // 同上：建材檔位也是背景算完才換
   const cntS = await st(page);
   ok('建材按鈕會改變積木數', cntS.target === 1800 && cntS.total > 1200,
      '目標 ' + cntS.target + '，實得 ' + cntS.total + ' 塊');
@@ -35017,8 +35030,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'ms（' + ratio.toFixed(2) + ' 倍；' + sp1.frames + ' / ' + sp3.frames + ' 幀）');
 
   await page.evaluate(() => { running = true; });
+  await bpMark();
   await page.click('#again');
-  await page.waitForTimeout(400);
+  await bpSwapped();                      // 同上（見〈控制項〉開頭那個 bpMark／bpSwapped）
   ok('「換一座來蓋」會換建築', (await st(page)).placed < 30, '重新開工');
 
   /* ── 立刻建成 ──
