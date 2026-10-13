@@ -8420,11 +8420,14 @@ const GIA_STEAM_MAX = 150;            // 自己的配額（dust 那一池總共 
    所以探 5.0 格＝「看到了就停下來踹，腳剛好落在它身上」，同 GIA_NEAR 4.0 那個道理。
    探的步進 0.5 格：樹只有樹幹擋路（外框可能只有一格寬），1 格一跳會從它身上跨過去。 */
 const GIA_EYE = 5.0, GIA_EYE_STEP = 0.5;
-/* 同一個障礙物最多踹幾腳。使用者選的是「踹到路通為止」，這個數字是**保險不是門檻**：
-   外框是所有還站著的格子的 min／max（見 homeBox），十六格長的牆被踹穿中間那一段時
-   外框不會縮，照「還探得到就再踹」判的話牠會對著一個永遠不通的框踹到天亮。
-   踹滿還不通就放它一馬（記進 m.bskip），改用原本那套繞過去。 */
+/* 擋路的那一段連踹幾腳**一塊都沒踹掉**就放過它（v1.276.3，使用者：「巨人跟破壞神都設個上限吧」，選的是
+   「連續幾下都沒打掉東西才算」「放過那一段改繞過去」「沿用舊數字」）。踹得動的照舊踹到路通為止（v1.207 使用者定的）；
+   踹不動的是芙莉蓮的罩子——她被打的時候站著不動、罩子 FR_HOLD 2.5 秒沒再被打才收，一腳 1.77 秒，等於她永遠走不開。
+   放過的那幾段記在 m.bskip，**這一趟走人才忘掉**（v1.207～v1.276.2 是下一幀就忘，等於從來沒繞過）。
+   放過之後**換條路走、又被擋就拆那邊**（使用者：「打滿上限就換條路走(如果又被擋就拆那邊)」，見 bwayPlan）。
+   見 開發筆記〈巨人與 Diablo：連打幾下都沒打掉東西就放過那一段（v1.276.3）〉 */
 const GIA_BUST = 8;
+const GIA_SIDE = 4;                   // 換條路：繞到放過的那一段外框端點外面再多幾格（肩寬 5.3 的一半多一點，見 bwayPlan）
 /* ── 暗黑破壞神（Diablo）──────────────────────────────────
    使用者：「加入新天災吉祥物 diablo 攻擊方式是舊版獅鷲的噴火／同巨人方式會被擊殺 死亡會倒在地上噴出一堆金幣
    然後慢慢消失」，附了兩張參考圖。造型見 engine.js〈Diablo〉（自己一顆 mesh，不在 BEASTS）。問過四件，使用者選：
@@ -8529,10 +8532,11 @@ function spawnBeast(kind, fun, bad, ang) {
        cq 出招中又點的那一點（這一招收完才去）、cn 已經走到最後那幾步了沒；
        chome／cbad 接到第一道命令那一刻原本的樣子（斬完要還原，見 excDone） */
     call: null, cq: null, cn: 0, chome: 0, cbad: 0,
-    /* 擋路就踹那一段的狀態（v1.207，只有巨人在用）：bust＝踹完要回哪一段
-       （null＝不是在清路），bn＝這個障礙物已經踹幾腳了，bskip＝踹不通、放它一馬的那一個。
-       Diablo 擋路就噴（v1.276）也用 bust；bdir＝噴之前在走的方向（噴完照它探路通了沒，見 diaEnd）。 */
-    bust: null, bn: 0, bskip: null, bdir: 0,
+    /* 擋路就踹那一段的狀態（v1.207，只有巨人在用）：bust＝踹完要回哪一段（null＝不是在清路），
+       bn＝連續幾腳一塊都沒踹掉，bskip＝放過的那幾段（這一趟走人才清，見 GIA_BUST），
+       bway＝放過之後換的那條路（兩個路點）、bside＝往哪一邊換（這一趟走人才清，見 bwayPlan）。
+       Diablo 擋路就噴（v1.276）也用這幾個；bdir＝噴之前在走的方向（噴完照它探路通了沒，見 diaEnd）。 */
+    bust: null, bn: 0, bskip: null, bway: null, bside: 0, bdir: 0,
     arm: 0, run: 0, raise: DOOM_RAISE[kind], bomb: 1, st: 'come', t: 0,   // run：Saber 跑多用力（v1.226）
     fun: fun ? 1 : 0, stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,
     /* bad＝這一趟要動手，home＝動手的目標在村子那邊（v1.166）。兩個分開是因為
@@ -8653,6 +8657,7 @@ function funBack(m) {
   m.bad = 0; m.home = 0;
   m.owe = 0;                                 // 還欠著的也一筆勾銷（v1.229，見 moreMascot）
   m.bust = null; m.bn = 0;                   // 清擋路那一腳的旗標（v1.207，同 leaveBeast）
+  m.bway = null;                             // 換到一半的那條路也收掉：回去逛有新的目標了（v1.276.3）
   m.vh = 0;                                  // 這一趟認準的那一間（v1.233.1）也收掉
   m.st = 'fun';
   strollPause(m); idleSpot(m);
@@ -8665,8 +8670,8 @@ function leaveBeast(m) {
   if (m.kick) { m.kick = 0; m.spin = 0; m.kt = 0; m.hit = 0; m.kleft = 0; }
   diaStop(m);                                // Diablo 噴到一半被叫走（地標垮到換場那種）：前傾張嘴的姿勢同上要收掉
   /* 清擋路那一腳的旗標也收掉（v1.207）：走人是一趟的結束，那一腳要回的那一段
-     已經不存在了；放過的那一個（bskip）也跟著這一趟作廢。 */
-  m.bust = null; m.bn = 0; m.bskip = null;
+     已經不存在了；放過的那幾段（bskip）、換到一半的路（bway、bside）也跟著這一趟作廢。 */
+  m.bust = null; m.bn = 0; m.bskip = null; m.bway = null; m.bside = 0;
   /* 「正在拆擋路的那一段牆」那個旗標也收掉（v1.194）：拆一下就是一趟，收掉之後
      上面那條 away 的豁免才只罩著這一趟（還是走不出去的話，go 下一行會再立一次）。 */
   m.home = 0;
@@ -8946,6 +8951,8 @@ function stepBeast0(m, dt) {
      站著發呆的那幾秒（m.pause）也不算「行走」，不去踹面前的東西。 */
   if (bigBeast(m) && !(m.pause > 0) &&
       (m.st === 'come' || m.st === 'fun' || m.st === 'go') && (m.kind === 'diablo' ? diaBust(m) : giantBust(m))) return false;
+  /* 放過擋路的那一段之後換條路（v1.276.3，見 bwayPlan）：排在上面那一條後面，路上又被擋就照樣停下來拆 */
+  if (m.bway && !(m.pause > 0) && (m.st === 'come' || m.st === 'fun' || m.st === 'go')) { bwayWalk(m, dt, spd, stp, kp); return false; }
   /* Excalibur 叫她過去那一段**用跑的**（v1.226，使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」）：
      腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
   if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'frieren')   // 里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0）同 Saber 用跑的
@@ -9156,8 +9163,9 @@ function stepBeast0(m, dt) {
        而該走的距離已經是 0——牠就會站在那裡不動、也不動手（實測 12 次卡住 2 次）。 */
     const adv = Math.max(0, d - doomNear(m));
     // 往前探半格：等踩進去才判斷的話，這一幀已經站在牆裡面了
+    // 門洞也算擋住（v1.276.3，使用者：「巨人 & Diablo 高度都不能走城門」；這一段只有這兩隻在走，見上面 bigBeast 那一行）
     const ex = m.x + dx / d * (adv + 0.5), ez = m.z + dz / d * (adv + 0.5);
-    if (adv < 0.05 || footBlocked(ex, ez) || homeFoot(ex, ez)) {
+    if (adv < 0.05 || footBlocked(ex, ez) || footHome(ex, ez, true)) {
       /* 擋在前面的是城牆（v1.186，使用者：「白猴子&黑獼猴可能被擋路(可以繞路走城門
          或他自己動手破壞)」，兩個都要）：目標在牆的另一邊就先去走城門；
          沒有門可繞（門樓被打爛了）就**改砸這一段牆**——m.home 一立起來，
@@ -9590,7 +9598,8 @@ function stepKick(m, dt) {
      照 m.kick >= 1 判的話那幾十幀會一幀炸一次。 */
   if (!m.hit && m.kick >= 1) {
     m.hit = 1;
-    giantKick(m);
+    const n = giantKick(m);
+    if (m.bust) m.bn = n > 0 ? 0 : m.bn + 1;           // 清路那一腳：連續幾腳一塊都沒踹掉（見 GIA_BUST）
   }
   if (t < GIA_CYCLE) return false;
   /* 一腳走完：還有配額就再來一腳，沒了就走人（吉祥物砸完回去逛，同猴子）。
@@ -9598,12 +9607,14 @@ function stepKick(m, dt) {
   m.kt = 0; m.hit = 0; m.kick = 0; m.spin = 0;
   /* 清擋路的那一腳（v1.207，使用者：「踹到路通為止」→「繼續走原本的路」）：
      踹完當場再探一次前面五格，還擋著就再一腳，通了就回原本在走的那一段。
+     連 GIA_BUST 腳一塊都沒踹掉（芙莉蓮罩著；或外框中間踹穿了、兩端還站著，框不會縮，見 homeBox）
+     就放過那一段（記進 m.bskip）、回原本那一段，探路跳過它，換條路（見 bwayPlan）。
      **朝向不必重新算**：牠面向的就是要走的方向，而擋路的東西就在那個方向上
      （踹地標那一路才要重新挑最近的一塊）。 */
   if (m.bust) {
     const h = giantBlock(m);
-    if (h && ++m.bn < GIA_BUST) return false;          // 還擋著：再一腳
-    if (h) m.bskip = h;                                // 踹滿了還不通：放它一馬，改繞過去
+    if (h && m.bn < GIA_BUST) return false;            // 還擋著：再一腳
+    if (h) { (m.bskip || (m.bskip = [])).push(h); bwayPlan(m, h, m.a); }   // 連踹都沒踹掉一塊：放過它，換條路
     m.st = m.bust; m.bust = null; m.bn = 0; m.kleft = 0;
     return false;
   }
@@ -9636,18 +9647,45 @@ function giantBlock(m, a = m.a) {
   const ux = Math.sin(a), uz = Math.cos(a);
   for (let s = GIA_EYE_STEP; s <= GIA_EYE + 1e-6; s += GIA_EYE_STEP) {
     const h = footHome(m.x + ux * s, m.z + uz * s, true);   // true＝門洞也算擋住
-    if (h && h !== m.bskip) return h;
+    if (h && !(m.bskip && m.bskip.includes(h))) return h;   // 放過的那幾段不算（見 GIA_BUST）
   }
   return null;
 }
 /* 這一幀擋路了嗎。回 true＝已經轉進踹那一段，呼叫端直接 return。
    m.bust 記的是「踹完要回哪一段」，同穿門那一段的 m.gback。 */
 function giantBust(m) {
-  const h = giantBlock(m);
-  if (!h) { m.bskip = null; return false; }            // 路通了：上次放過的那一個也不必再記
+  if (!giantBlock(m)) return false;
   m.bust = m.st; m.bn = 0;
   m.st = 'kick'; m.kt = 0; m.hit = 0; m.kick = 0; m.kleft = 0;
   return true;
+}
+/* 放過擋路的那一段 h 之後換條路（v1.276.3，使用者：「打滿上限就換條路走(如果又被擋就拆那邊)」）。巨人與 Diablo 都吃這一支。
+   兩個路點：① 橫著走到 h 外框的一端外面 GIA_SIDE 格（「橫」＝垂直於 a，a 是放過那一刻在走的方向）
+   ② 從那裡照 a 往前，走過 h 的深度再 GIA_SIDE 格。整圈城牆的話 ② 會撞上隔壁那一段，giantBust／diaBust 照舊停下來拆它；
+   又拆不動就再放過、再換（同一邊繼續往前，m.bside）。
+   為什麼要兩點、不是走到 ① 就回原本的目標：從 ① 直接朝地標走是斜的，那條線會切回 h 的外框，牠就貼著 h 磨回原地。
+   為什麼要記 m.bside：放過第二段時照「挑近的那一端」的話可能挑回第一段那一邊，兩段之間來回走。 */
+function bwayPlan(m, h, a) {
+  const ux = Math.sin(a), uz = Math.cos(a), px = uz, pz = -ux;   // p＝a 的右手邊
+  let lo = Infinity, hi = -Infinity, far = -Infinity;
+  for (const cx of [h.x0, h.x1]) for (const cz of [h.z0, h.z1]) {
+    const s = (cx - m.x) * px + (cz - m.z) * pz, f = (cx - m.x) * ux + (cz - m.z) * uz;
+    if (s < lo) lo = s;
+    if (s > hi) hi = s;
+    if (f > far) far = f;
+  }
+  if (!m.bside) m.bside = -lo < hi ? -1 : 1;       // 這一趟第一次放過：挑近的那一端
+  const s = m.bside > 0 ? hi + GIA_SIDE : lo - GIA_SIDE, f = Math.max(0, far) + GIA_SIDE;
+  const x1 = m.x + px * s, z1 = m.z + pz * s;
+  m.bway = { x1, z1, x2: x1 + ux * f, z2: z1 + uz * f, k: 0 };   // k＝走到第幾個路點了
+}
+/* 照 m.bway 走（借 tx／tz，同火把那一段：原本那一段的狀態與目標一個字都不動）。走到 ② 就收掉，回原本那一段的目標 */
+function bwayWalk(m, dt, spd, stp, kp) {
+  const w = m.bway, ox = m.tx, oz = m.tz;
+  m.tx = w.k ? w.x2 : w.x1; m.tz = w.k ? w.z2 : w.z1;
+  const done = strollTo(m, dt, spd, stp, kp);
+  m.tx = ox; m.tz = oz;
+  if (done) { if (w.k) m.bway = null; else w.k = 1; }
 }
 /* 身上冒的蒸氣（v1.192，使用者選的「照參考圖，再加走路冒蒸氣」）。
    從兩側斜方肌那一帶往上飄，越飄越大越淡。借塵霧那一池畫（dust），
@@ -9816,15 +9854,19 @@ function diaHitFx(m, dt, hx, hy, hz) {
   }
 }
 /* 噴火那幾個欄位收乾淨（走人、回去逛、被打斷、被斬殺都要叫：不收的話牠維持著前傾張嘴的姿勢一路走） */
-function diaStop(m) { if (m.kind === 'diablo') { m.fb = 0; m.ft = 0; m.fhit = 0; m.jr = 0; } }
+/* fgot＝這一道點著幾塊（擋路就噴那一趟看有沒有打掉東西，見 DIA_BUST） */
+function diaStop(m) { if (m.kind === 'diablo') { m.fb = 0; m.ft = 0; m.fhit = 0; m.jr = 0; m.fgot = 0; } }
 function diaEnd(m) {
+  const got = m.fgot;
   diaStop(m);
-  /* 擋路就噴那一趟：還擋著就再一道、**不設上限**，路通了才回原本那一段（同 stepKick 的 m.bust）。
+  /* 擋路就噴那一趟：還擋著就再一道，路通了才回原本那一段（同 stepKick 的 m.bust）；連 DIA_BUST 道一塊都沒點著就放過那一段。
      「路通了沒」照**噴之前在走的方向**（m.bdir）探：噴的時候轉去面向要燒的那一塊，照現在的朝向探的話
      探到的是旁邊不擋路的殘塊，對著它一直噴（見 開發筆記〈Diablo 擋路就一直噴到路通（v1.276.2）〉） */
   if (m.bust) {
     const h = giantBlock(m, m.bdir);
-    if (h) { m.bhome = h; return; }                     // 還擋著：st 還是 fire，下一幀從頭再噴一道
+    m.bn = got > 0 ? 0 : m.bn + 1;
+    if (h && m.bn < DIA_BUST) { m.bhome = h; return; }  // 還擋著：st 還是 fire，下一幀從頭再噴一道
+    if (h) { (m.bskip || (m.bskip = [])).push(h); bwayPlan(m, h, m.bdir); }   // 連幾道都沒點著：放過它，換條路
     m.st = m.bust; m.bust = null; m.bn = 0; m.bhome = null;
     return;
   }
@@ -9879,7 +9921,7 @@ function stepDiaFire(m, dt) {
         else {
           const p = { x: m.jx, y: m.jy, z: m.jz };
           /* 吉祥物砸村子、擋路就噴那兩種只准燒村子那邊，也不叫 igniteAt（它沒有 only 這一關，掃到的最近一塊可能是地標） */
-          if (m.home || m.bust) igniteAround(p, DIA_IGN_R, DIA_IGN_N, SET, isVillage);
+          if (m.home || m.bust) m.fgot += igniteAround(p, DIA_IGN_R, DIA_IGN_N, SET, isVillage);
           else {
             igniteAt(p.x, p.y, p.z);           // 順手把 phase 從 done 推到 wreck
             igniteAround(p, DIA_IGN_R, DIA_IGN_N, SET, null);
@@ -9965,15 +10007,17 @@ const bigBeast = m => m.kind === 'giant' || m.kind === 'diablo';
 /* ── Diablo 擋路就噴 ──
    同巨人那一套（見 giantBust）：前面 GIA_EYE 格內擋著的那一個（城牆、小人的家、樹；門洞也算擋住）就停下來對它噴一道。
    差別是火要燒：一塊點著到燒斷掉下來 BURN_TIME 2.2 秒，所以噴完**等那一個燒完**（最多 DIA_BUST_WAIT 秒）再看通了沒，
-   還擋著就再噴一道，**噴到路通為止、不放它一馬**（v1.276.2，使用者：「Diablo 真的會卡在門樓前 就繼續噴火 除非路通了」；
-   v1.276.0 是噴滿 4 道記進 m.bskip 改繞過去——可是下一幀探路時跳過它、回 null，就被當成「路通了」清掉，又探到同一段再噴，
-   等於從來沒放過）。巨人的 bskip 那一條沒動。通了回原本那一段（m.bust）。
-   小人照樣補燒出來的洞（使用者沒要改）：補得比燒得快的時候牠就一直站在那裡噴。 */
+   還擋著就再噴一道，**噴到路通為止**（v1.276.2，使用者：「Diablo 真的會卡在門樓前 就繼續噴火 除非路通了」）。通了回原本那一段（m.bust）。
+   小人照樣補燒出來的洞（使用者沒要改）：補得比燒得快的時候牠就一直站在那裡噴——那幾道都有點著東西，不算進下面那個上限。
+   **連 DIA_BUST 道一塊都沒點著就放過那一段**（v1.276.3，同巨人的 GIA_BUST：芙莉蓮罩著的那一段噴不動，她被打的時候又站著不動）。
+   v1.276.0 也有「噴滿 4 道放它一馬」，可是 m.bskip 下一幀就被當成「路通了」清掉、又探到同一段再噴，等於從來沒放過，v1.276.2 拿掉；
+   v1.276.3 放過的記到這一趟走人才忘（見 leaveBeast），放過之後換條路（見 bwayPlan）。 */
 const DIA_BUST_WAIT = 3;              // 噴完等它燒多久再看
+const DIA_BUST = 4;                   // 連幾道一塊都沒點著就放過那一段（v1.276.0 那個數字，使用者選的「沿用舊數字」）
 function diaBust(m) {
   const h = giantBlock(m);
   if (!h) return false;
-  m.bust = m.st; m.bhome = h;
+  m.bust = m.st; m.bhome = h; m.bn = 0;
   m.bdir = m.a;                       // 噴之前在走的方向：噴完照它探路通了沒（見 diaEnd）
   diaStop(m); m.st = 'fire';
   return true;

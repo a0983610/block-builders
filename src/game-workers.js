@@ -2398,7 +2398,7 @@ function strollTo(w, dt, spd, step, keepMore) {
   return false;
 }
 /* 巨人的走法（v1.207，使用者：「巨人太高不能走城門 行走有障礙物就發動攻擊踢掉」）：不規劃、直直走，
-   擋路的由 giantBust 踹掉；踹滿放過的那一間靠 dodgeHome 繞開。地標照舊是工地圈那個圓：
+   擋路的由 giantBust 踹掉；連踹幾腳都踹不掉、放過的那一間（m.bskip）換條路繞開（見 game-tools.js 的 bwayPlan）。地標照舊是工地圈那個圓：
    目標推到圈上、快貼圈時掰到切線（keepMore 是牠要再離遠幾格，GIA_KEEP）。
    這一支就是 v1.235 strollTo 裡巨人走的那一條，v1.236 拆出來時一個位元都沒改。 */
 function strollGiant(w, dt, spd, step, keepMore) {
@@ -2431,7 +2431,7 @@ function strollGiant(w, dt, spd, step, keepMore) {
      方向向量沒歸一的話探的距離會跟著放大（上面那兩段會把它拉到 2.5 倍長）。 */
   {
     const m0 = Math.hypot(ux, uz) || 1;
-    const g = dodgeHome(w, ux / m0, uz / m0);
+    const g = dodgeHome(w, ux / m0, uz / m0, null, true);   // true＝門洞也算擋住（牠太高，見 dodgeHome）
     ux = g.x; uz = g.z;
   }
   const m = Math.hypot(ux, uz) || 1;
@@ -3926,9 +3926,12 @@ const homeFoot = (x, z) => !!footHome(x, z);
    從**最近的那一面**出去（四面裡穿透最少的那一個方向），所以退出去的路是單向的，
    不會像「沿著屋子中心往外推」那樣把人從屋子另一頭推出去。
    擺在每一種走法的位移之後。 */
+/* 巨人與 Diablo 連門洞也推出來（v1.276.3，使用者：「巨人 & Diablo 高度都不能走城門(檢查一下巡路)」）：
+   門洞五層高、牠們十五格／十格（見 footHome 的 noGap）。v1.207 只在 giantBlock 探路時算門洞擋住，
+   這一支照一般人放行——放過門樓那一段之後（見 GIA_BUST）、或 near 最後幾步斜著走進門洞，都會從門洞穿進城（探針量到過）。 */
 function pushOutHome(w) {
   if (w.ghost > 0) return;                            // 穿透中（見 stuckWatch）
-  const h = footHome(w.x, w.z);
+  const h = footHome(w.x, w.z, w.kind === 'giant' || w.kind === 'diablo');   // 同 strollTo 開頭（見 game-tools.js 的 bigBeast）
   if (!h) return;
   const e = 0.02;                    // 剛好推到邊上會被浮點誤差判成還在裡面
   /* 城牆的直牆段只准**往厚度那一軸**推出去（v1.186）。整圈是切成好幾段的，
@@ -3951,10 +3954,12 @@ function pushOutHome(w) {
    是這樣貼著人家的牆磨過去的。 */
 /* skip（v1.190.2）：這一間不算擋路。只有天災那幾隻穿城門時會給——牠要穿的就是
    門樓那一段的門洞，斜著進門時 2.2 格的探針會打到兩側的墩座，一繞就永遠進不去。 */
+/* noGap（v1.276.3）＝門洞也算擋住（同 footHome）。只有 strollGiant 在給：巨人與 Diablo 走不了城門，
+   推出來那一層（pushOutHome）已經不准牠們進門洞，這一層不跟著算的話牠會對著門洞直走、每幀被推回來。 */
 const _dodge = { x: 0, z: 0 };
-function dodgeHome(w, ux, uz, skip) {
+function dodgeHome(w, ux, uz, skip, noGap) {
   _dodge.x = ux; _dodge.z = uz;
-  const h = blockHome(w, ux, uz, skip);
+  const h = blockHome(w, ux, uz, skip, noGap);
   if (!h) return _dodge;
   const bx = w.x - h.x, bz = w.z - h.z;
   const bd = Math.hypot(bx, bz) || 1;
@@ -3974,10 +3979,10 @@ function dodgeHome(w, ux, uz, skip) {
    探的距離要比一步大（WALK 6.8，一幀約 0.34），不然掰的時候已經踩進去了。 */
 const DODGE_EYE = 2.2, DODGE_STEP = 0.55;
 const _blk = { d: 0 };
-function blockHome(w, ux, uz, skip) {
+function blockHome(w, ux, uz, skip, noGap) {
   if (!homes || w.ghost > 0) return null;             // 穿透中（見 stuckWatch）
   for (let d = DODGE_STEP; d <= DODGE_EYE + 1e-6; d += DODGE_STEP) {
-    const h = footHome(w.x + ux * d, w.z + uz * d);
+    const h = footHome(w.x + ux * d, w.z + uz * d, noGap);
     if (h && h !== skip) { _blk.d = d; return h; }    // skip：穿城門那一段（見 dodgeHome）
   }
   return null;

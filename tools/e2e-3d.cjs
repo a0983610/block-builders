@@ -25576,7 +25576,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mk = o => Object.assign({
       kind: 'giant', st: 'come', x: 0, z: -6, a: 0, tx: 0, tz: 20,
       pause: 0, ghost: 0, gait: 0.85, sc: GIA_SC, fun: 0, home: 0,
-      kick: 0, kleft: 0, kt: 0, hit: 0, spin: 0, bust: null, bn: 0, bskip: null
+      kick: 0, kleft: 0, kt: 0, hit: 0, spin: 0, bust: null, bn: 0, bskip: null, bway: null, bside: 0
     }, o);
     /* ① 城門：牠連問都不問（gateNeed 第一行就回 false）。navReach（v1.235 起「有沒有路可繞」
        問的是巡路規則，v1.195～v1.234 是 crossNeed）換成一律「走得到」，
@@ -25589,7 +25589,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     navReach = keep.reach;
     /* ② 門洞那一點：別人走得過去，牠不行（footHome 的 noGap）。 */
     const holeOpen = !footHome(0, 0), holeShut = footHome(0, 0, true) === wall;
-    /* ③ 「走到牆邊就地拆牆」那一條對牠也關掉（那條會改掉牠這一趟的目標）：
+    /* ②-b 推出來、繞路那兩層也一樣（v1.276.3，使用者：「巨人 & Diablo 高度都不能走城門(檢查一下巡路)」）：
+       站進門洞裡——猴子不推、巨人從近的那一面推出去（pushOutHome）；往門洞走——繞路那一層照 noGap 也看得到牆（blockHome）。
+       v1.207～v1.276.2 只有探路（giantBlock）算門洞擋住，放過門樓那一段之後牠會直直從門洞走進城。 */
+    const pg = mk({ x: 0, z: -1 }), pa = mk({ kind: 'ape', x: 0, z: -1 });
+    pushOutHome(pg); pushOutHome(pa);
+    const push = { g: pg.z, a: pa.z };
+    const look = { open: blockHome(mk({ z: -3 }), 0, 1), shut: blockHome(mk({ z: -3 }), 0, 1, null, true) === wall };
+    /* ③「走到牆邊就地拆牆」那一條對牠也關掉（那條會改掉牠這一趟的目標）：
        站在門洞旁邊、腳邊 1.5 格就是牆身——猴子 true、巨人 false。 */
     const wfA = wallFoot(mk({ kind: 'ape', x: 5, z: -2.6 }), 5, 0);
     const wfG = wallFoot(mk({ x: 5, z: -2.6 }), 5, 0);
@@ -25597,7 +25604,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        並記下踹完要回哪一段。 */
     const m = mk({});
     const bust = giantBust(m);
-    const eye = { st: m.st, back: m.bust, bn: m.bn };
+    const eye = { st: m.st, back: m.bust };
     /* ⑤ 一腳結算一次、踹完還擋著就再一腳（使用者：「踹到路通為止」）。
        explode／igniteAround 換成樁：這一段驗的是狀態機，不要真的去炸場上那座金字塔。 */
     let booms = 0;
@@ -25606,47 +25613,73 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 一腳＝跑到 m.kt 歸零那一刻（週期結束，見 stepKick）
     const oneKick = mm => { for (let i = 0; i < 300; i++) { const t0 = mm.kt; stepKick(mm, 0.02); if (mm.kt < t0) break; } };
     oneKick(m);
-    const k1 = { booms, st: m.st, bn: m.bn, back: m.bust };
+    const k1 = { booms, st: m.st, back: m.bust };
     /* ⑥ 路通了（那一段被踹平＝空框，見 homeBox）就回原本那一段繼續走。 */
     wall.x0 = 1; wall.x1 = -1;
     oneKick(m);
-    const k2 = { booms, st: m.st, back: m.bust, skip: m.bskip };
-    /* ⑦ 踹滿 GIA_BUST 腳還不通（外框是所有還站著的格子的 min／max，中間踹穿了
-       框也不會縮）：放它一馬記進 bskip，改用原本那套繞過去——再問一次就不攔了。 */
+    const k2 = { booms, st: m.st, back: m.bust };
+    /* ⑦ 連 GIA_BUST 腳一塊都沒踹掉（explode 是樁、回 0，同芙莉蓮罩著的那一段）就放過那一段、換條路
+       （v1.276.3，使用者：「巨人跟破壞神都設個上限吧」「打滿上限就換條路走(如果又被擋就拆那邊)」）：
+       回原本那一段、記進 bskip、再問一次就不攔了；路點 ① 在外框近的那一端外面 GIA_SIDE 格、② 從那裡往前穿過它。
+       v1.207～v1.276.2 也是踹滿 8 腳放它一馬，可是 bskip 下一幀就被當成路通了清掉（那時這一條只驗了「再問一次」）。 */
     wall.x0 = -8; wall.x1 = 8;
-    const m2 = mk({});
+    const m2 = mk({ x: 1 });              // 偏右一格：近的那一端是右邊（x1）
     giantBust(m2);
     let kicks = 0;
     while (m2.st === 'kick' && kicks < GIA_BUST + 4) { oneKick(m2); kicks++; }
-    const giveUp = { kicks, st: m2.st, skip: m2.bskip === wall };
+    const giveUp = { kicks, st: m2.st, skip: !!m2.bskip && m2.bskip.includes(wall), way: m2.bway && Object.assign({}, m2.bway) };
     giveUp.again = giantBust(m2);
+    /* ⑦-b 再放過一段照同一邊換（m.bside）：第二段近的那一端在左邊，照樣往右 */
+    const m4 = mk({ x: 1 });
+    bwayPlan(m4, wall, 0);
+    const side1 = m4.bside;
+    bwayPlan(m4, { x0: -2, x1: 20, z0: -1.5, z1: 1.5 }, 0);
+    const same = { side1, side2: m4.bside, x1: m4.bway.x1 };
+    /* ⑦-c 踹得掉東西就照舊踹到路通為止（使用者 v1.207）：explode 回 1 → 50 腳都還在踹 */
+    explode = () => { booms++; return 1; };
+    const m3 = mk({});
+    giantBust(m3);
+    let kicks3 = 0;
+    while (m3.st === 'kick' && kicks3 < 50) { oneKick(m3); kicks3++; }
+    const keepOn = { kicks: kicks3, st: m3.st, back: m3.bust };
     /* ⑧ 吉祥物那一隻吃同一條（使用者選的「兩隻都改」）。 */
     const fun = mk({ fun: 1, st: 'fun' });
     const funBust = giantBust(fun);
     explode = keep.boom; igniteAround = keep.ig; homes = keep.homes;
-    return { gGate, aGate, gAsk, aAsk, aSt: ap.st, holeOpen, holeShut, wfA, wfG,
-             bust, eye, k1, k2, giveUp, funBust, funBack: fun.bust,
-             eye5: GIA_EYE, max: GIA_BUST };
+    return { gGate, aGate, gAsk, aAsk, aSt: ap.st, holeOpen, holeShut, push, look, z0: wall.z0, wfA, wfG,
+             bust, eye, k1, k2, giveUp, same, keepOn, funBust, funBack: fun.bust,
+             eye5: GIA_EYE, max: GIA_BUST, side: GIA_SIDE, wx1: wall.x1, wz1: wall.z1 };
   });
   ok('巨人不走城門：連問都不問，門洞對牠等於實心牆',
      jgate.gGate === false && jgate.gAsk === 0 &&
      jgate.aGate === true && jgate.aAsk === 1 && jgate.aSt === 'gate' &&
-     jgate.holeOpen && jgate.holeShut && jgate.wfG === false && jgate.wfA === true,
+     jgate.holeOpen && jgate.holeShut && jgate.wfG === false && jgate.wfA === true &&
+     jgate.push.a === -1 && jgate.push.g < jgate.z0 && jgate.look.open === null && jgate.look.shut,
      '同一段有門洞的牆：猴子問了 ' + jgate.aAsk + ' 次繞不繞、轉進 ' + jgate.aSt +
      '；巨人問 ' + jgate.gAsk + ' 次（門洞那一點 別人 footHome＝null、牠＝那一段），' +
-     '走到牆邊拆牆那條 猴子 ' + jgate.wfA + '／巨人 ' + jgate.wfG);
+     '走到牆邊拆牆那條 猴子 ' + jgate.wfA + '／巨人 ' + jgate.wfG +
+     '；站進門洞 z −1：猴子推到 ' + jgate.push.a + '、巨人推到 ' + jgate.push.g.toFixed(2) +
+     '；往門洞走 繞路那一層 一般 ' + jgate.look.open + '／noGap 看到牆 ' + jgate.look.shut);
   ok('擋路就停下來踹，路通了回原本那一段繼續走（不是踹完就收工）',
      jgate.bust && jgate.eye.st === 'kick' && jgate.eye.back === 'come' &&
-     jgate.k1.booms === 1 && jgate.k1.st === 'kick' && jgate.k1.bn === 1 &&
-     jgate.k2.booms === 2 && jgate.k2.st === 'come' && !jgate.k2.back && !jgate.k2.skip,
+     jgate.k1.booms === 1 && jgate.k1.st === 'kick' &&
+     jgate.k2.booms === 2 && jgate.k2.st === 'come' && !jgate.k2.back,
      '前方 ' + jgate.eye5 + ' 格內探到 → kick（踹完回 ' + jgate.eye.back +
      '）；第一腳炸 ' + jgate.k1.booms + ' 次、還擋著所以留在 ' + jgate.k1.st +
-     '（第 ' + jgate.k1.bn + ' 腳）→ 踹平之後那一腳結束就回 ' + jgate.k2.st);
-  ok('踹滿就放它一馬改繞過去（外框中間被踹穿也不會縮，不然會踹到天亮）',
-     jgate.giveUp.kicks === jgate.max && jgate.giveUp.st === 'come' &&
-     jgate.giveUp.skip && jgate.giveUp.again === false,
-     '同一個障礙物踹了 ' + jgate.giveUp.kicks + ' 腳（上限 ' + jgate.max +
-     '）就回 ' + jgate.giveUp.st + '、記進 bskip，再問一次攔不攔：' + jgate.giveUp.again);
+     ' → 踹平之後那一腳結束就回 ' + jgate.k2.st);
+  ok('連幾腳都沒踹掉一塊就放過那一段、換條路（踹不動的：芙莉蓮的罩子）',
+     jgate.giveUp.kicks === jgate.max && jgate.giveUp.st === 'come' && jgate.giveUp.skip && jgate.giveUp.again === false &&
+     !!jgate.giveUp.way && jgate.giveUp.way.x1 === jgate.wx1 + jgate.side && jgate.giveUp.way.z1 === -6 &&
+     jgate.giveUp.way.x2 === jgate.giveUp.way.x1 && Math.abs(jgate.giveUp.way.z2 - (jgate.wz1 + jgate.side)) < 1e-9 &&
+     jgate.same.side1 === 1 && jgate.same.side2 === 1 && jgate.same.x1 === 20 + jgate.side,
+     '一塊都踹不掉：踹了 ' + jgate.giveUp.kicks + ' 腳（上限 ' + jgate.max + '）就回 ' + jgate.giveUp.st +
+     '、記進 bskip，再問一次攔不攔：' + jgate.giveUp.again + '；換的路 ① (' + (jgate.giveUp.way && jgate.giveUp.way.x1) + ', ' +
+     (jgate.giveUp.way && jgate.giveUp.way.z1) + ') → ② (' + (jgate.giveUp.way && jgate.giveUp.way.x2) + ', ' +
+     (jgate.giveUp.way && jgate.giveUp.way.z2) + ')；再放過一段（近的那一端在另一邊）照樣往 ' + jgate.same.side2 + ' 那一邊');
+  ok('踹得掉東西就一直踹到路通（使用者 v1.207：「踹到路通為止」）',
+     jgate.keepOn.kicks === 50 && jgate.keepOn.st === 'kick' && jgate.keepOn.back === 'come',
+     '每一腳都有踹掉東西、框一直在：踹了 ' + jgate.keepOn.kicks + ' 腳還在 ' + jgate.keepOn.st +
+     '（踹完回 ' + jgate.keepOn.back + '）');
   ok('吉祥物那一隻吃同一條規則（使用者選的「兩隻都改」）',
      jgate.funBust && jgate.funBack === 'fun',
      '逛到一半被擋住 → 轉進 kick，踹完回 ' + jgate.funBack);
@@ -25840,9 +25873,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '，負的＝在殼外）；罩子裡燒起來 ' + dshield.inside + ' 塊（全場 ' + dshield.burn + ' 塊）');
 
   /* ── 擋路就噴（使用者：「Diablo 要比照巨人 擋路就噴」）：自己組一段正中央開著門洞的牆（同〈天災：巨人腳踢〉那一段），
-        直接呼叫 gateNeed／wallFoot／diaBust／stepDiaFire。牆上一塊積木都沒擺（只有框）：每一道都挑不到可燒的那一塊、
-        當場收掉，框還擋著就再一道——驗的是「擋著就一直噴、不設上限，路通了才回去走」（v1.276.2，使用者：
-        「Diablo 真的會卡在門樓前 就繼續噴火 除非路通了」；v1.276.0 是噴滿 4 道放它一馬）。
+        直接呼叫 gateNeed／wallFoot／diaBust／stepDiaFire／diaEnd。牆上一塊積木都沒擺（只有框）：每一道都挑不到可燒的那一塊、
+        當場收掉，一塊都沒點著——連 DIA_BUST 道就放過那一段、換條路（v1.276.3，使用者：「巨人跟破壞神都設個上限吧」
+        「打滿上限就換條路走(如果又被擋就拆那邊)」）；有點著東西的照舊噴到路通為止（v1.276.2，使用者：
+        「Diablo 真的會卡在門樓前 就繼續噴火 除非路通了」）。
         另外驗「路通了沒」照噴之前在走的方向探（m.bdir），不照噴的時候轉過去的方向 ── */
   const dgate = await page.evaluate(() => {
     /* 積木池也換成空的：場上真的積木掛的 hh 是原本那份 homes 的編號，留著的話 diaTarget 會把第 0 間的積木當成這段牆的 */
@@ -25853,23 +25887,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mk = o => Object.assign({
       kind: 'diablo', st: 'come', x: 0, z: -6, a: 0, tx: 0, tz: 20,
       pause: 0, ghost: 0, gait: 0.85, sc: DIA_SC, fun: 0, home: 0,
-      fb: 0, ft: 0, fhit: 0, jr: 0, spin: 0, bust: null, bn: 0, bskip: null, bdir: 0
+      fb: 0, ft: 0, fhit: 0, jr: 0, spin: 0, bust: null, bn: 0, bskip: null, bway: null, bside: 0, bdir: 0
     }, o);
     let asked = 0;
     navReach = () => { asked++; return true; };
     const gate = gateNeed(mk({}), 0, 20);
     navReach = keep.reach;
     const wf = wallFoot(mk({ x: 5, z: -2.6 }), 5, 0);
-    const m = mk({});
+    const m = mk({ x: 1 });               // 偏右一格（還在門洞前）：近的那一端是右邊（x1）
     const bust = diaBust(m);
     const eye = { st: m.st, back: m.bust, home: m.bhome === wall };
-    /* 一幀就是一道：挑不到目標當場收掉（diaEnd），還擋著的話下一幀從頭再噴——50 道（v1.276.0 的上限是 4）都還在噴 */
+    /* 一幀就是一道：挑不到目標當場收掉（diaEnd），一塊都沒點著——DIA_BUST 道之後放過那一段、回原本那一段、換條路 */
     let tries = 0;
     while (m.st === 'fire' && tries < 50) { stepDiaFire(m, 0.02); tries++; }
-    const keepOn = { st: m.st, tries, back: m.bust, skip: m.bskip };
+    const giveUp = { st: m.st, tries, skip: !!m.bskip && m.bskip.includes(wall), again: diaBust(m),
+                     way: m.bway && Object.assign({}, m.bway) };
+    /* 每一道都有點著東西（m.fgot，見 stepDiaFire）：50 道都還在噴 */
+    const m5 = mk({ x: 1, st: 'fire', bust: 'come', bhome: wall });
+    let tries5 = 0;
+    while (m5.st === 'fire' && tries5 < 50) { m5.fgot = 1; diaEnd(m5); tries5++; }
+    const keepOn = { st: m5.st, tries: tries5, back: m5.bust };
     homes = { list: [] };                 // 路通了：那一段整個不見
-    stepDiaFire(m, 0.02);
-    const clear = { st: m.st, bust: m.bust };
+    stepDiaFire(m5, 0.02);
+    const clear = { st: m5.st, bust: m5.bust };
     /* 噴完面向側面（轉去對著旁邊那一塊噴）：側面一段牆、正前方空的 → 路通了；正前方一段牆 → 還擋著 */
     const dirCase = h => {
       homes = { list: [h] };
@@ -25883,7 +25923,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const fun = mk({ fun: 1, st: 'fun' });
     const funBust = diaBust(fun);
     homes = keep.homes; blocks = keep.blocks;
-    return { gate, asked, wf, bust, eye, keepOn, clear, dir, funBust, funBack: fun.bust };
+    return { gate, asked, wf, bust, eye, giveUp, keepOn, clear, dir, funBust, funBack: fun.bust,
+             max: DIA_BUST, side: GIA_SIDE, wx1: wall.x1 };
   });
   ok('Diablo 不走城門：連問都不問，前面擋著就停下來對它噴（噴完回原本那一段）',
      dgate.gate === false && dgate.asked === 0 && dgate.wf === false &&
@@ -25891,11 +25932,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dgate.funBust && dgate.funBack === 'fun',
      '城門問了 ' + dgate.asked + ' 次、走到牆邊拆牆那條 ' + dgate.wf + '；正對著門洞 → ' + dgate.eye.st +
      '（噴完回 ' + dgate.eye.back + '）；逛到一半被擋 → 噴完回 ' + dgate.funBack);
-  ok('擋著就一直噴、不放它一馬，路通了才回原本那一段',
-     dgate.keepOn.st === 'fire' && dgate.keepOn.tries === 50 && dgate.keepOn.back === 'come' && !dgate.keepOn.skip &&
+  ok('連幾道都沒點著就放過那一段、換條路（噴不動的：芙莉蓮的罩子）',
+     dgate.giveUp.st === 'come' && dgate.giveUp.tries === dgate.max && dgate.giveUp.skip && dgate.giveUp.again === false &&
+     !!dgate.giveUp.way && dgate.giveUp.way.x1 === dgate.wx1 + dgate.side,
+     '一塊都點不著：噴了 ' + dgate.giveUp.tries + ' 道（上限 ' + dgate.max + '）就回 ' + dgate.giveUp.st +
+     '、記進 bskip，再問一次攔不攔：' + dgate.giveUp.again + '；換的路 ① x ' + (dgate.giveUp.way && dgate.giveUp.way.x1));
+  ok('有點著東西就一直噴，路通了才回原本那一段',
+     dgate.keepOn.st === 'fire' && dgate.keepOn.tries === 50 && dgate.keepOn.back === 'come' &&
      dgate.clear.st === 'come' && dgate.clear.bust === null,
-     '同一個擋路的噴了 ' + dgate.keepOn.tries + ' 道還在 ' + dgate.keepOn.st + '（bskip ' + (dgate.keepOn.skip ? '有' : '沒有') +
-     '）；那一段拿掉 → ' + dgate.clear.st);
+     '每一道都有點著、框一直在：噴了 ' + dgate.keepOn.tries + ' 道還在 ' + dgate.keepOn.st +
+     '；那一段拿掉 → ' + dgate.clear.st);
   ok('路通了沒照噴之前在走的方向探，不照噴的時候轉過去的方向',
      dgate.dir.side === 'come' && dgate.dir.ahead === 'fire',
      '噴完面向側面：側面一段牆（不擋路）→ ' + dgate.dir.side + '；正前方一段牆 → ' + dgate.dir.ahead);
