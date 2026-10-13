@@ -24,7 +24,7 @@ const TOOLS = [
   { id: 'bucket', n: '水桶', k: '🪣',
     tip: '點一下：倒一大缸水，積起來的水會從破洞噴出去；淋濕的積木與小人 5 秒內點不著',
     lock: null },
-  { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　點地面：只敲地板，建築不受影響',
+  { id: 'hammer', n: '槌子', k: '🔨', tip: '點建築：點狀衝擊　·　槌下的生物與小人會倒（點在牠身上、點旁邊的地面都算）　·　點地面：建築不受影響',
     lock: null },
   { id: 'bighammer', n: '大槌', k: '🔨', big: true,
     /* 「範圍三倍」是 v1.165 收小槌之後的實況（11 ÷ 3.6 ≈ 3.06）：大槌自己沒變。 */
@@ -163,8 +163,12 @@ let tool = 'hammer';
      · 份數**直接放到上限**（v1.262.0～v1.274 是 ×3 再壓上限）：龍捲風 3 → 4 道，其餘本來就到上限；保齡球、天降鐵球各 6 顆（BALL_MAX）
      · 擺法**統一一條規則**（rageSpots）：第一份在點的那一點，其餘隨機散在附近、兩兩至少隔一段距離——範圍與間距每把各一組（RAGE_SPOT）
      · 點兩下的那五把，第二點**也各自散在第二點附近**（使用者選的「也是分散在第二點附近」），不再是並排平行
-   見 開發筆記〈破壞模式統一：放到上限、點的那一點加附近隨機幾處（v1.275.0）〉 */
-const RAGE_TOOLS = { meteor: 1, tornado: 1, treb: 1, cannon: 1, fw: 1, ball: 1, drop: 1 };   // 會放好幾份的那幾把（開關灰不灰照這張表）
+   見 開發筆記〈破壞模式統一：放到上限、點的那一點加附近隨機幾處（v1.275.0）〉
+   **v1.278.0 再加兩把**（使用者：「核彈 彈跳球也加進破壞模式」，選的是「照放到上限，上限不動」）：
+   核彈 4 顆（NUKE_MAX）、彈跳球 2 把 48 顆（BNC_MAX ÷ BNC_N），擺法照同一條規則（rageSpots／rageEnds）。
+   見 開發筆記〈破壞模式加核彈與彈跳球（v1.278.0）〉 */
+const RAGE_TOOLS = { meteor: 1, tornado: 1, treb: 1, cannon: 1, fw: 1, ball: 1, drop: 1,
+                     nuke: 1, bounce: 1 };   // 會放好幾份的那幾把（開關灰不灰照這張表）
 let rageOn = false;                 // 開關（存在 pref.rage，見 game-save.js）
 /* 這一下放幾份：one 是平常一下放多少，cap 是場上同時最多幾個（同一個單位）。沒開就是 one，開著就是 cap */
 const rageN = (one, cap) => rageOn ? Math.max(one, cap) : one;
@@ -175,11 +179,14 @@ const rageN = (one, cap) => rageOn ? Math.max(one, cap) : one;
      treb／cannon 一隊的正面寬（投石機 21、加農砲 14）再加一台的身寬，兩隊才不會交錯在一起
      fw 一輪自己散 FW_OFF（7）格，兩輪的中心至少隔一輪的直徑
      ball／drop 球的直徑 2 × BALL_R 再留一點，擦身而過不是疊在一起
+     nuke 爆炸半徑 NUKE_R（同隕石：間距＝一顆炸得到多遠）（v1.278.0）
+     bounce 一把落地時自己散開的寬度（方向亂 ±BNC_YAW）再留一點（v1.278.0）
    點兩下的那幾把，第二點周圍也照同一組散。**物件不是常數**：預覽頁要邊看邊挑（同 ZEN_Z），程式只讀不寫 */
 const RAGE_SPOT = {
   meteor: { r: 40, gap: 9.2 }, tornado: { r: 36, gap: 24 },
   treb: { r: 40, gap: 30 }, cannon: { r: 36, gap: 22 },
-  fw: { r: 24, gap: 15 }, ball: { r: 20, gap: 9 }, drop: { r: 20, gap: 9 }
+  fw: { r: 24, gap: 15 }, ball: { r: 20, gap: 9 }, drop: { r: 20, gap: 9 },
+  nuke: { r: 45, gap: 30 }, bounce: { r: 24, gap: 12 }
 };
 /* n 份的位置：**第一份就是 (cx, cz)**（＝平常點一下那一份），其餘在 s.r 格內均勻抽（開根號，同 fireRock），
    跟已經抽好的任何一份（含第一份）近於 s.gap 就重抽。一份抽 30 次都塞不進去（前面幾份剛好把空位切碎了）就**整批重抽**；
@@ -671,7 +678,13 @@ function stepQuake(dt) {
 const SWING_DOWN = 0.19, SWING_BACK = 0.34;
 const SWING_ARM = 9, SWING_ANG = 2.15;
 let swingSide = 1;
-function launchHammer(point, dir, big, ground) {
+/* who ＝ 小槌子點到的那一隻生物或那個小人（v1.278.0；man＝是小人），沒給就是照舊點建築或地面。
+   使用者：「小槌子調整能攻擊生物」，選的是「點得到，砸在牠身上」「小人也算」：
+   點選那一層小槌子改看 'levi' 那一檔（建築、生物、小人同一級，見 game-ui.js 的 onUp），
+   槌頭落下那一刻（resolveSwing）先把槌下的打倒（hammerKO），再照常在落點 smash——旁邊的積木一樣打掉。
+   v1.50～v1.277 生物與小人在小槌子眼裡是透明的：實測對準牛羊點，射線穿過去落在牠後面 5.7～9.6 格的地上，
+   只敲一下地板（thumpGround），3 下都沒打倒。見 開發筆記〈小槌子砸得到生物與小人（v1.278.0）〉 */
+function launchHammer(point, dir, big, ground, who, man) {
   if (swing && !swing.hit) resolveSwing();        // 連點時先把上一槌結算掉，不要吃掉那一擊
   /* 側揮：揮動平面取「螢幕右方 × 世界上方」，弧線正對著鏡頭掃過來。
      沿著視線方向直直砸下去的話，槌子從頭到尾都是端面朝你，看不出那是一支槌子。 */
@@ -682,13 +695,16 @@ function launchHammer(point, dir, big, ground) {
   swing = { px: point.x, py: point.y, pz: point.z,
             dx: dir.x, dy: dir.y, dz: dir.z,
             rx: rx * swingSide, rz: rz * swingSide, t: 0, hit: false,
-            big: !!big, ground: !!ground };
+            big: !!big, ground: !!ground, who: who || null, man: !!man };
   sndSwing();
 }
 function resolveSwing() {
   if (!swing || swing.hit) return 0;
   swing.hit = true;
   const p = { x: swing.px, y: swing.py, z: swing.pz };
+  /* 小槌子槌下的生物與小人（v1.278.0）：**點哪裡都一樣**，排在 smash 前面——順序反了的話，
+     smash 打掉積木時 afterHit 會先把他們算成「被震倒」（quake）。大槌照舊（使用者只指名小槌子） */
+  if (!swing.big) hammerKO(p, swing.who, swing.man);
   // 砸在空地上：大槌是把整棟震一震（震到的那些自己垮下來），小槌只是敲一下地板
   if (swing.ground) return swing.big ? startQuake(p) : thumpGround(p);
   /* 大槌：範圍 BIG_R、力道再多五成。範圍本來寫成 hammerR × 2，
@@ -696,6 +712,32 @@ function resolveSwing() {
      所以大槌改用絕對值（11 ＝ 舊的 5.5 × 2，跟以前一模一樣）。 */
   return smash(p, { x: swing.dx, y: swing.dy, z: swing.dz },
                swing.big ? BIG_R : hammerR, hammerPow * (swing.big ? 1.5 : 1));
+}
+/* 小槌子一槌打倒誰（v1.278.0）。第一版只打倒點到的那一隻，使用者看過預覽：「小槌子打生物 如果是點在地面去
+   敲到生物也算有效 目前好像只會被點的那隻?」——實測（空地、一塊積木都沒打掉）點在生物身上，旁邊 2 格、4 格的
+   那兩隻與 2 格的小人都沒倒；敲地板那一下 2 格內的一個都沒倒。因為震倒那一圈只在 afterHit 裡，
+   而 afterHit 第一行是「沒打掉積木就 return」，敲地板（thumpGround）更是什麼活的都不碰。
+   所以改成一條規則：**每一槌都把落點 HAM_KO.r 內的生物與小人打倒、各算一次被打**（點建築、點地面、點在牠身上都一樣），
+   點到的那一個不管多遠都算（點在大個子的頭上，離腳可能超過半徑）。
+   量距離同 afterHit：三維、小人量胸口（0.9 高）——槌子砸在高樓上，底下的人不倒（v1.147）。
+   躺幾秒也同 afterHit（小人 1.1～2.3、生物 B_FALL）：點建築那一下以前就是 afterHit 震倒的，倒的樣子不變。
+   已經在飛、在燒、躺著的打不動，防護罩裡的打不倒（fellBeast／workerSafe 各自擋著），同一槌不會連算。 */
+/* 半徑：同敲在建築上震倒人的那一圈（afterHit 的 R × 1.7）。**物件不是常數**：預覽頁要邊看邊挑（同 RAGE_SPOT） */
+const HAM_KO = { r: hammerR * 1.7 };
+function hammerKO(p, who, man) {
+  const R = HAM_KO.r;
+  for (const w of workers) {
+    if (w.air || w.dead || w.burn > 0 || w.fall > 0 || workerSafe(w)) continue;   // 罩子裡的打不倒（v1.259.0）
+    if (w !== who && Math.hypot(w.x - p.x, (p.y || 0) - (w.y || 0) - 0.9, w.z - p.z) >= R) continue;
+    w.fall = rr(1.1, 2.3); releaseWorker(w); sndFall();
+    lifeHit(w, 'hammer');
+  }
+  const near = [];
+  eachBeastNear(p, R, m => near.push(m));
+  /* 點到的那一隻：揮下來那 0.19 秒裡走出場的不算（已經不在 beasts 上） */
+  if (who && !man && beasts && beasts.indexOf(who) >= 0 && near.indexOf(who) < 0) near.push(who);
+  for (const m of near)
+    if (!m.air && !m.dead && fellBeast(m, rr(B_FALL[0], B_FALL[1]))) { sndFall(); beastHit(m, 'hammer'); }
 }
 function stepSwing(dt) {
   if (!swing) return;
@@ -1721,7 +1763,7 @@ let bncs = null;            // 在場的彈跳球
 /* 第一下記位置，第二下丟出去（同保齡球）。 */
 function aimBounce(point) {
   if (!aim) { aimFirst(point, 2.5, 0xff8a1f); return; }
-  launchBounce(aim, point);
+  launchBounce(aim, point, rageN(1, Math.floor(BNC_MAX / BNC_N)));   // 破壞模式（v1.278.0）一下放到上限 2 把
 }
 function spawnBnc(x, y, z, vx, vy, vz) {
   if (!bncs) bncs = [];
@@ -1731,18 +1773,27 @@ function spawnBnc(x, y, z, vx, vy, vz) {
   bncs.push(o);
   return o;
 }
-function launchBounce(from, toward) {
+/* n ＝ 幾把（破壞模式，v1.278.0；不給就是一把）：同 launchBall，第一把照舊從第一點朝第二點丟，
+   其餘出手點散在第一點附近、各自朝第二點附近散開的那一點（rageEnds，範圍與間距見 RAGE_SPOT.bounce）。
+   一把接一把錯開 rageLags：還沒輪到的那一把每一顆都掛著 wait，stepBncs 跳過、draw 不畫，出手那一刻才揮一聲。
+   一把的時候不抽多的骰子（rageEnds 不叫、rageLags(1) 回 [0]），骰子順序跟原本一樣。 */
+function launchBounce(from, toward, n) {
+  n = n || 1;
+  const ends = n > 1 ? rageEnds(n, from, toward, RAGE_SPOT.bounce) : null, lag = rageLags(n);
   const top = Math.max(DROP_TOP, siteTopNow() + DROP_UP);
-  const dx = toward.x - from.x, dy = BNC_R - top, dz = toward.z - from.z;   // 瞄的是球心貼地那一點
-  const T = Math.hypot(dx, dy, dz) / BNC_SPD;
-  const vx = dx / T, vy = dy / T + 0.5 * GRAV * T, vz = dz / T;         // T 秒後剛好落在那一點
-  const h = Math.hypot(vx, vz), s = Math.hypot(h, vy);
-  const yaw = Math.atan2(vz, vx), pit = Math.atan2(vy, h);
-  for (let i = 0; i < BNC_N; i++) {
-    const a = yaw + rr(-BNC_YAW, BNC_YAW), p = pit + rr(-BNC_PITCH, BNC_PITCH);
-    const k = s * (1 + rr(-BNC_SPDJ, BNC_SPDJ));
-    spawnBnc(from.x, top, from.z,
-             Math.cos(a) * Math.cos(p) * k, Math.sin(p) * k, Math.sin(a) * Math.cos(p) * k);
+  for (let j = 0; j < n; j++) {
+    const f = j ? ends.a[j] : from, to = j ? ends.b[j] : toward;
+    const dx = to.x - f.x, dy = BNC_R - top, dz = to.z - f.z;            // 瞄的是球心貼地那一點
+    const T = Math.hypot(dx, dy, dz) / BNC_SPD;
+    const vx = dx / T, vy = dy / T + 0.5 * GRAV * T, vz = dz / T;         // T 秒後剛好落在那一點
+    const h = Math.hypot(vx, vz), s = Math.hypot(h, vy);
+    const yaw = Math.atan2(vz, vx), pit = Math.atan2(vy, h);
+    for (let i = 0; i < BNC_N; i++) {
+      const a = yaw + rr(-BNC_YAW, BNC_YAW), p = pit + rr(-BNC_PITCH, BNC_PITCH);
+      const k = s * (1 + rr(-BNC_SPDJ, BNC_SPDJ));
+      spawnBnc(f.x, top, f.z,
+               Math.cos(a) * Math.cos(p) * k, Math.sin(p) * k, Math.sin(a) * Math.cos(p) * k).wait = lag[j];
+    }
   }
   aim = null;
   sndSwing();
@@ -1778,8 +1829,14 @@ function sndBoing(v) { tone(300 + Math.min(1, v / 40) * 260, 0.16, 'sine', 0.07,
 const BNC_POOL = [], BNC_NEAR = [], BNC_D2 = [];
 function stepBncs(dt) {
   if (!bncs) return;
+  let swung = false;
   for (let i = bncs.length - 1; i >= 0; i--) {
     const o = bncs[i];
+    if (o.wait > 0) {              // 破壞模式還沒輪到這一把（v1.278.0，見 launchBounce）：不動、不扣壽命
+      o.wait -= dt;
+      if (o.wait > 0) continue;
+      if (!swung) { swung = true; sndSwing(); }    // 一把 24 顆同一幀出手：一把一聲，不是一顆一聲
+    }
     o.life -= dt;
     if (stepBounce(o, dt)) { spawnRing({ x: o.x, y: 0, z: o.z }, 1.5); bncs.splice(i, 1); }
   }
@@ -4444,13 +4501,23 @@ const NUKE_MAX = 4;                 // 跟引擎的 NUKE_MAX 一致，多的把�
 /* 彈頭在彈體模型的原點上（nukeGroup 的 y=0 附近），所以掃掠只要往前多探這麼一點，
    碰到的就是彈頭的鼻尖，不是等整顆彈體埋進屋頂才算。 */
 const NUKE_NOSE = 1.8;
-function callNuke(point) {
+/* n ＝ 一次幾顆（破壞模式，v1.278.0；不給就是一顆）。同隕石：第一顆就落在點的那一點，其餘散在附近
+   （rageSpots，範圍與間距見 RAGE_SPOT.nuke），倒數一顆接一顆錯開 rageLags——連地上的倒數圈一起錯開
+   （stepNuke 在 t 還大於 NUKE_WAIT ＋ NUKE_FALL 時什麼都不做，同 stepMeteors），每一顆從冒圈到落下都是平常的 2.8 秒。
+   警報與逃命只喊一次：從點的那一點往外跑、跑到最後一顆落下（alertFlee 喊第二次會蓋掉第一次的方向）。 */
+function callNuke(point, n) {
   if (!nukes) nukes = [];
-  if (nukes.length >= NUKE_MAX) nukes.shift();     // 放太多顆就把最早那顆擠掉
-  nukes.push({ x: point.x, y: NUKE_TOP + 3, z: point.z, s: NUKE_NOSE,
-               t: NUKE_WAIT + NUKE_FALL, mark: 0, spin: 0 });
+  n = n || 1;
+  const spots = n > 1 ? rageSpots(n, point.x, point.z, RAGE_SPOT.nuke) : null;
+  const lag = rageLags(n);
+  for (let i = 0; i < n; i++) {
+    if (nukes.length >= NUKE_MAX) nukes.shift();   // 放太多顆就把最早那顆擠掉
+    const p = i ? spots[i] : point;
+    nukes.push({ x: p.x, y: NUKE_TOP + 3, z: p.z, s: NUKE_NOSE,
+                 t: NUKE_WAIT + NUKE_FALL + lag[i], mark: 0, spin: 0 });
+  }
   // 警報一響，全場都開始跑（v1.96）。倒數多久就給他們跑多久
-  alertFlee(point, NUKE_WAIT + NUKE_FALL);
+  alertFlee(point, NUKE_WAIT + NUKE_FALL + lag[n - 1]);
   sndSiren();
 }
 function nukeHit(p) {
@@ -4467,6 +4534,7 @@ function stepNuke(dt) {
   for (let i = nukes.length - 1; i >= 0; i--) {
     const n = nukes[i];
     n.t -= dt;
+    if (n.t > NUKE_WAIT + NUKE_FALL) continue;     // 破壞模式還沒輪到這一顆（v1.278.0，見 callNuke）：連圈都還不冒
     n.spin += dt * 1.7;
     if (n.t > NUKE_FALL) {
       n.mark -= dt;
@@ -8222,7 +8290,7 @@ function useTool(hit) {
   if (tool === 'bucket') { pourWater(hit); return 0; }
   if (tool === 'bomb') { placeBomb(hit.point); return 0; }
   if (tool === 'meteor') { callMeteor(hit.point, rageN(1, MET_MAX)); return 0; }   // 破壞模式（v1.262.0）一下放滿上限 6 顆
-  if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }); return 0; }
+  if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }, rageN(1, NUKE_MAX)); return 0; }   // 破壞模式（v1.278.0）一下放滿上限 4 顆
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
   if (tool === 'storm') { aimStorm({ x: hit.point.x, z: hit.point.z }); return 0; }   // v1.228 點兩下
   if (tool === 'drop') { aimDropBall(hit.point); return 0; }

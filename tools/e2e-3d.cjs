@@ -11345,6 +11345,94 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 天災裝回去過（上面那幾條要牠），這裡要關回去——不關的話後面每一段都會跑到
      隨機來訪的猴子（同天災那幾段的收尾）。 */
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); clearHomes(); });
+
+  /* ── ⑰ 城內缺的有人補（v1.278.0，使用者：「城牆內適量的小房子或是小樹(目前觀察是發現被拆了就不會再蓋 一直去蓋城牆)」，
+        選「當下就補」）。v1.277 以前城內只在開工那一刻派人去「蓋缺的」：沒蓋完的那幾筆照樣算在數量裡、沒人回去接手，
+        整間打光被廢棄的那一間也要等下一輪（探針：第二輪 180 秒城內 0 人）。前三條造最小場面直接叫 startWall／stepWall：
+          a. 開工時每三組那一組先接手城內沒蓋完、沒人顧的那一間
+          b. 一秒一次（stepWall）：沒人顧的那一間、數量不夠的那幾筆，閒著的人去補（不從牆上調）
+          c. 沒有閒著的人才從牆上調一組，而且城內的人不到參加的三分之一才調（城牆是主角；第一版沒這條，預覽頁量到牆上 0 人）
+          d. 整間打光（廢棄）之後，一秒多內就有人在城內重蓋一間（真的跑 step，事件掛著）
+        全部規則型：整圈是現成的（mkWall，已經蓋好），城內那幾筆都還沒砌，不必等人搬料。 ── */
+  const wallFix = await page.evaluate(() => {
+    const keep = { siteR, arenaR, phase, doomT, ev: idleEv, last: evLast, arm: evArm, ph: evPh };
+    doomT = 1e9;
+    const W = mkWall(12, 52);
+    phase = 'done';
+    const live = workers.filter(w => !w.dead);
+    const free = () => {
+      dropHomes(h => h.wall);                            // 城內的拿掉（都還沒砌，沒有積木），牆留著
+      for (const w of live) { releaseWorker(w); w.hm = -1; w.fall = 0; w.flee = 0; w.x = 2 + Math.random(); w.z = W - 8; }
+    };
+    const inside = () => homes.list.map((h, i) => ({ h, i })).filter(o => !o.h.wall);
+    const crewOf = i => i < 0 ? 0 : workers.filter(w => w.hm === i).length;
+    const newIn = () => { for (let t = 0; t < 8; t++) { const i = wallInside([live[0]], 0, W - 8, false, W); if (i >= 0) return i; } return -1; };
+    const onWall = () => workers.filter(w => w.hm >= 0 && homes.list[w.hm].wall).length;
+    const segI = homes.list.findIndex(h => h.wall);
+    const cap = Math.floor(live.length / 3);
+    const out = { W, n: live.length, cap };
+    /* a. 開工 */
+    free();
+    const a = newIn(), aId = a >= 0 ? homes.list[a].id : -1;
+    startWall();
+    out.a = { made: a >= 0, crew: workers.filter(w => w.hm >= 0 && homes.list[w.hm].id === aId).length };
+    /* b. 閒著的人 */
+    free();
+    const b = newIn(), want0 = wallWant(W);
+    stepWall(WALL_FIX_T);
+    const ib = inside();
+    out.b = { made: b >= 0, crew: crewOf(b), want0, n: ib.length, allCrewed: ib.every(o => crewOf(o.i) > 0), onWall: onWall() };
+    /* c1. 全部在牆上、城內 0 人：調，調到三分之一為止（最後一組可能多出 HOME_TEAM − 1 人） */
+    free();
+    const c = newIn();
+    for (const w of live) w.hm = segI;
+    stepWall(WALL_FIX_T);
+    const inN = workers.filter(w => w.hm >= 0 && !homes.list[w.hm].wall).length;
+    out.c1 = { made: c >= 0, crew: crewOf(c), inN, max: cap + HOME_TEAM - 1, onWall: onWall() };
+    /* c2. 城內已經三分之一：另一間沒人顧的也不從牆上調 */
+    free();
+    const x = newIn(), y = newIn();
+    live.forEach((w, i) => { w.hm = i < cap ? x : segI; });
+    stepWall(WALL_FIX_T);
+    out.c2 = { made: x >= 0 && y >= 0, y: crewOf(y), onWall: onWall(), want: live.length - cap };
+    /* d. 真的跑：一間蓋好、住兩個人，整間打光。事件那一支要裝回真的（installClean 預設把它換成空函式），量完換回去 */
+    free();
+    const evS = stepIdleEvent;
+    stepIdleEvent = window.evStep;
+    idleEv = IDLE_EVENTS.find(e => e.id === 'wall'); evLast = idleEv; evArm = 0; evPh = 'idle';
+    const d = newIn(), h = homes.list[d];
+    for (let i = 0; i < h.slots.length; i++) {
+      const sl = h.slots[i], bk = newBlock();
+      bk.x = sl.x; bk.y = sl.y; bk.z = sl.z; bk.st = 3; bk.rest = true; bk.hh = d; bk.hk = i; bk.dug = 1;
+      blocks.push(bk); gridAdd(bk); sl.filled = true; h.left--;
+    }
+    h.done = true; homeBox(h); ENG.setBlockCount(blocks.length);
+    live[0].hm = live[1].hm = d; live[0].own = live[1].own = h.id;
+    for (let i = 0; i < 60; i++) step(0.05);             // 3 秒：城內缺的先補齊（閒著的人）
+    const before = inside().filter(o => !o.h.tree).length, dId = h.id;
+    const di = homes.list.findIndex(q => q.id === dId);
+    for (const bk of blocks) if (bk.st === 3 && bk.hh === di) breakBlock(bk, 0, 3, 0);
+    for (let i = 0; i < 30; i++) step(0.05);             // 1.5 秒
+    const id = inside();
+    out.d = { gone: !homes.list.some(q => q.id === dId), before, houses: id.filter(o => !o.h.tree).length,
+              allCrewed: id.every(o => crewOf(o.i) > 0) };
+    /* 動過的全域狀態還回去 */
+    clearHomes();
+    stepIdleEvent = evS;
+    idleEv = keep.ev; evLast = keep.last; evArm = keep.arm; evPh = keep.ph;
+    siteR = keep.siteR; arenaR = keep.arenaR; phase = keep.phase; doomT = keep.doomT;
+    return out;
+  });
+  ok('城內：開工時每三組那一組先接手城內沒蓋完、沒人顧的那一間',
+     wallFix.n >= 9 && wallFix.a.made && wallFix.a.crew > 0, JSON.stringify({ n: wallFix.n, a: wallFix.a }));
+  ok('城內：每秒看一次，沒人顧的那一間與數量不夠的那幾筆，閒著的人去補（不從牆上調）',
+     wallFix.b.made && wallFix.b.crew > 0 && wallFix.b.n >= 1 && wallFix.b.allCrewed && wallFix.b.onWall === 0, JSON.stringify(wallFix.b));
+  ok('城內：沒有閒著的人才從牆上調一組，城內的人到參加人數的三分之一就不再調（城牆是主角）',
+     wallFix.c1.made && wallFix.c1.crew > 0 && wallFix.c1.inN >= 1 && wallFix.c1.inN <= wallFix.c1.max &&
+     wallFix.c1.onWall === wallFix.n - wallFix.c1.inN && wallFix.c2.made && wallFix.c2.y === 0 && wallFix.c2.onWall === wallFix.c2.want,
+     JSON.stringify({ cap: wallFix.cap, c1: wallFix.c1, c2: wallFix.c2 }));
+  ok('城內一間整間打光（廢棄）之後，一秒多內就有人在城內重蓋一間',
+     wallFix.d.gone && wallFix.d.houses === wallFix.d.before && wallFix.d.allCrewed, JSON.stringify(wallFix.d));
   }   // ── 〈閒晃事件：城牆〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 偷懶 ══════════ */
@@ -29787,6 +29875,95 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hSlay.exc.seen + '；' + hSlay.exc.dead + ' 秒斬殺、被沖飛＝' + !!hSlay.exc.air + '；提示「' + hSlay.exc.said + '」');
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+
+  /* ── 小槌子（v1.278.0，使用者：「小槌子調整能攻擊生物」，選「點得到，砸在牠身上」「小人也算」；看過預覽再加一句
+        「如果是點在地面去 敲到生物也算有效 目前好像只會被點的那隻?」）：每一槌把落點 HAM_KO.r 內的生物與小人都打倒、
+        各算一次被打——點在牠身上、點旁邊的地面都一樣（hammerKO）。v1.277 以前空地上一塊積木都沒打掉時一個都不倒
+        （afterHit 第一行 return、thumpGround 什麼活的都不碰）。全部擺在空地上直接叫 launchHammer ＋ resolveSwing，不跑模擬 ── */
+  const hHam = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const lh = lifeHit;
+    lifeHit = window.lifeHitFn;                           // 「記一次」那一支 installClean 預設關掉，這裡要量它，量完換回去
+    const R = HAM_KO.r, X = bp.radius + 30, s0 = stats.smashed, n0 = placedCnt;
+    const ape = (x, z) => { const m = spawnBeast('ape', 1); m.x = x; m.z = z; m.y = 0; m.st = 'fun'; m.stay = 999; m.pause = 999; return m; };
+    const live = workers.filter(w => !w.dead && !w.air && !(w.burn > 0));
+    const man = (w, x, z) => { releaseWorker(w); w.x = x; w.z = z; w.y = 0; w.fall = 0; w.flee = 0; return w; };
+    const down = o => (o.fall || 0) > 0;
+    const D = { x: 0, y: -1, z: 0 }, out = { R: +R.toFixed(2), men: live.length };
+    /* ① 點在牠身上：牠、2 格外那一隻、2 格外那個小人倒；半徑外 1.5 格那一隻不倒 */
+    const a = ape(X, 0), b = ape(X + 2, 0), c = ape(X + R + 1.5, 0), w1 = man(live[0], X, 2), h1 = w1.hits || 0;
+    launchHammer({ x: X, y: 0.8, z: 0 }, D, false, false, a); resolveSwing();
+    out.onBeast = { a: down(a), b: down(b), c: down(c), w: down(w1), hit: (w1.hits || 0) - h1, aCounted: (a.hcd || 0) > 0 };
+    /* ② 敲在地上：2 格外的生物與小人倒，半徑外的不倒 */
+    const d = ape(X + 2, -20), e = ape(X + R + 1.5, -20), w2 = man(live[1], X, -18), h2 = w2.hits || 0;
+    launchHammer({ x: X, y: 0, z: -20 }, D, false, true); resolveSwing();
+    out.onGround = { d: down(d), e: down(e), w: down(w2), hit: (w2.hits || 0) - h2 };
+    /* ③ 砸在高處（離地 R ＋ 2）：正下方的生物與小人不倒（同 afterHit 的三維距離，v1.147） */
+    const f = ape(X, 20), w3 = man(live[2], X + 0.5, 20);
+    launchHammer({ x: X, y: R + 2, z: 20 }, D, false, false); resolveSwing();
+    out.high = { f: down(f), w: down(w3) };
+    /* ④ 點到的那一隻不管多遠都算（點在大個子的頭上，離腳超過半徑） */
+    const g = ape(X, 40);
+    launchHammer({ x: X, y: R + 2, z: 40 }, D, false, false, g); resolveSwing();
+    out.far = down(g);
+    /* ⑤ 大槌照舊（使用者只指名小槌子）：空地上沒打掉積木就不掀 */
+    const k = ape(X + 2, -40);
+    launchHammer({ x: X, y: 0.8, z: -40 }, D, true, false); resolveSwing();
+    out.big = down(k);
+    out.smashed = stats.smashed - s0; out.kept = placedCnt === n0;
+    swing = null; ENG.hideHammer(); beasts = null;
+    lifeHit = lh;
+    for (const w of [w1, w2, w3]) { w.fall = 0; w.hits = Math.max(0, (w.hits || 0) - 1); }
+    return out;
+  });
+  ok('小槌子點在生物身上：牠與半徑內的生物、小人都倒（各算一次被打），半徑外的不倒；空地上一塊積木都沒打掉也一樣',
+     hHam.onBeast.a && hHam.onBeast.b && !hHam.onBeast.c && hHam.onBeast.w && hHam.onBeast.hit === 1 && hHam.onBeast.aCounted &&
+     hHam.smashed === 0, JSON.stringify(hHam.onBeast) + '，半徑 ' + hHam.R + '、打掉 ' + hHam.smashed + ' 塊');
+  ok('小槌子敲在地上：半徑內的生物與小人倒，半徑外的不倒，建築一塊都不掉',
+     hHam.onGround.d && !hHam.onGround.e && hHam.onGround.w && hHam.onGround.hit === 1 && hHam.kept, JSON.stringify(hHam.onGround));
+  ok('小槌子砸在高處，正下方的不倒；點到的那一隻不管離落點多遠都算；大槌照舊（沒打掉積木不掀）',
+     !hHam.high.f && !hHam.high.w && hHam.far && !hHam.big, JSON.stringify({ high: hHam.high, far: hHam.far, big: hHam.big }));
+
+  /* 點選那一層：拿小槌子對著生物點下去，點到的就是牠（'levi' 那一檔，建築、生物、小人同一級）。
+     v1.277 以前是 'skip'：射線穿過牠落在後面 5.7～9.6 格的地上（探針量的）。真的走 onDown／onUp 點牠（同〈點地上的飛龍〉那一條）：
+     小人先挪到建築的另一邊（不然擋在前面的那一個會先被點到）、點完還回去 */
+  const hamClick = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const e = ENG.camEye(), hl = Math.hypot(e.x, e.z), hx = e.x / hl, hz = e.z / hl;
+    const m = spawnBeast('ape', 1);
+    m.x = hx * (bp.radius + 8); m.z = hz * (bp.radius + 8); m.y = 0; m.st = 'fun'; m.stay = 999; m.pause = 999;
+    const park = workers.map(o => [o, o.x, o.z]);
+    for (const [o] of park) { o.x = -hx * (bp.radius + 12); o.z = -hz * (bp.radius + 12); }
+    draw(); ENG.render();
+    const c = ENG.three.renderer.domElement.getBoundingClientRect();
+    const v = new THREE.Vector3(m.x, 0.8 * (m.sc || 1), m.z).project(ENG.three.camera);
+    const px = (v.x + 1) / 2 * c.width, py = (1 - v.y) / 2 * c.height;
+    /* 身體中段那一點可能剛好落在兩塊造型之間：附近掃一圈，找 'levi' 那一檔真的點到牠的那一點 */
+    let at = null;
+    for (let r = 0; r <= 30 && !at; r += 3)
+      for (let dx = -r; dx <= r && !at; dx += 3)
+        for (const dy of [-r, r]) {
+          const q = ENG.pick(px + dx, py + dy, 'levi');
+          if (q && q.kind === 'beast' && beastAt(q.idx) === m) { at = [px + dx, py + dy]; break; }
+        }
+    const r = { found: !!at };
+    if (at) {
+      r.skip = (ENG.pick(at[0], at[1], 'skip') || {}).kind;     // v1.277 以前那一檔會點到什麼
+      const panel = document.getElementById('panel'), hid = panel.classList.contains('hide'), was = tool;
+      tool = 'hammer';
+      onDown({ clientX: at[0] + c.left, clientY: at[1] + c.top }); onUp({});
+      tool = was;
+      if (!hid) panel.classList.remove('hide');      // onDown 會把設定面板收下去，還回去
+      r.swing = !!swing; r.who = !!swing && swing.who === m;
+      if (swing && !swing.hit) resolveSwing();
+      r.down = m.fall > 0;
+    }
+    for (const [o, x, z] of park) { o.x = x; o.z = z; }
+    swing = null; ENG.hideHammer(); beasts = null;
+    return r;
+  });
+  ok('拿小槌子點生物：點到的就是牠（不再穿過牠打到後面的地上），槌下去牠就倒',
+     hamClick.found && hamClick.swing && hamClick.who && hamClick.down, JSON.stringify(hamClick));
   }   // ── 〈破壞工具打得到那幾隻〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 被打死（v1.240）══════════
@@ -33658,11 +33835,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.mouse.move(900, 500);
   ok('開關在工具小窗左邊、指著它不會叫出選單；點一下切換並寫進 pref',
      rui.inBox && !rui.inPick && rui.left && rui.row && rui.menu === 'hidden' && rui.start === false && rui.on, JSON.stringify(rui));
-  ok('拿那七把時亮著（v1.275.0 加了保齡球、天降鐵球）、拿別把時灰掉（灰掉照樣切得動）',
-     rui.ids === 'ball,cannon,drop,fw,meteor,tornado,treb' && rui.all && rui.na && rui.naClick, JSON.stringify(rui));
+  ok('拿那九把時亮著（v1.275.0 加了保齡球、天降鐵球，v1.278.0 加了核彈、彈跳球）、拿別把時灰掉（灰掉照樣切得動）',
+     rui.ids === 'ball,bounce,cannon,drop,fw,meteor,nuke,tornado,treb' && rui.all && rui.na && rui.naClick, JSON.stringify(rui));
 
   /* ── 份數：關著每把照舊一份；開著**放到上限**（v1.275.0，使用者：「統一調整成各道具的最多數量(例如龍捲風好像應該是4)」）。
-        定時炸彈、核彈不受影響；開著的時候直接叫出手函式（不經 useTool）照舊一份——只有玩家點的那一下會放好幾份 ── */
+        v1.278.0 核彈（NUKE_MAX）、彈跳球（幾把塞滿 BNC_MAX）也加進來，剩定時炸彈不受影響；
+        開著的時候直接叫出手函式（不經 useTool）照舊一份——只有玩家點的那一下會放好幾份 ── */
   const rcount = await page.evaluate(() => {
     const t0 = tool, X = siteR + 30, G = (x, z) => ({ kind: 'ground', point: { x, y: 0, z }, dir: { x: 0, y: -1, z: 0 } });
     const fire = () => {
@@ -33676,6 +33854,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       cleanTools(); tool = 'drop'; useTool(G(-X, 0)); useTool(G(0, 0)); n.drop = balls.length;
       cleanTools(); tool = 'bomb'; useTool(G(0, 0)); n.bomb = bombs.length;
       cleanTools(); tool = 'nuke'; useTool(G(0, 0)); n.nuke = nukes.length;
+      cleanTools(); tool = 'bounce'; useTool(G(-X, 0)); useTool(G(0, 0)); n.bnc = bncs.length;
       return n;
     };
     rageOn = false; const off = fire();
@@ -33689,24 +33868,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     launchFw({ x: 0, z: 0 }); direct.fw = fworks.length + (fwWait || []).length;
     cleanTools(); launchBall({ x: -X, z: 0 }, { x: 0, z: 0 }); direct.ball = balls.length;
     cleanTools(); dropBall({ x: -X, z: 0 }, { x: 0, z: 0 }); direct.drop = balls.length;
+    cleanTools(); callNuke({ x: 0, z: 0 }); direct.nuke = nukes.length;
+    cleanTools(); launchBounce({ x: -X, z: 0 }, { x: 0, z: 0 }); direct.bnc = bncs.length;
     rageOn = false; cleanTools(); fwEnd(); tool = t0;
-    const base = { met: 1, tw: 1, treb: TREB_TEAM, can: CAN_TEAM, fw: FW_SHOT, ball: 1, drop: 1, bomb: 1, nuke: 1 };
+    const base = { met: 1, tw: 1, treb: TREB_TEAM, can: CAN_TEAM, fw: FW_SHOT, ball: 1, drop: 1, bomb: 1, nuke: 1, bnc: BNC_N };
     const want = { met: MET_MAX, tw: TW_MAX, treb: Math.floor(TREB_MAX / TREB_TEAM) * TREB_TEAM,
-                   can: Math.floor(CAN_MAX / CAN_TEAM) * CAN_TEAM, fw: FW_MAX, ball: BALL_MAX, drop: BALL_MAX, bomb: 1, nuke: 1 };
+                   can: Math.floor(CAN_MAX / CAN_TEAM) * CAN_TEAM, fw: FW_MAX, ball: BALL_MAX, drop: BALL_MAX, bomb: 1,
+                   nuke: NUKE_MAX, bnc: Math.floor(BNC_MAX / BNC_N) * BNC_N };
     const same = (a, b) => Object.keys(b).every(k => a[k] === b[k]);     // 比 b 有的那幾鍵
     return { off, on, base, want, direct, okOff: same(off, base), okOn: same(on, want), okDirect: same(base, direct) };   // 只比直接叫的那幾鍵
   });
-  ok('份數：關著每把照舊一份；開著放到上限——隕石 MET_MAX、龍捲風 TW_MAX、投石機與加農砲幾隊塞滿上限、煙火 FW_MAX、保齡球與天降鐵球 BALL_MAX',
+  ok('份數：關著每把照舊一份；開著放到上限——隕石 MET_MAX、龍捲風 TW_MAX、投石機與加農砲幾隊塞滿上限、煙火 FW_MAX、保齡球與天降鐵球 BALL_MAX、核彈 NUKE_MAX、彈跳球幾把塞滿 BNC_MAX',
      rcount.okOff && rcount.okOn,
      '關 ' + JSON.stringify(rcount.off) + '；開 ' + JSON.stringify(rcount.on) + '（要 ' + JSON.stringify(rcount.want) + '）');
-  ok('只有玩家點的那一下會放好幾份：開著的時候直接叫出手函式照舊一份；定時炸彈、核彈不受影響',
-     rcount.okDirect && rcount.on.bomb === 1 && rcount.on.nuke === 1, JSON.stringify(rcount.direct));
+  ok('只有玩家點的那一下會放好幾份：開著的時候直接叫出手函式照舊一份；定時炸彈不受影響',
+     rcount.okDirect && rcount.on.bomb === 1, JSON.stringify(rcount.direct));
 
   /* ── 散開的規則（rageSpots）：第一份就是點的那一點，其餘都在 r 內、兩兩至少隔 gap——每一把的那一組 RAGE_SPOT 各抽 300 批，
         份數照那一把開著時放幾份。一份的時候不抽骰子；骰子全押 0 時塞不進去也不能卡死（缺的疊在中心） ── */
   const rspot = await page.evaluate(() => {
     const N = { meteor: MET_MAX, tornado: TW_MAX, treb: Math.floor(TREB_MAX / TREB_TEAM), cannon: Math.floor(CAN_MAX / CAN_TEAM),
-                fw: Math.ceil(FW_MAX / FW_SHOT), ball: BALL_MAX, drop: BALL_MAX };
+                fw: Math.ceil(FW_MAX / FW_SHOT), ball: BALL_MAX, drop: BALL_MAX,
+                nuke: NUKE_MAX, bounce: Math.floor(BNC_MAX / BNC_N) };
     const out = {};
     for (const id of Object.keys(RAGE_TOOLS)) {
       const s = RAGE_SPOT[id], n = N[id];
@@ -33996,6 +34179,93 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('天降鐵球：第一顆照舊，其餘從 rageEnds 那一組出手、飛向自己的第二頭；兩下點在同一點就每一顆都直直砸',
      rball.drop.n === rball.max && rball.drop.first && rball.drop.at && rball.drop.aim && rball.drop.order && rball.drop.straight,
      JSON.stringify(rball.drop));
+
+  /* ── 核彈（v1.278.0，使用者：「核彈 彈跳球也加進破壞模式」）：同隕石——第一顆在點的那一點，其餘落在 rageSpots 那一組；
+        倒數照 rageLags 一顆接一顆錯開（第一顆就是平常的 NUKE_WAIT ＋ NUKE_FALL），倒數圈也跟著錯開（還沒輪到的連圈都不冒）；
+        警報與逃命只喊一次：從點的那一點往外跑、跑到最後一顆落下。沒開的時候照舊一顆 ── */
+  const rnuke = await page.evaluate(() => {
+    const t0 = tool, P = { kind: 'ground', point: { x: 4, y: 0, z: -7 }, dir: { x: 0, y: -1, z: 0 } };
+    tool = 'nuke'; rageOn = true;
+    const real = rageSpots;
+    let got = null;
+    rageSpots = function (...a) { return (got = real(...a)); };
+    const T0 = NUKE_WAIT + NUKE_FALL, inLag = g => g >= RAGE_LAG[0] - 1e-9 && g <= RAGE_LAG[1] + 1e-9;
+    let first = 0, spot = 0, cd = 0, flee = 0, ran = 0;
+    try {
+      for (let k = 0; k < 100; k++) {
+        cleanTools(); got = null;
+        useTool(P);
+        const ns = nukes, last = ns[ns.length - 1].t;
+        if (ns.length === NUKE_MAX && ns[0].x === 4 && ns[0].z === -7) first++;
+        if (got && ns.slice(1).every((n, i) => n.x === got[i + 1].x && n.z === got[i + 1].z)) spot++;
+        const gaps = ns.slice(1).map((n, i) => n.t - ns[i].t);
+        if (ns[0].t === T0 && gaps.every(inLag)) cd++;
+        /* 喊得到的那幾個（alertFlee 跳過在飛、在燒、死了的）：逃離點的那一點、逃到最後一顆落下再加 FLEE_TAIL */
+        const can = workers.filter(w => !w.air && !(w.burn > 0) && !slain(w));
+        ran = Math.max(ran, can.length);
+        if (can.every(w => w.fex === 4 && w.fez === -7 && Math.abs(w.flee - (last + FLEE_TAIL)) < 1e-9)) flee++;
+      }
+    } finally { rageSpots = real; }
+    /* 倒數圈：走半個 RAGE_LAG[0]（比最短的間隔還短）只有第一顆冒圈；走到最後一顆的 lag 過了才冒齊，那時第一顆還沒落下 */
+    cleanTools();
+    callNuke({ x: 0, z: 0 }, NUKE_MAX);
+    const ns = nukes.slice(), lastLag = ns[ns.length - 1].t - T0, h = RAGE_LAG[0] / 2;
+    step(h);
+    const ring = ns.map(n => n.mark > 0 ? 1 : 0).join('');
+    let t = h, g = 0;
+    while (ns.some(n => !(n.mark > 0)) && g++ < 200) { step(h); t += h; }
+    const rings = { first: ring, want: '1' + '0'.repeat(NUKE_MAX - 1), all: ns.every(n => n.mark > 0), t: +t.toFixed(3), h,
+                    last: +lastLag.toFixed(3), still: !!nukes && nukes.includes(ns[0]) && ns[0].t > NUKE_FALL };
+    rageOn = false; cleanTools(); useTool(P);
+    const one = nukes.length === 1 && nukes[0].x === 4 && nukes[0].z === -7 && nukes[0].t === T0;
+    cleanTools(); tool = t0;
+    return { first, spot, cd, flee, ran, one, rings };
+  });
+  ok('核彈：第一顆落在點的那一點、其餘落在 rageSpots 那一組；倒數照 RAGE_LAG 錯開；警報只喊一次，從點的那一點跑到最後一顆落下（100 批）',
+     rnuke.first === 100 && rnuke.spot === 100 && rnuke.cd === 100 && rnuke.flee === 100 && rnuke.ran > 0 && rnuke.one,
+     JSON.stringify({ first: rnuke.first, spot: rnuke.spot, cd: rnuke.cd, flee: rnuke.flee, ran: rnuke.ran, one: rnuke.one }));
+  const nr = rnuke.rings;
+  ok('核彈的倒數圈也跟著錯開：當下只有第一顆冒圈，其餘輪到了才冒（冒齊的時間 ＝ 最後一顆的 lag）',
+     nr.first === nr.want && nr.all && nr.t >= nr.last - 1e-6 && nr.t <= nr.last + nr.h + 1e-6 && nr.still, JSON.stringify(nr));
+
+  /* ── 彈跳球（v1.278.0）：同保齡球——第一把照舊從第一點朝第二點，其餘幾把從 rageEnds 第一頭那一組出手、
+        朝自己那一份的第二頭（水平方向偏差在 BNC_YAW 內）、每把 BNC_N 顆；一把接一把錯開 RAGE_LAG：
+        同一把同一個 wait，還在等的那一把不動、不扣壽命、不畫（draw 的 bncOn），等完才出手 ── */
+  const rbnc = await page.evaluate(() => {
+    cleanTools();
+    const real = rageEnds;
+    let e = null;
+    rageEnds = function (...a) { return (e = real(...a)); };
+    const ang = (vx, vz, dx, dz) => Math.abs(Math.atan2(vx * dz - vz * dx, vx * dx + vz * dz));
+    const F = { x: -40, z: 6 }, T = { x: 5, z: -3 }, K = Math.floor(BNC_MAX / BNC_N), r = { K, N: BNC_N };
+    try {
+      launchBounce(F, T, K);
+      const bs = bncs.slice(), grp = j => bs.slice(j * BNC_N, (j + 1) * BNC_N);
+      r.n = bs.length;
+      r.first = grp(0).every(o => o.x === F.x && o.z === F.z && ang(o.vx, o.vz, T.x - F.x, T.z - F.z) <= BNC_YAW + 1e-9);
+      r.at = Array.from({ length: K - 1 }, (_, j) => grp(j + 1).every(o => o.x === e.a[j + 1].x && o.z === e.a[j + 1].z &&
+             ang(o.vx, o.vz, e.b[j + 1].x - o.x, e.b[j + 1].z - o.z) <= BNC_YAW + 1e-9)).every(Boolean);
+      const w = Array.from({ length: K }, (_, j) => grp(j)[0].wait);
+      r.wait = w.map(v => +v.toFixed(4));
+      r.order = w[0] === 0 && Array.from({ length: K }, (_, j) => grp(j).every(o => o.wait === w[j])).every(Boolean) &&
+                w.slice(1).every((v, i) => v - w[i] >= RAGE_LAG[0] - 1e-9 && v - w[i] <= RAGE_LAG[1] + 1e-9);
+      draw(); r.drawn0 = bncOn.length;
+      const x0 = bs.map(o => o.x), life0 = bs.map(o => o.life), h = RAGE_LAG[0] / 2;
+      step(h);
+      r.frozen = bs.slice(BNC_N).every((o, i) => o.x === x0[i + BNC_N] && o.life === life0[i + BNC_N]);
+      r.moved = grp(0).every((o, i) => o.x !== x0[i] && o.life < life0[i]);
+      let g = 0;
+      while (bs.some(o => o.wait > 0) && g++ < 200) step(h);
+      draw(); r.drawn1 = bncOn.length; r.live = bncs ? bncs.length : 0;
+    } finally { rageEnds = real; }
+    cleanTools(); draw();
+    return r;
+  });
+  ok('彈跳球：第一把照舊，其餘幾把從 rageEnds 那一組出手、各自朝自己的第二頭，每把 BNC_N 顆',
+     rbnc.K > 1 && rbnc.n === rbnc.K * rbnc.N && rbnc.first && rbnc.at, JSON.stringify(rbnc));
+  ok('彈跳球一把接一把錯開 RAGE_LAG：還在等的那一把不動、不扣壽命、不畫，等完才出手',
+     rbnc.order && rbnc.drawn0 === rbnc.N && rbnc.frozen && rbnc.moved && rbnc.live > rbnc.N && rbnc.drawn1 === rbnc.live,
+     JSON.stringify(rbnc));
 
   await page.evaluate(() => { rageOn = pref.rage = false; cleanTools(); renderTools(); });
   }   // ── 〈破壞模式〉結束（--tier 跳過時從這裡出來）

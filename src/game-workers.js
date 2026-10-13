@@ -3389,8 +3389,9 @@ const IDLE_EVENTS = [
   /* 小人的家。每個人的行為擺在 updHome（跟魔法師一樣是「一條自己的路」），
      所以這裡不需要每幀的 step。 */
   { id: 'home', wt: 1, start: startHomes, step: null, stop: stopHomes },
-  /* 城牆（v1.186）。蓋法跟房子同一條路（都掛在 homes.list 上），所以收尾共用 stopHomes。 */
-  { id: 'wall', wt: 1, start: startWall, step: null, stop: stopHomes }
+  /* 城牆（v1.186）。蓋法跟房子同一條路（都掛在 homes.list 上），所以收尾共用 stopHomes。
+     step（v1.278.0）：城內缺的當下就補（見 stepWall） */
+  { id: 'wall', wt: 1, start: startWall, step: stepWall, stop: stopHomes }
 ];
 /* 上一件事蓋出來的東西還剩多少（v1.186 的黏著，**判準 v1.188 換掉**）。
    舊的判準是「homes.list 上還有那一類的任何一筆」——實測那個門檻**沒有出口**
@@ -4978,15 +4979,8 @@ function startWall() {
     dropHomes(h => !blocked(h));
     for (const h of plan) homes.list.push(h);
   }
-  /* 城內要放幾間、幾棵：按**可用的環面積**算（使用者選的），扣掉已經在城裡的那些。
-     內緣是房子的內緣（siteR + HOME_NEAR），外緣貼著牆內側。 */
-  const area = Math.PI * Math.max(0, (W - 2) ** 2 - (siteR + HOME_NEAR) ** 2);
-  let wantH = Math.min(WALL_IN_MAX, Math.round(area / WALL_IN_AREA));
-  let wantT = Math.min(WALL_IN_TMAX, Math.round(area / WALL_IN_TAREA));
-  for (const h of homes.list) {
-    if (h.wall || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;   // 城外的不算
-    if (h.tree) wantT--; else wantH--;
-  }
+  const want = wallWant(W);
+  let wantH = want.h, wantT = want.t;
   const pool = [];
   for (let i = 0; i < workers.length; i++) {
     const w = workers[i];
@@ -5004,10 +4998,18 @@ function startWall() {
     for (const w of crew) { cx += w.x; cz += w.z; }
     cx /= crew.length; cz /= crew.length;
     let hi = -1;
-    if (++nCrew % 3 === 0 && (wantH > 0 || wantT > 0)) {
-      const tree = wantH <= 0;
-      hi = wallInside(crew, cx, cz, tree, W);
-      if (hi >= 0) { if (tree) wantT--; else wantH--; }
+    if (++nCrew % 3 === 0) {
+      /* 城內**沒蓋完、被打出洞的先接手**，都好好的才蓋缺的（v1.278.0）。v1.186～v1.277 只有「蓋缺的」這一條：
+         沒蓋完的那幾筆照樣算在數量裡，所以缺的是 0、也沒有人回去接手——實測第二輪 180 秒城內 0 人，
+         一棵缺 54 格的樹、一間缺 86 格的房子就那樣停著（見 開發筆記〈城內的房子拆了要有人補（v1.278.0）〉） */
+      hi = pickInside(cx, cz, taken, W);
+      if (hi >= 0) {
+        for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;
+      } else if (wantH > 0 || wantT > 0) {
+        const tree = wantH <= 0;
+        hi = wallInside(crew, cx, cz, tree, W);
+        if (hi >= 0) { if (tree) wantT--; else wantH--; }
+      }
     }
     if (hi < 0) {
       hi = pickUnfinished(cx, cz, taken, 2);
@@ -5055,6 +5057,101 @@ function wallInside(crew, cx, cz, tree, W) {
   markHomeF6(h);
   homes.list.push(h);
   return homes.list.length - 1;
+}
+/* 城內還要再蓋幾間、幾棵：按**可用的環面積**算（使用者選的），扣掉已經在城裡的那些。
+   內緣是房子的內緣（siteR + HOME_NEAR），外緣貼著牆內側。
+   （v1.278.0 從 startWall 抽出來，stepWall 也要用） */
+function wallWant(W) {
+  const area = Math.PI * Math.max(0, (W - 2) ** 2 - (siteR + HOME_NEAR) ** 2);
+  const want = { h: Math.min(WALL_IN_MAX, Math.round(area / WALL_IN_AREA)),
+                 t: Math.min(WALL_IN_TMAX, Math.round(area / WALL_IN_TAREA)) };
+  for (const h of homes.list) {
+    if (h.wall || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;   // 城外的不算
+    if (h.tree) want.t--; else want.h--;
+  }
+  return want;
+}
+/* 城內還缺格子的那一間或那一棵（v1.278.0）：沒蓋完的、被打出洞的。挑離 (cx, cz) 最近、taken 裡沒有的；沒有就 −1 */
+function pickInside(cx, cz, taken, W) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < homes.list.length; i++) {
+    const h = homes.list[i];
+    if (h.wall || h.left <= 0 || taken.has(i) || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;
+    const d = (h.x - cx) ** 2 + (h.z - cz) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+/* 城內缺的當下就補（v1.278.0）。使用者：「城牆內適量的小房子或是小樹(目前觀察是發現被拆了就不會再蓋
+   一直去蓋城牆)」，選的是「當下就補」：城內缺的（被打到廢棄而少掉的、沒蓋完的、被打出洞的）隨時有人補——
+   先找閒著的人，沒有就從牆上調一組過去；整圈牆蓋完之後也照樣補。
+   v1.186～v1.277 城內只在一輪開工那一刻（startWall）派一次人，而且只派去「蓋缺的」：
+     · 整間打光的那一間 2 秒內被廢棄（wrecked），蓋那間的 2 個人改去閒晃，這一輪沒人重蓋
+     · 沒蓋完的那幾筆照樣算在數量裡，所以下一輪缺的是 0、也沒人接手（實測第二輪 180 秒城內 0 人）
+   被打出洞、但還有人住在裡面的那一間本來就會補（住的人 w.hm 還指著它，updHome 看到 h.left > 0 就回去砌），
+   所以這裡只管「沒人顧」的那幾筆，與數量不夠的那幾間。
+   **從牆上調人有上限**：城內的人（在蓋的、住在裡面的）還不到參加的人的三分之一才調，同 startWall「每三組分一組」。
+   第一版沒有這條，預覽頁量到大地標（城內要 5 間 4 棵）一開工每秒調一組進城，150 秒牆上 0 人、整圈只砌了 18／6540 塊
+   ——城牆是這件事的主角，不能被城內吃光。閒著的人不受這條限制（他們本來就沒在蓋牆）。
+   每 WALL_FIX_T 秒看一次（城內最多 9 筆、人最多幾十個，一次掃完不到一個毫秒）。 */
+const WALL_FIX_T = 1;
+let wallFixT = 0;
+function stepWall(dt) {
+  if ((wallFixT -= dt) > 0) return;
+  wallFixT = WALL_FIX_T;
+  if (!homes || !homes.list.some(h => h.wall)) return;    // 整圈都不在了（被新工地徵收）：等下一輪開工重生
+  const W = wallRing();
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;           // 同 startWall：施工中只有偷懶的人
+  const taken = new Set();                                  // 有人在顧的那幾筆（蓋到一半跌倒、逃命的也算，他們會回來）
+  let inN = 0, tot = 0;                                     // 城內的人／參加的人（從牆上調人的上限，見上面）
+  for (const w of workers) {
+    if (joins(w) && !w.dead) tot++;
+    const h = w.hm >= 0 ? homes.list[w.hm] : null;
+    if (!h) continue;
+    taken.add(w.hm);
+    if (!h.wall) inN++;
+  }
+  const want = wallWant(W);
+  for (let k = 0; k < WALL_IN_MAX + WALL_IN_TMAX; k++) {    // 城內最多這麼多筆，一次最多派這麼多組
+    let hi = pickInside(0, 0, taken, W);
+    const tree = hi < 0 && want.h <= 0;
+    if (hi < 0 && want.h <= 0 && want.t <= 0) return;      // 城內都好好的
+    /* 一組人：閒著的優先，沒有才從牆上調（離那裡最近的先）。照距離排好再交給 takeCrew，領頭的就是最近的那個 */
+    const at = hi >= 0 ? homes.list[hi] : null;
+    const tx = at ? at.x : 0, tz = at ? at.z : 0;
+    let left = [];
+    for (let i = 0; i < workers.length; i++) {
+      const w = workers[i];
+      if (w.hm < 0 && steady(w) && joins(w)) left.push(i);
+    }
+    if (!left.length && inN < Math.floor(tot / 3))
+      for (let i = 0; i < workers.length; i++) {
+        const w = workers[i], h = homes.list[w.hm];
+        if (h && h.wall && steady(w) && joins(w)) left.push(i);
+      }
+    if (!left.length) return;
+    const d2 = i => (workers[i].x - tx) ** 2 + (workers[i].z - tz) ** 2;
+    if (at) left.sort((a, b) => d2(a) - d2(b));
+    const crew = takeCrew(left);
+    if (hi >= 0) {
+      for (const sl of at.slots) if (!sl.filled) sl.claimed = -1;   // 上一批人留下的認領（同 startWall）
+    } else {
+      let cx = 0, cz = 0;
+      for (const w of crew) { cx += w.x; cz += w.z; }
+      hi = wallInside(crew, cx / crew.length, cz / crew.length, tree, W);
+      if (hi < 0) return;                                   // 城裡沒空地了：這一秒先不派，人照原本在做的
+      if (tree) want.t--; else want.h--;
+    }
+    taken.add(hi);
+    inN += crew.length;
+    const h = homes.list[hi];
+    for (const w of crew) {
+      releaseWorker(w);                                     // 手上的建材先放掉（從牆上調來的那一趟不算了）
+      w.hm = hi; w.hst = ''; w.pause = 0;
+      if (!h.tree) w.own = h.id;                            // 城內那幾間是真的家（同 startWall）
+    }
+  }
 }
 function stopHomes() {
   for (const w of workers) {

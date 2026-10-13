@@ -394,7 +394,10 @@ function draw() {
   ballOn.length = 0;
   if (balls) for (const o of balls) if (!(o.wait > 0)) ballOn.push(o);
   ENG.putBalls(ballOn);
-  ENG.putBncs(bncs || EMPTY);
+  /* 彈跳球同理（v1.278.0，見 launchBounce） */
+  bncOn.length = 0;
+  if (bncs) for (const o of bncs) if (!(o.wait > 0)) bncOn.push(o);
+  ENG.putBncs(bncOn);
   /* 龍捲風同理：破壞模式還在等出場的那幾道不畫（v1.270.0，見 launchTornado）。 */
   twOn.length = 0;
   if (twists) for (const w of twists) if (!(w.wait > 0)) twOn.push(w);
@@ -439,6 +442,7 @@ const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石
 const twOn = [];                // draw() 每幀重填：這一刻已經出場的龍捲風
 const ballOn = [];              // draw() 每幀重填：這一刻已經出手的球（保齡球、天降鐵球）
+const bncOn = [];               // draw() 每幀重填：這一刻已經出手的彈跳球（v1.278.0）
 
 /* ── 輸入 ───────────────────────────────────────────────── */
 let spinOn = false;
@@ -509,7 +513,10 @@ function onUp(e) {
      還立著的（SET：地標、房子、城牆）才算建築，同火槍兵 v1.232。v1.238 是 useTool 那邊把碎料改判成地面，
      里維那一把沒有——點碎料他會飛過去砍那一塊 */
   const debris = canCut ? (k, i) => k === 'block' && !!blocks[i] && blocks[i].st !== SET : null;
-  let hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man' : canCut ? 'levi'
+  /* 小槌子（v1.278.0，使用者：「小槌子調整能攻擊生物」，選「點得到，砸在牠身上」「小人也算」）也點 'levi' 這一檔：
+     建築、生物、小人同一級，射線先碰到誰就是誰。碎料**不**透明（那一條是斬擊類點「要斬的東西」才有的），
+     點碎料照舊是砸在那一點，跟以前一樣。大槌沒動（使用者只指名小槌子） */
+  let hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man' : canCut || tool === 'hammer' ? 'levi'
                                   : tool === 'fire' || tool === 'bucket' ? '' : 'skip', debris));
   /* 兵長砍猴（v1.230）點到砍不了的（天上的飛龍／獅鷲、里維自己、飛在半空的小人、弓箭手與火槍兵）：
      當他是透明的，照其他道具那樣看後面是建築還是地面。Excalibur 同理，生物照她自己那一份認（sabCanCut） */
@@ -533,6 +540,8 @@ function onUp(e) {
     if (tool === 'zenitsu') { markTool(tool); callZen(hit.point, w, true); return; }
     // 虛式「茈」（v1.255.0）：叫五條悟追著他跑到射程一半，放出去那一刻照他當時的位置瞄
     if (tool === 'gojo') { markTool(tool); callGojo(hit.point, w, true); return; }
+    // 小槌子（v1.278.0）：槌頭落下那一刻把他（連旁邊的）打倒、算一次被打，落點照常 smash（見 hammerKO）。不算 stats.poked（那是戳的）
+    if (tool === 'hammer') { markTool(tool); launchHammer(hit.point, hit.dir, false, false, w, true); return; }
     // 拿著火把戳人就是點他：站著被點著的會抱頭跑圈圈
     if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); lifeHit(w, 'torch'); return; }
     // 拿水桶澆人：濕 5 秒（身上有火的當場熄），不會把人打倒
@@ -558,6 +567,9 @@ function onUp(e) {
     if (tool === 'zenitsu' && zenCanCut(m)) { markTool(tool); callZen(hit.point, m); return; }
     // 虛式「茈」（v1.255.0）：點地上的生物＝叫五條悟追著牠跑過去，放出去那一刻照牠當時的位置瞄
     if (tool === 'gojo' && gjCanCut(m)) { markTool(tool); callGojo(hit.point, m); return; }
+    /* 小槌子（v1.278.0）：槌頭落下那一刻把牠（連旁邊的）打倒、算一次被打（見 hammerKO）。
+       天上的飛龍、獅鷲照 fellBeast 那一套是打下來；落點照常 smash */
+    if (tool === 'hammer') { markTool(tool); launchHammer(hit.point, hit.dir, false, false, m); return; }
     /* 拿著火把點牠：站著被點著的會抱頭跑圈圈；飛龍是拖著火飛一段再摔下來
        （v1.154，見 burnDragon）。已經在燒或剛被澆濕的點不著，那就改成打倒／打下來
        （v1.176 起在天上的獅鷲也一樣，改成把牠打下來——見 grDown）。 */
@@ -782,7 +794,7 @@ function renderRage() {
   b.classList.toggle('on', rageOn);
   b.classList.toggle('na', !use);
   b.setAttribute('aria-pressed', String(rageOn));
-  b.title = '破壞模式（' + (rageOn ? '開' : '關') + '）：隕石、龍捲風、投石機、加農砲、煙火、保齡球、天降鐵球' +
+  b.title = '破壞模式（' + (rageOn ? '開' : '關') + '）：隕石、龍捲風、投石機、加農砲、煙火、保齡球、天降鐵球、核彈、彈跳球' +
             '一下放到場上的上限，點的那一點加附近隨機幾處' + (use ? '' : '——現在拿的這一把不受影響');
 }
 /* 小人模式選單（v1.219，見 game-workers.js 的 LAZY_MODES）：使用者選「跟工具一樣的小窗」，
