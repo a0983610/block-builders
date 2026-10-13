@@ -940,7 +940,9 @@ if (vAo.x + vAo.y > 0.5) {
   function init(cvs) {
     canvas = cvs;
     renderer = new T.WebGLRenderer({ canvas: cvs, antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setPixelRatio(basePR() * resScale);
+    /* 顯示卡計時（v1.280.0，動態解析度用，見 render）。沒有的瀏覽器（Firefox、測試用的 SwiftShader）回 null */
+    gpuExt = renderer.getContext().getExtension('EXT_disjoint_timer_query_webgl2');
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = T.PCFSoftShadowMap;
 
@@ -3462,7 +3464,7 @@ if (vAo.x + vAo.y > 0.5) {
   function resize() {
     W = Math.max(1, window.innerWidth);
     H = Math.max(1, window.innerHeight);
-    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setPixelRatio(basePR() * resScale);   // 動態解析度降著的話照樣乘（不然拉一下視窗就被打回原本）
     renderer.setSize(W, H);          // 要讓 three 一併設 style 寬高，canvas 的內建尺寸靠不住
     camera.aspect = W / H;
     camera.updateProjectionMatrix();
@@ -10983,11 +10985,49 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     return best;
   }
 
-  function render() { renderer.render(scene, camera); }
+  /* ── 動態解析度（v1.280.0，見 開發筆記〈三個爆裂魔法同時炸卡在顯示卡：動態解析度、畫面設定小窗（v1.280.0）〉）──
+     使用者：「測試爆裂魔法同時爆炸的效能 看會不會卡 會的話看能不能優化」。量下來 CPU 每幀只要 3.5ms，
+     卡的是顯示卡——半透明疊太多層的填色量（三個陣炸開後 0.5 秒單算圖 43ms，塵霧那一顆就吃 35）。
+     看過預覽之後定案：跟不上 60fps 就把渲染解析度降到 0.75 倍、有餘裕再升回來（升降的判斷在 game-ui.js 的 dynStep），
+     高解析螢幕也照顯示卡時間決定（平常就跟不上的話會一直停在 1.5 倍）。
+     這裡只管兩件事：照 resScale 設解析度、量每一幀顯示卡花多久。
+     **為什麼要量顯示卡、不看幀距**：鎖 60 開著的時候幀距永遠是 16.7ms，看不出還剩多少餘裕——預覽第一版只看幀距，
+     降下去就升不回來。計時器一次只掛一個，結果幾幀之後才拿得到（非同步），所以不是每一幀都有一筆，平滑成 gpuMs 就夠用。 */
+  const basePR = () => Math.min(2, window.devicePixelRatio || 1);
+  let resScale = 1;
+  let gpuExt = null, gpuOn = false, gpuQ = null, gpuBusy = false, gpuMs = 0;
+  function setResScale(k) {
+    if (k === resScale) return;
+    resScale = k;
+    if (renderer) renderer.setPixelRatio(basePR() * k);
+  }
+  /* 開關計時：回傳這個瀏覽器量不量得到（量不到的話動態解析度整個不動作，見 dynStep） */
+  function gpuTiming(on) {
+    gpuOn = !!(on && gpuExt);
+    if (!gpuOn) gpuMs = 0;
+    return !!gpuExt;
+  }
+  function render() {
+    if (!gpuOn) { renderer.render(scene, camera); return; }
+    const gl = renderer.getContext();
+    if (gpuBusy && gl.getQueryParameter(gpuQ, gl.QUERY_RESULT_AVAILABLE)) {
+      // disjoint＝這段期間顯示卡被打斷過（切換電源模式之類），那一筆不準就丟掉
+      if (!gl.getParameter(gpuExt.GPU_DISJOINT_EXT)) gpuMs += (gl.getQueryParameter(gpuQ, gl.QUERY_RESULT) / 1e6 - gpuMs) * 0.2;
+      gpuBusy = false;
+    }
+    if (gpuBusy) { renderer.render(scene, camera); return; }
+    gpuQ = gpuQ || gl.createQuery();
+    gl.beginQuery(gpuExt.TIME_ELAPSED_EXT, gpuQ);
+    renderer.render(scene, camera);
+    gl.endQuery(gpuExt.TIME_ELAPSED_EXT);
+    gpuBusy = true;
+  }
   function info() { const r = renderer.info.render; return { calls: r.calls, tris: r.triangles }; }
 
   return {
     init, resize, render, info, pick, camEye,
+    setResScale, gpuTiming, get resScale() { return resScale; }, get gpuMs() { return gpuMs; },   /* 動態解析度（v1.280.0） */
+    get gpuSupported() { return !!gpuExt; },
     setBlockCount, putBlock, commitBlocks,
     setWorkerCount, putWorker, commitWorkers, putEmotes,
     setGiftIcons, putGifts, GIFT_SIZE,         /* 道具泡泡（v1.214）：開場餵圖示、每幀送位置 */

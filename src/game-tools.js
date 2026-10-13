@@ -8504,15 +8504,21 @@ function spawnTwistDust(t, dt, n) {
     });
   }
 }
-/* arr 不給就是 dust；強爆炸的火團那一池（billows，v1.279.0）走同一套，見 game-ui.js 的 step */
+/* arr 不給就是 dust；強爆炸的火團那一池（billows，v1.279.0）走同一套，見 game-ui.js 的 step。
+   **死掉的不 splice，活著的往前擠、最後一次截斷**（v1.280.0）：splice 一次就把後面整串往前搬一格，
+   上萬顆一起在死的時候是平方級。三個爆裂魔法同時炸（12,600 顆）同一頁新舊輪流換上量三輪：
+   這一支每幀 1.25 → 1.14 ms（整幀 3.7 → 3.5 ms），推出來的結果逐顆相同（活著的順序也一樣）。
+   省得不多——那一幕卡的是顯示卡不是這裡。（拿 JSON 快照單獨量是 1.345 → 0.178，那份物件的形狀全都一樣、
+   跑得特別快，不能代表真的場面。）見 開發筆記〈三個爆裂魔法同時炸卡在顯示卡：動態解析度、畫面設定小窗（v1.280.0）〉 */
 function stepDust(dt, arr = dust) {
   // 水平阻力與貼地摩擦照 60fps 一幀調的，換算成這一幀的（v1.244.0，同 stepHot）
   const f60 = dt * 60, g80 = Math.pow(0.8, f60);
   let lk = 0.94, lv = Math.pow(0.94, f60);
-  for (let i = arr.length - 1; i >= 0; i--) {
+  let lf = -1, lfv = 1, w = 0;                    // fade 的 pow 快取：同一批連著生的 fade 都一樣（同 keep 那一招）
+  for (let i = 0; i < arr.length; i++) {
     const d = arr[i];
     d.life -= dt;
-    if (d.life <= 0) { arr.splice(i, 1); continue; }
+    if (d.life <= 0) continue;
     // g 給負的就是會往上飄（火球、蘑菇雲）；沒給就是一般會落下的煙塵
     d.vy -= (d.g === undefined ? 7 : d.g) * dt;
     /* 水平阻力。預設 0.94 是「爆起來一團、幾乎就地停住」的煙塵；
@@ -8523,7 +8529,7 @@ function stepDust(dt, arr = dust) {
     d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
     if (d.y < 0.1) { d.y = 0.1; d.vy = 0; d.vx *= g80; d.vz *= g80; }
     // 要慢慢淡掉的（蘑菇雲）用縮的。單靠 life 到期會「啪」地整團同時不見
-    if (d.fade) d.s *= Math.pow(0.5, dt / d.fade);
+    if (d.fade) { if (d.fade !== lf) { lf = d.fade; lfv = Math.pow(0.5, dt / lf); } d.s *= lfv; }
     if (d.to) {                                   // 會冷卻的（火團，v1.279.0）：往 to 收，同 stepHot 那一段
       const k = Math.min(1, dt / d.cool);
       d.cr += (d.to[0] - d.cr) * k;
@@ -8533,7 +8539,9 @@ function stepDust(dt, arr = dust) {
     /* hold 的不自轉（v1.175）：消防車那條水柱的每一顆是「沿飛行方向拉長的水痕」，
        方向就是它的意義（見 aimDrop）——自轉會把整條水柱轉成一團翻滾的碎片。 */
     if (!d.hold) { d.rx += dt * 2; d.ry += dt * 3; }
+    arr[w++] = d;
   }
+  arr.length = w;
 }
 
 

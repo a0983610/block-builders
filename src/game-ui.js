@@ -41,6 +41,45 @@ function shakeTrees(p, R) {
   }
 }
 
+/* ── 動態解析度（v1.280.0，見 開發筆記〈三個爆裂魔法同時炸卡在顯示卡：動態解析度、畫面設定小窗（v1.280.0）〉）──
+   顯示卡一幀超過 DYN_BUDGET 連續 DYN_DOWN 秒 → 渲染解析度降到 DYN_K 倍；降了之後「換算回原本要花多久」
+   （÷ DYN_K²，填色量跟像素數成正比）< 預算的八成連續 DYN_UP 秒 → 升回來。兩次切換至少隔 DYN_COOL 秒，
+   免得來回跳（切換那一下畫布要重配，實測下一幀隔 18～94ms，會頓一下）。
+   量的是顯示卡時間不是幀距（理由見 engine.js 的 render）；瀏覽器量不到（gpuMs 一直是 0）就整個不動作——
+   只看幀距的話鎖 60 開著時分不出有沒有餘裕，會降下去升不回來、或來回切換一直頓。
+   高解析螢幕一樣照顯示卡時間決定（使用者選的）：平常就跟不上的顯示卡會一直停在降過的那一檔。
+   三個爆裂魔法同時炸（Intel UHD 770、一般螢幕、鎖 60）：炸開後那幾秒 31～35 → 45～55fps，炸完 5 秒升回原本。 */
+const DYN_K = 0.75;
+const DYN_BUDGET = 1000 / 60 - 2.5;   // 鎖 60 的一幀扣掉 CPU 那一段（step＋draw 平常 1～3.5ms）
+const DYN_DOWN = 0.25, DYN_UP = 1.5, DYN_COOL = 1.5;
+let dynOn = true;                     // 畫面設定那一格（pref.dyn）
+let dynSlow = 0, dynFast = 0, dynWait = 0;
+function setDyn(on) {
+  dynOn = on;
+  ENG.gpuTiming(on);
+  if (!on) ENG.setResScale(1);
+  dynSlow = dynFast = 0;
+}
+/* 畫面設定小窗裡「動態解析度」底下那一行現況 */
+function dispStat() {
+  $('dispStat').textContent = !ENG.gpuSupported ? '這個瀏覽器量不到顯示卡時間，這一格不會動作'
+    : !dynOn ? '關著'
+    : '現在：' + (ENG.resScale < 1 ? '降到 ' + DYN_K + ' 倍' : '原本解析度') + '（顯示卡一幀 ' + ENG.gpuMs.toFixed(1) + 'ms）';
+}
+/* 一幀的判斷。拆成一支吃 (dt, 顯示卡毫秒) 的函式：測試用的 SwiftShader 量不到顯示卡時間，
+   規則要靠直接餵數字驗（同〈鎖 60〉那條餵假時間戳）。 */
+function dynStep(dt, gpu) {
+  dynWait = Math.max(0, dynWait - dt);
+  if (!dynOn || !(gpu > 0)) { dynSlow = dynFast = 0; return; }
+  const k = ENG.resScale;
+  if (gpu > DYN_BUDGET) { dynSlow += dt; dynFast = 0; }
+  else if (gpu / (k * k) < DYN_BUDGET * 0.8) { dynFast += dt; dynSlow = 0; }
+  else { dynSlow = dynFast = 0; }
+  if (dynWait > 0) return;
+  if (k === 1 && dynSlow > DYN_DOWN) { ENG.setResScale(DYN_K); dynSlow = 0; dynWait = DYN_COOL; }
+  else if (k < 1 && dynFast > DYN_UP) { ENG.setResScale(1); dynFast = 0; dynWait = DYN_COOL; }
+}
+
 /* ── 主迴圈 ─────────────────────────────────────────────── */
 function frame(now) {
   requestAnimationFrame(frame);
@@ -64,6 +103,7 @@ function frame(now) {
   step(dt);
   draw();
   ENG.render();
+  dynStep(Math.min(0.1, raw), ENG.gpuMs);   // 動態解析度（v1.280.0）：照真的時間走，不吃時間倍率
   hudTick(now);
 }
 
@@ -254,7 +294,7 @@ const REST_SINK = 0.004;
    （同 computeSupport 的補算，見 開發筆記〈畫面沒變就不重寫〉）。
    地標那一份照外框開一張密集的格子表，換場那一刻建一次：預覽頁拿 bp.at（Map）查 26 個鄰居，
    換場第一幀要 6.3～7.3 ms；陣列下標查就沒有那一頓。房子那幾份用 homeNbr 留在格子上的鄰居表。
-   aoOn 是左下面板那一格（pref.ao），關掉就一律送 0（引擎那邊遮罩全 0 整段跳過）。 */
+   aoOn 是畫面設定小窗那一格（pref.ao；v1.280.0 以前在左下面板），關掉就一律送 0（引擎那邊遮罩全 0 整段跳過）。 */
 let aoOn = true;
 const AO_BIT = NBR.map(d => (d[0] + 1) * 9 + (d[1] + 1) * 3 + (d[2] + 1));
 const AO_DOWN = NBR.map(d => d[1] < 0);
@@ -1184,6 +1224,18 @@ function boot() {
   /* 積木 AO（v1.273.0）。再打開時不必從頭算：關著那段時間 aoUpdate 沒跑，has 還是關之前看到的樣子，
      打開那一幀逐格一比，期間變過的格子自己就會被挑出來重算（換了一座或房子換了一份格子則整份重建） */
   $('aoOn').addEventListener('change', e => { aoOn = pref.ao = e.target.checked; save(); });
+  $('dynRes').addEventListener('change', e => { pref.dyn = e.target.checked; setDyn(pref.dyn); save(); dispStat(); });
+  /* 畫面設定小窗（v1.280.0，使用者：「把跟畫面相關的設定 在設定中點選後加個獨立窗來設定」）：
+     鎖 60fps、積木 AO 從面板那一排搬進來，再加動態解析度。開合照快捷鍵那一頁；開著的時候每 0.3 秒更新一次現況 */
+  let dispT = 0;
+  $('dispBtn').addEventListener('click', () => {
+    dispStat();
+    $('dispWrap').classList.add('on');
+    clearInterval(dispT); dispT = setInterval(dispStat, 300);
+  });
+  $('dispWrap').addEventListener('click', e => {
+    if (e.target.id === 'dispWrap' || e.target.id === 'dispClose') { $('dispWrap').classList.remove('on'); clearInterval(dispT); }
+  });
   $('panelBtn').addEventListener('click', () => $('panel').classList.toggle('hide'));
   /* 工具選單平常靠 :hover 展開。觸控沒有 hover，所以小窗自己也能點開；
      開著的時候點畫面上任何別的地方就收起來，不然它會一直擋著。 */

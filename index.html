@@ -64,7 +64,7 @@
   select{width:100%}
   button:active{transform:translateY(1px)}
   button.primary{background:var(--accent);color:#fff;border-color:transparent;font-weight:700;width:100%}
-  .checks{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:12px;opacity:.8}   /* v1.273.0 多一格「積木 AO」，一列塞不下就折到第二列 */
+  .checks{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:12px;opacity:.8}   /* v1.273.0 多一格「積木 AO」，一列塞不下就折到第二列；v1.280.0 鎖 60fps、積木 AO 搬進畫面設定，只剩兩格 */
   .checks label{display:flex;align-items:center;gap:5px;flex:0 0 auto}
   /* ⚙ 設定、⚡ 立刻建成與小人模式（v1.219，使用者指定模式小窗擺在設定鈕右邊）：包在 #corner 裡，
      桌機橫排、設定在左；窄螢幕設定鈕搬到右下角，另外兩顆疊在它上面（見下面的 @media）。
@@ -196,13 +196,23 @@
   #toast .t b{font-size:14px}
   #toast .t span{font-size:11px;opacity:.72}
 
-  #badgeWrap,#impWrap,#keyWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
+  #badgeWrap,#impWrap,#keyWrap,#dispWrap{position:fixed;inset:0;z-index:22;display:none;place-items:center;
              background:rgba(12,18,26,.72)}
-  #badgeWrap.on,#impWrap.on,#keyWrap.on{display:grid}
-  #badgeBox,#impBox,#keyBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
+  #badgeWrap.on,#impWrap.on,#keyWrap.on,#dispWrap.on{display:grid}
+  #badgeBox,#impBox,#keyBox,#dispBox{background:#fff;border-radius:16px;padding:18px 20px;width:min(520px,92vw);
             max-height:82vh;overflow:auto}
-  #badgeBox h2,#impBox h2,#keyBox h2{margin:0 0 2px;font-size:17px}
-  #badgeBox .sub,#impBox .sub,#keyBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
+  #badgeBox h2,#impBox h2,#keyBox h2,#dispBox h2{margin:0 0 2px;font-size:17px}
+  #badgeBox .sub,#impBox .sub,#keyBox .sub,#dispBox .sub{font-size:12px;opacity:.65;margin-bottom:3px}
+  /* 畫面設定（v1.280.0）：一格一列，勾選框在左、粗體名稱底下一行說明 */
+  #dispBox{width:min(460px,92vw)}
+  #dispBox .opt{padding:10px 0;border-top:1px solid #eee}
+  #dispBox .opt:first-of-type{border-top:0}
+  #dispBox .opt label{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+  #dispBox .opt input{margin-top:3px}
+  #dispBox .opt b{font-size:14px}
+  #dispBox .opt span{display:block;font-size:12px;opacity:.68;line-height:1.55}
+  #dispStat{font:11.5px/1.5 ui-monospace,Consolas,monospace;opacity:.7;margin-top:3px}
+  #dispBtn{width:100%;margin-top:10px}
   /* 快捷鍵設定頁（v1.242.0）：九格排兩欄，左邊一顆深色的數字、右邊下拉 */
   #keys{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:7px 12px}
   #keys label{display:flex;align-items:center;gap:8px}
@@ -222,8 +232,8 @@
   .badge.got{background:#fdf1e2;opacity:1}
   .badge b{font-size:13px}
   .badge span{font-size:11.5px;opacity:.7}
-  #badgeBox .row,#impBox .row,#keyBox .row{display:flex;gap:8px;margin-top:12px}
-  #badgeBox .row button,#impBox .row button,#keyBox .row button{flex:1}
+  #badgeBox .row,#impBox .row,#keyBox .row,#dispBox .row{display:flex;gap:8px;margin-top:12px}
+  #badgeBox .row button,#impBox .row button,#keyBox .row button,#dispBox .row button{flex:1}
 
   /* 匯入建築：先去拿一份藍圖（四顆入口）→ 貼進來 → 匯入 → 下面是存下來的清單 */
   #impInfo{width:21px;height:21px;padding:0;border-radius:99px;line-height:1;
@@ -375,13 +385,9 @@
   <div class="checks">
     <label><input type="checkbox" id="spin"> 自轉</label>
     <label><input type="checkbox" id="mute"> 靜音</label>
-    <!-- 高刷螢幕隔整數個 vsync 才畫一幀（v1.244.0，預設開），見 game-ui.js 的 frame()。
-         寬度要自己放開：#panel label 的 54px 比 .checks label 的 auto 優先，這幾個字塞不下會折成兩行
-         （前兩格本來就是 54px，不動它們，間距才跟原本一樣） -->
-    <label style="flex:0 0 auto"><input type="checkbox" id="cap60"> 鎖 60fps</label>
-    <!-- 積木 AO（v1.273.0，預設開）：凹角、牆腳暗下來，見 game-ui.js 的 aoOn -->
-    <label style="flex:0 0 auto"><input type="checkbox" id="aoOn"> 積木 AO</label>
   </div>
+  <!-- 鎖 60fps、積木 AO 搬進「畫面設定」小窗（v1.280.0，使用者：「把跟畫面相關的設定 在設定中點選後加個獨立窗來設定」） -->
+  <button id="dispBtn" type="button">🖥 畫面設定</button>
 </div>
 
 <div id="hint">點建築 = 一槌砸下去 ｜ 拖曳／QE 轉視角 ｜ WASD 平移、ZX 升降、C 復位 ｜ 滾輪縮放 ｜ 點小人會跌倒</div>
@@ -407,6 +413,27 @@
     <div class="row">
       <button id="resetBtn">清空紀錄</button>
       <button class="primary" id="badgeClose">關閉</button>
+    </div>
+  </div>
+</div>
+
+<!-- 畫面設定（v1.280.0）：只影響這台電腦的畫面的那幾格，從左下面板搬過來，開合照快捷鍵那一頁 -->
+<div id="dispWrap">
+  <div id="dispBox">
+    <h2>🖥 畫面設定</h2>
+    <div class="sub">只影響這台電腦的畫面，不影響遊戲進度。設定會自動存起來。</div>
+    <!-- 高刷螢幕隔整數個 vsync 才畫一幀（v1.244.0，預設開），見 game-ui.js 的 frame() -->
+    <div class="opt"><label><input type="checkbox" id="cap60">
+      <div><b>鎖 60fps</b><span>高刷新率螢幕（120Hz 以上）每秒只畫 60 張：省顯示卡，也比較不會忽快忽慢。60Hz 螢幕開不開都一樣。</span></div></label></div>
+    <!-- 積木 AO（v1.273.0，預設開）：凹角、牆腳暗下來，見 game-ui.js 的 aoOn -->
+    <div class="opt"><label><input type="checkbox" id="aoOn">
+      <div><b>積木 AO</b><span>積木的凹角、牆腳暗下來，立體感比較好。關掉省一點效能。</span></div></label></div>
+    <!-- 動態解析度（v1.280.0，預設開）：見 game-ui.js 的 dynStep -->
+    <div class="opt"><label><input type="checkbox" id="dynRes">
+      <div><b>動態解析度</b><span>畫面跟不上 60fps 時（例如好幾個爆裂魔法一起炸），自動把 3D 畫面的解析度降到 0.75 倍，順了再升回來。
+        降的那幾秒會稍微糊一點，文字與面板不受影響。</span><div id="dispStat"></div></div></label></div>
+    <div class="row">
+      <button class="primary" id="dispClose">關閉</button>
     </div>
   </div>
 </div>
