@@ -330,6 +330,7 @@ let fires = null;     // 正在燒的積木（還站著的會往鄰居蔓延，�
 let nSpread = 0;      // fires 裡有幾筆是「還站著的建築」——碎料不占那個額度
 const hot = [];       // 火球粒子（走不透明那顆材質，才亮得起來）
 const flashes = [];   // 爆炸正中央那顆火球本體（好幾發一起炸就好幾顆）
+const billows = [];   // 核彈與爆裂魔法火球裡那一團團翻滾的火（v1.279.0，自己一池，見 emitBillows）
 const fxRings = [];   // 地面衝擊環與蘑菇雲腰環
 const clouds = [];    // 正在成形的蘑菇雲（會隨時間往上長，不是一次生出來）
 
@@ -1403,7 +1404,7 @@ function shellHit(r) {
      **最後一個參數 quiet ＝ 不震畫面**：一輪 18 發、每半秒就落一顆，每顆都晃的話
      畫面會一路抖到整輪打完（同投石機的石頭與雷，見 開發筆記〈會「持續破壞」的不震畫面〉）。
      聲音照給——連續的砲擊本來就該聽得到。 */
-  explode(p, CAN_R, CAN_POW, false, false, false, null, true);
+  explode(p, CAN_R, CAN_POW, false, false, null, true);
 }
 function stepCannons(dt) {
   if (!cannons) return;
@@ -2431,7 +2432,10 @@ const Y_BOOST = 0.85;               // 抬升占衝擊力道的比例（重力 2
    炸彈／投石機那幾種小爆炸不給——它們的半徑才 7～14，
    掃出 2.6 倍的氣浪會比爆炸本身還顯眼，變成小道具看起來比核彈兇。
    隕石 v1.151.1 放大到 18.4 之後**照樣不給**：它走的是 crash 那一路
-   ——「砸下來燒起來」，而那一圈往外掃的氣浪是「炸開」的長相。 */
+   ——「砸下來燒起來」，而那一圈往外掃的氣浪是「炸開」的長相。
+   v1.279.0 起它也是「強爆炸」的記號：火球裡多一團團翻滾的火、光留久一點（見 spawnBlast 的 big）。
+   （v1.278 以前 wind 前面還有一格 magic，只拿來把火球、火星、光環、風壓染成粉紅；
+   v1.279.0 爆裂魔法照參考圖改成跟核彈同一種橘之後那一格沒有用處了，連呼叫端一起拆掉。） */
 /* crash＝隕石那種「砸下來」的爆法：一樣把積木掃飛、一樣點火，但不走火球那一套
    （發光球殼、噴出來的火星、貼地光環、衝擊環），聲音也改成一聲悶響。
    隕石的重點本來就是火不是爆炸，掛一顆跟核彈同款的火球在上面反而搶戲。 */
@@ -2444,7 +2448,7 @@ const Y_BOOST = 0.85;               // 抬升占衝擊力道的比例（重力 2
    不給就照舊留一般的痕跡（焦黑／坑洞，半徑是爆炸半徑乘 MARK_SCORCH_R／MARK_CRATER_R）。
    v1.205～v1.230 這一格是 markR（只有隕石在用：使用者要「坑跟破壞範圍一樣大」，把要拿去乘的那個 R
    單獨傳進來）；改成直接給半徑之後，隕石給 MET_R 就是同一件事，共用的那兩個倍率照舊沒動。 */
-function explode(point, R, power, magic, wind, crash, self, quiet, scorchR) {
+function explode(point, R, power, wind, crash, self, quiet, scorchR) {
   const R2 = R * R;
   let n = 0, ownN = 0;                          // ownN＝其中有幾塊是地標的（見 afterHit）
   for (const b of blocks) {
@@ -2521,7 +2525,7 @@ function explode(point, R, power, magic, wind, crash, self, quiet, scorchR) {
      攤在半徑 45 的範圍裡稀疏到看不出「炸完那一圈在燒」。上限照舊是 FIRE_MAX 150。 */
   igniteAround(point, R * 1.5, Math.round(R * 1.2), SET);
   // 火球與衝擊環是「爆炸」的長相，crash 那條只留下被砸飛的積木與揚起來的塵土
-  if (!crash) { spawnBlast(point, R, magic); spawnRing(point, R); }
+  if (!crash) { spawnBlast(point, R, wind); spawnRing(point, R); }
   /* 地上留一塊痕跡：一般爆炸是焦黑，砸下來的是坑洞，強爆炸（給了 scorchR）是焦痕。
      「炸在半空就不留」照**真的爆炸半徑**判：爆點比 R 還高＝炸在屋頂上，地面沒被燒到
      （魔法陣陣心 12.1、火球半徑 45，照樣留）。 */
@@ -2531,7 +2535,7 @@ function explode(point, R, power, magic, wind, crash, self, quiet, scorchR) {
   }
   spawnDust(point, R, n);
   // 風壓排在最後：它吃的塵霧配額比較兇，先讓爆炸本身那些拿到自己的份
-  if (wind) spawnWind(point, R, magic);
+  if (wind) spawnWind(point, R);
   if (!quiet) ENG.shake(0.5 + Math.min(1.8, R * 0.03 + n * 0.015));
   if (crash) sndThud(R); else sndBoom(R);
   return n;
@@ -4399,10 +4403,56 @@ function meteorHit(m) {
      倒數期間地上那一圈一圈的預告環不受影響，那是預告不是爆炸。 */
   /* 最後一個參數：地上留一塊焦痕、半徑 ＝ 破壞半徑（v1.231 起是焦痕不是坑，使用者：「強大爆炸的道具
      地面坑改為焦痕(excalibur痕跡)」；「跟破壞範圍一樣大」是 v1.205 使用者定的「坑放大到 9.2」）。 */
-  explode(p, MET_R, MET_POW, false, false, true, null, false, MET_R);
+  explode(p, MET_R, MET_POW, false, true, null, false, MET_R);
   /* 爆炸本身已經帶一點餘火，但隕石是「燃燒」的——落點一帶再多點幾塊起來。
      這是它跟同尺寸的普通爆炸最明顯的差別。 */
   igniteAround(p, MET_R * 1.6, Math.round(MET_R * 1.6), SET);
+  spawnImpactDust(p, MET_R);
+}
+/* 落地的撞擊煙塵（v1.279.0，使用者：「隕石撞擊地面時 增加煙塵 目前看起來很像撞上去隕石就消失 然後地面留下個痕跡」）。
+   explode 自己的揚塵（spawnDust）是照「打到幾塊積木」給量：落在空地上只打到兩三塊，實測 **24 顆**、
+   單顆 0.18～0.62、散開 2 格、一秒就剩 6 顆——破壞半徑卻有 9.2，看起來就是石頭撞上去就不見了。
+   所以另外補四樣，全部照破壞半徑 R 算（預覽頁給使用者看過才落地）：
+     ① 土柱：從坑裡往上、往外噴，重力壓回來，在半空翻一下才散（土色）
+     ② 貼地往外滾的一圈：只有落在地面附近才有（同 spawnMark「炸在半空就不留」那條，照 y ≤ R 判）
+     ③ 土塊：小、暗、重，拋物線飛出去掉回地上
+     ④ 懸著的煙：落點一帶燒起來冒的煙，慢慢往上飄
+   跟爆炸的揚塵同一池（dust），閘門照風壓塵牆那一套（WIND_DUST_CAP）：一次性的爆量、幾秒就退光，
+   真的頂到池子才停。 */
+const MET_DUST = { plume: 220, ring: 110, clod: 40, haze: 50 };
+function spawnImpactDust(p, R) {
+  for (let i = 0; i < MET_DUST.plume; i++) {
+    if (dust.length > WIND_DUST_CAP) return;
+    const a = Math.random() * Math.PI * 2, r0 = R * 0.3 * Math.sqrt(Math.random());
+    const out = rr(0.5, 4.5), v = rr(0.46, 0.7);
+    dust.push({ x: p.x + Math.cos(a) * r0, y: p.y + rr(0.2, 1.2), z: p.z + Math.sin(a) * r0,
+      vx: Math.cos(a) * out, vy: rr(3, 11), vz: Math.sin(a) * out,
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(1.8, 3.4), s: rr(0.5, 1.4), cr: v, cg: v * 0.87, cb: v * 0.72, g: 3.6, fade: 1.8, keep: 0.97 });
+  }
+  if (p.y <= R) for (let i = 0; i < MET_DUST.ring; i++) {
+    if (dust.length > WIND_DUST_CAP) return;
+    const a = i / MET_DUST.ring * Math.PI * 2 + rr(-0.05, 0.05), sp = R * rr(0.9, 1.7), v = rr(0.6, 0.8);
+    dust.push({ x: p.x + Math.cos(a) * R * 0.25, y: rr(0.2, 1.0), z: p.z + Math.sin(a) * R * 0.25,
+      vx: Math.cos(a) * sp, vy: rr(0.3, 1.6), vz: Math.sin(a) * sp,
+      rx: 0, ry: a, life: rr(1.1, 2.0), s: rr(0.5, 1.3), cr: v, cg: v * 0.9, cb: v * 0.78, fade: 1.3, keep: 0.975 });
+  }
+  for (let i = 0; i < MET_DUST.clod; i++) {
+    if (dust.length > WIND_DUST_CAP) return;
+    const a = Math.random() * Math.PI * 2, out = rr(4, 12), v = rr(0.26, 0.4), r0 = rr(0, R * 0.2);
+    dust.push({ x: p.x + Math.cos(a) * r0, y: p.y + rr(0.3, 1), z: p.z + Math.sin(a) * r0,
+      vx: Math.cos(a) * out, vy: rr(5, 13), vz: Math.sin(a) * out,
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(0.9, 1.6), s: rr(0.22, 0.5), cr: v, cg: v * 0.8, cb: v * 0.62, g: 16, keep: 0.985 });
+  }
+  for (let i = 0; i < MET_DUST.haze; i++) {
+    if (dust.length > WIND_DUST_CAP) return;
+    const a = Math.random() * Math.PI * 2, r0 = R * 0.7 * Math.sqrt(Math.random());
+    dust.push({ x: p.x + Math.cos(a) * r0, y: p.y + rr(0.5, 3), z: p.z + Math.sin(a) * r0,
+      vx: rr(-0.6, 0.6), vy: rr(0.3, 1.2), vz: rr(-0.6, 0.6),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(2.8, 4.5), s: rr(0.9, 1.8), c: rr(0.3, 0.48), g: -0.25, fade: 2.2 });
+  }
 }
 function stepMeteors(dt) {
   if (!meteors) return;
@@ -4523,7 +4573,7 @@ function callNuke(point, n) {
 function nukeHit(p) {
   slayGiants(p, NUKE_R, 'nuke');            // 範圍內的巨人當場斬殺（v1.245.0），要排在 explode 前面
   // 第二個 true = 加風壓；最後一個 = 地上留焦痕（v1.231，大小同以前那塊焦黑：爆炸半徑 × MARK_SCORCH_R）
-  explode(p, NUKE_R, NUKE_POW, false, true, false, null, false, NUKE_R * MARK_SCORCH_R);
+  explode(p, NUKE_R, NUKE_POW, true, false, null, false, NUKE_R * MARK_SCORCH_R);
   startCloud(p, NUKE_R);
 }
 /* 畫面上要畫的那幾顆（倒數中的還在天上等，不畫）。重用同一個陣列，不要每幀配一個新的 */
@@ -4682,8 +4732,8 @@ function stepOneMagic(magic, dt) {
   if (magic.t <= 0) {
     const p = { x: magic.x, y: MAG_CORE_Y, z: magic.z };   // 爆點＝最低那層的圓心
     slayGiants(p, MAG_R, 'magic');          // 同核彈（v1.245.0）
-    // 第二個 true = 加風壓；最後一個 = 地上留焦痕（v1.231，同核彈）；by＝放這一發的（惠惠，見 castMagic）
-    explode(p, MAG_R, MAG_POW, true, true, false, magic.by, false, MAG_R * MARK_SCORCH_R);
+    // true = 加風壓（也是強爆炸：有火團）；最後一個 = 地上留焦痕（v1.231，同核彈）；by＝放這一發的（惠惠，見 castMagic）
+    explode(p, MAG_R, MAG_POW, true, false, magic.by, false, MAG_R * MARK_SCORCH_R);
     startCloud(p, MAG_R);             // 魔法爆完也留一朵，跟核彈同一種
     startArcs(p, MAG_R);              // 火球收乾之後，爆點還會劈三秒的藍電
     return true;
@@ -4969,8 +5019,10 @@ const HOT_MAX = 220;
    碎料的火苗、蘑菇雲的火光那些照舊擋在 HOT_MAX − 40，只有爆炸這一支頂到這個數，
    火星退光之後池子就回到原本的水位。
    引擎那顆 InstancedMesh 要畫得下「這個數 ＋ 一場煙火齊射的拖線（約 500 條）」，
-   所以 MAXFIRE 同時從 960 抬到 1280（見引擎那邊）。 */
-const HOT_BURST = 560;
+   所以 MAXFIRE 同時從 960 抬到 1280（見引擎那邊）。
+   v1.279.0 560 → 1200：爆裂魔法的火星照面積補到核彈的密度，一發 990 顆（見 spawnBlast 的 dens），
+   再留兩百給炸開那一刻場上本來就有的火苗。MAXFIRE 照同一條跟著到 1700。 */
+const HOT_BURST = 1200;
 /* 中央那顆火球。粒子撐不出「一整顆在發光的球」——96 顆小方塊再多也是一團碎火，
    中間該最亮的地方反而因為方塊之間有縫而透出背景。所以球本體交給實體球殼
    （見引擎 FLASH_SHELL），粒子留著當從球裡噴出來的火星。 */
@@ -4981,13 +5033,42 @@ const FLASH_MAX = 24;
 const FLASH_LIFE = 0.65;         // 亮多久：蘑菇雲 0.45 秒撐傘蓋，火球要撐到那之後才收乾
 const FLASH_HOLD = 0.2;          // 前 0.2 秒維持全亮，之後才開始暗
 const FLASH_UP = 0.22;           // 球心抬離爆點多少（半徑的倍率）
-function spawnBlast(p, R, magic) {
+/* ── 強爆炸的火團（v1.279.0，見 開發筆記〈隕石落地的煙塵、強爆炸的火團（v1.279.0）〉）──
+   使用者：「爆裂魔法爆炸特效 自從範圍加大以後 看起來爆炸火焰很空虛 少了這種感覺」＋一張核爆火球的參考圖
+   （看過預覽之後核彈也一起）。量到的：火星的兩個顆數上限（180／260）在 R≈31 就頂到了，
+   魔法 R45 跟核彈 R30 一樣是 447 對 435 顆，**每 R² 的密度只剩核彈的 46%**；而且火星 0.4 秒就退掉八九成、
+   火球殼 0.65 秒收乾，之後畫面上沒有「一整團在燒的火」，只剩灰色碎料。
+   補的是火球裡一團團翻滾的火：跟著火球撐開的那 0.45 秒（BILL_T，傘蓋撐開之前）一路生、
+   生在火球裡偏外緣那一層，由黃白冷成橘紅再變暗、往上浮、慢慢縮掉。
+   **自己一池**（billows，不放進 dust）：同烏雲 v1.118 的理由——dust.length 是好幾道配額的關卡，
+   一發魔法兩千團擠進去，三顆核彈一起丟的第三朵傘蓋又會生不出來（v1.248 修的就是那件事）。
+   畫的時候接在 dust 後面（dustList），引擎的 MAXDUST 另外留了這一池的份。
+   顆粒照蘑菇雲那一檔的粗細（0.8～1.9），走塵霧那顆半透明材質——不透明的火粒子那顆做到這麼大，
+   就是 v1.200 使用者嫌的「火紅色正方塊」。 */
+const BILL_T = 0.45;             // 火團在幾秒內生完（跟著火球撐開）
+const BILL_K = 1.0;              // 一發幾團 ＝ BILL_K × R²：魔法 2025、核彈 900（同面積同密度）
+const BILL_CAP = MAG_CAST * Math.round(BILL_K * MAG_R * MAG_R);   // 三個陣同時炸都給滿（6075），引擎 MAXDUST 照這個留
+/* 冷卻的兩端：IN 是火球裡面那一層、OUT 是外緣，照生的位置在中間插；0 是剛生、1 是冷到底（同 hot 的 to） */
+const BILL_C = { in0: [1, 0.92, 0.6], out0: [1, 0.52, 0.1], in1: [1, 0.42, 0.06], out1: [0.55, 0.1, 0.03] };
+/* 強爆炸的火球殼：光留久一點（1.5 秒，前 0.3 秒全亮），火團後面才一直透得出光；
+   整顆殼 × 0.6，最外那層（1.1 倍）就跟火團的外緣差不多大（撐開途中 0.62R、撐到頭 0.70R，火團外緣約 0.66R）。
+   不縮的話最外兩層撐到半徑 52（魔法），罩在火的外面、疊在藍天上就是一顆灰灰的透明大球——
+   使用者看預覽時問「爆裂魔法還有一種好像透明的球是什麼?」，三種給他選了這一種。
+   撐開的快慢照舊走 FLASH_LIFE：光留得久不等於撐得慢。 */
+const GLOW_LIFE = 1.5, GLOW_HOLD = 0.3, FLASH_SHRINK = 0.6;
+/* big＝強爆炸（核彈與爆裂魔法；explode 傳的是 wind，風壓也只有這兩種有） */
+function spawnBlast(p, R, big) {
   /* 火球球心抬到爆點上方一點：貼著地面生的話會被自己炸出來的碎料堆整個埋掉——
      它是加法混色，擋在前面的積木照樣不透明，量過只剩一成看得到。
      抬起來之後球的下緣還是切在地面附近（埋在地下的那部分被草地擋掉），
      上半個球高過碎料堆，才是參考圖那顆罩在爆心上的火球。 */
   if (flashes.length >= FLASH_MAX) flashes.shift();
-  flashes.push({ x: p.x, y: p.y + R * FLASH_UP, z: p.z, R, magic, t: 0, r: R * 0.34, op: 1 });
+  const fl = { x: p.x, y: p.y + R * FLASH_UP, z: p.z, R, t: 0, r: R * 0.34, op: 1 };
+  if (big) {
+    fl.big = 1; fl.life = GLOW_LIFE; fl.hold = GLOW_HOLD; fl.r *= FLASH_SHRINK;
+    fl.bN = Math.round(BILL_K * R * R); fl.bn = 0;
+  }
+  flashes.push(fl);
   /* ── 火星（v1.200 整批變細，見 開發筆記〈火星再細一級〉）──────────────
      使用者：「爆炸類的火紅色正方塊 目前來看太粗糙了 要調整成精細一點
      (達到其他特效水準的程度)」。舊版一發只有 48（炸彈）～96（核彈）顆、單顆
@@ -5005,7 +5086,11 @@ function spawnBlast(p, R, magic) {
      仰角偏上半球（sin 取 −0.25～1）：往下那半本來就埋在碎料堆與地面裡，撒下去是浪費配額。 */
   const hk = 0.8 + R * 0.055;                     // 單顆尺寸的倍率（沿用舊的算法）
   const cy = p.y + R * FLASH_UP;                  // 球心
-  const n1 = Math.min(180, 40 + Math.round(R * 4.4));
+  /* 比核彈大的那幾發照面積補顆數（v1.279.0）：兩個上限 180／260 在 R≈31 就頂到，
+     魔法 R45 原本跟核彈一樣多，攤在 2.25 倍的面積上只剩 46% 的密度（使用者看到的「空虛」之一）。
+     補到同密度 ＝ ×(R/NUKE_R)²，魔法一發 447 → 990 顆（HOT_BURST 跟著抬）。核彈以下一顆都沒變。 */
+  const dens = Math.max(1, (R / NUKE_R) * (R / NUKE_R));
+  const n1 = Math.round(Math.min(180, 40 + Math.round(R * 4.4)) * dens);
   for (let i = 0; i < n1; i++) {
     if (hot.length >= HOT_BURST) break;
     const a = Math.random() * Math.PI * 2;
@@ -5028,10 +5113,10 @@ function spawnBlast(p, R, magic) {
       s: rr(0.15, 0.32) * hk, life: rr(0.2, 0.48),
       g: -1.5, grow: 1.06, cool: rr(0.35, 0.7),
       cr: 1, cg: core ? rr(0.78, 0.92) : rr(0.34, 0.5), cb: core ? rr(0.3, 0.5) : rr(0.04, 0.12),
-      to: magic ? [0.85, 0.12, 0.32] : [0.5, 0.12, 0.03]            // 冷成暗紅／暗橘
+      to: [0.5, 0.12, 0.03]                       // 冷成暗紅（v1.278 以前魔法版冷成暗桃紅）
     });
   }
-  const n2 = Math.min(260, 52 + Math.round(R * 6.8));
+  const n2 = Math.round(Math.min(260, 52 + Math.round(R * 6.8)) * dens);
   for (let i = 0; i < n2; i++) {
     if (hot.length >= HOT_BURST) break;
     const a = Math.random() * Math.PI * 2;
@@ -5051,17 +5136,44 @@ function spawnBlast(p, R, magic) {
       g: 1.2, grow: 0.88, cool: rr(0.16, 0.36),
       keep: 0.965,                                // 預設 0.9 會讓它原地就停住（見 stepHot）
       cr: 1, cg: core ? rr(0.82, 0.96) : rr(0.42, 0.6), cb: core ? rr(0.4, 0.6) : rr(0.06, 0.16),
-      to: magic ? [0.85, 0.12, 0.32] : [0.55, 0.12, 0.03],
+      to: [0.55, 0.12, 0.03],
       dx, dy: ey, dz, ln: rr(0.9, 2.1) * (0.55 + R * 0.045)
     });
   }
   /* 中央的白閃原本是幾顆放大的白色方塊，現在球本體的核心就是白熱的，
      再疊那幾顆只會在球的正面糊出幾片奶油色的方形，所以拿掉了。 */
-  // 貼地往外掃的兩圈光。參考圖裡那幾道橫向的環就是這個
-  const c = magic ? 0xff3b6b : 0xffb038;
+  // 貼地往外掃的兩圈光。參考圖裡那幾道橫向的環就是這個（v1.278 以前魔法版是粉紅 0xff3b6b）
   for (let i = 0; i < 2; i++)
     fxRings.push({ x: p.x, z: p.z, y: 0.16 + i * 0.12, r: R * 0.2, vr: R * (2.2 - i * 0.8),
-                   op: 1, fade: 0.5 + i * 0.3, c, add: 1, spin: rr(0, 6.28) });
+                   op: 1, fade: 0.5 + i * 0.3, c: 0xffb038, add: 1, spin: rr(0, 6.28) });
+}
+/* 火團這一幀該生到第幾團：照時間算（同烏雲的聚雲），不是每幀累加——4 倍速或掉幀時快慢才不會跑掉。
+   生在「火球照原本尺寸撐開時的半徑」裡（殼縮了 FLASH_SHRINK，火團沒縮：縮的是光不是火），
+   偏外緣（u 取 √）——看得到的是球面那一層；仰角偏上半球，理由同火星。
+   池子滿了就跳過那一團但照樣記帳，不會之後一口氣補回來。 */
+function emitBillows(f) {
+  const want = Math.round(f.bN * Math.min(1, f.t / BILL_T));
+  const fr = f.R * (0.34 + 0.72 * Math.sqrt(Math.min(1, f.t / FLASH_LIFE)));
+  const sk = Math.sqrt(f.R / MAG_R);             // 核彈那發的單顆小一點（×0.82）
+  const C = BILL_C;
+  for (; f.bn < want; f.bn++) {
+    if (billows.length >= BILL_CAP) continue;
+    const a = Math.random() * Math.PI * 2;
+    const ey = rr(-0.35, 1), eh = Math.sqrt(Math.max(0, 1 - ey * ey));
+    const u = Math.sqrt(Math.random());
+    const rad = fr * (0.12 + 0.58 * u), sp = rr(1, 4), m = (x, y) => x + (y - x) * u;
+    billows.push({
+      x: f.x + Math.cos(a) * eh * rad, y: Math.max(0.6, f.y + ey * rad * 0.82), z: f.z + Math.sin(a) * eh * rad,
+      vx: Math.cos(a) * eh * sp, vy: ey * sp + rr(0.5, 2), vz: Math.sin(a) * eh * sp,
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(1.4, 2.6), s: rr(0.8, 1.9) * sk,
+      cr: m(C.in0[0], C.out0[0]), cg: m(C.in0[1], C.out0[1]), cb: m(C.in0[2], C.out0[2]),
+      to: [m(C.in1[0], C.out1[0]), m(C.in1[1], C.out1[1]), m(C.in1[2], C.out1[2])],
+      /* 外緣冷得快（暗紅的邊）、裡面留久一點黃——參考圖的火球就是黃白的心、暗紅的邊 */
+      cool: rr(0.5, 0.9) + (1 - u) * 0.9,
+      g: -2.2, fade: 1.2                          // 往上浮（同傘蓋往上升），縮著散掉
+    });
+  }
 }
 
 /* ── 風壓 ─────────────────────────────────────────────────
@@ -5087,13 +5199,16 @@ const WIND_DUST = 64;               // 塵牆幾顆
    或三個陣同時爆就會看到「只有光環在掃、地上沒被掀起來」）。清乾淨重測同一發是
    dust 118、64 顆滿額。
    改成照引擎的池子留一截：塵牆只要 64 顆、又是一次性的爆量（0.9～1.7 秒就退光），
-   留 300 給還在冒的煙綽綽有餘——真的頂到池子才停，那時本來就畫不下了。 */
-const WIND_DUST_CAP = ENG.MAXDUST - 300;
-function spawnWind(p, R, magic) {
+   留 300 給還在冒的煙綽綽有餘——真的頂到池子才停，那時本來就畫不下了。
+   v1.279.0 引擎的池子多了火團那一份（BILL_CAP，見 spawnBlast），那一份不是 dust 的，先扣掉
+   ——閘門的位置維持原本那一格（8600 − 300），隕石落地的撞擊煙塵也走這一道。 */
+const WIND_DUST_CAP = ENG.MAXDUST - BILL_CAP - 300;
+function spawnWind(p, R) {
   /* 顏色偏暖、不要接近白：這幾圈是加法混色又鋪得很大，給白的話整片畫面會過曝，
      連中間那顆火球都被洗掉（量過：拿掉火球的同一幀，過曝白從 0.13% 漲到 0.21%，
-     火球本身的對比就從 3 倍掉到 2.8 倍）。風壓是被掀起來的塵，不是第二顆火球。 */
-  const c = magic ? 0xff6fae : 0xffc078;
+     火球本身的對比就從 3 倍掉到 2.8 倍）。風壓是被掀起來的塵，不是第二顆火球。
+     （v1.278 以前魔法版是粉紅 0xff6fae；v1.279.0 爆裂魔法照參考圖跟核彈同一種橘。） */
+  const c = 0xffc078;
   for (let i = 0; i < WIND_RINGS; i++) {
     const k = i / (WIND_RINGS - 1);                 // 0 = 貼地那圈，1 = 最高那圈
     /* fade 是「淡掉要幾秒」，vr 要照它算：兩者不配的話環會在半路上就消失，
@@ -5127,15 +5242,19 @@ function spawnWind(p, R, magic) {
 /* 火球：先一瞬間衝到大半個尺寸，之後慢慢撐開；亮度收得比半徑快。
    兩者同速的話它會像顆縮回去的氣球，火球是「膨脹的同時燒完冷掉」。
    life／hold 沒給就走上面那兩個常數（爆炸類一律用預設）；王之財寶那顆小火球
-   自己帶一份短的，理由見 weaponBoom。 */
+   自己帶一份短的，理由見 weaponBoom。
+   強爆炸（big，v1.279.0）帶的是 GLOW_LIFE／GLOW_HOLD，但**撐開的快慢照舊走 FLASH_LIFE**——
+   光留得久不等於撐得慢；整顆再乘 FLASH_SHRINK，火團也在這裡跟著生（見 emitBillows）。 */
 function stepFlash(dt) {
   for (let i = flashes.length - 1; i >= 0; i--) {
     const f = flashes[i];
     f.t += dt;
+    if (f.bn < f.bN) emitBillows(f);
     const life = f.life || FLASH_LIFE, hold = f.hold === undefined ? FLASH_HOLD : f.hold;
     const k = f.t / life;
     if (k >= 1) { flashes.splice(i, 1); continue; }
-    f.r = f.R * (0.34 + 0.72 * Math.sqrt(k));       // sqrt：一開始猛、後面慢
+    const kr = f.big ? Math.min(1, f.t / FLASH_LIFE) : k;
+    f.r = f.R * (0.34 + 0.72 * Math.sqrt(kr)) * (f.big ? FLASH_SHRINK : 1);   // sqrt：一開始猛、後面慢
     const fade = f.t < hold ? 1 : 1 - (f.t - hold) / (life - hold);
     f.op = fade * fade;                             // 平方：亮的時間長、最後幾幀掉得乾脆
   }
@@ -6107,13 +6226,15 @@ function stepStorms(dt) {
    spawnDust／spawnRing／煙塵那些都拿 dust.length 當配額關卡（超過 400 就不再生），
    一朵一百五十團的雲擠進去會把雷自己的揚塵整個擋掉。
    接在後面而不是前面：真的滿到 MAXDUST 時，被切掉的該是雲的尾巴，不是打擊感。
-   重用同一個陣列，不要每幀配置一個新的。 */
+   重用同一個陣列，不要每幀配置一個新的。
+   強爆炸的火團（billows，v1.279.0）同一個理由也是自己一池，排在 dust 與烏雲中間。 */
 const dustAll = [];
 function dustList() {
-  if (!storms) return dust;
+  if (!storms && !billows.length) return dust;
   dustAll.length = 0;
   for (const d of dust) dustAll.push(d);
-  for (const s of storms) for (const q of s.puffs) dustAll.push(q);
+  for (const d of billows) dustAll.push(d);
+  if (storms) for (const s of storms) for (const q of s.puffs) dustAll.push(q);
   return dustAll;
 }
 
@@ -7698,7 +7819,7 @@ function weaponBoom(pt, w) {
   const p = { x: pt.x - w.dx * SPARK_BACK, y: pt.y - w.dy * SPARK_BACK,
               z: pt.z - w.dz * SPARK_BACK };
   if (flashes.length < FLASH_MAX)
-    flashes.push({ x: p.x, y: p.y, z: p.z, R: GATE_BOOM_R, magic: false,
+    flashes.push({ x: p.x, y: p.y, z: p.z, R: GATE_BOOM_R,
                    t: 0, r: GATE_BOOM_R * 0.34, op: 1,
                    life: GATE_BOOM_LIFE, hold: GATE_BOOM_HOLD });
   /* 從球面往外噴的火星。跟爆炸那一套同一個道理：生在球心的話這些幾乎不透明的
@@ -8383,14 +8504,15 @@ function spawnTwistDust(t, dt, n) {
     });
   }
 }
-function stepDust(dt) {
+/* arr 不給就是 dust；強爆炸的火團那一池（billows，v1.279.0）走同一套，見 game-ui.js 的 step */
+function stepDust(dt, arr = dust) {
   // 水平阻力與貼地摩擦照 60fps 一幀調的，換算成這一幀的（v1.244.0，同 stepHot）
   const f60 = dt * 60, g80 = Math.pow(0.8, f60);
   let lk = 0.94, lv = Math.pow(0.94, f60);
-  for (let i = dust.length - 1; i >= 0; i--) {
-    const d = dust[i];
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const d = arr[i];
     d.life -= dt;
-    if (d.life <= 0) { dust.splice(i, 1); continue; }
+    if (d.life <= 0) { arr.splice(i, 1); continue; }
     // g 給負的就是會往上飄（火球、蘑菇雲）；沒給就是一般會落下的煙塵
     d.vy -= (d.g === undefined ? 7 : d.g) * dt;
     /* 水平阻力。預設 0.94 是「爆起來一團、幾乎就地停住」的煙塵；
@@ -8402,6 +8524,12 @@ function stepDust(dt) {
     if (d.y < 0.1) { d.y = 0.1; d.vy = 0; d.vx *= g80; d.vz *= g80; }
     // 要慢慢淡掉的（蘑菇雲）用縮的。單靠 life 到期會「啪」地整團同時不見
     if (d.fade) d.s *= Math.pow(0.5, dt / d.fade);
+    if (d.to) {                                   // 會冷卻的（火團，v1.279.0）：往 to 收，同 stepHot 那一段
+      const k = Math.min(1, dt / d.cool);
+      d.cr += (d.to[0] - d.cr) * k;
+      d.cg += (d.to[1] - d.cg) * k;
+      d.cb += (d.to[2] - d.cb) * k;
+    }
     /* hold 的不自轉（v1.175）：消防車那條水柱的每一顆是「沿飛行方向拉長的水痕」，
        方向就是它的意義（見 aimDrop）——自轉會把整條水柱轉成一團翻滾的碎片。 */
     if (!d.hold) { d.rx += dt * 2; d.ry += dt * 3; }
@@ -9645,7 +9773,7 @@ function giantKick(m) {
      與那聲爆炸**——一腳踹下去不是炸彈，聲音該是一記悶響（sndThud）。
      self 給 m：牠踹的是自己腳前 4.7 格，而半徑是 9，不擋的話每踹一腳就把自己
      掀倒一次，一趟踹不完第二腳（見 explode 的 self）。 */
-  const n = explode(p, GIA_R, GIA_POW, false, false, true, m);
+  const n = explode(p, GIA_R, GIA_POW, false, true, m);
   /* 「帶有燃燒效果」：踹中那一片再撒一輪餘火，剩下的交給火自己蔓延（同隕石、同火球）。
      吉祥物那一趟（m.home）只認村子那一邊的積木，地標一塊都不准點。 */
   igniteAround(p, GIA_R * 1.6, Math.round(GIA_R * 1.6), SET, m.home ? isVillage : null);

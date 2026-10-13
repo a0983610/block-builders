@@ -21953,7 +21953,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       w.y = 0; w.air = 0; w.burn = 0; w.fall = 0;
     });
     const p0 = workers.map(w => ({ x: w.x, z: w.z }));
-    explode({ x: 0, y: 2, z: 0 }, 14, 17, false);
+    explode({ x: 0, y: 2, z: 0 }, 14, 17);
     const hit = { air: workers.filter(w => w.air).length, n: workers.length,
                   fall: workers.filter(w => w.fall > 0).length };
     let peak = 0, t = 0;
@@ -22615,10 +22615,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     flashes.push(...saved);
     step(0.05); step(0.05);                            // 爆後 0.15 秒：還在全亮期
     const hold = flashes.length ? flashes[0].op : -1;
-    for (let i = 0; i < 6; i++) step(0.05);            // 爆後 0.45 秒：該撐大也該暗了
+    for (let i = 0; i < 6; i++) step(0.05);            // 爆後 0.45 秒：該撐大了
     const fade = flashes.length ? { r: +flashes[0].r.toFixed(1), op: flashes[0].op } : null;
+    /* 核彈是強爆炸（v1.279.0）：光留到 GLOW_LIFE、整顆 × FLASH_SHRINK（見 spawnBlast）。
+       所以 0.75 秒（超過 FLASH_LIFE）時還在、只是暗下來了；收乾淨要等 GLOW_LIFE。 */
     for (let i = 0; i < 6; i++) step(0.05);            // 爆後 0.75 秒：超過 FLASH_LIFE
+    const dim = flashes.length ? { op: flashes[0].op, big: !!flashes[0].big } : null;
+    let tg = 0.75;
+    while (tg < GLOW_LIFE + 0.04) { step(0.05); tg += 0.05; }
     const left = flashes.length;
+    const shell = { maxR: NUKE_R * 1.06 * FLASH_SHRINK, life: FLASH_LIFE, glow: GLOW_LIFE };
     /* 火星的分布單獨量：這一刻場上的 hot 混著蘑菇雲柱心的火光（那些本來就生在中心），
        混在一起量不出「火星有沒有生在球面外」。直接叫一次 spawnBlast 最乾淨。
        **量的是離球心的三維距離**（v1.200）：火星從 v1.200 起撒在球面上而不是
@@ -22655,17 +22661,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     hot.length = 0; flashes.length = 0; fxRings.length = 0;
     for (let i = 0; i < FLASH_MAX + 4; i++) spawnBlast({ x: i * 3, y: 2.5, z: 0 }, 30, false);
     const capped = flashes.length, cap = FLASH_MAX;
-    hot.length = 0; flashes.length = 0; fxRings.length = 0;
-    return { born, on, off, hold, fade, left, sparkMin, spark, capped, cap, boomY };
+    hot.length = 0; flashes.length = 0; fxRings.length = 0; billows.length = 0;
+    return { born, on, off, hold, fade, dim, left, shell, sparkMin, spark, capped, cap, boomY };
   });
   /* 半徑走 sqrt，爆後第一幀（0.05 秒）就衝到一半以上——「一瞬間撐開」是刻意的，
-     等速膨脹看起來像吹氣球。所以這裡量的是「一幀內有沒有到半徑的一半」。 */
+     等速膨脹看起來像吹氣球。所以這裡量的是「一幀內有沒有到半徑的一半」。
+     v1.279.0 起核彈的殼整顆 × FLASH_SHRINK（縮進火團裡），比例照舊：撐到頭的 0.47～0.63
+     （以前寫死 15～20、上限 31.8，同一個比例）。 */
+  const bornK = flash.born[0] ? flash.born[0].r / flash.shell.maxR : 0;
   ok('爆炸中心有一顆實體火球，一幀就撐開、球心抬離爆點',
-     flash.born.length === 1 && flash.born[0].r > 15 && flash.born[0].r < 20 &&
+     flash.born.length === 1 && bornK > 0.47 && bornK < 0.63 &&
      Math.abs(flash.born[0].y - (flash.boomY + 30 * 0.22)) < 1.2,
      '爆後 0.05 秒半徑 ' + (flash.born[0] ? flash.born[0].r : '—') +
-     '（上限 30）、球心 y=' + (flash.born[0] ? flash.born[0].y : '—') +
-     '（爆點 ' + flash.boomY.toFixed(1) + ' + 抬升 6.6）');
+     '（撐到頭 ' + flash.shell.maxR.toFixed(1) + ' 的 ' + (bornK * 100).toFixed(0) + '%）、球心 y=' +
+     (flash.born[0] ? flash.born[0].y : '—') + '（爆點 ' + flash.boomY.toFixed(1) + ' + 抬升 6.6）');
   /* 絕對門檻一路在降：藍圖改瘦（0.5→0.42）讓建築長更高、取景拉遠，1.23% → 0.91%；
      核彈改成炸在接觸點之後，帝國大廈這一發是打在樓頂而不是腳邊，火球在畫面上的
      位置與遮擋都變了，再掉到 0.41%；v1.55 取景改成「建築底部置中」，帝國大廈的
@@ -22679,11 +22688,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('火球固定吃五個 draw call（每層球殼一個）', flash.on.calls - flash.off.calls === 5,
      flash.off.calls + ' → ' + flash.on.calls + ' 個');
   ok('火球先全亮一下才開始暗', flash.hold === 1, '爆後 0.15 秒亮度 ' + flash.hold);
+  /* 「撐大」量比例（v1.279.0 以前寫死 +8，殼縮成 0.6 倍之後同一個比例只剩 +7.2）；
+     「暗下來」改在 0.75 秒量：強爆炸的光前 GLOW_HOLD 秒全亮，0.45 秒才剛開始暗。 */
   ok('火球會一邊撐大一邊暗下來',
-     !!flash.fade && flash.fade.r > flash.born[0].r + 8 && flash.fade.op < 0.7,
-     '0.45 秒時半徑 ' + (flash.fade ? flash.fade.r : '—') + '、亮度 ' +
-     (flash.fade ? flash.fade.op.toFixed(2) : '—'));
-  ok('火球 0.75 秒內收乾淨', flash.left === 0, '剩 ' + flash.left + ' 顆');
+     !!flash.fade && flash.fade.r > flash.born[0].r * 1.5 && !!flash.dim && flash.dim.op < 0.7,
+     '0.45 秒時半徑 ' + (flash.fade ? flash.fade.r : '—') + '（爆後 0.05 秒 ' + flash.born[0].r +
+     '）、0.75 秒時亮度 ' + (flash.dim ? flash.dim.op.toFixed(2) : '—'));
+  ok('強爆炸的光留到 GLOW_LIFE 才收乾淨（撐開照舊 FLASH_LIFE）',
+     !!flash.dim && flash.dim.big && flash.left === 0,
+     '0.75 秒（過了撐開的 ' + flash.shell.life + ' 秒）還亮著（' + (flash.dim ? flash.dim.op.toFixed(2) : '—') + '）、' +
+     flash.shell.glow + ' 秒後剩 ' + flash.left + ' 顆');
   /* 火星要生在球面外。生在球心的話那些幾乎不透明的方塊會整片糊在球的正面，
      把最亮的核心遮成一堆橘色碎片——改成球殼的意義就沒了。 */
   ok('火星生在球面外，不會糊住核心', flash.sparkMin > 30 * 0.45,
@@ -22699,6 +22713,69 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '全部退光要 ' + flash.spark.gone + ' 秒');
   ok('同時炸好幾發也只留最新的那幾顆火球', flash.capped === flash.cap,
      '連續 ' + (flash.cap + 5) + ' 發 → 場上 ' + flash.capped + ' 顆（上限 ' + flash.cap + '）');
+
+  /* 強爆炸的火團（v1.279.0，使用者：「爆裂魔法爆炸特效 自從範圍加大以後 看起來爆炸火焰很空虛 少了這種感覺」
+     ＋一張核爆火球的參考圖；看過預覽之後核彈也一起、魔法的火星照範圍加密、魔法換成核彈的橘、光縮進火團裡）。
+     規則型：直接呼叫 spawnBlast／stepFlash／stepDust，不跑模擬，期望值全讀常數——
+     ① 一發幾團 ＝ round(BILL_K × R²)，BILL_T 秒內生完；小爆炸（big 沒開）一團都沒有、殼也不縮
+     ② 自己一池：dust 一顆都沒多（不搶雲的關卡），畫的時候 dustList 接得上
+     ③ 單顆在 0.8～1.9 × √(R/MAG_R) 裡；同一批會冷卻（綠色分量往下掉）、會往上浮
+     ④ 火星照面積補到核彈的密度（每 R² 幾顆差不到一成），核彈那一發的顆數沒變
+     ⑤ 爆裂魔法跟核彈同一種顏色：火球殼不帶魔法旗標、地上兩圈與風壓四圈都不是粉紅 */
+  const bl = await page.evaluate(() => {
+    const clean = () => { hot.length = 0; flashes.length = 0; fxRings.length = 0; billows.length = 0; };
+    const stormN = () => storms ? storms.reduce((s, q) => s + q.puffs.length, 0) : 0;
+    const one = (R, big) => {
+      clean();
+      const d0 = dust.length;
+      spawnBlast({ x: 0, y: 2.5, z: 0 }, R, big);
+      const sparks = hot.length, fl = flashes[0];
+      const want = big ? Math.round(BILL_K * R * R) : 0;
+      let t = 0, at = -1;
+      while (t < BILL_T + 0.2) { stepFlash(0.05); t += 0.05; if (at < 0 && want && billows.length >= want) at = +t.toFixed(2); }
+      const r = { R, want, n: billows.length, at, sparks, dustAdd: dust.length - d0,
+                  joined: dustList().length - dust.length - billows.length === stormN(),
+                  shrunk: fl.r < R * 1.06 * FLASH_SHRINK + 1e-6, big: !!fl.big };
+      const sk = Math.sqrt(R / MAG_R);
+      r.sizeOk = !billows.length || billows.every(d => d.s >= 0.8 * sk - 1e-9 && d.s <= 1.9 * sk + 1e-9);
+      const s = billows.slice(), avg = k => s.filter(d => d.life > 0).reduce((a, d) => a + d[k], 0) / Math.max(1, s.filter(d => d.life > 0).length);
+      r.cg0 = avg('cg'); r.y0 = avg('y');
+      for (let i = 0; i < 10; i++) stepDust(0.05, billows);   // 半秒
+      r.cg1 = avg('cg'); r.y1 = avg('y');
+      return r;
+    };
+    const mag = one(MAG_R, true), nuke = one(NUKE_R, true), bomb = one(BOMB_R, false);
+    const nukeWant = Math.min(180, 40 + Math.round(NUKE_R * 4.4)) + Math.min(260, 52 + Math.round(NUKE_R * 6.8));
+    /* ⑤ 跟 stepOneMagic 炸開那一行同一組參數（wind＝true）。不直接叫 stepOneMagic：
+       它後面還會 startCloud，那一下 holdWide 把鏡頭退開、退了就不收回來，會帶到這一段後面量像素的條目 */
+    clean();
+    explode({ x: 0, y: MAG_CORE_Y, z: 0 }, MAG_R, MAG_POW, true, false, null, false, MAG_R * MARK_SCORCH_R);
+    const pink = fxRings.filter(f => f.c === 0xff3b6b || f.c === 0xff6fae).length;
+    const col = { rings: fxRings.length, pink, flashMagic: flashes.some(f => 'magic' in f), big: flashes.length > 0 && !!flashes[0].big };
+    clean(); dust.length = 0; clearFires();                    // 動過的全域還回去（建築下一條自己重蓋）
+    return { mag, nuke, bomb, nukeWant, col, T: BILL_T };
+  });
+  ok('強爆炸的火球裡長出一團團的火：一發 BILL_K × R² 團、跟著火球撐開那幾秒生完，小爆炸沒有',
+     bl.mag.n === bl.mag.want && bl.nuke.n === bl.nuke.want && bl.mag.at > 0 && bl.mag.at <= bl.T + 0.06 &&
+     bl.bomb.n === 0 && !bl.bomb.big && bl.mag.big && bl.nuke.big,
+     '魔法 ' + bl.mag.n + '／' + bl.mag.want + ' 團（' + bl.mag.at + ' 秒生完）、核彈 ' + bl.nuke.n + '／' +
+     bl.nuke.want + '、炸彈 ' + bl.bomb.n + ' 團');
+  ok('火團自己一池：不搶塵霧的配額，畫的時候接在後面',
+     bl.mag.dustAdd === 0 && bl.nuke.dustAdd === 0 && bl.mag.joined && bl.nuke.joined,
+     '魔法那一發 dust 多了 ' + bl.mag.dustAdd + ' 顆、核彈 ' + bl.nuke.dustAdd + ' 顆；dustList 接上 ' + bl.mag.joined);
+  ok('火團的顆粒照蘑菇雲那一檔、由黃白冷成橘紅、往上浮；殼縮進火團裡',
+     bl.mag.sizeOk && bl.nuke.sizeOk && bl.mag.cg1 < bl.mag.cg0 - 0.05 && bl.mag.y1 > bl.mag.y0 &&
+     bl.mag.shrunk && bl.nuke.shrunk,
+     '綠色分量 ' + bl.mag.cg0.toFixed(2) + ' → ' + bl.mag.cg1.toFixed(2) + '（半秒）、平均高度 ' +
+     bl.mag.y0.toFixed(1) + ' → ' + bl.mag.y1.toFixed(1));
+  const dMag = bl.mag.sparks / (bl.mag.R * bl.mag.R), dNuke = bl.nuke.sparks / (bl.nuke.R * bl.nuke.R);
+  ok('爆裂魔法的火星照面積補到核彈的密度，核彈那一發顆數沒變',
+     Math.abs(dMag / dNuke - 1) < 0.1 && bl.nuke.sparks === bl.nukeWant,
+     '魔法 ' + bl.mag.sparks + ' 顆（每 R² ' + dMag.toFixed(3) + '）、核彈 ' + bl.nuke.sparks + ' 顆（' +
+     dNuke.toFixed(3) + '，應為 ' + bl.nukeWant + '）');
+  ok('爆裂魔法跟核彈同一種顏色：火球殼、地上兩圈、風壓四圈都不是粉紅',
+     bl.col.rings >= 6 && bl.col.pink === 0 && !bl.col.flashMagic && bl.col.big,
+     '炸開那一幀 ' + bl.col.rings + ' 圈、粉紅的 ' + bl.col.pink + ' 圈；火球殼帶魔法旗標 ' + bl.col.flashMagic);
 
   /* 風壓：核彈與爆裂魔法才有的那一下氣浪。火球只有爆炸半徑那麼大，
      威力看起來就到那裡為止；風壓要掃得比爆炸範圍更遠，還要把地面的塵土一起帶走。
@@ -22719,7 +22796,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     fxRings.length = 0; dust.length = 0;
     // 核彈爆炸真的會帶風壓；炸彈那種小爆炸不帶（半徑才 7～14，掃 2.6 倍會比核彈還顯眼）
-    explode({ x: 0, y: 2.5, z: 0 }, NUKE_R, NUKE_POW, false, true);
+    explode({ x: 0, y: 2.5, z: 0 }, NUKE_R, NUKE_POW, true);
     const nukeWind = dust.filter(d => d.keep).length;
     fxRings.length = 0; dust.length = 0; hot.length = 0; flashes.length = 0;
     explode({ x: 0, y: 2, z: 0 }, BOMB_R, BOMB_POW);
@@ -23421,12 +23498,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     startBuild(true); completeNow();
     castMagic({ x: 0, z: 0 });
     while (magics) step(0.05);
-    let t = 0, first = -1, last = -1, peak = 0, ball = -1;
+    let t = 0, first = -1, last = -1, peak = 0, ball = -1, shellOut = 0;
     const from = [], to = [];
     for (let i = 0; i < 100; i++) {                   // 爆炸後五秒
       step(0.05); t += 0.05;
       if (!bolts.length) continue;
-      if (first < 0) { first = +t.toFixed(2); ball = flashes.length; }
+      if (first < 0) {
+        first = +t.toFixed(2);
+        /* v1.279.0 起魔法的光留到 GLOW_LIFE（縮進火團裡），電還是 FLASH_LIFE 撐完就劈（使用者看過的預覽就是這樣）：
+           那時還在的只能是那一顆強爆炸的光，而且已經縮了——電要劈得出它的外殼 */
+        ball = flashes.filter(f => !f.big).length;
+        shellOut = Math.max(0, ...flashes.map(f => f.r * 1.1));
+      }
       last = +t.toFixed(2);
       peak = Math.max(peak, bolts.length);
       for (const b of bolts) if (b.pts.length === ARC_SEG + 1) {     // 主幹，不是分岔那條
@@ -23491,12 +23574,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              from: +Math.max(0, ...from).toFixed(2), n: to.length,
              reach: +Math.max(0, ...to).toFixed(1),
              mid: +(to.reduce((s, v) => s + v, 0) / (to.length || 1)).toFixed(1),
-             R: MAG_R, life: FLASH_LIFE, want: ARC_TIME };
+             R: MAG_R, life: FLASH_LIFE, want: ARC_TIME, shellOut: +shellOut.toFixed(1) };
   });
-  ok('火球收乾之後才開始劈電',
-     mgArc.first >= mgArc.life - 0.06 && mgArc.first < mgArc.life + 0.4 && mgArc.ball === 0,
-     '爆炸後 ' + mgArc.first + ' 秒第一道（火球亮 ' + mgArc.life + ' 秒，那時場上 ' +
-     mgArc.ball + ' 顆火球）');
+  ok('火球撐開之後才開始劈電，電劈得出光的外殼',
+     mgArc.first >= mgArc.life - 0.06 && mgArc.first < mgArc.life + 0.4 && mgArc.ball === 0 &&
+     mgArc.reach > mgArc.shellOut,
+     '爆炸後 ' + mgArc.first + ' 秒第一道（火球撐開要 ' + mgArc.life + ' 秒，那時場上一般火球 ' +
+     mgArc.ball + ' 顆、強爆炸的光外殼半徑 ' + mgArc.shellOut + '，電最遠劈到 ' + mgArc.reach + '）');
   ok('劈滿三秒，而且很稀疏',
      Math.abs((mgArc.last - mgArc.first) - mgArc.want) < 0.45 && mgArc.peak <= 4,
      mgArc.first + ' → ' + mgArc.last + ' 秒（' + (mgArc.last - mgArc.first).toFixed(2) +
@@ -25613,7 +25697,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const R = k === 'giant' ? GIA_R : k === 'nana' ? NANA_R : ROCK_R;
       const P = k === 'giant' ? GIA_POW : k === 'nana' ? NANA_POW : ROCK_POW;
       const n0 = blocks.filter(b => b.st === SET).length;
-      explode(p, R, P, false, false, true);
+      explode(p, R, P, false, true);
       return { n: n0 - blocks.filter(b => b.st === SET).length, n0,
                p: [+p.x.toFixed(1), +p.y.toFixed(1), +p.z.toFixed(1)] };
     }, kind);
@@ -34397,6 +34481,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      metLook.mine.shake > 0.3 && metLook.mine.fires > 0,
      '砸飛 ' + metLook.mine.smashed + ' 塊、揚塵 ' + metLook.mine.dust +
      ' 團、震動 ' + metLook.mine.shake + '、點著 ' + metLook.mine.fires + ' 塊');
+  /* 落地的撞擊煙塵（v1.279.0，使用者：「隕石撞擊地面時 增加煙塵 目前看起來很像撞上去隕石就消失
+     然後地面留下個痕跡」）。explode 自己的揚塵照「打到幾塊」給量，落在空地上只有 24 顆、散 2 格。
+     規則型：不跑模擬，直接叫 spawnImpactDust、只推 stepDust（期望值全讀 MET_DUST／MET_R／MET_S）——
+     ① 落在地面：四樣都在（土柱、貼地一圈、土塊、懸著的煙）
+     ② 貼地那一圈一秒內滾到破壞半徑的八成以上、土柱高過石身（不是貼在坑邊的一小撮；explode 那一點揚塵只散 2 格）
+        那一圈沒給 g，走預設重力很快落地、再吃貼地摩擦，一秒內就停住：探針 200 次最遠 8.26～9.26（0.90～1.01R，中位 8.84）。
+        第一版寫成「滾出破壞半徑外」是只拿水平阻力推的（推出 10.3），漏了落地與摩擦，--tier commit 量到 8.7 就紅了
+     ③ 落在半空（y > R，砸在屋頂上）沒有貼地那一圈（同 spawnMark「炸在半空就不留」）
+     ④ meteorHit 真的有叫它：砸在空地上，explode 那一點揚塵之外還多出這一整份 */
+  const metDust = await page.evaluate(() => {
+    const D = MET_DUST, sum = D.plume + D.ring + D.clod + D.haze;
+    dust.length = 0;
+    spawnImpactDust({ x: 0, y: 0.8, z: 0 }, MET_R);
+    const ground = dust.length;
+    const ring = dust.slice(D.plume, D.plume + D.ring);       // 照生的順序：土柱、一圈、土塊、煙
+    for (let i = 0; i < 20; i++) stepDust(0.05);              // 一秒
+    let ringFar = 0, top = 0;
+    for (const d of ring) if (d.life > 0) ringFar = Math.max(ringFar, Math.hypot(d.x, d.z));
+    for (const d of dust) top = Math.max(top, d.y);
+    dust.length = 0;
+    spawnImpactDust({ x: 0, y: MET_R + 2, z: 0 }, MET_R);
+    const roof = dust.length;
+    dust.length = 0;
+    meteorHit({ x: arenaR * 0.9, y: 0.8, z: 0 });              // 空地上：打不到積木
+    const viaHit = dust.length;
+    dust.length = 0; clearFires();                             // 動過的全域還回去
+    return { sum, noRing: sum - D.ring, ground, roof, viaHit, ringFar: +ringFar.toFixed(1), top: +top.toFixed(1),
+             R: MET_R, S: MET_S };
+  });
+  ok('落地噴出撞擊煙塵：土柱、貼地往外滾的一圈、土塊、懸著的煙',
+     metDust.ground === metDust.sum && metDust.ringFar > metDust.R * 0.8 && metDust.top > metDust.S &&
+     metDust.roof === metDust.noRing && metDust.viaHit >= metDust.sum,
+     '落在地面 ' + metDust.ground + '／' + metDust.sum + ' 團，一秒後那一圈滾到 ' + metDust.ringFar +
+     '（破壞半徑 ' + metDust.R + '）、土柱高 ' + metDust.top + '（石身 ' + metDust.S + '）；砸在屋頂上 ' +
+     metDust.roof + '／' + metDust.noRing + ' 團（沒有貼地那圈）；meteorHit 砸在空地 ' + metDust.viaHit + ' 團');
   /* 石身與破壞範圍是**兩個各自被使用者指定過的數**，所以一條測試守兩個常數：
      · 石身 4 格：v1.151.1 定案（使用者：「隕石大幅提高大小 約5倍(包含隕石本體&破壞範圍)」
        ＋「現在有點過大了…大概半徑接近兩倍的程度」——5 倍講的是體積，所以是半徑 ×2）。

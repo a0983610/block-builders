@@ -45,20 +45,23 @@ const ENG = (function () {
      一場齊射約 500 顆火星，加上還在燒的建築與爆炸火球才擠得下。
      v1.200 再到 1280：爆炸的火星改成「多而細」，一發最多吃到規則那邊的 HOT_BURST
      （560 顆），跟一場齊射同台時 960 會把後面那幾百條拖線默默切掉。
-     這顆是 InstancedMesh，多開 instance 不多吃 draw call，只多幾筆矩陣運算。 */
-  const MAXFIRE = 1280;
+     這顆是 InstancedMesh，多開 instance 不多吃 draw call，只多幾筆矩陣運算。
+     v1.279.0 再到 1700：爆裂魔法的火星照面積補到核彈的密度（一發 990 顆），HOT_BURST 跟著抬到 1200，
+     同一條算法——1200 ＋ 一場齊射的 500 條拖線。 */
+  const MAXFIRE = 1700;
   /* 爆炸中心的火球。一顆球撐不起來：加法混色的單一顆球是「整片同亮度」，
      邊緣硬得像顆塑膠球。改用幾層同心殼各給低濃度疊起來——中心被五層疊到爆白，
      往外一層層淡出去，才是參考圖那種糊掉的光。
      每層的濃度都壓得很低是因為加法混色會累加：中心是五層疊起來的（總和約 1.26，
      剛好過曝成白），各層給高一點整顆就平成一片死白，黃橘的漸層全看不見。
-     r 半徑倍率、op 這層的濃度、c 平常的顏色、mc 魔法版的顏色。 */
+     r 半徑倍率、op 這層的濃度、c 顏色。
+     （v1.278 以前還有一欄魔法版的粉紅 mc；v1.279.0 爆裂魔法照參考圖改成跟核彈同一種橘，那一欄拆了。） */
   const FLASH_SHELL = [
-    { r: 0.40, op: 0.50, c: 0xfffdf2, mc: 0xfff2f8 },
-    { r: 0.58, op: 0.30, c: 0xffeda6, mc: 0xffc9e0 },
-    { r: 0.75, op: 0.22, c: 0xffc44a, mc: 0xff86b6 },
-    { r: 0.92, op: 0.15, c: 0xff9a22, mc: 0xff4f86 },
-    { r: 1.10, op: 0.09, c: 0xff6d12, mc: 0xe22f6e }
+    { r: 0.40, op: 0.50, c: 0xfffdf2 },
+    { r: 0.58, op: 0.30, c: 0xffeda6 },
+    { r: 0.75, op: 0.22, c: 0xffc44a },
+    { r: 0.92, op: 0.15, c: 0xff9a22 },
+    { r: 1.10, op: 0.09, c: 0xff6d12 }
   ];
   /* 最多同時幾顆。**要跟規則那邊的 FLASH_MAX 一樣大**——小於它的話多出來的整顆不見。
      v1.132～v1.148.0 是 4（那時候只有爆炸類在用，同時炸四發已經很多了）。
@@ -669,8 +672,12 @@ const ENG = (function () {
      交錯量「有塵霧／沒塵霧」的 draw：k 1 是 1.49 倍、k 0.6 是 1.80 倍（五對中位）。
      v1.248 再加到 8600：最壞的一幕換成**三顆核彈一起丟**——三朵蘑菇雲同時在場實測峰值 7631 顆，
      規則那邊的雲關卡跟著抬到 8111（見 game-tools.js 的 CLOUD_CAP），這裡再留五百給雲以外的塵與接在後面的烏雲。
-     每多一顆的 CPU 實測約 0.09µs（draw 0.067 ＋ stepDust 0.023），最滿那一刻比 5600 多約 0.27ms。 */
-  const MAXDUST = 8600;
+     每多一顆的 CPU 實測約 0.09µs（draw 0.067 ＋ stepDust 0.023），最滿那一刻比 5600 多約 0.27ms。
+     v1.279.0 再加到 14700：核彈與爆裂魔法炸開時多一團「火團」（見 game-tools.js 的 spawnBlast），
+     它們**自己一池**（billows，同烏雲不放進 dust，不搶雲的關卡），畫的時候接在 dust 後面——
+     所以上限要另外給它那一份：規則那邊的 BILL_CAP ＝ 三個陣同時炸的滿額 6075 團，8600 ＋ 6075 進位。
+     （三顆核彈一起丟是 2700 團，還在這份裡面。）最滿那一刻照每顆 0.09µs 推是多約 0.55ms。 */
+  const MAXDUST = 14700;
 
   /* ── 草皮的花紋（v1.90）─────────────────────────────────
      使用者要「地面綠色增加草地感」。整片單色綠讀起來是一塊綠地板，不是草。
@@ -1419,7 +1426,7 @@ if (vAo.x + vAo.y > 0.5) {
 
     /* 火球的球殼：一層一顆 InstancedMesh，同時炸幾發都只吃 FLASH_SHELL.length 個
        draw call。顏色走 instance color——加法混色下 instance color 就是亮度旋鈕，
-       亮度衰減與魔法版的粉紅都靠它，材質不用每幀改。
+       亮度衰減靠它（v1.278 以前魔法版的粉紅也是），材質不用每幀改。
        不寫深度但照樣測深度：埋在地面下的那半自然被草地擋掉，剩下的就是一頂圓罩。 */
     flashGroup = new T.Group();
     const flGeo = new T.SphereGeometry(1, 20, 14);
@@ -3364,7 +3371,7 @@ if (vAo.x + vAo.y > 0.5) {
     if (fireMesh.instanceColor) fireMesh.instanceColor.needsUpdate = true;
   }
 
-  /* 爆炸中心那顆火球。list 每一項 {x, y, z, r 現在的半徑, op 亮度, magic 要不要粉紅} */
+  /* 爆炸中心那顆火球。list 每一項 {x, y, z, r 現在的半徑, op 亮度} */
   function putFlash(list) {
     const n = Math.min(list.length, FLASH_MAX);
     flashGroup.visible = n > 0;
@@ -3380,7 +3387,7 @@ if (vAo.x + vAo.y > 0.5) {
         scratch.scale.set(r, r * FLASH_SQUASH, r);
         scratch.updateMatrix();
         m.setMatrixAt(k, scratch.matrix);
-        m.setColorAt(k, tmpC.setHex(f.magic ? sh.mc : sh.c).multiplyScalar(f.op));
+        m.setColorAt(k, tmpC.setHex(sh.c).multiplyScalar(f.op));
       }
       m.instanceMatrix.needsUpdate = true;
       if (m.instanceColor) m.instanceColor.needsUpdate = true;

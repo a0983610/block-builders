@@ -217,6 +217,7 @@ function step(dt) {
   pairChat();                                            // 湊對要在更新之前，配到的當幀就停下來
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);
+  stepDust(dt, billows);                                 // 強爆炸的火團：自己一池，同一套推法（v1.279.0）
   stepTrees(dt);
   ENG.updateCamera(dt);
   if (spinOn) ENG.cam.yaw += dt * 0.16;
