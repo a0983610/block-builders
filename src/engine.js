@@ -1094,6 +1094,7 @@ if (vAo.x + vAo.y > 0.5) {
     gjInit(unit);                    // 赫、蒼、茈的光球與白光、衝擊波（全部先 visible = false）
     frInit(unit);                    // 芙莉蓮（v1.259.0）與她的防護罩；打到那一點的白光借上面那一行開的球（gjSph）
     diaInit();                       // Diablo：同上自己一顆（見〈Diablo〉那一節）
+    draInit();                       // 飛龍（v1.277.0）：同上自己一顆（見〈飛龍（v1.277.0 重製）〉那一節）
     /* 雷光（藍白）與一閃的光痕（金黃）：各一對不吃光、不投影的網格，亮芯不透明、光暈半透明（同造型預覽）。
        光暈排在地上的痕跡與塵霧後面畫（同 Excalibur 的光柱，見〈光柱被焦痕蓋住〉） */
     const zPair = (C, cap) => {
@@ -1698,7 +1699,7 @@ if (vAo.x + vAo.y > 0.5) {
     scene.add(fadeMesh);
 
     /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）：幾何體同 fadeMesh 那一套（不切、不發光），材質共用那一份 */
-    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT, FR_SLOT, DIA_SLOT);
+    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT, FR_SLOT, DIA_SLOT, DRA_SLOT);
     const HUM_N = HUM_MAX * HUM_SLOT;
     const humGeo = new T.BoxGeometry(1, 1, 1);
     const humCut = new T.InstancedBufferAttribute(new Float32Array(HUM_N * 4), 4);
@@ -4868,35 +4869,30 @@ if (vAo.x + vAo.y > 0.5) {
                             am: 1, hold: 1, pv: SNOW_SH, bomb: 1 }));
 
 
-  /* ── 飛龍（v1.139）───────────────────────────────────────
-     使用者給了一張參考圖：緋紅的身體、深色的棘刺與爪、大片翼膜、頭上一叢冠刺、
-     背脊一排刺、尾巴末端一片扇。造型是先做成 3D 預覽給使用者看過才落地的。
-
-     **翅膀是一條骨架鏈，不是一片繞翼根轉的硬板**（使用者第一版回饋：「飛的翅膀跟身體
+  /* ── 翼弧（v1.139 飛龍起，v1.176 獅鷲、v1.272.0 雁）──────────────────
+     **翅膀是一條骨架鏈，不是一片繞翼根轉的硬板**（v1.139 使用者看飛龍第一版的回饋：「飛的翅膀跟身體
      太過僵硬」）。每一幀先沿著翼展把方向角積分成一條弧線（wingArc），每一塊再照
      自己離翼根多遠掛上去——所以拍下去時翼面是彎的，翼尖還會甩在後面。
      中間試過「每一塊各自繞翼根轉不同角度」：角度一差開，相鄰兩段就在關節處裂開
-     （翼尖那一段整個斷掉），所以才改成沿弧線走——每一段本來就接在前一段的末端。 */
-  /* 翼弧的參數**一種一組**（v1.176 多了獅鷲）：px／py 翼根在哪、tip 翼尖的 x、
-     mid 中位角、amp 擺幅、lag 翼尖落後多少。飛龍那一組就是 v1.139 的原值。
-     curl＝角度沿著翼展再加多少（飛龍是 0：牠只有「拍翅」這一種姿態）。
+     （翼尖那一段整個斷掉），所以才改成沿弧線走——每一段本來就接在前一段的末端。
+     飛龍 v1.277.0 重製之後不走這一套了（自己一套骨架，見〈飛龍（v1.277.0 重製）〉），剩獅鷲與雁。 */
+  /* 翼弧的參數**一種一組**：px／py 翼根在哪、tip 翼尖的 x、
+     mid 中位角、amp 擺幅、lag 翼尖落後多少。
+     curl＝角度沿著翼展再加多少（雁是 0：牠只有「拍翅」這一種姿態）。
      獅鷲要靠 curl 收翅——翼根抬高、往翼尖一路折回來，就是貼在身側的那個形狀。 */
   const WING_CFG = {
-    dragon: { px: 0.30, py: 0.46, tip: 4.85, mid: 0.18, amp: 0.62, lag: 1.05, curl: 0 },
     /* v1.177 改成四足之後翼根跟著背降下來（py 2.00 → 1.62）：牠不再是站直的，
        翼面要壓在背脊上，不是浮在頭的兩側。 */
     gryphon: { px: 0.52, py: 1.62, tip: 3.30, mid: 0.24, amp: 0.58, lag: 0.95, curl: 0 },
     /* 雁（v1.272.0）：原點在身體中段（同飛龍），翼根貼著背、翼尖 1.07 */
     goose: { px: 0.13, py: 0.05, tip: 1.07, mid: 0.08, amp: 0.55, lag: 0.70, curl: 0 }
   };
-  const TAIL_SW = 0.60, TAIL_K = 0.52, TAIL_W = 0.62;      // 尾巴：擺幅、波長、比翅膀慢幾成
-  const NECK_SW = 0.22, NECK_W = 0.45;                     // 脖子：擺幅、快慢
   const ARC_N = 14;
   const arcX = new Float64Array(ARC_N + 1), arcY = new Float64Array(ARC_N + 1),
         arcA = new Float64Array(ARC_N + 1);
   /* 這一幀、離翼根 u 那一段的角度。**m.wb／m.wc／m.wa 給了就蓋掉表上的中位角／
      彎曲／擺幅**（v1.176）：獅鷲用這三個切「拍翅／收翅／展翅」三種姿態，
-     飛龍三個都不給，照表走就是原本的拍翅。 */
+     雁平常三個都不給，照表走就是拍翅（被打死才給 wb，見 game-tools.js 的 GOOSE_DEAD_WB）。 */
   const wingAng = (u, ph, c, m) =>
     (m.wb === undefined ? c.mid : m.wb) +
     (m.wc === undefined ? c.curl : m.wc) * u +
@@ -4917,79 +4913,25 @@ if (vAo.x + vAo.y > 0.5) {
     return list.map(b => Object.assign({}, b, { wg: 1,
       u: Math.min(1, Math.max(0, (Math.abs(b.p[0]) - c.px) / (c.tip - c.px))) }));
   }
-  const D_RED = 0xb8443c, D_RED2 = 0x8e2c2a, D_BELLY = 0xcf7a52,
-        D_SPIKE = 0x3c2b28, D_DK = 0x2a201e, D_MEMB = 0xd4685a,
-        D_EYE = 0xf2c14a, D_CLAW = 0x241c1a;
-  /* 翼膜：五條各有各的前後緣（zf/zr）的薄片接起來，所以前緣是掃過去的、後緣自然是
-     鋸齒的。**五條共平面**（y 全是 0.40）：上反角完全交給拍翅角度，
-     自己先帶角度的話一拍就散成五層樓梯。 */
-  const D_WING = [[0.95, 1.05, 0.78, -1.60], [1.95, 1.05, 0.88, -2.00],
-                  [2.95, 1.05, 0.78, -1.62], [3.80, 0.85, 0.58, -0.98],
-                  [4.50, 0.70, 0.32, -0.36]].map(q =>
-    ({ p: [q[0], 0.40, (q[2] + q[3]) / 2], s: [q[1], 0.10, q[2] - q[3]], c: D_MEMB }));
-  const DRAGON = [
-    { p: [0, 0, 0.65], s: [1.10, 0.95, 1.35], c: D_RED },            // 胸
-    { p: [0, -0.03, -0.45], s: [0.92, 0.82, 1.25], c: D_RED },       // 腹
-    { p: [0, -0.02, -1.25], s: [0.66, 0.60, 0.80], c: D_RED2 },      // 腰
-    /* 腹甲給暖銅色不給米白：從下面看只吃得到草地的反光（天光的地面色是草綠），
-       米白會被染成橄欖綠——而玩家看這條龍多半是從下往上看。 */
-    { p: [0, -0.40, 0.55], s: [0.72, 0.18, 1.70], c: D_BELLY },
-    { p: [0, 0.36, 1.35], s: [0.66, 0.66, 0.75], c: D_RED, nk: 1 },  // 頸 ×2
-    { p: [0, 0.66, 1.92], s: [0.58, 0.60, 0.68], c: D_RED, nk: 1 },
-    { p: [0, 0.86, 2.48], s: [0.76, 0.62, 0.92], c: D_RED, nk: 1 },  // 頭
-    { p: [0, 0.76, 3.10], s: [0.50, 0.38, 0.52], c: D_RED2, nk: 1 }, // 吻
-    { p: [0, 0.58, 3.00], s: [0.42, 0.18, 0.60], c: D_DK, nk: 1 },   // 下顎
-    { p: [0, 0.82, 3.36], s: [0.20, 0.14, 0.18], c: D_DK, nk: 1 },   // 鼻尖
-    { p: [0, 1.34, 2.20], s: [0.17, 0.72, 0.20], c: D_SPIKE, r: [-0.50, 0, 0], nk: 1 },  // 冠刺（中）
-    { p: [0, 1.12, 2.66], s: [0.52, 0.14, 0.34], c: D_DK, nk: 1 },   // 眉脊
-    { p: [0, 0.76, 0.95], s: [0.19, 0.62, 0.24], c: D_SPIKE, r: [-0.30, 0, 0] },   // 背脊五刺
-    { p: [0, 0.74, 0.35], s: [0.19, 0.70, 0.24], c: D_SPIKE, r: [-0.26, 0, 0] },
-    { p: [0, 0.66, -0.25], s: [0.17, 0.62, 0.22], c: D_SPIKE, r: [-0.22, 0, 0] },
-    { p: [0, 0.54, -0.80], s: [0.15, 0.48, 0.20], c: D_SPIKE, r: [-0.20, 0, 0] },
-    { p: [0, 0.44, -1.30], s: [0.13, 0.38, 0.18], c: D_SPIKE, r: [-0.18, 0, 0] },
-    { p: [0, -0.02, -1.85], s: [0.58, 0.56, 0.75], c: D_RED, tl: 1 },    // 尾四節
-    { p: [0, 0.02, -2.55], s: [0.48, 0.46, 0.72], c: D_RED, tl: 1 },
-    { p: [0, 0.08, -3.22], s: [0.38, 0.36, 0.68], c: D_RED2, tl: 1 },
-    { p: [0, 0.16, -3.82], s: [0.30, 0.28, 0.56], c: D_RED2, tl: 1 },
-    { p: [0, 0.24, -4.34], s: [0.78, 0.12, 0.72], c: D_SPIKE, tl: 1 },   // 尾扇
-    { p: [0, 0.26, -4.86], s: [0.46, 0.10, 0.50], c: D_SPIKE, tl: 1 },
-    { p: [0, 0.44, -4.10], s: [0.18, 0.38, 0.34], c: D_SPIKE, tl: 1 }
-  ].concat(bmir([
-    { p: [0.40, 0.98, 2.74], s: [0.11, 0.14, 0.13], c: D_EYE, nk: 1 },                       // 眼
-    { p: [0.38, 0.90, 2.44], s: [0.14, 0.14, 0.46], c: D_DK, r: [0, -0.35, 0], nk: 1 },      // 頰角
-    { p: [0.28, 1.26, 2.16], s: [0.14, 0.58, 0.17], c: D_SPIKE, r: [-0.50, 0, 0.26], nk: 1 },
-    { p: [0.50, 1.12, 2.06], s: [0.12, 0.44, 0.15], c: D_SPIKE, r: [-0.50, 0, 0.46], nk: 1 }
-  ])).concat(bmir(wing(D_WING, WING_CFG.dragon))).concat(bmir(wing([
-    { p: [0.80, 0.42, 0.74], s: [1.10, 0.30, 0.38], c: D_RED2 },                  // 上臂
-    { p: [1.95, 0.46, 0.84], s: [1.30, 0.26, 0.32], c: D_RED2 },                  // 前臂
-    { p: [3.30, 0.48, 0.60], s: [1.60, 0.18, 0.24], c: D_DK },                    // 翼指
-    { p: [4.55, 0.48, 0.34], s: [0.30, 0.20, 0.38], c: D_CLAW },                  // 翼爪
-    { p: [2.20, 0.47, -0.55], s: [2.20, 0.09, 0.13], c: D_DK, r: [0, 0.42, 0] },  // 膜上的指骨
-    { p: [1.90, 0.47, -1.25], s: [1.80, 0.08, 0.12], c: D_DK, r: [0, 0.72, 0] }
-  ], WING_CFG.dragon))).concat(bmir([
-    /* 後腿三塊掛 sw（v1.182，使用者：「飛龍也要像獅鷲能做出地面行走」）。
-       牠只有兩條腿（前肢就是那對翅膀），所以左右**反相**——bmir 會把 sw 翻號，
-       右腿 +0.8 出去左腿就是 −0.8，剛好是一步一步交替（四條腿的牛羊是對角同步的 ±0.5，
-       擺幅也只有一半：那是散步，兩條腿的要跨得開才走得動這麼大一隻）。
-       髖在大腿的後上角（y −0.20／z −0.60），同一條腿的三塊共用它——
-       各繞各的中心轉的話大腿、小腿、腳爪會散成三截（同猴子那三塊手臂）。
-       在天上不受影響：擺角是 sin(ph)·sw·**gait**，飛的時候 gait 是 0。 */
-    { p: [0.46, -0.42, -0.55], s: [0.36, 0.52, 0.46], c: D_RED, r: [0.50, 0, 0],
-      sw: 0.8, pv: -0.20, pz: -0.60 },                                              // 後腿
-    { p: [0.50, -0.78, -0.14], s: [0.28, 0.44, 0.32], c: D_RED2, r: [-0.55, 0, 0],
-      sw: 0.8, pv: -0.20, pz: -0.60 },
-    { p: [0.52, -0.98, 0.22], s: [0.30, 0.20, 0.44], c: D_CLAW,
-      sw: 0.8, pv: -0.20, pz: -0.60 }
-  ]));
-  /* 火球：亮芯 ＋ 外焰 ＋ 兩節尾焰。大小比照隕石（使用者指定）。 */
+  /* 飛龍的火球（v1.277.0 改成一團火，使用者：「參考圖上有一團火球」）：亮黃的芯、三根交叉的棒把它撐圓、
+     外面一圈橘紅的火瘤。**不分前後**（v1.139 那一版有兩節尾焰）：規則那邊讓它一路翻滾（spin），
+     有方向的尾焰一翻就甩到前面去；拖在後面的火交給規則那邊沿路撒的火苗（見 game-tools.js 的 stepFballs）。
+     大小規則那邊乘 FB_SC 2.6（全寬 1.25 → 場上 3.2 格，參考圖二那團火比龍頭還大）。 */
   const FBALL = [
-    { p: [0, 0, 0], s: [0.62, 0.62, 0.62], c: 0xff7a1e },
-    { p: [0.26, 0.16, -0.10], s: [0.34, 0.34, 0.34], c: 0xff9a2e },
-    { p: [-0.22, -0.14, -0.16], s: [0.36, 0.36, 0.36], c: 0xff5a12 },
-    { p: [0.05, 0.28, -0.20], s: [0.30, 0.30, 0.30], c: 0xffb340 },
-    { p: [0, 0, 0.06], s: [0.36, 0.36, 0.36], c: 0xffe08a },
-    { p: [0, -0.04, -0.55], s: [0.30, 0.30, 0.34], c: 0xff6a12 },
-    { p: [0, -0.08, -0.88], s: [0.18, 0.18, 0.26], c: 0xd8451a }
+    { p: [0, 0, 0], s: [0.70, 0.70, 0.70], c: 0xffd860 },               // 芯
+    { p: [0, 0, 0], s: [0.86, 0.52, 0.52], c: 0xffb030 },               // 撐圓的三根
+    { p: [0, 0, 0], s: [0.52, 0.86, 0.52], c: 0xffb030 },
+    { p: [0, 0, 0], s: [0.52, 0.52, 0.86], c: 0xffb030 },
+    { p: [0.36, 0.22, 0.10], s: [0.40, 0.40, 0.40], c: 0xff8a22 },      // 火瘤
+    { p: [-0.34, 0.26, -0.08], s: [0.42, 0.42, 0.42], c: 0xff7418 },
+    { p: [0.10, -0.36, 0.24], s: [0.40, 0.40, 0.40], c: 0xff8a22 },
+    { p: [-0.20, -0.30, -0.30], s: [0.38, 0.38, 0.38], c: 0xff5a12 },
+    { p: [0.24, 0.10, -0.38], s: [0.36, 0.36, 0.36], c: 0xff6a16 },
+    { p: [-0.12, 0.38, 0.30], s: [0.34, 0.34, 0.34], c: 0xff9a2e },
+    { p: [0.42, -0.18, -0.16], s: [0.30, 0.30, 0.30], c: 0xe8481a },
+    { p: [-0.44, -0.06, 0.22], s: [0.30, 0.30, 0.30], c: 0xe8481a },
+    { p: [0.02, 0.46, -0.20], s: [0.26, 0.26, 0.26], c: 0xd8401a },
+    { p: [0, -0.10, 0.46], s: [0.28, 0.28, 0.28], c: 0xffc040 }
   ];
 
   /* ── 獅鷲（v1.176）───────────────────────────────────────
@@ -5771,7 +5713,8 @@ if (vAo.x + vAo.y > 0.5) {
     return out;
   }
 
-  const BEASTS = { ape: APE, snow: SNOW, nana: NANA, torch: TORCH, dragon: DRAGON, fball: FBALL,
+  /* 飛龍 v1.277.0 起不在這裡：自己一顆 mesh（見〈飛龍（v1.277.0 重製）〉），同 Diablo */
+  const BEASTS = { ape: APE, snow: SNOW, nana: NANA, torch: TORCH, fball: FBALL,
                    cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
                    deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT,
                    shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY,
@@ -5789,7 +5732,7 @@ if (vAo.x + vAo.y > 0.5) {
   /* 每一種的模型範圍。破壞工具打得到牠們之後（v1.146），規則那邊要拿這三個數字擺姿勢，
      所以照造型表算出來、不寫死——改造型時不必記得回來改常數。
        floor 原點要離地多高，最低的那一塊才剛好貼著草皮（猴子的原點在腳底，所以是 0；
-             飛龍的原點在身體中段，肚子在原點下面，摔在地上要用這個把牠墊起來）
+             雁的原點在身體中段，肚子在原點下面，落在地上要用這個把牠墊起來）
        mid   身體中段，飛在半空翻滾時繞它轉（同小人的 AIR_PIVOT）
        lift  仰躺（繞 x 轉 −90°）時世界高度就是模型的 z，所以要抬「z 最伸出去的那一塊」
              那麼多，整隻才剛好躺在草皮上（同小人的 FLAT_LIFT）
@@ -5798,14 +5741,13 @@ if (vAo.x + vAo.y > 0.5) {
              **翼上那幾塊不算進 side**（v1.176）：牠們的 x 是每一幀照翼弧重算的
              （見 wingArc），表上的 p[0] 只是「離翼根多遠」用來算 u 的，不是實際位置。
              算進去的話獅鷲側躺要抬 3.41（翼尖的 x），整隻會浮在草皮上方七格。
-             其餘三個照舊全部算：z 沒有被翼弧動到，而 y 那兩個飛龍在用（見 DRA_DOWN_PAD）。
+             其餘三個照舊全部算：z 沒有被翼弧動到，y 那兩個照表上的位置算就對了。
              **side 要把 r 轉過的那幾塊算寬一點**（v1.182）：斜著擺的方塊比 p ± s/2 寬，
              照原本的算法鹿側躺會陷進草皮（實測梅花鹿 0.026、赤鹿 0.081 格——耳朵斜 0.42、
              角的側叉斜 0.62，是〈每一款動物站著、側躺、躺著壓火都貼著草皮〉那條抓到的）。
              繞 x 轉不影響 x 的投影，繞 y／z 才會：照 three 的 XYZ 順序，旋轉矩陣第一列是
              [cos y·cos z, −cos y·sin z, sin y]，三軸各自的投影加起來就是這一塊真正的寬度。
-             牛羊與獅鷲那幾款一格都沒變（牠們沒有繞 y／z 轉的部位），飛龍的 side 沒人讀
-             （只有 m.side 的才側躺，龍不是）。 */
+             牛羊與獅鷲那幾款一格都沒變（牠們沒有繞 y／z 轉的部位）。 */
   /* front（v1.274.0）趴著（繞 x 轉 +90°，往前趴、著火打滾）時貼地的是**前緣**：
              「z 最往前伸的那一塊」。v1.146～v1.273 趴著也照 lift（背緣）抬，因為兩隻猴子的背緣（尾巴）
              與前緣差得很少（見 game-tools.js 的 lieAng）；尾巴拿掉之後背緣只剩軀幹（小獼猴 0.365 → 0.202），
@@ -9808,6 +9750,468 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     coinFade.needsUpdate = true; coinGlow.needsUpdate = true;
     dropSphere(coinMesh);
   }
+  /* ══ 飛龍（v1.277.0 重製）════════════════════════════════════════
+     使用者：「更新飛龍造型(目前來看精緻度不足)&火球應該是用力往目標噴過去」，附了兩張魔物獵人火龍的參考圖，
+     接著：「這次更新應該是造型+動作 完全重製」。v1.139～v1.276 那一版是 BEASTS 裡的 60 塊：翅膀是一條翼弧（wingArc）、
+     尾巴與脖子各走一道行進波，沒有肘、腕、翼指，下顎不會張，腿只會整條繞髖擺。
+     所以**同 Diablo 自己一顆 mesh、不進 BEASTS**（塞進去的話每一隻牛羊都要照牠的塊數付成本），骨架 21 組：
+       軀幹（根）→ 頸兩節 → 頭 → 下顎；尾巴四節；兩邊翅膀各 肩／肘／腕；兩條腿各 髖／膝／踝。
+     規則那邊牠照樣是 beasts 裡的一隻（kind 'dragon'，狀態機在 game-tools.js〈事件三：飛龍〉），
+     畫的時候 putBeasts 那一格留空（BEASTS 裡沒有牠）、putDragons 用這一顆畫，點選照樣回報成 beast（draAt 對回索引）。
+
+     造型照參考圖：深紅的鱗、淺褐的胸腹甲、一圈往後掃的頭冠（兩根大角＋兩側冠刺，尖端黑）、黃眼、上下兩排牙；
+     背脊一排刺；翅膀是骨頭撐開的一大片粉米色翼膜（上臂、前臂、腕上的爪與大刺、三根翼指＋前臂伸出去的一根撐住內側），
+     翼膜上一道一道深褐的分岔紋；尾巴四節，末端一截兩側與背上都是刺的錘。配色見 DRC。
+     **原點在身體中段、面向 +z、左翼在 +x**（同 v1.139 那一版：規則那邊的巡航高度、DRA_SC 2.1 都照這個原點與大小算）。
+     翼展 10、體長 9（× 2.1 ＝ 場上 21 × 19 格，跟舊版差不多大）。
+     **翼膜是一排沿翼展切開的薄片**，每一片掛在它所在那一段骨頭上（肩到肘掛上臂、肘到腕掛前臂、腕以外掛手），
+     而且**三個關節的樞紐都在翼膜那一個平面上**（y DR_WY），片與片的分界剛好落在關節上：拍翅是繞 z 轉，
+     轉軸就是那條分界線，相鄰兩段像門鉸鍊一樣折、不會裂開（v1.139 那一版試過「每一塊各轉各的」，關節處整個斷掉）。
+     收翅（地上）要繞 y 轉，那時候翼膜疊在一起本來就是摺起來的樣子。
+     部位表同 DIABLO 的格式（p 站直時的絕對座標、s、c、g 掛在哪一組、r）；nl＝刺、角、爪（著地不算它、巡路的身長也不算）。
+     mb＝翼膜與翼膜上的紋：描邊淡（一片一片的深色邊會把整片膜切成百葉窗）、法線往上翻（見 draInit）；
+     fz＝收翅時沿翼弦收攏的那幾塊（翼膜、膜上的紋、翼指，見 DRA_FOLD_Z）。
+     來龍去脈（問過什麼、預覽兩輪改了什麼、量到的數字）見 開發筆記〈飛龍重製：造型＋動作、懸停吐火球（v1.277.0）〉 */
+  /* 配色照參考圖二（模型版：深紅鱗、粉米翼膜深褐紋、刺尖黑）——預覽頁兩組給使用者切，選的是這一組；
+     另一組是參考圖一（動畫版：橘紅 c84a2c 鱗、米黃 f0dfae 翼膜深紫 7a4e86 紋、刺尖深藍 2c3f7a） */
+  const DRC = {
+    red: 0xa83226, redL: 0xc44a34, redD: 0x6a1c18,         // 鱗：主色／亮面／溝
+    crm: 0xc89070, crmD: 0x8e5a44,                         // 胸腹甲／甲片之間的溝
+    memb: 0xdcb8a6, pat: 0x4a2620, bone: 0x8e2a22,         // 翼膜／膜上的紋／翼指骨
+    spk: 0x2e2220, tip: 0x1c1614,                          // 刺：根／尖
+    claw: 0x1a1412, eye: 0xf2b23a, tooth: 0xe8dcc4, mouth: 0x3a0e0c
+  };
+  const DRA_G = { body: 0, neck1: 1, neck2: 2, head: 3, jaw: 4, tail1: 5, tail2: 6, tail3: 7, tail4: 8,
+                  armL: 9, armR: 10, foreL: 11, foreR: 12, handL: 13, handR: 14,
+                  thighL: 15, thighR: 16, shinL: 17, shinR: 18, footL: 19, footR: 20 };
+  const DRA_NG = 21;
+  const DRA_PAR = [-1, 0, 1, 2, 3, 0, 5, 6, 7, 0, 0, 9, 10, 11, 12, 0, 0, 15, 16, 17, 18];
+  const DR_WY = 0.48;                // 翼膜那一個平面的高度（肩、肘、腕三個樞紐都在上面）
+  const DRA_PIV = [[0, 0, 0], [0, 0.32, 1.12], [0, 0.52, 1.72], [0, 0.74, 2.32], [0, 0.64, 2.62],
+                   [0, 0.02, -1.40], [0, 0.06, -2.30], [0, 0.10, -3.15], [0, 0.14, -3.95],
+                   [0.50, DR_WY, 0.80], [-0.50, DR_WY, 0.80], [1.80, DR_WY, 0.66], [-1.80, DR_WY, 0.66],
+                   [3.10, DR_WY, 0.94], [-3.10, DR_WY, 0.94],
+                   [0.42, -0.22, -0.78], [-0.42, -0.22, -0.78], [0.50, -0.86, -0.38], [-0.50, -0.86, -0.38],
+                   [0.50, -1.38, -0.78], [-0.50, -1.38, -0.78]];
+  /* 嘴（吐火球的出口，頭那一組上的一點，上下顎之間）：規則那邊照它放火球（見 draMouth）——**畫的跟用的同一份** */
+  const DR_MOUTH = [0, 0.64, 3.66];
+  const DRAGON = (() => {
+    const out = [];
+    const P = (g, p, s, c, r, f) => out.push(Object.assign({ g: DRA_G[g], p, s, c: DRC[c], cn: c, r: r || [0, 0, 0] }, f || {}));
+    const SIDE = { arm: 1, fore: 1, hand: 1, thigh: 1, shin: 1, foot: 1 };
+    /* 左右一對：寫左邊（+x），右邊鏡射（同 DIABLO 的 M） */
+    const M = (g, p, s, c, r, f) => {
+      r = r || [0, 0, 0];
+      P(SIDE[g] ? g + 'L' : g, p, s, c, r, f);
+      P(SIDE[g] ? g + 'R' : g, [-p[0], p[1], p[2]], s, c, [r[0], -r[1], -r[2]], f);
+    };
+    /* 從 a 到 b 的一根（寬 w、厚 t），同 DIABLO 的 SEG：大致直的片子朝前、大致橫的朝上 */
+    const SEG = (fn, g, a, b, w, t, c, f) => {
+      const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(d[0], d[1], d[2]);
+      fn(g, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2], [w, L, t], c,
+         frBasis(d, Math.abs(d[1]) > Math.abs(d[2]) ? [0, 0, 1] : [0, 1, 0]), f);
+    };
+    const NL = { nl: 1 }, MB = { mb: 1, fz: 1 };
+    /* 刺：根粗色深（spk）、尖細深藍（tip）兩段，從 a 沿 d 長 L */
+    const SPIKE = (fn, g, a, d, L, w) => {
+      const n = Math.hypot(d[0], d[1], d[2]);
+      const mid = a.map((v, i) => v + d[i] / n * L * 0.55), end = a.map((v, i) => v + d[i] / n * L);
+      SEG(fn, g, a, mid, w, w, 'spk', NL);
+      SEG(fn, g, mid, end, w * 0.55, w * 0.55, 'tip', NL);
+    };
+
+    /* ── 軀幹（根，原點）：胸厚、背上一道亮面、底下米黃的甲一片一片 ── */
+    P('body', [0, 0.06, 0.50], [1.16, 0.98, 1.30], 'red');            // 胸
+    P('body', [0, 0.47, 0.68], [0.94, 0.26, 0.96], 'redL');           // 肩背隆起
+    P('body', [0, -0.06, -0.42], [0.98, 0.86, 1.10], 'red');          // 腹
+    P('body', [0, 0.37, -0.40], [0.66, 0.16, 1.00], 'redL');          // 背上那一道亮面
+    P('body', [0, 0.00, -1.12], [0.80, 0.70, 0.78], 'redD');          // 腰臀
+    P('body', [0, -0.45, 0.48], [0.84, 0.12, 1.20], 'crm');           // 胸甲
+    P('body', [0, -0.50, -0.44], [0.74, 0.10, 1.04], 'crm');          // 腹甲
+    for (const z of [0.86, 0.46, 0.06]) P('body', [0, -0.515, z], [0.78, 0.03, 0.05], 'crmD');   // 甲片之間的溝
+    for (const z of [-0.30, -0.66]) P('body', [0, -0.555, z], [0.68, 0.03, 0.05], 'crmD');
+    M('body', [0.585, 0.02, 0.45], [0.03, 0.52, 1.02], 'redD');       // 兩側一道深色的鱗線
+    M('body', [0.495, -0.10, -0.42], [0.03, 0.46, 0.92], 'redD');
+    M('body', [0.36, 0.60, 0.70], [0.36, 0.10, 0.64], 'red', [0, 0, -0.30]);   // 肩甲（壓在翼根上）
+    for (const [z, y, L, w] of [[1.00, 0.56, 0.34, 0.15], [0.56, 0.58, 0.40, 0.16], [0.10, 0.52, 0.38, 0.15],
+                                [-0.36, 0.42, 0.34, 0.14], [-0.82, 0.40, 0.30, 0.13], [-1.24, 0.33, 0.26, 0.12]])
+      SPIKE(P, 'body', [0, y, z], [0, 0.78, -0.62], L, w);           // 背脊一排刺（往後上方）
+
+    /* ── 頸兩節 ── */
+    P('neck1', [0, 0.38, 1.44], [0.68, 0.64, 0.80], 'red');
+    P('neck1', [0, 0.08, 1.42], [0.48, 0.10, 0.74], 'crm');
+    M('neck1', [0.345, 0.40, 1.44], [0.02, 0.36, 0.64], 'redD');
+    SPIKE(P, 'neck1', [0, 0.66, 1.44], [0, 0.80, -0.60], 0.30, 0.13);
+    P('neck2', [0, 0.60, 2.02], [0.58, 0.56, 0.74], 'red');
+    P('neck2', [0, 0.33, 2.00], [0.42, 0.09, 0.68], 'crm');
+    M('neck2', [0.295, 0.62, 2.02], [0.02, 0.32, 0.58], 'redD');
+    SPIKE(P, 'neck2', [0, 0.84, 2.00], [0, 0.80, -0.60], 0.28, 0.12);
+
+    /* ── 頭：顱＋長吻，眉骨往眉心壓（兇）、黃眼陷在眼窩裡；頭冠一圈往後掃 ── */
+    P('head', [0, 0.86, 2.62], [0.74, 0.56, 0.72], 'red');            // 顱
+    P('head', [0, 1.15, 2.60], [0.50, 0.06, 0.56], 'redL');           // 頭頂亮面
+    M('head', [0.23, 1.08, 2.92], [0.28, 0.10, 0.26], 'redD', [0, 0, 0.32]);   // 眉骨
+    M('head', [0.362, 0.97, 2.90], [0.03, 0.14, 0.24], 'redD');       // 眼窩
+    M('head', [0.376, 0.98, 2.92], [0.03, 0.08, 0.15], 'eye');        // 眼
+    M('head', [0.33, 0.76, 2.70], [0.10, 0.26, 0.42], 'redD');        // 腮
+    P('head', [0, 0.80, 3.20], [0.52, 0.30, 0.80], 'red');            // 吻（上顎）
+    P('head', [0, 0.97, 3.15], [0.24, 0.06, 0.72], 'redL');           // 吻上那一道脊
+    P('head', [0, 0.82, 3.64], [0.36, 0.24, 0.16], 'redD');           // 鼻尖
+    M('head', [0.09, 0.90, 3.725], [0.06, 0.04, 0.02], 'mouth');      // 鼻孔
+    P('head', [0, 0.645, 3.14], [0.40, 0.03, 0.78], 'mouth');         // 上顎（張嘴才看得到）
+    M('head', [0.21, 0.635, 3.22], [0.04, 0.05, 0.66], 'tooth');      // 上排牙
+    M('head', [0.20, 0.60, 3.50], [0.04, 0.10, 0.04], 'tooth');       // 上獠牙
+    SEG(M, 'head', [0.18, 1.12, 2.48], [0.30, 1.40, 2.08], 0.15, 0.15, 'spk', NL);    // 兩根往後掃的大角
+    SEG(M, 'head', [0.30, 1.40, 2.08], [0.36, 1.52, 1.70], 0.08, 0.08, 'tip', NL);
+    SEG(P, 'head', [0, 1.14, 2.40], [0, 1.44, 2.10], 0.12, 0.12, 'spk', NL);          // 正中一根
+    SEG(P, 'head', [0, 1.44, 2.10], [0, 1.54, 1.84], 0.07, 0.07, 'tip', NL);
+    SEG(M, 'head', [0.34, 1.02, 2.42], [0.56, 1.22, 2.12], 0.11, 0.11, 'spk', NL);    // 兩側冠刺（上）
+    SEG(M, 'head', [0.56, 1.22, 2.12], [0.66, 1.28, 1.92], 0.06, 0.06, 'tip', NL);
+    SEG(M, 'head', [0.36, 0.80, 2.40], [0.58, 0.82, 2.08], 0.10, 0.10, 'spk', NL);    // 兩側冠刺（下，腮後）
+    SEG(M, 'head', [0.58, 0.82, 2.08], [0.68, 0.80, 1.88], 0.055, 0.055, 'tip', NL);
+    SEG(P, 'head', [0, 1.00, 3.42], [0, 1.10, 3.30], 0.07, 0.07, 'spk', NL);          // 鼻上的小角
+    /* 下顎（樞紐在顱底）：吐火球時張開 */
+    P('jaw', [0, 0.54, 3.10], [0.46, 0.16, 0.88], 'redD');
+    P('jaw', [0, 0.47, 3.08], [0.34, 0.04, 0.78], 'crm');             // 下巴底下的甲
+    P('jaw', [0, 0.625, 3.08], [0.36, 0.03, 0.76], 'mouth');          // 口腔
+    M('jaw', [0.19, 0.64, 3.24], [0.04, 0.05, 0.58], 'tooth');        // 下排牙
+    M('jaw', [0.18, 0.67, 3.48], [0.04, 0.09, 0.04], 'tooth');        // 下獠牙
+
+    /* ── 尾巴四節（一節比一節晚一點擺），背上一排刺；末端一截帶刺的錘 ── */
+    for (const [g, z, w, h, c, k] of [['tail1', -1.86, 0.62, 0.58, 'red', 0], ['tail2', -2.74, 0.50, 0.46, 'red', 1],
+                                      ['tail3', -3.56, 0.40, 0.36, 'redD', 2]]) {
+      const y = 0.02 + 0.04 * k;
+      P(g, [0, y, z], [w, h, 0.96 - 0.05 * k], c);
+      P(g, [0, y - h / 2, z], [w * 0.68, 0.05, 0.86 - 0.05 * k], 'crm');
+      SPIKE(P, g, [0, y + h / 2 - 0.02, z + 0.22], [0, 0.70, -0.72], 0.26 - 0.03 * k, 0.12 - 0.015 * k);
+      SPIKE(P, g, [0, y + h / 2 - 0.02, z - 0.20], [0, 0.70, -0.72], 0.24 - 0.03 * k, 0.11 - 0.01 * k);
+    }
+    P('tail4', [0, 0.14, -4.42], [0.46, 0.32, 0.94], 'red');
+    P('tail4', [0, 0.14, -4.98], [0.26, 0.20, 0.30], 'redD');
+    for (const z of [-4.08, -4.40, -4.72]) {
+      SEG(M, 'tail4', [0.20, 0.18, z], [0.50, 0.30, z - 0.26], 0.09, 0.09, 'tip', NL);
+      SEG(P, 'tail4', [0, 0.28, z], [0, 0.58, z - 0.24], 0.09, 0.09, 'tip', NL);
+    }
+    SEG(P, 'tail4', [0, 0.14, -5.10], [0, 0.18, -5.32], 0.08, 0.08, 'tip', NL);
+
+    /* ── 翅膀：骨頭（上臂、前臂、腕、三根翼指、前臂伸出去的一根撐內側）── */
+    const WY = DR_WY;
+    M('arm', [0.58, WY, 0.80], [0.46, 0.44, 0.50], 'red');            // 肩
+    SEG(M, 'arm', [0.50, WY, 0.80], [1.80, WY, 0.66], 0.40, 0.34, 'red');               // 上臂
+    SEG(M, 'arm', [0.62, WY + 0.17, 0.80], [1.72, WY + 0.15, 0.68], 0.20, 0.05, 'redL');
+    SPIKE(M, 'arm', [1.10, WY + 0.15, 0.72], [-0.15, 0.75, -0.62], 0.24, 0.09);
+    SPIKE(M, 'arm', [1.52, WY + 0.14, 0.70], [-0.15, 0.75, -0.62], 0.22, 0.08);
+    M('fore', [1.80, WY, 0.66], [0.34, 0.32, 0.34], 'redD');          // 肘
+    SEG(M, 'fore', [1.80, WY, 0.66], [3.10, WY, 0.94], 0.30, 0.26, 'red');              // 前臂
+    SEG(M, 'fore', [1.90, WY + 0.13, 0.70], [3.00, WY + 0.13, 0.92], 0.14, 0.04, 'redL');
+    for (const x of [2.15, 2.50, 2.85])                                                 // 前臂上緣一排刺
+      SPIKE(M, 'fore', [x, WY + 0.12, 0.66 + (x - 1.80) * 0.215], [-0.2, 0.75, -0.6], 0.24, 0.08);
+    const FZ = { fz: 1 };            // 翼指：收翅時跟翼膜一起沿翼弦收攏（見 DRA_FOLD_Z）
+    SEG(M, 'fore', [2.20, WY, 0.74], [2.30, WY, -0.80], 0.09, 0.08, 'bone', FZ);       // 撐內側那一根
+    SEG(M, 'fore', [2.30, WY, -0.80], [2.35, WY, -2.70], 0.06, 0.06, 'bone', FZ);
+    M('hand', [3.10, WY, 0.94], [0.30, 0.28, 0.32], 'redD');          // 腕
+    SEG(M, 'hand', [3.16, WY - 0.02, 1.06], [3.30, WY - 0.12, 1.40], 0.10, 0.10, 'claw', NL);   // 腕上往前勾的爪
+    SPIKE(M, 'hand', [3.06, WY + 0.12, 0.96], [-0.15, 0.85, -0.30], 0.34, 0.11);               // 腕上往上的大刺
+    SEG(M, 'hand', [3.10, WY, 0.94], [4.05, WY, 0.40], 0.13, 0.11, 'bone', FZ);        // 第一翼指：前緣到翼尖
+    SEG(M, 'hand', [4.05, WY, 0.40], [4.85, WY, -0.15], 0.09, 0.09, 'bone', FZ);
+    SEG(M, 'hand', [4.85, WY, -0.15], [5.02, WY, -0.30], 0.06, 0.06, 'claw', { nl: 1, fz: 1 });
+    SEG(M, 'hand', [3.10, WY, 0.94], [3.75, WY, -0.30], 0.11, 0.10, 'bone', FZ);       // 第二翼指
+    SEG(M, 'hand', [3.75, WY, -0.30], [4.35, WY, -1.55], 0.08, 0.08, 'bone', FZ);
+    SEG(M, 'hand', [3.10, WY, 0.94], [3.28, WY, -0.75], 0.10, 0.09, 'bone', FZ);       // 第三翼指
+    SEG(M, 'hand', [3.28, WY, -0.75], [3.45, WY, -2.45], 0.07, 0.07, 'bone', FZ);
+    /* 翼膜：前緣沿著骨頭、後緣在翼指尖之間往內凹（一道一道的扇貝邊）。每一段的切片數照寬度分，
+       分界落在關節上（見檔頭）。每一片照自己中線那一點的前後緣取長度 */
+    const LEAD = [[0.50, 0.80], [1.80, 0.66], [3.10, 0.94], [4.05, 0.40], [4.85, -0.15]];
+    const TRAIL = [[0.50, -2.05], [1.10, -1.85], [1.75, -2.25], [2.35, -2.72], [2.90, -2.15], [3.45, -2.47],
+                   [3.95, -1.72], [4.35, -1.57], [4.62, -0.92], [4.85, -0.17]];
+    const at = (pts, x) => {
+      let i = 1;
+      while (i < pts.length - 1 && x > pts[i][0]) i++;
+      const a = pts[i - 1], b = pts[i], f = Math.max(0, Math.min(1, (x - a[0]) / (b[0] - a[0])));
+      return a[1] + (b[1] - a[1]) * f;
+    };
+    for (const [g, x0, x1, n] of [['arm', 0.50, 1.80, 5], ['fore', 1.80, 3.10, 5], ['hand', 3.10, 4.85, 7]]) {
+      const w = (x1 - x0) / n;
+      for (let i = 0; i < n; i++) {
+        const xc = x0 + w * (i + 0.5), zf = at(LEAD, xc), zr = at(TRAIL, xc);
+        M(g, [xc, WY, (zf + zr) / 2], [w + 0.004, 0.05, zf - zr], 'memb', null, MB);
+      }
+    }
+    /* 膜上的紋（參考圖那幾道深色的分岔紋）：比膜厚一點點，兩面都露得出來。每一道都落在自己那一段的範圍裡 */
+    for (const [g, a, b, w] of [
+      ['arm', [0.85, -0.30], [1.30, -1.20], 0.13], ['arm', [1.30, -1.20], [1.02, -1.72], 0.11], ['arm', [1.30, -1.20], [1.66, -1.66], 0.10],
+      ['fore', [2.58, 0.30], [2.76, -0.70], 0.13], ['fore', [2.76, -0.70], [2.56, -1.58], 0.12],
+      ['fore', [2.56, -1.58], [2.05, -1.95], 0.10], ['fore', [2.56, -1.58], [2.92, -1.98], 0.09],
+      ['hand', [3.55, 0.12], [3.95, -0.55], 0.12], ['hand', [3.95, -0.55], [3.72, -1.30], 0.10], ['hand', [3.95, -0.55], [4.40, -0.72], 0.09]])
+      SEG(M, g, [a[0], WY, a[1]], [b[0], WY, b[1]], w, 0.065, 'pat', MB);
+
+    /* ── 腿（髖 → 膝 → 踝）：表上是站著的樣子（飛的時候往後收、懸停時往前垂、走路照步伐擺，見 draPose）── */
+    SEG(M, 'thigh', [0.42, -0.22, -0.78], [0.50, -0.86, -0.38], 0.46, 0.56, 'red');
+    M('thigh', [0.44, -0.24, -0.74], [0.50, 0.46, 0.62], 'red');                       // 大腿根的肉
+    SEG(M, 'thigh', [0.69, -0.30, -0.70], [0.74, -0.74, -0.44], 0.03, 0.34, 'redL');   // 大腿外側亮面
+    M('shin', [0.50, -0.86, -0.38], [0.30, 0.28, 0.30], 'redD');                       // 膝
+    SEG(M, 'shin', [0.50, -0.86, -0.38], [0.50, -1.38, -0.78], 0.26, 0.28, 'red');
+    SPIKE(M, 'shin', [0.50, -1.12, -0.70], [0, 0.35, -1.0], 0.22, 0.08);                // 小腿後面的距
+    M('foot', [0.50, -1.38, -0.78], [0.24, 0.22, 0.24], 'redD');                       // 踝
+    SEG(M, 'foot', [0.50, -1.38, -0.78], [0.50, -1.60, -0.48], 0.20, 0.20, 'red');     // 蹠骨
+    M('foot', [0.50, -1.64, -0.40], [0.34, 0.14, 0.34], 'redD');                       // 腳掌（貼地的那一塊）
+    for (const [a, b, c] of [[[0.40, -1.65, -0.30], [0.35, -1.68, -0.08], [0.34, -1.71, 0.06]],      // 三趾往前、一趾往後
+                             [[0.50, -1.65, -0.28], [0.50, -1.68, -0.04], [0.50, -1.71, 0.10]],
+                             [[0.60, -1.65, -0.30], [0.65, -1.68, -0.08], [0.66, -1.71, 0.06]],
+                             [[0.50, -1.64, -0.52], [0.50, -1.68, -0.70], [0.50, -1.71, -0.82]]]) {
+      SEG(M, 'foot', a, b, 0.09, 0.09, 'red');
+      SEG(M, 'foot', b, c, 0.055, 0.055, 'claw', NL);
+    }
+    return out;
+  })();
+  const DRA_PARTS = DRAGON.length;
+  const DRA_SLOT = DRA_PARTS;
+  const MAXDRA = 2;                  // 天災一隻＋吉祥物一隻
+  /* 著地算不算這一塊（見 draLow）：刺、角、爪（nl）不算，**細長的也不算**（兩個短邊都不到 0.12：牙、趾、甲片的溝）——
+     同 Diablo 的 DIA_GND：細的插進草皮一點看不出來，被一根爪尖撐高看得一清二楚 */
+  const DRA_GND = DRAGON.map(b => !b.nl && b.s.slice().sort((a, c) => a - c)[1] >= 0.12);
+  const DRA_LM = DRAGON.map(b => new T.Matrix4().compose(
+    new T.Vector3(b.p[0] - DRA_PIV[b.g][0], b.p[1] - DRA_PIV[b.g][1], b.p[2] - DRA_PIV[b.g][2]),
+    new T.Quaternion().setFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2])), new T.Vector3(b.s[0], b.s[1], b.s[2])));
+  /* 模型範圍（同 Diablo，照轉過之後的方塊算）。**腿與刺不算**：規則那邊拿 mid 當「身體中段」（著火的火苗從原點往上撒到
+     兩倍 mid，見 game-tools.js 的 burnBeastFx），表上的腿是站著往下伸的，算進去的話 mid 掉到原點底下、火苗往肚子底下撒 */
+  {
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
+    const e = new T.Matrix4(), LEG = [DRA_G.thighL, DRA_G.thighR, DRA_G.shinL, DRA_G.shinR, DRA_G.footL, DRA_G.footR];
+    for (const b of DRAGON) {
+      if (b.nl || LEG.includes(b.g)) continue;
+      const R = e.makeRotationFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2])).elements;
+      const h = k => (Math.abs(R[k]) * b.s[0] + Math.abs(R[k + 4]) * b.s[1] + Math.abs(R[k + 8]) * b.s[2]) / 2;
+      ylo = Math.min(ylo, b.p[1] - h(1));
+      yhi = Math.max(yhi, b.p[1] + h(1));
+      zlo = Math.min(zlo, b.p[2] - h(2));
+      xhi = Math.max(xhi, Math.abs(b.p[0]) + h(0));
+    }
+    BEAST_FLOOR.dragon = Math.max(0, -ylo);
+    BEAST_MID.dragon = (ylo + yhi) / 2;
+    BEAST_LIFT.dragon = -zlo;
+    BEAST_SIDE.dragon = xhi;
+  }
+  /* ── 姿勢：每一組的轉角（XYZ），寫進 _rA。規則那邊給的欄位（見 game-tools.js 的 spawnDragon）：
+       ph 拍翅相位、fa 拍翅力道（1 巡航、懸停 1.3、摔下去 0.5）、fold 0～1 收翅（地上）、gait 走路、
+       tuck 0～1 腿往後收（飛）、hov 0～1 懸停（腿往前垂、尾巴往下勾）、dn 0～1 趴著（整套絕對姿勢混過去）、
+       np／ny 頭往下／往左轉多少（懸停瞄準）、rear −0.5～1 頭往後仰（蓄力，負的是往前甩）、jaw 0～1 張嘴 ── */
+  const _rA = [...Array(DRA_NG)].map(() => [0, 0, 0]);
+  /* 拍翅：肩繞 z 上下（v1.139 那一版的中位角 0.10、擺幅 0.62），肘、腕各晚一點、各自多擺一點——翼尖甩在後面；
+     往上收的那半拍手往後掃、前臂往前收（翅膀折成 M 字，減阻） */
+  const DRA_FMID = 0.10, DRA_FAMP = 0.62, DRA_FLAG = [0.7, 1.4], DRA_FK = [0.30, 0.38], DRA_SWEEP = 0.28;
+  /* 收翅（地上）：照雄火龍站著的樣子給**每一段要轉到哪個方向**（左翼、身體座標），再換算成相對上一段的轉角——
+       上臂  往後上方（肘在背上）       前臂  往前下方（腕在胸前）       手  往後下方、貼著身側
+     x 沿骨頭、ch 翼膜往後緣那一邊（跟 x 正交化之後就是那一段的 −z）。右翼 y／z 反號。
+     第一版直接給三個關節繞 y 折（上臂往後、前臂往前、手往後）：翼膜整片翹在背上成一個 V、內側那一片插進身體 */
+  const DRA_FOLD = (() => {
+    const B = (x, ch) => {
+      const X = new T.Vector3(x[0], x[1], x[2]).normalize(), Z = new T.Vector3(-ch[0], -ch[1], -ch[2]);
+      Z.addScaledVector(X, -Z.dot(X)).normalize();
+      return new T.Matrix4().makeBasis(X, new T.Vector3().crossVectors(Z, X), Z);
+    };
+    const arm = B([0.25, 0.80, -0.55], [0.30, -0.60, -0.70]);
+    const fore = B([0.20, -0.45, 0.87], [0.35, -0.80, -0.45]);
+    const hand = B([0.15, -0.35, -0.92], [0.25, -0.95, 0.15]);
+    const rel = (P, C) => new T.Euler().setFromRotationMatrix(P.clone().invert().multiply(C), 'XYZ');
+    return [rel(new T.Matrix4(), arm), rel(arm, fore), rel(fore, hand)].map(e => [e.x, e.y, e.z]);
+  })();
+  /* 收翅時翼膜、膜上的紋、翼指沿翼弦（那一段的 z）壓到幾成：翼指收攏、膜摺起來。
+     剛體的切片轉不出摺痕——不壓的話一整片三格長的膜垂到地上 */
+  const DRA_FOLD_Z = 0.28;
+  /* 腿（髖／膝／踝的 x 轉角，正的＝往後擺；左右同號）：飛的時候往後收（貼在尾巴底下）、懸停時往前下方垂（參考圖一那個架勢） */
+  const DRA_TUCK = [1.00, 0.90, 0.60], DRA_DANGLE = [-0.20, 0.50, -0.30];
+  /* 趴著（被打下來的 down 那一段）：整套絕對姿勢。腿折在肚子底下、翅膀往兩邊攤在地上、脖子垂下來下巴擱在地上、尾巴平拖 */
+  const DRA_PRONE = (() => {
+    const G = DRA_G, A = [...Array(DRA_NG)].map(() => [0, 0, 0]);
+    A[G.neck1] = [0.40, 0.22, 0]; A[G.neck2] = [0.22, 0.14, 0]; A[G.head] = [-0.30, 0.10, 0.12]; A[G.jaw] = [0.10, 0, 0];
+    A[G.armL] = [0, 0.30, -0.20]; A[G.armR] = [0, -0.30, 0.20];
+    A[G.foreL] = [0, -0.25, -0.05]; A[G.foreR] = [0, 0.25, 0.05];
+    A[G.handL] = [0, 0.30, -0.02]; A[G.handR] = [0, -0.30, 0.02];
+    A[G.thighL] = [-1.10, 0, 0]; A[G.thighR] = [-1.10, 0, 0];
+    A[G.shinL] = [2.20, 0, 0]; A[G.shinR] = [2.20, 0, 0];
+    A[G.footL] = [-1.00, 0, 0]; A[G.footR] = [-1.00, 0, 0];
+    A[G.tail1] = [-0.30, 0.20, 0]; A[G.tail2] = [0.28, 0.22, 0]; A[G.tail3] = [0, 0.24, 0]; A[G.tail4] = [0, 0.26, 0];
+    return A;
+  })();
+  function draPose(m) {
+    for (const a of _rA) a[0] = a[1] = a[2] = 0;
+    const A = _rA, G = DRA_G;
+    const ph = m.ph || 0, s = Math.sin(ph), c = Math.cos(ph);
+    const fa = m.fa === undefined ? 1 : m.fa, fold = frC01(m.fold), hov = frC01(m.hov), tuck = frC01(m.tuck);
+    const g = frC01((m.gait || 0) / 0.85);
+    /* 翅膀：拍翅那一組，再照 fold 混到收翅那一組。右翼 y／z 反號 */
+    const sw = DRA_SWEEP * fa * Math.max(0, Math.cos(ph - DRA_FLAG[0]));
+    const W = [[0, sw * 0.4, DRA_FMID + DRA_FAMP * fa * s],
+               [0, -sw * 0.5, DRA_FK[0] * fa * Math.sin(ph - DRA_FLAG[0])],
+               [0, sw, DRA_FK[1] * fa * Math.sin(ph - DRA_FLAG[1])]];
+    for (let j = 0; j < 3; j++) {
+      const L = A[G.armL + j * 2], R = A[G.armR + j * 2], F = DRA_FOLD[j];
+      for (let i = 0; i < 3; i++) L[i] = W[j][i] + (F[i] - W[j][i]) * fold;
+      R[0] = L[0]; R[1] = -L[1]; R[2] = -L[2];
+    }
+    /* 腿：走路照步伐擺（往前擺的那一條膝蓋多彎＝抬腳、腳掌轉回來），再照 tuck 收、照 hov 垂 */
+    for (const [sd, gt] of [[1, G.thighL], [-1, G.thighR]]) {
+      let th = 0.55 * s * g * sd, sk = 0.70 * Math.max(0, -c * sd) * g, ft = -(th + sk) * 0.7;
+      th += (DRA_TUCK[0] - th) * tuck; sk += (DRA_TUCK[1] - sk) * tuck; ft += (DRA_TUCK[2] - ft) * tuck;
+      th += (DRA_DANGLE[0] - th) * hov; sk += (DRA_DANGLE[1] - sk) * hov; ft += (DRA_DANGLE[2] - ft) * hov;
+      A[gt][0] = th; A[gt + 2][0] = sk; A[gt + 4][0] = ft;
+    }
+    /* 頸與頭：飛的時候往前伸平、站著（fold）把脖子抬起來頭擺平；瞄準（np／ny）分給三節；
+       蓄力（rear）脖子往後仰、頭微微往下壓（像要撲出去），負的就是往前甩 */
+    const np = m.np || 0, ny = m.ny || 0, rear = m.rear || 0, sy = 0.06 * Math.sin(ph * 0.45);
+    A[G.neck1][0] = 0.08 - 0.33 * fold + np * 0.40 - 0.55 * rear + 0.05 * Math.sin(ph * 2) * g;
+    A[G.neck2][0] = 0.04 - 0.10 * fold + np * 0.35 - 0.35 * rear;
+    A[G.head][0] = -0.06 + 0.30 * fold + np * 0.25 + 0.15 * rear;
+    A[G.neck1][1] = sy + ny * 0.40; A[G.neck2][1] = sy * 0.8 + ny * 0.35; A[G.head][1] = ny * 0.25;
+    A[G.jaw][0] = 0.70 * frC01(m.jaw);
+    /* 尾巴：一節比一節晚、越往後擺越大（S 形）；飛的時候慢慢甩、走路照步伐甩。
+       正的 x 是尾巴往上翹（尾巴朝 −z），懸停時往下勾一點 */
+    const wv = g > 0.05 ? ph : ph * 0.55;
+    for (let k = 0; k < 4; k++) {
+      const T2 = A[G.tail1 + k];
+      T2[1] = (0.07 + 0.03 * k) * Math.sin(wv - 0.7 * k) * (1 + 0.6 * g);
+      T2[0] = 0.05 * Math.sin(ph + 0.6 - 0.5 * k) * (1 - g) - 0.12 * hov + 0.04 * fold;
+    }
+    /* 趴著：整套蓋過去（倒到一半就是一半）。喘的那一下放在前臂（往上拱一點），翼尖照樣貼地（見 draSettle） */
+    const dn = frC01(m.dn);
+    if (dn > 0) {
+      for (let gi = 0; gi < DRA_NG; gi++) for (let i = 0; i < 3; i++) A[gi][i] += (DRA_PRONE[gi][i] - A[gi][i]) * dn;
+      const br = 0.06 * (1 + Math.sin(ph)) * dn;
+      A[G.foreL][2] += br; A[G.foreR][2] -= br;
+    }
+  }
+  const _rG = [...Array(DRA_NG)].map(() => new T.Matrix4());
+  const _rm = new T.Matrix4(), _rm2 = new T.Matrix4(), _rR = new T.Matrix4();
+  const _rv = new T.Vector3(), _rq = new T.Quaternion(), _rE = new T.Euler(), _rONE = new T.Vector3(1, 1, 1);
+  /* 照 _rA 在模型座標裡把骨架一組一組接起來（_rG，還沒擺到世界；同 diaChain） */
+  function draChain() {
+    for (let g = 0; g < DRA_NG; g++) {
+      const p = DRA_PAR[g], pv = DRA_PIV[g], a = _rA[g];
+      const px = p < 0 ? 0 : DRA_PIV[p][0], py = p < 0 ? 0 : DRA_PIV[p][1], pz = p < 0 ? 0 : DRA_PIV[p][2];
+      _rm.compose(_rv.set(pv[0] - px, pv[1] - py, pv[2] - pz), _rq.setFromEuler(_rE.set(a[0], a[1], a[2], 'XYZ')), _rONE);
+      if (p < 0) _rG[g].copy(_rm); else _rG[g].multiplyMatrices(_rG[p], _rm);
+    }
+  }
+  /* 趴著時兩片翅膀**貼著地**（預覽第二輪，使用者：「趴著的時候會上下浮動」）。
+     量到的：趴著那一段原點離地在 2.09～2.86 之間來回（0.76 格），每一幀最低的都是右翼外側那一片膜——
+     那一版「喘」是兩肩一起上下 ±0.05，翼尖離肩 4.4 一甩就是 ±0.2，而 draLow 讓最低那一點貼草皮，
+     翼尖往下一壓整隻就被撐高；壓火時左右翻（側傾 ±0.3）會更嚴重。
+     所以趴著那一段每一幀照**肚子**（翅膀以外最低的那一點）定地面，再把兩肩各自轉到「那一邊翅膀最低的那一點剛好落在地面上」
+     （誤差 ÷ 力臂 DRA_SETTLE_L 換成轉角，三輪收斂）：側傾到哪一邊，那一邊的翅膀自己往上折、另一邊往下攤，肚子一直貼地。
+     轉角照 dn 混（倒到一半就修一半）；畫的（draRig）跟擺高度的（draLow）都走這一支，所以兩邊一致 */
+  const DRA_SETTLE_L = 3.6, DRA_SETTLE_MAX = 0.9;
+  const DRA_WING_G = [[DRA_G.armL, DRA_G.foreL, DRA_G.handL], [DRA_G.armR, DRA_G.foreR, DRA_G.handR]];
+  const DRA_WING_K = DRAGON.map(b => DRA_WING_G[0].includes(b.g) ? 0 : DRA_WING_G[1].includes(b.g) ? 1 : -1);
+  function draLowY(k) {                     // 第 k 塊轉過根的俯仰／側傾（_rR）之後的最低點（draChain、draSquash 之後）
+    const e = draPart(k, _rm).premultiply(_rR).elements;
+    return e[13] - 0.5 * (Math.abs(e[1]) + Math.abs(e[5]) + Math.abs(e[9]));
+  }
+  function draSettle(m) {
+    const dn = frC01(m.dn);
+    if (dn < 0.02) return;
+    _rR.makeRotationFromEuler(_rE.set(m.spin || 0, 0, m.roll || 0, 'YZX'));
+    const fix = [0, 0];
+    for (let it = 0; it < 3; it++) {
+      let yg = Infinity;
+      const yw = [Infinity, Infinity];
+      for (let k = 0; k < DRA_PARTS; k++) {
+        if (!DRA_GND[k]) continue;
+        const y = draLowY(k), w = DRA_WING_K[k];
+        if (w < 0) yg = Math.min(yg, y); else yw[w] = Math.min(yw[w], y);
+      }
+      for (let s = 0; s < 2; s++) {
+        const d = (yg - yw[s]) / DRA_SETTLE_L * dn;       // 正的＝翅膀比肚子低：往上收
+        const f = Math.max(-DRA_SETTLE_MAX, Math.min(DRA_SETTLE_MAX, fix[s] + d)) - fix[s];
+        fix[s] += f;
+        _rA[DRA_WING_G[s][0]][2] += s ? -f : f;           // 左翼正 z 往上、右翼反號
+      }
+      draChain();
+    }
+  }
+  /* 姿勢 → 骨架（模型座標）：擺姿勢、收翅壓扁、接骨架、趴著時翅膀貼地 */
+  function draBuild(m) {
+    draPose(m);
+    draSquash(m);
+    draChain();
+    draSettle(m);
+  }
+  /* 這一隻每一組的世界矩陣：骨架接好，再整組擺到世界（根同 putBeasts：YZX 朝向 → 側傾 → 俯仰） */
+  function draRig(m) {
+    draBuild(m);
+    scratch.rotation.set(m.spin || 0, m.a || 0, m.roll || 0, 'YZX');
+    scratch.position.set(m.x || 0, m.y || 0, m.z || 0);
+    scratch.scale.setScalar(m.sc || 1);
+    scratch.updateMatrix();
+    for (let g = 0; g < DRA_NG; g++) _rG[g].premultiply(scratch.matrix);
+  }
+  /* 第 k 塊的矩陣（接在 _rG 上）：收翅時 fz 那幾塊先沿那一段的 z 壓扁（見 DRA_FOLD_Z）。_rCz 由 draSquash 照這一隻設好 */
+  const _rC = new T.Matrix4();
+  let _rCz = 1;
+  function draSquash(m) {
+    _rCz = 1 - (1 - DRA_FOLD_Z) * frC01(m.fold);
+    if (_rCz < 0.999) _rC.makeScale(1, 1, _rCz);
+  }
+  function draPart(k, out) {
+    const b = DRAGON[k];
+    if (b.fz && _rCz < 0.999) return out.multiplyMatrices(_rG[b.g], _rm2.multiplyMatrices(_rC, DRA_LM[k]));
+    return out.multiplyMatrices(_rG[b.g], DRA_LM[k]);
+  }
+  /* 嘴在世界的哪裡（規則那邊吐火球那一刻叫，畫的跟用的同一份骨架） */
+  function draMouth(m, out) {
+    draRig(m);
+    const pv = DRA_PIV[DRA_G.head];
+    return out.set(DR_MOUTH[0] - pv[0], DR_MOUTH[1] - pv[1], DR_MOUTH[2] - pv[2]).applyMatrix4(_rG[DRA_G.head]);
+  }
+  /* 這個姿勢（含俯仰、側傾）最低那一點貼著草皮時，原點要離地多高（世界單位）。
+     規則那邊在地上那幾段（走、趴、降落、摔）每一幀照它擺高度：走路時兩隻腳輪流撐地、趴下去貼地的是肚子與攤開的翅膀，
+     v1.146～v1.276 那一版是一個常數（BEAST_FLOOR ＋ DRA_DOWN_PAD），姿勢一變就不對。
+     一塊的最低點＝中心的 y 減掉三個軸投影到 y 的半長（矩陣第二列）；只算 DRA_GND 那幾塊 */
+  function draLow(m) {
+    draBuild(m);
+    _rR.makeRotationFromEuler(_rE.set(m.spin || 0, 0, m.roll || 0, 'YZX'));
+    let lo = Infinity;
+    for (let k = 0; k < DRA_PARTS; k++) if (DRA_GND[k]) lo = Math.min(lo, draLowY(k));
+    return -lo * (m.sc || 1);
+  }
+  let draMesh = null;
+  const DRA_UP = 2;                  // 翼膜與胸腹甲的法線往上偏多少（見 draInit；要 > 1 朝下那一面才翻得過來，= 1 會變成零向量）
+  function draInit() {
+    /* 眼睛的法線往上偏（同主角的臉 GJ_FACE_UP）。
+       **翼膜與胸腹甲的法線整個往上翻**（DRA_UP > 1：朝下那一面加上去之後變成朝上）：牠多半是從底下看的，
+       朝下那一面只吃得到天光的地面色（草綠 0x5b7a48），米黃畫出來是橄欖綠（第一版截圖，v1.139 那一版的註解也講過這件事）。
+       翼膜本來就薄、背光會透，照朝上那一面打光是對的；胸腹甲從底下看照天光的天空色，淺一點但不綠。
+       翼膜與膜上的紋描邊淡（GJ_HAIR_EDGE，同主角的頭髮：一片疊一片都描一圈深色邊的話像百葉窗） */
+    const UP = { memb: DRA_UP, pat: DRA_UP, crm: DRA_UP, crmD: DRA_UP, eye: GJ_FACE_UP };
+    draMesh = new T.InstancedMesh(heroGeo(DRA_SLOT, MAXDRA, k => UP[DRAGON[k].cn] || 0,
+                                          k => DRAGON[k].mb ? GJ_HAIR_EDGE : 1),
+                                  voxelMaterial({}, GJ_EDGE_FIX, 'voxel-edge-gojo-hair'), MAXDRA * DRA_SLOT);
+    draMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    draMesh.castShadow = true;
+    draMesh.count = 0;
+    draMesh.visible = false;
+    draMesh.frustumCulled = false;
+    for (let i = 0; i < MAXDRA; i++)
+      for (let k = 0; k < DRA_SLOT; k++) draMesh.setColorAt(i * DRA_SLOT + k, tmpC.setHex(DRAGON[k].c));
+    scene.add(draMesh);
+  }
+  const draAt = [];                  // 這一幀第 n 隻畫的是清單裡的第幾隻（點選要對回去，同 diaAt）
+  function putDragons(list) {
+    let n = 0;
+    for (let i = 0; i < list.length && n < MAXDRA; i++) {
+      const m = list[i];
+      if (m.kind !== 'dragon') continue;
+      draAt[n] = i;
+      draRig(m);                     // 收翅壓扁的那一份也在裡面設好了（draBuild → draSquash）
+      const base = n * DRA_SLOT;
+      for (let k = 0; k < DRA_PARTS; k++) draMesh.setMatrixAt(base + k, draPart(k, _rm));
+      n++;
+    }
+    draMesh.count = n * DRA_SLOT;
+    draMesh.visible = n > 0;
+    if (n) { draMesh.instanceMatrix.needsUpdate = true; dropSphere(draMesh); }
+  }
+
   /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）。五支 putXxx 畫完之後叫一次：
      有 alpha 的那一位整格照抄到 humMesh、原本那一格塞 0。xxxAt 是「第幾位畫的是清單裡的第幾隻」。 */
   function fadeHumans(list) {
@@ -9833,6 +10237,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     move(gjMesh, gjAt, GJ_SLOT);
     move(frMesh, frAt, FR_SLOT);
     move(diaMesh, diaAt, DIA_SLOT);              // Diablo：從林帶進出場、死了變淡都走這一顆
+    move(draMesh, draAt, DRA_SLOT);              // 飛龍（v1.277.0）：從林帶飛進飛出那一段（不是人形，但同一個做法：自己一顆、整格照抄）
     humMesh.count = n * HUM_SLOT;
     humMesh.visible = n > 0;
     if (!n) return;
@@ -9993,8 +10398,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
         fadeAlpha.array.fill(m.alpha, base, base + BEAST_PARTS);
       }
       /* 順序跟小人一樣用 YZX：R = Ry(朝向)·Rz(側傾)·Rx(俯仰／翻滾)。
-         香蕉飛出去時是繞自己橫軸翻，所以翻滾放 x；飛龍的俯仰也放 x、
-         轉彎往內側傾斜放 z（那兩個值是規則那邊算的，見 game-tools.js 的 stepDragon）。
+         香蕉飛出去時是繞自己橫軸翻，所以翻滾放 x；獅鷲的俯仰也放 x、
+         轉彎往內側傾斜放 z（那兩個值是規則那邊算的；飛龍 v1.277.0 起自己一顆 mesh，同一個順序見 draRig）。
          被工具打倒之後（v1.146）這兩個角度就是猴子的「躺平角」與「打滾角」——
          跟小人的 tilt／rspin 是同一回事，只是欄位名照這裡原本的叫法。 */
       /* 兩條短腿的走路左右搖（v1.272.0，見 WADDLE）：重心壓到踩著地的那一隻腳上（右腳 sw > 0，
@@ -10058,8 +10463,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
         }
         /* 腰下那兩條前後擺、手反相擺（跟小人同一個式子），右手再加上抬起來那一段。
            轉完要把位置也繞著關節轉過去，不然三塊手臂各自繞自己中心轉會散開。 */
-        /* 飛龍那三種擺動（見上面 wingArc）。翼上那幾塊掛在弧線上、尾巴與脖子
-           各走一道自己的行進波——尾巴越往末端擺幅越大（S 形，不是整條硬甩）。 */
+        /* 翼上那幾塊掛在弧線上（見上面 wingArc；獅鷲與雁。v1.139～v1.276 的飛龍還有尾巴與脖子
+           各一道行進波，v1.277.0 飛龍重製成自己一套骨架之後那一段就沒有人用了） */
         if (b.wg) {
           const t = b.u * ARC_N, kk = Math.min(ARC_N - 1, Math.floor(t)), f = t - kk;
           const ax = arcX[kk] + (arcX[kk + 1] - arcX[kk]) * f;
@@ -10074,15 +10479,6 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
           M.setMatrixAt(base + k, tmpM);
           M.setColorAt(base + k, tmpC.setHex(b.c));
           continue;
-        }
-        if (b.tl || b.nk) {
-          const z = b.p[2];
-          const amp = b.tl ? TAIL_SW * Math.max(0, (-z - 1.2) / 3.6)
-                           : NECK_SW * Math.max(0, (z - 1.0) / 2.4);
-          const th = b.tl ? (m.ph || 0) * TAIL_W + TAIL_K * z : (m.ph || 0) * NECK_W + 1.2;
-          scratchB.position.x = b.p[0] + amp * Math.sin(th);
-          scratchB.rotation.y = (b.r ? b.r[1] : 0) -
-                                amp * (b.tl ? TAIL_K * 1.6 : 0.9) * Math.cos(th);
         }
         let ang = 0;
         if (b.sw) {
@@ -10536,6 +10932,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     if (gjMesh && gjMesh.visible) objs.push(gjMesh);      // 五條悟也算 beast（v1.255.0，見 putGojos）
     if (frMesh && frMesh.visible) objs.push(frMesh);      // 芙莉蓮也算 beast（v1.259.0，見 putFrierens）
     if (diaMesh && diaMesh.visible) objs.push(diaMesh);   // Diablo 也算 beast（見 putDiablos）
+    if (draMesh && draMesh.visible) objs.push(draMesh);   // 飛龍也算 beast（v1.277.0，見 putDragons）
     const hits = raycaster.intersectObjects(objs, false);
     let best = null, rank = 9;
     for (let i = 0; i < hits.length; i++) {
@@ -10543,7 +10940,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
                  : h.object === beastMesh || h.object === sabMesh || h.object === levMesh || h.object === megMesh ||
-                   h.object === zenMesh || h.object === gjMesh || h.object === frMesh || h.object === diaMesh ? 'beast'
+                   h.object === zenMesh || h.object === gjMesh || h.object === frMesh || h.object === diaMesh ||
+                   h.object === draMesh ? 'beast'
                  : h.object === giftMesh ? 'gift'
                  : h.object === ground ? 'ground' : null;
       /* 泡泡被牆擋住就點不到（畫面上本來就看不見它：泡泡不寫深度，但仍然吃深度測試）。
@@ -10559,6 +10957,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
                                       : h.object === gjMesh ? gjAt[Math.floor(h.instanceId / GJ_SLOT)]
                                       : h.object === frMesh ? frAt[Math.floor(h.instanceId / FR_SLOT)]
                                       : h.object === diaMesh ? diaAt[Math.floor(h.instanceId / DIA_SLOT)]
+                                      : h.object === draMesh ? draAt[Math.floor(h.instanceId / DRA_SLOT)]
                                                            : Math.floor(h.instanceId / BEAST_PARTS))
                 /* 泡泡是一整片貼圖網格（不是 instanced）：一顆兩個三角形，
                    而 giftAt 記著這一幀第幾片畫的是清單裡的第幾顆（見 putGifts）。 */
@@ -10657,6 +11056,9 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
        跪姿、趴姿與「算不算貼地」那一份遮罩（DIA_GND）也開出來：測試照它量倒在地上時每一塊離地多高 */
     putDiablos, DIABLO, DIA_PARTS, DIA_SLOT, MAXDIA, DIA_G, diaMouth, diaChest, DIA_KNEEL, DIA_PRONE, DIA_GND,
     putCoins, COIN_MAX,                     /* 金幣：純特效（見 game-tools.js〈Diablo〉的 spawnCoins） */
+    /* 飛龍（v1.277.0 重製）：自己一顆 mesh（putDragons）；draMouth 是吐火球的出口、draLow 是這個姿勢貼地時原點離地多高
+       （規則那邊在地上那幾段每一幀照它擺高度），兩支都跟畫出去的是同一份骨架 */
+    putDragons, DRAGON, DRA_PARTS, DRA_SLOT, MAXDRA, DRA_G, DRA_GND, draMouth, draLow,
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
     BEAST_FRONT, beastLift,                 /* 趴著照前緣抬（v1.274.0，猴子的尾巴拿掉之後背緣與前緣差很多） */
@@ -10680,6 +11082,6 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, diaMesh, coinMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, diaMesh, coinMesh, draMesh }; }
   };
 })();

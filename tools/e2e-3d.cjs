@@ -847,6 +847,21 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       pose[kind] = rows;
     }
     ENG.putBeasts([]);      // 動過的狀態還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）
+    /* 飛龍（v1.277.0 起自己一顆 mesh、不在 BEASTS 裡）：一樣擺一個每個欄位都釘死的姿勢畫一幀、讀 draMesh。
+       這份基準當初就是為了牠少一片翅膀才開的，搬出 BEASTS 之後不能從這裡漏掉。
+       姿勢挑「每一種動作都摻一點」（拍翅＋收翅、腿半收、懸停、瞄準、蓄力、張嘴），骨架的每一段數學都會被走到 */
+    {
+      const dm = ENG.three.draMesh;
+      ENG.putDragons([{ kind: 'dragon', x: 0, y: 20, z: 0, a: 0, ph: 1.1, gait: 0.5, sc: 1, spin: 0.3, roll: 0.2,
+                        fold: 0.3, tuck: 0.5, hov: 0.2, dn: 0, np: 0.3, ny: 0.2, rear: 0.4, jaw: 0.5 }]);
+      const rows = [];
+      for (let i = 0; i < ENG.DRA_PARTS; i++) {
+        dm.getMatrixAt(i, tmp); tmp.decompose(v, q, sc);
+        rows.push([rnd(v.x), rnd(v.y), rnd(v.z), rnd(sc.x), rnd(sc.y), rnd(sc.z)]);
+      }
+      pose.dragon = rows;
+      ENG.putDragons([]);
+    }
     return { parts, pose };
   });
   const BASE = path.join(__dirname, 'model-baseline.json');
@@ -24684,44 +24699,62 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '石頭 ' + bpow.rock + '／香蕉 ' + bpow.nana + '／炸彈 ' + bpow.bomb + ' 塊');
 
 
-  /* ── 事件三：飛龍（v1.139）── */
+  /* ── 事件三：飛龍（v1.139，v1.277.0 造型＋動作重製）──
+     v1.277.0 起龍自己一顆 mesh（draMesh）、21 組骨架，不在 BEASTS 裡（同 Diablo）。
+     下面這幾條讀的都是 putDragons 真的畫出去的矩陣：擺一個固定的姿勢、畫一幀、量。 */
   const dfig = await page.evaluate(() => {
-    const D = ENG.BEASTS.dragon;
-    const span = Math.max(...D.map(b => Math.abs(b.p[0]) + b.s[0] / 2)) * 2;
-    const len = Math.max(...D.map(b => b.p[2] + b.s[2] / 2)) -
-                Math.min(...D.map(b => b.p[2] - b.s[2] / 2));
-    return { span: +span.toFixed(2), len: +len.toFixed(2), sc: DRA_SC,
-             world: +(span * DRA_SC).toFixed(1), parts: D.length, max: ENG.BEAST_PARTS,
-             wing: D.filter(b => b.wg).length, tail: D.filter(b => b.tl).length,
-             neck: D.filter(b => b.nk).length,
-             memb: D.filter(b => b.c === 0xd4685a).length,
-             gry: ENG.BEASTS.gryphon.length,
-             fball: ENG.BEASTS.fball.length };
+    beasts = null; nanas = null; fballs = null;
+    const D = ENG.DRAGON, G = ENG.DRA_G;
+    const m = spawnDragon();
+    /* 翅膀攤平（拍翅力道 fa 給 0：肩只剩中位角、肘與腕打直、不往後掃）。第一版挑「肩的擺角歸零」那個相位，
+       可是肘、腕各晚一拍，那一刻還彎著，量到的翼展短了兩格（18.6） */
+    Object.assign(m, { x: 0, z: 0, y: 30, a: 0, roll: 0, spin: 0, ph: 0, fa: 0, fold: 0, tuck: 1, hov: 0, dn: 0 });
+    draw();
+    const mesh = ENG.three.draMesh, mt = new THREE.Matrix4();
+    let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (let k = 0; k < D.length; k++) {
+      mesh.getMatrixAt(k, mt); const e = mt.elements;
+      const hx = 0.5 * (Math.abs(e[0]) + Math.abs(e[4]) + Math.abs(e[8])), hz = 0.5 * (Math.abs(e[2]) + Math.abs(e[6]) + Math.abs(e[10]));
+      x0 = Math.min(x0, e[12] - hx); x1 = Math.max(x1, e[12] + hx);
+      if (!D[k].nl) { z0 = Math.min(z0, e[14] - hz); z1 = Math.max(z1, e[14] + hz); }
+    }
+    const inG = (b, ...gs) => gs.some(g => b.g === G[g]);
+    const out = { world: +(x1 - x0).toFixed(1), len: +(z1 - z0).toFixed(1), sc: DRA_SC, parts: D.length,
+                  slot: ENG.DRA_SLOT, inBeasts: 'dragon' in ENG.BEASTS, beastParts: ENG.BEAST_PARTS,
+                  maxOther: Math.max(...Object.values(ENG.BEASTS).map(a => a.length)), model: ENG.MODELS.dragon === D,
+                  groups: ENG.DRA_G && Object.keys(G).length,
+                  wingL: D.filter(b => inG(b, 'armL', 'foreL', 'handL')).length, wingR: D.filter(b => inG(b, 'armR', 'foreR', 'handR')).length,
+                  memb: D.filter(b => b.cn === 'memb').length, tail: D.filter(b => inG(b, 'tail1', 'tail2', 'tail3', 'tail4')).length,
+                  jaw: D.filter(b => b.g === G.jaw).length, fball: ENG.BEASTS.fball.length };
+    beasts = null; draw();
+    return out;
   });
-  /* 「一隻最多幾塊」（BEAST_PARTS）是照 BEASTS 整份取最大算的，所以只能守
-     「裝得下飛龍」——v1.176 起最大的那一種是獅鷲（65 塊），不再是飛龍。 */
+  /* 「翼展 20 格上下」是 v1.139 那一版的大小，重製之後照舊（模型翼展 10 × DRA_SC 2.1）。
+     自己一顆 mesh 的理由同 Diablo：塞進 BEASTS 的話每一隻牛羊都要照牠的 262 塊付成本 */
   ok('飛龍的翼展 20 格上下（小人 2.2 格，約九分之一）',
-     dfig.world > 19 && dfig.world < 22 && dfig.max >= dfig.parts,
-     '模型翼展 ' + dfig.span + ' ×' + dfig.sc + ' ＝ ' + dfig.world +
-     ' 格、體長 ' + dfig.len + '，' + dfig.parts + ' 塊（一隻的上限 ' + dfig.max +
-     ' 塊照最大的那一種算，現在是獅鷲的 ' + dfig.gry + ' 塊）');
-  ok('翅膀、尾巴、脖子各有自己的擺動旗標',
-     dfig.wing >= 20 && dfig.tail === 7 && dfig.neck >= 12 && dfig.memb === 10,
-     '翼 ' + dfig.wing + ' 塊（翼膜 ' + dfig.memb + '）／尾 ' + dfig.tail +
-     '／頸 ' + dfig.neck);
+     dfig.world > 19 && dfig.world < 22.5,
+     '翅膀攤平時畫出來的翼展 ' + dfig.world + ' 格、體長 ' + dfig.len + ' 格（×' + dfig.sc + '），' + dfig.parts + ' 塊');
+  ok('飛龍自己一顆 mesh：不進 BEASTS，別的動物一隻還是照原本最多塊那一款付成本',
+     dfig.parts === dfig.slot && !dfig.inBeasts && dfig.beastParts === dfig.maxOther && dfig.model,
+     '牠 ' + dfig.parts + ' 塊、BEAST_PARTS 還是 ' + dfig.beastParts + '（BEASTS 裡最多塊那一款 ' + dfig.maxOther + '）');
+  ok('骨架分得夠細：兩翼各三段、尾巴四節、下顎會張',
+     dfig.groups === 21 && dfig.wingL === dfig.wingR && dfig.wingL > 40 && dfig.memb === 34 && dfig.tail > 20 && dfig.jaw >= 5,
+     dfig.groups + ' 組；左翼 ' + dfig.wingL + '／右翼 ' + dfig.wingR + ' 塊（翼膜 ' + dfig.memb + ' 片）、尾 ' + dfig.tail + '、下顎 ' + dfig.jaw);
 
   /* 使用者第一版回饋：「飛的翅膀跟身體太過僵硬」。硬板的話翼面上每一塊都在同一條
-     直線上（偏離 0），而且翼尖跟翼根的高度差是固定的。這一條就是在驗它不是硬板。 */
+     直線上（偏離 0），而且翼尖跟翼根的高度差是固定的。這一條就是在驗它不是硬板。
+     v1.277.0 起翅膀是肩／肘／腕三段骨架（肘、腕各晚一拍），量的照舊是左翼那一排翼膜的中心。 */
   const dwing = await page.evaluate(() => {
     beasts = null; nanas = null; fballs = null;
     const m = spawnDragon();
     m.x = 0; m.z = 0; m.y = 30; m.a = 0; m.roll = 0; m.spin = 0;
-    const D = ENG.BEASTS.dragon, mesh = ENG.three.beastMesh;
+    const D = ENG.DRAGON, G = ENG.DRA_G, mesh = ENG.three.draMesh;
     const tmp = new THREE.Matrix4(), v = new THREE.Vector3();
     const memb = [];
-    for (let i = 0; i < D.length; i++) if (D[i].wg === 1 && D[i].c === 0xd4685a) memb.push(i);
-    const tip = D.findIndex(b => b.wg === 1 && b.u > 0.9);
-    const root = D.findIndex(b => b.wg === 1 && b.u < 0.2);
+    for (let i = 0; i < D.length; i++)
+      if (D[i].cn === 'memb' && [G.armL, G.foreL, G.handL].includes(D[i].g)) memb.push(i);
+    memb.sort((a, b) => D[a].p[0] - D[b].p[0]);          // 由翼根排到翼尖
+    const root = memb[0], tip = memb[memb.length - 1];
     const rise = [], dev = [];
     for (let k = 0; k < 8; k++) {
       m.ph = k * 0.8; draw();
@@ -24751,17 +24784,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* v1.146.1 使用者回報「飛龍一個翅膀不見了」。翼上那幾塊的位置是照 wg 的正負號
      從右半邊那條翼弧鏡射的，而 bmir 只翻了 p[0]／r／sw／am，漏了 wg——左翼整片
-     疊在右翼上（實測 22 塊全落在 x ＝ +1.52～+8.68）。這一條驗兩邊真的一邊一片。 */
+     疊在右翼上（實測 22 塊全落在 x ＝ +1.52～+8.68）。這一條驗兩邊真的一邊一片。
+     v1.277.0 起左右兩翼各自掛在自己那三組骨架上（M 寫左邊、鏡射出右邊，轉角 y／z 反號），照樣驗畫出來的位置 */
   const dsym = await page.evaluate(() => {
     beasts = null; nanas = null; fballs = null;
     const m = spawnDragon();
     m.x = 0; m.z = 0; m.y = 30; m.a = 0; m.roll = 0; m.spin = 0; m.ph = 1.1;
     draw();
-    const D = ENG.BEASTS.dragon, mesh = ENG.three.beastMesh;
+    const D = ENG.DRAGON, G = ENG.DRA_G, mesh = ENG.three.draMesh;
+    const W = [G.armL, G.foreL, G.handL, G.armR, G.foreR, G.handR];
     const tmp = new THREE.Matrix4(), v = new THREE.Vector3();
     let lo = 0, hi = 0, l = 0, r = 0;
     for (let i = 0; i < D.length; i++) {
-      if (!D[i].wg) continue;
+      if (!W.includes(D[i].g)) continue;
       mesh.getMatrixAt(i, tmp); v.setFromMatrixPosition(tmp);
       const x = v.x - m.x;
       if (x < -1) l++; else if (x > 1) r++;
@@ -24771,7 +24806,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return { l, r, lo: +lo.toFixed(2), hi: +hi.toFixed(2) };
   });
   ok('兩片翅膀一邊一片（不是左翼疊在右翼上）',
-     dsym.l === dsym.r && dsym.l >= 11 && Math.abs(dsym.lo + dsym.hi) < 0.01,
+     dsym.l === dsym.r && dsym.l >= 40 && Math.abs(dsym.lo + dsym.hi) < 0.01,
      '左 ' + dsym.l + ' 塊到 ' + dsym.lo + ' 格／右 ' + dsym.r + ' 塊到 ' + dsym.hi + ' 格');
 
   /* 航線（使用者：「從場外飛進工地稍微盤旋一下 中途吐幾顆火球」）。
@@ -24813,6 +24848,68 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('飛在建築上方，不會穿過建築',
      dfly.inside === 0 && dfly.yMin > dfly.top,
      '最低飛到 ' + dfly.yMin + '，建築頂 ' + dfly.top + '（穿模 ' + dfly.inside + ' 幀）');
+
+  /* 懸停吐火球（v1.277.0，使用者：「火球應該是用力往目標噴過去」，動作問過選「停在半空懸停吐」）。
+     **規則型**：每一顆都在懸停那一段吐（幾乎停住、正對瞄好的那一點）、從嘴（ENG.draMouth，跟畫出去的同一份骨架）出來、
+     直直飛向那一點、速度 FB_SPD、飛的途中速度一點都不變（不受重力）。v1.139～v1.276 是繞著圈不停、從模型前方 3.3 那一點
+     丟出一條拋物線，目標其實在牠側下方九十度。三顆都要成立。 */
+  await fillAll(page);
+  const dhov = await page.evaluate(() => {
+    beasts = null; nanas = null; fballs = null; clearFires();
+    for (const b of blocks) b.wet = 0;
+    const m = spawnDragon();
+    const shots = [], seen = new Set(), ph = {};
+    let n = 0, curve = 0;
+    const wrap = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+    while (beasts && beasts.includes(m) && n < 3000 && shots.length < 3) {
+      step(0.05); n++;
+      if (m.hv) ph[m.hv] = (ph[m.hv] || 0) + 1;
+      for (const f of fballs || []) {
+        if (seen.has(f)) { curve = Math.max(curve, Math.abs(f.vx - f.v0[0]), Math.abs(f.vy - f.v0[1]), Math.abs(f.vz - f.v0[2])); continue; }
+        seen.add(f); f.v0 = [f.vx, f.vy, f.vz];
+        const mo = ENG.draMouth(m, new THREE.Vector3());
+        const ox = f.x - f.vx * f.t, oy = f.y - f.vy * f.t, oz = f.z - f.vz * f.t;     // 吐出來那一點
+        const v = Math.hypot(f.vx, f.vy, f.vz), dx = m.fx - ox, dy = -oy, dz = m.fz - oz, d = Math.hypot(dx, dy, dz);
+        shots.push({ hv: m.hv, spd: +m.spd.toFixed(2), face: +Math.abs(wrap(Math.atan2(m.fx - m.x, m.fz - m.z) - m.a)).toFixed(3),
+                     mouth: +Math.hypot(ox - mo.x, oy - mo.y, oz - mo.z).toFixed(4), v: +v.toFixed(3),
+                     aim: +Math.acos(Math.min(1, (f.vx * dx + f.vy * dy + f.vz * dz) / (v * d))).toFixed(4), y0: +oy.toFixed(1) });
+      }
+    }
+    beasts = null; fballs = null; clearFires();
+    return { shots, curve, ph, spd: FB_SPD, hovSpd: DRA_HOV_SPD };
+  });
+  ok('火球是懸停下來吐的：吐那一刻幾乎停住、正對瞄好的那一點（煞車→轉向→蓄力→甩出去→轉回去五段都走過）',
+     dhov.shots.length === 3 && dhov.shots.every(s => s.hv === 'fire' && s.spd <= dhov.hovSpd + 0.5 && s.face < 0.15) &&
+     ['brake', 'aim', 'rear', 'fire', 'back'].every(k => dhov.ph[k] > 0),
+     dhov.shots.map(s => s.hv + ' 速度 ' + s.spd + '、偏 ' + s.face).join('／') + '；各段幀數 ' + JSON.stringify(dhov.ph));
+  ok('從嘴裡吐出來、直直飛向那一點、速度 FB_SPD，飛的途中不受重力',
+     dhov.shots.length === 3 && dhov.shots.every(s => s.mouth < 0.01 && Math.abs(s.v - dhov.spd) < 0.01 && s.aim < 0.001) &&
+     dhov.curve < 1e-9,
+     dhov.shots.map(s => '離嘴 ' + s.mouth + '、' + s.v + ' 格／秒、偏 ' + s.aim + '、從 ' + s.y0 + ' 高吐').join('／') +
+     '；飛的途中速度最多變了 ' + dhov.curve);
+  /* 懸停到一半被打下來、或放棄（配額收掉）：那一顆不吐。規則型：把牠推到蓄力那一段再出手 */
+  const dhcut = await page.evaluate(() => {
+    const out = {};
+    for (const how of ['crash', 'quit']) {
+      beasts = null; nanas = null; fballs = null; clearFires();
+      const m = spawnDragon();
+      Object.assign(m, { st: 'ring', x: m.rc, z: 0, a: 0, gap: 0, left: 2 });
+      let n = 0;
+      while (m.hv !== 'rear' && n < 200) { step(0.05); n++; }
+      const at = m.hv;
+      if (how === 'crash') crashDragon(m); else quitDoom(m);
+      let fb = 0, hv0 = m.hv;
+      for (let i = 0; i < 60; i++) { step(0.05); fb = Math.max(fb, fballs ? fballs.length : 0); }
+      out[how] = { at, hv0, st: m.st, fb };
+    }
+    beasts = null; fballs = null; clearFires();
+    return out;
+  });
+  ok('懸停到一半被打下來、或放棄這一趟：那一顆不吐',
+     dhcut.crash.at === 'rear' && dhcut.crash.hv0 === '' && dhcut.crash.fb === 0 &&
+     dhcut.quit.at === 'rear' && dhcut.quit.st === 'out' && dhcut.quit.fb === 0,
+     '蓄力時被打下來：hv「' + dhcut.crash.hv0 + '」、之後 3 秒火球 ' + dhcut.crash.fb + ' 顆（' + dhcut.crash.st + '）；' +
+     '蓄力時放棄：' + dhcut.quit.st + '、火球 ' + dhcut.quit.fb + ' 顆');
 
   /* 火球（使用者：「火球大約隕石那樣大 不要連噴」）。
      **一趟不夠，飛三趟取中位**（v1.148）：一趟只吐 3～5 顆，而拆掉多少幾乎全看
@@ -26615,14 +26712,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const m = spawnDragon(fun);
       m.left = 0;                                     // 這裡不驗吐火球，配額清掉
       const path = [];
-      let walked = 0, gait = 0, low = 1e9, inside = 0, rMin = 1e9, px = m.x, pz = m.z, inLm = 0, gap = Infinity;
+      let walked = 0, gait = 0, low = 0, inside = 0, rMin = 1e9, px = m.x, pz = m.z, inLm = 0, gap = Infinity;
       for (let i = 0; i < 6000 && beasts && beasts.indexOf(m) >= 0; i++) {
         stepDoom(0.05);
         if (path[path.length - 1] !== m.st) path.push(m.st);
         if (m.st === 'gwalk') {
           walked += Math.hypot(m.x - px, m.z - pz);
           gait = Math.max(gait, m.gait);
-          low = Math.min(low, m.y);
+          /* 貼地：原點高度跟「這一幀的姿勢最低那一點剛好貼草皮」差多少（v1.277.0 起地面高度照姿勢量，見 draGround；
+             v1.182～v1.276 是一個常數，所以那時候比的是最低的 m.y） */
+          low = Math.max(low, Math.abs(m.y - draGround(m)));
           rMin = Math.min(rMin, Math.hypot(m.x, m.z));
           if (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)) inside++;
           const bd = navBody(m), d = lmDist(m.x, m.z, lmField(bd.H)) - bd.r;
@@ -26635,15 +26734,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return { path: path.join('>'), gone: !beasts || beasts.indexOf(m) < 0,
                walked: +walked.toFixed(1), gait: +gait.toFixed(2), inside, inLm,
                gap: +gap.toFixed(2), r: +navBody(m).r.toFixed(1),
-               low: +low.toFixed(2), rMin: +rMin.toFixed(1) };
+               low: +low.toFixed(3), rMin: +rMin.toFixed(1) };
     };
     const land = run(1, 0);            // 吉祥物 ＋ 骰子押到底：一定降落
     const skip = run(1, 0.99);         // 吉祥物 ＋ 骰子押另一邊：不降落，照舊飛走
     const bad = run(0, 0);             // 天災那一趟：押到底也不降落
-    const gnd = +draGround().toFixed(2);
     const ring = +(siteR + DRA_STAND).toFixed(1);
     cleanTools();
-    return { land, skip, bad, gnd, ring };
+    return { land, skip, bad, ring };
   });
   ok('吉祥物那一趟的龍會自己降落：繞完 → 收翅滑降 → 在草皮上走一段 → 拍翅飛走',
      mland.land.path === 'in>ring>land>gwalk>rise>out' && mland.land.gone,
@@ -26655,11 +26753,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('落地那一段是真的用走的：腳踩在草皮上、腿在擺，身體（身長一半）不進地標的身位裡',
      mland.land.walked > 5 && mland.land.gait > 0.8 && mland.land.inside === 0 &&
      mland.land.inLm === 0 &&
-     Math.abs(mland.land.low - mland.gnd) < 0.05,
+     mland.land.low < 0.05,
      '走了 ' + mland.land.walked + ' 格、腳步 ' + mland.land.gait + '、踩進去 ' +
      mland.land.inside + ' 次、身體進到身位（' + mland.land.r + ' 格）裡 ' + mland.land.inLm + ' 幀（離身位最近 ' +
      mland.land.gap + '）；最近只到半徑 ' + mland.land.rMin + '（v1.235 以前那一圈 ' +
-     mland.ring + '）、貼地 ' + mland.land.low + '（地面 ' + mland.gnd + '）');
+     mland.ring + '）、離貼地最多 ' + mland.land.low + ' 格');
   ok('沒抽中的那一趟照舊繞完就飛走，天災那一趟則是壓根不會降落',
      mland.skip.path === 'in>ring>out' && mland.skip.gone &&
      mland.bad.path === 'in>ring>out' && mland.bad.gone,
@@ -28926,18 +29024,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
        會變成看那一顆有沒有剛好還在飛（實測跑兩輪就飄掉一次）。 */
     fballs = null;
     const path = [];
-    let downY = 0, downT = 0, riseT = 0, fb = 0;
+    let downY = 0, downT = 0, riseT = 0, fb = 0, downErr = 0;
     for (let i = 0; i < 1500 && beasts && beasts.indexOf(m) >= 0; i++) {
       stepDoom(0.05);
       path.push(m.st);
-      if (m.st === 'down') { downY = m.y; downT++; }
+      /* 貼地：原點高度跟「這個姿勢最低那一點剛好貼草皮」差多少（v1.277.0 起照姿勢量，見 draGround／draFollow）。
+         趴下去那一段姿勢一直在變（dn 收到 1），差距要一直是 0——預覽第二輪使用者：「趴著的時候會上下浮動」 */
+      if (m.st === 'down') { downY = m.y; downT++; downErr = Math.max(downErr, Math.abs(m.y - draGround(m))); }
       if (m.st === 'rise') riseT++;
       fb = Math.max(fb, fballs ? fballs.length : 0);
       if (m.st === 'in' || m.st === 'ring' || m.st === 'out') break;
     }
     return { before, hit, twice, left: m.left, turned0, turned: +m.turned.toFixed(2),
              path: [...new Set(path)].join('>'), fb,
-             downY: +downY.toFixed(2), gnd: +draGround().toFixed(2),
+             downY: +downY.toFixed(2), downErr: +downErr.toFixed(4),
              downT: +(downT * 0.05).toFixed(1), riseT: +(riseT * 0.05).toFixed(1),
              back: m.st, y: +m.y.toFixed(1),
              cached, cruise: DRA_CRUISE };
@@ -28950,9 +29050,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      hDra.before + ' → ' + hDra.path + ' → ' + hDra.back + '；趴了 ' + hDra.downT +
      ' 秒、爬升 ' + hDra.riseT + ' 秒回到 ' + hDra.y + ' 格（巡航 ' + hDra.cruise + '）');
   ok('趴著的高度剛好貼草皮，盤旋進度不歸零，而且摔了就不吐火球',
-     Math.abs(hDra.downY - hDra.gnd) < 0.01 && hDra.turned >= hDra.turned0 &&
+     hDra.downErr < 0.01 && hDra.turned >= hDra.turned0 &&
      hDra.left === 0 && hDra.fb === 0,
-     '趴在 y=' + hDra.downY + '（地面 ' + hDra.gnd + '）、繞了 ' + hDra.turned0 +
+     '趴在 y=' + hDra.downY + '（整段離貼地最多 ' + hDra.downErr + ' 格）、繞了 ' + hDra.turned0 +
      ' 弧度沒被歸零、火球配額 4 → ' + hDra.left);
 
   /* 本來就要飛出場的，起飛之後不該又繞一圈回來。 */
@@ -29084,16 +29184,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     crashDragon(m);
     for (let i = 0; i < 3000 && m.st !== 'gwalk'; i++) stepDoom(0.05);
     const got = m.st;
-    const flap = +m.wb.toFixed(2);                    // 剛落地時翅膀還在拍翅那一組
-    let moved = 0, gait = 0, low = 1e9, inside = 0, px = m.x, pz = m.z;
+    /* 翅膀收不收（v1.277.0 起是 m.fold 0 張開～1 收起來，見引擎的 DRA_FOLD；v1.182～v1.276 是翼弧的中位角 wb） */
+    const flap = +m.fold.toFixed(2);                  // 剛站起來時翅膀還攤著（趴著那一套是張開的）
+    let moved = 0, gait = 0, low = 0, inside = 0, px = m.x, pz = m.z;
     for (let i = 0; i < 40 && m.st === 'gwalk'; i++) {
       stepDoom(0.05);
       moved += Math.hypot(m.x - px, m.z - pz); px = m.x; pz = m.z;
       gait = Math.max(gait, m.gait);
-      low = Math.min(low, m.y);
+      low = Math.max(low, Math.abs(m.y - draGround(m)));   // 離「這一幀的姿勢剛好貼草皮」多遠（見 draFollow）
       if (footBlocked(m.x, m.z) || homeFoot(m.x, m.z)) inside++;
     }
-    const rest = +m.wb.toFixed(2);                    // 走著走著翅膀收起來了
+    const rest = +m.fold.toFixed(2);                  // 走著走著翅膀收起來了
     const lit = igniteBeast(m, 1);
     const st = m.st;                                  // 就地趴下來壓火
     let waited = 0;
@@ -29101,18 +29202,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const after = m.st;                               // 燒完再站起來把路走完
     cleanTools();
     return { got, moved: +moved.toFixed(1), gait: +gait.toFixed(2), inside,
-             low: +low.toFixed(2), gnd: +draGround().toFixed(2), flap, rest,
-             pose: DRA_POSE.rest[0], lit, st, after,
+             low: +low.toFixed(3), flap, rest, lit, st, after,
              waited: +(waited * 0.05).toFixed(1), burnT: DRA_BURN };
   });
   ok('飛龍趴完會站起來走一段：腳貼著草皮、腿真的在擺，也不會走進建築與小房子',
      hWalk.got === 'gwalk' && hWalk.moved > 2 && hWalk.gait > 0.8 &&
-     hWalk.inside === 0 && Math.abs(hWalk.low - hWalk.gnd) < 0.05,
+     hWalk.inside === 0 && hWalk.low < 0.05,
      '2 秒走了 ' + hWalk.moved + ' 格、腳步 ' + hWalk.gait + '、踩進去 ' + hWalk.inside +
-     ' 次；貼地 ' + hWalk.low + '（地面 ' + hWalk.gnd + '）');
-  ok('走路時翅膀收成拱起來的一對（不是攤著在地上拖）',
-     hWalk.flap < 0.5 && hWalk.rest > hWalk.pose * 0.5,
-     '中位角 ' + hWalk.flap + ' → ' + hWalk.rest + '（收翅那一組是 ' + hWalk.pose + '）');
+     ' 次；離貼地最多 ' + hWalk.low + ' 格');
+  ok('走路時翅膀收起來貼在身側（不是攤著在地上拖）',
+     hWalk.flap < 0.5 && hWalk.rest > 0.5,
+     '收翅 ' + hWalk.flap + ' → ' + hWalk.rest + '（0 張開、1 收好）');
   ok('走在草皮上被點著：就地趴下來壓火，燒完再站起來把路走完',
      hWalk.lit && hWalk.st === 'down' && hWalk.after === 'gwalk' &&
      Math.abs(hWalk.waited - hWalk.burnT) < 1.2,
@@ -29245,29 +29345,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       worst = Math.min(worst, low());
     }
     out.roll = +worst.toFixed(3);
-    /* 飛龍趴著：翅膀是每一幀照翼弧重擺的，所以翼相位也掃一圈 */
+    /* 飛龍趴著（v1.277.0 起自己一顆 mesh）：量 draMesh 裡**算貼地的那幾塊**（ENG.DRA_GND：刺、爪、細的不算，同引擎的 draLow）。
+       跑真的 down 那一段（喘的那一下照相位走），每一幀都要貼地，壓火時左右翻也是——
+       預覽第二輪使用者：「趴著的時候會上下浮動」（那一版喘是兩肩一起上下，翼尖一壓整隻被撐高，原點在 2.09～2.86 之間來回） */
+    const dlow = () => {
+      const mesh = ENG.three.draMesh, m4 = new THREE.Matrix4();
+      let lo = 1e9;
+      for (let k = 0; k < ENG.DRA_PARTS; k++) {
+        if (!ENG.DRA_GND[k]) continue;
+        mesh.getMatrixAt(k, m4);
+        const a = m4.elements;
+        lo = Math.min(lo, a[13] - 0.5 * (Math.abs(a[1]) + Math.abs(a[5]) + Math.abs(a[9])));
+      }
+      return lo;
+    };
     cleanTools(); phase = 'done'; doomT = 1e9;
     const d = spawnDragon(1);
     d.x = 26; d.z = 0; d.a = 0;
     crashDragon(d);
     for (let i = 0; i < 1200 && d.st !== 'down'; i++) stepDoom(0.05);
-    let dw = 1e9;
-    for (let k = 0; k < 40; k++) {
-      d.ph = DRA_DOWN_PH + 0.10 * Math.sin(k / 40 * Math.PI * 2);
-      draw();
-      dw = Math.min(dw, low());
-    }
-    out.dragon = +dw.toFixed(3);
+    d.t = 99;                                          // 一直趴著（量完自己收掉）
+    const dr = [1e9, -1e9], db = [1e9, -1e9];
+    for (let k = 0; k < 40; k++) { stepDoom(0.05); draw(); const y = dlow(); dr[0] = Math.min(dr[0], y); dr[1] = Math.max(dr[1], y); }
+    igniteBeast(d, 1);                                 // 趴著被點著：左右翻著壓火
+    for (let k = 0; k < 60; k++) { stepDoom(0.05); draw(); const y = dlow(); db[0] = Math.min(db[0], y); db[1] = Math.max(db[1], y); }
+    out.dragon = dr.map(v => +v.toFixed(3)); out.dragonBurn = db.map(v => +v.toFixed(3));
     cleanTools();
     return out;
   });
-  ok('站著／躺著／打滾／飛龍趴著，四種姿勢都貼著草皮（不陷進去也不浮起來）',
+  ok('站著／躺著／打滾三種姿勢都貼著草皮（不陷進去也不浮起來）',
      hGround.stand >= -0.02 && hGround.stand < 0.05 &&
      hGround.lie >= -0.02 && hGround.lie < 0.10 &&
-     hGround.roll >= -0.02 && hGround.roll < 0.25 &&
-     hGround.dragon >= -0.02 && hGround.dragon < 0.35,
-     '最低點：站 ' + hGround.stand + '／躺 ' + hGround.lie + '／滾 ' + hGround.roll +
-     '／龍趴著 ' + hGround.dragon);
+     hGround.roll >= -0.02 && hGround.roll < 0.25,
+     '最低點：站 ' + hGround.stand + '／躺 ' + hGround.lie + '／滾 ' + hGround.roll);
+  ok('飛龍趴著每一幀都貼著草皮，喘氣、壓火左右翻都不會整隻上下浮',
+     hGround.dragon[0] >= -0.02 && hGround.dragon[1] < 0.02 &&
+     hGround.dragonBurn[0] >= -0.02 && hGround.dragonBurn[1] < 0.02,
+     '貼地那幾塊的最低點：趴著 ' + hGround.dragon.join('～') + '、壓火 ' + hGround.dragonBurn.join('～') + ' 格');
 
   /* ── 獅鷲與巨人也貼著草皮，而且抬升要跟著躺平角一起收（v1.202.1）──
      上面那一條守的是兩隻猴子與飛龍，牛羊另有一條（〈閒逛的動物〉），

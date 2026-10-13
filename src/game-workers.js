@@ -1342,6 +1342,8 @@ function navDims() {
   /* Diablo：自己一顆 mesh、不在 BEASTS 裡，上面那一圈掃不到。背刺與尾巴不算（nl）：往後拖兩格的尾巴算進身長的話，
      牠在巡路規則裡是一隻圓周五格的東西，門洞與房子之間的路全部走不過 */
   navDim.diablo = scan(M.diablo, b => b.nl);
+  /* 飛龍（v1.277.0 重製）同 Diablo：自己一顆 mesh、不在 BEASTS 裡；刺、角、爪不算 */
+  navDim.dragon = scan(M.dragon, b => b.nl);
   return navDim;
 }
 /* 這個人（這隻）走路的身體：H 是幾層高的柱子擋得住他、r 是離柱子至少多遠。

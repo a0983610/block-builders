@@ -11919,9 +11919,13 @@ function spawnDragon(fun, bad) {
     /* 被打下來之後要用的（v1.146，見 crashDragon）：was 是摔之前在哪一段、
        t 是趴著的倒數、tsp 是摔下去時的翻滾角速度。 */
     was: '', t: 0, tsp: 0, vx: 0, vy: 0, vz: 0, lie: 0, wet: 0, burn: 0, air: 0, fall: 0,
-    /* 地面行走要用的（v1.182）：翅膀姿態從「照表拍翅」那一組起步（見 DRA_POSE），
-       leg／pause／ghost／tx／tz／lx／lz 是 strollTo 與 grSpot 的欄位（同獅鷲的 spawnGryph）。 */
-    wb: DRA_POSE.flap[0], wc: DRA_POSE.flap[1], wa: DRA_POSE.flap[2],
+    /* 姿勢（v1.277.0 重製，每一個欄位的意思見引擎的 draPose）：fold 收翅、tuck 腿往後收、hov 懸停那一套、
+       dn 趴著、fa 拍翅力道、np／ny／rear／jaw 頭怎麼擺。
+       spd 現在飛多快（懸停時收下來）；hv／ht 懸停吐火球走到哪一段、這一段幾秒了（見 hoverDragon），
+       mv 煞車時沿著哪個方向滑、fx／fz 這一顆瞄哪裡、shot 這一趟懸停吐出去了沒。
+       leg／pause／ghost／tx／tz／lx／lz 是 strollTo 與 grSpot 的欄位（地面行走，v1.182，同獅鷲的 spawnGryph）。 */
+    fold: 0, tuck: 1, hov: 0, dn: 0, fa: 1, np: 0, ny: 0, rear: 0, jaw: 0,
+    spd: DRA_SPD, hv: '', ht: 0, mv: 0, fx: 0, fz: 0, shot: 0,
     leg: 0, pause: 0, ghost: 0, tx: 0, tz: 0, lx: 0, lz: 0
   };
   if (!beasts) beasts = [];
@@ -11937,12 +11941,17 @@ function spawnDragon(fun, bad) {
 function stepDragon(m, dt) {
   /* 濕度自己在這裡遞減：走地上的那幾隻是 hurtBeast 在減，而牠不走那一支（v1.154）。 */
   if (m.wet > 0) m.wet = Math.max(0, m.wet - dt);
+  if (!m.hv) draNeck(m, dt);                              // 沒在懸停瞄準：頭擺回來（v1.277.0）
   /* 被打下來了（v1.146）：摔 → 趴 → 走一段（v1.182）→ 拍翅起飛，自己一套（見 fallenDragon）。 */
   if (m.st === 'crash' || m.st === 'down' || m.st === 'gwalk' || m.st === 'rise')
     return fallenDragon(m, dt);
   if (m.st === 'land') return landDragon(m, dt);          // 自己降落（v1.182，見上面那一段）
   if (m.st === 'ablaze') return ablazeDragon(m, dt);      // 身上著火（v1.154，見 burnDragon）
+  if (m.hv) return hoverDragon(m, dt);                    // 懸停吐火球（v1.277.0，見下面）
   draWings(m, 'flap', dt, 4);                             // 在天上：翅膀回到拍翅那一組
+  draBody(m, dt, 1, 0, 0);                                // 腿往後收、不懸停、不趴
+  m.fa += (1 - m.fa) * Math.min(1, dt * 3);
+  m.spd += (DRA_SPD - m.spd) * Math.min(1, dt * 1.6);     // 懸停完加回巡航速度
   m.ph += dt * DRA_FLAP;
   const r = Math.hypot(m.x, m.z) || 1;
   let want = m.a;
@@ -11955,12 +11964,8 @@ function stepDragon(m, dt) {
     want = Math.atan2(-m.x, -m.z) + m.dir * off;
     if (r <= m.rc * 1.04) m.st = 'ring';
   } else if (m.st === 'ring') {
-    /* 切線方向 ＋ 半徑誤差修正：飛太遠就往內偏、太近就往外偏。
-       只給切線的話，進場時半徑差多少就一直差多少，繞出來的是一個偏心的圈。 */
-    const nx = m.x / r, nz = m.z / r;
-    const err = Math.max(-1, Math.min(1, (r - m.rc) / (m.rc * 0.5)));
-    want = Math.atan2(-nz * m.dir - nx * err, nx * m.dir - nz * err);
-    m.turned += dt * DRA_SPD / m.rc;
+    want = draRingWant(m);
+    m.turned += dt * m.spd / m.rc;
     if (m.turned >= DRA_RING * Math.PI * 2) {
       /* 繞完了。吉祥物那一趟**偶爾自己降落**、在草皮上走一段再飛走（v1.182）。
          等繞完才判斷：中途落地的話這一圈的火球（bad 那一版）就吐不完了。 */
@@ -11969,13 +11974,15 @@ function stepDragon(m, dt) {
         toast('🐉 那條龍降落到草皮上了', '牠會在地上走一段，然後拍翅飛走');
       } else m.st = 'out';
     }
-    /* 邊繞邊吐（「中途吐幾顆火球」）。隔開來吐，不連噴。 */
+    /* 邊繞邊吐（「中途吐幾顆火球」）。隔開來吐，不連噴。
+       v1.277.0 起每一顆都**停下來懸停吐**（使用者選的，見 hoverDragon）：這裡只挑目標、切進懸停那一套，
+       吐出去那一刻才扣配額、重給間隔（gap 只在繞圈的時候數，懸停那幾秒不算）。 */
     m.gap -= dt;
     if (m.gap <= 0 && m.left > 0) {
       /* 吉祥物那一趟瞄的是村子那邊（v1.166）：一個都不剩就把剩下的配額作廢，
          別讓牠改噴地標——那是天災那一版才做的事。 */
-      if (m.home && !anyHome()) m.left = 0;
-      else { spitFire(m); m.left--; m.gap = rr(DRA_GAP[0], DRA_GAP[1]); }
+      if (!draAim(m)) m.left = 0;
+      else { m.hv = 'brake'; m.ht = 0; m.mv = m.a; m.shot = 0; }
     }
   } else want = Math.atan2(m.x, m.z);    // out：朝背向場心轉了再走（v1.275.0，見 skyAway）
   /* 轉向限速——圓弧是這樣轉出來的。轉多急就側傾多少（往內側倒）。 */
@@ -11985,12 +11992,110 @@ function stepDragon(m, dt) {
   const rate = Math.max(-DRA_TURN, Math.min(DRA_TURN, d / Math.max(dt, 1e-4)));
   m.a += rate * dt;
   m.roll += (-rate / DRA_TURN * DRA_ROLL - m.roll) * Math.min(1, dt * 3);
-  m.x += Math.sin(m.a) * DRA_SPD * dt;
-  m.z += Math.cos(m.a) * DRA_SPD * dt;
-  /* 身體跟著拍翅俯仰與上下浮，相位比翅膀晚一點——先拍翅，身體才被抬起來。 */
-  m.spin = DRA_PITCH * Math.sin(m.ph + 0.8);
+  m.x += Math.sin(m.a) * m.spd * dt;
+  m.z += Math.cos(m.a) * m.spd * dt;
+  /* 身體跟著拍翅俯仰與上下浮，相位比翅膀晚一點——先拍翅，身體才被抬起來。
+     懸停完鼻子是抬著的（DRA_HOV_PITCH）：收回來，不在那一幀硬跳回拍翅的俯仰 */
+  m.spin += (DRA_PITCH * Math.sin(m.ph + 0.8) - m.spin) * Math.min(1, dt * 6);
   m.y = m.cruise + DRA_BOB * Math.sin(m.ph - 1.0);     // 巡航高度是進場時算好的（見 spawnDragon）
   return m.st === 'out' && Math.hypot(m.x, m.z) > woodR();
+}
+/* 繞圈那一段這一幀要朝哪：切線方向 ＋ 半徑誤差修正（飛太遠就往內偏、太近就往外偏）。
+   只給切線的話，進場時半徑差多少就一直差多少，繞出來的是一個偏心的圈。懸停完轉回去也照這一支（見 hoverDragon） */
+function draRingWant(m) {
+  const r = Math.hypot(m.x, m.z) || 1, nx = m.x / r, nz = m.z / r;
+  const err = Math.max(-1, Math.min(1, (r - m.rc) / (m.rc * 0.5)));
+  return Math.atan2(-nz * m.dir - nx * err, nx * m.dir - nz * err);
+}
+/* 姿勢欄位往目標收（欄位見引擎的 draPose）：tuck 腿往後收、hov 懸停那一套、dn 趴著 */
+function draBody(m, dt, tuck, hov, dn, k) {
+  const r = Math.min(1, dt * (k || 4));
+  m.tuck += (tuck - m.tuck) * r; m.hov += (hov - m.hov) * r; m.dn += (dn - m.dn) * r;
+}
+/* 頭擺回來：沒在懸停瞄準的時候，瞄準的轉角、蓄力、張嘴都收回 0 */
+function draNeck(m, dt) {
+  const r = Math.min(1, dt * 4);
+  m.np -= m.np * r; m.ny -= m.ny * r; m.rear -= m.rear * r; m.jaw -= m.jaw * Math.min(1, dt * 6);
+}
+
+/* ── 懸停吐火球（v1.277.0）────────────────────────────────
+   使用者：「火球應該是用力往目標噴過去」，問過動作選的是**停在半空懸停吐**（比照魔物獵人火龍：
+   減速懸停、身體轉向目標、後仰再往前噴，噴完轉回切線繼續繞）。v1.139～v1.276 是繞著圈不停、
+   火球從正前方的嘴巴冒出來走一條拋物線（目標其實在牠側下方九十度），看起來是「丟下去」。
+   一顆一套，m.hv 是走到哪一段、m.ht 是這一段幾秒了：
+     brake  煞車：沿原本的方向（m.mv）滑出去、速度收到 DRA_HOV_SPD；同時轉向目標、鼻子抬起來、腿往前垂
+     aim    繼續轉到正對目標（最多 DRA_HV.aim 秒）
+     rear   脖子往後仰、張嘴（蓄力）
+     fire   往前一甩：頭甩過正中那一刻把火球吐出去，甩過頭再收回來
+     back   轉回切線、鼻子放平、腿收回去、速度加回 DRA_SPD，轉正了就回到繞圈
+   **懸停那一段 m.st 照舊是 'ring'**：打下來、著火、放棄、翻臉那幾條都是照 st 分岔的，一個字都不必改，
+   只要記得把 m.hv 清掉（見 draDive、burnDragon）。配額被收掉（放棄、吉祥物被打斷）而還沒吐的，直接跳到 back。
+   繞圈的進度（turned）照實際飛多快算：懸停那幾秒幾乎不前進，所以一趟會長個幾秒（使用者選的時候講過）。
+   見 開發筆記〈飛龍重製：造型＋動作、懸停吐火球（v1.277.0）〉 */
+const DRA_HV = { brake: 0.55, aim: 0.8, rear: 0.5, fire: 0.4, back: 1.1 };   // 各段幾秒（aim、back 是上限）
+const DRA_HOV_SPD = 1.2;             // 懸停時還往前飄多快（格／秒）
+const DRA_HOV_TURN = 2.4;            // 懸停時每秒轉幾弧度（繞圈時是 DRA_TURN 0.62）
+const DRA_HOV_PITCH = -0.42;         // 懸停時鼻子抬多高（身體立起來）
+const DRA_HOV_FLAP = 1.45, DRA_HOV_FA = 1.3;   // 懸停拍翅快幾倍、用力幾倍
+const DRA_HOV_BOB = 0.7;             // 懸停時身體跟著拍翅上下浮多少（巡航 DRA_BOB）
+const DRA_LUNGE = -0.5;              // 往前甩到多過頭（rear 的負值）
+function hoverDragon(m, dt) {
+  m.ht += dt;
+  if (m.left <= 0 && !m.shot && m.hv !== 'back') { m.hv = 'back'; m.ht = 0; }
+  const back = m.hv === 'back', P = DRA_HV;
+  m.ph += dt * DRA_FLAP * (back ? 1.15 : DRA_HOV_FLAP);
+  m.fa += ((back ? 1 : DRA_HOV_FA) - m.fa) * Math.min(1, dt * 4);
+  draWings(m, 'flap', dt, 4);
+  draBody(m, dt, back ? 1 : 0, back ? 0 : 1, 0, back ? 2.5 : 3.5);
+  m.spin += ((back ? 0 : DRA_HOV_PITCH) - m.spin) * Math.min(1, dt * 3);
+  m.roll += (0 - m.roll) * Math.min(1, dt * 3);
+  /* 朝向：懸停那幾段轉向目標，back 轉回繞圈的方向（被放棄了的就是背向場心，同 stepDragon 的 out） */
+  const want = !back ? Math.atan2(m.fx - m.x, m.fz - m.z)
+             : m.st === 'ring' ? draRingWant(m) : m.st === 'out' ? Math.atan2(m.x, m.z) : m.a;
+  let d = want - m.a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  m.a += Math.max(-DRA_HOV_TURN * dt, Math.min(DRA_HOV_TURN * dt, d));
+  /* 速度與位移：煞車那幾段沿原本的方向滑（身體轉向目標，不會往場心飄過去），轉回去那一段跟著身體、轉正了才加速 */
+  const vs = back && Math.abs(d) < 0.6 ? DRA_SPD : DRA_HOV_SPD;
+  m.spd += (vs - m.spd) * Math.min(1, dt * (back ? 1.4 : 3.2));
+  const mh = back ? m.a : m.mv;
+  m.x += Math.sin(mh) * m.spd * dt;
+  m.z += Math.cos(mh) * m.spd * dt;
+  m.turned += dt * m.spd / m.rc;
+  m.y = m.cruise + (DRA_BOB + (DRA_HOV_BOB - DRA_BOB) * m.hov) * Math.sin(m.ph - 1.0);
+  /* 頭瞄著目標（扣掉身體已經抬起來的那一份），往下最多 1.5、左右最多 0.9；back 收回來 */
+  if (!back) {
+    const dx = m.fx - m.x, dz = m.fz - m.z;
+    let ny = Math.atan2(dx, dz) - m.a;
+    while (ny > Math.PI) ny -= Math.PI * 2;
+    while (ny < -Math.PI) ny += Math.PI * 2;
+    const np = Math.atan2(m.y, Math.hypot(dx, dz) || 1) - m.spin;
+    const k = Math.min(1, dt * 5);
+    m.np += (Math.max(-0.3, Math.min(1.5, np)) - m.np) * k;
+    m.ny += (Math.max(-0.9, Math.min(0.9, ny)) - m.ny) * k;
+  } else draNeck(m, dt);
+  if (m.hv === 'brake') {
+    if (m.ht >= P.brake) { m.hv = 'aim'; m.ht = 0; }
+  } else if (m.hv === 'aim') {
+    if ((Math.abs(d) < 0.12 && m.ht > 0.2) || m.ht >= P.aim) { m.hv = 'rear'; m.ht = 0; }
+  } else if (m.hv === 'rear') {
+    m.rear += (1 - m.rear) * Math.min(1, dt * 5);
+    m.jaw += (0.85 - m.jaw) * Math.min(1, dt * 6);
+    if (m.ht >= P.rear) { m.hv = 'fire'; m.ht = 0; }
+  } else if (m.hv === 'fire') {
+    /* 頭往前一甩（很快），甩過正中那一刻吐出去；甩過頭之後慢慢收回來、嘴閉上 */
+    m.rear += ((m.ht < 0.12 ? DRA_LUNGE : 0) - m.rear) * Math.min(1, dt * (m.ht < 0.12 ? 22 : 4));
+    if (!m.shot && m.rear < 0.2) {
+      m.shot = 1;
+      spitFire(m); m.left--; m.gap = rr(DRA_GAP[0], DRA_GAP[1]);
+    }
+    if (m.ht > 0.2) m.jaw -= m.jaw * Math.min(1, dt * 6);
+    if (m.ht >= P.fire) { m.hv = 'back'; m.ht = 0; }
+  } else if (m.ht >= P.back * 2 || (m.ht >= P.back * 0.5 && Math.abs(d) < 0.15)) {
+    m.hv = '';                                       // back：轉正了（或撐到上限）就回到繞圈
+  }
+  return false;
 }
 
 /* ── 火球 ───────────────────────────────────────────────
@@ -12000,40 +12105,56 @@ function stepDragon(m, dt) {
    v1.146 當時的隕石（9.2／16），而隕石在 v1.151 被指定放大（v1.151.1 定案是半徑 ×2、
    範圍 18.4）。跟著走的話，飛龍的火球會被隕石的每一次調整帶著跑——那是另一把道具。 */
 const FB_R = 9.2, FB_POW = 16;
-const FB_SC = 2.6;                   // 畫多大：模型的芯 0.62 → 場上 1.6 格（同上，比的是當年的石身 2）
-const FB_SPD = 30;                   // 吐出去多快
-const FB_MOUTH = 3.3, FB_JAW = 0.7;  // 嘴巴在模型的哪裡（往前 3.3、往上 0.7）
-function spitFire(m) {
-  /* 隨機挑一個目標：地標中心一帶取一點，**瞄那一點的地面**（v1.275.0）——路上碰到建築就在那裡炸
-     （stepFballs 一路照 sweepRock 判撞），所以打到的是建築朝牠那一面、牠的高度以下那一截。
-     v1.146～v1.274 瞄的是那附近最高的一塊（理由是「不取高度的話火球會穿過屋頂才炸」，那時候還沒一路判撞）：
-     巡航高度固定 40 之後（見 DRA_CRUISE）碰到高樓就變成往上拋——探針在大笨鐘（高 80）吐 12 顆，
-     7 顆飛得比牠自己還高、最高拋到 70。使用者：「可以往建築底部丟」。
-     吉祥物那一趟瞄的是村子那邊（v1.166）：整片村子牠都飛得到，所以隨機挑一個、
-     瞄它的中央（同香蕉那一根，理由見 nanaThrow），一樣瞄地面。 */
-  let tx, tz;
+const FB_SC = 2.6;                   // 畫多大：模型全寬 1.25 → 場上 3.2 格（v1.277.0 一團火，見引擎的 FBALL）
+/* 吐出去多快（v1.277.0：30 → 55，**直直飛、不受重力**，使用者：「火球應該是用力往目標噴過去」）。
+   v1.139～v1.276 是解一條拋物線讓它 T 秒剛好落地：從 40 高吐出去初速幾乎是水平的、被重力往下拉，看起來是「丟下去」 */
+const FB_SPD = 55;
+const FB_FLASH = 22;                 // 吐出去那一下嘴前炸開幾顆火苗（看得出是「噴」出來的）
+const _fbM = new THREE.Vector3();
+/* 這一顆瞄哪裡（懸停一開始就挑好，整段懸停都轉向它，見 hoverDragon）。回傳 false＝沒得瞄（吉祥物那一趟村子一間都不剩）。
+   地標中心一帶取一點，**瞄那一點的地面**（v1.275.0）——路上碰到建築就在那裡炸
+   （stepFballs 一路照 sweepRock 判撞），所以打到的是建築朝牠那一面、牠的高度以下那一截。
+   v1.146～v1.274 瞄的是那附近最高的一塊（理由是「不取高度的話火球會穿過屋頂才炸」，那時候還沒一路判撞）：
+   巡航高度固定 40 之後（見 DRA_CRUISE）碰到高樓就變成往上拋——探針在大笨鐘（高 80）吐 12 顆，
+   7 顆飛得比牠自己還高、最高拋到 70。使用者：「可以往建築底部丟」。
+   吉祥物那一趟瞄的是村子那邊（v1.166）：整片村子牠都飛得到，所以隨機挑一個、
+   瞄它的中央（同香蕉那一根，理由見 nanaThrow），一樣瞄地面。 */
+function draAim(m) {
   const hb = m.home ? anyHome() : null;
-  if (m.home && !hb) return null;          // 一間都不剩：這一顆不吐（同上）
-  if (hb) { const h = homeMid(hb); tx = h.x; tz = h.z; }
+  if (m.home && !hb) return false;
+  if (hb) { const h = homeMid(hb); m.fx = h.x; m.fz = h.z; }
   else {
     const a = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * siteR * 0.8;
-    tx = Math.cos(a) * rad; tz = Math.sin(a) * rad;
+    m.fx = Math.cos(a) * rad; m.fz = Math.sin(a) * rad;
   }
-  const ty = 0;
-  const sx =m.x + Math.sin(m.a) * FB_MOUTH * DRA_SC;
-  const sz = m.z + Math.cos(m.a) * FB_MOUTH * DRA_SC;
-  const sy = m.y + FB_JAW * DRA_SC;
-  const dist = Math.hypot(tx - sx, ty - sy, tz - sz);
-  const T = Math.max(0.35, dist / FB_SPD);
+  return true;
+}
+/* 吐出去：從嘴（引擎的 draMouth，跟畫出去的是同一份骨架）直直飛向瞄好的那一點 */
+function spitFire(m) {
+  const p = ENG.draMouth(m, _fbM);
+  const sx = p.x, sy = p.y, sz = p.z, tx = m.fx, ty = 0, tz = m.fz;
+  const dist = Math.hypot(tx - sx, ty - sy, tz - sz) || 1;
+  const T = dist / FB_SPD;
+  const ux = (tx - sx) / dist, uy = (ty - sy) / dist, uz = (tz - sz) / dist;
   const f = {
     kind: 'fball', x: sx, y: sy, z: sz, sc: FB_SC, s: 1.1,   // s 是 sweepRock 的碰撞半徑
-    a: Math.atan2(tx - sx, tz - sz), spin: 0, em: 0, t: 0, T,
+    a: Math.atan2(ux, uz), spin: 0, roll: 0, em: 0, t: 0, T,
     home: m.home ? 1 : 0,                     // 這一顆是砸村子的（v1.166，見 fballHit）
-    vx: (tx - sx) / T, vz: (tz - sz) / T,
-    vy: (ty + 0.5 - sy) / T + 0.5 * GRAV * T          // 解拋物線：湊出剛好 T 秒抵達
+    vx: ux * FB_SPD, vy: uy * FB_SPD, vz: uz * FB_SPD
   };
   if (!fballs) fballs = [];
   fballs.push(f);
+  /* 嘴前炸開一團：沿著吐出去的方向噴、散開 */
+  for (let i = 0; i < FB_FLASH && hot.length < HOT_MAX - 40; i++) {
+    const v = rr(6, 18);
+    hot.push({
+      x: sx + rr(-0.5, 0.5), y: sy + rr(-0.5, 0.5), z: sz + rr(-0.5, 0.5),
+      vx: ux * v + rr(-3, 3), vy: uy * v + rr(-3, 3), vz: uz * v + rr(-3, 3),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      s: rr(0.7, 1.4), life: rr(0.12, 0.26), g: -1.2, grow: 1.08, cool: rr(0.15, 0.3),
+      cr: 1, cg: rr(0.6, 0.9), cb: rr(0.1, 0.3), to: [0.6, 0.12, 0.02]
+    });
+  }
   sndSpit();
 }
 function stepFballs(dt) {
@@ -12042,28 +12163,27 @@ function stepFballs(dt) {
     const f = fballs[i];
     const px = f.x, py = f.y, pz = f.z;
     f.t += dt;
-    f.vy -= GRAV * dt;
-    f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;
-    f.spin += dt * 6;
-    /* 拖著火：沿著這一幀走過的線段補火苗（同隕石那一套，見 stepMeteors）。
-       只在端點生的話，尾巴會斷成一節一節的。 */
-    f.em += dt * 90;
+    f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;   // 直直飛（v1.277.0，見 FB_SPD）
+    f.spin += dt * 7; f.roll += dt * 4.5;                    // 一路翻滾：火瘤一下在上一下在下，看起來在翻騰
+    /* 一團火：球身外面包一層大而短命的火苗（亮黃到橘），後面沿著這一幀走過的線段拖一條細的。
+       拖的那一條同隕石那一套（見 stepMeteors）：只在端點生的話，尾巴會斷成一節一節的。 */
+    f.em += dt * 160;
     while (f.em >= 1) {
       f.em--;
       if (hot.length > HOT_MAX - 40) break;
-      const head = Math.random() < 0.34;
+      const head = Math.random() < 0.5;
       const u = head ? 1 : Math.random();
-      const j = head ? 1.1 : 0.28;
+      const j = head ? 1.6 : 0.4;
       hot.push({
         x: px + (f.x - px) * u + rr(-j, j),
         y: py + (f.y - py) * u + rr(-j, j),
         z: pz + (f.z - pz) * u + rr(-j, j),
         vx: rr(-0.7, 0.7), vy: rr(0.5, 1.9), vz: rr(-0.7, 0.7),
         rx: Math.random() * 6, ry: Math.random() * 6,
-        s: head ? rr(0.8, 1.5) : rr(0.22, 0.55),
-        life: head ? rr(0.1, 0.2) : rr(0.14, 0.36),
+        s: head ? rr(1.0, 2.0) : rr(0.3, 0.7),
+        life: head ? rr(0.08, 0.16) : rr(0.14, 0.34),
         g: -1.6, grow: head ? 1.1 : 1.04, cool: rr(0.2, 0.42),
-        cr: 1, cg: rr(0.5, 0.84), cb: rr(0.06, 0.22), to: [0.55, 0.1, 0.02]
+        cr: 1, cg: head ? rr(0.62, 0.92) : rr(0.5, 0.84), cb: rr(0.06, 0.26), to: [0.55, 0.1, 0.02]
       });
     }
     /* 撞到就炸。小人的家也算固體（hardAt）：blockAt 只認地標的格子表。
@@ -13801,7 +13921,7 @@ function lieAng(m) {
    「離翼根多遠」，實際位置每一幀照翼弧重算），而收成立起來的翼（`GR_POSE.down`）
    翼尖實測伸到模型 x 0.729，比 `BEAST_SIDE.gryphon` 的 0.58 多 0.149——
    所以獅鷲一躺下去就陷進草皮 **0.313 格**（躺著那一幀最低的前十塊全是翼上的，
-   非翼的最深只有 0.035）。**先量再補**，同飛龍趴著補 `DRA_DOWN_PAD` 的做法。
+   非翼的最深只有 0.035）。**先量再補**，同 v1.146～v1.276 飛龍趴著補 `DRA_DOWN_PAD` 的做法（那一條 v1.277.0 重製之後換成照姿勢量）。
    四條腿的牛羊身上一塊翼都沒有，不在這張表裡＝一個位元都沒變。 */
 const BEAST_SIDE_PAD = { gryphon: 0.15 };
 /* 躺平不動時 m.lie 該給多少（倍率）。沒有翅膀的就是 1（引擎抬的 `SIDE·|sin(roll)|`
@@ -14110,7 +14230,6 @@ function burnBeastFx(m, dt) {
    歸隊接回 m.was（被打下來時在哪一段）：本來就要飛出場的別讓牠又繞一圈回來。
    繞了幾圈（m.turned）不歸零——那是「這一趟盤旋進度」，摔一跤不該重來。 */
 const DRA_DOWN = [2.2, 3.6];         // 趴幾秒才起飛
-const DRA_DOWN_PH = 0.23;            // 趴著時翅膀攤在哪個相位（翼面大致水平，見 wingAng）
 const DRA_DOWN_PITCH = 0.10, DRA_DOWN_ROLL = 0.18;   // 趴著的俯仰與側傾（不是站得直挺挺的）
 const DRA_RISE_PITCH = -0.30;        // 起飛時鼻子抬起來
 const DRA_RISE_FLAP = 2.2;           // 起飛拍翅比巡航用力幾倍
@@ -14119,6 +14238,7 @@ const DRA_RISE_UP = 14;              // 爬升速度（格／秒）
    水平保留一點前衝——原地直落看起來不像摔，像電梯。翻滾方向隨機。 */
 function draDive(m, vy) {
   m.st = 'crash';
+  m.hv = '';                                         // 懸停到一半被打下來：那一顆不吐了（v1.277.0，見 hoverDragon）
   m.vy = vy;
   m.vx = Math.sin(m.a) * DRA_SPD * 0.35;
   m.vz = Math.cos(m.a) * DRA_SPD * 0.35;
@@ -14138,40 +14258,56 @@ function crashDragon(m) {
         '牠在地上趴一下就會再飛起來');
   return true;
 }
-/* 趴在地上時原點要離地多高。BEAST_FLOOR 是照造型表算的「最低的那一塊剛好貼草皮」，
-   但翅膀是每一幀照翼弧重擺的（wingArc），趴著那個相位會低於表上的位置——實測還會
-   再陷進草皮 0.295（世界單位），換算回模型是 0.14，所以補 DRA_DOWN_PAD。 */
-const DRA_DOWN_PAD = 0.15;
-function draGround() { return (ENG.BEAST_FLOOR.dragon + DRA_DOWN_PAD) * DRA_SC; }
+/* 在地上（或快碰到地）的那幾段，原點要離地多高：**照這一幀的姿勢**量最低那一點（引擎的 draLow，
+   跟畫出去的是同一份骨架）——走路時兩隻腳輪流撐地、趴下去貼地的是肚子與攤開的翅膀、摔著翻滾時是翻到下面那一側。
+   v1.146～v1.276 是一個常數（BEAST_FLOOR ＋ DRA_DOWN_PAD 0.15：翼弧趴著那個相位會比表上低，實測陷進草皮 0.295 才補的），
+   v1.277.0 重製之後姿勢多了收翅、垂腿、趴姿，一個常數撐不住。 */
+function draGround(m) { return ENG.draLow(m); }
+/* 趴著、走路那兩段的高度：跟著地面的**變化**走（側傾翻過去肚子那一點換了、走路兩隻腳輪流撐地，地面高度跟著變），
+   剩下的差距（剛趴下去、剛站起來那一段）再慢慢收。**這一幀的姿勢要先擺好才叫**（側傾、步伐都算完）。
+   v1.182～v1.276 只有慢慢收那一行（dt × 8）：地面高度一直在變的時候會落後——預覽第二輪使用者：「趴著的時候會上下浮動」，
+   量到壓火左右翻時陷進草皮 0.19、浮起 0.23 格，走路時腳陷 0.13、浮 0.17。
+   m.gy＝上一幀的地面高度。**換到這兩段的那一刻照當下的姿勢記一次**（draLanded、摔到地上、走著被點著，見 draGyNow）：
+   第一版是清掉、下一幀才開始記，可是換段的下一幀姿勢變最多（趴姿混進來、收翅、腿收回來），那一幀的變化就只剩慢慢收，
+   實測剛趴下去離貼地 0.12、降落後剛站起來 0.49 格。見 開發筆記〈飛龍重製：造型＋動作、懸停吐火球（v1.277.0）〉 */
+function draFollow(m, dt) {
+  const gnd = draGround(m);
+  if (m.gy !== undefined) m.y += gnd - m.gy;
+  m.gy = gnd;
+  m.y += (gnd - m.y) * Math.min(1, dt * 8);
+}
+function draGyNow(m) { m.gy = draGround(m); }
 function fallenDragon(m, dt) {
-  const gnd = draGround();
   if (m.burn > 0) draBurn(m, dt);                    // 著火摔下來的，火還在燒（v1.154）
   if (m.st === 'crash') {
+    draBody(m, dt, 0.4, 0, 0, 3);                    // 腿半收、翅膀無力地拍
+    m.fa += (0.5 - m.fa) * Math.min(1, dt * 3);
     m.vy -= GRAV * dt;
     m.x += m.vx * dt; m.y += m.vy * dt; m.z += m.vz * dt;
     m.spin += m.tsp * dt;                            // 翻著摔下去
     m.roll += m.tsp * 0.6 * dt;
     m.ph += dt * DRA_FLAP * 0.4;                     // 翅膀還在無力地拍
-    if (m.y > gnd) return false;
-    m.y = gnd; m.vx = m.vy = m.vz = 0;
-    m.spin = DRA_DOWN_PITCH; m.roll = DRA_DOWN_ROLL; m.ph = DRA_DOWN_PH;
+    if (m.y > draGround(m)) return false;
+    m.vx = m.vy = m.vz = 0;
+    m.spin = DRA_DOWN_PITCH; m.roll = DRA_DOWN_ROLL;
+    m.y = draGround(m); draGyNow(m);
     m.st = 'down'; m.t = rr(DRA_DOWN[0], DRA_DOWN[1]);
     spawnRing({ x: m.x, y: 0, z: m.z }, 6);          // 砸出一圈塵
     sndFall();
     return false;
   }
   if (m.st === 'down') {
-    /* 趴著喘：翼面攤平不動，只有很小幅度的起伏（完全靜止看起來像壞掉的模型）。 */
+    /* 趴著喘：翅膀攤在地上、肚子貼地（引擎的趴姿，dn 收到 1），翅膀照相位微微起伏（完全靜止看起來像壞掉的模型）。 */
     m.t -= dt;
-    m.ph = DRA_DOWN_PH + 0.10 * Math.sin(m.t * 3.4);
-    m.y += (gnd - m.y) * Math.min(1, dt * 8);
+    draBody(m, dt, 0, 0, 1, 5);
+    m.ph += dt * 3.4;
     /* 身上還在燒就先不起飛（v1.154）：趴在地上左右翻著把火壓掉，燒完才拍翅。
-       翻的是側傾（roll），跟猴子在地上打滾同一個意思，只是牠這麼大隻不真的滾起來。 */
-    if (m.burn > 0) {
-      m.roll = DRA_DOWN_ROLL + DRA_BURN_ROLL * Math.sin(m.burn * DRA_BURN_HZ * Math.PI * 2);
-      return false;
-    }
-    m.roll += (DRA_DOWN_ROLL - m.roll) * Math.min(1, dt * 6);
+       翻的是側傾（roll），跟猴子在地上打滾同一個意思，只是牠這麼大隻不真的滾起來。
+       **側傾要在量地面高度之前算好**（v1.277.0）：先量再翻的話畫出去的那一幀是新的側傾配舊的高度，壓火時陷進／浮起 0.1 格 */
+    if (m.burn > 0) m.roll = DRA_DOWN_ROLL + DRA_BURN_ROLL * Math.sin(m.burn * DRA_BURN_HZ * Math.PI * 2);
+    else m.roll += (DRA_DOWN_ROLL - m.roll) * Math.min(1, dt * 6);
+    draFollow(m, dt);
+    if (m.burn > 0) return false;
     /* 喘完了就**站起來走一段**（v1.182），不再直接拍翅走人。 */
     if (m.t <= 0) { draLanded(m, 1); sndRoar(); }
     return false;
@@ -14180,16 +14316,19 @@ function fallenDragon(m, dt) {
   /* rise：拍翅起飛。鼻子抬起來、側傾收平，一路爬升到巡航高度才歸隊。 */
   const top = m.cruise;                     // 爬回進場時那個高度（見 spawnDragon）
   draWings(m, 'flap', dt, 4);               // 翅膀從收著的那一對張回來（v1.182）
+  draBody(m, dt, 1, 0, 0, 2);               // 腿慢慢收上去
+  m.fa += (1.4 - m.fa) * Math.min(1, dt * 3);   // 起飛拍得用力
   m.ph += dt * DRA_FLAP * DRA_RISE_FLAP;
   m.spin += (DRA_RISE_PITCH - m.spin) * Math.min(1, dt * 3);
   skyAway(m, dt, DRA_TURN, DRA_ROLL);       // 邊爬邊轉成背向場心（v1.275.0）：剛在建築旁邊走完、鼻子可能正對著建築
   m.y += DRA_RISE_UP * dt;
   /* 爬升的同時把前進速度加回來：原地直上直下不像鳥，像電梯。 */
+  const gnd = draGround(m);
   const f = Math.min(1, Math.max(0, (m.y - gnd) / Math.max(1, top - gnd)));
   m.x += Math.sin(m.a) * DRA_SPD * f * dt;
   m.z += Math.cos(m.a) * DRA_SPD * f * dt;
   if (m.y < top) return false;
-  m.y = top; m.spin = 0;
+  m.y = top; m.spin = 0; m.spd = DRA_SPD;            // 懸停到一半被打下來的：速度照爬升那一段的接回巡航
   m.st = m.was === 'out' ? 'out' : 'in';             // 歸隊，接回原本那一段
   return false;
 }
@@ -14215,6 +14354,7 @@ function burnDragon(m) {
   m.burn = DRA_BURN;
   m.bem = Math.random();
   m.left = 0;                                    // 著火就不吐火球了（同被打下來）
+  m.hv = '';                                     // 懸停到一半被點著：那一顆不吐了（v1.277.0，見 hoverDragon）
   sndRoar();
   /* 摔下去／趴著的那兩段：就地燒，不必再摔一次。 */
   if (m.st === 'crash' || m.st === 'down') {
@@ -14224,8 +14364,9 @@ function burnDragon(m) {
   /* 走在草皮上被點著（v1.182）：就地趴下來壓火（走同一段 down），
      燒完會再站起來把剩下的路走完——不推回 down 的話牠會拖著火在地上散步。 */
   if (m.st === 'gwalk') {
+    draGyNow(m);                                 // 還是走路那個姿勢：記下來，趴下去那一段照姿勢的變化跟著降（見 draFollow）
     m.st = 'down'; m.t = rr(DRA_DOWN[0], DRA_DOWN[1]); m.gait = 0;
-    m.spin = DRA_DOWN_PITCH; m.roll = DRA_DOWN_ROLL; m.ph = DRA_DOWN_PH;
+    m.spin = DRA_DOWN_PITCH; m.roll = DRA_DOWN_ROLL;
     toast('🐉 走在地上那條龍被點著了', '牠會趴下來把火壓掉才飛得起來');
     return true;
   }
@@ -14254,13 +14395,15 @@ function ablazeDragon(m, dt) {
   draBurn(m, dt);
   m.t -= dt;
   m.ph += dt * DRA_FLAP * 1.35;                  // 翅膀拍得又快又亂
+  draBody(m, dt, 0.6, 0, 0, 3);                  // 腿半垂下來
+  m.fa += (1.3 - m.fa) * Math.min(1, dt * 3);
   /* 不修航向了：照當下的朝向往前飄，左右晃、鼻子往下垂、一路掉高度。 */
   m.a += Math.sin(m.t * 5.2) * DRA_ABL_YAW * dt;
   m.roll += (Math.sin(m.t * 3.7) * DRA_ABL_ROLL - m.roll) * Math.min(1, dt * 4);
   m.spin += (DRA_ABL_PITCH - m.spin) * Math.min(1, dt * 3);
   m.x += Math.sin(m.a) * DRA_SPD * 0.8 * dt;
   m.z += Math.cos(m.a) * DRA_SPD * 0.8 * dt;
-  m.y = Math.max(draGround(), m.y - DRA_ABL_SINK * dt);
+  m.y = Math.max(draGround(m), m.y - DRA_ABL_SINK * dt);
   /* 火被澆熄了（wetBeast 會把 st 推回航線），或撐到底了就摔下去。 */
   if (m.t > 0 && m.burn > 0) return false;
   draDive(m, 0);                                 // 不是被打的那一下，所以沒有往上彈
@@ -14284,27 +14427,20 @@ function ablazeDragon(m, dt) {
    抓——跟「趴著的龍」同一個待遇，這次沒有改那件事。 */
 const DRA_WALK = 3.2;                // 走多快（格／秒；獅鷲 2.6、牛羊 1.5——龍大一號）
 /* 腿擺多快（倍率，見 strollTo 的 step）。**照「一步跨多遠」湊的**：
-   髖到腳底 0.78 模型單位 × 2.1 ＝ 1.64 格，擺幅 ±0.8 弧度（見造型表那三塊的 sw）
-   → 一條腿一趟掃 2×1.64×sin(0.8) ＝ 2.35 格、兩條腿一個週期走 4.7 格；
-   週期是 2π ÷ (11×step)，要讓 DRA_WALK × 週期 ≒ 4.7 才不會原地空踩。 */
-const DRA_STEP = 0.40;
+   髖到腳底 1.49 模型單位 × 2.1 ＝ 3.13 格（v1.277.0 重製的腿，v1.182～v1.276 是 0.78），
+   擺幅 ±0.55 弧度（見引擎 draPose 的走路那一行）→ 一條腿一趟掃 2×3.13×sin(0.55) ＝ 3.27 格、兩條腿一個週期走 6.5 格；
+   週期是 2π ÷ (11×step)，要讓 DRA_WALK × 週期 ≒ 6.5（週期 2.04 秒）才不會原地空踩。 */
+const DRA_STEP = 0.28;
 const DRA_GWALK = [4.5, 8];          // 在草皮上待幾秒（走到了就換下一個點，時間到才起飛）
 const DRA_STAND = 10;                // 站定的圈在建築外圈再往外幾格（獅鷲 5.5；龍佔地大）
 const DRA_WALK_IN = 16;              // 落地點再往外幾格，那一段用走的補完（獅鷲 14）
 const DRA_LAND_P = 0.5;              // 吉祥物那一趟繞完之後，有多少機會自己降落
 const DRA_LAND_SPD = 10;             // 降落那一段慢下來（巡航 15）
 const DRA_LAND_PITCH = -0.24;        // 降落時鼻子抬起來煞車（同獅鷲）
-/* 兩種翅膀姿態（見引擎的 wingAng：中位角／沿翼展的彎曲／擺幅）。
-   flap **要跟 WING_CFG.dragon 表上那三個數字一樣**——那一組就是「照表拍翅」，
-   不一樣的話起飛之後翅膀會歪掉（同獅鷲的 GR_POSE.flap 對 WING_CFG.gryphon）。
-   rest 是站著／走路收起來的那一對：翼根抬高、沿翼展一路彎回來，積出來是一道
-   從背上升起的拱（做法與不能超過 90° 的理由都見 GR_POSE 那一段）。 */
-const DRA_POSE = { flap: [0.18, 0, 0.62], rest: [1.45, -2.95, 0.05] };
+/* 兩種翅膀姿態：flap 張開來拍、rest 站著／走路收起來（引擎的 DRA_FOLD：上臂往後上方、前臂往前折、手往後折回來）。
+   規則這邊只給 m.fold 0～1 往哪一邊收（v1.277.0 重製；v1.182～v1.276 是翼弧的三個數字 wb／wc／wa，同獅鷲的 GR_POSE） */
 function draWings(m, to, dt, k) {
-  const p = DRA_POSE[to], r = Math.min(1, dt * (k || 5));
-  m.wb += (p[0] - m.wb) * r;
-  m.wc += (p[1] - m.wc) * r;
-  m.wa += (p[2] - m.wa) * r;
+  m.fold += ((to === 'rest' ? 1 : 0) - m.fold) * Math.min(1, dt * (k || 5));
 }
 /* 落地點與站定的位置：整套借獅鷲那支（見 grSpot），只換兩個距離。 */
 function draSpot(m) { grSpot(m, DRA_STAND, DRA_WALK_IN); }
@@ -14316,9 +14452,11 @@ function draSpot(m) { grSpot(m, DRA_STAND, DRA_WALK_IN); }
    遠一點的落地點會先落地再滑過去、近一點的會還在半空就到了）。 */
 function landDragon(m, dt) {
   draWings(m, 'flap', dt, 4);
+  draBody(m, dt, 0, 0.6, 0, 3);                      // 腿伸出來往前探（v1.277.0）
+  m.fa += (1.25 - m.fa) * Math.min(1, dt * 3);
   m.ph += dt * DRA_FLAP * 1.5;                       // 拍翅煞車：拍得比巡航用力
   m.spin += (DRA_LAND_PITCH - m.spin) * Math.min(1, dt * 4);
-  const gnd = draGround();
+  const gnd = draGround(m);
   const d = grFly(m, dt, DRA_LAND_SPD, DRA_TURN, DRA_ROLL);
   const tt = Math.max(0.3, d / DRA_LAND_SPD);
   m.y = Math.max(gnd, m.y - (m.y - gnd) / tt * dt);
@@ -14332,7 +14470,8 @@ function landDragon(m, dt) {
    之前就挑好了（grSpot 的 tx/tz ＝站定的位置，那一段是走進去的），
    摔下來的那條沒有，就地借 idleSpot 挑一個（同牛羊逛街的挑法）。 */
 function draLanded(m, spot) {
-  m.y = draGround(); m.gait = 0; m.leg = 0;
+  m.gait = 0; m.leg = 0;
+  m.y = draGround(m); draGyNow(m);
   if (spot) idleSpot(m);
   m.st = 'gwalk'; m.t = rr(DRA_GWALK[0], DRA_GWALK[1]);
 }
@@ -14341,7 +14480,7 @@ function draLanded(m, spot) {
    趴著留下的俯仰／側傾與降落的側傾在這裡收回來，不在切狀態那一幀硬歸零（會跳一下）。 */
 function walkDragon(m, dt) {
   draWings(m, 'rest', dt, 3);
-  m.y += (draGround() - m.y) * Math.min(1, dt * 8);
+  draBody(m, dt, 0, 0, 0, 4);                        // 站起來：腿放下、趴姿收掉
   m.spin += (0 - m.spin) * Math.min(1, dt * 4);
   m.roll += (0 - m.roll) * Math.min(1, dt * 4);
   m.t -= dt;
@@ -14349,6 +14488,7 @@ function walkDragon(m, dt) {
      「牠現在這個方位、外圈上那一點」，站定之後再叫一次會挑到同一點，
      於是每一幀都「已經到了」，龍就杵在原地不動了。 */
   if (strollTo(m, dt, DRA_WALK, DRA_STEP) && m.t > 0) idleSpot(m);
+  draFollow(m, dt);                                  // 步伐（strollTo 推的 ph）算完才量地面（見 draFollow）
   if (m.t > 0) return false;
   m.st = 'rise'; m.gait = 0; sndRoar();
   return false;
