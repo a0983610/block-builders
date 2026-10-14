@@ -3,6 +3,7 @@
    或在遊戲裡按「📥 匯入建築」把整份貼進去。 */
 
 // 檔名：日式醬油糰子.js
+// v1.263.0：糰子改成每個尺寸都坐在盤子上（原本某些 s 整串浮空一格）、hi 拉大（見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉）
 customBlueprint({
   name: '日式醬油糰子',
   pal: [
@@ -13,7 +14,7 @@ customBlueprint({
     '#d6b882', // 4 竹籤
     '#fffae8'  // 5 醬汁高光反光點
   ],
-  lo: 2.6, hi: 18.0,
+  lo: 2.6, hi: 24.0,
 
   gen(v, s) {
     // 1. 和風雙色方盤（左黑右白、四邊微翹）
@@ -43,7 +44,9 @@ customBlueprint({
     ];
 
     skewers.forEach(({ z, x0 }, skewerIdx) => {
-      const by = 1 + Math.round(br * 0.95);
+      /* 糰子最底那一格要落在第 1 層（直接坐在盤底那一片上）：blob 往下長到 floor(ry × 1.02) 格，
+         原本 1 + round(br × 0.95) 在某些 s 會比它多一格，整串（糰子＋竹籤）浮在盤子上方一格 */
+      const by = 1 + Math.min(Math.round(br * 0.95), Math.floor(br * 0.88 * 1.02 - 1e-6));
 
       // 竹籤本體（穿過 4 顆糰子並向右延伸握柄）
       v.box(x0 + Math.round(br * 3.6), by, z, stickLen, 1, 1, 4);

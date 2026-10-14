@@ -13,6 +13,12 @@ files:
   - src/preload/**
   - src/renderer/**
 
+# Chromium 介面語系只留中文與英文（en-US 是備援）。全部 55 種有 48MB，留兩種只剩 1.1MB，
+# portable 每次啟動要解壓的量跟著變小。
+electronLanguages:
+  - zh-TW
+  - en-US
+
 win:
   target:
     - portable
@@ -20,3 +26,7 @@ win:
 
 portable:
   artifactName: BlockBuilders-${version}-portable.${ext}
+  # 預設是先把 7z 解到暫存的中間資料夾、再複製一份去執行，暫存要吃約 840MB；
+  # 開了之後直接解到執行的位置，實測暫存降到約 324MB、啟動從 6～16 秒變 4～5 秒。
+  # 代價是 exe 從 96MB 變 140MB（不走 7z，改用 NSIS 自己的壓縮）。
+  useZip: true

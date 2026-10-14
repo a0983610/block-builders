@@ -11,6 +11,9 @@ const WRECK_AT = 0.25;              // 剩下不到這個比例就算拆完了�
    立刻叫推土機進場等於把那一發的收尾剪掉。先站在原地看這麼久再收拾。 */
 const SWAP_WAIT = 3;
 let swapWait = 0;                   // 已經等了幾秒（跟著模擬時間走，開快轉就等得短）
+/* 等的這幾秒先挑好下一座、叫背景去算（v1.265.0）：{ idx, name, cnt, bp }，bp 是背景算好回來的那一份
+   （還沒回來是 null）。離開拆除中就作廢（見 step 的換場） */
+let swapNext = null;
 const WAGE = 3;                     // 每個小人每秒的人力成本（$）
 /* 每塊積木從建築上掉下來，算多少損失。訂在 85 是要讓「拆一座」的數字有份量：
    一千塊的建築拆完約 $85,000，跟蓋它花掉的人力錢是同一個量級。 */
@@ -28,8 +31,18 @@ const freshStats = () => ({
 });
 let stats = freshStats();
 /* 面板上的設定也一起存，不然每次打開都要重調一輪 */
-/* v 是設定檔版本。舊存檔沒有這個欄位，load() 靠它認出「這份存檔是預設值改掉之前存的」 */
-const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, v: 1 });
+/* v 是設定檔版本。舊存檔沒有這個欄位，load() 靠它認出「這份存檔是預設值改掉之前存的」
+   gnd＝地面不透明度（0～100%）。舊存檔沒有它，merge() 就留預設的 100＝跟以前一樣不透明。 */
+/* lazy＝小人模式選哪一檔（v1.219，見 game-workers.js 的 LAZY_MODES），存的是 id */
+/* keys＝快捷鍵 1～9 各綁哪一把道具（v1.242.0），存道具 id，空字串＝沒綁。
+   預設全空（使用者選的），見 開發筆記〈破壞道具快捷鍵 1～9〉 */
+/* rage＝破壞模式開著沒（v1.262.0，見 game-tools.js 的 rageN），預設關 */
+/* ao＝積木 AO 開著沒（v1.273.0，見 game-ui.js 的 aoOn），預設開 */
+/* dyn＝動態解析度開著沒（v1.280.0，見 game-ui.js 的 dynStep），預設開（使用者選的）；舊存檔沒有這一格，merge 自動補 true */
+/* aa＝跟不上時關抗鋸齒（v1.281.0），預設開；once＝降了就不升回去（v1.281.0），預設關。舊存檔一樣靠 merge 補 */
+const KEY_N = 9;
+const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
+                           keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, dyn: true, aa: true, once: false, gnd: 100, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -126,7 +139,7 @@ let saveT = 0;
    沒有理由跟著快轉變密。除回去拿到的就是這一幀的真實秒數。
    拉長不太會掉紀錄：蓋完一座、拿到成就、解鎖道具、改設定都會各自存一次（見那幾處），
    這道只是「一直在破壞、什麼事件都沒發生」時的兜底。
-   抽成一支函式是為了測得死（見 開發筆記〈自動存檔拉到 60 秒，而且算真實時間〉）：
+   抽成一支函式是為了測得死（見 開發筆記〈自動存檔拉到 60 秒（v1.210.1），再拉到 5 分鐘（v1.210.2）〉）：
    e2e 直接餵 dt 給它，不必跑一整場模擬去等那 60 秒。 */
 const SAVE_EVERY = 300;
 function autoSave(dt) {
@@ -190,7 +203,23 @@ function applySave(o) {
   g.cnt = snapOpt(g.cnt, CNT_OPTS);
   g.wk = snapOpt(g.wk, WK_OPTS);
   g.spd = snapOpt(g.spd, SPD_OPTS);
+  // 小人模式認不得的 id（被改壞的存檔）回到預設那一檔，不然選單上三檔都不亮
+  if (!LAZY_MODES.some(m => m.id === g.lazy)) g.lazy = freshPref().lazy;
+  g.gnd = Math.min(100, Math.max(0, Math.round(g.gnd)));    // 滑桿的範圍外不收
+  g.keys = cleanKeys(g.keys);
   pref = g;
+}
+/* 快捷鍵（v1.242.0）：merge 只比 typeof，陣列跟物件都是 'object'，所以這裡再整理一次——
+   不是陣列就整組回預設；認不得的 id（改壞的存檔、之後拿掉的道具）清成沒綁；
+   同一把出現在兩格只留前面那格（一把道具只綁一個數字，見 game-ui.js 的 bindKey）。 */
+function cleanKeys(a) {
+  const out = freshPref().keys;
+  if (!Array.isArray(a)) return out;
+  for (let i = 0; i < KEY_N; i++) {
+    const id = a[i];
+    if (TOOLS.some(t => t.id === id) && out.indexOf(id) < 0) out[i] = id;
+  }
+  return out;
 }
 /* 數字吸到最近的一檔。壞掉的存檔（NaN、字串）當 0 處理，會吸到最小的那一檔 */
 function snapOpt(v, opts) {
@@ -200,10 +229,19 @@ function snapOpt(v, opts) {
 /* 把存回來的設定套進變數與面板 */
 function applyPref() {
   targetCnt = pref.cnt; timeScale = pref.spd; muted = pref.mute; spinOn = pref.spin;
+  lazyMode = pref.lazy; cap60 = pref.cap; rageOn = pref.rage; aoOn = pref.ao;
   setWorkerCount(pref.wk);
   $('mute').checked = pref.mute;
   $('spin').checked = pref.spin;
+  showGround(pref.gnd);
+  $('cap60').checked = pref.cap;
+  $('aoOn').checked = pref.ao;
+  $('aaDyn').checked = pref.aa;
+  $('dynRes').checked = pref.dyn;
+  $('dynOnce').checked = pref.once;
+  setDyn(pref.aa, pref.dyn, pref.once);
   syncHud();
+  renderModes();
 }
 function resetSave() {
   stats = freshStats(); spentThis = 0;

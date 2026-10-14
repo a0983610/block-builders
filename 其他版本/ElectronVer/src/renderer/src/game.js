@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.216.0';
+const VERSION = '1.283.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -38,6 +38,16 @@ const SPREAD = 2.9;                 // 建材散落區的鬆緊：每塊積木�
    所以拿 arenaR 當「場地邊緣」用的地方全部改讀 debrisR，只有那兩樣留在生活圈。
    見 開發筆記〈場地有兩圈：生活圈與碎料圈〉〈生活圈只剩房子與城牆〉。 */
 const DEBRIS_X = 1.3;
+/* 林帶（v1.256.0，使用者：「死掉小人復活&吉祥物&天災都從大概林帶 進出場」）。
+   碎料圈外 WOOD_IN～WOOD_OUT 那一圈種樹（見 makeTrees）；從外面走進來、走回外面去的
+   ——小人與牛羊死掉補進來的、天災、吉祥物（走的飛的都算）——一律從**林帶中線**那一圈進出（woodR），
+   那一圈往內 WOOD_FADE 格之間淡入淡出（見 woodFade）。v1.255 以前是三套：補進來的從方形島邊
+   （碎料圈外 24.5～68.9）、走的天災吉祥物 +3、飛的 +14。推土機、消防車、幽浮是機器，不在裡面（使用者選的）。
+   WOOD_OUT＝島邊往內一個樹冠（TREE_R 的上限）：種在最外面那一棵也不會凸出島。
+   見 開發筆記〈從林帶進出場〉 */
+const TREE_R = [1.7, 3];            // 樹冠半徑
+const WOOD_IN = 3, WOOD_OUT = ENG.GROUND_PAD - TREE_R[1];
+const WOOD_FADE = 6;
 const WALK = 6.8;                   // 小人走路速度
 const REACH = 0.9;                  // 走到多近算抵達
 const CELL = 1.25;                  // 空間雜湊格子大小（分離碎塊用）
@@ -56,10 +66,15 @@ let siteR = 12;                     // 建築占地半徑
 let arenaR = 40;                    // 生活圈半徑（v1.211 起只剩小房子與城牆綁它，見 DEBRIS_X）
 let debrisR = 40 * DEBRIS_X;        // 碎料圈半徑＝場地邊緣（碎塊、草地島、樹、生物、進退場圈）
 let phase = 'build';                // clear（整地）| build | done | wreck
-/* 小人「沒有工地要顧」的兩個階段。拆除中（wreck）純粹是換場的記帳狀態：
+/* 小人「沒有工地要顧」的三個階段。拆除中（wreck）純粹是換場的記帳狀態：
    拆到剩不到 WRECK_AT 就換下一座（見 step 尾巴）。v1.106 之前拆除中還會讓全場退場，
-   使用者：「敲一下持續驚嚇不合理」——現在拆除中小人照樣過自己的生活。 */
-const idlePhase = () => phase === 'done' || phase === 'wreck';
+   使用者：「敲一下持續驚嚇不合理」——現在拆除中小人照樣過自己的生活。
+   **整地中（clear）也算**（v1.248，使用者：「推土機來的時候小人不需要再到外圍繞圈 繼續做原本的事就好」）：
+   v1.61～v1.247 整地那十幾秒全場退到碎料場外圈繞圈，實測 83～96% 的人-幀擠在那一環，
+   換場前正在蓋家／城牆的人（20 人裡 14～20 人）也被叫停。現在照拆除中那樣閒晃、聊天、表演，
+   閒晃事件也照跑，推土機推完、真的開工才收（見 beginBuild）。推土機照舊直接穿過人（使用者選的）。
+   見 開發筆記〈整地中照常過日子〉 */
+const idlePhase = () => phase === 'done' || phase === 'wreck' || phase === 'clear';
 let buildStart = 0, buildElapsed = 0;
 let timeScale = 1;
 /* 面板上的三檔。做成按鈕不是滑桿：這三檔就是「小場地／標準／大場面」，
@@ -73,6 +88,12 @@ let timeScale = 1;
    真的長得到上萬的是金字塔、長城、城堡，加上 v1.143 換上的那十座（見 開發筆記〈換掉十座藍圖〉）。
    （藍圖體檢仍然照 300／1600／3000／10000 四個目標量，那是藍圖的事，跟面板無關。） */
 const CNT_OPTS = [1800, 3000, 9000];
+/* 每一檔的生活圈固定成這麼大（v1.256.0，使用者選「各檔取最大」）：換地標的時候島、霧、樹不再跟著縮放
+   （使用者：「會想改是因為換地標 感覺地圖會閃一下的改變」）。數字是 87 座（內建 48 ＋ blueprints/ 39）
+   照 arenaOf 那條算式量出來的最大值往上取整：1800 檔 64.93（復活節島摩艾）、3000 檔 78.48、
+   9000 檔 127.40（都是金門大橋）。取 max(固定值, 算式)：匯入一座比這還寬的，那一座才會自己撐大。
+   e2e〈場地固定與林帶進出場〉守著「沒有一座超過」。見 開發筆記〈換地標時場地固定〉 */
+const ARENA_FIX = { 1800: 65, 3000: 79, 9000: 128 };
 const WK_OPTS = [20, 40, 60];
 const SPD_OPTS = [0.5, 1, 4];
 const CNT_MAX = CNT_OPTS[CNT_OPTS.length - 1];
@@ -85,6 +106,10 @@ let running = true;
 let idle = false;
 let lastT = 0;
 let fps = 0;
+/* 鎖 60（v1.244.0，面板上的勾選，預設開）：高刷螢幕隔整數個 vsync 才畫一幀。
+   vsyncMs 是量出來的 rAF 間隔（跳過的那幾次也算），見 frame() 與 開發筆記〈鎖 60fps〉。 */
+let cap60 = true;
+let rafT = 0, vsyncMs = 1000 / 60;
 let recent = [];                    // 最近蓋過的，避免連續重複
 
 const restGrid = new Map();         // 空間雜湊：只放躺在地上的 FREE 積木
@@ -94,6 +119,26 @@ const _m = new THREE.Matrix4();
 
 const rr = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+/* 林帶中線（見 WOOD_IN）：從外面進來、走回外面去的都在這一圈 */
+const woodR = () => debrisR + (WOOD_IN + WOOD_OUT) / 2;
+function woodSpot(a) {
+  if (a === undefined) a = Math.random() * Math.PI * 2;
+  const d = woodR();
+  return { x: Math.cos(a) * d, z: Math.sin(a) * d };
+}
+/* 進出場那一段的淡入淡出（v1.256.0，使用者選「淡入淡出」）：離林帶中線越近越淡。
+   中線往內 REACH 以外是 0——走人的走到離中線 REACH 以內就算到了、當場收掉，那一刻要已經淡完；
+   再往內 WOOD_FADE 格是 1。只管兩段：剛進來還沒淡完（o.wIn），與正在走人（leaving）。
+   其餘時間有 alpha 就拿掉（走人走到一半被叫回去的那一隻）。屍體自己管 alpha（見 corpseAlpha），這裡不碰。
+   **畫之前叫**（game-ui.js 的 draw）：alpha 只是畫法，照「現在站在哪」算，生出來的時候只記 wIn。
+   引擎看到 alpha 就搬去半透明那一顆畫（小人、牛羊、猴子這些是 fadeMesh，人形角色是 humMesh）。 */
+function woodFade(o, leaving) {
+  if (o.dead) return;
+  if (!o.wIn && !leaving) { if (o.alpha !== undefined) o.alpha = undefined; return; }
+  const a = clamp((woodR() - REACH - Math.hypot(o.x, o.z)) / WOOD_FADE, 0, 1);
+  if (a >= 1) { o.wIn = 0; o.alpha = undefined; } else o.alpha = a;
+}
 
 /* ── 音效（純合成，不外掛音檔） ───────────────────────────── */
 let AC = null, muted = false;
@@ -168,6 +213,12 @@ function sndPlace() {
   tone(PLACE_SCALE[i], 0.14, 'triangle', 0.05, 0, 0, 0.008);
 }
 function sndSmash() { noise(0.42, 0.3, 1500); tone(78, 0.36, 'sawtooth', 0.1, 0.35); }
+/* 碎料落地彈一下（v1.264.1，使用者：「燃燒或破壞後 繼續蓋建築還是會有刺耳音效」）。
+   燒房子那幾十秒燒斷的積木一塊一塊掉、炸完一地碎料在彈，這一聲一秒響二三十次，
+   舊的切在 2200（單聲 2kHz 以上占 79%）是那一段唯一的高頻來源。切到 760、音量 0.03 → 0.045
+   把單聲 rms 對齊回來（93%）。760 是刻意挑的：voiceOK 拿 'noise' + 切點當名額，
+   舊的 2200 跟飛龍吐火球（sndSpit）擠同一個。見 開發筆記〈碎料落地那一聲刺耳的是切點（v1.264.1）〉 */
+function sndLand() { noise(0.05, 0.045, 760); }
 function sndDone() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.22, 'triangle', 0.07), i * 110)); }
 /* 跌倒聲每次抽一個音高：一排人被同一發掀倒時，同音高的那幾聲會疊成「一聲比較大的」，
    抖開之後才聽得出是好幾個人各跌各的（音高抖開也順便讓它們不再完全同相）。 */
@@ -255,10 +306,14 @@ function sndUfo() {
   g.connect(lp).connect(c.destination);
   lfo.start(t); lfo.stop(t + UFO_SND_DUR);
 }
-/* 點火：短促的「噗」一聲。只在點下去那一刻響，每塊都響會變成一片白噪音 */
-function sndFire() { noise(0.55, 0.16, 1600); tone(150, 0.4, 'sawtooth', 0.05, 2.4); }
+/* 點火：短促的「噗」一聲。只在點下去那一刻響，每塊都響會變成一片白噪音。
+   v1.258.0 使用者：「燃燒聲音有點刺耳」——刺的是噪音那一層：本來低通切在 1600、音量 0.16，
+   整聲 2 kHz 以上的能量九成四出自它（鋸齒只占一小部分，只換三角波 2 kHz 以上幾乎不變）。
+   預覽四檔挑了「柔」：噪音切到 800、鋸齒換三角波（150→360 改 130→208），整段音量差不多。
+   獅鷲噴火柱噴著的時候每 0.3 秒響一聲（v1.274 以前，v1.275.0 起獅鷲改成衝撞），刺的那一段疊起來最明顯。見 開發筆記〈點火那一聲刺耳的是噪音那一層（v1.258.0）〉 */
+function sndFire() { noise(0.55, 0.18, 800); tone(130, 0.4, 'triangle', 0.055, 1.6); }
 /* 猴子的叫聲（v1.138）：兩短聲的「吼—吼」。波形用鋸齒是因為要粗糙、泛音多——
-   三角波聽起來像笛子，不像動物。黑獼猴壓低（220 Hz 起）、白猴子高一截（330 Hz 起）：
+   三角波聽起來像笛子，不像動物。小獼猴壓低（220 Hz 起）、小猴子高一截（330 Hz 起）：
    兩隻的體型只差一成，聲音得分得開，不然玩家聽不出來哪一隻來了。 */
 /* 龍吼（v1.139）：一聲往下滑的低吼 ＋ 一層低通的噪音當氣息。
    基音壓到 90 Hz 以下——猴子的叫聲是 220／330，兩者一起在場上時要分得出來誰在叫。 */
@@ -284,12 +339,107 @@ function sndGiant() {
   noise(0.7, 0.14, 300);
   setTimeout(() => tone(48, 1.1, 'sawtooth', 0.06, 0.7, 'giant'), 380);
 }
+/* Diablo：一聲帶顫的嘶吼。要跟巨人（64 滑到 40）、龍吼（88 滑到 48）分得開：基音拉到 110、方波墊一層刺耳的上半，
+   噪音切在 900（比龍的 420 亮）——巨人是悶、龍是氣息，這一聲是「吼」 */
+function sndDiablo() {
+  tone(110, 1.25, 'sawtooth', 0.08, 0.5, 'diablo');
+  tone(165, 0.9, 'square', 0.03, 0.55, 'diablo2');
+  noise(0.9, 0.12, 900);
+}
+/* 金幣噴出來：一串高音的叮叮噹噹，錯開一點、音高亂一點 */
+function sndCoins() {
+  for (let i = 0; i < 7; i++)
+    setTimeout(() => tone(rr(1700, 2700), 0.13, 'triangle', 0.028, rr(0.95, 1.08), 'coin'), i * 55 + rr(0, 30));
+}
 function sndBeast(hi) {
   const f = hi ? 330 : 220;
   tone(f, 0.14, 'sawtooth', 0.05, 1.45, 'beast');
   noise(0.12, 0.03, 1500);
   setTimeout(() => tone(f * 1.18, 0.2, 'sawtooth', 0.045, 0.6, 'beast'), 170);
 }
+/* Saber（v1.222）：登場是一聲拔劍的金屬聲——一掃很高的噪音 ＋ 兩顆亮的音往上。
+   跟猴子 220／330、龍 88、巨人 64 那幾聲完全分得開：場上就她一個不是野獸，不該是吼聲。 */
+function sndSaber() {
+  noise(0.18, 0.05, 5200);
+  tone(1320, 0.28, 'sine', 0.045, 1.5, 'saber');
+  setTimeout(() => tone(1760, 0.4, 'triangle', 0.035, 1, 'saber'), 90);
+}
+/* 蓄力：一聲往上爬的嗡鳴，從舉到頂一路爬到開斬（ENG.EXC 的 charge − raise，v1.226 起 4 秒：
+   集氣 3 秒 ＋ 光柱長出來、停一下），爬到頂正好接上斬下去那一聲。長度讀表，不寫死 */
+function sndCharge() {
+  const d = ENG.EXC.charge - ENG.EXC.raise;
+  tone(180, d, 'triangle', 0.05, 4, 'excCharge', 0.4);
+  tone(360, d, 'sine', 0.025, 4, 'excCharge2', 0.6);
+}
+/* 開斬：低頻的轟 ＋ 一道往下掃的亮音（光柱斬下來）。自己的 key，不跟爆炸搶發聲名額 */
+function sndExcal() {
+  noise(0.9, 0.24, 700);
+  tone(72, 1.0, 'sawtooth', 0.09, 0.4, 'excal');
+  tone(1400, 0.6, 'triangle', 0.04, 0.25, 'excalHi');
+}
+/* 里維兵長（v1.230）：登場是機動裝置噴氣的「嘶」＋一聲短的金屬（拔刀）——跟 Saber 那一聲分得開（她是兩顆亮音往上） */
+function sndLevi() { noise(0.28, 0.07, 3600); tone(980, 0.12, 'square', 0.018, 1.6, 'levi'); }
+/* 惠惠（v1.247.0）：登場／被惹毛是兩顆往上的亮音（像施法前那一下），跟 Saber 的拔劍聲（1320／1760 ＋ 噪音）分得開 */
+function sndMegumin() {
+  tone(880, 0.18, 'sine', 0.04, 1.3, 'megumin');
+  setTimeout(() => tone(1175, 0.26, 'triangle', 0.03, 1.1, 'megumin'), 110);
+}
+/* 善逸（v1.251.0）：登場是一聲短的電流「滋」＋一顆往上的亮音——跟 Saber（兩顆亮音往上）、里維（噴氣＋短的金屬）分得開 */
+function sndZen() { noise(0.16, 0.05, 6000); tone(1560, 0.16, 'square', 0.016, 1.8, 'zen'); }
+/* 居合架勢：一聲往上爬的嗡鳴 ＋ 一直劈啪的電流聲，從蹲下去一路爬到衝出去（長度讀 ENG.ZEN.iai，不寫死） */
+function sndZenCharge() {
+  const d = ENG.ZEN.iai;
+  tone(220, d, 'sawtooth', 0.03, 3, 'zenCharge', 0.3);
+  noise(d, 0.03, 4200);
+}
+/* 一閃：雷劈下來那一聲（噪音的轟 ＋ 往下掃的亮音 ＋ 低頻） */
+function sndZenDash() {
+  noise(0.5, 0.22, 2400);
+  tone(1800, 0.35, 'square', 0.03, 0.2, 'zenDash');
+  tone(90, 0.6, 'sawtooth', 0.07, 0.5, 'zenDash2');
+}
+/* 刀滑進鞘裡那一聲「鏘」 */
+function sndZenSheath() {
+  tone(2400, 0.22, 'triangle', 0.04, 1, 'zenSheath');
+  setTimeout(() => tone(3200, 0.14, 'sine', 0.025, 1, 'zenSheath2'), 40);
+}
+/* 五條悟（v1.255.0）：登場是一聲低的嗡＋一顆很輕的高音（像空間被拉了一下）——跟 Saber（兩顆亮音往上）、
+   里維（噴氣＋短的金屬）、善逸（電流的滋）分得開 */
+function sndGojo() { tone(140, 0.35, 'sine', 0.05, 0.6, 'gojo'); tone(2100, 0.22, 'sine', 0.012, 1.4, 'gojoHi'); }
+/* 芙莉蓮（v1.259.0）：登場是三顆往上的柔和鐘音（像念了一句咒文）——跟惠惠（兩顆亮音）、Saber（拔劍聲）分得開 */
+function sndFrieren() {
+  tone(660, 0.3, 'sine', 0.03, 1, 'frieren');
+  setTimeout(() => tone(880, 0.3, 'sine', 0.025, 1, 'frieren2'), 90);
+  setTimeout(() => tone(1320, 0.4, 'sine', 0.02, 1, 'frieren3'), 180);
+}
+/* 防護罩張開：一聲往上掃的玻璃音＋很輕的嗡；被打到：一聲短的「叮」（同一個鍵，連著打只響一聲） */
+function sndFrOpen() { tone(520, 0.45, 'sine', 0.04, 2.4, 'frOpen'); tone(1560, 0.3, 'triangle', 0.015, 1.2, 'frOpen2'); }
+function sndFrHit() { tone(2200, 0.12, 'sine', 0.025, 0.7, 'frHit'); }
+/* 結印到放出去那幾秒：一聲往上爬的嗡鳴（長度讀 ENG.GJ.fire，不寫死），赫與蒼兩聲錯開疊在上面 */
+function sndGjCharge() {
+  const d = ENG.GJ.fire;
+  tone(110, d, 'triangle', 0.04, 3, 'gjCharge', 0.5);
+  tone(330, d, 'sine', 0.02, 2.5, 'gjCharge2', 0.8);
+}
+/* 赫與蒼撞在一起：一聲悶的轟＋往下掃的亮音 */
+function sndGjMeet() { noise(0.35, 0.12, 900); tone(1200, 0.4, 'sine', 0.03, 0.3, 'gjMeet'); }
+/* 茈放出去：低頻的轟（同 Excalibur 那一類）＋一聲往上拉的嗡 */
+function sndPurpFire() {
+  noise(0.7, 0.2, 500);
+  tone(60, 1.1, 'sawtooth', 0.08, 0.5, 'purp');
+  tone(220, 1.6, 'triangle', 0.04, 2.2, 'purpHum', 0.6);
+}
+/* 收掉那一下：吸著的全部甩出去，一聲炸開的噪音＋低頻 */
+function sndPurpBurst() { noise(0.6, 0.22, 1200); tone(80, 0.6, 'sawtooth', 0.07, 0.4, 'purpBurst'); }
+/* 詠唱：一聲往上爬的嗡鳴，從放出魔法陣一路爬到爆炸（道具那一發的 MAG_TIME 秒） */
+function sndChant() {
+  tone(150, MAG_TIME, 'triangle', 0.045, 3.2, 'megChant', 0.6);
+  tone(300, MAG_TIME, 'sine', 0.022, 3.2, 'megChant2', 0.9);
+}
+/* 射鋼索：一聲往上拉的噴氣 ＋ 鋼索捲動的鋸齒 */
+function sndOdm() { noise(0.45, 0.1, 2400); tone(260, 0.4, 'sawtooth', 0.03, 2.8, 'odm'); }
+/* 轉圈砍那一段每 LEV_SND 秒一聲：很短的金屬刮過（自己的 key，不跟碎料的聲音搶名額） */
+function sndLevCut() { noise(0.07, 0.05, 5200); tone(2400, 0.07, 'triangle', 0.018, 0.55, 'levCut'); }
 // 倒水：低通壓得比火低（水聲沒有火那種高頻的嘶），再墊一顆往下滑的低音當「灌下去」
 function sndWater() { noise(0.6, 0.13, 620); tone(210, 0.45, 'sine', 0.04, 0.5); }
 /* 煙火：往上是「咻」（音高一路往上滑），到頂是「啪」 */
@@ -370,10 +520,17 @@ function sndStab() { noise(0.12, 0.055, 420); }
 /* 箭雨齊射那一聲（v1.171）。配方就是 v1.136 從王之財寶身上**拿掉**的那一記——
    2100Hz 往下滑的鋸齒 ＋ 切在 5200 的短噪音。使用者當時說它「像是弓箭聲」
    （量下去 2kHz 以上占 96.7%，見 sndBlade 那段的比較）：對王之財寶是缺點，
-   對真的弓箭正好。一輪只放一聲——八十支箭各響一次的話 voiceOK 也只讓三聲過去。
+   對真的弓箭正好。v1.171～v1.231 一輪只放一聲；**v1.232 起每支一聲、音量乘 k**
+   （箭雨那邊傳 AR_SND_K，見 stepArchers）：放箭錯開之後一輪 80 支散在 0.65 秒裡，
+   一聲只響在第一支就對不上了。k 省略＝1（閒著的小人玩鬧那一支 playShot 照舊整聲）。
    噪音的低通刻意跟別人不同號（5200）：voiceOK 拿低通頻率當同一支音效的 key，
    撞號會跟那一支互相吃掉名額（理由同 sndGateHit 的 520）。 */
-function sndBow() { tone(2100, 0.16, 'sawtooth', 0.05, 0.28, 'bow'); noise(0.12, 0.055, 5200); }
+function sndBow(k = 1) { tone(2100, 0.16, 'sawtooth', 0.05 * k, 0.28, 'bow'); noise(0.12, 0.055 * k, 5200); }
+/* 火槍兵開一槍（v1.227）：一聲亮的「砰」（寬頻噪音、低通切得高）＋ 一段悶的回音
+   ＋ 一支往下滑的低頻。v1.227～v1.231 一排二十把只放一聲；**v1.232 起每一發一聲、音量乘 k**
+   （火槍那邊傳 MK_SND_K，見 mkFire），跟著錯開的槍聲一聲一聲響過去。
+   低通的號碼避開別人（2700／640），理由同 sndGateHit 的 520。 */
+function sndMusket(k = 1) { noise(0.16, 0.2 * k, 2700); noise(0.45, 0.07 * k, 640); tone(80, 0.18, 'triangle', 0.08 * k, 0.5, 'musket'); }
 /* 隕石進大氣層：拖長的低頻呼嘯，滑音往下＝由遠而近砸過來。
    比爆炸本身早一步響，聽到就知道要閃了 */
 function sndMeteor() { noise(0.9, 0.22, 700); tone(340, 0.85, 'sawtooth', 0.07, 0.22); }
@@ -442,6 +599,12 @@ function sndThunder() {
      而 rms 0.0105 → 0.0124（低頻的量沒少，甚至更飽）。 */
   tone(40, THUNDER_ROLL * 0.8, 'triangle', 0.08, 0, 'thunder');
 }
+/* 打雷重製（v1.283.0）：聚雲那三秒遠方一直在滾的悶雷——切點 80，比劈下去那一聲的 THUNDER_CUT 低，
+   也是另一個發聲名額（voiceOK 拿 'rumble' ＋ 切點當 key），不會把劈下去那一聲的滾雷吃掉。 */
+function sndStormBrew(dur) { rumble(dur, 0.1, 80); }
+/* 劈下去那一刻：sndThunder 前面多一記比較脆的劈裂。切點 640：700 隕石與 Excalibur 在用（同一個 key 會互搶名額）。
+   一發只有一道雷（v1.282 以前一朵劈 15～20 道才把 sndThunder 壓得那麼低），所以這一記給得比較響。 */
+function sndBoltCrack() { noise(0.22, 0.3, 640); sndThunder(); }
 /* 魔法陣長層的音效（sndRune）拿掉了：六層一路響上去太吵，
    而且蓋掉了引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 還在。 */
 
@@ -494,6 +657,18 @@ function separate(b) {
   }
   const d = Math.hypot(b.x, b.z);          // 保險：擠到最後還是要留在場內
   if (d > debrisR) { b.x = b.x / d * debrisR; b.z = b.z / d * debrisR; }
+  /* 村子剛挖出來的那一塊，落定時掉進工地圈就推回圈外（v1.224.1）。digBlock 挑往哪邊扔
+     只拿初速估落點，實際會彈——房子貼著工地圈時偶爾彈進去一點點（實測 0.09 格），
+     而 homeNear 不撿工地圈裡的料，那一塊就誰都不撿了。
+     只認 fresh（剛挖、第一次落地）：房子被打爛飛進工地的那些 dug 也是 1，但那是飛了
+     幾十格進去的，整塊瞬移出來會很怪，照舊落在哪就在哪。
+     推到圈外再半塊：homeNear 比的是 ≥，剛好壓線會被浮點誤差吃掉。
+     見 開發筆記〈挖出來的料彈進工地圈〉 */
+  if (b.fresh) {
+    b.fresh = 0;
+    const e = Math.hypot(b.x, b.z), ring = siteR + KEEP;
+    if (e > 0 && e < ring) { const k = (ring + HB) / e; b.x *= k; b.z *= k; }
+  }
 }
 /* separate 的溫和版：只算一輪、力道打折、位移還給上限。
    要「每幀都擠一點」的地方（推土機鏟子前那一坨）不能用 separate——
@@ -569,7 +744,9 @@ function newBlock() {
     /* 這塊是村子自己從地上挖出來的嗎（v1.134，見 digBlock／homeMine）。施工中小人蓋自己的
        家只撿得起這一種——地上其他那些是地標的建材，料池剛好只夠蓋完那一座。 */
     dug: 0,
+    fresh: 0,                            // 1 = 村子剛挖出來、還沒落地（見 separate）
     scale: 1, snap: 0, snapFrom: null, arc: null, wob: 0, al: 1, fallIn: 0,
+    pull: null,                          // 隔空拿、正在飛進手裡（v1.246，見 game-workers.js 的 startPull）
     gone: 0,                             // >0＝完工後多餘的碎料正在淡出（v1.109，見 clearSpare）
     burn: 0,                             // 1 = 正在燒（狀態本體在 fires 那筆裡）
     wet: 0                               // 還濕幾秒（>0 就點不著，顏色也壓深一點）
@@ -661,10 +838,13 @@ function stepBlock(b, dt) {
       b.vy = -b.vy * 0.3;
       b.vx *= 0.66; b.vz *= 0.66;
       b.ax *= 0.5; b.ay *= 0.5; b.az *= 0.5;
-      if (Math.random() < 0.22) noise(0.05, 0.03, 2200);
+      if (Math.random() < 0.22) sndLand();
     } else {
-      b.vy = 0; b.vx *= 0.82; b.vz *= 0.82;
-      b.ax *= 0.7; b.ay *= 0.7; b.az *= 0.7;
+      /* 貼地滑的摩擦是照 60fps「一幀乘一次」調的，換算成這一幀的（v1.244.0）——
+         直接每幀乘的話 120fps 只滑一半遠（見 開發筆記〈鎖 60fps〉）。上面彈一下那條是一次性的，不必換。 */
+      const f60 = dt * 60, fv = Math.pow(0.82, f60), fa = Math.pow(0.7, f60);
+      b.vy = 0; b.vx *= fv; b.vz *= fv;
+      b.ax *= fa; b.ay *= fa; b.az *= fa;
       if (Math.hypot(b.vx, b.vz) < 0.55 && Math.abs(b.ax) + Math.abs(b.ay) + Math.abs(b.az) < 1.2)
         startSnap(b);
     }
@@ -737,24 +917,112 @@ function pickShape() {
   return Math.floor(Math.random() * SHAPES.length);
 }
 
-function startBuild(instant) {
-  stopIdleEvent();                   // 閒晃事件收掉，人叫回去上工（v1.97）
+/* 生活圈多大（v1.256.0 起抽成一支，startBuild 與 e2e 共用同一份）。算式是原本那一條：
+   建材散落區從工地邊緣往外鋪，面積跟積木數成正比 → 不管 300 塊還 3000 塊都一樣鬆。
+   外面再套這一檔的固定值（見 ARENA_FIX）；不在三檔裡的建材數（舊存檔）就照算式。 */
+function arenaOf(sr, n, cnt) {
+  return Math.max(ARENA_FIX[cnt] || 0, Math.sqrt((sr + 2) ** 2 + SPREAD * n / Math.PI) + 8);
+}
+
+/* ── 藍圖丟到背景算（v1.265.0）──────────────────────────────
+   使用者：「換地標建築時有時候好像會卡一下 懷疑是在讀藍圖?(是的話 看看是不是能類似非同步載入藍圖)」
+   →「手動切換也不該卡 理想是算還是算 但是不要讓畫面卡 所以才想要類似多執行緒概念」。
+   換場那一下幾乎全花在 makeBlueprint（fitScale 為了湊塊數試產五六十次），其餘步驟加起來不到 2 ms：
+   3000 那一檔中位 40 ms、最慢 160 ms；9000 中位 137 ms、最慢 410 ms。丟給 Worker 算之後，
+   主執行緒只付收包那幾毫秒（9000 實測 3～7 ms，同步是 69～226 ms）。
+   file:// 的頁面拿檔案路徑開 Worker 會被擋（SecurityError，origin 'null'），**blob 開的可以**，
+   裡面 importScripts 那幾支藍圖檔也可以（實測 Chrome）。所以 Worker 跑的是同一份 blueprints.js
+   ＋同一批 blueprints/*.js（照 document.scripts 的順序載），產出的藍圖逐格相同。
+   開不起來（別的瀏覽器 file:// 的規矩不同）、或要的那座 Worker 裡沒有（遊戲裡匯入的），
+   就退回當場算——跟 v1.264 以前一樣會卡那一下，但不會壞。
+   startBuild() 自己照舊是同步的：測試與這條退路都直接叫它；只有換場的那幾個入口改成先問 Worker。
+   見 開發筆記〈換地標卡一下：藍圖丟到 Worker 算（v1.265.0）〉 */
+let bpWk = null;                    // Worker；null＝還沒開、false＝開不起來（一律當場算）
+let bpWait = null;                  // 正在等的那一份 { id, then }。同一時間只等一份，新的來了舊的回來就丟掉
+let bpSeq = 0;
+function bpWorker() {
+  if (bpWk !== null) return bpWk;
+  try {
+    const base = new URL('.', location.href).href;
+    const src = [...document.scripts].map(s => s.src).filter(u => {
+      const r = u.startsWith(base) ? u.slice(base.length) : '';
+      return r === 'src/blueprints.js' || r.startsWith('blueprints/');
+    });
+    /* 一支一支載、各自接住：跟主執行緒的 <script> 一樣，壞一支只少那一支（customBlueprint 撞名之類的也照樣跳過），
+       兩邊的 SHAPES 才會一模一樣。載不到 blueprints.js 的話每一份都回 null，呼叫端當場算。 */
+    const code =
+      'for (const u of ' + JSON.stringify(src) + ') { try { importScripts(u); } catch (e) {} }\n' +
+      'onmessage = e => {\n' +
+      '  const d = e.data;\n' +
+      '  let bp = null;\n' +
+      '  try { const i = SHAPES.findIndex(s => s.n === d.name); if (i >= 0) bp = makeBlueprint(i, d.cnt); } catch (er) { bp = null; }\n' +
+      '  postMessage({ id: d.id, bp });\n' +
+      '};';
+    bpWk = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+    bpWk.onmessage = e => {
+      const d = e.data;
+      const w = bpWait;
+      if (!w || d.id !== w.id) return;              // 已經被新的那一份取代了
+      bpWait = null;
+      w.then(d.bp);
+    };
+    bpWk.onerror = bpDown;
+  } catch (e) { bpWk = false; }
+  return bpWk;
+}
+/* Worker 掛了：之後一律當場算，正在等的那一份也當場算掉 */
+function bpDown() {
+  bpWk = false;
+  const w = bpWait;
+  bpWait = null;
+  if (w) w.then(null);
+}
+/* 叫背景算一份。then(bp) 收到時呼叫；bp 是 null＝背景算不了（Worker 開不起來、或那座 Worker 裡沒有），
+   呼叫端自己當場算。Worker 開不起來的話 then 是當場同步呼叫的。 */
+function askBlueprint(idx, cnt, then) {
+  const wk = bpWorker();
+  if (!wk) { then(null); return; }
+  bpWait = { id: ++bpSeq, then };
+  wk.postMessage({ id: bpSeq, name: SHAPES[idx].n, cnt });
+}
+/* 換場的入口（下拉選單、建材檔位、「換一座來蓋」）：挑好下一座、背景算好了再換。
+   等的那一下（9000 那一檔 0.1～0.3 秒）畫面照常在跑，舊的那座還在原地。 */
+function swapBuild() {
+  const idx = pickShape(), cnt = targetCnt;
+  askBlueprint(idx, cnt, got => startBuild(false, { idx, bp: got || makeBlueprint(idx, cnt) }));
+}
+
+/* ready：已經算好的那一份 { idx, bp }（背景算的、或換場前先叫背景算好的，見 swapBuild 與 step 的換場）。
+   沒給就跟以前一樣當場挑、當場算。 */
+function startBuild(instant, ready) {
+  bpWait = null;                     // 還在等的那一份作廢：不然它回來時會再換一次場
+  /* 閒晃事件**不在這裡收**（v1.248）：要整地的話那十幾秒照常過日子，蓋家／城牆的人接著蓋，
+     推土機推完、真的開工才收（見 beginBuild）。v1.97～v1.247 是這一行就收掉。 */
   /* 順序有講究：先把小人和舊建築解開（他們的 slot 指的是「舊」藍圖），
      再換 bp，最後才調整積木池——反過來做的話，
      reconcilePool 的 splice 會讓工作單（w.load）上的編號指到別塊積木上。 */
   /* 小人身上的火跟碎料的火一起收：積木待會要回收去蓋新的那座，
      人也一樣得回去上工，不能有人還在新工地旁邊打滾。 */
   for (const w of workers) {
+    /* 屍體（v1.240）照躺著淡完：這裡把 tilt 歸零的話他會在換場那一幀從地上直直立起來再倒下去 */
+    if (w.dead) continue;
     releaseWorker(w);
     w.air = 0; w.burn = 0; w.burnK = 0; w.lit = 0; w.roll = 0; w.fall = 0; w.trip = 0;
     w.wet = 0; w.wetK = 0;
-    /* 連續工作的鐘跟著換場歸零（v1.206）：上一座蓋完慶祝、閒晃了一大段之後，
-       新的一座第一趟就停下來喘是說不通的。 */
-    w.toil = 0; w.rst = 0;
+    /* 連續工作的鐘跟著換場重給（v1.206）：上一座蓋完慶祝、閒晃了一大段之後，
+       新的一座第一趟就停下來喘是說不通的。
+       **起點每人錯開**（v1.244.2，見 REST_SPREAD）：全部從 0 起算的話，整隊每 65 秒左右一起喘。 */
+    w.toil = rr(0, REST_AT * REST_SPREAD); w.rst = 0;
+    w.gvb = -1;                      // 上一座追太久放掉的那一塊，編號到新的一座就不算數了（v1.225）
+    /* 蓋家要去撿的那一塊同理（v1.248）：閒晃事件撐過換場之後，下面 reconcilePool 會把積木重排 */
+    w.gb = -1;
+    /* 換場那一刻算散場（v1.248）：整地中走閒晃那條路（見 idlePhase），慶祝窗口還開著的話
+       他會繞著新工地那一圈跳——那裡什麼都還沒有。施工那條路每幀會把它歸零，不影響下一座完工的慶祝。 */
+    w.cheer = CHEER_T + w.cout;
     w.emo = ''; w.emoT = 0; w.emoK = 0;   // 上一座留下的表情圖示不要跟著進新工地（v1.121）
     w.y = 0; w.tilt = 0; w.vx = w.vy = w.vz = 0;
   }
-  rollLazy();                        // 這一座誰偷懶重抽（v1.134，見 LAZY_PART）
+  rollLazy();                        // 這一座誰偷懶重抽（v1.134，見 LAZY_MODES）
   for (const b of blocks) {
     // 家的那些不解（v1.97）：房子留在場上（使用者指定），只有被新工地蓋到才拆（見下面）
     if (b.hh >= 0) continue;
@@ -791,16 +1059,15 @@ function startBuild(instant) {
      清掉的話蘑菇雲會在爆炸後 0.05 秒整朵消失，等於白做。
      塵霧（dust）本來就是這樣處理的，這裡跟它一致。 */
 
-  const idx = pickShape();
+  const idx = ready ? ready.idx : pickShape();
   recent.push(idx); if (recent.length > 8) recent.shift();
-  bp = makeBlueprint(idx, targetCnt);
+  bp = ready ? ready.bp : makeBlueprint(idx, targetCnt);
   indexGrid();
   placedCnt = 0; slotCursor = 0;
   buildElapsed = 0; spentThis = 0; lossThis = 0;
 
   siteR = Math.max(7, bp.radius);
-  // 建材散落區從工地邊緣往外鋪，面積跟積木數成正比 → 不管 300 塊還 3000 塊都一樣鬆
-  arenaR = Math.sqrt((siteR + 2) ** 2 + SPREAD * bp.slots.length / Math.PI) + 8;
+  arenaR = arenaOf(siteR, bp.slots.length, targetCnt);   // 每一檔固定（v1.256.0，見 ARENA_FIX）
   debrisR = arenaR * DEBRIS_X;       // 碎料可以飛到生活圈外面那一圈（見 DEBRIS_X）
   clearHomesInSite();                // 新工地蓋到誰家，那一間解成碎料（v1.97）
   reconcilePool();
@@ -880,6 +1147,12 @@ function kickOutSite() {
   for (const b of blocks) if (b.st === FREE && Math.hypot(b.x, b.z) < r) kickOut(b);
 }
 function beginBuild() {
+  /* 閒晃事件收掉，人叫回去上工（v1.97，使用者：「如果要再建造時 直接恢復進入建造模式」）。
+     v1.248 起從 startBuild 第一行挪到這裡：整地那段照常過日子，真的開工才收（見 idlePhase）。 */
+  stopIdleEvent();
+  /* 聊到一半、打到一半的也收掉（v1.248）：整地中現在照聊，不收的話開工之後他會把那五秒聊完才去上工。
+     v1.247 以前整地那一段會中斷聊天，開工那一刻不會有人還在聊。 */
+  for (const w of workers) { endChat(w); endFight(w); }
   phase = 'build';
   buildStart = performance.now();     // 施工計時從真正開工才起算，不含整地
 }
@@ -1066,7 +1339,7 @@ function stepDozers(dt) {
 }
 
 /* 直接把整座蓋好。開場用——一進來就有一座完整的建築可以砸，
-   不用先盯著小人搬十分鐘才有東西玩。設定面板的「立刻建成」也走這裡。 */
+   不用先盯著小人搬十分鐘才有東西玩。⚙ 設定旁邊那顆「立刻建成」也走這裡。 */
 function completeNow() {
   /* 房子的積木要跳過（v1.109）：那些不是這一座的料。以前是照編號硬取
      blocks[0..格數)，編號更後面的一律壓成散料——場上有村落的時候按下「立刻建成」，

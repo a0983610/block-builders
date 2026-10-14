@@ -6,13 +6,26 @@
 'use strict';
 
 /* ── 樹 ───────────────────────────────────────────────── */
+/* 林帶（v1.256.0，使用者選「54 顆、散成林帶」）：碎料圈外 WOOD_IN～WOOD_OUT 那一整圈等面積亂撒，
+   兩棵至少隔平均間距的六成——不會擠成一坨，也不會排成一圈。
+   **同一個場地大小只種一次**（使用者：「樹在同一個場地大小下只種一次，換檔位時才重種」）：
+   場地每一檔固定之後（見 ARENA_FIX）換地標時碎料圈不變，樹也就不動；換建材檔位、
+   或匯入一座撐大場地的，碎料圈變了才重種。v1.210～v1.255 是每換一座重抽一次
+   （18 棵、碎料圈外 3～15、平均排一圈），島固定了樹還是整圈跳一下。
+   棵數的上限是引擎那邊樹幹那一顆的 64 格。見 開發筆記〈林帶：54 棵、換地標不重種〉 */
+const TREE_N = 54;
+let treeAt = -1;                      // 現在這片林帶是照哪一個碎料圈種的
 function makeTrees() {
+  if (trees.length && treeAt === debrisR) return;
+  treeAt = debrisR;
   trees = [];
-  const n = 18;
-  for (let i = 0; i < n; i++) {
-    const a = i / n * Math.PI * 2 + rr(-0.18, 0.18);
-    const d = debrisR + rr(3, 15);      // 種在碎料圈外圍（v1.210 起，見 DEBRIS_X），不擋工地
-    trees.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, h: rr(2.2, 4.2), r: rr(1.7, 3), rot: rr(0, 1), wob: 0, wv: 0 });
+  const r0 = debrisR + WOOD_IN, r1 = debrisR + WOOD_OUT;
+  const gap = Math.sqrt(Math.PI * (r1 * r1 - r0 * r0) / TREE_N) * 0.6;
+  for (let k = 0; trees.length < TREE_N && k < TREE_N * 80; k++) {
+    const r = Math.sqrt(r0 * r0 + Math.random() * (r1 * r1 - r0 * r0)), a = Math.random() * Math.PI * 2;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    if (trees.some(t => (t.x - x) ** 2 + (t.z - z) ** 2 < gap * gap)) continue;
+    trees.push({ x, z, h: rr(2.2, 4.2), r: rr(TREE_R[0], TREE_R[1]), rot: rr(0, 1), wob: 0, wv: 0 });
   }
 }
 function stepTrees(dt) {
@@ -28,6 +41,93 @@ function shakeTrees(p, R) {
   }
 }
 
+/* ── 跟不上時降畫質（v1.280.0 動態解析度，見 開發筆記〈三個爆裂魔法同時炸卡在顯示卡：動態解析度、畫面設定小窗（v1.280.0）〉；
+   v1.281.0 加「跟不上時關抗鋸齒」「降了就不升回去」，見 開發筆記〈跟不上時先關抗鋸齒、升回去改成分幀偷量（v1.281.0）〉）──
+   畫面設定那兩格決定降下去有哪幾級（dynLevels，{k 倍解析度, s 次取樣}，一級一級往下）：
+     兩格都開：關抗鋸齒（1 倍 0 次）→ 還跟不上再 0.75 倍（0.75 倍 0 次）
+     只開「跟不上時關抗鋸齒」：1 倍 0 次；只開「動態解析度」：0.75 倍 4 次（v1.280.0 那一種）
+   貴的是抗鋸齒疊在幾十層半透明上，不是解析度（三個陣一起炸最重那一幀 44ms：0.75 倍保留抗鋸齒 29、原尺寸關抗鋸齒 5.2），所以關抗鋸齒排第一級。
+   顯示卡一幀超過 DYN_BUDGET 連續 DYN_DOWN 秒 → 往下一級；兩次切換至少隔 DYN_COOL 秒。
+   切換本身不重配任何東西（畫布大小不動，每一級的畫布事先配好，見 engine.js 的 prepareLows）。
+   **升回去是「分幀偷量」，不是切回去試**（使用者：「要動態的話切換一樣不要有卡頓」）：降著的時候顯示卡低於預算的 DYN_QUIET 連續 DYN_UP 秒，
+   就請引擎每一幀偷畫一條上一級的畫面量時間（engine.js 的 probe），量完一整張估出來低於預算九成才升，不夠就過 DYN_PROBE 秒再量。
+   v1.280.1 是真的切回去試——關了抗鋸齒之後降著那一級太便宜（9ms）看起來很有餘裕，會在爆炸中途切回 44ms 那一種、卡一幀 111ms。
+   升上去 DYN_HOLD 秒內又掉下來（估錯了）＝失敗一次，下一次偷量等 DYN_TRY 那一串（2、4、8、16 秒）；撐過就歸零。
+   「降了就不升回去」（pref.once）勾著就不偷量、只會往下（使用者：「也可以是不要動態只要一量到需要降 就降低然後不用升回去」），
+   重新勾選畫面設定那幾格（setDyn）才回到原本。
+   開場（還有改了那幾格之後）頭 DYN_WARM 秒不算：第一次開頁那一秒顯示卡在暖機（實測 0.75 秒時 32.8ms、1.25 秒才回到 11），
+   不跳過的話一開場就被判成跟不上——動態的話兩秒後偷量會升回來，「降了就不升回去」就一直卡在降著的樣子。
+   **不用猜的**：v1.280.0 第一版拿「0.75 倍的時間 ÷ 0.75²」猜原本要多久，猜得太高（陰影、貼回畫布那一下是固定的），
+   dpr 2 永遠停在又糊又沒變快的那一檔；關抗鋸齒差的倍數更是隨場面在變（閒晃幾乎 1 倍、爆炸 8 倍），只能量。
+   量的是顯示卡時間不是幀距（理由見 engine.js 的 render）；瀏覽器量不到（gpuMs 一直是 0）就整個不動作——
+   只看幀距的話鎖 60 開著時分不出有沒有餘裕，會降下去升不回來、或來回切換一直頓。
+   高解析螢幕一樣照顯示卡時間決定（使用者選的）：原本就跟不上的顯示卡，偷量會一直說不夠、停在降過的那一級。 */
+const DYN_K = 0.75;
+const DYN_BUDGET = 1000 / 60 - 2.5;   // 鎖 60 的一幀扣掉 CPU 那一段（step＋draw 平常 1～3.5ms）
+const DYN_DOWN = 0.25, DYN_UP = 1.5, DYN_COOL = 1.5, DYN_QUIET = 0.9, DYN_HOLD = 3, DYN_PROBE = 2, DYN_WARM = 3;
+const DYN_TRY = [2, 4, 8, 16];
+let dynLevels = [];                   // 降下去有哪幾級（不含原本那一級），照畫面設定那兩格排
+let dynLvl = 0;                       // 現在第幾級（0＝原本）
+let dynOnce = false;                  // 降了就不升回去（pref.once）
+let dynSlow = 0, dynFast = 0, dynWait = 0, dynNext = 0;   // dynWait＝切換的冷卻；dynNext＝離下一次偷量還有幾秒
+let dynWarm = 0;                      // 開場／改設定之後還有幾秒不算（DYN_WARM）
+let dynTry = 0, dynUpT = -1, dynProbing = false;          // 升上來又掉連續幾次；升上來之後過了幾秒（-1＝不是剛升上來的）；在等偷量
+/* 畫面設定那三格（pref.aa／pref.dyn／pref.once）改了就重排、回到原本那一級 */
+function setDyn(aa, res, once) {
+  dynLevels = [];
+  if (aa) dynLevels.push({ k: 1, s: 0 });
+  if (res) dynLevels.push({ k: DYN_K, s: aa ? 0 : 4 });
+  dynOnce = !!once;
+  ENG.gpuTiming(dynLevels.length > 0);
+  /* 每一級的畫布開著就先配好，切換那一下才不必當場配（見 engine.js 的 prepareLows）；量不到顯示卡時間的不配，反正不會降 */
+  ENG.prepareLows(dynLevels.length && ENG.gpuSupported ? dynLevels : []);
+  ENG.setLow(-1);
+  dynLvl = 0; dynSlow = dynFast = dynWait = dynNext = 0; dynTry = 0; dynUpT = -1; dynProbing = false;
+  dynWarm = DYN_WARM;
+}
+function dynGo(l) { dynLvl = l; ENG.setLow(l - 1); dynProbing = false; }
+/* 畫面設定小窗最底下那一行現況 */
+function dispStat() {
+  const L = dynLevels[dynLvl - 1];
+  $('dispStat').textContent = !ENG.gpuSupported ? '這個瀏覽器量不到顯示卡時間，這幾格不會動作'
+    : !dynLevels.length ? '關著'
+    : '現在：' + (!L ? '原本畫質' : [L.s ? '' : '關掉抗鋸齒', L.k < 1 ? '降到 ' + L.k + ' 倍' : ''].filter(Boolean).join('＋')) +
+      '（顯示卡一幀 ' + ENG.gpuMs.toFixed(1) + 'ms）' + (dynOnce && dynLvl ? '，不會升回去' : '');
+}
+/* 一幀的判斷。拆成一支吃 (dt, 顯示卡毫秒, 偷量結果, 是不是還在偷量) 的函式：測試用的 SwiftShader 量不到顯示卡時間，
+   規則要靠直接餵數字驗（同〈鎖 60〉那條餵假時間戳）。pr 是 engine.js 的 takeProbe：null＝這一幀沒有結果，{ms}＝估計上一級要多久 */
+function dynStep(dt, gpu, pr, probing) {
+  dynWait = Math.max(0, dynWait - dt);
+  dynNext = Math.max(0, dynNext - dt);
+  dynWarm = Math.max(0, dynWarm - dt);
+  const max = dynLevels.length;
+  if (!max || !(gpu > 0) || dynWarm > 0) { dynSlow = dynFast = 0; return; }
+  if (dynUpT >= 0) {
+    dynUpT += dt;
+    if (dynUpT > DYN_HOLD) { dynUpT = -1; dynTry = 0; }       // 升上來撐過 DYN_HOLD 秒：估得對，歸零
+  }
+  if (gpu > DYN_BUDGET) { dynSlow += dt; dynFast = 0; }
+  else if (gpu < DYN_BUDGET * DYN_QUIET) { dynFast += dt; dynSlow = 0; }
+  else { dynSlow = dynFast = 0; }
+  if (dynProbing) {
+    if (pr) {
+      dynProbing = false;
+      if (pr.ms < DYN_BUDGET * DYN_QUIET && dynWait <= 0) { dynGo(dynLvl - 1); dynUpT = 0; dynWait = DYN_COOL; dynFast = 0; return; }
+      dynNext = DYN_PROBE;                                      // 不夠：過一陣子再量
+    } else if (!probing) { dynProbing = false; dynNext = DYN_PROBE; }   // 引擎那一輪作廢了（被打斷、換級）
+  }
+  if (dynWait > 0) return;
+  if (dynSlow > DYN_DOWN && dynLvl < max) {
+    dynGo(dynLvl + 1); dynSlow = 0;
+    /* 剛升上來又跟不上＝估錯一次：下一次偷量等久一點 */
+    if (dynUpT >= 0) { dynNext = DYN_TRY[Math.min(dynTry, DYN_TRY.length - 1)]; dynTry++; dynUpT = -1; }
+    dynWait = DYN_COOL;
+  } else if (!dynOnce && dynLvl > 0 && !dynProbing && dynNext <= 0 && dynFast > DYN_UP) {
+    ENG.probe(dynLvl - 2, DYN_BUDGET - gpu, DYN_BUDGET * DYN_QUIET);   // 上一級：dynLvl − 1 級＝引擎的第 dynLvl − 2 種（−1＝畫布本身）
+    dynProbing = true;
+  }
+}
+
 /* ── 主迴圈 ─────────────────────────────────────────────── */
 function frame(now) {
   requestAnimationFrame(frame);
@@ -35,6 +135,15 @@ function frame(now) {
      為什麼不留在這裡推，見 setIdle() 的說明。
      rAF 本身不停掉：它是還原之後自動接回來的入口。 */
   if (idle) return;
+  /* 鎖 60（v1.244.0）：不是「滿 16.7ms 才畫」——144Hz 會變成隔 2、3 個 vsync 交錯，幀距一長一短會抖。
+     改成隔整數個 vsync 畫一次：n 取「畫出來還有 52fps 以上」的最大那個——
+     120Hz → 60、144 → 72、165 → 55、240 → 60；60／75／90／100Hz 的 n 是 1，照舊每幀畫
+     （100Hz 隔一個是 50，太頓）。門檻給 n − 0.5 個 vsync：時間戳抖一點、或上一幀拖到下一個
+     vsync 才來，都不會多跳一次。dt 照舊從上一次真的畫的那一幀算，所以遊戲速度不變。
+     見 開發筆記〈鎖 60fps〉。 */
+  if (rafT) { const v = now - rafT; if (v > 2 && v < 50) vsyncMs += (v - vsyncMs) * 0.05; }
+  rafT = now;
+  if (cap60 && lastT && now - lastT < vsyncMs * (Math.max(1, Math.floor(1000 / 52 / vsyncMs)) - 0.5)) return;
   if (!lastT) lastT = now;
   let raw = (now - lastT) / 1000;
   lastT = now;
@@ -46,6 +155,7 @@ function frame(now) {
   step(dt);
   draw();
   ENG.render();
+  dynStep(Math.min(0.1, raw), ENG.gpuMs, ENG.takeProbe(), ENG.probing);   // 跟不上時降畫質（v1.280.0／v1.281.0）：照真的時間走，不吃時間倍率
   hudTick(now);
 }
 
@@ -110,8 +220,16 @@ function step(dt) {
      （v1.62 之前是「陣一定會先把整棟扯下來捲進陣心，所以一定會跌破這條線」；
      現在整段吸下來只剝得走兩成，跌破多半是玩家在那六秒裡又補了幾發，但要擋的事情一樣。）
      （等待中途離開 wreck——按了「立刻建成」之類——就把秒數丟掉重算） */
-  if (phase !== 'wreck') swapWait = 0;
+  if (phase !== 'wreck') { swapWait = 0; swapNext = null; }
   else if (!magics && bp && placedCnt <= Math.floor(bp.slots.length * WRECK_AT)) {
+    /* 跌破門檻那一刻就先挑好下一座、叫背景去算（v1.265.0，見 askBlueprint）：等滿 SWAP_WAIT 那三秒
+       就是它算的時間，換場那一幀直接拿來用，畫面不等藍圖。還沒回來（Worker 開不起來、或測試一口氣
+       連跑好幾幀不讓出主執行緒）就當場算，跟以前一樣。 */
+    if (!swapNext) {
+      const idx = pickShape();
+      const n = swapNext = { idx, name: SHAPES[idx].n, cnt: targetCnt, bp: null };
+      askBlueprint(idx, n.cnt, got => { n.bp = got; });
+    }
     swapWait += dt;
     if (swapWait >= SWAP_WAIT) {
       stats.destroyed++;
@@ -121,16 +239,21 @@ function step(dt) {
       toast('💥 ' + bp.name + ' 拆除完畢',
             '損失 ' + money(lossThis) + '　·　累計拆掉 ' + stats.destroyed + ' 座');
       checkBadges(); save(); renderTools();
-      startBuild(false);
+      /* 先挑好的那一座在這三秒裡被刪掉（匯入的可以刪）或換了建材檔位，就照舊當場重挑 */
+      const n = swapNext;
+      const keep = SHAPES[n.idx] && SHAPES[n.idx].n === n.name && n.cnt === targetCnt;
+      startBuild(false, keep ? { idx: n.idx, bp: n.bp || makeBlueprint(n.idx, targetCnt) } : undefined);
     }
   }
   stepSwing(dt);
   stepQuake(dt);
   stepBall(dt);
+  stepBncs(dt);
   stepTwist(dt);
   stepTrebs(dt);
   stepCannons(dt);
   stepBombs(dt);
+  stepMeats(dt);                         // 肉（v1.261.0）：掉下來、叫最近的幾隻來吃、吃完收掉
   stepMeteors(dt);
   stepFw(dt);
   stepFire(dt);
@@ -147,10 +270,14 @@ function step(dt) {
   stepGates(dt);
   stepSwords(dt);
   stepUfo(dt);                           // 幽浮（v1.167）：飛進來、照光吸、飛走、五秒後丟下來
+  stepHoles(dt);                         // 小黑洞（v1.221）：抖、慢慢吸、一口吞掉、五秒後撒回來
+  stepPurps(dt);                         // 虛式「茈」（v1.255.0）：飛出去的紫球沿路吸、飛到射程盡頭甩出去
   /* 箭雨（v1.171）：一隊人與飛在半空的箭是兩份清單——隊伍撤走之後箭還在飛、
      還插在牆上慢慢淡，所以兩邊各走各的（同王之財寶的門與兵器）。 */
   stepArchers(dt);
   stepArrows(dt);
+  stepMusket(dt);                        // 火槍兵（v1.227）：一隊人與飛著的子彈也是兩份清單
+  stepBullets(dt);
   if (aim) aim.ph += dt;                 // 瞄準環的脈動
   stepGifts(dt);                         // 道具泡泡（v1.214）：飄下來、落地之後上下浮著等人點
   stepDozers(dt);
@@ -167,17 +294,19 @@ function step(dt) {
     if (supportT <= 0) { supportDirty = false; collapseUnsupported(); }
   }
   stepHomeFall(dt);                    // 小人的家：撐不住的也要垮（v1.102）
+  stepFrHang(dt);                      // 被防護罩撐住沒垮的：罩子走開之後重算支撐（v1.259.0）
 
   let spareDead = false;              // 這一幀有沒有碎料淡完了（見 clearSpare）
   for (const b of blocks) {
     if (b.fallIn > 0) {                 // 已判定要垮，等它的鬆脫時間到
       b.fallIn -= dt;
       if (b.fallIn <= 0) {
-        breakBlock(b, rr(-2.6, 2.6), rr(-1.6, 0.8), rr(-2.6, 2.6));
-        stats.smashed++;                // 垮下來的也算擊飛
-        giftRoll(1, b.x, b.y, b.z);     // 也一樣有機率掉道具泡泡（v1.214）
-        // 這塊垮掉之後，原本靠它撐住的鄰居可能也懸空了，再算一次
-        markSupportDirty(0.05);
+        if (breakBlock(b, rr(-2.6, 2.6), rr(-1.6, 0.8), rr(-2.6, 2.6))) {
+          stats.smashed++;                // 垮下來的也算擊飛
+          giftRoll(1, b.x, b.y, b.z);     // 也一樣有機率掉道具泡泡（v1.214）
+          // 這塊垮掉之後，原本靠它撐住的鄰居可能也懸空了，再算一次
+          markSupportDirty(0.05);
+        } else frHang = 1;                // 防護罩撐著（v1.259.0）：罩子走開之後 stepFrHang 再算一次
       }
     }
     // 落定轉正期間 st 還是 FLY，所以 snap 要排在 FLY 前面判斷，否則重力會一直把它壓下去
@@ -212,11 +341,14 @@ function step(dt) {
   mageHeapT -= dt;                                       // 料堆清單的重算計時（見 listMageHeaps）
   stepIdleEvent(dt);                                     // 閒晃事件（v1.97）
   stepDoom(dt);                                          // 天災（v1.138）
+  stepCoins(dt);                                         // Diablo 死掉噴出來的金幣（跟著屍體淡、屍體收掉就收）
   stepMascot(dt);                                        // 吉祥物（v1.144，三隻各數各的鐘）
   stepHerd(dt);                                          // 閒逛的動物（v1.154，場上少了就補）
+  stepGeese(dt);                                         // 雁群從空中飛過（v1.272.0）
   pairChat();                                            // 湊對要在更新之前，配到的當幀就停下來
   for (let i = 0; i < workers.length; i++) updWorker(workers[i], i, dt);
   stepDust(dt);
+  stepDust(dt, billows);                                 // 強爆炸的火團：自己一池，同一套推法（v1.279.0）
   stepTrees(dt);
   ENG.updateCamera(dt);
   if (spinOn) ENG.cam.yaw += dt * 0.16;
@@ -244,14 +376,100 @@ function step(dt) {
    只有「躺在地上的自由碎料」要沉——蓋好的建築是照格子擺的、彼此留 0.06 的縫，
    本來就不共面。 */
 const REST_SINK = 0.004;
+
+/* ── 積木 AO 的遮罩（v1.273.0，見 開發筆記〈積木 AO：凹角與牆腳暗下來（v1.273.0）〉）──
+   引擎那邊（AO_FIX）照每一塊「周圍 3×3×3 哪幾格有積木」把貼著鄰居的邊與角壓暗，這裡算那一份位元：
+   第 i 位 ＝ (dx+1)*9 + (dy+1)*3 + (dz+1)；最底層（gy 0）往下那一層當作有東西（地面），牆腳才會暗。
+   只有**砌上去的**（SET）才有遮罩，碎料、飛的、手上拿的給 0。
+   **只算變了的**：每幀逐格比 filled，變了的那格與它的 26 個鄰居重算——比對靠逐格看、不靠改的地方通知
+   （同 computeSupport 的補算，見 開發筆記〈畫面沒變就不重寫〉）。
+   地標那一份照外框開一張密集的格子表，換場那一刻建一次：預覽頁拿 bp.at（Map）查 26 個鄰居，
+   換場第一幀要 6.3～7.3 ms；陣列下標查就沒有那一頓。房子那幾份用 homeNbr 留在格子上的鄰居表。
+   aoOn 是畫面設定小窗那一格（pref.ao；v1.280.0 以前在左下面板），關掉就一律送 0（引擎那邊遮罩全 0 整段跳過）。 */
+let aoOn = true;
+const AO_BIT = NBR.map(d => (d[0] + 1) * 9 + (d[1] + 1) * 3 + (d[2] + 1));
+const AO_DOWN = NBR.map(d => d[1] < 0);
+let aoBp = null;                    // 地標那一份
+const aoHomes = new WeakMap();      // 每間房子一份
+const aoBlank = S => ({ S, has: new Int8Array(S.length).fill(-1), m: new Int32Array(S.length),
+                        mark: new Uint8Array(S.length), list: [] });
+function aoGrid(B) {
+  const S = B.slots, G = aoBlank(S);
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (const s of S) {
+    if (s.gx < x0) x0 = s.gx; if (s.gx > x1) x1 = s.gx;
+    if (s.gy < y0) y0 = s.gy; if (s.gy > y1) y1 = s.gy;
+    if (s.gz < z0) z0 = s.gz; if (s.gz > z1) z1 = s.gz;
+  }
+  x0--; y0--; z0--;                                   // 外框各留一圈，鄰居的下標就不會出界
+  const X = x1 - x0 + 2, Y = y1 - y0 + 2, Z = z1 - z0 + 2;
+  G.bp = B;
+  G.at = new Int32Array(X * Y * Z).fill(-1);          // 格子表：這一格是第幾個 slot（−1＝沒有）
+  G.idx = new Int32Array(S.length);
+  for (let i = 0; i < S.length; i++) {
+    G.idx[i] = (S[i].gx - x0) + (S[i].gy - y0) * X + (S[i].gz - z0) * X * Y;
+    G.at[G.idx[i]] = i;
+  }
+  G.off = NBR.map(d => d[0] + d[1] * X + d[2] * X * Y);
+  return G;
+}
+/* nb(i, q)：第 i 格往 NBR[q] 那個方向的鄰居是第幾格（−1＝沒有） */
+function aoRefresh(G, nb) {
+  const S = G.S, has = G.has, mark = G.mark, list = G.list;
+  const add = i => { if (!mark[i]) { mark[i] = 1; list.push(i); } };
+  for (let i = 0; i < S.length; i++) {
+    const h = S[i].filled ? 1 : 0;
+    if (h === has[i]) continue;
+    has[i] = h; add(i);
+    for (let q = 0; q < 26; q++) { const j = nb(i, q); if (j >= 0) add(j); }
+  }
+  for (let t = 0; t < list.length; t++) {
+    const i = list[t], ground = S[i].gy === 0;
+    let m = 0;
+    for (let q = 0; q < 26; q++) {
+      const j = nb(i, q);
+      if ((j >= 0 && has[j] === 1) || (ground && AO_DOWN[q])) m |= 1 << AO_BIT[q];
+    }
+    G.m[i] = m; mark[i] = 0;
+  }
+  list.length = 0;
+}
+function aoUpdate() {
+  if (bp && bp.slots && bp.slots.length) {
+    if (!aoBp || aoBp.bp !== bp || aoBp.S !== bp.slots) aoBp = aoGrid(bp);
+    const G = aoBp;
+    aoRefresh(G, (i, q) => G.at[G.idx[i] + G.off[q]]);
+  }
+  const HL = homes && homes.list;
+  if (HL) for (const h of HL) {
+    if (!h || !h.slots || !h.at) continue;
+    let G = aoHomes.get(h);
+    if (!G || G.S !== h.slots) { G = aoBlank(h.slots); aoHomes.set(h, G); }
+    aoRefresh(G, (i, q) => { const j = homeNbr(h, h.slots[i], NBR[q]); return j === undefined ? -1 : j; });
+  }
+}
+function aoOf(b) {
+  if (b.st !== SET) return 0;
+  if (b.hh >= 0) {
+    const h = homes && homes.list[b.hh], G = h && aoHomes.get(h);
+    return G && b.hk >= 0 && b.hk < G.m.length ? G.m[b.hk] : 0;
+  }
+  return b.slot >= 0 && aoBp && aoBp.bp === bp && b.slot < aoBp.m.length ? aoBp.m[b.slot] : 0;
+}
+
 function draw() {
   ENG.setBlockCount(blocks.length);
+  if (aoOn) aoUpdate();
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     _e.set(b.rx, b.ry, b.rz);
     const wob = b.wob > 0 ? Math.sin(b.wob * 40) * b.wob * 0.06 : 0;
     const sink = b.st === FREE && b.rest ? (i & 7) * REST_SINK : 0;
-    ENG.putBlock(i, b.x + wob, b.y - sink, b.z, _e, b.scale * b.al, b.r, b.g, b.b);
+    const ao = aoOn ? aoOf(b) : 0;
+    /* 小黑洞吸之前那一秒在抖（v1.221）：只加在畫出來的位置上，b.x／y／z 不動（見 holeQuake） */
+    if (b.qk) ENG.putBlock(i, b.x + wob + b.qx, b.y - sink + b.qy, b.z + b.qz, _e,
+                           b.scale * b.al, b.r, b.g, b.b, ao);
+    else ENG.putBlock(i, b.x + wob, b.y - sink, b.z, _e, b.scale * b.al, b.r, b.g, b.b, ao);
   }
   ENG.commitBlocks();
 
@@ -260,12 +478,35 @@ function draw() {
      ENG.setWorkerCount 只是把網格的 count 設成「這一幀有幾個人」，跟規則那邊的
      人數設定（game-workers.js 的 setWorkerCount）是兩件事。 */
   const arms = archerList();
-  ENG.setWorkerCount(workers.length + arms.length);
+  /* 火槍兵（v1.227）再接在弓箭手後面，同一顆網格（引擎的 MAXW 已經留好這 60 個位子）。 */
+  const guns = musketList(), g0 = workers.length + arms.length;
+  ENG.setWorkerCount(g0 + guns.length);
+  /* 從林帶進出場那一段淡入淡出（v1.256.0，見 woodFade）：**畫之前照當下的位置算**。alpha 只是畫法，
+     在 step 裡算的話畫出來的是「上一次 step 時站在哪」的濃淡——step 之後才被搬過位置的
+     （測試直接把牠搬到場中間、道具直接改位置）就對不上。動物那一份在下面 putBeasts 前面。 */
+  for (const w of workers) woodFade(w, 0);
   for (let i = 0; i < workers.length; i++) ENG.putWorker(i, workers[i]);
   for (let i = 0; i < arms.length; i++) ENG.putWorker(workers.length + i, arms[i]);
+  for (let i = 0; i < guns.length; i++) ENG.putWorker(g0 + i, guns[i]);
   ENG.commitWorkers();
-  ENG.putEmotes(workers);            // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位）
-  ENG.putBeasts(beastList());        // 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）
+  ENG.putEmotes(emoList());          // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位；v1.274.0 起猴子聊完也冒）
+  /* 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）。Saber（v1.222）也在這份清單裡，
+     putBeasts 把她那一格留空、putSabers 用她自己那顆 mesh 畫（索引對齊，點選才對得回去）；
+     她的光柱跟著劍一起畫（v1.223），不另外一份清單。 */
+  const bl = beastList();
+  if (beasts) for (const m of beasts) woodFade(m, beastOut(m));   // 見上面小人那一段（v1.256.0）
+  ENG.putBeasts(bl);
+  ENG.putSabers(bl);
+  ENG.putLevis(bl);                  // 里維兵長（v1.230）同 Saber：自己一顆 mesh、索引對齊
+  ENG.putMegs(bl);                   // 惠惠（v1.247.0）同上
+  ENG.putZens(bl);                   // 善逸（v1.251.0）同上，雷光與光痕也在這一支畫
+  ENG.putGojos(bl);                  // 五條悟（v1.255.0）同上，手上的赫／蒼／茈也在這一支畫
+  ENG.putFrierens(bl);               // 芙莉蓮（v1.259.0）同上，防護罩也在這一支畫
+  ENG.putDiablos(bl);                // Diablo 同上（自己一顆 mesh）
+  ENG.putDragons(bl);                // 飛龍（v1.277.0 重製）同上
+  ENG.putCoins(coinList());          // Diablo 死掉噴出來的金幣（純特效）
+  ENG.fadeHumans(bl);                // 上面七位裡正在淡入淡出的那幾位搬到半透明那一顆（v1.256.0，見 woodFade）
+  ENG.putPurps(purpList());          // 飛出去的紫球（自己一份清單：放出去就是自己的東西）
 
   ENG.putTrees(trees);
   ENG.putDust(dustList());
@@ -275,17 +516,32 @@ function draw() {
   ENG.putCannons(cannons ? cannons.list : EMPTY);      // 加農砲（v1.204）
   ENG.putShells(cannons ? cannons.shells : EMPTY);
   ENG.putBombs(bombs || EMPTY);
+  ENG.putMeats(meats || EMPTY);                     // 肉（v1.261.0）：沒有就 visible=false
   /* 只把真的在天上飛的隕石丟過去（還在倒數的那幾顆連影子都不該有）。
      重用同一個陣列，不要每幀配置一個新的。 */
   metFly.length = 0;
   if (meteors) for (const m of meteors) if (m.lit) metFly.push(m);
   ENG.putMeteors(metFly);
-  ENG.putBalls(balls || EMPTY);
-  ENG.putTornados(twists || EMPTY);
+  /* 球同理：破壞模式還在等出手的那幾顆不畫（v1.275.0，見 launchBall） */
+  ballOn.length = 0;
+  if (balls) for (const o of balls) if (!(o.wait > 0)) ballOn.push(o);
+  ENG.putBalls(ballOn);
+  /* 彈跳球同理（v1.278.0，見 launchBounce） */
+  bncOn.length = 0;
+  if (bncs) for (const o of bncs) if (!(o.wait > 0)) bncOn.push(o);
+  ENG.putBncs(bncOn);
+  /* 龍捲風同理：破壞模式還在等出場的那幾道不畫（v1.270.0，見 launchTornado）。 */
+  twOn.length = 0;
+  if (twists) for (const w of twists) if (!(w.wait > 0)) twOn.push(w);
+  ENG.putTornados(twOn);
   ENG.putFire(fireList());
   ENG.putFlash(flashes);
   ENG.putStars(stars);
   ENG.putBolts(bolts.length ? boltList() : EMPTY);
+  /* 打雷（v1.283.0）：粗雷、亮球、兩盞點光源、天色。沒有雷雨時 stormFx 給空的、暗度 0（引擎那邊同一個值不重設） */
+  stormFx();
+  ENG.putStorm(stormPaths, stormBalls, stormLamps);
+  ENG.setGloom(stormGloom);
   /* 魔法陣、爆炸光環、保齡球的瞄準環共用同一組環，在這裡合起來丟過去。
      魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。
      沒東西在瞄／沒魔法陣時不做 concat：那是每幀都會跑到的路徑。 */
@@ -306,7 +562,8 @@ function draw() {
   if (dozers) ENG.putDozers(dozRender(dozers));
   ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
   ENG.putPools(water ? poolList() : EMPTY, water ? water.wave : 0);   // 水窪同理
-  ENG.putMarks(marks);                              // 地上的焦黑與坑洞（沒有就 visible=false）
+  ENG.putMarks(marks, bloods);                      // 地上的焦黑與坑洞、屍體身下的血泊（v1.240）（沒有就 visible=false）
+  ENG.putSears(sears, scorches);                    // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），同上
   /* 王之財寶（v1.132）：門與兵器是兩份清單——門收掉之後兵器還在飛、還躺在地上慢慢淡，
      所以兩邊各自判斷有沒有東西要畫。 */
   ENG.putGates(gates ? gateList() : EMPTY);
@@ -315,9 +572,13 @@ function draw() {
   ENG.putGifts(gifts || EMPTY);                     // 道具泡泡（v1.214）：沒有就 visible=false
   /* 幽浮（v1.167）。飛出場之後還在倒數丟東西的那幾台不畫，所以過一手 ufoList()。 */
   ENG.putUfos(ufoList());
+  ENG.putHoles(holeList(), holeFx);                 // 小黑洞（v1.221）：黑球 ＋ 收掉那一下的黑色火球
 }
 const EMPTY = [];
 const metFly = [];              // draw() 每幀重填：這一刻真的在天上的隕石
+const twOn = [];                // draw() 每幀重填：這一刻已經出場的龍捲風
+const ballOn = [];              // draw() 每幀重填：這一刻已經出手的球（保齡球、天降鐵球）
+const bncOn = [];               // draw() 每幀重填：這一刻已經出手的彈跳球（v1.278.0）
 
 /* ── 輸入 ───────────────────────────────────────────────── */
 let spinOn = false;
@@ -378,21 +639,52 @@ function onUp(e) {
      其餘破壞道具**一律不理小人**——那些是對著建築用的，被路過的人擋掉那一下就白點了。 */
   /* pick 的結果要用格子重驗一次（見 fixHit）：射線鑽得過積木之間的縫，
      不驗的話這一下會落在牆後面那一塊、或牆後面的地上。 */
-  const hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man'
-                                  : tool === 'fire' || tool === 'bucket' ? '' : 'skip'));
+  /* Excalibur（v1.238，使用者：「類似里維 點建築&生物」）跟兵長砍猴同一檔：建築、生物、小人同一級，射線先碰到誰就是誰 */
+  /* 霹靂一閃（v1.251.0，使用者選「點得到，同 Saber／里維」）也是這一檔，生物照他自己那一份認（zenCanCut） */
+  /* 虛式「茈」（v1.255.0）同上，生物照他自己那一份認（gjCanCut） */
+  const canCut = tool === 'levi' ? leviCanCut : tool === 'excalibur' ? sabCanCut : tool === 'zenitsu' ? zenCanCut
+               : tool === 'gojo' ? gjCanCut : null;
+  /* 這兩把**碎料是透明的**（v1.239.0，使用者：「它可以點到碎料(不該可以點)」）：點的是要斬的東西，
+     地上的碎料、小人手上搬的、飛在半空的都不算，射線照樣往後找生物、建築或地面（碎料堆後面的猴子也點得到）。
+     還立著的（SET：地標、房子、城牆）才算建築，同火槍兵 v1.232。v1.238 是 useTool 那邊把碎料改判成地面，
+     里維那一把沒有——點碎料他會飛過去砍那一塊 */
+  const debris = canCut ? (k, i) => k === 'block' && !!blocks[i] && blocks[i].st !== SET : null;
+  /* 小槌子（v1.278.0，使用者：「小槌子調整能攻擊生物」，選「點得到，砸在牠身上」「小人也算」）也點 'levi' 這一檔：
+     建築、生物、小人同一級，射線先碰到誰就是誰。碎料**不**透明（那一條是斬擊類點「要斬的東西」才有的），
+     點碎料照舊是砸在那一點，跟以前一樣。大槌沒動（使用者只指名小槌子） */
+  let hit = fixHit(ENG.pick(x, y, tool === 'finger' ? 'man' : canCut || tool === 'hammer' ? 'levi'
+                                  : tool === 'fire' || tool === 'bucket' ? '' : 'skip', debris));
+  /* 兵長砍猴（v1.230）點到砍不了的（天上的飛龍／獅鷲、里維自己、飛在半空的小人、弓箭手與火槍兵）：
+     當他是透明的，照其他道具那樣看後面是建築還是地面。Excalibur 同理，生物照她自己那一份認（sabCanCut） */
+  if (hit && canCut &&
+      ((hit.kind === 'beast' && !canCut(beastAt(hit.idx))) ||
+       (hit.kind === 'worker' && !leviCanCutW(workers[hit.idx]))))
+    hit = fixHit(ENG.pick(x, y, 'skip', debris));
   if (!hit) return;
   /* 道具泡泡（v1.214）：撿起來就解鎖，跟手上拿哪一把無關，也不會用掉那一發
      ——引擎那邊已經把它排在所有東西前面（見 pick）。 */
   if (hit.kind === 'gift') { takeGift(hit.idx); return; }
   if (hit.kind === 'worker') {            // 戳小人：跌倒、手上的積木掉下來
     const w = workers[hit.idx];
-    if (!w || w.air) return;
+    /* 屍體（v1.240）畫在 fadeMesh、本來就點不到，這一條是保險 */
+    if (!w || w.air || w.dead) return;
+    /* 兵長砍猴（v1.230，使用者：「兵長點小人無效」）：叫里維飛過去砍他——同生物，只會倒地 */
+    if (tool === 'levi') { markTool(tool); callLevi(hit.point, hit.dir, w, true); return; }
+    // Excalibur（v1.238）：叫 Saber 追著他跑到射程一半斬下去（使用者選「點得到，同里維」）
+    if (tool === 'excalibur') { markTool(tool); callSaber(hit.point, w, true); return; }
+    // 霹靂一閃（v1.251.0，使用者：「可以點建築&小人」）：叫善逸追著他跑過去，八連其中一筆從他身上穿過去
+    if (tool === 'zenitsu') { markTool(tool); callZen(hit.point, w, true); return; }
+    // 虛式「茈」（v1.255.0）：叫五條悟追著他跑到射程一半，放出去那一刻照他當時的位置瞄
+    if (tool === 'gojo') { markTool(tool); callGojo(hit.point, w, true); return; }
+    // 小槌子（v1.278.0）：槌頭落下那一刻把他（連旁邊的）打倒、算一次被打，落點照常 smash（見 hammerKO）。不算 stats.poked（那是戳的）
+    if (tool === 'hammer') { markTool(tool); launchHammer(hit.point, hit.dir, false, false, w, true); return; }
     // 拿著火把戳人就是點他：站著被點著的會抱頭跑圈圈
-    if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); return; }
+    if (tool === 'fire' && igniteWorker(w, false)) { sndFire(); lifeHit(w, 'torch'); return; }
     // 拿水桶澆人：濕 5 秒（身上有火的當場熄），不會把人打倒
     if (tool === 'bucket') { wetWorker(w); splashFx(w.x, w.y + 1.4, w.z); sndWater(); return; }
-    if (w.fall <= 0 && w.burn <= 0) {
+    if (w.fall <= 0 && w.burn <= 0 && !workerSafe(w)) {   // 防護罩裡的戳不倒（v1.259.0）
       w.fall = rr(1.2, 2.4); releaseWorker(w); sndFall();
+      lifeHit(w, 'poke');                 // 被打死（v1.240）：戳一下也算一次
       stats.poked++; checkBadges();
     }
     return;
@@ -402,15 +694,27 @@ function onUp(e) {
   if (hit.kind === 'beast') {
     const m = beastAt(hit.idx);
     if (!m || m.air) return;
+    /* 兵長砍猴（v1.230）：點地上的生物＝叫里維飛過去砍牠。砍不了的那幾隻上面已經改點後面的東西了，
+       這裡的 leviCanCut 只是保險 */
+    if (tool === 'levi' && leviCanCut(m)) { markTool(tool); callLevi(hit.point, hit.dir, m); return; }
+    // Excalibur（v1.238）：點地上的生物＝叫 Saber 追著牠跑到射程一半，站定那一刻鎖定方向斬下去
+    if (tool === 'excalibur' && sabCanCut(m)) { markTool(tool); callSaber(hit.point, m); return; }
+    // 霹靂一閃（v1.251.0）：點地上的生物＝叫善逸追著牠跑過去，衝出去那一刻照牠當時的位置排路線
+    if (tool === 'zenitsu' && zenCanCut(m)) { markTool(tool); callZen(hit.point, m); return; }
+    // 虛式「茈」（v1.255.0）：點地上的生物＝叫五條悟追著牠跑過去，放出去那一刻照牠當時的位置瞄
+    if (tool === 'gojo' && gjCanCut(m)) { markTool(tool); callGojo(hit.point, m); return; }
+    /* 小槌子（v1.278.0）：槌頭落下那一刻把牠（連旁邊的）打倒、算一次被打（見 hammerKO）。
+       天上的飛龍、獅鷲照 fellBeast 那一套是打下來；落點照常 smash */
+    if (tool === 'hammer') { markTool(tool); launchHammer(hit.point, hit.dir, false, false, m); return; }
     /* 拿著火把點牠：站著被點著的會抱頭跑圈圈；飛龍是拖著火飛一段再摔下來
        （v1.154，見 burnDragon）。已經在燒或剛被澆濕的點不著，那就改成打倒／打下來
        （v1.176 起在天上的獅鷲也一樣，改成把牠打下來——見 grDown）。 */
     if (tool === 'fire') {
       /* 戳／點也算「被攻擊」（v1.208，見 game-tools.js 的 beastHit）：吉祥物切換
          要不要動手、天災被打幾次就放棄。 */
-      if (igniteBeast(m, 0)) { sndFire(); beastHit(m); }
-      else if (m.kind === 'dragon') { if (crashDragon(m)) beastHit(m); }
-      else if (m.sky) { if (grDown(m)) beastHit(m); }
+      if (igniteBeast(m, 0)) { sndFire(); beastHit(m, 'torch'); }
+      else if (m.kind === 'dragon') { if (crashDragon(m)) beastHit(m, 'torch'); }
+      else if (m.sky) { if (grDown(m)) beastHit(m, 'torch'); }
       return;
     }
     // 拿水桶澆牠：濕 5 秒（身上有火的當場熄），不會把牠打倒
@@ -420,7 +724,7 @@ function onUp(e) {
       sndWater();
       return;
     }
-    if (fellBeast(m, rr(1.2, 2.4))) { sndFall(); beastHit(m); }   // v1.208
+    if (fellBeast(m, rr(1.2, 2.4))) { sndFall(); beastHit(m, 'poke'); }   // v1.208
     return;
   }
   // 這幾種點空地也算（本來就是「選一個地點」）；其他工具要點到建築
@@ -438,9 +742,29 @@ const ORBIT_RATE = 220;
    都在 engine 那邊（lift／resetCamera），這裡只負責把鍵接上去。 */
 const LIFT_KEY = { KeyZ: -1, KeyX: 1 };
 const RESET_KEY = 'KeyC';
+/* ` 縮到工作列（桌面版的老闆鍵，使用者選的鍵）：跟標題列 ━ 那顆走同一條
+   window.desktop.minimize()，所以一樣是畫面停掉、工地繼續蓋。
+   直接用瀏覽器開這一頁時沒有 window.desktop，按了什麼事都不會發生。 */
+const MIN_KEY = 'Backquote';
 const keyDown = Object.create(null);
+/* 1～9 換道具（v1.242.0）：上排的數字鍵，右邊的數字鍵盤不算（使用者沒選）。
+   綁哪一把存在 pref.keys，見 開發筆記〈破壞道具快捷鍵 1～9〉。 */
+const HOT_KEY = /^Digit([1-9])$/;
+
+/* 只擋「匯入建築」的貼上框：藍圖是 JS，模板字串的 ` 是真的要打進去的。
+   下拉、滑桿、核取方塊不擋（跟鏡頭鍵那條防線不同）——焦點停在設定面板的元件上時，
+   老闆鍵也要一按就縮，不能先點一下畫面才按得動。
+   按著 Ctrl／⌘／Alt 的不算（同 C 復位），按住不放也只縮一次。 */
+function minKey(e) {
+  if (e.type !== 'keydown' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target && e.target.tagName === 'TEXTAREA') return;
+  if (window.desktop) window.desktop.minimize();
+}
 
 function onKey(e) {
+  if (e.code === MIN_KEY) { minKey(e); return; }
+  const hk = HOT_KEY.exec(e.code);
+  if (hk) { if (e.type === 'keydown') hotKey(e, +hk[1] - 1); return; }
   if (!PAN_KEY[e.code] && !ORBIT_KEY[e.code] && !LIFT_KEY[e.code] && e.code !== RESET_KEY) return;
   /* 只擋下拉選單與輸入框：字母鍵在 select 上是拿來跳選項的，在「匯入建築」的
      貼上框裡是真的在打字（不擋的話貼一段藍圖進去，鏡頭會跟著 WASD 一路飄走）。
@@ -464,6 +788,32 @@ function onKey(e) {
 }
 // 按著 W 切去別的視窗，keyup 收不到，切回來鏡頭會自己一直飄
 function clearKeys() { for (const k in keyDown) keyDown[k] = false; }
+
+/* 數字鍵：平常是換成那一格綁的道具；道具選單展開、指標停在某一把上時是「把這個數字綁給它」。
+   Ctrl／⌘／Alt＋數字是瀏覽器切分頁；按住不放的重送（e.repeat）不算；
+   在輸入框、下拉選單裡（快捷鍵設定頁本身就是九個下拉）按的不算，理由同 onKey。 */
+function hotKey(e, i) {
+  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'INPUT') return;
+  /* 選單收著的時候指不到：點完一把、選單當場收起來（.shut），指標還停在剛點的那顆原位，
+     那顆按鈕已經不算 :hover 了（e2e〈快捷鍵〉量過），所以那時按數字是換道具 */
+  const over = document.querySelector('#tools .tool:hover');
+  if (over) { bindKey(i, over.dataset.tool); return; }
+  const id = pref.keys[i];
+  if (!id) { toast('⌨ ' + (i + 1) + ' 還沒綁道具', '按右上 ⌨ 快捷鍵，或在道具選單指著道具按數字'); return; }
+  pickTool(TOOLS.find(t => t.id === id));
+}
+/* 把第 i 格（0 起算）綁給 id。一把道具只綁一個數字：它原本在別格的話那一格清掉。
+   同一個數字按回原本綁的那把＝取消（選單裡沒有別的辦法解除）。id 是空字串＝這格不綁。
+   不跳提示：提示的位置剛好蓋在展開的選單上，角落的數字出現或消失就是回饋。 */
+function bindKey(i, id) {
+  const k = pref.keys;
+  if (id && k[i] === id) k[i] = '';
+  else { for (let j = 0; j < KEY_N; j++) if (k[j] === id) k[j] = ''; k[i] = id; }
+  save(); renderTools();
+  if ($('keyWrap').classList.contains('on')) renderKeys();
+}
 
 /* 用真實時間推進，不吃時間倍率——開四倍速不該讓鏡頭也快四倍 */
 function panStep(dt) {
@@ -540,22 +890,38 @@ function syncHud() {
   syncSeg('wk', workerCnt);
   syncSeg('spd', timeScale);
 }
+/* 地面不透明度 v（0～100）：套到引擎、並讓滑桿與旁邊的數字跟上。
+   開場與匯入存檔走 applyPref() 叫它，拖滑桿時由 input 事件叫它。 */
+function showGround(v) {
+  ENG.setGroundAlpha(v / 100);
+  $('gnd').value = v;
+  $('gndV').textContent = v + '%';
+}
 
+/* 換成 t 這把：點選單與按數字鍵（v1.242.0）都走這裡。沒解鎖就跳提示、不換，回傳 false。 */
+function pickTool(t) {
+  if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return false; }
+  tool = t.id; aim = null; renderTools();           // 換道具就把瞄一半的第一點收掉
+  $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移、ZX 升降、C 復位　｜　滾輪縮放　｜　點小人會跌倒';
+  return true;
+}
 /* 工具選單：沒解鎖的畫成鎖住並寫出解鎖條件。
-   平常收在小窗裡（滑鼠指上去才展開），所以這裡順便把小窗更新成目前拿的那把。 */
+   平常收在小窗裡（滑鼠指上去才展開），所以這裡順便把小窗更新成目前拿的那把。
+   綁了快捷鍵的在左上角標數字（v1.242.0）；最下面那行字說怎麼綁（指著按數字，見 hotKey）。 */
 function renderTools() {
   const box = $('tools');
   box.innerHTML = '';
   for (const t of TOOLS) {
     const okNow = toolOk(t);
+    const hk = pref.keys.indexOf(t.id);
     const b = document.createElement('button');
     b.className = 'tool' + (tool === t.id ? ' on' : '') + (okNow ? '' : ' lock');
     b.dataset.tool = t.id;
-    b.innerHTML = '<span class="k">' + (okNow ? t.k : '🔒') + '</span><span class="n">' + t.n + '</span>';
+    b.innerHTML = (hk >= 0 ? '<span class="hk">' + (hk + 1) + '</span>' : '') +
+                  '<span class="k">' + (okNow ? t.k : '🔒') + '</span><span class="n">' + t.n + '</span>';
     b.title = okNow ? t.tip : t.lock.txt;
     b.addEventListener('click', () => {
-      if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return; }
-      tool = t.id; aim = null; renderTools();       // 換道具就把瞄一半的第一點收掉
+      if (!pickTool(t)) return;
       /* 選好就收起來，不要一直擋著畫面。兩個 class 都要動（v1.123，使用者：
          「選擇工具點擊後 就可以把工具清單收起來 目前要把滑鼠移開才會收」）：
          只拿掉 .open 的話 CSS 那條 `#toolbox:hover` 還按著它——指標就停在剛點的
@@ -563,10 +929,13 @@ function renderTools() {
          等指標離開小窗再撤掉（見下面的 pointerleave）。 */
       $('toolbox').classList.remove('open');
       $('toolbox').classList.add('shut');
-      $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移、ZX 升降、C 復位　｜　滾輪縮放　｜　點小人會跌倒';
     });
     box.appendChild(b);
   }
+  const tip = document.createElement('div');
+  tip.className = 'hkTip';
+  tip.textContent = '指著道具按 1～9 設快捷鍵';
+  box.appendChild(tip);
   const cur = TOOLS.find(t => t.id === tool) || TOOLS[0];
   $('toolNow').innerHTML = '<span class="k">' + cur.k + '</span><span class="n">' + cur.n +
                            '</span><span class="c">▾</span>';
@@ -574,6 +943,67 @@ function renderTools() {
   /* 這裡刻意不是 data-tool：選單裡的按鈕才是 data-tool，
      小窗也掛的話 querySelector('[data-tool=x]') 會先撈到小窗（它排在前面）。 */
   $('toolNow').dataset.cur = cur.id;
+  renderRage();                       // 換了道具，開關要不要灰掉跟著變
+}
+/* 破壞模式的開關（v1.262.0，見 game-tools.js 的 rageN）：一直顯示在工具小窗左邊（手機疊在上面），
+   拿的不是 RAGE_TOOLS 那幾把就灰掉（.na）——灰掉照樣切得動（使用者選「一直顯示，不適用時灰掉」）。 */
+function renderRage() {
+  const b = $('rageBtn'), use = !!RAGE_TOOLS[tool];
+  b.classList.toggle('on', rageOn);
+  b.classList.toggle('na', !use);
+  b.setAttribute('aria-pressed', String(rageOn));
+  b.title = '破壞模式（' + (rageOn ? '開' : '關') + '）：隕石、龍捲風、投石機、加農砲、煙火、保齡球、天降鐵球、核彈、彈跳球' +
+            '一下放到場上的上限，點的那一點加附近隨機幾處' + (use ? '' : '——現在拿的這一把不受影響');
+}
+/* 小人模式選單（v1.219，見 game-workers.js 的 LAZY_MODES）：使用者選「跟工具一樣的小窗」，
+   所以長相與開合都照 renderTools——平常只留「現在是哪一檔」，指上去或點一下才展開，
+   選完就收（.open／.shut 兩個 class 的理由見上面那段）。名字與比例只寫在 LAZY_MODES。 */
+function modeTip(m) {
+  return '施工中 ' + Math.round(m.part * 100) + '% 的小人不蓋地標、去做閒晃事件（被工具打倒就收心上工）';
+}
+function renderModes() {
+  const box = $('modes');
+  box.innerHTML = '';
+  for (const m of LAZY_MODES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mode' + (lazyMode === m.id ? ' on' : '');
+    b.dataset.mode = m.id;
+    b.innerHTML = '<span class="k">' + m.k + '</span><span class="n">' + m.n +
+                  '</span><span class="p">' + Math.round(m.part * 100) + '%</span>';
+    b.title = modeTip(m);
+    b.addEventListener('click', () => {
+      audio();
+      setLazyMode(m.id); pref.lazy = lazyMode; save(); renderModes();
+      $('modebox').classList.remove('open');
+      $('modebox').classList.add('shut');
+    });
+    box.appendChild(b);
+  }
+  const cur = LAZY_MODES.find(m => m.id === lazyMode) || LAZY_MODES[1];
+  $('modeNow').innerHTML = '<span class="k">' + cur.k + '</span><span class="n">' + cur.n +
+                           '</span><span class="c">▾</span>';
+  $('modeNow').title = '小人模式：' + modeTip(cur);
+  $('modeNow').dataset.cur = cur.id;       // 同 toolNow：不掛 data-mode，免得 querySelector 先撈到小窗
+}
+/* 快捷鍵設定頁（v1.242.0）：九格下拉，每格「（不綁）」加整張 TOOLS。沒解鎖的也列、
+   前面標 🔒（使用者選「可以綁，按了提示沒解鎖」）。改了走 bindKey，所以「一把只綁一格」
+   跟選單裡指著按數字是同一條規則，存檔也是那裡存。 */
+function renderKeys() {
+  const box = $('keys');
+  box.innerHTML = '';
+  for (let i = 0; i < KEY_N; i++) {
+    const lab = document.createElement('label');
+    lab.innerHTML = '<b>' + (i + 1) + '</b>';
+    const sel = document.createElement('select');
+    sel.dataset.key = String(i);
+    sel.innerHTML = '<option value="">（不綁）</option>' + TOOLS.map(t =>
+      '<option value="' + t.id + '">' + (toolOk(t) ? t.k : '🔒') + ' ' + t.n + '</option>').join('');
+    sel.value = pref.keys[i];
+    sel.addEventListener('change', () => bindKey(i, sel.value));
+    lab.appendChild(sel);
+    box.appendChild(lab);
+  }
 }
 function renderBadges() {
   const box = $('badges');
@@ -873,6 +1303,8 @@ function boot() {
     window.desktop.onIdle(setIdle);
     $('winMin').addEventListener('click', () => window.desktop.minimize());
     $('winClose').addEventListener('click', () => window.desktop.close());
+    /* 存檔資料夾的完整路徑，接在成就那頁「紀錄會自動存在這台電腦上」後面 */
+    window.desktop.dataDir().then(d => { $('saveDir').textContent = d; $('saveWhere').hidden = false; });
   } else {
     $('wctl').style.display = 'none';
   }
@@ -884,7 +1316,9 @@ function boot() {
   cv.addEventListener('touchstart', onDown, { passive: false });
   cv.addEventListener('touchmove', onMove, { passive: false });
   cv.addEventListener('touchend', onUp);
-  cv.addEventListener('wheel', e => { hidePanelOnPlay(); ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9); e.preventDefault(); }, { passive: false });
+  /* 滾輪朝游標縮放（v1.234）：游標底下那一點縮放時留在原地，見 engine.js 的 zoom。
+     雙指（onMove 那條）沒給座標，照舊往畫面中央縮。 */
+  cv.addEventListener('wheel', e => { hidePanelOnPlay(); ENG.zoom(e.deltaY > 0 ? 1.11 : 0.9, e.clientX, e.clientY); e.preventDefault(); }, { passive: false });
   cv.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKey);
@@ -893,14 +1327,15 @@ function boot() {
   /* 上次匯進來的藍圖要在建選單之前進 SHAPES，不然這一輪選單裡沒有它們 */
   loadImports();
   refreshShapeMenu();
-  $('shape').addEventListener('change', e => { shapePick = +e.target.value; startBuild(false); });
+  /* 換場的三個入口都先叫背景算藍圖，算好了才換（v1.265.0，見 swapBuild） */
+  $('shape').addEventListener('change', e => { shapePick = +e.target.value; swapBuild(); });
 
   /* 設定改動一律寫回 pref 並存檔——下次打開就不用重調。
      建材改了要重蓋（那是「下一座蓋多大」），小人與速度是當下就生效，不必打斷這一座。 */
-  makeSeg('cnt', CNT_OPTS, v => v, v => { targetCnt = pref.cnt = v; save(); startBuild(false); });
+  makeSeg('cnt', CNT_OPTS, v => v, v => { targetCnt = pref.cnt = v; save(); swapBuild(); });
   makeSeg('wk', WK_OPTS, v => v, v => { setWorkerCount(v); pref.wk = workerCnt; syncHud(); save(); });
   makeSeg('spd', SPD_OPTS, v => v + '×', v => { timeScale = pref.spd = v; syncHud(); save(); });
-  $('again').addEventListener('click', () => { audio(); startBuild(false); });
+  $('again').addEventListener('click', () => { audio(); swapBuild(); });
   /* 立刻建成：不想等小人搬完時用。走的是開場那條 completeNow()，
      所以人力費一毛都不加（stats.spent 只在 step() 裡隨施工時間累積），
      按不出「百萬工程」那類花錢成就；蓋過哪些地標、幾塊的大工程照記。 */
@@ -914,6 +1349,27 @@ function boot() {
   });
   $('spin').addEventListener('change', e => { spinOn = pref.spin = e.target.checked; save(); });
   $('mute').addEventListener('change', e => { muted = pref.mute = e.target.checked; save(); });
+  /* 拖的時候即時套（input），放開才存檔（change）：存檔是同步寫 localStorage，不必每一格都寫 */
+  $('gnd').addEventListener('input', e => { pref.gnd = +e.target.value; showGround(pref.gnd); });
+  $('gnd').addEventListener('change', () => save());
+  $('cap60').addEventListener('change', e => { cap60 = pref.cap = e.target.checked; save(); });
+  /* 積木 AO（v1.273.0）。再打開時不必從頭算：關著那段時間 aoUpdate 沒跑，has 還是關之前看到的樣子，
+     打開那一幀逐格一比，期間變過的格子自己就會被挑出來重算（換了一座或房子換了一份格子則整份重建） */
+  $('aoOn').addEventListener('change', e => { aoOn = pref.ao = e.target.checked; save(); });
+  /* 跟不上時降畫質那三格（v1.280.0 動態解析度；v1.281.0 加關抗鋸齒、降了就不升回去）：改哪一格都重排、回到原本那一級 */
+  for (const [id, k] of [['aaDyn', 'aa'], ['dynRes', 'dyn'], ['dynOnce', 'once']])
+    $(id).addEventListener('change', e => { pref[k] = e.target.checked; setDyn(pref.aa, pref.dyn, pref.once); save(); dispStat(); });
+  /* 畫面設定小窗（v1.280.0，使用者：「把跟畫面相關的設定 在設定中點選後加個獨立窗來設定」）：
+     鎖 60fps、積木 AO 從面板那一排搬進來，再加動態解析度。開合照快捷鍵那一頁；開著的時候每 0.3 秒更新一次現況 */
+  let dispT = 0;
+  $('dispBtn').addEventListener('click', () => {
+    dispStat();
+    $('dispWrap').classList.add('on');
+    clearInterval(dispT); dispT = setInterval(dispStat, 300);
+  });
+  $('dispWrap').addEventListener('click', e => {
+    if (e.target.id === 'dispWrap' || e.target.id === 'dispClose') { $('dispWrap').classList.remove('on'); clearInterval(dispT); }
+  });
   $('panelBtn').addEventListener('click', () => $('panel').classList.toggle('hide'));
   /* 工具選單平常靠 :hover 展開。觸控沒有 hover，所以小窗自己也能點開；
      開著的時候點畫面上任何別的地方就收起來，不然它會一直擋著。 */
@@ -929,6 +1385,19 @@ function boot() {
      它就一直記著「指標還在 #toolbox 裡」，之後再指回來連 pointerenter 也不會響。
      pointerover 是每次越過元素邊界都補一發，所以指回小窗那一下一定收得到。 */
   $('toolbox').addEventListener('pointerover', () => $('toolbox').classList.remove('shut'));
+  /* 破壞模式（v1.262.0）：點一下切換、存進 pref。它在 #toolbox 裡、#toolPick 外——指著它不會叫出選單；
+     觸控點開選單之後再點它，選單也一起收（上面那條 pointerdown 認的是整個 #toolbox，不會幫它收） */
+  $('rageBtn').addEventListener('click', () => {
+    audio();
+    rageOn = pref.rage = !rageOn; save(); renderRage();
+    $('toolbox').classList.remove('open');
+  });
+  // 小人模式的小窗（v1.219）：開合跟工具小窗同一套，理由見上面那三段
+  $('modeNow').addEventListener('click', () => $('modebox').classList.toggle('open'));
+  document.addEventListener('pointerdown', e => {
+    if (!$('modebox').contains(e.target)) $('modebox').classList.remove('open');
+  });
+  $('modebox').addEventListener('pointerover', () => $('modebox').classList.remove('shut'));
   $('badgeBtn').addEventListener('click', () => {
     renderBadges();
     $('saveMsg').className = '';              // 上一次匯入的結果不要留到下一次開啟
@@ -939,6 +1408,17 @@ function boot() {
   });
   $('resetBtn').addEventListener('click', () => {
     if (confirm('清掉所有紀錄與成就？（建築不受影響）')) { resetSave(); toast('紀錄已清空'); }
+  });
+  // 快捷鍵設定頁（v1.242.0）：開合照成就那一頁
+  $('keyBtn').addEventListener('click', () => {
+    renderKeys();
+    $('keyWrap').classList.add('on');
+  });
+  $('keyWrap').addEventListener('click', e => {
+    if (e.target.id === 'keyWrap' || e.target.id === 'keyClose') $('keyWrap').classList.remove('on');
+  });
+  $('keyClear').addEventListener('click', () => {
+    pref.keys = freshPref().keys; save(); renderTools(); renderKeys();
   });
   $('saveOut').addEventListener('click', exportSave);
   // 真正的 <input type=file> 藏起來，按鈕代點：它自己的樣子在各瀏覽器長得都不一樣
@@ -1008,6 +1488,7 @@ function boot() {
   applyPref();
   renderTools();
   renderBadges();
+  bpWorker();             // 背景算藍圖的 Worker 先開起來，第一次換場才不必等它載藍圖檔（v1.265.0）
   startBuild(true);
   completeNow();          // 開場直接給一座蓋好的建築，砸掉之後才會開始蓋下一座
   requestAnimationFrame(frame);

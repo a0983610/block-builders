@@ -4,8 +4,9 @@
 
    遊戲本身是純前端（沒有 fetch、沒有 Web Worker、three.js 是本機 lib），
    一件系統能力都不需要。唯一的 IPC 是「桌面模式」要的——無框視窗得自己做
-   最小化／關閉，最小化與還原也要通知 renderer 停畫面。遊戲邏輯一樣不碰它。 */
-const { app, BrowserWindow, Menu, ipcMain, shell, session } = require('electron');
+   最小化／關閉，最小化與還原也要通知 renderer 停畫面，成就那頁要顯示存檔資料夾在哪。
+   遊戲邏輯一樣不碰它。 */
+const { app, BrowserWindow, Menu, ipcMain, shell, session, screen } = require('electron');
 const path = require('path');
 
 /* renderer 底下就是原本那包網頁原封不動搬進來的（index.html 旁邊仍然是 lib/、src/、
@@ -44,10 +45,11 @@ const WIN_OPTS = {
    backgroundThrottling：整個「最小化之後只算不畫」的前提。最小化期間推模擬的是
      game-ui.js 的 setInterval（為什麼不是 rAF，看那邊 setIdle() 的說明），
      而實測預設值之下視窗一最小化，那個計時器會被降到一秒才跑一次——
-     50ms 的 tick 變成 1000ms，工地等於停擺。關掉之後它才穩得住 50ms。 */
+     50ms 的 tick 變成 1000ms，工地等於停擺。關掉之後它才穩得住 50ms。
+
+   大小不寫死：開窗時照主螢幕的工作區（扣掉工作列）鋪滿，見 createWindow()。
+   透明無框視窗在 Windows 上拉不動邊框，開出來多大就是多大，所以一開始就要對到螢幕。 */
 const MAIN_OPTS = {
-  width: 1280,
-  height: 860,
   frame: false,
   transparent: true,
   webPreferences: {
@@ -59,7 +61,9 @@ const MAIN_OPTS = {
 };
 
 function createWindow() {
-  const win = new BrowserWindow(MAIN_OPTS);
+  /* workArea 是主螢幕扣掉工作列之後的矩形（x／y 不一定是 0：工作列放在上面或左邊時會位移）。 */
+  const { x, y, width, height } = screen.getPrimaryDisplay().workArea;
+  const win = new BrowserWindow({ ...MAIN_OPTS, x, y, width, height });
 
   /* target="_blank" 在 Electron 預設是「再開一個 BrowserWindow」，等於拿這個 app 當瀏覽器。
      分兩種處理：
@@ -112,10 +116,12 @@ app.whenReady().then(() => {
     const w = BrowserWindow.fromWebContents(e.sender);
     if (w) w.close();
   });
+  /* 存檔放哪裡（成就那頁要顯示）：localStorage 與其他網頁資料都在 userData 底下 */
+  ipcMain.handle('app:dataDir', () => app.getPath('userData'));
 
   const win = createWindow();
 
-  /* 少了選單列就沒有開發者工具的快捷鍵，留一個 F12（遊戲的操作鍵是 WASD／QE／ZX／C，不會撞到） */
+  /* 少了選單列就沒有開發者工具的快捷鍵，留一個 F12（遊戲的操作鍵是 WASD／QE／ZX／C 與縮小的 `，不會撞到） */
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools();
   });

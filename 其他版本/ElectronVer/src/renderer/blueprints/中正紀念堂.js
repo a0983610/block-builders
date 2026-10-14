@@ -1,4 +1,5 @@
 // 檔名：中正紀念堂.js
+// v1.263.0：只調色（格子一格沒動）：屋頂改藍琉璃瓦、簷口深藍，牆身白配簷下陰影，台基灰白帶風化斑，寶頂金；下層簷改成只畫留下的那幾層、不再整座畫完再挖（見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉）
 // 正面：宏偉白色收分堂體坐落於多層寬闊石階之上，正中大拱門與金字門匾，頂覆雙層八角起翹重簷與金寶頂
 // 側面：正方對稱收分大理石牆身，雙層八角攢尖頂坡度平緩起翹，基座欄杆層次分明
 // 三樣識別物：雙層重簷八角攢尖頂與金寶頂、正面三段式大階梯與中央大理石御路、純白收分牆身與大圓拱門
@@ -6,12 +7,13 @@
 customBlueprint({
   name: '中正紀念堂',
   pal: [
-    '#b4b5b9', // 0 白大理石主體、堂體收分白牆、御路石雕
-    '#acadb2', // 1 次級台基底座、石階扶手與護欄
-    '#aeb1b4', // 2 台階踏步、大理石地坪鋪面
-    '#8c8884', // 3 八角攢尖頂青瓦面、屋簷坡面
-    '#938d87', // 4 拱門券框、門額底板、斗拱陰影層、內部坐像剪影
-    '#99938b'  // 5 金色攢尖寶珠頂、門匾金色字體
+    '#e1dcd2', // 0 白大理石：堂體收分白牆、平台欄杆與階梯扶手、御路、重簷間平座
+    '#aaa59b', // 1 白石陰影：簷下那一圈牆、拱門券框、銅像基座、台基最底層、台基側壁風化斑
+    '#c3bfb6', // 2 灰白花崗石：台基側壁、平台鋪面、台階踏步
+    '#2c5ca6', // 3 藍色琉璃瓦：八角重簷坡面
+    '#1b3a72', // 4 深藍：簷口最外那一層、斗拱層、門額匾底
+    '#d8a936', // 5 金：攢尖寶頂與托盤、匾面金字
+    '#3f3a36'  // 6 深色：殿內銅像、側立面窗洞
   ],
   lo: 2.4,
   hi: 18.5,
@@ -25,13 +27,25 @@ customBlueprint({
     const plW = bw + dim(s, 0.85, 4, true);// 大理石平台寬
     const plD = bw + dim(s, 0.85, 4, true);// 大理石平台深
 
+    // 固定雜湊（座標的純函式，同一個 s 每次產出一樣）：石材每一塊各自風化，不做一層一色的條紋
+    const hash = (x, y, z) => (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) % 100;
+
     // 1. 白色大理石寶座台基與平台（中空結構節省積木）
-    v.box(0, 0, 0, plW + 4, 1, plD + 4, 1);    // 最底層寬闊基台
-    v.walls(0, 1, 0, plW, baseH, plD, 1, 1);    // 側壁白石牆
+    v.box(0, 0, 0, plW + 4, 1, plD + 4, 1);    // 最底層寬闊基台（貼地那層用陰影色）
+    /* 側壁花崗石牆：照 v.walls（牆厚 1）的排法逐格蓋，當場用雜湊挑三成風化斑，
+       格子跟 v.walls 一格不差，又不必蓋完再掃一遍 */
+    {
+      const hx = (plW - 1) / 2, hz = (plD - 1) / 2;
+      for (let j = 0; j < baseH; j++) for (let i = 0; i < plW; i++) for (let k = 0; k < plD; k++) {
+        if (i >= 1 && i < plW - 1 && k >= 1 && k < plD - 1) continue;
+        const x = Math.round(-hx + i), y = 1 + j, z = Math.round(-hz + k);
+        v.set(x, y, z, hash(x, y, z) < 30 ? 1 : 2);
+      }
+    }
     v.box(0, baseH, 0, plW, 1, plD, 2);        // 頂層平台大理石鋪面
 
     // 平台四周白石欄杆
-    v.walls(0, baseH + 1, 0, plW, 1, plD, 1, 1);
+    v.walls(0, baseH + 1, 0, plW, 1, plD, 0, 1);
 
     // 2. 正面宏偉大階梯與中央大理石御路（正面朝向 -z）
     const frontEdgeZ = -Math.floor(plD / 2);
@@ -52,9 +66,9 @@ customBlueprint({
     const halfStW = Math.floor(stW / 2);
     mirrorX(v, halfStW + 1, (vv, dx) => {
       for (let i = 0; i < stSteps; i++) {
-        vv.box(dx, i + 1, stZ + i, 1, 1, 1, 1);
+        vv.box(dx, i + 1, stZ + i, 1, 1, 1, 0);
       }
-      vv.box(dx, 1, stZ - 1, 1, 2, 1, 1); // 階前抱鼓石/望柱
+      vv.box(dx, 1, stZ - 1, 1, 2, 1, 0); // 階前抱鼓石/望柱
     });
 
     // 3. 純白大理石主堂本體（微收分四方石垣）
@@ -65,12 +79,14 @@ customBlueprint({
       w1: bwTop, d1: bwTop,
       h: bh, c: 0, t: 1
     });
+    // 最上面那一層（boxTaper 的頂層剛好是 bwTop 見方）在簷下，換陰影色
+    v.walls(0, hallY + bh - 1, 0, bwTop, 1, bwTop, 1, 1);
 
     // 兩側立面裝飾窗欞飾線（打破側牆平板感）
     const sideWinH = dim(s, 0.35, 2);
     const sideWinY = hallY + Math.round(bh * 0.35);
     mirrorX(v, Math.floor(bwTop / 2), (vv, dx) => {
-      vv.box(dx, sideWinY, 0, 1, sideWinH, dim(s, 0.28, 1, true), 4);
+      vv.box(dx, sideWinY, 0, 1, sideWinH, dim(s, 0.28, 1, true), 6);
     });
 
     // 4. 正面大圓拱門、門額金匾與殿內剪影
@@ -78,14 +94,14 @@ customBlueprint({
     const archH = dim(s, 0.50, 3);
     const frontZ = -Math.floor(bw / 2); // 正面牆在 -z 側
 
-    // 正面圓拱門（補深色拱圈並挖出通道）
-    arch(v, 0, hallY, frontZ, archW, archH, 2, 4);
+    // 正面圓拱門（補一圈陰影色的拱圈並挖出通道）
+    arch(v, 0, hallY, frontZ, archW, archH, 2, 1);
 
     // 大殿正中央銅像神聖坐姿剪影
     const statueH = Math.min(bh - 2, archH + 1);
-    v.box(0, hallY, 0, 3, 1, 3, 4);      // 銅像基座
-    v.box(0, hallY + 1, 0, 2, Math.max(1, statueH - 1), 2, 4); // 坐姿身軀
-    v.set(0, hallY + 1 + Math.max(1, statueH - 1), 0, 4);       // 銅像首
+    v.box(0, hallY, 0, 3, 1, 3, 1);      // 銅像基座
+    v.box(0, hallY + 1, 0, 2, Math.max(1, statueH - 1), 2, 6); // 坐姿身軀
+    v.set(0, hallY + 1 + Math.max(1, statueH - 1), 0, 6);       // 銅像首
 
     // 正門上方「中正紀念堂」金字門匾
     const plaqueY = hallY + archH + Math.floor(archW / 2) + 1;
@@ -98,6 +114,17 @@ customBlueprint({
       v.set(0, plaqueY, fz - 1, 5);           // 匾面正中金字
     }
 
+    /* 八角屋頂：四坡頂正交一份、轉 45 度一份。逐層照 hipRoof 的寫法畫（每層四邊各縮 1 格），
+       最下面那層是簷口用深藍、上面是藍琉璃瓦；layers 給了就只畫最下面那幾層。 */
+    const roof8 = (y0, span, layers) => {
+      const draw = vv => {
+        for (let i = 0, w = span; w >= 1 && i < layers; i++, w -= 2)
+          vv.box(0, y0 + i, 0, w, 1, w, i === 0 ? 4 : 3);
+      };
+      draw(v);
+      stampY(v, 45, draw);
+    };
+
     // 5. 下層八角重簷屋頂（正交與45度重疊起翹簷口）
     const e1Span = bwTop + dim(s, 0.45, 4, true);
     const eave1Y = hallY + bh;
@@ -107,13 +134,11 @@ customBlueprint({
     v.box(0, eave1Y, 0, bwTop + 1, 1, bwTop + 1, 4);
     stampY(v, 45, vv => vv.box(0, eave1Y, 0, bwTop + 1, 1, bwTop + 1, 4));
 
-    // 下層八角飛簷坡面
-    hipRoof(v, 0, eave1Y + 1, 0, e1Span, e1Span, 3);
-    stampY(v, 45, vv => hipRoof(vv, 0, eave1Y + 1, 0, e1Span, e1Span, 3));
-
-    // 切平下層飛簷上方多餘坡度，露出精確厚度之起翹飛簷
-    const clearSpan = Math.round(e1Span * 1.5) + 4;
-    v.carve(0, eave1Y + 1 + eave1H, 0, clearSpan, e1Span, clearSpan);
+    /* 下層八角飛簷坡面：只畫最下面 eave1H 層（露出精確厚度之起翹飛簷）。
+       舊版是整座四坡頂畫完（連轉 45 度那份），再挖掉 clearSpan²×e1Span 那一大塊切平：
+       10000 塊那檔（s=13.49）一次 gen 要逐格刪 38400 格、寫 29074 次，改成只畫留下的那幾層後
+       刪 198、寫 24556，留下的格子一模一樣（lo～hi 每 0.02 比一次，0 處不同）。 */
+    roof8(eave1Y + 1, e1Span, eave1H);
 
     // 6. 重簷間八角平座暗樓（白色八角過渡頸部）
     const midY = eave1Y + 1 + eave1H;
@@ -130,9 +155,8 @@ customBlueprint({
     v.box(0, topRoofY, 0, midW + 1, 1, midW + 1, 4);
     stampY(v, 45, vv => vv.box(0, topRoofY, 0, midW + 1, 1, midW + 1, 4));
 
-    // 八角攢尖頂坡面匯聚
-    hipRoof(v, 0, topRoofY + 1, 0, e2Span, e2Span, 3);
-    stampY(v, 45, vv => hipRoof(vv, 0, topRoofY + 1, 0, e2Span, e2Span, 3));
+    // 八角攢尖頂坡面匯聚（整座畫到頂）
+    roof8(topRoofY + 1, e2Span, Infinity);
 
     // 8. 頂部金色攢尖寶頂
     const spireY = topRoofY + 1 + Math.ceil(e2Span / 2);
@@ -140,7 +164,7 @@ customBlueprint({
     const spireH = dim(s, 0.22, 2);
 
     // 寶座托盤
-    v.cyl(0, spireY, 0, spireR + 1, 1, 4);
+    v.cyl(0, spireY, 0, spireR + 1, 1, 5);
     // 葫蘆金球寶珠頂
     v.cyl(0, spireY + 1, 0, spireR, spireH, 5);
     v.set(0, spireY + 1 + spireH, 0, 5);
