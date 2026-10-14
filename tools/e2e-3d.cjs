@@ -1650,6 +1650,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       panelOk: checkBlueprint('__測 最小一八七二', { ver: VERSION })
     };
     r.good.big = good.warns.filter(w => w.indexOf('一大組懸空') === 0).length;
+    /* 面板兩檔各挑到的 s：拿 fitScale 自己算一次，跟報告上印的比 */
+    const goodSh = SHAPES[bpIndexOf('範例小教堂')];
+    r.goodPanel = BP_PANEL.map(t => {
+      const s = fitScale(goodSh, t);
+      return t + ' → ' + genCells(goodSh, s).cells().length + ' s=' + s.toFixed(2);
+    });
     r.palGot = palGot;
     for (const k of ['boom', 'args', 'nan', 'pal', 'gone', 'pin', 'seam', 'sign', 'white', 'missing', 'thin', 'pyr',
                      'tiny300', 'nine', 'floorB', 'loBig', 'panelOk'])
@@ -1671,6 +1677,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      diag.targets.length === 4 && diag.targets[diag.targets.length - 1] === 10000 &&
      diag.targets.every(t => new RegExp('\\n\\s+' + t + ' → ').test(diag.good.text)),
      '量了 ' + diag.targets.join('／') + ' 四個尺寸');
+  /* v1.287.0：說明書請玩家拍 9000 那一檔的四視圖，AI 要算部件在圖上幾格得拿那一檔的 s——
+     見 開發筆記〈盲測第三回：一兩次就要做好（v1.287.0）〉 */
+  const panelLine = (diag.good.text.split('\n').find(l => l.indexOf('  面板 ') === 0) || '').trim();
+  ok('報告印出面板兩檔各挑到的 s 與格數，跟 fitScale 算的一樣',
+     panelLine === '面板 ' + diag.goodPanel.join('　') + '（四視圖拍的那一檔，部件在圖上幾格拿這個 s 算）',
+     panelLine || '(報告裡沒有面板那一行)');
   ok('gen 丟例外會被抓到，錯誤訊息原封不動寫進報告',
      diag.boom.fails.length > 0 && diag.boom.text.indexOf('測試用的爆炸') > 0,
      diag.boom.fails.join('；'));

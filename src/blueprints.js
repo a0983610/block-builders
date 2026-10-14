@@ -9017,6 +9017,15 @@ function checkBlueprint(which, opt) {
         + '或用了這份說明文件裡沒有的函式。');
   }
 
+  /* 面板那兩檔各挑到的 s（v1.287.0）：說明書請玩家拍 9000 那一檔的四視圖回來，
+     AI 要算「這個部件在圖上幾格」得拿那一檔的 s 代進公式——上面那一表只有 3000 與 10000。
+     只印、不判。字元圖的 s 是自動反推的，AI 用不到，不印。
+     見 開發筆記〈盲測第三回：一兩次就要做好（v1.287.0）〉 */
+  const pShown = BP_PANEL.map(t => prow[t]).filter(Boolean);
+  if (!isLayers && pShown.length === BP_PANEL.length)
+    L.push('  面板 ' + pShown.map(p => p.t + ' → ' + p.n + ' s=' + p.s.toFixed(2)).join('　') +
+           '（四視圖拍的那一檔，部件在圖上幾格拿這個 s 算）');
+
   /* 尺寸、站幾格、配色 */
   const big = rows.filter(r => !r.err).pop();
   if (big) {
