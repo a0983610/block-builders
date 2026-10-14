@@ -1036,7 +1036,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (const s of b.slots) {
         if (s.y < minY) minY = s.y;
         if (s.y > maxY) maxY = s.y;
-        if (!(s.c >= 0 && s.c < 16)) badPal = true;
+        /* 索引要落在這一座自己的 pal 裡（v1.286.0 以前寫死 < 16：第一版就有、沒寫理由，
+           遊戲那邊一律 bp.pal[s.c % bp.pal.length]、沒有色數上限；體檢擋的也是「超出 pal」。
+           盲測落地的三色糰子與熱茶用了 18 色才踩到） */
+        if (!(Number.isInteger(s.c) && s.c >= 0 && s.c < b.pal.length)) badPal = true;
       }
       out.push({ n: b.name, cnt: b.slots.length, sorted, minY, maxY, h: b.height,
                  r: b.radius, pal: b.pal.length, badPal });
@@ -1045,7 +1048,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   }, 1000);
   ok('每一座都產得出來（含自訂的）', bpAll.length === ALL_SHAPES,
      bpAll.length + ' / ' + ALL_SHAPES);
-  ok('每座都有名字與配色', bpAll.every(b => b.n && b.pal > 0 && !b.badPal));
+  ok('每座都有名字與配色', bpAll.every(b => b.n && b.pal > 0 && !b.badPal),
+     bpAll.filter(b => !b.n || !(b.pal > 0) || b.badPal).map(b => b.n || '(沒名字)').join('、') ||
+     '最多 ' + Math.max(...bpAll.map(b => b.pal)) + ' 色');
   ok('施工順序由下往上', bpAll.every(b => b.sorted),
      bpAll.filter(b => !b.sorted).map(b => b.n).join(','));
   ok('最低一層貼在地面（y=0）', bpAll.every(b => b.minY === 0),
@@ -1464,7 +1469,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('lattice 在兩根柱子之間拉出交叉斜撐', bpTool.lat.n > 40 && bpTool.lat.mid,
      bpTool.lat.n + ' 格，跨距中段有料');
   /* limb（v1.157）：在此之前工具箱沒有「斜的量體」，人像的四肢只能拿 box 疊
-     ——倉庫裡三尊人像（自由女神、獅身人面像、八卦山大佛）全是那樣畫的。 */
+     ——倉庫裡三尊人像（自由女神、獅身人面像、八卦山大佛）當時全是那樣畫的
+     （三尊後來都重畫了：前兩尊 v1.285.0、八卦山大佛 v1.286.0）。 */
   ok('limb 在兩點之間拉出一根有粗細的東西，而且整根接得起來',
      bpTool.lb.one && bpTool.lb.n > 150 && Math.abs(bpTool.lb.slope - 8) < 0.6,
      '斜 45 度、r=2：' + bpTool.lb.n + ' 格連成一組；往上 8 層，橫向也移了 ' +
@@ -1540,11 +1546,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     mk('__壞 配色', { pal: ['#fff'], lo: 2, hi: 9,
       gen(v, s) { v.box(0, 0, 0, dim(s, 2, 5), dim(s, 2, 5), dim(s, 2, 5), 3); } });
     /* ③ 小尺寸時整組部件消失。真實案例是「尺寸沒給下限，算出 0 就什麼都沒畫」，
-       這裡用一個門檻直接模擬那個結果（300 塊時 s≈3.5、3000 塊時 s≈7.2）。 */
+       這裡用一個門檻直接模擬那個結果。v1.286.0 起在面板最小那一檔（1800）判，
+       所以門檻要卡在 1800 與 3000 之間（1800 塊時 s≈5.8、3000 塊時 s≈6.8）。 */
     mk('__壞 消失', { pal: ['#fff', '#c00'], lo: 2, hi: 9, gen(v, s) {
       const w = dim(s, 2, 5), h = dim(s, 2, 5);
       v.box(0, 0, 0, w, h, w, 0);
-      if (s > 5) v.box(0, h, 0, 3, 3, 3, 1);       // 頂上的小塔尖
+      if (s > 6.5) v.box(0, h, 0, 3, 3, 3, 1);     // 頂上的小塔尖
+    } });
+    /* ③b 只有 300 那一階不見（v1.286.0）：面板選不到 300，不算必修，但報告要記一行讓 AI 知道不用改 */
+    mk('__測 三百才消失', { pal: ['#fff', '#c00'], lo: 2, hi: 9, gen(v, s) {
+      const w = dim(s, 2, 5);
+      v.box(0, 0, 0, w, w, w, 0);
+      if (s > 4.5) v.box(0, w, 0, 3, 3, 3, 1);     // 300 塊時 s≈3.3、1800 塊時 s≈5.8
     } });
     // ④ 整棟只靠一格站在地上
     mk('__壞 針尖', { pal: ['#fff'], lo: 2, hi: 9, gen(v, s) {
@@ -1576,6 +1589,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       v.box(0, 0, 0, w, h, w, 0);
       v.box(0, h + 1, 0, w, h, w, 1);
     } });
+    /* ⑧b 接縫只在面板的 9000 那一檔斷開（v1.286.0）：盲測時一顆佛頭在 9000 跟肩膀斷開、
+       10000 剛好接上，報告只量四階，寫「懸空 0 格」。這裡先產一次問 fitScale 9000 挑到哪個 s，
+       只在那個 s 空一層——空不空都是同樣的格數，所以挑到的 s 不會因此改變。 */
+    let gapS = NaN;
+    const nineIdx = mk('__壞 九千接縫', { pal: ['#fff', '#c00'], lo: 2, hi: 24, gen(v, s) {
+      blob(v, 0, s, 0, s, s, s, 0);
+      let ty = 0; while (v.has(0, ty + 1, 0)) ty++;            // 球頂那一格
+      v.box(0, ty + (s === gapS ? 2 : 1), 0, 10, 6, 10, 1);
+    } });
+    gapS = fitScale(SHAPES[nineIdx], 9000);
+    const nineS = [1800, 3000, 10000].map(t => fitScale(SHAPES[nineIdx], t));
+    /* ⑫ s 壓到 lo 還太大，分兩種（v1.286.0）：每個 dim 都落在下限（lo 調小沒用），
+       或 lo 本身給太大（調小就有用）。v1.66 與這次盲測都照「把 lo 調小」做了、白忙一場 */
+    mk('__壞 下限撐著', { pal: ['#fff'], lo: 2, hi: 12, gen(v, s) {
+      const w = dim(s, 2, 14);
+      v.box(0, 0, 0, w, w, w, 0);
+    } });
+    mk('__壞 lo 太大', { pal: ['#fff'], lo: 8, hi: 14, gen(v, s) {
+      const w = dim(s, 2, 3);
+      v.box(0, 0, 0, w, w, w, 0);
+    } });
+    /* ⑬ 最小就是 1872 格：1600 那一階 +17%，但面板最小那一檔 1800 只差 +4%，不該提醒 */
+    mk('__測 最小一八七二', { pal: ['#fff'], lo: 2, hi: 9, gen(v, s) {
+      v.box(0, 0, 0, dim(s, 2, 12), dim(s, 2, 13), dim(s, 2, 12), 0);
+    } });
     // ⑨ 不是壞法：頂上空兩格吊一小塊招牌，那是刻意的小件懸空，不該被當成「一大組」
     mk('__測 吊牌', { pal: ['#fff', '#c00'], lo: 2, hi: 9, gen(v, s) {
       const w = dim(s, 2, 5);
@@ -1604,13 +1642,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       seam: checkBlueprint('__壞 接縫', { ver: VERSION }),
       sign: checkBlueprint('__測 吊牌', { ver: VERSION }),
       white: checkBlueprint('__測 全白', { ver: VERSION }),
-      missing: checkBlueprint('根本沒有這座', { ver: VERSION })
+      missing: checkBlueprint('根本沒有這座', { ver: VERSION }),
+      tiny300: checkBlueprint('__測 三百才消失', { ver: VERSION }),
+      nine: checkBlueprint('__壞 九千接縫', { ver: VERSION }),
+      floorB: checkBlueprint('__壞 下限撐著', { ver: VERSION }),
+      loBig: checkBlueprint('__壞 lo 太大', { ver: VERSION }),
+      panelOk: checkBlueprint('__測 最小一八七二', { ver: VERSION })
     };
     r.good.big = good.warns.filter(w => w.indexOf('一大組懸空') === 0).length;
     r.palGot = palGot;
-    for (const k of ['boom', 'args', 'nan', 'pal', 'gone', 'pin', 'seam', 'sign', 'white', 'missing', 'thin', 'pyr'])
+    for (const k of ['boom', 'args', 'nan', 'pal', 'gone', 'pin', 'seam', 'sign', 'white', 'missing', 'thin', 'pyr',
+                     'tiny300', 'nine', 'floorB', 'loBig', 'panelOk'])
       r[k] = { fails: r[k].fails, warns: r[k].warns, text: r[k].text };
+    r.nineS = { gap: gapS, others: nineS };
     r.targets = BP_TARGETS.slice();
+    r.panel = BP_PANEL.slice();
+    r.cnt = CNT_OPTS.slice();
     SHAPES.length = n0;                 // 測完收掉，別影響後面掃全部 SHAPES 的測試
     return r;
   });
@@ -1647,6 +1694,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('部件在小尺寸整組消失會被抓到',
      diag.gone.fails.some(f => /整組消失/.test(f)) && diag.gone.text.indexOf('dim(s, 係數, 下限)') > 0,
      diag.gone.fails.join('；'));
+  /* v1.286.0：整組消失改在面板最小那一檔判，300 那一階不見的只記一行。
+     面板三檔都要被體檢量到（BP_TARGETS 或 BP_PANEL 其中一邊），不然那一檔的懸空與消失就沒人看 */
+  ok('整組消失在面板最小那一檔判；只有 300 那一階不見的不算必修，報告記一行說不用改',
+     diag.gone.fails.some(f => f.indexOf('在 ' + diag.panel[0] + ' 塊時整組消失') > 0) &&
+     !diag.tiny300.fails.some(f => /整組消失/.test(f)) &&
+     /300 塊那一階 pal\[1\] 不見了——面板選不到 300 塊，不算必修/.test(diag.tiny300.text) &&
+     diag.cnt.every(c => diag.targets.includes(c) || diag.panel.includes(c)) && diag.panel[0] === diag.cnt[0],
+     '消失：' + diag.gone.fails.join('；') + '；只有 300 不見那座的必修 ' + diag.tiny300.fails.length +
+     ' 條；面板 ' + diag.cnt.join('／') + '、四階 ' + diag.targets.join('／') + '、另量 ' + diag.panel.join('／'));
+  /* lo 卡住還是下限撐著：修法要分得出來，不然 AI 照第一招調小 lo，一格都不會少 */
+  const loFix = t => (t.split('\n').find(l => l.indexOf('修法：s 已經壓到 lo') >= 0) || '').trim();
+  ok('s 壓到 lo 還太大時，分得出是 lo 給太大、還是各部件的下限撐著（lo 調小沒用）',
+     /lo 調小沒有用——s 縮到 1\.4 還是 2744 格/.test(loFix(diag.floorB.text)) &&
+     /把 lo 調小（例如 5\.6：同一份 gen 在那裡是 1331 格）/.test(loFix(diag.loBig.text)) &&
+     loFix(diag.loBig.text).indexOf('沒有用') < 0,
+     '下限撐著：「' + loFix(diag.floorB.text).slice(0, 48) + '…」；lo 太大：「' + loFix(diag.loBig.text).slice(0, 48) + '…」');
+  ok('最小就超過 1600、但面板最小那一檔差不到 10% 的，1600 那一階不提醒',
+     !diag.panelOk.warns.some(w => w.indexOf('1600 塊偏差') === 0) &&
+     /1600 →  1872 +\+17% +s=[\d.]+ +✔（這座最小就是這麼大；面板最小那一檔 1800 拿到 1872 格、\+4%，沒問題）/.test(diag.panelOk.text),
+     (diag.panelOk.text.split('\n').find(l => /^\s+1600 →/.test(l)) || '(沒有 1600 那一行)').trim());
   ok('整棟只靠一格站在地上會被提醒',
      diag.pin.warns.length + diag.pin.fails.length > 0 && diag.pin.text.indexOf('最底層 1 格⚠') > 0,
      diag.pin.text.split('\n').find(l => l.indexOf('最底層') > 0) || '(沒寫到最底層)');
@@ -1656,6 +1723,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('一大組懸空（接縫差一格）會被提醒，修法講的是接縫',
      !!seamWarn && diag.seam.text.indexOf('接縫差了一格') > 0,
      seamWarn || '(沒有一大組懸空的提醒)');
+  const nineWarn = diag.nine.warns.find(w => w.indexOf('一大組懸空') === 0) || '';
+  ok('接縫只在面板的 9000 那一檔斷開也抓得到（四階量不到的那一檔）',
+     /（9000 塊那一檔，佔 \d+%）/.test(nineWarn) && /懸空 0 格/.test(diag.nine.text) &&
+     diag.nineS.others.every(s => s !== diag.nineS.gap),
+     (nineWarn || '(沒有一大組懸空的提醒)') + '；10000 那一階：' +
+     ((diag.nine.text.split('\n').find(l => l.indexOf('連通性') === 0) || '?')) +
+     '；9000 挑到 s=' + diag.nineS.gap.toFixed(2) + '，1800／3000／10000 挑到 ' +
+     diag.nineS.others.map(s => s.toFixed(2)).join('／'));
   ok('刻意的小件懸空與好的藍圖不會被當成「一大組懸空」',
      !diag.sign.warns.some(w => w.indexOf('一大組懸空') === 0) && diag.good.big === 0 &&
      /懸空 [1-9]\d* 格/.test(diag.sign.text),
@@ -1758,13 +1833,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const ver = await page.evaluate(() => VERSION);
     const web = await page.evaluate(() => checkBlueprint(0, { ver: VERSION }).text);
     const cli = nodeBP.checkBlueprint(0, { ver }).text;
-    /* 「產生時間」那兩行是當下量到的耗時，本來就會因為機器與引擎不同而有無
+    /* 「產生時間」那一行是當下量到的耗時，本來就會因為機器與引擎不同而不一樣
        （node 跟 headless chromium 的速度不一樣，同一台機器上跑兩次也可能跨過門檻），
-       而它會不會出現又會改到「結論」那行的提醒數。要比的是報告內容，
-       不是這一次量到多快，所以這三行先挑掉。 */
+       跨過門檻的那一邊還會多一行修法、改到「結論」那行的提醒數。要比的是報告內容，
+       不是這一次量到多快，所以那幾行先挑掉。v1.286.0 起「產生時間」沒超過也會印，
+       修法那一行只在超過時才有，所以只挑緊接著、以「修法：」開頭的那一行。 */
     const strip = t => t.split('\n')
       .filter((l, i, a) => l.indexOf('產生時間') < 0 && l.indexOf('結論：') < 0 &&
-                           !(i > 0 && a[i - 1].indexOf('產生時間') >= 0))
+                           !(i > 0 && a[i - 1].indexOf('產生時間') >= 0 && /^\s+修法：/.test(l)))
       .join('\n');
     const a = strip(cli), b = strip(web);
     let first = '';
@@ -2066,6 +2142,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      vTop.y > Math.abs(vTop.x) + Math.abs(vTop.z) &&
      vIso.x > 1 && vIso.z < -1,
      vpCam.map(v => v.t + ' (' + v.x + ', ' + v.y + ', ' + v.z + ')').join('　'));
+  /* 每一格都順光（v1.286.0）：engine 的太陽固定在右後上方，正面那一格以前整片背光——
+     盲測時 AI 拿那一格判斷顏色，白糰子只剩五成亮度、深色大佛正面一片黑。
+     驗的是拍那一格的當下太陽站在鏡頭那一側（水平方向的夾角 cos > 0.9，設計值偏 0.29 弧度 ≈ 0.96），
+     而且正面那一格的太陽在 −z（以前在 +z）。拍完下一幀要回到遊戲原本那個位置。 */
+  const vpSun = await vp.evaluate(() => {
+    const keep = { yaw: ENG.cam.yaw, pitch: ENG.cam.pitch };
+    const sun = ENG.three.sun;
+    const out = SHOT_VIEWS.map(v => {
+      ENG.cam.yaw = v.yaw; ENG.cam.pitch = v.pitch;
+      ENG.orbit(0, 0); ENG.updateCamera(0); shotLight();
+      const c = ENG.three.camera.position, t = { x: ENG.cam.tx, z: ENG.cam.tz };
+      const cx = c.x - t.x, cz = c.z - t.z, sx = sun.position.x - t.x, sz = sun.position.z - t.z;
+      return { t: v.t, cos: +((cx * sx + cz * sz) / Math.hypot(cx, cz) / Math.hypot(sx, sz)).toFixed(3),
+               sz: +sz.toFixed(1) };
+    });
+    ENG.cam.yaw = keep.yaw; ENG.cam.pitch = keep.pitch; ENG.updateCamera(0);
+    const back = { x: +(sun.position.x - ENG.cam.tx).toFixed(1), z: +(sun.position.z - ENG.cam.tz).toFixed(1) };
+    return { out, back };
+  });
+  ok('四視圖每一格都順光：拍的當下太陽在鏡頭那一側，拍完回到遊戲原本的位置',
+     vpSun.out.length === 4 && vpSun.out.every(v => v.cos > 0.9) && vpSun.out[0].sz < -1 &&
+     vpSun.back.x > 1 && vpSun.back.z > 1,
+     vpSun.out.map(v => v.t + ' cos ' + v.cos).join('　') + '；正面那格太陽 z ' + vpSun.out[0].sz +
+     '；拍完 (' + vpSun.back.x + ', ' + vpSun.back.z + ')');
 
   /* 貼上藍圖：做藍圖的節奏是「貼上 → 看 → 改 → 再貼」，中間不該卡著存檔案 + 編輯 list.js。
      這幾條驗的是那條路的每一種結局，包含 AI 實際輸出長什麼樣（markdown 圍籬 + 檔名那行）。 */

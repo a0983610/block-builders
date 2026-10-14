@@ -212,7 +212,7 @@
 /* 版本號：報告的抬頭要帶版本，AI 才知道手上的說明文件對不對得上。
    這一頁不載遊戲層那五支（那會把整個遊戲跑起來），所以自己留一份，
    e2e 有一條測試守著它跟 src/game.js 的 VERSION 一致。 */
-const VIEWER_VER = '1.285.0';
+const VIEWER_VER = '1.286.0';
 
 const $ = id => document.getElementById(id);
 
@@ -547,6 +547,20 @@ const SHOT_VIEWS = [
      照整個半徑退的話這一格會比另外三格小一圈。 */
   { t: '④ 45°',        yaw: -0.9,         pitch: 0.42, w: 'r',          d: 'r', dm: 0.55 }
 ];
+/* 每一格都順光（v1.286.0）：engine 的 updateCamera 把太陽固定擺在旋轉中心的 (+46, 74, +32)，
+   也就是右後上方——正面（−z）那一格整片背光，盲測量到白糰子 (230,220,200) 在正面只剩 (106,117,116)、
+   深色的大佛正面一片黑，AI 拿那一格判斷顏色與五官只會往錯的方向改。
+   改成每一格都跟「遊戲開場的預設鏡頭」（engine 的 cam.yaw 初值 0.9）同一個相對關係：
+   太陽在鏡頭方位偏 atan2(32, 46) − 0.9 ≈ −0.29 弧度，水平距離與高度照 updateCamera。
+   只在拍的當下挪，下一幀 updateCamera 就擺回去，遊戲本體的打光不動。
+   見 開發筆記〈盲測第二回：三座粗糙的自訂藍圖重做、prompt 兩輪對照（v1.286.0）〉 */
+const SHOT_SUN = { off: Math.atan2(32, 46) - 0.9, r: Math.hypot(46, 32), y: 74 };
+function shotLight() {
+  const sun = ENG.three.sun, a = ENG.cam.yaw + SHOT_SUN.off;
+  sun.position.set(ENG.cam.tx + Math.cos(a) * SHOT_SUN.r, SHOT_SUN.y, ENG.cam.tz + Math.sin(a) * SHOT_SUN.r);
+  sun.target.position.set(ENG.cam.tx, 0, ENG.cam.tz);
+  sun.target.updateMatrixWorld();
+}
 function shotPng() {
   // 叫 REN 不叫 R：下面每一格的取景半徑也叫 R，同一支函式裡兩個 R 遲早出事
   const REN = ENG.three.renderer, cv = REN.domElement, S = SHOT_CELL;
@@ -588,6 +602,7 @@ function shotPng() {
     const R = Math.max(span(v.w), v.h ? span(v.h) : cy) * 1.2 + 1.5;
     ENG.cam.dist = ENG.camTarget.dist = R / Math.sin(halfV) + span(v.d) * (v.dm || 1);
     ENG.updateCamera(0);                         // dt = 0：只換算相機位置，不做任何緩動
+    shotLight();                                 // updateCamera 剛把太陽擺回右後上方，換成順光
     ENG.render();
     const dx = (i % 2) * S, dy = Math.floor(i / 2) * S;
     g.drawImage(cv, dx, dy, S, S);

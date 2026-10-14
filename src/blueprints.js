@@ -272,7 +272,7 @@ function blob(v, x0, y0, z0, rx, ry, rz, c, shell) {
 
 /* 兩點之間長出一根**有粗細**的東西（膠囊／圓錐）：斜的手臂、大腿、脖子、尾巴、斜撐。
    為什麼要專門一支：box／cyl／taper 都只能站著或沿著某一軸躺著，斜的部件只能自己
-   切成好幾段各挪一格——實測倉庫裡三尊人像（自由女神、獅身人面像、八卦山大佛；前兩尊是 v1.285.0 重畫前的版本）的四肢
+   切成好幾段各挪一格——實測倉庫裡三尊人像（自由女神、獅身人面像、八卦山大佛；都是重畫前的版本，前兩尊 v1.285.0、大佛 v1.286.0 重畫）的四肢
    全是軸對齊的方塊疊起來的，而「人像不像」的第一名就是這個。
 
    做法是掃包圍盒、算每一格到那條線段的距離：先把格子投影到線段上（t 夾在 0～1，
@@ -8776,6 +8776,14 @@ function importBlueprint(raw, own) {
    自訂藍圖的 hi 如果只算到 3000，10000 那一階就會頂在 hi 上，
    報告會直接說「s 已經頂到 hi」——那正是要給 AI 的訊號。 */
 const BP_TARGETS = [300, 1600, 3000, 10000];
+/* 面板三檔（game.js 的 CNT_OPTS）裡 BP_TARGETS 沒量到的那兩檔（v1.286.0）。不進塊數那一表，
+   只量兩件事：一大組懸空、部件整組消失。
+   · 懸空：盲測時一顆佛頭在 9000 那一檔跟肩膀斷開、10000 那一檔剛好接上，報告寫「懸空 0 格」——
+     玩家拿得到的是 9000，那一檔沒量就等於沒量。
+   · 整組消失改在 1800（面板最小的一檔）判：300 玩家選不到（舊存檔也會被 snapOpt 吸到三檔裡），
+     盲測時 AI 花了兩版去追「300 塊才消失」的一格眼睛、一格嘴，玩家根本看不到那個尺寸。
+   見 開發筆記〈盲測第二回：三座粗糙的自訂藍圖重做、prompt 兩輪對照（v1.286.0）〉 */
+const BP_PANEL = [1800, 9000];
 const BP_SLOW_MS = 250;         // 產一份藍圖的時間預算（換建築不能卡畫面）
 /* 輪廓圖的上限：一張最多幾格寬、幾格高（超過就降採樣）。
    一格積木印成**兩個字元**，等寬字型下才是正方形（字元本身高是寬的兩倍）。 */
@@ -8917,6 +8925,31 @@ function checkBlueprint(which, opt) {
                 cells, bb: { x: [mnx, mxx], y: [mny, mxy], z: [mnz, mxz] } });
   }
 
+  /* 面板那兩檔（BP_PANEL）：不進塊數那一表，只拿來量懸空與顏色在不在。
+     gen 在這兩檔丟例外的話，四階那邊幾乎一定也丟了、已經報過，這裡不重複。 */
+  const prow = {};
+  for (const t of BP_PANEL) {
+    try {
+      const s = fitScale(sh, t), cells = genCells(sh, s).cells(), hist = {};
+      for (const c of cells) hist[c.c] = (hist[c.c] || 0) + 1;
+      prow[t] = { t, s, n: cells.length, hist, cells };
+    } catch (e) { /* 見上 */ }
+  }
+  const pMin = prow[BP_PANEL[0]];
+  const pMinDev = pMin ? Math.round((pMin.n / pMin.t - 1) * 100) : null;
+
+  /* s 壓在 lo 還太大的時候，是 lo 卡住還是各部件的下限撐著？產一份 lo×0.7 比塊數就知道。
+     v1.66（新天鵝堡、帕德嫩）與 v1.286.0 的盲測（新竹火車站）都照「把 lo 調小」做了，
+     結果一格都沒少——s 到 lo 的時候每個 dim 早就落在下限。只在真的要給這條修法時才量（一次）。 */
+  let loTest;                                     // undefined ＝ 還沒量；null ＝ 量不了（gen 在那裡丟例外）
+  const loShrinks = () => {
+    if (loTest === undefined) {
+      try { loTest = { a: genCells(sh, sh.lo).m.size, b: genCells(sh, sh.lo * 0.7).m.size }; }
+      catch (e) { loTest = null; }
+    }
+    return loTest;
+  };
+
   /* 塊數 */
   L.push('');
   L.push('塊數（目標 → 實得，偏差）');
@@ -8927,15 +8960,22 @@ function checkBlueprint(which, opt) {
     /* 門檻拿「印出來的那個整數百分比」去比，不是拿原始值——不然報告上會出現
        「+10% ✔」跟「+10% ⚠」兩種，讀報告的 AI 只會覺得規則不一致。 */
     const shown = Math.round(dev * 100);
+    const atLo = !isLayers && dev > 0 && r.s < sh.lo + span * 0.05;
     /* 最小那一階給得寬：造型的最小可行尺寸本來就可能比 300 塊大（48 座裡 15 座如此），
        那是「這座就是不能再小」，不是缺陷。硬要縮到 300 只會讓部件消失。 */
     const floor300 = r.t === BP_TARGETS[0] && shown > 10;
-    const off = Math.abs(shown) > 10 && !floor300;
+    /* 比面板最小那一檔（1800）還小的那幾階（1600）也一樣（v1.286.0）：s 已經壓到最小、
+       而面板的 1800 拿到的跟 1800 差不到 10%，玩家選得到的每一檔都沒事——
+       以前照樣 ⚠，盲測時 AI 為了 1600 +17%（面板那一檔其實 +4%）去縮部件。 */
+    const floorPanel = !floor300 && shown > 10 && atLo && r.t < BP_PANEL[0] && pMin && pMinDev <= 10;
+    const off = Math.abs(shown) > 10 && !floor300 && !floorPanel;
     if (off) warn(r.t + ' 塊偏差 ' + shown + '%');
     L.push('  ' + pad(r.t, 5) + ' → ' + pad(r.n, 5) + '  ' +
            pad((shown >= 0 ? '+' : '') + shown + '%', 5) +
            '  s=' + r.s.toFixed(2) + '  ' + (off ? '⚠' : '✔') +
-           (floor300 ? '（這座最小就是這麼大，設 300 也會拿到 ' + r.n + ' 格）' : ''));
+           (floor300 ? '（這座最小就是這麼大，設 300 也會拿到 ' + r.n + ' 格）' : '') +
+           (floorPanel ? '（這座最小就是這麼大；面板最小那一檔 ' + pMin.t + ' 拿到 ' + pMin.n +
+                         ' 格、' + (pMinDev >= 0 ? '+' : '') + pMinDev + '%，沒問題）' : ''));
     if (!off) continue;
     if (isLayers)
       L.push('    修法：字元圖的 lo/hi 是自動反推的，改不動。偏差大表示原圖太小或太細，'
@@ -8943,9 +8983,23 @@ function checkBlueprint(which, opt) {
     else if (dev < 0 && r.s > sh.hi - span * 0.05)
       L.push('    修法：s 已經頂到 hi=' + sh.hi + '，塊數追不上目標。把 hi 調大（例如 ' +
              (sh.hi * 1.4).toFixed(0) + '）。');
-    else if (dev > 0 && r.s < sh.lo + span * 0.05)
-      L.push('    修法：s 已經壓到 lo=' + sh.lo + '，最小的造型還是太大。把 lo 調小（例如 ' +
-             (sh.lo * 0.7).toFixed(1) + '），或把各部件的下限（dim 的第三個參數）改小。');
+    else if (atLo) {
+      const lt = loShrinks(), lo7 = (sh.lo * 0.7).toFixed(1);
+      const panel = r.t < BP_PANEL[0] && pMin
+        ? '面板最小那一檔是 ' + pMin.t + '，這座在那一檔拿到 ' + pMin.n + ' 格（' +
+          (pMinDev >= 0 ? '+' : '') + pMinDev + '%）。' : '';
+      if (lt && lt.b < lt.a)
+        L.push('    修法：s 已經壓到 lo=' + sh.lo + '，最小的造型還是太大。把 lo 調小（例如 ' + lo7 +
+               '：同一份 gen 在那裡是 ' + lt.b + ' 格）。' + panel);
+      else if (lt)
+        L.push('    修法：s 已經壓到 lo=' + sh.lo + '，但 lo 調小沒有用——s 縮到 ' + lo7 + ' 還是 ' + lt.b +
+               ' 格，是各部件的下限（dim 的第三個參數）撐著。' + panel +
+               '真要更小，就把佔最多格的那幾個部件的下限改小（例如乘 0.7）；部件會跟著變細，'
+               + '縮過頭的會在小尺寸整組消失。');
+      else
+        L.push('    修法：s 已經壓到 lo=' + sh.lo + '，最小的造型還是太大。把 lo 調小（例如 ' + lo7 +
+               '），或把各部件的下限（dim 的第三個參數）改小。' + panel);
+    }
     else
       L.push('    修法：塊數一階一階跳，階距太大。把跳最兇的那個維度係數調小一點，'
            + '讓別的維度連續變化去補；或者只有真的要對稱的那一個取奇數。');
@@ -8966,17 +9020,35 @@ function checkBlueprint(which, opt) {
   /* 尺寸、站幾格、配色 */
   const big = rows.filter(r => !r.err).pop();
   if (big) {
-    L.push('尺寸 ' + big.w + '×' + big.h + '×' + big.d + ' 格' +
+    // 寬×高×深（v1.286.0 補上）：盲測時 AI 拿範例的輪廓圖倒推，才確定三個數字是 x×y×z
+    L.push('尺寸（寬×高×深）' + big.w + '×' + big.h + '×' + big.d + ' 格' +
            '　最底層 ' + big.floor + ' 格' + (big.floor < 3 ? '⚠' : '✔'));
     if (big.floor < 3) {
       warn('最底層只有 ' + big.floor + ' 格');
       L.push('  修法：整棟只靠 ' + big.floor + ' 格站在地上，那幾格一掉就整棟報廢。'
            + '底下補一層地板或底座（遊戲會自動把最低那層貼到地面，不必自己保證 y=0）。');
     }
-    if (big.ms > BP_SLOW_MS) {
+    /* 沒超過也印（v1.286.0）：以前只有超過才出現，AI 改完看不出還剩多少餘裕；
+       也寫明量的是哪一檔、量了什麼（找尺寸的那幾十次 gen 也算在裡面）。
+       修法以前只講「巨大實心量體」，盲測那支 566ms 的病其實是自己寫的 tint 迴圈掃了整個外接方形。 */
+    /* 超過預算就再量兩次取最快的：單次量測跟著機器忙不忙飄——盲測時同一份迴圈一版 140ms、
+       下一版（迴圈一行沒動）425ms，AI 花了一整版去追一個量測波動。沒超過的就不重量（不多花時間）。 */
+    let ms = big.ms, tries = 1;
+    while (ms > BP_SLOW_MS && tries < 3) {
+      const t0 = Date.now();
+      try { genCells(sh, fitScale(sh, big.t)).cells(); } catch (e) { break; }
+      ms = Math.min(ms, Date.now() - t0);
+      tries++;
+    }
+    const slow = ms > BP_SLOW_MS;
+    big.ms = ms;
+    L.push('產生時間 ' + ms + 'ms（' + big.t + ' 塊那一檔，找尺寸＋產一份' + (tries > 1 ? '，量 ' + tries + ' 次取最快' : '') +
+           '；預算 ' + BP_SLOW_MS + 'ms）' + (slow ? '⚠' : '✔'));
+    if (slow) {
       warn('產一份要 ' + big.ms + 'ms');
-      L.push('產生時間 ' + big.ms + 'ms（預算 ' + BP_SLOW_MS + 'ms）⚠');
-      L.push('  修法：造型的迴圈太重，換建築時畫面會卡一下。少用逐格計算的巨大實心量體。');
+      L.push('  修法：換建築時畫面會卡一下。遊戲為了找最接近的尺寸會呼叫 gen 幾十次，gen 裡每一圈迴圈都跟著乘幾十倍。'
+           + '最常見的是自己寫的逐格迴圈掃了整個包圍盒（蓋完再逐格重上色、tint 掃整個外接方形）——'
+           + '改成只掃看得到的那一面或那一圈；其次是很大的實心量體（裡面看不到的可以挖空）。');
     }
   }
   if (maxC >= sh.pal.length) {
@@ -9026,17 +9098,19 @@ function checkBlueprint(which, opt) {
       L.push('  主色 pal[' + top + '] 佔 ' + pct(seen[top]) + '、亮度 ' + lum(sh.pal[top]).toFixed(2) +
              '；淺色（亮度 > 0.75）佔 ' + pct(light));
       if (topShare >= 0.55 || lightShare >= 0.5)
-        L.push('  主色或淺色佔了一半以上：遊戲的光照會把淺色洗得更白，蓋出來容易是一團分不出面的顏色。'
+        L.push('  主色或淺色佔了一半以上：受光的那幾面會被光照洗淡（飽和度被吃掉、往灰白靠），蓋出來容易是一團分不出面的顏色。'
              + '見〈藍圖製作說明〉第 5 節的配色規則（本來就白的東西照實物，但要配一階灰與陰影色）。');
     }
   }
 
   /* 小尺寸的部件存活：大尺寸有、小尺寸沒有的顏色，就是「那個部件整組消失了」。
-     這是自訂藍圖最常見也最難自己看出來的錯（作者只看 3000 塊那版）。 */
-  const small = rows[0], last = big;
-  if (small && !small.err && last && last !== small) {
+     這是自訂藍圖最常見也最難自己看出來的錯（作者只看 3000 塊那版）。
+     v1.286.0 起在面板最小那一檔（1800）判，不是 300——理由見 BP_PANEL。
+     300 那一階也不見的只記一行、不算必修，讓 AI 知道它看得到、但不用為它改。 */
+  const small = pMin, last = big;
+  if (small && last && last !== small) {
     L.push('');
-    L.push(small.t + ' 塊時各色還在不在（跟 ' + last.t + ' 塊比）');
+    L.push(small.t + ' 塊時各色還在不在（面板最小那一檔，跟 ' + last.t + ' 塊比）');
     const parts = [];
     for (const k of Object.keys(last.hist).sort((a, b) => a - b)) {
       const a = last.hist[k], b = small.hist[k] || 0;
@@ -9044,20 +9118,29 @@ function checkBlueprint(which, opt) {
         bad('pal[' + k + '] 在 ' + small.t + ' 塊時整組消失');
         L.push('  ✘ pal[' + k + ']　' + a + ' → 0 格，整組消失');
         L.push('    修法：這一組的尺寸下限太小。用 dim(s, 係數, 下限) 把下限提到 2 以上'
-             + '（例如 dim(s, 0.35, 2)），不要寫 Math.round(s * 0.35)。');
+             + '（例如 dim(s, 0.35, 2)），不要寫 Math.round(s * 0.35)。'
+             + '這個顏色如果是 tint／paintFrom 點上去的（眼睛、嘴、招牌字），多半是底下那個部件在小尺寸太小、'
+             + '點的位置落到別的部件上，或被後面才畫的部件、塗色蓋掉：給那個部件一個尺寸下限，五官與圖案放在最後畫。');
       } else {
         parts.push('pal[' + k + '] ' + a + '→' + b);
       }
     }
     if (parts.length) L.push('  ✔ ' + parts.join('　'));
+    const tiny = rows[0];
+    if (tiny && !tiny.err && tiny.t < small.t) {
+      const lost = Object.keys(last.hist).filter(k => small.hist[k] && !tiny.hist[k]);
+      if (lost.length)
+        L.push('  （' + tiny.t + ' 塊那一階 ' + lost.map(k => 'pal[' + k + ']').join('、') +
+               ' 不見了——面板選不到 ' + tiny.t + ' 塊，不算必修，不用為它改）');
+    }
   }
 
   /* 連通性：拿遊戲自己的那份判定（26 鄰居、從最低層往上長），報告才跟實際行為一致。
      總量**只報數字不示警**：懸空是允許的，48 座裡倫敦眼有 156 組
      小孤島（輻條與車廂），都是故意的。要判斷「這是意外嗎」只有作者自己知道，
      所以附一句怎麼看，讓 AI 自己對照它畫了什麼。
-     例外是「一大組」（BP_FLOAT_BIG，見上面）：四個尺寸裡任一檔有一組佔整座 5% 以上，
-     就示警並附修法——那幾乎都是接縫差一格，不是刻意的懸空件。 */
+     例外是「一大組」（BP_FLOAT_BIG，見上面）：四個尺寸加上面板那兩檔（BP_PANEL）裡任一檔
+     有一組佔整座 5% 以上，就示警並附修法——那幾乎都是接縫差一格，不是刻意的懸空件。 */
   L.push('');
   try {
     const b = makeBlueprint(idx, BP_TARGETS[BP_TARGETS.length - 1]);
@@ -9066,9 +9149,9 @@ function checkBlueprint(which, opt) {
     L.push('連通性（' + b.count + ' 格）：連到地面 ' + (b.count - float) + ' 格、懸空 ' +
            float + ' 格' + (b.floats.length ? '（' + b.floats.length + ' 組，其中 ' +
            tiny.length + ' 組只有 ≤4 格）' : ''));
-    /* 四個尺寸裡最嚴重的那一組（佔比最高）。只報一次：同一條接縫在好幾檔都會出現。 */
+    /* 六個尺寸裡最嚴重的那一組（佔比最高）。只報一次：同一條接縫在好幾檔都會出現。 */
     let worst = null;
-    for (const r of rows) {
+    for (const r of rows.concat(BP_PANEL.map(t => prow[t]).filter(Boolean))) {
       if (r.err || !r.n) continue;
       const g = bpFloatGroups(r.cells)[0];
       if (g && g.n / r.n >= BP_FLOAT_BIG && (!worst || g.n / r.n > worst.g.n / worst.r.n))
@@ -9133,7 +9216,7 @@ function checkBlueprint(which, opt) {
 if (typeof module !== 'undefined' && module.exports)
   module.exports = { SHAPES, VOX, makeBlueprint, genCells, fitScale, NBR, gkeyOf, customBlueprint,
                      PROP_ALIVE,
-                     checkBlueprint, bpIndexOf, BP_TARGETS,
+                     checkBlueprint, bpIndexOf, BP_TARGETS, BP_PANEL,
                      cleanPaste, bpFileName, importBlueprint,
                      dim, ringOf, rowOf, mirrorX, mirrorZ, stampY, arch, archRow, stairs, hipRoof,
                      boxTaper, windowGrid, lattice, corners4, tubeZ, wheelX,
