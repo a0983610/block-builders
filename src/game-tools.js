@@ -11880,6 +11880,7 @@ function emoList() {
    **罩子**：離她 FR_R 格內（一個半球，中心在她腳下）還站著的積木、小人、生物，什麼打過來都不動（frShield）。
    平常看不到；有東西打進來那一刻張開（引擎從法杖寶石那一點往外一格一格亮起來），打到的那一點白光一閃、一圈亮紋往外擴，
    FR_HOLD 秒沒再被打就收掉。張開到收完那幾秒她站定、把法杖舉在身前（m.fc），罩子不跟著走。
+   罩子開著時被道具叫走（v1.282.0）：當下放手收罩、她馬上跑（m.bd，見 callFrieren）。
    擋的做法是每一條路的咽喉點各問一次 frShield：
      積木  breakBlock 回 false（呼叫端照它跳過計數、點火、吸走）、igniteBlock 點不著、已經在燒的熄掉；
            垮塌時罩著的那幾塊不掉（frHang，罩子走開之後重算一次支撐）
@@ -11914,7 +11915,11 @@ function callFrieren(p) {
     toast(BEAST_NM.frieren + '應召而來', '她跑到你點的地方站一下，再四處逛；身邊 ' + FR_R + ' 格內被攻擊就張開防護罩');
   } else {
     beastCry(m);
-    toast(BEAST_NM.frieren + '聽到了', m.bt != null ? '防護罩收掉就過去' : '她轉身跑到你點的地方');
+    /* 罩子開著也叫得走（v1.282.0，使用者：「芙莉蓮調整成開護盾時也可以被道具叫走」）：點下去那一刻放手收罩（m.bd），
+       她馬上轉身跑，罩子在原地照 FR_BAR_CLOSE 收完（見 frStep）。以前要等罩子收掉才過去——
+       Diablo 一直噴、罩子一直被打就永遠收不掉，她也永遠叫不走。見 開發筆記〈罩子開著時也叫得走芙莉蓮（v1.282.0）〉 */
+    if (m.bt != null) { m.bd = 1; if (m.bc == null) m.bc = 0; }
+    toast(BEAST_NM.frieren + '聽到了', m.bd ? '她收起防護罩，轉身跑到你點的地方' : '她轉身跑到你點的地方');
   }
   sendSaber(m, at);
   return m;
@@ -11940,10 +11945,12 @@ function frShield(x, y, z, vx, vy, vz) {
 }
 /* 罩子這一位被打了一下：沒開就張開（中心定在她這一刻腳下）、正在收就撐回來、計時歸零；
    亮紋畫在「從那一點沿著攻擊來的方向（−v）走、穿出罩子」那一點（v 是 0 就沿著「中心 → 那一點」，正中心就是頂上）。
-   m.bh 一筆 [方向 x, y, z（單位）, 打到後幾秒]，引擎照它畫亮紋與白光。soft＝球貼著罩子滾（見 frBall）：撐著不收，不另外亮一圈 */
+   m.bh 一筆 [方向 x, y, z（單位）, 打到後幾秒]，引擎照它畫亮紋與白光。soft＝球貼著罩子滾（見 frBall）：撐著不收，不另外亮一圈。
+   被叫走、放手在收的（m.bd）不撐回來：照樣擋，但收完就是收完 */
 function frHit(m, x, y, z, vx, vy, vz, soft) {
   if (m.bt == null) { m.bt = 0; m.bx = m.x; m.bz = m.z; m.bR = FR_R; m.bh = []; sndFrOpen(); }
-  m.bc = null; m.bq = 0;
+  if (!m.bd) m.bc = null;
+  m.bq = 0;
   if (soft) return;
   const px = x - m.bx, py = y, pz = z - m.bz;
   let ux = -vx, uy = -vy, uz = -vz, ul = Math.hypot(ux, uy, uz);
@@ -12041,15 +12048,17 @@ function beastSafe(m, vx, vy, vz) { return levBusy(m) || (!!m && !m.sky && frShi
 function workerSafe(w) { return !!w && frShield(w.x, w.y || 0, w.z); }
 /* 積木：還站著的才算（碎料、手上的不擋） */
 const blockSafe = (b, vx, vy, vz) => b.st === SET && frShield(b.x, b.y, b.z, vx, vy, vz);
-/* 每一幀：罩子的計時、舉杖。罩子張開到收完那幾秒她站定（回 true：stepBeast0 底下整段跳過，不走路、不轉身） */
+/* 每一幀：罩子的計時、舉杖。罩子張開到收完那幾秒她站定（回 true：stepBeast0 底下整段跳過，不走路、不轉身）。
+   被叫走放手的（m.bd，見 callFrieren）不站定、放下法杖：罩子留在原地收完，她照常跑 */
 function frStep(m, dt) {
-  m.fc = (m.fc || 0) + ((m.bt != null ? 1 : 0) - (m.fc || 0)) * Math.min(1, dt * FR_CAST);
+  m.fc = (m.fc || 0) + ((m.bt != null && !m.bd ? 1 : 0) - (m.fc || 0)) * Math.min(1, dt * FR_CAST);
   if (m.bt == null) return false;
   m.bt += dt;
   for (let i = m.bh.length - 1; i >= 0; i--) if ((m.bh[i][3] += dt) >= ENG.FR_BAR_RIP) m.bh.splice(i, 1);
   if (m.bc != null) {
-    if ((m.bc += dt) >= ENG.FR_BAR_CLOSE) { m.bt = m.bc = null; m.bh.length = 0; }
+    if ((m.bc += dt) >= ENG.FR_BAR_CLOSE) { m.bt = m.bc = null; m.bh.length = 0; m.bd = 0; }
   } else if ((m.bq += dt) >= FR_HOLD) m.bc = 0;
+  if (m.bd) return false;
   m.gait += (0 - m.gait) * Math.min(1, dt * 8);
   m.run += (0 - m.run) * Math.min(1, dt * 8);
   return true;

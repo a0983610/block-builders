@@ -33455,6 +33455,41 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '逛：一步 ' + fspd.walk.d.toFixed(4) + '（WALK × dt ' + (fspd.W * fspd.dt).toFixed(4) + '）；叫過去：一步 ' +
      fspd.d.toFixed(4) + '（× FR_RUN ' + fspd.K + '）、腿擺一幀 ' + fspd.ph.toFixed(3) + '、跑姿 ' + fspd.run.toFixed(3));
 
+  /* ── 罩子開著時叫她（v1.282.0，使用者：「芙莉蓮調整成開護盾時也可以被道具叫走」——Diablo 一直噴，罩子永遠收不掉）：
+        點下去那一刻放手收罩（m.bd）、下一幀就跑、放下法杖；收的那 FR_BAR_CLOSE 秒裡再被打照樣擋、但不撐回來；
+        收完之後路上又被打照舊站定撐罩（使用者選的「照現在：停下來撐罩」）。以前要等罩子收掉才過去 ── */
+  const fleave = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const R = siteR + 30, dt = 0.05;
+    const m = spawnBeast('frieren', 1, 0, 0);
+    m.x = R; m.z = 0; m.st = 'fun'; m.pause = 99; m.stay = 99; m.gait = 0; m.run = 0;
+    frShield(m.x + 1, 1, 0);
+    for (let i = 0; i < 20; i++) { frShield(m.x + 1, 1, 0); stepBeast(m, dt); }   // 一直被打一秒：站定、法杖舉起來
+    const bx = m.bx, bz = m.bz;
+    const r = { held: Math.hypot(m.x - R, m.z) < 1e-9, fc0: +m.fc.toFixed(3) };
+    callFrieren({ x: R, y: 0, z: -60 });
+    r.drop = m.bd === 1 && m.bc === 0 && m.st === 'call';
+    const x0 = m.x, z0 = m.z;
+    stepBeast(m, dt);
+    r.move = +Math.hypot(m.x - x0, m.z - z0).toFixed(4);
+    r.block = frShield(bx + 1, 1, bz); r.noBack = m.bc != null;          // 收到一半又被打：照樣擋、不撐回來
+    let t = dt;
+    while (m.bt != null && t < 2) { stepBeast(m, dt); t += dt; }
+    r.closeT = +t.toFixed(2); r.CLOSE = ENG.FR_BAR_CLOSE; r.fc1 = +m.fc.toFixed(3); r.bd1 = m.bd;
+    r.ran = +Math.hypot(m.x - x0, m.z - z0).toFixed(2);
+    frShield(m.x + 1, 1, m.z);                                           // 收完之後路上又被打
+    const x1 = m.x, z1 = m.z;
+    stepBeast(m, dt);
+    r.stop = m.bt != null && m.bx === x1 && m.bz === z1 && Math.hypot(m.x - x1, m.z - z1) < 1e-9 && m.st === 'call';
+    r.dt = dt;
+    beasts = null;
+    return r;
+  });
+  ok('罩子開著時叫得走：點下去當下放手收罩、下一幀就跑；收的時候再被打照樣擋但不撐回來；收完路上又被打照舊站定撐罩',
+     fleave.held && fleave.fc0 > 0.9 && fleave.drop && fleave.move > 0 && fleave.block && fleave.noBack &&
+     Math.abs(fleave.closeT - fleave.CLOSE) <= fleave.dt + 1e-9 && fleave.fc1 < 0.1 && !fleave.bd1 && fleave.stop,
+     JSON.stringify(fleave));
+
   /* ── 畫面：沒她在場不吃 draw call；沒開罩只畫她；開罩畫罩子（一位 FR_NE 條邊）；不抽 Math.random ── */
   const fdraw = await page.evaluate(() => {
     cleanTools();
