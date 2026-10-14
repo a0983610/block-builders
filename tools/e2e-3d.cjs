@@ -14398,334 +14398,202 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '沒球 ' + vc(bncAim.idle) + '、一把 ' + vc(bncAim.one) + '、滿 ' + vc(bncAim.full) +
      '、收掉 ' + vc(bncAim.after));
 
-  /* ── 打雷（v1.117）─────────────────────────────────────
-     使用者：「點擊地面 慢慢出現一朵烏雲 然後隨機打5~7道雷(閃電) 被雷打到的點造成
-     小破壞(可能就幾格積木) 附帶燃燒效果」。四件事各一條：雲是**慢慢**聚出來的、
-     聚滿了才開始劈、道數落在 5～7、一道雷只咬掉幾格但會燒起來。 */
+  /* ── 打雷（v1.283.0 重製）─────────────────────────────────────
+     使用者：「打雷道具完全重製 改成烏雲慢慢的集中到上空 並有雷電還在雲裡閃的效果 3秒後打下一道粗大雷
+     被雷劈到的積木或生物都會受到攻擊 並附帶燃燒效果 擊中地面也有特效 整體是營造一種超強雷電震撼感」，
+     問過之後選的：點一下、一路貫穿到地面、雷柱半徑 4、畫面震一下、地面衝擊波＋揚塵＋藍色電痕、電光照到旁邊。
+     v1.117～v1.282 那幾條（一次三朵、一朵 15～20 道、點兩下飄到 B、一道咬幾格、劈到哪都不震）跟著舊版拿掉，
+     見 開發筆記〈打雷重製：3 秒聚雲、一道粗雷貫穿到底（v1.283.0）〉。
+     全部規則型：期望值讀常數（STORM_CHARGE／STORM_PUFF／BOLT_R…），打的那一下直接呼叫 boltHit，不賭落點。 */
   await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 12 });
   /* 用 completeNow 不用 fillAll：fillAll 不會收掉整地推土機，剛擺好的最底層
      會被還在場上的推土機推散（實測前 0.25 秒掉 26 塊），那不是道具幹的。 */
   await page.evaluate(() => completeNow());
   const storm1 = await page.evaluate(() => {
-    marks.length = 0; dust.length = 0;
-    tool = 'storm';
-    /* 一次點擊出三朵（v1.165）：道數要把三朵加起來，劈了幾道也要三朵一起數
-       ——掛在 strike 上數，不用「bolts 這一幀變長了沒」：三朵可能同一幀一起劈，
-       那樣會少算。 */
-    const realStrike = window.strike;
-    let fired2 = 0;
-    window.strike = function (s) { fired2++; return realStrike(s); };
-    /* v1.228 起點兩下：同一點點兩下＝原地劈（就是 v1.227 以前點一下的樣子）。
-       飄到第二點那一套另外一條驗（〈點兩下、從 A 一路飄到 B〉）。 */
-    const at0 = { point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) };
-    useTool(at0); useTool(at0);
-    const born = storms.length;
-    const want = storms.reduce((a, s) => a + s.left, 0);
-    const each = storms.map(s => s.left);
-    /* 雲的高度要蓋過屋頂（v1.118）：固定 26 的時候整朵埋在高一點的建築裡，
-       電等於從樓層之間冒出來——使用者回報「看不太到電打在建築上」就是這件事。
-       量的是「比**現在**的屋頂高多少」（v1.169.2 起雲底照 siteTopNow 走，不是 bp.height
-       ——這一座 completeNow 過，兩個值一樣，會分岔的是塔沒蓋完那種狀況，
-       另外一條在幽浮那一段守著）。 */
-    const above = storms[0].y - siteTopNow();
-    const grow = [];
-    /* 18 秒：聚雲 2.6 ＋ 起手 0.4 ＋ 20 道 ×0.5 ＋ 收雲 1.35 ＝ 最壞 14.4 秒（v1.123
-       雲聚得比較久、道數也多了）。跑不完的話量到的會是「還沒劈完」。 */
-    let t = 0, first = -1, fired = 0, prev = 0;
-    while (t < 18) {
-      step(0.05); t += 0.05;
-      if (fired2 > fired) { fired = fired2; if (first < 0) first = +t.toFixed(2); }
-      prev = bolts.length;
-      /* 雲有自己一份粒子（不放進 dust，見 game-tools.js 的 dustList）。
-         取樣間隔跟著 STORM_GROW 走（v1.123 從 1.6 拉到 2.6）：寫死 0.4 秒的話，
-         第四次取樣落在 1.6 秒——那時候只長到六成，最後一格就對不上滿朵。 */
-      while (grow.length < 4 && t >= (grow.length + 1) * (STORM_GROW / 3))
-        grow.push(storms ? storms[0].puffs.length : 0);
-    }
-    const r = { born, want, each, fired, first, grow, full: STORM_GROW,
-                above: +above.toFixed(0), trio: STORM_TRIO, nRange: STORM_N.slice(),
-                puff: STORM_PUFF, burn: fires ? fires.length : 0,
-                over: storms ? storms.length : 0 };
-    window.strike = realStrike;
     cleanTools();
-    return r;
-  });
-  ok('點下去先慢慢聚出烏雲，不是一次生一整朵',
-     storm1.born === storm1.trio && storm1.grow[0] > 0 &&
-     storm1.grow.every((n, i) => i === 0 || n >= storm1.grow[i - 1]) &&
-     storm1.grow[3] > storm1.grow[0] * 2 && storm1.grow[3] === storm1.puff,
-     '一次出 ' + storm1.born + ' 朵；第一朵每 ' + (storm1.full / 3).toFixed(2) +
-     ' 秒量一次：' + storm1.grow.join(' → ') + ' 團（滿朵 ' + storm1.puff + ' 團）');
-  ok('雲飄在屋頂上方，電才看得出打在建築上', storm1.above >= 10,
-     '雲底比現在的屋頂高 ' + storm1.above + ' 單位');
-  ok('雲聚滿了才開始劈，劈完雲自己收掉',
-     storm1.first > storm1.full && storm1.over === 0,
-     '第一道雷在第 ' + storm1.first + ' 秒（雲要聚 ' + storm1.full + ' 秒）');
-  /* 三朵各自劈自己的（v1.165，使用者：「一次出現三朵烏雲 分別打雷」）：
-     每朵排 STORM_N 道、三朵加起來說要劈幾道就劈幾道（v1.177 起一朵 15～20）。 */
-  ok('三朵各自劈自己的，說要劈幾道就劈幾道', storm1.fired === storm1.want &&
-     storm1.each.length === storm1.trio &&
-     storm1.each.every(n => n >= storm1.nRange[0] && n <= storm1.nRange[1]),
-     '三朵各排 ' + storm1.each.join('／') + ' 道（共 ' + storm1.want +
-     '）、實際劈了 ' + storm1.fired + ' 道');
-  ok('劈中的地方會燒起來，火再自己往鄰居蔓延', storm1.burn > 20,
-     '整趟劈完還有 ' + storm1.burn + ' 塊在燒');
-
-  /* 怎麼聚（v1.123，使用者：「烏雲出現時細節 先在中心外圍慢慢出現 然後往中心聚攏」）。
-     兩件事要一起做，所以分兩條驗：只做出場順序的話整朵是「一圈一圈點亮」、沒有在動；
-     只做飄進來的話每一團各自從外面飛進來，但先出場的散在整朵各處，看不出方向。 */
-  const stormIn = await page.evaluate(() => {
-    cleanTools();
-    callStorm({ x: 0, z: 0 });
-    const s = storms[0];
-    const home = q => Math.hypot(q.hx - s.x, q.hz - s.z);      // 歸位點離雲心多遠
-    const now = q => Math.hypot(q.x - s.x, q.z - s.z);         // 現在離雲心多遠
-    const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
-    let t = 0;
-    while (t < 0.4) { step(0.05); t += 0.05; }
-    // 剛出場的這一批：都還在自己歸位點的外面（＝正在飄進來）
-    const fresh = s.puffs.length;
-    const outside = s.puffs.filter(q => now(q) > home(q) + 1).length / fresh;
-    while (t < STORM_GROW + 1.5) { step(0.05); t += 0.05; }
-    const n = s.puffs.length, m = Math.round(n * 0.2);
-    const r = { fresh, outside: +outside.toFixed(2), n,
-                early: +avg(s.puffs.slice(0, m).map(home)).toFixed(1),
-                late: +avg(s.puffs.slice(-m).map(home)).toFixed(1),
-                settled: +avg(s.puffs.map(q => Math.hypot(q.x - q.hx, q.z - q.hz))).toFixed(2),
-                R: STORM_R, puff: STORM_PUFF };
-    cleanTools();
-    return r;
-  });
-  ok('烏雲先在外圈出現，中心最後才補滿',
-     stormIn.n === stormIn.puff &&
-     stormIn.early > stormIn.R * 0.8 && stormIn.late < stormIn.R * 0.35,
-     '最先出場那兩成的位置離雲心 ' + stormIn.early + '、最後兩成 ' + stormIn.late +
-     '（雲半徑 ' + stormIn.R + '，滿朵 ' + stormIn.n + ' 團）');
-  ok('每一團都是從外面飄回自己的位置，不是原地長出來',
-     stormIn.outside > 0.9 && stormIn.settled < 1.2,
-     '剛冒出來的 ' + stormIn.fresh + ' 團裡有 ' + Math.round(stormIn.outside * 100) +
-     '% 還在自己位置的外面；聚滿之後平均離位 ' + stormIn.settled + ' 單位');
-
-  /* 一次三朵、從周圍往中心點靠攏（v1.165，使用者：「烏雲出現方式 調整成周圍出現後
-     再往中心點靠攏 一次出現三朵烏雲 分別打雷（出現可以故意設計微小時間差）」）。
-     上面兩條驗的是「一朵之內每一團怎麼聚」，這一條驗的是**整朵怎麼移動**：
-     三朵生在點擊處周圍更外面的地方（STORM_SEP ＋ STORM_COME），再一路飄向各自的
-     歸位點；三朵的方位要分得開，出場時間還要差一點。 */
-  const trio = await page.evaluate(() => {
-    cleanTools();
-    callStorm({ x: 0, z: 0 });
-    const far = () => storms.map(s => +Math.hypot(s.x, s.z).toFixed(1));
-    const born = storms.length;
-    const start = far();
-    const goal = storms.map(s => +Math.hypot(s.gx, s.gz).toFixed(1));
-    const lag = storms.map(s => +s.t.toFixed(2));
-    const ang = storms.map(s => Math.atan2(s.z, s.x));
-    let gap = 9;
-    for (let i = 0; i < ang.length; i++)
-      for (let j = i + 1; j < ang.length; j++) {
-        let g = Math.abs(ang[i] - ang[j]);
-        if (g > Math.PI) g = Math.PI * 2 - g;
-        gap = Math.min(gap, g);
-      }
-    let t = 0;
-    while (t < STORM_GROW) { step(0.05); t += 0.05; }
-    const r = { born, start, goal, lag, mid: far(),
-                gap: +(gap * 180 / Math.PI).toFixed(0), trio: STORM_TRIO,
-                sep: STORM_SEP, come: STORM_COME, lagStep: STORM_LAG, grow: STORM_GROW };
-    cleanTools();
-    return r;
-  });
-  ok('一次三朵烏雲，各自從周圍飄進來、往中心點靠攏',
-     trio.born === trio.trio && trio.gap > 100 &&
-     trio.start.every(v => v > trio.sep + trio.come * 0.9) &&
-     trio.goal.every(v => Math.abs(v - trio.sep) < 0.1) &&
-     trio.mid.every((v, i) => v < trio.start[i] * 0.45),
-     trio.born + ' 朵，方位互差 ' + trio.gap + '°；出場離點擊處 ' +
-     trio.start.join('／') + '，聚滿那一刻（第 ' + trio.grow + ' 秒）收到 ' +
-     trio.mid.join('／') + '（歸位點 ' + trio.goal.join('／') + '）');
-  ok('三朵的出場時間刻意差一點點',
-     trio.lag.every((v, i) => i === 0 || v < trio.lag[i - 1]) &&
-     Math.abs(trio.lag[trio.lag.length - 1]) < 1 &&
-     Math.abs(trio.lag[1] - trio.lag[0]) > 0.05,
-     '三朵各晚 ' + trio.lag.map(v => (-v).toFixed(2)).join('／') +
-     ' 秒出場（設定一朵差 ' + trio.lagStep + ' 秒）');
-
-  /* 點兩下、從 A 一路飄到 B（v1.228，使用者：「打雷調整成點兩個位置 然後從A點慢慢移動到B點」，
-     看過預覽選的是「劈多久走多久」）。全是規則型，期望值讀常數與那一趟自己排的道數，
-     骰子怎麼擲都一樣：
-     ① 第一下只畫瞄準環、一朵都還沒出來；第二下才出三朵。
-     ② 聚滿之前（STORM_GROW）整組待在 A；之後等速沿 A→B 走，雲本體跟著走、隊形不散。
-     ③ 最晚劈完的那一朵，最後一道劈下去那一刻整組剛好到 B（＝劈多久走多久）。
-     ④ 道數照舊（一朵 STORM_N、排幾道劈幾道），不因為走得遠就變多。
-     ⑤ 同一點點兩下就原地劈，雲心一步都不動。 */
-  const stormAB = await page.evaluate(() => {
-    cleanTools();
-    const hitAt = p => ({ point: new THREE.Vector3(p.x, 0, p.z), dir: new THREE.Vector3(0, -1, 0) });
-    const cen = s => ({ x: s.gx - s.ox, z: s.gz - s.oz });   // 整組的中心（扣掉這一朵在隊形裡的位置）
-    const A = { x: -24, z: 6 }, B = { x: 22, z: -10 };
-    tool = 'storm'; aim = null;
-    useTool(hitAt(A));
-    const one = { aim: !!aim, n: storms ? storms.length : 0 };
-    useTool(hitAt(B));
-    const trio = storms ? storms.slice() : [];
-    const plan = trio.map(s => s.left);
-    const hits = trio.map(() => []);
-    const realStrike = window.strike;
+    draw();                                          // 天色先照「沒有雷雨」畫一次，下面讀的才是原本的樣子
+    const th = ENG.three;
+    const base = { hemi: th.hemi.intensity, sun: th.sun.intensity, fog: th.scene.fog.color.getHex() };
+    const set0 = blocks.filter(b => b.st === SET).length;
+    const realShake = ENG.shake;
+    let shakes = 0;
+    ENG.shake = v => { shakes++; return realShake(v); };
+    const flashAt = [], realFlash = window.cloudFlash;
     let T = 0;
-    window.strike = function (s) {
-      const i = trio.indexOf(s);
-      if (i >= 0) { const c = cen(s); hits[i].push({ t: T, x: c.x, z: c.z }); }
-      return realStrike(s);
-    };
-    const D = Math.hypot(B.x - A.x, B.z - A.z), dur = trio.length ? trio[0].dur : 0;
-    let preA = 0, lin = 0, form = 0;
-    while (storms && T < 30) {
-      step(1 / 60); T += 1 / 60;
-      if (!storms) break;                              // 最後一朵收掉的那一幀 storms 會變 null
-      const g = T - STORM_GROW;                        // 整組的時間 ＝ 沒有出場時間差的第一朵
-      const k = Math.max(0, Math.min(1, g / dur));
-      for (const s of storms) {
-        const c = cen(s);
-        if (g < 0) preA = Math.max(preA, Math.hypot(c.x - A.x, c.z - A.z));
-        lin = Math.max(lin, Math.hypot(c.x - (A.x + (B.x - A.x) * k), c.z - (A.z + (B.z - A.z) * k)));
-        /* 雲本體（不是只有歸位點）跟著走：聚攏剩下的那一點點一秒後已經收到 1 格以內 */
-        if (g > 1) form = Math.max(form, Math.hypot(s.x - c.x - s.ox, s.z - c.z - s.oz));
+    window.cloudFlash = s => { flashAt.push(T); return realFlash(s); };
+    tool = 'storm'; aim = null;
+    useTool({ point: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(0, -1, 0) });   // 點一下就出來
+    const s = storms ? storms[0] : null;
+    const r = { born: storms ? storms.length : 0, ring: !!aim, y: s ? s.y : 0,
+                wantY: Math.max(STORM_Y0, siteTopNow() + STORM_UP), set0, puff: STORM_PUFF,
+                charge: STORM_CHARGE, lead: BOLT_LEAD, gather: STORM_GATHER };
+    const dt = 1 / 60;
+    let struckAt = -1, preLoss = 0, mono = true, last = 0, fresh = -1;
+    let leadEarly = 0, leadOn = 0, leadUp = 0, leadAfter = 0, prevTip = Infinity, envEnd = -1;
+    let mid = null, hit = null;
+    while (storms && T < 20) {
+      step(dt); T += dt;
+      if (!storms || storms[0] !== s) break;
+      if (s.puffs.length < last) mono = false;
+      last = s.puffs.length;
+      /* 剛出場的那一批：都還在自己位置的外面（＝正在捲進來），不是原地長出來 */
+      if (fresh < 0 && s.puffs.length >= 30) fresh = s.puffs.slice(0, 30).filter(q => q.rad > q.k * STORM_R + 1).length;
+      const lt = T - (STORM_CHARGE - BOLT_LEAD);
+      if (!s.struck) {
+        preLoss = set0 - blocks.filter(b => b.st === SET).length;
+        if (lt < -dt && s.lead.op > 0) leadEarly++;
+        if (lt > dt) { if (s.lead.op > 0) leadOn++; if (s.lead.tip > prevTip + 1e-9) leadUp++; prevTip = s.lead.tip; }
+      } else {
+        if (struckAt < 0) {
+          struckAt = T; hit = s.hitN;
+          r.full = s.puffs.length;
+          const n = s.puffs.length, m = Math.round(n * 0.2), avg = a => a.reduce((x, q) => x + q.k, 0) / a.length;
+          r.kEarly = +avg(s.puffs.slice(0, m)).toFixed(2); r.kLate = +avg(s.puffs.slice(-m)).toFixed(2);
+          /* 前四成出場的那些（第 0.92 秒以前），劈下去的時候已經捲到自己的位置（離歸位半徑不到 1.5；
+             照 STORM_PULL 算最遠是 22 × e^(−1.5 × 2.08) ≈ 1.0） */
+          r.settled = +Math.max(...s.puffs.slice(0, Math.floor(n * 0.4)).map(q => Math.abs(q.rad - q.k * STORM_R))).toFixed(2);
+          draw();
+          r.atHit = { hemi: +th.hemi.intensity.toFixed(3), lamps: th.stormLamps.map(L => L.visible && L.intensity > 0),
+                      segs: th.stormLay[0].count, ball: th.stormBall.count, env: s.env,
+                      burnFly: fires ? fires.filter(f => !f.sp).length : 0, burnSet: fires ? fires.filter(f => f.sp).length : 0 };
+        }
+        if (s.lead.op > 0) leadAfter++;
+        if (envEnd < 0 && s.ts > BOLT_T && s.env === 0) envEnd = +s.ts.toFixed(2);
+      }
+      if (!mid && T >= STORM_CHARGE / 2) {
+        draw();
+        mid = { hemi: +th.hemi.intensity.toFixed(3), sky: +th.gloomEl.style.opacity, lamp: th.stormLamps[0].visible,
+                lampB: th.stormLamps[1].intensity };
       }
     }
-    window.strike = realStrike;
-    const last = hits.map(h => h[h.length - 1]).filter(Boolean).sort((a, b) => b.t - a.t)[0];
-    const r = { one, born: trio.length, trioN: STORM_TRIO, plan, fired: hits.map(h => h.length),
-                nRange: STORM_N.slice(), preA, lin, form, D, dur, done: !storms,
-                end: last ? Math.hypot(last.x - B.x, last.z - B.z) : 99, lastT: last ? last.t : 0 };
-    /* ⑤ 同一點點兩下 */
-    cleanTools();
-    tool = 'storm'; aim = null;
-    useTool(hitAt(A)); useTool(hitAt(A));
-    const same = storms ? storms.slice() : [];
-    let still = 0;
-    T = 0;
-    while (storms && T < 20) {
-      step(0.05); T += 0.05;
-      for (const s of same) still = Math.max(still, Math.hypot(cen(s).x - A.x, cen(s).z - A.z));
-    }
-    r.sameN = same.length; r.sameDur = same.map(s => s.dur); r.still = still; r.sameDone = !storms;
+    while (storms && T < 20) { step(dt); T += dt; }
+    step(dt); draw();
+    Object.assign(r, { struckAt: +struckAt.toFixed(3), preLoss, mono, fresh, leadEarly, leadOn, leadUp, leadAfter,
+                       envEnd, hit, mid, done: !storms, T: +T.toFixed(2), shakes, flashes: flashAt.length,
+                       flashFirst: flashAt.length ? +flashAt[0].toFixed(2) : -1,
+                       end: { hemi: th.hemi.intensity, sun: th.sun.intensity, fog: th.scene.fog.color.getHex(),
+                              sky: th.gloomEl.style.opacity, lamps: th.stormLamps.some(L => L.visible),
+                              segs: th.stormLay.some(m => m.visible), ball: th.stormBall.visible }, base });
+    ENG.shake = realShake; window.cloudFlash = realFlash;
     cleanTools();
     return r;
   });
-  ok('打雷點兩下：第一下只畫瞄準環，第二下才出三朵',
-     stormAB.one.aim && stormAB.one.n === 0 && stormAB.born === stormAB.trioN,
-     '第一下 ' + stormAB.one.n + ' 朵（瞄準環 ' + (stormAB.one.aim ? '有' : '沒有') +
-     '）、第二下 ' + stormAB.born + ' 朵');
-  ok('聚滿之前整組待在第一點，之後三朵保持隊形等速飄到第二點',
-     stormAB.done && stormAB.dur > 0 && stormAB.preA < 1e-6 && stormAB.lin < 0.01 && stormAB.form < 1,
-     'A→B ' + stormAB.D.toFixed(1) + ' 格走 ' + stormAB.dur.toFixed(2) + ' 秒（每秒 ' +
-     (stormAB.D / stormAB.dur).toFixed(1) + ' 格）；聚滿前離 A ' + stormAB.preA.toFixed(3) +
-     '、離等速線最多 ' + stormAB.lin.toFixed(3) + '、雲本體離隊形最多 ' + stormAB.form.toFixed(2));
-  ok('劈多久走多久：最後一道雷劈下去那一刻剛好到第二點',
-     stormAB.end < 0.5,
-     '最後一道在第 ' + stormAB.lastT.toFixed(2) + ' 秒，那時整組中心離 B ' + stormAB.end.toFixed(2) + ' 格');
-  ok('飄得再遠道數也照舊，排幾道劈幾道',
-     stormAB.fired.every((n, i) => n === stormAB.plan[i]) &&
-     stormAB.plan.every(n => n >= stormAB.nRange[0] && n <= stormAB.nRange[1]),
-     '三朵各排 ' + stormAB.plan.join('／') + '、實際劈 ' + stormAB.fired.join('／') +
-     ' 道（一朵 ' + stormAB.nRange.join('～') + '）');
-  ok('同一點點兩下就原地劈，雲一步都不動',
-     stormAB.sameN === stormAB.trioN && stormAB.sameDur.every(v => v === 0) &&
-     stormAB.still < 1e-6 && stormAB.sameDone,
-     stormAB.sameN + ' 朵、要走的時間 ' + stormAB.sameDur.join('／') + '，整趟離點擊處最多 ' +
-     stormAB.still.toFixed(4) + ' 格');
+  ok('打雷點一下就出一朵雲，雲飄在現在的屋頂上方',
+     storm1.born === 1 && !storm1.ring && storm1.y === storm1.wantY,
+     storm1.born + ' 朵（瞄準環 ' + (storm1.ring ? '有' : '沒有') + '）；雲高 ' + storm1.y.toFixed(1) +
+     '（屋頂上 STORM_UP、至少 STORM_Y0 → ' + storm1.wantY.toFixed(1) + '）');
+  ok('烏雲一團一團捲進來：外圈先出場、剛冒出來的都還在自己位置的外面，劈下去之前聚滿',
+     storm1.mono && storm1.full === storm1.puff && storm1.kEarly > storm1.kLate + 0.3 &&
+     storm1.fresh === 30 && storm1.settled < 1.5,
+     '劈下去那一刻 ' + storm1.full + ' 團（滿朵 ' + storm1.puff + '）；剛冒出來的 30 團有 ' + storm1.fresh +
+     ' 團在自己位置外面' +
+     (storm1.mono && storm1.full === storm1.puff && storm1.kEarly > storm1.kLate + 0.3 && storm1.settled < 1.5 ? '' :
+      '；最先出場兩成離雲心 k ' + storm1.kEarly + '、最後兩成 ' + storm1.kLate + '；前四成離歸位最多 ' + storm1.settled +
+      ' 格；團數一路沒減少 ' + storm1.mono));
+  ok('點下去第 3 秒才劈（使用者指定），劈之前一塊都沒掉',
+     storm1.struckAt >= storm1.charge && storm1.struckAt < storm1.charge + 2 / 60 + 1e-9 &&
+     storm1.preLoss === 0 && storm1.hit > 0,
+     '第 ' + storm1.struckAt + ' 秒劈（STORM_CHARGE ' + storm1.charge + '）；劈之前掉 ' + storm1.preLoss +
+     ' 塊、劈下去打掉 ' + storm1.hit + ' 塊');
+  ok('劈下去之前雲裡就在閃，前導在最後那 0.3 秒往下探，劈下去就收掉',
+     storm1.flashFirst > 0 && storm1.flashFirst < storm1.charge && storm1.leadEarly === 0 &&
+     storm1.leadOn > 0 && storm1.leadUp === 0 && storm1.leadAfter === 0,
+     '雲裡第一下在第 ' + storm1.flashFirst + ' 秒；前導太早亮 ' +
+     storm1.leadEarly + ' 幀、該亮的時候亮 ' + storm1.leadOn + ' 幀、尖端往回縮 ' + storm1.leadUp +
+     ' 次、劈完還亮 ' + storm1.leadAfter + ' 幀');
+  ok('劈下去那一刻主雷、亮球、兩盞燈都亮，主雷亮完就暗',
+     storm1.atHit.env > 0 && storm1.atHit.segs > 0 && storm1.atHit.ball > 0 &&
+     storm1.atHit.lamps.every(Boolean) && storm1.envEnd > 0,
+     '主雷有畫 ' + (storm1.atHit.segs > 0) + '、亮球 ' + storm1.atHit.ball + ' 顆、燈 ' +
+     storm1.atHit.lamps.map(v => v ? '亮' : '暗').join('／') + '；第 ' + storm1.envEnd + ' 秒暗掉（BOLT_T）');
+  ok('劈到的會燒：打飛的碎料拖著火、柱子邊上還站著的也點著',
+     storm1.atHit.burnFly > 0 && storm1.atHit.burnSet > 0,
+     storm1.atHit.burnFly > 0 && storm1.atHit.burnSet > 0 ? '劈下去那一刻兩種都有在燒' :
+     '劈下去那一刻 ' + storm1.atHit.burnFly + ' 塊碎料在燒、' + storm1.atHit.burnSet + ' 塊還站著的在燒');
+  ok('聚雲時天色變暗、燈開著，散完全部還原（燈關掉、天光日光霧天空回到原本）',
+     storm1.mid.hemi < storm1.base.hemi && storm1.mid.sky > 0 && storm1.mid.lamp && storm1.mid.lampB === 0 &&
+     storm1.atHit.hemi < storm1.mid.hemi && storm1.done &&
+     storm1.end.hemi === storm1.base.hemi && storm1.end.sun === storm1.base.sun && storm1.end.fog === storm1.base.fog &&
+     storm1.end.sky === '0' && !storm1.end.lamps && !storm1.end.segs && !storm1.end.ball,
+     '天光 ' + storm1.base.hemi + ' → 聚到一半 ' + storm1.mid.hemi + ' → 劈 ' + storm1.atHit.hemi + ' → ' +
+     storm1.end.hemi + '；天空那層 ' + storm1.mid.sky + ' → ' + storm1.end.sky + '；收完了 ' + storm1.done +
+     '，燈 ' + (storm1.end.lamps ? '還開著' : '關了') + (storm1.done ? '' : '（推到第 ' + storm1.T + ' 秒）'));
+  ok('一發只震一下（劈下去那一刻）', storm1.shakes === 1, '整趟震了 ' + storm1.shakes + ' 次');
 
-  /* 雷**劈到哪裡都不震畫面**（v1.275.0，使用者：「調整打雷 不在擊建築 震動畫面(會造成畫面連續震動)」）。
-     v1.123～v1.274 是「劈在空地上不震、劈到建築才震」（使用者當時：「閃電打到地面不震動」）——
-     一次點擊三朵雲、一朵劈 15～20 道，劈在建築上的每一道都震，畫面就從頭抖到尾。
-     劈金字塔那一組要真的打掉積木（stats.smashed 有動），不然「沒震」可能只是沒劈到東西。 */
-  const stormShake = await page.evaluate(() => {
+  /* 雲裡越接近劈下閃得越密：押住骰子（Math.random 固定 0.5，每個間隔都乘中間值 1）再量間隔，
+     不押的話間隔各乘 0.6～1.4，前後的比較會偶爾靠得很近。只推 stepStorms 不推 step：
+     骰子押死之後小人那邊「抽到合格的位置才停」的迴圈可能永遠停不下來。 */
+  const stormFlash = await page.evaluate(() => {
     cleanTools();
-    /* 重蓋一座實心的金字塔：上面那幾條已經在同一座上劈掉好幾百塊、還燒了一陣，
-       不重蓋的話「劈到建築」那一組可能真的劈到空的。 */
+    const R0 = Math.random, at = [], realFlash = window.cloudFlash;
+    let T = 0;
+    Math.random = () => 0.5;
+    window.cloudFlash = s => { at.push(T); return realFlash(s); };
+    try {
+      callStorm({ x: 70, z: 70 });
+      while (T < STORM_CHARGE - 1e-9) { T += 1 / 60; stepStorms(1 / 60); }
+    } finally { Math.random = R0; window.cloudFlash = realFlash; }
+    cleanTools();
+    const h = STORM_CHARGE / 2, n = at.length;
+    return { n, a: at.filter(t => t < h).length, b: at.filter(t => t >= h).length,
+             first: n > 1 ? +(at[1] - at[0]).toFixed(3) : 0, last: n > 1 ? +(at[n - 1] - at[n - 2]).toFixed(3) : 9 };
+  });
+  ok('雲裡越接近劈下閃得越密', stormFlash.n > 4 && stormFlash.last < stormFlash.first / 3 && stormFlash.b > stormFlash.a,
+     '第一個間隔 ' + stormFlash.first + ' 秒、最後一個 ' + stormFlash.last + ' 秒；前一半閃 ' + stormFlash.a +
+     ' 下、後一半 ' + stormFlash.b + ' 下');
+
+  /* 雷柱（使用者選「一路貫穿到地面」）：直接呼叫 boltHit，垮塌先擋掉——上面連不到地面而跟著垮的那些不是這一道雷打掉的 */
+  const stormCol = await page.evaluate(() => {
+    cleanTools(); clearFires();
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
     targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
-    const real = ENG.shake;
-    let n = 0;
-    ENG.shake = v => { n++; return real(v); };
-    const count = fn => { n = 0; fn(); bolts.length = 0; return n; };
-    const s0 = stats.smashed;
-    const hit = count(() => { for (let k = 0; k < 20; k++) strike({ x: 0, z: 0, y: 40 }); });
-    const smashed = stats.smashed - s0;
-    const far = count(() => { for (let k = 0; k < 20; k++) strike({ x: 96, z: 96, y: 40 }); });
-    ENG.shake = real;
-    cleanTools();
-    return { hit, far, smashed };
+    const real = markSupportDirty;
+    markSupportDirty = () => {};
+    const P = { x: 2, z: -3 }, R = BOLT_R;
+    const inCol = b => Math.hypot(b.x - P.x, b.z - P.z) <= R;
+    const set = blocks.filter(b => b.st === SET);
+    const want = set.filter(inCol).length, out0 = set.length - want;
+    const top0 = Math.max(...set.filter(inCol).map(b => b.y));
+    const hit = boltHit(P, R);
+    const left = blocks.filter(b => b.st === SET && inCol(b)).length;
+    const out1 = blocks.filter(b => b.st === SET && !inCol(b)).length;
+    markSupportDirty = real;
+    cleanTools(); clearFires();
+    return { R, want, n: hit.n, left, out0, out1, top: hit.top, top0 };
   });
-  ok('雷劈到哪裡都不震畫面（劈到建築也不震）',
-     stormShake.far === 0 && stormShake.hit === 0 && stormShake.smashed > 0,
-     '劈金字塔 20 道（打掉 ' + stormShake.smashed + ' 塊）震了 ' + stormShake.hit + ' 次、劈場外空地 20 道震了 ' +
-     stormShake.far + ' 次');
+  ok('雷柱裡從最高那一塊到地面全部打掉，柱子外一塊都不掉',
+     stormCol.want > 0 && stormCol.n === stormCol.want && stormCol.left === 0 &&
+     stormCol.out1 === stormCol.out0 && stormCol.top === stormCol.top0,
+     '半徑 ' + stormCol.R + ' 的柱子裡 ' + stormCol.want + ' 塊 → 打掉 ' + stormCol.n + '、剩 ' + stormCol.left +
+     '；柱子外 ' + stormCol.out0 + ' → ' + stormCol.out1 + '；最高那一塊 ' + stormCol.top0.toFixed(2));
 
-  /* 劈到人（v1.133，使用者：「檢查一下 打雷 天降鐵球 王之財寶 是不是都沒對小人生效」
-     ——查下去確實是，指定「打倒 ＋ 燒起來」）。所有道具掀倒小人本來都靠共用的 afterHit，
-     而它**只在真的打掉積木時**才動人（`if (n <= 0) return`）：雷劈在空地上一塊積木都
-     沒掉，整段等於沒跑。
-     小人要**凍住**（updWorker 換成空的）：不凍的話他們在雲聚滿之前就走掉了
-     （實測 16 秒走了 80 幾單位），量到的會是「沒打到」而不是「打不到」。
-     量法在 v1.134 改過（見 開發筆記〈打雷劈到人那一條也在賭骰子〉）：人**鋪滿整個落點圓**，
-     而且驗的是「每個人離最近的落點多遠」——一道雷的落點是在半徑 STRIKE_R 的圓裡隨機挑的，
-     把人全擠在圓心的話，這一條就是在賭「這朵雲有沒有剛好劈到中間」。 */
+  /* 劈到人（v1.133 使用者指定「打倒 ＋ 燒起來」，v1.283.0 範圍跟著雷柱走）：直接呼叫 boltHit，人擺在場外空地上
+     柱子裡一圈、柱子外一圈。空地上一塊積木都沒掉，afterHit 第一行就 return，所以柱子外的人什麼事都不該有。 */
   const stormMan = await page.evaluate(() => {
     cleanTools();
-    setWorkerCount(16); targetCnt = 1800;
-    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
-    startBuild(true); completeNow(); shapePick = -1;
-    for (let i = 0; i < 30; i++) step(1 / 60);
-    const P = { x: 60, z: 0 };                       // 場外空地：確定一塊積木都沒有
-    /* 12 個鋪在落點圓裡（三圈 × 四個方位），4 個站在圓外 25 格當對照組——
-       落點最遠 13、打到人的範圍 5，那四個怎麼樣都碰不到。 */
-    const RING = [1, 6, 11];
-    for (let i = 0; i < workers.length; i++) {
-      const w = workers[i], out = i >= 12;
-      const a = (i % 4) / 4 * Math.PI * 2 + (out ? 0.7 : 0);
-      const rad = out ? 25 : RING[Math.floor(i / 4)];
+    setWorkerCount(16);
+    const P = { x: 60, z: 0 }, R = BOLT_R, IN = [0.3, 1.5, 2.6, R - 0.1], OUT = [R + BOLT_BODY + 0.4, R + 3, R + 6, R + 9];
+    workers.forEach((w, i) => {
+      const out = i >= 8, a = (i % 8) / 8 * Math.PI * 2;
+      const rad = (out ? OUT : IN)[i % 4];
+      releaseWorker(w);
       w.x = P.x + Math.cos(a) * rad; w.z = P.z + Math.sin(a) * rad;
       w.y = 0; w.st = 'idle'; w.fall = 0; w.air = 0; w.burn = 0; w.wet = 0; w.tilt = 0;
-    }
-    const oUpd = updWorker;
-    updWorker = () => {};
-    /* 落點記在 smash 上：strike() 每一道雷都拿那一點打一次點狀衝擊（就在動人的那幾行
-       前面），所以攔它就拿得到「這一道雷劈在哪」。這一段只有雷在動，不會有別的來源。 */
-    const oSmash = smash, pts = [];
-    smash = (p, d, r, pow, quiet, hush) => { pts.push({ x: p.x, z: p.z }); return oSmash(p, d, r, pow, quiet, hush); };
-    tool = 'storm';
-    const atP = { point: new THREE.Vector3(P.x, 0, P.z), dir: new THREE.Vector3(0, -1, 0) };
-    useTool(atP); useTool(atP);                      // v1.228 起點兩下：同一點＝原地劈
-    const hit = workers.map(() => ({ burn: 0, fall: 0 }));
-    let T = 0;
-    while (T < 16) {
-      step(1 / 60); T += 1 / 60;
-      workers.forEach((w, i) => { if (w.burn > 0) hit[i].burn = 1; if (w.fall > 0) hit[i].fall = 1; });
-    }
-    updWorker = oUpd; smash = oSmash;
-    /* 每個人離最近的那一道雷多遠：範圍內的一定要有反應（而且是燒著的——這一條沒有
-       消防車，濕的人才會只被打倒），範圍外的一個都不能動。邊界上那 ±0.3 格不算，
-       免得浮點誤差把人歸錯邊。 */
-    const r = { n: workers.length, R: BOLT_MAN_R, bolts: pts.length,
-                inN: 0, inHit: 0, inBurn: 0, outN: 0, outHit: 0 };
+    });
+    boltHit(P, R);
+    const r = { R, inN: 0, inHit: 0, inBurn: 0, outN: 0, outHit: 0 };
     workers.forEach((w, i) => {
-      let d = Infinity;
-      for (const p of pts) d = Math.min(d, Math.hypot(w.x - p.x, w.z - p.z));
-      const any = hit[i].burn || hit[i].fall;
-      if (d <= BOLT_MAN_R - 0.3) { r.inN++; if (any) r.inHit++; if (hit[i].burn) r.inBurn++; }
-      else if (d > BOLT_MAN_R + 0.3) { r.outN++; if (any) r.outHit++; }
+      const any = w.burn > 0 || w.fall > 0;
+      if (i < 8) { r.inN++; if (any) r.inHit++; if (w.burn > 0) r.inBurn++; }
+      else { r.outN++; if (any) r.outHit++; }
     });
     cleanTools();
     return r;
   });
-  ok('雷劈到小人：落點五格內的打倒並且在地上燒起來，範圍外的一個都沒事',
-     stormMan.inN >= 3 && stormMan.inHit === stormMan.inN && stormMan.inBurn === stormMan.inN &&
-     stormMan.outN >= 4 && stormMan.outHit === 0,
-     stormMan.n + ' 個人鋪在落點圓裡外，這朵雲劈了 ' + stormMan.bolts + ' 道：' +
-     '落點 ' + stormMan.R + ' 格內的 ' + stormMan.inN + ' 個 → ' + stormMan.inHit +
-     ' 個有反應、' + stormMan.inBurn + ' 個燒起來（v1.132 是 0 個）；' +
-     '範圍外的 ' + stormMan.outN + ' 個 → 動到 ' + stormMan.outHit + ' 個');
+  ok('雷劈到小人：雷柱裡的打倒並且在地上燒起來，柱子外的一個都沒事',
+     stormMan.inN === 8 && stormMan.inBurn === stormMan.inN && stormMan.outN === 8 && stormMan.outHit === 0,
+     '雷柱（半徑 ' + stormMan.R + '）裡 ' + stormMan.inN + ' 個 → ' + stormMan.inHit + ' 個有反應、' +
+     stormMan.inBurn + ' 個燒起來；柱子外 ' + stormMan.outN + ' 個 → 動到 ' + stormMan.outHit + ' 個');
 
   /* 劈完把視線高度還回去（v1.128，使用者：「如果是會讓鏡頭往高的方向調整的運鏡
      結束後高度要調回來」——這句一開始寫在天降鐵球底下，查證之後確認那支從頭到尾
@@ -14733,7 +14601,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      雲擺得比屋頂高，holdWide 就把視線抬到雲的腰間，而且**建築越高抬得越多**：
      羅馬競技場抬到 18.7、台北 101 抬到 67.2。劈完雲散了，鏡頭卻還仰在那裡看空的天空。
      跟煙火同一套（`temp` ＋ `releaseWide`），所以驗的東西也一樣：
-     抬起來又還回去、**視距留著**、連放兩朵不會被第一朵散掉就壓回去。 */
+     抬起來又還回去、**視距留著**、連放兩發不會被第一發散掉就壓回去。 */
   const stormCam = await page.evaluate(() => {
     const build = (name, cnt) => {
       cleanTools();
@@ -14753,11 +14621,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                dUp: +dUp.toFixed(1), d1: +ENG.camTarget.dist.toFixed(1) };
     };
     const low = one('羅馬競技場'), high = one('台北 101');
-    // 第二朵在第一朵還沒散完時點下去：第一朵收工不能把鏡頭壓回去
+    // 第二發在第一發還沒散完時點下去：第一發收工不能把鏡頭壓回去
     build('羅馬競技場', 3000);
     const ty0 = ENG.camTarget.ty;
     callStorm({ x: -20, z: 0 });
-    for (let i = 0; i < 60; i++) step(0.05);          // 3 秒後再點一朵
+    for (let i = 0; i < 60; i++) step(0.05);          // 3 秒後再點一發
     callStorm({ x: 20, z: 0 });
     /* 只在「還有雲在場上」時取樣：最後一幀本來就已經還回去了 */
     let mid = 1e9, g = 0;
@@ -14784,100 +14652,32 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('連放兩朵不會被第一朵散掉就壓回去',
      stormCam.two.mid > stormCam.two.ty0 + 10 &&
      Math.abs(stormCam.two.ty1 - stormCam.two.ty0) < 0.1,
-     '兩朵都在場時視線高最低只到 ' + stormCam.two.mid + '，全散完才回到 ' +
+     '兩發都在場時視線高最低只到 ' + stormCam.two.mid + '，全散完才回到 ' +
      stormCam.two.ty1);
 
-  /* 道數：使用者指定 15～20（v1.123，v1.118 是 7～15、更早是 5～7；v1.165 一次三朵時
-     把總量拆給三朵、一朵剩 5～7，v1.177 使用者要求加回來，一朵又是 15～20）。抽 900 朵，
-     範圍內每個值都要出現、也不能跑出範圍；順便驗頭尾兩個值沒有比中間少一半
-     （用 rr 再四捨五入會有那個毛病）。 */
-  const stormN = await page.evaluate(() => {
-    const seen = {};
-    for (let k = 0; k < 900; k++) {
-      storms = null;
-      callStorm({ x: 0, z: 0 });
-      seen[storms[0].left] = (seen[storms[0].left] || 0) + 1;
-    }
-    cleanTools();
-    return { seen, lo: STORM_N[0], hi: STORM_N[1] };
-  });
-  const stormKeys = Object.keys(stormN.seen).map(Number).sort((a, b) => a - b);
-  const stormCnt = stormKeys.map(k => stormN.seen[k]);
-  ok('隨機劈 15～20 道，每個道數的機會一樣',
-     stormKeys.length === stormN.hi - stormN.lo + 1 &&
-     stormKeys[0] === stormN.lo && stormKeys[stormKeys.length - 1] === stormN.hi &&
-     Math.min(...stormCnt) > Math.max(...stormCnt) * 0.55,
-     '抽 900 朵：' + stormKeys.map(k => k + '道×' + stormN.seen[k]).join('、'));
-
-  /* 一道雷咬掉多大一片。v1.123 前是「小破壞（可能就幾格積木）」——判定半徑 1.3，
-     格子間距 1，所以最多是「打中那一塊 ＋ 六個面鄰居」＝ 7 格，對角線（1.41）進不來。
-     使用者：「閃電破壞面積 加大(2倍)」→ 半徑乘 √2 變 1.84（**面積**兩倍）。
-     跨過 1.73 之後 3×3×3 的角落也進得來，幾何上限因此變成 27 格。
-     實際咬到多少要看打在哪：金字塔上劈 60 道量到 1～23 格、平均 14.2
-     （半徑 1.3 時是 1～7、平均 3）。格數比面積多得多是因為它是球不是圓——
-     半徑乘 √2，體積就是 2.83 倍，再加上格子落點的零頭。
-     垮塌要先擋掉：上面連不到地面而跟著垮的那些不是這一道雷打掉的。 */
-  /* v1.178 把這一條的**量法**修好（門檻沒動）。原本它是接著上一條的世界打的——那是被
-     兩朵雷劈過的羅馬競技場——而且 40 道全劈在同一點 (0, 0)，那裡是競技場中間的空地。
-     於是量到的「平均」其實是「同一個洞越挖越空」的衰減曲線，跟註解寫的 14.2 差很遠
-     （實測舊版平均 5～6 格，門檻是 > 6，等於一直踩在邊界上：同一顆種子 11780
-     v1.177 量到 6.4、v1.178 量到 5.4 就紅了）。
-     改成：**重新蓋一座完好的金字塔**，而且每一道都劈在沒劈過的那一根柱子上。 */
-  await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 12 });
-  const stormBite = await page.evaluate(() => {
-    completeNow();
-    const real = markSupportDirty;
-    markSupportDirty = () => {};
-    const per = [], done = [];
-    for (let k = 0; k < 40; k++) {
-      /* 挑一根還站著、而且離劈過的點都超過 3.2 格的柱子（判定半徑 1.84 的兩倍不到，
-         保證這一道打的是完好的表面，不是上一道挖出來的洞）。 */
-      const cand = blocks.filter(b => b.st === 3 &&
-        done.every(p => Math.hypot(b.x - p.x, b.z - p.z) > 3.2));
-      if (!cand.length) break;
-      const b0 = cand[Math.floor(Math.random() * cand.length)];
-      done.push({ x: b0.x, z: b0.z });
-      const before = blocks.filter(b => b.st === 3).length;
-      strike({ x: b0.x, z: b0.z, y: 40 });    // y 是雲底高度（v1.118 起跟著建築走）
-      per.push(before - blocks.filter(b => b.st === 3).length);
-      bolts.length = 0;
-    }
-    markSupportDirty = real;
-    per.sort((a, b) => a - b);
-    const r = { n: per.length, min: per[0], max: per[per.length - 1],
-                avg: +(per.reduce((a, b) => a + b, 0) / per.length).toFixed(1) };
-    cleanTools();
-    return r;
-  });
-  ok('一道雷咬掉的是「面積兩倍」那一片，不是整面牆',
-     stormBite.n >= 30 && stormBite.max <= 27 && stormBite.avg > 6 && stormBite.avg < 22,
-     '劈 ' + stormBite.n + ' 道：一道 ' + stormBite.min + '～' + stormBite.max +
-     ' 格、平均 ' + stormBite.avg + ' 格（幾何上限 27 格；半徑 1.3 時是 1～7、平均 3）');
-
-  /* 劈在空地上：地上留焦黑（不是坑洞——雷是燒不是砸），旁邊的建築一塊都不能掉。 */
+  /* 劈在空地上：旁邊的建築一塊都不能掉，地上留一塊焦痕（中心先燒紅再變黑的那種，見 spawnScorch） */
   await reset(page, { shape: '吉薩金字塔', cnt: 3000, workers: 12 });
   await page.evaluate(() => completeNow());
   const stormFar = await page.evaluate(() => {
-    marks.length = 0;
-    const set0 = blocks.filter(b => b.st === 3).length;
-    tool = 'storm';
-    const atFar = { point: new THREE.Vector3(70, 0, 70), dir: new THREE.Vector3(0, -1, 0) };
-    useTool(atFar); useTool(atFar);                  // v1.228 起點兩下：同一點＝原地劈
-    let t = 0, peak = 0, crater = 0;
-    while (t < 18) {
-      step(0.05); t += 0.05;
-      peak = Math.max(peak, marks.length);
-      crater += marks.filter(m => m.crater).length;
+    cleanTools();
+    scorches.length = 0;
+    const set0 = blocks.filter(b => b.st === SET).length;
+    callStorm({ x: 70, z: 70 });
+    let T = 0, scorch = 0, at = -1;
+    /* 焦痕活 SEAR_LIFE 秒，雲散完的時候可能已經在淡了，所以在它一出現就記下來 */
+    while (storms && T < 20) {
+      step(1 / 60); T += 1 / 60;
+      if (scorches.length > scorch) { scorch = scorches.length; at = Math.hypot(scorches[0].x - 70, scorches[0].z - 70); }
     }
-    const r = { set0, set1: blocks.filter(b => b.st === 3).length, peak, crater };
+    const r = { set0, set1: blocks.filter(b => b.st === SET).length, scorch, at };
     cleanTools();
     return r;
   });
-  ok('劈在空地上只留焦黑，不會傷到旁邊的建築',
-     stormFar.set0 === stormFar.set1 && stormFar.peak >= 4 && stormFar.crater === 0,
-     '建築 ' + stormFar.set1 + ' 塊原封不動，地上同時看得到 ' + stormFar.peak + ' 塊焦黑');
+  ok('劈在空地上只留焦痕，不會傷到旁邊的建築',
+     stormFar.set0 === stormFar.set1 && stormFar.scorch === 1 && stormFar.at === 0,
+     '建築 ' + stormFar.set1 + ' 塊原封不動，地上 ' + stormFar.scorch + ' 塊焦痕（離落點 ' + stormFar.at + '）');
 
-  /* 同時最多幾朵：滿了把最早那朵擠掉（跟其他清單型道具同一套）。 */
+  /* 同時最多幾發：滿了把最早那發擠掉（跟其他清單型道具同一套）。 */
   const stormCap = await page.evaluate(() => {
     cleanTools();
     const seen = [];
@@ -15744,7 +15544,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       left: (gates ? 1 : 0) + (weapons ? weapons.length : 0),
       rate: GATE_RATE, fire: GATE_FIRE, hold: GATE_HOLD,
       preOut, preN, back, bowl,
-      zone: +gateZone().toFixed(1), strikeR: STRIKE_R,
+      zone: +gateZone().toFixed(1),
       land: (() => {
         const d = land.sort((a, b) => a - b), q = f => +d[Math.floor(d.length * f)].toFixed(1);
         const far = gateZone() * 2.2;
@@ -15925,7 +15725,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      然後有些歪出去沒關係」）。打雷的落點是硬邊界（半徑 STRIKE_R 的圓裡抽一點）：
      實測中位 9～10.8、九成位 11.7～13。兵器做不到那麼齊——它是「瞄一點、沒打到就沿直線
      滑到落地」，尾巴收不成硬邊界（試過「飛過落點就化成金光」，使用者要照舊讓它插在地上）。
-     所以驗的是**中位與九成位跟打雷同一個量級**，最遠只擋「有沒有滑出場外」。 */
+     所以驗的是**中位與九成位跟打雷同一個量級**，最遠只擋「有沒有滑出場外」。
+     v1.283.0 打雷重製成一道雷柱，那個對照組（STRIKE_R）跟著拿掉；門檻本來就是讀 gateZone 的，條目名沒改（浮動清單的鍵）。 */
   /* 尾巴那一項驗的是**比例**不是極值（v1.139 改）：兩百多發裡最遠的那一發是
      整個分布最會跳的一個數，實測會在 28～30 之間晃，而門檻是 2.2 倍 ＝ 28.6——
      同一份程式碼本來就會偶爾越線，跟改了什麼無關。使用者本來就說「有些歪出去沒關係」，
@@ -15937,7 +15738,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gate1.land.n + ' 個落點離場心：中位 ' + gate1.land.med + '、四分之三位 ' +
      gate1.land.p75 + '、九成位 ' + gate1.land.p90 + '、最遠 ' + gate1.land.max +
      '（超出 2.2 倍打擊範圍的占 ' + gate1.land.farPct + '%；打擊範圍 ' + gate1.zone +
-     '、打雷是 ' + gate1.strikeR + '；v1.132.1 的瞄準規則量到的是 13.4／30／61／218）');
+     '；v1.132.1 的瞄準規則量到的是 13.4／30／61／218）');
   ok('門陣是凹的（像凹面鏡），而且沒有一把變成背對鏡頭飛',
      gate1.bowl.rim < gate1.bowl.mid - 4 && gate1.bowl.near > 12 && gate1.back === 0,
      '中間那圈 ' + gate1.bowl.nMid + ' 個門深 ' + gate1.bowl.mid + '、最外圈 ' +
@@ -28954,11 +28755,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let f = one();
     explode({ x: f[0].x, y: f[0].y, z: f[0].z }, 3, 12);
     ways.blast = !!f[0].air;
-    /* 雷押骰子劈在牠正下方（strike 的落點是雲心 ± STRIKE_R，Math.random 0 ＝ 正中），量完還回去 */
+    /* 雷柱劈在牠正下方（v1.283.0 起直接呼叫 boltHit，落點就是給的那一點，不必押骰子） */
     f = one();
-    const R0 = Math.random;
-    Math.random = () => 0;
-    try { strike({ x: f[0].x, y: 40, z: f[0].z }); } finally { Math.random = R0; }
+    boltHit({ x: f[0].x, z: f[0].z }, BOLT_R);
     ways.bolt = !!f[0].air;
     f = one(); ways.fire = igniteBeast(f[0], 0) && !!f[0].air;
     f = one(); ways.fell = fellBeast(f[0], 2) && !!f[0].air;
@@ -29155,28 +28954,23 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const b of blocks) b.wet = 0;
     const m = spawnBeast('ape', 1);
     m.x = 40; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999;
-    /* 落點是雲底半徑 STRIKE_R 內隨機的，所以打到中就停；
-       一道打不中的機率是 1−(5÷13)²，150 道全都沒中約等於 0。 */
-    let n = 0;
-    for (; n < 150 && m.burn <= 0 && m.fall <= 0; n++) strike({ x: m.x, z: m.z, y: 40 });
-    const ape = { n, burn: m.burn > 0, lie: m.lie, spin: +m.spin.toFixed(2) };
+    /* v1.283.0 起雷柱的落點就是給的那一點（直接呼叫 boltHit），一發就中，不必像 v1.282 以前連劈到中為止 */
+    boltHit({ x: m.x, z: m.z }, BOLT_R);
+    const ape = { burn: m.burn > 0, lie: m.lie, spin: +m.spin.toFixed(2) };
     cleanTools(); phase = 'done'; doomT = 1e9;
     const d = spawnDragon(1);
     d.x = 40; d.z = 0; d.st = 'ring'; d.y = 30;        // 巡航高度：雷認的是水平距離
-    let k = 0;
-    for (; k < 150 && d.st === 'ring'; k++) strike({ x: d.x, z: d.z, y: 40 });
-    return { ape, dra: { k, st: d.st, burn: d.burn || 0 } };
+    boltHit({ x: d.x, z: d.z }, BOLT_R);
+    return { ape, dra: { st: d.st, burn: d.burn || 0 } };
   });
   ok('雷劈到猴子＝當場點著並打倒（同小人）',
      hBolt.ape.burn && hBolt.ape.lie > 0,
-     '第 ' + hBolt.ape.n + ' 道劈中：身上有火 ' + hBolt.ape.burn + '、躺平角 ' +
-     hBolt.ape.spin);
+     '一發劈中：身上有火 ' + hBolt.ape.burn + '、躺平角 ' + hBolt.ape.spin);
   /* v1.153 以前這一條驗的是「點不著，改成把牠打下來」。使用者：「飛龍也要做著火狀態
      反應」——現在劈中就是點著牠，摔下來變成著火那一趟裡的一段（見下面）。 */
   ok('雷劈到飛龍＝點著牠，牠拖著火飛一段才摔下來',
      hBolt.dra.st === 'ablaze' && hBolt.dra.burn > 0,
-     '第 ' + hBolt.dra.k + ' 道劈中 → ' + hBolt.dra.st + '，身上的火 ' +
-     hBolt.dra.burn.toFixed(1) + ' 秒');
+     '一發劈中 → ' + hBolt.dra.st + '，身上的火 ' + hBolt.dra.burn.toFixed(1) + ' 秒');
 
   /* ── 飛龍：摔 → 趴 → 起飛 → 歸隊 ── */
   await fillAll(page);
@@ -29831,10 +29625,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       window[n] = function (...a) { seen++; return orig[n].apply(null, a); };
     }
     /* 要點兩下的那幾支（v1.171 加箭雨、v1.174 加投石機、v1.204 加加農砲、v1.218 加彈跳球、
-       v1.220 加天降鐵球、v1.227 加火槍兵、v1.228 加打雷：只點一下的話只會畫個瞄準環，
-       一台機器／一隊人都不會出來）。 */
+       v1.220 加天降鐵球、v1.227 加火槍兵：只點一下的話只會畫個瞄準環，
+       一台機器／一隊人都不會出來）。打雷 v1.228～v1.282 也在這裡，v1.283.0 重製之後回到點一下。 */
     const TWO = ['ball', 'tornado', 'gate', 'sword', 'arrow', 'treb', 'cannon', 'bounce', 'drop',
-                 'musket', 'storm'];
+                 'musket'];
     const out = [];
     try {
       for (const t of TOOLS) {
@@ -37564,7 +37358,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '密的（最密 ' + nudgePerf.eqTight.occ.max + '）' + nudgePerf.eqTight.same + '/' +
      nudgePerf.eqTight.n + ' 相同、' + nudgePerf.eqTight.moved + ' 塊被推動');
 
-  /* 塵霧最壞的一幕（v1.123）：三朵烏雲（一朵 700 團）＋ 一發核彈的蘑菇雲與火苗煙。
+  /* 塵霧最壞的一幕（v1.123）：三朵烏雲（一朵 700 團；v1.283.0 起一朵 STORM_PUFF 620 團、同時最多三發）＋ 一發核彈的蘑菇雲與火苗煙。
      兩件事一起驗——**都畫得出來**（MAXDUST 3400 是照這一幕訂的；砍在 2200 的話
      第三朵烏雲會整朵不見，因為烏雲接在 dust 後面、被切掉的是清單尾巴），
      以及**畫得起**（顆粒同時變小，覆蓋度沒怎麼動，所以變貴的只有 CPU 那一段）。 */
@@ -37589,7 +37383,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const idle = bench();
     for (const p of [{ x: -20, z: 0 }, { x: 20, z: 0 }, { x: 0, z: 24 }]) callStorm(p);
     startCloud({ x: 0, y: 0, z: 0 }, 30);
-    for (let i = 0; i < 200; i++) step(0.016);       // 聚滿三朵雲 ＋ 蘑菇撐開
+    /* 聚滿三朵雲 ＋ 蘑菇撐開。v1.283.0 起停在劈下去之前（v1.282 以前推 3.2 秒）：
+       重製之後第 STORM_CHARGE 秒那一下會打掉積木、點火，那一幕量到的就不只是塵霧了 */
+    for (let t = 0; t < STORM_CHARGE - 0.2; t += 0.016) step(0.016);
     const want = dustList().length;
     const full = bench(), drawn = ENG.three.dustMesh.count;
     cleanTools();

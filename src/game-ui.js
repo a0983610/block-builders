@@ -495,6 +495,10 @@ function draw() {
   ENG.putFlash(flashes);
   ENG.putStars(stars);
   ENG.putBolts(bolts.length ? boltList() : EMPTY);
+  /* 打雷（v1.283.0）：粗雷、亮球、兩盞點光源、天色。沒有雷雨時 stormFx 給空的、暗度 0（引擎那邊同一個值不重設） */
+  stormFx();
+  ENG.putStorm(stormPaths, stormBalls, stormLamps);
+  ENG.setGloom(stormGloom);
   /* 魔法陣、爆炸光環、保齡球的瞄準環共用同一組環，在這裡合起來丟過去。
      魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。
      沒東西在瞄／沒魔法陣時不做 concat：那是每幀都會跑到的路徑。 */

@@ -45,10 +45,9 @@ const TOOLS = [
   { id: 'magic', n: '爆裂魔法', k: '💥', tip: '點一下：魔法陣一層層展開，6 秒後爆炸' },
   /* 圖示 v1.251.0 起跟霹靂一閃對調（使用者：「圖示跟打雷對調」），⚡ 給善逸 */
   { id: 'storm', n: '打雷', k: '🌩',
-    /* v1.165 起一次三朵：從周圍飄進來、往中心靠攏，各自劈自己的雷（見 STORM_TRIO）。
-       v1.177 一朵劈 15～20 道（使用者要求加次數，見 STORM_N）。
-       v1.228 起點兩下：在第一點聚攏，邊劈邊飄到第二點（見 aimStorm）。 */
-    tip: '點兩下：先點烏雲出現的地方，再點要飄過去的地方——三朵烏雲邊飄邊劈，劈中的地方炸出小缺口並燒起來' },
+    /* v1.283.0 整支重製（見〈── 打雷 ──〉那一節）：點一下，烏雲捲到上空、3 秒後一道粗雷貫穿到地面。
+       v1.165～v1.282 是一次三朵、一朵劈 15～20 道小雷、v1.228 起點兩下從 A 飄到 B。 */
+    tip: '點一下：烏雲捲到那裡的上空，3 秒後劈下一道粗雷，從屋頂一路貫穿到地面，劈到的全部燒起來' },
   { id: 'drop', n: '天降鐵球', k: '⚫',
     /* v1.165 起不再是一路鑽到底：削過砸中的那一片，再順著屋頂的坡度滑下去（見 DROP_DIG）。
        v1.220 起點兩下、平平拋出去（見 aimDropBall）。 */
@@ -320,7 +319,7 @@ let bombs = null;     // 已放下、倒數中的定時炸彈
 let meteors = null;   // 已呼叫的隕石（倒數或下墜中，可以好幾顆）
 let nukes = null;     // 已呼叫的核彈（倒數或下墜中，可以好幾顆）
 let magics = null;    // 正在展開的魔法陣（可以好幾個）
-let storms = null;    // 正在打雷的烏雲（可以好幾朵）
+let storms = null;    // 正在打雷的那幾發（一發一朵雲一道雷，見 callStorm）
 let ufos = null;      // 在場的幽浮（含飛走之後還在倒數丟東西的那幾台，v1.167）
 let holes = null;     // 在場的小黑洞（含收完之後還在等五秒撒回來的那幾顆，v1.221）
 const holeFx = [];    // 小黑洞收掉那一下的黑色火球（倒著放的爆炸，見 holeGulp）
@@ -5858,369 +5857,399 @@ function boltList() {
   return boltSegs;
 }
 
-/* ── 打雷 ───────────────────────────────────────────────
-   使用者指定的順序就是這支的骨架：點地面 → 慢慢出現烏雲 → 隨機劈 5～7 道雷 →
-   被劈到的點小破壞（幾格積木）＋燒起來。
-   v1.165 起「一朵」變成「一組三朵」：從點擊處的周圍飄進來、往中心點靠攏，
-   出場還差一點時間差，各自劈自己的雷（見 STORM_TRIO）。
-   v1.228 起點兩下：在第一點聚攏，聚滿之後整組邊劈邊飄到第二點（見 aimStorm）。
+/* ── 打雷（v1.283.0 重製）─────────────────────────────────
+   使用者：「打雷道具完全重製 改成烏雲慢慢的集中到上空 並有雷電還在雲裡閃的效果 3秒後打下一道粗大雷
+   被雷劈到的積木或生物都會受到攻擊 並附帶燃燒效果 擊中地面也有特效 整體是營造一種超強雷電震撼感」
+   問過之後定的：點一下（不再點兩下）、一路貫穿到地面、雷柱半徑 4（BOLT_R）、畫面震一下、地面衝擊波＋揚塵、
+   地面竄藍色電痕；另外問「能不能加上光影讓旁邊的物體有電光線照上去」→ 兩盞點光源（引擎的 putStorm）。
+   預覽（tools/.e2e-out/打雷重製預覽.html）裡另外開著給看的三樣——烏雲遮天變暗、前導、地面焦痕——
+   使用者看完：「新版看起來效果不錯 半徑選4」。
+   v1.117～v1.282 那一套（一次三朵、一朵劈 15～20 道小雷、點兩下從 A 飄到 B）整支拿掉。
+   見 開發筆記〈打雷重製：3 秒聚雲、一道粗雷貫穿到底（v1.283.0）〉。
 
-   雲用塵霧粒子堆（跟蘑菇雲同一套，不另外開一種畫面物件）：一團一團地聚出來，
-   聚滿了才開始劈。一次生一整朵的話它會「啪」地整朵出現在半空，看起來像貼圖
-   不像雲聚過來——蘑菇雲那邊踩過同一個雷（見〈蘑菇雲〉）。
+   一發的時間軸：
+     0～STORM_GATHER           雲一團一團捲進來（外圈先、中心最後），整朵慢慢自轉，雲心越來越往下垂
+     STORM_FLASH0 起           雲裡開始閃：照亮附近的雲，八成帶一道看得到的電；越接近劈下越密
+     STORM_CHARGE − BOLT_LEAD  前導：一道細電沿著主幹往下探
+     STORM_CHARGE              劈：雷柱裡的全部受到攻擊（boltHit）、主雷幾記回擊、分岔、震一下、地面特效
+     再 STORM_LINGER 秒         雲還在閃、慢慢稀掉，之後散開、天色亮回來（STORM_DARK_OUT）
 
-   閃電重用爆裂魔法那套折線（boltPts／bolts）：一道雷是「一條主幹 ＋ 兩條從主幹
-   中段折出去、停在半空的分岔」。只畫主幹的話是一條光滑的折線，看起來像電線不像雷。
-   段數：主幹 11 ＋ 分岔 2×4 ＝ 19 段，九朵雲（v1.165：一次三朵、最多三次點擊）
-   各自劈到最密是 9×2×19 ＝ 342 段，加上三處爆裂魔法的餘電 126 段，
-   引擎的 MAXBOLT 跟著 288 → 480。 */
-/* 一次點擊出三朵（v1.165，使用者：「烏雲出現方式 調整成周圍出現後再往中心點靠攏
-   一次出現三朵烏雲 分別打雷（出現可以故意設計微小時間差）」）。
-   三朵是一組：各自從點擊處的周圍飄進來、各自劈自己的雷，只有召喚是同一下。
-   同時最多 9 朵 ＝ 還是三次點擊的量（同 v1.123 的「最多三朵」，只是一朵變一組）。 */
-const STORM_TRIO = 3;            // 一次幾朵
-const STORM_LAG = 0.18;          // 三朵之間的出場時間差（使用者：「微小時間差」）
-const STORM_MAX = STORM_TRIO * 3;   // 同時最多幾朵
-/* 雲底高度（v1.118 改成跟著建築走）。本來是固定 26，但地標最高到 138（大笨鐘 9000 塊）
-   ——雲整個埋在建築裡，電等於從樓層之間冒出來，看不出打在哪；使用者回報的就是這件事。
-   現在是「屋頂再上去 STORM_UP」，矮建築另外有個下限，不然雲會貼在屋簷上、電只剩一小截。
-   v1.169.2：「屋頂」改成讀 **siteTopNow()**（現在蓋到多高），不是 bp.height（蓋完多高）
-   ——使用者：「有些塔很高沒蓋完 出現時看起來太高」。 */
-const STORM_Y0 = 34;             // 最低就這麼高（矮建築用）
-const STORM_UP = 16;             // 高過屋頂多少
-/* **一朵**的半徑。v1.123 從 12 放到 17（使用者：「烏雲面積 閃電破壞面積 加大(2倍)」）
-   ——照字面是**面積**兩倍，所以半徑乘 √2（12 × 1.414 = 16.97）。
-   v1.165 一朵變三朵，單朵收到 9.9（17 × 0.58）：三朵落位在 STORM_SEP 的圓周上，
-   整組罩住的還是半徑 18.4 那一圈，跟改之前的 17 同一個量級——
-   使用者要的是「出現方式」變成三朵靠攏，不是把雷雨的規模放大。
-   厚度（STORM_TH）不跟著收：使用者指定的是面積，薄而寬本來就比較像一層雷雨雲。 */
-const STORM_R = 9.9;
-/* 三朵的落位（離點擊處多遠）與出場位置（再往外多遠）。
-   落位 8.5：三朵的雲心互相隔 14.7，各自半徑 9.9——看得出是三朵，又疊成一片。
-   出場再往外 26：飄進來那一段要看得出「從周圍往中心點靠攏」，
-   太近就變成原地長大。靠攏用指數逼近（每秒追上的比例 STORM_DRIFT），
-   1.2 的話 2.6 秒（＝聚滿一朵的時間）剩不到 1.2 單位，正好聚滿就到位。 */
-const STORM_SEP = 8.5;
-const STORM_COME = 26;
-const STORM_DRIFT = 1.2;
-const STORM_TH = 3.4;            // 雲心的厚度（往邊緣收，見 stormSeeds）
-/* 雲要聚多久才聚滿（使用者：「慢慢出現」）。v1.123 從 1.6 拉到 2.6：
-   要看得出「先外圈、再往中心收」（見 stormSeeds），1.6 秒整朵就長完了，
-   那個順序一閃就過去。 */
-const STORM_GROW = 2.6;
-/* 一朵雲幾團、一團多大。v1.117 是 44 團 × 3.4～6.4，使用者：「烏雲方塊太少 太大塊
-   看起來像一堆立方體」——量過就是這樣：半徑 11 的圓要用 44 顆邊長 5 的方塊鋪，
-   一顆一顆之間有縫，邊緣露出整齊的立方體側面。改成「多而小」（截圖比對 44／90／150／220
-   四種，150 團 × 1.4～3.0 最像雲，220 團反而在邊緣散成一堆小骰子）。
-   **v1.123 再細一級**（使用者：「烏雲效果太過粗糙」）。第一版只把團數補到「面積放大
-   一倍之後密度不變」（150 → 380）就去截圖，結果還是一團看得出邊長的方塊——
-   關鍵不是密度而是**單顆多大**：一顆邊長 3 的方塊擺在半徑 17 的雲裡，
-   輪廓上就是一顆一顆數得出來的骰子。所以三件事一起做：
-   ① 團數 150 → 700、單顆 1.4～3.0 → **1.4～2.9 再乘 taper**（見 ②）。
-      覆蓋度（Σ 邊長² ÷ 面積）1.68 → 2.21：顆粒變小、疊得更厚，輪廓才連成一片。
-   ② 大小跟著「離雲心多遠」收（STORM_TAPER）：會露出立方體側面的地方永遠是輪廓，
-      中心那些本來就被別團擋住。邊緣的一團只有中心的 60%。
-   ③ 引擎的 MAXDUST 跟著 900 → 2200（三朵同時在場就是 2100 團）。
-      **顆數變多不等於變貴**：覆蓋度沒變多少，GPU 那邊的填色量就差不多；
-      CPU 那邊量過一顆約 0.06µs（draw() 0 顆 0.29ms、900 顆 0.347ms），
-      2200 顆也只多 0.08ms，每幀預算是 4ms。
-   v1.165 一朵變三朵之後，團數照**面密度不變**換算：700 ÷ π17² ＝ 0.771 團／單位²，
-   半徑 9.9 的一朵就是 237 → 取 240（一次點擊 720 團，跟改之前的 700 同一個量級；
-   九朵塞滿也才 2160，仍在 MAXDUST 3400 以內）。 */
-const STORM_PUFF = 240;
-const STORM_S = [1.4, 2.9];
-const STORM_TAPER = 0.4;        // 邊緣的一團縮到中心的 (1 − 這個)
-/* 怎麼聚（v1.123，使用者：「烏雲出現時細節 先在中心外圍慢慢出現 然後往中心聚攏」）。
-   ① 出場順序：整朵的位置先抽好、照離雲心的距離**由外往內**排（見 stormSeeds），
-      所以一定是外圈先亮、中心最後補滿。本來是每次現抽一個位置，抽到哪就長在哪，
-      整朵一起淡入，看不出方向。
-   ② 每一團生在自己歸位點的外側，再一路飄回去。偏移量是「歸位點離雲心的距離 × STORM_IN
-      ＋ STORM_OUT」：只乘比例的話，歸位點就在雲心的那幾團等於原地生出來，
-      中心那一塊就沒有聚攏可看，所以要再加一個固定量。
-   ③ 飄回去用指數逼近（每秒追上的比例由 STORM_PULL 決定）：出場那一下最快、
-      快到位時慢下來，看起來像被吸過去而不是等速平移。 */
-const STORM_IN = 1.45;
-const STORM_OUT = 7;
-const STORM_PULL = 2.4;
-const STORM_FADE = 0.45;         // 劈完之後整朵縮掉的半衰期
-/* **一朵**劈幾道（使用者指定，v1.118 從 5～7 加到 7～15、v1.123 到 15～20）。
-   v1.165 一次三朵，把 15～20 拆給三朵（一朵 5～7、一次點擊仍是 15～21 道）——
-   **v1.177 收回這個拆法**（使用者：「打雷增加次數（上次變成三朵烏雲 被你分散了）」）：
-   一朵回到 15～20，一次點擊 45～60 道。三朵是「出現方式」的改動，不該連威力一起打三折。 */
-const STORM_N = [15, 20];
-const STORM_GAP = [0.22, 0.5];   // 兩道之間隔多久
-/* 雷打在**自己這朵**的雲心多遠以內。v1.123 是 13（跟雲的 17 一起放大，比例 0.765）。
-   v1.165 一朵變三朵，要對齊的是**整組**的比例：三朵的雲心散在半徑 8.5 上，
-   所以整組的落點圓 ＝ 8.5 ＋ 這個數，整組的雲 ＝ 8.5 ＋ 9.9 ＝ 18.4；
-   收在 4.5 的話落點圓 13 ÷ 18.4 ＝ 0.71，跟改之前的 0.765 同一個量級。
-   照單朵的比例給（9.9 × 0.765 ＝ 7.6）的話落點圓會變成 16.1：**威力會少三分之一**
-   ——實測國會大廈五趟平均，打掉 789 塊掉到 511。使用者這次要的是出現方式，
-   不是把雷雨改弱，所以照整組對齊。 */
-const STRIKE_R = 4.5;
-const STRIKE_NEAR = 1.6;         // 找「這一點上方最高那塊」的水平容差
-/* 一道雷打掉的範圍。使用者指定「小破壞（可能就幾格積木）」，所以這個數是照著
-   「打中那一塊 ＋ 它的面鄰居」湊的：格子間距是 1，收在 1.3 的話對角線（1.41）就進不來，
-   一道雷最多七格、打在牆面上實際多半是三到五格。
-   第一版給 3.2（比槌子的 5.5 小就好）——實測六道劈掉 726 塊，那不是「幾格」是拆房子。
-   雷的重點跟隕石一樣不在威力在火，見下面的 BOLT_FIRE_*。 */
-/* v1.123 從 1.3 放到 1.84（使用者：「閃電破壞面積 加大(2倍)」）——跟雲一樣照
-   **面積**兩倍算，半徑乘 √2。跨過 1.73 之後 3×3×3 的角落（√3）也進得來，
-   所以一道雷咬得到的上限從 7 格變成 27 格；打在牆面上實際咬到的還是少得多（見測試）。 */
-const BOLT_R = 1.84;
-const BOLT_POW = 13;             // 力道（投石機的石頭 12、槌子 15）
-const BOLT_FIRE_R = 5;           // 點火的範圍（比破壞範圍大得多：燒才是它的主要傷害）
-const BOLT_FIRE_N = 5;           // 一道雷最多點著幾塊，其餘交給火自己蔓延
-/* 劈到人的範圍（v1.133，使用者：「打雷⋯⋯沒對小人生效」，指定「打倒 ＋ 燒起來」）。
-   為什麼本來沒有：所有道具掀倒小人都靠共用的 afterHit，而它**只在真的打掉積木時**
-   才動人（第一行就是 `if (n <= 0) return`）——雷劈在空地上一塊積木都沒掉，
-   等於整段沒跑；就算劈在建築上，半徑也只有 BOLT_R × 1.7 ＝ 3.1。
-   實測：12 個人站在落點正下方，一整朵雲劈完 0 個有反應。
-   取 BOLT_FIRE_R（點火範圍 5）而不是 BOLT_R（破壞範圍 1.84）：這一下的主要傷害
-   本來就是燒，而不是砸——焦黑範圍內的人一起著火才對得上畫面。 */
-const BOLT_MAN_R = BOLT_FIRE_R;
-const BOLT_MARK = 4;             // 地上那塊焦黑多大（劈在屋頂上就不留，見 spawnMark）
-/* 點兩下，從第一點一路飄到第二點（v1.228，使用者：「打雷調整成點兩個位置
-   然後從A點慢慢移動到B點」）。怎麼走是看過預覽之後定的「**劈多久走多久**」：
-   三朵照舊在 A 周圍聚攏（上面那一整套都不動），聚滿那一刻（STORM_GROW）整組開始
-   沿 A→B 等速平移，走完的時間＝三朵裡最晚劈完的那一朵——所以不管兩點隔多遠，
-   一朵照舊劈 15～20 道（威力不變），最後一道剛好劈在 B。代價是隔得遠就走得快
-   （e2e 那一趟 48.7 格走 6.1 秒、每秒 8 格）。預覽裡另一種「固定每秒 3 格、劈完還沒到 B
-   就一路劈到 B」使用者先選了、再看一次之後改成這一種（探針量那一種 48 格要劈 130 道）。
-   同一點點兩下（相距不到 0.5，同 aimDir 的門檻）就原地劈，跟 v1.227 以前一模一樣。
-   見 開發筆記〈打雷：點兩下，從 A 一路飄到 B〉。 */
-const STORM_AIM_R = STORM_SEP + STRIKE_R;   // 第一下那圈光環：整組的雷落得到的那一圈（13）
-const STORM_AIM_C = 0xa9b4d8;
-function aimStorm(point) {
-  if (!aim) { aimFirst(point, STORM_AIM_R, STORM_AIM_C); return; }
-  const from = aim;
-  aim = null;
-  callStorm(from, point);
-}
-/* to 不給＝原地劈（測試與 v1.227 以前的呼叫端都是只給一點）。 */
-function callStorm(p, to) {
-  if (!storms) storms = [];
-  /* 滿了把最早的**一組**擠掉（同其他清單型道具，只是單位從一朵變一組）：
-     一朵一朵擠的話會留下兩朵孤零零的雲繼續劈。 */
-  while (storms.length + STORM_TRIO > STORM_MAX) storms.shift();
-  const y = Math.max(STORM_Y0, siteTopNow() + STORM_UP);
-  const base = Math.random() * Math.PI * 2;          // 三朵的方位，整組隨機轉
-  const bx = to ? to.x : p.x, bz = to ? to.z : p.z;
-  const trio = [];
-  let dur = 0;
-  for (let i = 0; i < STORM_TRIO; i++) {
-    const a = base + i * Math.PI * 2 / STORM_TRIO;
-    const lag = i * STORM_LAG;                       // 出場的微小時間差（使用者指定）
-    const ox = Math.cos(a) * STORM_SEP, oz = Math.sin(a) * STORM_SEP;
-    const s = {
-      /* 歸位點在點擊處周圍（STORM_SEP），出場再往外 STORM_COME，
-         之後一路往中心點靠攏——見 stepStorms 那段整朵平移。 */
-      gx: p.x + ox, gz: p.z + oz,
-      x: p.x + Math.cos(a) * (STORM_SEP + STORM_COME),
-      z: p.z + Math.sin(a) * (STORM_SEP + STORM_COME),
-      y, t: -lag, out: 0, puffs: [], seeds: null, seed: 0,
-      // 均勻抽。用 rr 再四捨五入的話頭尾兩個值只有一半的機會，中間會偏多
-      left: STORM_N[0] + Math.floor(Math.random() * (STORM_N[1] - STORM_N[0] + 1)),
-      next: STORM_GROW + lag + rr(0.1, 0.4),         // 自己聚滿了才開始劈
-      /* 往 B 飄用的（v1.228）：A、B、這一朵在整組裡的位置、出場時間差、要走多久（0＝原地） */
-      ax: p.x, az: p.z, bx, bz, ox, oz, lag, dur: 0, gaps: []
-    };
-    /* 每一道之間隔多久先抽好（v1.228）：「劈多久走多久」要先知道這一朵劈到第幾秒收工。
-       抽的分布跟以前「劈完一道現抽一次」一樣。 */
-    let end = s.next;
-    for (let k = 1; k < s.left; k++) { const g = rr(STORM_GAP[0], STORM_GAP[1]); s.gaps.push(g); end += g; }
-    dur = Math.max(dur, end - STORM_GROW);
-    s.seeds = stormSeeds(s);
-    trio.push(s);
-    storms.push(s);
+   stepStorms 只動狀態，長相在 stormFx → 引擎的 putStorm／setGloom。雲照舊走塵霧那顆 mesh（puffs，見 dustList）；
+   電全部走 putStorm 的三層加法柱（雲裡的、前導、主雷、分岔、地上的電痕），不走 boltMesh——那顆是實色不透明，
+   在暗下來的場景裡是一根一根藍色的棍子。閃爍的亂數全部在 step 裡抽（op 存在各自身上），stormFx 只照狀態排清單：
+   測試多半只跑 step 不跑 draw，畫面那邊抽亂數的話同一顆種子會因為有沒有 draw 而換一副骰子
+   （同〈雷光與光痕不抽 Math.random〉）。 */
+const STORM_CHARGE = 3;          // 點下去幾秒後劈（使用者指定）
+const STORM_MAX = 3;             // 同時最多幾發（再點就把最早那一發擠掉）
+/* 雲高照舊（v1.118／v1.169.2）：「現在」的屋頂再上去 STORM_UP，矮建築最低 STORM_Y0。
+   幽浮也照這一套（見那一節的 UFO_Y0／UFO_UP）。 */
+const STORM_Y0 = 34;
+const STORM_UP = 16;
+/* 一朵雲：半徑、雲心厚度、幾團。團數照舊版的面密度（0.77 團／單位²）：π × 16² × 0.77 ≈ 620。
+   形狀照舊：半徑往中心偏（0.7 次方）、厚度跟著半徑收（中間厚邊緣薄的透鏡）、一團的大小往邊緣收 STORM_TAPER
+   （輪廓上那幾團小一點，邊緣才不是一排立方體側面，見〈打雷（v1.117）〉）。 */
+const STORM_R = 16;
+const STORM_TH = 3.6;
+const STORM_PUFF = 620;
+const STORM_S = [1.5, 3.1];
+const STORM_TAPER = 0.4;
+const STORM_C = [0.05, 0.13];    // 雲的灰階。舊版 0.1～0.22：天色壓暗之後雲比天空還亮，預覽第一輪調深
+/* 怎麼聚（使用者：「烏雲慢慢的集中到上空」）：照時間算「現在該有幾團」，外圈先出場；每一團生在自己歸位點外側
+   STORM_COME 格、落後歸位點 STORM_SWIRL 弧度（捲著進來，不是直直飄進來），之後在極座標上指數逼近歸位點
+   （每秒追上 STORM_PULL）。整朵同時在自轉：外圈每秒 STORM_SPIN[0]、越往中心多轉 STORM_SPIN[1]（像漩渦）。
+   出場距離預覽第一輪是 16～30：第 1.8 秒還有一大片散在天上，看起來像一堆碎塊不像雲，收到 10～22。 */
+const STORM_GATHER = 2.3;        // 最後一團在第幾秒出場
+const STORM_COME = [10, 22];
+const STORM_SWIRL = 1.6;
+const STORM_PULL = 1.5;
+const STORM_SPIN = [0.16, 0.5];
+const STORM_GROW_IN = 0.4;       // 一團出場之後幾秒長到原本的大小（不然遠處會「啪」地冒出一顆方塊）
+const STORM_SAG = 2.6;           // 雲心（內四成）往下垂多少，照 (t ÷ STORM_CHARGE)² 垂——越接近劈下越明顯
+const STORM_LINGER = 1.1;        // 劈完雲還留多久（還在閃）
+const STORM_FADE = 0.5;          // 散掉時每一團縮小的半衰期（同時往外散開）
+const STORM_DARK_OUT = 1.6;      // 散掉之後天色多久亮回來
+/* 雲裡的閃：第一下在 STORM_FLASH0 秒；間隔從 0.5 秒照 (t ÷ STORM_CHARGE)² 縮到 0.06 秒（越接近劈下越密），
+   劈完從 0.12 秒慢慢拉回 0.62 秒，每個間隔再乘 0.6～1.4。一下照亮半徑 5～9 的雲，八成帶一道看得到的電。 */
+const STORM_FLASH0 = 0.45;
+/* 雷柱（使用者選「一路貫穿到地面」「半徑選4」）：水平距離 BOLT_R 以內、從屋頂到地面的全部受到攻擊（boltHit）。
+   預覽量過劈在正中央直接打掉幾塊（3000 塊的建築）：國會大廈 395、金字塔 521、新天鵝堡 635、
+   大笨鐘 826、台北 101 1248——細的塔被劈中心最慘。 */
+const BOLT_R = 4;
+const BOLT_BODY = 0.6;           // 人與動物多算這一點（量的是身體中心，身體有寬度）
+const BOLT_EMBER = 0.4;          // 打飛的碎料幾成拖著火（使用者：「附帶燃燒效果」）
+/* 雷柱邊上還站著的那一圈：從地面到屋頂每 BOLT_RIM_STEP 一層，在半徑 BOLT_R + BOLT_RIM 內點 BOLT_RIM_N 塊，
+   之後交給火自己往鄰居燒（同舊版「燒才是主要傷害」——被劈穿的建築要從那個洞燒開）。 */
+const BOLT_RIM = 2.2, BOLT_RIM_STEP = 3, BOLT_RIM_N = 2;
+const BOLT_WOB = 2.6;            // 雷柱外 √2.6 倍半徑以內的只晃一下（smash 的波及是 3.4 倍，柱子收一點）
+const BOLT_T = 0.95;             // 主雷亮多久
+/* 主雷的亮度：幾記回擊（真的閃電是同一條通道連劈好幾下：亮—暗—亮），之後抖著暗掉。[起, 迄, 亮度] */
+const BOLT_STROKES = [[0, 0.07, 1], [0.07, 0.12, 0.28], [0.12, 0.2, 1], [0.2, 0.26, 0.4], [0.26, 0.34, 0.95]];
+/* 主幹芯的粗細（照 BOLT_R ÷ 4 縮放，第一記再粗 1.3 倍）。預覽第一輪 0.62：糊成一根白柱子，看不出是閃電 */
+const BOLT_W = 0.42;
+const BOLT_LEAD = 0.3;           // 前導往下探多久
+/* 劈下去震一下。v1.275.0 拿掉打雷的震動（使用者：「會造成畫面連續震動」）是因為一次要劈 45～60 道；
+   現在一發只有一道，使用者這次選了「畫面震一下」。 */
+const BOLT_SHAKE = 1.8;
+const BOLT_ARC_T = 1.8;          // 地上的藍色電痕竄多久
+const BOLT_ARC_N = 10;           // 劈下去那一刻先竄幾道，之後每 0.04～0.12 秒（越後面越稀）補一道
+/* 點光源的相對亮度（引擎乘 STORM_LAMP_I）：雷柱上段、地面、雲裡的閃、地上的電痕。
+   預覽調的是 2600／1700／2400／260 燭光，這裡除以 2600。 */
+const LAMP_TOP = 1, LAMP_GND = 0.65, LAMP_CLOUD = 0.92, LAMP_ARC = 0.1;
+
+/* 折線：中點位移（碎形）——比等分抖動像真的閃電（大的轉折加小的鋸齒）。
+   cl 給了就把水平偏移收在那個圓裡：主幹收在雷柱裡，畫出來的電跟打到的範圍才對得上。 */
+function mdPath(a, b, iters, rough, cl) {
+  let pts = [a, b];
+  for (let it = 0; it < iters; it++) {
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i - 1], q = pts[i];
+      const off = Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z) * rough;
+      const m = { x: (p.x + q.x) / 2 + rr(-off, off), y: (p.y + q.y) / 2 + rr(-off, off) * 0.15,
+                  z: (p.z + q.z) / 2 + rr(-off, off) };
+      if (cl) {
+        const dx = m.x - cl.x, dz = m.z - cl.z, d = Math.hypot(dx, dz);
+        if (d > cl.r) { m.x = cl.x + dx / d * cl.r; m.z = cl.z + dz / d * cl.r; }
+      }
+      out.push(m, q);
+    }
+    pts = out;
   }
-  if (Math.hypot(bx - p.x, bz - p.z) >= 0.5) for (const s of trio) s.dur = dur;
-  /* 順手把鏡頭退到看得見整朵雲的距離（跟蘑菇雲共用 ENG.holdWide）。
-     量過：預設取景的「畫面上緣」差不多就在鏡頭自己的高度——矮建築（羅馬競技場 h=15）
-     只看得到 26 以下，雲擺在 34 就整朵在畫面外，點下去等於什麼都沒發生。
-     holdWide 只會把鏡頭往外／往上帶，不會搶走玩家自己拉近的視角。
-     **這一發是「用完要還」的**（v1.128，使用者：「如果是會讓鏡頭往高的方向調整的運鏡
-     結束後高度要調回來」——一開始寫在天降鐵球底下，查證之後確認那支從頭到尾不動鏡頭，
-     真正會抬高又停在那裡的是這一支）。雲擺得比屋頂高，視線就跟著抬到雲的腰間：
-     矮建築抬到 18.7、台北 101 抬到 67——劈完雲散了，鏡頭卻還仰在那裡看空的天空。
-     第三個參數給 true，最後一朵散掉之後在 stormEnd() 還回去。
-     視距不還，只還高度：把建築推出畫面的是仰角不是距離（見 ENG.holdWide）。 */
+  return pts;
+}
+function callStorm(p) {
+  if (!storms) storms = [];
+  while (storms.length >= STORM_MAX) storms.shift();
+  const y = Math.max(STORM_Y0, siteTopNow() + STORM_UP);
+  const s = { x: p.x, z: p.z, y, t: 0, puffs: [], seeds: stormSeeds(y), seed: 0,
+              flashes: [], zaps: [], arcs: [], fNext: STORM_FLASH0, arcNext: 0, arcGlow: 0,
+              struck: false, ts: 0, env: 0, topY: 0, hitN: 0, br: [], dark: 0 };
+  /* 主幹一出手就抽好：前導沿著同一條往下探，劈下去的就是那一條 */
+  s.main = mdPath({ x: p.x + rr(-1.2, 1.2), y: y - 1, z: p.z + rr(-1.2, 1.2) }, { x: p.x, y: 0.1, z: p.z },
+                  5, 0.21, { x: p.x, z: p.z, r: BOLT_R * 0.85 });
+  s.lead = { pts: s.main, w: 0.16, op: 0, halo: 0.12, tip: y };
+  s.leadBr = [];                                     // 前導的細分岔，往下探時一起長
+  for (let k = 0; k < 5; k++) {
+    const q = s.main[2 + Math.floor(Math.random() * (s.main.length * 0.8))];
+    const a = Math.random() * Math.PI * 2, L = rr(3, 8);
+    s.leadBr.push({ pts: mdPath(q, { x: q.x + Math.cos(a) * L, y: Math.max(0.3, q.y - L * rr(0.6, 1.2)),
+                                     z: q.z + Math.sin(a) * L }, 2, 0.25),
+                    w: 0.1, op: 0, halo: 0, tip: y });
+  }
+  s.bolt = { pts: s.main, w: BOLT_W * BOLT_R / 4, op: 0, halo: 0.07 };
+  s.balls = [{ x: p.x, y: 0.6, z: p.z, r: 0, op: 0 }, { x: p.x, y: 0, z: p.z, r: 0, op: 0 }];   // 落點、屋頂
+  storms.push(s);
+  /* 順手把鏡頭退到看得見整朵雲的距離（v1.117，跟蘑菇雲共用 ENG.holdWide），**用完要還**（v1.128，
+     使用者：「如果是會讓鏡頭往高的方向調整的運鏡 結束後高度要調回來」）：第三個參數給 true，
+     最後一發散掉之後在 stormEnd() 還回去。視距不還，只還高度。 */
   stormHold++;
-  /* 半徑取整組罩住的那一圈（三朵落位 ＋ 一朵半徑），不是單朵——v1.165 一朵只有 9.9，
-     只給單朵的話鏡頭退得比改之前近，外圈那兩朵會擠在畫面邊緣。 */
-  const wide = STORM_SEP + STORM_R;
-  ENG.holdWide(y + STORM_TH, Math.max(wide, bp ? bp.radius : wide), true);
+  ENG.holdWide(y + STORM_TH, Math.max(STORM_R + 4, bp ? bp.radius : STORM_R), true);
+  sndStormBrew(STORM_CHARGE + 1.5);
   sndTick();
 }
-/* 還欠幾次「把視線高度還回去」。一次點擊算一次（不是一朵一次），還可以連點，
-   所以要記次數——見 stormEnd()。 */
+/* 還欠幾次「把視線高度還回去」。一次點擊算一次，還可以連點，所以要記次數——見 stormEnd()。 */
 let stormHold = 0;
 /* 雲全部收乾淨了就把高度還回去。stepStorms 的兩個出口都要叫：
-   上面那個 early return 是「場上沒有雲」的捷徑，而最後一朵縮完的下一幀走的正是它。 */
+   上面那個 early return 是「場上沒有雲」的捷徑，而最後一發收掉的下一幀走的正是它。 */
 function stormEnd() {
   if (storms) return;
   while (stormHold > 0) { stormHold--; ENG.releaseWide(); }
 }
-/* 整朵雲的「歸位點」，一次抽好、照離雲心的距離**由外往內**排（v1.123，
-   使用者：「烏雲出現時細節 先在中心外圍慢慢出現 然後往中心聚攏」）。
-   半徑往中心偏（0.7 次方；均勻鋪滿是 0.5），厚度再跟著半徑收——
-   整朵是中間厚、邊緣薄的透鏡，不是一塊等厚的圓餅。圓餅的邊緣會露出一排
-   一樣大的方塊側面，那正是「看起來像一堆立方體」的來源。
-   排序放在這裡而不是每次現抽：現抽的話「外圈先出現」只能靠機率，
-   一定會有幾團中心的先冒出來，那個順序就看不出來了。 */
-function stormSeeds(s) {
+/* 整朵雲的「歸位點」一次抽好、照離雲心的距離**由外往內**排：現抽的話「外圈先出現」只能靠機率，
+   一定會有幾團中心的先冒出來（v1.123，使用者：「先在中心外圍慢慢出現 然後往中心聚攏」）。 */
+function stormSeeds(y) {
   const out = [];
   for (let i = 0; i < STORM_PUFF; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const k = Math.pow(Math.random(), 0.7);
-    const th = STORM_TH * (1 - 0.55 * k);
-    out.push({
-      /* 歸位點的水平位置改在 popPuff 才算（v1.165）：整朵雲一路往中心點靠攏，
-         雲心會動，出場那一刻的雲心才是這一團該歸的位置。 */
-      a, k, hy: s.y + rr(-th, th),
-      vx: rr(-0.35, 0.35), vz: rr(-0.35, 0.35),
-      rx: Math.random() * 6, ry: Math.random() * 6,
-      // 大小跟著離雲心多遠收：輪廓上那些變小，整朵的邊緣才不會是一排立方體側面
-      s: rr(STORM_S[0], STORM_S[1]) * (1 - STORM_TAPER * k),
-      // 壓到 0.1～0.22（一般揚塵 0.62～0.9、蘑菇雲 0.18～0.42）：這是雷雲不是煙
-      c: rr(0.1, 0.22)
-    });
+    const k = Math.pow(Math.random(), 0.7), th = STORM_TH * (1 - 0.55 * k);
+    out.push({ a: Math.random() * Math.PI * 2, k, hy: y + rr(-th, th),
+               s0: rr(STORM_S[0], STORM_S[1]) * (1 - STORM_TAPER * k), c: rr(STORM_C[0], STORM_C[1]) });
   }
   out.sort((p, q) => q.k - p.k);            // 離雲心遠的排前面 ＝ 先出場
   return out;
 }
-/* 讓下一團出場：生在自己歸位點的外側，之後每幀往歸位點飄（見 stepStorms）。 */
+/* 讓下一團出場：極座標（ang 方位、rad 離雲心多遠），歸位點是 (ha, k × STORM_R)；ha 跟著整朵自轉 */
 function popPuff(s) {
-  const q = s.seeds[s.seed++];
-  q.hx = s.x + Math.cos(q.a) * q.k * STORM_R;      // 歸位點以「出場當下的雲心」為準
-  q.hz = s.z + Math.sin(q.a) * q.k * STORM_R;
-  const out = q.k * STORM_R * STORM_IN + STORM_OUT;
-  q.x = s.x + Math.cos(q.a) * out;
-  q.y = q.hy + rr(-0.6, 0.6);
-  q.z = s.z + Math.sin(q.a) * out;
-  return q;
+  const d = s.seeds[s.seed++];
+  return { ha: d.a, ang: d.a - STORM_SWIRL * rr(0.7, 1.3), k: d.k,
+           rad: d.k * STORM_R + rr(STORM_COME[0], STORM_COME[1]),
+           hy0: d.hy, x: s.x, y: d.hy + rr(2, 7), z: s.z, rx: Math.random() * 6, ry: Math.random() * 6,
+           s: 0, s0: d.s0, c: d.c, age: 0, fade: 1, cr: undefined, cg: 0, cb: 0 };
 }
-/* 一道雷。落點是雲底下隨機一處：那一點上方有東西就打在最高那一塊上，沒有就打在地上。
-   固定瞄整棟最高點的話七道全劈在同一根避雷針上，看起來像鎖定不像天氣。 */
-function strike(s) {
+/* 雲裡閃一下：照亮那一帶的雲（flashes，stepStorm 把附近的團染亮），八成再帶一道看得到的電（zaps） */
+function cloudFlash(s) {
+  const k = Math.min(1, s.t / STORM_CHARGE);
   const a = Math.random() * Math.PI * 2;
-  const rad = Math.sqrt(Math.random()) * STRIKE_R;   // 開根號：落點才會均勻鋪滿整個圓
-  const x = s.x + Math.cos(a) * rad, z = s.z + Math.sin(a) * rad;
-  /* 這裡掃整池積木而不是用 colTop：colTop 只認地標藍圖的格子表，小人的家不在裡面
-     （隕石的掃掠判定也有同一個限制）。一道雷掃一次、一朵雲最多七次，划得來。 */
-  let top = null;
+  const r = Math.sqrt(Math.random()) * STORM_R * 0.75 * Math.min(1, 0.4 + s.t / STORM_GATHER);
+  const x = s.x + Math.cos(a) * r, z = s.z + Math.sin(a) * r, y = s.y - rr(0.4, 2);
+  s.flashes.push({ x, y, z, r: rr(5, 9) * (0.8 + 0.5 * k), p: rr(0.5, 1) * (0.5 + 0.5 * k), op: 0, t: 0,
+                   life: rr(0.1, 0.26) });
+  if (Math.random() < 0.8) {
+    const b = Math.random() * Math.PI * 2, L = rr(4, 12) * (0.7 + 0.7 * k);
+    const p0 = { x: x - Math.cos(b) * L / 2, y, z: z - Math.sin(b) * L / 2 };
+    const p1 = { x: x + Math.cos(b) * L / 2, y: y - rr(0, 1.5), z: z + Math.sin(b) * L / 2 };
+    s.zaps.push({ pts: mdPath(p0, p1, 4, 0.3), t: 0, life: rr(0.08, 0.2), w: rr(0.08, 0.14) * (0.8 + 0.7 * k),
+                  op: 1, halo: 0.08 });
+  }
+}
+/* 地上竄的一道藍色電痕：從落點附近沿地面往外，貼著地（y 固定） */
+function groundArc(s) {
+  const a = Math.random() * Math.PI * 2, L = rr(BOLT_R * 0.9, BOLT_R * 3.8), r0 = rr(0, BOLT_R * 0.4);
+  const x0 = s.x + Math.cos(a) * r0, z0 = s.z + Math.sin(a) * r0;
+  const pts = mdPath({ x: x0, y: 0.14, z: z0 }, { x: x0 + Math.cos(a) * L, y: 0.14, z: z0 + Math.sin(a) * L }, 3, 0.2);
+  for (const q of pts) q.y = 0.14;
+  s.arcs.push({ pts, t: 0, life: rr(0.08, 0.22), w: rr(0.1, 0.2), op: 1, halo: 0 });
+}
+function boltEnv(ts) {
+  for (const st of BOLT_STROKES) if (ts < st[1]) return ts >= st[0] ? st[2] : 0;
+  if (ts >= BOLT_T) return 0;
+  const last = BOLT_STROKES[BOLT_STROKES.length - 1][1];
+  return 0.8 * Math.pow(1 - (ts - last) / (BOLT_T - last), 1.6) * rr(0.7, 1);
+}
+/* 雷柱打下去（使用者：「被雷劈到的積木或生物都會受到攻擊 並附帶燃燒效果」）。p 只看 x、z：
+   水平距離 R 以內、從最高那一塊到地面的全部受到攻擊——還站著的積木全部打飛（往外噴、越靠中心越猛），
+   四成拖著火；邊上還站著的那一圈每隔幾層點幾塊；人與動物打倒並燒起來（同舊版的寫法，見〈打雷（v1.117）〉）。
+   只認水平距離：雷是從雲底一路劈到地面的一根柱子，飛在天上的龍、站在屋頂上的人都在這根柱子裡。
+   回 { n 打掉幾塊, top 雷柱裡原本最高那一塊的中心高度（沒有積木就是 0）}。
+   測試直接呼叫這一支（不必等三秒聚雲），所以畫面那些不在這裡（見 strike）。 */
+function boltHit(p, R) {
+  const R2 = R * R;
+  let n = 0, own = 0, top = 0;                       // own＝其中有幾塊是地標的（見 afterHit）
+  for (const b of blocks) if (b.st === SET && (b.x - p.x) ** 2 + (b.z - p.z) ** 2 <= R2 && b.y > top) top = b.y;
   for (const b of blocks) {
     if (b.st !== SET) continue;
-    if (Math.abs(b.x - x) > STRIKE_NEAR || Math.abs(b.z - z) > STRIKE_NEAR) continue;
-    if (!top || b.y > top.y) top = b;
+    const dx = b.x - p.x, dz = b.z - p.z, d2 = dx * dx + dz * dz;
+    if (d2 > R2) { if (d2 <= R2 * BOLT_WOB) b.wob = 0.5; continue; }
+    const d = Math.sqrt(d2), ol = Math.max(0.4, d), f = Math.pow(1 - d / R, 0.5);
+    const wasOwn = b.hh < 0;                         // breakBlock 會把 hh 清掉
+    if (!breakBlock(b, dx / ol * (3 + 9 * f) + rr(-1.5, 1.5), rr(1, 6) + 5 * f,
+                       dz / ol * (3 + 9 * f) + rr(-1.5, 1.5))) continue;   // 防護罩擋下（v1.259.0）
+    n++; if (wasOwn) own++;
+    if (Math.random() < BOLT_EMBER) igniteBlock(b);
   }
-  const p = top ? { x: top.x, y: top.y, z: top.z } : { x, y: 0.6, z };
-  const cx = s.x + rr(-STORM_R * 0.4, STORM_R * 0.4);
-  const cz = s.z + rr(-STORM_R * 0.4, STORM_R * 0.4);
-  const cy = s.y - rr(0.5, 2.5);
-  const life = rr(0.16, 0.26);
-  const main = boltPts(cx, cy, cz, p.x, p.y, p.z, 2.2, 11);
-  /* src 記著是哪一朵雲劈的。餘電那邊靠它算每一處的額度（boltsOf），雷不需要——
-     但 bolts 是共用的一份清單，每一筆都有 src 才不會讓走訪它的地方踩到 undefined。 */
-  bolts.push({ pts: main, t: 0, life, op: 1, w: rr(0.42, 0.6), src: s });
-  for (let k = 0; k < 2; k++) {
-    const q = main[3 + Math.floor(Math.random() * (main.length - 5))];
-    const b = Math.random() * Math.PI * 2, br = rr(2.5, 6);
-    bolts.push({
-      pts: boltPts(q.x, q.y, q.z, q.x + Math.cos(b) * br, Math.max(0.6, q.y - rr(3, 9)),
-                   q.z + Math.sin(b) * br, 1.2, 4),
-      t: 0, life: life * 0.75, op: 1, w: rr(0.18, 0.3), src: s
-    });
-  }
-  /* 小破壞（使用者：「可能就幾格積木」）：半徑比槌子還小的一次點狀衝擊。
-     quiet＝不震畫面，震動下面自己給——雷該震的是「一記」，不是槌子那條曲線。 */
-  smash(p, { x: 0, y: -1, z: 0 }, BOLT_R, BOLT_POW, true);
-  /* 附帶燃燒（使用者指定）：劈中那一帶還站著的積木點幾塊起來，火再自己往鄰居蔓延。
-     跟隕石共用同一支 igniteAround，差別只在半徑小得多——它是「劈出一個焦黑的小洞」。 */
-  igniteAround(p, BOLT_FIRE_R, BOLT_FIRE_N, SET);
-  /* 劈到的人：**打倒並且在地上燒**（使用者指定）。igniteWorker(w, 1) 就是「摔在地上燒」
-     那一種姿勢（roll=1，就地打滾）；剛被消防車噴濕的點不著，那就只打倒——
-     同小人被炸飛落地那一段的寫法（`if (!lit || !igniteWorker(w, true))`）。
-     只認水平距離：人站在地上，用三維距離的話劈在屋頂就打不到腳下的人（同 explode）。 */
+  for (let y = 0.5; y <= top + 1; y += BOLT_RIM_STEP) igniteAround({ x: p.x, y, z: p.z }, R + BOLT_RIM, BOLT_RIM_N, SET);
+  /* 劈到的人：**打倒並且在地上燒**（v1.133 使用者指定）。igniteWorker(w, 1) 就是「摔在地上燒」那一種；
+     剛被消防車噴濕的點不著，那就只打倒。先燒人再 afterHit：afterHit 會把附近的人震倒（fall），
+     順序反過來的話雷柱裡的人先被震倒、這裡就跳過他，燒不起來。 */
+  const g = { x: p.x, y: 0.6, z: p.z };
   for (const w of workers) {
     if (w.air || w.burn > 0 || w.fall > 0) continue;
-    if (Math.hypot(w.x - p.x, w.z - p.z) > BOLT_MAN_R) continue;
+    if (Math.hypot(w.x - p.x, w.z - p.z) > R + BOLT_BODY) continue;
     if (workerSafe(w)) continue;              // 防護罩裡的劈不到（v1.259.0）
     if (!igniteWorker(w, 1)) { releaseWorker(w); w.tilt = 0; w.fall = rr(1.1, 2.3); }
     sndFall();
-    lifeHit(w, 'bolt');                       // 屍體在上面那行 fall > 0 就跳掉了（v1.240，見 stepCorpse）
+    lifeHit(w, 'bolt');
   }
-  /* 劈到的生物同理（v1.146）。**飛龍 v1.154 起劈得著火**（igniteBeast 走 burnDragon）：
-     牠會拖著火飛一段再摔下來；已經在燒或剛被澆濕的回 false，那就走「只打倒」這條——
-     對牠來說就是被劈下來（crashDragon）。
-     **這裡只認水平距離**（flat）：雷是從雲底一路劈到地面的一條線，天上那條龍就在
-     這條線上。照三維距離算的話牠飛在 30 格高、雷的判定半徑才 5 格，等於永遠劈不到。 */
-  eachBeastNear(p, BOLT_MAN_R, m => {
+  /* 劈到的生物同理（v1.146）；飛龍劈得著火（v1.154，走 burnDragon），著不了的就是被劈下來 */
+  eachBeastNear(g, R + BOLT_BODY, m => {
     if (m.air || m.burn > 0 || m.fall > 0) return;
     if (igniteBeast(m, 1) || fellBeast(m, rr(B_FALL[0], B_FALL[1]))) beastHit(m, 'bolt');   // v1.208
     sndFall();
   }, true);
-  spawnMark(p, BOLT_MARK, false);           // 焦黑不是坑洞：雷是燒不是砸（劈在屋頂就不留）
-  /* **劈到哪裡都不震畫面**（v1.275.0，使用者：「調整打雷 不在擊建築 震動畫面(會造成畫面連續震動)」）。
-     v1.123～v1.274 是「劈到建築才震 0.8」（使用者當時：「閃電打到地面不震動」）——但一次點擊是三朵雲、
-     一朵劈 15～20 道，劈在建築上的那幾十道每一道都震，畫面就從頭抖到尾。
-     跟投石機、保齡球、王之財寶同一個道理（會持續破壞的那幾把不震，震動留給單次撞擊，見 smash 的 quiet） */
-  sndThunder();
+  afterHit(n, g, R, own);
+  return { n, top };
+}
+/* 劈下去那一刻：打（boltHit）、主雷的分岔、地面特效、震一下、聲音 */
+function strike(s) {
+  const hit = boltHit(s, BOLT_R);
+  s.topY = hit.top; s.hitN = hit.n;
+  s.balls[1].y = hit.top + 1;
+  /* 分岔：從主幹上七成岔出去、往下斜，停在半空，比主雷早暗（fade 秒） */
+  const M = s.main, nb = 6 + Math.floor(Math.random() * 3);
+  for (let k = 0; k < nb; k++) {
+    const q = M[2 + Math.floor(Math.random() * (M.length * 0.7))];
+    const a = Math.random() * Math.PI * 2, L = rr(5, 14) * BOLT_R / 4;
+    const e = { x: q.x + Math.cos(a) * L * 0.8, y: Math.max(0.3, q.y - rr(0.4, 1) * L), z: q.z + Math.sin(a) * L * 0.8 };
+    s.br.push({ pts: mdPath(q, e, 3, 0.2), k: rr(0.3, 0.45), fade: rr(0.25, 0.6), w: 0, op: 0, halo: 0.05 });
+  }
+  /* 地面（使用者選的「地面衝擊波＋揚塵」）：三圈藍白光環往外擴、一圈貼地往外推的塵牆 */
+  const R = BOLT_R;
+  fxRings.push({ x: s.x, z: s.z, y: 0.18, r: R * 0.5, vr: 34, op: 1, fade: 0.55, c: 0xd8ecff, add: 1, spin: rr(0, 6.28) });
+  fxRings.push({ x: s.x, z: s.z, y: 0.3, r: R * 0.4, vr: 20, op: 0.9, fade: 0.8, c: 0x6fb2ff, add: 1, spin: rr(0, 6.28) });
+  fxRings.push({ x: s.x, z: s.z, y: 0.45, r: R * 0.3, vr: 11, op: 0.8, fade: 1.1, c: 0x3d7dff, add: 1, spin: rr(0, 6.28) });
+  spawnRing({ x: s.x, y: 0, z: s.z }, R);
+  for (let i = 0; i < 46; i++) {
+    if (dust.length > 400) break;
+    const a = i / 46 * Math.PI * 2 + rr(-0.06, 0.06), sp = rr(12, 22), c = rr(0.5, 0.72);
+    dust.push({ x: s.x + Math.cos(a) * R * 0.6, y: rr(0.3, 1.2), z: s.z + Math.sin(a) * R * 0.6,
+                vx: Math.cos(a) * sp, vy: rr(0.5, 2.5), vz: Math.sin(a) * sp, g: 1.5, keep: 0.965, fade: 0.7,
+                rx: 0, ry: a, life: rr(1, 1.6), s: rr(0.8, 1.6), c, cr: c, cg: c * 0.92, cb: c * 0.82 });
+  }
+  /* 焦痕：中心先燒紅再冷成焦黑、冒煙（隕石那一種，見 spawnScorch）。雷柱一路劈到地面，所以劈在屋頂上也留 */
+  spawnScorch(s.x, s.z, R * 1.5);
+  for (let i = 0; i < BOLT_ARC_N; i++) groundArc(s);
+  s.arcNext = rr(0.04, 0.1);
+  ENG.shake(BOLT_SHAKE);
+  sndBoltCrack();
 }
 function stepStorms(dt) {
   if (!storms) { stormEnd(); return; }
-  for (let i = storms.length - 1; i >= 0; i--) {
-    const s = storms[i];
-    s.t += dt;
-    /* 整朵往中心點靠攏（v1.165，使用者：「周圍出現後再往中心點靠攏」）。
-       指數逼近歸位點，已經出場的那些團跟著整體平移——它們自己還在往各自的歸位點飄，
-       那是下面 STORM_PULL 那一層，兩層疊起來才是「雲一邊聚、一邊往中心飄」。
-       s.t 還沒到 0 的那幾朵（出場時間差）先不動：從自己的出場位置開始飄才看得出來。 */
-    if (s.t > 0) {
-      const come = 1 - Math.exp(-STORM_DRIFT * dt);
-      const mx = (s.gx - s.x) * come, mz = (s.gz - s.z) * come;
-      s.x += mx; s.z += mz;
-      for (const q of s.puffs) { q.hx += mx; q.hz += mz; q.x += mx; q.z += mz; }
-    }
-    /* 整組往 B 飄（v1.228，見 aimStorm 上面那段）：歸位點照時間沿 A→B 等速走，
-       雲連同已經出場的每一團跟著平移同一段。跟上面那層靠攏疊在一起——
-       聚滿那一刻還差的那一點點（約 1 格）照樣指數收掉。 */
-    if (s.dur > 0) {
-      const k = Math.max(0, Math.min(1, (s.t + s.lag - STORM_GROW) / s.dur));
-      const nx = s.ax + (s.bx - s.ax) * k + s.ox, nz = s.az + (s.bz - s.az) * k + s.oz;
-      const mx = nx - s.gx, mz = nz - s.gz;
-      if (mx || mz) {
-        s.gx = nx; s.gz = nz; s.x += mx; s.z += mz;
-        for (const q of s.puffs) { q.hx += mx; q.hz += mz; q.x += mx; q.z += mz; }
-      }
-    }
-    /* 一團一團地聚出來。照時間算「現在該有幾團」而不是每幀累加固定的量：
-       累加的話 dt 一變（4 倍速、掉幀）聚雲的快慢就跟著跑。 */
-    const want = Math.min(STORM_PUFF, Math.round(STORM_PUFF * s.t / STORM_GROW));
-    while (s.puffs.length < want) s.puffs.push(popPuff(s));
-    /* 歸位點自己慢慢飄（本來就有的那股 churn），每一團再往自己的歸位點逼近。
-       指數逼近而不是等速：剛出場那一下最快，快到位時慢下來，像被吸過去。 */
-    const pull = 1 - Math.exp(-STORM_PULL * dt);
-    for (const q of s.puffs) {
-      q.hx += q.vx * dt; q.hz += q.vz * dt;
-      q.x += (q.hx - q.x) * pull;
-      q.y += (q.hy - q.y) * pull;
-      q.z += (q.hz - q.z) * pull;
-      q.ry += dt * 0.22;
-    }
-    if (s.left > 0) {
-      s.next -= dt;
-      /* 間隔在 callStorm 就抽好了（v1.228）。最後一道劈完就沒得拿，那時 left 也歸零、用不到 */
-      if (s.next <= 0) { strike(s); s.left--; s.next = s.gaps.length ? s.gaps.shift() : 0; }
-    } else {
-      /* 劈完了：整朵縮掉再收。直接 splice 的話一朵雲會「啪」地整團消失。 */
-      s.out += dt;
-      const k = Math.pow(0.5, dt / STORM_FADE);
-      for (const q of s.puffs) q.s *= k;
-      if (s.out > STORM_FADE * 3) storms.splice(i, 1);
-    }
-  }
+  for (let i = storms.length - 1; i >= 0; i--) if (stepStorm(storms[i], dt)) storms.splice(i, 1);
   if (!storms.length) storms = null;
   stormEnd();
+}
+/* 一發往前走一步。回 true＝整個演完（雲散了、天色亮回來、電痕都熄了），可以收掉 */
+function stepStorm(s, dt) {
+  s.t += dt;
+  const t = s.t;
+  /* 一團一團地聚出來：照時間算「現在該有幾團」，不是每幀累加——4 倍速或掉幀時快慢才不會跑掉 */
+  const want = Math.min(STORM_PUFF, Math.round(STORM_PUFF * Math.min(1, t / STORM_GATHER)));
+  while (s.puffs.length < want) s.puffs.push(popPuff(s));
+  /* 雲裡的閃（間隔一定要往前推，不能等條件成立才推——同餘電那一段） */
+  if (t < STORM_CHARGE + STORM_LINGER) {
+    s.fNext -= dt;
+    while (s.fNext <= 0) {
+      cloudFlash(s);
+      const k = Math.min(1, t / STORM_CHARGE);
+      s.fNext += (t < STORM_CHARGE ? 0.5 - 0.44 * k * k : 0.12 + 0.5 * (t - STORM_CHARGE) / STORM_LINGER) * rr(0.6, 1.4);
+    }
+  }
+  for (let i = s.flashes.length - 1; i >= 0; i--) {
+    const f = s.flashes[i];
+    f.t += dt;
+    if (f.t >= f.life) { s.flashes.splice(i, 1); continue; }
+    f.op = f.p * (1 - f.t / f.life) * rr(0.6, 1);
+  }
+  /* 雲裡的電與地上的電痕：明滅而不是淡出（同餘電），時間到整道消失 */
+  for (const list of [s.zaps, s.arcs])
+    for (let i = list.length - 1; i >= 0; i--) {
+      const z = list[i];
+      z.t += dt;
+      if (z.t >= z.life) { list.splice(i, 1); continue; }
+      z.op = (1 - 0.3 * z.t / z.life) * rr(0.75, 1);
+    }
+  /* 前導：劈下前 BOLT_LEAD 秒，沿著主幹往下探（越探越快），細分岔起點過了尖端才長出來。
+     劈下去的那一幀（t 剛過 STORM_CHARGE）就收掉，不跟主雷疊在同一幀 */
+  const lt = t - (STORM_CHARGE - BOLT_LEAD);
+  if (!s.struck && lt > 0 && t < STORM_CHARGE) {
+    const fl = rr(0.5, 1);
+    s.lead.tip = s.main[0].y * (1 - Math.pow(lt / BOLT_LEAD, 1.4));
+    s.lead.op = 0.55 * fl;
+    for (const b of s.leadBr) { b.tip = s.lead.tip; b.op = b.pts[0].y > b.tip ? 0.4 * fl : 0; }
+  } else if (s.lead.op) {
+    s.lead.op = 0;
+    for (const b of s.leadBr) b.op = 0;
+  }
+  if (!s.struck && t >= STORM_CHARGE) { s.struck = true; strike(s); }
+  if (s.struck) {
+    s.ts += dt;
+    s.env = boltEnv(s.ts);
+    s.bolt.op = s.env;
+    s.bolt.w = BOLT_W * BOLT_R / 4 * (s.ts < BOLT_STROKES[0][1] ? 1.3 : 1);
+    for (const b of s.br) { b.op = s.env * Math.max(0, 1 - s.ts / b.fade); b.w = s.bolt.w * b.k; }
+    const e = s.env * 0.7;
+    s.balls[0].r = BOLT_R * 0.55 * (1 + 0.5 * s.env); s.balls[0].op = e;
+    s.balls[1].r = s.topY > 2 ? BOLT_R * 0.45 * s.env : 0; s.balls[1].op = e;
+    if (s.ts < BOLT_ARC_T) {
+      s.arcNext -= dt;
+      while (s.arcNext <= 0) { groundArc(s); s.arcNext += rr(0.04, 0.12) * (1 + 2 * s.ts / BOLT_ARC_T); }
+    }
+    s.arcGlow = s.arcs.length ? Math.min(1, s.arcs.length / 4) * rr(0.6, 1) : 0;
+  }
+  /* 雲的每一團：捲進來（極座標往歸位點逼近 ＋ 整朵自轉）、雲心往下垂、被閃電照亮；劈完 STORM_LINGER 秒後散開縮掉 */
+  const gone = t > STORM_CHARGE + STORM_LINGER;
+  const pull = 1 - Math.exp(-STORM_PULL * dt);
+  const shrink = gone ? Math.pow(0.5, dt / STORM_FADE) : 1;
+  const sag = STORM_SAG * Math.min(1, t / STORM_CHARGE) ** 2;
+  const spread = gone ? 1 + (t - STORM_CHARGE - STORM_LINGER) * 0.5 : 1;
+  for (const q of s.puffs) {
+    const w = STORM_SPIN[0] + STORM_SPIN[1] * (1 - q.k);
+    q.ha += w * dt;
+    q.ang += w * dt + (q.ha - q.ang) * pull;
+    q.rad += (q.k * STORM_R * spread - q.rad) * pull;
+    q.y += (q.hy0 - sag * Math.max(0, 1 - q.k / 0.4) - q.y) * pull;
+    q.x = s.x + Math.cos(q.ang) * q.rad; q.z = s.z + Math.sin(q.ang) * q.rad;
+    q.age += dt;
+    if (gone) q.fade *= shrink;
+    q.s = q.s0 * Math.min(1, q.age / STORM_GROW_IN) * q.fade;
+    q.ry += dt * 0.2;
+    /* 被照亮：附近的閃（離閃光中心越近越亮），劈下去那幾記把雲底中間整片照亮 */
+    let g = 0;
+    for (const f of s.flashes) {
+      const d = Math.hypot(q.x - f.x, q.y - f.y, q.z - f.z);
+      if (d < f.r) g += Math.pow(1 - d / f.r, 1.5) * f.op;
+    }
+    if (s.env > 0) g += s.env * 1.1 * Math.max(0, 1 - q.rad / STORM_R);
+    if (g > 0.02) {
+      g = Math.min(g, 1.3);
+      q.cr = Math.min(1, q.c + 0.5 * g); q.cg = Math.min(1, q.c + 0.64 * g); q.cb = Math.min(1, q.c * 0.96 + 0.92 * g);
+    } else q.cr = undefined;                         // 塵霧那邊看 cr 有沒有給，沒給就是灰階 c
+  }
+  s.dark = t < STORM_CHARGE + STORM_LINGER ? Math.min(1, t / STORM_CHARGE) ** 0.8
+         : Math.max(0, 1 - (t - STORM_CHARGE - STORM_LINGER) / STORM_DARK_OUT);
+  return gone && t > STORM_CHARGE + STORM_LINGER + Math.max(STORM_FADE * 4, STORM_DARK_OUT) &&
+         !s.arcs.length && !s.zaps.length;
+}
+/* 畫面那邊要的三份清單＋天色（draw 每幀叫一次，見 game-ui.js）。只照狀態排，不抽亂數（見這一節開頭）。
+   點光源只有兩盞：上面那盞給「最亮的那一處」（雷柱上段、前導尖端、雲裡的閃），地面那盞給落點與電痕；
+   好幾發同時在場就各取最亮的。重用同一份陣列與物件，不要每幀配置新的。 */
+const stormPaths = [], stormBalls = [], stormLamps = [];
+const stormLampA = { x: 0, y: 0, z: 0, i: 0 }, stormLampB = { x: 0, y: 0, z: 0, i: 0 };
+let stormGloom = 0;
+function lampPick(L, i, x, y, z) { if (i > L.i) { L.i = i; L.x = x; L.y = y; L.z = z; } }
+function stormFx() {
+  stormPaths.length = 0; stormBalls.length = 0; stormLamps.length = 0; stormGloom = 0;
+  if (!storms) return;
+  stormLampA.i = stormLampB.i = 0;
+  for (const s of storms) {
+    stormGloom = Math.max(stormGloom, s.dark);
+    for (const z of s.zaps) stormPaths.push(z);
+    if (s.lead.op > 0) {
+      stormPaths.push(s.lead);
+      for (const b of s.leadBr) if (b.op > 0) stormPaths.push(b);
+      lampPick(stormLampA, LAMP_CLOUD * s.lead.op, s.x, Math.max(s.lead.tip, 2), s.z);
+    }
+    if (s.env > 0) {
+      stormPaths.push(s.bolt);
+      for (const b of s.br) if (b.op > 0) stormPaths.push(b);
+      for (const b of s.balls) if (b.r > 0.01 && b.op > 0) stormBalls.push(b);
+      lampPick(stormLampA, LAMP_TOP * s.env, s.x, Math.max(s.topY, 8) + 3, s.z);
+      lampPick(stormLampB, LAMP_GND * s.env, s.x, 2.4, s.z);
+    }
+    for (const a of s.arcs) stormPaths.push(a);
+    if (s.arcGlow > 0) lampPick(stormLampB, LAMP_ARC * s.arcGlow, s.x, 1.2, s.z);
+    for (const f of s.flashes) lampPick(stormLampA, LAMP_CLOUD * f.op, f.x, f.y - 2, f.z);
+  }
+  stormLamps.push(stormLampA, stormLampB);           // 有雷雨就給兩盞（亮度可能是 0）：燈整場開著，見引擎的 putStorm
 }
 /* 塵霧與烏雲共用同一顆 mesh（還是一個 draw call），但烏雲**不放進 dust 那一池**：
    spawnDust／spawnRing／煙塵那些都拿 dust.length 當配額關卡（超過 400 就不再生），
@@ -6937,7 +6966,7 @@ function sndHoleGulp() { noise(0.45, 0.2, 380); tone(150, 0.42, 'sawtooth', 0.07
 
    ② **沒有燃燒效果**（使用者指定：「類似打雷 但是沒有燃燒效果」）。所以它只走槌子那條
       smash()，不叫 igniteAround——這正是它跟打雷最大的差別（打雷的傷害其實在火不在力，
-      見 BOLT_FIRE_*）。
+      v1.283.0 重製之後一樣，見 boltHit）。
 
    ③ **不震、不出聲（指 smash 那一聲）**。七秒射一百多發，每一發都震的話畫面會抖到結束
       （見〈會「持續破壞」的不震畫面〉）；聲音同理，讓給它自己那聲短促的金屬撞擊。
@@ -8413,7 +8442,7 @@ function useTool(hit) {
   if (tool === 'meteor') { callMeteor(hit.point, rageN(1, MET_MAX)); return 0; }   // 破壞模式（v1.262.0）一下放滿上限 6 顆
   if (tool === 'nuke') { callNuke({ x: hit.point.x, z: hit.point.z }, rageN(1, NUKE_MAX)); return 0; }   // 破壞模式（v1.278.0）一下放滿上限 4 顆
   if (tool === 'magic') { castMagic({ x: hit.point.x, z: hit.point.z }); return 0; }
-  if (tool === 'storm') { aimStorm({ x: hit.point.x, z: hit.point.z }); return 0; }   // v1.228 點兩下
+  if (tool === 'storm') { callStorm({ x: hit.point.x, z: hit.point.z }); return 0; }   // v1.283.0 起點一下（v1.228～v1.282 點兩下）
   if (tool === 'drop') { aimDropBall(hit.point); return 0; }
   if (tool === 'bounce') { aimBounce(hit.point); return 0; }
   // 第二下點在建築上就連高度一起當目標（v1.152，見 pickGate）

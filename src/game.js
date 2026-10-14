@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.282.1';
+const VERSION = '1.283.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -596,6 +596,12 @@ function sndThunder() {
      而 rms 0.0105 → 0.0124（低頻的量沒少，甚至更飽）。 */
   tone(40, THUNDER_ROLL * 0.8, 'triangle', 0.08, 0, 'thunder');
 }
+/* 打雷重製（v1.283.0）：聚雲那三秒遠方一直在滾的悶雷——切點 80，比劈下去那一聲的 THUNDER_CUT 低，
+   也是另一個發聲名額（voiceOK 拿 'rumble' ＋ 切點當 key），不會把劈下去那一聲的滾雷吃掉。 */
+function sndStormBrew(dur) { rumble(dur, 0.1, 80); }
+/* 劈下去那一刻：sndThunder 前面多一記比較脆的劈裂。切點 640：700 隕石與 Excalibur 在用（同一個 key 會互搶名額）。
+   一發只有一道雷（v1.282 以前一朵劈 15～20 道才把 sndThunder 壓得那麼低），所以這一記給得比較響。 */
+function sndBoltCrack() { noise(0.22, 0.3, 640); sndThunder(); }
 /* 魔法陣長層的音效（sndRune）拿掉了：六層一路響上去太吵，
    而且蓋掉了引力坍縮那一段該有的安靜。爆炸本身的 sndBoom 還在。 */
 

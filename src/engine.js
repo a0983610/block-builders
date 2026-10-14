@@ -26,6 +26,10 @@ const ENG = (function () {
   let meatMesh;                     // 丟在地上的肉（v1.261.0，見 putMeats）
   let torchMesh;                   // 小獼猴火把頭上的火（v1.249.0，見 putTorch）
   let starMesh, boltMesh;
+  let hemi;                         // 天光（打雷的烏雲遮天要壓暗它，v1.283.0，見 setGloom）
+  let stormLay = null, stormBall = null, stormLamps = null;   // 打雷的粗雷三層、亮球、兩盞點光源（v1.283.0，見 putStorm）
+  let gloomEl = null, gloomAt = -1;  // 烏雲遮天：蓋在 CSS 天空上的那一層、上一次給的暗度（見 setGloom）
+  let lampWarm = false;              // 「多兩盞燈」那一份 shader 編好了沒（見 draw3d）
   let emoMesh, emoGeo, emoPos, emoUv, emoCol;   // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
   let giftMesh, giftGeo, giftPos, giftUv;  // 掉在地上的道具泡泡（v1.214，見 setGiftIcons／putGifts）
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
@@ -152,10 +156,27 @@ const ENG = (function () {
      96 留了餘裕，反正是一顆 InstancedMesh，多開 instance 不多吃 draw call。
      ×3 跟上面那些圓環同一個理由（v1.67）：三個陣可以同時爆，額度是每一處各算的，
      三處一起放電最多 3×42＝126 段——留在 96 的話會被 putBolts 的 Math.min 默默切掉。
-     **×5（v1.165）**：打雷改成一次點擊三朵雲（見 game-tools 的 STORM_TRIO），
+     **×5（v1.165）**：打雷改成一次點擊三朵雲（v1.165～v1.282 的 STORM_TRIO），
      三次點擊就是九朵，各自最密同時兩道 × 19 段 ＝ 342 段，加上爆裂魔法的 126
-     要 468——停在 288 的話最後那朵的電會被默默切掉半截。 */
+     要 468——停在 288 的話最後那朵的電會被默默切掉半截。
+     （v1.283.0 打雷重製之後雷不走這一顆了，改走 putStorm 那三層；這裡沒縮回去，餘電與茈的藍電照舊用） */
   const MAXBOLT = 96 * 5;
+  /* 打雷的粗雷（v1.283.0，見 putStorm）：一段一個 instance、三層各一顆 InstancedMesh。
+     一發最密的那一刻量過約 300 段（主幹 32、分岔 8 條 × 8、地上電痕十幾道 × 8、雲裡的電），
+     同時最多三發（規則那邊的 STORM_MAX）→ 1400 留餘裕。亮球一發兩顆（落點、屋頂）。 */
+  const STORM_SEG = 1400, STORM_BALL = 8;
+  /* 三層：亮芯（白）、光暈（淺藍，芯的 2.6 倍寬、四成二亮）、外暈（深藍，7 倍寬，只畫粗折線——
+     細段每一節都畫的話接頭疊成一顆一顆亮點）。預覽第一版光暈 3.4 倍、外暈 9 倍又亮，整條糊成一根白柱子。
+     加法混色：雷雨那幾秒整個場景是暗的（見 setGloom），疊上去才讀得出來（白天的亮天空會把它洗掉，見 boltMesh 那段） */
+  const STORM_LAYER = [{ w: 1, k: 1, c: [1, 1, 1] }, { w: 2.6, k: 0.42, c: [0.5, 0.78, 1] },
+                       { w: 7, k: 1, c: [0.22, 0.45, 1] }];
+  /* 兩盞點光源（使用者：「能不能加上光影讓旁邊的物體有電光線照上去」）。規則那邊給 0～1 的相對亮度，
+     這裡乘 STORM_LAMP_I（r185 的點光源是燭光、照度照距離平方衰減：照 12 格外的牆約是太陽的三倍多）。 */
+  const STORM_LAMP_C = 0xa8c8ff, STORM_LAMP_I = 2600;
+  /* 天光、日光、霧的本來的樣子，與烏雲遮天最暗時各壓掉幾成（v1.283.0，見 setGloom）。
+     天空是 index.html 的 CSS 漸層（畫布是透明的），所以另外蓋一層暗色的 div，GLOOM.sky 是它最濃多少。 */
+  const HEMI_I = 1.25, SUN_I = 1.75, FOG_C = 0xbcd3e0, GLOOM_FOG = 0x363e4b;
+  const GLOOM = { hemi: 0.55, sun: 0.75, fog: 0.85, sky: 0.8 };
   const MAG_DASH = 26;                                       // 外圈那一圈虛線的段數
   /* 邊上的螺旋筆觸（v1.62.1，照參考圖）。使用者要的邊緣不規則是**螺旋狀**的：
      參考圖裡那一圈不是一條被弄皺的圓弧，是**幾道沿著邊掃出去的粗筆觸疊在一起**——
@@ -947,12 +968,13 @@ if (vAo.x + vAo.y > 0.5) {
     renderer.shadowMap.type = T.PCFSoftShadowMap;
 
     scene = new T.Scene();
-    scene.fog = new T.Fog(0xbcd3e0, 90, 320);
+    scene.fog = new T.Fog(FOG_C, 90, 320);
 
     camera = new T.PerspectiveCamera(48, 1, 0.5, 900);
 
-    scene.add(new T.HemisphereLight(0xd8ecff, 0x5b7a48, 1.25));  // 天光：頂面自然比側面亮
-    sun = new T.DirectionalLight(0xfff3dd, 1.75);
+    hemi = new T.HemisphereLight(0xd8ecff, 0x5b7a48, HEMI_I);   // 天光：頂面自然比側面亮
+    scene.add(hemi);
+    sun = new T.DirectionalLight(0xfff3dd, SUN_I);
     sun.position.set(38, 60, 26);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -1514,6 +1536,30 @@ if (vAo.x + vAo.y > 0.5) {
     boltMesh.count = 0; boltMesh.frustumCulled = false; boltMesh.visible = false;
     boltMesh.setColorAt(0, tmpC.setHex(0xffffff));
     scene.add(boltMesh);
+
+    /* 打雷的粗雷（v1.283.0，見 putStorm）：開口的八角柱，一段一根。方塊的話粗的那幾層側面看得出是方的。 */
+    const stormMk = (geo, cap) => {
+      const m = new T.InstancedMesh(geo, new T.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, depthWrite: false, blending: T.AdditiveBlending }), cap);
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.count = 0; m.frustumCulled = false; m.visible = false;
+      m.setColorAt(0, tmpC.setHex(0xffffff));
+      scene.add(m);
+      return m;
+    };
+    const stormCyl = new T.CylinderGeometry(0.5, 0.5, 1, 8, 1, true);
+    stormLay = STORM_LAYER.map(() => stormMk(stormCyl, STORM_SEG));
+    stormBall = stormMk(new T.SphereGeometry(0.5, 18, 12), STORM_BALL);
+    /* 兩盞點光源平常 visible = false：掛著不亮（亮度 0）的話每一個吃光的像素還是要多算兩盞燈。
+       關著再打開會換一份 shader（燈數是 shader 的一部分），第一次換要當場編——探針量到 headless 卡了三秒，
+       所以開場第一幀畫完就先用 compileAsync 把「多兩盞燈」那一份編好（見 draw3d），之後開關只是換用（量到 2ms）。 */
+    stormLamps = [new T.PointLight(STORM_LAMP_C, 0, 140, 2), new T.PointLight(STORM_LAMP_C, 0, 100, 2)];
+    for (const L of stormLamps) { L.visible = false; scene.add(L); }
+    /* 烏雲遮天蓋在 CSS 天空上的那一層：z-index −1 疊在 body 的背景上、畫布底下 */
+    gloomEl = document.createElement('div');
+    gloomEl.style.cssText = 'position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0;' +
+      'background:linear-gradient(#232b37 0%,#333c49 46%,#4b535e 72%,#5d636a 100%)';
+    document.body.appendChild(gloomEl);
 
     /* 貼地的發光圓環：魔法陣的每一層、爆炸的衝擊波、蘑菇雲腰上那一圈，
        都是這一組。每層一個扁環 + 一圈紋路——只有環的話它就是一條紅色的帶子，
@@ -3444,6 +3490,82 @@ if (vAo.x + vAo.y > 0.5) {
     }
     boltMesh.instanceMatrix.needsUpdate = true;
     if (boltMesh.instanceColor) boltMesh.instanceColor.needsUpdate = true;
+  }
+
+  /* 打雷（v1.283.0 重製）。規則那邊給三份清單，長相全在這裡：
+       paths  一條一條折線 {pts, w 芯的粗細, op 亮度, halo 外暈濃度, tip 只畫到這個高度（前導往下探用；不給＝整條）}
+       balls  落點與屋頂那一下的亮球 {x, y, z, r, op}
+       lamps  兩盞點光源 {x, y, z, i}（i 是 0～1 的相對亮度，乘 STORM_LAMP_I）；空的＝這一刻沒有雷雨，燈整個關掉
+     一段一根八角柱：沿 Y 拉成這一段的長度、再把 +Y 轉到這一段的方向；兩端各多伸半個粗細（不超過段長的一半），
+     折點才不會斷開。 */
+  const stormN = [0, 0, 0];
+  function stormSeg(L, p, q, w, op) {
+    if (stormN[L] >= STORM_SEG || op <= 0.003) return;
+    const dx = q.x - p.x, dy = q.y - p.y, dz = q.z - p.z, len = Math.hypot(dx, dy, dz) || 0.001;
+    _axis.set(dx / len, dy / len, dz / len);
+    scratch.position.set((p.x + q.x) / 2, (p.y + q.y) / 2, (p.z + q.z) / 2);
+    scratch.quaternion.setFromUnitVectors(_yAxis, _axis);
+    scratch.scale.set(w, len + Math.min(w, len) * 0.5, w);
+    scratch.updateMatrix();
+    const m = stormLay[L], c = STORM_LAYER[L].c, k = op * STORM_LAYER[L].k, i = stormN[L]++;
+    m.setMatrixAt(i, scratch.matrix);
+    m.setColorAt(i, tmpC.setRGB(c[0] * k, c[1] * k, c[2] * k));
+  }
+  const _tipQ = { x: 0, y: 0, z: 0 };
+  function putStorm(paths, balls, lamps) {
+    stormN[0] = stormN[1] = stormN[2] = 0;
+    for (const P of paths) {
+      const pts = P.pts, tip = P.tip;
+      for (let i = 1; i < pts.length; i++) {
+        const p = pts[i - 1]; let q = pts[i];
+        if (tip !== undefined) {
+          if (p.y <= tip) break;
+          if (q.y < tip) {                        // 這一段只畫到前導的尖端
+            const u = (p.y - tip) / (p.y - q.y);
+            _tipQ.x = p.x + (q.x - p.x) * u; _tipQ.y = tip; _tipQ.z = p.z + (q.z - p.z) * u;
+            q = _tipQ;
+          }
+        }
+        stormSeg(0, p, q, P.w * STORM_LAYER[0].w, P.op);
+        stormSeg(1, p, q, P.w * STORM_LAYER[1].w, P.op);
+      }
+      if (P.halo) for (let i = 4; i < pts.length; i += 4) stormSeg(2, pts[i - 4], pts[i], P.w * STORM_LAYER[2].w, P.op * P.halo);
+    }
+    for (let L = 0; L < 3; L++) {
+      const m = stormLay[L];
+      m.count = stormN[L]; m.visible = stormN[L] > 0;
+      if (!stormN[L]) continue;
+      m.instanceMatrix.needsUpdate = true;
+      if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    }
+    const nb = Math.min(balls.length, STORM_BALL);
+    stormBall.count = nb; stormBall.visible = nb > 0;
+    for (let i = 0; i < nb; i++) {
+      const b = balls[i];
+      scratch.position.set(b.x, b.y, b.z); scratch.quaternion.identity(); scratch.scale.setScalar(b.r * 2);
+      scratch.updateMatrix();
+      stormBall.setMatrixAt(i, scratch.matrix);
+      stormBall.setColorAt(i, tmpC.setRGB(0.6 * b.op, 0.78 * b.op, b.op));
+    }
+    if (nb) { stormBall.instanceMatrix.needsUpdate = true; if (stormBall.instanceColor) stormBall.instanceColor.needsUpdate = true; }
+    for (let i = 0; i < 2; i++) {
+      const L = stormLamps[i], s = lamps[i];
+      L.visible = lamps.length > 0;              // 開關會換 shader（開場編好了，見 draw3d），所以整場雷雨都開著、只調亮度
+      L.intensity = s && s.i > 0 ? s.i * STORM_LAMP_I : 0;
+      if (s && s.i > 0) L.position.set(s.x, s.y, s.z);
+    }
+  }
+  /* 烏雲遮天（v1.283.0）：d 0～1，天光、日光照 GLOOM 壓暗，霧往暗灰拉，CSS 天空上蓋那一層 div。
+     同一個值重複給就什麼都不做（平常每幀都是 0）。 */
+  const _fogC = new T.Color(FOG_C), _fogD = new T.Color(GLOOM_FOG);
+  function setGloom(d) {
+    d = Math.round(Math.max(0, Math.min(1, d)) * 1000) / 1000;
+    if (d === gloomAt) return;
+    gloomAt = d;
+    hemi.intensity = HEMI_I * (1 - GLOOM.hemi * d);
+    sun.intensity = SUN_I * (1 - GLOOM.sun * d);
+    scene.fog.color.copy(_fogC).lerp(_fogD, d * GLOOM.fog);
+    gloomEl.style.opacity = String(d * GLOOM.sky);
   }
 
   /* ── 草地島大小與視窗尺寸 ───────────────────────────── */
@@ -11096,6 +11218,17 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       blitScene.children[0].material.uniforms.map.value = L.rt.texture;
       renderer.render(blitScene, blitCam);
     } else renderer.render(scene, camera);
+    /* 第一幀畫完，把打雷那兩盞燈開著的那一份 shader 在背景編好（v1.283.0，見 init 的 stormLamps）：
+       compile 那一刻燈要是開著的（燈數是從場景裡讀的），送出去就關回去。沒有 compileAsync 的話就算了，
+       頂多第一次打雷那一下當場編。 */
+    if (!lampWarm) {
+      lampWarm = true;
+      if (renderer.compileAsync && !stormLamps[0].visible) {
+        for (const L of stormLamps) L.visible = true;
+        renderer.compileAsync(scene, camera).catch(() => {});
+        for (const L of stormLamps) L.visible = false;
+      }
+    }
   }
   /* ── 分幀偷量（v1.281.0，見上面那一大段）── */
   const PROBE_N = 16;
@@ -11187,7 +11320,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
-    putStars, putBolts, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
+    putStars, putBolts, putStorm, setGloom, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
     putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,
@@ -11281,6 +11414,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, diaMesh, coinMesh, draMesh }; }
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, diaMesh, coinMesh, draMesh,
+                            stormLay, stormBall, stormLamps, hemi, sun, gloomEl }; }
   };
 })();
