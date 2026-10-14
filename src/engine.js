@@ -22,7 +22,7 @@ const ENG = (function () {
   let searMesh, searGeo, searPos, searCol;   // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），見 putSears
   let excFade;                               // 光柱每一格下緣／上緣的濃淡（v1.226，見 putBar）
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
-  let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, meteorMesh;
+  let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, flashOp, meteorMesh;
   let meatMesh;                     // 丟在地上的肉（v1.261.0，見 putMeats）
   let torchMesh;                   // 小獼猴火把頭上的火（v1.249.0，見 putTorch）
   let starMesh, boltMesh;
@@ -1449,19 +1449,37 @@ if (vAo.x + vAo.y > 0.5) {
     fireMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
     /* 火球的球殼：一層一顆 InstancedMesh，同時炸幾發都只吃 FLASH_SHELL.length 個
-       draw call。顏色走 instance color——加法混色下 instance color 就是亮度旋鈕，
-       亮度衰減靠它（v1.278 以前魔法版的粉紅也是），材質不用每幀改。
-       不寫深度但照樣測深度：埋在地面下的那半自然被草地擋掉，剩下的就是一頂圓罩。 */
+       draw call。不寫深度但照樣測深度：埋在地面下的那半自然被草地擋掉，剩下的就是一頂圓罩。
+       **亮度走透明度（aOp），不走 instance color**（v1.284.0）：加法混色在這份 three 是
+       blendFuncSeparate(SRC_ALPHA, ONE, ONE, ONE)，畫布的 alpha 也跟著加，而天空是畫布後面的 CSS——
+       殼蓋到的那一塊天空會被這一層的 opacity 遮暗。v1.283 以前亮度只調顏色、透明度不動，
+       火退到只剩 3% 亮時天空還被遮暗 24～46%，就是使用者看到的「火球還是有明顯的透明球狀」。
+       改成顏色固定、透明度乘亮度：RGB 照樣是「顏色 × 透明度」，最亮那一刻一模一樣，
+       火退的時候天空跟著露回來。五層共用一顆幾何體連同 aOp（同小黑洞黑火球的 aFade）：
+       第 k 顆火球在五層裡都是第 k 格，亮度本來就是同一個數。見 開發筆記〈火球殼的透明球：遮暗了 CSS 天空〉。 */
     flashGroup = new T.Group();
     const flGeo = new T.SphereGeometry(1, 20, 14);
+    flashOp = new T.InstancedBufferAttribute(new Float32Array(FLASH_MAX), 1);
+    flashOp.setUsage(T.DynamicDrawUsage);
+    flGeo.setAttribute('aOp', flashOp);
     for (const sh of FLASH_SHELL) {
-      const m = new T.InstancedMesh(flGeo, new T.MeshBasicMaterial({
+      const mat = new T.MeshBasicMaterial({
         color: 0xffffff, transparent: true, opacity: sh.op,
         depthWrite: false, blending: T.AdditiveBlending
-      }), FLASH_MAX);
+      });
+      mat.onBeforeCompile = s => {
+        const cut = injector();
+        s.vertexShader = cut(s.vertexShader, '#include <common>', '\nattribute float aOp;\nvarying float vOp;');
+        s.vertexShader = cut(s.vertexShader, '#include <begin_vertex>', '\nvOp = aOp;');
+        s.fragmentShader = cut(s.fragmentShader, '#include <common>', '\nvarying float vOp;');
+        s.fragmentShader = cut(s.fragmentShader, '#include <color_fragment>', '\ndiffuseColor.a *= vOp;');
+        mat.userData.cuts = cut.count();          // 給測試看：四刀都換到了嗎
+      };
+      mat.customProgramCacheKey = () => 'flash-op';
+      const m = new T.InstancedMesh(flGeo, mat, FLASH_MAX);
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
       m.count = 0; m.frustumCulled = false;
-      m.setColorAt(0, tmpC.setHex(0xffffff));
+      for (let k = 0; k < FLASH_MAX; k++) m.setColorAt(k, tmpC.setHex(sh.c));
       flashShells.push(m); flashGroup.add(m);
     }
     flashGroup.visible = false;
@@ -3419,11 +3437,14 @@ if (vAo.x + vAo.y > 0.5) {
     if (fireMesh.instanceColor) fireMesh.instanceColor.needsUpdate = true;
   }
 
-  /* 爆炸中心那顆火球。list 每一項 {x, y, z, r 現在的半徑, op 亮度} */
+  /* 爆炸中心那顆火球。list 每一項 {x, y, z, r 現在的半徑, op 亮度}。
+     亮度寫進 aOp（透明度），顏色開機時就寫死了——理由見 init 那一段（v1.284.0） */
   function putFlash(list) {
     const n = Math.min(list.length, FLASH_MAX);
     flashGroup.visible = n > 0;
     if (!n) return;
+    for (let k = 0; k < n; k++) flashOp.setX(k, list[k].op);
+    flashOp.needsUpdate = true;
     for (let i = 0; i < FLASH_SHELL.length; i++) {
       const sh = FLASH_SHELL[i], m = flashShells[i];
       m.count = n;
@@ -3435,10 +3456,8 @@ if (vAo.x + vAo.y > 0.5) {
         scratch.scale.set(r, r * FLASH_SQUASH, r);
         scratch.updateMatrix();
         m.setMatrixAt(k, scratch.matrix);
-        m.setColorAt(k, tmpC.setHex(sh.c).multiplyScalar(f.op));
       }
       m.instanceMatrix.needsUpdate = true;
-      if (m.instanceColor) m.instanceColor.needsUpdate = true;
     }
   }
 
@@ -11414,7 +11433,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, diaMesh, coinMesh, draMesh,
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, diaMesh, coinMesh, draMesh,
                             stormLay, stormBall, stormLamps, hemi, sun, gloomEl }; }
   };
 })();

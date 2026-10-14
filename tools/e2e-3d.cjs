@@ -22515,6 +22515,43 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('同時炸好幾發也只留最新的那幾顆火球', flash.capped === flash.cap,
      '連續 ' + (flash.cap + 5) + ' 發 → 場上 ' + flash.capped + ' 顆（上限 ' + flash.cap + '）');
 
+  /* 火球殼的透明度跟著亮度退（v1.284.0，使用者：「爆裂魔法 火球還是有明顯的透明球狀…這是什麼?」）。
+     加法混色在這份 three 是 blendFuncSeparate(SRC_ALPHA, ONE, ONE, ONE)：畫布的 alpha 也跟著加，
+     天空是畫布後面的 CSS，殼蓋到的那一塊天空就被遮暗。v1.283 以前亮度只調顏色、透明度不動，
+     火退到 3% 亮時天空還被遮暗兩三成，就是那顆灰灰的透明球（見 開發筆記〈火球殼的透明球：遮暗了 CSS 天空〉）。
+     規則型：一顆火球擺在只有天空的那條視線上（離鏡頭 40，霧還沒開始），直接讀畫布的 alpha——
+     全亮時照舊不透明、亮度 0 時 alpha 也是 0（舊版是 255）、中間照比例（期望值讀五層材質自己的 opacity 加總）。 */
+  const flAlpha = await page.evaluate(() => {
+    cleanTools(); hot.length = 0; flashes.length = 0; fxRings.length = 0; billows.length = 0;
+    const T3 = ENG.three, gl = T3.renderer.getContext(), cam = T3.camera;
+    const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+    let px = null;
+    const read = () => { const b = new Uint8Array(4); gl.readPixels(px[0], px[1], 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, b); return b[3]; };
+    draw(); ENG.render();
+    /* 畫面上緣那一帶挑一個沒有東西的像素（alpha 0＝看到的是 CSS 天空）：高樓可能頂到中間，換左右兩點試 */
+    for (const fx of [0.5, 0.2, 0.8]) { px = [Math.round(W * fx), Math.round(H * 0.95)]; if (read() === 0) break; px = null; }
+    if (!px) return { sky: false };
+    const ndc = [px[0] / W * 2 - 1, px[1] / H * 2 - 1];
+    const dir = new THREE.Vector3(ndc[0], ndc[1], 0.5).unproject(cam).sub(cam.position).normalize();
+    const c = cam.position.clone().addScaledVector(dir, 40);
+    const f = { x: c.x, y: c.y, z: c.z, r: 5, op: 1 };
+    const at = op => { flashes.length = 0; f.op = op; flashes.push(f); draw(); ENG.render(); return read(); };
+    const sum = T3.flashShells.reduce((s, m) => s + m.material.opacity, 0);
+    const out = { sky: true, full: at(1), zero: at(0), mid: at(0.4), sum: +sum.toFixed(2),
+                  cuts: T3.flashShells.map(m => m.material.userData.cuts) };
+    out.want = Math.round(255 * Math.min(1, sum * 0.4));
+    flashes.length = 0; draw(); ENG.render();
+    return out;
+  });
+  ok('火球殼的亮度改走透明度：五層的四刀都注入到了（three 改了 chunk 名字會靜默失效）',
+     flAlpha.sky && flAlpha.cuts.every(n => n === 4),
+     flAlpha.sky ? '五層各換到 ' + flAlpha.cuts.join('／') + ' 刀' : '畫面上緣找不到只有天空的像素');
+  ok('火球退了，殼蓋到的那一塊天空跟著露回來（不會留一顆遮暗天空的灰球）',
+     flAlpha.sky && flAlpha.full === 255 && flAlpha.zero === 0 && Math.abs(flAlpha.mid - flAlpha.want) <= 3,
+     flAlpha.sky ? '天空那一點的畫布 alpha：全亮 ' + flAlpha.full + '、亮度 0.4 → ' + flAlpha.mid +
+       '（五層加起來 ' + flAlpha.sum + '，照比例該是 ' + flAlpha.want + '）、亮度 0 → ' + flAlpha.zero + '（v1.283 以前是 255）'
+       : '畫面上緣找不到只有天空的像素');
+
   /* 強爆炸的火團（v1.279.0，使用者：「爆裂魔法爆炸特效 自從範圍加大以後 看起來爆炸火焰很空虛 少了這種感覺」
      ＋一張核爆火球的參考圖；看過預覽之後核彈也一起、魔法的火星照範圍加密、魔法換成核彈的橘、光縮進火團裡）。
      規則型：直接呼叫 spawnBlast／stepFlash／stepDust，不跑模擬，期望值全讀常數——
@@ -23008,6 +23045,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const mgVary = await page.evaluate(() => {
     const cast = () => {
       startBuild(true); completeNow();
+      magics = null;                                  // 上一發還沒炸（推了 5 秒）：玩家一次一發（v1.284.0），先收掉才放得出新的
       castMagic({ x: 0, z: 0 });
       for (let i = 0; i < 100; i++) step(0.05);
       return magics[0].rings.filter(o => !o.add && !o.seed).map(o => +o.r.toFixed(3));
@@ -23028,6 +23066,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      這裡直接抓場上真的畫出來的那些紋路，投影到畫面看它往哪邊掃。 */
   const mgSpin = await page.evaluate(() => {
     startBuild(true); completeNow();
+    magics = null;                                    // 上一段那一發還差 0.6 秒才炸：玩家一次一發（v1.284.0），先收掉
     castMagic({ x: 0, z: 0 });
     for (let i = 0; i < 100; i++) step(0.05);        // 5 秒：六層都在，紋路的編號不再變動
     draw(); ENG.render();
@@ -23227,7 +23266,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     window.spawnStars = orig;
     /* 畫面那半：星星那顆 InstancedMesh 的幾何只有 9 個頂點（中心 + 8 個尖凹點），
-       場上沒有第二顆長這樣。法線與鏡頭視線的夾角接近 0 就是正對著鏡頭。 */
+       場上沒有第二顆長這樣。法線與鏡頭視線的夾角接近 0 就是正對著鏡頭。
+       上面那一圈最多推 5.95 秒，最後一發還差一幀才炸：玩家一次一發（v1.284.0），先收掉才放得出新的。 */
+    magics = null;
     castMagic({ x: 0, z: 0 });
     step(0.05); draw(); ENG.render();
     let sm = null;
@@ -23404,10 +23445,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      所以使用者看到的是「只有最後那發有藍色閃電」。
      電的起點就是它那一處的爆點（`boltPts` 兩端不抖，前一條已經量到起點離爆點 0），
      所以按 pts[0].x 分堆就分得出是哪一處劈的。 */
+  /* v1.284.0 起玩家一次只能一發（見〈爆裂魔法一次只能一發〉那一段），後兩發走「別人放的」那條路
+     （給 by，同惠惠那一發）：這一條守的是「每一處各自劈電」，跟誰放的無關，池子照舊開到 MAG_CAST 處。
+     by 在 explode 裡只拿來比「是不是牠自己」（self），給一個空物件就是誰都不是。 */
   const mgArc3 = await page.evaluate(() => {
     startBuild(true); completeNow();
     const at = [-20, 0, 20];
-    for (const x of at) castMagic({ x, z: 0 });     // 同一幀開三個，六秒後同一幀爆
+    at.forEach((x, i) => castMagic({ x, z: 0 }, i ? {} : null));     // 同一幀開三個，六秒後同一幀爆
     while (magics) step(0.05);
     const frames = new Map(), peak = new Map();
     let srcs = 0, seg = 0, stray = 0;
@@ -23919,10 +23963,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '連叫 6 顆 → 場上 ' + nukeMany.capped + ' 顆（上限 ' + nukeMany.max + '）');
 
   /* 爆裂魔法也可以同時好幾個（v1.59）。引擎那邊的環／盤／紋路池子要放得下：
-     一個陣吃 15 個環（六層×2 ＋ 火種 3）與 7 片盤，三個就是 45 與 21。 */
+     一個陣吃 15 個環（六層×2 ＋ 火種 3）與 7 片盤，三個就是 45 與 21。
+     v1.284.0 起玩家一次只能一發，後兩發（與下面連放五個的後四發）走「別人放的」那條路（給 by，同惠惠），
+     池子照舊開到 MAG_CAST 個（玩家一發＋惠惠一發用不到三個，那一格是保險）。 */
   const magMany = await page.evaluate(() => {
     cleanTools(); startBuild(true); completeNow();
-    for (let i = 0; i < 3; i++) castMagic({ x: (i - 1) * 26, z: 0 });
+    for (let i = 0; i < 3; i++) castMagic({ x: (i - 1) * 26, z: 0 }, i ? {} : null);
     const cast = magics.length;
     for (let i = 0; i < 40; i++) step(0.05);          // 2 秒：三個陣都長滿六層了
     const rings = magics.reduce((n, m) => n + (m.rings ? m.rings.length : 0), 0);
@@ -23945,7 +23991,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       boom += before - (magics ? magics.length : 0);
     }
     cleanTools();
-    for (let i = 0; i < 5; i++) castMagic({ x: i * 12 - 24, z: 8 });   // 連放五個
+    for (let i = 0; i < 5; i++) castMagic({ x: i * 12 - 24, z: 8 }, i ? {} : null);   // 連放五個
     const capped = magics.length;
     cleanTools();
     return { cast, rings, layers, at, vis, disc, fills, boom, capped, max: MAG_CAST };
@@ -23960,6 +24006,51 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      magMany.vis + ' 個、' + magMany.disc + ' 片');
   ok('魔法陣超過上限就把最早那個擠掉', magMany.capped === magMany.max,
      '連放 5 個 → 場上 ' + magMany.capped + ' 個（上限 ' + magMany.max + '）');
+
+  /* 玩家的爆裂魔法一次只能一發（v1.284.0，使用者：「爆裂魔法先調整成一次只能一發存在」）。
+     使用者選的四件事一起守（規則型，直接呼叫 castMagic，不跑模擬）：
+     ① 場上還有玩家的陣時再點一下 → 擋下來、跳提示，場上那個照常倒數（沒有被換掉、沒有被重設）
+     ② 惠惠那一發（有 by）另算：她可以跟玩家那一發同時在場，她在場也不會擋到玩家、玩家在場也不會擋到她
+     ③ 陣一炸開就能再放（爆完的火團、蘑菇雲、藍電還在也不算） */
+  const magOne = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow();
+    const otoast = toast, said = [];
+    toast = (a, b) => { said.push(a); return otoast(a, b); };
+    castMagic({ x: 0, z: 0 });
+    const first = magics[0];
+    for (let i = 0; i < 10; i++) step(0.05);
+    const t1 = first.t;
+    castMagic({ x: 20, z: 0 });                       // ① 第二下
+    const blocked = { n: magics.length, same: magics[0] === first, x: first.x, t: first.t, t1, said: said.slice() };
+    castMagic({ x: -20, z: 0 }, {});                  // ② 惠惠那一發
+    const withMeg = magics.length;
+    castMagic({ x: 20, z: 0 });                       // 惠惠在場時玩家再點一下：照樣只看玩家自己那一發
+    const still = magics.filter(m => !m.by).length;
+    cleanTools();
+    castMagic({ x: -20, z: 0 }, {});                  // 只有惠惠那一發在場：玩家放得出來
+    castMagic({ x: 0, z: 0 });
+    const megFirst = magics.filter(m => !m.by).length;
+    let g = 0;
+    while (magics && magics.some(m => !m.by) && g++ < 200) step(0.05);   // ③ 等玩家那一發炸開
+    const after = { arcs: arcSrcs ? arcSrcs.length : 0, billows: billows.length };
+    castMagic({ x: 20, z: 0 });
+    const again = magics ? magics.filter(m => !m.by).length : 0;
+    toast = otoast;
+    cleanTools();
+    return { blocked, withMeg, still, megFirst, after, again, said, max: MAG_TIME };
+  });
+  ok('玩家的爆裂魔法一次只能一發：再點一下擋下來、跳提示，場上那一發照常倒數',
+     magOne.blocked.n === 1 && magOne.blocked.same && magOne.blocked.x === 0 &&
+     magOne.blocked.t === magOne.blocked.t1 && magOne.blocked.t1 < magOne.max - 0.4 && magOne.blocked.said.length === 1,
+     '第二下之後場上 ' + magOne.blocked.n + ' 個（還是原本 x=' + magOne.blocked.x + ' 那個、倒數 ' +
+     magOne.blocked.t1.toFixed(2) + ' → ' + magOne.blocked.t.toFixed(2) + '）、提示「' + magOne.blocked.said.join('／') + '」');
+  ok('惠惠那一發另算：跟玩家那一發同時在場，誰都不擋誰',
+     magOne.withMeg === 2 && magOne.still === 1 && magOne.megFirst === 1 && magOne.said.length === 2,
+     '玩家一發＋惠惠一發 → 場上 ' + magOne.withMeg + ' 個；這時玩家再點 → 玩家的還是 ' + magOne.still +
+     ' 個；只有惠惠在場時玩家放得出 ' + magOne.megFirst + ' 個；提示一共 ' + magOne.said.length + ' 次');
+  ok('陣一炸開就能再放（爆完的火團、藍電還在也不算）',
+     magOne.again === 1 && magOne.after.arcs > 0 && magOne.after.billows > 0,
+     '炸開那一刻還有 ' + magOne.after.arcs + ' 處藍電、' + magOne.after.billows + ' 團火 → 再點放出 ' + magOne.again + ' 個');
 
   /* 一發核彈常常直接把整棟夷平，那會立刻觸發「剩不到 25% 就換下一座」。
      換場如果把特效也清掉，蘑菇雲就會在爆炸後 0.05 秒整朵消失——等於白做。
