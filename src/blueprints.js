@@ -272,7 +272,7 @@ function blob(v, x0, y0, z0, rx, ry, rz, c, shell) {
 
 /* 兩點之間長出一根**有粗細**的東西（膠囊／圓錐）：斜的手臂、大腿、脖子、尾巴、斜撐。
    為什麼要專門一支：box／cyl／taper 都只能站著或沿著某一軸躺著，斜的部件只能自己
-   切成好幾段各挪一格——實測倉庫裡三尊人像（自由女神、獅身人面像、八卦山大佛）的四肢
+   切成好幾段各挪一格——實測倉庫裡三尊人像（自由女神、獅身人面像、八卦山大佛；前兩尊是 v1.285.0 重畫前的版本）的四肢
    全是軸對齊的方塊疊起來的，而「人像不像」的第一名就是這個。
 
    做法是掃包圍盒、算每一格到那條線段的距離：先把格子投影到線段上（t 夾在 0～1，
@@ -436,7 +436,7 @@ function ringOf(v, n, r, fn, x0, z0, a0, span) {
    只給偏移量，軸由呼叫的人決定；要排成方陣就套兩層。
 
    全倉庫有 20 處自己寫 `-總寬/2 + i * 間距`（柱廊、欄杆、扶壁、衣褶、一排摩艾），
-   而那個式子很容易寫歪：內建自由女神的正面衣褶用 (n−1) 當分母、背面用 (n−2) 還補
+   而那個式子很容易寫歪：v1.285.0 重畫前的內建自由女神，正面衣褶用 (n−1) 當分母、背面用 (n−2) 還補
    了 +0.5——同一份藍圖裡同一件事寫了兩種，其中一種是湊出來的。 */
 function rowOf(v, n, step, fn, c0) {
   bpArgs('rowOf(v, n, 間距, fn, 中心)', 'vnnf', [v, n, step, fn]);
@@ -1318,164 +1318,301 @@ const SHAPES = [
     v.box(0, antBase + spireH, 0, 1, 1, 1, 3);
   } },
 
-{ n: '自由女神', lo: 2.2, hi: 14.5, pal: [0x5ea890, 0x447d6b, 0x82caa8, 0xc7ab88, 0x806a51, 0xf5c238, 0xd97d25],
-  /* 來源：blueprints/自由女神像.js（v1.66 換掉原本那份） */
+{ n: '自由女神', lo: 2.0, hi: 13.5,
+  // v1.285.0 整座重畫（見 開發筆記〈還很粗糙的七座重畫〉）
+  pal: [0x5f9e88,   // 0 銅綠本色
+        0x86c2a8,   // 1 銅綠亮面：衣褶凸稜、臉、銘牌正面
+        0x3d6e60,   // 2 銅綠暗面：褶子裡、眼睛、冠冕的窗、鎖鏈
+        0xe8b33a,   // 3 鍍金火焰
+        0xa8958a,   // 4 花崗岩基座（偏暖的灰粉）
+        0x6f6660,   // 5 深一階石：線腳、簷口、柱廊凹面、石縫
+        0x8e8f8c,   // 6 星形堡壘與混凝土基礎的灰石
+        0x5d8a3e],  // 7 星形台地上的草地
   gen(v, s) {
-    // -------------------------------------------------------------
-    // 1. 基座尺寸與建造（新古典花崗岩台基）
-    // -------------------------------------------------------------
-    const baseW = dim(s, 2.2, 9, true);  // 基座底寬（奇數）
-    const baseH = dim(s, 1.4, 5);        // 基座主高度
-    
-    // 台階基底（兩層向下展開）
-    v.box(0, 0, 0, baseW + 4, 1, baseW + 4, 4);
-    v.box(0, 1, 0, baseW + 2, 1, baseW + 2, 3);
+    // 正面：細高的銅綠立像站在方形花崗岩基座上，右手（畫面左邊）把細長的金色火焰舉過頭頂，
+    //   左手把一塊斜擺的銘牌抱在左側；基座下是兩三階往外放寬的灰色基礎，最底下一圈星形矮城牆。
+    // 側面：雕像前後薄（約寬的六成），長袍下襬往後拖、右腳跟在背後抬起；
+    //   基座比雕像寬一截、高度跟雕像到下巴差不多；星形堡壘又寬又矮。
+    // 三樣識別物：高舉的細長金色火炬、七道光芒的冠冕、星形堡壘上的方形基座（加上斜抱的銘牌）
+    // 部件：著地＝星形堡壘（城牆、壓頂、女兒牆、台地鋪面與尖角草地）、階梯狀混凝土基礎、
+    //       花崗岩基座（台階、粗石柱身、陽台腰線、柱廊凹窗、圓盤飾帶、簷口、頂上欄杆）、雕像矮台、腳邊斷鍊；
+    //       姿勢＝右手高舉、左手屈肘抱銘牌、右膝彎、右腳在後腳跟抬起、左腳尖從下襬探出；
+    //       軀幹＝下襬外張、膝部收、高腰、胸、斜肩；四肢＝兩臂各分上臂／前臂；
+    //       頭＝頸、頭、後腦的髮髻、臉（亮面）、眼、冠冕（窗）、七道光芒；
+    //       衣物＝長袍細直褶、從左肩斜披到右腰的斗篷（粗斜褶、下襬斜切）、火炬（柄、杯、欄杆、火焰）、銘牌
+    const H = (x, y, z) => (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) % 100;
+    const hd = s * 0.6;              // 頭高（下巴到頭頂）：整尊唯一的錨，不取整
+    const prof = (P, t) => {         // 折線內插：剖面表 [[t, 值], …]
+      if (t <= P[0][0]) return P[0][1];
+      for (let i = 1; i < P.length; i++) if (t <= P[i][0]) {
+        const [t0, a0] = P[i - 1], [t1, a1] = P[i];
+        return a0 + (a1 - a0) * (t - t0) / (t1 - t0);
+      }
+      return P[P.length - 1][1];
+    };
+    // 方環：切比雪夫距離 a < d ≤ b 的格子，顏色交給 cf 挑（一邊蓋一邊挑石色）
+    const sq = (y, a, b, cf) => {
+      for (let x = -b; x <= b; x++) for (let z = -b; z <= b; z++) {
+        if (Math.max(Math.abs(x), Math.abs(z)) <= a) { z = a; continue; }
+        const c = cf(x, y, z);
+        if (c >= 0) v.set(x, y, z, c);            // 回傳 −1 ＝ 這格留空
+      }
+    };
+    const stone = (c0, c1, p) => (x, y, z) => (H(x, y, z) < p ? c1 : c0);   // 石材：本色 c0，固定雜湊挑 p% 換成 c1
 
-    // 主台身（縮進石壁 + 四角突出壁柱）
-    v.box(0, 2, 0, baseW, baseH, baseW, 3);
-    const cornerOff = (baseW - 1) / 2;
-    corners4(v, cornerOff, cornerOff, (vv, cx, cz) => {
-      vv.box(cx, 2, cz, 1, baseH, 1, 4);
+    // ── 垂直分段：每一段的 y0 都從下一段的頂面算 ──
+    const hf = dim(s, 0.42, 2);                 // 星形堡壘城牆高（實物 9 m，壓成約 0.7 頭）
+    const fh = dim(s, 0.6, 2);                  // 混凝土基礎露出台地的那一段（實物約 11 m，壓成約 1 頭）
+    const pw = dim(s, 0.88, 3);                 // 基座柱身半寬（全寬約 2.9 頭，比雕像的 2.3 頭寬一截）
+    const nt = fh >= 6 ? 3 : 2;                 // 基礎分幾階（每階至少兩層高，才是「階」不是斜坡）
+    const ft = pw + 2 + (s >= 8 ? 1 : 0);       // 最上一階的半寬：跟基座台階齊平，大尺寸才多留一圈走道
+    const fb = ft + nt - 1;                     // 最下一階的半寬：一階往內收一格
+
+    // ── 1. 星形堡壘：十一角星，正面（−z）對著兩個尖角中間的凹口，背面是一個尖角 ──
+    // 凹口半徑：要包得住基礎的四個角。拿沒取整的半寬算——基座半寬每跳一格，整圈星形一起跳的話塊數一階差一成
+    const ri = (Math.max(3, s * 0.88) + (fb - pw)) * 1.42 + 1.5;
+    const ro = ri * 1.36;                       // 尖角半徑
+    const T = Math.PI / 11;
+    const NX = ri * Math.cos(T), NZ = ri * Math.sin(T), EL = Math.hypot(NX - ro, NZ);
+    const inStar = (x, z) => {
+      const r = Math.sqrt(x * x + z * z);
+      if (r <= NX * 0.98) return true;
+      if (r > ro + 0.6) return false;
+      let a = Math.atan2(x, -z) % (2 * T); if (a < 0) a += 2 * T;
+      const w = Math.abs(a - T);                // 0 ＝ 尖角方向、T ＝ 凹口方向
+      const qx = r * Math.cos(w), qz = r * Math.sin(w);
+      return ((NX - ro) * qz - NZ * (qx - ro)) / EL >= -0.45;
+    };
+    // 先把星形填成一張遮罩（外圍多留一圈 0，查鄰格不用判邊界）；星形左右對稱，只算 x ≥ 0 那半邊
+    const RS = Math.ceil(ro + 1), SW = RS * 2 + 3, at = (x, z) => (x + RS + 1) * SW + z + RS + 1;
+    const star = new Uint8Array(SW * SW);
+    for (let x = 0; x <= RS; x++) for (let z = -RS; z <= RS; z++)
+      if (inStar(x, z)) star[at(x, z)] = star[at(-x, z)] = 1;
+    const lawn = ri * 1.06;                     // 尖角裡（離中心比凹口遠）留草地
+    for (let x = -RS; x <= RS; x++) for (let z = -RS; z <= RS; z++) {
+      const i = at(x, z);
+      if (!star[i]) continue;
+      const edge = !star[i + SW] || !star[i - SW] || !star[i + 1] || !star[i - 1];
+      if (edge) {
+        for (let y = 0; y < hf - 1; y++) v.set(x, y, z, H(x, y, z) < 22 ? 5 : 6);   // 灰花崗岩方石城牆
+        v.set(x, hf - 1, z, 5);                 // 壓頂
+        v.set(x, hf, z, 6);                     // 女兒牆
+      } else if (Math.max(Math.abs(x), Math.abs(z)) >= fb) {
+        v.set(x, hf - 1, z, x * x + z * z > lawn * lawn ? 7 : (H(x, 0, z) < 18 ? 5 : 6));  // 台地：鋪面＋尖角草地
+      }
+    }
+
+    // ── 2. 混凝土基礎：階梯狀，一階往內收一格；每階頂層鋪滿到上一階的牆腳，最上面是接住基座台階的走道 ──
+    for (let j = 0; j < fh; j++) {
+      const k = Math.min(nt - 1, Math.floor(j * nt / fh)), h = fb - k;
+      const top = j === fh - 1 || Math.floor((j + 1) * nt / fh) !== k;
+      sq(hf + j, top ? (k === nt - 1 ? pw + 1 : h - 2) : h - 1, h, stone(6, 5, 12));
+    }
+    const yP = hf + fh;                         // 基座底面
+
+    // ── 3. 花崗岩基座：台階、粗石柱身、陽台腰線、柱廊凹窗、圓盤飾帶、簷口、頂上欄杆 ──
+    // 基座（台階到欄杆）約 4.4 頭（實物 27 m ≈ 5.6 頭，只壓到八成），雕像才不會像站在一塊矮墩上；
+    // 堡壘與基礎壓得多（合起來 1.6 頭，實物 4.1 頭）——省下的積木留給雕像刻姿勢與衣褶
+    const pl = dim(s, 0.15, 2), hl = dim(s, 1.25, 3), hg = dim(s, 0.75, 2), hz = dim(s, 0.2, 1);
+    sq(yP, pw - 1, pw + 2, stone(5, 4, 30));                    // 台階
+    for (let j = 1; j < pl; j++) sq(yP + j, pw - 1, pw + 1, stone(5, 4, 30));
+    const ys = yP + pl;                         // 柱身底
+    for (let j = 0; j < hl; j++) sq(ys + j, pw - 1, pw, stone(4, 5, 16));         // 粗石柱身
+    const yb = ys + hl;
+    sq(yb, pw - 1, pw + 1, () => 5);            // 陽台腰線（往外凸 1 格）
+    const pier = Math.max(2, Math.round(pw * 0.3)), rw = pw - pier;
+    for (let j = 1; j <= hg; j++) {
+      sq(yb + j, pw - 1, pw, (x, y, z) => {
+        const t = Math.abs(z) === pw ? x : z;
+        if (Math.abs(t) > rw) return 4;
+        return ((t + rw) % 2 === 0) ? 4 : -1;   // 柱子留著，柱間挖成凹窗
+      });
+      for (let t = -rw; t <= rw; t++) {         // 凹窗：柱間往裡退一格、塗深色
+        if ((t + rw) % 2 === 0) continue;
+        for (const [x, z] of [[t, -pw], [t, pw], [-pw, t], [pw, t]])
+          v.set(x === t ? x : x - Math.sign(x), yb + j, z === t ? z : z - Math.sign(z), 5);
+      }
+    }
+    const yz = yb + hg + 1;
+    for (let j = 0; j < hz; j++) sq(yz + j, pw - 1, pw, (x, y, z) => {
+      const t = Math.abs(z) === pw ? x : z;
+      return j === hz - 1 && Math.abs(t) < pw && (t + pw) % 2 === 0 ? 5 : 4;      // 圓盤飾帶
     });
-
-    // 台身腰線裝飾
-    const midH = 2 + Math.round(baseH * 0.5);
-    v.box(0, midH, 0, baseW + 1, 1, baseW + 1, 4);
-
-    // 基座頂簷口與觀景台圍欄
-    const topY = 2 + baseH;
-    v.box(0, topY, 0, baseW + 2, 1, baseW + 2, 4);
-    v.box(0, topY + 1, 0, baseW, 1, baseW, 3);
-    v.walls(0, topY + 2, 0, baseW, 1, baseW, 4, 1);
-
-    // -------------------------------------------------------------
-    // 2. 雕像踏板與腳部
-    // -------------------------------------------------------------
-    const statueBaseY = topY + 2;
-    const plinthW = dim(s, 1.4, 5, true);
-    const plinthD = dim(s, 1.2, 5, true);
-    v.box(0, statueBaseY, 0, plinthW, 1, plinthD, 1);
-
-    // -------------------------------------------------------------
-    // 3. 羅馬長袍與軀幹（下厚上斂、立體布褶）
-    // -------------------------------------------------------------
-    const robeY = statueBaseY + 1;
-    const bodyW = dim(s, 1.1, 5, true);
-    const bodyD = dim(s, 0.95, 4);
-    const bodyH = dim(s, 2.6, 9);
-
-    // 長袍主體量體（下層微張、中層厚實）
-    const robeLowH = Math.round(bodyH * 0.55);
-    v.taper(0, robeY, 0, (bodyW + 2) / 2, bodyW / 2, robeLowH, 0);
-    v.box(0, robeY + robeLowH, 0, bodyW, bodyH - robeLowH, bodyD, 0);
-
-    // 左腳前邁意象（長袍左前方微微隆起突出）
-    const legX = Math.round(bodyW * 0.22);
-    v.box(legX, robeY, Math.round(bodyD * 0.45), Math.max(1, Math.round(bodyW * 0.28)), Math.round(robeLowH * 0.85), 1, 0);
-    v.box(legX, robeY, Math.round(bodyD * 0.45) + 1, Math.max(1, Math.round(bodyW * 0.2)), 1, 1, 2);
-
-    // 垂直衣褶條紋（正面與側面加強立體光影）
-    const foldCount = dim(s, 0.45, 3);
-    const foldSpan = (bodyW - 1) / 2;
-    for (let i = 0; i < foldCount; i++) {
-      const fx = Math.round(-foldSpan + i * ((foldSpan * 2) / Math.max(1, foldCount - 1)));
-      // 正面衣褶（深色暗溝與亮色凸稜交錯）
-      v.box(fx, robeY + 1, Math.round(bodyD / 2), 1, robeLowH - 1, 1, (i % 2 === 0) ? 1 : 2);
-    }
-    // 背面衣褶
-    for (let i = 0; i < foldCount - 1; i++) {
-      const bx = Math.round(-foldSpan + 0.5 + i * (foldSpan / Math.max(1, foldCount - 2)));
-      v.box(bx, robeY + 1, -Math.round(bodyD / 2), 1, robeLowH, 1, 1);
-    }
-
-    // 披肩布幔（從右胸下斜向左肩覆蓋，做出立體厚度）
-    const chestY = robeY + bodyH - dim(s, 0.75, 3);
-    const sashH = dim(s, 0.45, 2);
-    v.box(0, chestY, 0, bodyW + 1, sashH, bodyD + 1, 0);
-    v.box(-Math.round(bodyW * 0.2), chestY - 1, Math.round(bodyD * 0.4), Math.max(1, Math.round(bodyW * 0.4)), 1, 1, 2);
-    v.box(Math.round(bodyW * 0.25), chestY + sashH, 0, Math.max(1, Math.round(bodyW * 0.35)), 1, bodyD + 1, 2);
-
-    // -------------------------------------------------------------
-    // 4. 左手與獨立宣言法典
-    // -------------------------------------------------------------
-    const leftArmX = Math.round(bodyW * 0.55);
-    const tabletY = robeY + Math.round(bodyH * 0.42);
-    const tabW = dim(s, 0.45, 2);
-    const tabH = dim(s, 0.85, 3);
-    const tabD = dim(s, 0.35, 1);
-
-    // 左上臂斜下至前臂彎曲
-    v.box(leftArmX, chestY - 1, 0, 1, Math.max(2, chestY - tabletY), 2, 0);
-    // 獨立宣言法典（斜立於身側的亮色石板）
-    v.box(leftArmX + 1, tabletY, Math.round(bodyD * 0.15), tabD, tabH, tabW, 2);
-    v.box(leftArmX + 1, tabletY, Math.round(bodyD * 0.15), 1, tabH, 1, 0); // 握住法典的手指
-
-    // -------------------------------------------------------------
-    // 5. 右肩、高舉的右臂與自由火炬
-    // -------------------------------------------------------------
-    const rightArmX = -Math.round(bodyW * 0.52);
-    const shoulderY = chestY + 1;
-    const torchArmTopY = robeY + bodyH + dim(s, 1.45, 5);
-    const armThick = Math.max(1, Math.round(dim(s, 0.35, 2) * 0.6));
-
-    // 右肩往外擴展並斜向上
-    v.box(rightArmX, shoulderY, 0, armThick + 1, 2, armThick + 1, 0);
-    // 右前臂筆直擎天
-    v.box(rightArmX, shoulderY + 2, 0, armThick, torchArmTopY - (shoulderY + 2), armThick, 0);
-    // 右手掌
-    v.box(rightArmX, torchArmTopY, 0, armThick + 1, 1, armThick + 1, 2);
-
-    // 火炬手柄
-    const torchBaseY = torchArmTopY + 1;
-    const torchStemH = dim(s, 0.45, 2);
-    v.cyl(rightArmX, torchBaseY, 0, 0.8, torchStemH, 1);
-    
-    // 火炬托盤與金屬杯口（向外擴張）
-    const trayY = torchBaseY + torchStemH;
-    const trayR = dim(s, 0.5, 2);
-    v.cyl(rightArmX, trayY, 0, trayR, 1, 6);
-    v.cyl(rightArmX, trayY + 1, 0, trayR + 0.4, 1, 5, 1);
-
-    // 金黃火焰（雙層躍動收尖造型）
-    const flameY = trayY + 1;
-    const flameH = dim(s, 0.85, 3);
-    v.taper(rightArmX, flameY, 0, trayR - 0.2, 0.2, flameH, 5);
-    v.box(rightArmX, flameY + 1, 0, 1, Math.max(1, flameH - 2), 1, 6); // 火焰核心深金色
-
-    // -------------------------------------------------------------
-    // 6. 頸部、頭部、垂髮與七芒冠冕
-    // -------------------------------------------------------------
-    const headY = robeY + bodyH;
-    const headR = dim(s, 0.45, 2);
-
-    // 頸部
-    v.cyl(0, headY, 0, Math.max(1, headR - 1), 1, 0);
-
-    // 垂在雙肩的希臘波浪長髮
-    mirrorX(v, headR, (vv, hx) => {
-      vv.box(hx, headY - 1, -Math.round(headR * 0.4), 1, 2, Math.max(1, headR), 1);
+    const yc = yz + hz;                         // 簷口兼頂面陽台的地板
+    sq(yc, -1, pw + 1, (x, y, z) => (Math.max(Math.abs(x), Math.abs(z)) === pw + 1 ? 5 : 4));
+    sq(yc + 1, pw, pw + 1, (x, y, z) => {       // 欄杆柱：每隔一格一根
+      const t = Math.abs(z) === pw + 1 ? x : z;
+      return Math.abs(t) === pw + 1 || t % 2 === 0 ? 4 : -1;
     });
+    sq(yc + 2, pw, pw + 1, () => 5);            // 欄杆扶手
 
-    // 雕刻頭部與面容輪廓
-    blob(v, 0, headY + 1 + headR * 0.6, 0, headR, headR * 1.15, headR * 0.9, 0);
-    // 面部立體輪廓（鼻樑微隆）
-    v.box(0, headY + 1 + Math.round(headR * 0.5), Math.round(headR * 0.85), 1, Math.max(1, headR - 1), 1, 2);
-
-    // 冠冕基座圓環（Diadem）
-    const crownY = headY + 1 + Math.round(headR * 0.85);
-    v.cyl(0, crownY, 0, headR + 0.6, 1, 2, 1);
-    // 冠冕上的小窗孔（暗色點綴）
-    paintFrom(v, 0, crownY, Math.round(headR + 1), 0, 0, -1, 2, 1);
-
-    // 七道光芒刺（放射狀立體尖芒）
-    const spikeLen = dim(s, 0.6, 3);
-    const spikeAngles = [-120, -80, -40, 0, 40, 80, 120];
-    for (let deg of spikeAngles) {
-      const rad = (deg * Math.PI) / 180;
-      const sx = Math.sin(rad) * (headR + spikeLen);
-      const sz = -Math.cos(rad) * (headR + spikeLen) * 0.55;
-      v.line(0, crownY, 0, Math.round(sx), crownY + 1 + Math.max(1, Math.round(spikeLen * 0.35)), Math.round(sz), 2);
+    // ── 4. 雕像：腳跟在 y0，頭身比 7（下巴在 6 頭高、頭頂在 7 頭高） ──
+    // 雕像自己的矮台：墊高一層，下襬才不會整圈躲在欄杆後面
+    v.box(0, yc + 1, 0, 2 * Math.min(pw - 1, Math.round(1.25 * hd)) + 1, 1, 2 * Math.min(pw - 1, Math.round(0.95 * hd)) + 1, 5);
+    const y0 = yc + 2;
+    // 長袍剖面（半寬、半深，頭高為單位）：下襬外張、膝部收、高腰最細、斜肩收到頸
+    const PXs = [[0, 1.15], [0.3, 1.08], [1.2, 1.02], [2.2, 0.98], [3.4, 0.97], [4.4, 0.88],
+                 [5.0, 0.88], [5.25, 0.82], [5.45, 0.7], [5.6, 0.52], [5.75, 0.3]];
+    const PZs = [[0, 0.82], [0.3, 0.72], [1.2, 0.64], [2.2, 0.62], [3.4, 0.62], [4.4, 0.56],
+                 [5.0, 0.6], [5.25, 0.56], [5.45, 0.5], [5.6, 0.42], [5.75, 0.28]];
+    /* 斗篷（palla）蓋在哪裡：背面整片垂到腳邊；正面是一條從左肩斜到右腰的帶子，下襬斜切（右高左低）。
+       正面那條帶子＝ xc（正規化的 x，−1 左緣～+1 右緣）落在 [下襬線, 上緣線) 之間，兩條線每層先解成 x 的門檻 */
+    const pallaRow = t => ({ on: t > 0.35 && t < 5.6, hem: (t - 1.95) / 0.85, top: (5.75 - t) / 1.1 - 0.55 });
+    const isPal = (P, xc, zn) => P.on && (zn > 0.25 || (xc <= P.hem && xc < P.top));
+    const robeTop = Math.round(5.75 * hd), dt = 1 / hd;
+    // 方位角只跟 (x, z) 有關，整件袍子共用一張表（gen 一輪要跑六十次，atan2 省下來很可觀）
+    const RX = Math.ceil(1.15 * hd + 2.6), RZ = Math.ceil(0.82 * hd + 2.6), TW = 2 * RZ + 1;
+    const TH = new Float32Array((2 * RX + 1) * TW);
+    for (let x = -RX; x <= RX; x++) for (let z = -RZ; z <= RZ; z++) TH[(x + RX) * TW + z + RZ] = Math.atan2(x, -z);
+    for (let j = 0; j <= robeTop; j++) {
+      const t = j / hd, y = y0 + j;
+      const ax = prof(PXs, t) * hd, az = prof(PZs, t) * hd;
+      const Rx = Math.ceil(ax + 2.6);
+      // 褶距：一道褶至少要「暗、本色、亮」三格才排得出來，再密就變成一格一格的棋盤雜訊
+      const Ns = Math.max(6, Math.round(Math.PI * (ax + az) / 3.0));     // 長袍細褶
+      const Np = Math.max(4, Math.round(Math.PI * (ax + az) / 4.2));     // 斗篷粗褶
+      const hollow = ax > 5.5 && t > 0.3 && t < 5.2;                     // 大尺寸挖空，省下看不到的格子
+      // 四處局部鼓起（高度方向的權重每層先算好）：右膝往前頂、左腳往前踏、胸、
+      // 左前臂上垂下來的那一大片斗篷（左側略偏後鼓出來，正面看左右才不對稱）
+      const gs = q => Math.exp(-q * q);
+      const kn = t > 0.6 && t < 3.4 ? 0.9 * gs((t - 2.0) / 0.6) : 0;
+      const lf = t < 2.2 ? 0.8 * gs((t - 0.5) / 0.7) : 0;
+      const ch = t > 4.3 && t < 5.7 ? 0.6 * gs((t - 5.0) / 0.3) : 0;
+      const dr = t > 1.2 && t < 4.6 ? 0.28 * hd * Math.min(1, (t - 1.2) / 0.8, (4.6 - t) / 0.4) : 0;
+      const P = pallaRow(t), P1 = pallaRow(t + dt);
+      /* 離基本橢圓表面的格數 d ＝ 該方向的半徑 ×（r − 1），那個半徑介於 az 與 ax 之間，
+         所以 r 落在門檻外的格子不用細算就知道：一定在外面／一定在深處。表面最多凹進 0.75 格、
+         上色只看表面往裡 1.05 格，所以 d < −1.8 的一律是看不到的本色、直接填；
+         挖空時改成 d < −2.2 的整段不要，其餘照「表面往裡 1.9 格」留殼。
+         每一排 x 先解出 z 的門檻，只有中間那一圈帶子逐格算褶子 */
+      const cut = Math.min(2.6, 1.3 + Math.max(kn, lf, ch, dr)), rOut = (1 + cut / az) * (1 + cut / az);
+      const deep = hollow ? 2.2 : 1.8, rIn = az > deep ? (1 - deep / az) * (1 - deep / az) : -1;
+      for (let x = -Rx; x <= Rx; x++) {
+        const xn = x / ax, q = xn * xn;
+        if (q > rOut) continue;
+        const zo = Math.floor(az * Math.sqrt(rOut - q));               // 這一排的外緣
+        const zi = q < rIn ? Math.ceil(az * Math.sqrt(rIn - q)) : 0;  // |z| < zi：深處
+        for (let z = -zo; z <= zo; z++) {
+          if (z > -zi && z < zi) {
+            if (hollow) z = zi - 1; else v.set(x, y, z, 0);
+            continue;
+          }
+          const zn = z / az, r = Math.sqrt(q + zn * zn);
+          const d = r > 0 ? Math.sqrt(x * x + z * z) * (1 - 1 / r) : -az;   // 離基本橢圓表面幾格（負的在裡面）
+          if (d > cut) continue;
+          if (d < -deep) { if (!hollow) v.set(x, y, z, 0); continue; }
+          const th = TH[(x + RX) * TW + z + RZ];  // 0 ＝ 正前方，往 +x（右手邊）為正
+          const xc = xn > 1 ? 1 : xn < -1 ? -1 : xn;
+          const pal = isPal(P, xc, zn);
+          const g = pal ? 0.5 - 0.5 * Math.cos(Np * th + (zn < 0.25 ? 1.6 * t : 0))   // 斗篷：正面斜褶、背面直褶
+                        : 0.5 - 0.5 * Math.cos(Ns * th + 0.2 * t);                   // 長袍：細直褶
+          let off = 0.35 - (pal ? 1.0 : 1.1) * Math.max(0, (g - 0.4) / 0.6) + (pal ? 0.9 : 0);
+          if (kn && th > -0.6 && th < 1.6) off += kn * gs((th - 0.5) / 0.4);
+          if (lf && th > -1.6 && th < 0.9) off += lf * gs((th + 0.35) / 0.45);
+          if (ch && th > -2 && th < 2) off += ch * gs(th / 0.9);
+          if (dr && th < -0.4) off += dr * gs((th + 1.75) / 0.5);
+          if (d > off || (hollow && d < off - 1.9)) continue;
+          let c = 0;
+          if (d > off - 1.05) {
+            // 溝底暗、凸稜亮；長袍的亮稜寬、斗篷的暗溝寬——斜披的那條帶子才跟底下的長袍分得開
+            c = pal ? (g > 0.55 ? 2 : g < 0.08 ? 1 : 0) : (g > 0.78 ? 2 : g < 0.45 ? 1 : 0);
+            if (!pal && zn <= 0.25 && isPal(P1, xc, zn)) c = 2;          // 斗篷下襬底下的陰影
+          }
+          v.set(x, y, z, c);
+        }
+      }
     }
+    // 腳：左腳尖從下襬前面探出來；右腳在後、腳跟抬起（小尺寸時收在欄杆裡面，不要壓到欄杆）
+    const az0 = 0.82 * hd, fr0 = Math.max(0.75, 0.17 * hd);
+    blob(v, -0.35 * hd, y0 + 0.12 * hd, -az0 - 0.15 * hd, 0.2 * hd, 0.16 * hd, 0.28 * hd, 0);
+    limb(v, { x: 0.4 * hd, y: y0, z: az0 * 0.6, x1: 0.45 * hd, y1: y0 + 0.55 * hd,
+              z1: Math.min(az0 + 0.3 * hd, pw - 1 - fr0), r: fr0, c: 0 });
+    // 腳邊斷掉的鎖鏈：右腳前一小截
+    const cz = -Math.min(pw - 1, Math.round(az0 + 0.35 * hd + 1));
+    for (let i = 0; i < Math.max(3, Math.round(hd * 0.9)); i++)
+      v.set(Math.round(0.15 * hd) + i, y0 + (i % 2), cz - (i % 3 === 2 ? 1 : 0), 2);
+
+    // 頸與頭（臉朝 −z，頭心略往前）：頸短，頭兩側有波浪髮把頭撐寬
+    const hz0 = -0.08 * hd, fz = Math.round(hz0), hy = y0 + 6.5 * hd;
+    // 頸從袍子頂一路接進頭裡：頸與頭各自取整的話，小尺寸會在下巴底下空一層（實測 3000 那檔空過，頭只靠光芒搭在右臂上）
+    const yN = y0 + robeTop - 1;
+    v.cyl(0, yN, fz, Math.max(0.9, 0.24 * hd), Math.round(hy - 0.25 * hd) - yN + 1, 0);
+    blob(v, 0, hy, hz0, 0.4 * hd, 0.52 * hd, 0.47 * hd, 0);
+    blob(v, 0, hy - 0.02 * hd, hz0 + 0.12 * hd, 0.46 * hd, 0.36 * hd, 0.4 * hd, 0);    // 兩側與後面的頭髮
+    blob(v, 0, hy - 0.12 * hd, hz0 + 0.36 * hd, 0.28 * hd, 0.28 * hd, 0.24 * hd, 0);   // 後腦髮髻
+    // 臉：亮一階，眼睛點暗色（眼睛那一排一定落在冠冕底下，小尺寸時兩者只差一格）
+    const yk = Math.round(hy + 0.3 * hd), kh = Math.max(1, Math.round(0.28 * hd)), kr = 0.48 * hd;
+    const fn = Math.ceil(0.6 * hd) + 2, ye = Math.min(Math.round(hy + 0.05 * hd), yk - 1);
+    for (let x = -Math.round(0.22 * hd); x <= Math.round(0.22 * hd); x++)
+      for (let y = Math.round(hy - 0.42 * hd); y <= ye; y++)
+        paintFrom(v, x, y, fz, 0, 0, -1, fn, 1);
+    mirrorX(v, Math.max(1, Math.round(0.16 * hd)), (vv, dx) => paintFrom(vv, dx, ye, fz, 0, 0, -1, fn, 2));
+
+    // 冠冕：一圈帶窗的冠，七道光芒往外往上放射（排在前半圈，最外兩道在耳朵上方）
+    v.cyl(0, yk, fz, kr, kh, 0);
+    /* 光芒約半個頭長（實物 2.7 m）。小尺寸刻意畫細（半徑 0.55 ＝ 一格寬的斜線，支撐算斜角相鄰、不會懸空）：
+       粗到 0.75 的話七道在九格寬裡擠成一整片帽簷，正面看不出是一根一根的尖刺。 */
+    const L = Math.max(2.6, 0.58 * hd), ev = 45 * Math.PI / 180, yr = yk + kh * 0.5;
+    const Lh = L * Math.cos(ev), Lv = L * Math.sin(ev);
+    for (let i = -3; i <= 3; i++) {
+      const a = i * 30 * Math.PI / 180, ca = Math.sin(a), sa = -Math.cos(a);
+      limb(v, { x: ca * (kr - 0.3), y: yr, z: fz + sa * (kr - 0.3),
+                x1: ca * (kr + Lh), y1: yr + Lv, z1: fz + sa * (kr + Lh),
+                r: hd < 5 ? 0.55 : 0.15 * hd, r1: Math.max(0.5, 0.04 * hd), c: 0 });
+    }
+    // 冠冕正面一排小窗（光芒根部會蓋到冠冕，所以最後才點）
+    for (let x = -Math.round(kr) + 1; x < Math.round(kr); x += 2)
+      paintFrom(v, x, yk, fz, 0, 0, -1, Math.ceil(kr) + 2, 2);
+
+    // 右手（+x）高舉火炬：上臂、前臂兩段，手在頭頂右上方
+    const sh = [0.78 * hd, y0 + 5.35 * hd, 0.05 * hd];
+    const el = [1.05 * hd, y0 + 6.65 * hd, -0.02 * hd];
+    const hn = [1.16 * hd, y0 + 7.9 * hd, -0.1 * hd];
+    limb(v, { x: sh[0], y: sh[1], z: sh[2], x1: el[0], y1: el[1], z1: el[2], r: 0.32 * hd, r1: 0.22 * hd, c: 0 });
+    limb(v, { x: el[0], y: el[1], z: el[2], x1: hn[0], y1: hn[1], z1: hn[2], r: 0.22 * hd, r1: 0.19 * hd, c: 0 });
+    blob(v, hn[0], hn[1] + 0.05 * hd, hn[2], 0.22 * hd, 0.24 * hd, 0.22 * hd, 0);
+    // 火炬：柄（銅）、杯（亮面）、一圈欄杆台（暗）、細長金焰（大約一個頭高、一個頭寬的六成）
+    const tx = Math.round(hn[0]), tz = Math.round(hn[2]);
+    const yt = Math.round(hn[1] + 0.2 * hd), th0 = Math.max(1, Math.round(0.3 * hd));
+    v.cyl(tx, yt, tz, Math.max(0.6, 0.12 * hd), th0, 0);
+    const ycup = yt + th0, cuh = Math.max(1, Math.round(0.22 * hd));
+    v.taper(tx, ycup, tz, Math.max(0.7, 0.16 * hd), Math.max(1, 0.3 * hd), cuh, 1);
+    const fr = Math.max(1.5, 0.3 * hd);
+    v.cyl(tx, ycup + cuh, tz, fr + 0.4, 1, 2);
+    v.taper(tx, ycup + cuh + 1, tz, fr, 0.3, Math.max(3, Math.round(1.0 * hd)), 3);
+
+    /* 左手（−x）抱銘牌。Bartholdi 1879 年的設計專利：左臂垂靠身體、銘牌斜靠在左側髖部以上，
+       斜著擺讓字朝向觀者，左手四指橫過銘牌正面——所以板面大半朝前、只偏左一點，頂端往外斜；
+       上臂貼著身側垂下，前臂從肘往前繞到銘牌外緣。 */
+    const lsh = [-0.78 * hd, y0 + 5.3 * hd, 0.05 * hd];
+    const lel = [-1.02 * hd, y0 + 4.05 * hd, 0.12 * hd];
+    const nb = 60 * Math.PI / 180, gm = 10 * Math.PI / 180, lean = 18 * Math.PI / 180;
+    const N = [-Math.cos(nb), 0, -Math.sin(nb)];                  // 銘牌正面朝前、偏左
+    let W = [-Math.sin(lean), Math.cos(gm), Math.sin(gm)];        // 長邊：頂端往外斜、略往後靠
+    const wn = W[0] * N[0] + W[1] * N[1] + W[2] * N[2];
+    W = W.map((q, i) => q - wn * N[i]);
+    const wl = Math.sqrt(W[0] * W[0] + W[1] * W[1] + W[2] * W[2]); W = W.map(q => q / wl);
+    const U = [N[1] * W[2] - N[2] * W[1], N[2] * W[0] - N[0] * W[2], N[0] * W[1] - N[1] * W[0]];   // 板寬方向（+ 朝身體）
+    const TC = [-1.0 * hd, y0 + 4.45 * hd, -0.36 * hd];
+    const hu = 0.44 * hd, hw = 0.75 * hd, hn2 = Math.max(0.75, 0.08 * hd);
+    const ex = [0, 1, 2].map(k => Math.ceil(hu * Math.abs(U[k]) + hw * Math.abs(W[k]) + hn2 * Math.abs(N[k])) + 1);
+    for (let x = Math.round(TC[0]) - ex[0]; x <= Math.round(TC[0]) + ex[0]; x++)
+      for (let y = Math.round(TC[1]) - ex[1]; y <= Math.round(TC[1]) + ex[1]; y++)
+        for (let z = Math.round(TC[2]) - ex[2]; z <= Math.round(TC[2]) + ex[2]; z++) {
+          const dx = x - TC[0], dy = y - TC[1], dz = z - TC[2];
+          const c = dx * N[0] + dy * N[1] + dz * N[2];
+          if (c > hn2 || c < -hn2) continue;
+          const a = dx * U[0] + dy * U[1] + dz * U[2], b = dx * W[0] + dy * W[1] + dz * W[2];
+          if (Math.abs(a) > hu || Math.abs(b) > hw) continue;
+          // 亮面板身；大尺寸才描本色的邊框、刻一行字（小尺寸板子只有三格寬，描了邊就整塊變回本色、跟袍子分不開）
+          const rim = hd >= 5 && (Math.abs(a) > hu - 0.9 || Math.abs(b) > hw - 0.9);
+          v.set(x, y, z, rim ? 0 : (hd >= 5 && Math.abs(b) < 0.5 && c > 0 ? 2 : 1));
+        }
+    // 左手：銘牌外緣偏下、壓在板面前面（四指橫過正面）
+    const hk = [-0.75 * hu, -0.25 * hw, hn2 + 0.4];
+    const lhn = [0, 1, 2].map(k => TC[k] + U[k] * hk[0] + W[k] * hk[1] + N[k] * hk[2]);
+    limb(v, { x: lsh[0], y: lsh[1], z: lsh[2], x1: lel[0], y1: lel[1], z1: lel[2], r: 0.28 * hd, r1: 0.22 * hd, c: 0 });
+    limb(v, { x: lel[0], y: lel[1], z: lel[2], x1: lhn[0], y1: lhn[1], z1: lhn[2], r: 0.22 * hd, r1: 0.19 * hd, c: 0 });
   } },
 { n: '倫敦大笨鐘', lo: 2, hi: 18, pal: [0xcfc3a5, 0x7d6f5c, 0x2d3a45, 0xf5f6f8, 0x1b324f, 0xd9a838],
   /* 來源：blueprints/大笨鐘.js（v1.66 換掉原本那份） */
@@ -1666,174 +1803,302 @@ const SHAPES = [
     v.box(0, tipY, 0, 1, 2, 1, 5);
     v.box(0, tipY + 1, 0, 3, 1, 1, 5);
   } },
-{ n: '泰姬瑪哈陵', lo: 2.2, hi: 15.5,
-  // v1.257.0 只調色、格子一格都沒動（見 開發筆記〈舊版 21 座重畫、偏白的 5 座調色〉）
-  // 泰姬瑪哈陵：使用者交的那一份，造型一格都不動（格子集合跟舊版完全一樣），只重新上色
-  // 正面：紅砂岩大台基上一座方殿，四面正中一個高起的拱門框，頂上一顆大洋蔥穹頂，四角四根細高宣禮塔
-  // 側面：跟正面一樣（四面對稱）
-  // 三樣識別物：飽滿的白色洋蔥穹頂＋金色尖頂、四根獨立的宣禮塔、拱門框裡深深凹進去的大拱龕
-  // 部件（照舊）：紅砂岩台基 大理石次台基 方殿四牆 切角 四面門框 伊萬拱龕 雙層小拱龕 屋頂平台
-  //              四角小尖塔 鼓座 洋蔥穹頂 金色尖頂 四座涼亭 四根宣禮塔（三段＋兩層陽台＋頂亭） 台階
-  // 上色：大理石從近白改成偏暖的象牙白；屋頂平台、次台基、陽台、拱框邊深一階；
-  //       穹頂與小圓頂用亮一階的大理石（全座最亮的就是穹頂）；拱門框加一圈黑色書法帶（新增，只 tint）；
-  //       紅砂岩台基照舊；尖頂與宣禮塔頂的金色亮一點。
-  /* 來源：blueprints/泰姬瑪哈陵.js（v1.114 換掉原本那份）。dim 的下限一律乘 0.7（17 處）：
-     原稿最小 2492 塊，面板的 1800 按下去等於沒反應（跟 v1.66 的新天鵝堡、帕德嫩同一個修法，
-     下限撐著的時候調 lo 沒用）。3000／9000 那兩檔一格都沒動 */
-  pal: [0xcfc3aa,   // 0 牆、宣禮塔身、涼亭柱（偏暖的象牙白大理石）
-        0xa39680,   // 1 次台基、屋頂平台、拱框邊、陽台、涼亭簷（深一階）
-        0x9a4436,   // 2 紅砂岩台基、宣禮塔座、台階
-        0x25282e,   // 3 拱龕深處、小拱龕、拱門框的黑色書法帶
-        0xd4a73a,   // 4 金色尖頂、四角小尖塔、宣禮塔頂
-        0xe8e2d6],  // 5 穹頂：中央洋蔥大穹頂、涼亭與宣禮塔的小圓頂（亮一階）
+{ n: '泰姬瑪哈陵', lo: 1.5, hi: 7.2,
+  // v1.285.0 整座重畫（見 開發筆記〈還很粗糙的七座重畫〉）
+  // 泰姬瑪哈陵（整座重畫）
+  // 正面（−z）：紅砂岩平台上一座寬而矮的白色大理石台基，正中一座切角方殿，
+  //   殿身正中一個比兩側高的長方形框（pishtaq）、框裡一道深凹的尖拱（iwan），兩側與斜切角各上下兩層小拱龕；
+  //   殿頂鼓座上一顆先鼓出再收尖的洋蔥圓頂＋金色尖飾，四周四座小圓頂涼亭；台基四角四根細高的宣禮塔。
+  // 側面：跟正面一樣（四面對稱）。全高（含尖飾）約台基寬的 0.77，宣禮塔頂齊圓頂下半、比 pishtaq 高一截。
+  // 三樣識別物：白色洋蔥大圓頂＋金色尖飾、台基四角四根三段（兩圈陽台＋頂上小涼亭）的宣禮塔、
+  //   pishtaq 框＋黑色書法帶裡深凹的尖拱門
+  // 部件：紅砂岩平台 大理石台基（盲拱廊、壓頂線、正面嵌入的台階） 主殿八邊形殼（勒腳線、簷口線）
+  //   四面 pishtaq（倒 U 書法帶、頂上壓頂） 伊萬尖拱（側壁、拱頂內面、門＋門楣＋上層格窗） 兩側上下兩層小拱龕
+  //   切角面上下兩層小拱龕 屋頂與女兒牆 小尖塔 guldasta（pishtaq 兩角＋八個轉角） 鼓座（盲拱、頂線）
+  //   洋蔥圓頂（雜湊深淺） 金色尖飾（直桿＋新月） 四座屋頂涼亭（底座、四柱、出簷、小洋蔥頂、金頂）
+  //   四根宣禮塔（八角座、三段塔身、兩圈陽台、頂層陽台、涼亭四柱、出簷、小圓頂、金頂）
+  /* 尺寸照實物換算，s 大約是「每 10 m 幾格」：台基 95 m、高 7 m；主殿 57 m 見方、切角 9 m、
+     牆高 26 m、pishtaq 33 m（寬 21 m）；圓頂最寬半徑約 12 m（取 13）、高約 25 m（取 27.5）、鼓座比圓頂細兩成；
+     尖飾 9.6 m；宣禮塔 40 m、直徑 6.2 m。圓頂放大一成是為了 3000 那檔：照實物的話圓頂只從 pishtaq 後面冒出
+     一個尖，跟涼亭、小尖塔疊成一座階梯金字塔，看不出是洋蔥頂（全高因此約 80 m，實物 73 m）。
+     佔地刻意只到台基＋四座塔：e2e〈整地推土機〉拿這一座 1200 塊當工地（半徑要 ≤ 16）。 */
+  pal: [0xd9d0c0,   // 0 大理石本色（偏暖的白）
+        0xbdb19d,   // 1 大理石暗一階：雜湊撒的深淺、勒腳線、簷口、壓頂、陽台、出簷
+        0x8e8576,   // 2 陰影灰：拱龕裡面、伊萬側壁、台基盲拱
+        0x2b2a2f,   // 3 深色鑲嵌：書法帶、伊萬深處的門與格窗
+        0xcfa23e,   // 4 金色尖飾
+        0x9b4a38,   // 5 紅砂岩平台
+        0xe6e0d4],  // 6 圓頂亮面大理石（全座最亮的是圓頂）
   gen(v, s) {
-    // 1. 關鍵比例係數
-    const baseW = dim(s, 4.6, 15, true);   // 紅砂岩大基座寬度（奇數，確保四塔有足夠空間）
-    const baseH = dim(s, 0.45, 1);         // 紅砂岩基座高度
-    const plinthW = dim(s, 3.4, 11, true); // 大理石次基座寬度
-    const mainW = dim(s, 2.5, 8, true);   // 陵墓主體寬度（奇數）
-    const mainH = dim(s, 1.8, 5);          // 陵墓主牆高
-    const minarOff = Math.round((baseW - 1) / 2) - 2; // 宣禮塔中心偏移
-    const minarH = dim(s, 3.8, 10);        // 宣禮塔高度（高聳修長）
+    const H = (x, y, z) => (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) % 100;
+    const mar = (x, y, z) => (H(x, y, z) < 30 ? 1 : 0);       // 大理石：三成暗一階，遠看才不是一片白
+    /* 四心尖拱：半跨 a，兩個圓心各往內 0.4a、半徑 1.4a。drop 是離中線 d 的那一欄比拱心矮多少，
+       inArch 判斷 (d, ly) 落不落在「總高 hn、底在 ly = 0」的拱形開口裡。 */
+    const drop = (d, a) => 1.34 * a - Math.sqrt(Math.max(0, 1.96 * a * a - (Math.abs(d) + 0.4 * a) ** 2));
+    const inArch = (d, ly, a, hn) => Math.abs(d) < a && ly >= 0 && ly < hn - drop(d, a);
 
-    // 2. 基座層：紅砂岩大台基 + 白色大理石高台基
-    v.box(0, 0, 0, baseW, baseH, baseW, 2);
-    v.box(0, baseH, 0, plinthW, 1, plinthW, 1);
+    // ── 尺寸 ─────────────────────────────────────────────
+    const P = dim(s, 9.5, 13, true), hP = (P - 1) / 2;      // 大理石台基 95 m 見方
+    const PH = dim(s, 0.7, 2);                              // 台基高 7 m
+    const RB = dim(s, 0.3, 1);                              // 紅砂岩平台露在台基外的寬（真的平台大得多，只露一圈）
+    const TW = dim(s, 5.7, 9, true), hT = (TW - 1) / 2;     // 主殿 57 m
+    const C = dim(s, 0.9, 2);                               // 四角斜切 9 m
+    const K = 2 * hT - C;                                   // |x|+|z| ≤ K 就是切掉角的正方形
+    const TH = dim(s, 2.6, 5);                              // 主殿牆高 26 m（到屋頂）
+    const PQ = Math.max(TH + 1, dim(s, 3.3, 6));            // pishtaq 33 m，一定比兩側高
+    const PW = dim(s, 2.1, 5, true), ph = (PW - 1) / 2;     // pishtaq 寬 21 m
+    /* 書法帶是一個倒 U 字框住拱口。小尺寸只畫上面一橫的話，正面看是拱門上方一條黑縫（像一扇窗，第一版踩過），
+       所以一律畫成倒 U：pishtaq 窄的時候就貼著 pishtaq 外緣畫（mg = 0），拱口寬度從框往內留一格白反推。
+       真的拱口約佔 pishtaq 寬的六成，9000 那檔對得上；小尺寸拱口窄一點，換框看得出來。 */
+    const mg = ph >= 7 ? 1 : 0;                             // 書法帶離 pishtaq 外緣幾格
+    const IW = Math.max(1, 2 * (ph - mg - 2) + 1), ia = IW / 2;     // 伊萬拱口寬
+    const topBand = PQ - 2;                                 // 書法帶上橫那一層（再上面一層是壓頂）
+    const apexH = Math.min(TH - 1, topBand - 1, dim(s, 2.45, 3));   // 伊萬拱心高（離書法帶至少一格）
+    const D = dim(s, 0.55, 1);                              // 伊萬凹進去幾格
+    /* 小尺寸（3000 以下，s < 4）另外一套：圓頂相對放大、鼓座收細、腰部幾層等寬，省掉 pishtaq 與轉角的小尖塔，
+       宣禮塔改成十字斷面的細柱。格子少的時候照實物比例，圓頂是一座階梯尖錐、塔是一疊盤子（看過四視圖才改的）。
+       門檻 4 落在 3000（s≈2.9）與 9000（s≈5.3）之間，9000 那檔一格都不受影響。 */
+    const sm = s < 4;
+    const yT = PH + 1;                                      // 主殿底層
+    const yRoof = yT + TH - 1, yR = yT + TH;                // 屋頂那一層、屋頂上第一層
 
-    // 3. 陵墓主體（八角切角大理石殿堂）
-    const bodyY = baseH + 1;
-    v.walls(0, bodyY, 0, mainW, mainH, mainW, 0, 1);
+    // ── 1. 紅砂岩平台：台基外一圈＋台基牆腳底下（台基是空心的，裡面不鋪），四角跟著斜切（佔地半徑不比台基角大） ──
+    for (let x = -hP - RB; x <= hP + RB; x++) for (let z = -hP - RB; z <= hP + RB; z++)
+      if (Math.max(Math.abs(x), Math.abs(z)) >= hP && Math.abs(x) + Math.abs(z) <= 2 * hP) v.set(x, 0, z, 5);
 
-    // 四角切角厚實化
-    const cornerD = (mainW - 1) / 2;
-    corners4(v, cornerD, cornerD, (vv, x, z) => {
-      vv.box(x, bodyY, z, 2, mainH, 2, 0);
-    });
-
-    // 4. 四面中央突出的門廳（Pishtaq 門框高出屋頂）與伊萬大拱門（Iwan）
-    const portalW = dim(s, 1.1, 4, true);
-    const portalH = mainH + 1; // 門框略高出屋脊，呈現經典伊斯蘭正立面
-    const archW = dim(s, 0.7, 2, true);
-    const archH = dim(s, 0.9, 3);
-
-    // 正背面 (±z)
-    mirrorZ(v, cornerD, (vv, dz) => {
-      const zIn = dz > 0 ? dz - 1 : dz + 1;
-      // 凸出的白色外框
-      vv.box(0, bodyY, dz, portalW, portalH, 1, 0);
-      // 中央深凹拱門
-      arch(vv, 0, bodyY, dz, archW, archH, 1, 1);
-      vv.box(0, bodyY, zIn, archW - 2, archH + 1, 1, 3);
-      // 左右兩側的上下雙層小拱龕（Pishtaq 側翼特徵）
-      const sideOff = Math.round((mainW - 1) / 2 - 1);
-      if (sideOff > (portalW - 1) / 2) {
-        mirrorX(vv, sideOff, (vvv, sx) => {
-          vvv.box(sx, bodyY + 1, dz, 1, 2, 1, 3);
-          vvv.box(sx, bodyY + mainH - 3, dz, 1, 2, 1, 3);
-        });
-      }
-    });
-
-    // 左右側面 (±x)
-    mirrorX(v, cornerD, (vv, dx) => {
-      const xIn = dx > 0 ? dx - 1 : dx + 1;
-      vv.box(dx, bodyY, 0, 1, portalH, portalW, 0);
-      vv.carve(dx, bodyY, 0, 1, archH, archW);
-      vv.carve(dx, bodyY + archH, 0, 1, 1, Math.max(1, archW - 2));
-      vv.box(xIn, bodyY, 0, 1, archH + 1, archW - 2, 3);
-      const sideOff = Math.round((mainW - 1) / 2 - 1);
-      if (sideOff > (portalW - 1) / 2) {
-        mirrorZ(vv, sideOff, (vvv, sz) => {
-          vvv.box(dx, bodyY + 1, sz, 1, 2, 1, 3);
-          vvv.box(dx, bodyY + mainH - 3, sz, 1, 2, 1, 3);
-        });
-      }
-    });
-
-    /* 4b.（新增，只上色）拱門框的黑色書法帶：門框最外那一圈，兩側往下、頂上一橫。
-       門框只比拱寬一格（1800／3000 那兩檔）的時候，兩側那一欄就是拱邊，塗黑會跟拱洞黏成一片，
-       所以那時只畫頂上一橫；門框比拱寬兩格以上才畫成倒 U。全部走 tint，牆不在就不畫。 */
-    {
-      const ph = (portalW - 1) / 2, top = bodyY + mainH - 1;
-      const sides = (portalW - archW) / 2 >= 2;
-      for (const f of [cornerD, -cornerD]) {
-        for (let a = -ph; a <= ph; a++) { tint(v, a, top, f, 3); tint(v, f, top, a, 3); }
-        if (sides) for (let y = bodyY; y < top; y++) for (const a of [ph, -ph]) {
-          tint(v, a, y, f, 3); tint(v, f, y, a, 3);
+    // ── 2. 大理石台基：中空的四面牆＋頂面；主殿正下方被殿身蓋住，不鋪 ──
+    const inO = (x, z) => Math.abs(x) <= hT && Math.abs(z) <= hT && Math.abs(x) + Math.abs(z) <= K;
+    const hide = D + 2;                                     // 伊萬地板要留著，往內縮幾格才開始省
+    /* 宣禮塔塔身半徑分三檔，不跟著 s 連續長：r + 0.35 落在 1.0～1.41 是十字形（5 格）、2.0～2.24 是
+       「3×3 加四個尖」，塔身與陽台一疊就是一串十字，看起來刺刺的（第二版踩過）。
+       所以只用十字（最小那檔）、3×3、5 寬圓三種塔身，陽台一律比塔身大一圈圓。 */
+    const rm = sm ? 0.75 : s < 6.2 ? 1.1 : 1.95;            // 真的直徑 6.2 m：9000 是 3 格寬；小尺寸用十字斷面才細
+    const rBal = rm + 0.85, rPed = rBal;                    // 陽台、八角座（台基角上那一塊不開盲拱）
+    const cornerU = hP - Math.floor(rPed + 0.35) * 2 - 1;
+    const SW = dim(s, 0.6, 3, true), sw = (SW - 1) / 2;     // 正面嵌進台基的台階寬
+    const pa = Math.max(2, Math.round(s * 0.7));            // 台基盲拱的間距
+    for (let y = 1; y <= PH; y++)
+      for (let x = -hP; x <= hP; x++) for (let z = -hP; z <= hP; z++) {
+        const ax = Math.abs(x), az = Math.abs(z), edge = ax === hP || az === hP;
+        if (!edge && y < PH) { z = hP - 1; continue; }      // 中間只有頂面那一層：直接跳到這一排的尾巴
+        if (!edge && ax <= hT - hide && az <= hT - hide && ax + az <= K - hide) continue;
+        // 台基頂面是大片地坪：暗一階只撒一成五（三成的話俯視是一片椒鹽）
+        let c = y === PH ? (edge ? 1 : H(x, y, z) < 15 ? 1 : 0) : mar(x, y, z);
+        if (edge && y < PH) {
+          // 盲拱廊：沿著台基四面一排淺色凹龕（角上宣禮塔那一段、正面台階那一段不開）
+          const u = az === hP ? x : z, au = Math.abs(u);
+          const m = ((u + 1000 * pa) % pa + pa) % pa;
+          const top = PH >= 3 && y === PH - 1;                 // 高的台基：最上一排只留拱心，拱頂才是尖的
+          if (au <= cornerU && !(z === -hP && au <= sw + 1) && m !== 0 &&
+              (!top || (pa >= 4 && m !== 1 && m !== pa - 1))) c = 2;
         }
+        v.set(x, y, z, c);
+      }
+    // 正面台階：嵌進台基正面，從平台一階一階爬到台基頂
+    v.carve(0, 1, -hP + (PH - 1) / 2, SW, PH, PH);
+    stairs(v, 0, 1, -hP, PH, SW, 'z', 1);
+    mirrorX(v, sw + 1, (vv, dx) => vv.box(dx, 1, -hP + (PH - 1) / 2, 1, PH, PH, 1));
+
+    // ── 3. 主殿：切角正方形的殼，一層一層蓋、一邊蓋一邊挑色 ──
+    /* 外殼取「八鄰居有一格在外面」：斜切那一面是階梯形，只取四鄰居的話相鄰兩格只有角碰角，
+       看得穿到殿裡面。這樣斜面是兩格厚的階梯，從哪個角度看都密。 */
+    const ring = [];
+    for (let x = -hT; x <= hT; x++) for (let z = -hT; z <= hT; z++) {
+      if (!inO(x, z)) continue;
+      let edge = false;
+      for (let i = -1; i <= 1 && !edge; i++) for (let k = -1; k <= 1; k++) if (!inO(x + i, z + k)) { edge = true; break; }
+      if (!edge) continue;
+      const ax = Math.abs(x), az = Math.abs(z);
+      const u = az === hT && ax <= hT - C ? x : ax === hT && az <= hT - C ? z : null;   // 主立面上的橫向座標
+      const nx = u === null ? 0 : az === hT ? 0 : -Math.sign(x), nz = u === null ? 0 : az === hT ? -Math.sign(z) : 0;
+      ring.push([x, z, u, (ax - az) / 2, ax + az, nx, nz]);
+    }
+    // 兩側開間與切角面：上下兩層小尖拱龕（下層高一點）
+    const bw = hT - C - ph, ucB = ph + (bw + 1) / 2;
+    const aB = bw >= 3 ? (bw - 1) / 2 : 0.6, aD = C >= 3 ? C / 2 - 0.5 : 0.5;
+    const avail = TH - 3, hl = Math.max(1, Math.round(avail * 0.55)), hu = avail - hl;
+    const niche = (d, ly, a) => inArch(d, ly - 1, a, hl) || (hu > 0 && inArch(d, ly - hl - 2, a, hu));
+    const band = (u, ly) => {
+      const au = Math.abs(u), b = ph - mg;
+      return (ly === topBand && au <= b) || (au === b && ly >= 1 && ly < topBand);
+    };
+    const backs = [], seals = [];
+    for (let ly = 0; ly < TH; ly++) {
+      const y = yT + ly;
+      for (const [x, z, u, t, sm, nx, nz] of ring) {
+        let c = ly === 0 || ly === TH - 1 ? 1 : mar(x, y, z);       // 勒腳線、簷口線
+        if (u !== null) {
+          const au = Math.abs(u);
+          if (au <= ph && inArch(u, ly, ia, apexH)) continue;         // 伊萬拱口，凹進去的部分後面補
+          if (au > ph && niche(au - ucB, ly, aB)) { backs.push([x, y, z, nx, nz]); continue; }
+          if (au <= ph && band(u, ly)) c = 3;
+        } else if (niche(t, ly, aD)) {                                 // 切角面的拱龕：外面那排挖掉、裡面那排當龕底
+          if (sm === K) continue;
+          c = 2;
+          seals.push([x, y, z]);
+        }
+        v.set(x, y, z, c);
+      }
+    }
+    for (let x = -hT + 1; x < hT; x++) for (let z = -hT + 1; z < hT; z++)    // 屋頂
+      if (inO(x, z) && !v.has(x, yRoof, z)) v.set(x, yRoof, z, mar(x, yRoof, z));
+    // 小拱龕的龕底：往殿內退一格，連上下左右一起補（斜著看才不會從縫裡看到殿裡面）
+    for (const [x, y, z, nx, nz] of backs)
+      for (let j = -1; j <= 1; j++) for (let dy = -1; dy <= 1; dy++) {
+        const bx = x + nx + (nz !== 0 ? j : 0), bz = z + nz + (nx !== 0 ? j : 0);
+        if (!v.has(bx, y + dy, bz)) v.set(bx, y + dy, bz, 2);
+      }
+    for (const [x, y, z] of seals) {
+      const sx = Math.sign(x), sz = Math.sign(z);
+      if (!v.has(x - sx, y, z)) v.set(x - sx, y, z, 2);
+      if (!v.has(x, y, z - sz)) v.set(x, y, z - sz, 2);
+    }
+
+    // ── 4. 四面 pishtaq 與伊萬 ──
+    const faceXZ = (f, u, k) => f === 0 ? [u, -hT + k] : f === 1 ? [hT - k, u] : f === 2 ? [-u, hT - k] : [-hT + k, -u];
+    const doorH = Math.max(1, Math.round(apexH * 0.4)), doorW = Math.max(0, (IW - 1) / 2 - 1);
+    const backC = (u, ly) => {
+      if (ia < 2) return 3;                                                // 窄的拱口整片深色，才看得出是開口
+      if (ly < doorH) return Math.abs(u) <= doorW ? 3 : 2;                  // 下層：門
+      if (ly === doorH) return 2;                                          // 門楣
+      if (inArch(u, ly - doorH - 1, ia - 1, apexH - doorH - 2))            // 上層：格窗（大的才排格子）
+        return ia >= 3 && ((u + ly) & 1) ? 2 : 3;
+      return 2;                                                            // 半穹頂內面
+    };
+    // 伊萬的形狀四面都一樣，先算一次：1 是拱口裡、2 是貼著拱口的一圈（側壁與拱頂內面）
+    const iwan = [];
+    for (let u = -ph; u <= ph; u++) for (let ly = 0; ly < TH - 1; ly++) {
+      if (inArch(u, ly, ia, apexH)) { iwan.push([u, ly, 1]); continue; }
+      let near = false;
+      for (let du = -1; du <= 1 && !near; du++) for (let dl = -1; dl <= 1; dl++) if (inArch(u + du, ly + dl, ia, apexH)) { near = true; break; }
+      if (near) iwan.push([u, ly, 2]);
+    }
+    for (let f = 0; f < 4; f++) {
+      // pishtaq 冒出屋頂那一截：兩格厚，頂上一層壓頂
+      for (let u = -ph; u <= ph; u++) for (let ly = TH; ly < PQ; ly++) for (let k = 0; k <= 1; k++) {
+        const [x, z] = faceXZ(f, u, k), y = yT + ly;
+        v.set(x, y, z, ly === PQ - 1 ? 1 : k === 0 && band(u, ly) ? 3 : mar(x, y, z));
+      }
+      // 伊萬：拱口往裡退 D 格，側壁與拱頂內面是陰影灰，最裡面是門＋格窗
+      for (const [u, ly, m] of iwan)
+        for (let k = 1; k <= D; k++) {
+          const [x, z] = faceXZ(f, u, k);
+          if (k < D && m === 2) v.set(x, yT + ly, z, 2);
+          if (k === D) v.set(x, yT + ly, z, m === 1 ? backC(u, ly) : 2);
+        }
+    }
+
+    // ── 5. 屋頂女兒牆與小尖塔 guldasta ──
+    for (const [x, z] of ring) if (!v.has(x, yR, z)) v.set(x, yR, z, 1);
+    const gH = dim(s, 0.35, 1);
+    if (!sm) {                                                           // 小尺寸不做：一格一根，只會把天際線弄雜、擋住圓頂
+      for (let f = 0; f < 4; f++) for (const u of [-ph, ph]) {           // pishtaq 兩角冒出頂的細柱
+        const [x, z] = faceXZ(f, u, 0);
+        v.box(x, yT + PQ, z, 1, gH, 1, 1);
+        v.set(x, yT + PQ + gH, z, 6);
+      }
+      corners4(v, hT - C, hT, (vv, x, z) => { vv.box(x, yR + 1, z, 1, gH, 1, 1); vv.set(x, yR + 1 + gH, z, 6); });
+      corners4(v, hT, hT - C, (vv, x, z) => { vv.box(x, yR + 1, z, 1, gH, 1, 1); vv.set(x, yR + 1 + gH, z, 6); });
+    }
+
+    // ── 6. 鼓座：一圈中空圓柱，比 pishtaq 頂高出一截；一圈盲拱、頂上一圈線腳 ──
+    const BR = s * (sm ? 1.5 : 1.3);                        // 圓頂最寬的半徑（真的約 12 m，放大一成；小尺寸放大兩成半，見檔頭）
+    const DR = Math.max(1.6, BR * (sm ? 0.58 : 0.78));      // 鼓座比圓頂細一圈：圓頂往外鼓出去，才是洋蔥（小的要細兩格才看得出）
+    const DH = (PQ - TH) + dim(s, 0.25, 1) + (sm ? 1 : 0);  // 小尺寸多露一層細鼓座，正面才看得到「頸子細、上面鼓出去」
+    const nA = Math.max(8, Math.round(DR * 2.4) * 2);
+    for (let j = 0; j < DH; j++) {
+      const y = yR + j, n = Math.ceil(DR + 0.5);
+      for (let x = -n; x <= n; x++) for (let z = -n; z <= n; z++) {
+        const d = Math.hypot(x, z);
+        if (d > DR + 0.35 || d < DR - 1.2) continue;
+        let c = j === DH - 1 ? 1 : mar(x, y, z);
+        if (DH >= 4 && j >= 1 && j < DH - 1) {
+          const q = ((Math.atan2(z, x) / (Math.PI * 2) + 1) * nA) % 1;
+          if (Math.abs(q - 0.5) < (j === DH - 2 ? 0.12 : 0.26)) c = 2;
+        }
+        v.set(x, y, z, c);
       }
     }
 
-    // 5. 屋頂平台與四角小細尖塔（Guldastas）
-    const roofY = bodyY + mainH;
-    v.box(0, roofY, 0, mainW, 1, mainW, 1);
-    corners4(v, cornerD, cornerD, (vv, gx, gz) => {
-      vv.box(gx, roofY + 1, gz, 1, dim(s, 0.45, 1), 1, 4);
+    /* ── 7. 洋蔥圓頂：剖面先鼓出（最寬在 3 成高）、上半段照圓球收，到最上面一成才收成尖；
+       一層一層的殼，內徑取上下兩層較小的那個，殼才接得起來（舊版用 onion 的 0.6 殼，坑坑疤疤就是這樣來的） ── */
+    /* 小尺寸的剖面：底口收得更細、最寬那段拉長（3000 那檔腰部四層等寬），收尖留到最後三層——
+       照大尺寸那條收的話 8 層裡只有兩層是最寬的，看起來是尖錐不是球。 */
+    const PROF = sm
+      ? [[0.6, 0], [0.86, 0.1], [1, 0.24], [1, 0.46], [0.92, 0.6], [0.74, 0.72], [0.5, 0.82], [0.26, 0.91], [0.05, 1]]
+      : [[0.80, 0], [0.94, 0.09], [1, 0.25], [0.98, 0.42], [0.92, 0.56], [0.8, 0.68],
+         [0.62, 0.77], [0.43, 0.84], [0.25, 0.91], [0.12, 0.96], [0.04, 1]];
+    const rAt = t => {
+      let i = 0;
+      while (i + 2 < PROF.length && t > PROF[i + 1][1]) i++;
+      const a = PROF[i], b = PROF[i + 1];
+      return a[0] + (b[0] - a[0]) * Math.min(1, Math.max(0, (t - a[1]) / (b[1] - a[1])));
+    };
+    const bulb = (x0, y0, z0, R, BH, cf) => {
+      for (let j = 0; j < BH; j++) {
+        const T = j2 => R * rAt(BH > 1 ? j2 / (BH - 1) : 0);
+        const r = T(j), ri = Math.min(r, j > 0 ? T(j - 1) : r, j < BH - 1 ? T(j + 1) : 0) - 1.1;
+        const n = Math.ceil(r + 0.35);
+        for (let x = -n; x <= n; x++) for (let z = -n; z <= n; z++) {
+          const d = Math.hypot(x, z);
+          if (d > r + 0.35 || d < ri) continue;
+          v.set(x0 + x, y0 + j, z0 + z, cf(x0 + x, y0 + j, z0 + z));
+        }
+      }
+    };
+    const BH = dim(s, 2.75, 4), yB = yR + DH;
+    bulb(0, yB, 0, BR, BH, (x, y, z) => (H(x, y, z) < 22 ? 0 : 6));
+    /* 金色尖飾：一根直桿，大的才有頂上往上翹的新月（正面看是一個 Y）。真的桿上有幾顆寶珠，
+       但一格粗的桿子上任何一圈加寬，正面看都是「十」字或劍柄，整座變成教堂（前三版都踩過），所以不做。 */
+    const FH = dim(s, 0.95, 2), yF = yB + BH;
+    v.box(0, yF, 0, 1, FH, 1, 4);
+    if (FH >= 5) {                                           // 新月：碗＋往上翹的兩個尖
+      const yc = yF + FH - 1;
+      v.del(0, yc, 0); v.set(-1, yc - 1, 0, 4); v.set(1, yc - 1, 0, 4); v.set(-1, yc, 0, 4); v.set(1, yc, 0, 4);
+    }
+
+    // ── 8. 屋頂四座涼亭 chattri：底座、柱、出簷、小圓頂、金頂 ──
+    /* 涼亭頂（金頂）齊大圓頂的下三成：真的約高 14 m，比這個高的話跟小尖塔、圓頂疊成一座階梯金字塔 */
+    const cc = Math.round(s * 1.8), rc = Math.max(1, s * 0.42), cpH = dim(s, 0.35, 1);
+    corners4(v, cc, cc, (vv, cx, cz) => {
+      vv.cyl(cx, yR, cz, rc, 1, 1);
+      // 四根柱子之間留空：真的是八根細柱，但格子上八根挨在一起就是一圈實牆，看不出是涼亭
+      const pp = Math.max(1, Math.round(rc * 0.55));
+      corners4(vv, pp, pp, (w, px, pz) => w.box(cx + px, yR + 1, cz + pz, 1, cpH, 1, 0));
+      vv.cyl(cx, yR + 1 + cpH, cz, rc + (rc >= 2 ? 0.5 : 0), 1, 1);
+      const cbH = dim(s, 0.75, 2);
+      bulb(cx, yR + 2 + cpH, cz, rc * 1.05, cbH, () => 6);
+      vv.set(cx, yR + 2 + cpH + cbH, cz, 4);
     });
 
-    // 6. 中央巨大球形洋蔥大穹頂（圓柱高鼓座 + 飽滿球形洋蔥 + 金色長尖頂）
-    const drumR = dim(s, 0.75, 2);
-    const drumH = dim(s, 0.5, 1);
-    const domeR = drumR + 1.2;
-    const domeH = dim(s, 2.0, 5);
-
-    // 圓柱形鼓座
-    v.cyl(0, roofY + 1, 0, drumR, drumH, 0, 1);
-    v.cyl(0, roofY + drumH, 0, drumR + 0.5, 1, 1);
-    // 巨大球形洋蔥頂
-    v.onion(0, roofY + 1 + drumH, 0, domeR, domeH, 5);          // 舊：0
-    // 金色長尖頂飾（蓮花托座 + 新月長針）
-    const finialY = roofY + 1 + drumH + domeH;
-    const finialH = dim(s, 0.7, 2);
-    v.box(0, finialY, 0, 1, finialH, 1, 4);
-    v.box(0, finialY + 1, 0, 3, 1, 1, 4);
-
-    // 7. 四座角部八角涼亭（Chattris，獨立架空圓頂亭）
-    const chatOff = Math.round(mainW * 0.36);
-    const chatR = Math.max(1.1, s * 0.16);
-    const chatH = dim(s, 0.4, 1);
-    corners4(v, chatOff, chatOff, (vv, cx, cz) => {
-      // 涼亭基座與四柱架空
-      vv.box(cx, roofY + 1, cz, 3, 1, 3, 1);
-      vv.box(cx - 1, roofY + 2, cz - 1, 1, chatH, 1, 0);
-      vv.box(cx + 1, roofY + 2, cz - 1, 1, chatH, 1, 0);
-      vv.box(cx - 1, roofY + 2, cz + 1, 1, chatH, 1, 0);
-      vv.box(cx + 1, roofY + 2, cz + 1, 1, chatH, 1, 0);
-      // 涼亭簷口與小圓頂
-      const chatCapY = roofY + 2 + chatH;
-      vv.box(cx, chatCapY, cz, 3, 1, 3, 1);
-      vv.dome(cx, chatCapY + 1, cz, chatR, 5, 0.9);
-      vv.box(cx, chatCapY + 1 + Math.round(chatR), cz, 1, 1, 1, 4);
+    // ── 9. 宣禮塔：八角座、三段塔身（兩圈陽台）、頂層陽台、涼亭（柱、出簷、小圓頂、金頂） ──
+    /* 3000 那檔整根塔只有 12 格高：八角座、三圈陽台、出簷全做成比塔身寬的盤子，就是一疊碟子（第二版踩過），
+       所以小的時候八角座跟塔身一樣粗（只換深一階的色）、頂上不做出簷，比塔身寬的只剩三圈陽台。 */
+    const mo = hP - Math.floor(rPed + 0.35);
+    const MH = dim(s, 4.0, 8);
+    const pedH = dim(s, 0.2, 1);
+    const mpH = s >= 3 ? dim(s, 0.3, 1) : 0, mEave = s >= 4 ? 1 : 0, mdH = dim(s, 0.3, 1), mfH = 1;
+    const b3 = MH - (mpH + mEave + mdH + mfH) - 1;
+    const b1 = Math.max(pedH + 1, Math.round(pedH + (b3 - pedH) * 0.34)), b2 = Math.max(b1 + 2, Math.round(pedH + (b3 - pedH) * 0.67));
+    corners4(v, mo, mo, (vv, mx, mz) => {
+      const y0 = yT;
+      vv.cyl(mx, y0, mz, s >= 4 ? rPed : rm, pedH, 1);                       // 八角座
+      for (let j = pedH; j < b3; j++) {                                      // 塔身（收分在格子上看不出來，不收）
+        const n = Math.ceil(rm + 0.35), y = y0 + j;
+        for (let x = -n; x <= n; x++) for (let z = -n; z <= n; z++)
+          if (Math.hypot(x, z) <= rm + 0.35) vv.set(mx + x, y, mz + z, mar(mx + x, y, mz + z));
+      }
+      // 兩圈陽台＋頂層陽台：只有一層薄薄的一圈（下面再墊托架就變成一串線軸，第二版踩過）
+      for (const b of [b1, b2, b3]) vv.cyl(mx, y0 + b, mz, rBal, 1, 1);
+      let y = y0 + b3 + 1;
+      if (mpH) {                                                             // 頂上涼亭：四根柱、出簷、小圓頂
+        corners4(vv, 1, 1, (w, px, pz) => w.box(mx + px, y, mz + pz, 1, mpH, 1, 0));
+        y += mpH;
+      }
+      if (mEave) { vv.cyl(mx, y, mz, rBal, 1, 1); y += 1; }
+      bulb(mx, y, mz, Math.max(sm ? 1.3 : 0.9, rm * 1.05), mdH, () => 6);   // 小尺寸的剖面底口細，半徑要給夠才不會只剩一格
+      vv.box(mx, y + mdH, mz, 1, mfH, 1, 4);
     });
-
-    // 8. 四角高聳獨立宣禮塔（三段漸縮 + 雙層外挑環形陽台 + 頂部涼亭頂）
-    const minarR = Math.max(0.9, s * 0.11);
-    corners4(v, minarOff, minarOff, (vv, mx, mz) => {
-      // 八角形底座
-      vv.box(mx, 0, mz, 3, baseH + 1, 3, 2);
-      // 塔身第一段
-      const seg1 = Math.round(minarH * 0.36);
-      vv.taper(mx, baseH + 1, mz, minarR + 0.4, minarR + 0.25, seg1, 0);
-      vv.cyl(mx, baseH + 1 + seg1, mz, minarR + 0.7, 1, 1); // 第一層陽台
-      // 塔身第二段
-      const seg2 = Math.round(minarH * 0.33);
-      vv.taper(mx, baseH + 1 + seg1 + 1, mz, minarR + 0.25, minarR + 0.1, seg2, 0);
-      vv.cyl(mx, baseH + 1 + seg1 + 1 + seg2, mz, minarR + 0.6, 1, 1); // 第二層陽台
-      // 塔身第三段
-      const seg3 = Math.max(2, minarH - seg1 - seg2 - 2);
-      const seg3Y = baseH + 1 + seg1 + 1 + seg2 + 1;
-      vv.cyl(mx, seg3Y, mz, minarR + 0.1, seg3, 0);
-      // 塔頂八角觀景亭與圓頂
-      const topY = seg3Y + seg3;
-      vv.cyl(mx, topY, mz, minarR + 0.8, 1, 1); // 頂層平台
-      vv.box(mx, topY + 1, mz, 1, 1, 1, 0);    // 涼亭柱
-      vv.dome(mx, topY + 2, mz, minarR + 0.3, 5, 0.85); // 塔頂小穹頂
-      vv.box(mx, topY + 2 + Math.round(minarR + 0.3), mz, 1, 1, 1, 4); // 金頂
-    });
-
-    // 9. 正面紅砂岩迎賓台階
-    const stairSteps = dim(s, 0.35, 1);
-    stairs(v, 0, 0, Math.round(baseW / 2) + stairSteps - 1, stairSteps, dim(s, 0.9, 4, true), '-z', 2);
   } },
 
 { n: '萬里長城', lo: 2.5, hi: 15, pal: [0xa39b8c, 0x70695d, 0x4a443b, 0x9e2a2b, 0xd4a373, 0x2b2823],
@@ -3143,210 +3408,449 @@ const SHAPES = [
     }
   } },
 
-{ n: '復活節島摩艾', lo: 1.5, hi: 10, pal: [0x322e2b, 0x7d7568, 0x4b453d, 0x9e9484, 0x7a3228],
-  /* 來源：blueprints/阿胡湯加里基摩艾石像群.js（v1.66 換掉原本那份） */
+{ n: '復活節島摩艾', lo: 5, hi: 34,
+  // v1.285.0 整座重畫（見 開發筆記〈還很粗糙的七座重畫〉）
+  // 阿胡湯加里基（Ahu Tongariki）整座重畫
+  // 正面（−z，內陸那一側）：一條長長的低石台上一排 15 尊摩艾，高矮不一、一尊一尊分得開；
+  //   每尊是「大頭＋短身」，臉上壓著一條眉骨、底下兩個深色眼窩、中間一條長鼻子；第二尊（畫面右邊數來）戴紅帽
+  // 側面：背面一條直線，臉那一側三段往前突——眉骨、鼻頭、下巴，中間夾著鼻根與嘴唇兩個凹口；
+  //   下巴底下縮回脖子，胸口比臉薄、肚子微鼓；石台前面拖一段鋪圓石的緩坡
+  // 三樣識別物：一排 15 尊大頭石像（頭佔五分之三）、眉骨／長鼻／方下巴的側面輪廓、一尊頭上的紅色圓柱帽 pukao
+  // 部件（人像六層）：
+  //   著地　石台 ahu（背面砌整齊的石板牆、頂面鋪石、兩端低一階的翼）、正面鋪圓石的緩坡
+  //   姿勢　15 尊並排站直、面向內陸，高矮照一張表
+  //   軀幹　在臀部截斷的短身、微鼓的肚子、往下收的肩、喉嚨的凹口
+  //   四肢　手臂淺浮雕貼在身體兩側（側面一道深色溝）、長手指在肚子前相合（一條亮帶＋上緣一道溝）
+  //   頭與五官　下巴、嘴唇（深色一條）、鼻頭（大尊鼻翼外張）、鼻樑、深色眼窩、眉骨、往後收的額頭、長耳朵
+  //   識別物　紅色 pukao（帽頂一顆小鈕）、平台前地上躺著的幾顆 pukao、凝灰岩的深淺與黃色地衣斑
+  pal: [0x6f675b,   // 0 凝灰岩（本色，灰褐）
+        0x544d44,   // 1 凝灰岩（暗一階：陰影、溝、嘴）
+        0x8b8273,   // 2 凝灰岩（亮一階：風化發白的面、手指）
+        0x9c8b4a,   // 3 黃色地衣斑
+        0x2b2723,   // 4 眼窩的深色
+        0x8e3b26,   // 5 pukao 紅色火山渣
+        0x4a4a4c,   // 6 石台的玄武岩（深灰）
+        0x77736c],  // 7 緩坡的圓石、石台石板的亮面
   gen(v, s) {
-    // 15 尊摩艾的身高係數（嚴格由左至右：左邊第 2、3 尊最高大，右側漸矮，第 13 尊戴帽子）
-    const scales = [
-      0.96, 1.15, 1.20, 0.94, 0.88,
-      0.92, 0.86, 0.80, 0.82, 0.76,
-      0.95, 0.74, 0.82, 0.70, 0.68
-    ];
-    const n = 15;
+    const hsh = (x, y, z) => {
+      let h = (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
+      h = Math.imul(h ^ (h >>> 13), 1274126177);
+      return ((h ^ (h >>> 16)) >>> 0) % 100;
+    };
+    // 凝灰岩一邊蓋一邊挑色：每尊一個底色（tone），上面撒少量深淺斑與地衣——
+    // 相鄰兩尊底色不同，遠看才分得出是一尊一尊；斑撒太密的話臉上的眼窩、嘴縫會被吃掉
+    const tuff = (x, y, z, bt) => {
+      const k = hsh(x, y, z);
+      if (k < 4) return 3;
+      if (k < 14) return (bt + 1 + (k & 1)) % 3;
+      return bt;
+    };
 
-    // 單尊基準寬度與像距（奇數方便置中刻五官）
-    const unitW = dim(s, 0.35, 3, true);
-    const gap = Math.max(1, dim(s, 0.18, 1));
-    const stepX = unitW + gap;
-    const totalW = n * unitW + (n - 1) * gap;
+    // ── 尺寸 ─────────────────────────────────────────────
+    /* 15 尊的身高係數（由 −x 端排起；站在正面看 −x 在畫面右邊）。實物約 5.6～8.7 m，
+       戴帽那尊在畫面右邊數來第二尊（i = 1），身子矮一截、帽子補回來。
+       +x 那一端（右側視圖、45° 視圖最近的那一尊）給高的：側面看到的就是它一整個輪廓，
+       矮的話後面幾尊的頭從它頭上冒出來，輪廓疊成一團 */
+    const SC = [0.84, 0.74, 0.90, 0.80, 0.95, 0.86, 0.78, 1.00, 0.88, 0.82, 0.92, 0.76, 0.84, 0.90, 0.97];
+    // 胖瘦：正中最高那尊是島上立起來最重的一尊（86 噸），特別壯
+    const WF = [1.0, 1.0, 0.95, 1.0, 1.0, 0.95, 1.0, 1.12, 1.0, 0.95, 1.05, 1.0, 0.95, 1.0, 1.0];
+    const TONE = [0, 2, 0, 1, 2, 0, 1, 0, 2, 0, 1, 2, 0, 2, 1];
+    const HAT = 1;
+    const tipOf = h => h >= 17 ? 3 : h >= 8 ? 2 : 1;                 // 鼻頭比臉頰多突幾格
+    const Hs = SC.map(f => dim(s, f, 6));                            // 每尊身高（s 就是最高那尊的身高）
+    const Ws = Hs.map((h, i) => Math.max(3, Math.round(h * 0.36 * WF[i])));   // 寬：實物約 0.35～0.4
+    const Fs = Hs.map(h => Math.max(3, Math.round(h * 0.30)));       // 臉頰那一面離背面幾格
+    const Ds = Hs.map((h, i) => Fs[i] + tipOf(h));                   // 最前面（鼻頭）離背面幾格
+    /* 像與像之間的空隙：至少 1 格，頭才一顆一顆分得開。實物的空隙比這寬得多（約半個像寬），
+       但 1800 那一檔場地上限 65，15 尊排下來長度已經 64，空隙只能壓到 1 格（9000 那一檔才長到 2） */
+    const g = dim(s, 0.09, 1);
+    let rowLen = g * 14;
+    for (const w of Ws) rowLen += w;
+    const P = dim(s, 0.17, 2);                                       // 石台高
+    const mx = dim(s, 0.22, 2);                                      // 兩端多出去的翼（實物連翼 220 m，這裡只留一小截）
+    const rr = dim(s, 0.08, 1);                                      // 緩坡每降一層往前幾格
+    let Dmax = 0;
+    for (const d of Ds) Dmax = Math.max(Dmax, d);
+    const zb = 0, zr = 1, zf = zb - Dmax;                            // 雕像背面 zb、石台背面 zr、石台正面 zf
+    const xL = -Math.floor(rowLen / 2) - mx, xR = xL + rowLen - 1 + 2 * mx;
 
-    const platD = dim(s, 1.10, 5);
-    const platH = dim(s, 0.30, 2);
+    // ── 1. 石台 ahu：背面是一塊一塊砌齊的石板，頂面鋪石，兩端低一階當翼 ──
+    /* 只蓋頂面與四面牆、裡面是空的：石台是整座最長的東西。第一版實心石台＋寬緩坡在 3000 那一檔
+       吃掉四成五（1282／2875），雕像只剩 9～12 格高、臉刻不出來；改空心、緩坡收窄後降到三成三 */
+    for (let x = xL; x <= xR; x++) {
+      const wing = x < xL + mx || x > xR - mx;
+      const ph = wing ? Math.max(1, P - 1) : P;
+      const xe = x === xL || x === xR || x === xL + mx || x === xR - mx;
+      for (let y = 0; y < ph; y++) for (let z = zf; z <= zr; z++) {
+        if (y < ph - 1 && !xe && z !== zf && z !== zr) continue;
+        let c = 6;
+        if (z === zr) {                                              // 背牆：錯縫的石板，一塊一個色
+          const slab = Math.floor((x + (y & 1) * 2) / 3);
+          c = hsh(slab, y, 11) < 45 ? 7 : 6;
+        } else if (y === ph - 1) c = hsh(x, y, z) < 22 ? 7 : 6;      // 頂面鋪石
+        v.set(x, y, z, c);
+      }
+    }
 
-    // 1. 阿胡（Ahu）長條祭台（上下兩層分色階）
-    v.box(0, 0, 0, totalW + dim(s, 0.8, 4), platH, platD + 2, 0);
-    v.box(0, platH - 1, 0, totalW + dim(s, 0.4, 2), 1, platD, 0);
+    // ── 2. 正面鋪圓石的緩坡：一層一層往前多鋪 rr 格 ──
+    for (let y = 0; y < P; y++) {
+      const dz = rr * (P - y);
+      for (let x = xL + mx; x <= xR - mx; x++)
+        for (let z = zf - dz; z < zf; z++) v.set(x, y, z, hsh(x, y, z) < 62 ? 7 : 6);
+    }
 
-    // 2. 逐一建造 15 尊獨立摩艾
-    for (let i = 0; i < n; i++) {
-      const posX = Math.round(-totalW / 2 + unitW / 2 + i * stepX);
-      const sc = scales[i];
+    // ── 3. 摩艾：同一支函式畫，吃身高；一列一列照側面輪廓給深度 ──
+    /* 頭佔五分之三，頭裡由下往上分六段：下巴、嘴唇、鼻頭、鼻樑＋眼窩、眉骨、額頭。
+       列數用「每段至少 1 列、餘數照比例分」去切——照 t = y/H 取樣的話，眉骨那一段只有 0.06 個身高，
+       某些尺寸會剛好落在兩列中間整段不見。頭太矮（< 6 列）先拿掉嘴唇、鼻樑兩段。 */
+    const ZF = [0.14, 0.11, 0.13, 0.27, 0.12, 0.23];
+    const zones = hh => {
+      const on = hh >= 6 ? [1, 1, 1, 1, 1, 1] : hh === 5 ? [1, 0, 1, 1, 1, 1] : [1, 0, 1, 0, 1, 1];
+      const n = on.slice();
+      let left = hh - n.reduce((a, b) => a + b, 0);
+      while (left-- > 0) {
+        let bi = 0, bv = -1e9;
+        for (let i = 0; i < 6; i++) if (on[i] && ZF[i] * hh - n[i] > bv) { bv = ZF[i] * hh - n[i]; bi = i; }
+        n[bi]++;
+      }
+      const rows = [];
+      for (let z = 0; z < 6; z++) for (let r = 0; r < n[z]; r++) rows.push([z, r, n[z]]);
+      return rows;
+    };
+    const moai = (xa, w, H, F, bt, hat) => {
+      /* 側面輪廓：胸口（T）比臉頰那一面（F）薄一截，下巴、鼻頭、眉骨再各往前突——
+         胸口跟臉一樣厚的話，側面看就是一根上下一樣粗的木樁 */
+      const T = Math.max(2, Math.round(H * 0.21));
+      const tipOut = tipOf(H), chinOut = H >= 17 ? 2 : 1;
+      const hh = Math.max(4, Math.round(H * 0.58)), tr = H - hh;      // 頭的列數、身體的列數
+      const rows = zones(hh);
+      const hasMid = rows.some(q => q[0] === 3);
+      const y0 = P;
+      const mid = (w - 1) / 2, narrow = w >= 5;
+      const coreW = narrow ? w - 2 : w;                               // 臉的寬（寬的那幾尊兩側讓給耳朵）
+      const earD = Math.max(1, Math.round(F * 0.45));
+      const hr = Math.max(0, Math.round(tr * 0.22));                  // 手指相合的那一列
+      const ka = Math.max(1, Math.round(T * 0.5));                    // 手臂後緣那道溝離背面幾格
+      const mc = bt === 1 ? 4 : 1;                                    // 嘴縫：底色本來就暗的那幾尊用更深的
+      for (let j = 0; j < H; j++) {
+        const y = y0 + j;
+        for (let i = 0; i < w; i++) {
+          const x = xa + i, dx = Math.abs(i - mid), edge = i === 0 || i === w - 1;
+          let d, k0 = 0, fc = -1, sideK = -1, head = false;
+          if (j < tr) {                                               // 身體
+            d = T;
+            if (j <= hr && H >= 12) d++;                              // 肚子（手放的地方）微鼓
+            if (edge && w >= 5) d--;                                  // 前面兩角削圓
+            if (j === tr - 1 && tr >= 3) {                            // 喉嚨凹口＋往下收的肩
+              if (T >= 3 && !edge) d--;
+              if (edge && w >= 4) k0 = 1;
+            }
+            if (j === hr) fc = dx < 0.6 ? 1 : 2;                      // 長手指在肚子前相合
+            else if (j === hr + 1 && dx >= 0.6 && !edge) fc = 1;      // 前臂上緣的溝
+            if (edge && j > hr && j < tr - 1) sideK = ka;             // 手臂後緣：側面一道深色直溝
+          } else {
+            const [zo, r, n] = rows[j - tr];
+            head = true;
+            if (narrow && edge) {
+              /* 頭最外那一欄：耳朵從下巴（耳垂）長到眉骨，貼在頭兩側偏後；額頭那幾列是頭的側面，跟耳朵一樣寬——
+                 額頭也縮進去的話頭頂變成圓的，正面看是一排鬼，不是平頂的方頭 */
+              if (zo === 5) { d = r === 0 ? F - 1 : F - 2; if (r === n - 1 && H >= 12) k0 = 1; }
+              else { d = earD + 1; k0 = 1; if (zo === 0 && r === 0) d = earD; else fc = 1; }   // 耳朵前緣一道暗色，把臉框出來
+            } else {
+              const nose = dx < 0.6, cedge = dx > (coreW - 1) / 2 - 0.1;
+              const eyeOk = !nose && !(cedge && coreW >= 7);          // 眼窩：鼻子以外整片挖；臉很寬時最外那一欄留給顴骨
+              if (!narrow && edge && zo >= 0 && zo <= 4) sideK = earD + 1;   // 窄的那幾尊：耳朵畫在側面
+              switch (zo) {
+                case 0: d = cedge && coreW >= 3 ? F : F + chinOut; break;     // 下巴：中間往前突
+                case 1:                                               // 嘴唇＋嘴縫（跟鼻翼一樣寬的一條深色）
+                  d = F;
+                  if ((n === 1 || r === n - 1) && dx < (coreW >= 5 ? 1.6 : 0.6)) fc = mc;
+                  break;
+                case 2:                                               // 鼻頭（大尊鼻翼外張，鼻翼比鼻尖退一格）
+                  if (nose) d = F + tipOut;
+                  else if (coreW >= 5 && dx < 1.6) d = F + tipOut - (H >= 14 ? 1 : 0);
+                  else if (!hasMid && eyeOk) { d = F - 1; fc = 4; }  // 頭太矮沒有鼻樑段：眼窩落在這一列
+                  else d = F;
+                  break;
+                case 3: {                                             // 鼻樑＋眼窩
+                  const ne = Math.max(1, Math.ceil(n * 0.6));
+                  if (nose) { d = F + 1 + (H >= 16 && r < n / 2 ? 1 : 0); fc = 2; }   // 鼻樑亮一階，夾在兩個眼窩中間才跳得出來
+                  else if (r >= n - ne && eyeOk) { d = F - (H >= 14 ? 2 : 1); fc = 4; }
+                  else d = F;
+                  break;
+                }
+                case 4: d = cedge && coreW >= 7 ? F : F + 1; break;  // 眉骨：橫過整張臉往前突
+                default:                                              // 額頭往後收、頭頂後緣削圓
+                  d = r === 0 ? F : F - 1;
+                  if (r === n - 1 && H >= 12) k0 = 1;
+              }
+            }
+          }
+          for (let k = k0; k < d; k++) {
+            const z = zb - k;
+            let c = tuff(x, y, z, bt);
+            if (k === d - 1 && fc >= 0) c = fc;
+            else if (k === sideK) c = 1;
+            else if (head && k === d - 1 && c !== 3) c = bt;          // 臉上不撒深淺斑（只留地衣），五官才不會被吃掉
+            v.set(x, y, z, c);
+          }
+        }
+      }
+      if (hat) {                                                      // 紅色 pukao：跟頭頂差不多寬的圓柱，帽頂一顆小鈕
+        /* 半徑跟著整個頭頂寬（含兩側耳朵那一欄）：只跟臉寬的話寬的那幾尊帽子比頭窄一圈；
+           再寬半格就在正中間多凸出一格，從正面看成一頂十字形的草帽 */
+        const xc = xa + mid, zc = zb - (F - 1) / 2, r0 = w / 2 - 0.1;
+        const ph = Math.max(2, Math.round(H * 0.28)), yt = y0 + H;
+        const R = Math.ceil(r0) + 1;
+        for (let x = Math.floor(xc - R); x <= Math.ceil(xc + R); x++)
+          for (let z = Math.floor(zc - R); z <= Math.ceil(zc + R); z++) {
+            const q = Math.sqrt((x - xc) * (x - xc) + (z - zc) * (z - zc));
+            if (q <= r0 + 0.35) for (let y = yt; y < yt + ph; y++) v.set(x, y, z, 5);
+            if (q <= r0 * 0.5 + 0.35) v.set(x, yt + ph, z, 5);
+          }
+      }
+    };
+    let xa = xL + mx;
+    for (let i = 0; i < 15; i++) {
+      moai(xa, Ws[i], Hs[i], Fs[i], TONE[i], i === HAT);
+      xa += Ws[i] + g;
+    }
 
-      const w = dim(s, 0.34 * Math.sqrt(sc), 3, true);
-      const bD = dim(s, 0.46 * sc, 3); // 軀幹深度
-      const bH = dim(s, 0.90 * sc, 4); // 軀幹高
-      const hH = dim(s, 1.10 * sc, 4); // 頭部高
-      const chinH = dim(s, 0.30 * sc, 2);
-
-      const yBase = platH;
-
-      // 獨立石墊底座
-      v.box(posX, yBase, 0, w, 1, bD + 1, 0);
-
-      // (A) 軀幹與微凸腹部
-      v.box(posX, yBase + 1, 0, w, bH, bD, 1);
-      // 正面腹部雙手交疊浮雕
-      const fz = -Math.floor(bD / 2);
-      v.box(posX, yBase + 1, fz, Math.max(1, w - 2), Math.max(1, bH - 2), 1, 3);
-      // 兩側手臂與陰影
-      mirrorX(v, Math.floor(w / 2), (vv, dx) => {
-        vv.box(posX + dx, yBase + 1, 0, 1, bH - 1, 1, 2);
-      });
-
-      // (B) 頭部與仰角輪廓（頭身厚實且前傾）
-      const headY = yBase + 1 + bH;
-      const headZ = -1;
-      const faceZ = headZ - Math.floor(bD / 2);
-
-      // 頭部主結構
-      v.box(posX, headY, headZ, w, hH, bD, 1);
-
-      // 突出下巴（厚道長下巴）
-      v.box(posX, headY, faceZ, w, chinH, 1, 1);
-      v.box(posX, headY, faceZ - 1, Math.max(1, w - 2), 1, 1, 3);
-
-      // 凸出眉骨與額頭
-      const browY = headY + hH - 1;
-      v.box(posX, browY, faceZ, w, 1, 1, 3);
-      v.box(posX, browY, faceZ - 1, w, 1, 1, 3);
-
-      // 長條高挺鼻樑（從眉骨垂到下巴上方）
-      const noseY = headY + chinH;
-      const noseH = Math.max(1, browY - noseY);
-      v.box(posX, noseY, faceZ - 1, 1, noseH, 1, 3);
-
-      // 深邃眼窩（眉骨下方兩側挖深陰影）
-      const eyeY = browY - 1;
-      mirrorX(v, 1, (vv, dx) => {
-        tint(vv, posX + dx, eyeY, faceZ, 2);
-      });
-
-      // 長耳（沿著頭部兩側拉長）
-      const earH = Math.max(2, hH - 2);
-      mirrorX(v, Math.floor(w / 2), (vv, dx) => {
-        vv.box(posX + dx, headY + 1, headZ, 1, earH, 1, 2);
-      });
-
-      // (C) 第 13 尊（索引 12）頭頂的紅色普卡奧（Pukao 石冠）
-      if (i === 12) {
-        const pukaoR = Math.max(1.3, (w / 2) + 0.3);
-        const pukaoH = dim(s, 0.45, 2);
-        v.cyl(posX, headY + hH, headZ, pukaoR, pukaoH, 4);
-        v.cyl(posX, headY + hH + pukaoH, headZ, Math.max(0.7, pukaoR * 0.5), 1, 4);
+    // ── 4. 平台前地上的 pukao（1960 年海嘯沖散的帽子）：兩顆正放的矮圓柱、一顆橫躺 ──
+    /* 半徑避開 1.65～2.3 那一段：圓面算的是「離中心 ≤ r ＋ 0.35」，r＋0.35 落在 2～2.24 之間時
+       只收進正上下左右各一格尖、收不進 (2, 1)，圓面點陣成十字形（9000 那一檔原本 r 1.7 就是這樣）。
+       小的取 3×3 方塊、大的取 5 格寬的圓，中心一律取整數 */
+    let pr = s * 0.125;
+    if (pr > 1.6 && pr < 2.3) pr = pr < 1.95 ? 1.6 : 2.3;
+    pr = Math.max(1.1, pr);
+    const ph = dim(s, 0.14, 2), pl = dim(s, 0.14, 2);
+    const pz = zf - rr * P - 2 - Math.ceil(pr);
+    const Lp = xR - xL, pr2 = (pr + 0.35) * (pr + 0.35), R = Math.ceil(pr + 0.35);
+    for (const [fx, lie] of [[-0.30, false], [0.10, true], [0.33, false]]) {
+      const cx = Math.round(xL + mx + (Lp - 2 * mx) * (0.5 + fx));
+      if (!lie) { v.cyl(cx, 0, pz, pr, ph, 5); continue; }            // 正放：跟頭上那頂一樣的矮鼓
+      /* 橫躺：圓面朝 ±x。圓心高度取「圓面往下真的收得到幾格」——用 round(pr) 的話 pr 1.56 會取 2、
+         圓面只往下長 1 格，整顆浮在地上一格（3000 那一檔實測懸空 18 格） */
+      const yc = Math.floor(pr + 0.35);
+      for (let a = -R; a <= R; a++) for (let b = -R; b <= R; b++) {
+        if (a * a + b * b > pr2 || yc + b < 0) continue;
+        for (let l = 0; l < pl; l++) v.set(cx - (pl >> 1) + l, yc + b, pz + a, 5);
       }
     }
   } },
-{ n: '獅身人面像', lo: 2.2, hi: 15.0,
-  pal: [0xc29b62, 0x9e7b47, 0x2b4c7e, 0xd4a73b, 0x701b1b, 0xe8dcc4],
-  /* 來源：blueprints/獅身人面像.js（v1.216 換掉 v1.66 那份） */
+{ n: '獅身人面像',
+  // v1.285.0 整座重畫（見 開發筆記〈還很粗糙的七座重畫〉）
+  // 吉薩的人面獅身像（整座重畫）：照實物 73 m 長、20 m 高、19 m 寬，臉朝東＝正面 −z；現況石色，不上彩
+  // 正面：平頂、兩翼往肩上撐開的頭巾罩著一張 4 m 寬的臉，兩片條紋垂飾垂到胸前；
+  //   底下是比頭寬的胸與肩，兩隻前爪平行往前伸，中間夾一塊灰粉色的夢碑
+  // 側面：低而長的伏臥獅身（背高約頭頂的 0.55），背平、臀部微微隆起，前爪往前平伸約 15 m；
+  //   頭與粗脖子明顯冒出背上，身側一層一層的岩棚與風化溝，最下緣一圈整齊的修補石塊
+  // 三樣識別物：條紋 nemes 頭巾（平頂＋撐開的兩翼＋垂飾）、往前平伸的兩隻前爪夾著夢碑、
+  //   身側橫向的風化岩層（下段硬而深、中段被蝕凹進去、上段背脊受光）
+  // 部件（動物六層）：
+  //   著地：前爪（含趾縫）、後腳掌、腹底貼地（不加台基）
+  //   姿勢：伏臥、頭朝正前方、前爪平伸、後腿收在身側
+  //   軀幹：剖面表拉出的獅身（背平、腰略收、臀部隆起、臀尾收圓）、往前挺的胸、肩、粗脖子、後腿臀
+  //   四肢與關節：肩→肘（肩的隆起）、肘→爪（前臂平伸）、後腿臀→後腳掌、繞過右臀的尾巴
+  //   頭與五官：臉（下巴往後收一格）、耳朵、凹進去的眼窩、缺掉的鼻子（平的斷面）、嘴縫、聖蛇的斷痕
+  //   衣物與識別物：nemes 頭頂平台、額上的頭帶、撐開的兩翼、披到背上的後擺、兩片垂飾、
+  //     深淺兩階的橫條紋、頰上的紅色殘跡、風化溝與岩棚、下緣與爪子的修補石塊、夢碑
+  lo: 3.0, hi: 26.0,
+  pal: [0xae8a56,   // 0 石灰岩本色（獅身的主色）
+        0x6f5638,   // 1 風化溝的暗面、頭巾深條紋、眼窩、嘴縫、尾巴
+        0xcfac72,   // 2 亮面：背脊、頭與臉（上段硬岩）、頭巾淺條紋
+        0x8f7552,   // 3 下段硬岩、修補石的接縫
+        0xd0b88c,   // 4 後代修補的整齊石塊（偏淺）
+        0xa0603f,   // 5 臉上偏紅的暖色殘跡
+        0x8c7b7d],  // 6 夢碑的灰粉花崗岩
   gen(v, s) {
-    // 1. 基座台座
-    const baseW = dim(s, 1.45, 5);
-    const baseL = dim(s, 3.85, 13);
-    const baseH = dim(s, 0.28, 1);
-    v.box(0, 0, 0, baseW, baseH, baseL, 1);
+    const m = s * 0.1, M = q => q * m, R = Math.round;          // m：每公尺幾格（不取整，塊數才連續）
+    const H = (x, y, z) => (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) % 100;
+    const lerpP = (P, t) => {
+      if (t <= P[0][0]) return P[0][1];
+      for (let i = 1; i < P.length; i++)
+        if (t <= P[i][0]) { const a = P[i - 1], b = P[i]; return a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]); }
+      return P[P.length - 1][1];
+    };
 
-    // 2. 以「頭」為核心基準錨點
-    const hd = s * 0.62;
-    const headR = Math.max(1.3, hd * 0.48);
-
-    // 3. 獅身軀幹（伏臥平滑形變）
-    const bodyW = Math.max(2.2, hd * 1.35);
-    const bodyL = Math.max(4.2, hd * 3.0);
-    const bodyH = Math.max(1.6, hd * 1.1);
-    const bodyZ = hd * 0.35;
-
-    // 前胸厚實隆起與後腰臀部
-    blob(v, 0, baseH + bodyH * 0.58, bodyZ - hd * 0.45, bodyW * 0.85, bodyH * 0.88, bodyL * 0.48, 0);
-    blob(v, 0, baseH + bodyH * 0.68, bodyZ + hd * 0.72, bodyW * 0.9, bodyH * 0.92, bodyL * 0.44, 0);
-
-    // 4. 四肢與尾巴
-    // 前爪
-    const pawW = dim(s, 0.26, 1);
-    const pawL = dim(s, 1.35, 3);
-    const pawH = dim(s, 0.22, 1);
-    const pawX = Math.round(bodyW * 0.52);
-    const pawZ = -Math.round(bodyL * 0.42 + pawL * 0.4);
-
-    mirrorX(v, pawX, (vv, dx) => {
-      vv.box(dx, baseH, pawZ, pawW, pawH, pawL, 0);
-      vv.box(dx, baseH, pawZ - Math.round(pawL * 0.4), pawW, Math.max(1, pawH), 1, 1);
-    });
-
-    // 後腿側髀
-    mirrorX(v, Math.round(bodyW * 0.7), (vv, dx) => {
-      blob(vv, dx, baseH + bodyH * 0.48, bodyZ + hd * 0.75, hd * 0.38, hd * 0.6, hd * 0.72, 0);
-    });
-
-    // 尾巴
-    limb(v, {
-      x: Math.round(bodyW * 0.65), y: baseH + 1, z: Math.round(bodyZ + bodyL * 0.48),
-      x1: Math.round(bodyW * 0.75), y1: baseH + Math.round(bodyH * 0.55), z1: Math.round(bodyZ + bodyL * 0.15),
-      r: 0.5, r1: 0.35, c: 1
-    });
-
-    // 5. 頸部與法老頭部
-    const neckY = baseH + bodyH * 0.76;
-    const headY = neckY + hd * 0.65;
-    const headZ = -Math.round(bodyL * 0.38);
-
-    // 頸柱
-    v.cyl(0, Math.round(neckY), headZ, Math.max(1.1, headR * 0.7), Math.max(1, Math.round(hd * 0.35)), 0);
-
-    // 人面頭部
-    blob(v, 0, headY, headZ, headR * 0.88, headR * 0.95, headR * 0.88, 0);
-
-    // 6. 法老頭巾（Nemes）
-    const hw = Math.max(3, Math.round(headR * 2.6));
-    const hh = Math.max(3, Math.round(hd * 1.15));
-    const hdDepth = Math.max(2, Math.round(headR * 1.9));
-
-    boxTaper(v, {
-      x: 0, y: Math.round(headY - headR * 0.25), z: headZ + 1,
-      w: hw, d: hdDepth,
-      w1: Math.max(2, Math.round(hw * 0.68)), d1: Math.max(2, Math.round(hdDepth * 0.78)),
-      h: hh, c: 2
-    });
-
-    // 額前頭巾金白帶包邊（保障 pal[5] 在 300 塊小尺寸不消失，寬度下限設為 3 且奇數置中）
-    const browW = dim(s, 0.45, 3, true);
-    const browY = Math.round(headY + headR * 0.5);
-    const browZ = headZ - Math.round(headR * 0.82);
-    v.box(0, browY, browZ, browW, 1, 1, 5);
-
-    // 頭巾垂布
-    const flapW = Math.max(1, Math.round(headR * 0.4));
-    const flapH = Math.max(2, Math.round(hd * 0.85));
-    mirrorX(v, Math.round(headR * 0.8), (vv, dx) => {
-      vv.box(dx, Math.round(neckY - flapH * 0.35), headZ - Math.round(headR * 0.48), flapW, flapH, 1, 3);
-    });
-
-    // 頂巾條紋
-    const stripeCount = Math.max(2, Math.round(hh * 0.6));
-    for (let i = 0; i < stripeCount; i++) {
-      const curY = Math.round(headY + i * 0.9);
-      const col = i % 2 === 0 ? 3 : 2;
-      mirrorX(v, Math.round(headR * 0.9), (vv, dx) => {
-        paintFrom(vv, dx, curY, headZ + 1, 0, 0, 1, 3, col);
-      });
+    /* ── 1. 獅身（含胸、肩、脖子、後腿臀）：先填一張佔位表，再挖成兩格厚的殼 ──
+       z 以公尺計，0 是胸口、58 是臀尾；爪子另外往前伸 15 m。
+       為什麼不直接疊 blob：幾顆橢球疊出來的是一團圓滾滾的塊（改前就是這樣），背不平、側面也刻不出岩層。
+       改成每一格 z 查剖面表（背高、半寬），上緣倒圓角，岩層就是「某幾層整圈往內縮」。
+       挖成殼是為了把塊數花在看得到的表面：實測填實心的話 3000 塊只有 51 格長、9000 塊 74 格，
+       3000 那檔露在外面的只有 1245 格；挖空之後同樣塊數是 60、97 格長，露在外面 2637 格。
+       佔位表一列一列用區間填（不逐格算橢球），9000 那檔才壓得進時限。 */
+    const TOP = [[0, 7.5], [1.5, 10.0], [4, 11.2], [10, 11.6], [20, 11.0], [32, 10.5],
+                 [41, 10.9], [47, 11.3], [52, 10.6], [55, 9.3], [57, 6.8], [58.3, 3.2]];
+    /* 半寬：獅身要比頭巾寬（實物身寬約 19 m、頭巾約 10.5 m），俯視才是「身體比頭寬」。
+       上一版半寬只給 6～6.6 m，加上中段內縮一格，俯視的軀幹比頭巾兩翼還窄，像一條長板 */
+    const WID = [[0, 5.4], [1.5, 6.6], [4, 7.5], [10, 7.9], [20, 7.7], [30, 7.3],
+                 [40, 7.6], [51, 7.4], [55, 6.5], [57, 5.0], [58.3, 2.8]];
+    const zc = R(M(0)), zb0 = R(M(-1.6)), zb1 = R(M(58.3)), NZ = zb1 - zb0 + 1;   // zc 胸口；zb0 留給往前挺的胸
+    const Tz = new Float64Array(NZ), Wz = new Float64Array(NZ);
+    for (let i = 0; i < NZ; i++) {
+      const zm = (zb0 + i) / m;
+      Tz[i] = zb0 + i < zc ? -1 : M(lerpP(TOP, zm)); Wz[i] = M(lerpP(WID, zm));
+    }
+    const r0 = M(3.6);                          // 背脊兩側的圓角（獅背是寬而平的，不是圓筒）
+    /* 岩層由下往上：修補石塊（yR 以下）→ 比較硬、比較深的下段（到 yM）→ 被蝕得最兇的中段
+       （整圈往內縮一格，再一層一層刻出風化溝）→ 上段（yIII 以上，背脊與脖子）。
+       中段縮進去、上段沒縮，從側面看就是一條一條往外凸的岩棚。 */
+    const yR = Math.max(1, R(M(2.4)));
+    const yM = Math.max(yR + 1, R(M(4.0)));
+    const yIII = Math.max(yM + 2, R(M(9.0)));
+    const P = Math.max(2, R(M(2.1)));           // 風化溝的間距
+    const groove = y => y > yM && y < yIII && (y - yM) % P === P - 1;
+    const inset = y => (y >= yM && y < yIII ? 1 : 0) + (groove(y) ? 1 : 0);
+    const hx = M(7.0), hy = M(5.0), hz = M(46), hrx = M(2.7), hry = M(4.9), hrz = M(8.6);   // 後腿臀（最寬 9.7 m）
+    const sx = M(6.8), sy = M(4.4), sz = M(6.5), srx = M(1.7), sry = M(4.2), srz = M(4.4);  // 肩
+    const nkx = M(3.6), nkz = M(4.6), nkrz = M(4.4), nky0 = M(7), nky1 = M(14);            // 脖子
+    const cy = M(4.6), cz = M(2.0), crx = M(5.4), cry = M(4.6), crz = M(3.1);              // 往前挺的胸
+    const pad = 2, xm = Math.ceil(M(10)) + 1, NY = Math.ceil(M(14)) + 2;
+    const NXp = 2 * xm + 1 + 2 * pad, NYp = NY + 2 * pad, SY = NXp, SZ = NXp * NYp;
+    const occ = new Uint8Array(SZ * (NZ + 2 * pad));
+    const rowOf = (y, z) => (z - zb0 + pad) * SZ + (y + pad) * SY + xm + pad;       // x = 0 那一格的索引
+    const fill = (row, a, b) => { for (let x = Math.max(-xm, Math.ceil(a)), e = Math.min(xm, Math.floor(b)); x <= e; x++) occ[row + x] = 1; };
+    for (let z = zb0; z <= zb1; z++) {
+      const i = z - zb0, T = Tz[i], W = Wz[i], rr = Math.min(r0, T, W);
+      for (let y = 0; y < NY; y++) {
+        const g = groove(y) ? 1 : 0, row = rowOf(y, z);   // 風化溝那一層整圈往內縮一格
+        if (y <= T) { const yy = y - (T - rr); const hw = yy > 0 ? W - rr + Math.sqrt(rr * rr - yy * yy) : W - inset(y); fill(row, -hw, hw); }
+        let q = 1 - ((y - hy) / hry) ** 2 - ((z - hz) / (hrz - g)) ** 2;
+        if (q >= 0) { const a = (hrx - g) * Math.sqrt(q); fill(row, hx - a, hx + a); fill(row, -hx - a, -hx + a); }
+        q = 1 - ((y - sy) / sry) ** 2 - ((z - sz) / (srz - g)) ** 2;
+        if (q >= 0) { const a = (srx - g) * Math.sqrt(q); fill(row, sx - a, sx + a); fill(row, -sx - a, -sx + a); }
+        if (y >= nky0 && y <= nky1 && (q = 1 - ((z - nkz) / nkrz) ** 2) >= 0) { const a = nkx * Math.sqrt(q); fill(row, -a, a); }
+        if ((q = 1 - ((y - cy) / cry) ** 2 - ((z - cz) / crz) ** 2) >= 0) { const a = crx * Math.sqrt(q); fill(row, -a, a); }
+      }
+    }
+    const brick = (u, y) => ((u + ((y & 1) << 1)) & 3) === 0 ? 3 : 4;
+    for (let z = zb0; z <= zb1; z++) for (let y = 0; y < NY; y++) {
+      const row = rowOf(y, z);
+      for (let x = -xm; x <= xm; x++) {
+        const k = row + x;
+        if (!occ[k]) continue;
+        const ex = !occ[k - 1] || !occ[k + 1], ez = !occ[k - SZ] || !occ[k + SZ];
+        const up = !occ[k + SY], dn = y > 0 && !occ[k - SY];
+        if (!ex && !ez && !up && !dn && occ[k - 2] && occ[k + 2] && occ[k - 2 * SZ] && occ[k + 2 * SZ] && occ[k + 2 * SY])
+          continue;                                                          // 殼裡面挖空
+        const h = H(x, y, z);
+        let c = 0;
+        if (y < yR) c = ex ? brick(z, y) : ez ? brick(x, y) : 3;              // 下緣的修補石塊
+        else if (ex || ez) c = groove(y) ? 1 : y >= yIII ? (h < 30 ? 0 : 2) : y < yM ? (h < 35 ? 0 : 3)
+                             : h < 14 ? 2 : h < 22 ? 1 : 0;
+        else if (up) c = h < 25 ? 0 : 2;                                       // 背脊受光
+        v.set(x, y, z, c);
+      }
     }
 
-    // 7. 神聖識別物（蛇飾、鬍子、五官面容）
-    // 額前眼鏡蛇神飾（Uraeus）
-    v.box(0, Math.round(headY + headR * 0.78), headZ - Math.round(headR * 0.88), 1, Math.max(2, Math.round(hd * 0.35)), 1, 4);
-
-    // 儀式假鬍子
-    v.box(0, Math.round(headY - headR * 0.85), headZ - Math.round(headR * 0.72), 1, Math.max(2, Math.round(hd * 0.4)), 1, 4);
-
-    // 面部五官（眼白與眼線雙重著色）
-    mirrorX(v, Math.max(1, Math.round(headR * 0.38)), (vv, dx) => {
-      paintFrom(vv, dx, Math.round(headY + headR * 0.12), headZ - Math.ceil(headR) - 1, 0, 0, 1, 4, 5);
-      paintFrom(vv, dx, Math.round(headY + headR * 0.22), headZ - Math.ceil(headR) - 1, 0, 0, 1, 4, 2);
+    // ── 2. 前腿與爪：從肘一路平伸到爪尖；後腳掌收在身側。整條包著修補石塊 ──
+    const paw = (cx, zA, zB, hA, hB, w, tipLen, toes) => {
+      for (let z = zA; z <= zB; z++) {
+        const f = (z - zA) / Math.max(1, zB - zA), tp = (z - zA) / Math.max(1, tipLen);
+        let hh = hA + (hB - hA) * f, ww = w;
+        if (tp < 1) { const k = Math.sqrt(1 - (1 - tp) * (1 - tp)); hh *= 0.65 + 0.35 * k; ww *= 0.75 + 0.25 * k; }
+        const top = Math.max(1, R(hh));
+        for (let x = Math.ceil(cx - ww); x <= Math.floor(cx + ww); x++) {
+          const edge = Math.abs(x - cx) > ww - 0.9 && ww >= 1.5;
+          const toe = toes && tp < 2 && toes.indexOf(x) >= 0;
+          const sd = Math.abs(x - cx) > ww - 1;
+          for (let y = 0; y < top; y++) {
+            if (y === top - 1 && (edge || toe) && top > 1) continue;            // 圓肩、趾縫
+            v.set(x, y, z, sd ? brick(z, y) : y === top - 1 ? brick(z + x * 2, 0) : 3);
+          }
+        }
+      }
+    };
+    const fw = M(2.2), fcx = M(4.3);              // 前腿在肩的正下方，兩爪內緣相距約 4.2 m（中間放夢碑）
+    mirrorX(v, 1, (vv, sg) => {
+      const cx = sg * fcx;
+      const toes = fw >= 2.4 ? [-1, 0, 1].map(k => R(cx + k * fw * 0.5)) : null;
+      paw(cx, R(M(-15)), R(M(7)), M(2.7), M(4.0), fw, M(1.4), toes);
+      paw(sg * M(8.6), R(M(36.5)), R(M(49)), M(2.0), M(2.5), M(1.25), M(1.2), null);   // 後腳掌收在身側
     });
 
-    // 鼻部與下唇
-    paintFrom(v, 0, Math.round(headY), headZ - Math.ceil(headR) - 1, 0, 0, 1, 4, 0);
-    paintFrom(v, 0, Math.round(headY - headR * 0.28), headZ - Math.ceil(headR) - 1, 0, 0, 1, 4, 1);
+    /* ── 3. 頭：臉、頭巾、垂飾、耳朵 ──
+       臉比實物（約 4 m）放寬到 4.9 m：照實寸 1800 那檔半寬 1.3 格、臉只有 3 格寬，眼睛落在臉的邊上；
+       放寬後 1800／3000 那檔 5 格、9000 那檔 7 格。頭頂仍在 20 m，整座高度不變。
+       臉往前凸出頭巾兩翼 2.3 m（約兩格），側面才看得到臉的側面與耳朵。 */
+    const fz = R(M(-1.4)), fy0 = R(M(12.3)), fy1 = R(M(17.4)), fwh = M(2.45);
+    const chinH = Math.max(1, R(M(0.9)));
+    for (let y = fy0; y < fy1; y++) {
+      const chin = y < fy0 + chinH, w = chin ? fwh - Math.max(0.5, M(0.6)) : fwh;
+      for (let x = -R(w); x <= R(w); x++)                              // 半寬四捨五入：3000 那檔才是 5 格不是 3 格
+        for (let z = chin ? fz + 1 : fz; z <= R(M(2.5)); z++) v.set(x, y, z, H(x, y, z) < 22 ? 0 : 2);
+    }
+    /* 頭巾 nemes 分三塊：
+       ・頭殼與頭頂：頭頂平，額上一條素面頭帶
+       ・後擺：固定寬度（±3.6 m）的一整片，從頭頂後緣沿一條直線斜到頸背、接上背脊
+       ・兩翼：太陽穴往肩上撐開的薄片（只有 2.6 m 厚），貼在臉與耳朵後面
+       上一版每一層各算寬度、兩翼一路延伸到後腦，從後面／45° 看是一疊逐層往後退又逐層變寬的盤子。
+       現在後擺寬度不變、後緣是一條直線，條紋只換顏色，不改形狀。 */
+    const ny0 = R(M(13.2)), nyC = fy1, nyT = Math.max(nyC + 2, R(M(20))), nyB = R(M(11.2));
+    const sp = Math.max(1, R(M(0.75)));
+    const stripe = y => (((nyT - y) / sp | 0) & 1) ? 1 : 2;
+    const bandTop = nyC + Math.max(1, R(M(0.6)));
+    const bh = M(3.6), wz0 = R(M(0.9)), wz1 = R(M(3.5));
+    const zBack = y => R(M(5.4 + (20 - y / m) / 8.8 * 3.6));           // 頭頂 (z 5.4, 20 m) → 頸背 (z 9.0, 11.2 m)
+    for (let y = nyB; y <= nyT; y++) {
+      const crown = y >= nyC, wing = !crown && y >= ny0, zb = zBack(y);
+      const hc = crown ? M(3.7) - (y - nyC) / Math.max(1, nyT - nyC) * M(0.4) : bh;
+      const zf = crown ? R(M(-1.0)) : wing ? wz0 : zb - Math.max(2, R(M(2.6)));   // 頸背那段只要一片布的厚度
+      for (let x = Math.ceil(-hc); x <= Math.floor(hc); x++)
+        for (let z = zf; z <= zb; z++) {
+          let c = stripe(y);
+          if (y === nyT) c = H(x, y, z) < 20 ? 0 : 2;                     // 頭頂平台
+          else if (crown && y < bandTop && z === zf) c = 2;              // 額上的頭帶
+          v.set(x, y, z, c);
+        }
+      if (!wing) continue;
+      const hw = M(5.4) - (y - ny0) / Math.max(1, nyC - ny0) * M(1.7);  // 兩翼：往下撐開到 ±5.4 m
+      for (let x = Math.ceil(-hw); x <= Math.floor(hw); x++)
+        if (Math.abs(x) > Math.floor(hc)) for (let z = wz0; z <= wz1; z++) v.set(x, y, z, stripe(y));
+    }
+    // 垂飾 lappets：從耳後垂到胸前，一樣是橫條紋
+    const lw = Math.max(0.5, M(0.9)), lcx = M(3.6);
+    mirrorX(v, 1, (vv, sg) => {
+      for (let y = R(M(8.4)); y < ny0; y++)
+        for (let x = Math.ceil(sg * lcx - lw); x <= Math.floor(sg * lcx + lw); x++)
+          for (let z = R(M(-0.8)); z <= R(M(1.0)); z++) vv.set(x, y, z, stripe(y));
+      blob(vv, sg * M(2.9), M(15.4), M(0.0), Math.max(0.7, M(0.6)), Math.max(1.0, M(0.9)), Math.max(0.7, M(0.8)), 2);  // 耳朵（約 1.4 m 高）
+    });
+
+    // ── 4. 五官：一律從頭裡往臉外找表面 ──
+    const hcz = R(M(2)), nn = hcz - fz + 2;
+    const ex = Math.max(1, R(M(1.1))), ey = R(M(16.0));
+    mirrorX(v, ex, (vv, dx) => {                                         // 眼窩：往裡凹一格、塗暗
+      if (vv.has(dx, ey, fz) && vv.has(dx, ey, fz + 1)) { vv.del(dx, ey, fz); tint(vv, dx, ey, fz + 1, 1); }
+      else paintFrom(vv, dx, ey, hcz, 0, 0, -1, nn, 1);
+    });
+    for (let y = R(M(14.7)); y < ey; y++) paintFrom(v, 0, y, hcz, 0, 0, -1, nn, 0);        // 缺掉的鼻子：一片平的斷面
+    const mw = Math.floor(M(1.15)), my = R(M(13.6));                 // 嘴寬約 2.3 m
+    for (let x = -mw; x <= mw; x++) paintFrom(v, x, my, hcz, 0, 0, -1, nn, 1);             // 嘴縫
+    /* 頰上的紅色殘跡：小尺寸時眼睛與嘴之間沒有空的一層，就退到嘴角兩邊（不然會蓋掉眼睛） */
+    let ry = Math.max(my + 1, R(M(14.8))), rx = Math.max(1, R(M(1.6)));
+    if (ry >= ey) { ry = my; rx = mw + 1; }
+    mirrorX(v, rx, (vv, dx) => paintFrom(vv, dx, ry, hcz, 0, 0, -1, nn, 5));
+    paintFrom(v, 0, Math.min(nyT - 1, R(M(17.9))), hcz, 0, 0, -1, nn + 2, 1);                // 聖蛇斷掉的痕
+
+    // ── 5. 夢碑：兩爪中間、貼著胸口的花崗岩碑，頂端圓弧 ──
+    const stW = dim(s, 0.24, 3, true), stH = dim(s, 0.36, 4), stT = Math.max(1, R(M(0.8)));
+    const sh = (stW - 1) / 2, ys = Math.min(stH - 1, Math.max(0, R(cy)));
+    const stZ = Math.min(zc, Math.ceil(cz - crz * Math.sqrt(Math.max(0, 1 - ((ys - cy) / cry) ** 2))));  // 胸口挺出來最前面那一格
+    for (let y = 0; y < stH; y++) for (let x = -sh; x <= sh; x++) {
+      if (y === stH - 1 && Math.abs(x) === sh && sh > 0) continue;
+      for (let z = stZ - stT; z < stZ; z++) v.set(x, y, z, 6);
+    }
+
+    // ── 6. 尾巴：從臀尾貼地繞到右臀，尾端搭在臀側 ──
+    /* 尾巴是淺浮雕，顏色跟身體一樣的話整條看不見（實測用 pal[3] 拍出來找不到），
+       塗成風化溝那一階的暗色，斜斜一條才跟橫向的岩層分得開 */
+    const tr = Math.max(0.8, M(0.6));
+    const TP = [[1.5, 1.0, 58.0], [6.0, 1.0, 57.6], [9.0, 1.4, 54.5], [9.5, 2.8, 50.0], [9.8, 4.4, 45.0]];
+    for (let i = 1; i < TP.length; i++)
+      limb(v, { x: M(TP[i - 1][0]), y: M(TP[i - 1][1]), z: M(TP[i - 1][2]),
+                x1: M(TP[i][0]), y1: M(TP[i][1]), z1: M(TP[i][2]), r: tr, c: 1 });
   } },
 { n: '聖巴索大教堂', lo: 2.2, hi: 14.0, pal: [0x9e2a2b, 0xf4f1de, 0x3a6b35, 0xe09f3e, 0x1d3557, 0x540b0e],
   /* 來源：AgentData/blueprints/聖巴索大教堂.js（v1.143 換掉原本那份）。dim 的下限一律乘 0.8（22 處）：原稿最小 2067 塊，面板的 1800 按下去等於沒反應。
@@ -3459,123 +3963,261 @@ const SHAPES = [
     v.gable(0, cY + dim(s, 0.5, 2), porchZ, dim(s, 0.6, 4, true), 2, 2);     // 門廳三角山牆
   } },
 
-{ n: '聖家堂', lo: 1.8, hi: 13.5, pal: [0xc8b99d, 0x9e8c74, 0x5c5346, 0xe5d7ba, 0xd4a246, 0xb44a38],
-  /* 來源：AgentData/blueprints/聖家堂.js（v1.143 換掉原本那份） */
+{ n: '聖家堂', lo: 2.4, hi: 10.5,
+  // v1.285.0 整座重畫（見 開發筆記〈還很粗糙的七座重畫〉）
+  pal: [0xae9a7a,   // 0 砂岩（主殿、翼廊、受難立面與它的四座鐘樓）
+        0x7a6650,   // 1 舊砂岩（誕生立面與它的四座鐘樓：最早蓋、風化偏褐偏暗）；側廊屋頂那條腰線
+        0xd6d0c4,   // 2 新石材的淺白（中央六塔：耶穌塔、福音書作者塔、聖母塔）、尖頂飾的白、十字架
+        0x35302b,   // 3 開口（鐘樓螺旋開口、大門、窗）
+        0xb83a2e,   // 4 紅馬賽克（尖頂飾、主殿果實尖塔）
+        0xe0a82e,   // 5 黃／金（尖頂飾、福音書作者象徵物、後殿小尖塔）
+        0x3d7034,   // 6 柏樹綠
+        0xa9d4ea],  // 7 淡藍（聖母塔的星、中央塔燈籠的玻璃）
   gen(v, s) {
-    // 1. 核心尺度參數化
-    const baseW = dim(s, 2.2, 9, true);      // 中殿與基座總寬
-    const baseD = dim(s, 2.8, 11);          // 中殿總深
-    const naveH = dim(s, 1.4, 5);           // 主殿牆高
-    const transeptW = dim(s, 3.2, 13, true);// 翼殿寬度（拉丁十字形）
-    const transeptD = dim(s, 1.2, 5);       // 翼殿深度
-
-    // 2. 基座與台階（第一層：台基）
-    v.box(0, 0, 0, baseW + 4, 1, baseD + 4, 1);
-    v.box(0, 0, 0, transeptW + 2, 1, transeptD + 2, 1);
-    const stepN = dim(s, 0.25, 2);
-    stairs(v, 0, 0, -Math.round(baseD / 2) - 2 - stepN, stepN, dim(s, 0.7, 3, true), 'z', 1);
-
-    // 3. 主體教堂殿堂（第二層：主量體）
-    v.walls(0, 1, 0, baseW, naveH, baseD, 0, 1);
-    v.walls(0, 1, 0, transeptW, naveH, transeptD, 0, 1);
-    v.box(0, 1 + naveH, 0, baseW + 2, 1, baseD + 2, 1); // 壓頂腰線（第四層：線腳分層）
-
-    // 4. 正面「誕生立面」門廊與三座大拱門（第三層：開口）
-    const frontZ = -Math.round(baseD / 2);
-    const portalW = dim(s, 0.45, 3, true);
-    const portalH = dim(s, 0.65, 3);
-    // 中央主拱門
-    arch(v, 0, 1, frontZ, portalW, portalH, 1, 1);
-    v.box(0, 1, frontZ + 1, portalW, portalH + Math.round((portalW - 1) / 2), 1, 2);
-    // 左右兩側副拱門
-    const sideOffset = Math.round(baseW * 0.26);
-    mirrorX(v, sideOffset, (vv, dx) => {
-      arch(vv, dx, 1, frontZ, Math.max(3, portalW - 2), Math.max(2, portalH - 1), 1, 1);
-      vv.box(dx, 1, frontZ + 1, Math.max(3, portalW - 2), Math.max(2, portalH - 1), 1, 2);
-    });
-
-    // 5. 側牆高窗與立面雕飾長窗
-    const winConfig = {
-      rows: 1, cols: dim(s, 0.35, 2),
-      w: 1, h: dim(s, 0.45, 2),
-      stepX: dim(s, 0.65, 3), stepY: 3,
-      c: 3, axis: 'z'
+    // 正面（−z，誕生立面）：四根拋物線收尖的紡錘鐘樓一字排開（中間兩根較高），塔腳之間三座暗色尖拱門，
+    //   正中那座最高、門頂山牆上一棵綠柏樹；鐘樓後面是一叢更高的淺色尖塔，往中央愈來愈高，
+    //   正中耶穌塔最高、頂上四臂十字架
+    // 側面（+x）：拉丁十字的長邊在 z：左（−z）誕生四塔、右（+z）受難四塔，中央一叢尖塔；
+    //   主殿往 +x 伸到還在施工的榮耀立面，後殿在 −x、頂著聖母塔（頂上一顆星）
+    // 三樣識別物：一排四根紡錘鐘樓（塔身螺旋開口、頂上紅黃白尖頂飾）、往中央愈來愈高的一叢尖塔、
+    //   耶穌塔頂的十字架
+    // 部件：台基 主殿側廊 主殿中廊 翼廊側廊 翼廊中廊 半圓後殿 高後殿 兩坡屋頂 側廊窗 中廊窗
+    //       側廊／中廊頂的果實小尖塔 主殿屋脊的雙曲面小天窗塔 後殿一圈小尖塔
+    //       誕生立面（三座尖拱門＋山牆＋柏樹＋白鴿） 誕生鐘樓×4（螺旋開口、尖頂飾）
+    //       受難立面（斜柱門廊＋門廊頂＋骨頭柱列） 受難鐘樓×4 榮耀立面（未完工：三座門＋前庭）
+    //       耶穌塔（石身＋白色燈籠＋玻璃）＋十字架 福音書作者塔×4（象徵物） 聖母塔＋星
+    const SA = 0, OLD = 1, WH = 2, DK = 3, RD = 4, YE = 5, GR = 6, BL = 7;
+    const H = (x, y, z) => (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) % 100;
+    /* 尺寸照真實公尺換：高度 0.04 s 格／公尺；平面放寬一成多（0.046 s）。
+       鐘樓另外加粗、立面上四根塔的間距另外拉開（見 rb、xi、xo），不然紡錘的收分刻不出來、四根擠成一片。 */
+    const V = (m, mn) => dim(s, m * 0.04, mn);
+    const P = (m, mn) => dim(s, m * 0.046, mn);
+    const kP = s * 0.046;
+    // 整數邊界的長方體與四面牆，顏色一邊蓋一邊挑（c 可以是函式）
+    const B = (x0, x1, y0, y1, z0, z1, c) => {
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++)
+        v.set(x, y, z, typeof c === 'function' ? c(x, y, z) : c);
     };
-    mirrorX(v, Math.round(baseW / 2), (vv, dx) => {
-      windowGrid(vv, Object.assign({ x: dx, y: 2, z: 0 }, winConfig));
-    });
-
-    // 6. 側壁飛扶壁支柱（第六層：附屬部件）
-    const buttressN = dim(s, 0.35, 2);
-    const bSpan = Math.max(2, Math.round((baseD - 2) / buttressN));
-    mirrorX(v, Math.round(baseW / 2) + 1, (vv, dx) => {
-      for (let i = 0; i < buttressN; i++) {
-        const bz = Math.round(-baseD / 2 + 1 + (i + 0.5) * bSpan);
-        vv.box(dx, 1, bz, 1, naveH, 1, 1);
-        v.line(dx, 1 + naveH, bz, Math.round(baseW / 2), 1 + naveH + 2, bz, 1);
+    const W = (x0, x1, y0, y1, z0, z1, c) => {
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++)
+        if (x === x0 || x === x1 || z === z0 || z === z1) v.set(x, y, z, c(x, y, z));
+    };
+    const sand = (x, y, z) => H(x, y, z) < 16 ? OLD : SA;                       // 新一點的砂岩
+    const old = (x, y, z) => H(x, y, z) < 18 ? SA : OLD;                        // 誕生立面與它的鐘樓：舊砂岩
+    const pale = (x, y, z) => H(x, y, z) < 22 ? SA : WH;                         // 中央六塔的淺色新石材
+    // 旋轉體（自己掃，顏色一邊蓋一邊挑）：prof [[半徑, 高度], …]，pick(x, y, z, 角度｜null)
+    const spin = (cx, y0, cz, prof, shell, pick) => {
+      const top = Math.round(prof[prof.length - 1][1]);
+      let k = 0;
+      for (let j = 0; j <= top; j++) {
+        while (k + 2 < prof.length && j > prof[k + 1][1]) k++;
+        const a = prof[k], b = prof[k + 1], sp = b[1] - a[1];
+        const t = sp > 0 ? Math.min(1, Math.max(0, (j - a[1]) / sp)) : 0;
+        const r = a[0] + (b[0] - a[0]) * t, n = Math.ceil(r + 0.3);
+        for (let i = -n; i <= n; i++) for (let m = -n; m <= n; m++) {
+          const d = Math.sqrt(i * i + m * m);                  // 不用 Math.hypot：fitScale 一輪六十次，它慢一截
+          if (d > r + 0.3 || (shell && r > 2.5 && d < r - shell)) continue;
+          v.set(cx + i, y0 + j, cz + m, pick(cx + i, y0 + j, cz + m, d > r - 0.7 ? Math.atan2(m, i) : null));
+        }
       }
-    });
-
-    // 7. 高聳山牆與屋頂（第五層：屋頂）
-    v.gable(0, 2 + naveH, 0, baseW + 2, baseD + 2, 0);
-
-    // 8. 正面誕生立面的四座鏤空鐘樓塔（高迪標誌性錐形網狀塔）
-    const fTowerR = dim(s, 0.28, 2);
-    const fTowerH = dim(s, 2.8, 8);
-    const innerX = Math.round(baseW * 0.16);
-    const outerX = Math.round(baseW * 0.38);
-
-    // 內側兩座較高的塔
-    mirrorX(v, innerX, (vv, dx) => {
-      vv.taper(dx, 1, frontZ - 1, fTowerR + 0.4, 0.8, fTowerH, 0, 1);
-      // 塔身開口鏤空效果
-      const winRows = dim(s, 0.5, 3);
-      for (let w = 0; w < winRows; w++) {
-        const wy = 2 + Math.round((w + 1) * (fTowerH / (winRows + 2)));
-        paintFrom(vv, dx, wy, frontZ - 3, 0, 0, 1, 3, 2);
+    };
+    const disc = (cx, y, cz, r, pick) => {
+      const n = Math.ceil(r + 0.3);
+      for (let i = -n; i <= n; i++) for (let m = -n; m <= n; m++)
+        if (i * i + m * m <= (r + 0.3) ** 2) v.set(cx + i, y, cz + m, pick(i, m));
+    };
+    // 拋物線尖拱門：u0 中線、hw 半寬、h 高，f(u, y) 處理每一格（挖洞或點暗）
+    const portal = (u0, hw, h, f) => {
+      for (let j = 0; j < h; j++) {
+        const w = hw * Math.sqrt(1 - j / h);
+        for (let u = Math.ceil(u0 - w - 0.01); u <= Math.floor(u0 + w + 0.01); u++) f(u, j);
       }
-      // 頂部主教冠/果實彩陶尖頂（第六層：頂飾）
-      const tipY = 1 + fTowerH;
-      vv.box(dx, tipY, frontZ - 1, 1, dim(s, 0.35, 2), 1, 5);
-      vv.box(dx, tipY + 1, frontZ - 1, 2, 1, 2, 4);
-    });
+    };
 
-    // 外側兩座略矮的塔
-    const outerTowerH = Math.round(fTowerH * 0.85);
-    mirrorX(v, outerX, (vv, dx) => {
-      vv.taper(dx, 1, frontZ, fTowerR, 0.7, outerTowerH, 0, 1);
-      const winRows = dim(s, 0.4, 2);
-      for (let w = 0; w < winRows; w++) {
-        const wy = 2 + Math.round((w + 1) * (outerTowerH / (winRows + 2)));
-        paintFrom(vv, dx, wy, frontZ - 2, 0, 0, 1, 3, 2);
+    // ── 平面骨架（真實：主殿含後殿 90 m、五廊寬 45 m；翼廊 60 m、三廊寬 30 m；側廊 30 m、中廊 45 m 高）
+    const hA = V(30, 3), hC = V(45, 5);
+    const xT = P(15, 2), xC = P(7.5, 1), zN = P(22.5, 3), zC = xC;
+    const xG = P(52, 6), zT = P(30, 4);
+    const xA = -xT, rA = zN;                       // 後殿半圓：圓心在翼廊西牆
+    const xM = -P(26, 4), rH = P(11, 2);           // 聖母塔與它底下的高後殿
+    /* 兩坡屋頂只蓋兩格厚的斜面（山牆端整片）：實心的三角柱裡面看不到，
+       塊數省下來給鐘樓長高。屋頂用淺砂岩，誕生立面的深褐鐘樓才從背景跳得出來。 */
+    const roof = (x, y, z) => H(x, y, z) < 25 ? OLD : SA;
+    const gableAlong = (axis, a0, a1, y0, hw0) => {
+      for (let j = 0; j <= hw0; j++) for (let a = a0; a <= a1; a++) for (let b = j - hw0; b <= hw0 - j; b++) {
+        if (a !== a0 && a !== a1 && Math.abs(b) < hw0 - j - 1) continue;
+        if (axis === 'x') v.set(a, y0 + j, b, roof(a, y0 + j, b)); else v.set(b, y0 + j, a, roof(b, y0 + j, a));
       }
-      const tipY = 1 + outerTowerH;
-      vv.box(dx, tipY, frontZ, 1, dim(s, 0.3, 2), 1, 5);
-      vv.box(dx, tipY + 1, frontZ, 2, 1, 2, 4);
-    });
+    };
 
-    // 9. 中央基督之塔（全堂最高主塔）與四福音書副塔
-    const mainTowerR = dim(s, 0.5, 3);
-    const mainTowerH = dim(s, 3.6, 11);
-    const mainTowerY = 2 + naveH;
-    // 中央主塔本體
-    v.taper(0, mainTowerY, 0, mainTowerR + 0.5, 0.9, mainTowerH, 0, 1);
-    // 頂部巨型四臂立體十字架
-    const crossBaseY = mainTowerY + mainTowerH;
-    const crossH = dim(s, 0.45, 3);
-    v.box(0, crossBaseY, 0, 1, crossH, 1, 4);
-    v.box(0, crossBaseY + Math.max(1, crossH - 2), 0, 3, 1, 1, 4);
-    v.box(0, crossBaseY + Math.max(1, crossH - 2), 0, 1, 1, 3, 4);
-    tint(v, 0, crossBaseY + crossH, 0, 5);
+    // ── 主殿（+x）：側廊外牆 → 側廊屋頂（深一階，兼腰線）→ 中廊高牆 → 兩坡屋頂（屋脊沿 x）
+    W(xT, xG, 0, hA, -zN, zN, sand);
+    for (let z = -zN; z <= zN; z++) if (Math.abs(z) >= zC) B(xT, xG, hA + 1, hA + 1, z, z, OLD);
+    W(xT, xG, hA + 2, hC, -zC, zC, sand);
+    gableAlong('x', xT, xG, hC + 1, zC + 1);
+    const ridgeN = hC + zC + 2;
+    // ── 翼廊（沿 z）：同一套斷面，屋脊沿 z
+    W(-xT, xT, 0, hA, -zT, zT, sand);
+    for (let x = -xT; x <= xT; x++) if (Math.abs(x) >= xC) B(x, x, hA + 1, hA + 1, -zT, zT, OLD);
+    W(-xC, xC, hA + 2, hC, -zT, zT, sand);
+    gableAlong('z', -zT, zT, hC + 1, xC + 1);
+    // ── 後殿（−x）：半圓外圈（側廊高）＋屋頂；中間一圈高後殿，屋頂收成圓錐托著聖母塔
+    for (let y = 0; y <= hA + 1; y++)
+      for (let x = Math.floor(xA - rA - 1); x < xA; x++) for (let z = -zN; z <= zN; z++) {
+        const d = Math.sqrt((x - xA) ** 2 + z * z);
+        if (d > rA + 0.35 || (y <= hA && d < rA - 1)) continue;
+        v.set(x, y, z, y > hA ? OLD : sand(x, y, z));
+      }
+    v.cyl(xM, hA + 2, 0, rH, hC - hA - 1, SA, 1);
+    v.taper(xM, hC + 1, 0, rH + 1, Math.max(1, rH * 0.45), V(10, 2), OLD, 1);
 
-    // 四福音書環繞副塔
-    const subTowerDist = Math.round(mainTowerR + 1.5);
-    const subTowerH = Math.round(mainTowerH * 0.6);
-    corners4(v, subTowerDist, subTowerDist, (vv, x, z) => {
-      vv.taper(x, mainTowerY, z, 0.8, 0.4, subTowerH, 1);
-      vv.box(x, mainTowerY + subTowerH, z, 1, 2, 1, 4);
-      tint(vv, x, mainTowerY + subTowerH + 2, z, 5);
+    // ── 窗：側廊、中廊一開間一道長窗（開間 7.5 m）
+    const bay = Math.max(2, Math.round(kP * 7.5));
+    for (let x = xT + 2; x <= xG - 1; x += bay) for (const sg of [-1, 1]) {
+      for (let y = 2; y <= hA - 2; y++) tint(v, x, y, sg * zN, DK);
+      for (let y = hA + 3; y <= hC - 1; y++) tint(v, x, y, sg * zC, DK);
+    }
+    // 側廊頂、中廊簷上的果實小尖塔（紅黃馬賽克）
+    let q = 0;
+    for (let x = xT + 2; x <= xG - 1; x += bay, q++) for (const sg of [-1, 1]) {
+      v.set(x, hA + 2, sg * zN, SA); v.set(x, hA + 3, sg * zN, q & 1 ? RD : YE);
+      v.set(x, hC + 2, sg * (zC + 1), SA); v.set(x, hC + 3, sg * (zC + 1), q & 1 ? YE : RD);
+    }
+    // 主殿屋脊上一排雙曲面小天窗塔（腰細、頂端金點）
+    const rl = Math.max(1, kP * 2.4), hl = V(12, 2);
+    const nl = Math.max(2, Math.round((xG - xT) / Math.max(4, kP * 13)));
+    rowOf(v, nl, (xG - xT) / nl, (vv, x) => {
+      const lx = Math.round(x);
+      revolve(vv, { x: lx, y: ridgeN + 1, z: 0, c: WH, prof: [[rl, 0], [rl * 0.5, hl * 0.5], [rl, hl * 0.8], [0.4, hl]] });
+      vv.set(lx, ridgeN + 1 + hl, 0, YE);
+    }, (xT + xG) / 2);
+    // 後殿外牆的長窗：落在兩座小尖塔中間，從圓心往外打一條線找到牆面
+    for (let k = 0; k < 6; k++) {
+      const a = Math.PI / 2 + (k + 0.5) * Math.PI / 6;
+      for (let y = 2; y <= hA - 2; y++) paintFrom(v, xA, y, 0, Math.cos(a), 0, Math.sin(a), Math.ceil(rA) + 2, DK);
+    }
+    // 後殿一圈七座小尖塔（禮拜堂頂）
+    ringOf(v, 7, rA, (vv, x, z) => {
+      const px = Math.round(x), pz = Math.round(z), hp = V(16, 2);
+      spin(px, hA + 2, pz, [[Math.max(0.9, kP * 2), 0], [0.4, hp - 1]], 0, () => SA);
+      vv.set(px, hA + 2 + hp, pz, YE);
+    }, xA, 0, Math.PI / 2, Math.PI);
+
+    // ── 鐘樓：下段埋在立面裡，出了立面頂就是拋物線收尖的紡錘；塔身螺旋排列的開口；頂上彩色尖頂飾
+    const rb = Math.max(1.2, s * 0.25);                     // 3000 塊是 3×3、9000 塊是五格寬的圓
+    const xi = dim(s, 0.68, 2), xo = dim(s, 1.6, 6);        // 內塔、外塔的 x：塔與塔之間要看得到天空
+    const bell = (cx, cz, ht, yF, body) => {
+      /* 出了立面頂一路收：五格寬 → 3×3 → 十字 → 一格，各佔一段（照拋物線取 sqrt 的話
+         整段幾乎等寬、最後一下收尖，看起來是一根直筒加一顆頭） */
+      const yS = Math.round(ht * 0.77);
+      const prof = [[rb * 0.7, 0], [rb * 0.75, yF * 0.6], [rb, yF]];
+      for (const [f, k] of [[0.35, 0.9], [0.65, 0.72], [0.85, 0.55], [1, 0.4]]) prof.push([rb * k, yF + (yS - yF) * f]);
+      spin(cx, 0, cz, prof, 1.2, (x, y, z, a) => {
+        if (a !== null && y > yF && y < yS - 1 && !((y - yF) % 2)) {
+          const ph = a / (2 * Math.PI) * 3 - (y - yF) / 6;    // 三道螺旋往上繞，一層開口一層實牆
+          if (ph - Math.floor(ph) < 0.3) return DK;
+        }
+        return body(x, y, z);
+      });
+      // 尖頂飾：細頸（白）→ 主教冠（紅黃相間）→ 一圈白球 → 權杖／十字（金）
+      let y = yS + 1;
+      v.set(cx, y++, cz, WH);
+      const nc = Math.max(1, Math.round((ht - yS) * 0.3)), rc = Math.max(1.1, rb * 0.6);
+      for (let k = 0; k < nc; k++, y++) disc(cx, y, cz, rc, (i, m) => (i + m + k) & 1 ? RD : YE);
+      if (s < 5) { for (; y <= ht; y++) v.set(cx, y, cz, y < ht ? WH : YE); return; }   // 小尺寸：白球圈、十字橫臂都只剩一格寬
+      disc(cx, y++, cz, 1, () => WH);
+      for (; y <= ht; y++) v.set(cx, y, cz, YE);
+      v.set(cx - 1, ht - 1, cz, YE); v.set(cx + 1, ht - 1, cz, YE);
+    };
+
+    /* ── 誕生立面（−z）：兩格厚的牆，三座門各頂一片尖山牆——正門那片最高、一路尖到柏樹腳下，
+          兩側的矮一截。牆頂在塔身那裡最低（塔從這裡開始獨立），往兩座塔中間拉高。 */
+    const zF = -zT - 1;
+    const fS = V(30, 3), fC = V(36, 4), pS = V(40, 4), pC = V(50, 5);
+    B(-xo - 1, xo + 1, 0, 0, zF - P(5, 2), zF - 1, OLD);                // 前庭台基
+    for (let x = -xo; x <= xo; x++) {
+      const ax = Math.abs(x), mid = (xi + xo) / 2, half = (xo - xi) / 2;
+      const top = ax < xi ? Math.round(fC + (pC - fC) * (1 - ax / xi))
+                          : Math.round(fS + (pS - fS) * Math.max(0, 1 - Math.abs(ax - mid) / half));
+      B(x, x, 0, top, zF, zF + 1, old);
+      // 門頂以上滿是雕刻：前面再黏一層零零落落的凸塊，平板才有凹凸
+      for (let y = (ax < xi ? V(30, 3) : V(24, 2)) + 1; y < top; y++)
+        if (H(x, y, zF - 1) < 14) v.set(x, y, zF - 1, old(x, y, zF - 1));
+    }
+    const cutF = (u, j) => { v.del(u, j, zF); v.set(u, j, zF + 1, DK); };
+    portal(0, Math.max(1, xi - rb * 0.7 - 0.2), V(30, 3), cutF);               // 正門（慈愛之門）
+    for (const sg of [-1, 1]) portal(sg * (xi + xo) / 2, Math.max(0.5, (xo - xi) / 2 - rb * 0.7 - 0.2), V(24, 2), cutF);
+    for (const sg of [-1, 1]) {
+      bell(sg * xi, zF, V(107.5, 10), fC, old);
+      bell(sg * xo, zF, V(98, 9), fS, old);
+    }
+    // 正門山牆頂上的柏樹（生命之樹）與白鴿
+    const yCy = pC + 1, hCy = V(20, 3);
+    v.taper(0, yCy, zF, Math.max(1.2, kP * 4.8), 0.4, hCy, GR);
+    paintFrom(v, 0, yCy + Math.round(hCy * 0.35), zF, 0, 0, -1, 4, WH);
+    paintFrom(v, 0, yCy + Math.round(hCy * 0.6), zF, 1, 0, 0, 4, WH);
+    paintFrom(v, 0, yCy + Math.round(hCy * 0.6), zF, -1, 0, 0, 4, WH);
+
+    /* ── 受難立面（+z）：比誕生立面平直、乾硬的淺色立面。門廊底下整片是暗的門洞，
+          前面六根往外斜的淺色骨頭柱撐著一片厚門廊頂，頂上一排高低不齊的骨頭柱（山牆） */
+    const zP = zT + 1, fP = V(40, 4);
+    const dP = P(9, 2), yCan = V(24, 3), rc6 = Math.max(0.75, s * 0.13);
+    B(-xo, xo, 0, fP, zT, zP, sand);
+    for (let x = 2 - xo; x <= xo - 2; x++) for (let y = 0; y < yCan; y++) { v.del(x, y, zP); v.set(x, y, zT, DK); }
+    for (const sg of [-1, 1]) {
+      bell(sg * xi, zP, V(112, 11), fP, sand);
+      bell(sg * xo, zP, V(103, 10), fP, sand);
+    }
+    rowOf(v, 6, (2 * xo - 3) / 5, (vv, x) =>
+      limb(vv, { x: x * 0.6, y: 0, z: zP + 1, x1: x * 1.05, y1: yCan, z1: zP + dP, r: rc6, c: WH }));
+    B(-xo, xo, yCan, yCan + 1, zP + 1, zP + dP, sand);                    // 門廊頂（兩層厚）
+    for (let x = 1 - xo, k = 0; x <= xo - 1; x += 2, k++)                  // 骨頭柱列：中間高、兩邊低、一高一低
+      B(x, x, yCan + 2, yCan + 1 + V(6, 1) + Math.round((xo - Math.abs(x)) * 0.5) + (k & 1), zP + dP, zP + dP, WH);
+
+    // ── 榮耀立面（+x，主殿東端）：2026 年還在施工，鐘樓沒蓋，只有門與前庭
+    const hG = V(24, 3);
+    portal(0, Math.max(1, zC - 0.5), hG, (z, y) => tint(v, xG, y, z, DK));
+    for (const sg of [-1, 1]) portal(sg * (zC + zN) / 2, Math.max(0.5, (zN - zC) / 2 - 1), V(18, 2), (z, y) => tint(v, xG, y, z, DK));
+    B(xG + 1, xG + P(6, 2), 0, 0, -zN, zN, OLD);
+
+    // ── 中央：耶穌塔（最高）＋四座福音書作者塔＋聖母塔，淺色新石材，上段白色燈籠＋玻璃
+    /* 塔身不點暗窗：正面看過去中央這一叢要是乾淨的淺色，才分得出前排深褐的誕生鐘樓 */
+    const central = (yL) => (x, y, z, a) => {
+      if (a === null) return WH;
+      if (y >= yL) return Math.round(a / (2 * Math.PI) * 12) % 3 ? WH : BL;   // 燈籠：白瓷夾玻璃直條
+      return pale(x, y, z);
+    };
+    const taperProf = (r0, h) => [[r0, 0], [r0 * 0.86, h * 0.45], [r0 * 0.6, h * 0.78], [r0 * 0.4, h * 0.92], [0.5, h]];
+    // 耶穌塔：172.5 m，頂上十字架高 17 m、寬 13.5 m（四臂立體十字，白瓷＋玻璃，2026 年 2 月裝完）
+    const rJ = Math.max(1.6, kP * 9.5), yJ0 = hC + 1, yX1 = V(172.5, 18);
+    const hX = Math.max(3, V(17, 3)), yJ1 = yX1 - hX;
+    spin(0, yJ0, 0, taperProf(rJ, yJ1 - yJ0), 1.3, central(V(135, 14)));
+    B(0, 0, yJ1 + 1, yX1, 0, 0, WH);
+    const ax = Math.max(1, Math.round(hX * 0.28)), yArm = yJ1 + Math.max(2, Math.round(hX * 0.55));
+    B(-ax, ax, yArm, yArm, 0, 0, WH); B(0, 0, yArm, yArm, -ax, ax, WH);
+    v.set(0, yArm, 0, BL);
+    // 福音書作者塔：135 m，頂上各一個金色象徵物（人、獅、牛、鷹），每一格都面貼面接回塔尖
+    const e = P(14, 2), rE = Math.max(1.2, kP * 5.5), yE1 = V(130, 14);
+    /* 塔腳是翼廊交叉處的四根大墩（砂岩，從側廊屋頂長到中廊頂），淺色塔身從中廊頂以上才露出來——
+       照實是從交叉部屋頂（60 多 m）才露出來；直接從側廊屋頂長的話，正面看過去下半截全疊在誕生鐘樓後面 */
+    [[1, -1], [-1, -1], [1, 1], [-1, 1]].forEach(([sx, sz], i) => {
+      const x = sx * e, z = sz * e;
+      B(x - 1, x + 1, hA + 2, hC, z - 1, z + 1, sand);
+      spin(x, hC + 1, z, taperProf(rE, yE1 - hC - 1), 1.2, central(V(115, 12)));
+      const y = yE1 + 1;
+      v.set(x, y, z, YE);
+      if (s < 6) return;                                                                     // 小尺寸只留一點金
+      v.set(x, y + 1, z, YE);
+      if (i === 0 || i === 3) { v.set(x - 1, y + 1, z, YE); v.set(x + 1, y + 1, z, YE); }   // 天使、鷹：張開的翅膀
+      else if (i === 2) { v.set(x, y + 2, z, YE); v.set(x - 1, y + 2, z, YE); v.set(x + 1, y + 2, z, YE); }  // 牛：兩支角
+      else { v.set(x, y + 1, z - 1, YE); v.set(x, y + 2, z, YE); }                           // 獅：頭往前探
     });
+    // 聖母塔：138 m，頂上一顆十二角星（白天是玻璃，晚上會亮）
+    const rM = Math.max(1.3, kP * 7), L = Math.max(1, Math.round(kP * 5));    // 星照實直徑 7 m 多，放大才看得到
+    const yM1 = V(138, 15) - 2 * L - 1, ySt = yM1 + 1 + L;
+    spin(xM, hC + 1, 0, taperProf(rM, yM1 - hC - 1), 1.2, central(V(118, 12)));
+    for (let k = -L; k <= L; k++) { v.set(xM + k, ySt, 0, BL); v.set(xM, ySt + k, 0, BL); v.set(xM, ySt, k, BL); }
+    if (L >= 2) for (const a of [-1, 1]) for (const b of [-1, 1]) for (const c of [-1, 1]) v.set(xM + a, ySt + b, c, BL);
   } },
 
 { n: '美國國會大廈', lo: 1.8, hi: 13,
@@ -4310,91 +4952,305 @@ const SHAPES = [
     blob(v, 0, y + goldR, 0, goldR, goldR * 1.25, goldR, 3);
   } },
 
-{ n: '吳哥窟', lo: 2.2, hi: 15.0, pal: [0x7a7469, 0x5c5549, 0x9e9687, 0x3a342c, 0xb5ac98, 0x4a453b],
-  /* 來源：AgentData/blueprints/吳哥窟.js（v1.143 換掉原本那份） */
+{ n: '吳哥窟', lo: 2.0, hi: 13,
+  // v1.285.0 整座重畫（見 開發筆記〈還很粗糙的七座重畫〉）
+  pal: [0x7f786b,   // 0 砂岩（灰，主色）
+        0x5d574d,   // 1 砂岩暗一階：地衣流痕、迴廊裡背光的內牆
+        0x9d9584,   // 2 砂岩亮一階：線腳、塔身一圈圈的收分、踏面
+        0x8a5a3e,   // 3 紅土石（laterite）：台基、池岸
+        0x4e4b46,   // 4 迴廊屋頂（深灰）
+        0x2f2c28,   // 5 門洞、窗洞
+        0x3e6f69],  // 6 水：參道兩側的倒影池、十字迴廊的四個水池
   gen(v, s) {
-    // 1. 基礎尺度參數化（全部帶下限保證小尺寸不失真）
-    const b1 = dim(s, 2.6, 13, true);   // 最底層台基邊長（奇數）
-    const b2 = dim(s, 1.9, 9, true);    // 第二層台基邊長（奇數）
-    const b3 = dim(s, 1.3, 7, true);    // 最高主殿台基邊長（奇數）
+    /* 正面（−z，西）：最前面一條長參道（兩側那伽護欄）接十字形榮譽台，後面是又長又低的第一層迴廊
+         （柱廊＋深灰屋頂，中間三座門樓），再往後第二層、第三層一層比一層高，頂上五座蓮苞塔
+         （正面看得到三座，中央那座最高）；整體寬約中央塔高的 3 倍
+       側面：三層台一路往後（+z）爬高，Bakan 台基又陡又高，塔群偏在整座的後半段，前面拖著參道
+       三樣識別物：梅花形五座蓮苞塔（松果輪廓、一圈圈水平線腳）、三層一圈套一圈的長方形迴廊、
+         正門前的長參道＋那伽護欄＋十字形榮譽台
+       部件：參道(台＋鋪面) 那伽護欄(兩側＋前端昂起的蛇頭) 藏經閣×2(台＋十字形殿身＋疊頂) 倒影池×2
+         十字形榮譽台(台＋護欄) 第一層台基(紅土石) 第一層迴廊(柱廊＋暗內牆＋疊澀屋頂) 西面三座門樓
+         南北東三座門樓 四角角亭 十字迴廊 Preah Poan(田字形四條廊＋四個水池)
+         第二層台基(紅土石＋線腳＋三面階梯) 第二層迴廊(外牆窗洞＋內側柱列＋屋頂) 四座門樓 四角截頂角塔
+         Bakan 陡台基(分階、每面三道陡梯) 第三層迴廊 四座門樓 十字軸廊 中央聖殿台 五座蓮苞塔(殿身＋松果塔) */
 
-    const h1 = dim(s, 0.4, 2);          // 底層台基高
-    const h2 = dim(s, 0.4, 2);          // 第二層高
-    const h3 = dim(s, 0.5, 2);          // 第三層高
+    // 尺寸一律用實物公尺換算：M(公尺, 下限)；係數之間的比例就是吳哥窟的長相
+    const M = (m, lo, odd) => dim(s, m * 0.04, lo, odd);
+    const Mf = (m, lo) => Math.max(lo, s * m * 0.04);     // 不取整：塔的半徑（塊數才連續）
+    // 固定雜湊：同一格每次都一樣。石頭一邊蓋一邊挑色，不整份重掃
+    const H = (x, y, z) => (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) % 100;
+    /* 砂岩：(x, z) 同一直行抽到的整條偏暗＝從上往下的地衣流痕（吳哥窟最明顯的質感）；
+       其餘逐格挑亮／暗。t = 2 是線腳那一層，亮為主 */
+    const st = (x, y, z, t) => {
+      const h = H(x, y, z);
+      if (H(x, 7, z) < 11 && h < 80) return 1;
+      if (t === 2) return h < 28 ? 0 : 2;
+      return h < 20 ? 2 : h < 31 ? 1 : 0;
+    };
+    const lat = (x, y, z) => H(x, y, z) < 18 ? 1 : 3;
+    const roof = (x, y, z) => H(x, y, z) < 20 ? 1 : 4;
+    const S = (x, y, z, t) => v.set(x, y, z, st(x, y, z, t || 0));
 
-    const gh = dim(s, 0.55, 2);         // 迴廊柱牆高度
-    const gw = dim(s, 0.35, 1);         // 迴廊寬度/厚度
-
-    // 2. 第一層（底層）大台基與外圍十字迴廊線條
-    v.box(0, 0, 0, b1 + 2, h1, b1 + 2, 1);
-    v.walls(0, h1, 0, b1, gh, b1, 0, gw);
-    // 外圍迴廊的盲窗/直欞石窗 (用 windowGrid tint 到外牆)
-    const win1 = { rows: 1, w: 1, h: Math.max(1, gh - 1), c: 3, stepX: 2, cols: Math.max(2, Math.floor(b1 / 4)) };
-    mirrorX(v, (b1 - 1) / 2, (vv, dx) => windowGrid(vv, Object.assign({ x: dx, y: h1, z: 0, axis: 'z' }, win1)));
-    mirrorZ(v, (b1 - 1) / 2, (vv, dz) => windowGrid(vv, Object.assign({ x: 0, y: h1, z: dz, axis: 'x' }, win1)));
-
-    // 四向正面開大門洞
-    mirrorX(v, (b1 - 1) / 2, (vv, dx) => vv.carve(dx, h1, 0, gw + 2, gh, dim(s, 0.35, 1, true)));
-    mirrorZ(v, (b1 - 1) / 2, (vv, dz) => vv.carve(0, h1, dz, dim(s, 0.35, 1, true), gh, gw + 2));
-
-    // 正面延伸石階與引橋參道 (朝 -z 方向)
-    const stairW = dim(s, 0.55, 3, true);
-    const bridgeL = dim(s, 0.7, 3);
-    stairs(v, 0, 0, -(b1 + 2) / 2 - 1, h1, stairW, '-z', 5);
-    v.box(0, 0, -(b1 + 2) / 2 - 1 - bridgeL / 2, stairW + 2, 1, bridgeL, 5);
-    // 參道兩側那伽護欄
-    mirrorX(v, (stairW + 1) / 2, (vv, dx) => vv.box(dx, 1, -(b1 + 2) / 2 - 1 - bridgeL / 2, 1, 1, bridgeL, 1));
-
-    // 3. 第二層台基與中層迴廊
-    const y2 = h1 + gh;
-    v.box(0, y2, 0, b2 + 2, h2, b2 + 2, 1);
-    v.walls(0, y2 + h2, 0, b2, gh, b2, 0, gw);
-    // 第二層四周台階
-    stairs(v, 0, y2, -(b2 + 2) / 2, h2, stairW, '-z', 5);
-    stairs(v, 0, y2, (b2 + 2) / 2, h2, stairW, 'z', 5);
-    stairs(v, -(b2 + 2) / 2, y2, 0, h2, stairW, '-x', 5);
-    stairs(v, (b2 + 2) / 2, y2, 0, h2, stairW, 'x', 5);
-
-    // 4. 第三層中央聖殿高台（須彌座）
-    const y3 = y2 + h2 + gh;
-    v.box(0, y3, 0, b3 + 2, h3, b3 + 2, 1);
-    v.walls(0, y3 + h3, 0, b3, gh, b3, 0, gw);
-    // 陡峭的通頂台階
-    stairs(v, 0, y3, -(b3 + 2) / 2, h3, Math.max(1, stairW - 2), '-z', 5);
-
-    // 5. 吳哥窟標誌性特徵：五座蓮花苞式寶塔（Prasat）
-    const yTowers = y3 + h3 + gh;
-    const cornerTowerOffset = Math.round((b3 - 1) / 2);
-
-    // 輔助函式：建造單座蓮花苞寶塔（多層向內縮進收尖 + 花瓣凹凸）
-    const buildLotusTower = (vx, vy, vz, r, h, isMain) => {
-      // 塔座與多重挑簷
-      v.box(vx, vy, vz, r * 2 + 1, 1, r * 2 + 1, 1);
-      v.taper(vx, vy + 1, vz, r, r * 0.8, Math.round(h * 0.4), 2);
-      // 蓮花苞鼓出段與收尖段
-      const midY = vy + 1 + Math.round(h * 0.4);
-      const topH = Math.max(3, h - Math.round(h * 0.4));
-      v.onion(vx, midY, vz, r * 0.9, topH, 2);
-      // 塔尖花冠與金頂
-      v.taper(vx, midY + topH, vz, Math.max(0.8, r * 0.35), 0.2, dim(s, 0.25, 2), 4);
-      // 塔身四面線腳裝飾
-      if (isMain) {
-        mirrorX(v, r, (vv, dx) => vv.box(vx + dx, vy + 1, vz, 1, Math.round(h * 0.5), 1, 4));
-        mirrorZ(v, r, (vv, dz) => vv.box(vx, vy + 1, vz + dz, 1, Math.round(h * 0.5), 1, 4));
+    /* 長方形環：x∈[xa,xb]、z∈[za,zb]，k ＝ 離外緣第幾格，a ＝ 沿著那一邊走的座標（排柱子用）。
+       只走環上的格子，中庭直接跳過 */
+    const ring = (xa, xb, za, zb, T, ya, yb, prof) => {
+      for (let z = za; z <= zb; z++) {
+        const kz = Math.min(z - za, zb - z);
+        for (let x = xa; x <= xb; x++) {
+          const kx = Math.min(x - xa, xb - x);
+          if (kz >= T && kx >= T) { x = xb - T; continue; }
+          const k = Math.min(kx, kz), a = kx <= kz ? z : x;
+          for (let y = ya; y <= yb; y++) { const c = prof(k, a, y, x, z); if (c >= 0) v.set(x, y, z, c); }
+        }
+      }
+    };
+    /* 迴廊斷面：外側（柱列 col／有窗洞的牆 wall）→ 走道 → 內側。
+       屋頂是一層一層往中線收的疊澀頂：第一層整片、往上每層兩邊各收一格 */
+    const nrOf = T => T >= 5 ? 3 : T >= 3 ? 2 : 1;
+    const gal = (y0, hc, T, out, inn) => (k, a, y, x, z) => {
+      const yb = y - y0;
+      if (yb < hc) {
+        // 只有一格厚（小尺寸）時，柱間塗暗色當成看進去的廊道，不挖空——挖了會直接看穿到中庭
+        if (k === 0) return out === 'col' ? ((a & 1) ? (T === 1 ? (H(x, y, z) < 40 ? 5 : 1) : -1) : st(x, y, z, 0))
+          : (yb === Math.max(0, hc - 2) && ((a % 3) + 3) % 3 === 0 ? 5 : st(x, y, z, 0));
+        if (k === T - 1) return inn === 'col' ? ((a & 1) ? -1 : st(x, y, z, 0)) : (H(x, y, z) < 35 ? 5 : 1);
+        return -1;
+      }
+      const r = yb - hc;
+      if (r === 0) return roof(x, y, z);
+      if (k >= r && k <= T - 1 - r) return roof(x, y, z);
+      if (r === 1 && T === 2 && k === 1) return roof(x, y, z);
+      return -1;
+    };
+    /* 一條直的廊（十字迴廊、Bakan 頂上的軸廊）：寬 gw（奇數），hp 層紅土石台、兩側柱列、屋頂 */
+    const lineGal = (ax, c, t0, t1, gw, y0, hp, hc) => {
+      const hg = (gw - 1) / 2;
+      for (let t = t0; t <= t1; t++) for (let u = -hg; u <= hg; u++) {
+        const x = ax === 'z' ? c + u : t, z = ax === 'z' ? t : c + u;
+        for (let y = y0; y < y0 + hp; y++) v.set(x, y, z, lat(x, y, z));
+        const yb = y0 + hp;
+        if (Math.abs(u) === hg && !(t & 1)) for (let y = yb; y < yb + hc; y++) S(x, y, z, 0);
+        v.set(x, yb + hc, z, roof(x, yb + hc, z));
+        if (hg >= 1 && Math.abs(u) < hg) v.set(x, yb + hc + 1, z, roof(x, yb + hc + 1, z));
+      }
+    };
+    /* 門樓／角亭：四角各缺一格的十字形殿身（門廊往四面伸），上面一層一層收的十字疊頂、頂上一顆蓮苞。
+       門洞用暗色塗，不挖穿——挖穿會看到後面的草地。base 給了就從地面墊到 y0（伸出台基的門廊才站得住） */
+    const pav = (xc, zc, y0, hx, hz, hb, tiers, door, base) => {
+      const notch = (ax, az, X, Z) => X > 1 && Z > 1 && ax === X && az === Z;
+      for (let dx = -hx; dx <= hx; dx++) for (let dz = -hz; dz <= hz; dz++) {
+        const ax = Math.abs(dx), az = Math.abs(dz), x = xc + dx, z = zc + dz;
+        if (notch(ax, az, hx, hz)) continue;
+        if (base) for (let y = 0; y < y0; y++) v.set(x, y, z, lat(x, y, z));
+        for (let y = y0; y < y0 + hb; y++)
+          v.set(x, y, z, (door === 'z' ? az === hz && ax <= (hx >= 3 ? 1 : 0)
+                                       : door === 'x' && ax === hx && az <= (hz >= 3 ? 1 : 0)) && y < y0 + hb - 1 ? 5
+                         : st(x, y, z, y === y0 + hb - 1 ? 2 : 0));
+      }
+      let y = y0 + hb;
+      for (let i = 0; i < tiers; i++, y++) {
+        const X = hx - i, Z = hz - i;
+        if (X < 0 || Z < 0) break;
+        for (let dx = -X; dx <= X; dx++) for (let dz = -Z; dz <= Z; dz++) {
+          if (notch(Math.abs(dx), Math.abs(dz), X, Z)) continue;
+          v.set(xc + dx, y, zc + dz, roof(xc + dx, y, zc + dz));
+        }
+      }
+      v.set(xc, y, zc, st(xc, y, zc, 2));                     // 頂上的蓮苞
+    };
+    // 塔的殿身：四角缺角的方塊，四面門洞
+    const body = (xc, y0, zc, hw, hb) => {
+      for (let dx = -hw; dx <= hw; dx++) for (let dz = -hw; dz <= hw; dz++) {
+        const ax = Math.abs(dx), az = Math.abs(dz);
+        if (hw >= 2 && ax === hw && az === hw) continue;
+        for (let y = y0; y < y0 + hb; y++) {
+          const door = ((ax === hw && dz === 0) || (az === hw && dx === 0)) && y < y0 + hb - 1;
+          v.set(xc + dx, y, zc + dz, door ? 5 : st(xc + dx, y, zc + dz, y === y0 + hb - 1 ? 2 : 0));
+        }
+      }
+    };
+    /* 蓮苞塔（prasat）：平面是四角一階一階切掉的十字（|x|+|z| 的上限切出階梯角），
+       立面每 tb 層一圈往外凸的亮色線腳，輪廓先微鼓再收成松果尖。cut 給了就截頂（第二層的角塔）。
+       半徑大的時候中空（看不到裡面）：一格一格往上收，上一層一定蓋得住下一層的洞 */
+    const inPlan = (ax, az, r) => (ax > az ? ax : az) <= r + 0.35 && ax + az <= r * 1.45 + 0.45;
+    const spire = (xc, y0, zc, R, hs, cut) => {
+      const tb = R >= 3 ? 3 : 2, top = cut ? Math.max(2, Math.round(hs * cut)) : hs;
+      for (let j = 0; j < top; j++) {
+        const t = hs > 1 ? j / (hs - 1) : 1;
+        let r = R * (1 + 0.1 * Math.sin(Math.PI * t)) * Math.pow(Math.max(0, 1 - Math.pow(t, 1.6)), 0.7);
+        const mold = j % tb === tb - 1 && j < top - 1;
+        if (mold) r += 0.5;
+        const n = Math.ceil(r + 0.5), ri = r - 1.5, y = y0 + j;
+        for (let dx = -n; dx <= n; dx++) for (let dz = -n; dz <= n; dz++) {
+          const ax = Math.abs(dx), az = Math.abs(dz);
+          if (!inPlan(ax, az, r)) continue;
+          if (ri > 0.8 && j < top - 1 && inPlan(ax, az, ri)) continue;
+          v.set(xc + dx, y, zc + dz, st(xc + dx, y, zc + dz, mold ? 2 : 0));
+        }
       }
     };
 
-    // (A) 四座副塔（衛塔）- 位於第三層台基四角
-    const sideR = dim(s, 0.28, 2);
-    const sideH = dim(s, 0.85, 4);
-    corners4(v, cornerTowerOffset, cornerTowerOffset, (vv, cx, cz) => {
-      buildLotusTower(cx, yTowers, cz, sideR, sideH, false);
-    });
+    // ── 尺寸 ─────────────────────────────────────────────
+    /* 第三層（Bakan）：實物 60 m 見方，坐在很陡的台基上，台頂離地約 23 m。
+       取 64 m、下限 9 格：再小的話角塔（3 格寬）跟中央塔中間空不出一格，五座塔糊成一座小山（1800 檔實測過） */
+    const A3 = M(64, 9, true), h3 = (A3 - 1) / 2, G3 = M(7, 1), hc3 = M(4.6, 1), cl3 = Math.floor((G3 - 1) / 2);
+    const run3 = M(6, 1), hB = h3 + run3;
+    // 第二層：100 × 115 m，台基約 9 m；中庭在地面高度（只畫迴廊底下那一圈台基）
+    const G2 = M(8, 1), hc2 = M(5.5, 1), ht2 = M(9, 1), cl2 = Math.floor((G2 - 1) / 2);
+    const HB = ht2 + M(14, 2);                              // Bakan 台基從地面算的總高
+    const Ls = Math.max(1, Math.round(HB * 0.25));          // Bakan 陡梯伸出台基外幾格
+    const gap2 = hB + Ls + G2;                              // 中庭至少留得下 Bakan 的梯腳
+    const hw2 = Math.max((M(100, 9, true) - 1) / 2, gap2);
+    const b2 = Math.max(gap2, M(49.5, 1));                 // Bakan 偏東：西側的中庭比較深
+    const f2 = Math.min(-gap2 - 1, b2 - M(115, 10) + 1);
+    // 第一層：187 × 215 m（正面寬 187、深 215）
+    const G1 = M(9, 1), T1 = G1, hp1 = M(3.5, 1), hc1 = M(5.2, 1), cl1 = Math.floor((G1 - 1) / 2);
+    const hw1 = Math.max((M(187, 17, true) - 1) / 2, hw2 + 3 + T1);
+    const b1 = b2 + Math.max(M(40, 1), T1 + 3);
+    const f1 = Math.min(b1 - M(215, 19) + 1, f2 - T1 - 6);
+    // 榮譽台與參道（參道實物 350 m，壓成 85 m，不然整座被拉得太長、場地也放不下）
+    const Lt = M(32, 3), zT1 = f1 - 1, zT0 = zT1 - Lt + 1;
+    const Lc = M(85, 7), zC1 = zT0 - 1, zC0 = zC1 - Lc + 1;
+    const hcw = (M(9.5, 3, true) - 1) / 2;
 
-    // (B) 中央主聖塔（最高大雄偉）
-    const mainR = dim(s, 0.42, 3);
-    const mainH = dim(s, 1.45, 7);
-    buildLotusTower(0, yTowers, 0, mainR, mainH, true);
+    // ── 1. 倒影池（參道兩側、榮譽台前）：紅土石池岸＋水面 ─────────
+    const pz1 = zT0 - M(8, 1), pz0 = pz1 - M(46, 4) + 1;
+    const px0 = hcw + M(20, 2), px1 = px0 + M(42, 3) - 1;
+    for (let x = px0; x <= px1; x++) for (let z = pz0; z <= pz1; z++) {
+      const rim = x === px0 || x === px1 || z === pz0 || z === pz1;
+      v.set(x, 0, z, rim ? 3 : 6); v.set(-x, 0, z, rim ? 3 : 6);
+    }
+    // 藏經閣：實物在參道半路上、比倒影池更前面；這裡貼在池子前面，空間不夠（最小那幾檔）就不蓋
+    const hxL = M(9, 1), hzL = M(6, 1), zL = pz0 - 2 - hzL, libOk = zL - hzL > zC0;
+    const xL = hcw + M(16, 2) + hxL;
+
+    // ── 2. 參道：一層高的石台、兩側那伽護欄（隔一段留一個側梯口）、前端蛇頭昂起 ─────────
+    for (let z = zC0; z <= zC1; z++) for (let x = -hcw; x <= hcw; x++) S(x, 0, z, Math.abs(x) < hcw ? 2 : 0);
+    const gStep = Math.max(4, M(50, 4));
+    for (let z = zC0 + 1; z <= zC1; z++) {
+      if (libOk && z === zL) continue;                          // 通往藏經閣的步道口
+      if ((zC1 - z) % gStep === Math.floor(gStep / 2)) {        // 側梯口：護欄斷開、外面一格踏步
+        S(hcw + 1, 0, z, 1); S(-hcw - 1, 0, z, 1); continue;
+      }
+      S(hcw, 1, z, 2); S(-hcw, 1, z, 2);
+    }
+    const fh = M(4, 2), fw = M(2, 1);                         // 七頭那伽：前端往上昂、往外張開的扇
+    for (let sg = -1; sg <= 1; sg += 2) {
+      for (let y = 1; y <= fh; y++) S(sg * hcw, y, zC0, 2);
+      for (let i = 1; i <= fw; i++) { S(sg * (hcw + i), fh, zC0, 2); S(sg * (hcw + i), fh - 1, zC0, 2); }
+    }
+
+    // ── 3. 藏經閣（參道兩側）：小台座、十字形殿身、兩層疊頂，一條步道接回參道 ─────────
+    if (libOk) for (let sg = -1; sg <= 1; sg += 2) {
+      for (let x = hcw + 1; x < xL - hxL; x++) S(sg * x, 0, zL, 2);
+      pav(sg * xL, zL, 1, hxL, hzL, M(5, 1), 2, 'x', true);
+    }
+
+    // ── 4. 十字形榮譽台：與迴廊台基同高，邊上一圈那伽護欄（正面中間、橫臂兩端留梯口） ─────────
+    const hst = (M(14, 3, true) - 1) / 2, har = (M(46, 7, true) - 1) / 2, dar = M(12, 2);
+    const zA0 = Math.round((zT0 + zT1 - dar) / 2), zA1 = zA0 + dar - 1;
+    const inT = (x, z) => z > zT1 || (z >= zT0 && ((Math.abs(x) <= hst) || (Math.abs(x) <= har && z >= zA0 && z <= zA1)));
+    for (let z = zT0; z <= zT1; z++) for (let x = -har; x <= har; x++) {
+      if (!inT(x, z)) continue;
+      for (let y = 0; y < hp1; y++) v.set(x, y, z, y === hp1 - 1 ? st(x, y, z, 2) : lat(x, y, z));
+      const edge = !inT(x - 1, z) || !inT(x + 1, z) || !inT(x, z - 1) || !inT(x, z + 1);
+      const open = (z === zT0 && Math.abs(x) <= Math.max(0, hst - 1)) || Math.abs(x) === har;
+      if (edge && !open) S(x, hp1, z, 2);
+    }
+
+    // ── 5. 第一層：紅土石台基＋迴廊（外側柱廊、背光的內牆、疊澀屋頂） ─────────
+    ring(-hw1, hw1, f1, b1, T1, 0, hp1 - 1, (k, a, y, x, z) => (y === hp1 - 1 && hp1 > 1) ? st(x, y, z, 2) : lat(x, y, z));
+    ring(-hw1, hw1, f1, b1, T1, hp1, hp1 + hc1 + nrOf(T1) - 1, gal(hp1, hc1, T1, 'col', 'wall'));
+    // 西面正門：中間一座大門樓（三層疊頂）、兩側各一座小的；南北東各一座；四角角亭
+    const hxW = M(14, 2), xS = M(30, 4), hxS = M(7, 1);
+    pav(0, f1 + cl1, hp1, hxW, M(9, 1), hc1 + M(3, 1), 3, 'z', true);
+    for (let sg = -1; sg <= 1; sg += 2) {
+      // 兩側小門樓：跟中間那座之間至少要空一格才擺（小尺寸擠在一起只會糊成一塊）
+      if (xS - hxS >= hxW + 2) pav(sg * xS, f1 + cl1, hp1, hxS, M(6, 1), hc1 + 1, 2, 'z', true);
+      pav(sg * (hw1 - cl1), 0, hp1, M(6, 1), M(10, 1), hc1 + 1, 2, 'x', true);
+      pav(sg * (hw1 - cl1), f1 + cl1, hp1, M(8, 1), M(8, 1), hc1 + 1, 2, '', true);
+      pav(sg * (hw1 - cl1), b1 - cl1, hp1, M(8, 1), M(8, 1), hc1 + 1, 2, '', true);
+    }
+    pav(0, b1 - cl1, hp1, M(10, 1), M(6, 1), hc1 + 1, 2, 'z', true);
+
+    // ── 6. 十字迴廊 Preah Poan：田字形四條廊，圍出四個水池 ─────────
+    const zc0 = f1 + T1, zc1 = f2 - 2, hwC = Math.max(3, M(27, 3)), zMid = Math.round((zc0 + zc1) / 2);
+    const gc = M(7, 1, true), hgc = (gc - 1) / 2;
+    for (let x = -hwC + hgc + 1; x <= hwC - hgc - 1; x++) for (let z = zc0; z <= zc1 - hgc - 1; z++) {
+      if (Math.abs(x) <= hgc || Math.abs(z - zMid) <= hgc) continue;
+      v.set(x, 0, z, 6);
+    }
+    for (const c of [-hwC, 0, hwC]) lineGal('z', c, zc0, zc1, gc, 0, hp1, hc1);
+    lineGal('x', zMid, -hwC, hwC, gc, 0, hp1, hc1);
+    lineGal('x', zc1 - hgc, -hwC, hwC, gc, 0, hp1, hc1);
+
+    // ── 7. 第二層：迴廊底下一圈台基（外緣多一格台階）＋迴廊（外牆開窗、內側柱列） ─────────
+    const T2 = G2 + 1;
+    ring(-hw2 - 1, hw2 + 1, f2 - 1, b2 + 1, T2, 0, ht2 - 1, (k, a, y, x, z) =>
+      (k === 0 || k === T2 - 1) ? (y === ht2 - 1 ? st(x, y, z, 2) : lat(x, y, z)) : (y === ht2 - 1 ? st(x, y, z, 0) : -1));
+    const sw2 = M(6, 1, true);
+    stairs(v, 0, 0, b2 + 1 + ht2, ht2, sw2, '-z', 2);
+    stairs(v, hw2 + 1 + ht2, 0, 0, ht2, sw2, '-x', 2);
+    stairs(v, -hw2 - 1 - ht2, 0, 0, ht2, sw2, 'x', 2);
+    ring(-hw2, hw2, f2, b2, G2, ht2, ht2 + hc2 + nrOf(G2) - 1, gal(ht2, hc2, G2, 'wall', 'col'));
+    pav(0, f2 + cl2, ht2, M(8, 1), M(6, 1), hc2 + 1, 2, 'z');
+    pav(0, b2 - cl2, ht2, M(8, 1), M(6, 1), hc2 + 1, 2, 'z');
+    /* 四角的角塔（第二層迴廊四角確實有塔，見 Notre Dame 建築圖庫的老照片說明）。
+       實際高度查不到可靠數字，這裡做成殿身加半截塔、明顯比上面的梅花五塔矮，免得正面多冒出兩座搶戲 */
+    const R2 = Mf(4.5, 1), hw2T = Math.max(1, Math.round(R2));
+    for (let sg = -1; sg <= 1; sg += 2) {
+      pav(sg * (hw2 - cl2), 0, ht2, M(6, 1), M(8, 1), hc2 + 1, 2, 'x');
+      for (const zz of [f2 + cl2, b2 - cl2]) {
+        body(sg * (hw2 - cl2), ht2, zz, hw2T, hc2 + 1);
+        spire(sg * (hw2 - cl2), ht2 + hc2 + 1, zz, R2, M(16, 2), 0.55);
+      }
+    }
+
+    // ── 8. Bakan：分階的陡台基（每階頂一圈亮線腳），每面三道陡梯 ─────────
+    const yT = HB;
+    const topK = k => Math.round(HB * Math.min(k + 1, run3 + 1) / (run3 + 1)) - 1;
+    for (let x = -hB; x <= hB; x++) for (let z = -hB; z <= hB; z++) {
+      const k = Math.min(hB - Math.abs(x), hB - Math.abs(z));
+      const y1 = topK(k), ya = k === 0 ? 0 : Math.min(topK(k - 1), y1);
+      for (let y = ya; y <= y1; y++) S(x, y, z, y === y1 ? 2 : 0);
+    }
+    // 陡梯：每面中間一道寬的、對著角塔兩道窄的（實物 12 道，爬起來幾乎是垂直的）
+    const L3 = Ls + run3, swC = (M(5, 1, true) - 1) / 2, sOff = h3 - cl3;
+    for (let d = 0; d < L3; d++) {
+      const top = Math.ceil(HB * (d + 1) / L3) - 1, q = -hB - Ls + d;
+      for (const o of HB >= 4 ? [-sOff, 0, sOff] : [0]) {      // 台太矮（最小那幾檔）只留中間那道
+        const hw = o === 0 ? swC : 0;
+        for (let w = -hw; w <= hw; w++) for (let y = 0; y <= top; y++) {
+          const c = y === top ? 2 : 1;
+          v.set(o + w, y, q, c); v.set(o + w, y, -q, c); v.set(q, y, o + w, c); v.set(-q, y, o + w, c);
+        }
+      }
+    }
+
+    // ── 9. 第三層迴廊、四座門樓、十字軸廊、中央聖殿台 ─────────
+    ring(-h3, h3, -h3, h3, G3, yT, yT + hc3 + nrOf(G3) - 1, gal(yT, hc3, G3, 'wall', 'col'));
+    const hwP = Math.max(1, Math.min(M(12, 1), h3 - G3 - 1)), hpc = M(3, 1);
+    const ga = M(6, 1, true);
+    for (let sg = -1; sg <= 1; sg += 2) {
+      if (h3 - G3 > hwP) {
+        lineGal('z', 0, sg < 0 ? -(h3 - G3) : hwP + 1, sg < 0 ? -(hwP + 1) : h3 - G3, ga, yT, 0, hc3);
+        lineGal('x', 0, sg < 0 ? -(h3 - G3) : hwP + 1, sg < 0 ? -(hwP + 1) : h3 - G3, ga, yT, 0, hc3);
+      }
+      pav(0, sg * (h3 - cl3), yT, M(6, 1), M(5, 1), hc3 + 1, 2, 'z');
+      pav(sg * (h3 - cl3), 0, yT, M(5, 1), M(6, 1), hc3 + 1, 2, 'x');
+    }
+    for (let x = -hwP; x <= hwP; x++) for (let z = -hwP; z <= hwP; z++)
+      for (let y = yT; y < yT + hpc; y++) S(x, y, z, y === yT + hpc - 1 ? 2 : 0);
+
+    // ── 10. 梅花形五塔：四角四座、中央一座最高 ─────────
+    const R3 = Mf(5.2, 1.1), hw3T = Math.max(1, Math.round(R3)), hs3 = M(24, 4);
+    corners4(v, h3 - cl3, h3 - cl3, (vv, x, z) => {
+      body(x, yT, z, hw3T, hc3 + 2);
+      spire(x, yT + hc3 + 2, z, R3, hs3);
+    });
+    const RC = Mf(7, 1.4), hwCT = Math.max(1, Math.round(RC)), hbC = M(9, 2), hsC = M(32, 6);
+    body(0, yT + hpc, 0, hwCT, hbC);
+    spire(0, yT + hpc + hbC, 0, RC, hsC);
   } },
 
 { n: '雅典帕德嫩神廟', lo: 1.5, hi: 14, pal: [0xd6be92, 0x9e8760, 0x682a20, 0xebd8b7, 0x807869, 0x4a3f33],
@@ -5221,122 +6077,278 @@ const SHAPES = [
       if ((z - rz0) % 2 === 0) v.box(rx0, rH + 1 - fl, z, 1, fl, 1, 6);
   } },
 
-{ n: '巴黎聖母院', lo: 2.2, hi: 15.0, pal: [0xe4d8c5, 0xa89c89, 0x5a6b7c, 0xa2c4d9, 0xc8963e, 0x5c3a21],
-  /* 來源：AgentData/blueprints/巴黎聖母院.js（v1.143 換掉原本那份） */
+{ n: '巴黎聖母院', lo: 0.8, hi: 7,
+  // v1.285.0 整座重畫（見 開發筆記〈還很粗糙的七座重畫〉）
+  pal: [0xd2c8b0,   // 0 石灰岩（亮）
+        0xaea38b,   // 1 石灰岩（暗一階）：線腳、扶壁墩、門框、玫瑰窗外框、欄杆
+        0x4c5866,   // 2 鉛皮屋頂（深藍灰）、鐘室百葉、國王廊與大迴廊的陰影
+        0x6e7a88,   // 3 鉛皮（亮一階）：屋頂雜色、尖塔
+        0x26457e,   // 4 彩繪玻璃深藍
+        0xa8322c,   // 5 玫瑰窗的紅
+        0x4e3424,   // 6 木門深褐
+        0xd6a93a],  // 7 金：尖塔頂的十字與公雞、尖塔細部
   gen(v, s) {
-    // 1. 核心比例與尺度計算（依據巴黎聖母院西立面雙塔、長中殿、後殿半圓與中軸尖塔）
-    const nw = dim(s, 1.60, 9, true);      // 中殿與後殿寬度（奇數便於對稱屋頂）
-    const nd = dim(s, 3.20, 15);           // 整座主教堂長度（深）
-    const nh = dim(s, 1.40, 6);            // 中殿牆高
-    const tw = dim(s, 0.75, 5, true);      // 正面雙鐘塔邊長（奇數）
-    const th = dim(s, 2.60, 11);           // 鐘塔高度（顯著高於主殿）
-    const spireH = dim(s, 1.80, 7);        // 中央交叉點哥德尖塔高
+    // 正面（−z）：寬而方的西立面，兩座平頂方塔（69 m）夾著中段（45 m），三條橫帶切成三層——
+    //   底層三座深凹的尖拱門（中間最大）、門上一整排國王廊、中層正中的圓玫瑰窗（兩側塔面各一對尖拱窗）、
+    //   上層橫過整面的大迴廊細柱，塔頂一圈欄杆；中段後面看不到屋頂。
+    // 側面（+x）：很長（128 m），矮的側廊外一整排扶壁墩，飛扶壁從墩頂斜撐到主殿高牆，
+    //   上面壓一條陡的鉛灰屋頂；中段翼廊山牆往外突、交叉點上一根細長尖塔（96 m）；東端半圓後殿。
+    // 三樣識別物：雙方塔＋玫瑰窗＋三層橫帶的西立面、兩側一整排飛扶壁、翼廊交叉點上的細尖塔
+    // 部件：台基線（最底一層暗石）｜主量體：雙塔、中段立面、側廊外牆、主殿高牆、翼廊、半圓後殿（內外兩圈）
+    //       ｜開口：三座尖拱門（外框＋門板＋山花）、西玫瑰窗、塔面成對尖拱窗、鐘室成對長開口、高窗、
+    //         小禮拜堂窗、翼廊門與兩扇翼廊玫瑰窗、山牆小圓窗
+    //       ｜線腳：國王廊（雕像＋壁龕）、聖母廊欄杆帶、大迴廊（細柱＋拱頂帶＋欄杆）、塔頂簷口與欄杆
+    //       ｜屋頂：主殿／翼廊十字交叉的陡屋頂、後殿半圓錐、側廊與迴廊的鉛皮露台、塔頂平台
+    //       ｜頂飾：立面四道扶壁與鐘樓轉角扶壁、扶壁墩＋小尖塔＋飛扶壁（後殿一圈放射排開）、
+    //         翼廊兩角小塔、交叉點尖塔（八角亭＋細尖＋金十字與公雞）
+    const M = (m, lo, odd) => dim(s, m / 10, lo, odd);     // 真實公尺 → 格（s ＝ 每 10 m 幾格）
+    const H = (x, y, z) => (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) % 100;
+    const ST = -1, LD = -2;                                 // 石材、鉛皮：一邊蓋一邊用雜湊挑兩階
+    const col = (c, x, y, z) => c === ST ? (y === 0 || H(x, y, z) < 27 ? 1 : 0)
+                              : c === LD ? (H(x, y, z) < 16 ? 3 : 2) : c;
+    const put = (x, y, z, c) => v.set(x, y, z, col(c, x, y, z));
+    const F = (x0, x1, y0, y1, z0, z1, c) => {              // 含端點的長方塊
+      const xa = Math.min(x0, x1), xb = Math.max(x0, x1), zA = Math.min(z0, z1), zB = Math.max(z0, z1);
+      for (let x = xa; x <= xb; x++) for (let y = y0; y <= y1; y++) for (let z = zA; z <= zB; z++) put(x, y, z, c);
+    };
+    const ring = (x0, x1, z0, z1, y0, y1, c) => {           // 一格厚的四面牆（四個角不重複寫）
+      const zA = Math.min(z0, z1), zB = Math.max(z0, z1);
+      F(x0, x1, y0, y1, zA, zA, c); F(x0, x1, y0, y1, zB, zB, c);
+      F(x0, x0, y0, y1, zA + 1, zB - 1, c); F(x1, x1, y0, y1, zA + 1, zB - 1, c);
+    };
+    // 尖拱：寬 w（奇數）、直段 h 層，上面每層兩邊各收一格收到 1 格——積木裡的哥德尖拱
+    const pArch = (w, h, fn) => {
+      const r = (w - 1) / 2;
+      for (let y = 0; y < h; y++) for (let i = -r; i <= r; i++) fn(i, y);
+      for (let k = 1; k <= r; k++) for (let i = k - r; i <= r - k; i++) fn(i, h + k - 1);
+    };
+    // 玫瑰窗：深藍為底、中心一格紅，大的才排得出一圈紅色花瓣；外面一圈石框
+    const roseAt = (r, fn) => {
+      const n = Math.ceil(r) + 2;
+      for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++) {
+        const d = Math.hypot(i, j);
+        if (d <= r + 0.35) {
+          const sec = Math.floor((Math.atan2(j, i) + Math.PI) / (Math.PI / 8));
+          fn(i, j, true, d < 0.7 || (r >= 2.2 && d > r * 0.4 && d < r * 0.75 && sec % 2 === 0) ? 5 : 4);
+        } else if (d <= r + 1.1) fn(i, j, false, 1);
+      }
+    };
 
-    const tz = -Math.round(nd / 2) + Math.round(tw / 2); // 雙塔中心 z 位置（正面）
-    const towerX = Math.round((nw - tw) / 2);            // 雙塔左右偏位 x
-    const frontFace = tz - Math.floor(tw / 2);           // 西立面正牆面 z 座標
-    const halfNw = Math.floor(nw / 2);                   // 中殿側牆 x 座標
+    /* ── 平面：雙塔決定西立面；主殿兩道側牆就是兩塔的內牆，側廊外牆比塔的外側面多出一格 ──
+       寬度全跟著塔寬（奇數）一階一階跳，長度、高度跟著 s 連續長：塊數才掃得到每一檔 */
+    const tw = M(14, 3, true);                  // 鐘樓邊長（奇數：塔面中線落在整數格）
+    const nh = Math.max(2, (tw - 1) / 2);       // 主殿側牆 |x|：主殿外寬 2nh+1 ≈ 立面寬的 0.37（實物 16／43.5 m）
+    const to = nh + tw - 1, tx = nh + (tw - 1) / 2;   // 鐘樓外側面、中線
+    const ah = to + 1, xT = ah + 1;             // 側廊（含小禮拜堂）外牆、翼廊端牆（只比小禮拜堂多突出一點）
+    const L = M(128, 20);                       // 全長 128 m
+    const zf = -Math.floor(L / 2);
+    const zb = zf + tw, zm = zf + (tw - 1) / 2; // 鐘樓背面後一格（側廊從這裡開始）、鐘樓中線
+    const zc = Math.max(zf + M(67, 11), zb + nh + 3);   // 翼廊中線：離正面 67 m
+    const zt0 = zc - nh, zt1 = zc + nh;         // 翼廊寬＝主殿寬：交叉處正方形、兩條屋脊一樣高
+    const ze = Math.max(zf + L - 1, zt1 + 3 + ah);       // 東端（唱詩班至少留兩格直段）
+    const za = ze - ah;                         // 後殿半圓的圓心
+    const inT = z => z > zt0 && z < zt1;
 
-    // 2. 台基與地基
-    v.box(0, 0, 0, nw + 4, 1, nd + 4, 1);
-    stairs(v, 0, 0, frontFace - 2, 2, nw + 2, 'z', 1);
+    // ── 高度 ──
+    const hA = M(12, 2);                        // 小禮拜堂外牆
+    const yAi = hA + M(4, 1);                   // 側廊屋頂幾乎是平的露台，靠主殿那邊高一兩格
+    const hN = M(31, 6);                        // 主殿牆頂
+    const R0 = nh + 1, Rh = Math.round(R0 * 1.15);      // 屋頂半寬（含出簷）、屋頂高：比 45° 陡
+    const ridge = hN + Rh;
+    const hwR = j => Math.round(R0 * (1 - j / Rh));      // 第 j 層屋面的半寬
+    // 扶壁墩頂在側廊與主殿牆頂中間：小尖塔要矮過屋簷，飛扶壁才斜得出來（墩太高看起來是一排木樁）
+    const pH = hA + Math.max(2, Math.round((hN - hA) * 0.45));
+    const gk = M(17, 4), kh = M(3.5, 1);        // 國王廊（實物約 19 m；壓低一點，玫瑰窗那一層才排得下 5×5 的圓）
+    const gt = Math.max(M(45, 9), ridge + 1);   // 西立面中段頂：要高過屋脊，正面才看不到屋頂
+    const gg = gt - M(8, 2);                    // 大迴廊底
+    const tt = Math.max(M(69, 13), gt + 5);     // 鐘樓頂
 
-    // 3. 主中殿與後殿量體（中空牆體）
-    v.walls(0, 1, 0, nw, nh, nd, 0, 1);
-
-    // 4. 後殿半圓收尾（Chevet / Apse）
-    const apseZ = Math.round(nd / 2);
-    v.cyl(0, 1, apseZ, halfNw, nh, 0, 1);
-
-    // 5. 側立面飛扶壁（Flying Buttresses）與高窗
-    const nButt = dim(s, 0.40, 3);
-    const buttStep = Math.max(3, Math.round((nd - tw - 4) / nButt));
-    for (let i = 0; i < nButt; i++) {
-      const bz = Math.round(-nd / 2 + tw + 2 + i * buttStep);
-      mirrorX(v, halfNw + 1, (vv, dx) => {
-        // 外側扶壁立柱
-        vv.box(dx > 0 ? dx + 1 : dx - 1, 1, bz, 1, nh + 1, 1, 1);
-        // 上層斜撐飛券連至主牆
-        vv.line(dx > 0 ? dx + 1 : dx - 1, nh, bz, dx, nh - 1, bz, 1);
-        // 扶壁頂端小尖塔
-        vv.taper(dx > 0 ? dx + 1 : dx - 1, nh + 2, bz, 0.8, 0.3, dim(s, 0.35, 2), 4);
-      });
+    // ── 1. 側廊外牆、主殿高牆（底下的拱廊從外面看不到，省掉）、側廊鉛皮露台 ──
+    const yr = a => hA + Math.round((ah - a) * (yAi - hA) / Math.max(1, ah - nh - 1));
+    for (let z = zb - 1; z <= za; z++) for (const sg of [1, -1]) {
+      if (!inT(z)) F(sg * ah, sg * ah, 0, hA - 1, z, z, ST);
+      if (z < zb) continue;
+      if (!inT(z)) F(sg * nh, sg * nh, yAi - 1, hN - 1, z, z, ST);
+      if (z >= zt0 && z <= zt1) continue;
+      for (let a = nh + 1; a <= ah; a++) put(sg * a, yr(a), z, LD);
     }
-
-    // 側高窗
-    mirrorX(v, halfNw, (vv, dx) => {
-      windowGrid(vv, {
-        x: dx, y: 2 + dim(s, 0.2, 1), z: 0,
-        cols: dim(s, 0.45, 3), rows: 1,
-        stepX: buttStep, stepY: 1,
-        w: 1, h: dim(s, 0.55, 3),
-        c: 3, axis: 'z'
-      });
-    });
-
-    // 6. 壓頂腰線與陡峭雙坡屋頂
-    v.box(0, 1 + nh, 0, nw + 2, 1, nd + 2, 1);
-    v.gable(0, 2 + nh, 0, nw + 2, nd + 2, 2);
-    // 後殿半圓錐形屋頂
-    v.taper(0, 2 + nh, apseZ, halfNw + 1, 0.5, Math.ceil((nw + 2) / 2), 2, 1);
-
-    // 7. 兩座西立面標誌鐘塔（雙塔中空、多層通風開口）
-    mirrorX(v, towerX, (vv, tx) => {
-      vv.walls(tx, 1, tz, tw, th, tw, 0, 1);
-      // 塔身雙層分界腰線
-      const midY = 1 + Math.round(th * 0.55);
-      vv.box(tx, midY, tz, tw + 1, 1, tw + 1, 1);
-      // 上層長條百葉雙連拱窗（鐘室）
-      const bArchW = dim(s, 0.22, 1, true);
-      const bArchH = dim(s, 0.45, 2);
-      vv.carve(tx - 1, midY + 1, tz - Math.floor(tw / 2), bArchW, bArchH, 1);
-      vv.carve(tx + 1, midY + 1, tz - Math.floor(tw / 2), bArchW, bArchH, 1);
-      // 塔頂平台欄杆與外擴簷口
-      vv.box(tx, 1 + th, tz, tw + 2, 1, tw + 2, 1);
-      vv.carve(tx, 1 + th, tz, tw, 1, tw);
-      // 塔頂四角精緻小尖柱
-      corners4(vv, Math.floor(tw / 2) + 0.5, Math.floor(tw / 2) + 0.5, (vvv, cx, cz) => {
-        vvv.box(tx + cx, 2 + th, tz + cz, 1, 1, 1, 4);
-      });
-    });
-
-    // 8. 西立面中央區塊：王者長廊（Galerie des Rois）
-    const galleryY = 1 + Math.round(nh * 0.7);
-    v.box(0, galleryY, frontFace, nw - 2, 1, 1, 1);
-    for (let gx = -Math.floor((nw - 4) / 2); gx <= Math.floor((nw - 4) / 2); gx += 2) {
-      tint(v, gx, galleryY, frontFace, 4);
+    // ── 2. 東端半圓後殿：外圈迴廊牆＋迴廊露台、內圈高牆 ──
+    for (let x = -ah - 1; x <= ah + 1; x++) for (let z = za + 1; z <= za + ah + 1; z++) {
+      const d = Math.hypot(x, z - za);
+      if (d > ah + 0.35) continue;
+      if (d > ah - 1) F(x, x, 0, hA - 1, z, z, ST);
+      if (d > nh + 0.35) put(x, hA + Math.round((ah - d) * (yAi - hA) / Math.max(1, ah - nh - 1)), z, LD);
+      else if (d > nh - 1) F(x, x, yAi - 1, hN - 1, z, z, ST);
     }
-
-    // 9. 正面標誌性西玫瑰窗（West Rose Window）
-    const roseR = dim(s, 0.35, 2);
-    const roseY = galleryY + roseR + 2;
-    for (let rx = -roseR; rx <= roseR; rx++) {
-      for (let ry = -roseR; ry <= roseR; ry++) {
-        const d = Math.hypot(rx, ry);
-        if (d <= roseR + 0.4) {
-          tint(v, rx, roseY + ry, frontFace, d > roseR - 0.8 ? 4 : 3);
-        }
+    // ── 3. 翼廊：南北端牆、伸出側廊外那一截側牆、側廊露台以上的高牆 ──
+    for (const sg of [1, -1]) {
+      F(sg * xT, sg * xT, 0, hN - 1, zt0, zt1, ST);
+      for (const z of [zt0, zt1]) {
+        F(sg * (ah + 1), sg * xT, 0, hN - 1, z, z, ST);
+        for (let a = nh + 1; a <= ah; a++) F(sg * a, sg * a, yr(a), hN - 1, z, z, ST);
+      }
+    }
+    // ── 4. 屋頂：主殿與翼廊兩條陡屋頂十字交叉、東端半圓錐；只做一層殼，第一層就坐在牆頂上 ──
+    const shell = (a, j) => a <= hwR(j) && (j === Rh || a >= hwR(j + 1));
+    for (let j = 0; j <= Rh; j++) {
+      const y = hN + j;
+      for (let z = zf + 1; z <= za; z++) {
+        const lim = z < zb ? nh - 1 : R0;                  // 兩塔之間只到塔的內牆
+        for (let x = -lim; x <= lim; x++) if (shell(Math.abs(x), j)) put(x, y, z, LD);
+      }
+      for (let x = -xT; x <= xT; x++) for (let u = -R0; u <= R0; u++) {
+        const end = Math.abs(x) === xT, a = Math.abs(u);   // 翼廊兩端是實心的石砌山牆
+        if (end ? a <= hwR(j) : shell(a, j)) put(x, y, zc + u, end ? ST : LD);
+      }
+      for (let x = -R0; x <= R0; x++) for (let z = za + 1; z <= za + R0; z++) {
+        const d = Math.hypot(x, z - za);
+        if (d <= hwR(j) + 0.35 && (j === Rh || d > hwR(j + 1) - 0.65)) put(x, y, z, LD);
       }
     }
 
-    // 10. 正面三座哥德透雕大門（聖母門、最後審判門、聖安妮門）
-    const portalW = dim(s, 0.32, 3, true);
-    const portalH = dim(s, 0.45, 2);
-    // 中央大門
-    arch(v, 0, 1, frontFace, portalW, portalH, 1, 1);
-    v.box(0, 1, frontFace + 1, portalW, portalH + Math.floor(portalW / 2), 1, 5);
-    // 左右兩側大門
-    mirrorX(v, towerX, (vv, dx) => {
-      arch(vv, dx, 1, frontFace, Math.max(1, portalW - 2), portalH - 1, 1, 1);
-      vv.box(dx, 1, frontFace + 1, Math.max(1, portalW - 2), portalH, 1, 5);
+    // ── 5. 西立面：兩座方塔、中段立面 ──
+    for (const sg of [1, -1]) ring(sg * nh, sg * to, zf, zb - 1, 0, tt - 1, ST);
+    F(-(nh - 1), nh - 1, 0, gt - 1, zf, zf, ST);
+    /* 三座尖拱大門：外框突出一格、門洞挖兩層，門板與尖拱裡的山花退在最裡面。
+       山花用暗色：門洞深、背光，石色的山花跟外框是同一色，尖拱的輪廓就看不出來 */
+    const portal = (cx, w, h) => {
+      pArch(w + 2, h, (i, y) => put(cx + i, y, zf - 1, 1));
+      pArch(w, h, (i, y) => {
+        v.del(cx + i, y, zf - 1); v.del(cx + i, y, zf);
+        put(cx + i, y, zf + 1, y < h ? 6 : 2);
+      });
+    };
+    const wc = Math.min(M(7, 3, true), 2 * nh - 1), ws = Math.min(M(5.5, 3, true), tw - 2);
+    const hc = Math.max(2, gk - (wc + 1) / 2);           // 中門外框頂剛好在國王廊下一層
+    portal(0, wc, hc);
+    for (const sg of [1, -1]) portal(sg * tx, ws, Math.max(2, hc - M(2.5, 1)));
+    // 立面四道扶壁（到大迴廊下）、往上接成鐘樓四角的扶壁
+    for (const sg of [1, -1]) {
+      for (const bx of [nh, to]) {
+        F(sg * bx, sg * bx, 0, gg - 1, zf - 1, zf - 1, 1);
+        F(sg * bx, sg * bx, gt + 1, tt - 2, zf - 1, zf - 1, 1);
+      }
+      for (const z of [zf, zb - 1]) F(sg * (to + 1), sg * (to + 1), 0, tt - 2, z, z, 1);
+    }
+    // 國王廊：整面一排雕像站在暗的壁龕前，上面一條突出的欄杆帶（聖母廊）——第一條橫帶
+    for (let x = -to; x <= to; x++) {
+      for (let y = gk; y < gk + kh; y++) {
+        put(x, y, zf, 2);
+        if ((x + to) % 2 === 0) put(x, y, zf - 1, 0); else v.del(x, y, zf - 1);
+      }
+      put(x, gk + kh, zf - 1, 1);
+      if (kh >= 2 && (x + to) % 2 === 0) put(x, gk + kh + 1, zf - 1, 1);
+    }
+    /* 西玫瑰窗（9.6 m）：中段正中，外框突出一格。照比例在三千塊只有 3×3 格，看起來是一扇方窗，
+       所以半徑至少給到 1.9（5×5 的圓），寧可壓到兩側塔的內緣 */
+    const rc = Math.round((gk + kh + gg) / 2);
+    const rr = Math.min(Math.max(1.9, s * 0.48), (gg - gk - kh - 2) / 2, nh - 0.1);
+    roseAt(rr, (i, j, g, c) => {                 // 玻璃前面的扶壁讓開
+      if (g) { put(i, rc + j, zf, c); v.del(i, rc + j, zf - 1); }
+      else put(i, rc + j, zf - 1, c);
     });
+    /* 鐘室每面一對細長開口；塔寬 9 格起每扇兩格寬（一格寬的長縫在大尺寸看起來像箭孔）。
+       塔面中層的尖拱窗在塔寬 5 格時只放正中一扇：放一對的話內側那扇緊貼玫瑰窗，
+       兩者連成一條藍帶，玫瑰窗就不圓了（試過） */
+    const pair = tw >= 9 ? [-2, -1, 1, 2] : tw >= 5 ? [-1, 1] : [0];
+    const pair2 = tw >= 7 ? pair : [0];
+    for (const sg of [1, -1]) for (const dx of pair2)
+      for (let y = gk + kh + 2; y <= gg - 2; y++) put(sg * (tx + dx), y, zf, 4);
+    // 大迴廊：一排細柱站在暗的廊道前，拱頂一條、頂上一條突出的欄杆——第三條橫帶
+    for (let x = -to; x <= to; x++) {
+      for (let y = gg; y < gt - 1; y++) {
+        put(x, y, zf, 2);
+        if ((x + to) % 2 === 0) put(x, y, zf - 1, ST); else v.del(x, y, zf - 1);
+      }
+      put(x, gt - 1, zf - 1, 1);
+      put(x, gt, zf - 1, 1);
+    }
+    for (let x = -(nh - 1); x <= nh - 1; x++) if (((x + nh) & 1) === 0) put(x, gt, zf, 1);
+    // 鐘室：每一面一對細長開口（暗色百葉）
+    for (const sg of [1, -1]) for (const dd of pair) for (let y = gt + 2; y <= tt - 3; y++) {
+      put(sg * (tx + dd), y, zf, 2); put(sg * (tx + dd), y, zb - 1, 2);
+      put(sg * to, y, zm + dd, 2); put(sg * nh, y, zm + dd, 2);
+    }
+    /* 塔頂：外伸一格的簷口、鉛皮平台、一圈欄杆。欄杆做成實心的一圈、退回牆面：
+       隔一格留一格的話這個尺寸就是城堡的雉堞，跟著簷口外伸的話整頂像一頂厚帽子（都試過）。
+       內側不外伸（兩塔之間的空隙是輪廓的一半）；三格寬的小塔外伸的話像一根 T 字樁，就不外伸 */
+    const ov = tw >= 5 ? 1 : 0;
+    for (const sg of [1, -1]) {
+      F(sg * nh, sg * (to + ov), tt, tt, zf - ov, zb - 1 + ov, 1);
+      F(sg * (nh + 1), sg * (to - 1), tt, tt, zf + 1, zb - 2, 2);
+      ring(sg * nh, sg * to, zf, zb - 1, tt + 1, tt + 1, 1);
+    }
 
-    // 11. 中軸屋脊哥德細長尖塔（Spire / Flèche）
-    const spireY = 2 + nh + Math.ceil((nw + 2) / 2);
-    v.taper(0, spireY, 0, Math.max(1.5, nw * 0.2), 0.3, spireH, 2, 1);
-    // 尖塔頂端十字架與風向金雞裝飾
-    v.box(0, spireY + spireH, 0, 1, 2, 1, 4);
-    v.box(0, spireY + spireH + 1, 0, 3, 1, 1, 4);
+    // ── 6. 扶壁墩＋小尖塔＋飛扶壁：墩站在側廊外牆上，飛扶壁從墩頂斜撐到主殿牆頂 ──
+    const pin = M(5, 2);
+    const unit = (w, sg, z, full) => {
+      const P = (x, y, c) => w.set(sg * x, y, z, col(c, sg * x, y, z));
+      for (let y = full ? 0 : hA; y < pH + pin; y++) P(ah, y, 1);
+      const xa = ah - 1, xb = nh + 1, ya = pH - 1, yb = hN - 1;
+      for (let x = xa; x >= xb; x--) {
+        const y = Math.round(ya + (yb - ya) * (xa === xb ? 1 : (xa - x) / (xa - xb)));
+        P(x, y, ST); P(x, y - 1, ST);
+      }
+    };
+    const bs = M(8, 3);
+    const spread = (a, b) => {
+      const n = Math.max(1, Math.floor((b - a) / bs) + 1), out = [];
+      for (let i = 0; i < n; i++) out.push(n === 1 ? Math.round((a + b) / 2) : a + Math.round(i * (b - a) / (n - 1)));
+      return out;
+    };
+    const nave = spread(zb + 1, zt0 - 2), choir = spread(zt1 + 2, za);
+    for (const sg of [1, -1]) for (const z of [...nave, ...choir]) unit(v, sg, z, false);
+    const nr = ah >= 9 ? 7 : 5;                 // 後殿一圈放射排開
+    for (let k = 1; k <= nr; k++) stampY(v, k * 180 / (nr + 1), w => unit(w, 1, za, true), 0, za);
+    // 窗：每兩道扶壁之間，主殿高牆一扇高窗、小禮拜堂牆一扇窗
+    const mids = [];
+    for (const row of [nave, choir]) for (let i = 0; i + 1 < row.length; i++) mids.push(Math.floor((row[i] + row[i + 1]) / 2));
+    for (const sg of [1, -1]) for (const z of mids) {
+      for (let y = yAi + 1; y <= hN - 2; y++) tint(v, sg * nh, y, z, 4);
+      for (let y = 1; y <= hA - 2; y++) tint(v, sg * ah, y, z, 4);
+    }
+    for (let k = 0; k <= nr; k++) {
+      const a = (k + 0.5) * Math.PI / (nr + 1);
+      const at = (r, y) => tint(v, Math.round(Math.cos(a) * r), y, za + Math.round(Math.sin(a) * r), 4);
+      for (let y = 1; y <= hA - 2; y++) at(ah, y) || at(ah - 0.5, y);
+      for (let y = yAi + 1; y <= hN - 2; y++) at(nh, y) || at(nh - 0.5, y);
+    }
+
+    // ── 7. 翼廊南北兩端：尖拱門、玫瑰窗（12.9 m）、山牆小圓窗、兩角小塔 ──
+    const wT = M(5.5, 3, true), hT = M(8, 2);
+    for (const sg of [1, -1]) {
+      const xe = sg * xT;
+      pArch(wT + 2, hT, (i, y) => put(xe + sg, y, zc + i, 1));
+      pArch(wT, hT, (i, y) => {
+        v.del(xe + sg, y, zc + i); v.del(xe, y, zc + i);
+        put(xe - sg, y, zc + i, y < hT ? 6 : 2);
+      });
+      const fTop = hT + (wT - 1) / 2;
+      const rT = Math.min(s * 0.62, nh - 0.65, (hN - 2 - fTop) / 2);
+      const ry = Math.round((fTop + hN) / 2);
+      roseAt(rT, (i, j, g, c) => put(g ? xe : xe + sg, ry + j, zc + i, c));
+      for (let y = hN + 1; y <= hN + Math.max(1, Math.round(Rh * 0.35)); y++) tint(v, xe, y, zc, 4);
+      const th = hN + Math.round(Rh * 0.6);
+      for (const z of [zt0 - 1, zt1 + 1]) { F(xe, xe, 0, th, z, z, 1); put(xe, th + 1, z, 2); }
+    }
+    // 翼廊東西兩面的高窗（側廊露台以上）
+    const wx = Math.round((nh + 1 + ah) / 2);
+    for (const sg of [1, -1]) for (const z of [zt0, zt1])
+      for (let y = yAi + 1; y <= hN - 2; y++) tint(v, sg * wx, y, z, 4);
+
+    // ── 8. 交叉點尖塔：八角亭（暗色開口、四角金飾）＋細尖＋金十字與公雞 ──
+    const rs = Math.max(1.2, s * 0.38), dTop = ridge + M(9, 3);
+    const spTop = Math.max(M(93, 16), dTop + 5);
+    v.cyl(0, ridge - 2, zc, rs, dTop - ridge + 2, 3);
+    const rf = Math.floor(rs + 0.35);
+    for (let y = ridge + 1; y < dTop - 1; y++)
+      for (const [i, k] of [[rf, 0], [-rf, 0], [0, rf], [0, -rf]]) tint(v, i, y, zc + k, 2);
+    for (const [i, k] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) tint(v, i, dTop - 1, zc + k, 7);
+    v.taper(0, dTop, zc, Math.max(0.9, rs * 0.65), 0.3, spTop - dTop, 3);
+    for (let y = dTop + 2; y < spTop - 2; y += 3)
+      for (const [i, k] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) tint(v, i, y, zc + k, 2);
+    v.box(0, spTop, zc, 1, 3, 1, 7);
+    v.box(0, spTop + 1, zc, 3, 1, 1, 7);
   } },
 
 { n: '嚴島神社鳥居', lo: 2.2, hi: 15.5, pal: [0xea4a20, 0x544d47, 0x2d695c, 0x231c18, 0xdba435, 0x9e2f14],
