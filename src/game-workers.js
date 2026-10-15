@@ -1337,6 +1337,8 @@ function navDims() {
   navDim.megumin = scan(M.megumin, b => b.g === ENG.MEG_G.staff);
   /* 善逸（v1.251.0）：刀與鞘那幾塊是它們自己的座標（鍔、鞘口在原點），不算 */
   navDim.zenitsu = scan(M.zenitsu, b => b.g === ENG.ZEN_G.sword || b.g === ENG.ZEN_G.saya);
+  /* 艾莉絲（v1.290.0）同善逸：劍與鞘是它們自己的座標，不算 */
+  navDim.eris = scan(M.eris, b => b.g === ENG.ER_G.sword || b.g === ENG.ER_G.saya);
   /* 五條悟（v1.255.0）：伸出來的手指只有比手勢才畫，不算 */
   navDim.gojo = scan(M.gojo, b => b.f);
   /* Diablo：自己一顆 mesh、不在 BEASTS 裡，上面那一圈掃不到。背刺與尾巴不算（nl）：往後拖兩格的尾巴算進身長的話，

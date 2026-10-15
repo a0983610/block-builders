@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.289.0';
+const VERSION = '1.290.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -412,6 +412,27 @@ function sndFrieren() {
 /* 防護罩張開：一聲往上掃的玻璃音＋很輕的嗡；被打到：一聲短的「叮」（同一個鍵，連著打只響一聲） */
 function sndFrOpen() { tone(520, 0.45, 'sine', 0.04, 2.4, 'frOpen'); tone(1560, 0.3, 'triangle', 0.015, 1.2, 'frOpen2'); }
 function sndFrHit() { tone(2200, 0.12, 'sine', 0.025, 0.7, 'frHit'); }
+/* 艾莉絲（v1.290.0）：登場是一聲短的劍鳴（很高的噪音一掃＋一顆亮的音往上）——跟 Saber（兩顆亮音往上）、里維（噴氣＋短的金屬）、
+   善逸（電流的滋）分得開 */
+function sndEris() { noise(0.12, 0.05, 7000); tone(1980, 0.2, 'triangle', 0.03, 1.3, 'eris'); }
+/* 居合架勢：一聲很輕、慢慢往上爬的嗡（長度讀 ENG.ERT 的 st ＋ hold，爬到頂正好接上斬下去那一聲） */
+function sndTachiCharge() {
+  const d = ENG.ERT.st + ENG.ERT.hold;
+  tone(320, d, 'sine', 0.025, 2.2, 'tachiCharge', 0.25);
+}
+/* 衝出去：一聲低的破風（使用者看過預覽要「衝一段過程中砍出去」，這一下是蹬地撲出去） */
+function sndTachiDash() { noise(0.22, 0.1, 2200); tone(150, 0.22, 'sawtooth', 0.03, 0.6, 'tachiDash'); }
+/* 一閃：很短很亮的「咻」（高頻噪音＋一顆往下掃的高音）＋低頻一沉——劍氣是看不見的，聲音要夠利 */
+function sndTachi() {
+  noise(0.22, 0.2, 5200);
+  tone(3000, 0.28, 'sine', 0.035, 0.25, 'tachi');
+  tone(110, 0.45, 'sawtooth', 0.05, 0.5, 'tachi2');
+}
+/* 收刀：刀滑進鞘裡那一聲「鏘」（同善逸那一聲的做法，音高錯開） */
+function sndTachiSheath() {
+  tone(2700, 0.2, 'triangle', 0.04, 1, 'tachiSheath');
+  setTimeout(() => tone(3600, 0.12, 'sine', 0.025, 1, 'tachiSheath2'), 40);
+}
 /* 結印到放出去那幾秒：一聲往上爬的嗡鳴（長度讀 ENG.GJ.fire，不寫死），赫與蒼兩聲錯開疊在上面 */
 function sndGjCharge() {
   const d = ENG.GJ.fire;

@@ -459,6 +459,7 @@ function draw() {
   ENG.putZens(bl);                   // 善逸（v1.251.0）同上，雷光與光痕也在這一支畫
   ENG.putGojos(bl);                  // 五條悟（v1.255.0）同上，手上的赫／蒼／茈也在這一支畫
   ENG.putFrierens(bl);               // 芙莉蓮（v1.259.0）同上，防護罩也在這一支畫
+  ENG.putErises(bl);                 // 艾莉絲（v1.290.0）同上，刀光與劍氣也在這一支畫
   ENG.putDiablos(bl);                // Diablo 同上（自己一顆 mesh）
   ENG.putDragons(bl);                // 飛龍（v1.277.0 重製）同上
   ENG.putCoins(coinList());          // Diablo 死掉噴出來的金幣（純特效）
@@ -599,8 +600,9 @@ function onUp(e) {
   /* Excalibur（v1.238，使用者：「類似里維 點建築&生物」）跟兵長砍猴同一檔：建築、生物、小人同一級，射線先碰到誰就是誰 */
   /* 霹靂一閃（v1.251.0，使用者選「點得到，同 Saber／里維」）也是這一檔，生物照他自己那一份認（zenCanCut） */
   /* 虛式「茈」（v1.255.0）同上，生物照他自己那一份認（gjCanCut） */
+  /* 光之太刀（v1.290.0）同上，生物照她自己那一份認（erCanCut） */
   const canCut = tool === 'levi' ? leviCanCut : tool === 'excalibur' ? sabCanCut : tool === 'zenitsu' ? zenCanCut
-               : tool === 'gojo' ? gjCanCut : null;
+               : tool === 'gojo' ? gjCanCut : tool === 'eris' ? erCanCut : null;
   /* 這兩把**碎料是透明的**（v1.239.0，使用者：「它可以點到碎料(不該可以點)」）：點的是要斬的東西，
      地上的碎料、小人手上搬的、飛在半空的都不算，射線照樣往後找生物、建築或地面（碎料堆後面的猴子也點得到）。
      還立著的（SET：地標、房子、城牆）才算建築，同火槍兵 v1.232。v1.238 是 useTool 那邊把碎料改判成地面，
@@ -633,6 +635,8 @@ function onUp(e) {
     if (tool === 'zenitsu') { markTool(tool); callZen(hit.point, w, true); return; }
     // 虛式「茈」（v1.255.0）：叫五條悟追著他跑到射程一半，放出去那一刻照他當時的位置瞄
     if (tool === 'gojo') { markTool(tool); callGojo(hit.point, w, true); return; }
+    // 光之太刀（v1.290.0）：叫艾莉絲追著他跑到射程一半，出手那一刻切面通過他的胸口
+    if (tool === 'eris') { markTool(tool); callEris(hit.point, w, true); return; }
     // 小槌子（v1.278.0）：槌頭落下那一刻把他（連旁邊的）打倒、算一次被打，落點照常 smash（見 hammerKO）。不算 stats.poked（那是戳的）
     if (tool === 'hammer') { markTool(tool); launchHammer(hit.point, hit.dir, false, false, w, true); return; }
     // 拿著火把戳人就是點他：站著被點著的會抱頭跑圈圈
@@ -660,6 +664,8 @@ function onUp(e) {
     if (tool === 'zenitsu' && zenCanCut(m)) { markTool(tool); callZen(hit.point, m); return; }
     // 虛式「茈」（v1.255.0）：點地上的生物＝叫五條悟追著牠跑過去，放出去那一刻照牠當時的位置瞄
     if (tool === 'gojo' && gjCanCut(m)) { markTool(tool); callGojo(hit.point, m); return; }
+    // 光之太刀（v1.290.0）：點地上的生物＝叫艾莉絲追著牠跑到射程一半，出手那一刻切面通過牠的身體中段
+    if (tool === 'eris' && erCanCut(m)) { markTool(tool); callEris(hit.point, m); return; }
     /* 小槌子（v1.278.0）：槌頭落下那一刻把牠（連旁邊的）打倒、算一次被打（見 hammerKO）。
        天上的飛龍、獅鷲照 fellBeast 那一套是打下來；落點照常 smash */
     if (tool === 'hammer') { markTool(tool); launchHammer(hit.point, hit.dir, false, false, m); return; }

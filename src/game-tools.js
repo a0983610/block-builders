@@ -101,7 +101,11 @@ const TOOLS = [
     tip: '點一下：叫芙莉蓮跑過去再四處逛；她身邊 8 格內被攻擊就自動張開防護罩' },
   { id: 'meat', n: '肉', k: '🍖',
     /* v1.261.0：也不是破壞道具——丟一塊肉，最近的幾隻閒逛動物小跑過來圍著吃（見 dropMeat）。照樣接在最後面、照等差階梯解鎖 */
-    tip: '點一下：丟一塊肉，40 格內最近的 3 隻閒逛動物小跑過來圍著吃，吃完才散' }
+    tip: '點一下：丟一塊肉，40 格內最近的 3 隻閒逛動物小跑過來圍著吃，吃完才散' },
+  { id: 'eris', n: '光之太刀', k: '🌙',
+    /* v1.290.0：點建築、地上的生物或小人就跑到射程一半，居合拔劍一閃，劍氣沿著隨機方向的切面砍穿過去；
+       點空地就跑到那裡待命（見 callEris） */
+    tip: '點建築、生物或小人：叫艾莉絲跑來拔劍一閃，劍氣隨機方向砍穿整座；點空地：跑到那裡待命' }
 ];
 /* 說明最多幾個字（v1.220.2，使用者：「破壞工具說明不要太長」）。選好一把之後它會接在
    底部那條操作提示的最前面，而那條不換行、後半段固定的操作說明自己就佔掉約 514px——
@@ -144,7 +148,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       zenitsu: 1,                                               // 霹靂一閃同上（v1.251.0）
                       gojo: 1,                                                  // 虛式「茈」同上（v1.255.0）
                       frieren: 1,                                               // 防禦魔法：點哪裡都是叫她跑過去（v1.259.0）
-                      meat: 1 };                                                // 肉：點哪裡都是丟在那裡（v1.261.0）
+                      meat: 1,                                                  // 肉：點哪裡都是丟在那裡（v1.261.0）
+                      eris: 1 };                                                // 光之太刀：點空地＝跑到那裡（v1.290.0）
 let tool = 'hammer';
 
 /* ── 破壞模式（v1.262.0）──────────────────────────────────
@@ -8503,6 +8508,8 @@ function useTool(hit) {
   if (tool === 'zenitsu') { callZen(hit.point, null, false, onGround); return 0; }
   // 虛式「茈」（v1.255.0）：同上，點建築＝跑到射程一半放出去（直線穿過那一點）、點空地＝跑到那裡待命
   if (tool === 'gojo') { callGojo(hit.point, null, false, onGround); return 0; }
+  // 光之太刀（v1.290.0）：同上，點建築＝跑到射程一半拔劍一閃（切面通過點到的那一點）、點空地＝跑到那裡待命
+  if (tool === 'eris') { callEris(hit.point, null, false, onGround); return 0; }
   /* 防禦魔法（v1.259.0）：點哪裡都是叫芙莉蓮跑到那一點（點建築就跑到它旁邊），站一下再四處逛。
      生物、小人在點選那一層是透明的（拿這一把照「skip」那一檔點），點到的就是後面的建築或地面 */
   if (tool === 'frieren') { callFrieren(hit.point); return 0; }
@@ -8726,7 +8733,8 @@ const doomNear = m => m.kind === 'giant' ? GIA_NEAR : m.kind === 'diablo' ? DIA_
    腿擺照小人那一份（stp 不給＝1，小人走 WALK 也是 11 弧度／秒）。 */
 const DOOM_SPD = { giant: GIA_WALK, diablo: DIA_WALK, saber: WALK, levi: WALK, megumin: WALK,     // 里維兵長（v1.230）、惠惠（v1.247.0）同 Saber
                    zenitsu: WALK, gojo: WALK,                                   // 善逸（v1.251.0）、五條悟（v1.255.0）也是
-                   frieren: WALK };   // 芙莉蓮 v1.259.0 漏列（照猴子的 2.2 走、跑 6.6），v1.260.0 補上（使用者選的「走路補成 6.8，跑 13.6」）
+                   frieren: WALK,     // 芙莉蓮 v1.259.0 漏列（照猴子的 2.2 走、跑 6.6），v1.260.0 補上（使用者選的「走路補成 6.8，跑 13.6」）
+                   eris: WALK };      // 艾莉絲（v1.290.0）同 Saber
 const DOOM_STEP = { giant: GIA_STEP, diablo: DIA_STEP };
 const DOOM_KEEP = { giant: GIA_KEEP, diablo: DIA_KEEP };
 /* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
@@ -8846,6 +8854,7 @@ function spawnBeast(kind, fun, bad, ang) {
   else if (kind === 'zenitsu') sndZen();
   else if (kind === 'gojo') sndGojo();
   else if (kind === 'frieren') sndFrieren();
+  else if (kind === 'eris') sndEris();
   else sndBeast(kind === 'snow');
   if (ang !== undefined) return m;               // Excalibur 叫來的：提示由 callSaber 講（v1.224）
   /* 惠惠（v1.247.0）只當吉祥物、只有被打才動手，提示講她會怎樣 */
@@ -8870,6 +8879,7 @@ function spawnBeast(kind, fun, bad, ang) {
                     : kind === 'levi' ? '他盯上了村子那一帶，雙刀已經出鞘了'
                     : kind === 'zenitsu' ? '他盯上了村子那一帶，腳邊已經劈啪冒著雷光'
                     : kind === 'gojo' ? '他盯上了村子那一帶，手從口袋裡抽出來了'
+                    : kind === 'eris' ? '她盯上了村子那一帶，手已經按在劍柄上了'   // v1.290.0
                     : kind === 'ape' ? '牠盯上了村子那一帶，手上那支火把還亮著'
                                      : '牠盯上了村子那一帶，手上那根香蕉還在')
                    : itOf(m) + '不會動手，晃一圈就走');
@@ -9229,7 +9239,8 @@ function stepBeast0(m, dt) {
   if (m.bway && !(m.pause > 0) && (m.st === 'come' || m.st === 'fun' || m.st === 'go')) { bwayWalk(m, dt, spd, stp, kp); return false; }
   /* Excalibur 叫她過去那一段**用跑的**（v1.226，使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」）：
      腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
-  if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'frieren')   // 里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0）同 Saber 用跑的
+  if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'frieren' ||
+      m.kind === 'eris')   // 里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0）、艾莉絲（v1.290.0）同 Saber 用跑的
     m.run += ((m.call && (m.st === 'call' || m.st === 'gate') ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   /* 惠惠退到安全距離那一段也用跑的（v1.247.0，使用者：「退到安全距離用跑的(三倍速度 要有奔跑動作)」） */
   else if (m.kind === 'megumin') m.run += ((m.st === 'mwalk' ? 1 : 0) - m.run) * Math.min(1, dt * 8);
@@ -9237,6 +9248,7 @@ function stepBeast0(m, dt) {
   if (m.st === 'odm') return stepOdm(m, dt);              // 兵長砍猴：立體機動那一招（v1.230）
   if (m.st === 'zen') return stepZen(m, dt);              // 霹靂一閃：架勢、一閃、收刀（v1.251.0）
   if (m.st === 'pur') return stepGojo(m, dt);             // 虛式「茈」：赫＋蒼合成茈、放出去（v1.255.0）
+  if (m.st === 'tachi') return stepTachi(m, dt);          // 光之太刀：居合、一閃、劍氣、收刀（v1.290.0）
   if (m.st === 'mwalk' || m.st === 'mcast') return stepMeg(m, dt, spd, stp, kp);   // 惠惠（v1.247.0）
   if (m.st === 'come') {
     /* 走到工地外圈、自己這一側那一點就算到了（「去哪」）。v1.235 以前給的是工地中心 (0, 0)，
@@ -9487,6 +9499,8 @@ function stepBeast0(m, dt) {
     if (m.kind === 'zenitsu') { if (m.call) zenStart(m); else if (m.bad) mascStrike(m); else funBack(m); return false; }
     /* 五條悟（v1.255.0）同上：站定之後結印放出茈（見 stepGojo） */
     if (m.kind === 'gojo') { if (m.call) gjStart(m); else if (m.bad) mascStrike(m); else funBack(m); return false; }
+    /* 艾莉絲（v1.290.0）同上：站定之後蹲成居合架勢（見 stepTachi） */
+    if (m.kind === 'eris') { if (m.call) erStart(m); else if (m.bad) mascStrike(m); else funBack(m); return false; }
     /* 芙莉蓮（v1.259.0）不動手：命令一律是「跑到那一點」（go，見 callAim），照理走不到這裡；走到了就回去逛 */
     if (m.kind === 'frieren') { funBack(m); return false; }
     /* 還欠著幾處的（v1.229，見 moreMascot）：砸之前先認好這一塊（砸完最近的那一塊就換人了），
@@ -10653,7 +10667,7 @@ function stepCall(m, dt, spd, stp, kp) {
      b／ax／az 是里維（v1.230）先開的，Saber 點生物（v1.238）同一套，只是點得到的那幾隻各認各的（sabCanCut） */
   if (c.b) {
     if (!levTargetOk(c.b, c.bw, m.kind === 'saber' ? sabCanCut : m.kind === 'zenitsu' ? zenCanCut
-                                : m.kind === 'gojo' ? gjCanCut : leviCanCut)) {
+                                : m.kind === 'gojo' ? gjCanCut : m.kind === 'eris' ? erCanCut : leviCanCut)) {
       excDone(m); return false;
     }
     c.x = c.b.x; c.z = c.b.z; c.ax = c.b.x; c.az = c.b.z;
@@ -10732,7 +10746,8 @@ function callAim(m) {
   // 里維兵長（v1.230）站的是目標前面那一點，面向的是要砍的那一點（c.ax／c.az）
   const c = m.call, dx = (c.ax !== undefined ? c.ax : c.x) - m.x, dz = (c.az !== undefined ? c.az : c.z) - m.z;
   if (Math.hypot(dx, dz) > 0.3) m.a = Math.atan2(dx, dz);
-  m.st = 'act'; m.t = m.kind === 'levi' ? LEV_AIM : m.kind === 'zenitsu' ? ZEN_AIM : m.kind === 'gojo' ? GJ_AIM : DOOM_AIM;
+  m.st = 'act'; m.t = m.kind === 'levi' ? LEV_AIM : m.kind === 'zenitsu' ? ZEN_AIM : m.kind === 'gojo' ? GJ_AIM
+                    : m.kind === 'eris' ? ER_AIM : DOOM_AIM;
 }
 /* 一招收完（斬完、或開斬之後被打斷）要去哪裡。排著的下一道命令先做；
    叫來的那一招收完回去逛（叫到的一定已經是吉祥物，見 ownSaber）；她自己那一招照舊（吉祥物回去逛、天災走人）。 */
@@ -10763,6 +10778,7 @@ function mascStrike(m) {
   m.call = c; m.cn = 0; m.cbad = 0; m.chome = 0;
   if (m.kind === 'levi') odmStart(m);
   else if (m.kind === 'zenitsu') zenStart(m);
+  else if (m.kind === 'eris') erStart(m);                // 艾莉絲（v1.290.0）
   else gjStart(m);
 }
 
@@ -10851,7 +10867,8 @@ const lvSm = f => f * f * (3 - 2 * f);
    倒下、暈著、爬起來的惠惠 v1.247.0～v1.259.0 也在這裡（「躺著暈不會被打到」）；v1.260.0 拿掉，
    使用者：「惠惠攻擊後倒地 調整成能被攻擊(同一般倒地)」（見 stepMegDown） */
 /* 五條悟**什麼時候都是**（v1.255.0，無下限；使用者：「無下限 什麼時候都打不動」）：不只結印、放出茈那一招 */
-function levBusy(m) { return !!m && (m.st === 'odm' || m.st === 'zen' || m.kind === 'gojo' || !!m.dead); }
+/* 光之太刀出招中的艾莉絲也是（v1.290.0：居合到收刀一整段，同善逸） */
+function levBusy(m) { return !!m && (m.st === 'odm' || m.st === 'zen' || m.st === 'tachi' || m.kind === 'gojo' || !!m.dead); }
 /* 在地上嗎（點得到、追得到的那一條，里維與 Saber 共用）。飛龍的 sky 從進場到飛走一路是 1（連在地上那幾段也是），
    所以牠照狀態認：在草皮上走（gwalk）、摔下來趴著（down）的算在地上；其餘照 sky（獅鷲降落時歸零） */
 const onGroundBeast = m => m.kind === 'dragon' ? m.st === 'gwalk' || m.st === 'down' : !m.sky;
@@ -11186,7 +11203,8 @@ function levStrike(m, b, w) {
 const GIA_SLAIN = {
   levi: ['被里維兵長斬殺', '後頸一刀，'], nuke: ['被核彈炸死', ''], magic: ['被爆裂魔法炸死', ''],
   excal: ['被 Excalibur 斬殺', '光柱掃過，'],
-  purp: ['被虛式「茈」抹消', '紫球掃過，']             // v1.255.0（使用者選「巨人被抹消，其他甩飛」）
+  purp: ['被虛式「茈」抹消', '紫球掃過，'],            // v1.255.0（使用者選「巨人被抹消，其他甩飛」）
+  tachi: ['被光之太刀斬殺', '劍氣斬過，']               // v1.290.0（使用者選「砍倒＋斬殺巨人」）
 };
 function giantDie(b, by) {
   b.dead = 1e-6; b.st = 'dead'; b.call = null; b.cq = null;
@@ -13198,6 +13216,311 @@ function megCancel(m) {
   for (let j = 0; j < g.shown; j++) starsOn(g, j, 6);
 }
 
+/* ── 破壞道具：光之太刀（v1.290.0）────────────────────────────
+   使用者：「做這個角色的造型 也是越像越好 / 預計會加成道具&吉祥物 攻擊方式是光之太刀 類似無形的劍氣斬過 砍的方向隨機」
+   （造型先做過預覽，見 engine.js〈艾莉絲〉；「腰後不用再一把刀 造型OK」）。動手前問了四件，使用者選的都是推薦項：
+     · 劍氣砍多遠：**砍穿整座建築**（劍氣飛 ERW.R 格，站在射程一半 ER_REACH 出招，同 Saber 的規矩；加了衝刺之後站得更遠，見 erReach）
+     · 切面怎麼定：**通過點的那一點**，再繞「她 → 那一點」那條線隨機轉一個角度（點高處就從高處切，橫的那一刀上半截會垮）
+     · 砍到的小人與生物：**砍倒＋斬殺巨人**（小人砍倒、動物倒地、巨人與 Diablo 斬殺，同兵長的 levStrike）
+     · 一次幾刀：**一刀**
+   照現有角色的慣例、問之前跟使用者講過的：點建築、生物、小人跑到射程一半出招，點空地跑過去待命（同 Saber）；整招打不動她（levBusy）；
+   出完招留下來逛；也進吉祥物（偶而動手只砍村子那邊、被打會生氣，v1.268.0 那條規則）；切開之後接不到地的照垮塌規則掉下來。
+   **走過去那一段整套是 Excalibur／兵長砍猴那一套**（sendSaber／stepCall／callAim／excDone 共用）：她就是一隻吉祥物（kind 'eris'）。
+   站定那一刻（callAim → act → erStart）轉進 tachi，時間軸讀引擎那一份（ENG.ERT），姿勢照同一份擺：
+     st    拔劍掄成上段              hold  蓄一下
+     dash  往前撲衝出去（erDash）
+     sl    斬：刃掃過正前方那一刻（sl × ERW.at）定切面（erPlane），劍氣從手那一點放出去
+     fol   停在斬完那一格：劍氣沿著切面往外飛（ERW.v 格／秒），**這一幀飛過的那一圈切掉**（erCut：離那一面 ER_Z.w／2 以內、
+           扇形左右各 ERW.fan 以內的積木打掉——首尾相接，每一塊剛好被算到一次，同 Excalibur）
+     bk    收刀，「鏘」一聲，回去逛（excDone）
+   見 開發筆記〈破壞道具：光之太刀〉 */
+/* 切口多厚（格）：使用者看過預覽從 2／3／4 裡選了「切口4格」。下限是 √3——斜的那一刀要把兩邊隔開，
+   支撐判定角碰角就算連著（兩塊中心最遠差 √3 ≈ 1.73），薄過它的話斜切的上半截還勾著下半截、不會垮。
+   **物件不是常數**：預覽頁要邊看邊挑，程式只讀不寫 */
+const ER_Z = { w: 4 };
+const ER_REACH = ENG.ERW.R / 2;   // 站多遠出招（至少）：射程的一半（同 Excalibur 的 EXC_REACH）；衝刺比它遠就照衝刺的（見 erReach）
+const ER_AIM = 0.2;               // 站定那一下（act）多久就蹲下去
+const ER_HAND = [0.35, 0.62];     // 劍氣從哪裡放出去（模型單位）：她前面 0.35、離地 0.62——斬的那一條弧經過的地方
+/* 砍的方向（m.th，繞「她 → 那一點」那條線轉幾度）：四分之一直劈（π/2），其餘在 ±ER_TILT 弧度裡隨機
+   （0 橫斬、正的左上往右下斜劈、負的右上往左下斜劈——上段起手一律由上往下，見引擎的 erSlashAt）——造型預覽「隨機」那一檔，使用者看過 */
+const ER_VERT = 0.25, ER_TILT = 0.8;
+const ER_HIT = [1.5, 4];          // 切下來的積木往切口兩側掉出去多快（慢：是被切開，不是被炸飛）
+function pickEris(p) {
+  let best = null, bd = Infinity;
+  if (beasts) for (const m of beasts) {
+    if (m.kind !== 'eris') continue;
+    const d = Math.hypot(m.x - p.x, m.z - p.z) + (m.ufo ? 1e6 : 0);
+    if (d < bd) { bd = d; best = m; }
+  }
+  return best;
+}
+/* 點得到、追得到的生物：同 sabCanCut（她自己、被吸走的、打不動的、天上的不算；五條悟點得到、砍不動） */
+function erCanCut(m) {
+  return !!m && m.kind !== 'eris' && !m.ufo && (m.kind === 'gojo' || !levBusy(m)) && onGroundBeast(m);
+}
+/* 點下去的那一下（useTool／game-ui.js 點生物、點小人那兩條）。tb＝點到的那一隻（或那一個小人，isW 給 true）；
+   ground＝點的是空地（跑到那裡待命）。回傳被叫去的那一位（測試在讀）。 */
+function callEris(p, tb, isW, ground) {
+  const at = tb ? { x: tb.x, y: 0, z: tb.z, sd: erReach(), ax: tb.x, az: tb.z, b: tb, bw: isW ? 1 : 0 }
+           : ground ? { x: p.x, y: 0, z: p.z, sd: LEV_SD, go: 1, b: null }
+           : { x: p.x, y: p.y || 0, z: p.z, sd: erReach() };
+  const whom = !tb ? '' : isW ? '那個小人' : (BEAST_NM[tb.kind] || '那一隻');
+  let m = pickEris(at);
+  if (!m) {
+    /* 從那一點的方位上進場（同 Excalibur）；點在場心附近就隨機挑一個方位 */
+    const a = Math.hypot(at.x, at.z) > 1 ? Math.atan2(at.z, at.x) : Math.random() * Math.PI * 2;
+    m = spawnBeast('eris', 1, 0, a);
+    toast(BEAST_NM.eris + '應召而來', ground ? '她跑到你點的地方待命'
+                                     : '她朝' + (whom || '你點的地方') + '跑過去，拔劍一閃，劍氣砍穿過去');
+  } else {
+    beastCry(m);
+    toast(BEAST_NM.eris + '聽到了', m.st === 'tachi' ? '這一刀收完就過去'
+                                   : tb ? '她轉身朝' + whom + '跑過去'
+                                   : ground ? '她轉身跑到你點的地方待命' : '她轉身朝你點的地方跑過去');
+  }
+  if (m.st === 'tachi') m.cq = at;             // 正在出招：這一刀收完再過去（同 Excalibur）
+  else sendSaber(m, at);
+  return m;
+}
+/* 站定那一刻：面向那一點、拔劍掄成上段；砍的方向這一刻就抽好（衝的後半把劍掄到這一刀的起點要用它） */
+function erStart(m) {
+  const c = m.call;
+  if (c.b && !levTargetOk(c.b, c.bw, erCanCut)) { excDone(m); return; }
+  m.st = 'tachi'; m.op = 'st'; m.ot = 0; m.cut = null; m.tp = 0;
+  m.gait = 0; m.run = 0;
+  const p = erTarget(m);
+  if (Math.hypot(p.x - m.x, p.z - m.z) > 0.3) m.a = Math.atan2(p.x - m.x, p.z - m.z);
+  m.th = Math.random() < ER_VERT ? Math.PI / 2 : (Math.random() * 2 - 1) * ER_TILT;
+  sndTachiCharge();
+}
+/* 切面要通過的那一點：點的是生物、小人就照牠這一刻在的地方（身體中段、胸口），點建築就是點到的那一點 */
+function erTarget(m) {
+  const c = m.call;
+  if (c.b) {
+    const o = c.b;
+    return c.bw ? { x: o.x, y: (o.y || 0) + 0.9 * (o.scale || 1), z: o.z }
+                : { x: o.x, y: (o.y || 0) + ENG.BEAST_MID[o.kind] * (o.sc || 1), z: o.z };
+  }
+  return { x: c.ax !== undefined ? c.ax : c.x, y: c.ay !== undefined ? c.ay : c.y || 0, z: c.az !== undefined ? c.az : c.z };
+}
+/* 出手那一刻定切面（寫進 m.cut，引擎照它畫劍氣）：手那一點 h（她前面一點、離地 ER_HAND[1]）、u＝往那一點、
+   s＝那一面上往旁邊（th 0 是水平往她的左手邊 s0，π/2 是 v0＝u × s0 大致朝上）、n＝那一面的法線。
+   r 劍氣飛到哪了、t 斬下去幾秒了、tw 劍氣放出去那一刻（引擎畫切面亮一下要用）、n 切掉幾塊（測試在讀）。
+   點的是會走的，牠這一刻可能走開了一點：先轉過去面向牠再定 */
+function erPlane(m) {
+  const P = erTarget(m), sc = m.sc || 1;
+  if (Math.hypot(P.x - m.x, P.z - m.z) > 0.3) m.a = Math.atan2(P.x - m.x, P.z - m.z);
+  const fx = Math.sin(m.a), fz = Math.cos(m.a);
+  const hx = m.x + fx * ER_HAND[0] * sc, hy = (m.y || 0) + ER_HAND[1] * sc, hz = m.z + fz * ER_HAND[0] * sc;
+  let ux = P.x - hx, uy = P.y - hy, uz = P.z - hz, ul = Math.hypot(ux, uy, uz);
+  if (ul < 1) { ux = fx; uy = 0; uz = fz; ul = 1; }   // 點在她腳邊：照她面向的方向平平砍出去
+  ux /= ul; uy /= ul; uz /= ul;
+  let s0x = uz, s0z = -ux, sl = Math.hypot(s0x, s0z);   // 上 × u：水平、往她的左手邊
+  if (sl < 1e-3) { s0x = fz; s0z = -fx; sl = 1; }
+  s0x /= sl; s0z /= sl;
+  const v0x = uy * s0z, v0y = uz * s0x - ux * s0z, v0z = -uy * s0x;   // u × s0
+  const c = Math.cos(m.th || 0), s = Math.sin(m.th || 0);
+  const sx = c * s0x + s * v0x, sy = s * v0y, sz = c * s0z + s * v0z;
+  m.cut = { hx, hy, hz, ux, uy, uz, sx, sy, sz,
+            nx: uy * sz - uz * sy, ny: uz * sx - ux * sz, nz: ux * sy - uy * sx,
+            r: 0, t: 0, tw: ENG.ERT.sl * ENG.ERW.at, n: 0, shk: 0, sm: 0 };
+  m.tp = Math.asin(Math.max(-1, Math.min(1, uy)));    // 仰角：斬的那一條弧跟著抬（見引擎的 erSlashAt）
+}
+function stepTachi(m, dt) {
+  const c = m.call, E = ENG.ERT;
+  if (!c) { erEnd(m); return false; }
+  m.ot += dt;
+  m.gait = 0; m.run = 0;
+  if (m.cut) erWaveStep(m, dt);
+  if (m.op === 'st') { if (m.ot >= E.st) { m.op = 'hold'; m.ot = 0; } return false; }
+  if (m.op === 'hold') {
+    if (m.ot < E.hold) return false;
+    if (c.b && !levTargetOk(c.b, c.bw, erCanCut)) { erEnd(m); return false; }   // 點的那一隻不在了：收手
+    erDashStart(m);
+    m.op = 'dash'; m.ot = 0;
+    sndTachiDash();
+    return false;
+  }
+  if (m.op === 'dash') {
+    erDash(m);
+    if (m.ot < E.dash) return false;
+    erAim(m);                                      // 斬下去那一刻：照目標這一刻在哪抬手（仰角）
+    m.op = 'sl'; m.ot = 0;
+    sndTachi();
+    return false;
+  }
+  if (m.op === 'sl' || m.op === 'fol') erDash(m);  // 斬的時候勢頭還沒停：往前滑一小段（見 erDash）
+  /* 刃掃過正前方那一刻（sl × ERW.at）定切面、劍氣放出去：手那一點照她這一刻滑到的地方 */
+  if (m.op === 'sl' && !m.cut && m.ot >= E.sl * ENG.ERW.at) { erPlane(m); m.cut.t = m.ot; }
+  if (m.op === 'sl') { if (m.ot >= E.sl) { m.op = 'fol'; m.ot = 0; } return false; }
+  if (m.op === 'fol') { if (m.ot >= E.fol) { m.op = 'bk'; m.ot = 0; } return false; }
+  if (m.ot < E.bk) return false;
+  sndTachiSheath();
+  erEnd(m);
+  return false;
+}
+/* ── 衝一段（使用者看過預覽：「調整砍的動作整個人物都會移動(例如衝一段過程中砍出去) 而不是站著丟劍氣 才會有狂劍士的感覺」）──
+   蓄完往目標撲出去：dash 那 ERT.dash 秒越衝越快（距離照 u² 走）衝 ER_DASH.L 格，衝到底的速度不收，
+   斬的那一下與斬完的頭幾格照這個速度往前滑、照 ER_DASH.tau 秒的時間常數煞住（多滑 v × tau）。
+   不衝過頭：總共最多衝到離那一點 ER_DASH.keep 格；**一小步一小步探前面半格**（同 stepCall 的 CALL_PROBE），
+   碰到建築、房子就停在那裡（還是照樣斬）——她站在射程一半，點的是建築深處的話面前那一面牆可能就在衝的那一段裡。
+   第三版 L 7、tau 0.05（撲 7 格＋滑 3.5 格），使用者看過預覽：「衝刺距離不夠」——tau 0.06、dash 0.2 → 0.3 秒，
+   預覽頁給了 7／12／16／20 四檔，使用者：「衝刺距離20+8」——L 20（撲 20 格＋滑 8 格）。
+   站在射程一半（30 格）只衝得了 30 − keep＝26 格，所以站多遠改成照衝刺距離往外推（見 erReach，多留 pad 格） */
+const ER_DASH = { L: 20, tau: 0.06, keep: 4, pad: 4 };
+/* 跑到離那一點多遠站定：射程一半（ER_REACH），衝刺整段（撲 L ＋滑 v × tau）加 keep、pad 比它遠就照衝刺的 */
+function erReach() {
+  const D = ER_DASH;
+  return Math.max(ER_REACH, D.L + 2 * D.L / ENG.ERT.dash * D.tau + D.keep + D.pad);
+}
+function erDashStart(m) {
+  const P = erTarget(m);
+  if (Math.hypot(P.x - m.x, P.z - m.z) > 0.3) m.a = Math.atan2(P.x - m.x, P.z - m.z);
+  m.dfx = Math.sin(m.a); m.dfz = Math.cos(m.a);
+  m.dmax = Math.max(0, Math.min(ER_DASH.L + 2 * ER_DASH.L / ENG.ERT.dash * ER_DASH.tau,
+                                Math.hypot(P.x - m.x, P.z - m.z) - ER_DASH.keep));
+  m.dd = 0; m.dstop = 0;
+}
+function erDash(m) {
+  if (m.dstop || !(m.dmax > m.dd)) return;
+  const E = ENG.ERT, T = E.dash, L = ER_DASH.L, v = 2 * L / T;
+  const t = m.op === 'dash' ? m.ot : (m.op === 'sl' ? m.ot : E.sl + m.ot);   // 衝完之後過了幾秒
+  const want = Math.min(m.dmax, m.op === 'dash' ? L * Math.pow(Math.min(1, t / T), 2)
+                                                : L + v * ER_DASH.tau * (1 - Math.exp(-t / ER_DASH.tau)));
+  let sp = want - m.dd;
+  while (sp > 1e-9) {
+    const s = Math.min(CALL_PROBE, sp), ex = m.x + m.dfx * (s + 0.5), ez = m.z + m.dfz * (s + 0.5);
+    if (footBlocked(ex, ez) || homeFoot(ex, ez)) { m.dstop = 1; break; }
+    m.x += m.dfx * s; m.z += m.dfz * s; m.dd += s; sp -= s;
+  }
+}
+/* 抬手的仰角（目標比手高多少，斬的那一條弧跟著抬，見引擎的 erSlashAt）：斬下去那一刻、定切面那一刻各算一次 */
+function erAim(m) {
+  const P = erTarget(m), sc = m.sc || 1;
+  if (Math.hypot(P.x - m.x, P.z - m.z) > 0.3) m.a = Math.atan2(P.x - m.x, P.z - m.z);
+  const d = Math.hypot(P.x - m.x, P.z - m.z) - ER_HAND[0] * sc;
+  m.tp = Math.atan2(P.y - ((m.y || 0) + ER_HAND[1] * sc), Math.max(1, d));
+}
+/* 劍氣往外飛一幀：放出去之後（t 過了 tw）照 ERW.v 往外，飛到 ERW.R 為止；這一幀飛過的那一圈切掉 */
+function erWaveStep(m, dt) {
+  const c = m.cut, W = ENG.ERW;
+  c.t += dt;
+  const r1 = Math.min(W.R, Math.max(0, (c.t - c.tw) * W.v));
+  if (r1 > c.r) { erCut(m, c.r, r1); c.r = r1; }
+}
+/* ── 煙：只冒在被砍中的積木身上（使用者看過第二版預覽：「煙的顆粒太粗(可以加在被砍中的積木&生物上就好
+   空中出現煙霧也是奇怪)」；第二版是沿著整個切面冒大顆的煙，一刀 260 顆、一顆 0.6～1.5）——
+   切下來的那一塊有 ER_SMOKE.p 的機率在原地冒一縷細塵，往切口兩側被推開一點、慢慢往上散；一刀最多 ER_SMOKE.max 縷。
+   一縷 ER_SMOKE.s 大、活 ER_SMOKE.life 秒。第三版之後使用者說「砍過的那個面 痕跡效果淡一點」，第四版連這個也調淡了
+   （p 0.3、一縷 0.10～0.26），使用者：「切口的細塵->不用調淡 主要是要看到這個效果比較多」——回到第三版這一組。
+   塵霧那一池，閘門同核彈的塵牆（WIND_DUST_CAP） */
+const ER_SMOKE = { p: 0.5, max: 420, s: [0.14, 0.36], life: [0.7, 1.4] };
+function erSmoke(c, x, y, z, k) {
+  if (c.sm >= ER_SMOKE.max || dust.length > WIND_DUST_CAP) return;
+  c.sm++;
+  const sp = rr(0.8, 2.5) * k;
+  dust.push({
+    x: x + rr(-0.3, 0.3), y: Math.max(0.2, y + rr(-0.3, 0.3)), z: z + rr(-0.3, 0.3),
+    vx: c.nx * sp + rr(-0.6, 0.6), vy: c.ny * sp + rr(0.6, 2.2), vz: c.nz * sp + rr(-0.6, 0.6),
+    rx: Math.random() * 6, ry: Math.random() * 6,
+    life: rr(ER_SMOKE.life[0], ER_SMOKE.life[1]), s: rr(ER_SMOKE.s[0], ER_SMOKE.s[1]), c: rr(0.72, 0.9), keep: 0.93, g: 1.2, fade: 1.1
+  });
+}
+/* ── 血：砍中的小人與生物身上噴一蓬血（使用者看過第三版預覽：「砍在生物身上改成噴血 不是煙霧」；第三版是冒 6 縷細塵）——
+   從被砍中的那一點（小人胸口、生物身體中段）往切口兩側噴出去（切面的法線方向，兩側輪流）、順著劍氣飛的方向帶一點、往上彈，
+   小顆、重力拉下來落地。一隻 ER_BLOOD.n 顆，大隻的照身形（sz＝身體中段高度 ÷ 小人胸口高度）多噴（最多 ER_BLOOD.max 倍）、
+   顆粒大一點、噴得快一點（√sz 倍、最多 ER_BLOOD.big 倍：巨人身體中段 7.5 格，不封頂的話一顆 0.43、噴 19 格／秒，是一塊一塊的紅磚）。
+   借塵霧那一池（每顆自己的顏色，同消防車的水滴），0 個新 draw call；閘門同 erSmoke */
+const ER_BLOOD = { n: 16, max: 4, big: 2, s: [0.06, 0.15], sp: [2.5, 6.5], g: 16 };
+function erBlood(c, x, y, z, sz) {
+  const k = Math.max(1, sz), n = Math.round(ER_BLOOD.n * Math.min(ER_BLOOD.max, k)), f = Math.min(ER_BLOOD.big, Math.sqrt(k));
+  for (let i = 0; i < n; i++) {
+    if (dust.length > WIND_DUST_CAP) return;
+    const side = i % 2 ? 1 : -1, sp = rr(ER_BLOOD.sp[0], ER_BLOOD.sp[1]) * f, fw = rr(0.5, 3) * f;
+    dust.push({
+      x: x + rr(-0.15, 0.15) * f, y: y + rr(-0.2, 0.2) * f, z: z + rr(-0.15, 0.15) * f,
+      vx: c.nx * side * sp + c.ux * fw + rr(-0.8, 0.8), vy: c.ny * side * sp + c.uy * fw + rr(1.5, 4.5) * f,
+      vz: c.nz * side * sp + c.uz * fw + rr(-0.8, 0.8),
+      rx: Math.random() * 6, ry: Math.random() * 6,
+      life: rr(0.6, 1.1), s: rr(ER_BLOOD.s[0], ER_BLOOD.s[1]) * f,
+      cr: rr(0.55, 0.78), cg: rr(0.02, 0.06), cb: rr(0.03, 0.07), g: ER_BLOOD.g, keep: 0.98
+    });
+  }
+}
+function erEnd(m) {
+  m.op = null; m.ot = 0; m.cut = null; m.y = 0;
+  excDone(m);
+}
+/* 劍氣這一幀從半徑 r0 飛到 r1：那一面上這一圈（扇形左右各 ERW.fan）、離那一面 ER_Z.w／2 以內的積木打掉
+   （還立著的算破壞；地上的碎料一起掃走但不算，同 Excalibur），往切口兩側慢慢掉出去、順著劍氣飛的方向帶一點。
+   吉祥物砸村子那一趟（m.home）地標一塊都不碰（同 Saber 的 excSweep）。回傳切掉幾塊 */
+function erCut(m, r0, r1) {
+  const c = m.cut, W2 = ER_Z.w / 2, cosF = Math.cos(ENG.ERW.fan);
+  let n = 0, own = 0, cx = 0, cy = 0, cz = 0;
+  for (const b of blocks) {
+    if (b.st !== SET && b.st !== FREE) continue;
+    const vx = b.x - c.hx, vy = b.y - c.hy, vz = b.z - c.hz;
+    const d = vx * c.nx + vy * c.ny + vz * c.nz;
+    if (d > W2 || d < -W2) continue;
+    const a = vx * c.ux + vy * c.uy + vz * c.uz, s = vx * c.sx + vy * c.sy + vz * c.sz, r = Math.hypot(a, s);
+    if (r <= r0 || r > r1 || a < r * cosF) continue;
+    const set = b.st === SET, ow = set && b.hh < 0;   // 同 smash：breakBlock 會把 hh 清掉，要先看
+    if (m.home && ow) continue;
+    const k = d >= 0 ? 1 : -1, sp = rr(ER_HIT[0], ER_HIT[1]), ri = 1 / (r || 1);
+    const ox = (a * c.ux + s * c.sx) * ri, oy = (a * c.uy + s * c.sy) * ri, oz = (a * c.uz + s * c.sz) * ri;
+    const bx = b.x, by = b.y, bz = b.z;               // breakBlock 之後它就開始飛了，煙冒在切下來的那個位置
+    if (!breakBlock(b, c.nx * k * sp + ox * sp * 0.6, c.ny * k * sp + oy * sp * 0.6 + rr(0.5, 2),
+                    c.nz * k * sp + oz * sp * 0.6)) continue;   // 防護罩擋下（v1.259.0）
+    if (!set) continue;
+    n++; if (ow) own++;
+    cx += bx; cy += by; cz += bz;
+    if (Math.random() < ER_SMOKE.p) erSmoke(c, bx, by, bz, k);
+  }
+  erLives(m, r0, r1, W2, cosF);
+  if (!n) return 0;
+  const at = { x: cx / n, y: cy / n, z: cz / n };
+  /* self 給她自己：切口從她手邊開始，afterHit 震倒的半徑（W2 × 1.7）可能罩到她（同巨人那一腳的 self） */
+  afterHit(n, at, W2, own, m);
+  c.n += n;
+  if (!c.shk) { c.shk = 1; ENG.shake(1.0 + Math.min(1.2, n * 0.004)); }   // 一刀只震一次
+  return n;
+}
+/* 劍氣這一幀飛過的那一圈裡的人與動物（使用者選的「砍倒＋斬殺巨人」，同兵長的 levStrike）：小人砍倒、動物倒地、
+   巨人與 Diablo 斬殺。小人量胸口、動物量身體中段（同 Excalibur 的 excLives）；天上的不算（onGroundBeast）、她自己不算 */
+function erLives(m, r0, r1, W2, cosF) {
+  const c = m.cut;
+  const inCut = (x, y, z, pad) => {
+    const vx = x - c.hx, vy = y - c.hy, vz = z - c.hz;
+    if (Math.abs(vx * c.nx + vy * c.ny + vz * c.nz) > W2 + pad) return false;
+    const a = vx * c.ux + vy * c.uy + vz * c.uz, s = vx * c.sx + vy * c.sy + vz * c.sz, r = Math.hypot(a, s);
+    return r > r0 && r <= r1 && a >= r * cosF;
+  };
+  let hit = 0;
+  for (const w of workers) {
+    if (w.air || w.dead || w.fall > 0 || w.burn > 0) continue;   // 屍體、已經倒著的不再砍
+    if (!inCut(w.x, (w.y || 0) + 0.9 * (w.scale || 1), w.z, GATE_MAN_R)) continue;
+    if (workerSafe(w)) continue;                                   // 防護罩擋下（v1.259.0）
+    w.fall = rr(1.6, 2.8); releaseWorker(w);
+    lifeHit(w, 'tachi');
+    hit++;
+    erBlood(c, w.x, (w.y || 0) + 0.9 * (w.scale || 1), w.z, w.scale || 1);
+  }
+  if (beasts) for (const o of beasts) {
+    if (o === m || o.air || o.ufo || !onGroundBeast(o)) continue;
+    const mid = ENG.BEAST_MID[o.kind] * (o.sc || 1);
+    if (!inCut(o.x, (o.y || 0) + mid, o.z, GATE_MAN_R + mid * 0.8)) continue;
+    let ok = false;
+    if (killable(o)) { if (!o.dead && !beastSafe(o)) { slayBeast(o, 'tachi'); ok = true; } }   // 罩子裡的斬不死
+    else if (fellBeast(o, rr(2.4, 3.6))) { beastHit(o, 'tachi'); ok = true; }
+    if (!ok) continue;
+    hit++;
+    erBlood(c, o.x, (o.y || 0) + mid, o.z, mid / 0.9);             // 大隻的多噴、顆粒大一點
+  }
+  if (hit) sndFall();
+  return hit;
+}
+
+
 /* ── 吉祥物（v1.144）─────────────────────────────────────
    使用者：「黑獼猴 白猴子 飛龍 列為吉祥物／吉祥物一段時間就會出來刷存在感
    （不搞破壞 只是出現逛一逛 一段時間又走了）／各吉祥物出來刷存在感的事件各自獨立
@@ -13266,7 +13589,9 @@ const MASCOTS = [
   { id: 'zenitsu', ground: 1, spawn: bad => spawnBeast('zenitsu', 1, bad) },
   { id: 'gojo', ground: 1, spawn: bad => spawnBeast('gojo', 1, bad) },
   /* 芙莉蓮（v1.268.0）：只來逛（使用者選的「她也不主動動手」——她那一把道具只有防護罩，沒有攻擊的招） */
-  { id: 'frieren', ground: 1, calm: 1, spawn: () => spawnBeast('frieren', 1, 0) }
+  { id: 'frieren', ground: 1, calm: 1, spawn: () => spawnBeast('frieren', 1, 0) },
+  /* 艾莉絲（v1.290.0）：照 v1.268.0 那條規則，來逛、偶爾動手（光之太刀只砍村子那邊，見 mascStrike）、被打到會生氣 */
+  { id: 'eris', ground: 1, spawn: bad => spawnBeast('eris', 1, bad) }
 ];
 /* ── 偶而動手的機率：固定邏輯（v1.268.0）────────────────────────
    使用者：「降低吉祥物出手攻擊村子的機率(因為越來越多隻 同機率下 被破壞的機會已經大幅上升 可以用一個固定邏輯
@@ -13410,10 +13735,10 @@ const MORE_GAP = DOOM_FIRE_R * 2;
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 小獼猴', snow: '🐵 小猴子', dragon: '🐉 飛龍',
                    gryphon: '🦅 獅鷲', giant: '🗿 巨人', diablo: '😈 Diablo', saber: '⚔ Saber', levi: '🗡 里維兵長',
-                   megumin: '💥 惠惠', zenitsu: '⚡ 善逸', gojo: '🟣 五條悟', frieren: '🛡 芙莉蓮' };
+                   megumin: '💥 惠惠', zenitsu: '⚡ 善逸', gojo: '🟣 五條悟', frieren: '🛡 芙莉蓮', eris: '🌙 艾莉絲' };
 /* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）用「他」；
    惠惠（v1.247.0）、芙莉蓮（v1.259.0）用「她」——其餘那幾款照舊是牠 */
-const itOf = m => m.kind === 'saber' || m.kind === 'megumin' || m.kind === 'frieren' ? '她'
+const itOf = m => m.kind === 'saber' || m.kind === 'megumin' || m.kind === 'frieren' || m.kind === 'eris' ? '她'
                 : m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' ? '他' : '牠';
 /* 叫一聲。哪一種叫哪一聲照 spawnBeast／spawnDragon 那邊的分法，不另訂一套。 */
 function beastCry(m) {
@@ -13426,6 +13751,7 @@ function beastCry(m) {
   else if (m.kind === 'zenitsu') sndZen();
   else if (m.kind === 'gojo') sndGojo();
   else if (m.kind === 'frieren') sndFrieren();
+  else if (m.kind === 'eris') sndEris();
   else sndBeast(m.kind === 'snow');
 }
 /* 這一隻已經在走人了嗎（那就別再改牠的主意，同 turnBad 的規矩：都走到一半了

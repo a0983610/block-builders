@@ -1126,6 +1126,7 @@ if (vAo.x + vAo.y > 0.5) {
     scene.add(gjMesh);
     gjInit(unit);                    // 赫、蒼、茈的光球與白光、衝擊波（全部先 visible = false）
     frInit(unit);                    // 芙莉蓮（v1.259.0）與她的防護罩；打到那一點的白光借上面那一行開的球（gjSph）
+    erInit();                        // 艾莉絲（v1.290.0）與她的刀光、劍氣（見〈艾莉絲〉那一節）
     diaInit();                       // Diablo：同上自己一顆（見〈Diablo〉那一節）
     draInit();                       // 飛龍（v1.277.0）：同上自己一顆（見〈飛龍（v1.277.0 重製）〉那一節）
     /* 雷光（藍白）與一閃的光痕（金黃）：各一對不吃光、不投影的網格，亮芯不透明、光暈半透明（同造型預覽）。
@@ -1774,7 +1775,7 @@ if (vAo.x + vAo.y > 0.5) {
     scene.add(fadeMesh);
 
     /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）：幾何體同 fadeMesh 那一套（不切、不發光），材質共用那一份 */
-    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT, FR_SLOT, DIA_SLOT, DRA_SLOT);
+    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT, FR_SLOT, ER_SLOT, DIA_SLOT, DRA_SLOT);
     const HUM_N = HUM_MAX * HUM_SLOT;
     const humGeo = new T.BoxGeometry(1, 1, 1);
     const humCut = new T.InstancedBufferAttribute(new Float32Array(HUM_N * 4), 4);
@@ -9464,6 +9465,779 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     }
     if (nb) frBarAB.needsUpdate = frBarAG.needsUpdate = true;
   }
+  /* ══ 艾莉絲（v1.290.0）══════════════════════════════════════════
+     使用者：「做這個角色的造型 也是越像越好 / 預計會加成道具&吉祥物 攻擊方式是光之太刀 類似無形的劍氣斬過 砍的方向隨機」
+     ［附兩張圖：立繪（右手扶在腦後、左手叉腰、左腰掛劍）、公仔（握著出鞘的劍）］。
+     造型預覽 tools/.e2e-out/艾莉絲造型預覽.html 一輪：「腰後不用再一把刀 造型OK」（第一版腰後還橫著一把灰鞘的，拿掉了）。
+     **同芙莉蓮自己一顆 mesh、不進 BEASTS**（kind 'eris'，putErises 畫、erAt 對回索引）。造型表格式同 FRIEREN
+     （p 站直時的絕對座標、s 尺寸、c 顏色、g 掛在哪一組、r 自己的轉角；面向 +z、**右手在 −x**；k 菱形片、z 袖子拉長／跟著挪）。
+     比芙莉蓮多的四組：後面的長髮（mane，掛在頭上、自己擺）、大衣下襬（skirt，掛在腰、跑起來往後揚）、
+     劍（sword，自己的座標：護手在原點、刃朝 +y、刃口朝 +z）、鞘（saya，跟劍同一套座標——收著的時候兩個矩陣一樣）。
+     **手去追劍柄與鞘**（同芙莉蓮的 frRig）：右手握劍柄（wR）、左手握鞘（wL，gL 從鞘口沿著鞘量，負的＝在柄上）。
+     光之太刀那一招的姿勢與時間軸（ERT）在這裡，規則那邊照同一份走；劍氣（規則那邊寫在她身上的 m.cut）怎麼畫看 ER_FX。
+     見 開發筆記〈艾莉絲的造型〉 */
+  /* 配色從參考圖 1 取樣（PowerShell System.Drawing，每一區量化分桶取最多的幾桶）：
+     頭髮 #bb443a／影 #8b2e2a、膚 #fddcc5、毛領 #ebd3b4／#cbb49c、領結 #55423c、大衣 #1e181a、白上衣 #fdf8f3、
+     腰帶 #6b4c3d、短褲 #3a3535、過膝襪上半 #242222、下半（透膚）#5e4840、鞋 #242423、鞘 #342b25。
+     大衣、短褲、襪子往亮推一點（照抄在遊戲光下只剩剪影，同芙莉蓮的褲襪） */
+  const ERC = {
+    skin: 0xffd8c0, skinD: 0xeeb79e,
+    hair: 0xc9382f, hairD: 0x92252a, hairL: 0xd8473c,
+    eyeW: 0xffffff, iris: 0xb8222b, irisL: 0xf5826f, pupil: 0x47101a, lash: 0x3a1a1e, brow: 0x8f2a27, mouth: 0xbf5a54,
+    wht: 0xfaf5f0, whtD: 0xd8d0ca, blk: 0x2b2325,
+    coat: 0x332a2d, lining: 0x6e6669, strW: 0xf4ece6,
+    fur: 0xead3b2, furD: 0xc8ab8c, furL: 0xf6e9d2,
+    belt: 0x76503a, silver: 0xccd1d8, gold: 0xd2ad5f, goldD: 0x8f7344,
+    shorts: 0x403839, stk: 0x302b2b, stkS: 0x664e45, btn: 0x1c1919,
+    shoe: 0x2c2a29, sole: 0x161414,
+    steel: 0xdde2e8, steelD: 0x96a0ab, grip: 0x3b2a24,
+    saya: 0x3d312b, sayaL: 0x655246, band: 0x262022
+  };
+  /* 法線往上偏多少：頭髮、白上衣、毛領 0.5（紅髮給 1 的話頂上吃滿天光、整頭偏粉）；臉與膚色照 heroUp 那一條（GJ_FACE_UP） */
+  const ER_UP = { hair: 0.5, hairD: 0.5, hairL: 0.5, wht: 0.5, whtD: 0.5, fur: 0.5, furD: 0.5, furL: 0.5 };
+  const ER_G = { body: 0, head: 1, armR: 2, armL: 3, handR: 4, handL: 5, legR: 6, legL: 7, footR: 8, footL: 9,
+                 mane: 10, skirt: 11, sword: 12, saya: 13 };
+  const ER_NG = 14;
+  /* 每一組的樞紐（站直時的絕對座標）：手在手腕、腳掌在腳踝、長髮在後腦、下襬在腰；劍與鞘用自己的座標 */
+  const ER_PIV = [[0, 0, 0], [0, 0.78, 0], [-0.255, 0.715, 0], [0.255, 0.715, 0], [-0.255, 0.465, 0], [0.255, 0.465, 0],
+                  [-0.085, 0.40, 0], [0.085, 0.40, 0], [-0.085, 0.075, 0], [0.085, 0.075, 0],
+                  [0, 1.0, -0.20], [0, 0.48, 0], [0, 0, 0], [0, 0, 0]];
+  /* 手臂一節、沒有手肘：搆不到先把袖子拉長（最多 ER_EXT），還不夠才整支挪。
+     ER_EXT 給 0.18（芙莉蓮 0.14）：居合架勢右手要越過身體去握左腰的柄（同善逸的 ZEN_ARM ＋ ZEN_EXT 0.46） */
+  const ER_WAIST = 0.46, ER_WRIST = 0.25, ER_EXT = 0.18, ER_HAND_C = 0.038;
+  const ER_BLADE = 0.38;             // 刃長（護手往上量）：插在左腰，鞘尾垂到腳踝（參考圖 1）
+  const ER_GRIP = -0.058;            // 握點（護手往柄那一側量）
+  /* 刃（與鞘）的彎：刀背在 −z，越往刀尖越往刀背那一側彎；越往刀尖越寬一點（參考圖 2 的寬刃） */
+  const erBZ = y => -0.03 * Math.pow(y / ER_BLADE, 2), erBW = y => 0.048 + 0.012 * y / ER_BLADE;
+  const ERIS = (() => {
+    const out = [];
+    const P = (g, p, s, c, r, f) => out.push(Object.assign({ g: ER_G[g], p, s, c: ERC[c], cn: c, r: r || [0, 0, 0] }, f || {}));
+    const SIDE = { arm: 1, hand: 1, leg: 1, foot: 1 };
+    const M = (g, p, s, c, r, f) => {
+      r = r || [0, 0, 0];
+      P(SIDE[g] ? g + 'L' : g, p, s, c, r, f);
+      P(SIDE[g] ? g + 'R' : g, [-p[0], p[1], p[2]], s, c, [r[0], -r[1], -r[2]], f);
+    };
+    const DIA = (fn, g, c, d, len, wid, n, t, col) => {
+      const w = wid / Math.SQRT2;
+      fn(g, c.slice(), [w, w, t], col, frBasis(d, n), { k: len / wid });
+    };
+    const LOCK = (fn, g, c, d, L, W, n, t, col) => DIA(fn, g, c, d, 2 * L, W, n, t || 0.03, col || 'hair');
+    const SEG = (fn, g, a, b, w, t, n, col) => {
+      const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(d[0], d[1], d[2]);
+      fn(g, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2], [w, L, t], col, frBasis(d, n));
+    };
+
+    /* ── 頭（樞紐在脖子 0.78）：0.78～1.11 ── */
+    P('head', [0, 0.945, 0], [0.46, 0.33, 0.44], 'skin');
+    /* 眼睛：紅、吊眼（上眼線往外上挑），眼白 → 虹膜 → 下半亮色 → 瞳孔 → 高光；眉頭壓低（參考圖 1 那種好勝的表情） */
+    M('head', [0.10, 0.898, 0.221], [0.112, 0.068, 0.004], 'eyeW');
+    M('head', [0.094, 0.894, 0.2225], [0.064, 0.066, 0.004], 'iris');
+    M('head', [0.094, 0.876, 0.224], [0.052, 0.024, 0.004], 'irisL');
+    M('head', [0.094, 0.897, 0.2255], [0.028, 0.036, 0.004], 'pupil');
+    M('head', [0.081, 0.91, 0.227], [0.016, 0.016, 0.004], 'eyeW');
+    M('head', [0.102, 0.934, 0.224], [0.13, 0.02, 0.006], 'lash', [0, 0, 0.14]);
+    M('head', [0.172, 0.938, 0.224], [0.04, 0.014, 0.006], 'lash', [0, 0, 0.55]);
+    M('head', [0.10, 0.864, 0.222], [0.07, 0.006, 0.004], 'skinD');
+    M('head', [0.10, 0.972, 0.2215], [0.095, 0.013, 0.004], 'brow', [0, 0, 0.26]);
+    P('head', [0, 0.852, 0.221], [0.012, 0.01, 0.004], 'skinD');                         // 鼻
+    P('head', [0.004, 0.818, 0.221], [0.048, 0.009, 0.004], 'mouth', [0, 0, 0.1]);      // 嘴：一邊嘴角往上的笑
+    P('head', [0.03, 0.824, 0.2215], [0.012, 0.014, 0.004], 'mouth', [0, 0, 0.6]);
+
+    /* ── 頭髮：紅、量多。頭頂三階收上去；後腦；兩側；瀏海一撮一撮參差（中間那撮垂到兩眼之間）；
+       臉側兩撮長的垂到胸前；髮箍（參考圖 2）；頭頂往後順、兩側往外翹的幾撮；呆毛 ── */
+    P('head', [0, 1.155, -0.02], [0.50, 0.09, 0.47], 'hair');                           // 1.11～1.20
+    P('head', [0, 1.215, -0.02], [0.42, 0.03, 0.41], 'hair');
+    P('head', [0, 1.24, -0.02], [0.30, 0.02, 0.29], 'hair');
+    P('head', [0, 0.94, -0.24], [0.50, 0.34, 0.04], 'hair');                            // 後腦
+    M('head', [0.245, 1.0, -0.03], [0.035, 0.22, 0.47], 'hair');                        // 兩側 0.89～1.11
+    M('head', [0.245, 0.84, -0.09], [0.035, 0.12, 0.33], 'hairD');                      // 下巴旁往後
+    P('head', [0, 1.15, 0.228], [0.46, 0.08, 0.03], 'hair');                            // 頭頂前緣
+    P('head', [0, 1.075, 0.225], [0.50, 0.07, 0.04], 'hair');                           // 瀏海根 1.04～1.11
+    for (const [x, y, dx, dy, len, wid, c] of [
+      [-0.015, 0.985, 0.12, -1, 0.24, 0.075, 'hair'],                                    // 中間那撮：垂到兩眼之間
+      [0.075, 1.02, 0.28, -1, 0.16, 0.08, 'hair'],
+      [-0.09, 1.02, -0.32, -1, 0.16, 0.08, 'hair'],
+      [0.175, 1.0, 0.42, -1, 0.18, 0.075, 'hairD'],
+      [-0.175, 1.0, -0.42, -1, 0.18, 0.075, 'hairD'],
+      [0.215, 0.955, 0.15, -1, 0.24, 0.06, 'hair'],                                      // 兩鬢
+      [-0.215, 0.955, -0.15, -1, 0.24, 0.06, 'hair'],
+      [0.035, 1.065, 0.55, -1, 0.15, 0.07, 'hairL'],
+      [-0.115, 1.06, -0.6, -1, 0.15, 0.07, 'hairL']])
+      DIA(P, 'head', [x, y, 0.2475], [dx, dy, 0], len, wid, [0, 0, 1], 0.02, c);
+    for (const s of [1, -1]) {
+      LOCK(P, 'head', [0.238 * s, 0.85, 0.165], [0.1 * s, -1, 0.06], 0.27, 0.09, [s, 0, 0.35], 0.035, 'hair');   // 垂到胸前
+      LOCK(P, 'head', [0.205 * s, 0.88, 0.205], [0.04 * s, -1, 0.03], 0.16, 0.06, [0.25 * s, 0, 1], 0.025, 'hairD');
+    }
+    {
+      const pts = [[0.262, 0.99], [0.262, 1.115], [0.262, 1.19], [0.235, 1.218], [0.175, 1.24], [0.09, 1.258], [0, 1.264]];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
+        SEG(M, 'head', [x0, y0, 0.03], [x1, y1, 0.03], 0.045, 0.02, [(x0 + x1) / 2, (y0 + y1) / 2 - 1.0, 0], 'band');
+      }
+    }
+    LOCK(M, 'head', [0.12, 1.21, -0.10], [0.3, -0.25, -1], 0.13, 0.11, [0.3, 1, 0], 0.03, 'hair');
+    LOCK(P, 'head', [0, 1.225, -0.12], [0, -0.2, -1], 0.13, 0.12, [0, 1, 0], 0.03, 'hairD');
+    LOCK(M, 'head', [0.25, 1.08, -0.06], [0.55, -1, -0.35], 0.12, 0.085, [1, 0.2, 0], 0.03, 'hair');
+    LOCK(M, 'head', [0.25, 0.97, -0.13], [0.45, -1, -0.5], 0.12, 0.08, [1, 0, 0], 0.03, 'hairD');
+    DIA(P, 'head', [0.025, 1.315, 0.06], [0.2, 1, 0.35], 0.16, 0.035, [1, 0, 0], 0.018, 'hair');   // 呆毛
+    DIA(P, 'head', [0.065, 1.39, 0.06], [0.9, 0.3, -0.6], 0.09, 0.03, [0, 1, 0.3], 0.016, 'hair');
+
+    /* ── 後面的長髮（樞紐在後腦 0, 1.0, −0.20）：七綹，各沿一條平滑的曲線（Catmull-Rom）切 6 節，往下散開、垂到大腿，髮尾往外捲。
+       每一條：控制點、寬（根 → 尾，中段再鼓 0.03）、顏色、髮尾往哪捲（cx）。中間那條最長、越外面越短越往外捲，條與條前後錯開——
+       背面看才是一綹一綹（造型預覽第一版寬度幾乎不收，背面像一口鐘） ── */
+    const STR = [
+      { m: 0, w: [0.15, 0.06], c: 'hair', cx: 0.3,
+        pts: [[0, 1.04, -0.24], [0, 0.88, -0.29], [0.012, 0.70, -0.31], [-0.01, 0.52, -0.31], [0.01, 0.37, -0.30], [0.035, 0.25, -0.28]] },
+      { m: 1, w: [0.13, 0.05], c: 'hairD', cx: 0.6,
+        pts: [[0.085, 1.04, -0.235], [0.105, 0.88, -0.27], [0.13, 0.70, -0.28], [0.15, 0.53, -0.28], [0.18, 0.40, -0.265], [0.22, 0.30, -0.245]] },
+      { m: 1, w: [0.13, 0.05], c: 'hair', cx: 0.6,
+        pts: [[0.165, 1.03, -0.22], [0.205, 0.87, -0.26], [0.245, 0.70, -0.27], [0.275, 0.55, -0.26], [0.305, 0.43, -0.24], [0.345, 0.35, -0.215]] },
+      { m: 1, w: [0.10, 0.045], c: 'hairD', cx: 0.8,
+        pts: [[0.235, 1.0, -0.17], [0.285, 0.86, -0.20], [0.325, 0.72, -0.205], [0.355, 0.59, -0.195], [0.385, 0.49, -0.175], [0.42, 0.43, -0.145]] }
+    ];
+    for (const st of STR) {
+      const cv = new T.CatmullRomCurve3(st.pts.map(a => new T.Vector3(a[0], a[1], a[2])));
+      const fn = st.m ? M : P, N = 6, n = [st.pts[0][0] * 1.4, 0, -1];
+      for (let i = 0; i < N; i++) {
+        const a = cv.getPoint(i / N), b = cv.getPoint((i + 1) / N), u = (i + 0.5) / N;
+        const w = st.w[0] + (st.w[1] - st.w[0]) * u + 0.03 * Math.sin(Math.PI * u);
+        const ex = b.clone().sub(a).normalize().multiplyScalar(0.02);
+        SEG(fn, 'mane', a.clone().sub(ex).toArray(), b.clone().add(ex).toArray(), w, 0.07, n, st.c);
+      }
+      const e = cv.getPoint(1).toArray(), d = cv.getTangent(1).toArray();             // 髮尾：一撮尖＋一撮往外捲
+      DIA(fn, 'mane', e, [d[0] + st.cx * 0.3, d[1], d[2]], 0.2, st.w[1] * 1.3, n, 0.05, st.c === 'hair' ? 'hairD' : 'hair');
+      DIA(fn, 'mane', [e[0] + 0.02, e[1] + 0.03, e[2] + 0.01], [st.cx * 0.6, 0.7, d[2]], 0.09, st.w[1] * 1.1, n, 0.04, 'hairL');
+    }
+
+    /* ── 身體：短褲＋兩條腰帶（上面那條銀飾＋金扣；下面那條往左腰斜下去、劍掛在那一頭）；露腰；白色短上衣（胸下一道黑帶、
+       下緣中間一個黑色尖角） ── */
+    P('body', [0, 0.415, -0.005], [0.29, 0.09, 0.21], 'shorts');                       // 0.37～0.46
+    P('body', [0, 0.455, -0.005], [0.30, 0.022, 0.22], 'belt');
+    P('body', [0.035, 0.455, 0.107], [0.06, 0.016, 0.006], 'silver');
+    P('body', [-0.035, 0.455, 0.107], [0.026, 0.024, 0.006], 'gold');
+    SEG(P, 'body', [-0.15, 0.442, 0.106], [0.165, 0.392, 0.106], 0.02, 0.008, [0, 0, 1], 'belt');
+    P('body', [0.165, 0.392, 0.106], [0.022, 0.022, 0.008], 'silver');
+    P('body', [0, 0.51, 0], [0.25, 0.10, 0.18], 'skin');                               // 腰 0.46～0.56
+    P('body', [0, 0.50, 0.0905], [0.01, 0.018, 0.004], 'skinD');                        // 肚臍
+    P('body', [0, 0.63, 0.005], [0.29, 0.14, 0.21], 'wht');                             // 0.56～0.70
+    P('body', [0, 0.638, 0.115], [0.24, 0.075, 0.03], 'wht');                           // 胸
+    P('body', [0, 0.645, 0.1305], [0.006, 0.07, 0.003], 'whtD');                        // 中縫
+    P('body', [0, 0.575, 0.005], [0.295, 0.02, 0.215], 'blk');                          // 胸下黑帶
+    DIA(P, 'body', [0, 0.562, 0.112], [0, -1, 0], 0.05, 0.05, [0, 0, 1], 0.006, 'blk');
+    /* ── 大衣：黑、前面敞開；後片、兩側、前襟兩條（露出白上衣與腰），肩上一片；袖子在手臂那組 ── */
+    P('body', [0, 0.725, 0], [0.34, 0.05, 0.22], 'coat');
+    P('body', [0, 0.615, -0.118], [0.36, 0.27, 0.03], 'coat');                          // 後片 0.48～0.75
+    M('body', [0.168, 0.615, -0.01], [0.03, 0.27, 0.235], 'coat');
+    M('body', [0.155, 0.60, 0.12], [0.06, 0.24, 0.025], 'coat');                        // 前襟 0.48～0.72
+    /* ── 毛領：米色、蓬，從後頸繞過肩膀、沿前襟往下一段；外面一撮一撮翹出來 ── */
+    P('body', [0, 0.755, -0.12], [0.44, 0.09, 0.10], 'fur');
+    M('body', [0.20, 0.752, 0.0], [0.17, 0.085, 0.27], 'fur');                         // 蓋過肩膀
+    SEG(M, 'body', [0.13, 0.77, 0.115], [0.155, 0.67, 0.14], 0.085, 0.045, [0, 0, 1], 'fur');
+    DIA(M, 'body', [0.155, 0.665, 0.142], [0.25, -1, 0.1], 0.08, 0.06, [0, 0, 1], 0.03, 'furD');
+    DIA(M, 'body', [0.27, 0.785, -0.05], [1, 0.4, -0.3], 0.12, 0.06, [0, 1, 0], 0.04, 'furL');
+    DIA(M, 'body', [0.26, 0.76, 0.09], [0.8, 0.1, 0.6], 0.11, 0.055, [0, 1, 0], 0.04, 'furD');
+    DIA(M, 'body', [0.11, 0.785, 0.12], [0.3, 0.6, 0.8], 0.09, 0.05, [0, 1, 0], 0.035, 'furL');
+    DIA(P, 'body', [0.08, 0.785, -0.17], [0.3, 0.3, -1], 0.12, 0.06, [0, 1, 0], 0.04, 'furL');
+    DIA(P, 'body', [-0.10, 0.78, -0.17], [-0.3, 0.2, -1], 0.11, 0.06, [0, 1, 0], 0.04, 'fur');
+    /* ── 領結：黑，在喉嚨那裡 ── */
+    P('body', [0, 0.745, 0.13], [0.035, 0.03, 0.03], 'blk');
+    DIA(M, 'body', [0.045, 0.745, 0.13], [1, -0.25, 0], 0.085, 0.06, [0, 0, 1], 0.025, 'blk');
+    DIA(M, 'body', [0.02, 0.70, 0.135], [0.35, -1, 0], 0.08, 0.035, [0, 0, 1], 0.015, 'blk');
+
+    /* ── 大衣下襬（樞紐在腰 0.48）：後片垂到大腿、兩側各一片，下緣一道灰的裡布 ── */
+    SEG(P, 'skirt', [0, 0.485, -0.13], [0, 0.25, -0.21], 0.40, 0.025, [0, 0.3, -1], 'coat');
+    SEG(P, 'skirt', [0, 0.27, -0.205], [0, 0.245, -0.213], 0.405, 0.028, [0, 0.3, -1], 'lining');
+    SEG(M, 'skirt', [0.178, 0.485, -0.07], [0.215, 0.27, -0.10], 0.14, 0.025, [1, 0, -0.2], 'coat');
+    SEG(M, 'skirt', [0.212, 0.29, -0.098], [0.218, 0.262, -0.101], 0.142, 0.028, [1, 0, -0.2], 'lining');
+
+    /* ── 手臂（樞紐在肩膀 ±0.255, 0.715）：黑袖、前臂兩道白條紋、袖口外擴一點 ── */
+    M('arm', [0.255, 0.70, 0], [0.14, 0.05, 0.15], 'coat');
+    M('arm', [0.255, 0.585, 0], [0.13, 0.23, 0.14], 'coat', 0, { z: 1 });
+    M('arm', [0.255, 0.545, 0], [0.134, 0.011, 0.144], 'strW', 0, { z: 2 });
+    M('arm', [0.255, 0.522, 0], [0.134, 0.011, 0.144], 'strW', 0, { z: 2 });
+    M('arm', [0.255, 0.48, 0], [0.145, 0.04, 0.155], 'coat', 0, { z: 2 });
+    /* ── 手（樞紐在手腕）：握拳＋拇指（拇指在手的本地 +z，握東西時朝刃那一側） ── */
+    M('hand', [0.255, 0.427, 0.005], [0.075, 0.075, 0.085], 'skin');
+    M('hand', [0.222, 0.44, 0.04], [0.026, 0.04, 0.026], 'skin');
+    /* ── 抱胸時的上臂（掛在身體上）：抱胸那一格手臂的根從肩膀挪到手肘（ER_ELB），肩膀到手肘這一截由它補上；
+       平常收起來（長度照 fd 縮到 0，位置與長度每一幀照手臂的根算，見 putErises——這裡的 p／s 只是 fd 1 那一格） ── */
+    M('body', [0.255, 0.645, 0.04], [0.13, 0.18, 0.14], 'coat', 0, { f: 1 });
+
+    /* ── 腳（樞紐在胯 ±0.085, 0.40）：短褲褲管、一截大腿、過膝襪（上半不透、外側一排扣；下半透膚）、腳踝一圈 ── */
+    M('leg', [0.085, 0.375, 0], [0.13, 0.05, 0.15], 'shorts');
+    M('leg', [0.085, 0.335, 0], [0.112, 0.03, 0.122], 'skin');
+    M('leg', [0.085, 0.27, 0], [0.114, 0.10, 0.124], 'stk');
+    M('leg', [0.143, 0.30, 0.0], [0.004, 0.014, 0.014], 'btn');
+    M('leg', [0.143, 0.255, 0.0], [0.004, 0.014, 0.014], 'btn');
+    M('leg', [0.085, 0.155, 0], [0.106, 0.13, 0.116], 'stkS');
+    M('leg', [0.085, 0.085, 0], [0.104, 0.025, 0.114], 'stk');
+    /* ── 腳掌（樞紐在腳踝）：黑色平底鞋，腳背露一點、一條帶子 ── */
+    M('foot', [0.085, 0.058, 0.035], [0.08, 0.026, 0.09], 'skin');
+    M('foot', [0.085, 0.025, 0.025], [0.10, 0.05, 0.175], 'shoe');
+    M('foot', [0.085, 0.06, 0.035], [0.085, 0.012, 0.035], 'shoe', [0, 0.5, 0]);
+    M('foot', [0.085, 0.004, 0.025], [0.105, 0.008, 0.18], 'sole');
+
+    /* ── 劍（自己的座標：護手在原點、刃朝 +y、刃口朝 +z）：銀刃微彎、刀背一道暗溝、金色護手弓從鍔繞到柄頭（參考圖 1、2） ── */
+    const NB = 5;
+    for (let i = 0; i < NB; i++) {
+      const y0 = 0.02 + (ER_BLADE - 0.06) * i / NB, y1 = 0.02 + (ER_BLADE - 0.06) * (i + 1) / NB, ym = (y0 + y1) / 2;
+      SEG(P, 'sword', [0, y0 - 0.005, erBZ(y0)], [0, y1 + 0.005, erBZ(y1)], erBW(ym), 0.012, [1, 0, 0], 'steel');
+      SEG(P, 'sword', [0, y0, erBZ(y0) - erBW(ym) * 0.2], [0, y1, erBZ(y1) - erBW(ym) * 0.2], erBW(ym) * 0.22, 0.014, [1, 0, 0], 'steelD');
+    }
+    DIA(P, 'sword', [0, ER_BLADE - 0.04, erBZ(ER_BLADE - 0.04)], [0, 1, -0.35], 0.09, erBW(ER_BLADE), [1, 0, 0], 0.012, 'steel');
+    P('sword', [0, 0.008, 0], [0.026, 0.016, 0.07], 'gold');
+    P('sword', [0, 0.025, 0], [0.018, 0.02, 0.05], 'goldD');
+    SEG(P, 'sword', [0, 0.004, -0.03], [0, 0.03, -0.058], 0.012, 0.012, [1, 0, 0], 'gold');
+    for (const [a, b] of [[[0, 0.004, 0.03], [0, -0.03, 0.062]], [[0, -0.03, 0.062], [0, -0.085, 0.064]], [[0, -0.085, 0.064], [0, -0.118, 0.022]]])
+      SEG(P, 'sword', a, b, 0.012, 0.012, [1, 0, 0], 'gold');
+    P('sword', [0, -0.058, 0], [0.022, 0.09, 0.026], 'grip');
+    P('sword', [0, -0.113, 0], [0.03, 0.022, 0.032], 'gold');
+    /* ── 鞘（同劍的座標）：深褐、寬、跟著刃彎；鞘口銀、掛環、鞘尾前一段交叉綁帶、銀色鞘尾（參考圖 2） ── */
+    for (let i = 0; i < NB; i++) {
+      const y0 = (ER_BLADE + 0.01) * i / NB, y1 = (ER_BLADE + 0.01) * (i + 1) / NB, ym = (y0 + y1) / 2;
+      SEG(P, 'saya', [0, y0 - 0.004, erBZ(y0)], [0, y1 + 0.004, erBZ(y1)], erBW(ym) + 0.022, 0.03, [1, 0, 0], 'saya');
+    }
+    P('saya', [0, 0.018, 0], [0.036, 0.036, 0.078], 'silver');
+    P('saya', [0, 0.07, erBZ(0.07) - 0.035], [0.034, 0.024, 0.02], 'silver');
+    {
+      const y = ER_BLADE - 0.08, z = erBZ(y), w = erBW(y) + 0.022;
+      SEG(P, 'saya', [0, y - 0.035, z - w / 2], [0, y + 0.035, z + w / 2], 0.012, 0.034, [1, 0, 0], 'sayaL');
+      SEG(P, 'saya', [0, y - 0.035, z + w / 2], [0, y + 0.035, z - w / 2], 0.012, 0.034, [1, 0, 0], 'sayaL');
+    }
+    DIA(P, 'saya', [0, ER_BLADE + 0.015, erBZ(ER_BLADE)], [0, 1, -0.2], 0.08, erBW(ER_BLADE) + 0.02, [1, 0, 0], 0.033, 'silver');
+    return out;
+  })();
+  const ER_PARTS = ERIS.length;
+  const ER_SLOT = ER_PARTS;
+  const MAXER = 2;                   // 同芙莉蓮：場上只會有一位，留一格餘裕
+  const ER_CN = ERIS.map(b => b.cn);
+  const ER_PV = ERIS.map(b => new T.Vector3(b.p[0] - ER_PIV[b.g][0], b.p[1] - ER_PIV[b.g][1], b.p[2] - ER_PIV[b.g][2]));
+  const ER_SV = ERIS.map(b => new T.Vector3(b.s[0], b.s[1], b.s[2]));
+  const ER_QV = ERIS.map(b => new T.Quaternion().setFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2])));
+  const ER_LM = ERIS.map((b, k) => b.k
+    ? new T.Matrix4().compose(ER_PV[k], ER_QV[k], new T.Vector3(1, 1, 1)).multiply(new T.Matrix4().makeScale(1, b.k, 1))
+        .multiply(new T.Matrix4().makeRotationZ(Math.PI / 4)).multiply(new T.Matrix4().makeScale(b.s[0], b.s[1], b.s[2]))
+    : new T.Matrix4().compose(ER_PV[k], ER_QV[k], ER_SV[k]));
+  /* 模型範圍（同芙莉蓮；劍與鞘是道具、自己的座標，不算）：菱形片的高度照它真的長度 */
+  {
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
+    for (const b of ERIS) {
+      if (b.g === ER_G.sword || b.g === ER_G.saya) continue;
+      const hy = b.k ? b.s[0] * Math.SQRT2 * b.k / 2 : b.s[1] / 2;
+      ylo = Math.min(ylo, b.p[1] - hy);
+      yhi = Math.max(yhi, b.p[1] + hy);
+      zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
+      xhi = Math.max(xhi, Math.abs(b.p[0]) + b.s[0] / 2);
+    }
+    BEAST_FLOOR.eris = Math.max(0, -ylo);
+    BEAST_MID.eris = (ylo + yhi) / 2;
+    BEAST_LIFT.eris = -zlo;
+    BEAST_SIDE.eris = xhi;
+  }
+  /* ── 光之太刀的時間軸（秒）。規則那邊（stepTachi）照同一份表走：
+       st    拔劍掄成上段：右手握柄、左手拉鞘 → 拔出來 → 刀往前下一甩、整把掄過頭頂，雙手舉在額頭前上方
+       hold  蓄一下（上段架著、往下沉一點）
+       dash  往前撲衝出去（壓低成弓步、劍還舉在頭上，後半把劍掄到這一刀的起點；規則那邊把她往前推，見 game-tools.js 的 erDash）
+       sl    衝的勢頭還沒停就斬：由上往下一刀掃過去（極快）；sl × ERW.at 那一刻刃掃過正前方，劍氣從那裡放出去
+       fol   停在斬完那一格（還往前滑一段才停）
+       bk    收刀：甩一下刀 → 刀尖對進鞘口 → 滑進去 → 站回招牌姿勢
+     第一、二版沒有 dash（站著蹲好就斬），使用者看過第二版預覽：「調整砍的動作整個人物都會移動(例如衝一段過程中砍出去)
+     而不是站著丟劍氣 才會有狂劍士的感覺」。第三版是居合（從左腰拔刀斬），使用者：「他應該不是居合姿勢 而是上段起手」
+     「動作也都要更豪邁」——st 改成拔劍掄上段（0.35 → 0.5 秒）、dash 0.2 → 0.3 秒（衝得遠，見 game-tools.js 的 ER_DASH）。
+     劍氣（ERW）：從手那一點沿著砍的那一面往外飛，v 格／秒、飛到 R 格；扇形左右各 fan 弧度。
+     規則那邊照這三個數字切（見 game-tools.js 的 erCut）——**畫的跟用的同一份數字** ── */
+  const ERT = { st: 0.5, hold: 0.25, dash: 0.3, sl: 0.13, fol: 0.6, bk: 1.1 };
+  const ERW = { v: 400, R: 60, fan: 70 * Math.PI / 180, at: 0.5 };
+  /* 劍氣怎麼畫（預覽頁上可以切，程式只讀不寫）：style 0 看不見（只有切口）、1 一道細白線飛出去、2 白線＋切面亮一下；
+     trail 斬的那一下刀上拖一道刀光；sheet 切面亮一下最亮那一圈的不透明度。使用者看過預覽選的：
+     「劍氣 選3 但是要再加上類似氣浪 煙霧感」「刀光開」——style 2；煙是規則那邊冒在被砍中的積木上的細塵（見 game-tools.js 的 erSmoke）。
+     第三版之後：「砍過的那個面 痕跡效果淡一點」，預覽頁給了「第三版 0.32／淡 0.14／更淡 0.07」三檔，使用者：「切面亮的那一下->選更淡這版」 */
+  const ER_FX = { style: 2, trail: 1, sheet: 0.07 };
+  /* ── 姿勢（身體座標）：手伸向 h、手指朝 d；鞘口掛在 ym、刃朝 yd、刃口朝 yn；
+     出鞘的劍：握點 hs、刃朝 wd、刃口朝 wn，dr 0＝收在鞘裡、1＝拿在手上；
+     右手 wR 握劍柄、左手 wL 握鞘（gL 從鞘口沿著鞘量，負的＝在柄上）；長髮 mn＝[往後揚, 往旁甩]、下襬 sk 往後揚；
+     fd 抱胸（0～1：手臂的根從肩膀挪到手肘 ER_ELB，肩膀到手肘那一截補一塊上臂，見 ER_K.stand） ── */
+  const erV = a => new T.Vector3(a[0], a[1], a[2]);
+  const ER_KF = ['lift', 'bob', 'lean', 'twist', 'rollR', 'rollL', 'sk', 'wR', 'wL', 'gL', 'dr', 'fd'];
+  const ER_KA = ['head', 'lR', 'lL', 'mn'];
+  const ER_KV = ['hR', 'hL', 'dR', 'dL', 'ym', 'yd', 'yn', 'hs', 'wd', 'wn'];
+  const ER_SH = ER_PIV[ER_G.armR];   // 右肩：斬的那一條弧繞著它（見 erSlashAt）
+  function erK(o) {
+    const k = { lift: o.lift || 0, bob: 0, lean: o.lean || 0, twist: o.twist || 0, head: (o.head || [0, 0, 0]).slice(),
+                hR: erV(o.hR || [-0.30, 0.44, 0.03]), hL: erV(o.hL || [0.30, 0.44, 0.03]), rollR: o.rollR || 0, rollL: o.rollL || 0,
+                lR: (o.lR || [0, 0]).slice(), lL: (o.lL || [0, 0]).slice(), mn: (o.mn || [0.04, 0]).slice(), sk: o.sk || 0,
+                /* 鞘掛在左腰、刃朝下往後一點，刃口（護手弓那一側）朝外——正面看得到鞘的寬面（同參考圖 1） */
+                ym: erV(o.ym || [0.19, 0.40, 0.10]), yd: erV(o.yd || [0.05, -0.93, -0.37]).normalize(), yn: erV(o.yn || [1, 0, 0.35]),
+                hs: erV(o.hs || [0.1, 0.5, 0.2]), wd: erV(o.wd || [0, 1, 0]).normalize(), wn: erV(o.wn || [0, 0, 1]),
+                dr: o.dr || 0, wR: o.wR ?? 0, wL: o.wL ?? 1, gL: o.gL ?? -0.075, fd: o.fd || 0 };
+    k.dR = o.dR ? erV(o.dR).normalize() : k.hR.clone().sub(erV(ER_SH)).normalize();
+    k.dL = o.dL ? erV(o.dL).normalize() : k.hL.clone().sub(erV(ER_PIV[ER_G.armL])).normalize();
+    return k;
+  }
+  function erCopy(d, s) {
+    for (const f of ER_KF) d[f] = s[f];
+    for (const f of ER_KA) for (let i = 0; i < s[f].length; i++) d[f][i] = s[f][i];
+    for (const f of ER_KV) d[f].copy(s[f]);
+    return d;
+  }
+  function erMix(d, s, w) {
+    if (!(w > 0)) return d;
+    const f = (a, b) => a + (b - a) * w;
+    for (const x of ER_KF) d[x] = f(d[x], s[x]);
+    for (const x of ER_KA) for (let i = 0; i < s[x].length; i++) d[x][i] = f(d[x][i], s[x][i]);
+    for (const x of ER_KV) d[x].lerp(s[x], w);
+    for (const x of ['dR', 'dL', 'yd', 'wd']) d[x].normalize();
+    return d;
+  }
+  /* 上段：雙手把劍舉在額頭前上方、刃朝後上（越過頭頂）、刃口朝前上；右手握握點、左手握柄頭（ER_POMMEL）。
+     手比肩膀高很多，手臂一節搆不到的那一點點是整支往上挪（看起來就是聳肩舉手） */
+  const ER_POMMEL = 0.055;           // 柄頭在握點往柄尾多遠（雙手握的時候左手在那裡）
+  const ER_SHR = erV(ER_SH), ER_SHL = erV(ER_PIV[ER_G.armL]);
+  const erPommel = (out, hs, wd) => out.copy(hs).addScaledVector(wd, -ER_POMMEL);
+  const ER_JA = (() => {
+    const hs = [-0.02, 1.28, 0.19], wd = [0.05, 0.66, -0.75];
+    return { wR: 1, wL: 0, dr: 1, hs, wd, wn: [0, 0.75, 0.66], hL: erPommel(new T.Vector3(), erV(hs), erV(wd).normalize()).toArray() };
+  })();
+  /* 抱胸那一格手肘在肩膀的哪裡（往下、往前一點）：手臂只有一節，抱胸時把整支當前臂、根挪到這裡 */
+  const ER_ELB = [0, -0.16, 0.08];
+  const ER_K = {
+    /* 站著：招牌姿勢——抱胸、兩腳張很開、胸口挺著、下巴抬起來（第三版站著是左手扶劍柄、右手垂著；
+       使用者看過第三版預覽：「站著的時候應該是他的招牌姿勢」，選了抱胸，參考圖 1 的右手扶頭那一種沒選）。
+       第四版兩隻手臂從肩膀直直伸到對面胸前、正面看是一個大 X，使用者：「現在的抱胸看起來有點怪」——
+       改成上臂垂在兩側、前臂在胸下橫著疊起來（fd 1：手臂的根挪到手肘，見 ER_ELB）：右前臂在下、左前臂疊在前上方，
+       兩隻手各塞到對面的上臂前面 */
+    stand: erK({ lift: -0.006, lean: -0.05, head: [-0.16, 0, 0], lR: [0, -0.17], lL: [0, 0.17], fd: 1,
+                 hR: [0.2, 0.555, 0.15], dR: [1, 0.02, 0.2], hL: [-0.2, 0.61, 0.24], dL: [-1, 0.05, 0.2], wL: 0, mn: [0.04, 0] }),
+    /* 走：大搖大擺——左手按在劍柄上、右手大幅甩、胸口挺著（步幅與甩手照 m.ph 算，見 erPose） */
+    walk: erK({ lean: -0.03, head: [-0.12, 0, 0] }),
+    /* 跑：狂野的戰士衝刺（使用者看過預覽：「奔跑動作要調整(應該是更狂野的戰士奔跑)」；第一版是前傾 0.30、步幅 0.85 的一般跑）——
+       上身壓低前撲、頭抬起來瞪著前面，左手緊握鞘口（鞘往後平拖）、右手大幅前後甩；長髮與下襬整片往後揚 */
+    run: erK({ lift: -0.03, lean: 0.52, head: [-0.46, 0, 0], hR: [-0.33, 0.52, 0.02], gL: 0.03, yd: [0.12, -0.42, -0.9],
+               mn: [0.85, 0], sk: 0.65 }),
+    /* 上段架勢（使用者看過第三版預覽：「他應該不是居合姿勢 而是上段起手」）：左腳在前、右腳在後，左肩微微在前、頭轉回正前方 */
+    jodan: erK({ lift: -0.04, lean: 0.08, twist: -0.15, head: [-0.12, 0.15, 0], lR: [0.45, -0.08], lL: [-0.42, 0.08],
+                 mn: [0.2, 0], sk: 0.15, ...ER_JA })
+  };
+  const ER_RUN_STRIDE = 1.1;         // 跑的時候腿擺多大（弧度；一般跑 0.85，見 ER_K.run）
+  const ER_WALK_STRIDE = 0.55;       // 走的時候（第三版 0.42：大搖大擺跨大步）
+  /* 衝：壓低成大弓步往前撲（左腳在前跨很開、右腳在後蹬直，lift 照腿張開的角度壓下去、腳才踩得到地），上身前傾、
+     頭抬起來瞪著前面；劍還舉在頭上（後半掄到這一刀的起點，見 erCock）；長髮與下襬整片往後揚、鞘往後飄 */
+  const ER_DASH = erK({ lift: -0.18, lean: 0.5, head: [-0.45, 0, 0], lR: [1.0, -0.08], lL: [-0.95, 0.08],
+                        mn: [1.0, 0], sk: 0.8, yd: [0.15, -0.5, -0.85], ...ER_JA });
+  /* 斬完：還壓在弓步上往前滑，左手放開柄往後甩開（扭腰的方向照砍的方向，見 erTw） */
+  const ER_FOLLOW = erK({ lift: -0.13, lean: 0.5, head: [-0.3, 0, 0], lR: [0.9, -0.1], lL: [-0.85, 0.12],
+                          wR: 1, wL: 0, hL: [0.42, 0.56, -0.22], dL: [0.45, -0.2, -1], mn: [0.55, -0.25], sk: 0.5, dr: 1,
+                          yd: [0.15, -0.5, -0.85] });
+  /* 收刀：大大地甩一下刀（刃往右前下）→ 刀尖對進鞘口（刀沿著鞘的方向、刀尖剛好在鞘口外面）→ 滑進去 → 站回招牌姿勢 */
+  const ER_CHIBURI = erK({ lift: -0.04, lean: 0.18, twist: 0.25, head: [-0.1, -0.25, 0], lR: [0.45, -0.1], lL: [-0.4, 0.1],
+                           wR: 1, wL: 1, gL: 0.03, dr: 1, hs: [-0.46, 0.6, 0.28], wd: [-0.45, -0.45, 0.77], wn: [0, -0.8, -0.55],
+                           mn: [0.2, -0.1], sk: 0.15, ym: [0.16, 0.45, 0.14], yd: [0.3, -0.6, -0.75], yn: [0, 0.8, -0.6] });
+  const ER_NOTO = (() => {
+    const k = erK({ lift: -0.02, lean: 0.1, twist: -0.1, head: [-0.06, 0.1, 0], lR: [0.2, -0.04], lL: [-0.2, 0.06],
+                    wR: 1, wL: 1, gL: 0.03, dr: 1, mn: [0.08, 0], sk: 0.05,
+                    ym: [0.16, 0.45, 0.14], yd: [0.3, -0.6, -0.75], yn: [0, 0.8, -0.6] });
+    k.wd.copy(k.yd); k.wn.copy(k.yn);
+    k.hs.copy(k.ym).addScaledVector(k.yd, -(ER_BLADE + 0.02) + ER_GRIP);
+    return k;
+  })();
+  /* 拔出來之後掄成上段（st 的後半，w 0～1）：刃繞著手在身體正面那一面往前轉——刀尖從後下（鞘的方向）→ 正下 → 正前 →
+     正上 → 後上，整整轉了大半圈多（豪邁的那一甩）；刀背在前帶著轉，轉到上段剛好刃口朝前上。
+     刃的方向寫成 (x, −cos ψ, sin ψ)：ψ 從鞘的方向（p0）一路加到上段（p1），x 從鞘的那一點側偏收到上段那一點。
+     手從拔出來那一點往前上掄到上段那一點（中途往前多推一點），左手放開鞘、去握柄頭 */
+  const ER_DRAW = (() => {
+    const a = ER_NOTO.yd, b = ER_K.jodan.wd, p0 = Math.atan2(a.z, -a.y);
+    let p1 = Math.atan2(b.z, -b.y);
+    while (p1 < p0) p1 += 2 * Math.PI;
+    return { x0: a.x, x1: b.x, p0, p1, push: 0.12 };
+  })();
+  function erDraw(k, w) {
+    erCopy(k, ER_NOTO);
+    erMix(k, ER_K.jodan, w);
+    const D = ER_DRAW, x = D.x0 + (D.x1 - D.x0) * w, ps = D.p0 + (D.p1 - D.p0) * w, r = Math.sqrt(1 - x * x);
+    k.wd.set(x, -Math.cos(ps) * r, Math.sin(ps) * r);
+    k.wn.set(0, -Math.sin(ps), -Math.cos(ps));
+    k.hs.copy(ER_NOTO.hs).lerp(ER_K.jodan.hs, w);
+    k.hs.z += D.push * Math.sin(Math.PI * w);
+    erPommel(k.hL, k.hs, k.wd); k.dL.copy(k.hL).sub(ER_SHL).normalize();
+    k.wL = 1 - frE(Math.min(1, w / 0.35));
+    k.dr = 1;
+    return k;
+  }
+  /* ── 斬的那一條弧（上段起手、一律由上往下）：手（握點）繞著右肩前面一點的圓心，在砍的那一面上掃一個大扇形——
+     那一面的側軸 e＝(cos th, sin th, 0)（身體座標；0 橫、π/2 直），從 e 那一側偏前 ER_ARC.a0 掃到另一側 ER_ARC.a1（過了正下方往後帶）。
+     th < 0 的時候 e 那一側是左下，換成 −e（右上）起手——所以 0 由左往右橫斬、正的左上往右下、負的右上往左下、π/2 由上往下直劈
+     （規則那邊切的那一面同一個角度，見 game-tools.js 的 erPlane；第三版是居合，從左腰掃到右前方，負的那一邊是由下往上撩）。
+     圓心 ER_ARC.c：往左 c[0]、往前 c[2]（直劈那一刀起手在頭頂，圓心不往前的話手會穿過臉），高度照 |sin th| 從 c[1] 抬到 c[3]
+     （橫斬那一刀在胸口、直劈在頭頂起手）；往前那一軸的半徑短一點（rf）。
+     刃大致沿著「圓心 → 手」往外，起手時刃落後（往後上蓄著）、收尾時刃超前（手腕甩出去），lag 是落後／超前多少。
+     上身前傾會把整條弧往前下帶，繞 x 轉回 −(lean ＋ tp) × cos² th：橫斬那一刀要整條轉回來才跟切的那一面對得上
+     （造型預覽第一版橫斬掃到一半刃是往前下指的；tp 是目標比手高多少，規則那邊給）；
+     直劈那一刀繞 x 轉本來就還在那一面上，轉了反而把頭頂那一段轉到後腦勺 ── */
+  const ER_ARC = { c: [0.1, -0.12, 0.2, 0.03], r: 0.4, rf: 0.32, a0: 1.2, a1: -1.5, lag: 1.1 };
+  const _esp = new T.Vector3(), _est = new T.Vector3(), _esr = new T.Vector3();
+  const _erq = new T.Quaternion(), _erX = new T.Vector3(1, 0, 0);
+  function erSlashAt(t, th, tp, k) {
+    const A = ER_ARC, sg = Math.sin(th) < -1e-3 ? -1 : 1, ex = sg * Math.cos(th), ey = sg * Math.sin(th);
+    const ang = A.a0 + (A.a1 - A.a0) * t, ca = Math.cos(ang), sa = Math.sin(ang);
+    const cy = A.c[1] + (A.c[3] - A.c[1]) * Math.abs(Math.sin(th));
+    _esp.set(A.c[0] + A.r * sa * ex, cy + A.r * sa * ey, A.c[2] + A.rf * ca);
+    _esr.set(sa * ex, sa * ey, ca);
+    _est.set(-ca * ex, -ca * ey, sa);                      // 掃的方向（ang 往小走）
+    k.wd.copy(_esr).addScaledVector(_est, (t - 0.45) * A.lag).normalize();
+    k.wn.copy(_est);
+    const c2 = Math.cos(th) * Math.cos(th);
+    _erq.setFromAxisAngle(_erX, -(k.lean + Math.max(-0.7, Math.min(0.7, tp || 0))) * c2);
+    _esp.applyQuaternion(_erq); k.wd.applyQuaternion(_erq); k.wn.applyQuaternion(_erq);
+    k.hs.set(ER_SH[0] + _esp.x, ER_SH[1] + _esp.y, ER_SH[2] + _esp.z);
+    return k;
+  }
+  /* 扭腰跟著砍的方向：掄到起點那一刻胸口轉向起手那一側（ER_TW[0]）、斬完轉到另一側（ER_TW[1]）；
+     橫的轉最多、直劈只轉三成。頭跟著轉回來看前面 */
+  const ER_TW = [0.35, -0.45];
+  const erTw = th => (Math.sin(th) < -1e-3 ? -1 : 1) * (0.3 + 0.7 * Math.abs(Math.cos(th)));
+  const erTwist = (k, v) => { k.twist = v; k.head[1] = -0.85 * v; };
+  const _erk = erK({}), _erk2 = erK({}), _erk3 = erK({}), _erPm = new T.Vector3();
+  /* 衝的後半：劍從上段掄到這一刀的起點（c 0～1），雙手一直握著 */
+  function erCock(k, c, th, tp) {
+    erSlashAt(0, th, tp, erCopy(_erk3, k));
+    k.hs.lerp(_erk3.hs, c); k.wd.lerp(_erk3.wd, c).normalize(); k.wn.lerp(_erk3.wn, c);
+    erTwist(k, k.twist + (erTw(th) * ER_TW[0] - k.twist) * c);
+    erPommel(k.hL, k.hs, k.wd); k.dL.copy(k.hL).sub(ER_SHL).normalize();
+    return k;
+  }
+  const erC01 = v => Math.min(1, Math.max(0, v || 0));
+  /* 這一幀的姿勢（寫進 _erk）：
+       站     招牌姿勢（ER_K.stand）
+       走     m.gait、m.ph 擺腿，混成大搖大擺的走（ER_K.walk：右手跟著左腳甩，左手按著柄，鞘跟著晃一點；長髮一甩一甩）
+       跑     m.run 0～1：叫過去那一段
+       出招   m.st === 'tachi'：照 m.op（st／hold／dash／sl／fol／bk）與這一段的秒數 m.ot，m.th 砍的方向、m.tp 目標的仰角
+     slv 給了就照「斬到 slv」擺（畫刀光的時候往回取樣用，見 erTrail） */
+  function erPose(m, slv) {
+    const k = erCopy(_erk, ER_K.stand);
+    const g = erC01((m.gait || 0) / 0.85), ph = m.ph || 0, s = Math.sin(ph);
+    if (g > 0) {
+      const q = erCopy(_erk2, ER_K.walk), L = ER_PIV[ER_G.legR][1];
+      q.lR[0] = ER_WALK_STRIDE * s; q.lL[0] = -ER_WALK_STRIDE * s;
+      q.lift -= L * (1 - Math.cos(ER_WALK_STRIDE * s)) * 0.6;
+      q.bob = 0.02 * Math.abs(Math.cos(ph)); q.twist = 0.1 * s;
+      q.hR.z += 0.2 * s; q.hR.y += 0.05 * Math.max(0, s);
+      q.dR.copy(q.hR).sub(ER_SHR).normalize();
+      q.yd.z += 0.06 * s; q.yd.normalize();
+      q.mn[0] += 0.08 + 0.05 * Math.sin(2 * ph); q.mn[1] += 0.05 * s;
+      q.sk += 0.05 + 0.04 * Math.sin(2 * ph);
+      erMix(k, q, g);
+    }
+    const r = m.lie || m.air ? 0 : erC01(m.run);
+    if (r > 0) {
+      /* 步幅 ER_RUN_STRIDE（一般跑 0.85）；跨到最開那一刻腳離地最高，整個人壓下去一點，腳才踩得到地（沒有膝蓋）。
+         肩膀跟著步伐反著扭、右手往前甩的時候抬高一點（揮拳那樣），長髮與下襬一甩一甩 */
+      const q = erCopy(_erk2, ER_K.run), L = ER_PIV[ER_G.legR][1];
+      q.lR[0] = ER_RUN_STRIDE * s; q.lL[0] = -ER_RUN_STRIDE * s;
+      q.lift -= L * (1 - Math.cos(ER_RUN_STRIDE * s)) * 0.6;
+      q.twist = 0.2 * s;
+      q.hR.z += 0.3 * s; q.hR.y += 0.1 * Math.max(0, s);   // 右手跟右腳反著擺（右腳往前是 s < 0）
+      q.dR.copy(q.hR).sub(ER_SHR).normalize();
+      q.head[1] = -0.12 * s;
+      q.mn[0] += 0.12 * Math.sin(2 * ph); q.mn[1] = 0.1 * s;
+      q.sk += 0.12 * Math.sin(2 * ph + 0.5);
+      q.bob = Math.abs(Math.cos(ph)) * 0.07;
+      erMix(k, q, r);
+    }
+    if (slv === undefined && m.st !== 'tachi') return k;
+    const op = m.op, u = m.ot || 0, th = m.th || 0;
+    if (slv !== undefined || op === 'sl' || op === 'fol') {
+      /* 斬：衝 → 斬完。雙手握著掃到三成五才放開左手（往後甩開） */
+      const t = slv !== undefined ? erC01(slv) : op === 'sl' ? erC01(u / ERT.sl) : 1, f = frE(Math.min(1, t * 1.3));
+      erCopy(k, ER_DASH);
+      erMix(k, ER_FOLLOW, f);
+      erTwist(k, erTw(th) * (ER_TW[0] + (ER_TW[1] - ER_TW[0]) * f));
+      erSlashAt(t, th, m.tp, k);
+      const two = 1 - frE((t - 0.35) / 0.3);
+      if (two > 0) {
+        k.hL.copy(ER_FOLLOW.hL).lerp(erPommel(_erPm, k.hs, k.wd), two);
+        k.dL.copy(k.hL).sub(ER_SHL).normalize();
+      }
+    } else if (op === 'st') {
+      const b = erC01(u / ERT.st);
+      if (b < 0.25) { erMix(k, ER_NOTO, frE(b / 0.25)); k.dr = 0; }               // 右手去握柄、左手拉鞘
+      else if (b < 0.45) { erCopy(k, ER_NOTO); k.dr = frE((b - 0.25) / 0.2); }    // 沿著鞘拔出來
+      else erDraw(k, frE((b - 0.45) / 0.55));                                     // 往前下一甩、掄過頭頂成上段
+    } else if (op === 'hold') { erCopy(k, ER_K.jodan); k.lift -= 0.025 * frE(u / ERT.hold); }   // 蓄：往下沉一點
+    else if (op === 'dash') {
+      erCopy(k, ER_K.jodan); k.lift -= 0.025;
+      erMix(k, ER_DASH, frE(u / (ERT.dash * 0.35)));     // 頭三成五壓成大弓步撲出去（劍還舉在頭上）
+      const c = frE((u / ERT.dash - 0.45) / 0.55);       // 後半把劍掄到這一刀的起點（刃落後、蓄著）
+      if (c > 0) erCock(k, c, th, m.tp);
+    } else if (op === 'bk') {
+      const b = erC01(u / ERT.bk);
+      erCopy(k, ER_FOLLOW);
+      erTwist(k, erTw(th) * ER_TW[1]);
+      erSlashAt(1, th, m.tp, k);                         // 斬完那一格
+      if (b < 0.25) erMix(k, ER_CHIBURI, frE(b / 0.25));
+      else if (b < 0.5) { erCopy(k, ER_CHIBURI); erMix(k, ER_NOTO, frE((b - 0.25) / 0.25)); }
+      else {
+        /* 0.5～0.72 沿著鞘滑進去（劍跟鞘同一個方向，混的只有位置）；0.72～1 放手、站回招牌姿勢 */
+        erCopy(k, ER_NOTO);
+        k.dr = 1 - frE((b - 0.5) / 0.22);
+        const w = frE((b - 0.72) / 0.28);
+        if (w > 0) { const dr = k.dr; erMix(k, ER_K.stand, w); k.dr = dr * (1 - w); }
+      }
+    }
+    return k;
+  }
+  const _erG = [...Array(ER_NG)].map(() => new T.Matrix4());
+  const _erExt = new Array(ER_NG).fill(0);
+  const _erHip = new T.Matrix4(), _erm = new T.Matrix4(), _ermb = new T.Matrix4(), _erms = new T.Matrix4(), _ermw = new T.Matrix4();
+  const _erv = new T.Vector3(), _erv2 = new T.Vector3(), _erq1 = new T.Quaternion(), _erq2 = new T.Quaternion(), _erE = new T.Euler();
+  const _erqh = new T.Quaternion(), _erqg = new T.Quaternion(), _ergx = new T.Vector3(), _ergy = new T.Vector3(), _erdd = new T.Vector3();
+  const _erhR = new T.Vector3(), _erhL = new T.Vector3(), _eraR = new T.Vector3(), _eraL = new T.Vector3();
+  const _erqy = new T.Quaternion(), _erqw = new T.Quaternion(), _erpo = new T.Vector3(), _erpw = new T.Vector3();
+  const _erbx = new T.Vector3(), _erby = new T.Vector3(), _erbz = new T.Vector3();
+  const _erONE = new T.Vector3(1, 1, 1), _erDOWN = new T.Vector3(0, -1, 0), _erY = new T.Vector3(0, 1, 0);
+  const _erRoot = [[0, 0, 0], [0, 0, 0]];   // 這一幀右、左手臂的根（身體座標；抱胸時在手肘，見 erRig）
+  const ER_UA_TOP = 0.02;                   // 抱胸的上臂從肩膀樞紐往上多蓋一點（蓋住肩頭）
+  let _erFd = 0;                            // 這一幀抱胸多少（putErises 畫上臂那一截要用）
+  /* 長軸朝 d、本地 z 朝 n（扳到跟 d 垂直）的轉角 */
+  function erBasisQ(q, d, n) {
+    _erby.copy(d).normalize();
+    _erbz.copy(n).addScaledVector(_erby, -_erby.dot(n)).normalize();
+    _erbx.crossVectors(_erby, _erbz);
+    return q.setFromRotationMatrix(_ermb.makeBasis(_erbx, _erby, _erbz));
+  }
+  /* 算出這一位每一組的世界矩陣（_erG）。根同 frRig（YZX：朝向 → 打滾 → 躺平；飛在半空繞身體中段轉）；
+     上身繞腰前傾、扭腰；鞘照 ym／yd／yn 掛在身上，劍收著跟鞘同一個矩陣、拿在手上照 hs／wd／wn，dr 混兩個；
+     手去追劍柄與鞘（同 frRig 的握杖）；腿掛在胯、腳掌轉回來貼平地面；長髮掛在頭上再自己擺、下襬掛在腰上往後揚 */
+  function erRig(m, slv) {
+    const k = erPose(m, slv), msc = m.sc || 1, mid = BEAST_MID.eris;
+    _erFd = k.fd || 0;
+    scratch.rotation.set(m.spin || 0, m.a || 0, m.roll || 0, 'YZX');
+    const lift = !m.lie ? 0
+      : m.side ? BEAST_SIDE.eris * m.lie * Math.abs(Math.sin(m.roll || 0))
+               : BEAST_LIFT.eris * m.lie * Math.abs(Math.sin(m.spin || 0));
+    scratch.position.set(m.x || 0, (m.y || 0) + lift * msc, m.z || 0);
+    if (m.air) {
+      _erv.set(0, mid, 0).applyEuler(scratch.rotation);
+      scratch.position.x -= _erv.x * msc;
+      scratch.position.y += (mid - _erv.y) * msc;
+      scratch.position.z -= _erv.z * msc;
+    }
+    scratch.scale.setScalar(msc);
+    scratch.updateMatrix();
+    _erHip.copy(scratch.matrix).multiply(_erm.makeTranslation(0, k.lift + k.bob, 0));
+    const B = _erG[ER_G.body].copy(_erHip).multiply(_erm.makeTranslation(0, ER_WAIST, 0))
+      .multiply(_erm.makeRotationY(k.twist)).multiply(_erm.makeRotationX(k.lean)).multiply(_erm.makeTranslation(0, -ER_WAIST, 0));
+    _erG[ER_G.head].multiplyMatrices(B, _erm.compose(_erv.set(0, ER_PIV[ER_G.head][1], 0),
+      _erq1.setFromEuler(_erE.set(k.head[0], k.head[1], k.head[2], 'XYZ')), _erONE));
+    _erG[ER_G.mane].multiplyMatrices(_erG[ER_G.head], _erm.compose(
+      _erv.set(0, ER_PIV[ER_G.mane][1] - ER_PIV[ER_G.head][1], ER_PIV[ER_G.mane][2]),
+      _erq1.setFromEuler(_erE.set(k.mn[0], 0, k.mn[1], 'XYZ')), _erONE));
+    _erG[ER_G.skirt].multiplyMatrices(B, _erm.compose(_erv.set(0, ER_PIV[ER_G.skirt][1], 0),
+      _erq1.setFromEuler(_erE.set(k.sk, 0, 0, 'XYZ')), _erONE));
+    erBasisQ(_erqy, k.yd, k.yn);
+    _erms.compose(k.ym, _erqy, _erONE);
+    _erG[ER_G.saya].multiplyMatrices(B, _erms);
+    erBasisQ(_erqw, k.wd, k.wn);
+    _erpw.copy(k.hs).addScaledVector(k.wd, -ER_GRIP);
+    _erpo.copy(k.ym).lerp(_erpw, k.dr);
+    _erq1.copy(_erqy).slerp(_erqw, k.dr);
+    _ermw.compose(_erpo, _erq1, _erONE);
+    _erG[ER_G.sword].multiplyMatrices(B, _ermw);
+    /* 手要去的點：右手握劍柄、左手握鞘；握軸＝手的本地 z（拇指那一側）：右手朝刃、左手朝柄 */
+    _erhR.copy(k.hR).lerp(_erv.set(0, ER_GRIP, 0).applyMatrix4(_ermw), k.wR);
+    _eraR.set(0, 1, 0).applyQuaternion(_erq1);
+    _erhL.copy(k.hL).lerp(_erv.set(0, k.gL, 0).applyMatrix4(_erms), k.wL);
+    _eraL.copy(k.yd).negate();
+    for (const [ga, gh, h, d0, w, roll, ax] of [[ER_G.armR, ER_G.handR, _erhR, k.dR, k.wR, k.rollR, _eraR],
+                                                [ER_G.armL, ER_G.handL, _erhL, k.dL, k.wL, k.rollL, _eraL]]) {
+      /* 手臂的根：平常在肩膀；抱胸（fd）挪到手肘，肩膀到手肘那一截由身上那塊上臂補（見 putErises） */
+      const p0 = ER_PIV[ga], pv = _erRoot[ga === ER_G.armR ? 0 : 1], fd = k.fd || 0;
+      for (let i = 0; i < 3; i++) pv[i] = p0[i] + ER_ELB[i] * fd;
+      _erqh.setFromUnitVectors(_erDOWN, d0).multiply(_erq2.setFromAxisAngle(_erY, roll));
+      if (w > 0) {
+        /* 握著：拳心套在柄（鞘）上——握軸對齊、手指順著手臂、扳到跟握軸垂直（同 frRig） */
+        _ergy.copy(h).sub(_erv2.set(pv[0], pv[1], pv[2])).normalize();
+        _ergy.addScaledVector(ax, -_ergy.dot(ax));
+        if (_ergy.lengthSq() < 1e-6) _ergy.set(0, 0, 1).addScaledVector(ax, -ax.z);
+        _ergy.normalize().negate();
+        _ergx.crossVectors(_ergy, ax).normalize();
+        _erv.crossVectors(_ergx, _ergy);
+        _erqh.slerp(_erqg.setFromRotationMatrix(_ermb.makeBasis(_ergx, _ergy, _erv)), w);
+      }
+      _erdd.set(0, -1, 0).applyQuaternion(_erqh);
+      _erv.copy(h).addScaledVector(_erdd, -ER_HAND_C).sub(_erv2.set(pv[0], pv[1], pv[2]));
+      const len = _erv.length() || 1;
+      _erv.multiplyScalar(1 / len);
+      const ext = Math.min(ER_EXT, Math.max(0, len - ER_WRIST)), shift = Math.max(0, len - ER_WRIST - ER_EXT);
+      _erExt[ga] = ext;
+      _erq1.setFromUnitVectors(_erDOWN, _erv);
+      _erv2.set(pv[0], pv[1], pv[2]).addScaledVector(_erv, shift);
+      _erG[ga].multiplyMatrices(B, _erm.compose(_erv2, _erq1, _erONE));
+      _erv2.addScaledVector(_erv, ER_WRIST + ext);
+      _erG[gh].multiplyMatrices(B, _erm.compose(_erv2, _erqh, _erONE));
+    }
+    for (const [g, gf, l] of [[ER_G.legR, ER_G.footR, k.lR], [ER_G.legL, ER_G.footL, k.lL]]) {
+      const pv = ER_PIV[g];
+      _erG[g].multiplyMatrices(_erHip, _erm.compose(_erv.set(pv[0], pv[1], pv[2]), _erq1.setFromEuler(_erE.set(l[0], 0, l[1], 'XYZ')), _erONE));
+      _erG[gf].multiplyMatrices(_erG[g], _erm.compose(_erv.set(0, ER_PIV[gf][1] - pv[1], 0),
+        _erq1.setFromEuler(_erE.set(-l[0], 0, -l[1], 'ZYX')), _erONE));
+    }
+  }
+  /* 劍上這一點（從護手沿著刃量 y）在世界的哪裡（要先 erRig 過）：刀光的兩條邊、測試量握劍都用它 */
+  const erBladePt = (out, y) => out.set(0, y, erBZ(y)).applyMatrix4(_erG[ER_G.sword]);
+
+  /* ── 刀光與劍氣（都是不吃光、不投影的網格，頂點自己帶透明度；沒在出招整組 visible = false）──
+       刀光（erTrailMesh）  斬的那一下：照 erRig(m, slv) 往回取樣這一條弧上 ER_TRAIL_N 個時刻，劍尖與刃中間連成一條帶子，
+                            越舊越淡；斬完 ER_TRAIL_FADE 秒淡掉
+       劍氣（erWave）       規則那邊寫在她身上的 m.cut：手那一點 h、往目標的 u、那一面上往旁邊的 s、劍氣飛到哪了 r、斬下去幾秒了 t。
+                            一道細的白弧（亮芯＋外面一圈淡藍的光暈）在那一面上、半徑 r、左右各 ERW.fan，飛到盡頭前那兩成五淡掉
+       切面（erSheet）      style 2：那一面上 r 以內那一片扇形亮一下（越靠外緣越亮），劍氣飛完之後 ER_SHEET_FADE 秒淡掉 */
+  const ER_TRAIL_N = 24, ER_TRAIL_SPAN = 0.75, ER_TRAIL_FADE = 0.25;
+  const ER_ARC_N = 48, ER_WAVE_W = [0.16, 0.9], ER_SHEET_FADE = 0.35;
+  const ER_FX_VS = 'attribute float al; attribute vec3 col; varying float vA; varying vec3 vC;\n' +
+    'void main() { vA = al; vC = col; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+  const ER_FX_FS = 'varying float vA; varying vec3 vC; void main() { gl_FragColor = vec4(vC, vA);\n#include <colorspace_fragment>\n}';
+  let erMesh = null, erTrailMesh = null, erWaveMesh = null, erSheetMesh = null;
+  /* 一條帶子（每一段兩個頂點）：n 段、頂點數 2(n + 1) */
+  function erStrip(n, order) {
+    const g = new T.BufferGeometry();
+    g.setAttribute('position', new T.BufferAttribute(new Float32Array((n + 1) * 2 * 3), 3).setUsage(T.DynamicDrawUsage));
+    g.setAttribute('al', new T.BufferAttribute(new Float32Array((n + 1) * 2), 1).setUsage(T.DynamicDrawUsage));
+    g.setAttribute('col', new T.BufferAttribute(new Float32Array((n + 1) * 2 * 3), 3).setUsage(T.DynamicDrawUsage));
+    const idx = [];
+    for (let i = 0; i < n; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    g.setIndex(idx);
+    const mesh = new T.Mesh(g, new T.ShaderMaterial({ vertexShader: ER_FX_VS, fragmentShader: ER_FX_FS,
+                                                      transparent: true, depthWrite: false, side: T.DoubleSide }));
+    mesh.frustumCulled = false; mesh.renderOrder = order; mesh.visible = false;
+    scene.add(mesh);
+    return mesh;
+  }
+  function erInit() {
+    erMesh = new T.InstancedMesh(heroGeo(ER_SLOT, MAXER, k => {
+      const b = ERIS[k];
+      return b.g === ER_G.head && HERO_FACE[b.cn] || b.cn === 'skin' || b.cn === 'skinD' ? GJ_FACE_UP : ER_UP[b.cn] || 0;
+    }, heroEk(ER_CN)), voxelMaterial({}, GJ_EDGE_FIX, 'voxel-edge-gojo-hair'), MAXER * ER_SLOT);
+    erMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    erMesh.castShadow = true;
+    erMesh.count = 0;
+    erMesh.visible = false;
+    erMesh.frustumCulled = false;
+    for (let i = 0; i < MAXER; i++)
+      for (let k = 0; k < ER_SLOT; k++) erMesh.setColorAt(i * ER_SLOT + k, tmpC.setHex(ERIS[k].c));
+    scene.add(erMesh);
+    erTrailMesh = erStrip(ER_TRAIL_N - 1, 4);
+    erWaveMesh = erStrip(ER_ARC_N * 2 + 1, 5);          // 亮芯一條、光暈一條，中間一段退化成看不見的接縫
+    erSheetMesh = erStrip(ER_ARC_N, 3);
+  }
+  const erAt = [];                   // 這一幀第 n 位畫的是 beasts 的第幾隻（點選要對回去，同 frAt）
+  const _erTa = new T.Vector3(), _erTb = new T.Vector3();
+  /* 刀光：斬（sl）那一段與斬完（fol）的頭 ER_TRAIL_FADE 秒。回 true＝這一幀有畫 */
+  function erTrail(m) {
+    if (!ER_FX.trail || m.st !== 'tachi' || (m.op !== 'sl' && m.op !== 'fol')) return false;
+    const s1 = m.op === 'sl' ? erC01(m.ot / ERT.sl) : 1;
+    const fade = m.op === 'fol' ? 1 - m.ot / ER_TRAIL_FADE : 1;
+    if (fade <= 0) return false;
+    const G = erTrailMesh.geometry, P = G.attributes.position.array, A = G.attributes.al.array, C = G.attributes.col.array;
+    for (let i = 0; i < ER_TRAIL_N; i++) {
+      erRig(m, Math.max(0, s1 - ER_TRAIL_SPAN * (1 - i / (ER_TRAIL_N - 1))));
+      erBladePt(_erTa, ER_BLADE + 0.03); erBladePt(_erTb, ER_BLADE * 0.45);
+      P.set([_erTa.x, _erTa.y, _erTa.z, _erTb.x, _erTb.y, _erTb.z], i * 6);
+      const w = Math.pow(i / (ER_TRAIL_N - 1), 1.6) * fade;
+      A[i * 2] = w * 0.85; A[i * 2 + 1] = w * 0.12;
+      C.set([0.85 + 0.15 * w, 0.93 + 0.07 * w, 1, 0.85, 0.93, 1], i * 6);
+    }
+    G.attributes.position.needsUpdate = G.attributes.al.needsUpdate = G.attributes.col.needsUpdate = true;
+    return true;
+  }
+  /* 劍氣與切面：照 m.cut 畫（規則那邊給，見 game-tools.js 的 erPlane）。回 [劍氣有沒有畫, 切面有沒有畫] */
+  const erArcPt = (c, rad, psi, out) => out.set(c.hx + rad * (Math.cos(psi) * c.ux + Math.sin(psi) * c.sx),
+                                              c.hy + rad * (Math.cos(psi) * c.uy + Math.sin(psi) * c.sy),
+                                              c.hz + rad * (Math.cos(psi) * c.uz + Math.sin(psi) * c.sz));
+  function erWave(m) {
+    const c = m.cut;
+    if (!c || !ER_FX.style || !(c.r > 0)) return [false, false];
+    const F = ERW.fan, R = ERW.R, q = c.r / R;
+    const fade = 1 - frE((q - 0.75) / 0.25);
+    let wave = false, sheet = false;
+    if (fade > 0 && q < 1) {
+      const G = erWaveMesh.geometry, P = G.attributes.position.array, A = G.attributes.al.array, C = G.attributes.col.array;
+      /* 兩條帶子接成一條：前 ER_ARC_N + 1 對頂點是亮芯，後 ER_ARC_N + 1 對是光暈（中間那一段兩頭透明度都是 0，看不見） */
+      for (let L = 0; L < 2; L++) {
+        const w = ER_WAVE_W[L], a0 = L ? 0.3 : 1, col = L ? [0.72, 0.88, 1] : [1, 1, 1];
+        for (let i = 0; i <= ER_ARC_N; i++) {
+          const f = i / ER_ARC_N, psi = F - 2 * F * f, taper = Math.pow(Math.sin(Math.PI * f), 0.6);
+          const j = (L * (ER_ARC_N + 1) + i) * 2;
+          erArcPt(c, c.r + w * taper * 0.5, psi, _erTa); erArcPt(c, Math.max(0, c.r - w * taper * 0.5), psi, _erTb);
+          P.set([_erTa.x, _erTa.y, _erTa.z, _erTb.x, _erTb.y, _erTb.z], j * 3);
+          const al = (i === 0 || i === ER_ARC_N) ? 0 : a0 * fade * taper;
+          A[j] = A[j + 1] = al;
+          C.set(col, j * 3); C.set(col, j * 3 + 3);
+        }
+      }
+      G.attributes.position.needsUpdate = G.attributes.al.needsUpdate = G.attributes.col.needsUpdate = true;
+      wave = true;
+    }
+    if (ER_FX.style === 2) {
+      const tFull = c.tw + R / ERW.v, k = c.t < tFull ? 1 : 1 - frE((c.t - tFull) / ER_SHEET_FADE);
+      if (k > 0) {
+        const G = erSheetMesh.geometry, P = G.attributes.position.array, A = G.attributes.al.array, C = G.attributes.col.array;
+        for (let i = 0; i <= ER_ARC_N; i++) {
+          const psi = F - 2 * F * i / ER_ARC_N;
+          erArcPt(c, Math.min(c.r, R), psi, _erTa);
+          P.set([_erTa.x, _erTa.y, _erTa.z, c.hx, c.hy, c.hz], i * 6);
+          A[i * 2] = ER_FX.sheet * k; A[i * 2 + 1] = 0;
+          C.set([0.9, 0.96, 1, 0.9, 0.96, 1], i * 6);
+        }
+        G.attributes.position.needsUpdate = G.attributes.al.needsUpdate = G.attributes.col.needsUpdate = true;
+        sheet = true;
+      }
+    }
+    return [wave, sheet];
+  }
+  function putErises(list) {
+    let n = 0, tr = false, wv = false, sh = false;
+    for (let i = 0; i < list.length && n < MAXER; i++) {
+      const m = list[i];
+      if (m.kind !== 'eris') continue;
+      erAt[n] = i;
+      /* 刀光、劍氣先畫（刀光要往回取樣、會把骨架算成別的時刻），她自己最後照這一刻再算一次 */
+      if (!tr) tr = erTrail(m);
+      if (!wv && !sh) [wv, sh] = erWave(m);
+      erRig(m);
+      const base = n * ER_SLOT;
+      for (let j = 0; j < ER_PARTS; j++) {
+        const b = ERIS[j];
+        if (b.f) {
+          /* 抱胸的上臂：從肩膀頂上（ER_UA_TOP）到手臂這一幀的根（_erRoot，見 erRig）；沒在抱胸就縮成 0 */
+          const s = b.p[0] < 0 ? 0 : 1, r = _erRoot[s], p0 = ER_PIV[s ? ER_G.armL : ER_G.armR];
+          _erv.set(p0[0] - r[0], p0[1] + ER_UA_TOP - r[1], p0[2] - r[2]);
+          const len = _erv.length();
+          if (_erFd < 0.01) tmpM.makeScale(0, 0, 0);
+          else {
+            _erq1.setFromUnitVectors(_erY, _erv.multiplyScalar(1 / len));
+            _erv2.set(r[0], r[1], r[2]).addScaledVector(_erv, len / 2);
+            tmpM.compose(_erv2, _erq1, _erpo.set(ER_SV[j].x, len, ER_SV[j].z));
+          }
+          erMesh.setMatrixAt(base + j, _erm.multiplyMatrices(_erG[b.g], tmpM));
+          continue;
+        }
+        const e = b.z ? _erExt[b.g] : 0;
+        if (e) {
+          // 袖子往下長 e（上緣不動），它下面的袖口與條紋整塊往下挪 e（同 putFrierens）
+          _erv.copy(ER_PV[j]); _erv2.copy(ER_SV[j]);
+          if (b.z === 1) { _erv.y -= e / 2; _erv2.y += e; } else _erv.y -= e;
+          tmpM.compose(_erv, ER_QV[j], _erv2);
+          erMesh.setMatrixAt(base + j, _erm.multiplyMatrices(_erG[b.g], tmpM));
+        } else erMesh.setMatrixAt(base + j, _erm.multiplyMatrices(_erG[b.g], ER_LM[j]));
+      }
+      n++;
+    }
+    erMesh.count = n * ER_SLOT;
+    erMesh.visible = n > 0;
+    if (n) { erMesh.instanceMatrix.needsUpdate = true; dropSphere(erMesh); }
+    erTrailMesh.visible = tr; erWaveMesh.visible = wv; erSheetMesh.visible = sh;
+  }
   /* ══ Diablo（暗黑破壞神）════════════════════════════════════════
      使用者：「加入新天災吉祥物 diablo 攻擊方式是舊版獅鷲的噴火」，附了兩張暗黑破壞神二代的參考圖。
      第一版塞進 BEASTS（67 塊，同巨人）給使用者看：「太醜 不夠精緻 因為那是暗黑破壞神的經典角色 不能不像」。
@@ -10389,6 +11163,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     move(zenMesh, zenAt, ZEN_SLOT);
     move(gjMesh, gjAt, GJ_SLOT);
     move(frMesh, frAt, FR_SLOT);
+    move(erMesh, erAt, ER_SLOT);                 // 艾莉絲（v1.290.0）
     move(diaMesh, diaAt, DIA_SLOT);              // Diablo：從林帶進出場、死了變淡都走這一顆
     move(draMesh, draAt, DRA_SLOT);              // 飛龍（v1.277.0）：從林帶飛進飛出那一段（不是人形，但同一個做法：自己一顆、整格照抄）
     humMesh.count = n * HUM_SLOT;
@@ -11084,6 +11859,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     if (zenMesh && zenMesh.visible) objs.push(zenMesh);   // 善逸也算 beast（v1.251.0，見 putZens）
     if (gjMesh && gjMesh.visible) objs.push(gjMesh);      // 五條悟也算 beast（v1.255.0，見 putGojos）
     if (frMesh && frMesh.visible) objs.push(frMesh);      // 芙莉蓮也算 beast（v1.259.0，見 putFrierens）
+    if (erMesh && erMesh.visible) objs.push(erMesh);      // 艾莉絲也算 beast（v1.290.0，見 putErises）
     if (diaMesh && diaMesh.visible) objs.push(diaMesh);   // Diablo 也算 beast（見 putDiablos）
     if (draMesh && draMesh.visible) objs.push(draMesh);   // 飛龍也算 beast（v1.277.0，見 putDragons）
     const hits = raycaster.intersectObjects(objs, false);
@@ -11093,7 +11869,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
                  : h.object === beastMesh || h.object === sabMesh || h.object === levMesh || h.object === megMesh ||
-                   h.object === zenMesh || h.object === gjMesh || h.object === frMesh || h.object === diaMesh ||
+                   h.object === zenMesh || h.object === gjMesh || h.object === frMesh || h.object === erMesh || h.object === diaMesh ||
                    h.object === draMesh ? 'beast'
                  : h.object === giftMesh ? 'gift'
                  : h.object === ground ? 'ground' : null;
@@ -11109,6 +11885,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
                                       : h.object === zenMesh ? zenAt[Math.floor(h.instanceId / ZEN_SLOT)]
                                       : h.object === gjMesh ? gjAt[Math.floor(h.instanceId / GJ_SLOT)]
                                       : h.object === frMesh ? frAt[Math.floor(h.instanceId / FR_SLOT)]
+                                      : h.object === erMesh ? erAt[Math.floor(h.instanceId / ER_SLOT)]
                                       : h.object === diaMesh ? diaAt[Math.floor(h.instanceId / DIA_SLOT)]
                                       : h.object === draMesh ? draAt[Math.floor(h.instanceId / DRA_SLOT)]
                                                            : Math.floor(h.instanceId / BEAST_PARTS))
@@ -11405,6 +12182,12 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 芙莉蓮（v1.259.0）：自己一顆 mesh（putFrierens），防護罩照規則那邊寫在她身上的 bt／bc／bh 畫；
        FR_BAR_OPEN／FR_BAR_CLOSE／FR_BAR_RIP 是罩子張開、收掉、亮紋擴完要幾秒（規則那邊照這幾個收狀態） */
     putFrierens, FRIEREN, FR_PARTS, FR_SLOT, MAXFR, FR_G, FR_NE, FR_BAR_OPEN, FR_BAR_CLOSE, FR_BAR_RIP,
+    /* 艾莉絲（v1.290.0）：自己一顆 mesh（putErises），刀光與劍氣也在這一支畫。規則那邊照 ERT 的時間軸走光之太刀，
+       劍氣飛多快、多遠、扇形多開讀 ERW（規則那邊照同一份切）；ER_FX 是劍氣怎麼畫（預覽頁切換用）。
+       erBlade(m, y) 照現在的姿勢算劍上那一點（測試量握劍、刀光用；ER_HOLD 是右手握的那一點、雙手時左手握的柄頭、刃長） */
+    putErises, ERIS, ER_PARTS, ER_SLOT, MAXER, ER_G, ERT, ERW, ER_FX,
+    ER_HOLD: { grip: ER_GRIP, pommel: ER_GRIP - ER_POMMEL, blade: ER_BLADE },
+    erBlade: (m, y, out) => { erRig(m); return erBladePt(out || new T.Vector3(), y); },
     /* Diablo：自己一顆 mesh（putDiablos）；diaMouth 是噴火的出口（世界座標，畫的跟用的同一份）。
        跪姿、趴姿與「算不算貼地」那一份遮罩（DIA_GND）也開出來：測試照它量倒在地上時每一塊離地多高 */
     putDiablos, DIABLO, DIA_PARTS, DIA_SLOT, MAXDIA, DIA_G, diaMouth, diaChest, DIA_KNEEL, DIA_PRONE, DIA_GND,
@@ -11428,14 +12211,14 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
                ape: APE, snow: SNOW, nana: NANA, torch: TORCH, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
                deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, diablo: DIABLO, saber: SABER, levi: LEVI, megumin: MEGUMIN,
-               zenitsu: ZENITSU, gojo: GOJO, frieren: FRIEREN,
+               zenitsu: ZENITSU, gojo: GOJO, frieren: FRIEREN, eris: ERIS,
                shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY, tabby: TABBY, blackcat: BLACKCAT,
                chiikawa: CHIIKAWA, hachiware: HACHIWARE, usagi: USAGI, emperor: EMPEROR, adelie: ADELIE,
                goose: GOOSE };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, diaMesh, coinMesh, draMesh,
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erWaveMesh, erSheetMesh, diaMesh, coinMesh, draMesh,
                             stormLay, stormBall, stormLamps, hemi, sun, gloomEl }; }
   };
 })();
