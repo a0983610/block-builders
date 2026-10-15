@@ -1,75 +1,100 @@
-/* 積木小人 · 匯出的藍圖（日式醬油糰子）
-   用法二選一：放進 blueprints/ 並把檔名加進 list.js，
-   或在遊戲裡按「📥 匯入建築」把整份貼進去。 */
-
 // 檔名：日式醬油糰子.js
-// v1.263.0：糰子改成每個尺寸都坐在盤子上（原本某些 s 整串浮空一格）、hi 拉大（見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉）
+// v1.288.0 盲測第四回：子 agent 只拿〈藍圖製作說明〉、從零做出來的第二版（看過一次報告＋9000 四視圖），原樣收進來（只改了 name 與檔名那一行；縫與亮光的門檻從半徑比例改成格數，1800 那一檔才不會整組消失；見 開發筆記〈盲測第四回：清水寺、御手洗糰子、水榭戲亭（v1.288.0）〉）
+// 正面：低而寬的深藍長盤，盤上一排四顆圓滾滾的白糰子，竹籤從兩端穿出（+x 是握柄，長；−x 尖端只露一點）
+// 側面：盤子很薄、盤緣微微外翻；兩串並排，從側面看是兩顆圓球並肩
+// 三樣識別物：①一串四顆分得開的圓球＋穿出來的竹籤握柄 ②頂上那一蓋亮亮的琥珀色醬汁（亮光、流痕、縫裡積的醬、盤上一攤）
+//   ③白糰子球腰一圈的焦痕
+// 比例表（實物，查得到的）：糰子直徑約 2.5～3 cm（取 2.8）；一串 3～5 顆，關東 4 顆；竹籤長 15 cm、粗 3 mm；
+//   串上糰子彼此貼緊；長角皿約 20×11 cm、盤緣高約 1 cm。換算成糰子半徑 R：1 cm ≈ 0.71R
+//   竹籤全長 10.75R（尖端露 0.35R、四顆佔 8R、握柄露 2.4R）；盤收緊到 竹籤全長＋1.2R × 兩串寬＋1.6R；兩串中心距 2.25R
+// 輪廓寬度（正面，以盤寬 ＝ 1）：高台 0.70／盤面＋盤緣 1.00／醬汁池 0.78／球心那一層（竹籤全長）0.86／
+//   糰子那一段 0.66（四顆，頂上四個分得開的圓包）
+// 部件尺寸：上一版報告 9000 → s = 10.90（R = 5.45，糰子 11 格）。這一版盤子收緊、醬汁池只畫露出來那一圈，估 s ≈ 11.7（R ≈ 5.85）：
+//   糰子直徑 11～13 格；球心距 floor(2R) ＝ 11 格（剛好貼著，縫一定接得上）；竹籤半徑 0.19R ≈ 1.1（十字剖面，3 格粗）；
+//   握柄露 2.4R ≈ 14 格；盤 69×35 格＋外翻一圈；盤緣 2 層、高台 1 層；
+//   醬汁蓋：球心上 0.2R 以上（正面看頂上 4 排是醬、下面 5 排是白）；流痕四分之一的份、往下流到球心下 0.44R；
+//   亮光斑約 5 格寬、外圈亮琥珀約 8 格寬；縫裡積的醬 2 格寬；焦痕斑塊 2 格一塊、只在球腰 ±0.45R
+// 部件：盤高台(walls) 盤面(box) 盤緣(walls 一層外擴一格、牆厚 2) 醬汁池(ellipseRing，只畫糰子外面那一圈)
+//   糰子×8(blob 殼厚 2，c 給顏色函式：縫／醬汁三階／白／焦痕／底部陰影) 竹籤尖端×2、握柄×2(limb)
+// 六層：主量體＝糰子；口緣＝盤緣外翻；附件＝竹籤；內容物＝醬汁蓋與醬汁池；表面紋理＝焦痕、亮光、流痕、縫、底部陰影；
+//   文字圖案＝（無，盤子素面）
 customBlueprint({
   name: '日式醬油糰子',
-  pal: [
-    '#f8f9fa', // 0 白瓷方盤（右側主體）
-    '#2b2d30', // 1 黑陶盤邊（左側跳色）
-    '#c87a28', // 2 醬油葛汁裹色（亮金琥珀）
-    '#5c2206', // 3 炙燒焦香斑紋 / 盤底濃醬汁
-    '#d6b882', // 4 竹籤
-    '#fffae8'  // 5 醬汁高光反光點
-  ],
-  lo: 2.6, hi: 24.0,
+  pal: ['#ebe5d3',   // 0 糰子白（0.88）
+        '#bdb39b',   // 1 糰子底部陰影（0.68）
+        '#6e4020',   // 2 焦痕（0.28）
+        '#a84c12',   // 3 醬汁・深琥珀（0.37）：背光面、流痕、醬汁底下透出來的焦痕
+        '#ffe0a0',   // 4 醬汁亮光（0.81）
+        '#d98328',   // 5 醬汁・亮琥珀（0.50）：朝光那一面、盤上那一攤
+        '#d9b779',   // 6 竹籤（0.66）
+        '#232c44',   // 7 盤子・深藍（0.20）
+        '#4a5a80',   // 8 盤緣口沿（0.40）
+        '#141927',   // 9 盤底高台（0.12）
+        '#6a2c0a'],  // 10 兩顆糰子之間的縫：醬汁積在這裡（0.23）
+  lo: 4.6, hi: 18,
 
   gen(v, s) {
-    // 1. 和風雙色方盤（左黑右白、四邊微翹）
-    const pw = dim(s, 3.8, 15, true);
-    const pd = dim(s, 2.8, 11, true);
-    const splitX = -Math.round(pw * 0.22); // 黑白分界位置
+    const R = Math.max(2.3, s * 0.5);                      // 糰子半徑：整盤唯一的錨（2.3 以下會變十字形）
+    const q = (k, lo) => Math.max(lo, Math.round(R * k));  // 其餘尺寸一律寫成 R 的倍數
+    const odd = n => (n % 2 ? n : n + 1);
 
-    // 盤底實心
-    v.box(0, 0, 0, pw, 1, pd, 0);
-    v.box(-Math.round(pw / 2) + Math.round((splitX - (-Math.round(pw / 2))) / 2), 0, 0,
-          splitX - (-Math.round(pw / 2)) + 1, 1, pd, 1);
+    // ── 竹籤與糰子的位置（先算，盤子照它收邊）──
+    const N = 4, step = Math.floor(R * 2);              // 球心距：不超過直徑，相鄰兩顆一定貼得上
+    const tipL = R * 0.35, handL = R * 2.4;             // 尖端露出、握柄露出
+    const skL = tipL + 2 * R + (N - 1) * step + handL;  // 竹籤全長
+    const xs0 = -skL / 2, xs1 = skL / 2;                // 尖端在 −x、握柄末端在 +x
+    const b0 = Math.round(xs0 + tipL + R);
+    const bxs = [];
+    for (let i = 0; i < N; i++) bxs.push(b0 + i * step);
+    const xm = (bxs[0] + bxs[N - 1]) / 2;
+    const zr = Math.round(R * 1.125);                   // 兩串的 z（中間留一格縫）
+    const sr = Math.max(0.75, R * 0.19);                // 竹籤半徑（比實物粗一點才看得到）
 
-    // 盤緣一圈微翹圍邊
-    v.walls(0, 1, 0, pw, 1, pd, 0, 1);
-    v.box(-Math.round(pw / 2) + Math.round((splitX - (-Math.round(pw / 2))) / 2), 1, 0,
-          splitX - (-Math.round(pw / 2)) + 1, 1, pd, 1);
-    v.carve(0, 1, 0, pw - 2, 1, pd - 2); // 保持內部平坦
+    // ── 盤子：高台 → 盤面 → 盤緣（一層往外翻一格）──
+    const PW = odd(Math.round(skL + R * 1.2)), PD = odd(2 * zr + Math.round(R * 3.6));
+    const footH = q(0.22, 1);
+    v.walls(0, 0, 0, odd(Math.round(PW * 0.7)), footH, odd(Math.round(PD * 0.65)), 9, 1);  // 高台
+    const fy = footH;                                   // 盤面那一層（從高台頂面算）
+    v.box(0, fy, 0, PW, 1, PD, 7);                      // 盤面
+    const rh = q(0.35, 2);
+    for (let k = 0; k < rh; k++)                        // 盤緣：牆厚 2，上一層的內圈壓在下一層的外圈上
+      v.walls(0, fy + 1 + k, 0, PW + 2 * k, 1, PD + 2 * k, k === rh - 1 ? 8 : 7, 2);
 
-    // 2. 兩串醬油糰子（每串 4 顆、淋上濃郁醬汁）
-    const br = s * 0.26;                               // 糰子半徑
-    const stepX = br * 1.72;                           // 橫向排開（左到右 4 顆）
-    const stickLen = Math.round(br * 9.2);             // 竹籤長度
+    const py = fy + 1;                                  // 盤面上那一層：醬汁池、糰子最底那一格
+    const cy = py + Math.floor(R * 1.02);               // 球心（整數）：球底那一格正好落在 py，貼著盤面
 
-    const skewers = [
-      { z: -Math.round(s * 0.32), x0: -Math.round(br * 2.6) }, // 後排串
-      { z:  Math.round(s * 0.28), x0: -Math.round(br * 3.2) }  // 前排串
-    ];
+    // ── 盤上那一攤醬汁：只畫露在糰子外面那一圈 ──
+    const prx = (N - 1) * step / 2 + R * 1.45, prz = R * 1.4;
+    mirrorZ(v, zr, (vv, z) => vv.ellipseRing(xm, py, z, prx, prz, 1, 5, R * 0.6));
 
-    skewers.forEach(({ z, x0 }, skewerIdx) => {
-      /* 糰子最底那一格要落在第 1 層（直接坐在盤底那一片上）：blob 往下長到 floor(ry × 1.02) 格，
-         原本 1 + round(br × 0.95) 在某些 s 會比它多一格，整串（糰子＋竹籤）浮在盤子上方一格 */
-      const by = 1 + Math.min(Math.round(br * 0.95), Math.floor(br * 0.88 * 1.02 - 1e-6));
-
-      // 竹籤本體（穿過 4 顆糰子並向右延伸握柄）
-      v.box(x0 + Math.round(br * 3.6), by, z, stickLen, 1, 1, 4);
-
-      // 盤底溢流的焦糖濃醬汁（前排較多）
-      if (skewerIdx === 1) {
-        v.box(x0 + Math.round(br * 2.2), 1, z + Math.round(br * 0.6), Math.round(br * 5.2), 1, Math.round(br * 1.8), 3);
+    // ── 糰子的顏色 ──
+    const g = Math.max(1, Math.round(R / 3));           // 焦痕斑塊大小：一塊 g×g×g，不是一格一格的小黑點
+    const ball = (bx, bz, i, side) => (x, y, z) => {
+      const dx = (x - bx) / R, dy = (y - cy) / R, dz = (z - bz) / R;
+      const ex = x - bx;                                // 縫與亮光的門檻用格數：1800 那一檔 R 只剩兩三格，比例門檻一格都落不進去
+      if ((ex > R - 1 && i < N - 1) || (ex < 1 - R && i > 0)) return 10;   // 跟鄰居相貼的那一圈（1 格）：醬汁積在縫裡
+      const sec = Math.floor((Math.atan2(dz, dx) + Math.PI) / (Math.PI / 6));   // 繞垂直軸切 12 份
+      const hd = hash100(sec, i, side);
+      const line = hd < 25 ? 0.2 - (1 + hd % 8) * 0.08 : 0.2;   // 醬汁下緣：頂上那一蓋，四分之一的份往下流
+      const hb = hash100(Math.floor(x / g), Math.floor(y / g), Math.floor(z / g));
+      const band = Math.abs(dx) < 0.45;                 // 球腰那一圈：烤架碰得到、最鼓的地方
+      if (dy >= line) {
+        const l = 0.25 * dx + 0.76 * dy - 0.6 * dz;     // 朝「上、前、右」那個方向的程度
+        if (l > Math.min(0.9, 1 - 0.5 / R)) return 4;   // 亮光：小尺寸放寬到「離最亮那一點半格內」
+        if (band && hb < 28) return 3;                  // 醬汁底下透出來的焦痕：只深一階，不點黑
+        return l > 0.68 ? 5 : 3;                        // 朝光那一面亮琥珀、背光面與流痕深琥珀
       }
+      if (band && hb < 35) return 2;                    // 白的那一段：球腰一圈的焦痕
+      return dy < -0.7 ? 1 : 0;
+    };
 
-      // 連續 4 顆飽滿的琥珀醬油糰子
-      for (let i = 0; i < 4; i++) {
-        const cx = x0 + Math.round(i * stepX);
-
-        // 糰子主體（有機球體，外層均勻裹上琥珀金醬油葛汁）
-        blob(v, cx, by, z, br * 0.96, br * 0.88, br * 0.92, 2);
-
-        // 表面炙燒焦點（頂部焦痕）
-        paintFrom(v, cx, by + Math.ceil(br) + 1, z, 0, -1, 0, 3, 3);
-        paintFrom(v, cx + 1, by + Math.ceil(br) + 1, z, 0, -1, 0, 3, 3);
-
-        // 醬汁高光反光點（斜上方微光澤）
-        paintFrom(v, cx - 1, by + Math.ceil(br * 0.6), z - Math.ceil(br * 0.6), 0, -1, 1, 3, 5);
-      }
+    // ── 兩串：糰子（殼厚 2）＋竹籤尖端＋握柄 ──
+    mirrorZ(v, zr, (vv, bz) => {
+      const side = bz > 0 ? 1 : 0;
+      bxs.forEach((bx, i) => blob(vv, bx, cy, bz, R, R, R, ball(bx, bz, i, side), 2));
+      // 竹籤從球裡面長出來（起點伸進球裡半個半徑），終點往內收 sr，圓頭剛好到端點
+      limb(vv, { x: bxs[0] - R * 0.5, y: cy, z: bz, x1: xs0 + sr, y1: cy, z1: bz, r: sr, c: 6 });       // 尖端
+      limb(vv, { x: bxs[N - 1] + R * 0.5, y: cy, z: bz, x1: xs1 - sr, y1: cy, z1: bz, r: sr, c: 6 });   // 握柄
     });
   }
 });

@@ -1,124 +1,186 @@
-/* 積木小人 · 匯出的藍圖（清水寺本堂與舞台）
-   用法二選一：放進 blueprints/ 並把檔名加進 list.js，
-   或在遊戲裡按「📥 匯入建築」把整份貼進去。 */
-
 // 檔名：清水寺本堂與舞台.js
-// v1.263.0：本堂後半與左翼廊底下補上山坡（正面石垣＋兩側與背面土坡、樹叢），本堂整座坐在坡上不再懸空（見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉）
+// v1.288.0 盲測第四回：子 agent 只拿〈藍圖製作說明〉、從零做出來的第二版（看過一次報告＋9000 四視圖），原樣收進來（只改了 name 與檔名那一行；見 開發筆記〈盲測第四回：清水寺、御手洗糰子、水榭戲亭（v1.288.0）〉）
+// 正面：下半是一整片「柱＋貫」組成的方格木架，站在往後升高的山坡上；上面是寬寬的舞台與欄杆，
+//       左右兩座較低的翼廊、淺色山牆夾著舞台，後面壓著一個巨大的四坡屋頂（簷口平緩、越往上越陡）
+// 側面：山坡（樹林）從前方谷底斜升到本堂中段；舞台和本堂前半懸在木架上往前伸，本堂後半坐在山上
+// 三樣識別物：①往前伸出、有高欄的木造舞台（淺色檜木地板）
+//             ②舞台底下縱橫交錯的欅木柱與貫（懸造）
+//             ③檜皮葺的大寄棟屋頂（下緩上陡的反り，深褐色，邊緣一圈淺色軒付）
+// 比例表（實物）：本堂含翼廊間口 36 m、奧行 31 m；本堂高約 18 m（地板到屋脊）；
+//   舞台高約 13 m、面積約 200 m²；舞台前排柱長約 12 m；身舍桁行 9 間、梁間 7 間；
+//   正面左右各一座入母屋造、妻入的翼廊（楽舎），舞台夾在中間；屋頂寄棟造、檜皮葺
+//   設計取值（查不到的自己定）：一間 3.6 m；軸部 6 m、屋頂 12 m；翼廊軸部為本堂的 0.7；
+//   舞台 6 間寬 × 3 間深 ≈ 21.6 × 10.8 m；翼廊 2 間寬、往前伸 2 間；山坡從舞台前緣斜升到本堂前 3 間
+// 輪廓寬度（正面，以大屋頂屋簷全寬 ＝ 1）：山腳 0.91／舞台前排柱 0.51／本堂＋翼廊 0.87／
+//   屋簷 1.00／屋頂半高 約 0.6／屋脊 0.33
+// 部件尺寸（第一版報告：9000 塊 s = 10.86；這一版估 s ≈ 11）：本堂寬 2·dim(s,1.8)+1 = 41、
+//   深 dim(s,2.52) = 28；舞台面高 dim(s,1.3) = 14；柱間約 4 格、柱 1 格、貫 1 格、貫上下間距 3
+//   （前排柱上 4 層貫）；軸部 7、屋頂 13 層、出簷 3；翼廊軸部 5；舞台 25 寬 × 14 深；
+//   翼廊 9×9 格、山牆 9 格寬 5 層、比大屋頂屋簷高出 4 層；懸魚 2 格；高欄 2 層
+// 部件：山坡（逐 z 一條 box＋兩側與背面山壁，樹林色 hash）、礎石（柱的顏色函式）、柱（box）、
+//   貫（box 長條，兩端各凸 1 格）、舞台地板（box）、高欄（box 橫木＋短柱）、
+//   本堂軸部（walls＋顏色函式：柱／板壁／開著的禮堂／頭貫）、翼廊（walls）、
+//   大屋頂（逐層 walls 環，內縮量照 1.6t−0.6t² 做出反り）、軒付（第一層外緣換色）、
+//   箱棟與鬼板（box）、翼廊入母屋（walls 裙兩層＋中空兩坡）、破風與淺色妻壁（顏色函式）、懸魚（tint）
 customBlueprint({
   name: '清水寺本堂與舞台',
   pal: [
-    '#3e352f', // 0 懸造高架巨型圓木柱架（棟樑木構）
-    '#9e9484', // 1 舞台木地板與迴廊高欄（風化灰木）
-    '#54443b', // 2 本堂木造主殿身與外廊樑架
-    '#43372f', // 3 巨大寄棟造檜皮葺屋頂瓦
-    '#827568', // 4 翼廊出簷與破風木裝飾
-    '#c85038', // 5 遠景三重塔朱紅（點綴後方迴廊）
-    '#8a8476', // 6 山坡石垣（亮）
-    '#696357', // 7 山坡石垣（暗，風化的那幾塊）
-    '#5d773b', // 8 山坡草地
-    '#3d5a2b'  // 9 坡上樹叢
-  ],
-  lo: 2.5, hi: 15.0,
+    '#bc9c7a',   // 0 柱、立柱、妻壁（風化的欅木）
+    '#957556',   // 1 貫、大引、頭貫（暗一階的木）
+    '#523d2f',   // 2 檜皮葺屋頂
+    '#2b2420',   // 3 箱棟、鬼板、翼廊屋脊
+    '#b89268',   // 4 軒付（屋頂邊緣的檜皮切口）、破風
+    '#caa97a',   // 5 舞台地板（檜木板）
+    '#33271e',   // 6 開著的禮堂、翼廊內側（暗）
+    '#5e4634',   // 7 板壁、蔀戸
+    '#3d5530',   // 8 山坡樹林
+    '#2f4527',   // 9 樹林暗一階
+    '#7a6a58',   // 10 土石
+    '#5c5044',   // 11 土石暗一階
+    '#d4a640',   // 12 懸魚（金）
+    '#8f8a82',   // 13 礎石
+    '#7a5c40'],  // 14 高欄
+  lo: 1.5, hi: 22,
 
   gen(v, s) {
-    // 尺度規劃：清水寺以橫長雄偉的檜皮葺大屋頂與高聳懸造（Kakezukuri）舞台著稱
-    const mainW = dim(s, 3.2, 13, true);   // 本堂寬度
-    const mainD = dim(s, 2.2, 7, true);    // 本堂進深（下限 9 → 7：補了山坡之後最小那一版變大，1600 塊壓不下來，v1.263.0）
-    const hallH = dim(s, 1.2, 4);          // 本堂殿身高
-    const stageD = dim(s, 1.3, 5, true);   // 懸空向外突出的舞台進深
-    const stageH = dim(s, 1.6, 6);         // 懸空崖壁木架高度
+    // 範圍寫法的 box／walls：給兩端（含），自動換成中心＋寬
+    const B = (xa, xb, y0, y1, za, zb, c) => {
+      const x0 = Math.min(xa, xb), x1 = Math.max(xa, xb), z0 = Math.min(za, zb), z1 = Math.max(za, zb);
+      if (y1 < y0) return;
+      v.box((x0 + x1) / 2, y0, (z0 + z1) / 2, x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1, c);
+    };
+    const W = (xa, xb, y0, y1, za, zb, c, t) => {
+      const x0 = Math.min(xa, xb), x1 = Math.max(xa, xb), z0 = Math.min(za, zb), z1 = Math.max(za, zb);
+      if (y1 < y0) return;
+      v.walls((x0 + x1) / 2, y0, (z0 + z1) / 2, x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1, c, t);
+    };
+    const sym = (k, f) => Math.sign(k) * Math.round(Math.abs(k) * f);
 
-    const stageZ = -Math.round((mainD + stageD) / 2) + 2; // 舞台中心位置
+    const hw = dim(s, 1.80, 7);     // 本堂半寬（間口 36 m）
+    const D  = dim(s, 2.52, 10);    // 本堂進深（7 間）
+    const F  = dim(s, 1.30, 5);     // 舞台面高（13 m）
+    const E  = dim(s, 0.60, 3);     // 軸部高（6 m）
+    const Hr = dim(s, 1.20, 4);     // 大屋頂高（12 m）
+    const oh = dim(s, 0.25, 1);     // 大屋頂出簷
+    const ow = dim(s, 0.15, 1);     // 翼廊出簷
+    const nt = dim(s, 0.27, 2);     // 貫的上下間距
+    const pw = dim(s, 0.09, 1);     // 柱粗
+    const Ew = Math.max(2, Math.round(E * 0.7));   // 翼廊軸部高（比本堂低）
 
-    // 1. 懸造舞台木結構（縱橫交錯的貫木與立柱）
-    const numPillarsX = dim(s, 0.6, 5, true);
-    const numPillarsZ = dim(s, 0.45, 3);
-    const stepX = Math.round((mainW - 2) / (numPillarsX - 1));
-    const stepZ = Math.round((stageD - 2) / Math.max(1, numPillarsZ - 1));
+    const X = k => sym(k, hw / 5);          // 第 k 條柱列（k = -5…5）
+    const Z = r => sym(r, D / 7);           // 第 r 排柱（0 = 本堂正面，負的往前）
+    const zs = Z(-3) - 1;                   // 舞台前緣
+    const z0 = Z(-3) - 2, z1 = Z(3);        // 山坡：z0 落地，z1 升到舞台面下
+    const hx = hw + 1, zb = D + 2;          // 山的兩側與背面
+    const ys = z => z <= z0 ? 0 : z >= z1 ? F - 1 : Math.round((F - 1) * (z - z0) / (z1 - z0));
+    const PX = new Set(), PZ = new Set();
+    for (let k = -5; k <= 5; k++) PX.add(X(k));
+    for (let r = -3; r <= 7; r++) PZ.add(Z(r));
 
-    // 懸空立柱陣列
-    for (let ix = 0; ix < numPillarsX; ix++) {
-      const px = -Math.round((mainW - 2) / 2) + ix * stepX;
-      for (let iz = 0; iz < numPillarsZ; iz++) {
-        const pz = stageZ - Math.round((stageD - 2) / 2) + iz * stepZ;
-        v.box(px, 0, pz, 1, stageH, 1, 0); // 粗壯木柱
+    // ── 台基：山坡（頂面與山壁都是樹林，山壁夾一點土石）──
+    const green = (x, y, z) => (hash100(x, y, z) < 35 ? 9 : 8);
+    const bank = (x, y, z) => { const h = hash100(x, y, z); return h < 15 ? 11 : h < 25 ? 10 : h < 55 ? 9 : 8; };
+    for (let z = z0; z <= zb; z++) {
+      const y = ys(z);
+      if (z < z1 || z >= D) B(-hx, hx, y, y, z, z, green);             // 斜坡、本堂後面
+      else { B(-hx, -hw, y, y, z, z, green); B(hw, hx, y, y, z, z, green); }  // 本堂兩側
+      B(-hx, -hx, 0, y - 1, z, z, bank); B(hx, hx, 0, y - 1, z, z, bank);      // 兩側山壁
+    }
+    B(-hx, hx, 0, F - 2, zb, zb, bank);                                  // 背面山壁
+
+    // ── 懸造：先畫貫（每隔 nt 層一圈，沿 x、沿 z，兩端凸出 1 格）──
+    const rowK = r => (r === -3 ? 3 : 5);
+    for (let y = F - 1; y >= 1; y -= nt) {
+      for (let r = -3; r <= 2; r++) {
+        if (ys(Z(r)) + 1 > y) continue;
+        B(X(-rowK(r)) - 1, X(rowK(r)) + 1, y, y, Z(r), Z(r), 1);
+      }
+      for (let k = -5; k <= 5; k++) {
+        const r0 = Math.abs(k) <= 3 ? -3 : -2;
+        if (ys(Z(r0)) + 1 > y) continue;
+        let r1 = r0;
+        while (r1 < 2 && ys(Z(r1 + 1)) + 1 <= y) r1++;
+        const zEnd = y === F - 1 ? z1 : Z(r1) + 1;
+        if (r1 > r0 || y === F - 1) B(X(k), X(k), y, y, Z(r0) - 1, zEnd, 1);
+      }
+    }
+    // ── 再畫柱：蓋過貫，從礎石一路通到舞台下 ──
+    const pl = Math.floor((pw - 1) / 2), ph = pw - 1 - pl;
+    for (let r = -3; r <= 2; r++) {
+      const z = Z(r), b = ys(z) + 1;
+      if (b > F - 1) continue;
+      for (let k = -rowK(r); k <= rowK(r); k++) {
+        const x = X(k);
+        B(x - pl, x + ph, b, F - 1, z - pl, z + ph, (xx, y) => (y === b ? 13 : 0));
       }
     }
 
-    // 橫向貫木穿插加固（多層水平樑）
-    for (let y = 1; y < stageH; y += 2) {
-      // 沿 X 軸貫木
-      for (let iz = 0; iz < numPillarsZ; iz++) {
-        const pz = stageZ - Math.round((stageD - 2) / 2) + iz * stepZ;
-        v.box(0, y, pz, mainW - 1, 1, 1, 0);
-      }
-      // 沿 Z 軸貫木
-      for (let ix = 0; ix < numPillarsX; ix++) {
-        const px = -Math.round((mainW - 2) / 2) + ix * stepX;
-        v.box(px, y, stageZ, 1, 1, stageD, 0);
-      }
-    }
-
-    // 2. 清水舞台平板地板與周圍木高欄
-    v.box(0, stageH, stageZ, mainW, 1, stageD, 1);
-    // 舞台外緣三面高欄（欄杆）
-    mirrorX(v, Math.round((mainW - 1) / 2), (vv, dx) => {
-      vv.box(dx, stageH + 1, stageZ, 1, 1, stageD, 1);
+    // ── 舞台地板與高欄 ──
+    B(X(-3), X(3), F, F, zs, 0, (x, y, z) => (z === zs ? 1 : 5));
+    const zw = Z(-2);                                                    // 翼廊正面
+    B(X(-3), X(3), F + 2, F + 2, zs, zs, 14);
+    for (let x = X(-3); x <= X(3); x += 2) B(x, x, F + 1, F + 1, zs, zs, 14);
+    mirrorX(v, 1, (vv, sg) => {
+      const x = sg * X(3);
+      B(x, x, F + 2, F + 2, zs, zw - 1, 14);
+      for (let z = zs; z < zw; z += 2) B(x, x, F + 1, F + 1, z, z, 14);
     });
-    v.box(0, stageH + 1, stageZ - Math.round((stageD - 1) / 2), mainW, 1, 1, 1);
 
-    // 3. 後方本堂主體結構
-    const hallY = stageH;
-    v.walls(0, hallY, 0, mainW - 2, hallH, mainD, 2, 1); // 本堂牆面
-    // 正面開放式柱廊通道（堂前木柱）
-    for (let ix = 0; ix < numPillarsX; ix++) {
-      const px = -Math.round((mainW - 2) / 2) + ix * stepX;
-      v.box(px, hallY, -Math.round((mainD - 1) / 2), 1, hallH, 1, 0);
+    // ── 本堂軸部：柱、板壁、正面開著的禮堂、頭貫 ──
+    const wallC = (x, y, z) => {
+      if (y === F + E - 1) return 1;
+      if ((z === 0 || z === D) ? PX.has(x) : PZ.has(z)) return 0;
+      if (y === F) return 1;
+      return z === 0 ? 6 : 7;
+    };
+    W(-hw, hw, F, F + E - 1, 0, D, wallC, 1);
+
+    // ── 翼廊軸部（比本堂低）──
+    const wingC = (x, y, z) => {
+      if (y === F + Ew - 1) return 1;
+      if ((z === zw || z === 0) ? PX.has(x) : PZ.has(z)) return 0;
+      return Math.abs(x) === X(3) ? 6 : 7;
+    };
+    mirrorX(v, 1, (vv, sg) => W(sg * X(3), sg * hw, F, F + Ew - 1, zw, 0, wingC, 1));
+
+    // ── 大屋頂：一層一層的環，往上內縮量 1.6t − 0.6t²（簷口緩、上面陡）──
+    const Y0 = F + E;
+    const rx = hw + oh, rz0 = -oh, rz1 = D + oh;
+    const I = Math.floor((rz1 - rz0 + 1 - 3) / 2);
+    const ins = k => { const t = k / (Hr - 1); return Math.round(I * (1.6 * t - 0.6 * t * t)); };
+    const eaveC = (x, y, z) => (Math.abs(x) === rx || z === rz0 || z === rz1 ? 4 : 2);
+    for (let k = 0; k < Hr; k++) {
+      const i = ins(k), y = Y0 + k;
+      if (k === Hr - 1) { B(-rx + i, rx - i, y, y, rz0 + i, rz1 - i, 2); break; }
+      let t = Math.max(2, ins(k + 1) - i + 1);
+      if (k === 0) t = Math.max(t, oh + 1);                              // 第一層要碰到牆頂
+      W(-rx + i, rx - i, y, y, rz0 + i, rz1 - i, k === 0 ? eaveC : 2, t);
     }
+    const yt = Y0 + Hr, rl = rx - I;
+    const zc0 = Math.floor((rz0 + rz1) / 2), zc1 = Math.ceil((rz0 + rz1) / 2);
+    B(-rl, rl, yt, yt, zc0, zc1, 3);                                     // 箱棟
+    mirrorX(v, rl, (vv, x) => B(x, x, yt + 1, yt + 1, zc0, zc1, 3));     // 鬼板
 
-    // 4. 左側連接翼廊與阿彌陀堂引道
-    const wingW = dim(s, 1.2, 5);
-    const wingY = hallY;
-    v.box(-Math.round((mainW + wingW) / 2), wingY, 0, wingW, hallH - 1, dim(s, 0.9, 4), 2);
-    v.gable(-Math.round((mainW + wingW) / 2), wingY + hallH, 0, wingW + 2, dim(s, 1.1, 5), 3);
-
-    // 5. 巨大寄棟造（四坡廡殿頂）檜皮葺大屋頂
-    const roofY = hallY + hallH;
-    v.eave(0, roofY, 0, mainW + 4, mainD + 4, 4, 1); // 寬深大挑簷
-    hipRoof(v, 0, roofY + 1, 0, mainW + 6, mainD + 6, 3); // 巨大四坡主屋頂
-
-    // 6. 舞台上方兩側翼角小破風（正面左側與右側抱廈山花）
-    const gableW = dim(s, 0.9, 4, true);
-    const frontEaveZ = -Math.round((mainD + 4) / 2) + 1;
-    mirrorX(v, Math.round((mainW - gableW) / 2), (vv, dx) => {
-      vv.gable(dx, roofY + 1, frontEaveZ, gableW, dim(s, 0.7, 3), 3);
-    });
-
-    // 7. 正脊延伸木構
-    const ridgeLen = Math.max(3, mainW - mainD + 2);
-    const roofTopY = roofY + 1 + Math.max(2, Math.round((mainD + 6) / 2));
-    v.box(0, roofTopY, 0, ridgeLen, 1, 1, 3);
-
-    /* 8. 山坡（v1.263.0）：本堂後半與左翼廊坐在山坡上，只有前面伸出去的舞台靠柱林撐著（懸造）。
-       原本本堂後半底下是空的、左翼廊整組懸空，整座只靠舞台的柱腳站著。
-       正面緊貼柱林後面是一道直立的石垣，兩側與背面是越往下越寬的土坡（2:1）；
-       只蓋外殼（坡頂除了本堂裡面那塊也鋪滿），看不到的內部不填。
-       顏色一邊蓋一邊挑：石垣用固定雜湊挑兩階深淺，土坡用雜湊撒樹叢 */
-    const hash = (x, y, z) => (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) % 100;
-    const hz0 = stageZ + (stageD - 1) / 2 + 1;                              // 石垣立面：舞台柱林最後一排的後面
-    const hzB = (mainD + 1) / 2;                                            // 坡頂後緣：本堂後牆再往後一格
-    const hxL = -Math.round((mainW + wingW) / 2) - Math.ceil(wingW / 2);    // 坡頂左緣：翼廊外側再一格
-    const hxR = (mainW - 1) / 2;                                            // 坡頂右緣：本堂側牆再往外一格
-    const inX = (mainW - 3) / 2, inZ = (mainD - 1) / 2;                     // 本堂四面牆的位置（牆裡面的坡頂看不到）
-    for (let y = 0; y < stageH; y++) {
-      const e = Math.round((stageH - 1 - y) * 0.5);
-      const xl = hxL - e, xr = hxR + e, zb = hzB + e, top = y === stageH - 1;
-      for (let x = xl; x <= xr; x++) for (let z = hz0; z <= zb; z++) {
-        if (top ? (Math.abs(x) < inX && Math.abs(z) < inZ && z > hz0)        // 石垣那一排要砌到頂
-                : !(x === xl || x === xr || z === hz0 || z === zb)) continue;
-        const h = hash(x, y, z);
-        v.set(x, y, z, z === hz0 ? (h < 35 ? 7 : 6) : (h < 30 ? 9 : 8));
+    // ── 翼廊屋頂：入母屋（下段四坡裙兩層＋上段兩坡，淺色山牆朝正面），往後插進大屋頂 ──
+    mirrorX(v, 1, (vv, sg) => {
+      const Yw = F + Ew;
+      const a = X(3) - ow, b = hw + ow, wz0 = zw - ow, wz1 = Z(1);
+      W(sg * a, sg * b, Yw, Yw, wz0, 0,
+        (x, y, z) => (Math.abs(x) === a || Math.abs(x) === b || z === wz0 ? 4 : 2), ow + 1);
+      W(sg * (a + 1), sg * (b - 1), Yw + 1, Yw + 1, wz0 + 1, 0, 2, 2);
+      let L0 = a + 2, R0 = b - 2;
+      if ((R0 - L0) % 2) R0 -= 1;                                        // 山牆寬取奇數
+      const gz0 = wz0 + 2, jm = (R0 - L0) / 2;
+      for (let j = 0; j <= jm; j++) {
+        const L = L0 + j, R = R0 - j;
+        W(sg * L, sg * R, Yw + 2 + j, Yw + 2 + j, gz0, wz1, (x, y, z) => {
+          if (z === gz0) return (Math.abs(x) <= L || Math.abs(x) >= R) ? 4 : 0;  // 破風／妻壁
+          return j === jm ? 3 : 2;
+        }, 2);
       }
-    }
+      const gc = sg * (L0 + jm);
+      tint(v, gc, Yw + 2 + jm - 1, gz0, 12);                             // 懸魚
+      tint(v, gc, Yw + 2 + jm - 2, gz0, 12);
+    });
   }
 });

@@ -17,11 +17,13 @@
 
    kinds 一個字元對一個參數：v=VOX、n=數字、c=顏色索引、f=函式、s=字串、o=物件。
    只寫到「最後一個必要參數」為止，後面的可選參數不驗（arch 的 c、blob 的 shell 這種
-   本來就可以不給）。訊息一律以「參數錯誤：」開頭，報告靠它挑出對應的修法。 */
+   本來就可以不給）。訊息一律以「參數錯誤：」開頭，報告靠它挑出對應的修法。
+   c 也收「顏色函式」(x, y, z) => 索引，真正的索引在 VOX.set 逐格算（見那裡的註解）。 */
 const BP_KIND = {
   v: [o => !!o && typeof o.set === 'function' && typeof o.has === 'function', '一個 VOX（第一個參數要傳 v）'],
   n: [o => typeof o === 'number' && Number.isFinite(o), '數字'],
-  c: [o => typeof o === 'number' && Number.isInteger(o) && o >= 0, '顏色索引（pal 的第幾個，從 0 算，要整數）'],
+  c: [o => (typeof o === 'number' && Number.isInteger(o) && o >= 0) || typeof o === 'function',
+      '顏色索引（pal 的第幾個，從 0 算，要整數），或回傳顏色索引的函式 (x, y, z) => …'],
   f: [o => typeof o === 'function', '函式'],
   s: [o => typeof o === 'string' && !!o, '字串'],
   o: [o => !!o && typeof o === 'object', '物件（具名參數）']
@@ -47,8 +49,10 @@ function bpKeys(sig, o, keys) {
   for (const k of keys.split(' ')) {
     const v = o[k];
     if (typeof v === 'number' && Number.isFinite(v)) continue;
+    if (k === 'c' && typeof v === 'function') continue;        // 顏色函式，同 BP_KIND.c
     throw new Error('參數錯誤：' + sig + ' 的 ' + k +
-                    (v === undefined ? ' 沒給' : ' 收到 ' + bpShow(v)) + '，要的是數字');
+                    (v === undefined ? ' 沒給' : ' 收到 ' + bpShow(v)) +
+                    (k === 'c' ? '，要的是' + BP_KIND.c[1] : '，要的是數字'));
   }
 }
 
@@ -66,7 +70,26 @@ VOX.prototype = {
        (undefined >> 16) & 255 算出 0 → 畫成一塊純黑積木（game.js 上色那段），
        而體檢的「索引超出 pal」查的是 maxC >= pal.length，2.5 < 3 過得去。
        補 round 只是從「作者算錯索引」變成「靜默畫上一個沒人指定的顏色」——
-       那正是這一整段驗證在避的事（見檔頭與 ellipseRing 的 thick）。 */
+       那正是這一整段驗證在避的事（見檔頭與 ellipseRing 的 thick）。
+
+       c 也可以是**顏色函式** (x, y, z) => 索引：每支畫圖函式最後都走到這裡，所以在這裡
+       逐格算一次，二十支工具就全都「蓋的當下就挑色」——拿到的是取整之後真正落格的座標。
+       為什麼要它：blob／limb／revolve 一格只能給一個顏色，石牆的雜色、旋轉體上下兩面不同色、
+       毛皮的明暗都只能自己寫逐格迴圈或蓋完再掃（內建動物為此另做了 voxGrid 的 E／L，
+       43 支自訂藍圖有 16 支各寫一份雜湊、說明書得附兩段手寫迴圈）。
+       回傳值照樣要是整數索引，不是就丟例外，不默默跳過——理由同上面那段。
+       見 開發筆記〈顏色函式：畫圖工具的 c 可以給函式〉。 */
+    if (typeof c === 'function') {
+      if (!Number.isFinite(x + y + z)) bpArgs('v.set(x, y, z, c)', 'nnn', [x, y, z]);
+      x = Math.round(x); y = Math.round(y); z = Math.round(z);
+      if (y < 0) return;
+      const got = c(x, y, z);
+      if (!(typeof got === 'number' && Number.isInteger(got) && got >= 0))
+        throw new Error('參數錯誤：顏色函式在 (' + x + ', ' + y + ', ' + z + ') 回傳 ' + bpShow(got) +
+                        '，要的是顏色索引（pal 的第幾個，從 0 算，要整數）');
+      this.m.set(x + ':' + y + ':' + z, got);
+      return;
+    }
     if (!(typeof c === 'number' && Number.isInteger(c) && c >= 0) || !Number.isFinite(x + y + z))
       bpArgs('v.set(x, y, z, c)', 'nnnc', [x, y, z, c]);
     x = Math.round(x); y = Math.round(y); z = Math.round(z);
@@ -714,7 +737,9 @@ function voxGrid(v, bx, by, bz0, bz1, out) {
   };
   return { put, has, get, paint, E, L, flush, G, NY, NZ };
 }
-/* 0～99 的固定雜湊：皮膚斑駁、虎斑邊緣這種「看起來隨機、每次長得一樣」的挑色 */
+/* 0～99 的固定雜湊：皮膚斑駁、虎斑邊緣這種「看起來隨機、每次長得一樣」的挑色。
+   v1.288.0 起〈藍圖製作說明〉也列給自訂藍圖用（配顏色函式撒石牆雜色），
+   所以**輸出不能再改**——改了內建動物與每一支用到它的自訂藍圖都會換一身花色。 */
 function hash100(x, y, z) {
   let h = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791);
   h = Math.imul(h ^ (h >>> 13), 1274126177);
@@ -9009,7 +9034,11 @@ function checkBlueprint(which, opt) {
      直接指到參數表就好，不必再叫 AI 去猜「undefined 是從哪裡進迴圈的」。 */
   if (threw) {
     const argErr = rows.some(r => r.err && r.err.indexOf('參數錯誤：') === 0);
-    L.push(argErr
+    const cfErr = rows.some(r => r.err && r.err.indexOf('參數錯誤：顏色函式') === 0);   // 見 VOX.set
+    L.push(cfErr
+      ? '  修法：顏色函式的每一條路都要回傳 pal 的整數索引——算出來的要 Math.round() 包起來，'
+        + '每個分支都要有 return（漏掉的那一支回傳的就是 undefined）。見〈藍圖製作說明〉3.4。'
+      : argErr
       ? '  修法：上面那行是「呼叫函式時參數給錯了」，訊息裡已經指出是哪一支的第幾個參數。'
         + '照〈藍圖製作說明〉3.1／3.2 的參數表補齊——最常見的是最後那個顏色索引 c 忘了給，'
         + '或某個尺寸自己算成了 NaN／undefined。'
@@ -9129,7 +9158,10 @@ function checkBlueprint(which, opt) {
         L.push('    修法：這一組的尺寸下限太小。用 dim(s, 係數, 下限) 把下限提到 2 以上'
              + '（例如 dim(s, 0.35, 2)），不要寫 Math.round(s * 0.35)。'
              + '這個顏色如果是 tint／paintFrom 點上去的（眼睛、嘴、招牌字），多半是底下那個部件在小尺寸太小、'
-             + '點的位置落到別的部件上，或被後面才畫的部件、塗色蓋掉：給那個部件一個尺寸下限，五官與圖案放在最後畫。');
+             + '點的位置落到別的部件上，或被後面才畫的部件、塗色蓋掉：給那個部件一個尺寸下限，五官與圖案放在最後畫。'
+             // v1.288.0 盲測：糰子的亮光（法向量 > 0.9）、縫（|dx| > 0.84R）在 R≈2.7 時一格都不剩
+             + '是顏色函式挑出來的（亮光、縫、斑）：門檻用格數（例如離表面 1 格內），不要用半徑的比例——'
+             + '小尺寸時那個比例的範圍裡一格都落不進去。');
       } else {
         parts.push('pal[' + k + '] ' + a + '→' + b);
       }
@@ -9229,5 +9261,5 @@ if (typeof module !== 'undefined' && module.exports)
                      cleanPaste, bpFileName, importBlueprint,
                      dim, ringOf, rowOf, mirrorX, mirrorZ, stampY, arch, archRow, stairs, hipRoof,
                      boxTaper, windowGrid, lattice, corners4, tubeZ, wheelX,
-                     tint, paintFrom, blob, limb, plate, revolve };
+                     tint, paintFrom, blob, limb, plate, revolve, hash100 };
 

@@ -1243,7 +1243,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const names = ['dim', 'ringOf', 'rowOf', 'mirrorX', 'mirrorZ', 'stampY', 'arch', 'archRow',
                    'stairs', 'hipRoof', 'boxTaper', 'windowGrid', 'lattice', 'corners4',
                    'tubeZ', 'wheelX', 'tint', 'paintFrom', 'blob', 'limb', 'plate', 'revolve',
-                   'checkBlueprint'];
+                   'hash100', 'checkBlueprint'];
     const missing = names.filter(n => typeof window[n] !== 'function');
 
     // dim：夾下限、取奇數
@@ -1430,8 +1430,28 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const rv = { r0: rad(vrv, 0), r8: rad(vrv, 8), r9: rad(vrv, 9), lay: ext(vrv, 'y'),
                  shellMid: vsh.has(0, 5, 0), shellWall: vsh.has(4, 5, 0), solidMid: vsl.has(0, 5, 0) };
 
+    /* 顏色函式（v1.288.0）：c 給 (x, y, z) => 索引，逐格算、拿到的是取整後的座標。
+       位置參數那條路（v.box、blob）與具名物件那條路（revolve、limb 走 bpKeys）都要收；
+       回傳不是整數索引要丟「參數錯誤：」，不能默默跳過那一格。 */
+    const colsAt = (vv, f) => [...new Set(vv.cells().filter(f).map(o => o.c))].sort().join(',');
+    const vcb = new VOX(), intXYZ = [];
+    vcb.box(0.4, 0, 0, 3, 2, 1, (x, y, z) => { intXYZ.push(Number.isInteger(x) && Number.isInteger(z)); return y; });
+    const vcl = new VOX();
+    blob(vcl, 0, 5, 0, 4, 4, 4, (x, y, z) => (y > 5 ? 1 : 0));
+    const vcr = new VOX();
+    revolve(vcr, { x: 0, y: 0, z: 0, prof: [[5, 0], [5, 4]], c: (x, y, z) => (y === 4 ? 2 : 1) });
+    const vcm = new VOX();
+    limb(vcm, { x: 0, y: 0, z: 0, x1: 6, y1: 6, z1: 0, r: 1.5, c: (x, y, z) => (x < 3 ? 3 : 4) });
+    let cfErr = '';
+    try { new VOX().box(0, 0, 0, 2, 1, 1, () => 2.5); } catch (e) { cfErr = e.message; }
+    const cf = { box0: colsAt(vcb, o => o.y === 0), box1: colsAt(vcb, o => o.y === 1),
+                 intXYZ: intXYZ.length === 6 && intXYZ.every(Boolean),
+                 blobTop: colsAt(vcl, o => o.y > 5), blobBot: colsAt(vcl, o => o.y <= 5),
+                 revTop: colsAt(vcr, o => o.y === 4), revSide: colsAt(vcr, o => o.y < 4),
+                 limb: colsAt(vcm, () => true), err: cfErr };
+
     return { missing, nAll: names.length, d, archR, archMade, st, wg, ring, ringOk, hip, mx, mz,
-             lat, lb, row, stamp, bt, arc, pl, rv };
+             lat, lb, row, stamp, bt, arc, pl, rv, cf };
   });
   ok('組合工具全都掛在全域，自訂藍圖叫得到', bpTool.missing.length === 0,
      bpTool.missing.length ? '沒有：' + bpTool.missing.join('、') : bpTool.nAll + ' 支都在');
@@ -1501,6 +1521,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('revolve 給了 shell 只留外壁（杯底要自己補一片）',
      !bpTool.rv.shellMid && bpTool.rv.shellWall && bpTool.rv.solidMid,
      'shell=1：中軸是空的、外壁還在；不給 shell 時中軸是實心的');
+  /* v1.288.0：blob／limb／revolve 以前一格只能給一個顏色，石牆雜色、上下兩面不同色都得自己寫逐格迴圈。
+     見 開發筆記〈顏色函式：畫圖工具的 c 可以給函式〉 */
+  ok('c 給顏色函式：每一格照自己的座標挑色（位置參數與具名物件兩條路都收）',
+     bpTool.cf.box0 === '0' && bpTool.cf.box1 === '1' && bpTool.cf.intXYZ &&
+     bpTool.cf.blobTop === '1' && bpTool.cf.blobBot === '0' &&
+     bpTool.cf.revTop === '2' && bpTool.cf.revSide === '1' && bpTool.cf.limb === '3,4',
+     'box 兩層 ' + bpTool.cf.box0 + '／' + bpTool.cf.box1 + '（座標是整數 ' + bpTool.cf.intXYZ + '）、blob 上／下 ' +
+     bpTool.cf.blobTop + '／' + bpTool.cf.blobBot + '、revolve 頂／側 ' + bpTool.cf.revTop + '／' +
+     bpTool.cf.revSide + '、limb ' + bpTool.cf.limb);
+  ok('顏色函式回傳的不是整數索引就丟參數錯誤，不會默默跳過',
+     /^參數錯誤：顏色函式在 \(0, 0, 0\) 回傳 2\.5/.test(bpTool.cf.err), bpTool.cf.err || '(沒有丟例外)');
   /* v1.158 的三支：全倉庫 20 處手刻「−總寬/2 + i × 間距」、13 處手刻方形收分，
      而斜著擺的一整組東西以前只能自己算三角函數（五稜郭的星形、扇形車庫的放射狀機庫）。 */
   ok('rowOf 沿一軸等距排開，以中心對稱，並回傳整排總長',
