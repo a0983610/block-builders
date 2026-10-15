@@ -7092,18 +7092,36 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const lost = set0 - blocks.filter(b => b.st === 3).length, smashed = stats.smashed - sm0;
     const ph = phase;                                  // 地標被動到：done → wreck（同玩家自己砸）
     // 對著一個人射一支：照樣被撞飛（同箭雨打到小人那條，manWeapon 的力道走飛行方向）
-    const w = workers[0];
+    /* 射誰、站哪裡（v1.289.0 完整輪紅過一次「撞飛 0 次」，同種子重跑重現不出來）：以前一律對 workers[0] 從他左邊 3 格平射，
+       他剛好站在建築或房子的 +x 側時箭先插進牆裡、或先擦到路上的另一個人；他是前面段落打死的屍體、被 completeNow 蓋在建築腳下的話
+       四面都是牆（探針 300 次抓到：站在金字塔腳邊、箭插在中間那一塊上）。這一條要守的是「箭打到人會撞飛」，不是「他左邊空不空」——
+       挑一個活著的，原地或左邊 3 格有東西擋（hardAt：積木與房子）、有別人，就挪到工地外圈一個空的點再射 */
+    const w = workers.find(p => !p.dead) || workers[0];
     w.fall = 0; w.air = 0; w.burn = 0; w.trip = 0;
     arrows = null;
-    pushArrow(w.x - 3, 1.0 * (w.scale || 1), w.z, 20, 0, 0, 1);
+    const y0 = 1.0 * (w.scale || 1);
+    const open = (x, z) => {
+      for (let s = 0; s <= 3.5; s += 0.25) {
+        if (hardAt(x - s, y0, z)) return false;
+        for (const o of workers) if (o !== w && Math.hypot(o.x - (x - s), o.z - z) < GATE_MAN_R + 0.3) return false;
+      }
+      return true;
+    };
+    let moved = open(w.x, w.z) ? 0 : -1;
+    for (let k = 0; moved < 0 && k < 64; k++) {
+      const a = k * Math.PI / 8, R = siteR + 4 + Math.floor(k / 16) * 6;
+      if (open(Math.cos(a) * R, Math.sin(a) * R)) { w.x = Math.cos(a) * R; w.z = Math.sin(a) * R; moved = 1; }
+    }
+    pushArrow(w.x - 3, y0, w.z, 20, 0, 0, 1);
     for (let i = 0; i < 20; i++) stepArrows(0.05);
-    return { lost, smashed, ph, hit: w.air || w.fall > 0 ? 1 : 0 };
+    return { lost, smashed, ph, hit: w.air || w.fall > 0 ? 1 : 0, moved };
   });
   ok('玩鬧的箭就是一支箭：咬得掉積木、也撞得倒人（不寫成例外）',
      playHurt.lost > 0 && playHurt.smashed === playHurt.lost && playHurt.ph === 'wreck' &&
      playHurt.hit === 1,
      '地標少了 ' + playHurt.lost + ' 塊、擊飛統計 +' + playHurt.smashed + '、phase→' +
-     playHurt.ph + '、被射到的人被撞飛 ' + playHurt.hit + ' 次');
+     playHurt.ph + '、被射到的人被撞飛 ' + playHurt.hit + ' 次' +
+     (playHurt.moved < 0 ? '（找不到空的點，照原地射）' : playHurt.moved ? '（他左邊有東西擋，挪到外圈空的點射）' : ''));
 
   /* ── 休息：做久了就地喘一口氣 ── */
   const rest = await page.evaluate(() => {
