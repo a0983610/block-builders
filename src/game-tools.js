@@ -10663,6 +10663,11 @@ function stepCall(m, dt, spd, stp, kp) {
     /* 一步不跨進 sd 那一圈（v1.226）：跑 3 倍時一幀 0.4 格，開頭那一條「到了沒」是走之前判的，
        不擋的話她會停在 3.65 格（實測，那時站 4 格）。d − sd 一定 > 0.05（開頭那一條擋掉了），不會是 0 */
     if (strollTo(m, dt, Math.min(spd, (d - sd) / dt), stp, kp)) { m.cn = 1; m.leg = 0; }
+    /* 走完這一步再判一次到了沒（v1.288.1，使用者：「如果兵長在後面 巨人在前面 他砍巨人會追不到」）：
+       上面那一行讓這一步剛好停在 sd 那一圈上，點的是會走的生物（c.b）時牠接著又往前走一步，
+       下一幀開頭量就又多出牠那一步——牠一幀走得比 0.05 遠就永遠「還差一點」（巨人 4 格／秒，60fps 一幀 0.067）。
+       實測他離巨人 16.2 格（射程 16 ＋ 巨人一幀）跟著走了 10～17 秒，巨人自己停下來才射。見 開發筆記〈兵長追不到往前走的巨人〉 */
+    if (Math.hypot(c.x - m.x, c.z - m.z) <= sd + 0.05) callAim(m);
     return false;
   }
   m.a = Math.atan2(dx, dz);
@@ -10681,7 +10686,7 @@ function stepCall(m, dt, spd, stp, kp) {
     m.x += ux * s; m.z += uz * s; sp -= s;
   }
   pushOutHome(m);
-  if (stop) { callAim(m); return false; }
+  if (stop || Math.hypot(c.x - m.x, c.z - m.z) <= sd + 0.05) { callAim(m); return false; }   // 走完這一步再判一次（同上面那一段）
   m.ph += dt * 11 * (stp || 1);
   m.gait += (0.85 - m.gait) * Math.min(1, dt * 8);
   return false;

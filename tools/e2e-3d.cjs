@@ -31894,6 +31894,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 秒，跪下＋跪著＋倒下＋趴著＋散掉 ' + lbeast.giant.want + '）；sc ' + lbeast.giant.scMin + '～' + lbeast.giant.scMax + '（原本 ' +
      lbeast.giant.sc0 + '）；躺平角 ' + lbeast.giant.lie);
 
+  /* ── 追往前走的巨人（v1.288.1，使用者：「如果兵長在後面 巨人在前面 他砍巨人會追不到」）：
+        stepCall 那一步剛好停在射程那一圈上，巨人接著又往前一步，下一幀開頭量永遠多出牠那一步（60fps 一幀 0.067 > 0.05）。
+        巨人一直往外走、他在牠正後方 20 格：改之前 14.8 秒（巨人走到目標停下來）才射，見 開發筆記〈兵長追不到往前走的巨人〉 ── */
+  const lchase = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const g = spawnBeast('giant', 1);
+    g.x = siteR + 30; g.z = 0; g.st = 'fun'; g.pause = 0; g.stay = 999; g.tx = siteR + 90; g.tz = 0;
+    const L = spawnBeast('levi', 1, 0, 0);
+    L.x = g.x - 20; L.z = 0; L.st = 'fun'; L.pause = 999; L.stay = 999;
+    callLevi({ x: g.x, y: 0, z: g.z }, null, g);
+    const dt = 1 / 60;
+    let n = 0, act = -1, d = 0, walk = 0;
+    while (n < 20 * 60 && act < 0) {
+      step(dt); n++;
+      if (L.st === 'act') { act = n * dt; d = Math.hypot(L.x - g.x, L.z - g.z); walk = g.gait; }
+    }
+    beasts = null;
+    return { act, d, walk, R: LEV_RANGE.c };
+  });
+  ok('追往前走的巨人：牠一直往前走，他從後面追上、一進射程就射鋼索',
+     lchase.act > 0 && lchase.act < 1 && lchase.walk > 0.3 && lchase.d <= lchase.R + 0.5,
+     (lchase.act > 0 ? lchase.act.toFixed(2) + ' 秒進 act' : '20 秒都沒進 act') + '，那一刻離巨人 ' + lchase.d.toFixed(2) +
+     ' 格（射程 ' + lchase.R + '）、巨人腿擺 ' + lchase.walk.toFixed(2) + '（還在走）');
+
   /* ── 一塊一塊散掉：引擎照 m.melt 把那幾塊收掉（固定的亂序：k × 黃金比例的小數部分 < melt） ── */
   const lmelt = await page.evaluate(() => {
     cleanTools();
