@@ -19348,10 +19348,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 同時在燒的上限。手動一路點到點不動為止——真的等它自己燒到 150 塊要好幾十秒，
        而且會先把建築燒垮。數的是 nSpread（還站著的那種火）：碎料的火走另一份額度。 */
     for (const b of blocks) igniteBlock(b);              // 點到點不動為止
-    const cap = { fires: nSpread, all: fires.length, hot: 0, BURN_HOT, FIRE_MAX,
-                  fits: BURN_HOT + HOT_BURST <= ENG.MAXFIRE };
+    /* v1.289.0 起村子（b.hh ≥ 0）另一份額度（VIL_FIRE_MAX）、火苗另一檔（VIL_HOT，粒子帶 vil 記號）：
+       這裡數的是地標那一份；村子那一份見下面〈村子另一份額度〉。fits 三份加起來（地標、村子、一發核彈） */
+    const cap = { fires: nSpread - nVil, vil: nVil, all: fires.length, hot: 0, BURN_HOT, FIRE_MAX, VIL_FIRE_MAX,
+                  fits: BURN_HOT + VIL_HOT + HOT_BURST <= ENG.MAXFIRE };
     // 火苗要跑幾幀才生得出來，量的是這段時間的峰值
-    for (let i = 0; i < 30; i++) { step(0.05); cap.hot = Math.max(cap.hot, hot.length); }
+    for (let i = 0; i < 30; i++) { step(0.05); cap.hot = Math.max(cap.hot, hot.filter(p => !p.vil).length); }
     startBuild(true);
     const swap = { fires: fires ? fires.length : 0, burning: blocks.filter(b => b.burn).length };
     return { lit, set0, sm0, spread, burnt, cap, swap };
@@ -19371,8 +19373,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      順序錯的話積木一掉下來就恢復原本的顏色，「燒黑」等於白做——這條就是在守那個順序。 */
   ok('掉下來之後還是焦黑的，不會恢復原色', fire.burnt.onGround > 10,
      '地上有 ' + fire.burnt.onGround + ' 塊目標色還是黑的');
-  ok('同時在燒的塊數有上限', fire.cap.fires === fire.cap.FIRE_MAX,
-     '還站著的 ' + fire.cap.fires + ' / ' + fire.cap.FIRE_MAX + ' 塊' +
+  ok('同時在燒的塊數有上限', fire.cap.fires === fire.cap.FIRE_MAX && fire.cap.vil <= fire.cap.VIL_FIRE_MAX,
+     '還站著的地標 ' + fire.cap.fires + ' / ' + fire.cap.FIRE_MAX + ' 塊、村子 ' + fire.cap.vil + ' / ' + fire.cap.VIL_FIRE_MAX + ' 塊' +
      (fire.cap.fires === fire.cap.FIRE_MAX ? '' : '（連碎料共 ' + fire.cap.all + ' 塊在燒）'));
   /* 火苗跟爆炸的火球共用同一個 hot 陣列。整棟在燒時把它塞爆的話，這時候丟一發核彈
      就會沒有火球，所以燃燒有自己的一檔 BURN_HOT（v1.210.1，以前是跟別人共用 HOT_MAX−40），
@@ -19382,7 +19384,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('整棟在燒也不會把爆炸的火球配額吃光',
      fire.cap.hot <= fire.cap.BURN_HOT && fire.cap.fits === true,
      fire.cap.FIRE_MAX + ' 塊在燒時 ' + fire.cap.hot + ' / ' + fire.cap.BURN_HOT +
-     ' 顆火粒子，加爆炸那一發還畫得下 ' + fire.cap.fits);
+     ' 顆火粒子，加村子那一檔與爆炸那一發還畫得下 ' + fire.cap.fits);
   /* v1.59 反過來了：換建築時火**不收**。一整棟在燒忽然全暗是「換場感」最重的一筆，
      現在那些燒著的積木會被打散成碎料、拖著火飛出去、落地燒成焦炭。
      擋的是下一步——小人把還在燒的碎料撿去蓋新的那座（見下面那條 douse 的測試）。 */
@@ -19410,6 +19412,66 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      carryFire.lit > 0 && carryFire.kept > 0 && carryFire.placed >= 40 && carryFire.worst === 0,
      '換場時 ' + carryFire.kept + ' 塊還帶著火 → 新建築砌了 ' + carryFire.placed +
      ' 塊，其中著火的 ' + carryFire.worst + ' 塊');
+
+  /* ── 村子另一份額度（v1.289.0，使用者：「假設我燒地標 然後燒小房子就無效的情況」）──
+     共用一份的時候地標一燒就頂到 FIRE_MAX，房子只點得著點的那一塊、火傳不出去（實測 15 秒燒 2 塊）；
+     煙也早被地標頂到閘門。不跑模擬：整圈城牆當村子（wallPlan，同〈天災：巨人腳踢〉那個夾具），地標先點到點不動，
+       ① 再點村子：點得著，一路點到點不動剛好 VIL_FIRE_MAX，地標那一份一塊都沒多
+       ② 地標那一檔的火苗與煙先塞滿（壽命拉長的假粒子），推一秒：村子的照樣冒得出來，各自不超過自己那一檔
+       ③ 三份閘門加起來（地標、村子、一發核彈）引擎畫得下
+     見 開發筆記〈燒地標時小房子點不著〉 ── */
+  const vfire = await page.evaluate(() => {
+    cleanTools(); startBuild(true); completeNow(); clearFires();
+    stopIdleEvent(); clearHomes();
+    homes = { list: [] };
+    for (const h of wallPlan()) {
+      const hi = homes.list.length;
+      homes.list.push(h);
+      for (let i = 0; i < h.slots.length; i++) {
+        const sl = h.slots[i], b = newBlock();
+        b.st = 3; b.x = sl.x; b.y = sl.y; b.z = sl.z; b.rest = true;
+        b.hh = hi; b.hk = i; b.dug = 1;
+        blocks.push(b); gridAdd(b); sl.filled = true; h.left--;
+      }
+      h.done = true; homeBox(h);
+    }
+    ENG.setBlockCount(blocks.length);
+    for (const b of blocks) if (b.st === 3 && b.hh < 0) igniteBlock(b);
+    const land0 = nSpread - nVil;
+    const vb = blocks.filter(b => b.st === 3 && b.hh >= 0);
+    const first = igniteBlock(vb[0]);
+    for (const b of vb) igniteBlock(b);
+    const q = { land0, first, land: nSpread - nVil, vil: nVil, wall: vb.length };
+    hot.length = 0; dust.length = 0;
+    while (dust.length < BURN_SMOKE)
+      dust.push({ x: 0, y: 60, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, life: 10, s: 0.5, c: 0.3, g: 0, fade: 2.2 });
+    while (hot.length <= BURN_HOT)
+      hot.push({ x: 0, y: 60, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, s: 0.3, life: 10, g: 0, grow: 1, cool: 1,
+                 cr: 1, cg: 0.6, cb: 0.1, to: [0.6, 0.12, 0.02] });
+    let vh = 0, vs = 0;
+    for (let i = 0; i < 60; i++) {
+      step(1 / 60);
+      let a = 0, c = 0;
+      for (const p of hot) if (p.vil) a++;
+      for (const d of dust) if (d.vil) c++;
+      vh = Math.max(vh, a); vs = Math.max(vs, c);
+    }
+    q.vh = vh; q.vs = vs; q.VIL_HOT = VIL_HOT; q.VIL_SMOKE = VIL_SMOKE; q.VIL_FIRE_MAX = VIL_FIRE_MAX; q.FIRE_MAX = FIRE_MAX;
+    q.fits = BURN_HOT + VIL_HOT + HOT_BURST <= ENG.MAXFIRE;
+    q.sum = BURN_HOT + VIL_HOT + HOT_BURST; q.max = ENG.MAXFIRE;
+    // 手動砌的那一圈牆、塞進去的假粒子都要收掉（同〈天災：巨人腳踢〉那個夾具的結尾）
+    cleanTools(); clearHomes(); clearFires();
+    hot.length = 0; dust.length = 0;
+    return q;
+  });
+  ok('村子另一份額度：地標燒到點不動時還點得著村子、燒到 VIL_FIRE_MAX，地標那一份一塊都沒多',
+     vfire.land0 === vfire.FIRE_MAX && vfire.first === true && vfire.vil === vfire.VIL_FIRE_MAX && vfire.land === vfire.FIRE_MAX,
+     '地標 ' + vfire.land0 + ' / ' + vfire.FIRE_MAX + ' 塊在燒時點城牆：點得著＝' + vfire.first + '，點到點不動村子 ' + vfire.vil +
+     ' / ' + vfire.VIL_FIRE_MAX + ' 塊（整圈 ' + vfire.wall + ' 塊）、地標還是 ' + vfire.land + ' 塊');
+  ok('村子的火苗與煙自己一檔：地標那一檔塞滿了照樣冒得出來，不超過自己那一檔；三檔加起來引擎畫得下',
+     vfire.vh > 0 && vfire.vh <= vfire.VIL_HOT + 1 && vfire.vs > 0 && vfire.vs <= vfire.VIL_SMOKE && vfire.fits === true,
+     '一秒內村子的火苗最多 ' + vfire.vh + ' / ' + vfire.VIL_HOT + ' 顆、煙 ' + vfire.vs + ' / ' + vfire.VIL_SMOKE +
+     ' 團；地標＋村子＋核彈 ' + vfire.sum + ' ≤ 引擎 ' + vfire.max + '：' + vfire.fits);
 
   /* ══════════ 碎料燃燒 ══════════
      爆炸打出來的碎料會帶著火飛出去，燒滿 3 秒變成一塊焦炭。

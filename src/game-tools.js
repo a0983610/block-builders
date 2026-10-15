@@ -327,6 +327,7 @@ let gates = null;     // 正在發動的王之財寶（同時最多三組，見 
 let weapons = null;   // 場上所有兵器：門裡待發、飛行中、翻滾中、躺在地上的（v1.132）
 let fires = null;     // 正在燒的積木（還站著的會往鄰居蔓延，碎料的只燒自己）
 let nSpread = 0;      // fires 裡有幾筆是「還站著的建築」——碎料不占那個額度
+let nVil = 0;         // nSpread 裡有幾筆是村子的（房子、樹、城牆）——村子另一份額度（v1.289.0，見 VIL_FIRE_MAX）
 const hot = [];       // 火球粒子（走不透明那顆材質，才亮得起來）
 const flashes = [];   // 爆炸正中央那顆火球本體（好幾發一起炸就好幾顆）
 const billows = [];   // 核彈與爆裂魔法火球裡那一團團翻滾的火（v1.279.0，自己一池，見 emitBillows）
@@ -2549,7 +2550,12 @@ function explode(point, R, power, wind, crash, self, quiet, scorchR) {
 
    蔓延用 26 鄰居（含斜角），跟支撐判定共用同一份 NBR：voxel 造型很多是斜線畫的
    （鐵塔的斜撐、螺旋、圓弧），只認 6 面的話火會在斜著相鄰的地方整片停死。 */
-const FIRE_MAX = 150;         // 同時最多幾塊「還站著的」在燒——粒子與 CPU 的閘門
+const FIRE_MAX = 150;         // 同時最多幾塊「還站著的」地標在燒——粒子與 CPU 的閘門
+/* 村子（小房子、樹、城牆：b.hh ≥ 0）另一份（v1.289.0，使用者：「假設我燒地標 然後燒小房子就無效的情況」，
+   選「村子另開一份」）。共用一份的時候地標一燒就頂到 150，房子只點得著點的那一塊、火傳不出去：
+   實測地標 148 塊在燒時點一間 153 塊的房子，15 秒只燒了 2 塊（地標沒在燒時同一種房子 15 秒整間燒光、最多同時 74 塊）。
+   同下面碎料那一份的理由。地標那一份照舊 150：地標燒垮的速度不變（見 開發筆記〈燒地標時小房子點不著〉） */
+const VIL_FIRE_MAX = 150;
 /* 碎料的額度要蓋得住「一發核彈打出來的全部碎料」——半徑 30 幾乎蓋住整棟，
    量過一發能打出 2861 塊。訂太低的話同一發爆炸裡會有一批碎料沒燒起來，
    看起來不像設計，像額度用完了。成本量過：2511 塊在燒時每幀多 0.23ms（預算 4ms）。 */
@@ -2565,8 +2571,15 @@ const BURN_SPREAD = 0.35;     // 燒到幾成才開始把火傳給鄰居
    不動 HOT_MAX（那是十幾個特效共用的常態水位，動它等於全場一起變）。
    400 這個數字的上界是引擎的 MAXFIRE 1280：跟一發核彈的 HOT_BURST 560 同台是 960，
    還畫得下（有一條測試在守這個關係）。煙同理：380 在碎料燃燒時實測 374～378 已經頂滿，
-   而引擎 MAXDUST 3400 還很鬆，隕石那邊早就放到 700 了。 */
-const BURN_HOT = 400, BURN_SMOKE = 700;
+   而引擎 MAXDUST 3400 還很鬆，隕石那邊早就放到 700 了。
+   v1.289.0 兩個閘門與燒積木的火苗、煙一起 ×1.5（400／700 → 600／1050，使用者選「村子自己一份＋整體再放大 1.5 倍」）。
+   上界照同一條算：600 ＋ 村子的 VIL_HOT 300 ＋ 一發爆炸的 HOT_BURST 1200（v1.279.0 起，上面那段寫的 560 是當年的數）
+   ＝ 2100，引擎的 MAXFIRE 跟著從 1700 抬到 2100（測試在守） */
+const BURN_HOT = 600, BURN_SMOKE = 1050;
+/* 村子的火自己一份火苗與煙的閘門（v1.289.0）：地標在燒時煙早就頂到閘門（實測 698／700），
+   房子就算燒起來也冒不出煙（實測 7 團，地標沒在燒時 348 團）。村子的粒子帶 vil 記號、各數各的（見 stepFire）。
+   火苗 300：村子最多 VIL_FIRE_MAX 塊在燒、碎料不算村子的（freeBlock 把 hh 歸 −1），照「係數 × 壽命 × √N」只要 170 上下 */
+const VIL_HOT = 300, VIL_SMOKE = 1050;
 let slotOwner = null;         // slot → blocks 索引；只有蔓延需要反查，燒的時候每幀重建
 /* 重建那張反查表。積木只記得自己在哪個 slot，沒有反向的表，而「沿著格子走」的東西
    （火的蔓延、水沿表面流）都得從格子反查回積木。要用的那一幀自己重建一次：
@@ -2599,16 +2612,20 @@ function igniteBlock(b) {
   const sp = b.st === SET;
   /* 兩種火各有各的額度。共用一個的話，一發爆炸打出來的幾百塊碎料會把額度整個吃光，
      旁邊還站著的那半棟就再也燒不起來——那才是這個道具最該看到的畫面。 */
-  if (fires && (sp ? nSpread >= FIRE_MAX : fires.length - nSpread >= EMBER_MAX)) return false;
+  /* 還站著的再分地標、村子兩份（v1.289.0，見 VIL_FIRE_MAX）。記在火上（f.v），不是燒完時再看 b.hh：
+     燒到一半被打下來的那一塊 freeBlock 會把 hh 歸 −1，到時候就分不出它原本算哪一份 */
+  const v = sp && b.hh >= 0;
+  if (fires && (sp ? (v ? nVil >= VIL_FIRE_MAX : nSpread - nVil >= FIRE_MAX) : fires.length - nSpread >= EMBER_MAX)) return false;
   if (!fires) fires = [];
   b.burn = 1;
   if (sp) nSpread++;
+  if (v) nVil++;
   /* 燒的快慢每塊各抽一個倍率：全部同速的話整面牆會同一秒一起變黑、一起掉下來，
      看起來像在播動畫不像在燒。碎料不抽，它就是規定的那 3 秒。
      c0 記原本的顏色，焦黑是從它往黑內插出來的。
      em（火苗的配額累積）則是從隨機的地方起跳、不是 0：一發爆炸會在同一幀點著上千塊，
      全部從 0 開始的話它們會同時湊滿第一顆火苗——火就變成「整片一起閃、然後一起沒有」。 */
-  fires.push({ b, sp, dur: sp ? BURN_TIME : EMBER_TIME, t: 0, rate: sp ? rr(0.8, 1.3) : 1,
+  fires.push({ b, sp, v, dur: sp ? BURN_TIME : EMBER_TIME, t: 0, rate: sp ? rr(0.8, 1.3) : 1,
                next: rr(0.1, 0.3), em: Math.random(), c0: [b.tr, b.tg, b.tb] });
   return true;
 }
@@ -2616,7 +2633,7 @@ function igniteBlock(b) {
    b.burn 是掛在積木上的旗標，只把 fires 設成 null 的話那些積木會永遠點不著。 */
 function clearFires() {
   if (fires) for (const f of fires) f.b.burn = 0;
-  fires = null; nSpread = 0;
+  fires = null; nSpread = 0; nVil = 0;
 }
 /* 把單獨一塊上的火弄熄。用在「小人撿起還在燒的碎料」：換建築時火不再整批收掉
    （v1.59），上一座的碎料會拖著火躺在新工地上等著被撿去蓋，撿起來還燒著的話，
@@ -2628,8 +2645,9 @@ function douse(b) {
   const i = fires.findIndex(f => f.b === b);
   if (i < 0) return;
   if (fires[i].sp) nSpread--;
+  if (fires[i].v) nVil--;
   fires.splice(i, 1);
-  if (!fires.length) { fires = null; nSpread = 0; }
+  if (!fires.length) { fires = null; nSpread = 0; nVil = 0; }
 }
 /* ── 潮濕 ───────────────────────────────────────────────
    被水噴到的東西濕 5 秒（使用者指定），這 5 秒內點不著，顏色壓深一點點。
@@ -4185,11 +4203,19 @@ function stepFire(dt) {
      有東西在蔓延時每幀重建一次；只有碎料在燒（爆炸過後的常態）就整段跳過——
      碎料不蔓延，為它每幀掃三千塊積木是白花的。 */
   if (bp && nSpread) buildSlotOwner();
+  /* 村子的火苗與煙各數各的（v1.289.0，見 VIL_HOT）：粒子帶 vil 記號，有村子在燒才掃兩個池子數一次
+     （同 giantSteam 數自己那一份的做法）。村子的火剛熄時還有幾顆帶記號的在退，那一兩秒照舊算進地標那一份，不值得每幀白掃 */
+  let vh = 0, vs = 0;
+  if (nVil) {
+    for (const p of hot) if (p.vil) vh++;
+    for (const d of dust) if (d.vil) vs++;
+  }
   for (let i = fires.length - 1; i >= 0; i--) {
     const f = fires[i], b = f.b;
     /* 已經在燒的還站著那一塊進了防護罩（她走過來、或罩子剛張開，v1.259.0）：火熄掉、顏色還原 */
     if (f.sp && b.st === SET && blockSafe(b)) {
       b.burn = 0; nSpread--;
+      if (f.v) nVil--;
       b.tr = f.c0[0]; b.tg = f.c0[1]; b.tb = f.c0[2];
       fires.splice(i, 1);
       continue;
@@ -4204,27 +4230,32 @@ function stepFire(dt) {
        一塊燒得旺、五十塊各自小小地燒，總量才守得住。
        係數 v1.210.1 從 13 拉到 20（使用者：「觀察到好像燃燒不多」）——√ 那個分母留著，
        它是「總量守得住」的本體；真正讓畫面太乾的是係數與閘門都訂在還沒有專屬額度的年代。
-       場上的火苗總數 ≈ 係數 × 粒子壽命(均 0.46 秒) × √N，所以 13 → 20 就是整組 ×1.5。 */
-    f.em += dt * 20 / Math.sqrt(fires.length);
+       場上的火苗總數 ≈ 係數 × 粒子壽命(均 0.46 秒) × √N，所以 13 → 20 就是整組 ×1.5。
+       v1.289.0 再 ×1.5（20 → 30，使用者選「村子自己一份＋整體再放大 1.5 倍」），
+       N 改成**這一塊那一份**在燒的塊數：村子算村子的，地標（連碎料）算地標的——同一個 N 的話地標一燒，房子每塊分到的就被攤薄 */
+    f.em += dt * 30 / Math.sqrt(f.v ? nVil : fires.length - nVil);
     while (f.em >= 1) {
       f.em--;
-      if (hot.length > BURN_HOT) break;                 // 燃燒自己那一檔（見 BURN_HOT）
+      if (f.v ? vh > VIL_HOT : hot.length - vh > BURN_HOT) break;   // 燃燒自己那一檔（見 BURN_HOT；村子見 VIL_HOT）
       hot.push({
         x: b.x + rr(-0.4, 0.4), y: b.y + rr(0, 0.5), z: b.z + rr(-0.4, 0.4),
         vx: rr(-0.6, 0.6), vy: rr(2.4, 4.6), vz: rr(-0.6, 0.6),
         rx: Math.random() * 6, ry: Math.random() * 6,
         s: rr(0.3, 0.66), life: rr(0.3, 0.62), g: -2.6, grow: 1.06, cool: rr(0.25, 0.5),
-        cr: 1, cg: rr(0.5, 0.82), cb: rr(0.06, 0.24), to: [0.6, 0.12, 0.02]
+        cr: 1, cg: rr(0.5, 0.82), cb: rr(0.06, 0.24), to: [0.6, 0.12, 0.02], vil: f.v
       });
+      if (f.v) vh++;
     }
-    // 煙：比爆炸的煙深，而且往上飄（g 給負的）
-    if (Math.random() < dt * 2.4 && dust.length < BURN_SMOKE)
+    // 煙：比爆炸的煙深，而且往上飄（g 給負的）。每秒 2.4 → 3.6 團（v1.289.0 ×1.5），閘門同火苗各算各的
+    if (Math.random() < dt * 3.6 && (f.v ? vs < VIL_SMOKE : dust.length - vs < BURN_SMOKE)) {
       dust.push({
         x: b.x + rr(-0.3, 0.3), y: b.y + 0.5, z: b.z + rr(-0.3, 0.3),
         vx: rr(-0.5, 0.5), vy: rr(1.2, 2.6), vz: rr(-0.5, 0.5),
         rx: Math.random() * 6, ry: Math.random() * 6,
-        life: rr(1.6, 3.2), s: rr(0.5, 1.1), c: rr(0.2, 0.36), g: -0.6, fade: 2.2
+        life: rr(1.6, 3.2), s: rr(0.5, 1.1), c: rr(0.2, 0.36), g: -0.6, fade: 2.2, vil: f.v
       });
+      if (f.v) vs++;
+    }
     if (f.sp && f.t > BURN_TIME * BURN_SPREAD) {
       f.next -= dt;
       if (f.next <= 0) { f.next = rr(0.1, 0.24); spreadFire(b); }
@@ -4233,6 +4264,7 @@ function stepFire(dt) {
     // 燒完了：建築那塊焦黑鬆脫掉下來；碎料就停在焦黑
     b.burn = 0;
     if (f.sp) nSpread--;
+    if (f.v) nVil--;
     /* 碎料（f.sp = false）本來就在地上或半空，沒有「鬆脫」可言，燒完只剩焦黑。
        已經不是 SET 的建築塊（燒到一半被上面垮下來的帶走）也一樣不用再打掉一次；
        placedCnt 與損失在 freeBlock 那邊算，重複呼叫會多扣一次。 */
