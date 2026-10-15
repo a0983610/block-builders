@@ -26065,6 +26065,51 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ' 幀、踹 ' + jwall.kicks + ' 腳、' + jwall.into + ' 秒進到城裡，' +
      '整圈剩 ' + jwall.n1 + ' 塊（全程 ' + jwall.secs + ' 秒）');
 
+  /* ── 走到工地外圈：目標就在正內側就直直走，直線會切進圈裡才掰切線（v1.288.2）──
+     使用者：「有時候巨人到地標建築旁邊會快速一直轉向」。進場那一段的目標是圈上正對牠的那一點，
+     以前「快貼圈又朝內走」一律掰切線，而目標在正內側時選左選右比的內積是 ±1e-16 的浮點雜訊，左右每幀亂翻。
+     不跑模擬，直接呼叫 strollTo 驗規則本身（見 開發筆記〈巨人走到工地外圈前快速轉向〉）：
+       ① 十二個方位 × 離圈 1／1.5／2.9 格、目標是圈上正對牠那一點：走的方向就是正內側
+          （不給 REACH 以內的：那一步直接回「到了」、不改朝向，量到的是上一個起點的）
+       ② 目標在建築另一頭（直線切進圈裡）：照舊掰切線，繞的那一邊一路不翻、不進圈裡 ── */
+  const jturn = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    stopIdleEvent(); clearHomes();
+    beasts = null;
+    const m = spawnBeast('giant', 0, 0, 0);
+    const keep = siteR + KEEP + GIA_KEEP, wrap = e => Math.abs(Math.atan2(Math.sin(e), Math.cos(e)));
+    let worst = 0, n1 = 0;
+    for (let j = 0; j < 12; j++) for (const off of [1, 1.5, 2.9]) {
+      const ang = j * Math.PI / 6 + 0.1, r = keep + off;
+      m.x = Math.cos(ang) * r; m.z = Math.sin(ang) * r;
+      const k = keepOut(m, 0, 0, keep); m.tx = k.x; m.tz = k.z;
+      strollTo(m, 0.05, GIA_WALK, GIA_STEP, GIA_KEEP);
+      worst = Math.max(worst, wrap(m.a - Math.atan2(-Math.cos(ang), -Math.sin(ang)))); n1++;
+    }
+    m.x = keep + 1.5; m.z = 0; m.tx = -(keep + 10); m.tz = 2;
+    const a0 = Math.atan2(m.tx - m.x, m.tz - m.z);
+    let bend = -1, side = 0, flip = 0, inside = 0, n2 = 0;
+    while (n2 < 600) {
+      const x0 = m.x, z0 = m.z;
+      if (strollTo(m, 0.05, GIA_WALK, GIA_STEP, GIA_KEEP)) break;
+      n2++;
+      if (bend < 0) bend = wrap(m.a - a0);
+      if (Math.hypot(m.x, m.z) < keep - 1e-6) inside++;
+      if (Math.hypot(m.x, m.z) < keep + 3) {             // 掰切線那一圈裡：繞的方向（順／逆時針）
+        const s = Math.sign(x0 * (m.z - z0) - z0 * (m.x - x0));
+        if (s && side && s !== side) flip++;
+        if (s) side = s;
+      }
+    }
+    beasts = null;
+    return { worst, n1, bend: +bend.toFixed(3), flip, inside, n2, done: n2 < 600 };
+  });
+  ok('走到工地外圈：目標就在正內側就直直走、不掰切線；目標在建築另一頭照舊繞，繞的那一邊不翻、不進圈裡',
+     jturn.worst < 1e-9 && jturn.bend > 0.2 && jturn.flip === 0 && jturn.inside === 0 && jturn.done,
+     '正內側 ' + jturn.n1 + ' 個起點：走的方向離正內側最多 ' + jturn.worst.toExponential(1) + ' 弧度；' +
+     '另一頭：第一步掰了 ' + jturn.bend + ' 弧度、繞的方向翻了 ' + jturn.flip + ' 次、進圈裡 ' + jturn.inside +
+     ' 步、' + (jturn.done ? jturn.n2 + ' 步走到' : '600 步沒走到'));
+
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
 
   /* ══════════ 吉祥物 ══════════ */

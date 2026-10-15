@@ -2402,7 +2402,8 @@ function strollTo(w, dt, spd, step, keepMore) {
 /* 巨人的走法（v1.207，使用者：「巨人太高不能走城門 行走有障礙物就發動攻擊踢掉」）：不規劃、直直走，
    擋路的由 giantBust 踹掉；連踹幾腳都踹不掉、放過的那一間（m.bskip）換條路繞開（見 game-tools.js 的 bwayPlan）。地標照舊是工地圈那個圓：
    目標推到圈上、快貼圈時掰到切線（keepMore 是牠要再離遠幾格，GIA_KEEP）。
-   這一支就是 v1.235 strollTo 裡巨人走的那一條，v1.236 拆出來時一個位元都沒改。 */
+   這一支就是 v1.235 strollTo 裡巨人走的那一條，v1.236 拆出來時一個位元都沒改；
+   v1.288.2 起掰切線多一個條件：直線走過去真的會切進那一圈才掰（見下面那一段）。 */
 function strollGiant(w, dt, spd, step, keepMore) {
   const keep = siteR + KEEP + (keepMore || 0);
   /* 目標點落在建築裡就先推到外圈。不推的話牠會繞著建築打轉永遠抵達不了，
@@ -2418,10 +2419,16 @@ function strollGiant(w, dt, spd, step, keepMore) {
   let ux = (w.tx - w.x) / da, uz = (w.tz - w.z) / da;
   const pr = Math.hypot(w.x, w.z);
   const nx = pr < 0.001 ? 1 : w.x / pr, nz = pr < 0.001 ? 0 : w.z / pr;   // 由工地中心往外
+  /* 往目標那條直線上離場心最近的那一點：在這一段上（pu < d）、離場心不到 keep，直直走才會切進那一圈（v1.288.2）。
+     不切就不掰——進場那一段（come）的目標是圈上「正對著牠」的那一點、每幀照牠的位置重給，永遠在正內側，
+     以前照樣掰切線，而那時「選哪一邊」比的內積是 ±1e-16 的浮點雜訊，左右每幀亂翻：
+     實測 21 趟有 18 趟在轉進 near 之前 0.35～0.7 秒內朝向來回翻 4～10 次、一幀最多轉 99～130°
+     （使用者：「有時候巨人到地標建築旁邊會快速一直轉向」，見 開發筆記〈巨人走到工地外圈前快速轉向〉） */
+  const pu = -(w.x * ux + w.z * uz);
   if (pr < keep) {
     // 人已經在建築範圍內（剛擺完積木站在外圈的就是這樣）——先往外走出去
     ux += nx * 1.5; uz += nz * 1.5;
-  } else if (pr < keep + 3 && ux * nx + uz * nz < 0) {
+  } else if (pr < keep + 3 && ux * nx + uz * nz < 0 && pu < d && pr * pr - pu * pu < keep * keep) {
     /* 快貼到牆了又還朝著中心走：把方向掰到切線上，選跟原方向同側的那一條，
        離牆越近掰得越兇。直接煞停的話他會頂著牆原地發抖。 */
     let sx = -nz, sz = nx;
