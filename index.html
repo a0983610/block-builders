@@ -221,6 +221,10 @@
   #dispBox .opt input{margin-top:3px}
   #dispBox .opt b{font-size:14px}
   #dispBox .opt span{display:block;font-size:12px;opacity:.68;line-height:1.55}
+  /* 光源那一排（v1.296.0）：同左下面板的三檔按鈕 */
+  #dispBox .seg{display:flex;gap:5px;margin-top:7px}
+  #dispBox .seg button{flex:1;min-width:0;padding:5px 2px;font-size:12.5px;font-variant-numeric:tabular-nums}
+  #dispBox .seg button.on{background:var(--accent);border-color:transparent;color:#fff;font-weight:700}
   #dispStat{font:11.5px/1.5 ui-monospace,Consolas,monospace;opacity:.7;margin-top:3px}
   #dispBtn{width:100%;margin-top:10px}
   /* 快捷鍵設定頁（v1.242.0）：九格排兩欄，左邊一顆深色的數字、右邊下拉 */
@@ -444,9 +448,11 @@
     <!-- 積木 AO（v1.273.0，預設開）：凹角、牆腳暗下來，見 game-ui.js 的 aoOn -->
     <div class="opt"><label><input type="checkbox" id="aoOn">
       <div><b>積木 AO</b><span>積木的凹角、牆腳暗下來，立體感比較好。關掉省一點效能。</span></div></label></div>
-    <!-- 爆炸光源（v1.291.0，預設開）：核彈、爆裂魔法炸開那一下照亮周圍，見 game-ui.js 的 boomLit -->
-    <div class="opt"><label><input type="checkbox" id="boomLit">
-      <div><b>爆炸光源</b><span>核彈、爆裂魔法炸開那一下把周圍的建築與地面照成橘色。關掉省一點效能。</span></div></label></div>
+    <!-- 光源（v1.296.0，預設 6 盞；v1.291.0～v1.295.0 是「爆炸光源」勾選）：四顆一點就切（使用者：「下拉不好操作」），
+         按鈕照 LAMP_OPTS 生（game.js），見 game-ui.js 的 lampN -->
+    <div class="opt"><div><b>光源</b><span>核彈、爆裂魔法炸開那一下，還有晚上燒的火、飛龍的火球、煙火，把周圍的建築與地面照亮。
+      盞數多，同時照得到的地方多，但每多一盞顯示卡就多花一點（只在有東西亮的時候）。關掉最省。</span>
+      <div class="seg" id="lampN"></div></div></div>
     <!-- 晝夜（v1.295.0，預設開）：照電腦的時鐘每小時一天，見 game-ui.js 的 dayOn -->
     <div class="opt"><label><input type="checkbox" id="dayOn">
       <div><b>晝夜</b><span>照電腦的時鐘，每小時的前 30 分鐘是白天（太陽從日出走到日落），後 30 分鐘是晚上（月光＋星星）。關掉就一直是正午。</span></div></label></div>

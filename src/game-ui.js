@@ -219,6 +219,7 @@ function step(dt) {
   stepClouds(dt);
   stepHot(dt);
   stepFlash(dt);
+  stepGlows(dt);                         // 晚上的小光源（v1.296.0）：自己的時鐘、撞擊與煙火那一下到期收掉
   stepFxRings(dt);
   stepMarks(dt);
   stepStars(dt);
@@ -344,7 +345,9 @@ const REST_SINK = 0.004;
    換場第一幀要 6.3～7.3 ms；陣列下標查就沒有那一頓。房子那幾份用 homeNbr 留在格子上的鄰居表。
    aoOn 是畫面設定小窗那一格（pref.ao；v1.280.0 以前在左下面板），關掉就一律送 0（引擎那邊遮罩全 0 整段跳過）。 */
 let aoOn = true;
-let boomLit = true;                 // 畫面設定「爆炸光源」（v1.291.0，pref.boom），見 draw 裡的 putBooms
+/* 畫面設定「光源」幾盞（v1.296.0，pref.lamps，LAMP_OPTS 關／6／10／16，預設 6）：強爆炸、打雷、晚上的小光源共用。
+   v1.291.0～v1.295.0 是「爆炸光源」勾選（pref.boom）——沒勾的舊存檔換成關、勾著的換成 6（見 game-save.js 的 applySave） */
+let lampN = 6;
 let dayOn = true;                   // 畫面設定「晝夜」（v1.295.0，pref.day），見 draw 裡的 setDayTime
 /* 一小時裡的第幾分鐘（0～60），晝夜照這個走（v1.295.0）。測試把它換成固定的正午（見 e2e 的 installClean） */
 let dayClock = () => { const d = new Date(); return d.getMinutes() + d.getSeconds() / 60 + d.getMilliseconds() / 60000; };
@@ -508,8 +511,11 @@ function draw() {
      照 HUD 那個真的時鐘；畫面設定那一格關掉就給 −1（一直是正午）。見 開發筆記〈晝夜：一小時一天（v1.295.0）〉 */
   ENG.setDayTime(dayOn ? dayClock() : -1);
   /* 強爆炸照亮周圍（v1.291.0）：核彈、爆裂魔法的火球各一盞點光源（見 boomLampList）。
-     boomLit 是畫面設定小窗那一格（pref.boom，預設開；使用者：「爆炸光源如果耗效能可以做成開關」） */
-  ENG.putBooms(boomLit && flashes.length ? boomLampList() : EMPTY);
+     lampN 是畫面設定小窗「光源」那一排（pref.lamps；使用者：「爆炸光源如果耗效能可以做成開關」，v1.296.0 起改成選幾盞） */
+  ENG.putBooms(lampN && flashes.length ? boomLampList() : EMPTY);
+  /* 晚上的小光源（v1.296.0）：燒的火、飛龍火球、煙火，用強爆炸與打雷剩下的燈（所以排在 putStorm、putBooms 後面）。
+     白天不排（引擎那邊也會乘 0），見 glowLampList */
+  ENG.putGlows(lampN && ENG.nightK() > 0 ? glowLampList(ENG.lampRoom()) : EMPTY);
   /* 魔法陣、爆炸光環、保齡球的瞄準環共用同一組環，在這裡合起來丟過去。
      魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。
      沒東西在瞄／沒魔法陣時不做 concat：那是每幀都會跑到的路徑。 */
@@ -838,6 +844,12 @@ function makeSeg(id, opts, fmt, pick) {
 /* 亮起目前這一檔。值不在清單裡就三顆都不亮——那代表有人繞過面板直接改變數（測試會這樣做） */
 function syncSeg(id, v) {
   for (const b of $(id).children) b.classList.toggle('on', +b.dataset.v === v);
+}
+/* 光源幾盞（v1.296.0）：變數、引擎、畫面設定那一排一起改。讀存檔（applyPref）與點按鈕都走這裡 */
+function setLamps(n) {
+  lampN = pref.lamps = n;
+  ENG.setLampCount(n);
+  syncSeg('lampN', n);
 }
 function syncHud() {
   $('bname').textContent = bp ? bp.name : '';
@@ -1306,7 +1318,8 @@ function boot() {
   /* 積木 AO（v1.273.0）。再打開時不必從頭算：關著那段時間 aoUpdate 沒跑，has 還是關之前看到的樣子，
      打開那一幀逐格一比，期間變過的格子自己就會被挑出來重算（換了一座或房子換了一份格子則整份重建） */
   $('aoOn').addEventListener('change', e => { aoOn = pref.ao = e.target.checked; save(); });
-  $('boomLit').addEventListener('change', e => { boomLit = pref.boom = e.target.checked; save(); });   // 爆炸光源（v1.291.0）
+  /* 光源（v1.296.0，使用者：「下拉不好操作 改成四個點一下就能切換的按鈕」）：同左下面板那三排的做法 */
+  makeSeg('lampN', LAMP_OPTS, v => v ? v + ' 盞' : '關', v => { setLamps(v); save(); });
   $('dayOn').addEventListener('change', e => { dayOn = pref.day = e.target.checked; save(); });       // 晝夜（v1.295.0）
   /* 跟不上時降畫質那三格（v1.280.0 動態解析度；v1.281.0 加關抗鋸齒、降了就不升回去）：改哪一格都重排、回到原本那一級 */
   for (const [id, k] of [['aaDyn', 'aa'], ['dynRes', 'dyn'], ['dynOnce', 'once']])

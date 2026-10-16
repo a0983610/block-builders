@@ -4073,6 +4073,7 @@ function burstFw(f) {
                  c: rgbHex(f.c[0]), add: 1, spin: rr(0, 6.28) });
   fxRings.push({ x: f.x, z: f.z, y: f.y, r: 1, vr: 13, op: 0.85, fade: 0.75,
                  c: rgbHex(f.c2[0]), add: 1, spin: rr(0, 6.28) });
+  glowBursts.push({ x: f.x, y: f.y, z: f.z, c: f.c[0], t0: glowT });   // 晚上炸開那一下照亮底下（v1.296.0，見 glowLampList）
   sndFwPop();
 }
 /* 二次炸開：一顆火星飛到一半自己再炸成一小球。
@@ -5322,7 +5323,7 @@ function stepFlash(dt) {
    所以只有強爆炸（big：核彈與爆裂魔法）的火球給燈，一顆一盞、放在火球球心（f.y 已經抬過 FLASH_UP）；
    相對亮度＝半徑 × 亮的程度（BOOM_LAMP_ATK 秒從 0 亮起來，之後照火球的 op 暗下去），引擎乘 BOOM_LAMP_E。
    引擎只有 ENG.BOOM_LAMPS 盞：照亮度排，最後一盞把剩下的併起來（照亮度加權放在重心、亮度加總但不超過最亮那一顆，
-   幾顆疊在一起才不會過曝成白）。畫面設定把「爆炸光源」關掉就不叫這一支（見 game-ui.js 的 boomLit）。
+   幾顆疊在一起才不會過曝成白）。畫面設定「光源」選關就不叫這一支（v1.296.0 起；以前是「爆炸光源」那一格，見 game-ui.js 的 lampN）。
    物件重複用（_boomPool），每幀叫不生垃圾。 */
 const BOOM_LAMP_ATK = 0.05;
 const _booms = [], _boomPool = [];
@@ -5349,6 +5350,169 @@ function boomLampList() {
     _booms.length = N;
   }
   return _booms;
+}
+
+/* ── 晚上的小光源（v1.296.0，見 開發筆記〈晚上的火光：燒的火、飛龍火球、煙火（v1.296.0）〉）──
+   使用者：「先做放火 飛龍火球 煙火」「只在晚上亮 跟爆炸同光源」「這波做的都是比較小的光 晚上才亮應該合理」，
+   預覽看過「效果確實不錯 亮度先1就好」。引擎給幾盞空燈（ENG.lampRoom()：強爆炸、打雷先拿剩下的）就排幾筆，**短的先**：
+     ball  飛在半空的火球（fballs），一顆一盞跟著飛
+     hit   火球撞上去那一下（fballHit 記），FLASH_LIFE 秒內收掉，算法同強爆炸
+     fw    煙火炸開那一下（burstFw 記），GLOW_FW_T 秒內淡掉，顏色照那一發
+     fire  剩下的全給建築上還砌著、正在燒的積木（「建築上所有在燒的」，使用者選的：不管誰點的）
+   火的那幾盞（使用者：「不要造成多建築燃燒 光源飛來飛去」）：
+     ① **先分棟再分群**：地標一組、每一間房子／城牆一組（b.hh），燈只在同一棟裡面分（k-means），不會擺在兩棟中間；
+        每棟至少一盞、照塊數由多到少發，燈比棟數少時塊數最少的那幾棟不亮
+     ② **燈不飛**：一盞燈只跟著同一棟、GLOW_JUMP 格以內的那一群走；比這遠就原地淡掉、另一盞在新的地方淡入（GLOW_FADE 秒）
+     預覽量的（地標＋三間房子一起燒、六盞全給火、25 秒）：看得到的燈最快 156～279 → 5～13 格／秒，
+     離最近在燒那塊超過 5 格 2.4% → 0.3%
+   時間走 glowT（stepGlows 推），閃爍是它的正弦——不抽 Math.random（draw 那邊抽的話同一顆種子會因為有沒有畫換骰子）。
+   物件重複用，每幀叫不生垃圾（分群那一輪每 GLOW_PICK 秒才一次）。 */
+const GLOW_PICK = 0.2;          // 幾秒重新分一次群
+const GLOW_FULL = 24;           // 一群幾塊以上全亮（照 √(塊數 ÷ 它)）
+const GLOW_UP = 1;              // 燈擺在那一群的重心再往上多少（火苗往上竄）
+const GLOW_JUMP = 5, GLOW_FADE = 0.35;
+const GLOW_FW_T = 1.8;          // 煙火那一下亮多久（火星本身飛 FW_LIFE 3.4 秒，最亮的是剛炸開那一段）
+const GLOW_ATK = 0.05;          // 撞擊、煙火從 0 亮起來要多久（同 BOOM_LAMP_ATK）
+let glowT = 0, glowAt = 0, glowPickT = -1, glowK = 0;
+const glowHits = [], glowBursts = [];
+const glowSlots = [];           // 火的那幾盞，一盞一格 {key 哪一棟, x/y/z 現在, tx/ty/tz 要去, w 亮度, tw 要變成多亮}
+const _glows = [], _glowPool = [];
+function stepGlows(dt) {
+  glowT += dt;
+  while (glowHits.length && glowT - glowHits[0].t0 > FLASH_LIFE) glowHits.shift();
+  while (glowBursts.length && glowT - glowBursts[0].t0 > GLOW_FW_T) glowBursts.shift();
+}
+/* 換建築、測試要回到乾淨狀態時整批收掉 */
+function clearGlows() {
+  glowHits.length = 0; glowBursts.length = 0; glowSlots.length = 0;
+  glowPickT = -1; glowK = 0;
+}
+const glowLive = s => s.w > 0.02 || s.tw > 0;
+function glowMeans(pts, K, seed) {
+  K = Math.min(K, pts.length);
+  const c = [];
+  for (let i = 0; i < Math.min(K, seed.length); i++) c.push({ x: seed[i].x, y: seed[i].y, z: seed[i].z, n: 0 });
+  while (c.length < K) {                         // 不夠的：補離現有中心最遠的那一塊
+    let best = -1, far = pts[0];
+    for (const p of pts) {
+      let d = c.length ? 1e9 : 0;
+      for (const q of c) d = Math.min(d, (p.x - q.x) ** 2 + (p.y - q.y) ** 2 + (p.z - q.z) ** 2);
+      if (d > best) { best = d; far = p; }
+    }
+    c.push({ x: far.x, y: far.y, z: far.z, n: 0 });
+  }
+  const s = c.map(() => [0, 0, 0, 0]);
+  for (let it = 0; it < 4; it++) {
+    for (const a of s) a[0] = a[1] = a[2] = a[3] = 0;
+    for (const p of pts) {
+      let bj = 0, bd = 1e9;
+      for (let j = 0; j < c.length; j++) {
+        const d = (p.x - c[j].x) ** 2 + (p.y - c[j].y) ** 2 + (p.z - c[j].z) ** 2;
+        if (d < bd) { bd = d; bj = j; }
+      }
+      const a = s[bj]; a[0] += p.x; a[1] += p.y; a[2] += p.z; a[3]++;
+    }
+    for (let j = 0; j < c.length; j++) {
+      const a = s[j]; c[j].n = a[3];
+      if (a[3]) { c[j].x = a[0] / a[3]; c[j].y = a[1] / a[3]; c[j].z = a[2] / a[3]; }
+    }
+  }
+  return c.filter(o => o.n > 0);
+}
+/* 這一刻火的目標：一棟一組、照塊數發燈、組內分群（起手沿用同一棟那幾盞的位置，燈才不會一輪一換） */
+function glowTargets(K) {
+  const g = new Map();
+  if (fires) for (const f of fires) {
+    const b = f.b;
+    if (b.st !== SET) continue;
+    const key = b.hh < 0 ? -1 : b.hh;
+    let a = g.get(key);
+    if (!a) g.set(key, a = []);
+    a.push(b);
+  }
+  const G = [];
+  for (const [key, pts] of g) G.push({ key, pts, a: 0 });
+  G.sort((p, q) => q.pts.length - p.pts.length);
+  for (let i = 0; i < Math.min(K, G.length); i++) G[i].a = 1;
+  for (let left = K - Math.min(K, G.length); left > 0; left--) {   // 多的燈給「每盞分到最多塊」的那一棟
+    let best = null;
+    for (const o of G) if (o.a && o.a < o.pts.length && (!best || o.pts.length / (o.a + 1) > best.pts.length / (best.a + 1))) best = o;
+    if (!best) break;
+    best.a++;
+  }
+  const T = [];
+  for (const o of G) {
+    if (!o.a) continue;
+    const seed = [];
+    for (const s of glowSlots) if (glowLive(s) && s.key === o.key) seed.push({ x: s.tx, y: s.ty - GLOW_UP, z: s.tz });
+    for (const c of glowMeans(o.pts, o.a, seed)) T.push({ key: o.key, x: c.x, y: c.y + GLOW_UP, z: c.z, n: c.n });
+  }
+  return T.sort((p, q) => q.n - p.n);
+}
+/* 火的那 K 盞：每 GLOW_PICK 秒（或 K 變了）重新配一次，之後每幀平滑跟過去、淡入淡出 */
+function glowFire(K, dt) {
+  while (glowSlots.length < K) glowSlots.push({ key: null, x: 0, y: 0, z: 0, tx: 0, ty: 0, tz: 0, w: 0, tw: 0 });
+  for (let i = K; i < glowSlots.length; i++) glowSlots[i].w = glowSlots[i].tw = 0;   // 被短的那幾種借走的
+  if (K !== glowK || glowT - glowPickT >= GLOW_PICK || glowT < glowPickT) {
+    glowK = K; glowPickT = glowT;
+    const T = glowTargets(K), got = new Set();
+    for (const t of T) {                         // 同一棟、GLOW_JUMP 格內最近的那一盞跟過去
+      let bs = null, bd = GLOW_JUMP;
+      for (let i = 0; i < K; i++) {
+        const s = glowSlots[i];
+        if (got.has(s) || !glowLive(s) || s.key !== t.key) continue;
+        const d = Math.hypot(s.tx - t.x, s.ty - t.y, s.tz - t.z);
+        if (d <= bd) { bd = d; bs = s; }
+      }
+      if (bs) { got.add(bs); bs.tx = t.x; bs.ty = t.y; bs.tz = t.z; bs.tw = Math.min(1, Math.sqrt(t.n / GLOW_FULL)); t.done = true; }
+    }
+    for (let i = 0; i < K; i++) if (!got.has(glowSlots[i])) glowSlots[i].tw = 0;   // 沒跟上的：原地淡掉
+    for (const t of T) {                         // 新的那幾群：找一盞已經暗掉的，在那裡淡入
+      if (t.done) continue;
+      let s = null;
+      for (let i = 0; i < K && !s; i++) if (!got.has(glowSlots[i]) && glowSlots[i].w <= 0.02) s = glowSlots[i];
+      if (!s) continue;                          // 燈都還在淡出，下一輪再說
+      got.add(s);
+      s.key = t.key; s.x = s.tx = t.x; s.y = s.ty = t.y; s.z = s.tz = t.z; s.w = 0;
+      s.tw = Math.min(1, Math.sqrt(t.n / GLOW_FULL));
+    }
+  }
+  const a = 1 - Math.exp(-dt * 5), st = dt / GLOW_FADE;
+  for (let i = 0; i < K; i++) {
+    const s = glowSlots[i];
+    s.x += (s.tx - s.x) * a; s.y += (s.ty - s.y) * a; s.z += (s.tz - s.z) * a;
+    s.w = s.w < s.tw ? Math.min(s.tw, s.w + st) : Math.max(s.tw, s.w - st);
+  }
+}
+/* K＝這一幀有幾盞空燈（ENG.lampRoom()）。回傳的第 j 筆給第 j 盞 */
+function glowLampList(K) {
+  const dt = Math.max(0, glowT - glowAt); glowAt = glowT;
+  _glows.length = 0;
+  const add = () => _glowPool[_glows.length] || (_glowPool[_glows.length] = {});
+  const put = (k, x, y, z, i, R, c) => {
+    if (_glows.length >= K) return;
+    const o = add(); o.k = k; o.x = x; o.y = y; o.z = z; o.i = i; o.R = R; o.c = c;
+    _glows.push(o);
+  };
+  if (fballs) for (const f of fballs) put('ball', f.x, f.y, f.z, 1, 0, null);
+  for (const h of glowHits) {
+    const u = (glowT - h.t0) / FLASH_LIFE;
+    put('hit', h.x, h.y + 1, h.z, Math.min(1, (glowT - h.t0) / GLOW_ATK) * (1 - u) * (1 - u), FB_R, null);
+  }
+  for (const b of glowBursts) {
+    const u = (glowT - b.t0) / GLOW_FW_T;
+    put('fw', b.x, b.y, b.z, Math.min(1, (glowT - b.t0) / GLOW_ATK) * (1 - u) * (1 - u), 0, b.c);
+  }
+  const K2 = K - _glows.length;
+  if (K2 > 0) {
+    glowFire(K2, dt);
+    for (let i = 0; i < K2; i++) {
+      const s = glowSlots[i];
+      const fk = 0.8 + 0.12 * Math.sin(glowT * 11 + i * 1.7) + 0.08 * Math.sin(glowT * 23.3 + i * 2.9);   // 火在跳
+      put('fire', s.x, s.y, s.z, s.w * fk, 0, null);
+    }
+  } else for (const s of glowSlots) s.w = s.tw = 0;
+  return _glows;
 }
 
 /* ── 蘑菇雲 ───────────────────────────────────────────────
@@ -12584,6 +12748,7 @@ function stepFballs(dt) {
 function fballHit(f) {
   const p = { x: f.x, y: Math.max(0.8, f.y), z: f.z };
   explode(p, FB_R, FB_POW);
+  glowHits.push({ x: p.x, y: p.y, z: p.z, t0: glowT });   // 晚上撞上去那一下閃一次（v1.296.0，見 glowLampList）
   /* 爆炸本身帶一點餘火，但這是火球——落點一帶再多點幾塊起來，
      這是它跟同尺寸的普通爆炸最明顯的差別（同隕石）。
      砸村子那一顆只准燒村子那邊（v1.166）：這裡的半徑 14.7 比爆炸的 9.2 大得多，

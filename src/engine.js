@@ -29,11 +29,14 @@ const ENG = (function () {
   let hemi;                         // 天光（打雷的烏雲遮天要壓暗它，v1.283.0，見 setGloom）
   let stormLay = null, stormBall = null, stormLamps = null;   // 打雷的粗雷三層、亮球、兩盞點光源（v1.283.0，見 putStorm）
   let boomLamps = null;             // 強爆炸的四盞點光源（v1.291.0，見 putBooms）
-  let stormOn = false, boomOn = false;   // 這一刻打雷／爆炸要不要燈（六盞一起開關，見 lampSync）
+  const glowLamps = [];             // 光源數超過六盞多出來的那幾盞（v1.296.0，只給晚上的小光源，見 setLampCount）
+  let lampN = 6;                    // 光源數（v1.296.0，畫面設定「光源」：0＝全關，否則六盞以上，見 setLampCount）
+  let boomUsed = 0;                 // 這一幀強爆炸用掉幾盞（putBooms 記，putGlows／lampRoom 照它找空的）
+  let stormOn = false, boomOn = false, glowOn = false;   // 這一刻打雷／爆炸／小光源要不要燈（全部一起開關，見 lampSync）
   let gloomEl = null, gloomAt = -1;  // 烏雲遮天：蓋在 CSS 天空上的那一層、上一次給的暗度（見 setGloom）
   let skyNightEl = null, skyDuskEl = null, skyStarEl = null;   // 晝夜：夜空、黃昏、星星三層（v1.295.0，見 setDayTime）
   let dayAt = -1;                    // 晝夜：上一次給的分鐘數，−1＝關掉（一直是正午）
-  let lampWarm = false;              // 「六盞燈都開著」那一份 shader 編好了沒（見 draw3d）
+  let lampWarm = false;              // 「燈都開著」那一份 shader 編好了沒（見 draw3d；換光源數就重編，見 setLampCount）
   let emoMesh, emoGeo, emoPos, emoUv, emoCol;   // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
   let giftMesh, giftGeo, giftPos, giftUv;  // 掉在地上的道具泡泡（v1.214，見 setGiftIcons／putGifts）
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
@@ -186,6 +189,17 @@ const ENG = (function () {
      四盞是量過的：破壞模式核彈 ×4 同時最多 4 顆夠亮的火球；真顯示卡（UHD 770、1080p）上燈數 0／2／4／6／8
      一幀 10.9／10.6／10.9／11.1／12.9ms，到六盞都在量測的抖動裡（見 開發筆記〈強爆炸照亮周圍（v1.291.0）〉） */
   const BOOM_LAMPS = 4, BOOM_LAMP_C = 0xffa24a, BOOM_LAMP_E = 16, BOOM_LAMP_REACH = 3;
+  const STORM_LAMP_D = [140, 100];   // 打雷那兩盞照多遠（晚上的小光源借過之後要還回來，見 putStorm）
+  /* 晚上的小光源（v1.296.0，見 putGlows）：建築上在燒的火（一群一盞）、飛龍的火球（飛行中＋撞上去那一下）、煙火炸開那一下。
+     規則那邊給 0～1 的相對亮度 i，這裡乘 I：decay 1（照度＝亮度 ÷ 距離），I＝「離光源 D 格那一圈的照度」× D——
+     晚上月光 0.62、天光 0.5（白天日光 1.75）。再乘「多晚」（1 − 白天成分），所以白天是 0、黃昏慢慢亮起來。
+     預覽四檔 ×0.5／×1／×2／×4，使用者：「效果確實不錯 亮度先1就好」——下面就是 ×1：
+       fire  一群火 5 格那一圈 1.5、照到 18 格
+       ball  飛行中的火球 4 格那一圈 3、照到 24 格
+       hit   撞上去那一下：同強爆炸的算法（離爆心一個半徑那一圈 4、照到 3 倍半徑），R 由規則那邊給
+       fw    煙火：40 幾格高炸開、離屋頂三十幾格，35 格那一圈 1.2、照到 90 格（第一版 15 格那一圈 1，截圖看不出來）；顏色照那一發 */
+  const GLOW = { fire: { c: 0xff8a36, I: 1.5 * 5, d: 18 }, ball: { c: 0xffa040, I: 3 * 4, d: 24 },
+                 hit: { c: BOOM_LAMP_C, E: 4, reach: 3 }, fw: { I: 1.2 * 35, d: 90 } };
   /* 天光、日光、霧的本來的樣子，與烏雲遮天最暗時各壓掉幾成（v1.283.0，見 setGloom）。
      天空是 index.html 的 CSS 漸層（畫布是透明的），所以另外蓋一層暗色的 div，GLOOM.sky 是它最濃多少。 */
   const HEMI_I = 1.25, SUN_I = 1.75, FOG_C = 0xbcd3e0, GLOOM_FOG = 0x363e4b;
@@ -1596,7 +1610,7 @@ if (vAo.x + vAo.y > 0.5) {
     /* 兩盞點光源平常 visible = false：掛著不亮（亮度 0）的話每一個吃光的像素還是要多算兩盞燈。
        關著再打開會換一份 shader（燈數是 shader 的一部分），第一次換要當場編——探針量到 headless 卡了三秒，
        所以開場第一幀畫完就先用 compileAsync 把「多兩盞燈」那一份編好（見 draw3d），之後開關只是換用（量到 2ms）。 */
-    stormLamps = [new T.PointLight(STORM_LAMP_C, 0, 140, 2), new T.PointLight(STORM_LAMP_C, 0, 100, 2)];
+    stormLamps = [new T.PointLight(STORM_LAMP_C, 0, STORM_LAMP_D[0], 2), new T.PointLight(STORM_LAMP_C, 0, STORM_LAMP_D[1], 2)];
     for (const L of stormLamps) { L.visible = false; scene.add(L); }
     /* 強爆炸的四盞（v1.291.0）：跟打雷那兩盞**一起開關**（見 lampSync）——燈數只有「全關」與「六盞都開」兩種，
        shader 也就只多一份（開場編好）；各開各的話打雷、爆炸、兩個都有是三份，第一次碰到的那一份要當場編（量到 200ms 上下） */
@@ -1605,6 +1619,7 @@ if (vAo.x + vAo.y > 0.5) {
       const L = new T.PointLight(BOOM_LAMP_C, 0, 1, 1);
       L.visible = false; scene.add(L); boomLamps.push(L);
     }
+    makeGlowLamps();                             // 光源數超過六盞多出來的那幾盞（v1.296.0，見 setLampCount）
     /* 晝夜的三層（v1.295.0）：跟烏雲那一層同一招，烏雲排在它們後面＝疊在最上面。
        黃昏的橘色擠在畫面上面兩成多：預設鏡頭下天空只露那一段，照整頁分配的話橘色全被草地蓋住（預覽第一版）。
        星星是一顆 2px 的點拖一串 box-shadow，自己一支亂數（不吃 Math.random：測試下了種子，多抽會位移別段的骰子） */
@@ -3624,30 +3639,84 @@ if (vAo.x + vAo.y > 0.5) {
       stormBall.setColorAt(i, tmpC.setRGB(0.6 * b.op, 0.78 * b.op, b.op));
     }
     if (nb) { stormBall.instanceMatrix.needsUpdate = true; if (stormBall.instanceColor) stormBall.instanceColor.needsUpdate = true; }
+    stormOn = lampN > 0 && lamps.length > 0;     // 開關會換 shader（開場編好了，見 draw3d），所以整場雷雨都開著、只調亮度
     for (let i = 0; i < 2; i++) {
       const L = stormLamps[i], s = lamps[i];
-      L.intensity = s && s.i > 0 ? s.i * STORM_LAMP_I : 0;
+      L.intensity = stormOn && s && s.i > 0 ? s.i * STORM_LAMP_I : 0;
       if (s && s.i > 0) L.position.set(s.x, s.y, s.z);
+      /* 沒打雷時這兩盞會借給晚上的小光源（見 putGlows），要用的時候把打雷的樣子還回來 */
+      if (stormOn) { L.color.setHex(STORM_LAMP_C); L.decay = 2; L.distance = STORM_LAMP_D[i]; }
     }
-    stormOn = lamps.length > 0;                  // 開關會換 shader（開場編好了，見 draw3d），所以整場雷雨都開著、只調亮度
     lampSync();
   }
-  /* 打雷那兩盞與爆炸那四盞一起開關（v1.291.0）：有一邊要燈就六盞都開，沒用到的亮度 0。理由見 init 的 boomLamps */
+  /* 全部的燈一起開關（v1.291.0 打雷兩盞＋爆炸四盞；v1.296.0 起再加光源數多出來的那幾盞）：有一邊要燈就全開，
+     沒用到的亮度 0。燈數是 shader 的一部分，各開各的就會多好幾份 shader、第一次碰到的那一份要當場編（理由見 init 的 boomLamps）。
+     光源數 0＝一盞都不開 */
   function lampSync() {
-    const v = stormOn || boomOn;
+    const v = lampN > 0 && (stormOn || boomOn || glowOn);
     for (const L of stormLamps) L.visible = v;
     for (const L of boomLamps) L.visible = v;
+    for (const L of glowLamps) L.visible = v;
   }
   /* 強爆炸照亮周圍（v1.291.0）。規則那邊給這一刻的燈 {x, y, z, i 相對亮度, R 火球半徑}（最多 BOOM_LAMPS 盞，
      多的已經在那邊併好，見 boomLampList）；空的＝沒有強爆炸在亮（或畫面設定把「爆炸光源」關了） */
   function putBooms(lamps) {
+    boomUsed = lampN > 0 ? Math.min(lamps.length, BOOM_LAMPS) : 0;
     for (let i = 0; i < BOOM_LAMPS; i++) {
-      const L = boomLamps[i], s = lamps[i];
+      const L = boomLamps[i], s = i < boomUsed ? lamps[i] : null;
       L.intensity = s && s.i > 0 ? s.i * BOOM_LAMP_E : 0;
       if (s && s.i > 0) { L.position.set(s.x, s.y, s.z); L.distance = s.R * BOOM_LAMP_REACH; }
+      if (s) { L.color.setHex(BOOM_LAMP_C); L.decay = 1; }   // 沒用到的那幾盞會借給晚上的小光源，用的時候還回來
     }
-    boomOn = lamps.length > 0;
+    boomOn = boomUsed > 0;
     lampSync();
+  }
+  /* 晚上的小光源（v1.296.0，見 開發筆記〈晚上的火光：燒的火、飛龍火球、煙火（v1.296.0）〉）：只用這一幀沒人用的燈——
+     強爆炸、打雷先拿（putStorm、putBooms 要先叫），剩下的照順序給：爆炸那四盞沒用到的、沒打雷時打雷那兩盞、光源數多出來的那幾盞。
+     規則那邊先問 lampRoom() 有幾盞，照那個數排好清單 {x, y, z, i 0～1, k 哪一種（見 GLOW）, R 撞擊半徑, c 煙火顏色 [r, g, b]}，
+     第 j 筆就是第 j 盞空燈。亮度再乘「多晚」：白天整個不亮（清單照給也一樣） */
+  function nightK() { return 1 - dayPhase(dayAt).L; }
+  function lampRoom() { return lampN > 0 ? lampN - (stormOn ? 2 : 0) - boomUsed : 0; }
+  function putGlows(list) {
+    const night = lampN > 0 ? nightK() : 0;
+    let j = 0, lit = 0;
+    const use = L => {
+      const s = list[j++];
+      if (!s || !(s.i > 0) || !(night > 0)) { L.intensity = 0; return; }
+      const g = GLOW[s.k];
+      L.position.set(s.x, s.y, s.z); L.decay = 1;
+      if (s.k === 'hit') { L.intensity = g.E * s.R * s.i * night; L.distance = s.R * g.reach; }
+      else { L.intensity = g.I * s.i * night; L.distance = g.d; }
+      if (s.c) L.color.setRGB(s.c[0], s.c[1], s.c[2], T.SRGBColorSpace); else L.color.setHex(g.c);
+      lit++;
+    };
+    for (let i = boomUsed; i < BOOM_LAMPS; i++) use(boomLamps[i]);
+    if (!stormOn) for (const L of stormLamps) use(L);
+    for (const L of glowLamps) use(L);
+    glowOn = lit > 0;
+    lampSync();
+  }
+  /* 光源數（v1.296.0，畫面設定「光源」關／6／10／16，使用者：「或許可以也在設定裡增加光源數設定基本就6 然後有更多」）。
+     六盞以下只有 0：打雷兩盞＋爆炸四盞是固定的那一份，多的只給晚上的小光源。真顯示卡（UHD 770、1080p、台北 101）
+     一幀 0 盞 8.8ms、6 盞 11.2～11.7、10 盞 13.1、16 盞 15.8、24 盞 19.6——每多一盞約 0.45ms，而且只在燈開著時才付。
+     換了數量就是另一份 shader：下一幀照開場那一招在背景先編好（見 draw3d 的 lampWarm） */
+  function setLampCount(n) {
+    n = n > 0 ? Math.max(6, Math.round(n)) : 0;
+    if (n === lampN) return;
+    lampN = n;
+    if (!stormLamps) return;                     // 開場 init 之前就讀到存檔：init 照 lampN 生（見 makeGlowLamps）
+    makeGlowLamps();
+    if (n === 0) { stormOn = boomOn = glowOn = false; boomUsed = 0; }
+    lampSync();
+    if (n > 0) lampWarm = false;
+  }
+  function makeGlowLamps() {
+    for (const L of glowLamps) scene.remove(L);
+    glowLamps.length = 0;                        // 原地清：測試從 ENG.three 拿到的那一份參照不會過期
+    for (let i = 6; i < lampN; i++) {
+      const L = new T.PointLight(GLOW.fire.c, 0, 1, 1);
+      L.visible = false; scene.add(L); glowLamps.push(L);
+    }
   }
   /* 烏雲遮天（v1.283.0）：d 0～1，天光、日光照 GLOOM 壓暗，霧往暗灰拉，CSS 天空上蓋那一層 div。
      同一個值重複給就什麼都不做（平常每幀都是 0）。 */
@@ -12274,15 +12343,15 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     } else renderer.render(scene, camera);
     /* 第一幀畫完，把打雷那兩盞＋爆炸那四盞燈開著的那一份 shader 在背景編好（v1.283.0，見 init 的 stormLamps；
        v1.291.0 起六盞一起開關，見 lampSync）：compile 那一刻燈要是開著的（燈數是從場景裡讀的），送出去就關回去。
-       沒有 compileAsync 的話就算了，頂多第一次打雷／強爆炸那一下當場編。 */
+       沒有 compileAsync 的話就算了，頂多第一次打雷／強爆炸那一下當場編。
+       v1.296.0 起光源數換了（見 setLampCount）也再來一次，連多出來的那幾盞一起；光源數 0 不必編 */
     if (!lampWarm) {
       lampWarm = true;
-      if (renderer.compileAsync && !stormLamps[0].visible) {
-        for (const L of stormLamps) L.visible = true;
-        for (const L of boomLamps) L.visible = true;
+      if (renderer.compileAsync && lampN > 0 && !stormLamps[0].visible) {
+        const all = stormLamps.concat(boomLamps, glowLamps);
+        for (const L of all) L.visible = true;
         renderer.compileAsync(scene, camera).catch(() => {});
-        for (const L of stormLamps) L.visible = false;
-        for (const L of boomLamps) L.visible = false;
+        for (const L of all) L.visible = false;
       }
     }
   }
@@ -12377,6 +12446,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
     putBooms, BOOM_LAMPS,                      /* 強爆炸照亮周圍（v1.291.0）：規則那邊照 BOOM_LAMPS 盞併好再給 */
+    putGlows, lampRoom, nightK, setLampCount,  /* 晚上的小光源、光源數（v1.296.0）：規則那邊照 lampRoom() 盞排好再給 */
+    get lampN() { return lampN; },
     DAY: { fade: DAY_FADE, low: DAY_LOW, moonTop: MOON_TOP, noon: SUN_NOON },   /* 晝夜（v1.295.0）：測試照這幾個算期望值 */
     putStars, putBolts, putStorm, setGloom, setDayTime, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
     putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
@@ -12481,6 +12552,6 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
     get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh,
-                            stormLay, stormBall, stormLamps, boomLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl, skyStarEl }; }
+                            stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl, skyStarEl }; }
   };
 })();

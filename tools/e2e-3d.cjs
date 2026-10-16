@@ -491,6 +491,7 @@ const installClean = page => page.evaluate(() => {
     dozers = null; ENG.putDozers([]);
     water = null;
     fworks = null; fwSparks = null; fwWait = null;
+    clearGlows();                     // 晚上的小光源（v1.296.0）：撞擊、煙火那一下與火的那幾盞
     quake = null;
     marks.length = 0;                 // 地上的焦黑／坑洞：留著會多吃一個 draw call
     sears.length = 0;                     // Excalibur 的燒灼痕（v1.224）：一道活 10 秒，同上
@@ -38963,12 +38964,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      量引擎真的那幾盞燈。燈數是 shader 的一部分，所以守「打雷兩盞＋爆炸四盞要嘛全開、要嘛全關」 */
   const boomL = await page.evaluate(() => {
     cleanTools();
-    const th = ENG.three, $ = id => document.getElementById(id), keep = pref.boom;
+    const th = ENG.three, $ = id => document.getElementById(id), keep = pref.lamps;
     const st = () => {
-      const all = th.stormLamps.concat(th.boomLamps), on = all.filter(L => L.visible).length;
+      const all = th.stormLamps.concat(th.boomLamps, th.glowLamps), on = all.filter(L => L.visible).length;
       return { on: on === all.length ? 'all' : on === 0 ? 'none' : 'mixed', n: th.boomLamps.filter(L => L.visible && L.intensity > 0).length };
     };
-    const r = { inBox: $('dispBox').contains($('boomLit')), fresh: freshPref().boom, N: ENG.BOOM_LAMPS };
+    const r = { inBox: $('dispBox').contains($('lampN')), fresh: freshPref().lamps, N: ENG.BOOM_LAMPS,
+                btns: [...$('lampN').children].map(b => b.textContent).join('／') };
     flashes.length = 0; draw(); r.idle = st();
     /* 小爆炸（炸彈那一種，沒有 big）不給燈 */
     spawnBlast({ x: 0, y: 0, z: 0 }, BOMB_R); stepFlash(0.1); draw(); r.small = st();
@@ -38992,12 +38994,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const g of flashes.filter(g => g.R <= NUKE_R - 3)) { const i = g.R * g.op; w += i; x += g.x * i; }
     r.six = { n: list.length, x: +list[3].x.toFixed(3), want: +(x / w).toFixed(3), i: list[3].i, top: list[0].i };
     draw(); r.sixLit = st();
-    /* 畫面設定那一格關掉：照樣炸、燈全關；勾回來又亮 */
-    const set = v => { $('boomLit').checked = v; $('boomLit').dispatchEvent(new Event('change', { bubbles: true })); };
-    set(false); draw(); r.off = Object.assign(st(), { pref: pref.boom, fl: flashes.length });
-    set(true); draw(); r.back = st();
-    set(keep);
+    /* 畫面設定「光源」（v1.296.0 起四顆按鈕，以前是「爆炸光源」勾選）：點關照樣炸、燈全關；點 6 又亮。點的是按鈕本身 */
+    const pick = v => [...$('lampN').children].find(b => +b.dataset.v === v).click();
+    pick(0); draw(); r.off = Object.assign(st(), { pref: pref.lamps, eng: ENG.lampN, fl: flashes.length,
+                                              btnOn: [...$('lampN').children].filter(b => b.classList.contains('on')).map(b => b.dataset.v).join() });
+    pick(6); draw(); r.back = st();
+    pick(keep);
     flashes.length = 0; draw(); r.end = st();
+    /* 舊存檔（v1.291.0～v1.295.0 的 boom）：沒勾＝關、勾著＝6、沒有這一格＝6；改壞的數字吸到最近的一檔。applySave 不碰 DOM，量完還回去 */
+    const keepS = stats, keepP = pref;
+    const conv = p => { applySave({ s: keepS, p }); return pref.lamps; };
+    r.old = [conv({ boom: false }), conv({ boom: true }), conv({}), conv({ lamps: 12 }), conv({ lamps: 'x' }), conv({ boom: false, lamps: 10 })];
+    stats = keepS; pref = keepP;
     cleanTools();
     return r;
   });
@@ -39012,10 +39020,169 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(boomL.six.x - boomL.six.want) < 1e-3 && boomL.six.i === boomL.six.top,
      '清單 ' + boomL.six.n + ' 盞、亮 ' + boomL.sixLit.n + '（' + boomL.sixLit.on + '）；最後一盞 x ' + boomL.six.x + '（重心 ' + boomL.six.want +
      '）、亮度 ' + boomL.six.i + '（最亮 ' + boomL.six.top + '）');
-  ok('畫面設定「爆炸光源」：在小窗裡、預設開；關掉照樣炸但燈全關，勾回來又亮',
-     boomL.inBox && boomL.fresh === true && boomL.off.on === 'none' && boomL.off.pref === false && boomL.off.fl > 0 &&
-     boomL.back.on === 'all' && boomL.end.on === 'none',
-     '在小窗 ' + boomL.inBox + '、預設 ' + boomL.fresh + '；關掉 ' + boomL.off.on + '（火球 ' + boomL.off.fl + ' 顆）、勾回來 ' + boomL.back.on);
+  ok('畫面設定「光源」：關／6／10／16 四顆按鈕在小窗裡、預設 6；點關照樣炸但燈全關，點 6 又亮；舊存檔沒勾爆炸光源＝關、勾著＝6',
+     boomL.inBox && boomL.fresh === 6 && boomL.btns === '關／6 盞／10 盞／16 盞' &&
+     boomL.off.on === 'none' && boomL.off.pref === 0 && boomL.off.eng === 0 && boomL.off.btnOn === '0' && boomL.off.fl > 0 &&
+     boomL.back.on === 'all' && boomL.end.on === 'none' && boomL.old.join() === '0,6,6,10,6,10',
+     '在小窗 ' + boomL.inBox + '、按鈕 ' + boomL.btns + '、預設 ' + boomL.fresh + '；點關 ' + boomL.off.on + '（pref ' + boomL.off.pref +
+     '、引擎 ' + boomL.off.eng + '、亮的那顆 ' + boomL.off.btnOn + '、火球 ' + boomL.off.fl + ' 顆）、點 6 ' + boomL.back.on +
+     '；舊存檔 沒勾／勾著／沒這格／12／壞值／已有 10 → ' + boomL.old.join('／'));
+
+  /* 晚上的小光源（v1.296.0，使用者：「先做放火 飛龍火球 煙火」「只在晚上亮 跟爆炸同光源」「不要造成多建築燃燒 光源飛來飛去」，
+     看過預覽「效果確實不錯 亮度先1就好」）與光源數（「設定裡增加光源數設定基本就6 然後有更多」→ 關／6／10／16）。
+     規則型、不跑模擬：自己組一份 fires（假積木只帶 x/y/z、st、hh）與 fballs，直接叫 glowLampList／stepGlows（時鐘只推小光源那一支）、
+     fballHit／burstFw、引擎的 putStorm／putBooms／putGlows 與 draw，量真的那幾盞燈。量完把全域還回去 */
+  const glowL = await page.evaluate(() => {
+    cleanTools(); flashes.length = 0;
+    const th = ENG.three, keepClock = dayClock, keepN = pref.lamps;
+    const A = () => th.stormLamps.concat(th.boomLamps, th.glowLamps);
+    const lit = () => A().filter(L => L.visible && L.intensity > 0);
+    const allOn = () => A().every(L => L.visible), noneOn = () => A().every(L => !L.visible);
+    /* 一棟在燒的：n 塊排在 (cx, cz) 附近，hh＝哪一棟（−1 地標） */
+    const clump = (cx, cz, n, hh) => {
+      const o = [];
+      for (let i = 0; i < n; i++) o.push({ b: { x: cx + (i % 5) - 2, y: 2 + Math.floor(i / 15), z: cz + Math.floor(i / 5) % 3 - 1, st: SET, hh } });
+      return o;
+    };
+    /* 這盞燈最近的那一塊是哪一棟、離多遠 */
+    const near = (p, F) => {
+      let bd = 1e9, hh = null;
+      for (const f of F) { const d = Math.hypot(f.b.x - p.x, f.b.y - p.y, f.b.z - p.z); if (d < bd) { bd = d; hh = f.b.hh; } }
+      return { d: bd, hh };
+    };
+    const copy = K => glowLampList(K).map(o => ({ k: o.k, x: o.x, y: o.y, z: o.z, i: o.i, R: o.R, c: o.c }));
+    const r = { JUMP: GLOW_JUMP, UP: GLOW_UP };
+    setLamps(6);
+    /* ① 只在晚上亮：:45 全亮、:30 剛好一半、:15 與關掉晝夜都不亮；燈都在火上 */
+    fires = clump(0, 0, 30, -1);
+    dayClock = () => 45; draw(); stepGlows(1); draw();
+    const L45 = lit();
+    r.n45 = L45.length; r.sum45 = L45.reduce((a, L) => a + L.intensity, 0);
+    r.col45 = [...new Set(L45.map(L => L.color.getHexString()))].join();
+    r.on45 = allOn();
+    r.off45 = Math.max(...L45.map(L => near(L.position, fires).d));
+    dayClock = () => 30; draw();
+    r.half = +(lit().reduce((a, L) => a + L.intensity, 0) / r.sum45).toFixed(6);
+    dayClock = () => 15; draw(); r.day = { lit: lit().length, none: noneOn() };
+    dayOn = false; dayClock = () => 45; draw(); r.dayOff = { lit: lit().length, none: noneOn() }; dayOn = pref.day;
+    /* ② 先分棟再分群：地標 40 塊、一間房子 12 塊、另一間 6 塊。六盞：每棟都有、燈最近的那一塊一定是自己那一棟、
+       沒有一盞擺在兩棟中間；兩盞：塊數最少那一棟不亮 */
+    const F2 = clump(-40, 0, 40, -1).concat(clump(40, 0, 12, 3), clump(0, 50, 6, 5));
+    fires = F2; clearGlows(); copy(6); stepGlows(1);
+    const g6 = copy(6).filter(o => o.k === 'fire' && o.i > 0);
+    const per = {}; let worst = 0;
+    for (const o of g6) { const q = near(o, F2); per[q.hh] = (per[q.hh] || 0) + 1; worst = Math.max(worst, q.d); }
+    r.split = per; r.n6 = g6.length; r.worst6 = +worst.toFixed(2);
+    clearGlows(); copy(2); stepGlows(1);
+    r.k2 = copy(2).filter(o => o.k === 'fire' && o.i > 0).map(o => near(o, F2).hh).sort((a, b) => a - b).join();
+    /* ③ 燈不飛：一盞燈、火整群挪到 30 格外（同一棟）。每 0.05 秒記：亮著的時候只在舊的那一群或新的那一群上，
+       中間一步都不經過；舊的先原地淡掉、新的在那裡淡入。火只挪 2 格（GLOW_JUMP 內）就一路跟過去、不熄 */
+    fires = clump(0, 0, 20, -1); clearGlows(); copy(1); stepGlows(1); copy(1);
+    const A0 = copy(1)[0];
+    fires = clump(30, 0, 20, -1);
+    const B0 = { x: 30, z: 0 };
+    let between = 0, firstB = -1, lastA = -1, moveLit = 0;
+    let prev = A0;
+    for (let t = 0.05; t < 1.5 + 1e-9; t += 0.05) {
+      stepGlows(0.05); const o = copy(1)[0];
+      if (o.i > 0.01) {
+        const dA = Math.hypot(o.x - A0.x, o.z - A0.z), dB = Math.hypot(o.x - B0.x, o.z - B0.z);
+        if (dA > 3 && dB > 3) between++;
+        if (dA <= 3) lastA = +t.toFixed(2);
+        if (dB <= 3 && firstB < 0) firstB = +t.toFixed(2);
+        if (prev.i > 0.05 && o.i > 0.05) moveLit = Math.max(moveLit, Math.hypot(o.x - prev.x, o.y - prev.y, o.z - prev.z));
+      }
+      prev = o;
+    }
+    r.fly = { between, lastA, firstB, moveLit: +moveLit.toFixed(3), endI: +prev.i.toFixed(3), endB: Math.hypot(prev.x - B0.x, prev.z - B0.z) < 3 };
+    fires = clump(0, 0, 20, -1); clearGlows(); copy(1); stepGlows(1); copy(1);
+    const C0 = copy(1)[0];
+    fires = clump(2, 0, 20, -1);
+    let minI = 9;
+    for (let t = 0; t < 1.5; t += 0.05) { stepGlows(0.05); const o = copy(1)[0]; minI = Math.min(minI, o.i); prev = o; }
+    r.follow = { minI: +minI.toFixed(3), dx: +(prev.x - C0.x).toFixed(3), fk: 0.45 };   // 全亮 × 閃爍最暗 0.6 ≈ 0.55，熄過的話會掉到 0
+    /* ④ 火球、撞上去那一下、煙火炸開那一下：短的先排，火拿剩下的 */
+    fires = clump(0, 0, 30, -1); clearGlows();
+    const keepFb = fballs;
+    fballs = [{ x: 10, y: 20, z: -4 }];
+    fballHit({ x: 0, y: 0.5, z: 300 });                       // 撞在場外的地上：只看記下來的那一下
+    burstFw({ x: 5, y: 40, z: 5, c: FW_COL[1], c2: FW_COL[2] });
+    const s0 = copy(3);
+    stepGlows(GLOW_ATK);
+    const s1 = copy(5);
+    r.order = s1.map(o => o.k).join();
+    r.ball = s0[0].k === 'ball' && s0[0].x === 10 && s0[0].y === 20 && s0[0].z === -4 && s0[0].i === 1;
+    r.hit = { i0: s0[1].i, i1: +s1[1].i.toFixed(4), want1: +((1 - GLOW_ATK / FLASH_LIFE) ** 2).toFixed(4), R: s1[1].R === FB_R, z: s1[1].z };
+    r.fw = { i0: s0[2].i, c: s1[2].c === FW_COL[1][0], y: s1[2].y };
+    stepGlows(FLASH_LIFE);
+    r.hitGone = copy(5).filter(o => o.k === 'hit').length;
+    r.fwStill = copy(5).filter(o => o.k === 'fw').length;
+    stepGlows(GLOW_FW_T);
+    r.fwGone = copy(5).filter(o => o.k === 'fw').length;
+    fballs = keepFb; fwSparks = null; fxRings.length = 0; hot.length = 0; flashes.length = 0;
+    /* ⑤ 光源數 10：多的四盞一起開關；打雷、強爆炸先拿，晚上的小光源用剩下的；借過打雷那兩盞，打雷一來顏色、照多遠還回去 */
+    fires = clump(0, 0, 40, -1); clearGlows();
+    ENG.setDayTime(45);                    // 這一段不叫 draw：引擎的時刻要自己給（①最後那一下 draw 是關掉晝夜＝正午）
+    setLamps(10);
+    r.extra = th.glowLamps.length;
+    const STORM2 = [{ x: 0, y: 30, z: 0, i: 1 }, { x: 0, y: 1, z: 0, i: 1 }];   // 打雷照舊兩盞（上面那盞、地面那盞）
+    ENG.putStorm([], [], STORM2); ENG.putBooms([{ x: 0, y: 5, z: 0, i: 1, R: 10 }]);
+    r.room10 = ENG.lampRoom();
+    ENG.putGlows(glowLampList(ENG.lampRoom())); stepGlows(1); ENG.putGlows(glowLampList(ENG.lampRoom()));
+    r.busy = { on: allOn(), storm: th.stormLamps.every(L => L.color.getHexString() === 'a8c8ff' && L.intensity > 0),
+               boom: th.boomLamps[0].color.getHexString() === 'ffa24a',
+               fire: lit().filter(L => L.color.getHexString() === 'ff8a36').length };
+    ENG.putStorm([], [], []); ENG.putBooms([]);
+    r.roomFree = ENG.lampRoom();
+    ENG.putGlows(glowLampList(ENG.lampRoom())); stepGlows(1);       // 多出來的三盞剛配到，淡入完再量
+    ENG.putStorm([], [], []); ENG.putBooms([]); ENG.putGlows(glowLampList(ENG.lampRoom()));
+    r.free = { on: allOn(), fire: lit().filter(L => L.color.getHexString() === 'ff8a36').length,
+               stormLent: th.stormLamps.every(L => L.color.getHexString() === 'ff8a36') };
+    ENG.putStorm([], [], STORM2);
+    r.back = th.stormLamps.map(L => L.color.getHexString() + '/' + L.decay + '/' + L.distance).join();
+    ENG.putStorm([], [], []);
+    /* 光源數 0：打雷、強爆炸、晚上的小光源一盞都不開 */
+    setLamps(0);
+    ENG.putStorm([], [], STORM2); ENG.putBooms([{ x: 0, y: 5, z: 0, i: 1, R: 10 }]);
+    r.zero = { room: ENG.lampRoom(), none: noneOn() };
+    ENG.putGlows(EMPTY); r.zero.after = noneOn();
+    ENG.putStorm([], [], []); ENG.putBooms([]);
+    setLamps(keepN);
+    fires = null; clearFires(); clearGlows(); dayClock = keepClock; draw();
+    r.end = noneOn();
+    cleanTools();
+    return r;
+  });
+  ok('晚上的小光源：只在晚上亮——:45 全亮、:30 剛好一半、:15 與關掉晝夜一盞都不開；燈都在火上',
+     glowL.n45 === 6 && glowL.on45 && glowL.col45 === 'ff8a36' && glowL.off45 <= 3 && Math.abs(glowL.half - 0.5) < 1e-6 &&
+     glowL.day.lit === 0 && glowL.day.none && glowL.dayOff.lit === 0 && glowL.dayOff.none,
+     ':45 亮 ' + glowL.n45 + ' 盞（全開 ' + glowL.on45 + '、#' + glowL.col45 + '、離火最遠 ' + glowL.off45.toFixed(2) + ' 格）；:30 是 :45 的 ' + glowL.half +
+     ' 倍；:15 亮 ' + glowL.day.lit + '（全關 ' + glowL.day.none + '）；關掉晝夜亮 ' + glowL.dayOff.lit);
+  ok('晚上的小光源：先分棟再分群——每棟都有燈、每盞最近的那一塊是自己那一棟、不擺在兩棟中間；燈不夠時塊數最少的那一棟不亮',
+     glowL.n6 === 6 && glowL.split['-1'] >= 1 && glowL.split['3'] >= 1 && glowL.split['5'] >= 1 && glowL.worst6 <= glowL.UP + 2.5 &&
+     glowL.k2 === '-1,3',
+     '六盞：地標 ' + glowL.split['-1'] + '、房子 3 ' + glowL.split['3'] + '、房子 5 ' + glowL.split['5'] + '，離自己那一棟最遠 ' + glowL.worst6 +
+     ' 格；兩盞給 ' + glowL.k2);
+  ok('晚上的小光源：燈不飛——火挪到 GLOW_JUMP 格外，舊的原地淡掉、新的在那裡淡入，亮著的時候一步都不經過中間；挪幾格就一路跟過去、不熄',
+     glowL.fly.between === 0 && glowL.fly.lastA > 0 && glowL.fly.firstB > glowL.fly.lastA && glowL.fly.moveLit < 0.5 &&
+     glowL.fly.endB && glowL.fly.endI > 0.5 && glowL.follow.minI > glowL.follow.fk && Math.abs(glowL.follow.dx - 2) < 0.2,
+     '挪 30 格：經過中間 ' + glowL.fly.between + ' 次、舊的最後亮在第 ' + glowL.fly.lastA + ' 秒、新的第 ' + glowL.fly.firstB +
+     ' 秒出現、亮著時一步最多挪 ' + glowL.fly.moveLit + ' 格、最後亮度 ' + glowL.fly.endI + '；挪 2 格：最暗 ' + glowL.follow.minI +
+     '、跟過去 ' + glowL.follow.dx + ' 格');
+  ok('晚上的小光源：飛龍火球一顆一盞跟著飛、撞上去那一下 FLASH_LIFE 收掉、煙火那一下照那一發的顏色 GLOW_FW_T 收掉；短的先排，火拿剩下的',
+     glowL.ball && glowL.hit.i0 === 0 && glowL.hit.i1 === glowL.hit.want1 && glowL.hit.R && glowL.hit.z === 300 &&
+     glowL.fw.i0 === 0 && glowL.fw.c && glowL.fw.y === 40 && glowL.order === 'ball,hit,fw,fire,fire' &&
+     glowL.hitGone === 0 && glowL.fwStill === 1 && glowL.fwGone === 0,
+     '火球 ' + glowL.ball + '；撞擊 0 → ' + glowL.hit.i1 + '（應為 ' + glowL.hit.want1 + '）、半徑 FB_R ' + glowL.hit.R + '；煙火顏色 ' + glowL.fw.c +
+     '；順序 ' + glowL.order + '；FLASH_LIFE 後撞擊剩 ' + glowL.hitGone + '、煙火剩 ' + glowL.fwStill + '，GLOW_FW_T 後 ' + glowL.fwGone);
+  ok('光源數：10 盞多四盞、全部一起開關；打雷、強爆炸先拿，小光源用剩下的，借過打雷那兩盞要還；0 盞時一盞都不開',
+     glowL.extra === 4 && glowL.room10 === 7 && glowL.busy.on && glowL.busy.storm && glowL.busy.boom && glowL.busy.fire === 7 &&
+     glowL.roomFree === 10 && glowL.free.on && glowL.free.fire === 10 && glowL.free.stormLent &&
+     glowL.back === 'a8c8ff/2/140,a8c8ff/2/100' && glowL.zero.room === 0 && glowL.zero.none && glowL.zero.after && glowL.end,
+     '多 ' + glowL.extra + ' 盞；打雷＋一顆強爆炸時空 ' + glowL.room10 + ' 盞、火亮 ' + glowL.busy.fire + '（全開 ' + glowL.busy.on +
+     '、打雷兩盞藍的亮著 ' + glowL.busy.storm + '、強爆炸那盞橘的 ' + glowL.busy.boom + '）；都沒有時空 ' + glowL.roomFree + '、火亮 ' + glowL.free.fire +
+     '（全開 ' + glowL.free.on + '、借了打雷那兩盞 ' + glowL.free.stormLent + '）；打雷回來 ' + glowL.back +
+     '；0 盞 空 ' + glowL.zero.room + '、全關 ' + glowL.zero.none + '／' + glowL.zero.after + '；收完全關 ' + glowL.end);
 
   /* 「每幀乘一次」的阻尼照 dt 換算（v1.244.0，使用者：「要改」）。規則型：同一顆粒子、同一塊碎料，
      用 30／60／120／144fps 的 dt 各推兩秒，看走多遠。改之前走的距離跟幀率成反比——探針實測

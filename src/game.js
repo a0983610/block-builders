@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.295.0';
+const VERSION = '1.296.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -96,6 +96,10 @@ const CNT_OPTS = [1800, 3000, 9000];
 const ARENA_FIX = { 1800: 65, 3000: 79, 9000: 128 };
 const WK_OPTS = [20, 40, 60];
 const SPD_OPTS = [0.5, 1, 4];
+/* 畫面設定「光源」幾盞（v1.296.0，使用者選「關／6／10／16」、預設 6）。0＝一盞都不開；六盞以上的才有用
+   （打雷兩盞＋強爆炸四盞是固定那一份，多的給晚上的小光源，見 engine.js 的 setLampCount）。
+   真顯示卡（UHD 770、1080p、台北 101）一幀：0 盞 8.8ms、6 盞 11.2～11.7、10 盞 13.1、16 盞 15.8（24 盞 19.6 就掉到 60fps 以下） */
+const LAMP_OPTS = [0, 6, 10, 16];
 const CNT_MAX = CNT_OPTS[CNT_OPTS.length - 1];
 let targetCnt = 3000;
 let workerCnt = 20;
