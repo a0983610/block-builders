@@ -9575,7 +9575,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
      比芙莉蓮多的四組：後面的長髮（mane，掛在頭上、自己擺）、大衣下襬（skirt，掛在腰、跑起來往後揚）、
      劍（sword，自己的座標：護手在原點、刃朝 +y、刃口朝 +z）、鞘（saya，跟劍同一套座標——收著的時候兩個矩陣一樣）。
      **手去追劍柄與鞘**（同芙莉蓮的 frRig）：右手握劍柄（wR）、左手握鞘（wL，gL 從鞘口沿著鞘量，負的＝在柄上）。
-     光之太刀那一招的姿勢與時間軸（ERT）在這裡，規則那邊照同一份走；劍氣（規則那邊寫在她身上的 m.cut）怎麼畫看 ER_FX。
+     光之太刀那一招的姿勢與時間軸（ERT）在這裡，規則那邊照同一份走；切面（規則那邊寫在她身上的 m.cut）怎麼畫看 ER_FX。
      見 開發筆記〈艾莉絲的造型〉 */
   /* 配色從參考圖 1 取樣（PowerShell System.Drawing，每一區量化分桶取最多的幾桶）：
      頭髮 #bb443a／影 #8b2e2a、膚 #fddcc5、毛領 #ebd3b4／#cbb49c、領結 #55423c、大衣 #1e181a、白上衣 #fdf8f3、
@@ -9597,12 +9597,13 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
   /* 法線往上偏多少：頭髮、白上衣、毛領 0.5（紅髮給 1 的話頂上吃滿天光、整頭偏粉）；臉與膚色照 heroUp 那一條（GJ_FACE_UP） */
   const ER_UP = { hair: 0.5, hairD: 0.5, hairL: 0.5, wht: 0.5, whtD: 0.5, fur: 0.5, furD: 0.5, furL: 0.5 };
   const ER_G = { body: 0, head: 1, armR: 2, armL: 3, handR: 4, handL: 5, legR: 6, legL: 7, footR: 8, footL: 9,
-                 mane: 10, skirt: 11, sword: 12, saya: 13 };
-  const ER_NG = 14;
-  /* 每一組的樞紐（站直時的絕對座標）：手在手腕、腳掌在腳踝、長髮在後腦、下襬在腰；劍與鞘用自己的座標 */
+                 mane: 10, skirt: 11, sword: 12, saya: 13, shinR: 14, shinL: 15 };
+  const ER_NG = 16;
+  /* 每一組的樞紐（站直時的絕對座標）：手在手腕、腳掌在腳踝、長髮在後腦、下襬在腰；劍與鞘用自己的座標；
+     小腿在膝蓋（v1.292.0：跑步要一腳撐地、一腳把小腿往後收，見 erGaitLeg；剛好是過膝襪不透／透膚的那條線） */
   const ER_PIV = [[0, 0, 0], [0, 0.78, 0], [-0.255, 0.715, 0], [0.255, 0.715, 0], [-0.255, 0.465, 0], [0.255, 0.465, 0],
                   [-0.085, 0.40, 0], [0.085, 0.40, 0], [-0.085, 0.075, 0], [0.085, 0.075, 0],
-                  [0, 1.0, -0.20], [0, 0.48, 0], [0, 0, 0], [0, 0, 0]];
+                  [0, 1.0, -0.20], [0, 0.48, 0], [0, 0, 0], [0, 0, 0], [-0.085, 0.22, 0], [0.085, 0.22, 0]];
   /* 手臂一節、沒有手肘：搆不到先把袖子拉長（最多 ER_EXT），還不夠才整支挪。
      ER_EXT 給 0.18（芙莉蓮 0.14）：居合架勢右手要越過身體去握左腰的柄（同善逸的 ZEN_ARM ＋ ZEN_EXT 0.46） */
   const ER_WAIST = 0.46, ER_WRIST = 0.25, ER_EXT = 0.18, ER_HAND_C = 0.038;
@@ -9613,7 +9614,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
   const ERIS = (() => {
     const out = [];
     const P = (g, p, s, c, r, f) => out.push(Object.assign({ g: ER_G[g], p, s, c: ERC[c], cn: c, r: r || [0, 0, 0] }, f || {}));
-    const SIDE = { arm: 1, hand: 1, leg: 1, foot: 1 };
+    const SIDE = { arm: 1, hand: 1, leg: 1, foot: 1, shin: 1 };
     const M = (g, p, s, c, r, f) => {
       r = r || [0, 0, 0];
       P(SIDE[g] ? g + 'L' : g, p, s, c, r, f);
@@ -9765,14 +9766,17 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
        平常收起來（長度照 fd 縮到 0，位置與長度每一幀照手臂的根算，見 putErises——這裡的 p／s 只是 fd 1 那一格） ── */
     M('body', [0.255, 0.645, 0.04], [0.13, 0.18, 0.14], 'coat', 0, { f: 1 });
 
-    /* ── 腳（樞紐在胯 ±0.085, 0.40）：短褲褲管、一截大腿、過膝襪（上半不透、外側一排扣；下半透膚）、腳踝一圈 ── */
+    /* ── 腳（樞紐在胯 ±0.085, 0.40）：短褲褲管、一截大腿、過膝襪（上半不透、外側一排扣；下半透膚）、腳踝一圈。
+       膝蓋以下（透膚那一截、腳踝一圈）是小腿那一組（樞紐在膝蓋 0.22）；膝蓋那一塊掛在大腿上、站直時整塊藏在兩截裡面，
+       彎膝蓋的時候補住膝蓋前面那個缺角 ── */
     M('leg', [0.085, 0.375, 0], [0.13, 0.05, 0.15], 'shorts');
     M('leg', [0.085, 0.335, 0], [0.112, 0.03, 0.122], 'skin');
     M('leg', [0.085, 0.27, 0], [0.114, 0.10, 0.124], 'stk');
     M('leg', [0.143, 0.30, 0.0], [0.004, 0.014, 0.014], 'btn');
     M('leg', [0.143, 0.255, 0.0], [0.004, 0.014, 0.014], 'btn');
-    M('leg', [0.085, 0.155, 0], [0.106, 0.13, 0.116], 'stkS');
-    M('leg', [0.085, 0.085, 0], [0.104, 0.025, 0.114], 'stk');
+    M('leg', [0.085, 0.22, 0], [0.10, 0.11, 0.11], 'stk');
+    M('shin', [0.085, 0.155, 0], [0.106, 0.13, 0.116], 'stkS');
+    M('shin', [0.085, 0.085, 0], [0.104, 0.025, 0.114], 'stk');
     /* ── 腳掌（樞紐在腳踝）：黑色平底鞋，腳背露一點、一條帶子 ── */
     M('foot', [0.085, 0.058, 0.035], [0.08, 0.026, 0.09], 'skin');
     M('foot', [0.085, 0.025, 0.025], [0.10, 0.05, 0.175], 'shoe');
@@ -9840,26 +9844,31 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
        st    拔劍掄成上段：右手握柄、左手拉鞘 → 拔出來 → 刀往前下一甩、整把掄過頭頂，雙手舉在額頭前上方
        hold  蓄一下（上段架著、往下沉一點）
        dash  往前撲衝出去（壓低成弓步、劍還舉在頭上，後半把劍掄到這一刀的起點；規則那邊把她往前推，見 game-tools.js 的 erDash）
-       sl    衝的勢頭還沒停就斬：由上往下一刀掃過去（極快）；sl × ERW.at 那一刻刃掃過正前方，劍氣從那裡放出去
+       sl    衝的勢頭還沒停就斬：由上往下一刀掃過去（極快）；sl × ERW.at 那一刻（刀剛掄出去）定切面，切面跟著刀掃過去
        fol   停在斬完那一格（還往前滑一段才停）
        bk    收刀：甩一下刀 → 刀尖對進鞘口 → 滑進去 → 站回招牌姿勢
      第一、二版沒有 dash（站著蹲好就斬），使用者看過第二版預覽：「調整砍的動作整個人物都會移動(例如衝一段過程中砍出去)
      而不是站著丟劍氣 才會有狂劍士的感覺」。第三版是居合（從左腰拔刀斬），使用者：「他應該不是居合姿勢 而是上段起手」
      「動作也都要更豪邁」——st 改成拔劍掄上段（0.35 → 0.5 秒）、dash 0.2 → 0.3 秒（衝得遠，見 game-tools.js 的 ER_DASH）。
-     劍氣（ERW）：從手那一點沿著砍的那一面往外飛，v 格／秒、飛到 R 格；扇形左右各 fan 弧度。
-     規則那邊照這三個數字切（見 game-tools.js 的 erCut）——**畫的跟用的同一份數字** ── */
+     切面（ERW）：手那一點為圓心、半徑 R 格、扇形左右各 fan 弧度，sw 秒從起手那一側掃到另一側（同刀砍的方向）。
+     規則那邊照這幾個數字切（見 game-tools.js 的 erCut）——**畫的跟用的同一份數字**。
+     v1.292.0 之前是從手上往外飛（v 400 格／秒、R 60、at 0.5：刃掃過正前方那一刻放出去）；使用者：「稍微增加切面範圍 大約半徑*1.5」
+     「切面應該像是劍從一邊切到另一邊」——R 90、改成橫著掃，at 0.5 → 0.1（從刀剛掄出去那一刻開始掃，切面跟刀同一個時候經過正前方）；
+     掃多久預覽頁給了 0.12／0.2／0.3 秒，使用者選「0.12 秒（跟刀一樣快）」 ── */
   const ERT = { st: 0.5, hold: 0.25, dash: 0.3, sl: 0.13, fol: 0.6, bk: 1.1 };
-  const ERW = { v: 400, R: 60, fan: 70 * Math.PI / 180, at: 0.5 };
-  /* 劍氣怎麼畫（預覽頁上可以切，程式只讀不寫）：style 0 看不見（只有切口）、1 一道細白線飛出去、2 白線＋切面亮一下；
-     trail 斬的那一下刀上拖一道刀光；sheet 切面亮一下最亮那一圈的不透明度。使用者看過預覽選的：
-     「劍氣 選3 但是要再加上類似氣浪 煙霧感」「刀光開」——style 2；煙是規則那邊冒在被砍中的積木上的細塵（見 game-tools.js 的 erSmoke）。
-     第三版之後：「砍過的那個面 痕跡效果淡一點」，預覽頁給了「第三版 0.32／淡 0.14／更淡 0.07」三檔，使用者：「切面亮的那一下->選更淡這版」 */
-  const ER_FX = { style: 2, trail: 1, sheet: 0.07 };
+  const ERW = { R: 90, fan: 70 * Math.PI / 180, at: 0.1, sw: 0.12 };
+  /* 刀光與切面怎麼畫（預覽頁上可以切，程式只讀不寫）：trail 斬的那一下刀上拖一道刀光；sheet 切面最亮那一片的不透明度。
+     使用者看過預覽選的：「刀光開」；第三版之後：「砍過的那個面 痕跡效果淡一點」，預覽頁給了「第三版 0.32／淡 0.14／更淡 0.07」三檔，
+     使用者：「切面亮的那一下->選更淡這版」。v1.292.0 白線拿掉、切面改成橫著掃之後又給了 0.07／0.12／0.2／0.3，使用者還是選 0.07，
+     另外加上切口閃一下光（見 erGlint）。煙是規則那邊冒在被砍中的積木上的細塵（見 game-tools.js 的 erSmoke） */
+  const ER_FX = { trail: 1, sheet: 0.07 };
   /* ── 姿勢（身體座標）：手伸向 h、手指朝 d；鞘口掛在 ym、刃朝 yd、刃口朝 yn；
      出鞘的劍：握點 hs、刃朝 wd、刃口朝 wn，dr 0＝收在鞘裡、1＝拿在手上；
      右手 wR 握劍柄、左手 wL 握鞘（gL 從鞘口沿著鞘量，負的＝在柄上）；長髮 mn＝[往後揚, 往旁甩]、下襬 sk 往後揚；
-     fd 抱胸（0～1：手臂的根從肩膀挪到手肘 ER_ELB，肩膀到手肘那一截補一塊上臂，見 ER_K.stand） ── */
+     fd 抱胸（0～1：手臂的根從肩膀挪到手肘 ER_ELB，肩膀到手肘那一截補一塊上臂，見 ER_K.stand）；
+     腿 lR／lL＝[大腿往後擺, 往外張, 膝蓋往後彎, 腳尖往下]（後兩個 v1.292.0 跑步才用，見 erGaitLeg；長度一律補成 4，erMix 才混得起來） ── */
   const erV = a => new T.Vector3(a[0], a[1], a[2]);
+  const erL4 = a => [a[0] || 0, a[1] || 0, a[2] || 0, a[3] || 0];
   const ER_KF = ['lift', 'bob', 'lean', 'twist', 'rollR', 'rollL', 'sk', 'wR', 'wL', 'gL', 'dr', 'fd'];
   const ER_KA = ['head', 'lR', 'lL', 'mn'];
   const ER_KV = ['hR', 'hL', 'dR', 'dL', 'ym', 'yd', 'yn', 'hs', 'wd', 'wn'];
@@ -9867,7 +9876,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
   function erK(o) {
     const k = { lift: o.lift || 0, bob: 0, lean: o.lean || 0, twist: o.twist || 0, head: (o.head || [0, 0, 0]).slice(),
                 hR: erV(o.hR || [-0.30, 0.44, 0.03]), hL: erV(o.hL || [0.30, 0.44, 0.03]), rollR: o.rollR || 0, rollL: o.rollL || 0,
-                lR: (o.lR || [0, 0]).slice(), lL: (o.lL || [0, 0]).slice(), mn: (o.mn || [0.04, 0]).slice(), sk: o.sk || 0,
+                lR: erL4(o.lR || []), lL: erL4(o.lL || []), mn: (o.mn || [0.04, 0]).slice(), sk: o.sk || 0,
                 /* 鞘掛在左腰、刃朝下往後一點，刃口（護手弓那一側）朝外——正面看得到鞘的寬面（同參考圖 1） */
                 ym: erV(o.ym || [0.19, 0.40, 0.10]), yd: erV(o.yd || [0.05, -0.93, -0.37]).normalize(), yn: erV(o.yn || [1, 0, 0.35]),
                 hs: erV(o.hs || [0.1, 0.5, 0.2]), wd: erV(o.wd || [0, 1, 0]).normalize(), wn: erV(o.wn || [0, 0, 1]),
@@ -9920,8 +9929,37 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     jodan: erK({ lift: -0.04, lean: 0.08, twist: -0.15, head: [-0.12, 0.15, 0], lR: [0.45, -0.08], lL: [-0.42, 0.08],
                  mn: [0.2, 0], sk: 0.15, ...ER_JA })
   };
-  const ER_RUN_STRIDE = 1.1;         // 跑的時候腿擺多大（弧度；一般跑 0.85，見 ER_K.run）
   const ER_WALK_STRIDE = 0.55;       // 走的時候（第三版 0.42：大搖大擺跨大步）
+  /* ── 跑（有膝蓋，v1.292.0）。使用者：「目前奔跑時兩腳都貼地看起來很奇怪」——原本兩條腿是一整根、對稱地前後擺，
+       左右兩腳隨時一樣高，身體再壓下去讓腳踩到地，所以兩腳永遠一起貼著地面滑。改成一條腿一步分兩段（p 0～1，左腳晚半步）：
+         撐地（p < D）  大腿從前面 S0 掃到後面 S1、膝蓋微彎吸一下（KS），腳掌平貼
+         騰空          蹬地之後膝蓋往後收到 K（腳跟踢向屁股）、大腿往前抬到 F（q 0.7），最後小腿往前伸、大腿落回 S0 著地；
+                       前六成腳尖往下一點（tp）
+       身體高度照兩條腿裡往下伸最長的那一條貼地（就是撐地的那一條），兩腳都離地那一小段（D～0.5）再往上彈 hop。
+       使用者看過預覽：「跑步看起來可以」。見 開發筆記〈光之太刀調整：切面橫著掃過去、半徑 90、跑步加膝蓋（v1.292.0）〉 ── */
+  const ER_GAIT = { D: 0.38, S0: 0.42, S1: 0.5, F: 0.9, K: 1.75, KS: 0.3, tp: 0.5, hop: 0.03 };
+  const ER_THIGH = ER_PIV[ER_G.legR][1] - ER_PIV[ER_G.shinR][1];   // 胯到膝蓋 0.18
+  const ER_SHIN = ER_PIV[ER_G.shinR][1] - ER_PIV[ER_G.footR][1];   // 膝蓋到腳踝 0.145
+  const erHerm = (a, ma, b, mb, t) => {
+    const t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * a + (t3 - 2 * t2 + t) * ma + (3 * t2 - 2 * t3) * b + (t3 - t2) * mb;
+  };
+  /* 這一條腿在 p 那一刻：寫進 l（[往後擺, 往外張, 膝蓋, 腳尖往下]），回傳胯到腳踝往下多長（貼地要用） */
+  function erGaitLeg(p, l) {
+    const G = ER_GAIT, sw = G.S0 + G.S1;
+    p -= Math.floor(p);
+    let f, kn, tp = 0;
+    if (p < G.D) { const u = p / G.D; f = G.S0 - sw * u; kn = G.KS * Math.sin(Math.PI * u); }
+    else {
+      const q = (p - G.D) / (1 - G.D), v = -sw / G.D * (1 - G.D);   // v：撐地時大腿掃的速度（換成騰空這一段的 q）
+      f = q < 0.7 ? erHerm(-G.S1, 0, G.F, 0, q / 0.7) : erHerm(G.F, 0, G.S0, v * 0.3, (q - 0.7) / 0.3);
+      kn = q < 0.35 ? erHerm(0, 0, G.K, 0, q / 0.35) : q < 0.85 ? erHerm(G.K, 0, 0.12, 0, (q - 0.35) / 0.5)
+         : erHerm(0.12, 0, 0, 0, (q - 0.85) / 0.15);
+      tp = G.tp * Math.sin(Math.PI * Math.min(1, q / 0.6));   // q 0.6 以後放平：小腿伸回來經過身體下方時腳尖才不會擦地
+    }
+    l[0] = -f; l[2] = kn; l[3] = tp;
+    return ER_THIGH * Math.cos(f) + ER_SHIN * Math.cos(f - kn);
+  }
   /* 衝：壓低成大弓步往前撲（左腳在前跨很開、右腳在後蹬直，lift 照腿張開的角度壓下去、腳才踩得到地），上身前傾、
      頭抬起來瞪著前面；劍還舉在頭上（後半掄到這一刀的起點，見 erCock）；長髮與下襬整片往後揚、鞘往後飄 */
   const ER_DASH = erK({ lift: -0.18, lean: 0.5, head: [-0.45, 0, 0], lR: [1.0, -0.08], lL: [-0.95, 0.08],
@@ -10031,18 +10069,20 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     }
     const r = m.lie || m.air ? 0 : erC01(m.run);
     if (r > 0) {
-      /* 步幅 ER_RUN_STRIDE（一般跑 0.85）；跨到最開那一刻腳離地最高，整個人壓下去一點，腳才踩得到地（沒有膝蓋）。
+      /* 腿照有膝蓋的跑法擺（見 erGaitLeg）：撐地那一條貼地、騰空那一小段往上彈（v1.292.0 之前是步幅 1.1 弧度、兩腳對稱擺，
+         跨到最開那一刻整個人壓下去讓腳踩到地——兩腳永遠一起貼著地）。
          肩膀跟著步伐反著扭、右手往前甩的時候抬高一點（揮拳那樣），長髮與下襬一甩一甩 */
-      const q = erCopy(_erk2, ER_K.run), L = ER_PIV[ER_G.legR][1];
-      q.lR[0] = ER_RUN_STRIDE * s; q.lL[0] = -ER_RUN_STRIDE * s;
-      q.lift -= L * (1 - Math.cos(ER_RUN_STRIDE * s)) * 0.6;
-      q.twist = 0.2 * s;
-      q.hR.z += 0.3 * s; q.hR.y += 0.1 * Math.max(0, s);   // 右手跟右腳反著擺（右腳往前是 s < 0）
+      const q = erCopy(_erk2, ER_K.run), G = ER_GAIT, p = ph / (2 * Math.PI), pf = p - Math.floor(p);
+      q.lift = Math.max(erGaitLeg(p, q.lR), erGaitLeg(p + 0.5, q.lL)) - ER_THIGH - ER_SHIN;
+      const w = (pf % 0.5 - G.D) / (0.5 - G.D);
+      q.bob = w > 0 ? G.hop * Math.sin(Math.PI * w) : 0;
+      const a = Math.cos(2 * Math.PI * (p - G.D));        // 右手往前甩多少：右腳蹬到最後面（p＝D）那一刻甩到最前面
+      q.twist = 0.2 * a;
+      q.hR.z += 0.3 * a; q.hR.y += 0.1 * Math.max(0, a);
       q.dR.copy(q.hR).sub(ER_SHR).normalize();
-      q.head[1] = -0.12 * s;
-      q.mn[0] += 0.12 * Math.sin(2 * ph); q.mn[1] = 0.1 * s;
+      q.head[1] = -0.12 * a;
+      q.mn[0] += 0.12 * Math.sin(2 * ph); q.mn[1] = 0.1 * a;
       q.sk += 0.12 * Math.sin(2 * ph + 0.5);
-      q.bob = Math.abs(Math.cos(ph)) * 0.07;
       erMix(k, q, r);
     }
     if (slv === undefined && m.st !== 'tachi') return k;
@@ -10177,36 +10217,54 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       _erv2.addScaledVector(_erv, ER_WRIST + ext);
       _erG[gh].multiplyMatrices(B, _erm.compose(_erv2, _erqh, _erONE));
     }
-    for (const [g, gf, l] of [[ER_G.legR, ER_G.footR, k.lR], [ER_G.legL, ER_G.footL, k.lL]]) {
-      const pv = ER_PIV[g];
-      _erG[g].multiplyMatrices(_erHip, _erm.compose(_erv.set(pv[0], pv[1], pv[2]), _erq1.setFromEuler(_erE.set(l[0], 0, l[1], 'XYZ')), _erONE));
-      _erG[gf].multiplyMatrices(_erG[g], _erm.compose(_erv.set(0, ER_PIV[gf][1] - pv[1], 0),
-        _erq1.setFromEuler(_erE.set(-l[0], 0, -l[1], 'ZYX')), _erONE));
+    for (const [g, gs, gf, l] of [[ER_G.legR, ER_G.shinR, ER_G.footR, k.lR], [ER_G.legL, ER_G.shinL, ER_G.footL, k.lL]]) {
+      const pv = ER_PIV[g], pk = ER_PIV[gs];
+      _erq1.setFromEuler(_erE.set(l[0], 0, l[1], 'XYZ'));
+      _erG[g].multiplyMatrices(_erHip, _erm.compose(_erv.set(pv[0], pv[1], pv[2]), _erq1, _erONE));
+      _erq2.setFromAxisAngle(_erX, l[2]);                                    // 膝蓋往後彎（v1.292.0）
+      _erG[gs].multiplyMatrices(_erG[g], _erm.compose(_erv.set(0, pk[1] - pv[1], 0), _erq2, _erONE));
+      /* 腳掌：大腿加膝蓋轉了多少整個反過來（貼平地面），再照 l[3] 腳尖往下 */
+      _erq1.multiply(_erq2).invert().multiply(_erq2.setFromAxisAngle(_erX, l[3]));
+      _erG[gf].multiplyMatrices(_erG[gs], _erm.compose(_erv.set(0, ER_PIV[gf][1] - pk[1], 0), _erq1, _erONE));
     }
   }
   /* 劍上這一點（從護手沿著刃量 y）在世界的哪裡（要先 erRig 過）：刀光的兩條邊、測試量握劍都用它 */
   const erBladePt = (out, y) => out.set(0, y, erBZ(y)).applyMatrix4(_erG[ER_G.sword]);
 
-  /* ── 刀光與劍氣（都是不吃光、不投影的網格，頂點自己帶透明度；沒在出招整組 visible = false）──
+  /* ── 刀光與切面（都是不吃光、不投影的網格，頂點自己帶透明度；沒在出招整組 visible = false）──
        刀光（erTrailMesh）  斬的那一下：照 erRig(m, slv) 往回取樣這一條弧上 ER_TRAIL_N 個時刻，劍尖與刃中間連成一條帶子，
                             越舊越淡；斬完 ER_TRAIL_FADE 秒淡掉
-       劍氣（erWave）       規則那邊寫在她身上的 m.cut：手那一點 h、往目標的 u、那一面上往旁邊的 s、劍氣飛到哪了 r、斬下去幾秒了 t。
-                            一道細的白弧（亮芯＋外面一圈淡藍的光暈）在那一面上、半徑 r、左右各 ERW.fan，飛到盡頭前那兩成五淡掉
-       切面（erSheet）      style 2：那一面上 r 以內那一片扇形亮一下（越靠外緣越亮），劍氣飛完之後 ER_SHEET_FADE 秒淡掉 */
+       切面（erSheet）      規則那邊寫在她身上的 m.cut：手那一點 h、往目標的 u、那一面上往旁邊的 s、從哪一側掃到哪一側 p0 → p1、
+                            掃到哪了 f（0～1）、斬下去幾秒了 t。那一面上、半徑 ERW.R 的扇形，**從起手那一側掃到另一側**
+                            （同刀砍的方向），掃過的地方亮著、前緣亮一點，掃完 ER_SHEET_FADE 秒淡掉
+       切口的光（erGlint）  被切到的積木在切面上閃一下（規則那邊切的時候記在 m.cut.pts：那一塊投影到切面上的位置、
+                            切到的時刻），一點一點 ER_GLINT.t 淡掉；被積木擋住，只看得到表面那一圈切口
+     v1.292.0 之前切面是從她手上往外擴的（一道白弧沿著那一面往外飛 400 格／秒、白弧以內亮著）。使用者：
+     「攻擊切面特效不要做成從艾利絲射出去的感覺 也不要有一條比較明顯的線飛出去」——預覽頁先試了白線拿掉、只剩切口的光，
+     使用者：「好像那個面也消失了? 切面應該像是劍從一邊切到另一邊」——白弧拿掉、切面改成橫著掃過去；
+     第二版預覽使用者：「0.12 秒（跟刀一樣快） 0.07 切口閃一下」——切口的光留著 */
   const ER_TRAIL_N = 24, ER_TRAIL_SPAN = 0.75, ER_TRAIL_FADE = 0.25;
-  const ER_ARC_N = 48, ER_WAVE_W = [0.16, 0.9], ER_SHEET_FADE = 0.35;
+  /* 切面的網格（扇形分幾段、半徑分幾圈）、掃完淡多久；透明度的形狀：
+       r0  手邊那一段多長慢慢亮起來（她手上不會有一個亮點）；out 外面那幾成淡出去；side 扇形兩側多寬淡掉（弧度）；
+       edge 前緣多寬淡掉（不會是一條硬邊）、lead／boost 前緣後面那一段（弧度）亮幾倍——刀掃過去的那一下 */
+  const ER_ARC_N = 48, ER_SHEET_NR = 8, ER_SHEET_FADE = 0.35;
+  const ER_SHEET_A = { r0: 6, out: 0.45, side: 0.15, edge: 0.06, lead: 0.3, boost: 1.5 };
+  /* 光點最多幾顆（規則那邊照這個數字收，見 game-tools.js 的 erCut）、一顆多大（格）、亮起來／開始淡／淡多久（秒）、多亮 */
+  const ER_GLINT = { max: 900, size: 1.4, t: [0.03, 0.06, 0.4], a: 0.3 };
   const ER_FX_VS = 'attribute float al; attribute vec3 col; varying float vA; varying vec3 vC;\n' +
     'void main() { vA = al; vC = col; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
   const ER_FX_FS = 'varying float vA; varying vec3 vC; void main() { gl_FragColor = vec4(vC, vA);\n#include <colorspace_fragment>\n}';
-  let erMesh = null, erTrailMesh = null, erWaveMesh = null, erSheetMesh = null;
-  /* 一條帶子（每一段兩個頂點）：n 段、頂點數 2(n + 1) */
-  function erStrip(n, order) {
-    const g = new T.BufferGeometry();
-    g.setAttribute('position', new T.BufferAttribute(new Float32Array((n + 1) * 2 * 3), 3).setUsage(T.DynamicDrawUsage));
-    g.setAttribute('al', new T.BufferAttribute(new Float32Array((n + 1) * 2), 1).setUsage(T.DynamicDrawUsage));
-    g.setAttribute('col', new T.BufferAttribute(new Float32Array((n + 1) * 2 * 3), 3).setUsage(T.DynamicDrawUsage));
+  let erMesh = null, erTrailMesh = null, erSheetMesh = null, erGlintMesh = null;
+  /* 網格：n × w 格、頂點數 (n + 1)(w + 1)，第 i 列第 j 個是 i × (w + 1) + j。刀光是一條帶子（w＝1：每一段兩個頂點），
+     切面是扇形分 n 段、半徑分 w 圈 */
+  function erGrid(n, w, order) {
+    const g = new T.BufferGeometry(), nv = (n + 1) * (w + 1);
+    g.setAttribute('position', new T.BufferAttribute(new Float32Array(nv * 3), 3).setUsage(T.DynamicDrawUsage));
+    g.setAttribute('al', new T.BufferAttribute(new Float32Array(nv), 1).setUsage(T.DynamicDrawUsage));
+    g.setAttribute('col', new T.BufferAttribute(new Float32Array(nv * 3), 3).setUsage(T.DynamicDrawUsage));
     const idx = [];
-    for (let i = 0; i < n; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    for (let i = 0; i < n; i++)
+      for (let j = 0; j < w; j++) { const a = i * (w + 1) + j, b = a + w + 1; idx.push(a, a + 1, b, a + 1, b + 1, b); }
     g.setIndex(idx);
     const mesh = new T.Mesh(g, new T.ShaderMaterial({ vertexShader: ER_FX_VS, fragmentShader: ER_FX_FS,
                                                       transparent: true, depthWrite: false, side: T.DoubleSide }));
@@ -10214,6 +10272,13 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     scene.add(mesh);
     return mesh;
   }
+  /* 切口的光點：一顆一顆柔邊的圓（離中心越遠越淡）、加法混色；大小 ER_GLINT.size 是世界單位，照離相機多遠縮（同 PointsMaterial） */
+  const ER_GLINT_VS = 'attribute float al; varying float vA; uniform float uSize, uHalfH;\n' +
+    'void main() { vA = al; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv;\n' +
+    '  gl_PointSize = uSize * projectionMatrix[1][1] * uHalfH / max(0.1, -mv.z); }';
+  const ER_GLINT_FS = 'varying float vA; void main() { vec2 q = gl_PointCoord * 2.0 - 1.0; float r = dot(q, q);\n' +
+    '  if (r > 1.0) discard; float f = (1.0 - r) * (1.0 - r); gl_FragColor = vec4(0.85, 0.93, 1.0, vA * f);\n' +
+    '#include <colorspace_fragment>\n}';
   function erInit() {
     erMesh = new T.InstancedMesh(heroGeo(ER_SLOT, MAXER, k => {
       const b = ERIS[k];
@@ -10227,9 +10292,18 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     for (let i = 0; i < MAXER; i++)
       for (let k = 0; k < ER_SLOT; k++) erMesh.setColorAt(i * ER_SLOT + k, tmpC.setHex(ERIS[k].c));
     scene.add(erMesh);
-    erTrailMesh = erStrip(ER_TRAIL_N - 1, 4);
-    erWaveMesh = erStrip(ER_ARC_N * 2 + 1, 5);          // 亮芯一條、光暈一條，中間一段退化成看不見的接縫
-    erSheetMesh = erStrip(ER_ARC_N, 3);
+    erTrailMesh = erGrid(ER_TRAIL_N - 1, 1, 4);
+    erSheetMesh = erGrid(ER_ARC_N, ER_SHEET_NR, 3);
+    {
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.BufferAttribute(new Float32Array(ER_GLINT.max * 3), 3).setUsage(T.DynamicDrawUsage));
+      g.setAttribute('al', new T.BufferAttribute(new Float32Array(ER_GLINT.max), 1).setUsage(T.DynamicDrawUsage));
+      erGlintMesh = new T.Points(g, new T.ShaderMaterial({
+        vertexShader: ER_GLINT_VS, fragmentShader: ER_GLINT_FS, uniforms: { uSize: { value: ER_GLINT.size }, uHalfH: { value: 400 } },
+        transparent: true, depthWrite: false, blending: T.AdditiveBlending }));
+      erGlintMesh.frustumCulled = false; erGlintMesh.renderOrder = 3; erGlintMesh.visible = false;
+      scene.add(erGlintMesh);
+    }
   }
   const erAt = [];                   // 這一幀第 n 位畫的是 beasts 的第幾隻（點選要對回去，同 frAt）
   const _erTa = new T.Vector3(), _erTb = new T.Vector3();
@@ -10251,60 +10325,60 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     G.attributes.position.needsUpdate = G.attributes.al.needsUpdate = G.attributes.col.needsUpdate = true;
     return true;
   }
-  /* 劍氣與切面：照 m.cut 畫（規則那邊給，見 game-tools.js 的 erPlane）。回 [劍氣有沒有畫, 切面有沒有畫] */
+  /* 切面上半徑 rad、角度 psi（從 u 往 s 轉）的那一點 */
   const erArcPt = (c, rad, psi, out) => out.set(c.hx + rad * (Math.cos(psi) * c.ux + Math.sin(psi) * c.sx),
                                               c.hy + rad * (Math.cos(psi) * c.uy + Math.sin(psi) * c.sy),
                                               c.hz + rad * (Math.cos(psi) * c.uz + Math.sin(psi) * c.sz));
-  function erWave(m) {
-    const c = m.cut;
-    if (!c || !ER_FX.style || !(c.r > 0)) return [false, false];
-    const F = ERW.fan, R = ERW.R, q = c.r / R;
-    const fade = 1 - frE((q - 0.75) / 0.25);
-    let wave = false, sheet = false;
-    if (fade > 0 && q < 1) {
-      const G = erWaveMesh.geometry, P = G.attributes.position.array, A = G.attributes.al.array, C = G.attributes.col.array;
-      /* 兩條帶子接成一條：前 ER_ARC_N + 1 對頂點是亮芯，後 ER_ARC_N + 1 對是光暈（中間那一段兩頭透明度都是 0，看不見） */
-      for (let L = 0; L < 2; L++) {
-        const w = ER_WAVE_W[L], a0 = L ? 0.3 : 1, col = L ? [0.72, 0.88, 1] : [1, 1, 1];
-        for (let i = 0; i <= ER_ARC_N; i++) {
-          const f = i / ER_ARC_N, psi = F - 2 * F * f, taper = Math.pow(Math.sin(Math.PI * f), 0.6);
-          const j = (L * (ER_ARC_N + 1) + i) * 2;
-          erArcPt(c, c.r + w * taper * 0.5, psi, _erTa); erArcPt(c, Math.max(0, c.r - w * taper * 0.5), psi, _erTb);
-          P.set([_erTa.x, _erTa.y, _erTa.z, _erTb.x, _erTb.y, _erTb.z], j * 3);
-          const al = (i === 0 || i === ER_ARC_N) ? 0 : a0 * fade * taper;
-          A[j] = A[j + 1] = al;
-          C.set(col, j * 3); C.set(col, j * 3 + 3);
-        }
-      }
-      G.attributes.position.needsUpdate = G.attributes.al.needsUpdate = G.attributes.col.needsUpdate = true;
-      wave = true;
-    }
-    if (ER_FX.style === 2) {
-      const tFull = c.tw + R / ERW.v, k = c.t < tFull ? 1 : 1 - frE((c.t - tFull) / ER_SHEET_FADE);
-      if (k > 0) {
-        const G = erSheetMesh.geometry, P = G.attributes.position.array, A = G.attributes.al.array, C = G.attributes.col.array;
-        for (let i = 0; i <= ER_ARC_N; i++) {
-          const psi = F - 2 * F * i / ER_ARC_N;
-          erArcPt(c, Math.min(c.r, R), psi, _erTa);
-          P.set([_erTa.x, _erTa.y, _erTa.z, c.hx, c.hy, c.hz], i * 6);
-          A[i * 2] = ER_FX.sheet * k; A[i * 2 + 1] = 0;
-          C.set([0.9, 0.96, 1, 0.9, 0.96, 1], i * 6);
-        }
-        G.attributes.position.needsUpdate = G.attributes.al.needsUpdate = G.attributes.col.needsUpdate = true;
-        sheet = true;
+  /* 切面：從 p0 掃到 p0 ＋ (p1 − p0) × f 那一片。一個頂點的透明度＝ER_FX.sheet × 掃完之後淡掉 × 半徑那一軸 × 角度那一軸
+     （兩側、前緣淡掉，前緣後面 lead 那一段亮 1 ＋ boost 倍）。回 true＝這一幀有畫 */
+  function erSheet(c) {
+    const tEnd = c.tw + ERW.sw, k = c.t < tEnd ? 1 : 1 - frE((c.t - tEnd) / ER_SHEET_FADE);
+    if (!(k > 0) || !(c.f > 0)) return false;
+    const S = ER_SHEET_A, F = ERW.fan, R = ERW.R, pe = c.p0 + (c.p1 - c.p0) * c.f, span = Math.abs(pe - c.p0);
+    const G = erSheetMesh.geometry, P = G.attributes.position.array, A = G.attributes.al.array, C = G.attributes.col.array;
+    for (let i = 0; i <= ER_ARC_N; i++) {
+      const psi = c.p0 + (pe - c.p0) * i / ER_ARC_N, dl = span * (1 - i / ER_ARC_N);   // dl：離前緣多遠（弧度）
+      const ang = frE((F - Math.abs(psi)) / S.side) * frE(dl / S.edge) * (1 + S.boost * Math.exp(-(dl / S.lead) * (dl / S.lead)));
+      for (let j = 0; j <= ER_SHEET_NR; j++) {
+        const r = R * j / ER_SHEET_NR, v = i * (ER_SHEET_NR + 1) + j;
+        erArcPt(c, r, psi, _erTa);
+        P[v * 3] = _erTa.x; P[v * 3 + 1] = _erTa.y; P[v * 3 + 2] = _erTa.z;
+        A[v] = ER_FX.sheet * k * ang * frE(r / S.r0) * (1 - frE((r - (1 - S.out) * R) / (S.out * R)));
+        C[v * 3] = 0.9; C[v * 3 + 1] = 0.96; C[v * 3 + 2] = 1;
       }
     }
-    return [wave, sheet];
+    G.attributes.position.needsUpdate = G.attributes.al.needsUpdate = G.attributes.col.needsUpdate = true;
+    return true;
+  }
+  /* 切口的光：c.pts 一塊四個數（投影到切面上的 x、y、z，切到那一刻的 c.t）；還亮著的才放進去。
+     一顆的透明度＝ER_GLINT.a × 時間 */
+  function erGlint(c) {
+    const pts = c.pts, n = pts ? Math.min(pts.length >> 2, ER_GLINT.max) : 0, T0 = ER_GLINT.t;
+    const G = erGlintMesh.geometry, P = G.attributes.position.array, A = G.attributes.al.array;
+    let live = 0;
+    for (let i = 0; i < n; i++) {
+      const tau = c.t - pts[i * 4 + 3];
+      const k = tau < 0 ? 0 : Math.min(1, tau / T0[0]) * (1 - frE((tau - T0[1]) / T0[2]));
+      if (!(k > 0)) continue;
+      P[live * 3] = pts[i * 4]; P[live * 3 + 1] = pts[i * 4 + 1]; P[live * 3 + 2] = pts[i * 4 + 2];
+      A[live++] = ER_GLINT.a * k;
+    }
+    if (!live) return false;
+    G.setDrawRange(0, live);
+    G.attributes.position.needsUpdate = G.attributes.al.needsUpdate = true;
+    erGlintMesh.material.uniforms.uHalfH.value = renderer.domElement.height / 2;
+    return true;
   }
   function putErises(list) {
-    let n = 0, tr = false, wv = false, sh = false;
+    let n = 0, tr = false, sh = false, gl = false;
     for (let i = 0; i < list.length && n < MAXER; i++) {
       const m = list[i];
       if (m.kind !== 'eris') continue;
       erAt[n] = i;
-      /* 刀光、劍氣先畫（刀光要往回取樣、會把骨架算成別的時刻），她自己最後照這一刻再算一次 */
+      /* 刀光、切面先畫（刀光要往回取樣、會把骨架算成別的時刻），她自己最後照這一刻再算一次 */
       if (!tr) tr = erTrail(m);
-      if (!wv && !sh) [wv, sh] = erWave(m);
+      if (m.cut && !sh) sh = erSheet(m.cut);
+      if (m.cut && !gl) gl = erGlint(m.cut);
       erRig(m);
       const base = n * ER_SLOT;
       for (let j = 0; j < ER_PARTS; j++) {
@@ -10337,7 +10411,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     erMesh.count = n * ER_SLOT;
     erMesh.visible = n > 0;
     if (n) { erMesh.instanceMatrix.needsUpdate = true; dropSphere(erMesh); }
-    erTrailMesh.visible = tr; erWaveMesh.visible = wv; erSheetMesh.visible = sh;
+    erTrailMesh.visible = tr; erSheetMesh.visible = sh; erGlintMesh.visible = gl;
   }
   /* ══ Diablo（暗黑破壞神）════════════════════════════════════════
      使用者：「加入新天災吉祥物 diablo 攻擊方式是舊版獅鷲的噴火」，附了兩張暗黑破壞神二代的參考圖。
@@ -12287,10 +12361,11 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 芙莉蓮（v1.259.0）：自己一顆 mesh（putFrierens），防護罩照規則那邊寫在她身上的 bt／bc／bh 畫；
        FR_BAR_OPEN／FR_BAR_CLOSE／FR_BAR_RIP 是罩子張開、收掉、亮紋擴完要幾秒（規則那邊照這幾個收狀態） */
     putFrierens, FRIEREN, FR_PARTS, FR_SLOT, MAXFR, FR_G, FR_NE, FR_BAR_OPEN, FR_BAR_CLOSE, FR_BAR_RIP,
-    /* 艾莉絲（v1.290.0）：自己一顆 mesh（putErises），刀光與劍氣也在這一支畫。規則那邊照 ERT 的時間軸走光之太刀，
-       劍氣飛多快、多遠、扇形多開讀 ERW（規則那邊照同一份切）；ER_FX 是劍氣怎麼畫（預覽頁切換用）。
+    /* 艾莉絲（v1.290.0）：自己一顆 mesh（putErises），刀光與切面也在這一支畫。規則那邊照 ERT 的時間軸走光之太刀，
+       切面多大、扇形多開、掃多久讀 ERW（規則那邊照同一份切）；ER_FX 是刀光與切面怎麼畫（預覽頁切換用）；
+       ER_GLINT 是切口的光（規則那邊照 max 收 m.cut.pts，v1.292.0）。
        erBlade(m, y) 照現在的姿勢算劍上那一點（測試量握劍、刀光用；ER_HOLD 是右手握的那一點、雙手時左手握的柄頭、刃長） */
-    putErises, ERIS, ER_PARTS, ER_SLOT, MAXER, ER_G, ERT, ERW, ER_FX,
+    putErises, ERIS, ER_PARTS, ER_SLOT, MAXER, ER_G, ERT, ERW, ER_FX, ER_GLINT, ER_SHEET_A,
     ER_HOLD: { grip: ER_GRIP, pommel: ER_GRIP - ER_POMMEL, blade: ER_BLADE },
     erBlade: (m, y, out) => { erRig(m); return erBladePt(out || new T.Vector3(), y); },
     /* Diablo：自己一顆 mesh（putDiablos）；diaMouth 是噴火的出口（世界座標，畫的跟用的同一份）。
@@ -12323,7 +12398,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erWaveMesh, erSheetMesh, diaMesh, coinMesh, draMesh,
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh,
                             stormLay, stormBall, stormLamps, boomLamps, gjInfMesh, hemi, sun, gloomEl }; }
   };
 })();

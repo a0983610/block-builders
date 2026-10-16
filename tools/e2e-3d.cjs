@@ -34194,6 +34194,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     m.gait = 0.85; m.ph = 1; ENG.putErises([m]);
     fold.walk = ua.map(size);
     m.gait = 0;
+    /* 跑（v1.292.0 有膝蓋）：一步取 40 格，每一格左右腳掌最低點離地多高（÷ 縮放） */
+    const footLo = g => {
+      let y = 1e9;
+      for (let i = 0; i < ENG.ER_SLOT; i++) {
+        if (M[i].g !== g) continue;
+        mesh.getMatrixAt(i, mat);
+        for (let c = 0; c < 8; c++) y = Math.min(y, v.set(c & 1 ? 0.5 : -0.5, c & 2 ? 0.5 : -0.5, c & 4 ? 0.5 : -0.5).applyMatrix4(mat).y);
+      }
+      return y / sc;
+    };
+    const run = [];
+    m.run = 1;
+    for (let i = 0; i < 40; i++) { m.ph = 2 * Math.PI * i / 40; ENG.putErises([m]); run.push([footLo(G.footR), footLo(G.footL)]); }
+    m.run = 0; m.ph = 0;
     /* 握劍：拔出來之後每一格右手方塊的中心（就是手要去的那一點）離劍上握點多遠；雙手那幾格左手離柄頭多遠 */
     const gp = new THREE.Vector3(), pm = new THREE.Vector3(), frames = [];
     for (let b = 0.3; b <= 1.0001; b += 0.05) frames.push(['st', b * E.st, b >= 0.9]);
@@ -34231,7 +34245,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              lo: +(lo / sc).toFixed(3), top: +((hi - lo) / sc).toFixed(3), sc, doomSc: DOOM_SC,
              at: ie, meat: im, n: TOOLS.length, ground: !!GROUND_TOOL.eris, masc: !!row.id, calm: !!row.calm, mground: row.ground,
              doom: DOOMS.some(d => d.id === 'eris'), nm: !!BEAST_NM.eris, it: itOf({ kind: 'eris' }), icon: TOOLS[ie].k,
-             fold, grip: +grip.toFixed(4), two: +two.toFixed(4), n2,
+             fold, grip: +grip.toFixed(4), two: +two.toFixed(4), n2, run,
              headTop: +headTop.toFixed(3), jg, jt, jl, down };
   });
   ok('艾莉絲自己一顆 mesh：不進 BEASTS、在造型表總表裡',
@@ -34250,6 +34264,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fo.ua.length === 2 && fo.ua.every(s => s > 0.1) && fo.walk.every(s => s === 0),
      fo.ua.length === 2 && fo.ua.every(s => s > 0.1) && fo.walk.every(s => s === 0) && fo.hR.l > 0 && fo.hL.l < 0 ? '抱胸'
        : JSON.stringify(fo));
+  /* 跑（v1.292.0，使用者：「目前奔跑時兩腳都貼地看起來很奇怪」）：每一格低的那一隻腳貼地（騰空那一下最多彈 hop 0.03）、
+     沒有一格陷進地面；一步裡至少四分之一的時候兩腳高低差超過 0.04、最高抬到 0.08 以上（舊的是兩腳每一格一樣高）。
+     騰空的腳只在蹬地之後那一段抬得高，小腿伸回來經過身體下方時離地只剩一點點，所以不是每一格都差很多 */
+  const eRun = efig.run, eLow = eRun.map(([r, l]) => Math.min(r, l)), eGap = eRun.map(([r, l]) => Math.abs(r - l));
+  const eRunOk = eLow.every(y => y > -0.01 && y < 0.035) && eGap.filter(d => d > 0.04).length >= eRun.length / 4 &&
+                 Math.max(...eGap) > 0.08;
+  ok('跑步一腳撐地、一腳收起來：低的那一隻每一格都貼地，一步裡至少四分之一兩腳高低差超過 0.04、最高抬到 0.08 以上',
+     eRunOk, '低的那一隻 ' + Math.min(...eLow).toFixed(3) + '～' + Math.max(...eLow).toFixed(3) + '；高低差超過 0.04 的 ' +
+     eGap.filter(d => d > 0.04).length + '／' + eRun.length + ' 格、最大 ' + Math.max(...eGap).toFixed(3));
   ok('握劍：拔出來之後每一格右手都握在握點上；上段、衝、斬的前三成雙手握（左手在柄頭）',
      efig.grip < 0.02 && efig.two < 0.02 && efig.n2 > 0,
      efig.grip < 0.02 && efig.two < 0.02 ? '握著' : '右手最遠離握點 ' + efig.grip + '、左手最遠離柄頭 ' + efig.two);
@@ -34281,8 +34304,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('切面通過點的那一點：法線跟往那一點的方向、那一面上往旁邊的方向都垂直；橫斬的側軸水平、直劈的法線水平（抽 200 次）',
      eplane.worst < 1e-9 && eplane.sy < 1e-9 && eplane.ny < 1e-9, eplane.worst < 1e-9 ? '通過' : JSON.stringify(eplane));
 
+  /* ── 切面從起手那一側掃到另一側（v1.292.0，使用者：「切面應該像是劍從一邊切到另一邊」）：同上面〈一律由上往下砍〉的刀——
+        橫斬從左手邊掃到右手邊、正的從左上、負的從右上、直劈從上面；掃的角度從 p0 到 p1、扇形兩邊各 ERW.fan ── */
+  const esweep = await page.evaluate(() => {
+    const out = [];
+    for (const th of [0, 0.6, -0.6, Math.PI / 2]) {
+      const m = { x: 30, z: 4, y: 0, a: 0, sc: DOOM_SC, th, call: { x: 0, y: 3, z: 4, ax: 0, ay: 3, az: 4 } };
+      erPlane(m);
+      const c = m.cut, fx = Math.sin(m.a), fz = Math.cos(m.a);
+      const pt = p => { const k = 0.9 * p, x = c.hx + 10 * (Math.cos(k) * c.ux + Math.sin(k) * c.sx),
+                        y = c.hy + 10 * (Math.cos(k) * c.uy + Math.sin(k) * c.sy), z = c.hz + 10 * (Math.cos(k) * c.uz + Math.sin(k) * c.sz);
+                        return { l: (x - m.x) * fz - (z - m.z) * fx, y }; };
+      const s = pt(c.p0), e = pt(c.p1);
+      out.push({ th: +th.toFixed(2), dl: +(s.l - e.l).toFixed(3), dy: +(s.y - e.y).toFixed(3),
+                 span: Math.abs(c.p0) === ENG.ERW.fan && c.p1 === -c.p0 && c.f === 0 });
+    }
+    return out;
+  });
+  const esOk = esweep.every(d => d.span && (d.th === 0 ? d.dl > 1 && Math.abs(d.dy) < 1 : d.th > 1.5 ? d.dy > 1
+                                            : d.dy > 0.5 && d.dl * d.th > 0));
+  ok('切面從起手那一側掃到另一側（同刀砍的方向）：橫斬由左往右、正的從左上、負的從右上、直劈從上往下',
+     esOk, esOk ? '同刀的方向' : JSON.stringify(esweep));
+
   /* ── 切的範圍：她站在 +x 外面、橫斬點金字塔正中 3 格高那一點；離那一面 ER_Z.w／2 以內、扇形裡、R 以內的地標全部切掉，
-        範圍外一塊都不少（分兩段切，驗首尾相接）；押骰子（rr 取下限、冒塵一定中）：每一塊都冒一縷，到 ER_SMOKE.max 為止。
+        範圍外一塊都不少（分兩段掃，驗首尾相接；掃到一半的時候只切了起手那一側：橫斬是她的左手邊）；
+        押骰子（rr 取下限、冒塵一定中）：每一塊都冒一縷，到 ER_SMOKE.max 為止；切口的光一塊一點、都在切面上，到 ER_GLINT.max 為止。
         只叫 erCut、不推主迴圈，所以還不會垮。再來一趟 m.home（吉祥物砍村子那一趟）：地標一塊都不碰 ── */
   const ecut = await page.evaluate(() => {
     cleanTools(); phase = 'done'; clearFires();
@@ -34301,12 +34347,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         return Math.abs(d) <= W2 && r <= R && a >= r * cosF;
       };
       const cnt = f => blocks.filter(b => b.st === SET && b.hh < 0 && f(b)).length;
-      const in0 = cnt(inCut), out0 = cnt(b => !inCut(b));
-      erCut(m, 0, R * 0.5); erCut(m, R * 0.5, R);
-      return { in0, in1: cnt(inCut), out0, out1: cnt(b => !inCut(b)), n: c.n, sm: c.sm };
+      const side = b => (b.x - c.hx) * c.sx + (b.y - c.hy) * c.sy + (b.z - c.hz) * c.sz;   // 正的＝起手那一側（橫斬：她的左手邊）
+      const in0 = cnt(inCut), out0 = cnt(b => !inCut(b)), L0 = cnt(b => inCut(b) && side(b) > 0.5), R0 = cnt(b => inCut(b) && side(b) < -0.5);
+      erCut(m, 0, 0.5);
+      const half = { L: cnt(b => inCut(b) && side(b) > 0.5), R: cnt(b => inCut(b) && side(b) < -0.5), L0, R0 };
+      erCut(m, 0.5, 1);
+      let off = 0;
+      for (let i = 0; i < c.pts.length; i += 4)
+        off = Math.max(off, Math.abs((c.pts[i] - c.hx) * c.nx + (c.pts[i + 1] - c.hy) * c.ny + (c.pts[i + 2] - c.hz) * c.nz));
+      return { in0, in1: cnt(inCut), out0, out1: cnt(b => !inCut(b)), n: c.n, sm: c.sm, half, pts: c.pts.length / 4, off, p0: c.p0 };
     };
     const r = one(0);
-    r.max = ER_SMOKE.max; r.w = ER_Z.w;
+    r.max = ER_SMOKE.max; r.w = ER_Z.w; r.gmax = ENG.ER_GLINT.max;
     completeNow();
     r.home = one(1);
     Math.random = real;
@@ -34314,9 +34366,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return r;
   });
   const ecOk = ecut.in0 > 0 && ecut.in1 === 0 && ecut.out1 === ecut.out0 && ecut.n === ecut.in0;
-  ok('切的範圍：離那一面 ER_Z.w／2 以內、扇形裡、射程以內的地標全部切掉，範圍外的一塊都不少（分兩段切、首尾相接）',
+  ok('切的範圍：離那一面 ER_Z.w／2 以內、扇形裡、半徑以內的地標全部切掉，範圍外的一塊都不少（分兩段掃、首尾相接）',
      ecOk, ecOk ? '切口 ' + ecut.w + ' 格、範圍內全切、範圍外不動'
                 : '範圍內 ' + ecut.in0 + ' → ' + ecut.in1 + '、範圍外 ' + ecut.out0 + ' → ' + ecut.out1 + '、算進去 ' + ecut.n);
+  const eh = ecut.half;
+  ok('切面是掃過去的：掃到一半時起手那一側（橫斬：她的左手邊）切完了、另一側一塊都還沒動',
+     ecut.p0 > 0 && eh.L0 > 0 && eh.R0 > 0 && eh.L === 0 && eh.R === eh.R0,
+     '左手邊 ' + eh.L0 + ' → ' + eh.L + '、右手邊 ' + eh.R0 + ' → ' + eh.R);
+  ok('切口的光：切下來的一塊記一點、都在切面上，一刀到 ER_GLINT.max 為止',
+     ecut.pts === Math.min(ecut.n, ecut.gmax) && ecut.off < 1e-9,
+     ecut.pts + ' 點（切 ' + ecut.n + ' 塊、上限 ' + ecut.gmax + '）、離切面最遠 ' + ecut.off);
   ok('切口細塵：切下來的每一塊都有機率冒一縷（押骰子時每一塊都冒），一刀到 ER_SMOKE.max 為止',
      ecut.sm === Math.min(ecut.n, ecut.max), '冒了 ' + ecut.sm + ' 縷（切 ' + ecut.n + ' 塊、上限 ' + ecut.max + '）');
   ok('吉祥物砍村子那一趟（m.home）：地標一塊都不碰',
@@ -34348,7 +34407,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const sky = { kind: 'gryphon', sky: 1, x: X, y: 20, z: 20, a: 0, sc: 1, air: 0 };
     beasts.push(sky);
     const d0 = dust.length, poked = stats.poked;
-    erLives(m, 0, ENG.ERW.R, ER_Z.w / 2, Math.cos(ENG.ERW.fan));
+    erLives(m, 0, 1, ER_Z.w / 2);
     const add = dust.slice(d0), red = add.filter(d => d.cr !== undefined && d.cr > 0.5 && d.cg < 0.1 && d.cb < 0.1).length;
     const want = [w.scale || 1, ENG.BEAST_MID.ape * ape.sc / 0.9, ENG.BEAST_MID.giant * g.sc / 0.9]
       .reduce((s, k) => s + Math.round(ER_BLOOD.n * Math.min(ER_BLOOD.max, Math.max(1, k))), 0);
@@ -34402,7 +34461,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const wall = { dd: +w.dd.toFixed(3), stop: w.dstop, x: +w.x.toFixed(3), blocked: footBlocked(w.x, w.z) || !!homeFoot(w.x, w.z), slash };
     beasts = null;
     const c = callEris({ x: 0, y: 3, z: 0.5 });
-    const r = { open, wall, sd: c.call.sd, reach: erReach(), half: ER_REACH, want: Math.max(ER_REACH, full + D.keep + D.pad) };
+    const r = { open, wall, sd: c.call.sd, reach: erReach(), want: full + D.keep + D.pad };
     beasts = null; supportDirty = false;
     return r;
   });
@@ -34410,8 +34469,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      第一稿寫 === 紅過一次（27.999958）。容差 1e−3 比那一截大、比探一步（CALL_PROBE）小得多 */
   const edOk = Math.abs(edash.open.dd - edash.open.full) < 1e-3 && edash.open.dd <= edash.open.full + 1e-9 &&
                edash.open.dmax === edash.open.full && !edash.open.stop &&
-               edash.open.left >= edash.open.keep - 1e-6 && edash.sd === edash.reach && edash.reach === edash.want && edash.reach >= edash.half;
-  ok('衝刺：空地上衝滿「撲 L ＋滑 v × tau」格、離那一點至少留 keep 格；站在 erReach 格外（衝刺整段＋keep＋pad，不比射程一半近）',
+               edash.open.left >= edash.open.keep - 1e-6 && edash.sd === edash.reach && edash.reach === edash.want;
+  /* v1.292.0 半徑 60 → 90，使用者：「衝的距離不調整 只調整切面半徑」——站多遠只照衝刺算，不再跟射程一半取遠的 */
+  ok('衝刺：空地上衝滿「撲 L ＋滑 v × tau」格、離那一點至少留 keep 格；站在 erReach 格外（衝刺整段＋keep＋pad）',
      edOk, edOk ? '衝 ' + edash.open.dd + ' 格、站在 ' + edash.reach + ' 格外' : JSON.stringify(edash));
   ok('衝的路上碰到建築就停在外面，還是照樣斬',
      edash.wall.stop === 1 && !edash.wall.blocked && edash.wall.dd > 0 && edash.wall.slash === 1,
@@ -34535,12 +34595,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('出招那一整段（拔劍、蓄、衝、斬、斬完、收刀）打不動她，收完就打得動',
      ebusy.OPS.every(k => ebusy.r[k] === 'false,false,false,true') && !ebusy.r.free, JSON.stringify(ebusy.r));
 
-  /* ── 畫面：沒她在場不吃 draw call；刀光只在斬與斬完那一下，劍氣與切面照 m.cut（飛到盡頭、淡完就藏起來）；
-        切面最亮那一圈就是 ER_FX.sheet（使用者選的「更淡」）；畫的時候不抽 Math.random ── */
+  /* ── 畫面：沒她在場不吃 draw call；刀光只在斬與斬完那一下，切面與切口的光照 m.cut（掃完淡完、光點淡完就藏起來）；
+        切面亮著的那一片就是 ER_FX.sheet（使用者選的「更淡」0.07）、前緣亮一點但不超過 1 ＋ boost 倍；畫的時候不抽 Math.random ── */
   const edraw = await page.evaluate(() => {
     cleanTools();
     const T3 = ENG.three, E = ENG.ERT, W = ENG.ERW;
-    const vis = () => [T3.erMesh, T3.erTrailMesh, T3.erWaveMesh, T3.erSheetMesh].map(o => o.visible ? 1 : 0).join('');
+    const vis = () => [T3.erMesh, T3.erTrailMesh, T3.erSheetMesh, T3.erGlintMesh].map(o => o.visible ? 1 : 0).join('');
     ENG.putErises([]);
     const off = vis();
     const m = spawnBeast('eris', 1, 0, 0), X = siteR + 20;
@@ -34558,28 +34618,31 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     ENG.putErises([m]);
     const slash = vis();
     Math.random = real; erPlane(m); Math.random = () => { rnd++; return real(); };
-    m.op = 'sl'; m.ot = E.sl * 0.8; m.cut.r = W.R * 0.3; m.cut.t = m.cut.tw + m.cut.r / W.v;
+    m.op = 'sl'; m.ot = E.sl * 0.8; m.cut.f = 0.5; m.cut.t = m.cut.tw + W.sw / 2;
+    m.cut.pts.push(m.cut.hx + 5, m.cut.hy, m.cut.hz, m.cut.t - 0.05);   // 剛切到的一塊（光點還亮著）
     ENG.putErises([m]);
-    const fly = vis(), al = T3.erSheetMesh.geometry.attributes.al.array;
-    let top = 0;
-    for (let i = 0; i < al.length; i++) top = Math.max(top, al[i]);
-    m.op = 'fol'; m.ot = E.fol; m.cut.r = W.R; m.cut.t = m.cut.tw + W.R / W.v + 1;
+    const fly = vis(), al = T3.erSheetMesh.geometry.attributes.al.array, S = ENG.ER_FX.sheet;
+    let top = 0, flat = 0;
+    for (let i = 0; i < al.length; i++) { top = Math.max(top, al[i]); if (Math.abs(al[i] / S - 1) < 1e-3) flat++; }
+    m.op = 'fol'; m.ot = E.fol; m.cut.f = 1; m.cut.t = m.cut.tw + W.sw + 1;
     ENG.putErises([m]);
     const done = vis();
     Math.random = real;
     ENG.putErises([]);
     const gone = vis();
     beasts = null;
-    return { off, stand, dash, slash, fly, done, gone, cnt, slot: ENG.ER_SLOT, rnd, top: +top.toFixed(6), sheet: ENG.ER_FX.sheet };
+    return { off, stand, dash, slash, fly, done, gone, cnt, slot: ENG.ER_SLOT, rnd, top: +top.toFixed(6), flat, sheet: S,
+             boost: ENG.ER_SHEET_A.boost };
   });
   const edOk2 = edraw.off === '0000' && edraw.stand === '1000' && edraw.dash === '1000' && edraw.slash === '1100' &&
                 edraw.fly === '1111' && edraw.done === '1000' && edraw.gone === '0000' && edraw.cnt === edraw.slot;
-  ok('沒她在場就不吃 draw call：本體、刀光、劍氣、切面平常都藏著；刀光只在斬那一下，劍氣與切面到飛完淡完為止',
-     edOk2, '沒她 ' + edraw.off + '；站 ' + edraw.stand + '；衝 ' + edraw.dash + '；斬 ' + edraw.slash + '；劍氣飛 ' + edraw.fly +
-     '；斬完淡完 ' + edraw.done + '；走了 ' + edraw.gone + '（本體／刀光／劍氣／切面）；一位 ' + edraw.cnt + ' 格');
-  ok('切面亮一下最亮那一圈就是 ER_FX.sheet（使用者選「更淡」）', edraw.top === edraw.sheet,
-     '最亮 ' + edraw.top + '、ER_FX.sheet ' + edraw.sheet);
-  ok('刀光、劍氣、切面不抽 Math.random（每幀都畫，不該吃掉規則那邊的骰子）', edraw.rnd === 0, '畫六幀抽了 ' + edraw.rnd + ' 次');
+  ok('沒她在場就不吃 draw call：本體、刀光、切面、切口的光平常都藏著；刀光只在斬那一下，切面與光點到淡完為止',
+     edOk2, '沒她 ' + edraw.off + '；站 ' + edraw.stand + '；衝 ' + edraw.dash + '；斬 ' + edraw.slash + '；掃到一半 ' + edraw.fly +
+     '；斬完淡完 ' + edraw.done + '；走了 ' + edraw.gone + '（本體／刀光／切面／切口的光）；一位 ' + edraw.cnt + ' 格');
+  ok('切面亮著的那一片就是 ER_FX.sheet（使用者選「更淡」0.07），前緣亮一點、不超過 1 ＋ boost 倍',
+     edraw.flat > 0 && edraw.top > edraw.sheet * 1.2 && edraw.top <= edraw.sheet * (1 + edraw.boost) + 1e-9,
+     '等於 ER_FX.sheet 的頂點 ' + edraw.flat + ' 個、最亮 ' + edraw.top + '（ER_FX.sheet ' + edraw.sheet + '、boost ' + edraw.boost + '）');
+  ok('刀光、切面、切口的光不抽 Math.random（每幀都畫，不該吃掉規則那邊的骰子）', edraw.rnd === 0, '畫六幀抽了 ' + edraw.rnd + ' 次');
 
   /* ── 點選：真的走 onDown／onUp 點一隻小獼猴，叫到她、命令帶著那一隻；點得到她自己（回報成 beast、索引對得回來） ── */
   const epick = await page.evaluate(() => {

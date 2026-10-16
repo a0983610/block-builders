@@ -13287,7 +13287,7 @@ function megCancel(m) {
 /* ── 破壞道具：光之太刀（v1.290.0）────────────────────────────
    使用者：「做這個角色的造型 也是越像越好 / 預計會加成道具&吉祥物 攻擊方式是光之太刀 類似無形的劍氣斬過 砍的方向隨機」
    （造型先做過預覽，見 engine.js〈艾莉絲〉；「腰後不用再一把刀 造型OK」）。動手前問了四件，使用者選的都是推薦項：
-     · 劍氣砍多遠：**砍穿整座建築**（劍氣飛 ERW.R 格，站在射程一半 ER_REACH 出招，同 Saber 的規矩；加了衝刺之後站得更遠，見 erReach）
+     · 劍氣砍多遠：**砍穿整座建築**（切面半徑 ERW.R 格；站多遠見 erReach）
      · 切面怎麼定：**通過點的那一點**，再繞「她 → 那一點」那條線隨機轉一個角度（點高處就從高處切，橫的那一刀上半截會垮）
      · 砍到的小人與生物：**砍倒＋斬殺巨人**（小人砍倒、動物倒地、巨人與 Diablo 斬殺，同兵長的 levStrike）
      · 一次幾刀：**一刀**
@@ -13297,17 +13297,17 @@ function megCancel(m) {
    站定那一刻（callAim → act → erStart）轉進 tachi，時間軸讀引擎那一份（ENG.ERT），姿勢照同一份擺：
      st    拔劍掄成上段              hold  蓄一下
      dash  往前撲衝出去（erDash）
-     sl    斬：刃掃過正前方那一刻（sl × ERW.at）定切面（erPlane），劍氣從手那一點放出去
-     fol   停在斬完那一格：劍氣沿著切面往外飛（ERW.v 格／秒），**這一幀飛過的那一圈切掉**（erCut：離那一面 ER_Z.w／2 以內、
-           扇形左右各 ERW.fan 以內的積木打掉——首尾相接，每一塊剛好被算到一次，同 Excalibur）
+     sl    斬：刀剛掄出去那一刻（sl × ERW.at）定切面（erPlane），切面從起手那一側掃到另一側（ERW.sw 秒，同刀砍的方向），
+           **這一幀掃過的那一片切掉**（erCut：離那一面 ER_Z.w／2 以內、半徑 ERW.R 以內、這一幀掃過的角度裡的積木打掉——
+           首尾相接，每一塊剛好被算到一次，同 Excalibur。v1.292.0 之前是劍氣從手上往外飛、一圈一圈切，見 erWaveStep）
+     fol   停在斬完那一格
      bk    收刀，「鏘」一聲，回去逛（excDone）
    見 開發筆記〈破壞道具：光之太刀〉 */
 /* 切口多厚（格）：使用者看過預覽從 2／3／4 裡選了「切口4格」。下限是 √3——斜的那一刀要把兩邊隔開，
    支撐判定角碰角就算連著（兩塊中心最遠差 √3 ≈ 1.73），薄過它的話斜切的上半截還勾著下半截、不會垮。
    **物件不是常數**：預覽頁要邊看邊挑，程式只讀不寫 */
 const ER_Z = { w: 4 };
-const ER_REACH = ENG.ERW.R / 2;   // 站多遠出招（至少）：射程的一半（同 Excalibur 的 EXC_REACH）；衝刺比它遠就照衝刺的（見 erReach）
-const ER_AIM = 0.2;               // 站定那一下（act）多久就蹲下去
+const ER_AIM = 0.2;              // 站定那一下（act）多久就蹲下去
 const ER_HAND = [0.35, 0.62];     // 劍氣從哪裡放出去（模型單位）：她前面 0.35、離地 0.62——斬的那一條弧經過的地方
 /* 砍的方向（m.th，繞「她 → 那一點」那條線轉幾度）：四分之一直劈（π/2），其餘在 ±ER_TILT 弧度裡隨機
    （0 橫斬、正的左上往右下斜劈、負的右上往左下斜劈——上段起手一律由上往下，見引擎的 erSlashAt）——造型預覽「隨機」那一檔，使用者看過 */
@@ -13371,9 +13371,10 @@ function erTarget(m) {
   }
   return { x: c.ax !== undefined ? c.ax : c.x, y: c.ay !== undefined ? c.ay : c.y || 0, z: c.az !== undefined ? c.az : c.z };
 }
-/* 出手那一刻定切面（寫進 m.cut，引擎照它畫劍氣）：手那一點 h（她前面一點、離地 ER_HAND[1]）、u＝往那一點、
+/* 出手那一刻定切面（寫進 m.cut，引擎照它畫切面）：手那一點 h（她前面一點、離地 ER_HAND[1]）、u＝往那一點、
    s＝那一面上往旁邊（th 0 是水平往她的左手邊 s0，π/2 是 v0＝u × s0 大致朝上）、n＝那一面的法線。
-   r 劍氣飛到哪了、t 斬下去幾秒了、tw 劍氣放出去那一刻（引擎畫切面亮一下要用）、n 切掉幾塊（測試在讀）。
+   p0 → p1 從哪一個角度掃到哪一個角度（從 u 往 s 量；起手那一側同引擎 erSlashAt：th < 0 從 −s 那一側、其餘從 +s 那一側）、
+   f 掃到哪了（0～1）、t 斬下去幾秒了、tw 開始掃那一刻、n 切掉幾塊（測試在讀）、pts 切口的光（見引擎的 erGlint）。
    點的是會走的，牠這一刻可能走開了一點：先轉過去面向牠再定 */
 function erPlane(m) {
   const P = erTarget(m), sc = m.sc || 1;
@@ -13387,11 +13388,11 @@ function erPlane(m) {
   if (sl < 1e-3) { s0x = fz; s0z = -fx; sl = 1; }
   s0x /= sl; s0z /= sl;
   const v0x = uy * s0z, v0y = uz * s0x - ux * s0z, v0z = -uy * s0x;   // u × s0
-  const c = Math.cos(m.th || 0), s = Math.sin(m.th || 0);
+  const c = Math.cos(m.th || 0), s = Math.sin(m.th || 0), p0 = (s < -1e-3 ? -1 : 1) * ENG.ERW.fan;
   const sx = c * s0x + s * v0x, sy = s * v0y, sz = c * s0z + s * v0z;
   m.cut = { hx, hy, hz, ux, uy, uz, sx, sy, sz,
             nx: uy * sz - uz * sy, ny: uz * sx - ux * sz, nz: ux * sy - uy * sx,
-            r: 0, t: 0, tw: ENG.ERT.sl * ENG.ERW.at, n: 0, shk: 0, sm: 0 };
+            p0, p1: -p0, f: 0, t: 0, tw: ENG.ERT.sl * ENG.ERW.at, n: 0, shk: 0, sm: 0, pts: [] };
   m.tp = Math.asin(Math.max(-1, Math.min(1, uy)));    // 仰角：斬的那一條弧跟著抬（見引擎的 erSlashAt）
 }
 function stepTachi(m, dt) {
@@ -13418,7 +13419,7 @@ function stepTachi(m, dt) {
     return false;
   }
   if (m.op === 'sl' || m.op === 'fol') erDash(m);  // 斬的時候勢頭還沒停：往前滑一小段（見 erDash）
-  /* 刃掃過正前方那一刻（sl × ERW.at）定切面、劍氣放出去：手那一點照她這一刻滑到的地方 */
+  /* 刀剛掄出去那一刻（sl × ERW.at）定切面、開始掃：手那一點照她這一刻滑到的地方 */
   if (m.op === 'sl' && !m.cut && m.ot >= E.sl * ENG.ERW.at) { erPlane(m); m.cut.t = m.ot; }
   if (m.op === 'sl') { if (m.ot >= E.sl) { m.op = 'fol'; m.ot = 0; } return false; }
   if (m.op === 'fol') { if (m.ot >= E.fol) { m.op = 'bk'; m.ot = 0; } return false; }
@@ -13436,10 +13437,12 @@ function stepTachi(m, dt) {
    預覽頁給了 7／12／16／20 四檔，使用者：「衝刺距離20+8」——L 20（撲 20 格＋滑 8 格）。
    站在射程一半（30 格）只衝得了 30 − keep＝26 格，所以站多遠改成照衝刺距離往外推（見 erReach，多留 pad 格） */
 const ER_DASH = { L: 20, tau: 0.06, keep: 4, pad: 4 };
-/* 跑到離那一點多遠站定：射程一半（ER_REACH），衝刺整段（撲 L ＋滑 v × tau）加 keep、pad 比它遠就照衝刺的 */
+/* 跑到離那一點多遠站定：衝刺整段（撲 L ＋滑 v × tau）加 keep、pad（36 格）。
+   v1.292.0 之前是「射程一半」與這個取遠的（半徑 60 時兩個都是 36）；半徑改 90 之後照那條規則會變 45，
+   使用者：「衝的距離不調整 只調整切面半徑」——拿掉射程一半那一項（出手時離那一點約 11 格，切面還往後切 79 格，整座建築一樣砍得穿） */
 function erReach() {
   const D = ER_DASH;
-  return Math.max(ER_REACH, D.L + 2 * D.L / ENG.ERT.dash * D.tau + D.keep + D.pad);
+  return D.L + 2 * D.L / ENG.ERT.dash * D.tau + D.keep + D.pad;
 }
 function erDashStart(m) {
   const P = erTarget(m);
@@ -13469,12 +13472,20 @@ function erAim(m) {
   const d = Math.hypot(P.x - m.x, P.z - m.z) - ER_HAND[0] * sc;
   m.tp = Math.atan2(P.y - ((m.y || 0) + ER_HAND[1] * sc), Math.max(1, d));
 }
-/* 劍氣往外飛一幀：放出去之後（t 過了 tw）照 ERW.v 往外，飛到 ERW.R 為止；這一幀飛過的那一圈切掉 */
+/* 切面掃一幀：開始掃之後（t 過了 tw）照 ERW.sw 秒從 p0 掃到 p1；這一幀掃過的那一片切掉
+   （v1.292.0 之前是劍氣照 400 格／秒從手上往外飛、一圈一圈切，使用者：「切面應該像是劍從一邊切到另一邊」；
+   見 開發筆記〈光之太刀調整：切面橫著掃過去、半徑 90、跑步加膝蓋（v1.292.0）〉） */
 function erWaveStep(m, dt) {
-  const c = m.cut, W = ENG.ERW;
+  const c = m.cut;
   c.t += dt;
-  const r1 = Math.min(W.R, Math.max(0, (c.t - c.tw) * W.v));
-  if (r1 > c.r) { erCut(m, c.r, r1); c.r = r1; }
+  const f1 = Math.min(1, Math.max(0, (c.t - c.tw) / ENG.ERW.sw));
+  if (f1 > c.f) { erCut(m, c.f, f1); c.f = f1; }
+}
+/* 切面上的這一點掃到第幾成才被切（0～1；扇形外面、半徑外面回 −1）：a、s 是它在 u、s 兩軸上的位置 */
+function erSweepAt(c, a, s) {
+  if (Math.hypot(a, s) > ENG.ERW.R) return -1;
+  const g = (Math.atan2(s, a) - c.p0) / (c.p1 - c.p0);
+  return g >= 0 && g <= 1 ? g : -1;
 }
 /* ── 煙：只冒在被砍中的積木身上（使用者看過第二版預覽：「煙的顆粒太粗(可以加在被砍中的積木&生物上就好
    空中出現煙霧也是奇怪)」；第二版是沿著整個切面冒大顆的煙，一刀 260 顆、一顆 0.6～1.5）——
@@ -13519,11 +13530,11 @@ function erEnd(m) {
   m.op = null; m.ot = 0; m.cut = null; m.y = 0;
   excDone(m);
 }
-/* 劍氣這一幀從半徑 r0 飛到 r1：那一面上這一圈（扇形左右各 ERW.fan）、離那一面 ER_Z.w／2 以內的積木打掉
-   （還立著的算破壞；地上的碎料一起掃走但不算，同 Excalibur），往切口兩側慢慢掉出去、順著劍氣飛的方向帶一點。
+/* 切面這一幀從第 f0 成掃到第 f1 成：那一面上這一片（半徑 ERW.R 以內）、離那一面 ER_Z.w／2 以內的積木打掉
+   （還立著的算破壞；地上的碎料一起掃走但不算，同 Excalibur），往切口兩側慢慢掉出去、順著離手那一點的方向帶一點。
    吉祥物砸村子那一趟（m.home）地標一塊都不碰（同 Saber 的 excSweep）。回傳切掉幾塊 */
-function erCut(m, r0, r1) {
-  const c = m.cut, W2 = ER_Z.w / 2, cosF = Math.cos(ENG.ERW.fan);
+function erCut(m, f0, f1) {
+  const c = m.cut, W2 = ER_Z.w / 2;
   let n = 0, own = 0, cx = 0, cy = 0, cz = 0;
   for (const b of blocks) {
     if (b.st !== SET && b.st !== FREE) continue;
@@ -13531,7 +13542,8 @@ function erCut(m, r0, r1) {
     const d = vx * c.nx + vy * c.ny + vz * c.nz;
     if (d > W2 || d < -W2) continue;
     const a = vx * c.ux + vy * c.uy + vz * c.uz, s = vx * c.sx + vy * c.sy + vz * c.sz, r = Math.hypot(a, s);
-    if (r <= r0 || r > r1 || a < r * cosF) continue;
+    const g = erSweepAt(c, a, s);
+    if (g < 0 || g > f1 || (f0 > 0 && g <= f0)) continue;
     const set = b.st === SET, ow = set && b.hh < 0;   // 同 smash：breakBlock 會把 hh 清掉，要先看
     if (m.home && ow) continue;
     const k = d >= 0 ? 1 : -1, sp = rr(ER_HIT[0], ER_HIT[1]), ri = 1 / (r || 1);
@@ -13543,8 +13555,10 @@ function erCut(m, r0, r1) {
     n++; if (ow) own++;
     cx += bx; cy += by; cz += bz;
     if (Math.random() < ER_SMOKE.p) erSmoke(c, bx, by, bz, k);
+    /* 切口的光（v1.292.0）：這一塊投影到切面上的那一點、切到的時刻，引擎照它亮一點（見引擎的 erGlint） */
+    if (c.pts.length < ENG.ER_GLINT.max * 4) c.pts.push(bx - d * c.nx, by - d * c.ny, bz - d * c.nz, c.t);
   }
-  erLives(m, r0, r1, W2, cosF);
+  erLives(m, f0, f1, W2);
   if (!n) return 0;
   const at = { x: cx / n, y: cy / n, z: cz / n };
   /* self 給她自己：切口從她手邊開始，afterHit 震倒的半徑（W2 × 1.7）可能罩到她（同巨人那一腳的 self） */
@@ -13553,15 +13567,15 @@ function erCut(m, r0, r1) {
   if (!c.shk) { c.shk = 1; ENG.shake(1.0 + Math.min(1.2, n * 0.004)); }   // 一刀只震一次
   return n;
 }
-/* 劍氣這一幀飛過的那一圈裡的人與動物（使用者選的「砍倒＋斬殺巨人」，同兵長的 levStrike）：小人砍倒、動物倒地、
+/* 切面這一幀掃過的那一片裡的人與動物（使用者選的「砍倒＋斬殺巨人」，同兵長的 levStrike）：小人砍倒、動物倒地、
    巨人與 Diablo 斬殺。小人量胸口、動物量身體中段（同 Excalibur 的 excLives）；天上的不算（onGroundBeast）、她自己不算 */
-function erLives(m, r0, r1, W2, cosF) {
+function erLives(m, f0, f1, W2) {
   const c = m.cut;
   const inCut = (x, y, z, pad) => {
     const vx = x - c.hx, vy = y - c.hy, vz = z - c.hz;
     if (Math.abs(vx * c.nx + vy * c.ny + vz * c.nz) > W2 + pad) return false;
-    const a = vx * c.ux + vy * c.uy + vz * c.uz, s = vx * c.sx + vy * c.sy + vz * c.sz, r = Math.hypot(a, s);
-    return r > r0 && r <= r1 && a >= r * cosF;
+    const g = erSweepAt(c, vx * c.ux + vy * c.uy + vz * c.uz, vx * c.sx + vy * c.sy + vz * c.sz);
+    return g >= 0 && g <= f1 && (f0 === 0 || g > f0);
   };
   let hit = 0;
   for (const w of workers) {
