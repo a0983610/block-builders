@@ -4589,7 +4589,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
             「人剛好在哪」帶著走（實測同一份程式換一顆種子，最少÷最多 0.51 → 0.30），
             而且過路的會往內切，內環本來就會多吃一份過境流量。
        等面積而不是等寬：等寬的話外環面積大得多，本來就會比較多人，比了沒意義。 */
-    const tLo = siteR + IDLE_NEAR, tHi = Math.max(tLo + 1, debrisR);   // v1.211：外緣是碎料圈
+    const tLo = 0, tHi = debrisR;       // v1.211：外緣是碎料圈；v1.293.0：內緣拿掉，地標範圍也抽（v1.292 以前是 siteR + IDLE_NEAR）
     const tCut = f => Math.sqrt(tLo * tLo + (tHi * tHi - tLo * tLo) * f);
     const tEdge = [tCut(1 / 3), tCut(2 / 3)];
     const tBand = [0, 0, 0], probe = { tx: 0, tz: 0 }, tN = 20000;
@@ -39994,6 +39994,52 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      navRing.s.n + ' 趟（牆半徑 ' + navRing.W + '）：走到站位 ' + navRing.s.ok + '、用到穿透 ' + navRing.s.ghost +
      ' 幀、在牆框裡 ' + navRing.s.inBox + ' 幀、最慢 ' + navRing.s.slow + ' 秒；對照（牆當一般房子＝v1.247）走到 ' +
      navRing.o.ok + '／' + navRing.o.n + (navRing.bad.length ? '；壞的：' + navRing.bad.slice(0, 6).join('；') : ''));
+
+  /* ⑰ 出口在背面、又比 45 格還遠（v1.293.0，使用者：「這次一起修規則 3」）。
+     規則 3 的範圍是從兩端往外擴三段（NAV_PAD 10／25／45），口袋的出口落在框外就一律找不到路，
+     照規則 6 卡 3 秒穿牆——巨石陣外圈的土堤只有南邊一個口，從北邊往圈裡走就是這樣
+     （見 開發筆記〈閒晃挑點抽一次、地標範圍也抽〉）。最後一段把整張地圖的障礙包進來再找一次（navAllBox）。
+     場面：106 寬、61 深的 U 形口袋（三道牆、開口朝北），從口袋底的外面（南）走到口袋裡，
+     出口離兩端的外接框 54 格以上，三段範圍都包不到。每一種身體都規劃一次；小人與猴子真的走一趟。
+     對照：那三段各自搜（每一種身體都找不到）；關掉最後一段，小人靠穿透才進得去。 */
+  const navFar = await page.evaluate(() => {
+    const N = window.navT;
+    const list = () => [N.B(-50, 50, -1, 1), N.B(-53, -50, -1, 60), N.B(50, 53, -1, 60)];
+    const S = [N.OX, N.OZ - 6], G = [N.OX, N.OZ + 6];
+    homes = { list: list() };
+    const plans = N.who.map(wk => {
+      const w = { x: S[0], z: S[1], ghost: 0 };
+      if (wk.kind) { w.kind = wk.kind; w.sc = wk.sc; }
+      const bd = navBody(w);
+      frameNo++;
+      const three = NAV_PAD.filter(p => Array.isArray(navGrid(S[0], S[1], G[0], G[1], p, bd))).length;
+      const p = navPlan(w, G[0], G[1], bd);
+      let bad = 0, ax = S[0], az = S[1];
+      if (p) for (const q of p.p.concat([{ x: G[0], z: G[1] }])) {
+        if (footHome(q.x, q.z) || !navSeg(ax, az, q.x, q.z, bd)) bad++;
+        ax = q.x; az = q.z;
+      }
+      return { n: wk.n, three, plan: !!p, corners: p ? p.p.length : 0, bad };
+    });
+    const walk = N.who.filter(wk => wk.n === '小人' || wk.n === '猴子').map(wk => {
+      const r = N.run(list(), S, G, wk, 60);
+      return { who: wk.n, t: r.t, ghost: r.ghost, inBox: r.inBox, navBad: r.navBad, walked: r.walked };
+    });
+    const o = navAllBox;
+    navAllBox = () => null;
+    let off;
+    try { off = N.run(list(), S, G, N.who[0], 60); } finally { navAllBox = o; }
+    homes = null; frameNo++;
+    return { plans, walk, off: { t: off.t, ghost: off.ghost, walked: off.walked } };
+  });
+  ok('出口在背面、比 45 格還遠：三段範圍找不到，把整張地圖的障礙包進來就規劃得出路，不靠穿透（規則 3 最後一段）',
+     navFar.plans.every(p => !p.three && p.plan && !p.bad) &&
+     navFar.walk.every(r => r.t > 0 && !r.ghost && !r.inBox && !r.navBad) && navFar.off.ghost > 0,
+     navFar.plans.map(p => p.n + '：三段找到 ' + p.three + '、最後一段 ' + (p.plan ? p.corners + ' 個轉角' : '找不到') +
+                           (p.bad ? '（轉角不在空地上或走不通 ' + p.bad + '）' : '')).join('；') +
+     '｜走一趟：' + navFar.walk.map(r => r.who + ' ' + r.t + ' 秒、走 ' + r.walked + ' 格、穿透 ' + r.ghost +
+                                    ' 幀、在框裡 ' + r.inBox + ' 幀').join('；') +
+     '｜關掉最後一段：小人 ' + navFar.off.t + ' 秒、穿透 ' + navFar.off.ghost + ' 幀、走 ' + navFar.off.walked + ' 格');
 
   /* 這一段動過的全域還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）：地標換回這一段開頭那一座 */
   await page.evaluate(() => {

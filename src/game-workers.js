@@ -814,7 +814,7 @@ function stuckWatch(w, dt) {
    換身體（bd，見 navBody）就是換一張地標的地圖；bd 給 null 就只看房子與城牆。 */
 const NAV_CELL = 0.5;               // 格子多大：最窄的縫（窄巷 1 格、城門洞 5 格）要分得出來
 const NAV_MAX = 160;                // 一邊最多幾格：範圍再大就把格子放粗，一次最多 160×160
-const NAV_PAD = [10, 25, 45];       // 兩端外接框往外多看幾格；找不到路就放大再找（U 形口袋的出口在背面）
+const NAV_PAD = [10, 25, 45];       // 兩端外接框往外多看幾格；找不到路就放大再找（U 形口袋的出口在背面）；三段都找不到再把整張地圖的障礙包進來（navAllBox）
 const NAV_SOFT = 4;                 // 貼著牆那一圈的代價倍率：路線寧可離牆半格，窄巷才貼著走
 /* 離轉角多近算「站在轉角上」（v1.243.1）。往轉角走的那一步是 min(腳程 × dt, 離轉角多遠)，走得到就剛好踩在上面，
    這個數只是浮點餘裕；它存在是為了「站在轉角上、下一段剛好擦邊看不到」那一種，不然他會停在轉角上不動。
@@ -985,15 +985,39 @@ function navPlan(w, tx, tz, bd) {
     if (p === false) return null;           // 起點或終點接不上格子：範圍放大也一樣，不必再搜
     if (p) return p.length ? { p, i: 0, tx, tz, bd, chk: NAV_CHK } : null;
   }
-  return null;
+  const b = navAllBox(w.x, w.z, tx, tz, bd);
+  if (!b) return null;
+  const p = navGrid(w.x, w.z, tx, tz, 0, bd, b);
+  return p && p.length ? { p, i: 0, tx, tz, bd, chk: NAV_CHK } : null;
+}
+/* 規則 3 最後一段的範圍（v1.293.0，使用者：「這次一起修規則 3」）：三段（NAV_PAD）都找不到路，
+   就把地圖上所有障礙——地標的格子表（照身位往外擴）、每一間房子／樹／城牆段的外框——跟第三段的範圍
+   一起包進來再找一次，障礙外面再留 NAV_PAD[0]。三段範圍都是從兩端往外擴的，入口在背面、
+   又比 45 格還遠的時候就落在框外：巨石陣外圈的土堤只有南邊一個口，從北邊往圈裡走一律找不到路，
+   照規則 6 卡 3 秒穿牆進去（見 開發筆記〈閒晃挑點抽一次、地標範圍也抽〉）。
+   包不出比第三段更大的範圍回 null（同一片再搜一次一樣找不到）。 */
+function navAllBox(sx, sz, tx, tz, bd) {
+  const L = NAV_PAD[NAV_PAD.length - 1], m = NAV_PAD[0];
+  const b = { x0: Math.min(sx, tx) - L, x1: Math.max(sx, tx) + L, z0: Math.min(sz, tz) - L, z1: Math.max(sz, tz) + L };
+  let more = false;
+  const add = (x0, x1, z0, z1) => {
+    if (x0 - m < b.x0) { b.x0 = x0 - m; more = true; }
+    if (x1 + m > b.x1) { b.x1 = x1 + m; more = true; }
+    if (z0 - m < b.z0) { b.z0 = z0 - m; more = true; }
+    if (z1 + m > b.z1) { b.z1 = z1 + m; more = true; }
+  };
+  if (lmAny(bd)) add(gOffX - 0.5 - bd.r, gOffX + gMaxX + 0.5 + bd.r, gOffZ - 0.5 - bd.r, gOffZ + gMaxZ + 0.5 + bd.r);
+  if (homes) for (const h of homes.list) if (h.x1 > h.x0 && h.z1 > h.z0) add(h.x0, h.x1, h.z0, h.z1);
+  return more ? b : null;
 }
 /* 一次 A*。格子半格一格，擋住＝格子中心在障礙裡（房子、城牆，與這個身體碰得到的地標柱子），
    貼著牆那一圈加價（NAV_SOFT），不准斜切兩個擋住的格子之間（角碰角那道縫就是這樣關起來的）。
    找到回傳拉直過的轉角陣列（可能是空的＝格子上是直線），這個範圍裡找不到回傳 null，
-   起點或終點根本接不上格子回傳 false（範圍放大也沒用）。 */
-function navGrid(sx, sz, tx, tz, pad, bd) {
-  const X0 = Math.min(sx, tx) - pad, Z0 = Math.min(sz, tz) - pad;
-  const W = Math.max(sx, tx) + pad - X0, H = Math.max(sz, tz) + pad - Z0;
+   起點或終點根本接不上格子回傳 false（範圍放大也沒用）。
+   box 給了就照它的範圍搜（規則 3 最後一段，見 navAllBox），pad 不看。 */
+function navGrid(sx, sz, tx, tz, pad, bd, box) {
+  const X0 = box ? box.x0 : Math.min(sx, tx) - pad, Z0 = box ? box.z0 : Math.min(sz, tz) - pad;
+  const W = (box ? box.x1 : Math.max(sx, tx) + pad) - X0, H = (box ? box.z1 : Math.max(sz, tz) + pad) - Z0;
   const c = Math.max(NAV_CELL, Math.max(W, H) / NAV_MAX);
   const nx = Math.ceil(W / c), nz = Math.ceil(H / c), N = nx * nz;
   const blk = new Uint8Array(N);                   // 0 空地、1 貼著牆、2 擋住
@@ -2351,15 +2375,10 @@ function carryPose(w) {
    這裡則把建築當成以工地中心為圓心、半徑 siteR 的一根柱子繞過去。v1.236 起兩邊是同一張地圖
    （見 navBody）：蓋好的部分擋、沒蓋的與底下空的走得過，閒晃的人也會從建築腳下穿過去。 */
 /* 工地外圈：建築外圍再往外這麼多。v1.236 起走路不再繞這一圈（地標在地圖上了），
-   剩下的都是「去哪」：閒晃挑點的內緣、天災與吉祥物進場走到哪算到（come）、巨人（牠不規劃，見 strollTo）、
-   站位沿半徑往外掃到哪裡為止（standPos）、挖料與蓋家挑的位置不落在工地上。 */
+   剩下的都是「去哪」：天災與吉祥物進場走到哪算到（come）、巨人（牠不規劃，見 strollTo）、
+   站位沿半徑往外掃到哪裡為止（standPos）、挖料與蓋家挑的位置不落在工地上。
+   閒晃挑點的內緣（IDLE_NEAR，siteR + 2）v1.293.0 收掉了，見 idleSpot。 */
 const KEEP = 1.5;
-/* 閒晃目標點的內緣：離建築外圍幾格起跳（見 idleSpot）。外緣是 debrisR（場地外緣，
-   v1.183 使用者：「小人跟動物 能走的範圍都是碎料範圍 但是不穿地標跟小房子」）——
-   v1.210 把場地拆成兩圈時這裡跟著生活圈留在 arenaR，等於那句話被縮水了；
-   v1.211 使用者重新定調「生物能走動的範圍也調整到比較大的新碎料範圍」，
-   所以外緣搬回真正的碎料圈（吉薩 3000 建材：63.7 → 82.8）。 */
-const IDLE_NEAR = 2;
 
 /* 走到定點就站一會兒。站的時間跟**剛走完**那段路成比例——
    寫死秒數的話，換一座大的（工地大、走得久）站著的人就變少，比例會跟著建築跑掉；
@@ -2458,26 +2477,39 @@ function strollGiant(w, dt, spd, step, keepMore) {
   return false;
 }
 
-/* 下一個閒晃點：**整片碎料場裡按面積平均挑**（v1.183；慶祝散場後也用這個）。
+/* 下一個閒晃點：**整片碎料場（含地標範圍）裡按面積平均挑，抽一次就用**（v1.293.0；慶祝散場後也用這個）。
    小人與動物共用這一支，所以兩邊的活動範圍是同一件事。
 
-   這個範圍改過兩次，兩次都是使用者定的，理由不一樣：
+   這個範圍改過三次，都是使用者定的，理由不一樣：
      v1.60～v1.95  整片草地亂挑（arenaR + 20 的方形）
      v1.96～v1.182 收成「工地外圈 IDLE_NEAR～9 那一環」——使用者：「盡量不要讓建築
                    一圈都沒人，看起來會有點明顯」
-     v1.183        放回整片碎料場，但改成**按面積平均**
-   為什麼放得回去：v1.183 使用者把當年那句話的意思講清楚了——「當初會說建築一圈沒人，
+     v1.183        放回整片碎料場，但改成**按面積平均**；內緣留在工地外圈（siteR + IDLE_NEAR 2）
+     v1.293.0      內緣拿掉，**地標範圍也抽**
+   v1.183 為什麼放得回去：使用者把當年那句話的意思講清楚了——「當初會說建築一圈沒人，
    是因為小人們行動範圍不會到建築邊，導致明顯空著一圈」。**問題在內緣不在外緣**：
    當年那版是方形亂數，貼著建築那一圈反而抽不太到，於是建築腳邊空出一圈。
-   按面積平均抽就沒有這件事——每單位面積的機會一樣，內緣照樣貼著建築
-   （下限 IDLE_NEAR，再由 strollTo 的 KEEP 擋住不穿進去），外面也不會稀掉。
+   按面積平均抽就沒有這件事——每單位面積的機會一樣，外面也不會稀掉。
+   外緣是 debrisR（v1.183 使用者：「小人跟動物 能走的範圍都是碎料範圍」；v1.210 拆兩圈時被縮成 arenaR，
+   v1.211 使用者重新定調「生物能走動的範圍也調整到比較大的新碎料範圍」，搬回碎料圈）。
 
-   **半徑要用 sqrt 抽**：直接 rr(lo, hi) 是「按半徑平均」，外圈那一大片面積大、
+   **v1.293.0 抽一次、不重抽**（使用者：「在程式上設計一直用重抽是不合理的 要是大量密集的情形
+   會大量重跑」「依現在有的通用巡路邏輯 應該已經能讓能選位置 選地標建築範圍內了吧」）。
+   v1.97～v1.292 是壓到房子就重抽、8 次都中改沿自己那一圈抽、再 8 次都中就不給新目標——房子占 p 的面積
+   就要抽 1/(1−p) 次，越密越多，最後那一步還是靜默失敗（舊目標留著，下一幀又「到了」再抽 16 次）。
+   落點現在交給通用的規則：
+     · 壓在房子或地標的積木裡：走的時候 strollTo 的規則 2（navGoal）照各自的身體挪到最近站得下的地方
+     · 站得下、但被地標圍住從外面走不到：**在這裡**換成走得到的地方裡最近的那一點（lmNearReach，同 standPos；
+       使用者選「放在挑點那一層」）。不換的話規劃一定失敗，照規則 6 卡 3 秒穿牆進去
+     · 巨人與 Diablo 不規劃（strollGiant）：在地標裡的牠自己推到工地圈上，在房子裡的就踹過去
+   數字見 開發筆記〈閒晃挑點抽一次、地標範圍也抽〉。
+
+   **半徑要用 sqrt 抽**：直接 rr(0, hi) 是「按半徑平均」，外圈那一大片面積大、
    抽到的機會卻一樣，散出去會變成內密外疏。
 
    **near 給了就改成「沿著自己現在那一圈走一段」**（v1.183，散場那一刻在用）：
-   人剛好站在慶祝圈上，而那個圈的半徑幾乎就貼著閒晃範圍的內緣——照整片抽的話，
-   每個人抽到的點幾乎都在自己外面，於是**一圈人又整齊往外走**（那正是 v1.96 修掉的
+   人剛好站在慶祝圈上，而那個圈比整片碎料場小得多（v1.292 以前幾乎就貼著閒晃範圍的內緣）——照整片抽的話，
+   每個人抽到的點大多在自己外面，於是**一圈人又整齊往外走**（那正是 v1.96 修掉的
    三件事之一，實測平均徑向分量回到 +0.27～+0.34，跟當年的壞值 +0.25～+0.42 同一區間）。
 
    為什麼不是「在自己身邊的圓裡抽」（第一版試過）：人站在內緣上，那個圓的內半邊會被
@@ -2485,28 +2517,25 @@ function strollGiant(w, dt, spd, step, keepMore) {
    **保持半徑、只轉角度**才是真的 0：往哪一邊轉隨機，第一段路就是繞著建築走一小段，
    之後的目標點照舊整片按面積抽。near 是這一段的弧長上限。 */
 function idleSpot(w, near) {
-  const lo = siteR + IDLE_NEAR, hi = Math.max(lo + 1, debrisR);
-  for (let t = 0; t < 8; t++) {
-    let x, z;
-    if (near) {
-      const r = Math.min(hi, Math.max(lo, Math.hypot(w.x, w.z) || lo));
-      const arc = rr(near[0], near[1]) * (Math.random() < 0.5 ? -1 : 1);
-      const a = Math.atan2(w.z, w.x) + arc / r;               // 沿著圈走 arc 格
-      x = Math.cos(a) * r; z = Math.sin(a) * r;
-    } else {
-      const a = Math.random() * Math.PI * 2;
-      const d = Math.sqrt(lo * lo + Math.random() * (hi * hi - lo * lo));
-      x = Math.cos(a) * d; z = Math.sin(a) * d;
-    }
-    if (homeAt(x, z)) continue;               // 別挑在人家屋子裡（v1.97）
-    /* 城牆的另一邊**照挑**（v1.235，使用者：閒晃的目標被牆隔開就「照規則規劃過去」）。
-       v1.186～v1.234 會濾掉，理由是「那個點走不到、strollTo 要走到了才換下一個目標」——
-       strollTo 現在會規劃路線從門洞走過去（見 navAim），那個理由沒了。 */
-    w.tx = x; w.tz = z; return;
+  const hi = debrisR;
+  let x, z;
+  if (near) {
+    const r = Math.min(hi, Math.hypot(w.x, w.z) || 1);
+    const arc = rr(near[0], near[1]) * (Math.random() < 0.5 ? -1 : 1);
+    const a = Math.atan2(w.z, w.x) + arc / r;                 // 沿著圈走 arc 格
+    x = Math.cos(a) * r; z = Math.sin(a) * r;
+  } else {
+    const a = Math.random() * Math.PI * 2;
+    const d = hi * Math.sqrt(Math.random());
+    x = Math.cos(a) * d; z = Math.sin(a) * d;
   }
-  /* 8 次都挑在人家屋子裡（村子很擠的時候）：**沿著自己現在那一圈走一小段**。
-     near 給了就不再往下遞迴（那一支挑的就是同一圈上的點）。 */
-  if (!near) idleSpot(w, [3, 8]);
+  /* 被地標圍住、從外面走不到：換成走得到的地方裡最近的那一點（見上面）。
+     城牆的另一邊、壓在房子裡的照給（v1.235 起 strollTo 會規劃過去、規則 2 會挪出來） */
+  if (!lmReach(x, z)) {
+    const q = lmNearReach(x, z);
+    if (q) { x = q.x; z = q.z; }
+  }
+  w.tx = x; w.tz = z;
 }
 function wander(w, dt) {
   if (w.show || w.pause > 0) { idleWait(w, dt); return; }
@@ -5409,14 +5438,12 @@ function landHome(b, a) {
   sndPlace();
 }
 /* 蓋完就在自己家附近走走（使用者的規格）。跟一般閒晃同一套（會發呆、走近了會聊天），
-   只是目標點以自己的房子為中心，不是以工地為中心。 */
+   只是目標點以自己的房子為中心，不是以工地為中心。
+   抽一次就用（v1.293.0，同 idleSpot）：壓在隔壁那一間裡的交給 strollTo 的規則 2 挪出來。
+   v1.292 以前是壓到就重抽、第 12 次照收——最後那一次本來就是靠規則 2 收尾。 */
 function liveSpot(w, h) {
-  for (let t = 0; t < 12; t++) {
-    const a = rr(0, Math.PI * 2), d = rr(h.r + HOME_STAND, h.r + LIVE_R);
-    const x = h.x + Math.cos(a) * d, z = h.z + Math.sin(a) * d;
-    if (t < 11 && homeAt(x, z)) continue;
-    w.tx = x; w.tz = z; return;
-  }
+  const a = rr(0, Math.PI * 2), d = rr(h.r + HOME_STAND, h.r + LIVE_R);
+  w.tx = h.x + Math.cos(a) * d; w.tz = h.z + Math.sin(a) * d;
 }
 function liveHome(w, h, dt) {
   /* 剛從「蓋」切到「住」的那一刻，目標點可能還是上一份工作留下的——挖料的坑，

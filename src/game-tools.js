@@ -14229,7 +14229,7 @@ const HERD_SC = [0.90, 1.08];        // 每一隻的大小抽一個倍率，同�
 const HERD_STAY = [3.5, 9];          // 走到了站著吃草幾秒
 let herdN = 0;                       // 這一場養幾隻（第一次叫 stepHerd 時抽）
 
-/* 放一隻進來。**直接站在場上**（落腳點借 idleSpot 挑，那一支本來就會避開小人的家），
+/* 放一隻進來。**直接站在場上**（落腳點借 idleSpot 挑，壓在房子或地標裡的照規則 2 挪出來），
    不像猴子那樣從場外走進來：牠們是這片草地的住戶不是訪客，而且走那麼慢的話
    （最慢的綿羊 1.3），從碎料場外緣走到工地要一分鐘——開場那一分鐘場上一隻動物都沒有。
    先挑一個站著、再挑一個當第一個目標。
@@ -14260,7 +14260,11 @@ function spawnCattle(edge) {
   } else {
     idleSpot(m);
     m.x = m.tx; m.z = m.tz;
-    pushOutHome(m);                                // 剛好挑在人家屋子裡：推出來
+    /* 挑到的點可能壓在房子或地標的積木裡（v1.293.0 起 idleSpot 抽一次、地標範圍也抽）：
+       這一點是落腳處不是目標，strollTo 不會幫忙挪，照規則 2 挪到這個身體站得下的地方。
+       v1.292 以前只會壓在房子裡，用 pushOutHome 推出來 */
+    const g = navGoal(m, m.x, m.z, navBody(m));
+    if (g) { m.x = g.x; m.z = g.z; }
   }
   idleSpot(m);
   if (!beasts) beasts = [];
