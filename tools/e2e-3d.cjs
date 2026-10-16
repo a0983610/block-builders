@@ -12811,7 +12811,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       uniq: new Set(TOOLS.map(t => t.id)).size,
       full: TOOLS.filter(t => t.id && t.n && t.k && t.tip).length,
       ok: TOOLS.map(t => toolOk(t)),
-      btn: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open')
+      /* v1.294.0 起選單照種類分組，畫面上的順序不再是 TOOLS 的順序——照 id 一把一把找回來排 */
+      btn: TOOLS.map(t => {
+        const e = document.querySelector('#tools [data-tool="' + t.id + '"]');
+        return !e ? 'none' : e.className.indexOf('lock') >= 0 ? 'lock' : 'open';
+      }),
+      nBtn: document.querySelectorAll('#tools .tool').length,
+      catUniq: new Set(TOOL_CATS.map(c => c.id)).size === TOOL_CATS.length,
+      noCat: TOOLS.filter(t => !TOOL_CATS.some(c => c.id === t.cat)).map(t => t.id),
+      emptyCat: TOOL_CATS.filter(c => !TOOLS.some(t => t.cat === c.id)).map(c => c.id),
+      grp: [...document.querySelectorAll('#tools .grp')].map(g => g.dataset.cat + '〈' +
+             g.querySelector('.cat').textContent + '〉' +
+             [...g.querySelectorAll('.tool')].map(b => b.dataset.tool).join(',')).join('｜'),
+      grpWant: TOOL_CATS.map(c => c.id + '〈' + c.n + '〉' +
+                 TOOLS.filter(t => t.cat === c.id).map(t => t.id).join(',')).join('｜')
     };
   });
   const NTOOL = lock0.ids.length;
@@ -12849,8 +12862,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      tipLen.out.length === 0,
      (tipLen.out.length ? '超出的：' + tipLen.out.join('、') + '；' : '') +
      '最寬 ' + tipLen.wMax + 'px，視窗 ' + tipLen.vw);
-  ok('畫面上的工具鈕跟道具表一樣多', lock0.btn.length === NTOOL,
-     lock0.btn.length + ' 顆鈕 / ' + NTOOL + ' 種道具');
+  ok('畫面上的工具鈕跟道具表一樣多', lock0.nBtn === NTOOL && lock0.btn.indexOf('none') < 0,
+     lock0.nBtn + ' 顆鈕 / ' + NTOOL + ' 種道具');
+  /* 道具選單照種類分組（v1.294.0，使用者：「道具選擇頁面根據種類分類(比較好找)」）。
+     哪一把歸哪一類寫在 TOOLS 的 cat，這裡不寫死名單：只守「每一把都分到一類、每一類都有東西、
+     畫面照 TOOL_CATS 的順序一類一組、組裡照 TOOLS 的順序」。加新道具忘了寫 cat 會紅在第一條。 */
+  ok('每一把道具都分到一類（cat 是 TOOL_CATS 裡的 id），每一類都有道具',
+     lock0.noCat.length === 0 && lock0.emptyCat.length === 0 && lock0.catUniq,
+     (lock0.noCat.length ? '沒分到類的：' + lock0.noCat.join(',') + '；' : '') +
+     (lock0.emptyCat.length ? '空的類：' + lock0.emptyCat.join(',') + '；' : '') +
+     (lock0.catUniq ? '' : 'TOOL_CATS 的 id 有重複；') + lock0.grpWant.split('｜').length + ' 類');
+  ok('道具選單照種類分組：一類一組照 TOOL_CATS 的順序，組裡照 TOOLS 的順序（＝解鎖順序）',
+     lock0.grp === lock0.grpWant, lock0.grp);
   /* 手指與水桶不破壞任何東西，槌子是起手用的：這三把沒有鎖，其餘一律要解。 */
   ok('一開始只有手指、水桶跟槌子可用',
      lock0.ok.join(',') === openStr(lock0.free) &&
@@ -36084,7 +36107,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* 重點是「畫面跟著讀回來的紀錄重畫」，不是哪幾把該開——該開幾把是等差算出來的
      （擊飛 1234 塊 ÷ 步幅 2,000 ＝ 0 把），寫死一長串的話每加一把道具就要改。 */
   const afterReload = await page.evaluate(() => ({
-    dom: [...document.querySelectorAll('.tool')].map(e => e.className.indexOf('lock') >= 0 ? 'lock' : 'open').join(','),
+    /* 照 TOOLS 的順序找回來（v1.294.0 起選單照種類分組，畫面上的順序不是 TOOLS 的順序） */
+    dom: TOOLS.map(t => {
+      const e = document.querySelector('#tools [data-tool="' + t.id + '"]');
+      return !e ? 'none' : e.className.indexOf('lock') >= 0 ? 'lock' : 'open';
+    }).join(','),
     want: TOOLS.map(t => toolOk(t) ? 'open' : 'lock').join(','),
     open: TOOLS.filter(t => toolOk(t)).length,
     free: TOOLS.filter(t => !t.lock).length,
@@ -37625,13 +37652,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              opts: sels.map(s => s.options.length).join(','), want: TOOLS.length + 1,
              lock: [...sels[0].options].filter(o => o.textContent.indexOf('🔒') === 0).length,
              lockWant: TOOLS.filter(t => !toolOk(t)).length,
-             empty: sels.every(s => s.value === '') };
+             empty: sels.every(s => s.value === ''),
+             /* v1.294.0：跟道具選單同一套分組（optgroup 照 TOOL_CATS、組裡照 TOOLS 的順序） */
+             grp: sels.map(s => [...s.querySelectorAll('optgroup')].map(g => g.label + ':' +
+                    [...g.children].map(o => o.value).join(',')).join('｜')),
+             grpWant: TOOL_CATS.map(c => c.n + ':' + TOOLS.filter(t => t.cat === c.id).map(t => t.id).join(',')).join('｜') };
   });
   ok('⌨ 快捷鍵打得開：九格下拉，每格是「不綁」加整張道具表，沒解鎖的標 🔒，預設全空',
      hkDlg.open && hkDlg.n === 9 && hkDlg.opts.split(',').every(v => +v === hkDlg.want) &&
      hkDlg.lock === hkDlg.lockWant && hkDlg.lock > 0 && hkDlg.empty,
      '打開 ' + hkDlg.open + '、' + hkDlg.n + ' 格、每格選項 ' + hkDlg.opts + '（應為 ' + hkDlg.want +
      '）、標 🔒 的 ' + hkDlg.lock + '（沒解鎖 ' + hkDlg.lockWant + ' 把）、全空 ' + hkDlg.empty);
+  ok('九格下拉也照種類分組，跟道具選單同一套',
+     hkDlg.grp.every(g => g === hkDlg.grpWant),
+     hkDlg.grp.filter(g => g !== hkDlg.grpWant).length + ' 格對不上；' + hkDlg.grp[0]);
 
   await page.selectOption('#keys select[data-key="2"]', 'bucket');
   await page.selectOption('#keys select[data-key="8"]', 'cannon');      // 還沒解鎖的也綁得上去
@@ -37980,6 +38014,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      overlap.mode.l >= 0 && overlap.mode.r <= 390 && overlap.mode.t >= 0,
      '小窗寬 ' + overlap.modeW + '、選單寬 ' + overlap.mode.w + '，左 ' + overlap.mode.l + '、右 ' +
      overlap.mode.r + '、上 ' + overlap.mode.t);
+  /* 視窗太矮時道具選單在裡面捲（v1.294.0，使用者：「手機版可能要微調 例如變成加上卷軸條」）：
+     分組之後選單比較高，矮的手機與矮的桌機視窗整份放不下，就在選單裡捲、框框整份留在畫面內。
+     有沒有真的捲到只印出來：放得下就不必捲，規則是「框框留在畫面內、放不下的部分捲得到」。
+     量完把視窗還回 390×780。 */
+  const shortMenu = [];
+  for (const [w, h] of [[390, 664], [1280, 600]]) {
+    await page.setViewportSize({ width: w, height: h });
+    await page.waitForTimeout(300);
+    shortMenu.push(await page.evaluate(([w, h]) => {
+      const tb = document.getElementById('toolbox'), m = document.getElementById('tools');
+      tb.classList.add('open');
+      const r = m.getBoundingClientRect(), more = m.scrollHeight > m.clientHeight + 1;
+      const ok = r.top >= 0 && r.bottom <= h && r.left >= 0 && r.right <= w &&
+                 (!more || getComputedStyle(m).overflowY === 'auto');
+      tb.classList.remove('open');
+      return { ok, d: w + '×' + h + '：上 ' + Math.round(r.top) + '、下 ' + Math.round(r.bottom) +
+                      '、框高 ' + m.clientHeight + '／內容 ' + m.scrollHeight + (more ? '（捲）' : '（放得下）') };
+    }, [w, h]));
+  }
+  await page.setViewportSize({ width: 390, height: 780 });
+  await page.waitForTimeout(300);
+  ok('視窗太矮時道具選單在裡面捲，整份框框留在畫面內', shortMenu.every(o => o.ok),
+     shortMenu.map(o => o.d).join('；'));
   const pMob = await pix(page);
   ok('手機尺寸下照樣畫得出來', pMob.opaque > 0.4, (pMob.opaque * 100).toFixed(0) + '%');
   await page.screenshot({ path: path.join(OUT, '06-手機版.png') });

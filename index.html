@@ -94,6 +94,7 @@
   /* 破壞工具（畫面上方中央）：平常只留一顆「現在拿什麼」的小窗，
      滑鼠指上去才展開整份選單。選單是會自動換行的網格，所以之後再加道具
      不用重新安排版面，也不會把整排推到壓住別的卡片。
+     v1.294.0 起照種類一類一組（小標題＋6 欄網格），比視窗高就出捲軸（見下面的 #tools）。
      小人模式那顆（v1.219，#modeNow）長相與開合照抄這一套，擺的位置見下面的 #corner。 */
   /* v1.262.0 起小窗左邊多一顆破壞模式的開關（#rageBtn），兩顆並排、一起置中
      （第一版放右邊，使用者看過預覽：「破壞模式開關 放在工具左邊」）。
@@ -141,11 +142,20 @@
   #modebox:hover:not(.shut) #modeMenu,#modebox.open #modeMenu{opacity:1;visibility:visible}
   /* 這裡不用 --panel（86% 半透明白）：選單底下常常剛好是操作提示那條深色藥丸，
      透上來會把字襯得看不清楚。其他卡片是靜態的所以透一點沒關係，這個是蓋在上面的選單。 */
+  /* 照種類分組（v1.294.0，見 開發筆記〈道具選單照種類分成六類（v1.294.0）〉）：一類一個 .grp，
+     上面小標題 .cat、底下 .gt 網格。使用者看過預覽選「小標題＋6 欄」：4 欄的話分組多出來的
+     小標題與半空的列把選單撐到 695px，1366×657 的筆電下緣超出畫面；6 欄是 578px。
+     比視窗高就捲（使用者：「手機版可能要微調 例如變成加上卷軸條」）。扣掉的是選單上緣的位置
+     （量過：桌機 59px＝小窗 top 14＋小窗高＋橋 8）再留 13px；下緣版面的扣法見下面兩個 @media。 */
   #tools{
-    display:grid;grid-template-columns:repeat(4,76px);gap:6px;padding:8px;
+    display:flex;flex-direction:column;gap:5px;padding:8px;
     border-radius:14px;background:#fff;border:1px solid var(--line);
     box-shadow:0 10px 28px rgba(20,32,48,.22);
+    max-height:calc(100vh - 72px);overflow-y:auto;
   }
+  #tools .grp + .grp{border-top:1px solid var(--line);padding-top:5px}
+  #tools .cat{font-size:11px;font-weight:700;opacity:.55;line-height:14px;padding:0 4px 3px}
+  #tools .gt{display:grid;grid-template-columns:repeat(6,76px);gap:6px}
   .tool{
     display:flex;flex-direction:column;align-items:center;gap:1px;
     padding:6px 4px;border-radius:10px;
@@ -166,7 +176,7 @@
     border-radius:5px;background:var(--ink);color:#fff;
     font:700 10px/15px system-ui,sans-serif;font-variant-numeric:tabular-nums;text-align:center}
   .tool.on .hk{background:#fff;color:var(--accent)}
-  #tools .hkTip{grid-column:1/-1;text-align:center;font-size:11px;opacity:.55;padding-top:2px}
+  #tools .hkTip{text-align:center;font-size:11px;opacity:.55;padding-top:2px}
   /* 小人模式的三檔：一檔一列，右邊寫出比例（照 LAZY_MODES 的 part 算，見 renderModes） */
   #modes{
     display:flex;flex-direction:column;gap:3px;padding:6px;
@@ -277,10 +287,13 @@
      小窗放在上面，寬 860 以上就閃得過資訊卡；選單要 1062 以上才完全不蓋到它——
      1025～1061 那一小段（滑鼠、又剛好把視窗拉到那麼窄）展開時會壓到資訊卡一角，
      選單是浮在上面的一層，蓋到不影響操作，所以斷點還是取整數 1024，
-     讓平板豎放的 1024 落在下緣這一邊。選單跟著往上開。 */
+     讓平板豎放的 1024 落在下緣這一邊。選單跟著往上開。
+     （v1.294.0 選單分組改 6 欄、寬 504px 之後，要 1226 以上才完全不蓋到資訊卡，
+     1025～1225 展開時壓到它一角——理由同上，斷點不跟著動。） */
   @media (max-width:1024px), (hover:none) and (pointer:coarse){
     #toolbox{top:auto;bottom:12px}
     #toolMenu{top:auto;bottom:100%;padding:0 0 8px}
+    #tools{max-height:calc(100vh - 70px)}   /* 往上開，下緣離視窗底 57px（量過）再留 13 */
     /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具小窗。
        小人模式跟著設定鈕走（v1.219，使用者選「疊在設定鈕上面」）：底排中間擺不下第二顆
        （390 寬時設定鈕左邊只剩 56px，模式小窗要 93），所以直排、右緣對齊，選單靠右往上開。
@@ -305,7 +318,10 @@
     #stat{font-size:10px;gap:2px 8px}
     #clock{font-size:20px}
     #panel{width:calc(100vw - 28px)}
-    #tools{grid-template-columns:repeat(3,74px)}   /* 四欄 338px 在 390 的螢幕上太貼邊 */
+    /* v1.294.0 分組之後改 5 欄窄一點的磚：寬 354px，360 寬的手機也放得下，最長的名字（虛式「茈」）
+       也沒擠出磚外（量過）。破壞模式開關疊在小窗上面，選單下緣離視窗底 98px，再留 12 */
+    #tools{max-height:calc(100vh - 110px)}
+    #tools .gt{grid-template-columns:repeat(5,64px);gap:4px}
     /* 破壞模式的開關疊在工具小窗上面（v1.262.0）：底排擺不下兩顆並排——390 寬時名字最長的那把
        （虛式「茈」小窗 141px）＋間距 6＋開關 107px，置中後右緣 322，壓到設定鈕（312 起）。
        見 開發筆記〈破壞模式：點一下放好幾份（v1.262.0）〉 */

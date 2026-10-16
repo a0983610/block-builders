@@ -852,10 +852,21 @@ function pickTool(t) {
 }
 /* 工具選單：沒解鎖的畫成鎖住並寫出解鎖條件。
    平常收在小窗裡（滑鼠指上去才展開），所以這裡順便把小窗更新成目前拿的那把。
-   綁了快捷鍵的在左上角標數字（v1.242.0）；最下面那行字說怎麼綁（指著按數字，見 hotKey）。 */
+   綁了快捷鍵的在左上角標數字（v1.242.0）；最下面那行字說怎麼綁（指著按數字，見 hotKey）。
+   v1.294.0 起照 TOOL_CATS 一類一組（.grp：小標題 .cat ＋ 道具網格 .gt），組裡照 TOOLS 的順序，
+   見 開發筆記〈道具選單照種類分成六類（v1.294.0）〉。 */
 function renderTools() {
   const box = $('tools');
   box.innerHTML = '';
+  const grid = {};
+  for (const c of TOOL_CATS) {
+    const g = document.createElement('div');
+    g.className = 'grp';
+    g.dataset.cat = c.id;
+    g.innerHTML = '<div class="cat">' + c.n + '</div><div class="gt"></div>';
+    box.appendChild(g);
+    grid[c.id] = g.lastChild;
+  }
   for (const t of TOOLS) {
     const okNow = toolOk(t);
     const hk = pref.keys.indexOf(t.id);
@@ -875,7 +886,7 @@ function renderTools() {
       $('toolbox').classList.remove('open');
       $('toolbox').classList.add('shut');
     });
-    box.appendChild(b);
+    grid[t.cat].appendChild(b);
   }
   const tip = document.createElement('div');
   tip.className = 'hkTip';
@@ -933,7 +944,8 @@ function renderModes() {
 }
 /* 快捷鍵設定頁（v1.242.0）：九格下拉，每格「（不綁）」加整張 TOOLS。沒解鎖的也列、
    前面標 🔒（使用者選「可以綁，按了提示沒解鎖」）。改了走 bindKey，所以「一把只綁一格」
-   跟選單裡指著按數字是同一條規則，存檔也是那裡存。 */
+   跟選單裡指著按數字是同一條規則，存檔也是那裡存。
+   v1.294.0 起跟道具選單一樣照 TOOL_CATS 分組（optgroup），組裡照 TOOLS 的順序。 */
 function renderKeys() {
   const box = $('keys');
   box.innerHTML = '';
@@ -942,8 +954,10 @@ function renderKeys() {
     lab.innerHTML = '<b>' + (i + 1) + '</b>';
     const sel = document.createElement('select');
     sel.dataset.key = String(i);
-    sel.innerHTML = '<option value="">（不綁）</option>' + TOOLS.map(t =>
-      '<option value="' + t.id + '">' + (toolOk(t) ? t.k : '🔒') + ' ' + t.n + '</option>').join('');
+    sel.innerHTML = '<option value="">（不綁）</option>' + TOOL_CATS.map(c =>
+      '<optgroup label="' + c.n + '">' + TOOLS.filter(t => t.cat === c.id).map(t =>
+        '<option value="' + t.id + '">' + (toolOk(t) ? t.k : '🔒') + ' ' + t.n + '</option>').join('') +
+      '</optgroup>').join('');
     sel.value = pref.keys[i];
     sel.addEventListener('change', () => bindKey(i, sel.value));
     lab.appendChild(sel);
