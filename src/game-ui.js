@@ -344,6 +344,7 @@ const REST_SINK = 0.004;
    換場第一幀要 6.3～7.3 ms；陣列下標查就沒有那一頓。房子那幾份用 homeNbr 留在格子上的鄰居表。
    aoOn 是畫面設定小窗那一格（pref.ao；v1.280.0 以前在左下面板），關掉就一律送 0（引擎那邊遮罩全 0 整段跳過）。 */
 let aoOn = true;
+let boomLit = true;                 // 畫面設定「爆炸光源」（v1.291.0，pref.boom），見 draw 裡的 putBooms
 const AO_BIT = NBR.map(d => (d[0] + 1) * 9 + (d[1] + 1) * 3 + (d[2] + 1));
 const AO_DOWN = NBR.map(d => d[1] < 0);
 let aoBp = null;                    // 地標那一份
@@ -500,6 +501,9 @@ function draw() {
   stormFx();
   ENG.putStorm(stormPaths, stormBalls, stormLamps);
   ENG.setGloom(stormGloom);
+  /* 強爆炸照亮周圍（v1.291.0）：核彈、爆裂魔法的火球各一盞點光源（見 boomLampList）。
+     boomLit 是畫面設定小窗那一格（pref.boom，預設開；使用者：「爆炸光源如果耗效能可以做成開關」） */
+  ENG.putBooms(boomLit && flashes.length ? boomLampList() : EMPTY);
   /* 魔法陣、爆炸光環、保齡球的瞄準環共用同一組環，在這裡合起來丟過去。
      魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。
      沒東西在瞄／沒魔法陣時不做 concat：那是每幀都會跑到的路徑。 */
@@ -1282,6 +1286,7 @@ function boot() {
   /* 積木 AO（v1.273.0）。再打開時不必從頭算：關著那段時間 aoUpdate 沒跑，has 還是關之前看到的樣子，
      打開那一幀逐格一比，期間變過的格子自己就會被挑出來重算（換了一座或房子換了一份格子則整份重建） */
   $('aoOn').addEventListener('change', e => { aoOn = pref.ao = e.target.checked; save(); });
+  $('boomLit').addEventListener('change', e => { boomLit = pref.boom = e.target.checked; save(); });   // 爆炸光源（v1.291.0）
   /* 跟不上時降畫質那三格（v1.280.0 動態解析度；v1.281.0 加關抗鋸齒、降了就不升回去）：改哪一格都重排、回到原本那一級 */
   for (const [id, k] of [['aaDyn', 'aa'], ['dynRes', 'dyn'], ['dynOnce', 'once']])
     $(id).addEventListener('change', e => { pref[k] = e.target.checked; setDyn(pref.aa, pref.dyn, pref.once); save(); dispStat(); });

@@ -28,8 +28,10 @@ const ENG = (function () {
   let starMesh, boltMesh;
   let hemi;                         // 天光（打雷的烏雲遮天要壓暗它，v1.283.0，見 setGloom）
   let stormLay = null, stormBall = null, stormLamps = null;   // 打雷的粗雷三層、亮球、兩盞點光源（v1.283.0，見 putStorm）
+  let boomLamps = null;             // 強爆炸的四盞點光源（v1.291.0，見 putBooms）
+  let stormOn = false, boomOn = false;   // 這一刻打雷／爆炸要不要燈（六盞一起開關，見 lampSync）
   let gloomEl = null, gloomAt = -1;  // 烏雲遮天：蓋在 CSS 天空上的那一層、上一次給的暗度（見 setGloom）
-  let lampWarm = false;              // 「多兩盞燈」那一份 shader 編好了沒（見 draw3d）
+  let lampWarm = false;              // 「六盞燈都開著」那一份 shader 編好了沒（見 draw3d）
   let emoMesh, emoGeo, emoPos, emoUv, emoCol;   // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
   let giftMesh, giftGeo, giftPos, giftUv;  // 掉在地上的道具泡泡（v1.214，見 setGiftIcons／putGifts）
   /* 最多同時幾顆核彈在天上（規則那邊 NUKE_MAX 跟這個數字一致）。
@@ -175,6 +177,13 @@ const ENG = (function () {
   /* 兩盞點光源（使用者：「能不能加上光影讓旁邊的物體有電光線照上去」）。規則那邊給 0～1 的相對亮度，
      這裡乘 STORM_LAMP_I（r185 的點光源是燭光、照度照距離平方衰減：照 12 格外的牆約是太陽的三倍多）。 */
   const STORM_LAMP_C = 0xa8c8ff, STORM_LAMP_I = 2600;
+  /* 強爆炸照亮周圍（v1.291.0，見 putBooms）：四盞橘色的點光源，decay 1（照度＝亮度 ÷ 距離）。
+     規則那邊給的相對亮度 i 是「火球半徑 × 亮的程度（0～1）」，乘 BOOM_LAMP_E 之後離爆心一個半徑那一圈的照度
+     就是 BOOM_LAMP_E × 亮的程度（日光是 SUN_I 1.75）；照到 BOOM_LAMP_REACH 倍半徑收掉。
+     預覽四檔 ×0.5／×1／×2／×4（×1＝4），使用者：「效果確實不錯 亮度*4」。
+     四盞是量過的：破壞模式核彈 ×4 同時最多 4 顆夠亮的火球；真顯示卡（UHD 770、1080p）上燈數 0／2／4／6／8
+     一幀 10.9／10.6／10.9／11.1／12.9ms，到六盞都在量測的抖動裡（見 開發筆記〈強爆炸照亮周圍（v1.291.0）〉） */
+  const BOOM_LAMPS = 4, BOOM_LAMP_C = 0xffa24a, BOOM_LAMP_E = 16, BOOM_LAMP_REACH = 3;
   /* 天光、日光、霧的本來的樣子，與烏雲遮天最暗時各壓掉幾成（v1.283.0，見 setGloom）。
      天空是 index.html 的 CSS 漸層（畫布是透明的），所以另外蓋一層暗色的 div，GLOOM.sky 是它最濃多少。 */
   const HEMI_I = 1.25, SUN_I = 1.75, FOG_C = 0xbcd3e0, GLOOM_FOG = 0x363e4b;
@@ -1576,6 +1585,13 @@ if (vAo.x + vAo.y > 0.5) {
        所以開場第一幀畫完就先用 compileAsync 把「多兩盞燈」那一份編好（見 draw3d），之後開關只是換用（量到 2ms）。 */
     stormLamps = [new T.PointLight(STORM_LAMP_C, 0, 140, 2), new T.PointLight(STORM_LAMP_C, 0, 100, 2)];
     for (const L of stormLamps) { L.visible = false; scene.add(L); }
+    /* 強爆炸的四盞（v1.291.0）：跟打雷那兩盞**一起開關**（見 lampSync）——燈數只有「全關」與「六盞都開」兩種，
+       shader 也就只多一份（開場編好）；各開各的話打雷、爆炸、兩個都有是三份，第一次碰到的那一份要當場編（量到 200ms 上下） */
+    boomLamps = [];
+    for (let i = 0; i < BOOM_LAMPS; i++) {
+      const L = new T.PointLight(BOOM_LAMP_C, 0, 1, 1);
+      L.visible = false; scene.add(L); boomLamps.push(L);
+    }
     /* 烏雲遮天蓋在 CSS 天空上的那一層：z-index −1 疊在 body 的背景上、畫布底下 */
     gloomEl = document.createElement('div');
     gloomEl.style.cssText = 'position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0;' +
@@ -3572,10 +3588,28 @@ if (vAo.x + vAo.y > 0.5) {
     if (nb) { stormBall.instanceMatrix.needsUpdate = true; if (stormBall.instanceColor) stormBall.instanceColor.needsUpdate = true; }
     for (let i = 0; i < 2; i++) {
       const L = stormLamps[i], s = lamps[i];
-      L.visible = lamps.length > 0;              // 開關會換 shader（開場編好了，見 draw3d），所以整場雷雨都開著、只調亮度
       L.intensity = s && s.i > 0 ? s.i * STORM_LAMP_I : 0;
       if (s && s.i > 0) L.position.set(s.x, s.y, s.z);
     }
+    stormOn = lamps.length > 0;                  // 開關會換 shader（開場編好了，見 draw3d），所以整場雷雨都開著、只調亮度
+    lampSync();
+  }
+  /* 打雷那兩盞與爆炸那四盞一起開關（v1.291.0）：有一邊要燈就六盞都開，沒用到的亮度 0。理由見 init 的 boomLamps */
+  function lampSync() {
+    const v = stormOn || boomOn;
+    for (const L of stormLamps) L.visible = v;
+    for (const L of boomLamps) L.visible = v;
+  }
+  /* 強爆炸照亮周圍（v1.291.0）。規則那邊給這一刻的燈 {x, y, z, i 相對亮度, R 火球半徑}（最多 BOOM_LAMPS 盞，
+     多的已經在那邊併好，見 boomLampList）；空的＝沒有強爆炸在亮（或畫面設定把「爆炸光源」關了） */
+  function putBooms(lamps) {
+    for (let i = 0; i < BOOM_LAMPS; i++) {
+      const L = boomLamps[i], s = lamps[i];
+      L.intensity = s && s.i > 0 ? s.i * BOOM_LAMP_E : 0;
+      if (s && s.i > 0) { L.position.set(s.x, s.y, s.z); L.distance = s.R * BOOM_LAMP_REACH; }
+    }
+    boomOn = lamps.length > 0;
+    lampSync();
   }
   /* 烏雲遮天（v1.283.0）：d 0～1，天光、日光照 GLOOM 壓暗，霧往暗灰拉，CSS 天空上蓋那一層 div。
      同一個值重複給就什麼都不做（平常每幀都是 0）。 */
@@ -8673,6 +8707,42 @@ void main() {
   const gjFx = [];                   // 每一位一組：赫、蒼、手上的茈、白光、衝擊波
   const purpFx = [];                 // 每一顆飛出去的茈一組：球、殘影、出手的兩圈衝擊波、地上的紫光、收掉那一下的白光與衝擊波
   const PURP_MAX = 3;                // 同時畫幾顆飛著的（要 ≥ 規則那邊的上限）
+  /* 無下限的殼（v1.291.0，使用者：「五條悟無下限被打中無效 但是顯示提示(才不會看起來像BUG)」→ 預覽選「身上閃一圈光紋」、白藍）：
+     一位一顆球（拉成直一點的橢球罩住他），照規則那邊寫在他身上的 m.ih（[方向 x, y, z, 打到後幾秒]，見 gjInfHit）畫：
+     打到的那一點白光一閃、一圈亮紋從那一點往外擴（後面跟一圈細的）、整個殼淡淡浮出來，GJ_INF_LIFE 秒收掉。
+     方向是 0 的那幾下（點火、震倒、被吸：沒有方向）畫在朝鏡頭那一側，玩家看得到。
+     普通混色（加亮混色疊在天空上整片變白，見〈Saber〉那次）；沒在亮就 visible = false（沒東西在場就不吃 draw call） */
+  const GJ_INF_LIFE = 0.75, GJ_INF_HITS = 4, GJ_INF_C = 0xbfe6ff;
+  const GJ_INF_VS = `varying vec3 vP; varying vec3 vN; varying vec3 vV;
+void main() {
+  vP = normalize(position);
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz);
+  gl_Position = projectionMatrix * mv;
+}`;
+  const GJ_INF_FS = `uniform vec3 c; uniform vec4 h[${GJ_INF_HITS}];
+varying vec3 vP; varying vec3 vN; varying vec3 vV;
+void main() {
+  float rim = 1.0 - abs(dot(normalize(vN), normalize(vV)));
+  vec3 p = normalize(vP);
+  float a = 0.0, w = 0.0;
+  for (int i = 0; i < ${GJ_INF_HITS}; i++) {
+    float u = h[i].w;
+    if (u < 0.0 || u >= 1.0) continue;
+    float ang = acos(clamp(dot(p, h[i].xyz), -1.0, 1.0));
+    float fr = ang - 2.8 * sqrt(u);
+    a += 1.1 * exp(-fr * fr / 0.02) * (1.0 - u);
+    float f2 = fr + 0.32;
+    a += 0.5 * exp(-f2 * f2 / 0.012) * (1.0 - u);
+    float hot = exp(-ang * ang / 0.09) * exp(-u * 5.0);
+    a += 1.5 * hot; w += hot;
+    a += 0.22 * (1.0 - u) * (1.0 - u) * (0.25 + rim * rim);
+  }
+  vec3 col = mix(c, vec3(1.0), clamp(w * 1.2, 0.0, 1.0));
+  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * 0.8);
+  #include <colorspace_fragment>
+}`;
+  const gjInfMesh = [];              // 每一位一顆（見上面）
   function gjInit(unit) {
     gjBox = unit;
     gjSph = new T.SphereGeometry(1, 32, 20);
@@ -8685,6 +8755,16 @@ void main() {
     gjGlowTex = new T.CanvasTexture(cvs); gjGlowTex.colorSpace = T.SRGBColorSpace;
     for (let i = 0; i < MAXGOJO; i++)
       gjFx.push({ red: gjOrb('red'), blue: gjOrb('blue'), purple: gjOrb('purple'), flash: gjFlash(), shock: gjShock() });
+    const infGeo = new T.SphereGeometry(1, 48, 32);
+    for (let i = 0; i < MAXGOJO; i++) {
+      const S = new T.Mesh(infGeo, new T.ShaderMaterial({
+        uniforms: { c: { value: new T.Color(GJ_INF_C) },
+                    h: { value: Array.from({ length: GJ_INF_HITS }, () => new T.Vector4(0, 1, 0, -1)) } },
+        vertexShader: GJ_INF_VS, fragmentShader: GJ_INF_FS, transparent: true, depthWrite: false, side: T.DoubleSide
+      }));
+      S.renderOrder = 4; S.visible = false; S.frustumCulled = false;
+      scene.add(S); gjInfMesh.push(S);
+    }
     for (let i = 0; i < PURP_MAX; i++) {
       const trail = [];
       for (let k = 0; k < GJ_TRAIL; k++) {
@@ -8796,6 +8876,25 @@ void main() {
       }
     }
   }
+  /* 無下限的殼（v1.291.0，見 GJ_INF_LIFE 那一段）：沒有 m.ih 就藏起來 */
+  const _gjiv = new T.Vector3();
+  function gjInfPut(m, S) {
+    const L = m.ih;
+    if (!L || !L.length) { S.visible = false; return; }
+    const mid = BEAST_MID.gojo * (m.sc || 1), H = S.material.uniforms.h.value;
+    S.position.set(m.x, (m.y || 0) + mid * 0.95, m.z);
+    S.scale.set(mid * 1.25, mid * 1.4, mid * 1.25);
+    for (let i = 0; i < GJ_INF_HITS; i++) {
+      const h = L[i];
+      if (!h) { H[i].w = -1; continue; }
+      if (h[0] || h[1] || h[2]) H[i].set(h[0], h[1], h[2], h[3] / GJ_INF_LIFE);
+      else {                                     // 沒方向：朝鏡頭那一側（高低差壓扁，不然鏡頭在高處時亮在頭頂）
+        _gjiv.copy(camera.position).sub(S.position); _gjiv.y *= 0.3; _gjiv.normalize();
+        H[i].set(_gjiv.x, _gjiv.y, _gjiv.z, h[3] / GJ_INF_LIFE);
+      }
+    }
+    S.visible = true;
+  }
   function putGojos(list) {
     let n = 0;
     _zI[2] = 0; _zCap[2] = MAXGOJO * GJ_AURA_SLOT;
@@ -8820,12 +8919,14 @@ void main() {
       gjHeldFx(m, gjFx[n]);
       _zPen = 2;
       gjAura(m, n);
+      gjInfPut(m, gjInfMesh[n]);
       n++;
     }
     for (let i = n; i < MAXGOJO; i++) {
       const F = gjFx[i];
       F.red.g.visible = F.blue.g.visible = F.purple.g.visible = false;
       gjPutFlash(F.flash, null, -1); F.shock.visible = false;
+      gjInfMesh[i].visible = false;
     }
     gjMesh.count = n * GJ_SLOT;
     gjMesh.visible = n > 0;
@@ -12016,15 +12117,17 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       blitScene.children[0].material.uniforms.map.value = L.rt.texture;
       renderer.render(blitScene, blitCam);
     } else renderer.render(scene, camera);
-    /* 第一幀畫完，把打雷那兩盞燈開著的那一份 shader 在背景編好（v1.283.0，見 init 的 stormLamps）：
-       compile 那一刻燈要是開著的（燈數是從場景裡讀的），送出去就關回去。沒有 compileAsync 的話就算了，
-       頂多第一次打雷那一下當場編。 */
+    /* 第一幀畫完，把打雷那兩盞＋爆炸那四盞燈開著的那一份 shader 在背景編好（v1.283.0，見 init 的 stormLamps；
+       v1.291.0 起六盞一起開關，見 lampSync）：compile 那一刻燈要是開著的（燈數是從場景裡讀的），送出去就關回去。
+       沒有 compileAsync 的話就算了，頂多第一次打雷／強爆炸那一下當場編。 */
     if (!lampWarm) {
       lampWarm = true;
       if (renderer.compileAsync && !stormLamps[0].visible) {
         for (const L of stormLamps) L.visible = true;
+        for (const L of boomLamps) L.visible = true;
         renderer.compileAsync(scene, camera).catch(() => {});
         for (const L of stormLamps) L.visible = false;
+        for (const L of boomLamps) L.visible = false;
       }
     }
   }
@@ -12118,6 +12221,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
+    putBooms, BOOM_LAMPS,                      /* 強爆炸照亮周圍（v1.291.0）：規則那邊照 BOOM_LAMPS 盞併好再給 */
     putStars, putBolts, putStorm, setGloom, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
     putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
@@ -12179,6 +12283,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 五條悟（v1.255.0）：自己一顆 mesh（putGojos），手上的赫／蒼／茈照 GJ 的時間軸畫；
        規則那邊照 GJ.fire 那一刻放出紫球、出手點讀 gjTip（同一支 gjRig 擺的姿勢）；飛出去的那幾顆 putPurps 畫 */
     putGojos, putPurps, GOJO, GJ_PARTS, GJ_SLOT, MAXGOJO, GJ, GJ_G, GJ_HELD_R, gjTip, PURP_MAX, PURP_BURST,
+    GJ_INF_LIFE, GJ_INF_HITS,                   /* 無下限的殼亮多久、同時幾圈（v1.291.0）：規則那邊照這兩個收 m.ih */
     /* 芙莉蓮（v1.259.0）：自己一顆 mesh（putFrierens），防護罩照規則那邊寫在她身上的 bt／bc／bh 畫；
        FR_BAR_OPEN／FR_BAR_CLOSE／FR_BAR_RIP 是罩子張開、收掉、亮紋擴完要幾秒（規則那邊照這幾個收狀態） */
     putFrierens, FRIEREN, FR_PARTS, FR_SLOT, MAXFR, FR_G, FR_NE, FR_BAR_OPEN, FR_BAR_CLOSE, FR_BAR_RIP,
@@ -12219,6 +12324,6 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
     get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erWaveMesh, erSheetMesh, diaMesh, coinMesh, draMesh,
-                            stormLay, stormBall, stormLamps, hemi, sun, gloomEl }; }
+                            stormLay, stormBall, stormLamps, boomLamps, gjInfMesh, hemi, sun, gloomEl }; }
   };
 })();

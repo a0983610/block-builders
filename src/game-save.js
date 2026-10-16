@@ -39,9 +39,11 @@ let stats = freshStats();
 /* ao＝積木 AO 開著沒（v1.273.0，見 game-ui.js 的 aoOn），預設開 */
 /* dyn＝動態解析度開著沒（v1.280.0，見 game-ui.js 的 dynStep），預設開（使用者選的）；舊存檔沒有這一格，merge 自動補 true */
 /* aa＝跟不上時關抗鋸齒（v1.281.0），預設開；once＝降了就不升回去（v1.281.0），預設關。舊存檔一樣靠 merge 補 */
+/* boom＝爆炸光源（v1.291.0，見 game-ui.js 的 boomLit），預設開；舊存檔同上靠 merge 補 */
 const KEY_N = 9;
 const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
-                           keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, dyn: true, aa: true, once: false, v: 1 });
+                           keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, dyn: true, aa: true, once: false,
+                           boom: true, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -227,12 +229,13 @@ function snapOpt(v, opts) {
 /* 把存回來的設定套進變數與面板 */
 function applyPref() {
   targetCnt = pref.cnt; timeScale = pref.spd; muted = pref.mute; spinOn = pref.spin;
-  lazyMode = pref.lazy; cap60 = pref.cap; rageOn = pref.rage; aoOn = pref.ao;
+  lazyMode = pref.lazy; cap60 = pref.cap; rageOn = pref.rage; aoOn = pref.ao; boomLit = pref.boom;
   setWorkerCount(pref.wk);
   $('mute').checked = pref.mute;
   $('spin').checked = pref.spin;
   $('cap60').checked = pref.cap;
   $('aoOn').checked = pref.ao;
+  $('boomLit').checked = pref.boom;
   $('aaDyn').checked = pref.aa;
   $('dynRes').checked = pref.dyn;
   $('dynOnce').checked = pref.once;

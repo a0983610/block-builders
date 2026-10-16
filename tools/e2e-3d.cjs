@@ -33134,6 +33134,68 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ['fun', 'call', 'act', 'pur'].every(k => gbusy[k] === 'false,false,false,true') && gbusy.can === 'true,true,true,false' &&
      gbusy.zenBusy === false && gbusy.hurt === '0,0,0', JSON.stringify(gbusy));
 
+  /* ── 無下限的亮紋（v1.291.0，使用者：「五條悟無下限被打中無效 但是顯示提示(才不會看起來像BUG)」→ 預覽選身上閃一圈、白藍、「吸也閃」）：
+        打不動他的那一下（beastSafe）記一筆 m.ih。全部規則型：直接叫 tossBeast／fellBeast／igniteBeast／ufoSuck／holeTake，
+        計時走真的 step（守 stepBeast0 那一行），畫面只叫 putGojos ── */
+  const ginf = await page.evaluate(() => {
+    cleanTools();
+    const m = spawnBeast('gojo', 1, 0, 0);
+    m.x = siteR + 30; m.z = 0; m.st = 'fun'; m.pause = 999;
+    const r = {}, dirs = () => m.ih.map(h => h.slice(0, 3).map(v => +v.toFixed(2)).join(',')).join('｜');
+    /* ① 炸：tossBeast 把他往 +x 推（攻擊從 −x 來）→ 亮在 −x 那一側；同一刻的震倒（沒方向）併進去，一發只亮一圈 */
+    r.toss = tossBeast(m, 6, 4, 0, true); fellBeast(m, 2);
+    r.bomb = dirs();
+    /* ② 計時：真的 step，GJ_INF_LIFE 秒收掉 */
+    let T = 0;
+    while (m.ih.length && T < 5) { step(0.05); T += 0.05; }
+    r.life = +T.toFixed(2);
+    /* ③ 沒方向的（點火、推倒）記 0,0,0；GJ_INF_SOFT 秒內再來一下併進去，隔開了才另一圈 */
+    igniteBeast(m, 0); r.fire = dirs();
+    fellBeast(m, 2); r.soft = m.ih.length;
+    for (let i = 0; i < Math.ceil(GJ_INF_SOFT / 0.05) + 1; i++) step(0.05);
+    fellBeast(m, 2); r.apart = m.ih.length;
+    /* ④ 同一方向連打（善逸那種）GJ_INF_GAP 秒內算同一下；換方向另開一圈；最多 GJ_INF_HITS 圈 */
+    m.ih.length = 0;
+    for (let k = 0; k < 3; k++) tossBeast(m, 6, 0, 0);
+    r.same = m.ih.length;
+    for (let a = 1; a <= 5; a++) tossBeast(m, 6 * Math.cos(a * 1.2), 0, 6 * Math.sin(a * 1.2));
+    r.cap = m.ih.length;
+    /* ⑤ 幽浮光柱、小黑洞罩著他：吸不走，但亮（沒方向） */
+    const back = o => { for (const it of o.up) if (it.kind === 0) { it.o.ufo = 0; it.o.st = FLY; } };   // 順手吸到的碎料放回去
+    m.ih.length = 0;
+    const u = { x: m.x, y: 20, z: m.z, up: [], bag: [], hit: 0 };
+    ufoSuck(u, 0.05); back(u);
+    r.ufo = [m.ufo || 0, m.ih.length];
+    m.ih.length = 0;
+    const h = { x: m.x, y: 1, z: m.z, up: [], hit: 0 };
+    holeTake(h); back(h);
+    r.hole = [m.ufo || 0, m.ih.length];
+    r.hurt = [m.air || 0, m.burn || 0, m.fall || 0].join(',');
+    /* ⑥ 畫面：有 m.ih 才畫殼、套在他身上；沒方向的那一圈朝鏡頭；沒有就藏起來 */
+    const S = ENG.three.gjInfMesh[0], H = S.material.uniforms.h.value, cam = ENG.three.camera.position;
+    m.ih.length = 0; ENG.putGojos([m]); r.hide = S.visible;
+    m.ih.push([0, 0, 0, 0.1], [-1, 0, 0, 0.2]); ENG.putGojos([m]);
+    r.show = S.visible && Math.hypot(S.position.x - m.x, S.position.z - m.z) < 1e-6;
+    r.face = H[0].x * (cam.x - m.x) + H[0].z * (cam.z - m.z) > 0;
+    r.u = [+H[0].w.toFixed(3), +H[1].w.toFixed(3), H[1].x, H[2].w];
+    ENG.putGojos([]); r.end = S.visible;
+    r.K = { LIFE: ENG.GJ_INF_LIFE, HITS: ENG.GJ_INF_HITS };
+    beasts = null;
+    return r;
+  });
+  ok('無下限的亮紋：炸他亮在攻擊來的那一側（衝擊＋震倒只亮一圈），GJ_INF_LIFE 秒收掉；點火、推倒沒方向、太近的併進去',
+     ginf.toss === false && ginf.bomb === '-0.98,-0.2,0' &&Math.abs(ginf.life - ginf.K.LIFE) < 0.05 + 1e-9 &&
+     ginf.fire === '0,0,0' && ginf.soft === 1 && ginf.apart === 2,
+     '炸 ' + ginf.bomb + '；' + ginf.life + ' 秒收掉（GJ_INF_LIFE ' + ginf.K.LIFE + '）；點火 ' + ginf.fire + '、緊接著推倒 ' + ginf.soft +
+     ' 圈、隔開之後 ' + ginf.apart + ' 圈');
+  ok('無下限的亮紋：同方向連打算一下、換方向另開一圈、最多 GJ_INF_HITS 圈；幽浮光柱與小黑洞吸不走他，但會亮',
+     ginf.same === 1 && ginf.cap === ginf.K.HITS && ginf.ufo.join() === '0,1' && ginf.hole.join() === '0,1' && ginf.hurt === '0,0,0',
+     '同方向三下 ' + ginf.same + ' 圈；再換五個方向 ' + ginf.cap + ' 圈；幽浮（被吸／亮）' + ginf.ufo + '；小黑洞 ' + ginf.hole + '；air／burn／fall ' + ginf.hurt);
+  ok('無下限的殼：有亮紋才畫、套在他身上，沒方向的那一圈朝鏡頭；沒有就藏起來（不吃 draw call）',
+     ginf.hide === false && ginf.show && ginf.face && ginf.end === false &&
+     ginf.u[0] === +(0.1 / ginf.K.LIFE).toFixed(3) && ginf.u[1] === +(0.2 / ginf.K.LIFE).toFixed(3) && ginf.u[2] === -1 && ginf.u[3] === -1,
+     JSON.stringify({ hide: ginf.hide, show: ginf.show, face: ginf.face, u: ginf.u, end: ginf.end }));
+
   /* ── 畫面：沒他在場不吃 draw call；手上的赫／蒼／茈照時間軸；出手前身上的紫電只在兩顆球撞在一起之後到放出去之後一小段；
         飛著的茈、收掉之後藏起來；不抽 Math.random（只叫 putGojos／putPurps） ── */
   const gdraw = await page.evaluate(() => {
@@ -34275,6 +34337,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const put = (o, x, z) => { o.x = x; o.z = z; o.y = 0; o.air = 0; o.fall = 0; o.burn = 0; };
     const alive = workers.filter(o => !o.dead), w = alive[0], w2 = alive[1];   // 上面切金字塔那兩刀可能砍到過人
     put(w, X, -10); put(w2, X + 20, -10);
+    /* 其餘活著的小人挪到場的另一邊（那一面外），量完放回去（v1.291.0）：留在原地的話剛好有人閒晃到那一面上就多砍一個、多噴一份血，
+       噴血那條就對不上（--seed 4240302499 噴了 141 顆、算 112，同種子重跑 113 對 113；多的 29 顆約兩個 0.9 倍的小人） */
+    const others = alive.slice(2).map(o => [o, o.x, o.z]);
+    for (const [o] of others) o.x = -X;
     const ape = spawnBeast('ape', 1); put(ape, X, 0); ape.st = 'fun'; ape.pause = 999;
     const g = spawnBeast('giant', 1); put(g, X, 12); g.st = 'fun'; g.pause = 999;
     const far = spawnBeast('ape', 1); put(far, X + 20, 4); far.st = 'fun'; far.pause = 999;
@@ -34291,6 +34357,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     Math.random = real;
     beasts = null;
     for (const o of [w, w2]) { o.fall = 0; o.y = 0; }
+    for (const [o, x, z] of others) { o.x = x; o.z = z; }
     return r;
   });
   ok('砍到的人與動物：那一面上的小人砍倒、小獼猴倒地、巨人斬殺；那一面外的、她背後的、天上的、她自己不算',
@@ -38646,6 +38713,65 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '五格在小窗裡 ' + disp.inBox + '、面板剩 ' + disp.panelChecks.join('／') + '；開 ' + disp.opened + '、收 ' + disp.closed +
      '；預設（關抗鋸齒／動態解析度／不升回去）' + disp.fresh.join('／') + '；取消關抗鋸齒 → ' + disp.aaOff.lv + '、取消動態解析度 → ' + disp.resOff.lv +
      '、勾不升回去 → ' + disp.onceOn.once);
+
+  /* 強爆炸照亮周圍（v1.291.0，使用者：「評估火&爆炸 也有類似打雷的光源效果」→ 預覽「效果確實不錯 亮度*4」
+     「可能燈加在核彈跟爆裂魔法就好 小爆炸看不太出來」「爆炸光源如果耗效能可以做成開關」）。規則型：直接 spawnBlast／stepFlash／draw，
+     量引擎真的那幾盞燈。燈數是 shader 的一部分，所以守「打雷兩盞＋爆炸四盞要嘛全開、要嘛全關」 */
+  const boomL = await page.evaluate(() => {
+    cleanTools();
+    const th = ENG.three, $ = id => document.getElementById(id), keep = pref.boom;
+    const st = () => {
+      const all = th.stormLamps.concat(th.boomLamps), on = all.filter(L => L.visible).length;
+      return { on: on === all.length ? 'all' : on === 0 ? 'none' : 'mixed', n: th.boomLamps.filter(L => L.visible && L.intensity > 0).length };
+    };
+    const r = { inBox: $('dispBox').contains($('boomLit')), fresh: freshPref().boom, N: ENG.BOOM_LAMPS };
+    flashes.length = 0; draw(); r.idle = st();
+    /* 小爆炸（炸彈那一種，沒有 big）不給燈 */
+    spawnBlast({ x: 0, y: 0, z: 0 }, BOMB_R); stepFlash(0.1); draw(); r.small = st();
+    /* 一顆強爆炸：剛生那一刻還沒亮；0.1 秒後一盞在火球球心、橘色、照到 BOOM_LAMP_REACH 倍半徑、亮度 BOOM_LAMP_E × R */
+    flashes.length = 0;
+    spawnBlast({ x: 5, y: 0, z: -3 }, NUKE_R, true); draw(); r.t0 = st();
+    stepFlash(0.1); draw();
+    const f = flashes[0], L = th.boomLamps.find(L => L.intensity > 0);
+    r.one = st();
+    r.at = L ? Math.hypot(L.position.x - f.x, L.position.y - f.y, L.position.z - f.z) < 1e-6 : false;
+    r.reach = L ? +(L.distance / f.R).toFixed(3) : 0;
+    r.E = L ? +(L.intensity / f.R / f.op).toFixed(3) : 0;
+    r.color = L ? L.color.getHexString() : '';
+    stepFlash(GLOW_LIFE); draw(); r.gone = st();
+    /* 六顆一起：四盞全亮，最後一盞放在後三顆的亮度加權重心、亮度不超過最亮那一顆 */
+    flashes.length = 0;
+    for (let i = 0; i < 6; i++) spawnBlast({ x: i * 10, y: 0, z: 0 }, NUKE_R - i, true);
+    stepFlash(0.1);
+    const list = boomLampList().map(o => Object.assign({}, o));
+    let w = 0, x = 0;
+    for (const g of flashes.filter(g => g.R <= NUKE_R - 3)) { const i = g.R * g.op; w += i; x += g.x * i; }
+    r.six = { n: list.length, x: +list[3].x.toFixed(3), want: +(x / w).toFixed(3), i: list[3].i, top: list[0].i };
+    draw(); r.sixLit = st();
+    /* 畫面設定那一格關掉：照樣炸、燈全關；勾回來又亮 */
+    const set = v => { $('boomLit').checked = v; $('boomLit').dispatchEvent(new Event('change', { bubbles: true })); };
+    set(false); draw(); r.off = Object.assign(st(), { pref: pref.boom, fl: flashes.length });
+    set(true); draw(); r.back = st();
+    set(keep);
+    flashes.length = 0; draw(); r.end = st();
+    cleanTools();
+    return r;
+  });
+  ok('強爆炸照亮周圍：核彈／爆裂魔法的火球一顆一盞（球心、橘色、照到 BOOM_LAMP_REACH 倍半徑），小爆炸不給燈，收完就關',
+     boomL.idle.on === 'none' && boomL.small.on === 'none' && boomL.t0.on === 'none' &&
+     boomL.one.on === 'all' && boomL.one.n === 1 && boomL.at && boomL.reach === 3 && boomL.E === 16 && boomL.color === 'ffa24a' &&
+     boomL.gone.on === 'none',
+     '平常 ' + boomL.idle.on + '、炸彈 ' + boomL.small.on + '、剛炸 ' + boomL.t0.on + '；0.1 秒 ' + boomL.one.on + '（亮 ' + boomL.one.n +
+     ' 盞、在球心 ' + boomL.at + '、照到 ' + boomL.reach + ' 倍半徑、亮度 ' + boomL.E + ' × R、#' + boomL.color + '）；收完 ' + boomL.gone.on);
+  ok('強爆炸照亮周圍：六顆一起時 BOOM_LAMPS 盞全亮，多的併進最後一盞（重心、不超過最亮那一顆）；打雷那兩盞跟著一起開關',
+     boomL.six.n === boomL.N && boomL.sixLit.on === 'all' && boomL.sixLit.n === boomL.N &&
+     Math.abs(boomL.six.x - boomL.six.want) < 1e-3 && boomL.six.i === boomL.six.top,
+     '清單 ' + boomL.six.n + ' 盞、亮 ' + boomL.sixLit.n + '（' + boomL.sixLit.on + '）；最後一盞 x ' + boomL.six.x + '（重心 ' + boomL.six.want +
+     '）、亮度 ' + boomL.six.i + '（最亮 ' + boomL.six.top + '）');
+  ok('畫面設定「爆炸光源」：在小窗裡、預設開；關掉照樣炸但燈全關，勾回來又亮',
+     boomL.inBox && boomL.fresh === true && boomL.off.on === 'none' && boomL.off.pref === false && boomL.off.fl > 0 &&
+     boomL.back.on === 'all' && boomL.end.on === 'none',
+     '在小窗 ' + boomL.inBox + '、預設 ' + boomL.fresh + '；關掉 ' + boomL.off.on + '（火球 ' + boomL.off.fl + ' 顆）、勾回來 ' + boomL.back.on);
 
   /* 「每幀乘一次」的阻尼照 dt 換算（v1.244.0，使用者：「要改」）。規則型：同一顆粒子、同一塊碎料，
      用 30／60／120／144fps 的 dt 各推兩秒，看走多遠。改之前走的距離跟幀率成反比——探針實測

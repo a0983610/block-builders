@@ -5304,6 +5304,40 @@ function stepFlash(dt) {
     f.op = fade * fade;                             // 平方：亮的時間長、最後幾幀掉得乾脆
   }
 }
+/* ── 強爆炸照亮周圍（v1.291.0，見 開發筆記〈強爆炸照亮周圍（v1.291.0）〉）──
+   使用者：「評估火&爆炸 也有類似打雷的光源效果」→ 預覽「效果確實不錯 亮度*4」；問到好幾發一起炸時：
+   「最好是多個燈 ……可能燈加在核彈跟爆裂魔法就好 小爆炸看不太出來」。
+   所以只有強爆炸（big：核彈與爆裂魔法）的火球給燈，一顆一盞、放在火球球心（f.y 已經抬過 FLASH_UP）；
+   相對亮度＝半徑 × 亮的程度（BOOM_LAMP_ATK 秒從 0 亮起來，之後照火球的 op 暗下去），引擎乘 BOOM_LAMP_E。
+   引擎只有 ENG.BOOM_LAMPS 盞：照亮度排，最後一盞把剩下的併起來（照亮度加權放在重心、亮度加總但不超過最亮那一顆，
+   幾顆疊在一起才不會過曝成白）。畫面設定把「爆炸光源」關掉就不叫這一支（見 game-ui.js 的 boomLit）。
+   物件重複用（_boomPool），每幀叫不生垃圾。 */
+const BOOM_LAMP_ATK = 0.05;
+const _booms = [], _boomPool = [];
+function boomLampList() {
+  _booms.length = 0;
+  for (const f of flashes) {
+    if (!f.big) continue;
+    const i = f.R * Math.min(1, f.t / BOOM_LAMP_ATK) * f.op;
+    if (!(i > 0)) continue;
+    const o = _boomPool[_booms.length] || (_boomPool[_booms.length] = {});
+    o.x = f.x; o.y = f.y; o.z = f.z; o.i = i; o.R = f.R;
+    _booms.push(o);
+  }
+  const N = ENG.BOOM_LAMPS;
+  if (_booms.length > 1) _booms.sort((a, b) => b.i - a.i);
+  if (_booms.length > N) {
+    let w = 0, x = 0, y = 0, z = 0, R = 0;
+    for (let j = N - 1; j < _booms.length; j++) {
+      const o = _booms[j];
+      w += o.i; x += o.x * o.i; y += o.y * o.i; z += o.z * o.i; R += o.R * o.i;
+    }
+    const o = _booms[N - 1];
+    o.x = x / w; o.y = y / w; o.z = z / w; o.R = R / w; o.i = Math.min(w, _booms[0].i);
+    _booms.length = N;
+  }
+  return _booms;
+}
 
 /* ── 蘑菇雲 ───────────────────────────────────────────────
    不是一次生出來的：柱子先往上冒，半秒後才在頂端撐出傘蓋，同時腰上出現一圈環。
@@ -6465,7 +6499,9 @@ function ufoSuck(u, dt) {
   }
   if (beasts) for (const m of beasts) {
     if (m.ufo || m.sky) continue;         // 在天上飛的那幾隻不吸（見檔頭 ④）
-    if (levBusy(m)) continue;             // 立體機動中的里維、正在氣化的巨人（v1.230，見 levBusy）
+    /* 立體機動中的里維、正在氣化的巨人（v1.230，見 levBusy）。五條悟往下走到 beastSafe：
+       吸不走，但光柱罩著他時身上亮紋（v1.291.0，使用者「吸也閃」，見 gjInfHit） */
+    if (levBusy(m) && m.kind !== 'gojo') continue;
     const rad = ufoRad(u, m.y || 0);
     if ((m.x - u.x) ** 2 + (m.z - u.z) ** 2 > rad * rad) continue;
     if (beastSafe(m)) continue;           // 防護罩裡的吸不走（v1.259.0；排在光圈判斷後面，光圈外的不算被打）
@@ -6805,7 +6841,7 @@ function holeTake(h) {
     holeGrab(h, w, 1);
   }
   if (beasts) for (const m of beasts) {
-    if (m.ufo || m.sky || levBusy(m)) continue;          // levBusy（v1.230）同幽浮那一條
+    if (m.ufo || m.sky || (levBusy(m) && m.kind !== 'gojo')) continue;   // levBusy（v1.230）、五條悟（v1.291.0）同幽浮那一條
     if ((m.x - h.x) ** 2 + ((m.y || 0) + HOLE_MID[2] - h.y) ** 2 + (m.z - h.z) ** 2 > R2) continue;
     if (beastSafe(m)) continue;           // 防護罩裡的吸不走（v1.259.0；排在範圍判斷後面）
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'hole');   // v1.208
@@ -9168,6 +9204,7 @@ function stepBeast0(m, dt) {
   if (megDown(m)) return stepMegDown(m, dt);
   /* 芙莉蓮（v1.259.0）：防護罩的計時與舉杖；罩子張開到收完那幾秒她站定（見 frStep） */
   if (m.kind === 'frieren' && frStep(m, dt)) return false;
+  if (m.ih) gjInfStep(m, dt);                              // 五條悟無下限的亮紋計時（v1.291.0，見 gjInfHit）
   if (m.kind === 'dragon') return stepDragon(m, dt);      // 牠不走路，自己一套（見下面）
   if (m.kind === 'gryphon') return stepGryph(m, dt);      // 飛進來降落再起飛，自己一套（v1.176）
   /* 卡住了就脫困（v1.190.2，使用者：「小人 牛羊 猴子這類盡量同一套走位判定」）。
@@ -11170,7 +11207,8 @@ function levLives(m, C, cutR) {
     lifeHit(w, 'levi');
   }
   if (beasts) for (const o of beasts) {
-    if (o === m || o.air || o.sky || levBusy(o)) continue;
+    /* 五條悟往下走：刀掃到他時 fellBeast → beastSafe 擋下、身上亮一圈（v1.291.0，見 gjInfHit） */
+    if (o === m || o.air || o.sky || (levBusy(o) && o.kind !== 'gojo')) continue;
     const mid = ENG.BEAST_MID[o.kind] * (o.sc || 1);
     if (Math.hypot(o.x - C.x, (o.y || 0) + mid - C.y, o.z - C.z) > R + mid * 0.8) continue;
     if (fellBeast(o, rr(2.2, 3.4))) { sndFall(); beastHit(o, 'levi'); }
@@ -11599,6 +11637,32 @@ const GJ_REACH = PURP_RANGE / 2;   // 站多遠出招：射程的一半（同 Ex
    眼罩版 ×1.2 是 2.91） */
 const GJ_SC = DOOM_SC * 1.1;
 const GJ_AIM = 0.2;                // 站定那一下（act）多久就開始結印
+/* 無下限的亮紋（v1.291.0，使用者：「五條悟無下限被打中無效 但是顯示提示(才不會看起來像BUG)」→ 預覽選「身上閃一圈光紋」、
+   白藍、「吸也閃」）：打不動他的那一下（beastSafe 認出是他——炸飛、點火、震倒、斬、被吸都走那一支）記一筆
+   m.ih [方向 x, y, z（從他身體中心指向被打到的那一側）, 打到後幾秒]，引擎照它畫那層殼（ENG.GJ_INF_LIFE 秒收掉）。
+     · 有方向的（tossBeast 給的是把他推出去的速度）：攻擊從反方向來，亮在 −v 那一側（高低壓扁成三成，免得亮在頭頂或腳底）
+     · 沒方向的（點火、震倒、被吸）：記 0, 0, 0，引擎畫在朝鏡頭那一側
+   GJ_INF_GAP 秒內方向差不到 GJ_INF_ANG 的算同一下；沒方向的那一下 GJ_INF_SOFT 秒內有一圈就併進去——
+   一發炸彈的衝擊（有方向）＋震倒（沒方向）只亮一圈，被幽浮光柱罩著時每 GJ_INF_SOFT 秒亮一圈（同時三圈，不會擠掉沒亮完的）。
+   同時最多 ENG.GJ_INF_HITS 圈 */
+const GJ_INF_GAP = 0.15, GJ_INF_ANG = 0.6, GJ_INF_SOFT = 0.3;
+function gjInfHit(m, vx, vy, vz) {
+  if (!m.ih) m.ih = [];
+  let x = 0, y = 0, z = 0;
+  const dir = !!(vx || vz);
+  if (dir) {
+    x = -vx; y = -(vy || 0) * 0.3; z = -vz;
+    const L = Math.hypot(x, y, z); x /= L; y /= L; z /= L;
+  }
+  for (const h of m.ih)
+    if (dir ? h[3] < GJ_INF_GAP && h[0] * x + h[1] * y + h[2] * z > Math.cos(GJ_INF_ANG) : h[3] < GJ_INF_SOFT) return;
+  if (m.ih.length >= ENG.GJ_INF_HITS) m.ih.shift();
+  m.ih.push([x, y, z, 0]);
+}
+/* 每一幀：亮紋的計時，亮完拿掉（stepBeast0 叫） */
+function gjInfStep(m, dt) {
+  for (let i = m.ih.length - 1; i >= 0; i--) if ((m.ih[i][3] += dt) >= ENG.GJ_INF_LIFE) m.ih.splice(i, 1);
+}
 let purps = null;
 function pickGojo(p) {
   let best = null, bd = Infinity;
@@ -12136,7 +12200,10 @@ function frWallHit(fm) {
 }
 /* 生物打不打得動：levBusy（立體機動中的里維、出招中的善逸、五條悟、死掉的、倒下的惠惠）之外，罩子裡的也打不動。
    只用在「打」的那幾處（炸飛、點火、震倒、吸走、斬殺）；「點得到」那幾支（sabCanCut 等）照舊只看 levBusy */
-function beastSafe(m, vx, vy, vz) { return levBusy(m) || (!!m && !m.sky && frShield(m.x, m.y || 0, m.z, vx, vy, vz)); }
+function beastSafe(m, vx, vy, vz) {
+  if (m && m.kind === 'gojo') { gjInfHit(m, vx, vy, vz); return true; }   // 無下限：打不動，身上亮一圈（v1.291.0，見 gjInfHit）
+  return levBusy(m) || (!!m && !m.sky && frShield(m.x, m.y || 0, m.z, vx, vy, vz));
+}
 /* 小人：沒有 levBusy 那一套，只有罩子 */
 function workerSafe(w) { return !!w && frShield(w.x, w.y || 0, w.z); }
 /* 積木：還站著的才算（碎料、手上的不擋） */
@@ -12767,7 +12834,8 @@ function grRamLives(m, C, R) {
     lifeHit(w, 'ram');
   }
   eachBeastNear(C, R + 1.5, o => {
-    if (o === m || o.air || o.sky || levBusy(o)) return;
+    /* 五條悟往下走：撞到他時 tossBeast → beastSafe 擋下、身上亮一圈（v1.291.0，見 gjInfHit） */
+    if (o === m || o.air || o.sky || (levBusy(o) && o.kind !== 'gojo')) return;
     const hl = Math.hypot(o.x - C.x, o.z - C.z) || 1;
     if (tossBeast(o, ux * sp + (o.x - C.x) / hl * 4, rr(4, 7), uz * sp + (o.z - C.z) / hl * 4, false)) beastHit(o, 'ram');
   });
