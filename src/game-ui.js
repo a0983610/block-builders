@@ -1455,6 +1455,7 @@ function boot() {
   renderBadges();
   bpWorker();             // 背景算藍圖的 Worker 先開起來，第一次換場才不必等它載藍圖檔（v1.265.0）
   startBuild(true);
+  spreadAtSite();         // 人是 applyPref 那一刻生的，那時還沒有這一座：照它重撒（v1.298.1）。要在 completeNow 排慶祝圈之前
   completeNow();          // 開場直接給一座蓋好的建築，砸掉之後才會開始蓋下一座
   requestAnimationFrame(frame);
 }

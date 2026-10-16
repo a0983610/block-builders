@@ -28,14 +28,33 @@ function carryCap(scale) {
   return clamp(Math.round(CARRY_MID + size * CARRY_SIZE + gauss() * CARRY_SD),
                CARRY_MIN, CARRY_MAX);
 }
-function newWorker(i) {
+/* 新來的人站哪：工地外圍隨機一點（siteR 外 3～9 格）。照的是**當下這一座**的 siteR，
+   所以還沒換上這一座之前生的人要重撒一次（見 spreadAtSite）。 */
+function sitePoint() {
   const a = Math.random() * Math.PI * 2, d = siteR + rr(3, 9);
+  return { x: Math.cos(a) * d, z: Math.sin(a) * d };
+}
+/* 開局那一隊照第一座重撒（v1.298.1）。boot 是先 applyPref 生人、才 startBuild 換上第一座，
+   生人那一刻 siteR 還是預設的 12：人一律落在半徑 15～21，大一點的建築整隊都站在建築裡
+   （實測 90 座裡 60 座有人在占地內、27 座 20 人全在裡面，羅浮宮金字塔 19 人被牆圍住），一開場就一起從牆裡走上慶祝圈。
+   工程師、魔法師接手時照站位記下的角度與半徑跟著換（同 tagEngineer／tagMage），不然還指著建築裡那一點。
+   見 開發筆記〈開局小人站在建築裡〉 */
+function spreadAtSite() {
+  for (const w of workers) {
+    const p = sitePoint();
+    w.x = p.x; w.z = p.z;
+    if (w.eng) w.eang = Math.atan2(w.z, w.x);
+    if (w.mage) { w.mang = Math.atan2(w.z, w.x); w.mrad = Math.hypot(w.x, w.z); }
+  }
+}
+function newWorker(i) {
+  const p = sitePoint();
   /* 每個人身高略有差異。v1.51 整體再放大 1.5 倍（1.06–1.24 → 1.59–1.86）：
      模型從腳底到帽頂是 1.31，乘上去大約是 2.1–2.4 格，也就是兩塊多積木高。
      之前那一版遠鏡頭下只剩一撮色點，數不出幾個人、也看不出誰頭上頂著積木。 */
   const scale = rr(W_LO, W_HI);
   return {
-    x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d, a: 0, ph: Math.random() * 6, gait: 0,
+    x: p.x, y: 0, z: p.z, a: 0, ph: Math.random() * 6, gait: 0,
     tone: i, st: 'idle', tx: 0, tz: 0,
     /* 這一趟的工作單：load 是 {b 積木, s 藍圖格子} 一對一對排好的，
        cap 是一趟最多領幾對，li 是撿到第幾對（回程時一律從第 0 對開始丟）。 */

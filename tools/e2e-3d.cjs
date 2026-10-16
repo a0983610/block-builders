@@ -669,6 +669,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     phase: typeof phase !== 'undefined' ? phase : '',
     placed: typeof placedCnt !== 'undefined' ? placedCnt : -1,
     total: typeof bp !== 'undefined' && bp ? bp.slots.length : 0,
+    /* 開局站位（v1.298.1，見 spreadAtSite）：人照這一座的 siteR 撒在外圍，慶祝那段 ringWalk 的半徑只在起點與圈之間，
+       所以開場這一秒多不會有人在占地裡。照預設 siteR 12 撒的話，抽到大一點的建築整隊都站在裡面 */
+    siteR: typeof siteR !== 'undefined' ? siteR : 0,
+    inSite: typeof workers !== 'undefined' ? workers.filter(w => Math.hypot(w.x, w.z) < siteR).length : -1,
     cvW: document.getElementById('cv').width,
     cvH: document.getElementById('cv').height,
     cssW: document.getElementById('cv').style.width,
@@ -684,6 +688,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      boot.bp + ' ' + boot.placed + '/' + boot.total + '，phase=' + boot.phase);
   ok('積木池已建立', boot.blocks > 100, boot.blocks + ' 塊');
   ok('小人已就位', boot.workers > 0, boot.workers + ' 人');
+  ok('開局小人站在建築外圍，不是從建築裡走出來', boot.inSite === 0,
+     boot.bp + ' 半徑 ' + boot.siteR.toFixed(1) + '，占地內 ' + boot.inSite + '／' + boot.workers + ' 人');
 
   /* 面板的三檔按鈕：數字只寫在 CNT_OPTS／WK_OPTS／SPD_OPTS，按鈕照著生。
      這裡驗「畫面上長出來的就是那三個數字」，順便驗預設值那顆有亮起來。 */
