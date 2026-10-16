@@ -78,6 +78,7 @@ const SKELETON = `<!-- ${title} 的面板：改完重跑 node tools/make-preview
   function setup() {
     savable = false;                               // 預覽不寫存檔（不然會蓋掉使用者真的進度）
     doomT = 1e9;                                   // 不讓天災插進來
+    dayClock = () => 15;                           // 晝夜釘在正午（造型要在白天看；要看晚上就拿掉這一行）
     stats.gift = TOOLS.map(t => t.id);             // 道具全解鎖，底下的道具列都能拿
     renderTools();
     completeNow();

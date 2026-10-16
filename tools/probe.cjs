@@ -100,6 +100,9 @@ const MULBERRY = 'function(a){return function(){a|=0;a=a+0x6D2B79F5|0;' +
     try { return typeof bp !== 'undefined' && bp && bp.slots && typeof blocks !== 'undefined'; } catch (e) { return false; }
   }, null, { timeout: 60000 });
   if (!has('--live')) await page.evaluate(() => { running = false; });   // 主迴圈停掉，時間只由 ff() 推
+  /* 晝夜（v1.295.0）釘在正午：照真的時鐘的話，:30 之後跑的探針截圖是晚上、量到的燈光跟著幾點變。
+     要量晝夜本身就在探針裡自己給 ENG.setDayTime(分鐘) 或換掉 dayClock */
+  await page.evaluate(() => { if (typeof dayClock === 'function') dayClock = () => 15; });
 
   const run = (fn, arg) => page.evaluate(fn, arg);
   const reset = (o = {}) => page.evaluate(o => {

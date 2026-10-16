@@ -31,6 +31,8 @@ const ENG = (function () {
   let boomLamps = null;             // 強爆炸的四盞點光源（v1.291.0，見 putBooms）
   let stormOn = false, boomOn = false;   // 這一刻打雷／爆炸要不要燈（六盞一起開關，見 lampSync）
   let gloomEl = null, gloomAt = -1;  // 烏雲遮天：蓋在 CSS 天空上的那一層、上一次給的暗度（見 setGloom）
+  let skyNightEl = null, skyDuskEl = null, skyStarEl = null;   // 晝夜：夜空、黃昏、星星三層（v1.295.0，見 setDayTime）
+  let dayAt = -1;                    // 晝夜：上一次給的分鐘數，−1＝關掉（一直是正午）
   let lampWarm = false;              // 「六盞燈都開著」那一份 shader 編好了沒（見 draw3d）
   let emoMesh, emoGeo, emoPos, emoUv, emoCol;   // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
   let giftMesh, giftGeo, giftPos, giftUv;  // 掉在地上的道具泡泡（v1.214，見 setGiftIcons／putGifts）
@@ -188,6 +190,17 @@ const ENG = (function () {
      天空是 index.html 的 CSS 漸層（畫布是透明的），所以另外蓋一層暗色的 div，GLOOM.sky 是它最濃多少。 */
   const HEMI_I = 1.25, SUN_I = 1.75, FOG_C = 0xbcd3e0, GLOOM_FOG = 0x363e4b;
   const GLOOM = { hemi: 0.55, sun: 0.75, fog: 0.85, sky: 0.8 };
+  /* 晝夜（v1.295.0，見 setDayTime）：每小時 :00～:30 白天、:30～:00 晚上，換場前後各 DAY_FADE 分鐘漸變
+     （:28～:32 黃昏、:58～:02 黎明，使用者選的）。太陽 :00 從 DAY_LOW 升起、:15 正午回到 SUN_NOON
+     （＝v1.294 以前固定的那個位置，正午的光影跟以前一模一樣）、:30 落回 DAY_LOW；晚上同一盞燈改成月光，
+     DAY_LOW → MOON_TOP → DAY_LOW。不加第二盞燈：不多一趟陰影、不換 shader。
+     DAY_LOW 20° 是使用者選的（影子 2.75 倍高、陰影貼圖沿太陽方向粗 2.3 倍；10° 是 5.7 倍高、粗 4.6 倍）。 */
+  const SUN_NOON = [46, 74, 32];
+  const DAY_FADE = 2, DAY_LOW = 20 * Math.PI / 180, MOON_TOP = 45 * Math.PI / 180;
+  const MOON_I = 0.62, HEMI_NIGHT = 0.5;
+  const SUN_C = 0xfff3dd, SUN_WARM = 0xffa060, MOON_C = 0xa8bfff;
+  const HEMI_SKY = 0xd8ecff, HEMI_GND = 0x5b7a48, HEMI_SKY_N = 0x8ea4d6, HEMI_GND_N = 0x2b3826, HEMI_DUSK = 0xffc49a;
+  const FOG_N = 0x141c2c, FOG_DUSK = 0xc98f7a;
   const MAG_DASH = 26;                                       // 外圈那一圈虛線的段數
   /* 邊上的螺旋筆觸（v1.62.1，照參考圖）。使用者要的邊緣不規則是**螺旋狀**的：
      參考圖裡那一圈不是一條被弄皺的圓弧，是**幾道沿著邊掃出去的粗筆觸疊在一起**——
@@ -983,9 +996,9 @@ if (vAo.x + vAo.y > 0.5) {
 
     camera = new T.PerspectiveCamera(48, 1, 0.5, 900);
 
-    hemi = new T.HemisphereLight(0xd8ecff, 0x5b7a48, HEMI_I);   // 天光：頂面自然比側面亮
+    hemi = new T.HemisphereLight(HEMI_SKY, HEMI_GND, HEMI_I);   // 天光：頂面自然比側面亮
     scene.add(hemi);
-    sun = new T.DirectionalLight(0xfff3dd, SUN_I);
+    sun = new T.DirectionalLight(SUN_C, SUN_I);
     sun.position.set(38, 60, 26);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -1591,6 +1604,31 @@ if (vAo.x + vAo.y > 0.5) {
     for (let i = 0; i < BOOM_LAMPS; i++) {
       const L = new T.PointLight(BOOM_LAMP_C, 0, 1, 1);
       L.visible = false; scene.add(L); boomLamps.push(L);
+    }
+    /* 晝夜的三層（v1.295.0）：跟烏雲那一層同一招，烏雲排在它們後面＝疊在最上面。
+       黃昏的橘色擠在畫面上面兩成多：預設鏡頭下天空只露那一段，照整頁分配的話橘色全被草地蓋住（預覽第一版）。
+       星星是一顆 2px 的點拖一串 box-shadow，自己一支亂數（不吃 Math.random：測試下了種子，多抽會位移別段的骰子） */
+    const skyLayer = css => {
+      const d = document.createElement('div');
+      d.style.cssText = 'position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0;' + css;
+      document.body.appendChild(d);
+      return d;
+    };
+    skyNightEl = skyLayer('background:linear-gradient(#050a1a 0%,#0c1730 45%,#1a2742 75%,#26324a 100%)');
+    skyDuskEl = skyLayer('background:linear-gradient(#34397a 0%,#8a568a 10%,#e07a72 19%,#f6a463 27%,#f9cb8a 40%,#f9d9a6 100%)');
+    skyStarEl = skyLayer('-webkit-mask-image:linear-gradient(#000 0%,#000 45%,transparent 78%);' +
+                         'mask-image:linear-gradient(#000 0%,#000 45%,transparent 78%)');
+    {
+      let s = 7;
+      const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647, sh = [];
+      for (let i = 0; i < 170; i++) {
+        const big = rnd() < 0.12, a = (0.45 + rnd() * 0.55).toFixed(2);
+        sh.push((rnd() * 100).toFixed(2) + 'vw ' + (rnd() * 72).toFixed(2) + 'vh ' + (big ? '1.5px 0.6px' : '0 0') +
+                ' rgba(255,255,255,' + a + ')');
+      }
+      const dot = document.createElement('div');
+      dot.style.cssText = 'position:absolute;left:0;top:0;width:2px;height:2px;border-radius:50%;box-shadow:' + sh.join(',');
+      skyStarEl.appendChild(dot);
     }
     /* 烏雲遮天蓋在 CSS 天空上的那一層：z-index −1 疊在 body 的背景上、畫布底下 */
     gloomEl = document.createElement('div');
@@ -3618,10 +3656,53 @@ if (vAo.x + vAo.y > 0.5) {
     d = Math.round(Math.max(0, Math.min(1, d)) * 1000) / 1000;
     if (d === gloomAt) return;
     gloomAt = d;
-    hemi.intensity = HEMI_I * (1 - GLOOM.hemi * d);
-    sun.intensity = SUN_I * (1 - GLOOM.sun * d);
-    scene.fog.color.copy(_fogC).lerp(_fogD, d * GLOOM.fog);
-    gloomEl.style.opacity = String(d * GLOOM.sky);
+    applySky();
+  }
+  /* 晝夜（v1.295.0）：t＝一小時裡的第幾分鐘（0～60），負的＝關掉（一直是正午，跟 v1.294 以前一模一樣）。
+     同 setGloom，同一個值重複給就什麼都不做。天光、日光、霧兩邊都要壓，所以一律在 applySky 一起算——
+     各寫各的會互蓋（v1.294 以前 setGloom 是直接寫死亮度）。見 開發筆記〈晝夜：一小時一天（v1.295.0）〉 */
+  function setDayTime(t) {
+    t = t >= 0 && isFinite(t) ? Math.round((t % 60) * 1000) / 1000 : -1;
+    if (t === dayAt) return;
+    dayAt = t;
+    applySky();
+  }
+  const _smooth = x => { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); };
+  const SUN_DIST = Math.hypot(SUN_NOON[0], SUN_NOON[1], SUN_NOON[2]), SUN_AZ = Math.atan2(SUN_NOON[2], SUN_NOON[0]),
+        SUN_TOP = Math.atan2(SUN_NOON[1], Math.hypot(SUN_NOON[0], SUN_NOON[2]));      // 正午的仰角 52.9°
+  /* 這一刻的天色：L 白天成分（1 白天、0 晚上）、W 黃昏／黎明的濃度（換場那一刻最濃）、
+     el／az 太陽（晚上是月亮）的仰角與方位、k 仰角從最低到最高走到哪（太陽越低越暖）、f 燈的亮度（換場那一刻是 0，
+     太陽換月亮時方向跳一下看不出來） */
+  function dayPhase(t) {
+    if (t < 0) return { L: 1, W: 0, el: SUN_TOP, az: SUN_AZ, k: 1, f: 1, moon: false, noon: true };
+    const F = DAY_FADE, moon = t >= 30, t0 = moon ? t - 30 : t, u = t0 / 30, k = Math.sin(Math.PI * u);
+    const L = t < 15 || t >= 45 ? _smooth(((t >= 45 ? t - 60 : t) + F) / (F * 2)) : 1 - _smooth((t - 30 + F) / (F * 2));
+    return { L, W: 1 - Math.abs(2 * L - 1), el: DAY_LOW + ((moon ? MOON_TOP : SUN_TOP) - DAY_LOW) * k,
+             az: SUN_AZ + (u - 0.5) * Math.PI, k, f: _smooth(t0 / F) * _smooth((30 - t0) / F), moon, noon: false };
+  }
+  const sunOff = { x: SUN_NOON[0], y: SUN_NOON[1], z: SUN_NOON[2] };   // 太陽在旋轉中心的哪裡（updateCamera 照這個擺）
+  const _sunC = new T.Color(SUN_C), _sunW = new T.Color(SUN_WARM), _moonC = new T.Color(MOON_C);
+  const _hSky = new T.Color(HEMI_SKY), _hGnd = new T.Color(HEMI_GND), _hSkyN = new T.Color(HEMI_SKY_N),
+        _hGndN = new T.Color(HEMI_GND_N), _hDusk = new T.Color(HEMI_DUSK);
+  const _fogN = new T.Color(FOG_N), _fogK = new T.Color(FOG_DUSK);
+  function applySky() {
+    const P = dayPhase(dayAt), g = Math.max(0, gloomAt);
+    if (P.noon) { sunOff.x = SUN_NOON[0]; sunOff.y = SUN_NOON[1]; sunOff.z = SUN_NOON[2]; }
+    else {
+      const h = SUN_DIST * Math.cos(P.el);
+      sunOff.x = h * Math.cos(P.az); sunOff.y = SUN_DIST * Math.sin(P.el); sunOff.z = h * Math.sin(P.az);
+    }
+    sun.position.set(cam.tx + sunOff.x, sunOff.y, cam.tz + sunOff.z);
+    if (P.moon) sun.color.copy(_moonC); else sun.color.copy(_sunW).lerp(_sunC, Math.sqrt(P.k));
+    sun.intensity = (P.moon ? MOON_I : SUN_I * (0.75 + 0.25 * P.k)) * P.f * (1 - GLOOM.sun * g);
+    hemi.intensity = (HEMI_NIGHT + (HEMI_I - HEMI_NIGHT) * P.L) * (1 - GLOOM.hemi * g);
+    hemi.color.copy(_hSkyN).lerp(_hSky, P.L).lerp(_hDusk, 0.35 * P.W);
+    hemi.groundColor.copy(_hGndN).lerp(_hGnd, P.L);
+    scene.fog.color.copy(_fogN).lerp(_fogC, P.L).lerp(_fogK, 0.5 * P.W).lerp(_fogD, GLOOM.fog * g);
+    skyNightEl.style.opacity = String(+(1 - P.L).toFixed(3));
+    skyDuskEl.style.opacity = String(+(0.9 * P.W).toFixed(3));
+    skyStarEl.style.opacity = String(+_smooth((0.4 - P.L) / 0.4).toFixed(3));
+    gloomEl.style.opacity = String(g * GLOOM.sky);
   }
 
   /* ── 草地島大小與視窗尺寸 ───────────────────────────── */
@@ -11884,7 +11965,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     }
     camera.position.set(x, Math.max(1.2, y), z);
     camera.lookAt(cam.tx, cam.ty, cam.tz);
-    sun.position.set(cam.tx + 46, 74, cam.tz + 32);
+    sun.position.set(cam.tx + sunOff.x, sunOff.y, cam.tz + sunOff.z);   // 晝夜會挪（v1.295.0，見 applySky）
     sun.target.position.set(cam.tx, 0, cam.tz);
     sun.target.updateMatrixWorld();
   }
@@ -12296,7 +12377,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
     putBooms, BOOM_LAMPS,                      /* 強爆炸照亮周圍（v1.291.0）：規則那邊照 BOOM_LAMPS 盞併好再給 */
-    putStars, putBolts, putStorm, setGloom, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
+    DAY: { fade: DAY_FADE, low: DAY_LOW, moonTop: MOON_TOP, noon: SUN_NOON },   /* 晝夜（v1.295.0）：測試照這幾個算期望值 */
+    putStars, putBolts, putStorm, setGloom, setDayTime, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
     putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,
@@ -12399,6 +12481,6 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
     get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh,
-                            stormLay, stormBall, stormLamps, boomLamps, gjInfMesh, hemi, sun, gloomEl }; }
+                            stormLay, stormBall, stormLamps, boomLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl, skyStarEl }; }
   };
 })();

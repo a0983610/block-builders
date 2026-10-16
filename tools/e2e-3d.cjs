@@ -405,6 +405,11 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那一段自己裝回去（見「被打死」）。 */
   if (!window.lifeHitFn) window.lifeHitFn = lifeHit;
   lifeHit = () => {};
+  /* 晝夜（v1.295.0）一律釘在正午。照真的時鐘走的話，過了 :30 跑測試整個畫面是晚上：
+     燈光、天空、像素那幾條會跟著「現在幾點」變（打雷「散完全部還原」拿前後亮度 === 比，時鐘一走就差一點）。
+     要測這件事本身的那一段自己直接給分鐘數（見「畫面：晝夜」）。 */
+  if (!window.dayClockFn) window.dayClockFn = dayClock;
+  dayClock = () => 15;
   /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
      清成一般碎料就好，下一次 startBuild 的 reconcilePool 會把多的收掉。 */
   window.clearHomes = () => {
@@ -1025,6 +1030,125 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('主角六位共用同一份材質（一把 cache key、只編一次 program）',
      hs.every(([, r]) => r.key) && look.fr.key, hs.map(([k, r]) => k + ':' + r.key).join(' ') + ' frieren:' + look.fr.key);
   }   // ── 〈畫面：積木 AO、主角的臉與頭髮〉結束
+
+  /* ══════════ 畫面：晝夜（v1.295.0）══════════ */
+  /* 規則型，不跑模擬（見 開發筆記〈晝夜：一小時一天（v1.295.0）〉）：直接 ENG.setDayTime(分鐘) 讀引擎真的燈與天空那幾層。
+     ① 關掉＝正午，太陽在 DAY.noon（＝v1.294 以前固定的位置）
+     ② 白天：:00 從 DAY.low 升起、:15 回到正午、:30 落回 DAY.low，方位掃半圈；換場那一刻燈是 0、中間連續
+     ③ 晚上：夜空、星星全開、月光偏藍、月亮爬到 DAY.moonTop；黃昏／黎明只在換場前後 DAY.fade 分鐘
+     ④ 打雷的烏雲疊在晝夜上面：散掉回到「晚上」，不是回到正午（v1.294 以前 setGloom 直接寫死亮度）
+     ⑤ draw 照 dayClock 走、畫面設定那一格關掉就是正午 */
+  SEC: { if (!(await head('畫面：晝夜', T_COMMIT))) break SEC;
+  const day = await page.evaluate(() => {
+    cleanTools(); draw();
+    const th = ENG.three, D = ENG.DAY, R2D = 180 / Math.PI, $ = id => document.getElementById(id);
+    const snap = t => {
+      ENG.setDayTime(t);
+      const x = th.sun.position.x - ENG.cam.tx, y = th.sun.position.y, z = th.sun.position.z - ENG.cam.tz;
+      return { x, y, z, el: Math.atan2(y, Math.hypot(x, z)) * R2D, az: Math.atan2(z, x) * R2D,
+               sunI: th.sun.intensity, sunC: th.sun.color.getHexString(), hemi: th.hemi.intensity,
+               hemiC: th.hemi.color.getHexString(), fog: th.scene.fog.color.getHexString(),
+               night: +th.skyNightEl.style.opacity, dusk: +th.skyDuskEl.style.opacity, star: +th.skyStarEl.style.opacity };
+    };
+    const r = { low: +(D.low * R2D).toFixed(3), moonTop: +(D.moonTop * R2D).toFixed(3), fade: D.fade };
+    const noonEl = Math.atan2(D.noon[1], Math.hypot(D.noon[0], D.noon[2])) * R2D;
+    r.noonEl = +noonEl.toFixed(3);
+    /* ① */
+    const off = snap(-1), noon = snap(15);
+    r.off = { x: off.x, y: off.y, z: off.z, I: off.sunI, n: off.night + off.dusk + off.star };
+    r.offIsNoon = Math.abs(off.x - D.noon[0]) < 1e-9 && Math.abs(off.y - D.noon[1]) < 1e-9 && Math.abs(off.z - D.noon[2]) < 1e-9;
+    r.sameNoon = Math.hypot(off.x - noon.x, off.y - noon.y, off.z - noon.z) < 1e-6 && Math.abs(off.sunI - noon.sunI) < 1e-9 &&
+                 off.sunC === noon.sunC && off.hemi === noon.hemi && off.hemiC === noon.hemiC && off.fog === noon.fog &&
+                 noon.night + noon.dusk + noon.star === 0;
+    /* ② 白天每 0.05 分鐘取一點 */
+    const S = [];
+    for (let i = 0; i < 1200; i++) S.push(snap(i * 0.05));
+    const dayS = S.slice(0, 600);
+    r.rise = +dayS[0].el.toFixed(3); r.top = +dayS[300].el.toFixed(3); r.set = +S[599].el.toFixed(3);
+    r.setWant = +(r.low + (noonEl - r.low) * Math.sin(Math.PI * 29.95 / 30)).toFixed(3);   // 最後一點是 :29.95，還沒落到底
+    r.upOk = dayS.slice(1, 301).every((s, i) => s.el > dayS[i].el);
+    r.downOk = dayS.slice(301).every((s, i) => s.el < dayS[300 + i].el);
+    let sweep = 0, monoAz = true;
+    for (let i = 1; i < 600; i++) { let d = S[i].az - S[i - 1].az; d = (d + 540) % 360 - 180; sweep += d; if (d * (S[1].az - S[0].az) <= 0) monoAz = false; }
+    r.sweep = +Math.abs(sweep).toFixed(1); r.monoAz = monoAz;
+    r.edgeI = [+S[0].sunI.toFixed(4), +S[600].sunI.toFixed(4)];
+    r.peak = S.indexOf(dayS.reduce((a, s) => s.sunI > a.sunI ? s : a)) * 0.05;
+    /* 整小時連續：相鄰兩點亮度、天空差多少；光的方向一跳（換太陽／月亮）那一下燈要是暗的 */
+    let maxI = 0, maxHemi = 0, maxSky = 0, jump = [];
+    for (let i = 0; i < 1200; i++) {
+      const a = S[i], b = S[(i + 1) % 1200];
+      maxI = Math.max(maxI, Math.abs(a.sunI - b.sunI)); maxHemi = Math.max(maxHemi, Math.abs(a.hemi - b.hemi));
+      maxSky = Math.max(maxSky, Math.abs(a.night - b.night), Math.abs(a.dusk - b.dusk), Math.abs(a.star - b.star));
+      const cos = (a.x * b.x + a.y * b.y + a.z * b.z) / Math.hypot(a.x, a.y, a.z) / Math.hypot(b.x, b.y, b.z);
+      if (cos < Math.cos(5 / R2D)) jump.push({ at: +(i * 0.05).toFixed(2), I: +Math.max(a.sunI, b.sunI).toFixed(4) });
+    }
+    r.maxI = +maxI.toFixed(3); r.maxHemi = +maxHemi.toFixed(3); r.maxSky = +maxSky.toFixed(3); r.jump = jump;
+    /* ③ 晚上與換場 */
+    const at = t => S[Math.round(t / 0.05) % 1200];
+    const n45 = at(45);
+    r.mid = { night: n45.night, star: n45.star, dusk: n45.dusk, el: +n45.el.toFixed(3), blue: parseInt(n45.sunC.slice(4), 16) > parseInt(n45.sunC.slice(0, 2), 16),
+              hemiLow: n45.hemi < noon.hemi, I: n45.sunI };
+    r.night = S.filter((s, i) => i * 0.05 > 30 + D.fade + 1e-9 && i * 0.05 < 60 - D.fade - 1e-9).every(s => s.night === 1 && s.dusk === 0 && s.star === 1);
+    r.dayClear = S.filter((s, i) => i * 0.05 > D.fade + 1e-9 && i * 0.05 < 30 - D.fade - 1e-9).every(s => s.night === 0 && s.dusk === 0 && s.star === 0);
+    r.duskPeak = [at(30).dusk, at(0).dusk];
+    r.duskMax = Math.max(...S.map(s => s.dusk));
+    /* ④ 晚上打雷：烏雲壓暗、散掉回到晚上 */
+    ENG.setDayTime(45);
+    const h0 = th.hemi.intensity, s0 = th.sun.intensity, f0 = th.scene.fog.color.getHexString();
+    ENG.setGloom(1);
+    const h1 = th.hemi.intensity, s1 = th.sun.intensity, sky1 = +th.gloomEl.style.opacity, night1 = +th.skyNightEl.style.opacity;
+    ENG.setDayTime(46);                                       // 烏雲還在、時鐘往前走：烏雲那一份不能被晝夜蓋掉
+    const h2 = th.hemi.intensity;
+    ENG.setDayTime(45); ENG.setGloom(0);
+    r.storm = { darker: h1 < h0 && s1 < s0 && sky1 > 0 && night1 === 1, keep: h2 < h0,
+                back: th.hemi.intensity === h0 && th.sun.intensity === s0 && th.scene.fog.color.getHexString() === f0,
+                h: [+h0.toFixed(3), +h1.toFixed(3), +th.hemi.intensity.toFixed(3)], noonH: +noon.hemi.toFixed(3) };
+    /* 疊的順序：烏雲那一層在晝夜三層後面（＝蓋在最上面） */
+    r.order = [th.skyNightEl, th.skyDuskEl, th.skyStarEl].every(e => e.compareDocumentPosition(th.gloomEl) & Node.DOCUMENT_POSITION_FOLLOWING);
+    /* ⑤ draw 照 dayClock；畫面設定那一格 */
+    const keepPref = pref.day;
+    const set = v => { $('dayOn').checked = v; $('dayOn').dispatchEvent(new Event('change', { bubbles: true })); };
+    set(true); dayClock = () => 45; draw();
+    r.drawNight = +th.skyNightEl.style.opacity;
+    set(false); draw();
+    r.offDraw = { night: +th.skyNightEl.style.opacity, pref: pref.day, noon: Math.abs(th.sun.position.x - ENG.cam.tx - D.noon[0]) < 1e-9 };
+    set(keepPref);
+    r.inBox = $('dispBox').contains($('dayOn')); r.fresh = freshPref().day;
+    dayClock = () => 15; draw();
+    r.end = +th.skyNightEl.style.opacity;
+    return r;
+  });
+  ok('晝夜：關掉＝正午，太陽在 DAY.noon（v1.294 以前固定的位置），天空那三層都沒蓋',
+     day.offIsNoon && day.sameNoon && day.off.n === 0,
+     '關掉時太陽 (' + [day.off.x, day.off.y, day.off.z].map(v => +v.toFixed(3)).join(', ') + ')、亮度 ' + day.off.I +
+     '；:15 跟關掉一樣 ' + day.sameNoon);
+  ok('晝夜：太陽 :00 從 DAY.low 升起、:15 到正午、:30 落回 DAY.low，方位一路往同一邊掃半圈',
+     Math.abs(day.rise - day.low) < 1e-3 && Math.abs(day.top - day.noonEl) < 1e-3 && Math.abs(day.set - day.setWant) < 2e-3 &&
+     day.upOk && day.downOk && day.monoAz && Math.abs(day.sweep - 180) < 1,
+     '仰角 :00 ' + day.rise + '°（DAY.low ' + day.low + '°）、:15 ' + day.top + '°（正午 ' + day.noonEl + '°）、:29.95 ' + day.set +
+     '°（應為 ' + day.setWant + '°）；先升後降 ' + day.upOk + '／' + day.downOk + '；方位掃 ' + day.sweep + '°、同一個方向 ' + day.monoAz);
+  ok('晝夜：換場那一刻燈是暗的（:00／:30 亮度 0），正午最亮；整小時連續，光的方向只在燈暗的時候跳',
+     day.edgeI[0] === 0 && day.edgeI[1] === 0 && Math.abs(day.peak - 15) < 1e-6 &&
+     day.maxI < 0.1 && day.maxHemi < 0.1 && day.maxSky < 0.1 && day.jump.length > 0 && day.jump.every(j => j.I < 0.01),
+     ':00／:30 亮度 ' + day.edgeI.join('／') + '、最亮在 :' + day.peak + '；每 0.05 分鐘最多差：日光 ' + day.maxI + '、天光 ' + day.maxHemi +
+     '、天空 ' + day.maxSky + '；方向一跳 ' + day.jump.map(j => ':' + j.at + '（燈 ' + j.I + '）').join('、'));
+  ok('晝夜：晚上夜空、星星全開、月光偏藍、月亮爬到 DAY.moonTop；白天乾淨；黃昏／黎明只在換場前後、換場那一刻最濃',
+     day.night && day.dayClear && day.mid.night === 1 && day.mid.star === 1 && day.mid.dusk === 0 && day.mid.blue &&
+     day.mid.hemiLow && day.mid.I > 0 && Math.abs(day.mid.el - day.moonTop) < 1e-3 &&
+     day.duskPeak[0] === day.duskMax && day.duskPeak[1] === day.duskMax && day.duskMax > 0,
+     ':45 夜空 ' + day.mid.night + '、星星 ' + day.mid.star + '、黃昏 ' + day.mid.dusk + '、月亮仰角 ' + day.mid.el + '°（DAY.moonTop ' +
+     day.moonTop + '°）、偏藍 ' + day.mid.blue + '；晚上全程 ' + day.night + '、白天全程 ' + day.dayClear +
+     '；黃昏最濃 ' + day.duskMax + '（:30 ' + day.duskPeak[0] + '、:00 ' + day.duskPeak[1] + '）');
+  ok('晝夜：晚上打雷，烏雲疊在夜色上再壓暗；時鐘照走烏雲那一份不掉，散掉回到晚上（不是回到正午）',
+     day.storm.darker && day.storm.keep && day.storm.back && day.order,
+     '天光 晚上 ' + day.storm.h[0] + ' → 烏雲 ' + day.storm.h[1] + ' → 散掉 ' + day.storm.h[2] + '（正午 ' + day.storm.noonH +
+     '）；烏雲那層疊在最上面 ' + day.order);
+  ok('晝夜：draw 照 dayClock 走；畫面設定「晝夜」在小窗裡、預設開，關掉就是正午',
+     day.drawNight === 1 && day.offDraw.night === 0 && day.offDraw.pref === false && day.offDraw.noon &&
+     day.inBox && day.fresh === true && day.end === 0,
+     'dayClock 給 :45 → 夜空 ' + day.drawNight + '；關掉 → 夜空 ' + day.offDraw.night + '、太陽回正午 ' + day.offDraw.noon +
+     '；在小窗 ' + day.inBox + '、預設 ' + day.fresh);
+  }   // ── 〈畫面：晝夜〉結束
 
   SEC: { if (!(await head('藍圖', T_FULL))) break SEC;
   const bpAll = await page.evaluate(cnt => {

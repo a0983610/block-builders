@@ -447,6 +447,9 @@
     <!-- 爆炸光源（v1.291.0，預設開）：核彈、爆裂魔法炸開那一下照亮周圍，見 game-ui.js 的 boomLit -->
     <div class="opt"><label><input type="checkbox" id="boomLit">
       <div><b>爆炸光源</b><span>核彈、爆裂魔法炸開那一下把周圍的建築與地面照成橘色。關掉省一點效能。</span></div></label></div>
+    <!-- 晝夜（v1.295.0，預設開）：照電腦的時鐘每小時一天，見 game-ui.js 的 dayOn -->
+    <div class="opt"><label><input type="checkbox" id="dayOn">
+      <div><b>晝夜</b><span>照電腦的時鐘，每小時的前 30 分鐘是白天（太陽從日出走到日落），後 30 分鐘是晚上（月光＋星星）。關掉就一直是正午。</span></div></label></div>
     <!-- 跟不上時降畫質那三格（v1.280.0 動態解析度；v1.281.0 加關抗鋸齒、降了就不升回去）：見 game-ui.js 的 dynStep -->
     <div class="opt"><label><input type="checkbox" id="aaDyn">
       <div><b>跟不上時關抗鋸齒</b><span>畫面跟不上 60fps 時（例如好幾個爆裂魔法一起炸），先把 3D 畫面的抗鋸齒關掉——這一步最省，

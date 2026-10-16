@@ -345,6 +345,9 @@ const REST_SINK = 0.004;
    aoOn 是畫面設定小窗那一格（pref.ao；v1.280.0 以前在左下面板），關掉就一律送 0（引擎那邊遮罩全 0 整段跳過）。 */
 let aoOn = true;
 let boomLit = true;                 // 畫面設定「爆炸光源」（v1.291.0，pref.boom），見 draw 裡的 putBooms
+let dayOn = true;                   // 畫面設定「晝夜」（v1.295.0，pref.day），見 draw 裡的 setDayTime
+/* 一小時裡的第幾分鐘（0～60），晝夜照這個走（v1.295.0）。測試把它換成固定的正午（見 e2e 的 installClean） */
+let dayClock = () => { const d = new Date(); return d.getMinutes() + d.getSeconds() / 60 + d.getMilliseconds() / 60000; };
 const AO_BIT = NBR.map(d => (d[0] + 1) * 9 + (d[1] + 1) * 3 + (d[2] + 1));
 const AO_DOWN = NBR.map(d => d[1] < 0);
 let aoBp = null;                    // 地標那一份
@@ -501,6 +504,9 @@ function draw() {
   stormFx();
   ENG.putStorm(stormPaths, stormBalls, stormLamps);
   ENG.setGloom(stormGloom);
+  /* 晝夜（v1.295.0，使用者：「根據一小時中的時段切分成一天 30分前白天 30分後晚上 白天會調整日照位置」）：
+     照 HUD 那個真的時鐘；畫面設定那一格關掉就給 −1（一直是正午）。見 開發筆記〈晝夜：一小時一天（v1.295.0）〉 */
+  ENG.setDayTime(dayOn ? dayClock() : -1);
   /* 強爆炸照亮周圍（v1.291.0）：核彈、爆裂魔法的火球各一盞點光源（見 boomLampList）。
      boomLit 是畫面設定小窗那一格（pref.boom，預設開；使用者：「爆炸光源如果耗效能可以做成開關」） */
   ENG.putBooms(boomLit && flashes.length ? boomLampList() : EMPTY);
@@ -1301,6 +1307,7 @@ function boot() {
      打開那一幀逐格一比，期間變過的格子自己就會被挑出來重算（換了一座或房子換了一份格子則整份重建） */
   $('aoOn').addEventListener('change', e => { aoOn = pref.ao = e.target.checked; save(); });
   $('boomLit').addEventListener('change', e => { boomLit = pref.boom = e.target.checked; save(); });   // 爆炸光源（v1.291.0）
+  $('dayOn').addEventListener('change', e => { dayOn = pref.day = e.target.checked; save(); });       // 晝夜（v1.295.0）
   /* 跟不上時降畫質那三格（v1.280.0 動態解析度；v1.281.0 加關抗鋸齒、降了就不升回去）：改哪一格都重排、回到原本那一級 */
   for (const [id, k] of [['aaDyn', 'aa'], ['dynRes', 'dyn'], ['dynOnce', 'once']])
     $(id).addEventListener('change', e => { pref[k] = e.target.checked; setDyn(pref.aa, pref.dyn, pref.once); save(); dispStat(); });
