@@ -4457,6 +4457,7 @@ function meteorHit(m) {
      這是它跟同尺寸的普通爆炸最明顯的差別。 */
   igniteAround(p, MET_R * 1.6, Math.round(MET_R * 1.6), SET);
   spawnImpactDust(p, MET_R);
+  glowHits.push({ x: p.x, y: p.y, z: p.z, R: MET_R, t0: glowT });   // 晚上撞地那一下閃一次（v1.297.0，同飛龍火球，見 glowLampList）
 }
 /* 落地的撞擊煙塵（v1.279.0，使用者：「隕石撞擊地面時 增加煙塵 目前看起來很像撞上去隕石就消失 然後地面留下個痕跡」）。
    explode 自己的揚塵（spawnDust）是照「打到幾塊積木」給量：落在空地上只打到兩三塊，實測 **24 顆**、
@@ -5355,8 +5356,13 @@ function boomLampList() {
 /* ── 晚上的小光源（v1.296.0，見 開發筆記〈晚上的火光：燒的火、飛龍火球、煙火（v1.296.0）〉）──
    使用者：「先做放火 飛龍火球 煙火」「只在晚上亮 跟爆炸同光源」「這波做的都是比較小的光 晚上才亮應該合理」，
    預覽看過「效果確實不錯 亮度先1就好」。引擎給幾盞空燈（ENG.lampRoom()：強爆炸、打雷先拿剩下的）就排幾筆，**短的先**：
+     magic 爆裂魔法陣（v1.297.0 起，下面四種同）：陣心、最低那層的高度，陣長了幾層就亮幾成（glowMagic）
+     purp  茈：跟著紫球飛，收掉那一下淡出
+     ufo   幽浮照光那一段：光柱底下那一塊上方 3 格（glowUfoY），跟著光柱淡入淡出
+     met   落下中的隕石（撞地那一下走 hit，R＝MET_R）
+     dia   Diablo 噴火那一段：嘴一盞（一半亮）、火柱到了再亮打到的那一點
      ball  飛在半空的火球（fballs），一顆一盞跟著飛
-     hit   火球撞上去那一下（fballHit 記），FLASH_LIFE 秒內收掉，算法同強爆炸
+     hit   火球撞上去那一下（fballHit 記，R＝FB_R）、隕石撞地那一下（meteorHit 記，R＝MET_R），FLASH_LIFE 秒內收掉，算法同強爆炸
      fw    煙火炸開那一下（burstFw 記），GLOW_FW_T 秒內淡掉，顏色照那一發
      fire  剩下的全給建築上還砌著、正在燒的積木（「建築上所有在燒的」，使用者選的：不管誰點的）
    火的那幾盞（使用者：「不要造成多建築燃燒 光源飛來飛去」）：
@@ -5484,6 +5490,24 @@ function glowFire(K, dt) {
     s.w = s.w < s.tw ? Math.min(s.tw, s.w + st) : Math.max(s.tw, s.w - st);
   }
 }
+/* 爆裂魔法陣亮到幾成：長出來的層數（每層照長到幾成算）÷ 總層數，同 stepOneMagic 的算法 */
+function glowMagic(m) {
+  const el = MAG_TIME - m.t;
+  let L = 0;
+  for (let i = 0; i < MAG_LAYER.length; i++) {
+    const g = (el - i * MAG_GAP) / MAG_GROW;
+    if (g <= 0) break;
+    L += Math.min(1, g);
+  }
+  return L / MAG_LAYER.length;
+}
+/* 幽浮那一盞擺多高：光柱底下（UFO_R 內）最高那一塊再上去 3 格，照光那一刻量一次記在 u.gy（收光就清掉） */
+function glowUfoY(u) {
+  let t = 0;
+  for (const b of blocks) if (b.st === SET && b.y > t && Math.hypot(b.x - u.x, b.z - u.z) < UFO_R) t = b.y;
+  return t + 3;
+}
+const _glowN = new THREE.Vector3();
 /* K＝這一幀有幾盞空燈（ENG.lampRoom()）。回傳的第 j 筆給第 j 盞 */
 function glowLampList(K) {
   const dt = Math.max(0, glowT - glowAt); glowAt = glowT;
@@ -5494,10 +5518,36 @@ function glowLampList(K) {
     const o = add(); o.k = k; o.x = x; o.y = y; o.z = z; o.i = i; o.R = R; o.c = c;
     _glows.push(o);
   };
+  /* 第二波（v1.297.0，使用者：「先做推薦那 5 項」）：爆裂魔法陣、茈、幽浮光柱、落下中的隕石、Diablo 火柱，排在火球前面 */
+  if (magics) for (const m of magics) {
+    const k = glowMagic(m);
+    if (k > 0) put('magic', m.x, MAG_CORE_Y, m.z, k, 0, null);
+  }
+  if (purps) for (const p of purps) {
+    const k = p.st === 'fly' ? 1 : Math.max(0, 1 - p.bt / ENG.PURP_BURST);   // 收掉那一下跟著淡掉
+    if (k > 0) put('purp', p.x, p.y, p.z, k, 0, null);
+  }
+  if (ufos) for (const u of ufos) {
+    if (!(u.beam > 0)) { u.gy = undefined; continue; }
+    if (u.gy === undefined) u.gy = glowUfoY(u);
+    put('ufo', u.x, Math.min(u.gy, u.y - 2), u.z, u.beam, 0, null);
+  }
+  if (meteors) for (const m of meteors) if (m.lit && m.t > 0 && m.t <= MET_FALL) put('met', m.x, m.y, m.z, 1, 0, null);
+  if (beasts) for (const m of beasts) {
+    if (m.kind !== 'diablo' || m.st !== 'fire') continue;
+    const el = m.ft - DIA_WIND;
+    if (el < 0 || el >= DIA_BREATH) continue;
+    const n = ENG.diaMouth(m, _glowN);
+    put('dia', n.x, n.y, n.z, 0.5, 0, null);    // 嘴那一盞
+    if (el >= diaJetT(m) * (m.jf || 1)) {       // 火柱到了才亮打到的那一點（同「火柱到了才點著」）；被防護罩擋下就亮在殼上
+      const s = m.jf || 1;
+      put('dia', n.x + (m.jx - n.x) * s, n.y + (m.jy - n.y) * s + 1, n.z + (m.jz - n.z) * s, 1, 0, null);
+    }
+  }
   if (fballs) for (const f of fballs) put('ball', f.x, f.y, f.z, 1, 0, null);
   for (const h of glowHits) {
     const u = (glowT - h.t0) / FLASH_LIFE;
-    put('hit', h.x, h.y + 1, h.z, Math.min(1, (glowT - h.t0) / GLOW_ATK) * (1 - u) * (1 - u), FB_R, null);
+    put('hit', h.x, h.y + 1, h.z, Math.min(1, (glowT - h.t0) / GLOW_ATK) * (1 - u) * (1 - u), h.R, null);
   }
   for (const b of glowBursts) {
     const u = (glowT - b.t0) / GLOW_FW_T;
@@ -12748,7 +12798,7 @@ function stepFballs(dt) {
 function fballHit(f) {
   const p = { x: f.x, y: Math.max(0.8, f.y), z: f.z };
   explode(p, FB_R, FB_POW);
-  glowHits.push({ x: p.x, y: p.y, z: p.z, t0: glowT });   // 晚上撞上去那一下閃一次（v1.296.0，見 glowLampList）
+  glowHits.push({ x: p.x, y: p.y, z: p.z, R: FB_R, t0: glowT });   // 晚上撞上去那一下閃一次（v1.296.0，見 glowLampList）
   /* 爆炸本身帶一點餘火，但這是火球——落點一帶再多點幾塊起來，
      這是它跟同尺寸的普通爆炸最明顯的差別（同隕石）。
      砸村子那一顆只准燒村子那邊（v1.166）：這裡的半徑 14.7 比爆炸的 9.2 大得多，

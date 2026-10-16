@@ -197,9 +197,18 @@ const ENG = (function () {
        fire  一群火 5 格那一圈 1.5、照到 18 格
        ball  飛行中的火球 4 格那一圈 3、照到 24 格
        hit   撞上去那一下：同強爆炸的算法（離爆心一個半徑那一圈 4、照到 3 倍半徑），R 由規則那邊給
-       fw    煙火：40 幾格高炸開、離屋頂三十幾格，35 格那一圈 1.2、照到 90 格（第一版 15 格那一圈 1，截圖看不出來）；顏色照那一發 */
+       fw    煙火：40 幾格高炸開、離屋頂三十幾格，35 格那一圈 1.2、照到 90 格（第一版 15 格那一圈 1，截圖看不出來）；顏色照那一發
+     v1.297.0 第二波（使用者：「先做推薦那 5 項」，看過預覽「確實都不錯 都先亮度1」「魔法陣、茈 弱光源也只在晚上亮」）：
+       magic 爆裂魔法陣：陣心、最低那層的高度，20 格那一圈 2（六層長滿時）、照到 75 格；紅橘（盤 #cb2306 與鑲邊 #fcf534 之間）
+       purp  茈：跟著紫球，5 格那一圈 3、照到 30 格
+       ufo   幽浮光柱：光柱底下那一塊上方，8 格那一圈 2.5、照到 40 格；光柱的淡青
+       met   落下中的隕石：6 格那一圈 4、照到 40 格（撞地那一下走 hit，R＝MET_R）
+       dia   Diablo 火柱打到的那一點：5 格那一圈 3、照到 30 格（嘴那一盞規則那邊給一半） */
   const GLOW = { fire: { c: 0xff8a36, I: 1.5 * 5, d: 18 }, ball: { c: 0xffa040, I: 3 * 4, d: 24 },
-                 hit: { c: BOOM_LAMP_C, E: 4, reach: 3 }, fw: { I: 1.2 * 35, d: 90 } };
+                 hit: { c: BOOM_LAMP_C, E: 4, reach: 3 }, fw: { I: 1.2 * 35, d: 90 },
+                 magic: { c: 0xff6a1a, I: 2 * 20, d: 75 }, purp: { c: 0xb070ff, I: 3 * 5, d: 30 },
+                 ufo: { c: 0xcdf6ff, I: 2.5 * 8, d: 40 }, met: { c: 0xff7a2a, I: 4 * 6, d: 40 },
+                 dia: { c: 0xff8a36, I: 3 * 5, d: 30 } };
   /* 天光、日光、霧的本來的樣子，與烏雲遮天最暗時各壓掉幾成（v1.283.0，見 setGloom）。
      天空是 index.html 的 CSS 漸層（畫布是透明的），所以另外蓋一層暗色的 div，GLOOM.sky 是它最濃多少。 */
   const HEMI_I = 1.25, SUN_I = 1.75, FOG_C = 0xbcd3e0, GLOOM_FOG = 0x363e4b;
@@ -12447,6 +12456,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
     putBooms, BOOM_LAMPS,                      /* 強爆炸照亮周圍（v1.291.0）：規則那邊照 BOOM_LAMPS 盞併好再給 */
     putGlows, lampRoom, nightK, setLampCount,  /* 晚上的小光源、光源數（v1.296.0）：規則那邊照 lampRoom() 盞排好再給 */
+    GLOW_KINDS: Object.keys(GLOW),             /* 認得哪幾種（v1.297.0）：測試照這個對規則那邊給的 k */
     get lampN() { return lampN; },
     DAY: { fade: DAY_FADE, low: DAY_LOW, moonTop: MOON_TOP, noon: SUN_NOON },   /* 晝夜（v1.295.0）：測試照這幾個算期望值 */
     putStars, putBolts, putStorm, setGloom, setDayTime, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,

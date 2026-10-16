@@ -39184,6 +39184,84 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（全開 ' + glowL.free.on + '、借了打雷那兩盞 ' + glowL.free.stormLent + '）；打雷回來 ' + glowL.back +
      '；0 盞 空 ' + glowL.zero.room + '、全關 ' + glowL.zero.none + '／' + glowL.zero.after + '；收完全關 ' + glowL.end);
 
+  /* 晚上的小光源第二波（v1.297.0，使用者：「先做推薦那 5 項」，看過預覽「確實都不錯 都先亮度1」「魔法陣、茈 弱光源也只在晚上亮」）：
+     爆裂魔法陣、茈、幽浮光柱、隕石、Diablo 火柱。規則型：自己組 magics／purps／ufos／meteors（只帶 glowLampList 讀的那幾格），
+     Diablo 用真的一隻改成噴火那一段，直接叫 glowLampList，再把清單丟給引擎的 putGlows 量真的燈。量完全域還回去 */
+  const glow2 = await page.evaluate(() => {
+    cleanTools(); flashes.length = 0;
+    const th = ENG.three, keep = { magics, purps, ufos, meteors, fires };
+    fires = null;
+    const copy = K => glowLampList(K).map(o => ({ k: o.k, x: +o.x.toFixed(3), y: +o.y.toFixed(3), z: +o.z.toFixed(3), i: +o.i.toFixed(4), R: o.R }));
+    const r = {};
+    /* 魔法陣：剛放 0；第一層長一半＝0.5 ÷ 層數；六層長滿＝1。燈在陣心、最低那層的高度 */
+    magics = [{ x: 3, z: -4, t: MAG_TIME }];
+    r.mag0 = copy(6).filter(o => o.k === 'magic').length;
+    magics[0].t = MAG_TIME - MAG_GROW / 2;
+    const m1 = copy(6).find(o => o.k === 'magic');
+    r.mag1 = { i: m1.i, want: +(0.5 / MAG_LAYER.length).toFixed(4), at: m1.x === 3 && m1.z === -4 && Math.abs(m1.y - MAG_CORE_Y) < 1e-3 };
+    magics[0].t = 0.01;
+    r.magFull = copy(6).find(o => o.k === 'magic').i;
+    magics = null;
+    /* 茈：飛的時候 1，收掉那一下照 bt 淡出 */
+    purps = [{ x: 1, y: 3, z: 2, st: 'fly', bt: 0 }, { x: 9, y: 3, z: 2, st: 'burst', bt: ENG.PURP_BURST / 2 }];
+    r.purp = copy(6).filter(o => o.k === 'purp').map(o => o.i).join();
+    purps = null;
+    /* 幽浮：照光時才亮、亮度跟著光柱；擺在光柱底下那一塊上方 3 格（場外沒積木＝地面上 3 格） */
+    ufos = [{ x: 300, y: 40, z: 0, beam: 0 }, { x: 320, y: 40, z: 0, beam: 0.5 }];
+    const u = copy(6).filter(o => o.k === 'ufo');
+    r.ufo = { n: u.length, i: u[0] && u[0].i, y: u[0] && u[0].y, x: u[0] && u[0].x };
+    ufos = null;
+    /* 隕石：還在倒數的不亮、落下中的亮；撞地那一下走 hit、半徑 MET_R */
+    meteors = [{ lit: 0, t: MET_WAIT + MET_FALL, x: 0, y: 60, z: 0 }, { lit: 1, t: MET_FALL / 2, x: 5, y: 30, z: 5 }];
+    r.met = copy(6).filter(o => o.k === 'met').map(o => o.x).join();
+    meteors = null;
+    clearGlows();
+    meteorHit({ x: 0, y: 0.5, z: 300 });                        // 撞在場外的地上：只看記下來的那一下
+    const h = copy(6).find(o => o.k === 'hit');
+    r.metHit = h ? h.R === MET_R : false;
+    clearGlows(); hot.length = 0; flashes.length = 0;
+    /* Diablo：前傾那一段不亮；剛噴、火柱還沒到只有嘴那一盞（一半亮）；火柱到了多一盞在打到的那一點；噴完就收 */
+    beasts = null;
+    const d = spawnBeast('diablo');
+    d.st = 'fire'; d.jx = d.x + 6; d.jy = 3; d.jz = d.z; d.jf = 1;
+    d.ft = DIA_WIND * 0.5; r.diaWind = copy(6).filter(o => o.k === 'dia').length;
+    d.ft = DIA_WIND + 0.001; r.diaStart = copy(6).filter(o => o.k === 'dia').map(o => o.i).join();
+    d.ft = DIA_WIND + diaJetT(d) + 0.01;
+    const e1 = copy(6).filter(o => o.k === 'dia');
+    r.diaHit = { n: e1.length, i: e1.map(o => o.i).join(),
+                 at: e1[1] ? Math.hypot(e1[1].x - d.jx, e1[1].y - (d.jy + 1), e1[1].z - d.jz) < 1e-2 : false };
+    d.ft = DIA_WIND + DIA_BREATH + 0.01; r.diaEnd = copy(6).filter(o => o.k === 'dia').length;
+    d.ft = DIA_WIND + diaJetT(d) + 0.01;
+    /* 全部一起：短的先、順序固定，火拿剩下的；每一種引擎都認得。晚上亮度＝表裡的 I × i、顏色照表；白天全 0 */
+    magics = [{ x: 0, z: 0, t: 0.01 }]; purps = [{ x: 1, y: 3, z: 2, st: 'fly', bt: 0 }];
+    ufos = [{ x: 320, y: 40, z: 0, beam: 1 }]; meteors = [{ lit: 1, t: MET_FALL / 2, x: 5, y: 30, z: 5 }];
+    fires = [{ b: { x: 0, y: 2, z: 0, st: SET, hh: -1 } }];
+    const all = copy(8);
+    r.order = all.map(o => o.k).join();
+    r.known = all.every(o => ENG.GLOW_KINDS.includes(o.k));
+    ENG.putStorm([], [], []); ENG.putBooms([]);
+    const room = ENG.lampRoom(), lamps = th.boomLamps.concat(th.stormLamps, th.glowLamps);
+    ENG.setDayTime(45); ENG.putGlows(glowLampList(room));
+    r.lit = lamps.slice(0, 6).map(L => L.color.getHexString() + '/' + +L.intensity.toFixed(3)).join();
+    ENG.setDayTime(15); ENG.putGlows(glowLampList(room));
+    r.day = lamps.reduce((a, L) => a + L.intensity, 0);
+    ENG.putGlows([]);
+    magics = keep.magics; purps = keep.purps; ufos = keep.ufos; meteors = keep.meteors; fires = keep.fires;
+    cleanTools(); draw();
+    return r;
+  });
+  ok('晚上的小光源第二波：魔法陣照長了幾層亮幾成、茈跟著球收掉淡出、幽浮照光才亮擺在光柱底下、隕石落下才亮撞地閃一下、Diablo 嘴一盞火柱到了再一盞',
+     glow2.mag0 === 0 && glow2.mag1.i === glow2.mag1.want && glow2.mag1.at && glow2.magFull === 1 && glow2.purp === '1,0.5' &&
+     glow2.ufo.n === 1 && glow2.ufo.i === 0.5 && glow2.ufo.y === 3 && glow2.ufo.x === 320 && glow2.met === '5' && glow2.metHit &&
+     glow2.diaWind === 0 && glow2.diaStart === '0.5' && glow2.diaHit.n === 2 && glow2.diaHit.i === '0.5,1' && glow2.diaHit.at && glow2.diaEnd === 0,
+     '魔法陣 剛放 ' + glow2.mag0 + ' 盞、第一層一半 ' + glow2.mag1.i + '（應為 ' + glow2.mag1.want + '、在陣心 ' + glow2.mag1.at + '）、長滿 ' + glow2.magFull +
+     '；茈 ' + glow2.purp + '；幽浮 ' + glow2.ufo.n + ' 盞、亮度 ' + glow2.ufo.i + '、高 ' + glow2.ufo.y + '；隕石落下中 x=' + glow2.met + '、撞地 R＝MET_R ' + glow2.metHit +
+     '；Diablo 前傾 ' + glow2.diaWind + '、剛噴 ' + glow2.diaStart + '、火柱到了 ' + glow2.diaHit.i + '（在打到那一點 ' + glow2.diaHit.at + '）、噴完 ' + glow2.diaEnd);
+  ok('晚上的小光源第二波：順序 魔法陣→茈→幽浮→隕石→Diablo→火，引擎都認得；晚上亮度＝表裡的那一檔、顏色照表，白天全 0',
+     glow2.order === 'magic,purp,ufo,met,dia,dia,fire,fire' && glow2.known &&
+     glow2.lit === 'ff6a1a/40,b070ff/15,cdf6ff/20,ff7a2a/24,ff8a36/7.5,ff8a36/15' && glow2.day === 0,
+     '順序 ' + glow2.order + '、都認得 ' + glow2.known + '；:45 ' + glow2.lit + '；:15 加總 ' + glow2.day);
+
   /* 「每幀乘一次」的阻尼照 dt 換算（v1.244.0，使用者：「要改」）。規則型：同一顆粒子、同一塊碎料，
      用 30／60／120／144fps 的 dt 各推兩秒，看走多遠。改之前走的距離跟幀率成反比——探針實測
      煙塵 5.10／2.61／1.31／1.09、火星 3.00／1.50／0.75／0.63、碎料貼地滑 1.39／0.70／0.35／0.29，
