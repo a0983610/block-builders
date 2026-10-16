@@ -5361,9 +5361,12 @@ function boomLampList() {
      ufo   幽浮照光那一段：光柱底下那一塊上方 3 格（glowUfoY），跟著光柱淡入淡出
      met   落下中的隕石（撞地那一下走 hit，R＝MET_R）
      dia   Diablo 噴火那一段：嘴一盞（一半亮）、火柱到了再亮打到的那一點
+     excal Excalibur 光柱（v1.298.0 起，下面 hit 的小爆炸與 torch 同）：沿著光柱 GLOW_EXC_AT 那幾格，亮暗跟著光柱（ENG.excWk、excTail）
      ball  飛在半空的火球（fballs），一顆一盞跟著飛
-     hit   火球撞上去那一下（fballHit 記，R＝FB_R）、隕石撞地那一下（meteorHit 記，R＝MET_R），FLASH_LIFE 秒內收掉，算法同強爆炸
+     hit   小爆炸：explode 炸出來、不是強爆炸的那一顆火球（炸彈、加農砲、香蕉炸彈、飛龍火球撞上去），一顆一盞、新的先，
+           R＝那一發的爆炸半徑；隕石撞地那一下（crash 不生火球，meteorHit 記，R＝MET_R）。FLASH_LIFE 秒內收掉，算法同強爆炸
      fw    煙火炸開那一下（burstFw 記），GLOW_FW_T 秒內淡掉，顏色照那一發
+     torch 小獼猴的火把（手上那支、掉在地上那支都算）：火把頭上方，閃法同 fire。在場就一直亮，所以排在短的後面
      fire  剩下的全給建築上還砌著、正在燒的積木（「建築上所有在燒的」，使用者選的：不管誰點的）
    火的那幾盞（使用者：「不要造成多建築燃燒 光源飛來飛去」）：
      ① **先分棟再分群**：地標一組、每一間房子／城牆一組（b.hh），燈只在同一棟裡面分（k-means），不會擺在兩棟中間；
@@ -5379,6 +5382,11 @@ const GLOW_UP = 1;              // 燈擺在那一群的重心再往上多少（
 const GLOW_JUMP = 5, GLOW_FADE = 0.35;
 const GLOW_FW_T = 1.8;          // 煙火那一下亮多久（火星本身飛 FW_LIFE 3.4 秒，最亮的是剛炸開那一段）
 const GLOW_ATK = 0.05;          // 撞擊、煙火從 0 亮起來要多久（同 BOOM_LAMP_ATK）
+/* Excalibur 光柱的燈擺在光柱上、離光柱起點幾格。預覽是 6／22／45 三盞，使用者：「感覺劍尾那邊不是在高空就是快速斬下
+   應該是看不出區別 不如把燈讓出來」→ 只留靠劍那一盞（照她腳下與斬到的近處），讓出來的給燒的火。
+   光柱長過那一盞之後幾格內亮到全亮；斬到前下方之後光柱遠端插進地裡，那一段的燈擺回地面上多高 */
+const GLOW_EXC_AT = [6], GLOW_EXC_GROW = 6, GLOW_EXC_LOW = 1.5;
+const GLOW_TOR_UP = 0.3;        // 火把那一盞在火把頭上方多少（火苗往上竄）
 let glowT = 0, glowAt = 0, glowPickT = -1, glowK = 0;
 const glowHits = [], glowBursts = [];
 const glowSlots = [];           // 火的那幾盞，一盞一格 {key 哪一棟, x/y/z 現在, tx/ty/tz 要去, w 亮度, tw 要變成多亮}
@@ -5508,6 +5516,8 @@ function glowUfoY(u) {
   return t + 3;
 }
 const _glowN = new THREE.Vector3();
+/* 火在跳：燒的火與火把同一個閃法，i 錯開相位 */
+const glowFk = i => 0.8 + 0.12 * Math.sin(glowT * 11 + i * 1.7) + 0.08 * Math.sin(glowT * 23.3 + i * 2.9);
 /* K＝這一幀有幾盞空燈（ENG.lampRoom()）。回傳的第 j 筆給第 j 盞 */
 function glowLampList(K) {
   const dt = Math.max(0, glowT - glowAt); glowAt = glowT;
@@ -5544,7 +5554,30 @@ function glowLampList(K) {
       put('dia', n.x + (m.jx - n.x) * s, n.y + (m.jy - n.y) * s + 1, n.z + (m.jz - n.z) * s, 1, 0, null);
     }
   }
+  /* 第三波（v1.298.0，使用者：「這次做Excalibur光柱 小爆炸 火把」，見 開發筆記〈晚上的光源第三波：Excalibur 光柱、小爆炸、火把（v1.298.0）〉）：
+     Excalibur 光柱排在火球前面、小爆炸跟撞擊一起、火把在火前面 */
+  if (beasts) for (const m of beasts) {
+    if (m.kind !== 'saber' || m.st !== 'excal') continue;
+    const len = ENG.excLen(m.xt), wk = ENG.excWk(m.xt);
+    if (!(len > 0.01 && wk > 0)) continue;       // 同引擎 putBar：集氣完才長出來、斬完淡掉
+    const s = ENG.excSword(m), base = ENG.EXC_BASE * (m.sc || 1);
+    const gx = s.x, gy = s.y, gz = s.z, dx = s.dx, dy = s.dy, dz = s.dz;   // excSword 回共用物件，先讀走
+    for (const d of GLOW_EXC_AT) {
+      if (d >= len) continue;                    // 光柱還沒長到這裡
+      const L = base + d;                        // 光柱從劍身中段長出去（同 excGeo 的 base）
+      put('excal', gx + dx * L, Math.max(GLOW_EXC_LOW, gy + dy * L), gz + dz * L,
+          wk * ENG.excTail(d) * Math.min(1, (len - d) / GLOW_EXC_GROW), 0, null);
+    }
+  }
   if (fballs) for (const f of fballs) put('ball', f.x, f.y, f.z, 1, 0, null);
+  /* 小爆炸：explode 炸出來那顆火球（spawnBlast）一顆一盞、新的先。強爆炸（big）自己有燈；
+     自己帶 life 的是王之財寶擊中那顆小火球（weaponBoom，使用者選的：不算） */
+  for (let j = flashes.length - 1; j >= 0; j--) {
+    const f = flashes[j];
+    if (f.big || f.life) continue;
+    const u = f.t / FLASH_LIFE;
+    put('hit', f.x, f.y, f.z, Math.min(1, f.t / GLOW_ATK) * (1 - u) * (1 - u), f.R, null);
+  }
   for (const h of glowHits) {
     const u = (glowT - h.t0) / FLASH_LIFE;
     put('hit', h.x, h.y + 1, h.z, Math.min(1, (glowT - h.t0) / GLOW_ATK) * (1 - u) * (1 - u), h.R, null);
@@ -5553,13 +5586,14 @@ function glowLampList(K) {
     const u = (glowT - b.t0) / GLOW_FW_T;
     put('fw', b.x, b.y, b.z, Math.min(1, (glowT - b.t0) / GLOW_ATK) * (1 - u) * (1 - u), 0, b.c);
   }
+  const th = ENG.torchHeads();                   // 這一幀畫出來的火把（draw 先畫動物才排燈），淡進淡出照 k
+  for (let j = 0; j < th.length; j++) put('torch', th[j].x, th[j].y + GLOW_TOR_UP, th[j].z, th[j].k * glowFk(j), 0, null);
   const K2 = K - _glows.length;
   if (K2 > 0) {
     glowFire(K2, dt);
     for (let i = 0; i < K2; i++) {
       const s = glowSlots[i];
-      const fk = 0.8 + 0.12 * Math.sin(glowT * 11 + i * 1.7) + 0.08 * Math.sin(glowT * 23.3 + i * 2.9);   // 火在跳
-      put('fire', s.x, s.y, s.z, s.w * fk, 0, null);
+      put('fire', s.x, s.y, s.z, s.w * glowFk(i), 0, null);
     }
   } else for (const s of glowSlots) s.w = s.tw = 0;
   return _glows;
@@ -12797,8 +12831,7 @@ function stepFballs(dt) {
 }
 function fballHit(f) {
   const p = { x: f.x, y: Math.max(0.8, f.y), z: f.z };
-  explode(p, FB_R, FB_POW);
-  glowHits.push({ x: p.x, y: p.y, z: p.z, R: FB_R, t0: glowT });   // 晚上撞上去那一下閃一次（v1.296.0，見 glowLampList）
+  explode(p, FB_R, FB_POW);   // 晚上撞上去那一下的燈跟著這一發炸出來的火球（v1.298.0 起歸「小爆炸」，見 glowLampList）
   /* 爆炸本身帶一點餘火，但這是火球——落點一帶再多點幾塊起來，
      這是它跟同尺寸的普通爆炸最明顯的差別（同隕石）。
      砸村子那一顆只准燒村子那邊（v1.166）：這裡的半徑 14.7 比爆炸的 9.2 大得多，

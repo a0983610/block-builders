@@ -39105,16 +39105,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     fires = clump(0, 0, 30, -1); clearGlows();
     const keepFb = fballs;
     fballs = [{ x: 10, y: 20, z: -4 }];
-    fballHit({ x: 0, y: 0.5, z: 300 });                       // 撞在場外的地上：只看記下來的那一下
+    /* 撞在場外的地上：只看它炸出來的那顆火球（v1.298.0 起撞擊那一盞歸「小爆炸」，跟著 flashes 走，所以 stepFlash 也要推） */
+    fballHit({ x: 0, y: 0.5, z: 300 });
     burstFw({ x: 5, y: 40, z: 5, c: FW_COL[1], c2: FW_COL[2] });
     const s0 = copy(3);
-    stepGlows(GLOW_ATK);
+    stepGlows(GLOW_ATK); stepFlash(GLOW_ATK);
     const s1 = copy(5);
     r.order = s1.map(o => o.k).join();
     r.ball = s0[0].k === 'ball' && s0[0].x === 10 && s0[0].y === 20 && s0[0].z === -4 && s0[0].i === 1;
     r.hit = { i0: s0[1].i, i1: +s1[1].i.toFixed(4), want1: +((1 - GLOW_ATK / FLASH_LIFE) ** 2).toFixed(4), R: s1[1].R === FB_R, z: s1[1].z };
     r.fw = { i0: s0[2].i, c: s1[2].c === FW_COL[1][0], y: s1[2].y };
-    stepGlows(FLASH_LIFE);
+    stepGlows(FLASH_LIFE); stepFlash(FLASH_LIFE);
     r.hitGone = copy(5).filter(o => o.k === 'hit').length;
     r.fwStill = copy(5).filter(o => o.k === 'fw').length;
     stepGlows(GLOW_FW_T);
@@ -39261,6 +39262,130 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      glow2.order === 'magic,purp,ufo,met,dia,dia,fire,fire' && glow2.known &&
      glow2.lit === 'ff6a1a/40,b070ff/15,cdf6ff/20,ff7a2a/24,ff8a36/7.5,ff8a36/15' && glow2.day === 0,
      '順序 ' + glow2.order + '、都認得 ' + glow2.known + '；:45 ' + glow2.lit + '；:15 加總 ' + glow2.day);
+
+  /* 晚上的小光源第三波（v1.298.0，使用者：「這次做Excalibur光柱 小爆炸 火把」，看過預覽「Excalibur 先不當強光」「看起來都不錯」）：
+     規則型：Saber 用真的一位改成出招那一段、照 m.xt 給時刻；小爆炸用真的 explode／weaponBoom 在場外炸、只推 stepFlash；
+     火把用真的一隻小獼猴丟給引擎的 putBeasts，讀它記下來的火把頭（掉在地上那一支走真的 torDrop）。
+     直接叫 glowLampList，再把清單丟給引擎的 putGlows 量真的燈。量完全域還回去 */
+  const glow3 = await page.evaluate(() => {
+    cleanTools(); flashes.length = 0; hot.length = 0;
+    const th = ENG.three, keep = { fires };
+    fires = null;
+    const copy = K => glowLampList(K).map(o => ({ k: o.k, x: o.x, y: o.y, z: o.z, i: o.i, R: o.R }));
+    const of = (L, k) => L.filter(o => o.k === k);
+    const E = ENG.EXC, r = { nAt: GLOW_EXC_AT.length, LOW: GLOW_EXC_LOW, UP: GLOW_TOR_UP };
+    /* Excalibur：集氣中不亮；光柱長到哪只亮長過的那幾盞；長滿時每一盞在光柱軸上、亮度＝光柱亮度 × 尾端濃淡；
+       斬到前下方之後插進地裡的擺回地面上（還在斬口那一條上）；淡完收 */
+    beasts = null;
+    const m = spawnBeast('saber');
+    m.st = 'excal';
+    const at = xt => { m.xt = xt; return of(copy(6), 'excal'); };
+    r.exPre = at(E.gather - 0.01).length;
+    /* 長出來那一段取 19 個時刻：亮幾盞＝長過了幾盞、每一盞亮度照算（不寫死盞數：v1.298.0 預覽三盞、落地改一盞） */
+    r.exGrow = { bad: 0, none: 0, part: 0 };
+    for (let k = 1; k < 20; k++) {
+      const xt = E.gather + (E.grow - E.gather) * k / 20, len = ENG.excLen(xt), g = at(xt);
+      const want = GLOW_EXC_AT.filter(d => d < len);
+      if (g.length !== want.length) r.exGrow.bad++;
+      g.forEach((o, j) => {
+        const full = ENG.excWk(xt) * ENG.excTail(want[j]), wI = full * Math.min(1, (len - want[j]) / GLOW_EXC_GROW);
+        if (Math.abs(o.i - wI) > 1e-9) r.exGrow.bad++;
+        if (wI < full - 1e-9) r.exGrow.part++;
+      });
+      if (!g.length) r.exGrow.none++;
+    }
+    const xf = E.charge - 0.01, f = at(xf);
+    const s = ENG.excSword(m), sg = { x: s.x, y: s.y, z: s.z, dx: s.dx, dy: s.dy, dz: s.dz }, base = ENG.EXC_BASE * (m.sc || 1);
+    let off = 0, iErr = 0;
+    f.forEach((o, j) => {
+      const L = base + GLOW_EXC_AT[j];
+      off = Math.max(off, Math.hypot(o.x - (sg.x + sg.dx * L), o.y - (sg.y + sg.dy * L), o.z - (sg.z + sg.dz * L)));
+      iErr = Math.max(iErr, Math.abs(o.i - ENG.excWk(xf) * ENG.excTail(GLOW_EXC_AT[j])));
+    });
+    r.exFull = { n: f.length, off: +off.toFixed(4), iErr, up: +sg.dy.toFixed(3) };
+    const e = at(E.hold + 0.1), s2 = ENG.excSword(m), hn = Math.hypot(s2.dx, s2.dz);
+    r.exEnd = { n: e.length, low: Math.min(...e.map(o => o.y)), flat: e.filter(o => Math.abs(o.y - GLOW_EXC_LOW) < 1e-9).length,
+                side: +Math.max(...e.map(o => Math.abs((o.x - s2.x) * s2.dz / hn - (o.z - s2.z) * s2.dx / hn))).toFixed(6),
+                down: +s2.dy.toFixed(3) };
+    r.exGone = at(E.fade).length;
+    /* 小爆炸：炸彈一發、0.1 秒後加農砲一發、中間夾一顆王之財寶擊中的小火球——兩盞、新的先、R 照那一發，王之財寶那顆不算 */
+    beasts = null; ENG.putBeasts([]);
+    explode({ x: 0, y: 0.6, z: 300 }, BOMB_R, BOMB_POW);                              // 場外：一塊都炸不到，只看那顆火球
+    weaponBoom({ x: 10, y: 3, z: 300 }, { dx: 0, dy: -1, dz: 0 });
+    stepFlash(0.1);
+    explode({ x: 20, y: 0.6, z: 300 }, CAN_R, CAN_POW, false, false, null, true);
+    stepFlash(GLOW_ATK);
+    const b = of(copy(6), 'hit');
+    r.boom = { n: b.length, all: flashes.length, R: b.map(o => o.R).join(), want: [CAN_R, BOMB_R].join(),
+               i: b.map(o => +o.i.toFixed(6)).join(),
+               wantI: [(1 - GLOW_ATK / FLASH_LIFE) ** 2, (1 - (0.1 + GLOW_ATK) / FLASH_LIFE) ** 2].map(v => +v.toFixed(6)).join() };
+    stepFlash(FLASH_LIFE);
+    r.boomGone = of(copy(6), 'hit').length;
+    flashes.length = 0; hot.length = 0; fxRings.length = 0;
+    /* 火把：沒有小獼猴就沒有；一隻一盞，擺在火芯正上方 GLOW_TOR_UP 以內；淡出一半亮一半；掉在地上那一支照樣一盞（手上那支收掉） */
+    r.torchNone = of(copy(6), 'torch').length;
+    const ape = spawnBeast('ape', 1, 0);
+    ape.x = 300; ape.z = 0;
+    ENG.putBeasts(beastList());
+    const t1 = of(copy(6), 'torch'), m4 = new THREE.Matrix4(), cp = new THREE.Vector3();
+    th.torchMesh.getMatrixAt(0, m4); cp.setFromMatrixPosition(m4);
+    r.torch = { n: t1.length, heads: ENG.torchHeads().length,
+                dxz: t1[0] ? Math.hypot(t1[0].x - cp.x, t1[0].z - cp.z) : 9, above: t1[0] ? +(t1[0].y - cp.y).toFixed(4) : -9,
+                k: t1[0] ? +(t1[0].i / glowFk(0)).toFixed(6) : null, near: t1[0] ? +Math.hypot(t1[0].x - 300, t1[0].z).toFixed(2) : 99 };
+    ape.alpha = 0.5; ENG.putBeasts(beastList());
+    const t2 = of(copy(6), 'torch');
+    r.torchHalf = t2[0] ? +(t2[0].i / glowFk(0)).toFixed(6) : null;
+    ape.alpha = undefined;
+    torDrop(ape);
+    ENG.putBeasts(beastList());
+    const t3 = of(copy(6), 'torch');
+    r.torchDrop = { n: t3.length, tor: !!ape.tor, at: t3[0] && ape.tor ? +Math.hypot(t3[0].x - ape.tor.x, t3[0].z - ape.tor.z).toFixed(2) : 99 };
+    ape.tor = null;
+    /* 全部一起：光柱 → 小爆炸 → 火把 → 火；引擎都認得。晚上亮度 ÷ i（hit 再 ÷ R）＝表裡那一檔、顏色照表；白天全 0 */
+    beasts = [m, ape]; m.xt = xf;
+    ENG.putBeasts(beastList());
+    explode({ x: 0, y: 0.6, z: 300 }, BOMB_R, BOMB_POW); stepFlash(GLOW_ATK);
+    fires = [{ b: { x: 0, y: 2, z: 0, st: SET, hh: -1 } }];
+    const all = copy(8);
+    r.order = all.map(o => o.k).join();
+    r.known = all.every(o => ENG.GLOW_KINDS.includes(o.k));
+    ENG.putStorm([], [], []); ENG.putBooms([]);
+    const room = ENG.lampRoom(), lamps = th.boomLamps.concat(th.stormLamps, th.glowLamps);
+    ENG.setDayTime(45);
+    const L = glowLampList(room); ENG.putGlows(L);
+    r.lit = lamps.slice(0, all.filter(o => o.k !== 'fire').length).map((Lp, j) => Lp.color.getHexString() + '/' +
+      +(Lp.intensity / (L[j].k === 'hit' ? L[j].R * L[j].i : L[j].i)).toFixed(3)).join();
+    ENG.setDayTime(15); ENG.putGlows(glowLampList(room));
+    r.day = lamps.reduce((a, Lp) => a + Lp.intensity, 0);
+    ENG.putGlows([]);
+    flashes.length = 0; hot.length = 0; fxRings.length = 0;
+    fires = keep.fires;
+    cleanTools(); draw();
+    return r;
+  });
+  ok('晚上的小光源第三波：Excalibur 集氣中不亮、光柱長到哪亮到哪、長滿時燈在光柱軸上（亮度＝光柱亮度 × 尾端濃淡）、插進地裡的擺回地面上、淡完收',
+     glow3.exPre === 0 && glow3.exGrow.bad === 0 && glow3.exGrow.none >= 1 && glow3.exGrow.part >= 1 &&
+     glow3.exFull.n === glow3.nAt && glow3.exFull.off < 1e-3 && glow3.exFull.iErr < 1e-9 &&
+     glow3.exFull.up > 0.9 && glow3.exEnd.n === glow3.nAt && glow3.exEnd.low >= glow3.LOW - 1e-9 && glow3.exEnd.flat >= 1 &&
+     glow3.exEnd.side < 1e-3 && glow3.exEnd.down < 0 && glow3.exGone === 0,
+     '集氣中 ' + glow3.exPre + ' 盞；長出來那 19 個時刻 盞數或亮度對不上 ' + glow3.exGrow.bad + ' 次（還沒長到 ' + glow3.exGrow.none +
+     ' 次、正在亮起來 ' + glow3.exGrow.part + ' 次）；長滿 ' + glow3.exFull.n + '／' + glow3.nAt + ' 盞、離光柱軸最遠 ' + glow3.exFull.off + '、亮度最多差 ' + glow3.exFull.iErr +
+     '（劍朝上 ' + glow3.exFull.up + '）；斬到底 ' + glow3.exEnd.n + ' 盞、最低 ' + glow3.exEnd.low + '（擺回地面 ' + glow3.exEnd.flat + ' 盞）、離斬口那條線 ' +
+     glow3.exEnd.side + '（劍朝下 ' + glow3.exEnd.down + '）；淡完 ' + glow3.exGone);
+  ok('晚上的小光源第三波：小爆炸一顆火球一盞、新的先、R＝那一發的半徑，王之財寶那顆不算、FLASH_LIFE 收掉；火把一支一盞在火芯正上方、照淡進淡出，掉在地上那支照樣亮',
+     glow3.boom.n === 2 && glow3.boom.all === 3 && glow3.boom.R === glow3.boom.want && glow3.boom.i === glow3.boom.wantI && glow3.boomGone === 0 &&
+     /* dxz 拿 1e-3：火芯是從 torchMesh 的 instance 矩陣讀回來的（Float32，x 在 300 附近精度約 3e-5），燈是 float64 */
+    glow3.torchNone === 0 && glow3.torch.n === 1 && glow3.torch.heads === 1 && glow3.torch.dxz < 1e-3 &&
+     glow3.torch.above > 0 && glow3.torch.above <= glow3.UP && glow3.torch.k === 1 && glow3.torch.near < 2 && glow3.torchHalf === 0.5 &&
+     glow3.torchDrop.n === 1 && glow3.torchDrop.tor && glow3.torchDrop.at < 1,
+     '火球 ' + glow3.boom.all + ' 顆給 ' + glow3.boom.n + ' 盞、R ' + glow3.boom.R + '（應為 ' + glow3.boom.want + '）、亮度 ' + glow3.boom.i +
+     '（應為 ' + glow3.boom.wantI + '）、收完剩 ' + glow3.boomGone + '；火把 沒有猴子 ' + glow3.torchNone + ' 盞、一隻 ' + glow3.torch.n +
+     ' 盞（火芯旁 ' + glow3.torch.dxz.toFixed(6) + '、高 ' + glow3.torch.above + '、亮度 ' + glow3.torch.k + '、離牠 ' + glow3.torch.near + ' 格）、淡出一半 ' +
+     glow3.torchHalf + '；掉在地上 ' + glow3.torchDrop.n + ' 盞、離那一支 ' + glow3.torchDrop.at + ' 格');
+  ok('晚上的小光源第三波：順序 光柱→小爆炸→火把→火，引擎都認得；晚上亮度＝表裡的那一檔、顏色照表，白天全 0',
+     glow3.order === Array(glow3.nAt).fill('excal').concat(['hit', 'torch'], Array(8 - glow3.nAt - 2).fill('fire')).join() && glow3.known &&
+     glow3.lit === Array(glow3.nAt).fill('ffc860/24').concat(['ffa24a/4', 'ff9a40/4.5']).join() && glow3.day === 0,
+     '順序 ' + glow3.order + '、都認得 ' + glow3.known + '；:45 ' + glow3.lit + '；:15 加總 ' + glow3.day);
 
   /* 「每幀乘一次」的阻尼照 dt 換算（v1.244.0，使用者：「要改」）。規則型：同一顆粒子、同一塊碎料，
      用 30／60／120／144fps 的 dt 各推兩秒，看走多遠。改之前走的距離跟幀率成反比——探針實測

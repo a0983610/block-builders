@@ -203,12 +203,17 @@ const ENG = (function () {
        purp  茈：跟著紫球，5 格那一圈 3、照到 30 格
        ufo   幽浮光柱：光柱底下那一塊上方，8 格那一圈 2.5、照到 40 格；光柱的淡青
        met   落下中的隕石：6 格那一圈 4、照到 40 格（撞地那一下走 hit，R＝MET_R）
-       dia   Diablo 火柱打到的那一點：5 格那一圈 3、照到 30 格（嘴那一盞規則那邊給一半） */
+       dia   Diablo 火柱打到的那一點：5 格那一圈 3、照到 30 格（嘴那一盞規則那邊給一半）
+     v1.298.0 第三波（使用者：「這次做Excalibur光柱 小爆炸 火把」，看過預覽「Excalibur 先不當強光」「看起來都不錯」）：
+       excal Excalibur 光柱：靠劍那一段一盞（預覽是三盞，「劍尾那邊…看不出區別 不如把燈讓出來」），12 格那一圈 2、照到 60 格；光柱中間那層的金色
+       （小爆炸走 hit：炸彈、加農砲、香蕉炸彈、飛龍火球撞上去，R＝那一發的爆炸半徑）
+       torch 小獼猴的火把：火把頭上方，3 格那一圈 1.5、照到 15 格 */
   const GLOW = { fire: { c: 0xff8a36, I: 1.5 * 5, d: 18 }, ball: { c: 0xffa040, I: 3 * 4, d: 24 },
                  hit: { c: BOOM_LAMP_C, E: 4, reach: 3 }, fw: { I: 1.2 * 35, d: 90 },
                  magic: { c: 0xff6a1a, I: 2 * 20, d: 75 }, purp: { c: 0xb070ff, I: 3 * 5, d: 30 },
                  ufo: { c: 0xcdf6ff, I: 2.5 * 8, d: 40 }, met: { c: 0xff7a2a, I: 4 * 6, d: 40 },
-                 dia: { c: 0xff8a36, I: 3 * 5, d: 30 } };
+                 dia: { c: 0xff8a36, I: 3 * 5, d: 30 },
+                 excal: { c: 0xffc860, I: 2 * 12, d: 60 }, torch: { c: 0xff9a40, I: 1.5 * 3, d: 15 } };
   /* 天光、日光、霧的本來的樣子，與烏雲遮天最暗時各壓掉幾成（v1.283.0，見 setGloom）。
      天空是 index.html 的 CSS 漸層（畫布是透明的），所以另外蓋一層暗色的 div，GLOOM.sky 是它最濃多少。 */
   const HEMI_I = 1.25, SUN_I = 1.75, FOG_C = 0xbcd3e0, GLOOM_FOG = 0x363e4b;
@@ -11604,8 +11609,13 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
   const TORCH_C = [[1, 0.84, 0.30], [1, 0.46, 0.08], [0.62, 0.13, 0.03]];   // 火苗從底到頂的三段色
   const _torchO = new T.Object3D();
   let torchN = 0;                          // 這一幀排了幾支
-  function putTorch(x, y, z, s, a, gait) {
+  /* 這一幀每支火把頭在哪（v1.298.0，晚上那一盞燈擺這裡，見 torchHeads）：{x, y, z 火把頭的中心, k 0～1 淡進淡出} */
+  const torchAt = [], _torchAtPool = [];
+  function putTorch(x, y, z, s, a, gait, k) {
     if (torchN >= TORCH_MAX) return;
+    const h = _torchAtPool[torchN] || (_torchAtPool[torchN] = {});
+    h.x = x; h.y = y; h.z = z; h.k = k;
+    torchAt.push(h);
     const t = performance.now() / 1000, i0 = torchN++ * TORCH_N;
     for (let j = 0; j < TORCH_N; j++) {
       let px = x, py = y, pz = z, w, rx = 0, ry = 0;
@@ -11642,7 +11652,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
   function putBeasts(list) {
     const n = Math.min(list.length, MAXBEAST);
     beastMesh.count = n * BEAST_PARTS;
-    torchN = 0;
+    torchN = 0; torchAt.length = 0;
     let fb = 0;                                // 這一幀排進 fadeMesh 後段的第幾具（v1.240）
     for (let i = 0; i < n; i++) {
       const m = list[i], parts = BEASTS[m.kind];
@@ -11788,8 +11798,10 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
         M.setColorAt(base + k, tmpC.setHex(b.c));
         // 火把頭（v1.249.0）：這一塊畫出去的中心就是火的錨點。
         // 從林帶淡進來／淡出去那一段（v1.256.0）火苗跟著縮放——火是亮的、不吃 alpha，不縮的話會比牠先出現
-        if (b.ft) putTorch(tmpM.elements[12], tmpM.elements[13], tmpM.elements[14],
-                           msc * (m.alpha === undefined ? 1 : m.alpha), m.a || 0, m.gait || 0);
+        if (b.ft) {
+          const al = m.alpha === undefined ? 1 : m.alpha;
+          putTorch(tmpM.elements[12], tmpM.elements[13], tmpM.elements[14], msc * al, m.a || 0, m.gait || 0, al);
+        }
       }
     }
     beastMesh.instanceMatrix.needsUpdate = true;
@@ -12498,6 +12510,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 四位主角每一塊的顏色名（v1.273.0）：測試照它對「臉往上偏、頭髮描邊淡」落在哪幾格（見 heroGeo） */
     HERO_CN: { saber: SAB_CN, levi: LEV_CN, megumin: MEG_CN, zenitsu: ZEN_CN },
     TORCH_N,                                /* 一支火把的火幾塊（v1.249.0，測試要對 torchMesh 的數量） */
+    torchHeads: () => torchAt,              /* 上一次 putBeasts 畫了哪幾支火把、火把頭在哪（v1.298.0，晚上那一盞燈照這個擺；draw 裡先畫動物才排燈） */
     /* 巨人（v1.192）：規則那邊要拿它算「這一腳踹到哪一點」。
        畫出來的腳掌跟判定用的那一點是同一條式子算的（同 SWORD_HIT／UFO_MOUTH）。 */
     giantFoot,
@@ -12509,6 +12522,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
        判定斬到哪——跟畫出來的同一份數字。 */
     putSabers, SABER, SAB_PARTS, MAXSAB,
     EXC, EXC_W, EXC_L, EXC_BASE, excWidth, excSword,
+    excLen, excWk, excTail,                 /* 光柱這一刻多長、多亮、離起點 d 格多濃（v1.298.0，晚上的燈跟畫出來的光柱同一份） */
     /* 里維兵長（v1.230）：自己一顆 mesh（putLevis）。規則那邊照 LEV 的時間軸走立體機動那一招 */
     putLevis, LEVI, LEV_PARTS, LEV_SLOT, MAXLEV, LEV,
     /* 惠惠（v1.247.0）：自己一顆 mesh（putMegs）。規則那邊照 MEGT 的時間軸走詠唱、倒下、爬起來，
