@@ -9652,6 +9652,9 @@ function stepBeast(m, dt) {
    轉進 out 那一幀會從全實直接跳到快淡完。 */
 const beastOut = m => m.st === 'go' || (!!m.sky && (m.st === 'out' || (m.st === 'up' && !(m.left > 0))));
 function stepBeast0(m, dt) {
+  /* 睡著的被打到（v1.304.0）：飛、燒、倒、被吸走、死了——睡姿當場收掉，交給那一下的反應（見 napStop）。
+     擺在幽浮那一條前面：被吸走那幾秒下面整段都跑不到 */
+  if ((m.nap > 0 || m.slp > 0) && (m.ufo || m.air || m.burn > 0 || m.fall > 0 || m.dead)) napStop(m);
   /* 被幽浮吸走了（v1.167）：牠這一段完全交給 stepUfo 管（在光裡飄、在艙裡等、
      從天上掉回來），這裡整段跳過。擺在最前面：下面每一條分支都會動到位置。 */
   if (m.ufo) return false;
@@ -9896,6 +9899,9 @@ function stepBeast0(m, dt) {
       }
       return false;
     }
+    /* 睡著、正在趴下去或爬起來的（v1.304.0，見 napStep）。排在中箭跑開後面（射中那一下已經把牠叫醒了），
+       肉前面：肉叫不動睡著的（見 meatCall），睡醒剛被叫到的那一隻先爬起來再過去 */
+    if (m.nap > 0 || m.slp > 0) { napStep(m, dt); return false; }
     /* 被肉叫過去的（v1.261.0，見 stepMeats）：小跑過去、圍著吃，吃完 meatFree 放回來接著逛。
        排在中箭跑開後面：路上中箭的先跑開，跑完接著過去 */
     if (m.meat) { meatWalk(m, dt, spd, stp, kp); return false; }
@@ -9909,8 +9915,13 @@ function stepBeast0(m, dt) {
     /* 逛的目標被城牆隔開就照規則規劃過去（v1.235，同 wander）；v1.195～v1.234 是隔一秒複驗、重挑一個這一側的點 */
     if (strollTo(m, dt, spd, stp, kp)) {
       /* 站多久：猴子照剛走完那段路算（strollPause），牛羊改成固定抽——
-         牠們一趟只走幾格，照比例算的話停不到一秒，看起來是一直在繞圈。 */
-      if (m.herd) { m.pause = rr(HERD_STAY[0], HERD_STAY[1]); m.leg = 0; }
+         牠們一趟只走幾格，照比例算的話停不到一秒，看起來是一直在繞圈。
+         牛羊停下來那一刻先擲一次要不要睡（v1.304.0，見 napStart），晚上比較容易中 */
+      if (m.herd) {
+        if (Math.random() < NAP_P[0] + (NAP_P[1] - NAP_P[0]) * ENG.nightK()) napStart(m);
+        else m.pause = rr(HERD_STAY[0], HERD_STAY[1]);
+        m.leg = 0;
+      }
       else strollPause(m);
       idleSpot(m);
     }
@@ -12474,14 +12485,15 @@ function beastList() {
   if (fballs) for (const f of fballs) _beasts.push(f);
   return _beasts;
 }
-/* 頭上的表情圖示要畫的清單（v1.274.0）：小人 ＋ 頭上正冒著圖示的猴子（聊完冒愛心，見〈猴子聊天〉）。
-   平常沒有猴子在冒，直接回 workers，不多抄一份 */
+/* 頭上的表情圖示要畫的清單（v1.274.0）：小人 ＋ 頭上正冒著圖示的猴子（聊完冒愛心，見〈猴子聊天〉）
+   ＋ 頭上正冒著 ZZZ 的閒逛動物（v1.304.0，見 napStep）。平常沒有動物在冒，直接回 workers，不多抄一份 */
 const _emos = [];
+const emoOn = m => m.emoK > 0.02 || m.zzK > 0.02;
 function emoList() {
-  if (!beasts || !beasts.some(m => m.emoK > 0.02)) return workers;
+  if (!beasts || !beasts.some(emoOn)) return workers;
   _emos.length = 0;
   for (const w of workers) _emos.push(w);
-  for (const m of beasts) if (m.emoK > 0.02) _emos.push(m);
+  for (const m of beasts) if (emoOn(m)) _emos.push(m);
   return _emos;
 }
 
@@ -14695,6 +14707,43 @@ const HERD_SC = [0.90, 1.08];        // 每一隻的大小抽一個倍率，同�
 const HERD_STAY = [3.5, 9];          // 走到了站著吃草幾秒
 let herdN = 0;                       // 這一場養幾隻（第一次叫 stepHerd 時抽）
 
+/* ── 睡覺（v1.304.0）──
+   使用者：「增加閒晃動物行為 睡覺 晚上時有比較多的機會在睡覺(需增加睡覺動作&ZZZ符號)」。動手前問了四件，選的是：
+   **趴睡**（姿勢見 engine.js 的 SLP；兩條腿的看過預覽改成坐著打瞌睡）、頭上**一個個 Z 往上飄**（見 putZzz）、
+   **晚上約一半在睡、白天偶爾打盹**、**被打到才醒**（肉叫不動睡著的那幾隻，見 meatCall）。
+   規則只有一條：走到一個點要停下來的那一刻（本來一律站著吃草）擲一次骰，中了就趴下去睡一段。
+   機率與睡多久都照「現在多晚」（ENG.nightK：白天 0、晚上 1，黃昏黎明那幾分鐘在中間）從白天那一格混到晚上那一格。
+   被打到（飛、燒、倒、被吸走、死）那一刻 stepBeast0 開頭就叫醒，姿勢交給那一下的反應（見 napStop）。
+   見 開發筆記〈閒逛的動物會睡覺（v1.304.0）〉 */
+/* 機率與長度是照量到的反推的：牠們大部分時間在走（走一趟平均約 57 秒、站著吃草平均 6 秒），
+   在睡的比例 ≈ p·睡多久 ÷ (p·睡多久 ＋ (1−p)·6 ＋ 57)。第一版估「走一趟幾秒」給 0.06／0.22、15～30／40～80 秒，
+   量出來白天 1.3%、晚上 18.5%；照上面那條式子改成現在的機率之後白天 10.5%，晚上睡 90～150 秒量到 60.1%、
+   60～100 秒量到 44.2%，取中間的 70～120 秒量到 43.3%（單跑一次的起伏約 ±8%，比這幾檔之間的差還大，停在這裡） */
+const NAP_P = [0.2, 0.5];            // 停下來的時候睡著的機率：白天、晚上
+const NAP_T = [[20, 40], [70, 120]]; // 一次睡幾秒：白天、晚上
+const NAP_DOWN = 1.2, NAP_UP = 0.8;  // 趴下去、爬起來各幾秒
+const NAP_ZZ = 2;                    // ZZZ 長出來的快慢（每秒；收回去兩倍快）
+function napStart(m) {
+  const k = ENG.nightK();
+  m.nap = rr(NAP_T[0][0] + (NAP_T[1][0] - NAP_T[0][0]) * k, NAP_T[0][1] + (NAP_T[1][1] - NAP_T[0][1]) * k);
+  m.zt = rr(0, 10);                  // ZZZ 的鐘：每一隻抽一個起點，幾隻一起睡也不會同步冒
+}
+/* 睡著／趴下去／爬起來那幾秒（fun 那一段轉進來）：不走、不吃草。爬起來接著走向下一個點（停下來那一刻就挑好了） */
+function napStep(m, dt) {
+  m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+  m.zt += dt;
+  if (m.nap > 0) {
+    m.nap = Math.max(0, m.nap - dt);
+    m.slp = Math.min(1, m.slp + dt / NAP_DOWN);
+    if (m.slp >= 1) m.zzK = Math.min(1, m.zzK + dt * NAP_ZZ);   // 趴好了才冒 Z
+  } else {
+    m.slp = Math.max(0, m.slp - dt / NAP_UP);
+    m.zzK = m.slp > 0 ? Math.max(0, m.zzK - dt * NAP_ZZ * 2) : 0;
+  }
+}
+/* 被打醒：睡姿當場收掉（那一下本來就是突然的：被掀飛、被點著、被震倒），ZZZ 一起收 */
+function napStop(m) { m.nap = 0; m.slp = 0; m.zzK = 0; }
+
 /* 放一隻進來。**直接站在場上**（落腳點借 idleSpot 挑，壓在房子或地標裡的照規則 2 挪出來），
    不像猴子那樣從場外走進來：牠們是這片草地的住戶不是訪客，而且走那麼慢的話
    （最慢的綿羊 1.3），從碎料場外緣走到工地要一分鐘——開場那一分鐘場上一隻動物都沒有。
@@ -14716,7 +14765,9 @@ function spawnCattle(edge) {
     spin: 0, roll: 0, lie: 0, air: 0, vx: 0, vy: 0, vz: 0, tsp: 0, fall: 0,
     lit: 0, burn: 0, brl: 0, bem: 0, rph: 0, wet: 0, bx: 0, bz: 0, br: 0, ba: 0, bo: 0,
     /* 被打幾次了、死了幾秒（v1.240，見 lifeHit／dieHerd）。alpha 只有死了才有（引擎看到它就搬去淡掉那一顆畫） */
-    hits: 0, dead: 0
+    hits: 0, dead: 0,
+    /* 睡覺（v1.304.0，見 napStep）：還要睡幾秒、趴下去的份量 0～1、ZZZ 的鐘與大小 */
+    nap: 0, slp: 0, zt: 0, zzK: 0
   };
   if (edge) {
     /* 補進來的那一隻從林帶淡進來（v1.256.0，同小人，見 woodFade；v1.240～v1.255 是方形島邊） */
@@ -14930,13 +14981,14 @@ function meatFloor(f) {
   }
   return y;
 }
-/* 叫一隻：MEAT_FAR 格內離這塊最近、還活著、身上沒掛著別塊肉、沒被吸走的閒逛動物。
+/* 叫一隻：MEAT_FAR 格內離這塊最近、還活著、身上沒掛著別塊肉、沒被吸走、沒在睡的閒逛動物
+   （睡著的叫不動，v1.304.0 使用者選的「被打到才醒」）。
    站哪個位子：空著的那幾個裡，離牠來的方向最近的那一個（從哪邊來就站哪邊，不必繞到另一頭） */
 function meatCall(f) {
   if (!beasts) return null;
   let m = null, bd = MEAT_FAR;
   for (const q of beasts) {
-    if (!q.herd || q.dead || q.meat || q.ufo) continue;
+    if (!q.herd || q.dead || q.meat || q.ufo || q.nap > 0) continue;
     const d = Math.hypot(q.x - f.x, q.z - f.z);
     if (d < bd) { bd = d; m = q; }
   }

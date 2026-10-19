@@ -29777,12 +29777,268 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; stepHerd = () => {}; cleanTools(); });
 
+  /* ══════════ 閒逛的動物：睡覺 ══════════ */
+  /* v1.304.0。使用者：「增加閒晃動物行為 睡覺 晚上時有比較多的機會在睡覺(需增加睡覺動作&ZZZ符號)」，
+     選了趴睡（兩條腿的看過預覽改成坐著打瞌睡）、頭上一個個 Z 往上飄、晚上約一半在睡／白天偶爾打盹、被打到才醒。
+     **全部是規則型**：姿勢直接給 m.slp 量畫出去的矩陣，擲骰押 Math.random，幾點用 ENG.setDayTime 給——
+     不跑一場等牠們自己睡。「晚上幾成在睡」是統計，探針量過（見 開發筆記〈閒逛的動物會睡覺（v1.304.0）〉），這裡不驗。 */
+  }   // ── 〈閒逛的動物〉結束（--tier 跳過時從這裡出來）
+  SEC: { if (!(await head('閒逛的動物：睡覺', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+
+  /* ── 姿勢：每一款趴好之後怎麼擺（照 ENG.SLP 與造型表驗，不寫死哪一款沉多少） ── */
+  const zpose = await page.evaluate(() => {
+    const K = ENG.SLP_K, mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4(), col = new THREE.Color();
+    /* 第 i 塊畫出去的樣子：中心、上下左右的半寬、本身 y 軸多長、y 軸往前倒了幾弧度、顏色 */
+    const part = i => {
+      mesh.getMatrixAt(i, m4);
+      const a = m4.elements, sy = Math.hypot(a[4], a[5], a[6]);
+      mesh.getColorAt(i, col);
+      return { x: a[12], y: a[13], z: a[14], sy,
+               hx: 0.5 * (Math.abs(a[0]) + Math.abs(a[4]) + Math.abs(a[8])),
+               hy: 0.5 * (Math.abs(a[1]) + Math.abs(a[5]) + Math.abs(a[9])),
+               flat: sy ? Math.abs(a[5]) / sy : 0, lean: Math.atan2(a[6], a[5]), c: col.getHex() };
+    };
+    const put = (kind, slp) => {
+      ENG.putBeasts([{ kind, x: 0, y: 0, z: 0, a: 0, ph: 0, gait: 0, sc: 1, slp }]);
+      return ENG.BEASTS[kind].map((b, i) => part(i));
+    };
+    const out = {};
+    for (const kind of HERD_KIND) {
+      const P = ENG.BEASTS[kind], S = ENG.SLP[kind];
+      if (!S) { out[kind] = null; continue; }
+      const st = put(kind, 0), half = put(kind, 0.4), zz = put(kind, 1);
+      const sit = S.zm === Infinity;
+      const legs = P.map((b, i) => i).filter(i => P[i].sw);
+      const live = zz.filter(q => q.sy > 1e-6);
+      const lo = Math.min(...live.map(q => q.y - q.hy));
+      /* 軀幹＝不是腿、不是手、體積最大那一塊（同 SLP 的定義） */
+      let big = -1, bv = -1;
+      P.forEach((b, i) => { const v = b.s[0] * b.s[1] * b.s[2]; if (!b.sw && !b.am && v > bv) { bv = v; big = i; } });
+      const o = { sit, lo: +lo.toFixed(3), nod: +S.nod.toFixed(2),
+                  flat: +Math.max(...legs.map(i => zz[i].flat)).toFixed(3) };
+      if (sit) {
+        /* 坐著：腳往前伸（腳尖在關節前面）、身體往前點頭 SLP_DOZE */
+        o.fwd = legs.every(i => zz[i].z > P[i].pz - 1e-6);
+        o.lean = +zz[0].lean.toFixed(3);
+      } else {
+        o.belly = +(zz[big].y - zz[big].hy).toFixed(3);
+        o.tuck = +Math.max(...legs.map(i => Math.abs(zz[i].x) + zz[i].hx - zz[big].hx)).toFixed(3);
+        const hd = P.map((b, i) => i).filter(i => S.hd[i]);
+        o.head = hd.length ? +Math.min(...hd.map(i => zz[i].y - zz[i].hy)).toFixed(3) : null;
+      }
+      /* 眼睛：過半才閉（0.4 照 smoothstep 是 0.35）；1 壓成 SLP_EYE 那麼高、換成閉眼那條線的顏色，2 收掉 */
+      const e1 = P.map((b, i) => i).filter(i => P[i].ey === 1), e2 = P.map((b, i) => i).filter(i => P[i].ey === 2);
+      o.eye = e1.length ? +Math.max(...e1.map(i => Math.abs(zz[i].sy / st[i].sy - K.eye))).toFixed(3) : null;
+      o.lid = e1.every(i => zz[i].c === K.lid);
+      o.hide = e2.every(i => zz[i].sy < 1e-6);
+      o.open = e1.concat(e2).every(i => Math.abs(half[i].sy - st[i].sy) < 1e-6 && half[i].c === st[i].c);
+      o.ne = e1.length + e2.length;
+      out[kind] = o;
+    }
+    ENG.putBeasts([]);
+    return { out, K };
+  });
+  const ZK = zpose.K, ZP = zpose.out;
+  const ZKINDS = Object.keys(ZP);
+  const ZQUAD = ZKINDS.filter(k => ZP[k] && !ZP[k].sit), ZSIT = ZKINDS.filter(k => ZP[k] && ZP[k].sit);
+  ok('每一款閒逛動物都有睡姿：四條腿的趴、兩條腿的坐著',
+     ZKINDS.every(k => ZP[k]) && ZQUAD.length >= 14 && ZSIT.length >= 7,
+     '趴 ' + ZQUAD.length + ' 款、坐 ' + ZSIT.length + ' 款' +
+     (ZKINDS.every(k => ZP[k]) ? '' : '；沒有睡姿的：' + ZKINDS.filter(k => !ZP[k]).join('、')));
+  ok('四條腿的趴好：軀幹貼著草皮、腿折平收在軀幹裡、頭低到碰到草皮（或低到上限）不陷進去',
+     ZQUAD.every(k => Math.abs(ZP[k].belly) < 0.005 && ZP[k].flat < 0.01 && ZP[k].tuck <= 1e-3 &&
+                      ZP[k].head >= -0.03 && (ZP[k].head <= 0.03 || ZP[k].nod >= ZK.nod - 0.011)),
+     ZQUAD.map(k => k + ' 肚子 ' + ZP[k].belly + '、腿 ' + ZP[k].flat + '／外緣 ' + ZP[k].tuck +
+                    '、低頭 ' + ZP[k].nod + ' 頭最低 ' + ZP[k].head).join('；'));
+  ok('兩條腿的坐著打瞌睡：腳往前伸平、整隻往前點頭、最低那一塊貼著草皮',
+     ZSIT.every(k => ZP[k].fwd && ZP[k].flat < 0.01 && Math.abs(ZP[k].lean - ZK.doze) < 0.01 &&
+                     ZP[k].lo >= -0.01 && ZP[k].lo <= 0.01),
+     ZSIT.map(k => k + ' 點頭 ' + ZP[k].lean + '、最低 ' + ZP[k].lo + (ZP[k].fwd ? '' : '（腳沒往前）')).join('；'));
+  ok('睡著閉眼：趴下去過半才閉，眼睛壓成一條線、換成閉眼的顏色，亮點與瞳孔收掉',
+     ZKINDS.filter(k => ZP[k] && ZP[k].ne).every(k => ZP[k].lid && ZP[k].hide && ZP[k].open &&
+                                                      (ZP[k].eye === null || ZP[k].eye < 1e-3)) &&
+     ZKINDS.filter(k => ZP[k] && ZP[k].ne).length >= ZKINDS.length - 1,
+     ZKINDS.filter(k => ZP[k] && ZP[k].ne).length + ' 款有眼睛（沒有的：' +
+     (ZKINDS.filter(k => ZP[k] && !ZP[k].ne).join('、') || '無') + '）；壓扁的比例最多差 ' +
+     Math.max(...ZKINDS.filter(k => ZP[k] && ZP[k].eye !== null).map(k => ZP[k].eye)));
+
+  /* ── 頭上的 ZZZ ── */
+  const zzz = await page.evaluate(() => {
+    const geo = ENG.three.emoMesh.geometry, p = geo.attributes.position.array;
+    const quads = m => {
+      ENG.putEmotes([m]);
+      const n = geo.drawRange.count / 6, q = [];
+      for (let j = 0; j < n; j++) {
+        let ylo = 1e9, cx = 0, cz = 0, w = 0;
+        for (let c = 0; c < 4; c++) {
+          const i = (j * 4 + c) * 3;
+          ylo = Math.min(ylo, p[i + 1]); cx += p[i] / 4; cz += p[i + 2] / 4;
+        }
+        w = Math.hypot(p[j * 12 + 3] - p[j * 12], p[j * 12 + 4] - p[j * 12 + 1], p[j * 12 + 5] - p[j * 12 + 2]);
+        q.push({ ylo, cx, cz, w });
+      }
+      return { n, vis: ENG.three.emoMesh.visible, q };
+    };
+    const out = {}, thin = ENG.SLP_K.thin, m4 = new THREE.Matrix4();
+    for (const kind of HERD_KIND) {
+      const S = ENG.SLP[kind];
+      if (!S) continue;
+      /* 朝向給 0：身體每一塊的外框照世界軸取，斜著擺的話外框會比身體大一圈，量出來的「蓋到」不準 */
+      const m = { kind, x: 5, y: 0, z: -3, a: 0, sc: 1.6, zzK: 1, zt: 0.4, emoK: 0, slp: 1 };
+      /* 趴好之後每一塊的外框（鹿角那種細的不算，同引擎挑 ZZZ 錨點的規則） */
+      ENG.putBeasts([m]);
+      const P = ENG.BEASTS[kind], box = [];
+      P.forEach((b, i) => {
+        if (Math.min(b.s[0], b.s[2]) < thin) return;
+        ENG.three.beastMesh.getMatrixAt(i, m4);
+        const a = m4.elements;
+        if (Math.hypot(a[4], a[5], a[6]) < 1e-6) return;            // 收掉的那幾塊（閉眼的亮點）
+        box.push({ x: a[12], z: a[14], top: a[13] + 0.5 * (Math.abs(a[1]) + Math.abs(a[5]) + Math.abs(a[9])),
+                   hx: 0.5 * (Math.abs(a[0]) + Math.abs(a[4]) + Math.abs(a[8])),
+                   hz: 0.5 * (Math.abs(a[2]) + Math.abs(a[6]) + Math.abs(a[10])) });
+      });
+      const len = (Math.max(...P.map(b => b.p[2] + b.s[2] / 2)) - Math.min(...P.map(b => b.p[2] - b.s[2] / 2))) * m.sc;
+      const full = quads(m), halfK = quads(Object.assign({}, m, { zzK: 0.5 })), off = quads(Object.assign({}, m, { zzK: 0 }));
+      /* 每一個 Z 跟它正下方蓋到的那幾塊身體比：最低的那個角要高過那幾塊的頂（負的＝插進身體裡） */
+      let above = 1e9;
+      for (const o of full.q)
+        for (const b of box)
+          if (Math.abs(o.cx - b.x) <= b.hx && Math.abs(o.cz - b.z) <= b.hz) above = Math.min(above, o.ylo - b.top);
+      out[kind] = { n: full.n, above: above === 1e9 ? 'none' : +above.toFixed(3),
+                    near: +Math.max(...full.q.map(o => Math.hypot(o.cx - m.x, o.cz - m.z) / len)).toFixed(2),
+                    half: +(Math.max(...halfK.q.map(o => o.w)) / Math.max(...full.q.map(o => o.w))).toFixed(3),
+                    off: off.n, offVis: off.vis };
+    }
+    ENG.putBeasts([]); ENG.putEmotes([]);
+    /* 規則那邊：頭上冒著 Z 的才進表情清單（平常沒有就直接回 workers，不多抄一份） */
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const z = spawnCattle(), w = spawnCattle();
+    z.zzK = 0.5;
+    const L1 = emoList(), inList = L1.indexOf(z) >= 0 && L1.indexOf(w) < 0;
+    z.zzK = 0;
+    const plain = emoList() === workers;
+    cleanTools();
+    return { out, inList, plain };
+  });
+  const ZZK = Object.keys(zzz.out);
+  ok('睡著頭上冒三個 Z：不插進身體裡、在牠旁邊；大小跟著 zzK，收掉的時候一片都不畫（不吃 draw call）',
+     ZZK.length >= 21 && ZZK.every(k => zzz.out[k].n === 3 && (zzz.out[k].above === 'none' || zzz.out[k].above >= -0.01) &&
+                                        zzz.out[k].near < 1.5 &&
+                                        Math.abs(zzz.out[k].half - 0.5) < 0.01 && zzz.out[k].off === 0 && !zzz.out[k].offVis) &&
+     zzz.inList && zzz.plain,
+     ZZK.map(k => k + ' ' + zzz.out[k].n + ' 片、高過底下那塊 ' + zzz.out[k].above + '、離牠 ' + zzz.out[k].near + ' 個身長').join('；') +
+     '；冒著 Z 的進表情清單＝' + zzz.inList + '、沒有就直接回 workers＝' + zzz.plain);
+
+  /* ── 停下來那一刻擲骰：白天 NAP_P[0]、晚上 NAP_P[1]，黃昏照 nightK 混；睡多久同樣照 nightK 混 ── */
+  const zdice = await page.evaluate(() => {
+    const R = Math.random, out = [];
+    const arrive = (clock, v) => {
+      cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+      ENG.setDayTime(clock);
+      const m = spawnCattle();
+      m.kind = 'cow'; m.x = siteR + 20; m.z = 0; m.y = 0; m.st = 'fun'; m.pause = 0; m.nav = null;
+      m.tx = m.x; m.tz = m.z;                                  // 目標就在腳下：這一幀就是「走到了」
+      Math.random = () => v;
+      try { stepBeast(m, 0.05); } finally { Math.random = R; }
+      return m;
+    };
+    for (const clock of [15, 30, 45]) {
+      ENG.setDayTime(clock);
+      const k = ENG.nightK(), p = NAP_P[0] + (NAP_P[1] - NAP_P[0]) * k;
+      const lo = NAP_T[0][0] + (NAP_T[1][0] - NAP_T[0][0]) * k, hi = NAP_T[0][1] + (NAP_T[1][1] - NAP_T[0][1]) * k;
+      for (const v of [p - 0.05, p + 0.05]) {
+        const m = arrive(clock, v);
+        out.push({ clock, k: +k.toFixed(2), p: +p.toFixed(3), v: +v.toFixed(3), nap: +m.nap.toFixed(3),
+                   want: v < p ? +(lo + v * (hi - lo)).toFixed(3) : 0, pause: m.pause > 0 });
+      }
+    }
+    cleanTools();
+    ENG.setDayTime(dayOn ? dayClock() : -1);               // 晝夜還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）
+    return out;
+  });
+  ok('停下來那一刻擲一次骰要不要睡：白天、黃昏、晚上機率一路變高，睡多久也跟著拉長；沒中就照舊站著吃草',
+     zdice.length === 6 && zdice.every(o => o.want ? o.nap === o.want && !o.pause : o.nap === 0 && o.pause) &&
+     zdice[0].p < zdice[2].p && zdice[2].p < zdice[4].p && zdice[0].want < zdice[2].want && zdice[2].want < zdice[4].want,
+     zdice.map(o => ':' + o.clock + '（晚上 ' + o.k + '、機率 ' + o.p + '）骰 ' + o.v + ' → ' +
+                    (o.nap ? '睡 ' + o.nap + ' 秒' : '吃草')).join('；'));
+
+  /* ── 一覺的過程：趴下去 → 趴好才冒 Z → 睡完爬起來、Z 收掉 → 接著走 ── */
+  const zrun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const m = spawnCattle();
+    m.kind = 'sheep'; m.x = siteR + 20; m.z = 0; m.y = 0; m.st = 'fun'; m.pause = 0; m.nav = null;
+    m.tx = m.x + 20; m.tz = 0;                                // 醒來要走去的那一點
+    m.nap = 3; m.slp = 0; m.zzK = 0;
+    const dt = 0.05;
+    let tDown = -1, zAtDown = -1, zMax = 0, tUp = -1, zAtUp = -1, tWalk = -1;
+    for (let i = 1; i <= 160; i++) {
+      stepBeast(m, dt);
+      const t = i * dt;
+      if (tDown < 0 && m.slp >= 1) { tDown = t; zAtDown = m.zzK; }
+      zMax = Math.max(zMax, m.zzK);
+      if (tDown > 0 && tUp < 0 && m.nap <= 0 && m.slp <= 0) { tUp = t; zAtUp = m.zzK; }
+      if (tUp > 0 && tWalk < 0 && m.gait > 0.3) tWalk = t;
+    }
+    cleanTools();
+    return { tDown: +tDown.toFixed(2), zAtDown: +zAtDown.toFixed(3), zMax: +zMax.toFixed(2),
+             tUp: +tUp.toFixed(2), zAtUp: zAtUp, tWalk: +tWalk.toFixed(2), down: NAP_DOWN, up: NAP_UP };
+  });
+  ok('一覺的過程：NAP_DOWN 秒趴好、趴好才冒 Z，睡完 NAP_UP 秒爬起來、Z 跟著收掉，接著走',
+     Math.abs(zrun.tDown - zrun.down) <= 0.051 && zrun.zAtDown <= 0.11 && zrun.zMax === 1 &&
+     Math.abs(zrun.tUp - (3 + zrun.up)) <= 0.051 && zrun.zAtUp === 0 && zrun.tWalk > zrun.tUp && zrun.tWalk < zrun.tUp + 1,
+     zrun.tDown + ' 秒趴好（那時 Z ' + zrun.zAtDown + '）、Z 最大 ' + zrun.zMax + '；睡 3 秒、' + zrun.tUp +
+     ' 秒爬起來（Z ' + zrun.zAtUp + '）、' + zrun.tWalk + ' 秒開始走');
+
+  /* ── 被打到才醒：飛、倒、燒都當場收掉睡姿；水（沒著火）不算；肉叫不動睡著的 ── */
+  const zwake = await page.evaluate(() => {
+    const sleeper = (x, z) => {
+      const m = spawnCattle();
+      m.kind = 'cow'; m.x = x; m.z = z; m.y = 0; m.st = 'fun'; m.pause = 0; m.nav = null;
+      m.tx = m.x; m.tz = m.z; m.nap = 60; m.slp = 1; m.zzK = 1;
+      return m;
+    };
+    const out = {};
+    for (const [name, hit] of [['炸飛', m => tossBeast(m, 6, 8, 0, false)], ['震倒', m => fellBeast(m, 2)],
+                               ['點著', m => igniteBeast(m, 1)]]) {
+      cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+      const m = sleeper(siteR + 20, 0);
+      const did = hit(m);
+      stepBeast(m, 0.05);
+      out[name] = { did, nap: m.nap, slp: m.slp, zzK: m.zzK };
+    }
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const w = sleeper(siteR + 20, 0);
+    const wet = wetBeast(w);
+    for (let i = 0; i < 20; i++) stepBeast(w, 0.05);
+    out['澆水'] = { did: wet, nap: +w.nap.toFixed(2), slp: w.slp, zzK: w.zzK };
+    /* 肉：睡著的那一隻離得近也叫不到，叫的是醒著的那一隻；牠醒了才叫得到牠 */
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const px = siteR + 20, pz = 10;
+    const near = sleeper(px + 3, pz), far = spawnCattle();
+    far.kind = 'ox'; far.x = px + 8; far.z = pz; far.y = 0; far.st = 'fun'; far.pause = 5;
+    const f = dropMeat({ x: px, z: pz });
+    const c1 = meatCall(f);
+    near.nap = 0; near.slp = 0; near.zzK = 0;
+    const c2 = meatCall(f);
+    out.meat = { first: c1 === far ? 'far' : c1 === near ? 'near' : String(c1), then: c2 === near ? 'near' : String(c2) };
+    cleanTools();
+    return out;
+  });
+  const ZHIT = ['炸飛', '震倒', '點著'];
+  ok('睡著的被打到就醒：炸飛、震倒、點著那一幀睡姿與 Z 都收掉；水沒有澆到火不算；肉叫不動睡著的',
+     ZHIT.every(n => zwake[n].did && zwake[n].nap === 0 && zwake[n].slp === 0 && zwake[n].zzK === 0) &&
+     zwake['澆水'].did && zwake['澆水'].nap > 50 && zwake['澆水'].slp === 1 &&
+     zwake.meat.first === 'far' && zwake.meat.then === 'near',
+     ZHIT.map(n => n + ' → 睡 ' + zwake[n].nap + '／趴 ' + zwake[n].slp + '／Z ' + zwake[n].zzK).join('；') +
+     '；澆水 → 還要睡 ' + zwake['澆水'].nap + ' 秒；肉先叫 ' + zwake.meat.first + '（睡著那隻比較近），牠醒了再叫 ' + zwake.meat.then);
+
   /* ══════════ 雁群 ══════════ */
   /* v1.272.0。使用者：「增加閒晃動物種類 吉伊卡哇 企鵝 鳥(在空中飛過)」，鳥選了「雁群排 V 字」「打得到」。
      規則都是直接押出來驗的（不跑一場等牠們自己來）：一群幾隻、隊形、航線在建築旁邊、飛多快、
      過了中線就是在飛走、飛出林帶收掉；被打中（所有打法都走 grDown → gooseDown）就掉下來、
      落在地面或屋頂上、躺 DIE_HOLD 秒淡 DIE_FADE 秒；不擋天災、不算被打幾次。 */
-  }   // ── 〈閒逛的動物〉結束（--tier 跳過時從這裡出來）
+  }   // ── 〈閒逛的動物：睡覺〉結束（--tier 跳過時從這裡出來）
   SEC: { if (!(await head('雁群', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await page.evaluate(() => { stepDoom = window.doomStep; });   // 雁是 stepDoom 在推的（同 beasts 裡每一隻）

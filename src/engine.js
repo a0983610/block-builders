@@ -4461,8 +4461,10 @@ if (vAo.x + vAo.y > 0.5) {
      或描邊陰影，那一片會像貼了張別的遊戲的圖。 */
   /* v1.237 多一種 sweat（累了在喘，💦）。貼圖上再多一格 drop：它不是一種表情，
      是 sweat 附帶的「太陽穴旁一大滴汗」（見 putEmotes），規則那邊不會拿它當 w.emo。 */
+  /* v1.304.0 再多一格 z：睡著的動物頭上一個個往上飄的 Z（見 putZzz）。它也不是一種表情
+     （掛的不是 w.emo，是 w.zzK），所以不在 EMO_KINDS 裡。 */
   const EMO_KINDS = ['bang', 'quest', 'heart', 'anger', 'sweat'];   // 規則那邊用這幾個字
-  const EMO_CELLS = EMO_KINDS.concat(['drop']);                     // 貼圖上的順序
+  const EMO_CELLS = EMO_KINDS.concat(['drop', 'z']);                // 貼圖上的順序
   const EMO_IDX = {};
   EMO_CELLS.forEach((k, i) => { EMO_IDX[k] = i; });
   const EMO_CELL = 128;              // 貼圖一格幾像素（圖示在畫面上最多四十幾像素，128 夠）
@@ -4477,7 +4479,7 @@ if (vAo.x + vAo.y > 0.5) {
   const DROP_SLIDE = 0.24;           // 一輪往下滑多遠
   const EMO_MAX = MAXW * 2;          // 一個人最多兩片（💦 ＋ 那一滴）
   const EMO_COL = { bang: '#ffd23c', quest: '#54c7f0', heart: '#ff5f8a', anger: '#e8342a',
-                    sweat: '#6cd2ff', drop: '#6cd2ff' };
+                    sweat: '#6cd2ff', drop: '#6cd2ff', z: '#e4f0ff' };
   /* 一顆水滴：圓的那頭圓心在 (x, y)、半徑 r，尖端朝 ang 那個方向拉出去 2.1r（兩條切線收成尖） */
   function emoTear(g, x, y, r, ang) {
     const d = 2.1 * r, h = Math.acos(r / d);
@@ -4530,6 +4532,13 @@ if (vAo.x + vAo.y > 0.5) {
       });
     } else if (kind === 'drop') {
       emoTear(g, cx, 80, 30, -Math.PI / 2);   // 太陽穴那一大滴：尖端朝上的一顆（v1.237）
+    } else if (kind === 'z') {
+      /* 睡覺的 Z（v1.304.0）：上橫、斜線、下橫一筆畫完，粗線圓角（同問號：用畫的不用字型） */
+      g.lineWidth = 20;
+      g.beginPath();
+      g.moveTo(cx - 34, 26); g.lineTo(cx + 34, 26);
+      g.lineTo(cx - 34, 102); g.lineTo(cx + 34, 102);
+      g.stroke();
     } else {
       /* 生氣：漫畫的怒氣符號（💢）。四道弧圍成一圈、缺口在四個斜角——但**弧是往內凹的**：
          每一道的中間凹向圓心、兩頭往斜角撐出去，整體是一個「角在斜角、邊往內縮」的方框，
@@ -5229,12 +5238,34 @@ if (vAo.x + vAo.y > 0.5) {
       emoCol[q + c * 4 + 3] = alpha;
     }
   }
+  /* 睡覺的 ZZZ（v1.304.0，使用者選「一個個 Z 往上飄」）：ZZ_N 個 Z 輪流從頭頂冒出來，往上、往鏡頭右手邊飄，
+     邊飄邊變大、最後淡掉，一個 Z 飄完要 ZZ_T 秒。錨點照 SLP 的 zy／zz（趴好之後的頭頂）。
+     w.zzK 是整組的大小 0～1（規則那邊趴好了才長出來、醒來收回去），w.zt 是牠自己的鐘（每一隻抽一個起點，不會整群同步）。
+     容量：EMO_MAX 是兩倍的人數上限（792 片），場上的動物最多 MAXBEAST 隻、一隻三片，人再多也塞得下。 */
+  const ZZ_N = 3, ZZ_T = 2.7;
+  const ZZ_SIZE = 0.24;              // 飄到最上面那時候多大（模型單位，乘 sc）；剛冒出來是它的一半
+  const ZZ_RISE = 0.60, ZZ_DRIFT = 0.32;   // 一趟往上、往右飄多遠
+  function putZzz(w, n) {
+    const sl = SLP[w.kind];
+    if (!sl) return n;
+    const s = w.sc || 1, a = w.a || 0;
+    const x0 = w.x + Math.sin(a) * sl.zz * s, y0 = (w.y || 0) + sl.zy * s, z0 = w.z + Math.cos(a) * sl.zz * s;
+    for (let i = 0; i < ZZ_N && n < EMO_MAX; i++) {
+      const u = ((w.zt || 0) / ZZ_T + i / ZZ_N) % 1;
+      const hs = ZZ_SIZE * 0.5 * (0.5 + 0.5 * u) * w.zzK * s;
+      const al = Math.min(1, u / 0.12) * (u > 0.7 ? (1 - u) / 0.3 : 1);
+      const up = u * ZZ_RISE * s + hs, rt = (u * ZZ_DRIFT + Math.sin(u * Math.PI * 2) * 0.05) * s;
+      emoQuad(n++, x0 + _emoR.x * rt, y0 + up + _emoR.y * rt, z0 + _emoR.z * rt, hs, EMO_IDX.z, al);
+    }
+    return n;
+  }
   function putEmotes(list) {
     let n = 0;
     _emoR.set(1, 0, 0).applyQuaternion(camera.quaternion);
     _emoU.set(0, 1, 0).applyQuaternion(camera.quaternion);
     for (let i = 0; i < list.length && n < EMO_MAX; i++) {
       const w = list[i];
+      if (w.zzK > 0.02) n = putZzz(w, n);          // 睡著的動物（v1.304.0）：牠沒有表情圖示，畫完 Z 下面那條就跳過
       const k = w.emoK || 0, cell = EMO_IDX[w.emo];
       /* 身體不是站直的就不畫：圖示是「掛在頭上」的，人躺著、打滾的時候那一片還飄在
          原處會很突兀。規則那邊也會在被炸飛／著火／倒下時把 emoK 收掉
@@ -5745,7 +5776,7 @@ if (vAo.x + vAo.y > 0.5) {
     if (o.hump) mid.push({ p: [0, 0.96, 0.32], s: [0.40, 0.16, 0.32], c: o.spot });  // 肩峰
     const side = [
       { p: [0.07, 0.80, 1.10], s: [0.05, 0.05, 0.03], c: o.nose },    // 鼻孔
-      { p: [0.12, 0.94, 0.98], s: [0.07, 0.07, 0.04], c: CW_EY },     // 眼
+      { p: [0.12, 0.94, 0.98], s: [0.07, 0.07, 0.04], c: CW_EY, ey: 1 },   // 眼（ey：睡著閉起來，見 SLP）
       { p: [0.23, 0.95, 0.80], s: [0.14, 0.07, 0.11], c: o.ear },     // 耳
       { p: [0.12, 1.04, 0.86], s: [0.08, 0.12, 0.09], c: o.horn },    // 角（頂到 1.12）
       { p: [0.18 + o.hornL, 1.09, 0.86], s: [0.09 + o.hornL * 2, 0.07, 0.08], c: o.horn },
@@ -5792,7 +5823,7 @@ if (vAo.x + vAo.y > 0.5) {
       { p: [0, 0.53, -0.46], s: [0.12, 0.14, 0.10], c: o.wool }       // 尾
     ].concat(bmir([
       { p: [0.26, 0.50, -0.02], s: [0.18, 0.34, 0.40], c: o.wool },   // 兩側各一球（剪影才凸）
-      { p: [0.10, 0.68, 0.66], s: [0.05, 0.05, 0.03], c: 0x14100e },  // 眼
+      { p: [0.10, 0.68, 0.66], s: [0.05, 0.05, 0.03], c: 0x14100e, ey: 1 },  // 眼
       { p: [0.16, 0.65, 0.50], s: [0.13, 0.06, 0.09], c: o.face },    // 耳
       { p: [0.12, 0.74, 0.48], s: [0.08, 0.09, 0.10], c: o.horn },    // 捲角兩節
       { p: [0.17 + o.hornL, 0.69, 0.54], s: [0.08 + o.hornL * 2, 0.08, 0.09], c: o.horn },
@@ -5841,7 +5872,7 @@ if (vAo.x + vAo.y > 0.5) {
     ];
     if (o.mane) mid.push({ p: [0, 0.80, 0.44], s: [0.29, 0.30, 0.27], c: o.mane });  // 頸下的鬃
     const side = [
-      { p: [0.11, 1.17, 0.71], s: [0.06, 0.06, 0.05], c: DE_EY },     // 眼
+      { p: [0.11, 1.17, 0.71], s: [0.06, 0.06, 0.05], c: DE_EY, ey: 1 },     // 眼
       /* 耳朵要**大又外張**：鹿耳在剪影上跟角一樣好認，貼著頭畫等於沒畫。 */
       { p: [0.17, 1.21, 0.52], s: [0.17, 0.11, 0.10], c: o.ear, r: [0, 0, 0.42] },
       /* 腿：三節（大腿／小腿／蹄）。同一條腿的三塊**pz 要一樣**，不然三截各繞各的
@@ -5917,7 +5948,7 @@ if (vAo.x + vAo.y > 0.5) {
       { p: [0, 0.74, -0.28], s: [0.08, 0.12, 0.30], c: o.bristle });
     const side = [
       { p: [0.06, 0.42, 0.77], s: [0.05, 0.05, 0.03], c: o.nose },    // 鼻孔（在鼻盤正面）
-      { p: [0.13, 0.50, 0.58], s: [0.05, 0.05, 0.04], c: PG_EY },     // 眼
+      { p: [0.13, 0.50, 0.58], s: [0.05, 0.05, 0.04], c: PG_EY, ey: 1 },     // 眼
       /* 耳朵擺在頭與肩的交界、**高過頭頂**：擺在頭側面的話整片被肩擋住看不到。 */
       { p: [0.14, 0.58, 0.42], s: [0.16, 0.10, 0.14], c: o.ear, r: [o.earR, 0, 0.32] },
       /* 腿短又粗：兩節就夠（同牛羊），細節多了在這個高度也看不到。 */
@@ -5979,7 +6010,7 @@ if (vAo.x + vAo.y > 0.5) {
     const tip = [ear[0] - Math.sin(ez) * ED, ear[1] + Math.cos(ez) * Math.cos(ex) * ED,
                  ear[2] + Math.cos(ez) * Math.sin(ex) * ED];
     const side = [
-      { p: [0.08, 0.71, 0.545], s: [0.05, 0.05, 0.02], c: o.eye },     // 眼
+      { p: [0.08, 0.71, 0.545], s: [0.05, 0.05, 0.02], c: o.eye, ey: 1 },     // 眼
       { p: ear, s: [0.08, 0.07, 0.05], c: o.ear, r: ER },              // 耳（下寬）
       { p: tip, s: [0.04, 0.05, 0.04], c: o.ear, r: ER },              // 耳（上尖）
       /* 腿：前腳兩節（腿＋腳掌），後腳三節（大腿比前腳粗一圈＋小腿＋腳掌）。 */
@@ -6024,7 +6055,7 @@ if (vAo.x + vAo.y > 0.5) {
     ];
     if (o.blaze) mid.push({ p: [0, 1.53, 1.03], s: [0.06, 0.02, 0.30], c: o.blaze, r: [0.70, 0, 0] });  // 臉上那條白
     const side = [
-      { p: [0.105, 1.54, 0.89], s: [0.02, 0.06, 0.06], c: o.eye, r: [0.70, 0, 0] },     // 眼（在長臉的上半段）
+      { p: [0.105, 1.54, 0.89], s: [0.02, 0.06, 0.06], c: o.eye, r: [0.70, 0, 0], ey: 1 },   // 眼（在長臉的上半段）
       { p: [0.06, 1.76, 0.78], s: [0.05, 0.13, 0.05], c: o.ear, r: [-0.15, 0, -0.18] }, // 耳
       /* 腿：前臂／管骨／蹄三節，後腿的大腿最粗。管骨以下是 sock 色（棗紅馬是黑的）。 */
       { p: [0.14, 0.62, 0.38], s: [0.13, 0.42, 0.15], c: o.hide, sw: 0.5, pv: HOR_SH, pz: 0.38 },
@@ -6071,7 +6102,7 @@ if (vAo.x + vAo.y > 0.5) {
       { p: [0, 0.335, -0.20], s: [0.225, 0.13, 0.03], c: o.stripe },
       { p: [0, 0.505, 0.30], s: [0.06, 0.02, 0.10], c: o.stripe });
     const side = [
-      { p: [0.055, 0.44, 0.372], s: [0.05, 0.04, 0.02], c: o.eye },    // 眼（黑貓的黃眼睛就是牠的臉）
+      { p: [0.055, 0.44, 0.372], s: [0.05, 0.04, 0.02], c: o.eye, ey: 1 },    // 眼（黑貓的黃眼睛就是牠的臉）
       { p: [0.065, 0.525, 0.28], s: [0.075, 0.05, 0.035], c: o.hide }, // 耳（下寬）
       { p: [0.075, 0.565, 0.28], s: [0.035, 0.035, 0.03], c: o.hide }, // 耳（上尖）
       { p: [0.065, 0.53, 0.30], s: [0.04, 0.035, 0.01], c: o.inner },  // 耳內
@@ -6130,8 +6161,8 @@ if (vAo.x + vAo.y > 0.5) {
     if (o.tail === 'puff')                                            // 烏薩奇的短尾（一小團）
       mid.push({ p: [0, 0.16, -0.275], s: [0.12, 0.10, 0.06], c: o.puff });
     const side = [
-      { p: [0.10, 0.44, 0.265], s: [0.055, 0.07, 0.02], c: CHI_EYE },       // 眼（黑豆）
-      { p: [0.088, 0.455, 0.276], s: [0.022, 0.022, 0.006], c: 0xffffff },  // 眼裡的亮點
+      { p: [0.10, 0.44, 0.265], s: [0.055, 0.07, 0.02], c: CHI_EYE, ey: 1 },       // 眼（黑豆）
+      { p: [0.088, 0.455, 0.276], s: [0.022, 0.022, 0.006], c: 0xffffff, ey: 2 },  // 眼裡的亮點
       { p: [0.18, 0.38, 0.264], s: [0.10, 0.05, 0.02], c: o.blush },        // 腮紅
       { p: [0.33, 0.27, 0.04], s: [0.08, 0.12, 0.10], c: o.hide, am: 0.6, pv: CHI_SH },             // 手
       { p: [0.13, 0.05, 0.10], s: [0.14, 0.10, 0.16], c: o.hide, sw: 0.6, pv: CHI_HIP, pz: 0.10 }   // 腳（前緣探出肚子底下）
@@ -6186,7 +6217,7 @@ if (vAo.x + vAo.y > 0.5) {
     if (o.ear) side.push({ p: [0.13, 0.82, 0.03], s: [0.025, 0.11, 0.12], c: o.ear });          // 耳後那一抹金黃
     if (o.ring) side.push(
       { p: [0.10, 0.885, 0.15], s: [0.05, 0.05, 0.02], c: W },                                   // 白眼圈
-      { p: [0.10, 0.885, 0.162], s: [0.025, 0.03, 0.01], c: 0x111111 });                          // 眼珠
+      { p: [0.10, 0.885, 0.162], s: [0.025, 0.03, 0.01], c: 0x111111, ey: 1 });                   // 眼珠
     const k = o.k || 1;
     return mid.concat(bmir(side)).map(b => {
       const q = Object.assign({}, b, { p: b.p.map(v => v * k), s: b.s.map(v => v * k) });
@@ -6223,8 +6254,8 @@ if (vAo.x + vAo.y > 0.5) {
     { p: [0, 0.34, -0.39], s: [0.08, 0.13, 0.08], c: CHA_HIDE, r: [-0.2, 0, 0] },   // 　　尾尖翹起來
     { p: [0, 0.43, -0.41], s: [0.07, 0.06, 0.07], c: 0xffb733, ft: 0.9 }            // 　　火（錨點）
   ].concat(bmir([
-    { p: [0.09, 0.67, 0.192], s: [0.075, 0.10, 0.02], c: CHA_EYE },    // 眼（大橢圓）
-    { p: [0.078, 0.69, 0.204], s: [0.025, 0.03, 0.006], c: 0xffffff }, // 眼裡的亮點
+    { p: [0.09, 0.67, 0.192], s: [0.075, 0.10, 0.02], c: CHA_EYE, ey: 1 },    // 眼（大橢圓）
+    { p: [0.078, 0.69, 0.204], s: [0.025, 0.03, 0.006], c: 0xffffff, ey: 2 }, // 眼裡的亮點
     { p: [0.18, 0.38, 0.07], s: [0.07, 0.15, 0.08], c: CHA_HIDE, am: 0.5, pv: CHA_SH },              // 手
     /* 腳三塊同一個關節（pz 0.07）：腳趾那一條白要凸出腳掌前緣，離關節不能太遠（測試量 |pz − z| < 0.06） */
     { p: [0.11, 0.14, 0.02], s: [0.13, 0.14, 0.14], c: CHA_HIDE, sw: 0.5, pv: CHA_HIP, pz: 0.07 },   // 大腿
@@ -6252,8 +6283,8 @@ if (vAo.x + vAo.y > 0.5) {
     { p: [0, 0.32, -0.25], s: [0.09, 0.06, 0.10], c: SQ_SKIN },                     // 　　捲回來
     { p: [0, 0.235, -0.332], s: [0.05, 0.07, 0.006], c: 0x6aaed6 }                  // 　　捲的那一圈
   ].concat(bmir([
-    { p: [0.09, 0.61, 0.172], s: [0.075, 0.09, 0.02], c: 0x8a1c22 },   // 眼（紅褐）
-    { p: [0.078, 0.63, 0.184], s: [0.025, 0.028, 0.006], c: 0xffffff },
+    { p: [0.09, 0.61, 0.172], s: [0.075, 0.09, 0.02], c: 0x8a1c22, ey: 1 },   // 眼（紅褐）
+    { p: [0.078, 0.63, 0.184], s: [0.025, 0.028, 0.006], c: 0xffffff, ey: 2 },
     { p: [0.21, 0.36, 0.05], s: [0.08, 0.15, 0.08], c: SQ_SKIN, am: 0.5, pv: SQ_SH },                // 手（從殼緣伸出來）
     { p: [0.11, 0.13, 0.04], s: [0.12, 0.12, 0.13], c: SQ_SKIN, sw: 0.5, pv: SQ_HIP, pz: 0.06 },     // 大腿
     { p: [0.11, 0.04, 0.07], s: [0.13, 0.08, 0.17], c: SQ_SKIN, sw: 0.5, pv: SQ_HIP, pz: 0.06 }      // 腳掌
@@ -6287,10 +6318,10 @@ if (vAo.x + vAo.y > 0.5) {
     bmir([
       ...BU_LAYER.slice(0, 3).map(([y, h, w]) =>
         ({ p: [w / 2 + 0.003, y, BU_Z], s: [0.01, h, 0.035], c: BU_SEAM })),   // 側面那一道縫
-      { p: [0.12, 0.36, 0.362], s: [0.085, 0.075, 0.01], c: 0xc8242c },        // 眼（紅）
-      { p: [0.11, 0.36, 0.368], s: [0.03, 0.05, 0.006], c: 0x2a1416 },         // 瞳孔
-      { p: [0.13, 0.38, 0.371], s: [0.022, 0.022, 0.004], c: 0xffffff },       // 亮點
-      { p: [0.12, 0.405, 0.364], s: [0.10, 0.016, 0.008], c: BU_SPOT, r: [0, 0, 0.3] },   // 上眼瞼：內側低、外側高
+      { p: [0.12, 0.36, 0.362], s: [0.085, 0.075, 0.01], c: 0xc8242c, ey: 1 }, // 眼（紅）
+      { p: [0.11, 0.36, 0.368], s: [0.03, 0.05, 0.006], c: 0x2a1416, ey: 2 },  // 瞳孔
+      { p: [0.13, 0.38, 0.371], s: [0.022, 0.022, 0.004], c: 0xffffff, ey: 2 },  // 亮點
+      { p: [0.12, 0.405, 0.364], s: [0.10, 0.016, 0.008], c: BU_SPOT, r: [0, 0, 0.3], ey: 2 },   // 上眼瞼：內側低、外側高
       { p: [0.14, 0.50, 0.21], s: [0.08, 0.06, 0.06], c: BU_SKIN },            // 耳（下寬）
       { p: [0.15, 0.545, 0.21], s: [0.04, 0.04, 0.04], c: BU_SKIN },           // 耳（上尖）
       { p: [0.192, 0.27, 0.03], s: [0.01, 0.07, 0.09], c: BU_SPOT },           // 身上的斑
@@ -6596,6 +6627,75 @@ if (vAo.x + vAo.y > 0.5) {
      那是另一件事（這一版只動猴子），所以不在表上。 */
   const PRONE_FRONT = { ape: 1, snow: 1 };
   const beastLift = (k, spin) => spin > 0 && PRONE_FRONT[k] ? Math.max(BEAST_LIFT[k], BEAST_FRONT[k]) : BEAST_LIFT[k];
+
+  /* ── 睡覺（v1.304.0）──────────────────────────────────────
+     使用者：「增加閒晃動物行為 睡覺 晚上時有比較多的機會在睡覺(需增加睡覺動作&ZZZ符號)」，選了「趴睡」。
+     規則那邊給 m.slp（0＝站著、1＝趴好了，中間是趴下去／爬起來那一段，見 game-tools.js 的 napStep），
+     putBeasts 照它把姿勢混過去：
+       · 四條腿的：腿繞自己的關節往肚子底下折 SLP_FOLD（前腳往後、後腳往前；同一條腿的每一塊同一個關節，
+         所以整條腿一起轉，同走路那一式），整隻往下沉 drop＝**軀幹**（體積最大那一塊）的底，軀幹就貼著草皮；
+         頭頸（軀幹前緣往後 SLP_HEAD 以前的那幾塊）繞軀幹前緣低下去 nod，低到最低那一塊碰到草皮為止（最多 SLP_NOD）。
+         站著就比軀幹的底還低的那幾塊不算頭頸（狗胸前那片淺色）：牠們是胸口，跟著頭轉的話頭一低就整片沉進草皮。
+         折起來的腿收在軀幹裡面（每一款的腿都比軀幹窄）；乳牛的乳房比軀幹的底低，沉進草皮裡。
+       · 兩條腿的（WADDLE 那七款）**坐著打瞌睡**：腳往前折（zm 給無限大＝每一隻腳都照後腳折）、
+         腳以外整隻繞髖往前點頭 SLP_DOZE，沉到最低那一塊貼著草皮。預覽第一版是照選項寫的「往前趴」
+         （繞腳底轉 +90°），臉朝下埋著、閉眼看不到，看起來是一塊方塊倒在地上；使用者看過兩種之後選了坐著。
+       · 眼睛（造型表的 ey）閉起來：1 壓成一條深色的線、2（亮點、瞳孔、眼瞼）收掉。
+     全部照造型表算，加一款不必回來填數字。zy／zz 是頭上 ZZZ 的錨點（趴好之後頭頂多高、離原點往前多遠），
+     都是模型單位，畫的時候乘 sc（見 putZzz）。 */
+  const SLP_FOLD = Math.PI / 2;      // 腿折多少（弧度）
+  const SLP_TUCK = 0.3;              // 折起來的腿往中線收幾成
+  const SLP_NOD = 0.6;               // 頭最多低多少（弧度）
+  const SLP_DOZE = 0.22;             // 兩條腿的坐著往前點頭多少（弧度）
+  const SLP_THIN = 0.06;             // 比這個細的（鹿角、角尖）不算頭頂：ZZZ 從頭冒，不從角尖冒
+  const SLP_HEAD = 0.05;             // 頭頸從軀幹前緣往後多少算起（馬的鬃貼著頸背，中心在前緣後面一點）
+  const SLP_EYE = 0.22;              // 閉眼壓成幾成高
+  const SLP_LID = 0x1a1416;          // 閉起來那條線的顏色（貓的綠眼睛、妙蛙種子的紅眼睛閉起來都是深色的一條）
+  const SLP = {};
+  for (const k in BEASTS) {
+    const P = BEASTS[k];
+    const legs = P.filter(b => b.sw && b.pz !== undefined);
+    if (!legs.length || WING_CFG[k]) continue;         // 沒有四條腿的關節、有翅膀的（獅鷲）不睡
+    const sit = !!WADDLE[k];                           // 兩條腿的坐著打瞌睡
+    let big = null, bv = -1, yhi = 0;
+    for (const b of P) {
+      yhi = Math.max(yhi, b.p[1] + b.s[1] / 2);
+      if (b.sw || b.am) continue;
+      const v = b.s[0] * b.s[1] * b.s[2];
+      if (v > bv) { bv = v; big = b; }
+    }
+    const zs = legs.map(b => b.pz);
+    const zm = sit ? Infinity : (Math.max(...zs) + Math.min(...zs)) / 2;  // 關節在這一條以前的是前腳
+    let drop = big.p[1] - big.s[1] / 2;
+    /* 點頭繞哪一點轉：四條腿的是軀幹前緣（頸根），坐著的是髖 */
+    const hy = sit ? legs[0].pv : big.p[1], fz = sit ? 0 : big.p[2] + big.s[2] / 2 - SLP_HEAD;
+    const hd = P.map(b => !b.sw && (sit || (!b.am && b.p[2] > fz && b.p[1] - b.s[1] / 2 >= drop)));
+    /* 頭頸低 a 弧度之後這一塊的 [底, 頂, z]（繞 x 轉：上下的厚度照轉過的角度換算） */
+    const at = (b, a) => {
+      const dy = b.p[1] - hy, dz = b.p[2] - fz, c = Math.cos(a), s = Math.sin(a);
+      const rx = (b.r ? b.r[0] : 0) + a;
+      const h = (Math.abs(Math.cos(rx)) * b.s[1] + Math.abs(Math.sin(rx)) * b.s[2]) / 2;
+      const y = hy + dy * c - dz * s;
+      return [y - h, y + h, fz + dy * s + dz * c];
+    };
+    let nod = 0;
+    if (sit) {
+      /* 腳往前折 90° 之後高度＝關節高 ＋ (z − 關節 z)，厚度變成原本的 z 那一邊 */
+      nod = SLP_DOZE;
+      drop = Math.min(...P.map(b => b.sw ? b.pv + (b.p[2] - b.pz) - b.s[2] / 2 : at(b, nod)[0]));
+    } else {
+      const low = a => Math.min(...P.filter((b, i) => hd[i]).map(b => at(b, a)[0]));
+      while (nod < SLP_NOD && low(nod + 0.01) > drop) nod += 0.01;
+    }
+    /* ZZZ 從哪冒：四條腿的是頭頸（不算細的角），坐著的是上面那四成五（整隻就是一顆頭） */
+    let top = 0, z0 = Infinity, z1 = -Infinity;
+    P.forEach((b, i) => {
+      if (!hd[i] || (sit ? b.p[1] < yhi * 0.55 : Math.min(b.s[0], b.s[2]) < SLP_THIN)) return;
+      const q = at(b, nod);
+      top = Math.max(top, q[1]); z0 = Math.min(z0, q[2]); z1 = Math.max(z1, q[2]);
+    });
+    SLP[k] = { drop, zm, hy, fz, hd, nod, zy: top - drop, zz: (z0 + z1) / 2 };
+  }
 
   /* ── Saber（v1.222）─────────────────────────────────────────
      使用者：「如果想加特定知名角色進遊戲中 … 同小人大小 越精緻越像越好」，附了一張 Saber 的圖。
@@ -12132,6 +12232,10 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
          cos(ph) > 0 那半個週期往後掃＝踩著地，所以那半個週期往 +x 倒＝roll 取負）。
          只在站著走的時候搖：躺著、飛在半空的 roll 是倒地那一套在用。 */
       const wd = WADDLE[m.kind] && m.gait && !m.lie && !m.air ? -WADDLE[m.kind] * Math.cos(m.ph || 0) * m.gait : 0;
+      /* 睡覺（v1.304.0，見 SLP）：se 是趴下去的份量，m.slp 照 smoothstep 混（起頭與收尾慢）。
+         往下沉在下面 slift，折腿、低頭、閉眼在每一塊那一段 */
+      const sl = m.slp > 0 ? SLP[m.kind] : null;
+      const se = sl ? m.slp * m.slp * (3 - 2 * m.slp) : 0;
       scratch.rotation.set(m.spin || 0, m.a || 0, (m.roll || 0) + wd, 'YZX');
       const msc = m.sc || 1;
       /* 躺在草皮上的要照傾角抬起半個身厚，同小人那一套（見 putWorker 的 lift）。
@@ -12143,8 +12247,10 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       const mlift = !m.lie ? 0
         : m.side ? BEAST_SIDE[m.kind] * m.lie * Math.abs(Math.sin(m.roll || 0))
                  : beastLift(m.kind, m.spin || 0) * m.lie * Math.abs(Math.sin(m.spin || 0));   // 趴著照前緣（v1.274.0）
+      /* 睡覺：四條腿的沉到軀幹貼著草皮、坐著的沉到最低那一塊貼著草皮 */
+      const slift = sl ? -sl.drop * se : 0;
       /* 搖的時候繞那隻腳的外緣轉：抬「外緣 × |sin 角|」，另一隻腳才不會插進草皮（見 WADDLE_E） */
-      scratch.position.set(m.x, (m.y || 0) + (mlift + (wd ? WADDLE_E[m.kind] * Math.abs(Math.sin(wd)) : 0)) * msc, m.z);
+      scratch.position.set(m.x, (m.y || 0) + (mlift + slift + (wd ? WADDLE_E[m.kind] * Math.abs(Math.sin(wd)) : 0)) * msc, m.z);
       /* 被吹飛的在半空翻滾：繞身體中段轉，不是繞腳底（同 putWorker 的 AIR_PIVOT）。 */
       if (m.air) {
         _piv.set(0, BEAST_MID[m.kind], 0).applyEuler(scratch.rotation);
@@ -12213,6 +12319,12 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
              照 m.kick 繞髖往前上方抬。負角＝往前，所以是減的——跟右手的 m.arm 同一條式子。 */
           if (b.kk && b.sw > 0 && m.kick)
             ang -= (m.kickA === undefined ? BEAST_KICK : m.kickA) * m.kick;
+          /* 睡覺折腿（v1.304.0）：正角＝腳往後擺，所以前腳正、後腳負，兩邊都往肚子底下收（坐著的全部往前伸）；
+             也往中線收一點（SLP_TUCK）：豬的蹄子外緣跟軀幹一樣寬，不收的話折起來貼在肚子側面一塊深色 */
+          if (se) {
+            ang += (b.pz > sl.zm ? SLP_FOLD : -SLP_FOLD) * se;
+            scratchB.position.x *= 1 - SLP_TUCK * se;
+          }
         } else if (b.am) {
           if (!b.hold) ang = -Math.sin(m.ph || 0) * b.am * (m.gait || 0) * 0.8;
           if (b.am > 0 && m.arm) ang -= (m.raise === undefined ? BEAST_RAISE : m.raise) * m.arm;
@@ -12246,10 +12358,20 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
           scratchB.position.y = d.y; scratchB.position.z = d.z;
           scratchB.rotation.x += d.rx;
         }
+        /* 睡覺低頭（v1.304.0）：頭頸那幾塊繞軀幹前緣往下轉（同上面彎腰那一式）；過半就閉眼 */
+        if (se && sl.hd[k]) {
+          const be = sl.nod * se, dy = scratchB.position.y - sl.hy, dz = scratchB.position.z - sl.fz;
+          const c = Math.cos(be), s2 = Math.sin(be);
+          scratchB.position.y = sl.hy + dy * c - dz * s2;
+          scratchB.position.z = sl.fz + dy * s2 + dz * c;
+          scratchB.rotation.x += be;
+        }
+        const shut = se > 0.5 && b.ey;
+        if (shut) { if (b.ey === 2) scratchB.scale.setScalar(0); else scratchB.scale.y *= SLP_EYE; }
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
         M.setMatrixAt(base + k, tmpM);
-        M.setColorAt(base + k, tmpC.setHex(b.c));
+        M.setColorAt(base + k, tmpC.setHex(shut ? SLP_LID : b.c));
         // 火把頭（v1.249.0）：這一塊畫出去的中心就是火的錨點。
         // 從林帶淡進來／淡出去那一段（v1.256.0）火苗跟著縮放——火是亮的、不吃 alpha，不縮的話會比牠先出現。
         // ft 是火的大小倍率（v1.301.0：火把頭 1、小火龍的尾巴 0.9）
@@ -13018,6 +13140,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     BEAST_FLOOR, BEAST_MID, BEAST_LIFT,     /* 摔倒／躺平要用的模型尺寸（v1.146） */
     BEAST_SIDE,                             /* 側躺要抬多高（v1.154，四條腿的那幾隻） */
     BEAST_FRONT, beastLift,                 /* 趴著照前緣抬（v1.274.0，猴子的尾巴拿掉之後背緣與前緣差很多） */
+    SLP,                                    /* 每一款睡覺怎麼趴（v1.304.0，測試照它驗沉多少、頭低多少、ZZZ 錨點） */
+    SLP_K: { nod: SLP_NOD, doze: SLP_DOZE, eye: SLP_EYE, lid: SLP_LID, thin: SLP_THIN },
     torchGrip,                              /* 彎腰撿火把時柄中心在模型的哪一點（v1.274.0，規則那邊挑站位用） */
     /* 全部造型表（v1.149）：測試把這一份整個存成基準檔（tools/model-baseline.json），
        之後有人改到任何一個模型就會紅。為什麼需要：飛龍少一片翅膀（v1.146.1，bmir 漏了 wg）
