@@ -169,6 +169,26 @@ function loadPlaywright() {
     '  npm i -g @playwright/mcp（附帶的 chromium 也能用）');
   process.exit(2);
 }
+/* ---------- 開場 Shader Error 的現場（v1.299.1）----------
+   〈啟動〉偶發三則 `THREE.WebGLProgram: Shader Error 0／1282 - VALIDATE_STATUS false`，換個時間就重現不出來，
+   根因沒追到（見 開發筆記〈開場偶發的 Shader Error：裝紀錄等下次〉）。所以紅的時候把現場留下來，這裡收的是
+   **瀏覽器自己的 log**（GPU 程序那一端出事會寫在這裡）：Playwright 開了 pw:browser 會把它轉到這支的 stderr，
+   攔下來收在 GPU_LOG、不印出來，其他 stderr 照常印。要在載入 playwright 之前設（它載入時讀 DEBUG）；
+   使用者自己設了 DEBUG 就不碰。頁面那一端的紀錄見 INIT_TRACE。 */
+const GPU_LOG = [];
+if (!process.env.DEBUG) {
+  process.env.DEBUG = 'pw:browser';
+  const errWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (c, ...a) => {
+    const s = String(c);
+    if (!/pw:browser/.test(s)) return errWrite(c, ...a);
+    /* 只收 Chromium 自己那種一行一筆的 log（[月日/時分秒.毫秒:等級:檔名]）；頁面的 console 訊息有換行時第二行起
+       沒有這個開頭，跟 INFO:CONSOLE 那一行一起不收。ReadPixels 那一則是 GPU 計時一直在報的效能提示 */
+    if (GPU_LOG.length < 400 && /\[err\] \[\d{4}\/\d{6}\.\d{3}:/.test(s) && !/INFO:CONSOLE|GPU stall due to ReadPixels/.test(s))
+      GPU_LOG.push(s.replace(/\u001b\[[0-9;]*m/g, '').trim().slice(0, 600));
+    return true;
+  };
+}
 const { chromium } = loadPlaywright();
 
 const ROOT = path.resolve(__dirname, '..');
@@ -266,6 +286,46 @@ const seedOf = t => (SEED ^ hashStr(t)) >>> 0;
 /* 頁面端：addInitScript 每次載入都會跑，所以重新整理過的頁面也照樣是種子亂數。
    遊戲、three.js（generateUUID）與測試自己在 evaluate 裡抽的籤全部走這一支。 */
 const INIT_SEED = 'window.__seed=function(n){Math.random=(' + MULBERRY + ')(n>>>0)};window.__seed(' + SEED + ');';
+/* 開場 Shader Error 的現場，頁面那一端（v1.299.1，見上面 GPU_LOG）：只掛在主頁面、three 載入之前。
+   記 context lost／restored、每支 program 什麼時候 link、哪一支讀到 LINK_STATUS false、console.error 的**全文與呼叫堆疊**
+   （three 印的全文有材質名、Program Info Log、vertex／fragment shader 自己的錯；Playwright 那邊的 errors 只留第一行）、
+   前三幀的時刻（開場第一幀畫完那一下 compileAsync 同步編燈開著的那一份，見引擎的 draw3d）。三幀之後 rAF 還回去。 */
+const INIT_TRACE = `(() => {
+  const ev = window.__ev = [], T = () => +performance.now().toFixed(1);
+  const add = (k, o) => { if (ev.length < 300) ev.push(Object.assign({ k, t: T() }, o || {})); };
+  const og = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, a) {
+    const c = og.call(this, type, a);
+    if (c && /webgl/.test(type) && !window.__gl) {
+      window.__gl = c; add('ctx', { type });
+      this.addEventListener('webglcontextlost', () => add('lost'));
+      this.addEventListener('webglcontextrestored', () => add('restored'));
+    }
+    return c;
+  };
+  const P = window.WebGL2RenderingContext && WebGL2RenderingContext.prototype;
+  if (P) {
+    const link = P.linkProgram, gpp = P.getProgramParameter;
+    let n = 0;
+    P.linkProgram = function (p) { p.__id = ++n; p.__t = T(); return link.call(this, p); };
+    P.getProgramParameter = function (p, pn) {
+      const r = gpp.call(this, p, pn);
+      if (pn === this.LINK_STATUS && r === false) add('linkFalse', { id: p.__id, linkedAt: p.__t, lost: this.isContextLost() });
+      return r;
+    };
+  }
+  const oe = console.error;
+  console.error = function (...a) {
+    add('err', { msg: String(a[0]).slice(0, 6000), lost: window.__gl ? window.__gl.isContextLost() : null,
+                 stack: String(new Error().stack).split('\\n').slice(2, 14).map(s => s.trim()).join(' | ') });
+    return oe.apply(this, a);
+  };
+  const raf = window.requestAnimationFrame;
+  let f = 0;
+  window.requestAnimationFrame = function (cb) {
+    return raf.call(window, ts => { add('frame', { f: ++f }); if (f >= 3) window.requestAnimationFrame = raf; cb(ts); });
+  };
+})();`;
 Math.random = mulberry32(SEED);            // Node 端（測試自己在 node 這一側抽的籤）
 let PAGE = null;                           // 主頁面，head() 換段時要對它重下種子
 /* 開頁面一律走這支：新的 page 各自是一個 context，addInitScript 不會自己跟過去。 */
@@ -637,9 +697,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 /* ============================================================ */
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
-  const browser = BROWSER = await chromium.launch();
+  /* --enable-logging=stderr：GPU 程序的 log 才會寫出來，見 GPU_LOG（v1.299.1） */
+  const browser = BROWSER = await chromium.launch({ args: ['--enable-logging=stderr'] });
   console.log('種子 --seed ' + SEED + '（紅了照這個數字重跑就是同一副骰子）');
   const page = PAGE = await newPage({ viewport: VIEW });
+  await page.addInitScript(INIT_TRACE);            // 開場 Shader Error 的現場（v1.299.1，見 INIT_TRACE）
 
   const errors = [];
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
@@ -678,7 +740,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cssW: document.getElementById('cv').style.width,
     dpr: window.devicePixelRatio
   }));
-  ok('沒有 JS 例外或 console 錯誤', errors.length === 0, errors.slice(0, 3).join(' | '));
+  /* 紅了就把現場存下來（v1.299.1，見 GPU_LOG／INIT_TRACE）：開場那三則 Shader Error 換個時間就重現不出來，
+     下一次碰到時要的是全文、時間線與 GPU 程序那一端的 log（見 開發筆記〈開場偶發的 Shader Error：裝紀錄等下次〉） */
+  let bootDump = '';
+  if (errors.length) {
+    const tr = await page.evaluate(() => {
+      const gl = window.__gl, ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+      return { ev: window.__ev || [], renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : null,
+               lostNow: gl ? gl.isContextLost() : null, parallel: gl ? !!gl.getExtension('KHR_parallel_shader_compile') : null,
+               ver: typeof VERSION !== 'undefined' ? VERSION : null };
+    });
+    const f = path.join(OUT, '啟動錯誤.txt');
+    const line = e => e.k + '@' + e.t + (e.f ? ' 第' + e.f + '幀' : '') + (e.id ? ' program#' + e.id + '（link 在 ' + e.linkedAt + '）' : '') +
+                      (e.lost !== undefined && e.lost !== null ? ' lost=' + e.lost : '') + (e.stack ? '\n    堆疊：' + e.stack : '');
+    fs.writeFileSync(f, ['開場的 console 錯誤（e2e〈啟動〉自動存，見 開發筆記〈開場偶發的 Shader Error：裝紀錄等下次〉）',
+      '時間 ' + new Date().toISOString() + '　種子 ' + SEED + '　版本 ' + tr.ver,
+      'renderer：' + tr.renderer + '　平行編譯：' + tr.parallel + '　現在 context 掉了：' + tr.lostNow, '',
+      '== Playwright 收到的錯誤（第一行）', ...errors, '',
+      '== 頁面端時間線（毫秒，從頁面開始算）', ...tr.ev.map(line), '',
+      '== console.error 全文', ...tr.ev.filter(e => e.k === 'err').map(e => '@' + e.t + '\n' + e.msg + '\n'), '',
+      '== 瀏覽器自己的 log（[err] 那幾行，從開瀏覽器到現在）', ...GPU_LOG].join('\n'));
+    bootDump = '（全文、時間線與 GPU log 存在 ' + path.relative(process.cwd(), f) + '）';
+  }
+  ok('沒有 JS 例外或 console 錯誤', errors.length === 0, errors.slice(0, 3).join(' | ') + bootDump);
   ok('three.js 有載入（classic script）', boot.three === '185', 'REVISION=' + boot.three);
   ok('InstancedMesh 可用', boot.inst);
   ok('藍圖數量 = 內建 ' + SHAPE_COUNT + ' + 自訂 ' + CUSTOM_COUNT,
