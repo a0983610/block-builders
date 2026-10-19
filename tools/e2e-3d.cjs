@@ -39692,6 +39692,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const t3 = of(copy(6), 'torch');
     r.torchDrop = { n: t3.length, tor: !!ape.tor, at: t3[0] && ape.tor ? +Math.hypot(t3[0].x - ape.tor.x, t3[0].z - ape.tor.z).toFixed(2) : 99 };
     ape.tor = null;
+    /* 小火龍的尾巴（v1.301.0）：閒逛的那一隻也是火把那一套——一隻一支火、一盞燈，錨點就是造型表標 ft 的尾巴尖那一塊；
+       火的大小照 ft 倍率：火芯那一塊的寬 ÷ 放大倍率 ÷ ft 要落在 putTorch 那一式的 0.075 ± 一成（它會閃），小獼猴的火把（ft 1）照舊 */
+    const coreW = () => { th.torchMesh.getMatrixAt(0, m4); return new THREE.Vector3().setFromMatrixScale(m4).x; };
+    beasts = [ape]; ENG.putBeasts(beastList());
+    const apeW = coreW() / (ape.sc || 1);
+    beasts = null;
+    const ch = spawnCattle(false);
+    ch.kind = 'charmander'; ch.x = 300; ch.z = 0; ch.a = 0.7;
+    beasts = [ch];
+    ENG.putBeasts(beastList());
+    const kFt = ENG.BEASTS.charmander.findIndex(b => b.ft), ft = ENG.BEASTS.charmander[kFt].ft;
+    th.beastMesh.getMatrixAt(kFt, m4); cp.setFromMatrixPosition(m4);
+    const hd = ENG.torchHeads(), t4 = of(copy(6), 'torch');
+    r.cha = { herd: HERD_KIND.includes('charmander'), heads: hd.length, n: t4.length, ft,
+              off: hd[0] ? +Math.hypot(hd[0].x - cp.x, hd[0].y - cp.y, hd[0].z - cp.z).toFixed(6) : 9,
+              w: +(coreW() / ch.sc / ft).toFixed(4), apeW: +apeW.toFixed(4) };
     /* 全部一起：光柱 → 小爆炸 → 火把 → 火；引擎都認得。晚上亮度 ÷ i（hit 再 ÷ R）＝表裡那一檔、顏色照表；白天全 0 */
     beasts = [m, ape]; m.xt = xf;
     ENG.putBeasts(beastList());
@@ -39733,6 +39749,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（應為 ' + glow3.boom.wantI + '）、收完剩 ' + glow3.boomGone + '；火把 沒有猴子 ' + glow3.torchNone + ' 盞、一隻 ' + glow3.torch.n +
      ' 盞（火芯旁 ' + glow3.torch.dxz.toFixed(6) + '、高 ' + glow3.torch.above + '、亮度 ' + glow3.torch.k + '、離牠 ' + glow3.torch.near + ' 格）、淡出一半 ' +
      glow3.torchHalf + '；掉在地上 ' + glow3.torchDrop.n + ' 盞、離那一支 ' + glow3.torchDrop.at + ' 格');
+  /* 火芯寬度那一式是 0.075 × (1 ± 0.10)，多留 1e-4 給 Float32 讀回來的誤差 */
+  const coreOk = w => w >= 0.075 * 0.9 - 1e-4 && w <= 0.075 * 1.1 + 1e-4;
+  ok('閒逛的小火龍：尾巴尖那一塊就是火把那一套火，一隻一支、一盞燈；火的大小照造型表的 ft 倍率，小獼猴的火把照舊',
+     glow3.cha.herd && glow3.cha.heads === 1 && glow3.cha.n === 1 && glow3.cha.off < 1e-3 && glow3.cha.ft < 1 &&
+     coreOk(glow3.cha.w) && coreOk(glow3.cha.apeW),
+     '在閒逛名單 ' + glow3.cha.herd + '；火 ' + glow3.cha.heads + ' 支、燈 ' + glow3.cha.n + ' 盞、離尾巴尖那一塊 ' + glow3.cha.off +
+     '；ft ' + glow3.cha.ft + '，火芯寬 ÷ 放大 ÷ ft ＝ ' + glow3.cha.w + '（小獼猴 ' + glow3.cha.apeW + '，那一式 0.0675～0.0825）');
   ok('晚上的小光源第三波：順序 光柱→小爆炸→火把→火，引擎都認得；晚上亮度＝表裡的那一檔、顏色照表，白天全 0',
      glow3.order === Array(glow3.nAt).fill('excal').concat(['hit', 'torch'], Array(8 - glow3.nAt - 2).fill('fire')).join() && glow3.known &&
      glow3.lit === Array(glow3.nAt).fill('ffc860/24').concat(['ffa24a/4', 'ff9a40/4.5']).join() && glow3.day === 0,
