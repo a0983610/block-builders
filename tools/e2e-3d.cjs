@@ -496,6 +496,17 @@ const installClean = page => page.evaluate(() => {
     const yaw = ENG.cam.yaw;
     castGate({ x: t.x - Math.cos(yaw) * GATE_BACK, z: t.z - Math.sin(yaw) * GATE_BACK }, t);
   };
+  /* 投石機／加農砲的推進場（v1.302.0）一步跳完：還在推的每一台直接擺到站位、朝向目標、不透明、算到齊，
+     推的人收掉。給量「架好之後」那幾條用（開火、後座、石兜裡的石頭、砲口環），不必每一條都先推四秒；
+     推進場本身在〈加農砲〉的〈推進場〉那幾條量。g ＝ trebs 或 cannons。 */
+  window.puSkip = g => {
+    if (!g) return;
+    for (const m of g.list) if (m.st === 'in') {
+      m.x = m.hx; m.z = m.hz; m.a = m.af; m.go = m.mv = m.d; m.alpha = undefined; m.crew = null;
+      m.st = 'fire';
+      if (m.tm) m.tm.ok++;
+    }
+  };
   window.cleanTools = () => {
     clearHomes();
     swing = null; ENG.hideHammer();
@@ -13395,7 +13406,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     useTool({ kind: 'ground', point: { x: from.x, y: 0, z: from.z } });
     const one = { aim: !!aim, n: trebs ? trebs.list.length : 0 };
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
-    const team = trebs.list.map(m => ({ x: m.x, z: m.z, a: m.a, tx: m.tx, tz: m.tz }));
+    // v1.302.0 起每一台從後面推進來：量的是站位（hx／hz）與站好之後的朝向（af），點下去那一刻 m.x 是出現的地方
+    const team = trebs.list.map(m => ({ x: m.hx, z: m.hz, a: m.af, tx: m.tx, tz: m.tz }));
     /* 隊形：一列、中心落在第一點、間距 TREB_GAP、每台都朝自己的目標。
        目標在 −x 方向，所以隊伍的橫向就是 z（見 castTrebs）。 */
     const cx = team.reduce((s, m) => s + m.x, 0) / team.length;
@@ -13409,23 +13421,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     // 每台的朝向該是「自己 → 自己的目標」，目標則是第二下點的那一點
     const faceErr = Math.max(...team.map(m => Math.abs(m.a - Math.atan2(m.tx - m.x, m.tz - m.z))));
     const aimErr = Math.max(...team.map(m => Math.hypot(m.tx, m.tz)));
-    // 再架一隊：疊上去；架到滿（TREB_MAX）就把最早那一隊擠掉
+    /* 再架一隊：疊上去；在打的到上限（TREB_MAX）就把最早那一隊換掉——v1.302.0 起不是直接擠掉，
+       是停火、原地淡掉（st 'out'），所以清單裡還在、只是不算在打的那幾台。 */
+    const live = () => trebs.list.filter(m => m.st !== 'out').length;
+    const fading = () => trebs.list.filter(m => m.st === 'out');
     useTool({ kind: 'ground', point: { x: -siteR - 14, y: 0, z: 0 } });
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
-    const two = trebs.list.length;
+    const first = trebs.list.slice(0, TREB_TEAM);
+    const two = live();
+    // 推一秒再叫第三隊：還沒出現（錯開 PU_LAG 以內）就被換掉的那一台是直接收掉、不淡（見 puOut）
+    for (let i = 0; i < 50; i++) stepTrebs(0.02);
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: siteR + 14 } });
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
-    const three = trebs.list.length;
+    const three = live(), out3 = fading();
+    const oldOut = out3.length === TREB_TEAM && out3.every(m => first.includes(m) && m.left === 0);
     /* 第一下點在建築正中央：整隊要被推到建築外圍，而且**四台不能疊在一起**
-       （推隊伍的中心而不是一台一台推，理由見 castTrebs）。 */
+       （推隊伍的中心而不是一台一台推，理由見 castTrebs）。量站位（hx／hz）。 */
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
     useTool({ kind: 'ground', point: { x: siteR + 20, y: 0, z: 0 } });
     const last = trebs.list.slice(-TREB_TEAM);
     let apart = 9e9;
     for (let i = 0; i < last.length; i++)
       for (let j = i + 1; j < last.length; j++)
-        apart = Math.min(apart, Math.hypot(last[i].x - last[j].x, last[i].z - last[j].z));
-    const pushed = Math.min(...last.map(m => Math.hypot(m.x, m.z)));
+        apart = Math.min(apart, Math.hypot(last[i].hx - last[j].hx, last[i].hz - last[j].hz));
+    const pushed = Math.min(...last.map(m => Math.hypot(m.hx, m.hz)));
     let maxRock = 0, offCentre = 0;
     for (let i = 0; i < 1400 && trebs; i++) {
       step(0.02);
@@ -13438,7 +13457,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              ctrErr: +Math.hypot(cx - from.x, cz - from.z).toFixed(4),
              gapMin: +gapMin.toFixed(3), gapMax: +gapMax.toFixed(3), gap: TREB_GAP,
              faceErr: +faceErr.toFixed(6), aimErr: +aimErr.toFixed(4),
-             two, three, pushed: +pushed.toFixed(1), apart: +apart.toFixed(1),
+             two, three, out3: out3.length, oldOut, pushed: +pushed.toFixed(1), apart: +apart.toFixed(1),
              siteR: +siteR.toFixed(1), maxRock, gone: !trebs, offCentre };
   });
   ok('點兩下：第一下只在地上畫光環，第二下才一次架四台',
@@ -13450,10 +13469,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(treb.gapMax - treb.gap) < 0.001 && treb.faceErr < 1e-9 && treb.aimErr < 1e-9,
      '隊列中心離第一點 ' + treb.ctrErr + '、間距 ' + treb.gapMin + '～' + treb.gapMax +
      '（TREB_GAP ' + treb.gap + '）、朝向誤差最多 ' + treb.faceErr + ' 弧度');
-  ok('可以再架一隊，架到上限就把最早那一隊擠掉',
-     treb.two === treb.want * 2 && treb.three === treb.cap,
-     '一隊 ' + treb.team + ' → 兩隊 ' + treb.two + ' → 再一隊 ' + treb.three +
-     '（上限 ' + treb.cap + '）');
+  ok('可以再架一隊，架到上限就把最早那一隊換掉（停火、原地淡掉）',
+     treb.two === treb.want * 2 && treb.three === treb.cap && treb.oldOut,
+     '在打的：一隊 ' + treb.team + ' → 兩隊 ' + treb.two + ' → 再一隊 ' + treb.three +
+     '（上限 ' + treb.cap + '）；在淡的 ' + treb.out3 + ' 台、就是最早那一隊而且停火了 ' + treb.oldOut);
   ok('第一下點在建築上會把整隊推到外圍，四台不會疊在一起',
      treb.pushed > treb.siteR && treb.apart > 3.5,
      '最近的一台距中心 ' + treb.pushed + '（建築半徑 ' + treb.siteR +
@@ -13482,6 +13501,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       tool = 'treb';
       useTool({ kind: 'ground', point: { x: siteR + 14, y: 0, z: 0 } });
       useTool(hit);
+      puSkip(trebs);                             // 擺到站位再打（v1.302.0 起是推進來的）
       const m = trebs.list[0];
       trebs.rocks.length = 0;
       m.arm = ENG.TREB_REL;                      // 放索那一刻（出手點是索末端）
@@ -13513,7 +13533,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      不跑整輪、不賭落點，所以不會飄。 */
   const rockDud = await page.evaluate(() => {
     cleanTools(); completeNow();
-    trebs = { list: [], rocks: [] };
+    trebs = { list: [], rocks: [], crews: [], live: TREB_MAX };
     trebs.rocks.push({ x: siteR + 20, y: 10, z: 0, vx: 20, vy: 0, vz: 0,
                        T: 0.3, t: 0, rx: 0, ry: 0, s: 1.6 });     // T 只有 0.3 秒
     let at = null;
@@ -13587,6 +13607,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const loaded = await page.evaluate(() => {
     trebs = null;
     placeTreb({ x: siteR + 20, z: 0 }, { x: 0, z: 0 });
+    puSkip(trebs);                               // 推進來那一段整台半透明、石頭不畫（v1.302.0），這一條量的是站好之後
     const m = trebs.list[0], rs = m.rs;
     ENG.putRocks(trebs.rocks, trebs.list);
     const idle = { flying: trebs.rocks.length, drawn: ENG.three.rockMesh.count };
@@ -19457,7 +19478,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     useTool({ kind: 'ground', point: { x: from.x, y: 0, z: from.z } });
     const one = { aim: !!aim, n: cannons ? cannons.list.length : 0 };
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
-    const team = cannons.list.map(m => ({ x: m.x, z: m.z, a: m.a, tx: m.tx, tz: m.tz }));
+    // 量站位與站好之後的朝向（v1.302.0 起推進來，同投石機那一段）
+    const team = cannons.list.map(m => ({ x: m.hx, z: m.hz, a: m.af, tx: m.tx, tz: m.tz }));
     const cx = team.reduce((s, m) => s + m.x, 0) / team.length;
     const cz = team.reduce((s, m) => s + m.z, 0) / team.length;
     const zs = team.map(m => m.z).sort((a, b) => a - b);
@@ -19468,29 +19490,33 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     const faceErr = Math.max(...team.map(m => Math.abs(m.a - Math.atan2(m.tx - m.x, m.tz - m.z))));
     const aimErr = Math.max(...team.map(m => Math.hypot(m.tx, m.tz)));
-    // 再架一隊：疊上去；架到滿（CAN_MAX）就把最早那一隊擠掉
+    // 再架一隊：疊上去；在打的到上限（CAN_MAX）就把最早那一隊換掉：停火、原地淡掉（v1.302.0，同投石機那一段）
+    const live = () => cannons.list.filter(m => m.st !== 'out').length;
     useTool({ kind: 'ground', point: { x: -siteR - CAN_STAND - 6, y: 0, z: 0 } });
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
-    const two = cannons.list.length;
+    const first = cannons.list.slice(0, CAN_TEAM);
+    const two = live();
+    for (let i = 0; i < 50; i++) stepCannons(0.02);     // 推一秒：還沒出現就被換掉的是直接收掉、不淡
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: siteR + CAN_STAND + 6 } });
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
-    const three = cannons.list.length;
+    const three = live(), out3 = cannons.list.filter(m => m.st === 'out');
+    const oldOut = out3.length === CAN_TEAM && out3.every(m => first.includes(m) && m.left === 0);
     /* 第一下點在建築正中央：整隊要被推到圈外，而且量的是**砲口**不是機台中心
        ——砲口在機台前方 canMuzzle().z，那正是 CAN_STAND 要遠的理由。 */
     cleanTools(); completeNow();
     tool = 'cannon';
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
     useTool({ kind: 'ground', point: { x: siteR + 20, y: 0, z: 0 } });
-    // 砲口離場心多遠（**砲口不是機台中心**）。抬了頭砲口會往回縮，所以照各自的仰角算
+    // 砲口離場心多遠（**砲口不是機台中心**）。抬了頭砲口會往回縮，所以照各自的仰角算；量站好之後（hx／hz／af）
     const muzzleD = Math.min(...cannons.list.map(m => {
       const mz = ENG.canMuzzle(0, 0, m.el);
-      return Math.hypot(m.x + Math.sin(m.a) * mz.z, m.z + Math.cos(m.a) * mz.z);
+      return Math.hypot(m.hx + Math.sin(m.af) * mz.z, m.hz + Math.cos(m.af) * mz.z);
     }));
     let apart = 9e9;
     const last = cannons.list;
     for (let i = 0; i < last.length; i++)
       for (let j = i + 1; j < last.length; j++)
-        apart = Math.min(apart, Math.hypot(last[i].x - last[j].x, last[i].z - last[j].z));
+        apart = Math.min(apart, Math.hypot(last[i].hx - last[j].hx, last[i].hz - last[j].hz));
     /* 跑一整輪：**重新架一隊、而且第二下要點在建築上**。上面那一隊的第二下點的是
        工地外的空地（那一段驗的是隊形被推出去），照那一隊跑完會打在草地上，
        量到的破壞當然是 0（第一版就是這樣紅的）。 */
@@ -19516,7 +19542,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              ctrErr: +Math.hypot(cx - from.x, cz - from.z).toFixed(4),
              gapMin: +gapMin.toFixed(3), gapMax: +gapMax.toFixed(3), gap: CAN_GAP,
              faceErr: +faceErr.toFixed(6), aimErr: +aimErr.toFixed(4),
-             two, three, apart: +apart.toFixed(1), muzzleD: +muzzleD.toFixed(1),
+             two, three, out3: out3.length, oldOut, apart: +apart.toFixed(1), muzzleD: +muzzleD.toFixed(1),
              siteR: +siteR.toFixed(1), maxShell, drawn, gone: !cannons, offCentre };
   });
   ok('點兩下：第一下只在地上畫光環，第二下才一次架 ' + can.want + ' 門',
@@ -19528,10 +19554,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(can.gapMax - can.gap) < 0.001 && can.faceErr < 1e-9 && can.aimErr < 1e-9,
      '隊列中心離第一點 ' + can.ctrErr + '、間距 ' + can.gapMin + '～' + can.gapMax +
      '（CAN_GAP ' + can.gap + '）、朝向誤差最多 ' + can.faceErr + ' 弧度');
-  ok('可以再架一隊，架到上限就把最早那一隊擠掉',
-     can.two === can.want * 2 && can.three === can.cap,
-     '一隊 ' + can.team + ' → 兩隊 ' + can.two + ' → 再一隊 ' + can.three +
-     '（上限 ' + can.cap + '）');
+  ok('可以再架一隊，架到上限就把最早那一隊換掉（停火、原地淡掉）',
+     can.two === can.want * 2 && can.three === can.cap && can.oldOut,
+     '在打的：一隊 ' + can.team + ' → 兩隊 ' + can.two + ' → 再一隊 ' + can.three +
+     '（上限 ' + can.cap + '）；在淡的 ' + can.out3 + ' 門、就是最早那一隊而且停火了 ' + can.oldOut);
   /* 這一條守的就是 CAN_STAND ＝ 11 的理由：砲口在機台**前方**（投石機的出手點在後方），
      照投石機的 5 站的話砲口會落在牆裡，一出膛就在自己臉前面炸開。 */
   ok('第一下點在建築正中央：整隊被推到圈外，而且砲口也在圈外（不會生在牆裡）',
@@ -19559,6 +19585,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools(); completeNow();
     cannons = null;
     placeCannon({ x: siteR + CAN_STAND, z: 0 }, { x: 0, z: 0 });
+    puSkip(cannons);                           // 站好、不透明（推進來那一段畫在半透明那一顆，canMesh 裡沒有它）
     const m = cannons.list[0];
     let elErr = 0, vMax = 0, vMin = 9e9, tipErr = 0;
     let elLo = 9, elHi = 0, flatOk = 1;
@@ -19641,6 +19668,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools(); completeNow();
     cannons = null;
     placeCannon({ x: siteR + CAN_STAND, z: 0 }, { x: 0, z: 0 });
+    puSkip(cannons);                            // 量站好之後的後座（v1.302.0 起是推進來的）
     const m = cannons.list[0];
     const at = () => {                          // 這一刻砲口在世界的哪裡（照畫面那一份算）
       const mz = ENG.canMuzzle(m.rec, m.back, m.el);      // 仰角也要帶（v1.212）
@@ -19728,6 +19756,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       tool = 'cannon';
       useTool({ kind: 'ground', point: { x: siteR + CAN_STAND + 6, y: 0, z: 0 } });
       useTool(hit);
+      puSkip(cannons);                         // 從站位打（推進來的出現點遠 6～12 格，18° 打得到的高度就不一樣了）
       const m = cannons.list[0];
       cannons.shells.length = 0;
       fireCannon(m);
@@ -19747,7 +19776,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* 沒打中東西就不炸：放一顆往島外飛的砲彈（路上一塊積木都沒有），
        T 只有 0.3 秒——舊版會在 10 高、0.3 秒那一刻自爆。 */
     cleanTools();
-    cannons = { list: [], shells: [] };
+    cannons = { list: [], shells: [], crews: [], live: CAN_MAX };
     cannons.shells.push({ x: siteR + 20, y: 10, z: 0, vx: 20, vy: 0, vz: 0,
                           T: 0.3, t: 0, rx: 0, ry: 0, s: CAN_SHELL });
     let dud = null;
@@ -19804,6 +19833,259 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '一輪 ' + canShake.shots + ' 發（' + canShake.want + ' 發）、震 ' + canShake.got + ' 次');
   ok('同一支 explode 不給 quiet 照樣震', canShake.loud === 1,
      '炸一發震 ' + canShake.loud + ' 次');
+
+  /* ── 推進場、原地淡出（v1.302.0，投石機與加農砲共用，見 game-tools.js 的〈機台推進場〉）──────────
+     > 使用者：「投石機&加農砲 也像箭雨&火槍兵 用推的出場(退場只要慢慢消失即可)」
+     選的：小人推、推到就走開；從隊形後方推上來；走路的一半；再叫第三隊時最舊那隊停火、原地淡掉。
+     **全是規則型**：只推 stepTrebs／stepCannons、一幀一幀讀狀態，不跑整輪、不看統計。
+     站位挑在建築正前方（後方一路空到島邊），所以每一台都該從正後方進來。 */
+  const puIn = await page.evaluate(() => {
+    const res = {}, realW = sndWind;
+    let nW = 0;
+    sndWind = () => { nW++; };
+    try {
+      for (const kind of ['treb', 'cannon']) {
+        cleanTools(); completeNow();
+        const T = kind === 'treb';
+        const from = { x: siteR + (T ? TREB_STAND : CAN_STAND) + 2, z: 0 };
+        nW = 0;
+        if (T) castTrebs(from, { x: 0, z: 0 }, 0); else castCannons(from, { x: 0, z: 0 }, 0);
+        const G = () => T ? trebs : cannons, stepK = T ? stepTrebs : stepCannons;
+        const ms = G().list.slice(), tail = T ? ENG.TREB_TAIL : ENG.CAN_TAIL, hw = T ? TREB_HW : CAN_HW;
+        const left0 = ms.map(m => m.left), flying = () => (T ? G().rocks : G().shells).length;
+        const r = {
+          n: ms.length, want: T ? TREB_TEAM : CAN_TEAM, wind0: nW,
+          hidden: ms.every(m => m.alpha === 0 && m.crew && m.crew.men.length === 2 && m.crew.men.every(p => p.alpha === 0)),
+          far: +Math.max(...ms.map(m => m.d)).toFixed(2), near: +Math.min(...ms.map(m => m.d)).toFixed(2), dMax: PU_D[1],
+          behind: ms.filter(m => Math.abs(mkAngLerp(m.wa, m.af, 1) - m.wa) < 1e-6 &&
+                                 Math.abs(Math.hypot(m.hx - m.sx, m.hz - m.sz) - m.d) < 1e-9).length,
+          path: ms.every(m => puPath(m.sx, m.sz, m.hx, m.hz, hw))
+        };
+        const dt = 1 / 60, prev = ms.map(m => ({ x: m.x, z: m.z, al: 0 }));
+        let t = 0, allIn = -1, vMax = 0, alDown = 0, early = 0, crewOff = 0, pushBad = 0, bound = 0;
+        for (const m of ms) bound = Math.max(bound, m.ti + m.d / PU_SPD);
+        for (; t < 12 && allIn < 0; t += dt) {
+          stepK(dt);
+          ms.forEach((m, i) => {
+            vMax = Math.max(vMax, Math.hypot(m.x - prev[i].x, m.z - prev[i].z) / dt);
+            const al = m.alpha === undefined ? 1 : m.alpha;
+            if (al < prev[i].al - 1e-12) alDown++;
+            prev[i] = { x: m.x, z: m.z, al };
+            if (m.crew) for (const p of m.crew.men) {
+              // 推的人站在機台背面後面 PU_HAND（機台座標 z ＝ tail − PU_HAND），朝向、濃淡跟機台一樣、手頂著
+              const lz = (p.x - m.x) * Math.sin(m.a) + (p.z - m.z) * Math.cos(m.a);
+              if (Math.abs(lz - (tail - PU_HAND)) > 1e-6) crewOff++;
+              if (p.push !== 1 || p.alpha !== m.alpha || p.a !== m.a) pushBad++;
+            }
+          });
+          if (ms.every(m => m.st !== 'in')) allIn = t + dt;
+          else if (ms.some((m, i) => m.left !== left0[i]) || flying()) early++;
+        }
+        r.vMax = +vMax.toFixed(3); r.spd = +PU_SPD.toFixed(3); r.alDown = alDown; r.early = early;
+        r.crewOff = crewOff; r.pushBad = pushBad; r.windIn = nW;
+        r.allIn = +allIn.toFixed(3); r.bound = +(bound + 2 * dt).toFixed(3);
+        r.home = +Math.max(...ms.map(m => Math.hypot(m.x - m.hx, m.z - m.hz))).toFixed(6);
+        r.face = +Math.max(...ms.map(m => Math.abs(m.a - m.af))).toFixed(9);
+        r.solid = ms.every(m => m.alpha === undefined);
+        // 到齊之後才開第一發
+        let first = -1;
+        for (let k = 0; k < 600 && first < 0; k++) { stepK(dt); if (ms.some((m, i) => m.left !== left0[i])) first = k * dt; }
+        r.first = +first.toFixed(3); r.wind = nW;
+        res[kind] = r;
+      }
+    } finally { sndWind = realW; }
+    cleanTools(); clearFires();
+    return res;
+  });
+  for (const k of ['treb', 'cannon']) {
+    const r = puIn[k], nm = k === 'treb' ? '投石機' : '加農砲';
+    ok(nm + '：推進場——出現那一刻整台與推的人都看不見、在站位正後方 PU_D 以內、路上沒有固體',
+       r.n === r.want && r.hidden && r.far <= r.dMax + 1e-9 && r.behind === r.n && r.path && r.wind0 === 0,
+       r.n + ' 台（一隊 ' + r.want + '）全部 alpha 0、各帶兩個人；離站位 ' + r.near + '～' + r.far + '（PU_D 上限 ' + r.dMax +
+       '）；從正後方來的 ' + r.behind + ' 台；路驗過 ' + r.path + '；叫出來那一刻不響（' + r.wind0 + ' 聲）');
+    ok(nm + '：兩個人頂在機台背面推著走，最快 PU_SPD、邊推邊淡入（只增不減），全部到齊之前一發都不打',
+       r.vMax <= r.spd + 1e-6 && r.alDown === 0 && r.crewOff === 0 && r.pushBad === 0 && r.early === 0,
+       '最快 ' + r.vMax + ' 格／秒（PU_SPD ' + r.spd + '）；濃淡往下掉 ' + r.alDown + ' 幀；推的人不在背面 ' + r.crewOff +
+       ' 人-幀、姿勢／朝向／濃淡對不上 ' + r.pushBad + '；到齊前開火 ' + r.early + ' 幀');
+    ok(nm + '：到齊那一刻每一台都在站位上、朝著目標、全亮，響一聲；之後才開第一發',
+       r.allIn > 0 && r.allIn <= r.bound && r.home < 1e-6 && r.face < 1e-9 && r.solid &&
+       r.windIn === 1 && r.wind === 1 && r.first >= 0,
+       '到齊 ' + r.allIn + ' 秒（上限 錯開＋最遠一台÷PU_SPD ＝ ' + r.bound + '）；離站位 ' + r.home + '、朝向差 ' + r.face +
+       '；「架好」那一聲 ' + r.windIn + ' 聲；到齊之後 ' + r.first + ' 秒開第一發');
+  }
+
+  /* 推完人就走開：每個人先收手站直（push 1 → 0、前傾跟著收），朝背對目標那一半走 TR_OUT_D、最後那一段淡掉、淡完就收；
+     走開的那幾組最多留 g.live 組（引擎的 MAXW 照這個留位子）。 */
+  const puCrewOff = await page.evaluate(() => {
+    const res = {};
+    for (const kind of ['treb', 'cannon']) {
+      cleanTools(); completeNow();
+      const T = kind === 'treb', stepK = T ? stepTrebs : stepCannons;
+      if (T) castTrebs({ x: siteR + TREB_STAND + 2, z: 0 }, { x: 0, z: 0 }, 0);
+      else castCannons({ x: siteR + CAN_STAND + 2, z: 0 }, { x: 0, z: 0 }, 0);
+      const g = T ? trebs : cannons, ms = g.list.slice();
+      const seen = new Map();                    // 走開的人 → 記下來的東西
+      const dt = 1 / 60;
+      let t = 0, pushUp = 0, back = 0, dist = [9e9, 0], alUp = 0, gone = -1;
+      for (; t < 15 && gone < 0; t += dt) {
+        stepK(dt);
+        for (const c of g.crews) for (const p of c.men) {
+          let s = seen.get(p);
+          if (!s) {
+            // 這個人推的是哪一台：散場起點離哪一台的站位最近
+            const dm = m => Math.hypot(p.ox - m.hx, p.oz - m.hz);
+            const m = ms.reduce((b, q) => dm(q) < dm(b) ? q : b);
+            const ux = Math.sin(m.af), uz = Math.cos(m.af);
+            if ((p.ex - p.ox) * ux + (p.ez - p.oz) * uz > 1e-9) back++;     // 往目標那一半走＝錯
+            const d = Math.hypot(p.ex - p.ox, p.ez - p.oz);
+            dist = [Math.min(dist[0], d), Math.max(dist[1], d)];
+            s = { push: p.push, al: p.alpha === undefined ? 1 : p.alpha };
+            seen.set(p, s);
+          }
+          if (p.push > s.push + 1e-12) pushUp++;
+          const al = p.alpha === undefined ? 1 : p.alpha;
+          if (al > s.al + 1e-12) alUp++;
+          s.push = p.push; s.al = al;
+        }
+        if (seen.size && !crewList().length) gone = t + dt;
+      }
+      const stowed = [...seen.keys()].every(p => p.push === 0 && p.lean === 0);
+      res[kind] = { men: seen.size, want: 2 * ms.length, pushUp, back, alUp, stowed,
+                    dMin: +dist[0].toFixed(2), dMax: +dist[1].toFixed(2), dLo: TR_OUT_D[0], dHi: TR_OUT_D[1],
+                    gone: +gone.toFixed(2), crews: g.crews.length };
+    }
+    /* 走開的最多留 g.live 組：塞滿之後再放一組，最早那一組直接收掉 */
+    cleanTools();
+    const g = { list: [], crews: [], live: 2 };
+    const mk = () => ({ crew: { men: [{ x: 0, z: 0, a: 0, ph: 0, alpha: undefined }], st: 'push', ux: 1, uz: 0 } });
+    const a = mk(), b = mk(), c = mk(), cb = b.crew, cc = c.crew;    // puFree 會把 m.crew 清掉，先記下來
+    puFree(a, g); puFree(b, g); puFree(c, g);
+    res.cap = { n: g.crews.length, oldest: g.crews[0] === cb, newest: g.crews[1] === cc };
+    cleanTools();
+    return res;
+  });
+  for (const k of ['treb', 'cannon']) {
+    const r = puCrewOff[k], nm = k === 'treb' ? '投石機' : '加農砲';
+    ok(nm + '：推到位那兩個人收手站直、朝背對目標那一半走開，越走越淡、淡完就收',
+       r.men === r.want && r.pushUp === 0 && r.stowed && r.back === 0 && r.alUp === 0 &&
+       r.dMin >= r.dLo - 0.01 && r.dMax <= r.dHi + 0.01 && r.gone > 0 && r.crews === 0,
+       r.men + ' 人（' + r.want + '）；收手時 push 往回漲 ' + r.pushUp + ' 幀、最後全收好 ' + r.stowed +
+       '；往目標那一半走的 ' + r.back + ' 人；走 ' + r.dMin + '～' + r.dMax + ' 格；濃淡往回漲 ' + r.alUp + ' 幀；' + r.gone + ' 秒走光');
+  }
+  ok('走開的那幾組最多留 g.live 組，再多就把最早那一組收掉',
+     puCrewOff.cap.n === 2 && puCrewOff.cap.oldest && puCrewOff.cap.newest, JSON.stringify(puCrewOff.cap));
+
+  /* 退場：打完站 3.5 秒就停在原地淡掉（PU_FADE 秒、只減不增、位置不動），淡完收掉；
+     再叫第三隊：最舊那一隊停火、原地淡掉，還沒出現的那一台直接收掉；在淡的整台畫在半透明那一顆，石兜裡的石頭不畫。 */
+  const puOutR = await page.evaluate(() => {
+    const res = {};
+    for (const kind of ['treb', 'cannon']) {
+      cleanTools(); completeNow();
+      const T = kind === 'treb', stepK = T ? stepTrebs : stepCannons;
+      const X = siteR + (T ? TREB_STAND : CAN_STAND) + 2;
+      if (T) castTrebs({ x: X, z: 0 }, { x: 0, z: 0 }, 0); else castCannons({ x: X, z: 0 }, { x: 0, z: 0 }, 0);
+      const G = () => T ? trebs : cannons;
+      puSkip(G());
+      const ms = G().list.slice();
+      for (const m of ms) { m.left = 0; m.idle = 0; m.sw = 0; }
+      const dt = 1 / 60;
+      let t = 0, outAt = -1, alUp = 0, moved = 0, end = -1;
+      const pos = ms.map(m => [m.x, m.z, m.a]), al = ms.map(() => 1);
+      for (; t < 10 && end < 0; t += dt) {
+        stepK(dt);
+        if (T && trebs) trebs.rocks.length = 0;
+        if (!T && cannons) cannons.shells.length = 0;
+        if (outAt < 0 && ms.some(m => m.st === 'out')) outAt = t + dt;
+        ms.forEach((m, i) => {
+          const a = m.alpha === undefined ? 1 : m.alpha;
+          if (a > al[i] + 1e-12) alUp++;
+          al[i] = a;
+          if (Math.hypot(m.x - pos[i][0], m.z - pos[i][1]) > 1e-9 || m.a !== pos[i][2]) moved++;
+        });
+        if (!G()) end = t + dt;
+      }
+      /* 第三隊：A 推一秒（都出現了）→ B（剛叫、還沒出現）→ C：在打的已經兩隊，A 停火淡掉 → D：B 一台都還沒出現，直接收掉 */
+      cleanTools(); completeNow();
+      const cast = (x, z) => T ? castTrebs({ x, z }, { x: 0, z: 0 }, 0) : castCannons({ x, z }, { x: 0, z: 0 }, 0);
+      cast(X, 0);
+      const A = G().list.slice();
+      for (let i = 0; i < 60; i++) stepK(dt);
+      cast(-X, 0);
+      const B = G().list.slice(A.length);
+      cast(0, X);
+      const aOut = A.every(m => m.st === 'out' && m.left === 0 && G().list.includes(m));
+      cast(0, -X);
+      const bGone = B.every(m => !G().list.includes(m));
+      const live = G().list.filter(m => m.st !== 'out').length;
+      // 畫一次：在淡的整台搬到半透明那一顆；石兜裡的石頭只畫全亮的那幾台（推一幀讓 A 開始淡，C／D 一步跳到站好）
+      stepK(dt);
+      puSkip(G());
+      for (const m of G().list) if (m.st !== 'out') m.load = 1;
+      if (T) { ENG.putTrebs(trebs.list); ENG.putRocks(trebs.rocks, trebs.list); }
+      else ENG.putCannons(cannons.list);
+      const P = T ? ENG.MODELS.treb.length : ENG.MODELS.cannon.length;
+      const nf = G().list.filter(m => m.alpha !== undefined).length, no = G().list.length - nf;
+      const M = T ? ENG.three.trebMesh : ENG.three.canMesh, F = T ? ENG.three.trebFade : ENG.three.canFade;
+      res[kind] = {
+        outAt: +outAt.toFixed(3), idle: 3.5, end: +end.toFixed(3), fade: PU_FADE, alUp, moved,
+        aOut, bGone, live, cap: T ? TREB_MAX : CAN_MAX,
+        drawOk: M.count === no * P && F.count === nf * P && F.visible === nf > 0 && nf === A.length,
+        rocks: T ? ENG.three.rockMesh.count : -1, rocksWant: T ? no : -1
+      };
+    }
+    cleanTools();
+    return res;
+  });
+  for (const k of ['treb', 'cannon']) {
+    const r = puOutR[k], nm = k === 'treb' ? '投石機' : '加農砲';
+    ok(nm + '：打完站 3.5 秒才退場，原地淡掉（不動、只減不增），PU_FADE 秒淡完收掉',
+       Math.abs(r.outAt - r.idle) < 0.05 && r.alUp === 0 && r.moved === 0 &&
+       r.end > r.outAt && r.end - r.outAt <= r.fade + 0.05,
+       '停火站到 ' + r.outAt + ' 秒開始淡（站 ' + r.idle + ' 秒）、' + r.end + ' 秒收掉（淡了 ' + +(r.end - r.outAt).toFixed(3) +
+       ' 秒，PU_FADE ' + r.fade + '）；濃淡往回漲 ' + r.alUp + ' 幀、動了 ' + r.moved + ' 幀');
+    ok(nm + '：再叫第三隊時最舊那一隊停火、原地淡掉，還沒出現就被換掉的直接收掉；淡的畫在半透明那一顆' +
+       (k === 'treb' ? '、石兜裡的石頭不畫' : ''),
+       r.aOut && r.bGone && r.live === r.cap && r.drawOk && r.rocks === r.rocksWant,
+       '最舊那隊停火在淡 ' + r.aOut + '；還沒出現的收掉 ' + r.bGone + '；在打的 ' + r.live + '（上限 ' + r.cap + '）；' +
+       '兩顆網格分得對 ' + r.drawOk + (k === 'treb' ? '；石兜裡畫了 ' + r.rocks + ' 顆（全亮的 ' + r.rocksWant + ' 台）' : ''));
+  }
+
+  /* 被推著走時輪子要跟著滾、其他部位不動：同一台擺 mv 0 與 mv 1.3 各畫一次，矩陣不一樣的只能是 wheel 那幾塊。
+     容量：機台池裝得下在打的兩隊 ＋ 在淡的兩隊；小人上限再多留推的人（還在推的 ＋ 走開的各 g.live 組、一組兩人）。 */
+  const puWheel = await page.evaluate(() => {
+    cleanTools();
+    const res = {};
+    for (const [kind, put, mesh, parts] of [['treb', ENG.putTrebs, 'trebMesh', ENG.MODELS.treb],
+                                            ['cannon', ENG.putCannons, 'canMesh', ENG.MODELS.cannon]]) {
+      const base = { x: 10, z: 20, a: 0.7, arm: ENG.TREB_REST, sa: ENG.trebSlingLoose(ENG.TREB_REST), rec: 0, back: 0, el: ENG.CAN_EL };
+      const grab = mv => {
+        put([Object.assign({}, base, { mv })]);
+        return Array.from(ENG.three[mesh].instanceMatrix.array.slice(0, parts.length * 16));
+      };
+      const a = grab(0), b = grab(1.3);
+      let wheelDiff = 0, otherDiff = 0, centre = 0;
+      parts.forEach((p, k) => {
+        let d = 0;
+        for (let j = 0; j < 16; j++) d = Math.max(d, Math.abs(a[k * 16 + j] - b[k * 16 + j]));
+        if (p.wheel) { if (d > 1e-6) wheelDiff++; centre = Math.max(centre, Math.abs(a[k * 16 + 12] - b[k * 16 + 12]), Math.abs(a[k * 16 + 14] - b[k * 16 + 14])); }
+        else if (d > 1e-9) otherDiff++;
+      });
+      res[kind] = { wheels: parts.filter(p => p.wheel).length, wheelDiff, otherDiff, centre: +centre.toFixed(9) };
+      put([]);
+    }
+    const maxPeople = Math.max(...WK_OPTS) + 2 * AR_N + 2 * MK_N + 2 * 2 * TREB_MAX + 2 * 2 * CAN_MAX;
+    res.cap = { maxTreb: ENG.MAXTREB, pool: TREB_POOL, maxCan: ENG.MAXCAN, canPool: CAN_POOL,
+                maxw: ENG.MAXW, fadeW: ENG.FADE_W, people: maxPeople };
+    return res;
+  });
+  ok('被推著走時輪子跟著滾，其他部位一塊都不動（投石機、加農砲）',
+     ['treb', 'cannon'].every(k => puWheel[k].wheels >= 4 && puWheel[k].wheelDiff === puWheel[k].wheels &&
+                                   puWheel[k].otherDiff === 0 && puWheel[k].centre < 1e-6),
+     JSON.stringify({ treb: puWheel.treb, cannon: puWheel.cannon }));
+  ok('容量：機台池裝得下在打的兩隊 ＋ 在淡的兩隊；小人上限裝得下最多人數 ＋ 兩種隊伍各兩隊 ＋ 推機台的人，全部在淡也裝得下',
+     puWheel.cap.maxTreb >= puWheel.cap.pool && puWheel.cap.maxCan >= puWheel.cap.canPool &&
+     puWheel.cap.maxw >= puWheel.cap.people && puWheel.cap.fadeW >= puWheel.cap.maxw,
+     JSON.stringify(puWheel.cap));
   }   // ── 〈加農砲〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 放火 ══════════
@@ -33998,9 +34280,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
         for (let i = 0; i < 600 && live(); i++) step(dt);
         r[name] = { n: hits.length, lo: hits.length ? Math.min(...hits.map(h => gap(h[0], h[1], h[2]))) : null, open: m.bt != null, gone: !live() };
       };
-      trebs = { list: [], rocks: [{ x: X - 22, y: 4, z: Z, vx: 30, vy: 4, vz: 0, T: 1, t: 0, rx: 0, ry: 0, s: 1.7 }] };
+      trebs = { list: [], rocks: [{ x: X - 22, y: 4, z: Z, vx: 30, vy: 4, vz: 0, T: 1, t: 0, rx: 0, ry: 0, s: 1.7 }], crews: [], live: TREB_MAX };
       shot('rock', () => !!trebs, stepTrebs);
-      cannons = { list: [], shells: [{ x: X - 22, y: 3, z: Z, vx: 40, vy: 2, vz: 0, T: 1, t: 0, rx: 0, ry: 0, s: CAN_SHELL }] };
+      cannons = { list: [], shells: [{ x: X - 22, y: 3, z: Z, vx: 40, vy: 2, vz: 0, T: 1, t: 0, rx: 0, ry: 0, s: CAN_SHELL }], crews: [], live: CAN_MAX };
       shot('shell', () => !!cannons, stepCannons);
       /* 方位押在 +x（背對建築）：抽到朝建築那一側的話，斜插進來那一段可能先擦到建築 */
       callMeteor({ x: X, y: 0, z: Z });
@@ -35410,7 +35692,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const real = rageEnds;
     let e = null;
     rageEnds = function (...a) { return (e = real(...a)); };
-    const pack = l => l.map(m => [m.x, m.z, m.tx, m.tz, m.ty].map(v => +v.toFixed(6)).join()).join('|');
+    // 量站位 hx／hz（v1.302.0 起從後面推進來，點下去那一刻 m.x 是出現的地方、每一次抽的都不一樣）
+    const pack = l => l.map(m => [m.hx, m.hz, m.tx, m.tz, m.ty].map(v => +v.toFixed(6)).join()).join('|');
     const chk = (list, team, one) => {
       const teams = [];
       for (let k = 0; k * team < list.length; k++) teams.push(list.slice(k * team, (k + 1) * team));

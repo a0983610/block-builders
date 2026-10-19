@@ -17,6 +17,9 @@ const ENG = (function () {
   let sun, ground, dirtPad, grassRim, blockMesh, workerMesh, beastMesh, trunkMesh, leafMesh, dustMesh;
   let ballMesh, bncMesh, tornadoGroup, hammerGroup, rockMesh, trebMesh, dozMesh, trkMesh, poolMesh;
   let canMesh, shellMesh;           // 加農砲與燒著的砲彈（v1.204）
+  /* 推進來、淡出去那一段的投石機與加農砲（v1.302.0）：規則那邊給了 alpha 的那幾台整台搬到這兩顆畫
+     （同屍體搬去 fadeMesh：機台本身那一顆不必變透明，才不會跟塵霧、火苗搶先後）。材質借 fadeMesh 那一份 */
+  let trebFade = null, trebFadeA = null, canFade = null, canFadeA = null;
   let poolGeo, poolPos, poolFoam, poolUni;
   let markMesh, markGeo, markPos, markCol;
   let searMesh, searGeo, searPos, searCol;   // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），見 putSears
@@ -84,12 +87,15 @@ const ENG = (function () {
      實測 4 → 24 的 step + draw 差在雜訊內（1.87 → 1.70 ms）。 */
   const FLASH_MAX = 24;
   const FLASH_SQUASH = 0.82;               // 壓扁一點：貼地炸開的火球是扁的，不是正球
-  const MAXROCK = 48, MAXTREB = 8;   // TREB_PARTS 由造型表自己數（見 TREB_PART）
+  /* 投石機 8 → 16 台（v1.302.0）：再叫一隊時舊的那一隊原地淡掉、新的同時推進來（見 game-tools.js 的〈機台推進場〉），
+     在打的兩隊 ＋ 在淡的兩隊（破壞模式一次叫兩隊）。**要 ≥ 規則那邊的 TREB_POOL**。 */
+  const MAXROCK = 48, MAXTREB = 16;   // TREB_PARTS 由造型表自己數（見 TREB_PART）
   /* 加農砲（v1.204）：場上最多幾門、同時最多幾顆砲彈在空中。
-     **要 ≥ 規則那邊的 CAN_MAX**，小於它的話多出來的整門畫不出來。
+     **要 ≥ 規則那邊的 CAN_POOL**，小於它的話多出來的整門畫不出來。
      一門 29 個部位全塞進同一顆 InstancedMesh，六門也只吃 1 個 draw call。
-     砲彈 16：一門一次一顆在空中（飛行約 1 秒、每 1.6～2.4 秒才打一發），六門用不到一半。 */
-  const MAXCAN = 6, MAXSHELL = 16;
+     砲彈 16：一門一次一顆在空中（飛行約 1 秒、每 1.6～2.4 秒才打一發），六門用不到一半。
+     v1.302.0 起 6 → 12 門，理由同 MAXTREB（在淡的那兩隊不再開砲，砲彈數不必跟著加）。 */
+  const MAXCAN = 12, MAXSHELL = 16;
   /* 鐵球最多同時幾顆（v1.116）。要跟規則那邊的 BALL_MAX 一樣大——
      小於它的話多出來的球會整顆不見（規則還在算，畫面上沒有）。 */
   const MAXBALL = 6;
@@ -416,8 +422,8 @@ const ENG = (function () {
      超過上限的那幾具照舊畫在原本那一顆、不淡（直接消失）——60 人那一檔全死在同一幀才碰得到。
      **v1.299.0 起 60 → 340（＝ MAXW，那一行在後面、這裡還讀不到，寫數字）**：箭雨與火槍兵的隊伍進場與散場
      都是邊走邊淡（見 game-tools.js 的〈隊伍進出場〉），交接那幾秒一隊在淡入、一隊在淡出，人數上限裡的每一個人
-     都可能同時在淡。e2e〈火槍兵〉的容量那條守著 FADE_W ≥ MAXW。 */
-  const FADE_W = 340, FADE_B = 24;
+     都可能同時在淡。e2e〈火槍兵〉的容量那條守著 FADE_W ≥ MAXW。v1.302.0 跟著 MAXW 到 396（推機台進場的人）。 */
+  const FADE_W = 396, FADE_B = 24;
   let fadeMesh = null, fadeAlpha = null;
   let fadeWn = 0, fadeWUsed = 0, fadeBUsed = 0;   // 這一幀排到第幾具小人／上一幀用到幾具
   /* ── 人形角色淡入淡出（v1.256.0）──────────────────────────
@@ -708,8 +714,10 @@ const ENG = (function () {
      v1.227 再到 200：破壞道具「火槍兵」那一隊 60 人也是照 putWorker 畫的（接在弓箭手後面），
      60 個工人 ＋ 80 個弓箭手 ＋ 60 個火槍兵同時在場剛好 200（見 開發筆記〈火槍兵〉）。
      v1.299.0 再到 340：再叫一隊時舊的那一隊走開淡出、新的同時走進來（使用者選「舊的散場、新的進場」），
-     兩種各最多兩隊：60 ＋ 80 × 2 ＋ 60 × 2（見 開發筆記〈箭雨與火槍兵：進場排隊、散場走開〉）。 */
-  const MAXW = 340;
+     兩種各最多兩隊：60 ＋ 80 × 2 ＋ 60 × 2（見 開發筆記〈箭雨與火槍兵：進場排隊、散場走開〉）。
+     v1.302.0 再到 396：推投石機、加農砲進場的人也接在後面（一台兩個人），還在推的最多在打的那麼多台、
+     推完走開的最多再一份（見 game-tools.js 的 puFree）：投石機 2 × (8 ＋ 8)、加農砲 2 × (6 ＋ 6)。 */
+  const MAXW = 396;
   /* 每個小人的部位數，要跟 BODY 的長度一模一樣。7 個身體部位 ＋ 藍圖 ＋ 聊天泡泡兩塊
      ＋ v1.51 補的七塊細節（帽頂、帽舌、兩顆眼睛、兩隻鞋、腰帶）
      ＋ v1.64 魔法師的五塊（巫師帽三塊、法杖、寶珠）
@@ -1901,6 +1909,29 @@ if (vAo.x + vAo.y > 0.5) {
     for (let i = 0; i < COIN_MAX; i++) coinMesh.setColorAt(i, tmpC.setHex(i % 3 ? COIN_C : COIN_C2));
     scene.add(coinMesh);
 
+    /* 推進來、淡出去的投石機與加農砲（v1.302.0，見 trebFade）：幾何體同 humMesh 那一套（不切、不發光），
+       材質與陰影材質共用 fadeMesh 那一份（淡到 45% 以下整台不投影，同屍體） */
+    const machFade = n => {
+      const g = new T.BoxGeometry(1, 1, 1);
+      const cut = new T.InstancedBufferAttribute(new Float32Array(n * 4), 4);
+      for (let i = 0; i < n; i++) cut.array[i * 4 + 3] = -1;
+      const a = new T.InstancedBufferAttribute(new Float32Array(n), 1);
+      a.setUsage(T.DynamicDrawUsage);
+      g.setAttribute('aCut', cut);
+      g.setAttribute('aFade', a);
+      g.setAttribute('aGlow', new T.InstancedBufferAttribute(new Float32Array(n), 1));
+      const m = new T.InstancedMesh(g, fadeMesh.material, n);
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.castShadow = true;
+      m.customDepthMaterial = weapDepth;
+      m.count = 0; m.frustumCulled = false; m.visible = false;
+      m.setColorAt(0, tmpC.setHex(0xffffff));
+      scene.add(m);
+      return [m, a];
+    };
+    [trebFade, trebFadeA] = machFade(MAXTREB * TREB_PARTS);
+    [canFade, canFadeA] = machFade(MAXCAN * CAN_PARTS);
+
     /* 幽浮（v1.167）。外殼跟投石機同一套：整台的部位塞進一顆 InstancedMesh，
        所以一台跟兩台一樣貴。顏色開場寫一次就好（同大劍，造型只有這一種）。 */
     ufoMesh = new T.InstancedMesh(unit, voxelMaterial({}), UFO_MAX * UFO_PARTS);
@@ -2130,11 +2161,12 @@ if (vAo.x + vAo.y > 0.5) {
 
   /* 一個輪子＝兩塊交叉的板（0° 與 45°）。單一方塊只會像個木箱，交叉之後是個八角星
      ——輪輻的樣子。尖角剛好落在輪緣（半徑 TREB_WHEEL），所以最低那個尖點正好觸地。 */
+  /* wheel: 1 ＝ 被推著走時這一塊要跟著滾（v1.302.0，見 putTrebs；同加農砲的 canWheel） */
   function trebWheel(x, z) {
     const w = TREB_WHEEL * Math.SQRT2;
     return [
-      { p: [x, TREB_WHEEL, z], s: [0.36, w, w], c: TR_WOOD },
-      { p: [x, TREB_WHEEL, z], s: [0.36, w, w], c: TR_WOOD, r: [Math.PI / 4, 0, 0] }
+      { p: [x, TREB_WHEEL, z], s: [0.36, w, w], c: TR_WOOD, r: [0, 0, 0], wheel: 1 },
+      { p: [x, TREB_WHEEL, z], s: [0.36, w, w], c: TR_WOOD, r: [Math.PI / 4, 0, 0], wheel: 1 }
     ];
   }
   /* 一根斜撐：給「從哪撐到哪」（同一個 x 平面上的兩點），長度與傾角自己算
@@ -2189,6 +2221,12 @@ if (vAo.x + vAo.y > 0.5) {
     ]
   );
   const TREB_PARTS = TREB_PART.length;
+  /* 機台最後面那一面在哪（機台座標 z，v1.302.0）：推進場時推的人兩隻手頂在這裡（規則那邊讀，見 game-tools.js 的 puCrew）。
+     照造型表掃出來的，造型改了就跟著對：只算固定的那幾塊（掛在臂、索、砲管上的會動），斜的那幾塊照沒轉算
+     （投石機最後面是後橫樑、加農砲是尾端那塊直立木板，都是正的）。 */
+  const partTail = parts => Math.min(...parts.filter(b => b.p && b.d === undefined && b.sd === undefined)
+                                             .map(b => b.p[2] - b.s[2] / 2));
+  const TREB_TAIL = partTail(TREB_PART);    // 後橫樑的背面
 
   /* 臂上離支點 d 的那一點在機台座標的位置。臂的方向（從支點指向投石端）是
      (z, y) = (−cos arm, −sin arm)：arm 0 ＝ 長臂水平朝**後**，正角＝長臂壓低在後
@@ -2241,11 +2279,17 @@ if (vAo.x + vAo.y > 0.5) {
     if (a === undefined) a = trebSlingAngle(arm);
     return { a, y: tip.y + Math.sin(a) * TREB_SLING, z: tip.z + Math.cos(a) * TREB_SLING };
   }
+  /* t.alpha（v1.302.0）：推進來、淡出去那一段，整台搬到 trebFade 畫（見那一行）。
+     t.mv：被推著走了多遠，輪子照這個滾（滾角 ＝ 走過的弧長 ÷ 輪半徑，同 putCannons 的後退）。 */
   function putTrebs(list) {
     const n = Math.min(list.length, MAXTREB);
-    trebMesh.count = n * TREB_PARTS;
+    let no = 0, nf = 0;
     for (let i = 0; i < n; i++) {
       const t = list[i];
+      const fade = t.alpha !== undefined, M = fade ? trebFade : trebMesh;
+      const base = (fade ? nf++ : no++) * TREB_PARTS;
+      if (fade) trebFadeA.array.fill(t.alpha, base, base + TREB_PARTS);
+      const roll = (t.mv || 0) / TREB_WHEEL;
       scratch.position.set(t.x, 0, t.z);
       scratch.rotation.set(0, t.a, 0);
       scratch.scale.setScalar(1);
@@ -2272,18 +2316,27 @@ if (vAo.x + vAo.y > 0.5) {
           scratchB.rotation.set(b.spin ? Math.PI - t.arm : 0, 0, 0);
         } else {
           scratchB.position.set(bx, b.p[1], b.p[2]);
-          if (b.r) scratchB.rotation.set(b.r[0], b.r[1], b.r[2]);
+          if (b.wheel) scratchB.rotation.set(b.r[0] + roll, 0, 0);
+          else if (b.r) scratchB.rotation.set(b.r[0], b.r[1], b.r[2]);
           else scratchB.rotation.set(0, 0, 0);
         }
         scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
-        trebMesh.setMatrixAt(i * TREB_PARTS + k, tmpM);
-        trebMesh.setColorAt(i * TREB_PARTS + k, tmpC.setHex(b.c));
+        M.setMatrixAt(base + k, tmpM);
+        M.setColorAt(base + k, tmpC.setHex(b.c));
       }
     }
+    trebMesh.count = no * TREB_PARTS;
+    trebFade.count = nf * TREB_PARTS;
+    trebFade.visible = nf > 0;                 // 沒有在淡的就不吃 draw call
     trebMesh.instanceMatrix.needsUpdate = true;
     if (trebMesh.instanceColor) trebMesh.instanceColor.needsUpdate = true;
+    if (nf) {
+      trebFade.instanceMatrix.needsUpdate = true;
+      trebFade.instanceColor.needsUpdate = true;
+      trebFadeA.needsUpdate = true;
+    }
   }
 
   /* ── 加農砲（v1.204）─────────────────────────────────
@@ -2397,6 +2450,7 @@ if (vAo.x + vAo.y > 0.5) {
     ]
   );
   const CAN_PARTS = CAN_PART.length;
+  const CAN_TAIL = partTail(CAN_PART);      // 尾端那塊直立木板的背面（v1.302.0，見 partTail）
   /* 砲口在哪（機台座標）。**砲彈就是從這一點飛出去的**——規則那邊拿它當出手點，
      跟 trebSling／BOW_TIP／SWORD_TIP 同一條規矩：畫出來的與飛出去的只有一份數字。
      rec：砲管後座 0 ＝ 復進到底（待發），1 ＝ 後座到底。
@@ -2410,13 +2464,16 @@ if (vAo.x + vAo.y > 0.5) {
     const d = CAN_LEN - (rec || 0) * CAN_RECOIL;
     return { y: CAN_PIV + Math.sin(e) * d, z: Math.cos(e) * d - (kick || 0) };
   }
-  /* c：{x, z, a 朝向, rec 砲管後座 0～1, back 整台退了多少, el 砲管仰角} */
+  /* c：{x, z, a 朝向, rec 砲管後座 0～1, back 整台退了多少, el 砲管仰角,
+         alpha 推進來／淡出去那一段的濃淡（v1.302.0，整門搬到 canFade 畫）, mv 被推著走了多遠（輪子跟著滾）} */
   function putCannons(list) {
     const n = Math.min(list.length, MAXCAN);
-    canMesh.visible = n > 0;                 // 沒砲在場就不吃 draw call
-    canMesh.count = n * CAN_PARTS;
+    let no = 0, nf = 0;
     for (let i = 0; i < n; i++) {
       const t = list[i];
+      const fade = t.alpha !== undefined, M = fade ? canFade : canMesh;
+      const base = (fade ? nf++ : no++) * CAN_PARTS;
+      if (fade) canFadeA.array.fill(t.alpha, base, base + CAN_PARTS);
       /* 整台後退：沿著機台自己的 −z（砲口朝 +z，所以後退是 −z）。
          擺在**外層矩陣**上，所以砲架、輪子、砲管整台一起走——這就是
          「整台砲都後退一點再回去」那一層。 */
@@ -2428,8 +2485,8 @@ if (vAo.x + vAo.y > 0.5) {
       const back = (t.rec || 0) * CAN_RECOIL;
       // 這一門現在的砲管仰角（v1.212：打不到才抬頭，規則那邊解出來記在砲上）
       const el = t.el != null ? t.el : CAN_EL;
-      // 輪子滾的角度：走過的弧長 ÷ 半徑。後退是 −z，所以輪子往後滾（負角）
-      const roll = -kick / CAN_WHEEL;
+      // 輪子滾的角度：走過的弧長 ÷ 半徑。後退是 −z，所以輪子往後滾（負角）；被推著往前走是正的（v1.302.0）
+      const roll = ((t.mv || 0) - kick) / CAN_WHEEL;
       for (let k = 0; k < CAN_PARTS; k++) {
         const b = CAN_PART[k];
         const bx = b.p ? b.p[0] : 0;
@@ -2448,12 +2505,21 @@ if (vAo.x + vAo.y > 0.5) {
         scratchB.scale.set(b.s[0], b.s[1], b.s[2]);
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
-        canMesh.setMatrixAt(i * CAN_PARTS + k, tmpM);
-        canMesh.setColorAt(i * CAN_PARTS + k, tmpC.setHex(b.c));
+        M.setMatrixAt(base + k, tmpM);
+        M.setColorAt(base + k, tmpC.setHex(b.c));
       }
     }
+    canMesh.visible = no > 0;                // 沒砲在場就不吃 draw call
+    canMesh.count = no * CAN_PARTS;
+    canFade.visible = nf > 0;
+    canFade.count = nf * CAN_PARTS;
     canMesh.instanceMatrix.needsUpdate = true;
     if (canMesh.instanceColor) canMesh.instanceColor.needsUpdate = true;
+    if (nf) {
+      canFade.instanceMatrix.needsUpdate = true;
+      canFade.instanceColor.needsUpdate = true;
+      canFadeA.needsUpdate = true;
+    }
   }
   /* 燒著的砲彈。跟投石機的飛石、隕石共用同一顆球（IcosahedronGeometry(0.5,1)），
      只有顏色不同——火色（使用者：「可以像投石機那顆球型 顏色偏火色」）。
@@ -2900,6 +2966,7 @@ if (vAo.x + vAo.y > 0.5) {
     }
     if (trebList) for (const t of trebList) {
       if (!t.load || n >= MAXROCK) continue;              // 石兜是空的就不畫
+      if (t.alpha !== undefined) continue;                // 推進來、淡出去那一段整台是半透明的，石頭不畫（v1.302.0）
       const sl = trebSling(t.arm, t.sa);
       scratch.position.set(t.x + Math.sin(t.a) * sl.z, sl.y, t.z + Math.cos(t.a) * sl.z);
       scratch.rotation.set(0, t.a, 0);
@@ -3894,6 +3961,7 @@ if (vAo.x + vAo.y > 0.5) {
      Q 版把肩膀降到 0.56 之後每一個都得重算。現在一律寫成 ARM_Y ＋ 位移，
      下次再調比例只要改這一行（見 開發筆記〈不要寫死會隨改動變動的數字〉）。 */
   const ARM_X = 0.32, ARM_Y = 0.56, ARM_H = 0.34, ARM_W = 0.19, ARM_D = 0.23;
+  const PUSH_ARM = -1.5;            // 推機台時手往前伸的角度（−1.5 ＝ 水平前伸，前傾另外補，見 putWorker 的 w.push）
   /* 掛在手臂上的兩件（v1.198）：袖子往上 SLEEVE_ON、手套往下 HAND_ON，
      沿著手臂自己的軸走，所以手一擺它們自己跟著轉（見 putWorker 的 b.on）。 */
   const SLEEVE_ON = -0.10, HAND_ON = 0.235;
@@ -4656,6 +4724,14 @@ if (vAo.x + vAo.y > 0.5) {
         if (w.carry) {                      // 搬東西時雙手舉高
           scratchB.rotation.x = -2.5;
           scratchB.position.y = ARM_Y + 0.23; scratchB.position.z = -0.14;
+        } else if (w.push > 0) {
+          /* 推機台（v1.302.0，投石機與加農砲推進場，見 game-tools.js 的〈機台推進場〉）：兩隻手往前伸、
+             頂在機台後面；身體前傾是 w.lean 給的，所以手要多抬一個前傾角才是平的。
+             push 是 0～1：推完走開那一段照它收回一般走路擺手。 */
+          const s = -Math.sin(w.ph) * b.arm * w.gait * 0.8, p = w.push;
+          scratchB.rotation.x = s + (PUSH_ARM - (w.lean || 0) - s) * p;
+          scratchB.position.y = b.p[1] + (ARM_Y + 0.12 - b.p[1]) * p;
+          scratchB.position.z = b.p[2] + (0.14 - b.p[2]) * p;
         } else if (w.dig) {
           /* 挖料（v1.130）：兩手握在鏟柄上，一隻握上端、另一隻往下握一截
              （照使用者給的照片；兩隻手擺一樣的話看起來是抱著柄，不是握著）。
@@ -12668,6 +12744,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
        **CAN_EL 是底、CAN_ELMAX 是抬頭的上限**（v1.212）：兩個數字規則那邊都要用到
        （見 game-tools.js 的 canEl），砲管畫在哪個角度就照那個角度解初速。 */
     CAN_EL, CAN_ELMAX, CAN_RECOIL, CAN_KICK, CAN_LEN, canMuzzle, MAXCAN,
+    /* 推進場（v1.302.0）：推的人頂在機台最後面那一面（規則那邊的 puCrew 讀），場上最多幾台（規則那邊的 TREB_POOL 要裝得下） */
+    TREB_TAIL, CAN_TAIL, MAXTREB,
     /* 大劍（v1.161）：規則那邊要拿這幾個算刃掃到哪，畫面與判定共用同一份數字 */
     SWORD_MAX, SWORD_PARTS, SWORD_PIVOT, SWORD_EDGE, SWORD_HIT, SWORD_TIP, SWORD_W, SWORD_THK,
     /* 幽浮（v1.167）：光柱的錐度與吸光口高度。判定用的倒錐就是畫出來這一根，
@@ -12743,7 +12821,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh,
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh,
                             stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl, skyStarEl }; }
   };
 })();

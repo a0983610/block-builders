@@ -778,6 +778,169 @@ function stepSwing(dt) {
   ENG.setHammer(hx, hy, hz, hx + st * s.rx, hy - ct, hz + st * s.rz, 0, m);
 }
 
+/* ── 機台推進場（v1.302.0，投石機與加農砲共用）──────────────────
+   使用者：「投石機&加農砲 也像箭雨&火槍兵 用推的出場(退場只要慢慢消失即可)」。問過四件事（全選建議）：
+   **小人推、推到就走開**（每台後面兩個人，到位之後四散走開淡出，沿用箭雨散場那一套 trDisperse／trLeave）、
+   從**隊形後方**推上來（一路面向目標、到位不用轉；正後方推不進來才往兩側偏，那幾台到位之後原地轉向）、
+   **走路的一半**、場上已經兩隊再叫第三隊時**最舊那一隊停火、原地淡掉**。
+   v1.102～v1.301 是架好那一刻整台直接出現、打完站 3.5 秒整台不見，滿了把最早那一台直接擠掉。
+   淡入照〈隊伍進出場〉那一套（trFadeIn：頭幾格看不見、照推了多少淡入）；這一次叫出來的全部到齊、轉好才開打。
+   濃淡寫在 m.alpha，引擎看到就整台搬去半透明那一顆畫（trebFade／canFade）；推的人接在小人後面畫（crewList，同弓箭手）。
+   見 開發筆記〈投石機與加農砲：推進場、原地淡出〉 */
+const PU_SPD = WALK / 2;            // 推的速度（使用者選：走路的一半）
+const PU_D = [6, 12];               // 從站位往後多遠出現
+const PU_LAG = 0.6;                 // 每台出現的時刻錯開多少（同 TR_IN_LAG）
+const PU_TURN = 0.6;                // 從兩側推進來的那幾台，到位之後轉向目標要多久
+const PU_SIDE = [0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2, Math.PI / 2, -Math.PI / 2];   // 正後方推不進來就往兩側偏幾度試（弧度）
+const PU_FADE = 2;                  // 退場原地淡多久（使用者：「慢慢消失」）
+const PU_LEAN = 0.3;                // 推的人身體前傾
+const PU_HAND = 0.75;               // 推的人站在機台背面後面多遠（身體中心到手掌，身高 1.59～1.86 量的）
+
+/* 這一段路推得過去嗎：出現那一頭要在草地裡（同 placeTreb 夾的 debrisR − 2），沿路每 TR_STEP 驗一點，
+   中線與兩側（hw＝半寬）三條線都不能在建築或房子裡（arFree）。站位那一頭 1.2 以內不驗（同 trPath：
+   placeTreb 推過、夾過，可能本來就貼著牆）。 */
+function puPath(fx, fz, hx, hz, hw) {
+  if (Math.hypot(fx, fz) > debrisR - 2) return false;
+  const d = Math.hypot(hx - fx, hz - fz), n = Math.max(1, Math.ceil(d / TR_STEP));
+  const sx = d > 0 ? -(hz - fz) / d * hw : 0, sz = d > 0 ? (hx - fx) / d * hw : 0;
+  for (let i = 0; i < n; i++) {
+    const u = i / n;
+    if (d * (1 - u) < 1.2) break;
+    const x = fx + (hx - fx) * u, z = fz + (hz - fz) * u;
+    if (!arFree(x, z) || !arFree(x + sx, z + sz) || !arFree(x - sx, z - sz)) return false;
+  }
+  return true;
+}
+/* 一台剛架好（m.x／m.z／m.a 是站位與朝向）：改成從後面推進來。站位往正後方 PU_D 那麼遠（每台各抽一次），
+   推不過去就縮短、再往兩側偏（PU_SIDE），都不行就原地淡入（d ＝ 0，不帶人）。
+   hw＝機台半寬（驗路用），tail＝機台背面在機台座標的 z（ENG.TREB_TAIL／CAN_TAIL），推的人頂在那裡。 */
+function puEnter(m, hw, tail) {
+  let s = null;
+  for (const off of PU_SIDE) {
+    const b = m.a + Math.PI + off, bx = Math.sin(b), bz = Math.cos(b);
+    for (let d = rr(PU_D[0], PU_D[1]); d >= 3 && !s; d -= 3)
+      if (puPath(m.x + bx * d, m.z + bz * d, m.x, m.z, hw)) s = { x: m.x + bx * d, z: m.z + bz * d };
+    if (s) break;
+  }
+  if (!s) s = { x: m.x, z: m.z };
+  m.hx = m.x; m.hz = m.z; m.af = m.a; m.sx = s.x; m.sz = s.z; m.x = s.x; m.z = s.z;
+  m.d = Math.hypot(m.hx - s.x, m.hz - s.z); m.go = 0; m.mv = 0;
+  m.ti = rr(0, PU_LAG); m.tg = 0; m.arr = -1; m.st = 'in'; m.alpha = 0;
+  m.wa = m.d > 0.01 ? Math.atan2(m.hx - s.x, m.hz - s.z) : m.af; m.a = m.wa;
+  m.crew = m.d >= 0.5 ? puCrew(m, tail - PU_HAND) : null;
+}
+/* 推的那兩個人：站在機台正後方（機台座標 (±lx, lz)），跟著機台走（puCarry）。
+   putWorker 讀的欄位照弓箭手那一份（castArrows）；push＝手頂在機台上（0～1，見引擎的 w.push）。
+   兩個人並肩要隔一個肩寬（ARM_X 0.32 × 身高），不然肩膀疊在一起。 */
+function puCrew(m, lz) {
+  const men = [];
+  for (const k of [-1, 1]) {
+    const p = { x: m.x, y: 0, z: m.z, a: m.a, ph: rr(0, Math.PI * 2), gait: 0,
+                tone: Math.floor(rr(0, 1000)), base: rr(W_LO, W_HI), scale: 1,
+                push: 1, lean: PU_LEAN, alpha: 0, lx: k * 0.42 * W_HI, lz };
+    p.scale = p.base;
+    men.push(p);
+  }
+  return { men, st: 'push', ux: Math.sin(m.af), uz: Math.cos(m.af) };
+}
+/* 推的人跟著機台走：位置照機台的位置與朝向轉過去，濃淡跟機台一樣，機台在動腿才擺（腿擺照腳程，同 trGather） */
+function puCarry(m, dt) {
+  if (!m.crew) return;
+  const ca = Math.cos(m.a), sa = Math.sin(m.a), mv = m.tg >= m.ti && m.go < m.d;
+  for (const p of m.crew.men) {
+    p.x = m.x + p.lx * ca + p.lz * sa; p.z = m.z - p.lx * sa + p.lz * ca; p.a = m.a;
+    p.alpha = m.alpha; p.gait = mv ? 1 : 0;
+    if (mv) p.ph += dt * 11 * PU_SPD / WALK;
+  }
+}
+/* 推進場的一幀：還沒到出現時刻的看不見；出現之後推到站位、邊推邊淡入，推的人跟著走。
+   到了就放人走開（puFree），從兩側推進來的再原地轉向目標。到位而且轉好了回傳 true。
+   g ＝ trebs／cannons（list 機台、crews 推完正在走開的那幾組人、live 最多幾台在打）。 */
+function puGather(m, dt, g) {
+  m.tg += dt;
+  if (m.tg < m.ti) { m.alpha = 0; puCarry(m, dt); return false; }
+  if (m.go < m.d) {
+    m.go = Math.min(m.d, m.go + PU_SPD * dt); m.mv = m.go;
+    const u = m.go / m.d;
+    m.x = m.sx + (m.hx - m.sx) * u; m.z = m.sz + (m.hz - m.sz) * u;
+  }
+  const al = trFadeIn(m, m.tg - m.ti);
+  m.alpha = al >= 1 ? undefined : al;
+  puCarry(m, dt);
+  if (m.go < m.d || al < 1) return false;
+  if (m.arr < 0) { m.arr = m.tg; puFree(m, g); }
+  if (Math.abs(mkAngLerp(m.wa, m.af, 1) - m.wa) < 0.01) { m.a = m.af; return true; }   // 從正後方來的不用轉
+  const k = (m.tg - m.arr) / PU_TURN;
+  m.a = mkAngLerp(m.wa, m.af, mkEase(k));
+  return k >= 1;
+}
+/* 放推的人走開：背對目標那一半四散（trDisperse 照 crew.ux／uz 挑方向），挪到 g.crews 走完。
+   走開的最多留 g.live 組（＝還在推的最多那麼多組），再多就把最早那一組直接收掉——引擎的 MAXW 照這個留位子。 */
+function puFree(m, g) {
+  if (!m.crew) return;
+  trDisperse(m.crew);
+  if (g.crews.length >= g.live) g.crews.shift();
+  g.crews.push(m.crew);
+  m.crew = null;
+}
+const puStow = (p, u) => { p.push = 1 - mkEase(u); p.lean = PU_LEAN * p.push; };   // 走開前先收手、站直
+function puCrews(g, dt) {
+  for (let i = g.crews.length - 1; i >= 0; i--) if (trLeave(g.crews[i], dt, puStow)) g.crews.splice(i, 1);
+}
+/* 這一次叫出來的全部到齊才開打（同箭雨「排好隊伍再攻擊」）：同一次叫出來的共用一個 tm，
+   n＝幾台、ok＝到了幾台。到齊那一刻響一聲（v1.301 以前是叫出來那一刻，同箭雨 v1.299.0 搬到排好那一刻）。
+   單獨架的一台（沒有 tm）自己到了就算。 */
+function puReady(m) {
+  m.st = 'fire';
+  if (!m.tm) { sndWind(); return; }
+  if (++m.tm.ok === m.tm.n) sndWind();
+}
+const puGo = m => !m.tm || m.tm.ok >= m.tm.n;
+/* 退場：停火、原地淡掉（使用者：「退場只要慢慢消失即可」）。還在推的那兩個人放走（同到位那一刻）；
+   還沒出現的那一台直接收掉（回傳 true，同 trDisperse 收掉還沒出現的人）。淡入到一半的從那個濃淡往下淡。
+   還沒到位就被換掉的，同一次叫出來的那幾台不必再等它。 */
+function puOut(m, g) {
+  if (m.st === 'in' && m.tm) m.tm.n--;
+  if (m.st === 'in' && m.tg < m.ti) return true;
+  puFree(m, g);
+  m.am = m.alpha === undefined ? 1 : m.alpha;
+  m.st = 'out'; m.fo = 0; m.left = 0;
+  return false;
+}
+/* 淡完回傳 true */
+function puFade(m, dt) {
+  m.fo += dt;
+  m.alpha = m.am * (1 - m.fo / PU_FADE);
+  return m.alpha <= 0;
+}
+/* 架新的一台之前騰位子：在打的已經 g.live 台（兩隊）就把最舊那一台換掉（puOut）；連在淡的一起滿了 pool 台
+   就把最舊那一台在淡的直接收掉（同箭雨「arOld 本來就有一隊在走的話那一隊直接收掉」）。 */
+function puRoom(g, pool) {
+  const list = g.list;
+  let n = 0;
+  for (const t of list) if (t.st !== 'out') n++;
+  if (n >= g.live) {
+    const i = list.findIndex(t => t.st !== 'out');
+    if (puOut(list[i], g)) list.splice(i, 1);
+  }
+  if (list.length >= pool) {
+    const i = list.findIndex(t => t.st === 'out');
+    list.splice(i >= 0 ? i : 0, 1);
+  }
+}
+/* 推的人：投石機與加農砲兩邊還在推的 ＋ 推完正在走開的（draw 接在火槍兵後面畫；每幀重用同一個陣列） */
+const crewBuf = [];
+function crewList() {
+  if (!trebs && !cannons) return EMPTY;
+  crewBuf.length = 0;
+  for (const g of [trebs, cannons]) {
+    if (!g) continue;
+    for (const m of g.list) if (m.crew) for (const p of m.crew.men) crewBuf.push(p);
+    for (const c of g.crews) for (const p of c.men) crewBuf.push(p);
+  }
+  return crewBuf;
+}
+
 /* ── 投石機 ─────────────────────────────────────────────
    一次架四台，朝你點的第二個位置附近隨機丟石頭，走拋物線砸下來。
 
@@ -788,8 +951,12 @@ function stepSwing(dt) {
    就改轟那一間」。目標改成明點的之後，那條「站在誰旁邊就轟誰」沒必要了——想轟哪一間
    直接點它，比「站在誰旁邊」還準（e2e 那條「每一把破壞道具都打得到小人的家」照樣
    守著，只是改成第二下點在那間房子上）。 */
-const TREB_MAX = 8;                 // 場上最多幾台（＝兩隊。**要 ≤ 引擎的 MAXTREB**）
+const TREB_MAX = 8;                 // 場上最多幾台在打（＝兩隊）
 const TREB_TEAM = 4;                // 一次架幾台（使用者指定）
+/* 連在淡的一起最多幾台（v1.302.0，見 puRoom）：在打的兩隊 ＋ 被換掉、正在淡的兩隊——破壞模式一次叫兩隊，
+   只留一隊給在淡的話會有一隊被擠掉的直接不見。**要 ≤ 引擎的 MAXTREB** */
+const TREB_POOL = TREB_MAX * 2;
+const TREB_HW = 2;                  // 推進來時驗路的半寬（輪子在 ±1.85、厚 0.36；側邊平台高過人頭，不算）
 const TREB_GAP = 7;                 // 台與台之間隔多遠（底座 3.8 寬，中間留得下走道）
 const TREB_SHOTS = 5, ROCK_R = 4.6, ROCK_POW = 12;
 /* 落點在第二點附近散多開（開根號讓分布均勻，同箭雨的 AR_SPRAY）。
@@ -874,17 +1041,19 @@ function aimTrebs(point, onBlock) {
    （v1.262.0～v1.274 是幾隊接成一長排、目標沿著排的方向平行挪）。散出去的那幾隊瞄**地面**（同隕石：
    點在屋頂上的話散出去的那一點底下可能是空的，瞄那個高度會在半空中炸開；瞄地面的話路上有建築就照舊打在建築上）。
    第二隊起第一發往後挪（v1.270.0，見 rageLags）：機台照舊一起架好，之後每台各自裝填本來就會錯開 */
+/* v1.302.0 起每一台從後面推進來（見〈機台推進場〉），這一次叫出來的共用一個 tm、全部到齊才開打；
+   「一隊架好」那一聲搬到到齊那一刻（puReady，一次叫出來一聲，不是四台各一聲；破壞模式幾隊也是一聲）。 */
 function castTrebs(from, toward, aimY, teams) {
   aim = null;
   teams = teams || 1;
   const ends = teams > 1 ? rageEnds(teams, from, toward, RAGE_SPOT.treb) : null, lag = rageLags(teams);
+  const tm = { n: 0, ok: 0 };
   for (let t = 0; t < teams; t++)
-    trebTeam(t ? ends.a[t] : from, t ? ends.b[t] : toward, t ? 0 : aimY, lag[t]);
-  sndWind();                        // 一隊架好那一聲（一隊一次，不是四台各一聲；破壞模式幾隊也是一聲）
+    trebTeam(t ? ends.a[t] : from, t ? ends.b[t] : toward, t ? 0 : aimY, lag[t], tm);
 }
 /* 一隊排成一列、整隊面向目標（橫向 ＝ 指向目標那個方向轉 90 度，同 castArrows）。
    同一個地方連點兩下就沒有方向可用，跟箭雨一樣退回「朝場心」。wait ＝ 這一隊的第一發再晚幾秒（見 placeTreb）。 */
-function trebTeam(from, toward, aimY, wait) {
+function trebTeam(from, toward, aimY, wait, tm) {
   const N = TREB_TEAM;
   /* 第一下點在建築上的話**整隊**先推到外圍（機台不能長在牆裡面，同 v1.102 那條規則）。
      推的是隊伍的中心、不是一台一台推：一台一台推會把四台壓到同一個半徑上，
@@ -922,7 +1091,7 @@ function trebTeam(from, toward, aimY, wait) {
   }
   for (let i = 0; i < N; i++) {
     const off = (i - (N - 1) / 2) * TREB_GAP;
-    placeTreb({ x: cx + sx * off, z: cz + sz * off }, toward, aimY, wait);
+    placeTreb({ x: cx + sx * off, z: cz + sz * off }, toward, aimY, wait, tm);
   }
 }
 /* 架一台：站在 spot、轟 aimAt。
@@ -933,10 +1102,12 @@ function trebTeam(from, toward, aimY, wait) {
         （使用者：「箭雨 投石機 加農砲 這些會叫出東西做攻擊的 還是被限制在舊的範圍」）
         ——v1.210 那版的理由「外圈是給碎料散的空地，不是站機器的地方」被這一句推翻了：
         草地島鋪到哪，機台就架得到哪。見 開發筆記〈生活圈只剩房子與城牆〉。
-   wait ＝ 第一發再晚幾秒（破壞模式第二隊起，v1.270.0；不給就是 0）。 */
-function placeTreb(spot, aimAt, aimY, wait) {
-  if (!trebs) trebs = { list: [], rocks: [] };
-  if (trebs.list.length >= TREB_MAX) trebs.list.shift();
+   wait ＝ 第一發再晚幾秒（破壞模式第二隊起，v1.270.0；不給就是 0）。
+   v1.302.0 起架好的那一台從後面推進來（puEnter，tm 見 castTrebs）；滿了不再直接擠掉，最舊那一台原地淡掉（puRoom）。
+   crews ＝ 推完正在走開的那幾組人。 */
+function placeTreb(spot, aimAt, aimY, wait, tm) {
+  if (!trebs) trebs = { list: [], rocks: [], crews: [], live: TREB_MAX };
+  puRoom(trebs, TREB_POOL);
   let x = spot.x, z = spot.z;
   const d = Math.hypot(x, z), minD = siteR + TREB_STAND;
   if (d < minD) {
@@ -950,11 +1121,14 @@ function placeTreb(spot, aimAt, aimY, wait) {
      load 是「石兜裡有沒有石頭」、rs 是那顆石頭多大——**裝填的時候就抽好**，
      所以待發時畫在石兜裡的跟等一下飛出去的是同一顆（見 ENG.putRocks）。 */
   /* ty ＝ 要轟的那一點多高（v1.212，點建築就是點到的那一塊，點空地是 0）。 */
-  trebs.list.push({ x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
-                    tx: aimAt.x, tz: aimAt.z, ty: aimY || 0,
-                    arm: ENG.TREB_REST, sa: ENG.trebSlingLoose(ENG.TREB_REST),
-                    sw: 0, shot: 0, load: 1, rs: rr(1.3, 2.1),
-                    next: 0.4 + (wait || 0), left: TREB_SHOTS, idle: 0 });
+  const m = { x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
+              tx: aimAt.x, tz: aimAt.z, ty: aimY || 0,
+              arm: ENG.TREB_REST, sa: ENG.trebSlingLoose(ENG.TREB_REST),
+              sw: 0, shot: 0, load: 1, rs: rr(1.3, 2.1),
+              next: 0.4 + (wait || 0), left: TREB_SHOTS, idle: 0, tm: tm || null };
+  if (tm) tm.n++;
+  puEnter(m, TREB_HW, ENG.TREB_TAIL);
+  trebs.list.push(m);
 }
 function fireRock(m) {
   /* 落點以「這一隊要轟的那一點」為準隨機取（開根號讓分布均勻，不然會全擠在中心）。
@@ -1053,10 +1227,15 @@ function rockHit(r) {
   spawnRing({ x: p.x, y: 0, z: p.z }, 5);
   sndSmash();
 }
+/* v1.302.0：推進來那一段（st 'in'）只走 puGather；到齊之前不數第一發；退場（st 'out'）原地淡，
+   甩到一半的照樣甩完、絞回（不再數下一發，puOut 把 left 歸零了）。 */
 function stepTrebs(dt) {
   if (!trebs) return;
+  puCrews(trebs, dt);
   for (let i = trebs.list.length - 1; i >= 0; i--) {
     const m = trebs.list[i];
+    if (m.st === 'in') { if (!puGather(m, dt, trebs)) continue; puReady(m); }
+    if (m.st === 'out' && puFade(m, dt)) { trebs.list.splice(i, 1); continue; }
     if (m.sw) {
       /* 正在甩：配重掃下來、長臂往前上方甩過去。掃過放索的角度就出手
          （夾在 TREB_END，dt 大的時候不會掃過頭，也保證不會漏掉那一發）。 */
@@ -1081,11 +1260,11 @@ function stepTrebs(dt) {
       m.sa += (tgt - m.sa) * Math.min(1, dt * TREB_DROOP);
       if (m.sa > Math.PI * 2) m.sa -= Math.PI * 2;
       if (m.left > 0) {
-        m.next -= dt;
+        if (puGo(m)) m.next -= dt;                   // 這一次叫出來的全部到齊才開始數（v1.302.0）
         if (m.next <= 0) { m.next = rr(1.2, 2); m.left--; m.sw = 1; m.shot = 0; }
-      } else {
-        m.idle += dt;                                // 打完站一下再撤走
-        if (m.idle > 3.5) trebs.list.splice(i, 1);
+      } else if (m.st !== 'out') {
+        m.idle += dt;                                // 打完站一下再撤走：v1.302.0 起是原地淡掉（puOut）
+        if (m.idle > 3.5) puOut(m, trebs);
       }
     }
   }
@@ -1106,7 +1285,7 @@ function stepTrebs(dt) {
       trebs.rocks.splice(i, 1); rockHit(r);
     }
   }
-  if (!trebs.list.length && !trebs.rocks.length) { trebs = null; ENG.putTrebs([]); ENG.putRocks([]); }
+  if (!trebs.list.length && !trebs.rocks.length && !trebs.crews.length) { trebs = null; ENG.putTrebs([]); ENG.putRocks([]); }
 }
 
 /* ── 加農砲 ─────────────────────────────────────────────
@@ -1132,8 +1311,10 @@ function stepTrebs(dt) {
    （上限 ENG.CAN_ELMAX 45°），抬到上限還打不到就打它打得到的最高處——打在牆上。
    低目標、打平地的每一發都還是 18°，低伸彈道一個字沒變（見 canEl／canV）。
    見 開發筆記〈加農砲：直射、後座、燒著的砲彈〉〈點哪打哪：加農砲會抬頭、目標高度照點到的〉 */
-const CAN_MAX = 6;                  // 場上最多幾門（＝兩隊。**要 ≤ 引擎的 MAXCAN**）
+const CAN_MAX = 6;                  // 場上最多幾門在打（＝兩隊）
 const CAN_TEAM = 3;                 // 一次架幾門（使用者指定）
+const CAN_POOL = CAN_MAX * 2;       // 連在淡的一起最多幾門（v1.302.0，理由同 TREB_POOL）。**要 ≤ 引擎的 MAXCAN**
+const CAN_HW = 1.8;                 // 推進來時驗路的半寬（車軸 3.4 寬、輪子在 ±1.45）
 const CAN_GAP = 7;                  // 門與門之間隔多遠（同投石機；整台寬 3.2，中間留得下走道）
 const CAN_SHOTS = 6;                // 每門幾發（使用者指定）
 /* 破壞半徑與力道：**同投石機的石頭**（使用者指定）。所以兩把的差別是彈道、速度與火，
@@ -1174,21 +1355,22 @@ function aimCannons(point, onBlock) {
   castCannons(aim, point, onBlock ? point.y : 0, rageN(1, Math.floor(CAN_MAX / CAN_TEAM)));
 }
 /* teams（破壞模式，v1.262.0）同 castTrebs：v1.275.0 起其餘幾隊架在第一點附近、轟第二點附近
-   （範圍與間距見 RAGE_SPOT.cannon），散出去的那幾隊瞄地面，第二隊起第一發往後挪。 */
+   （範圍與間距見 RAGE_SPOT.cannon），散出去的那幾隊瞄地面，第二隊起第一發往後挪。
+   v1.302.0 起推進來、到齊才開打，那一聲搬到到齊那一刻（同 castTrebs）。 */
 function castCannons(from, toward, aimY, teams) {
   aim = null;
   teams = teams || 1;
   const ends = teams > 1 ? rageEnds(teams, from, toward, RAGE_SPOT.cannon) : null, lag = rageLags(teams);
+  const tm = { n: 0, ok: 0 };
   for (let t = 0; t < teams; t++)
-    canTeam(t ? ends.a[t] : from, t ? ends.b[t] : toward, t ? 0 : aimY, lag[t]);
-  sndWind();                        // 一隊架好那一聲（同投石機，一隊一次）
+    canTeam(t ? ends.a[t] : from, t ? ends.b[t] : toward, t ? 0 : aimY, lag[t], tm);
 }
 /* 一隊排成一列、整隊面向目標。**整段隊形的算法與理由跟 trebTeam 一模一樣**
    （推隊伍的中心而不是一台一台推、推完才算方向、排完再整隊往外挪到每一門都在圈外、
    最後夾回島內）——那邊的註解就是這一段的說明，不重抄一遍。
    照 castArrows／castTrebs 的先例各留一份：這三把的隊形細節（幾台、間距、退多遠）
    各不相同，抽成共用的話參數會比程式還長。 */
-function canTeam(from, toward, aimY, wait) {
+function canTeam(from, toward, aimY, wait, tm) {
   const N = CAN_TEAM;
   let cx = from.x, cz = from.z;
   const d0 = Math.hypot(cx, cz), minD = siteR + CAN_STAND;
@@ -1216,14 +1398,15 @@ function canTeam(from, toward, aimY, wait) {
   }
   for (let i = 0; i < N; i++) {
     const off = (i - (N - 1) / 2) * CAN_GAP;
-    placeCannon({ x: cx + sx * off, z: cz + sz * off }, toward, aimY, wait);
+    placeCannon({ x: cx + sx * off, z: cz + sz * off }, toward, aimY, wait, tm);
   }
 }
 /* 架一門：站在 spot、轟 aimAt。兩道保險同 placeTreb（斜著站時還在牆裡的那一門要推出去、
-   站到島外的要夾回來；v1.211 起外緣同樣是 debrisR）。wait 同 placeTreb（v1.270.0）。 */
-function placeCannon(spot, aimAt, aimY, wait) {
-  if (!cannons) cannons = { list: [], shells: [] };
-  if (cannons.list.length >= CAN_MAX) cannons.list.shift();
+   站到島外的要夾回來；v1.211 起外緣同樣是 debrisR）。wait 同 placeTreb（v1.270.0）。
+   推進場、騰位子、crews 都同 placeTreb（v1.302.0）。 */
+function placeCannon(spot, aimAt, aimY, wait, tm) {
+  if (!cannons) cannons = { list: [], shells: [], crews: [], live: CAN_MAX };
+  puRoom(cannons, CAN_POOL);
   let x = spot.x, z = spot.z;
   const d = Math.hypot(x, z), minD = siteR + CAN_STAND;
   if (d < minD) {
@@ -1240,9 +1423,12 @@ function placeCannon(spot, aimAt, aimY, wait) {
   const mz0 = ENG.canMuzzle(0, 0, ENG.CAN_EL);
   const el = canEl(Math.max(1, Math.hypot(aimAt.x - x, aimAt.z - z) - mz0.z),
                    ty + 0.6 - mz0.y + CAN_AIM_PAD);
-  cannons.list.push({ x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
-                      tx: aimAt.x, tz: aimAt.z, ty, el,
-                      rec: 0, back: 0, next: 0.4 + (wait || 0), left: CAN_SHOTS, idle: 0 });
+  const m = { x, z, a: Math.atan2(aimAt.x - x, aimAt.z - z),
+              tx: aimAt.x, tz: aimAt.z, ty, el,
+              rec: 0, back: 0, next: 0.4 + (wait || 0), left: CAN_SHOTS, idle: 0, tm: tm || null };
+  if (tm) tm.n++;
+  puEnter(m, CAN_HW, ENG.CAN_TAIL);
+  cannons.list.push(m);
 }
 /* ── 彈道：仰角先，初速後（v1.212）────────────────────────────────
    v1.204～v1.211 是**固定 18°**、打不到的高度就把 h 當 0 —— 而 h 是「相對砲口」的
@@ -1423,15 +1609,19 @@ function shellHit(r) {
      聲音照給——連續的砲擊本來就該聽得到。 */
   explode(p, CAN_R, CAN_POW, false, false, null, true);
 }
+/* v1.302.0：推進場、到齊才數第一發、退場原地淡（同 stepTrebs）。 */
 function stepCannons(dt) {
   if (!cannons) return;
+  puCrews(cannons, dt);
   for (let i = cannons.list.length - 1; i >= 0; i--) {
     const m = cannons.list[i];
+    if (m.st === 'in') { if (!puGather(m, dt, cannons)) continue; puReady(m); }
+    if (m.st === 'out' && puFade(m, dt)) { cannons.list.splice(i, 1); continue; }
     // 復進：砲管彈回待發位置，整台也一路推回原位（兩層各走各的，見 ENG.putCannons）
     if (m.rec > 0) m.rec = Math.max(0, m.rec - dt / CAN_BACK_T);
     if (m.back > 0) m.back = Math.max(0, m.back - ENG.CAN_KICK * dt / CAN_KICK_T);
     if (m.left > 0) {
-      m.next -= dt;
+      if (puGo(m)) m.next -= dt;                     // 這一次叫出來的全部到齊才開始數（v1.302.0）
       if (m.next <= 0) {
         m.next = rr(CAN_LOAD[0], CAN_LOAD[1]);
         m.left--;
@@ -1443,9 +1633,9 @@ function stepCannons(dt) {
         m.back = ENG.CAN_KICK;
         fireCannon(m);
       }
-    } else {
-      m.idle += dt;                                  // 打完站一下再撤走（同投石機）
-      if (m.idle > 3.5) cannons.list.splice(i, 1);
+    } else if (m.st !== 'out') {
+      m.idle += dt;                                  // 打完站一下再撤走（同投石機，v1.302.0 起原地淡掉）
+      if (m.idle > 3.5) puOut(m, cannons);
     }
   }
   for (let i = cannons.shells.length - 1; i >= 0; i--) {
@@ -1465,7 +1655,7 @@ function stepCannons(dt) {
       cannons.shells.splice(i, 1); shellHit(r);
     }
   }
-  if (!cannons.list.length && !cannons.shells.length) {
+  if (!cannons.list.length && !cannons.shells.length && !cannons.crews.length) {
     cannons = null; ENG.putCannons([]); ENG.putShells([]);
   }
 }

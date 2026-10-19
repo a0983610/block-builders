@@ -444,7 +444,9 @@ function draw() {
   const arms = archerList();
   /* 火槍兵（v1.227）再接在弓箭手後面，同一顆網格（引擎的 MAXW 已經留好這 60 個位子）。 */
   const guns = musketList(), g0 = workers.length + arms.length;
-  ENG.setWorkerCount(g0 + guns.length);
+  /* 推投石機、加農砲進場的人（v1.302.0）再接在火槍兵後面，同一顆網格（引擎的 MAXW 已經留好位子） */
+  const crew = crewList(), c0 = g0 + guns.length;
+  ENG.setWorkerCount(c0 + crew.length);
   /* 從林帶進出場那一段淡入淡出（v1.256.0，見 woodFade）：**畫之前照當下的位置算**。alpha 只是畫法，
      在 step 裡算的話畫出來的是「上一次 step 時站在哪」的濃淡——step 之後才被搬過位置的
      （測試直接把牠搬到場中間、道具直接改位置）就對不上。動物那一份在下面 putBeasts 前面。 */
@@ -452,6 +454,7 @@ function draw() {
   for (let i = 0; i < workers.length; i++) ENG.putWorker(i, workers[i]);
   for (let i = 0; i < arms.length; i++) ENG.putWorker(workers.length + i, arms[i]);
   for (let i = 0; i < guns.length; i++) ENG.putWorker(g0 + i, guns[i]);
+  for (let i = 0; i < crew.length; i++) ENG.putWorker(c0 + i, crew[i]);
   ENG.commitWorkers();
   ENG.putEmotes(emoList());          // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位；v1.274.0 起猴子聊完也冒）
   /* 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）。Saber（v1.222）也在這份清單裡，
