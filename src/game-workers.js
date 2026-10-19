@@ -3470,7 +3470,7 @@ function evBlocks(e) {
   const wall = EV_WALL[e.id];
   if (wall === undefined || !homes) return 0;
   let n = 0;
-  for (const h of homes.list) if (!!h.wall === wall) n += h.slots.length - h.left;
+  for (const h of homes.list) if (!!h.wall === wall && !h.lamp) n += h.slots.length - h.left;   // 燈架不是哪一件事蓋的（v1.303.0）
   return n;
 }
 function evAlive(e) {
@@ -3500,8 +3500,9 @@ function rollIdleEvent() {
      **清單上的每一筆都是上一件蓋的**：房子、樹、城牆段只在事件的 start 裡生出來，
      而 start 只跟在這裡後面跑——所以「上一件蓋的」就是整份 homes.list，城內那幾間房子
      與樹也在裡面（使用者選的「一起拆」）。解法跟廢棄、被新工地徵收同一條（dropHomes）：
-     積木變成地上的碎料，下一件的人撿去用（見 開發筆記〈換成另一件事，上一件蓋的整批解體〉）。 */
-  if (evLast && e !== evLast) dropHomes(() => false);
+     積木變成地上的碎料，下一件的人撿去用（見 開發筆記〈換成另一件事，上一件蓋的整批解體〉）。
+     **v1.303.0 起例外是燈源的燈架**（h.lamp）：玩家立的，不是哪一件事蓋的，留著 */
+  if (evLast && e !== evLast) dropHomes(h => !!h.lamp);
   /* 換一件事，最高點就跟著換成「這一類現在有多少」（見 evAlive）。
      這兩個一定要一起動：只歸零 evPeak、evLast 留給呼叫端設的話，
      中間那一瞬間 evAlive 拿 peak 0 去比，什麼都會判成「還活著」。 */
@@ -4833,7 +4834,8 @@ function pickHomeSite(cx, cz, rad, capOut) {
    **不能改成「都有人了就疊到同一間」**：這一輪剛開的新房子也是「還沒蓋完」，
    於是第二組之後全部併進第一間，一輪只蓋得出一間（實測 20 人 10 個離隊只蓋 1 間）。
    間數比組數多的時候會有一兩間排到下一輪，那是排隊、不是沒人管。 */
-const homeCat = h => h.wall ? 2 : h.tree ? 1 : 0;
+/* 燈源的燈架（v1.303.0）自己一類 3：沒有人會照這一類去找（壞了就沒了，使用者選的），見 game-tools.js〈道具：燈源〉 */
+const homeCat = h => h.lamp ? 3 : h.wall ? 2 : h.tree ? 1 : 0;
 const NO_TAKEN = new Set();                        // 「誰都還沒被認走」：見 updHome 接下一段
 function pickUnfinished(cx, cz, taken, cat) {
   let best = -1, bd = Infinity;
@@ -5123,7 +5125,7 @@ function wallWant(W) {
   const want = { h: Math.min(WALL_IN_MAX, Math.round(area / WALL_IN_AREA)),
                  t: Math.min(WALL_IN_TMAX, Math.round(area / WALL_IN_TAREA)) };
   for (const h of homes.list) {
-    if (h.wall || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;   // 城外的不算
+    if (h.wall || h.lamp || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;   // 城外的不算；燈架（v1.303.0）不是房子也不是樹
     if (h.tree) want.t--; else want.h--;
   }
   return want;
@@ -5133,7 +5135,8 @@ function pickInside(cx, cz, taken, W) {
   let best = -1, bd = Infinity;
   for (let i = 0; i < homes.list.length; i++) {
     const h = homes.list[i];
-    if (h.wall || h.left <= 0 || taken.has(i) || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;
+    // 燈架（v1.303.0）壞了就沒了，不派人去補（同 homeCat 那一類沒人接）
+    if (h.wall || h.lamp || h.left <= 0 || taken.has(i) || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;
     const d = (h.x - cx) ** 2 + (h.z - cz) ** 2;
     if (d < bd) { bd = d; best = i; }
   }

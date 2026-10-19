@@ -105,7 +105,11 @@ const TOOLS = [
   { id: 'eris', n: '光之太刀', k: '🌙', cat: 'anime',
     /* v1.290.0：點建築、地上的生物或小人就跑到射程一半，居合拔劍一閃，劍氣沿著隨機方向的切面砍穿過去；
        點空地就跑到那裡待命（見 callEris） */
-    tip: '點建築、生物或小人：叫艾莉絲跑來拔劍一閃，劍氣隨機方向砍穿整座；點空地：跑到那裡待命' }
+    tip: '點建築、生物或小人：叫艾莉絲跑來拔劍一閃，劍氣隨機方向砍穿整座；點空地：跑到那裡待命' },
+  { id: 'flood', n: '燈源', k: '🔦', cat: 'safe', lamp: true,
+    /* v1.303.0：也不是破壞道具——點兩下立一座燈架往那個方向照（見 aimFlood）。lamp：畫面設定「光源」選關就沒有這一把（見 toolHere）。
+       照樣接在最後面、照等差階梯解鎖 */
+    tip: '點兩下：先點燈架立在哪，再點要照的地方——晚上才照得亮，最多 4 座，被打壞就熄' }
 ];
 /* 道具選單的分類（v1.294.0，使用者：「道具選擇頁面根據種類分類(比較好找)」）：選單與快捷鍵那九格下拉
    照這張的順序一類一組，組裡照 TOOLS 的順序（＝解鎖順序）排。每一把在 TOOLS 裡寫 `cat` 指到這裡的 id。
@@ -140,6 +144,9 @@ const LOCK_STEP = 4000;
 /* 兩條路都算解鎖（v1.214）：累計擊飛到門檻，**或**在泡泡裡開到它（stats.gift，會進存檔）。
    泡泡開出來的不照階梯順序，所以可能先拿到核彈——那就是這個機制的用意。 */
 const toolOk = t => !t.lock || t.lock.ok() || stats.gift.indexOf(t.id) >= 0;
+/* 這一把現在有沒有（v1.303.0）：標了 lamp 的（燈源）畫面設定「光源」選關就整把不見——選單、快捷鍵、泡泡都不出現
+   （使用者：「如果沒有在設定開啟光源數量 就沒有這道具」）。解鎖是另一回事：關掉再開，解過的照樣是解過的 */
+const toolHere = t => !t.lamp || lampN > 0;
 /* 這幾種點空地也算數：它們的用法就是「選一個地點」，
    規定一定要點到建築的話，站在旁邊的空地放炸彈反而做不到。
    大槌點空地是地震、保齡球點空地是從那裡把球丟出去，所以也在這裡。
@@ -161,7 +168,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       gojo: 1,                                                  // 虛式「茈」同上（v1.255.0）
                       frieren: 1,                                               // 防禦魔法：點哪裡都是叫她跑過去（v1.259.0）
                       meat: 1,                                                  // 肉：點哪裡都是丟在那裡（v1.261.0）
-                      eris: 1 };                                                // 光之太刀：點空地＝跑到那裡（v1.290.0）
+                      eris: 1,                                                  // 光之太刀：點空地＝跑到那裡（v1.290.0）
+                      flood: 1 };                                               // 燈源：兩下都是點地面也算（v1.303.0）
 let tool = 'hammer';
 
 /* ── 破壞模式（v1.262.0）──────────────────────────────────
@@ -274,7 +282,7 @@ const GIFT_BOB = 0.22;           // 落地後上下浮多少
 let gifts = null;                // 場上還沒被點掉的泡泡（換場不收，見 startBuild）
 
 /* 還鎖著的那幾把（泡泡只從這裡面挑）。已經用泡泡開過的也算解鎖，所以走 toolOk。 */
-function lockedTools() { return TOOLS.filter(t => t.lock && !toolOk(t)); }
+function lockedTools() { return TOOLS.filter(t => t.lock && !toolOk(t) && toolHere(t)); }   // 現在沒有的那把（光源關掉時的燈源）不掉
 function spawnGift(x, y, z) {
   const pool = lockedTools();
   if (!pool.length) return null;                 // 全開了就不掉
@@ -9001,6 +9009,8 @@ function useTool(hit) {
   if (tool === 'frieren') { callFrieren(hit.point); return 0; }
   /* 肉（v1.261.0）：點哪裡就丟在那裡，點到建築就掉在它旁邊的空地（見 dropMeat）。生物、小人同上是透明的 */
   if (tool === 'meat') { dropMeat(hit.point); return 0; }
+  /* 燈源（v1.303.0）：第一下立燈架的位置、第二下照哪裡；點在建築上就瞄那個高度（同投石機、加農砲） */
+  if (tool === 'flood') { aimFlood(hit.point, hit.kind === 'block'); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
@@ -15019,6 +15029,225 @@ function meatWalk(m, dt, spd, stp, kp) {
   while (e < -Math.PI) e += Math.PI * 2;
   m.a += clamp(e, -B_RISE_YAW * dt, B_RISE_YAW * dt);
   m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+}
+
+/* ── 道具：燈源（v1.303.0）───────────────────────────────
+   使用者：「增加道具燈源 如果沒有在設定開啟光源數量 就沒有這道具／功能是往某個方向照明 被攻擊會被破壞」，參考圖是球場的燈架。
+   問過之後定的：**點兩下**（先點立在哪、再點照哪裡，同投石機）、**積木架＋模型燈頭、壞了就沒了**（小人不修）、
+   **晚上照、白天燈板亮著**、**最多 4 座**（再立就擠掉最早那座）。見 開發筆記〈道具：燈源〉。
+
+   架子是真的積木，**掛在 homes.list 上**（h.lamp，同房子、樹、城牆）：支撐垮塌、每一把道具打得到、會飛的東西撞得到（homeSolid）、
+   走路的東西繞過去（homeBox）、換場不會被炸散、打它不算打地標——那一整套是現成的。只有兩件不一樣：
+   沒人來修（homeCat 是自己一類，沒有人會去接）、**架頂那一塊不在了就整座收掉**（燈頭掉下來熄掉、剩下的散成碎料，見 floodBreak）。
+   燈頭（燈板、燈泡、光束、聚光燈）是引擎畫的模型（ENG.putFloods），積木只能對齊格子，燈頭要轉到任意方向 */
+const FL_MAX = ENG.MAXFLOOD;        // 場上最多幾座（使用者選的 4，引擎的燈也只有這幾盞）
+const FL_H = 14;                    // 架頂離地幾格（底座一層 3×3 ＋ 柱子 13 格）
+const FL_BASE = [0.6, 0.6, 0.58];   // 底座的水泥色
+const FL_POLE = [[0.5, 0.54, 0.58], [0.43, 0.47, 0.51]];   // 柱子的鋼色，一格一格深淺交錯（看得出是一節一節的）
+const FL_LAY = 0.045;               // 一塊一塊砌上去，一塊幾秒（整座 22 塊約一秒）
+const FL_SITE = 3;                  // 離工地外緣至少幾格（不立在地標要蓋的地方）
+const FL_HEAD_T = 0.35;             // 砌好之後燈頭冒出來要幾秒
+/* 點亮那一下閃幾下（球場的燈是一盞一盞熱起來的）：FL_WARM 秒裡照這張表一格一格換，之後全亮。不抽 Math.random（測試下了種子） */
+const FL_WARM = 0.8;
+const FL_FLICK = [0.45, 0, 0.7, 0.1, 0, 0.85, 0.3, 1, 0.65, 1];
+const FL_PITCH = [-0.45, 1.25];     // 燈板往下俯的範圍（弧度）：往上最多抬 26°、往下最多俯 72°
+const FL_AIM_R = 2.2, FL_AIM_C = 0xffe7a0;   // 第一下的光環（≈ 底座那一圈）
+/* 燈頭掉到地上躺幾秒、再幾秒淡掉。看過預覽改的（使用者：「燈具壞掉 掉在地上也是用淡掉的方式退場」）：
+   第一版是躺 1.5 秒再 0.5 秒縮掉；淡多久同機台退場（PU_FADE，「慢慢消失」） */
+const FL_LIE = 1.5, FL_FADE = PU_FADE;
+/* 燈頭怎麼掉（預覽第二輪改，使用者：「現在燈具沒有燈頭掉到地上，先躺 1.5 秒，接著在 2 秒內淡到透明再收掉」）：
+   第一版是原地往下掉、隨便翻——量得到它在，但深色的燈頭一半陷進地裡、又被柱子散下來的積木蓋住，晚上看不出來。
+   改成往燈板背面那一側倒（FL_BACK 格／秒），一邊翻成**燈板朝上**（FL_TIP 秒翻完），落在底座幾格外、躺平時燈泡那一面看得到；
+   落地太快就彈一下（FL_BOUNCE），揚一撮塵。FL_REST＝燈板朝上躺平時原點離地多高（背後那個盒子 0.53 厚） */
+const FL_BACK = 3.5, FL_TIP = 1.0, FL_BOUNCE = 0.25, FL_REST = 0.55;
+let floods = null;
+/* 底座 3×3（先中間、再一圈）＋ 中間往上一根柱子；格子座標 i／k 是 0～2，ox／oz＝1 讓 (1, 1) 落在 (x, z)（同樹，見 homeSolid） */
+function floodSlots(x, z) {
+  const out = [];
+  const add = (i, gy, k, c) => out.push({ x: x + i - 1, y: gy + HB, z: z + k - 1, c, i, k, gy, filled: false, claimed: -1 });
+  add(1, 0, 1, FL_BASE);
+  for (let i = 0; i < 3; i++) for (let k = 0; k < 3; k++) if (i !== 1 || k !== 1) add(i, 0, k, FL_BASE);
+  for (let gy = 1; gy < FL_H; gy++) add(1, gy, 1, FL_POLE[gy % 2]);
+  return out;
+}
+/* 立在哪：島內、工地外，不壓在房子、樹、城牆、別座燈架上（照整份格子框，還沒蓋完的也算占著）。
+   點在工地裡（點建築）先沿半徑推到工地外緣（同加農砲的站位；點在正中心就推向鏡頭那一側），
+   那一點放不下就往外一圈一圈找最近放得下的；都放不下回 null */
+function floodSpot(x, z) {
+  const minD = siteR + FL_SITE + 1.5, maxD = debrisR - 3, d0 = Math.hypot(x, z);
+  if (d0 < minD || d0 > maxD) {
+    const e = ENG.camEye(), a = d0 < 0.01 ? Math.atan2(e.z, e.x) : Math.atan2(z, x), d = clamp(d0, minD, maxD);
+    x = Math.cos(a) * d; z = Math.sin(a) * d;
+  }
+  const fits = (px, pz) => {
+    const r = Math.hypot(px, pz);
+    if (r < minD - 1e-9 || r > maxD) return false;
+    if (homes) for (const h of homes.list) {
+      const s = homeSpan(h);
+      if (s.x1 > px - 2 && s.x0 < px + 2 && s.z1 > pz - 2 && s.z0 < pz + 2) return false;
+    }
+    return true;
+  };
+  for (let r = 0; r <= 18; r += 1.5)
+    for (let j = 0, n = r ? Math.ceil(r * 4) : 1; j < n; j++) {
+      const a = j / n * Math.PI * 2, px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
+      if (fits(px, pz)) return { x: px, z: pz };
+    }
+  return null;
+}
+/* 兩點式（同投石機）：第一下記位置、畫個光環，第二下立起來照那一點；第二下點在建築上就連高度一起瞄 */
+function aimFlood(point, onBlock) {
+  if (!aim) { aimFirst(point, FL_AIM_R, FL_AIM_C); return; }
+  const from = aim;
+  aim = null;
+  placeFlood(from, point, onBlock ? point.y : 0);
+}
+/* 立一座：from 立在哪、toward 照哪裡、ty 照那一點多高。場上滿了就先把最早那座收掉（見 floodBreak）。回傳那一座（放不下回 null） */
+function placeFlood(from, toward, ty) {
+  const sp = floodSpot(from.x, from.z);
+  if (!sp) { toast('🔦 這附近立不下燈架', '離建築、房子遠一點再試'); return null; }
+  if (!floods) floods = [];
+  const up = floods.filter(f => !f.head);
+  if (up.length >= FL_MAX) floodBreak(up[0]);
+  if (!homes) homes = { list: [] };
+  const slots = floodSlots(sp.x, sp.z);
+  const at = new Map();
+  slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+  const h = { id: homeSeq++, x: sp.x, z: sp.z, r: 2.2, kind: 'flood', at, ox: 1, oz: 1,
+              slots, left: slots.length, n: 0, lamp: 1, done: false };
+  homeBox(h);
+  markHomeF6(h);
+  homes.list.push(h);
+  floodClear(sp.x, sp.z);
+  const f = { h, x: sp.x, z: sp.z, top: FL_H, t: 0, laid: 0, topB: null, on: 0, lit: 0, hs: 0, warm: -1,
+              a: 0, p: 0, d: 10, head: null };
+  floodAim(f, toward.x, ty || 0, toward.z);
+  floods.push(f);
+  return f;
+}
+/* 燈板朝哪：從燈板的軸心（架頂上 ENG.FLOOD_PIV）看過去。兩下點在同一個地方（沒有方向）就照工地中心 */
+function floodAim(f, tx, ty, tz) {
+  if (Math.hypot(tx - f.x, tz - f.z) < 1) { tx = 0; tz = 0; ty = 0; }
+  const dx = tx - f.x, dy = ty - (f.top + ENG.FLOOD_PIV), dz = tz - f.z, hz = Math.hypot(dx, dz);
+  f.a = Math.atan2(dx, dz);
+  f.p = clamp(Math.atan2(-dy, hz), FL_PITCH[0], FL_PITCH[1]);
+  f.d = Math.hypot(hz, dy);
+}
+/* 立的地方先清出來：底座底下的碎料往外彈開、站在上面的人與動物推到底座外面（不然會被砌在柱子裡） */
+function floodClear(x, z) {
+  for (const b of blocks) {
+    if (b.st !== FREE || Math.abs(b.x - x) > 2.1 || Math.abs(b.z - z) > 2.1) continue;
+    let dx = b.x - x, dz = b.z - z, d = Math.hypot(dx, dz);
+    if (d < 0.01) { dx = 1; dz = 0; d = 1; }
+    freeBlock(b);
+    const sp = rr(3, 5);
+    b.vx = dx / d * sp; b.vz = dz / d * sp; b.vy = rr(3, 5);
+    b.ax = rr(-6, 6); b.ay = rr(-6, 6); b.az = rr(-6, 6);
+  }
+  const push = o => {
+    if (Math.abs(o.x - x) > 2 || Math.abs(o.z - z) > 2) return;
+    const dx = o.x - x, dz = o.z - z;
+    if (Math.abs(dx) > Math.abs(dz)) o.x = x + (dx < 0 ? -2.1 : 2.1); else o.z = z + (dz < 0 ? -2.1 : 2.1);
+  };
+  for (const w of workers) if (!w.air) push(w);
+  if (beasts) for (const m of beasts) if (m.herd && !m.air) push(m);
+}
+/* 砌上去一塊（同 landHome 落定那一下，只是不經過小人的手） */
+function floodLay(f, k) {
+  const h = f.h, sl = h.slots[k];
+  if (blocks.length >= ENG.MAXB) return false;
+  const b = newBlock();
+  b.st = SET; b.rest = true;
+  b.x = sl.x; b.y = sl.y; b.z = sl.z;
+  b.r = b.tr = sl.c[0]; b.g = b.tg = sl.c[1]; b.b = b.tb = sl.c[2];
+  b.scale = 1.22;                                       // 落定彈一下（同 landHome）
+  b.hh = homes.list.indexOf(h); b.hk = k;
+  blocks.push(b);
+  sl.filled = true; sl.claimed = -1;
+  h.left--;
+  homeBox(h);
+  if (h.left <= 0) h.done = true;
+  if (k === h.slots.length - 1) f.topB = b;
+  homeOwnAt = -1;                                       // 「哪一格是哪一塊」的表這一幀算過的話要重算（見 homeOwners）
+  return true;
+}
+/* 收掉一座：燈頭從架頂掉下來（架頂那一塊被打飛的話照它的速度帶一點）、燈熄掉；剩下的積木整座散成碎料（dropHomes，同房子廢棄）。
+   燈頭還沒冒出來就收的（砌到一半被打掉、擠掉）就沒有燈頭可掉 */
+function floodBreak(f) {
+  if (f.head) return;
+  const b = f.topB, v = b && b.st === FLY ? b : null;
+  const bx = -Math.sin(f.a) * FL_BACK, bz = -Math.cos(f.a) * FL_BACK;   // 往燈板背面那一側
+  f.head = { x: f.x, y: f.top, z: f.z, vx: bx + (v ? v.vx * 0.4 : 0), vy: (v ? Math.max(0, v.vy) * 0.4 : 0) + rr(1.5, 2.5),
+             vz: bz + (v ? v.vz * 0.4 : 0), rx: 0, rz: rr(-0.15, 0.15), p: f.p, p0: f.p, tip: 0, rest: false, t: 0 };
+  f.lit = 0;
+  if (!(f.hs > 0)) f.head.t = FL_LIE + FL_FADE;         // 燈頭還沒出來：沒東西要掉
+  if (homes && homes.list.indexOf(f.h) >= 0) { dropHomes(q => q !== f.h); homeOwnAt = -1; }   // 清單重排過，同上
+}
+function stepFloods(dt) {
+  if (!floods) return;
+  for (let i = floods.length - 1; i >= 0; i--) {
+    const f = floods[i];
+    if (f.head) {                                       // 掉下來的燈頭：落地、躺一下、淡掉（透明度見 floodList）
+      const e = f.head;
+      f.on = Math.max(0, f.on - dt * 6);
+      if (!e.rest) {
+        e.vy -= GRAV * dt;
+        e.x += e.vx * dt; e.y += e.vy * dt; e.z += e.vz * dt;
+        /* 往後翻成燈板朝上（rx −90°：頭頂轉到背面、燈板正面朝天），燈板的俯角一起收回 0；FL_TIP 秒翻完、尾段放慢 */
+        e.tip += dt;
+        const u = Math.min(1, e.tip / FL_TIP), q = 1 - (1 - u) * (1 - u);
+        e.rx = -Math.PI / 2 * q; e.p = e.p0 * (1 - q);
+        if (e.y <= FL_REST) {
+          e.y = FL_REST;
+          if (f.hs > 0 && e.vy < -3) { spawnDust({ x: e.x, y: 0.3, z: e.z }, 2, 6); sndLand(); }
+          if (e.vy < -4) { e.vy = -e.vy * FL_BOUNCE; e.vx *= 0.5; e.vz *= 0.5; }
+          else { e.rest = true; e.rx = -Math.PI / 2; e.p = 0; }
+        }
+      } else e.t += dt;
+      if (e.t >= FL_LIE + FL_FADE) floods.splice(i, 1);
+      continue;
+    }
+    const h = f.h, S = h.slots;
+    if (!homes || homes.list.indexOf(h) < 0) { floodBreak(f); continue; }   // 被別人收掉了（新工地徵收、剩兩成五廢棄）
+    f.t += dt;
+    while (f.laid < S.length && f.t >= f.laid * FL_LAY) {
+      /* 砌到一半底下被打掉：上面那塊砌不上去，這一座就不立了 */
+      if (!canPlaceHome(h, f.laid) || !floodLay(f, f.laid)) { floodBreak(f); break; }
+      f.laid++;
+    }
+    if (f.head) continue;
+    if (f.laid < S.length) continue;
+    if (!S[S.length - 1].filled) { floodBreak(f); continue; }   // 架頂那一塊不在了：燈頭掉下來
+    if (f.hs < 1) { f.hs = Math.min(1, f.hs + dt / FL_HEAD_T); if (f.hs >= 1) f.warm = 0; continue; }
+    if (f.warm >= 0) {
+      f.warm += dt;
+      if (f.warm >= FL_WARM) f.warm = -1;
+    }
+    f.lit = f.warm < 0 ? 1 : FL_FLICK[Math.min(FL_FLICK.length - 1, Math.floor(f.warm / FL_WARM * FL_FLICK.length))];
+    f.on = f.lit;
+  }
+  if (!floods.length) floods = null;
+}
+/* 畫面那邊要的（ENG.putFloods）：還立著的先、掉下來的排後面，超過引擎的上限就不畫（掉下來那幾座先不畫） */
+const _flDraw = [];
+function floodList() {
+  _flDraw.length = 0;
+  for (let pass = 0; pass < 2; pass++)
+    for (const f of floods) {
+      if (!!f.head !== !!pass || !(f.hs > 0) || _flDraw.length >= FL_MAX) continue;
+      const e = f.head;
+      let o = f.dr || (f.dr = {});
+      o.x = e ? e.x : f.x; o.y = e ? e.y : f.top; o.z = e ? e.z : f.z;
+      o.a = f.a; o.p = e ? e.p : f.p; o.d = f.d; o.rx = e ? e.rx : 0; o.rz = e ? e.rz : 0;
+      o.s = f.hs; o.lit = f.lit; o.on = f.on;
+      o.alpha = e && e.t > FL_LIE ? Math.max(0, 1 - (e.t - FL_LIE) / FL_FADE) : undefined;   // 躺夠了才開始淡（引擎整顆搬到淡的那一顆畫）
+      _flDraw.push(o);
+    }
+  return _flDraw;
+}
+/* 光源選關（setLamps）：這一把沒了，場上的也收掉（燈頭掉下來、架子散掉） */
+function dropFloods() {
+  if (floods) for (const f of floods) floodBreak(f);
 }
 
 /* ── 破壞工具打得到那幾隻（v1.146）────────────────────────

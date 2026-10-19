@@ -36,6 +36,10 @@ const ENG = (function () {
   let lampN = 6;                    // 光源數（v1.296.0，畫面設定「光源」：0＝全關，否則六盞以上，見 setLampCount）
   let boomUsed = 0;                 // 這一幀強爆炸用掉幾盞（putBooms 記，putGlows／lampRoom 照它找空的）
   let stormOn = false, boomOn = false, glowOn = false;   // 這一刻打雷／爆炸／小光源要不要燈（全部一起開關，見 lampSync）
+  /* 燈架（v1.303.0，見 putFloods）：燈頭、燈泡、晚上的光束各一顆 InstancedMesh，四盞聚光燈自己一組開關（見 floodSync） */
+  let floodMesh = null, floodLitMesh = null, floodBeamMesh = null, floodLamps = null, floodOn = false;
+  let floodFade = null, floodFadeA = null;   // 掉在地上淡掉的燈頭（同 trebFade：給了 alpha 的整顆搬到這一顆畫）
+  let floodBeamPos = null, floodBeamCol = null;   // 光束的頂點與頂點色（每幀照燈板的位置重寫，見 putFloods）
   let gloomEl = null, gloomAt = -1;  // 烏雲遮天：蓋在 CSS 天空上的那一層、上一次給的暗度（見 setGloom）
   let skyNightEl = null, skyDuskEl = null, skyStarEl = null;   // 晝夜：夜空、黃昏、星星三層（v1.295.0，見 setDayTime）
   let dayAt = -1;                    // 晝夜：上一次給的分鐘數，−1＝關掉（一直是正午）
@@ -141,6 +145,7 @@ const ENG = (function () {
   const SCORCHV = SCORCH_MAX * SCORCH_SEG * (SCORCH_U.length - 1) * 6;
   const MAXBOMB = 6, BOMB_PARTS = 3;
   const MAXMEAT = 6;                       // 同時最多幾塊肉（規則那邊 MEAT_MAX 直接讀這個，v1.261.0）
+  const MAXFLOOD = 4;                      // 同時最多幾座燈架（v1.303.0，使用者選的；規則那邊 FL_MAX 直接讀這個）
   const MAXMET = 6;                       // 同時最多幾顆隕石（一顆一個 instance）
   /* 環的總數：魔法陣每層要兩個（亮芯 + 外圈暈染，單一個環太扁看不出是發光的），
      四層就吃掉八個，再加上爆炸衝擊環與蘑菇雲腰環。 */
@@ -1470,6 +1475,41 @@ if (vAo.x + vAo.y > 0.5) {
     scene.add(meatMesh);
     meatMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
+    /* 燈架（v1.303.0）：架子是真的積木（規則那邊砌的），這裡只畫架頂那個燈頭——
+       燈頭要轉到任意方向，積木只能對齊格子。三顆同幽浮那一套：外殼吃光、燈泡不吃光（白天也亮著）、光束加色。
+       顏色開場寫一次就好（燈泡的亮暗每幀由 putFloods 寫） */
+    floodMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXFLOOD * FLOOD_PARTS);
+    floodMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    floodMesh.castShadow = true; floodMesh.count = 0;
+    floodMesh.frustumCulled = false; floodMesh.visible = false;
+    for (let i = 0; i < MAXFLOOD; i++)
+      for (let k = 0; k < FLOOD_PARTS; k++) floodMesh.setColorAt(i * FLOOD_PARTS + k, tmpC.setHex(FLOOD_ALL[k].c));
+    scene.add(floodMesh);
+    floodLitMesh = new T.InstancedMesh(unit, new T.MeshBasicMaterial({ color: 0xffffff }), MAXFLOOD * FLOOD_LITS);
+    floodLitMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    floodLitMesh.count = 0; floodLitMesh.frustumCulled = false; floodLitMesh.visible = false;
+    floodLitMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    scene.add(floodLitMesh);
+    /* 光束：從燈板正面那一片燈泡（長方形）照出去，四邊照燈的半角往外張，拉到瞄的那一點——預覽第二輪改的
+       （使用者：「光束的部分要符合燈具照出去」；第一版是一根圓錐，窄頭是個比燈板小的圓，看起來不是燈板照出來的）。
+       四座的四面寫進同一份頂點、每幀照燈板的位置重算（一座 FLOOD_BEAM_V 個頂點），頂點色從燈板往外淡到黑——
+       加色混合，黑就是看不見，所以不必另開一份「沿著長度變淡」的 shader */
+    {
+      const g = new T.BufferGeometry();
+      floodBeamPos = new Float32Array(MAXFLOOD * FLOOD_BEAM_V * 3);
+      floodBeamCol = new Float32Array(MAXFLOOD * FLOOD_BEAM_V * 3);
+      const pa = new T.BufferAttribute(floodBeamPos, 3), ca = new T.BufferAttribute(floodBeamCol, 3);
+      pa.setUsage(T.DynamicDrawUsage); ca.setUsage(T.DynamicDrawUsage);
+      g.setAttribute('position', pa); g.setAttribute('color', ca);
+      g.setDrawRange(0, 0);
+      floodBeamMesh = new T.Mesh(g, new T.MeshBasicMaterial({
+        color: FLOOD_C, vertexColors: true, transparent: true, opacity: FLOOD_BEAM_OP,
+        side: T.DoubleSide, depthWrite: false, forceSinglePass: true, blending: T.AdditiveBlending
+      }));
+    }
+    floodBeamMesh.frustumCulled = false; floodBeamMesh.visible = false;
+    scene.add(floodBeamMesh);
+
     /* 隕石：一顆一個 instance。石頭本體走 instance color，越接近落地燒得越紅
        （火焰本身是 hot 那批粒子拖出來的，這裡只負責那顆石頭）。
        幾何跟投石機的飛石同一顆球（v1.193，使用者：「隕石也順便改成球型」）。 */
@@ -1647,6 +1687,14 @@ if (vAo.x + vAo.y > 0.5) {
       L.visible = false; scene.add(L); boomLamps.push(L);
     }
     makeGlowLamps();                             // 光源數超過六盞多出來的那幾盞（v1.296.0，見 setLampCount）
+    /* 燈架的四盞聚光燈（v1.303.0，見 putFloods）：點光源照不出「往一個方向」，所以是另一種燈、自己一組開關（floodSync）——
+       跟上面那一池綁在一起的話，每次強爆炸、打雷都要多付四盞的錢。不投影子（一盞多畫一趟整個場景）。
+       target 要掛進場景，世界矩陣才會跟著每幀更新 */
+    floodLamps = [];
+    for (let i = 0; i < MAXFLOOD; i++) {
+      const L = new T.SpotLight(FLOOD_C, 0, 1, FLOOD_ANG, FLOOD_PEN, 1);
+      L.visible = false; scene.add(L, L.target); floodLamps.push(L);
+    }
     /* 晝夜的三層（v1.295.0）：跟烏雲那一層同一招，烏雲排在它們後面＝疊在最上面。
        黃昏的橘色擠在畫面上面兩成多：預設鏡頭下天空只露那一段，照整頁分配的話橘色全被草地蓋住（預覽第一版）。
        星星是一顆 2px 的點拖一串 box-shadow，自己一支亂數（不吃 Math.random：測試下了種子，多抽會位移別段的骰子） */
@@ -1931,6 +1979,8 @@ if (vAo.x + vAo.y > 0.5) {
     };
     [trebFade, trebFadeA] = machFade(MAXTREB * TREB_PARTS);
     [canFade, canFadeA] = machFade(MAXCAN * CAN_PARTS);
+    /* 燈架掉在地上的燈頭（v1.303.0，使用者：「燈具壞掉 掉在地上也是用淡掉的方式退場」）：外殼＋燈泡（已經熄了）整顆一起淡 */
+    [floodFade, floodFadeA] = machFade(MAXFLOOD * (FLOOD_PARTS + FLOOD_LITS));
 
     /* 幽浮（v1.167）。外殼跟投石機同一套：整台的部位塞進一顆 InstancedMesh，
        所以一台跟兩台一樣貴。顏色開場寫一次就好（同大劍，造型只有這一種）。 */
@@ -3064,6 +3114,167 @@ if (vAo.x + vAo.y > 0.5) {
     if (meatMesh.instanceColor) meatMesh.instanceColor.needsUpdate = true;
   }
 
+  /* ── 燈架的燈頭（v1.303.0，見 開發筆記〈道具：燈源〉）──
+     使用者：「增加道具燈源 如果沒有在設定開啟光源數量 就沒有這道具／功能是往某個方向照明 被攻擊會被破壞」，參考圖是球場的燈架。
+     架子是規則那邊砌的積木，這裡畫架頂的燈頭：原點在架頂那一塊的頂面中心，燈板朝 +Z。
+     兩段：FLOOD_YOKE 只跟著轉向（底座、橫桿、兩支側臂），FLOOD_PANEL 再繞側臂的軸（離原點 FLOOD_PIV 高）往下俯——
+     燈板掛在兩支側臂中間轉，俯到哪都不會撞到底下的架子。燈泡（FLOOD_LIT）一格一格排在燈板正面，不吃光照，所以白天也是亮著的 */
+  const FLOOD_PIV = 1.95;
+  const FLOOD_W = 4.4, FLOOD_H = 3.0, FLOOD_D = 0.4;       // 燈板的寬、高、厚
+  const FLOOD_YOKE = [
+    { p: [0, 0.08, 0], s: [1.0, 0.16, 1.0], c: 0x50565e },                      // 底座
+    { p: [0, 0.32, 0], s: [0.34, 0.34, 0.34], c: 0x5d646d },                    // 頸
+    { p: [0, 0.55, 0], s: [FLOOD_W + 0.7, 0.18, 0.3], c: 0x5d646d },            // 橫桿
+    { p: [FLOOD_W / 2 + 0.25, (0.55 + FLOOD_PIV) / 2, 0], s: [0.18, FLOOD_PIV - 0.4, 0.3], c: 0x5d646d },   // 側臂
+    { p: [-FLOOD_W / 2 - 0.25, (0.55 + FLOOD_PIV) / 2, 0], s: [0.18, FLOOD_PIV - 0.4, 0.3], c: 0x5d646d },
+    { p: [FLOOD_W / 2 + 0.18, FLOOD_PIV, 0], s: [0.3, 0.36, 0.36], c: 0x454a52 },   // 軸
+    { p: [-FLOOD_W / 2 - 0.18, FLOOD_PIV, 0], s: [0.3, 0.36, 0.36], c: 0x454a52 }
+  ];
+  const FLOOD_PANEL = [
+    { p: [0, 0, 0], s: [FLOOD_W, FLOOD_H, FLOOD_D], c: 0x3a3f47 },             // 燈板
+    { p: [0, 0, -0.36], s: [FLOOD_W - 0.8, FLOOD_H - 0.6, 0.34], c: 0x30353c },   // 背後的盒子
+    { p: [0, FLOOD_H / 2 + 0.03, 0.3], s: [FLOOD_W + 0.1, 0.1, 0.62], c: 0x2b2f35 },   // 遮光簷
+    { p: [FLOOD_W / 2 + 0.02, 0, 0.3], s: [0.1, FLOOD_H, 0.62], c: 0x2b2f35 },
+    { p: [-FLOOD_W / 2 - 0.02, 0, 0.3], s: [0.1, FLOOD_H, 0.62], c: 0x2b2f35 }
+  ];
+  const FLOOD_ALL = FLOOD_YOKE.concat(FLOOD_PANEL), FLOOD_PARTS = FLOOD_ALL.length;
+  const FLOOD_COLS = 6, FLOOD_ROWS = 4;                     // 燈泡一排幾顆、幾排
+  const FLOOD_LIT = [];
+  for (let r = 0; r < FLOOD_ROWS; r++) for (let c = 0; c < FLOOD_COLS; c++)
+    FLOOD_LIT.push({ p: [(c - (FLOOD_COLS - 1) / 2) * 0.68, (r - (FLOOD_ROWS - 1) / 2) * 0.66, FLOOD_D / 2 + 0.03],
+                     s: [0.5, 0.48, 0.06] });
+  const FLOOD_LITS = FLOOD_LIT.length;
+  const FLOOD_BULB = 0xfff8e8, FLOOD_BULB_OFF = 0x3c3e40;   // 燈泡亮著／熄掉的顏色
+  /* 燈：暖白、半角 FLOOD_ANG、外圈 FLOOD_PEN 那一段慢慢暗。decay 1（照度＝亮度 ÷ 距離，同晚上的小光源），
+     所以亮度照「瞄的那一點照度 FLOOD_E」× 距離給——近的遠的瞄到的那一點一樣亮。晚上月光 0.62、天光 0.5。
+     照到 FLOOD_REACH 倍距離收掉（three 的距離窗在瞄的那一點還剩 0.92，除回去） */
+  const FLOOD_C = 0xfff4e0, FLOOD_ANG = 0.32, FLOOD_PEN = 0.5, FLOOD_E = 2.5, FLOOD_REACH = 2.2;
+  const FLOOD_ATT = Math.pow(1 - Math.pow(1 / FLOOD_REACH, 4), 2);
+  /* 光束（晚上才看得到）：起點是燈泡那一片的外框（半寬 FLOOD_BEAM_W、半高 FLOOD_BEAM_H，貼在燈泡前面 FLOOD_BEAM_Z），
+     四邊各照 tan(FLOOD_ANG) 往外張、拉到瞄的那一點；沿著長度切 FLOOD_BEAM_SEG 段，照 FLOOD_BEAM_FADE 次方淡掉。
+     濃度 FLOOD_BEAM_OP（加色、雙面，疊起來是兩倍）：預覽四檔 不要／淡 0.08／0.16／濃 0.3，使用者選「淡」。
+     一座四面 × 段數 × 兩個三角形 */
+  const FLOOD_BEAM_W = (FLOOD_COLS - 1) / 2 * 0.68 + 0.25, FLOOD_BEAM_H = (FLOOD_ROWS - 1) / 2 * 0.66 + 0.24;
+  const FLOOD_BEAM_Z = FLOOD_D / 2 + 0.07;
+  const FLOOD_BEAM_SEG = 8, FLOOD_BEAM_FADE = 1.6, FLOOD_BEAM_OP = 0.08;
+  const FLOOD_BEAM_V = 4 * FLOOD_BEAM_SEG * 6;
+  const _flN = [0, 1, 2, 3].map(() => new T.Vector3()), _flE = [0, 1, 2, 3].map(() => new T.Vector3());   // 光束四個角：燈板那頭／遠的那頭
+  let _fbi = 0;                                            // 光束寫到第幾個頂點
+  /* 光束的一個頂點：第 c 個角、沿著長度 u（0 燈板～1 瞄的那一點）、整根的亮度 k */
+  function floodBeamV(c, u, k) {
+    const N = _flN[c], E = _flE[c], i = _fbi++ * 3, w = Math.pow(1 - u, FLOOD_BEAM_FADE) * k;
+    floodBeamPos[i] = N.x + (E.x - N.x) * u; floodBeamPos[i + 1] = N.y + (E.y - N.y) * u; floodBeamPos[i + 2] = N.z + (E.z - N.z) * u;
+    floodBeamCol[i] = floodBeamCol[i + 1] = floodBeamCol[i + 2] = w;
+  }
+  const _flH = new T.Matrix4(), _flP = new T.Matrix4(), _flC = new T.Vector3(), _flF = new T.Vector3();
+  const _flO = new T.Object3D();
+  _flO.rotation.order = 'YXZ';                              // 先轉向、再在那個方向上翻（掉下來那一段）
+  /* f：{x, y, z 架頂那一塊的頂面中心, a 朝哪（rotation.y，+Z 轉到瞄的方向）, p 燈板往下俯幾度（弧度）,
+          d 燈板到瞄的那一點多遠, lit 燈有多亮 0～1（點亮那一下會閃）, on 燈泡多亮 0～1,
+          rx／rz 掉下來時翻滾、s 整個燈頭多大（冒出來那一下由小長大）,
+          alpha 掉在地上淡掉那一段（給了就整顆搬到 floodFade 畫，燈泡跟外殼一起淡；早就熄了，不照東西）}
+     晚上（nightK）才照東西、才看得到光束；燈泡白天晚上都照 on 亮（使用者選「晚上照、白天燈板亮著」） */
+  const FLOOD_FN = FLOOD_PARTS + FLOOD_LITS;               // 淡掉的那一顆裡一座占幾格（外殼接燈泡）
+  function putFloods(list) {
+    const n = Math.min(list.length, MAXFLOOD);
+    const night = lampN > 0 ? nightK() : 0;
+    let no = 0, nf = 0, beams = 0, lit = 0;
+    _fbi = 0;
+    for (let i = 0; i < n; i++) {
+      const f = list[i], fade = f.alpha !== undefined;
+      const fb = nf * FLOOD_FN;
+      if (fade) floodFadeA.array.fill(Math.max(0, f.alpha), fb, fb + FLOOD_FN);
+      _flO.position.set(f.x, f.y, f.z);
+      _flO.rotation.set(f.rx || 0, f.a, f.rz || 0);
+      _flO.scale.setScalar(Math.max(1e-3, f.s == null ? 1 : f.s));
+      _flO.updateMatrix();
+      _flH.copy(_flO.matrix);
+      scratchB.position.set(0, FLOOD_PIV, 0); scratchB.rotation.set(f.p || 0, 0, 0); scratchB.scale.setScalar(1);
+      scratchB.updateMatrix();
+      _flP.multiplyMatrices(_flH, scratchB.matrix);
+      for (let k = 0; k < FLOOD_PARTS; k++) {
+        const P = FLOOD_ALL[k];
+        scratchB.position.set(P.p[0], P.p[1], P.p[2]); scratchB.rotation.set(0, 0, 0);
+        scratchB.scale.set(P.s[0], P.s[1], P.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(k < FLOOD_YOKE.length ? _flH : _flP, scratchB.matrix);
+        if (fade) { floodFade.setMatrixAt(fb + k, tmpM); floodFade.setColorAt(fb + k, tmpC.setHex(P.c)); }
+        else floodMesh.setMatrixAt(no * FLOOD_PARTS + k, tmpM);
+      }
+      const on = Math.max(0, Math.min(1, f.on || 0));
+      _floodC.setHex(FLOOD_BULB_OFF).lerp(_floodOn, on);
+      for (let k = 0; k < FLOOD_LITS; k++) {
+        const P = FLOOD_LIT[k];
+        scratchB.position.set(P.p[0], P.p[1], P.p[2]); scratchB.rotation.set(0, 0, 0);
+        scratchB.scale.set(P.s[0], P.s[1], P.s[2]);
+        scratchB.updateMatrix();
+        tmpM.multiplyMatrices(_flP, scratchB.matrix);
+        const M = fade ? floodFade : floodLitMesh, at = fade ? fb + FLOOD_PARTS + k : no * FLOOD_LITS + k;
+        M.setMatrixAt(at, tmpM);
+        M.setColorAt(at, _floodC);
+      }
+      if (fade) { nf++; continue; }
+      no++;
+      /* 燈與光束：從燈板正面那一點、沿燈板朝的方向 */
+      const k = Math.max(0, Math.min(1, f.lit || 0)) * night;
+      if (!(k > 0) || lit >= MAXFLOOD) continue;
+      _flC.setFromMatrixPosition(_flP);
+      _flF.set(0, 0, 1).transformDirection(_flP);
+      const d = Math.max(2, f.d || 0);
+      const L = floodLamps[lit++];
+      L.position.copy(_flC).addScaledVector(_flF, FLOOD_D);
+      L.target.position.copy(_flC).addScaledVector(_flF, d);
+      L.intensity = FLOOD_E * k * d / FLOOD_ATT;
+      L.distance = d * FLOOD_REACH;
+      /* 光束：燈板座標裡算好四個角（燈泡那一片的外框、遠的那頭每邊再張 d × tan 半角），轉到世界座標；中間沿著長度線性內插 */
+      const sp = d * Math.tan(FLOOD_ANG);
+      for (let c = 0; c < 4; c++) {
+        const sx = c === 1 || c === 2 ? 1 : -1, sy = c >= 2 ? 1 : -1;
+        _flN[c].set(sx * FLOOD_BEAM_W, sy * FLOOD_BEAM_H, FLOOD_BEAM_Z).applyMatrix4(_flP);
+        _flE[c].set(sx * (FLOOD_BEAM_W + sp), sy * (FLOOD_BEAM_H + sp), FLOOD_BEAM_Z + d).applyMatrix4(_flP);
+      }
+      for (let c = 0; c < 4; c++) {
+        const c2 = (c + 1) % 4;
+        for (let j = 0; j < FLOOD_BEAM_SEG; j++) {
+          const u0 = j / FLOOD_BEAM_SEG, u1 = (j + 1) / FLOOD_BEAM_SEG;
+          floodBeamV(c, u0, k); floodBeamV(c2, u0, k); floodBeamV(c2, u1, k);
+          floodBeamV(c, u0, k); floodBeamV(c2, u1, k); floodBeamV(c, u1, k);
+        }
+      }
+      beams++;
+    }
+    for (let i = lit; i < MAXFLOOD; i++) floodLamps[i].intensity = 0;   // 開著的時候四盞一起開，沒用到的亮度 0（同 lampSync）
+    floodOn = lit > 0;
+    floodSync();
+    floodBeamMesh.visible = beams > 0;
+    floodBeamMesh.geometry.setDrawRange(0, beams * FLOOD_BEAM_V);
+    floodMesh.visible = floodLitMesh.visible = no > 0;
+    floodMesh.count = no * FLOOD_PARTS;
+    floodLitMesh.count = no * FLOOD_LITS;
+    floodFade.count = nf * FLOOD_FN;
+    floodFade.visible = nf > 0;                 // 沒有在淡的就不吃 draw call
+    if (no) {
+      floodMesh.instanceMatrix.needsUpdate = true;
+      floodLitMesh.instanceMatrix.needsUpdate = true;
+      if (floodLitMesh.instanceColor) floodLitMesh.instanceColor.needsUpdate = true;
+    }
+    if (nf) {
+      floodFade.instanceMatrix.needsUpdate = true;
+      floodFade.instanceColor.needsUpdate = true;
+      floodFadeA.needsUpdate = true;
+    }
+    if (beams) {
+      floodBeamMesh.geometry.attributes.position.needsUpdate = true;
+      floodBeamMesh.geometry.attributes.color.needsUpdate = true;
+    }
+  }
+  const _floodC = new T.Color(), _floodOn = new T.Color(FLOOD_BULB);
+  /* 燈架那四盞一起開關（同 lampSync 的理由：燈數是 shader 的一部分，一盞一盞開就多好幾份 shader）。光源數 0＝不開 */
+  function floodSync() {
+    const v = lampN > 0 && floodOn;
+    for (const L of floodLamps) L.visible = v;
+  }
+
   /* 隕石。m：{x, y, z, rx, ry, s, hot 0–1 燒得多紅}
      只畫真的在天上飛的那幾顆——還在倒數的那些由規則那邊自己濾掉，
      這裡收到的就是要畫的。 */
@@ -3792,8 +4003,8 @@ if (vAo.x + vAo.y > 0.5) {
     lampN = n;
     if (!stormLamps) return;                     // 開場 init 之前就讀到存檔：init 照 lampN 生（見 makeGlowLamps）
     makeGlowLamps();
-    if (n === 0) { stormOn = boomOn = glowOn = false; boomUsed = 0; }
-    lampSync();
+    if (n === 0) { stormOn = boomOn = glowOn = floodOn = false; boomUsed = 0; }
+    lampSync(); floodSync();
     if (n > 0) lampWarm = false;
   }
   function makeGlowLamps() {
@@ -12612,11 +12823,16 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
        v1.296.0 起光源數換了（見 setLampCount）也再來一次，連多出來的那幾盞一起；光源數 0 不必編 */
     if (!lampWarm) {
       lampWarm = true;
-      if (renderer.compileAsync && lampN > 0 && !stormLamps[0].visible) {
+      if (renderer.compileAsync && lampN > 0) {
+        /* v1.303.0 起多了燈架那四盞聚光燈（自己一組開關，見 floodSync）：點光源那一池、聚光燈、兩邊都開是三份，
+           一次編好。compileAsync 是當下照燈的開關就編（three 的 compile 是同步那一段），所以一份一份切著送 */
         const all = stormLamps.concat(boomLamps, glowLamps);
-        for (const L of all) L.visible = true;
-        renderer.compileAsync(scene, camera).catch(() => {});
-        for (const L of all) L.visible = false;
+        for (const [p, s] of [[true, false], [false, true], [true, true]]) {
+          for (const L of all) L.visible = p;
+          for (const L of floodLamps) L.visible = s;
+          renderer.compileAsync(scene, camera).catch(() => {});
+        }
+        lampSync(); floodSync();                 // 照這一刻真的要不要燈開回去
       }
     }
   }
@@ -12712,6 +12928,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
     putBooms, BOOM_LAMPS,                      /* 強爆炸照亮周圍（v1.291.0）：規則那邊照 BOOM_LAMPS 盞併好再給 */
     putGlows, lampRoom, nightK, setLampCount,  /* 晚上的小光源、光源數（v1.296.0）：規則那邊照 lampRoom() 盞排好再給 */
+    putFloods, MAXFLOOD, FLOOD_PIV,            /* 燈架（v1.303.0）：規則那邊的上限讀 MAXFLOOD、瞄準照燈板的軸高 FLOOD_PIV 算俯角 */
     GLOW_KINDS: Object.keys(GLOW),             /* 認得哪幾種（v1.297.0）：測試照這個對規則那邊給的 k */
     get lampN() { return lampN; },
     DAY: { fade: DAY_FADE, low: DAY_LOW, moonTop: MOON_TOP, noon: SUN_NOON },   /* 晝夜（v1.295.0）：測試照這幾個算期望值 */
@@ -12811,6 +13028,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       return { man: BODY, treb: TREB_PART, cannon: CAN_PART, doz: DOZ_PART, truck: TRK_PART,
                bomb: BOMB_PART, meat: MEAT_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
                ufo: UFO_PART, ufoLit: UFO_LIT,
+               flood: FLOOD_ALL, floodLit: FLOOD_LIT,   /* 燈架的燈頭（v1.303.0）：前 FLOOD_YOKE 塊只跟著轉向，其餘是燈板 */
                ape: APE, snow: SNOW, nana: NANA, torch: TORCH, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRYPH,
                deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, diablo: DIABLO, saber: SABER, levi: LEVI, megumin: MEGUMIN,
@@ -12822,6 +13040,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
     get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh,
-                            stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl, skyStarEl }; }
+                            stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl, skyStarEl,
+                            floodMesh, floodLitMesh, floodBeamMesh, floodLamps, floodFade }; }
   };
 })();

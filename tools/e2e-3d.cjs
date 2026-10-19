@@ -517,6 +517,7 @@ const installClean = page => page.evaluate(() => {
     cannons = null; ENG.putCannons([]); ENG.putShells([]);   // 加農砲（v1.204）：砲與飛在空中的彈
     bombs = null; ENG.putBombs([]);
     meats = null; ENG.putMeats([]);                          // 肉（v1.261.0）：吃完才收，沒有動物在吃就一直擺著
+    floods = null; ENG.putFloods([]);                        // 燈源（v1.303.0）：燈架的積木在 homes 上（上面 clearHomes 收了），燈頭與聚光燈在這
     meteors = null; ENG.putMeteors([]);
     nukes = null; ENG.putNukes([]);
     magics = null;
@@ -34907,6 +34908,300 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { cleanTools(); });
   }   // ── 〈道具：肉〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 道具：燈源（v1.303.0） ══════════
+     使用者：「增加道具燈源 如果沒有在設定開啟光源數量 就沒有這道具／功能是往某個方向照明 被攻擊會被破壞」，選了點兩下、
+     積木架＋模型燈頭壞了就沒了、晚上照白天燈板亮著、最多 4 座；看過預覽：燈頭掉地上要淡掉、光束從燈板照出去、光束選淡。
+     全部是規則型：直接叫 placeFlood／stepFloods／floodAim／setLamps／引擎的 putFloods，量完把全域還回去。
+     見 開發筆記〈道具：燈源〉 */
+  SEC: { if (!(await head('道具：燈源', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await fillAll(page);
+
+  /* ── 道具表：接在最後（光之太刀後面）、不破壞那一類、點空地也算數；說明的座數就是 FL_MAX、FL_MAX 就是引擎的上限 ── */
+  const ftab = await page.evaluate(() => {
+    const i = TOOLS.findIndex(t => t.id === 'flood'), ie = TOOLS.findIndex(t => t.id === 'eris'), t = TOOLS[i];
+    return { at: i, er: ie, n: TOOLS.length, ground: !!GROUND_TOOL.flood, icon: t.k, cat: t.cat, lamp: !!t.lamp,
+             tip: t.tip.indexOf('最多 ' + FL_MAX + ' 座') >= 0, max: FL_MAX, eng: ENG.MAXFLOOD,
+             parts: ENG.MODELS.flood.length, lit: ENG.MODELS.floodLit.length };
+  });
+  ok('道具表：接在光之太刀後面（最後一把）、歸「不破壞」、標 lamp、點空地也算數；圖示 🔦；說明的座數就是 FL_MAX、FL_MAX 就是引擎的 MAXFLOOD',
+     ftab.er >= 0 && ftab.at === ftab.er + 1 && ftab.at === ftab.n - 1 && ftab.cat === 'safe' && ftab.lamp && ftab.ground &&
+     ftab.icon === '🔦' && ftab.tip && ftab.max === ftab.eng,
+     JSON.stringify(ftab));
+
+  /* ── 砌法：homes.list 多一筆 lamp（homeCat 3、還沒蓋完）、底座 3×3 一層＋柱子到 FL_H；
+        一塊一塊砌（一幀推 FL_LAY 就多一塊）、砌完 done；燈頭 FL_HEAD_T 冒出來、照 FL_FLICK 閃完全亮；這一段不抽 Math.random ── */
+  const fbuild = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 25;
+    const f = placeFlood({ x: X, z: 0 }, { x: 0, z: 0 }, 0), h = f.h, S = h.slots, hi = homes.list.indexOf(h);
+    const r = { entry: hi >= 0 && h.lamp === 1 && homeCat(h) === 3 && !h.done && h.left === S.length,
+                slots: S.length, want: 9 + FL_H - 1, ground: S.filter(s => s.gy === 0).length, top: S[S.length - 1].gy + 1, flH: FL_H,
+                at: S.every((s, k) => h.at.get(s.i + ':' + s.gy + ':' + s.k) === k) };
+    const real = Math.random;
+    let rnd = 0;
+    Math.random = () => { rnd++; return real(); };
+    try {
+      stepFloods(1e-6);
+      const per = [f.laid];
+      r.dark = true;                                                                  // 還沒砌完：燈頭沒出來、燈沒亮
+      while (f.laid < S.length && per.length < 60) {
+        if (f.hs !== 0 || f.lit !== 0) r.dark = false;
+        const n0 = f.laid; stepFloods(FL_LAY * 1.0001); per.push(f.laid - n0);
+      }
+      r.one = per.every(n => n === 1); r.steps = per.length;
+      r.done = h.done && h.left === 0;
+      const mine = blocks.filter(b => b.hh === hi && b.st === SET);
+      r.set = mine.length; r.onSlot = mine.every(b => b.x === S[b.hk].x && b.y === S[b.hk].y && b.z === S[b.hk].z);
+      r.topB = f.topB === mine.find(b => b.hk === S.length - 1);
+      stepFloods((0.5 - f.hs) * FL_HEAD_T); r.half = +f.hs.toFixed(3);                // 砌完那一幀燈頭就開始長，補到一半
+      stepFloods(FL_HEAD_T * 0.5 + 1e-6); r.full = f.hs;
+      const seen = [];
+      for (let j = 0; j < 20; j++) { stepFloods(FL_WARM / 20); seen.push(f.lit); if (f.on !== f.lit) r.onLit = false; }
+      r.flick = seen.slice(0, -1).every(v => FL_FLICK.indexOf(v) >= 0) && seen.some(v => v < 1);
+      stepFloods(0.1); r.lit = f.lit; r.on = f.on;
+    } finally { Math.random = real; }
+    r.rnd = rnd;
+    cleanTools();
+    return r;
+  });
+  ok('砌法：homes.list 多一筆 lamp（homeCat 3、自己一類）；底座 3×3 一層＋柱子，架頂 FL_H 格高；格子表對得上',
+     fbuild.entry && fbuild.slots === fbuild.want && fbuild.ground === 9 && fbuild.top === fbuild.flH && fbuild.at,
+     JSON.stringify(fbuild));
+  ok('一塊一塊砌：每過 FL_LAY 秒多一塊、砌完 done、每一塊都在自己那一格；燈頭砌完才冒出來（FL_HEAD_T 長滿），照 FL_FLICK 閃完全亮；這一段不抽 Math.random',
+     fbuild.one && fbuild.done && fbuild.set === fbuild.slots && fbuild.onSlot && fbuild.topB && fbuild.dark &&
+     fbuild.half === 0.5 && fbuild.full === 1 && fbuild.flick && fbuild.onLit !== false && fbuild.lit === 1 && fbuild.on === 1 && fbuild.rnd === 0,
+     '砌了 ' + fbuild.steps + ' 步；燈頭 ' + fbuild.half + ' → ' + fbuild.full + '；最後 lit ' + fbuild.lit + '、on ' + fbuild.on + '；Math.random ' + fbuild.rnd + ' 次');
+
+  /* ── 點兩下與瞄準：第一下只畫光環（FL_AIM_R）、第二下立起來；燈板朝第二點、俯角照燈板軸心（架頂上 FLOOD_PIV）算、夾在 FL_PITCH；
+        第二下點在建築上就瞄那個高度；兩下點在同一個地方就照工地中心；點在工地裡推到工地外、跟別座不重疊 ── */
+  const faim = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 25, t0 = tool, r = {};
+    tool = 'flood';
+    useTool({ kind: 'ground', point: { x: X, y: 0, z: 0 }, dir: { x: 0, y: -1, z: 0 } });
+    r.first = !floods && !!aim && aim.r === FL_AIM_R;
+    useTool({ kind: 'block', point: { x: 0, y: 7, z: 3 }, dir: { x: 0, y: -1, z: 0 } });
+    tool = t0;
+    const f = floods && floods[0];
+    r.second = !!f && !aim;
+    const want = (tx, ty, tz) => {
+      const dx = tx - f.x, dy = ty - (f.top + ENG.FLOOD_PIV), dz = tz - f.z, hz = Math.hypot(dx, dz);
+      return { a: Math.atan2(dx, dz), p: Math.max(FL_PITCH[0], Math.min(FL_PITCH[1], Math.atan2(-dy, hz))), d: Math.hypot(hz, dy) };
+    };
+    const same = w => Math.abs(f.a - w.a) < 1e-9 && Math.abs(f.p - w.p) < 1e-9 && Math.abs(f.d - w.d) < 1e-9;
+    r.block = same(want(0, 7, 3));
+    floodAim(f, f.x + 2, 0, f.z); r.steep = f.p === FL_PITCH[1];                      // 腳邊兩格：俯到底
+    floodAim(f, f.x, 200, f.z + 30); r.high = f.p === FL_PITCH[0];                   // 高高在上：抬到頂
+    floodAim(f, f.x + 0.3, 0, f.z + 0.2); r.center = same(want(0, 0, 0));            // 同一個地方：照工地中心
+    const g = placeFlood({ x: 0, z: 0 }, { x: 5, z: 0 }, 0);
+    r.out = Math.hypot(g.x, g.z) >= siteR + FL_SITE + 1.5 - 1e-9;
+    const k = placeFlood({ x: f.x, z: f.z }, { x: 0, z: 0 }, 0), a = homeSpan(f.h), b = homeSpan(k.h);
+    r.apart = a.x1 <= b.x0 || b.x1 <= a.x0 || a.z1 <= b.z0 || b.z1 <= a.z0;
+    cleanTools();
+    return r;
+  });
+  ok('點兩下：第一下只畫光環、第二下立起來；燈板朝第二點、俯角照燈板軸心算、夾在 FL_PITCH；點建築就瞄那個高度、兩下同一點就照工地中心',
+     faim.first && faim.second && faim.block && faim.steep && faim.high && faim.center, JSON.stringify(faim));
+  ok('立在哪：點在工地裡推到工地外緣 FL_SITE 格外；點在別座燈架上就挪開、兩座的占地不重疊',
+     faim.out && faim.apart, JSON.stringify(faim));
+
+  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但三類派工（房子、樹、城牆）與城內補洞都不會挑它；
+        事件黏著不數它；換一件事（rollIdleEvent 那一下整份清單解體）它留著 ── */
+  const fkeep = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const f = placeFlood({ x: siteR + 25, z: 0 }, { x: 0, z: 0 }, 0);
+    stepFloods(5);
+    const h = f.h, hi = homes.list.indexOf(h);
+    const b = blocks.find(q => q.hh === hi && q.st === SET && q.hk === 1);          // 底座外圈那一塊
+    breakBlock(b, 0, 1, 0);
+    const r = { left: h.left, cat: [0, 1, 2].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
+                inside: pickInside(f.x, f.z, new Set(), 1e9) !== hi, ev: evBlocks(IDLE_EVENTS[0]) };
+    const keep = [evLast, evPeak], real = Math.random;
+    evLast = IDLE_EVENTS[0];
+    Math.random = () => 0.999;                                                       // 抽到最後一件（城牆）
+    let e;
+    try { e = rollIdleEvent(); } finally { Math.random = real; evLast = keep[0]; evPeak = keep[1]; }
+    r.rolled = e === IDLE_EVENTS[IDLE_EVENTS.length - 1] && e !== IDLE_EVENTS[0];
+    r.stay = homes.list.indexOf(h) >= 0 && blocks.filter(q => q.hh === homes.list.indexOf(h) && q.st === SET).length === h.slots.length - 1;
+    cleanTools();
+    return r;
+  });
+  ok('沒人修、不算哪一件事：缺一塊時三類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
+     fkeep.left === 1 && fkeep.cat && fkeep.inside && fkeep.ev === 0 && fkeep.rolled && fkeep.stay, JSON.stringify(fkeep));
+
+  /* ── 被攻擊：打它不算打地標（phase 還是 done）、會飛的東西撞得到（homeSolid）；
+        打掉架頂 → 燈頭掉下來熄掉、整座從清單收掉、剩下的積木散成碎料；燈頭往燈板背面那一側倒、翻成燈板朝上躺平（離地 FL_REST），
+        躺 FL_LIE 秒才開始淡（FL_FADE 淡完、收掉）；柱子中間打斷也一樣（上面垮下來、架頂不在了） ── */
+  const fhit = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const r = {};
+    const f = placeFlood({ x: siteR + 25, z: 0 }, { x: 0, z: 0 }, 0);
+    stepFloods(5); stepFloods(FL_WARM + 0.1);
+    const hi = homes.list.indexOf(f.h);
+    r.solid = homeSolid(f.x, 8 + HB, f.z);
+    smash({ x: f.x + 1, y: 0.5, z: f.z + 1 }, { x: 0, y: -1, z: 0 }, 0.6, 15, true, true);   // 只敲底座的一個角
+    r.phase = phase;
+    r.chip = f.h.left > 0;
+    const mine = blocks.filter(b => b.hh === hi);
+    const fx = Math.sin(f.a), fz = Math.cos(f.a);
+    breakBlock(f.topB, 0, 2, 0);
+    stepFloods(1e-3);
+    const e = f.head;
+    r.head = !!e && f.lit === 0 && homes.list.indexOf(f.h) < 0 && mine.every(b => b.st !== SET);
+    let t = 0, land = -1;
+    while (t < 10 && e && !e.rest) { stepFloods(0.02); t += 0.02; }
+    land = +t.toFixed(2);
+    r.land = land; r.rest = e.rest;
+    r.behind = +((e.x - f.x) * fx + (e.z - f.z) * fz).toFixed(2);
+    r.flat = e.rx === -Math.PI / 2 && e.p === 0 && e.y === FL_REST;
+    stepFloods(FL_LIE * 0.9); r.lie = floodList()[0].alpha;
+    stepFloods(FL_LIE * 0.1 + FL_FADE * 0.5); r.mid = +floodList()[0].alpha.toFixed(3);
+    stepFloods(FL_FADE * 0.5 + 1e-3); r.gone = !floods;
+    /* 柱子中間打斷：上面那幾塊垮下來（走主迴圈的垮塌），架頂不在了燈頭就掉 */
+    const g = placeFlood({ x: -(siteR + 25), z: 0 }, { x: 0, z: 0 }, 0);
+    stepFloods(5);
+    const gi = homes.list.indexOf(g.h), cut = blocks.find(b => b.hh === gi && b.st === SET && g.h.slots[b.hk].gy === 6);
+    breakBlock(cut, 3, 0, 0); markHomeDirty();
+    for (let i = 0; i < 80 && !g.head; i++) step(0.05);
+    r.cut = !!g.head;
+    cleanTools();
+    return r;
+  });
+  ok('被攻擊：打它不算打地標（phase 還是 done）、柱子是實心的（會飛的東西撞得到）',
+     fhit.phase === 'done' && fhit.chip && fhit.solid, JSON.stringify(fhit));
+  ok('打掉架頂：燈頭掉下來熄掉、整座從清單收掉、剩下的散成碎料；燈頭往燈板背面倒、燈板朝上躺平；躺 FL_LIE 秒才開始淡、FL_FADE 淡完收掉',
+     fhit.head && fhit.rest && fhit.behind < 0 && fhit.flat && fhit.lie === undefined && fhit.mid === 0.5 && fhit.gone,
+     '落地 ' + fhit.land + ' 秒、落在背面 ' + (-fhit.behind) + ' 格；淡到一半 ' + fhit.mid + '；收掉 ' + fhit.gone);
+  ok('柱子中間打斷：上面跟著垮，架頂不在了燈頭一樣掉下來', fhit.cut, JSON.stringify(fhit));
+
+  /* ── 最多 FL_MAX 座：再立就擠掉最早那座（燈頭掉下來） ── */
+  const fmax = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const R = siteR + 25, out = [];
+    for (let j = 0; j <= FL_MAX; j++) {
+      const a = j / (FL_MAX + 1) * Math.PI * 2;
+      out.push(placeFlood({ x: Math.cos(a) * R, z: Math.sin(a) * R }, { x: 0, z: 0 }, 0));
+    }
+    const r = { up: floods.filter(f => !f.head).length, first: !!out[0].head, rest: out.slice(1).every(f => !f.head),
+                lamps: homes.list.filter(h => h.lamp).length, max: FL_MAX };
+    cleanTools();
+    return r;
+  });
+  ok('最多 FL_MAX 座：再立就擠掉最早那座（燈頭掉下來、架子收掉），其餘照舊立著',
+     fmax.up === fmax.max && fmax.first && fmax.rest && fmax.lamps === fmax.max, JSON.stringify(fmax));
+
+  /* ── 光源選關就沒有這一把：選單那一格不見、選不到（快捷鍵也是）、泡泡不掉它；正拿著的換回槌子、場上的收掉；再開回來那一格回來 ── */
+  const flamp = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const keepN = lampN, keepTool = tool, keepGift = stats.gift.slice(), keepSm = stats.smashed, t = TOOLS.find(q => q.id === 'flood');
+    const f = placeFlood({ x: siteR + 25, z: 0 }, { x: 0, z: 0 }, 0);
+    stepFloods(5);
+    tool = 'flood'; renderTools();
+    const r = { before: !!document.querySelector('#tools [data-tool=flood]') };
+    /* 泡泡只從還鎖著的裡面挑：前面幾段打下來的累計擊飛早就過了它的門檻（第一版這一項印 skip、沒驗到），
+       所以先押成「還沒解鎖」——擊飛歸 0、泡泡清單拿掉它，量完還回去 */
+    stats.smashed = 0; stats.gift = stats.gift.filter(id => id !== 'flood');
+    r.locked = !toolOk(t);
+    setLamps(0);
+    r.tool = tool; r.menu = !document.querySelector('#tools [data-tool=flood]'); r.pick = pickTool(t) === false && tool === 'hammer';
+    r.gift = lockedTools().every(q => q.id !== 'flood');
+    r.gone = !!f.head && homes.list.indexOf(f.h) < 0;
+    setLamps(keepN || 6);
+    r.back = !!document.querySelector('#tools [data-tool=flood]');
+    r.giftBack = lockedTools().some(q => q.id === 'flood');
+    stats.smashed = keepSm; stats.gift = keepGift; setLamps(keepN); tool = keepTool; renderTools();
+    cleanTools();
+    return r;
+  });
+  ok('光源選關就沒有這一把：選單那一格不見、選不到、泡泡不掉它；正拿著的換回槌子、場上的燈架收掉；再開回來那一格回來',
+     flamp.before && flamp.locked && flamp.tool === 'hammer' && flamp.menu && flamp.pick && flamp.gift && flamp.gone && flamp.back &&
+     flamp.giftBack,
+     JSON.stringify(flamp));
+
+  /* ── 畫面：沒燈架不吃 draw call、燈全關；晚上兩座照亮——四盞聚光燈一起開、照到的那一點一樣亮（亮度 ÷ 距離相同）、
+        燈在燈板前面朝瞄的那一點、光束從燈泡那一片出發拉到瞄的那一點；白天燈不開、光束不畫、燈泡照樣亮著；
+        淡掉那一顆整顆搬到 floodFade；光源數 0 燈不開；畫的時候不抽 Math.random ── */
+  const fdraw = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const T = ENG.three, L4 = T.floodLamps, r = {};
+    ENG.putFloods([]);
+    r.off = !T.floodMesh.visible && !T.floodLitMesh.visible && !T.floodBeamMesh.visible && !T.floodFade.visible && L4.every(L => !L.visible);
+    const a = placeFlood({ x: siteR + 25, z: 0 }, { x: 0, z: 0 }, 0);
+    const b = placeFlood({ x: 0, z: siteR + 40 }, { x: 0, z: 0 }, 0);
+    stepFloods(5); stepFloods(FL_WARM + 0.1);
+    const real = Math.random;
+    let rnd = 0;
+    Math.random = () => { rnd++; return real(); };
+    try {
+      ENG.setDayTime(45);
+      ENG.putFloods(floodList());
+      const P = ENG.MODELS.flood, LIT = ENG.MODELS.floodLit;
+      r.count = T.floodMesh.visible && T.floodMesh.count === 2 * P.length && T.floodLitMesh.count === 2 * LIT.length;
+      const on = L4.filter(L => L.intensity > 0);
+      r.lamps = L4.every(L => L.visible) && on.length === 2;
+      r.perD = on.map((L, i) => L.intensity / [a, b][i].d);
+      r.sameE = Math.abs(r.perD[0] - r.perD[1]) < 1e-9 * r.perD[0];
+      const panel = P.reduce((m, p) => p.s[0] * p.s[1] > m.s[0] * m.s[1] ? p : m), half = Math.hypot(panel.s[0] / 2, panel.s[1] / 2);
+      const V = new THREE.Vector3(), pos = T.floodBeamMesh.geometry.attributes.position.array, n = T.floodBeamMesh.geometry.drawRange.count;
+      const ck = [a, b].map((f, i) => {
+        const c = new THREE.Vector3(f.x, f.top + ENG.FLOOD_PIV, f.z), L = on[i];
+        const fw = new THREE.Vector3().subVectors(L.target.position, L.position).normalize();
+        const tgt = new THREE.Vector3().copy(c).addScaledVector(fw, f.d);
+        let near = Infinity, far = -Infinity;
+        for (let k = i * n / 2; k < (i + 1) * n / 2; k++) {
+          V.set(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2]).sub(c);
+          const along = V.dot(fw);
+          if (along < 0.5) near = Math.min(near, V.length());
+          far = Math.max(far, along);
+        }
+        return { lamp: L.position.distanceTo(c) < 1, aim: L.target.position.distanceTo(tgt) < 0.5,
+                 near: +near.toFixed(3), half: +half.toFixed(3), far: +(far - f.d).toFixed(3) };
+      });
+      r.ck = ck;
+      r.beam = T.floodBeamMesh.visible && n > 0 && ck.every(q => q.lamp && q.aim && q.near <= q.half && Math.abs(q.far) < 0.5);
+      ENG.setDayTime(15);
+      ENG.putFloods(floodList());
+      const c0 = new THREE.Color();
+      T.floodLitMesh.getColorAt(0, c0);
+      r.day = L4.every(L => !L.visible) && !T.floodBeamMesh.visible && T.floodLitMesh.visible && c0.r > 0.9 && c0.g > 0.9;
+      const one = Object.assign({}, floodList()[0], { alpha: 0.4 });
+      ENG.putFloods([one]);
+      r.fade = T.floodFade.visible && T.floodFade.count === P.length + LIT.length && !T.floodMesh.visible &&
+               Math.abs(T.floodFade.geometry.attributes.aFade.array[0] - 0.4) < 1e-6;
+      ENG.setDayTime(45);
+      ENG.setLampCount(0);
+      ENG.putFloods(floodList());
+      r.zero = L4.every(L => !L.visible) && !T.floodBeamMesh.visible;
+      ENG.setLampCount(lampN);
+    } finally { Math.random = real; }
+    r.rnd = rnd;
+    cleanTools();
+    ENG.setDayTime(dayOn ? dayClock() : -1);
+    return r;
+  });
+  ok('畫面：沒燈架不吃 draw call、燈全關；晚上兩座——四盞聚光燈一起開、照到的那一點一樣亮、燈在燈板前朝瞄的那一點、光束從燈泡那一片拉到瞄的那一點',
+     fdraw.off && fdraw.count && fdraw.lamps && fdraw.sameE && fdraw.beam, JSON.stringify(fdraw));
+  ok('白天燈不開、光束不畫、燈泡照樣亮著；淡掉的那一顆整顆搬到 floodFade；光源數 0 燈不開；畫的時候不抽 Math.random',
+     fdraw.day && fdraw.fade && fdraw.zero && fdraw.rnd === 0, JSON.stringify(fdraw));
+
+  /* ── 換場：地標換一座（startBuild）時，工地外的燈架照樣立著、燈頭不掉（它在 homes 上，不會被當成舊地標炸散） ── */
+  const fswap = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const f = placeFlood({ x: siteR + 25, z: 0 }, { x: 0, z: 0 }, 0);
+    stepFloods(5);
+    startBuild(true);
+    stepFloods(1e-3);
+    const hi = homes.list.indexOf(f.h);
+    const r = { kept: hi >= 0, set: blocks.filter(b => b.hh === hi && b.st === SET).length, n: f.h.slots.length, head: !!f.head };
+    cleanTools();
+    return r;
+  });
+  ok('換場：工地外的燈架照樣立著（積木一塊不少、燈頭不掉）', fswap.kept && fswap.set === fswap.n && !fswap.head, JSON.stringify(fswap));
+
+  await page.evaluate(() => { cleanTools(); });
+  }   // ── 〈道具：燈源〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 破壞道具：光之太刀（v1.290.0） ══════════
      使用者：「做這個角色的造型 也是越像越好 / 預計會加成道具&吉祥物 攻擊方式是光之太刀 類似無形的劍氣斬過 砍的方向隨機」，

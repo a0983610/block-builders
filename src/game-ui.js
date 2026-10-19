@@ -211,6 +211,7 @@ function step(dt) {
   stepCannons(dt);
   stepBombs(dt);
   stepMeats(dt);                         // 肉（v1.261.0）：掉下來、叫最近的幾隻來吃、吃完收掉
+  stepFloods(dt);                        // 燈源（v1.303.0）：燈架一塊一塊砌上去、點亮，架頂被打掉燈頭就掉下來
   stepMeteors(dt);
   stepFw(dt);
   stepFire(dt);
@@ -519,6 +520,8 @@ function draw() {
   /* 晚上的小光源（v1.296.0）：燒的火、飛龍火球、煙火，用強爆炸與打雷剩下的燈（所以排在 putStorm、putBooms 後面）。
      白天不排（引擎那邊也會乘 0），見 glowLampList */
   ENG.putGlows(lampN && ENG.nightK() > 0 ? glowLampList(ENG.lampRoom()) : EMPTY);
+  /* 燈架的燈頭與聚光燈（v1.303.0）：燈泡白天晚上都亮，照東西與光束只在晚上（引擎乘 nightK），所以要在 setDayTime 後面 */
+  ENG.putFloods(floods ? floodList() : EMPTY);
   /* 魔法陣、爆炸光環、保齡球的瞄準環共用同一組環，在這裡合起來丟過去。
      魔法陣的那幾層每幀由 stepMagic 算好，爆炸那幾圈自己會擴散。
      沒東西在瞄／沒魔法陣時不做 concat：那是每幀都會跑到的路徑。 */
@@ -850,9 +853,18 @@ function syncSeg(id, v) {
 }
 /* 光源幾盞（v1.296.0）：變數、引擎、畫面設定那一排一起改。讀存檔（applyPref）與點按鈕都走這裡 */
 function setLamps(n) {
+  const had = lampN > 0;
   lampN = pref.lamps = n;
   ENG.setLampCount(n);
   syncSeg('lampN', n);
+  /* 燈源（v1.303.0）：選關就沒有這一把（見 toolHere）——正拿著的換回槌子、瞄一半的收掉、場上的燈架收掉（見 dropFloods），
+     選單那一格跟著出現／消失。讀存檔那一次通常是 6 → 6，什麼都不做 */
+  if (had === n > 0) return;
+  if (!n) {
+    if (tool === 'flood') { tool = 'hammer'; aim = null; }
+    dropFloods();
+  }
+  renderTools();
 }
 function syncHud() {
   $('bname').textContent = bp ? bp.name : '';
@@ -866,6 +878,7 @@ function syncHud() {
 
 /* 換成 t 這把：點選單與按數字鍵（v1.242.0）都走這裡。沒解鎖就跳提示、不換，回傳 false。 */
 function pickTool(t) {
+  if (!toolHere(t)) { toast(t.k + ' 沒有' + t.n, '畫面設定的「光源」選關的時候沒有這一把'); return false; }   // 快捷鍵綁著它（v1.303.0）
   if (!toolOk(t)) { toast('🔒 ' + t.n + ' 還沒解鎖', t.lock.txt); return false; }
   tool = t.id; aim = null; renderTools();           // 換道具就把瞄一半的第一點收掉
   $('hint').textContent = t.tip + '　｜　拖曳／QE 轉視角　｜　WASD 平移、ZX 升降、C 復位　｜　滾輪縮放　｜　點小人會跌倒';
@@ -889,6 +902,7 @@ function renderTools() {
     grid[c.id] = g.lastChild;
   }
   for (const t of TOOLS) {
+    if (!toolHere(t)) continue;                    // 光源選關時的燈源（v1.303.0）：整格不畫
     const okNow = toolOk(t);
     const hk = pref.keys.indexOf(t.id);
     const b = document.createElement('button');
@@ -975,8 +989,9 @@ function renderKeys() {
     lab.innerHTML = '<b>' + (i + 1) + '</b>';
     const sel = document.createElement('select');
     sel.dataset.key = String(i);
+    /* 現在沒有的那把（光源選關時的燈源，v1.303.0）不列——除非這一格本來就綁著它，不然這一格會變成選不到值 */
     sel.innerHTML = '<option value="">（不綁）</option>' + TOOL_CATS.map(c =>
-      '<optgroup label="' + c.n + '">' + TOOLS.filter(t => t.cat === c.id).map(t =>
+      '<optgroup label="' + c.n + '">' + TOOLS.filter(t => t.cat === c.id && (toolHere(t) || pref.keys[i] === t.id)).map(t =>
         '<option value="' + t.id + '">' + (toolOk(t) ? t.k : '🔒') + ' ' + t.n + '</option>').join('') +
       '</optgroup>').join('');
     sel.value = pref.keys[i];
