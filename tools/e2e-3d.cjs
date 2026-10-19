@@ -2989,9 +2989,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     /* v1.265.0 起下拉選單換場是**背景算完才換**（swapBuild → askBlueprint；匯進來的這座 Worker 裡沒有，
        回來是 null、主執行緒當場算），叫下去那一刻 bp 還是舊的——要等它換上（同〈效能〉那幾條 bgSwap 的等法）。
        這一條 v1.265.0 之後沒跑過（〈匯入建築〉是完整輪才跑的段），v1.270.0 的完整輪才紅出來，
-       見 開發筆記〈換地標卡一下：藍圖丟到 Worker 算（v1.265.0）〉 */
+       見 開發筆記〈換地標卡一下：藍圖丟到 Worker 算（v1.265.0）〉
+       v1.300.0 起下拉只改「下一座蓋什麼」、不換場，要再按「換一座來蓋」才換上（同〈控制項〉「藍圖下拉可以指定建築」）。
+       這一條 v1.300.0 沒跟著改，v1.303.0 的完整輪等滿 8 秒還是原本那座才紅出來，
+       見 開發筆記〈上方橫條、下拉只改下一座（v1.300.0）〉 */
     const old = bp, t = performance.now();
     sel.dispatchEvent(new Event('change'));
+    document.getElementById('again').click();
     while (bp === old && performance.now() - t < 8000) await new Promise(r => setTimeout(r, 10));
     /* 「真的蓋得出來」＝每一格都填得滿。v1.141 起料池不再預先補滿（缺料的人自己挖，
        見 reconcilePool），所以不能再拿「池子＝格數」當證據——改走憑空建成那條路，
