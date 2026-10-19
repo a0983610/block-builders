@@ -2745,8 +2745,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     inp.dispatchEvent(new Event('change'));
     return n;
   }, '// 檔名：讀檔來的.js\n' + SAMPLE.replace("name: '貼上來的小屋'", "name: '讀檔來的小屋'"));
-  await vp.waitForFunction(() => document.getElementById('pasteMsg').textContent.trim() !== '',
-                           null, { timeout: 5000 });
+  /* 等訊息最多 30 秒，等不到就讓下面那條判紅，不要再用 waitForFunction 的 5 秒逾時把**整支腳本炸掉**——
+     炸了之後後面每一段都不跑。這一步 `--until` 時量到過 5.5～7.7 秒，完整輪卻過得了，
+     見 開發筆記〈兩條在賭頁面快慢的測試：讀檔只給 5 秒、貼上只等 150 毫秒〉 */
+  const vpWait = await vp.evaluate(async () => {
+    const m = document.getElementById('pasteMsg'), t = performance.now();
+    while (m.textContent.trim() === '' && performance.now() - t < 30000) await new Promise(r => setTimeout(r, 10));
+    return { got: m.textContent.trim() !== '', ms: Math.round(performance.now() - t) };
+  });
   const vpFileGo = await vp.evaluate(before => {
     return { msg: document.getElementById('pasteMsg').textContent,
              bad: document.getElementById('pasteMsg').className.indexOf('bad') >= 0,
@@ -2763,8 +2769,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      !vpFileGo.bad && vpFileGo.added === 1 && vpFileGo.name === '讀檔來的小屋' &&
      vpFileGo.drawn > 100 && vpFileGo.picked.indexOf('讀檔來的小屋') > 0 &&
      vpFileGo.rep === '藍圖：讀檔來的小屋（自訂 · gen）' && vpFileGo.inBox &&
-     vpFileGo.cleared,
-     vpFileGo.msg + '（畫了 ' + vpFileGo.drawn + ' 塊，報告第二行「' + vpFileGo.rep + '」）');
+     vpFileGo.cleared && vpWait.got,
+     (vpWait.got ? '' : '等了 ' + vpWait.ms + ' ms 還沒回訊息　') +
+     vpFileGo.msg + '（畫了 ' + vpFileGo.drawn + ' 塊，報告第二行「' + vpFileGo.rep + '」，讀檔到出訊息 ' + vpWait.ms + ' ms）');
 
   ok('預覽頁整段跑完沒有 console 錯誤', vpErr.length === 0, vpErr.join(' / ') || '乾淨');
   await vp.close();
@@ -2879,11 +2886,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      impPos.txt === '📋 貼上' && impPos.before && impPos.sameRow && impPos.w > 60,
      '「' + impPos.txt + '」寬 ' + impPos.w + 'px，在「匯入」左邊');
 
+  /* 讀剪貼簿是非同步的，按下去之後**等按鈕換上這一下的結果**再讀（最多 3 秒），不要固定等 150 毫秒：
+     頁面一慢 readText 還沒回來，讀到的就還是「📋 貼上」。
+     見 開發筆記〈兩條在賭頁面快慢的測試：讀檔只給 5 秒、貼上只等 150 毫秒〉 */
   const impGot = await gp.evaluate(async () => {
     await navigator.clipboard.writeText('customBlueprint({ 剪貼簿裡這一段 })');
     document.getElementById('impPaste').value = '';
-    document.getElementById('impPasteBtn').click();
-    await new Promise(r => setTimeout(r, 150));
+    const b = document.getElementById('impPasteBtn'), t = performance.now();
+    b.click();
+    while (b.textContent === '📋 貼上' && performance.now() - t < 3000) await new Promise(r => setTimeout(r, 10));
     return { v: document.getElementById('impPaste').value, shapes: SHAPES.length,
              btn: document.getElementById('impPasteBtn').textContent };
   });
@@ -2894,10 +2905,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '框裡「' + impGot.v + '」，按鈕變成「' + impGot.btn + '」');
 
   const impNone = await gp.evaluate(async () => {
+    /* 上一條「已貼上 ✓」排了一個 1.6 秒後還原成「📋 貼上」的計時器，新按一下不會取消它——
+       先睡 1.7 秒讓它跑完，不然它會落在這一條按下去之後，把「剪貼簿是空的」蓋回去（同下一條 impDeny 的 v1.148.1） */
+    await new Promise(r => setTimeout(r, 1700));
     await navigator.clipboard.writeText('');
     document.getElementById('impPaste').value = '手上這一段還在改';
-    document.getElementById('impPasteBtn').click();
-    await new Promise(r => setTimeout(r, 150));
+    const b = document.getElementById('impPasteBtn'), t = performance.now();
+    b.click();
+    while (b.textContent === '📋 貼上' && performance.now() - t < 3000) await new Promise(r => setTimeout(r, 10));
     return { v: document.getElementById('impPaste').value,
              btn: document.getElementById('impPasteBtn').textContent };
   });
