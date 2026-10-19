@@ -463,8 +463,8 @@ const installClean = page => page.evaluate(() => {
     /* 箭雨（v1.171）：一隊人與飛在半空的箭是兩份清單，兩份都要收。
        弓箭手是接在 workers 後面畫的，所以清掉之後還要把小人的 count 收回來，
        不然這一段留下的 40 個位子會被下一條測試量到（它們讀的是 workerMesh.count）。 */
-    archers = null; arrows = null;
-    musket = null; bullets = null;    // 火槍兵（v1.227）：一隊人與飛著的子彈，同箭雨兩份都收
+    archers = null; arrows = null; arOld = null;   // arOld／mkOld：被換掉、正在散場的那一隊（v1.299.0）
+    musket = null; bullets = null; mkOld = null;   // 火槍兵（v1.227）：一隊人與飛著的子彈，同箭雨兩份都收
     ENG.setWorkerCount(workers.length); ENG.putWeapons([]);
     /* 幽浮（v1.167）：一趟十六秒，而且它把積木收在地板底下、還借了鏡頭的高度。
        ufoClear() 是那兩件事的出口（同 gateEnd 的角色），不能只把 ufos 設成 null。 */
@@ -18157,20 +18157,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
     const one = { aim: !!aim, men: archers ? 1 : 0, arrows: arrows ? arrows.length : 0 };
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
-    const M = archers.men, xs = M.map(m => m.x), zs = M.map(m => m.z);
+    /* 隊形量的是**站位**（m.hx／m.hz）與站好之後的朝向（m.af）：v1.299.0 起點下去那一刻人在隊形外面、
+       還要走進來（見〈箭雨：進場排隊〉那一條），m.x／m.z 是出現的地方。 */
+    const M = archers.men, xs = M.map(m => m.hx), zs = M.map(m => m.hz);
     const z0 = Math.min(...zs);
     draw();                                   // 要畫過才讀得到這一幀的 instance 數
     return {
       one, aim2: !!aim, n: M.length, N: AR_N, col: AR_COL,
       wantRows: Math.ceil(AR_N / AR_COL), wantWide: (AR_COL - 1) * AR_GAP, jit: AR_JIT,
       face: +AR_FACE.toFixed(3),
-      rows: new Set(M.map(m => Math.round((m.z - z0) / AR_ROWGAP))).size,
+      rows: new Set(M.map(m => Math.round((m.hz - z0) / AR_ROWGAP))).size,
       wide: +(Math.max(...xs) - Math.min(...xs)).toFixed(1),
       deep: +(Math.max(...zs) - z0).toFixed(1),
       /* 整隊面向「第一點 → 第二點」那個方向（每個人再抖 ±AR_FACE，v1.252 起 ±6°）：
          不是各自朝目標轉，所以這裡比的是同一個 a0。 */
-      faceMax: +Math.max(...M.map(m => Math.abs(m.a - Math.PI))).toFixed(3),
-      inSolid: M.filter(m => footBlocked(m.x, m.z) || homeFoot(m.x, m.z)).length,
+      faceMax: +Math.max(...M.map(m => Math.abs(m.af - Math.PI))).toFixed(3),
+      inSolid: M.filter(m => footBlocked(m.hx, m.hz) || homeFoot(m.hx, m.hz)).length,
       wcount: ENG.three.workerMesh.count,
       want: (workers.length + M.length) * ENG.WPARTS,
       inWorkers: workers.filter(w => w.bow).length
@@ -18208,11 +18210,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     try { castArrows({ x: 0, z: 42 }, { x: 0, z: 0 }, 0); }
     finally { arSpot = os; }
     const M = archers.men, a0 = Math.PI, dx = [], dz = [], da = [];
-    M.forEach((m, i) => {
+    M.forEach((m, i) => {                             // 站位 hx／hz、站好之後的朝向 af（v1.299.0，見 arCast 那條）
       const row = Math.floor(i / AR_COL), col = i % AR_COL;
       const off = col - (Math.min(AR_COL, AR_N - row * AR_COL) - 1) / 2;
-      dx.push(Math.abs(m.x - off * AR_GAP)); dz.push(Math.abs(m.z - (42 + row * AR_ROWGAP)));
-      da.push(Math.abs(Math.atan2(Math.sin(m.a - a0), Math.cos(m.a - a0))));
+      dx.push(Math.abs(m.hx - off * AR_GAP)); dz.push(Math.abs(m.hz - (42 + row * AR_ROWGAP)));
+      da.push(Math.abs(Math.atan2(Math.sin(m.af - a0), Math.cos(m.af - a0))));
     });
     cleanTools();
     const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
@@ -18226,9 +18228,154 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      arJit.n + ' 人離自己那一格最多 ' + arJit.dMax + '、平均 ' + arJit.dAvg + '（AR_JIT ±' + arJit.jit +
      '）；朝向偏最多 ' + arJit.aMax + '、平均 ' + arJit.aAvg + ' 弧度（AR_FACE ±' + arJit.face.toFixed(4) + '）');
 
+  /* ── 進場排隊、散場走開、交接（v1.299.0，使用者：「箭雨&火槍兵 調整成小人一個範圍內出現 然後排好隊伍再攻擊
+        結束也是散場走開消失 (出現消失都像是地圖邊緣進出場的樣子)」，看過預覽選的：隊形周圍一片、小跑、
+        四散走開、舊的散場新的進場）。三條都是規則型：出現點、散場方向、錯開的時刻是亂抽的，
+        但抽到哪裡都要守同一組上下限（見 CLAUDE.md〈兩種條目〉）。cleanTools 把房子清掉了（clearHomes），
+        站在 (0, 42) 時隊形後面是空地，所以散場方向一定挑得到背對目標那一半（路不通才會放寬，見 trTo）。 */
+  const arIn = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const os = shootArrow, dt = 1 / 60;
+    let early = 0;
+    shootArrow = (g, m) => { if (g.st === 'in') early++; os(g, m); };
+    try {
+      castArrows({ x: 0, z: 42 }, { x: 0, z: 0 }, 0);
+      const g = archers, M = g.men;
+      const r0 = M.map(m => Math.hypot(m.sx - m.hx, m.sz - m.hz));
+      const res = { n: M.length, N: AR_N, hidden: M.filter(m => m.alpha === 0).length,
+                    dLo: +Math.min(...r0).toFixed(2), dHi: +Math.max(...r0).toFixed(2), lo: TR_IN_D[0], hi: TR_IN_D[1],
+                    bad: M.filter(m => m.d >= 1.2 && !trPath(m.sx, m.sz, m.hx, m.hz)).length };
+      /* 一幀一幀推到開打：跑多快、濃淡只增不減、走路時弓拿在手上（bowUp 0）、到位那一刻全亮站在格子上朝正面 */
+      const prev = M.map(m => ({ x: m.x, z: m.z, al: 0 }));
+      let vMax = 0, dim = 0, T = 0, bowMax = 0;
+      while (g.st === 'in' && T < 10) {
+        step(dt); T += dt;
+        M.forEach((m, i) => {
+          const p = prev[i], v = Math.hypot(m.x - p.x, m.z - p.z) / dt;
+          if (v > vMax) vMax = v;
+          const al = m.alpha === undefined ? 1 : m.alpha;
+          if (al < p.al - 1e-9) dim++;
+          p.x = m.x; p.z = m.z; p.al = al;
+          if (g.st === 'in' && m.bowUp > bowMax) bowMax = m.bowUp;
+        });
+      }
+      Object.assign(res, {
+        st: g.st, T: +T.toFixed(3), Tmax: +(TR_IN_LAG + TR_IN_D[1] / TR_RUN + TR_TURN + 3 * dt).toFixed(3),
+        vMax: +vMax.toFixed(3), run: +TR_RUN.toFixed(3), dim, bowMax, early,
+        home: Math.max(...M.map(m => Math.hypot(m.x - m.hx, m.z - m.hz))),
+        face: Math.max(...M.map(m => Math.abs(m.a - m.af))),
+        lit: M.filter(m => m.alpha === undefined).length });
+      return res;
+    } finally { shootArrow = os; cleanTools(); }
+  });
+  ok('箭雨：進場排隊——一開始全隊看不見、在自己那一格外 TR_IN_D 以內、路上沒有固體；小跑過來邊走邊淡入，全到齊才開打',
+     arIn.n === arIn.N && arIn.hidden === arIn.n && arIn.dHi <= arIn.hi + 1e-9 && arIn.bad === 0 &&
+     arIn.st === 'fire' && arIn.T <= arIn.Tmax && arIn.vMax <= arIn.run + 1e-6 && arIn.dim === 0 &&
+     arIn.bowMax === 0 && arIn.early === 0 && arIn.home < 1e-9 && arIn.face < 1e-9 && arIn.lit === arIn.n,
+     arIn.hidden + '／' + arIn.n + ' 人一開始看不見；離自己那一格 ' + arIn.dLo + '～' + arIn.dHi + '（TR_IN_D ' + arIn.lo + '～' +
+     arIn.hi + '），路上碰到固體 ' + arIn.bad + ' 人；第 ' + arIn.T + ' 秒全到齊開打（上限 ' + arIn.Tmax + '）；最快 ' +
+     arIn.vMax + ' 格／秒（TR_RUN ' + arIn.run + '）；變淡的 ' + arIn.dim + ' 次；走路時弓舉起來最多 ' + arIn.bowMax +
+     '；到齊前射出去 ' + arIn.early + ' 支；到齊時離格子最遠 ' + arIn.home.toExponential(1) + '、朝向差 ' +
+     arIn.face.toExponential(1) + '、全亮 ' + arIn.lit + ' 人');
+
+  const arOut = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const dt = 1 / 60;
+    castArrows({ x: 0, z: 42 }, { x: 0, z: 0 }, 0);
+    const g = archers;
+    let T = 0;
+    while (archers === g && g.st !== 'out' && T < 30) { step(dt); T += dt; }
+    const M = g.men.slice(), S = M.map(() => ({ al: 1, gone: 0, bow: -1 }));
+    let back = 0, dOk = 0, dim = 0, early = 0, T2 = 0;
+    for (const m of M) {
+      if ((m.ex - m.ox) * g.ux + (m.ez - m.oz) * g.uz <= 1e-9) back++;
+      if (m.d >= TR_OUT_D[0] - 1e-9 && m.d <= TR_OUT_D[1] + 1e-9) dOk++;
+    }
+    while (T2 < 10) {
+      step(dt); T2 += dt;
+      const live = new Set(g.men);
+      M.forEach((m, i) => {
+        const s = S[i];
+        if (s.gone) return;
+        if (!live.has(m)) { s.gone = T2; return; }
+        if (m.gait > 0 && s.bow < 0) s.bow = m.bowUp;          // 邁出第一步那一幀弓收好了沒
+        const al = m.alpha === undefined ? 1 : m.alpha;
+        if (al > s.al + 1e-9) dim++;
+        if (m.alpha !== undefined && m.d - m.go > REACH + WOOD_FADE + WALK * dt) early++;
+        s.al = al;
+      });
+      if (archers !== g) break;
+    }
+    /* 散場時刻跟站完的時刻**比原值**：照規則差在 (0, 一幀]，g.t 一幀一幀加上去，差值可能小到 1e-15
+       ——先 toFixed 再比的話兩個都是 9.917、「晚於」判紅（第一版就這樣紅的，同〈火槍兵那條先捨入再比〉） */
+    const lateBy = g.t - g.end;
+    cleanTools();
+    return { n: M.length, lateBy, tOut: +g.t.toFixed(3), end: +g.end.toFixed(3), dt, back, dOk, dim, early,
+             bowMax: Math.max(...S.map(s => s.bow)), lastMax: +Math.max(...S.map(s => s.al)).toFixed(4),
+             lastWant: +(WALK * dt / WOOD_FADE).toFixed(4), allGone: S.every(s => s.gone > 0),
+             T2: +T2.toFixed(3), Tmax: +(TR_OUT_LAG + TR_STOW + TR_OUT_D[1] / WALK + 3 * dt).toFixed(3),
+             nul: archers === null, lo: TR_OUT_D[0], hi: TR_OUT_D[1] };
+  });
+  ok('箭雨：散場走開——射完站 AR_IDLE 才散，每個人收好弓再朝背對目標那一半走 TR_OUT_D，最後那一段淡掉、淡完就收',
+     arOut.lateBy > 0 && arOut.lateBy <= arOut.dt + 1e-9 &&
+     arOut.back === arOut.n && arOut.dOk === arOut.n && arOut.bowMax === 0 && arOut.dim === 0 && arOut.early === 0 &&
+     arOut.lastMax <= arOut.lastWant + 1e-4 && arOut.allGone && arOut.nul && arOut.T2 <= arOut.Tmax,
+     '第 ' + arOut.tOut + ' 秒散場（站完是 ' + arOut.end + '，晚 ' + arOut.lateBy.toExponential(1) + ' 秒）；' +
+     arOut.back + '／' + arOut.n + ' 人朝背對目標那一半、' +
+     arOut.dOk + ' 人走 ' + arOut.lo + '～' + arOut.hi + ' 格；邁步時弓還舉著最多 ' + arOut.bowMax + '；變亮 ' + arOut.dim +
+     ' 次、離終點太遠就開始淡 ' + arOut.early + ' 次；收掉前最後一幀最濃 ' + arOut.lastMax + '（一幀走的份量 ' + arOut.lastWant +
+     '）；' + arOut.T2 + ' 秒走光（上限 ' + arOut.Tmax + '）');
+
+  /* 交接（使用者選「舊的散場、新的進場」）：在打的那一隊當場散場、挪到 arOld，新的一隊進場，兩隊都畫得到；
+     淡的那些都真的搬去半透明那一顆（workerMesh 那一格是 0，FADE_W 不夠的話會照原樣畫出來）。
+     剛叫出來就又換掉：還沒出現的直接收掉；本來在 arOld 的那一隊（還沒走完）直接收掉——同時最多兩隊。 */
+  const arSwap = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const dt = 1 / 60, W = ENG.WPARTS;
+    castArrows({ x: 0, z: 42 }, { x: 0, z: 0 }, 0);
+    for (let i = 0; i < 60 * 4; i++) step(dt);
+    const A = archers, aSt = A.st;
+    castArrows({ x: 20, z: 40 }, { x: 0, z: 0 }, 0);
+    const B = archers;
+    step(dt);
+    draw();
+    const L = archerList(), X = ENG.three.workerMesh.instanceMatrix.array;
+    let faded = 0, leak = 0;
+    L.forEach((m, k) => {
+      if (m.alpha === undefined) return;
+      faded++;
+      const at = (workers.length + k) * W * 16;
+      if (Math.hypot(X[at], X[at + 1], X[at + 2]) > 1e-9) leak++;
+    });
+    const one = { aSt, oldIsA: arOld === A, aOut: A.st, bIn: B.st, list: L.length, want: A.men.length + B.men.length,
+                  wcount: ENG.three.workerMesh.count / W, wwant: workers.length + L.length, faded, leak };
+    const hidB = B.men.filter(m => m.arr < 0 && B.tg < m.ti).length, aMen = A.men.slice();
+    castArrows({ x: -20, z: 40 }, { x: 0, z: 0 }, 0);
+    const L2 = archerList();
+    const two = { oldIsB: arOld === B, bOut: B.st, bMen: B.men.length, bWas: AR_N, hidB,
+                  aLeft: aMen.filter(m => L2.indexOf(m) >= 0).length, aWas: aMen.length };
+    let T = 0;
+    while ((archers || arOld) && T < 40) { step(dt); T += dt; }
+    const clean = !archers && !arOld && archerList().length === 0;
+    cleanTools();
+    return { one, two, T: +T.toFixed(2), clean };
+  });
+  ok('箭雨：再叫一隊——在打的那一隊當場散場、新的進場，兩隊都畫得到；淡的全在半透明那一顆；同時最多兩隊',
+     arSwap.one.aSt === 'fire' && arSwap.one.oldIsA && arSwap.one.aOut === 'out' && arSwap.one.bIn === 'in' &&
+     arSwap.one.list === arSwap.one.want && arSwap.one.wcount === arSwap.one.wwant &&
+     arSwap.one.faded > 60 && arSwap.one.leak === 0 &&
+     arSwap.two.oldIsB && arSwap.two.bOut === 'out' && arSwap.two.bMen === arSwap.two.bWas - arSwap.two.hidB &&
+     arSwap.two.aWas > 0 && arSwap.two.aLeft === 0 && arSwap.clean,
+     '第一隊在 ' + arSwap.one.aSt + ' 時叫第二隊：第一隊 → ' + arSwap.one.aOut + '、第二隊 ' + arSwap.one.bIn + '；畫 ' +
+     arSwap.one.list + ' 人（兩隊合計 ' + arSwap.one.want + '）、workerMesh ' + arSwap.one.wcount + ' 人（期望 ' +
+     arSwap.one.wwant + '）；在淡的 ' + arSwap.one.faded + ' 人、漏在原本那一顆的 ' + arSwap.one.leak +
+     '；馬上又叫第三隊：第二隊還沒出現的 ' + arSwap.two.hidB + ' 人收掉（剩 ' + arSwap.two.bMen + '）、第一隊還畫著的 ' +
+     arSwap.two.aLeft + '／' + arSwap.two.aWas + '；' + arSwap.T + ' 秒後全部走完' + (arSwap.clean ? '、清空' : '、**沒清空**'));
+
   /* 一整趟：射滿 AR_VOL 輪、每一支出手的角度、弧高、有沒有爆／燒／震、收不收乾淨。
-     24 秒的窗夠長：最後一支離手最晚在第 8.6 秒（AR_LIFT ＋ AR_DRAW ＋ 4×AR_CYCLE ＋ 錯開，v1.232 錯開 0.65），
-     整隊第 10 秒撤走，最後一支箭插著淡完約第 17 秒。 */
+     24 秒的窗夠長：進場最慢 2.7 秒（v1.299.0 起，見〈箭雨：進場排隊〉那條的上限），最後一支離手再晚 8.6 秒
+     （AR_LIFT ＋ AR_DRAW ＋ 4×AR_CYCLE ＋ 錯開，v1.232 錯開 0.65），站 1.3 秒、散場最慢 2.9 秒走光（約第 15.5 秒），
+     最後一支箭插著淡完約第 20 秒。 */
   const arRun = await page.evaluate(() => {
     cleanTools(); completeNow();
     const b0 = blocks.filter(b => b.st === SET).length, s0 = stats.smashed;
@@ -18252,7 +18399,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const shake0 = +ENG.cam.shake.toFixed(4);
     ENG.cam.shake = 0;
     let peakY = 0, peakN = 0, shake = 0, hotMax = 0, flashMax = 0, up = 0, down = 0;
-    let quit = -1, gone = -1, kMax = 0, kLast = 0;
+    let quit = -1, gone = -1, kMax = 0, kMin = 9;
     for (let i = 0; i < 60 * 24; i++) {
       step(1 / 60); T += 1 / 60;
       if (arrows) {
@@ -18265,12 +18412,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       if (ENG.cam.shake > shake) shake = ENG.cam.shake;
       if (hot.length > hotMax) hotMax = hot.length;
       if (flashes.length > flashMax) flashMax = flashes.length;
-      /* 出場長大、撤走縮小，中間**不准變大**（v1.171 開發中的病：撤走前站著那 1.3 秒
-         縮放係數是負的 q，一路長到 3.9 倍——使用者：「離場的時候會變大」）。 */
+      /* 從頭到尾都是原身高（v1.299.0 起出現與消失是邊走邊淡，不再縮放）。v1.171～v1.298 這裡守的是
+         「出場長大、撤走縮小，中間不准變大」（v1.171 開發中撤走前站著那 1.3 秒一路長到 3.9 倍）。 */
       if (archers) for (const m of archers.men) {
         const k = m.scale / m.base;
         if (k > kMax) kMax = k;
-        kLast = k;
+        if (k < kMin) kMin = k;
       }
       if (!archers && quit < 0) quit = +T.toFixed(2);
       if (quit >= 0 && !arrows && gone < 0) gone = +T.toFixed(2);
@@ -18290,7 +18437,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              smashed: stats.smashed - s0,
              setDrop: b0 - blocks.filter(b => b.st === SET).length,
              quit, gone, weapVis: ENG.three.weapMesh.visible,
-             kMax: +kMax.toFixed(3), kLast: +kLast.toFixed(3),
+             kMax: +kMax.toFixed(3), kMin: +kMin.toFixed(3),
              wcount: ENG.three.workerMesh.count / ENG.WPARTS };
   });
   const arFullOk = arRun.men === arRun.N && arRun.n === arRun.want && arRun.vol === arRun.vols;
@@ -18311,10 +18458,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      arRun.burning + ' 塊、震動 ' + arRun.shake + '（開量之前先歸零，前面留下 ' +
      arRun.shake0 + '）；打掉 ' + arRun.smashed +
      ' 塊（還站著的少了 ' + arRun.setDrop + ' 塊）');
-  ok('整隊只會長出來與縮回去，中間不會變大（撤走前站著那一段也不會）',
-     arRun.kMax <= 1.001 && arRun.kLast < 0.35,
-     '整趟縮放係數最大 ' + arRun.kMax + '（＞1 就是變大了）、消失前最後一幀 ' +
-     arRun.kLast);
+  ok('整隊從頭到尾都是原身高（出現與消失是邊走邊淡，不縮放）',
+     arRun.kMax <= 1.001 && arRun.kMin >= 0.999,
+     '整趟縮放係數 ' + arRun.kMin + '～' + arRun.kMax);
   ok('射完整隊撤走、箭也全部收乾淨',
      arRun.quit > 5 && arRun.gone > arRun.quit && !arRun.weapVis &&
      arRun.wcount === 6,
@@ -18337,7 +18483,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       tool = 'arrow';
       useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
       useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
-      for (let i = 0; i < 60 * 12; i++) step(1 / 60);
+      for (let i = 0; i < 60 * 15; i++) step(1 / 60);         // v1.299.0 起多進場那 2.7 秒（12 → 15）
     } finally { shootArrow = os; Math.random = rnd; cleanTools(); }
     const tau = s => s.t - (AR_LIFT + AR_DRAW + s.n * AR_CYCLE);
     const per = {};
@@ -18432,7 +18578,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     tool = 'arrow';
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
-    for (let i = 0; i < 30; i++) step(1 / 60);
+    // v1.299.0 起要等走進來、排好、舉好弓（AR_LIFT）才是射箭的姿勢
+    for (let i = 0; i < 60 * 10 && !(archers.st === 'fire' && archers.t > AR_LIFT); i++) step(1 / 60);
     archers.men.forEach(m => { m.draw = 1; });      // 全隊擺成滿弓再畫
     draw();
     const M = ENG.three.workerMesh, W = ENG.WPARTS, A = M.instanceMatrix.array;
@@ -18447,11 +18594,45 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const arch = workers.length;                    // 第一個弓箭手的 instance 編號
     const at = (arch * W + nock) * 16;              // 搭著的那一支箭
     const L = Math.hypot(A[at + 8], A[at + 9], A[at + 10]) || 1;
-    return { n: bow.length,
-             worker: +Math.max(...bow.map(p => sc(0, p))).toFixed(4),
-             archer: +Math.min(...bow.map(p => sc(arch, p))).toFixed(3),
-             deg: +(Math.asin(A[at + 9] / L) * 180 / Math.PI).toFixed(1),
-             last: !!parts[parts.length - 1].orb };
+    const out = { n: bow.length,
+                  worker: +Math.max(...bow.map(p => sc(0, p))).toFixed(4),
+                  archer: +Math.min(...bow.map(p => sc(arch, p))).toFixed(3),
+                  deg: +(Math.asin(A[at + 9] / L) * 180 / Math.PI).toFixed(1),
+                  last: !!parts[parts.length - 1].orb };
+    /* 拿著走（v1.299.0，bowUp 0）：握把在左手手掌裡、兩片弓臂的末端都離地；舉到一半（0.5）握把落在兩頭之間。
+       直接擺一個人畫（不跑模擬），量完那一格畫回去。 */
+    const grip = parts.findIndex(b => b.bow && !b.lim && !b.str && !b.nock && !b.quiv);
+    const glove = parts.findIndex(b => b.c === 'glove' && b.arm < 0);
+    const limbs = parts.map((b, i) => b.lim ? i : -1).filter(i => i >= 0);
+    const pos = k => { const q = (W + k) * 16; return [A[q + 12], A[q + 13], A[q + 14]]; };
+    const man = (bowUp, gait) => ({ x: 0, y: 0, z: 0, a: 0, ph: 1.1, gait, tone: 0, scale: 1.7, bow: 1, bowUp, draw: 0 });
+    /* 走路那一份掃一整個步伐週期（左手往前、往後擺到底都量到）：弓臂兩頭（中心 ± 半個長度沿著自己的 y 軸）
+       換回身高 1 的高度，要比弓臂半個厚度高——不然擺到底那一刻弓臂插進草皮（v1.299.0 第一版擺幅 0.3 就是這樣，見 BOW_CARRY_SW） */
+    const half = Math.max(...limbs.map(k => Math.max(parts[k].s[0], parts[k].s[2]) / 2));
+    const carry = [];
+    for (const gait of [0, 1]) {
+      let hand = 0, low = 1e9;
+      for (let i = 0; i < (gait ? 32 : 1); i++) {
+        const m = man(0, gait); m.ph = i * Math.PI / 16;
+        ENG.putWorker(1, m);
+        const g = pos(grip), h = pos(glove);
+        hand = Math.max(hand, Math.hypot(g[0] - h[0], g[1] - h[1], g[2] - h[2]));
+        for (const k of limbs) {
+          const q = (W + k) * 16, c = pos(k);
+          for (const s of [1, -1]) low = Math.min(low, (c[1] + s * A[q + 5] / 2) / m.scale);
+        }
+      }
+      carry.push({ gait, hand, low: +low.toFixed(4), half });
+    }
+    ENG.putWorker(1, man(1, 0)); const up = pos(grip);
+    ENG.putWorker(1, man(0, 0)); const dn = pos(grip);
+    ENG.putWorker(1, man(0.5, 0)); const mid = pos(grip);
+    out.carry = carry;
+    // 握把就是框架的原點，內插是直線（_bowG.lerp），所以舉到一半剛好落在兩頭的正中間
+    out.mid = Math.hypot(...[0, 1, 2].map(i => mid[i] - (up[i] + dn[i]) / 2));
+    out.span = +Math.hypot(...[0, 1, 2].map(i => up[i] - dn[i])).toFixed(3);
+    draw();                                          // 動過的那一格還回去
+    return out;
   });
   ok('弓那七塊只有弓箭手身上有（別人縮成 0），畫出來的箭跟彈道同一個角度',
      arBow.n === 7 && arBow.worker < 1e-6 && arBow.archer > 0.01 &&
@@ -18459,6 +18640,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '弓 ' + arBow.n + ' 塊：一般小人身上最大縮放 ' + arBow.worker +
      '、弓箭手身上最小 ' + arBow.archer + '；畫出來那支箭朝上 ' + arBow.deg +
      ' 度（彈道 45.00）');
+  ok('箭雨：走路時弓拿在左手——握把在手掌裡、弓臂末端都離地；舉到一半握把在兩個姿勢正中間',
+     arBow.carry.every(c => c.hand < 1e-6 && c.low > c.half) && arBow.mid < 1e-6 && arBow.span > 0.3,
+     arBow.carry.map(c => (c.gait ? '走路（一整個步伐）' : '站著') + '：握把離左手最遠 ' + c.hand.toExponential(1) +
+                          '、弓臂末端最低 ' + c.low + '（身高 1；弓臂半個厚度 ' + c.half + '）').join('；') +
+     '；舉到一半離正中間 ' + arBow.mid.toExponential(1) + '（兩個姿勢的握把差 ' + arBow.span + '）');
 
   /* 最貴的那一幀：人數上限的場子再加一整隊弓箭手，而且箭最多的時候
      （80 人 × 36 塊 ＋ 240 支箭 × 8 塊都要擺矩陣）。門檻放寬到 6ms 是照現成的
@@ -18471,7 +18657,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 42 } });
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
     let peak = 0, tPeak = 0, T = 0;
-    for (let i = 0; i < 60 * 12; i++) {
+    for (let i = 0; i < 60 * 15; i++) {             // v1.299.0 起多進場那 2.7 秒（12 → 15）
       step(1 / 60); T += 1 / 60;
       if (arrows && arrows.length > peak) { peak = arrows.length; tPeak = T; }
     }
@@ -18511,9 +18697,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     kinds: ENG.WEAP_KIND.length, scales: WEAP_SCALE.length, arrowK: ENG.ARROW_K,
     parts: ENG.WEAP_KIND[ENG.ARROW_K].length
   }));
-  ok('容量留得夠：小人上限裝得下最多人數 ＋ 一隊弓箭手，兵器池裝得下王之財寶最壞值 ＋ 一隊的箭',
-     arCap.maxw >= arCap.wk + arCap.n && arCap.weapMax >= arCap.keep + arCap.need,
-     '小人上限 ' + arCap.maxw + ' ≥ ' + arCap.wk + ' ＋ ' + arCap.n +
+  ok('容量留得夠：小人上限裝得下最多人數 ＋ 兩隊弓箭手（交接那幾秒），兵器池裝得下王之財寶最壞值 ＋ 一隊的箭',
+     arCap.maxw >= arCap.wk + 2 * arCap.n && arCap.weapMax >= arCap.keep + arCap.need,
+     '小人上限 ' + arCap.maxw + ' ≥ ' + arCap.wk + ' ＋ 2 × ' + arCap.n +
      '；兵器池 ' + arCap.weapMax + ' ≥ ' + arCap.keep + ' ＋ ' + arCap.need +
      '（箭自己的上限 ' + arCap.arKeep + '）');
   ok('箭排在造型表最後一種，王之財寶抽不到它',
@@ -18539,7 +18725,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const fz = 62, tz = fz - d;
       useTool({ kind: 'ground', point: { x: 40, y: 0, z: fz } });
       useTool({ kind: 'ground', point: { x: 40, y: 0, z: tz } });
-      for (let i = 0; i < 60 * 14; i++) step(1 / 60);
+      for (let i = 0; i < 60 * 17; i++) step(1 / 60);       // v1.299.0 起多進場那 2.7 秒（14 → 17）
       arrowStick = os;
       const rs = land.map(l => Math.hypot(l[0] - 40, l[1] - tz)).sort((a, b) => a - b);
       const q = f => +rs[Math.min(rs.length - 1, Math.floor(rs.length * f))].toFixed(2);
@@ -18611,7 +18797,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       useTool({ kind: 'ground', point: { x: 0, y: 0, z: 22 } });
       useTool(onBlock ? { kind: 'block', point: p } : { kind: 'ground', point: { x: p.x, y: 0, z: p.z } });
       const ty = archers.ty;
-      for (let i = 0; i < 60 * 16; i++) step(1 / 60);
+      for (let i = 0; i < 60 * 19; i++) step(1 / 60);       // v1.299.0 起多進場那 2.7 秒（16 → 19）
       shootArrow = os; arrowStick = ost;
       land.sort((a, b) => a - b);
       return { ty: +ty.toFixed(2), n: shots.length,
@@ -18672,7 +18858,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       byRow: [0, 1, 2].map(r => M.filter(m => m.row === r).length),
       wide: +(Math.max(...xs) - Math.min(...xs)).toFixed(2),
       arWide: +((AR_COL - 1) * AR_GAP).toFixed(2), spot: MK_SPOT,
-      inSolid: M.filter(m => footBlocked(m.x, m.z) || homeFoot(m.x, m.z)).length,
+      inSolid: M.filter(m => footBlocked(m.hx, m.hz) || homeFoot(m.hx, m.hz)).length,   // 站位（v1.299.0 起人還在走進來）
       wcount: ENG.three.workerMesh.count, want: (workers.length + M.length) * ENG.WPARTS,
       inWorkers: workers.filter(w => w.gun).length,
       gear: M.filter(m => m.gun).length
@@ -18727,14 +18913,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '）；九輪 lag 不全一樣的 ' + mkJitChk.redraw + '／' + mkJitChk.n + ' 人');
 
   /* 一整趟：九輪、每一輪是哪一排開、開的人是不是站在最前面、每人幾發、間隔、
-     水平、煙、不爆不震、收不收乾淨。30 秒的窗：v1.232 起一輪 MK_P 2.26 秒，最後一輪在第 19.0 秒開始，
-     第 21.7 秒立て銃、第 23.4 秒撤完。 */
+     水平、煙、不爆不震、收不收乾淨。34 秒的窗：v1.232 起一輪 MK_P 2.26 秒；v1.299.0 起先走進來排好（最慢 2.7 秒）
+     才開打，最後一輪約在第 21.7 秒開始、第 24.4 秒立て銃、站 1.3 秒散場、最慢第 28.6 秒走光。 */
   const mkRun = await page.evaluate(() => {
     cleanTools(); completeNow();
     const s0 = stats.smashed, shots = [];
     const of = mkFire, ob = mkBlast;
     let T = 0, smokeMin = 1e9, smokeN = 0;
+    let early = 0;                                   // 還在進場就開槍的（v1.299.0：排好才開打）
     mkFire = (g, m, n) => {
+      if (g.st !== 'fire') early++;
       of(g, m, n);
       const b = bullets[bullets.length - 1], S = g.slot[0][m.col];
       const d = Math.atan2(b.dx, b.dz) - g.a0;
@@ -18754,21 +18942,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     useTool({ kind: 'ground', point: { x: 0, y: 0, z: 0 } });
     const a0 = musket.a0;
     ENG.cam.shake = 0;
-    let shake = 0, flashMax = 0, kMax = 0, kLast = 0, quit = -1, gone = -1;
+    let shake = 0, flashMax = 0, kMax = 0, kMin = 9, quit = -1, gone = -1;
+    let walkIn = 0, walkOut = 0, offShoul = 0;       // 走進來／走開的人-幀、其中槍不是扛著的（v1.299.0）
     const load = {}, walk = {}, turn = {};
     /* v1.252：換位那一段每個人晚 lag[n] 秒起步、沒在瞄時朝 a0 ＋ fa。記每個人每一輪第一次邁步的時刻
        （這一輪開始之後幾秒）減掉時間表上的起步點（前排 MK_TL.lower、後排 MK_TL.pack）再減 lag[n]——
        照規則走的話落在一幀之內；裝填站著的那幾幀量朝向離 a0 ＋ fa 多遠。 */
     const go = {}, t0 = MK_LIFT + MK_RAISE;
     let goLo = Infinity, goHi = -Infinity, goN = 0, faceErr = 0, faceN = 0;
-    for (let i = 0; i < 60 * 30; i++) {
+    for (let i = 0; i < 60 * 34; i++) {
       step(1 / 60); T += 1 / 60;
       if (ENG.cam.shake > shake) shake = ENG.cam.shake;
       if (flashes.length > flashMax) flashMax = flashes.length;
       if (musket) for (const m of musket.men) {
         const id = m.row + ':' + m.col, k = m.scale / m.base;
         if (k > kMax) kMax = k;
-        kLast = k;
+        if (k < kMin) kMin = k;
+        if (m.gait && musket.st !== 'fire') {
+          if (musket.st === 'in') walkIn++; else walkOut++;
+          if (m.gp !== 'shoul' || m.gq) offShoul++;
+        }
         if (m.gp === 'load' && !m.gq) {
           load[id] = (load[id] || 0) + 1 / 60;
           faceErr = Math.max(faceErr, Math.abs(Math.atan2(Math.sin(m.a - a0 - m.fa), Math.cos(m.a - a0 - m.fa)))); faceN++;
@@ -18823,7 +19016,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       faceErr: +faceErr.toExponential(1), faceN,
       shake: +shake.toFixed(3), flashMax, burning: fires ? fires.length : 0, nSpread,
       smashed: stats.smashed - s0,
-      kMax: +kMax.toFixed(3), kLast: +kLast.toFixed(3), quit, gone,
+      kMax: +kMax.toFixed(3), kMin: +kMin.toFixed(3), quit, gone, early, walkIn, walkOut, offShoul,
       wcount: ENG.three.workerMesh.count / ENG.WPARTS
     };
   });
@@ -18877,11 +19070,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mkRun.flashMax === 0 && mkRun.shake === 0,
      '打掉 ' + mkRun.smashed + ' 塊；燒起來 ' + mkRun.burning + ' 塊、爆炸光 ' +
      mkRun.flashMax + ' 顆、震動 ' + mkRun.shake);
-  ok('整隊只會長出來與縮回去，打完撤走、子彈收乾淨，小人的 count 回來',
-     mkRun.kMax <= 1.001 && mkRun.kLast < 0.35 && mkRun.quit > 15 &&
+  /* v1.299.0（同〈箭雨〉進場排隊、散場走開那三條；走開的路、淡入淡出在那邊守，這裡守火槍兵自己的）：
+     扛著槍（担え銃）走進來、排好才開槍、打完收成担え銃再走開；從頭到尾原身高（v1.227～v1.298 是長出來、縮回去）。 */
+  ok('火槍兵：扛著槍走進來、排好才開槍、打完收槍再走開；從頭到尾原身高；子彈收乾淨，小人的 count 回來',
+     mkRun.kMax <= 1.001 && mkRun.kMin >= 0.999 && mkRun.early === 0 &&
+     mkRun.walkIn > 0 && mkRun.walkOut > 0 && mkRun.offShoul === 0 && mkRun.quit > 15 &&
      mkRun.gone >= mkRun.quit && mkRun.wcount === 6,
-     '縮放係數最大 ' + mkRun.kMax + '、消失前最後一幀 ' + mkRun.kLast + '；第 ' + mkRun.quit +
-     ' 秒撤走、第 ' + mkRun.gone + ' 秒子彈收完；count 回到 ' + mkRun.wcount);
+     '縮放係數 ' + mkRun.kMin + '～' + mkRun.kMax + '；進場中開槍 ' + mkRun.early + ' 發；走進來 ' + mkRun.walkIn +
+     '、走開 ' + mkRun.walkOut + ' 人-幀，槍不是扛著的 ' + mkRun.offShoul + '；第 ' + mkRun.quit +
+     ' 秒走光、第 ' + mkRun.gone + ' 秒子彈收完；count 回到 ' + mkRun.wcount);
 
   /* 造型與出手點：擺一個構え的火槍兵直接畫（不跑模擬），量畫出來那一截槍管——
      ① 朝上的角度＝仰角、朝向＝他面向的方向 ② 槍管前緣的中心＝ENG.gunMuzzle（子彈的起點）
@@ -19018,7 +19215,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       cow.x = p.x; cow.z = p.z / 2; cow.tx = cow.x; cow.tz = cow.z; cow.pause = 999;
       cow.air = 0; cow.fall = 0; cow.burn = 0;
       kind = cow.kind;
-      for (let i = 0; i < 60 * 3; i++) {
+      for (let i = 0; i < 60 * 5; i++) {                 // v1.299.0 起先走進來排好才開槍（3 → 5 秒）
         step(1 / 60);
         manAir = Math.max(manAir, workers.filter(w => w.air).length);
         if (beasts) cowAir = Math.max(cowAir, beasts.filter(b => b.air).length);
@@ -19107,11 +19304,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '（槌子 ' + mkSnd.smash.rms + '）、2kHz 以上 ' + mkSnd.bowVol.hiPct + '%（單聲 ' + mkSnd.bow1.hiPct +
      '%）、peak ' + mkSnd.bowVol.peak);
 
-  /* 容量：人數開到最大、一隊弓箭手與一隊火槍兵同時在場也要畫得下（MAXW 140 → 200 的理由）。 */
-  const mkCap = await page.evaluate(() => ({ maxw: ENG.MAXW, wk: Math.max(...WK_OPTS), ar: AR_N, mk: MK_N }));
-  ok('小人上限裝得下最多人數 ＋ 一隊弓箭手 ＋ 一隊火槍兵',
-     mkCap.maxw >= mkCap.wk + mkCap.ar + mkCap.mk,
-     '小人上限 ' + mkCap.maxw + ' ≥ ' + mkCap.wk + ' ＋ ' + mkCap.ar + ' ＋ ' + mkCap.mk);
+  /* 容量：人數開到最大、弓箭手與火槍兵各兩隊同時在場（交接那幾秒）也要畫得下（MAXW 140 → 200 → 340 的理由）；
+     那些人都可能同時在淡，淡入淡出那一顆也要裝得下（FADE_W ≥ MAXW，v1.299.0）。
+     真的擺出來畫一次：人數開到最大、兩種各叫兩隊（第二隊剛叫出來＝全隊 alpha 0、第一隊剛開始散場），
+     淡的那些在 workerMesh 裡的那一格都要是 0（漏出來＝ FADE_W 不夠，那幾個人會照原樣不透明地畫出來）。 */
+  const mkCap = await page.evaluate(() => {
+    cleanTools(); completeNow();
+    const n0 = workers.length, W = ENG.WPARTS;
+    setWorkerCount(Math.max(...WK_OPTS));
+    castArrows({ x: 0, z: 42 }, { x: 0, z: 0 }, 0); castMusket({ x: 0, z: -42 }, { x: 0, z: 0 }, -1);
+    for (let i = 0; i < 60 * 3; i++) step(1 / 60);
+    castArrows({ x: 20, z: 40 }, { x: 0, z: 0 }, 0); castMusket({ x: 20, z: -40 }, { x: 0, z: 0 }, -1);
+    step(1 / 60);
+    draw();
+    const X = ENG.three.workerMesh.instanceMatrix.array, list = archerList().concat(musketList());
+    let faded = 0, leak = 0;
+    list.forEach((m, k) => {
+      if (m.alpha === undefined) return;
+      faded++;
+      const at = (workers.length + k) * W * 16;
+      if (Math.hypot(X[at], X[at + 1], X[at + 2]) > 1e-9) leak++;
+    });
+    const r = { maxw: ENG.MAXW, fadeW: ENG.FADE_W, wk: workers.length, ar: AR_N, mk: MK_N,
+                drawn: ENG.three.workerMesh.count / W, people: workers.length + list.length, faded, leak };
+    cleanTools();
+    setWorkerCount(0); setWorkerCount(n0);           // 這一段動過人數，還回去
+    return r;
+  });
+  ok('小人上限裝得下最多人數 ＋ 弓箭手兩隊 ＋ 火槍兵兩隊，全部在淡也裝得下，真的擺出來畫一個都沒漏',
+     mkCap.maxw >= mkCap.wk + 2 * mkCap.ar + 2 * mkCap.mk && mkCap.fadeW >= mkCap.maxw &&
+     mkCap.drawn === mkCap.people && mkCap.faded > 2 * 60 && mkCap.leak === 0,
+     '小人上限 ' + mkCap.maxw + ' ≥ ' + mkCap.wk + ' ＋ 2 × ' + mkCap.ar + ' ＋ 2 × ' + mkCap.mk + '；淡入淡出那一顆 ' +
+     mkCap.fadeW + '；擺出來 ' + mkCap.people + ' 人、畫了 ' + mkCap.drawn + ' 人，在淡的 ' + mkCap.faded + ' 人、漏出來 ' + mkCap.leak);
 
   }   // ── 〈火槍兵〉結束（--tier 跳過時從這裡出來）
 

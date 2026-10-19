@@ -15540,7 +15540,9 @@ function beastWeapon(w, m) {
    不像的地方除了上面第 ④ 點，還有「箭是拋出去的，兵器是直射的」。
 
    v1.174～v1.175 只動人數與輪數（隊形、彈道、判定一個字都沒改，見 AR_N 那一段的帳）：
-   v1.174「箭雨弓箭隊改成40人射5輪」、v1.175「箭雨弓箭隊改成80人」。 */
+   v1.174「箭雨弓箭隊改成40人射5輪」、v1.175「箭雨弓箭隊改成80人」。
+   v1.299.0 起不再憑空長出來、縮回去：在隊形周圍一片邊走邊淡入、小跑集合，排好才開打，
+   打完四散走開淡出（見下面〈隊伍進出場〉那一段的 TR_*，火槍兵共用）。 */
 /* 一隊幾人、射幾輪。**v1.175 人數回到 80、五輪留著**（使用者：「箭雨弓箭隊改成80人」），
    隊形也跟著回到 v1.171～v1.173 那個 5 排 × 16 的方陣（正面寬 33 ≈ 工地直徑）：
      80 人 × 3 輪 ＝ 240 支（v1.171）→ 40 人 × 5 輪 ＝ 200 支（v1.174）
@@ -15559,7 +15561,9 @@ const AR_GAP = 2.2, AR_ROWGAP = 2.6;    // 同一排的人隔多遠／排與排�
    遠看還是一格一格的方陣。量法與數字見 開發筆記〈火槍兵與箭雨的隊形抖亂一點〉。 */
 const AR_JIT = 0.6;
 const AR_FACE = 6 * Math.PI / 180;
-const AR_LIFT = 0.45;            // 出場：整隊由小長到原尺寸要多久
+/* 全隊到齊之後舉弓要多久（v1.299.0 起；v1.171～v1.298 是「出場：整隊由小長到原尺寸要多久」，同一個數）。
+   弓從拿在左手（m.bowUp 0，見引擎的 BOW_CARRY_R）舉到 45 度（1），舉完才開始拉弓，所以放箭的時間表不用動。 */
+const AR_LIFT = 0.45;
 const AR_DRAW = 0.7;             // 拉一次弓要多久（弦從 0 拉到滿）
 /* 同一輪裡每個人的放箭時刻各自錯開多少（不錯開像一個人在射）。**v1.232 起 0.45 → 0.65，
    而且每放一支就重抽一次**（使用者：「目前一起發射太過整齊 小人射擊要有小小時間差(箭雨也是一起改)」）：
@@ -15572,11 +15576,7 @@ const AR_CYCLE = 1.7;            // 一輪到下一輪多久（要大於 AR_DRAW
    「每支一聲（很小聲）」；「注意別讓聲音爆太大聲&刺耳」）。同一支音效 0.06 秒內最多疊 3 聲
    （voiceOK），所以一輪 80 支實際響得出來的約一半。量法與數字見 開發筆記〈火槍兵平行射、開槍錯開〉。 */
 const AR_SND_K = 0.3;
-const AR_IDLE = 1.3;             // 射完站多久才撤
-const AR_OUT = 0.45;             // 撤走：整隊縮回去要多久
-/* 出場／撤走的縮放下限。**不能給 0**：putWorker 讀的是 `w.scale || 1`，0 會被當成
-   「沒給」＝原尺寸——那樣整隊在最後一幀會突然彈回原大小再消失。給一個看不見的小數就好。 */
-const AR_K0 = 0.001;
+const AR_IDLE = 1.3;             // 射完站多久才散場
 /* 落點在第二點附近散多開。**基本半徑 ＋ 射程的一個比例**（v1.172 使用者：「箭矢落點
    比現在更分散一點(正常射手沒這麼準)」）：v1.171 是固定半徑 5，不管射 15 還是射 60
    都一樣準——而射得愈遠愈不準才是射手該有的樣子（一點角度誤差乘上距離就是落點誤差）。
@@ -15610,7 +15610,8 @@ const AR_FADE = 1.4;             // 淡多久（透明度歸零就收掉）
 const AR_KEEP = AR_N * AR_VOL;
 const AR_AIM_R = 9;              // 第一下在地上畫的那圈光環多大（一隊的正面寬 33）
 const AR_AIM_C = 0xc79a5a;       // 木色（同弓）
-let archers = null;              // 在場的弓箭隊（同時只有一隊，見 castArrows）
+let archers = null;              // 在場的弓箭隊（見 castArrows）
+let arOld = null;                // 被換掉、正在散場的那一隊（v1.299.0，見 castArrows）
 let arrows = null;               // 場上所有箭：飛行中的 ＋ 插著淡出中的
 
 /* 第一下記位置、畫個光環，第二下才叫人。
@@ -15622,7 +15623,9 @@ function aimArrows(point, onBlock) {
   castArrows(aim, point, onBlock ? point.y : 0);
 }
 /* 站位：一排一排排在第一點**背對目標**的那一側，整隊面向目標。
-   同時只有一隊（AR_N 是照 MAXW 的餘裕訂的，見引擎那邊）：再點一次就換一隊，
+   每個人從自己那一格外面一點的地方走進來（trEnter，v1.299.0）——點下去那一刻 m.x／m.z 是出現的地方，
+   站位記在 m.hx／m.hz。再點一次就換一隊：舊那一隊當場散場、挪到 arOld 走完（使用者選「舊的散場、新的進場」），
+   arOld 本來就有一隊在走的話那一隊直接收掉——同時最多兩隊，引擎的 MAXW 照這個留位子。
    舊那一隊已經射出去的箭照樣飛完（同王之財寶「門收了兵器還在飛」）。 */
 function castArrows(from, toward, aimY) {
   aim = null;
@@ -15642,19 +15645,22 @@ function castArrows(from, toward, aimY) {
     const p = arSpot(from.x + sx * off * AR_GAP - ux * row * AR_ROWGAP + rr(-AR_JIT, AR_JIT),
                      from.z + sz * off * AR_GAP - uz * row * AR_ROWGAP + rr(-AR_JIT, AR_JIT),
                      ux, uz);
-    men.push({
-      x: p.x, y: 0, z: p.z, a: a0 + rr(-AR_FACE, AR_FACE),
+    const m = {
+      x: p.x, y: 0, z: p.z, a: a0,
       /* putWorker 會讀到的欄位都要有值：ph／gait 是走路擺動用的（站著不動給 0），
          tone 決定膚色與工作服（同 newWorker 拿編號當色號），base 是自己的身高倍率。 */
-      ph: 0, gait: 0, tone: i, base: rr(W_LO, W_HI), scale: 0,
-      bow: 1, draw: 0,                           // draw＝弦拉了多滿（引擎照它擺弦與箭）
+      ph: 0, gait: 0, tone: i, base: rr(W_LO, W_HI), scale: 1,
+      bow: 1, bowUp: 0, draw: 0,                 // bowUp＝弓舉起來多少（0＝拿在左手走路）、draw＝弦拉了多滿
       done: 0, off: rr(0, AR_SPREAD)             // done＝已經射幾輪、off＝自己這一輪慢多少放箭（每輪重抽）
-    });
+    };
+    m.scale = m.base;
+    trEnter(m, p.x, p.z, a0 + rr(-AR_FACE, AR_FACE), ux, uz);
+    men.push(m);
   }
-  // ty＝瞄的高度：點建築就是那一塊的高度，點空地就是地面上一點點（v1.172）
+  if (archers) { if (archers.st !== 'out') trDisperse(archers); arOld = archers; }
+  // ty＝瞄的高度：點建築就是那一塊的高度，點空地就是地面上一點點（v1.172）；st／tg／ux／uz 見〈隊伍進出場〉
   archers = { men, t: 0, tx: toward.x, ty: aimY > 0 ? aimY : AR_AIM_Y, tz: toward.z,
-              end: -1 };
-  sndWind();                                    // 一隊人到位（同投石機架好那一聲）
+              end: -1, st: 'in', tg: 0, ux, uz };
 }
 /* 站位落在建築或小人的家裡面的話，先沿著背對目標的方向往後退到空地（退幾格就好，
    退太遠整隊會散開）；還是踩在裡面的話，改成**照場心往外推**——第一下點在建築正中央
@@ -15683,25 +15689,26 @@ function arSpot(x, z, ux, uz) {
   if (d2 > lim) { p.x = p.x / d2 * lim; p.z = p.z / d2 * lim; }
   return p;
 }
-/* 一隊人的一生：出場（由小長大）→ AR_VOL 輪齊射 → 站一下 → 撤走（縮回去）。
+/* 一隊人的一生（v1.299.0 起）：進場（隊形周圍一片邊走邊淡入、小跑集合，trGather）→ 全隊到齊才舉弓
+   （AR_LIFT）→ AR_VOL 輪齊射 → 站一下 → 散場（四散走開淡出，trDisperse／trLeave）。v1.171～v1.298 是
+   由小長大、縮回去。被換掉的那一隊（arOld）只剩走開那一段。g.t 是開打之後的鐘（到齊那一刻從 0 算）。
    每個人各自算自己的鐘（m.off／m.done），所以一輪裡那八十支箭是散開的、不是一起彈出去；
    m.off 放完一支就重抽（v1.232），每一輪誰先誰後都不一樣。 */
 function stepArchers(dt) {
+  if (arOld && trLeave(arOld, dt, arStow)) arOld = null;
   if (!archers) return;
   const g = archers;
-  g.t += dt;
-  let k = g.t < AR_LIFT ? g.t / AR_LIFT : 1;         // 出場由小而大（同門的 GATE_GROW）
-  /* 撤走：g.end 是「開始縮」的**時刻**，射完之後還要站 AR_IDLE 秒才到，
-     所以 g.t > g.end 才開始算——少了這個條件的話，站著那 1.3 秒 q 是負的、
-     k ＝ 1 − q 會一路長到 3.9 倍（v1.171 開發中踩到，使用者：「離場的時候會變大」）。 */
-  if (g.end >= 0 && g.t > g.end) {
-    const q = (g.t - g.end) / AR_OUT;
-    if (q >= 1) { archers = null; return; }
-    k = 1 - q;
+  if (g.st === 'out') { if (trLeave(g, dt, arStow)) archers = null; return; }
+  if (g.st === 'in') {
+    if (!trGather(g, dt)) return;
+    g.st = 'fire';
+    sndWind();                                       // 一隊人到位（同投石機架好那一聲；v1.299.0 起是排好那一刻）
   }
-  k = Math.max(AR_K0, k);                            // 下限不能是 0，理由見 AR_K0
+  g.t += dt;
+  const bu = g.t < AR_LIFT ? mkEase(g.t / AR_LIFT) : 1;   // 舉弓（見 AR_LIFT）
   let left = 0;
   for (const m of g.men) {
+    m.bowUp = bu;
     if (m.done < AR_VOL) {
       left++;
       // 這一支什麼時候離手：出場 ＋ 拉一次弓 ＋ 前面幾輪 ＋ 自己的錯開量
@@ -15714,10 +15721,12 @@ function stepArchers(dt) {
       const nt = AR_LIFT + AR_DRAW + m.done * AR_CYCLE + m.off;   // 下一支（用更新後的 done）
       m.draw = clamp(1 - (nt - g.t) / AR_DRAW, 0, 1);
     } else m.draw = 0;
-    m.scale = m.base * k;
   }
-  if (!left && g.end < 0) g.end = g.t + AR_IDLE;     // 全隊射完：站一下再撤
+  if (!left && g.end < 0) g.end = g.t + AR_IDLE;     // 全隊射完：站一下再散場
+  if (g.end >= 0 && g.t > g.end) trDisperse(g);
 }
+/* 散場那一段先把弓放回左手（從散場那一刻舉著多高開始放，見 trDisperse 的 bu0） */
+const arStow = (m, u) => { m.bowUp = m.bu0 * (1 - mkEase(u)); };
 /* 射一支出去。出發點是**畫出來那把弓的位置**（引擎的 BOW_TIP 轉到世界座標），
    不是小人的腳底——兩邊各寫一份的話箭會從肚子飛出去（同法杖的 WAND_TIP）。
    身體座標 → 世界：rotation.y = a 之後 (px,py,pz) 落在
@@ -15937,13 +15946,146 @@ function playHit(r, m) {
   m.tz = ar > lim ? az / ar * lim : az;
 }
 
-/* 弓箭隊要畫的那一份（接在 workers 後面，見 game-ui.js 的 draw）。 */
-const archerList = () => archers ? archers.men : EMPTY;
+/* 弓箭隊要畫的那一份（接在 workers 後面，見 game-ui.js 的 draw）。兩隊都在場（交接那幾秒）才 concat。 */
+const archerList = () => arOld ? (archers ? arOld.men.concat(archers.men) : arOld.men)
+                               : archers ? archers.men : EMPTY;
 /* 兵器與箭畫在同一顆網格（引擎的 weapMesh，容量 WEAP_MAX）。兩邊都有東西才 concat
    ——這是每幀都會跑到的路徑（同 draw() 裡 ringList 那一段的用意）。 */
 function weapList() {
   if (!arrows) return weapons || EMPTY;
   return weapons ? weapons.concat(arrows) : arrows;
+}
+
+/* ── 隊伍進出場（v1.299.0，箭雨與火槍兵共用）────────────────────
+   使用者：「箭雨&火槍兵 調整成小人一個範圍內出現 然後排好隊伍再攻擊 結束也是散場走開消失
+   (出現消失都像是地圖邊緣進出場的樣子)」。看過預覽（tools/.e2e-out/隊伍進出場預覽.html）選的：
+   **隊形周圍一片**出現、**小跑**集合、打完**四散走開**、再叫一隊時**舊的散場、新的進場**。
+   v1.171～v1.298 是整隊由小長大（AR_LIFT 0.45 秒）、打完縮回去（0.45 秒）。
+   出現與消失照林帶進出場那一套（woodFade）：走進來的頭 REACH 格看不見、再 WOOD_FADE 格淡到全亮；
+   走開的最後 WOOD_FADE 格淡掉、離終點 REACH 收掉。濃淡寫在 m.alpha，引擎看到就搬去半透明那一顆畫
+   （fadeMesh，FADE_W 照 MAXW 留，見引擎那邊）。見 開發筆記〈箭雨與火槍兵：進場排隊、散場走開〉 */
+const TR_RUN = WALK * 1.5;          // 進場小跑（使用者選：走路的 1.5 倍）
+const TR_IN_D = [9, 18];            // 從離自己那一格多遠的地方出現（整隊＝隊形外面再大一圈的一片）
+const TR_IN_LAG = 0.6;              // 每個人出現的時刻錯開多少
+const TR_TURN = 0.25;               // 到位之後轉向正面要多久
+const TR_STOW = 0.3;                // 散場：收弓／收槍要多久（同時轉向要走的方向）
+const TR_OUT_D = [10, 14];          // 散場走多遠
+const TR_OUT_LAG = 0.6;             // 散場每個人起步的時刻錯開多少
+const TR_POP = 0.6;                 // 找不到路、只能原地淡入淡出時淡多久
+const TR_TRY = 12, TR_STEP = 0.6;   // 挑方向試幾次、驗路每隔多遠驗一點
+
+/* 這一段路走得通嗎：far 那一頭要在草地裡（同 arSpot 的夾法），從 far 往 home 每 TR_STEP 驗一點
+   不在建築或房子裡（arFree）；home 那一頭（自己的站位／散場起點）1.2 以內不驗——arSpot 夾回草地之後
+   可能本來就貼著牆。 */
+function trPath(fx, fz, hx, hz) {
+  if (Math.hypot(fx, fz) > debrisR - 1.5) return false;
+  const d = Math.hypot(hx - fx, hz - fz), n = Math.max(1, Math.ceil(d / TR_STEP));
+  for (let i = 0; i < n; i++) {
+    const u = i / n;
+    if (d * (1 - u) < 1.2) break;
+    if (!arFree(fx + (hx - fx) * u, fz + (hz - fz) * u)) return false;
+  }
+  return true;
+}
+/* 從哪裡出現：自己那一格往隨機方向 TR_IN_D 那麼遠。路不通就換方向，TR_TRY 次都不行就沿背對目標的方向
+   往近找，再不行就原地淡入。 */
+function trFrom(hx, hz, ux, uz) {
+  for (let k = 0; k < TR_TRY; k++) {
+    const a = Math.random() * Math.PI * 2, d = rr(TR_IN_D[0], TR_IN_D[1]);
+    const x = hx + Math.cos(a) * d, z = hz + Math.sin(a) * d;
+    if (trPath(x, z, hx, hz)) return { x, z };
+  }
+  for (let d = TR_IN_D[1]; d >= 2; d -= 2)
+    if (trPath(hx - ux * d, hz - uz * d, hx, hz)) return { x: hx - ux * d, z: hz - uz * d };
+  return { x: hx, z: hz };
+}
+/* 散場往哪裡走：背對目標那一半裡挑一個方向（使用者選「四散走開」）。路不通就換，TR_TRY 次之後放寬成
+   四面八方，再不行就原地淡掉。 */
+function trTo(x0, z0, ux, uz) {
+  const b = Math.atan2(-uz, -ux);
+  for (let k = 0; k < TR_TRY * 2; k++) {
+    const a = b + rr(-Math.PI / 2, Math.PI / 2) * (k < TR_TRY ? 1 : 2), d = rr(TR_OUT_D[0], TR_OUT_D[1]);
+    const x = x0 + Math.cos(a) * d, z = z0 + Math.sin(a) * d;
+    if (trPath(x, z, x0, z0)) return { x, z };
+  }
+  return { x: x0, z: z0 };
+}
+/* 進出場那一段的濃淡：照走了多少（同 woodFade 照離林帶多遠）。路短（退到近處找的那幾個）照比例縮，
+   短到不到 0.5 格（原地）就照時間。 */
+const trR0 = m => Math.min(REACH, m.d * 0.15);
+const trFl = m => Math.max(0.5, Math.min(WOOD_FADE, m.d * 0.7));
+const trFadeIn = (m, tw) => m.d < 0.5 ? clamp(tw / TR_POP, 0, 1) : clamp((m.go - trR0(m)) / trFl(m), 0, 1);
+const trFadeOut = (m, tw) => m.d < 0.5 ? clamp(1 - tw / TR_POP, 0, 1) : clamp((m.d - m.go - trR0(m)) / trFl(m), 0, 1);
+
+/* 一個人進場的資料：h＝自己那一格、af＝站好之後朝哪、s＝從哪裡出現、ti＝幾秒後出現、arr＝幾秒到位（−1＝還沒）。
+   **不能叫 lag**：火槍兵的 m.lag 是每一輪換位晚多少起步那一串（預覽踩到：蓋掉之後排好了卻不開槍）。 */
+function trEnter(m, hx, hz, af, ux, uz) {
+  const s = trFrom(hx, hz, ux, uz);
+  m.hx = hx; m.hz = hz; m.sx = s.x; m.sz = s.z; m.x = s.x; m.z = s.z;
+  m.d = Math.hypot(hx - s.x, hz - s.z); m.go = 0; m.ti = rr(0, TR_IN_LAG); m.arr = -1;
+  m.af = af; m.wa = m.d > 0.01 ? Math.atan2(hx - s.x, hz - s.z) : af; m.a = m.wa; m.alpha = 0;
+}
+/* 進場：還沒到出現時刻的看不見（alpha 0）；出現後小跑到自己那一格、邊走邊淡入，到了轉向正面。
+   全隊都到、最後一個也轉好了才回傳 true（使用者：「排好隊伍再攻擊」）。 */
+function trGather(g, dt) {
+  g.tg += dt;
+  let busy = 0;
+  for (const m of g.men) {
+    if (m.arr < 0) {
+      busy++;
+      if (g.tg < m.ti) { m.alpha = 0; continue; }
+      m.go = Math.min(m.d, m.go + TR_RUN * dt);
+      const u = m.d > 0 ? m.go / m.d : 1;
+      m.x = m.sx + (m.hx - m.sx) * u; m.z = m.sz + (m.hz - m.sz) * u;
+      const al = trFadeIn(m, g.tg - m.ti);
+      m.alpha = al >= 1 ? undefined : al;
+      if (m.go >= m.d && al >= 1) { m.arr = g.tg; m.gait = 0; }
+      else if (m.go < m.d) { m.gait = 1; m.ph += dt * 11 * TR_RUN / WALK; }   // 腿擺照腳程（WALK 是 11 弧度／秒）
+    } else if (g.tg - m.arr < TR_TURN) {
+      busy++;
+      m.a = mkAngLerp(m.wa, m.af, mkEase((g.tg - m.arr) / TR_TURN));
+    } else m.a = m.af;
+  }
+  return !busy;
+}
+/* 散場：每個人挑一個方向（trTo）、錯開 TR_OUT_LAG 起步。進場到一半就被換掉的：還沒出現的直接收掉，
+   淡到一半的從那個濃淡往下淡（am）。弓舉著多高（bu0）、槍擺什麼姿勢（gp0）記下來，收的時候從那裡收。 */
+function trDisperse(g) {
+  if (g.st === 'in') g.men = g.men.filter(m => !(m.arr < 0 && g.tg < m.ti));
+  g.st = 'out'; g.to = 0;
+  for (const m of g.men) {
+    m.am = m.alpha === undefined ? 1 : m.alpha;
+    m.ox = m.x; m.oz = m.z; m.oa = m.a;
+    const e = trTo(m.x, m.z, g.ux, g.uz);
+    m.ex = e.x; m.ez = e.z; m.d = Math.hypot(e.x - m.x, e.z - m.z); m.go = 0;
+    m.ea = m.d > 0.01 ? Math.atan2(e.x - m.x, e.z - m.z) : m.a;
+    m.lo = rr(0, TR_OUT_LAG);
+    m.gait = 0; m.draw = 0; m.rec = 0; m.rod = 0;
+    m.bu0 = m.bowUp === undefined ? 1 : m.bowUp;
+    if (m.gun) { m.gp0 = (m.gk || 0) < 0.5 ? m.gp : (m.gq || m.gp); m.gp = m.gp0; m.gq = null; m.gk = 0; }
+  }
+}
+/* 走開：先收弓／收槍 TR_STOW 秒（stow，同時轉向要走的方向），再照一般腳程走開、最後 WOOD_FADE 格淡掉。
+   淡完就從隊伍裡拿掉，全隊走光回傳 true。 */
+function trLeave(g, dt, stow) {
+  g.to += dt;
+  for (let i = g.men.length - 1; i >= 0; i--) {
+    const m = g.men[i], tau = g.to - m.lo;
+    m.gait = 0;
+    if (tau < 0) continue;
+    stow(m, tau / TR_STOW);
+    m.a = mkAngLerp(m.oa, m.ea, mkEase(tau / TR_STOW));
+    if (tau < TR_STOW) continue;
+    m.go = Math.min(m.d, m.go + WALK * dt);
+    const u = m.d > 0 ? m.go / m.d : 1;
+    m.x = m.ox + (m.ex - m.ox) * u; m.z = m.oz + (m.ez - m.oz) * u;
+    if (m.go < m.d) { m.gait = 1; m.ph += dt * 11; }
+    const al = trFadeOut(m, tau - TR_STOW);
+    if (al <= 0) { g.men.splice(i, 1); continue; }
+    m.alpha = Math.min(al, m.am);
+    if (m.alpha >= 1) m.alpha = undefined;
+  }
+  return !g.men.length;
 }
 
 /* ── 火槍兵（v1.227）─────────────────────────────────────────
@@ -15966,7 +16108,8 @@ function weapList() {
    v1.232 看過第二份預覽之後改的（見 開發筆記〈火槍兵平行射、開槍錯開〉）：一排開槍錯開 0.14 → 0.6 秒、
    每一發重抽（MK_SPREAD）；整排朝隊伍正前方平行射、散布 ±2°（mkAim）；點到地上的碎料算點地面。
    v1.252（見 開發筆記〈火槍兵與箭雨的隊形抖亂一點〉）：格子抖一點、沒在瞄時朝向各偏一點、換位起步錯開
-   （MK_SPOT／MK_FACE／MK_LAG）；帽子改回一般小人的安全帽。 */
+   （MK_SPOT／MK_FACE／MK_LAG）；帽子改回一般小人的安全帽。
+   v1.299.0：進場排隊、散場走開，同箭雨（見〈隊伍進出場〉）；扛著槍（担え銃）走進來、打完收槍再走。 */
 const MK_COL = 20, MK_ROWS = 3;          // 一排 20 人 × 3 排（使用者選 60 人）
 const MK_N = MK_COL * MK_ROWS;
 const MK_RND = 3;                        // 每一排輪到幾次（使用者選）
@@ -15986,8 +16129,8 @@ const MK_ROW = 1.9;                      // 排與排之間隔多遠
 const MK_SPOT = 0.35;
 const MK_FACE = 8 * Math.PI / 180;
 const MK_LAG = 0.08;
-const MK_LIFT = 0.45;                    // 出場：由小長到原尺寸（同 AR_LIFT）
-const MK_RAISE = 0.5;                    // 出場之後第一排舉槍要多久
+const MK_LIFT = 0.45;                    // 全隊到齊之後站多久第一排才舉槍（v1.299.0 起；以前是出場由小長大，同 AR_LIFT）
+const MK_RAISE = 0.5;                    // 第一排舉槍要多久
 /* 同一排每個人開槍時刻各自錯開多少（不錯開像一把槍）。**v1.232 起 0.14 → 0.6，而且每一發舉槍時
    重抽**（使用者：「目前一起發射太過整齊 小人射擊要有小小時間差」，看過預覽選 0.6）：
    0.14 的時候一排二十發擠在 0.08～0.13 秒裡、一幀最多五把一起開（探針），看起來就是一起開。 */
@@ -15999,7 +16142,7 @@ const MK_SPREAD = 0.6;
 const MK_DH = MK_SPREAD - 0.14;
 const MK_P = 1.8 + MK_DH;                // 一排齊射到下一排齊射（一輪）
 const MK_SETTLE = 0.4;                   // 最後一輪走完 → 全隊立て銃
-const MK_IDLE = 1.3, MK_OUT = 0.45;      // 站一下、撤走（同箭雨的 AR_IDLE／AR_OUT）
+const MK_IDLE = 1.3;                     // 立て銃站多久才散場（同箭雨的 AR_IDLE）
 const MK_REC_T = 0.22;                   // 後座彈回去要多久
 /* 一輪之內的時間表（秒，v1.227 照 MK_P ＝ 1.8 排的，v1.232 起 raise／rest／reload 以外都加 MK_DH）。
    第一排：瞄著 → 開槍 → 放下 → 往旁邊一步進縫 → 往後走兩排 → 回到自己那一行 → 開始裝填。
@@ -16032,7 +16175,8 @@ const MK_AIM_R = AR_AIM_R, MK_AIM_C = 0xc9a03e;   // 第一下那圈光環（黃
    留一截——池子 3400，一整趟最多也才幾百團（見 開發筆記〈火槍兵〉）。 */
 const MK_FLASH = 7, MK_SMOKE = 7;
 const MK_DUST_CAP = ENG.MAXDUST - 300;
-let musket = null;               // 在場的火槍隊（同時只有一隊，同箭雨）
+let musket = null;               // 在場的火槍隊（同箭雨）
+let mkOld = null;                // 被換掉、正在散場的那一隊（v1.299.0，同箭雨的 arOld）
 let bullets = null;              // 飛在半空的子彈
 
 /* 第一下記位置、畫個光環，第二下才叫人（同箭雨）。第二下點在建築上：那一點的高度就是目標
@@ -16044,7 +16188,8 @@ function aimMusket(point, onBlock) {
 }
 /* 站位：第一排站在第一點那一條線上、另外兩排往後排，整隊面向目標。
    **格子先算好**（slot[排][行]，每一格抖 MK_SPOT，v1.252）：輪替時人在格子之間走，格子不動——站位的防呆
-   （踩在建築或房子裡就往外推、夾回草地內）走箭雨那一支 arSpot。 */
+   （踩在建築或房子裡就往外推、夾回草地內）走箭雨那一支 arSpot。
+   每個人從格子外面一點的地方走進來、再叫一隊時舊的散場（v1.299.0，同 castArrows）。 */
 function castMusket(from, toward, ty) {
   aim = null;
   let dx = toward.x - from.x, dz = toward.z - from.z;
@@ -16066,20 +16211,23 @@ function castMusket(from, toward, ty) {
   for (let r = 0; r < MK_ROWS; r++) for (let c = 0; c < MK_COL; c++) {
     const p = slot[r][c], lag = [];
     for (let n = 0; n < MK_VOL; n++) lag.push(rr(0, MK_LAG));
-    men.push({
+    const m = {
       x: p.x, y: 0, z: p.z, a: a0, row: r, col: c,
       /* putWorker 會讀到的欄位（同弓箭手）：ph／gait 走路擺動、tone 膚色與衣色、base 身高。
-         gun 讓引擎畫火繩槍；gp／gq／gk 是姿勢（見引擎的 GUN_POSE）。
+         gun 讓引擎畫火繩槍；gp／gq／gk 是姿勢（見引擎的 GUN_POSE），扛著槍（担え銃）走進來。
          帽子是一般小人的安全帽（v1.252 使用者：「火槍兵帽子改回原本一般小人帽子」，v1.227～v1.251 戴陣笠）。 */
-      ph: 0, gait: 0, tone: r * MK_COL + c, base: rr(W_LO, W_HI), scale: AR_K0,
+      ph: 0, gait: 0, tone: r * MK_COL + c, base: rr(W_LO, W_HI), scale: 1,
       gun: 1, gp: 'shoul', gq: null, gk: 0, rec: 0, rod: 0, el: 0,
       aa: a0,                                    // 這一發瞄的方向（見 mkAim）
       off: 0, shot: -1, aimN: -1,                // off＝這一發自己慢多少開槍（舉槍時抽，見 mkAim）、shot／aimN＝第幾輪做過了
       fa: rr(-MK_FACE, MK_FACE), lag             // fa＝沒在瞄時朝向偏多少、lag[n]＝第 n 輪換位晚多少起步（v1.252）
-    });
+    };
+    m.scale = m.base;
+    trEnter(m, p.x, p.z, a0 + m.fa, ux, uz);
+    men.push(m);
   }
-  musket = { men, slot, t: 0, a0, sx, sz, tx: toward.x, tz: toward.z, ty };
-  sndWind();                                     // 一隊人到位（同箭雨）
+  if (musket) { if (musket.st !== 'out') trDisperse(musket); mkOld = musket; }
+  musket = { men, slot, t: 0, a0, sx, sz, tx: toward.x, tz: toward.z, ty, st: 'in', tg: 0, ux, uz };
 }
 const mkEase = u => { u = clamp(u, 0, 1); return u * u * (3 - 2 * u); };
 /* 從 a 轉到 b 走 k（走近的那一邊，不會繞一大圈） */
@@ -16117,16 +16265,14 @@ function mkAim(g, m, n) {
   m.aa = g.a0 + Math.cos(ang) * rad;
   let el = 0;
   if (g.ty >= 0) {
-    /* 照**原身高**解：第一排是出場那一刻就瞄的，那時候整隊還在由小長大（scale 趨近 0），
-       照當下的 scale 算的話槍口等於貼在地上，仰角會多抬好幾度。 */
-    const sc = m.scale, ux = Math.sin(g.a0), uz = Math.cos(g.a0);
-    m.scale = m.base;
+    /* v1.227～v1.298 這裡先把 scale 換成原身高再解（第一排是出場那一刻就瞄的，那時整隊還在由小長大）；
+       v1.299.0 起整隊一直是原身高（進場改成走進來），直接照當下的解。 */
+    const ux = Math.sin(g.a0), uz = Math.cos(g.a0);
     for (let pass = 0; pass < 2; pass++) {
       const q = ENG.gunAim(m, m.aa, el, _mkQ);
       const fwd = (g.tx - q.x) * ux + (g.tz - q.z) * uz;      // 正前方到目標那一面（下限 1，免得貼臉時爆掉）
       el = clamp(Math.atan2(g.ty - q.y, Math.max(1, fwd)), 0, MK_EL_MAX);
     }
-    m.scale = sc;
     if (el > 0) el = clamp(el + Math.sin(ang) * rad, 0, MK_EL_MAX);
   }
   m.el = el;
@@ -16136,27 +16282,30 @@ function mkRaise(g, m, u) {
   const k = mkPose(m, 'shoul', 'aim', u);
   m.a = mkAngLerp(g.a0 + m.fa, m.aa, k);
 }
-/* 一整隊：出場（由小長大）→ 第一排舉槍 → MK_VOL 輪齊射（三段擊輪替）→ 立て銃 → 撤走。 */
+/* 一整隊（v1.299.0 起）：進場（扛著槍走進來排好，trGather）→ 站 MK_LIFT → 第一排舉槍 → MK_VOL 輪齊射
+   （三段擊輪替）→ 立て銃 → 散場（收槍、四散走開淡出）。v1.227～v1.298 是由小長大、縮回去。
+   g.t 是開打之後的鐘（到齊那一刻從 0 算），mkMan 的時間表照它走，一個字都不用動。 */
 function stepMusket(dt) {
+  if (mkOld && trLeave(mkOld, dt, mkStow)) mkOld = null;
   if (!musket) return;
   const g = musket;
+  if (g.st === 'out') { if (trLeave(g, dt, mkStow)) musket = null; return; }
+  if (g.st === 'in') {
+    if (!trGather(g, dt)) return;
+    g.st = 'fire';
+    sndWind();                                   // 一隊人到位（同箭雨，排好那一刻）
+  }
   g.t += dt;
   const t = g.t, t0 = MK_LIFT + MK_RAISE, tEnd = t0 + MK_VOL * MK_P + MK_SETTLE;
-  let k = t < MK_LIFT ? t / MK_LIFT : 1;
-  /* 撤走從「站完」那一刻才開始算（箭雨 v1.171 踩過：少了這個條件整隊會先變大才消失） */
-  if (t > tEnd + MK_IDLE) {
-    const q = (t - tEnd - MK_IDLE) / MK_OUT;
-    if (q >= 1) { musket = null; return; }
-    k = 1 - q;
-  }
-  k = Math.max(AR_K0, k);                        // 下限不能是 0，理由見 AR_K0
+  if (t > tEnd + MK_IDLE) { trDisperse(g); return; }      // 立て銃站一下就散場
   for (const m of g.men) {
     if (m.rec > 0) m.rec = Math.max(0, m.rec - dt / MK_REC_T);
     m.gait = 0; m.rod = 0;
     mkMan(g, m, t, t0, dt);
-    m.scale = m.base * k;
   }
 }
+/* 散場那一段先收槍：從散場那一刻擺的姿勢（立て銃，或被換掉時正在瞄／裝填的那一個）轉成担え銃 */
+const mkStow = (m, u) => { mkPose(m, m.gp0, 'shoul', u); };
 /* 一個人這一刻在做什麼。n ＝ 第幾輪、tau ＝ 這一輪走到哪、s0 ＝ 這一輪開始時他在第幾排
    （0 ＝ 最前面）。每一輪第一排退到最後、其餘各往前一排，所以 s0 ＝ (自己那一排 − n) mod 3。
    v1.252：沒在瞄的時候朝 A（隊伍的方向 ＋ m.fa）；開槍之後的那幾段照 tw（＝ tau 晚 lag[n] 秒）走，
@@ -16329,5 +16478,6 @@ function bulletBeast(r, m) {
                 r.dz * MK_BLOW * B_BLOW + rr(-1, 1), false)) beastHit(m, 'bullet');
   sndFall();
 }
-/* 火槍隊要畫的那一份（接在弓箭手後面，見 game-ui.js 的 draw）。 */
-const musketList = () => musket ? musket.men : EMPTY;
+/* 火槍隊要畫的那一份（接在弓箭手後面，見 game-ui.js 的 draw）。兩隊都在場才 concat（同 archerList）。 */
+const musketList = () => mkOld ? (musket ? mkOld.men.concat(musket.men) : mkOld.men)
+                               : musket ? musket.men : EMPTY;

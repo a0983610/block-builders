@@ -413,8 +413,11 @@ const ENG = (function () {
      要的就只有 aFade；陰影淡到 45% 以下整具不投影（理由同兵器）。
      前段是小人（一具 WPARTS 格、最多 FADE_W 具）、後段是動物（一具 BEAST_PARTS 格、最多 FADE_B 具），
      每幀從頭排、用到哪畫到哪；**沒有屍體就 visible = false**（沒東西在場就不吃 draw call）。
-     超過上限的那幾具照舊畫在原本那一顆、不淡（直接消失）——60 人那一檔全死在同一幀才碰得到。 */
-  const FADE_W = 60, FADE_B = 24;
+     超過上限的那幾具照舊畫在原本那一顆、不淡（直接消失）——60 人那一檔全死在同一幀才碰得到。
+     **v1.299.0 起 60 → 340（＝ MAXW，那一行在後面、這裡還讀不到，寫數字）**：箭雨與火槍兵的隊伍進場與散場
+     都是邊走邊淡（見 game-tools.js 的〈隊伍進出場〉），交接那幾秒一隊在淡入、一隊在淡出，人數上限裡的每一個人
+     都可能同時在淡。e2e〈火槍兵〉的容量那條守著 FADE_W ≥ MAXW。 */
+  const FADE_W = 340, FADE_B = 24;
   let fadeMesh = null, fadeAlpha = null;
   let fadeWn = 0, fadeWUsed = 0, fadeBUsed = 0;   // 這一幀排到第幾具小人／上一幀用到幾具
   /* ── 人形角色淡入淡出（v1.256.0）──────────────────────────
@@ -703,8 +706,10 @@ const ENG = (function () {
      draw 兩邊都落在 0.40～0.43 ms（各量三段），差距在雜訊裡。
      真正的成本只在弓箭隊在場那幾秒，見 開發筆記〈箭雨〉的每幀成本那一段。
      v1.227 再到 200：破壞道具「火槍兵」那一隊 60 人也是照 putWorker 畫的（接在弓箭手後面），
-     60 個工人 ＋ 80 個弓箭手 ＋ 60 個火槍兵同時在場剛好 200（見 開發筆記〈火槍兵〉）。 */
-  const MAXW = 200;
+     60 個工人 ＋ 80 個弓箭手 ＋ 60 個火槍兵同時在場剛好 200（見 開發筆記〈火槍兵〉）。
+     v1.299.0 再到 340：再叫一隊時舊的那一隊走開淡出、新的同時走進來（使用者選「舊的散場、新的進場」），
+     兩種各最多兩隊：60 ＋ 80 × 2 ＋ 60 × 2（見 開發筆記〈箭雨與火槍兵：進場排隊、散場走開〉）。 */
+  const MAXW = 340;
   /* 每個小人的部位數，要跟 BODY 的長度一模一樣。7 個身體部位 ＋ 藍圖 ＋ 聊天泡泡兩塊
      ＋ v1.51 補的七塊細節（帽頂、帽舌、兩顆眼睛、兩隻鞋、腰帶）
      ＋ v1.64 魔法師的五塊（巫師帽三塊、法杖、寶珠）
@@ -4020,6 +4025,39 @@ if (vAo.x + vAo.y > 0.5) {
     const L = bowLift(BOW_Y, BOW_Z, 0);
     return [BOW_X, L.y, L.z];
   })();
+  /* 走路時弓拿在左手、橫在身側（v1.299.0，箭雨的隊伍走進來、走開，見 game-tools.js 的〈隊伍進出場〉；
+     預覽給使用者看過）。w.bowUp：0＝拿著走、1＝舉起來射（沒給＝1，閒著的小人射牛羊那一支照舊走原本那條路）。
+     拿著走時整把弓掛在左手手掌上：弓臂沿著前後、前端往下斜 BOW_CARRY_DIP、弓背朝上（弦在下面）；
+     左手只小幅擺、右手照一般走路擺。舉到一半：整把弓當一個剛體，框架在「掛在左手」與「舉起來」之間內插
+     （位置 lerp、轉角 slerp，見 bowFrame）——兩頭各自 lerp 每一塊的話，弓臂、握把、弦在半路會散開。
+     **為什麼不直著拿**：Q 版的手掌只在 0.33 高，弓高 0.92，直著拿下弓臂會插進地裡。 */
+  const BOW_CARRY_R = -0.2;                 // 左手往前帶多少
+  /* 走路時左手擺多大（一般走路是 0.8）。預覽給的是 0.3：左手往後擺到八成九（ph 1.1）弓臂前端（末端往弦那一側彎、
+     弦在下面）就只離地 0.011（身高 1，e2e〈箭雨：走路時弓拿在左手〉第一版量到的），擺到底更低；弓臂半個厚度 0.034，會插進草皮。
+     收到 0.15：一整個步伐最低那一點離地 0.0556，扣掉半個厚度還有 0.02。站著的樣子不變（擺幅只在走路時乘上去）。 */
+  const BOW_CARRY_SW = 0.15;
+  const BOW_CARRY_DIP = 0.35;               // 弓臂前端往下斜多少（左手往前帶會把它抬回來一點）
+  // 拿著走那一組的基底：弓自己的 X → 身體 −X、Y（弓臂）→ 前下、Z（弓背）→ 上前
+  const _bowCB = new T.Quaternion().setFromRotationMatrix(new T.Matrix4().makeBasis(
+    new T.Vector3(-1, 0, 0),
+    new T.Vector3(0, -Math.sin(BOW_CARRY_DIP), Math.cos(BOW_CARRY_DIP)),
+    new T.Vector3(0, Math.cos(BOW_CARRY_DIP), Math.sin(BOW_CARRY_DIP))));
+  // 舉起來那一組：先側傾再抬 45 度（＝ bowRot 少了每一塊自己那一下），握把落在 BOW_TIP
+  const _bowRF = new T.Quaternion().setFromAxisAngle(_bowAX, BOW_TILT)
+    .multiply(new T.Quaternion().setFromAxisAngle(_bowAZ, BOW_CANT));
+  const _bowRG = new T.Vector3(BOW_TIP[0], BOW_TIP[1], BOW_TIP[2]);
+  let _bowU = 1, _bowCR = 0;               // 這一個人的 bowUp（夾在 0～1）、拿著走時左手的角度
+  const _bowF = new T.Quaternion(), _bowCQ = new T.Quaternion(), _bowG = new T.Vector3(), _bowV = new T.Vector3();
+  /* 這一個人的弓擺在哪：框架 _bowF（轉角）＋ _bowG（握把的位置）。putWorker 開頭叫一次，一個人算一次。 */
+  function bowFrame(w) {
+    _bowU = w.bowUp === undefined ? 1 : Math.max(0, Math.min(1, w.bowUp));
+    if (_bowU >= 1) return;
+    _bowCR = BOW_CARRY_R + Math.sin(w.ph) * (w.gait || 0) * BOW_CARRY_SW;
+    _bowCQ.setFromAxisAngle(_bowAX, _bowCR).multiply(_bowCB);
+    _bowG.set(-ARM_X, ARM_Y - HAND_ON * Math.cos(_bowCR), -HAND_ON * Math.sin(_bowCR));   // 左手手掌（同手套的 b.on）
+    _bowF.copy(_bowCQ);
+    if (_bowU > 0) { _bowF.slerp(_bowRF, _bowU); _bowG.lerp(_bowRG, _bowU); }
+  }
   /* ── 火槍兵的火繩槍（v1.227）─────────────────────────────────
      破壞道具「火槍兵」那一隊人拿的（規則那邊見 game-tools.js 的〈火槍兵〉）。
      只有那一隊有（w.gun），別人身上這七塊縮成 0——同弓、法杖與鏟子。造型是先做預覽、
@@ -4574,6 +4612,7 @@ if (vAo.x + vAo.y > 0.5) {
                 (w.gun ? RQ_GUN : 0) |
                 (w.gun && ((w.gk || 0) < 0.5 ? w.gp : w.gq || w.gp) === 'load' ? RQ_ROD : 0);
     if (w.gun) gunPose(w);
+    if (w.bow) bowFrame(w);                  // v1.299.0：弓拿著走／舉到一半（見 BOW_CARRY_R）
     for (let k = 0; k < WPARTS; k++) {
       /* 這個人身上沒有的那幾塊（別種人的零件、沒拿的道具）**直接塞一個全 0 的矩陣**
          就跳掉（v1.198，見 開發筆記〈沒有的部位不要走完整條路〉）。
@@ -4635,8 +4674,14 @@ if (vAo.x + vAo.y > 0.5) {
           const dk = w.draw || 0;
           const L = b.arm < 0 ? bowLift(BOW_Y, 0.20, -1.42)
                               : bowLift(BOW_Y + 0.04 * dk, 0.20 - 0.30 * dk, -1.34 + 0.58 * dk);
-          scratchB.rotation.x = L.r;
-          scratchB.position.y = L.y; scratchB.position.z = L.z;
+          let r = L.r, y = L.y, z = L.z;
+          if (_bowU < 1) {
+            /* 拿著走（v1.299.0，見 BOW_CARRY_R）：左手掛著弓小幅擺、右手照一般走路擺；舉弓那一段照 bowUp 內插 */
+            const c = b.arm < 0 ? _bowCR : -Math.sin(w.ph) * b.arm * w.gait * 0.8;
+            r = c + (r - c) * _bowU; y = b.p[1] + (y - b.p[1]) * _bowU; z = b.p[2] + (z - b.p[2]) * _bowU;
+          }
+          scratchB.rotation.x = r;
+          scratchB.position.y = y; scratchB.position.z = z;
         } else if (w.gun) {
           /* 火槍兵（v1.227）：從肩膀朝握點伸過去（握點見 gunPose），手掌中心剛好落在握點上。
              手臂是一整根不會彎的方塊，所以握點比手臂短的時候肩膀那一頭會往後退一點——
@@ -4800,9 +4845,17 @@ if (vAo.x + vAo.y > 0.5) {
           /* 先側傾（繞握把，見 BOW_CANT）再抬起來（繞肩膀，見 bowLift）。
              側傾只動 x 與 y：繞 Z 軸轉，z 不變；抬起來只動 y 與 z，x 不變。 */
           const dy = py - BOW_Y;
-          const L = bowLift(BOW_Y + dy * BOW_CC, pz, rot);
-          scratchB.position.set(BOW_X - dy * BOW_CS, L.y, L.z);
-          bowRot(rot, scratchB.quaternion);
+          if (_bowU >= 1) {
+            const L = bowLift(BOW_Y + dy * BOW_CC, pz, rot);
+            scratchB.position.set(BOW_X - dy * BOW_CS, L.y, L.z);
+            bowRot(rot, scratchB.quaternion);
+          } else {
+            /* 拿著走／舉到一半（v1.299.0）：握把座標的 (0, dy, dz) 經框架 _bowF 轉到 _bowG（見 bowFrame）。
+               _bowF 是舉起來那一組時，跟上面那一支算出來的一模一樣（側傾再抬、握把落在 BOW_TIP）。 */
+            _bowV.set(0, dy, pz - BOW_Z).applyQuaternion(_bowF).add(_bowG);
+            scratchB.position.copy(_bowV);
+            scratchB.quaternion.copy(_bowF).multiply(_bowQ.setFromAxisAngle(_bowAX, rot));
+          }
           if (sy) scratchB.scale.set(b.s[0], sy, b.s[2]);
         }
       }
