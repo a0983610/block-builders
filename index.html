@@ -8,6 +8,7 @@
   :root{
     --ink:#1b2430; --panel:rgba(255,255,255,.86); --line:rgba(27,36,48,.14);
     --accent:#e8873c; --ok:#3f9e63; --bad:#c0483c;
+    --hudB:47px;   /* 上方橫條的下緣，開場由 game-ui.js 的 boot 量了寫回來（橫條折成幾列就跟著變） */
   }
   *{box-sizing:border-box}
   html,body{height:100%;margin:0;overflow:hidden}
@@ -27,24 +28,34 @@
     box-shadow:0 6px 24px rgba(20,32,48,.16);
   }
 
-  /* 左上：目前在蓋什麼 */
-  #head{top:14px;left:14px;padding:10px 14px;min-width:206px}
-  #head h1{margin:0;font-size:17px;font-weight:800;letter-spacing:.5px}
-  #head .sub{display:flex;gap:8px;align-items:center;margin-top:4px;font-size:12px;opacity:.75}
+  /* 上方橫條（v1.300.0，使用者：「左上&右上的面版改成在最上方的一橫條」）：以前是左上資訊卡（#head）
+     與右上時鐘卡（#time）兩張，現在兩群並排在同一張卡裡，左群靠左、右群靠右。
+     排不下就自動折行（使用者選的）：先是右群整群換到下一列（仍靠右），再窄就群裡逐塊折。
+     量過（1366 寬、累計數字七位數）：兩群攤成一列約 1280px，所以 1366 以上一列放得下；
+     道具小窗不塞進來（使用者選「放橫條下面置中」），塞進來的話要 1500px 左右。
+     整條貼齊視窗的上緣與左右兩邊（看過預覽：「橫條上面不用留空間 完全貼在最上方」，兩側選「左右也貼邊」），
+     所以四角不圓、只畫下框。 */
+  #hud{top:0;left:0;right:0;padding:7px 14px;border-width:0 0 1px;border-radius:0;
+       display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px}
+  #head,#time{display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px;min-width:0}
+  #time{margin-left:auto}
+  #head h1{margin:0;font-size:16px;font-weight:800;letter-spacing:.5px;white-space:nowrap}
+  #head .sub{display:flex;gap:8px;align-items:center;font-size:12px;opacity:.75;white-space:nowrap}
   .tag{padding:1px 8px;border-radius:99px;background:var(--accent);color:#fff;font-size:11px;font-weight:700}
   .tag.ok{background:var(--ok)}
   .tag.bad{background:var(--bad)}
-  #stat{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:7px;font-size:11px;opacity:.72;
+  #stat{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;opacity:.72;
         font-variant-numeric:tabular-nums}
+  #stat span{white-space:nowrap}
   #stat b{font-weight:700;opacity:.95}
-  #track{height:5px;border-radius:99px;background:rgba(27,36,48,.13);margin-top:8px;overflow:hidden}
+  #track{flex:0 0 96px;height:5px;border-radius:99px;background:rgba(27,36,48,.13);overflow:hidden}
   #bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#f0b46b);transition:width .25s}
 
-  /* 右上：時鐘與計時 */
-  #time{top:14px;right:14px;padding:10px 14px;text-align:right}
-  #clock{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
-  #time .row{margin-top:3px;font-size:12px;opacity:.72;font-variant-numeric:tabular-nums}
+  /* 橫條右群：施工計時、損失、fps、時鐘、三顆按鈕 */
+  #clock{font-size:19px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+  #time .row{font-size:12px;opacity:.72;font-variant-numeric:tabular-nums;white-space:nowrap}
   #time .row.bad b{color:var(--bad)}          /* 損失用紅字，跟施工計時一眼分得開 */
+  #time button{padding:5px 9px;white-space:nowrap}
 
   /* 左下：設定 */
   /* 面板往上讓出一排，收合鈕才不會壓在面板上 */
@@ -57,6 +68,10 @@
   #panel .seg button{flex:1;min-width:0;padding:5px 2px;font-size:12.5px;
     font-variant-numeric:tabular-nums}
   #panel .seg button.on{background:var(--accent);border-color:transparent;color:#fff;font-weight:700}
+  /* 選建築那一排（v1.300.0）：下拉右邊一顆只有 🎲 的小方鈕，點了下一座就改回隨機（使用者選的長相） */
+  #panel .pick{display:flex;gap:6px}
+  #panel .pick select{flex:1;min-width:0}
+  #rnd{flex:0 0 34px;padding:0}
   select,button{
     font:inherit;font-size:13px;color:var(--ink);background:#fff;
     border:1px solid var(--line);border-radius:9px;padding:6px 9px;cursor:pointer;
@@ -99,7 +114,8 @@
   /* v1.262.0 起小窗左邊多一顆破壞模式的開關（#rageBtn），兩顆並排、一起置中
      （第一版放右邊，使用者看過預覽：「破壞模式開關 放在工具左邊」）。
      選單照舊以整個 #toolbox 置中（#toolPick 沒有 position，選單的定位基準還是 #toolbox）。 */
-  #toolbox{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:6;
+  /* v1.300.0 起擺在上方橫條正下方（--hudB 是橫條的下緣，橫條折行時跟著往下讓） */
+  #toolbox{position:fixed;left:50%;top:calc(var(--hudB) + 8px);transform:translateX(-50%);z-index:6;
     display:flex;align-items:stretch;gap:6px;width:max-content}
   #toolNow,#modeNow{
     display:flex;align-items:center;gap:8px;padding:7px 13px;border-radius:12px;
@@ -146,12 +162,13 @@
      上面小標題 .cat、底下 .gt 網格。使用者看過預覽選「小標題＋6 欄」：4 欄的話分組多出來的
      小標題與半空的列把選單撐到 695px，1366×657 的筆電下緣超出畫面；6 欄是 578px。
      比視窗高就捲（使用者：「手機版可能要微調 例如變成加上卷軸條」）。扣掉的是選單上緣的位置
-     （量過：桌機 59px＝小窗 top 14＋小窗高＋橋 8）再留 13px；下緣版面的扣法見下面兩個 @media。 */
+     （量過：桌機 59px＝小窗 top 14＋小窗高 37＋橋 8）再留 13px；下緣版面的扣法見下面兩個 @media。
+     v1.300.0 小窗挪到上方橫條底下，上緣變成 --hudB＋8＋37＋8，再留 13 就是 --hudB＋66。 */
   #tools{
     display:flex;flex-direction:column;gap:5px;padding:8px;
     border-radius:14px;background:#fff;border:1px solid var(--line);
     box-shadow:0 10px 28px rgba(20,32,48,.22);
-    max-height:calc(100vh - 72px);overflow-y:auto;
+    max-height:calc(100vh - var(--hudB) - 66px);overflow-y:auto;
   }
   #tools .grp + .grp{border-top:1px solid var(--line);padding-top:5px}
   #tools .cat{font-size:11px;font-weight:700;opacity:.55;line-height:14px;padding:0 4px 3px}
@@ -195,8 +212,9 @@
   .mode.on .p{opacity:.9}
   .mode.on:hover{background:var(--accent)}
 
-  /* 成就與提示（工具列移到上方後，提示往下讓開） */
-  #toast{position:fixed;left:50%;top:88px;transform:translateX(-50%);z-index:15;
+  /* 成就與提示（工具列移到上方後，提示往下讓開）。v1.300.0 工具列跟著橫條往下挪，
+     提示照舊排在小窗上緣往下 74px（以前是 14 → 88） */
+  #toast{position:fixed;left:50%;top:calc(var(--hudB) + 82px);transform:translateX(-50%);z-index:15;
          display:flex;flex-direction:column;gap:6px;align-items:center;pointer-events:none}
   #toast .t{
     padding:8px 16px;border-radius:12px;background:rgba(27,36,48,.88);color:#fff;
@@ -298,6 +316,7 @@
     #toolbox{top:auto;bottom:12px}
     #toolMenu{top:auto;bottom:100%;padding:0 0 8px}
     #tools{max-height:calc(100vh - 70px)}   /* 往上開，下緣離視窗底 57px（量過）再留 13 */
+    #toast{top:calc(var(--hudB) + 8px)}     /* 上面沒有小窗了，提示直接排在橫條底下（v1.300.0） */
     /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具小窗。
        小人模式跟著設定鈕走（v1.219，使用者選「疊在設定鈕上面」）：底排中間擺不下第二顆
        （390 寬時設定鈕左邊只剩 56px，模式小窗要 93），所以直排、右緣對齊，選單靠右往上開。
@@ -312,15 +331,11 @@
   }
 
   @media (max-width:640px){
-    /* 限寬，不然統計那一行會把卡片撐到右上角的時鐘底下。
-       扣掉的是時鐘那張卡的寬度＋兩邊留白：它的寬度是裡面最寬那顆按鈕撐出來的，
-       v1.57 多了「📥 匯入建築」之後從 186 變成 193px（220 那版會剛好疊到 1px）。
-       （v1.242.0 量出來：193 其實是成就與匯入兩顆 inline-block 按鈕的寬度**加總**撐出來的，
-       見 #keyBtn 那一行的註解。） */
-    #head{min-width:0;padding:8px 11px;max-width:calc(100vw - 232px)}
+    /* v1.300.0 起左上、右上兩張卡併成上方橫條，排不下自己折行，不必再替資訊卡限寬 */
+    #hud{padding:7px 11px}
     #head h1{font-size:15px}
     #stat{font-size:10px;gap:2px 8px}
-    #clock{font-size:20px}
+    #clock{font-size:17px}
     #panel{width:calc(100vw - 28px)}
     /* v1.294.0 分組之後改 5 欄窄一點的磚：寬 354px，360 寬的手機也放得下，最長的名字（虛式「茈」）
        也沒擠出磚外（量過）。破壞模式開關疊在小窗上面，選單下緣離視窗底 98px，再留 12 */
@@ -351,29 +366,29 @@
 <body>
 <canvas id="cv"></canvas>
 
-<div class="card" id="head">
-  <h1 id="bname">—</h1>
-  <div class="sub"><span class="tag" id="phase">施工中</span><span id="prog">0 / 0</span><span id="bcount"></span></div>
-  <div id="track"><div id="bar"></div></div>
-  <div id="stat">
-    <span>本次人力 <b id="cost">$0</b></span>
-    <span>累計 <b id="costAll">$0</b></span>
-    <span>拆掉 <b id="nDest">0</b> 座</span>
-    <span>擊飛 <b id="nSmash">0</b> 塊</span>
+<!-- 上方橫條（v1.300.0）：左群是目前在蓋什麼，右群是計時、時鐘與三顆按鈕。
+     兩群保留原本的 id（head／time），測試量版面、程式寫數字都照舊找得到 -->
+<div class="card" id="hud">
+  <div id="head">
+    <h1 id="bname">—</h1>
+    <div class="sub"><span class="tag" id="phase">施工中</span><span id="prog">0 / 0</span><span id="bcount"></span></div>
+    <div id="track"><div id="bar"></div></div>
+    <div id="stat">
+      <span>本次人力 <b id="cost">$0</b></span>
+      <span>累計 <b id="costAll">$0</b></span>
+      <span>拆掉 <b id="nDest">0</b> 座</span>
+      <span>擊飛 <b id="nSmash">0</b> 塊</span>
+    </div>
   </div>
-</div>
-
-<div class="card" id="time">
-  <div id="clock">--:--:--</div>
-  <div class="row">施工 <b id="timer">0:00</b></div>
-  <div class="row bad">損失 <b id="lossAll">$0</b></div>
-  <div class="row" id="fps">— fps</div>
-  <button id="badgeBtn" style="margin-top:7px;width:100%">🏅 成就</button>
-  <button id="impBtn" style="margin-top:6px;width:100%">📥 匯入建築</button>
-  <!-- 這一顆要 display:block（v1.242.0 量過）：按鈕是 inline-block，卡片算「要多寬」時會把同一段
-       裡的按鈕當成排在同一行、寬度加總——上面兩顆加起來 163px 就是卡片 193px 的由來。
-       第三顆照樣 inline 的話卡片撐到 272px，手機上壓到左上的資訊卡（見 #head 的 max-width）。 -->
-  <button id="keyBtn" style="margin-top:6px;width:100%;display:block">⌨ 快捷鍵</button>
+  <div id="time">
+    <div class="row">施工 <b id="timer">0:00</b></div>
+    <div class="row bad">損失 <b id="lossAll">$0</b></div>
+    <div class="row" id="fps">— fps</div>
+    <div id="clock">--:--:--</div>
+    <button id="badgeBtn">🏅 成就</button>
+    <button id="impBtn">📥 匯入建築</button>
+    <button id="keyBtn">⌨ 快捷鍵</button>
+  </div>
 </div>
 
 <div id="toast"></div>
@@ -395,7 +410,8 @@
 </div>
 </div>
 <div class="card" id="panel">
-  <select id="shape"></select>
+  <!-- 下拉只決定「下一座蓋什麼」，不拆現在這座（v1.300.0）；🎲 是直接改回隨機 -->
+  <div class="pick"><select id="shape"></select><button id="rnd" type="button" title="下一座隨機">🎲</button></div>
   <!-- 三檔按鈕，不是滑桿。按鈕是照 game.js 的 CNT_OPTS／WK_OPTS／SPD_OPTS 生出來的，
        數字只寫在那邊一份，HTML 這裡只留空盒子，兩邊不會對不起來。 -->
   <div class="r"><label>建材</label><div class="seg" id="cnt"></div></div>
@@ -504,7 +520,8 @@
       <li>貼進下面那個框（懶得按 Ctrl+V 就按 <b>📋 貼上</b>，剪貼簿裡那段直接倒進框裡），
           按 <b>匯入</b>。已經存成 <code>.js</code> 檔的（別人傳來的、上次匯出的）
           直接按 <b>📂 讀檔並匯入</b> 挑那支檔，不必先開起來複製內容。</li>
-      <li>匯完它就在<b>設定面板的下拉選單</b>裡（自訂的排在最前面），選了就開始蓋。</li>
+      <li>匯完它就在<b>設定面板的下拉選單</b>裡（自訂的排在最前面），選了下一座就蓋它；
+          要馬上蓋就按 <b>換一座來蓋</b>。</li>
       <li>匯進來的<b>會存著</b>，關掉再開還在。清單那一列可以 <b>匯出</b> 成 .js 傳給別人，
           或 <b>刪除</b>。</li>
       <li>想先看看蓋起來的樣子，或讓 AI 照體檢報告改到好——按 <b>藍圖預覽</b>，

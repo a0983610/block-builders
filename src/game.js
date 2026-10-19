@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.299.1';
+const VERSION = '1.300.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -1007,7 +1007,7 @@ function askBlueprint(idx, cnt, then) {
   bpWait = { id: ++bpSeq, then };
   wk.postMessage({ id: bpSeq, name: SHAPES[idx].n, cnt });
 }
-/* 換場的入口（下拉選單、建材檔位、「換一座來蓋」）：挑好下一座、背景算好了再換。
+/* 換場的入口（建材檔位、「換一座來蓋」；下拉選單 v1.300.0 起只改下一座、不換場）：挑好下一座、背景算好了再換。
    等的那一下（9000 那一檔 0.1～0.3 秒）畫面照常在跑，舊的那座還在原地。 */
 function swapBuild() {
   const idx = pickShape(), cnt = targetCnt;

@@ -17658,19 +17658,29 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const b = blocks.find(q => q.st === 3);
     useTool({ kind: 'block', point: new THREE.Vector3(b.x, b.y, b.z),
               dir: new THREE.Vector3(0.2, -0.9, 0.2).normalize() });
-    /* 天空的螢幕座標：畫面上緣一定看得到天（取景永遠把建築擺在下半部） */
-    return { aimed: !!aim, hitSky: ENG.pick(window.innerWidth - 60, 40, 'skip') === null };
+    /* 天空的螢幕座標：畫面上緣一定看得到天（取景永遠把建築擺在下半部）。
+       **要點在畫布上**（v1.300.0）：v1.299 以前寫死 (寬 − 60, 40)，那一點其實落在右上的時鐘卡上——
+       mousedown 沒進畫布、onDown 沒跑，這一條是空過的；上方橫條之後那一點變成「⌨ 快捷鍵」，
+       一點就把設定頁打開蓋住後面幾段。改成從橫條底下往下找：第一個打到畫布、而且 pick 是天空的那一點 */
+    const hudB = document.getElementById('hud').getBoundingClientRect().bottom, x = window.innerWidth - 60;
+    let y = -1;
+    for (let t = Math.ceil(hudB) + 10; t < window.innerHeight / 2 && y < 0; t += 10) {
+      const el = document.elementFromPoint(x, t);
+      if (el && el.id === 'cv' && ENG.pick(x, t, 'skip') === null) y = t;
+    }
+    return { aimed: !!aim, hitSky: y >= 0, x, y, hid: document.getElementById('panel').classList.contains('hide') };
   });
-  await page.mouse.move(VIEW.width - 60, 40);
+  await page.mouse.move(sky.x, sky.y);
   await page.mouse.down(); await page.mouse.up();
-  const skyAfter = await page.evaluate(() => {
+  const skyAfter = await page.evaluate(hid => {
     const r = { aim: !!aim, n: swords ? swords.length : 0 };
     swords = null; aim = null; tool = 'hammer';
+    if (!hid) document.getElementById('panel').classList.remove('hide');   // 點到畫布會把設定面板收下去，還回去
     return r;
-  });
+  }, sky.hid);
   ok('第二下點到天空那一下無效：不揮、第一點留著',
      sky.aimed && sky.hitSky && skyAfter.aim && skyAfter.n === 0,
-     '第一下記住了 ' + sky.aimed + '、那個位置確實是天空 ' + sky.hitSky +
+     '第一下記住了 ' + sky.aimed + '、(' + sky.x + ',' + sky.y + ') 打到畫布而且是天空 ' + sky.hitSky +
      '；點下去之後 揮出 ' + skyAfter.n + ' 把、第一點還在 ' + skyAfter.aim);
 
   /* ══════════ 幽浮 ══════════
@@ -36713,8 +36723,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     while (bp === window.__bp0 && performance.now() - t < 8000) await new Promise(r => setTimeout(r, 10));
     delete window.__bp0;
   });
+  /* 下拉 v1.300.0 起只改「下一座蓋什麼」、不換場（使用者：「切換建築的下拉選單選擇後 不再拆掉目前建築
+     只是下一個會改那個選單的建築」）：選了之後等一段比 Worker 回信久的時間，bp 要還是原本那一份；
+     按「換一座來蓋」才換成選的那座。選的那座要一直留著（後面建材那條重蓋的還是它） */
+  const wheel = await page.evaluate(() => SHAPES.findIndex(s => s.n === '倫敦眼摩天輪'));
+  await page.evaluate(() => { window.__bpKeep = bp; });
+  await page.selectOption('#shape', String(wheel));
+  await page.waitForTimeout(800);
+  const pickOnly = await page.evaluate(() => {
+    const r = { same: bp === window.__bpKeep, name: bp.name, pick: shapePick };
+    delete window.__bpKeep;
+    return r;
+  });
+  ok('下拉選了不換場，只記下下一座要蓋什麼', pickOnly.same && pickOnly.pick === wheel,
+     '選完 800ms 現在還是「' + pickOnly.name + '」，shapePick ' + pickOnly.pick + '（倫敦眼摩天輪是 ' + wheel + '）');
   await bpMark();
-  await page.selectOption('#shape', String(await page.evaluate(() => SHAPES.findIndex(s => s.n === '倫敦眼摩天輪'))));
+  await page.click('#again');
   await bpSwapped();
   ok('藍圖下拉可以指定建築', (await st(page)).name === '倫敦眼摩天輪', (await st(page)).name);
 
@@ -36749,6 +36773,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '目標 ' + cntS.target + '，實得 ' + cntS.total + ' 塊');
   ok('積木池跟著藍圖走（多的會被收掉）', Math.abs(cntS.pool - cntS.total) <= 2,
      '先灌到 ' + poolBig + ' 塊，點下去之後池 ' + cntS.pool + '、藍圖 ' + cntS.total + ' 格');
+
+  /* 下拉右邊那顆 🎲（v1.300.0）：一點就改回隨機，下拉跟著跳回「🎲 隨機」，一樣不換場 */
+  await page.evaluate(() => { window.__bpKeep = bp; });
+  await page.click('#rnd');
+  await page.waitForTimeout(800);            // 同上一條：比 Worker 回信久，真的叫了換場這裡就換掉了
+  const rndBtn = await page.evaluate(() => {
+    const r = { same: bp === window.__bpKeep, pick: shapePick, sel: document.getElementById('shape').value };
+    delete window.__bpKeep;
+    return r;
+  });
+  ok('🎲 一點就改回隨機，不換場', rndBtn.same && rndBtn.pick === -1 && rndBtn.sel === '-1',
+     'shapePick ' + rndBtn.pick + '、下拉 ' + rndBtn.sel + '、現在這座' + (rndBtn.same ? '沒換' : '被換掉了'));
 
   await hitSeg('wk', 60);
   ok('小人按鈕會改變人數', (await st(page)).workers === 60, (await st(page)).workers + ' 人');
@@ -38309,7 +38345,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const r = await page.evaluate(() => {
       const box = {};
       // 量的是收起來的小窗（toolbox；v1.219 的小人模式 modebox 與 v1.220.2 的 finish 在設定鈕旁邊）：選單平常是藏著的，不占版面
-      for (const id of ['head', 'time', 'toolbox', 'modebox', 'finish', 'panelBtn', 'ver']) {
+      // v1.300.0 左上、右上兩張卡併成上方橫條（hud）：量整條，不量裡面兩群（兩群中間那段空的也是橫條）
+      for (const id of ['hud', 'toolbox', 'modebox', 'finish', 'panelBtn', 'ver']) {
         const e = document.getElementById(id);
         if (getComputedStyle(e).display !== 'none') box[id] = e.getBoundingClientRect();
       }
@@ -38336,7 +38373,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       void pnl.offsetWidth; pnl.style.transition = '';
       const hitP = e => q.right > e.left && e.right > q.left && q.bottom > e.top && e.bottom > q.top;
       const pm = hitP(m) || hitP(f);
-      return { bad, headW: Math.round(box.head.width), top: Math.round(box.toolbox.top),
+      return { bad, headW: Math.round(box.hud.width), top: Math.round(box.toolbox.top),
                out: box.toolbox.left < -1 || box.toolbox.right > window.innerWidth + 1,
                side, stack, pm, gapPm: Math.round(Math.min(m.top, f.top) - q.bottom),
                txt: document.getElementById('stat').textContent.replace(/\s+/g, ' ').trim() };
@@ -38396,7 +38433,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 手機版空間很擠，按鈕互相疊到就點不到了——直接量方框有沒有相交 */
   const overlap = await page.evaluate(() => {
-    const ids = ['head', 'time', 'toolbox', 'modebox', 'finish', 'panelBtn', 'ver'];
+    const ids = ['hud', 'toolbox', 'modebox', 'finish', 'panelBtn', 'ver'];   // hud：v1.300.0 的上方橫條，同上
     const box = {};
     for (const id of ids) {
       const e = document.getElementById(id);

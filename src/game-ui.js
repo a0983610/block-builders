@@ -1273,6 +1273,11 @@ function boot() {
      哪幾個圖示要畫進那張貼圖是規則這邊餵過去的，見 engine.js 的 setGiftIcons。 */
   ENG.setGiftIcons(TOOLS.map(t => t.k));
   window.addEventListener('resize', () => ENG.resize());
+  /* 上方橫條（v1.300.0）排不下會自己折行，折成幾列底下的道具小窗、提示、道具選單的高度就得讓多少：
+     橫條大小一變就把它的下緣寫進 CSS 的 --hudB（視窗縮放、數字變長撐到折行都會觸發） */
+  const hud = $('hud');
+  new ResizeObserver(() => document.documentElement.style.setProperty(
+    '--hudB', Math.round(hud.getBoundingClientRect().bottom) + 'px')).observe(hud);
 
   const cv = $('cv');
   cv.addEventListener('mousedown', onDown);
@@ -1292,11 +1297,16 @@ function boot() {
   /* 上次匯進來的藍圖要在建選單之前進 SHAPES，不然這一輪選單裡沒有它們 */
   loadImports();
   refreshShapeMenu();
-  /* 換場的三個入口都先叫背景算藍圖，算好了才換（v1.265.0，見 swapBuild） */
-  $('shape').addEventListener('change', e => { shapePick = +e.target.value; swapBuild(); });
+  /* 下拉只改「下一座蓋什麼」，不拆現在這座（v1.300.0，使用者：「切換建築的下拉選單選擇後 不再拆掉目前建築
+     只是下一個會改那個選單的建築」）。選了的那座會一直蓋到改回隨機（pickShape 照 shapePick 挑，使用者選的）；
+     要馬上換就按「換一座來蓋」。🎲 是下拉右邊那顆，直接改回隨機 */
+  $('shape').addEventListener('change', e => { shapePick = +e.target.value; });
+  $('rnd').addEventListener('click', () => { audio(); shapePick = -1; $('shape').value = '-1'; });
 
   /* 設定改動一律寫回 pref 並存檔——下次打開就不用重調。
      建材改了要重蓋（那是「下一座蓋多大」），小人與速度是當下就生效，不必打斷這一座。 */
+  /* 換場的入口（建材檔位、「換一座來蓋」）都先叫背景算藍圖，算好了才換（v1.265.0，見 swapBuild）；
+     下拉 v1.300.0 起不換場了 */
   makeSeg('cnt', CNT_OPTS, v => v, v => { targetCnt = pref.cnt = v; save(); swapBuild(); });
   makeSeg('wk', WK_OPTS, v => v, v => { setWorkerCount(v); pref.wk = workerCnt; syncHud(); save(); });
   makeSeg('spd', SPD_OPTS, v => v + '×', v => { timeScale = pref.spd = v; syncHud(); save(); });
