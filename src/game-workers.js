@@ -115,6 +115,7 @@ function newWorker(i) {
     /* 挖料（v1.129）：dig 是「這一鏟挖到哪了」0～1（畫鏟子用，0＝沒拿鏟子），
        dug 是這一趟已經挖出幾塊躺在地上了（挖出來的不在手上，所以算在人身上）。 */
     dig: 0, dug: 0,
+    lkx: 0, lkz: 0,                 // 逛街走到店門口要看的那一點（v1.305.0，見 shopSpot）
     /* 抽到的身高（v1.113）。scale 是「實際畫多大」，肌肉小人要在它上面再乘 MUS_SIZE，
        所以抽到的那個值要另外留一份：直接乘 scale 的話，setWorkerCount 每叫一次
        tagMuscle 就再乘一次，人數調個幾輪他會長成一棟樓。 */
@@ -3448,7 +3449,10 @@ const IDLE_EVENTS = [
   { id: 'home', wt: 1, start: startHomes, step: null, stop: stopHomes },
   /* 城牆（v1.186）。蓋法跟房子同一條路（都掛在 homes.list 上），所以收尾共用 stopHomes。
      step（v1.278.0）：城內缺的當下就補（見 stepWall） */
-  { id: 'wall', wt: 1, start: startWall, step: stepWall, stop: stopHomes }
+  { id: 'wall', wt: 1, start: startWall, step: stepWall, stop: stopHomes },
+  /* 商店街（v1.305.0）。同城牆：掛在 homes.list 上、收尾共用 stopHomes；
+     step 管一階一階往上加蓋（見 stepShop） */
+  { id: 'shop', wt: 1, start: startShop, step: stepShop, stop: stopHomes }
 ];
 /* 上一件事蓋出來的東西還剩多少（v1.186 的黏著，**判準 v1.188 換掉**）。
    舊的判準是「homes.list 上還有那一類的任何一筆」——實測那個門檻**沒有出口**
@@ -3463,14 +3467,16 @@ const IDLE_EVENTS = [
    **分母是最高點，不是藍圖該有的總塊數**：整圈城牆 3384 塊、第一輪只蓋得了 246 塊
    （實測），拿總塊數當分母的話一開工就被判定「建造數不多」，城牆永遠蓋不起來。
    最高點記在事件這一層、不是逐筆記：逐筆的話廢棄一筆連分母也跟著消失，
-   打掉三分之一反而變回 100%。 */
-const EV_WALL = { home: false, wall: true };
+   打掉三分之一反而變回 100%。
+   **算哪幾類照 homeCat**（v1.305.0 多了商店街，原本「是不是城牆」的真假值分不出第三件）：
+   事件一算房子與樹、事件二只算城牆段（城內那幾間不算，同 v1.188）、事件三算店；燈架（3）哪一件都不算（v1.303.0） */
+const EV_CAT = { home: [0, 1], wall: [2], shop: [4] };
 let evPeak = 0;                     // 這一件事曾經蓋到的最高塊數（換一件才歸零，見 rollIdleEvent）
 function evBlocks(e) {
-  const wall = EV_WALL[e.id];
-  if (wall === undefined || !homes) return 0;
+  const cats = EV_CAT[e.id];
+  if (!cats || !homes) return 0;
   let n = 0;
-  for (const h of homes.list) if (!!h.wall === wall && !h.lamp) n += h.slots.length - h.left;   // 燈架不是哪一件事蓋的（v1.303.0）
+  for (const h of homes.list) if (cats.includes(homeCat(h))) n += h.slots.length - h.left;
   return n;
 }
 function evAlive(e) {
@@ -4356,6 +4362,89 @@ function formSlots(k, pal, put) {
       del(mu, 0, 3);                                    // 陽台門
       break;
     }
+    /* ── 商店街的店面（v1.305.0，見 SHOP_KIND）：pal 多一格 pal[3]（雨遮的白條紋、招牌的框） ── */
+    case 'arcade': {
+      /* 騎樓店屋：一樓往裡縮 AR 格當騎樓（正面兩根柱子撐著樓上），店面那一道牆開門與櫥窗；
+         二樓以上整個蓋出去到騎樓上面，二樓正面一條招牌色的橫帶，側邊再掛一塊直立招牌。
+         騎樓兩側不封：隔壁那一間的騎樓接得起來（巷子兩格，看得到裡面是通的） */
+      const AR = 2;
+      for (let gy = 0; gy < k.h; gy++)
+        for (let u = 0; u <= W; u++)
+          for (let v = gy < 2 ? AR : 0; v <= D; v++) {
+            if (u !== 0 && u !== W && v !== (gy < 2 ? AR : 0) && v !== D) continue;
+            set(u, v, gy, gy === 2 && v === 0 ? pal[2] : pal[0]);
+          }
+      for (const u of [0, W]) { set(u, 0, 0, pal[1]); set(u, 0, 1, pal[1]); }   // 騎樓柱
+      for (let u = 1; u < W; u++) set(u, 1, 2, pal[1]);                     // 騎樓的天花板
+      door(mu, AR); door(mu + 1, AR);                   // 兩格寬的店門
+      win(1, AR, 1); win(W - 1, AR, 1);                 // 櫥窗
+      for (const gy of [3, 5]) { win(1, 0, gy); win(W - 1, 0, gy); win(0, 3, gy); win(W, 3, gy); }
+      for (let u = 0; u <= W; u++) for (let v = 0; v <= D; v++) set(u, v, k.h, pal[1]);   // 平頂
+      for (let gy = 3; gy < k.h; gy++) set(W, -1, gy, pal[2]);              // 直立招牌（掛在正面牆上）
+      break;
+    }
+    case 'awning': {
+      /* 雨遮小店：一層樓，正面整排櫥窗、門口上面一條紅白（藍白、綠白）相間的條紋雨遮，
+         平頂上沿著正面立一塊招牌 */
+      walls(rect(0, W, 0, D), 0, W, 0, D, k.h, pal[0]);
+      door(mu, 0);
+      for (let u = 1; u < W; u++) if (u !== mu) win(u, 0, 1);
+      win(0, 2, 1); win(W, 2, 1);
+      for (let u = 0; u <= W; u++) set(u, -1, k.h - 1, u % 2 ? pal[3] : pal[2]);   // 雨遮（搭在正面牆頂那一層）
+      for (let u = 0; u <= W; u++) for (let v = 0; v <= D; v++) set(u, v, k.h, pal[1]);
+      for (let u = 1; u < W; u++) { set(u, 0, k.h + 1, pal[2]); set(u, 0, k.h + 2, pal[2]); }   // 屋頂招牌
+      break;
+    }
+    case 'sign': {
+      /* 招牌樓：兩層樓（一樓大櫥窗、二樓一整條橫窗），平頂上兩根柱子撐一塊大看板 */
+      walls(rect(0, W, 0, D), 0, W, 0, D, k.h, gy => gy === 2 ? pal[1] : pal[0]);
+      door(mu, 0);
+      win(1, 0, 1); win(W - 1, 0, 1);
+      for (let u = 1; u < W; u++) win(u, 0, 3);
+      for (const v of [2, D - 2]) { win(0, v, 3); win(W, v, 3); }
+      for (let u = 0; u <= W; u++) for (let v = 0; v <= D; v++) set(u, v, k.h, pal[1]);
+      for (const u of [1, W - 1]) for (let gy = k.h + 1; gy <= k.h + 2; gy++) set(u, D - 1, gy, pal[1]);
+      for (let u = 0; u <= W; u++)
+        for (let gy = k.h + 3; gy <= k.h + 5; gy++) set(u, D - 1, gy, gy === k.h + 4 ? pal[2] : pal[3]);
+      break;
+    }
+    case 'market': {
+      /* 市場攤棚：六根柱子撐一頂條紋帆布棚（三層往上收），棚下沿著正面一排攤位、攤上擺貨。
+         四面都不封——跟其他款不一樣，它沒有門 */
+      for (const u of [0, mu, W]) for (const v of [0, D]) for (let gy = 0; gy < k.h; gy++) set(u, v, gy, pal[1]);
+      for (let j = 0; j < 3; j++)
+        for (let u = 0; u <= W; u++)
+          for (let v = j; v <= D - j; v++) set(u, v, k.h + j, u % 2 ? pal[3] : pal[2]);
+      for (let u = 1; u < W; u++) if (u !== mu) set(u, 1, 0, pal[0]);       // 攤位
+      for (const u of [1, mu - 1, mu + 1, W - 1]) set(u, 1, 1, pal[2]);     // 攤上的貨
+      break;
+    }
+    case 'corner': {
+      /* 轉角樓：只蓋在十字路口的四個角。正面與右側（u = W）兩面都是店面（兩面各一個門、一排櫥窗），
+         兩道腰線、平頂女兒牆，轉角那一頭頂上一座小鐘樓（白色的鐘面朝正面） */
+      walls(rect(0, W, 0, D), 0, W, 0, D, k.h, gy => gy === 2 || gy === 4 ? pal[1] : pal[0]);
+      door(mu, 0); door(W, D - 3);
+      for (const u of [1, 2, W - 2, W - 1]) win(u, 0, 1);
+      for (const v of [1, 2, D - 1]) win(W, v, 1);
+      for (const gy of [3, 5]) {
+        for (const u of [1, mu, W - 2]) win(u, 0, gy);
+        for (const v of [2, D - 2]) { win(W, v, gy); win(0, v, gy); }
+        for (const u of [2, W - 2]) win(u, D, gy);
+      }
+      for (let u = 0; u <= W; u++) for (let v = 0; v <= D; v++) {
+        set(u, v, k.h, pal[0]);
+        const edge = u === 0 || u === W || v === 0 || v === D;
+        if (edge && (u + v) % 2 === 0) set(u, v, k.h + 1, pal[1]);
+      }
+      // 鐘樓 3×3：兩層 ＋ 頂 ＋ 尖。實心——空心的話中間那一格前後左右上下都封死（同塔樓宅邸那個坑）
+      for (let u = W - 2; u <= W; u++) for (let v = 0; v <= 2; v++) {
+        for (let gy = k.h + 1; gy <= k.h + 2; gy++) set(u, v, gy, pal[1]);
+        set(u, v, k.h + 3, pal[2]);
+      }
+      set(W - 1, 0, k.h + 2, pal[3]);                   // 鐘面
+      set(W - 1, 1, k.h + 4, pal[2]);
+      break;
+    }
   }
   const cu = W / 2, cv = D / 2;
   const list = [...cells.values()];
@@ -4834,8 +4923,9 @@ function pickHomeSite(cx, cz, rad, capOut) {
    **不能改成「都有人了就疊到同一間」**：這一輪剛開的新房子也是「還沒蓋完」，
    於是第二組之後全部併進第一間，一輪只蓋得出一間（實測 20 人 10 個離隊只蓋 1 間）。
    間數比組數多的時候會有一兩間排到下一輪，那是排隊、不是沒人管。 */
-/* 燈源的燈架（v1.303.0）自己一類 3：沒有人會照這一類去找（壞了就沒了，使用者選的），見 game-tools.js〈道具：燈源〉 */
-const homeCat = h => h.lamp ? 3 : h.wall ? 2 : h.tree ? 1 : 0;
+/* 燈源的燈架（v1.303.0）自己一類 3：沒有人會照這一類去找（壞了就沒了，使用者選的），見 game-tools.js〈道具：燈源〉。
+   商店街的店（v1.305.0）一類 4：蓋房子、蓋城牆的人不會被派去接一間蓋一半的店，反過來也一樣 */
+const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.tree ? 1 : 0;
 const NO_TAKEN = new Set();                        // 「誰都還沒被認走」：見 updHome 接下一段
 function pickUnfinished(cx, cz, taken, cat) {
   let best = -1, bd = Infinity;
@@ -5213,6 +5303,275 @@ function stepWall(dt) {
     }
   }
 }
+/* ── 事件三：商店街（v1.305.0）──────────────────────────────────
+   使用者：「增加閒晃事件三／蓋出一個做生意的商圈(商店街) 城市房屋(可以參考事件一小房子 選適合的
+   或增加商店街型的房子)較整齊 有留行走的路線」，接著「街道可以設計成為著地標一圈 如果積木夠的話」、
+   「簡單來說就是圍著地標 先一條街 夠的話變成十字 再來ㄇ字 然後口字圍成一圈」。問過選的：
+     · 格局：方形環街繞地標，街兩側店面對開、門都朝街；四面正中央各留一條路口穿過內外兩排
+     · 一面一面長（一 → 十 → ㄇ → 口）：每多一面就多一條街，兩條街在角落交叉成十字路口；
+       **一階蓋好了、積木預算還夠才往下一階加蓋**（SHOP_BUDGET）
+     · 房子：事件一挑城裡看起來合適的五款（拿掉圍籬）＋新做的五款店面（見 formSlots 的 arcade 起那幾個 case）
+     · 路面不畫：店排整齊、留出街與巷子當走道，地上還是草地
+     · 蓋完逛街（見 liveShop）；誰去蓋照城牆：站得穩的人全部參加，w.own 不動（店不是誰的家）
+   跟城牆一樣**整條街是一次規劃好的**（shopPlan，存在 shopRing），每一間掛在 homes.list 上，
+   所以支撐、垮塌、被道具打壞、有人補洞、積木就地挖出來、魔法師隔空拋、肌肉小人就地掄那一整套都不必再寫。
+   打爛了也不廢棄、留著等人補（同城牆段，見 wrecked）：位置是規劃好的，廢棄掉就沒有地方會再生出那一間。
+
+   幾何（以某一面為準，n＝離場中心多遠、t＝沿著這一面）：
+       a0＝siteR + HOME_NEAR   內排的背面（跟小房子的內緣同一條）
+       fi＝a0 + SHOP_D         內排的店門那一條線（門朝外）
+       fo＝fi + SHOP_S         外排的店門那一條線（門朝內），fi～fo 就是街
+   內排排在 |t| ≤ a0 − 巷子、外排排到 |t| ≤ fi（再過去就是隔壁那一面的街）；
+   角落的兩塊方地（內角 [a0,fi]²、外角 [fo,fo+D]²）各放一間轉角樓。內角跟著先蓋的那一面，
+   外角要兩面都在才蓋——那時候兩條街才在那裡交叉成十字。 */
+const SHOP_S = 5;                   // 街幾格寬（兩排店門之間；路口也是這麼寬）
+const SHOP_D = 8;                   // 一排的進深：店最深 7 格，轉角樓 8×8
+const SHOP_ALLEY = 2;               // 店與店之間的巷子
+/* 整條街最多幾塊（一階一階加上去，下一階加了會超過就停在這一階）。拿最大的一圈城牆當上限
+   （engine.js 的 MAXB 那條帳寫 11396，測試當場量到 11508，見 開發筆記〈事件三：商店街（v1.305.0）〉）：商店街跟城牆、村子是不同的事件，
+   換事件時上一件整批解體（見 rollIdleEvent），所以池子那條帳不必再加一份。
+   粗算一整圈：小地標四十幾間七千多塊、1800／3000 的中位一萬上下，9000 大一點的就停在ㄇ字。 */
+const SHOP_BUDGET = 11000;
+const SHOP_OUT = 6;                 // 店的外角最遠到 arenaR + 這麼多（同城牆的角，見 wallRing）
+/* 店的款式。form 那五款是新做的店面（見 formSlots），其餘是事件一挑過來的（城裡不圍圍籬）。
+   wt 是抽到的相對權重：新的店面多一點，看起來才是商店街、不是排整齊的村子。
+   d 一律不超過 SHOP_D − 1：一排的店門對齊在同一條線上，背面隨款式深淺不一。 */
+const SHOP_KIND = [
+  { n: 2, id: '騎樓店屋', form: 'arcade', w: 6, d: 7, h: 6, wt: 2 },
+  { n: 1, id: '雨遮小店', form: 'awning', w: 7, d: 6, h: 3, wt: 2 },
+  { n: 2, id: '招牌樓', form: 'sign', w: 6, d: 6, h: 5, wt: 2 },
+  { n: 2, id: '市場攤棚', form: 'market', w: 9, d: 6, h: 3, wt: 2 },
+  ...['塔屋', '兩層樓', '長屋', '三層樓', '平頂樓'].map(id => ({ ...HOME_KIND.find(k => k.id === id), fence: 0, wt: 1 }))
+];
+const SHOP_CORNER = { n: 3, id: '轉角樓', form: 'corner', w: 8, d: 8, h: 7 };
+/* 牆、屋頂／柱子、招牌與雨遮、雨遮的白條紋（事件一那幾款只用到前三格：牆、屋頂、煙囪） */
+const SHOP_PAL = [
+  [[0.93, 0.87, 0.74], [0.45, 0.30, 0.22], [0.80, 0.20, 0.18], [0.96, 0.95, 0.92]],
+  [[0.90, 0.76, 0.74], [0.38, 0.36, 0.42], [0.20, 0.52, 0.36], [0.96, 0.95, 0.92]],
+  [[0.74, 0.84, 0.88], [0.30, 0.36, 0.48], [0.94, 0.62, 0.16], [0.96, 0.95, 0.92]],
+  [[0.95, 0.88, 0.58], [0.52, 0.34, 0.20], [0.22, 0.40, 0.70], [0.96, 0.95, 0.92]],
+  [[0.80, 0.80, 0.78], [0.55, 0.22, 0.20], [0.86, 0.70, 0.12], [0.20, 0.20, 0.22]],
+  [[0.78, 0.90, 0.80], [0.28, 0.42, 0.34], [0.82, 0.28, 0.52], [0.96, 0.95, 0.92]]
+];
+const SIDE_N = [[1, 0], [0, 1], [-1, 0], [0, -1]];       // 四面往外的方向：+x、+z、−x、−z
+const ROT_FACE = [[0, -1], [1, 0], [0, 1], [-1, 0]];     // rot 0～3 門朝哪個方向（見 homeSlots）
+const faceRot = (dx, dz) => dz < -0.5 ? 0 : dx > 0.5 ? 1 : dz > 0.5 ? 2 : 3;
+let shopRing = null;                // 這一條街的規劃：{ items, stage 已經蓋到第幾階, allow 預算夠蓋到第幾階 }
+/* 挑一款：寬度塞得進 room 的裡面照 wt 抽，盡量不跟隔壁同一款 */
+function pickShop(room, prev) {
+  let fit = SHOP_KIND.filter(k => k.w <= room);
+  if (fit.length > 1) fit = fit.filter(k => k !== prev);
+  let tot = 0;
+  for (const k of fit) tot += k.wt;
+  let r = Math.random() * tot;
+  for (const k of fit) { r -= k.wt; if (r < 0) return k; }
+  return fit[fit.length - 1] || null;
+}
+/* 規劃整條街。第一面是**正對鏡頭的那一面**（ENG.cam.yaw，玩家轉過的話照轉過的），第二面是鄰邊裡
+   也比較朝鏡頭的那一面，之後順著同一個方向繞——所以第二階的十字路口落在離鏡頭最近的那個角。
+   每一間先把格子生好（homeSlots）：要拿塊數算預算夠蓋到第幾階。 */
+function shopPlan() {
+  const a0 = siteR + HOME_NEAR, fi = a0 + SHOP_D, fo = fi + SHOP_S;
+  const lim = arenaR + SHOP_OUT;
+  const ex = Math.cos(ENG.cam.yaw), ez = Math.sin(ENG.cam.yaw);
+  const dot = q => SIDE_N[q][0] * ex + SIDE_N[q][1] * ez;
+  let q0 = 0;
+  for (let q = 1; q < 4; q++) if (dot(q) > dot(q0)) q0 = q;
+  const turn = dot((q0 + 1) % 4) >= dot((q0 + 3) % 4) ? 1 : 3;
+  const stageOf = q => [0, 1, 2, 3].findIndex(j => (q0 + j * turn) % 4 === q);
+  const items = [];
+  let prevPal = null;
+  /* 放一間：第 q 面的 n0～n1（進深）× t0～t1（門面）那一塊，門朝 face（+1 往外、−1 往內）。
+     四個角有一個超出 lim 就不放（大地標的外排兩頭、外角那間會被這條收掉） */
+  const add = (q, kind, n0, n1, t0, t1, face, stage) => {
+    for (const n of [n0, n1]) for (const t of [t0, t1]) if (Math.hypot(n, t) > lim) return;
+    const [nx, nz] = SIDE_N[q], tx = -nz, tz = nx;         // 切線＝法向轉 90°
+    const nc = (n0 + n1) / 2, tc = (t0 + t1) / 2;
+    let pal;
+    do pal = SHOP_PAL[Math.floor(Math.random() * SHOP_PAL.length)]; while (pal === prevPal);
+    prevPal = pal;
+    const x = nc * nx + tc * tx, z = nc * nz + tc * tz;
+    const rot = faceRot(face * nx, face * nz);
+    items.push({ x, z, kind, rot, pal, stage, slots: homeSlots(x, z, kind, pal, rot) });
+  };
+  /* 一排：從路口那一頭（|t| = SHOP_S / 2）往外排到 end，正負兩半各排一次。
+     剩下的空間平均攤進巷子裡——路口那一間不動（內外兩排的路口才對得齊），最外那一間貼齊 end */
+  const row = (q, inner, end) => {
+    for (const sg of [1, -1]) {
+      const got = [];
+      let t = SHOP_S / 2;
+      for (;;) {
+        const k = pickShop(end - t, got.length ? got[got.length - 1].kind : null);
+        if (!k) break;
+        got.push({ kind: k, t });
+        t += k.w + SHOP_ALLEY;
+      }
+      if (!got.length) continue;
+      const last = got[got.length - 1];
+      const spare = end - (last.t + last.kind.w);
+      got.forEach((g, i) => {
+        const a = g.t + (got.length > 1 ? spare * i / (got.length - 1) : 0), b = a + g.kind.w;
+        add(q, g.kind, inner ? fi - g.kind.d : fo, inner ? fi : fo + g.kind.d,
+            sg > 0 ? a : -b, sg > 0 ? b : -a, inner ? 1 : -1, stageOf(q));
+      });
+    }
+  };
+  for (let q = 0; q < 4; q++) { row(q, true, a0 - SHOP_ALLEY); row(q, false, fi); }
+  /* 角落：第 q 面與第 q+1 面之間那個角（在第 q 面的座標裡是 t 正的那一頭）。
+     轉角樓的正面朝第 q 面的街、右側（u = W）朝第 q+1 面的街——rot 照正面挑，右側自己就轉對了 */
+  for (let q = 0; q < 4; q++) {
+    const s0 = stageOf(q), s1 = stageOf((q + 1) % 4);
+    add(q, SHOP_CORNER, a0, fi, a0, fi, 1, Math.min(s0, s1));
+    add(q, SHOP_CORNER, fo, fo + SHOP_D, fo, fo + SHOP_D, -1, Math.max(s0, s1));
+  }
+  const per = [0, 0, 0, 0];
+  for (const it of items) per[it.stage] += it.slots.length;
+  let allow = 1, sum = per[0];
+  while (allow < 4 && sum + per[allow] <= SHOP_BUDGET) sum += per[allow++];
+  return { items, stage: 0, allow };
+}
+/* 往下一階加蓋（沒有下一階、或預算不夠就回 0）。這一階壓到的東西先拆成碎料（同 startWall：
+   燈源的燈架、換事件之前剛好沒解掉的都算）；新工地比規劃那時候大、已經蓋到的那幾間不生 */
+function shopGrow() {
+  const R = shopRing;
+  if (!R || R.stage >= R.allow) return 0;
+  const k = R.stage++;
+  const add = R.items.filter(it => it.stage === k && Math.hypot(it.x, it.z) - homeR(it.kind) > siteR + KEEP);
+  const span = add.map(it => homeSpan(it));
+  dropHomes(h => {
+    const b = homeSpan(h);
+    return !span.some(s => b.x0 < s.x1 && b.x1 > s.x0 && b.z0 < s.z1 && b.z1 > s.z0);
+  });
+  for (const it of add) {
+    const at = new Map();
+    it.slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+    const { ox, oz } = homeOff(it.kind, it.rot);
+    const h = { id: homeSeq++, x: it.x, z: it.z, r: homeR(it.kind), kind: it.kind.id, at,
+                ox, oz, rot: it.rot,
+                slots: it.slots, left: it.slots.length, n: it.kind.n,
+                shop: 1, done: false };
+    homeBox(h);
+    markHomeF6(h);
+    homes.list.push(h);
+  }
+  return add.length;
+}
+/* 開工：場上沒有店就規劃一條新的、蓋第一階；有的話就是接著蓋（同城牆「一圈只開一次」）。
+   派人照 startWall：站得穩的全部參加、一組接一間，每一間都有人了就疊上去；
+   全都蓋好了的話就近找一間，從那裡開始逛街 */
+function startShop() {
+  if (!homes) homes = { list: [] };
+  if (!homes.list.some(h => h.shop)) { shopRing = shopPlan(); shopGrow(); }
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  const pool = [];
+  for (let i = 0; i < workers.length; i++) if (steady(workers[i]) && joins(workers[i])) pool.push(i);
+  for (let i = pool.length - 1; i > 0; i--) {          // 洗牌（同 startHomes）
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+  }
+  const taken = new Set();
+  while (pool.length) {
+    const crew = takeCrew(pool);
+    let cx = 0, cz = 0;
+    for (const w of crew) { cx += w.x; cz += w.z; }
+    cx /= crew.length; cz /= crew.length;
+    let hi = pickUnfinished(cx, cz, taken, 4);
+    if (hi < 0) hi = pickUnfinished(cx, cz, NO_TAKEN, 4);
+    if (hi >= 0) {
+      for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;   // 上一批人留下的認領（同 startWall）
+    } else hi = shopNear(cx, cz);
+    if (hi < 0) continue;                               // 一間店都沒有（地方不夠）：這一組照常閒晃
+    taken.add(hi);
+    for (const w of crew) {
+      releaseWorker(w);                                 // 手上的建材先放掉，這趟不是上工
+      w.hm = hi; w.hst = ''; w.pause = 0;
+    }
+  }
+}
+function shopNear(x, z) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < homes.list.length; i++) {
+    const h = homes.list[i];
+    if (!h.shop) continue;
+    const d = (h.x - x) ** 2 + (h.z - z) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+/* 每秒看一次：這一階都蓋好過了就往下一階加蓋（預算還夠的話）；閒著的人（開工那一刻在空中、
+   剛復活補進來的）掛到最近的那一間——蓋好了的就從那裡開始逛，要不要去幫忙交給 liveShop */
+const SHOP_FIX_T = 1;
+let shopFixT = 0;
+function stepShop(dt) {
+  if ((shopFixT -= dt) > 0) return;
+  shopFixT = SHOP_FIX_T;
+  if (!homes || !homes.list.some(h => h.shop)) return;    // 整條街都被新工地徵收了：等下一輪開工重新規劃
+  if (homes.list.every(h => !h.shop || h.done)) shopGrow();
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  for (const w of workers) {
+    if (w.hm >= 0 || w.dead || !steady(w) || !joins(w)) continue;
+    releaseWorker(w);
+    w.hm = shopNear(w.x, w.z); w.hst = ''; w.pause = 0;
+  }
+}
+/* 逛街（使用者選的）：沿著街走，走到某一間的店門口停下來看一下（像在買東西），看完再挑下一間。
+   挑的是附近（SHOP_WALK 以內）蓋好的店，所以人會在同一段街上來回走；附近沒有才整條街隨便挑。
+   每走到一間、要挑下一間之前先看有沒有哪一間缺人在蓋（下一階剛開工、被打出洞），
+   有就過去幫忙——**一間最多 HOME_TEAM 個人**，不然一間被打個洞，整條街逛街的人全部擠過去補。
+   聊天、表演照舊（不在蓋的時候 homeBusy 是假的，見 chatFree）。
+   w.hst 'shop'＝正在走去某一間店門口；其他值（剛蓋完、聊完天）就重新決定下一步。 */
+const SHOP_LOOK = [1.6, 4];         // 在店門口看幾秒
+const SHOP_WALK = 30;               // 挑下一間的範圍
+const SHOP_FRONT = [2, 3.2];        // 站在店門前多遠（門廊、雨遮挑出去一格；街 5 格寬，對面的也挑出來一格）
+function liveShop(w, h, dt) {
+  if (w.show || w.pause > 0) { idleWait(w, dt); return; }
+  if (w.hst !== 'shop') {
+    w.hst = 'shop';
+    if (shopHelp(w)) return;
+    shopSpot(w);
+  }
+  if (!strollTo(w, dt)) return;
+  w.a = Math.atan2(w.lkx - w.x, w.lkz - w.z);          // 到了：轉過去看店面
+  w.pause = rr(SHOP_LOOK[0], SHOP_LOOK[1]); w.leg = 0;
+  rollShow(w);
+  w.hst = '';
+}
+function shopHelp(w) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < homes.list.length; i++) {
+    const h = homes.list[i];
+    if (!h.shop || h.left <= 0) continue;
+    let n = 0;
+    for (const o of workers) if (o.hm === i) n++;
+    if (n >= HOME_TEAM) continue;
+    const d = (h.x - w.x) ** 2 + (h.z - w.z) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  if (best < 0) return false;
+  w.hm = best; w.hst = ''; w.pause = 0;
+  return true;
+}
+/* 下一間要逛的店門口：正面中線往外 SHOP_FRONT，沿門面錯開一點（不然每個人都站在門的正前方）。
+   lkx／lkz 是走到之後要看的那一點（正面牆上）。一間蓋好的都沒有就照一般閒晃挑 */
+function shopSpot(w) {
+  const near = [], all = [];
+  for (const h of homes.list) {
+    if (!h.shop || !h.done || h.left > 0) continue;
+    all.push(h);
+    if ((h.x - w.x) ** 2 + (h.z - w.z) ** 2 < SHOP_WALK * SHOP_WALK) near.push(h);
+  }
+  const pick = near.length ? near : all;
+  if (!pick.length) { idleSpot(w); w.lkx = w.tx; w.lkz = w.tz; return; }
+  const h = pick[Math.floor(Math.random() * pick.length)];
+  const [fx, fz] = ROT_FACE[h.rot];
+  const half = (h.rot & 1 ? h.ox : h.oz) + 0.5;           // 正面離中心多遠
+  const j = rr(-0.6, 0.6) * (h.rot & 1 ? h.oz : h.ox);    // 沿門面錯開
+  const d = rr(SHOP_FRONT[0], SHOP_FRONT[1]);
+  w.lkx = h.x + fx * half - fz * j; w.lkz = h.z + fz * half + fx * j;
+  w.tx = w.lkx + fx * d; w.tz = w.lkz + fz * d;
+}
 function stopHomes() {
   for (const w of workers) {
     if (w.hm < 0) continue;
@@ -5279,8 +5638,9 @@ function dropHomes(keep) {
    整圈的去留交給換事件那一條（見 rollIdleEvent）。不排除的話：wallPlan 一圈只跑一次，
    廢棄掉的那一段沒有任何地方會再生出來——實測蓋好的一段 122 塊整段打光，1 秒內從清單上
    消失（24 段 → 23 段），150 秒後還是缺著，牆線上永遠少一段
-   （見 開發筆記〈城牆段打爛了不廢棄，留著等人補〉）。 */
-const wrecked = h => h.done && !h.wall && h.slots.length - h.left < h.slots.length * WRECK_AT && !frHomeHeld(h);
+   （見 開發筆記〈城牆段打爛了不廢棄，留著等人補〉）。
+   **商店街的店也一樣**（v1.305.0）：整條街是一次規劃好的（shopPlan），廢棄掉的那一間沒有地方會再生出來。 */
+const wrecked = h => h.done && !h.wall && !h.shop && h.slots.length - h.left < h.slots.length * WRECK_AT && !frHomeHeld(h);
 /* 罩著的那一間先不廢棄（v1.259.0，見 game-tools.js〈道具：防禦魔法〉：罩子裡一塊都不掉）：
    還站著的有一塊在芙莉蓮的防護罩裡就留著，罩子走開之後（stepFrHang）再判一次 */
 function frHomeHeld(h) {
@@ -5464,6 +5824,7 @@ function landHome(b, a) {
    抽一次就用（v1.293.0，同 idleSpot）：壓在隔壁那一間裡的交給 strollTo 的規則 2 挪出來。
    v1.292 以前是壓到就重抽、第 12 次照收——最後那一次本來就是靠規則 2 收尾。 */
 function liveSpot(w, h) {
+  if (h.shop) { shopSpot(w); return; }  // 商店街（v1.305.0）：聊完天、打完架接著逛，不是繞著那一間打轉
   const a = rr(0, Math.PI * 2), d = rr(h.r + HOME_STAND, h.r + LIVE_R);
   w.tx = h.x + Math.cos(a) * d; w.tz = h.z + Math.sin(a) * d;
 }
@@ -5493,6 +5854,7 @@ function updHome(w, wi, dt) {
      （idleSpot 取的是場上任一處），於是他會走到別的地方去——實測有人跑到離自己家
      38 格遠。手上還有貨的例外：那幾格還算在 h.left 裡，所以這裡不會擋到砌完最後幾塊。 */
   if (h.left <= 0 && !w.load.length) {
+    if (h.shop) { liveShop(w, h, dt); return; }         // 商店街（v1.305.0）：蓋完了逛街，看到缺人的再去幫忙
     w.hst = '';
     /* 城牆蓋完一段就自己去接最近的下一段（v1.186）：整圈是切成十幾段的，
        蓋完就站在牆邊過日子的話，一輪只推得動幾段。整圈都好了才回去閒晃。 */

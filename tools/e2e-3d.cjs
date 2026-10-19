@@ -8434,7 +8434,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              placed: placedCnt, total: bp.slots.length,
              homes: hs.filter(h => !h.tree).length, slots: sum(h => !h.tree),
              trees: hs.filter(h => h.tree).length, treeSlots: sum(h => h.tree),
-             budget: TREE_BUDGET,
+             budget: TREE_BUDGET, shop: SHOP_BUDGET,
              left: hs.reduce((a, h) => a + h.left, 0) };
   });
   /* 門檻 v1.153 加上樹那一份：村子現在是「最多 43 間 5405 格的房子 ＋ 最多
@@ -8452,6 +8452,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      poolFit.wallN + '）→ 池子 ' + poolFit.pool + '／' + poolFit.maxb +
      '，挖不出來 ' + poolFit.full + ' 次、蓋了 ' + poolFit.secs + ' 秒還缺 ' +
      poolFit.left + ' 格');
+  /* 商店街（v1.305.0）跟村子、城牆是不同的事件，換事件時上一件整批解體（rollIdleEvent），
+     所以它不另外佔一份：預算只要不超過最大的一圈城牆，上面那條帳就照樣成立 */
+  ok('商店街的預算不超過最大的一圈城牆（積木池那條帳不必再加一份）',
+     poolFit.shop <= poolFit.wall,
+     '商店街預算 ' + poolFit.shop + ' 塊、最大的一圈城牆 ' + poolFit.wall + ' 塊（' + poolFit.wallN + '）');
 
   /* 房子也要「底部拆掉上面一起垮」（v1.102，使用者指定「同地標建築邏輯」）。
      規則跟 collapseUnsupported 一樣：26 鄰接、從地面那一層往上找連通，連不到的鬆脫。
@@ -11841,6 +11846,331 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('城內一間整間打光（廢棄）之後，一秒多內就有人在城內重蓋一間',
      wallFix.d.gone && wallFix.d.houses === wallFix.d.before && wallFix.d.allCrewed, JSON.stringify(wallFix.d));
   }   // ── 〈閒晃事件：城牆〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 閒晃事件：商店街 ══════════ */
+  SEC: { if (!(await head('閒晃事件：商店街', T_COMMIT))) break SEC;
+  /* v1.305.0，使用者：「增加閒晃事件三／蓋出一個做生意的商圈(商店街) …較整齊 有留行走的路線」，
+     接著「圍著地標 先一條街 夠的話變成十字 再來ㄇ字 然後口字圍成一圈」（見 開發筆記〈事件三：商店街〉）。
+     **全部規則型**：造最小場面（只設 siteR／arenaR，homes 自己組、格子直接標成砌好，不生積木），
+     直接呼叫 shopPlan／shopGrow／stepShop／startShop／updHome 那幾支。規劃裡的款式與配色是抽的，
+     所以每一條都寫成「怎麼抽都要成立」的；骰子會影響結果的那幾處（換事件）押骰子。量完把全域還回去。 */
+  const shopT = await page.evaluate(() => {
+    const keep = { siteR, arenaR, yaw: ENG.cam.yaw, ev: idleEv, last: evLast, arm: evArm, ph: evPh, peak: evPeak,
+                   phase, ring: shopRing, rnd: Math.random,
+                   ws: workers.map(w => [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show]) };
+    cleanTools(); clearHomes(); stopIdleEvent();
+    phase = 'done';
+    const out = { D: SHOP_D, budget: SHOP_BUDGET };
+    const ALL = SHOP_KIND.concat([SHOP_CORNER]);
+    const span = it => homeSpan(it);
+    const hit = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.z0 < b.z1 && a.z1 > b.z0;
+    /* 一間標成砌好（不生積木：這一段量的是規則，不是畫面） */
+    const fill = h => { for (const sl of h.slots) sl.filled = true; h.left = 0; h.done = true; homeBox(h); };
+    const shops = () => homes.list.filter(h => h.shop);
+
+    /* ① 每一款 × 四向：塊數 100～300、同一格不重複、每一格六面連得回地面、照 canPlaceHome 砌得完；
+          挑出去的（門廊、雨遮、直立招牌、陽台）只在正面、只挑一格——那是街，不是隔壁那一間 */
+    out.kinds = ALL.map(k => {
+      const bad = [];
+      for (let rot = 0; rot < 4; rot++) {
+        const S = homeSlots(0, 0, k, SHOP_PAL[0], rot);
+        const at = new Map();
+        S.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+        if (at.size !== S.length) bad.push(rot + '同格');
+        const h = { slots: S, at, done: false };
+        markHomeF6(h);
+        if (S.some(s => !s.f6)) bad.push(rot + '懸空');
+        let placed = 0, moved = true;
+        while (moved) {
+          moved = false;
+          for (let i = 0; i < S.length; i++) {
+            if (S[i].filled || !canPlaceHome(h, i)) continue;
+            S[i].filled = true; placed++; moved = true;
+          }
+        }
+        if (placed !== S.length) bad.push(rot + '砌不完');
+        const { ox, oz } = homeOff(k, rot), [fx, fz] = ROT_FACE[rot];
+        for (const s of S) {
+          if (Math.abs(s.x) <= ox + 1e-6 && Math.abs(s.z) <= oz + 1e-6) continue;
+          const f = s.x * fx + s.z * fz, side = fx ? s.z : s.x;
+          if (Math.abs(f - ((fx ? ox : oz) + 1)) > 1e-6 || Math.abs(side) > (fx ? oz : ox) + 1e-6) { bad.push(rot + '挑出去不在正面'); break; }
+        }
+      }
+      return { id: k.id, n: homeSlots(0, 0, k, SHOP_PAL[0], 0).length, w: k.w, d: k.d, fence: !!k.fence, form: k.form || '', bad };
+    });
+
+    /* ② 規劃：siteR 從 7 掃到 75、三檔建材各一份（arenaR 照 arenaOf 算）。每一份都要：
+          店與店不重疊、不壓到工地、四個角都在 arenaR + SHOP_OUT 以內、蓋得到的那幾階加起來不超過預算；
+          每一間的店門落在兩條線上（內排 fi 門朝外、外排 fo 門朝內）；門口前面是空地（街）；
+          四面正中央那條路口從內排背面到外排背面都是空的 */
+    const plans = [];
+    for (const cnt of CNT_OPTS) for (let sr = 7; sr <= 75; sr += 4) {
+      siteR = sr; arenaR = arenaOf(sr, cnt, cnt);
+      const R = shopPlan();
+      const a0 = siteR + HOME_NEAR, fi = a0 + SHOP_D, fo = fi + SHOP_S, lim = arenaR + SHOP_OUT;
+      const sp = R.items.map(span);
+      let over = 0, inSite = 0, far = 0, line = 0, door = 0, gap = 0;
+      for (let i = 0; i < sp.length; i++) for (let j = i + 1; j < sp.length; j++) if (hit(sp[i], sp[j])) over++;
+      const inAny = (x, z) => sp.some(s => x > s.x0 && x < s.x1 && z > s.z0 && z < s.z1);
+      for (const it of R.items) {
+        if (Math.hypot(it.x, it.z) - homeR(it.kind) <= siteR + KEEP) inSite++;
+        const { ox, oz } = homeOff(it.kind, it.rot), [fx, fz] = ROT_FACE[it.rot];
+        for (const sx of [-1, 1]) for (const sz of [-1, 1])
+          if (Math.hypot(it.x + sx * (ox + 0.5), it.z + sz * (oz + 0.5)) > lim + 1e-6) far++;
+        const half = (fx ? ox : oz) + 0.5;
+        const v = it.x * fx + it.z * fz + half;
+        if (Math.abs(v - fi) > 1e-6 && Math.abs(v + fo) > 1e-6) line++;
+        if (inAny(it.x + fx * (half + 2.5), it.z + fz * (half + 2.5))) door++;
+      }
+      for (const [nx, nz] of SIDE_N)
+        for (let n = a0; n <= fo + SHOP_D; n += 0.5)
+          for (const t of [-2.4, 0, 2.4]) if (inAny(n * nx - t * nz, n * nz + t * nx)) gap++;
+      let sum = 0;
+      for (const it of R.items) if (it.stage < R.allow) sum += it.slots.length;
+      plans.push({ cnt, sr, n: R.items.length, allow: R.allow, sum, over, inSite, far, line, door, gap });
+    }
+    const bad = plans.filter(p => p.over || p.inSite || p.far || p.line || p.door || p.gap || p.allow < 1 ||
+                                  (p.allow > 1 && p.sum > SHOP_BUDGET));
+    out.plan = { n: plans.length, bad: bad.slice(0, 4), budget: SHOP_BUDGET,
+                 maxSum: Math.max(...plans.map(p => p.sum)), maxN: Math.max(...plans.map(p => p.n)),
+                 allow: [1, 2, 3, 4].map(a => plans.filter(p => p.allow === a).length) };
+
+    /* ③ 第一面正對鏡頭、第二面是鄰邊裡也朝鏡頭的那一面（四個鏡頭方向各規劃一次）：
+          第 0 階那幾間的重心落在正對鏡頭的那一軸上，第 1 階的重心在跟它垂直、也朝鏡頭的那一軸上 */
+    siteR = 18; arenaR = 79;
+    out.face = [0.3, 1.9, 3.5, 5.0].map(yaw => {
+      ENG.cam.yaw = yaw;
+      const R = shopPlan();
+      const ex = Math.cos(yaw), ez = Math.sin(yaw);
+      const axis = st => {
+        let x = 0, z = 0, n = 0;
+        for (const it of R.items) if (it.stage === st) { x += it.x; z += it.z; n++; }
+        x /= n; z /= n;
+        return Math.abs(x) > Math.abs(z) ? [Math.sign(x), 0] : [0, Math.sign(z)];
+      };
+      const a = axis(0), b = axis(1);
+      const dots = SIDE_N.map(q => q[0] * ex + q[1] * ez);
+      const best = SIDE_N[dots.indexOf(Math.max(...dots))];
+      return { yaw, ok0: a[0] === best[0] && a[1] === best[1],
+               ok1: a[0] * b[0] + a[1] * b[1] === 0 && b[0] * ex + b[1] * ez > 0 };
+    });
+    ENG.cam.yaw = keep.yaw;
+
+    /* ④ 一階一階長：這一階還有一間沒蓋好就不長；全部蓋好過了才往下一階加蓋、加的就是規劃裡那一階的那幾間；
+          加到預算夠的那一階為止，再蓋好也不再長。下一階壓到的東西（這裡擺一間小房子）先拆掉 */
+    siteR = 18; arenaR = 79;
+    homes = { list: [] };
+    shopRing = shopPlan();
+    const R = shopRing;
+    shopGrow();
+    const grow = { allow: R.allow, steps: [] };
+    const st1 = R.items.find(it => it.stage === 1);
+    {
+      const kind = HOME_KIND[0], slots = homeSlots(st1.x, st1.z, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: st1.x, z: st1.z, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                  oz: (kind.d - 1) / 2, slots, left: slots.length, n: 1, done: false };
+      homes.list.push(h);
+      grow.blockId = h.id;
+    }
+    const step1 = () => { shopFixT = 0; stepShop(SHOP_FIX_T); };
+    for (let k = 0; k < 6; k++) {
+      const before = R.stage, nShop = shops().length;
+      const list = shops();
+      for (let i = 0; i < list.length - 1; i++) fill(list[i]);     // 差最後一間
+      step1();
+      const early = R.stage !== before || shops().length !== nShop;
+      fill(list[list.length - 1]);
+      step1();
+      const added = shops().length - nShop;
+      const want = R.items.filter(it => it.stage === before).length;
+      grow.steps.push({ before, after: R.stage, early, added, want: R.stage > before ? want : 0 });
+    }
+    grow.blockGone = !homes.list.some(h => h.id === grow.blockId);
+    grow.total = shops().reduce((a, h) => a + h.slots.length, 0);
+    grow.final = R.stage;
+    /* 預算擋住：最大的那一座（siteR 73.2、arenaR 128，金門大橋 9000 那一檔）長到預算為止，到不了口 */
+    siteR = 73.2; arenaR = 128;
+    homes = { list: [] };
+    shopRing = shopPlan();
+    shopGrow();
+    for (let k = 0; k < 5; k++) { for (const h of shops()) fill(h); step1(); }
+    grow.big = { allow: shopRing.allow, stage: shopRing.stage, total: shops().reduce((a, h) => a + h.slots.length, 0) };
+    out.grow = grow;
+
+    /* ⑤ 開工派人：站得穩的人全部掛到店上（同城牆，有沒有家都抽）、w.own 不動；再開一次不重新規劃 */
+    siteR = 18; arenaR = 79;
+    homes = { list: [] }; shopRing = null;
+    for (let i = 0; i < workers.length; i++) {
+      const a = i / workers.length * Math.PI * 2, w = workers[i];
+      releaseWorker(w); w.hm = -1; w.hst = ''; w.flee = 0; w.air = 0; w.burn = 0; w.fall = 0;
+      w.x = Math.sin(a) * (siteR + 4); w.z = Math.cos(a) * (siteR + 4);
+    }
+    const own0 = workers.map(w => w.own);
+    startShop();
+    const ring0 = shopRing, n0 = shops().length;
+    const crewed = workers.filter(w => w.hm >= 0 && homes.list[w.hm].shop).length;
+    startShop();
+    out.start = { workers: workers.length, crewed, shops: n0, same: shopRing === ring0 && shops().length === n0,
+                  own: workers.every((w, i) => w.own === own0[i]) };
+
+    /* ⑥ 逛街：整條街蓋好。shopSpot 挑的目標站在某一間蓋好的店門前 SHOP_FRONT 那麼遠、不在任何一間的框裡，
+          看的那一點在那一間的正面上；附近有店就挑附近的。liveSpot（聊完天、打完架）對店也走 shopSpot。
+          updHome 那條路：蓋好的店 → 走去店門口（hst 'shop'）→ 到了停下來、轉過去看店面 */
+    for (const h of shops()) fill(h);
+    for (let k = 0; k < 6; k++) { for (const h of shops()) fill(h); step1(); }
+    const w0 = workers[0];
+    const okSpot = () => {
+      if (homeAt(w0.tx, w0.tz)) return 'in-box';
+      for (const h of shops()) {
+        const [fx, fz] = ROT_FACE[h.rot];
+        const half = (h.rot & 1 ? h.ox : h.oz) + 0.5;
+        if (Math.abs((w0.lkx - h.x) * fx + (w0.lkz - h.z) * fz - half) > 1e-6) continue;
+        if (Math.abs((w0.lkx - h.x) * -fz + (w0.lkz - h.z) * fx) > (h.rot & 1 ? h.oz : h.ox) + 0.5) continue;
+        const d = Math.hypot(w0.tx - w0.lkx, w0.tz - w0.lkz);
+        const dir = (w0.tx - w0.lkx) * fx + (w0.tz - w0.lkz) * fz;
+        if (d < SHOP_FRONT[0] - 1e-6 || d > SHOP_FRONT[1] + 1e-6 || Math.abs(dir - d) > 1e-6) continue;
+        if (Math.hypot(h.x - w0.x, h.z - w0.z) > SHOP_WALK) return 'far';
+        return '';
+      }
+      return 'no-front';
+    };
+    const spotBad = {};
+    for (let k = 0; k < 200; k++) {
+      const h = shops()[k % shops().length];
+      w0.x = h.x + 9; w0.z = h.z - 4;
+      if (k % 2) shopSpot(w0); else liveSpot(w0, h);
+      const e = okSpot();
+      if (e) spotBad[e] = (spotBad[e] || 0) + 1;
+    }
+    const hi = homes.list.indexOf(shops()[0]);
+    releaseWorker(w0); w0.hm = hi; w0.hst = ''; w0.pause = 0; w0.show = '';
+    w0.x = homes.list[hi].x + 9; w0.z = homes.list[hi].z;
+    updHome(w0, 0, 0.05);
+    const going = { hst: w0.hst, spot: okSpot() };
+    w0.x = w0.tx; w0.z = w0.tz;
+    updHome(w0, 0, 0.05);
+    const look = Math.atan2(w0.lkx - w0.x, w0.lkz - w0.z);
+    out.stroll = { spotBad, going, arrived: { hst: w0.hst, pause: +w0.pause.toFixed(2),
+                   face: Math.abs(Math.atan2(Math.sin(w0.a - look), Math.cos(w0.a - look))) < 1e-6 } };
+
+    /* ⑦ 逛到一半看到缺人的那一間就過去幫忙，一間最多 HOME_TEAM 個人 */
+    const sh = shops(), ti = homes.list.indexOf(sh[1]);
+    sh[1].left = 5; for (let i = 0; i < 5; i++) sh[1].slots[i].filled = false;
+    for (const w of workers) { releaseWorker(w); w.hm = hi; w.hst = 'shop'; w.pause = 0; w.show = ''; }
+    for (let i = 1; i <= HOME_TEAM; i++) workers[i].hm = ti;
+    w0.hst = ''; w0.pause = 0;
+    updHome(w0, 0, 0.05);
+    const full = w0.hm;
+    workers[HOME_TEAM].hm = hi;
+    w0.hm = hi; w0.hst = ''; w0.pause = 0;
+    updHome(w0, 0, 0.05);
+    out.help = { full: full === hi, join: w0.hm === ti, team: HOME_TEAM };
+
+    /* ⑧ 打爛了不廢棄（同城牆段）：蓋好過的店打到剩一成，wreckHomes 不收它；同樣的小房子會被收掉 */
+    homes = { list: [] }; shopRing = null;
+    siteR = 18; arenaR = 79;
+    shopRing = shopPlan(); shopGrow();
+    const s0 = shops()[0];
+    fill(s0);
+    for (let i = 0; i < s0.slots.length * 0.9; i++) { s0.slots[i].filled = false; s0.left++; }
+    {
+      const kind = HOME_KIND[0], slots = homeSlots(0, 60, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: 0, z: 60, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                  oz: (kind.d - 1) / 2, slots, left: Math.ceil(slots.length * 0.9), n: 1, done: true };
+      homes.list.push(h);
+      out.wreck = { home: h.id };
+    }
+    wreckHomes();
+    out.wreck.shopStay = homes.list.includes(s0);
+    out.wreck.homeGone = !homes.list.some(h => h.id === out.wreck.home);
+
+    /* ⑨ 分類：店是自己一類（homeCat 4）——蓋房子、種樹、蓋牆的那三類派工都不會挑一間沒蓋完的店；
+          事件黏著只數店（事件一不數它、事件三只數它） */
+    const ci = homes.list.indexOf(s0);
+    const shopEv = IDLE_EVENTS.find(e => e.id === 'shop'), homeEv = IDLE_EVENTS.find(e => e.id === 'home');
+    let houseN = 0;
+    for (const h of homes.list) if (!h.shop) houseN += h.slots.length - h.left;
+    let shopN = 0;
+    for (const h of shops()) shopN += h.slots.length - h.left;
+    out.cat = { cat: homeCat(s0), others: [0, 1, 2].every(c => pickUnfinished(s0.x, s0.z, new Set(), c) !== ci),
+                mine: pickUnfinished(s0.x, s0.z, new Set(), 4) >= 0,
+                evShop: evBlocks(shopEv) === shopN, evHome: evBlocks(homeEv) === houseN, shopN, houseN };
+
+    /* ⑩ 黏著：商店街還剩四分之一以上就不重抽（骰子押在小人的家也一樣）；拆到剩不到四分之一，押小人的家就換、
+          整條街解體；押商店街就留著 */
+    const force = e => {
+      let tot = 0, lo = 0;
+      for (const x of IDLE_EVENTS) tot += x.wt;
+      for (const x of IDLE_EVENTS) { if (x === e) break; lo += x.wt; }
+      Math.random = () => (lo + e.wt / 2) / tot;
+    };
+    homes = { list: [] }; shopRing = null;
+    shopRing = shopPlan(); shopGrow();
+    for (const h of shops()) fill(h);
+    const full0 = evBlocks(shopEv);
+    evLast = shopEv; evPeak = full0; force(homeEv);
+    const stay = rollIdleEvent().id;
+    Math.random = keep.rnd;
+    const n1 = shops().length;
+    evLast = shopEv; evPeak = full0 / WRECK_AT + 1; force(shopEv);
+    const same = rollIdleEvent().id, n2 = shops().length;
+    Math.random = keep.rnd;
+    evLast = shopEv; evPeak = full0 / WRECK_AT + 1; force(homeEv);
+    const swap = rollIdleEvent().id, n3 = shops().length;
+    Math.random = keep.rnd;
+    out.stick = { stay, same, swap, n1, n2, n3 };
+
+    /* 動過的全域狀態還回去 */
+    clearHomes();
+    workers.forEach((w, i) => { [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show] = keep.ws[i]; w.hst = ''; });
+    siteR = keep.siteR; arenaR = keep.arenaR; ENG.cam.yaw = keep.yaw; phase = keep.phase;
+    idleEv = keep.ev; evLast = keep.last; evArm = keep.arm; evPh = keep.ph; evPeak = keep.peak;
+    shopRing = keep.ring; Math.random = keep.rnd;
+    return out;
+  });
+  const kBad = shopT.kinds.filter(k => k.bad.length || k.n < 100 || k.n > 300 || k.fence ||
+                                       (k.form === 'corner' ? k.w !== shopT.D || k.d !== shopT.D : k.d > shopT.D - 1));
+  ok('店的款式（每一款 × 四向）：100～300 塊、六面連回地面、照 canPlaceHome 砌得完；挑出去的只在正面一格、進深不超過一排、城裡不圍圍籬',
+     shopT.kinds.length >= 10 && kBad.length === 0,
+     shopT.kinds.map(k => k.id + ' ' + k.w + '×' + k.d + ' ' + k.n + ' 塊' + (k.bad.length ? '（' + k.bad.join('、') + '）' : '')).join('；'));
+  ok('規劃（siteR 7～75 × 三檔建材）：不重疊、不壓工地、不出界、店門對齊兩條線、門口是街、四面正中央的路口是空的、蓋得到的不超過預算',
+     shopT.plan.n >= 50 && shopT.plan.bad.length === 0,
+     shopT.plan.n + ' 份規劃，最多 ' + shopT.plan.maxN + ' 間、蓋得到的最多 ' + shopT.plan.maxSum + ' 塊（預算 ' +
+     shopT.plan.budget + '）；停在一／十／ㄇ／口：' + shopT.plan.allow.join('／') +
+     (shopT.plan.bad.length ? '；壞的：' + JSON.stringify(shopT.plan.bad) : ''));
+  ok('第一條街正對鏡頭，第二條接在也朝鏡頭的那一面（兩條在離鏡頭最近的角交叉）',
+     shopT.face.every(f => f.ok0 && f.ok1), JSON.stringify(shopT.face));
+  const gs = shopT.grow.steps.filter(s => s.before < shopT.grow.allow);
+  ok('一階一階長：還有一間沒蓋好就不長，全部蓋好過了才加下一階（加的就是規劃裡那一階），長到預算夠的那一階就停；下一階壓到的房子先拆掉',
+     gs.length === shopT.grow.allow - 1 && gs.every(s => !s.early && s.after === s.before + 1 && s.added === s.want && s.added > 0) &&
+     shopT.grow.final === shopT.grow.allow && shopT.grow.steps.every(s => !s.early) &&
+     shopT.grow.steps.filter(s => s.before >= shopT.grow.allow).every(s => s.after === s.before && s.added === 0) &&
+     shopT.grow.total <= shopT.budget && shopT.grow.blockGone &&
+     shopT.grow.big.stage === shopT.grow.big.allow && shopT.grow.big.allow < 4 && shopT.grow.big.total <= shopT.budget,
+     JSON.stringify(shopT.grow));
+  ok('開工：站得穩的人全部掛到店上、w.own 不動（店不是家）；再開一次不重新規劃',
+     shopT.start.crewed === shopT.start.workers && shopT.start.shops > 0 && shopT.start.same && shopT.start.own,
+     JSON.stringify(shopT.start));
+  ok('逛街：目標站在某一間蓋好的店門前、不在框裡，附近的店優先；走到了停下來轉身看店面（liveSpot 對店也這樣挑）',
+     Object.keys(shopT.stroll.spotBad).length === 0 && shopT.stroll.going.hst === 'shop' && !shopT.stroll.going.spot &&
+     shopT.stroll.arrived.hst === '' && shopT.stroll.arrived.pause > 0 && shopT.stroll.arrived.face,
+     JSON.stringify(shopT.stroll));
+  ok('逛到一半看到缺人的那一間就去幫忙，一間最多 HOME_TEAM 個人',
+     shopT.help.full && shopT.help.join, JSON.stringify(shopT.help));
+  ok('店打爛了不廢棄、留著等人補（同城牆段）；同樣打爛的小房子照舊廢棄',
+     shopT.wreck.shopStay && shopT.wreck.homeGone, JSON.stringify(shopT.wreck));
+  ok('店是自己一類：另外三類派工不挑它，事件黏著只有商店街數它',
+     shopT.cat.cat === 4 && shopT.cat.others && shopT.cat.mine && shopT.cat.evShop && shopT.cat.evHome && shopT.cat.shopN > 0,
+     JSON.stringify(shopT.cat));
+  ok('商店街還剩四分之一以上就不重抽；拆到剩不到四分之一才換（換了整條解體，抽到同一件就留著）',
+     shopT.stick.stay === 'shop' && shopT.stick.n1 > 0 && shopT.stick.same === 'shop' && shopT.stick.n2 === shopT.stick.n1 &&
+     shopT.stick.swap === 'home' && shopT.stick.n3 === 0,
+     JSON.stringify(shopT.stick));
+  }   // ── 〈閒晃事件：商店街〉結束
 
   /* ══════════ 偷懶 ══════════ */
   await head('偷懶', T_MUST);
@@ -35282,7 +35612,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('立在哪：點在工地裡推到工地外緣 FL_SITE 格外；點在別座燈架上就挪開、兩座的占地不重疊',
      faim.out && faim.apart, JSON.stringify(faim));
 
-  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但三類派工（房子、樹、城牆）與城內補洞都不會挑它；
+  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但四類派工（房子、樹、城牆、店）與城內補洞都不會挑它；
         事件黏著不數它；換一件事（rollIdleEvent 那一下整份清單解體）它留著 ── */
   const fkeep = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
@@ -35291,11 +35621,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const h = f.h, hi = homes.list.indexOf(h);
     const b = blocks.find(q => q.hh === hi && q.st === SET && q.hk === 1);          // 底座外圈那一塊
     breakBlock(b, 0, 1, 0);
-    const r = { left: h.left, cat: [0, 1, 2].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
+    const r = { left: h.left, cat: [0, 1, 2, 4].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
                 inside: pickInside(f.x, f.z, new Set(), 1e9) !== hi, ev: evBlocks(IDLE_EVENTS[0]) };
     const keep = [evLast, evPeak], real = Math.random;
     evLast = IDLE_EVENTS[0];
-    Math.random = () => 0.999;                                                       // 抽到最後一件（城牆）
+    Math.random = () => 0.999;                                                       // 抽到最後一件（v1.305.0 起是商店街）
     let e;
     try { e = rollIdleEvent(); } finally { Math.random = real; evLast = keep[0]; evPeak = keep[1]; }
     r.rolled = e === IDLE_EVENTS[IDLE_EVENTS.length - 1] && e !== IDLE_EVENTS[0];
@@ -35303,7 +35633,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return r;
   });
-  ok('沒人修、不算哪一件事：缺一塊時三類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
+  ok('沒人修、不算哪一件事：缺一塊時四類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
      fkeep.left === 1 && fkeep.cat && fkeep.inside && fkeep.ev === 0 && fkeep.rolled && fkeep.stay, JSON.stringify(fkeep));
 
   /* ── 被攻擊：打它不算打地標（phase 還是 done）、會飛的東西撞得到（homeSolid）；
@@ -41818,6 +42148,50 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '｜走一趟：' + navFar.walk.map(r => r.who + ' ' + r.t + ' 秒、走 ' + r.walked + ' 格、穿透 ' + r.ghost +
                                     ' 幀、在框裡 ' + r.inBox + ' 幀').join('；') +
      '｜關掉最後一段：小人 ' + navFar.off.t + ' 秒、穿透 ' + navFar.off.ghost + ' 幀、走 ' + navFar.off.walked + ' 格');
+
+  /* ⑱ 商店街一整圈（v1.305.0）：方形環街、內外兩排店、店與店之間 2 格巷子、四面正中央一條路口。
+     整圈圍住地標，上工、撿料、閒晃都要穿過它——驗「圈外走到地標邊、地標邊走到圈外、沿街繞過轉角」
+     每一種走法都走得到、不穿透、不進框、沒被當成卡住。規劃裡的款式是抽的，這裡規劃那一下換成固定的一串骰子
+     （同一版程式跑幾次都是同一條街）；四階全擺上（口字）。工地圈照 siteR 12、arenaR 65。 */
+  const navShop = await page.evaluate(() => {
+    const N = window.navT;
+    siteR = 12; arenaR = 65;
+    const rnd = Math.random;
+    let sd = 12345;
+    Math.random = () => ((sd = (sd * 16807) % 2147483647) - 1) / 2147483646;
+    let R;
+    try { R = shopPlan(); } finally { Math.random = rnd; }
+    const list = R.items.map(it => {
+      const h = { x: it.x, z: it.z, r: homeR(it.kind), slots: it.slots, left: 0, done: true, at: new Map() };
+      for (const sl of h.slots) sl.filled = true;
+      homeBox(h);
+      return h;
+    });
+    const fi = siteR + HOME_NEAR + SHOP_D, c = fi + SHOP_S / 2, out = fi + SHOP_S + SHOP_D + 6, inn = siteR + 3;
+    const sc = {
+      '圈外對著路口走到地標邊': [[0, out], [0, inn]],
+      '圈外對著一排店走到地標邊': [[14, out], [6, inn]],
+      '圈外斜對角走到地標邊': [[out, out], [inn * 0.7, inn * 0.7]],
+      '地標邊走到圈外（對著一排店）': [[inn, -6], [out, -14]],
+      '沿街繞過轉角': [[-14, c], [c, -14]],
+    };
+    const runs = [];
+    for (const [name, [s, g]] of Object.entries(sc))
+      for (const wk of N.who) {
+        const r = N.run(list, s, g, wk);
+        r.name = name; r.who = wk.n; r.geo = -1; r.leak = false;
+        runs.push(r);
+      }
+    siteR = N.keep[0]; arenaR = N.keep[1];
+    homes = null;
+    return { s: N.sum(runs), shops: list.length };
+  });
+  ok('商店街一整圈（環街＋四面路口＋巷子）：圈外到地標邊、地標邊到圈外、沿街繞過轉角，每一種走法都走到、不穿透、不進框',
+     navShop.s.arrived === navShop.s.n && !navShop.s.ghost && !navShop.s.inBox && !navShop.s.navBad && !navShop.s.re,
+     navShop.shops + ' 間 ' + navShop.s.n + ' 趟：到了 ' + navShop.s.arrived + '、用到穿透 ' + navShop.s.ghost +
+     '、在框裡 ' + navShop.s.inBox + ' 幀、規劃出來的路不通 ' + navShop.s.navBad + '、被當成卡住（重找路線）' +
+     navShop.s.re + ' 趟、規劃了 ' + navShop.s.plan + ' 趟；最慢 ' + navShop.s.slow +
+     (navShop.s.bad.length ? '；壞的：' + navShop.s.bad.join('；') : ''));
 
   /* 這一段動過的全域還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）：地標換回這一段開頭那一座 */
   await page.evaluate(() => {
