@@ -80,6 +80,7 @@ node tools/e2e-3d.cjs                  完整輪（7~8 分鐘）
 node tools/e2e-3d.cjs --until 段名     開發用：跑到那一段就收工
 node tools/e2e-3d.cjs --list           印段落一覽（段名／等級／行數），段名直接餵給 --until
 node tools/check-bp.cjs --all          48 座藍圖體檢（幾秒）
+node tools/bp-overview.cjs             藍圖總覽（盲測挑候選先看它；圖存 ../blueprints/，只重拍有變的）
 tools\run-tests.bat                    不想打指令：雙擊出選單（參數也吃，直接接過去）
 ```
 

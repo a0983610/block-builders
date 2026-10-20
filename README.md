@@ -1,4 +1,4 @@
-# 積木小人 · 世界地標工地　`v1.311.0`
+# 積木小人 · 世界地標工地　`v1.312.0`
 
 一進來就有一座蓋好的世界地標。你把它砸爛，小人們才會從滿地的碎料裡
 一塊一塊搬出來，慢慢蓋出下一座。被打到的地方才會壞，沒波及的地方原封不動。
@@ -350,6 +350,7 @@ tools/bump-version.cjs  改版本號：四個地方一次改齊（patch／minor�
 tools/check-notes.cjs   查程式與文件裡的「開發筆記〈段名〉」有沒有斷線
 tools/probe.cjs         跑一支探針：開遊戲頁、等開場、執行量測、結果寫成 JSON（--new 產骨架）
 tools/make-preview.cjs  組一頁預覽：遊戲本體 ＋ 一塊面板 → tools/.e2e-out/名稱.html
+tools/bp-overview.cjs   每座藍圖拍 3000／9000 的四視圖拼成總覽（存在 repo 外的 ../blueprints/，只重拍有變的）
 dist/                   匯出的成品包（不進 git，隨時能重產）
 ```
 
@@ -390,6 +391,7 @@ node tools/check-bp.cjs --all               48 座藍圖體檢（幾秒鐘）
 node tools/check-notes.cjs                  「開發筆記〈段名〉」斷線檢查（幾秒鐘）
 node tools/probe.cjs 探針.cjs --out 結果.json   跑一支探針（--seed 同一副骰子、--page 量預覽頁）
 node tools/make-preview.cjs 某某預覽         組一頁預覽（第一次先產面板骨架）
+node tools/bp-overview.cjs                  藍圖總覽：每座拍四視圖存起來，下次只重拍有變的（--force 全部重拍）
 ```
 
 **不想打指令的話雙擊 `tools\run-tests.bat`**：出一份選單（必要檔／commit 檔／完整輪／
