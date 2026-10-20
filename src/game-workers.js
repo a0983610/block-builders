@@ -3466,7 +3466,9 @@ const IDLE_EVENTS = [
      收尾要多收國王的王冠（見 stopPalace） */
   { id: 'palace', wt: 1, start: startPalace, step: stepPalace, stop: stopPalace },
   /* 部落（v1.309.0）。就是事件一換一張款式表（見 startTribe），所以同事件一：沒有每幀的 step、收尾共用 stopHomes */
-  { id: 'tribe', wt: 1, start: startTribe, step: null, stop: stopHomes }
+  { id: 'tribe', wt: 1, start: startTribe, step: null, stop: stopHomes },
+  /* 求救招牌（v1.310.0）。同皇宮：掛在 homes.list 上，step 管一行一行加上去與「拼好了」（見 stepSign）；收尾共用 stopHomes */
+  { id: 'sign', wt: 1, start: startSign, step: stepSign, stop: stopHomes }
 ];
 /* 上一件事蓋出來的東西還剩多少（v1.186 的黏著，**判準 v1.188 換掉**）。
    舊的判準是「homes.list 上還有那一類的任何一筆」——實測那個門檻**沒有出口**
@@ -3484,9 +3486,9 @@ const IDLE_EVENTS = [
    打掉三分之一反而變回 100%。
    **算哪幾類照 homeCat**（v1.305.0 多了商店街，原本「是不是城牆」的真假值分不出第三件）：
    事件一算房子與樹、事件二只算城牆段（城內那幾間不算，同 v1.188）、事件三算店、事件四算樹林（5）、事件五算皇宮（6）、
-   事件六算小屋、樹、營火與圖騰柱（0、1、7——小屋就是事件一的房子換款式，換事件時上一件整批解體，兩邊不會同時在場）；
-   燈架（3）哪一件都不算（v1.303.0） */
-const EV_CAT = { home: [0, 1], wall: [2], shop: [4], forest: [5], palace: [6], tribe: [0, 1, 7] };
+   事件六算小屋、樹、營火與圖騰柱（0、1、7——小屋就是事件一的房子換款式，換事件時上一件整批解體，兩邊不會同時在場）、
+   事件七算招牌（8）；燈架（3）哪一件都不算（v1.303.0） */
+const EV_CAT = { home: [0, 1], wall: [2], shop: [4], forest: [5], palace: [6], tribe: [0, 1, 7], sign: [8] };
 let evPeak = 0;                     // 這一件事曾經蓋到的最高塊數（換一件才歸零，見 rollIdleEvent）
 function evBlocks(e) {
   const cats = EV_CAT[e.id];
@@ -3832,7 +3834,8 @@ function homeBox(h) {
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const sl of h.slots) {
     if (!sl.filled) continue;
-    if (h.tree && sl.gy > TREE_DUCK) continue;    // 樹只有樹幹擋路，樹冠走得過去
+    // 樹只有樹幹擋路，樹冠走得過去；求救招牌（v1.310.0）只有柱子擋路，架高的字底下走得過去
+    if ((h.tree || h.sign) && sl.gy > TREE_DUCK) continue;
     if (sl.x < x0) x0 = sl.x;
     if (sl.x > x1) x1 = sl.x;
     if (sl.z < z0) z0 = sl.z;
@@ -3847,7 +3850,7 @@ function homeBox(h) {
 function homeSpan(h) {
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const sl of h.slots) {
-    if (h.tree && sl.gy > TREE_DUCK) continue;
+    if ((h.tree || h.sign) && sl.gy > TREE_DUCK) continue;
     if (sl.x < x0) x0 = sl.x;
     if (sl.x > x1) x1 = sl.x;
     if (sl.z < z0) z0 = sl.z;
@@ -5212,8 +5215,9 @@ function pickHomeSite(cx, cz, rad, capOut) {
    商店街的店（v1.305.0）一類 4：蓋房子、蓋城牆的人不會被派去接一間蓋一半的店，反過來也一樣。
    樹林的樹（v1.307.0）一類 5：它也是 h.tree（樹冠走得過去那一套要沿用），所以要排在 h.tree 前面。
    皇宮的每一件（v1.308.0）一類 6。
-   部落的營火與圖騰柱（v1.309.0）一類 7：蓋小屋、種樹的人不會被派去接（小屋本身是 0，就是事件一的房子） */
-const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.palace ? 6 : h.prop ? 7 : h.tree ? 1 : 0;
+   部落的營火與圖騰柱（v1.309.0）一類 7：蓋小屋、種樹的人不會被派去接（小屋本身是 0，就是事件一的房子）。
+   求救招牌的每一段（v1.310.0）一類 8 */
+const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.palace ? 6 : h.prop ? 7 : h.sign ? 8 : h.tree ? 1 : 0;
 const NO_TAKEN = new Set();                        // 「誰都還沒被認走」：見 updHome 接下一段
 function pickUnfinished(cx, cz, taken, cat) {
   let best = -1, bd = Infinity;
@@ -6850,6 +6854,275 @@ function startProps(taken) {
     }
   }
 }
+
+/* ── 事件七：求救招牌（v1.310.0）──────────────────────────────────────
+   使用者：「增加閒晃事件七／小人們用積木拼出"救救我 我們被困在這個世界做苦工"／筆劃太多可以用簡單英文表達」，選的是：
+   整句直譯三行（SAVE US／TRAPPED IN THIS WORLD／FORCED TO WORK）、字**立起來面向鏡頭**、擺在**地標正前方**、
+   拼好之後**站在字前面對鏡頭揮手**。
+
+   做法照皇宮：開工時一次規劃好整面（signPlan，存在 signRing），一段一段掛在 homes.list 上（多一個 h.sign），
+   **一行一階、照讀的順序**加上去（signGrow：SAVE US → 第二行 → 第三行）。整面共用同一張世界整數格，一段就是一段 wallSeg。
+   長相是**架高的看板**：每一行坐在一根橫樑上，橫樑靠背後的柱子撐到地面；最下面那一行也架到 TREE_DUCK 之上，
+   所以招牌底下走得過去，擋路的只有柱子（同樹冠，見 homeBox）。
+   **一段一根柱子**：一行切成好幾段（每段不超過 SIGN_RUN 格寬、只切在字與字之間），每一段自己有一根柱子撐到地面——
+   蓋法與垮塌只看同一件裡的格子（canPlaceHome／collapseHome），而擋路的外框框的是柱子那一格
+   （一件裡有兩根柱子的話，兩根之間就是一道看不見的牆）。
+   見 開發筆記〈事件七：求救招牌（v1.310.0）〉。 */
+const SIGN_LINES = ['SAVE US', 'TRAPPED IN THIS WORLD', 'FORCED TO WORK'];
+const SIGN_IN = 2;                  // 柱子離內緣（siteR + HOME_NEAR）多遠，字在柱子前面一格
+const SIGN_LIFT = TREE_DUCK + 1;    // 最下面那一行的橫樑在第幾層：底下走得過去（見 TREE_DUCK）
+const SIGN_PITCH = 9;               // 一行占幾層：橫樑 1 ＋ 字 7 ＋ 行距 1
+const SIGN_KERN = 1, SIGN_SPACE = 3;   // 字距、詞距
+const SIGN_RUN = 14;                // 一段最多幾格寬
+const SIGN_FRONT = [2.5, 8];        // 拼好之後站在字前面多遠
+const SIGN_STRAY = 12;              // 換地方揮手時沿著招牌最多挪幾格
+const SIGN_WAVE = [3, 6];           // 一次揮幾秒
+const SIGN_REST = [0.8, 2.5];       // 揮完停幾秒再換個地方
+/* 5×7 的字（I 是 3 寬）。**每一格都要上下左右連回最下面那一排**（坐在橫樑上）：斜的筆畫做成階梯、圓角往裡多補一格。
+   只有對角接著的話六面連不回地面，打掉之後補不回去（蓋好之後 canPlaceHome 只認六面）。只做三行用得到的字 */
+const SIGN_FONT = {
+  A: ['.###.', '##.##', '#...#', '#####', '#...#', '#...#', '#...#'],
+  C: ['.####', '##...', '#....', '#....', '#....', '##...', '.####'],
+  D: ['####.', '#..##', '#...#', '#...#', '#...#', '#..##', '####.'],
+  E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
+  F: ['#####', '#....', '#....', '####.', '#....', '#....', '#....'],
+  H: ['#...#', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  I: ['###', '.#.', '.#.', '.#.', '.#.', '.#.', '###'],
+  K: ['#...#', '#..##', '#.##.', '###..', '#.##.', '#..##', '#...#'],
+  L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
+  N: ['#...#', '##..#', '###.#', '#.###', '#..##', '#...#', '#...#'],
+  O: ['.###.', '##.##', '#...#', '#...#', '#...#', '##.##', '.###.'],
+  P: ['####.', '#..##', '#...#', '#..##', '####.', '#....', '#....'],
+  R: ['####.', '#..##', '#...#', '#..##', '####.', '#..##', '#...#'],
+  S: ['.####', '##...', '#....', '#####', '....#', '...##', '####.'],
+  T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+  U: ['#...#', '#...#', '#...#', '#...#', '#...#', '##.##', '.###.'],
+  V: ['#...#', '#...#', '#...#', '#...#', '##.##', '.###.', '..#..'],
+  W: ['#...#', '#...#', '#...#', '#.#.#', '#.#.#', '#.#.#', '#####']
+};
+/* 第一行（SAVE US）紅字、其餘白字；橫樑與柱子是深色木頭 */
+const SIGN_PAL = { head: [0.86, 0.16, 0.13], text: [0.96, 0.95, 0.90], beam: [0.40, 0.28, 0.17], post: [0.33, 0.23, 0.15] };
+let signRing = null;                // 這一面的規劃：{ items, stage, allow, fin 拼好了沒, 座標換算 }
+/* 排版（局部座標：u 從鏡頭看過去往右、gy 往上）：每一行置中，回傳每個字的左右欄、整行的左右欄、橫樑在第幾層。
+   第 0 行在最上面 */
+function signLayout(lines) {
+  return lines.map((s, li) => {
+    const glyphs = [];
+    let u = 0;
+    for (const word of s.split(' ')) {
+      if (glyphs.length) u += SIGN_SPACE - SIGN_KERN;
+      for (const ch of word) {
+        const w = SIGN_FONT[ch][0].length;
+        glyphs.push({ ch, u0: u, u1: u + w - 1 });
+        u += w + SIGN_KERN;
+      }
+    }
+    const wid = u - SIGN_KERN, off = -Math.floor(wid / 2);
+    for (const g of glyphs) { g.u0 += off; g.u1 += off; }
+    return { glyphs, u0: off, u1: off + wid - 1, gy: SIGN_LIFT + (lines.length - 1 - li) * SIGN_PITCH };
+  });
+}
+/* 一行切成幾段，回傳 [[頭, 尾], …]（橫樑兩頭各多出去一格）。均分成 ceil(寬 ÷ SIGN_RUN) 段，
+   每一刀挪到最近的「字與字之間」——一個字切成兩半的話，切出去那半邊連不回自己那一段的橫樑 */
+function signCuts(L) {
+  const a = L.u0 - 1, b = L.u1 + 1, len = b - a + 1;
+  const ok = e => !L.glyphs.some(g => g.u0 <= e && e < g.u1);   // e 當這一段的最後一欄切不切得下去
+  const m = Math.ceil(len / SIGN_RUN), out = [];
+  let s = a;
+  for (let k = 1; k < m; k++) {
+    const t = a + Math.round(k * len / m) - 1;
+    let e = -1e9;
+    for (let d = 0; d <= SIGN_RUN && e < s; d++) {
+      if (t - d >= s && t - d < b && ok(t - d)) e = t - d;
+      else if (t + d >= s && t + d < b && ok(t + d)) e = t + d;
+    }
+    if (e < s) continue;
+    out.push([s, e]); s = e + 1;
+  }
+  out.push([s, b]);
+  return out;
+}
+/* 規劃整面：字面朝**鏡頭那一側最接近的那一軸**（同商店街的第一面），貼在地標正前方（使用者選的）。
+   F＝字面朝的方向、T＝從鏡頭看過去的右手邊；字在 n0 那一面，柱子在後面一格（n0 − 1，被字擋著）。
+   每一段的格子排好砌的順序（homeFree 照清單挑第一個放得上去的）：柱子由下往上 → 橫樑從柱子往兩邊 → 字由左到右一個一個、
+   每個字由下往上——所以看起來是一個字母一個字母拼出來的 */
+function signPlan() {
+  const ex = Math.cos(ENG.cam.yaw), ez = Math.sin(ENG.cam.yaw);
+  const dot = q => SIDE_N[q][0] * ex + SIDE_N[q][1] * ez;
+  let q0 = 0;
+  for (let q = 1; q < 4; q++) if (dot(q) > dot(q0)) q0 = q;
+  const [fx, fz] = SIDE_N[q0], tx = fz, tz = -fx;
+  const n0 = Math.round(siteR + HOME_NEAR + SIGN_IN) + 1;
+  const lines = signLayout(SIGN_LINES);
+  const used = new Set();                       // 已經立了柱子的欄（各行的柱子都在同一面，不能撞在一起）
+  const free = (u, pad) => { for (let o = -pad; o <= pad; o++) if (used.has(u + o)) return false; return true; };
+  const items = [];
+  lines.forEach((L, li) => {
+    for (const [s, e] of signCuts(L)) {
+      /* 柱子立在這一段正中間附近，跟別行的柱子錯開（先找左右都空一欄的，免得兩根黏成一根粗的） */
+      const mid = Math.round((s + e) / 2);
+      let c = null;
+      for (const pad of [1, 0])
+        for (let d = 0; c === null && d <= e - s; d++) {
+          if (mid - d >= s && free(mid - d, pad)) c = mid - d;
+          else if (mid + d <= e && free(mid + d, pad)) c = mid + d;
+        }
+      used.add(c);
+      const cells = [];
+      const put = (u, n, gy, col) => cells.push({ i: u * tx + n * fx, k: u * tz + n * fz, gy, c: col });
+      for (let gy = 0; gy <= L.gy; gy++) put(c, n0 - 1, gy, SIGN_PAL.post);
+      const beam = [];
+      for (let u = s; u <= e; u++) beam.push(u);
+      beam.sort((p, q) => Math.abs(p - c) - Math.abs(q - c));
+      for (const u of beam) put(u, n0, L.gy, SIGN_PAL.beam);
+      for (const g of L.glyphs) {
+        if (g.u0 < s || g.u1 > e) continue;
+        const rows = SIGN_FONT[g.ch];
+        for (let r = rows.length - 1; r >= 0; r--)
+          for (let j = 0; j < rows[r].length; j++)
+            if (rows[r][j] === '#') put(g.u0 + j, n0, L.gy + rows.length - r, li ? SIGN_PAL.text : SIGN_PAL.head);
+      }
+      items.push({ stage: li, cells, n: cells.length });
+    }
+  });
+  let half = 0;
+  for (const L of lines) half = Math.max(half, -L.u0, L.u1);
+  return { stage: 0, allow: lines.length, fin: 0, items, fx, fz, tx, tz, n0, half,
+           thin: fx ? 'x' : 'z' };            // 招牌沿 T 延伸，薄的是 F 那一軸（見 pushOutHome／homeStand）
+}
+/* 往下一行加蓋（沒有下一行、或這一行整行都壓在新工地上就回 0）。這一行壓到的別的東西先拆成碎料（同 palaceGrow），
+   招牌自己的不拆——上下幾行本來就疊在同一面 */
+function signGrow() {
+  const R = signRing;
+  if (!R || R.stage >= R.allow) return 0;
+  const k = R.stage++;
+  const add = [];
+  for (const it of R.items) {
+    if (it.stage !== k) continue;
+    const h = wallSeg(it.cells, '招牌', R.thin);
+    h.wall = 0; h.sign = 1;                      // 欄位借城牆段那一份（thin、wx0～wz1），但不算城牆
+    if (!wallHitsSite(h, siteR + KEEP)) add.push(h);
+  }
+  dropHomes(h => {
+    if (h.sign) return true;
+    const b = homeSpan(h);
+    return !add.some(s => b.x0 < s.wx1 && b.x1 > s.wx0 && b.z0 < s.wz1 && b.z1 > s.wz0);
+  });
+  for (const h of add) homes.list.push(h);
+  return add.length;
+}
+function signNear(x, z) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < homes.list.length; i++) {
+    const h = homes.list[i];
+    if (!h.sign) continue;
+    const d = (h.x - x) ** 2 + (h.z - z) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+/* 開工：場上沒有招牌就規劃一面、蓋第一行；有的話接著蓋（同 startPalace）。派人照 startShop：
+   站得穩的全部參加、一組接一段，每一段都有人了就疊上去 */
+function startSign() {
+  if (!homes) homes = { list: [] };
+  if (!homes.list.some(h => h.sign)) { signRing = signPlan(); signGrow(); }
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  const pool = [];
+  for (let i = 0; i < workers.length; i++) if (steady(workers[i]) && joins(workers[i])) pool.push(i);
+  for (let i = pool.length - 1; i > 0; i--) {          // 洗牌（同 startHomes）
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+  }
+  const taken = new Set();
+  while (pool.length) {
+    const crew = takeCrew(pool);
+    let cx = 0, cz = 0;
+    for (const w of crew) { cx += w.x; cz += w.z; }
+    cx /= crew.length; cz /= crew.length;
+    let hi = pickUnfinished(cx, cz, taken, 8);
+    if (hi < 0) hi = pickUnfinished(cx, cz, NO_TAKEN, 8);
+    if (hi >= 0) {
+      for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;   // 上一批人留下的認領（同 startShop）
+    } else hi = signNear(cx, cz);
+    if (hi < 0) continue;                               // 整面壓在新工地上：這一組照常閒晃
+    taken.add(hi);
+    for (const w of crew) {
+      releaseWorker(w);                                 // 手上的建材先放掉，這趟不是上工
+      w.hm = hi; w.hst = ''; w.pause = 0;
+    }
+  }
+}
+/* 每秒看一次（同 stepPalace）：這一行都拼好過了就加下一行；最後一行也拼好了就是整面拼好（fin）。
+   閒著的人掛到最近的那一段 */
+let signFixT = 0;
+function stepSign(dt) {
+  if ((signFixT -= dt) > 0) return;
+  signFixT = SHOP_FIX_T;
+  const R = signRing;
+  if (!R || !homes || !homes.list.some(h => h.sign)) return;     // 整面被新工地徵收了：等下一輪開工重新規劃
+  if (!R.fin && homes.list.every(h => !h.sign || h.done)) {
+    let n = 0;
+    while (!n && R.stage < R.allow) n = signGrow();
+    if (!n) R.fin = 1;
+  }
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  for (const w of workers) {
+    if (w.hm >= 0 || w.dead || !steady(w) || !joins(w)) continue;
+    releaseWorker(w);
+    w.hm = signNear(w.x, w.z); w.hst = ''; w.pause = 0;
+  }
+}
+/* 自己那一段拼好了：還沒拼完整面的話去幫還沒拼好的那一段；整面拼好了就到字前面對鏡頭揮手（使用者選的），
+   揮完停一下、沿著招牌換個地方再揮。要換地方之前先看有沒有哪一段缺人（被打出洞），有就過去補（一段最多 HOME_TEAM 人，同 liveShop） */
+function liveSign(w, h, dt) {
+  if (w.show || w.pause > 0) { idleWait(w, dt); return; }
+  if (!signRing || !signRing.fin) {
+    if (!signHelp(w)) w.gait += (0 - w.gait) * Math.min(1, dt * 8);   // 下一行還沒開（最多等一秒，見 stepSign）
+    return;
+  }
+  if (w.hst !== 'sign') {
+    w.hst = 'sign';
+    if (teamHelp(w, 8)) return;
+    signSpot(w);
+  }
+  if (!strollTo(w, dt)) return;
+  signWave(w);
+  w.hst = '';
+}
+/* 還在拼的時候去幫哪一段：**人最少的**那一段（一樣多就挑近的）。一行只有三到八段，二十個人照 teamHelp
+   一段最多 HOME_TEAM 人的話，一半的人站在旁邊看 */
+function signHelp(w) {
+  let best = -1, bn = Infinity, bd = Infinity;
+  for (let i = 0; i < homes.list.length; i++) {
+    const h = homes.list[i];
+    if (!h.sign || h.left <= 0) continue;
+    let n = 0;
+    for (const o of workers) if (o !== w && o.hm === i) n++;
+    const d = (h.x - w.x) ** 2 + (h.z - w.z) ** 2;
+    if (n < bn || (n === bn && d < bd)) { best = i; bn = n; bd = d; }
+  }
+  if (best < 0) return false;
+  w.hm = best; w.hst = ''; w.pause = 0;
+  return true;
+}
+/* 字前面的一個點：離字面 SIGN_FRONT、沿著招牌從他現在的位置挪 SIGN_STRAY 以內（不出最寬那一行的兩頭） */
+function signSpot(w) {
+  const R = signRing;
+  const u = clamp(w.x * R.tx + w.z * R.tz + rr(-SIGN_STRAY, SIGN_STRAY), -R.half, R.half);
+  const n = R.n0 + rr(SIGN_FRONT[0], SIGN_FRONT[1]);
+  w.tx = u * R.tx + n * R.fx; w.tz = u * R.tz + n * R.fz;
+}
+/* 到了：轉向鏡頭揮手。揮手是閒置表演那一個（見 stepShow 的 wave：右手高舉、人繞著 showA 左右轉），
+   showA 對著**現在**鏡頭在的位置——玩家轉過視角的話，下一次揮就對著新的方向 */
+function signWave(w) {
+  const c = ENG.cam, cp = Math.cos(c.pitch);
+  const ex = c.tx + Math.cos(c.yaw) * cp * c.dist, ez = c.tz + Math.sin(c.yaw) * cp * c.dist;
+  w.a = w.showA = Math.atan2(ex - w.x, ez - w.z);
+  w.show = 'wave'; w.showT = rr(SIGN_WAVE[0], SIGN_WAVE[1]); w.showM = null; w.shot = 0;
+  w.pause = w.showT + rr(SIGN_REST[0], SIGN_REST[1]); w.leg = 0;
+}
 function stopHomes() {
   for (const w of workers) {
     if (w.hm < 0) continue;
@@ -6868,8 +7141,9 @@ function clearHomesInSite() {
      每換一座地標就整圈拆掉重蓋。這樣一來換到比較小的地標時，上一座留下的城牆
      就照舊站在那裡（那是已經蓋好的城，沒有理由自己倒）；換到更大的、牆會切進
      新工地的那幾段才解成碎料。 */
-  /* 皇宮的每一件同城牆（v1.308.0）：大殿二十幾格見方，外接圓一圈下去連隔壁的空地都算進來 */
-  dropHomes(h => h.wall || h.palace ? !wallHitsSite(h, r) : Math.hypot(h.x, h.z) - h.r > r);
+  /* 皇宮的每一件同城牆（v1.308.0）：大殿二十幾格見方，外接圓一圈下去連隔壁的空地都算進來。
+     求救招牌的每一段也是（v1.310.0）：一段十幾格寬、二十幾層高，外接圓會把貼著它的整片地都算進來 */
+  dropHomes(h => h.wall || h.palace || h.sign ? !wallHitsSite(h, r) : Math.hypot(h.x, h.z) - h.r > r);
 }
 /* 把不要的那幾間解成碎料，其餘重編索引。keep(h) 回傳 true 就留著，回傳解掉了幾間。
    索引會變，所以積木的 hh、**還在飛的那些的 arc.hm**、以及小人的 hm 都要一起重編。
@@ -6921,8 +7195,9 @@ function dropHomes(keep) {
    **商店街的店也一樣**（v1.305.0）：整條街是一次規劃好的（shopPlan），廢棄掉的那一間沒有地方會再生出來。
    **樹林的樹也一樣**（v1.307.0，forestPlan 一次規劃好）。
    **皇宮也一樣**（v1.308.0，palacePlan 一次規劃好）：蓋好之後雖然沒人修（使用者選的），打爛的那一件留著當廢墟，
-   整座的去留同樣交給換事件那一條。 */
-const wrecked = h => h.done && !h.wall && !h.shop && !h.forest && !h.palace && h.slots.length - h.left < h.slots.length * WRECK_AT && !frHomeHeld(h);
+   整座的去留同樣交給換事件那一條。
+   **求救招牌也一樣**（v1.310.0，signPlan 一次規劃好）：廢棄掉的那一段就是字裡永遠缺的一塊，拼好之後有人回來補（見 liveSign）。 */
+const wrecked = h => h.done && !h.wall && !h.shop && !h.forest && !h.palace && !h.sign && h.slots.length - h.left < h.slots.length * WRECK_AT && !frHomeHeld(h);
 /* 罩著的那一間先不廢棄（v1.259.0，見 game-tools.js〈道具：防禦魔法〉：罩子裡一塊都不掉）：
    還站著的有一塊在芙莉蓮的防護罩裡就留著，罩子走開之後（stepFrHang）再判一次 */
 function frHomeHeld(h) {
@@ -7099,7 +7374,7 @@ function landHome(b, a) {
   sl.filled = true; sl.claimed = -1;
   h.left--;
   // 擋路的外框跟著長（見 homeBox）。就地擴一格就好，不必整份重算
-  if (!h.tree || sl.gy <= TREE_DUCK) {           // 樹冠不進外框，理由同 homeBox
+  if (!(h.tree || h.sign) || sl.gy <= TREE_DUCK) {   // 樹冠、架高的招牌不進外框，理由同 homeBox
     if (sl.x - 0.5 < h.x0) h.x0 = sl.x - 0.5;
     if (sl.x + 0.5 > h.x1) h.x1 = sl.x + 0.5;
     if (sl.z - 0.5 < h.z0) h.z0 = sl.z - 0.5;
@@ -7118,6 +7393,7 @@ function liveSpot(w, h) {
   if (h.shop) { shopSpot(w); return; }  // 商店街（v1.305.0）：聊完天、打完架接著逛，不是繞著那一間打轉
   if (h.forest) { forestSpot(w); return; }   // 樹林（v1.307.0）：同上，接著在林子裡散步
   if (h.palace) { palaceSpot(w); return; }   // 皇宮（v1.308.0）：國王回中庭踱步、其他人接著在外圍流浪
+  if (h.sign) { signSpot(w); return; }       // 求救招牌（v1.310.0）：回到字前面接著揮手
   const a = rr(0, Math.PI * 2), d = rr(h.r + HOME_STAND, h.r + LIVE_R);
   w.tx = h.x + Math.cos(a) * d; w.tz = h.z + Math.sin(a) * d;
 }
@@ -7152,6 +7428,7 @@ function updHome(w, wi, dt) {
   if (h.left <= 0 && !w.load.length) {
     if (h.shop) { liveShop(w, h, dt); return; }         // 商店街（v1.305.0）：蓋完了逛街，看到缺人的再去幫忙
     if (h.forest) { liveForest(w, h, dt); return; }     // 樹林（v1.307.0）：種好了在林子裡散步，看到缺人的再去幫忙
+    if (h.sign) { liveSign(w, h, dt); return; }         // 求救招牌（v1.310.0）：去幫還沒拼好的那一段，整面拼好了對鏡頭揮手
     w.hst = '';
     /* 城牆蓋完一段就自己去接最近的下一段（v1.186）：整圈是切成十幾段的，
        蓋完就站在牆邊過日子的話，一輪只推得動幾段。整圈都好了才回去閒晃。 */

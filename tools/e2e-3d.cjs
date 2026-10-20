@@ -8435,6 +8435,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              homes: hs.filter(h => !h.tree).length, slots: sum(h => !h.tree),
              trees: hs.filter(h => h.tree).length, treeSlots: sum(h => h.tree),
              budget: TREE_BUDGET, shop: SHOP_BUDGET, forest: FOREST_BUDGET, palace: PALACE_BUDGET,
+             sign: (() => { const R = signPlan(); return R.items.reduce((a, it) => a + it.n, 0); })(),
              left: hs.reduce((a, h) => a + h.left, 0) };
   });
   /* 門檻 v1.153 加上樹那一份：村子現在是「最多 43 間 5405 格的房子 ＋ 最多
@@ -8465,6 +8466,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('皇宮的預算不超過最大的一圈城牆（積木池那條帳不必再加一份）',
      poolFit.palace <= poolFit.wall,
      '皇宮預算 ' + poolFit.palace + ' 塊、最大的一圈城牆 ' + poolFit.wall + ' 塊（' + poolFit.wallN + '）');
+  /* 求救招牌（v1.310.0）同商店街的理由；它沒有預算，整面的塊數是固定的（字與排版不隨地標變） */
+  ok('求救招牌整面的塊數不超過最大的一圈城牆（積木池那條帳不必再加一份）',
+     poolFit.sign > 0 && poolFit.sign <= poolFit.wall,
+     '求救招牌 ' + poolFit.sign + ' 塊、最大的一圈城牆 ' + poolFit.wall + ' 塊（' + poolFit.wallN + '）');
 
   /* 房子也要「底部拆掉上面一起垮」（v1.102，使用者指定「同地標建築邏輯」）。
      規則跟 collapseUnsupported 一樣：26 鄰接、從地面那一層往上找連通，連不到的鬆脫。
@@ -13114,6 +13119,371 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      triT.stick.swap === 'home' && triT.stick.n3 === 0,
      JSON.stringify(triT.stick));
   }   // ── 〈閒晃事件：部落〉結束
+
+  SEC: { if (!(await head('閒晃事件：求救招牌', T_COMMIT))) break SEC;
+  /* v1.310.0，使用者：「增加閒晃事件七／小人們用積木拼出"救救我 我們被困在這個世界做苦工"／筆劃太多可以用簡單英文表達」，
+     選的是整句直譯三行（SAVE US／TRAPPED IN THIS WORLD／FORCED TO WORK）、字立起來面向鏡頭、擺在地標正前方、
+     拼好之後站在字前面對鏡頭揮手（見 開發筆記〈事件七：求救招牌（v1.310.0）〉）。
+     **全部規則型**，寫法同〈閒晃事件：皇宮〉：造最小場面、格子直接標成砌好、不生積木。signPlan 沒有骰子（只看 siteR 與鏡頭方向），
+     挑揮手點那幾下換成固定的一串骰子（mulberry32），換事件那條押骰子。量完把全域還回去。 */
+  const sgnT = await page.evaluate(() => {
+    const keep = { siteR, arenaR, debrisR, yaw: ENG.cam.yaw, ev: idleEv, last: evLast, arm: evArm, ph: evPh, peak: evPeak,
+                   phase, ring: signRing, rnd: Math.random,
+                   ws: workers.map(w => [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show, w.lazy, w.own]) };
+    cleanTools(); clearHomes(); stopIdleEvent();
+    phase = 'done';
+    const seed = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+                              t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+    const out = {};
+    const fill = h => { for (const sl of h.slots) sl.filled = true; h.left = 0; h.done = true; homeBox(h); };
+    const sgs = () => homes.list.filter(h => h.sign);
+    const signEv = IDLE_EVENTS.find(e => e.id === 'sign'), homeEv = IDLE_EVENTS.find(e => e.id === 'home');
+    const resetW = () => workers.forEach((w, i) => {
+      const a = i / workers.length * Math.PI * 2;
+      releaseWorker(w); w.hm = -1; w.hst = ''; w.flee = 0; w.air = 0; w.burn = 0; w.fall = 0; w.lazy = 0; w.pause = 0; w.show = '';
+      w.x = Math.sin(a) * (siteR + 4); w.z = Math.cos(a) * (siteR + 4);
+    });
+    const lines = signLayout(SIGN_LINES);
+    /* 這一格是第幾行的第幾個字（不是字的格子回 null）：u／n 是招牌的局部座標 */
+    const glyphOf = (R, c) => {
+      const u = c.i * R.tx + c.k * R.tz, n = c.i * R.fx + c.k * R.fz;
+      if (n !== R.n0) return null;
+      for (let li = 0; li < lines.length; li++) {
+        const L = lines[li];
+        if (c.gy <= L.gy || c.gy > L.gy + 7) continue;
+        const gi = L.glyphs.findIndex(g => u >= g.u0 && u <= g.u1);
+        return gi < 0 ? null : li + ':' + gi;
+      }
+      return null;
+    };
+
+    /* ① 字：三行用到的每一個字都有，7 排、每排一樣寬；每一格上下左右連得回最下面那一排（只有對角接著的話六面連不回地面） */
+    out.font = [...new Set(SIGN_LINES.join('').replace(/ /g, ''))].map(ch => {
+      const g = SIGN_FONT[ch];
+      if (!g) return { ch, miss: 1 };
+      const H = g.length, W = g[0].length;
+      const on = (r, j) => r >= 0 && r < H && j >= 0 && j < W && g[r][j] === '#';
+      const seen = new Set(), st = [];
+      for (let j = 0; j < W; j++) if (on(H - 1, j)) { seen.add((H - 1) + ':' + j); st.push([H - 1, j]); }
+      while (st.length) {
+        const [r, j] = st.pop();
+        for (const [dr, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const k = (r + dr) + ':' + (j + dj);
+          if (on(r + dr, j + dj) && !seen.has(k)) { seen.add(k); st.push([r + dr, j + dj]); }
+        }
+      }
+      let n = 0;
+      for (let r = 0; r < H; r++) for (let j = 0; j < W; j++) if (on(r, j)) n++;
+      return { ch, h: H, even: g.every(s => s.length === W), n, loose: n - seen.size };
+    });
+
+    /* ② 規劃：siteR 7～75 × 三檔建材、鏡頭五個方向輪流。每一份都要：字面朝鏡頭那一側（跟鏡頭方向夾角 45° 以內）、
+          從鏡頭看過去由左到右（T 是鏡頭的右手邊）、柱子那一面離內緣（siteR + HOME_NEAR）SIGN_IN 格、整數格、格子不重疊、
+          不出碎料場；每一段六面連回地面、照 canPlaceHome 砌得完、地面那幾層只有一根柱子（擋路的外框就是那一格）；
+          每個字整個落在同一段裡（段只切在字與字之間）、每一格都在；一行一階、照讀的順序（第 0 行在最上面） */
+    const plans = [];
+    let fontN = 0;
+    for (const L of lines) for (const g of L.glyphs) for (const s of SIGN_FONT[g.ch]) fontN += s.split('#').length - 1;
+    for (const cnt of CNT_OPTS) for (let sr = 7; sr <= 75; sr += 4) {
+      siteR = sr; arenaR = arenaOf(sr, cnt, cnt); debrisR = arenaR * DEBRIS_X;
+      ENG.cam.yaw = [0.3, 0.9, 1.9, 3.5, 5.0][(sr + cnt) % 5];
+      const R = signPlan();
+      const ex = Math.cos(ENG.cam.yaw), ez = Math.sin(ENG.cam.yaw);
+      const p = { cnt, sr, face: +(R.fx * ex + R.fz * ez).toFixed(3), ltr: +(R.tx * ez - R.tz * ex).toFixed(3),
+                  n: R.items.length, allow: R.allow };
+      const seen = new Set(), owner = new Map();
+      let dup = 0, ints = true, far = 0, near = Infinity, glyphCells = 0, split = 0;
+      for (const it of R.items) for (const c of it.cells) {
+        const k = c.i + ':' + c.k + ':' + c.gy;
+        if (seen.has(k)) dup++;
+        seen.add(k);
+        if (!Number.isInteger(c.i) || !Number.isInteger(c.k)) ints = false;
+        far = Math.max(far, Math.hypot(c.i, c.k));
+        near = Math.min(near, c.i * R.fx + c.k * R.fz);
+        const g = glyphOf(R, c);
+        if (!g) continue;
+        glyphCells++;
+        if (owner.has(g) && owner.get(g) !== it) split++;
+        owner.set(g, it);
+      }
+      Object.assign(p, { dup, ints, room: +(debrisR - far).toFixed(1), gap: +(near - sr - HOME_NEAR).toFixed(2),
+                         glyphCells, split });
+      let hang = 0, unbuilt = 0, onePost = 0;
+      for (const it of R.items) {
+        const h = wallSeg(it.cells, '招牌', R.thin);
+        h.wall = 0; h.sign = 1;
+        hang += h.slots.filter(s => !s.f6).length;
+        let placed = 0, moved = true;
+        while (moved) {
+          moved = false;
+          for (let i = 0; i < h.slots.length; i++) {
+            if (h.slots[i].filled || !canPlaceHome(h, i)) continue;
+            h.slots[i].filled = true; placed++; moved = true;
+          }
+        }
+        unbuilt += h.slots.length - placed;
+        if (new Set(h.slots.filter(s => s.gy <= TREE_DUCK).map(s => s.x + ':' + s.z)).size === 1) onePost++;
+      }
+      Object.assign(p, { hang, unbuilt, onePost });
+      const top = [];
+      for (let s = 0; s < R.allow; s++) top.push(Math.max(...R.items.filter(it => it.stage === s).flatMap(it => it.cells.map(c => c.gy))));
+      p.order = top.every((t, s) => !s || t < top[s - 1]) && R.items.every(it => it.stage < R.allow);
+      plans.push(p);
+    }
+    const pbad = plans.filter(p => p.face < 0.7 || p.ltr < 0.7 || p.dup || !p.ints || p.room < 0 || Math.abs(p.gap - SIGN_IN) > 0.5 ||
+                                   p.glyphCells !== fontN || p.split || p.hang || p.unbuilt || p.onePost !== p.n ||
+                                   !p.order || p.allow !== SIGN_LINES.length);
+    out.plan = { n: plans.length, bad: pbad.slice(0, 4), fontN, pieces: plans[0].n,
+                 minFace: Math.min(...plans.map(p => p.face)), minRoom: Math.min(...plans.map(p => p.room)) };
+
+    /* ③ 一行一行長：這一行還有一段沒拼好就不長；全部拼好過了才長下一行、長的就是規劃裡那一行那幾段；
+          最後一行也拼好了就是整面拼好（fin）、不再長。下一行壓到的東西（這裡擺一間小房子）先拆掉 */
+    siteR = 18; arenaR = 79; debrisR = arenaR * DEBRIS_X; ENG.cam.yaw = 0.9;
+    homes = { list: [] };
+    signRing = signPlan();
+    const R = signRing;
+    signGrow();
+    const grow = { allow: R.allow, steps: [], first: sgs().length };
+    {
+      const st1 = R.items.find(it => it.stage === 1), c1 = st1.cells[st1.cells.length - 1];
+      const kind = HOME_KIND[0], slots = homeSlots(c1.i, c1.k, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: c1.i, z: c1.k, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                  oz: (kind.d - 1) / 2, slots, left: slots.length, n: 1, done: false };
+      homes.list.push(h);
+      grow.blockId = h.id;
+    }
+    const step1 = () => { signFixT = 0; stepSign(SHOP_FIX_T); };
+    for (let k = 0; k < R.allow + 2; k++) {
+      const before = R.stage, nT = sgs().length, fin0 = R.fin, list = sgs();
+      for (let i = 0; i < list.length - 1; i++) fill(list[i]);        // 差最後一段
+      step1();
+      const early = R.stage !== before || sgs().length !== nT || R.fin !== fin0;
+      fill(list[list.length - 1]);
+      step1();
+      grow.steps.push({ before, after: R.stage, early, added: sgs().length - nT,
+                        want: R.items.filter(it => it.stage === before).length, fin: R.fin });
+    }
+    grow.blockGone = !homes.list.some(h => h.id === grow.blockId);
+    grow.fin = R.fin; grow.final = R.stage;
+    out.grow = grow;
+
+    /* ④ 擋路：整面拼好之後，每一段的外框就是柱子那一格（1×1）；字那一面與字前面一格整排都不擋，
+          柱子那一面只有柱子那幾欄擋——招牌底下走得過去 */
+    const walk = { boxes: sgs().map(h => [+(h.x1 - h.x0).toFixed(2), +(h.z1 - h.z0).toFixed(2)]), front: 0, back: 0, cols: 0 };
+    for (let u = -R.half - 1; u <= R.half + 1; u++) {
+      for (const n of [R.n0, R.n0 + 1]) if (footHome(u * R.tx + n * R.fx, u * R.tz + n * R.fz)) walk.front++;
+      if (footHome(u * R.tx + (R.n0 - 1) * R.fx, u * R.tz + (R.n0 - 1) * R.fz)) walk.back++;
+      walk.cols++;
+    }
+    walk.pieces = sgs().length;
+    out.walk = walk;
+
+    /* ⑤ 拼的順序：一段照 homeFree 一格一格砌——柱子由下往上 → 橫樑 → 字由左到右一個一個（下一個字的第一格在上一個字的最後一格之後） */
+    {
+      const it = R.items.filter(x => x.stage === 1).reduce((a, b) => (b.n > a.n ? b : a));
+      const h = wallSeg(it.cells, '招牌', R.thin);
+      h.wall = 0; h.sign = 1;
+      const kindOf = sl => {
+        const n = sl.x * R.fx + sl.z * R.fz;
+        if (n === R.n0 - 1) return 'post';
+        const g = glyphOf(R, { i: sl.x, k: sl.z, gy: sl.gy });
+        return g || 'beam';
+      };
+      const seq = [];
+      for (;;) {
+        const k = homeFree(h);
+        if (k < 0) break;
+        h.slots[k].filled = true;
+        seq.push(kindOf(h.slots[k]));
+      }
+      const lastPost = seq.lastIndexOf('post'), firstBeam = seq.indexOf('beam'), lastBeam = seq.lastIndexOf('beam');
+      const gl = seq.filter(s => s !== 'post' && s !== 'beam');
+      const firstLetter = seq.findIndex(s => s !== 'post' && s !== 'beam');
+      const runs = [];
+      for (const g of gl) if (runs[runs.length - 1] !== g) runs.push(g);
+      const us = runs.map(g => { const [li, gi] = g.split(':').map(Number); return lines[li].glyphs[gi].u0; });
+      out.order = { n: seq.length, all: seq.length === h.slots.length, postFirst: lastPost < firstBeam, beamThen: lastBeam < firstLetter,
+                    letters: runs.length, oneRun: new Set(runs).size === runs.length, ltr: us.every((u, i) => !i || u > us[i - 1]),
+                    word: runs.map(g => { const [li, gi] = g.split(':').map(Number); return lines[li].glyphs[gi].ch; }).join('') };
+    }
+
+    /* ⑥ 開工：站得穩的人全部掛上來、w.own 不動（招牌不是誰的家）；再開一次不重新規劃；施工中只有偷懶的人參加 */
+    homes = { list: [] }; signRing = null;
+    resetW();
+    const own0 = workers.map(w => w.own);
+    startSign();
+    const ring0 = signRing, n0 = sgs().length;
+    const st = { workers: workers.length, crewed: workers.filter(w => w.hm >= 0 && homes.list[w.hm].sign).length, n0,
+                 stage0: sgs().length === ring0.items.filter(it => it.stage === 0).length };
+    startSign();
+    st.same = signRing === ring0 && sgs().length === n0;
+    st.own = workers.every((w, i) => w.own === own0[i]);
+    stopHomes(); homes = { list: [] }; signRing = null; resetW();
+    phase = 'build'; workers[3].lazy = 1;
+    startSign();
+    st.lazy = { built: workers[3].hm >= 0, others: workers.filter((w, i) => i !== 3 && w.hm >= 0).length };
+    phase = 'done'; workers[3].lazy = 0;
+    stopHomes();
+    out.start = st;
+
+    /* ⑦ 拼好之前與之後：自己那一段拼好了、整面還沒拼完 → 去幫人最少的那一段；整面拼好了 → 揮手點在字前面
+          SIGN_FRONT、沿著招牌不出最寬那一行；走到了就轉向鏡頭揮手（show 'wave'、showA 對著鏡頭、揮完還停一下）、
+          揮手那一幀舉手（w.wave）；被打出洞就有人回來補（一段最多 HOME_TEAM 人，滿了就照常揮手）；聊完天接著回字前面 */
+    homes = { list: [] }; resetW();
+    signRing = signPlan();
+    const S = signRing;
+    while (S.stage < S.allow) { signGrow(); for (const h of sgs()) fill(h); }
+    const L1 = sgs(), A = L1[0], B = L1[1], C = L1[2];
+    const ai = homes.list.indexOf(A), bi = homes.list.indexOf(B), ci = homes.list.indexOf(C);
+    const E = workers[0], X = workers[1], Y = workers[2];
+    const hole = (h, n) => { for (let i = 0; i < n; i++) h.slots[h.slots.length - 1 - i].filled = false; h.left = n; };
+    const life = {};
+    S.fin = 0; hole(B, 5); hole(C, 3);
+    X.hm = bi; Y.hm = bi; E.hm = ai; E.hst = ''; E.pause = 0; E.show = '';
+    updHome(E, 0, 0.05);
+    life.help = E.hm === ci;
+    X.hm = -1; Y.hm = -1; fill(B); fill(C);
+    S.fin = 1;
+    Math.random = seed(77);
+    const zone = { n: 200, ok: 0 };
+    try {
+      for (let k = 0; k < zone.n; k++) {
+        E.x = (Math.random() * 2 - 1) * 80; E.z = (Math.random() * 2 - 1) * 80;
+        const u0 = E.x * S.tx + E.z * S.tz;
+        signSpot(E);
+        const u = E.tx * S.tx + E.tz * S.tz, n = E.tx * S.fx + E.tz * S.fz;
+        if (n >= S.n0 + SIGN_FRONT[0] - 1e-6 && n <= S.n0 + SIGN_FRONT[1] + 1e-6 && Math.abs(u) <= S.half + 1e-6 &&
+            Math.abs(u - Math.max(-S.half, Math.min(S.half, u0))) <= SIGN_STRAY + 1e-6) zone.ok++;
+      }
+    } finally { Math.random = keep.rnd; }
+    life.zone = zone;
+    E.hm = ai; E.hst = 'sign'; E.pause = 0; E.show = '';
+    signSpot(E); E.x = E.tx; E.z = E.tz;
+    updHome(E, 0, 0.05);
+    const c = ENG.cam, cp = Math.cos(c.pitch);
+    const eyeA = Math.atan2(c.tx + Math.cos(c.yaw) * cp * c.dist - E.x, c.tz + Math.sin(c.yaw) * cp * c.dist - E.z);
+    life.wave = { show: E.show, face: Math.abs(E.showA - eyeA) < 1e-6, rest: E.pause > E.showT,
+                  len: E.showT >= SIGN_WAVE[0] - 1e-6 && E.showT <= SIGN_WAVE[1] + 1e-6 };
+    E.wave = 0;
+    updHome(E, 0, 0.05);
+    life.arm = E.wave === 1;
+    E.show = ''; E.showT = 0; E.pause = 0; E.hst = '';
+    hole(B, 4);
+    updHome(E, 0, 0.05);
+    life.repair = E.hm === bi;
+    E.hm = ai; E.hst = '';
+    for (let i = 1; i <= HOME_TEAM; i++) workers[i].hm = bi;
+    updHome(E, 0, 0.05);
+    life.full = E.hm === ai && E.hst === 'sign';
+    for (let i = 1; i <= HOME_TEAM; i++) workers[i].hm = -1;
+    fill(B);
+    releaseWorker(E); E.hm = ai; E.hst = 'sign';
+    liveSpot(E, A);
+    const lu = E.tx * S.tx + E.tz * S.tz, ln = E.tx * S.fx + E.tz * S.fz;
+    life.chat = ln >= S.n0 + SIGN_FRONT[0] - 1e-6 && ln <= S.n0 + SIGN_FRONT[1] + 1e-6 && Math.abs(lu) <= S.half + 1e-6;
+    out.life = life;
+
+    /* ⑧ 打爛了不廢棄（同城牆段、店、樹林、皇宮）：拼好過的那一段打到剩一成，wreckHomes 不收它；同樣打爛的小房子會被收掉 */
+    hole(A, Math.ceil(A.slots.length * 0.9));
+    {
+      const kind = HOME_KIND[0], slots = homeSlots(0, -200, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: 0, z: -200, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                  oz: (kind.d - 1) / 2, slots, left: Math.ceil(slots.length * 0.9), n: 1, done: true };
+      homes.list.push(h);
+      out.wreck = { home: h.id };
+    }
+    wreckHomes();
+    out.wreck.stay = homes.list.includes(A);
+    out.wreck.homeGone = !homes.list.some(h => h.id === out.wreck.home);
+
+    /* ⑨ 分類：招牌自己一類（homeCat 8）——另外七類派工不挑一段缺一塊的招牌、第 8 類挑得到；事件黏著只有事件七數它 */
+    {
+      const kind = HOME_KIND[0], slots = homeSlots(0, 200, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      homes.list.push({ id: homeSeq++, x: 0, z: 200, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                        oz: (kind.d - 1) / 2, slots, left: 0, n: 1, done: true });
+      for (const sl of slots) sl.filled = true;
+    }
+    const ai2 = homes.list.indexOf(A);
+    let otherN = 0, signN = 0;
+    for (const h of homes.list) if (!h.sign) otherN += h.slots.length - h.left;
+    for (const h of sgs()) signN += h.slots.length - h.left;
+    out.cat = { cat: homeCat(A), others: [0, 1, 2, 4, 5, 6, 7].every(k => pickUnfinished(A.x, A.z, new Set(), k) !== ai2),
+                mine: pickUnfinished(A.x, A.z, new Set(), 8) === ai2,
+                evSign: evBlocks(signEv) === signN, evHome: evBlocks(homeEv) === otherN, signN, otherN };
+
+    /* ⑩ 黏著：招牌還剩四分之一以上就不重抽（骰子押在小人的家也一樣）；拆到剩不到四分之一，押小人的家就換、整面解體；押招牌就留著 */
+    const force = e => {
+      let tot = 0, lo = 0;
+      for (const x of IDLE_EVENTS) tot += x.wt;
+      for (const x of IDLE_EVENTS) { if (x === e) break; lo += x.wt; }
+      Math.random = () => (lo + e.wt / 2) / tot;
+    };
+    homes = { list: [] }; signRing = signPlan();
+    while (signRing.stage < signRing.allow) { signGrow(); for (const h of sgs()) fill(h); }
+    const full0 = evBlocks(signEv);
+    try {
+      evLast = signEv; evPeak = full0; force(homeEv);
+      const stay = rollIdleEvent().id, n1 = sgs().length;
+      evLast = signEv; evPeak = full0 / WRECK_AT + 1; force(signEv);
+      const same = rollIdleEvent().id, n2 = sgs().length;
+      evLast = signEv; evPeak = full0 / WRECK_AT + 1; force(homeEv);
+      const swap = rollIdleEvent().id, n3 = sgs().length;
+      out.stick = { stay, same, swap, n1, n2, n3 };
+    } finally { Math.random = keep.rnd; }
+
+    /* 動過的全域狀態還回去 */
+    stopHomes();
+    clearHomes();
+    workers.forEach((w, i) => { [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show, w.lazy, w.own] = keep.ws[i]; w.hst = ''; w.showT = 0; });
+    siteR = keep.siteR; arenaR = keep.arenaR; debrisR = keep.debrisR; ENG.cam.yaw = keep.yaw; phase = keep.phase;
+    idleEv = keep.ev; evLast = keep.last; evArm = keep.arm; evPh = keep.ph; evPeak = keep.peak;
+    signRing = keep.ring; Math.random = keep.rnd;
+    return out;
+  });
+  ok('招牌的字：三行用到的每一個字都有（7 排、每排一樣寬），每一格上下左右連得回最下面那一排',
+     sgnT.font.every(f => !f.miss && f.h === 7 && f.even && f.n > 0 && f.loose === 0),
+     sgnT.font.map(f => f.ch + (f.miss ? ' 沒有' : ' ' + f.n + ' 格' + (f.loose ? '、連不回 ' + f.loose : ''))).join('、'));
+  ok('規劃（siteR 7～75 × 三檔建材、鏡頭五個方向）：字面朝鏡頭、由左到右讀、貼著內緣 SIGN_IN 格、整數格不重疊、不出碎料場；' +
+     '每一段六面連回地面、砌得完、地面那幾層只有一根柱子；每個字整個在同一段、一格不缺；一行一階、照讀的順序',
+     sgnT.plan.n >= 50 && sgnT.plan.bad.length === 0,
+     sgnT.plan.n + ' 份、每份 ' + sgnT.plan.pieces + ' 段、字 ' + sgnT.plan.fontN + ' 格；字面跟鏡頭最少 ' + sgnT.plan.minFace +
+     '、離碎料場外緣最近 ' + sgnT.plan.minRoom + ' 格' + (sgnT.plan.bad.length ? '；壞的：' + JSON.stringify(sgnT.plan.bad) : ''));
+  const sgs1 = sgnT.grow.steps.filter(s => s.before < sgnT.grow.allow);
+  ok('一行一行拼：還有一段沒拼好就不長，全部拼好過了才長下一行（長的就是規劃裡那一行），最後一行拼好就是整面拼好、不再長；壓到的房子先拆掉',
+     sgs1.length === sgnT.grow.allow - 1 && sgs1.every(s => !s.early && s.after === s.before + 1 && s.added === s.want && s.added > 0) &&
+     sgnT.grow.steps.filter(s => s.before >= sgnT.grow.allow).every(s => s.after === s.before && s.added === 0 && s.fin === 1) &&
+     sgnT.grow.steps.every(s => !s.early) && sgnT.grow.fin === 1 && sgnT.grow.final === sgnT.grow.allow && sgnT.grow.blockGone,
+     JSON.stringify(sgnT.grow));
+  ok('擋路：拼好之後每一段的外框就是柱子那一格（1×1），字那一面與字前面整排不擋、柱子那一面只擋柱子那幾欄（招牌底下走得過去）',
+     sgnT.walk.boxes.every(b => b[0] === 1 && b[1] === 1) && sgnT.walk.front === 0 && sgnT.walk.back === sgnT.walk.pieces,
+     JSON.stringify({ front: sgnT.walk.front, back: sgnT.walk.back, pieces: sgnT.walk.pieces, cols: sgnT.walk.cols }));
+  ok('拼的順序：柱子由下往上 → 橫樑 → 字由左到右一個一個（一個字拼完才換下一個）',
+     sgnT.order.all && sgnT.order.postFirst && sgnT.order.beamThen && sgnT.order.letters > 1 && sgnT.order.oneRun && sgnT.order.ltr,
+     JSON.stringify(sgnT.order));
+  ok('開工：站得穩的人全部掛上來（掛的是第一行那幾段）、w.own 不動；再開一次不重新規劃；施工中只有偷懶的人參加',
+     sgnT.start.crewed === sgnT.start.workers && sgnT.start.stage0 && sgnT.start.same && sgnT.start.own &&
+     sgnT.start.lazy.built && sgnT.start.lazy.others === 0,
+     JSON.stringify(sgnT.start));
+  ok('拼好之前去幫人最少的那一段；拼好之後揮手點在字前面、走到了轉向鏡頭揮手（舉手、揮完停一下）；被打出洞有人回來補（滿 HOME_TEAM 人就照常揮手）；聊完天回字前面',
+     sgnT.life.help && sgnT.life.zone.ok === sgnT.life.zone.n && sgnT.life.wave.show === 'wave' && sgnT.life.wave.face &&
+     sgnT.life.wave.rest && sgnT.life.wave.len && sgnT.life.arm && sgnT.life.repair && sgnT.life.full && sgnT.life.chat,
+     JSON.stringify(sgnT.life));
+  ok('招牌打爛了不廢棄（同城牆段、店、樹林、皇宮）；同樣打爛的小房子照舊廢棄',
+     sgnT.wreck.stay && sgnT.wreck.homeGone, JSON.stringify(sgnT.wreck));
+  ok('招牌是自己一類（homeCat 8）：另外七類派工不挑它、第 8 類挑得到；事件黏著只有招牌數它',
+     sgnT.cat.cat === 8 && sgnT.cat.others && sgnT.cat.mine && sgnT.cat.evSign && sgnT.cat.evHome && sgnT.cat.signN > 0 && sgnT.cat.otherN > 0,
+     JSON.stringify(sgnT.cat));
+  ok('招牌還剩四分之一以上就不重抽；拆到剩不到四分之一才換（換了整面解體，抽到同一件就留著）',
+     sgnT.stick.stay === 'sign' && sgnT.stick.n1 > 0 && sgnT.stick.same === 'sign' && sgnT.stick.n2 === sgnT.stick.n1 &&
+     sgnT.stick.swap === 'home' && sgnT.stick.n3 === 0,
+     JSON.stringify(sgnT.stick));
+  }   // ── 〈閒晃事件：求救招牌〉結束
 
   /* ══════════ 偷懶 ══════════ */
   await head('偷懶', T_MUST);
@@ -36555,7 +36925,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('立在哪：點在工地裡推到工地外緣 FL_SITE 格外；點在別座燈架上就挪開、兩座的占地不重疊',
      faim.out && faim.apart, JSON.stringify(faim));
 
-  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但七類派工（房子、樹、城牆、店、樹林、皇宮、部落的營火與圖騰柱）與城內補洞都不會挑它；
+  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但八類派工（房子、樹、城牆、店、樹林、皇宮、部落的營火與圖騰柱、求救招牌）與城內補洞都不會挑它；
         事件黏著不數它；換一件事（rollIdleEvent 那一下整份清單解體）它留著 ── */
   const fkeep = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
@@ -36564,11 +36934,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const h = f.h, hi = homes.list.indexOf(h);
     const b = blocks.find(q => q.hh === hi && q.st === SET && q.hk === 1);          // 底座外圈那一塊
     breakBlock(b, 0, 1, 0);
-    const r = { left: h.left, cat: [0, 1, 2, 4, 5, 6, 7].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
+    const r = { left: h.left, cat: [0, 1, 2, 4, 5, 6, 7, 8].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
                 inside: pickInside(f.x, f.z, new Set(), 1e9) !== hi, ev: evBlocks(IDLE_EVENTS[0]) };
     const keep = [evLast, evPeak], real = Math.random;
     evLast = IDLE_EVENTS[0];
-    Math.random = () => 0.999;                                                       // 抽到最後一件（v1.309.0 起是部落）
+    Math.random = () => 0.999;                                                       // 抽到最後一件（v1.310.0 起是求救招牌）
     let e;
     try { e = rollIdleEvent(); } finally { Math.random = real; evLast = keep[0]; evPeak = keep[1]; }
     r.rolled = e === IDLE_EVENTS[IDLE_EVENTS.length - 1] && e !== IDLE_EVENTS[0];
@@ -36576,7 +36946,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return r;
   });
-  ok('沒人修、不算哪一件事：缺一塊時七類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
+  ok('沒人修、不算哪一件事：缺一塊時八類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
      fkeep.left === 1 && fkeep.cat && fkeep.inside && fkeep.ev === 0 && fkeep.rolled && fkeep.stay, JSON.stringify(fkeep));
 
   /* ── 被攻擊：打它不算打地標（phase 還是 done）、會飛的東西撞得到（homeSolid）；
