@@ -4992,9 +4992,10 @@ function castMagic(point, by) {
     return;
   }
   if (!magics) magics = [];
-  if (magics.length >= MAG_CAST) magics.shift();     // 放太多個就把最早那個擠掉（玩家一發＋惠惠一發到不了，留著當保險）
+  if (magics.length >= MAG_CAST) magLetGo(magics.shift());   // 放太多個就把最早那個擠掉（玩家一發＋惠惠一發到不了，留著當保險）
   magics.push({
     x: point.x, z: point.z, t: MAG_TIME, shown: 0, by: by || null,
+    id: ++magSeq,                         // 浮著的積木記這個號碼（b.mgk），見 implode
     // 每層的半徑抖動：施法當下抽一次存起來，每幀重抽的話整疊會一直閃
     rj: MAG_LAYER.map(() => rr(1 - MAG_JITTER, 1 + MAG_JITTER)),
     /* 每層的紋路起始角度各抽一個定值：六層都從同一個角度起跳的話，
@@ -5006,12 +5007,23 @@ function castMagic(point, by) {
   });
   /* 整疊頂端在 51.9（v1.215 放大前是 34.6），貼著建築的取景裝不下（矮建築取景更近）。
      跟龍捲風、蘑菇雲同一套：施法期間鏡頭退到整疊進得了畫面的距離，
-     爆完那朵雲會再接手撐住這個距離。 */
-  ENG.holdWide(MAG_TOP, MAG_WIDE);
+     爆完那朵雲會再接手撐住這個距離。
+     **用完要還高度**（v1.311.0，使用者看過實測之後選的「爆完把視線高度還回去」）：第三個參數給 true，
+     陣全部收掉之後在 magEnd 還一次；那時蘑菇雲已經接手抬著（startCloud 也是 temp），
+     要等雲散了才真的降回施法前的高度。v1.310 以前不還，視線停在 29.2（施法前 0）。 */
+  magHold++;
+  ENG.holdWide(MAG_TOP, MAG_WIDE, true);
   alertFlee(point, MAG_TIME);             // 魔法陣一亮，全場就往外跑（v1.96）
 }
+/* 還欠幾次「把視線高度還回去」（同 stormHold）。陣全部收乾淨了才還——見 magEnd。 */
+let magHold = 0;
+let magSeq = 0;                           // 陣的編號（浮著的積木認這個，見 implode）
+function magEnd() {
+  if (magics) return;
+  while (magHold > 0) { magHold--; ENG.releaseWide(); }
+}
 function stepMagic(dt) {
-  if (!magics) return;
+  if (!magics) { magEnd(); return; }
   for (let i = magics.length - 1; i >= 0; i--)
     if (stepOneMagic(magics[i], dt)) magics.splice(i, 1);
   if (!magics.length) magics = null;
@@ -5020,11 +5032,12 @@ function stepMagic(dt) {
 function stepOneMagic(magic, dt) {
   /* 詠唱被打斷的那一陣（v1.247.0，見 megCancel）：在這裡才從清單拿掉——打斷她的那一下可能就是
      stepMagic 這一圈裡另一陣爆炸震倒的，當場 splice 會把正在跑的這個迴圈弄亂 */
-  if (magic.gone) return true;
+  if (magic.gone) { magLetGo(magic); return true; }
   magic.t -= dt;
   const el = MAG_TIME - magic.t;
   if (magic.t <= 0) {
     const p = { x: magic.x, y: MAG_CORE_Y, z: magic.z };   // 爆點＝最低那層的圓心
+    magLetGo(magic);                        // 拽進來的那一團交給 explode 噴出去
     slayGiants(p, MAG_R, 'magic');          // 同核彈（v1.245.0）
     // true = 加風壓（也是強爆炸：有火團）；最後一個 = 地上留焦痕（v1.231，同核彈）；by＝放這一發的（惠惠，見 castMagic）
     explode(p, MAG_R, MAG_POW, true, false, magic.by, false, MAG_R * MARK_SCORCH_R);
@@ -5134,8 +5147,8 @@ function stepOneMagic(magic, dt) {
 
 /* ── 往陣心捲進去的魔力粒子 ───────────────────────────────
    施法一開始就有，一路捲到爆炸：小、快、密，從陣外一路螺旋進陣心
-   （就是等一下的爆點）。真的把牆一片片剝下來捲進去的是 implode（最後 CRUSH_AT 秒
-   換成快速往內吸，見 crushIn），
+   （就是等一下的爆點）。真的把牆一片片剝下來的是 implode（v1.311.0 起剝下來的原地浮著，
+   最後 CRUSH_AT 秒才一口氣拽進陣心，見 magDive），
    這些光點是那件事的前奏——六秒裡一直在說「能量正往那一點集中」。
    v1.47 之前這裡是一道從陣心往上衝的光柱，看起來像中心在冒煙：方向反了，
    陣是在吸不是在噴，所以整個掉頭。 */
@@ -5172,113 +5185,153 @@ function magSuck(m, dt) {
 }
 
 /* ── 引力坍縮 ─────────────────────────────────────────────
-   爆炸前的最後幾秒，把周圍的東西往陣心捲進去（內吸 + 切線 = 螺旋），
-   再撒一些往中心捲的魔力光點。先收縮、後爆發，張力才拉得起來——
-   這是它跟核彈最大的差別：核彈是「一下打平」，魔法是「先聚成一團再炸開」。 */
-const IMP_TIME = 4.5;               // 倒數剩幾秒開始吸
+   爆炸前的最後幾秒，把範圍裡的東西從原位剝下來、浮在那裡，最後那一下才一口氣拽進陣心，
+   接著從那裡炸開。先收縮、後爆發，張力才拉得起來——
+   這是它跟核彈最大的差別：核彈是「一下打平」，魔法是「先聚成一團再炸開」。
+   v1.311.0 改成黑洞那種樣子（使用者：「爆裂魔法的吸積木效果 調整成像黑洞那種樣子／
+   爆炸前才快速吸進中心噴出去」，問過之後：「類似黑洞的現在原位剝離 最後才吸進去 不要在外面繞圈了」；
+   「這次只是調整吸積木的方式」——只改積木怎麼被吸，不加別的特效）。
+   v1.87～v1.310 剝下來的被內吸＋切線一路螺旋捲進陣心，第 5.9 秒早就聚成一小團、
+   還剛好躲在最下面那層陣的盤後面，最後那幾秒看不出還在吸。現在分兩段：
+     浮著  剝下來的（還有範圍裡地上的碎料、半空中掉下來的）**留在原位浮著**、慢慢翻，不往中心靠
+     拽進去  最後 CRUSH_AT 秒全部拽進陣心（先慢後快），下一幀炸開
+   見 開發筆記〈爆裂魔法改成黑洞：原位剝離、最後才吸進去（v1.311.0）〉。 */
+const IMP_TIME = 4.5;               // 倒數剩幾秒開始剝
 /* 吸的這一整段路，總共剝得走幾成還站著的積木（v1.87，使用者指定
    「吸的過程共破壞兩成」）。v1.62～v1.86 是「倒數剩 0.3 秒，一幀之內抽兩成扯下來、
    速度算成剛好在爆炸那一刻抵達陣心」（crushIn）：吸的那四秒半建築完全沒事，
    然後忽然少兩成、緊接著就炸開——使用者看到的就是「忽然吸兩成然後爆炸飛出去」。
-   現在整段吸的過程一直在剝，剝下來的跟碎料吃同一組力被捲進陣心，
-   所以「先收縮、後爆發」是一件連續發生的事，不是兩件事接在一起。
+   現在整段一直在剝（v1.311.0 起剝下來的原地浮著，最後才一起拽進去），
+   所以建築是一塊一塊鬆開的，不是一幀之內忽然少一大塊。
    每幀的機率是 1−(1−這個數)^(dt/IMP_TIME)：整段加起來剛好兩成，而且跟幀率無關。 */
 const MAG_TAKE = 0.2;
-/* 吸的過程分兩段（v1.93，使用者指定「緩慢吸部分積木 → 爆炸前快速吸往爆炸中心 → 爆炸」）：
-   前面 IMP_TIME−CRUSH_AT 秒是慢慢吸（一路剝牆，剝下來的被捲著繞進來），
-   最後 CRUSH_AT 秒改成**快速往內吸**——範圍內的碎料全部改走算好的彈道，
-   剛好在爆炸那一刻抵達陣心。
-   這一段是 v1.87 連著 crushIn 一起拆掉的，使用者反映「快速往內吸的效果被你拿掉了」，
-   所以收回來；但這次只搬碎料、不再多剝牆：剝走的兩成是慢吸那一段的事，
-   v1.62～v1.86 那個「一幀之內抽兩成」不重演。
-   0.6 → 0.3（v1.93.1，使用者：「最後 0.3 秒快速往內吸（速度快 看起來比較像是超強烈爆炸）」）：
-   同一段距離用一半的時間走完，速度就翻一倍——收攏那一下更像被硬拽進去的，
-   接在後面的火球才像「壓到極限才炸開」。0.3 也剛好是 v1.62～v1.86 那支 crushIn 的老數字。 */
+/* 最後一口氣拽進陣心要多久（v1.93 起「緩慢吸部分積木 → 爆炸前快速吸往爆炸中心 → 爆炸」的那一段）。
+   0.6 → 0.3（v1.93.1，使用者：「最後 0.3 秒快速往內吸（速度快 看起來比較像是超強烈爆炸）」）。
+   v1.311.0 起前面那段不再往中心捲，所以這一段要從**原位**一路拽到陣心（最遠 MAG_R 那麼遠），
+   不像以前只是把已經聚在陣心附近的那團再壓一下。預覽頁給了 0.3／0.5／0.8，使用者照舊選 0.3。 */
 const CRUSH_AT = 0.3;
 /* 收攏成一顆多大的球。全部瞄同一個點的話，最後那幾幀整團會疊成一顆積木大小的小點，
    看起來像憑空消失；散成一小顆球才看得到那團被壓在一起的東西。
    v1.215 跟著 ×1.5（2.6 → 3.9）：吸進來的料多了（範圍 1.5 倍＝面積 2.25 倍），
    還擠在同一顆 2.6 的球裡會回到「一團看不出體積的小點」。 */
 const CRUSH_BALL = 3.9;
-/* 甩向陣心：速度算成剛好在爆炸那一刻抵達陣心附近的一個隨機點。
-   水平是距離除以剩餘時間（遠的近的同時到）；垂直除了補高度差，還要加回這段路
-   會被重力吃掉的 GRAV×T/2，不然整團會在半路往下沉，收攏的位置就不在爆點上。 */
-function aimCore(m, b) {
-  if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
-  const T = Math.max(0.08, m.t);
-  b.vx = (m.x + rr(-CRUSH_BALL, CRUSH_BALL) - b.x) / T;
-  b.vy = (MAG_CORE_Y + rr(-CRUSH_BALL * 0.8, CRUSH_BALL * 0.8) - b.y) / T + GRAV * T / 2;
-  b.vz = (m.z + rr(-CRUSH_BALL, CRUSH_BALL) - b.z) / T;
+/* 浮著的那一段（v1.311.0）。
+   MAG_LIFT：牆上剝下來的浮起多高（格）——「原位」，離開牆面看得出來就好，飄遠了就不是原位。
+     預覽頁給了小（0.3～1.4）／中／大（1～4）三檔，使用者選「中」；小那一檔在預設的鏡頭距離下
+     看不出有離開牆面。
+   MAG_FLOAT：地上的碎料浮起多高。它們本來就躺在地上，浮得比牆上的高一點才看得出是被吸起來的。
+   MAG_LOOSE：地上的碎料由陣心往外一圈一圈浮起來，吸力開始之後走到這個比例時整個範圍都浮起來了。
+   MAG_HOVER：把浮著的拉回自己那個點的彈簧（角頻率，臨界阻尼）——半空中接住的碎料一秒內停穩，不彈來彈去。
+   MAG_TUMBLE：浮著的時候自己翻多快（rad/s）。breakBlock 給的是 ±9（被打飛的翻法），浮著的要慢慢轉。 */
+const MAG_LIFT = [0.6, 2.5];
+const MAG_FLOAT = [1, 3.5];
+const MAG_LOOSE = 0.8;
+const MAG_HOVER = 3;
+const MAG_TUMBLE = 1.2;
+/* 拽進去那一段走到幾成（0～1，先慢後快）。 */
+function magDiveE(m) {
+  const u = Math.max(0, Math.min(1, 1 - m.t / CRUSH_AT));
+  return u * u;
 }
-/* 快吸開始那一下：範圍內已經是碎料的全部推上彈道（還站著的留到爆炸）。
-   只跑一次，之後才剝下來的在 implode 裡當場甩——那時 m.t 更小，飛得更急。 */
-function crushIn(m) {
-  const R2 = MAG_R * MAG_R;
-  for (const b of blocks) {
-    if (b.st !== FREE && b.st !== FLY) continue;
-    const dx = b.x - m.x, dz = b.z - m.z;
-    if (dx * dx + dz * dz > R2) continue;
-    aimCore(m, b);
+/* 接手一塊：變成飛著的、記上這個陣的號碼、慢慢翻。浮著那一段記一個錨點（原位再抬 lift），
+   拽進去那一段直接排上去。dust＝牆上剝下來的那一塊本來該換成的碎料色（同小黑洞：
+   浮著的時候留原本的顏色，看得出是「那一塊建築」；被放掉時才換，炸開時 explode 自己會換）。 */
+function magGrab(m, b, lift, dust) {
+  if (b.cell) gridDel(b);
+  b.st = FLY; b.rest = false; b.snap = 0;
+  b.mgk = m.id;
+  b.ax = rr(-MAG_TUMBLE, MAG_TUMBLE); b.ay = rr(-MAG_TUMBLE, MAG_TUMBLE); b.az = rr(-MAG_TUMBLE, MAG_TUMBLE);
+  const h = { b, x: b.x, y: b.y + lift, z: b.z, dust };
+  if (m.dive) magAim(m, h); else m.held.push(h);
+}
+/* 排上拽進去那一段：從現在的位置走到陣心附近的一個隨機點。全部瞄同一個點的話最後那幾幀
+   整團會疊成一顆積木大小的小點，看起來像憑空消失（見 CRUSH_BALL）。
+   e＝排上去那一刻已經走到幾成：半路才剝下來的，從那一刻算起照樣在爆炸前一幀到。 */
+function magAim(m, h) {
+  const b = h.b;
+  h.x = b.x; h.y = b.y; h.z = b.z;
+  h.e = magDiveE(m);
+  h.tx = m.x + rr(-CRUSH_BALL, CRUSH_BALL);
+  h.ty = MAG_CORE_Y + rr(-CRUSH_BALL * 0.8, CRUSH_BALL * 0.8);
+  h.tz = m.z + rr(-CRUSH_BALL, CRUSH_BALL);
+  m.dive.push(h);
+}
+/* 拽進去那一段開始：浮著的全部排上去。範圍裡其他的碎料（垮下來還沒接住的、剛滾進來的）
+   在同一幀 implode 的迴圈裡接手，那時 m.dive 已經在了，magGrab 會直接排上去。 */
+function magDive(m) {
+  m.dive = [];
+  for (const h of m.held) if (h.b.st === FLY && h.b.mgk === m.id) magAim(m, h);
+  m.held.length = 0;
+}
+/* 放手：陣炸開、被擠掉、被打斷（惠惠）的時候。還浮著的照重力掉下來，牆上剝下來的換成碎料色。 */
+function magLetGo(m) {
+  for (const list of [m.held, m.dive]) if (list) for (const h of list) {
+    const b = h.b;
+    if (b.mgk !== m.id) continue;
+    b.mgk = 0;
+    if (h.dust && b.st === FLY) { b.tr = h.dust[0]; b.tg = h.dust[1]; b.tb = h.dust[2]; }
   }
+  m.held = m.dive = null;
 }
 function implode(m, dt) {
-  const k = Math.min(1, (IMP_TIME - m.t) / IMP_TIME);   // 0 → 1，越接近爆炸吸得越猛
+  const k = Math.min(1, (IMP_TIME - m.t) / IMP_TIME);   // 0 → 1，越接近爆炸越強
   if (k <= 0) return;
-  const fast = m.t <= CRUSH_AT;                         // 最後這一段改成快速往內吸
-  if (fast && !m.crush) { m.crush = 1; crushIn(m); }
+  if (!m.held) m.held = [];
+  if (m.t <= CRUSH_AT && !m.dive) magDive(m);      // 最後這一段：全部拽進陣心
   const R = MAG_R, R2 = R * R;
   // 這一幀從還站著的積木裡剝走幾成（見 MAG_TAKE）
   const take = 1 - Math.pow(1 - MAG_TAKE, dt / IMP_TIME);
+  const loose = R * Math.min(1, k / MAG_LOOSE);         // 地上的碎料浮到哪一圈了（見 MAG_LOOSE）
   let n = 0, own = 0;                 // own＝其中有幾塊是地標的（見 afterHit）
   for (const b of blocks) {
-    if (b.st === CARRY || b.st === TOSS) continue;      // 小人手上的不動
+    if (b.st === CARRY || b.st === TOSS || b.mgk === m.id) continue;   // 小人手上的不動；已經接手的跳過
     const dx = b.x - m.x, dz = b.z - m.z;
     const d2 = dx * dx + dz * dz;
     if (d2 > R2) continue;
-    /* 還站著的積木：這一幀抽中的當場剝下來，剝完就是碎料，下面那組吸力馬上吃得到；
-       沒抽中的原地留著、連力都不加（SET 不吃速度，加了只是留一組舊速度給下次）。
-       剝下來之後**不另外算彈道**：離爆炸還有好幾秒，光靠內吸就會被捲到陣心，
-       而且看起來是「被吸過去」而不是「被丟過去」。 */
+    /* 還站著的積木：這一幀抽中的當場從原位剝下來，浮起一點點；沒抽中的原地留著。
+       顏色留原本的（breakBlock 會換成碎料色，換回來，碎料色記在手上，見 magGrab）。 */
     if (b.st === SET) {
       if (Math.random() >= take) continue;
       const wasOwn = b.hh < 0;                      // breakBlock 會把 hh 清掉
+      const tr = b.tr, tg = b.tg, tb = b.tb;
       if (!breakBlock(b, 0, 0, 0)) continue;       // 防護罩擋下（v1.259.0）
       n++; if (wasOwn) own++;
-      if (fast) { aimCore(m, b); continue; }     // 快吸那一段剝下來的：當場甩向陣心
+      const dust = [b.tr, b.tg, b.tb];
+      b.tr = tr; b.tg = tg; b.tb = tb;
+      magGrab(m, b, rr(MAG_LIFT[0], MAG_LIFT[1]), dust);
     }
-    /* 快吸開始之後，已經在彈道上的就別再加力——再推一把會提早對穿過陣心，
-       爆炸當下反而是散開的。這一段只補「剛滾進範圍的碎料」。 */
-    if (fast) { if (b.st === FREE) aimCore(m, b); continue; }
-    if (b.st === FREE) { if (b.cell) gridDel(b); b.st = FLY; b.rest = false; b.snap = 0; }
-    const d = Math.sqrt(d2);
-    const pull = (0.35 + 0.65 * (1 - d / R)) * k * dt * 3;
-    /* 垂直方向拉向最低層那圈的高度（＝爆點）。重力一直往下拉 26，所以這裡是
-       「離目標高度多遠」的彈簧加一股固定上抬，碎料才會停在那個高度翻攪，
-       而不是聚攏之後整團掉回地上。這一段放在 d2 < 1 的檢查前面：
-       剛好落在陣心正上方的那幾塊要是被跳過，會從團裡掉出來。
-       固定上抬 9 → 13.5（v1.215 ×1.5）：彈簧那一項是「離目標高度多遠」乘出來的，
-       高度放大它自己就跟著放大，只有這個絕對值要手動跟。 */
-    b.vy += ((MAG_CORE_Y - b.y) * 1.6 + 13.5) * pull;
-    b.ay += rr(-6, 6) * dt;
-    /* 進到陣心那一團就被拖慢。少了這一段，強吸力會讓積木直接對穿過去再飛出另一邊，
-       爆炸當下反而是散開的——量過：沒有阻尼時爆炸當下平均離陣心 13.9，有的話 5.6
-       （那是 MAG_R＝30 那版量的，v1.215 起半徑與吸力都 ×1.5，數量級一起放大）。
-       半徑 7 → 10.5（v1.215 ×1.5）：陣心那一團本身大了，還用 7 的話阻尼只吃到團心。 */
-    if (d < 10.5) {
-      const f = 1 - Math.min(0.5, 4 * dt * (1 - d / 10.5));
-      b.vx *= f; b.vy *= f; b.vz *= f;
-    }
-    if (d2 < 1) continue;                               // 已經在陣心，再算內吸會除以 0
-    const nx = dx / d, nz = dz / d;
-    /* 內吸 + 切線；越靠近陣心吸力越強，看起來才像被捲進去而不是等速平移。
-       30／11 → 45／16.5（v1.215 ×1.5）：要吸的距離變 1.5 倍而倒數還是 6 秒，
-       不跟的話最外圈那一圈到爆炸都還沒捲進來。 */
-    b.vx += (-nx * 45 - nz * 16.5) * pull;
-    b.vz += (-nz * 45 + nx * 16.5) * pull;
+    /* 半空中的（剝掉之後上面垮下來的、別的道具打飛進來的）就地接住；拽進去那一段開始之後
+       範圍裡的碎料全部一起拽。地上的碎料由陣心往外一圈一圈浮起來。 */
+    else if (b.st === FLY || m.dive) magGrab(m, b, 0, null);
+    else if (d2 <= loose * loose) magGrab(m, b, rr(MAG_FLOAT[0], MAG_FLOAT[1]), null);
   }
   /* 記帳：計數、嚇小人、標記垮塌重算。半徑給 MAG_CORE_R（陣心那一圈）而不是 MAG_R，
      不然整個工地的小人都會被掀倒。 */
   if (n) afterHit(n, { x: m.x, y: MAG_CORE_Y, z: m.z }, MAG_CORE_R, own);
+  if (m.dive) {
+    /* 拽進去：位置照「先慢後快」算出來，速度給「這一幀剛好走到那裡」（stepBlock 會先扣
+       GRAV×dt，所以垂直要補回去）。u 多算一幀：最後一幀（m.t ≤ dt）剛好到，爆炸是下一幀的事。 */
+    const u = Math.min(1, (CRUSH_AT - m.t + dt) / CRUSH_AT), e = u * u;
+    for (const h of m.dive) {
+      const b = h.b;
+      if (b.st !== FLY || b.mgk !== m.id) continue;
+      const f = h.e >= 1 ? 1 : Math.max(0, (e - h.e) / (1 - h.e));
+      b.vx = (h.x + (h.tx - h.x) * f - b.x) / dt;
+      b.vy = (h.y + (h.ty - h.y) * f - b.y) / dt + GRAV * dt;
+      b.vz = (h.z + (h.tz - h.z) * f - b.z) / dt;
+    }
+  } else {
+    /* 浮著：臨界阻尼的彈簧拉回自己那個點，再抵掉重力（stepBlock 每幀扣 GRAV×dt）。
+       被別的東西接走的（幽浮、小黑洞、另一個陣）從清單拿掉。 */
+    const w = MAG_HOVER;
+    for (let i = m.held.length - 1; i >= 0; i--) {
+      const h = m.held[i], b = h.b;
+      if (b.st !== FLY || b.mgk !== m.id) { m.held.splice(i, 1); continue; }
+      b.vx += ((h.x - b.x) * w * w - b.vx * 2 * w) * dt;
+      b.vy += ((h.y - b.y) * w * w - b.vy * 2 * w) * dt + GRAV * dt;
+      b.vz += ((h.z - b.z) * w * w - b.vz * 2 * w) * dt;
+    }
+  }
   /* 魔力光點：從陣的外圈生出來，靠 pull 一路捲進中心。
      三成給青藍色——參考圖裡捲上來的能量流是冷色的，跟紅陣對比才看得出「被吸進去」。 */
   m.motes = (m.motes || 0) + dt * (10 + 46 * k);
@@ -5894,10 +5947,27 @@ function startCloud(p, R) {
   /* 順手把鏡頭退到整朵雲進得了畫面的距離。用原本貼著建築的取景根本裝不下——
      量過：不退的話中型建築只看得到那根柱子，傘蓋整個在畫面上緣外。
      尺寸是實測 R=30 那朵：3.7 秒升到 39（≈R×1.3）、傘蓋半徑 15.4（≈R×0.51）。
-     雲會一直往上飄，框的是「傘蓋撐開那幾秒」的樣子，不是它飄走之後的高度。 */
-  ENG.holdWide(R * 1.3, R * 0.55);
+     雲會一直往上飄，框的是「傘蓋撐開那幾秒」的樣子，不是它飄走之後的高度。
+     **雲散了要還高度**（v1.311.0，使用者：「爆完把視線高度還回去」＋「核彈也一起還高度」）：
+     第三個參數給 true，CLOUD_HOLD 秒後在 stepClouds 還回去。v1.310 以前不還——當初的理由是
+     「核彈炸完就換場」，但換場（keepView）不動鏡頭，視線就一直停在雲的半腰。 */
+  cloudHold++; cloudHoldT = CLOUD_HOLD;
+  ENG.holdWide(R * 1.3, R * 0.55, true);
+}
+/* 雲撐著鏡頭撐多久（從爆炸那一刻算）。雲的那一筆 CLOUD_GROW 秒就收掉了，煙還會一路飄、
+   一路縮好幾秒，所以用自己的計時，不跟著那一筆走；連放好幾朵就從最後一朵重新算。
+   用計時不用「場上還有沒有雲」：測試會直接清 clouds，計時照樣走得完。
+   8 秒是量的（爆裂魔法炸新天鵝堡，雲的煙 Σ大小² 對尖峰）：6.5 秒 19%、8 秒 7%、9 秒 2%——
+   剩一成以下才放，鏡頭降下來那一秒半剛好接上最後幾縷散掉。 */
+const CLOUD_HOLD = 8;
+let cloudHold = 0, cloudHoldT = 0;
+/* 把雲借去的視線高度還回去（同 stormEnd／gateEnd）。測試清場也走這支。 */
+function cloudEnd() {
+  cloudHoldT = 0;
+  while (cloudHold > 0) { cloudHold--; ENG.releaseWide(); }
 }
 function stepClouds(dt) {
+  if (cloudHold && (cloudHoldT -= dt) <= 0) cloudEnd();
   for (let i = clouds.length - 1; i >= 0; i--) {
     const c = clouds[i], t0 = c.t;
     c.t += dt;

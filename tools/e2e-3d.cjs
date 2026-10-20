@@ -520,7 +520,9 @@ const installClean = page => page.evaluate(() => {
     floods = null; ENG.putFloods([]);                        // 燈源（v1.303.0）：燈架的積木在 homes 上（上面 clearHomes 收了），燈頭與聚光燈在這
     meteors = null; ENG.putMeteors([]);
     nukes = null; ENG.putNukes([]);
-    magics = null;
+    /* 魔法陣與蘑菇雲借去的鏡頭高度（v1.311.0 起用完要還）：同下面的 gateEnd，不還的話下一條量到的
+       視線高是被抬過的，而且還沒走完的雲的計時會在下一條半路把別人借的高度還掉。 */
+    magics = null; magEnd(); cloudEnd();
     /* 烏雲（v1.117）與閃電。電要連 arcSrcs 一起收：只清 bolts 的話，
        還在放電的那一處下一幀又補一批回來，等於沒清。 */
     storms = null; arcSrcs = null; bolts.length = 0;
@@ -25496,10 +25498,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     let stood = -1, inR = 0, suckAt = -1, prev = 0, maxDrop = 0, dropFrames = 0, preSet = 0;
     let wall = null, wallD = null, pick = null, pickD0 = 0, minD = null;
     let gathered = 0, gatherY = 0;
+    /* 浮著那一段（v1.311.0）：implode 剝下來的（held 裡帶 dust 的那幾塊）離原位多遠 */
+    const home = new Map(), floated = new Set();
+    let hoverH = 0, hoverUp = 0, hoverDown = 0;
     for (let i = 0; i < 200 && magics; i++) {
       const m = magics[0];
+      if (m.held && m.t > CRUSH_AT) for (const h of m.held) {
+        const p = h.dust && home.get(h.b);
+        if (!p) continue;
+        floated.add(h.b);
+        hoverH = Math.max(hoverH, Math.hypot(h.b.x - p[0], h.b.z - p[2]));
+        hoverUp = Math.max(hoverUp, h.b.y - p[1]);
+        hoverDown = Math.min(hoverDown, h.b.y - p[1]);
+      }
       if (stood < 0 && m.t <= IMP_TIME) {            // 吸力開始的那一幀：把分母記下來
         wall = blocks.filter(b => b.st === 3);
+        for (const b of wall) home.set(b, [b.x, b.y, b.z]);
         wallD = wall.map(b => Math.hypot(b.x, b.z));
         stood = wall.length; prev = stood;
         // 「兩成」是**範圍內**的兩成：城堡有一截伸出半徑 30 外，那些本來就不該動
@@ -25539,7 +25553,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              maxDrop, dropFrames, preSet, n: pick ? pick.length : 0,
              pickD0: +pickD0.toFixed(1), gathered: +gathered.toFixed(1),
              gatherY: +gatherY.toFixed(1), coreY: +MAG_CORE_Y.toFixed(1), ball: CRUSH_BALL,
-             pulled: +(minD ? minD.reduce((s, v) => s + v, 0) / minD.length : -1).toFixed(1) };
+             pulled: +(minD ? minD.reduce((s, v) => s + v, 0) / minD.length : -1).toFixed(1),
+             floated: floated.size, hoverH: +hoverH.toFixed(2), hoverUp: +hoverUp.toFixed(2),
+             hoverDown: +hoverDown.toFixed(2), lift: MAG_LIFT[1] };
   });
   ok('吸的過程一路在剝牆，不是某一幀忽然少一大塊',
      mgTake.dropFrames > 50 && mgTake.torn > 0 && mgTake.maxDrop < mgTake.torn * 0.1,
@@ -25552,17 +25568,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '吸力從第 ' + mgTake.suckAt + ' 秒起，範圍內 ' + mgTake.inR + ' 塊 → 剝走 ' +
      mgTake.torn + ' 塊（' + (mgTake.torn / mgTake.inR * 100).toFixed(1) + '%，設定 ' +
      (mgTake.take * 100) + '%），爆炸前還有 ' + mgTake.preSet + ' 塊站著');
-  /* 「爆炸當下離陣心多近」的門檻要照**收攏球**算（v1.215）：本來寫死 5，配的是
-     CRUSH_BALL 2.6（實測平均 2.1～2.3）。球跟著 MAG_R 放大成 5.2 之後，平均自然
-     跟著到 4.6～5.1——寫死的 5 就變成「剛好卡在邊上」。兩倍球半徑對得上原本那個 5。
-     高度那項不動：它比的是「跟爆點差多少」，實測 1.0 以內。 */
-  ok('剝下來的會被捲到陣心，爆炸那一刻就在爆點上',
-     mgTake.pulled < mgTake.pickD0 * 0.35 && mgTake.gathered < mgTake.ball * 2 &&
-     Math.abs(mgTake.gatherY - mgTake.coreY) < 3.5,
-     '早期剝下來那批裡最外圈 ' + mgTake.n + ' 塊原本離陣心 ' + mgTake.pickD0 +
-     '，爆炸當下 ' + mgTake.gathered + '（最靠近 ' + mgTake.pulled + '），高度 ' +
-     mgTake.gatherY + '（爆點 ' + mgTake.coreY + '）');
-  /* 兩段吸（v1.93，使用者指定「緩慢吸部分積木 → 爆炸前快速吸往爆炸中心 → 爆炸」）：
+  /* v1.311.0 改成黑洞那種吸法（使用者：「類似黑洞的現在原位剝離 最後才吸進去 不要在外面繞圈了」）：
+     剝下來的**留在原位浮著**，最後 CRUSH_AT 秒才拽進陣心。v1.87～v1.310 這一條是「剝下來的會被捲到陣心」
+     （統計型：內吸＋切線一路捲，量爆炸當下聚得多近），現在前半段是一條規則——
+     剝下來那一刻速度是 0、接著被臨界阻尼的彈簧拉到原位上方 MAG_LIFT 那麼高，
+     所以水平不該動、往上不該超過 MAG_LIFT 的上限、也不該往下掉。改成規則型，判成敗。
+     後半段照舊：「爆炸當下離陣心多近」的門檻照**收攏球**算（v1.215 起兩倍 CRUSH_BALL，
+     見那一版的說明），高度比的是「跟爆點差多少」。 */
+  ok('剝下來的留在原位浮著，最後才拽到陣心，爆炸那一刻就在爆點上',
+     mgTake.floated > 50 && mgTake.hoverH < 0.3 && mgTake.hoverUp <= mgTake.lift + 0.3 &&
+     mgTake.hoverDown > -0.3 &&
+     mgTake.gathered < mgTake.ball * 2 && Math.abs(mgTake.gatherY - mgTake.coreY) < 3.5,
+     '浮著那一段 ' + mgTake.floated + ' 塊離原位：水平最多 ' + mgTake.hoverH + '、往上最多 ' +
+     mgTake.hoverUp + '（MAG_LIFT 上限 ' + mgTake.lift + '）、往下最多 ' + mgTake.hoverDown +
+     '；早期剝下來那批裡最外圈 ' + mgTake.n + ' 塊原本離陣心 ' + mgTake.pickD0 +
+     '，爆炸當下 ' + mgTake.gathered + '，高度 ' + mgTake.gatherY + '（爆點 ' + mgTake.coreY + '）');
+  /* **v1.311.0 起前一段不再往中心捲**（剝下來的原地浮著，見上一條），所以這一條從統計型改成規則型：
+     快吸前那 CRUSH_AT 秒碎料的平均徑向速度該是 0 上下（浮著的被彈簧拉在原位、地上浮起來的只往上），
+     最後那 CRUSH_AT 秒才整批往內衝。下面是 v1.93～v1.310「慢吸 → 快吸」那一版的來龍去脈，取樣的窗與
+     排除圈的道理照舊適用。
+     兩段吸（v1.93，使用者指定「緩慢吸部分積木 → 爆炸前快速吸往爆炸中心 → 爆炸」）：
      量的是碎料**往陣心靠近的速度**（徑向速度，往內是正的）——慢吸那一段是靠 pull
      一點一點加速度捲進來，最後 CRUSH_AT 秒改走「剛好在爆炸那一刻抵達陣心」的彈道，
      速度整個跳一級。
@@ -25626,11 +25651,42 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              fast: +(fast / Math.max(1, fn)).toFixed(1),
              sn, fn, slowN, fastN, at: CRUSH_AT };
   });
-  ok('最後那一段改成快速往內吸，不是一路等速捲進來',
-     mgFast.fn > 2 && mgFast.slow > 0 && mgFast.fast > mgFast.slow,
+  ok('前面浮著不往中心靠，最後那一段才快速往內吸',
+     mgFast.fn > 2 && Math.abs(mgFast.slow) < 1 && mgFast.fast > 10,
      '快吸前那 ' + mgFast.at + ' 秒 ' + mgFast.sn + ' 幀：碎料平均往內 ' + mgFast.slow + ' ／秒（' +
      mgFast.slowN + ' 塊）→ 最後 ' + mgFast.at + ' 秒 ' + mgFast.fn + ' 幀：' +
      mgFast.fast + ' ／秒（' + mgFast.fastN + ' 塊）');
+
+  /* 魔法陣與蘑菇雲借去的視線高度用完要還（v1.311.0，使用者看過實測之後選的「爆完把視線高度還回去」
+     ＋「核彈也一起還高度」）。v1.310 以前兩個都是「只退不收」：新天鵝堡施法前視線高 0，
+     施法抬到 25.9、雲再抬到 29.2，之後就一直停在那裡（換場是 keepView，也不會動它）。
+     規則型，三件事：施法／雲在的時候抬起來、雲還沒散（CLOUD_HOLD 秒內）不還、過了就還回施法前那個高度。
+     視距不驗：還的只有高度（同煙火那一條）。 */
+  const magCam = await page.evaluate(() => {
+    const one = fire => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === '新天鵝堡');
+      targetCnt = 1800; startBuild(true); completeNow(); shapePick = -1;
+      for (let i = 0; i < 20; i++) step(0.05);
+      const ty0 = ENG.camTarget.ty;
+      let up = ty0, g = 0;
+      fire();
+      while (!cloudHold && g++ < 600) { step(0.05); up = Math.max(up, ENG.camTarget.ty); }   // 推到炸開、雲生出來
+      let held = 1e9;
+      for (let i = 0; i < (CLOUD_HOLD - 0.5) / 0.05; i++) { step(0.05); held = Math.min(held, ENG.camTarget.ty); }
+      for (let i = 0; i < 20; i++) step(0.05);       // 過了 CLOUD_HOLD 再一秒
+      return { ty0: +ty0.toFixed(1), up: +up.toFixed(1), held: +held.toFixed(1), ty1: +ENG.camTarget.ty.toFixed(1) };
+    };
+    const mag = one(() => castMagic({ x: 0, z: 0 }));
+    const nuke = one(() => callNuke({ x: 0, z: 0 }, 1));
+    cleanTools();
+    return { mag, nuke, hold: CLOUD_HOLD };
+  });
+  ok('爆裂魔法、核彈的蘑菇雲散了，視線高度還回施法前',
+     [magCam.mag, magCam.nuke].every(r => r.up > r.ty0 + 10 && r.held > r.ty0 + 10 && Math.abs(r.ty1 - r.ty0) < 0.1),
+     '魔法 ' + magCam.mag.ty0 + ' → ' + magCam.mag.up + '（雲在的 ' + magCam.hold + ' 秒內最低 ' + magCam.mag.held +
+     '）→ ' + magCam.mag.ty1 + '；核彈 ' + magCam.nuke.ty0 + ' → ' + magCam.nuke.up + '（最低 ' + magCam.nuke.held +
+     '）→ ' + magCam.nuke.ty1);
 
   /* 爆點要在最低那層的圓心上，不是地面：碎料被吸到那個高度，火球就該從那裡炸開。
      火球本體再往上抬 MAG_R×FLASH_UP（免得被自己炸出來的碎料堆埋掉），
