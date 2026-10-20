@@ -3464,7 +3464,9 @@ const IDLE_EVENTS = [
   { id: 'forest', wt: 1, start: startForest, step: stepForest, stop: stopHomes },
   /* 皇宮（v1.308.0）。同樹林：掛在 homes.list 上，step 管一階一階加蓋與「蓋好了把人趕走」（見 stepPalace）；
      收尾要多收國王的王冠（見 stopPalace） */
-  { id: 'palace', wt: 1, start: startPalace, step: stepPalace, stop: stopPalace }
+  { id: 'palace', wt: 1, start: startPalace, step: stepPalace, stop: stopPalace },
+  /* 部落（v1.309.0）。就是事件一換一張款式表（見 startTribe），所以同事件一：沒有每幀的 step、收尾共用 stopHomes */
+  { id: 'tribe', wt: 1, start: startTribe, step: null, stop: stopHomes }
 ];
 /* 上一件事蓋出來的東西還剩多少（v1.186 的黏著，**判準 v1.188 換掉**）。
    舊的判準是「homes.list 上還有那一類的任何一筆」——實測那個門檻**沒有出口**
@@ -3481,9 +3483,10 @@ const IDLE_EVENTS = [
    最高點記在事件這一層、不是逐筆記：逐筆的話廢棄一筆連分母也跟著消失，
    打掉三分之一反而變回 100%。
    **算哪幾類照 homeCat**（v1.305.0 多了商店街，原本「是不是城牆」的真假值分不出第三件）：
-   事件一算房子與樹、事件二只算城牆段（城內那幾間不算，同 v1.188）、事件三算店、事件四算樹林（5）、事件五算皇宮（6）；
+   事件一算房子與樹、事件二只算城牆段（城內那幾間不算，同 v1.188）、事件三算店、事件四算樹林（5）、事件五算皇宮（6）、
+   事件六算小屋、樹、營火與圖騰柱（0、1、7——小屋就是事件一的房子換款式，換事件時上一件整批解體，兩邊不會同時在場）；
    燈架（3）哪一件都不算（v1.303.0） */
-const EV_CAT = { home: [0, 1], wall: [2], shop: [4], forest: [5], palace: [6] };
+const EV_CAT = { home: [0, 1], wall: [2], shop: [4], forest: [5], palace: [6], tribe: [0, 1, 7] };
 let evPeak = 0;                     // 這一件事曾經蓋到的最高塊數（換一件才歸零，見 rollIdleEvent）
 function evBlocks(e) {
   const cats = EV_CAT[e.id];
@@ -4204,12 +4207,13 @@ function formSlots(k, pal, put) {
   const del = (u, v, gy) => cells.delete(key(u, v, gy));
   const rect = (a0, a1, b0, b1) => (u, v) => u >= a0 && u <= a1 && v >= b0 && v <= b1;
   // 一圈牆：平面 inM 的邊界格（四鄰有一格在平面外），gy0 起 h 層。c 可以是「第幾層 → 顏色」
-  const walls = (inM, u0, u1, v0, v1, h, c) => {
+  // （g0：從第幾層砌起，事件六的高腳屋牆砌在架高的地板上）
+  const walls = (inM, u0, u1, v0, v1, h, c, g0 = 0) => {
     for (let u = u0; u <= u1; u++)
       for (let v = v0; v <= v1; v++) {
         if (!inM(u, v)) continue;
         if (inM(u + 1, v) && inM(u - 1, v) && inM(u, v + 1) && inM(u, v - 1)) continue;
-        for (let gy = 0; gy < h; gy++) set(u, v, gy, typeof c === 'function' ? c(gy) : c);
+        for (let gy = g0; gy < g0 + h; gy++) set(u, v, gy, typeof c === 'function' ? c(gy) : c);
       }
   };
   const door = (u, v, gy0 = 0, hh = 2) => { for (let gy = gy0; gy < gy0 + hh; gy++) del(u, v, gy); };
@@ -4224,13 +4228,61 @@ function formSlots(k, pal, put) {
         if (inM(u + 1, v) && inM(u - 1, v) && inM(u, v + 1) && inM(u, v - 1)) set(u, v, base + 1, pal[1]);
       }
   };
-  /* 人字頂：屋脊沿 v，每往上一層兩邊各收一格，前後兩面補成三角形的山牆（牆色）。 */
-  const gable = (u0, u1, v0, v1, base) => {
+  /* 人字頂：屋脊沿 v，每往上一層兩邊各收一格，前後兩面補成三角形的山牆（牆色）。
+     rc 給了就照層換屋頂色（事件六的茅草一層深一層淺） */
+  const gable = (u0, u1, v0, v1, base, rc) => {
     for (let s = 0; u0 + s <= u1 - s; s++) {
-      const gy = base + s, a = u0 + s, b = u1 - s;
-      for (let v = v0; v <= v1; v++) { set(a, v, gy, pal[1]); set(b, v, gy, pal[1]); }
+      const gy = base + s, a = u0 + s, b = u1 - s, c = rc ? rc(gy) : pal[1];
+      for (let v = v0; v <= v1; v++) { set(a, v, gy, c); set(b, v, gy, c); }
       for (let u = a + 1; u < b; u++) { set(u, v0, gy, pal[0]); set(u, v1, gy, pal[0]); }
     }
+  };
+  /* ── 事件六（v1.309.0）的幾個小工具。pal 五格：牆／獸皮、茅草、木頭、彩繪、深一階的茅草 ── */
+  const thatch = gy => gy % 2 ? pal[4] : pal[1];   // 茅草一層深一層淺：看得出是一圈一圈鋪上去的
+  /* 一頂圓錐（茅草頂、帳篷）：第 j 層半徑 r0 − j × step，每層只鋪外面那一圈
+     （裡面被上一層蓋住看不到）。至少 TRIBE_SHELL 格厚，而且要往裡鋪到「下一層的外緣再進一格」：
+     不然下一層最外那一圈底下是空的，上下兩層只剩對角接著、六面連不回地面（同皇宮四坡頂那一條；
+     試過固定 1.3 格，收得快的圓屋頂尖那一格就懸空了）。回傳最上面那一層的上一層 */
+  const cone = (cu0, cv0, r0, g0, step, c) => {
+    for (let j = 0; ; j++) {
+      const r = r0 - j * step, gy = g0 + j;
+      if (r < -0.2) return gy;
+      const n = Math.ceil(r + 1), inner = Math.min(r - TRIBE_SHELL, r - step - 0.65);
+      for (let u = Math.floor(cu0 - n); u <= Math.ceil(cu0 + n); u++)
+        for (let v = Math.floor(cv0 - n); v <= Math.ceil(cv0 + n); v++) {
+          const d = Math.hypot(u - cu0, v - cv0);
+          if (d <= r + 0.35 && d > inner) set(u, v, gy, c(u, v, gy));
+        }
+    }
+  };
+  /* 尖木樁圍籬：兩層高、隔一根多一層當尖頭，正面留口。方的屋子照事件一的圍籬離兩格圍一圈；
+     圓的屋子圍成圓的、半徑多 TRIBE_STAKE 格——圓圈的邊在斜角那裡是兩格厚的階梯，離兩格的話會跟
+     屋牆（也是階梯）在斜角夾死，屋簷底下那一圈被切成好幾個走不進去的口袋。地基半徑照 homeR 的 fence 那一格算 */
+  const stakes = round => {
+    const cu = W / 2, cv = D / 2, R = W / 2 + TRIBE_STAKE, n = Math.ceil(R - W / 2 + 0.5);
+    const on = round ? (u, v) => Math.hypot(u - cu, v - cv) <= R : rect(-2, W + 2, -2, D + 2);
+    for (let u = -n; u <= W + n; u++)
+      for (let v = -n; v <= D + n; v++) {
+        if (!on(u, v) || (on(u + 1, v) && on(u - 1, v) && on(u, v + 1) && on(u, v - 1))) continue;
+        if (v < cv && Math.abs(u - cu) < 1.5) continue;                     // 正面的口
+        const tall = (u + v) % 2 === 0;
+        for (let gy = 0; gy < (tall ? 3 : 2); gy++) set(u, v, gy, gy === 2 ? TRIBE_TIP : pal[2]);
+      }
+  };
+  /* 一頂帳篷：底半徑 R、H 層收到頂（沒有牆，獸皮從地面一路收上去）。兩道彩繪：一道一色、一道隔格點點；
+     正面兩格高的門口，旁邊那一條深一階（掀開的那片皮）；頂上的桿子露出來兩格、往兩邊撇一格
+     （第一版四面各撇兩格高，看過去像一朵深色的花插在帳篷頂上） */
+  const tipiAt = (cu0, cv0, R, H) => {
+    const b1 = Math.round(H * 0.3), b2 = Math.round(H * 0.55);
+    const top = cone(cu0, cv0, R, 0, R / H, (u, v, gy) =>
+      gy === b1 ? pal[3] : gy === b2 && (u + v) % 2 ? pal[1] : pal[0]);
+    for (let gy = 0; gy < 2; gy++)
+      for (let v = Math.floor(cv0 - R - 1); v < cv0; v++) del(cu0, v, gy);
+    for (let gy = 0; gy < 3; gy++)
+      for (let v = Math.floor(cv0 - R - 1); v < cv0; v++)
+        if (cells.has(key(cu0 + 1, v, gy))) { set(cu0 + 1, v, gy, pal[4]); break; }
+    set(cu0, cv0, top, pal[2]); set(cu0, cv0, top + 1, pal[2]);
+    set(cu0 - 1, cv0, top + 1, pal[2]); set(cu0 + 1, cv0, top + 1, pal[2]);
   };
   const W = k.w - 1, D = k.d - 1, mu = Math.floor(W / 2);
   switch (k.form) {
@@ -4456,6 +4508,109 @@ function formSlots(k, pal, put) {
       }
       set(W - 1, 0, k.h + 2, pal[3]);                   // 鐘面
       set(W - 1, 1, k.h + 4, pal[2]);
+      break;
+    }
+    /* ── 事件六：部落（v1.309.0，見 TRIBE_KIND）──────────────── */
+    case 'round': {
+      /* 茅草圓屋：圓形泥牆、離地第二層一圈隔一格一塊的彩繪；圓錐茅草頂往外挑 eave 格屋簷（一層收 slope 格），
+         頂上一撮草尖 */
+      const R = W / 2, disc = r => (u, v) => Math.hypot(u - R, v - R) <= r + 0.35;
+      walls(disc(R), 0, W, 0, D, k.h, pal[0]);
+      for (const c of [...cells.values()]) if (c.gy === 1 && (c.u + c.v) % 2) c.c = pal[3];
+      const top = cone(R, R, R + k.eave, k.h, k.slope, (u, v, gy) => thatch(gy));
+      set(R, R, top, pal[2]);
+      door(mu, 0);
+      if (k.fence) stakes(1);
+      break;
+    }
+    case 'tipi': {
+      /* 圓錐帳篷（d＝底的直徑，h＝幾層收到頂）。twin：右邊再搭一頂小的（底半徑 twin），兩頂的門都朝前 */
+      const R = D / 2;
+      tipiAt(R, R, R, k.h);
+      if (k.twin) tipiAt(W - k.twin, R, k.twin, Math.round(k.h * k.twin / R));
+      if (k.fence) stakes(1);
+      break;
+    }
+    case 'stilt': {
+      /* 高腳屋：木樁把地板架高 TRIBE_FLOOR 層，地板上 h 層高的竹牆、人字形茅草頂（兩側各挑一格屋簷），
+         正面一條沒有牆的前廊（一圈欄杆），一根斜靠的梯子 */
+      const FL = TRIBE_FLOOR, top = FL + k.h;
+      const pu = W >= 6 ? [0, mu, W] : [0, W], pv = D >= 6 ? [0, Math.floor(D / 2), D] : [0, D];
+      for (const u of pu) for (const v of pv) for (let gy = 0; gy < FL; gy++) set(u, v, gy, pal[2]);
+      for (let u = 0; u <= W; u++) for (let v = 0; v <= D; v++) set(u, v, FL, pal[3]);
+      walls(rect(0, W, 1, D), 0, W, 1, D, k.h, pal[0], FL + 1);
+      door(mu, 1, FL + 1);
+      for (const v of D >= 7 ? [Math.round(D / 3) + 1, Math.round(D * 2 / 3) + 1] : [Math.floor((D + 1) / 2)]) {
+        win(0, v, FL + 2); win(W, v, FL + 2);                                // 窗：側牆上面那一層
+      }
+      for (let u = 0; u <= W; u++) if (u !== mu) set(u, 0, FL + 1, pal[3]);   // 前廊的欄杆
+      gable(-1, W + 1, 0, D, top, thatch);
+      /* 屋脊前後各伸出去一格再往上翹一格（東南亞高腳屋那種翹起來的屋脊）。第一版是長屋那種兩根交叉的椽子，
+         擺在高腳屋上從正面看是兩隻耳朵、底下四根木樁是腳，像一隻動物 */
+      const rg = top + Math.floor((W + 2) / 2);                                // 屋脊那一層
+      for (const [v, s] of [[0, -1], [D, 1]]) { set(mu, v + s, rg, thatch(rg)); set(mu, v + s, rg + 1, thatch(rg + 1)); }
+      set(mu, -1, 0, pal[3]); set(mu, -1, 1, pal[3]); set(mu, -2, 0, pal[3]);   // 梯子
+      if (k.fence) stakes(0);
+      break;
+    }
+    case 'long': {
+      /* 長形茅草屋：沒有牆，茅草頂從地面一路蓋上去，斷面是一道尖拱（h 層高）；前後兩面編織的山牆，
+         正面開門（長的那幾款後面也開一個），屋脊壓一條深色的脊、兩頭的椽子交叉翹出來 */
+      const cu = W / 2, H = k.h;
+      const t = u => u < 0 || u > W ? -1 : Math.round(H * Math.pow(1 - Math.abs(u - cu) / (cu + 0.5), TRIBE_ARCH));
+      for (let u = 0; u <= W; u++) {
+        const hi = t(u), lo = Math.max(0, Math.min(hi, t(u - 1), t(u + 1)));   // 斷面要四鄰接，一格一格接上去
+        for (let v = 0; v <= D; v++) for (let gy = lo; gy <= hi; gy++) set(u, v, gy, thatch(gy));
+        for (const v of [0, D]) for (let gy = 0; gy < lo; gy++) set(u, v, gy, gy === 2 ? pal[3] : pal[0]);
+      }
+      const rt = t(Math.round(cu)) + 1;
+      for (let v = 0; v <= D; v++) set(Math.round(cu), v, rt, pal[2]);       // 壓脊
+      for (const v of [0, D]) for (const s of [-1, 1]) {                       // 兩頭交叉翹出來的椽子
+        set(Math.round(cu) + s, v, rt, pal[2]); set(Math.round(cu) + s, v, rt + 1, pal[2]);
+      }
+      door(mu, 0);
+      if (D >= 8) door(mu, D);
+      if (k.fence) stakes(0);
+      break;
+    }
+    case 'camp': {
+      /* 營火：中間一堆十字擺的柴、上面再架一根（火從那一根冒出來，見 game-tools.js 的 stepCamp），
+         外面一圈石頭，四面各一根橫躺的木頭當板凳 */
+      const c = W / 2;
+      for (let u = 0; u <= W; u++) for (let v = 0; v <= D; v++) {
+        const d = Math.hypot(u - c, v - c);
+        if (d > 1.5 && d < 2.5) set(u, v, 0, (u + v) % 2 ? pal[0] : pal[1]);
+      }
+      set(c, c, 0, pal[2]);
+      for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) set(c + a, c + b, 0, pal[2]);
+      set(c, c, 1, pal[3]);
+      for (let s = -1; s <= 1; s++) {
+        set(c + s, 0, 0, pal[4]); set(c + s, D, 0, pal[4]); set(0, c + s, 0, pal[4]); set(W, c + s, 0, pal[4]);
+      }
+      break;
+    }
+    case 'totem': {
+      /* 圖騰柱：2×2 的木柱，一節三層、每節一張臉（頂層一對白眼、中層往前凸的鼻子、底層黑嘴），一節換一個顏色；
+         最上面一隻雷鳥：兩邊張開的翅膀（翅尖往上翹）、往前伸的黃喙。pal：木、紅、青、黑、白、黃 */
+      const c0 = mu, c1 = mu + 1, seg = [pal[1], pal[2], pal[5]];
+      const N = Math.floor((k.h - 2) / 3);
+      for (let gy = 0; gy < k.h; gy++) {
+        const s = Math.floor(gy / 3), f = gy % 3, head = s >= N;
+        for (const u of [c0, c1]) for (const v of [1, 2]) {
+          let c = head ? pal[3] : seg[s % 3];
+          if (v === 1 && !head) c = f === 2 ? pal[4] : f === 0 ? pal[3] : c;
+          if (v === 1 && head && gy === k.h - 1) c = pal[4];                 // 雷鳥的眼睛
+          set(u, v, gy, c);
+        }
+        if (!head && f === 1) { set(c0, 0, gy, seg[s % 3]); set(c1, 0, gy, seg[s % 3]); }   // 鼻子
+      }
+      const wy = 3 * N - 1;                                  // 翅膀從最上面那一節的頂層張開
+      for (let u = 0; u < c0; u++) for (let g = 0; g < 2; g++) {
+        const c = g ? pal[2] : pal[1];
+        set(u, 1, wy + g, c); set(W - u, 1, wy + g, c);
+      }
+      set(0, 1, wy + 2, pal[3]); set(W, 1, wy + 2, pal[3]);   // 翅尖往上翹
+      set(c0, 0, k.h - 2, pal[5]); set(c1, 0, k.h - 2, pal[5]);   // 黃喙
       break;
     }
   }
@@ -5056,8 +5211,9 @@ function pickHomeSite(cx, cz, rad, capOut) {
 /* 燈源的燈架（v1.303.0）自己一類 3：沒有人會照這一類去找（壞了就沒了，使用者選的），見 game-tools.js〈道具：燈源〉。
    商店街的店（v1.305.0）一類 4：蓋房子、蓋城牆的人不會被派去接一間蓋一半的店，反過來也一樣。
    樹林的樹（v1.307.0）一類 5：它也是 h.tree（樹冠走得過去那一套要沿用），所以要排在 h.tree 前面。
-   皇宮的每一件（v1.308.0）一類 6 */
-const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.palace ? 6 : h.tree ? 1 : 0;
+   皇宮的每一件（v1.308.0）一類 6。
+   部落的營火與圖騰柱（v1.309.0）一類 7：蓋小屋、種樹的人不會被派去接（小屋本身是 0，就是事件一的房子） */
+const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.palace ? 6 : h.prop ? 7 : h.tree ? 1 : 0;
 const NO_TAKEN = new Set();                        // 「誰都還沒被認走」：見 updHome 接下一段
 function pickUnfinished(cx, cz, taken, cat) {
   let best = -1, bd = Infinity;
@@ -5069,8 +5225,12 @@ function pickUnfinished(cx, cz, taken, cat) {
   }
   return best;
 }
-function startHomes() {
+/* tribe 給了就是事件六（v1.309.0）：款式表換成那一種屋型的、配色換成那一種的，其餘一模一樣；
+   房子分完之後先補營火與圖騰柱（startProps）再種樹 */
+function startHomes(tribe) {
   if (!homes) homes = { list: [] };
+  const tab = tribe ? TRIBE_KIND.filter(k => k.s === tribe) : HOME_KIND;
+  const pals = tribe ? TRIBE_PAL[tribe] : HOME_PAL;
   const taken = new Set();
   const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
   /* 施工中只有偷懶的人參加（v1.134）：其他人在蓋地標。蓋完了（done／wreck）全場都算，
@@ -5126,10 +5286,10 @@ function startHomes() {
       for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;
     } else {
       // 款式要先挑：間距看的是兩家地基的大小（見 pickHomeSite）
-      const kind = pickKind(HOME_KIND, crew.length);
+      const kind = pickKind(tab, crew.length);
       const spot = pickHomeSite(cx, cz, homeR(kind));
       if (!spot) continue;                             // 沒空地了，這一組就照常閒晃
-      const pal = HOME_PAL[Math.floor(Math.random() * HOME_PAL.length)];
+      const pal = pals[Math.floor(Math.random() * pals.length)];
       const rot = Math.floor(Math.random() * 4);       // 四個方向隨機（v1.254，見 homeSlots）
       const slots = homeSlots(spot.x, spot.z, kind, pal, rot);
       /* at 是「格子座標 → 第幾格」的表，垮塌、火勢蔓延、放不放得上去都要查它。
@@ -5141,6 +5301,7 @@ function startHomes() {
                   ox, oz, rot,
                   slots, left: slots.length, n: crew.length,
                   done: false };          // 蓋好過一次了嗎（見 dropHungHome）
+      if (tribe) h.tribe = tribe;          // 一村一種屋型：下一輪接著用同一種（見 startTribe）
       homeBox(h);                          // 走路擋不擋看這個外框（見 footHome）
       markHomeF6(h);                       // 退化偵測的基準線，趁完好時算
       homes.list.push(h);
@@ -5153,6 +5314,7 @@ function startHomes() {
       w.own = homes.list[hi].id;                       // 從現在起這是他家（v1.109）
     }
   }
+  if (tribe) startProps(taken);
   startTrees(taken);
 }
 /* 一組人：領頭的那個，再拉附近幾個一起蓋（使用者：「也可以跟附近的小人一起合蓋
@@ -6542,6 +6704,151 @@ function palaceSpot(w) {
   if (!palaceRing || !palaceRing.fin) { idleSpot(w); return; }
   if (w.king) { throneSpot(w); w.hst = 'throne'; }
   else { exileSpot(w); w.hst = 'exile'; }
+}
+
+/* ── 事件六：部落（v1.309.0）──────────────────────────────────────
+   使用者：「增加閒晃事件六／類似事件一 但是是原始部落風格的小房子」。問過之後定的：
+   四種屋型（茅草圓屋、圓錐帳篷、高腳屋、長形茅草屋）**一村只抽一種**（「以上可以讓隨機都是同一種風格一起出現
+   不然混著來很奇怪」）、塊數照事件一（100～300）、加營火、圖騰柱、尖木樁圍籬，蓋好照事件一在自家附近走走。
+   沒問到的照事件一：誰去蓋、幾個人一間、蓋在哪、間距、就地挖料、剩下的人種樹——
+   所以**整件就是事件一換一張款式表**（startHomes 帶 tribe），小屋是普通的家（homeCat 0、w.own 照設）。
+   多出來的只有營火與圖騰柱（h.prop，homeCat 7）：房子分完之後沒事的人先把它們補齊，剩下的才去種樹。 */
+const TRIBE_STYLE = ['round', 'tipi', 'stilt', 'long'];
+/* 款式：一種屋型六、七款（1 人兩、三款，2 人兩款，3 人兩款，大多有一款圍尖木樁），都走 formSlots。
+   **1 人款要多幾款**：慶祝散場時大家站成一圈、隔得開，湊得成三人組的少（事件一實測 20 人 7 間 891 塊，
+   平均一間 127 塊），一村大半是 1 人款——預覽第一版每種屋型只有一款 1 人的，一村十幾間長得一模一樣。
+   塊數守事件一那兩條：100～300、不超過樣板款同人數的最大一間（1 人 105、2 人 153、3 人 276），
+   積木池那條帳才不必動（尺寸是照這兩條掃出來的，註解裡的數字是塊數）。高腳屋的 2 人款不圍：最小的一間加一圈圍籬就 168 塊。
+   w／d 是屋子本體（圍籬另外算，見 homeR）；h 各款意思不同：圓屋＝泥牆幾層、帳篷＝幾層收到頂、
+   高腳屋＝地板上的牆幾層、長屋＝尖拱幾層高。圓屋另外帶 slope（茅草頂一層往裡收幾格）、eave（屋簷挑出去幾格）；
+   雙帳篷的 twin 是右邊那一頂小帳篷的底半徑 */
+const TRIBE_KIND = [
+  { s: 'round', n: 1, id: '圓屋',         form: 'round', w: 7,  d: 7,  h: 2, slope: 0.9, eave: 0.5 },   // 105
+  { s: 'round', n: 1, id: '尖頂圓屋',     form: 'round', w: 5,  d: 5,  h: 3, slope: 0.4, eave: 0.5 },   // 103
+  { s: 'round', n: 1, id: '寬簷圓屋',     form: 'round', w: 5,  d: 5,  h: 3, slope: 0.6, eave: 1 },     // 102
+  { s: 'round', n: 2, id: '大圓屋',       form: 'round', w: 9,  d: 9,  h: 2, slope: 1.3, eave: 0.5 },   // 149
+  { s: 'round', n: 2, id: '圍籬圓屋',     form: 'round', w: 5,  d: 5,  h: 2, slope: 0.9, eave: 1, fence: 1 },   // 138
+  { s: 'round', n: 3, id: '酋長圓屋',     form: 'round', w: 11, d: 11, h: 2, slope: 1.2, eave: 1 },     // 257
+  { s: 'round', n: 3, id: '圍籬大圓屋',   form: 'round', w: 7,  d: 7,  h: 3, slope: 0.9, eave: 1, fence: 1 },   // 221
+  { s: 'tipi',  n: 1, id: '帳篷',         form: 'tipi',  w: 7,  d: 7,  h: 8 },              // 105
+  { s: 'tipi',  n: 1, id: '矮帳篷',       form: 'tipi',  w: 9,  d: 9,  h: 5 },              // 102
+  { s: 'tipi',  n: 2, id: '大帳篷',       form: 'tipi',  w: 9,  d: 9,  h: 7 },              // 144
+  { s: 'tipi',  n: 2, id: '圍籬帳篷',     form: 'tipi',  w: 5,  d: 5,  h: 9, fence: 1 },    // 127
+  { s: 'tipi',  n: 3, id: '雙帳篷',       form: 'tipi',  w: 15, d: 9,  h: 10, twin: 2 },    // 218
+  { s: 'tipi',  n: 3, id: '圍籬大帳篷',   form: 'tipi',  w: 7,  d: 7,  h: 10, fence: 1 },   // 201
+  { s: 'stilt', n: 1, id: '高腳屋',       form: 'stilt', w: 5,  d: 4,  h: 2 },              // 100
+  { s: 'stilt', n: 1, id: '窄高腳屋',     form: 'stilt', w: 3,  d: 6,  h: 3 },              // 102
+  { s: 'stilt', n: 2, id: '寬高腳屋',     form: 'stilt', w: 7,  d: 4,  h: 2 },              // 142
+  { s: 'stilt', n: 2, id: '深高腳屋',     form: 'stilt', w: 5,  d: 6,  h: 2 },              // 132
+  { s: 'stilt', n: 3, id: '大高腳屋',     form: 'stilt', w: 9,  d: 7,  h: 2 },              // 262
+  { s: 'stilt', n: 3, id: '圍籬高腳屋',   form: 'stilt', w: 7,  d: 5,  h: 2, fence: 1 },    // 244
+  { s: 'long',  n: 1, id: '茅草長屋',     form: 'long',  w: 5,  d: 8,  h: 3 },              // 102
+  { s: 'long',  n: 1, id: '高茅草屋',     form: 'long',  w: 5,  d: 5,  h: 6 },              // 102
+  { s: 'long',  n: 1, id: '寬茅草屋',     form: 'long',  w: 9,  d: 4,  h: 4 },              // 104
+  { s: 'long',  n: 2, id: '大茅草長屋',   form: 'long',  w: 7,  d: 8,  h: 4 },              // 144
+  { s: 'long',  n: 2, id: '圍籬茅草長屋', form: 'long',  w: 5,  d: 4,  h: 4, fence: 1 },    // 136
+  { s: 'long',  n: 3, id: '部落長屋',     form: 'long',  w: 9,  d: 11, h: 5 },
+  { s: 'long',  n: 3, id: '圍籬大長屋',   form: 'long',  w: 7,  d: 8,  h: 4, fence: 1 }     // 241
+];
+/* 配色：每間在自己那一種屋型的三組裡抽一組（同 HOME_PAL）。五格見 formSlots 的事件六那一段：
+   牆／獸皮、茅草、木頭、彩繪、深一階的茅草（帳篷沒有茅草：[1] 是第二道彩繪、[4] 是掀開的那片皮；
+   高腳屋的 [3] 是淺色的竹地板與欄杆） */
+/* 茅草兩色要差得夠多（預覽第一版只差一成，整頂看過去是一座沙色的階梯金字塔，跟吉薩金字塔混在一起） */
+const TRIBE_PAL = {
+  round: [
+    [[0.70, 0.47, 0.31], [0.86, 0.70, 0.36], [0.40, 0.28, 0.17], [0.90, 0.86, 0.76], [0.60, 0.44, 0.21]],
+    [[0.84, 0.74, 0.56], [0.80, 0.63, 0.31], [0.40, 0.28, 0.17], [0.62, 0.26, 0.16], [0.55, 0.41, 0.19]],
+    [[0.90, 0.86, 0.76], [0.88, 0.75, 0.43], [0.40, 0.28, 0.17], [0.26, 0.36, 0.56], [0.64, 0.50, 0.26]]
+  ],
+  tipi: [
+    [[0.90, 0.83, 0.67], [0.24, 0.38, 0.62], [0.45, 0.32, 0.20], [0.72, 0.24, 0.16], [0.76, 0.66, 0.50]],
+    [[0.84, 0.72, 0.54], [0.18, 0.16, 0.14], [0.45, 0.32, 0.20], [0.85, 0.62, 0.20], [0.70, 0.58, 0.42]],
+    [[0.94, 0.90, 0.80], [0.72, 0.24, 0.16], [0.45, 0.32, 0.20], [0.20, 0.44, 0.40], [0.80, 0.74, 0.62]]
+  ],
+  stilt: [
+    [[0.76, 0.66, 0.44], [0.70, 0.55, 0.28], [0.38, 0.27, 0.17], [0.84, 0.76, 0.52], [0.48, 0.36, 0.18]],
+    [[0.68, 0.56, 0.38], [0.76, 0.62, 0.32], [0.36, 0.26, 0.16], [0.80, 0.70, 0.46], [0.52, 0.40, 0.20]],
+    [[0.82, 0.74, 0.54], [0.62, 0.58, 0.32], [0.40, 0.29, 0.18], [0.86, 0.80, 0.58], [0.42, 0.40, 0.21]]
+  ],
+  /* 長屋的山牆比茅草深：同一個色系的話整間看過去是一坨土堆，分不出哪裡是屋頂 */
+  long: [
+    [[0.50, 0.34, 0.22], [0.84, 0.68, 0.36], [0.30, 0.21, 0.13], [0.86, 0.80, 0.66], [0.60, 0.45, 0.21]],
+    [[0.58, 0.44, 0.28], [0.76, 0.62, 0.33], [0.28, 0.20, 0.13], [0.70, 0.24, 0.16], [0.53, 0.41, 0.21]],
+    [[0.44, 0.32, 0.22], [0.88, 0.74, 0.42], [0.32, 0.23, 0.14], [0.90, 0.86, 0.76], [0.64, 0.49, 0.25]]
+  ]
+};
+const TRIBE_SHELL = 1.3;            // 圓錐（茅草頂、帳篷）每一層至少鋪多厚，見 formSlots 的 cone
+const TRIBE_FLOOR = 2;              // 高腳屋的地板架在第幾層（底下兩層是木樁）
+const TRIBE_ARCH = 0.75;            // 長屋尖拱的彎法：1 是兩面直直斜上去的人字頂，越小越鼓（0.55 看過去像一坨土堆）
+const TRIBE_TIP = [0.66, 0.50, 0.32];   // 尖木樁的尖頭（削過的木頭比較淺）
+const TRIBE_STAKE = 2.85;           // 圓的屋子，圍籬的半徑比屋子多幾格（見 formSlots 的 stakes）
+/* 營火與圖騰柱：一村一堆營火、最多 TRIBE_TOTEM 根圖騰柱（使用者選「幾根」，根數是我定的） */
+const TRIBE_PROP = {
+  camp:  { n: 1, id: '營火',   form: 'camp',  w: 9, d: 9, h: 2 },
+  totem: { n: 1, id: '圖騰柱', form: 'totem', w: 8, d: 3, h: 11 }
+};
+const TRIBE_TOTEM = 3;
+const CAMP_PAL = [[0.55, 0.55, 0.53], [0.44, 0.44, 0.43], [0.40, 0.27, 0.16], [0.20, 0.14, 0.10], [0.50, 0.36, 0.22]];
+const TOTEM_PAL = [[0.50, 0.34, 0.20], [0.74, 0.20, 0.14], [0.13, 0.50, 0.50], [0.12, 0.10, 0.09],
+                   [0.93, 0.91, 0.86], [0.92, 0.74, 0.18]];
+/* 開工：場上已經有部落的話接著用同一種屋型（一村只有一種），沒有才抽 */
+function startTribe() {
+  if (!homes) homes = { list: [] };
+  const old = homes.list.find(h => h.tribe);
+  startHomes(old ? old.tribe : TRIBE_STYLE[Math.floor(Math.random() * TRIBE_STYLE.length)]);
+}
+/* 營火與圖騰柱：房子分完之後（w.hm < 0 的人），一組接一件——先接手蓋一半的、再補營火、再補圖騰柱，
+   都齊了就停，剩下的人交給 startTrees。蓋法同樹（掛在 homes.list、不設 w.own），擺在哪同房子（pickHomeSite） */
+function startProps(taken) {
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  const free = [];
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    if (w.hm >= 0 || !steady(w) || !joins(w)) continue;
+    free.push(i);
+  }
+  for (let i = free.length - 1; i > 0; i--) {          // 洗牌（同 startHomes）
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = free[i]; free[i] = free[j]; free[j] = t;
+  }
+  let fires = 0, poles = 0;
+  for (const h of homes.list) { if (h.prop === 'camp') fires++; if (h.prop === 'totem') poles++; }
+  while (free.length) {
+    const crew = takeCrew(free);
+    let cx = 0, cz = 0;
+    for (const w of crew) { cx += w.x; cz += w.z; }
+    cx /= crew.length; cz /= crew.length;
+    let hi = pickUnfinished(cx, cz, taken, 7);
+    if (hi >= 0) {
+      for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;
+    } else {
+      const what = !fires ? 'camp' : poles < TRIBE_TOTEM ? 'totem' : '';
+      if (!what) break;                                // 都齊了：這一組跟其他人交給種樹
+      const kind = TRIBE_PROP[what];
+      const spot = pickHomeSite(cx, cz, homeR(kind));
+      if (!spot) continue;                             // 沒空地了，這一組就照常閒晃
+      const rot = Math.floor(Math.random() * 4);
+      const slots = homeSlots(spot.x, spot.z, kind, what === 'camp' ? CAMP_PAL : TOTEM_PAL, rot);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const { ox, oz } = homeOff(kind, rot);
+      const h = { id: homeSeq++, x: spot.x, z: spot.z, r: homeR(kind), kind: kind.id, at,
+                  ox, oz, rot, slots, left: slots.length, n: crew.length,
+                  prop: what, done: false };
+      if (what === 'camp') { h.flame = slots.findIndex(s => s.gy === 1); fires++; }   // 架在最上面那根柴（見 stepCamp）
+      else poles++;
+      homeBox(h);
+      markHomeF6(h);
+      homes.list.push(h);
+      hi = homes.list.length - 1;
+    }
+    taken.add(hi);
+    for (const w of crew) {
+      releaseWorker(w);
+      w.hm = hi; w.hst = ''; w.pause = 0;              // w.own 不動：營火、圖騰柱不是家
+    }
+  }
 }
 function stopHomes() {
   for (const w of workers) {

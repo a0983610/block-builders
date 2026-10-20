@@ -215,6 +215,7 @@ function step(dt) {
   stepMeteors(dt);
   stepFw(dt);
   stepFire(dt);
+  stepCamp(dt);                          // 部落的營火（v1.309.0）：蓋好、最上面那根柴還在就一直冒火苗與煙
   stepNuke(dt);
   stepMagic(dt);
   stepClouds(dt);

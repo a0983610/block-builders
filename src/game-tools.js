@@ -4530,6 +4530,43 @@ function spreadHomeFire(b) {
   }
 }
 
+/* ── 部落的營火（v1.309.0）──────────────────────────────────
+   事件六的營火（h.prop === 'camp'，見 game-workers.js 的 startProps）：蓋好過、最上面那根柴還在，就一直燒。
+   **火只是特效**（使用者選的時候講好「不會燒房子」）：火苗與煙跟燒東西的同一個樣子（同 stepFire 那兩段），
+   但不點著任何東西；那根柴被打掉火就熄，有人補回去又燒起來。晚上那一盞光見 glowLampList */
+const CAMP_HOT = 26, CAMP_SMOKE = 1.6;   // 每秒幾顆火苗、幾團煙
+function campLit(h) {
+  const sl = h.prop === 'camp' && h.done ? h.slots[h.flame] : null;
+  return sl && sl.filled ? sl : null;
+}
+function stepCamp(dt) {
+  if (!homes) return;
+  for (const h of homes.list) {
+    const sl = campLit(h);
+    if (!sl) continue;
+    h.fem = (h.fem || 0) + dt * CAMP_HOT;
+    while (h.fem >= 1) {
+      h.fem--;
+      if (hot.length > BURN_HOT) continue;              // 燃燒那一檔滿了（整片在燒）：營火讓出來
+      hot.push({
+        x: sl.x + rr(-0.35, 0.35), y: sl.y + rr(0.3, 0.6), z: sl.z + rr(-0.35, 0.35),
+        vx: rr(-0.4, 0.4), vy: rr(2.2, 4), vz: rr(-0.4, 0.4),
+        rx: Math.random() * 6, ry: Math.random() * 6,
+        s: rr(0.3, 0.6), life: rr(0.3, 0.6), g: -2.6, grow: 1.06, cool: rr(0.25, 0.5),
+        cr: 1, cg: rr(0.5, 0.82), cb: rr(0.06, 0.24), to: [0.6, 0.12, 0.02]
+      });
+    }
+    if (Math.random() < dt * CAMP_SMOKE && dust.length < BURN_SMOKE) {
+      dust.push({
+        x: sl.x + rr(-0.3, 0.3), y: sl.y + 1, z: sl.z + rr(-0.3, 0.3),
+        vx: rr(-0.4, 0.4), vy: rr(1.2, 2.4), vz: rr(-0.4, 0.4),
+        rx: Math.random() * 6, ry: Math.random() * 6,
+        life: rr(1.6, 3.2), s: rr(0.5, 1), c: rr(0.26, 0.4), g: -0.6, fade: 2.2
+      });
+    }
+  }
+}
+
 /* ── 定時炸彈 ───────────────────────────────────────────
    放下去 3 秒後炸，範圍跟大槌一樣。點在牆上就黏在牆上，
    點在地上就擺在地上——「在點選的地方」就是字面意思。 */
@@ -5585,6 +5622,7 @@ const GLOW_ATK = 0.05;          // 撞擊、煙火從 0 亮起來要多久（同
    光柱長過那一盞之後幾格內亮到全亮；斬到前下方之後光柱遠端插進地裡，那一段的燈擺回地面上多高 */
 const GLOW_EXC_AT = [6], GLOW_EXC_GROW = 6, GLOW_EXC_LOW = 1.5;
 const GLOW_TOR_UP = 0.3;        // 火把那一盞在火把頭上方多少（火苗往上竄）
+const GLOW_CAMP_UP = 1.2;       // 營火那一盞在最上面那根柴上方多少（v1.309.0）
 let glowT = 0, glowAt = 0, glowPickT = -1, glowK = 0;
 const glowHits = [], glowBursts = [];
 const glowSlots = [];           // 火的那幾盞，一盞一格 {key 哪一棟, x/y/z 現在, tx/ty/tz 要去, w 亮度, tw 要變成多亮}
@@ -5786,6 +5824,14 @@ function glowLampList(K) {
   }
   const th = ENG.torchHeads();                   // 這一幀畫出來的火把（draw 先畫動物才排燈），淡進淡出照 k
   for (let j = 0; j < th.length; j++) put('torch', th[j].x, th[j].y + GLOW_TOR_UP, th[j].z, th[j].k * glowFk(j), 0, null);
+  /* 部落的營火（v1.309.0，見 stepCamp）：一堆一盞，跟火把同一個閃法 */
+  if (homes) {
+    let j = th.length;
+    for (const h of homes.list) {
+      const sl = campLit(h);
+      if (sl) put('camp', sl.x, sl.y + GLOW_CAMP_UP, sl.z, glowFk(j++), 0, null);
+    }
+  }
   const K2 = K - _glows.length;
   if (K2 > 0) {
     glowFire(K2, dt);

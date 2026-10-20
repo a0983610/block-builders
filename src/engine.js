@@ -218,13 +218,15 @@ const ENG = (function () {
      v1.298.0 第三波（使用者：「這次做Excalibur光柱 小爆炸 火把」，看過預覽「Excalibur 先不當強光」「看起來都不錯」）：
        excal Excalibur 光柱：靠劍那一段一盞（預覽是三盞，「劍尾那邊…看不出區別 不如把燈讓出來」），12 格那一圈 2、照到 60 格；光柱中間那層的金色
        （小爆炸走 hit：炸彈、加農砲、香蕉炸彈、飛龍火球撞上去，R＝那一發的爆炸半徑）
-       torch 小獼猴的火把：火把頭上方，3 格那一圈 1.5、照到 15 格 */
+       torch 小獼猴的火把：火把頭上方，3 格那一圈 1.5、照到 15 格
+     v1.309.0：camp 事件六的營火：柴堆上方，6 格那一圈 2、照到 26 格（照得到圍著它的那幾間小屋） */
   const GLOW = { fire: { c: 0xff8a36, I: 1.5 * 5, d: 18 }, ball: { c: 0xffa040, I: 3 * 4, d: 24 },
                  hit: { c: BOOM_LAMP_C, E: 4, reach: 3 }, fw: { I: 1.2 * 35, d: 90 },
                  magic: { c: 0xff6a1a, I: 2 * 20, d: 75 }, purp: { c: 0xb070ff, I: 3 * 5, d: 30 },
                  ufo: { c: 0xcdf6ff, I: 2.5 * 8, d: 40 }, met: { c: 0xff7a2a, I: 4 * 6, d: 40 },
                  dia: { c: 0xff8a36, I: 3 * 5, d: 30 },
-                 excal: { c: 0xffc860, I: 2 * 12, d: 60 }, torch: { c: 0xff9a40, I: 1.5 * 3, d: 15 } };
+                 excal: { c: 0xffc860, I: 2 * 12, d: 60 }, torch: { c: 0xff9a40, I: 1.5 * 3, d: 15 },
+                 camp: { c: 0xff9a40, I: 2 * 6, d: 26 } };
   /* 天光、日光、霧的本來的樣子，與烏雲遮天最暗時各壓掉幾成（v1.283.0，見 setGloom）。
      天空是 index.html 的 CSS 漸層（畫布是透明的），所以另外蓋一層暗色的 div，GLOOM.sky 是它最濃多少。 */
   const HEMI_I = 1.25, SUN_I = 1.75, FOG_C = 0xbcd3e0, GLOOM_FOG = 0x363e4b;

@@ -12877,6 +12877,244 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      JSON.stringify(kingM));
   }   // ── 〈閒晃事件：皇宮〉結束
 
+  SEC: { if (!(await head('閒晃事件：部落', T_COMMIT))) break SEC;
+  /* v1.309.0，使用者：「增加閒晃事件六／類似事件一 但是是原始部落風格的小房子」，選的是四種屋型（茅草圓屋、圓錐帳篷、
+     高腳屋、長形茅草屋，一村只抽一種）、塊數照事件一、加營火／圖騰柱／尖木樁圍籬、蓋好照事件一在自家附近走走
+     （見 開發筆記〈事件六：部落（v1.309.0）〉）。整件就是事件一換一張款式表，所以事件一那幾條（蓋法、支撐、補洞、廢棄）不重驗。
+     **全部規則型**：形狀掃整張 TRIBE_KIND（同〈小人的家〉每一款那三條）；開工直接叫 startTribe，抽哪一種屋型押第一顆骰子、
+     其餘換成固定的一串（mulberry32）；格子直接標成砌好、不生積木；營火的火直接叫 stepCamp／glowLampList。量完把全域還回去。 */
+  const triT = await page.evaluate(() => {
+    const keep = { siteR, arenaR, debrisR, ev: idleEv, last: evLast, arm: evArm, ph: evPh, peak: evPeak, phase, rnd: Math.random,
+                   ws: workers.map(w => [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show, w.lazy, w.own]) };
+    cleanTools(); clearHomes(); stopIdleEvent();
+    phase = 'done';
+    const seed = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+                              t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+    const out = { workers: workers.length, nKinds: TRIBE_KIND.length, totemMax: TRIBE_TOTEM };
+    const fill = h => { for (const sl of h.slots) sl.filled = true; h.left = 0; h.done = true; homeBox(h); };
+    const triEv = IDLE_EVENTS.find(e => e.id === 'tribe'), homeEv = IDLE_EVENTS.find(e => e.id === 'home');
+
+    /* ① 每一款（＋營火、圖騰柱）× 四個方向：同〈小人的家〉每一款那三條的量法（轉得對、塊數、懸空、照規則砌得完、屋簷底下走得進去） */
+    const top = {};
+    for (const k of HOME_KIND) if (!k.form) top[k.n] = Math.max(top[k.n] || 0, homeSlots(0, 0, k, HOME_PAL[0]).length);
+    const turn = (x, z, r) => r === 0 ? [x, z] : r === 1 ? [-z, x] : r === 2 ? [-x, -z] : [z, -x];
+    const all = TRIBE_KIND.map(k => ({ k, pal: TRIBE_PAL[k.s][0], house: 1 }))
+      .concat([{ k: TRIBE_PROP.camp, pal: CAMP_PAL }, { k: TRIBE_PROP.totem, pal: TOTEM_PAL }]);
+    out.shape = all.map(({ k, pal, house }) => {
+      const s0 = homeSlots(0, 0, k, pal, 0);
+      const o = { id: k.id, n: k.n, total: s0.length, rotBad: 0, offBad: 0 };
+      for (let r = 0; r < 4; r++) {
+        const sl = homeSlots(0, 0, k, pal, r), off = homeOff(k, r);
+        const A = s0.map(s => { const p = turn(s.x, s.z, r); return p[0] + ',' + s.gy + ',' + p[1] + ',' + s.c.join(); });
+        const B = sl.map(s => s.x + ',' + s.gy + ',' + s.z + ',' + s.c.join());
+        if (A.sort().join(';') !== B.sort().join(';')) o.rotBad++;
+        if (sl.some(s => Math.round(s.x + off.ox) !== s.i || Math.round(s.z + off.oz) !== s.k)) o.offBad++;
+      }
+      const at = new Map();
+      let dup = 0;
+      s0.forEach((s, i) => { const id = s.i + ':' + s.gy + ':' + s.k; if (at.has(id)) dup++; at.set(id, i); });
+      const nb = (s, d) => at.get((s.i + d[0]) + ':' + (s.gy + d[1]) + ':' + (s.k + d[2]));
+      const f6 = new Uint8Array(s0.length), st = [];
+      s0.forEach((s, i) => { if (s.gy === 0) { f6[i] = 1; st.push(i); } });
+      while (st.length) {
+        const s = s0[st.pop()];
+        for (const d of NBR6) { const j = nb(s, d); if (j !== undefined && !f6[j]) { f6[j] = 1; st.push(j); } }
+      }
+      const fl = new Uint8Array(s0.length);
+      let built = 0;
+      for (;;) {
+        let pick = -1;
+        for (let i = 0; i < s0.length && pick < 0; i++) {
+          if (fl[i]) continue;
+          if (s0[i].gy === 0 || NBR.some(d => { const j = nb(s0[i], d); return j !== undefined && fl[j]; })) pick = i;
+        }
+        if (pick < 0) break;
+        fl[pick] = 1; built++;
+      }
+      const I0 = Math.min(...s0.map(s => s.i)) - 2, I1 = Math.max(...s0.map(s => s.i)) + 2;
+      const K0 = Math.min(...s0.map(s => s.k)) - 2, K1 = Math.max(...s0.map(s => s.k)) + 2;
+      const open = (i, kk) => !at.has(i + ':0:' + kk) && !at.has(i + ':1:' + kk);
+      const roofed = new Set(s0.filter(s => s.gy >= 2).map(s => s.i + ',' + s.k));
+      const seen = new Set(), q = [];
+      for (let i = I0; i <= I1; i++) for (const kk of [K0, K1]) { seen.add(i + ',' + kk); q.push([i, kk]); }
+      for (let kk = K0; kk <= K1; kk++) for (const i of [I0, I1]) { seen.add(i + ',' + kk); q.push([i, kk]); }
+      while (q.length) {
+        const [i, kk] = q.pop();
+        for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const ni = i + a, nk = kk + b, id = ni + ',' + nk;
+          if (ni < I0 || ni > I1 || nk < K0 || nk > K1 || seen.has(id) || !open(ni, nk)) continue;
+          seen.add(id); q.push([ni, nk]);
+        }
+      }
+      let room = 0, shut = 0;
+      for (const id of roofed) {
+        const [i, kk] = id.split(',').map(Number);
+        if (!open(i, kk)) continue;
+        room++;
+        if (!seen.has(id)) shut++;
+      }
+      return Object.assign(o, { house: !!house, dup, hang: s0.length - f6.reduce((a, v) => a + v, 0), built, room, shut, hi: top[k.n],
+                                inBand: !house || (s0.length >= 100 && s0.length <= 300 && s0.length <= top[k.n]) });
+    });
+
+    /* ② 款式表：四種屋型每一種都有 1、2、3 人的款；照人數抽（pickKind，表先照屋型濾過，同 startHomes）只抽得到那一種的那一組，每一款都抽得到 */
+    out.mix = TRIBE_STYLE.map(s => {
+      const tab = TRIBE_KIND.filter(k => k.s === s);
+      return [1, 2, 3].map(n => {
+        const got = {};
+        for (let i = 0; i < 200; i++) got[pickKind(tab, n).id] = 1;
+        return { s, n, got: Object.keys(got).sort().join('／'), want: tab.filter(k => k.n === n).map(k => k.id).sort().join('／') };
+      });
+    }).flat();
+
+    /* ③ 開工：第一輪押第一顆骰子抽到第 2 種（高腳屋），之後兩輪押別種也沿用；每一輪蓋出來的直接砌好、stopHomes 收工（同換場合）。
+          小屋都是同一種、款式都在那一種的表裡、是家（w.own 指著它、homeCat 0）；營火一堆、圖騰柱不超過上限、不算誰的家；
+          每一輪結束時有樹的話營火與圖騰柱已經齊了（沒事的人先蓋這兩樣） */
+    const resetW = () => workers.forEach((w, i) => {
+      const a = i / workers.length * Math.PI * 2;
+      releaseWorker(w); w.hm = -1; w.hst = ''; w.flee = 0; w.air = 0; w.burn = 0; w.fall = 0; w.lazy = 0; w.own = -1;
+      w.pause = 0; w.show = '';
+      w.x = Math.sin(a) * (siteR + 4); w.z = Math.cos(a) * (siteR + 4);
+    });
+    const rng = seed(17);
+    const firstAs = (v, fn) => {
+      let first = true;
+      Math.random = () => first ? (first = false, v) : rng();
+      try { return fn(); } finally { Math.random = keep.rnd; }
+    };
+    siteR = 18; arenaR = 79; debrisR = arenaR * DEBRIS_X;
+    // 事件一（startHomes 不帶 tribe）照舊不會蓋出部落的東西
+    homes = { list: [] };
+    resetW();
+    firstAs(0.5, () => startHomes());
+    out.home = { n: homes.list.length, tribe: homes.list.filter(h => h.tribe || h.prop).length };
+    homes = { list: [] };
+    resetW();
+    const rounds = [];
+    const huts = () => homes.list.filter(h => h.tribe), props = p => homes.list.filter(h => h.prop === p);
+    for (const v of [(2 + 0.5) / TRIBE_STYLE.length, 0.1, 0.9]) {
+      firstAs(v, () => startTribe());
+      const hs = huts(), styles = [...new Set(hs.map(h => h.tribe))];
+      const tab = TRIBE_KIND.filter(k => k.s === styles[0]).map(k => k.id);
+      rounds.push({ styles: styles.join(), huts: hs.length, kindOk: hs.every(h => tab.includes(h.kind)),
+                    owned: hs.every(h => workers.some(w => w.own === h.id)) && hs.every(h => homeCat(h) === 0),
+                    camp: props('camp').length, totem: props('totem').length,
+                    propOwned: homes.list.some(h => h.prop && workers.some(w => w.own === h.id)),
+                    propCrew: homes.list.filter(h => h.prop).every(h => workers.some(w => w.hm === homes.list.indexOf(h)) || h.done),
+                    trees: homes.list.filter(h => h.tree).length });
+      for (const h of homes.list) fill(h);
+      stopHomes();
+    }
+    out.rounds = rounds;
+    // 缺一塊的圖騰柱：下一輪有人接手，不另外開一根新的
+    const t0 = props('totem')[0];
+    if (t0) {
+      t0.slots[t0.slots.length - 1].filled = false; t0.left = 1;
+      const nT = props('totem').length;
+      firstAs(0.5, () => startTribe());
+      out.redo = { took: workers.some(w => w.hm === homes.list.indexOf(t0)), same: props('totem').length === nT };
+      fill(t0); stopHomes();
+    }
+
+    /* ④ 營火：蓋好過、最上面那根柴（h.flame，第 1 層那一格）在 → 冒火苗、晚上有一盞 camp 光；不點著任何東西（fires 照舊是空的）。
+          那根柴不在 → 不冒、不亮；還沒蓋好過 → 不燒 */
+    const camp = props('camp')[0];
+    {
+      const sl = campLit(camp);
+      const near = () => hot.filter(p => Math.hypot(p.x - sl.x, p.z - sl.z) < 0.6 && p.y > sl.y && p.y < sl.y + 1.2).length;
+      const glow = () => glowLampList(16).some(o => o.k === 'camp' && o.x === sl.x && o.z === sl.z);
+      const f = { lit: !!sl && sl === camp.slots[camp.flame] && sl.gy === 1 };
+      const h0 = near();
+      stepCamp(0.5);
+      f.burn = near() - h0; f.glow = glow(); f.fires = !fires || fires.length === 0;
+      sl.filled = false; camp.left = 1;
+      f.out = campLit(camp) === null;
+      const h1 = near();
+      stepCamp(0.5);
+      f.burnOff = near() - h1; f.glowOff = glow();
+      sl.filled = true; camp.left = 0; camp.done = false;
+      f.notYet = campLit(camp) === null;
+      camp.done = true;
+      out.fire = f;
+    }
+
+    /* ⑤ 分類：營火與圖騰柱自己一類（homeCat 7）——另外六類派工不挑一堆缺一塊的營火、第 7 類挑得到；
+          事件黏著數小屋、樹、營火與圖騰柱（整份清單） */
+    camp.slots[camp.flame].filled = false; camp.left = 1;
+    const ci = homes.list.indexOf(camp);
+    let tot = 0;
+    for (const h of homes.list) tot += h.slots.length - h.left;
+    out.cat = { camp: homeCat(camp), totem: t0 ? homeCat(t0) : -1, hut: homeCat(huts()[0]),
+                others: [0, 1, 2, 4, 5, 6].every(c => pickUnfinished(camp.x, camp.z, new Set(), c) !== ci),
+                mine: pickUnfinished(camp.x, camp.z, new Set(), 7) === ci, ev: evBlocks(triEv) === tot, tot };
+    fill(camp);
+
+    /* ⑥ 黏著：部落還剩四分之一以上就不重抽（骰子押在小人的家也一樣）；拆到剩不到四分之一，押小人的家就換、整村解體；押部落就留著 */
+    const force = e => {
+      let tw = 0, lo = 0;
+      for (const x of IDLE_EVENTS) tw += x.wt;
+      for (const x of IDLE_EVENTS) { if (x === e) break; lo += x.wt; }
+      Math.random = () => (lo + e.wt / 2) / tw;
+    };
+    const full0 = evBlocks(triEv);
+    try {
+      evLast = triEv; evPeak = full0; force(homeEv);
+      const stay = rollIdleEvent().id, n1 = homes.list.length;
+      evLast = triEv; evPeak = full0 / WRECK_AT + 1; force(triEv);
+      const same = rollIdleEvent().id, n2 = homes.list.length;
+      evLast = triEv; evPeak = full0 / WRECK_AT + 1; force(homeEv);
+      const swap = rollIdleEvent().id, n3 = homes.list.length;
+      out.stick = { stay, same, swap, n1, n2, n3 };
+    } finally { Math.random = keep.rnd; }
+
+    /* 動過的全域狀態還回去 */
+    stopHomes();
+    clearHomes();
+    workers.forEach((w, i) => { [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show, w.lazy, w.own] = keep.ws[i]; w.hst = ''; });
+    siteR = keep.siteR; arenaR = keep.arenaR; debrisR = keep.debrisR; phase = keep.phase;
+    idleEv = keep.ev; evLast = keep.last; evArm = keep.arm; evPh = keep.ph; evPeak = keep.peak;
+    Math.random = keep.rnd;
+    return out;
+  });
+  const tShape = triT.shape;
+  ok('部落每一款（含營火、圖騰柱）× 四個方向：轉過去的格子一一對應、ox／oz 照 homeOff 給就換得回格座標',
+     tShape.length === triT.nKinds + 2 && tShape.every(o => o.rotBad === 0 && o.offBad === 0),
+     tShape.length + ' 款 × 4 向：轉錯 ' + tShape.reduce((a, o) => a + o.rotBad, 0) + ' 向、換不回去 ' +
+     tShape.reduce((a, o) => a + o.offBad, 0) + ' 向');
+  ok('部落每一款：小屋 100～300 塊、不超過事件一樣板款同人數的最大一間；每一款（含營火、圖騰柱）不重疊、六面連得回地面、照規則砌得完',
+     tShape.every(o => o.inBand && o.dup === 0 && o.hang === 0 && o.built === o.total),
+     tShape.map(o => o.id + ' ' + o.total + (o.house ? '（' + o.n + ' 人上限 ' + o.hi + '）' : '') +
+       (o.dup || o.hang || o.built !== o.total ? '：重疊 ' + o.dup + '、懸空 ' + o.hang + '、砌得完 ' + o.built : '')).join('、'));
+  ok('部落每一款：屋簷底下的空格都從門走得進去（有門、門沒被堵，圍了尖木樁的也留了口）',
+     tShape.filter(o => o.house).every(o => o.room > 0 && o.shut === 0) && tShape.every(o => o.shut === 0),
+     tShape.map(o => o.id + ' 屋內 ' + o.room + ' 格' + (o.shut ? '、關死 ' + o.shut : '')).join('、'));
+  ok('款式表：四種屋型每一種都有 1、2、3 人的款，照人數抽只抽得到那一種的那一組（每一款都抽得到）',
+     triT.mix.length === 12 && triT.mix.every(g => g.want && g.got === g.want),
+     triT.mix.map(g => g.s + ' ' + g.n + ' 人 ' + g.got).join('；') + '（每組抽 200 次）');
+  const tr = triT.rounds;
+  ok('開工：一村只有一種屋型——第一輪抽到的那一種，之後骰子押別種也沿用；小屋是家（w.own 指著它、homeCat 0）；事件一照舊不會蓋出部落的東西',
+     tr.length === 3 && tr.every(r => r.styles === 'stilt' && r.kindOk && r.owned) && tr[0].huts > 0 &&
+     triT.home.n > 0 && triT.home.tribe === 0,
+     JSON.stringify({ workers: triT.workers, rounds: tr.map(r => ({ styles: r.styles, huts: r.huts, kindOk: r.kindOk, owned: r.owned })), home: triT.home }));
+  ok('營火與圖騰柱：一村一堆營火、圖騰柱不超過 TRIBE_TOTEM，不算誰的家；有樹的時候這兩樣已經齊了（沒事的人先蓋）；缺一塊的下一輪有人接手、不另開新的',
+     tr.every(r => r.camp <= 1 && r.totem <= triT.totemMax && !r.propOwned && r.propCrew &&
+                   (r.trees === 0 || (r.camp === 1 && r.totem === triT.totemMax))) &&
+     tr[tr.length - 1].camp === 1 && !!triT.redo && triT.redo.took && triT.redo.same,
+     JSON.stringify({ rounds: tr.map(r => ({ camp: r.camp, totem: r.totem, trees: r.trees, propOwned: r.propOwned, propCrew: r.propCrew })),
+                      redo: triT.redo }));
+  ok('營火：蓋好過、最上面那根柴在就冒火苗、晚上有一盞光；柴打掉就熄、還沒蓋好過不燒；火不會點著東西',
+     triT.fire.lit && triT.fire.burn > 0 && triT.fire.glow && triT.fire.fires && triT.fire.out &&
+     triT.fire.burnOff === 0 && !triT.fire.glowOff && triT.fire.notYet,
+     JSON.stringify(triT.fire));
+  ok('營火與圖騰柱是自己一類（homeCat 7，小屋是 0）：另外六類派工不挑它、第 7 類挑得到；事件黏著數整村（小屋、樹、營火、圖騰柱）',
+     triT.cat.camp === 7 && triT.cat.totem === 7 && triT.cat.hut === 0 && triT.cat.others && triT.cat.mine && triT.cat.ev && triT.cat.tot > 0,
+     JSON.stringify(triT.cat));
+  ok('部落還剩四分之一以上就不重抽；拆到剩不到四分之一才換（換了整村解體，抽到同一件就留著）',
+     triT.stick.stay === 'tribe' && triT.stick.n1 > 0 && triT.stick.same === 'tribe' && triT.stick.n2 === triT.stick.n1 &&
+     triT.stick.swap === 'home' && triT.stick.n3 === 0,
+     JSON.stringify(triT.stick));
+  }   // ── 〈閒晃事件：部落〉結束
+
   /* ══════════ 偷懶 ══════════ */
   await head('偷懶', T_MUST);
   /* v1.134，使用者：「建築模式下 10% 小人不去蓋地標建築 繼續他的閒晃模式（閒晃模式的事件）」
@@ -36317,7 +36555,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('立在哪：點在工地裡推到工地外緣 FL_SITE 格外；點在別座燈架上就挪開、兩座的占地不重疊',
      faim.out && faim.apart, JSON.stringify(faim));
 
-  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但六類派工（房子、樹、城牆、店、樹林、皇宮）與城內補洞都不會挑它；
+  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但七類派工（房子、樹、城牆、店、樹林、皇宮、部落的營火與圖騰柱）與城內補洞都不會挑它；
         事件黏著不數它；換一件事（rollIdleEvent 那一下整份清單解體）它留著 ── */
   const fkeep = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
@@ -36326,11 +36564,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const h = f.h, hi = homes.list.indexOf(h);
     const b = blocks.find(q => q.hh === hi && q.st === SET && q.hk === 1);          // 底座外圈那一塊
     breakBlock(b, 0, 1, 0);
-    const r = { left: h.left, cat: [0, 1, 2, 4, 5, 6].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
+    const r = { left: h.left, cat: [0, 1, 2, 4, 5, 6, 7].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
                 inside: pickInside(f.x, f.z, new Set(), 1e9) !== hi, ev: evBlocks(IDLE_EVENTS[0]) };
     const keep = [evLast, evPeak], real = Math.random;
     evLast = IDLE_EVENTS[0];
-    Math.random = () => 0.999;                                                       // 抽到最後一件（v1.308.0 起是皇宮）
+    Math.random = () => 0.999;                                                       // 抽到最後一件（v1.309.0 起是部落）
     let e;
     try { e = rollIdleEvent(); } finally { Math.random = real; evLast = keep[0]; evPeak = keep[1]; }
     r.rolled = e === IDLE_EVENTS[IDLE_EVENTS.length - 1] && e !== IDLE_EVENTS[0];
@@ -36338,7 +36576,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return r;
   });
-  ok('沒人修、不算哪一件事：缺一塊時六類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
+  ok('沒人修、不算哪一件事：缺一塊時七類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
      fkeep.left === 1 && fkeep.cat && fkeep.inside && fkeep.ev === 0 && fkeep.rolled && fkeep.stay, JSON.stringify(fkeep));
 
   /* ── 被攻擊：打它不算打地標（phase 還是 done）、會飛的東西撞得到（homeSolid）；
