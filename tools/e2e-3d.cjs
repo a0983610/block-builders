@@ -8434,7 +8434,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              placed: placedCnt, total: bp.slots.length,
              homes: hs.filter(h => !h.tree).length, slots: sum(h => !h.tree),
              trees: hs.filter(h => h.tree).length, treeSlots: sum(h => h.tree),
-             budget: TREE_BUDGET, shop: SHOP_BUDGET,
+             budget: TREE_BUDGET, shop: SHOP_BUDGET, forest: FOREST_BUDGET,
              left: hs.reduce((a, h) => a + h.left, 0) };
   });
   /* 門檻 v1.153 加上樹那一份：村子現在是「最多 43 間 5405 格的房子 ＋ 最多
@@ -8457,6 +8457,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('商店街的預算不超過最大的一圈城牆（積木池那條帳不必再加一份）',
      poolFit.shop <= poolFit.wall,
      '商店街預算 ' + poolFit.shop + ' 塊、最大的一圈城牆 ' + poolFit.wall + ' 塊（' + poolFit.wallN + '）');
+  /* 樹林（v1.307.0）同商店街的理由 */
+  ok('樹林的預算不超過最大的一圈城牆（積木池那條帳不必再加一份）',
+     poolFit.forest <= poolFit.wall,
+     '樹林預算 ' + poolFit.forest + ' 塊、最大的一圈城牆 ' + poolFit.wall + ' 塊（' + poolFit.wallN + '）');
 
   /* 房子也要「底部拆掉上面一起垮」（v1.102，使用者指定「同地標建築邏輯」）。
      規則跟 collapseUnsupported 一樣：26 鄰接、從地面那一層往上找連通，連不到的鬆脫。
@@ -12171,6 +12175,332 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      shopT.stick.swap === 'home' && shopT.stick.n3 === 0,
      JSON.stringify(shopT.stick));
   }   // ── 〈閒晃事件：商店街〉結束
+
+  /* ══════════ 閒晃事件：樹林 ══════════ */
+  SEC: { if (!(await head('閒晃事件：樹林', T_COMMIT))) break SEC;
+  /* v1.307.0，使用者：「增加閒晃事件四／種出一整片樹(比事件一更多種樹 也有更大棵的 可參考事件一的樹)」，
+     選的是地標周圍整圈、四類新樹種、幾棵兩倍大＋一棵神木當中心、一叢一叢往外擴散；看預覽時再定
+     「跟事件一那樣分散程度」「純隨機撒」（見 開發筆記〈事件四：樹林（v1.307.0）〉）。
+     **全部規則型**，寫法同〈閒晃事件：商店街〉：造最小場面、格子直接標成砌好、不生積木。
+     規劃裡的位置與款式是抽的，所以**規劃那幾下換成固定的一串骰子**（mulberry32），同一版程式每次都是同一批樹林；
+     換事件那條押骰子。量完把全域還回去。 */
+  const forT = await page.evaluate(() => {
+    const keep = { siteR, arenaR, yaw: ENG.cam.yaw, ev: idleEv, last: evLast, arm: evArm, ph: evPh, peak: evPeak,
+                   phase, ring: forestRing, rnd: Math.random,
+                   ws: workers.map(w => [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show]) };
+    cleanTools(); clearHomes(); stopIdleEvent();
+    phase = 'done';
+    const seed = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+                              t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+    const out = { budget: FOREST_BUDGET };
+    const fill = h => { for (const sl of h.slots) sl.filled = true; h.left = 0; h.done = true; homeBox(h); };
+    const fors = () => homes.list.filter(h => h.forest);
+    const ALL = FOREST_KIND.concat([FOREST_GIANT]);
+    const big0 = Math.max(...TREE_KIND.map(k => treeSlots(0, 0, k, TREE_PAL[0]).length));   // 事件一最大的那一棵（大樹）
+
+    /* ① 每一款 × 四向（椰子樹往哪邊斜看 rot）：同一格不重複、六面連回地面、照 canPlaceHome 砌得完、
+          樹幹站在地上、樹冠蓋得過樹幹（樹幹不從頂上冒出來）；樹幹露 3 層以上的那幾款擋路只擋樹幹（同事件一）、
+          柳枝只垂到 TREE_DUCK 之上（底下走得過去） */
+    out.kinds = ALL.map(k => {
+      const bad = [];
+      let n = 0, top = 0, box = 0;
+      for (let rot = 0; rot < 4; rot++) {
+        const pal = k.pals[0], S = treeSlots(0, 0, k, pal, rot);
+        const at = new Map();
+        S.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+        if (at.size !== S.length) bad.push(rot + '同格');
+        const h = { slots: S, at, done: false, tree: 1 };
+        markHomeF6(h);
+        if (S.some(s => !s.f6)) bad.push(rot + '懸空');
+        let placed = 0, moved = true;
+        while (moved) {
+          moved = false;
+          for (let i = 0; i < S.length; i++) {
+            if (S[i].filled || !canPlaceHome(h, i)) continue;
+            S[i].filled = true; placed++; moved = true;
+          }
+        }
+        if (placed !== S.length) bad.push(rot + '砌不完');
+        const trunk = S.filter(s => s.c === pal[0] || (k.mark && s.c === pal[4]));
+        if (!trunk.some(s => s.gy === 0)) bad.push(rot + '樹幹沒著地');
+        const tTop = Math.max(...trunk.map(s => s.gy));
+        if (!S.some(s => !trunk.includes(s) && s.gy > tTop)) bad.push(rot + '樹幹冒頂');
+        if (k.form === 'weep' && S.some(s => s.c !== pal[0] && s.gy <= TREE_DUCK)) bad.push(rot + '柳枝擋路');
+        homeBox(h);
+        box = Math.round((h.x1 - h.x0) * (h.z1 - h.z0));
+        if (k.th >= 3 && k.form !== 'giant' && k.form !== 'bamboo' && box !== k.tw * k.tw) bad.push(rot + '擋路框 ' + box);
+        n = S.length; top = Math.max(...S.map(s => s.gy)) + 1;
+      }
+      return { id: k.id, form: k.form, crew: k.n, n, top, box, old: TREE_KIND.some(t => t.id === k.id), bad };
+    });
+    out.big0 = big0;
+
+    /* ② 規劃：siteR 7～75 × 三檔建材（arenaR 照 arenaOf 算）。每一份都要：
+          兩棵之間照 homeSep 隔開（事件一同一把尺）、地基不伸進地標那一圈、中心不超出外緣、
+          只有一棵神木而且在第 0 階、剪過的話剪口不比 FOREST_DEEP 窄而且剪口外沒有樹、長得到的那幾階加起來不超過預算；
+          **不塞滿**：每一棵跟最近那一棵的距離是最小間距的幾倍，全部擠在 1.15 倍以內的比例
+          （塞滿的話是 98～100%，見 開發筆記）。整批合起來每一款都種得到 */
+    const plans = [], seen = {};
+    let s0 = 12345;
+    for (const cnt of CNT_OPTS) for (let sr = 7; sr <= 75; sr += 4) {
+      siteR = sr; arenaR = arenaOf(sr, cnt, cnt);
+      Math.random = seed(s0++);
+      const R = forestPlan();
+      Math.random = keep.rnd;
+      const a = siteR + HOME_NEAR, outR = Math.max(a + FOREST_DEEP, homeOut());
+      let close = 0, inSite = 0, far = 0, tight = 0;
+      for (const p of R.items) {
+        seen[p.k.id] = (seen[p.k.id] || 0) + 1;
+        const d0 = Math.hypot(p.x, p.z);
+        if (d0 - p.r < a - 1e-9) inSite++;
+        if (d0 > outR + 1e-9) far++;
+        let nn = Infinity;
+        for (const q of R.items) {
+          if (q === p) continue;
+          const d = Math.hypot(q.x - p.x, q.z - p.z);
+          if (d < homeSep(q.r, p.r) - 1e-9) close++;
+          nn = Math.min(nn, d / homeSep(q.r, p.r));
+        }
+        if (nn < 1.15) tight++;
+      }
+      const giants = R.items.filter(p => p.k === FOREST_GIANT);
+      const cutBad = Number.isFinite(R.cut) &&
+        (R.cut < a + FOREST_DEEP - 1e-9 || R.items.some(p => p.k !== FOREST_GIANT && Math.hypot(p.x, p.z) >= R.cut));
+      const sum = R.items.reduce((s, p) => s + p.slots.length, 0);
+      plans.push({ cnt, sr, n: R.items.length, sum, allow: R.allow, close: close / 2, inSite, far, cutBad,
+                   giant: giants.length === 1 && giants[0].stage === 0, tight: +(tight / R.items.length).toFixed(2) });
+    }
+    const bad = plans.filter(p => p.close || p.inSite || p.far || p.cutBad || !p.giant || p.allow < 1 ||
+                                  (p.allow > 1 && p.sum > FOREST_BUDGET) || p.tight > 0.8);
+    out.plan = { n: plans.length, bad: bad.slice(0, 4), minN: Math.min(...plans.map(p => p.n)), maxN: Math.max(...plans.map(p => p.n)),
+                 maxSum: Math.max(...plans.map(p => p.sum)), maxTight: Math.max(...plans.map(p => p.tight)),
+                 missing: FOREST_KIND.filter(k => !seen[k.id]).map(k => k.id), seen };
+
+    /* ③ 神木擺在鏡頭的側邊（四個鏡頭方向各規劃一次）：神木的方位跟鏡頭方向差 90°，所以不擋在地標前面 */
+    siteR = 18; arenaR = 79;
+    out.face = [0.3, 1.9, 3.5, 5.0].map(yaw => {
+      ENG.cam.yaw = yaw;
+      Math.random = seed(77);
+      const R = forestPlan();
+      Math.random = keep.rnd;
+      const g = R.items.find(p => p.k === FOREST_GIANT);
+      const dot = (g.x * Math.cos(yaw) + g.z * Math.sin(yaw)) / Math.hypot(g.x, g.z);
+      return { yaw, dot: +dot.toFixed(6) };
+    });
+    ENG.cam.yaw = keep.yaw;
+
+    /* ④ 一階一階長：這一階還有一棵沒種好就不長；全部種好過了才往下一階長、長的就是規劃裡那一階的那幾棵；
+          長到預算夠的那一階為止，再種好也不再長。下一階壓到的東西（這裡擺一間小房子）先拆掉 */
+    siteR = 18; arenaR = 79;
+    homes = { list: [] };
+    Math.random = seed(99);
+    forestRing = forestPlan();
+    Math.random = keep.rnd;
+    const R = forestRing;
+    forestGrow();
+    const grow = { allow: R.allow, steps: [], first: fors().map(h => h.kind) };
+    const st1 = R.items.find(it => it.stage >= 1);
+    {
+      const kind = HOME_KIND[0], slots = homeSlots(st1.x, st1.z, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: st1.x, z: st1.z, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                  oz: (kind.d - 1) / 2, slots, left: slots.length, n: 1, done: false };
+      homes.list.push(h);
+      grow.blockId = h.id;
+    }
+    const step1 = () => { forestFixT = 0; stepForest(SHOP_FIX_T); };
+    for (let k = 0; k < R.allow + 2; k++) {
+      const before = R.stage, nT = fors().length;
+      const list = fors();
+      for (let i = 0; i < list.length - 1; i++) fill(list[i]);     // 差最後一棵
+      step1();
+      const early = R.stage !== before || fors().length !== nT;
+      fill(list[list.length - 1]);
+      step1();
+      const added = fors().length - nT;
+      // 長的就是規劃裡 before 那一階（空的那幾階跳過，所以是 before～after 之間全部）
+      const want = R.items.filter(it => it.stage >= before && it.stage < R.stage).length;
+      grow.steps.push({ before, after: R.stage, early, added, want });
+    }
+    grow.giantFirst = grow.first.includes(FOREST_GIANT.id);
+    grow.blockGone = !homes.list.some(h => h.id === grow.blockId);
+    grow.total = fors().reduce((a, h) => a + h.slots.length, 0);
+    grow.final = R.stage;
+    out.grow = grow;
+
+    /* ⑤ 開工派人：站得穩的人全部掛到樹林上、w.own 不動（樹不是家）；再開一次不重新規劃 */
+    homes = { list: [] }; forestRing = null;
+    for (let i = 0; i < workers.length; i++) {
+      const a = i / workers.length * Math.PI * 2, w = workers[i];
+      releaseWorker(w); w.hm = -1; w.hst = ''; w.flee = 0; w.air = 0; w.burn = 0; w.fall = 0;
+      w.x = Math.sin(a) * (siteR + 4); w.z = Math.cos(a) * (siteR + 4);
+    }
+    const own0 = workers.map(w => w.own);
+    startForest();
+    const ring0 = forestRing, n0 = fors().length;
+    const crewed = workers.filter(w => w.hm >= 0 && homes.list[w.hm].forest).length;
+    startForest();
+    out.start = { workers: workers.length, crewed, trees: n0, same: forestRing === ring0 && fors().length === n0,
+                  own: workers.every((w, i) => w.own === own0[i]) };
+
+    /* ⑥ 散步：整片種好。forestSpot 挑的目標在附近（FOREST_WALK 以內）某一棵種好的樹底下：離樹幹一格多到樹冠邊；
+          liveSpot（聊完天、打完架）對樹林也走 forestSpot。updHome 那條路：種好的 → 走去樹下（hst 'forest'）→ 到了停一下 */
+    for (let k = 0; k < forestRing.allow + 1; k++) { for (const h of fors()) fill(h); step1(); }
+    for (const h of fors()) fill(h);
+    const w0 = workers[0];
+    const okSpot = () => {
+      for (const h of fors()) {
+        const d = Math.hypot(w0.tx - h.x, w0.tz - h.z);
+        if (d < h.ox + 1.7 - 1e-6 || d > Math.max(h.ox + 2.2, h.r - 1.2) + 1e-6) continue;
+        return Math.hypot(h.x - w0.x, h.z - w0.z) > FOREST_WALK ? 'far' : '';
+      }
+      return 'no-tree';
+    };
+    const spotBad = {};
+    for (let k = 0; k < 200; k++) {
+      const h = fors()[k % fors().length];
+      w0.x = h.x + 9; w0.z = h.z - 4;
+      if (k % 2) forestSpot(w0); else liveSpot(w0, h);
+      const e = okSpot();
+      if (e) spotBad[e] = (spotBad[e] || 0) + 1;
+    }
+    const hi = homes.list.indexOf(fors()[0]);
+    releaseWorker(w0); w0.hm = hi; w0.hst = ''; w0.pause = 0; w0.show = '';
+    w0.x = homes.list[hi].x + 9; w0.z = homes.list[hi].z;
+    updHome(w0, 0, 0.05);
+    /* 走的那一幀 strollTo 已經把壓在框裡的目標挪出來了（樹冠低的那幾款整片都在框裡，見 forestSpot），所以這裡驗「不在框裡」 */
+    const going = { hst: w0.hst, spot: homeAt(w0.tx, w0.tz) ? 'in-box' : '' };
+    w0.x = w0.tx; w0.z = w0.tz; w0.leg = 10;
+    updHome(w0, 0, 0.05);
+    out.stroll = { spotBad, going, arrived: { hst: w0.hst, pause: +w0.pause.toFixed(2) } };
+
+    /* ⑦ 散步到一半看到缺人的那一棵就去幫忙，一棵最多 HOME_TEAM 個人 */
+    const fs = fors(), ti = homes.list.indexOf(fs[1]);
+    fs[1].left = 5; for (let i = 0; i < 5; i++) fs[1].slots[fs[1].slots.length - 1 - i].filled = false;
+    for (const w of workers) { releaseWorker(w); w.hm = hi; w.hst = 'forest'; w.pause = 0; w.show = ''; }
+    for (let i = 1; i <= HOME_TEAM; i++) workers[i].hm = ti;
+    w0.hst = ''; w0.pause = 0;
+    updHome(w0, 0, 0.05);
+    const full = w0.hm;
+    workers[HOME_TEAM].hm = hi;
+    w0.hm = hi; w0.hst = ''; w0.pause = 0;
+    updHome(w0, 0, 0.05);
+    out.help = { full: full === hi, join: w0.hm === ti, team: HOME_TEAM };
+
+    /* ⑧ 打爛了不廢棄（同城牆段、店）：種好過的樹打到剩一成，wreckHomes 不收它；同樣打爛的小房子會被收掉 */
+    homes = { list: [] }; forestRing = null;
+    Math.random = seed(5);
+    forestRing = forestPlan();
+    Math.random = keep.rnd;
+    forestGrow();
+    const t0 = fors()[0];
+    fill(t0);
+    for (let i = 0; i < t0.slots.length * 0.9; i++) { t0.slots[t0.slots.length - 1 - i].filled = false; t0.left++; }
+    {
+      const kind = HOME_KIND[0], slots = homeSlots(0, 200, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: 0, z: 200, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                  oz: (kind.d - 1) / 2, slots, left: Math.ceil(slots.length * 0.9), n: 1, done: true };
+      homes.list.push(h);
+      out.wreck = { home: h.id };
+    }
+    wreckHomes();
+    out.wreck.treeStay = homes.list.includes(t0);
+    out.wreck.homeGone = !homes.list.some(h => h.id === out.wreck.home);
+
+    /* ⑨ 分類：樹林是自己一類（homeCat 5，雖然它也是 h.tree）——房子、樹、城牆、店那四類派工都不挑一棵沒種完的樹林；
+          事件黏著只有事件四數它（事件一數房子與樹，不數它） */
+    const ci = homes.list.indexOf(t0);
+    const forEv = IDLE_EVENTS.find(e => e.id === 'forest'), homeEv = IDLE_EVENTS.find(e => e.id === 'home');
+    let otherN = 0, forN = 0;
+    for (const h of homes.list) if (!h.forest) otherN += h.slots.length - h.left;
+    for (const h of fors()) forN += h.slots.length - h.left;
+    out.cat = { cat: homeCat(t0), tree: t0.tree === 1, others: [0, 1, 2, 4].every(c => pickUnfinished(t0.x, t0.z, new Set(), c) !== ci),
+                mine: pickUnfinished(t0.x, t0.z, new Set(), 5) >= 0,
+                evFor: evBlocks(forEv) === forN, evHome: evBlocks(homeEv) === otherN, forN, otherN };
+
+    /* ⑩ 黏著：樹林還剩四分之一以上就不重抽（骰子押在小人的家也一樣）；拆到剩不到四分之一，押小人的家就換、
+          整片解體；押樹林就留著 */
+    const force = e => {
+      let tot = 0, lo = 0;
+      for (const x of IDLE_EVENTS) tot += x.wt;
+      for (const x of IDLE_EVENTS) { if (x === e) break; lo += x.wt; }
+      Math.random = () => (lo + e.wt / 2) / tot;
+    };
+    homes = { list: [] }; forestRing = null;
+    Math.random = seed(6);
+    forestRing = forestPlan();
+    Math.random = keep.rnd;
+    forestGrow();
+    for (const h of fors()) fill(h);
+    const full0 = evBlocks(forEv);
+    evLast = forEv; evPeak = full0; force(homeEv);
+    const stay = rollIdleEvent().id;
+    Math.random = keep.rnd;
+    const n1 = fors().length;
+    evLast = forEv; evPeak = full0 / WRECK_AT + 1; force(forEv);
+    const same = rollIdleEvent().id, n2 = fors().length;
+    Math.random = keep.rnd;
+    evLast = forEv; evPeak = full0 / WRECK_AT + 1; force(homeEv);
+    const swap = rollIdleEvent().id, n3 = fors().length;
+    Math.random = keep.rnd;
+    out.stick = { stay, same, swap, n1, n2, n3 };
+
+    /* 動過的全域狀態還回去 */
+    clearHomes();
+    workers.forEach((w, i) => { [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show] = keep.ws[i]; w.hst = ''; });
+    siteR = keep.siteR; arenaR = keep.arenaR; ENG.cam.yaw = keep.yaw; phase = keep.phase;
+    idleEv = keep.ev; evLast = keep.last; evArm = keep.arm; evPh = keep.ph; evPeak = keep.peak;
+    forestRing = keep.ring; Math.random = keep.rnd;
+    return out;
+  });
+  /* 兩倍大的那幾款＝新款裡三個人種的（神木除外） */
+  const fk = forT.kinds, fNew = fk.filter(k => !k.old), fGiant = fk.find(k => k.form === 'giant');
+  const fBig = fNew.filter(k => k !== fGiant && k.crew === 3);
+  ok('樹林的款式（每一款 × 四向）：六面連回地面、照 canPlaceHome 砌得完、樹幹著地不冒頂、樹下走得過去；比事件一多、兩倍大的在大樹的 1.8～2.6 倍、神木三倍以上而且最大',
+     fk.every(k => k.bad.length === 0) && fNew.length > 0 && fk.length > fk.filter(k => k.old).length &&
+     ['weep', 'palm', 'bamboo', 'column'].every(f => fNew.some(k => k.form === f)) &&
+     fBig.length >= 2 && fBig.every(k => k.n >= forT.big0 * 1.8 && k.n <= forT.big0 * 2.6) &&
+     !!fGiant && fGiant.n >= forT.big0 * 3 && fk.every(k => k === fGiant || k.n < fGiant.n),
+     fk.map(k => k.id + ' ' + k.n + ' 塊／' + k.top + ' 層' + (k.bad.length ? '（' + k.bad.join('、') + '）' : '')).join('；') +
+     '（事件一最大 ' + forT.big0 + ' 塊）');
+  ok('規劃（siteR 7～75 × 三檔建材，固定骰子）：照事件一的間距、不伸進地標、不出界、一棵神木在第 0 階、剪口不窄於 FOREST_DEEP、長得到的不超過預算、沒有塞滿；每一款都種得到',
+     forT.plan.n >= 50 && forT.plan.bad.length === 0 && forT.plan.missing.length === 0,
+     forT.plan.n + ' 份規劃，' + forT.plan.minN + '～' + forT.plan.maxN + ' 棵、長得到的最多 ' + forT.plan.maxSum + ' 塊（預算 ' +
+     forT.budget + '）；擠在最小間距 1.15 倍以內的比例最多 ' + forT.plan.maxTight + '；每款棵數 ' + JSON.stringify(forT.plan.seen) +
+     (forT.plan.bad.length ? '；壞的：' + JSON.stringify(forT.plan.bad) : '') +
+     (forT.plan.missing.length ? '；沒種到：' + forT.plan.missing.join('、') : ''));
+  ok('神木擺在鏡頭的側邊（四個鏡頭方向都跟鏡頭方向差 90°），不擋在地標前面',
+     forT.face.every(f => Math.abs(f.dot) < 1e-6), JSON.stringify(forT.face));
+  const fgs = forT.grow.steps.filter(s => s.before < forT.grow.allow);
+  ok('一階一階長：第 0 階有神木；還有一棵沒種好就不長，全部種好過了才長下一階（長的就是規劃裡那一階，空的那幾階跳過），長到預算夠的那一階就停；壓到的房子先拆掉',
+     forT.grow.giantFirst && fgs.length > 0 &&
+     fgs.every(s => !s.early && s.after > s.before && s.added === s.want && s.added > 0) &&
+     forT.grow.final === forT.grow.allow && forT.grow.steps.every(s => !s.early) &&
+     forT.grow.steps.filter(s => s.before >= forT.grow.allow).every(s => s.after === s.before && s.added === 0) &&
+     forT.grow.total <= forT.budget && forT.grow.blockGone,
+     JSON.stringify(forT.grow));
+  ok('開工：站得穩的人全部掛到樹林上、w.own 不動（樹不是家）；再開一次不重新規劃',
+     forT.start.crewed === forT.start.workers && forT.start.trees > 0 && forT.start.same && forT.start.own,
+     JSON.stringify(forT.start));
+  ok('散步：目標在附近某一棵種好的樹底下（離樹幹一格多到樹冠邊）；走到了停一下（liveSpot 對樹林也這樣挑）',
+     Object.keys(forT.stroll.spotBad).length === 0 && forT.stroll.going.hst === 'forest' && !forT.stroll.going.spot &&
+     forT.stroll.arrived.hst === '' && forT.stroll.arrived.pause > 0,
+     JSON.stringify(forT.stroll));
+  ok('散步到一半看到缺人的那一棵就去幫忙，一棵最多 HOME_TEAM 個人',
+     forT.help.full && forT.help.join, JSON.stringify(forT.help));
+  ok('樹林的樹打爛了不廢棄、留著等人補（同城牆段、店）；同樣打爛的小房子照舊廢棄',
+     forT.wreck.treeStay && forT.wreck.homeGone, JSON.stringify(forT.wreck));
+  ok('樹林是自己一類（雖然也是 h.tree）：另外四類派工不挑它，事件黏著只有樹林數它',
+     forT.cat.cat === 5 && forT.cat.tree && forT.cat.others && forT.cat.mine && forT.cat.evFor && forT.cat.evHome && forT.cat.forN > 0,
+     JSON.stringify(forT.cat));
+  ok('樹林還剩四分之一以上就不重抽；拆到剩不到四分之一才換（換了整片解體，抽到同一件就留著）',
+     forT.stick.stay === 'forest' && forT.stick.n1 > 0 && forT.stick.same === 'forest' && forT.stick.n2 === forT.stick.n1 &&
+     forT.stick.swap === 'home' && forT.stick.n3 === 0,
+     JSON.stringify(forT.stick));
+  }   // ── 〈閒晃事件：樹林〉結束
 
   /* ══════════ 偷懶 ══════════ */
   await head('偷懶', T_MUST);
@@ -35612,7 +35942,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('立在哪：點在工地裡推到工地外緣 FL_SITE 格外；點在別座燈架上就挪開、兩座的占地不重疊',
      faim.out && faim.apart, JSON.stringify(faim));
 
-  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但四類派工（房子、樹、城牆、店）與城內補洞都不會挑它；
+  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但五類派工（房子、樹、城牆、店、樹林）與城內補洞都不會挑它；
         事件黏著不數它；換一件事（rollIdleEvent 那一下整份清單解體）它留著 ── */
   const fkeep = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
@@ -35621,11 +35951,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const h = f.h, hi = homes.list.indexOf(h);
     const b = blocks.find(q => q.hh === hi && q.st === SET && q.hk === 1);          // 底座外圈那一塊
     breakBlock(b, 0, 1, 0);
-    const r = { left: h.left, cat: [0, 1, 2, 4].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
+    const r = { left: h.left, cat: [0, 1, 2, 4, 5].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
                 inside: pickInside(f.x, f.z, new Set(), 1e9) !== hi, ev: evBlocks(IDLE_EVENTS[0]) };
     const keep = [evLast, evPeak], real = Math.random;
     evLast = IDLE_EVENTS[0];
-    Math.random = () => 0.999;                                                       // 抽到最後一件（v1.305.0 起是商店街）
+    Math.random = () => 0.999;                                                       // 抽到最後一件（v1.307.0 起是樹林）
     let e;
     try { e = rollIdleEvent(); } finally { Math.random = real; evLast = keep[0]; evPeak = keep[1]; }
     r.rolled = e === IDLE_EVENTS[IDLE_EVENTS.length - 1] && e !== IDLE_EVENTS[0];
@@ -35633,7 +35963,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return r;
   });
-  ok('沒人修、不算哪一件事：缺一塊時四類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
+  ok('沒人修、不算哪一件事：缺一塊時五類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
      fkeep.left === 1 && fkeep.cat && fkeep.inside && fkeep.ev === 0 && fkeep.rolled && fkeep.stay, JSON.stringify(fkeep));
 
   /* ── 被攻擊：打它不算打地標（phase 還是 done）、會飛的東西撞得到（homeSolid）；

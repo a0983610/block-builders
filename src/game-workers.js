@@ -3452,7 +3452,10 @@ const IDLE_EVENTS = [
   { id: 'wall', wt: 1, start: startWall, step: stepWall, stop: stopHomes },
   /* 商店街（v1.305.0）。同城牆：掛在 homes.list 上、收尾共用 stopHomes；
      step 管一階一階往上加蓋（見 stepShop） */
-  { id: 'shop', wt: 1, start: startShop, step: stepShop, stop: stopHomes }
+  { id: 'shop', wt: 1, start: startShop, step: stepShop, stop: stopHomes },
+  /* 樹林（v1.307.0）。同商店街：掛在 homes.list 上、收尾共用 stopHomes；
+     step 管一階一階往外長（見 stepForest） */
+  { id: 'forest', wt: 1, start: startForest, step: stepForest, stop: stopHomes }
 ];
 /* 上一件事蓋出來的東西還剩多少（v1.186 的黏著，**判準 v1.188 換掉**）。
    舊的判準是「homes.list 上還有那一類的任何一筆」——實測那個門檻**沒有出口**
@@ -3469,8 +3472,8 @@ const IDLE_EVENTS = [
    最高點記在事件這一層、不是逐筆記：逐筆的話廢棄一筆連分母也跟著消失，
    打掉三分之一反而變回 100%。
    **算哪幾類照 homeCat**（v1.305.0 多了商店街，原本「是不是城牆」的真假值分不出第三件）：
-   事件一算房子與樹、事件二只算城牆段（城內那幾間不算，同 v1.188）、事件三算店；燈架（3）哪一件都不算（v1.303.0） */
-const EV_CAT = { home: [0, 1], wall: [2], shop: [4] };
+   事件一算房子與樹、事件二只算城牆段（城內那幾間不算，同 v1.188）、事件三算店、事件四算樹林（5）；燈架（3）哪一件都不算（v1.303.0） */
+const EV_CAT = { home: [0, 1], wall: [2], shop: [4], forest: [5] };
 let evPeak = 0;                     // 這一件事曾經蓋到的最高塊數（換一件才歸零，見 rollIdleEvent）
 function evBlocks(e) {
   const cats = EV_CAT[e.id];
@@ -4467,12 +4470,25 @@ function formSlots(k, pal, put) {
    順序是樹幹由下往上 → 樹冠一層一層、每層由內往外、一層換一個繞行方向。
    照這個順序砌看起來才是「長出來」的，而且連號的兩格是真的相鄰
    （同 homeSlots 沿周長生的理由：小人是照順序認格子的，跳來跳去就是在走路。
-   實測連號平均跳 1.7～2.2 格，不排的話是 2.4～3.2）。 */
-function treeSlots(hx, hz, k, pal) {
+   實測連號平均跳 1.7～2.2 格，不排的話是 2.4～3.2）。
+
+   事件四的樹林（v1.307.0）多了五種樹形與三樣細節，全部接在同一支裡（見 FOREST_KIND）：
+     weep 柳樹（圓冠外圈垂下一條條枝條）、palm 椰子樹（斜長的樹幹 ＋ 頂上一圈下垂的葉）、
+     bamboo 竹叢（好幾根竹子各自站在地上）、column 柏樹（細長的火焰形）、
+     giant 神木（3 格粗幹、幾團樹冠疊起來、板根、注連繩）；
+     mark 樹皮花紋（spot 白樺的黑斑／ring 一圈一圈）用 pal[4]。
+   垂下來的那些（柳枝、椰葉尖）在清單裡排得比掛著它的那一格前面也沒關係：
+   homeFree 挑的是「第一個放得上去的」，撐著它的那一格砌好之前它只是被跳過。
+   rot 只有椰子樹用（往哪邊斜，ROT_FACE 那四個方向）。 */
+function treeSlots(hx, hz, k, pal, rot) {
   const c0 = (k.tw - 1) / 2;                     // 樹幹中心（2 格粗時落在 0.5）
   const cells = new Map();                       // i:gy:kk → { i, gy, kk, c, d, a }
   const key = (i, gy, kk) => i + ':' + gy + ':' + kk;
   const hash = (i, gy, kk, a, b, c) => (((i * a + kk * b + gy * c) % 6) + 6) % 6;
+  // 樹幹的一格（花紋見上面 mark）。d −1 讓它在同一層裡排最前面
+  const stem = (i, gy, kk) => cells.set(key(i, gy, kk), { i, gy, kk, d: -1, a: 0,
+    c: k.mark === 'spot' && gy > 0 && hash(i, gy, kk, 5, 11, 3) === 0 ? pal[4]
+     : k.mark === 'ring' && gy % 3 === 2 ? pal[4] : pal[0] });
   // 葉色交錯、外圈偶爾掛一顆果子：都用位置算，同一棵樹每次長出來要一樣
   const leafC = (i, gy, kk, edge) =>
     edge && k.fruit && hash(i, gy, kk, 23, 31, 7) === 0 ? pal[3]
@@ -4485,24 +4501,127 @@ function treeSlots(hx, hz, k, pal) {
   };
   /* 一層樹葉：半徑 r 的圓盤。只有最外那一圈（離邊 0.55 格以內）才挑得掉，
      裡面一定留——裡面也挑的話樹冠會被打成蜂窩，看過去是一堆破洞。 */
-  const disc = (gy, r) => {
+  /* 圓心預設在樹幹中心；神木那幾團偏一邊的樹冠給 (ci, ck) */
+  const disc = (gy, r, ci = c0, ck = c0) => {
     if (r < 0.4) return;
-    const R = Math.ceil(r + c0);
+    const R = Math.ceil(r + Math.max(Math.abs(ci), Math.abs(ck)));
     for (let i = -R; i <= R; i++)
       for (let kk = -R; kk <= R; kk++) {
-        const d = Math.hypot(i - c0, kk - c0);
+        const d = Math.hypot(i - ci, kk - ck);
         if (d > r + 0.15) continue;                // 放寬到 0.35 的話小樹冠會是個方塊
         leaf(i, gy, kk, d > r - 0.55);
       }
   };
+  // 一團橢球樹冠：中心那一層 cy、半徑 rx、半高 ry（ball 與神木共用）
+  const blob = (cy, rx, ry, ci, ck) => {
+    for (let gy = Math.ceil(cy - ry); gy <= cy + ry; gy++) {
+      const dy = (gy - cy) / ry;
+      disc(gy, rx * Math.sqrt(Math.max(0, 1 - dy * dy)), ci, ck);
+    }
+  };
   let trunkTop;
-  if (k.form === 'ball') {
+  if (k.form === 'ball' || k.form === 'weep') {
     const ry = Math.round(k.ry);
     const cy = k.th + ry;                          // 樹冠中心那一層
     trunkTop = cy;
     for (let gy = k.th; gy <= cy + ry; gy++) {
       const dy = (gy - cy) / k.ry;
       disc(gy, k.rx * Math.sqrt(Math.max(0, 1 - dy * dy)));
+    }
+    if (k.form === 'weep') {
+      /* 柳枝：樹冠外圈（離邊 1.3 格以內）每一柱從最低那一格往下垂，垂到 k.hang 層。
+         只垂到第 3 層以上（TREE_DUCK 之上）：枝條底下還是走得過去，不會變成一圈簾子擋路。
+         隔幾柱少垂一格、挑掉六分之一，看過去才是一條一條的，不是一片布 */
+      const low = new Map();
+      for (const c of cells.values()) {
+        if (Math.hypot(c.i - c0, c.kk - c0) <= k.rx - 1.3) continue;
+        const id = c.i + ':' + c.kk;
+        if (!low.has(id) || c.gy < low.get(id).gy) low.set(id, c);
+      }
+      for (const c of low.values()) {
+        if (hash(c.i, 0, c.kk, 13, 7, 0) === 0) continue;
+        const end = k.hang + (hash(c.i, 1, c.kk, 3, 5, 0) < 2 ? 1 : 0);
+        for (let gy = c.gy - 1; gy >= end; gy--) leaf(c.i, gy, c.kk, false);
+      }
+    }
+  } else if (k.form === 'palm') {
+    /* 椰子樹：樹幹往 rot 那一邊斜（越高斜越多，二次曲線），頂上一圈八片葉子往外伸、往下垂，
+       葉子底下掛幾顆椰子。斜的那一下多墊一格，不然換柱的地方只有對角接著（六面連不回地面） */
+    const [fx, fz] = ROT_FACE[(rot || 0) & 3];
+    const H = k.th;
+    const off = gy => Math.round(k.lean * (gy / H) ** 2);
+    for (let gy = 0; gy <= H; gy++) {
+      const o = off(gy);
+      stem(o * fx, gy, o * fz);
+      if (gy > 0 && o !== off(gy - 1)) stem(o * fx, gy - 1, o * fz);
+    }
+    const ti = off(H) * fx, tk = off(H) * fz;     // 樹頂
+    leaf(ti, H + 1, tk, false);                    // 頂上冒出來的新芽
+    /* 一片葉子：往 (dx, dz) 伸 L 格，每格高度照 drop 往下掉；高度變的地方整段補滿（直的一條），
+       斜的方向每走一步先橫著墊一格（同樹幹斜的那一招） */
+    const frond = (dx, dz, L) => {
+      let pk = tk, py = H + 1;
+      for (let s = 1; s <= L; s++) {
+        const y = H + 1 - (s <= 1 ? 0 : s - 1);
+        const ni = ti + dx * s, nk = tk + dz * s;
+        if (dx && dz) leaf(ni, py, pk, false);       // 斜的：先橫著墊一格
+        for (let gy = py; gy >= y; gy--) leaf(ni, gy, nk, false);
+        pk = nk; py = y;
+      }
+    };
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) frond(dx, dz, k.rx | 0);
+    for (const [dx, dz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) frond(dx, dz, Math.round(k.rx * 0.7));
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1]])
+      cells.set(key(ti + dx, H - 1, tk + dz), { i: ti + dx, gy: H - 1, kk: tk + dz, c: pal[3], d: 1, a: 0 });
+    trunkTop = -1;                                 // 樹幹上面自己畫過了
+  } else if (k.form === 'bamboo') {
+    /* 竹叢：半徑 rx 裡挑三分之一的格子各立一根竹子（正中間那根一定有），高度 ry 上下差三層，
+       一根一格粗、每三節一圈深色的節（mark ring）；竹梢頂上一格葉子，往下兩層各往一邊撇出一兩格葉子。
+       竹子是一根一根各自站在地上的，所以這一款沒有「一根樹幹」 */
+    const R = Math.ceil(k.rx);
+    const poles = [];
+    for (let i = -R; i <= R; i++)
+      for (let kk = -R; kk <= R; kk++)
+        if (Math.hypot(i, kk) <= k.rx && ((!i && !kk) || hash(i, 0, kk, 7, 11, 0) < 2))
+          poles.push([i, kk, k.ry - 1 + hash(i, 0, kk, 5, 3, 0) % 4]);
+    for (const [i, kk, H] of poles) {
+      leaf(i, H + 1, kk, false);
+      for (let j = 0; j < 3; j++) {
+        const gy = H - j * 2, [dx, dz] = [[1, 0], [0, 1], [-1, 0], [0, -1]][hash(i, gy, kk, 3, 7, 1) % 4];
+        leaf(i + dx, gy, kk + dz, false);
+        if (j < 2) leaf(i + dx * 2, gy, kk + dz * 2, false);
+      }
+    }
+    for (const [i, kk, H] of poles) for (let gy = 0; gy <= H; gy++) stem(i, gy, kk);
+    trunkTop = -1;
+  } else if (k.form === 'column') {
+    /* 柏樹：細長的火焰形。下面三成從 0.75 倍收到最寬，再往上一路收尖；最上面兩層一根單格的尖
+       （同 cone 的塔尖）。樹幹探到塔尖底下三層 */
+    for (let t = 0; t < k.ry; t++) {
+      const u = t / (k.ry - 1);
+      const r = t >= k.ry - 2 ? 0.45
+              : u < 0.3 ? k.rx * (0.75 + 0.25 * u / 0.3) : k.rx * (1 - (u - 0.3) / 0.7) ** 0.7;
+      disc(k.th + t, r);
+    }
+    trunkTop = k.th + k.ry - 3;
+  } else if (k.form === 'giant') {
+    /* 神木：幾團橢球樹冠疊起來（lobes：[偏 i, 樹冠中心離樹幹露出那一層多高, 偏 k, rx, ry]），
+       粗幹 3 格穿到最上面那一團的中心；地面一圈板根、離地 rope 層繞一圈注連繩
+       （繩子 pal[4]，四面垂一條白色的紙垂 pal[3]） */
+    for (const [di, dy, dk, rx, ry] of k.lobes) blob(k.th + dy, rx, ry, c0 + di, c0 + dk);
+    trunkTop = k.th + k.lobes[k.lobes.length - 1][1];
+    const lo = -1, hi = k.tw;                      // 樹幹外面那一圈
+    for (let i = lo; i <= hi; i++)
+      for (let kk = lo; kk <= hi; kk++) {
+        if (i >= 0 && i < k.tw && kk >= 0 && kk < k.tw) continue;
+        if ((i === lo || i === hi) && (kk === lo || kk === hi)) continue;   // 板根不包角
+        stem(i, 0, kk);
+        cells.set(key(i, k.rope, kk), { i, gy: k.rope, kk, c: pal[4], d: 0, a: 0 });
+      }
+    for (const [i, kk] of [[c0, lo - 1], [c0, hi + 1], [lo - 1, c0], [hi + 1, c0]]) stem(i, 0, kk);
+    for (const [i, kk] of [[c0, lo], [c0, hi], [lo, c0], [hi, c0]]) {
+      stem(i, 1, kk);                              // 板根往上爬一格
+      cells.set(key(i, k.rope - 1, kk), { i, gy: k.rope - 1, kk, c: pal[3], d: 0, a: 0 });
     }
   } else if (k.form === 'cone') {
     /* 針葉塔：半徑一路收到 0，兩層一階讓側面有鋸齒。
@@ -4528,8 +4647,7 @@ function treeSlots(hx, hz, k, pal) {
   // 樹幹（蓋過樹冠：同一格上樹幹優先，被砸開才看得到裡面是幹不是葉）
   for (let gy = 0; gy <= trunkTop; gy++)
     for (let i = 0; i < k.tw; i++)
-      for (let kk = 0; kk < k.tw; kk++)
-        cells.set(key(i, gy, kk), { i, gy, kk, c: pal[0], d: -1, a: 0 });
+      for (let kk = 0; kk < k.tw; kk++) stem(i, gy, kk);
   /* 連通篩：只留「六面連得回地面」的那些。挑掉外圈那一步有可能留下孤零零的一片葉子，
      而那種葉子完好時 f6 就是 false，之後永遠不會被垮塌判定收掉（見 markHomeF6）——
      與其讓它掛在半空，不如一開始就不要生出來。 */
@@ -4879,6 +4997,10 @@ function wallHitsSite(h, r) {
   const x = Math.max(h.wx0, Math.min(0, h.wx1)), z = Math.max(h.wz0, Math.min(0, h.wz1));
   return x * x + z * z < r * r;
 }
+/* 兩間（兩棵）的中心至少隔多遠：至少 HOME_GAP，而且兩家的地基不能碰到（v1.99 起有圍籬大屋，
+   地基半徑 6.7——固定 12 的話兩間會疊在一起）。ra／rb 是兩邊的地基半徑（homeR／treeR／h.r）。
+   v1.307.0 從 pickHomeSite 抽出來：事件四的樹林照同一把尺擺（使用者：「跟事件一那樣分散程度」） */
+const homeSep = (ra, rb) => Math.max(HOME_GAP, ra + rb + 3);
 /* 找一塊空地：從這一組人現在站的方位往外找，避開已經蓋好的房子與樹。
    找不到就回 null（那一組人就照常閒晃，不硬塞）。
    capOut 給了就用它當外緣（v1.186，城內那幾間房子要留在牆裡面）。 */
@@ -4893,8 +5015,7 @@ function pickHomeSite(cx, cz, rad, capOut) {
     const a = base + rr(-HOME_ARC, HOME_ARC), r = rr(lo, hi);
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     let ok = true;
-    /* 隔多遠：至少 HOME_GAP，而且兩家的地基不能碰到（v1.99 起有圍籬大屋，
-       地基半徑 6.7——固定 12 的話兩間會疊在一起）。
+    /* 隔多遠見 homeSep。
        城牆改用整段的外框比（v1.186）：它又直又長，外接圓半徑 8 以上，
        拿圓去比的話城內整片都會被判成「離牆太近」，一間都放不進去。 */
     for (const h of homes.list) {
@@ -4903,8 +5024,7 @@ function pickHomeSite(cx, cz, rad, capOut) {
             z > h.wz0 - rad - 1 && z < h.wz1 + rad + 1) { ok = false; break; }
         continue;
       }
-      if ((h.x - x) ** 2 + (h.z - z) ** 2 <
-          Math.max(HOME_GAP, h.r + rad + 3) ** 2) { ok = false; break; }
+      if ((h.x - x) ** 2 + (h.z - z) ** 2 < homeSep(h.r, rad) ** 2) { ok = false; break; }
     }
     if (ok) for (const t2 of trees)
       if ((t2.x - x) ** 2 + (t2.z - z) ** 2 < (HOME_TREE + t2.r) ** 2) { ok = false; break; }
@@ -4924,8 +5044,9 @@ function pickHomeSite(cx, cz, rad, capOut) {
    於是第二組之後全部併進第一間，一輪只蓋得出一間（實測 20 人 10 個離隊只蓋 1 間）。
    間數比組數多的時候會有一兩間排到下一輪，那是排隊、不是沒人管。 */
 /* 燈源的燈架（v1.303.0）自己一類 3：沒有人會照這一類去找（壞了就沒了，使用者選的），見 game-tools.js〈道具：燈源〉。
-   商店街的店（v1.305.0）一類 4：蓋房子、蓋城牆的人不會被派去接一間蓋一半的店，反過來也一樣 */
-const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.tree ? 1 : 0;
+   商店街的店（v1.305.0）一類 4：蓋房子、蓋城牆的人不會被派去接一間蓋一半的店，反過來也一樣。
+   樹林的樹（v1.307.0）一類 5：它也是 h.tree（樹冠走得過去那一套要沿用），所以要排在 h.tree 前面 */
+const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.tree ? 1 : 0;
 const NO_TAKEN = new Set();                        // 「誰都還沒被認走」：見 updHome 接下一段
 function pickUnfinished(cx, cz, taken, cat) {
   let best = -1, bd = Infinity;
@@ -5529,7 +5650,7 @@ function liveShop(w, h, dt) {
   if (w.show || w.pause > 0) { idleWait(w, dt); return; }
   if (w.hst !== 'shop') {
     w.hst = 'shop';
-    if (shopHelp(w)) return;
+    if (teamHelp(w, 4)) return;
     shopSpot(w);
   }
   if (!strollTo(w, dt)) return;
@@ -5538,11 +5659,12 @@ function liveShop(w, h, dt) {
   rollShow(w);
   w.hst = '';
 }
-function shopHelp(w) {
+/* 附近缺人的那一間（cat 照 homeCat：店 4、樹林 5），一間最多 HOME_TEAM 人；有就把 w 派過去 */
+function teamHelp(w, cat) {
   let best = -1, bd = Infinity;
   for (let i = 0; i < homes.list.length; i++) {
     const h = homes.list[i];
-    if (!h.shop || h.left <= 0) continue;
+    if (homeCat(h) !== cat || h.left <= 0) continue;
     let n = 0;
     for (const o of workers) if (o.hm === i) n++;
     if (n >= HOME_TEAM) continue;
@@ -5571,6 +5693,272 @@ function shopSpot(w) {
   const d = rr(SHOP_FRONT[0], SHOP_FRONT[1]);
   w.lkx = h.x + fx * half - fz * j; w.lkz = h.z + fz * half + fx * j;
   w.tx = w.lkx + fx * d; w.tz = w.lkz + fz * d;
+}
+/* ── 事件四：樹林（v1.307.0）──────────────────────────────────────
+   使用者：「增加閒晃事件四／種出一整片樹(比事件一更多種樹 也有更大棵的 可參考事件一的樹)」，
+   選的是：地標周圍整圈、新樹種四類（四季色樹、特殊樹形、細高型、大型巨木）都要、
+   幾棵約兩倍的大樹加一棵三倍以上的神木當中心、一叢一叢往外擴散。
+
+   做法照商店街：開工時一次規劃好整片（forestPlan，存在 forestRing），每一棵掛在 homes.list 上
+   （h.tree 照舊——樹冠走得過去那一套直接沿用——再多一個 h.forest），一階一階加上去（forestGrow）：
+   第 0 階是神木那一叢，之後每一階沿著那一圈往兩邊各多長一叢，長到兩頭接起來。
+   見 開發筆記〈事件四：樹林（v1.307.0）〉。 */
+/* 樹林的款式：事件一那八款照原樣（配色照舊從 TREE_PAL 抽），再加十款新的；神木只有一棵，另外擺（FOREST_GIANT）。
+   wt 是抽到的相對權重：新款多一點才看得出「比事件一更多種」，兩倍大的那兩款少一點（一片林裡幾棵）。
+   pals 是這一款能抽的配色：[樹幹, 深葉, 淺葉, 果子／花／紙垂, 樹皮花紋／節／繩子]（後兩格沒用到的款可以不給） */
+const FOREST_KIND = [
+  ...TREE_KIND.map(k => ({ ...k, wt: 1, pals: TREE_PAL })),
+  { n: 2, id: '櫻花', tw: 1, th: 3, form: 'ball', rx: 3.4, ry: 2.0, fruit: 1, wt: 2, pals: [
+    [[0.36, 0.24, 0.22], [0.93, 0.64, 0.74], [0.98, 0.80, 0.86], [1.00, 0.95, 0.97]],
+    [[0.36, 0.24, 0.22], [0.88, 0.50, 0.64], [0.95, 0.70, 0.80], [1.00, 0.95, 0.97]]] },
+  { n: 2, id: '楓樹', tw: 1, th: 3, form: 'ball', rx: 3.0, ry: 2.6, wt: 2, pals: [
+    [[0.40, 0.27, 0.18], [0.72, 0.14, 0.10], [0.88, 0.28, 0.12]],
+    [[0.40, 0.27, 0.18], [0.85, 0.38, 0.10], [0.95, 0.58, 0.16]]] },
+  { n: 2, id: '銀杏', tw: 1, th: 3, form: 'ball', rx: 2.6, ry: 3.4, wt: 2, pals: [
+    [[0.45, 0.33, 0.22], [0.90, 0.70, 0.14], [0.98, 0.86, 0.36]]] },
+  { n: 2, id: '柳樹', tw: 1, th: 6, form: 'weep', rx: 3.6, ry: 2.2, hang: 3, wt: 2, pals: [
+    [[0.40, 0.30, 0.20], [0.40, 0.60, 0.24], [0.62, 0.78, 0.36]]] },
+  { n: 1, id: '椰子樹', tw: 1, th: 9, form: 'palm', rx: 4.2, lean: 2, mark: 'ring', wt: 2, pals: [
+    [[0.62, 0.50, 0.34], [0.22, 0.50, 0.18], [0.38, 0.66, 0.24], [0.42, 0.30, 0.14], [0.52, 0.41, 0.28]]] },
+  { n: 1, id: '竹叢', tw: 1, form: 'bamboo', rx: 2.0, ry: 11, mark: 'ring', wt: 2, pals: [
+    [[0.52, 0.68, 0.28], [0.28, 0.52, 0.20], [0.44, 0.68, 0.28], [0.44, 0.68, 0.28], [0.38, 0.52, 0.20]]] },
+  { n: 1, id: '白樺', tw: 1, th: 5, form: 'ball', rx: 1.9, ry: 3.0, mark: 'spot', wt: 2, pals: [
+    [[0.93, 0.92, 0.88], [0.46, 0.66, 0.24], [0.66, 0.80, 0.34], [0.66, 0.80, 0.34], [0.18, 0.18, 0.18]],
+    [[0.93, 0.92, 0.88], [0.86, 0.70, 0.18], [0.95, 0.84, 0.34], [0.95, 0.84, 0.34], [0.18, 0.18, 0.18]]] },
+  { n: 1, id: '柏樹', tw: 1, th: 1, form: 'column', rx: 1.8, ry: 11, wt: 2, pals: [
+    [[0.38, 0.26, 0.18], [0.14, 0.34, 0.20], [0.22, 0.44, 0.26]]] },
+  { n: 3, id: '巨杉', tw: 2, th: 6, form: 'cone', rx: 5.2, ry: 13, wt: 1, pals: [
+    [[0.56, 0.28, 0.18], [0.18, 0.40, 0.20], [0.28, 0.52, 0.24]]] },
+  { n: 3, id: '巨橡', tw: 2, th: 6, form: 'ball', rx: 5.0, ry: 4.5, wt: 1, pals: TREE_PAL }
+];
+const FOREST_GIANT = { n: 3, id: '神木', tw: 3, th: 9, form: 'giant', rope: 4, lobes: [
+  [0, 3, 0, 6.6, 2.6], [3, 6, -2, 3.6, 2.0], [-3, 7, 2, 3.4, 2.0], [0, 8, 0, 5.2, 2.4], [0, 12, 0, 3.2, 2.0]
+], pals: [[[0.36, 0.27, 0.20], [0.20, 0.42, 0.20], [0.32, 0.56, 0.26], [0.97, 0.97, 0.95], [0.84, 0.74, 0.48]]] };
+/* 整片最多幾塊：同商店街（SHOP_BUDGET 那段的理由——換事件時上一件整批解體，池子那條帳不必再加一份） */
+const FOREST_BUDGET = SHOP_BUDGET;
+const FOREST_STEP = 14;             // 一階沿著那一圈多長幾格（第 0 階是神木那一叢，之後兩邊各一叢）
+/* 整圈優先：整片種滿超過預算的話，從外緣往裡剪到塞得下（帶子變窄、但圍得成一圈）；
+   最窄剪到 FOREST_DEEP（樹的中心離內緣這麼遠以內）——再窄就不像樹林了，那就讓它圍不滿一圈 */
+const FOREST_DEEP = 18;
+let forestRing = null;              // 這一片的規劃：{ items, stage 已經長到第幾階, allow 預算夠長到第幾階 }
+/* 一款樹的樣板（在原點長一棵）：塊數與地基半徑只看款式，規劃時不必每棵都真的生一次。
+   地基半徑 r＝最外那一格離中心多遠＋1.2（同 treeR 的樹冠＋1.2；新款的樹冠不一定照 rx 長，所以照真的格子量） */
+const forestTpl = new Map();
+function forestShape(k) {
+  if (!forestTpl.has(k)) {
+    const sl = treeSlots(0, 0, k, k.pals[0], 0);
+    let ext = 0;
+    for (const s of sl) ext = Math.max(ext, Math.hypot(s.x, s.z));
+    forestTpl.set(k, { n: sl.length, r: ext + 1.2 });
+  }
+  return forestTpl.get(k);
+}
+function pickForest() {
+  let tot = 0;
+  for (const k of FOREST_KIND) tot += k.wt;
+  let r = Math.random() * tot;
+  for (const k of FOREST_KIND) { r -= k.wt; if (r < 0) return k; }
+  return FOREST_KIND[FOREST_KIND.length - 1];
+}
+/* 規劃整片。神木擺在**鏡頭的側邊**（ENG.cam.yaw 轉 90°）貼著內緣：擺在正對鏡頭那一邊的話，
+   二十幾層高的樹冠剛好擋在地標前面。
+   其餘的照「離神木多遠（沿著那一圈）」由近到遠一棵一棵擺：隨機撒點，跟已經擺好的每一棵照 homeSep 隔開
+   （**事件一同一把尺**：中心至少隔 HOME_GAP、地基不碰。v1.307.0 第一版是「最外那一格隔兩格」，
+   使用者：「這一圈樹太密了不合理 原本是想說跟事件一那樣分散程度」）；範圍也同事件一（pickHomeSite）：
+   中心離內緣至少一個地基半徑。**款式先抽、抽到哪一款就等到放得下那一款為止**（最多等 FOREST_WAIT 個點再重抽）：
+   第一版是「這個點放不下就換一款試」，小的永遠先塞進縫裡——實測一片 163 棵裡柏樹 79 棵、
+   兩倍大的那兩款一棵都沒有，比例完全不照 wt。
+   **撒的點不多（FOREST_TRY），不把空地塞滿**：塞滿的話每一棵都剛好隔最小間距，看過去像排好的行道樹
+   （使用者：「這些樹太過整齊」，選的是「純隨機撒」——同事件一，隨機挑空地放、不刻意塞滿，空隙自然有大有小）。
+   擺完整圈再看預算（見 FOREST_DEEP），最後照沿圈距離分階、算預算夠長到第幾階 */
+const FOREST_WAIT = 5;
+/* 每 HOME_GAP² 那麼大的地撒幾個點。一棵至少佔 HOME_GAP 見方上下，所以 1 左右就是「撒到塞滿以前」 */
+const FOREST_TRY = 1;
+function forestPlan() {
+  const a = siteR + HOME_NEAR, out = Math.max(a + FOREST_DEEP, homeOut());
+  const th0 = ENG.cam.yaw + Math.PI / 2;
+  const G = forestShape(FOREST_GIANT);
+  const gr = a + G.r;
+  /* 擺好的樹放進格子裡查鄰居（大地標一整圈要撒一萬多個點，每個點都跟每一棵比會慢到看得出卡一下）。
+     格子邊長取「最大的兩棵（神木）要隔多遠」，查自己那格與周圍八格就一定查得到 */
+  const C = homeSep(G.r, G.r) + 0.1, grid = new Map(), placed = [];
+  const put = p => {
+    const id = Math.floor(p.x / C) * 4096 + Math.floor(p.z / C);
+    if (!grid.has(id)) grid.set(id, []);
+    grid.get(id).push(p);
+    placed.push(p);
+  };
+  const fits = (x, z, r) => {
+    const gx = Math.floor(x / C), gz = Math.floor(z / C);
+    for (let i = gx - 1; i <= gx + 1; i++)
+      for (let j = gz - 1; j <= gz + 1; j++)
+        for (const q of grid.get(i * 4096 + j) || [])
+          if ((q.x - x) ** 2 + (q.z - z) ** 2 < homeSep(q.r, r) ** 2) return false;
+    for (const t2 of trees)
+      if ((t2.x - x) ** 2 + (t2.z - z) ** 2 < (HOME_TREE + t2.r) ** 2) return false;   // 同 pickHomeSite
+    return true;
+  };
+  put({ k: FOREST_GIANT, x: Math.cos(th0) * gr, z: Math.sin(th0) * gr, r: G.r, n: G.n, giant: 1 });
+  const mid = (a + out) / 2;
+  const arcOf = (x, z) => {
+    let d = Math.atan2(z, x) - th0;
+    d -= Math.round(d / (Math.PI * 2)) * Math.PI * 2;
+    return Math.abs(d) * mid;
+  };
+  const pts = [];
+  const nPts = Math.ceil(Math.PI * (out * out - a * a) / (HOME_GAP * HOME_GAP) * FOREST_TRY);
+  for (let i = 0; i < nPts; i++) {
+    const r = Math.sqrt(rr(a * a, out * out)), t = rr(0, Math.PI * 2);   // 面積上均勻
+    const x = Math.cos(t) * r, z = Math.sin(t) * r;
+    pts.push({ x, z, r, arc: arcOf(x, z) });
+  }
+  pts.sort((p, q) => p.arc - q.arc);
+  let k = null, S = null, wait = 0;
+  for (const p of pts) {
+    if (!k || ++wait > FOREST_WAIT) { k = pickForest(); S = forestShape(k); wait = 0; }
+    if (p.r < a + S.r || !fits(p.x, p.z, S.r)) continue;   // 地基不伸進地標那一圈（同 pickHomeSite 的內緣）
+    put({ k, x: p.x, z: p.z, r: S.r, n: S.n });
+    k = null;
+  }
+  // 整圈超過預算就從外緣往裡剪（神木一定留），最窄剪到 FOREST_DEEP
+  const byR = placed.slice(1).sort((p, q) => Math.hypot(p.x, p.z) - Math.hypot(q.x, q.z));
+  let sum = G.n, cut = Infinity;
+  for (const p of byR) {
+    if ((sum += p.n) > FOREST_BUDGET) { cut = Math.max(Math.hypot(p.x, p.z), a + FOREST_DEEP); break; }
+  }
+  const keep = placed.filter(p => p.giant || Math.hypot(p.x, p.z) < cut);
+  const items = keep.map(p => ({ ...p, stage: p.giant ? 0 : Math.floor(arcOf(p.x, p.z) / FOREST_STEP) }));
+  const per = [];
+  for (const it of items) per[it.stage] = (per[it.stage] || 0) + it.n;
+  let allow = 1, tot = per[0];
+  while (allow < per.length && tot + (per[allow] || 0) <= FOREST_BUDGET) tot += per[allow++] || 0;
+  while (allow > 1 && !per[allow - 1]) allow--;      // 停在空的那幾階上沒意義（見 forestGrow 跳過空階）
+  /* 長得到的那幾階才真的生格子（配色、椰子樹往哪邊斜在這裡抽） */
+  for (const it of items) {
+    if (it.stage >= allow) continue;
+    it.pal = it.k.pals[Math.floor(Math.random() * it.k.pals.length)];
+    it.rot = Math.floor(Math.random() * 4);
+    it.slots = treeSlots(it.x, it.z, it.k, it.pal, it.rot);
+  }
+  return { items: items.filter(it => it.slots), stage: 0, allow, cut };
+}
+/* 往下一階長（沒有下一階就回 0）。這一階壓到的東西先拆成碎料（同 shopGrow），拿整棵的外框比
+   （homeSpan 對樹只框樹幹，這裡要的是「這塊地上空被誰占著」）；新工地比規劃那時候大、壓到的那幾棵不生。
+   樹是隨機撒的，某一段沿圈距離剛好一棵都沒有的話那一階是空的——**空的直接跳過**，接著長下一階，
+   不然那一秒（stepForest 每秒看一次）什麼都沒長、下一秒才長 */
+function forestGrow() {
+  const R = forestRing;
+  if (!R) return 0;
+  let add = [];
+  while (!add.length && R.stage < R.allow) {
+    const k = R.stage++;
+    add = R.items.filter(it => it.stage === k && Math.hypot(it.x, it.z) - it.r > siteR + KEEP);
+  }
+  if (!add.length) return 0;
+  const span = add.map(it => homeSpan({ slots: it.slots }));
+  dropHomes(h => {
+    const b = homeSpan(h);
+    return !span.some(s => b.x0 < s.x1 && b.x1 > s.x0 && b.z0 < s.z1 && b.z1 > s.z0);
+  });
+  for (const it of add) {
+    const at = new Map();
+    it.slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+    const c0 = (it.k.tw - 1) / 2;                       // 見 homeSolid（同 startTrees）
+    const h = { id: homeSeq++, x: it.x, z: it.z, r: it.r, kind: it.k.id, at,
+                ox: c0, oz: c0,
+                slots: it.slots, left: it.slots.length, n: it.k.n,
+                tree: 1, forest: 1, done: false };
+    homeBox(h);
+    markHomeF6(h);
+    homes.list.push(h);
+  }
+  return add.length;
+}
+/* 開工：場上沒有樹林就規劃一片、長第 0 階；有的話接著種（同 startShop）。
+   派人照 startShop：站得穩的全部參加、一組接一棵，每一棵都有人了就疊上去 */
+function startForest() {
+  if (!homes) homes = { list: [] };
+  if (!homes.list.some(h => h.forest)) { forestRing = forestPlan(); forestGrow(); }
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  const pool = [];
+  for (let i = 0; i < workers.length; i++) if (steady(workers[i]) && joins(workers[i])) pool.push(i);
+  for (let i = pool.length - 1; i > 0; i--) {          // 洗牌（同 startHomes）
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+  }
+  const taken = new Set();
+  while (pool.length) {
+    const crew = takeCrew(pool);
+    let cx = 0, cz = 0;
+    for (const w of crew) { cx += w.x; cz += w.z; }
+    cx /= crew.length; cz /= crew.length;
+    let hi = pickUnfinished(cx, cz, taken, 5);
+    if (hi < 0) hi = pickUnfinished(cx, cz, NO_TAKEN, 5);
+    if (hi >= 0) {
+      for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;   // 上一批人留下的認領（同 startShop）
+    } else hi = forestNear(cx, cz);
+    if (hi < 0) continue;                               // 一棵都沒有（地方不夠）：這一組照常閒晃
+    taken.add(hi);
+    for (const w of crew) {
+      releaseWorker(w);                                 // 手上的建材先放掉，這趟不是上工
+      w.hm = hi; w.hst = ''; w.pause = 0;
+    }
+  }
+}
+function forestNear(x, z) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < homes.list.length; i++) {
+    const h = homes.list[i];
+    if (!h.forest) continue;
+    const d = (h.x - x) ** 2 + (h.z - z) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+/* 每秒看一次（同 stepShop）：這一階都種好過了就往下一階長；閒著的人掛到最近的那一棵 */
+let forestFixT = 0;
+function stepForest(dt) {
+  if ((forestFixT -= dt) > 0) return;
+  forestFixT = SHOP_FIX_T;
+  if (!homes || !homes.list.some(h => h.forest)) return;  // 整片都被新工地徵收了：等下一輪開工重新規劃
+  if (homes.list.every(h => !h.forest || h.done)) forestGrow();
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  for (const w of workers) {
+    if (w.hm >= 0 || w.dead || !steady(w) || !joins(w)) continue;
+    releaseWorker(w);
+    w.hm = forestNear(w.x, w.z); w.hst = ''; w.pause = 0;
+  }
+}
+/* 種好了就在樹林裡散步：走到附近某一棵種好的樹底下停一下，再挑下一棵（同逛街的節奏）。
+   每要挑下一棵之前先看有沒有缺人的那一棵（下一階剛長出來、被打出洞），有就過去幫忙，一棵最多 HOME_TEAM 人（同 liveShop） */
+const FOREST_WALK = 30;             // 挑下一棵的範圍
+function liveForest(w, h, dt) {
+  if (w.show || w.pause > 0) { idleWait(w, dt); return; }
+  if (w.hst !== 'forest') {
+    w.hst = 'forest';
+    if (teamHelp(w, 5)) return;
+    forestSpot(w);
+  }
+  if (!strollTo(w, dt)) return;
+  strollPause(w);
+  rollShow(w);
+  w.hst = '';
+}
+/* 下一個散步點：附近一棵種好的樹底下，離樹幹一格多到樹冠邊（樹冠低的那幾款站不進去，交給 strollTo 的規則 2 挪出來） */
+function forestSpot(w) {
+  const near = [], all = [];
+  for (const h of homes.list) {
+    if (!h.forest || !h.done || h.left > 0) continue;
+    all.push(h);
+    if ((h.x - w.x) ** 2 + (h.z - w.z) ** 2 < FOREST_WALK * FOREST_WALK) near.push(h);
+  }
+  const pick = near.length ? near : all;
+  if (!pick.length) { idleSpot(w); return; }
+  const h = pick[Math.floor(Math.random() * pick.length)];
+  const a = rr(0, Math.PI * 2), d = rr(h.ox + 1.7, Math.max(h.ox + 2.2, h.r - 1.2));
+  w.tx = h.x + Math.cos(a) * d; w.tz = h.z + Math.sin(a) * d;
 }
 function stopHomes() {
   for (const w of workers) {
@@ -5639,8 +6027,9 @@ function dropHomes(keep) {
    廢棄掉的那一段沒有任何地方會再生出來——實測蓋好的一段 122 塊整段打光，1 秒內從清單上
    消失（24 段 → 23 段），150 秒後還是缺著，牆線上永遠少一段
    （見 開發筆記〈城牆段打爛了不廢棄，留著等人補〉）。
-   **商店街的店也一樣**（v1.305.0）：整條街是一次規劃好的（shopPlan），廢棄掉的那一間沒有地方會再生出來。 */
-const wrecked = h => h.done && !h.wall && !h.shop && h.slots.length - h.left < h.slots.length * WRECK_AT && !frHomeHeld(h);
+   **商店街的店也一樣**（v1.305.0）：整條街是一次規劃好的（shopPlan），廢棄掉的那一間沒有地方會再生出來。
+   **樹林的樹也一樣**（v1.307.0，forestPlan 一次規劃好）：廢棄掉的那一棵就是林子裡永遠的一個洞。 */
+const wrecked = h => h.done && !h.wall && !h.shop && !h.forest && h.slots.length - h.left < h.slots.length * WRECK_AT && !frHomeHeld(h);
 /* 罩著的那一間先不廢棄（v1.259.0，見 game-tools.js〈道具：防禦魔法〉：罩子裡一塊都不掉）：
    還站著的有一塊在芙莉蓮的防護罩裡就留著，罩子走開之後（stepFrHang）再判一次 */
 function frHomeHeld(h) {
@@ -5825,6 +6214,7 @@ function landHome(b, a) {
    v1.292 以前是壓到就重抽、第 12 次照收——最後那一次本來就是靠規則 2 收尾。 */
 function liveSpot(w, h) {
   if (h.shop) { shopSpot(w); return; }  // 商店街（v1.305.0）：聊完天、打完架接著逛，不是繞著那一間打轉
+  if (h.forest) { forestSpot(w); return; }   // 樹林（v1.307.0）：同上，接著在林子裡散步
   const a = rr(0, Math.PI * 2), d = rr(h.r + HOME_STAND, h.r + LIVE_R);
   w.tx = h.x + Math.cos(a) * d; w.tz = h.z + Math.sin(a) * d;
 }
@@ -5855,6 +6245,7 @@ function updHome(w, wi, dt) {
      38 格遠。手上還有貨的例外：那幾格還算在 h.left 裡，所以這裡不會擋到砌完最後幾塊。 */
   if (h.left <= 0 && !w.load.length) {
     if (h.shop) { liveShop(w, h, dt); return; }         // 商店街（v1.305.0）：蓋完了逛街，看到缺人的再去幫忙
+    if (h.forest) { liveForest(w, h, dt); return; }     // 樹林（v1.307.0）：種好了在林子裡散步，看到缺人的再去幫忙
     w.hst = '';
     /* 城牆蓋完一段就自己去接最近的下一段（v1.186）：整圈是切成十幾段的，
        蓋完就站在牆邊過日子的話，一輪只推得動幾段。整圈都好了才回去閒晃。 */
