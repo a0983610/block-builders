@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.307.0';
+const VERSION = '1.308.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -225,6 +225,9 @@ function sndDone() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => to
    抖開之後才聽得出是好幾個人各跌各的（音高抖開也順便讓它們不再完全同相）。 */
 function sndFall() { tone(rr(170, 245), 0.16, 'square', 0.05, 0.5, 'fall'); }
 function sndSwing() { tone(160, 0.3, 'sine', 0.06, 3.2); }
+/* 國王甩鞭子打到人那一下（v1.308.0，見 game-workers.js 的 lashHit）：短短一聲「啪」。
+   切點 3300 是挑過的——voiceOK 拿 'noise' + 切點當名額，別跟現有的擠同一個（見 sndLand 那段） */
+function sndWhip() { noise(0.06, 0.06, 3300); tone(1500, 0.05, 'triangle', 0.018, 0.5, 'whip'); }
 /* 龍捲風的風聲。v1.62.3 之前只在出場放**一聲** 1.6 秒的噪音，而它現在活 10 秒——
    使用者的說法是「好像沒有音效」，其實是響完之後有八秒多是靜的，
    所以改成整段一直重放（見 stepTwist 的 w.snd）。

@@ -116,6 +116,11 @@ function newWorker(i) {
        dug 是這一趟已經挖出幾塊躺在地上了（挖出來的不在手上，所以算在人身上）。 */
     dig: 0, dug: 0,
     lkx: 0, lkz: 0,                 // 逛街走到店門口要看的那一點（v1.305.0，見 shopSpot）
+    /* 事件五的皇宮（v1.308.0，見 liveKing）：king 是不是這一輪的國王（戴王冠、披風、拿鞭子）、
+       kst 國王這一刻在做什麼（go 走過去／say 指著人／chase 追過去／lash 甩鞭子）、kd 這一段還剩幾秒、
+       kt 還有幾秒才再抽一鞭、lt 盯上的是哪一個、lash 這一鞭甩到哪 0～1、hop 被抽到還要跳幾秒。
+       cmd（指著人）與 whip（鞭子甩到哪）是畫出來的姿勢，跟 hail／plan 一樣每幀重算。 */
+    king: 0, kst: '', kd: 0, kt: 0, lt: -1, lash: 0, hop: 0, cmd: 0, whip: 0,
     /* 抽到的身高（v1.113）。scale 是「實際畫多大」，肌肉小人要在它上面再乘 MUS_SIZE，
        所以抽到的那個值要另外留一份：直接乘 scale 的話，setWorkerCount 每叫一次
        tagMuscle 就再乘一次，人數調個幾輪他會長成一棟樓。 */
@@ -1851,7 +1856,8 @@ function updWorker(w, wi, dt) {
      lean 一定要在這裡歸零：它是站著的身體傾角，留著的話那個人會一路彎著腰去搬料。 */
   w.stre = 0; w.twirl = 0; w.jack = 0; w.clap = 0; w.wave = 0;
   w.bow = 0; w.draw = 0; w.tire = 0; w.lean = 0;
-  stuckWatch(w, dt);                 // 卡住了就脫困（v1.108）。擺在最前面：下面每一條分支都會 return
+  w.cmd = 0; w.whip = 0;             // 國王指人、甩鞭子（v1.308.0）：被打倒的國王不要躺著還舉著鞭子
+  stuckWatch(w, dt);                // 卡住了就脫困（v1.108）。擺在最前面：下面每一條分支都會 return
   /* 穿地標的牆只在搬料那兩段（v1.236，見 pick）：其餘的路（閒晃、挖料、逃命…）照地圖走 */
   if (w.st !== 'pick' && w.st !== 'build') w.lmg = 0;
   /* 舉杖同理，只是它是漸進的（瞬間切 0/1 的話杖會用瞬移的抬起放下）：
@@ -3455,7 +3461,10 @@ const IDLE_EVENTS = [
   { id: 'shop', wt: 1, start: startShop, step: stepShop, stop: stopHomes },
   /* 樹林（v1.307.0）。同商店街：掛在 homes.list 上、收尾共用 stopHomes；
      step 管一階一階往外長（見 stepForest） */
-  { id: 'forest', wt: 1, start: startForest, step: stepForest, stop: stopHomes }
+  { id: 'forest', wt: 1, start: startForest, step: stepForest, stop: stopHomes },
+  /* 皇宮（v1.308.0）。同樹林：掛在 homes.list 上，step 管一階一階加蓋與「蓋好了把人趕走」（見 stepPalace）；
+     收尾要多收國王的王冠（見 stopPalace） */
+  { id: 'palace', wt: 1, start: startPalace, step: stepPalace, stop: stopPalace }
 ];
 /* 上一件事蓋出來的東西還剩多少（v1.186 的黏著，**判準 v1.188 換掉**）。
    舊的判準是「homes.list 上還有那一類的任何一筆」——實測那個門檻**沒有出口**
@@ -3472,8 +3481,9 @@ const IDLE_EVENTS = [
    最高點記在事件這一層、不是逐筆記：逐筆的話廢棄一筆連分母也跟著消失，
    打掉三分之一反而變回 100%。
    **算哪幾類照 homeCat**（v1.305.0 多了商店街，原本「是不是城牆」的真假值分不出第三件）：
-   事件一算房子與樹、事件二只算城牆段（城內那幾間不算，同 v1.188）、事件三算店、事件四算樹林（5）；燈架（3）哪一件都不算（v1.303.0） */
-const EV_CAT = { home: [0, 1], wall: [2], shop: [4], forest: [5] };
+   事件一算房子與樹、事件二只算城牆段（城內那幾間不算，同 v1.188）、事件三算店、事件四算樹林（5）、事件五算皇宮（6）；
+   燈架（3）哪一件都不算（v1.303.0） */
+const EV_CAT = { home: [0, 1], wall: [2], shop: [4], forest: [5], palace: [6] };
 let evPeak = 0;                     // 這一件事曾經蓋到的最高塊數（換一件才歸零，見 rollIdleEvent）
 function evBlocks(e) {
   const cats = EV_CAT[e.id];
@@ -5045,8 +5055,9 @@ function pickHomeSite(cx, cz, rad, capOut) {
    間數比組數多的時候會有一兩間排到下一輪，那是排隊、不是沒人管。 */
 /* 燈源的燈架（v1.303.0）自己一類 3：沒有人會照這一類去找（壞了就沒了，使用者選的），見 game-tools.js〈道具：燈源〉。
    商店街的店（v1.305.0）一類 4：蓋房子、蓋城牆的人不會被派去接一間蓋一半的店，反過來也一樣。
-   樹林的樹（v1.307.0）一類 5：它也是 h.tree（樹冠走得過去那一套要沿用），所以要排在 h.tree 前面 */
-const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.tree ? 1 : 0;
+   樹林的樹（v1.307.0）一類 5：它也是 h.tree（樹冠走得過去那一套要沿用），所以要排在 h.tree 前面。
+   皇宮的每一件（v1.308.0）一類 6 */
+const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.palace ? 6 : h.tree ? 1 : 0;
 const NO_TAKEN = new Set();                        // 「誰都還沒被認走」：見 updHome 接下一段
 function pickUnfinished(cx, cz, taken, cat) {
   let best = -1, bd = Infinity;
@@ -5960,6 +5971,578 @@ function forestSpot(w) {
   const a = rr(0, Math.PI * 2), d = rr(h.ox + 1.7, Math.max(h.ox + 2.2, h.r - 1.2));
   w.tx = h.x + Math.cos(a) * d; w.tz = h.z + Math.sin(a) * d;
 }
+/* ── 事件五：皇宮（v1.308.0）──────────────────────────────────────
+   使用者：「增加閒晃事件五／小人們被奴役 一起去幫一隻小人蓋一棟皇宮 最後其他小人流浪」，選的是：
+   中式宮殿或西式王宮隨機、一階一階加蓋（主殿 → 兩翼 → 前庭圍牆與宮門 → 角樓，上限同商店街）、
+   被抽中的那一隻戴王冠披風在旁邊監工不動手、手上一根鞭子偶爾抽一下附近的人、
+   整座蓋好之後其他人被趕到外圍流浪、皇宮被打壞了不修。
+
+   做法照商店街與樹林：開工時一次規劃好整座（palacePlan，存在 palaceRing），每一件掛在 homes.list 上
+   （多一個 h.palace），一階一階加上去（palaceGrow）。整座共用**同一張世界整數格**（同城牆），
+   幾件才對得齊——所以一件就是一段 wallSeg（thin 直牆段、gap 門洞、wx0～wz1 都現成），只是不算城牆。
+   見 開發筆記〈事件五：皇宮（v1.308.0）〉。 */
+const PALACE_BUDGET = SHOP_BUDGET;  // 整座最多幾塊（理由同 FOREST_BUDGET）
+const PAL_IN = 2;                   // 皇宮靠地標那一邊離內緣（siteR + HOME_NEAR）多遠
+/* 中庭（局部座標，見 palaceDesign）：兩翼之間、宮門到主殿台階之間。蓋好之後國王在這裡踱步 */
+const PAL_YARD = { u0: -8, u1: 8, v0: 6, v1: 17 };
+let palaceRing = null;              // 這一座的規劃：{ style, items, stage, allow, fin 蓋好了沒, king 誰是國王, 座標換算 }
+/* 兩款，開工時隨機抽一款（使用者：「中式宮殿或西式王宮 隨機」）。c 是這一款的配色 */
+const PALACE_STYLE = [
+  { id: 'cn', name: '中式宮殿', make: palaceCN, c: {
+    base: [0.90, 0.89, 0.85],       // 漢白玉台基、欄杆
+    base2: [0.74, 0.73, 0.70],      // 台基側面的陰影、御路
+    red: [0.66, 0.15, 0.12],        // 紅牆、紅柱
+    door: [0.42, 0.16, 0.10],       // 格扇門窗
+    gold: [0.92, 0.70, 0.22],       // 匾額、寶頂
+    band: [0.16, 0.46, 0.44],       // 簷下彩畫（青綠）
+    band2: [0.20, 0.32, 0.60],      // 彩畫的藍
+    tile: [0.96, 0.75, 0.16],       // 黃琉璃瓦
+    ridge: [0.80, 0.54, 0.10] } },  // 屋脊、鴟吻（深一階的黃）
+  { id: 'west', name: '西式王宮', make: palaceWest, c: {
+    stone: [0.92, 0.86, 0.72],      // 米黃砂岩
+    base: [0.70, 0.68, 0.64],       // 一樓粗石、台座
+    white: [0.97, 0.96, 0.92],      // 柱子、簷口、分層線
+    glass: [0.26, 0.36, 0.52],      // 窗
+    door: [0.40, 0.26, 0.16],       // 木門
+    slate: [0.32, 0.38, 0.50],      // 石板屋頂
+    dome: [0.42, 0.66, 0.58],       // 銅綠圓頂
+    gold: [0.93, 0.75, 0.24],       // 金頂、拱上的王冠
+    iron: [0.17, 0.18, 0.21],       // 鐵欄杆
+    flag: [0.76, 0.13, 0.15] } }    // 旗、王冠上的寶石
+];
+/* 一座皇宮的設計，局部座標：u 左右（左右對稱）、v 從正門往後、gy 往上。
+   一件一筆 { kind, stage, cells, thin, gap }：thin 'u'＝沿 u 延伸的直牆段（推人只往厚度那一軸，見 pushOutHome）、
+   gap 門洞 { u0, u1, v0, v1 }（走得過去，見 footHome）。
+   **幾件的外框只碰邊、不重疊**（疊在一起的兩個框會互推，見 開發筆記〈城牆踩到的四個坑〉①），
+   碰不到的地方至少隔 3 格（窄過一個人身的縫會被當成路、擠進去卡住）：
+       v −2～5   正中央宮門 ＋ 兩段宮牆 ＋ 兩端角樓
+       v 5～16   兩翼（u 12～20 兩側，跟角樓碰邊）
+       v 17～19  空著（兩翼後面通到外頭的路）
+       v 20～38  主殿（u −13～13，含正面台階）
+   每一格都要六面連回地面（屋簷那幾圈是一層一層往外接出去的），測試照 canPlaceHome 一路砌到完驗過。 */
+function palaceDesign(style) {
+  const out = [];
+  const piece = (kind, stage, o) => { const p = Object.assign({ kind, stage, cells: new Map() }, o); out.push(p); return p; };
+  const set = (p, u, v, gy, c) => p.cells.set(u + ':' + v + ':' + gy, { u, v, gy, c });
+  const col = (c, u, v, gy) => typeof c === 'function' ? c(u, v, gy) : c;   // 顏色可以是 (u, v, gy) → 顏色
+  const box = (p, u0, u1, v0, v1, g0, g1, c) => {                           // 一塊實心
+    for (let gy = g0; gy <= g1; gy++)
+      for (let u = u0; u <= u1; u++) for (let v = v0; v <= v1; v++) set(p, u, v, gy, col(c, u, v, gy));
+  };
+  const ring = (p, u0, u1, v0, v1, g0, g1, c) => {                          // 一圈牆（只有外框那一圈）
+    for (let gy = g0; gy <= g1; gy++)
+      for (let u = u0; u <= u1; u++) for (let v = v0; v <= v1; v++)
+        if (u === u0 || u === u1 || v === v0 || v === v1) set(p, u, v, gy, col(c, u, v, gy));
+  };
+  const slab = (p, u0, u1, v0, v1, gy, c, hole) => {                        // 一層，挖掉 hole [u0, u1, v0, v1]
+    for (let u = u0; u <= u1; u++) for (let v = v0; v <= v1; v++)
+      if (!hole || u < hole[0] || u > hole[1] || v < hole[2] || v > hole[3]) set(p, u, v, gy, col(c, u, v, gy));
+  };
+  /* 四坡頂：第 k 層蓋 [u0+k, u1−k]×[v0+k, v1−k]，只鋪兩格寬的一圈（裡面被上一層蓋住看不到；
+     兩格寬才跟上一層上下疊得到——一格寬的話上下只有對角接著，六面連不回地面），縮到一邊剩一格就是屋脊（top 色）。
+     第一層要從牆頂一路鋪出去：in0 是牆裡面那一塊（不鋪） */
+  const hip = (p, u0, u1, v0, v1, gy, c, top, in0) => {
+    for (let k = 0; ; k++) {
+      const a0 = u0 + k, a1 = u1 - k, b0 = v0 + k, b1 = v1 - k;
+      if (a0 > a1 || b0 > b1) break;
+      slab(p, a0, a1, b0, b1, gy + k, a0 === a1 || b0 === b1 ? top : c, k ? [a0 + 2, a1 - 2, b0 + 2, b1 - 2] : in0);
+    }
+  };
+  const disc = (p, cu, cv, r0, r1, gy, c) => {                              // 圓頂的一層：離 (cu, cv) r0～r1 那一圈
+    const n = Math.ceil(r1);
+    for (let u = cu - n; u <= cu + n; u++) for (let v = cv - n; v <= cv + n; v++) {
+      const d = Math.hypot(u - cu, v - cv);
+      if (d >= r0 && d <= r1) set(p, u, v, gy, col(c, u, v, gy));
+    }
+  };
+  // 左右成對的那幾件：先蓋右邊（u 正的那一側），左邊照鏡子翻一份
+  const mirror = p => {
+    const q = piece(p.kind, p.stage, { thin: p.thin });
+    for (const c of p.cells.values()) set(q, -c.u, c.v, c.gy, c.c);
+  };
+  style.make({ piece, set, box, ring, slab, hip, disc, mirror }, style.c);
+  return out;
+}
+/* 中式宮殿：大殿坐在兩層漢白玉台基上，正面一排紅柱夾著格扇門、簷下一圈青綠彩畫，重簷廡殿頂（黃琉璃瓦、屋脊兩端鴟吻）；
+   兩翼是東西配殿（門朝中庭）；前面一道紅牆黃瓦的宮牆，正中央宮門（門洞五格寬），兩端角樓 */
+function palaceCN(K, C) {
+  const { piece, set, box, ring, slab, hip, mirror } = K;
+  // ── 第 0 階：大殿 ──
+  const m = piece('大殿', 0);
+  ring(m, -13, 13, 22, 38, 0, 0, C.base2);                       // 下層台基：外圈（裡面被頂面蓋住）
+  box(m, -13, 13, 22, 38, 1, 1, C.base);                         // 下層台基的頂面
+  box(m, -11, 11, 24, 36, 2, 2, C.base);                         // 上層台基
+  for (let u = -13; u <= 13; u++) for (let v = 22; v <= 38; v++) {   // 兩層的欄杆：沿外緣隔一格一根，台階那幾格留空
+    if ((u + v) % 2) continue;
+    if ((Math.abs(u) === 13 || v === 22 || v === 38) && !(v === 22 && Math.abs(u) <= 3)) set(m, u, v, 2, C.base);
+    const e2 = Math.abs(u) <= 11 && v >= 24 && v <= 36 && (Math.abs(u) === 11 || v === 24 || v === 36);
+    if (e2 && !(v === 24 && Math.abs(u) <= 2)) set(m, u, v, 3, C.base);
+  }
+  const yu = u => Math.abs(u) <= 1 ? C.base2 : C.base;           // 台階正中央是御路（深一階）
+  for (let u = -3; u <= 3; u++) { set(m, u, 20, 0, yu(u)); set(m, u, 21, 0, yu(u)); set(m, u, 21, 1, yu(u)); }
+  for (let u = -2; u <= 2; u++) set(m, u, 23, 2, yu(u));
+  ring(m, -9, 9, 26, 34, 3, 7, (u, v, gy) =>                     // 殿身：正面紅柱夾格扇，兩側開窗，簷下彩畫
+    gy === 7 ? ((u + v) % 3 ? C.band : C.band2)
+    : v === 26 ? (u % 2 ? C.door : C.red)
+    : Math.abs(u) === 9 && v % 2 && gy >= 4 && gy <= 5 ? C.door : C.red);
+  slab(m, -11, 11, 24, 36, 8, C.tile, [-6, 6, 29, 31]);          // 下簷：從牆頂挑出去兩格、往裡鋪到上層殿身底下
+  slab(m, -10, 10, 25, 35, 9, C.tile, [-8, 8, 27, 33]);          // 下簷第二階
+  ring(m, -7, 7, 28, 32, 9, 10, (u, v, gy) => gy === 10 ? C.band : C.red);   // 上層殿身（兩重簷中間那一截）
+  for (let u = -1; u <= 1; u++) set(m, u, 28, 9, C.gold);         // 匾額
+  hip(m, -10, 10, 25, 35, 11, C.tile, C.ridge, [-6, 6, 29, 31]);  // 上簷：廡殿頂，屋脊落在 gy 16
+  for (const s of [-1, 1]) {                                      // 鴟吻：屋脊兩端往上翹、往裡勾
+    set(m, 5 * s, 30, 17, C.ridge); set(m, 5 * s, 30, 18, C.ridge); set(m, 4 * s, 30, 18, C.ridge);
+  }
+  // ── 第 1 階：東西配殿（門朝中庭）──
+  const sh = piece('配殿', 1);
+  box(sh, 12, 20, 6, 16, 0, 0, C.base);
+  ring(sh, 13, 19, 7, 15, 1, 4, (u, v, gy) =>
+    gy === 4 ? ((u + v) % 3 ? C.band : C.band2) : u === 13 && v > 7 && v < 15 && v % 2 ? C.door : C.red);
+  hip(sh, 12, 20, 6, 16, 5, C.tile, C.ridge, [14, 18, 8, 14]);
+  set(sh, 16, 10, 10, C.ridge); set(sh, 16, 12, 10, C.ridge);
+  mirror(sh);
+  // ── 第 2 階：宮牆（紅牆、黃瓦壓頂）＋ 正中央的宮門 ──
+  const wl = piece('宮牆', 2, { thin: 'u' });
+  box(wl, 7, 14, 1, 1, 0, 3, C.red);
+  slab(wl, 7, 14, 0, 2, 4, C.tile);
+  slab(wl, 7, 14, 1, 1, 5, C.ridge);
+  mirror(wl);
+  const g = piece('宮門', 2, { gap: { u0: -2.5, u1: 2.5, v0: -2.5, v1: 4.5 } });
+  ring(g, 3, 6, 0, 2, 0, 4, (u, v, gy) => gy ? C.red : C.base);   // 兩側墩座
+  ring(g, -6, -3, 0, 2, 0, 4, (u, v, gy) => gy ? C.red : C.base);
+  box(g, -2, 2, 0, 2, 4, 4, (u, v) => v === 0 && Math.abs(u) <= 1 ? C.gold : C.red);   // 門洞上的過樑（正面一塊匾）
+  slab(g, -6, 6, 0, 2, 5, u => (u + 9) % 3 ? C.band : C.band2);  // 簷下彩畫
+  hip(g, -6, 6, -2, 4, 6, C.tile, C.ridge, [-5, 5, 1, 1]);
+  set(g, -3, 1, 10, C.ridge); set(g, 3, 1, 10, C.ridge);
+  // ── 第 3 階：角樓（宮牆兩端）──
+  const tw = piece('角樓', 3);
+  box(tw, 16, 20, 0, 4, 0, 0, C.base);
+  ring(tw, 16, 20, 0, 4, 1, 5, (u, v, gy) => (u === 18 || v === 2) && gy >= 2 && gy <= 3 ? C.door : C.red);
+  slab(tw, 16, 20, 0, 4, 6, (u, v) => (u + v) % 3 ? C.band : C.band2, [17, 19, 1, 3]);
+  hip(tw, 15, 21, -1, 5, 7, C.tile, C.ridge, [17, 19, 1, 3]);
+  set(tw, 18, 2, 11, C.gold);                                     // 寶頂
+  mirror(tw);
+}
+/* 西式王宮：主樓三層（一樓粗石、分層線、成排的窗），正面列柱門廊頂著三角山牆，石板屋頂上一座銅綠圓頂、金頂旗桿；
+   兩翼是兩層的側樓（門朝中庭）；前面一道鐵欄杆，正中央大門（兩根石柱撐著鐵拱、拱頂一頂金王冠），兩端角亭 */
+function palaceWest(K, C) {
+  const { piece, set, box, ring, slab, hip, disc, mirror } = K;
+  // ── 第 0 階：主樓 ──
+  const m = piece('主樓', 0);
+  const winRow = gy => gy === 2 || gy === 3 || gy === 5 || gy === 6 || gy === 9;   // 一樓、二樓兩格高，三樓一格
+  ring(m, -12, 12, 25, 35, 0, 10, (u, v, gy) => {
+    if (gy <= 1) return C.base;
+    if (gy === 4 || gy === 8) return C.white;                     // 分層線
+    if (v === 25 && Math.abs(u) <= 1 && gy <= 3) return C.door;   // 正門（在門廊後面）
+    const t = v === 25 || v === 35 ? u : v - 30;                  // 沿著這一面的座標，正中央是 0；每三格一扇窗
+    const corner = Math.abs(u) === 12 && (v === 25 || v === 35);
+    return !corner && t % 3 === 0 && winRow(gy) ? C.glass : C.stone;
+  });
+  slab(m, -13, 13, 24, 36, 11, C.white, [-10, 10, 27, 33]);     // 簷口：挑出去一格、往裡鋪到屋頂底下
+  slab(m, -12, 12, 25, 35, 12, C.slate, [-10, 10, 27, 33]);     // 石板屋頂（兩格寬一圈一圈收）
+  slab(m, -11, 11, 26, 34, 13, C.slate, [-9, 9, 28, 32]);
+  box(m, -10, 10, 27, 33, 14, 14, C.slate);                       // 平頂
+  disc(m, 0, 30, 2.5, 3.6, 15, C.white);                          // 圓頂的鼓座，第二層開一圈窗
+  disc(m, 0, 30, 2.5, 3.6, 16, (u, v) => (u + v) % 2 ? C.glass : C.stone);
+  disc(m, 0, 30, 2.3, 3.6, 17, C.dome);                           // 圓頂一層一層收
+  disc(m, 0, 30, 1.9, 3.2, 18, C.dome);
+  disc(m, 0, 30, 1.2, 2.6, 19, C.dome);
+  disc(m, 0, 30, 0, 1.9, 20, C.dome);
+  disc(m, 0, 30, 0, 1, 21, C.dome);
+  set(m, 0, 30, 22, C.gold); set(m, 0, 30, 23, C.gold);           // 金頂
+  set(m, 0, 30, 24, C.white); set(m, 0, 30, 25, C.white);         // 旗桿
+  for (const [u, gy] of [[1, 24], [2, 24], [1, 25], [2, 25]]) set(m, u, 30, gy, C.flag);
+  box(m, -5, 5, 21, 24, 0, 1, C.base);                            // 門廊的台座
+  for (let u = -4; u <= 4; u++) set(m, u, 20, 0, C.base);         // 台階
+  for (let u = -5; u <= 5; u += 2) for (let gy = 2; gy <= 7; gy++) set(m, u, 21, gy, C.white);   // 列柱
+  box(m, -5, 5, 21, 24, 8, 8, C.white);                           // 簷部
+  for (let gy = 9; gy <= 11; gy++) {                              // 三角山牆：一層收兩格，正面白、頂上石板、正中央一枚金徽
+    const hw = 5 - (gy - 9) * 2;
+    box(m, -hw, hw, 21, 24, gy, gy, (u, v) => v === 21 ? (gy === 10 && u === 0 ? C.gold : C.white) : C.slate);
+  }
+  // ── 第 1 階：兩翼（兩層的側樓，門朝中庭）──
+  const wg = piece('側翼', 1);
+  ring(wg, 12, 20, 5, 15, 0, 6, (u, v, gy) => {
+    if (u === 12 && v === 10 && gy <= 1) return C.door;
+    if (gy === 0) return C.base;
+    if (gy === 3) return C.white;
+    const t = u === 12 || u === 20 ? v - 10 : u - 16;
+    const corner = (u === 12 || u === 20) && (v === 5 || v === 15);
+    return !corner && t % 2 === 0 && gy !== 6 ? C.glass : C.stone;
+  });
+  slab(wg, 12, 20, 5, 15, 7, C.white, [14, 18, 7, 13]);          // 簷口
+  hip(wg, 13, 19, 6, 14, 8, C.slate, C.slate, [15, 17, 8, 12]);
+  mirror(wg);
+  // ── 第 2 階：鐵欄杆 ＋ 正中央的大門 ──
+  const fc = piece('鐵柵', 2, { thin: 'u' });
+  box(fc, 7, 15, 1, 1, 0, 0, C.base);                              // 石基
+  for (let u = 7; u <= 15; u += 2) { set(fc, u, 1, 1, C.iron); set(fc, u, 1, 2, C.iron); }   // 欄杆
+  slab(fc, 7, 15, 1, 1, 3, C.iron);                                // 上橫桿
+  mirror(fc);
+  const g = piece('大門', 2, { gap: { u0: -2.5, u1: 2.5, v0: -0.5, v1: 2.5 } });
+  for (const s of [-1, 1]) {
+    const a = s > 0 ? 3 : -5, b = s > 0 ? 5 : -3;
+    box(g, a, b, 0, 2, 0, 5, (u, v, gy) => gy ? C.stone : C.base); // 石柱
+    box(g, a, b, 0, 2, 6, 6, C.white);                             // 柱頭
+    set(g, 4 * s, 1, 7, C.gold); set(g, 4 * s, 1, 8, C.gold);      // 金甕
+    set(g, 6 * s, 1, 0, C.base);                                   // 接到兩邊鐵欄杆的那一截
+    for (let gy = 1; gy <= 3; gy++) set(g, 6 * s, 1, gy, C.iron);
+  }
+  slab(g, -2, 2, 1, 1, 5, C.iron);                                 // 鐵拱
+  slab(g, -1, 1, 1, 1, 6, C.iron);
+  slab(g, -1, 1, 1, 1, 7, C.gold);                                 // 拱頂的金王冠：三個尖、正中央一顆紅寶石
+  set(g, -1, 1, 8, C.gold); set(g, 1, 1, 8, C.gold); set(g, 0, 1, 8, C.flag);
+  // ── 第 3 階：角亭（鐵欄杆兩端）──
+  const pv = piece('角亭', 3);
+  ring(pv, 16, 20, 0, 4, 0, 4, (u, v, gy) => gy === 0 ? C.base : (u === 18 || v === 2) && gy <= 3 ? C.glass : C.stone);
+  box(pv, 16, 20, 0, 4, 5, 5, C.white);                            // 簷口（圓頂坐在上面）
+  disc(pv, 18, 2, 1, 2.3, 6, C.dome);
+  disc(pv, 18, 2, 0, 1.6, 7, C.dome);
+  disc(pv, 18, 2, 0, 1, 8, C.dome);
+  set(pv, 18, 2, 9, C.gold); set(pv, 18, 2, 10, C.gold);
+  mirror(pv);
+}
+/* 皇宮那幾件很大（大殿 27×19 格、二十個人同時蓋一件），房子那一套是照小房子想的，所以三處改看這一件自己：
+     · 一趟的第一格挑**離他最近、放得上去的空格**（palaceFree，takeHomeBlock 叫），不照清單順序——清單是照砌的順序
+       一層一層繞圈排的，照順序認的話二十個人全擠在同一個角上、拿著料繞半座大殿走過去。
+       越低的層越優先（一層折 PAL_LAYER 格路），所以看起來還是一層一層往上長
+     · 站在外框離那一格最近的那一面外面丟（homeStand）、挖在外框離他最近的那一面外面（digSpot）：
+       照外接圓（h.r）推的話長邊那幾格要站到八格外
+   實測（20 人、吉薩金字塔 1800、中式）：每分鐘 190 → 336 塊，搬著料走路的時間 37% → 20%，見 開發筆記〈事件五：皇宮（v1.308.0）〉 */
+const PAL_LAYER = 6;
+function palaceFree(h, x, z) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < h.slots.length; i++) {
+    const sl = h.slots[i];
+    if (sl.filled || sl.claimed >= 0) continue;
+    const d = Math.hypot(sl.x - x, sl.z - z) + sl.gy * PAL_LAYER;
+    if (d >= bd || !canPlaceHome(h, i)) continue;
+    bd = d; best = i;
+  }
+  return best;
+}
+/* 外框（整件蓋起來會占到哪裡，wx0～wz1）上離 (x, z) 最近的那一點，再往那一面的外面推 pad。
+   (x, z) 在框裡的話挑最近的那一面出去。回傳同一個暫存物件 */
+const _po = { x: 0, z: 0 };
+function palaceOut(h, x, z, pad) {
+  let px = Math.min(Math.max(x, h.wx0), h.wx1), pz = Math.min(Math.max(z, h.wz0), h.wz1);
+  if (px === x && pz === z) {
+    const m = Math.min(x - h.wx0, h.wx1 - x, z - h.wz0, h.wz1 - z);
+    if (m === x - h.wx0) px = h.wx0; else if (m === h.wx1 - x) px = h.wx1; else if (m === z - h.wz0) pz = h.wz0; else pz = h.wz1;
+  }
+  if (px === h.wx0) px -= pad; else if (px === h.wx1) px += pad;
+  if (pz === h.wz0) pz -= pad; else if (pz === h.wz1) pz += pad;
+  _po.x = px; _po.z = pz;
+  return _po;
+}
+/* 局部座標 (u, v) → 世界座標（見 palacePlan） */
+const palaceAt = (R, u, v) => ({ x: R.sx * (R.off + u) + R.fx * (R.vm - v), z: R.sz * (R.off + u) + R.fz * (R.vm - v) });
+/* 規劃整座：抽一款、擺在**鏡頭的側邊**（同神木：擺在正前方會擋住地標）、正門朝鏡頭那一側。
+   S＝往外的那一軸（局部 u 沿著它，最靠地標的那一格離內緣 PAL_IN），F＝正門朝的那一軸。
+   幾件的格子在這裡就換成世界格座標（同城牆，整座共用一張整數格），h 等到長到那一階才生（palaceGrow）；
+   每一件的格子先排好砌的順序：由下往上、同一層先外圈再往裡、繞著中心轉、一層換一個方向（同 formSlots） */
+function palacePlan() {
+  const style = PALACE_STYLE[Math.floor(Math.random() * PALACE_STYLE.length)];
+  const parts = palaceDesign(style);
+  let u0 = Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const p of parts) for (const c of p.cells.values()) { u0 = Math.min(u0, c.u); v0 = Math.min(v0, c.v); v1 = Math.max(v1, c.v); }
+  const th = ENG.cam.yaw + Math.PI / 2, ex = Math.cos(ENG.cam.yaw), ez = Math.sin(ENG.cam.yaw);
+  const dot = q => SIDE_N[q][0] * Math.cos(th) + SIDE_N[q][1] * Math.sin(th);
+  let q0 = 0;
+  for (let q = 1; q < 4; q++) if (dot(q) > dot(q0)) q0 = q;
+  const [sx, sz] = SIDE_N[q0];
+  let fx = -sz, fz = sx;                                           // 跟 S 垂直的兩個方向裡，挑朝鏡頭的那一個
+  if (fx * ex + fz * ez < 0) { fx = -fx; fz = -fz; }
+  const R = { style: style.id, stage: 0, allow: 1, fin: 0, king: -1,
+              sx, sz, fx, fz, off: Math.round(siteR + HOME_NEAR + PAL_IN - u0), vm: Math.round((v0 + v1) / 2) };
+  let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
+  R.items = parts.map(p => {
+    const cells = [...p.cells.values()];
+    let cu = 0, cv = 0;
+    for (const c of cells) { cu += c.u; cv += c.v; }
+    cu /= cells.length; cv /= cells.length;
+    for (const c of cells) {
+      c.d = Math.max(Math.abs(c.u - cu), Math.abs(c.v - cv));
+      c.a = Math.atan2(c.v - cv, c.u - cu) * (c.gy % 2 ? -1 : 1);
+    }
+    cells.sort((a, b) => (a.gy - b.gy) || (b.d - a.d) || (a.a - b.a));
+    const world = cells.map(c => {
+      const g = palaceAt(R, c.u, c.v);
+      bx0 = Math.min(bx0, g.x); bx1 = Math.max(bx1, g.x); bz0 = Math.min(bz0, g.z); bz1 = Math.max(bz1, g.z);
+      return { i: g.x, k: g.z, gy: c.gy, c: c.c };
+    });
+    let gap = null;
+    if (p.gap) {
+      const A = palaceAt(R, p.gap.u0, p.gap.v0), B = palaceAt(R, p.gap.u1, p.gap.v1);
+      gap = { x0: Math.min(A.x, B.x), x1: Math.max(A.x, B.x), z0: Math.min(A.z, B.z), z1: Math.max(A.z, B.z) };
+    }
+    // 直牆段沿 u 延伸＝沿 S 那一軸：S 是 x 軸的話薄的是 z
+    return { kind: p.kind, stage: p.stage, cells: world, n: world.length, thin: p.thin ? (sx ? 'z' : 'x') : null, gap };
+  });
+  R.box = { x0: bx0 - 0.5, x1: bx1 + 0.5, z0: bz0 - 0.5, z1: bz1 + 0.5 };   // 整座的外框（流浪的人不靠近，見 exileSpot）
+  const per = [0, 0, 0, 0];
+  for (const it of R.items) per[it.stage] += it.n;
+  let sum = per[0];
+  while (R.allow < per.length && sum + per[R.allow] <= PALACE_BUDGET) sum += per[R.allow++];
+  return R;
+}
+/* 往下一階加蓋（沒有下一階、或這一階整階都壓在新工地上就回 0）。這一階壓到的東西先拆成碎料
+   （同 shopGrow：燈源的燈架、換事件之前剛好沒解掉的都算）；新工地比規劃那時候大、壓到的那幾件不生（拿外框比，同 clearHomesInSite） */
+function palaceGrow() {
+  const R = palaceRing;
+  if (!R || R.stage >= R.allow) return 0;
+  const k = R.stage++;
+  const add = [];
+  for (const it of R.items) {
+    if (it.stage !== k) continue;
+    const h = wallSeg(it.cells, it.kind, it.thin, it.gap);
+    h.wall = 0; h.palace = 1;                    // 欄位借城牆段那一份（thin、gap、wx0～wz1），但不算城牆
+    if (!wallHitsSite(h, siteR + KEEP)) add.push(h);
+  }
+  dropHomes(h => {
+    const b = homeSpan(h);
+    return !add.some(s => b.x0 < s.wx1 && b.x1 > s.wx0 && b.z0 < s.wz1 && b.z1 > s.wz0);
+  });
+  for (const h of add) homes.list.push(h);
+  return add.length;
+}
+function palaceNear(x, z) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < homes.list.length; i++) {
+    const h = homes.list[i];
+    if (!h.palace) continue;
+    const d = (h.x - x) ** 2 + (h.z - z) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+/* 國王與鞭子（使用者選「國王監工不動手」＋「國王揮鞭子」）。一輪是：挑一個正在蓋的人 → 走到他旁邊幾格外 →
+   站著指著他監工幾秒 → 再挑下一個；隔一陣子（LASH_GAP）改成追過去抽他一鞭。
+   甩到 ENG.WHIP_HIT 那一刻打到人：對方跳一下、冒生氣、啪一聲——engine.js 照同一個進度把鞭子甩直，
+   兩邊各寫一份的話聲音跟畫面對不上（同 WAND_TIP／DIG_TIP）。整座蓋好之後回中庭踱步（liveThrone）。 */
+const KING_SAY = [2.5, 5];          // 站定指著一個人監工幾秒
+const KING_STAND = [2.6, 4];        // 站在離他多遠的地方指
+const KING_NEAR = 30;               // 挑誰：這麼近以內的先挑（附近都沒有才整座挑）
+const KING_PACE = 0.55;             // 蓋好之後在中庭踱步，走得比平常慢（腳也擺慢，見 strollTo 的 step）
+const LASH_GAP = [7, 14];           // 隔幾秒抽一鞭（使用者：「偶爾抽一下附近的人」）
+const LASH_T = 0.9;                 // 一鞭幾秒：舉起來 → 甩出去 → 收回來
+const LASH_NEAR = 2.2;              // 走到離他多近才抽（鞭子連手臂伸出去兩格半，見 engine.js 的 WHIP_SEG）
+const LASH_GIVE = 6;                // 追幾秒還追不到就換一個
+const HOP_T = 0.42, HOP_H = 0.5;    // 被抽到跳多久、多高
+/* 開工：場上沒有皇宮就規劃一座、蓋第 0 階；有的話接著蓋（同 startShop）。
+   國王：上一次那一位還在就是他（換場合重開、下一輪接著蓋都一樣，誰是國王記在 palaceRing）；沒有的話從這一次參加的人裡抽一個
+   ——**至少兩個人才抽**（只剩一個人的話沒有人可以使喚，那就他自己蓋）。魔法師不抽（巫師帽跟王冠疊在同一顆頭上），
+   肌肉小人能不抽就不抽（裸上半身披披風不像國王）。他這一次沒參加（施工中他不偷懶）就沒有國王在場，其餘的人照蓋。
+   其餘的人照 startShop 派：一組接一件，每一件都有人了就疊上去 */
+function startPalace() {
+  if (!homes) homes = { list: [] };
+  if (!homes.list.some(h => h.palace)) { palaceRing = palacePlan(); palaceGrow(); }
+  const R = palaceRing;
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  const pool = [];
+  for (let i = 0; i < workers.length; i++) if (steady(workers[i]) && joins(workers[i])) pool.push(i);
+  if (!(R.king >= 0 && R.king < workers.length && !workers[R.king].mage)) R.king = -1;
+  if (R.king < 0 && pool.length >= 2) {
+    const plain = pool.filter(i => !workers[i].mage && !workers[i].mus);
+    const pick = plain.length ? plain : pool.filter(i => !workers[i].mage);
+    if (pick.length) R.king = pick[Math.floor(Math.random() * pick.length)];
+  }
+  const ki = pool.indexOf(R.king);
+  if (ki >= 0) {
+    pool.splice(ki, 1);
+    const w = workers[R.king];
+    releaseWorker(w);
+    w.king = 1; w.kst = ''; w.lash = 0; w.kt = rr(LASH_GAP[0], LASH_GAP[1]);
+    w.hm = palaceNear(w.x, w.z); w.hst = ''; w.pause = 0;
+  }
+  for (let i = pool.length - 1; i > 0; i--) {          // 洗牌（同 startHomes）
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+  }
+  const taken = new Set();
+  while (pool.length) {
+    const crew = takeCrew(pool);
+    let cx = 0, cz = 0;
+    for (const w of crew) { cx += w.x; cz += w.z; }
+    cx /= crew.length; cz /= crew.length;
+    let hi = pickUnfinished(cx, cz, taken, 6);
+    if (hi < 0) hi = pickUnfinished(cx, cz, NO_TAKEN, 6);
+    if (hi >= 0) {
+      for (const sl of homes.list[hi].slots) if (!sl.filled) sl.claimed = -1;   // 上一批人留下的認領（同 startShop）
+    } else hi = palaceNear(cx, cz);
+    if (hi < 0) continue;                               // 一件都沒有（整座壓在新工地上）：這一組照常閒晃
+    taken.add(hi);
+    for (const w of crew) {
+      releaseWorker(w);                                 // 手上的建材先放掉，這趟不是上工
+      w.hm = hi; w.hst = ''; w.pause = 0;
+    }
+  }
+}
+/* 收掉：王冠、披風、鞭子也收（那一身是這件事在跑的時候才穿的）；誰是國王記在 palaceRing，下次開工還是他 */
+function stopPalace() {
+  for (const w of workers) { w.king = 0; w.kst = ''; w.lash = 0; w.hop = 0; }
+  stopHomes();
+}
+/* 每秒看一次（同 stepShop）：這一階都蓋好過了就往下一階加蓋；最後一階也蓋好了就是整座蓋好（palaceFin）。
+   閒著的人掛到最近的那一件——蓋好了的話他從那裡開始流浪 */
+let palFixT = 0;
+function stepPalace(dt) {
+  if ((palFixT -= dt) > 0) return;
+  palFixT = SHOP_FIX_T;
+  const R = palaceRing;
+  if (!R || !homes || !homes.list.some(h => h.palace)) return;   // 整座被新工地徵收了：等下一輪開工重新規劃
+  if (!R.fin && homes.list.every(h => !h.palace || h.done)) {
+    let n = 0;
+    while (!n && R.stage < R.allow) n = palaceGrow();
+    if (!n) palaceFin();
+  }
+  const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
+  const joins = w => phase !== 'build' || w.lazy;
+  for (const w of workers) {
+    /* 施工中偷懶的國王被打倒、收心上工了（quitLazy）：王冠鞭子收起來，不然他戴著王冠去搬地標的料。
+       誰是國王還記在 palaceRing，下次他再參加還是他 */
+    if (w.king && !joins(w)) { w.king = 0; w.kst = ''; w.lash = 0; }
+    if (w.hm >= 0 || w.dead || !steady(w) || !joins(w)) continue;
+    releaseWorker(w);
+    w.hm = palaceNear(w.x, w.z); w.hst = ''; w.pause = 0;
+  }
+}
+/* 整座蓋好了：國王住進去，其他人被趕走（使用者選「趕到外圍流浪、不修」）。手上的東西放下，下一幀起各走各的（見 palaceLife） */
+function palaceFin() {
+  palaceRing.fin = 1;
+  for (const w of workers) {
+    const h = w.hm >= 0 && homes.list[w.hm];
+    if (!h || !h.palace) continue;
+    releaseWorker(w); w.hst = ''; w.pause = 0; w.kst = '';
+  }
+}
+/* 皇宮這一件的人這一幀做什麼（updHome 開頭叫）。回傳 true＝這裡處理掉了；false＝照一般蓋房子那條路去蓋 */
+function palaceLife(w, h, dt) {
+  if (w.hop > 0) {                                     // 被抽到跳一下（手上的事照做）
+    w.hop = Math.max(0, w.hop - dt);
+    w.y = Math.sin((1 - w.hop / HOP_T) * Math.PI) * HOP_H;
+  }
+  if (w.king) { liveKing(w, dt); return true; }
+  if (palaceRing && palaceRing.fin && !w.load.length) { liveExile(w, dt); return true; }
+  return false;
+}
+/* 誰算「正在被使喚的人」：掛在皇宮上、站得穩、不是國王自己 */
+function slaveOk(t) {
+  const h = t && t.hm >= 0 && homes.list[t.hm];
+  return !!h && h.palace && !t.king && !t.dead && !(t.air || t.burn > 0 || t.flee > 0 || t.fall > 0);
+}
+function pickSlave(w) {
+  const near = [], all = [];
+  for (let i = 0; i < workers.length; i++) {
+    const t = workers[i];
+    if (!slaveOk(t)) continue;
+    all.push(i);
+    if ((t.x - w.x) ** 2 + (t.z - w.z) ** 2 < KING_NEAR * KING_NEAR) near.push(i);
+  }
+  const pick = near.length ? near : all;
+  return pick.length ? pick[Math.floor(Math.random() * pick.length)] : -1;
+}
+/* 國王這一幀（w.kst：'' 挑下一件事／go 走過去／say 指著他／chase 追過去／lash 甩鞭子） */
+function liveKing(w, dt) {
+  if (palaceRing && palaceRing.fin) { liveThrone(w, dt); return; }
+  w.kt -= dt;
+  const t = workers[w.lt];
+  const face = () => {
+    if (t) w.a = Math.atan2(t.x - w.x, t.z - w.z);
+    w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  };
+  if (w.kst === 'lash') {
+    face();
+    const s0 = w.lash;
+    w.lash = Math.min(1, w.lash + dt / LASH_T);
+    w.whip = w.lash;
+    if (s0 < ENG.WHIP_HIT && w.lash >= ENG.WHIP_HIT) lashHit(w, t);
+    if (w.lash >= 1) { w.lash = 0; w.whip = 0; w.kst = ''; w.kt = rr(LASH_GAP[0], LASH_GAP[1]); }
+    return;
+  }
+  if (w.kst === 'say') {
+    face();
+    w.cmd = 1; w.ph += dt * 4;                         // 指人的那隻手跟著 ph 晃（見 engine.js 的 kingArm）
+    if ((w.kd -= dt) <= 0 || !slaveOk(t)) w.kst = '';
+    return;
+  }
+  if (w.kst === 'go' || w.kst === 'chase') {
+    if (!slaveOk(t) || (w.kd -= dt) <= 0) { w.kst = ''; return; }   // 那個人不蓋了／追太久：換一個
+    if (w.kst === 'chase') {
+      if (Math.hypot(t.x - w.x, t.z - w.z) <= LASH_NEAR) { w.kst = 'lash'; w.lash = 0; face(); return; }
+      w.tx = t.x; w.tz = t.z;
+    }
+    const leg = w.leg;                                 // 監工的路不算閒晃里程（同 layTrip）
+    const got = strollTo(w, dt);
+    w.leg = leg;
+    if (got && w.kst === 'go') { w.kst = 'say'; w.kd = rr(KING_SAY[0], KING_SAY[1]); }
+    return;
+  }
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  const k = pickSlave(w);
+  if (k < 0) return;                                   // 沒有人可以使喚（都在半空、在逃命）：站著等
+  w.lt = k; w.kd = LASH_GIVE;
+  if (w.kt <= 0) { w.kst = 'chase'; return; }
+  // 站到離他 KING_STAND 的地方：從他往國王現在這一側退開
+  const s = workers[k], dx = w.x - s.x, dz = w.z - s.z, d = Math.hypot(dx, dz) || 1;
+  const r = rr(KING_STAND[0], KING_STAND[1]);
+  w.tx = s.x + dx / d * r; w.tz = s.z + dz / d * r;
+  w.kst = 'go';
+}
+/* 甩到那一刻：啪一聲；人還在鞭子搆得到的地方就跳一下、冒生氣（甩出去之前他走開了就抽空） */
+function lashHit(w, t) {
+  sndWhip();
+  if (!slaveOk(t) || Math.hypot(t.x - w.x, t.z - w.z) > LASH_NEAR + 0.8) return;
+  t.hop = HOP_T;
+  showEmo(t, 'anger');
+}
+/* 蓋好之後國王住進去，在中庭裡慢慢踱步 */
+function liveThrone(w, dt) {
+  if (w.pause > 0) { idleWait(w, dt); return; }
+  if (w.hst !== 'throne') { w.hst = 'throne'; throneSpot(w); }
+  if (!strollTo(w, dt, WALK * KING_PACE, KING_PACE)) return;
+  strollPause(w);
+  w.hst = '';
+}
+function throneSpot(w) {
+  const p = palaceAt(palaceRing, rr(PAL_YARD.u0, PAL_YARD.u1), rr(PAL_YARD.v0, PAL_YARD.v1));
+  w.tx = p.x; w.tz = p.z;
+}
+/* 其他人被趕到外圍流浪（使用者選的）：在碎料場外圈（arenaR～debrisR）一趟一趟沿著外圍走很遠，
+   挑點時避開皇宮那一塊（外框 PAL_AWAY 格以內不去）。走得比平常慢一點、停一下就走、不表演（被趕出來的人不跳舞），聊天照舊 */
+const EXILE_ARC = [0.7, 1.9];       // 一趟沿著外圍走幾弧度（長途）
+const EXILE_SPD = 0.75;             // 走得比平常慢（腳也擺慢）
+const EXILE_REST = [1.5, 5];        // 走到了停幾秒
+const PAL_AWAY = 8;                 // 離皇宮外框多遠以內不去
+function liveExile(w, dt) {
+  if (w.pause > 0) { idleWait(w, dt); return; }
+  if (w.hst !== 'exile') { w.hst = 'exile'; exileSpot(w); }
+  if (!strollTo(w, dt, WALK * EXILE_SPD, EXILE_SPD)) return;
+  w.pause = rr(EXILE_REST[0], EXILE_REST[1]); w.leg = 0;
+  w.hst = '';
+}
+const palaceNearPt = (x, z, pad) => {
+  const B = palaceRing && palaceRing.box;
+  return !!B && x > B.x0 - pad && x < B.x1 + pad && z > B.z0 - pad && z < B.z1 + pad;
+};
+function exileSpot(w) {
+  const r0 = Math.max(arenaR, siteR + HOME_NEAR + 8), r1 = Math.max(r0 + 6, debrisR - 3);
+  const a0 = Math.atan2(w.z, w.x);
+  let x = 0, z = 0;
+  for (let t = 0; t < 24; t++) {
+    const a = a0 + rr(EXILE_ARC[0], EXILE_ARC[1]) * (Math.random() < 0.5 ? -1 : 1), r = rr(r0, r1);
+    x = Math.cos(a) * r; z = Math.sin(a) * r;
+    if (!palaceNearPt(x, z, PAL_AWAY)) break;
+  }
+  w.tx = x; w.tz = z;
+}
+/* 聊完天、打完架之後下一步去哪（liveSpot 叫）：蓋好了的話國王回中庭、其他人接著流浪；還在蓋的照一般閒晃挑 */
+function palaceSpot(w) {
+  if (!palaceRing || !palaceRing.fin) { idleSpot(w); return; }
+  if (w.king) { throneSpot(w); w.hst = 'throne'; }
+  else { exileSpot(w); w.hst = 'exile'; }
+}
 function stopHomes() {
   for (const w of workers) {
     if (w.hm < 0) continue;
@@ -5978,7 +6561,8 @@ function clearHomesInSite() {
      每換一座地標就整圈拆掉重蓋。這樣一來換到比較小的地標時，上一座留下的城牆
      就照舊站在那裡（那是已經蓋好的城，沒有理由自己倒）；換到更大的、牆會切進
      新工地的那幾段才解成碎料。 */
-  dropHomes(h => h.wall ? !wallHitsSite(h, r) : Math.hypot(h.x, h.z) - h.r > r);
+  /* 皇宮的每一件同城牆（v1.308.0）：大殿二十幾格見方，外接圓一圈下去連隔壁的空地都算進來 */
+  dropHomes(h => h.wall || h.palace ? !wallHitsSite(h, r) : Math.hypot(h.x, h.z) - h.r > r);
 }
 /* 把不要的那幾間解成碎料，其餘重編索引。keep(h) 回傳 true 就留著，回傳解掉了幾間。
    索引會變，所以積木的 hh、**還在飛的那些的 arc.hm**、以及小人的 hm 都要一起重編。
@@ -6028,8 +6612,10 @@ function dropHomes(keep) {
    消失（24 段 → 23 段），150 秒後還是缺著，牆線上永遠少一段
    （見 開發筆記〈城牆段打爛了不廢棄，留著等人補〉）。
    **商店街的店也一樣**（v1.305.0）：整條街是一次規劃好的（shopPlan），廢棄掉的那一間沒有地方會再生出來。
-   **樹林的樹也一樣**（v1.307.0，forestPlan 一次規劃好）：廢棄掉的那一棵就是林子裡永遠的一個洞。 */
-const wrecked = h => h.done && !h.wall && !h.shop && !h.forest && h.slots.length - h.left < h.slots.length * WRECK_AT && !frHomeHeld(h);
+   **樹林的樹也一樣**（v1.307.0，forestPlan 一次規劃好）。
+   **皇宮也一樣**（v1.308.0，palacePlan 一次規劃好）：蓋好之後雖然沒人修（使用者選的），打爛的那一件留著當廢墟，
+   整座的去留同樣交給換事件那一條。 */
+const wrecked = h => h.done && !h.wall && !h.shop && !h.forest && !h.palace && h.slots.length - h.left < h.slots.length * WRECK_AT && !frHomeHeld(h);
 /* 罩著的那一間先不廢棄（v1.259.0，見 game-tools.js〈道具：防禦魔法〉：罩子裡一塊都不掉）：
    還站著的有一塊在芙莉蓮的防護罩裡就留著，罩子走開之後（stepFrHang）再判一次 */
 function frHomeHeld(h) {
@@ -6102,6 +6688,15 @@ function digSpot(w, h) {
     const q = side ? out + DIG_NEAR : back - DIG_NEAR;
     w.tx = zx ? p0 : q; w.tz = zx ? q : p0; w.hdt = DIG_T;
     return;
+  }
+  /* 皇宮那幾件（v1.308.0）：挖在**外框離他最近的那一面**外面（同上面直牆段的道理，只是四面都算）。
+     照下面那一套的話大殿外接圓半徑 16，挖料點落在長邊外九到十四格（見 palaceOut） */
+  if (h.palace) {
+    for (let t = 0; t < 20; t++) {
+      const p = palaceOut(h, w.x + rr(-DIG_FAR, DIG_FAR), w.z + rr(-DIG_FAR, DIG_FAR), rr(DIG_NEAR, DIG_FAR));
+      if (Math.hypot(p.x, p.z) < siteR + KEEP || homeAt(p.x, p.z)) continue;
+      w.tx = p.x; w.tz = p.z; w.hdt = DIG_T; return;
+    }
   }
   /* 挖的地方取在「他現在站的那一側」，不是整圈亂挑（v1.100）。
      房子大了之後（地基半徑可以到 9.6），亂挑的話一趟裡「走去挖」跟「走回去砌」
@@ -6215,6 +6810,7 @@ function landHome(b, a) {
 function liveSpot(w, h) {
   if (h.shop) { shopSpot(w); return; }  // 商店街（v1.305.0）：聊完天、打完架接著逛，不是繞著那一間打轉
   if (h.forest) { forestSpot(w); return; }   // 樹林（v1.307.0）：同上，接著在林子裡散步
+  if (h.palace) { palaceSpot(w); return; }   // 皇宮（v1.308.0）：國王回中庭踱步、其他人接著在外圍流浪
   const a = rr(0, Math.PI * 2), d = rr(h.r + HOME_STAND, h.r + LIVE_R);
   w.tx = h.x + Math.cos(a) * d; w.tz = h.z + Math.sin(a) * d;
 }
@@ -6239,6 +6835,9 @@ function liveHome(w, h, dt) {
 function updHome(w, wi, dt) {
   const h = homes && homes.list[w.hm];
   if (!h) { w.hm = -1; return; }                        // 那一間被徵收了：回去閒晃
+  /* 皇宮（v1.308.0）：國王不動手；整座蓋好之後其他人被趕到外圍流浪，**壞了也不回來修**（使用者選的），
+     所以擺在「還缺格子就去蓋」那幾條前面 */
+  if (h.palace && palaceLife(w, h, dt)) return;
   /* 蓋完了就換「住」那條路——**這一條要排在挖料前面**。反過來的話，最後一塊落定那一刻
      還在挖料途中的人會把那一趟走完才回家；而他手上的目標點可能是聊完天時挑的閒晃點
      （idleSpot 取的是場上任一處），於是他會走到別的地方去——實測有人跑到離自己家
@@ -6467,7 +7066,7 @@ function takeHomeBlock(w, wi, h, i) {
   if (!b || b.st !== FREE || b.holder >= 0) return false;
   const a0 = w.load.length ? blocks[w.load[0].b] : null;
   const anchor = a0 && a0.hh === w.hm ? h.slots[a0.hk] : null;
-  const k = homeFree(h, anchor);
+  const k = h.palace && !anchor ? palaceFree(h, w.x, w.z) : homeFree(h, anchor);   // 皇宮：見 palaceFree
   if (k < 0) return false;
   douse(b);                                             // 還在燒的先熄掉（同工人撿料）
   if (b.cell) gridDel(b);
@@ -6579,6 +7178,12 @@ function homeStand(h, sl, w, pad) {
   const set = (x, z) => { _hst.x = x; _hst.z = z; return _hst; };
   if (h.thin === 'z') return set(sl.x, w.z > h.z ? h.wz1 + pad : h.wz0 - pad);
   if (h.thin === 'x') return set(w.x > h.x ? h.wx1 + pad : h.wx0 - pad, sl.z);
+  /* 皇宮那幾件（v1.308.0）：站在**外框離那一格最近的那一面**外面（同直牆段），站不住（貼著隔壁那一件）
+     才照下面那一套繞著轉。大殿 27×19 格，照外接圓推的話長邊那幾格要站到八格外去丟 */
+  if (h.palace) {
+    const p = palaceOut(h, sl.x, sl.z, pad);
+    if (!footHome(p.x, p.z) && !wallBlocked(w.x, w.z, p.x, p.z)) return set(p.x, p.z);
+  }
   let dx = sl.x - h.x, dz = sl.z - h.z;
   let d = Math.hypot(dx, dz);
   if (d < 0.001) { dx = w.x - h.x; dz = w.z - h.z; d = Math.hypot(dx, dz) || 1; }

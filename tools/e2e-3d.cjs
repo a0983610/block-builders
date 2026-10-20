@@ -8434,7 +8434,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              placed: placedCnt, total: bp.slots.length,
              homes: hs.filter(h => !h.tree).length, slots: sum(h => !h.tree),
              trees: hs.filter(h => h.tree).length, treeSlots: sum(h => h.tree),
-             budget: TREE_BUDGET, shop: SHOP_BUDGET, forest: FOREST_BUDGET,
+             budget: TREE_BUDGET, shop: SHOP_BUDGET, forest: FOREST_BUDGET, palace: PALACE_BUDGET,
              left: hs.reduce((a, h) => a + h.left, 0) };
   });
   /* 門檻 v1.153 加上樹那一份：村子現在是「最多 43 間 5405 格的房子 ＋ 最多
@@ -8461,6 +8461,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('樹林的預算不超過最大的一圈城牆（積木池那條帳不必再加一份）',
      poolFit.forest <= poolFit.wall,
      '樹林預算 ' + poolFit.forest + ' 塊、最大的一圈城牆 ' + poolFit.wall + ' 塊（' + poolFit.wallN + '）');
+  /* 皇宮（v1.308.0）同商店街的理由 */
+  ok('皇宮的預算不超過最大的一圈城牆（積木池那條帳不必再加一份）',
+     poolFit.palace <= poolFit.wall,
+     '皇宮預算 ' + poolFit.palace + ' 塊、最大的一圈城牆 ' + poolFit.wall + ' 塊（' + poolFit.wallN + '）');
 
   /* 房子也要「底部拆掉上面一起垮」（v1.102，使用者指定「同地標建築邏輯」）。
      規則跟 collapseUnsupported 一樣：26 鄰接、從地面那一層往上找連通，連不到的鬆脫。
@@ -12501,6 +12505,377 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      forT.stick.swap === 'home' && forT.stick.n3 === 0,
      JSON.stringify(forT.stick));
   }   // ── 〈閒晃事件：樹林〉結束
+
+  SEC: { if (!(await head('閒晃事件：皇宮', T_COMMIT))) break SEC;
+  /* v1.308.0，使用者：「增加閒晃事件五／小人們被奴役 一起去幫一隻小人蓋一棟皇宮 最後其他小人流浪」，
+     選的是中式／西式隨機、一階一階加蓋（主殿 → 兩翼 → 宮牆宮門 → 角樓）、國王監工不動手＋揮鞭子、
+     蓋好之後趕到外圍流浪、壞了不修（見 開發筆記〈事件五：皇宮（v1.308.0）〉）。
+     **全部規則型**，寫法同〈閒晃事件：樹林〉：造最小場面、格子直接標成砌好、不生積木。
+     palacePlan 只有一個骰子（抽哪一款），押住它整座就是固定的；流浪與踱步挑點那幾下換成固定的一串骰子（mulberry32）。
+     國王追人、甩鞭直接叫 liveKing（被抽的那個人不動），換事件那條押骰子。量完把全域還回去。 */
+  const palT = await page.evaluate(() => {
+    const keep = { siteR, arenaR, debrisR, yaw: ENG.cam.yaw, ev: idleEv, last: evLast, arm: evArm, ph: evPh, peak: evPeak,
+                   phase, ring: palaceRing, rnd: Math.random,
+                   ws: workers.map(w => [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show, w.lazy]) };
+    cleanTools(); clearHomes(); stopIdleEvent();
+    phase = 'done';
+    const seed = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+                              t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+    const out = { budget: PALACE_BUDGET };
+    const fill = h => { for (const sl of h.slots) sl.filled = true; h.left = 0; h.done = true; homeBox(h); };
+    const pals = () => homes.list.filter(h => h.palace);
+    const palEv = IDLE_EVENTS.find(e => e.id === 'palace'), homeEv = IDLE_EVENTS.find(e => e.id === 'home');
+    // 押款式：palacePlan 唯一的骰子是抽哪一款，給 (i + 0.5) / 款數 就是第 i 款
+    const planAs = i => {
+      Math.random = () => (i + 0.5) / PALACE_STYLE.length;
+      try { return palacePlan(); } finally { Math.random = keep.rnd; }
+    };
+    const resetW = () => workers.forEach((w, i) => {
+      const a = i / workers.length * Math.PI * 2;
+      releaseWorker(w); w.hm = -1; w.hst = ''; w.flee = 0; w.air = 0; w.burn = 0; w.fall = 0; w.lazy = 0;
+      w.king = 0; w.kst = ''; w.lash = 0; w.hop = 0; w.pause = 0; w.show = '';
+      w.x = Math.sin(a) * (siteR + 4); w.z = Math.cos(a) * (siteR + 4);
+    });
+
+    /* ① 兩款的設計（局部座標）：每一件六面連回地面、照 canPlaceHome 砌得完、著地；幾件的外框不重疊、
+          碰不到的至少隔 3 格；門洞那一塊地面往上四層是空的（走得過去）；四階都有東西、加起來不超過預算 */
+    out.design = PALACE_STYLE.map(st => {
+      const bad = [];
+      const rows = palaceDesign(st).map(p => {
+        const cells = [...p.cells.values()].map(c => ({ i: c.u, k: c.v, gy: c.gy, c: c.c }));
+        const h = wallSeg(cells, p.kind, null, null);
+        markHomeF6(h);
+        if (h.slots.some(s => !s.f6)) bad.push(p.kind + '懸空');
+        let placed = 0, moved = true;
+        while (moved) {
+          moved = false;
+          for (let i = 0; i < h.slots.length; i++) {
+            if (h.slots[i].filled || !canPlaceHome(h, i)) continue;
+            h.slots[i].filled = true; placed++; moved = true;
+          }
+        }
+        if (placed !== h.slots.length) bad.push(p.kind + '砌不完');
+        if (p.gap && cells.some(c => c.gy <= 3 && c.i > p.gap.u0 && c.i < p.gap.u1 && c.k > p.gap.v0 && c.k < p.gap.v1)) bad.push(p.kind + '門洞被堵');
+        return { kind: p.kind, stage: p.stage, n: h.slots.length, box: [h.wx0, h.wx1, h.wz0, h.wz1] };
+      });
+      for (let a = 0; a < rows.length; a++) for (let b = a + 1; b < rows.length; b++) {
+        const A = rows[a].box, B = rows[b].box;
+        const dx = Math.max(B[0] - A[1], A[0] - B[1]), dz = Math.max(B[2] - A[3], A[2] - B[3]);
+        if (dx < 0 && dz < 0) bad.push(rows[a].kind + '×' + rows[b].kind + '重疊');
+        else if (Math.max(dx, dz) > 0 && Math.max(dx, dz) < 3) bad.push(rows[a].kind + '×' + rows[b].kind + '窄縫 ' + Math.max(dx, dz));
+      }
+      const per = [0, 0, 0, 0];
+      for (const r of rows) per[r.stage] += r.n;
+      return { id: st.id, per, total: per.reduce((s, n) => s + n, 0), kinds: rows.map(r => r.kind).join(''), bad };
+    });
+
+    /* ② 規劃：siteR 7～75 × 三檔建材 × 兩款，鏡頭四個方向輪流。每一份都要：正門朝鏡頭那一側（跟鏡頭方向夾角 45° 以內）、
+          擺在鏡頭的側邊（往外那一軸跟鏡頭方向夾角 45° 以上）、最靠地標那一面離內緣（siteR + HOME_NEAR）至少 PAL_IN − 1、
+          格子都在整數格上、四階都在預算內 */
+    const plans = [];
+    for (const cnt of CNT_OPTS) for (let sr = 7; sr <= 75; sr += 4) for (let i = 0; i < PALACE_STYLE.length; i++) {
+      siteR = sr; arenaR = arenaOf(sr, cnt, cnt);
+      ENG.cam.yaw = [0.3, 1.9, 3.5, 5.0][(sr + i) % 4];
+      const R = planAs(i);
+      const ex = Math.cos(ENG.cam.yaw), ez = Math.sin(ENG.cam.yaw), B = R.box;
+      const near = Math.hypot(Math.max(B.x0, Math.min(0, B.x1)), Math.max(B.z0, Math.min(0, B.z1)));
+      const sum = R.items.filter(it => it.stage < R.allow).reduce((s, it) => s + it.n, 0);
+      plans.push({ cnt, sr, st: R.style, face: +(R.fx * ex + R.fz * ez).toFixed(3), side: +Math.abs(R.sx * ex + R.sz * ez).toFixed(3),
+                   gap: +(near - sr - HOME_NEAR).toFixed(2), allow: R.allow, sum,
+                   ints: R.items.every(it => it.cells.every(c => Number.isInteger(c.i) && Number.isInteger(c.k))) });
+    }
+    ENG.cam.yaw = keep.yaw;
+    const pbad = plans.filter(p => p.face < 0.7 || p.side > 0.71 || p.gap < PAL_IN - 1 - 1e-9 || !p.ints || p.allow !== 4 || p.sum > PALACE_BUDGET);
+    out.plan = { n: plans.length, bad: pbad.slice(0, 4), styles: [...new Set(plans.map(p => p.st))].join('、'),
+                 minGap: Math.min(...plans.map(p => p.gap)), minFace: Math.min(...plans.map(p => p.face)), maxSide: Math.max(...plans.map(p => p.side)) };
+
+    /* ③ 一階一階長：這一階還有一件沒蓋好就不長；全部蓋好過了才長下一階、長的就是規劃裡那一階那幾件；
+          最後一階也蓋好了就是整座蓋好（fin）、不再長。下一階壓到的東西（這裡擺一間小房子）先拆掉 */
+    siteR = 18; arenaR = 79; debrisR = arenaR * DEBRIS_X;
+    homes = { list: [] };
+    palaceRing = planAs(0);
+    const R = palaceRing;
+    palaceGrow();
+    const grow = { allow: R.allow, steps: [], first: pals().map(h => h.kind).join('') };
+    {
+      const st1 = R.items.find(it => it.stage === 1), c1 = st1.cells[Math.floor(st1.cells.length / 2)];
+      const kind = HOME_KIND[0], slots = homeSlots(c1.i, c1.k, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: c1.i, z: c1.k, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                  oz: (kind.d - 1) / 2, slots, left: slots.length, n: 1, done: false };
+      homes.list.push(h);
+      grow.blockId = h.id;
+    }
+    const step1 = () => { palFixT = 0; stepPalace(SHOP_FIX_T); };
+    for (let k = 0; k < R.allow + 2; k++) {
+      const before = R.stage, nT = pals().length, fin0 = R.fin, list = pals();
+      for (let i = 0; i < list.length - 1; i++) fill(list[i]);        // 差最後一件
+      step1();
+      const early = R.stage !== before || pals().length !== nT || R.fin !== fin0;
+      fill(list[list.length - 1]);
+      step1();
+      grow.steps.push({ before, after: R.stage, early, added: pals().length - nT,
+                        want: R.items.filter(it => it.stage === before).length, fin: R.fin });
+    }
+    grow.blockGone = !homes.list.some(h => h.id === grow.blockId);
+    grow.fin = R.fin; grow.final = R.stage;
+    out.grow = grow;
+
+    /* ④ 開工：站得穩的人全部掛上來、w.own 不動（皇宮不是誰的家）；抽一個國王（不是魔法師）；再開一次不重新規劃、還是同一個國王；
+          收掉時王冠也收、再開又是他；只有一個人參加（施工中只有他偷懶）就不抽國王、他自己蓋 */
+    homes = { list: [] }; palaceRing = null;
+    resetW();
+    const own0 = workers.map(w => w.own);
+    startPalace();
+    const ring0 = palaceRing, n0 = pals().length, k0 = palaceRing.king;
+    const st = { workers: workers.length, crewed: workers.filter(w => w.hm >= 0 && homes.list[w.hm].palace).length,
+                 kings: workers.filter(w => w.king).length, kingOk: k0 >= 0 && workers[k0].king === 1 && !workers[k0].mage };
+    startPalace();
+    st.same = palaceRing === ring0 && pals().length === n0 && palaceRing.king === k0 && workers.filter(w => w.king).length === 1;
+    st.own = workers.every((w, i) => w.own === own0[i]);
+    stopPalace();
+    st.off = workers.every(w => !w.king);
+    startPalace();
+    st.back = workers[k0].king === 1 && workers.filter(w => w.king).length === 1;
+    stopPalace();
+    homes = { list: [] }; palaceRing = null; resetW();
+    phase = 'build'; workers[3].lazy = 1;
+    startPalace();
+    st.solo = { kings: workers.filter(w => w.king).length, built: workers[3].hm >= 0, others: workers.filter((w, i) => i !== 3 && w.hm >= 0).length };
+    // 施工中兩個人偷懶：一個當國王；他被打倒收心上工（quitLazy）→ 下一次 stepPalace 王冠收掉，誰是國王照舊記著
+    stopPalace(); homes = { list: [] }; palaceRing = null; resetW();
+    workers[2].lazy = 1; workers[3].lazy = 1;
+    startPalace();
+    const lk = palaceRing.king, wasKing = lk >= 0 && workers[lk].king === 1;
+    quitLazy(workers[lk]);
+    step1();
+    st.quit = { wasKing, off: workers[lk].king === 0, kept: palaceRing.king === lk };
+    phase = 'done'; workers[2].lazy = 0; workers[3].lazy = 0;
+    stopPalace();
+    out.start = st;
+
+    /* ⑤ 國王：該抽了（kt ≤ 0）就挑一個人追過去，搆得到（LASH_NEAR）就甩；甩到 ENG.WHIP_HIT 那一刻那個人跳一下、冒生氣；
+          甩完隔 LASH_GAP 秒才再抽。還沒到時間就走到他旁邊 KING_STAND 那麼遠、站定指著他（cmd）。
+          甩出去之前那個人走開了就抽空。國王自己一塊都不搬 */
+    homes = { list: [] }; palaceRing = null; resetW();
+    palaceRing = planAs(0); palaceGrow();
+    startPalace();
+    const ki = palaceRing.king, K = workers[ki];
+    const si = workers.findIndex((w, i) => i !== ki && w.hm >= 0), S = workers[si];
+    for (const w of workers) if (w !== K && w !== S) w.hm = -1;    // 只留他一個能被使喚
+    S.x = K.x + 1.5; S.z = K.z; S.hop = 0; S.emo = ''; S.emoT = 0;
+    K.kt = 0; K.kst = ''; K.lt = -1;
+    const lash = { seq: [] };
+    liveKing(K, 0.05); lash.seq.push(K.kst + ':' + K.lt);
+    liveKing(K, 0.05); lash.seq.push(K.kst);
+    let hitAt = -1, hopBefore = false, prev = 0, whipOk = true;
+    for (let n = 0; n < 60 && K.kst === 'lash'; n++) {
+      prev = K.lash;
+      K.whip = 0;
+      liveKing(K, 0.05);
+      if (K.kst === 'lash' && Math.abs(K.whip - K.lash) > 1e-9) whipOk = false;
+      if (S.hop > 0 && hitAt < 0) { hitAt = K.lash || 1; hopBefore = prev >= ENG.WHIP_HIT; }
+    }
+    Object.assign(lash, { target: K.lt === si, hitAt: +hitAt.toFixed(3), hopBefore, whipOk, emo: S.emo, after: K.kst,
+                          gap: +K.kt.toFixed(2), gapOk: K.kt >= LASH_GAP[0] - 0.06 && K.kt <= LASH_GAP[1] });
+    // 抽空：甩到那一刻他已經走到六格外
+    S.hop = 0; S.x = K.x + 6; K.kst = 'lash'; K.lash = ENG.WHIP_HIT - 0.01;
+    liveKing(K, 0.05);
+    lash.miss = S.hop === 0;
+    // 監工：還沒到時間 → 走過去（離他 KING_STAND）→ 站定指著他
+    S.x = K.x + 10; S.z = K.z; K.kt = 99; K.kst = ''; K.cmd = 0;
+    liveKing(K, 0.05);
+    const goD = Math.hypot(K.tx - S.x, K.tz - S.z);
+    lash.go = K.kst === 'go' && goD >= KING_STAND[0] - 1e-6 && goD <= KING_STAND[1] + 1e-6;
+    for (let n = 0; n < 5 && K.kst === 'go'; n++) { K.x = K.tx; K.z = K.tz; liveKing(K, 0.05); }
+    K.cmd = 0; liveKing(K, 0.05);
+    lash.say = K.kst === 'say' && K.cmd === 1;
+    // 國王一塊都不搬：走 updHome 那條路幾十幀，手上一直是空的、從不去撿／挖
+    let carried = 0, dug = 0;
+    for (let n = 0; n < 60; n++) { updHome(K, ki, 0.05); if (K.load.length) carried++; if (K.hst === 'grab' || K.hst === 'dig') dug++; }
+    lash.idle = carried === 0 && dug === 0;
+    out.lash = lash;
+
+    /* ⑥ 蓋好之後：國王的踱步點在皇宮中庭（整座外框裡、不在任何一件的框裡）；其他人流浪——目標在外圈（r0～r1）、
+          離皇宮外框 PAL_AWAY 以外；被打出洞也不回來修（同一個破洞，還沒蓋好之前是會去補的）；聊完天（liveSpot）接著流浪 */
+    for (let k = 0; k < 8 && !palaceRing.fin; k++) { for (const h of pals()) fill(h); step1(); }
+    const RR = palaceRing, B = RR.box;
+    const r0 = Math.max(arenaR, siteR + HOME_NEAR + 8), r1 = Math.max(r0 + 6, debrisR - 3);
+    Math.random = seed(41);
+    const ex = { fin: RR.fin, ring: 0, near: 0, throneIn: 0, throneBox: 0, n: 300 };
+    const E = workers.find(w => !w.king && w.hm >= 0);
+    try {
+      for (let n = 0; n < ex.n; n++) {
+        const a = Math.random() * Math.PI * 2, r = Math.random() * 80;
+        E.x = Math.cos(a) * r; E.z = Math.sin(a) * r;
+        exileSpot(E);
+        const d = Math.hypot(E.tx, E.tz);
+        if (d >= r0 - 1e-6 && d <= r1 + 1e-6) ex.ring++;
+        if (palaceNearPt(E.tx, E.tz, PAL_AWAY)) ex.near++;
+        throneSpot(K);
+        if (K.tx > B.x0 && K.tx < B.x1 && K.tz > B.z0 && K.tz < B.z1) ex.throneIn++;
+        if (footHome(K.tx, K.tz)) ex.throneBox++;
+      }
+    } finally { Math.random = keep.rnd; }
+    const main = pals()[0], mi = homes.list.indexOf(main);
+    for (let i = 0; i < 5; i++) main.slots[main.slots.length - 1 - i].filled = false;
+    main.left = 5;
+    releaseWorker(E); E.hm = mi; E.hst = ''; E.pause = 0; E.x = main.x + 20; E.z = main.z;
+    updHome(E, workers.indexOf(E), 0.05);
+    ex.exile = { hst: E.hst, load: E.load.length };
+    RR.fin = 0; E.hst = ''; E.pause = 0;
+    updHome(E, workers.indexOf(E), 0.05);
+    ex.repairBefore = E.hst === 'grab' || E.hst === 'dig';
+    releaseWorker(E); RR.fin = 1; E.hst = ''; E.pause = 0;
+    liveSpot(E, main);
+    ex.chat = { hst: E.hst, ring: Math.hypot(E.tx, E.tz) >= r0 - 1e-6 && Math.hypot(E.tx, E.tz) <= r1 + 1e-6 };
+    K.hst = ''; liveSpot(K, main);
+    ex.chatKing = K.hst;
+    out.exile = ex;
+
+    /* ⑦ 打爛了不廢棄（同城牆段、店、樹林）：蓋好過的那一件打到剩一成，wreckHomes 不收它；同樣打爛的小房子會被收掉 */
+    const w0 = pals()[1];
+    fill(w0);
+    for (let i = 0; i < w0.slots.length * 0.9; i++) { w0.slots[w0.slots.length - 1 - i].filled = false; w0.left++; }
+    {
+      const kind = HOME_KIND[0], slots = homeSlots(0, 200, kind, HOME_PAL[0]);
+      const at = new Map();
+      slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+      const h = { id: homeSeq++, x: 0, z: 200, r: homeR(kind), kind: kind.id, at, ox: (kind.w - 1) / 2,
+                  oz: (kind.d - 1) / 2, slots, left: Math.ceil(slots.length * 0.9), n: 1, done: true };
+      homes.list.push(h);
+      out.wreck = { home: h.id };
+    }
+    wreckHomes();
+    out.wreck.stay = homes.list.includes(w0);
+    out.wreck.homeGone = !homes.list.some(h => h.id === out.wreck.home);
+
+    /* ⑧ 分類：皇宮自己一類（homeCat 6）——另外五類派工不挑一件沒蓋完的皇宮；事件黏著只有事件五數它 */
+    const ci = homes.list.indexOf(w0);
+    let otherN = 0, palN = 0;
+    for (const h of homes.list) if (!h.palace) otherN += h.slots.length - h.left;
+    for (const h of pals()) palN += h.slots.length - h.left;
+    out.cat = { cat: homeCat(w0), others: [0, 1, 2, 4, 5].every(c => pickUnfinished(w0.x, w0.z, new Set(), c) !== ci),
+                mine: pickUnfinished(w0.x, w0.z, new Set(), 6) >= 0,
+                evPal: evBlocks(palEv) === palN, evHome: evBlocks(homeEv) === otherN, palN, otherN };
+
+    /* ⑨ 黏著：皇宮還剩四分之一以上就不重抽（骰子押在小人的家也一樣）；拆到剩不到四分之一，押小人的家就換、整座解體；押皇宮就留著 */
+    const force = e => {
+      let tot = 0, lo = 0;
+      for (const x of IDLE_EVENTS) tot += x.wt;
+      for (const x of IDLE_EVENTS) { if (x === e) break; lo += x.wt; }
+      Math.random = () => (lo + e.wt / 2) / tot;
+    };
+    stopPalace();
+    homes = { list: [] }; palaceRing = planAs(1); palaceGrow();
+    for (const h of pals()) fill(h);
+    const full0 = evBlocks(palEv);
+    evLast = palEv; evPeak = full0; force(homeEv);
+    const stay = rollIdleEvent().id;
+    Math.random = keep.rnd;
+    const n1 = pals().length;
+    evLast = palEv; evPeak = full0 / WRECK_AT + 1; force(palEv);
+    const same = rollIdleEvent().id, n2 = pals().length;
+    Math.random = keep.rnd;
+    evLast = palEv; evPeak = full0 / WRECK_AT + 1; force(homeEv);
+    const swap = rollIdleEvent().id, n3 = pals().length;
+    Math.random = keep.rnd;
+    out.stick = { stay, same, swap, n1, n2, n3 };
+
+    /* 動過的全域狀態還回去 */
+    stopPalace();
+    clearHomes();
+    workers.forEach((w, i) => { [w.x, w.z, w.a, w.tx, w.tz, w.pause, w.show, w.lazy] = keep.ws[i]; w.hst = ''; w.hop = 0; w.kt = 0; w.lt = -1; });
+    siteR = keep.siteR; arenaR = keep.arenaR; debrisR = keep.debrisR; ENG.cam.yaw = keep.yaw; phase = keep.phase;
+    idleEv = keep.ev; evLast = keep.last; evArm = keep.arm; evPh = keep.ph; evPeak = keep.peak;
+    palaceRing = keep.ring; Math.random = keep.rnd;
+    return out;
+  });
+  ok('皇宮兩款的設計：每一件六面連回地面、照 canPlaceHome 砌得完；外框不重疊、碰不到的至少隔 3 格；門洞走得過去；四階都有、不超過預算',
+     palT.design.length === 2 && palT.design.every(d => d.bad.length === 0 && d.per.every(n => n > 0) && d.total <= palT.budget),
+     palT.design.map(d => d.id + ' ' + d.total + ' 塊（各階 ' + d.per.join('／') + '）' + d.kinds +
+                     (d.bad.length ? '；壞的：' + d.bad.slice(0, 6).join('、') : '')).join('；'));
+  ok('規劃（siteR 7～75 × 三檔建材 × 兩款、鏡頭四個方向）：擺在鏡頭側邊、正門朝鏡頭、不壓進地標內緣、格子在整數格上、四階都在預算內',
+     palT.plan.n >= 100 && palT.plan.bad.length === 0 && palT.plan.styles.split('、').length === 2,
+     palT.plan.n + ' 份（' + palT.plan.styles + '）；正門朝向跟鏡頭最少 ' + palT.plan.minFace + '、往外那一軸跟鏡頭最多 ' + palT.plan.maxSide +
+     '、離內緣最近 ' + palT.plan.minGap + ' 格' + (palT.plan.bad.length ? '；壞的：' + JSON.stringify(palT.plan.bad) : ''));
+  const pgs = palT.grow.steps.filter(s => s.before < palT.grow.allow);
+  ok('一階一階蓋：還有一件沒蓋好就不長，全部蓋好過了才長下一階（長的就是規劃裡那一階），最後一階蓋好就是整座蓋好、不再長；壓到的房子先拆掉',
+     pgs.length === palT.grow.allow - 1 && pgs.every(s => !s.early && s.after === s.before + 1 && s.added === s.want && s.added > 0) &&
+     palT.grow.steps.filter(s => s.before >= palT.grow.allow).every(s => s.after === s.before && s.added === 0 && s.fin === 1) &&
+     palT.grow.steps.every(s => !s.early) && palT.grow.fin === 1 && palT.grow.final === palT.grow.allow && palT.grow.blockGone,
+     JSON.stringify(palT.grow));
+  ok('開工：站得穩的人全部掛上來、w.own 不動；抽一個國王（不是魔法師），再開一次不重抽、收掉時王冠收、再開又是他；只有一個人參加就不抽、他自己蓋；偷懶的國王收心上工就脫下王冠',
+     palT.start.crewed === palT.start.workers && palT.start.kings === 1 && palT.start.kingOk && palT.start.same && palT.start.own &&
+     palT.start.off && palT.start.back && palT.start.solo.kings === 0 && palT.start.solo.built && palT.start.solo.others === 0 &&
+     palT.start.quit.wasKing && palT.start.quit.off && palT.start.quit.kept,
+     JSON.stringify(palT.start));
+  ok('國王：該抽了就追過去、搆得到就甩，甩到 WHIP_HIT 那一刻對方跳一下冒生氣、再隔 LASH_GAP 秒；他走開了就抽空；還沒到時間就走到旁邊指著他；自己一塊都不搬',
+     palT.lash.seq[0] === 'chase:' + palT.lash.seq[0].split(':')[1] && palT.lash.target && palT.lash.seq[1] === 'lash' &&
+     palT.lash.hitAt >= 0 && !palT.lash.hopBefore && palT.lash.whipOk && palT.lash.emo === 'anger' && palT.lash.after === '' &&
+     palT.lash.gapOk && palT.lash.miss && palT.lash.go && palT.lash.say && palT.lash.idle,
+     JSON.stringify(palT.lash));
+  ok('蓋好之後：國王的踱步點在中庭（皇宮外框裡、不在任何一件裡）；其他人流浪到外圈、避開皇宮；被打出洞也不回來修（還沒蓋好時會補）；聊完天接著流浪',
+     palT.exile.fin === 1 && palT.exile.ring === palT.exile.n && palT.exile.near === 0 &&
+     palT.exile.throneIn === palT.exile.n && palT.exile.throneBox === 0 &&
+     palT.exile.exile.hst === 'exile' && palT.exile.exile.load === 0 && palT.exile.repairBefore &&
+     palT.exile.chat.hst === 'exile' && palT.exile.chat.ring && palT.exile.chatKing === 'throne',
+     JSON.stringify(palT.exile));
+  ok('皇宮打爛了不廢棄、留著當廢墟（同城牆段、店、樹林）；同樣打爛的小房子照舊廢棄',
+     palT.wreck.stay && palT.wreck.homeGone, JSON.stringify(palT.wreck));
+  ok('皇宮是自己一類：另外五類派工不挑它，事件黏著只有皇宮數它',
+     palT.cat.cat === 6 && palT.cat.others && palT.cat.mine && palT.cat.evPal && palT.cat.evHome && palT.cat.palN > 0,
+     JSON.stringify(palT.cat));
+  ok('皇宮還剩四分之一以上就不重抽；拆到剩不到四分之一才換（換了整座解體，抽到同一件就留著）',
+     palT.stick.stay === 'palace' && palT.stick.n1 > 0 && palT.stick.same === 'palace' && palT.stick.n2 === palT.stick.n1 &&
+     palT.stick.swap === 'home' && palT.stick.n3 === 0,
+     JSON.stringify(palT.stick));
+
+  /* ⑩ 國王的造型（引擎那邊）：戴王冠、不戴安全帽、披風、鞭子；平常鞭子垂著不插進地裡；
+        甩到 WHIP_HIT 那一刻鞭身三截一截比一截往前、都接近水平（甩直了）；走起來披風往後飄。
+        量法同〈小人造型〉：把 1 號擺好姿勢、直接叫 putWorker、讀 instance 矩陣，用顏色認部位 */
+  const kingM = await page.evaluate(() => {
+    const w = workers[1], T = ENG.MODELS.man;
+    const keepW = { ...w };
+    const m = new THREE.Matrix4(), v = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+    const pose = extra => {
+      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0, bub: 0, talk: 0, point: 0, hail: 0,
+                         fall: 0, tilt: 0, roll: 0, danc: 0, guard: 0, punch: 0, air: 0, flip: 0, stre: 0, twirl: 0, jack: 0,
+                         clap: 0, wave: 0, bow: 0, draw: 0, lean: 0, tire: 0, dig: 0, mage: 0, mus: 0, king: 1, whip: 0, cmd: 0 }, extra);
+      ENG.putWorker(1, w);
+      const out = [];
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        ENG.three.workerMesh.getMatrixAt(ENG.WPARTS + k, m);
+        if (m.elements[0] === 0 && m.elements[5] === 0) continue;
+        m.decompose(v, q, sc);
+        const ax = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+        out.push({ k, c: T[k].c, y: v.y, z: v.z, ay: ax.y, len: sc.y });
+      }
+      return out;
+    };
+    const s = w.scale;
+    const rest = pose({}), plain = pose({ king: 0 }), hit = pose({ whip: ENG.WHIP_HIT }), walk = pose({ gait: 1 });
+    Object.assign(w, keepW);
+    const lashOf = P => P.filter(p => p.c === 'lash').sort((a, b) => a.k - b.k);
+    const low = p => p.y - Math.abs(p.ay) * p.len / 2;
+    const L = lashOf(hit), grip = hit.find(p => p.c === 'staff');
+    const capeZ = P => P.find(p => p.c === 'cape').z;
+    return {
+      crown: rest.filter(p => p.c === 'crown').length, hat: rest.filter(p => p.c === 'hat').length,
+      cape: rest.filter(p => p.c === 'cape').length, lash: lashOf(rest).length,
+      plainCrown: plain.filter(p => p.c === 'crown' || p.c === 'cape' || p.c === 'lash').length, plainHat: plain.filter(p => p.c === 'hat').length,
+      restLow: +(Math.min(...lashOf(rest).map(low)) / s).toFixed(3),
+      hitAy: L.map(p => +p.ay.toFixed(2)), hitZ: L.map(p => +(p.z / s).toFixed(2)), gripZ: grip ? +(grip.z / s).toFixed(2) : null,
+      capeBack: +((capeZ(walk) - capeZ(rest)) / s).toFixed(3)
+    };
+  });
+  ok('國王的造型：戴王冠（六塊）不戴安全帽、披風、三截鞭子（一般工人一塊都沒有）；平常鞭子垂著不插進地裡；甩到 WHIP_HIT 那一刻三截往前甩直；走起來披風往後飄',
+     kingM.crown === 6 && kingM.hat === 0 && kingM.cape === 1 && kingM.lash === 3 && kingM.plainCrown === 0 && kingM.plainHat > 0 &&
+     kingM.restLow >= -0.01 && kingM.hitAy.every(a => Math.abs(a) < 0.6) &&
+     kingM.hitZ[0] > kingM.gripZ && kingM.hitZ[1] > kingM.hitZ[0] && kingM.hitZ[2] > kingM.hitZ[1] && kingM.capeBack < -0.02,
+     JSON.stringify(kingM));
+  }   // ── 〈閒晃事件：皇宮〉結束
 
   /* ══════════ 偷懶 ══════════ */
   await head('偷懶', T_MUST);
@@ -35942,7 +36317,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('立在哪：點在工地裡推到工地外緣 FL_SITE 格外；點在別座燈架上就挪開、兩座的占地不重疊',
      faim.out && faim.apart, JSON.stringify(faim));
 
-  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但五類派工（房子、樹、城牆、店、樹林）與城內補洞都不會挑它；
+  /* ── 沒人修、不算事件：打掉一塊之後 h.left 1，但六類派工（房子、樹、城牆、店、樹林、皇宮）與城內補洞都不會挑它；
         事件黏著不數它；換一件事（rollIdleEvent 那一下整份清單解體）它留著 ── */
   const fkeep = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
@@ -35951,11 +36326,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const h = f.h, hi = homes.list.indexOf(h);
     const b = blocks.find(q => q.hh === hi && q.st === SET && q.hk === 1);          // 底座外圈那一塊
     breakBlock(b, 0, 1, 0);
-    const r = { left: h.left, cat: [0, 1, 2, 4, 5].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
+    const r = { left: h.left, cat: [0, 1, 2, 4, 5, 6].every(c => pickUnfinished(f.x, f.z, new Set(), c) !== hi),
                 inside: pickInside(f.x, f.z, new Set(), 1e9) !== hi, ev: evBlocks(IDLE_EVENTS[0]) };
     const keep = [evLast, evPeak], real = Math.random;
     evLast = IDLE_EVENTS[0];
-    Math.random = () => 0.999;                                                       // 抽到最後一件（v1.307.0 起是樹林）
+    Math.random = () => 0.999;                                                       // 抽到最後一件（v1.308.0 起是皇宮）
     let e;
     try { e = rollIdleEvent(); } finally { Math.random = real; evLast = keep[0]; evPeak = keep[1]; }
     r.rolled = e === IDLE_EVENTS[IDLE_EVENTS.length - 1] && e !== IDLE_EVENTS[0];
@@ -35963,7 +36338,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return r;
   });
-  ok('沒人修、不算哪一件事：缺一塊時五類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
+  ok('沒人修、不算哪一件事：缺一塊時六類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
      fkeep.left === 1 && fkeep.cat && fkeep.inside && fkeep.ev === 0 && fkeep.rolled && fkeep.stay, JSON.stringify(fkeep));
 
   /* ── 被攻擊：打它不算打地標（phase 還是 done）、會飛的東西撞得到（homeSolid）；
@@ -42522,6 +42897,53 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '、在框裡 ' + navShop.s.inBox + ' 幀、規劃出來的路不通 ' + navShop.s.navBad + '、被當成卡住（重找路線）' +
      navShop.s.re + ' 趟、規劃了 ' + navShop.s.plan + ' 趟；最慢 ' + navShop.s.slow +
      (navShop.s.bad.length ? '；壞的：' + navShop.s.bad.join('；') : ''));
+
+  /* ⑲ 皇宮（v1.308.0）：主殿、兩翼、宮牆與宮門、角樓圍出一個中庭，通到外頭的只有正中央的宮門洞（5 格寬）
+     與兩翼後面那兩條 3 格的路。國王蓋好之後在中庭踱步、其他人被趕到外圍——驗「宮門外走進中庭、中庭走出宮門、
+     中庭走到皇宮背後、外側繞到宮門前、靠地標那一側走進中庭」每一種走法都走到、不穿透、不進框。
+     兩款各跑一次；palacePlan 唯一的骰子（抽哪一款）押住，整座是固定的。四階全擺上、整件砌滿 */
+  const navPal = await page.evaluate(() => {
+    const N = window.navT;
+    siteR = 12; arenaR = 65;
+    const rnd = Math.random, runs = [];
+    let pieces = 0;
+    for (let i = 0; i < PALACE_STYLE.length; i++) {
+      Math.random = () => (i + 0.5) / PALACE_STYLE.length;
+      let R;
+      try { R = palacePlan(); } finally { Math.random = rnd; }
+      const list = R.items.map(it => {
+        const h = wallSeg(it.cells, it.kind, it.thin, it.gap);
+        h.wall = 0; h.palace = 1;
+        for (const sl of h.slots) sl.filled = true;
+        h.left = 0; h.done = true; homeBox(h);
+        return h;
+      });
+      pieces += list.length;
+      const P = (u, v) => { const p = palaceAt(R, u, v); return [p.x, p.z]; };
+      const sc = {
+        '宮門外走進中庭': [P(0, -10), P(0, 11)],
+        '中庭走出宮門外': [P(0, 11), P(0, -10)],
+        '中庭走到皇宮背後': [P(0, 11), P(0, 46)],
+        '外側繞到宮門前': [P(32, 25), P(0, -10)],
+        '靠地標那一側走進中庭': [P(-24, 8), P(-4, 12)],
+      };
+      for (const [name, [s, g]] of Object.entries(sc))
+        for (const wk of N.who) {
+          const r = N.run(list, s, g, wk);
+          r.name = R.style + '・' + name; r.who = wk.n; r.geo = -1; r.leak = false;
+          runs.push(r);
+        }
+    }
+    siteR = N.keep[0]; arenaR = N.keep[1];
+    homes = null;
+    return { s: N.sum(runs), pieces };
+  });
+  ok('皇宮（中庭只靠宮門洞與兩翼後面的路通到外頭）：進出中庭、走到背後、外側繞到宮門前，每一種走法都走到、不穿透、不進框',
+     navPal.s.arrived === navPal.s.n && !navPal.s.ghost && !navPal.s.inBox && !navPal.s.navBad && !navPal.s.re,
+     '兩款共 ' + navPal.pieces + ' 件 ' + navPal.s.n + ' 趟：到了 ' + navPal.s.arrived + '、用到穿透 ' + navPal.s.ghost +
+     '、在框裡 ' + navPal.s.inBox + ' 幀、規劃出來的路不通 ' + navPal.s.navBad + '、被當成卡住（重找路線）' +
+     navPal.s.re + ' 趟、規劃了 ' + navPal.s.plan + ' 趟；最慢 ' + navPal.s.slow +
+     (navPal.s.bad.length ? '；壞的：' + navPal.s.bad.join('；') : ''));
 
   /* 這一段動過的全域還回去（見 開發筆記〈測試動過的全域狀態要還回去〉）：地標換回這一段開頭那一座 */
   await page.evaluate(() => {

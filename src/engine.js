@@ -733,6 +733,7 @@ const ENG = (function () {
        腮紅兩塊）、衣著（領口、圍兜、袖兩塊、手套兩塊）、肌肉小人的腹、
        魔法師的袍下襬、帽帶、鬍子兩塊
      ＋ v1.227 火槍兵的火繩槍七塊（床尾、台木、槍管、金箍、火挾、火繩頭、槊杖）
+     ＋ v1.308.0 國王的十四塊（頂髮、王冠六塊、紅寶石、披風、毛領、鞭柄、鞭身三截）
      （v1.121 曾經有表情圖示的八塊，v1.122 換成貼圖之後收掉了，見 paintEmoAtlas；
      火槍兵的陣笠四塊 v1.227～v1.251 有，v1.252 改回一般小人的安全帽之後收掉了）。
      全部共用同一個 InstancedMesh，不多一個 draw call。
@@ -745,7 +746,7 @@ const ENG = (function () {
        58 塊、跳過且條件查 REQ 表          0.79～0.86ms   ← 現在這個
      也就是**部位多了六成、一般工人畫的從 14 塊變 33 塊，每幀成本跟改版前同一個帶**。
      同一個場景的 draw 也一樣（改版前 1.61～2.01ms，現在 1.56～1.99ms）。 */
-  const WPARTS = 65;
+  const WPARTS = 79;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。
      v1.118 從 720 加到 900：打雷的烏雲也借這顆 mesh 畫（一朵 150 團），
@@ -4176,6 +4177,10 @@ if (vAo.x + vAo.y > 0.5) {
   /* 掛在手臂上的兩件（v1.198）：袖子往上 SLEEVE_ON、手套往下 HAND_ON，
      沿著手臂自己的軸走，所以手一擺它們自己跟著轉（見 putWorker 的 b.on）。 */
   const SLEEVE_ON = -0.10, HAND_ON = 0.235;
+  /* 國王的鞭子（v1.308.0，閒晃事件五）：柄多長、鞭身一截多長（三截）、甩到哪個進度鞭梢打到人。
+     規則那邊讀 ENG.WHIP_HIT 判「這一刻打中」（同 WAND_TIP／DIG_TIP：畫出來的跟判定用的是同一份數字），
+     WHIP_FLOOR 是鞭身最低垂到哪（再低就貼著地往前躺，見 whipPose） */
+  const WHIP_GRIP = 0.26, WHIP_SEG = 0.32, WHIP_HIT = 0.6, WHIP_FLOOR = 0.03;
   /* 指揮時藍圖收到左手邊垂著 */
   const PLAN_X = ARM_X, PLAN_Y = 0.50;
   /* 肌肉小人的手臂（v1.112）：粗 MUS_ARM 倍、往外挪到 MUS_ARM_X。
@@ -4706,6 +4711,25 @@ if (vAo.x + vAo.y > 0.5) {
     { p: [0, GUN_BORE, GUN_L], s: [0.026, 0.026, ROD_L], c: 'staff', gun: 1, rod: 1 },   // 槊杖
     /* v1.227～v1.251 這裡還有陣笠四塊（戴的人安全帽整塊跳過）。v1.252 使用者：「火槍兵帽子改回原本
        一般小人帽子」，火槍兵戴回安全帽、那四塊收掉（見 開發筆記〈火槍兵與箭雨的隊形抖亂一點〉）。 */
+    /* ── 國王（v1.308.0，閒晃事件五「皇宮」）─────────────────────────
+       被抽中當國王的那一隻（w.king）：安全帽與圍兜跳掉（hard 那幾塊），換成頂髮 ＋ 金王冠、紅披風 ＋ 白毛領、
+       右手一根鞭子。王冠坐在頭頂上（頭頂 1.18），尖頂到 1.40，還在表情圖示底邊 1.80 以下。
+       鞭子四塊（柄 ＋ 三截鞭身）與披風的位置在 putWorker 裡按姿勢重算（見 whipPose、b.cape），這裡寫的是預設值。
+       擺在魔法師那一段**前面**：測試靠「BODY 最後一塊是寶珠」認寶珠。 */
+    { p: [0, 1.15, 0], s: [0.50, 0.07, 0.48], c: 'hair', king: 1 },                 // 頂髮（沒有安全帽蓋著）
+    { p: [0, 1.225, 0], s: [0.44, 0.10, 0.42], c: 'crown', king: 1 },              // 王冠的箍
+    { p: [-0.17, 1.32, 0.16], s: [0.09, 0.10, 0.09], c: 'crown', king: 1 },        // 四個角的尖
+    { p: [0.17, 1.32, 0.16], s: [0.09, 0.10, 0.09], c: 'crown', king: 1 },
+    { p: [-0.17, 1.32, -0.16], s: [0.09, 0.10, 0.09], c: 'crown', king: 1 },
+    { p: [0.17, 1.32, -0.16], s: [0.09, 0.10, 0.09], c: 'crown', king: 1 },
+    { p: [0, 1.335, 0.17], s: [0.09, 0.13, 0.08], c: 'crown', king: 1 },          // 正面最高的那一個尖
+    { p: [0, 1.225, 0.215], s: [0.09, 0.06, 0.03], c: 'jewel', king: 1 },          // 正面一顆紅寶石
+    { p: [0, 0.43, -0.215], s: [0.50, 0.64, 0.05], c: 'cape', king: 1, cape: 1 },  // 披風（肩膀垂到小腿）
+    { p: [0, 0.75, -0.02], s: [0.56, 0.08, 0.44], c: 'white', king: 1 },           // 白毛領
+    { p: [ARM_X, 0.30, 0.18], s: [0.055, WHIP_GRIP, 0.055], c: 'staff', king: 1, wh: 1 },   // 鞭柄（借法杖的木色）
+    { p: [ARM_X, 0.15, 0.30], s: [0.035, WHIP_SEG, 0.035], c: 'lash', king: 1, wh: 2 },     // 鞭身三截
+    { p: [ARM_X, 0.05, 0.45], s: [0.035, WHIP_SEG, 0.035], c: 'lash', king: 1, wh: 3 },
+    { p: [ARM_X, 0.02, 0.70], s: [0.032, WHIP_SEG, 0.032], c: 'lash', king: 1, wh: 4 },
     /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
        巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
        只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
@@ -4770,7 +4794,12 @@ if (vAo.x + vAo.y > 0.5) {
     iron: [0x3d434b],
     gwood: [0x7e3f22],
     brass: [0xc9a03e],
-    ember: [0xff5a1a]
+    ember: [0xff5a1a],
+    /* 國王（v1.308.0）：金王冠（比寶珠深一階，才不會跟頭髮旁邊的亮黃安全帽搞混）、紅寶石、紅披風、深色皮鞭 */
+    crown: [0xf2c23a],
+    jewel: [0xd8263a],
+    cape: [0xa82230],
+    lash: [0x3a2a1e]
   };
   const ORB_LIT = new T.Color(0xffffff);   // 施法時寶珠往這個亮色靠（要跟金色差得夠開才看得出亮起來）
   const EMBER_HI = new T.Color(0xffd27a);  // 火繩頭明滅往這個亮色靠
@@ -4787,14 +4816,58 @@ if (vAo.x + vAo.y > 0.5) {
      實測 60 人擺一輪：0.96～1.14ms → 0.79～0.86ms。 */
   const RQ_MAGE = 1, RQ_PLAIN = 2, RQ_MUS = 4, RQ_CLOTH = 8, RQ_PLAN = 16,
         RQ_BUB = 32, RQ_DIG = 64, RQ_BOW = 128, RQ_DRAW = 256,
-        RQ_GUN = 512, RQ_ROD = 1024;                       // v1.227 火槍兵
+        RQ_GUN = 512, RQ_ROD = 1024,                       // v1.227 火槍兵
+        RQ_KING = 2048;                                    // v1.308.0 國王
   const REQ = new Uint16Array(WPARTS);
   for (let k = 0; k < WPARTS; k++) {
     const b = BODY[k];
     REQ[k] = (b.wiz ? RQ_MAGE : 0) | (b.hard ? RQ_PLAIN : 0) | (b.mus ? RQ_MUS : 0) |
              (b.cloth ? RQ_CLOTH : 0) | (b.plan ? RQ_PLAN : 0) | (b.bub ? RQ_BUB : 0) |
              (b.dig ? RQ_DIG : 0) | (b.bow ? RQ_BOW : 0) | (b.nock ? RQ_DRAW : 0) |
-             (b.gun ? RQ_GUN : 0) | (b.rod ? RQ_ROD : 0);
+             (b.gun ? RQ_GUN : 0) | (b.rod ? RQ_ROD : 0) | (b.king ? RQ_KING : 0);
+  }
+  /* 國王拿鞭子的那隻手與鞭子（v1.308.0）。一個人算一次，手臂分支與鞭子那四塊都讀這幾個暫存。
+     三種姿勢：甩鞭（w.whip 0～1：舉到頭頂後面 → 往前甩直 → 收回來，鞭身一截一截慢半拍跟上，
+     WHIP_HIT 那一刻三截剛好都甩直往前）、指人（w.cmd：手舉起來朝前指，同工程師指揮那個角度，鞭子垂著）、
+     平常（手往前下方握著，鞭子垂下來、多的那一截貼著地往前拖）。
+     角度：手臂 rotation.x 負的往前抬（−1.5 水平前伸）；鞭身每一截的 θ 是「從正下方往前轉多少」（π/2 水平往前）。
+     WHIP_KEY 一列是 [進度, 手臂角, 手臂抬高, 手臂前移]，中間照進度內插。 */
+  const WHIP_KEY = [[0, -0.55, 0, 0.04], [0.38, -2.85, 0.21, -0.04], [0.5, -1.35, 0.08, 0.14], [1, -0.55, 0, 0.04]];
+  const _wh = { r: 0, y: 0, z: 0, x: 0 };
+  const _whY = new Float32Array(4), _whZ = new Float32Array(4), _whA = new Float32Array(4);   // 柄＋三截的中心與轉角
+  function whipTh(t) {                                     // 鞭身一截在進度 t 時的角度
+    if (t <= 0 || t >= 1) return 0.25;
+    if (t < 0.38) return 0.25 - 1.15 * t / 0.38;          // 舉起來時甩到身後
+    if (t < 0.5) return -0.9 + 2.65 * (t - 0.38) / 0.12;  // 往前甩直（略高過水平）
+    return 1.75 - 1.5 * (t - 0.5) / 0.5;                  // 落回來
+  }
+  function whipPose(w) {
+    const s = w.whip || 0;
+    let r, y, z;
+    if (s > 0) {
+      let k = 1;
+      while (k < WHIP_KEY.length - 1 && s > WHIP_KEY[k][0]) k++;
+      const A = WHIP_KEY[k - 1], B = WHIP_KEY[k], f = (s - A[0]) / (B[0] - A[0]);
+      r = A[1] + (B[1] - A[1]) * f; y = ARM_Y + A[2] + (B[2] - A[2]) * f; z = A[3] + (B[3] - A[3]) * f;
+    } else if (w.cmd) {
+      r = -2.05 - Math.sin(w.ph * 2.2) * 0.28; y = ARM_Y + 0.18; z = 0;
+    } else {
+      r = WHIP_KEY[0][1]; y = ARM_Y + WHIP_KEY[0][2]; z = WHIP_KEY[0][3];
+    }
+    _wh.r = r; _wh.y = y; _wh.z = z; _wh.x = w.mus ? MUS_ARM_X : ARM_X;
+    // 柄：從拳頭裡（離手臂中心 HAND_ON 再往下一點）沿著手臂的軸伸出去
+    const dy = -Math.cos(r), dz = -Math.sin(r);
+    let py = y + dy * (HAND_ON + 0.02), pz = z + dz * (HAND_ON + 0.02);
+    _whY[0] = py + dy * WHIP_GRIP / 2; _whZ[0] = pz + dz * WHIP_GRIP / 2; _whA[0] = Math.PI + r;
+    py += dy * WHIP_GRIP; pz += dz * WHIP_GRIP;
+    for (let i = 0; i < 3; i++) {
+      let th = s > 0 ? whipTh(s - 0.045 * i) : w.cmd ? 0.05 : 0.25 - 0.1 * i;
+      if (py - Math.cos(th) * WHIP_SEG < WHIP_FLOOR)      // 垂到地面以下：這一截剛好垂到地，再多的貼地往前躺
+        th = py <= WHIP_FLOOR ? Math.PI / 2 : Math.acos(Math.min(1, (py - WHIP_FLOOR) / WHIP_SEG));
+      const ey = -Math.cos(th), ez = Math.sin(th);
+      _whY[i + 1] = py + ey * WHIP_SEG / 2; _whZ[i + 1] = pz + ez * WHIP_SEG / 2; _whA[i + 1] = Math.PI - th;
+      py += ey * WHIP_SEG; pz += ez * WHIP_SEG;
+    }
   }
 
   function setWorkerCount(n) { workerMesh.count = Math.min(n, MAXW) * WPARTS; }
@@ -4893,7 +4966,8 @@ if (vAo.x + vAo.y > 0.5) {
     scratch.updateMatrix();
     /* 這個人滿足哪些條件（見 REQ）。一個人算一次，不是一塊算一次。 */
     /* 火槍兵（v1.227）的槊杖只在「這一刻主要是裝填」時畫（兩個姿勢之間走到一半以上才換）。 */
-    const has = (w.mage ? RQ_MAGE : RQ_PLAIN) | (w.mus ? RQ_MUS : RQ_CLOTH) |
+    /* 國王（v1.308.0）不戴安全帽、沒有圍兜（RQ_PLAIN 那幾塊），換成王冠披風鞭子（RQ_KING） */
+    const has = (w.mage ? RQ_MAGE : w.king ? RQ_KING : RQ_PLAIN) | (w.mus ? RQ_MUS : RQ_CLOTH) |
                 (w.plan ? RQ_PLAN : 0) | (w.bub >= 0.02 ? RQ_BUB : 0) |
                 (w.dig ? RQ_DIG : 0) | (w.bow ? RQ_BOW : 0) |
                 (w.draw >= 0.05 ? RQ_DRAW : 0) |
@@ -4901,6 +4975,8 @@ if (vAo.x + vAo.y > 0.5) {
                 (w.gun && ((w.gk || 0) < 0.5 ? w.gp : w.gq || w.gp) === 'load' ? RQ_ROD : 0);
     if (w.gun) gunPose(w);
     if (w.bow) bowFrame(w);                  // v1.299.0：弓拿著走／舉到一半（見 BOW_CARRY_R）
+    if (w.king) whipPose(w);                 // v1.308.0：國王的鞭子
+
     for (let k = 0; k < WPARTS; k++) {
       /* 這個人身上沒有的那幾塊（別種人的零件、沒拿的道具）**直接塞一個全 0 的矩陣**
          就跳掉（v1.198，見 開發筆記〈沒有的部位不要走完整條路〉）。
@@ -5055,6 +5131,10 @@ if (vAo.x + vAo.y > 0.5) {
           scratchB.rotation.z = b.arm * (0.26 - p * 0.26);
           scratchB.position.y = ARM_Y + 0.12;
           scratchB.position.z = 0.12 + p * 0.26;
+        } else if (w.king && b.arm > 0) {
+          /* 國王拿鞭子的那隻手（v1.308.0，見 whipPose）：甩鞭、指人、平常握著三種；左手照下面走路擺 */
+          scratchB.rotation.x = _wh.r;
+          scratchB.position.y = _wh.y; scratchB.position.z = _wh.z;
         } else if (w.cast > 0.02 && b.arm > 0) {   // 施法：拿杖那隻手抬起來扶著杖身
           scratchB.rotation.x = -1.15 * w.cast;
           scratchB.position.y = b.p[1] + 0.16 * w.cast;
@@ -5162,6 +5242,19 @@ if (vAo.x + vAo.y > 0.5) {
         scratchB.position.copy(_gV3);
         scratchB.quaternion.copy(_gQ);
         if (b.gr) scratchB.quaternion.multiply(_gRx.setFromAxisAngle(_gAX, b.gr));
+      }
+      /* 國王的鞭子（v1.308.0）：四塊的中心與轉角在 whipPose 裡算好了（都在拿鞭子那隻手的平面上） */
+      if (b.wh) {
+        const k = b.wh - 1;
+        scratchB.position.set(_wh.x, _whY[k], _whZ[k]);
+        scratchB.rotation.x = _whA[k];
+      }
+      /* 披風（v1.308.0）：上緣釘在肩膀上，走起來下襬往後飄——繞上緣轉，不是繞中心（繞中心的話上緣會跑進身體裡） */
+      if (b.cape) {
+        const a = 0.06 + 0.32 * w.gait, h = b.s[1] / 2;
+        scratchB.rotation.x = a;
+        scratchB.position.y = b.p[1] + h - h * Math.cos(a);
+        scratchB.position.z = b.p[2] - h * Math.sin(a);
       }
       /* 巫師帽與法杖只有魔法師有（安全帽那幾塊在上面就跳掉了——兩頂疊在同一顆頭上
          會直接穿模）。杖與寶珠跟著施法深淺（w.cast 0～1）抬起來，
@@ -13059,6 +13152,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
     cam, camTarget, BS, MAXB, MAXW, WPARTS, MAXDOZ, MAXTRUCK, MAXBNC,
     DOZ_W, DOZ_FRONT, MAG_RIM_OUT, WAND_TIP, DIG_TIP,
+    WHIP_HIT,                                  /* 國王甩鞭子（v1.308.0）：甩到這個進度鞭梢打到人，規則那邊照這個判打中 */
     MARK_SEG, EMO_KINDS, EMO_CELLS, EMO_Y, EMO_SIZE, EMO_HAT, MAXDUST, MAXFIRE, WEAP_KIND, WEAP_MAX, GATE_MAX,
     /* 被打死（v1.240）：血泊同時最多幾攤、淡掉的屍體最多幾具；GROUND_PAD 是島比碎料圈多出來那一圈
        （規則那邊拿它算林帶的外緣，見 game.js 的 WOOD_OUT）。
