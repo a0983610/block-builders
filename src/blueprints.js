@@ -2433,113 +2433,145 @@ const SHAPES = [
     stairs(v, 0, 0, faceZ1 - stN - (stoneH - 1) * 2 - 1, stN + stoneH, dim(s, 0.6, 2, true), 'z', 2);
   } },
 
-{ n: '京都五重塔', lo: 2.0, hi: 13.5,
-  pal: [0x5a3d28, 0x2e353b, 0x9e836a, 0xd4aa50, 0xdcd4c5, 0x8b2e2e],
-  /* 來源：blueprints/京都五重塔.js（v1.216 換掉原本那份） */
+{ n: '京都五重塔',
+  // v1.313.0 整座重畫：盲測第七回的子 agent 只拿〈藍圖製作說明〉、從零做出來的第二版（看過一次報告＋9000 四視圖），
+  // 原樣收進來，只改了名字與 pal 的寫法（見 開發筆記〈盲測第七回：金閣寺、銀閣寺、箱館奉行所、京都五重塔（v1.313.0）〉）
+  // 正面：石造基壇上疊五層方形深出簷，簷寬由下往上每層每邊收 1 格（頂層約初層的 0.72），塔身比簷窄一半，頂上一根細長的黑色相輪
+  // 側面：方形平面、四面相同（四面都有門、都有台階），跟正面一樣
+  // 三樣識別物：五層深灰瓦的深出簷（屋角微微上翹）、頂上九個圈的金屬相輪、白牆配深色木柱與初層的板門
+  // 比例表（實物）：全高 54.8 m（木造塔日本最高，1644 年再建）；平面方三間
+  //   以下為一般認識的估值：基壇高約 1.2 m、寬約 15.6 m；初層塔身一邊約 9.5 m、五層約 7.1 m；
+  //   初層簷寬約 19 m；基壇上到頂層屋頂約 41 m；相輪約 12 m
+  //   九個輪要一圈一圈分得開（輪 1 格＋縫 1 格），相輪拉長到全高約 30%（實物約 22%），塔身照實物
+  // 輪廓寬度（正面，以初層簷寬 ＝ 1）：基壇 0.79／初層塔身 0.52／初層簷 1.00／三層簷 0.86／五層簷 0.72／九輪 0.17
+  //   （第一版實測 9000 塊 s = 8.77、10000 塊 29×91×29；二、三層簷一樣寬 → 這一版改成每層固定收 1 格）
+  // 部件尺寸（9000 塊估 s ≈ 8.6～8.8，每公尺 f = 0.16·s ≈ 1.4 格）：
+  //   簷寬 29／27／25／23／21 格；塔身 15／13／13／11／11 格；出簷 5～7 格；初層牆高 dim(s,0.8,4)=7 格；上層牆高 5 格
+  //   初層板門 3 寬×5 高；連子窓 3 寬×3 高（三條直櫺）、上下留白壁；上層板門 1 寬×3 高
+  //   屋頂每層 3 層積木、每層每邊收 2 格；屋角上翹 1 格、從角落往回 3 格
+  //   九輪：每輪直徑 5 格、輪距 2 格，9 輪共 17 格；相輪全長約 29 格；風鐸 2 格長
+  // 部件：基壇(walls＋box，hash 雜色) 四面台階(stairs) 塔身×5(walls＋顏色函式：柱、頭貫、板扉、連子窓、白壁)
+  //   組物(walls 環×2) 軒裏(walls 環，接回組物) 屋頂×5(boxTaper 中空，隅棟用顏色函式) 屋角反り(box) 風鐸(set)
+  //   高欄(walls t=1) 露盤(box) 伏鉢(cyl) 請花(cyl) 九輪(cyl×9) 擦管(cyl) 水煙(box 十字) 竜車(cyl) 宝珠(blob)
+  pal: [0xe2dccf,   // 0 白壁
+        0x3b2a1e,   // 1 深色木：柱、頭貫、軒裏、高欄
+        0x575b61,   // 2 瓦（深灰）
+        0x2f3236,   // 3 隅棟（更深一階的灰）
+        0x86603e,   // 4 板扉、組物、連子
+        0xa8a398,   // 5 基壇石
+        0x8d887e,   // 6 基壇石（暗一階）、台階
+        0x2c2925],  // 7 相輪、風鐸（黑褐的青銅）
+  lo: 1.5, hi: 15,
+
   gen(v, s) {
-    // 1. 基座（石階與平台）
-    const bw = dim(s, 2.0, 9, true);
-    const bh = dim(s, 0.25, 1);
-    v.box(0, 0, 0, bw, bh, bw, 2);
-    stairs(v, 0, 0, -(bw - 1) / 2 - 2, 2, dim(s, 0.4, 3, true), 'z', 2);
+    const f = s * 0.16;                                     // 每公尺幾格
+    const M = (m, lo) => Math.max(lo, Math.round(f * m));
+    const tile = (x, y, z) => (Math.abs(x) === Math.abs(z) ? 3 : 2);   // 對角線上是隅棟
+    const stone = (x, y, z) => (hash100(x, y, z) < 25 ? 6 : 5);
 
-    // 2. 塔身高寬比例計算
-    const baseW = dim(s, 1.35, 7, true);   // 初層塔身寬
-    const floorH = dim(s, 0.55, 3);        // 每層牆高
-    let currentY = bh;
-
-    // 3. 五層塔身、門窗、斗栱與出簷
-    for (let floor = 0; floor < 5; floor++) {
-      // 漸縮係數（收分）
-      const shrinkRatio = 1 - floor * 0.07;
-      const fw = Math.max(3, Math.round(baseW * shrinkRatio) | 1); // 維持奇數
-      const ew = fw + dim(s, 0.65, 4, true); // 大出簷寬度
-      const ed = ew;
-
-      // 迴廊與走道欄杆（初層）
-      if (floor === 0) {
-        v.box(0, currentY, 0, fw + 2, 1, fw + 2, 2);
-        currentY += 1;
-      }
-
-      // 塔身四面牆與角柱
-      v.walls(0, currentY, 0, fw, floorH, fw, 0, 1);
-
-      // 初層設四面正門，上層設格窗
-      const doorW = dim(s, 0.25, 1, true);
-      const doorH = Math.max(2, floorH - 1);
-      const faceOffset = (fw - 1) / 2;
-
-      mirrorZ(v, faceOffset, (vv, dz) => {
-        if (floor === 0) {
-          // 初層大門
-          vv.carve(0, currentY, dz, doorW, doorH, 1);
-          vv.box(0, currentY, dz > 0 ? dz - 1 : dz + 1, doorW, doorH, 1, 5);
-        } else {
-          // 上層障子窗（走 tint）
-          tint(vv, 0, currentY + 1, dz, 4);
-          if (fw >= 5) {
-            tint(vv, -1, currentY + 1, dz, 5);
-            tint(vv, 1, currentY + 1, dz, 5);
-          }
-        }
-      });
-
-      mirrorX(v, faceOffset, (vv, dx) => {
-        if (floor === 0) {
-          vv.carve(dx, currentY, 0, 1, doorH, doorW);
-          vv.box(dx > 0 ? dx - 1 : dx + 1, currentY, 0, 1, doorH, doorW, 5);
-        } else {
-          tint(vv, dx, currentY + 1, 0, 4);
-          if (fw >= 5) {
-            tint(vv, dx, currentY + 1, -1, 5);
-            tint(vv, dx, currentY + 1, 1, 5);
-          }
-        }
-      });
-
-      // 斗栱與挑簷承托層
-      v.box(0, currentY + floorH, 0, fw + 1, 1, fw + 1, 0);
-
-      // 深遠和式屋簷（出簷與四坡斜頂）
-      v.eave(0, currentY + floorH + 1, 0, ew, ed, 1, 1);
-      /* 出簷挑得比斗栱遠的時候，斗栱要再往外挑一圈接到簷口（v1.263.0）。簷環是兩格厚的一圈，
-         斗栱層只到 fw+1；出簷那個係數取整到 7 以上（s ≥ 8.48，也就是 9000 那一檔起）時，兩者
-         中間空一格、又差一層，連斜角都碰不到——每一層屋頂連同上面整截都懸空（9000 那一檔
-         9353 格裡 8105 格）。只補中間缺的那一圈：沒有空隙的尺寸（1800、3000）一格都不加。
-         見 開發筆記〈自訂藍圖調整一輪（v1.263.0）〉 */
-      const gapT = Math.floor((ew - fw - 5) / 2);
-      if (gapT > 0) v.walls(0, currentY + floorH + 1, 0, ew - 4, 1, ed - 4, 0, gapT);
-      hipRoof(v, 0, currentY + floorH + 2, 0, ew, ed, 1);
-
-      // 更新下一層底部的 Y 座標
-      const roofPeakH = Math.max(1, Math.round((ew - fw) / 2));
-      currentY += floorH + 2 + roofPeakH;
+    // 各層塔身半寬 HB；簷半寬 EV 每層至少收 1 格（往上一層一層小），簷至少比塔身多 3 格
+    const HB = [], EV = [];
+    for (let i = 0; i < 5; i++) {
+      const hb = M(4.75 - 0.3 * i, 2);
+      HB.push(i ? Math.min(HB[i - 1], hb) : hb);
+    }
+    const E0 = Math.round(f * 9.8), es = Math.max(1, f * 0.5);
+    for (let i = 0; i < 5; i++) {
+      const e = Math.max(HB[i] + 3, E0 - Math.round(i * es));
+      EV.push(i ? Math.min(EV[i - 1], e) : e);
     }
 
-    // 4. 頂部相輪（九輪、水煙、伏缽、寶珠飾件）
-    const spireH = dim(s, 1.2, 7);
-    // 露盤與覆缽
-    v.box(0, currentY, 0, 3, 1, 3, 3);
-    v.box(0, currentY + 1, 0, 2, 1, 2, 3);
+    // ── 台基：石造基壇（中空，上面一片實心）＋四面台階
+    const bh = M(1.2, 2);
+    const B = Math.min(EV[0] - 1, Math.max(HB[0] + 2, Math.round(f * 7.8)));
+    v.walls(0, 0, 0, 2 * B + 1, bh - 1, 2 * B + 1, stone, 1);
+    v.box(0, bh - 1, 0, 2 * B + 1, 1, 2 * B + 1, stone);
+    const sw = dim(s, 0.55, 3, true);
+    stairs(v, 0, 0, -B - bh, bh, sw, 'z', 6);
+    stairs(v, 0, 0, B + bh, bh, sw, '-z', 6);
+    stairs(v, -B - bh, 0, 0, bh, sw, 'x', 6);
+    stairs(v, B + bh, 0, 0, bh, sw, '-x', 6);
 
-    // 剎柱本體
-    v.box(0, currentY + 2, 0, 1, spireH, 1, 3);
+    // 塔身的牆：柱與頭貫（最上一層）是深色木，其餘白壁；中央間板扉、初層兩脇間連子窓
+    const wallC = (y0, Hw, hb, ci, dh, win) => {
+      const dTop = y0 + Math.max(1, Hw - 3);              // 門最上面那一層
+      return (x, y, z) => {
+        if (y === y0 + Hw - 1) return 1;                  // 頭貫
+        const ax = Math.abs(x), az = Math.abs(z);
+        const a = az === hb ? ax : az;                    // 沿著這面牆的位置
+        if (a === hb || a === ci) return 1;               // 柱（方三間 → 每面四根）
+        if (y <= dTop) {
+          if (a <= dh) return 4;                          // 板扉（落地）
+          if (win && y >= y0 + 2 && a > ci) return (a - ci) % 2 ? 4 : 1;   // 連子窓的直櫺
+        }
+        return 0;
+      };
+    };
 
-    // 九輪（相輪環節）
-    const ringCount = dim(s, 0.6, 5);
-    const ringSpacing = Math.max(1, Math.floor((spireH - 3) / ringCount));
-    for (let i = 0; i < ringCount; i++) {
-      const ry = currentY + 2 + i * ringSpacing;
-      if (ry < currentY + spireH - 2) {
-        v.box(0, ry, 0, 3, 1, 3, 3);
-      }
+    const nb = dim(s, 0.24, 1);                     // 組物幾層
+    const rb = dim(s, 0.22, 1);                     // 露盤半寬
+    const up = dim(s, 0.1, 1), L = dim(s, 0.35, 2); // 屋角上翹：高幾格、從角落往回幾格
+    const bell = dim(s, 0.25, 1);                   // 風鐸長
+    let y = bh;
+    for (let i = 0; i < 5; i++) {
+      const hb = HB[i], E = EV[i], W = 2 * hb + 1, last = i === 4;
+      const Hw = i ? dim(s, 0.53, 3) : dim(s, 0.8, 4);
+      const ci = hb >= 3 ? Math.max(1, Math.round(hb * 0.38)) : -1;  // 塔身太窄就只留角柱
+      const dh = Math.max(0, ci - (i ? 3 : 2));                       // 門半寬：初層寬、上層窄
+      v.walls(0, y, 0, W, Hw, W, wallC(y, Hw, hb, ci, dh, i === 0 && Hw >= 6), 1);   // 塔身
+      y += Hw;
+      for (let k = 1; k <= nb; k++)                                   // 組物：一層往外推一格
+        v.walls(0, y + k - 1, 0, W + 2 * k, 1, W + 2 * k, 4, 2);
+      y += nb;
+      v.walls(0, y, 0, 2 * E - 1, 1, 2 * E - 1, 1, E - hb - nb + 1);   // 軒裏：從組物一路接到簷口
+      y += 1;
+
+      // 屋頂：每層每邊收 2 格，收到上一層的縁（最上一層收到露盤）
+      const hn = last ? rb : HB[i + 1], gap = last ? 0 : 2;
+      const hr = Math.max(2, Math.floor((E - hn - gap) / 2) + 1);
+      const top = E - 2 * (hr - 1);
+      const ry = y;
+      boxTaper(v, { x: 0, y: ry, z: 0, w: 2 * E + 1, d: 2 * E + 1, w1: 2 * top + 1, d1: 2 * top + 1,
+                    h: hr, t: Math.max(3, top - hn + 1), c: tile });
+
+      // 屋角微微上翹＋角下的風鐸
+      mirrorX(v, 1, (vx, sx) => mirrorZ(vx, 1, (vz, sz) => {
+        for (let k = 1; k <= up; k++) {
+          const len = Math.max(1, Math.round(L * (up - k + 1) / up));
+          const mid = E - (len - 1) / 2;
+          vz.box(sx * mid, ry + k, sz * (E - 0.5), len, 1, 2, tile);
+          vz.box(sx * (E - 0.5), ry + k, sz * mid, 2, 1, len, tile);
+        }
+        for (let k = 1; k <= bell; k++) vz.set(sx * E, ry - k, sz * E, 7);
+      }));
+
+      y = ry + hr;
+      if (!last && top - hn >= 2) v.walls(0, y, 0, 2 * top + 1, 1, 2 * top + 1, 1, 1);   // 上一層的高欄
     }
 
-    // 頂部水煙與寶珠
-    const topY = currentY + spireH + 1;
-    v.box(0, topY, 0, 2, 2, 2, 3);
-    v.set(0, topY + 2, 0, 3);
+    // ── 相輪：露盤 → 伏鉢 → 請花 → 九輪 → 水煙 → 竜車 → 宝珠，中間一根擦管
+    const lh = dim(s, 0.16, 1);
+    v.box(0, y, 0, 2 * rb + 1, lh, 2 * rb + 1, 7);  y += lh;          // 露盤
+    const fh = dim(s, 0.14, 1);
+    v.cyl(0, y, 0, Math.max(1.2, s * 0.17), fh, 7);  y += fh;         // 伏鉢
+    const rr = Math.max(1.9, s * 0.22);
+    v.cyl(0, y, 0, rr, 1, 7);  y += 1;                                // 請花
+    const y0s = y;
+    const n = Math.min(9, Math.max(3, Math.round(s * 1.2)));
+    for (let k = 0; k < n; k++) v.cyl(0, y + 1 + 2 * k, 0, rr, 1, 7); // 九輪：輪 1 格、縫 1 格
+    y += 2 * n + 1;
+    const rw = Math.round(rr + 1), hw = dim(s, 0.4, 2);
+    for (let j = 0; j < hw; j++) {                                    // 水煙：十字交叉的兩片
+      const wj = j === 0 || j === hw - 1 ? 2 * rw - 1 : 2 * rw + 1;
+      v.box(0, y + j, 0, wj, 1, 1, 7);
+      v.box(0, y + j, 0, 1, 1, wj, 7);
+    }
+    y += hw;
+    v.cyl(0, y, 0, 1.2, 1, 7);  y += 1;                               // 竜車
+    const pr = Math.max(1.5, s * 0.17), pry = pr * 1.15;
+    const pc = y + Math.floor(pry * 1.02);
+    blob(v, 0, pc, 0, pr, pry, pr, 7);                                // 宝珠
+    v.cyl(0, y0s, 0, 0.5, pc - y0s, 7);                               // 擦管
   } },
 
 { n: '帝國大廈',
