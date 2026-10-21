@@ -7078,6 +7078,53 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '打完沒冒生氣的 ' + (fun.fights - fun.anger) + ' 場' +
      (fun.anger === fun.fights ? '' : '（共 ' + fun.fights + ' 場）'));
 
+  /* ── 打架湊近、退開也照巡路規則走（v1.315.1，見 stepFight）：〈流程〉那條「閒晃不會穿過建築」約 1% 的輪次紅在這裡——
+     兩個人隔著金字塔的一個角聊天，往對方湊的那條線切過角落，以前直接改座標就走進身位。上面那幾條是跑模擬數的，
+     要剛好有人在角落談不攏才抓得到；這一條押好：兩個人各站在同一個角的兩面外（離牆比身位多 0.15、離角 1 格），
+     連線的中點就在角上，Math.random 押 0 直接開打，量整場有沒有人進到身位（量法同〈流程〉那一條）。
+     舊的寫法這一幕 140 人-幀（見 開發筆記〈打架湊近時走進地標的身位〉） ── */
+  const fightLm = await page.evaluate(() => {
+    shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
+    targetCnt = 500; setWorkerCount(4); startBuild(true); completeNow();
+    for (let i = 0; i < 200; i++) step(0.05);          // 慶祝跑完
+    let cb = null;                                     // 最底層最靠 +x+z 的那一塊＝金字塔的那個角
+    for (const q of blocks) if (q.st === 3 && q.y < 1 && (!cb || q.x + q.z > cb.x + cb.z)) cb = q;
+    const cx = cb.x + 0.5, cz = cb.z + 0.5;
+    const a = workers[0], b = workers[1];
+    for (const w of workers) {
+      w.air = 0; w.burn = 0; w.fall = 0; w.trip = 0; w.flee = 0; w.chat = 0; w.cw = -1; w.fig = 0; w.fw = -1;
+      w.show = ''; w.showT = 0; w.carry = false; w.load.length = 0; w.st = 'idle'; w.ghost = 0; w.nav = null; w.pause = 0;
+    }
+    for (const w of workers.slice(2)) { w.x = -25; w.z = -25; w.tx = w.x; w.tz = w.z; w.pause = 99; }   // 另外兩個站遠一點
+    const ra = navBody(a).r, rb = navBody(b).r;
+    a.x = cx + ra + 0.15; a.z = cz - 1; b.x = cx - 1; b.z = cz + rb + 0.15;
+    a.tx = a.x; a.tz = a.z; b.tx = b.x; b.tz = b.z;
+    const pre = { aFree: lmFree(a.x, a.z, navBody(a)), bFree: lmFree(b.x, b.z, navBody(b)),
+                  midIn: !lmFree((a.x + b.x) / 2, (a.z + b.z) / 2, navBody(a)) };
+    const d0 = Math.hypot(a.x - b.x, a.z - b.z);
+    const rnd = Math.random;
+    Math.random = () => 0;                             // FIGHT_P 那一顆一定中
+    const fired = startFight(0, 1);
+    Math.random = rnd;
+    let frames = 0, inLm = 0;
+    for (let i = 0; i < 100 && (a.fig > 0 || b.fig > 0); i++) {
+      step(0.05); frames++;
+      for (const w of [a, b]) {
+        if (!(w.fig > 0)) continue;
+        const bd = navBody(w);
+        if (!(w.ghost > 0) && !w.air && lmDist(w.x, w.z, lmField(bd.H)) < bd.r - 1e-6) inLm++;
+      }
+    }
+    return { pre, fired, frames, inLm, ft: FIGHT_T,
+             d0: +d0.toFixed(2), d1: +Math.hypot(a.x - b.x, a.z - b.z).toFixed(2) };
+  });
+  ok('打架湊近、退開也照巡路規則走：隔著金字塔的角開打，整場沒有人進到身位',
+     fightLm.pre.aFree && fightLm.pre.bFree && fightLm.pre.midIn && fightLm.fired &&
+     fightLm.frames >= fightLm.ft / 0.05 - 2 && fightLm.inLm === 0,
+     '起點兩個人都在身位外＝' + (fightLm.pre.aFree && fightLm.pre.bFree) + '、連線中點在身位裡＝' + fightLm.pre.midIn +
+     '；開打＝' + fightLm.fired + '、打了 ' + fightLm.frames + ' 幀、進到身位 ' + fightLm.inLm + ' 人-幀；' +
+     '兩人距離 ' + fightLm.d0 + ' → ' + fightLm.d1 + '（FIGHT_D 1.35，被牆擋住站不到也照打）');
+
   /* ── 猴子也會絆一跤，牛羊不會 ── */
   const apeTrip = await page.evaluate(() => {
     shapePick = SHAPES.findIndex(s => s.n === '吉薩金字塔');
@@ -13377,6 +13424,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     life.repair = E.hm === bi;
     E.hm = ai; E.hst = '';
     for (let i = 1; i <= HOME_TEAM; i++) workers[i].hm = bi;
+    /* 先往字面外站開（v1.315.1）：signSpot 新挑的揮手點是亂數，剛好落在腳邊的話這一幀就「到了」、直接揮手、hst 收回 ''，
+       量到的就不是「照常去揮手」那一步（--seed 1227266186：新點離他 0.469 格，E 沒被派去 B、照樣在揮，卻判成紅）。
+       往外挪 SIGN_FRONT[1] + 4：他原本就站在 SIGN_FRONT 那一帶，挪完離新點至少 SIGN_FRONT[0] + 4 */
+    E.x += S.fx * (SIGN_FRONT[1] + 4); E.z += S.fz * (SIGN_FRONT[1] + 4);
     updHome(E, 0, 0.05);
     life.full = E.hm === ai && E.hst === 'sign';
     for (let i = 1; i <= HOME_TEAM; i++) workers[i].hm = -1;
