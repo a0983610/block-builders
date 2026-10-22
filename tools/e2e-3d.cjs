@@ -470,6 +470,7 @@ const installClean = page => page.evaluate(() => {
      要測這件事本身的那一段自己直接給分鐘數（見「畫面：晝夜」）。 */
   if (!window.dayClockFn) window.dayClockFn = dayClock;
   dayClock = () => 15;
+  skySeason = () => 0;               // 星空第幾季（v1.320.0）照時鐘的小時輪，同上釘住（見「畫面：星空」）
   /* 已經蓋起來的房子也要清掉：它們是跨建築留著的（設計如此），對測試來說是殘留。
      清成一般碎料就好，下一次 startBuild 的 reconcilePool 會把多的收掉。 */
   window.clearHomes = () => {
@@ -1154,7 +1155,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return { x, y, z, el: Math.atan2(y, Math.hypot(x, z)) * R2D, az: Math.atan2(z, x) * R2D,
                sunI: th.sun.intensity, sunC: th.sun.color.getHexString(), hemi: th.hemi.intensity,
                hemiC: th.hemi.color.getHexString(), fog: th.scene.fog.color.getHexString(),
-               night: +th.skyNightEl.style.opacity, dusk: +th.skyDuskEl.style.opacity, star: +th.skyStarEl.style.opacity };
+               night: +th.skyNightEl.style.opacity, dusk: +th.skyDuskEl.style.opacity,
+               star: th.skyStars.material.uniforms.uOp.value };   // 星星 v1.320.0 起是 3D 的（見「畫面：星空」）
     };
     const r = { low: +(D.low * R2D).toFixed(3), moonTop: +(D.moonTop * R2D).toFixed(3), fade: D.fade };
     const noonEl = Math.atan2(D.noon[1], Math.hypot(D.noon[0], D.noon[2])) * R2D;
@@ -1209,8 +1211,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     r.storm = { darker: h1 < h0 && s1 < s0 && sky1 > 0 && night1 === 1, keep: h2 < h0,
                 back: th.hemi.intensity === h0 && th.sun.intensity === s0 && th.scene.fog.color.getHexString() === f0,
                 h: [+h0.toFixed(3), +h1.toFixed(3), +th.hemi.intensity.toFixed(3)], noonH: +noon.hemi.toFixed(3) };
-    /* 疊的順序：烏雲那一層在晝夜三層後面（＝蓋在最上面） */
-    r.order = [th.skyNightEl, th.skyDuskEl, th.skyStarEl].every(e => e.compareDocumentPosition(th.gloomEl) & Node.DOCUMENT_POSITION_FOLLOWING);
+    /* 疊的順序：烏雲那一層在晝夜那兩層後面（＝蓋在最上面；星星 v1.320.0 起畫在畫布裡，烏雲那一份見「畫面：星空」） */
+    r.order = [th.skyNightEl, th.skyDuskEl].every(e => e.compareDocumentPosition(th.gloomEl) & Node.DOCUMENT_POSITION_FOLLOWING);
     /* ⑤ draw 照 dayClock；畫面設定那一格 */
     const keepPref = pref.day;
     const set = v => { $('dayOn').checked = v; $('dayOn').dispatchEvent(new Event('change', { bubbles: true })); };
@@ -1255,6 +1257,140 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      'dayClock 給 :45 → 夜空 ' + day.drawNight + '；關掉 → 夜空 ' + day.offDraw.night + '、太陽回正午 ' + day.offDraw.noon +
      '；在小窗 ' + day.inBox + '、預設 ' + day.fresh);
   }   // ── 〈畫面：晝夜〉結束
+
+  /* ══════════ 畫面：星空（v1.320.0）══════════ */
+  /* 規則型，不跑模擬（見 開發筆記〈星空：真實星表、銀河、月亮，跟著鏡頭轉（v1.320.0）〉）：直接 ENG.setDayTime／setSkySeason／setSkyDrop，
+     讀引擎真的那三顆（星、銀河、月亮）的 uniform 與 visible。天球的方向照 uRot 算（著色器裡做的是同一個乘法，再把仰角壓 uShift）。
+     ① 資料：5 等以內、亮的排前面、座標在範圍內，天狼星排第一；銀河那張圖讀得進來（2:1）；檔頭留著 d3-celestial 的 BSD-3 聲明
+     ② 方向：北天極在正北、仰角＝緯度；赤經＝恆星時的星過子午線（正南、仰角 90°−緯度）；時角 +6h 在正西地平線（東升西落）
+     ③ 轉：一整夜（:30→:60）子午線上的赤經走 180°；春夏秋冬半夜各差 6 小時；同一個季節同一個時刻不會變
+     ④ 白天三顆都關（不吃 draw call），晚上開、濃度跟 v1.295.0 的 CSS 星星同一條；烏雲照 GLOOM.sky 壓
+     ⑤ 月亮跟月光那盞燈同方位、仰角往下壓 skyDrop；燈暗的時候月亮也淡掉
+     ⑥ 畫面設定「星空往下壓」：在小窗、按鈕照 SKY_DROP_OPTS、預設 30（＝ENG.SKY.drop）、點了 pref 與引擎一起改；舊存檔補預設、改壞的吸到最近一檔
+     ⑦ draw 照 skySeason 給季節 */
+  SEC: { if (!(await head('畫面：星空', T_COMMIT))) break SEC;
+  const skyHead = fs.readFileSync(path.join(ROOT, 'src/sky-data.js'), 'utf8').slice(0, 3000);
+  const sky = await page.evaluate(async () => {
+    cleanTools(); draw();
+    const th = ENG.three, S = ENG.SKY, D = ENG.DAY, R2D = 180 / Math.PI, $ = id => document.getElementById(id);
+    const keepDrop = pref.drop, keepSeason = skySeason;
+    const r = {};
+    /* ① */
+    const n = SKY_STARS.length / 4;
+    let sorted = true, inRange = true;
+    for (let i = 0; i < n; i++) {
+      const ra = SKY_STARS[i * 4], dec = SKY_STARS[i * 4 + 1], m = SKY_STARS[i * 4 + 2];
+      if (i && m < SKY_STARS[i * 4 - 2]) sorted = false;
+      if (!(ra >= 0 && ra < 360 && dec >= -90 && dec <= 90 && m <= 5)) inRange = false;
+    }
+    r.data = { n, sorted, inRange, first: SKY_STARS.slice(0, 3), pts: th.skyStars.geometry.attributes.position.count };
+    const tex = th.skyMw.material.uniforms.uMap.value;
+    for (let k = 0; k < 100 && !(tex.image && tex.image.width); k++) await new Promise(res => setTimeout(res, 20));
+    r.mw = tex.image ? [tex.image.width, tex.image.height] : null;
+    /* ② ③ 天球的方向：赤道座標的單位向量乘 uRot */
+    const south = Math.atan2(D.noon[2], D.noon[0]) * R2D, lat = S.lat * R2D;
+    const turn = (a, b) => ((a - b) % 360 + 540) % 360 - 180;
+    const at = (ra, dec) => {
+      const a = ra / R2D, d = dec / R2D;
+      const v = new THREE.Vector3(Math.cos(d) * Math.cos(a), Math.cos(d) * Math.sin(a), Math.sin(d)).applyMatrix3(th.skyStars.material.uniforms.uRot.value);
+      return { el: Math.asin(v.y) * R2D, az: Math.atan2(v.z, v.x) * R2D };
+    };
+    ENG.setSkySeason(0); ENG.setDayTime(45);
+    const pole = at(0, 90), mer = at(S.mid[0] * 15, 0), west = at(S.mid[0] * 15 - 90, 0);
+    r.pole = [pole.el - lat, turn(pole.az, south + 180)];
+    r.mer = [mer.el - (90 - lat), turn(mer.az, south)];
+    r.west = [west.el, turn(west.az, south + 90)];
+    /* 一整夜：子午線上的那一點赤經＝半夜那一季 + (t − 45) × 6°，量 :30～:59.9 五個時刻離正南、離 90°−緯度多遠 */
+    r.night = [30, 37.5, 45, 52.5, 59.9].map(t => {
+      ENG.setDayTime(t);
+      const p = at(S.mid[0] * 15 + (t - 45) * 6, 0);
+      return Math.max(Math.abs(turn(p.az, south)), Math.abs(p.el - (90 - lat)));
+    });
+    r.seasons = [0, 1, 2, 3].map(k => {
+      ENG.setSkySeason(k); ENG.setDayTime(44); ENG.setDayTime(45);
+      const p = at(S.mid[k] * 15, 0);
+      return Math.max(Math.abs(turn(p.az, south)), Math.abs(p.el - (90 - lat)));
+    });
+    r.step = S.mid.map((h, k) => ((S.mid[(k + 1) % 4] - h) % 24 + 24) % 24);
+    ENG.setSkySeason(0); ENG.setDayTime(44); ENG.setDayTime(45);
+    const m1 = th.skyStars.material.uniforms.uRot.value.clone();
+    ENG.orbit(300, 0); ENG.updateCamera(0);                          // 轉鏡頭：天球的方向不跟著動（方向釘在世界裡）
+    r.sameAfterOrbit = th.skyStars.material.uniforms.uRot.value.equals(m1);
+    ENG.orbit(-300, 0); ENG.updateCamera(0);
+    /* ④ */
+    const vis = () => [th.skyStars.visible, th.skyMw.visible, th.skyMoon.visible].map(Number).join('');
+    ENG.setDayTime(15); r.day = vis();
+    ENG.setDayTime(45); r.mid = { vis: vis(), op: th.skyStars.material.uniforms.uOp.value, mw: th.skyMw.material.uniforms.uOp.value };
+    ENG.setGloom(1);
+    r.gloom = { op: th.skyStars.material.uniforms.uOp.value, moon: th.skyMoon.material.uniforms.uOp.value, sky: +th.gloomEl.style.opacity };
+    ENG.setGloom(0);
+    /* ⑤ */
+    const moon = () => {
+      const s = th.sun.position, x = s.x - ENG.cam.tx, z = s.z - ENG.cam.tz, u = th.skyMoon.material.uniforms.uDir.value;
+      return { lightEl: Math.atan2(s.y, Math.hypot(x, z)) * R2D, lightAz: Math.atan2(z, x) * R2D,
+               el: Math.asin(u.y) * R2D, az: Math.atan2(u.z, u.x) * R2D, op: th.skyMoon.material.uniforms.uOp.value, sunI: th.sun.intensity };
+    };
+    r.moon = [];
+    for (const [t, d] of [[45, 30], [36, 0], [54, 45]]) {
+      ENG.setSkyDrop(d); ENG.setDayTime(t);
+      const m = moon();
+      r.moon.push({ t, d, dAz: turn(m.az, m.lightAz), dEl: m.el - (m.lightEl - d), shift: th.skyStars.material.uniforms.uShift.value * R2D, op: m.op });
+    }
+    ENG.setDayTime(30); r.moonEdge = [th.skyMoon.material.uniforms.uOp.value, th.sun.intensity];
+    ENG.setDayTime(31); r.moonIn = th.skyMoon.material.uniforms.uOp.value;
+    /* ⑥ */
+    setSkyDrop(keepDrop);
+    const pick = v => [...$('skyDrop').children].find(b => +b.dataset.v === v).click();
+    r.ui = { inBox: $('dispBox').contains($('skyDrop')), fresh: freshPref().drop, eng: S.drop,
+             btns: [...$('skyDrop').children].map(b => +b.dataset.v).join(), opts: SKY_DROP_OPTS.join() };
+    pick(0); r.ui.zero = { pref: pref.drop, eng: ENG.skyDrop, on: [...$('skyDrop').children].filter(b => b.classList.contains('on')).map(b => b.dataset.v).join() };
+    pick(45); r.ui.max = { pref: pref.drop, eng: +(ENG.skyDrop * R2D).toFixed(9) };
+    pick(keepDrop);
+    const keepS = stats, keepP = pref;
+    const conv = p => { applySave({ s: keepS, p }); return pref.drop; };
+    r.old = [conv({}), conv({ drop: 20 }), conv({ drop: 'x' }), conv({ drop: 0 })].join();
+    r.oldWant = [r.ui.fresh, snapOpt(20, SKY_DROP_OPTS), r.ui.fresh, 0].join();
+    stats = keepS; pref = keepP;
+    setSkyDrop(keepDrop);
+    /* ⑦ */
+    skySeason = () => 2; draw(); r.drawSeason = ENG.skySeason;
+    skySeason = keepSeason; draw();
+    ENG.setDayTime(15);
+    return r;
+  });
+  ok('星空：資料是 5 等以內 ' + sky.data.n + ' 顆、亮的排前面、座標在範圍內，天狼星排第一；銀河那張圖 2:1；檔頭有 d3-celestial 的 BSD-3 聲明',
+     sky.data.sorted && sky.data.inRange && sky.data.pts === sky.data.n && sky.data.n > 1000 &&
+     Math.abs(sky.data.first[0] - 101.29) < 0.01 && Math.abs(sky.data.first[1] + 16.72) < 0.01 &&
+     sky.mw && sky.mw[0] === sky.mw[1] * 2 &&
+     /Copyright \(c\) 2015, Olaf Frohn/.test(skyHead) && /Redistributions of source code must retain/.test(skyHead),
+     '第一顆 ' + sky.data.first.join('、') + '；銀河圖 ' + (sky.mw || []).join('×') + '；排序 ' + sky.data.sorted + '、範圍 ' + sky.data.inRange);
+  ok('星空：北天極在正北、仰角＝緯度；赤經＝恆星時的星過正南、仰角 90°−緯度；時角 6 小時在正西地平線（東升西落）；轉鏡頭天球不跟著變',
+     sky.pole.every(v => Math.abs(v) < 1e-6) && sky.mer.every(v => Math.abs(v) < 1e-6) && sky.west.every(v => Math.abs(v) < 1e-6) &&
+     sky.sameAfterOrbit,
+     '北天極差 ' + sky.pole.map(v => v.toExponential(1)).join('／') + '°、子午線差 ' + sky.mer.map(v => v.toExponential(1)).join('／') +
+     '°、正西差 ' + sky.west.map(v => v.toExponential(1)).join('／') + '°；轉鏡頭之後 uRot 一樣 ' + sky.sameAfterOrbit);
+  ok('星空：一整夜（:30→:60）轉 180°；春夏秋冬半夜各差 6 小時赤經',
+     sky.night.every(v => v < 1e-6) && sky.seasons.every(v => v < 1e-6) && sky.step.every(h => h === 6),
+     '五個時刻子午線最多差 ' + Math.max(...sky.night).toExponential(1) + '°、四季 ' + Math.max(...sky.seasons).toExponential(1) +
+     '°、季與季差 ' + sky.step.join('／') + ' 小時');
+  ok('星空：白天三顆都關（不吃 draw call）、晚上開到 1；烏雲照 GLOOM.sky 壓（跟以前那一層 div 蓋在星星上一樣）',
+     sky.day === '000' && sky.mid.vis === '111' && sky.mid.op === 1 && sky.mid.mw === 1 &&
+     Math.abs(sky.gloom.op - (1 - sky.gloom.sky)) < 1e-3 && Math.abs(sky.gloom.moon - (1 - sky.gloom.sky)) < 1e-3 && sky.gloom.sky > 0,
+     ':15 ' + sky.day + '、:45 ' + sky.mid.vis + '（濃度 ' + sky.mid.op + '）；烏雲最濃 星 ' + sky.gloom.op + '、月 ' + sky.gloom.moon +
+     '（那一層 div ' + sky.gloom.sky + '）');
+  ok('星空：月亮跟月光那盞燈同方位、仰角往下壓 skyDrop；:30 燈 0 月亮也 0，:31 開始淡入',
+     sky.moon.every(m => Math.abs(m.dAz) < 1e-6 && Math.abs(m.dEl) < 1e-6 && Math.abs(m.shift - m.d) < 1e-9 && m.op > 0) &&
+     sky.moonEdge[0] === 0 && sky.moonEdge[1] === 0 && sky.moonIn > 0 && sky.moonIn < 1,
+     sky.moon.map(m => ':' + m.t + ' 壓 ' + m.d + '° 方位差 ' + m.dAz.toExponential(1) + '、仰角差 ' + m.dEl.toExponential(1)).join('；') +
+     '；:30 月 ' + sky.moonEdge[0] + '／燈 ' + sky.moonEdge[1] + '、:31 月 ' + sky.moonIn);
+  ok('星空：畫面設定「星空往下壓」在小窗、按鈕照 SKY_DROP_OPTS、預設 ' + sky.ui.eng + '°；點了 pref 與引擎一起改；舊存檔補預設、改壞的吸到最近一檔',
+     sky.ui.inBox && sky.ui.btns === sky.ui.opts && sky.ui.fresh === sky.ui.eng &&
+     sky.ui.zero.pref === 0 && sky.ui.zero.eng === 0 && sky.ui.zero.on === '0' &&
+     sky.ui.max.pref === 45 && Math.abs(sky.ui.max.eng - 45) < 1e-9 && sky.old === sky.oldWant,
+     '按鈕 ' + sky.ui.btns + '；點 0 → pref ' + sky.ui.zero.pref + '、引擎 ' + sky.ui.zero.eng + '、亮 ' + sky.ui.zero.on +
+     '；點 45 → ' + sky.ui.max.eng + '°；舊存檔 ' + sky.old + '（應為 ' + sky.oldWant + '）');
+  ok('星空：draw 照 skySeason 給季節', sky.drawSeason === 2, 'skySeason 給 2 → 引擎 ' + sky.drawSeason);
+  }   // ── 〈畫面：星空〉結束
 
   SEC: { if (!(await head('藍圖', T_FULL))) break SEC;
   const bpAll = await page.evaluate(cnt => {

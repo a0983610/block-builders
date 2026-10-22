@@ -475,6 +475,10 @@
     <!-- 晝夜（v1.295.0，預設開）：照電腦的時鐘每小時一天，見 game-ui.js 的 dayOn -->
     <div class="opt"><label><input type="checkbox" id="dayOn">
       <div><b>晝夜</b><span>照電腦的時鐘，每小時的前 30 分鐘是白天（太陽從日出走到日落），後 30 分鐘是晚上（月光＋星星）。關掉就一直是正午。</span></div></label></div>
+    <!-- 星空往下壓（v1.320.0，預設 30°）：按鈕照 SKY_DROP_OPTS 生（game.js），見 game-ui.js 的 setSkyDrop -->
+    <div class="opt"><div><b>星空往下壓</b><span>晚上的星空是真的星圖，會跟著鏡頭轉，每天換一季。鏡頭平常往下看，畫面上緣剛好在地平線上——
+      0° 是星星真的位置，要把鏡頭壓低往上看才看得到；往下壓越多，平常的畫面看得到越多星星與銀河，但高度越不真實。</span>
+      <div class="seg" id="skyDrop"></div></div></div>
     <!-- 跟不上時降畫質那三格（v1.280.0 動態解析度；v1.281.0 加關抗鋸齒、降了就不升回去）：見 game-ui.js 的 dynStep -->
     <div class="opt"><label><input type="checkbox" id="aaDyn">
       <div><b>跟不上時關抗鋸齒</b><span>畫面跟不上 60fps 時（例如好幾個爆裂魔法一起炸），先把 3D 畫面的抗鋸齒關掉——這一步最省，
@@ -568,6 +572,9 @@
   if (window.BP_FILES) for (var i = 0; i < BP_FILES.length; i++)
     document.write('<script src="blueprints/' + encodeURI(BP_FILES[i]) + '"><\/script>');
 </script>
+<!-- 夜空的資料（tools/build-sky.cjs 產出）：真實星表與銀河，要排在引擎前面（engine.js 的 makeSky 讀它）。
+     沒放這一支的話晚上就沒有星空，其餘照跑（藍圖預覽.html 就沒放：那一頁一直是正午）。 -->
+<script src="src/sky-data.js"></script>
 <script src="src/engine.js"></script>
 <!-- 遊戲層拆成五支（見 src/game.js 檔頭那張表）。都是 classic script、共用同一份
      全域 scope，所以拆檔跟寫在同一支檔裡完全等價。順序有兩個要求：核心那支要排在

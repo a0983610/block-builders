@@ -41,7 +41,7 @@ const ENG = (function () {
   let floodFade = null, floodFadeA = null;   // 掉在地上淡掉的燈頭（同 trebFade：給了 alpha 的整顆搬到這一顆畫）
   let floodBeamPos = null, floodBeamCol = null;   // 光束的頂點與頂點色（每幀照燈板的位置重寫，見 putFloods）
   let gloomEl = null, gloomAt = -1;  // 烏雲遮天：蓋在 CSS 天空上的那一層、上一次給的暗度（見 setGloom）
-  let skyNightEl = null, skyDuskEl = null, skyStarEl = null;   // 晝夜：夜空、黃昏、星星三層（v1.295.0，見 setDayTime）
+  let skyNightEl = null, skyDuskEl = null;   // 晝夜：夜空、黃昏兩層（v1.295.0，見 setDayTime；星星 v1.320.0 起是 3D 的，見 makeSky）
   let dayAt = -1;                    // 晝夜：上一次給的分鐘數，−1＝關掉（一直是正午）
   let lampWarm = false;              // 「燈都開著」那一份 shader 編好了沒（見 draw3d；換光源數就重編，見 setLampCount）
   let emoMesh, emoGeo, emoPos, emoUv, emoCol;   // 頭上的表情圖示（v1.122，見 paintEmoAtlas／putEmotes）
@@ -246,6 +246,15 @@ const ENG = (function () {
   const SUN_C = 0xfff3dd, SUN_WARM = 0xffa060, MOON_C = 0xa8bfff;
   const HEMI_SKY = 0xd8ecff, HEMI_GND = 0x5b7a48, HEMI_SKY_N = 0x8ea4d6, HEMI_GND_N = 0x2b3826, HEMI_DUSK = 0xffc49a;
   const FOG_N = 0x141c2c, FOG_DUSK = 0xc98f7a;
+  /* 星空（v1.320.0，見 makeSky）：真實星表＋銀河＋月亮，方向釘在世界裡，轉鏡頭跟著轉。
+     南方＝SUN_AZ（正午太陽、半夜月亮的方位），緯度照台灣；一整夜（30 分鐘）天球轉 180°（真的夜晚約 12 小時轉 180°），
+     每天（每小時）換一季：SKY_MID 是春夏秋冬半夜（:45）的地方恆星時——獅子、天蠍與銀河中心、飛馬、獵戶在南方。
+     SKY_DROP 是畫面設定「星空往下壓」的預設（度）：預設鏡頭往下看 24.1°、垂直視角一半 24°，畫面上緣就在地平線，
+     真天空佔畫面 0%——不壓的話預設畫面一顆星都看不到（見 開發筆記〈星空：真實星表、銀河、月亮，跟著鏡頭轉（v1.320.0）〉）。
+     SKY_R 是那顆大球的半徑（相機 far 900 以內）；MOON_DEG 月亮看起來多大（真的是 0.5°，那樣只有八個像素） */
+  const SKY_LAT = 23.5 * Math.PI / 180, SKY_MID = [12, 18, 0, 6], SKY_DROP = 30, SKY_R = 800, MOON_DEG = 3;
+  let skyStars = null, skyMw = null, skyMoon = null, skyWarm = false;   // 星、銀河、月亮；skyWarm＝shader 先編好了沒（見 draw3d）
+  let skyDrop = SKY_DROP * Math.PI / 180, skySeason = 0;               // 往下壓幾度（弧度）、第幾季（0 春～3 冬，見 setSkySeason）
   const MAG_DASH = 26;                                       // 外圈那一圈虛線的段數
   /* 邊上的螺旋筆觸（v1.62.1，照參考圖）。使用者要的邊緣不規則是**螺旋狀**的：
      參考圖裡那一圈不是一條被弄皺的圓弧，是**幾道沿著邊掃出去的粗筆觸疊在一起**——
@@ -1707,9 +1716,10 @@ if (vAo.x + vAo.y > 0.5) {
       L.shadow.bias = FLOOD_SH_BIAS; L.shadow.normalBias = FLOOD_SH_NBIAS;
       L.visible = false; scene.add(L, L.target); floodLamps.push(L);
     }
-    /* 晝夜的三層（v1.295.0）：跟烏雲那一層同一招，烏雲排在它們後面＝疊在最上面。
+    /* 晝夜的兩層（v1.295.0）：跟烏雲那一層同一招，烏雲排在它們後面＝疊在最上面。
        黃昏的橘色擠在畫面上面兩成多：預設鏡頭下天空只露那一段，照整頁分配的話橘色全被草地蓋住（預覽第一版）。
-       星星是一顆 2px 的點拖一串 box-shadow，自己一支亂數（不吃 Math.random：測試下了種子，多抽會位移別段的骰子） */
+       v1.295.0～v1.319.0 還有第三層星星（一顆 2px 的點拖 170 個 box-shadow），貼在螢幕上、轉鏡頭不會動——
+       v1.320.0 起換成 3D 的（見 makeSky） */
     const skyLayer = css => {
       const d = document.createElement('div');
       d.style.cssText = 'position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0;' + css;
@@ -1718,20 +1728,7 @@ if (vAo.x + vAo.y > 0.5) {
     };
     skyNightEl = skyLayer('background:linear-gradient(#050a1a 0%,#0c1730 45%,#1a2742 75%,#26324a 100%)');
     skyDuskEl = skyLayer('background:linear-gradient(#34397a 0%,#8a568a 10%,#e07a72 19%,#f6a463 27%,#f9cb8a 40%,#f9d9a6 100%)');
-    skyStarEl = skyLayer('-webkit-mask-image:linear-gradient(#000 0%,#000 45%,transparent 78%);' +
-                         'mask-image:linear-gradient(#000 0%,#000 45%,transparent 78%)');
-    {
-      let s = 7;
-      const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647, sh = [];
-      for (let i = 0; i < 170; i++) {
-        const big = rnd() < 0.12, a = (0.45 + rnd() * 0.55).toFixed(2);
-        sh.push((rnd() * 100).toFixed(2) + 'vw ' + (rnd() * 72).toFixed(2) + 'vh ' + (big ? '1.5px 0.6px' : '0 0') +
-                ' rgba(255,255,255,' + a + ')');
-      }
-      const dot = document.createElement('div');
-      dot.style.cssText = 'position:absolute;left:0;top:0;width:2px;height:2px;border-radius:50%;box-shadow:' + sh.join(',');
-      skyStarEl.appendChild(dot);
-    }
+    makeSky();
     /* 烏雲遮天蓋在 CSS 天空上的那一層：z-index −1 疊在 body 的背景上、畫布底下 */
     gloomEl = document.createElement('div');
     gloomEl.style.cssText = 'position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0;' +
@@ -4103,8 +4100,202 @@ if (vAo.x + vAo.y > 0.5) {
     scene.fog.color.copy(_fogN).lerp(_fogC, P.L).lerp(_fogK, 0.5 * P.W).lerp(_fogD, GLOOM.fog * g);
     skyNightEl.style.opacity = String(+(1 - P.L).toFixed(3));
     skyDuskEl.style.opacity = String(+(0.9 * P.W).toFixed(3));
-    skyStarEl.style.opacity = String(+_smooth((0.4 - P.L) / 0.4).toFixed(3));
     gloomEl.style.opacity = String(g * GLOOM.sky);
+    if (!skyStars) return;
+    /* 星空（v1.320.0）：濃度跟 v1.295.0 的 CSS 星星同一條；烏雲照 GLOOM.sky 壓（以前是那一層 div 蓋在星星上）。
+       月亮跟著月光那盞燈的方向（方位一樣、仰角一起往下壓 skyDrop），淡入淡出也跟燈（P.f）一樣 */
+    const op = +(_smooth((0.4 - P.L) / 0.4) * (1 - GLOOM.sky * g)).toFixed(3);
+    skyStars.material.uniforms.uOp.value = skyMw.material.uniforms.uOp.value = op;
+    skyStars.visible = skyMw.visible = op > 0;
+    skyRot(skyLst(dayAt), skyU.uRot.value);
+    const mo = P.moon ? +(P.f * (1 - GLOOM.sky * g)).toFixed(3) : 0, e = P.el - skyDrop;
+    skyMoon.material.uniforms.uOp.value = mo;
+    skyMoon.visible = mo > 0;
+    if (mo > 0) skyMoon.material.uniforms.uDir.value.set(Math.cos(e) * Math.cos(P.az), Math.sin(e), Math.cos(e) * Math.sin(P.az));
+  }
+
+  /* ── 星空（v1.320.0）────────────────────────────────────
+     使用者：「夜晚的星星 在使用 Q E選轉的時候 不會跟著移動 評估是不是能將真的星空做上去」——
+     v1.295.0 的星星是一層 CSS，貼在螢幕上。換成三顆 3D 的東西：星（1,627 顆，5 等以內）、銀河、月亮，
+     都畫在以鏡頭為中心的大球上：頂點著色器拿 cameraPosition 加「方向 × 半徑」，只有方向、沒有位置——
+     平移、升降、縮放都不會靠近它，轉鏡頭就跟著轉。星與銀河的頂點存赤道座標的單位向量，uRot 把它轉成這一刻的世界方向
+     （照恆星時與緯度，見 skyRot），再把仰角整片往下壓 uShift（只壓仰角、方位不動，Q／E 轉多少星星就轉多少，見 SKY_DROP）。
+     資料是 src/sky-data.js（tools/build-sky.cjs 從 d3-celestial 轉的，BSD-3）；藍圖預覽.html 沒載那一支，就不生（那一頁一直是正午）。
+     不吃霧（ShaderMaterial 預設沒有霧）、不寫深度、renderOrder 排在半透明的東西最前面：建築擋得住它、煙蓋得過它。
+     白天 visible＝false（沒東西在場就不吃 draw call），晚上三個。見 開發筆記〈星空：真實星表、銀河、月亮，跟著鏡頭轉（v1.320.0）〉 */
+  const SKY_GLSL = `
+    uniform mat3 uRot; uniform float uShift, uR;
+    float lowFade;
+    vec3 skyDir(vec3 eq, out float alt) {
+      vec3 h = uRot * eq;
+      alt = asin(clamp(h.y, -1.0, 1.0));
+      float az = atan(h.z, h.x), e = alt - uShift;
+      lowFade = smoothstep(-0.35, -0.2, e);
+      return vec3(cos(e) * cos(az), sin(e), cos(e) * sin(az));
+    }`;
+  /* lowFade：壓下去之後低於 −11.5°～−20° 的淡掉——鏡頭退到島外時，畫面下緣那片空處（島底下）不該有星星 */
+  const skyU = { uRot: { value: new T.Matrix3() }, uShift: { value: skyDrop }, uR: { value: SKY_R } };
+  /* 天球三根軸的世界方向：Q＝天赤道過子午線那一點（正南、仰角 90°−緯度）、W＝正西、P＝北天極（正北、仰角＝緯度）。
+     南＝SUN_AZ、東在 SUN_AZ−90°：月光那盞燈從那邊升起（見 dayPhase），月亮東升西落，星星也是 */
+  const _skyN = new T.Vector3(-Math.cos(SUN_AZ), 0, -Math.sin(SUN_AZ)), _skyW = new T.Vector3(-Math.sin(SUN_AZ), 0, Math.cos(SUN_AZ));
+  const _skyQ = _skyN.clone().multiplyScalar(-Math.sin(SKY_LAT)).setY(Math.cos(SKY_LAT));
+  const _skyP = _skyN.clone().multiplyScalar(Math.cos(SKY_LAT)).setY(Math.sin(SKY_LAT));
+  /* 地方恆星時（弧度）：半夜（:45）是 SKY_MID 那一季，一整夜 30 分鐘轉 180°。白天也照算（看不到）；
+     換季在 :00（見 setSkySeason），那一刻星星的濃度是 0，看不到跳 */
+  function skyLst(t) { return (SKY_MID[skySeason] * 15 + (t - 45) * 6) * Math.PI / 180; }
+  /* 赤道座標 (cos δ cos α, cos δ sin α, sin δ) → 世界方向：時角 h＝θ−α，方向＝cos δ cos h·Q＋cos δ sin h·W＋sin δ·P，
+     展開之後對 (x, y, z) 是線性的，三根欄就是下面那三個向量 */
+  const _skyA = new T.Vector3(), _skyB = new T.Vector3();
+  function skyRot(theta, m) {
+    const c = Math.cos(theta), s = Math.sin(theta);
+    _skyA.copy(_skyQ).multiplyScalar(c).addScaledVector(_skyW, s);
+    _skyB.copy(_skyQ).multiplyScalar(s).addScaledVector(_skyW, -c);
+    m.set(_skyA.x, _skyB.x, _skyP.x, _skyA.y, _skyB.y, _skyP.y, _skyA.z, _skyB.z, _skyP.z);
+  }
+  function skyEq(raDeg, decDeg, out, i) {
+    const a = raDeg * Math.PI / 180, d = decDeg * Math.PI / 180;
+    out[i] = Math.cos(d) * Math.cos(a); out[i + 1] = Math.cos(d) * Math.sin(a); out[i + 2] = Math.sin(d);
+  }
+  /* B−V 色指數 → 顏色：藍白（熱）到橘（冷），飽和度刻意壓低（真的星星肉眼看大多是白的） */
+  const SKY_BV = [[-0.3, 0.62, 0.72, 1], [0, 0.84, 0.89, 1], [0.6, 1, 0.98, 0.93], [1.2, 1, 0.86, 0.68], [2, 1, 0.72, 0.5]];
+  function skyBv(bv, out, i) {
+    let k = 1;
+    while (k < SKY_BV.length - 1 && bv > SKY_BV[k][0]) k++;
+    const a = SKY_BV[k - 1], b = SKY_BV[k], f = Math.max(0, Math.min(1, (bv - a[0]) / (b[0] - a[0])));
+    for (let j = 0; j < 3; j++) out[i + j] = a[j + 1] + (b[j + 1] - a[j + 1]) * f;
+  }
+  /* 一個 CSS 像素在這一趟畫的目標上是幾個像素：點的大小是像素給的，動態解析度畫到低解析的畫布時要跟著縮（見 render） */
+  function skyPx() {
+    const rt = renderer.getRenderTarget();
+    return rt ? rt.height / H : renderer.getPixelRatio();
+  }
+  function makeSky() {
+    if (typeof SKY_STARS === 'undefined') return;
+    const n = SKY_STARS.length / 4;
+    const pos = new Float32Array(n * 3), col = new Float32Array(n * 3), mag = new Float32Array(n), ph = new Float32Array(n);
+    let seed = 11;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;   // 閃爍的相位，自己一支亂數（不吃 Math.random：測試下了種子）
+    for (let i = 0; i < n; i++) {
+      skyEq(SKY_STARS[i * 4], SKY_STARS[i * 4 + 1], pos, i * 3);
+      skyBv(SKY_STARS[i * 4 + 3], col, i * 3);
+      mag[i] = SKY_STARS[i * 4 + 2]; ph[i] = rnd();
+    }
+    let g = new T.BufferGeometry();
+    g.setAttribute('position', new T.BufferAttribute(pos, 3));
+    g.setAttribute('aCol', new T.BufferAttribute(col, 3));
+    g.setAttribute('aMag', new T.BufferAttribute(mag, 1));
+    g.setAttribute('aPh', new T.BufferAttribute(ph, 1));
+    /* 星：亮的大一點、亮一點；閃爍靠地平線閃得兇一點（大氣比較厚）。大小與亮度是預覽頁使用者看過的那一檔（中） */
+    skyStars = new T.Points(g, new T.ShaderMaterial({
+      uniforms: Object.assign({ uTime: { value: 0 }, uPx: { value: 1 }, uOp: { value: 0 } }, skyU),
+      transparent: true, depthWrite: false, blending: T.AdditiveBlending,
+      vertexShader: SKY_GLSL + `
+        attribute vec3 aCol; attribute float aMag, aPh;
+        uniform float uTime, uPx, uOp;
+        varying vec3 vCol; varying float vA;
+        void main() {
+          float alt; vec3 d = skyDir(position, alt);
+          gl_Position = projectionMatrix * viewMatrix * vec4(cameraPosition + d * uR, 1.0);
+          float amp = 0.22 + 0.3 * (1.0 - smoothstep(0.0, 0.7, alt));
+          float tw = 1.0 + amp * sin(uTime * (2.0 + 3.5 * fract(aPh * 7.13)) + aPh * 6.2832);
+          vA = clamp(1.4 - 0.16 * aMag, 0.3, 1.0) * tw * smoothstep(0.0, 0.1, alt) * lowFade * uOp;
+          vCol = aCol;
+          gl_PointSize = clamp(3.8 - 0.45 * aMag, 1.8, 5.5) * uPx;
+        }`,
+      fragmentShader: `
+        varying vec3 vCol; varying float vA;
+        void main() {
+          vec2 p = gl_PointCoord * 2.0 - 1.0;
+          float r = dot(p, p);
+          if (r > 1.0) discard;
+          gl_FragColor = vec4(vCol, vA * (1.0 - smoothstep(0.35, 1.0, r)));
+        }`
+    }));
+    skyStars.onBeforeRender = () => {
+      const u = skyStars.material.uniforms;
+      u.uPx.value = skyPx(); u.uTime.value = performance.now() / 1000;
+    };
+    /* 銀河：一張赤經 × 赤緯的灰階圖（tools/build-sky.cjs 烤的）貼在一顆赤道座標的球上，同一支 skyDir 轉過去 */
+    const NA = 144, ND = 72, vp = [], uv = [], idx = [];
+    for (let j = 0; j <= ND; j++) for (let i = 0; i <= NA; i++) {
+      skyEq(360 * i / NA, -90 + 180 * j / ND, vp, vp.length);
+      uv.push(i / NA, j / ND);
+    }
+    for (let j = 0; j < ND; j++) for (let i = 0; i < NA; i++) {
+      const a = j * (NA + 1) + i, c = a + NA + 1;
+      idx.push(a, a + 1, c + 1, a, c + 1, c);
+    }
+    g = new T.BufferGeometry();
+    g.setAttribute('position', new T.Float32BufferAttribute(vp, 3));
+    g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    const tex = new T.TextureLoader().load(SKY_MW);
+    tex.wrapS = T.RepeatWrapping;                // 赤經是一圈
+    skyMw = new T.Mesh(g, new T.ShaderMaterial({
+      uniforms: Object.assign({ uMap: { value: tex }, uOp: { value: 0 } }, skyU, { uR: { value: SKY_R + 20 } }),
+      transparent: true, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, forceSinglePass: true,
+      vertexShader: SKY_GLSL + `
+        varying vec2 vUv; varying float vAlt, vLow;
+        void main() {
+          float alt; vec3 d = skyDir(position, alt);
+          vAlt = alt; vUv = uv; vLow = lowFade;
+          gl_Position = projectionMatrix * viewMatrix * vec4(cameraPosition + d * uR, 1.0);
+        }`,
+      fragmentShader: `
+        uniform sampler2D uMap; uniform float uOp;
+        varying vec2 vUv; varying float vAlt, vLow;
+        void main() {
+          gl_FragColor = vec4(0.74, 0.8, 1.0, texture2D(uMap, vUv).r * 0.3 * uOp * smoothstep(0.0, 0.25, vAlt) * vLow);
+        }`
+    }));
+    /* 月亮：一個點，圓盤＋三塊月海＋一圈光暈；一般混色（蓋得住後面的星） */
+    g = new T.BufferGeometry();
+    g.setAttribute('position', new T.Float32BufferAttribute([0, 0, 0], 3));
+    skyMoon = new T.Points(g, new T.ShaderMaterial({
+      uniforms: { uDir: { value: new T.Vector3(0, 1, 0) }, uR: { value: SKY_R - 40 }, uSize: { value: 1 }, uOp: { value: 0 } },
+      transparent: true, depthWrite: false,
+      vertexShader: `
+        uniform vec3 uDir; uniform float uR, uSize;
+        void main() {
+          gl_Position = projectionMatrix * viewMatrix * vec4(cameraPosition + uDir * uR, 1.0);
+          gl_PointSize = uSize;
+        }`,
+      fragmentShader: `
+        uniform float uOp;
+        void main() {
+          vec2 p = gl_PointCoord * 2.0 - 1.0;
+          float r = length(p), disc = 1.0 - smoothstep(0.31, 0.335, r), m = 0.0;
+          m += 1.0 - smoothstep(0.0, 0.12, length(p - vec2(-0.08, -0.07)));
+          m += 1.0 - smoothstep(0.0, 0.08, length(p - vec2(0.1, 0.04)));
+          m += 1.0 - smoothstep(0.0, 0.06, length(p - vec2(-0.02, 0.14)));
+          vec3 c = mix(vec3(1.0, 0.98, 0.9), vec3(0.76, 0.78, 0.8), clamp(m, 0.0, 1.0) * 0.55);
+          float halo = (1.0 - disc) * pow(max(0.0, 1.0 - r), 2.4) * 0.5, a = max(disc, halo);
+          if (a <= 0.003) discard;
+          gl_FragColor = vec4((c * disc + vec3(0.66, 0.76, 1.0) * halo) / a, a * uOp);
+        }`
+    }));
+    /* 圓盤佔點的 0.335：點要開到 MOON_DEG ÷ 0.335 那麼大，月亮才是 MOON_DEG 度 */
+    skyMoon.onBeforeRender = () => {
+      const rt = renderer.getRenderTarget();
+      skyMoon.material.uniforms.uSize.value = MOON_DEG / camera.fov * (rt ? rt.height : H * renderer.getPixelRatio()) / 0.335;
+    };
+    [skyMw, skyStars, skyMoon].forEach((o, i) => {
+      o.frustumCulled = false; o.visible = false; o.renderOrder = -12 + i;
+      scene.add(o);
+    });
+  }
+  /* 畫面設定「星空往下壓」（v1.320.0，度）。存檔可能比 init 先讀到，所以只記值、有星空了才重算 */
+  function setSkyDrop(deg) {
+    skyDrop = Math.max(0, +deg || 0) * Math.PI / 180;
+    skyU.uShift.value = skyDrop;
+    if (skyStars) applySky();
+  }
+  /* 第幾季（0 春～3 冬，規則那邊照時鐘的小時給，每天換一季；使用者：「季節就每天換一季吧」）。同一個值重複給就什麼都不做 */
+  function setSkySeason(k) {
+    k = ((Math.floor(k) % 4) + 4) % 4 || 0;
+    if (k === skySeason) return;
+    skySeason = k;
+    if (skyStars) applySky();
   }
 
   /* ── 草地島大小與視窗尺寸 ───────────────────────────── */
@@ -13105,6 +13296,17 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
         lampSync(); floodSync();                 // 照這一刻真的要不要燈開回去
       }
     }
+    /* 星空那三顆（v1.320.0）白天是關的，第一次天黑那一幀才會編 shader：開場第一幀畫完同一招先在背景編好。
+       不吃燈（ShaderMaterial 沒開 lights），換光源數也不必重編 */
+    if (!skyWarm) {
+      skyWarm = true;
+      if (renderer.compileAsync && skyStars) {
+        const sky = [skyMw, skyStars, skyMoon], was = sky.map(o => o.visible);
+        for (const o of sky) o.visible = true;
+        renderer.compileAsync(scene, camera).catch(() => {});
+        sky.forEach((o, i) => { o.visible = was[i]; });
+      }
+    }
   }
   /* ── 分幀偷量（v1.281.0，見上面那一大段）── */
   const PROBE_N = 16;
@@ -13203,6 +13405,9 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     GLOW_KINDS: Object.keys(GLOW),             /* 認得哪幾種（v1.297.0）：測試照這個對規則那邊給的 k */
     get lampN() { return lampN; },
     DAY: { fade: DAY_FADE, low: DAY_LOW, moonTop: MOON_TOP, noon: SUN_NOON },   /* 晝夜（v1.295.0）：測試照這幾個算期望值 */
+    setSkyDrop, setSkySeason,                  /* 星空（v1.320.0）：畫面設定「星空往下壓」、規則那邊照時鐘給第幾季 */
+    SKY: { lat: SKY_LAT, mid: SKY_MID, drop: SKY_DROP },   /* 測試照這幾個算期望值 */
+    get skyDrop() { return skyDrop; }, get skySeason() { return skySeason; },
     putStars, putBolts, putStorm, setGloom, setDayTime, putMarks, putSears, SEAR_MAX, SEAR_SEC, SEAR_U, SCORCH_MAX, SCORCH_SEG, SCORCH_U, SCORCH_GLOW, SEAR_GLOW, putGates, putWeapons, putSwords, putBeasts, putUfos,
     putHoles, MAXHOLE: HOLE_MAX,            /* 小黑洞（v1.221）：規則那邊的上限直接讀這個 */
     fitCamera, updateCamera, orbit, pan, lift, zoom, resetCamera, shake, holdWide, releaseWide,
@@ -13315,7 +13520,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
     get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh,
-                            stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl, skyStarEl,
+                            stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl,
+                            skyStars, skyMw, skyMoon,
                             floodMesh, floodLitMesh, floodBeamMesh, floodLamps, floodFade }; }
   };
 })();

@@ -44,10 +44,11 @@ let stats = freshStats();
    v1.291.0～v1.295.0 是 boom（爆炸光源勾選）：那一格拿掉了，舊存檔沒勾的換成 0、勾著的換成預設（見 applySave） */
 /* day＝晝夜（v1.295.0，見 game-ui.js 的 dayOn），預設開（使用者選的）；舊存檔同上靠 merge 補 */
 /* flsh＝燈架影子（v1.316.0，見 engine.js 的 setFloodShadow），預設關（使用者選的：開了每座亮著的燈架多畫一趟整個場景） */
+/* drop＝星空往下壓幾度（v1.320.0，SKY_DROP_OPTS 0／15／30／45，見 game-ui.js 的 setSkyDrop），預設 30；舊存檔靠 merge 補 */
 const KEY_N = 9;
 const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
                            keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, dyn: true, aa: true, once: false,
-                           lamps: 10, day: true, flsh: false, v: 1 });
+                           lamps: 10, day: true, flsh: false, drop: 30, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -211,6 +212,7 @@ function applySave(o) {
   /* 光源（v1.296.0）：還沒有 lamps 的舊存檔照「爆炸光源」那一格換——沒勾＝關、勾著（或沒這一格）＝預設（v1.317.0 起 10） */
   if (o.p && o.p.lamps === undefined && o.p.boom === false) g.lamps = 0;
   g.lamps = snapOpt(g.lamps, LAMP_OPTS);
+  g.drop = snapOpt(g.drop, SKY_DROP_OPTS);
   // 小人模式認不得的 id（被改壞的存檔）回到預設那一檔，不然選單上三檔都不亮
   if (!LAZY_MODES.some(m => m.id === g.lazy)) g.lazy = freshPref().lazy;
   g.keys = cleanKeys(g.keys);
@@ -239,6 +241,7 @@ function applyPref() {
   lazyMode = pref.lazy; cap60 = pref.cap; rageOn = pref.rage; aoOn = pref.ao; dayOn = pref.day;
   setWorkerCount(pref.wk);
   setLamps(pref.lamps);
+  setSkyDrop(pref.drop);
   ENG.setFloodShadow(pref.flsh);
   $('mute').checked = pref.mute;
   $('spin').checked = pref.spin;

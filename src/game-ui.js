@@ -354,6 +354,9 @@ let lampN = 10;
 let dayOn = true;                   // 畫面設定「晝夜」（v1.295.0，pref.day），見 draw 裡的 setDayTime
 /* 一小時裡的第幾分鐘（0～60），晝夜照這個走（v1.295.0）。測試把它換成固定的正午（見 e2e 的 installClean） */
 let dayClock = () => { const d = new Date(); return d.getMinutes() + d.getSeconds() / 60 + d.getMilliseconds() / 60000; };
+/* 星空第幾季（v1.320.0，0 春～3 冬）：一小時一天，每天換一季（使用者：「季節就每天換一季吧」），照時鐘的小時輪。
+   換在 :00 那一刻，那時星星的濃度是 0（見 engine.js 的 setSkySeason） */
+let skySeason = () => new Date().getHours() % 4;
 const AO_BIT = NBR.map(d => (d[0] + 1) * 9 + (d[1] + 1) * 3 + (d[2] + 1));
 const AO_DOWN = NBR.map(d => d[1] < 0);
 let aoBp = null;                    // 地標那一份
@@ -516,6 +519,7 @@ function draw() {
   ENG.setGloom(stormGloom);
   /* 晝夜（v1.295.0，使用者：「根據一小時中的時段切分成一天 30分前白天 30分後晚上 白天會調整日照位置」）：
      照 HUD 那個真的時鐘；畫面設定那一格關掉就給 −1（一直是正午）。見 開發筆記〈晝夜：一小時一天（v1.295.0）〉 */
+  ENG.setSkySeason(skySeason());
   ENG.setDayTime(dayOn ? dayClock() : -1);
   /* 強爆炸照亮周圍（v1.291.0）：核彈、爆裂魔法的火球各一盞點光源（見 boomLampList）。
      lampN 是畫面設定小窗「光源」那一排（pref.lamps；使用者：「爆炸光源如果耗效能可以做成開關」，v1.296.0 起改成選幾盞） */
@@ -853,6 +857,12 @@ function makeSeg(id, opts, fmt, pick) {
 /* 亮起目前這一檔。值不在清單裡就三顆都不亮——那代表有人繞過面板直接改變數（測試會這樣做） */
 function syncSeg(id, v) {
   for (const b of $(id).children) b.classList.toggle('on', +b.dataset.v === v);
+}
+/* 星空往下壓幾度（v1.320.0）：存檔、引擎、畫面設定那一排一起改。讀存檔（applyPref）與點按鈕都走這裡 */
+function setSkyDrop(d) {
+  pref.drop = d;
+  ENG.setSkyDrop(d);
+  syncSeg('skyDrop', d);
 }
 /* 光源幾盞（v1.296.0）：變數、引擎、畫面設定那一排一起改。讀存檔（applyPref）與點按鈕都走這裡 */
 function setLamps(n) {
@@ -1356,6 +1366,7 @@ function boot() {
   /* 燈架影子（v1.316.0，預設關）：只有燈源那四盞投影，點光源那一池照舊不投（使用者：「其他點光源都還好」） */
   $('floodSh').addEventListener('change', e => { pref.flsh = e.target.checked; ENG.setFloodShadow(pref.flsh); save(); });
   $('dayOn').addEventListener('change', e => { dayOn = pref.day = e.target.checked; save(); });       // 晝夜（v1.295.0）
+  makeSeg('skyDrop', SKY_DROP_OPTS, v => v + '°', v => { setSkyDrop(v); save(); });                   // 星空往下壓（v1.320.0）
   /* 跟不上時降畫質那三格（v1.280.0 動態解析度；v1.281.0 加關抗鋸齒、降了就不升回去）：改哪一格都重排、回到原本那一級 */
   for (const [id, k] of [['aaDyn', 'aa'], ['dynRes', 'dyn'], ['dynOnce', 'once']])
     $(id).addEventListener('change', e => { pref[k] = e.target.checked; setDyn(pref.aa, pref.dyn, pref.once); save(); dispStat(); });
