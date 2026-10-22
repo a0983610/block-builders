@@ -109,7 +109,11 @@ const TOOLS = [
   { id: 'flood', n: '燈源', k: '🔦', cat: 'safe', lamp: true,
     /* v1.303.0：也不是破壞道具——點兩下立一座燈架往那個方向照（見 aimFlood）。lamp：畫面設定「光源」選關就沒有這一把（見 toolHere）。
        照樣接在最後面、照等差階梯解鎖 */
-    tip: '點兩下：先點燈架立在哪，再點要照的地方——晚上才照得亮，最多 4 座，被打壞就熄' }
+    tip: '點兩下：先點燈架立在哪，再點要照的地方——晚上才照得亮，燈架＋火把最多 4 座，被打壞就熄' },
+  { id: 'torch', n: '火把', k: '🕯', cat: 'safe', lamp: true,
+    /* v1.317.0：也不是破壞道具——點一下插一支火把，晚上照亮周圍（見 placeTorch）。跟燈源一樣標 lamp、合計上限（見 lightRoom）。
+       圖示：🔥 是放火、🔦（Unicode 名字就叫 electric torch）是燈源，所以用 🕯。照樣接在最後面、照等差階梯解鎖 */
+    tip: '點一下：插一支火把，晚上照亮周圍——火把＋燈架最多 4 座，被打壞就熄' }
 ];
 /* 道具選單的分類（v1.294.0，使用者：「道具選擇頁面根據種類分類(比較好找)」）：選單與快捷鍵那九格下拉
    照這張的順序一類一組，組裡照 TOOLS 的順序（＝解鎖順序）排。每一把在 TOOLS 裡寫 `cat` 指到這裡的 id。
@@ -169,7 +173,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       frieren: 1,                                               // 防禦魔法：點哪裡都是叫她跑過去（v1.259.0）
                       meat: 1,                                                  // 肉：點哪裡都是丟在那裡（v1.261.0）
                       eris: 1,                                                  // 光之太刀：點空地＝跑到那裡（v1.290.0）
-                      flood: 1 };                                               // 燈源：兩下都是點地面也算（v1.303.0）
+                      flood: 1,                                                 // 燈源：兩下都是點地面也算（v1.303.0）
+                      torch: 1 };                                               // 火把：點哪裡都是插在那裡（v1.317.0）
 let tool = 'hammer';
 
 /* ── 破壞模式（v1.262.0）──────────────────────────────────
@@ -5877,9 +5882,15 @@ function glowLampList(K) {
   }
   const th = ENG.torchHeads();                   // 這一幀畫出來的火把（draw 先畫動物才排燈），淡進淡出照 k
   for (let j = 0; j < th.length; j++) put('torch', th[j].x, th[j].y + GLOW_TOR_UP, th[j].z, th[j].k * glowFk(j), 0, null);
+  let j = th.length;
+  /* 道具「火把」插在地上的那幾支（v1.317.0，見 placeTorch）：排在小獼猴的火把後面、同一個閃法，亮度表另一格（pole，照得比較遠） */
+  if (torches) for (const t of torches) {
+    if (!(t.k > 0)) continue;
+    const o = torchFlame(t);
+    put('pole', o.x, o.y + GLOW_TOR_UP, o.z, t.k * glowFk(j++), 0, null);
+  }
   /* 部落的營火（v1.309.0，見 stepCamp）：一堆一盞，跟火把同一個閃法 */
   if (homes) {
-    let j = th.length;
     for (const h of homes.list) {
       const sl = campLit(h);
       if (sl) put('camp', sl.x, sl.y + GLOW_CAMP_UP, sl.z, glowFk(j++), 0, null);
@@ -9133,6 +9144,7 @@ function useTool(hit) {
   if (tool === 'meat') { dropMeat(hit.point); return 0; }
   /* 燈源（v1.303.0）：第一下立燈架的位置、第二下照哪裡；點在建築上就瞄那個高度（同投石機、加農砲） */
   if (tool === 'flood') { aimFlood(hit.point, hit.kind === 'block'); return 0; }
+  if (tool === 'torch') { placeTorch(hit.point); return 0; }   // 火把（v1.317.0）：點一下插一支，點在建築上推到工地外
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
@@ -15214,7 +15226,7 @@ function meatWalk(m, dt, spd, stp, kp) {
    走路的東西繞過去（homeBox）、換場不會被炸散、打它不算打地標——那一整套是現成的。只有兩件不一樣：
    沒人來修（homeCat 是自己一類，沒有人會去接）、**架頂那一塊不在了就整座收掉**（燈頭掉下來熄掉、剩下的散成碎料，見 floodBreak）。
    燈頭（燈板、燈泡、光束、聚光燈）是引擎畫的模型（ENG.putFloods），積木只能對齊格子，燈頭要轉到任意方向 */
-const FL_MAX = ENG.MAXFLOOD;        // 場上最多幾座（使用者選的 4，引擎的燈也只有這幾盞）
+const FL_MAX = ENG.MAXFLOOD;        // 場上最多幾座（使用者選的 4，引擎的燈也只有這幾盞）；v1.317.0 起是燈架＋火把合計（見 lightRoom）
 const FL_H = 14;                    // 架頂離地幾格（底座一層 3×3 ＋ 柱子 13 格）
 const FL_BASE = [0.6, 0.6, 0.58];   // 底座的水泥色
 const FL_POLE = [[0.5, 0.54, 0.58], [0.43, 0.47, 0.51]];   // 柱子的鋼色，一格一格深淺交錯（看得出是一節一節的）
@@ -15246,9 +15258,10 @@ function floodSlots(x, z) {
 }
 /* 立在哪：島內、工地外，不壓在房子、樹、城牆、別座燈架上（照整份格子框，還沒蓋完的也算占著）。
    點在工地裡（點建築）先沿半徑推到工地外緣（同加農砲的站位；點在正中心就推向鏡頭那一側），
-   那一點放不下就往外一圈一圈找最近放得下的；都放不下回 null */
-function floodSpot(x, z) {
-  const minD = siteR + FL_SITE + 1.5, maxD = debrisR - 3, d0 = Math.hypot(x, z);
+   那一點放不下就往外一圈一圈找最近放得下的；都放不下回 null。
+   half＝占地半寬：燈架底座 3×3 是 1.5、火把一格是 TH_HALF（v1.317.0），跟別人之間都再留半格 */
+function floodSpot(x, z, half = 1.5) {
+  const minD = siteR + FL_SITE + half, maxD = debrisR - 3, d0 = Math.hypot(x, z), m = half + 0.5;
   if (d0 < minD || d0 > maxD) {
     const e = ENG.camEye(), a = d0 < 0.01 ? Math.atan2(e.z, e.x) : Math.atan2(z, x), d = clamp(d0, minD, maxD);
     x = Math.cos(a) * d; z = Math.sin(a) * d;
@@ -15258,7 +15271,7 @@ function floodSpot(x, z) {
     if (r < minD - 1e-9 || r > maxD) return false;
     if (homes) for (const h of homes.list) {
       const s = homeSpan(h);
-      if (s.x1 > px - 2 && s.x0 < px + 2 && s.z1 > pz - 2 && s.z0 < pz + 2) return false;
+      if (s.x1 > px - m && s.x0 < px + m && s.z1 > pz - m && s.z0 < pz + m) return false;
     }
     return true;
   };
@@ -15276,13 +15289,13 @@ function aimFlood(point, onBlock) {
   aim = null;
   placeFlood(from, point, onBlock ? point.y : 0);
 }
-/* 立一座：from 立在哪、toward 照哪裡、ty 照那一點多高。場上滿了就先把最早那座收掉（見 floodBreak）。回傳那一座（放不下回 null） */
+/* 立一座：from 立在哪、toward 照哪裡、ty 照那一點多高。場上滿了就先把最早那座收掉（v1.317.0 起燈架＋火把合計，見 lightRoom）。
+   回傳那一座（放不下回 null） */
 function placeFlood(from, toward, ty) {
   const sp = floodSpot(from.x, from.z);
   if (!sp) { toast('🔦 這附近立不下燈架', '離建築、房子遠一點再試'); return null; }
+  lightRoom();
   if (!floods) floods = [];
-  const up = floods.filter(f => !f.head);
-  if (up.length >= FL_MAX) floodBreak(up[0]);
   if (!homes) homes = { list: [] };
   const slots = floodSlots(sp.x, sp.z);
   const at = new Map();
@@ -15294,7 +15307,7 @@ function placeFlood(from, toward, ty) {
   homes.list.push(h);
   floodClear(sp.x, sp.z);
   const f = { h, x: sp.x, z: sp.z, top: FL_H, t: 0, laid: 0, topB: null, on: 0, lit: 0, hs: 0, warm: -1,
-              a: 0, p: 0, d: 10, head: null };
+              a: 0, p: 0, d: 10, head: null, seq: ++lightSeq };
   floodAim(f, toward.x, ty || 0, toward.z);
   floods.push(f);
   return f;
@@ -15326,7 +15339,7 @@ function floodClear(x, z) {
   for (const w of workers) if (!w.air) push(w);
   if (beasts) for (const m of beasts) if (m.herd && !m.air) push(m);
 }
-/* 砌上去一塊（同 landHome 落定那一下，只是不經過小人的手） */
+/* 砌上去一塊（同 landHome 落定那一下，只是不經過小人的手）。f 只用到 h／topB，插火把（v1.317.0）也走這一支 */
 function floodLay(f, k) {
   const h = f.h, sl = h.slots[k];
   if (blocks.length >= ENG.MAXB) return false;
@@ -15422,6 +15435,98 @@ function floodList() {
 /* 光源選關（setLamps）：這一把沒了，場上的也收掉（燈頭掉下來、架子散掉） */
 function dropFloods() {
   if (floods) for (const f of floods) floodBreak(f);
+}
+
+/* ── 道具：火把（v1.317.0）───────────────────────────────
+   使用者：「道具增加火把 效果是類似燈具 操作上只點一個位置 插上火把發光／火把+燈具上限 一樣是4」。
+   問過、看過兩輪預覽之後定的：**積木桿＋模型火**（同燈源掛在 homes.list：打得到、撞得到、會垮；最上面那塊不在就熄，沒人修）、
+   **燈借小光源那一池**（glowLampList 的 pole：只在晚上照，火白天照樣燒）、高 TH_H 格、火「大」（引擎的 POLE_FIRE）、
+   亮度「8 格那一圈 1.65、照到 25 格」（使用者：「類似燈具 拿來晚上照亮用 但是也不該太亮(比燈具弱不少)」，選了燈架的 2/3 那一檔）。
+   燈架＋火把合計 FL_MAX 座，滿了擠掉最早那一座（見 lightRoom）。砌法、挑位置、清場同燈架（floodLay／floodSpot／floodClear）。
+   見 開發筆記〈道具：火把〉 */
+const TH_H = 4;                                         // 幾格高（最上面那一格是纏布頭）
+const TH_WOOD = [0x6a / 255, 0x4a / 255, 0x30 / 255];  // 柄：小獼猴那支火把的顏色（engine 的 APE 造型表）
+const TH_HEAD = [0x3a / 255, 0x2a / 255, 0x1c / 255];  // 纏布頭：同上
+const TH_HALF = 0.5;                                    // 占地半寬（一格），挑位置用（見 floodSpot）
+const TH_OUT = 0.6;                                     // 熄掉要幾秒（火縮掉；火把頭被打飛的話火跟著那一塊飛）
+let torches = null;
+let lightSeq = 0;                                       // 燈架、火把立的順序（擠掉最早那一座用）
+/* 燈架＋火把合計最多 FL_MAX（使用者：「火把+燈具上限 一樣是4」）：滿了先收掉最早立的那一座，不分哪一種 */
+function lightRoom() {
+  let n = 0, old = null;
+  if (floods) for (const f of floods) if (!f.head) { n++; if (!old || f.seq < old.seq) old = f; }
+  if (torches) for (const t of torches) if (t.out < 0) { n++; if (!old || t.seq < old.seq) old = t; }
+  if (n < FL_MAX) return;
+  if (floods && floods.indexOf(old) >= 0) floodBreak(old); else torchOut(old);
+}
+/* 插一支：點在哪就插在哪（點在工地裡推到工地外，同燈架）。回傳那一支（插不下回 null） */
+function placeTorch(p) {
+  const sp = floodSpot(p.x, p.z, TH_HALF);
+  if (!sp) { toast('🕯 這附近插不下火把', '離建築、房子遠一點再試'); return null; }
+  lightRoom();
+  if (!torches) torches = [];
+  if (!homes) homes = { list: [] };
+  const slots = [];
+  for (let gy = 0; gy < TH_H; gy++)
+    slots.push({ x: sp.x, y: gy + HB, z: sp.z, c: gy === TH_H - 1 ? TH_HEAD : TH_WOOD, i: 0, k: 0, gy, filled: false, claimed: -1 });
+  const at = new Map();
+  slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+  const h = { id: homeSeq++, x: sp.x, z: sp.z, r: 0.8, kind: 'torch', at, ox: 0, oz: 0,
+              slots, left: slots.length, n: 0, lamp: 1, done: false };
+  homeBox(h);
+  markHomeF6(h);
+  homes.list.push(h);
+  floodClear(sp.x, sp.z);
+  const t = { h, x: sp.x, z: sp.z, top: TH_H - 1 + HB, t: 0, laid: 0, topB: null, k: 0, out: -1, fb: null, seq: ++lightSeq };
+  torches.push(t);
+  return t;
+}
+/* 熄掉：火把頭那一塊被打飛的話火跟著它飛（fb）、TH_OUT 秒縮掉；原地熄的冒一小撮煙。剩下的桿子散成碎料（同燈架） */
+function torchOut(t) {
+  if (t.out >= 0) return;
+  t.out = 0;
+  const b = t.topB;
+  t.fb = b && b.st === FLY ? b : null;
+  if (!t.fb && t.k > 0) spawnDust({ x: t.x, y: t.top + 0.6, z: t.z }, 0.8, 4);
+  if (homes && homes.list.indexOf(t.h) >= 0) { dropHomes(q => q !== t.h); homeOwnAt = -1; }   // 清單重排過（見 floodBreak）
+}
+function stepTorches(dt) {
+  if (!torches) return;
+  for (let i = torches.length - 1; i >= 0; i--) {
+    const t = torches[i], S = t.h.slots;
+    if (t.out >= 0) {                                   // 熄掉了（out 只當旗標用）：火縮掉，縮完收掉
+      t.k = Math.max(0, t.k - dt / TH_OUT);
+      if (!(t.k > 0)) torches.splice(i, 1);
+      continue;
+    }
+    if (!homes || homes.list.indexOf(t.h) < 0) { torchOut(t); continue; }   // 被別人收掉了（新工地徵收、剩兩成五廢棄）
+    t.t += dt;
+    while (t.laid < S.length && t.t >= t.laid * FL_LAY) {
+      if (!canPlaceHome(t.h, t.laid) || !floodLay(t, t.laid)) { torchOut(t); break; }   // 砌到一半底下被打掉：不插了
+      t.laid++;
+    }
+    if (t.out >= 0 || t.laid < S.length) continue;
+    if (!S[S.length - 1].filled) { torchOut(t); continue; }   // 火把頭那一塊不在了（被打掉、或底下打斷垮下來）
+    t.k = Math.min(1, t.k + dt / FL_HEAD_T);                 // 砌好之後火冒出來（同燈頭）
+  }
+  if (!torches.length) torches = null;
+}
+/* 火在哪：火把頭那一塊的中心；熄掉中被打飛的話跟著那一塊。畫火（torchList）與排燈（glowLampList）共用（引擎裡畫火的那一支叫 torchFire，不同一支） */
+function torchFlame(t) {
+  const o = t.dr || (t.dr = {}), b = t.fb;
+  o.x = b ? b.x : t.x; o.y = b ? b.y : t.top; o.z = b ? b.z : t.z; o.k = t.k;
+  return o;
+}
+/* 畫面那邊要的（ENG.putTorches）：火還在的那幾支 */
+const _thDraw = [];
+function torchList() {
+  _thDraw.length = 0;
+  for (const t of torches) if (t.k > 0) _thDraw.push(torchFlame(t));
+  return _thDraw;
+}
+/* 光源選關（setLamps）：同燈架，場上的也收掉 */
+function dropTorches() {
+  if (torches) for (const t of torches) torchOut(t);
 }
 
 /* ── 破壞工具打得到那幾隻（v1.146）────────────────────────

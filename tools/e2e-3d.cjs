@@ -518,6 +518,7 @@ const installClean = page => page.evaluate(() => {
     bombs = null; ENG.putBombs([]);
     meats = null; ENG.putMeats([]);                          // 肉（v1.261.0）：吃完才收，沒有動物在吃就一直擺著
     floods = null; ENG.putFloods([]);                        // 燈源（v1.303.0）：燈架的積木在 homes 上（上面 clearHomes 收了），燈頭與聚光燈在這
+    torches = null;                                          // 火把（v1.317.0）：同上；火每幀照清單畫（putBeasts 先清），不必另外收
     meteors = null; ENG.putMeteors([]);
     nukes = null; ENG.putNukes([]);
     /* 魔法陣與蘑菇雲借去的鏡頭高度（v1.311.0 起用完要還）：同下面的 gateEnd，不還的話下一條量到的
@@ -36967,15 +36968,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await fillAll(page);
 
-  /* ── 道具表：接在最後（光之太刀後面）、不破壞那一類、點空地也算數；說明的座數就是 FL_MAX、FL_MAX 就是引擎的上限 ── */
+  /* ── 道具表：接在光之太刀後面、不破壞那一類、點空地也算數；說明的座數就是 FL_MAX、FL_MAX 就是引擎的上限。
+        v1.317.0 火把接到它後面之後「最後一把」那一句不成立了（同虛式「茈」那一條的說法），條目名跟著拿掉（規則型，沒有鍵要搬） ── */
   const ftab = await page.evaluate(() => {
     const i = TOOLS.findIndex(t => t.id === 'flood'), ie = TOOLS.findIndex(t => t.id === 'eris'), t = TOOLS[i];
     return { at: i, er: ie, n: TOOLS.length, ground: !!GROUND_TOOL.flood, icon: t.k, cat: t.cat, lamp: !!t.lamp,
              tip: t.tip.indexOf('最多 ' + FL_MAX + ' 座') >= 0, max: FL_MAX, eng: ENG.MAXFLOOD,
              parts: ENG.MODELS.flood.length, lit: ENG.MODELS.floodLit.length };
   });
-  ok('道具表：接在光之太刀後面（最後一把）、歸「不破壞」、標 lamp、點空地也算數；圖示 🔦；說明的座數就是 FL_MAX、FL_MAX 就是引擎的 MAXFLOOD',
-     ftab.er >= 0 && ftab.at === ftab.er + 1 && ftab.at === ftab.n - 1 && ftab.cat === 'safe' && ftab.lamp && ftab.ground &&
+  ok('道具表：接在光之太刀後面、歸「不破壞」、標 lamp、點空地也算數；圖示 🔦；說明的座數就是 FL_MAX、FL_MAX 就是引擎的 MAXFLOOD',
+     ftab.er >= 0 && ftab.at === ftab.er + 1 && ftab.cat === 'safe' && ftab.lamp && ftab.ground &&
      ftab.icon === '🔦' && ftab.tip && ftab.max === ftab.eng,
      JSON.stringify(ftab));
 
@@ -37223,9 +37225,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       ENG.setLampCount(0);
       ENG.putFloods(floodList());
       r.zero = L4.every(L => !L.visible) && !T.floodBeamMesh.visible;
-      ENG.setLampCount(lampN);
     } finally { Math.random = real; }
     r.rnd = rnd;
+    /* 還原放在計數外面（v1.317.0）：光源預設 6 → 10 之後，還原會重生多出來那四盞點光源，
+       three 每生一個物件抽 4 次 Math.random 當 uuid（一盞燈＋它的影子相機＝8 次，四盞 32 次）——那不是「畫的時候」抽的 */
+    ENG.setLampCount(lampN);
     cleanTools();
     ENG.setDayTime(dayOn ? dayClock() : -1);
     return r;
@@ -37287,6 +37291,272 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { cleanTools(); });
   }   // ── 〈道具：燈源〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 道具：火把（v1.317.0） ══════════
+     使用者：「道具增加火把 效果是類似燈具 操作上只點一個位置 插上火把發光／火把+燈具上限 一樣是4」，選了積木桿＋模型火、
+     燈借小光源那一池、火一直燒晚上才照亮；看過兩輪預覽：高 4、火「大」、亮度「8 格那一圈 1.65」（燈架的 2/3）。
+     全部是規則型：直接叫 placeTorch／stepTorches／placeFlood／setLamps／glowLampList、引擎的 putTorches／putGlows，量完把全域還回去。
+     見 開發筆記〈道具：火把〉 */
+  SEC: { if (!(await head('道具：火把', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await fillAll(page);
+
+  /* ── 道具表：接在燈源後面、不破壞那一類、標 lamp、點空地也算數；說明的座數就是 FL_MAX；門檻照等差階梯比燈源多一階 ── */
+  const ttab = await page.evaluate(() => {
+    const i = TOOLS.findIndex(t => t.id === 'torch'), iF = TOOLS.findIndex(t => t.id === 'flood'), t = TOOLS[i], f = TOOLS[iF];
+    return { at: i, fl: iF, ground: !!GROUND_TOOL.torch, icon: t.k, cat: t.cat, lamp: !!t.lamp,
+             tip: t.tip.indexOf('最多 ' + FL_MAX + ' 座') >= 0, step: t.lock.need - f.lock.need, LOCK_STEP };
+  });
+  ok('道具表：接在燈源後面、歸「不破壞」、標 lamp、點空地也算數；圖示 🕯；說明的座數就是 FL_MAX；門檻比燈源多一階',
+     ttab.fl >= 0 && ttab.at === ttab.fl + 1 && ttab.cat === 'safe' && ttab.lamp && ttab.ground && ttab.icon === '🕯' && ttab.tip &&
+     ttab.step === ttab.LOCK_STEP,
+     JSON.stringify(ttab));
+
+  /* ── 點一下就插、一塊一塊砌：homes.list 多一筆 lamp（homeCat 3）、一格寬 TH_H 格高、最上面那格是纏布頭；
+        每過 FL_LAY 秒多一塊、砌完火才冒出來（FL_HEAD_T 長滿）；這一段不抽 Math.random ── */
+  const tbuild = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const t0 = tool, X = siteR + 25;
+    tool = 'torch';
+    useTool({ kind: 'ground', point: { x: X, y: 0, z: 0 }, dir: { x: 0, y: -1, z: 0 } });
+    tool = t0;
+    const t = torches && torches[0];
+    if (!t) return { none: true };
+    const h = t.h, S = h.slots, hi = homes.list.indexOf(h);
+    const r = { one: torches.length === 1 && !aim, at: Math.hypot(t.x - X, t.z) < 1e-9,
+                entry: hi >= 0 && h.lamp === 1 && homeCat(h) === 3 && !h.done && h.left === S.length,
+                slots: S.length, H: TH_H, column: S.every((s, k) => s.x === t.x && s.z === t.z && s.gy === k),
+                head: S[S.length - 1].c === TH_HEAD && S.slice(0, -1).every(s => s.c === TH_WOOD),
+                map: S.every((s, k) => h.at.get(s.i + ':' + s.gy + ':' + s.k) === k) };
+    const real = Math.random;
+    let rnd = 0;
+    Math.random = () => { rnd++; return real(); };
+    try {
+      stepTorches(1e-6);
+      const per = [t.laid];
+      r.dark = true;                                                                  // 還沒砌完：火還沒冒出來
+      while (t.laid < S.length && per.length < 30) {
+        if (t.k !== 0) r.dark = false;
+        const n0 = t.laid; stepTorches(FL_LAY * 1.0001); per.push(t.laid - n0);
+      }
+      r.each = per.every(n => n === 1); r.steps = per.length;
+      r.done = h.done && h.left === 0;
+      const mine = blocks.filter(b => b.hh === hi && b.st === SET);
+      r.set = mine.length; r.onSlot = mine.every(b => b.x === S[b.hk].x && b.y === S[b.hk].y && b.z === S[b.hk].z);
+      r.topB = t.topB === mine.find(b => b.hk === S.length - 1);
+      stepTorches((0.5 - t.k) * FL_HEAD_T); r.half = +t.k.toFixed(3);                // 砌完那一幀火就開始長，補到一半
+      stepTorches(FL_HEAD_T); r.full = t.k;
+    } finally { Math.random = real; }
+    r.rnd = rnd;
+    cleanTools();
+    return r;
+  });
+  ok('點一下就插：homes.list 多一筆 lamp（homeCat 3、自己一類）；一格寬 TH_H 格高、最上面那格是纏布頭；格子表對得上',
+     tbuild.one && tbuild.at && tbuild.entry && tbuild.slots === tbuild.H && tbuild.column && tbuild.head && tbuild.map,
+     JSON.stringify(tbuild));
+  ok('一塊一塊砌：每過 FL_LAY 秒多一塊、砌完 done、每一塊都在自己那一格；火砌完才冒出來（FL_HEAD_T 長滿）；這一段不抽 Math.random',
+     tbuild.each && tbuild.done && tbuild.set === tbuild.slots && tbuild.onSlot && tbuild.topB && tbuild.dark &&
+     tbuild.half === 0.5 && tbuild.full === 1 && tbuild.rnd === 0,
+     '砌了 ' + tbuild.steps + ' 步；火 ' + tbuild.half + ' → ' + tbuild.full + '；Math.random ' + tbuild.rnd + ' 次');
+
+  /* ── 插在哪：點在工地裡推到工地外緣（FL_SITE 再加半格外）；點在別支火把、燈架上就挪開，占地不重疊 ── */
+  const tspot = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const apart = (p, q) => { const A = homeSpan(p.h), B = homeSpan(q.h); return A.x1 <= B.x0 || B.x1 <= A.x0 || A.z1 <= B.z0 || B.z1 <= A.z0; };
+    const a = placeTorch({ x: 0, z: 0 });
+    const r = { out: Math.hypot(a.x, a.z) >= siteR + FL_SITE + TH_HALF - 1e-9, d: +(Math.hypot(a.x, a.z) - siteR).toFixed(2) };
+    const b = placeTorch({ x: a.x, z: a.z });
+    const f = placeFlood({ x: siteR + 25, z: 0 }, { x: 0, z: 0 }, 0);
+    const c = placeTorch({ x: f.x, z: f.z });
+    r.torch = apart(a, b); r.flood = apart(c, f); r.near = +Math.hypot(b.x - a.x, b.z - a.z).toFixed(2);
+    cleanTools();
+    return r;
+  });
+  ok('插在哪：點在工地裡推到工地外緣 FL_SITE 格再加半格外；點在別支火把、燈架上就挪開，占地不重疊',
+     tspot.out && tspot.torch && tspot.flood, JSON.stringify(tspot));
+
+  /* ── 燈架＋火把合計 FL_MAX 座：照立的順序擠掉最早那一座，不分哪一種（燈架燈頭掉下來、火把熄掉） ── */
+  const tmax = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const R = siteR + 25, at = j => { const a = j / 8 * Math.PI * 2; return { x: Math.cos(a) * R, z: Math.sin(a) * R }; };
+    const list = [];
+    for (let j = 0; j < FL_MAX; j++) list.push(j % 2 ? placeTorch(at(j)) : placeFlood(at(j), { x: 0, z: 0 }, 0));
+    const up = () => (floods ? floods.filter(f => !f.head).length : 0) + (torches ? torches.filter(t => t.out < 0).length : 0);
+    const gone = o => floods && floods.indexOf(o) >= 0 ? !!o.head : o.out >= 0;
+    const r = { full: up(), max: FL_MAX, kinds: list.map(o => floods.indexOf(o) >= 0 ? '燈架' : '火把').join() };
+    placeTorch(at(FL_MAX));                                                          // 再插一支火把：最早那座是燈架
+    r.a = { up: up(), first: gone(list[0]), rest: list.slice(1).every(o => !gone(o)) };
+    placeFlood(at(FL_MAX + 1), { x: 0, z: 0 }, 0);                                    // 再立一座燈架：最早那座換成火把
+    r.b = { up: up(), second: gone(list[1]), rest: list.slice(2).every(o => !gone(o)) };
+    r.lamps = homes.list.filter(h => h.lamp).length;
+    cleanTools();
+    return r;
+  });
+  ok('燈架＋火把合計 FL_MAX 座：再插火把擠掉最早那座燈架、再立燈架擠掉最早那支火把，其餘照舊立著',
+     tmax.full === tmax.max && tmax.a.up === tmax.max && tmax.a.first && tmax.a.rest &&
+     tmax.b.up === tmax.max && tmax.b.second && tmax.b.rest && tmax.lamps === tmax.max,
+     JSON.stringify(tmax));
+
+  /* ── 沒人修、不算事件：缺一塊時八類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著（同燈架，靠 h.lamp） ── */
+  const tkeep = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const t = placeTorch({ x: siteR + 25, z: 0 });
+    stepTorches(2);
+    const h = t.h, hi = homes.list.indexOf(h);
+    breakBlock(blocks.find(q => q.hh === hi && q.st === SET && q.hk === 1), 0, 1, 0);
+    const r = { left: h.left, cat: [0, 1, 2, 4, 5, 6, 7, 8].every(c => pickUnfinished(t.x, t.z, new Set(), c) !== hi),
+                inside: pickInside(t.x, t.z, new Set(), 1e9) !== hi, ev: evBlocks(IDLE_EVENTS[0]) };
+    const keep = [evLast, evPeak], real = Math.random;
+    evLast = IDLE_EVENTS[0];
+    Math.random = () => 0.999;
+    let e;
+    try { e = rollIdleEvent(); } finally { Math.random = real; evLast = keep[0]; evPeak = keep[1]; }
+    r.rolled = e !== IDLE_EVENTS[0];
+    r.stay = homes.list.indexOf(h) >= 0;
+    cleanTools();
+    return r;
+  });
+  ok('沒人修、不算哪一件事：缺一塊時八類派工與城內補洞都不挑它、事件黏著不數它；換一件事整份清單解體時它留著',
+     tkeep.left === 1 && tkeep.cat && tkeep.inside && tkeep.ev === 0 && tkeep.rolled && tkeep.stay, JSON.stringify(tkeep));
+
+  /* ── 被攻擊：打它不算打地標、桿子是實心的；火把頭被打飛 → 熄掉、從清單收掉、剩下的散成碎料，火跟著那一塊飛、TH_OUT 秒縮完收掉；
+        桿子中間打斷也一樣（走主迴圈的垮塌，最上面那塊不在了就熄） ── */
+  const thit = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const r = {};
+    const a = placeTorch({ x: siteR + 25, z: 0 });
+    stepTorches(2);
+    r.solid = homeSolid(a.x, 1 + HB, a.z);
+    smash({ x: a.x, y: a.top, z: a.z }, { x: 0, y: -1, z: 0 }, 0.6, 15, true, true);   // 槌子敲火把頭
+    stepTorches(1e-3);
+    r.phase = phase; r.smashOut = a.out >= 0;
+    stepTorches(TH_OUT + 0.1); r.smashGone = !torches;
+    const b = placeTorch({ x: siteR + 25, z: 0 });
+    stepTorches(2);
+    const hi = homes.list.indexOf(b.h), mine = blocks.filter(q => q.hh === hi), top = b.topB;
+    breakBlock(top, 4, 3, 0);
+    stepTorches(1e-3);
+    r.out = b.out >= 0 && b.fb === top && homes.list.indexOf(b.h) < 0 && mine.every(q => q.st !== SET);
+    top.x += 3; top.y += 2;                                                           // 那一塊飛到哪，火就在哪
+    const o = torchList()[0];
+    r.follow = !!o && o.x === top.x && o.y === top.y && o.z === top.z;
+    stepTorches(TH_OUT * 0.5); r.mid = +b.k.toFixed(3);                              // 打飛那一步只記熄掉，下一步才開始縮
+    stepTorches(TH_OUT * 0.5 + 1e-3); r.gone = !torches;
+    /* 桿子中間打斷：上面垮下來（走主迴圈的垮塌），最上面那塊不在了就熄 */
+    const c = placeTorch({ x: -(siteR + 25), z: 0 });
+    stepTorches(2);
+    const ci = homes.list.indexOf(c.h), cut = blocks.find(q => q.hh === ci && q.st === SET && c.h.slots[q.hk].gy === 1);
+    breakBlock(cut, 3, 0, 0); markHomeDirty();
+    for (let i = 0; i < 80 && c.out < 0; i++) step(0.05);
+    r.cut = c.out >= 0;
+    cleanTools();
+    return r;
+  });
+  ok('被攻擊：打它不算打地標（phase 還是 done）、桿子是實心的（會飛的東西撞得到）；槌子敲火把頭就熄',
+     thit.phase === 'done' && thit.solid && thit.smashOut && thit.smashGone, JSON.stringify(thit));
+  ok('火把頭被打飛：熄掉、從清單收掉、剩下的散成碎料；火跟著那一塊飛、TH_OUT 秒縮完收掉；桿子中間打斷上面垮下來也熄',
+     thit.out && thit.follow && thit.mid === 0.5 && thit.gone && thit.cut, JSON.stringify(thit));
+
+  /* ── 光源選關就沒有這一把：選單那一格不見、選不到、泡泡不掉它；正拿著的換回槌子、場上的火把熄掉；再開回來那一格回來 ── */
+  const tlamp = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const keepN = lampN, keepTool = tool, keepGift = stats.gift.slice(), keepSm = stats.smashed, t = TOOLS.find(q => q.id === 'torch');
+    const a = placeTorch({ x: siteR + 25, z: 0 });
+    stepTorches(2);
+    tool = 'torch'; renderTools();
+    const r = { before: !!document.querySelector('#tools [data-tool=torch]') };
+    stats.smashed = 0; stats.gift = stats.gift.filter(id => id !== 'torch');          // 先押成還沒解鎖（同燈源那一條的理由）
+    r.locked = !toolOk(t);
+    setLamps(0);
+    r.tool = tool; r.menu = !document.querySelector('#tools [data-tool=torch]'); r.pick = pickTool(t) === false && tool === 'hammer';
+    r.gift = lockedTools().every(q => q.id !== 'torch');
+    r.gone = a.out >= 0 && homes.list.indexOf(a.h) < 0;
+    setLamps(keepN || freshPref().lamps);
+    r.back = !!document.querySelector('#tools [data-tool=torch]');
+    r.giftBack = lockedTools().some(q => q.id === 'torch');
+    stats.smashed = keepSm; stats.gift = keepGift; setLamps(keepN); tool = keepTool; renderTools();
+    cleanTools();
+    return r;
+  });
+  ok('光源選關就沒有這一把：選單那一格不見、選不到、泡泡不掉它；正拿著的換回槌子、場上的火把熄掉；再開回來那一格回來',
+     tlamp.before && tlamp.locked && tlamp.tool === 'hammer' && tlamp.menu && tlamp.pick && tlamp.gift && tlamp.gone && tlamp.back &&
+     tlamp.giftBack,
+     JSON.stringify(tlamp));
+
+  /* ── 畫面：沒火把不吃 draw call；插好的火接在動物的火後面、火芯在火把頭那一塊上（放大 POLE_FIRE 倍）、不算小獼猴的火把；
+        晚上一支一盞（pole）在火把頭上方 GLOW_TOR_UP、排在燒的火前面，8 格那一圈照度 1.65、照到 25 格；
+        白天燈不開、火照樣燒；畫的時候不抽 Math.random ── */
+  const tdraw = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null; flashes.length = 0;
+    const T = ENG.three, keep = { fires }, r = {};
+    fires = null;
+    ENG.putBeasts([]); ENG.putTorches([]);
+    r.off = !T.torchMesh.visible && T.torchMesh.count === 0;
+    const a = placeTorch({ x: siteR + 25, z: 0 }), b = placeTorch({ x: -(siteR + 25), z: 0 });
+    stepTorches(2);
+    const real = Math.random;
+    let rnd = 0;
+    Math.random = () => { rnd++; return real(); };
+    try {
+      ENG.putBeasts([]); ENG.putTorches(torchList());
+      const m4 = new THREE.Matrix4(), p = new THREE.Vector3(), s = new THREE.Vector3(), q = new THREE.Quaternion();
+      T.torchMesh.getMatrixAt(0, m4); m4.decompose(p, q, s);
+      r.count = T.torchMesh.visible && T.torchMesh.count === 2 * ENG.TORCH_N && ENG.torchHeads().length === 0;
+      /* 火芯那一塊（putTorch 那一式的第 0 塊）：在火把頭上方 0.045 × 倍率、寬 0.075 × 倍率（會閃 ±一成）。Float32 讀回來，給 1e-3 */
+      r.core = { dxz: +Math.hypot(p.x - a.x, p.z - a.z).toFixed(4), dy: +(p.y - a.top - 0.045 * ENG.POLE_FIRE).toFixed(4),
+                 w: +(s.x / ENG.POLE_FIRE / 0.075).toFixed(3) };
+      ENG.putStorm([], [], []); ENG.putBooms([]);
+      ENG.setDayTime(45);
+      fires = [{ b: { x: 0, y: 2, z: 0, st: SET, hh: -1 } }];
+      const room = ENG.lampRoom(), L = glowLampList(room), cp = L.map(o => ({ k: o.k, x: o.x, y: o.y, z: o.z, i: o.i }));
+      ENG.putGlows(L);
+      const lamps = T.boomLamps.concat(T.stormLamps, T.glowLamps), night = ENG.nightK();
+      r.order = cp.map(o => o.k).filter((k, j, A) => A.indexOf(k) === j).join();
+      r.known = ENG.GLOW_KINDS.includes('pole');
+      const poles = cp.map((o, j) => ({ o, L: lamps[j] })).filter(e => e.o.k === 'pole');
+      r.n = poles.length;
+      r.above = poles.every((e, j) => { const t = [a, b][j]; return Math.hypot(e.o.x - t.x, e.o.z - t.z) < 1e-9 && Math.abs(e.o.y - t.top - GLOW_TOR_UP) < 1e-9; });
+      r.E8 = poles.map(e => +(e.L.intensity / (e.o.i * night) / 8 * Math.pow(1 - Math.pow(8 / e.L.distance, 4), 2)).toFixed(6));
+      r.dist = poles.map(e => e.L.distance);
+      r.color = poles.map(e => e.L.color.getHexString());
+      ENG.setDayTime(15);
+      ENG.putGlows(glowLampList(room));
+      r.day = lamps.reduce((s, Lp) => s + Lp.intensity, 0);
+      ENG.putBeasts([]); ENG.putTorches(torchList());
+      r.dayFire = T.torchMesh.visible && T.torchMesh.count === 2 * ENG.TORCH_N;
+    } finally { Math.random = real; }
+    r.rnd = rnd;
+    ENG.putGlows([]);
+    fires = keep.fires;
+    cleanTools(); draw();
+    ENG.setDayTime(dayOn ? dayClock() : -1);
+    return r;
+  });
+  ok('畫面：沒火把不吃 draw call；火接在動物的火後面、火芯在火把頭那一塊上（放大 POLE_FIRE 倍）、不算小獼猴的火把',
+     tdraw.off && tdraw.count && tdraw.core.dxz < 1e-3 && Math.abs(tdraw.core.dy) < 1e-3 && tdraw.core.w >= 0.9 && tdraw.core.w <= 1.1,
+     JSON.stringify(tdraw));
+  ok('晚上一支一盞（pole）在火把頭上方、排在燒的火前面：8 格那一圈照度 1.65、照到 25 格；白天燈不開、火照樣燒；不抽 Math.random',
+     tdraw.known && tdraw.n === 2 && tdraw.above && tdraw.order === 'pole,fire' && tdraw.E8.every(v => Math.abs(v - 1.65) < 1e-6) &&
+     tdraw.dist.every(d => d === 25) && tdraw.color.every(c => c === 'ff9a40') && tdraw.day === 0 && tdraw.dayFire && tdraw.rnd === 0,
+     '8 格照度 ' + tdraw.E8.join('／') + '、照到 ' + tdraw.dist.join('／') + ' 格、#' + tdraw.color.join('／#') + '；順序 ' + tdraw.order +
+     '；白天燈 ' + tdraw.day + '、火 ' + tdraw.dayFire + '；Math.random ' + tdraw.rnd + ' 次');
+
+  /* ── 換場：地標換一座（startBuild）時，工地外的火把照樣立著、火不熄（它在 homes 上，不會被當成舊地標炸散） ── */
+  const tswap = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const t = placeTorch({ x: siteR + 25, z: 0 });
+    stepTorches(2);
+    startBuild(true);
+    stepTorches(1e-3);
+    const hi = homes.list.indexOf(t.h);
+    const r = { kept: hi >= 0, set: blocks.filter(b => b.hh === hi && b.st === SET).length, n: t.h.slots.length, lit: t.out < 0 && t.k === 1 };
+    cleanTools();
+    return r;
+  });
+  ok('換場：工地外的火把照樣立著（積木一塊不少、火不熄）', tswap.kept && tswap.set === tswap.n && tswap.lit, JSON.stringify(tswap));
+
+  await page.evaluate(() => { cleanTools(); });
+  }   // ── 〈道具：火把〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 破壞道具：光之太刀（v1.290.0） ══════════
      使用者：「做這個角色的造型 也是越像越好 / 預計會加成道具&吉祥物 攻擊方式是光之太刀 類似無形的劍氣斬過 砍的方向隨機」，
@@ -42015,10 +42285,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     pick(6); draw(); r.back = st();
     pick(keep);
     flashes.length = 0; draw(); r.end = st();
-    /* 舊存檔（v1.291.0～v1.295.0 的 boom）：沒勾＝關、勾著＝6、沒有這一格＝6；改壞的數字吸到最近的一檔。applySave 不碰 DOM，量完還回去 */
+    /* 舊存檔（v1.291.0～v1.295.0 的 boom）：沒勾＝關、勾著＝預設、沒有這一格＝預設；改壞的數字吸到最近的一檔
+       （型別不對的 'x' merge 不收，留預設）。已經存了 6 的照舊 6（v1.317.0 使用者選「只改預設」）。applySave 不碰 DOM，量完還回去 */
     const keepS = stats, keepP = pref;
     const conv = p => { applySave({ s: keepS, p }); return pref.lamps; };
-    r.old = [conv({ boom: false }), conv({ boom: true }), conv({}), conv({ lamps: 12 }), conv({ lamps: 'x' }), conv({ boom: false, lamps: 10 })];
+    r.old = [conv({ boom: false }), conv({ boom: true }), conv({}), conv({ lamps: 12 }), conv({ lamps: 'x' }), conv({ boom: false, lamps: 10 }),
+             conv({ lamps: 6 })];
+    r.oldWant = [0, r.fresh, r.fresh, snapOpt(12, LAMP_OPTS), r.fresh, 10, 6].join();
     stats = keepS; pref = keepP;
     cleanTools();
     return r;
@@ -42034,13 +42307,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      Math.abs(boomL.six.x - boomL.six.want) < 1e-3 && boomL.six.i === boomL.six.top,
      '清單 ' + boomL.six.n + ' 盞、亮 ' + boomL.sixLit.n + '（' + boomL.sixLit.on + '）；最後一盞 x ' + boomL.six.x + '（重心 ' + boomL.six.want +
      '）、亮度 ' + boomL.six.i + '（最亮 ' + boomL.six.top + '）');
-  ok('畫面設定「光源」：關／6／10／16 四顆按鈕在小窗裡、預設 6；點關照樣炸但燈全關，點 6 又亮；舊存檔沒勾爆炸光源＝關、勾著＝6',
-     boomL.inBox && boomL.fresh === 6 && boomL.btns === '關／6 盞／10 盞／16 盞' &&
+  ok('畫面設定「光源」：關／6／10／16 四顆按鈕在小窗裡、預設 10；點關照樣炸但燈全關，點 6 又亮；舊存檔沒勾爆炸光源＝關、勾著＝預設、存了 6 的照舊',
+     boomL.inBox && boomL.fresh === 10 && boomL.btns === '關／6 盞／10 盞／16 盞' &&
      boomL.off.on === 'none' && boomL.off.pref === 0 && boomL.off.eng === 0 && boomL.off.btnOn === '0' && boomL.off.fl > 0 &&
-     boomL.back.on === 'all' && boomL.end.on === 'none' && boomL.old.join() === '0,6,6,10,6,10',
+     boomL.back.on === 'all' && boomL.end.on === 'none' && boomL.old.join() === boomL.oldWant,
      '在小窗 ' + boomL.inBox + '、按鈕 ' + boomL.btns + '、預設 ' + boomL.fresh + '；點關 ' + boomL.off.on + '（pref ' + boomL.off.pref +
      '、引擎 ' + boomL.off.eng + '、亮的那顆 ' + boomL.off.btnOn + '、火球 ' + boomL.off.fl + ' 顆）、點 6 ' + boomL.back.on +
-     '；舊存檔 沒勾／勾著／沒這格／12／壞值／已有 10 → ' + boomL.old.join('／'));
+     '；舊存檔 沒勾／勾著／沒這格／12／壞值／已有 10／已有 6 → ' + boomL.old.join('／') + '（要 ' + boomL.oldWant.split(',').join('／') + '）');
 
   /* 晚上的小光源（v1.296.0，使用者：「先做放火 飛龍火球 煙火」「只在晚上亮 跟爆炸同光源」「不要造成多建築燃燒 光源飛來飛去」，
      看過預覽「效果確實不錯 亮度先1就好」）與光源數（「設定裡增加光源數設定基本就6 然後有更多」→ 關／6／10／16）。

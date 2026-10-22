@@ -212,6 +212,7 @@ function step(dt) {
   stepBombs(dt);
   stepMeats(dt);                         // 肉（v1.261.0）：掉下來、叫最近的幾隻來吃、吃完收掉
   stepFloods(dt);                        // 燈源（v1.303.0）：燈架一塊一塊砌上去、點亮，架頂被打掉燈頭就掉下來
+  stepTorches(dt);                       // 火把（v1.317.0）：一塊一塊砌上去、火冒出來，火把頭被打掉就熄
   stepMeteors(dt);
   stepFw(dt);
   stepFire(dt);
@@ -347,9 +348,9 @@ const REST_SINK = 0.004;
    換場第一幀要 6.3～7.3 ms；陣列下標查就沒有那一頓。房子那幾份用 homeNbr 留在格子上的鄰居表。
    aoOn 是畫面設定小窗那一格（pref.ao；v1.280.0 以前在左下面板），關掉就一律送 0（引擎那邊遮罩全 0 整段跳過）。 */
 let aoOn = true;
-/* 畫面設定「光源」幾盞（v1.296.0，pref.lamps，LAMP_OPTS 關／6／10／16，預設 6）：強爆炸、打雷、晚上的小光源共用。
-   v1.291.0～v1.295.0 是「爆炸光源」勾選（pref.boom）——沒勾的舊存檔換成關、勾著的換成 6（見 game-save.js 的 applySave） */
-let lampN = 6;
+/* 畫面設定「光源」幾盞（v1.296.0，pref.lamps，LAMP_OPTS 關／6／10／16，預設 6；v1.317.0 預設改 10）：強爆炸、打雷、晚上的小光源共用。
+   v1.291.0～v1.295.0 是「爆炸光源」勾選（pref.boom）——沒勾的舊存檔換成關、勾著的換成預設（見 game-save.js 的 applySave） */
+let lampN = 10;
 let dayOn = true;                   // 畫面設定「晝夜」（v1.295.0，pref.day），見 draw 裡的 setDayTime
 /* 一小時裡的第幾分鐘（0～60），晝夜照這個走（v1.295.0）。測試把它換成固定的正午（見 e2e 的 installClean） */
 let dayClock = () => { const d = new Date(); return d.getMinutes() + d.getSeconds() / 60 + d.getMilliseconds() / 60000; };
@@ -465,6 +466,7 @@ function draw() {
   const bl = beastList();
   if (beasts) for (const m of beasts) woodFade(m, beastOut(m));   // 見上面小人那一段（v1.256.0）
   ENG.putBeasts(bl);
+  ENG.putTorches(torches ? torchList() : EMPTY);   // 插在地上的火把（v1.317.0）：火接在動物的火把後面，所以在 putBeasts 後面
   ENG.putSabers(bl);
   ENG.putLevis(bl);                  // 里維兵長（v1.230）同 Saber：自己一顆 mesh、索引對齊
   ENG.putMegs(bl);                   // 惠惠（v1.247.0）同上
@@ -858,12 +860,14 @@ function setLamps(n) {
   lampN = pref.lamps = n;
   ENG.setLampCount(n);
   syncSeg('lampN', n);
-  /* 燈源（v1.303.0）：選關就沒有這一把（見 toolHere）——正拿著的換回槌子、瞄一半的收掉、場上的燈架收掉（見 dropFloods），
-     選單那一格跟著出現／消失。讀存檔那一次通常是 6 → 6，什麼都不做 */
+  /* 燈源（v1.303.0）、火把（v1.317.0）：選關就沒有這兩把（見 toolHere）——正拿著的換回槌子、瞄一半的收掉、
+     場上的燈架與火把收掉（見 dropFloods／dropTorches），選單那一格跟著出現／消失。讀存檔那一次通常是 10 → 10，什麼都不做 */
   if (had === n > 0) return;
   if (!n) {
-    if (tool === 'flood') { tool = 'hammer'; aim = null; }
+    const cur = TOOLS.find(t => t.id === tool);
+    if (cur && !toolHere(cur)) { tool = 'hammer'; aim = null; }
     dropFloods();
+    dropTorches();
   }
   renderTools();
 }

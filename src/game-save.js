@@ -39,14 +39,15 @@ let stats = freshStats();
 /* ao＝積木 AO 開著沒（v1.273.0，見 game-ui.js 的 aoOn），預設開 */
 /* dyn＝動態解析度開著沒（v1.280.0，見 game-ui.js 的 dynStep），預設開（使用者選的）；舊存檔沒有這一格，merge 自動補 true */
 /* aa＝跟不上時關抗鋸齒（v1.281.0），預設開；once＝降了就不升回去（v1.281.0），預設關。舊存檔一樣靠 merge 補 */
-/* lamps＝光源幾盞（v1.296.0，LAMP_OPTS 關／6／10／16，見 game-ui.js 的 lampN），預設 6。
-   v1.291.0～v1.295.0 是 boom（爆炸光源勾選）：那一格拿掉了，舊存檔沒勾的換成 0、勾著的換成 6（見 applySave） */
+/* lamps＝光源幾盞（v1.296.0，LAMP_OPTS 關／6／10／16，見 game-ui.js 的 lampN），預設 6；
+   v1.317.0 預設改 10（使用者：「設定上的光源數 預設改為10」，選了只改預設：已經存了 6 的照舊 6）。
+   v1.291.0～v1.295.0 是 boom（爆炸光源勾選）：那一格拿掉了，舊存檔沒勾的換成 0、勾著的換成預設（見 applySave） */
 /* day＝晝夜（v1.295.0，見 game-ui.js 的 dayOn），預設開（使用者選的）；舊存檔同上靠 merge 補 */
 /* flsh＝燈架影子（v1.316.0，見 engine.js 的 setFloodShadow），預設關（使用者選的：開了每座亮著的燈架多畫一趟整個場景） */
 const KEY_N = 9;
 const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
                            keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, dyn: true, aa: true, once: false,
-                           lamps: 6, day: true, flsh: false, v: 1 });
+                           lamps: 10, day: true, flsh: false, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -207,7 +208,7 @@ function applySave(o) {
   g.cnt = snapOpt(g.cnt, CNT_OPTS);
   g.wk = snapOpt(g.wk, WK_OPTS);
   g.spd = snapOpt(g.spd, SPD_OPTS);
-  /* 光源（v1.296.0）：還沒有 lamps 的舊存檔照「爆炸光源」那一格換——沒勾＝關、勾著（或沒這一格）＝預設 6 */
+  /* 光源（v1.296.0）：還沒有 lamps 的舊存檔照「爆炸光源」那一格換——沒勾＝關、勾著（或沒這一格）＝預設（v1.317.0 起 10） */
   if (o.p && o.p.lamps === undefined && o.p.boom === false) g.lamps = 0;
   g.lamps = snapOpt(g.lamps, LAMP_OPTS);
   // 小人模式認不得的 id（被改壞的存檔）回到預設那一檔，不然選單上三檔都不亮

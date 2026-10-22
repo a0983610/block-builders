@@ -33,7 +33,7 @@ const ENG = (function () {
   let stormLay = null, stormBall = null, stormLamps = null;   // 打雷的粗雷三層、亮球、兩盞點光源（v1.283.0，見 putStorm）
   let boomLamps = null;             // 強爆炸的四盞點光源（v1.291.0，見 putBooms）
   const glowLamps = [];             // 光源數超過六盞多出來的那幾盞（v1.296.0，只給晚上的小光源，見 setLampCount）
-  let lampN = 6;                    // 光源數（v1.296.0，畫面設定「光源」：0＝全關，否則六盞以上，見 setLampCount）
+  let lampN = 10;                   // 光源數（v1.296.0，畫面設定「光源」：0＝全關，否則六盞以上，見 setLampCount；v1.317.0 預設 6 → 10）
   let boomUsed = 0;                 // 這一幀強爆炸用掉幾盞（putBooms 記，putGlows／lampRoom 照它找空的）
   let stormOn = false, boomOn = false, glowOn = false;   // 這一刻打雷／爆炸／小光源要不要燈（全部一起開關，見 lampSync）
   /* 燈架（v1.303.0，見 putFloods）：燈頭、燈泡、晚上的光束各一顆 InstancedMesh，四盞聚光燈自己一組開關（見 floodSync） */
@@ -219,14 +219,18 @@ const ENG = (function () {
        excal Excalibur 光柱：靠劍那一段一盞（預覽是三盞，「劍尾那邊…看不出區別 不如把燈讓出來」），12 格那一圈 2、照到 60 格；光柱中間那層的金色
        （小爆炸走 hit：炸彈、加農砲、香蕉炸彈、飛龍火球撞上去，R＝那一發的爆炸半徑）
        torch 小獼猴的火把：火把頭上方，3 格那一圈 1.5、照到 15 格
-     v1.309.0：camp 事件六的營火：柴堆上方，6 格那一圈 2、照到 26 格（照得到圍著它的那幾間小屋） */
+     v1.309.0：camp 事件六的營火：柴堆上方，6 格那一圈 2、照到 26 格（照得到圍著它的那幾間小屋）
+     v1.317.0：pole 道具「火把」插在地上那一支：火把頭上方，8 格那一圈 1.65、照到 25 格——拿來晚上照亮用、比燈架弱
+       （預覽五檔 0.47／0.6／0.85／1.25／1.65，使用者選 1.65＝燈架瞄的那一點 FLOOD_E 2.5 的 2/3）；
+       同燈架把 three 的距離窗在 8 格那一點剩的那一點除回去（POLE_ATT），8 格那一圈就剛好是 1.65 */
+  const POLE_ATT = Math.pow(1 - Math.pow(8 / 25, 4), 2);
   const GLOW = { fire: { c: 0xff8a36, I: 1.5 * 5, d: 18 }, ball: { c: 0xffa040, I: 3 * 4, d: 24 },
                  hit: { c: BOOM_LAMP_C, E: 4, reach: 3 }, fw: { I: 1.2 * 35, d: 90 },
                  magic: { c: 0xff6a1a, I: 2 * 20, d: 75 }, purp: { c: 0xb070ff, I: 3 * 5, d: 30 },
                  ufo: { c: 0xcdf6ff, I: 2.5 * 8, d: 40 }, met: { c: 0xff7a2a, I: 4 * 6, d: 40 },
                  dia: { c: 0xff8a36, I: 3 * 5, d: 30 },
                  excal: { c: 0xffc860, I: 2 * 12, d: 60 }, torch: { c: 0xff9a40, I: 1.5 * 3, d: 15 },
-                 camp: { c: 0xff9a40, I: 2 * 6, d: 26 } };
+                 camp: { c: 0xff9a40, I: 2 * 6, d: 26 }, pole: { c: 0xff9a40, I: 1.65 * 8 / POLE_ATT, d: 25 } };
   /* 天光、日光、霧的本來的樣子，與烏雲遮天最暗時各壓掉幾成（v1.283.0，見 setGloom）。
      天空是 index.html 的 CSS 漸層（畫布是透明的），所以另外蓋一層暗色的 div，GLOOM.sky 是它最濃多少。 */
   const HEMI_I = 1.25, SUN_I = 1.75, FOG_C = 0xbcd3e0, GLOOM_FOG = 0x363e4b;
@@ -12282,8 +12286,9 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
      這顆 mesh 也不在造型基準裡（那一段只讀 beastMesh），所以不會讓基準每次對不上。 */
   const TORCH_N = 8;
   /* 同時幾支（場上的小獼猴正常一兩隻；超過的那幾支靜靜地不畫火，不報錯）。
-     v1.301.0 4 → 6：閒逛的小火龍尾巴也是這一套火，牠們是常駐的，跟天災的小獼猴同時在場的話 4 支不夠 */
-  const TORCH_MAX = 6;
+     v1.301.0 4 → 6：閒逛的小火龍尾巴也是這一套火，牠們是常駐的，跟天災的小獼猴同時在場的話 4 支不夠。
+     v1.317.0 再多 MAXFLOOD 支：道具「火把」插在地上的那幾支（跟燈架合計最多 MAXFLOOD 座，見 putTorches）排在動物後面 */
+  const TORCH_MAX = 6 + MAXFLOOD;
   const TORCH_C = [[1, 0.84, 0.30], [1, 0.46, 0.08], [0.62, 0.13, 0.03]];   // 火苗從底到頂的三段色
   const _torchO = new T.Object3D();
   let torchN = 0;                          // 這一幀排了幾支
@@ -12294,6 +12299,11 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     const h = _torchAtPool[torchN] || (_torchAtPool[torchN] = {});
     h.x = x; h.y = y; h.z = z; h.k = k;
     torchAt.push(h);
+    torchFire(x, y, z, s, a, gait);
+  }
+  /* 一支火排進 torchMesh（呼叫端先確定 torchN 還沒滿）。插在地上的火把（putTorches）也走這一支，但不記進 torchAt——
+     那幾支的燈規則那邊自己排（glowLampList 的 pole），記進來的話會被當成小獼猴的火把多排一盞 */
+  function torchFire(x, y, z, s, a, gait) {
     const t = performance.now() / 1000, i0 = torchN++ * TORCH_N;
     for (let j = 0; j < TORCH_N; j++) {
       let px = x, py = y, pz = z, w, rx = 0, ry = 0;
@@ -12322,6 +12332,26 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       torchMesh.setMatrixAt(i0 + j, _torchO.matrix);
       torchMesh.setColorAt(i0 + j, tmpC);
     }
+  }
+  /* 火把的火排完了：沒有火就整顆藏起來（不吃 draw call） */
+  function torchCommit() {
+    torchMesh.count = torchN * TORCH_N;
+    torchMesh.visible = torchN > 0;
+    if (torchN) {
+      torchMesh.instanceMatrix.needsUpdate = true;
+      if (torchMesh.instanceColor) torchMesh.instanceColor.needsUpdate = true;
+    }
+  }
+  /* 道具「火把」插在地上的那幾支（v1.317.0）：{x, y, z 火把頭那一塊的中心, k 0～1 冒出來／熄掉}，
+     火照小獼猴那一套（不拖、不轉向）放大 POLE_FIRE 倍——預覽「火的大小」小／中／大＝5／7／9，使用者選大。
+     **要在 putBeasts 後面叫**：那一支把這一幀的火從頭排起，這幾支接在動物後面 */
+  const POLE_FIRE = 9;
+  function putTorches(list) {
+    for (const o of list) {
+      if (torchN >= TORCH_MAX) break;
+      torchFire(o.x, o.y, o.z, POLE_FIRE * o.k, 0, 0);
+    }
+    torchCommit();
   }
 
   /* m：{kind 哪一種（BEASTS 的 key）, x, y, z, a 朝向, ph 步伐相位,
@@ -12508,13 +12538,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     beastMesh.instanceMatrix.needsUpdate = true;
     if (beastMesh.instanceColor) beastMesh.instanceColor.needsUpdate = true;
     dropSphere(beastMesh);
-    // 火把的火：沒有拿火把的在場就整顆藏起來（不吃 draw call）
-    torchMesh.count = torchN * TORCH_N;
-    torchMesh.visible = torchN > 0;
-    if (torchN) {
-      torchMesh.instanceMatrix.needsUpdate = true;
-      if (torchMesh.instanceColor) torchMesh.instanceColor.needsUpdate = true;
-    }
+    torchCommit();                             // 火把的火：沒有拿火把的在場就整顆藏起來（不吃 draw call）
     // 淡掉的那幾具（v1.240）：上一幀排得比這一幀多的那幾格清成 0（同 commitWorkers）
     const b0 = FADE_W * WPARTS;
     for (let s = b0 + fb * BEAST_PARTS; s < b0 + fadeBUsed * BEAST_PARTS; s++) fadeMesh.setMatrixAt(s, ZERO_M);
@@ -13221,6 +13245,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     /* 四位主角每一塊的顏色名（v1.273.0）：測試照它對「臉往上偏、頭髮描邊淡」落在哪幾格（見 heroGeo） */
     HERO_CN: { saber: SAB_CN, levi: LEV_CN, megumin: MEG_CN, zenitsu: ZEN_CN },
     TORCH_N,                                /* 一支火把的火幾塊（v1.249.0，測試要對 torchMesh 的數量） */
+    putTorches, POLE_FIRE,                  /* 道具「火把」插在地上那幾支的火（v1.317.0，putBeasts 後面叫） */
     torchHeads: () => torchAt,              /* 上一次 putBeasts 畫了哪幾支火把、火把頭在哪（v1.298.0，晚上那一盞燈照這個擺；draw 裡先畫動物才排燈） */
     /* 巨人（v1.192）：規則那邊要拿它算「這一腳踹到哪一點」。
        畫出來的腳掌跟判定用的那一點是同一條式子算的（同 SWORD_HIT／UFO_MOUTH）。 */
