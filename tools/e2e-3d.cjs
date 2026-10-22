@@ -28618,7 +28618,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '逛到一半被擋住 → 轉進 kick，踹完回 ' + jgate.funBack);
 
   /* 只有巨人改（使用者：「只針對巨人」）：同一間擋路的房子，猴子照舊繞過去。
-     用房子不用城牆——這一條驗的是「擋路的東西」，城牆那一套上面那條已經驗過。 */
+     用房子不用城牆——這一條驗的是「擋路的東西」，城牆那一套上面那條已經驗過。
+     押住骰子（v1.317.1）：猴子走路時每幀 `Math.random() < B_TRIP_P * dt` 會自己絆一跤，倒下去火把脫手、
+     爬起來先彎腰撿回來（v1.274.0），4 秒就走不到房子前面——探針同一個場面跑 300 次卡住 4 次（1.3%），
+     v1.317.0 那一輪就紅在這裡。那不是這一條要守的事，所以走的那 4 秒 Math.random 給 0.5（同〈巡路能力〉那一條的押法：
+     永遠不小於 B_TRIP_P × dt），生出來那一下照舊用真的骰子；押住之後 50 次結果一模一樣（橫移 3.26、往前 7.95），規則型、不會飄。
+     跑完還回去（見 開發筆記〈測試動過的全域狀態要還回去〉） */
   const jonly = await page.evaluate(() => {
     const keep = { homes, ph: phase, boom: explode, ig: igniteAround };
     phase = 'done';
@@ -28631,8 +28636,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const run = kind => {
       const m = spawnBeast(kind);
       m.x = 0; m.z = hz - 8; m.a = 0; m.st = 'come'; m.tx = 0; m.tz = 0;
-      const seen = new Set();
-      for (let i = 0; i < 200; i++) { stepBeast(m, 0.02); seen.add(m.st); }
+      const seen = new Set(), real = Math.random;
+      Math.random = () => 0.5;                                 // 押死：B_TRIP_P × dt 永遠抽不到（不會絆倒）
+      try { for (let i = 0; i < 200; i++) { stepBeast(m, 0.02); seen.add(m.st); } }
+      finally { Math.random = real; }
       beasts = null;
       return { sts: [...seen].join('／'), kick: seen.has('kick'),
                off: +Math.abs(m.x).toFixed(1), adv: +(m.z - (hz - 8)).toFixed(1) };
