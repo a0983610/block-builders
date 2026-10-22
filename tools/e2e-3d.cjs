@@ -37235,6 +37235,42 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('白天燈不開、光束不畫、燈泡照樣亮著；淡掉的那一顆整顆搬到 floodFade；光源數 0 燈不開；畫的時候不抽 Math.random',
      fdraw.day && fdraw.fade && fdraw.zero && fdraw.rnd === 0, JSON.stringify(fdraw));
 
+  /* ── 燈架影子（v1.316.0，見 開發筆記〈燈架投影子（v1.316.0）〉）：畫面設定那一格、預設關；勾了四盞一起投影
+        （貼圖 FLOOD_SH_MAP），點光源那一池照舊不投；只有亮著的那幾盞每幀畫影子，沒亮的先畫一次就停；
+        沒燈架時一個 draw call 都不多；取消勾選就全關。規則型，不跑模擬 ── */
+  const fshade = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const T = ENG.three, L4 = T.floodLamps, pool = T.stormLamps.concat(T.boomLamps, T.glowLamps), r = {};
+    const keep = pref.flsh, box = $('floodSh');
+    const set = v => { box.checked = v; box.dispatchEvent(new Event('change', { bubbles: true })); };
+    r.fresh = freshPref().flsh === false; r.inBox = $('dispBox').contains(box);
+    ENG.setDayTime(45);
+    const calls = () => { ENG.render(); return T.renderer.info.render.calls; };
+    set(false); ENG.putFloods([]); const c0 = calls();
+    set(true); ENG.putFloods([]); const c1 = calls();
+    r.noFlood = { off: c0, on: c1 };
+    r.on = pref.flsh === true && ENG.floodShadow && L4.every(L => L.castShadow && L.shadow.mapSize.x === ENG.FLOOD_SH_MAP) &&
+           pool.every(L => !L.castShadow);
+    placeFlood({ x: siteR + 25, z: 0 }, { x: 0, z: 0 }, 0);
+    stepFloods(5); stepFloods(FL_WARM + 0.1);
+    ENG.putFloods(floodList());
+    r.lit = L4.filter(L => L.intensity > 0).length;
+    r.auto = L4.map(L => L.shadow.autoUpdate);
+    calls();
+    r.maps = L4.map(L => !!L.shadow.map);
+    r.pend = L4.map(L => L.shadow.needsUpdate);
+    set(false);
+    r.off = pref.flsh === false && !ENG.floodShadow && L4.every(L => !L.castShadow);
+    set(keep);
+    cleanTools();
+    ENG.setDayTime(dayOn ? dayClock() : -1);
+    return r;
+  });
+  ok('燈架影子：畫面設定那一格、預設關；勾了四盞一起投影、點光源不投；只有亮著的那一盞每幀畫影子，其他三盞畫過一次就停；沒燈架不多 draw call；取消就全關',
+     fshade.fresh && fshade.inBox && fshade.on && fshade.off && fshade.noFlood.on === fshade.noFlood.off &&
+     fshade.lit === 1 && fshade.auto.join() === 'true,false,false,false' && fshade.maps.every(Boolean) && fshade.pend.every(v => !v),
+     JSON.stringify(fshade));
+
   /* ── 換場：地標換一座（startBuild）時，工地外的燈架照樣立著、燈頭不掉（它在 homes 上，不會被當成舊地標炸散） ── */
   const fswap = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;

@@ -42,10 +42,11 @@ let stats = freshStats();
 /* lamps＝光源幾盞（v1.296.0，LAMP_OPTS 關／6／10／16，見 game-ui.js 的 lampN），預設 6。
    v1.291.0～v1.295.0 是 boom（爆炸光源勾選）：那一格拿掉了，舊存檔沒勾的換成 0、勾著的換成 6（見 applySave） */
 /* day＝晝夜（v1.295.0，見 game-ui.js 的 dayOn），預設開（使用者選的）；舊存檔同上靠 merge 補 */
+/* flsh＝燈架影子（v1.316.0，見 engine.js 的 setFloodShadow），預設關（使用者選的：開了每座亮著的燈架多畫一趟整個場景） */
 const KEY_N = 9;
 const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
                            keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, dyn: true, aa: true, once: false,
-                           lamps: 6, day: true, v: 1 });
+                           lamps: 6, day: true, flsh: false, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）
@@ -237,11 +238,13 @@ function applyPref() {
   lazyMode = pref.lazy; cap60 = pref.cap; rageOn = pref.rage; aoOn = pref.ao; dayOn = pref.day;
   setWorkerCount(pref.wk);
   setLamps(pref.lamps);
+  ENG.setFloodShadow(pref.flsh);
   $('mute').checked = pref.mute;
   $('spin').checked = pref.spin;
   $('cap60').checked = pref.cap;
   $('aoOn').checked = pref.ao;
   $('dayOn').checked = pref.day;
+  $('floodSh').checked = pref.flsh;
   $('aaDyn').checked = pref.aa;
   $('dynRes').checked = pref.dyn;
   $('dynOnce').checked = pref.once;

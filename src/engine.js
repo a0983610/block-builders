@@ -1691,11 +1691,16 @@ if (vAo.x + vAo.y > 0.5) {
     }
     makeGlowLamps();                             // 光源數超過六盞多出來的那幾盞（v1.296.0，見 setLampCount）
     /* 燈架的四盞聚光燈（v1.303.0，見 putFloods）：點光源照不出「往一個方向」，所以是另一種燈、自己一組開關（floodSync）——
-       跟上面那一池綁在一起的話，每次強爆炸、打雷都要多付四盞的錢。不投影子（一盞多畫一趟整個場景）。
+       跟上面那一池綁在一起的話，每次強爆炸、打雷都要多付四盞的錢。
+       影子是畫面設定那一格（v1.316.0，見 setFloodShadow；一盞多畫一趟整個場景，預設關）——存檔可能比 init 先讀到，所以照 floodShadow 開。
        target 要掛進場景，世界矩陣才會跟著每幀更新 */
     floodLamps = [];
     for (let i = 0; i < MAXFLOOD; i++) {
       const L = new T.SpotLight(FLOOD_C, 0, 1, FLOOD_ANG, FLOOD_PEN, 1);
+      L.castShadow = floodShadow;
+      L.shadow.mapSize.set(FLOOD_SH_MAP, FLOOD_SH_MAP);
+      L.shadow.camera.near = FLOOD_SH_NEAR; L.shadow.camera.updateProjectionMatrix();
+      L.shadow.bias = FLOOD_SH_BIAS; L.shadow.normalBias = FLOOD_SH_NBIAS;
       L.visible = false; scene.add(L, L.target); floodLamps.push(L);
     }
     /* 晝夜的三層（v1.295.0）：跟烏雲那一層同一招，烏雲排在它們後面＝疊在最上面。
@@ -3153,6 +3158,12 @@ if (vAo.x + vAo.y > 0.5) {
      照到 FLOOD_REACH 倍距離收掉（three 的距離窗在瞄的那一點還剩 0.92，除回去） */
   const FLOOD_C = 0xfff4e0, FLOOD_ANG = 0.32, FLOOD_PEN = 0.5, FLOOD_E = 2.5, FLOOD_REACH = 2.2;
   const FLOOD_ATT = Math.pow(1 - Math.pow(1 / FLOOD_REACH, 4), 2);
+  /* 燈投影子（v1.316.0，畫面設定「燈架影子」，預設關；見 setFloodShadow）。亮著的一盞每幀多畫一趟整個場景：
+     貼圖 512——這台內顯（台北 101、1920×1080）四盞全投影 1024 多 7.3 ms、掉到 60fps 以下，512 多 4.5 ms。
+     near 拉到 2：預設 0.5 的話透視深度的精度全擠在燈前面，同一個 bias 在 30 格外等於把影子推開兩格多（影子跟腳底分家）。
+     見 開發筆記〈燈架投影子（v1.316.0）〉 */
+  const FLOOD_SH_MAP = 512, FLOOD_SH_NEAR = 2, FLOOD_SH_BIAS = -0.0005, FLOOD_SH_NBIAS = 0.05;
+  let floodShadow = false;
   /* 光束（晚上才看得到）：起點是燈泡那一片的外框（半寬 FLOOD_BEAM_W、半高 FLOOD_BEAM_H，貼在燈泡前面 FLOOD_BEAM_Z），
      四邊各照 tan(FLOOD_ANG) 往外張、拉到瞄的那一點；沿著長度切 FLOOD_BEAM_SEG 段，照 FLOOD_BEAM_FADE 次方淡掉。
      濃度 FLOOD_BEAM_OP（加色、雙面，疊起來是兩倍）：預覽四檔 不要／淡 0.08／0.16／濃 0.3，使用者選「淡」。
@@ -3247,6 +3258,13 @@ if (vAo.x + vAo.y > 0.5) {
       beams++;
     }
     for (let i = lit; i < MAXFLOOD; i++) floodLamps[i].intensity = 0;   // 開著的時候四盞一起開，沒用到的亮度 0（同 lampSync）
+    /* 影子（v1.316.0）：四盞照樣一起投影（同一份 shader），但只有亮著的那幾盞每幀畫影子——亮度 0 的那一趟白畫。
+       沒畫過的先畫一次（needsUpdate），貼圖才不會是空的 */
+    if (floodShadow) for (let i = 0; i < MAXFLOOD; i++) {
+      const S = floodLamps[i].shadow;
+      S.autoUpdate = i < lit;
+      if (i >= lit && !S.map) S.needsUpdate = true;
+    }
     floodOn = lit > 0;
     floodSync();
     floodBeamMesh.visible = beams > 0;
@@ -3276,6 +3294,17 @@ if (vAo.x + vAo.y > 0.5) {
   function floodSync() {
     const v = lampN > 0 && floodOn;
     for (const L of floodLamps) L.visible = v;
+  }
+  /* 燈架投影子（v1.316.0，使用者：「會只改燈是因為沒影子特別奇怪 其他點光源都還好」——點光源那一池照舊不投）。
+     投不投影是 shader 的一部分（NUM_SPOT_LIGHT_SHADOWS），換了要重編：照 setLampCount 那一招，下一幀在背景把
+     燈開著的那幾份編好（見 draw3d），第一次亮燈才不會當場卡（量到 0.36 秒）。init 之前讀到存檔就先記著，init 照它開 */
+  function setFloodShadow(on) {
+    on = !!on;
+    if (on === floodShadow) return;
+    floodShadow = on;
+    if (!floodLamps) return;
+    for (const L of floodLamps) L.castShadow = on;
+    if (lampN > 0) lampWarm = false;
   }
 
   /* 隕石。m：{x, y, z, rx, ry, s, hot 0–1 燒得多紅}
@@ -13146,6 +13175,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putBooms, BOOM_LAMPS,                      /* 強爆炸照亮周圍（v1.291.0）：規則那邊照 BOOM_LAMPS 盞併好再給 */
     putGlows, lampRoom, nightK, setLampCount,  /* 晚上的小光源、光源數（v1.296.0）：規則那邊照 lampRoom() 盞排好再給 */
     putFloods, MAXFLOOD, FLOOD_PIV,            /* 燈架（v1.303.0）：規則那邊的上限讀 MAXFLOOD、瞄準照燈板的軸高 FLOOD_PIV 算俯角 */
+    setFloodShadow, get floodShadow() { return floodShadow; }, FLOOD_SH_MAP,   /* 燈架影子（v1.316.0，畫面設定那一格） */
     GLOW_KINDS: Object.keys(GLOW),             /* 認得哪幾種（v1.297.0）：測試照這個對規則那邊給的 k */
     get lampN() { return lampN; },
     DAY: { fade: DAY_FADE, low: DAY_LOW, moonTop: MOON_TOP, noon: SUN_NOON },   /* 晝夜（v1.295.0）：測試照這幾個算期望值 */
