@@ -12127,7 +12127,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     updHome(w0, 0, 0.05);
     const full = w0.hm;
     workers[HOME_TEAM].hm = hi;
-    w0.hm = hi; w0.hst = ''; w0.pause = 0;
+    /* show 也要歸零：上一下 updHome 走到店門口會 rollShow，抽到表演的話這一下只演、走不到 teamHelp
+       （見 開發筆記〈「幫忙的上限」那條：後半段漏歸零 show（v1.318.1）〉） */
+    w0.hm = hi; w0.hst = ''; w0.pause = 0; w0.show = '';
     updHome(w0, 0, 0.05);
     out.help = { full: full === hi, join: w0.hm === ti, team: HOME_TEAM };
 
@@ -12443,7 +12445,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     updHome(w0, 0, 0.05);
     const full = w0.hm;
     workers[HOME_TEAM].hm = hi;
-    w0.hm = hi; w0.hst = ''; w0.pause = 0;
+    /* show 也要歸零（同商店街那一段，v1.318.1）：走到樹底下會 rollShow */
+    w0.hm = hi; w0.hst = ''; w0.pause = 0; w0.show = '';
     updHome(w0, 0, 0.05);
     out.help = { full: full === hi, join: w0.hm === ti, team: HOME_TEAM };
 
