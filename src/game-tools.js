@@ -7850,7 +7850,7 @@ function castGate(from, toward, aimY) {
   const fx = dx / d, fz = dz / d;
   const ux = -fz, uz = fx;
 
-  const sp = gateSpan();
+  const top = siteTopNow(), sp = gateSpan(top);
   /* 門陣高度**沒有跟著目標動**（v1.152 試過，被實測擋下來）：把整片抬到目標上方之後，
      門陣就整個高過屋頂，被錐面拉平的那些會從屋頂上空掠過去——泰姬瑪哈陵打掉的積木
      2275 → 798、插在地上的最遠 17 → 131；抬到「俯角夠陡、滑不遠」的高度更慘，
@@ -7858,8 +7858,11 @@ function castGate(from, toward, aimY) {
      所以維持原高度，改用「搆得到的門才瞄那一點」（見 aimGate）。
      v1.172：「樓高」改讀 **siteTopNow()**（現在蓋到多高），不是 bp.height（蓋完多高）
      ——同烏雲與幽浮那一版的理由，使用者指名這三支一起改。門陣是**半個樓高**再加 6，
-     所以塔沒蓋完時它只降一半（台北 101 拆到 23 高：38.5 → 17.5）。 */
-  const y = Math.max(GATE_Y0, siteTopNow() * GATE_UP + GATE_UP_ADD);
+     所以塔沒蓋完時它只降一半（台北 101 拆到 23 高：38.5 → 17.5）。
+     v1.315.5：門陣**多高**（gateSpan）也讀同一個 top——v1.172 只改了中心，剛開工的泰姬瑪哈陵
+     中心掉到下限 12、整片卻還是蓋完那座的 31.5 高，一百個門有 17 個門心在地底下
+     （見 開發筆記〈門陣的高也跟著現在的屋頂（v1.315.5）〉）。 */
+  const y = Math.max(GATE_Y0, top * GATE_UP + GATE_UP_ADD);
   const g = {
     x: toward.x, z: toward.z, y, ty, fx, fz, ux, uz,
     /* 錐形夾角的軸：水平、朝著鏡頭（見 GATE_CONE）。**一定要在這裡就給值**——
@@ -7913,14 +7916,17 @@ function drainGate(g) {
 /* 門陣多寬多高、切幾欄幾列。寬跟著外接半徑、高跟著樓高，兩邊各自夾在一個區間裡
    （太小的話一百個門會疊成一坨，太大的話鏡頭要退到門變成一片小點）。
    欄數由長寬比算：cols × rows ≈ GATE_N 而且 cols/rows ≈ w/h，
-   解出來就是 cols = √(N × w ÷ h)，這樣格子才會接近正方形。 */
-function gateSpan() {
-  const R = bp ? bp.radius : 18, H = bp ? bp.height : 15;
+   解出來就是 cols = √(N × w ÷ h)，這樣格子才會接近正方形。
+   top＝現在的屋頂（siteTopNow，castGate 掃一次傳進來）：高跟門陣中心讀同一把尺，
+   最下面那一排才保證在地面上——中心 max(12, top／2 ＋ 6)、高最多 max(22, top／2 ＋ 14)，
+   下緣 ＝ 中心 − 高／2 一律 ≥ 1（v1.315.5；之前讀 bp.height，建築矮的時候下面幾排鑽進地底）。 */
+function gateSpan(top) {
+  const R = bp ? bp.radius : 18;
   /* 寬度直接決定鏡頭要退多遠（holdWide 拿它當取景半徑），所以不能一味放寬——
      放到 80 的時候整片門在畫面上反而變小、變遠。收到「外接半徑的兩倍多一點」，
      鏡頭近了，門就大了。 */
   const w = clamp(R * 2.2 + 20, 50, 100);
-  const h = Math.min(clamp(H * 0.5 + 14, 22, 46), w / GATE_FLAT);
+  const h = Math.min(clamp(top * 0.5 + 14, 22, 46), w / GATE_FLAT);
   const cols = Math.max(4, Math.round(Math.sqrt(GATE_N * w / h)));
   return { w, h, cols, rows: Math.ceil(GATE_N / cols) };
 }

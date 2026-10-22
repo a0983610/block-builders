@@ -18482,7 +18482,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       shapePick = SHAPES.findIndex(s => s.n === shape);
       targetCnt = 3000; startBuild(true); completeNow(); shapePick = -1;
       for (let i = 0; i < 20; i++) step(0.05);
-      const sp = gateSpan();
+      const sp = gateSpan(siteTopNow());
       return { s: shape, w: +sp.w.toFixed(0), h: +sp.h.toFixed(0),
                grid: sp.cols + '×' + sp.rows,
                ratio: +(sp.w / sp.h).toFixed(2) };
@@ -18496,6 +18496,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gateAspect.out.every(r => r.w >= 50),
      gateAspect.out.map(r => r.s + ' ' + r.w + '×' + r.h + '（' + r.ratio + ' 比 1，' +
        r.grid + ' 格）').join('；') + '——最扁也要 ' + gateAspect.flat + ' 比 1');
+
+  /* 門陣的下緣在地面上（v1.315.5）：門陣的中心與高讀同一個「現在的屋頂」（siteTopNow）。
+     v1.172～v1.315.4 只有中心跟著，剛開工的泰姬瑪哈陵中心掉到下限 12、整片卻還是蓋完那座的 31.5 高，
+     一百個門有 17 個門心在地底下。規則型：下緣（中心 − 高／2）是算出來的、不看骰子，
+     門心最低也只比下緣再往下抖四分之一格，所以兩條都要成立。 */
+  const gateLow = await page.evaluate(() => {
+    const one = (shape, done) => {
+      cleanTools();
+      shapePick = SHAPES.findIndex(s => s.n === shape);
+      targetCnt = 3000; startBuild(true); if (done) completeNow(); shapePick = -1;
+      const top = siteTopNow();
+      gateAt({ x: 0, z: 0 });
+      const g = gates[gates.length - 1];
+      return { s: shape + (done ? ' 蓋完' : ' 剛開工'), top: +top.toFixed(1), y: +g.y.toFixed(1), h: +g.h.toFixed(1),
+               bottom: +(g.y - g.h / 2).toFixed(2), low: +Math.min(...g.ports.map(p => p.y)).toFixed(2) };
+    };
+    const out = [one('泰姬瑪哈陵', false), one('泰姬瑪哈陵', true), one('台北 101', false)];
+    cleanTools();
+    return out;
+  });
+  ok('門陣的下緣在地面上：剛開工的工地放一發，最下面那一排門心也不在地底下',
+     gateLow.every(r => r.bottom >= 1 - 1e-6 && r.low > 0),
+     gateLow.map(r => r.s + '（屋頂 ' + r.top + '）：中心 ' + r.y + '、高 ' + r.h + '、下緣 ' + r.bottom +
+       '、最低的門心 ' + r.low).join('；'));
 
   /* 打得多開：範圍跟著建築的外接半徑收（見 gateZone）。固定 22 的話打細長的塔
      幾乎全落在空地上——實測台北 101 只有 24% 的發數碰得到建築、整趟掉 3%。 */
