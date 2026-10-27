@@ -38089,8 +38089,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      gtab.step === gtab.LOCK_STEP && !gtab.masc && !gtab.doom && gtab.nm && gtab.he === '他',
      JSON.stringify(gtab));
 
-  /* ── 叫來：點一下多一位（從林帶騎進來、往點的那一點騎）；再點一次還是那一位、改騎去新的那一點、守護時間從頭算；
-        毛色抽一次（Math.random 押 0＝棗紅、押 0.9＝白） ── */
+  /* ── 叫來：點一下多一位（從林帶騎進來、往點的那一點騎）；再點一次還是那一位、改騎去新的那一點、**守護時間照舊**
+        （第二輪使用者：「再次使用小人將軍只是移動他位置 不重算60分鐘」）；毛色抽一次（Math.random 押 0＝棗紅、押 0.9＝白） ── */
   const gcall = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
     const real = Math.random, t0 = tool;
@@ -38104,7 +38104,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
             raise: m.raise === GEN_RAISE, side: m.side, sc: m.sc === GEN_SC, coat0: m.coat, wood: Math.hypot(m.x, m.z) > debrisR };
       m.gt = 100;
       useTool({ kind: 'ground', point: { x: 0, y: 0, z: siteR + 30 }, dir: { x: 0, y: -1, z: 0 } });
-      r.again = beasts.filter(q => q.kind === 'general').length === 1 && beasts[0] === m && m.tz === siteR + 30 && m.gt === GEN_TIME;
+      r.again = beasts.filter(q => q.kind === 'general').length === 1 && beasts[0] === m && m.tz === siteR + 30 && m.gt === 100;
       beasts = null;
       Math.random = () => 0.9;
       r.coat1 = callGeneral({ x: siteR + 20, z: 0 }).coat;
@@ -38112,7 +38112,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools(); beasts = null;
     return r;
   });
-  ok('叫來：點一下多一位，從林帶往點的那一點騎（gride）、守護 GEN_TIME 秒；再點一次還是同一位、改騎去新的那一點、時間從頭算；毛色抽一次',
+  ok('叫來：點一下多一位，從林帶往點的那一點騎（gride）、守護 GEN_TIME 秒；再點一次還是同一位、改騎去新的那一點、守護時間照舊；毛色抽一次',
      gcall.n === 1 && gcall.st === 'gride' && gcall.why === 'go' && gcall.tx && gcall.gt && gcall.fun === 1 && gcall.raise &&
      gcall.side === 1 && gcall.sc && gcall.wood && gcall.again && gcall.coat0 === 1 && gcall.coat1 === 0,
      JSON.stringify(gcall));
@@ -38133,17 +38133,22 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('畫面：m.coat 為真時馬那幾塊畫 c2（棗紅），騎士那幾塊不變', gcolor.white && gcolor.bay && gcolor.rider, JSON.stringify(gcolor));
 
-  /* ── 誰算敵人（genFoe）：村子裡（arenaR）的天災全部算；吉祥物只有巨人、Diablo（進村就算）與飛龍、獅鷲（m.left > 0 動手中才算）；
-        村子外、走人中、打滿三下的、牛羊、他自己都不算 ── */
+  /* ── 誰算敵人（genFoe）：村子裡（arenaR）的天災全部算；吉祥物是巨人、Diablo（進村就算）、正要去砸村子的（m.bad 且 m.home，
+        哪一款都算，玩家叫去出招的那一趟不算），與來砸的飛龍、獅鷲（m.left > 0；**村子外也算**，從林帶淡進來就算）；
+        村子外的其他、走人中、打滿三下的、牛羊、他自己都不算 ── */
   const gfoe = await page.evaluate(() => {
     cleanTools(); beasts = null;
     const R = arenaR - 3, mk = (kind, o) => Object.assign({ kind, x: R, y: 0, z: 0, st: 'fun', fun: 1, left: 0, hits: 0, dead: 0 }, o);
     const L = {
       dApe: mk('ape', { fun: 0, st: 'come' }), dSaber: mk('saber', { fun: 0, st: 'near' }), dOut: mk('giant', { fun: 0, x: arenaR + 3 }),
       dGo: mk('ape', { fun: 0, st: 'go' }), mGiant: mk('giant'), mDiablo: mk('diablo'), mSaber: mk('saber'), mApe: mk('ape'),
+      mSaberBad: mk('saber', { bad: 1, home: 1 }), mApeBad: mk('ape', { bad: 1, home: 1 }), mApeBadOut: mk('ape', { bad: 1, home: 1, x: arenaR + 3 }),
+      mSaberCall: mk('saber', { bad: 1, home: 1, call: { x: 0, z: 0 } }), mSaberMadLm: mk('saber', { bad: 1, home: 0 }),
       mDra0: mk('dragon', { st: 'ring', sky: 1, y: 40 }), mDra: mk('dragon', { st: 'ring', sky: 1, y: 40, left: 2 }),
-      mGry: mk('gryphon', { st: 'in', sky: 1, y: 40, left: 1, stay: 30 }), slain: mk('giant', { hits: KILL_HITS }),
-      herd: mk('cow', { herd: 1 }), gen: mk('general', { st: 'fun' })
+      mDraFar: mk('dragon', { st: 'in', sky: 1, y: 40, left: 2, x: woodR() - REACH - WOOD_FADE - 0.1 }),
+      mDraFade: mk('dragon', { st: 'in', sky: 1, y: 40, left: 2, x: woodR() - REACH - WOOD_FADE + 0.1 }),
+      mGry: mk('gryphon', { st: 'in', sky: 1, y: 40, left: 1, stay: 30 }), mGryFar: mk('gryphon', { st: 'in', sky: 1, y: 40, left: 1, stay: 30, x: debrisR }),
+      slain: mk('giant', { hits: KILL_HITS }), herd: mk('cow', { herd: 1 }), gen: mk('general', { st: 'fun' })
     };
     beasts = Object.values(L);
     const r = {};
@@ -38151,9 +38156,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     beasts = null;
     return r;
   });
-  ok('誰算敵人：村子裡的天災全部算（村子外、走人中的不算）；吉祥物只有巨人、Diablo，與動手中的飛龍、獅鷲；打滿的、牛羊、他自己不算',
+  ok('誰算敵人：村子裡的天災全部算（村子外、走人中的不算）；吉祥物是巨人、Diablo、正要去砸村子的（玩家叫的那一趟、改砸地標的不算），' +
+     '與動手中的飛龍、獅鷲（村子外也算、還在淡進來的不算）；打滿的、牛羊、他自己不算',
      gfoe.dApe && gfoe.dSaber && !gfoe.dOut && !gfoe.dGo && gfoe.mGiant && gfoe.mDiablo && !gfoe.mSaber && !gfoe.mApe &&
-     !gfoe.mDra0 && gfoe.mDra && gfoe.mGry && !gfoe.slain && !gfoe.herd && !gfoe.gen,
+     gfoe.mSaberBad && gfoe.mApeBad && !gfoe.mApeBadOut && !gfoe.mSaberCall && !gfoe.mSaberMadLm &&
+     !gfoe.mDra0 && gfoe.mDra && gfoe.mDraFar && !gfoe.mDraFade && gfoe.mGry && gfoe.mGryFar && !gfoe.slain && !gfoe.herd && !gfoe.gen,
      JSON.stringify(gfoe));
 
   /* ── 叫哪幾招（genWeapons）：地上的三招都行、天上的只有箭雨；玩家自己叫的箭雨或火槍兵還在場上就不叫那一招 ── */
@@ -38302,8 +38309,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('他自己：被打不生氣、不改主意；再叫一次會把正在打的那一隊收掉；時間到收兵、騎回林帶',
      gself.calm && gself.recall && gself.leave, JSON.stringify(gself));
 
-  /* ── 守護中其他吉祥物不來砸村子：鐘抽到「來砸房子」那一下（Math.random 押 0），他在場時 Saber 是來逛的、巨人照樣來砸；
-        他不在場時兩隻都照抽 ── */
+  /* ── 打得死（第二輪使用者：「他打得死 被打死就退場也是三下」）：打倒兩下照樣爬起來守；第三下倒地不起（同獅鷲：側躺、流血、
+        DIE_HOLD ＋ DIE_FADE 秒淡掉收掉），那一刻叫的那一隊收兵；陣亡的那一位不算在守護（其他吉祥物照抽「來砸房子」），再用一次道具叫的是新的一位 ── */
+  const gdie = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    bloods.length = 0;                               // 前面幾段留下的血泊佔著 BLOOD_MAX 的話這一攤生不出來
+    /* 「記一次」那一支 reset 換成空的了（見 installClean 的 lifeHit），這一條裝回本尊、量完還回去（同〈被打死〉） */
+    const keepToast = toast, keepLife = lifeHit; toast = () => {}; lifeHit = window.lifeHitFn;
+    const r = {};
+    try {
+      const m = callGeneral({ x: siteR + 25, z: 0 });
+      m.x = siteR + 25; m.z = 0; m.wIn = 0; m.st = 'fun';
+      castArrows({ x: m.x, z: m.z + 20 }, { x: m.x, z: m.z + 50 }, 0);
+      m.gg = archers; m.gp = { w: 'arrow', S: { x: m.x, z: m.z + 20 }, ux: 0, uz: 1 }; m.st = 'gcmd';
+      const hit = () => { m.fall = 0; m.lie = 0; m.roll = 0; m.hcd = 0; if (fellBeast(m, 1)) beastHit(m, 'poke'); stepBeast(m, 0.05); };
+      hit(); hit();
+      r.two = m.hits === 2 && !m.dead && archers.st !== 'out' && pickGeneral() === m && genAwe('saber');
+      hit();
+      r.dead = m.dead > 0 && m.st === 'dead' && archers.st === 'out' && m.gg === null && pickGeneral() === null && !genAwe('saber') && bloods.length > 0;
+      let t = 0, gone = false;
+      while (t < DIE_HOLD + DIE_FADE + 1 && !gone) { gone = stepBeast(m, 0.1); t += 0.1; }
+      r.gone = gone && +t.toFixed(1) >= DIE_HOLD + DIE_FADE;
+      const n = callGeneral({ x: siteR + 25, z: 0 });
+      r.fresh = n !== m && n.gt === GEN_TIME && !n.dead;
+    } finally { toast = keepToast; lifeHit = keepLife; }
+    cleanTools(); beasts = null; archers = null; arOld = null; bloods.length = 0;
+    return r;
+  });
+  ok('打得死：被打兩下照樣守；第三下倒地不起、流血、DIE_HOLD＋DIE_FADE 秒後收掉，叫的那一隊當場收兵、不再算在守護；再用一次道具叫新的一位',
+     gdie.two && gdie.dead && gdie.gone && gdie.fresh, JSON.stringify(gdie));
+
+  /* ── 守護中其他吉祥物不來砸村子：鐘抽到「來砸房子」那一下（Math.random 押 0），他在場時 Saber、飛龍、獅鷲是來逛的
+        （飛龍、獅鷲是第二輪加的：他擋不到牠們），巨人照樣來砸；他不在場、在走人時都照抽 ── */
   const gawe = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
     const real = Math.random, keepToast = toast, keepSpawn = MASCOTS.map(k => k.spawn), keepT = mascT.slice(), got = {};
@@ -38311,10 +38348,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const roll = () => {
       for (const k of MASCOTS) k.spawn = bad => { got[k.id] = bad; };
       mascT.fill(1e9);
-      const iS = MASCOTS.findIndex(k => k.id === 'saber'), iG = MASCOTS.findIndex(k => k.id === 'giant');
-      mascT[iS] = 1e-9; mascT[iG] = 1e-9;
+      for (const id of ['saber', 'giant', 'dragon', 'gryphon']) mascT[MASCOTS.findIndex(k => k.id === id)] = 1e-9;
       window.mascStep(0.01);                         // reset 把 stepMascot 換成空的了，直接叫本尊（同〈四位道具角色也自己來逛〉）
-      return { saber: got.saber, giant: got.giant };
+      return { saber: got.saber, giant: got.giant, dragon: got.dragon, gryphon: got.gryphon };
     };
     let r;
     try {
@@ -38328,9 +38364,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools(); beasts = null;
     return r;
   });
-  ok('守護中其他吉祥物不來砸村子：他在場時 Saber 抽到也是來逛的、巨人照樣來砸；他不在場（或已經在走人）時照抽',
-     gawe.off.saber === 1 && gawe.off.giant === 1 && gawe.on.saber === 0 && gawe.on.giant === 1 &&
-     gawe.leaving.saber === 1 && gawe.leaving.giant === 1, JSON.stringify(gawe));
+  const all1 = o => o.saber === 1 && o.giant === 1 && o.dragon === 1 && o.gryphon === 1;
+  ok('守護中其他吉祥物不來砸村子：他在場時 Saber、飛龍、獅鷲抽到也是來逛的、巨人照樣來砸；他不在場（或已經在走人）時照抽',
+     all1(gawe.off) && gawe.on.saber === 0 && gawe.on.dragon === 0 && gawe.on.gryphon === 0 && gawe.on.giant === 1 && all1(gawe.leaving),
+     JSON.stringify(gawe));
 
   await page.evaluate(() => { cleanTools(); beasts = null; archers = null; arOld = null; musket = null; mkOld = null; });
   }   // ── 〈道具：小人將軍〉結束（--tier 跳過時從這裡出來）

@@ -9822,7 +9822,7 @@ function stepBeast0(m, dt) {
   if (m.kind === 'goose') return stepGoose(m, dt);
   /* 被斬殺的巨人：躺著冒蒸氣、氣化消失（里維 v1.230；核彈、爆裂魔法、Excalibur v1.245.0，見 giantDie）；
      被打死的牛羊：躺著流血、淡掉（v1.240），獅鷲同牛羊、飛龍趴著流血淡掉（v1.323.0） */
-  if (m.dead) return m.herd || m.kind === 'gryphon' ? stepCarcass(m, dt) : m.kind === 'dragon' ? stepDraDie(m, dt)
+  if (m.dead) return lieDie(m) ? stepCarcass(m, dt) : m.kind === 'dragon' ? stepDraDie(m, dt)
                    : m.kind === 'diablo' ? stepDiaDie(m, dt) : stepDie(m, dt);   // Diablo 趴倒、噴金幣、淡掉
   /* 惠惠爆完往後倒、暈著、爬起來（v1.247.0）：被打倒、卡住那兩套都不必跑（v1.260.0 起被炸飛、點著的那幾秒在裡面照一般那一套） */
   if (megDown(m)) return stepMegDown(m, dt);
@@ -10966,7 +10966,7 @@ function stepDiaDie(m, dt) {
 /* 殺得死的那兩款（巨人、Diablo）：五個呼叫點（里維、核彈、爆裂魔法、Excalibur、茈）都問這一支，死法各走各的 */
 const killable = m => m.kind === 'giant' || m.kind === 'diablo';
 /* 有三條命的那四款（v1.323.0，見 beastHit）：上面那兩款，加飛龍、獅鷲。牛羊另外一條（m.herd），一直都有 */
-const mortal = m => killable(m) || m.kind === 'dragon' || m.kind === 'gryphon';
+const mortal = m => killable(m) || m.kind === 'dragon' || m.kind === 'gryphon' || m.kind === 'general';   // 小人將軍 v1.324.0 第二輪
 /* 太高走不了城門、擋路就動手的那兩款（使用者：「Diablo 要比照巨人 擋路就噴」）：不走城門、不規劃（strollGiant 直直走），
    前面五格擋著就停下來動手——巨人踹（giantBust），Diablo 噴（diaBust）。gateNeed／wallFoot／strollTo／near 那幾處都問這一支 */
 const bigBeast = m => m.kind === 'giant' || m.kind === 'diablo';
@@ -14385,8 +14385,8 @@ function stepMascot(dt) {
     mascT[i] -= dt;
     if (mascT[i] > 0) continue;
     mascT[i] = -1;
-    /* 偶而是來砸房子的那一隻（v1.166）；calm 的一律來逛（v1.268.0）。小人將軍守護中（v1.324.0）除了他會打的那四款，
-       其餘的一律來逛（使用者：「其他吉祥物 不再主動攻擊村子」）。genAwe 排在亂數後面：有沒有將軍都抽同樣幾次 */
+    /* 偶而是來砸房子的那一隻（v1.166）；calm 的一律來逛（v1.268.0）。小人將軍守護中（v1.324.0）除了巨人、Diablo，
+       其餘的一律來逛（使用者：「其他吉祥物 不再主動攻擊村子」，飛龍與獅鷲是第二輪加的）。genAwe 排在亂數後面：有沒有將軍都抽同樣幾次 */
     k.spawn(!k.calm && Math.random() < MASC_BAD && !genAwe(k.id) ? 1 : 0);
   }
 }
@@ -14839,14 +14839,19 @@ function stepBloods(dt) {
 /* 牛羊那一份。第三下的反應演完（落地、燒完）那一刻 hurtBeast 叫這一支：就地倒下、身下漫一攤血，
    之後每幀走 stepCarcass（stepBeast0 那條 m.dead）。站著死的（燒完跑圈那種）往哪一邊倒現在才抽。 */
 let herdOwed = 0;                    // 死掉、還沒補回來的幾隻：stepHerd 補的時候從林帶走進來（v1.256.0）
-/* 打死了照這一套倒下的：牛羊，加獅鷲（v1.323.0，使用者選的「倒地＋血泊＋變淡」；牠被打倒本來就是借牛羊那一套側躺，見 spawnGryph 的 side） */
-const lieDie = m => !!m.herd || m.kind === 'gryphon';
+/* 打死了照這一套倒下的：牛羊，加獅鷲（v1.323.0，使用者選的「倒地＋血泊＋變淡」；牠被打倒本來就是借牛羊那一套側躺，見 spawnGryph 的 side）。
+   小人將軍（v1.324.0 第二輪，使用者：「他打得死 被打死就退場也是三下」）同獅鷲：他的馬本來就是側躺那一套 */
+const lieDie = m => !!m.herd || m.kind === 'gryphon' || m.kind === 'general';
 function dieHerd(m) {
   m.dead = 1e-6; m.alpha = 1; m.fall = 1; m.gait = 0; m.pause = 0; m.spook = 0; m.face = 0;
   if (m.kind === 'gryphon') {
     m.st = 'dead'; m.left = 0; m.rk = null;
     sndGryDie();
     toast('🦅 那隻獅鷲被打死了', '牠倒在草皮上不再起來，身下流了一攤血，慢慢消失');
+  } else if (m.kind === 'general') {
+    genDismiss(m);                                     // 他叫的那一隊跟著收兵
+    m.st = 'dead'; m.gf = null; m.arm = 0;
+    toast(BEAST_NM.general + '陣亡了', '他倒在草皮上不再起來，叫來的兵也收兵了；再用一次道具會叫一位新的來');
   }
   if (!m.lie) { lieSide(m); m.lie = lieLift(m); }
   /* 血漫在身體底下，中心是**身體的重心**倒下去之後落在哪：側躺的那一隻，背朝 −sdir 那一側倒過去
@@ -17347,8 +17352,11 @@ const musketList = () => mkOld ? (musket ? mkOld.men.concat(musket.men) : mkOld.
    招喚出來的攻擊打到自己(可以用位置設計)」。問過定的：在村子（生活圈 arenaR）裡巡邏；出兵的對象見 GEN_FOE；
    三招隨機抽一招、一次一隊；沒射中的照樣打壞東西（跟玩家自己叫的走同一條路：castArrows／castMusket／canTeam）；
    守護中其他吉祥物不再主動來砸村子（見 stepMascot 那一行 genAwe）。
-   我自己定、回報時講過的：打不死（被打照樣倒、爬起來接著守，不生氣，見 beastHit）；場上只有一位，再點一次＝叫他騎過去、
-   守護時間重算；時間照模擬時間走（同天災的倒數），到了騎回林帶；換地標照守。
+   我自己定、回報時講過的：場上只有一位；時間照模擬時間走（同天災的倒數），到了騎回林帶；換地標照守；被打不生氣（見 beastHit）。
+   第二輪使用者改的：「他打得死 被打死就退場也是三下」（同獅鷲倒地、流血、淡掉，叫的那一隊收兵，見 dieHerd）、
+   「再次使用小人將軍只是移動他位置 不重算60分鐘」、「上場前就抽中要砸房子的 也會出手」（正要去砸村子的吉祥物也打，見 genFoe）、
+   來砸村子的飛龍與獅鷲「早一點發現」（林帶淡進來就算，不等牠進村，見 genFoe）——量過還是趕不上，再問一次選的是
+   「守護中牠們也不來砸」（見 genAwe）。
    **不讓自己的兵打到自己，靠站位**（genPlan／genSafe）：兵一律排在他**前面**、整隊面向敵人，每一個射手都在他前面
    至少 GEN_BEHIND 格；瞄的那一點一直夾在隊伍前緣再往前 GEN_FRONT 格以外（genAim）。箭、子彈、砲彈都是從射手往前
    飛向那一點，所以整條路上每一點都在他前面——打不到他。指揮那一段他站定不動，自己也不會走進射線裡。
@@ -17366,7 +17374,8 @@ const GEN_STAY = [2, 5];               // 巡邏走到一點站多久
 const GEN_BEHIND = 4;                  // 他至少站在每一個射手後面幾格（再加隊形的抖動量）
 const GEN_FRONT = 4;                   // 瞄的那一點至少在隊伍前緣前面幾格
 /* 吉祥物裡他會打的四款：1＝進村就打（巨人、Diablo）、2＝動手的時候才打（飛龍、獅鷲：m.left 是這一趟還要吐幾顆火球／
-   撞幾下，來砸村子、被惹毛都會給，見 madMascot）。天災一律打。表上沒有的吉祥物他守護時不來砸村子（genAwe） */
+   撞幾下，來砸村子、被惹毛都會給，見 madMascot）。天災一律打；表上沒有的吉祥物正要去砸村子的也打（見 genFoe）。
+   他守護時不來砸村子的（genAwe）：1 以外的全部——飛龍、獅鷲第二輪也算進來（見 genAwe） */
 const GEN_FOE = { giant: 1, diablo: 1, dragon: 2, gryphon: 2 };
 /* 三招各自的站法：B＝隊伍前緣在他前面幾格（隊伍排在他與敵人之間）；D＝前緣到敵人最好多遠（騎過去就照這個站），
    lo／hi＝前緣到敵人在這個範圍裡就地出兵、不必挪。B 是照隊形的深度訂的：箭雨 5 排共 10.4 格、火槍兵 3 排 3.8 格，
@@ -17380,13 +17389,19 @@ const GEN_ARMY = {
 };
 const GEN_TRY = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9];   // 就地出兵：隊伍往兩側偏幾度試（弧度）
 const GEN_POST = [0, 0.7, -0.7];                // 騎過去：第幾次換到敵人的哪一側（弧度，繞著敵人轉）
+/* 還在守護的那一位（陣亡倒在地上的、時間到正在走人的不算：再用一次道具就是叫一位新的） */
+const genOn = m => m.kind === 'general' && !m.dead && m.st !== 'go';
 function pickGeneral() {
-  if (beasts) for (const m of beasts) if (m.kind === 'general') return m;
+  if (beasts) for (const m of beasts) if (genOn(m)) return m;
   return null;
 }
-/* 守護中的這一款不來砸村子嗎（stepMascot 抽「來砸房子」那一下問）：他會打的那四款照抽 */
-const genAwe = id => !GEN_FOE[id] && !!beasts && beasts.some(m => m.kind === 'general' && m.st !== 'go');
-/* 點下去的那一下（useTool）：沒有就從林帶那一邊叫一位進來，有就叫他騎過去；守護時間都從頭算。回傳那一位（測試在讀） */
+/* 守護中的這一款不來砸村子嗎（stepMascot 抽「來砸房子」那一下問）：巨人、Diablo 照抽（進村就打，GEN_FOE 1）。
+   **飛龍、獅鷲第二輪也不來砸**（使用者選的「守護中牠們也不來砸」）：量過他擋不到——來砸的獅鷲飛進來第 3 秒就俯衝、
+   飛龍第 9 秒吐火球，一隊箭雨從叫出來到第一支箭離手就要 3.7 秒，再加舉劍、箭飛，最快第 8 秒才到（見 開發筆記〈道具：小人將軍〉）。
+   被惹毛（被打）的照樣會動手，那時他照樣出兵（genFoe 的 m.left） */
+const genAwe = id => GEN_FOE[id] !== 1 && !!beasts && beasts.some(genOn);
+/* 點下去的那一下（useTool）：沒有就從林帶那一邊叫一位進來、守護 GEN_TIME 秒；有就叫他騎過去，**守護時間照舊**
+   （v1.324.0 第二輪，使用者：「再次使用小人將軍只是移動他位置 不重算60分鐘」）。回傳那一位（測試在讀） */
 function callGeneral(p) {
   let m = pickGeneral();
   if (!m) {
@@ -17396,14 +17411,15 @@ function callGeneral(p) {
     m.side = 1; m.sdir = 1;                       // 四條腿的：倒下來往側邊倒（同牛羊，見 lieAng）
     m.coat = Math.random() < 0.5 ? 1 : 0;         // 白馬或棗紅馬（見 engine 的 GENERAL）
     m.raise = GEN_RAISE;
+    m.gt = GEN_TIME;
     toast(BEAST_NM.general + '應召而來',
           '他騎到你點的地方，接下來 ' + Math.round(GEN_TIME / 60) + ' 分鐘在村子裡巡邏；敵人進村就叫箭雨、火槍兵或加農砲出來打');
   } else {
     genDismiss(m);                                // 正在打的那一隊收兵：他要騎走了，站位那一套就不成立了
     beastCry(m);
-    toast(BEAST_NM.general + '聽到了', '他騎到你點的地方，守護時間重新算 ' + Math.round(GEN_TIME / 60) + ' 分鐘');
+    toast(BEAST_NM.general + '聽到了', '他騎到你點的地方（守護時間照舊，還剩 ' + Math.ceil(m.gt / 60) + ' 分鐘）');
   }
-  m.gt = GEN_TIME; m.gcd = 0; m.gtry = 0; m.gf = null; m.gw = null; m.gg = null; m.gp = null;
+  m.gcd = 0; m.gtry = 0; m.gf = null; m.gw = null; m.gg = null; m.gp = null;
   m.st = 'gride'; m.gwhy = 'go'; m.grt = 0; m.tx = p.x; m.tz = p.z; m.leg = 0; m.pause = 0;
   return m;
 }
@@ -17416,12 +17432,21 @@ function genSpot(m) {
 }
 /* 腿擺倍率：他的馬就是閒逛那匹馬的腿（同一支 horseParts），照腳程等比例放大（理由見 HERD_STEP） */
 const genStep = v => HERD_STEP.horse * v / HERD_WALK.horse;
-/* 這一隻要不要打：還在場上、沒倒地死、沒在走人、在村子裡（arenaR），而且是天災或 GEN_FOE 那四款 */
+/* 這一隻要不要打：還在場上、沒倒地死、沒在走人，而且是
+     · 在村子裡（arenaR）的天災、巨人、Diablo
+     · 在村子裡、正要去砸村子的吉祥物（m.bad 且 m.home：他上場前就抽中的那幾隻、被惹毛改砸村子的；玩家叫去出招的那一趟不算）
+       ——v1.324.0 第二輪，使用者：「上場前就抽中要砸房子的 也會出手」，問過選的是「將軍也出兵打牠們」
+     · 來砸的飛龍、獅鷲（m.left > 0）：**從林帶淡進來就算，不等牠進村**——第二輪使用者選的「早一點發現」：
+       第一輪等牠進了村子才打，有將軍、沒將軍各三場，火球都是 2／1／1 顆、衝撞都是 1／1／1 趟，一下都沒擋到
+       （牠進場幾秒就吐完、衝完，舉劍＋排隊＋箭飛要七八秒）。「淡進來了」照位置算（同 woodFade 那一條：離林帶中線 REACH ＋ WOOD_FADE 以內是還在淡），
+       **不看 m.wIn**——那是畫之前才清的旗標（game-ui.js 的 draw），規則不跟著畫走（探針不畫，看 wIn 的話一隻都不算） */
 function genFoe(f) {
   if (!f || f.kind === 'general' || f.herd || f.kind === 'goose' || f.ufo || slain(f) || beastLeaving(f)) return false;
-  if (!beasts || beasts.indexOf(f) < 0 || Math.hypot(f.x, f.z) > arenaR) return false;
-  if (!f.fun) return true;
-  return GEN_FOE[f.kind] === 1 || (GEN_FOE[f.kind] === 2 && f.left > 0);
+  if (!beasts || beasts.indexOf(f) < 0) return false;
+  if (f.fun && GEN_FOE[f.kind] === 2) return f.left > 0 && Math.hypot(f.x, f.z) <= woodR() - REACH - WOOD_FADE;
+  if (Math.hypot(f.x, f.z) > arenaR) return false;
+  if (!f.fun || GEN_FOE[f.kind] === 1) return true;
+  return !!(f.bad && f.home) && !f.call && !f.cq;
 }
 function genPick(m) {
   let best = null, bd = Infinity;
