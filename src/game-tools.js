@@ -9565,9 +9565,15 @@ function homeMid(b) {
   return h ? { x: h.x, z: h.z } : { x: b.x, z: b.z };
 }
 /* 砸完（或目標中途沒了）就回去逛（v1.166）。天災那幾隻動完手是走人（leaveBeast），
-   吉祥物本來就是「來逛一圈」的，砸完那一間回去把剩下的 stay 逛完再走。 */
+   吉祥物本來就是「來逛一圈」的，砸完那一間回去再逛一陣子才走。
+   **這一趟是來砸的（m.bad）就重抽一份 MASC_STAY**（v1.321.0，使用者：「退場時間是一個都沒事發生 一定時間後退場的機制」
+   「被打又生氣去破壞 然後時間重算」）：v1.166～v1.320 是把剩下的逛完，被打生氣的那一隻砸完常常幾秒就走
+   （實測 Saber 剩 3.8 秒、兵長 1.4 秒，小獼猴燒完當場走）。出場就是來砸的那一隻也算（使用者選的）。
+   m.bad 是 0 的不重抽：走人途中拆擋路的牆那一趟（見 stepBeast 的 go）拆完照舊接著走。
+   見 開發筆記〈吉祥物：逛的時間是「沒事發生」的倒數〉 */
 function funBack(m) {
   diaStop(m);                                // Diablo 噴火的姿勢收乾淨（被打退、翻臉都從這裡出去）
+  if (m.bad) m.stay = rr(MASC_STAY[0], MASC_STAY[1]);
   m.bad = 0; m.home = 0;
   m.owe = 0;                                 // 還欠著的也一筆勾銷（v1.229，見 moreMascot）
   m.bust = null; m.bn = 0;                   // 清擋路那一腳的旗標（v1.207，同 leaveBeast）
@@ -9589,6 +9595,9 @@ function leaveBeast(m) {
   /* 「正在拆擋路的那一段牆」那個旗標也收掉（v1.194）：拆一下就是一趟，收掉之後
      上面那條 away 的豁免才只罩著這一趟（還是走不出去的話，go 下一行會再立一次）。 */
   m.home = 0;
+  /* 「這一趟要動手」也收掉（v1.321.0）：走到一半時間到的那一隻（目標走不到）留著它的話，走人途中被打
+     會被 beastHit 當成「本來要動手」而收手，不會生氣掉頭（見 madMascot）。天災那幾隻本來就是 0 */
+  m.bad = 0;
   /* 還欠著的也收掉（v1.229，見 moreMascot）：走人那一段沒門可繞時會轉進 near → act
      拆牆出去（見 stepBeast 的 go），不收的話拆完那一下會被當成欠帳接著砸下一處。 */
   m.owe = 0;
@@ -9940,7 +9949,9 @@ function stepBeast0(m, dt) {
   /* 吉祥物：在工地那一帶晃，晃夠 m.stay 秒就走人（使用者：「只是出現逛一逛
      一段時間又走了」）。逛的點跟小人閒晃借同一支 idleSpot——它挑的範圍就是
      「碎料場那一片、又還在鏡頭裡」，也已經會避開小人的家；站多久也照小人那套
-     （strollPause，跟剛走完那段路成比例）。 */
+     （strollPause，跟剛走完那段路成比例）。
+     **m.stay 是「沒事發生」的倒數**（v1.321.0，使用者：「退場時間是一個都沒事發生 一定時間後退場的機制」）：
+     被打（算進去的那一下，見 beastHit）、砸完回來（見 funBack）都重抽一份 MASC_STAY。 */
   if (m.st === 'fun') {
     /* 牛羊沒有這個倒數（v1.154）：逛完不走人，這一段就是牠們的日常。 */
     if (!m.herd) {
@@ -10159,7 +10170,7 @@ function stepBeast0(m, dt) {
     /* 燒完一處，「燒完才走」的保險重算（v1.244.2，使用者選的「每燒完一處重算」）：逛的時間已經用完的，
        超時從這裡重新數，下一處又有 MORE_WAIT 那麼久。v1.229～v1.244.1 沒有這一行，超時是幾處加起來算的——
        每一處在外圈要繞 3～17 秒，打 10 下的三趟只燒了 3、6、8 處就被保險切掉（見 開發筆記〈欠帳的保險每一處重算〉）。
-       最後一處燒完也照歸零：stay 剛好是 0，回去逛那一段的出口（stay <= 0、沒欠帳）下一幀就走，跟以前一樣。 */
+       最後一處燒完接著 funBack 重抽一份逛的時間（v1.321.0；v1.244.2～v1.320 是歸零之後下一幀就走）。 */
     if (m.owe > 0 && m.stay < 0) m.stay = 0;
     if (m.owe > 0 && --m.owe > 0 && moreNext(m)) return false;
     if (m.fun) funBack(m); else leaveBeast(m);        // 吉祥物砸完回去逛（v1.166）
@@ -11400,7 +11411,7 @@ function excDone(m) {
   m.call = null; m.cn = 0;
   funBack(m);                                   // 它會把 bad／home 清掉，還原要排在它後面
   m.bad = m.cbad; m.home = m.chome;
-  /* 「留下來逛一陣子」。吉祥物自己砸的那一趟不加（v1.268.0，見 mascStrike）：同其他吉祥物，砸完把剩下的逛完就走 */
+  /* 「留下來逛一陣子」。吉祥物自己砸的那一趟（v1.268.0，見 mascStrike）上面 funBack 已經重抽過了（m.bad，v1.321.0） */
   if (!own) m.stay = Math.max(m.stay, rr(MASC_STAY[0], MASC_STAY[1]));
 }
 /* 吉祥物自己動手的那一趟（v1.268.0）：里維、善逸、五條悟走到 act、手上沒有玩家的命令、這一趟是來砸的
@@ -13451,7 +13462,8 @@ function grRamLives(m, C, R) {
    吉祥物還有 stay 就照當下的位置挑個地方降落把它逛完（grSpot → in → land），不然飛出場 */
 function grRamDone(m) {
   m.rk = null; m.left = 0;
-  if (m.fun) { m.bad = 0; m.home = 0; }
+  /* 撞完重抽一份逛的時間（v1.321.0，同走路那幾款的 funBack）：被打收手的那一下 m.bad 已經先清掉了，那一下在 beastHit 重抽 */
+  if (m.fun) { if (m.bad) m.stay = rr(MASC_STAY[0], MASC_STAY[1]); m.bad = 0; m.home = 0; }
   if (m.fun && m.stay > 0) { grSpot(m); m.st = 'in'; }
   else m.st = 'out';
 }
@@ -14241,8 +14253,8 @@ const MASC_STAY = [50, 60];
        （見 igniteAround 的 only）。
      · **「根據吉祥物的破壞模式」** ＝各用自己那一套，跟天災那一版同一份程式：
        小獼猴走過去點火把、小猴子丟香蕉炸彈、飛龍在上空吐火球。
-   砸完**不算天災**：m.fun 一直是 1，所以天災的鐘照數（見 stepDoom），牠也照舊
-   把剩下的 stay 逛完才走（見 funBack）。 */
+   砸完**不算天災**：m.fun 一直是 1，所以天災的鐘照數（見 stepDoom），牠砸完回去
+   再逛一份 MASC_STAY 才走（v1.321.0 起重抽；以前是把剩下的逛完，見 funBack）。 */
 const MASC_BAD_SHOT = [1, 2];         // 飛龍那一版吐幾顆（天災那一版是 DRA_SHOT 3~5）
 /* 一隻一列。加第四隻吉祥物＝往這張表再放一列，別處一個字都不必動（同 DOOMS）。
    ground＝用走的，整地那一段先不放進來；龍在天上，推土機碰不到牠，照樣可以來。
@@ -14398,6 +14410,7 @@ function turnBad(id) {
        地標砸完了沒都不管了。
    **牛羊不算**：牠們沒有「來意」這件事，也沒有攻擊手段（同 DOOM_ACT 那一條）。
    **已經在走人的那一隻也不算**：都走到一半了又掉頭回來很怪（同 turnBad 的規矩）。
+   v1.321.0 起吉祥物時間到了在走的那一隻例外：照樣生氣、掉頭回來砸（使用者定的，見 beastHit）。
    **翻臉過的那一隻（turnBad）算天災**：m.fun 已經是 0，走的就是「被打幾次就放棄」。
 
    呼叫點在**道具真的打中了**那幾條（那幾支回傳 true 的那一刻），不是塞進 tossBeast／
@@ -14457,7 +14470,7 @@ function beastLeaving(m) {
 /* 這一趟要砸的是地標嗎（v1.208 生氣那一版才會有）：m.bad 是「要動手」、
    m.home 是「動手的目標在村子那邊」，所以兩個湊起來才分得出砸哪一邊。 */
 const madSet = m => !!m.bad && !m.home;
-/* 吉祥物收手：回去把剩下的 stay 逛完，跟砸完那一趟同一個出口（funBack）。 */
+/* 吉祥物收手：回去逛，跟砸完那一趟同一個出口（funBack）。逛的時間在 beastHit 那邊重抽（v1.321.0，使用者選的「被打退也重算」）。 */
 function calmMascot(m) {
   /* 惠惠（v1.247.0，使用者選的「收手，魔法陣散掉」）：還在走過去或詠唱到一半的，陣收掉、回去逛 */
   if (m.kind === 'megumin') {
@@ -14502,8 +14515,11 @@ function madMascot(m) {
   /* 表上標 more 的（v1.229）：這一下就是欠的第一處。先記上再挑，挑的時候才會跳過燒過的地方 */
   const k = mascRow(m.kind);
   if (k && k.more) m.owe = 1;
+  const out = beastLeaving(m);                         // 時間到了正在走人的（v1.321.0，見 beastHit）：下面掉頭回來
   const tb = madPick(m);
   if (!tb) { m.owe = 0; return; }
+  /* 走人那一段已經淡掉一點的，從現在站的地方淡回來（照位置算，見 woodFade）；換到一半那條出場的路收掉（同 funBack） */
+  if (out) { m.wIn = 1; m.bway = null; }
   /* 惠惠（v1.247.0）：退到炸不到自己的地方，對著挑到的那一塊放一發爆裂魔法（見〈惠惠〉那一節） */
   if (m.kind === 'megumin') {
     megMad(m, tb);
@@ -14517,6 +14533,7 @@ function madMascot(m) {
     /* 圈數歸零＝再繞一圈（這一圈是來吐火球的）、gap 重給，兩件事的理由同 turnBad。
        在地上那一段的（摔下來或自己降落）起飛之後要接回盤旋，不然牠拿著配額直接飛走。 */
     if (m.was === 'out') m.was = 'in';
+    if (m.st === 'out') m.st = 'in';                   // 繞完正在飛出場的（v1.321.0）：掉頭飛回那一圈
     m.turned = 0; m.gap = rr(0.4, 1.2);
   } else if (m.kind === 'gryphon') {
     m.left = 1;
@@ -14530,6 +14547,12 @@ function madMascot(m) {
        理由同 turnBad——near 那一段沒有繞路，從碎料場外緣直線切過來的話，
        牠會半路卡在別人家門口就地動手。走到了進哪一段見 stepBeast 的 come。 */
     m.st = 'come'; m.tx = 0; m.tz = 0; m.leg = 0;
+  } else if (m.st === 'go' || (m.st === 'gate' && m.gback === 'go')) {
+    /* 時間到了正在走回場外的（v1.321.0）：掉頭，接法同欠帳的下一處（moreNext）——地標從進場那一段走，
+       村子那邊 fun 那一段本來就會找過去。正在穿城門的不打斷（理由見 stepBeast 的 away），穿完接回這一段 */
+    const st = madSet(m) ? 'come' : 'fun';
+    if (m.st === 'gate') m.gback = st;
+    else { m.st = st; m.tx = 0; m.tz = 0; m.leg = 0; }
   }
   beastCry(m);
   toast((BEAST_NM[m.kind] || '牠') + '被惹毛了',
@@ -14640,7 +14663,12 @@ function beastHit(m, src) {
   /* 雁（v1.272.0）：打中那一下 gooseDown 已經讓牠掉下來了（掉下來就死），沒有別的要記 */
   if (m && m.kind === 'goose') return;
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
-  if (!m || m === hitBy || beastLeaving(m) || m.call || m.cq) return;
+  if (!m || m === hitBy || m.call || m.cq) return;
+  /* 已經在走人的不改主意（v1.208：都走到一半了又掉頭回來很怪）：天災，與換場（整地）被趕走的吉祥物。
+     **吉祥物時間到了在走的那一隻照樣會生氣**（v1.321.0，使用者：「被攻擊後還是堅持退場 不會生氣／應該是時間到就退場
+     被打又生氣去破壞 然後時間重算」，問過選的是「掉頭回來生氣砸」）：掉頭見 madMascot，
+     來龍去脈見 開發筆記〈吉祥物：逛的時間是「沒事發生」的倒數〉 */
+  if (beastLeaving(m) && !(m.fun && phase !== 'clear')) return;
   /* 五條悟（v1.255.0）、芙莉蓮（v1.259.0）不會生氣：一個什麼時候都打不動（無下限）、一個站在自己的罩子裡，
      照理走不到這裡；v1.268.0 他們當上吉祥物時使用者選的是「照現狀，打不到就不生氣」，這一條留著守住。
      里維兵長（v1.230）、善逸（v1.251.0）v1.267 以前也在這裡（只做玩家叫的事），v1.268.0 拿掉
@@ -14659,6 +14687,10 @@ function beastHit(m, src) {
     if (!m.bad) madMascot(m);
     else if (k && k.more) moreMascot(m);               // 不收手，多砸一處（v1.229，見 MASCOTS）
     else calmMascot(m);
+    /* 被打就是有事發生：逛的時間重抽一份（v1.321.0，使用者選的「被打退也重算」）。生氣走去砸村子那一段在 fun 裡、
+       時間照扣——v1.320 以前剩幾秒的那一隻走到一半時間到就走了，一下都沒砸（實測巨人、小猴子剩 5 秒被打，5.0 秒後走人）。
+       砸完回來那一刻再重抽一次（見 funBack） */
+    m.stay = rr(MASC_STAY[0], MASC_STAY[1]);
     return;
   }
   m.hurt = (m.hurt || 0) + 1;

@@ -30074,7 +30074,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     }
     return { secs: +(n * 0.05).toFixed(1), acted: +(acted * 0.05).toFixed(2), inside,
              after: +(out * 0.05).toFixed(1),
-             burnHome, burnSite, hiSite, st, stay: +stay.toFixed(1),
+             burnHome, burnSite, hiSite, st, stay: +stay.toFixed(1), lo: MASC_STAY[0],
              site0, site: site(), home0, low, ph: phase,
              gone: !beasts || beasts.indexOf(m) < 0 };
   });
@@ -30086,9 +30086,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mape.burnHome + ' 塊（還站著的村子 ' + mape.home0 + ' → ' + mape.low +
      '）；地標燒 ' + mape.hiSite + ' 塊、' + mape.site0 + ' → ' + mape.site +
      ' 塊，phase ' + mape.ph);
-  ok('砸完回去把剩下的時間逛完才走（不像天災那幾隻動完手就走人）',
-     mape.st === 'fun' && mape.gone && mape.inside === 0,
-     '動完手轉回 ' + mape.st + '（還剩 ' + mape.stay + ' 秒要逛）→ 又 ' + mape.after +
+  /* v1.321.0 條目名從「砸完回去把剩下的時間逛完才走」改掉：砸完重抽一份 MASC_STAY（見 funBack，〈吉祥物：逛的時間是「沒事發生」的倒數〉） */
+  ok('砸完回去重抽一份逛的時間，逛完才走（不像天災那幾隻動完手就走人）',
+     mape.st === 'fun' && mape.stay >= mape.lo && mape.gone && mape.inside === 0,
+     '動完手轉回 ' + mape.st + '（重抽到 ' + mape.stay + ' 秒要逛，MASC_STAY 下限 ' + mape.lo + '）→ 又 ' + mape.after +
      ' 秒之後走了 ' + mape.gone + '；全程踩進建築或房子 ' + mape.inside + ' 幀');
 
   const msnow = await page.evaluate(() => {
@@ -30524,26 +30525,103 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     beastHit(c);
     const herd = { bad: c.bad, st: c.st, hurt: c.hurt };
     beasts = null;
-    const m = spawnBeast('ape', 1);                 // 吉祥物，已經在走回場外
-    leaveBeast(m);
-    beastHit(m);
-    const goM = { bad: m.bad, st: m.st };
-    beasts = null;
     const d = spawnBeast('ape');                    // 天災，已經在走回場外
     d.quit = 1;
     leaveBeast(d);
     beastHit(d);
     const goD = { hurt: d.hurt, st: d.st };
     cleanTools();
-    return { herd, goM, goD };
+    return { herd, goD };
   });
-  ok('牛羊不吃這一套（連數都不數），已經在走人的也不改主意',
+  /* v1.321.0 條目名從「…已經在走人的也不改主意」改掉：吉祥物時間到了在走的那一隻改成會生氣（下一條） */
+  ok('牛羊不吃這一套（連數都不數），已經在走人的天災也不改主意',
      hskip.herd.bad === undefined && hskip.herd.st === 'fun' &&
      hskip.herd.hurt === undefined &&
-     hskip.goM.bad === 0 && hskip.goM.st === 'go' &&
      hskip.goD.hurt === 0 && hskip.goD.st === 'go',
      '牛羊 bad ' + hskip.herd.bad + '／hurt ' + hskip.herd.hurt +
-     '；走人中的吉祥物 bad ' + hskip.goM.bad + '、天災 hurt ' + hskip.goD.hurt);
+     '；走人中的天災 hurt ' + hskip.goD.hurt);
+
+  /* ── 吉祥物時間到了在走人被打：生氣掉頭回來；逛的時間是「沒事發生」的倒數（v1.321.0）──
+     使用者：「調查吉祥物退場 被攻擊後還是堅持退場 不會生氣（應該是時間到就退場 被打又生氣去破壞 然後時間重算）
+     退場時間是一個都沒事發生 一定時間後退場的機制」。問過四件，全選建議：重抽 50~60 秒、走人中被打掉頭回來生氣砸、
+     出場就來砸的那一隻砸完也重算、被打退也重算。
+     規則型：擺好狀態直接打一下（或直接叫 funBack／leaveBeast）看旗標，不跑模擬。換場（整地）被趕走的照走。 */
+  const hback = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; mascT.fill(1e9);
+    const or = Math.random;
+    const hit = (m, dice) => { Math.random = () => dice; beastHit(m); Math.random = or; };
+    /* 走路的：逛完了正在走（stay 0、leaveBeast）。骰子押 0 ＝ 砸地標、0.9 ＝ 砸村子（同「砸哪一邊」那條） */
+    const walk = dice => {
+      const m = spawnBeast('giant', 1); m.st = 'fun'; m.stay = 0;
+      leaveBeast(m);
+      hit(m, dice);
+      const r = { st: m.st, bad: m.bad, home: m.home, wIn: m.wIn, stay: m.stay };
+      beasts = null;
+      return r;
+    };
+    const set = walk(0);
+    /* 村子那邊：借一塊地標積木掛到村子那一邊（hh >= 0 就是村子），**量完還回去** */
+    const b0 = blocks.find(x => x.st === SET && x.hh < 0), was = b0.hh;
+    b0.hh = 0;
+    const vill = walk(0.9);
+    b0.hh = was;
+    /* 正在穿城門出去的：不打斷，穿完接回進場那一段 */
+    const g = spawnBeast('giant', 1); leaveBeast(g); g.st = 'gate'; g.gback = 'go';
+    hit(g, 0);
+    const gate = { st: g.st, gback: g.gback, bad: g.bad };
+    beasts = null;
+    /* 換場（整地）被趕走的：照走，不生氣 */
+    phase = 'clear';
+    const c = spawnBeast('giant', 1); leaveBeast(c);
+    hit(c, 0);
+    const clear = { st: c.st, bad: c.bad };
+    phase = 'done';
+    beasts = null;
+    /* 飛的兩款：飛龍繞完正在飛出去、獅鷲逛完正在飛出去 */
+    const d = spawnDragon(1); d.st = 'out';
+    hit(d, 0);
+    const dra = { st: d.st, bad: d.bad, left: d.left };
+    beasts = null;
+    const q = spawnGryph(1, 0); q.stay = 0; q.st = 'out'; q.sky = 1;
+    hit(q, 0);
+    const gry = { st: q.st, bad: q.bad, left: q.left, stay: q.stay };
+    beasts = null;
+    /* 逛的時間：被打（生氣、收手）重抽；砸完回來（funBack）這一趟是來砸的才重抽，
+       走人途中拆擋路的牆那一趟（bad 0）不重抽、拆完照舊接著走 */
+    const h = spawnBeast('giant', 1); h.st = 'fun'; h.stay = 0.5;
+    hit(h, 0);
+    const madStay = h.stay;
+    h.hcd = 0; h.stay = 0.5; h.st = 'near';
+    hit(h, 0);
+    const calm = { bad: h.bad, stay: h.stay };
+    beasts = null;
+    const f1 = spawnBeast('giant', 1); f1.st = 'act'; f1.bad = 1; f1.stay = 0.5; funBack(f1);
+    const f0 = spawnBeast('giant', 1); f0.st = 'act'; f0.bad = 0; f0.stay = -0.5; funBack(f0);
+    const smash = f1.stay, wall = f0.stay;
+    beasts = null;
+    /* 要去砸卻時間到了的（目標走不到，保險那一條）：走人那一刻 bad 收掉——路上被打才會生氣，不是被當成收手 */
+    const l = spawnBeast('giant', 1); l.bad = 1; leaveBeast(l);
+    const lbad = l.bad;
+    cleanTools();
+    return { set, vill, gate, clear, dra, gry, madStay, calm, smash, wall, lbad, lo: MASC_STAY[0] };
+  });
+  ok('吉祥物時間到了在走人被打：照樣生氣、掉頭回來砸（地標走進場那一段、村子那邊直接找過去、穿城門的穿完再接），換場被趕走的照走',
+     hback.set.st === 'come' && hback.set.bad === 1 && hback.set.home === 0 && hback.set.wIn === 1 &&
+     hback.vill.st === 'fun' && hback.vill.bad === 1 && hback.vill.home === 1 &&
+     hback.gate.st === 'gate' && hback.gate.gback === 'come' && hback.gate.bad === 1 &&
+     hback.clear.st === 'go' && hback.clear.bad === 0 &&
+     hback.dra.st === 'in' && hback.dra.bad === 1 && hback.dra.left > 0 &&
+     hback.gry.st === 'in' && hback.gry.bad === 1 && hback.gry.left === 1 && hback.gry.stay >= hback.lo,
+     '砸地標 go → ' + hback.set.st + '（淡回來 wIn ' + hback.set.wIn + '）、砸村子 go → ' + hback.vill.st +
+     '、穿城門的穿完接 ' + hback.gate.gback + '、換場的 ' + hback.clear.st + '（bad ' + hback.clear.bad + '）；飛龍 out → ' +
+     hback.dra.st + '（配額 ' + hback.dra.left + '）、獅鷲 out → ' + hback.gry.st);
+  ok('逛的時間是「沒事發生」的倒數：被打（生氣、收手）、砸完回來都重抽一份 MASC_STAY；走人途中拆牆那一趟不重抽',
+     hback.set.stay >= hback.lo && hback.madStay >= hback.lo &&
+     hback.calm.bad === 0 && hback.calm.stay >= hback.lo &&
+     hback.smash >= hback.lo && hback.wall === -0.5 && hback.lbad === 0,
+     '剩 0.5 秒被打：生氣 → ' + hback.madStay.toFixed(1) + '、收手 → ' + hback.calm.stay.toFixed(1) +
+     '；走人中被打 → ' + hback.set.stay.toFixed(1) + '；砸完回來 → ' + hback.smash.toFixed(1) +
+     '、拆牆那一趟 −0.5 → ' + hback.wall + '（MASC_STAY 下限 ' + hback.lo + '）；要去砸卻時間到的走人時 bad → ' + hback.lbad);
 
   /* ── 一發炸彈只數一次 ── */
   /* 帶火的那一發（爆炸都是 lit）會把牠掀到半空，**落地那一刻才點著**（見 flyBeast）。
@@ -30755,10 +30833,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       acts.push({ x: t.x, z: t.z, reach: Math.hypot(t.x - m.x, t.z - m.z), stay: m.stay });
       return 0;
     };
-    const m = spawnBeast('ape', 1); m.st = 'fun'; m.stay = 0.5;
+    const m = spawnBeast('ape', 1); m.st = 'fun';
     for (let i = 0; i < 3; i++) { m.hcd = 0; beastHit(m); }
+    m.stay = 0.5;                                   // 打完才給：被打那一下會重抽逛的時間（v1.321.0），這一條驗的是「時間到了還欠著也不走」
     let n = 0;
-    while (n < 4000 && beasts && beasts.indexOf(m) >= 0 && m.st !== 'go') { step(0.05); n++; }
+    /* 燒完第三處回去逛（funBack）就停：v1.321.0 起那一刻重抽一份逛的時間，不再是下一幀就走 */
+    while (n < 4000 && beasts && beasts.indexOf(m) >= 0 && m.st !== 'go' &&
+           !(acts.length >= 3 && m.st === 'fun' && !m.bad)) { step(0.05); n++; }
     DOOM_ACT.ape = oa;
     let gap = Infinity;
     for (let i = 0; i < acts.length; i++)
@@ -30767,16 +30848,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const out = { n: acts.length, gap: +gap.toFixed(1), want: MORE_GAP, near: DOOM_NEAR,
                   reach: +Math.max(...acts.map(a => a.reach)).toFixed(1),
                   stay: +Math.min(...acts.map(a => a.stay)).toFixed(1),
-                  st: m.st, owe: m.owe, secs: +(n * 0.05).toFixed(1) };
+                  st: m.st, owe: m.owe, back: +m.stay.toFixed(1), lo: MASC_STAY[0], secs: +(n * 0.05).toFixed(1) };
     cleanTools();
     return out;
   });
-  ok('小獼猴打三下就燒三處，每一處離別處至少 MORE_GAP、走到旁邊才點，燒完才走',
+  /* v1.321.0 條目名從「…燒完才走」改掉：燒完回去逛、重抽一份逛的時間（見 funBack） */
+  ok('小獼猴打三下就燒三處，每一處離別處至少 MORE_GAP、走到旁邊才點，燒完才回去逛（逛的時間重抽）',
      hchain.n === 3 && hchain.gap >= hchain.want && hchain.reach < hchain.near * 2 &&
-     hchain.st === 'go' && hchain.owe === 0 && hchain.stay <= 0,
+     hchain.st === 'fun' && hchain.owe === 0 && hchain.stay <= 0 && hchain.back >= hchain.lo,
      hchain.secs + ' 秒燒了 ' + hchain.n + ' 處，彼此最近 ' + hchain.gap + ' 格（MORE_GAP ' +
      hchain.want + '）、點火時離目標最遠 ' + hchain.reach + ' 格；燒的時候逛的時間已經剩 ' +
-     hchain.stay + ' 秒，燒完才 ' + hchain.st);
+     hchain.stay + ' 秒，燒完回到 ' + hchain.st + '、重抽 ' + hchain.back + ' 秒（MASC_STAY 下限 ' + hchain.lo + '）');
 
   /* ── 欠帳的保險每一處重算（v1.244.2）──
      使用者問「45 秒是什麼」之後選「每燒完一處重算」。v1.229～v1.244.1 的 MORE_WAIT 是幾處加起來算的：
@@ -36842,14 +36924,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       beasts = null; purpClear(); cleanTools(); clearHomes();
       return r;
     };
-    const r = { levi: one('levi'), zen: one('zenitsu'), gojo: one('gojo'), range: PURP_RANGE };
+    const r = { levi: one('levi'), zen: one('zenitsu'), gojo: one('gojo'), range: PURP_RANGE, lo: MASC_STAY[0] };
     Math.random = or;
     phase = keepPh;
     return r;
   });
-  const qrOk = r => !!r.done && r.done.st === 'fun' && r.done.bad === 0 && r.done.home === 0 && r.done.stay <= 5 &&
+  /* v1.321.0 起收完重抽一份逛的時間（同其他吉祥物砸完，見 funBack）；v1.268.0～v1.320 是不加、逛完剩下的就走 */
+  const qrOk = r => !!r.done && r.done.st === 'fun' && r.done.bad === 0 && r.done.home === 0 && r.done.stay >= qrun.lo &&
                     r.set1 === r.set0 && r.v1 < r.v0;
-  ok('一整趟自己動手：照道具那一招砸那一間，地標一塊不少，收完回去逛、不加逛的時間（兵長／善逸／五條悟）',
+  ok('一整趟自己動手：照道具那一招砸那一間，地標一塊不少，收完回去逛、逛的時間重抽（兵長／善逸／五條悟）',
      qrOk(qrun.levi) && qrun.levi.seen.indexOf('odm') >= 0 && qrOk(qrun.zen) && qrun.zen.seen.indexOf('zen') >= 0 &&
      qrOk(qrun.gojo) && qrun.gojo.seen.indexOf('pur') >= 0 && qrun.gojo.ball >= qrun.range,
      ['levi', 'zen', 'gojo'].map(k => {
