@@ -6397,6 +6397,67 @@ if (vAo.x + vAo.y > 0.5) {
     hoof: 0x4a4440, ear: 0xd8d3ca, eye: 0x17120f, blaze: 0
   });
 
+  /* 小人將軍（v1.324.0，道具「小人將軍」）：騎馬的 Q 版小人，馬跟人是同一隻——走路腿擺、被打倒側躺都是牛羊那一套。
+     使用者看過預覽（tools/.e2e-out/將軍造型預覽.html）選的：「西洋騎士 劍 白或紅」。
+     **馬的毛色每一位抽一次**：同一份造型表，馬的那幾塊多帶一欄 c2（棗紅馬的顏色），規則那邊給 m.coat 就畫 c2（見 putBeasts）。
+     白馬那一份給了臉上那條白（跟臉同色、看不出來），兩份才會一樣 29 塊、一塊對一塊。
+     騎士照小人的比例畫（頭比肩寬），坐在鞍上（鞍頂 1.27）；右手（+x）拿劍。手臂連劍先照垂下來畫，
+     再整組繞肩膀轉到平常的角度（genArm）：劍尖斜指前下方；指揮時 putBeasts 照 m.arm × m.raise 再往前上舉，
+     劍就變成往前上方高舉。左手往前拉韁繩、不舉（hold）。見 開發筆記〈道具：小人將軍〉 */
+  const GEN_SH = [1.60, -0.02];                           // 肩關節（y, z）
+  function genArm(list, am, th) {
+    const c = Math.cos(th), s = Math.sin(th);
+    return list.map(b => {
+      const dy = b.p[1] - GEN_SH[0], dz = b.p[2] - GEN_SH[1];
+      return Object.assign({}, b, { p: [b.p[0], GEN_SH[0] + dy * c - dz * s, GEN_SH[1] + dy * s + dz * c],
+                                    r: [(b.r ? b.r[0] : 0) + th, 0, 0], am, hold: 1, pv: GEN_SH[0], pz: GEN_SH[1] });
+    });
+  }
+  const GENERAL = (() => {
+    const white = horseParts({ hide: 0xe9e6df, face: 0xe9e6df, muzzle: 0x8a7f78, mane: 0xb5aea3, sock: 0xe9e6df,
+                               hoof: 0x4a4440, ear: 0xd8d3ca, eye: 0x17120f, blaze: 0xe9e6df });
+    const horse = white.map((b, i) => Object.assign({}, b, { c2: HORSE[i].c }));   // c2＝棗紅馬（同 HORSE）
+    const ARM = 0xc9d0d9, ARMD = 0x7f8996, GOLD = 0xe2b845, RED = 0xb8282e, HAIR = 0x4a3a2c, GLOVE = 0x6b4a30;
+    const mid = [
+      { p: [0, 1.235, -0.02], s: [0.50, 0.07, 0.42], c: 0x5a3a22 },               // 馬鞍（頂 1.27）
+      { p: [0, 1.45, -0.02], s: [0.432, 0.36, 0.324], c: ARM },                    // 身體（銀甲）
+      { p: [0, 1.30, -0.02], s: [0.45, 0.07, 0.34], c: ARMD },                     // 腰帶
+      { p: [0, 1.48, 0.152], s: [0.26, 0.20, 0.02], c: GOLD },                     // 胸前那片金
+      { p: [0, 1.818, -0.02], s: [0.45, 0.396, 0.432], c: 0xf0c39a },              // 頭（Q 版）
+      { p: [0, 1.43, -0.25], s: [0.42, 0.42, 0.04], c: RED, r: [0.3, 0, 0] },     // 披風（往後飄）
+      { p: [0, 2.03, -0.02], s: [0.47, 0.17, 0.45], c: 0xd3d9e3 },                 // 頭盔
+      { p: [0, 1.955, -0.02], s: [0.49, 0.07, 0.47], c: ARMD },                    // 盔緣
+      { p: [0, 2.21, -0.05], s: [0.07, 0.22, 0.30], c: 0xc62f2b },                 // 羽飾
+      { p: [0, 2.12, -0.25], s: [0.07, 0.16, 0.12], c: 0xc62f2b }                  // 羽尾
+    ];
+    const side = [
+      { p: [0.232, 1.04, -0.04], s: [0.015, 0.32, 0.62], c: RED },                 // 馬衣
+      { p: [0.112, 1.80, 0.204], s: [0.135, 0.135, 0.02], c: 0xffffff },           // 眼白
+      { p: [0.12, 1.79, 0.21], s: [0.08, 0.10, 0.02], c: 0x2a231d },               // 瞳孔
+      { p: [0.112, 1.895, 0.205], s: [0.13, 0.04, 0.02], c: HAIR, r: [0, 0, 0.28] },    // 眉（往中間壓，凶一點）
+      { p: [0.07, 1.725, 0.205], s: [0.13, 0.045, 0.02], c: HAIR, r: [0, 0, -0.3] },    // 八字鬍
+      { p: [0.25, 1.62, -0.02], s: [0.17, 0.10, 0.26], c: ARMD },                  // 肩甲
+      { p: [0.28, 1.27, 0.08], s: [0.14, 0.14, 0.30], c: 0x9aa3ae },               // 大腿（跨在馬上，貼著馬身）
+      { p: [0.30, 1.08, 0.15], s: [0.13, 0.26, 0.15], c: 0x9aa3ae },               // 小腿
+      { p: [0.30, 0.94, 0.19], s: [0.14, 0.08, 0.22], c: 0x2f2822 }                // 靴
+    ];
+    /* 右手：垂下來時手的中心在 (0.27, 1.31)。劍順著「從正下方往前 0.8 弧度」那個方向伸出去 */
+    const HX = 0.27, HY = 1.31, HZ = -0.02, PH = 0.8, dy = -Math.cos(PH), dz = Math.sin(PH);
+    const at = d => [HX, HY + dy * d, HZ + dz * d];
+    const right = [
+      { p: [HX, 1.46, HZ], s: [0.12, 0.28, 0.14], c: ARM },                        // 手臂
+      { p: [HX, HY, HZ], s: [0.13, 0.09, 0.15], c: GLOVE },                        // 手套
+      { p: at(-0.07), s: [0.05, 0.14, 0.05], c: 0x5a3a22, r: [-PH, 0, 0] },        // 握把
+      { p: at(0.06), s: [0.20, 0.04, 0.07], c: GOLD, r: [-PH, 0, 0] },             // 護手
+      { p: at(0.39), s: [0.06, 0.62, 0.025], c: 0xe4e9ef, r: [-PH, 0, 0] }         // 劍身
+    ];
+    const left = [
+      { p: [-HX, 1.46, HZ], s: [0.12, 0.28, 0.14], c: ARM },
+      { p: [-HX, HY, HZ], s: [0.13, 0.09, 0.15], c: GLOVE }
+    ];
+    return horse.concat(mid, bmir(side), genArm(right, 1, -0.35), genArm(left, -1, -0.7));
+  })();
+
   /* 貓：嘴**貼在臉上**不往前伸（跟狗分開的那一處）、耳朵是兩節疊出來的尖角，
      尾巴三節：從屁股往後上翹、直直豎起、尾尖往前勾。 */
   const CAT_SH = 0.22, CAT_HIP = 0.22;
@@ -6883,7 +6944,8 @@ if (vAo.x + vAo.y > 0.5) {
                    tabby: TABBY, blackcat: BLACKCAT,
                    chiikawa: CHIIKAWA, hachiware: HACHIWARE, usagi: USAGI,
                    emperor: EMPEROR, adelie: ADELIE, goose: GOOSE,
-                   charmander: CHARMANDER, bulbasaur: BULBASAUR, squirtle: SQUIRTLE };
+                   charmander: CHARMANDER, bulbasaur: BULBASAUR, squirtle: SQUIRTLE,
+                   general: GENERAL };                    // 小人將軍（v1.324.0）
   /* 左右搖的時候繞哪一點轉：重心壓到踩著地的那一隻腳上，繞那隻腳**外緣**轉（v1.272.0）——
      繞原點轉的話另一隻腳會插進草皮。外緣＝掛 sw 那幾塊最往外的那一邊，照造型表算 */
   const WADDLE_E = {};
@@ -12725,7 +12787,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
         M.setMatrixAt(base + k, tmpM);
-        M.setColorAt(base + k, tmpC.setHex(shut ? SLP_LID : b.c));
+        /* 換一身毛色（v1.324.0 小人將軍的馬，見 GENERAL）：規則那邊給了 m.coat，帶 c2 的那幾塊畫 c2 */
+        M.setColorAt(base + k, tmpC.setHex(shut ? SLP_LID : m.coat && b.c2 !== undefined ? b.c2 : b.c));
         // 火把頭（v1.249.0）：這一塊畫出去的中心就是火的錨點。
         // 從林帶淡進來／淡出去那一段（v1.256.0）火苗跟著縮放——火是亮的、不吃 alpha，不縮的話會比牠先出現。
         // ft 是火的大小倍率（v1.301.0：火把頭 1、小火龍的尾巴 0.9）
@@ -13524,7 +13587,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
                zenitsu: ZENITSU, gojo: GOJO, frieren: FRIEREN, eris: ERIS,
                shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY, tabby: TABBY, blackcat: BLACKCAT,
                chiikawa: CHIIKAWA, hachiware: HACHIWARE, usagi: USAGI, emperor: EMPEROR, adelie: ADELIE,
-               goose: GOOSE, charmander: CHARMANDER, bulbasaur: BULBASAUR, squirtle: SQUIRTLE };
+               goose: GOOSE, charmander: CHARMANDER, bulbasaur: BULBASAUR, squirtle: SQUIRTLE, general: GENERAL };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */

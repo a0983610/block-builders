@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.323.1';
+const VERSION = '1.324.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -442,6 +442,13 @@ function sndFrHit() { tone(2200, 0.12, 'sine', 0.025, 0.7, 'frHit'); }
 /* 艾莉絲（v1.290.0）：登場是一聲短的劍鳴（很高的噪音一掃＋一顆亮的音往上）——跟 Saber（兩顆亮音往上）、里維（噴氣＋短的金屬）、
    善逸（電流的滋）分得開 */
 function sndEris() { noise(0.12, 0.05, 7000); tone(1980, 0.2, 'triangle', 0.03, 1.3, 'eris'); }
+/* 小人將軍（v1.324.0）：號角三聲往上（Sol—Do—Mi）——應召而來、舉劍出兵都吹這一聲。用方波像銅管，
+   跟芙莉蓮（三顆柔和鐘音）分得開；音量壓得比槍聲、砲聲低，出兵那一刻疊在一起不刺耳 */
+function sndGeneral() {
+  tone(392, 0.14, 'square', 0.022, 1, 'gen');
+  setTimeout(() => tone(523, 0.14, 'square', 0.022, 1, 'gen2'), 130);
+  setTimeout(() => tone(659, 0.34, 'square', 0.02, 1, 'gen3'), 260);
+}
 /* 居合架勢：一聲很輕、慢慢往上爬的嗡（長度讀 ENG.ERT 的 st ＋ hold，爬到頂正好接上斬下去那一聲） */
 function sndTachiCharge() {
   const d = ENG.ERT.st + ENG.ERT.hold;

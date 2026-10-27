@@ -113,7 +113,11 @@ const TOOLS = [
   { id: 'torch', n: '火把', k: '🕯', cat: 'safe', lamp: true,
     /* v1.317.0：也不是破壞道具——點一下插一支火把，晚上照亮周圍（見 placeTorch）。跟燈源一樣標 lamp、合計上限（見 lightRoom）。
        圖示：🔥 是放火、🔦（Unicode 名字就叫 electric torch）是燈源，所以用 🕯。照樣接在最後面、照等差階梯解鎖 */
-    tip: '點一下：插一支火把，晚上照亮周圍——火把＋燈架最多 4 座，被打壞就熄' }
+    tip: '點一下：插一支火把，晚上照亮周圍——火把＋燈架最多 4 座，被打壞就熄' },
+  { id: 'general', n: '小人將軍', k: '🎖', cat: 'army',
+    /* v1.324.0：也不是破壞道具——叫一位騎馬的將軍來守護村子 GEN_TIME 秒，敵人進村就叫箭雨、火槍兵、加農砲出來打
+       （見 callGeneral）。照樣接在最後面、照等差階梯解鎖 */
+    tip: '點一下：叫騎馬的將軍來守護村子 60 分鐘，敵人進村就叫箭雨、火槍兵或加農砲' }
 ];
 /* 道具選單的分類（v1.294.0，使用者：「道具選擇頁面根據種類分類(比較好找)」）：選單與快捷鍵那九格下拉
    照這張的順序一類一組，組裡照 TOOLS 的順序（＝解鎖順序）排。每一把在 TOOLS 裡寫 `cat` 指到這裡的 id。
@@ -174,7 +178,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       meat: 1,                                                  // 肉：點哪裡都是丟在那裡（v1.261.0）
                       eris: 1,                                                  // 光之太刀：點空地＝跑到那裡（v1.290.0）
                       flood: 1,                                                 // 燈源：兩下都是點地面也算（v1.303.0）
-                      torch: 1 };                                               // 火把：點哪裡都是插在那裡（v1.317.0）
+                      torch: 1,                                                 // 火把：點哪裡都是插在那裡（v1.317.0）
+                      general: 1 };                                             // 小人將軍：點哪裡都是叫他騎過去（v1.324.0）
 let tool = 'hammer';
 
 /* ── 破壞模式（v1.262.0）──────────────────────────────────
@@ -9152,6 +9157,9 @@ function useTool(hit) {
   /* 燈源（v1.303.0）：第一下立燈架的位置、第二下照哪裡；點在建築上就瞄那個高度（同投石機、加農砲） */
   if (tool === 'flood') { aimFlood(hit.point, hit.kind === 'block'); return 0; }
   if (tool === 'torch') { placeTorch(hit.point); return 0; }   // 火把（v1.317.0）：點一下插一支，點在建築上推到工地外
+  /* 小人將軍（v1.324.0）：點哪裡都是叫他騎到那一點（點建築就騎到旁邊站得下的地方，巡路規則在挪），之後在村子裡巡邏。
+     生物、小人在點選那一層是透明的（同防禦魔法） */
+  if (tool === 'general') { callGeneral(hit.point); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
@@ -9442,7 +9450,8 @@ function spawnBeast(kind, fun, bad, ang) {
     gw: null, nav: null, navWait: 0, nb: null, nbS: 0,
     /* 巨人自己一個倍率（v1.192）：牠的模型是拿 5.00 當高畫的，不是拿小人的 1.31，
        所以不能跟猴子共用 DOOM_SC。kick 是踹到哪了（0～1，引擎照它擺腿）。五條悟也自己一個（v1.255.0，見 GJ_SC）。 */
-    sc: kind === 'giant' ? GIA_SC : kind === 'diablo' ? DIA_SC : kind === 'gojo' ? GJ_SC : kind === 'frieren' ? FR_SC : DOOM_SC,
+    sc: kind === 'giant' ? GIA_SC : kind === 'diablo' ? DIA_SC : kind === 'gojo' ? GJ_SC : kind === 'frieren' ? FR_SC
+      : kind === 'general' ? GEN_SC : DOOM_SC,
     kick: 0, kleft: 0, kt: 0, hit: 0, puff: 0,
     /* Saber 出招到第幾秒（v1.222，見 stepExcal）；th0 上一幀光柱的角度（null＝不在斬）、
        thS 開斬那一刻的角度，xn／xb 這一招斬掉幾塊／點著幾塊（測試在讀），xs 震過畫面了沒 */
@@ -9492,6 +9501,7 @@ function spawnBeast(kind, fun, bad, ang) {
   else if (kind === 'gojo') sndGojo();
   else if (kind === 'frieren') sndFrieren();
   else if (kind === 'eris') sndEris();
+  else if (kind === 'general') sndGeneral();     // 小人將軍（v1.324.0）
   else sndBeast(kind === 'snow');
   if (ang !== undefined) return m;               // Excalibur 叫來的：提示由 callSaber 講（v1.224）
   /* 惠惠（v1.247.0）只當吉祥物、只有被打才動手，提示講她會怎樣 */
@@ -9839,6 +9849,9 @@ function stepBeast0(m, dt) {
     sndFall();
     return false;
   }
+  /* 小人將軍（v1.324.0）：巡邏、騎過去、舉劍出兵、時間到騎回林帶都是自己一套（見 stepGen）。
+     擺在被打倒那一條後面（倒下、爬起來照牛羊那一套），下面那幾段（舉手、走人、動手）一段都不走 */
+  if (m.kind === 'general') return stepGen(m, dt);
   const spd = m.herd ? HERD_WALK[m.kind] : (DOOM_SPD[m.kind] || DOOM_WALK);   // 每一款自己的腳程（v1.183）
   const stp = m.herd ? HERD_STEP[m.kind] : (DOOM_STEP[m.kind] || 0);
   const kp = m.herd ? 0 : (DOOM_KEEP[m.kind] || 0);       // 要離建築外圈再遠幾格（v1.192 巨人）
@@ -14372,7 +14385,9 @@ function stepMascot(dt) {
     mascT[i] -= dt;
     if (mascT[i] > 0) continue;
     mascT[i] = -1;
-    k.spawn(!k.calm && Math.random() < MASC_BAD ? 1 : 0);   // 偶而是來砸房子的那一隻（v1.166）；calm 的一律來逛（v1.268.0）
+    /* 偶而是來砸房子的那一隻（v1.166）；calm 的一律來逛（v1.268.0）。小人將軍守護中（v1.324.0）除了他會打的那四款，
+       其餘的一律來逛（使用者：「其他吉祥物 不再主動攻擊村子」）。genAwe 排在亂數後面：有沒有將軍都抽同樣幾次 */
+    k.spawn(!k.calm && Math.random() < MASC_BAD && !genAwe(k.id) ? 1 : 0);
   }
 }
 /* 把場上那隻吉祥物就地轉成天災（v1.145，使用者：「如果吉祥物進來剛好抽到天災
@@ -14482,11 +14497,12 @@ const MORE_GAP = DOOM_FIRE_R * 2;
 const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 小獼猴', snow: '🐵 小猴子', dragon: '🐉 飛龍',
                    gryphon: '🦅 獅鷲', giant: '🗿 巨人', diablo: '😈 Diablo', saber: '⚔ Saber', levi: '🗡 里維兵長',
-                   megumin: '💥 惠惠', zenitsu: '⚡ 善逸', gojo: '🟣 五條悟', frieren: '🛡 芙莉蓮', eris: '🌙 艾莉絲' };
+                   megumin: '💥 惠惠', zenitsu: '⚡ 善逸', gojo: '🟣 五條悟', frieren: '🛡 芙莉蓮', eris: '🌙 艾莉絲',
+                   general: '🎖 小人將軍' };
 /* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）用「他」；
    惠惠（v1.247.0）、芙莉蓮（v1.259.0）用「她」——其餘那幾款照舊是牠 */
 const itOf = m => m.kind === 'saber' || m.kind === 'megumin' || m.kind === 'frieren' || m.kind === 'eris' ? '她'
-                : m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' ? '他' : '牠';
+                : m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'general' ? '他' : '牠';
 /* 叫一聲。哪一種叫哪一聲照 spawnBeast／spawnDragon 那邊的分法，不另訂一套。 */
 function beastCry(m) {
   if (m.kind === 'dragon' || m.kind === 'gryphon') sndRoar();
@@ -14499,6 +14515,7 @@ function beastCry(m) {
   else if (m.kind === 'gojo') sndGojo();
   else if (m.kind === 'frieren') sndFrieren();
   else if (m.kind === 'eris') sndEris();
+  else if (m.kind === 'general') sndGeneral();
   else sndBeast(m.kind === 'snow');
 }
 /* 這一隻已經在走人了嗎（那就別再改牠的主意，同 turnBad 的規矩：都走到一半了
@@ -14729,7 +14746,8 @@ function beastHit(m, src) {
      （使用者：「都來逛 偶爾動手 被打到會生氣」）：照吉祥物那一套，一擊切換一次（見 mascStrike）。
      倒下、暈著、爬起來的惠惠（v1.247.0）也不算：v1.260.0 起那幾段打得到她了（被炸飛、點著），但使用者選的是
      「不算，不生氣」——爬起來照原本回去逛，不會再放一發 */
-  if (m.kind === 'gojo' || m.kind === 'frieren' || m.dead || megDown(m)) return;
+  /* 小人將軍（v1.324.0）也不生氣：他是來守護的，被打照樣倒、爬起來接著守（沒有「來意」可以改） */
+  if (m.kind === 'gojo' || m.kind === 'frieren' || m.kind === 'general' || m.dead || megDown(m)) return;
   /* 動不了手的吉祥物（v1.229，表上的 spent：小猴子丟完香蕉）：照樣會倒，只是不再改主意 */
   if (mascSpent(m)) return;
   /* 冷卻中（v1.229）：上一下算進去還不到 BEAST_HIT_CD 秒，這一下不算。
@@ -17322,3 +17340,300 @@ function bulletBeast(r, m) {
 /* 火槍隊要畫的那一份（接在弓箭手後面，見 game-ui.js 的 draw）。兩隊都在場才 concat（同 archerList）。 */
 const musketList = () => mkOld ? (musket ? mkOld.men.concat(musket.men) : mkOld.men)
                                : musket ? musket.men : EMPTY;
+
+/* ── 道具：小人將軍（v1.324.0）──────────────────────────────
+   使用者：「增加一個道具 小人將軍(可能小人騎馬造型)／放上去以後會守護村子1小時 有天災或是巨人 diablo靠近(村子範圍內)
+   或是飛龍 獅鷲來破壞的話／會呼叫箭雨 火槍兵 加農砲攻擊」，看過造型預覽之後：「西洋騎士 劍 白或紅／還有注意不要讓他
+   招喚出來的攻擊打到自己(可以用位置設計)」。問過定的：在村子（生活圈 arenaR）裡巡邏；出兵的對象見 GEN_FOE；
+   三招隨機抽一招、一次一隊；沒射中的照樣打壞東西（跟玩家自己叫的走同一條路：castArrows／castMusket／canTeam）；
+   守護中其他吉祥物不再主動來砸村子（見 stepMascot 那一行 genAwe）。
+   我自己定、回報時講過的：打不死（被打照樣倒、爬起來接著守，不生氣，見 beastHit）；場上只有一位，再點一次＝叫他騎過去、
+   守護時間重算；時間照模擬時間走（同天災的倒數），到了騎回林帶；換地標照守。
+   **不讓自己的兵打到自己，靠站位**（genPlan／genSafe）：兵一律排在他**前面**、整隊面向敵人，每一個射手都在他前面
+   至少 GEN_BEHIND 格；瞄的那一點一直夾在隊伍前緣再往前 GEN_FRONT 格以外（genAim）。箭、子彈、砲彈都是從射手往前
+   飛向那一點，所以整條路上每一點都在他前面——打不到他。指揮那一段他站定不動，自己也不會走進射線裡。
+   見 開發筆記〈道具：小人將軍〉 */
+const GEN_TIME = 3600;                 // 守護多久（秒，模擬時間）：使用者說的「1小時」
+const GEN_SC = DOOM_SC * 1.15;         // 比小人大一號（預覽定的：騎在馬上的人頭跟小人差不多大）
+const GEN_WALK = WALK * 0.6;           // 巡邏的腳程
+const GEN_RIDE = WALK * 1.5;           // 叫他過去、騎到出兵的位置：跑的
+const GEN_RIDE_T = 20;                 // 騎到出兵的位置最多騎幾秒（走不到就算了，下一輪重挑）
+const GEN_RAISE = 1.6;                 // 指揮時右手連劍再往前上舉多少（弧度，給 m.raise；預覽定的）
+const GEN_CMD_T = 0.6;                 // 舉劍之後多久出兵
+const GEN_GAP = [2, 4];                // 一隊打完、隔多久才叫下一隊
+const GEN_RETRY = 2;                   // 這一輪站不出隊伍（全被房子擋著、敵人在天上又沒有打得到的）隔多久再試
+const GEN_STAY = [2, 5];               // 巡邏走到一點站多久
+const GEN_BEHIND = 4;                  // 他至少站在每一個射手後面幾格（再加隊形的抖動量）
+const GEN_FRONT = 4;                   // 瞄的那一點至少在隊伍前緣前面幾格
+/* 吉祥物裡他會打的四款：1＝進村就打（巨人、Diablo）、2＝動手的時候才打（飛龍、獅鷲：m.left 是這一趟還要吐幾顆火球／
+   撞幾下，來砸村子、被惹毛都會給，見 madMascot）。天災一律打。表上沒有的吉祥物他守護時不來砸村子（genAwe） */
+const GEN_FOE = { giant: 1, diablo: 1, dragon: 2, gryphon: 2 };
+/* 三招各自的站法：B＝隊伍前緣在他前面幾格（隊伍排在他與敵人之間）；D＝前緣到敵人最好多遠（騎過去就照這個站），
+   lo／hi＝前緣到敵人在這個範圍裡就地出兵、不必挪。B 是照隊形的深度訂的：箭雨 5 排共 10.4 格、火槍兵 3 排 3.8 格，
+   各加 GEN_BEHIND 與抖動量，再留一排多退後的餘地（arSpot 踩到房子會往後退一排 AR_ROWGAP）；加農砲推的人從砲後面
+   PU_D 那麼遠推上來，B 要比它長，推的人才不會從他身上穿過去。lo／hi 放得寬：敵人一直在動（小獼猴進村點完火
+   十幾秒就走），範圍窄的話他一直在騎、到了敵人又不在那裡了（探針：14～40 那一版小獼猴整趟一次都沒出成） */
+const GEN_ARMY = {
+  arrow: { B: 20, D: 26, lo: 10, hi: 50 },
+  musket: { B: 12, D: 22, lo: 8, hi: 40 },
+  cannon: { B: 20, D: 28, lo: 14, hi: 50 }
+};
+const GEN_TRY = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9];   // 就地出兵：隊伍往兩側偏幾度試（弧度）
+const GEN_POST = [0, 0.7, -0.7];                // 騎過去：第幾次換到敵人的哪一側（弧度，繞著敵人轉）
+function pickGeneral() {
+  if (beasts) for (const m of beasts) if (m.kind === 'general') return m;
+  return null;
+}
+/* 守護中的這一款不來砸村子嗎（stepMascot 抽「來砸房子」那一下問）：他會打的那四款照抽 */
+const genAwe = id => !GEN_FOE[id] && !!beasts && beasts.some(m => m.kind === 'general' && m.st !== 'go');
+/* 點下去的那一下（useTool）：沒有就從林帶那一邊叫一位進來，有就叫他騎過去；守護時間都從頭算。回傳那一位（測試在讀） */
+function callGeneral(p) {
+  let m = pickGeneral();
+  if (!m) {
+    /* 從那一點的方位上進場（同芙莉蓮）；點在場心附近就隨機挑一個方位 */
+    const a = Math.hypot(p.x, p.z) > 1 ? Math.atan2(p.z, p.x) : Math.random() * Math.PI * 2;
+    m = spawnBeast('general', 1, 0, a);
+    m.side = 1; m.sdir = 1;                       // 四條腿的：倒下來往側邊倒（同牛羊，見 lieAng）
+    m.coat = Math.random() < 0.5 ? 1 : 0;         // 白馬或棗紅馬（見 engine 的 GENERAL）
+    m.raise = GEN_RAISE;
+    toast(BEAST_NM.general + '應召而來',
+          '他騎到你點的地方，接下來 ' + Math.round(GEN_TIME / 60) + ' 分鐘在村子裡巡邏；敵人進村就叫箭雨、火槍兵或加農砲出來打');
+  } else {
+    genDismiss(m);                                // 正在打的那一隊收兵：他要騎走了，站位那一套就不成立了
+    beastCry(m);
+    toast(BEAST_NM.general + '聽到了', '他騎到你點的地方，守護時間重新算 ' + Math.round(GEN_TIME / 60) + ' 分鐘');
+  }
+  m.gt = GEN_TIME; m.gcd = 0; m.gtry = 0; m.gf = null; m.gw = null; m.gg = null; m.gp = null;
+  m.st = 'gride'; m.gwhy = 'go'; m.grt = 0; m.tx = p.x; m.tz = p.z; m.leg = 0; m.pause = 0;
+  return m;
+}
+/* 巡邏的下一點：同 idleSpot，範圍換成村子那一圈（arenaR）；被地標圍住走不到的換成走得到的最近那一點 */
+function genSpot(m) {
+  const a = Math.random() * Math.PI * 2, d = arenaR * Math.sqrt(Math.random());
+  let x = Math.cos(a) * d, z = Math.sin(a) * d;
+  if (!lmReach(x, z)) { const q = lmNearReach(x, z); if (q) { x = q.x; z = q.z; } }
+  m.tx = x; m.tz = z;
+}
+/* 腿擺倍率：他的馬就是閒逛那匹馬的腿（同一支 horseParts），照腳程等比例放大（理由見 HERD_STEP） */
+const genStep = v => HERD_STEP.horse * v / HERD_WALK.horse;
+/* 這一隻要不要打：還在場上、沒倒地死、沒在走人、在村子裡（arenaR），而且是天災或 GEN_FOE 那四款 */
+function genFoe(f) {
+  if (!f || f.kind === 'general' || f.herd || f.kind === 'goose' || f.ufo || slain(f) || beastLeaving(f)) return false;
+  if (!beasts || beasts.indexOf(f) < 0 || Math.hypot(f.x, f.z) > arenaR) return false;
+  if (!f.fun) return true;
+  return GEN_FOE[f.kind] === 1 || (GEN_FOE[f.kind] === 2 && f.left > 0);
+}
+function genPick(m) {
+  let best = null, bd = Infinity;
+  if (beasts) for (const f of beasts) {
+    if (!genFoe(f)) continue;
+    const d = Math.hypot(f.x - m.x, f.z - m.z);
+    if (d < bd) { bd = d; best = f; }
+  }
+  return best;
+}
+/* 瞄多高：天上的瞄牠的身體中心（m.y），地上的瞄身體中段（同 weaponVsBeast 判中的那一段） */
+const genTy = f => f.sky ? (f.y || 0) : ENG.BEAST_MID[f.kind] * (f.sc || 1);
+/* 這一隻能叫哪幾招：**天上的只有箭雨**——火槍兵仰角上限 MK_EL_MAX（30°），加農砲瞄的高度不會高過落點那裡的積木
+   （見 fireCannon 的 colTop），兩招都打不到天上 40 格。玩家自己叫的那一隊還在場上的也不叫（叫了會把玩家那一隊換掉） */
+function genWeapons(f) {
+  const out = onGroundBeast(f) ? ['arrow', 'musket', 'cannon'] : ['arrow'];
+  return out.filter(w => !(w === 'arrow' && archers && archers.st !== 'out') && !(w === 'musket' && musket && musket.st !== 'out'));
+}
+/* 這一隊站在 S、面向 (ux, uz) 的話每一個射手會站在哪：照 castArrows／castMusket／canTeam 的排法算（不加抖動），
+   踩到房子退後那一步也照 arSpot 算，所以算出來的就是真的會站的位置（差一個抖動量） */
+function genShooters(w, S, ux, uz) {
+  const sx = -uz, sz = ux, out = [];
+  if (w === 'arrow') for (let i = 0; i < AR_N; i++) {
+    const row = Math.floor(i / AR_COL), col = i % AR_COL, off = col - (Math.min(AR_COL, AR_N - row * AR_COL) - 1) / 2;
+    out.push(arSpot(S.x + sx * off * AR_GAP - ux * row * AR_ROWGAP, S.z + sz * off * AR_GAP - uz * row * AR_ROWGAP, ux, uz));
+  } else if (w === 'musket') for (let r = 0; r < MK_ROWS; r++) for (let c = 0; c < MK_COL; c++) {
+    const off = c - (MK_COL - 1) / 2;
+    out.push(arSpot(S.x + sx * off * MK_GAP - ux * r * MK_ROW, S.z + sz * off * MK_GAP - uz * r * MK_ROW, ux, uz));
+  } else for (let i = 0; i < CAN_TEAM; i++) {
+    const off = (i - (CAN_TEAM - 1) / 2) * CAN_GAP;
+    out.push({ x: S.x + sx * off, z: S.z + sz * off });
+  }
+  return out;
+}
+/* 站位那條規則（見這一節開頭）：每一個射手都在他前面至少 GEN_BEHIND 格（再加隊形的抖動量）。
+   加農砲另外要整隊都站在工地圈外、島內：canTeam／placeCannon 會把站進工地圈的整隊往外推、站出島的夾回來，
+   推過就不是算好的位置了，那一種不用 */
+function genSafe(m, w, S, ux, uz) {
+  const P = genShooters(w, S, ux, uz), jit = w === 'arrow' ? AR_JIT : w === 'musket' ? MK_SPOT : 0;
+  if (w === 'cannon') for (const p of P) {
+    const r = Math.hypot(p.x, p.z);
+    if (r < siteR + CAN_STAND + 0.1 || r > debrisR - 2) return false;
+  }
+  for (const p of P) if ((p.x - m.x) * ux + (p.z - m.z) * uz < GEN_BEHIND + jit) return false;
+  return true;
+}
+/* 就地出兵排得出來嗎：隊伍前緣擺在他往敵人那個方向 B 格（排不下就往兩側偏一點試），前緣到敵人要在 lo～hi 裡、
+   站位要過 genSafe。排得出來回 { w, S（前緣中心）, ux, uz（隊伍面向） }，排不出來回 null */
+function genPlan(m, f, w) {
+  const A = GEN_ARMY[w], d0 = Math.hypot(f.x - m.x, f.z - m.z) || 1;
+  const bx = (f.x - m.x) / d0, bz = (f.z - m.z) / d0;
+  for (const th of GEN_TRY) {
+    const c = Math.cos(th), s = Math.sin(th);
+    const S = { x: m.x + (bx * c - bz * s) * A.B, z: m.z + (bx * s + bz * c) * A.B };
+    const dx = f.x - S.x, dz = f.z - S.z, D = Math.hypot(dx, dz);
+    if (D < A.lo || D > A.hi) continue;
+    if (genSafe(m, w, S, dx / D, dz / D)) return { w, S, ux: dx / D, uz: dz / D };
+  }
+  return null;
+}
+/* 瞄哪一點：敵人在哪就瞄哪，但夾在隊伍前緣再往前 GEN_FRONT 格以外——敵人走到隊伍裡、繞到後面也一樣，
+   箭與砲彈就落在隊伍前面，不會往回打 */
+function genAim(p, f) {
+  let x = f.x, z = f.z;
+  const front = (x - p.S.x) * p.ux + (z - p.S.z) * p.uz;
+  if (front < GEN_FRONT) { x += p.ux * (GEN_FRONT - front); z += p.uz * (GEN_FRONT - front); }
+  return { x, z, y: genTy(f) };
+}
+/* 盯上一隻之後：抽一招（換位置重試時照舊用同一招）；就地排得出隊伍就舉劍，排不出來就騎到「敵人與他那條線上、
+   距離剛好」的地方（第二、三次換到敵人的另一側），騎到了再試；三次都不行就隔 GEN_RETRY 秒重來 */
+function genEngage(m) {
+  const f = m.gf, ws = genFoe(f) ? genWeapons(f) : [];
+  if (!ws.length) { genDone(m, GEN_RETRY); return; }
+  if (ws.indexOf(m.gw) < 0) m.gw = ws[Math.floor(Math.random() * ws.length)];
+  const p = genPlan(m, f, m.gw);
+  if (p) { m.gp = p; m.gg = null; m.gct = 0; m.st = 'gcmd'; m.pause = 0; sndGeneral(); return; }
+  if (m.gtry >= GEN_POST.length) { genDone(m, GEN_RETRY); return; }
+  const A = GEN_ARMY[m.gw], th = GEN_POST[m.gtry++], c = Math.cos(th), s = Math.sin(th);
+  const d = Math.hypot(m.x - f.x, m.z - f.z) || 1, vx = (m.x - f.x) / d, vz = (m.z - f.z) / d;
+  let px = f.x + (vx * c - vz * s) * (A.B + A.D), pz = f.z + (vx * s + vz * c) * (A.B + A.D);
+  const r = Math.hypot(px, pz), lim = debrisR - 3;
+  if (r > lim) { px *= lim / r; pz *= lim / r; }
+  m.tx = px; m.tz = pz; m.st = 'gride'; m.gwhy = 'post'; m.grt = 0; m.leg = 0; m.pause = 0;
+}
+/* 出兵：走玩家叫的那幾支（castArrows／castMusket／canTeam），叫出來的那一隊記在 m.gg（加農砲記同一次叫的那個 tm）。
+   castArrows／castMusket 會清掉 aim（玩家點兩下的第一下），玩家正點到一半的話那一下要留著。
+   **叫出來之後拿真的站位再驗一次**（genSafeNow）：genSafe 算的是不加抖動的站位，抖一下踩進房子、往後退兩排的那一種
+   它算不到。驗不過就當場收兵（那一隊還在走進來，一箭都還沒射），隔 GEN_RETRY 秒重排 */
+function genCast(m) {
+  const p = m.gp, t = genAim(p, m.gf), a0 = aim;
+  if (p.w === 'arrow') { castArrows(p.S, t, t.y); m.gg = archers; }
+  else if (p.w === 'musket') { castMusket(p.S, t, t.y); m.gg = musket; }
+  else { m.gg = { n: 0, ok: 0 }; canTeam(p.S, t, t.y, 0, m.gg); }
+  aim = a0;
+  if (!genSafeNow(m)) { genDismiss(m); genDone(m, GEN_RETRY); }
+}
+/* 叫出來的那一隊，每一個人要站的位置（弓箭手 hx／hz、火槍兵的格子 slot、加農砲推到位的 hx／hz）都在他前面 GEN_BEHIND 格以上嗎。
+   火槍兵輪替時走的那條縫（mkLane）只是格子往旁邊挪半個間距，前後不變，所以驗格子就夠 */
+function genSafeNow(m) {
+  const p = m.gp, g = m.gg;
+  const men = p.w === 'arrow' ? g.men : p.w === 'musket' ? [].concat(...g.slot) : cannons.list.filter(c => c.tm === g);
+  for (const q of men) {
+    const x = q.hx !== undefined ? q.hx : q.x, z = q.hz !== undefined ? q.hz : q.z;
+    if ((x - m.x) * p.ux + (z - m.z) * p.uz < GEN_BEHIND) return false;
+  }
+  return true;
+}
+/* 他叫的那一隊還在打嗎（散場、被玩家叫的同一招換掉、打完撤走都算打完了） */
+function genTeamOn(m) {
+  const g = m.gg;
+  if (!g) return false;
+  if (m.gp.w === 'arrow') return archers === g && g.st !== 'out';
+  if (m.gp.w === 'musket') return musket === g && g.st !== 'out';
+  return !!cannons && cannons.list.some(c => c.tm === g && c.st !== 'out');
+}
+/* 打的時候跟著敵人瞄（每一發離手那一刻讀的就是這幾個欄位：shootArrow 的 g.tx、mkAim 的 g.ty、fireCannon 的 m.tx）。
+   火槍兵整排朝隊伍正前方平行射（mkAim），跟得到的只有仰角；加農砲還在推進來的那幾門先不轉（puGather 在轉它）。
+   箭雨瞄的是「箭飛到時牠會在的地方」（genLead），牠這一刻多快照上一幀到這一幀走了多少算（換了一隻就從 0 起算） */
+function genTrack(m, dt) {
+  const f = m.gf, g = m.gg;
+  if (m.gfo === f && dt > 0) {
+    const k = Math.min(1, dt * 4);
+    m.gvx += ((f.x - m.gfx) / dt - m.gvx) * k; m.gvz += ((f.z - m.gfz) / dt - m.gvz) * k;
+  } else { m.gfo = f; m.gvx = 0; m.gvz = 0; }
+  m.gfx = f.x; m.gfz = f.z;
+  const t = genAim(m.gp, m.gp.w === 'arrow' ? genLead(m, f) : f);
+  if (m.gp.w !== 'cannon') { g.tx = t.x; g.tz = t.z; g.ty = t.y; return; }
+  for (const c of cannons.list) {
+    if (c.tm !== g || c.st === 'out') continue;
+    c.tx = t.x; c.tz = t.z; c.ty = t.y;
+    if (c.st !== 'in') c.a = Math.atan2(t.x - c.x, t.z - c.z);
+  }
+}
+/* 箭飛到那裡要幾秒（照 shootArrow 的兩支解：目標不比出手點高走 45 度、比出手點高走最省力仰角；從隊伍前緣中心算），
+   乘上牠這一刻的速度＝箭到的時候牠在哪。解兩次（落點挪了，飛的時間跟著變）。
+   天上的飛龍一邊繞一邊吐火球，往 40 格高射的箭要飛三四秒，瞄牠現在的位置一支都射不中（探針：沒有這一支時兩隊 0 中） */
+function genLead(m, f) {
+  const S = m.gp.S, dh = genTy(f) - ENG.BOW_TIP[1] * DOOM_SC;
+  let x = f.x, z = f.z;
+  for (let k = 0; k < 2; k++) {
+    const d = Math.max(1, Math.hypot(x - S.x, z - S.z));
+    const T = dh <= 0 ? Math.max(AR_T_MIN, Math.sqrt((d - dh) / (GRAV / 2)))
+                      : d / (Math.sqrt(GRAV * (dh + Math.hypot(d, dh))) * Math.cos(Math.PI / 4 + Math.atan2(dh, d) / 2));
+    x = f.x + m.gvx * T; z = f.z + m.gvz * T;
+  }
+  return Object.assign({}, f, { x, z });
+}
+/* 收兵：那一隊當場散場（箭雨、火槍兵 trDisperse，加農砲 puOut 原地淡掉），同玩家再叫一隊時舊的那一隊 */
+function genDismiss(m) {
+  if (m.gp && genTeamOn(m)) {
+    if (m.gp.w === 'cannon') { for (const c of cannons.list) if (c.tm === m.gg && c.st !== 'out') puOut(c, cannons); }
+    else trDisperse(m.gg);
+  }
+  m.gg = null; m.gp = null;
+}
+/* 這一輪結束，回去巡邏：先站一下，cd 秒（沒給＝GEN_GAP）之後才再盯下一隻 */
+function genDone(m, cd) {
+  m.gg = null; m.gp = null; m.gf = null; m.gw = null; m.gtry = 0;
+  m.st = 'fun'; m.gcd = cd === undefined ? rr(GEN_GAP[0], GEN_GAP[1]) : cd;
+  m.pause = rr(GEN_STAY[0], GEN_STAY[1]);
+  genSpot(m);
+}
+/* 一幀（stepBeast0 叫，倒地那一段已經在前面處理掉了）。狀態：
+     gride 騎到一點（gwhy＝'go' 玩家叫他去的那一點、'post' 出兵的位置）
+     fun   巡邏：在村子裡逛，每一幀找最近的敵人，找到就 genEngage
+     gcmd  指揮：站定、轉向隊伍的面向、舉劍；GEN_CMD_T 秒後出兵，那一隊打完（或敵人沒了收兵）才回去巡邏
+     go    時間到了，騎回林帶（走到了回 true，這一位就收掉；淡出見 woodFade） */
+function stepGen(m, dt) {
+  m.gt -= dt;
+  if (m.gcd > 0) m.gcd -= dt;
+  m.arm += ((m.st === 'gcmd' ? 1 : 0) - m.arm) * Math.min(1, dt * DOOM_ARM);
+  if (m.st === 'go') return strollTo(m, dt, GEN_WALK, genStep(GEN_WALK), 0);
+  if (m.gt <= 0) {
+    genDismiss(m);
+    leaveBeast(m);
+    toast(BEAST_NM.general + '守護完了', '時間到了，他騎馬回去了');
+    return false;
+  }
+  if (m.st === 'gride') {
+    if (m.gwhy === 'post' && !genFoe(m.gf)) { genDone(m); return false; }    // 騎到一半，敵人走了、倒地死了、出村了
+    m.grt += dt;
+    if (!strollTo(m, dt, GEN_RIDE, genStep(GEN_RIDE), 0) && !(m.gwhy === 'post' && m.grt > GEN_RIDE_T)) return false;
+    m.leg = 0;
+    if (m.gwhy === 'post') genEngage(m);
+    else { m.st = 'fun'; m.pause = rr(GEN_STAY[0], GEN_STAY[1]); genSpot(m); }
+    return false;
+  }
+  if (m.st === 'gcmd') {
+    const p = m.gp;
+    m.gait += (0 - m.gait) * Math.min(1, dt * 8);
+    m.a = mkAngLerp(m.a, Math.atan2(p.ux, p.uz), Math.min(1, dt * 6));
+    if (!m.gg) {
+      if ((m.gct += dt) < GEN_CMD_T) return false;
+      if (genFoe(m.gf)) genCast(m); else genDone(m);
+      return false;
+    }
+    if (!genTeamOn(m)) { genDone(m); return false; }
+    /* 盯的那一隻沒了：換最近的那一隻，**要在隊伍前面的**（不在前面的就收兵，下一輪重排） */
+    if (!genFoe(m.gf)) {
+      const f = genPick(m);
+      if (f && (f.x - p.S.x) * p.ux + (f.z - p.S.z) * p.uz >= GEN_FRONT) m.gf = f;
+      else { genDismiss(m); genDone(m); return false; }
+    }
+    genTrack(m, dt);
+    return false;
+  }
+  /* 巡邏（fun） */
+  if (!(m.gcd > 0)) {
+    const f = genPick(m);
+    if (f) { m.gf = f; m.gw = null; m.gtry = 0; genEngage(m); if (m.st !== 'fun') return false; }
+  }
+  if (m.pause > 0) { m.pause -= dt; m.gait += (0 - m.gait) * Math.min(1, dt * 8); return false; }
+  if (strollTo(m, dt, GEN_WALK, genStep(GEN_WALK), 0)) { m.pause = rr(GEN_STAY[0], GEN_STAY[1]); m.leg = 0; genSpot(m); }
+  return false;
+}

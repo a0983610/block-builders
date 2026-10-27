@@ -38062,6 +38062,279 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { cleanTools(); });
   }   // ── 〈道具：火把〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 道具：小人將軍（v1.324.0） ══════════
+     使用者：「增加一個道具 小人將軍(可能小人騎馬造型)／放上去以後會守護村子1小時 有天災或是巨人 diablo靠近(村子範圍內)
+     或是飛龍 獅鷲來破壞的話 會呼叫箭雨 火槍兵 加農砲攻擊」「注意不要讓他招喚出來的攻擊打到自己(可以用位置設計)」。
+     全部是規則型：直接擺好他與敵人、叫 callGeneral／genFoe／genWeapons／genPlan／genCast／stepGen／stepMascot 量規則本身，
+     要抽骰子的押住，量完把全域還回去。見 開發筆記〈道具：小人將軍〉 */
+  SEC: { if (!(await head('道具：小人將軍', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await fillAll(page);
+
+  /* ── 造型與表：進 BEASTS 與造型總表、塊數在上限內；馬那 29 塊帶 c2＝棗紅馬的顏色；道具接在火把後面、歸「軍隊器械」 ── */
+  const gtab = await page.evaluate(() => {
+    const G = ENG.BEASTS.general, H = ENG.BEASTS.horse;
+    const i = TOOLS.findIndex(t => t.id === 'general'), it = TOOLS.findIndex(t => t.id === 'torch'), t = TOOLS[i];
+    return { inB: !!G, model: ENG.MODELS.general === G, n: G.length, max: ENG.BEAST_PARTS,
+             coat: H.every((b, k) => G[k].c2 === b.c) && G.slice(H.length).every(b => b.c2 === undefined),
+             arm: G.filter(b => b.am > 0).length > 0 && G.filter(b => b.am).every(b => b.hold),
+             at: i, torch: it, cat: t.cat, icon: t.k, ground: !!GROUND_TOOL.general, step: t.lock.need - TOOLS[it].lock.need, LOCK_STEP,
+             tip: t.tip.indexOf(Math.round(GEN_TIME / 60) + ' 分鐘') >= 0, masc: MASCOTS.some(k => k.id === 'general'),
+             doom: DOOMS.some(d => d.id === 'general'), nm: !!BEAST_NM.general, he: itOf({ kind: 'general' }) };
+  });
+  ok('造型：進 BEASTS 與造型總表、塊數不超過 BEAST_PARTS；馬那幾塊帶 c2（＝棗紅馬那一份的顏色）、騎士沒有；手臂走路不擺（hold）',
+     gtab.inB && gtab.model && gtab.n <= gtab.max && gtab.coat && gtab.arm, JSON.stringify(gtab));
+  ok('道具表：接在火把後面、歸「軍隊器械」、點空地也算數；圖示 🎖；說明的分鐘數就是 GEN_TIME；門檻比火把多一階；不進吉祥物與天災；提示用「他」',
+     gtab.torch >= 0 && gtab.at === gtab.torch + 1 && gtab.cat === 'army' && gtab.ground && gtab.icon === '🎖' && gtab.tip &&
+     gtab.step === gtab.LOCK_STEP && !gtab.masc && !gtab.doom && gtab.nm && gtab.he === '他',
+     JSON.stringify(gtab));
+
+  /* ── 叫來：點一下多一位（從林帶騎進來、往點的那一點騎）；再點一次還是那一位、改騎去新的那一點、守護時間從頭算；
+        毛色抽一次（Math.random 押 0＝棗紅、押 0.9＝白） ── */
+  const gcall = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const real = Math.random, t0 = tool;
+    let r;
+    try {
+      Math.random = () => 0;
+      tool = 'general';
+      useTool({ kind: 'ground', point: { x: siteR + 20, y: 0, z: 0 }, dir: { x: 0, y: -1, z: 0 } });
+      const m = beasts.find(q => q.kind === 'general');
+      r = { n: beasts.length, st: m.st, why: m.gwhy, tx: m.tx === siteR + 20 && m.tz === 0, gt: m.gt === GEN_TIME, fun: m.fun,
+            raise: m.raise === GEN_RAISE, side: m.side, sc: m.sc === GEN_SC, coat0: m.coat, wood: Math.hypot(m.x, m.z) > debrisR };
+      m.gt = 100;
+      useTool({ kind: 'ground', point: { x: 0, y: 0, z: siteR + 30 }, dir: { x: 0, y: -1, z: 0 } });
+      r.again = beasts.filter(q => q.kind === 'general').length === 1 && beasts[0] === m && m.tz === siteR + 30 && m.gt === GEN_TIME;
+      beasts = null;
+      Math.random = () => 0.9;
+      r.coat1 = callGeneral({ x: siteR + 20, z: 0 }).coat;
+    } finally { Math.random = real; tool = t0; }
+    cleanTools(); beasts = null;
+    return r;
+  });
+  ok('叫來：點一下多一位，從林帶往點的那一點騎（gride）、守護 GEN_TIME 秒；再點一次還是同一位、改騎去新的那一點、時間從頭算；毛色抽一次',
+     gcall.n === 1 && gcall.st === 'gride' && gcall.why === 'go' && gcall.tx && gcall.gt && gcall.fun === 1 && gcall.raise &&
+     gcall.side === 1 && gcall.sc && gcall.wood && gcall.again && gcall.coat0 === 1 && gcall.coat1 === 0,
+     JSON.stringify(gcall));
+
+  /* ── 畫面：m.coat 為真時帶 c2 的那幾塊畫 c2（馬變棗紅），騎士那幾塊不變 ── */
+  const gcolor = await page.evaluate(() => {
+    const G = ENG.BEASTS.general, mesh = ENG.three.beastMesh, c = new THREE.Color();
+    const m = { kind: 'general', x: siteR + 20, y: 0, z: 0, a: 0, ph: 0, gait: 0, sc: GEN_SC, arm: 0, bomb: 1 };
+    const hex = k => { mesh.getColorAt(k, c); return c.getHex(); };
+    const iH = 0, iR = G.findIndex(b => b.c2 === undefined);
+    ENG.putBeasts([m]);
+    const w = [hex(iH), hex(iR)];
+    m.coat = 1; ENG.putBeasts([m]);
+    const b = [hex(iH), hex(iR)];
+    ENG.putBeasts([]);
+    const want = h => new THREE.Color(h).getHex();
+    return { white: w[0] === want(G[iH].c), bay: b[0] === want(G[iH].c2), rider: w[1] === b[1] && w[1] === want(G[iR].c) };
+  });
+  ok('畫面：m.coat 為真時馬那幾塊畫 c2（棗紅），騎士那幾塊不變', gcolor.white && gcolor.bay && gcolor.rider, JSON.stringify(gcolor));
+
+  /* ── 誰算敵人（genFoe）：村子裡（arenaR）的天災全部算；吉祥物只有巨人、Diablo（進村就算）與飛龍、獅鷲（m.left > 0 動手中才算）；
+        村子外、走人中、打滿三下的、牛羊、他自己都不算 ── */
+  const gfoe = await page.evaluate(() => {
+    cleanTools(); beasts = null;
+    const R = arenaR - 3, mk = (kind, o) => Object.assign({ kind, x: R, y: 0, z: 0, st: 'fun', fun: 1, left: 0, hits: 0, dead: 0 }, o);
+    const L = {
+      dApe: mk('ape', { fun: 0, st: 'come' }), dSaber: mk('saber', { fun: 0, st: 'near' }), dOut: mk('giant', { fun: 0, x: arenaR + 3 }),
+      dGo: mk('ape', { fun: 0, st: 'go' }), mGiant: mk('giant'), mDiablo: mk('diablo'), mSaber: mk('saber'), mApe: mk('ape'),
+      mDra0: mk('dragon', { st: 'ring', sky: 1, y: 40 }), mDra: mk('dragon', { st: 'ring', sky: 1, y: 40, left: 2 }),
+      mGry: mk('gryphon', { st: 'in', sky: 1, y: 40, left: 1, stay: 30 }), slain: mk('giant', { hits: KILL_HITS }),
+      herd: mk('cow', { herd: 1 }), gen: mk('general', { st: 'fun' })
+    };
+    beasts = Object.values(L);
+    const r = {};
+    for (const k in L) r[k] = genFoe(L[k]);
+    beasts = null;
+    return r;
+  });
+  ok('誰算敵人：村子裡的天災全部算（村子外、走人中的不算）；吉祥物只有巨人、Diablo，與動手中的飛龍、獅鷲；打滿的、牛羊、他自己不算',
+     gfoe.dApe && gfoe.dSaber && !gfoe.dOut && !gfoe.dGo && gfoe.mGiant && gfoe.mDiablo && !gfoe.mSaber && !gfoe.mApe &&
+     !gfoe.mDra0 && gfoe.mDra && gfoe.mGry && !gfoe.slain && !gfoe.herd && !gfoe.gen,
+     JSON.stringify(gfoe));
+
+  /* ── 叫哪幾招（genWeapons）：地上的三招都行、天上的只有箭雨；玩家自己叫的箭雨或火槍兵還在場上就不叫那一招 ── */
+  const gweap = await page.evaluate(() => {
+    cleanTools(); beasts = null;
+    const g = { kind: 'giant', x: 10, z: 0, y: 0, sc: GIA_SC }, d = { kind: 'dragon', x: 10, z: 0, y: 40, sky: 1, st: 'ring', sc: 1 };
+    const r = { ground: genWeapons(g).join(), air: genWeapons(d).join() };
+    archers = { st: 'fire', men: [] };
+    r.busyA = genWeapons(g).join();
+    archers = { st: 'out', men: [] }; musket = { st: 'in', men: [] };
+    r.busyM = genWeapons(g).join();
+    archers = null; musket = null;
+    return r;
+  });
+  ok('叫哪幾招：地上的三招都行、天上的只有箭雨；玩家叫的箭雨／火槍兵還在打就不叫那一招（散場中的不算）',
+     gweap.ground === 'arrow,musket,cannon' && gweap.air === 'arrow' && gweap.busyA === 'musket,cannon' && gweap.busyM === 'arrow,cannon',
+     JSON.stringify(gweap));
+
+  /* ── 站位規則（不讓自己的兵打到自己）：他站在場上各處、敵人在四周各個方向，三招各排一次——排得出來的那幾次，
+        叫出來的每一個射手（弓箭手 hx／hz、火槍兵的格子、加農砲到位的位置）都在他前面 GEN_BEHIND 格以上（隊形抖動押 0 與 0.999 各一輪）；
+        瞄的那一點不管敵人在哪，都在隊伍前緣前面 GEN_FRONT 格以上 ── */
+  const gsafe = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const real = Math.random, keepToast = toast;
+    const r = { plans: 0, tries: 0, bad: 0, worst: Infinity, aimBad: 0, dismissed: 0, byW: { arrow: 0, musket: 0, cannon: 0 } };
+    toast = () => {};
+    try {
+      for (const jit of [0, 0.999]) {
+        Math.random = () => jit;
+        for (let gi = 0; gi < 4; gi++) for (let fi = 0; fi < 6; fi++) {
+          const ga = gi / 4 * Math.PI * 2 + 0.3, gr = siteR + 18;
+          const m = { kind: 'general', x: Math.cos(ga) * gr, z: Math.sin(ga) * gr, st: 'gcmd', gt: GEN_TIME };
+          const fa = fi / 6 * Math.PI * 2, fd = 25 + fi * 6;
+          const f = { kind: 'giant', fun: 0, st: 'come', x: m.x + Math.cos(fa) * fd, z: m.z + Math.sin(fa) * fd, y: 0, sc: GIA_SC, hits: 0 };
+          beasts = [m, f];
+          for (const w of ['arrow', 'musket', 'cannon']) {
+            r.tries++;
+            const p = genPlan(m, f, w);
+            if (!p) continue;
+            r.plans++; r.byW[w]++;
+            m.gp = p; m.gf = f; m.gg = null;
+            genCast(m);
+            if (!m.gg) r.dismissed++;                  // 驗不過、當場收兵的（見下一條）
+            else {
+              const men = w === 'arrow' ? archers.men : w === 'musket' ? [].concat(...musket.slot) : cannons.list.filter(c => c.tm === m.gg);
+              for (const q of men) {
+                const x = q.hx !== undefined ? q.hx : q.x, z = q.hz !== undefined ? q.hz : q.z;
+                const b = (x - m.x) * p.ux + (z - m.z) * p.uz;
+                r.worst = Math.min(r.worst, b);
+                if (b < GEN_BEHIND) r.bad++;
+              }
+            }
+            /* 敵人跑到隊伍後面、跑到他身邊：瞄的那一點照樣夾在前緣前面 */
+            for (const q of [{ x: m.x, z: m.z }, { x: p.S.x - p.ux * 30, z: p.S.z - p.uz * 30 }, f]) {
+              const t = genAim(p, Object.assign({}, f, q));
+              if ((t.x - p.S.x) * p.ux + (t.z - p.S.z) * p.uz < GEN_FRONT - 1e-9) r.aimBad++;
+            }
+            archers = null; arOld = null; musket = null; mkOld = null; cannons = null;
+          }
+        }
+      }
+    } finally { Math.random = real; toast = keepToast; }
+    r.worst = r.worst === Infinity ? null : +r.worst.toFixed(2);
+    cleanTools(); beasts = null; archers = null; arOld = null; musket = null; mkOld = null;
+    return r;
+  });
+  ok('站位規則：排得出來的每一次，叫出來的每一個射手都在他前面 GEN_BEHIND 格以上；瞄的那一點一律在隊伍前緣前面 GEN_FRONT 格以上',
+     gsafe.plans > 0 && gsafe.byW.arrow > 0 && gsafe.byW.musket > 0 && gsafe.byW.cannon > 0 && gsafe.bad === 0 && gsafe.aimBad === 0,
+     gsafe.bad === 0 && gsafe.aimBad === 0 && gsafe.plans > 0 ? '' : JSON.stringify(gsafe));
+
+  /* ── 驗不過就收兵：硬塞一個「隊伍前緣就在他腳下」的排法，叫出來的那一隊當場散場、他回去巡邏（GEN_RETRY 秒後再試） ── */
+  const gnow = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const keepToast = toast; toast = () => {};
+    let r;
+    try {
+      const m = callGeneral({ x: siteR + 20, z: 0 });
+      m.x = siteR + 20; m.z = 0; m.wIn = 0;
+      const f = spawnBeast('giant', 0, 0); f.x = siteR + 20; f.z = 40; f.wIn = 0;
+      m.gf = f; m.gp = { w: 'arrow', S: { x: m.x, z: m.z + 2 }, ux: 0, uz: 1 }; m.st = 'gcmd'; m.gg = null;
+      genCast(m);
+      r = { out: !!archers && archers.st === 'out', st: m.st, gg: m.gg === null, cd: m.gcd === GEN_RETRY };
+    } finally { toast = keepToast; }
+    cleanTools(); beasts = null; archers = null; arOld = null;
+    return r;
+  });
+  ok('驗不過就收兵：有射手站不到他前面 GEN_BEHIND 格的話，那一隊當場散場、他回去巡邏、GEN_RETRY 秒後再試',
+     gnow.out && gnow.st === 'fun' && gnow.gg && gnow.cd, JSON.stringify(gnow));
+
+  /* ── 一整趟（不跑主迴圈，一幀一幀推 stepGen）：天災巨人在前面 → 盯上、舉劍（gcmd）→ GEN_CMD_T 秒後出兵（招押 0＝箭雨）→
+        巨人走動時瞄的那一點跟著改 → 巨人打滿死掉、沒有別的敵人 → 那一隊收兵、他回去巡邏 ── */
+  const grun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const real = Math.random, keepToast = toast;
+    const r = {};
+    toast = () => {};
+    try {
+      Math.random = () => 0;
+      /* 他在村子裡、巨人在他正前方半個 arenaR（箭雨 B 20 之後前緣到巨人還有十幾格），兩個都在村子裡 */
+      const X = arenaR * 0.55, m = callGeneral({ x: X, z: 0 });
+      m.x = X; m.z = 0; m.wIn = 0; m.st = 'fun'; m.pause = 0; m.gcd = 0;
+      const f = spawnBeast('giant', 0, 0); f.x = X; f.z = arenaR * 0.5; f.wIn = 0;
+      stepGen(m, 0.05);
+      r.cmd = m.st === 'gcmd' && m.gf === f && m.gp && m.gp.w === 'arrow' && !m.gg;
+      let t = 0.05;
+      while (!m.gg && t < GEN_CMD_T + 0.5) { stepGen(m, 0.05); t += 0.05; }
+      r.cast = m.gg === archers && !!archers && +t.toFixed(2) >= GEN_CMD_T;
+      r.arm = m.arm > 0.8;
+      stepGen(m, 0.05);                              // 先站著一幀：速度從 0 起算、瞄的就是牠現在的位置
+      const still = genAim(m.gp, f);
+      r.still = archers.tx === still.x && archers.tz === still.z;
+      f.x += 5; stepGen(m, 0.05);                    // 牠動了：箭雨瞄「箭到時牠會在的地方」（genLead），比牠現在的位置更往前
+      const want = genAim(m.gp, genLead(m, f));
+      r.track = archers.tx === want.x && archers.tz === want.z && archers.tx > f.x;
+      f.hits = KILL_HITS; stepGen(m, 0.05);
+      r.done = archers.st === 'out' && m.st === 'fun' && m.gf === null;
+    } finally { Math.random = real; toast = keepToast; }
+    cleanTools(); beasts = null; archers = null; arOld = null;
+    return r;
+  });
+  ok('一整趟：盯上前面的天災就站定舉劍、GEN_CMD_T 秒後出兵；打的時候瞄的那一點跟著敵人走（箭雨瞄箭到時牠會在的地方）；敵人沒了那一隊收兵、他回去巡邏',
+     grun.cmd && grun.cast && grun.arm && grun.still && grun.track && grun.done, JSON.stringify(grun));
+
+  /* ── 他自己：被打不生氣（照樣倒、不改主意）；時間到收兵、騎回林帶（go）；再叫一次會把正在打的那一隊收掉 ── */
+  const gself = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const keepToast = toast; toast = () => {};
+    const r = {};
+    try {
+      const m = callGeneral({ x: siteR + 25, z: 0 });
+      m.x = siteR + 25; m.z = 0; m.wIn = 0; m.st = 'fun';
+      m.hcd = 0; beastHit(m, 'poke');
+      r.calm = !m.bad && !m.home && m.st === 'fun' && !(m.hcd > 0);
+      castArrows({ x: m.x, z: m.z + 20 }, { x: m.x, z: m.z + 50 }, 0);
+      m.gg = archers; m.gp = { w: 'arrow', S: { x: m.x, z: m.z + 20 }, ux: 0, uz: 1 }; m.st = 'gcmd';
+      callGeneral({ x: 0, z: siteR + 25 });
+      r.recall = archers.st === 'out' && m.st === 'gride' && m.gg === null;
+      castArrows({ x: m.x, z: m.z + 20 }, { x: m.x, z: m.z + 50 }, 0);
+      m.gg = archers; m.gp = { w: 'arrow', S: { x: m.x, z: m.z + 20 }, ux: 0, uz: 1 }; m.st = 'gcmd'; m.gt = 0.01;
+      stepGen(m, 0.05);
+      r.leave = m.st === 'go' && archers.st === 'out';
+    } finally { toast = keepToast; }
+    cleanTools(); beasts = null; archers = null; arOld = null;
+    return r;
+  });
+  ok('他自己：被打不生氣、不改主意；再叫一次會把正在打的那一隊收掉；時間到收兵、騎回林帶',
+     gself.calm && gself.recall && gself.leave, JSON.stringify(gself));
+
+  /* ── 守護中其他吉祥物不來砸村子：鐘抽到「來砸房子」那一下（Math.random 押 0），他在場時 Saber 是來逛的、巨人照樣來砸；
+        他不在場時兩隻都照抽 ── */
+  const gawe = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const real = Math.random, keepToast = toast, keepSpawn = MASCOTS.map(k => k.spawn), keepT = mascT.slice(), got = {};
+    toast = () => {};
+    const roll = () => {
+      for (const k of MASCOTS) k.spawn = bad => { got[k.id] = bad; };
+      mascT.fill(1e9);
+      const iS = MASCOTS.findIndex(k => k.id === 'saber'), iG = MASCOTS.findIndex(k => k.id === 'giant');
+      mascT[iS] = 1e-9; mascT[iG] = 1e-9;
+      window.mascStep(0.01);                         // reset 把 stepMascot 換成空的了，直接叫本尊（同〈四位道具角色也自己來逛〉）
+      return { saber: got.saber, giant: got.giant };
+    };
+    let r;
+    try {
+      Math.random = () => 0;
+      r = { off: roll() };
+      const m = callGeneral({ x: siteR + 25, z: 0 }); m.st = 'fun';
+      r.on = roll();
+      m.st = 'go';
+      r.leaving = roll();
+    } finally { Math.random = real; toast = keepToast; MASCOTS.forEach((k, i) => { k.spawn = keepSpawn[i]; mascT[i] = keepT[i]; }); }
+    cleanTools(); beasts = null;
+    return r;
+  });
+  ok('守護中其他吉祥物不來砸村子：他在場時 Saber 抽到也是來逛的、巨人照樣來砸；他不在場（或已經在走人）時照抽',
+     gawe.off.saber === 1 && gawe.off.giant === 1 && gawe.on.saber === 0 && gawe.on.giant === 1 &&
+     gawe.leaving.saber === 1 && gawe.leaving.giant === 1, JSON.stringify(gawe));
+
+  await page.evaluate(() => { cleanTools(); beasts = null; archers = null; arOld = null; musket = null; mkOld = null; });
+  }   // ── 〈道具：小人將軍〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 破壞道具：光之太刀（v1.290.0） ══════════
      使用者：「做這個角色的造型 也是越像越好 / 預計會加成道具&吉祥物 攻擊方式是光之太刀 類似無形的劍氣斬過 砍的方向隨機」，
      選了劍氣砍穿整座建築、切面通過點的那一點、砍倒＋斬殺巨人、一刀；看了五輪預覽之後：上段起手、衝一段過程中斬下去（撲 20＋滑 8）、
