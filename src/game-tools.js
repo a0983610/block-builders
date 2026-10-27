@@ -9838,12 +9838,13 @@ function stepBeast0(m, dt) {
   if (m.kind === 'giant') giantSteam(m, dt);
   /* 開工／整地就放棄走人：天災是衝著「蓋好的那一座」來的，半成品不在它的守備範圍
      （也免得牠站在推土機的路線上）。
-     吉祥物只避整地（v1.144）：牠不挑地標的狀態，施工中照樣可以來逛（使用者選的），
-     但整地那一段推土機會把整片工地掃過去，走路的先讓開。
+     吉祥物哪一段都不避（v1.322.0，使用者：「全部吉祥物等 整地期間都不避」）：牠不挑地標的狀態，
+     施工中照樣可以來逛（v1.144 使用者選的）；v1.144～v1.321 只避整地（推土機會把整片工地掃過去，走路的先讓開）。
+     現在同小人（v1.248.0「推土機車道上的人不管，車直接穿過」），推土機不管牠們
+     （見 開發筆記〈飛龍跟一般吉祥物一樣逛、全部吉祥物整地不避〉）。
      牛羊哪一段都不避（v1.154）：牠們住在這裡，沒有「走人」這件事——而且牠們逛的點
      （idleSpot）都挑在建築外圈之外，推土機掃的是圈內（v1.235 以前還有 strollTo 把目標推到圈外）。 */
-  const away = m.herd ? false
-             : m.fun ? phase === 'clear' : (phase === 'build' || phase === 'clear');
+  const away = !m.herd && !m.fun && (phase === 'build' || phase === 'clear');
   /* **正在穿城門的不要打斷**（v1.190.2）：穿門是一段不可分割的位移（走到門口那一點 →
      穿過去），而這一條會把牠拉回 go，go 那一段下一行又發現被牆擋住、再把牠推回 gate——
      兩邊每幀互推，gate 的位移程式碼永遠跑不到，牠就定在原地了（連 stuckWatch 的穿透
@@ -12882,7 +12883,9 @@ const DRA_GAP = [1.1, 2.2];          // 兩顆之間隔幾秒（「不要連噴�
 let fballs = null;                   // 飛在半空的火球
 
 /* 放一條龍進來。方位隨機，順時針逆時針也隨機——固定的話每次看到的都一樣。
-   fun＝吉祥物那一版（v1.144）：航線一模一樣，只是 left 給 0，一顆火球都不吐。
+   fun＝吉祥物那一版（v1.144）：left 給 0，一顆火球都不吐；**逛 MASC_STAY 秒才走**（v1.322.0，同其他吉祥物，
+   繞一段擲一次要不要降落走一段，見 stepDragon 的 ring）。v1.144～v1.321 是繞完 DRA_RING 圈就走。
+   見 開發筆記〈飛龍跟一般吉祥物一樣逛、全部吉祥物整地不避〉
    bad＝吉祥物那一趟順手噴村子（v1.166）：配額給 MASC_BAD_SHOT，落點改瞄村子那邊。 */
 function spawnDragon(fun, bad) {
   /* 從林帶中線上空飛進來、飛出那一圈就收掉，兩頭淡入淡出（v1.256.0，見 woodFade；v1.255 以前是碎料圈外 14 格） */
@@ -12905,6 +12908,7 @@ function spawnDragon(fun, bad) {
     left: fun ? (bad ? Math.round(rr(MASC_BAD_SHOT[0], MASC_BAD_SHOT[1])) : 0)
               : Math.round(rr(DRA_SHOT[0], DRA_SHOT[1])),
     fun: fun ? 1 : 0, bad: bad ? 1 : 0, home: bad ? 1 : 0,
+    stay: fun ? rr(MASC_STAY[0], MASC_STAY[1]) : 0,               // 逛多久（v1.322.0，同 spawnBeast）
     hurt: 0, quit: Math.round(rr(DOOM_QUIT[0], DOOM_QUIT[1])),   // 被打到就改變主意（v1.208，見 beastHit）
     hcd: 0,                                                       // 被打到的冷卻（v1.229，同 spawnBeast）
     /* 被打下來之後要用的（v1.146，見 crashDragon）：was 是摔之前在哪一段、
@@ -12923,8 +12927,8 @@ function spawnDragon(fun, bad) {
   beasts.push(m);
   sndRoar();
   if (fun) toast('🐉 一條龍飛過工地上空',
-                 bad && anyHome() ? '牠繞一圈就走，路上會朝村子那邊吐幾顆火球'
-                                  : '牠只是繞一圈就走，不會吐火球');
+                 bad && anyHome() ? '牠會在工地一帶逛一陣子，先朝村子那邊吐幾顆火球'
+                                  : '牠會在工地一帶逛一陣子，有時飛、有時落地走');
   else toast('🐉 一條龍朝工地飛過來了', '牠會在上空繞一圈，邊繞邊吐火球');
   return m;
 }
@@ -12932,6 +12936,9 @@ function spawnDragon(fun, bad) {
 function stepDragon(m, dt) {
   /* 濕度自己在這裡遞減：走地上的那幾隻是 hurtBeast 在減，而牠不走那一支（v1.154）。 */
   if (m.wet > 0) m.wet = Math.max(0, m.wet - dt);
+  /* 吉祥物那一版逛的時間（v1.322.0，同走路那幾款在 fun 那一段扣）：天上繞（ring，懸停吐火球也算）、地上走（gwalk）兩段扣；
+     進場、降落、起飛、飛出去是路上（同走路那幾款的 come），摔下來趴著那幾段是被打倒，都不扣 */
+  if (m.fun && (m.st === 'ring' || m.st === 'gwalk')) m.stay -= dt;
   if (!m.hv) draNeck(m, dt);                              // 沒在懸停瞄準：頭擺回來（v1.277.0）
   /* 被打下來了（v1.146）：摔 → 趴 → 走一段（v1.182）→ 拍翅起飛，自己一套（見 fallenDragon）。 */
   if (m.st === 'crash' || m.st === 'down' || m.st === 'gwalk' || m.st === 'rise')
@@ -12957,13 +12964,21 @@ function stepDragon(m, dt) {
   } else if (m.st === 'ring') {
     want = draRingWant(m);
     m.turned += dt * m.spd / m.rc;
-    if (m.turned >= DRA_RING * Math.PI * 2) {
-      /* 繞完了。吉祥物那一趟**偶爾自己降落**、在草皮上走一段再飛走（v1.182）。
+    /* 吉祥物逛的時間到了就走（v1.322.0，同走路那幾款）；還有火球沒吐完的吐完再走 */
+    if (m.fun && m.stay <= 0 && !(m.left > 0)) m.st = 'out';
+    else if (m.turned >= DRA_RING * Math.PI * 2) {
+      /* 繞完一段。天災那一趟就走；吉祥物那一趟**擲一次要不要降落**（DRA_LAND_P）、在草皮上走一段再飛起來繞，
+         不降落就再繞一段，逛的時間到了才走（v1.322.0，使用者：「飛龍調整成跟一般吉祥物一樣 不再特例 他逛的時候
+         有時用飛的有時在地面走」，選的「照現有的尺」）。v1.182～v1.321 是繞完這一段就走（降落的那一趟走完也走）。
          等繞完才判斷：中途落地的話這一圈的火球（bad 那一版）就吐不完了。 */
-      if (m.fun && m.left <= 0 && Math.random() < DRA_LAND_P) {
-        draSpot(m); m.was = 'out'; m.st = 'land';
-        toast('🐉 那條龍降落到草皮上了', '牠會在地上走一段，然後拍翅飛走');
-      } else m.st = 'out';
+      if (!m.fun) m.st = 'out';
+      else {
+        m.turned = 0;
+        if (m.left <= 0 && Math.random() < DRA_LAND_P) {
+          draSpot(m); m.was = 'in'; m.st = 'land';         // 走完起飛接回盤旋（見 fallenDragon 的 rise）
+          toast('🐉 那條龍降落到草皮上了', '牠會在地上走一段，再飛起來繞');
+        }
+      }
     }
     /* 邊繞邊吐（「中途吐幾顆火球」）。隔開來吐，不連噴。
        v1.277.0 起每一顆都**停下來懸停吐**（使用者選的，見 hoverDragon）：這裡只挑目標、切進懸停那一套，
@@ -13080,6 +13095,8 @@ function hoverDragon(m, dt) {
     if (!m.shot && m.rear < 0.2) {
       m.shot = 1;
       spitFire(m); m.left--; m.gap = rr(DRA_GAP[0], DRA_GAP[1]);
+      /* 吉祥物吐完最後一顆＝砸完回來（v1.322.0，同走路那幾款的 funBack）：逛的時間重抽、這一趟不再是來砸的 */
+      if (m.fun && m.bad && m.left <= 0) { m.stay = rr(MASC_STAY[0], MASC_STAY[1]); m.bad = 0; m.home = 0; }
     }
     if (m.ht > 0.2) m.jaw -= m.jaw * Math.min(1, dt * 6);
     if (m.ht >= P.fire) { m.hv = 'back'; m.ht = 0; }
@@ -13603,9 +13620,9 @@ function stepGryph(m, dt) {
     else if (m.burn > 0) grWings(m, 'rest', dt, 4);
     if (hurtBeast(m, dt)) return false;    // 飛、躺、燒那幾段自己一套，這一幀底下整段跳過
   }
-  /* 開工／整地就走人：天災是衝著蓋好的那一座來的，吉祥物只避整地（同 stepBeast 的 away）。
+  /* 開工／整地就走人：天災是衝著蓋好的那一座來的；吉祥物哪一段都不避（v1.322.0，同 stepBeast 的 away）。
      已經在起飛或飛出去的就不用再管。衝到一半的（ram）在天上，直接飛出去（路線清掉） */
-  const away = m.fun ? phase === 'clear' : (phase === 'build' || phase === 'clear');
+  const away = !m.fun && (phase === 'build' || phase === 'clear');
   if (away && m.st !== 'up' && m.st !== 'out') {
     m.left = 0; m.rk = null; m.st = m.sky ? 'out' : 'up';
   }
@@ -14233,13 +14250,15 @@ function erLives(m, f0, f1, W2) {
      · **不動手**：猴子走到建築外圈就開始逛，不進 near／act 那兩段，DOOM_ACT 根本不會被
        叫到（不點火、不丟香蕉）；龍的 left 給 0，一顆火球都不吐。
      · **不挑階段**：施工中、蓋好、拆除中都會來（使用者選的「任何時候都可能」）。天災那條
-       phase === 'done' 是因為「要有一座完好的地標可以砸」，吉祥物沒有這個需求；只有整地
-       那一段走路的先不放進來（推土機會把整片工地掃過去，見 stepBeast 的 away）。
+       phase === 'done' 是因為「要有一座完好的地標可以砸」，吉祥物沒有這個需求。
+       整地也照來（v1.322.0，使用者：「全部吉祥物等 整地期間都不避」）；v1.144～v1.321 整地那一段
+       走路的先不放進來、在場上的也走人（推土機會把整片工地掃過去）。
    兩條線互不擋：吉祥物在場上時天災的鐘照數（見 stepDoom），反過來也一樣。 */
 const MASC_LO = 180, MASC_HI = 360;   // 3~6 分鐘。跟天災一樣照模擬時間走，開 4 倍速就快 4 倍
 /* 走到工地邊之後逛幾秒才走人（「一段時間又走了」）。v1.144～v1.267 是 25～45；v1.268.0 使用者：
    「延長吉祥物閒逛時間約在50秒~60秒」「用工具叫進場也統一一起調逛的秒數」——道具叫來的那幾位做完事
-   「留下來逛一陣子」讀的也是這一個（見 excDone），所以一起變長。飛龍不吃這個（牠是繞 DRA_RING 圈就走，使用者選的「飛龍不動」） */
+   「留下來逛一陣子」讀的也是這一個（見 excDone），所以一起變長。
+   飛龍 v1.322.0 起也吃這個（使用者：「飛龍調整成跟一般吉祥物一樣 不再特例」）；v1.144～v1.321 是繞 DRA_RING 圈就走 */
 const MASC_STAY = [50, 60];
 /* ── 偶而動手（v1.166）────────────────────────────────────
    使用者：「吉祥物出沒偶而也會對不是地標建築破壞（根據吉祥物的破壞模式）」。
@@ -14257,7 +14276,7 @@ const MASC_STAY = [50, 60];
    再逛一份 MASC_STAY 才走（v1.321.0 起重抽；以前是把剩下的逛完，見 funBack）。 */
 const MASC_BAD_SHOT = [1, 2];         // 飛龍那一版吐幾顆（天災那一版是 DRA_SHOT 3~5）
 /* 一隻一列。加第四隻吉祥物＝往這張表再放一列，別處一個字都不必動（同 DOOMS）。
-   ground＝用走的，整地那一段先不放進來；龍在天上，推土機碰不到牠，照樣可以來。
+   v1.144～v1.321 還有一欄 ground（用走的，整地那一段先不放進來），整地不避之後（v1.322.0）拿掉了。
    **被打到的個別脾氣也寫在這一列**（v1.229，使用者：「程式結構上可以調整成 可能有其他吉祥物
    要個別設定」）。沒寫的照預設：一擊切換一次（見 beastHit）。
      more   被打不收手，**每打一下多砸一處**（見 moreMascot）。接得起來的只有走 act 那一段的
@@ -14266,33 +14285,30 @@ const MASC_BAD_SHOT = [1, 2];         // 飛龍那一版吐幾顆（天災那一
      calm   不主動動手（v1.268.0）：鐘抽到「來砸房子」也是來逛的那一版（見 stepMascot），也不算進 MASC_BAD 的分母。 */
 const MASCOTS = [
   /* 小獼猴（v1.229）：「不會被打退 打他幾下(3秒冷卻)就會燒幾次建築」 */
-  { id: 'ape', ground: 1, spawn: bad => spawnBeast('ape', 1, bad), more: 1 },
+  { id: 'ape', spawn: bad => spawnBeast('ape', 1, bad), more: 1 },
   /* 小猴子（v1.229）：「只能攻擊一次(因為香蕉丟了 就沒了)」——手上那根就是 m.bomb（見 nanaThrow） */
-  { id: 'snow', ground: 1, spawn: bad => spawnBeast('snow', 1, bad), spent: m => !m.bomb },
-  { id: 'dragon', ground: 0, spawn: bad => spawnDragon(1, bad) },
-  /* 獅鷲雖然是飛進來的，ground 還是給 1（v1.176）：牠會**降落**在建築外圈那一環上，
-     整地那一段推土機正在掃的就是那一帶，不要在那時候放牠進來。 */
-  { id: 'gryphon', ground: 1, spawn: bad => spawnGryph(1, bad) },
-  /* 巨人（v1.192）：用走的，整地那一段先不放進來（同兩隻猴子）。 */
-  { id: 'giant', ground: 1, spawn: bad => spawnBeast('giant', 1, bad) },
-  /* Diablo：用走的，同巨人。砸村子那一趟也是噴一道火，只燒村子那邊（見 stepDiaFire） */
-  { id: 'diablo', ground: 1, spawn: bad => spawnBeast('diablo', 1, bad) },
-  /* Saber（v1.222）：用走的，同上。砸村子那一趟也是一招 Excalibur，但地標一塊都不斬、不燒（見 excSweep）。 */
-  { id: 'saber', ground: 1, spawn: bad => spawnBeast('saber', 1, bad) },
-  /* 惠惠（v1.247.0）：用走的，同上。**鐘抽到「來砸房子」也不理**（使用者：「他完全不主動攻擊的」）：
+  { id: 'snow', spawn: bad => spawnBeast('snow', 1, bad), spent: m => !m.bomb },
+  { id: 'dragon', spawn: bad => spawnDragon(1, bad) },
+  { id: 'gryphon', spawn: bad => spawnGryph(1, bad) },
+  { id: 'giant', spawn: bad => spawnBeast('giant', 1, bad) },          // 巨人（v1.192）
+  /* Diablo：砸村子那一趟也是噴一道火，只燒村子那邊（見 stepDiaFire） */
+  { id: 'diablo', spawn: bad => spawnBeast('diablo', 1, bad) },
+  /* Saber（v1.222）：砸村子那一趟也是一招 Excalibur，但地標一塊都不斬、不燒（見 excSweep）。 */
+  { id: 'saber', spawn: bad => spawnBeast('saber', 1, bad) },
+  /* 惠惠（v1.247.0）：**鐘抽到「來砸房子」也不理**（使用者：「他完全不主動攻擊的」）：
      只有被打的時候才動手（生氣 → 退到安全距離放爆裂魔法，見〈惠惠〉那一節）。
      v1.268.0 使用者：「唯一惠惠不主動動手是特例 他火力太強大」 */
-  { id: 'megumin', ground: 1, calm: 1, spawn: () => spawnBeast('megumin', 1, 0) },
+  { id: 'megumin', calm: 1, spawn: () => spawnBeast('megumin', 1, 0) },
   /* 里維兵長、善逸、五條悟（v1.268.0，使用者：「加入兵長 善逸 五條悟 芙莉蓮」「都來逛 偶爾動手 被打到會生氣」）：
      本來只能用道具叫來。來砸房子那一趟用的就是道具那一招，地標一塊都不碰（同 Saber，見 mascStrike）。
      五條悟什麼時候都打不動（無下限），所以被打生氣那一條他碰不到（使用者選的「照現狀，打不到就不生氣」） */
-  { id: 'levi', ground: 1, spawn: bad => spawnBeast('levi', 1, bad) },
-  { id: 'zenitsu', ground: 1, spawn: bad => spawnBeast('zenitsu', 1, bad) },
-  { id: 'gojo', ground: 1, spawn: bad => spawnBeast('gojo', 1, bad) },
+  { id: 'levi', spawn: bad => spawnBeast('levi', 1, bad) },
+  { id: 'zenitsu', spawn: bad => spawnBeast('zenitsu', 1, bad) },
+  { id: 'gojo', spawn: bad => spawnBeast('gojo', 1, bad) },
   /* 芙莉蓮（v1.268.0）：只來逛（使用者選的「她也不主動動手」——她那一把道具只有防護罩，沒有攻擊的招） */
-  { id: 'frieren', ground: 1, calm: 1, spawn: () => spawnBeast('frieren', 1, 0) },
+  { id: 'frieren', calm: 1, spawn: () => spawnBeast('frieren', 1, 0) },
   /* 艾莉絲（v1.290.0）：照 v1.268.0 那條規則，來逛、偶爾動手（光之太刀只砍村子那邊，見 mascStrike）、被打到會生氣 */
-  { id: 'eris', ground: 1, spawn: bad => spawnBeast('eris', 1, bad) }
+  { id: 'eris', spawn: bad => spawnBeast('eris', 1, bad) }
 ];
 /* ── 偶而動手的機率：固定邏輯（v1.268.0）────────────────────────
    使用者：「降低吉祥物出手攻擊村子的機率(因為越來越多隻 同機率下 被破壞的機會已經大幅上升 可以用一個固定邏輯
@@ -14324,7 +14340,7 @@ function stepMascot(dt) {
   for (let i = 0; i < MASCOTS.length; i++) {
     const k = MASCOTS[i];
     if (beastOn(k.id)) { mascT[i] = -1; continue; }   // 還在場上，等牠走了再重抽下一次
-    if (k.ground && phase === 'clear') continue;      // 整地中：鐘先停著，不推進也不放人
+    /* 整地中照數照放（v1.322.0，使用者：「全部吉祥物等 整地期間都不避」）；v1.144～v1.321 走路的那幾款整地中鐘停著 */
     if (mascT[i] < 0) { mascT[i] = rr(MASC_LO, MASC_HI); continue; }
     mascT[i] -= dt;
     if (mascT[i] > 0) continue;
@@ -14664,11 +14680,12 @@ function beastHit(m, src) {
   if (m && m.kind === 'goose') return;
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
   if (!m || m === hitBy || m.call || m.cq) return;
-  /* 已經在走人的不改主意（v1.208：都走到一半了又掉頭回來很怪）：天災，與換場（整地）被趕走的吉祥物。
+  /* 已經在走人的不改主意（v1.208：都走到一半了又掉頭回來很怪）：天災。
      **吉祥物時間到了在走的那一隻照樣會生氣**（v1.321.0，使用者：「被攻擊後還是堅持退場 不會生氣／應該是時間到就退場
      被打又生氣去破壞 然後時間重算」，問過選的是「掉頭回來生氣砸」）：掉頭見 madMascot，
-     來龍去脈見 開發筆記〈吉祥物：逛的時間是「沒事發生」的倒數〉 */
-  if (beastLeaving(m) && !(m.fun && phase !== 'clear')) return;
+     來龍去脈見 開發筆記〈吉祥物：逛的時間是「沒事發生」的倒數〉。
+     v1.321.0 還多擋了「換場（整地）被趕走的吉祥物」，v1.322.0 吉祥物整地不避之後就沒有那一種了 */
+  if (beastLeaving(m) && !m.fun) return;
   /* 五條悟（v1.255.0）、芙莉蓮（v1.259.0）不會生氣：一個什麼時候都打不動（無下限）、一個站在自己的罩子裡，
      照理走不到這裡；v1.268.0 他們當上吉祥物時使用者選的是「照現狀，打不到就不生氣」，這一條留著守住。
      里維兵長（v1.230）、善逸（v1.251.0）v1.267 以前也在這裡（只做玩家叫的事），v1.268.0 拿掉
@@ -16026,7 +16043,8 @@ function fallenDragon(m, dt) {
   m.z += Math.cos(m.a) * DRA_SPD * f * dt;
   if (m.y < top) return false;
   m.y = top; m.spin = 0; m.spd = DRA_SPD;            // 懸停到一半被打下來的：速度照爬升那一段的接回巡航
-  m.st = m.was === 'out' ? 'out' : 'in';             // 歸隊，接回原本那一段
+  /* 歸隊，接回原本那一段；吉祥物逛的時間到了就飛走（v1.322.0） */
+  m.st = m.was === 'out' || (m.fun && m.stay <= 0) ? 'out' : 'in';
   return false;
 }
 
@@ -16074,7 +16092,7 @@ function burnDragon(m) {
     return true;
   }
   /* 火滅了要接回原本那一段。**降落到一半被點著的不蓋掉**（v1.182）：
-     牠的 m.was 在進 land 那一刻就設成 'out' 了（繞完才降落的），蓋掉會變成再繞一圈。 */
+     牠的 m.was 在進 land 那一刻就設好了（v1.182～v1.321 是 'out'＝走完就走；v1.322.0 起吉祥物是 'in'＝走完接回盤旋）。 */
   if (m.st !== 'land') m.was = m.st === 'out' ? 'out' : 'in';
   m.st = 'ablaze';
   m.t = rr(DRA_ABLAZE[0], DRA_ABLAZE[1]);
@@ -16112,7 +16130,8 @@ function ablazeDragon(m, dt) {
    著火（v1.154）與倒地（v1.146）本來就有，缺的是中間那一段——牠趴著喘完就直接
    拍翅走人，兩條腿一步都沒踏過。現在兩條路都會經過地上那一段：
      被打下來   crash → down（趴著喘／壓火）→ **gwalk（站起來走一段）** → rise
-     自己降落   ring 繞完 → **land（收翅滑降）** → gwalk → rise → out
+     自己降落   ring 繞完 → **land（收翅滑降）** → gwalk → rise → in（接回盤旋，v1.322.0；以前是 out）
+   吉祥物那一趟逛的時間（MASC_STAY，v1.322.0）在 ring 與 gwalk 扣，到了就走：天上的直接 out、地上的就地 rise → out。
    自己降落**只有吉祥物那一趟會做**（m.fun）：天災那一趟是衝著地標來的，
    中途落地會把「繞一圈邊吐火球」整個打斷。
 
@@ -16131,7 +16150,7 @@ const DRA_STEP = 0.28;
 const DRA_GWALK = [4.5, 8];          // 在草皮上待幾秒（走到了就換下一個點，時間到才起飛）
 const DRA_STAND = 10;                // 站定的圈在建築外圈再往外幾格（獅鷲 5.5；龍佔地大）
 const DRA_WALK_IN = 16;              // 落地點再往外幾格，那一段用走的補完（獅鷲 14）
-const DRA_LAND_P = 0.5;              // 吉祥物那一趟繞完之後，有多少機會自己降落
+const DRA_LAND_P = 0.5;              // 吉祥物那一趟每繞完一段（DRA_RING 圈），有多少機會自己降落
 const DRA_LAND_SPD = 10;             // 降落那一段慢下來（巡航 15）
 const DRA_LAND_PITCH = -0.24;        // 降落時鼻子抬起來煞車（同獅鷲）
 /* 兩種翅膀姿態：flap 張開來拍、rest 站著／走路收起來（引擎的 DRA_FOLD：上臂往後上方、前臂往前折、手往後折回來）。
@@ -16186,7 +16205,7 @@ function walkDragon(m, dt) {
      於是每一幀都「已經到了」，龍就杵在原地不動了。 */
   if (strollTo(m, dt, DRA_WALK, DRA_STEP) && m.t > 0) idleSpot(m);
   draFollow(m, dt);                                  // 步伐（strollTo 推的 ph）算完才量地面（見 draFollow）
-  if (m.t > 0) return false;
+  if (m.t > 0 && !(m.fun && m.stay <= 0)) return false;   // 吉祥物逛的時間到了：這一段沒走完也就地起飛走人（v1.322.0）
   m.st = 'rise'; m.gait = 0; sndRoar();
   return false;
 }

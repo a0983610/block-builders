@@ -28621,15 +28621,15 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ── 兩張表各有牠一列（加一種＝加一列，別處不必動）── */
   const jtab = await page.evaluate(() => ({
     doom: DOOMS.map(d => d.id), masc: MASCOTS.map(k => k.id),
-    ground: (MASCOTS.find(k => k.id === 'giant') || {}).ground,
     act: !!DOOM_ACT.giant, fight: canFight({ kind: 'giant' }),
     badKicks: GIA_BAD_KICKS, kicks: GIA_KICKS
   }));
+  /* v1.322.0 起 MASCOTS 沒有 ground 那一欄了（吉祥物整地不避），這一條不再驗它 */
   ok('DOOMS 與 MASCOTS 各多一列就接上了，吉祥物那一版只踹一腳',
      jtab.doom.indexOf('giant') >= 0 && jtab.masc.indexOf('giant') >= 0 &&
-     jtab.ground === 1 && !jtab.act && jtab.fight && jtab.badKicks === 1,
+     !jtab.act && jtab.fight && jtab.badKicks === 1,
      '天災 ' + jtab.doom.join('／') + '；吉祥物 ' + jtab.masc.join('／') +
-     '（ground ' + jtab.ground + '）；天災那一趟踹 ' + jtab.kicks.join('~') +
+     '；天災那一趟踹 ' + jtab.kicks.join('~') +
      ' 腳、吉祥物那一趟 ' + jtab.badKicks + ' 腳');
 
   /* ── 太高走不了城門，擋路的踹掉再走（v1.207）─────────────────
@@ -28922,15 +28922,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     beasts = null; ENG.putDiablos([]);
     return { lo: +lo.toFixed(3), hi: +hi.toFixed(2), sc: DIA_SC, parts: ENG.DIA_PARTS, inBeasts: !!ENG.BEASTS.diablo,
              doom: DOOMS.map(d => d.id), masc: MASCOTS.map(k => k.id),
-             ground: (MASCOTS.find(k => k.id === 'diablo') || {}).ground,
              fight: canFight({ kind: 'diablo' }), kill: killable({ kind: 'diablo' }), big: bigBeast({ kind: 'diablo' }) };
   });
   ok('Diablo 站著 10 格高、腳底貼著草皮，自己一顆 mesh（不在 BEASTS）',
      Math.abs(dfig.lo) < 0.05 && dfig.hi > 9.5 && dfig.hi < 11 && !dfig.inBeasts,
      '最低 ' + dfig.lo + '、最高 ' + dfig.hi + ' 格（刺尖，×' + dfig.sc + '），' + dfig.parts + ' 塊');
   ok('DOOMS 與 MASCOTS 各多一列，殺得死巨人的那幾樣也殺得死他，太高走不了城門（同巨人）',
-     dfig.doom.includes('diablo') && dfig.masc.includes('diablo') && dfig.ground === 1 && dfig.fight && dfig.kill && dfig.big,
-     '天災 ' + dfig.doom.join('／') + '；吉祥物 ' + dfig.masc.join('／') + '（ground ' + dfig.ground + '）；canFight ' +
+     dfig.doom.includes('diablo') && dfig.masc.includes('diablo') && dfig.fight && dfig.kill && dfig.big,
+     '天災 ' + dfig.doom.join('／') + '；吉祥物 ' + dfig.masc.join('／') + '；canFight ' +
      dfig.fight + '、killable ' + dfig.kill + '、bigBeast ' + dfig.big);
 
   /* ── 一整趟：走進來、噴一道、走人（使用者選的「一趟 1 道」）── */
@@ -29488,15 +29487,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   /* ── 兩張表各有她一列（加一種＝加一列，別處不必動），提示用「她」── */
   const stab = await page.evaluate(() => ({
     doom: DOOMS.map(d => d.id), masc: MASCOTS.map(k => k.id),
-    ground: (MASCOTS.find(k => k.id === 'saber') || {}).ground,
     fight: canFight({ kind: 'saber' }), act: !!DOOM_ACT.saber,
     nm: BEAST_NM.saber, it: itOf({ kind: 'saber' }) + itOf({ kind: 'ape' })
   }));
   ok('DOOMS 與 MASCOTS 各多一列就接上了，提示裡她是「她」、其餘照舊是「牠」',
-     stab.doom.indexOf('saber') >= 0 && stab.masc.indexOf('saber') >= 0 && stab.ground === 1 &&
+     stab.doom.indexOf('saber') >= 0 && stab.masc.indexOf('saber') >= 0 &&
      stab.fight && !stab.act && stab.nm && stab.it === '她牠',
-     '天災 ' + stab.doom.join('／') + '；吉祥物 ' + stab.masc.join('／') + '（ground ' + stab.ground +
-     '）；' + stab.nm + '：' + stab.it);
+     '天災 ' + stab.doom.join('／') + '；吉祥物 ' + stab.masc.join('／') + '；' + stab.nm + '：' + stab.it);
 
   /* ── 畫面成本：沒她在場一個 draw call 都不吃（CLAUDE.md〈效能相關〉那條規矩）── */
   const sdraw = await page.evaluate(() => {
@@ -29704,20 +29701,26 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (const b of blocks) b.wet = 0;
     const set0 = blocks.filter(b => b.st === SET).length;
     const m = spawnDragon(1);
-    const shots = m.left;
-    let n = 0, fb = 0, burn = 0, ring = 0;
+    const shots = m.left, stay0 = +m.stay.toFixed(2);
+    let n = 0, fb = 0, burn = 0, ring = 0, walk = 0;
     while (n < 5000 && beasts && beasts.indexOf(m) >= 0) {
-      step(0.05); n++;
+      /* 逛的鐘照 stepDragon 開頭那一行在扣：這一幀開始時在 ring／gwalk 就算一幀 */
       if (m.st === 'ring') ring++;
+      else if (m.st === 'gwalk') walk++;
+      step(0.05); n++;
       fb = Math.max(fb, fballs ? fballs.length : 0);
       burn = Math.max(burn, blocks.filter(b => b.burn > 0).length);
     }
     return { gone: !beasts || beasts.indexOf(m) < 0, secs: +(n * 0.05).toFixed(1),
-             ring: +(ring * 0.05).toFixed(1), shots, fb, burn, set0,
-             set: blocks.filter(b => b.st === SET).length, ph: phase };
+             ring: +(ring * 0.05).toFixed(1), walk: +(walk * 0.05).toFixed(1), stay0, shots, fb, burn, set0,
+             set: blocks.filter(b => b.st === SET).length, ph: phase, slo: MASC_STAY[0], shi: MASC_STAY[1] };
   });
-  ok('飛龍吉祥物照樣繞一圈就飛走',
-     mdra.gone && mdra.ring > 8, '盤旋 ' + mdra.ring + ' 秒（全程 ' + mdra.secs + ' 秒）');
+  /* v1.322.0 條目名從「飛龍吉祥物照樣繞一圈就飛走」改掉（使用者：「飛龍調整成跟一般吉祥物一樣 不再特例」）：
+     逛的長度跟走路那幾款同一條（〈走進來 → 逛一逛 → 走人〉那一條），天上繞與地上走加起來就是這一趟抽到的 stay */
+  ok('飛龍吉祥物也逛 MASC_STAY 秒才走：天上繞、地上走加起來就是這一趟抽到的秒數',
+     mdra.gone && mdra.stay0 >= mdra.slo && mdra.stay0 <= mdra.shi &&
+     Math.abs(mdra.ring + mdra.walk - mdra.stay0) < 0.2,
+     '抽到 ' + mdra.stay0 + ' 秒；天上繞 ' + mdra.ring + ' 秒＋地上走 ' + mdra.walk + ' 秒（全程 ' + mdra.secs + ' 秒）');
   ok('牠一顆火球都不吐，地標一塊都沒少',
      mdra.shots === 0 && mdra.fb === 0 && mdra.burn === 0 &&
      mdra.set === mdra.set0 && mdra.ph === 'done',
@@ -29763,15 +29766,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                gap: +gap.toFixed(2), r: +navBody(m).r.toFixed(1),
                low: +low.toFixed(3), rMin: +rMin.toFixed(1) };
     };
-    const land = run(1, 0);            // 吉祥物 ＋ 骰子押到底：一定降落
-    const skip = run(1, 0.99);         // 吉祥物 ＋ 骰子押另一邊：不降落，照舊飛走
+    const land = run(1, 0);            // 吉祥物 ＋ 骰子押到底：每繞完一段都降落
+    const skip = run(1, 0.99);         // 吉祥物 ＋ 骰子押另一邊：不降落，一直繞到逛完
     const bad = run(0, 0);             // 天災那一趟：押到底也不降落
     const ring = +(siteR + DRA_STAND).toFixed(1);
     cleanTools();
     return { land, skip, bad, ring };
   });
-  ok('吉祥物那一趟的龍會自己降落：繞完 → 收翅滑降 → 在草皮上走一段 → 拍翅飛走',
-     mland.land.path === 'in>ring>land>gwalk>rise>out' && mland.land.gone,
+  /* v1.322.0 條目名從「…→ 拍翅飛走」改掉：走完起飛接回盤旋，逛的時間到了才走（v1.182～v1.321 是走完就走，路徑 in>ring>land>gwalk>rise>out）。
+     押 0 的話每繞完一段都降落、stay 抽到 50，所以至少降落兩次（繞一段十幾秒＋地上 4.5 秒，逛 50 秒） */
+  ok('吉祥物那一趟的龍會自己降落：繞完 → 收翅滑降 → 在草皮上走一段 → 起飛回去繞，逛完才飛走',
+     mland.land.path.startsWith('in>ring>land>gwalk>rise>in>ring>land>gwalk>rise>') &&
+     mland.land.path.endsWith('>out') && mland.land.gone,
      mland.land.path);
   /* 龍身長 18 格，走路時頭尾不能插進地標裡。v1.182～v1.235 是「整個退到 siteR + DRA_STAND 那一圈外面」
      （strollTo 的 keepMore：只把目標推出去不夠，兩點之間那條直線本來就會從圈裡切過去，所以連路線都繞在圈外）；
@@ -29785,10 +29791,52 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      mland.land.inside + ' 次、身體進到身位（' + mland.land.r + ' 格）裡 ' + mland.land.inLm + ' 幀（離身位最近 ' +
      mland.land.gap + '）；最近只到半徑 ' + mland.land.rMin + '（v1.235 以前那一圈 ' +
      mland.ring + '）、離貼地最多 ' + mland.land.low + ' 格');
-  ok('沒抽中的那一趟照舊繞完就飛走，天災那一趟則是壓根不會降落',
+  ok('沒抽中的那一趟一直在天上繞到逛完才飛走，天災那一趟則是壓根不會降落',
      mland.skip.path === 'in>ring>out' && mland.skip.gone &&
      mland.bad.path === 'in>ring>out' && mland.bad.gone,
      '吉祥物沒抽中 ' + mland.skip.path + '；天災 ' + mland.bad.path);
+
+  /* ── 飛龍吉祥物逛的時間怎麼收尾（v1.322.0，使用者：「飛龍調整成跟一般吉祥物一樣 不再特例」）──
+     規則型：擺好狀態直接走一兩幀，不跑整趟模擬。
+       ① 天上繞、時間到 → 下一幀就飛出去
+       ② 地上走、這一段還有 99 秒、時間到 → 就地起飛，爬到巡航高度直接飛出去（不接回盤旋）
+       ③ 繞完一段：骰子沒抽中 → 圈數歸零、還在繞；抽中 → 降落，走完接回盤旋（was 'in'）
+       ④ 來砸的那一趟吐完最後一顆 → 逛的時間重抽、這一趟不再是來砸的（同走路那幾款的 funBack） */
+  const mdtime = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const or = Math.random;
+    const mk = () => { beasts = null; const m = spawnDragon(1); m.left = 0; return m; };
+    const a = mk(); a.st = 'ring'; a.stay = 0.01;
+    stepDragon(a, 0.05);
+    const air = a.st;
+    const b = mk(); b.x = siteR + 30; b.z = 0; b.y = 0; b.st = 'gwalk'; b.t = 99; b.stay = 0.01;
+    stepDragon(b, 0.05);
+    const gnd = b.st;
+    for (let i = 0; i < 600 && b.st === 'rise'; i++) stepDragon(b, 0.05);
+    const gnd2 = b.st;
+    const ring = dice => {
+      const c = mk(); c.st = 'ring'; c.stay = 30; c.turned = DRA_RING * Math.PI * 2 - 1e-6;
+      Math.random = () => dice; stepDragon(c, 0.05); Math.random = or;
+      return { st: c.st, turned: +c.turned.toFixed(3), was: c.was };
+    };
+    const miss = ring(0.99), hit = ring(0);
+    const f = mk(); f.st = 'ring'; f.left = 1; f.bad = 1; f.home = 0; f.stay = 0.5;
+    f.hv = 'fire'; f.ht = 0; f.rear = 0; f.shot = 0; f.fx = 0; f.fz = 0;
+    hoverDragon(f, 0.02);
+    const fire = { left: f.left, bad: f.bad, stay: +f.stay.toFixed(1) };
+    fballs = null;
+    cleanTools();
+    return { air, gnd, gnd2, miss, hit, fire, lo: MASC_STAY[0] };
+  });
+  ok('飛龍吉祥物逛的時間：天上的時間到就飛走、地上的就地起飛直接走；繞完一段沒降落就再繞；吐完最後一顆火球重抽',
+     mdtime.air === 'out' && mdtime.gnd === 'rise' && mdtime.gnd2 === 'out' &&
+     mdtime.miss.st === 'ring' && mdtime.miss.turned === 0 &&
+     mdtime.hit.st === 'land' && mdtime.hit.was === 'in' &&
+     mdtime.fire.left === 0 && mdtime.fire.bad === 0 && mdtime.fire.stay >= mdtime.lo,
+     '① 天上時間到 → ' + mdtime.air + '；② 地上時間到 → ' + mdtime.gnd + ' → ' + mdtime.gnd2 +
+     '；③ 繞完沒抽中 → ' + mdtime.miss.st + '（圈數 ' + mdtime.miss.turned + '）、抽中 → ' + mdtime.hit.st +
+     '（走完接回 ' + mdtime.hit.was + '）；④ 吐完最後一顆 → 配額 ' + mdtime.fire.left + '、bad ' + mdtime.fire.bad +
+     '、逛的時間重抽 ' + mdtime.fire.stay + '（下限 ' + mdtime.lo + '）');
 
   /* ── 不挑階段（使用者選的「任何時候都可能」）── */
   const mph = await page.evaluate(() => {
@@ -29801,28 +29849,30 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       for (let i = 0; i < 4; i++) stepDoom(0.05);
       out[ph] = fun.st + '/' + doom.st;
     }
-    /* 整地那一段連放都不放走路的進來（鐘也停著），龍在天上不受影響。 */
+    /* 整地那一段鐘照數、照樣放進來（v1.322.0，使用者：「全部吉祥物等 整地期間都不避」）；
+       v1.144～v1.321 走路的那幾款不放（鐘停著），只有龍飛得進來 */
     cleanTools(); phase = 'clear'; doomT = 1e9;
     stepMascot(0.05);
     mascT.fill(0.01);
     stepMascot(0.05);
     const inClear = beasts ? beasts.map(m => m.kind).sort().join() : '';
-    const held = mascT[0] === 0.01 && mascT[1] === 0.01;
+    const all = MASCOTS.map(k => k.id).sort().join();
     cleanTools();
     /* **phase 還回去**（v1.190.3）：這一條為了測四種階段直接改了全域 phase，改完停在
        'clear'。下面〈火球一開始只點村子那邊〉那一條會拿 phase 當判準（「沒燒到地標
        就該還是 done」），被這裡汙染的話它就在賭「這一趟有沒有剛好燒到地標」
        ——實測 commit 檔開出過「地標一塊都沒被點著、phase 卻是 wreck」。 */
     phase = keepPh;
-    return { out, inClear, held, keepPh };
+    return { out, inClear, all, keepPh };
   });
   ok('施工中天災那隻會走人，吉祥物照樣留下來逛',
      mph.out.build === 'come/go' && mph.out.done === 'come/come' &&
      mph.out.wreck === 'come/come',
      Object.keys(mph.out).map(k => k + ' ' + mph.out[k]).join('，'));
-  ok('整地中走路的先讓開（鐘也停著），飛龍照樣飛得進來',
-     mph.out.clear === 'go/go' && mph.inClear === 'dragon' && mph.held,
-     '整地中放進來的是 ' + (mph.inClear || '（沒有）') + '，兩個走路的鐘停在原地 ' + mph.held);
+  /* v1.322.0 條目名從「整地中走路的先讓開（鐘也停著），飛龍照樣飛得進來」改掉 */
+  ok('整地中吉祥物也不避：在場上的照樣逛（天災照舊走人），鐘照數、每一款都照樣放進來',
+     mph.out.clear === 'come/go' && mph.inClear === mph.all,
+     '整地中 吉祥物／天災 ' + mph.out.clear + '；放進來的是 ' + (mph.inClear || '（沒有）'));
 
   /* ── 兩條線互不擋 ── */
   const mdoom = await page.evaluate(() => {
@@ -30570,7 +30620,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     hit(g, 0);
     const gate = { st: g.st, gback: g.gback, bad: g.bad };
     beasts = null;
-    /* 換場（整地）被趕走的：照走，不生氣 */
+    /* 整地中時間到了在走的：一樣生氣掉頭（v1.322.0 吉祥物整地不避；v1.321.0 這裡是「換場被趕走的照走」） */
     phase = 'clear';
     const c = spawnBeast('giant', 1); leaveBeast(c);
     hit(c, 0);
@@ -30605,15 +30655,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     cleanTools();
     return { set, vill, gate, clear, dra, gry, madStay, calm, smash, wall, lbad, lo: MASC_STAY[0] };
   });
-  ok('吉祥物時間到了在走人被打：照樣生氣、掉頭回來砸（地標走進場那一段、村子那邊直接找過去、穿城門的穿完再接），換場被趕走的照走',
+  /* v1.322.0 條目名最後一句從「換場被趕走的照走」改成「整地中也一樣」（吉祥物整地不避） */
+  ok('吉祥物時間到了在走人被打：照樣生氣、掉頭回來砸（地標走進場那一段、村子那邊直接找過去、穿城門的穿完再接），整地中也一樣',
      hback.set.st === 'come' && hback.set.bad === 1 && hback.set.home === 0 && hback.set.wIn === 1 &&
      hback.vill.st === 'fun' && hback.vill.bad === 1 && hback.vill.home === 1 &&
      hback.gate.st === 'gate' && hback.gate.gback === 'come' && hback.gate.bad === 1 &&
-     hback.clear.st === 'go' && hback.clear.bad === 0 &&
+     hback.clear.st === 'come' && hback.clear.bad === 1 &&
      hback.dra.st === 'in' && hback.dra.bad === 1 && hback.dra.left > 0 &&
      hback.gry.st === 'in' && hback.gry.bad === 1 && hback.gry.left === 1 && hback.gry.stay >= hback.lo,
      '砸地標 go → ' + hback.set.st + '（淡回來 wIn ' + hback.set.wIn + '）、砸村子 go → ' + hback.vill.st +
-     '、穿城門的穿完接 ' + hback.gate.gback + '、換場的 ' + hback.clear.st + '（bad ' + hback.clear.bad + '）；飛龍 out → ' +
+     '、穿城門的穿完接 ' + hback.gate.gback + '、整地中 go → ' + hback.clear.st + '（bad ' + hback.clear.bad + '）；飛龍 out → ' +
      hback.dra.st + '（配額 ' + hback.dra.left + '）、獅鷲 out → ' + hback.gry.st);
   ok('逛的時間是「沒事發生」的倒數：被打（生氣、收手）、砸完回來都重抽一份 MASC_STAY；走人途中拆牆那一趟不重抽',
      hback.set.stay >= hback.lo && hback.madStay >= hback.lo &&
@@ -30967,14 +31018,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const row = MASCOTS.find(k => k.id === 'megumin') || {};
     const otoast = toast; toast = () => {};
     const m = row.spawn ? row.spawn(1) : null;                     // 鐘抽中「偶而是來砸房子的那一隻」那一下
-    const r = { masc: MASCOTS.map(k => k.id), doom: DOOMS.map(d => d.id), ground: row.ground,
+    const r = { masc: MASCOTS.map(k => k.id), doom: DOOMS.map(d => d.id),
                 fun: m && m.fun, bad: m && m.bad, home: m && m.home, nm: BEAST_NM.megumin,
                 it: itOf({ kind: 'megumin' }) + itOf({ kind: 'ape' }), fight: canFight({ kind: 'megumin' }) };
     toast = otoast; beasts = null;
     return r;
   });
   ok('MASCOTS 多一列、不進 DOOMS；鐘抽到「來砸房子」也是來逛的那一版（完全不主動攻擊），提示裡是「她」',
-     gtab.masc.indexOf('megumin') >= 0 && gtab.doom.indexOf('megumin') < 0 && gtab.ground === 1 &&
+     gtab.masc.indexOf('megumin') >= 0 && gtab.doom.indexOf('megumin') < 0 &&
      gtab.fun === 1 && gtab.bad === 0 && gtab.home === 0 && !!gtab.nm && gtab.it === '她牠' && !gtab.fight,
      '吉祥物 ' + gtab.masc.join('／') + '；天災 ' + gtab.doom.join('／') + '；抽到來砸房子 → fun ' + gtab.fun +
      '、bad ' + gtab.bad + '；' + gtab.nm + '：' + gtab.it + '、canFight ' + gtab.fight);
@@ -31509,20 +31560,19 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     phase = 'build';
     for (let i = 0; i < 400; i++) { stepDoom(0.05); stepHerd(0.05); }
     const build = live();
-    /* 對照組：同一段路上的吉祥物，整地那一段就會走人 */
+    /* 對照組：同一段路上的天災，整地那一段就會走人（v1.322.0 起吉祥物整地不避，對照組從吉祥物換成天災） */
     phase = 'clear';
-    const ape = spawnBeast('ape', 1);
-    ape.st = 'fun'; ape.stay = 999;
+    const ape = spawnBeast('ape');
     stepDoom(0.05);
     const apeGo = ape.st === 'go';
     phase = 'done';
     cleanTools();
     return { n0, done, clear, build, apeGo };
   });
-  ok('閒逛的動物不會逛完就走人，蓋好、整地、施工三段都在（吉祥物整地那段會走人）',
+  ok('閒逛的動物不會逛完就走人，蓋好、整地、施工三段都在（天災整地那段會走人）',
      cstay.done && cstay.clear && cstay.build && cstay.apeGo,
      '100 秒後 ' + cstay.n0 + ' 隻都還在（done ' + cstay.done + '／clear ' + cstay.clear +
-     '／build ' + cstay.build + '），同一段路的吉祥物整地時走人＝' + cstay.apeGo);
+     '／build ' + cstay.build + '），同一段路的天災整地時走人＝' + cstay.apeGo);
 
   const cdoom = await page.evaluate(() => {
     cleanTools(); phase = 'done';
@@ -33721,6 +33771,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     beasts = null;
     spawnDragon(1);
     const dr = beasts[beasts.length - 1];
+    dr.stay = 1;                                     // 這一條只看進出場淡入淡出：逛的時間（v1.322.0 起 50～60 秒、還會降落）縮到 1 秒
     let dGone = -1, dIn = false, dOut = false;
     for (let t = 0; t < 120; t += 0.05) {
       step(0.05);
@@ -34539,7 +34590,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     callSaber({ x: siteR + 20, y: 0, z: -(EXC_REACH + 20) });
     beastHit(m);                                     // 吉祥物本來會「一擊切換一次」（v1.208）
     const hit = { bad: m.bad, st: m.st, call: !!m.call };
-    phase = 'clear'; stepBeast(m, 0.02);             // 整地：吉祥物本來會走人
+    phase = 'clear'; stepBeast(m, 0.02);             // 整地（v1.322.0 起吉祥物整地本來就不走人，這一下留著守「叫去的那一趟」那條豁免）
     const clear = m.st; phase = 'done';
     m.st = 'act'; reaim(m); const act = m.st;
     m.st = 'excal'; m.xt = 1; m.hit = 0; reaim(m); const exc = m.st;
@@ -36808,13 +36859,14 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   const qtab = await page.evaluate(() => {
     const ids = ['levi', 'zenitsu', 'gojo', 'frieren'];
     const rows = ids.map(id => MASCOTS.find(k => k.id === id) || null);
-    return { have: rows.map(k => k ? 1 : 0).join(''), ground: rows.map(k => k ? k.ground : 0).join(''),
+    return { have: rows.map(k => k ? 1 : 0).join(''),
              doom: ids.filter(id => DOOMS.some(d => d.id === id)).join(),
              calm: MASCOTS.filter(k => k.calm).map(k => k.id).join() };
   });
-  ok('四位都進 MASCOTS（用走的，整地那一段先不放）、不進 DOOMS；不主動動手的只有惠惠與芙莉蓮',
-     qtab.have === '1111' && qtab.ground === '1111' && qtab.doom === '' && qtab.calm === 'megumin,frieren',
-     '在表上 ' + qtab.have + '、ground ' + qtab.ground + '；天災裡有「' + qtab.doom + '」；calm ' + qtab.calm);
+  /* v1.322.0 條目名拿掉「（用走的，整地那一段先不放）」：吉祥物整地不避，MASCOTS 沒有 ground 那一欄了 */
+  ok('四位都進 MASCOTS、不進 DOOMS；不主動動手的只有惠惠與芙莉蓮',
+     qtab.have === '1111' && qtab.doom === '' && qtab.calm === 'megumin,frieren',
+     '在表上 ' + qtab.have + '；天災裡有「' + qtab.doom + '」；calm ' + qtab.calm);
 
   /* ── 機率是固定邏輯：每一隻 ＝ MASC_BAD_ROUND ÷ 會動手的隻數；骰子押 0（一定抽中）時 calm 的照樣是來逛的 ── */
   const qbad = await page.evaluate(() => {
@@ -37876,7 +37928,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const row = MASCOTS.find(k => k.id === 'eris') || {};
     return { parts: M.length, slot: ENG.ER_SLOT, inBeasts: 'eris' in ENG.BEASTS, model: ENG.MODELS.eris === M,
              lo: +(lo / sc).toFixed(3), top: +((hi - lo) / sc).toFixed(3), sc, doomSc: DOOM_SC,
-             at: ie, meat: im, n: TOOLS.length, ground: !!GROUND_TOOL.eris, masc: !!row.id, calm: !!row.calm, mground: row.ground,
+             at: ie, meat: im, n: TOOLS.length, ground: !!GROUND_TOOL.eris, masc: !!row.id, calm: !!row.calm,
              doom: DOOMS.some(d => d.id === 'eris'), nm: !!BEAST_NM.eris, it: itOf({ kind: 'eris' }), icon: TOOLS[ie].k,
              fold, grip: +grip.toFixed(4), two: +two.toFixed(4), n2, run,
              headTop: +headTop.toFixed(3), jg, jt, jl, down };
@@ -37886,8 +37938,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('身形：原點在腳底、模型高 1.35～1.45（連呆毛；小人帽頂 1.31），縮放同小人平均（DOOM_SC）',
      Math.abs(efig.lo) < 0.02 && efig.top > 1.35 && efig.top < 1.45 && efig.sc === efig.doomSc,
      '最低 ' + efig.lo + '、模型高 ' + efig.top + ' × ' + efig.sc.toFixed(3));
-  ok('道具表：接在肉後面、點空地也算數；也進吉祥物（用走的、會動手）、不進天災，提示裡是「她」；圖示 🌙',
-     efig.meat >= 0 && efig.at === efig.meat + 1 && efig.ground && efig.masc && !efig.calm && efig.mground === 1 &&
+  /* v1.322.0 條目名「（用走的、會動手）」改成「（會動手）」：MASCOTS 沒有 ground 那一欄了 */
+  ok('道具表：接在肉後面、點空地也算數；也進吉祥物（會動手）、不進天災，提示裡是「她」；圖示 🌙',
+     efig.meat >= 0 && efig.at === efig.meat + 1 && efig.ground && efig.masc && !efig.calm &&
      !efig.doom && efig.nm && efig.it === '她' && efig.icon === '🌙',
      'TOOLS 第 ' + efig.at + ' 把（肉第 ' + efig.meat + ' 把、共 ' + efig.n + ' 把）；吉祥物 ' + efig.masc + '（calm ' + efig.calm +
      '）、天災 ' + efig.doom + '；' + efig.it + '；圖示 ' + efig.icon);
