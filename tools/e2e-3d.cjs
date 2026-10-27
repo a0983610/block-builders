@@ -33315,15 +33315,17 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const masc = m.hits;
     beasts = null; w.hits = 0;
     cleanTools();
-    return { seq, two, keep, alive, masc, K: KILL_HITS, tbl: Object.keys(HIT_DMG).length };
+    /* v1.323.0：本來斬得死巨人的那六種一下算滿（使用者選的「小人、牛羊也一樣」），其餘照舊 1 */
+    const full = Object.keys(HIT_DMG).filter(k => HIT_DMG[k] === KILL_HITS).sort().join();
+    return { seq, two, keep, alive, masc, K: KILL_HITS, tbl: Object.keys(HIT_DMG).length, full };
   });
-  ok('打中一次記一次，表上沒寫的就是 1，寫了幾就記幾（HIT_DMG）',
-     kc.seq.join() === '1,2' && kc.two === 2 && kc.tbl === 0,
+  ok('打中一次記一次，表上沒寫的就是 1，寫了幾就記幾（HIT_DMG）；本來斬得死巨人的六種一下算滿',
+     kc.seq.join() === '1,2' && kc.two === 2 && kc.tbl === 6 && kc.full === 'excal,levi,magic,nuke,purp,tachi',
      '戳 → 炸：' + kc.seq.join(' → ') + '；表上暫時給 blast 2 就記 ' + kc.two +
-     '；表上現在 ' + kc.tbl + ' 筆（使用者：「先預設所有道具都是打中累積1次」）');
-  ok('被打過的次數不會恢復，打不滿 KILL_HITS 不會死；吉祥物不記這一筆',
+     '；表上 ' + kc.tbl + ' 筆、一下算滿 ' + kc.K + ' 的：' + kc.full);
+  ok('被打過的次數不會恢復，打不滿 KILL_HITS 不會死；打不死的吉祥物（小獼猴）不記這一筆',
      kc.keep === 2 && kc.alive && kc.masc === undefined,
-     '被打兩下放著走 30 秒還是 ' + kc.keep + '（門檻 ' + kc.K + '）、還活著；吉祥物 hits ' + kc.masc);
+     '被打兩下放著走 30 秒還是 ' + kc.keep + '（門檻 ' + kc.K + '）、還活著；小獼猴 hits ' + kc.masc);
 
   /* ── 小人一整趟：第三下倒下 → 血漫開 → 淡掉 → 換一個新的從林帶走進來（v1.255 以前是島邊） ── */
   const kw = await page.evaluate(() => {
@@ -33614,6 +33616,162 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      ksw.same && Math.abs(ksw.t1 + Math.PI / 2) < 0.02 && ksw.d1 > ksw.d0,
      '換場前躺平角 ' + ksw.t0.toFixed(3) + '、換場後 ' + ksw.t1.toFixed(3) + '，死了 ' + ksw.d0.toFixed(2) +
      ' → ' + ksw.d1.toFixed(2) + ' 秒');
+
+  /* ── 飛龍、獅鷲、巨人、Diablo 也是三條命（v1.323.0，使用者：「調整 飛龍(要做死亡動作) 獅鷲(要做死亡動作) diablo 巨人
+        都能被各種攻擊打死 像是一般生物三條命／原本能強力殺死的攻擊都調整成一次算三下 直接殺死」）。
+        巨人、Diablo 第三下當場接斬殺那一套（選的「當場接原本的死法」）；天災被打退之後走人中照樣打得死（選的「照舊放棄」）；
+        不冷卻（同牛羊）：同一幀連打三下就死。直接叫 beastHit，不跑模擬 ── */
+  const kb = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9;
+    const said = [], toast0 = window.toast;
+    window.toast = (a, b) => { said.push(a + '｜' + (b || '')); return toast0(a, b); };
+    const out = {};
+    try {
+      for (const k of ['giant', 'diablo']) {
+        beasts = null; said.length = 0;
+        const m = spawnBeast(k, 1, 0);
+        m.x = siteR + 30; m.z = 0; m.st = 'fun'; m.pause = 999; m.stay = 999;
+        const hits = [], live = [];
+        for (let i = 0; i < KILL_HITS; i++) { beastHit(m, 'arrow'); hits.push(m.hits); live.push(!(m.dead > 0)); }
+        out[k] = { hits: hits.join(), live: live.join(), st: m.st, said: said[said.length - 1] || '' };
+      }
+      beasts = null;
+      const d = spawnBeast('giant');                 // 天災：第二下就放棄走人
+      d.x = siteR + 30; d.z = 0; d.quit = 2;
+      const dt = [];
+      for (let i = 0; i < KILL_HITS; i++) { d.hcd = 0; beastHit(d, 'arrow'); dt.push(d.st); }
+      out.doom = dt.join(' → ');
+      beasts = null;
+      const g = spawnBeast('giant', 1, 0);
+      g.x = siteR + 30; g.z = 0; g.st = 'fun';
+      beastHit(g, 'levi');                           // 一下算滿：兵長刀圈掃到的旁邊那一隻也是
+      out.levi = { dead: g.dead > 0, hits: g.hits };
+    } finally { window.toast = toast0; beasts = null; cleanTools(); }
+    return out;
+  });
+  ok('巨人、Diablo 三條命：一般攻擊第一、二下照舊改主意，第三下當場接斬殺那一套（不冷卻）',
+     ['giant', 'diablo'].every(k => kb[k].hits === '1,2,3' && kb[k].live === 'true,true,false' && kb[k].st === 'dead' &&
+                                    /被打死了｜挨滿三下，/.test(kb[k].said)) &&
+     kb.levi.dead && kb.levi.hits === 3,
+     '巨人 ' + kb.giant.hits + '、活著 ' + kb.giant.live + '、' + kb.giant.st + '「' + kb.giant.said + '」；Diablo ' +
+     kb.diablo.hits + '、' + kb.diablo.live + '、' + kb.diablo.st + '；兵長一下 ' + kb.levi.hits + '、死 ' + kb.levi.dead);
+  ok('天災被打退之後走人中照樣打得死（第二下放棄走人、第三下死）',
+     /^\w+ → go → dead$/.test(kb.doom), kb.doom);
+
+  /* 飛龍：天上被打下來的第三下摔到地上（down）那一刻死，趴著不再起飛、身下一攤血、DIE_HOLD 後淡掉、淡完拿掉；
+     點著當第三下、半空被澆熄的照樣摔下去死；屍體打不動；天災翻臉不挑打滿的那一隻 */
+  const kd = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9; beasts = null;
+    const said = [], toast0 = window.toast;
+    window.toast = (a, b) => { said.push(a); return toast0(a, b); };
+    try {
+      const m = spawnDragon(1, 0);
+      m.x = m.rc; m.z = 0; m.st = 'ring'; m.wIn = 0; m.alpha = undefined; m.hits = KILL_HITS - 1;
+      const nb0 = bloods.length;
+      const hit = crashDragon(m); beastHit(m, 'arrow');
+      const air = m.st + '/' + (m.dead > 0);
+      let t = 0, landed = null, deadAt = null, gone = null, rise = false, early = false, aMid = null, imm = null, nb = 0, R = 0;
+      for (let k = 0; k < 300; k++) {
+        const was = m.st;
+        step(0.05); t += 0.05;
+        if (!beasts || !beasts.includes(m)) { gone = t; break; }
+        if (was === 'crash' && m.st !== 'crash' && landed === null) landed = t;
+        if (m.st === 'rise' || m.st === 'gwalk') rise = true;
+        if (m.dead && deadAt === null) { deadAt = t; nb = bloods.length - nb0; R = bloods[bloods.length - 1].R; }
+        if (m.dead && m.dead < DIE_HOLD - 0.1 && m.alpha !== undefined) early = true;
+        if (m.dead && aMid === null && m.dead >= DIE_HOLD + DIE_FADE / 2) aMid = m.alpha;
+        if (m.dead > 1 && imm === null)
+          imm = !crashDragon(m) && !tossBeast(m, 2, 6, 0, true) && !fellBeast(m, 1) && !igniteBeast(m, 0) && m.st === 'dead';
+      }
+      const wantR = draSize().len * m.sc * BLOOD_BEAST;
+      /* 點著當第三下，半空澆熄 */
+      beasts = null;
+      const f = spawnDragon(1, 0);
+      f.x = f.rc; f.z = 0; f.st = 'ring'; f.wIn = 0; f.hits = KILL_HITS - 1;
+      const lit = igniteBeast(f, 1); beastHit(f, 'torch');
+      const st0 = f.st; wetBeast(f); const st1 = f.st;
+      let fd = false, back = false;
+      for (let k = 0; k < 200 && !fd && !back; k++) { step(0.05); fd = f.dead > 0; back = f.st === 'ring' || f.st === 'rise'; }
+      /* 天災翻臉不挑打滿、還在摔的那一隻 */
+      beasts = null;
+      const tb = spawnDragon(1, 0);
+      tb.st = 'crash'; tb.hits = KILL_HITS;
+      const turned = turnBad('dragon');
+      return { hit, air, landed, deadAt, gone, rise, early, aMid, imm, nb, R, wantR, st0, st1, lit, fd, back, turned,
+               said: said.filter(s => /打死/.test(s)).join('／'), H: DIE_HOLD, F: DIE_FADE };
+    } finally { window.toast = toast0; beasts = null; cleanTools(); }
+  });
+  ok('飛龍第三下：被打下來摔到地上那一刻才死，趴著不再起飛，身下一攤血（照身長），DIE_HOLD 後淡掉、淡完拿掉',
+     kd.hit && kd.air === 'crash/false' && kd.landed !== null && kd.deadAt - kd.landed <= 0.051 && !kd.rise &&
+     kd.nb === 1 && Math.abs(kd.R - kd.wantR) < 1e-6 && !kd.early && Math.abs(kd.aMid - 0.5) <= 0.03 &&
+     Math.abs(kd.gone - kd.deadAt - (kd.H + kd.F)) <= 0.11 && kd.imm && /那條龍被打死了/.test(kd.said),
+     '打下來那一刻 ' + kd.air + '；落地 ' + (kd.landed || 0).toFixed(2) + ' 秒、死 ' + (kd.deadAt || 0).toFixed(2) +
+     ' 秒、起飛過 ' + kd.rise + '；血泊 ' + kd.nb + ' 攤、半徑 ' + kd.R.toFixed(2) + '（照身長 ' + kd.wantR.toFixed(2) +
+     '）；淡到一半 ' + (kd.aMid === null ? '—' : kd.aMid.toFixed(2)) + '、死後 ' + ((kd.gone || 0) - (kd.deadAt || 0)).toFixed(2) +
+     ' 秒拿掉；打不動 ' + kd.imm + '；「' + kd.said + '」');
+  ok('飛龍被點著當第三下、半空澆熄也撐不住：照樣摔下去死；天災翻臉不挑打滿的那一隻',
+     kd.lit && kd.st0 === 'ablaze' && kd.st1 === 'crash' && kd.fd && !kd.back && kd.turned === false,
+     '點著 ' + kd.st0 + '、澆熄 ' + kd.st1 + '、死了 ' + kd.fd + '（飛回去 ' + kd.back + '）；翻臉挑到 ' + kd.turned);
+
+  /* 獅鷲：同牛羊那一套。天上被打下來的落地那一刻死、地上被打倒的當下死；淡完拿掉、不算進牛羊要補的隻數 */
+  const kg = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9; beasts = null;
+    const said = [], toast0 = window.toast;
+    window.toast = (a, b) => { said.push(a); return toast0(a, b); };
+    try {
+      const owed0 = herdOwed, nb0 = bloods.length;
+      const m = spawnGryph(1, 0);
+      m.x = siteR + 30; m.z = 0; m.wIn = 0; m.alpha = undefined; m.hits = KILL_HITS - 1;
+      const hit = tossBeast(m, 0, 0, 0, false); beastHit(m, 'arrow');
+      const air = !!m.air && !m.dead;
+      let t = 0, landed = null, deadAt = null, gone = null, nb = 0, R = 0, flat = null;
+      for (let k = 0; k < 300; k++) {
+        const wa = m.air;
+        step(0.05); t += 0.05;
+        if (!beasts || !beasts.includes(m)) { gone = t; break; }
+        if (wa && !m.air && landed === null) landed = t;
+        if (m.dead && deadAt === null) { deadAt = t; nb = bloods.length - nb0; R = bloods[bloods.length - 1].R; }
+        if (m.dead && flat === null && Math.abs(m.roll - lieAng(m)) < 0.02) flat = m.dead;
+      }
+      const wantR = herdBody('gryphon').len * m.sc * BLOOD_BEAST;
+      beasts = null;
+      const s = spawnGryph(1, 0);
+      s.x = siteR + 30; s.z = 0; s.y = 0; s.sky = 0; s.st = 'stand'; s.wIn = 0; s.hits = KILL_HITS - 1;
+      const fell = fellBeast(s, 2); beastHit(s, 'poke');
+      step(0.05);
+      const ground = s.dead > 0 && s.st === 'dead';
+      return { hit, air, landed, deadAt, gone, nb, R, wantR, flat, fell, ground, owed: herdOwed - owed0,
+               said: said.filter(x => /打死/.test(x)).join('／'), H: DIE_HOLD, F: DIE_FADE };
+    } finally { window.toast = toast0; beasts = null; cleanTools(); }
+  });
+  ok('獅鷲第三下同牛羊：天上被打下來的落地那一刻死、地上被打倒的當下死，側躺流血淡掉，不算進牛羊要補的隻數',
+     kg.hit && kg.air && kg.landed !== null && kg.deadAt - kg.landed <= 0.051 && kg.nb === 1 &&
+     Math.abs(kg.R - kg.wantR) < 1e-6 && kg.flat !== null && kg.flat <= 0.6 &&
+     Math.abs(kg.gone - kg.deadAt - (kg.H + kg.F)) <= 0.11 && kg.fell && kg.ground && kg.owed === 0 &&
+     /那隻獅鷲被打死了/.test(kg.said),
+     '落地 ' + (kg.landed || 0).toFixed(2) + ' 秒、死 ' + (kg.deadAt || 0).toFixed(2) + ' 秒；血泊 ' + kg.nb + ' 攤、半徑 ' +
+     kg.R.toFixed(2) + '；側躺 ' + (kg.flat === null ? '—' : kg.flat.toFixed(2)) + ' 秒；死後 ' +
+     ((kg.gone || 0) - (kg.deadAt || 0)).toFixed(2) + ' 秒拿掉；地上被打倒當下死 ' + kg.ground + '；牛羊欠 ' + kg.owed);
+
+  /* 核彈、爆裂魔法走共用的 explode：炸到的那一下報自己的名字（一下算滿），爆完換回 blast；一般炸彈照舊 1 */
+  const kn = await page.evaluate(() => {
+    cleanTools(); clearFires(); beasts = null; phase = 'done'; doomT = 1e9;
+    const X = siteR + 60, w = workers[5], out = {};
+    const fires = [['nuke', () => nukeHit({ x: X, y: 0, z: 0 })],
+                   ['magic', () => stepOneMagic({ x: X, z: 0, t: 1e-6 }, 0.01)],
+                   ['bomb', () => explode({ x: X, y: 0.5, z: 0 }, BOMB_R, BOMB_POW)]];
+    for (const [nm, fire] of fires) {
+      releaseWorker(w); w.x = X + 3; w.z = 0; w.y = 0; w.air = 0; w.fall = 0; w.burn = 0; w.tilt = 0; w.hits = 0;
+      fire();
+      out[nm] = w.hits + '/' + blastSrc;
+    }
+    w.air = 0; w.y = 0; w.hits = 0; w.x = siteR + 4; w.z = 0;
+    cleanTools(); clearFires();
+    return out;
+  });
+  ok('核彈、爆裂魔法炸到的一下算滿（explode 報 nuke／magic，爆完換回 blast），一般炸彈照舊一下',
+     kn.nuke === '3/blast' && kn.magic === '3/blast' && kn.bomb === '1/blast',
+     '核彈 ' + kn.nuke + '、爆裂魔法 ' + kn.magic + '、炸彈 ' + kn.bomb + '（記幾下／爆完的 blastSrc）');
 
   /* 收尾：拔掉、死的那幾格換回一般的新人（站在工地旁，不是從林帶走進來） */
   await page.evaluate(() => {

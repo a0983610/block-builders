@@ -2668,6 +2668,9 @@ const Y_BOOST = 0.85;               // 抬升占衝擊力道的比例（重力 2
    不給就照舊留一般的痕跡（焦黑／坑洞，半徑是爆炸半徑乘 MARK_SCORCH_R／MARK_CRATER_R）。
    v1.205～v1.230 這一格是 markR（只有隕石在用：使用者要「坑跟破壞範圍一樣大」，把要拿去乘的那個 R
    單獨傳進來）；改成直接給半徑之後，隕石給 MET_R 就是同一件事，共用的那兩個倍率照舊沒動。 */
+/* 炸到的人與動物記到「被打死」那一筆的名字（見 HIT_DMG）。平常是 'blast'；核彈、爆裂魔法爆的那一刻
+   換成 'nuke'／'magic'（v1.323.0：那兩發一下算滿），爆完換回來。同 hitBy 用旗標、不多傳一個參數（已經八個） */
+let blastSrc = 'blast';
 function explode(point, R, power, wind, crash, self, quiet, scorchR) {
   const R2 = R * R;
   let n = 0, ownN = 0;                          // ownN＝其中有幾塊是地標的（見 afterHit）
@@ -2723,7 +2726,7 @@ function explode(point, R, power, wind, crash, self, quiet, scorchR) {
     let nx = dx / ol, nz = dz / ol;
     if (hd < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
     tossWorker(w, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true);
-    lifeHit(w, 'blast');                                       // 落地那一下的點著不再數一次（同 beastHit）
+    lifeHit(w, blastSrc);                                      // 落地那一下的點著不再數一次（同 beastHit）
   }
   /* 生物也一起掀（v1.146）。同一條公式，只是力道打個折——牠們比人重一些。 */
   eachBeastNear(point, R, (m, d) => {
@@ -2735,7 +2738,7 @@ function explode(point, R, power, wind, crash, self, quiet, scorchR) {
     let nx = (m.x - point.x) / ol, nz = (m.z - point.z) / ol;
     if (hd < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
     if (tossBeast(m, nx * f + rr(-2, 2), lift + rr(1, 4), nz * f + rr(-2, 2), true))
-      beastHit(m, 'blast');                        // v1.208（落地那一下的點著不再數一次）
+      beastHit(m, blastSrc);                       // v1.208（落地那一下的點著不再數一次）
   });
   afterHit(n, point, R, ownN, self);
   /* 還站著的（SET）餘火：半徑放到 1.5 倍去找——衝擊圈內幾乎都被炸飛了，
@@ -4863,7 +4866,9 @@ function callNuke(point, n) {
 function nukeHit(p) {
   slayGiants(p, NUKE_R, 'nuke');            // 範圍內的巨人當場斬殺（v1.245.0），要排在 explode 前面
   // 第二個 true = 加風壓；最後一個 = 地上留焦痕（v1.231，大小同以前那塊焦黑：爆炸半徑 × MARK_SCORCH_R）
+  blastSrc = 'nuke';                        // 炸到的一下算滿（v1.323.0，見 HIT_DMG）
   explode(p, NUKE_R, NUKE_POW, true, false, null, false, NUKE_R * MARK_SCORCH_R);
+  blastSrc = 'blast';
   startCloud(p, NUKE_R);
 }
 /* 畫面上要畫的那幾顆（倒數中的還在天上等，不畫）。重用同一個陣列，不要每幀配一個新的 */
@@ -5045,7 +5050,9 @@ function stepOneMagic(magic, dt) {
     magLetGo(magic);                        // 拽進來的那一團交給 explode 噴出去
     slayGiants(p, MAG_R, 'magic');          // 同核彈（v1.245.0）
     // true = 加風壓（也是強爆炸：有火團）；最後一個 = 地上留焦痕（v1.231，同核彈）；by＝放這一發的（惠惠，見 castMagic）
+    blastSrc = 'magic';                     // 同核彈（v1.323.0）
     explode(p, MAG_R, MAG_POW, true, false, magic.by, false, MAG_R * MARK_SCORCH_R);
+    blastSrc = 'blast';
     startCloud(p, MAG_R);             // 魔法爆完也留一朵，跟核彈同一種
     startArcs(p, MAG_R);              // 火球收乾之後，爆點還會劈三秒的藍電
     return true;
@@ -9804,8 +9811,9 @@ function stepBeast0(m, dt) {
   /* 雁（v1.272.0）：飛、被打下來、摔在地上淡掉都是自己一套（見 stepGoose），擺在 m.dead 那一條前面 */
   if (m.kind === 'goose') return stepGoose(m, dt);
   /* 被斬殺的巨人：躺著冒蒸氣、氣化消失（里維 v1.230；核彈、爆裂魔法、Excalibur v1.245.0，見 giantDie）；
-     被打死的牛羊：躺著流血、淡掉（v1.240） */
-  if (m.dead) return m.herd ? stepCarcass(m, dt) : m.kind === 'diablo' ? stepDiaDie(m, dt) : stepDie(m, dt);   // Diablo 趴倒、噴金幣、淡掉
+     被打死的牛羊：躺著流血、淡掉（v1.240），獅鷲同牛羊、飛龍趴著流血淡掉（v1.323.0） */
+  if (m.dead) return m.herd || m.kind === 'gryphon' ? stepCarcass(m, dt) : m.kind === 'dragon' ? stepDraDie(m, dt)
+                   : m.kind === 'diablo' ? stepDiaDie(m, dt) : stepDie(m, dt);   // Diablo 趴倒、噴金幣、淡掉
   /* 惠惠爆完往後倒、暈著、爬起來（v1.247.0）：被打倒、卡住那兩套都不必跑（v1.260.0 起被炸飛、點著的那幾秒在裡面照一般那一套） */
   if (megDown(m)) return stepMegDown(m, dt);
   /* 芙莉蓮（v1.259.0）：防護罩的計時與舉杖；罩子張開到收完那幾秒她站定（見 frStep） */
@@ -10943,6 +10951,8 @@ function stepDiaDie(m, dt) {
 }
 /* 殺得死的那兩款（巨人、Diablo）：五個呼叫點（里維、核彈、爆裂魔法、Excalibur、茈）都問這一支，死法各走各的 */
 const killable = m => m.kind === 'giant' || m.kind === 'diablo';
+/* 有三條命的那四款（v1.323.0，見 beastHit）：上面那兩款，加飛龍、獅鷲。牛羊另外一條（m.herd），一直都有 */
+const mortal = m => killable(m) || m.kind === 'dragon' || m.kind === 'gryphon';
 /* 太高走不了城門、擋路就動手的那兩款（使用者：「Diablo 要比照巨人 擋路就噴」）：不走城門、不規劃（strollGiant 直直走），
    前面五格擋著就停下來動手——巨人踹（giantBust），Diablo 噴（diaBust）。gateNeed／wallFoot／strollTo／near 那幾處都問這一支 */
 const bigBeast = m => m.kind === 'giant' || m.kind === 'diablo';
@@ -11859,7 +11869,8 @@ const GIA_SLAIN = {
   levi: ['被里維兵長斬殺', '後頸一刀，'], nuke: ['被核彈炸死', ''], magic: ['被爆裂魔法炸死', ''],
   excal: ['被 Excalibur 斬殺', '光柱掃過，'],
   purp: ['被虛式「茈」抹消', '紫球掃過，'],            // v1.255.0（使用者選「巨人被抹消，其他甩飛」）
-  tachi: ['被光之太刀斬殺', '劍氣斬過，']               // v1.290.0（使用者選「砍倒＋斬殺巨人」）
+  tachi: ['被光之太刀斬殺', '劍氣斬過，'],              // v1.290.0（使用者選「砍倒＋斬殺巨人」）
+  hits: ['被打死了', '挨滿三下，']                      // v1.323.0：被一般的攻擊打滿 KILL_HITS 下（見 beastHit）
 };
 function giantDie(b, by) {
   b.dead = 1e-6; b.st = 'dead'; b.call = null; b.cq = null;
@@ -14359,6 +14370,8 @@ function turnBad(id) {
   if (!beasts) return false;
   for (const m of beasts) {
     if (m.kind !== id || !m.fun) continue;
+    /* 打死了、或已經打滿正在演最後那一下的不轉（v1.323.0）：轉了是一具屍體在「又繞回來了」，這一件就被吃掉了 */
+    if (slain(m)) continue;
     /* Excalibur 叫去斬的那一位不轉（v1.224）：那一趟是玩家的。她只有一位，所以這一件天災作廢（見 stepDoom） */
     if (m.call || m.cq) continue;
     /* 動不了手的不轉（v1.229，小猴子丟完香蕉）：轉了牠會再丟一根手上沒有的香蕉。這一件作廢見 stepDoom */
@@ -14672,12 +14685,20 @@ function quitDoom(m) {
 let hitBy = null;
 /* 道具打中一隻的那一刻。呼叫點見上面那一段的說明。
    src＝這一下是什麼打的（v1.240，見 HIT_DMG）：牛羊照它記幾次、記滿 KILL_HITS 就死；
-   吉祥物與天災用不到它（那一套數的是「被打幾下」，不分是什麼打的）。 */
+   改主意那一套用不到它（數的是「被打幾下」，不分是什麼打的），飛龍、獅鷲、巨人、Diablo 的命照它記（v1.323.0）。 */
 function beastHit(m, src) {
   /* 牛羊（v1.240）：沒有「來意」可以改（v1.208），但會被打死——只記一筆，其餘都不吃 */
   if (m && m.herd) { lifeHit(m, src); return; }
   /* 雁（v1.272.0）：打中那一下 gooseDown 已經讓牠掉下來了（掉下來就死），沒有別的要記 */
   if (m && m.kind === 'goose') return;
+  /* 飛龍、獅鷲、巨人、Diablo 也是三條命（v1.323.0，使用者：「都能被各種攻擊打死 像是一般生物三條命」）：
+     同牛羊照 src 記、不冷卻，**走人中的天災也照記**（使用者選的「照舊放棄，走人中照樣打得死」）——所以排在下面那幾道門前面。
+     打滿的那一下不再改主意：巨人、Diablo 當場接斬殺那一套（使用者選的「當場接原本的死法」，被打的反應不演）；
+     飛龍、獅鷲照演完這一下的反應（摔下來、燒完）才倒地不起（見 fallenDragon、hurtBeast） */
+  if (m && mortal(m)) {
+    lifeHit(m, src);
+    if (slain(m)) { if (killable(m)) slayBeast(m, src in GIA_SLAIN ? src : 'hits'); return; }
+  }
   /* Excalibur 叫去斬的那一趟不改主意（v1.224）：被打到只是拖延，爬起來接著走過去 */
   if (!m || m === hitBy || m.call || m.cq) return;
   /* 已經在走人的不改主意（v1.208：都走到一半了又掉頭回來很怪）：天災。
@@ -14742,8 +14763,11 @@ const KILL_HITS = 3;                 // 被打幾次會死（使用者：「累�
    打中累積1次」）——之後要讓某一種一下算兩次，在這裡加一行就好，不必回頭改呼叫點。
    quake 震倒／ball 鐵球／twister 龍捲風／blast 爆炸／spark 煙火／bolt 雷／ufo 幽浮／hole 小黑洞／
    weapon 王之財寶／blade 大劍／excal Excalibur／levi 兵長／arrow 箭雨／bullet 火槍／torch 火把／
-   poke 手指／play 小人閒著射箭。天災與吉祥物的攻擊走的是同一批呼叫點（香蕉、火球是 blast，巨人那一腳是 quake…）。 */
-const HIT_DMG = {};
+   poke 手指／play 小人閒著射箭。天災與吉祥物的攻擊走的是同一批呼叫點（香蕉、火球是 blast，巨人那一腳是 quake…）。
+   **v1.323.0 本來斬得死巨人的那六種一下算滿**（使用者：「原本能強力殺死的攻擊都調整成一次算三下 直接殺死」，
+   選的是小人、牛羊也一樣）：兵長、核彈、爆裂魔法、Excalibur、虛式「茈」、光之太刀。
+   核彈、爆裂魔法走的是共用的 explode，報上來的名字見 blastSrc。 */
+const HIT_DMG = { levi: KILL_HITS, nuke: KILL_HITS, magic: KILL_HITS, excal: KILL_HITS, purp: KILL_HITS, tachi: KILL_HITS };
 function lifeHit(o, src) {
   if (!o || o.dead) return;
   /* 防護罩裡的不算被打（v1.259.0）：呼叫端多半是「先丟、再記一筆」，丟的那一下被罩子擋掉了，這一筆也不記 */
@@ -14781,8 +14805,14 @@ function stepBloods(dt) {
 /* 牛羊那一份。第三下的反應演完（落地、燒完）那一刻 hurtBeast 叫這一支：就地倒下、身下漫一攤血，
    之後每幀走 stepCarcass（stepBeast0 那條 m.dead）。站著死的（燒完跑圈那種）往哪一邊倒現在才抽。 */
 let herdOwed = 0;                    // 死掉、還沒補回來的幾隻：stepHerd 補的時候從林帶走進來（v1.256.0）
+/* 打死了照這一套倒下的：牛羊，加獅鷲（v1.323.0，使用者選的「倒地＋血泊＋變淡」；牠被打倒本來就是借牛羊那一套側躺，見 spawnGryph 的 side） */
+const lieDie = m => !!m.herd || m.kind === 'gryphon';
 function dieHerd(m) {
   m.dead = 1e-6; m.alpha = 1; m.fall = 1; m.gait = 0; m.pause = 0; m.spook = 0; m.face = 0;
+  if (m.kind === 'gryphon') {
+    m.st = 'dead'; m.left = 0; m.rk = null;
+    toast('🦅 那隻獅鷲被打死了', '牠倒在草皮上不再起來，身下流了一攤血，慢慢消失');
+  }
   if (!m.lie) { lieSide(m); m.lie = lieLift(m); }
   /* 血漫在身體底下，中心是**身體的重心**倒下去之後落在哪：側躺的那一隻，背朝 −sdir 那一側倒過去
      （roll ＝ sdir·90° 把「上」轉到牠的 −x）；兩條腿的照仰躺算（往背後倒）。牛羊全是側躺的。 */
@@ -14818,7 +14848,7 @@ function stepCarcass(m, dt) {
   else m.spin += (lieAng(m) - m.spin) * k;
   m.alpha = corpseAlpha(m.dead);
   if (m.dead < DIE_HOLD + DIE_FADE) return false;
-  herdOwed++;
+  if (m.herd) herdOwed++;                            // 獅鷲（v1.323.0）不補：吉祥物、天災是另一條線
   return true;                                       // stepDoom 把牠從清單拿掉
 }
 
@@ -15758,7 +15788,8 @@ function wetBeast(m) {
     m.wet = WET_TIME;
     if (m.burn > 0) {
       m.burn = 0;
-      if (m.st === 'ablaze') { m.st = m.was === 'out' ? 'out' : 'in'; m.spin = 0; }
+      /* 被打滿的那一隻（v1.323.0，點著牠的就是第三下）火滅了也撐不住：照樣摔下去、趴到地上就死（見 fallenDragon） */
+      if (m.st === 'ablaze') { if (slain(m)) draDive(m, 0); else { m.st = m.was === 'out' ? 'out' : 'in'; m.spin = 0; } }
     }
     return true;
   }
@@ -15819,8 +15850,9 @@ function hurtBeast(m, dt) {
   if (m.wet > 0) m.wet = Math.max(0, m.wet - dt);
   if (m.air) { flyBeast(m, dt); return true; }
   if (m.burn > 0) { burnBeast(m, dt); return true; }
-  /* 被打滿 KILL_HITS 次的牛羊（v1.240）：最後那一下的反應演完了（落地、燒完），躺著的就這樣不起來 */
-  if (m.herd && slain(m)) { dieHerd(m); return true; }
+  /* 被打滿 KILL_HITS 次的牛羊（v1.240）：最後那一下的反應演完了（落地、燒完），躺著的就這樣不起來。
+     獅鷲同一套（v1.323.0）：天上被打下來的摔到地上那一刻、地上被打倒的當下 */
+  if (lieDie(m) && slain(m)) { dieHerd(m); return true; }
   if (m.fall > 0) {
     /* 躺平就是躺平：兩條腿的往後仰躺（負角）——同小人，往前趴的話臉那幾塊會插進草地裡；
        四條腿的往側邊倒（見 lieAng）。 */
@@ -15878,7 +15910,7 @@ function burnBeast(m, dt) {
   burnBeastFx(m, dt);
   if (m.burn <= 0) {                                 // 燒完拍拍灰站起來
     /* 被打滿那一隻躺著燒完（v1.240）：就這樣躺著死（見 dieHerd），不先站起來再倒下去 */
-    if (m.brl && m.herd && slain(m)) { m.burn = 0; m.brl = 0; m.rph = 0; m.gait = 0; return; }
+    if (m.brl && lieDie(m) && slain(m)) { m.burn = 0; m.brl = 0; m.rph = 0; m.gait = 0; return; }
     m.burn = 0; m.brl = 0; m.spin = 0; m.roll = 0; m.rph = 0; m.gait = 0; m.lie = 0;
     return;
   }
@@ -15960,7 +15992,8 @@ function draDive(m, vy) {
 }
 /* 把牠打下來。回傳 true＝真的打到了（已經在摔的不重複觸發）。 */
 function crashDragon(m) {
-  if (m.st === 'crash' || m.st === 'down' || m.st === 'rise') return false;
+  /* 打死了的（v1.323.0）也不動：屍體淡完之前還畫在 draMesh 上，點得到（火把點不著就改打下來那一條直接叫這一支） */
+  if (m.st === 'crash' || m.st === 'down' || m.st === 'rise' || m.dead) return false;
   /* 走在地上／正在降落的那一隻（v1.182）：m.was 已經是「起飛之後要接回哪一段」了，
      別把它蓋成 gwalk／land——蓋掉的話 rise 那一行會把牠送回盤旋，本來要走人的又繞一圈。 */
   const onGround = m.st === 'gwalk';
@@ -16022,6 +16055,8 @@ function fallenDragon(m, dt) {
     else m.roll += (DRA_DOWN_ROLL - m.roll) * Math.min(1, dt * 6);
     draFollow(m, dt);
     if (m.burn > 0) return false;
+    /* 被打滿 KILL_HITS 下的（v1.323.0）：摔到地上（著火的燒完）就這樣趴著不起來，同牛羊落地那一刻（見 dieDragon） */
+    if (slain(m)) { dieDragon(m); return false; }
     /* 喘完了就**站起來走一段**（v1.182），不再直接拍翅走人。 */
     if (m.t <= 0) { draLanded(m, 1); sndRoar(); }
     return false;
@@ -16046,6 +16081,39 @@ function fallenDragon(m, dt) {
   /* 歸隊，接回原本那一段；吉祥物逛的時間到了就飛走（v1.322.0） */
   m.st = m.was === 'out' || (m.fun && m.stay <= 0) ? 'out' : 'in';
   return false;
+}
+
+/* ── 飛龍被打死（v1.323.0）───────────────────────────────
+   使用者：「飛龍(要做死亡動作)…都能被各種攻擊打死 像是一般生物三條命」，死法選的是「倒地＋血泊＋變淡」（同牛羊、小人那一套）。
+   打滿那一下的反應照演（被打下來就摔、著火的拖著火摔下來、在地上把火燒完），趴到地上（down）那一刻起不再喘、不再起飛：
+   就這樣趴著，身下漫一攤血，DIE_HOLD 秒後花 DIE_FADE 秒淡掉（淡的那一段整格搬去 humMesh，同從林帶飛進飛出那一段，
+   見引擎的 fadeHumans），淡完 stepBeast 回 true 從場上拿掉——天災那一件就結束了（同巨人）。 */
+function dieDragon(m) {
+  m.dead = 1e-6; m.st = 'dead'; m.left = 0; m.hv = ''; m.burn = 0; m.gait = 0;
+  const g = draSize(), sc = m.sc || 1;
+  spawnBlood(m.x + Math.sin(m.a) * g.cz * sc, m.z + Math.cos(m.a) * g.cz * sc, g.len * sc * BLOOD_BEAST);
+  toast('🐉 那條龍被打死了', '牠趴在草皮上不再起來，身下流了一攤血，慢慢消失');
+}
+function stepDraDie(m, dt) {
+  m.dead += dt;
+  draBody(m, dt, 0, 0, 1, 5);                        // 趴姿同 down；不再喘（ph 不往前走，前臂那一下停住）
+  m.roll += (DRA_DOWN_ROLL - m.roll) * Math.min(1, dt * 6);   // 壓火時左右翻的那一下收回來
+  draFollow(m, dt);
+  /* 淡之前不給 alpha（同 Diablo）：給了就搬去半透明那一顆畫，全濃那幾秒沒必要 */
+  m.alpha = m.dead <= DIE_HOLD ? undefined : corpseAlpha(m.dead);
+  return m.dead >= DIE_HOLD + DIE_FADE;
+}
+/* 飛龍身長（鼻尖到尾錘，刺、角、爪不算）與中心離原點往前多少（模型單位，照造型表算一次）：血泊照它算，
+   同牛羊那一份照身長（herdBody）——第一版只照軀幹（半徑 3.1 格），整攤被肚子與攤開的翅膀蓋住，截圖上看不出來 */
+let _draSize = null;
+function draSize() {
+  if (_draSize) return _draSize;
+  let lo = Infinity, hi = -Infinity;
+  for (const b of ENG.DRAGON) {
+    if (b.nl) continue;
+    lo = Math.min(lo, b.p[2] - b.s[2] / 2); hi = Math.max(hi, b.p[2] + b.s[2] / 2);
+  }
+  return (_draSize = { len: hi - lo, cz: (lo + hi) / 2 });
 }
 
 /* ── 飛龍：著火（v1.154）─────────────────────────────────
