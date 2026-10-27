@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.323.0';
+const VERSION = '1.323.1';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -353,6 +353,22 @@ function sndDiablo() {
   tone(110, 1.25, 'sawtooth', 0.08, 0.5, 'diablo');
   tone(165, 0.9, 'square', 0.03, 0.55, 'diablo2');
   noise(0.9, 0.12, 900);
+}
+/* 飛龍被打死（v1.323.0，使用者：「飛龍、獅鷲死的時候+音效」）：一聲拖長、越來越弱的低吼，最後吐完一口氣。
+   要跟活著的龍吼（sndRoar：88 滑到 48、1.15 秒）分得開：起音再低一點、拖到 1.9 秒、滑得更深，第二聲更弱更低，
+   尾巴一段悶的噪音當斷氣。噪音切點避開別人用的（voiceOK 拿 'noise' ＋ 切點當名額，見 sndLand 那段） */
+function sndDraDie() {
+  tone(76, 1.9, 'sawtooth', 0.075, 0.42, 'draDie');
+  noise(0.8, 0.08, 400);
+  setTimeout(() => tone(54, 1.4, 'sawtooth', 0.045, 0.6, 'draDie2'), 420);
+  setTimeout(() => noise(1.0, 0.07, 280), 1300);
+}
+/* 獅鷲被打死：鷹的那一半先叫一聲往下滑的長嘯（猴子 220／330、Diablo 110 都在底下，這一聲 700 起），
+   接著獅子那一半一聲低吼，最後一口氣 */
+function sndGryDie() {
+  tone(700, 0.6, 'sawtooth', 0.03, 0.45, 'gryDie');
+  setTimeout(() => tone(140, 0.9, 'sawtooth', 0.06, 0.55, 'gryDie2'), 250);
+  setTimeout(() => noise(0.8, 0.07, 360), 700);
 }
 /* 金幣噴出來：一串高音的叮叮噹噹，錯開一點、音高亂一點 */
 function sndCoins() {

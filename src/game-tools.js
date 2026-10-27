@@ -10911,10 +10911,11 @@ function diaDie(m, by) {
   m.side = 0; m.lie = 1; m.dk = 0; m.dp = 0; m.coin = 0;
   /* 躺平角折回 (−π, π]（飛在半空翻過的那種可能轉了好幾圈）；已經趴著（被打倒、著火打滾）的不必再跪 */
   m.s0 = Math.atan2(Math.sin(m.spin || 0), Math.cos(m.spin || 0));
-  m.pr = m.s0 > 1.0 ? 1 : 0;
+  /* 門檻 v1.323.0 起同巨人的 DOWN_ANG（v1.276～v1.322 是 1.0：爬到一半的那一隻會從半蹲重跪一次——使用者：「開始演就應該已經算已經死了」） */
+  m.pr = m.s0 > DOWN_ANG ? 1 : 0;
   sndDiablo();
   const s = GIA_SLAIN[by] || GIA_SLAIN.levi;
-  toast(BEAST_NM.diablo + s[0], s[1] + '跪倒在地、往前撲倒，噴出一地金幣，慢慢消失');
+  toast(BEAST_NM.diablo + s[0], s[1] + (m.pr ? '趴在地上不再起來' : '跪倒在地、往前撲倒') + '，噴出一地金幣，慢慢消失');
 }
 const _diaC = new THREE.Vector3();
 /* 著地那一刻是死後第幾秒 */
@@ -11864,7 +11865,14 @@ function levStrike(m, b, w) {
    姿勢那四個角度（knee／ank／hip／spin）是 stepDie 每幀給的，kpv 叫引擎改用跪倒那一套畫（見 giaDownPart）；
    lie 給 0：往後仰躺那一套的抬升不用了（引擎那邊照這個姿勢最低那一塊貼地）。
    by＝誰殺的（GIA_SLAIN 的鍵，沒給＝里維）：v1.245.0 起核彈、爆裂魔法（slayGiants）、Excalibur（excLives）也殺得死，
-   死法同一套（使用者選的「同里維斬殺那一套」），只有提示那一句不同。 */
+   死法同一套（使用者選的「同里維斬殺那一套」），只有提示那一句不同。
+   **已經倒在地上的不再演一次**（v1.323.0，使用者：「從站著開始演 開始演就應該已經算已經死了 不應該再演一次」）：
+   躺平角（折回 (−π, π]）超過 DOWN_ANG 的——被打倒、躺著燒、爬到一半——照現在躺著的那一面就地死：不跪、不往前倒，
+   躺平角收到那一面的 ±90°（m.lay），直接從趴著冒蒸氣那一段（stepDie 的 t3）接下去；畫法照一般躺姿（kpv 0）。
+   **看躺平角不看 fall／lie**：第三下的反應（tossBeast 掀起來）在 beastHit 之前就把 fall、lie 收掉了，躺平角還留著。 */
+/* 躺平角超過這麼多才算「已經倒了」：要高過踹人時上身往後仰的 GIA_LEAN（0.12，那是站著），
+   躺著是 ±π/2，被打倒之後一幀就過了這個門檻。Diablo 同一個門檻（見 diaDie 的 m.pr） */
+const DOWN_ANG = 0.3;
 const GIA_SLAIN = {
   levi: ['被里維兵長斬殺', '後頸一刀，'], nuke: ['被核彈炸死', ''], magic: ['被爆裂魔法炸死', ''],
   excal: ['被 Excalibur 斬殺', '光柱掃過，'],
@@ -11873,13 +11881,18 @@ const GIA_SLAIN = {
   hits: ['被打死了', '挨滿三下，']                      // v1.323.0：被一般的攻擊打滿 KILL_HITS 下（見 beastHit）
 };
 function giantDie(b, by) {
+  const s0 = Math.atan2(Math.sin(b.spin || 0), Math.cos(b.spin || 0));
+  const lay = Math.abs(s0) > DOWN_ANG;
   b.dead = 1e-6; b.st = 'dead'; b.call = null; b.cq = null;
   b.kick = 0; b.kt = 0; b.hit = 0; b.kleft = 0; b.bust = null; b.gait = 0; b.pause = 0;
   b.air = 0; b.burn = 0; b.brl = 0; b.fall = 1; b.face = 0; b.roll = 0; b.arm = 0; b.y = 0;
-  b.lie = 0; b.spin = 0; b.kpv = 1; b.knee = 0; b.ank = 0; b.hip = 0; b.thud = 0; b.melt = 0; b.puff = 0;
+  b.knee = 0; b.ank = 0; b.hip = 0; b.melt = 0; b.puff = 0;
+  /* 躺著的：躺平角照舊、抬升照躺平那一套、著地那兩下不再震（已經在地上了）；站著的照跪倒那一套 */
+  if (lay) { b.lay = Math.sign(s0) * Math.PI / 2; b.spin = s0; b.lie = lieLift(b); b.kpv = 0; b.thud = 2; }
+  else { b.lay = 0; b.spin = 0; b.lie = 0; b.kpv = 1; b.thud = 0; }
   sndGiant();
   const s = GIA_SLAIN[by] || GIA_SLAIN.levi;
-  toast(BEAST_NM.giant + s[0], s[1] + '跪倒在地、往前倒下，冒著蒸氣一塊一塊散掉');
+  toast(BEAST_NM.giant + s[0], s[1] + (lay ? '倒在地上不再起來' : '跪倒在地、往前倒下') + '，冒著蒸氣一塊一塊散掉');
 }
 /* 核彈、爆裂魔法炸到的巨人當場斬殺（v1.245.0，使用者：「調整爆裂魔法 核彈 excalibur可以擊殺巨人」，
    範圍選的是「整個爆炸半徑」）。範圍就是 explode 掀飛的那一圈（同一支 eachBeastNear、同一個 R），
@@ -11916,9 +11929,12 @@ function dieThud(m, big) {
 function stepDie(m, dt) {
   m.dead += dt;
   m.fall = 1; m.gait = 0;
-  const D = LEV_DIE, t = m.dead, SL = ENG.GIA_SLUMP, PR = ENG.GIA_PRONE, H = Math.PI / 2;
+  const D = LEV_DIE, SL = ENG.GIA_SLUMP, PR = ENG.GIA_PRONE, H = Math.PI / 2;
   const t1 = D.kneel, t2 = t1 + D.wait, t3 = t2 + D.fall, t4 = t3 + D.hold;
-  if (t < t1) {
+  /* 倒在地上就地死的（m.lay，v1.323.0，見 giantDie）：時間軸從著地那一刻（t3）算起，躺平角收到那一面（同倒地那一行的漸收） */
+  const t = m.lay ? t3 + m.dead : m.dead;
+  if (m.lay) m.spin += (m.lay - m.spin) * Math.min(1, dt * 9);
+  else if (t < t1) {
     /* 跪下：膝蓋往後折到小腿平貼地面（knee ＋ spin ＝ 90°）、上身往前垮 SL。
        **膝蓋先往前頂、腳掌先平貼地面，最後四成才伸直腳背**（見 engine.js 的 giaDownPart）：
        只折膝蓋的話腳尖先往下插，整隻被撐高 0.66 格才往下掉；這樣排剩腳背伸直那一下的 0.1 格 */
@@ -14811,6 +14827,7 @@ function dieHerd(m) {
   m.dead = 1e-6; m.alpha = 1; m.fall = 1; m.gait = 0; m.pause = 0; m.spook = 0; m.face = 0;
   if (m.kind === 'gryphon') {
     m.st = 'dead'; m.left = 0; m.rk = null;
+    sndGryDie();
     toast('🦅 那隻獅鷲被打死了', '牠倒在草皮上不再起來，身下流了一攤血，慢慢消失');
   }
   if (!m.lie) { lieSide(m); m.lie = lieLift(m); }
@@ -16092,6 +16109,7 @@ function dieDragon(m) {
   m.dead = 1e-6; m.st = 'dead'; m.left = 0; m.hv = ''; m.burn = 0; m.gait = 0;
   const g = draSize(), sc = m.sc || 1;
   spawnBlood(m.x + Math.sin(m.a) * g.cz * sc, m.z + Math.cos(m.a) * g.cz * sc, g.len * sc * BLOOD_BEAST);
+  sndDraDie();
   toast('🐉 那條龍被打死了', '牠趴在草皮上不再起來，身下流了一攤血，慢慢消失');
 }
 function stepDraDie(m, dt) {

@@ -6852,9 +6852,18 @@ if (vAo.x + vAo.y > 0.5) {
     return Math.PI / 2;
   })();
   /* 第 k 塊現在在世界的哪裡（中心）。規則那邊拿它決定蒸氣從哪裡冒（一塊散掉那一刻就從那一塊冒一團），
-     算法同 putBeasts 的那一段：腳踝／膝蓋／髖 → 繞膝蓋往前趴 → 朝向 → 抬到貼地 → 乘 sc */
+     算法同 putBeasts 的那一段：腳踝／膝蓋／髖 → 繞膝蓋往前趴 → 朝向 → 抬到貼地 → 乘 sc。
+     **沒在跪倒那一套（kpv 0）**＝已經倒在地上、就地死的那一隻（v1.323.0，見 game-tools.js 的 giantDie）：
+     照 putBeasts 一般那一段（YZX 轉、抬 beastLift × lie × |sin|）——照跪倒的樞紐算的話蒸氣整團偏到身體外面 */
+  const _gpE = new T.Euler(), _gpV = new T.Vector3();
   function giaPartAt(m, k, out) {
     const b = GIANT[k], sc = m.sc || 1, ph = m.spin || 0;
+    if (!m.kpv) {
+      _gpV.set(b.p[0], b.p[1], b.p[2]).applyEuler(_gpE.set(ph, m.a || 0, m.roll || 0, 'YZX'));
+      const lift = m.lie ? beastLift('giant', ph) * m.lie * Math.abs(Math.sin(ph)) : 0;
+      out.x = m.x + _gpV.x * sc; out.y = (m.y || 0) + (lift + _gpV.y) * sc; out.z = m.z + _gpV.z * sc;
+      return out;
+    }
     const d = giaDownPart(b, m.knee || 0, m.ank || 0, m.hip || 0);
     const dy = d.y - GIA_KNEE[0], dz = d.z - GIA_KNEE[1];
     const y = GIA_KNEE[0] + dy * Math.cos(ph) - dz * Math.sin(ph);

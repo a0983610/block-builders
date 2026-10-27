@@ -33658,6 +33658,71 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('天災被打退之後走人中照樣打得死（第二下放棄走人、第三下死）',
      /^\w+ → go → dead$/.test(kb.doom), kb.doom);
 
+  /* 已經倒在地上的不再演一次（使用者：「從站著開始演 開始演就應該已經算已經死了 不應該再演一次」）：
+     先打倒（不算命）、躺平，再掀一下當第三下——躺平角一路留在那一面、不震地，從趴著冒蒸氣那一段（hold → melt）接下去；
+     蒸氣照畫出來的身體冒（giaPartAt 對 beastMesh 的每一塊）。踹到一半（上身往後仰 GIA_LEAN）的照舊算站著、跪倒；
+     Diablo 同一個門檻（趴著的不跪） */
+  const kly = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9;
+    const out = {};
+    try {
+      beasts = null;
+      const m = spawnBeast('giant', 1, 0);
+      m.x = siteR + 30; m.z = 0; m.st = 'fun'; m.pause = 999; m.stay = 999; m.wIn = 0; m.alpha = undefined;
+      m.hits = KILL_HITS - 1;
+      fellBeast(m, 3);
+      for (let i = 0; i < 12; i++) step(0.05);       // 躺平
+      const s0 = m.spin;
+      tossBeast(m, 1, 3, 0, false); beastHit(m, 'arrow');
+      const st = { dead: m.dead > 0, kpv: m.kpv, thud: m.thud };
+      let minAbs = 9, t = 0, meltAt = null, gone = null, err = 0;
+      for (let i = 0; i < 300; i++) {
+        step(0.05); t += 0.05;
+        if (!beasts || !beasts.includes(m)) { gone = t; break; }
+        minAbs = Math.min(minAbs, Math.abs(m.spin));
+        if (meltAt === null && m.melt > 0) meltAt = t;
+        if (i === 5) {
+          draw();
+          const A = ENG.three.beastMesh.instanceMatrix.array, bi = beasts.indexOf(m), o = {};
+          for (let k = 0; k < ENG.BEASTS.giant.length; k++) {
+            const e = (bi * ENG.BEAST_PARTS + k) * 16;
+            ENG.giaPartAt(m, k, o);
+            err = Math.max(err, Math.hypot(A[e + 12] - o.x, A[e + 13] - o.y, A[e + 14] - o.z));
+          }
+        }
+      }
+      out.lay = { s0, st, minAbs, meltAt, gone, err };
+      beasts = null;
+      const k = spawnBeast('giant', 1, 0);
+      k.x = siteR + 30; k.z = 0; k.st = 'fun'; k.kick = 1; k.spin = -GIA_LEAN;   // 踹到一半
+      giantDie(k, 'levi');
+      out.kick = { kpv: k.kpv, lay: k.lay, spin: k.spin };
+      beasts = null;
+      const d = spawnBeast('diablo', 1, 0);
+      d.x = siteR + 30; d.z = 0; d.st = 'fun'; d.pause = 999; d.stay = 999; d.hits = KILL_HITS - 1;
+      fellBeast(d, 3);
+      for (let i = 0; i < 12; i++) step(0.05);
+      tossBeast(d, 1, 3, 0, false); beastHit(d, 'arrow');
+      let dk = 0;
+      for (let i = 0; i < 20; i++) { step(0.05); dk = Math.max(dk, d.dk); }
+      out.dia = { pr: d.pr, dk };
+    } finally { beasts = null; cleanTools(); }
+    out.D = LEV_DIE;
+    return out;
+  });
+  ok('倒在地上的巨人被打第三下就地死：躺平角留在那一面、不重跪不震地，直接趴著冒蒸氣再散掉，蒸氣照畫出來的身體冒',
+     kly.lay.st.dead && kly.lay.st.kpv === 0 && kly.lay.st.thud === 2 && Math.abs(kly.lay.s0) > 1.5 &&
+     kly.lay.minAbs >= Math.PI / 2 - 0.02 && Math.abs(kly.lay.meltAt - kly.D.hold) <= 0.06 &&
+     /* 蒸氣位置：instanceMatrix 存的是 Float32，座標 30～40 格的捨入就有 1e-6 級（第一輪寫 1e-6 紅過，差 1.9e-6）；
+        照跪倒那一套算錯的話差的是膝蓋高度 × 體型那麼多格，1e-3 分得開 */
+     Math.abs(kly.lay.gone - kly.D.hold - kly.D.melt) <= 0.06 && kly.lay.err < 1e-3,
+     '躺平角 ' + kly.lay.s0.toFixed(3) + '，死後最接近站直是 ' + kly.lay.minAbs.toFixed(3) + '；kpv ' + kly.lay.st.kpv +
+     '、thud ' + kly.lay.st.thud + '；' + (kly.lay.meltAt || 0).toFixed(2) + ' 秒開始散（hold ' + kly.D.hold + '）、' +
+     (kly.lay.gone || 0).toFixed(2) + ' 秒拿掉（＋melt ' + kly.D.melt + '）；蒸氣位置對畫出來的差 ' + kly.lay.err.toExponential(1));
+  ok('踹到一半（上身往後仰 GIA_LEAN）被斬殺照舊算站著、跪倒；Diablo 趴在地上被打第三下不跪',
+     kly.kick.kpv === 1 && kly.kick.lay === 0 && kly.kick.spin === 0 && kly.dia.pr === 1 && kly.dia.dk === 0,
+     '踹到一半：kpv ' + kly.kick.kpv + '、lay ' + kly.kick.lay + '；Diablo 趴著：pr ' + kly.dia.pr + '、跪的份量最多 ' + kly.dia.dk);
+
   /* 飛龍：天上被打下來的第三下摔到地上（down）那一刻死，趴著不再起飛、身下一攤血、DIE_HOLD 後淡掉、淡完拿掉；
      點著當第三下、半空被澆熄的照樣摔下去死；屍體打不動；天災翻臉不挑打滿的那一隻 */
   const kd = await page.evaluate(() => {
