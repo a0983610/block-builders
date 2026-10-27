@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.324.1';
+const VERSION = '1.325.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -139,7 +139,7 @@ function woodSpot(a) {
    **畫之前叫**（game-ui.js 的 draw）：alpha 只是畫法，照「現在站在哪」算，生出來的時候只記 wIn。
    引擎看到 alpha 就搬去半透明那一顆畫（小人、牛羊、猴子這些是 fadeMesh，人形角色是 humMesh）。 */
 function woodFade(o, leaving) {
-  if (o.dead) return;
+  if (o.dead || o.dlg) return;      // 被大洪水捲走的同屍體，自己管 alpha（v1.325.0，見 game-tools.js 的 dlgDrift）
   if (!o.wIn && !leaving) { if (o.alpha !== undefined) o.alpha = undefined; return; }
   const a = clamp((woodR() - REACH - Math.hypot(o.x, o.z)) / WOOD_FADE, 0, 1);
   if (a >= 1) { o.wIn = 0; o.alpha = undefined; } else o.alpha = a;
@@ -494,6 +494,34 @@ function sndOdm() { noise(0.45, 0.1, 2400); tone(260, 0.4, 'sawtooth', 0.03, 2.8
 function sndLevCut() { noise(0.07, 0.05, 5200); tone(2400, 0.07, 'triangle', 0.018, 0.55, 'levCut'); }
 // 倒水：低通壓得比火低（水聲沒有火那種高頻的嘶），再墊一顆往下滑的低音當「灌下去」
 function sndWater() { noise(0.6, 0.13, 620); tone(210, 0.45, 'sine', 0.04, 0.5); }
+/* 大洪水（v1.325.0，使用者選「水聲」）：按下去放一整段，撐過浪衝進來那兩秒、淹滿之後慢慢收。
+   兩層噪音共用一份等幅的取樣：低通的「轟」（水量）＋帶通從高往低掃的「嘩」（浪頭過去），再墊一支往下滑的低音。
+   包絡自己配（同 sndWind 的理由：noise() 自帶的是爆炸那種一開聲就往下掉的包絡）。 */
+function sndDeluge(dur) {
+  const c = audio(); if (!c || muted) return;
+  if (!voiceOK('deluge', c)) return;
+  const n = Math.floor(c.sampleRate * dur);
+  const buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const t = c.currentTime, out = c.createGain();
+  out.gain.setValueAtTime(0.0008, t);
+  out.gain.exponentialRampToValueAtTime(1, t + 0.3);
+  out.gain.setValueAtTime(1, t + dur * 0.35);
+  out.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+  out.connect(c.destination);
+  const src = c.createBufferSource(); src.buffer = buf;
+  const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 360;
+  const g1 = c.createGain(); g1.gain.value = 0.42;
+  src.connect(lp).connect(g1).connect(out);
+  const band = c.createBiquadFilter(); band.type = 'bandpass'; band.Q.value = 1.2;
+  band.frequency.setValueAtTime(1500, t); band.frequency.exponentialRampToValueAtTime(450, t + dur);
+  const g2 = c.createGain(); g2.gain.value = 0.16;
+  src.connect(band).connect(g2).connect(out);
+  src.start(t); src.stop(t + dur);
+  tone(62, dur * 0.6, 'sawtooth', 0.07, 0.55, 'deluge');
+}
+/* 浪頭撞上地標那一下：一聲悶的拍擊（切點 680 自己一個名額，見 sndLand 那段） */
+function sndDelugeHit() { noise(0.9, 0.26, 680); tone(90, 0.5, 'sine', 0.08, 0.5, 'dlgHit'); }
 /* 煙火：往上是「咻」（音高一路往上滑），到頂是「啪」 */
 function sndFwUp() { tone(260, 1.1, 'sawtooth', 0.035, 4.2); noise(1, 0.045, 1100); }
 function sndFwPop() { noise(0.4, 0.16, 2600); tone(120, 0.32, 'square', 0.05, 0.45); }
@@ -1281,7 +1309,7 @@ function driveTo(m, dt, spd) {
 }
 function dozRender(D) {
   return D.list.map(m => ({ x: m.x, z: m.z, a: m.a, bl: m.bl,
-                            bob: Math.sin(D.t * 26 + m.k * 1.7) * 0.045 }));
+                            bob: m.dlg ? m.fy : Math.sin(D.t * 26 + m.k * 1.7) * 0.045 }));   // 被大洪水捲走的沉下去（v1.325.0）
 }
 /* 鏟面「前面」那一疊碎料跟著車子一起平移——整疊維持原本的相對位置往前走，
    這才像被推著。只動落定的碎塊，已就位的建築、小人手上的、還在飛的都不碰。
@@ -1368,6 +1396,7 @@ function stepDozers(dt) {
        收尾的 kickOut 只彈掉 siteClearR 以內的，外圈那一圈剛推出來的料還在路上。 */
     let alive = 0;
     for (const m of D.list) {
+      if (m.dlg) { alive++; continue; }   // 被大洪水捲走的（v1.325.0）：漂著沉下去、收掉都在 stepDeluge
       dozeMove(m, dt, sp => { m.x += Math.sin(m.a) * sp * dt; m.z += Math.cos(m.a) * sp * dt; });
       if (Math.hypot(m.x, m.z) < debrisR + 14) alive++;
     }

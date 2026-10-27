@@ -91,9 +91,10 @@
           align-items:flex-end;pointer-events:none}
   #corner > *{pointer-events:auto}
   #modebox{position:relative}
-  #panelBtn,#finish{padding:7px 11px;white-space:nowrap}
+  /* 🌊 大洪水（v1.325.0，使用者：「立即建成旁邊增加一個按鈕」）接在 ⚡ 右邊（窄螢幕疊在 ⚡ 上面），淹著的時候同樣灰掉 */
+  #panelBtn,#finish,#deluge{padding:7px 11px;white-space:nowrap}
   /* 已經蓋好或正在拆的時候沒得立刻建成（使用者選「灰掉」，不藏：藏了旁邊那顆會跟著跳位） */
-  #finish:disabled{opacity:.42;cursor:default}
+  #finish:disabled,#deluge:disabled{opacity:.42;cursor:default}
 
   #ver{
     position:fixed;right:14px;bottom:14px;z-index:4;
@@ -320,14 +321,16 @@
     /* 底部這一排的左右兩角讓給版本號與設定鈕，中間才留給工具小窗。
        小人模式跟著設定鈕走（v1.219，使用者選「疊在設定鈕上面」）：底排中間擺不下第二顆
        （390 寬時設定鈕左邊只剩 56px，模式小窗要 93），所以直排、右緣對齊，選單靠右往上開。
-       ⚡ 立刻建成（v1.220.2）夾在中間，使用者選「三顆直排疊起來」：由下往上 ⚙、⚡、模式。 */
+       ⚡ 立刻建成（v1.220.2）夾在中間，使用者選「三顆直排疊起來」：由下往上 ⚙、⚡、模式。
+       🌊 大洪水（v1.325.0）接在 ⚡ 後面，所以由下往上 ⚙、⚡、🌊、模式。 */
     #corner{right:14px;left:auto;flex-direction:column-reverse;align-items:flex-end}
     #modeMenu{left:auto;right:0}
     #ver{left:14px;right:auto}
     /* 設定面板要讓開底部的小窗與右下角疊起來的那幾顆，不然會壓在它們上面。
        v1.219 從 84 拉到 100：14＋設定鈕 35＋6＋模式小窗 37＝92，84 的話會壓到 8px。
-       v1.220.2 多疊一顆 ⚡（35＋6）→ 133，照舊留 8px 就是 141。 */
-    #panel{bottom:141px}
+       v1.220.2 多疊一顆 ⚡（35＋6）→ 133，照舊留 8px 就是 141。
+       v1.325.0 再疊一顆 🌊（35＋6）→ 174，留 8px 就是 182。 */
+    #panel{bottom:182px}
   }
 
   @media (max-width:640px){
@@ -404,6 +407,7 @@
 <div id="corner">
 <button id="panelBtn">⚙ 設定</button>
 <button id="finish" title="跳過施工過程，直接把這一座蓋好（不算人力費）">⚡ 立刻建成</button>
+<button id="deluge" title="全島大水：地標以外的生物、房子、樹、碎料全部沖走">🌊 大洪水</button>
 <div id="modebox">
   <button id="modeNow" type="button"><span class="k">😐</span><span class="n">普通</span><span class="c">▾</span></button>
   <div id="modeMenu"><div id="modes"></div></div>

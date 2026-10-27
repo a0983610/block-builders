@@ -32,6 +32,11 @@ function stepTrees(dt) {
   for (const t of trees) {                // 被震到會晃，用彈簧收回來
     t.wv += -t.wob * 46 * dt - t.wv * 4.4 * dt;
     t.wob += t.wv * dt;
+    /* 大洪水退完水重種的那一片（v1.325.0，見 game-tools.js 的 dlgEnd）：等 gw 秒、再從零長回原本大小（fk 是 putTrees 的大小倍率） */
+    if (t.gw !== undefined) {
+      if (t.gw > 0) t.gw -= dt;
+      else if ((t.fk += dt / DLG_GROW) >= 1) { t.fk = undefined; t.gw = undefined; }
+    }
   }
 }
 function shakeTrees(p, R) {
@@ -244,6 +249,7 @@ function step(dt) {
   stepDozers(dt);
   stepTrucks(dt);
   stepWater(dt);
+  stepDeluge(dt);                        // 大洪水（v1.325.0）：水線掃到誰就捲走誰；擺在積木那一圈前面，捲走的那幾塊這一幀就不走物理
   for (let i = toasts.length - 1; i >= 0; i--) {
     toasts[i].t -= dt;
     if (toasts[i].t <= 0) { toasts.splice(i, 1); renderToasts(); }
@@ -259,6 +265,7 @@ function step(dt) {
 
   let spareDead = false;              // 這一幀有沒有碎料淡完了（見 clearSpare）
   for (const b of blocks) {
+    if (b.dlg) continue;                // 被大洪水捲走的（v1.325.0）：漂、淡、收掉都在 stepDeluge
     if (b.fallIn > 0) {                 // 已判定要垮，等它的鬆脫時間到
       b.fallIn -= dt;
       if (b.fallIn <= 0) {
@@ -452,7 +459,9 @@ function draw() {
   const guns = musketList(), g0 = workers.length + arms.length;
   /* 推投石機、加農砲進場的人（v1.302.0）再接在火槍兵後面，同一顆網格（引擎的 MAXW 已經留好位子） */
   const crew = crewList(), c0 = g0 + guns.length;
-  ENG.setWorkerCount(c0 + crew.length);
+  /* 被大洪水整隊捲走的兵（v1.325.0）再接在後面：他們是從上面那幾隊搬出來的，人數上限裡本來就有他們的位子 */
+  const dmen = dlgMen(), d0 = c0 + crew.length, dn = Math.min(dmen.length, ENG.MAXW - d0);
+  ENG.setWorkerCount(d0 + dn);
   /* 從林帶進出場那一段淡入淡出（v1.256.0，見 woodFade）：**畫之前照當下的位置算**。alpha 只是畫法，
      在 step 裡算的話畫出來的是「上一次 step 時站在哪」的濃淡——step 之後才被搬過位置的
      （測試直接把牠搬到場中間、道具直接改位置）就對不上。動物那一份在下面 putBeasts 前面。 */
@@ -461,6 +470,7 @@ function draw() {
   for (let i = 0; i < arms.length; i++) ENG.putWorker(workers.length + i, arms[i]);
   for (let i = 0; i < guns.length; i++) ENG.putWorker(g0 + i, guns[i]);
   for (let i = 0; i < crew.length; i++) ENG.putWorker(c0 + i, crew[i]);
+  for (let i = 0; i < dn; i++) ENG.putWorker(d0 + i, dmen[i]);
   ENG.commitWorkers();
   ENG.putEmotes(emoList());          // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位；v1.274.0 起猴子聊完也冒）
   /* 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）。Saber（v1.222）也在這份清單裡，
@@ -549,6 +559,7 @@ function draw() {
   if (dozers) ENG.putDozers(dozRender(dozers));
   ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
   ENG.putPools(water ? poolList() : EMPTY, water ? water.wave : 0);   // 水窪同理
+  ENG.putDeluge(deluge ? dlgDraw() : null);         // 大洪水（v1.325.0）：要排在水窪後面（共用波紋相位，見 engine 的 putDeluge）
   ENG.putMarks(marks, bloods);                      // 地上的焦黑與坑洞、屍體身下的血泊（v1.240）（沒有就 visible=false）
   ENG.putSears(sears, scorches);                    // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），同上
   /* 王之財寶（v1.132）：門與兵器是兩份清單——門收掉之後兵器還在飛、還躺在地上慢慢淡，
@@ -837,6 +848,7 @@ function hudTick(now) {
   $('lossAll').textContent = money(stats.wrecked);
   // 已經蓋好或正在拆的時候沒什麼可以「立刻建成」，按鈕就灰掉
   $('finish').disabled = phase !== 'build' && phase !== 'clear';
+  $('deluge').disabled = !!deluge;   // 淹著的時候再按沒有意義（v1.325.0，同上灰掉不藏）
 }
 /* ── 面板的三檔按鈕 ─────────────────────────────────────
    一組按鈕就是一個設定。數字只寫在 CNT_OPTS／WK_OPTS／SPD_OPTS 那三個陣列裡，
@@ -1355,6 +1367,8 @@ function boot() {
     sndDone();
     toast('⚡ ' + bp.name + ' 直接完工', '沒有算人力費');
   });
+  /* 大洪水（v1.325.0，使用者：「立即建成旁邊增加一個按鈕 大洪水」）：地標以外的全部沖走，見 game-tools.js〈大洪水〉 */
+  $('deluge').addEventListener('click', () => { audio(); castDeluge(); });   // 灰掉交給 hudTick
   $('spin').addEventListener('change', e => { spinOn = pref.spin = e.target.checked; save(); });
   $('mute').addEventListener('change', e => { muted = pref.mute = e.target.checked; save(); });
   $('cap60').addEventListener('change', e => { cap60 = pref.cap = e.target.checked; save(); });

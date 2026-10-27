@@ -317,6 +317,7 @@ function giftRoll(n, x, y, z) {
 function stepGifts(dt) {
   if (!gifts) return;
   for (const g of gifts) {
+    if (g.dlg) continue;                         // 被大洪水捲走的（v1.325.0）：漂、縮、收掉都在 stepDeluge
     g.ph += dt;
     if (g.sc < 1) g.sc = Math.min(1, g.sc + dt / GIFT_POP);
     if (g.rest) { g.y = GIFT_Y + Math.sin(g.ph * 1.6) * GIFT_BOB; continue; }
@@ -3379,6 +3380,7 @@ function stepTrucks(dt) {
   moreTruck(T, dt);                   // 火還沒滅就再多派（v1.187，見 FT_MORE）
   for (let i = T.list.length - 1; i >= 0; i--) {
     const m = T.list[i];
+    if (m.dlg) continue;                          // 被大洪水捲走的（v1.325.0）：漂著沉下去、收掉都在 stepDeluge
     m.t += dt;
     m.bob = Math.sin(m.t * 24) * 0.05;            // 引擎抖動：停著也在抖
     m.bk = Math.floor(m.t * 3.4) % 2;             // 警示燈：一秒閃三下多
@@ -9789,6 +9791,7 @@ function actWalk(m, b, aim, dt, spd, stp, kp) {
    丟香蕉與放火瞄的是座標、巨人那一腳要先等 DOOM_AIM 1.1 秒（比這個窗口長）、
    獅鷲噴火前要等 GR_AIM 1.0 秒（同上；v1.275.0 起改成衝撞，爬起來一律先起飛），都在窗口之外。 */
 function stepBeast(m, dt) {
+  if (m.dlg) return dlgBeast(m, dt);       // 被大洪水捲走（v1.325.0）：漂著、淡掉，淡完收掉（見〈大洪水〉）
   /* 被打到的冷卻（v1.229，見 beastHit）。擺在最前面：三種狀態機（走路、飛龍、獅鷲）
      都從這裡進去，被幽浮吸走、躺在地上那幾段也照數。 */
   if (m.hcd > 0) m.hcd -= dt;
@@ -12636,6 +12639,7 @@ function stepDoom(dt) {
       if (stepBeast(beasts[i], dt)) beasts.splice(i, 1);
     if (!beasts.length) beasts = null;
   }
+  if (deluge) return;                                // 淹著的時候鐘停著（v1.325.0，同 stepHerd）
   if (phase !== 'done') { doomT = -1; return; }     // 沒有一座完好的地標可砸
   /* 一次一件，等這一件演完。**吉祥物不算**（v1.144）：那是另一條線，場上有牠在逛的
      時候天災的鐘照數——不排除的話，三隻輪流來逛就等於把天災關掉了。 */
@@ -14377,6 +14381,7 @@ function beastOn(id) {
 }
 /* 吉祥物的鐘。主迴圈每幀叫一次（見 game-ui.js 的 step），三隻各數各的、互不干擾。 */
 function stepMascot(dt) {
+  if (deluge) return;                // 淹著的時候鐘停著（v1.325.0，同 stepHerd）
   for (let i = 0; i < MASCOTS.length; i++) {
     const k = MASCOTS[i];
     if (beastOn(k.id)) { mascT[i] = -1; continue; }   // 還在場上，等牠走了再重抽下一次
@@ -15045,6 +15050,7 @@ function spawnCattle(edge) {
    平常這一支什麼都不做——牛羊不會走人，所以只有開場那幾幀、與**有一隻被打死淡完之後**（v1.240）才真的放人。
    死掉的那幾隻淡完之前還在清單上（算在 n 裡），所以是「消失後才走進一隻新的」；補的那一隻從邊上走進來。 */
 function stepHerd(dt) {
+  if (deluge) return;                // 淹著的時候不補（v1.325.0）：補進來的會直接走進水裡再被捲走一次，退完再從林帶走進來
   if (!herdN) herdN = Math.round(rr(HERD_N[0], HERD_N[1]));
   let n = 0;
   if (beasts) for (const m of beasts) if (m.herd) n++;
@@ -15274,6 +15280,7 @@ function stepMeats(dt) {
   if (!meats) return;
   for (let i = meats.length - 1; i >= 0; i--) {
     const f = meats[i];
+    if (f.dlg) continue;                                          // 被大洪水捲走的（v1.325.0）：漂、縮、收掉都在 stepDeluge
     const fl = meatFloor(f);
     if (f.y > fl || f.vy > 0) {                                   // 掉下來（第一下彈一點點）
       f.vy -= GRAV * dt; f.y += f.vy * dt;
@@ -17661,4 +17668,382 @@ function stepGen(m, dt) {
   if (m.pause > 0) { m.pause -= dt; m.gait += (0 - m.gait) * Math.min(1, dt * 8); return false; }
   if (strollTo(m, dt, GEN_WALK, genStep(GEN_WALK), 0)) { m.pause = rr(GEN_STAY[0], GEN_STAY[1]); m.leg = 0; genSpot(m); }
   return false;
+}
+
+/* ── 大洪水（v1.325.0）───────────────────────────────────────
+   使用者：「立即建成旁邊增加一個按鈕 大洪水／按了會有全地圖大水 把地標建築以外的所有生物 小房子 全部沖走」。
+   問過選的：生物**漂出島外、淡掉**，小人與動物照舊從林帶補回來（respawnWorker／herdOwed），吉祥物、天災、
+   道具叫來的兵與角色就算退場；一起沖走的還有村子其他建物（homes.list 上全部：城牆、商店街、皇宮、招牌、燈源）、
+   樹（林帶那一圈）、地上的碎料；房子的積木**跟著水漂走消失**、不留碎料；水是**從島邊四面漲上來再退**。
+   天上飛的（雁、在空中的飛龍與獅鷲）淹不到，不沖。
+   規則只有一條：**浪掃過、身子在水面以下的**就被捲走——地標的積木（slot ≥ 0）不算，蓋到一半的照舊在。
+   房子是浪掃到那一間就解開（dropHomes），上面的積木泡到水再照同一條規則捲走。
+   淹著的時候不放新的進來（動物補位、吉祥物、天災、閒晃事件的鐘都停著，見 stepHerd／stepMascot／stepDoom／stepIdleEvent），
+   退完小人才一起從林帶走回來（dlgEnd）。
+
+   第二輪（看過預覽，使用者：「沒有大水來的兇猛感」，四樣全選）：
+     · **一道高浪牆**：浪頭比水面高一截、往後斜下去接回水面（引擎 putDeluge 畫）
+     · **更快、捲得更猛**：浪頭打到的先浮上來衝出水面、在半空翻滾（DLG_TOSS／DLG_TUMBLE），落回水裡再被水流沖走
+     · **浪花水花＋畫面震動**：浪頭一路噴水花、撞上地標貼地那一層就地往上濺、房子被掃到整間濺起一片、衝出水面與落水各濺一下；
+       浪推進來那幾秒一直震，撞上地標那一下再重震一次
+     · **水聲**：一整段轟隆聲（sndDeluge），撞上地標那一下一聲拍擊（sndDelugeHit）
+   不是生物也不是房子的那幾樣也沖（使用者四樣全選）：投石機、加農砲漂走（淡掉照它自己的退場 puOut）；
+   地上的兵器漂走（淡掉照它自己那一套，化成金光）；肉、道具泡泡漂走縮掉；推土機、消防車沒有透明度，漂著**沉下去**、沉到草皮底下收掉；
+   地上的焦黑、坑、焦痕、血泊在浪過去之後開始淡掉。
+
+   第三輪（看過第二版，使用者：「改成從一邊大水淹過來吧 淹的高度也要參考目前地標高度」，問過選的）：
+     · **每次隨機從島的一邊**捲過來（四邊挑一邊），DLG_IN 秒推過整座島、推出對面的島邊
+     · **水面是地標現在高度的一半**（siteTopNow：還站著的最高那一塊，蓋到一半、拆到一半照當下的算；最少 DLG_HMIN），
+       浪頭再高出**水位的一半**（跟著水位等比例）
+     · **全部順著浪的方向沖**：浪頭打到的先跟著浪走（浪速的 DLG_RIDE 成），慢慢慢成水流的速度，從對面的島邊沖出去
+   水深起來之後（101 那種高的淹到三十幾格），「拋起來再掉回水面」不成立了——東西在水底，得先浮上來。所以垂直方向改成一套：
+   水面下往上浮（DLG_BUOY、阻力 DLG_WDRAG），第一次冒出水面照被打到的力道衝出去（DLG_TOSS）、在半空翻滾、落回水裡濺一下，之後浮在水面上。
+   淡掉：沖出對面的島邊就開始淡；還在島上的最多漂 DLG_KEEP 秒也開始淡；淡 DLG_FADE 秒，淡完收掉。
+
+   第四輪（看過第三版，使用者：「周圍的樹也要一起長回來 不只換地標才長」；第一輪選的是換地標才重種）：
+   退完水跟小人、動物一起，林帶重種一片（makeTrees），每一棵從零長回原本大小（DLG_GROW 秒），起長的時間各自錯開（見 game-ui.js 的 stepTrees）。
+   見 開發筆記〈大洪水（v1.325.0）〉 */
+const DLG_IN = 3, DLG_HOLD = 2.5, DLG_OUT = 3;   // 浪推過整座島幾秒、推出去之後淹著停幾秒、退幾秒
+const DLG_HK = 0.5;                  // 水面是地標現在高度的幾成（使用者選「一半」）
+const DLG_HMIN = 1.5;                // 地標很矮、還沒蓋起來時水面最少多高（小人身高約 1.7）
+const DLG_CK = 0.5;                  // 浪頭比水面高出水位的幾成（使用者選「跟著水位等比例」）
+const DLG_BK = 2.5, DLG_BMIN = 8;    // 浪頭往後斜下去多長：浪頭高的幾倍，最短幾格
+const DLG_KEEP = 3.5, DLG_FADE = 1.5;  // 還在島上的最多漂幾秒就開始淡、淡幾秒
+const DLG_RIDE = [0.7, 0.95];        // 浪頭打到的先跟著浪走多快（浪速的幾成）
+const DLG_SPD = [6, 11];             // 慢下來之後被水流沖多快（每一樣各抽一個）
+const DLG_SLOW = 1.2;                // 從跟著浪走慢成水流速度的時間常數（秒）
+const DLG_WOB = 0.35;                // 方向各自偏多少（弧度）
+const DLG_TOSS = [7, 11];            // 第一次冒出水面往上衝多快（樹打四折，機台、車子不拋）
+const DLG_BUOY = 40;                 // 水面下往上浮的加速度
+const DLG_WDRAG = 0.3;               // 水面下的阻力（每秒剩幾成）
+const DLG_G = 22;                    // 衝出水面之後的重力
+const DLG_TUMBLE = [6, 11];          // 在半空翻滾的角速度
+const DLG_SPRAY = 600;               // 浪頭一秒噴幾顆水花
+/* 水花跟塵霧共用一池（引擎的 MAXDUST 14700，核彈、爆裂魔法那一份占 8600）。一般塵霧的 400（spawnDust）是「煙塵別太多」的軟上限，
+   施工中光是挖料、落地的煙就常常頂在那裡，照它的話水花一顆都噴不出來；水花自己一份額度 */
+const DLG_DUST = 2400;
+const DLG_SINK = 4;                  // 推土機、消防車沉多深（整台沒進草皮底下）
+const DLG_GROW = 2.5, DLG_GROW_LAG = 1.5;   // 退完水林帶重種：一棵從零長回原本大小幾秒、起長最多晚幾秒
+/* { t 演到第幾秒, dx/dz 浪往哪推, E 島的半寬, H 水位, CR 浪頭高出水面多少, B 浪頭斜坡多長, v 浪速,
+     F 浪的正面推到哪（沿著 dx/dz 量）, L 水面, C 浪頭頂, men 整隊捲走的兵（搬出隊伍自己漂）, lm 地標貼地那一層、li 掃到第幾格, em 水花的零頭 } */
+let deluge = null;
+const dlgEdge = () => debrisR + ENG.GROUND_PAD;    // 島的半寬（草地島是方的，見 engine 的 setGroundSize）
+/* 浪掃過了沒：沿著浪前進的方向量，在浪的正面後面就是 */
+const dlgHit = (x, z) => x * deluge.dx + z * deluge.dz <= deluge.F;
+const dlgWet = y => (y || 0) < deluge.L + 0.5;
+const dlgMen = () => deluge ? deluge.men : EMPTY;
+/* 畫面那邊要的那一份（見 engine 的 putDeluge）。外緣蓋過島邊一點，水才不會跟草皮的邊緣切齊 */
+const _dlgO = { dx: 0, dz: 0, F: 0, L: 0, C: 0, B: 0, O: 0, wt: 0 };
+function dlgDraw() {
+  const o = _dlgO, D = deluge;
+  o.dx = D.dx; o.dz = D.dz; o.F = D.F; o.L = D.L; o.C = D.C; o.B = D.B; o.O = D.E + 0.4; o.wt = D.t;
+  return o;
+}
+/* 按鈕那一下。淹著的時候再按不算（按鈕也灰掉，見 game-ui.js 的 hudTick） */
+function castDeluge() {
+  if (deluge) return false;
+  const d = [[1, 0], [-1, 0], [0, 1], [0, -1]][Math.floor(Math.random() * 4)];   // 從 −d 那一邊往 d 推
+  const E = dlgEdge(), H = Math.max(DLG_HMIN, siteTopNow() * DLG_HK), CR = H * DLG_CK, B = Math.max(DLG_BMIN, CR * DLG_BK);
+  /* 地標貼地那一層照浪先掃到的順序排好：浪頭掃到哪一格就在那裡往上濺（見 dlgCrest） */
+  const lm = [];
+  if (bp) for (const s of bp.slots) if (s.gy === 0 && s.filled) lm.push({ x: s.x, z: s.z, q: s.x * d[0] + s.z * d[1] });
+  lm.sort((a, b) => a.q - b.q);
+  /* 浪的正面從浪來那一邊的島邊（−E）起跑，DLG_IN 秒推到對面島邊外 B 格（浪頭的斜坡整段離開島） */
+  deluge = { t: 0, dx: d[0], dz: d[1], E, H, CR, B, v: (2 * (E + 0.4) + B) / DLG_IN,
+             F: -E - 0.4, L: H, C: H + CR, men: [], lm, li: 0, em: 0 };
+  stopIdleEvent();                   // 村子要被沖光了，那一件先收掉；退完重抽一件（見 dlgEnd）
+  ENG.shake(0.8);
+  sndDeluge(DLG_IN + DLG_HOLD);
+  toast('🌊 大洪水', '大浪從島的一邊捲過來，地標以外的全部沖走');
+  return true;
+}
+function stepDeluge(dt) {
+  if (!deluge) return;
+  const D = deluge;
+  D.t += dt;
+  D.F = -D.E - 0.4 + D.v * Math.min(D.t, DLG_IN);
+  if (D.t < DLG_IN + DLG_HOLD) D.L = D.H;
+  else {
+    const k = Math.min(1, (D.t - DLG_IN - DLG_HOLD) / DLG_OUT);
+    D.L = D.H - (D.H + 0.3) * k * k;                                       // 退到草皮底下（先慢後快）
+  }
+  D.C = D.L + D.CR;
+  if (D.t < DLG_IN) {
+    ENG.shake(dt * 2.6);             // 浪推進來那幾秒一直在震（震幅每秒衰減到 2%，見 engine 的 updateCamera；這個量撐在 0.6 上下）
+    dlgCrest(dt);
+  }
+  if (D.t < DLG_IN + DLG_HOLD) dlgSweep();
+  if (D.t >= DLG_IN && D.t < DLG_IN + DLG_HOLD) dlgMarks();
+  const bob = f => 0.05 * Math.sin(f.t * 2.6 + f.ph);
+  /* 漂。人與動物各自的那一幀在 updWorker／stepBeast 開頭（見 dlgWorker／dlgBeast），這裡是其餘的 */
+  for (let i = D.men.length - 1; i >= 0; i--) {
+    const p = D.men[i], al = dlgPose(p, dt);
+    if (al <= 0) D.men.splice(i, 1); else p.alpha = al;
+  }
+  let done = false;
+  for (const b of blocks) {
+    const f = b.dlg;
+    if (!f) continue;
+    /* 被別的東西接手了（幽浮、小黑洞把它吸走：st 換成 CARRY、掛 ufo）：這一塊交給它，不再漂 */
+    if (b.st !== FLY || b.ufo) { b.dlg = null; b.al = 1; continue; }
+    const top = D.L - HB * 0.4;
+    b.al = dlgDrift(b, dt, top);
+    const air = !!f.air;
+    b.y = f.y + (air ? 0 : bob(f));
+    if (air) { b.rx += f.tw * dt; b.rz += f.tw * 0.7 * dt; } else b.ry += f.sp * dt;
+    if (b.al <= 0) { f.done = 1; done = true; }
+  }
+  if (done) dropBlocks(b => !!b.dlg && b.dlg.done === 1);
+  for (let i = trees.length - 1; i >= 0; i--) {
+    const t = trees[i], f = t.dlg;
+    if (!f) continue;
+    t.fk = dlgDrift(t, dt, D.L - 0.8);               // 樹沒有透明度，淡掉改成縮掉（見 engine 的 putTrees）
+    t.fy = f.y + bob(f);                             // 連根拔起浮到水面上
+    t.tip = Math.min(0.35, f.t * 0.8) * (f.sp > 0 ? 1 : -1);
+    if (t.fk <= 0) trees.splice(i, 1);
+  }
+  /* 投石機、加農砲：淡掉是它自己的退場（puFade），這裡只管漂 */
+  for (const g of [trebs, cannons]) if (g) for (const m of g.list) if (m.dlg) { dlgDrift(m, dt); m.a += m.dlg.sp * dt; }
+  /* 地上的兵器：淡掉是它自己那一套（stepWeapons 的 lie → fade，化成金光），這裡只管漂 */
+  if (weapons) for (const w of weapons) if (w.dlg) dlgDrift(w, dt);
+  /* 肉、道具泡泡：浮在水面上，淡掉改成縮掉（兩樣都沒有透明度，都有縮放：f.s／g.sc） */
+  if (meats) {
+    for (let i = meats.length - 1; i >= 0; i--) {
+      const f = meats[i], q = f.dlg;
+      if (!q) continue;
+      f.s = dlgDrift(f, dt, D.L - 0.2); f.y = q.y + bob(q); f.a += q.sp * dt;
+      if (f.s <= 0) meats.splice(i, 1);
+    }
+    if (!meats.length) meats = null;
+  }
+  if (gifts) {
+    for (let i = gifts.length - 1; i >= 0; i--) {
+      const g = gifts[i], q = g.dlg;
+      if (!q) continue;
+      g.sc = dlgDrift(g, dt, D.L + 0.6); g.y = q.y + bob(q);
+      if (g.sc <= 0) gifts.splice(i, 1);
+    }
+    if (!gifts.length) gifts = null;
+  }
+  /* 推土機、消防車：沒有透明度、也沒有縮放，漂著沉下去，整台沒進草皮底下就收掉 */
+  const sunk = f => f.t >= DLG_KEEP * 0.5 + DLG_FADE;
+  const sink = f => -DLG_SINK * clamp((f.t - DLG_KEEP * 0.5) / DLG_FADE, 0, 1) + bob(f);
+  if (dozers) {
+    for (let i = dozers.list.length - 1; i >= 0; i--) {
+      const m = dozers.list[i], f = m.dlg;
+      if (!f) continue;
+      dlgDrift(m, dt); m.a += f.sp * 0.5 * dt; m.fy = sink(f);
+      if (sunk(f)) dozers.list.splice(i, 1);
+    }
+    if (!dozers.list.length) { dozers = null; ENG.putDozers([]); }
+  }
+  if (trucks) {
+    for (let i = trucks.list.length - 1; i >= 0; i--) {
+      const m = trucks.list[i], f = m.dlg;
+      if (!f) continue;
+      dlgDrift(m, dt); m.a += f.sp * 0.5 * dt; m.bob = sink(f);
+      if (sunk(f)) trucks.list.splice(i, 1);
+    }
+    if (!trucks.list.length) trucks = null;
+  }
+  if (D.t >= DLG_IN + DLG_HOLD + DLG_OUT) dlgEnd();
+}
+/* 浪頭這一幀：沿著浪的正面一路往前噴水花；掃過地標貼地那一層就在那裡往上濺（往回彈），第一下重震一下、拍一聲。
+   浪越高水花越大（sz：浪頭高出水面 1.6 格是 1 倍，照平方根長） */
+function dlgCrest(dt) {
+  const D = deluge, O = D.E + 0.4, sz = Math.sqrt(Math.max(1, D.CR / 1.6));
+  if (D.F > -O && D.F < O) {
+    D.em += dt * DLG_SPRAY;
+    while (D.em >= 1) {
+      D.em--;
+      const p = rr(-O, O), k = D.v * rr(0.4, 0.6);          // 正面上挑一點（p 橫的），往浪前進的方向噴
+      dlgSpray(D.F * D.dx - p * D.dz, D.C - rr(0, D.CR * 0.3), D.F * D.dz + p * D.dx,
+               D.dx * k, rr(4, 9) * sz, D.dz * k, 1, sz);
+    }
+  }
+  while (D.li < D.lm.length && D.lm[D.li].q <= D.F) {
+    const s = D.lm[D.li++];
+    if (D.li === 1) { ENG.shake(1.2); sndDelugeHit(); }
+    if (Math.random() < 0.5)
+      dlgSpray(s.x, rr(0.3, 1) * D.C, s.z, -D.dx * rr(2, 5), rr(8, 13) * sz, -D.dz * rr(2, 5), 2, sz);
+  }
+}
+/* 水花：塵霧那一池（同 digPuff 換顏色），白裡帶一點藍。sz＝顆粒大小的倍率 */
+function dlgSpray(x, y, z, vx, vy, vz, n, sz) {
+  for (let i = 0; i < n; i++) {
+    if (dust.length > DLG_DUST) return;
+    dust.push({ x: x + rr(-0.4, 0.4), y, z: z + rr(-0.4, 0.4),
+                vx: vx + rr(-1.5, 1.5), vy: vy * rr(0.75, 1.2), vz: vz + rr(-1.5, 1.5),
+                rx: Math.random() * 6, ry: Math.random() * 6,
+                life: rr(0.5, 1.1), s: rr(0.3, 0.75) * (sz || 1), keep: 0.97, cr: 0.86, cg: 0.94, cb: 1 });
+  }
+}
+/* 淹滿之後地上的痕跡開始淡（每幀叫，取 min／max 所以叫幾次都一樣）：焦黑與坑、燒灼痕、焦痕從現在起照它自己的淡出段淡，血泊直接進淡出那一段 */
+function dlgMarks() {
+  for (const m of marks) m.t = Math.min(m.t, MARK_FADE);
+  for (const s of sears) s.t = Math.min(s.t, SEAR_FADE);
+  for (const s of scorches) s.t = Math.min(s.t, SEAR_FADE);
+  for (const o of bloods) o.t = Math.max(o.t, DIE_HOLD);
+}
+/* 這一幀浪掃到誰。泡到水的才捲：飛在半空的（被炸飛的小人、天上的飛龍）等落下來泡到水那一幀才算 */
+function dlgSweep() {
+  /* 浪還在推的時候被打到的會衝出水面；浪推出去之後才泡到水的（掉下來的料、落地的人）只是浮上來 */
+  const k = deluge.t < DLG_IN ? 1 : 0;
+  for (const w of workers) if (!w.dlg && !w.ufo && dlgWet(w.y) && dlgHit(w.x, w.z)) dlgWorker0(w, k);
+  if (beasts) for (const m of beasts)
+    if (!m.dlg && !m.ufo && m.kind !== 'goose' && onGroundBeast(m) && dlgWet(m.y) && dlgHit(m.x, m.z)) dlgBeast0(m, m.dead ? 0 : k);
+  /* 道具叫來的兵：一隊有一個人泡到水就整隊捲走（隊伍是一起動的，拆一半剩下那幾個的隊形就不成立了） */
+  if (dlgTroop(archers, k)) archers = null;
+  if (dlgTroop(arOld, k)) arOld = null;
+  if (dlgTroop(musket, k)) musket = null;
+  if (dlgTroop(mkOld, k)) mkOld = null;
+  for (const g of [trebs, cannons]) {
+    if (!g) continue;
+    /* 機台漂走、淡掉照它自己的退場（原地淡掉，見 puOut）：推的人放走、挪到 g.crews——下一行就整組捲走 */
+    for (let i = g.list.length - 1; i >= 0; i--) {
+      const m = g.list[i];
+      if (m.dlg || !dlgHit(m.x, m.z)) continue;
+      if (m.st !== 'out' && puOut(m, g)) { g.list.splice(i, 1); continue; }   // 還沒出現的那一台直接收掉
+      dlgFloat(m, 0);
+    }
+    for (const c of g.crews) dlgTroop(c, k);       // 捲空的那一組 puCrews 自己收（trLeave 看到沒人就回 true）
+  }
+  if (homes && homes.list.some(h => dlgHit(h.x, h.z))) {
+    for (const h of homes.list) if (dlgHit(h.x, h.z)) dlgSpray(h.x, 1, h.z, 0, 9, 0, 10);   // 整間濺起一片
+    dropHomes(h => !dlgHit(h.x, h.z));
+  }
+  /* 地上的、飛著的碎料（FREE／FLY）。手上的（CARRY）、丟出去的（TOSS）不算：人被捲走時 releaseWorker 放下來，下一幀就是 FLY；
+     被幽浮、小黑洞抓著的掛 ufo */
+  for (const b of blocks)
+    if (!b.dlg && b.slot < 0 && b.hh < 0 && (b.st === FREE || b.st === FLY) && !b.ufo &&
+        dlgWet(b.y) && dlgHit(b.x, b.z)) dlgBlock0(b, k);
+  for (const t of trees) if (!t.dlg && dlgHit(t.x, t.z)) { t.gw = undefined; dlgFloat(t, k * 0.4); }   // 上一場重種、還在長的那幾棵不再長（大小交給 stepDeluge）
+  /* 地上的兵器（插著、躺著的；門裡待發、飛著、掉著的不算）：直接進淡出那一段 */
+  if (weapons) for (const w of weapons)
+    if (!w.dlg && w.st !== 'gate' && w.st !== 'fly' && w.st !== 'fall' && dlgHit(w.x, w.z)) { w.lie = 0; dlgFloat(w, 0); }
+  if (meats) for (const f of meats) if (!f.dlg && dlgHit(f.x, f.z)) { meatFree(f); dlgFloat(f, k * 0.5); }   // 叫來吃的那幾隻先放掉
+  if (gifts) for (const g of gifts) if (!g.dlg && dlgHit(g.x, g.z)) dlgFloat(g, 0);
+  /* 推土機被捲走就當整地收工（不然 phase 會一直停在 clear，見 finishClear：剩下的碎料彈出去、交給小人） */
+  if (dozers) for (const m of dozers.list)
+    if (!m.dlg && dlgHit(m.x, m.z)) { if (!dozers.done) finishClear(); dlgFloat(m, 0); }
+  if (trucks) for (const m of trucks.list)
+    if (!m.dlg && dlgHit(m.x, m.z)) { m.jet = 0; m.jetT = 0; m.hasJ = 0; dlgFloat(m, 0); }
+}
+/* 捲走那一刻抽好往哪漂、多快；k＝被浪頭打到的力道倍率（0＝不衝出水面、不跟著浪走：機台、車子、浪過去之後才泡到水的） */
+function dlgFloat(o, k) {
+  const D = deluge, a = Math.atan2(D.dx, D.dz) + rr(-DLG_WOB, DLG_WOB);   // 順著浪的方向，各自偏一點
+  o.dlg = { t: 0, ux: Math.sin(a), uz: Math.cos(a),
+            v: k ? D.v * rr(DLG_RIDE[0], DLG_RIDE[1]) : 0, vm: rr(DLG_SPD[0], DLG_SPD[1]),
+            sp: rr(-1.2, 1.2), ph: Math.random() * 6,
+            y: o.y || 0, vy: 0, toss: k * rr(DLG_TOSS[0], DLG_TOSS[1]),    // 現在多高、往上的速度、第一次冒出水面衝多快
+            tw: rr(DLG_TUMBLE[0], DLG_TUMBLE[1]) * (Math.random() < 0.5 ? -1 : 1),
+            fs: -1 };                                                         // 從第幾秒開始淡（−1＝還沒）
+  if (k) dlgSpray(o.x, 0.4, o.z, D.dx * 4, 6, D.dz * 4, 2);
+}
+/* 漂一幀，回傳濃度（1 → 0，淡完是 0）。水平：先跟著浪走，慢慢慢成水流的速度。
+   top 給了就連垂直一起算（f.y）：水面下往上浮、第一次冒出水面照被打到的力道衝出去、在半空落回來濺一下，之後浮在 top 上下。
+   沖出對面的島邊、或在島上漂了 DLG_KEEP 秒，就開始淡 */
+function dlgDrift(o, dt, top) {
+  const f = o.dlg, D = deluge;
+  f.t += dt;
+  f.v += (f.vm - f.v) * Math.min(1, dt / DLG_SLOW);
+  o.x += f.ux * f.v * dt; o.z += f.uz * f.v * dt;
+  if (top !== undefined) {
+    const was = f.y >= top;
+    if (was) f.vy -= DLG_G * dt;
+    else { f.vy += DLG_BUOY * dt; f.vy *= Math.pow(DLG_WDRAG, dt); }
+    f.y += f.vy * dt;
+    /* air＝衝出水面在半空翻滾的那一段：只有被浪頭打到的第一次冒出水面才算。退水時水面掉得比東西快，
+       東西也會短暫高過水面，那一段只是跟著落下去、不翻（不然退水那幾秒整片又翻起來） */
+    if (!was && f.y >= top) { f.air = f.toss > 0 ? 1 : 0; f.vy = Math.min(f.vy, f.toss || 1.5); f.toss = 0; }
+    else if (was && f.y < top) { if (f.air && f.vy < -3) dlgSpray(o.x, top + 0.3, o.z, 0, 4, 0, 2); f.air = 0; }
+  }
+  if (f.fs < 0 && (f.t > DLG_KEEP || (D && o.x * D.dx + o.z * D.dz > D.E))) f.fs = f.t;
+  return f.fs < 0 ? 1 : clamp(1 - (f.t - f.fs) / DLG_FADE, 0, 1);
+}
+/* 人（小人、整隊捲走的兵）漂一幀，回傳濃度：衝出水面那一段在半空翻滾（繞身體中段，見 engine 的 putWorker 的 w.air），
+   之後仰躺浮在水面上、慢慢打轉 */
+function dlgPose(w, dt) {
+  const f = w.dlg, sc = w.scale || 1, top = (deluge ? deluge.L : 0) - 0.3 * sc;
+  const al = dlgDrift(w, dt, top), air = !!f.air;
+  w.y = f.y + (air ? 0 : 0.06 * Math.sin(f.t * 2.6 + f.ph));
+  w.air = air ? 1 : 0;
+  if (air) w.tilt = (w.tilt || 0) + f.tw * dt;
+  else {
+    const to = -1.35 + Math.round(((w.tilt || 0) + 1.35) / (Math.PI * 2)) * Math.PI * 2;   // 翻了幾圈都收到最近的那一個仰躺
+    w.tilt = (w.tilt || 0) + (to - (w.tilt || 0)) * Math.min(1, dt * 4);
+  }
+  w.a += f.sp * dt; w.fall = 1; w.gait = 0;
+  return al;
+}
+function dlgWorker0(w, k) {
+  releaseWorker(w);                  // 手上的料掉下來（泡到水的下一幀一起捲走）；聊天、打架、表演一起收
+  w.burn = 0; w.roll = 0; w.rspin = 0; w.air = 0; w.flee = 0; w.trip = 0; w.pause = 0;
+  w.emo = ''; w.emoT = 0; w.emoK = 0;
+  dlgFloat(w, k);
+}
+/* updWorker 開頭叫：這一段整個交給水。淡完了就這樣漂著（看不見），退完水 dlgEnd 換一個新的人從林帶走進來 */
+function dlgWorker(w, dt) { w.alpha = dlgPose(w, dt); }
+function dlgBeast0(m, k) {
+  /* 踢到一半、噴火到一半的姿勢收乾淨：走人的共同出口（見 leaveBeast）。之後整段交給 dlgBeast，st 換成什麼都不會再被讀到 */
+  if (!m.herd && !m.dead) leaveBeast(m);
+  if (m.nap > 0 || m.slp > 0) napStop(m);
+  if (m.mate) monkStop(m);
+  m.burn = 0; m.air = 0; m.gait = 0;
+  dlgFloat(m, k);
+}
+/* stepBeast 開頭叫：漂一幀，淡完回 true（stepDoom 把牠從清單拿掉）。牛羊記一筆欠帳，退完水從林帶補（見 stepHerd）。
+   衝出水面那一段往前翻（m.spin，繞身體中段，見 engine 的 putBeasts 的 m.air），落回水裡翻回站著浮 */
+function dlgBeast(m, dt) {
+  const f = m.dlg, top = (deluge ? deluge.L : 0) - 0.5 * (m.sc || 1);
+  const al = dlgDrift(m, dt, top), air = !!f.air;
+  m.y = Math.max(0, f.y + (air ? 0 : 0.06 * Math.sin(f.t * 2.6 + f.ph)));
+  m.air = air ? 1 : 0;
+  if (m.air) m.spin = (m.spin || 0) + f.tw * dt;
+  else if (!m.dead) {
+    const to = Math.round((m.spin || 0) / (Math.PI * 2)) * Math.PI * 2;
+    m.spin = (m.spin || 0) + (to - (m.spin || 0)) * Math.min(1, dt * 4);
+  }
+  m.a += f.sp * dt; m.gait = 0;
+  m.alpha = al;
+  if (al > 0) return false;
+  if (m.herd) herdOwed++;
+  return true;
+}
+/* 一隊兵整隊捲走：人搬到 deluge.men 自己漂，隊伍清空。回傳 true＝這一隊捲走了，呼叫端把它收掉 */
+function dlgTroop(g, k) {
+  if (!g || !g.men.length || !g.men.some(p => dlgHit(p.x, p.z))) return false;
+  for (const p of g.men) { p.draw = 0; p.rec = 0; dlgFloat(p, k); deluge.men.push(p); }
+  g.men = [];
+  return true;
+}
+function dlgBlock0(b, k) {
+  if (b.cell) gridDel(b);
+  douse(b);                          // 燒著的熄掉（不然 fires 那一筆會一直燒一塊已經收掉的積木）
+  b.st = FLY; b.rest = false; b.snap = 0; b.gone = 0; b.fallIn = 0; b.holder = -1;
+  dlgFloat(b, k);
+}
+/* 退完了：捲走的小人換新的從林帶走進來，還沒漂完的收掉，閒晃事件重抽一件 */
+function dlgEnd() {
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    if (!w.dlg) continue;
+    /* 漂著的時候被幽浮吸走的：交給幽浮（它記著的是這個人，換掉的話吸上去的是一個已經不在場上的人） */
+    if (w.ufo) { w.dlg = null; w.alpha = undefined; } else respawnWorker(i);
+  }
+  if (beasts) {
+    for (const m of beasts) if (m.dlg && m.herd) herdOwed++;
+    beasts = beasts.filter(m => !m.dlg);
+    if (!beasts.length) beasts = null;
+  }
+  dropBlocks(b => !!b.dlg);
+  /* 林帶重種一片，從零長回來（第四輪，使用者：「周圍的樹也要一起長回來」）。浪推過整座島，一棵都不會剩，makeTrees 看到空的就重種 */
+  trees = trees.filter(t => !t.dlg);
+  if (!trees.length) { makeTrees(); for (const t of trees) { t.fk = 0; t.gw = rr(0, DLG_GROW_LAG); } }
+  if (meats) { meats = meats.filter(f => !f.dlg); if (!meats.length) meats = null; }
+  if (gifts) { gifts = gifts.filter(g => !g.dlg); if (!gifts.length) gifts = null; }
+  if (dozers) { dozers.list = dozers.list.filter(m => !m.dlg); if (!dozers.list.length) { dozers = null; ENG.putDozers([]); } }
+  if (trucks) { trucks.list = trucks.list.filter(m => !m.dlg); if (!trucks.list.length) trucks = null; }
+  evArm = 1;
+  deluge = null;
 }

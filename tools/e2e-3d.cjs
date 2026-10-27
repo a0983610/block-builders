@@ -566,6 +566,10 @@ const installClean = page => page.evaluate(() => {
        （〈天災：Diablo 噴火〉整圈城牆那一條就是這樣偶爾紅，見 開發筆記〈Diablo 擋路就一直噴到路通（v1.276.2）〉） */
     dozers = null; ENG.putDozers([]);
     water = null;
+    /* 大洪水（v1.325.0）：淹到一半的照退完那一刻收（捲走的小人換人、樹重種、事件重抽），不能只把 deluge 設成 null——
+       身上掛著 dlg 的小人會一直漂著、永遠不換人 */
+    if (deluge) dlgEnd();
+    ENG.putDeluge(null);
     fworks = null; fwSparks = null; fwWait = null;
     clearGlows();                     // 晚上的小光源（v1.296.0）：撞擊、煙火那一下與火的那幾盞
     quake = null;
@@ -15700,33 +15704,35 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      「不擋」量的是**那一點打到的不是 #corner 裡的東西**，不是「打到畫布」：選單往上開正好落在
      設定面板的位置，面板開著的時候那一點本來就是面板。
      偷懶在測試裡是關掉的（installClean），換檔不會生出人來。 */
-  /* v1.220.2 起 ⚡ 立刻建成夾在設定與模式中間（使用者選的），所以「中間的縫」變成兩道。 */
+  /* v1.220.2 起 ⚡ 立刻建成夾在設定與模式中間（使用者選的），所以「中間的縫」變成兩道；
+     v1.325.0 起 🌊 大洪水再接在 ⚡ 後面（使用者：「立即建成旁邊增加一個按鈕」），縫變成三道。 */
   const modeIdle = await page.evaluate(() => {
     const cor = document.getElementById('corner');
     const r = document.getElementById('modes').getBoundingClientRect();
     const mid = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
     const a = document.getElementById('panelBtn').getBoundingClientRect();
     const f = document.getElementById('finish').getBoundingClientRect();
+    const d = document.getElementById('deluge').getBoundingClientRect();
     const b = document.getElementById('modebox').getBoundingClientRect();
     const name = e => e ? e.tagName + (e.id ? '#' + e.id : '') : '—';
     const gapAt = (l, rr) => document.elementFromPoint((l.right + rr.left) / 2,
       (Math.max(l.top, rr.top) + Math.min(l.bottom, rr.bottom)) / 2);
-    const gaps = [gapAt(a, f), gapAt(f, b)];
+    const gaps = [gapAt(a, f), gapAt(f, d), gapAt(d, b)];
     return { menu: getComputedStyle(document.getElementById('modeMenu')).visibility,
              hit: name(mid), hitIn: !!mid && cor.contains(mid),
              gap: gaps.map(name).join('／'), gapIn: gaps.some(g => !!g && cor.contains(g)),
-             side: f.left >= a.right && b.left >= f.right &&
-                   Math.abs(f.bottom - a.bottom) < 3 && Math.abs(b.bottom - a.bottom) < 3,
-             at: [a.left, a.right, f.left, f.right, b.left, b.right, b.bottom].map(Math.round).join('／'),
+             side: f.left >= a.right && d.left >= f.right && b.left >= d.right &&
+                   Math.abs(f.bottom - a.bottom) < 3 && Math.abs(d.bottom - a.bottom) < 3 && Math.abs(b.bottom - a.bottom) < 3,
+             at: [a.left, a.right, f.left, f.right, d.left, d.right, b.left, b.right, b.bottom].map(Math.round).join('／'),
              cur: document.getElementById('modeNow').dataset.cur, mode: lazyMode,
              label: document.getElementById('modeNow').textContent.replace(/\s+/g, '') };
   });
-  ok('⚙ 設定、⚡ 立刻建成、小人模式由左到右排一排，收著的選單與中間的縫都不擋東西',
+  ok('⚙ 設定、⚡ 立刻建成、🌊 大洪水、小人模式由左到右排一排，收著的選單與中間的縫都不擋東西',
      modeIdle.menu === 'hidden' && !modeIdle.hitIn && !modeIdle.gapIn &&
      modeIdle.side && modeIdle.cur === modeIdle.mode,
-     '小窗寫著「' + modeIdle.label + '」（' + modeIdle.cur + '）、三顆排一排 ' + modeIdle.side +
-     '（設定 左／右、立刻建成 左／右、模式 左／右、底 ' + modeIdle.at + '）；選單 ' + modeIdle.menu +
-     '、那塊點下去打到 ' + modeIdle.hit + '、兩道縫打到 ' + modeIdle.gap);
+     '小窗寫著「' + modeIdle.label + '」（' + modeIdle.cur + '）、四顆排一排 ' + modeIdle.side +
+     '（設定 左／右、立刻建成 左／右、大洪水 左／右、模式 左／右、底 ' + modeIdle.at + '）；選單 ' + modeIdle.menu +
+     '、那塊點下去打到 ' + modeIdle.hit + '、三道縫打到 ' + modeIdle.gap);
   /* ⚡ 立刻建成搬出設定面板（v1.220.2，使用者：「移出設定頁面 獨立在外面方便按」）：
      面板一動手玩就收下去，所以要驗的是**面板收著的時候**它還看得到、點得到。 */
   const finOut = await page.evaluate(() => {
@@ -38372,6 +38378,134 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { cleanTools(); beasts = null; archers = null; arOld = null; musket = null; mkOld = null; });
   }   // ── 〈道具：小人將軍〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 大洪水（v1.325.0） ══════════
+     使用者：「立即建成旁邊增加一個按鈕 大洪水／按了會有全地圖大水 把地標建築以外的所有生物 小房子 全部沖走」，
+     看過四版預覽定案：隨機從島的一邊捲過來、水面是地標現在高度的一半、浪頭再高出水位一半、全部順著浪沖走；
+     退完水小人與動物從林帶補回來、林帶重種長回來。
+     全部是規則型：方向押 Math.random；「誰會被捲走」直接擺好場面呼叫 dlgSweep 驗；整場跑一趟驗的是一定成立的事
+     （地標一塊不少、該走的都走了、該回來的都回來了、水那一顆收掉）。見 開發筆記〈大洪水（v1.325.0）〉 */
+  SEC: { if (!(await head('大洪水', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await fillAll(page);
+
+  /* ── 按鈕：接在 ⚡ 後面；按下去開淹、淹著的時候灰掉、再按不算；方向、水位、浪頭照規則算 ── */
+  const dbtn = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const el = document.getElementById('deluge'), fin = document.getElementById('finish');
+    hudLast = 0; hudTick(performance.now());
+    const r = { next: fin.nextElementSibling === el, inCorner: document.getElementById('corner').contains(el), dis0: el.disabled };
+    const real = Math.random, top = siteTopNow();
+    try { Math.random = () => 0; el.click(); } finally { Math.random = real; }
+    hudLast = 0; hudTick(performance.now());
+    r.on = !!deluge; r.dis1 = el.disabled; r.again = castDeluge() === false;
+    r.dir = deluge.dx === 1 && deluge.dz === 0;                       // 押 0：四邊的第一個，從 −x 往 +x 推
+    r.H = Math.abs(deluge.H - Math.max(DLG_HMIN, top * DLG_HK)) < 1e-9 && deluge.H > DLG_HMIN;   // 金字塔夠高，照地標算
+    r.CR = Math.abs(deluge.CR - deluge.H * DLG_CK) < 1e-9;
+    r.F0 = deluge.F === -dlgEdge() - 0.4;
+    deluge.F = 0;
+    r.hit = dlgHit(-1, 50) && dlgHit(-60, -50) && !dlgHit(1, -50) && !dlgHit(60, 0);   // 浪的正面停在 x＝0：掃過的是 x < 0 那一半
+    cleanTools();
+    hudLast = 0; hudTick(performance.now());
+    r.dis2 = el.disabled; r.off = deluge === null && !ENG.delugeOn;
+    return r;
+  });
+  ok('🌊 大洪水接在 ⚡ 立刻建成後面；按下去開淹、淹著的時候灰掉、再按不算，收完又能按',
+     dbtn.next && dbtn.inCorner && !dbtn.dis0 && dbtn.on && dbtn.dis1 && dbtn.again && !dbtn.dis2 && dbtn.off, JSON.stringify(dbtn));
+  ok('從一邊推過來（方向四個軸向抽一個）、水位＝地標現在高度的一半（最少 DLG_HMIN）、浪頭再高出水位的 DLG_CK；浪的正面後面才算掃過',
+     dbtn.dir && dbtn.H && dbtn.CR && dbtn.F0 && dbtn.hit, JSON.stringify(dbtn));
+
+  /* ── 誰會被捲走（規則：浪掃過、身子在水面以下；地標不算、天上飛的不算）：擺好場面直接叫 dlgSweep ── */
+  const drule = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const real = Math.random, keepTrees = trees.map(t => Object.assign({}, t));
+    let r;
+    try {
+      Math.random = () => 0;                                        // 從 −x 往 +x
+      castDeluge();
+      deluge.F = 0;
+      const [w0, w1, w2] = workers;
+      w0.x = -20; w0.z = 5; w0.y = 0;                               // 掃過、泡在水裡
+      w1.x = -20; w1.z = -5; w1.y = deluge.L + 5; w1.air = 1;       // 掃過、但飛在水面上
+      w2.x = 20; w2.z = 0; w2.y = 0;                                // 還沒掃到
+      const c0 = spawnCattle(false), c1 = spawnCattle(false);
+      c0.x = -25; c0.z = 0; c1.x = 25; c1.z = 0;
+      const sky = { kind: 'gryphon', sky: 1, x: -20, y: 40, z: 0 };  // 天上飛的
+      beasts.push(sky);
+      const lmb = blocks.find(b => b.st === SET && b.slot >= 0 && b.x < -1);   // 地標上、在掃過那一半的一塊
+      const mk = x => { const b = newBlock(); b.x = x; b.z = 3; b.y = HB; blocks.push(b); gridAdd(b); return b; };
+      const b0 = mk(-30), b1 = mk(30);
+      trees[0].x = -40; trees[0].z = 0; trees[1].x = 40; trees[1].z = 0;
+      dlgSweep();
+      r = { w0: !!w0.dlg, w1: !!w1.dlg, w2: !!w2.dlg, c0: !!c0.dlg, c1: !!c1.dlg, sky: !!sky.dlg,
+            lm: !!(lmb && lmb.dlg), lmOk: !!lmb, b0: !!b0.dlg, b1: !!b1.dlg, t0: !!trees[0].dlg, t1: !!trees[1].dlg };
+      dropBlocks(b => b === b1);
+    } finally { Math.random = real; }
+    cleanTools();
+    trees = keepTrees;
+    return r;
+  });
+  ok('浪掃過、泡到水的才捲走：小人、牛羊、碎料、樹捲走；還沒掃到的、飛在水面上的、天上飛的、地標的積木不動',
+     drule.w0 && !drule.w1 && !drule.w2 && drule.c0 && !drule.c1 && !drule.sky && drule.lmOk && !drule.lm &&
+     drule.b0 && !drule.b1 && drule.t0 && !drule.t1, JSON.stringify(drule));
+
+  /* ── 整場跑一趟：地標一塊不少；小人、牛羊、村子、碎料、箭雨隊、肉、泡泡、地上的痕跡、樹全部沖走；
+        退完水小人換新的從林帶走進來、牛羊記成欠帳（補位那一支測試裡關著）、林帶重種從零長回來、水那一顆收掉 ── */
+  const drun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    stepDoom = window.doomStep;                       // 生物漂、淡、收掉是 stepDoom → stepBeast 在推
+    const keepTrees = trees.map(t => Object.assign({}, t)), owed0 = herdOwed;
+    idleEv = IDLE_EVENTS[0]; startHomes();            // 村子：直接開事件一，房子的格子清單當場就排好（同〈閒晃事件：小人的家〉）
+    const tops = blocks.filter(b => b.st === SET && b.slot >= 0).sort((a, b) => b.y - a.y).slice(0, 8);
+    for (const b of tops) breakBlock(b, 0, 2, 0);     // 打掉幾塊，落地就是一般碎料
+    for (let i = 0; i < 40; i++) step(0.05);
+    spawnCattle(false); spawnCattle(false);
+    castArrows({ x: arenaR * 0.8, z: 0 }, { x: arenaR * 0.8, z: arenaR }, 0);
+    dropMeat({ x: arenaR * 0.5, y: 0, z: -arenaR * 0.5 });
+    spawnBlood(-arenaR * 0.4, -arenaR * 0.3, 1.2);
+    spawnMark({ x: arenaR * 0.4, y: 0, z: arenaR * 0.3 }, 4, false);
+    gifts = [{ id: TOOLS[0].id, k: 0, x: -arenaR * 0.6, y: GIFT_Y, z: arenaR * 0.6, vy: 0, sc: 1, ph: 0, rest: true }];
+    const own = () => blocks.filter(b => b.st === SET && b.slot >= 0).length;
+    const loose = () => blocks.filter(b => b.slot < 0 && b.hh < 0).length;
+    const before = { set: own(), debris: loose(), homes: homes ? homes.list.length : 0, herd: beasts.filter(m => m.herd).length,
+                     arch: archers ? archers.men.length : 0, meats: meats ? meats.length : 0, marks: marks.length, bloods: bloods.length };
+    const w0 = workers.slice();
+    castDeluge();
+    let maxDlg = 0, men = 0, on = false;
+    for (let t = 0; deluge && t < DLG_IN + DLG_HOLD + DLG_OUT + 1; t += 0.05) {
+      step(0.05);
+      maxDlg = Math.max(maxDlg, workers.filter(w => w.dlg).length);
+      men = Math.max(men, dlgMen().length);
+      if (deluge) { draw(); on = on || ENG.delugeOn; }
+    }
+    draw();
+    const after = { set: own(), debris: loose(), homes: homes ? homes.list.length : 0, herd: beasts ? beasts.filter(m => m.herd).length : 0,
+                    owed: herdOwed - owed0, arch: !!archers, men: dlgMen().length, meats: meats ? meats.length : 0, gifts: gifts ? gifts.length : 0,
+                    marks: marks.length, bloods: bloods.length, wk: workers.length, dlg: workers.filter(w => w.dlg).length,
+                    fresh: workers.every((w, i) => w !== w0[i]), wood: workers.every(w => Math.abs(Math.hypot(w.x, w.z) - woodR()) < 2),
+                    on, off: !ENG.delugeOn, gone: deluge === null, trees: trees.length, treeN: TREE_N,
+                    grow: trees.every(t => t.fk !== undefined && t.fk < 1 && !t.dlg) };
+    for (let i = 0; i < Math.ceil((DLG_GROW + DLG_GROW_LAG) / 0.05) + 2; i++) step(0.05);
+    after.grown = trees.every(t => t.fk === undefined && t.gw === undefined);
+    stepDoom = () => {};
+    herdOwed = owed0;
+    cleanTools();
+    trees = keepTrees;
+    return { before, after, maxDlg, men, n: workers.length };
+  });
+  const db = drun.before, da = drun.after;
+  ok('整場跑完地標一塊不少（地標不算在沖走的裡面）', da.set === db.set && db.set > 0, JSON.stringify(drun));
+  ok('小人、牛羊、村子、碎料、箭雨隊、肉、泡泡、地上的痕跡全部沖走（擺上去的每一樣都有）',
+     db.debris > 0 && db.homes > 0 && db.herd === 2 && db.arch > 0 && db.meats === 1 && db.marks > 0 && db.bloods > 0 &&
+     drun.maxDlg === drun.n && drun.men >= db.arch &&
+     da.debris === 0 && da.homes === 0 && da.herd === 0 && da.owed === 2 && !da.arch && da.men === 0 &&
+     da.meats === 0 && da.gifts === 0 && da.marks === 0 && da.bloods === 0, JSON.stringify(drun));
+  ok('退完水：小人一樣多、全部換新的從林帶走進來，林帶重種一片從零長回原本大小；水那一顆淹著時有畫、退完收掉',
+     da.wk === drun.n && da.dlg === 0 && da.fresh && da.wood && da.trees === da.treeN && da.grow && da.grown &&
+     da.on && da.off && da.gone, JSON.stringify(drun));
+
+  await page.evaluate(() => { cleanTools(); beasts = null; archers = null; arOld = null; });
+  }   // ── 〈大洪水〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 破壞道具：光之太刀（v1.290.0） ══════════
      使用者：「做這個角色的造型 也是越像越好 / 預計會加成道具&吉祥物 攻擊方式是光之太刀 類似無形的劍氣斬過 砍的方向隨機」，
      選了劍氣砍穿整座建築、切面通過點的那一點、砍倒＋斬殺巨人、一刀；看了五輪預覽之後：上段起手、衝一段過程中斬下去（撲 20＋滑 8）、
@@ -42094,7 +42228,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const box = {};
       // 量的是收起來的小窗（toolbox；v1.219 的小人模式 modebox 與 v1.220.2 的 finish 在設定鈕旁邊）：選單平常是藏著的，不占版面
       // v1.300.0 左上、右上兩張卡併成上方橫條（hud）：量整條，不量裡面兩群（兩群中間那段空的也是橫條）
-      for (const id of ['hud', 'toolbox', 'modebox', 'finish', 'panelBtn', 'ver']) {
+      for (const id of ['hud', 'toolbox', 'modebox', 'finish', 'deluge', 'panelBtn', 'ver']) {   // deluge：v1.325.0 的 🌊 大洪水
         const e = document.getElementById(id);
         if (getComputedStyle(e).display !== 'none') box[id] = e.getBoundingClientRect();
       }
@@ -42105,25 +42239,25 @@ const toScreen = (page, sel) => page.evaluate(sel => {
           if (a.right > b.left && b.right > a.left && a.bottom > b.top && b.bottom > a.top)
             bad.push(keys[i] + '×' + keys[j]);
         }
-      /* 小人模式（v1.219）與 ⚡ 立刻建成（v1.220.2）跟著設定鈕：桌機依序排在它右邊（⚙ ⚡ 模式）、
-         底對齊；窄視窗依序疊在它上面（由下往上 ⚙ ⚡ 模式）、右緣對齊。
+      /* 小人模式（v1.219）、⚡ 立刻建成（v1.220.2）與 🌊 大洪水（v1.325.0）跟著設定鈕：桌機依序排在它右邊（⚙ ⚡ 🌊 模式）、
+         底對齊；窄視窗依序疊在它上面（由下往上 ⚙ ⚡ 🌊 模式）、右緣對齊。
          設定面板**展開的時候**也不能壓到它們——面板平常可能是收著的，量之前先關掉動畫攤開，
-         量完照原樣收回去（窄視窗的面板 bottom 從 84 拉到 100、再拉到 141 就是為了這條）。 */
-      const p = box.panelBtn, f = box.finish, m = box.modebox;
-      const side = f.left >= p.right && m.left >= f.right &&
-                   Math.abs(f.bottom - p.bottom) < 3 && Math.abs(m.bottom - p.bottom) < 3;
-      const stack = f.bottom <= p.top && m.bottom <= f.top &&
-                    Math.abs(f.right - p.right) < 2 && Math.abs(m.right - p.right) < 2;
+         量完照原樣收回去（窄視窗的面板 bottom 從 84 拉到 100、141，v1.325.0 再拉到 182 就是為了這條）。 */
+      const p = box.panelBtn, f = box.finish, d = box.deluge, m = box.modebox;
+      const side = f.left >= p.right && d.left >= f.right && m.left >= d.right &&
+                   Math.abs(f.bottom - p.bottom) < 3 && Math.abs(d.bottom - p.bottom) < 3 && Math.abs(m.bottom - p.bottom) < 3;
+      const stack = f.bottom <= p.top && d.bottom <= f.top && m.bottom <= d.top &&
+                    Math.abs(f.right - p.right) < 2 && Math.abs(d.right - p.right) < 2 && Math.abs(m.right - p.right) < 2;
       const pnl = document.getElementById('panel'), hid = pnl.classList.contains('hide');
       pnl.style.transition = 'none'; pnl.classList.remove('hide');
       const q = pnl.getBoundingClientRect();
       if (hid) pnl.classList.add('hide');
       void pnl.offsetWidth; pnl.style.transition = '';
       const hitP = e => q.right > e.left && e.right > q.left && q.bottom > e.top && e.bottom > q.top;
-      const pm = hitP(m) || hitP(f);
+      const pm = hitP(m) || hitP(f) || hitP(d);
       return { bad, headW: Math.round(box.hud.width), top: Math.round(box.toolbox.top),
                out: box.toolbox.left < -1 || box.toolbox.right > window.innerWidth + 1,
-               side, stack, pm, gapPm: Math.round(Math.min(m.top, f.top) - q.bottom),
+               side, stack, pm, gapPm: Math.round(Math.min(m.top, f.top, d.top) - q.bottom),
                txt: document.getElementById('stat').textContent.replace(/\s+/g, ' ').trim() };
     });
     statTxt = r.txt;
@@ -42136,7 +42270,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('量的時候資訊卡確實是最寬的狀態', /累計\s*\$1,234,567/.test(statTxt), statTxt);
   ok('桌機縮視窗，工具列不會壓到資訊卡', clash.length === 0,
      clash.join(' / ') || '工具列位置：' + barAt.join('、'));
-  ok('⚡ 立刻建成與小人模式跟著設定鈕：桌機依序排在右邊、窄視窗依序疊在上面，設定面板展開也壓不到',
+  ok('⚡ 立刻建成、🌊 大洪水與小人模式跟著設定鈕：桌機依序排在右邊、窄視窗依序疊在上面，設定面板展開也壓不到',
      modeBad.length === 0,
      (modeBad.length ? '不對的：' + modeBad.join('、') + '；' : '') + modeAt.join('、'));
   /* v1.110：以前是「窄於 1500 就把工具搬到下緣」，於是一般筆電（1920 開 125% 縮放是 1536、
@@ -42181,7 +42315,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   /* 手機版空間很擠，按鈕互相疊到就點不到了——直接量方框有沒有相交 */
   const overlap = await page.evaluate(() => {
-    const ids = ['hud', 'toolbox', 'modebox', 'finish', 'panelBtn', 'ver'];   // hud：v1.300.0 的上方橫條，同上
+    const ids = ['hud', 'toolbox', 'modebox', 'finish', 'deluge', 'panelBtn', 'ver'];   // hud：v1.300.0 的上方橫條，同上；deluge：v1.325.0
     const box = {};
     for (const id of ids) {
       const e = document.getElementById(id);
@@ -42203,8 +42337,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const mm = document.getElementById('modes').getBoundingClientRect();
     document.getElementById('modebox').classList.remove('open');
     /* 小人模式疊在設定鈕上面（v1.219，使用者選的），v1.220.2 起 ⚡ 立刻建成夾在兩顆中間
-       （使用者選「三顆直排疊起來」）；手機的面板是整排寬，展開也不能壓到它們 */
-    const p = box.panelBtn, f = box.finish, m = box.modebox;
+       （使用者選「三顆直排疊起來」），v1.325.0 起 🌊 大洪水再疊在 ⚡ 上面；手機的面板是整排寬，展開也不能壓到它們 */
+    const p = box.panelBtn, f = box.finish, d = box.deluge, m = box.modebox;
     const pnl = document.getElementById('panel'), hid = pnl.classList.contains('hide');
     pnl.style.transition = 'none'; pnl.classList.remove('hide');
     const q = pnl.getBoundingClientRect();
@@ -42217,16 +42351,16 @@ const toScreen = (page, sel) => page.evaluate(sel => {
                      r: Math.round(menu.right), t: Math.round(menu.top) },
              mode: { w: Math.round(mm.width), l: Math.round(mm.left),
                      r: Math.round(mm.right), t: Math.round(mm.top) },
-             stack: f.bottom <= p.top && m.bottom <= f.top &&
-                    Math.abs(f.right - p.right) < 2 && Math.abs(m.right - p.right) < 2,
-             pm: hitP(m) || hitP(f),
-             at: [p.top, f.bottom, f.top, m.bottom, p.right, f.right, m.right, q.bottom, m.top].map(Math.round) };
+             stack: f.bottom <= p.top && d.bottom <= f.top && m.bottom <= d.top &&
+                    Math.abs(f.right - p.right) < 2 && Math.abs(d.right - p.right) < 2 && Math.abs(m.right - p.right) < 2,
+             pm: hitP(m) || hitP(f) || hitP(d),
+             at: [p.top, f.bottom, f.top, d.bottom, d.top, m.bottom, p.right, f.right, d.right, m.right, q.bottom, m.top].map(Math.round) };
   });
-  ok('手機版 ⚡ 立刻建成與小人模式依序疊在設定鈕上面，設定面板展開也壓不到',
+  ok('手機版 ⚡ 立刻建成、🌊 大洪水與小人模式依序疊在設定鈕上面，設定面板展開也壓不到',
      overlap.stack && !overlap.pm,
-     '設定鈕頂／立刻建成底 ' + overlap.at.slice(0, 2).join('／') + '、立刻建成頂／模式小窗底 ' +
-     overlap.at.slice(2, 4).join('／') + '、右緣 ' + overlap.at.slice(4, 7).join('／') +
-     '；面板底／模式小窗頂 ' + overlap.at.slice(7).join('／'));
+     '設定鈕頂／立刻建成底 ' + overlap.at.slice(0, 2).join('／') + '、立刻建成頂／大洪水底 ' +
+     overlap.at.slice(2, 4).join('／') + '、大洪水頂／模式小窗底 ' + overlap.at.slice(4, 6).join('／') +
+     '、右緣 ' + overlap.at.slice(6, 10).join('／') + '；面板底／模式小窗頂 ' + overlap.at.slice(10).join('／'));
   ok('手機版的 UI 不會互相疊到', overlap.bad.length === 0, overlap.bad.join('、') || overlap.n + ' 個區塊都沒相交');
   ok('手機版工具小窗不會超出畫面', overlap.out.length === 0,
      '小窗寬 ' + overlap.toolsW + '，視窗寬 390' + (overlap.out.length ? '；超出：' + overlap.out.join(',') : ''));

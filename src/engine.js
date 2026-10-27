@@ -21,6 +21,7 @@ const ENG = (function () {
      （同屍體搬去 fadeMesh：機台本身那一顆不必變透明，才不會跟塵霧、火苗搶先後）。材質借 fadeMesh 那一份 */
   let trebFade = null, trebFadeA = null, canFade = null, canFadeA = null;
   let poolGeo, poolPos, poolFoam, poolUni;
+  let dlgMesh = null, dlgGeo, dlgPos, dlgFoam;   // 大洪水（v1.325.0）：整座島一片水，材質借水窪那一份（見 putDeluge）
   let markMesh, markGeo, markPos, markCol;
   let searMesh, searGeo, searPos, searCol;   // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），見 putSears
   let excFade;                               // 光柱每一格下緣／上緣的濃淡（v1.226，見 putBar）
@@ -122,6 +123,7 @@ const ENG = (function () {
      可是看不到水柱」：一個裝滿的馬克杯已經 4463 格，超過舊的 4000 格上限。 */
   const MAXPOOL = 9000;
   const MAXPOOLV = 150000;                  // 水的頂點上限（一格最多 6 面 × 6 頂點）
+  const DLG_VERT = 48;                      // 大洪水的頂點數上限：水面與兩側、浪頭斜坡與兩側、浪的正面、浪來那一邊共 8 塊，一塊 6 個頂點（見 putDeluge）
   /* 地面痕跡（焦黑／坑洞）：同時最多幾塊、一塊切幾片、一塊最多幾圈。
      一塊痕跡是幾個同心圈疊出來的，圈與圈之間鋪一圈四邊形，
      所以頂點上限＝塊數 × 片數 × (圈數−1) × 6。 */
@@ -1418,6 +1420,18 @@ if (vAo.x + vAo.y > 0.5) {
     poolMesh = new T.Mesh(poolGeo, poolMaterial());
     poolMesh.frustumCulled = false; poolMesh.visible = false;
     scene.add(poolMesh);
+    /* 大洪水（v1.325.0）：**材質直接共用上面那一份**（同一個 shader、同一組 uniform，波紋、菲涅耳、泡沫都是現成的），
+       幾何自己一顆——水窪是一格一格的，整座島兩百多格見方塞不進 MAXPOOL。頂點一樣填世界座標（材質把 position 當世界座標用）。
+       沒在淹就 visible = false（沒東西在場就不吃 draw call）。 */
+    dlgGeo = new T.BufferGeometry();
+    dlgPos = new Float32Array(DLG_VERT * 3);
+    dlgFoam = new Float32Array(DLG_VERT);
+    dlgGeo.setAttribute('position', new T.BufferAttribute(dlgPos, 3).setUsage(T.DynamicDrawUsage));
+    dlgGeo.setAttribute('aFoam', new T.BufferAttribute(dlgFoam, 1).setUsage(T.DynamicDrawUsage));
+    dlgGeo.setDrawRange(0, 0);
+    dlgMesh = new T.Mesh(dlgGeo, poolMesh.material);
+    dlgMesh.frustumCulled = false; dlgMesh.visible = false;
+    scene.add(dlgMesh);
 
     /* 地面痕跡（v1.88）：炸過的地方一塊焦黑、隕石一個坑，都會漸漸淡掉。
        跟水那顆網格同一套做法——**每幀重組一份三角形**，不是一塊痕跡一顆網格：
@@ -2741,6 +2755,49 @@ if (vAo.x + vAo.y > 0.5) {
     if (fa.clearUpdateRanges) { fa.clearUpdateRanges(); fa.addUpdateRange(0, v / 3); }
     else if (fa.updateRange) { fa.updateRange.offset = 0; fa.updateRange.count = v / 3; }
     fa.needsUpdate = true;
+  }
+  /* 大洪水（v1.325.0，見 game-tools.js〈大洪水〉）。o ＝ {dx, dz 浪往哪個方向推（四個軸向之一）, F 浪的正面推到哪（沿著那個方向量）,
+     L 水面高, C 浪頭頂多高, B 浪頭往後斜下去多長才接回水面, O 島的半寬（蓋過島邊一點）, wt 波紋相位}，null＝沒在淹。
+     形狀是從島的一邊（−O）一路鋪到浪的正面 F 的一整塊水（使用者看過第二版：「改成從一邊大水淹過來吧」）：
+     正面從地面直直立到浪頭 C，浪頭往後 B 格斜下去接回水面 L；浪的正面與那一段斜坡起白沫（泡沫旗標給大一點，見 poolMaterial 的 foam）。
+     浪推出對面的島邊之後，那一邊換成一道島邊的牆。幾何先在「浪的座標」裡組（q 沿著浪前進、p 橫的），寫進去時轉回世界座標。 */
+  function putDeluge(o) {
+    if (!o) { dlgMesh.visible = false; return; }
+    const P = dlgPos, Fm = dlgFoam, L = o.L, O = o.O, F = o.F, B = o.B, C = Math.max(L, o.C), dx = o.dx, dz = o.dz;
+    let v = 0, fm = 0;
+    const pt = (q, y, p) => { P[v++] = q * dx - p * dz; P[v++] = y; P[v++] = q * dz + p * dx; };
+    /* 四個角照順序給（q, y, p），拆成兩個三角形 */
+    const quad = (q0, y0, p0, q1, y1, p1, q2, y2, p2, q3, y3, p3) => {
+      const k = v / 3;
+      for (let i = 0; i < 6; i++) Fm[k + i] = fm;
+      pt(q0, y0, p0); pt(q1, y1, p1); pt(q2, y2, p2);
+      pt(q0, y0, p0); pt(q2, y2, p2); pt(q3, y3, p3);
+    };
+    const h = q => q <= F - B ? L : L + (C - L) * (q - (F - B)) / B;   // 那一點的水面高（浪頭的斜坡上）
+    const qe = Math.min(F, O);                              // 水鋪到哪
+    if (qe <= -O) { dlgMesh.visible = false; return; }
+    const q1 = Math.min(F - B, qe), r0 = Math.max(F - B, -O), bot = -1.25;   // 島邊的牆往下到草皮那一層的底（見 setGroundSize）
+    if (q1 > -O) {                                          // 平的那一段水面＋兩側島邊
+      quad(-O, L, -O, q1, L, -O, q1, L, O, -O, L, O);
+      quad(-O, bot, -O, q1, bot, -O, q1, L, -O, -O, L, -O);
+      quad(-O, bot, O, q1, bot, O, q1, L, O, -O, L, O);
+    }
+    if (qe > r0) {                                          // 浪頭往後斜下去那一段＋兩側
+      const y0 = h(r0), y1 = h(qe);
+      fm = 2; quad(r0, y0, -O, qe, y1, -O, qe, y1, O, r0, y0, O);
+      fm = 0;
+      quad(r0, bot, -O, qe, bot, -O, qe, y1, -O, r0, y0, -O);
+      quad(r0, bot, O, qe, bot, O, qe, y1, O, r0, y0, O);
+    }
+    if (F <= O) { fm = 1.5; quad(F, -0.05, -O, F, -0.05, O, F, C, O, F, C, -O); fm = 0; }   // 浪的正面
+    else quad(O, bot, -O, O, bot, O, O, h(O), O, O, h(O), -O);                             // 推出去了：對面那一邊的島邊
+    quad(-O, bot, -O, -O, bot, O, -O, h(-O), O, -O, h(-O), -O);                            // 浪來的那一邊的島邊
+    dlgMesh.visible = v > 0;
+    dlgGeo.setDrawRange(0, v / 3);
+    dlgGeo.attributes.position.needsUpdate = true;
+    dlgGeo.attributes.aFoam.needsUpdate = true;
+    /* 波紋相位跟水窪共用同一個 uniform：場上有水窪就照它的（同一支波），沒有才照這邊的 */
+    if (poolUni && !poolMesh.visible) poolUni.uWTime.value = o.wt || 0;
   }
   /* 整組濃度的旋鈕（v1.88.1，使用者回饋「都淡淡的就好，太深原本的煙都看不清楚了」）。
      表裡的 a 維持原來的相對比例（中心深、外圈淡），統一乘這個數字調濃淡——
@@ -12816,18 +12873,19 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     leafMesh.count = trees.length * 3;
     for (let i = 0; i < trees.length; i++) {
       const t = trees[i];
-      const lean = t.wob * 0.14;
-      scratch.position.set(t.x, t.h * 0.5, t.z);
+      /* 被大洪水捲走的（v1.325.0，見 game-tools.js 的 dlgTree）：fy 浮起來多高、tip 倒下去多少、fk 縮到幾成（縮完就收掉） */
+      const lean = t.wob * 0.14 + (t.tip || 0), fy = t.fy || 0, fk = t.fk === undefined ? 1 : t.fk;
+      scratch.position.set(t.x, fy + t.h * 0.5 * fk, t.z);
       scratch.rotation.set(lean, 0, lean * 0.6);
-      scratch.scale.set(0.5, t.h, 0.5);
+      scratch.scale.set(0.5 * fk, t.h * fk, 0.5 * fk);
       scratch.updateMatrix();
       trunkMesh.setMatrixAt(i, scratch.matrix);
       for (let k = 0; k < 3; k++) {
-        const y = t.h + k * t.r * 0.62;
-        const rr = t.r * (1 - k * 0.28);
-        scratch.position.set(t.x + lean * y * 1.4, y, t.z + lean * 0.6 * y * 1.4);
+        const y = (t.h + k * t.r * 0.62) * fk;
+        const rr = t.r * (1 - k * 0.28) * fk;
+        scratch.position.set(t.x + lean * y * 1.4, fy + y, t.z + lean * 0.6 * y * 1.4);
         scratch.rotation.set(lean, t.rot, lean * 0.6);
-        scratch.scale.set(rr, t.r * 0.72, rr);
+        scratch.scale.set(rr, t.r * 0.72 * fk, rr);
         scratch.updateMatrix();
         leafMesh.setMatrixAt(i * 3 + k, scratch.matrix);
         tmpC.setHex(LEAF[(i + k) % LEAF.length]);
@@ -13467,6 +13525,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     setWorkerCount, putWorker, commitWorkers, putEmotes,
     setGiftIcons, putGifts, GIFT_SIZE,         /* 道具泡泡（v1.214）：開場餵圖示、每幀送位置 */
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
+    putDeluge, get delugeOn() { return !!dlgMesh && dlgMesh.visible; },   /* 大洪水（v1.325.0）：測試看這一顆有沒有在畫 */
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
