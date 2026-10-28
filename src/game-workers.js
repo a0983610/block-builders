@@ -1395,6 +1395,10 @@ function navDims() {
   navDim.diablo = scan(M.diablo, b => b.nl);
   /* 飛龍（v1.277.0 重製）同 Diablo：自己一顆 mesh、不在 BEASTS 裡；刺、角、爪不算 */
   navDim.dragon = scan(M.dragon, b => b.nl);
+  /* 獅鷲（v1.327.0 重製）同 Diablo：爪、耳羽、尾毛不算，細長的獅尾也不算（往後拖兩格多，算進去的話身長從 7 格變 10.5 格，
+     同 Diablo 的尾巴那個理由：房子之間的路全部走不過）。v1.177～v1.326 在 BEASTS 裡，尾巴照算（那一條只拖 0.72 模型單位） */
+  const GT = [ENG.GRY_G.tail1, ENG.GRY_G.tail2, ENG.GRY_G.tail3, ENG.GRY_G.tail4];
+  navDim.gryphon = scan(M.gryphon, b => b.nl || GT.includes(b.g));
   return navDim;
 }
 /* 這個人（這隻）走路的身體：H 是幾層高的柱子擋得住他、r 是離柱子至少多遠。

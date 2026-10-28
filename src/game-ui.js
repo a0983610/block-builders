@@ -489,6 +489,7 @@ function draw() {
   ENG.putErises(bl);                 // 艾莉絲（v1.290.0）同上，刀光與劍氣也在這一支畫
   ENG.putDiablos(bl);                // Diablo 同上（自己一顆 mesh）
   ENG.putDragons(bl);                // 飛龍（v1.277.0 重製）同上
+  ENG.putGryphs(bl);                 // 獅鷲（v1.327.0 重製）同上
   ENG.putCoins(coinList());          // Diablo 死掉噴出來的金幣（純特效）
   ENG.fadeHumans(bl);                // 上面七位裡正在淡入淡出的那幾位搬到半透明那一顆（v1.256.0，見 woodFade）
   ENG.putPurps(purpList());          // 飛出去的紫球（自己一份清單：放出去就是自己的東西）

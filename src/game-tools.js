@@ -13287,10 +13287,12 @@ function fballHit(f) {
 
    **著火與倒地整套借猴子那一條**（使用者：「也要做著火&倒地」）：降落之後牠就是一隻
    站在草皮上的動物，hurtBeast／flyBeast／burnBeast／igniteBeast 一個字都不必改
-   （所以造型表那幾條腿還是給了 sw——著火站著被點著的那一段會繞圈跑）。
+   （著火站著被點著的那一段會繞圈跑，腿照 m.gait 擺——v1.327.0 起是引擎 gryPose 照 gait 擺骨架，以前是造型表的 sw）。
    在天上被打到就先 grDown 切成地上那一套再摔下來，不必像飛龍那樣另外刻
    crash／down／rise 三段：龍**永遠**在天上，落地對牠是意外；獅鷲本來就會降落。 */
-const GR_SC = 2.1;                   // 模型高 2.49 → 場上 5.2 格高、身長 7.9 格、翼展 14 格
+/* 模型翼展 9.24（攤平）→ 場上 17 格（v1.327.0 重製，使用者選的「放大一點、介於中間」：舊版 14、飛龍 21）；
+   高 6.7 格（耳羽尖）、身長連尾巴 11.1 格。v1.176～v1.326 是 2.1（模型高 2.49 → 5.2 格高、身長 7.9、翼展 14） */
+const GR_SC = 1.84;
 const GR_SPD = 17;                   // 巡航速度（格／秒）
 const GR_LAND_SPD = 11;              // 降落那一段慢下來
 const GR_TURN = 0.9;                 // 每秒最多轉幾弧度 → 盤旋半徑 ≒ 19 格
@@ -13318,52 +13320,53 @@ const GR_RAM = { spd: 28, run: 36, turn: 2.2, r: 3.6, fwd: 2, top: 18, thru: 80,
 /* 走路（v1.177，使用者：「獅鷲應該是四足走」）。**借小人那支 strollTo**（同猴子與牛羊）：
    繞開別人家、不穿建築、走到了回 true 全是它在管，這裡只給速度與腿擺多快。
    走多快：猴子 DOOM_WALK 2.2、牛羊 HERD_WALK 1.5——獅鷲比牠們大一號，給 2.6。
-   腿擺的倍率照身長收（同 HERD_STEP 的理由：走得慢又照原速擺腿的話是原地空踩）。
+   腿擺的倍率照「一步跨多遠」湊（同 HERD_STEP 的理由：走得慢又照原速擺腿的話是原地空踩）：
+   四條腿對角同步一個週期走 4·腿長·sin(擺幅)·縮放，週期 2π ÷ (11·step)（strollTo 那行 w.ph += dt * 11 * step）。
+   腿長取前腳肩、後腳髖兩個樞紐的高度平均（引擎的 GRY_PIV，原點在腳底）、擺幅是引擎的 GRY_STEP_A。
+   v1.177～v1.326 是寫死的 0.55：照同一條式子算，那一版（腿長 1.23、擺幅 0.5、縮放 2.1）腿每秒掃 4.8 格、身體只走 2.6（滑步）；
+   v1.327.0 重製之後照這條算出來是 0.29（同飛龍 v1.277.0 重製時 DRA_STEP 照步幅重湊）。
    WALK_IN＝降落點退到站定位置（v1.274 以前是噴火的位置）的外面幾格，那一段用走的補完：不這樣做的話牠是
    「憑空落在該站的那一格」，四條腿一步都不必走。
    **這一段要夠長才看得出來**（使用者：「有觀察到獅鷲在地面好像就不會行走」）：
    第一版給 6 格 ＝ 走 2.3 秒、還不到牠自己的身長（7.9 格），畫面上等於原地落地。
    14 格 ≒ 5.4 秒，是「降落在外圍、一路走過來」看得清楚的長度。 */
-const GR_WALK = 2.6, GR_STEP = 0.55, GR_WALK_IN = 14;
+const GR_WALK = 2.6, GR_WALK_IN = 14;
+const GR_STEP = (() => {
+  const P = ENG.GRY_PIV, G = ENG.GRY_G, leg = (P[G.fthL][1] + P[G.hthL][1]) / 2;
+  return 2 * Math.PI * GR_WALK / (11 * 4 * leg * Math.sin(ENG.GRY_STEP_A) * GR_SC);
+})();
 const GR_WALK_MAX = 14;              // 走不到就別卡著（房子擋路那種），時間到就從那裡開始逛
 const GR_STAY = [2.5, 6];            // 吉祥物那一版走到了站著看幾秒再換下一個點
-/* 三種翅膀姿態（見引擎的 wingAng：中位角／沿翼展的彎曲／擺幅）。
+/* 姿態（v1.327.0 重製，見引擎〈獅鷲（v1.327.0 重製）〉的 gryPose）：規則這邊只給幾個 0～1 的欄位，引擎照它們擺骨架。
+     fold 收翅（鳥收翅的 Z 字，貼在身側）  dive 俯衝（翅膀往後掃成三角）
+     tuck 腳收起來（飛）                    jaw 張嘴
    **每一幀往目標姿態收一點**，不是直接指定：直接跳的話換姿態那一瞬間翅膀會變形。
-     flap 飛：中位角小、整條一樣、大擺幅
-     rest 站著／走路：**收成拱起來的一對**（v1.177，見下面那段）；俯衝撞進去那一段也是這一對（v1.275.0，翅膀收著衝）
-     down 摔了／躺著／燒著：兩片幾乎立起來（見下面 GR_POSE.down 那一行的理由）
-   v1.176～v1.274 還有一組 open（瞄準與噴火時高舉成 V 字），噴火拿掉之後沒人用，一起拿掉。
-   **沒有真正的「收翅」**：翼弧是在 x–y 平面上積出來的（見引擎的 wingArc），
-   「往身後折」這個方向做不到。能做的是「翼根往上、沿翼展一路彎回來」——
-   積出來是一道拱：從背上升起、到翼尖又落回背高。
-   v1.176 的 rest 是**攤平的展翅**（0.05／−0.55），配那時候站直的身體還行；
-   v1.177 改成四足之後身體是水平的，攤平的翼面正好蓋住整個獸身——實際截圖是
-   「一張桌子壓在牠背上」。所以改成拱起來的 1.30／−2.60：翼尖收到 x 2.5
-   （場上半展 5.3 格、整體 10.6 格，攤平時是 13.9），背上那道拱高過腰、低過頭。
-   角度**不能再往上加**：|角度| 超過 90° 之後 cos 變負，翼根那幾段會往身體中線裡面
-   長，左右兩片會交叉穿過脊背。 */
-/* down 那一組的角度**要接近 90°**：翼弧沿著 x 積出去（見引擎的 wingArc），角度立起來
-   之後 cos 接近 0，整片翼就收在翼根附近（x 只伸到 0.6 上下）。側躺是繞 z 轉 90°，
-   模型的 x 會變成世界的高度——翅膀還張開的話，一片翹到天上、另一片整個插進草皮裡。
-   立起來之後那個寬度剛好跟身體差不多（引擎的 BEAST_SIDE 0.63，翼上那幾塊不算進去），
-   側躺才貼得平。 */
+     flap 飛：翅膀攤開拍、腳收起來
+     land 降落：翅膀照拍、腳放下來準備著地
+     rest 站著／走路：收翅（預覽頁另做過「半舉」給使用者比，選的是收翅）
+     down 摔了／躺著／燒著：收翅（同 rest；分開寫是兩種情況，呼叫端看得出是哪一種）
+     dive 俯衝撞穿（v1.275.0 那一段）：翅膀往後掃、腳收起來、張嘴
+   v1.176～v1.326 是翼弧的三個數字（wb／wc／wa：中位角、沿翼展的彎曲、擺幅），翼弧收不起來，
+   站著只能拱在背上、躺著只能立起來——見 開發筆記〈獅鷲重製：造型＋動作（v1.327.0）〉 */
 const GR_POSE = {
-  flap: [0.24, 0, 0.58], rest: [1.30, -2.60, 0.06], down: [1.58, -0.10, 0.02]
+  flap: { fold: 0, dive: 0, tuck: 1, jaw: 0 },
+  land: { fold: 0, dive: 0, tuck: 0, jaw: 0 },
+  rest: { fold: 1, dive: 0, tuck: 0, jaw: 0 },
+  down: { fold: 1, dive: 0, tuck: 0, jaw: 0 },
+  dive: { fold: 0, dive: 1, tuck: 1, jaw: 1 }
 };
 function grWings(m, to, dt, k) {
   const p = GR_POSE[to], r = Math.min(1, dt * (k || 5));
-  m.wb += (p[0] - m.wb) * r;
-  m.wc += (p[1] - m.wc) * r;
-  m.wa += (p[2] - m.wa) * r;
+  for (const f in p) m[f] += (p[f] - m[f]) * r;
 }
-/* 被打倒／被點著躺下的**那一刻**就把翅膀擺到 down，不等下一幀的 grWings 去收
+/* 被打倒／被點著躺下的**那一刻**就把翅膀收好，不等下一幀的 grWings 去收
    （v1.177 量到的）：側躺是把模型的 x 轉成世界的高度，翅膀還攤著的話貼地那一片
    插進草皮 4.3 格——而「打倒」與「下一次 step」之間剛好會畫一幀。
    擺在共用的 igniteBeast／fellBeast 裡，跟那兩支本來就有的 `kind === 'dragon'`
    分支同一個做法（只有這一種有翅膀要收）。 */
 function grLie(m) {
   if (m.kind !== 'gryphon') return;
-  m.wb = GR_POSE.down[0]; m.wc = GR_POSE.down[1]; m.wa = GR_POSE.down[2];
+  Object.assign(m, GR_POSE.down);
 }
 
 /* ── 衝撞（v1.275.0）─────────────────────────────────────
@@ -13433,7 +13436,7 @@ function grRamIn(m, dt) {
 function stepRam(m, dt) {
   const k = m.rk, V = GR_RAM.spd, y0 = m.y;
   if (k.ph === 0) {
-    grWings(m, 'rest', dt, 6);                           // 翅膀收著衝
+    grWings(m, 'dive', dt, 6);                           // 翅膀往後掃著衝（v1.327.0；v1.275.0～v1.326 是站著那一對拱翅）
     m.ph += dt * GR_FLAP * 0.4;
     let e = Math.atan2(k.tx - m.x, k.tz - m.z) - m.a;
     while (e > Math.PI) e -= Math.PI * 2;
@@ -13448,7 +13451,7 @@ function stepRam(m, dt) {
     /* 進撞穿那一刻高度直接放到 hy：餘弦曲線到這裡只剩零點幾格，撞穿那一段就是貼著排好的那個高度平飛 */
     if (d < 1.5 || (d > dPrev && d < k.d0 * 0.5)) { k.ph = 1; k.s = 0; m.y = k.hy; k.thru = grRamThru(m); }
   } else {
-    grWings(m, k.ph === 1 ? 'rest' : 'flap', dt, 4);
+    grWings(m, k.ph === 1 ? 'dive' : 'flap', dt, 4);
     m.ph += dt * GR_FLAP * (k.ph === 1 ? 0.4 : GR_HARD);
     m.roll += (0 - m.roll) * Math.min(1, dt * 3);
     m.x += Math.sin(m.a) * V * dt; m.z += Math.cos(m.a) * V * dt;
@@ -13553,7 +13556,7 @@ function spawnGryph(fun, bad) {
     a: Math.atan2(-Math.cos(a), -Math.sin(a)),      // 一出現就朝著工地
     sky: 1, st: 'in', t: 0, ph: 0, gait: 0, leg: 0, pause: 0, ghost: 0,
     sc: GR_SC, spin: 0, roll: 0,
-    wb: GR_POSE.flap[0], wc: GR_POSE.flap[1], wa: GR_POSE.flap[2],
+    ...GR_POSE.flap,                                // 姿態欄位（fold／dive／tuck／jaw，見 GR_POSE）
     /* 撞幾次（吉祥物只有抽中要動手的那一趟才撞，其餘 0）。同飛龍的 m.left。 */
     left: fun ? (bad ? 1 : 0) : 1,
     fun: fun ? 1 : 0, bad: bad ? 1 : 0, home: bad ? 1 : 0,
@@ -13691,7 +13694,7 @@ function stepGryph(m, dt) {
   }
   if (m.st === 'ram') { stepRam(m, dt); return false; }  // 俯衝撞穿（v1.275.0）
   if (m.st === 'land') {
-    grWings(m, 'flap', dt, 4);
+    grWings(m, 'land', dt, 4);             // 腳放下來準備著地（v1.327.0）
     m.ph += dt * GR_FLAP * GR_HARD;        // 拍翅煞車：拍得比巡航用力
     m.spin += (GR_LAND_PITCH - m.spin) * Math.min(1, dt * 4);
     const d = grFly(m, dt, GR_LAND_SPD);
@@ -14887,7 +14890,7 @@ function herdBody(kind) {
   let g = _herdBody[kind];
   if (g) return g;
   let lo = 0, hi = 0, v = 0, cy = 0, cz = 0;
-  for (const b of ENG.BEASTS[kind]) {
+  for (const b of ENG.BEASTS[kind] || ENG.MODELS[kind]) {   // 獅鷲 v1.327.0 起自己一顆 mesh、不在 BEASTS 裡（部位表同一個格式）
     lo = Math.min(lo, b.p[2] - b.s[2] / 2); hi = Math.max(hi, b.p[2] + b.s[2] / 2);
     const k = b.s[0] * b.s[1] * b.s[2];
     v += k; cy += b.p[1] * k; cz += b.p[2] * k;
@@ -15776,20 +15779,13 @@ function lieAng(m) {
      打倒時照兩條腿那一條往後仰躺的話，躺著被殺就得從仰躺翻成趴著。趴姿與貼地照引擎的 diaPose／diaRig */
   return m.side ? m.sdir * Math.PI * 0.5 : (m.face || m.kind === 'diablo' ? Math.PI * 0.5 : -Math.PI * 0.5);
 }
-/* 側躺時**翼上那幾塊還是比身體寬一點**，要多抬這麼多（模型單位，v1.202.1）。
-   `BEAST_SIDE` 刻意不把翼上那幾塊算進去（見 engine 那一段：牠們表上的 p[0] 是
-   「離翼根多遠」，實際位置每一幀照翼弧重算），而收成立起來的翼（`GR_POSE.down`）
-   翼尖實測伸到模型 x 0.729，比 `BEAST_SIDE.gryphon` 的 0.58 多 0.149——
-   所以獅鷲一躺下去就陷進草皮 **0.313 格**（躺著那一幀最低的前十塊全是翼上的，
-   非翼的最深只有 0.035）。**先量再補**，同 v1.146～v1.276 飛龍趴著補 `DRA_DOWN_PAD` 的做法（那一條 v1.277.0 重製之後換成照姿勢量）。
-   四條腿的牛羊身上一塊翼都沒有，不在這張表裡＝一個位元都沒變。 */
-const BEAST_SIDE_PAD = { gryphon: 0.15 };
-/* 躺平不動時 m.lie 該給多少（倍率）。沒有翅膀的就是 1（引擎抬的 `SIDE·|sin(roll)|`
-   正好是半個身寬）；有翅膀的把上面那塊補正折成倍率交給引擎，因為抬升是引擎照
-   `BEAST_SIDE × m.lie` 算的，game 這一層只有 m.lie 這個槓桿。 */
+/* 躺平不動時 m.lie 該給多少（倍率）：1——引擎抬的 `SIDE·|sin(roll)|` 正好是半個身寬。
+   v1.202.1～v1.326 獅鷲另外補一張 BEAST_SIDE_PAD（0.15）折成倍率：那時 `BEAST_SIDE` 不算翼上那幾塊
+   （翼弧每一幀重算位置），收成立起來的翼又比身體寬，一躺下去就陷 0.313 格。
+   v1.327.0 重製之後引擎照收翅的樣子量 BEAST_SIDE（翅膀算進去，見〈獅鷲（v1.327.0 重製）〉），那張表就拿掉了；
+   這一支留著，躺下的那幾個出口都問它 */
 function lieLift(m) {
-  const pad = (m.side && BEAST_SIDE_PAD[m.kind]) || 0;
-  return pad ? 1 + pad / (ENG.BEAST_SIDE[m.kind] || 0.01) : 1;
+  return 1;
 }
 /* 側躺著晃的時候 m.lie 要給多少（倍率）。躺平在 90° 時剛好是 lieLift（沒翅膀的就是 1），
    引擎那邊抬的 `SIDE·|sin(roll)|` 正好等於半個身寬；偏開 δ 之後**本來朝上那一側會轉到

@@ -978,6 +978,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       pose.dragon = rows;
       ENG.putDragons([]);
     }
+    /* 獅鷲（v1.327.0 重製，同飛龍搬出 BEASTS）：拍翅＋收翅＋俯衝都摻一點（slerp、羽毛收攏都會走到）、腿半收、走路、張嘴；
+       離地 20 格，貼地少拍那一條（GRY_FLAP_CLR）不影響 */
+    {
+      const gm = ENG.three.gryMesh;
+      ENG.putGryphs([{ kind: 'gryphon', x: 0, y: 20, z: 0, a: 0, ph: 1.1, gait: 0.5, sc: 1, spin: 0.3, roll: 0.2,
+                       fold: 0.3, dive: 0.2, tuck: 0.5, jaw: 0.5 }]);
+      const rows = [];
+      for (let i = 0; i < ENG.GRY_PARTS; i++) {
+        gm.getMatrixAt(i, tmp); tmp.decompose(v, q, sc);
+        rows.push([rnd(v.x), rnd(v.y), rnd(v.z), rnd(sc.x), rnd(sc.y), rnd(sc.z)]);
+      }
+      pose.gryphon = rows;
+      ENG.putGryphs([]);
+    }
     return { parts, pose };
   });
   const BASE = path.join(__dirname, 'model-baseline.json');
@@ -28016,64 +28030,80 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { stepDoom = window.doomStep; });   // 牠們每一幀是 stepDoom 在推（見 game-tools.js 的 stepDoom）
   await fillAll(page);
 
-  /* ── 造型（讀引擎那份部位表，跟核可過的造型對得起來）── */
+  /* ── 造型（v1.327.0 重製：讀畫出去的 gryMesh，跟核可過的造型對得起來）──
+        擺一隻在原點、朝 +z、縮放 1，照姿勢欄位畫出去，量每一塊的世界包圍盒（模型單位）。 */
   const gfig = await page.evaluate(() => {
-    const G = ENG.BEASTS.gryphon;
-    const wg = G.filter(b => b.wg);
-    const span = Math.max(...wg.map(b => Math.abs(b.p[0]) + b.s[0] / 2)) * 2;
-    const top = Math.max(...G.map(b => b.p[1] + b.s[1] / 2));
-    /* 頭＝最高的那一塊白羽色（頭、頸、胸前那片白羽共用同一個顏色）。 */
-    const hd = G.filter(b => b.c === 0xe9e5db).sort((a, b) => b.p[1] - a.p[1])[0];
-    const eye = G.find(b => b.c === 0x1d1a16);
-    const beak = G.filter(b => b.c === 0xe0a730).sort((a, b) => b.p[2] - a.p[2])[0];
-    const body = G.filter(b => !b.wg);
-    const long = Math.max(...body.map(b => b.p[2] + b.s[2] / 2)) -
-                 Math.min(...body.map(b => b.p[2] - b.s[2] / 2));
+    const G = ENG.GRY, n = ENG.GRY_PARTS, GG = ENG.GRY_G, M = ENG.three.gryMesh;
+    const boxes = o => {
+      ENG.putGryphs([Object.assign({ kind: 'gryphon', x: 0, y: 0, z: 0, a: 0, sc: 1, ph: 0 }, o)]);
+      const a = M.instanceMatrix.array, out = [];
+      for (let k = 0; k < n; k++) {
+        const i = k * 16, h = j => (Math.abs(a[i + j]) + Math.abs(a[i + j + 4]) + Math.abs(a[i + j + 8])) / 2;
+        out.push({ k, g: G[k].g, nl: G[k].nl, x: a[i + 12], y: a[i + 13], z: a[i + 14], hx: h(0), hy: h(1), hz: h(2) });
+      }
+      return out;
+    };
+    const max = (B, f) => Math.max(...B.map(f)), min = (B, f) => Math.min(...B.map(f));
+    const WING = [GG.armL, GG.armR, GG.foreL, GG.foreR, GG.handL, GG.handR];
+    const isW = b => WING.includes(b.g);
+    const flat = boxes({ fa: 0, fold: 0, tuck: 1 });                 // 翅膀攤平、腳收起來
+    const st = boxes({ fold: 1, tuck: 0 });                           // 站著、翅膀收起來
+    const span = max(flat, b => b.x + b.hx) - min(flat, b => b.x - b.hx);
+    const body = st.filter(b => !b.nl);
+    /* 頭那一組：顱＝最大那一塊白羽；眼睛、喙照顏色名找（引擎的 cn） */
+    const head = st.filter(b => b.g === GG.head);
+    const skull = head.filter(b => G[b.k].cn === 'hd').sort((p, q) => q.hx * q.hy * q.hz - p.hx * p.hy * p.hz)[0];
+    const eye = head.find(b => G[b.k].cn === 'eye' && b.x > 0);
+    const beak = max(head.filter(b => G[b.k].cn === 'bk' || G[b.k].cn === 'bk2'), b => b.z + b.hz);
+    /* 四隻腳：走路相位 0 與 π 各畫一次，腳那一組的中心往前後挪多少（正的＝往前） */
+    const foot = (B, g) => { const P = B.filter(b => b.g === g); return P.reduce((s, b) => s + b.z, 0) / P.length; };
+    const w0 = boxes({ fold: 1, gait: 1, ph: Math.PI / 2 }), w1 = boxes({ fold: 1, gait: 1, ph: -Math.PI / 2 });
+    const mv = g => +(foot(w0, g) - foot(w1, g)).toFixed(3);
+    /* 翅膀貼著地拍、收翅的過渡，翼尖都不准插進草皮（v1.327.0 第一版量到的兩個坑，見引擎 gryPose 的 GRY_FLAP_CLR 與 slerp）：
+       原點在地上（y 0），收翅 0～1、相位一整圈掃過去取翅膀最低那一點 */
+    let wLow = 1e9;
+    for (let f = 0; f <= 1.0001; f += 0.1)
+      for (let i = 0; i < 12; i++) wLow = Math.min(wLow, min(boxes({ fold: f, ph: i * Math.PI / 6 }).filter(isW), b => b.y - b.hy));
+    const sideFold = max(st.filter(b => !b.nl), b => Math.abs(b.x) + b.hx);
     return {
-      parts: G.length, max: ENG.BEAST_PARTS, wg: wg.length,
-      /* 四足（v1.177）：四條腿都掛 sw（會跟著步伐擺），一塊 am 都沒有
-         ——v1.176 的前爪是 am（抬起來的手），走起來只有後腿在動。 */
-      legs: G.filter(b => b.sw).length, arms: G.filter(b => b.am).length,
-      long: +(long * GR_SC).toFixed(1),
+      parts: n, beastMax: ENG.BEAST_PARTS, inBeasts: !!ENG.BEASTS.gryphon, groups: Object.keys(GG).length,
       span: +span.toFixed(2), world: +(span * GR_SC).toFixed(1),
-      tall: +(top * GR_SC).toFixed(1), floor: ENG.BEAST_FLOOR.gryphon,
-      /* 眼睛凸出頭外面多少（負的＝埋在頭裡，正面側面都看不到眼睛） */
-      eyeX: +(Math.abs(eye.p[0]) + eye.s[0] / 2 -
-              (Math.abs(hd.p[0]) + hd.s[0] / 2)).toFixed(3),
-      eyeZ: +(eye.p[2] + eye.s[2] / 2 - (hd.p[2] + hd.s[2] / 2)).toFixed(3),
-      beakZ: +(beak.p[2] + beak.s[2] / 2 - (hd.p[2] + hd.s[2] / 2)).toFixed(2),
-      /* 頭前緣要伸出翼面前緣（不然站著側面看整顆頭被翅膀吃掉） */
-      hdWing: +(hd.p[2] + hd.s[2] / 2 -
-                Math.max(...wg.map(b => b.p[2] + b.s[2] / 2))).toFixed(2),
-      side: +ENG.BEAST_SIDE.gryphon.toFixed(2),
-      sideAll: +Math.max(...G.map(b => Math.abs(b.p[0]) + b.s[0] / 2)).toFixed(2)
+      tall: +(max(st, b => b.y + b.hy) * GR_SC).toFixed(1),
+      long: +((max(st, b => b.z + b.hz) - min(st, b => b.z - b.hz)) * GR_SC).toFixed(1),
+      floor: ENG.BEAST_FLOOR.gryphon, low: +min(body, b => b.y - b.hy).toFixed(4),
+      /* 收翅：最寬那一點（翅膀算進去）＝引擎的 BEAST_SIDE（側躺照它抬），比攤平時窄多少 */
+      foldW: +sideFold.toFixed(3), side: +ENG.BEAST_SIDE.gryphon.toFixed(3), half: +(span / 2).toFixed(2),
+      eyeX: +((eye.x + eye.hx) - (skull.x + skull.hx)).toFixed(3),
+      beakZ: +(beak - (skull.z + skull.hz)).toFixed(2),
+      /* 頭前緣要伸出翅膀最前那一點（不然站著側面看整顆頭被翅膀吃掉，v1.176 第一版的坑） */
+      hdWing: +(max(head, b => b.z + b.hz) - max(st.filter(isW), b => b.z + b.hz)).toFixed(2),
+      lf: mv(GG.fftL), rf: mv(GG.fftR), lh: mv(GG.hftL), rh: mv(GG.hftR), wLow: +wLow.toFixed(3)
     };
   });
-  /* v1.177 使用者：「獅鷲應該是四足走」——所以這一條連「四條腿都會擺」一起守：
-     v1.176 是站姿，前爪掛 am（抬起來的手），只有兩條後腿跟著步伐擺。 */
-  ok('獅鷲是四足獸：高五格多、身長八格、翼展十四格上下，四條腿都跟著步伐擺',
-     gfig.tall > 5 && gfig.tall < 6.5 && gfig.long > 7 && gfig.long < 9 &&
-     gfig.world > 12.5 && gfig.world < 16 &&
-     gfig.floor === 0 && gfig.wg >= 20 && gfig.max >= gfig.parts &&
-     gfig.legs >= 16 && gfig.arms === 0,
-     '高 ' + gfig.tall + '、長 ' + gfig.long + '、翼展 ' + gfig.world +
-     ' 格（模型 ' + gfig.span + '）、' + gfig.parts + ' 塊（翼上 ' + gfig.wg +
-     ' 塊、腿上 ' + gfig.legs + ' 塊、抬手的 ' + gfig.arms +
-     ' 塊）、原點在腳底 ' + gfig.floor);
-  /* 這兩條守的是實際截圖抓到的兩個坑（v1.176 第一版）：眼睛整顆埋在頭裡面、
-     側面看整顆頭被翅膀吃掉。都是「有沒有凸出去」的問題，不是位置對不對。 */
-  ok('眼睛與喙都凸出頭的外面（不然正面側面都看不到眼睛）',
-     gfig.eyeX > 0 && gfig.eyeZ > 0 && gfig.beakZ > 0,
-     '眼睛凸出 x ' + gfig.eyeX + '／z ' + gfig.eyeZ + '，喙比頭前緣再前 ' + gfig.beakZ);
-  ok('頭伸在翼面前面（站著側面看得到鷲頭）',
-     gfig.hdWing > 0.4, '頭前緣比翼面前緣再前 ' + gfig.hdWing + '（模型單位）');
-  /* 側躺那條踩到的坑：翼上那幾塊的 p[0] 是「離翼根多遠」（算拍翅相位的 u 用的），
-     實際位置是每一幀照翼弧重算的，所以不能算進「側躺要抬多高」。 */
-  ok('翼上那幾塊不算進「側躺要抬多高」（不然整隻浮在草皮上方）',
-     gfig.side < 0.8 && gfig.sideAll > 3,
-     '側躺抬 ' + gfig.side + ' × 2.1 ＝ ' + (gfig.side * 2.1).toFixed(1) +
-     ' 格（照全部算會變成 ' + gfig.sideAll + '、浮 ' +
-     (gfig.sideAll * 2.1).toFixed(1) + ' 格）');
+  /* v1.327.0 使用者：「更新獅鷲造型 標準參考飛龍」，選了「造型＋動作完全重製」、大小翼展 17 格（舊版 14、飛龍 21）。
+     同飛龍：自己一顆 mesh、不進 BEASTS（塞進去的話每一隻牛羊都照牠的塊數付成本） */
+  ok('獅鷲（v1.327.0 重製）：自己一顆 mesh、骨架 27 組，翼展 17 格、高六格多，原點在腳底',
+     !gfig.inBeasts && gfig.parts > gfig.beastMax && gfig.groups === 27 &&
+     Math.abs(gfig.world - 17) < 0.3 && gfig.tall > 6 && gfig.tall < 7.5 && gfig.long > 9 && gfig.long < 13 &&
+     gfig.floor === 0 && Math.abs(gfig.low) < 1e-3,
+     '翼展 ' + gfig.world + ' 格（模型 ' + gfig.span + '）、高 ' + gfig.tall + '、身長連尾巴 ' + gfig.long + ' 格；' +
+     gfig.parts + ' 塊（BEASTS 每一隻 ' + gfig.beastMax + '）、' + gfig.groups + ' 組；最低 ' + gfig.low);
+  /* v1.177 使用者：「獅鷲應該是四足走」——四條腿都跟著步伐擺，對角同步（左前＝右後、右前＝左後） */
+  ok('四條腿都跟著步伐擺，對角同步（左前跟右後一起、右前跟左後一起）',
+     [gfig.lf, gfig.rf, gfig.lh, gfig.rh].every(v => Math.abs(v) > 0.1) &&
+     Math.sign(gfig.lf) === Math.sign(gfig.rh) && Math.sign(gfig.rf) === Math.sign(gfig.lh) && Math.sign(gfig.lf) !== Math.sign(gfig.rf),
+     '相位 ±90° 兩幀腳往前後挪：左前 ' + gfig.lf + '、右前 ' + gfig.rf + '、左後 ' + gfig.lh + '、右後 ' + gfig.rh);
+  /* 收得起來是這一版重製的重點（v1.176～v1.326 翼弧收不起來，站著只能拱在背上）；收好的寬度就是側躺要抬多高 */
+  ok('翅膀收得起來：收好最寬那一點不到攤開時的兩成，側躺照它抬（BEAST_SIDE）',
+     gfig.foldW < gfig.half * 0.2 && Math.abs(gfig.side - gfig.foldW) < 1e-3,
+     '收好最寬 ' + gfig.foldW + '（攤開半展 ' + gfig.half + '）、BEAST_SIDE ' + gfig.side);
+  ok('貼著地拍翅、收翅到一半，翼尖都不插進草皮',
+     gfig.wLow > 0, '原點在地上時翅膀最低 ' + gfig.wLow + '（模型單位）');
+  /* 這兩條守的是 v1.176 第一版實際截圖抓到的兩個坑：眼睛整顆埋在頭裡面、側面看整顆頭被翅膀吃掉 */
+  ok('眼睛凸出頭的外面、喙伸出頭前緣',
+     gfig.eyeX > 0 && gfig.beakZ > 0, '眼睛凸出 x ' + gfig.eyeX + '，喙比頭前緣再前 ' + gfig.beakZ);
+  ok('頭伸在翅膀前面（站著側面看得到鷲頭）',
+     gfig.hdWing > 0.4, '頭前緣比翅膀最前那一點再前 ' + gfig.hdWing + '（模型單位）');
 
   /* ── 表：不在天災的表上，吉祥物那一列還在；巡航高度固定，跟屋頂多高無關（把屋頂墊到 200 也一樣）── */
   const gtab = await page.evaluate(() => {
@@ -32842,10 +32872,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      走路擺腿本身就會讓 OBB 下緣掉 0.05~0.23 格（對照組量出來的既有現象），
      跑狀態機的話那一段會蓋過這裡要守的東西。 */
   const hRise = await page.evaluate(() => {
+    /* 獅鷲 v1.327.0 起自己一顆 mesh（gryMesh）：爪、耳羽、尾毛（nl）不算，同飛龍的 DRA_GND——細的插進草皮一點看不出來 */
+    let kind = null;
     const low = () => {
-      const mesh = ENG.three.beastMesh, m4 = new THREE.Matrix4();
+      const gry = kind === 'gryphon', mesh = gry ? ENG.three.gryMesh : ENG.three.beastMesh, m4 = new THREE.Matrix4();
       let lo = 1e9;
       for (let i = 0; i < mesh.count; i++) {
+        if (gry && ENG.GRY[i % ENG.GRY_SLOT].nl) continue;
         mesh.getMatrixAt(i, m4);
         const a = m4.elements;
         if (Math.hypot(a[0], a[1], a[2]) < 1e-4 || Math.hypot(a[4], a[5], a[6]) < 1e-4 ||
@@ -32855,12 +32888,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       return +lo.toFixed(3);
     };
     const out = {};
-    for (const kind of ['gryphon', 'giant']) {
+    for (kind of ['gryphon', 'giant']) {
       cleanTools(); phase = 'done'; doomT = 1e9;
       let m;
       if (kind === 'gryphon') {
         m = spawnGryph(1);
         m.sky = 0; m.st = 'walk'; m.t = 99;             // 切成「站在草皮上的那一隻」
+        Object.assign(m, GR_POSE.rest);                 // 姿勢也一起（v1.327.0 起有骨架：剛生出來是飛的姿勢、腳收著，真的遊戲裡降落那一段會放下來）
       } else m = spawnBeast('giant', 1);
       m.x = 26; m.z = 0; m.a = 0; m.y = 0; m.gait = 0; m.pause = 999; m.stay = 999;
       draw();
@@ -32897,7 +32931,7 @@ const toScreen = (page, sel) => page.evaluate(sel => {
          （v1.202.1 之前實測 獅鷲 −1.53、巨人 −1.29 格）。 */
       cleanTools(); phase = 'done'; doomT = 1e9;
       if (kind === 'gryphon') {
-        m = spawnGryph(1); m.sky = 0; m.st = 'walk'; m.t = 99;
+        m = spawnGryph(1); m.sky = 0; m.st = 'walk'; m.t = 99; Object.assign(m, GR_POSE.rest);
       } else m = spawnBeast('giant', 1);
       m.x = 26; m.z = 0; m.a = 0; m.y = 0; m.gait = 0; m.pause = 999; m.stay = 999;
       /* **躺幾秒要讓它自己跑完**，不要手動把 m.fall 設成 0：v1.202.1 之前把抬升關掉的
@@ -37636,6 +37670,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     const ms = [['shiba', -3], ['tabby', 0], ['collie', 3]].map(([k, z]) => {
       const m = spawnCattle(); m.kind = k; m.nb = null; m.x = edge + 8; m.z = z; m.pause = 0; m.tx = m.x; m.tz = m.z; return m;
     });
+    /* 先叫滿三隻再開始走（同上面〈走過去吃〉那一條）：stepMeats 一幀只叫一隻，而 tx 就是腳下、pause 0，
+       還沒被叫到的那幾隻第一幀 stepBeast 就算「走到了」、擲一次要不要睡（NAP_P，白天 0.2）——睡著的叫不動（v1.304.0），
+       這一條就在賭骰子（v1.327.0 那一輪 --seed 2543083983 量到柴犬、邊牧 nap 9.0／6.4、停在 22 格外，一口都沒走過去） */
+    for (let i = 0; i < MEAT_N; i++) stepMeats(0.001);
     let top = -1;
     for (const q of blocks) if (q.st === SET && q.hh < 0 && q.x === b.x && q.z === b.z) top = Math.max(top, q.y + HB);
     const r = { top: +top.toFixed(3), up: f.up };
