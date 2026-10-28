@@ -100,8 +100,9 @@ const TOOLS = [
        有攻擊打過來就自動張開防護罩擋住（見 callFrieren）。照樣接在最後面、照等差階梯解鎖 */
     tip: '點一下：叫芙莉蓮跑過去再四處逛；她身邊 8 格內被攻擊就自動張開防護罩' },
   { id: 'meat', n: '肉', k: '🍖', cat: 'safe',
-    /* v1.261.0：也不是破壞道具——丟一塊肉，最近的幾隻閒逛動物小跑過來圍著吃（見 dropMeat）。照樣接在最後面、照等差階梯解鎖 */
-    tip: '點一下：丟一塊肉，40 格內最近的 3 隻閒逛動物小跑過來圍著吃，吃完才散' },
+    /* v1.261.0：也不是破壞道具——丟一塊肉，最近的幾隻閒逛動物小跑過來圍著吃（見 dropMeat）。照樣接在最後面、照等差階梯解鎖。
+       v1.326.0 起只叫吃肉的（見 FOOD_EAT），點建築就擺在屋頂上（見 meatTop） */
+    tip: '點一下：丟一塊肉，40 格內最近的 3 隻吃肉的動物跑來圍著吃，吃完才散；丟在屋頂上吃不到' },
   { id: 'eris', n: '光之太刀', k: '🌙', cat: 'anime',
     /* v1.290.0：點建築、地上的生物或小人就跑到射程一半，居合拔劍一閃，劍氣沿著隨機方向的切面砍穿過去；
        點空地就跑到那裡待命（見 callEris） */
@@ -117,7 +118,12 @@ const TOOLS = [
   { id: 'general', n: '小人將軍', k: '🎖', cat: 'army',
     /* v1.324.0：也不是破壞道具——叫一位騎馬的將軍來守護村子 GEN_TIME 秒，敵人進村就叫箭雨、火槍兵、加農砲出來打
        （見 callGeneral）。照樣接在最後面、照等差階梯解鎖 */
-    tip: '點一下：叫騎馬的將軍來守護村子 60 分鐘，敵人進村就叫箭雨、火槍兵或加農砲' }
+    tip: '點一下：叫騎馬的將軍來守護村子 60 分鐘，敵人進村就叫箭雨、火槍兵或加農砲' },
+  /* v1.326.0：草料、香蕉同肉那一套（見 dropMeat），只是叫的是吃那一種的（見 FOOD_EAT）。照樣接在最後面、照等差階梯解鎖 */
+  { id: 'hay', n: '草料', k: '🌾', cat: 'safe',
+    tip: '點一下：丟一捆草料，40 格內最近的 3 隻吃草的動物跑來圍著吃，吃完才散；丟在屋頂上吃不到' },
+  { id: 'banana', n: '香蕉', k: '🍌', cat: 'safe',
+    tip: '點一下：丟一串香蕉，40 格內最近的 3 隻吃香蕉的動物（含猴子）跑來圍著吃；丟在屋頂上吃不到' }
 ];
 /* 道具選單的分類（v1.294.0，使用者：「道具選擇頁面根據種類分類(比較好找)」）：選單與快捷鍵那九格下拉
    照這張的順序一類一組，組裡照 TOOLS 的順序（＝解鎖順序）排。每一把在 TOOLS 裡寫 `cat` 指到這裡的 id。
@@ -179,7 +185,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       eris: 1,                                                  // 光之太刀：點空地＝跑到那裡（v1.290.0）
                       flood: 1,                                                 // 燈源：兩下都是點地面也算（v1.303.0）
                       torch: 1,                                                 // 火把：點哪裡都是插在那裡（v1.317.0）
-                      general: 1 };                                             // 小人將軍：點哪裡都是叫他騎過去（v1.324.0）
+                      general: 1,                                               // 小人將軍：點哪裡都是叫他騎過去（v1.324.0）
+                      hay: 1, banana: 1 };                                      // 草料、香蕉：同肉（v1.326.0）
 let tool = 'hammer';
 
 /* ── 破壞模式（v1.262.0）──────────────────────────────────
@@ -9154,8 +9161,11 @@ function useTool(hit) {
   /* 防禦魔法（v1.259.0）：點哪裡都是叫芙莉蓮跑到那一點（點建築就跑到它旁邊），站一下再四處逛。
      生物、小人在點選那一層是透明的（拿這一把照「skip」那一檔點），點到的就是後面的建築或地面 */
   if (tool === 'frieren') { callFrieren(hit.point); return 0; }
-  /* 肉（v1.261.0）：點哪裡就丟在那裡，點到建築就掉在它旁邊的空地（見 dropMeat）。生物、小人同上是透明的 */
-  if (tool === 'meat') { dropMeat(hit.point); return 0; }
+  /* 肉（v1.261.0）：點哪裡就丟在那裡（見 dropMeat）。生物、小人同上是透明的。
+     v1.326.0 起草料、香蕉同一支；點到建築就擺在那一欄的頂上（射線方向傳進去，見 meatTop） */
+  if (tool === 'meat' || tool === 'hay' || tool === 'banana') {
+    dropMeat(hit.point, tool, hit.kind === 'block' ? hit.dir : null); return 0;
+  }
   /* 燈源（v1.303.0）：第一下立燈架的位置、第二下照哪裡；點在建築上就瞄那個高度（同投石機、加農砲） */
   if (tool === 'flood') { aimFlood(hit.point, hit.kind === 'block'); return 0; }
   if (tool === 'torch') { placeTorch(hit.point); return 0; }   // 火把（v1.317.0）：點一下插一支，點在建築上推到工地外
@@ -9980,7 +9990,7 @@ function stepBeast0(m, dt) {
   if (m.st === 'fun') {
     /* 牛羊沒有這個倒數（v1.154）：逛完不走人，這一段就是牠們的日常。 */
     if (!m.herd) {
-      m.stay -= dt;
+      if (!m.meat) m.stay -= dt;          // 被香蕉叫去那一段（走過去、等、吃）倒數停住（v1.326.0，使用者選的）
       /* 被打出來的欠帳砸完才走（v1.229，使用者選的「燒完才走」：打幾下就燒幾次，
          不會因為逛的時間到了就少燒）。沒被打過的那一趟照舊，時間到就走。
          保險 MORE_WAIT：這裡本來是這一段唯一的出口，欠帳的目標剛好走不到的話牠會永遠不走
@@ -15194,8 +15204,14 @@ function gooseDown(m) {
    身上沒掛著別塊肉的閒逛動物**。丟下去那一刻叫滿、路上被打死的有別隻補上、被別塊叫走的不搶回來、
    範圍裡都被叫光了就等前面那幾塊吃完或有別隻逛進來——都是這一條。
    走過去（繞房子、穿城門）是巡路規則在走（strollTo，見 meatWalk）；被打倒、點著、吹飛那幾秒照舊
-   （hurtBeast 排在前面），爬起來接著過去。 */
-const MEAT_MAX = ENG.MAXMEAT;      // 場上最多幾塊（引擎的上限，再丟就擠掉最早那塊，同定時炸彈）
+   （hurtBeast 排在前面），爬起來接著過去。
+
+   **v1.326.0 分成三種食物**（使用者：「道具 肉 調整只能吸引吃肉的動物 點建築位置也能掉在建築上(但是動物吃不到)／
+   增加道具 草料只能吸引吃草的動物／增加道具 香蕉吸引吃香蕉的動物(包含那兩隻吉祥物)」）。問過之後定的：
+   誰吃哪一種照食性、雜食的兩種都吃（FOOD_EAT）；擺在建築上的**照叫、在底下圍著等**，掉回地上才吃得到（f.up）；
+   猴子吉祥物只叫來逛的那幾隻、被叫去那一段退場倒數停住（mascFood）。草料、香蕉其餘照肉這一套：
+   同一份 meats 清單（f.kind 分哪一種）、同一條規則、各自最多 MEAT_MAX 個。見 開發筆記〈道具：草料、香蕉，肉只叫吃肉的〉 */
+const MEAT_MAX = ENG.MAXMEAT;      // 場上最多幾塊（引擎的上限，再丟就擠掉最早那塊，同定時炸彈）；v1.326.0 起每一種各算各的
 const MEAT_N = 3;                  // 一塊叫幾隻（使用者選「最近的幾隻」，選項寫的是 3 隻）
 /* 多遠以內的才叫（看過預覽之後使用者定的：「加 40 格上限」）。沒有上限的時候第三近的那一隻在 111.6 格外，
    跑到的時候肉早就被吃完了。範圍裡不夠 MEAT_N 隻就先吃著，之後逛進來的照樣叫得到（stepMeats 每幀都在問） */
@@ -15211,28 +15227,71 @@ const MEAT_BONE = 1.2;             // 吃完剩骨頭擺幾秒
 const MEAT_POP = 0.3;              // 骨頭縮掉要幾秒
 const MEAT_WOB = 0.12;             // 有人在咬的時候左右扯幾弧度
 const MEAT_WOB_HZ = 9;
-/* 掉在哪：點到建築（地標、房子）的話挪到旁邊最近的空地——留骨頭那麼長的身位，
-   掉進建築裡的話看不到、也沒有一隻走得到。navGoal 就是巡路規則 2（目標壓在障礙裡就挪到最近的可走點） */
+/* 掉在哪：落點壓在建築（地標、房子）裡的話挪到旁邊最近的空地——留骨頭那麼長的身位，
+   掉進建築裡的話看不到、也沒有一隻走得到。navGoal 就是巡路規則 2（目標壓在障礙裡就挪到最近的可走點）。
+   v1.326.0 起只剩點空地走這一條：點到建築那一下擺在那一欄頂上（見 dropMeat） */
 const MEAT_BD = { H: 1, r: 1.2 };
+/* 誰吃哪一種（v1.326.0，使用者選的「照食性、雜食吃兩種」）：豬、傑尼龜肉跟草料都吃，企鵝吃魚算肉；
+   香蕉是吉伊卡哇三隻，加上兩隻猴子吉祥物（小獼猴、小猴子）。每一款閒逛動物至少在一張裡（有一條測試在掃） */
+const FOOD_EAT = {
+  meat: { shiba: 1, collie: 1, tabby: 1, blackcat: 1, emperor: 1, adelie: 1, charmander: 1, hog: 1, boar: 1, squirtle: 1 },
+  hay: { cow: 1, ox: 1, sheep: 1, ram: 1, deer: 1, stag: 1, horse: 1, grey: 1, hog: 1, boar: 1, bulbasaur: 1, squirtle: 1 },
+  banana: { chiikawa: 1, hachiware: 1, usagi: 1, ape: 1, snow: 1 }
+};
+/* 吉祥物叫得到的只有「來逛、閒著」的（v1.326.0 使用者選的「只叫來逛的」）：這一趟要來砸的（m.bad）、還欠著要砸的（m.owe）、
+   道具叫來的（m.call）、火把掉了要去撿的（m.tor／m.pick）都不叫。叫去之後變成那幾種（被打生氣、逛完走人）stepMeats 就放掉，
+   位子讓給別隻。天災那一版沒有 m.fun，不叫 */
+const mascFood = m => !!m.fun && m.st === 'fun' && !m.bad && !(m.owe > 0) && !m.call && !m.tor && !(m.pick > 0);
+/* 點在牆面上的話落點剛好在面上，往射線方向再推進去這麼多才問得到那一欄（< 半格，不會穿過一塊跑到後面那一欄） */
+const MEAT_IN = 0.3;
 let meats = null;
-/* 丟一塊。挪的時候「從哪邊來就停在哪邊」照的是鏡頭：點建築的話掉在朝著鏡頭那一側 */
-function dropMeat(p) {
+/* 丟一塊。kind 是哪一種（meat／hay／banana，v1.326.0）。
+   dir：點到建築那一下的射線方向（點空地是 null）。點到建築就擺在那一欄最高那一塊的頂上、從那上面 MEAT_Y0 掉下來
+   （v1.326.0，使用者：「點建築位置也能掉在建築上(但是動物吃不到)」）；v1.261.0～v1.325 是挪到旁邊最近的空地。
+   點空地照舊：挪的時候「從哪邊來就停在哪邊」照的是鏡頭，貼著建築的話掉在朝著鏡頭那一側 */
+function dropMeat(p, kind = 'meat', dir = null) {
   if (!meats) meats = [];
-  if (meats.length >= MEAT_MAX) meatFree(meats.shift());        // 擠掉最早那塊：圍著它的放回去逛
-  const e = ENG.camEye();
-  const g = navGoal({ x: e.x, z: e.z, ghost: 0 }, p.x, p.z, MEAT_BD);
+  const same = meats.filter(q => q.kind === kind);
+  if (same.length >= MEAT_MAX) {                                 // 擠掉同一種最早那塊：圍著它的放回去逛
+    meats.splice(meats.indexOf(same[0]), 1); meatFree(same[0]);
+  }
+  let x = p.x, z = p.z, top = 0;
+  if (dir) {
+    const qx = p.x + dir.x * MEAT_IN, qz = p.z + dir.z * MEAT_IN;
+    top = meatTop(qx, qz);
+    if (top) { x = qx; z = qz; }
+  }
+  if (!top) {
+    const e = ENG.camEye();
+    const g = navGoal({ x: e.x, z: e.z, ghost: 0 }, x, z, MEAT_BD);
+    if (g) { x = g.x; z = g.z; }
+  }
   const a = rr(0, Math.PI * 2);
-  const f = { x: g ? g.x : p.x, y: MEAT_Y0, z: g ? g.z : p.z, vy: 0, hit: 0,
+  const f = { kind, x, y: top + MEAT_Y0, z, vy: 0, hit: 0, up: top ? 1 : 0,
               a, a0: a, base: rr(0, Math.PI * 2), left: 1, k: 1, s: 1, t: 0, ph: 0 };
   meats.push(f);
   return f;
+}
+/* 這一欄最高那一塊的頂面（地標、房子、樹、城牆都算，hardAt）；一塊都沒有回 0。
+   從最高可能的那一層往下找：地標照格子表的頂（gMaxY）、村子那邊照每一間格子裡最高那一層。點一下才問一次 */
+function meatTop(x, z) {
+  let hi = bp ? gMaxY : -1;
+  if (homes) for (const h of homes.list) for (const s of h.slots) if (s.gy > hi) hi = s.gy;
+  for (let g = hi; g >= 0; g--) if (hardAt(x, g + HB, z)) return g + HB * 2;
+  return 0;
+}
+/* 底下那塊建築的頂面（v1.326.0）：中間那一欄從現在的高度往下找第一塊（hardAt），沒有回 0。
+   有的話這一塊就是擺在建築上（f.up），動物吃不到；那一塊被打掉就往下掉，掉回地上才吃得到 */
+function meatRoof(f) {
+  for (let g = Math.floor(f.y - HB * 2 + 1e-6); g >= 0; g--) if (hardAt(f.x, g + HB, f.z)) return g + HB * 2;
+  return 0;
 }
 /* 站位：MEAT_N 個位子平均圍一圈 */
 const meatAng = (f, k) => f.base + k * Math.PI * 2 / MEAT_N;
 /* 底下那塊碎料的頂面（沒有就是地面）。碎料只鋪一層（separate 把它們推開、不疊），
    所以中間那一段底下有一塊就擺在它上面；那一塊被搬走就再往下掉 */
 function meatFloor(f) {
-  const cx = Math.floor(f.x / CELL), cz = Math.floor(f.z / CELL), R = HB + ENG.MEAT_R;
+  const cx = Math.floor(f.x / CELL), cz = Math.floor(f.z / CELL), R = HB + ENG.FOOD_R[f.kind];
   let y = 0;
   for (let i = -1; i <= 1; i++) for (let k = -1; k <= 1; k++) {
     const a = restGrid.get(gcell(cx + i, cz + k)); if (!a) continue;
@@ -15242,12 +15301,15 @@ function meatFloor(f) {
 }
 /* 叫一隻：MEAT_FAR 格內離這塊最近、還活著、身上沒掛著別塊肉、沒被吸走、沒在睡的閒逛動物
    （睡著的叫不動，v1.304.0 使用者選的「被打到才醒」）。
+   v1.326.0 起要吃這一種的（FOOD_EAT）；吃香蕉的猴子吉祥物也叫，只要是來逛、閒著的（mascFood）。
+   擺在建築上的照樣叫（使用者選的「照叫，在底下圍著等」），站位壓在建築裡由巡路規則挪到旁邊（見 meatWalk）。
    站哪個位子：空著的那幾個裡，離牠來的方向最近的那一個（從哪邊來就站哪邊，不必繞到另一頭） */
 function meatCall(f) {
   if (!beasts) return null;
+  const eats = FOOD_EAT[f.kind];
   let m = null, bd = MEAT_FAR;
   for (const q of beasts) {
-    if (!q.herd || q.dead || q.meat || q.ufo || q.nap > 0) continue;
+    if (!eats[q.kind] || !(q.herd || mascFood(q)) || q.dead || q.meat || q.ufo || q.nap > 0) continue;
     const d = Math.hypot(q.x - f.x, q.z - f.z);
     if (d < bd) { bd = d; m = q; }
   }
@@ -15281,7 +15343,10 @@ function stepMeats(dt) {
   for (let i = meats.length - 1; i >= 0; i--) {
     const f = meats[i];
     if (f.dlg) continue;                                          // 被大洪水捲走的（v1.325.0）：漂、縮、收掉都在 stepDeluge
-    const fl = meatFloor(f);
+    const rf = meatRoof(f), fl = Math.max(meatFloor(f), rf);
+    /* 底下那一塊建築被打掉、掉回地上了（v1.326.0）：在底下等的那幾隻重新走到旁邊來吃 */
+    if (f.up && !rf && beasts) for (const m of beasts) if (m.meat === f) m.mEat = 0;
+    f.up = rf ? 1 : 0;
     if (f.y > fl || f.vy > 0) {                                   // 掉下來（第一下彈一點點）
       f.vy -= GRAV * dt; f.y += f.vy * dt;
       if (f.y <= fl) {
@@ -15298,8 +15363,10 @@ function stepMeats(dt) {
     let n = 0, eat = 0;
     if (beasts) for (const m of beasts) {
       if (m.meat !== f || m.dead) continue;
+      if (!m.herd && !mascFood(m)) { m.meat = null; m.mEat = 0; continue; }   // 吉祥物不再是來逛的（v1.326.0）：放掉，位子讓給別隻
       n++;
-      if (m.mEat && !m.air && !m.lie && !(m.burn > 0)) eat++;     // 被打倒、在燒的那幾秒不算在吃
+      /* 被打倒、在燒的那幾秒不算在吃；擺在建築上的（f.up，v1.326.0）圍著也吃不到 */
+      if (m.mEat && !f.up && !m.air && !m.lie && !(m.burn > 0)) eat++;
     }
     if (n < MEAT_N) meatCall(f);
     f.left -= eat * dt / (MEAT_EAT * MEAT_N);
@@ -15311,11 +15378,13 @@ function stepMeats(dt) {
   }
   if (!meats.length) meats = null;
 }
-/* 被叫過去的那一隻這一幀怎麼走（stepBeast0 的 fun 那一段叫）：小跑到自己那個位子、轉過去面向肉、站定吃 */
+/* 被叫過去的那一隻這一幀怎麼走（stepBeast0 的 fun 那一段叫）：小跑到自己那個位子、轉過去面向肉、站定吃。
+   擺在建築上的（v1.326.0）：位子壓在建築裡，strollTo 照巡路規則 2 挪到旁邊最近走得到的地方，
+   最後那一點挪不動就地站定——就是「在底下圍著等」，面向肉、腳停下來，只是 stepMeats 不算牠在吃 */
 function meatWalk(m, dt, spd, stp, kp) {
   const f = m.meat;
   if (!meats || meats.indexOf(f) < 0) { m.meat = null; m.mEat = 0; return; }   // 那一塊已經不在了
-  const a = meatAng(f, m.mk), r = ENG.MEAT_R + MEAT_GAP + herdBody(m.kind).nose * (m.sc || 1);
+  const a = meatAng(f, m.mk), r = ENG.FOOD_R[f.kind] + MEAT_GAP + herdBody(m.kind).nose * (m.sc || 1);
   m.tx = f.x + Math.cos(a) * r; m.tz = f.z + Math.sin(a) * r;
   m.pause = 0;
   /* 吃到一半被推開（被打飛、炸開，爬起來已經不在原地）就再走回去 */

@@ -27,7 +27,7 @@ const ENG = (function () {
   let excFade;                               // 光柱每一格下緣／上緣的濃淡（v1.226，見 putBar）
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
   let bombMesh, nukeMesh, ringGroup, magSpokeMesh, fireMesh, flashGroup, flashOp, meteorMesh;
-  let meatMesh;                     // 丟在地上的肉（v1.261.0，見 putMeats）
+  let meatMesh;                     // 丟在地上的肉（v1.261.0，見 putMeats）；v1.326.0 起草料、香蕉各一顆在 FOOD 裡
   let torchMesh;                   // 小獼猴火把頭上的火（v1.249.0，見 putTorch）
   let starMesh, boltMesh;
   let hemi;                         // 天光（打雷的烏雲遮天要壓暗它，v1.283.0，見 setGloom）
@@ -1497,13 +1497,17 @@ if (vAo.x + vAo.y > 0.5) {
     scene.add(bombMesh);
     bombMesh.setColorAt(0, tmpC.setHex(0xffffff));
 
-    /* 肉（v1.261.0）：同定時炸彈，一塊 MEAT_PARTS 個 instance，沒丟就 visible=false */
-    meatMesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXMEAT * MEAT_PARTS);
-    meatMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
-    meatMesh.castShadow = true; meatMesh.count = 0;
-    meatMesh.frustumCulled = false; meatMesh.visible = false;
-    scene.add(meatMesh);
-    meatMesh.setColorAt(0, tmpC.setHex(0xffffff));
+    /* 肉（v1.261.0）：同定時炸彈，一塊 MEAT_PARTS 個 instance，沒丟就 visible=false。
+       v1.326.0 起草料、香蕉各一顆，同一套（見 FOOD） */
+    for (const k in FOOD) {
+      const mesh = FOOD[k].mesh = new T.InstancedMesh(unit, voxelMaterial({}), MAXMEAT * FOOD[k].part.length);
+      mesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      mesh.castShadow = true; mesh.count = 0;
+      mesh.frustumCulled = false; mesh.visible = false;
+      scene.add(mesh);
+      mesh.setColorAt(0, tmpC.setHex(0xffffff));
+    }
+    meatMesh = FOOD.meat.mesh;
 
     /* 燈架（v1.303.0）：架子是真的積木（規則那邊砌的），這裡只畫架頂那個燈頭——
        燈頭要轉到任意方向，積木只能對齊格子。三顆同幽浮那一套：外殼吃光、燈泡不吃光（白天也亮著）、光束加色。
@@ -3153,31 +3157,53 @@ if (vAo.x + vAo.y > 0.5) {
   const MEAT_PARTS = MEAT_PART.length;
   /* 肉塊左右的半寬（規則那邊照它算動物站多近，見 game-tools.js 的 meatSpot） */
   const MEAT_R = Math.max(...MEAT_PART.filter(p => p.m).map(p => Math.abs(p.p[2]) + p.s[2] / 2));
-  /* f：{x, y, z, a 骨頭朝哪, k 肉剩多大（0～1，往骨頭收）, s 整塊多大（收掉那一下）} */
+
+  /* 草料（v1.326.0）：一捆方形乾草——米黃的一塊、兩頭切口深一階、頂上亮一層、兩條鏽紅綁繩，兩頭與頂上冒幾撮草。
+     同肉：原點在地面、長邊沿 x。全部標 m（沒有骨頭）：被吃的時候整捆往中間那條軸縮，吃完就沒了 */
+  const HAY_CY = 0.4;
+  const HAY_PART = [
+    { p: [0, HAY_CY, 0], s: [1.5, 0.8, 0.8], c: 0xd4ac52, m: 1 },              // 草捆
+    { p: [0, 0.81, 0], s: [1.42, 0.02, 0.72], c: 0xe6c76e, m: 1 },             // 頂上曬得亮的那一層
+    { p: [0.755, HAY_CY, 0], s: [0.02, 0.74, 0.74], c: 0xb48a3a, m: 1 },       // 兩頭的切口
+    { p: [-0.755, HAY_CY, 0], s: [0.02, 0.74, 0.74], c: 0xb48a3a, m: 1 },
+    { p: [0.38, 0.415, 0], s: [0.07, 0.83, 0.83], c: 0x7a3e22, m: 1 },         // 兩條綁繩（底貼地、頂上蓋過亮的那一層）
+    { p: [-0.38, 0.415, 0], s: [0.07, 0.83, 0.83], c: 0x7a3e22, m: 1 },
+    { p: [0.79, 0.6, 0.18], s: [0.1, 0.05, 0.16], c: 0xe6c76e, m: 1 },         // 冒出來的幾撮草
+    { p: [-0.79, 0.28, -0.2], s: [0.1, 0.05, 0.18], c: 0xe6c76e, m: 1 },
+    { p: [0.12, 0.83, -0.2], s: [0.24, 0.04, 0.05], c: 0xe6c76e, m: 1 },
+    { p: [-0.5, 0.83, 0.16], s: [0.05, 0.04, 0.22], c: 0xc39a44, m: 1 }
+  ];
+  /* f：{x, y, z, kind 哪一種（沒給是肉）, a 骨頭朝哪, k 肉剩多大（0～1，往骨頭收）, s 整塊多大（收掉那一下）}。
+     v1.326.0 起三種食物都走這一支，照 f.kind 畫進各自那一顆（FOOD，各 MAXMEAT 份） */
   function putMeats(list) {
-    const n = Math.min(list.length, MAXMEAT);
-    meatMesh.visible = n > 0;
-    meatMesh.count = n * MEAT_PARTS;
-    for (let i = 0; i < n; i++) {
-      const f = list[i];
+    for (const t in FOOD) FOOD[t].n = 0;
+    for (const f of list) {
+      const F = FOOD[f.kind || 'meat'];
+      if (F.n >= MAXMEAT) continue;
+      const P = F.part, NP = P.length, i = F.n++;
       const k = Math.max(1e-3, f.k == null ? 1 : f.k);
       scratch.position.set(f.x, f.y, f.z);
       scratch.rotation.set(0, f.a || 0, 0);
       scratch.scale.setScalar(Math.max(1e-3, f.s == null ? 1 : f.s));
       scratch.updateMatrix();
-      for (let j = 0; j < MEAT_PARTS; j++) {
-        const p = MEAT_PART[j], q = p.m ? k : 1;
-        scratchB.position.set(p.p[0] * q, MEAT_CY + (p.p[1] - MEAT_CY) * q, p.p[2] * q);
-        scratchB.rotation.set(0, 0, 0);
+      for (let j = 0; j < NP; j++) {
+        const p = P[j], q = p.m ? k : 1;
+        scratchB.position.set(p.p[0] * q, F.cy + (p.p[1] - F.cy) * q, p.p[2] * q);
+        if (p.r) scratchB.rotation.set(p.r[0], p.r[1], p.r[2]); else scratchB.rotation.set(0, 0, 0);
         scratchB.scale.set(p.s[0] * q, p.s[1] * q, p.s[2] * q);
         scratchB.updateMatrix();
         tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
-        meatMesh.setMatrixAt(i * MEAT_PARTS + j, tmpM);
-        meatMesh.setColorAt(i * MEAT_PARTS + j, tmpC.setHex(p.c));
+        F.mesh.setMatrixAt(i * NP + j, tmpM);
+        F.mesh.setColorAt(i * NP + j, tmpC.setHex(p.c));
       }
     }
-    meatMesh.instanceMatrix.needsUpdate = true;
-    if (meatMesh.instanceColor) meatMesh.instanceColor.needsUpdate = true;
+    for (const t in FOOD) {
+      const F = FOOD[t];
+      F.mesh.visible = F.n > 0;
+      F.mesh.count = F.n * F.part.length;
+      F.mesh.instanceMatrix.needsUpdate = true;
+      if (F.mesh.instanceColor) F.mesh.instanceColor.needsUpdate = true;
+    }
   }
 
   /* ── 燈架的燈頭（v1.303.0，見 開發筆記〈道具：燈源〉）──
@@ -5862,6 +5888,34 @@ if (vAo.x + vAo.y > 0.5) {
     out.push({ p: [-0.585, 0.51, 0], s: [0.06, 0.06, 0.06], c: 0xffe98a });
     return out;
   })();
+
+  /* 道具「香蕉」（v1.326.0）：一串三根。每一根就是上面那根的六塊黃色弧＋兩頭（不要膠帶與引信），
+     放大 BUNCH_SC、蒂頭收在同一點、往三個方向張開（BUNCH_FAN）；中間那根亮一階，看得出是三根。
+     肚子貼地、蒂頭翹起來，整串挪到長邊的中點、最低點貼地。蒂頭不標 m：吃完剩它擺一下（同肉的骨頭）。
+     放在這裡是因為要讀 NANA；肉、草料在 putMeats 那邊（三種一起登記在下面的 FOOD） */
+  const BUNCH_SC = 1.5, BUNCH_FAN = [-0.42, 0, 0.42], BUNCH_C = [0xe2b42e, 0xf0c53a, 0xe2b42e];
+  const BUNCH_PART = (() => {
+    const a = NANA[6].p;                                     // 蒂頭那一端（第 7 塊）
+    let out = [];
+    BUNCH_FAN.forEach((ry, i) => {
+      const one = NANA.slice(0, 8).map((b, j) => ({ p: [b.p[0] - a[0], b.p[1] - a[1], 0], s: b.s, r: b.r,
+                                                    c: j < 6 ? BUNCH_C[i] : b.c, m: j === 6 ? 0 : 1 }));
+      out = out.concat(attach(one, { x: 0, y: 0, z: 0, sc: BUNCH_SC, ry }).map((q, j) => ({ p: q.p, s: q.s, r: q.r, c: q.c, m: one[j].m })));
+    });
+    out.push({ p: [-0.14, 0, 0], s: [0.26, 0.17, 0.2], c: 0x5e4a22, m: 0 });   // 三根收在一起的那一截梗
+    const fm = out.filter(q => q.m);
+    const mx = (Math.min(...fm.map(q => q.p[0] - q.s[0] / 2)) + Math.max(...fm.map(q => q.p[0] + q.s[0] / 2))) / 2;
+    const lo = Math.min(...out.map(q => q.p[1] - q.s[1] / 2));
+    return out.map(q => Object.assign(q, { p: [q.p[0] - mx, q.p[1] - lo, q.p[2]] }));
+  })();
+  /* 被吃的時候往哪一條軸縮：香蕉那幾塊的平均高度 */
+  const BUNCH_CY = (() => { const fm = BUNCH_PART.filter(q => q.m); return fm.reduce((s, q) => s + q.p[1], 0) / fm.length; })();
+  /* 三種食物（v1.326.0）：規則那邊 f.kind 是哪一種就畫哪一份（putMeats）。每一種自己一顆 InstancedMesh（init 時開）、各 MAXMEAT 份。
+     FOOD_R＝那一種左右的半寬（同 MEAT_R，規則那邊照它算動物站多近） */
+  const FOOD = { meat: { part: MEAT_PART, cy: MEAT_CY }, hay: { part: HAY_PART, cy: HAY_CY },
+                 banana: { part: BUNCH_PART, cy: BUNCH_CY } };
+  const FOOD_R = {};
+  for (const t in FOOD) FOOD_R[t] = Math.max(...FOOD[t].part.filter(p => p.m).map(p => Math.abs(p.p[2]) + p.s[2] / 2));
 
   /* 小獼猴：頭頂 1.31——跟小人連安全帽一樣高（使用者：「小人大小」）。
      跟小人區隔靠的是剪影不是顏色：駝背前傾、手垂過膝、頭頂一撮冠毛。
@@ -13529,6 +13583,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
+    FOOD_R,                                    /* 三種食物各自的半寬（v1.326.0，MEAT_R 就是 FOOD_R.meat） */
     putBooms, BOOM_LAMPS,                      /* 強爆炸照亮周圍（v1.291.0）：規則那邊照 BOOM_LAMPS 盞併好再給 */
     putGlows, lampRoom, nightK, setLampCount,  /* 晚上的小光源、光源數（v1.296.0）：規則那邊照 lampRoom() 盞排好再給 */
     putFloods, MAXFLOOD, FLOOD_PIV,            /* 燈架（v1.303.0）：規則那邊的上限讀 MAXFLOOD、瞄準照燈板的軸高 FLOOD_PIV 算俯角 */
@@ -13637,7 +13692,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
        NUKE_PARTS 是 init 時才填的，所以整份用 getter 取，不能在建物件那一刻就取值。 */
     get MODELS() {
       return { man: BODY, treb: TREB_PART, cannon: CAN_PART, doz: DOZ_PART, truck: TRK_PART,
-               bomb: BOMB_PART, meat: MEAT_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
+               bomb: BOMB_PART, meat: MEAT_PART, hay: HAY_PART, bunch: BUNCH_PART, weapon: WEAP_KIND, nuke: NUKE_PARTS, sword: SWORD_PART,
                ufo: UFO_PART, ufoLit: UFO_LIT,
                flood: FLOOD_ALL, floodLit: FLOOD_LIT,   /* 燈架的燈頭（v1.303.0）：前 FLOOD_YOKE 塊只跟著轉向，其餘是燈板 */
                ape: APE, snow: SNOW, nana: NANA, torch: TORCH, dragon: DRAGON, fball: FBALL,
@@ -13650,7 +13705,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh,
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, hayMesh: FOOD.hay.mesh, bunchMesh: FOOD.banana.mesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh,
                             stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl,
                             skyStars, skyMw, skyMoon,
                             floodMesh, floodLitMesh, floodBeamMesh, floodLamps, floodFade }; }
