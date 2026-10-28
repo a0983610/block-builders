@@ -38622,8 +38622,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('打得死：被打兩下照樣守；第三下倒地不起、流血、DIE_HOLD＋DIE_FADE 秒後收掉，叫的那一隊當場收兵、不再算在守護；再用一次道具叫新的一位',
      gdie.two && gdie.dead && gdie.gone && gdie.fresh, JSON.stringify(gdie));
 
-  /* ── 守護中其他吉祥物不來砸村子：鐘抽到「來砸房子」那一下（Math.random 押 0），他在場時 Saber、飛龍、獅鷲是來逛的
-        （飛龍、獅鷲是第二輪加的：他擋不到牠們），巨人照樣來砸；他不在場、在走人時都照抽 ── */
+  /* ── 守護中其他吉祥物不來砸村子：鐘抽到「來砸房子」那一下（Math.random 押 0），他在場時 Saber 是來逛的，
+        巨人、飛龍、獅鷲照樣來砸（飛龍、獅鷲 v1.324.1～v1.327.1 也不來砸，v1.327.2 改回照抽）；他不在場、在走人時都照抽 ── */
   const gawe = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
     const real = Math.random, keepToast = toast, keepSpawn = MASCOTS.map(k => k.spawn), keepT = mascT.slice(), got = {};
@@ -38648,8 +38648,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     return r;
   });
   const all1 = o => o.saber === 1 && o.giant === 1 && o.dragon === 1 && o.gryphon === 1;
-  ok('守護中其他吉祥物不來砸村子：他在場時 Saber、飛龍、獅鷲抽到也是來逛的、巨人照樣來砸；他不在場（或已經在走人）時照抽',
-     all1(gawe.off) && gawe.on.saber === 0 && gawe.on.dragon === 0 && gawe.on.gryphon === 0 && gawe.on.giant === 1 && all1(gawe.leaving),
+  ok('守護中其他吉祥物不來砸村子：他在場時 Saber 抽到也是來逛的、巨人與飛龍與獅鷲照樣來砸；他不在場（或已經在走人）時照抽',
+     all1(gawe.off) && gawe.on.saber === 0 && gawe.on.dragon === 1 && gawe.on.gryphon === 1 && gawe.on.giant === 1 && all1(gawe.leaving),
      JSON.stringify(gawe));
 
   await page.evaluate(() => { cleanTools(); beasts = null; archers = null; arOld = null; musket = null; mkOld = null; });
