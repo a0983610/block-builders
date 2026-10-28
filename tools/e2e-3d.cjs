@@ -12995,6 +12995,39 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     Math.random = keep.rnd;
     out.stick = { stay, same, swap, n1, n2, n3 };
 
+    /* ⑪ 像城牆一樣當成一整座（v1.327.3，使用者：「應該要像城牆視為一個整體 部分完工後要是又被破壞 還是要再去蓋起來
+          整體完工後被破壞才不補」）：一件蓋好了就去接最近一件還缺格子的——下一階剛生出來的、蓋好過又被打出洞的都算，
+          一件都不缺才放手（hm −1，同城牆段）；最後一階蓋好過了、前面有一件還缺著就不算整座蓋好，補齊了才 fin */
+    stopPalace();
+    homes = { list: [] }; palaceRing = planAs(0); palaceGrow(); resetW();
+    const P = palaceRing, hall = pals()[0], hole = (h, n) => {
+      for (let i = 0; i < n; i++) h.slots[h.slots.length - 1 - i].filled = false;
+      h.left = n;
+    };
+    const Wk = workers[0], onDone = h => {           // 他掛在蓋好的 h 上、手上沒東西，走一幀 updHome 之後掛到哪一件
+      releaseWorker(Wk); Wk.hm = homes.list.indexOf(h); Wk.hst = ''; Wk.pause = 0; Wk.x = h.x; Wk.z = h.z;
+      updHome(Wk, 0, 0.05);
+      return Wk.hm >= 0 ? homes.list[Wk.hm] : null;
+    };
+    fill(hall); step1();                              // 主殿蓋好 → 長出兩翼
+    const nx = onDone(hall);
+    const whole = { next: !!nx && nx.palace && nx !== hall && nx.left > 0 && P.items.some(it => it.stage === 1 && it.kind === nx.kind) };
+    for (const h of pals()) if (h !== hall) fill(h);
+    hole(hall, 5);                                    // 主殿蓋好過、又被打出洞
+    const wing = pals().find(h => h !== hall);
+    whole.fix = onDone(wing) === hall;
+    fill(hall);
+    whole.none = onDone(wing) === null;               // 這一階一件都不缺（下一階 stepPalace 才長）：放手
+    for (let k = 0; k < 8 && P.stage < P.allow; k++) { for (const h of pals()) fill(h); step1(); }
+    for (const h of pals()) fill(h);
+    hole(hall, 5);                                    // 最後一階也蓋好了，主殿還缺五格
+    step1();
+    whole.finHole = P.fin;
+    fill(hall); step1();
+    whole.finFull = P.fin;
+    whole.stage = P.stage + '/' + P.allow;
+    out.whole = whole;
+
     /* 動過的全域狀態還回去 */
     stopPalace();
     clearHomes();
@@ -13043,6 +13076,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      palT.stick.stay === 'palace' && palT.stick.n1 > 0 && palT.stick.same === 'palace' && palT.stick.n2 === palT.stick.n1 &&
      palT.stick.swap === 'home' && palT.stick.n3 === 0,
      JSON.stringify(palT.stick));
+  ok('像城牆一樣當成一整座：一件蓋好了就去接最近一件還缺格子的（下一階、蓋好過又被打出洞的都算），都不缺才放手；前面有一件還缺著就不算整座蓋好，補齊了才算',
+     palT.whole.next && palT.whole.fix && palT.whole.none && palT.whole.finHole === 0 && palT.whole.finFull === 1,
+     JSON.stringify(palT.whole));
 
   /* ⑩ 國王的造型（引擎那邊）：戴王冠、不戴安全帽、披風、鞭子；平常鞭子垂著不插進地裡；
         甩到 WHIP_HIT 那一刻鞭身三截一截比一截往前、都接近水平（甩直了）；走起來披風往後飄。

@@ -6559,7 +6559,9 @@ function stopPalace() {
   for (const w of workers) { w.king = 0; w.kst = ''; w.lash = 0; w.hop = 0; }
   stopHomes();
 }
-/* 每秒看一次（同 stepShop）：這一階都蓋好過了就往下一階加蓋；最後一階也蓋好了就是整座蓋好（palaceFin）。
+/* 每秒看一次（同 stepShop）：這一階都蓋好過了就往下一階加蓋；最後一階也蓋好了、**而且每一件現在都是完整的**
+   才是整座蓋好（palaceFin）。v1.327.3 以前只看「每一件都蓋好過」：主殿蓋好過、蓋角樓時被打掉一半，角樓一蓋好就判整座蓋好，
+   人全部趕去流浪，主殿從此缺一半（使用者看到的「皇宮半毀、其他人在外面逛」，見 開發筆記〈皇宮像城牆一樣當成一整座〉）。
    閒著的人掛到最近的那一件——蓋好了的話他從那裡開始流浪 */
 let palFixT = 0;
 function stepPalace(dt) {
@@ -6570,7 +6572,7 @@ function stepPalace(dt) {
   if (!R.fin && homes.list.every(h => !h.palace || h.done)) {
     let n = 0;
     while (!n && R.stage < R.allow) n = palaceGrow();
-    if (!n) palaceFin();
+    if (!n && homes.list.every(h => !h.palace || h.left <= 0)) palaceFin();
   }
   const steady = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0);
   const joins = w => phase !== 'build' || w.lazy;
@@ -7440,8 +7442,11 @@ function updHome(w, wi, dt) {
     if (h.sign) { liveSign(w, h, dt); return; }         // 求救招牌（v1.310.0）：去幫還沒拼好的那一段，整面拼好了對鏡頭揮手
     w.hst = '';
     /* 城牆蓋完一段就自己去接最近的下一段（v1.186）：整圈是切成十幾段的，
-       蓋完就站在牆邊過日子的話，一輪只推得動幾段。整圈都好了才回去閒晃。 */
-    if (h.wall) { w.hm = pickUnfinished(w.x, w.z, NO_TAKEN, 2); return; }
+       蓋完就站在牆邊過日子的話，一輪只推得動幾段。整圈都好了才回去閒晃。
+       **皇宮也一樣**（v1.327.3，使用者：「應該要像城牆視為一個整體」）：蓋好一件就接最近一件還缺格子的
+       （下一階剛生出來的、蓋好過又被打出洞的都算）。v1.308～v1.327 是在那一件旁邊閒晃，下一階生出來 0 人接，
+       實測一輪只蓋得了一階（見 開發筆記〈皇宮像城牆一樣當成一整座〉）。整座蓋好之後走不到這裡（palaceLife 擋在前面） */
+    if (h.wall || h.palace) { w.hm = pickUnfinished(w.x, w.z, NO_TAKEN, homeCat(h)); return; }
     liveHome(w, h, dt);
     return;
   }
