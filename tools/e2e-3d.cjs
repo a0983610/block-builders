@@ -41177,7 +41177,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       const head = win(0, 0.3);
       let last = 0;
       all.env.forEach((v, i) => { if (v > head * 0.05) last = (i + 1) * 0.02; });
-      return { rms: +all.rms.toFixed(4), peak: +all.peak.toFixed(3), over: all.over,
+      /* rmsRaw：沒捨入的 rms。rms 只留四位小數是給訊息看的——碎料落地那一級（0.0005）一格 0.0001 就是兩成，
+         拿捨入過的去比「留七成」等於在賭進位（見 開發筆記〈碎料落地那一條在賭 rms 的進位〉） */
+      return { rms: +all.rms.toFixed(4), rmsRaw: all.rms, peak: +all.peak.toFixed(3), over: all.over,
                hiPct: +(hi.rms / all.rms * 100).toFixed(1), body: +body.rms.toFixed(4),
                midPct: +(mid.rms / all.rms * 100).toFixed(1),
                hold: +(win(0.55, 0.75) / win(0.02, 0.2)).toFixed(2),
@@ -41608,10 +41610,12 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      snd.fire.hiPct < snd.fireOld.hiPct * 0.5 && snd.fire.hiPct < 30 && snd.fire.rms > snd.fireOld.rms * 0.7,
      '2kHz 以上 ' + snd.fireOld.hiPct + '% → ' + snd.fire.hiPct + '%；rms ' + snd.fireOld.rms + ' → ' + snd.fire.rms);
   /* 碎料落地彈一下（v1.264.1）：燒房子、炸完那幾十秒唯一的高頻來源，切點 2200 → 760、音量補回來。
-     同點火那條的兩把尺：高頻占比少一半以上，整段 rms 至少留七成 */
+     同點火那條的兩把尺：高頻占比少一半以上，整段 rms 至少留七成。
+     rms 比的是沒捨入的 rmsRaw（v1.327.0 完整輪紅過一次：捨入成 0.0006 → 0.0004 就過不了 0.7；
+     同一套量法量 40 次，捨入過的紅 2 次，沒捨入的比值 0.79～1.01、一次都沒紅） */
   ok('碎料落地那一聲不刺耳：2kHz 以上比舊配方少一半以上，音量沒跟著縮',
-     snd.land.hiPct < snd.landOld.hiPct * 0.5 && snd.land.hiPct < 30 && snd.land.rms > snd.landOld.rms * 0.7,
-     '2kHz 以上 ' + snd.landOld.hiPct + '% → ' + snd.land.hiPct + '%；rms ' + snd.landOld.rms + ' → ' + snd.land.rms);
+     snd.land.hiPct < snd.landOld.hiPct * 0.5 && snd.land.hiPct < 30 && snd.land.rmsRaw > snd.landOld.rmsRaw * 0.7,
+     '2kHz 以上 ' + snd.landOld.hiPct + '% → ' + snd.land.hiPct + '%；rms ' + snd.landOld.rmsRaw.toFixed(6) + ' → ' + snd.land.rmsRaw.toFixed(6));
   }   // ── 〈音效〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 視角操作 ══════════ */
