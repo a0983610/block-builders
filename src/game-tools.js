@@ -17367,7 +17367,9 @@ const musketList = () => mkOld ? (musket ? mkOld.men.concat(musket.men) : mkOld.
    **不讓自己的兵打到自己，靠站位**（genPlan／genSafe）：兵一律排在他**前面**、整隊面向敵人，每一個射手都在他前面
    至少 GEN_BEHIND 格；瞄的那一點一直夾在隊伍前緣再往前 GEN_FRONT 格以外（genAim）。箭、子彈、砲彈都是從射手往前
    飛向那一點，所以整條路上每一點都在他前面——打不到他。指揮那一段他站定不動，自己也不會走進射線裡。
-   見 開發筆記〈道具：小人將軍〉 */
+   v1.325.1 使用者：「出手距離太短 明明實際攻擊距離可以很長 卻跑到很近的地方才招喚」——射程照每一招量到的拉（GEN_ARMY 的 hi）、
+   騎過去的路上一進射程就出兵（stepGen 的 gride）。
+   見 開發筆記〈道具：小人將軍〉、〈小人將軍出手距離拉到量到的射程〉 */
 const GEN_TIME = 3600;                 // 守護多久（秒，模擬時間）：使用者說的「1小時」
 const GEN_SC = DOOM_SC * 1.15;         // 比小人大一號（預覽定的：騎在馬上的人頭跟小人差不多大）
 const GEN_WALK = WALK * 0.6;           // 巡邏的腳程
@@ -17384,15 +17386,18 @@ const GEN_FRONT = 4;                   // 瞄的那一點至少在隊伍前緣�
    撞幾下，來砸村子、被惹毛都會給，見 madMascot）。天災一律打；表上沒有的吉祥物正要去砸村子的也打（見 genFoe）。
    他守護時不來砸村子的（genAwe）：1 以外的全部——飛龍、獅鷲第二輪也算進來（見 genAwe） */
 const GEN_FOE = { giant: 1, diablo: 1, dragon: 2, gryphon: 2 };
-/* 三招各自的站法：B＝隊伍前緣在他前面幾格（隊伍排在他與敵人之間）；D＝前緣到敵人最好多遠（騎過去就照這個站），
+/* 三招各自的站法：B＝隊伍前緣在他前面幾格（隊伍排在他與敵人之間）；D＝騎過去的目的地，前緣到敵人多遠，
    lo／hi＝前緣到敵人在這個範圍裡就地出兵、不必挪。B 是照隊形的深度訂的：箭雨 5 排共 10.4 格、火槍兵 3 排 3.8 格，
    各加 GEN_BEHIND 與抖動量，再留一排多退後的餘地（arSpot 踩到房子會往後退一排 AR_ROWGAP）；加農砲推的人從砲後面
    PU_D 那麼遠推上來，B 要比它長，推的人才不會從他身上穿過去。lo／hi 放得寬：敵人一直在動（小獼猴進村點完火
-   十幾秒就走），範圍窄的話他一直在騎、到了敵人又不在那裡了（探針：14～40 那一版小獼猴整趟一次都沒出成） */
+   十幾秒就走），範圍窄的話他一直在騎、到了敵人又不在那裡了（探針：14～40 那一版小獼猴整趟一次都沒出成）。
+   **hi 是每一招量出來的射程**（v1.325.1，使用者：「出手距離太短 明明實際攻擊距離可以很長」，選「照每一招量到的拉」）：
+   火槍兵 20～80、加農砲 30～110 中的數一樣多，箭雨打小獼猴 60 以內中 16～25 支、80 以上剩 2～5 支——所以 80／110／60。
+   D 是 hi 往內 10：騎的路上一進射程就出兵（見 stepGen 的 gride），D 只是方向上的目的地，一路排不出隊伍才會真的騎到 */
 const GEN_ARMY = {
-  arrow: { B: 20, D: 26, lo: 10, hi: 50 },
-  musket: { B: 12, D: 22, lo: 8, hi: 40 },
-  cannon: { B: 20, D: 28, lo: 14, hi: 50 }
+  arrow: { B: 20, D: 50, lo: 10, hi: 60 },
+  musket: { B: 12, D: 70, lo: 8, hi: 80 },
+  cannon: { B: 20, D: 100, lo: 14, hi: 110 }
 };
 const GEN_TRY = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9];   // 就地出兵：隊伍往兩側偏幾度試（弧度）
 const GEN_POST = [0, 0.7, -0.7];                // 騎過去：第幾次換到敵人的哪一側（弧度，繞著敵人轉）
@@ -17522,14 +17527,17 @@ function genAim(p, f) {
   if (front < GEN_FRONT) { x += p.ux * (GEN_FRONT - front); z += p.uz * (GEN_FRONT - front); }
   return { x, z, y: genTy(f) };
 }
-/* 盯上一隻之後：抽一招（換位置重試時照舊用同一招）；就地排得出隊伍就舉劍，排不出來就騎到「敵人與他那條線上、
-   距離剛好」的地方（第二、三次換到敵人的另一側），騎到了再試；三次都不行就隔 GEN_RETRY 秒重來 */
+/* 排得出隊伍：站定、舉劍（gcmd），GEN_CMD_T 秒後出兵 */
+function genCmd(m, p) { m.gp = p; m.gg = null; m.gct = 0; m.st = 'gcmd'; m.pause = 0; sndGeneral(); }
+/* 盯上一隻之後：抽一招（換位置重試時照舊用同一招）；就地排得出隊伍就舉劍，排不出來就往「敵人與他那條線上、
+   射程邊緣往內一點」的地方騎（第二、三次換到敵人的另一側），路上一排得出來就停（見 stepGen 的 gride），
+   騎到了還排不出來就換下一個位置；三次都不行就隔 GEN_RETRY 秒重來 */
 function genEngage(m) {
   const f = m.gf, ws = genFoe(f) ? genWeapons(f) : [];
   if (!ws.length) { genDone(m, GEN_RETRY); return; }
   if (ws.indexOf(m.gw) < 0) m.gw = ws[Math.floor(Math.random() * ws.length)];
   const p = genPlan(m, f, m.gw);
-  if (p) { m.gp = p; m.gg = null; m.gct = 0; m.st = 'gcmd'; m.pause = 0; sndGeneral(); return; }
+  if (p) { genCmd(m, p); return; }
   if (m.gtry >= GEN_POST.length) { genDone(m, GEN_RETRY); return; }
   const A = GEN_ARMY[m.gw], th = GEN_POST[m.gtry++], c = Math.cos(th), s = Math.sin(th);
   const d = Math.hypot(m.x - f.x, m.z - f.z) || 1, vx = (m.x - f.x) / d, vz = (m.z - f.z) / d;
@@ -17617,7 +17625,7 @@ function genDone(m, cd) {
   genSpot(m);
 }
 /* 一幀（stepBeast0 叫，倒地那一段已經在前面處理掉了）。狀態：
-     gride 騎到一點（gwhy＝'go' 玩家叫他去的那一點、'post' 出兵的位置）
+     gride 騎到一點（gwhy＝'go' 玩家叫他去的那一點、'post' 出兵的位置：路上一進射程、排得出隊伍就停下來出兵）
      fun   巡邏：在村子裡逛，每一幀找最近的敵人，找到就 genEngage
      gcmd  指揮：站定、轉向隊伍的面向、舉劍；GEN_CMD_T 秒後出兵，那一隊打完（或敵人沒了收兵）才回去巡邏
      go    時間到了，騎回林帶（走到了回 true，這一位就收掉；淡出見 woodFade） */
@@ -17634,6 +17642,13 @@ function stepGen(m, dt) {
   }
   if (m.st === 'gride') {
     if (m.gwhy === 'post' && !genFoe(m.gf)) { genDone(m); return false; }    // 騎到一半，敵人走了、倒地死了、出村了
+    /* 路上一進射程就停下來出兵（v1.325.1，使用者選的「一進射程就停下來出兵」）：以前要騎到 post 那一點才再排，
+       一路早就進了射程還照騎（探針：Diablo 63 格外發現、騎 29～35 格、出兵時只剩 21～31 格）。
+       這一招中途變得叫不了（敵人飛上天、玩家叫了同一招）就照舊騎到再由 genEngage 換一招 */
+    if (m.gwhy === 'post' && genWeapons(m.gf).indexOf(m.gw) >= 0) {
+      const p = genPlan(m, m.gf, m.gw);
+      if (p) { m.leg = 0; genCmd(m, p); return false; }
+    }
     m.grt += dt;
     if (!strollTo(m, dt, GEN_RIDE, genStep(GEN_RIDE), 0) && !(m.gwhy === 'post' && m.grt > GEN_RIDE_T)) return false;
     m.leg = 0;

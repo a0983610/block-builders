@@ -38290,6 +38290,38 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('一整趟：盯上前面的天災就站定舉劍、GEN_CMD_T 秒後出兵；打的時候瞄的那一點跟著敵人走（箭雨瞄箭到時牠會在的地方）；敵人沒了那一隊收兵、他回去巡邏',
      grun.cmd && grun.cast && grun.arm && grun.still && grun.track && grun.done, JSON.stringify(grun));
 
+  /* ── 射程與騎過去（v1.325.1，使用者：「出手距離太短 明明實際攻擊距離可以很長 卻跑到很近的地方才招喚」）：
+        前緣到敵人剛好在 GEN_ARMY 的 hi 以內就地排得出、剛好在外排不出；敵人在射程外 → 往 post 騎（gride）→
+        路上一進射程就站定舉劍，不必騎到 post（B＋D）那一點。招押 0＝箭雨；他與敵人在 x＝X 那一條線上，不經過地標 ── */
+  const gride = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const real = Math.random, keepToast = toast;
+    const r = {};
+    toast = () => {};
+    try {
+      Math.random = () => 0;
+      const A = GEN_ARMY.arrow, X = arenaR * 0.55, Z = arenaR * 0.6;
+      const f = spawnBeast('giant', 0, 0); f.x = X; f.z = Z; f.wIn = 0;
+      r.edgeIn = !!genPlan({ x: X, z: Z - (A.B + A.hi - 1) }, f, 'arrow');
+      r.edgeOut = !genPlan({ x: X, z: Z - (A.B + A.hi + 1) }, f, 'arrow');
+      const m = callGeneral({ x: X, z: 0 });
+      m.x = X; m.z = Z - (A.B + A.hi + 5); m.wIn = 0; m.st = 'fun'; m.pause = 0; m.gcd = 0;
+      stepGen(m, 0.05);
+      r.post = m.st === 'gride' && m.gwhy === 'post' && m.gw === 'arrow';
+      const post = { x: m.tx, z: m.tz };
+      let t = 0;
+      while (m.st === 'gride' && t < 10) { stepGen(m, 0.05); t += 0.05; }
+      const d = Math.hypot(m.x - f.x, m.z - f.z);
+      r.d = +d.toFixed(2);
+      r.cmd = m.st === 'gcmd' && m.gf === f && !!m.gp && m.gp.w === 'arrow';
+      r.edge = d <= A.B + A.hi + 1e-9 && d > A.B + A.D && Math.hypot(m.x - post.x, m.z - post.z) > 1;
+    } finally { Math.random = real; toast = keepToast; }
+    cleanTools(); beasts = null; archers = null; arOld = null;
+    return r;
+  });
+  ok('射程與騎過去：前緣到敵人在 GEN_ARMY 的 hi 以內就地出兵、剛好在外的不出；射程外的往前騎，路上一進射程就站定舉劍，不騎到 post 那一點',
+     gride.edgeIn && gride.edgeOut && gride.post && gride.cmd && gride.edge, JSON.stringify(gride));
+
   /* ── 他自己：被打不生氣（照樣倒、不改主意）；時間到收兵、騎回林帶（go）；再叫一次會把正在打的那一隊收掉 ── */
   const gself = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
