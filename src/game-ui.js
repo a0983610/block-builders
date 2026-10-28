@@ -1378,7 +1378,7 @@ function boot() {
   $('aoOn').addEventListener('change', e => { aoOn = pref.ao = e.target.checked; save(); });
   /* 光源（v1.296.0，使用者：「下拉不好操作 改成四個點一下就能切換的按鈕」）：同左下面板那三排的做法 */
   makeSeg('lampN', LAMP_OPTS, v => v ? v + ' 盞' : '關', v => { setLamps(v); save(); });
-  /* 燈架影子（v1.316.0，預設關）：只有燈源那四盞投影，點光源那一池照舊不投（使用者：「其他點光源都還好」） */
+  /* 燈架影子（v1.316.0；v1.327.1 起預設開）：只有燈源那四盞投影，點光源那一池照舊不投（使用者：「其他點光源都還好」） */
   $('floodSh').addEventListener('change', e => { pref.flsh = e.target.checked; ENG.setFloodShadow(pref.flsh); save(); });
   $('dayOn').addEventListener('change', e => { dayOn = pref.day = e.target.checked; save(); });       // 晝夜（v1.295.0）
   makeSeg('skyDrop', SKY_DROP_OPTS, v => v + '°', v => { setSkyDrop(v); save(); });                   // 星空往下壓（v1.320.0）

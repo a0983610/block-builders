@@ -43,12 +43,13 @@ let stats = freshStats();
    v1.317.0 預設改 10（使用者：「設定上的光源數 預設改為10」，選了只改預設：已經存了 6 的照舊 6）。
    v1.291.0～v1.295.0 是 boom（爆炸光源勾選）：那一格拿掉了，舊存檔沒勾的換成 0、勾著的換成預設（見 applySave） */
 /* day＝晝夜（v1.295.0，見 game-ui.js 的 dayOn），預設開（使用者選的）；舊存檔同上靠 merge 補 */
-/* flsh＝燈架影子（v1.316.0，見 engine.js 的 setFloodShadow），預設關（使用者選的：開了每座亮著的燈架多畫一趟整個場景） */
+/* flsh＝燈架影子（v1.316.0，見 engine.js 的 setFloodShadow），預設關（使用者選的：開了每座亮著的燈架多畫一趟整個場景）；
+   v1.327.1 預設改開（使用者：「道具燈架的影子效果 預設打開」，選了只改預設：已經存了 false 的照舊關） */
 /* drop＝星空往下壓幾度（v1.320.0，SKY_DROP_OPTS 0／15／30／45，見 game-ui.js 的 setSkyDrop），預設 30；舊存檔靠 merge 補 */
 const KEY_N = 9;
 const freshPref = () => ({ cnt: 3000, wk: 20, spd: 1, mute: false, spin: false, lazy: 'norm',
                            keys: Array(KEY_N).fill(''), cap: true, rage: false, ao: true, dyn: true, aa: true, once: false,
-                           lamps: 10, day: true, flsh: false, drop: 30, v: 1 });
+                           lamps: 10, day: true, flsh: true, drop: 30, v: 1 });
 let pref = freshPref();
 let spentThis = 0;
 let lossThis = 0;                   // 這一座造成的損失（換建築時歸零）

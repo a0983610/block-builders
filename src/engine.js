@@ -3243,7 +3243,7 @@ if (vAo.x + vAo.y > 0.5) {
      照到 FLOOD_REACH 倍距離收掉（three 的距離窗在瞄的那一點還剩 0.92，除回去） */
   const FLOOD_C = 0xfff4e0, FLOOD_ANG = 0.32, FLOOD_PEN = 0.5, FLOOD_E = 2.5, FLOOD_REACH = 2.2;
   const FLOOD_ATT = Math.pow(1 - Math.pow(1 / FLOOD_REACH, 4), 2);
-  /* 燈投影子（v1.316.0，畫面設定「燈架影子」，預設關；見 setFloodShadow）。亮著的一盞每幀多畫一趟整個場景：
+  /* 燈投影子（v1.316.0，畫面設定「燈架影子」，v1.327.1 起預設開——開場由 applyPref 叫 setFloodShadow 打開；見 setFloodShadow）。亮著的一盞每幀多畫一趟整個場景：
      貼圖 512——這台內顯（台北 101、1920×1080）四盞全投影 1024 多 7.3 ms、掉到 60fps 以下，512 多 4.5 ms。
      near 拉到 2：預設 0.5 的話透視深度的精度全擠在燈前面，同一個 bias 在 30 格外等於把影子推開兩格多（影子跟腳底分家）。
      見 開發筆記〈燈架投影子（v1.316.0）〉 */
