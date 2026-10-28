@@ -37749,6 +37749,243 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   await page.evaluate(() => { cleanTools(); });
   }   // ── 〈道具：草料、香蕉〉結束（--tier 跳過時從這裡出來）
 
+  /* ══════════ 食物被道具打飛（v1.328.0）══════════
+     使用者：「我發現 肉 草料 香蕉 不會跟著被龍捲風吹走 順便看看是不是也不會被其他道具影響」——探針量到只有大洪水捲得走。
+     選了：同碎料一條規則（碎料會被哪一支打飛、吸走，食物就跟著）、落地後照樣能吃、龍捲風同碎料捲上去繞圈、幽浮／小黑洞同碎料撒回島上。
+     全部規則型：直接叫 explode／foodKick／stepMeats／stepTwist／stepMagic／stepUfo／stepHoles／stepBall，要擲骰的地方押住；
+     動漫招式那幾支要跑整個角色才打得出來，靠原始碼掃描守（會掃地上碎料的函式裡一定有 eachFood）。
+     見 開發筆記〈食物同碎料被道具打飛、吸走〉 */
+  SEC: { if (!(await head('食物被道具打飛', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await fillAll(page);
+
+  /* ── 原始碼：會掃地上碎料的函式（迴圈開頭只放 SET／FREE 進來，或只跳過 CARRY／TOSS）裡一定有 eachFood。
+        例外三支（只撿候選、只記要抖的、只抖畫面——都不動碎料）寫在這裡，而且要真的還長那樣，名單才不會爛掉 ── */
+  {
+    const src = fs.readFileSync(path.join(ROOT, 'src/game-tools.js'), 'utf8');
+    const fns = {};
+    for (const part of src.split(/^(?=function |const |let |var |\/\*)/m)) {
+      const m = /^function (\w+)/.exec(part);
+      if (m) fns[m[1]] = part;
+    }
+    const DEBRIS = /\bst !== SET && \w+\.st !== FREE\b|\bst === CARRY \|\| \w+\.st === TOSS\b/;
+    const SKIP = { stepBounce: '只撿這一幀的候選，真的撞在 bncTouch', castHole: '只記下要抖的那幾塊', holeQuake: '只抖畫出來的位置' };
+    const hit = Object.keys(fns).filter(k => DEBRIS.test(fns[k]));
+    const miss = hit.filter(k => !SKIP[k] && fns[k].indexOf('eachFood(') < 0);
+    const stale = Object.keys(SKIP).filter(k => hit.indexOf(k) < 0);
+    ok('會掃地上碎料的每一支都多掃一遍食物（eachFood）；例外只有只撿候選、只抖畫面的那三支',
+       hit.length >= 12 && !miss.length && !stale.length,
+       (hit.length - Object.keys(SKIP).length) + ' 支：' + hit.filter(k => !SKIP[k]).join('、') +
+       (miss.length ? '；**漏了：' + miss.join('、') + '**' : '') + (stale.length ? '；**例外名單上已經不掃碎料的：' + stale.join('、') + '**' : ''));
+  }
+
+  /* ── 爆炸：範圍裡的照碎料那一條公式往外、往上炸飛；範圍外的不動 ── */
+  const fblast = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30;
+    const near = dropMeat({ x: X, y: 0, z: 0 }, 'hay'), far = dropMeat({ x: X - 20, y: 0, z: 0 }, 'meat');
+    for (const f of meats) { f.y = 0; f.vy = 0; }
+    const x0 = far.x;
+    explode({ x: X + 2, y: 0.5, z: 0 }, 8, 30);
+    const r = { near: { air: near.air, vx: +near.vx.toFixed(2), vy: +near.vy.toFixed(2) }, far: { air: far.air, moved: far.x !== x0 } };
+    cleanTools();
+    return r;
+  });
+  ok('爆炸：範圍裡的食物照碎料那一條公式炸飛（背著爆心往外、往上），範圍外的不動',
+     fblast.near.air === 1 && fblast.near.vx < 0 && fblast.near.vy > 0 && fblast.far.air === 0 && !fblast.far.moved, JSON.stringify(fblast));
+
+  /* ── 飛：同碎料那一套物理。往上飛、落下來停在擺著的那一層、翻的角度轉回平放；往外丟到碎料圈邊上撞牆彈回來 ── */
+  const ffly = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30;
+    const f = dropMeat({ x: X, y: 0, z: 0 }, 'meat'); f.y = 0;
+    foodKick(f, -6, 9, 0);
+    const dt = 0.05, r = { nan: 0, top: 0 };
+    let t = 0;
+    for (; t < 10 && f.air; t += dt) {
+      stepMeats(dt);
+      r.top = Math.max(r.top, f.y);
+      if (!isFinite(f.x + f.y + f.z + f.a + f.tilt)) r.nan++;
+    }
+    r.t = +t.toFixed(2); r.air = f.air; r.dx = +(X - f.x).toFixed(2); r.y = f.y; r.fl = Math.max(meatFloor(f), meatRoof(f));
+    for (let u = 0; u < 1; u += dt) stepMeats(dt);
+    r.tilt = f.tilt;
+    const g = dropMeat({ x: X, y: 0, z: 0 }, 'banana'); g.y = 0;
+    foodKick(g, 300, 4, 0);
+    r.far = 0;
+    for (let u = 0; u < 6 && g.air; u += dt) { stepMeats(dt); r.far = Math.max(r.far, Math.hypot(g.x, g.z)); }
+    r.far = +r.far.toFixed(4); r.R = debrisR;
+    cleanTools();
+    return r;
+  });
+  ok('打飛之後同碎料那一套物理：往上飛、落下來停在擺著的那一層（碎料頂、屋頂取高的），翻的角度轉回平放，一路沒有 NaN',
+     ffly.air === 0 && ffly.top > 1 && ffly.dx > 1 && Math.abs(ffly.y - ffly.fl) < 1e-9 && ffly.tilt === 0 && ffly.nan === 0, JSON.stringify(ffly));
+  ok('飛出碎料圈就撞牆彈回來（同碎料），不會飛到島外', ffly.far <= ffly.R + 1e-6 && ffly.far > ffly.R - 1,
+     '最遠 ' + ffly.far + '（碎料圈 ' + ffly.R + '）');
+
+  /* ── 落地後照樣能吃：吃到一半被打飛，半空那段一口都不算；落地後叫來的那一隻走到新的地方接著吃 ── */
+  const feat = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30;
+    const m = spawnCattle(); m.kind = 'shiba'; m.nb = null; m.x = X + 3; m.z = 0; m.pause = 0; m.tx = m.x; m.tz = m.z;
+    const f = dropMeat({ x: X, y: 0, z: 0 }, 'meat'); f.y = 0;
+    stepMeats(0.001);                                                        // 先叫到（同〈走過去吃〉：擲睡覺的骰之前）
+    const dt = 0.05, r = { called: m.meat === f };
+    let t = 0;
+    for (; t < 10 && !(m.mEat && f.left < 1); t += dt) { stepMeats(dt); stepBeast(m, dt); }
+    r.start = +t.toFixed(2);
+    foodKick(f, -8, 7, 0);
+    const left0 = f.left;
+    let airEat = 0;
+    for (t = 0; t < 10 && f.air; t += dt) { stepMeats(dt); stepBeast(m, dt); if (f.left !== left0) airEat++; }
+    r.fly = +t.toFixed(2); r.airEat = airEat; r.moved = +(X - f.x).toFixed(2);
+    const left1 = f.left;
+    for (t = 0; t < 15 && !(f.left < left1); t += dt) { stepMeats(dt); stepBeast(m, dt); }
+    r.again = +t.toFixed(2); r.who = m.meat === f;
+    r.d = +Math.hypot(m.x - f.x, m.z - f.z).toFixed(3);
+    r.reach = +(ENG.FOOD_R.meat + MEAT_GAP + herdBody('shiba').nose * (m.sc || 1)).toFixed(3);
+    cleanTools(); beasts = null;
+    return r;
+  });
+  ok('吃到一半被打飛：飛在半空那段一口都不算，落地後叫來的那一隻走到新的地方接著吃',
+     feat.called && feat.start < 10 && feat.airEat === 0 && feat.moved > 2 && feat.again < 15 && feat.who && feat.d < feat.reach + 0.3,
+     JSON.stringify(feat));
+
+  /* ── 龍捲風：罩到就捲上去（同碎料那一組力）；龍捲風走了就掉下來停住 ── */
+  const ftw = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30;
+    const f = dropMeat({ x: X, y: 0, z: 0 }, 'hay'); f.y = 0;
+    launchTornado({ x: X, z: 0 }, { x: X, z: 20 });
+    const dt = 0.05, r = { top: 0, air: 0 };
+    for (let t = 0; t < 1; t += dt) { stepTwist(dt); stepMeats(dt); r.top = Math.max(r.top, f.y); if (f.air) r.air++; }
+    r.top = +r.top.toFixed(2);
+    twists = null;
+    let t = 0;
+    for (; t < 20 && f.air; t += dt) stepMeats(dt);
+    r.land = f.air === 0; r.t = +t.toFixed(2);
+    cleanTools();
+    return r;
+  });
+  ok('龍捲風：罩到的食物捲上去（同碎料那一組力），龍捲風走了就掉下來停住',
+     ftw.air > 0 && ftw.top > 2 && ftw.land, JSON.stringify(ftw));
+
+  /* ── 爆裂魔法：同地上的碎料先浮起來被這個陣接住，炸開那一下被炸飛 ── */
+  const fmag = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30;
+    const f = dropMeat({ x: X + 2, y: 0, z: 0 }, 'banana'); f.y = 0;
+    castMagic({ x: X, z: 0 });
+    const id = magics[magics.length - 1].id, dt = 0.05, r = { held: 0, top: 0 };
+    let t = 0;
+    for (; t < 12 && magics; t += dt) {
+      stepMagic(dt); stepMeats(dt);
+      if (f.mgk === id && f.air) { r.held++; r.top = Math.max(r.top, f.y); }
+    }
+    r.boom = +t.toFixed(2); r.air = f.air; r.vy = +f.vy.toFixed(2); r.top = +r.top.toFixed(2);
+    let far = 0;
+    for (let u = 0; u < 3; u += dt) { stepMeats(dt); far = Math.max(far, Math.hypot(f.x - X, f.z)); }
+    r.far = +far.toFixed(2);
+    cleanTools();
+    return r;
+  });
+  ok('爆裂魔法：食物同地上的碎料先浮起來被這個陣接住，炸開那一下被炸飛',
+     fmag.held > 0 && fmag.top > 0.5 && fmag.air === 1 && fmag.far > 3, JSON.stringify(fmag));
+
+  /* ── 幽浮：光圈裡的同碎料吸走（押住 UFO_TAKE 那一顆骰：每一幀都抽中），五秒後撒回島上，落地停住、還在清單上 ── */
+  const fufo = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30;
+    const f = dropMeat({ x: X, y: 0, z: 0 }, 'meat'); f.y = 0;
+    const real = Math.random;
+    Math.random = () => 0;
+    const r = { got: 0, drop: 0 };
+    try {
+      callUfo({ x: X, z: 0 });
+      const dt = 0.05;
+      let t = 0;
+      for (; t < 40 && !(r.drop && !f.air); t += dt) {
+        stepUfo(dt); stepMeats(dt);
+        if (f.ufo) r.got = 1;
+        if (r.got && !f.ufo && f.air) r.drop = 1;
+      }
+      r.t = +t.toFixed(2);
+    } finally { Math.random = real; }
+    r.land = f.air === 0 && !f.ufo; r.d = +Math.hypot(f.x, f.z).toFixed(2); r.R = debrisR; r.inList = meats.indexOf(f) >= 0;
+    cleanTools();
+    return r;
+  });
+  ok('幽浮：光圈裡的食物同碎料吸走、收在艙裡，五秒後撒回島上，落地停住、還在清單上',
+     fufo.got && fufo.drop && fufo.land && fufo.d <= fufo.R + 1e-6 && fufo.inList, JSON.stringify(fufo));
+
+  /* ── 小黑洞：範圍裡的全部吸走（不擲骰）、叫來吃的那一隻放掉，五秒後撒回島上落地 ── */
+  const fhole = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30;
+    const m = spawnCattle(); m.kind = 'shiba'; m.nb = null; m.x = X; m.z = 25; m.pause = 999;   // 在 HOLE_R 外：自己不會被一起吸走
+    const f = dropMeat({ x: X, y: 0, z: 0 }, 'meat'); f.y = 0;
+    stepMeats(0.001);
+    const r = { called: m.meat === f, got: 0, freed: null, drop: 0 };
+    castHole({ x: X, y: 0, z: 0 }, true);
+    const dt = 0.05;
+    let t = 0;
+    for (; t < 40 && !(r.drop && !f.air); t += dt) {
+      stepHoles(dt); stepMeats(dt);
+      if (f.ufo && !r.got) { r.got = 1; r.freed = m.meat === null; }
+      if (r.got && !f.ufo && f.air) r.drop = 1;
+    }
+    r.t = +t.toFixed(2); r.land = f.air === 0 && !f.ufo; r.d = +Math.hypot(f.x, f.z).toFixed(2); r.R = debrisR;
+    cleanTools(); beasts = null;
+    return r;
+  });
+  ok('小黑洞：範圍裡的食物同碎料全部吸走、叫來吃的那一隻先放掉，五秒後撒回島上落地',
+     fhole.called && fhole.got && fhole.freed && fhole.drop && fhole.land && fhole.d <= fhole.R + 1e-6, JSON.stringify(fhole));
+
+  /* ── 保齡球：滾過去碰到就撞開（同地上的散料）。押住出手方向（BALL_SPREAD 那一點亂數）：正對著滾過去。
+        出手點擺在 35 格外：球是從 BALL_R ＋ BALL_DROP 高丟出去的，出手後二十幾格還在半空，
+        擺近了它從食物頭上飛過去（第一版擺 15 格外，經過時球心 4.31 高、離食物中心 3.9 ＞ 判定半徑 3.8；地上的碎料在那裡也一樣不會被碰到） ── */
+  const fball = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const X = siteR + 30;
+    const f = dropMeat({ x: X, y: 0, z: 0 }, 'hay'); f.y = 0;
+    launchBall({ x: X, z: -35 }, { x: X, z: 35 });
+    const b = balls[balls.length - 1];
+    b.vx = 0; b.vz = BALL_SPD; b.ax = 1; b.az = 0;
+    const dt = 0.05, r = { air: 0, by: null };
+    for (let t = 0; t < 4; t += dt) {
+      stepBall(dt); stepMeats(dt);
+      if (f.air) { r.air++; if (r.by === null && balls && balls[0]) r.by = +balls[0].y.toFixed(2); }
+    }
+    r.dz = +f.z.toFixed(2); r.r = BALL_R;
+    cleanTools();
+    return r;
+  });
+  ok('保齡球：滾過去碰到食物就撞開（同地上的散料），往球滾的那一邊飛', fball.air > 0 && fball.dz > 1, JSON.stringify(fball));
+
+  /* ── 畫面：翻跟斗繞中心那一點轉（翻半圈時每一塊都跟平放那一份對中心點對稱）；平放時跟原本一模一樣 ── */
+  const fdraw = await page.evaluate(() => {
+    cleanTools();
+    const mesh = ENG.three.meatMesh, P = ENG.MODELS.meat, cy = ENG.FOOD_CY.meat, X = siteR + 30;
+    const mat = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+    const at = tilt => {
+      ENG.putMeats([{ x: X, y: 0, z: 0, a: 0, k: 1, s: 1, tilt }]);
+      return P.map((p, i) => { const v = new THREE.Vector3(); mesh.getMatrixAt(i, mat); mat.decompose(v, q, sc); return v; });
+    };
+    const a = at(0), b = at(Math.PI);
+    let flip = 0, flat = 0;
+    for (let i = 0; i < P.length; i++) {
+      flip = Math.max(flip, Math.abs(b[i].x - (2 * X - a[i].x)), Math.abs(b[i].y - (2 * cy - a[i].y)), Math.abs(b[i].z - a[i].z));
+      flat = Math.max(flat, Math.abs(a[i].x - (X + P[i].p[0])), Math.abs(a[i].y - P[i].p[1]), Math.abs(a[i].z - P[i].p[2]));
+    }
+    ENG.putMeats([]);
+    return { flip: +flip.toExponential(2), flat: +flat.toExponential(2), cy, n: P.length };
+  });
+  ok('畫面：翻跟斗繞中心那一點轉（翻半圈時每一塊都對中心點對稱），平放時每一塊的位置跟造型表一樣',
+     fdraw.flip < 1e-4 && fdraw.flat < 1e-4, JSON.stringify(fdraw));
+
+  await page.evaluate(() => { cleanTools(); });
+  }   // ── 〈食物被道具打飛〉結束（--tier 跳過時從這裡出來）
+
   /* ══════════ 道具：燈源（v1.303.0） ══════════
      使用者：「增加道具燈源 如果沒有在設定開啟光源數量 就沒有這道具／功能是往某個方向照明 被攻擊會被破壞」，選了點兩下、
      積木架＋模型燈頭壞了就沒了、晚上照白天燈板亮著、最多 4 座；看過預覽：燈頭掉地上要淡掉、光束從燈板照出去、光束選淡。

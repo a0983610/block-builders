@@ -3174,8 +3174,12 @@ if (vAo.x + vAo.y > 0.5) {
     { p: [0.12, 0.83, -0.2], s: [0.24, 0.04, 0.05], c: 0xe6c76e, m: 1 },
     { p: [-0.5, 0.83, 0.16], s: [0.05, 0.04, 0.22], c: 0xc39a44, m: 1 }
   ];
-  /* f：{x, y, z, kind 哪一種（沒給是肉）, a 骨頭朝哪, k 肉剩多大（0～1，往骨頭收）, s 整塊多大（收掉那一下）}。
-     v1.326.0 起三種食物都走這一支，照 f.kind 畫進各自那一顆（FOOD，各 MAXMEAT 份） */
+  /* f：{x, y, z, kind 哪一種（沒給是肉）, a 骨頭朝哪, k 肉剩多大（0～1，往骨頭收）, s 整塊多大（收掉那一下）,
+     tilt 被打飛時翻跟斗翻到幾弧度（v1.328.0，繞長邊那條軸的垂直方向翻、繞中心那一點轉；沒給是 0＝平放）}。
+     v1.326.0 起三種食物都走這一支，照 f.kind 畫進各自那一顆（FOOD，各 MAXMEAT 份）。
+     自己一顆 Object3D（同燈架的 _flO）：先轉朝向、再在那個方向上翻，不去改共用那顆 scratch 的轉法順序 */
+  const _fdO = new T.Object3D(), _fdV = new T.Vector3();
+  _fdO.rotation.order = 'YZX';
   function putMeats(list) {
     for (const t in FOOD) FOOD[t].n = 0;
     for (const f of list) {
@@ -3183,17 +3187,20 @@ if (vAo.x + vAo.y > 0.5) {
       if (F.n >= MAXMEAT) continue;
       const P = F.part, NP = P.length, i = F.n++;
       const k = Math.max(1e-3, f.k == null ? 1 : f.k);
-      scratch.position.set(f.x, f.y, f.z);
-      scratch.rotation.set(0, f.a || 0, 0);
-      scratch.scale.setScalar(Math.max(1e-3, f.s == null ? 1 : f.s));
-      scratch.updateMatrix();
+      const sc = Math.max(1e-3, f.s == null ? 1 : f.s);
+      _fdO.rotation.set(0, f.a || 0, f.tilt || 0);
+      /* 原點在底下，翻的時候要繞中心（離底 cy）：轉完把中心挪回原位。不翻的時候這一截是 0 */
+      _fdV.set(0, F.cy * sc, 0).applyEuler(_fdO.rotation);
+      _fdO.position.set(f.x - _fdV.x, f.y + F.cy * sc - _fdV.y, f.z - _fdV.z);
+      _fdO.scale.setScalar(sc);
+      _fdO.updateMatrix();
       for (let j = 0; j < NP; j++) {
         const p = P[j], q = p.m ? k : 1;
         scratchB.position.set(p.p[0] * q, F.cy + (p.p[1] - F.cy) * q, p.p[2] * q);
         if (p.r) scratchB.rotation.set(p.r[0], p.r[1], p.r[2]); else scratchB.rotation.set(0, 0, 0);
         scratchB.scale.set(p.s[0] * q, p.s[1] * q, p.s[2] * q);
         scratchB.updateMatrix();
-        tmpM.multiplyMatrices(scratch.matrix, scratchB.matrix);
+        tmpM.multiplyMatrices(_fdO.matrix, scratchB.matrix);
         F.mesh.setMatrixAt(i * NP + j, tmpM);
         F.mesh.setColorAt(i * NP + j, tmpC.setHex(p.c));
       }
@@ -5917,6 +5924,9 @@ if (vAo.x + vAo.y > 0.5) {
                  banana: { part: BUNCH_PART, cy: BUNCH_CY } };
   const FOOD_R = {};
   for (const t in FOOD) FOOD_R[t] = Math.max(...FOOD[t].part.filter(p => p.m).map(p => Math.abs(p.p[2]) + p.s[2] / 2));
+  /* FOOD_CY＝那一種的中心離底多高（v1.328.0）：規則那邊量「碰不碰得到」用這一點（碎料量的也是中心），翻跟斗也繞這一點 */
+  const FOOD_CY = {};
+  for (const t in FOOD) FOOD_CY[t] = FOOD[t].cy;
 
   /* 小獼猴：頭頂 1.31——跟小人連安全帽一樣高（使用者：「小人大小」）。
      跟小人區隔靠的是剪影不是顏色：駝背前傾、手垂過膝、頭頂一撮冠毛。
@@ -13911,6 +13921,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
     FOOD_R,                                    /* 三種食物各自的半寬（v1.326.0，MEAT_R 就是 FOOD_R.meat） */
+    FOOD_CY,                                   /* 三種食物各自的中心離底多高（v1.328.0，道具打不打得到量這一點） */
     putBooms, BOOM_LAMPS,                      /* 強爆炸照亮周圍（v1.291.0）：規則那邊照 BOOM_LAMPS 盞併好再給 */
     putGlows, lampRoom, nightK, setLampCount,  /* 晚上的小光源、光源數（v1.296.0）：規則那邊照 lampRoom() 盞排好再給 */
     putFloods, MAXFLOOD, FLOOD_PIV,            /* 燈架（v1.303.0）：規則那邊的上限讀 MAXFLOOD、瞄準照燈板的軸高 FLOOD_PIV 算俯角 */

@@ -2162,6 +2162,14 @@ function bncTouch(o, h, R) {
       rest = true;
     }
   }
+  /* 地上的食物同地上的散料（v1.328.0，見 foodKick）：碰到就撞開，同上面咬一口那一條；球不會被它彈開 */
+  eachFood((f, cx, cy, cz) => {
+    const dx = cx - o.x, dy = cy - o.y, dz = cz - o.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > R2) return;
+    const d = Math.max(0.4, Math.sqrt(d2)), sp = Math.hypot(o.vx, o.vy, o.vz);
+    foodKick(f, o.vx * 0.3 + dx / d * 4 + rr(-1.5, 1.5), Math.max(2, sp * 0.15) + dy / d * 2 + rr(1, 3), o.vz * 0.3 + dz / d * 4 + rr(-1.5, 1.5));
+  }, true);
   if (rest) {                                      // 靠著東西滾：慢慢停下來
     const k = Math.pow(BNC_ROLL, h);
     o.vx *= k; o.vz *= k;
@@ -2287,6 +2295,14 @@ function stepBall(dt) {
         o.vz * 0.5 + dz / d * 7 + rr(-2, 2))) continue;   // 防護罩擋下（v1.259.0）
       if (wasSet) { n++; if (wasOwn) own++; }      // 地上的散料被撞開不算破壞
     }
+    /* 地上的食物同地上的散料（v1.328.0，見 foodKick）：碰到就撞開，同上面那一條；不算碰到幾塊（球不會被它擋住） */
+    eachFood((f, cx, cy, cz) => {
+      const dx = cx - o.x, dy = cy - o.y, dz = cz - o.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > R2) return;
+      const d = Math.max(0.4, Math.sqrt(d2));
+      foodKick(f, o.vx * 0.5 + dx / d * 7 + rr(-2, 2), Math.max(3, sp * 0.26) + dy / d * 3 + rr(1, 5), o.vz * 0.5 + dz / d * 7 + rr(-2, 2));
+    }, true);
     ballShove(o, R);
     if (n) {
       o.hit += n;
@@ -2645,6 +2661,16 @@ function stepTwist(dt) {
       if (!p.air && frCover(p.x, p.y || 0, p.z)) continue;   // 防護罩擋下（v1.259.0）：沒被捲起來就不推
       twSwirl(w, p, dx, dz, d, dt, B_BLOW);        // 大隻的捲得慢一點（同掀飛照體型打折）
     }
+    /* 地上的食物同碎料（v1.328.0）：罩到就捲上去、跟碎料同一組力（力道不打折）、一路亂翻 */
+    eachFood(f => {
+      const dx = f.x - w.x, dz = f.z - w.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > R2 || f.y > w.h) return;
+      const d = Math.max(0.5, Math.sqrt(d2));
+      if (!f.air) foodKick(f, 0, 0, 0);
+      twSwirl(w, f, dx, dz, d, dt, 1);
+      f.asp += rr(-30, 30) * dt; f.tsp += rr(-30, 30) * dt;
+    });
     if (n) {
       w.hit += n;
       afterHit(n, { x: w.x, y: 2, z: w.z }, R * 0.6, own);
@@ -2719,6 +2745,18 @@ function explode(point, R, power, wind, crash, self, quiet, scorchR) {
     igniteBlock(b);
     if (wasSet) { n++; if (wasOwn) ownN++; }
   }
+  /* 地上的食物同碎料（v1.328.0，見 foodKick）：上面那一條公式、量的是食物中心；不點火（落地還要吃） */
+  eachFood((fd, cx, cy, cz) => {
+    const dx = cx - point.x, dy = cy - point.y, dz = cz - point.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > R2) return;
+    const d = Math.sqrt(d2), ol = Math.max(0.7, d);
+    const f = Math.pow(1 - d / R, 0.55) * power;
+    const lift = f * Y_BOOST * (0.35 + 0.65 * (1 - d / R));
+    let nx = dx / ol, nz = dz / ol;
+    if (d < 1.2) { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
+    foodKick(fd, nx * f + rr(-2, 2), Math.abs(dy) / ol * f * 0.5 + lift + rr(1, 4), nz * f + rr(-2, 2));
+  });
   /* 站在火球裡的人跟碎料同一套：吃同一條衝擊力公式、被炸飛出去，而且一律點著
      （落地才開始燒）。圈外那一帶不吹飛，交給 afterHit 把他們掀倒就好。
      這段要排在 afterHit 前面：afterHit 不會再去動已經飛起來的人。
@@ -5270,6 +5308,16 @@ function magGrab(m, b, lift, dust) {
   const h = { b, x: b.x, y: b.y + lift, z: b.z, dust };
   if (m.dive) magAim(m, h); else m.held.push(h);
 }
+/* 這一件還在這個陣手上嗎：記著這個陣的號碼、還在飛（積木是 FLY，食物是 air，v1.328.0）。落地了就是放掉了 */
+const magHas = (m, o) => o.mgk === m.id && (o.st === FLY || o.air === 1);
+/* 地上的食物同碎料（v1.328.0）：接手的做法同 magGrab，只是「變成飛著的」走 foodKick、翻得慢（MAG_TUMBLE） */
+function magFood(m, f, lift) {
+  foodKick(f, 0, 0, 0);
+  f.asp = rr(-MAG_TUMBLE, MAG_TUMBLE); f.tsp = rr(-MAG_TUMBLE, MAG_TUMBLE);
+  f.mgk = m.id;
+  const h = { b: f, x: f.x, y: f.y + lift, z: f.z, dust: null };
+  if (m.dive) magAim(m, h); else m.held.push(h);
+}
 /* 排上拽進去那一段：從現在的位置走到陣心附近的一個隨機點。全部瞄同一個點的話最後那幾幀
    整團會疊成一顆積木大小的小點，看起來像憑空消失（見 CRUSH_BALL）。
    e＝排上去那一刻已經走到幾成：半路才剝下來的，從那一刻算起照樣在爆炸前一幀到。 */
@@ -5286,7 +5334,7 @@ function magAim(m, h) {
    在同一幀 implode 的迴圈裡接手，那時 m.dive 已經在了，magGrab 會直接排上去。 */
 function magDive(m) {
   m.dive = [];
-  for (const h of m.held) if (h.b.st === FLY && h.b.mgk === m.id) magAim(m, h);
+  for (const h of m.held) if (magHas(m, h.b)) magAim(m, h);
   m.held.length = 0;
 }
 /* 放手：陣炸開、被擠掉、被打斷（惠惠）的時候。還浮著的照重力掉下來，牆上剝下來的換成碎料色。 */
@@ -5331,6 +5379,14 @@ function implode(m, dt) {
     else if (b.st === FLY || m.dive) magGrab(m, b, 0, null);
     else if (d2 <= loose * loose) magGrab(m, b, rr(MAG_FLOAT[0], MAG_FLOAT[1]), null);
   }
+  /* 地上的食物同地上的碎料（v1.328.0）：同一圈一圈浮起來、半空中的就地接住、拽進去那一段全部一起拽 */
+  eachFood(f => {
+    if (f.mgk === m.id) return;
+    const dx = f.x - m.x, dz = f.z - m.z, d2 = dx * dx + dz * dz;
+    if (d2 > R2) return;
+    if (f.air || m.dive) magFood(m, f, 0);
+    else if (d2 <= loose * loose) magFood(m, f, rr(MAG_FLOAT[0], MAG_FLOAT[1]));
+  });
   /* 記帳：計數、嚇小人、標記垮塌重算。半徑給 MAG_CORE_R（陣心那一圈）而不是 MAG_R，
      不然整個工地的小人都會被掀倒。 */
   if (n) afterHit(n, { x: m.x, y: MAG_CORE_Y, z: m.z }, MAG_CORE_R, own);
@@ -5340,7 +5396,7 @@ function implode(m, dt) {
     const u = Math.min(1, (CRUSH_AT - m.t + dt) / CRUSH_AT), e = u * u;
     for (const h of m.dive) {
       const b = h.b;
-      if (b.st !== FLY || b.mgk !== m.id) continue;
+      if (!magHas(m, b)) continue;
       const f = h.e >= 1 ? 1 : Math.max(0, (e - h.e) / (1 - h.e));
       b.vx = (h.x + (h.tx - h.x) * f - b.x) / dt;
       b.vy = (h.y + (h.ty - h.y) * f - b.y) / dt + GRAV * dt;
@@ -5352,7 +5408,7 @@ function implode(m, dt) {
     const w = MAG_HOVER;
     for (let i = m.held.length - 1; i >= 0; i--) {
       const h = m.held[i], b = h.b;
-      if (b.st !== FLY || b.mgk !== m.id) { m.held.splice(i, 1); continue; }
+      if (!magHas(m, b)) { m.held.splice(i, 1); continue; }
       b.vx += ((h.x - b.x) * w * w - b.vx * 2 * w) * dt;
       b.vy += ((h.y - b.y) * w * w - b.vy * 2 * w) * dt + GRAV * dt;
       b.vz += ((h.z - b.z) * w * w - b.vz * 2 * w) * dt;
@@ -7065,7 +7121,7 @@ function callUfo(p) {
    放掉的時候要把旗標清掉，不然下一台幽浮會以為它還在別人光裡而跳過它。 */
 const ufoHas = it => it.o.ufo === 1 && (it.kind !== 0 || it.o.st === CARRY);
 function ufoLose(it) { if (it.o.ufo === 1) it.o.ufo = 0; }
-/* 抓一件東西進光柱。kind：0 積木、1 小人、2 動物。
+/* 抓一件東西進光柱。kind：0 積木、1 小人、2 動物、3 食物（v1.328.0）。
    記下「被吸走的地方」（x／z）：五秒後就是掉回這裡（見檔頭 ②）。 */
 function ufoGrab(u, o, kind) {
   o.ufo = 1;
@@ -7114,6 +7170,15 @@ function ufoSuck(u, dt) {
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'ufo');   // v1.208
     ufoGrab(u, m, 2);
   }
+  /* 地上的食物同碎料（v1.328.0）：照 UFO_TAKE 抽，抽中就吸走（kind 3）。叫來吃的那幾隻先放掉（同大洪水），
+     撒下來落地之後照「叫最近的幾隻」那條重新叫。往上飄、翻（tilt）、撒下來（air ＋ 速度）都走小人與動物那一支 */
+  eachFood(f => {
+    if (f.y > u.y) return;
+    const rad = ufoRad(u, f.y), dx = f.x - u.x, dz = f.z - u.z;
+    if (dx * dx + dz * dz > rad * rad || Math.random() >= take) return;
+    meatFree(f);
+    ufoGrab(u, f, 3);
+  });
   if (n) { u.hit += n; afterHit(n, { x: u.x, y: u.y, z: u.z }, UFO_R * 0.6, own); }
 }
 /* 光柱裡那些：一邊繞著柱子轉、一邊往上飄，碰到吸光口就進艙。
@@ -7183,7 +7248,8 @@ function ufoDrop(u) {
       o.st = FLY; o.rest = false; o.snap = 0; o.al = 1;
       o.vx = rr(-2, 2); o.vy = rr(-4, 0); o.vz = rr(-2, 2);
       o.ax = rr(-9, 9); o.ay = rr(-9, 9); o.az = rr(-9, 9);
-    } else {
+    } else if (it.kind === 3) foodKick(o, rr(-2, 2), rr(-4, 0), rr(-2, 2));   // 食物（v1.328.0）：同積木那一條、一樣邊掉邊翻
+    else {
       o.air = 1; o.fall = 0;
       o.vx = rr(-2, 2); o.vy = rr(-3, 0); o.vz = rr(-2, 2);
     }
@@ -7453,6 +7519,12 @@ function holeTake(h) {
     if (!m.air && tossBeast(m, 0, 0, 0, false)) beastHit(m, 'hole');   // v1.208
     holeGrab(h, m, 2);
   }
+  /* 地上的食物同碎料（v1.328.0）：範圍裡的全部接手（量中心，同碎料）、叫來吃的先放掉（同幽浮那一條） */
+  eachFood((f, cx, cy, cz) => {
+    if ((cx - h.x) ** 2 + (cy - h.y) ** 2 + (cz - h.z) ** 2 > R2) return;
+    meatFree(f);
+    holeGrab(h, f, 3);
+  });
   if (n) { h.hit += n; afterHit(n, h, 0, own); }
 }
 /* 手上那些這一幀在哪：接手時的偏移繞球心轉 a、再縮成 f（兩個都是這一件自己的，見 HOLE_IN 那段）。
@@ -9035,6 +9107,22 @@ function swordCut(s, aFrom, aTo, dt) {
     n++; if (ow) own++;
     cx += b.x; cy += b.y; cz += b.z;
   }
+  /* 地上的食物同地上的碎料（v1.328.0，見 foodKick）：同一片扇形、同一條力道公式 */
+  eachFood((f, fx, fy, fz) => {
+    const vx = fx - s.x, vy = fy - s.y, vz = fz - s.z;
+    if (Math.abs(vx * s.nx + vy * s.ny + vz * s.nz) > slab) return;
+    const a = vx * s.u0x + vy * s.u0y + vz * s.u0z, c = vx * s.e2x + vy * s.e2y + vz * s.e2z;
+    const d2 = a * a + c * c;
+    if (d2 < r02 || d2 > r12) return;
+    const th = Math.atan2(c, a);
+    if (th < aFrom || th > aTo) return;
+    const r = Math.sqrt(d2), sp = Math.min(SW_HIT_MAX, om * r * SW_HIT_K);
+    const tx = (-c * s.u0x + a * s.e2x) / r, ty = (-c * s.u0y + a * s.e2y) / r, tz = (-c * s.u0z + a * s.e2z) / r;
+    const gx = (a * s.u0x + c * s.e2x) / r, gy = (a * s.u0y + c * s.e2y) / r, gz = (a * s.u0z + c * s.e2z) / r;
+    foodKick(f, tx * sp + gx * sp * 0.25 + rr(-1.6, 1.6),
+             Math.abs(ty * sp + gy * sp * 0.25) * 0.35 + rr(2.4, 6.8) + sp * 0.12,
+             tz * sp + gz * sp * 0.25 + rr(-1.6, 1.6));
+  }, true);
   /* 人與動物排在這裡：**不管有沒有切到積木都要判**（使用者要的就是「剛好碰到」也算），
      而且要排在下面的 afterHit 前面——afterHit 不會動已經飛起來的人，順序反了的話
      被刃掃到的那個會變成「原地倒下」而不是被撞飛（同爆炸那邊的順序）。 */
@@ -11179,6 +11267,12 @@ function excSweep(m, P, C) {
     n++; if (ow) own++;
     cx += b.x; cy += b.y; cz += b.z;
   }
+  /* 地上的食物同地上的碎料（v1.328.0，見 foodKick）：同一道光掃到就沖飛、同一條力道 */
+  eachFood((f, fx, fy, fz) => {
+    if (!excCross(g, P, C, fx, fy, fz, 0)) return;
+    const sp = rr(EXC_HIT[0], EXC_HIT[1]), tf = Math.max(0.35, tu);
+    foodKick(f, g.fx * tf * sp + rr(-1.5, 1.5), Math.abs(tv) * sp * 0.35 + rr(2.4, 6.8), g.fz * tf * sp + rr(-1.5, 1.5));
+  }, true);
   /* 人與動物排在 afterHit 前面（同大劍）：afterHit 不會動已經飛起來的人，
      順序反了的話被光柱掃到的那個會變成「原地倒下」而不是被沖飛。 */
   excLives(m, g, P, C);
@@ -11837,6 +11931,13 @@ function levCut(m, C, dt) {
     n++; if (ow) own++;
     cx += b.x; cy += b.y; cz += b.z;
   }
+  /* 地上的食物同地上的碎料（v1.328.0，見 foodKick）：刀轉到就甩出去、同一條力道 */
+  eachFood((f, fx, fy, fz) => {
+    const dx = fx - C.x, dy = fy - C.y, dz = fz - C.z;
+    if (dx * dx + dy * dy + dz * dz > R2) return;
+    const hl = Math.hypot(dx, dz) || 1, sp = rr(LEV_HIT[0], LEV_HIT[1]);
+    foodKick(f, dz / hl * sp + c.nx * rr(2, 5), rr(2, 6) + c.ny * 3, -dx / hl * sp + c.nz * rr(2, 5));
+  }, true);
   levLives(m, C, R);
   m.odu += dt;
   if (!n) return 0;
@@ -12214,6 +12315,16 @@ function zenCut(m, s0, s1, dt) {
       n++; if (ow) own++;
       cx += b.x; cy += b.y; cz += b.z;
     }
+    /* 地上的食物同地上的碎料（v1.328.0，見 foodKick）：同一截、同一條力道 */
+    eachFood((f, fx, fy, fz) => {
+      if (fy >= H) return;
+      const vx = fx - ax, vz = fz - az, t = vx * ux + vz * uz;
+      if (t < -W2 || t > L + W2) return;
+      const tc = t < 0 ? 0 : t > L ? L : t, dx = vx - ux * tc, dz = vz - uz * tc;
+      if (dx * dx + dz * dz > W2 * W2) return;
+      const sp = rr(ZEN_HIT[0], ZEN_HIT[1]), sd = (ux * dz - uz * dx) < 0 ? 1 : -1;
+      foodKick(f, ux * sp - uz * sd * rr(1, 4), rr(3, 8), uz * sp + ux * sd * rr(1, 4));
+    }, true);
     zenLives(m, ax, az, ux, uz, L, W2);
   }
   m.zdu += dt;
@@ -12450,7 +12561,7 @@ function purpD2(a, b, x, y, z) {
   const ex = wx - vx * t, ey = wy - vy * t, ez = wz - vz * t;
   return ex * ex + ey * ey + ez * ez;
 }
-/* 接手一件（kind：0 積木、1 小人、2 動物）：旗標沿用 ufo（意思是「這一件被某個道具收著」，同小黑洞，見那一節），
+/* 接手一件（kind：0 積木、1 小人、2 動物、3 食物（v1.328.0））：旗標沿用 ufo（意思是「這一件被某個道具收著」，同小黑洞，見那一節），
    積木改 CARRY。記下接手那一刻離球心的偏移（沿著飛的方向那一份 al、繞著飛的方向那一圈的角度 th 與半徑 rr），
    之後每一幀照「繞著球轉、半徑慢慢收到 rf、前後那一份慢慢收到 0」算出來（見 purpMove）——
    繞的軸就是飛的方向，球一路往前鑽、東西一路繞著它轉（使用者：「帶著旋轉 積木或生物吸進去轉」） */
@@ -12501,6 +12612,13 @@ function purpTake(p, a, b) {
     bl.tr = tr; bl.tg = tg; bl.tb = tb;
     if (wasSet) { n++; if (wasOwn) own++; }
   }
+  /* 地上的食物同地上的碎料（v1.328.0）：同一段、吸進去轉（kind 3）、掛滿了照樣削飛；叫來吃的先放掉（同幽浮那一條） */
+  eachFood((f, fx, fy, fz) => {
+    if (purpD2(a, b, fx, fy, fz) > R2) return;
+    if (p.up.length >= PURP_CAP) { foodKick(f, p.ux * 12, rr(3, 7), p.uz * 12); return; }
+    meatFree(f);
+    purpGrab(p, f, 3);
+  }, true);
   for (const w of workers) {
     if (w.ufo || w.air || w.dead) continue;   // 已經被收著／飛在半空的不吸；屍體不吸（v1.240）
     if (purpD2(a, b, w.x, (w.y || 0) + 0.9 * (w.scale || 1), w.z) > (PURP_R + GATE_MAN_R) ** 2) continue;
@@ -12560,6 +12678,7 @@ function purpBurst(p, now) {
       if (it.dust) { o.tr = it.dust[0]; o.tg = it.dust[1]; o.tb = it.dust[2]; }   // 甩出去就是碎料了
       o.vx = vx; o.vy = vy; o.vz = vz;
     } else if (it.kind === 1) tossWorker(o, vx * 0.6, vy, vz * 0.6, false);
+    else if (it.kind === 3) foodKick(o, vx, vy, vz);   // 食物（v1.328.0）：同積木那一條速度
     else {
       /* 動物接手時已經是 air（tossBeast 掀過），再叫 tossBeast 會直接回 false——速度自己給（同小黑洞的 holeBail），
          大的照 tossBeast 那一條打折（bk） */
@@ -13505,6 +13624,13 @@ function grRamHit(m, dt) {
     n++; if (ow) own++;
     cx += b.x; cy += b.y; cz += b.z;
   }
+  /* 地上的食物同地上的碎料（v1.328.0，見 foodKick）：撞到就撞飛、同一條力道 */
+  eachFood((f, fx, fy, fz) => {
+    const dx = fx - C.x, dy = fy - C.y, dz = fz - C.z;
+    if (dx * dx + dy * dy + dz * dz > R2) return;
+    const sp = rr(GR_RAM.hit[0], GR_RAM.hit[1]), hl = Math.hypot(dx, dz) || 1;
+    foodKick(f, ux * sp + dx / hl * rr(2, 5), rr(2, 6) + dy, uz * sp + dz / hl * rr(2, 5));
+  }, true);
   grRamLives(m, C, R);
   if (!n) return;
   const at = { x: cx / n, y: cy / n, z: cz / n };
@@ -14251,6 +14377,18 @@ function erCut(m, f0, f1) {
     /* 切口的光（v1.292.0）：這一塊投影到切面上的那一點、切到的時刻，引擎照它亮一點（見引擎的 erGlint） */
     if (c.pts.length < ENG.ER_GLINT.max * 4) c.pts.push(bx - d * c.nx, by - d * c.ny, bz - d * c.nz, c.t);
   }
+  /* 地上的食物同地上的碎料（v1.328.0，見 foodKick）：同一片切面、同一條力道 */
+  eachFood((f, fx, fy, fz) => {
+    const vx = fx - c.hx, vy = fy - c.hy, vz = fz - c.hz;
+    const d = vx * c.nx + vy * c.ny + vz * c.nz;
+    if (d > W2 || d < -W2) return;
+    const a = vx * c.ux + vy * c.uy + vz * c.uz, s = vx * c.sx + vy * c.sy + vz * c.sz, r = Math.hypot(a, s);
+    const g = erSweepAt(c, a, s);
+    if (g < 0 || g > f1 || (f0 > 0 && g <= f0)) return;
+    const k = d >= 0 ? 1 : -1, sp = rr(ER_HIT[0], ER_HIT[1]), ri = 1 / (r || 1);
+    const ox = (a * c.ux + s * c.sx) * ri, oy = (a * c.uy + s * c.sy) * ri, oz = (a * c.uz + s * c.sz) * ri;
+    foodKick(f, c.nx * k * sp + ox * sp * 0.6, c.ny * k * sp + oy * sp * 0.6 + rr(0.5, 2), c.nz * k * sp + oz * sp * 0.6);
+  }, true);
   erLives(m, f0, f1, W2);
   if (!n) return 0;
   const at = { x: cx / n, y: cy / n, z: cz / n };
@@ -15271,8 +15409,10 @@ function dropMeat(p, kind = 'meat', dir = null) {
     if (g) { x = g.x; z = g.z; }
   }
   const a = rr(0, Math.PI * 2);
+  /* air 之後那幾個是被打飛用的（v1.328.0，見 foodKick）：先給 0，從地上直接被吸走、沒經過 foodKick 的那一份飛的時候才不會算出 NaN */
   const f = { kind, x, y: top + MEAT_Y0, z, vy: 0, hit: 0, up: top ? 1 : 0,
-              a, a0: a, base: rr(0, Math.PI * 2), left: 1, k: 1, s: 1, t: 0, ph: 0 };
+              a, a0: a, base: rr(0, Math.PI * 2), left: 1, k: 1, s: 1, t: 0, ph: 0,
+              air: 0, vx: 0, vz: 0, asp: 0, tsp: 0, tilt: 0 };
   meats.push(f);
   return f;
 }
@@ -15331,6 +15471,66 @@ function meatCall(f) {
   m.meat = f; m.mk = mk; m.mEat = 0; m.pause = 0; m.leg = 0;
   return m;
 }
+/* ── 食物被道具打飛（v1.328.0）──────────────────────────
+   使用者：「我發現 肉 草料 香蕉 不會跟著被龍捲風吹走 順便看看是不是也不會被其他道具影響」。
+   探針量到：v1.261.0～v1.327 只有大洪水捲得走，其餘道具放在食物身上水平位移 0（旁邊的碎料照樣飛）。問過之後定的：
+   **同碎料一條規則**——碎料會被哪一支打飛、吸走，食物就跟著被打飛、吸走（地上的碎料有掃的那幾支照同一條判定、
+   同一條速度公式各多掃一遍食物）；**落地後照樣能吃**（叫來的跟著走過去，飛在半空那段不算在吃）；
+   龍捲風**同碎料捲上去繞圈**（twSwirl）；幽浮、小黑洞**同碎料撒回島上**（ufoDrop）。
+   飛的物理照碎料那一支（stepBlock）：重力、出了 debrisR 撞牆彈回來、落地還有力氣就彈、沒力氣就滑到停。
+   旗標用 air／tilt（同小人、動物）：幽浮、小黑洞、茈那幾支放手時寫的是 `o.air = 1` ＋ 速度、繞的時候寫 `o.tilt`，
+   食物不必在那幾支另開分支。見 開發筆記〈食物同碎料被道具打飛、吸走〉 */
+/* 掃食物：被收著的（大洪水 dlg、幽浮／小黑洞／茈 ufo）、吃完只剩骨頭的不算。cb 收到「這一份」與它的中心（碎料量的也是中心）。
+   rest＝只掃躺著的（呼叫端那一支只掃 SET／FREE、不碰半空中 FLY 的那幾支，同一條規則） */
+function eachFood(cb, rest) {
+  if (!meats) return;
+  for (const f of meats) {
+    if (f.dlg || f.ufo || f.left <= 0 || (rest && f.air)) continue;
+    cb(f, f.x, f.y + ENG.FOOD_CY[f.kind], f.z);
+  }
+}
+/* 打飛：速度照呼叫端算給碎料的那一條，自己翻（同 breakBlock 給的 ±9）。丟下來那一下的彈算用過了 */
+function foodKick(f, vx, vy, vz) {
+  f.air = 1; f.hit = 1;
+  f.vx = vx; f.vy = vy; f.vz = vz;
+  f.asp = rr(-9, 9); f.tsp = rr(-9, 9);
+}
+/* 飛：同 stepBlock（重力、撞牆、落地彈／滑），落在哪一層照擺著的那一套（fl＝碎料頂、屋頂取高的，見 stepMeats）。
+   滑到停（同碎料 startSnap 那一刻）就不飛了，翻的角度交給 stepMeats 轉正 */
+function foodFly(f, dt, fl) {
+  f.vy -= GRAV * dt;
+  f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;
+  f.a += f.asp * dt; f.tilt = (f.tilt || 0) + f.tsp * dt;
+  const d = Math.hypot(f.x, f.z);
+  if (d > debrisR) {
+    const nx = f.x / d, nz = f.z / d;
+    f.x = nx * debrisR; f.z = nz * debrisR;
+    const dot = f.vx * nx + f.vz * nz;
+    f.vx -= 2 * dot * nx * 0.55; f.vz -= 2 * dot * nz * 0.55;
+  }
+  if (f.y > fl) return;
+  f.y = fl;
+  if (f.vy < -2.2) {
+    f.vy = -f.vy * 0.3;
+    f.vx *= 0.66; f.vz *= 0.66;
+    f.asp *= 0.5; f.tsp *= 0.5;
+    if (Math.random() < 0.22) sndLand();
+  } else {
+    const f60 = dt * 60, fv = Math.pow(0.82, f60), fa = Math.pow(0.7, f60);
+    f.vy = 0; f.vx *= fv; f.vz *= fv;
+    f.asp *= fa; f.tsp *= fa;
+    if (Math.hypot(f.vx, f.vz) < 0.55 && Math.abs(f.asp) + Math.abs(f.tsp) < 1.2) {
+      f.air = 0; f.vx = f.vz = 0; f.asp = f.tsp = 0;
+    }
+  }
+}
+/* 落定轉正：翻的角度轉回最近的平放（2π 的整數倍）。碎料 stepSnap 約 0.22 秒轉到 90 度的倍數，
+   這裡照指數收（一秒收掉 FOOD_RIGHT 倍），0.25 秒剩 5% 看起來就平了 */
+const FOOD_RIGHT = 12;
+function foodRight(f, dt) {
+  const T = Math.PI * 2, to = Math.round(f.tilt / T) * T, e = to - f.tilt;
+  f.tilt = Math.abs(e) < 1e-3 ? 0 : f.tilt + e * Math.min(1, dt * FOOD_RIGHT);
+}
 /* 放掉圍著這塊的：吃飽了站一下（同走到一個點站著吃草），再照常逛 */
 function meatFree(f) {
   if (!beasts) return;
@@ -15347,17 +15547,20 @@ function stepMeats(dt) {
   for (let i = meats.length - 1; i >= 0; i--) {
     const f = meats[i];
     if (f.dlg) continue;                                          // 被大洪水捲走的（v1.325.0）：漂、縮、收掉都在 stepDeluge
+    if (f.ufo) continue;                                          // 被幽浮、小黑洞、茈收著的（v1.328.0）：位置由那一支管，放手才接著算
     const rf = meatRoof(f), fl = Math.max(meatFloor(f), rf);
     /* 底下那一塊建築被打掉、掉回地上了（v1.326.0）：在底下等的那幾隻重新走到旁邊來吃 */
     if (f.up && !rf && beasts) for (const m of beasts) if (m.meat === f) m.mEat = 0;
     f.up = rf ? 1 : 0;
-    if (f.y > fl || f.vy > 0) {                                   // 掉下來（第一下彈一點點）
+    if (f.air) foodFly(f, dt, fl);                                // 被道具打飛（v1.328.0）：同碎料那一套，見 foodFly
+    else if (f.y > fl || f.vy > 0) {                              // 掉下來（第一下彈一點點）
       f.vy -= GRAV * dt; f.y += f.vy * dt;
       if (f.y <= fl) {
         f.y = fl;
         if (!f.hit) { f.hit = 1; f.vy = -f.vy * MEAT_BOUNCE; sndStab(); } else f.vy = 0;
       }
     } else { f.y = fl; f.vy = 0; }                                // 底下剛好滾進來一塊：墊上去
+    if (!f.air && f.tilt) foodRight(f, dt);                       // 飛完落定：翻的角度轉回平放
     if (f.left <= 0) {                                            // 吃完了：骨頭擺一下、縮掉
       f.t += dt;
       f.a = f.a0; f.k = 0; f.s = 1 - clamp((f.t - MEAT_BONE) / MEAT_POP, 0, 1);
@@ -15369,8 +15572,8 @@ function stepMeats(dt) {
       if (m.meat !== f || m.dead) continue;
       if (!m.herd && !mascFood(m)) { m.meat = null; m.mEat = 0; continue; }   // 吉祥物不再是來逛的（v1.326.0）：放掉，位子讓給別隻
       n++;
-      /* 被打倒、在燒的那幾秒不算在吃；擺在建築上的（f.up，v1.326.0）圍著也吃不到 */
-      if (m.mEat && !f.up && !m.air && !m.lie && !(m.burn > 0)) eat++;
+      /* 被打倒、在燒的那幾秒不算在吃；擺在建築上的（f.up，v1.326.0）圍著也吃不到；被打飛在半空的（f.air，v1.328.0）也吃不到 */
+      if (m.mEat && !f.up && !f.air && !m.air && !m.lie && !(m.burn > 0)) eat++;
     }
     if (n < MEAT_N) meatCall(f);
     f.left -= eat * dt / (MEAT_EAT * MEAT_N);
@@ -15391,8 +15594,9 @@ function meatWalk(m, dt, spd, stp, kp) {
   const a = meatAng(f, m.mk), r = ENG.FOOD_R[f.kind] + MEAT_GAP + herdBody(m.kind).nose * (m.sc || 1);
   m.tx = f.x + Math.cos(a) * r; m.tz = f.z + Math.sin(a) * r;
   m.pause = 0;
-  /* 吃到一半被推開（被打飛、炸開，爬起來已經不在原地）就再走回去 */
-  if (m.mEat && Math.hypot(m.x - m.mx, m.z - m.mz) > REACH) m.mEat = 0;
+  /* 吃到一半被推開（被打飛、炸開，爬起來已經不在原地）就再走回去；
+     食物被打飛走了（離開吃的那一刻在的地方超過 REACH，v1.328.0）也一樣，走到它落下來的地方 */
+  if (m.mEat && (Math.hypot(m.x - m.mx, m.z - m.mz) > REACH || Math.hypot(f.x - m.mfx, f.z - m.mfz) > REACH)) m.mEat = 0;
   if (!m.mEat) {
     if (!strollTo(m, dt, spd * PLAY_RUN_K, stp * PLAY_RUN_K, kp)) return;
     /* 剩下那一點用走的挪過去（照樣 navMove，不穿東西）；挪不動（站位被房子擋住）就地吃 */
@@ -15407,7 +15611,7 @@ function meatWalk(m, dt, spd, stp, kp) {
         return;
       }
     }
-    m.mEat = 1; m.mx = m.x; m.mz = m.z;
+    m.mEat = 1; m.mx = m.x; m.mz = m.z; m.mfx = f.x; m.mfz = f.z;
   }
   let e = Math.atan2(f.x - m.x, f.z - m.z) - m.a;
   while (e > Math.PI) e -= Math.PI * 2;
@@ -18017,7 +18221,9 @@ function dlgSweep() {
   /* 地上的兵器（插著、躺著的；門裡待發、飛著、掉著的不算）：直接進淡出那一段 */
   if (weapons) for (const w of weapons)
     if (!w.dlg && w.st !== 'gate' && w.st !== 'fly' && w.st !== 'fall' && dlgHit(w.x, w.z)) { w.lie = 0; dlgFloat(w, 0); }
-  if (meats) for (const f of meats) if (!f.dlg && dlgHit(f.x, f.z)) { meatFree(f); dlgFloat(f, k * 0.5); }   // 叫來吃的那幾隻先放掉
+  /* 食物：叫來吃的那幾隻先放掉。被幽浮、小黑洞收著的（ufo）不算、被打飛在半空的等落到水裡才算（同飛著的碎料，v1.328.0） */
+  if (meats) for (const f of meats)
+    if (!f.dlg && !f.ufo && (!f.air || dlgWet(f.y)) && dlgHit(f.x, f.z)) { meatFree(f); f.air = 0; dlgFloat(f, k * 0.5); }
   if (gifts) for (const g of gifts) if (!g.dlg && dlgHit(g.x, g.z)) dlgFloat(g, 0);
   /* 推土機被捲走就當整地收工（不然 phase 會一直停在 clear，見 finishClear：剩下的碎料彈出去、交給小人） */
   if (dozers) for (const m of dozers.list)
