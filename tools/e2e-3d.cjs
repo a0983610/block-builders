@@ -32320,6 +32320,42 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      '飛到 ' + hFly.top + ' 格高、翻了 ' + hFly.spun + ' 弧度 → ' + hFly.path +
      '，落在半徑 ' + hFly.r + '（邊界 ' + hFly.lim + '）');
 
+  /* ── 倒在地上的（躺著、正在爬起來）被打到：不掀飛、就地再躺一次，這一下照算（v1.325.2，使用者：「diablo 巨人等生物
+        被攻擊倒地後(例如箭雨)因為是多段攻擊 會一直倒地翻來翻去 尤其是大隻的生物」）。躺多久押 0＝B_FALL 下限；
+        爬到一半的躺回去；側躺的不翻邊；帶火的就地點著打滾；巨人照樣記一下命；燒著打滾的不在這條規則裡（照舊掀飛） ── */
+  const hLie = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    /* 「記一次」那一支 reset 換成空的了（見 installClean 的 lifeHit），這一條裝回本尊、量完還回去（同〈被打死〉） */
+    const real = Math.random, keepLife = lifeHit, r = {};
+    lifeHit = window.lifeHitFn;
+    try {
+      Math.random = () => 0;
+      const mk = kind => { const m = spawnBeast(kind, 1); m.x = 26; m.z = 0; m.y = 0; m.st = 'fun'; m.stay = 999; m.wet = 0; return m; };
+      const a = mk('ape'); fellBeast(a, 3);
+      const ax = a.x, az = a.z;
+      r.lying = tossBeast(a, 9, 11, 0, false) && !a.air && a.fall === B_FALL[0] && a.x === ax && a.z === az;
+      const b = mk('snow'); fellBeast(b, 3); b.fall = 0; b.spin = lieAng(b) * 0.5;   // 爬到一半
+      r.rise = tossBeast(b, 9, 11, 0, false) && !b.air && b.fall === B_FALL[0];
+      for (let i = 0; i < 20; i++) stepDoom(0.05);
+      r.back = Math.abs(b.spin - lieAng(b)) < 0.02 && b.fall > 0;
+      const c = spawnCattle(); fellBeast(c, 3); c.sdir = -1;              // 押 0 的話 lieSide 給 1，改成另一邊才看得出翻沒翻
+      r.side = tossBeast(c, 9, 11, 0, false) && !c.air && c.sdir === -1;
+      const d = mk('ape'); fellBeast(d, 3);
+      r.lit = tossBeast(d, 9, 11, 0, true) && !d.air && d.burn > 0 && d.brl === 1;
+      const g = mk('giant'); fellBeast(g, 3);
+      r.giant = tossBeast(g, 1, 3, 0, false) && !g.air && g.fall > 0;
+      if (r.giant) beastHit(g, 'arrow');
+      r.hits = g.hits || 0;
+      const e = mk('ape'); igniteBeast(e, 1);
+      r.burnToss = tossBeast(e, 9, 11, 0, false) && !!e.air && !(e.burn > 0);
+    } finally { Math.random = real; lifeHit = keepLife; }
+    cleanTools(); beasts = null;
+    return r;
+  });
+  ok('倒在地上的被打到不掀飛：躺著、爬到一半的就地再躺（躺回去、側躺不翻邊、帶火的點著打滾），這一下照算命；燒著打滾的照舊掀飛',
+     hLie.lying && hLie.rise && hLie.back && hLie.side && hLie.lit && hLie.giant && hLie.hits === 1 && hLie.burnToss,
+     JSON.stringify(hLie));
+
   /* ── 猴子：兩種著火演法（同小人：躺著滾 / 站著抱頭跑圈圈）── */
   const hBurn = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9;

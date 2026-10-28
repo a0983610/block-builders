@@ -15756,6 +15756,19 @@ function tossBeast(m, vx, vy, vz, lit) {
      就跑不到。 */
   if (m.sky) return grDown(m);
   if (m.air) return false;                           // 已經在飛了，不用再掀一次
+  /* 倒在地上的（躺著、正在爬起來：m.lie 還沒收掉）被打到：**不掀飛，就地再躺一次**，這一下照算（回 true，beastHit 記一筆）
+     ——v1.325.2，使用者：「diablo 巨人等生物 被攻擊倒地後(例如箭雨)因為是多段攻擊 會一直倒地翻來翻去 尤其是大隻的生物」，選「就地再躺」。
+     躺著那幾秒箭與子彈打不到（weaponVsBeast 跳過 fall），箭雨、火槍兵一直在落，牠開始爬起來的第一幀就被打中，還是躺平的姿勢；
+     從躺姿掀上天那一幀，畫的樞紐從腳底換到身體中段（見 開發筆記〈落地不能「接著空中的角度躺下去」〉，躺平 90° 兩套差巨人 9.74 格），
+     實測那一幀整隻瞬移巨人 6.7～10.1、Diablo 7.4～7.8 格。同 fellBeast「已經躺著的推不倒第二次」。
+     躺多久重抽（同落地那一下）；往哪邊躺照舊（不叫 lieSide，側躺的不會翻到另一邊）；帶火的就地點著打滾（同落地那一刻判定燒不燒）。
+     燒著打滾的、死了的照舊；惠惠倒下那三段有自己的暈（m.mt，見 stepMegDown），照 v1.260.0 使用者定的「炸得飛」。
+     見 開發筆記〈倒在地上再被打：不掀飛、就地再躺〉 */
+  if (m.lie && !m.dead && !(m.burn > 0) && !megDown(m)) {
+    if (!(lit && igniteBeast(m, 1))) { m.fall = rr(B_FALL[0], B_FALL[1]); m.gait = 0; m.pause = 0; }
+    reaim(m);
+    return true;
+  }
   const sp = Math.hypot(vx, vz);
   if (sp > B_TOSS_MAX) { const k = B_TOSS_MAX / sp; vx *= k; vz *= k; }
   /* roll 也歸零：那是躺平／打滾留下的角度，飛在半空沒有意義——不清的話
