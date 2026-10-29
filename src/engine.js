@@ -21,7 +21,7 @@ const ENG = (function () {
      （同屍體搬去 fadeMesh：機台本身那一顆不必變透明，才不會跟塵霧、火苗搶先後）。材質借 fadeMesh 那一份 */
   let trebFade = null, trebFadeA = null, canFade = null, canFadeA = null;
   let poolGeo, poolPos, poolFoam, poolUni;
-  let dlgMesh = null, dlgGeo, dlgPos, dlgFoam;   // 大洪水（v1.325.0）：整座島一片水，材質借水窪那一份（見 putDeluge）
+  let dlgMesh = null, dlgGeo, dlgPos, dlgCol, dlgFoam;   // 大洪水（v1.325.0；v1.330.0 換成會起伏的一張網格、自己一份材質，見 putDeluge）
   let markMesh, markGeo, markPos, markCol;
   let searMesh, searGeo, searPos, searCol;   // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），見 putSears
   let excFade;                               // 光柱每一格下緣／上緣的濃淡（v1.226，見 putBar）
@@ -123,7 +123,10 @@ const ENG = (function () {
      可是看不到水柱」：一個裝滿的馬克杯已經 4463 格，超過舊的 4000 格上限。 */
   const MAXPOOL = 9000;
   const MAXPOOLV = 150000;                  // 水的頂點上限（一格最多 6 面 × 6 頂點）
-  const DLG_VERT = 48;                      // 大洪水的頂點數上限：水面與兩側、浪頭斜坡與兩側、浪的正面、浪來那一邊共 8 塊，一塊 6 個頂點（見 putDeluge）
+  /* 大洪水那一張網格（v1.330.0，見 putDeluge）：橫的 DLG_NPI 行水面＋兩側島邊各一行；
+     往前的列是 浪來那一邊的島邊 1 ＋ 平的水身 DLG_NB ＋ 浪頭那一段 DLG_NC ＋ 浪舌 DLG_NK */
+  const DLG_NPI = 76, DLG_NB = 50, DLG_NC = 24, DLG_NK = 9;
+  const DLG_NP = DLG_NPI + 2, DLG_NR = 1 + DLG_NB + DLG_NC + DLG_NK;
   /* 地面痕跡（焦黑／坑洞）：同時最多幾塊、一塊切幾片、一塊最多幾圈。
      一塊痕跡是幾個同心圈疊出來的，圈與圈之間鋪一圈四邊形，
      所以頂點上限＝塊數 × 片數 × (圈數−1) × 6。 */
@@ -1046,6 +1049,27 @@ if (vAo.x + vAo.y > 0.5) {
     return m;
   }
 
+  /* ── 大洪水的水（v1.330.0）──
+     v1.325.0 借的是上面水窪那一份：52% 透明，整座島的草透上來就是一片青綠色的玻璃，
+     浪的正面那塊直立平板的泡沫又是一格一格的花紋（使用者：「水也假假的」）。
+     自己一份：九成不透明的深色海水，顏色照頂點給（浪頭透光淺一點、前緣白沫、後面一條條泡沫紋，見 putDeluge）；
+     面一樣是 flatShading（法線照螢幕微分算，不必傳），網格本身會起伏，所以一片一片的面就是浪。
+     **白沫自己發一點光**：浪的正面背著太陽時，光照下去只剩一片灰牆（預覽第一輪截圖），泡沫背光也是白的。 */
+  function delugeMaterial() {
+    const m = new T.MeshPhongMaterial({ vertexColors: true, flatShading: true, shininess: 60, specular: 0x5f7f8c,
+      emissive: 0x06151b, transparent: true, opacity: 0.9, side: T.DoubleSide });
+    m.onBeforeCompile = sh => {
+      const cut = injector();
+      sh.vertexShader = cut(sh.vertexShader, '#include <common>', '\nattribute float aFoam;\nvarying float vFoamE;');
+      sh.vertexShader = cut(sh.vertexShader, '#include <begin_vertex>', '\nvFoamE = aFoam;');
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <common>', '\nvarying float vFoamE;');
+      sh.fragmentShader = cut(sh.fragmentShader, '#include <emissivemap_fragment>', '\ntotalEmissiveRadiance += vFoamE * diffuseColor.rgb * 0.6;');
+      m.userData.cuts = cut.count();               // 給測試看：四刀都換到了嗎
+    };
+    m.customProgramCacheKey = () => 'deluge-wave';
+    return m;
+  }
+
   function init(cvs) {
     canvas = cvs;
     renderer = new T.WebGLRenderer({ canvas: cvs, antialias: true, alpha: true });
@@ -1422,16 +1446,23 @@ if (vAo.x + vAo.y > 0.5) {
     poolMesh = new T.Mesh(poolGeo, poolMaterial());
     poolMesh.frustumCulled = false; poolMesh.visible = false;
     scene.add(poolMesh);
-    /* 大洪水（v1.325.0）：**材質直接共用上面那一份**（同一個 shader、同一組 uniform，波紋、菲涅耳、泡沫都是現成的），
-       幾何自己一顆——水窪是一格一格的，整座島兩百多格見方塞不進 MAXPOOL。頂點一樣填世界座標（材質把 position 當世界座標用）。
+    /* 大洪水（v1.325.0）：幾何自己一顆——水窪是一格一格的，整座島兩百多格見方塞不進 MAXPOOL。
+       v1.330.0 換成一張 DLG_NP × DLG_NR 的網格（三角形的接法固定，每幀只重寫頂點的位置、顏色、白沫）、材質自己一份（見 delugeMaterial）。
        沒在淹就 visible = false（沒東西在場就不吃 draw call）。 */
     dlgGeo = new T.BufferGeometry();
-    dlgPos = new Float32Array(DLG_VERT * 3);
-    dlgFoam = new Float32Array(DLG_VERT);
+    dlgPos = new Float32Array(DLG_NP * DLG_NR * 3);
+    dlgCol = new Float32Array(DLG_NP * DLG_NR * 3);
+    dlgFoam = new Float32Array(DLG_NP * DLG_NR);
     dlgGeo.setAttribute('position', new T.BufferAttribute(dlgPos, 3).setUsage(T.DynamicDrawUsage));
+    dlgGeo.setAttribute('color', new T.BufferAttribute(dlgCol, 3).setUsage(T.DynamicDrawUsage));
     dlgGeo.setAttribute('aFoam', new T.BufferAttribute(dlgFoam, 1).setUsage(T.DynamicDrawUsage));
-    dlgGeo.setDrawRange(0, 0);
-    dlgMesh = new T.Mesh(dlgGeo, poolMesh.material);
+    const dlgIdx = [];
+    for (let i = 0; i < DLG_NR - 1; i++) for (let j = 0; j < DLG_NP - 1; j++) {
+      const a = i * DLG_NP + j, c = a + DLG_NP;
+      dlgIdx.push(a, c, a + 1, a + 1, c, c + 1);
+    }
+    dlgGeo.setIndex(dlgIdx);
+    dlgMesh = new T.Mesh(dlgGeo, delugeMaterial());
     dlgMesh.frustumCulled = false; dlgMesh.visible = false;
     scene.add(dlgMesh);
 
@@ -2762,48 +2793,106 @@ if (vAo.x + vAo.y > 0.5) {
     else if (fa.updateRange) { fa.updateRange.offset = 0; fa.updateRange.count = v / 3; }
     fa.needsUpdate = true;
   }
+  /* 大洪水的浪形（v1.330.0）：規則那邊（誰被浪掃到、捲在浪頭裡的東西多高、水花從哪裡噴）跟畫出來的是同一份
+     （同 trebSling：畫出來的與規則那邊只有一份數字）。CR 浪頭高出水面多少、B 浪頭往後退下去多長（規則那邊照水位算好給）：
+     dc 浪峰在前緣後面多遠、bw 浪頭往後退下去的寬度、lean 浪舌往前捲多遠、A 前緣前後參差的幅度。 */
+  function dlgShape(CR, B) {
+    return { dc: Math.max(0.8, CR * 0.55), bw: Math.max(3.5, B * 0.45),
+             lean: Math.min(12, Math.max(0.6, CR * 0.8)), A: Math.min(14, Math.max(4, CR * 2 + 3)) };
+  }
+  /* 前緣不是一直線：橫的 p 那一點的前緣比 F 往前（正）或往後（負）多少。三道不同波長的正弦疊起來，跟著時間 t 慢慢變 */
+  function dlgFrontN(S, p, t) {
+    return S.A * (0.55 * Math.sin(p * 0.067 + t * 0.7) + 0.3 * Math.sin(p * 0.151 - t * 1.3 + 1.3)
+                  + 0.15 * Math.sin(p * 0.29 + t * 2.3 + 0.4));
+  }
+  /* 浪頭剖面：在前緣後面 d 那一點，水面再高出水位多少（不含波紋）。浪峰、往後退下去、再拖兩道小浪 */
+  function dlgCrestH(S, CR, d) {
+    if (d < S.dc) return CR;
+    const u = (d - S.dc) / S.bw, u1 = u - 2.4, u2 = u - 4.3;
+    return CR * (Math.exp(-u * u) + 0.2 * Math.exp(-1.6 * u1 * u1) + 0.09 * Math.exp(-1.6 * u2 * u2));
+  }
+  /* 深水、浪頭透光、白沫三個顏色（頂點顏色是線性的，先換算好） */
+  const DLG_COL = [0x174a5c, 0x2f8796, 0xeef6fa].map(h => { const c = new T.Color(h); return [c.r, c.g, c.b]; });
+  const dlgLip = new Float32Array(DLG_NK * 2);
+  const c01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
   /* 大洪水（v1.325.0，見 game-tools.js〈大洪水〉）。o ＝ {dx, dz 浪往哪個方向推（四個軸向之一）, F 浪的正面推到哪（沿著那個方向量）,
-     L 水面高, C 浪頭頂多高, B 浪頭往後斜下去多長才接回水面, O 島的半寬（蓋過島邊一點）, wt 波紋相位}，null＝沒在淹。
-     形狀是從島的一邊（−O）一路鋪到浪的正面 F 的一整塊水（使用者看過第二版：「改成從一邊大水淹過來吧」）：
-     正面從地面直直立到浪頭 C，浪頭往後 B 格斜下去接回水面 L；浪的正面與那一段斜坡起白沫（泡沫旗標給大一點，見 poolMaterial 的 foam）。
-     浪推出對面的島邊之後，那一邊換成一道島邊的牆。幾何先在「浪的座標」裡組（q 沿著浪前進、p 橫的），寫進去時轉回世界座標。 */
+     L 水面高, H 水位（湧浪照它給幅度）, CR 浪頭高出水面多少, S 浪形（dlgShape）, O 島的半寬（蓋過島邊一點）, t 演到第幾秒}，null＝沒在淹。
+     v1.325.0 是 8 塊平板：一片半透明直直立著的浪的正面、一片平的水面（使用者：「沒有像海嘯來襲沖走的感覺 水也假假的」）。
+     v1.330.0 換成一張會起伏的網格，幾何先在「浪的座標」裡組（q 沿著浪前進、p 橫的），寫進去時轉回世界座標：
+       列 0           浪來那一邊的島邊，往下到草皮底
+       平的水身       世界上固定間距（浪前進時不會跟著滑），超過浪頭那一段的起點就疊在那裡；高度＝水位＋順著水流跑的湧浪
+       浪頭那一段     浪峰往後退下去再拖兩道小浪（dlgCrestH），越靠近浪峰越密；浪頭附近疊一層亂翻的碎浪
+       浪舌           從浪峰往前捲、舌尖往下勾、縮回來，再整面往下接到地面（浪腳往前衝一點）；每一點跟著時間亂翻
+       兩側那兩行     兩側島邊，照旁邊那一行往下到草皮底
+     前緣照 dlgFrontN 參差不齊。推出對面的島邊之後，超出去的那幾列收在島邊（q＝O），浪舌收成一道島邊的牆。 */
   function putDeluge(o) {
     if (!o) { dlgMesh.visible = false; return; }
-    const P = dlgPos, Fm = dlgFoam, L = o.L, O = o.O, F = o.F, B = o.B, C = Math.max(L, o.C), dx = o.dx, dz = o.dz;
-    let v = 0, fm = 0;
-    const pt = (q, y, p) => { P[v++] = q * dx - p * dz; P[v++] = y; P[v++] = q * dz + p * dx; };
-    /* 四個角照順序給（q, y, p），拆成兩個三角形 */
-    const quad = (q0, y0, p0, q1, y1, p1, q2, y2, p2, q3, y3, p3) => {
-      const k = v / 3;
-      for (let i = 0; i < 6; i++) Fm[k + i] = fm;
-      pt(q0, y0, p0); pt(q1, y1, p1); pt(q2, y2, p2);
-      pt(q0, y0, p0); pt(q2, y2, p2); pt(q3, y3, p3);
+    const S = o.S, O = o.O, L = o.L, CR = o.CR, C = L + CR, F = o.F, t = o.t, dx = o.dx, dz = o.dz;
+    if (F + S.A + S.lean * 1.2 <= -O) { dlgMesh.visible = false; return; }   // 浪還沒上島
+    const P = dlgPos, Cl = dlgCol, Fm = dlgFoam, NP = DLG_NP, bot = -1.25;   // 島邊的牆往下到草皮那一層的底（見 setGroundSize）
+    const [cd, ch, cf] = DLG_COL;
+    const as = Math.min(1.4, Math.max(0.2, 0.045 * o.H + 0.18));   // 湧浪的幅度：水越深浪越大
+    const zc = S.dc + S.bw * 5.2;                                  // 浪頭那一段從前緣往後多長（含後面拖的兩道小浪）
+    const J = 0.12 + CR * 0.1;                                     // 浪舌亂翻的幅度
+    let hk = 0, fo = 0;                                            // 這一點透光幾成、白沫幾成
+    const put = (n, q, y, p) => {
+      P[n * 3] = q * dx - p * dz; P[n * 3 + 1] = y; P[n * 3 + 2] = q * dz + p * dx;
+      for (let i = 0; i < 3; i++) { const b = cd[i] + (ch[i] - cd[i]) * hk; Cl[n * 3 + i] = b + (cf[i] - b) * fo; }
+      Fm[n] = fo;
     };
-    const h = q => q <= F - B ? L : L + (C - L) * (q - (F - B)) / B;   // 那一點的水面高（浪頭的斜坡上）
-    const qe = Math.min(F, O);                              // 水鋪到哪
-    if (qe <= -O) { dlgMesh.visible = false; return; }
-    const q1 = Math.min(F - B, qe), r0 = Math.max(F - B, -O), bot = -1.25;   // 島邊的牆往下到草皮那一層的底（見 setGroundSize）
-    if (q1 > -O) {                                          // 平的那一段水面＋兩側島邊
-      quad(-O, L, -O, q1, L, -O, q1, L, O, -O, L, O);
-      quad(-O, bot, -O, q1, bot, -O, q1, L, -O, -O, L, -O);
-      quad(-O, bot, O, q1, bot, O, q1, L, O, -O, L, O);
+    /* 水面那一點（d＝在前緣後面多遠）：浪頭透光淺一點；白沫是前緣那一圈，後面一條條順著水流的泡沫紋
+       （預覽第一輪整片是一條條粗白帶、太規律，收窄再切成一段一段） */
+    const surf = (n, q, p, d) => {
+      const sw = as * (0.6 * Math.sin(q * 0.27 - t * 2.2 + p * 0.05) + 0.4 * Math.sin(p * 0.21 + q * 0.09 - t * 1.4));
+      const e = Math.max(0, d - S.dc);
+      const tb = (0.12 + CR * 0.16) * Math.exp(-e / (CR * 1.2 + 2.5)) * Math.sin(p * 0.53 + t * 5.1 + q * 0.37) * Math.sin(p * 0.21 - t * 3.3 + q * 0.11);
+      const y = L + dlgCrestH(S, CR, d) + sw + tb;
+      hk = Math.min(1, c01((y - L) / (CR + 0.01)) * 0.85 + c01(sw / as) * 0.25);
+      const st = c01((Math.sin(p * 0.41 + 1.6 * Math.sin(q * 0.05 - t * 0.6)) - 0.72) / 0.28)
+               * c01(Math.sin(q * 0.17 - t * 3.1 + p * 0.07) * Math.sin(q * 0.31 + p * 0.17 - t * 2.7) * 2) * 0.2;
+      const tr = Math.exp(-e / 30) * 0.18 * c01(Math.sin(p * 0.33 + q * 0.21 - t * 2) * 1.5);
+      fo = Math.min(1, Math.max(Math.exp(-e / (CR * 0.8 + 1.5)) * (0.72 + 0.28 * Math.sin(p * 0.9 + t * 4.3 + q * 0.5)), st + tr));
+      put(n, q, y, p);
+    };
+    const yl = C - CR * 0.4, ln = S.lean, Lp = dlgLip;
+    Lp.set([-S.dc * 0.45 + ln * 0.25, C + CR * 0.10, ln * 0.55, C + CR * 0.06, ln * 0.95, C - CR * 0.08,
+            ln * 1.12, C - CR * 0.30, ln * 0.80, yl, ln * 0.55, yl * 0.62, ln * 0.45, yl * 0.30,
+            ln * 0.65, yl * 0.08, ln * 0.95, -0.05]);
+    for (let j = 1; j <= DLG_NPI; j++) {
+      const p = -O + 2 * O * (j - 1) / (DLG_NPI - 1), Fp = F + dlgFrontN(S, p, t);
+      for (let i = 0; i < DLG_NB; i++) {
+        const q = Math.min(O, Math.max(-O, Math.min(-O + 2 * O * i / (DLG_NB - 1), Fp - zc)));
+        surf((1 + i) * NP + j, q, p, Fp - q);
+        if (i === 0) { hk = 0; fo = 0; put(j, q, bot, p); }
+      }
+      for (let c = 0; c < DLG_NC; c++) {
+        const q = Math.min(O, Math.max(-O, Fp - S.dc - (zc - S.dc) * Math.pow(1 - c / (DLG_NC - 1), 1.6)));
+        surf((1 + DLG_NB + c) * NP + j, q, p, Fp - q);
+      }
+      /* 浪舌那一段全白；底下那一面透出一點水色（整面一樣白的話 101 那種大浪看起來是一道斷崖） */
+      const edge = L + dlgCrestH(S, CR, Fp - O);
+      hk = 0.7;
+      for (let k = 0; k < DLG_NK; k++) {
+        const last = k === DLG_NK - 1;
+        let q = Fp + Lp[k * 2] + (last ? 0 : J * Math.sin(p * 0.61 + t * 6.3 + k * 1.9));
+        let y = Lp[k * 2 + 1] + (last ? 0 : J * 0.6 * Math.sin(p * 0.83 - t * 5.7 + k * 2.3));
+        if (q > O) { q = O; y = last ? bot : Math.min(y, edge); }
+        if (q < -O) { q = -O; if (last) y = bot; }
+        fo = last ? 0.75 : k < 5 ? 0.85 + 0.15 * Math.sin(p * 1.1 + t * 7.3 + k * 1.7)
+                                 : 0.62 + 0.22 * Math.sin(p * 0.47 + t * 4.1 + k * 2.9) * Math.sin(p * 0.19 - t * 2.3);
+        put((1 + DLG_NB + DLG_NC + k) * NP + j, q, y, p);
+      }
     }
-    if (qe > r0) {                                          // 浪頭往後斜下去那一段＋兩側
-      const y0 = h(r0), y1 = h(qe);
-      fm = 2; quad(r0, y0, -O, qe, y1, -O, qe, y1, O, r0, y0, O);
-      fm = 0;
-      quad(r0, bot, -O, qe, bot, -O, qe, y1, -O, r0, y0, -O);
-      quad(r0, bot, O, qe, bot, O, qe, y1, O, r0, y0, O);
+    for (let i = 0; i < DLG_NR; i++) for (let s = 0; s < 2; s++) {
+      const a = i * NP + (s ? DLG_NPI : 1), b = i * NP + (s ? NP - 1 : 0);
+      P[b * 3] = P[a * 3]; P[b * 3 + 1] = bot; P[b * 3 + 2] = P[a * 3 + 2];
+      for (let c = 0; c < 3; c++) Cl[b * 3 + c] = Cl[a * 3 + c] * 0.7;
+      Fm[b] = Fm[a] * 0.5;
     }
-    if (F <= O) { fm = 1.5; quad(F, -0.05, -O, F, -0.05, O, F, C, O, F, C, -O); fm = 0; }   // 浪的正面
-    else quad(O, bot, -O, O, bot, O, O, h(O), O, O, h(O), -O);                             // 推出去了：對面那一邊的島邊
-    quad(-O, bot, -O, -O, bot, O, -O, h(-O), O, -O, h(-O), -O);                            // 浪來的那一邊的島邊
-    dlgMesh.visible = v > 0;
-    dlgGeo.setDrawRange(0, v / 3);
+    dlgMesh.visible = true;
     dlgGeo.attributes.position.needsUpdate = true;
+    dlgGeo.attributes.color.needsUpdate = true;
     dlgGeo.attributes.aFoam.needsUpdate = true;
-    /* 波紋相位跟水窪共用同一個 uniform：場上有水窪就照它的（同一支波），沒有才照這邊的 */
-    if (poolUni && !poolMesh.visible) poolUni.uWTime.value = o.wt || 0;
   }
   /* 整組濃度的旋鈕（v1.88.1，使用者回饋「都淡淡的就好，太深原本的煙都看不清楚了」）。
      表裡的 a 維持原來的相對比例（中心深、外圈淡），統一乘這個數字調濃淡——
@@ -14478,6 +14567,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     setGiftIcons, putGifts, GIFT_SIZE,         /* 道具泡泡（v1.214）：開場餵圖示、每幀送位置 */
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
     putDeluge, get delugeOn() { return !!dlgMesh && dlgMesh.visible; },   /* 大洪水（v1.325.0）：測試看這一顆有沒有在畫 */
+    dlgShape, dlgFrontN, dlgCrestH,            /* 大洪水的浪形（v1.330.0）：規則那邊判誰被掃到、捲在浪頭裡多高、水花從哪噴，跟畫出來的同一份 */
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
@@ -14611,7 +14701,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, hayMesh: FOOD.hay.mesh, bunchMesh: FOOD.banana.mesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, amMesh, amGlowMesh, amPuffMesh, amSoftMesh, diaMesh, coinMesh, draMesh, gryMesh,
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, hayMesh: FOOD.hay.mesh, bunchMesh: FOOD.banana.mesh, fadeMesh, humMesh, ground, markMesh, poolMesh, dlgMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, amMesh, amGlowMesh, amPuffMesh, amSoftMesh, diaMesh, coinMesh, draMesh, gryMesh,
                             stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl,
                             skyStars, skyMw, skyMoon,
                             floodMesh, floodLitMesh, floodBeamMesh, floodLamps, floodFade }; }

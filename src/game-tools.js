@@ -18271,7 +18271,7 @@ function stepGen(m, dt) {
 
    第二輪（看過預覽，使用者：「沒有大水來的兇猛感」，四樣全選）：
      · **一道高浪牆**：浪頭比水面高一截、往後斜下去接回水面（引擎 putDeluge 畫）
-     · **更快、捲得更猛**：浪頭打到的先浮上來衝出水面、在半空翻滾（DLG_TOSS／DLG_TUMBLE），落回水裡再被水流沖走
+     · **更快、捲得更猛**：浪頭打到的先浮上來衝出水面、在半空翻滾，落回水裡再被水流沖走（v1.330.0 換成捲進浪頭，見第五輪）
      · **浪花水花＋畫面震動**：浪頭一路噴水花、撞上地標貼地那一層就地往上濺、房子被掃到整間濺起一片、衝出水面與落水各濺一下；
        浪推進來那幾秒一直震，撞上地標那一下再重震一次
      · **水聲**：一整段轟隆聲（sndDeluge），撞上地標那一下一聲拍擊（sndDelugeHit）
@@ -18285,46 +18285,60 @@ function stepGen(m, dt) {
        浪頭再高出**水位的一半**（跟著水位等比例）
      · **全部順著浪的方向沖**：浪頭打到的先跟著浪走（浪速的 DLG_RIDE 成），慢慢慢成水流的速度，從對面的島邊沖出去
    水深起來之後（101 那種高的淹到三十幾格），「拋起來再掉回水面」不成立了——東西在水底，得先浮上來。所以垂直方向改成一套：
-   水面下往上浮（DLG_BUOY、阻力 DLG_WDRAG），第一次冒出水面照被打到的力道衝出去（DLG_TOSS）、在半空翻滾、落回水裡濺一下，之後浮在水面上。
+   水面下往上浮（DLG_BUOY、阻力 DLG_WDRAG），第一次冒出水面照被打到的力道衝出去、在半空翻滾、落回水裡濺一下，之後浮在水面上
+   （v1.330.0 浪頭打到的改成捲進浪頭；浪過去之後才泡到水的照舊浮上來）。
    淡掉：沖出對面的島邊就開始淡；還在島上的最多漂 DLG_KEEP 秒也開始淡；淡 DLG_FADE 秒，淡完收掉。
 
    第四輪（看過第三版，使用者：「周圍的樹也要一起長回來 不只換地標才長」；第一輪選的是換地標才重種）：
    退完水跟小人、動物一起，林帶重種一片（makeTrees），每一棵從零長回原本大小（DLG_GROW 秒），起長的時間各自錯開（見 game-ui.js 的 stepTrees）。
-   見 開發筆記〈大洪水（v1.325.0）〉 */
-const DLG_IN = 3, DLG_HOLD = 2.5, DLG_OUT = 3;   // 浪推過整座島幾秒、推出去之後淹著停幾秒、退幾秒
+
+   第五輪（v1.330.0，使用者：「大洪水的特效效果還是不太滿意 沒有像海嘯來襲沖走的感覺 水也假假的」，看過預覽、四題選的）：
+     · 水換成會起伏的一張網格、深色海水、前緣參差不齊、浪頂捲出浪舌（引擎 putDeluge；浪形 dlgShape／dlgFrontN／dlgCrestH 跟這邊共用）
+     · **浪推過整座島 5 秒**（原本 3 秒，一閃就過去看不清浪的形狀）；浪頭高照舊是水位的一半
+     · **捲進浪頭一起沖**：浪頭打到的跟著浪頭往前衝（浪速的 DLG_RIDE 成）、在浪頭裡上下翻滾 DLG_RIDE_T 秒才掉出來落回水面漂；
+       沖出島邊的從島邊掉下去
+     · 水花大部分跟著浪頭往前衝（原本一噴出來就落在後面，變成滿地白色小方塊），另有浪頂的水霧與貼地往前衝的浪腳
+   判掃到誰也照參差的前緣（dlgFront），不然會「水還沒到、人先被捲走」。
+   見 開發筆記〈大洪水（v1.325.0）〉、〈大洪水改成海嘯：浪舌、深色海水、捲進浪頭一起沖（v1.330.0）〉 */
+const DLG_IN = 5, DLG_HOLD = 2.5, DLG_OUT = 3;   // 浪推過整座島幾秒（v1.330.0 使用者選 5 秒，原本 3）、推出去之後淹著停幾秒、退幾秒
 const DLG_HK = 0.5;                  // 水面是地標現在高度的幾成（使用者選「一半」）
 const DLG_HMIN = 1.5;                // 地標很矮、還沒蓋起來時水面最少多高（小人身高約 1.7）
 const DLG_CK = 0.5;                  // 浪頭比水面高出水位的幾成（使用者選「跟著水位等比例」）
 const DLG_BK = 2.5, DLG_BMIN = 8;    // 浪頭往後斜下去多長：浪頭高的幾倍，最短幾格
 const DLG_KEEP = 3.5, DLG_FADE = 1.5;  // 還在島上的最多漂幾秒就開始淡、淡幾秒
-const DLG_RIDE = [0.7, 0.95];        // 浪頭打到的先跟著浪走多快（浪速的幾成）
+const DLG_RIDE = [0.8, 1.0];         // 捲在浪頭裡跟著浪走多快（浪速的幾成；v1.330.0 原本 0.7～0.95、而且很快就慢下來）
+const DLG_RIDE_T = [1.5, 3.2];       // 捲在浪頭裡多久才掉出來（秒，每一樣各抽一個；浪推完、沖出島邊也會掉出來）
 const DLG_SPD = [6, 11];             // 慢下來之後被水流沖多快（每一樣各抽一個）
-const DLG_SLOW = 1.2;                // 從跟著浪走慢成水流速度的時間常數（秒）
+const DLG_SLOW = 1.8;                // 掉出浪頭之後慢成水流速度的時間常數（秒，v1.330.0 預覽那一版，原本 1.2）
 const DLG_WOB = 0.35;                // 方向各自偏多少（弧度）
-const DLG_TOSS = [7, 11];            // 第一次冒出水面往上衝多快（樹打四折，機台、車子不拋）
 const DLG_BUOY = 40;                 // 水面下往上浮的加速度
 const DLG_WDRAG = 0.3;               // 水面下的阻力（每秒剩幾成）
-const DLG_G = 22;                    // 衝出水面之後的重力
-const DLG_TUMBLE = [6, 11];          // 在半空翻滾的角速度
-const DLG_SPRAY = 600;               // 浪頭一秒噴幾顆水花
+const DLG_G = 22;                    // 高過水面時的重力
+const DLG_TUMBLE = [6, 11];          // 翻滾的角速度
+const DLG_SPRAY = 2400;              // 浪頭一秒噴幾顆水花（整座島的前緣；v1.330.0 原本 600，噴出來就落在後面、散成碎紙片）
 /* 水花跟塵霧共用一池（引擎的 MAXDUST 14700，核彈、爆裂魔法那一份占 8600）。一般塵霧的 400（spawnDust）是「煙塵別太多」的軟上限，
-   施工中光是挖料、落地的煙就常常頂在那裡，照它的話水花一顆都噴不出來；水花自己一份額度 */
-const DLG_DUST = 2400;
+   施工中光是挖料、落地的煙就常常頂在那裡，照它的話水花一顆都噴不出來；水花自己一份額度（v1.330.0 2400 → 5600，加上 8600 還在 MAXDUST 以內） */
+const DLG_DUST = 5600;
+const DLG_FOAM = [0.855, 0.922, 0.956], DLG_MIST = [0.651, 0.784, 0.855];   // 白沫、水霧的顏色（0xeef6fa、0xd3e5ee 換成線性，同引擎那一份白沫）
 const DLG_SINK = 4;                  // 推土機、消防車沉多深（整台沒進草皮底下）
 const DLG_GROW = 2.5, DLG_GROW_LAG = 1.5;   // 退完水林帶重種：一棵從零長回原本大小幾秒、起長最多晚幾秒
-/* { t 演到第幾秒, dx/dz 浪往哪推, E 島的半寬, H 水位, CR 浪頭高出水面多少, B 浪頭斜坡多長, v 浪速,
-     F 浪的正面推到哪（沿著 dx/dz 量）, L 水面, C 浪頭頂, men 整隊捲走的兵（搬出隊伍自己漂）, lm 地標貼地那一層、li 掃到第幾格, em 水花的零頭 } */
+/* { t 演到第幾秒, dx/dz 浪往哪推, E 島的半寬, H 水位, CR 浪頭高出水面多少, B 浪頭斜坡多長, S 浪形（engine 的 dlgShape）, v 浪速,
+     F 浪的正面推到哪（沿著 dx/dz 量；前緣在那一條上下參差，見 dlgFront）, L 水面, C 浪頭頂, men 整隊捲走的兵（搬出隊伍自己漂）,
+     lm 地標貼地那一層、li 掃到第幾格, em 水花的零頭 } */
 let deluge = null;
 const dlgEdge = () => debrisR + ENG.GROUND_PAD;    // 島的半寬（草地島是方的，見 engine 的 setGroundSize）
-/* 浪掃過了沒：沿著浪前進的方向量，在浪的正面後面就是 */
-const dlgHit = (x, z) => x * deluge.dx + z * deluge.dz <= deluge.F;
+/* 前緣在橫的 p 那一點推到哪（v1.330.0 前緣參差不齊，跟畫出來的同一份） */
+const dlgFront = p => deluge.F + ENG.dlgFrontN(deluge.S, p, deluge.t);
+/* 浪掃過了沒：沿著浪前進的方向量，在那一點的前緣後面就是 */
+const dlgHit = (x, z) => x * deluge.dx + z * deluge.dz <= dlgFront(z * deluge.dx - x * deluge.dz);
 const dlgWet = y => (y || 0) < deluge.L + 0.5;
+const dlgOff = o => Math.max(Math.abs(o.x), Math.abs(o.z)) > deluge.E;   // 沖出島外了（底下沒有水接著）
 const dlgMen = () => deluge ? deluge.men : EMPTY;
 /* 畫面那邊要的那一份（見 engine 的 putDeluge）。外緣蓋過島邊一點，水才不會跟草皮的邊緣切齊 */
-const _dlgO = { dx: 0, dz: 0, F: 0, L: 0, C: 0, B: 0, O: 0, wt: 0 };
+const _dlgO = { dx: 0, dz: 0, F: 0, L: 0, H: 0, CR: 0, S: null, O: 0, t: 0 };
 function dlgDraw() {
   const o = _dlgO, D = deluge;
-  o.dx = D.dx; o.dz = D.dz; o.F = D.F; o.L = D.L; o.C = D.C; o.B = D.B; o.O = D.E + 0.4; o.wt = D.t;
+  o.dx = D.dx; o.dz = D.dz; o.F = D.F; o.L = D.L; o.H = D.H; o.CR = D.CR; o.S = D.S; o.O = D.E + 0.4; o.t = D.t;
   return o;
 }
 /* 按鈕那一下。淹著的時候再按不算（按鈕也灰掉，見 game-ui.js 的 hudTick） */
@@ -18337,7 +18351,7 @@ function castDeluge() {
   if (bp) for (const s of bp.slots) if (s.gy === 0 && s.filled) lm.push({ x: s.x, z: s.z, q: s.x * d[0] + s.z * d[1] });
   lm.sort((a, b) => a.q - b.q);
   /* 浪的正面從浪來那一邊的島邊（−E）起跑，DLG_IN 秒推到對面島邊外 B 格（浪頭的斜坡整段離開島） */
-  deluge = { t: 0, dx: d[0], dz: d[1], E, H, CR, B, v: (2 * (E + 0.4) + B) / DLG_IN,
+  deluge = { t: 0, dx: d[0], dz: d[1], E, H, CR, B, S: ENG.dlgShape(CR, B), v: (2 * (E + 0.4) + B) / DLG_IN,
              F: -E - 0.4, L: H, C: H + CR, men: [], lm, li: 0, em: 0 };
   stopIdleEvent();                   // 村子要被沖光了，那一件先收掉；退完重抽一件（見 dlgEnd）
   ENG.shake(0.8);
@@ -18387,7 +18401,9 @@ function stepDeluge(dt) {
     if (!f) continue;
     t.fk = dlgDrift(t, dt, D.L - 0.8);               // 樹沒有透明度，淡掉改成縮掉（見 engine 的 putTrees）
     t.fy = f.y + bob(f);                             // 連根拔起浮到水面上
-    t.tip = Math.min(0.35, f.t * 0.8) * (f.sp > 0 ? 1 : -1);
+    /* 捲在浪頭裡前後翻（v1.330.0）；掉出來之後慢慢倒向一邊浮著 */
+    const tip = f.ride ? Math.sin(f.t * 2.2 + f.ph) * 0.9 : 0.35 * (f.sp > 0 ? 1 : -1);
+    t.tip = f.ride ? tip : (t.tip || 0) + (tip - (t.tip || 0)) * Math.min(1, dt * 3);
     if (t.fk <= 0) trees.splice(i, 1);
   }
   /* 投石機、加農砲：淡掉是它自己的退場（puFade），這裡只管漂 */
@@ -18436,35 +18452,54 @@ function stepDeluge(dt) {
   }
   if (D.t >= DLG_IN + DLG_HOLD + DLG_OUT) dlgEnd();
 }
-/* 浪頭這一幀：沿著浪的正面一路往前噴水花；掃過地標貼地那一層就在那裡往上濺（往回彈），第一下重震一下、拍一聲。
-   浪越高水花越大（sz：浪頭高出水面 1.6 格是 1 倍，照平方根長） */
+/* 浪頭這一幀：沿著參差的前緣一路噴水花；掃過地標貼地那一層就在那裡往上濺（往回彈），第一下重震一下、拍一聲。
+   v1.330.0 分三種（原本只有一種、往前的速度只有浪速的四到六成，一噴出來就落在浪後面散成碎紙片）：
+     浪頂的白水 55%：從浪舌噴出來、**跟著浪頭往前衝**（浪速的 0.88～1.06，阻力很小）往上噴——浪頭那一整排是一團白
+     水霧 25%：大顆、往上散、慢慢落後（浪速的五到八成）、邊飄邊縮
+     浪腳 20%：從浪腳貼地往前衝（比浪快一點）
+   浪越高顆粒越大（sz：浪頭高出水面 1.6 格是 1 倍，照平方根長，封頂 2 倍——101 那種浪頭 16 格照平方根是 3.2 倍，水霧一顆六格大，近鏡頭像一塊塊冰磚） */
 function dlgCrest(dt) {
-  const D = deluge, O = D.E + 0.4, sz = Math.sqrt(Math.max(1, D.CR / 1.6));
-  if (D.F > -O && D.F < O) {
-    D.em += dt * DLG_SPRAY;
-    while (D.em >= 1) {
-      D.em--;
-      const p = rr(-O, O), k = D.v * rr(0.4, 0.6);          // 正面上挑一點（p 橫的），往浪前進的方向噴
-      dlgSpray(D.F * D.dx - p * D.dz, D.C - rr(0, D.CR * 0.3), D.F * D.dz + p * D.dx,
-               D.dx * k, rr(4, 9) * sz, D.dz * k, 1, sz);
+  const D = deluge, S = D.S, O = D.E + 0.4, v = D.v, sz = Math.min(2, Math.sqrt(Math.max(1, D.CR / 1.6)));
+  const ux = D.dx, uz = D.dz, px = -D.dz, pz = D.dx;          // 往前、橫的（p）
+  D.em += dt * DLG_SPRAY;
+  while (D.em >= 1) {
+    D.em--;
+    const p = rr(-O, O), r = Math.random(), lx = rr(-1.5, 1.5);
+    const q = dlgFront(p) + S.lean * (r < 0.8 ? rr(0.5, 1.15) : rr(0.9, 1.3));
+    if (q > O || q < -O) continue;                             // 浪還沒上島、已經推出去的那一段不噴
+    const x = q * ux + p * px, z = q * uz + p * pz;
+    if (r < 0.55) {
+      const k = v * rr(0.88, 1.06);
+      dlgDrop(x, D.C - rr(0, D.CR * 0.35), z, ux * k + px * lx, rr(3, 9) * sz, uz * k + pz * lx, rr(0.5, 1.25) * sz, rr(0.35, 0.8), 0.995, DLG_FOAM);
+    } else if (r < 0.8) {
+      const k = v * rr(0.5, 0.8);
+      dlgDrop(x, D.C + rr(0, D.CR * 0.2), z, ux * k + px * lx, rr(4, 8) * sz, uz * k + pz * lx, rr(1, 2) * sz, rr(0.7, 1.3), 0.975, DLG_MIST, 3, 0.9);
+    } else {
+      const k = v * rr(1, 1.12);
+      dlgDrop(x, rr(0.2, 0.7), z, ux * k + px * lx, rr(1, 3.5), uz * k + pz * lx, rr(0.35, 0.8) * sz, rr(0.25, 0.5), 0.99, DLG_FOAM);
     }
   }
   while (D.li < D.lm.length && D.lm[D.li].q <= D.F) {
     const s = D.lm[D.li++];
     if (D.li === 1) { ENG.shake(1.2); sndDelugeHit(); }
-    if (Math.random() < 0.5)
-      dlgSpray(s.x, rr(0.3, 1) * D.C, s.z, -D.dx * rr(2, 5), rr(8, 13) * sz, -D.dz * rr(2, 5), 2, sz);
+    for (let i = 0; i < 2; i++)
+      dlgDrop(s.x + rr(-0.4, 0.4), rr(0.3, 1) * D.C, s.z + rr(-0.4, 0.4), -ux * rr(2, 5) + rr(-1.5, 1.5), rr(8, 14) * sz,
+              -uz * rr(2, 5) + rr(-1.5, 1.5), rr(0.5, 1.1) * sz, rr(0.6, 1.2), 0.97, DLG_FOAM);
   }
 }
-/* 水花：塵霧那一池（同 digPuff 換顏色），白裡帶一點藍。sz＝顆粒大小的倍率 */
+/* 一顆水花：塵霧那一池（同 digPuff 換顏色）。keep＝水平阻力（每 1/60 秒剩幾成，見 stepDust）、c 顏色、g 重力（沒給是 7）、fade 邊飄邊縮的半衰期 */
+function dlgDrop(x, y, z, vx, vy, vz, s, life, keep, c, g, fade) {
+  if (dust.length > DLG_DUST) return;
+  const d = { x, y, z, vx, vy, vz, rx: Math.random() * 6, ry: Math.random() * 6, life, s, keep, cr: c[0], cg: c[1], cb: c[2] };
+  if (g !== undefined) d.g = g;
+  if (fade) d.fade = fade;
+  dust.push(d);
+}
+/* 一把水花（房子被掃到、被浪頭打到、落回水裡那幾下）：n 顆、往四周散一點。sz＝顆粒大小的倍率 */
 function dlgSpray(x, y, z, vx, vy, vz, n, sz) {
-  for (let i = 0; i < n; i++) {
-    if (dust.length > DLG_DUST) return;
-    dust.push({ x: x + rr(-0.4, 0.4), y, z: z + rr(-0.4, 0.4),
-                vx: vx + rr(-1.5, 1.5), vy: vy * rr(0.75, 1.2), vz: vz + rr(-1.5, 1.5),
-                rx: Math.random() * 6, ry: Math.random() * 6,
-                life: rr(0.5, 1.1), s: rr(0.3, 0.75) * (sz || 1), keep: 0.97, cr: 0.86, cg: 0.94, cb: 1 });
-  }
+  const k = (sz || 1) * 1.3;
+  for (let i = 0; i < n; i++)
+    dlgDrop(x + rr(-0.6, 0.6), y, z + rr(-0.6, 0.6), vx + rr(-2, 2), vy * rr(0.75, 1.25), vz + rr(-2, 2), rr(0.45, 1) * k, rr(0.5, 1.1), 0.97, DLG_FOAM);
 }
 /* 淹滿之後地上的痕跡開始淡（每幀叫，取 min／max 所以叫幾次都一樣）：焦黑與坑、燒灼痕、焦痕從現在起照它自己的淡出段淡，血泊直接進淡出那一段 */
 function dlgMarks() {
@@ -18475,7 +18510,7 @@ function dlgMarks() {
 }
 /* 這一幀浪掃到誰。泡到水的才捲：飛在半空的（被炸飛的小人、天上的飛龍）等落下來泡到水那一幀才算 */
 function dlgSweep() {
-  /* 浪還在推的時候被打到的會衝出水面；浪推出去之後才泡到水的（掉下來的料、落地的人）只是浮上來 */
+  /* 浪還在推的時候被打到的捲進浪頭；浪推出去之後才泡到水的（掉下來的料、落地的人）只是浮上來 */
   const k = deluge.t < DLG_IN ? 1 : 0;
   for (const w of workers) if (!w.dlg && !w.ufo && dlgWet(w.y) && dlgHit(w.x, w.z)) dlgWorker0(w, k);
   if (beasts) for (const m of beasts)
@@ -18505,13 +18540,13 @@ function dlgSweep() {
   for (const b of blocks)
     if (!b.dlg && b.slot < 0 && b.hh < 0 && (b.st === FREE || b.st === FLY) && !b.ufo &&
         dlgWet(b.y) && dlgHit(b.x, b.z)) dlgBlock0(b, k);
-  for (const t of trees) if (!t.dlg && dlgHit(t.x, t.z)) { t.gw = undefined; dlgFloat(t, k * 0.4); }   // 上一場重種、還在長的那幾棵不再長（大小交給 stepDeluge）
+  for (const t of trees) if (!t.dlg && dlgHit(t.x, t.z)) { t.gw = undefined; dlgFloat(t, k); }   // 上一場重種、還在長的那幾棵不再長（大小交給 stepDeluge）
   /* 地上的兵器（插著、躺著的；門裡待發、飛著、掉著的不算）：直接進淡出那一段 */
   if (weapons) for (const w of weapons)
     if (!w.dlg && w.st !== 'gate' && w.st !== 'fly' && w.st !== 'fall' && dlgHit(w.x, w.z)) { w.lie = 0; dlgFloat(w, 0); }
   /* 食物：叫來吃的那幾隻先放掉。被幽浮、小黑洞收著的（ufo）不算、被打飛在半空的等落到水裡才算（同飛著的碎料，v1.328.0） */
   if (meats) for (const f of meats)
-    if (!f.dlg && !f.ufo && (!f.air || dlgWet(f.y)) && dlgHit(f.x, f.z)) { meatFree(f); f.air = 0; dlgFloat(f, k * 0.5); }
+    if (!f.dlg && !f.ufo && (!f.air || dlgWet(f.y)) && dlgHit(f.x, f.z)) { meatFree(f); f.air = 0; dlgFloat(f, k); }
   if (gifts) for (const g of gifts) if (!g.dlg && dlgHit(g.x, g.z)) dlgFloat(g, 0);
   /* 推土機被捲走就當整地收工（不然 phase 會一直停在 clear，見 finishClear：剩下的碎料彈出去、交給小人） */
   if (dozers) for (const m of dozers.list)
@@ -18519,39 +18554,55 @@ function dlgSweep() {
   if (trucks) for (const m of trucks.list)
     if (!m.dlg && dlgHit(m.x, m.z)) { m.jet = 0; m.jetT = 0; m.hasJ = 0; dlgFloat(m, 0); }
 }
-/* 捲走那一刻抽好往哪漂、多快；k＝被浪頭打到的力道倍率（0＝不衝出水面、不跟著浪走：機台、車子、浪過去之後才泡到水的） */
+/* 捲走那一刻抽好往哪漂、多快；k＝1 浪頭打到的（捲進浪頭）、0 不跟著浪走的（機台、車子、死掉的、浪過去之後才泡到水的） */
 function dlgFloat(o, k) {
   const D = deluge, a = Math.atan2(D.dx, D.dz) + rr(-DLG_WOB, DLG_WOB);   // 順著浪的方向，各自偏一點
+  const rk = k ? rr(DLG_RIDE[0], DLG_RIDE[1]) : 0;
   o.dlg = { t: 0, ux: Math.sin(a), uz: Math.cos(a),
-            v: k ? D.v * rr(DLG_RIDE[0], DLG_RIDE[1]) : 0, vm: rr(DLG_SPD[0], DLG_SPD[1]),
+            v: D.v * rk * 0.85, vm: rr(DLG_SPD[0], DLG_SPD[1]),          // 捲進去那一下先慢一點，再追上 rk（見 dlgDrift）
             sp: rr(-1.2, 1.2), ph: Math.random() * 6,
-            y: o.y || 0, vy: 0, toss: k * rr(DLG_TOSS[0], DLG_TOSS[1]),    // 現在多高、往上的速度、第一次冒出水面衝多快
+            y: o.y || 0, vy: 0, air: k ? 1 : 0,                               // 現在多高、往上的速度、在不在翻滾
+            ride: k ? 1 : 0, rk, rideT: k ? rr(DLG_RIDE_T[0], DLG_RIDE_T[1]) : 0, rend: 0,   // 捲在浪頭裡、捲多久、第幾秒掉出來
             tw: rr(DLG_TUMBLE[0], DLG_TUMBLE[1]) * (Math.random() < 0.5 ? -1 : 1),
             fs: -1 };                                                         // 從第幾秒開始淡（−1＝還沒）
   if (k) dlgSpray(o.x, 0.4, o.z, D.dx * 4, 6, D.dz * 4, 2);
 }
-/* 漂一幀，回傳濃度（1 → 0，淡完是 0）。水平：先跟著浪走，慢慢慢成水流的速度。
-   top 給了就連垂直一起算（f.y）：水面下往上浮、第一次冒出水面照被打到的力道衝出去、在半空落回來濺一下，之後浮在 top 上下。
-   沖出對面的島邊、或在島上漂了 DLG_KEEP 秒，就開始淡 */
+/* 漂一幀，回傳濃度（1 → 0，淡完是 0）。
+   捲在浪頭裡（v1.330.0）：跟著浪頭走（浪速的 rk 成）、不跑到那一點的前緣前面去；top 給了的話高度跟著那一點的浪頭剖面（dlgCrestH，
+   同畫出來的那一份）在浪頭裡上下翻。浪推完、捲了 rideT 秒、或沖出島外就掉出來。
+   沒捲在浪頭裡：水平慢成水流的速度；top 給了就連垂直一起算——水面下往上浮、高過水面就落回來（從浪頭掉出來的那一下落水濺一下），
+   之後浮在 top 上下；沖出島外的底下沒有水接著，從島邊掉下去。
+   沖出島外、或掉出浪頭之後漂了 DLG_KEEP 秒，就開始淡 */
 function dlgDrift(o, dt, top) {
   const f = o.dlg, D = deluge;
   f.t += dt;
-  f.v += (f.vm - f.v) * Math.min(1, dt / DLG_SLOW);
+  if (f.ride && (!D || D.t >= DLG_IN || f.t > f.rideT || dlgOff(o))) { f.ride = 0; f.rend = f.t; f.vy = 0; }
+  if (f.ride) f.v += (D.v * f.rk - f.v) * Math.min(1, dt * 3);
+  else f.v += (f.vm - f.v) * Math.min(1, dt / DLG_SLOW);
   o.x += f.ux * f.v * dt; o.z += f.uz * f.v * dt;
+  const off = !!D && dlgOff(o);
   if (top !== undefined) {
-    const was = f.y >= top;
-    if (was) f.vy -= DLG_G * dt;
-    else { f.vy += DLG_BUOY * dt; f.vy *= Math.pow(DLG_WDRAG, dt); }
-    f.y += f.vy * dt;
-    /* air＝衝出水面在半空翻滾的那一段：只有被浪頭打到的第一次冒出水面才算。退水時水面掉得比東西快，
-       東西也會短暫高過水面，那一段只是跟著落下去、不翻（不然退水那幾秒整片又翻起來） */
-    if (!was && f.y >= top) { f.air = f.toss > 0 ? 1 : 0; f.vy = Math.min(f.vy, f.toss || 1.5); f.toss = 0; }
-    else if (was && f.y < top) { if (f.air && f.vy < -3) dlgSpray(o.x, top + 0.3, o.z, 0, 4, 0, 2); f.air = 0; }
+    if (f.ride) {
+      const q = o.x * D.dx + o.z * D.dz, Fp = dlgFront(o.z * D.dx - o.x * D.dz), over = q - (Fp - 0.4);
+      if (over > 0) { o.x -= D.dx * over; o.z -= D.dz * over; }
+      const y0 = f.y, yt = top + ENG.dlgCrestH(D.S, D.CR, Math.max(D.S.dc, Fp - Math.min(q, Fp - 0.4))) - 0.3 + D.CR * 0.22 * Math.sin(f.t * 3.7 + f.ph);
+      f.y += (yt - f.y) * Math.min(1, dt * 6);
+      f.vy = (f.y - y0) / Math.max(dt, 1e-4); f.air = 1;
+    } else {
+      const tp = off ? -Infinity : top, was = f.y >= tp;
+      if (was) f.vy -= DLG_G * dt;
+      else { f.vy += DLG_BUOY * dt; f.vy *= Math.pow(DLG_WDRAG, dt); }
+      f.y += f.vy * dt;
+      /* 從水面下浮上來不翻、不往上衝。退水時水面掉得比東西快，東西也會短暫高過水面，那一段只是跟著落下去、不翻
+         （不然退水那幾秒整片又翻起來）；翻的只有從浪頭掉出來那一下，落回水裡就停 */
+      if (!was && f.y >= tp) { f.air = 0; f.vy = Math.min(f.vy, 1.5); }
+      else if (was && f.y < tp) { if (f.air && f.vy < -3) dlgSpray(o.x, tp + 0.3, o.z, 0, 4, 0, 2); f.air = 0; }
+    }
   }
-  if (f.fs < 0 && (f.t > DLG_KEEP || (D && o.x * D.dx + o.z * D.dz > D.E))) f.fs = f.t;
+  if (f.fs < 0 && !f.ride && (off || f.t > f.rend + DLG_KEEP)) f.fs = f.t;
   return f.fs < 0 ? 1 : clamp(1 - (f.t - f.fs) / DLG_FADE, 0, 1);
 }
-/* 人（小人、整隊捲走的兵）漂一幀，回傳濃度：衝出水面那一段在半空翻滾（繞身體中段，見 engine 的 putWorker 的 w.air），
+/* 人（小人、整隊捲走的兵）漂一幀，回傳濃度：捲在浪頭裡、掉出來落水前翻滾（繞身體中段，見 engine 的 putWorker 的 w.air），
    之後仰躺浮在水面上、慢慢打轉 */
 function dlgPose(w, dt) {
   const f = w.dlg, sc = w.scale || 1, top = (deluge ? deluge.L : 0) - 0.3 * sc;
@@ -18583,11 +18634,11 @@ function dlgBeast0(m, k) {
   dlgFloat(m, k);
 }
 /* stepBeast 開頭叫：漂一幀，淡完回 true（stepDoom 把牠從清單拿掉）。牛羊記一筆欠帳，退完水從林帶補（見 stepHerd）。
-   衝出水面那一段往前翻（m.spin，繞身體中段，見 engine 的 putBeasts 的 m.air），落回水裡翻回站著浮 */
+   捲在浪頭裡、掉出來落水前往前翻（m.spin，繞身體中段，見 engine 的 putBeasts 的 m.air），落回水裡翻回站著浮 */
 function dlgBeast(m, dt) {
   const f = m.dlg, top = (deluge ? deluge.L : 0) - 0.5 * (m.sc || 1);
-  const al = dlgDrift(m, dt, top), air = !!f.air;
-  m.y = Math.max(0, f.y + (air ? 0 : 0.06 * Math.sin(f.t * 2.6 + f.ph)));
+  const al = dlgDrift(m, dt, top), air = !!f.air, y = f.y + (air ? 0 : 0.06 * Math.sin(f.t * 2.6 + f.ph));
+  m.y = deluge && dlgOff(m) ? y : Math.max(0, y);    // 沖出島外的從島邊掉下去（v1.330.0）；島上的不沉到草皮底下
   m.air = air ? 1 : 0;
   if (m.air) m.spin = (m.spin || 0) + f.tw * dt;
   else if (!m.dead) {

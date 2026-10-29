@@ -38934,7 +38934,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      看過四版預覽定案：隨機從島的一邊捲過來、水面是地標現在高度的一半、浪頭再高出水位一半、全部順著浪沖走；
      退完水小人與動物從林帶補回來、林帶重種長回來。
      全部是規則型：方向押 Math.random；「誰會被捲走」直接擺好場面呼叫 dlgSweep 驗；整場跑一趟驗的是一定成立的事
-     （地標一塊不少、該走的都走了、該回來的都回來了、水那一顆收掉）。見 開發筆記〈大洪水（v1.325.0）〉 */
+     （地標一塊不少、該走的都走了、該回來的都回來了、水那一顆收掉）。見 開發筆記〈大洪水（v1.325.0）〉
+     v1.330.0 改成海嘯（前緣參差、捲進浪頭一起沖、水花跟著浪頭、水自己一份材質）：多四條，捲進浪頭那幾條一樣押 Math.random、直接叫那一支。
+     見 開發筆記〈大洪水改成海嘯：浪舌、深色海水、捲進浪頭一起沖（v1.330.0）〉 */
   SEC: { if (!(await head('大洪水', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await fillAll(page);
@@ -38954,7 +38956,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     r.CR = Math.abs(deluge.CR - deluge.H * DLG_CK) < 1e-9;
     r.F0 = deluge.F === -dlgEdge() - 0.4;
     deluge.F = 0;
-    r.hit = dlgHit(-1, 50) && dlgHit(-60, -50) && !dlgHit(1, -50) && !dlgHit(60, 0);   // 浪的正面停在 x＝0：掃過的是 x < 0 那一半
+    /* v1.330.0 前緣參差不齊：從 −x 往 +x 推，橫的 p 就是 z。那一點的前緣後面一格算掃過、前面一格不算 */
+    r.hit = dlgHit(dlgFront(50) - 1, 50) && dlgHit(dlgFront(-50) - 30, -50) && !dlgHit(dlgFront(-50) + 1, -50) && !dlgHit(dlgFront(0) + 30, 0);
+    /* 參差：整條前緣（每一格量一次）前後差得出來，而且不超過浪形給的幅度 A */
+    let lo = 1e9, hi = -1e9;
+    for (let p = -dlgEdge(); p <= dlgEdge(); p++) { const d = dlgFront(p) - deluge.F; lo = Math.min(lo, d); hi = Math.max(hi, d); }
+    r.jag = +(hi - lo).toFixed(2); r.A = deluge.S.A;
+    r.jagOk = hi - lo > 2 && Math.max(hi, -lo) <= deluge.S.A + 1e-9;
     cleanTools();
     hudLast = 0; hudTick(performance.now());
     r.dis2 = el.disabled; r.off = deluge === null && !ENG.delugeOn;
@@ -38962,8 +38970,11 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   });
   ok('🌊 大洪水接在 ⚡ 立刻建成後面；按下去開淹、淹著的時候灰掉、再按不算，收完又能按',
      dbtn.next && dbtn.inCorner && !dbtn.dis0 && dbtn.on && dbtn.dis1 && dbtn.again && !dbtn.dis2 && dbtn.off, JSON.stringify(dbtn));
-  ok('從一邊推過來（方向四個軸向抽一個）、水位＝地標現在高度的一半（最少 DLG_HMIN）、浪頭再高出水位的 DLG_CK；浪的正面後面才算掃過',
+  ok('從一邊推過來（方向四個軸向抽一個）、水位＝地標現在高度的一半（最少 DLG_HMIN）、浪頭再高出水位的 DLG_CK；在那一點的前緣後面才算掃過',
      dbtn.dir && dbtn.H && dbtn.CR && dbtn.F0 && dbtn.hit, JSON.stringify(dbtn));
+  /* v1.330.0（使用者：「沒有像海嘯來襲沖走的感覺」）：前緣不是一直線，判掃到誰也照同一條（不然會「水還沒到、人先被捲走」） */
+  ok('浪的前緣參差不齊（前後差得出來、不超過浪形給的幅度 A）',
+     dbtn.jagOk, '前後差 ' + dbtn.jag + ' 格（幅度 A＝' + dbtn.A + '）');
 
   /* ── 誰會被捲走（規則：浪掃過、身子在水面以下；地標不算、天上飛的不算）：擺好場面直接叫 dlgSweep ── */
   const drule = await page.evaluate(() => {
@@ -38999,6 +39010,58 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      drule.w0 && !drule.w1 && !drule.w2 && drule.c0 && !drule.c1 && !drule.sky && drule.lmOk && !drule.lm &&
      drule.b0 && !drule.b1 && drule.t0 && !drule.t1, JSON.stringify(drule));
 
+  /* ── 捲進浪頭一起沖（v1.330.0，使用者：「沒有像海嘯來襲沖走的感覺」，選了「捲進浪頭一起沖」）：
+        押 Math.random＝0（捲 DLG_RIDE[0] 成浪速、捲 DLG_RIDE_T[0] 秒、方向偏 −DLG_WOB），浪的時間與前緣自己推，直接叫 dlgFloat／dlgDrift。
+        舊版被打到的照 1.2 秒的時間常數慢成水流：照舊版的常數算，一秒後的速度只剩浪速的 0.35～0.49，落在浪後面
+        （一秒內走的距離舊版也有浪速的五到七成，分不出新舊，所以量的是一秒後的速度） ── */
+  const dride = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const real = Math.random, n0 = dust.length;
+    let r;
+    try {
+      Math.random = () => 0;                                        // 從 −x 往 +x：沿著浪是 x、橫的 p 是 z
+      castDeluge();
+      const D = deluge, dt = 0.05, top = D.L - 0.3;
+      const adv = s => { D.t += s; D.F = -D.E - 0.4 + D.v * Math.min(D.t, DLG_IN); };
+      adv(1);                                                       // 浪推了一秒
+      const o = { x: dlgFront(0) - 2, z: 0, y: 0 }, x0 = o.x;     // 前緣後面兩格、泡在水底
+      dlgFloat(o, 1);
+      const f = o.dlg;
+      r = { ride0: f.ride, rideT: f.rideT === DLG_RIDE_T[0], rk: f.rk === DLG_RIDE[0], ahead: -1e9 };
+      for (let i = 0; i < 20; i++) { adv(dt); dlgDrift(o, dt, top); r.ahead = Math.max(r.ahead, o.x - (dlgFront(o.z) - 0.4)); }
+      r.go = +((o.x - x0) / D.v).toFixed(3);                        // 一秒往前走了浪速的幾成（只印）
+      r.v1 = +(f.v / D.v).toFixed(3);                               // 一秒後的速度是浪速的幾成
+      r.up = +f.y.toFixed(2); r.top = +top.toFixed(2); r.air1 = f.air; r.ride1 = f.ride;
+      for (let i = 0; i < 60; i++) { adv(dt); dlgDrift(o, dt, top); }   // 再三秒：早就過了 rideT，掉出浪頭、落回水面
+      r.ride2 = f.ride; r.rend = +f.rend.toFixed(2); r.air2 = f.air; r.float = +(f.y - top).toFixed(3); r.fs2 = f.fs;
+      /* 沖出島外：浪快推到對面時捲進去，跟著衝出島邊 → 掉出浪頭、從島邊掉下去、開始淡 */
+      D.t = DLG_IN - 0.4; adv(0);
+      const o2 = { x: dlgFront(0) - 1, z: 0, y: 0 };
+      dlgFloat(o2, 1);
+      for (let i = 0; i < 30; i++) { adv(dt); dlgDrift(o2, dt, top); }
+      r.out = +o2.x.toFixed(1); r.E = D.E; r.fallY = +o2.dlg.y.toFixed(1); r.fs3 = o2.dlg.fs; r.ride3 = o2.dlg.ride;
+      /* 浪頭的水花（押 0 抽到的是浪頂那一種）：從前緣噴出來、跟著浪頭往前衝 */
+      D.t = 1; adv(0); D.F = 0; D.li = D.lm.length; D.em = 0;
+      const d0 = dust.length;
+      dlgCrest(0.01);
+      const sp = dust.slice(d0);
+      r.spN = sp.length; r.spWant = Math.floor(0.01 * DLG_SPRAY);
+      r.spV = sp.length ? +Math.min(...sp.map(d => d.vx / D.v)).toFixed(3) : 0;
+      r.spAt = sp.every(d => d.x - dlgFront(d.z) >= 0 && d.x - dlgFront(d.z) <= D.S.lean * 1.3);
+    } finally { Math.random = real; }
+    cleanTools();
+    dust.length = n0;
+    return r;
+  });
+  ok('浪頭打到的捲進浪頭：一直在那一點的前緣後面、一秒後還跟著浪頭在衝（浪速的 0.75 成以上）、從水底被帶上來翻滾',
+     dride.ride0 === 1 && dride.rideT && dride.rk && dride.ahead <= 1e-9 && dride.v1 >= 0.75 &&
+     dride.up > dride.top - 1.5 && dride.air1 === 1 && dride.ride1 === 1, JSON.stringify(dride));
+  ok('捲夠 DLG_RIDE_T 秒就掉出浪頭、落回水面浮著不翻；沖出島外的掉出浪頭、從島邊掉下去、開始淡',
+     dride.ride2 === 0 && dride.rend > 0 && dride.air2 === 0 && Math.abs(dride.float) < 0.3 && dride.fs2 < 0 &&
+     dride.out > dride.E && dride.ride3 === 0 && dride.fallY < -2 && dride.fs3 >= 0, JSON.stringify(dride));
+  ok('浪頂的水花從前緣噴出來、跟著浪頭往前衝（浪速的 0.85 成以上，舊版只有四到六成、一噴出來就落在後面）',
+     dride.spN === dride.spWant && dride.spN > 0 && dride.spV >= 0.85 && dride.spAt, JSON.stringify(dride));
+
   /* ── 整場跑一趟：地標一塊不少；小人、牛羊、村子、碎料、箭雨隊、肉、泡泡、地上的痕跡、樹全部沖走；
         退完水小人換新的從林帶走進來、牛羊記成欠帳（補位那一支測試裡關著）、林帶重種從零長回來、水那一顆收掉 ── */
   const drun = await page.evaluate(() => {
@@ -39026,14 +39089,20 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       step(0.05);
       maxDlg = Math.max(maxDlg, workers.filter(w => w.dlg).length);
       men = Math.max(men, dlgMen().length);
-      if (deluge) { draw(); on = on || ENG.delugeOn; }
+      if (deluge) {
+        draw();
+        if (ENG.delugeOn && !on) ENG.render();      // 真的畫一次：材質的 onBeforeCompile 是第一次編 program 才跑（同〈水桶〉那一條的刀數）
+        on = on || ENG.delugeOn;
+      }
     }
+    const dm = ENG.three.dlgMesh.material;
     draw();
     const after = { set: own(), debris: loose(), homes: homes ? homes.list.length : 0, herd: beasts ? beasts.filter(m => m.herd).length : 0,
                     owed: herdOwed - owed0, arch: !!archers, men: dlgMen().length, meats: meats ? meats.length : 0, gifts: gifts ? gifts.length : 0,
                     marks: marks.length, bloods: bloods.length, wk: workers.length, dlg: workers.filter(w => w.dlg).length,
                     fresh: workers.every((w, i) => w !== w0[i]), wood: workers.every(w => Math.abs(Math.hypot(w.x, w.z) - woodR()) < 2),
                     on, off: !ENG.delugeOn, gone: deluge === null, trees: trees.length, treeN: TREE_N,
+                    cuts: dm.userData.cuts, own: dm !== ENG.three.poolMesh.material, vc: dm.vertexColors,
                     grow: trees.every(t => t.fk !== undefined && t.fk < 1 && !t.dlg) };
     for (let i = 0; i < Math.ceil((DLG_GROW + DLG_GROW_LAG) / 0.05) + 2; i++) step(0.05);
     after.grown = trees.every(t => t.fk === undefined && t.gw === undefined);
@@ -39053,6 +39122,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
   ok('退完水：小人一樣多、全部換新的從林帶走進來，林帶重種一片從零長回原本大小；水那一顆淹著時有畫、退完收掉',
      da.wk === drun.n && da.dlg === 0 && da.fresh && da.wood && da.trees === da.treeN && da.grow && da.grown &&
      da.on && da.off && da.gone, JSON.stringify(drun));
+  /* v1.330.0 不再借水窪那一份（52% 透明、草透上來是一片青綠色的玻璃）；白沫自己發光那一刀是注入的，chunk 改名時會靜默失效 */
+  ok('大洪水的水自己一份材質（照頂點上色），shader 的四個注入點都真的換到了',
+     da.own && da.vc === true && da.cuts === 4, da.cuts + ' / 4 刀、自己一份 ' + da.own + '、頂點上色 ' + da.vc);
 
   await page.evaluate(() => { cleanTools(); beasts = null; archers = null; arOld = null; });
   }   // ── 〈大洪水〉結束（--tier 跳過時從這裡出來）
