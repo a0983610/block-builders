@@ -37201,9 +37201,10 @@ const toScreen = (page, sel) => page.evaluate(sel => {
              doom: ids.filter(id => DOOMS.some(d => d.id === id)).join(),
              calm: MASCOTS.filter(k => k.calm).map(k => k.id).join() };
   });
-  /* v1.322.0 條目名拿掉「（用走的，整地那一段先不放）」：吉祥物整地不避，MASCOTS 沒有 ground 那一欄了 */
-  ok('四位都進 MASCOTS、不進 DOOMS；不主動動手的只有惠惠與芙莉蓮',
-     qtab.have === '1111' && qtab.doom === '' && qtab.calm === 'megumin,frieren',
+  /* v1.322.0 條目名拿掉「（用走的，整地那一段先不放）」：吉祥物整地不避，MASCOTS 沒有 ground 那一欄了。
+     v1.329.0 歐爾麥特也是 calm（使用者：「當作吉祥物偶爾進村子逛逛 不主動攻擊」），條目名跟著改 */
+  ok('四位都進 MASCOTS、不進 DOOMS；不主動動手的只有惠惠、芙莉蓮、歐爾麥特',
+     qtab.have === '1111' && qtab.doom === '' && qtab.calm === 'megumin,frieren,allmight',
      '在表上 ' + qtab.have + '；天災裡有「' + qtab.doom + '」；calm ' + qtab.calm);
 
   /* ── 機率是固定邏輯：每一隻 ＝ MASC_BAD_ROUND ÷ 會動手的隻數；骰子押 0（一定抽中）時 calm 的照樣是來逛的 ── */
@@ -39583,6 +39584,399 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
   }   // ── 〈破壞道具：光之太刀〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 破壞道具：DETROIT SMASH（v1.329.0）══════════
+     歐爾麥特：叫來跑到射程一半出拳，拳風錐形（ENG.AMW）裡的積木整片往前吹飛、小人與動物吹飛、巨人一拳打倒；
+     也當吉祥物來逛（calm、被打不生氣，擺個姿勢）。全部規則型：錐形、吹到誰直接叫 amSweep／amLives（押骰子），
+     姿勢直接寫 m.sp／m.op／m.ot、量 amMesh 畫出去的矩陣；一整趟走主迴圈，驗的是一定成立的事（狀態順序、點到的那一塊一定吹掉）。
+     見 開發筆記〈破壞道具：DETROIT SMASH〉 */
+  SEC: { if (!(await head('破壞道具：DETROIT SMASH', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await page.evaluate(() => { stepDoom = window.doomStep; });   // 他走路是 stepDoom 在推
+  await fillAll(page);
+
+  /* ── 造型、表、姿勢：直接寫 m.sp／m.op／m.ot，量 amMesh 畫出去的矩陣（身體座標換成「往前／往左手邊／高」、除以縮放） ── */
+  const afig = await page.evaluate(() => {
+    const M = ENG.ALLMIGHT, G = ENG.AM_G, mesh = ENG.three.amMesh, T = ENG.AMT;
+    const mat = new THREE.Matrix4(), v = new THREE.Vector3();
+    const m = spawnBeast('allmight', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0; m.a = 0.7; m.st = 'fun'; m.gait = 0; m.ph = 0; m.run = 0;
+    const sc = m.sc, fx = Math.sin(m.a), fz = Math.cos(m.a);
+    const rel = p => ({ f: +(((p.x - m.x) * fx + (p.z - m.z) * fz) / sc).toFixed(3),
+                        l: +(((p.x - m.x) * fz - (p.z - m.z) * fx) / sc).toFixed(3), y: +(p.y / sc).toFixed(3) });
+    const at = k => { mesh.getMatrixAt(k, mat); return v.setFromMatrixPosition(mat).clone(); };
+    const ys = keep => {
+      let lo = 1e9, hi = -1e9;
+      for (let i = 0; i < ENG.AM_SLOT; i++) {
+        if (keep && !keep(M[i])) continue;
+        mesh.getMatrixAt(i, mat);
+        for (let c = 0; c < 8; c++) {
+          v.set(c & 1 ? 0.5 : -0.5, c & 2 ? 0.5 : -0.5, c & 4 ? 0.5 : -0.5).applyMatrix4(mat);
+          lo = Math.min(lo, v.y); hi = Math.max(hi, v.y);
+        }
+      }
+      return [lo / sc, hi / sc];
+    };
+    const pose = o => { Object.assign(m, o); ENG.putMights([m]); };
+    const fist = g => M.findIndex(b => b.g === g && b.cn === 'skin' && b.s[0] === 0.135);
+    const fR = fist(G.handR), fL = fist(G.handL);
+    pose({ sp: 'rest', sp0: 'rest', spk: 1 });
+    const [lo, top] = ys(), chin = ys(b => b.g === G.head && !/^hair/.test(b.cn))[0];
+    const st = {};
+    for (const sp of ['rest', 'flex', 'hip']) { pose({ sp, sp0: sp, spk: 1 }); st[sp] = { R: rel(at(fR)), L: rel(at(fL)) }; }
+    pose({ sp: 'rest', sp0: 'rest', st: 'smash', op: 'wind', ot: T.wind });
+    const wind = { R: rel(at(fR)), L: rel(at(fL)) };
+    pose({ op: 'hit', ot: T.hit });
+    const hit = { R: rel(at(fR)), L: rel(at(fL)) };
+    pose({ st: 'fun', op: null });
+    /* 走、跑：一步取 40 格，低的那一隻腳最低點離地多高（÷ 縮放） */
+    const foot = g => ys(b => b.g === g)[0];
+    const walk = [], run = [];
+    for (let i = 0; i < 40; i++) { pose({ gait: 0.85, run: 0, ph: 2 * Math.PI * i / 40 }); walk.push(Math.min(foot(G.footR), foot(G.footL))); }
+    for (let i = 0; i < 40; i++) { pose({ gait: 0, run: 1, ph: 2 * Math.PI * i / 40 }); run.push(Math.min(foot(G.footR), foot(G.footL))); }
+    pose({ gait: 0, run: 0, ph: 0 });
+    ENG.putMights([]); beasts = null;
+    const ia = TOOLS.findIndex(t => t.id === 'allmight'), ib = TOOLS.findIndex(t => t.id === 'banana');
+    const row = MASCOTS.find(k => k.id === 'allmight') || {};
+    const span = a => [+Math.min(...a).toFixed(3), +Math.max(...a).toFixed(3)];
+    return { parts: M.length, slot: ENG.AM_SLOT, inBeasts: 'allmight' in ENG.BEASTS, model: ENG.MODELS.allmight === M,
+             lo: +lo.toFixed(3), top: +top.toFixed(3), chin: +chin.toFixed(3), sc, doomSc: DOOM_SC, st, wind, hit,
+             walk: span(walk), run: span(run),
+             at: ia, banana: ib, name: TOOLS[ia].n, icon: TOOLS[ia].k, cat: TOOLS[ia].cat, ground: !!GROUND_TOOL.allmight,
+             masc: !!row.id, calm: !!row.calm, doom: DOOMS.some(d => d.id === 'allmight'), nm: !!BEAST_NM.allmight,
+             it: itOf({ kind: 'allmight' }) };
+  });
+  ok('歐爾麥特自己一顆 mesh：不進 BEASTS、在造型表總表裡',
+     afig.parts === afig.slot && !afig.inBeasts && afig.model, '他 ' + afig.parts + ' 塊');
+  /* 使用者選的「小人的 1.6 倍」「頭約 1/5」：頭頂（頭髮）1.95、髮尖 2.31，小人帽頂 1.31 */
+  ok('身形：原點在腳底、連髮尖 2.2～2.45（小人帽頂 1.31 的 1.7～1.85 倍）、頭（下巴到頭頂）約身高 1/5，縮放同小人平均（DOOM_SC）',
+     Math.abs(afig.lo) < 0.02 && afig.top > 2.2 && afig.top < 2.45 && afig.chin > 1.5 && afig.sc === afig.doomSc,
+     '最低 ' + afig.lo + '、髮尖 ' + afig.top + '、下巴 ' + afig.chin + ' × ' + afig.sc.toFixed(3));
+  ok('道具表：接在香蕉後面、叫 DETROIT SMASH、圖示 👊、動漫類、點空地也算數；進吉祥物（不主動動手）、不進天災，提示裡是「他」',
+     afig.banana >= 0 && afig.at === afig.banana + 1 && afig.name === 'DETROIT SMASH' && afig.icon === '👊' && afig.cat === 'anime' &&
+     afig.ground && afig.masc && afig.calm && !afig.doom && afig.nm && afig.it === '他',
+     'TOOLS 第 ' + afig.at + ' 把（香蕉第 ' + afig.banana + ' 把）「' + afig.name + '」' + afig.icon + '／' + afig.cat +
+     '；吉祥物 ' + afig.masc + '（calm ' + afig.calm + '）、天災 ' + afig.doom + '；' + afig.it);
+  const ast = afig.st;
+  ok('三種站姿：自然站拳頭垂在腰下兩側；雙臂彎舉拳頭高過下巴、張到肩膀外面；叉腰拳頭貼在腰的兩側',
+     ast.rest.R.y < 0.95 && ast.rest.L.y < 0.95 && ast.rest.R.l < -0.3 && ast.rest.L.l > 0.3 &&
+     ast.flex.R.y > afig.chin && ast.flex.L.y > afig.chin && ast.flex.R.l < -0.45 && ast.flex.L.l > 0.45 &&
+     ast.hip.R.y > 0.85 && ast.hip.R.y < 1.2 && ast.hip.L.y > 0.85 && ast.hip.L.y < 1.2 &&
+     ast.hip.R.l < 0 && ast.hip.R.l > -0.45 && ast.hip.L.l > 0 && ast.hip.L.l < 0.45, JSON.stringify(ast));
+  /* 「往前伸直」＝右拳離身體往前超過一整隻手臂（上臂 0.32 ＋前臂 0.30 ＋拳頭 0.13 ＝ 0.75）。
+     第一稿寫 > 1.0 是猜的，實測 0.957（扭腰、弓步之後肩膀只往前 0.2 上下） */
+  ok('出拳：蓄力時右拳拉在身邊，打出去右拳往前伸直、在胸口高度，左拳收在後面',
+     afig.hit.R.f > 0.8 && afig.hit.R.y > 1.0 && afig.hit.R.y < 1.8 && afig.hit.L.f < afig.hit.R.f - 0.8 &&
+     afig.wind.R.f < afig.hit.R.f - 0.8, JSON.stringify({ wind: afig.wind, hit: afig.hit }));
+  ok('走、跑：每一格低的那一隻腳都貼地（沒陷進地裡，最多跟著步伐彈起一點）',
+     afig.walk[0] > -0.02 && afig.walk[1] < 0.08 && afig.run[0] > -0.02 && afig.run[1] < 0.08,
+     '走 ' + afig.walk.join('～') + '、跑 ' + afig.run.join('～'));
+
+  /* ── 拳風的錐形：他站在 +x 外面往 −x 打，拳頭 2.2 格高；錐形裡（離拳頭 0～L、離中軸 amR(a) 以內）的地標全部吹飛，
+        外面的一塊都不少（分前後兩截推，驗首尾相接：推完前半截時後半截一塊都還沒動）；吹出去一律往前、離拳頭越近越快
+        （押骰子：rr 取下限）；煙塵到 AM_DUST.max 為止。只叫 amSweep、不推主迴圈 ── */
+  const acut = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; clearFires();
+    const real = Math.random;
+    Math.random = () => 0;
+    const W = ENG.AMW;
+    const m = spawnBeast('allmight', 1, 0, 0);
+    m.x = bp.radius + 40; m.z = 0.5; m.y = 0;
+    m.sw = { hx: bp.radius + 38, hy: 2.2, hz: 0.5, ux: -1, uy: 0, uz: 0, t: 0, f: 0, n: 0, shk: 0, sm: 0 };
+    const w = m.sw;
+    const aOf = b => (b.x - w.hx) * w.ux + (b.y - w.hy) * w.uy + (b.z - w.hz) * w.uz;
+    const inCone = b => { const a = aOf(b); return a >= 0 && a <= W.L && Math.hypot(b.y - w.hy, b.z - w.hz) <= ENG.amR(a); };
+    const lm = blocks.filter(b => b.st === SET && b.hh < 0);
+    const inside = lm.filter(inCone), out0 = lm.length - inside.length;
+    const near = inside.filter(b => aOf(b) <= W.L / 2), far = inside.filter(b => aOf(b) > W.L / 2);
+    amSweep(m, 0, W.L / 2);
+    const half = { near: near.filter(b => b.st === SET).length, far: far.filter(b => b.st === SET).length, n0: near.length, f0: far.length };
+    amSweep(m, W.L / 2, W.L);
+    const fwd = b => b.vx * w.ux + b.vy * w.uy + b.vz * w.uz;
+    const avg = a => a.reduce((s, b) => s + fwd(b), 0) / Math.max(1, a.length);
+    const r = { in0: inside.length, in1: inside.filter(b => b.st === SET).length, out0,
+                out1: blocks.filter(b => b.st === SET && b.hh < 0 && !inCone(b)).length, half,
+                back: inside.filter(b => !(fwd(b) > 0)).length, vNear: +avg(near).toFixed(2), vFar: +avg(far).toFixed(2),
+                n: w.n, sm: w.sm, max: AM_DUST.max };
+    Math.random = real;
+    beasts = null; supportDirty = false;
+    return r;
+  });
+  const acOk = acut.in0 > 0 && acut.in1 === 0 && acut.out1 === acut.out0 && acut.n >= acut.in0;
+  ok('拳風的錐形：離拳頭 0～射程、離中軸 amR(a) 以內的地標全部吹飛，外面的一塊都不少',
+     acOk, acOk ? '錐形裡 ' + acut.in0 + ' 塊全吹飛、外面 ' + acut.out0 + ' 塊不動'
+                : '錐形裡 ' + acut.in0 + ' → ' + acut.in1 + '、外面 ' + acut.out0 + ' → ' + acut.out1 + '、算進去 ' + acut.n);
+  ok('拳風是往前推的：推完前半截時，前半截吹光了、後半截一塊都還沒動',
+     acut.half.n0 > 0 && acut.half.f0 > 0 && acut.half.near === 0 && acut.half.far === acut.half.f0, JSON.stringify(acut.half));
+  ok('整片往前吹飛（使用者選的）：每一塊都往拳風的方向飛、離拳頭越近越快',
+     acut.back === 0 && acut.vNear > acut.vFar, '往回飛的 ' + acut.back + ' 塊；前半截平均 ' + acut.vNear + '、後半截 ' + acut.vFar);
+  ok('煙塵：被吹飛的那幾塊冒煙、地上沿路揚起來，一拳到 AM_DUST.max 為止', acut.sm > 0 && acut.sm <= acut.max,
+     '冒了 ' + acut.sm + ' 團（上限 ' + acut.max + '）');
+
+  /* ── 吹到的人與動物（使用者選「吹飛＋巨人一拳打倒」、小人「算挨一下」）：往 +z 打一道；錐形裡的小人吹飛、算挨一下，
+        小獼猴吹飛，巨人打倒；錐形外的、他背後的、天上的、他自己不算（押骰子） ── */
+  await fillAll(page);
+  const alife = await page.evaluate(() => {
+    cleanTools(); phase = 'done';
+    const real = Math.random;
+    Math.random = () => 0;
+    const X = siteR + 30, W = ENG.AMW;
+    const m = spawnBeast('allmight', 1, 0, 0);
+    m.x = X; m.z = -45; m.y = 0;
+    m.sw = { hx: X, hy: 2.2, hz: -44, ux: 0, uy: 0, uz: 1, t: 0, f: 0, n: 0, shk: 0, sm: 0 };
+    const put = (o, x, z) => { o.x = x; o.z = z; o.y = 0; o.air = 0; o.fall = 0; o.burn = 0; };
+    const alive = workers.filter(o => !o.dead), w = alive[0], w2 = alive[1];
+    put(w, X, -10); put(w2, X + 25, -10);
+    /* 其餘活著的小人挪到場的另一邊（錐形外），量完放回去（同〈破壞道具：光之太刀〉那一條的理由） */
+    const others = alive.slice(2).map(o => [o, o.x, o.z]);
+    for (const [o] of others) o.x = -X;
+    const hits = w.hits || 0;
+    const ape = spawnBeast('ape', 1); put(ape, X, 0); ape.st = 'fun'; ape.pause = 999;
+    const g = spawnBeast('giant', 1); put(g, X, 20); g.st = 'fun'; g.pause = 999;
+    const far = spawnBeast('ape', 1); put(far, X + 25, 4); far.st = 'fun'; far.pause = 999;
+    const back = spawnBeast('ape', 1); put(back, X, -52); back.st = 'fun'; back.pause = 999;
+    const sky = { kind: 'gryphon', sky: 1, x: X, y: 20, z: 20, a: 0, sc: 1, air: 0 };
+    beasts.push(sky);
+    const lh = lifeHit;
+    lifeHit = window.lifeHitFn;                    // 「記一次」那一支 installClean 預設關掉，這裡要量它，量完換回去
+    amLives(m, 0, W.L);
+    lifeHit = lh;
+    const r = { w: !!w.air, w2: !!w2.air, hit: (w.hits || 0) - hits, wFwd: w.vz > 0, ape: !!ape.air, apeFwd: ape.vz > 0,
+                giant: !!g.dead, far: !!far.air, back: !!back.air, sky: !!(sky.air || sky.fall), me: !!(m.air || m.fall) };
+    Math.random = real;
+    beasts = null;
+    for (const o of [w, w2]) { o.air = 0; o.fall = 0; o.y = 0; o.vx = o.vy = o.vz = 0; }
+    w.hits = hits;
+    for (const [o, x, z] of others) { o.x = x; o.z = z; }
+    return r;
+  });
+  ok('吹到的人與動物：錐形裡的小人往前吹飛、算挨一下，小獼猴往前吹飛，巨人一拳打倒；錐形外的、他背後的、天上的、他自己不算',
+     alife.w && alife.hit === 1 && alife.wFwd && !alife.w2 && alife.ape && alife.apeFwd && alife.giant &&
+     !alife.far && !alife.back && !alife.sky && !alife.me, JSON.stringify(alife));
+
+  /* ── 一整趟（建築）：從那一點的方位進場、跑到射程一半（AM_REACH）站定 → 蓄力 → 打出去（放出拳風）→ 停住 → 收回 → 回去逛；
+        點到的那一塊吹掉了；拳風推到射程盡頭，收完拳之後照樣散完才收（m.sw 歸零）；那一整招打不動他 ── */
+  await fillAll(page);
+  const arun = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    for (const b of blocks) { b.burn = 0; b.wet = 0; }
+    let P = null;                                  // 金字塔 +x 那一面、3 格高的外殼（同〈破壞道具：光之太刀〉）
+    for (const b of blocks) if (b.st === SET && Math.abs(b.y - 3) < 0.6 && (!P || b.x > P.x)) P = b;
+    const px = P.x, pz = P.z;
+    tool = 'allmight';
+    useTool({ kind: 'block', point: { x: P.x, y: P.y, z: P.z }, dir: { x: -1, y: 0, z: 0 } });
+    tool = 'hammer';
+    const ms = (beasts || []).filter(b => b.kind === 'allmight'), m = ms[0], c = m.call;
+    let da = Math.atan2(m.z, m.x) - Math.atan2(c.z, c.x);
+    while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+    const entry = { n: ms.length, fun: m.fun, st: m.st, da: Math.abs(da), sd: c.sd, reach: AM_REACH };
+    const seen = [];
+    let n = 0, act = null, soft = 0, rel = null, front = 0, cleared = false;
+    while (n < 6000 && beasts && beasts.indexOf(m) >= 0) {
+      step(0.02); n++;
+      const k = m.st + (m.st === 'smash' ? ':' + m.op : '');
+      if (seen[seen.length - 1] !== k) seen.push(k);
+      if (!act && m.st === 'act') act = Math.hypot(m.x - px, m.z - pz);
+      if (m.st === 'smash' && !levBusy(m)) soft++;
+      if (m.sw && !rel) rel = m.op;
+      if (m.sw) front = m.sw.f;
+      if (rel && !m.sw && seen.indexOf('smash:back') >= 0) { cleared = true; break; }
+    }
+    const r = { entry, seen: seen.join('→'), act, soft, rel, front, L: ENG.AMW.L, cleared, cut: P.st !== SET,
+                end: { call: m.call, op: m.op, st: m.st } };
+    beasts = null; clearFires();
+    return r;
+  });
+  const arIn = arun.entry.n === 1 && arun.entry.fun === 1 && arun.entry.st === 'call' && arun.entry.da < 1e-9 &&
+               arun.entry.sd === arun.entry.reach;
+  ok('點建築：從那一點的方位進場、是吉祥物，命令停在射程一半（AM_REACH）', arIn,
+     arIn ? '一位、站在離那一點 ' + arun.entry.reach + ' 格' : JSON.stringify(arun.entry));
+  const arOk = arun.seen === 'call→act→smash:wind→smash:hit→smash:hold→smash:back→fun' && arun.act !== null &&
+               Math.abs(arun.act - arun.entry.reach) < 0.15 && arun.cut && arun.rel === 'hit' &&
+               arun.end.call === null && arun.end.op === null;
+  ok('一整趟（建築）：站定 → 蓄力 → 打出去（放出拳風）→ 停住 → 收回 → 回去逛，點到的那一塊吹掉了',
+     arOk, arOk ? arun.seen : arun.seen + '；站定時離那一點 ' + arun.act + '、拳風在 ' + arun.rel + ' 放出去、點到的吹掉 ' +
+     arun.cut + '、收完 ' + JSON.stringify(arun.end));
+  ok('拳風推到射程盡頭，收完拳之後照樣散完才收；那一整招打不動他',
+     arun.front === arun.L && arun.cleared && arun.soft === 0,
+     '前緣推到 ' + arun.front + '（射程 ' + arun.L + '）、散完收掉 ' + arun.cleared + '、出拳中打得動 ' + arun.soft + ' 幀');
+
+  /* ── 點生物、巨人、小人：追過去出拳——牠吹飛（還在場上）、巨人打倒、小人吹飛（不算手指戳倒的成就） ── */
+  await fillAll(page);
+  const ahit = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; clearFires();
+    const run = (tb, isW) => {
+      const m = callMight({ x: tb.x, y: 0, z: tb.z }, tb, isW);
+      const b = !!m.call && m.call.b === tb && m.call.bw === (isW ? 1 : 0), seen = [];
+      let n = 0, hit = 0, dead = 0;
+      while (n < 4000) {
+        step(0.02); n++;
+        const k = m.st + (m.st === 'smash' ? ':' + m.op : '');
+        if (seen[seen.length - 1] !== k) seen.push(k);
+        if (tb.air || tb.fall > 0 || tb.lie > 0) hit = 1;
+        if (tb.dead) dead = 1;
+        if (m.st === 'fun' && seen.indexOf('smash:back') >= 0) break;
+      }
+      return { b, hit, dead, call: m.call, done: seen.indexOf('smash:back') >= 0 };
+    };
+    const a = spawnBeast('ape', 1); a.x = siteR + 26; a.z = 6; a.st = 'fun'; a.pause = 999; a.stay = 999;
+    const ape = run(a, false); ape.alive = beasts.indexOf(a) >= 0;
+    beasts = null;
+    const g = spawnBeast('giant', 1); g.x = siteR + 30; g.z = -8; g.st = 'fun'; g.pause = 999; g.stay = 999;
+    const giant = run(g, false);
+    beasts = null;
+    const w = workers.find(o => !o.dead), poked = stats.poked;
+    w.x = siteR + 20; w.z = 12; w.y = 0; w.air = 0; w.fall = 0;
+    const man = run(w, true); man.poked = stats.poked - poked;
+    w.air = 0; w.fall = 0; w.y = 0; beasts = null;
+    return { ape, giant, man };
+  });
+  ok('點生物：追過去出拳，牠吹飛、還在場上，收完拳命令收掉',
+     ahit.ape.b && ahit.ape.done && ahit.ape.hit && !ahit.ape.dead && ahit.ape.alive && ahit.ape.call === null, JSON.stringify(ahit.ape));
+  ok('點巨人：一拳打倒', ahit.giant.b && ahit.giant.done && ahit.giant.dead, JSON.stringify(ahit.giant));
+  ok('點小人：追過去把他吹飛，不算手指戳倒的成就',
+     ahit.man.b && ahit.man.done && ahit.man.hit && ahit.man.poked === 0, JSON.stringify(ahit.man));
+
+  /* ── 點空地：跑到那一點、待命 LEV_WAIT 秒再回去逛（不出拳，同 Saber／艾莉絲） ── */
+  const ago = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('allmight', 1, 0, 0);
+    m.x = siteR + 8; m.z = 0; m.st = 'fun'; m.pause = 99;
+    const a = 1.1, G = { x: Math.cos(a) * (siteR + 16), y: 0, z: Math.sin(a) * (siteR + 16) };
+    tool = 'allmight'; useTool({ kind: 'ground', point: G, dir: { x: 0, y: -1, z: 0 } }); tool = 'hammer';
+    const go = !!(m.call && m.call.go);
+    let n = 0, arr = null, smash = 0;
+    while (n < 3000 && !arr) {
+      step(0.02); n++;
+      if (m.st === 'smash') smash++;
+      if (m.st === 'fun') arr = { d: Math.hypot(m.x - G.x, m.z - G.z), pause: m.pause, call: m.call };
+    }
+    beasts = null;
+    return { go, arr, smash, sd: LEV_SD, wait: LEV_WAIT };
+  });
+  ok('點空地：跑到那一點待命 LEV_WAIT 秒再回去逛，不出拳',
+     ago.go && ago.arr && ago.arr.d <= ago.sd + 0.1 && ago.arr.call === null && ago.smash === 0 &&
+     ago.arr.pause > ago.wait - 0.05 && ago.arr.pause <= ago.wait, JSON.stringify(ago));
+
+  /* ── 出拳那一整段打不動他（吹不飛、推不倒、點不著），收完就打得動 ── */
+  const abusy = await page.evaluate(() => {
+    cleanTools();
+    const m = spawnBeast('allmight', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0;
+    const r = {}, OPS = ['wind', 'hit', 'hold', 'back'];
+    for (const op of OPS) {
+      m.st = 'smash'; m.op = op;
+      r[op] = [tossBeast(m, 5, 5, 5, true), fellBeast(m, 2), igniteBeast(m, 0), levBusy(m)].join(',');
+    }
+    m.st = 'fun'; m.op = null; r.free = levBusy(m);
+    beasts = null;
+    return { r, OPS };
+  });
+  ok('出拳那一整段（蓄力、打出去、停住、收回）打不動他，收完就打得動',
+     abusy.OPS.every(k => abusy.r[k] === 'false,false,false,true') && !abusy.r.free, JSON.stringify(abusy.r));
+
+  /* ── 吉祥物：站姿三種輪著換（走著不換、停下來換一種、站久了也換，換的時候從原本那一種混過去）；
+        被打到不生氣（使用者選的「不生氣，擺個姿勢繼續逛」）：bad／home 不動、擺雙臂彎舉 AM_FLEX_T 秒、在逛就站著擺；冷卻中再被打不算 ── */
+  const amasc = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const m = spawnBeast('allmight', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0; m.st = 'fun'; m.gait = 0; m.run = 0; m.pause = 5;
+    amIdle(m, 0.02);
+    const first = m.sp, known = !!ENG.AM_K[first] && AM_POSES.indexOf(first) >= 0;
+    m.gait = 0.85; amIdle(m, 0.1);
+    const walking = m.sp;
+    m.gait = 0; amIdle(m, 0.02);
+    const stopped = m.sp, from = m.sp0, k0 = m.spk;
+    for (let i = 0; i < 100; i++) amIdle(m, 0.01);
+    const k1 = m.spk;
+    const before = m.sp;
+    m.spT = 0.01; amIdle(m, 0.02);
+    const longStand = m.sp !== before;
+    m.hcd = 0; m.pause = 0;
+    beastHit(m, 'hammer');
+    const hit = { bad: m.bad, home: m.home, sp: m.sp, flexT: m.flexT, pause: m.pause, hcd: m.hcd };
+    m.flexT = 0.5;
+    beastHit(m, 'hammer');
+    const again = m.flexT;
+    beasts = null;
+    return { first, known, walking, stopped, from, k0, k1, longStand, hit, again, T: AM_FLEX_T, cd: BEAST_HIT_CD };
+  });
+  ok('三種站姿輪著換：走著不換、停下來換另一種、站久了也換，換的時候從原本那一種慢慢混過去',
+     amasc.known && amasc.walking === amasc.first && amasc.stopped !== amasc.first && amasc.from === amasc.first &&
+     amasc.k0 < 1 && amasc.k1 === 1 && amasc.longStand, JSON.stringify(amasc));
+  ok('逛的時候被打到不生氣：不改主意、擺雙臂彎舉 AM_FLEX_T 秒（在逛就站著擺）；冷卻中再被打不算',
+     amasc.hit.bad === 0 && amasc.hit.home === 0 && amasc.hit.sp === 'flex' && amasc.hit.flexT === amasc.T &&
+     amasc.hit.pause >= amasc.T && amasc.hit.hcd === amasc.cd && amasc.again === 0.5, JSON.stringify(amasc.hit) + '；冷卻中 ' + amasc.again);
+
+  /* ── 畫面：沒他在場不吃 draw call；氣浪、柔光衝擊波照 m.sw 畫、拳光只亮一下，散完（AM_FX.end）就藏起來；畫的時候不抽 Math.random ── */
+  const adraw = await page.evaluate(() => {
+    cleanTools();
+    const T3 = ENG.three;
+    const vis = () => [T3.amMesh, T3.amPuffMesh, T3.amSoftMesh, T3.amGlowMesh].map(o => o.visible ? 1 : 0).join('');
+    ENG.putMights([]);
+    const off = vis();
+    const m = spawnBeast('allmight', 1, 0, 0);
+    m.x = siteR + 20; m.z = 0; m.a = 0; m.st = 'fun'; m.sp = m.sp0 = 'flex'; m.spk = 1;
+    const real = Math.random;
+    let rnd = 0;
+    Math.random = () => { rnd++; return real(); };
+    ENG.putMights([m]);
+    const stand = vis(), cnt = T3.amMesh.count;
+    m.sw = { hx: m.x, hy: 2.2, hz: 1, ux: 0, uy: 0, uz: 1, t: 0.1, f: 0, n: 0 };
+    ENG.putMights([m]);
+    const blast = vis();
+    m.sw.t = 0.6; ENG.putMights([m]);
+    const later = vis();
+    m.sw.t = ENG.AM_FX.end + 0.01; ENG.putMights([m]);
+    const done = vis();
+    Math.random = real;
+    ENG.putMights([]);
+    const gone = vis();
+    beasts = null;
+    return { off, stand, blast, later, done, gone, cnt, slot: ENG.AM_SLOT, rnd };
+  });
+  const adOk = adraw.off === '0000' && adraw.stand === '1000' && adraw.blast === '1111' && adraw.later === '1110' &&
+               adraw.done === '1000' && adraw.gone === '0000' && adraw.cnt === adraw.slot;
+  ok('沒他在場就不吃 draw call：本體、氣浪、柔光衝擊波、拳光平常都藏著；拳光只亮一下，拳風散完就收',
+     adOk, '沒他 ' + adraw.off + '；站 ' + adraw.stand + '；剛出拳 ' + adraw.blast + '；0.6 秒 ' + adraw.later + '；散完 ' + adraw.done +
+     '；走了 ' + adraw.gone + '（本體／氣浪／柔光衝擊波／拳光）；一位 ' + adraw.cnt + ' 格');
+  ok('氣浪、柔光衝擊波不抽 Math.random（每幀都畫，不該吃掉規則那邊的骰子）', adraw.rnd === 0, '畫四幀抽了 ' + adraw.rnd + ' 次');
+
+  /* ── 點選：真的走 onDown／onUp 點一隻小獼猴，叫到他、命令帶著那一隻；點得到他自己（回報成 beast、索引對得回來） ── */
+  const apick = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const e = ENG.camEye(), hl = Math.hypot(e.x, e.z), hx = e.x / hl, hz = e.z / hl;
+    const park = workers.map(o => [o, o.x, o.z]);
+    for (const [o] of park) { o.x = -hx * (bp.radius + 12); o.z = -hz * (bp.radius + 12); }
+    const a = spawnBeast('ape', 1);
+    a.x = hx * (bp.radius + 8); a.z = hz * (bp.radius + 8); a.a = 0; a.st = 'fun'; a.pause = 999;
+    draw(); ENG.render();
+    const c = ENG.three.renderer.domElement.getBoundingClientRect(), cam = ENG.three.camera;
+    const at = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam);
+                              return [(v.x + 1) / 2 * c.width + c.left, (1 - v.y) / 2 * c.height + c.top]; };
+    const pa = at(a.x, ENG.BEAST_MID.ape * a.sc, a.z);
+    const panel = document.getElementById('panel'), hid = panel.classList.contains('hide'), was = tool;
+    tool = 'allmight';
+    onDown({ clientX: pa[0], clientY: pa[1] }); onUp({});
+    tool = was;
+    if (!hid) panel.classList.remove('hide');
+    const Z = (beasts || []).find(b => b.kind === 'allmight');
+    const r = { called: !!Z, b: !!(Z && Z.call && Z.call.b === a) };
+    beasts = [{ kind: 'cow', x: 900, y: 0, z: 900, a: 0, sc: 1, ph: 0, gait: 0 }];
+    const m = spawnBeast('allmight', 1, 0, 0);
+    m.x = hx * (bp.radius + 8); m.z = hz * (bp.radius + 8); m.st = 'fun';
+    draw(); ENG.render();
+    const pm = at(m.x, 1.0 * m.sc, m.z), hit = ENG.pick(pm[0] - c.left, pm[1] - c.top, 'levi');
+    r.kind = hit && hit.kind; r.idx = hit ? hit.idx : -1; r.me = !!hit && beastAt(hit.idx) === m;
+    for (const [o, x, z] of park) { o.x = x; o.z = z; }
+    beasts = null; ENG.putBeasts([]); ENG.putMights([]);
+    return r;
+  });
+  ok('點選：真的點一隻小獼猴叫得到他、命令帶著那一隻；點得到他自己（索引對回 beasts 裡的他）',
+     apick.called && apick.b && apick.kind === 'beast' && apick.idx === 1 && apick.me, JSON.stringify(apick));
+
+  await page.evaluate(() => { stepDoom = () => {}; cleanTools(); });
+  }   // ── 〈破壞道具：DETROIT SMASH〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 破壞模式（v1.262.0）══════════
      工具小窗左邊那顆開關：開著的時候 RAGE_TOOLS 那幾把點一下放好幾份。

@@ -123,7 +123,10 @@ const TOOLS = [
   { id: 'hay', n: '草料', k: '🌾', cat: 'safe',
     tip: '點一下：丟一捆草料，40 格內最近的 3 隻吃草的動物跑來圍著吃，吃完才散；丟在屋頂上吃不到' },
   { id: 'banana', n: '香蕉', k: '🍌', cat: 'safe',
-    tip: '點一下：丟一串香蕉，40 格內最近的 3 隻吃香蕉的動物（含猴子）跑來圍著吃；丟在屋頂上吃不到' }
+    tip: '點一下：丟一串香蕉，40 格內最近的 3 隻吃香蕉的動物（含猴子）跑來圍著吃；丟在屋頂上吃不到' },
+  { id: 'allmight', n: 'DETROIT SMASH', k: '👊', cat: 'anime',
+    /* v1.329.0：點建築、地上的生物或小人就跑到射程一半，一拳轟出超強拳風，前方整片吹飛；點空地就跑到那裡待命（見 callMight） */
+    tip: '點建築、生物或小人：叫歐爾麥特跑來一拳轟出超強拳風，前方 90 格整片吹飛；點空地：跑到那裡待命' }
 ];
 /* 道具選單的分類（v1.294.0，使用者：「道具選擇頁面根據種類分類(比較好找)」）：選單與快捷鍵那九格下拉
    照這張的順序一類一組，組裡照 TOOLS 的順序（＝解鎖順序）排。每一把在 TOOLS 裡寫 `cat` 指到這裡的 id。
@@ -186,7 +189,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       flood: 1,                                                 // 燈源：兩下都是點地面也算（v1.303.0）
                       torch: 1,                                                 // 火把：點哪裡都是插在那裡（v1.317.0）
                       general: 1,                                               // 小人將軍：點哪裡都是叫他騎過去（v1.324.0）
-                      hay: 1, banana: 1 };                                      // 草料、香蕉：同肉（v1.326.0）
+                      hay: 1, banana: 1,                                        // 草料、香蕉：同肉（v1.326.0）
+                      allmight: 1 };                                            // DETROIT SMASH：點空地＝跑到那裡（v1.329.0）
 let tool = 'hammer';
 
 /* ── 破壞模式（v1.262.0）──────────────────────────────────
@@ -9246,6 +9250,8 @@ function useTool(hit) {
   if (tool === 'gojo') { callGojo(hit.point, null, false, onGround); return 0; }
   // 光之太刀（v1.290.0）：同上，點建築＝跑到射程一半拔劍一閃（切面通過點到的那一點）、點空地＝跑到那裡待命
   if (tool === 'eris') { callEris(hit.point, null, false, onGround); return 0; }
+  // DETROIT SMASH（v1.329.0）：同上，點建築＝跑到射程一半一拳轟出拳風（往點到的那一點打）、點空地＝跑到那裡待命
+  if (tool === 'allmight') { callMight(hit.point, null, false, onGround); return 0; }
   /* 防禦魔法（v1.259.0）：點哪裡都是叫芙莉蓮跑到那一點（點建築就跑到它旁邊），站一下再四處逛。
      生物、小人在點選那一層是透明的（拿這一把照「skip」那一檔點），點到的就是後面的建築或地面 */
   if (tool === 'frieren') { callFrieren(hit.point); return 0; }
@@ -9479,7 +9485,8 @@ const doomNear = m => m.kind === 'giant' ? GIA_NEAR : m.kind === 'diablo' ? DIA_
 const DOOM_SPD = { giant: GIA_WALK, diablo: DIA_WALK, saber: WALK, levi: WALK, megumin: WALK,     // 里維兵長（v1.230）、惠惠（v1.247.0）同 Saber
                    zenitsu: WALK, gojo: WALK,                                   // 善逸（v1.251.0）、五條悟（v1.255.0）也是
                    frieren: WALK,     // 芙莉蓮 v1.259.0 漏列（照猴子的 2.2 走、跑 6.6），v1.260.0 補上（使用者選的「走路補成 6.8，跑 13.6」）
-                   eris: WALK };      // 艾莉絲（v1.290.0）同 Saber
+                   eris: WALK,        // 艾莉絲（v1.290.0）同 Saber
+                   allmight: WALK };  // 歐爾麥特（v1.329.0）同 Saber
 const DOOM_STEP = { giant: GIA_STEP, diablo: DIA_STEP };
 const DOOM_KEEP = { giant: GIA_KEEP, diablo: DIA_KEEP };
 /* 右手抬到底幾度：送火把 vs 舉過頭要丟。**巨人給 0**：牠是用踢的，站定瞄的那一秒
@@ -9601,12 +9608,18 @@ function spawnBeast(kind, fun, bad, ang) {
   else if (kind === 'gojo') sndGojo();
   else if (kind === 'frieren') sndFrieren();
   else if (kind === 'eris') sndEris();
+  else if (kind === 'allmight') sndMight();      // 歐爾麥特（v1.329.0）
   else if (kind === 'general') sndGeneral();     // 小人將軍（v1.324.0）
   else sndBeast(kind === 'snow');
   if (ang !== undefined) return m;               // Excalibur 叫來的：提示由 callSaber 講（v1.224）
   /* 惠惠（v1.247.0）只當吉祥物、只有被打才動手，提示講她會怎樣 */
   if (kind === 'megumin') {
     toast(BEAST_NM.megumin + '來工地逛逛', '她不會主動動手；惹毛她的話，她會退到炸不到自己的地方放一發爆裂魔法');
+    return m;
+  }
+  /* 歐爾麥特（v1.329.0）只當吉祥物來逛、被打也不生氣（使用者選的），提示講他會怎樣 */
+  if (kind === 'allmight') {
+    toast(BEAST_NM.allmight + '來工地逛逛', '他不會動手；被打到也只是擺個姿勢笑一笑');
     return m;
   }
   const nm = BEAST_NM[kind];
@@ -9893,6 +9906,8 @@ function stepBeast(m, dt) {
   /* 被打到的冷卻（v1.229，見 beastHit）。擺在最前面：三種狀態機（走路、飛龍、獅鷲）
      都從這裡進去，被幽浮吸走、躺在地上那幾段也照數。 */
   if (m.hcd > 0) m.hcd -= dt;
+  /* 歐爾麥特收完拳之後的拳風（v1.329.0）：擺在最前面，理由同上——被打飛、躺著那幾段氣浪也照樣散 */
+  if (m.sw && m.st !== 'smash') amSwAge(m, dt);
   /* 火把掉在地上、猴子聊天（v1.274.0）：擺在最前面，理由同上——被幽浮吸走、飛在半空、躺著那幾段也要照算
      （火把在天上照樣要往下掉，躺下去那一刻就要脫手，聊到一半被打倒就要散） */
   if (m.kind === 'ape') stepTorch(m, dt);
@@ -10006,8 +10021,9 @@ function stepBeast0(m, dt) {
   /* Excalibur 叫她過去那一段**用跑的**（v1.226，使用者：「點擊後saber用跑(速度是一般的三倍 需要做出跑的動作)」）：
      腳程與腿擺都乘 EXC_RUN，穿城門那一段也算。m.run 是引擎擺奔跑姿勢用的（0～1，慢慢混過去，見 sabRun）。 */
   if (m.kind === 'saber' || m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'frieren' ||
-      m.kind === 'eris')   // 里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0）、艾莉絲（v1.290.0）同 Saber 用跑的
+      m.kind === 'eris' || m.kind === 'allmight')   // 里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）、芙莉蓮（v1.259.0）、艾莉絲（v1.290.0）、歐爾麥特（v1.329.0）同 Saber 用跑的
     m.run += ((m.call && (m.st === 'call' || m.st === 'gate') ? 1 : 0) - m.run) * Math.min(1, dt * 8);
+  if (m.kind === 'allmight') amIdle(m, dt);              // 三種站姿停下來就換一種（v1.329.0）
   /* 惠惠退到安全距離那一段也用跑的（v1.247.0，使用者：「退到安全距離用跑的(三倍速度 要有奔跑動作)」） */
   else if (m.kind === 'megumin') m.run += ((m.st === 'mwalk' ? 1 : 0) - m.run) * Math.min(1, dt * 8);
   if (m.st === 'call') { const k = callRun(m); return stepCall(m, dt, spd * k, (stp || 1) * k, kp); }   // v1.224；芙莉蓮兩倍（v1.260.0）
@@ -10015,6 +10031,7 @@ function stepBeast0(m, dt) {
   if (m.st === 'zen') return stepZen(m, dt);              // 霹靂一閃：架勢、一閃、收刀（v1.251.0）
   if (m.st === 'pur') return stepGojo(m, dt);             // 虛式「茈」：赫＋蒼合成茈、放出去（v1.255.0）
   if (m.st === 'tachi') return stepTachi(m, dt);          // 光之太刀：居合、一閃、劍氣、收刀（v1.290.0）
+  if (m.st === 'smash') return stepSmash(m, dt);          // DETROIT SMASH：蓄力、打出去、拳風、收回（v1.329.0）
   if (m.st === 'mwalk' || m.st === 'mcast') return stepMeg(m, dt, spd, stp, kp);   // 惠惠（v1.247.0）
   if (m.st === 'come') {
     /* 走到工地外圈、自己這一側那一點就算到了（「去哪」）。v1.235 以前給的是工地中心 (0, 0)，
@@ -10032,7 +10049,8 @@ function stepBeast0(m, dt) {
          **吉祥物會動手**（使用者：「吉祥物會破壞」）：跟天災同一條路。 */
       if (wallFoot(m, 0, 0)) {
         /* 惠惠也不拆（v1.247.0，使用者：「他完全不主動攻擊的」）：同牛羊，就在城外逛。芙莉蓮也是（v1.259.0，她只保護） */
-        if (m.herd || m.kind === 'megumin' || m.kind === 'frieren') { m.st = 'fun'; m.leg = 0; }
+        /* 歐爾麥特（v1.329.0）同上：他不主動動手（使用者：「不主動攻擊」） */
+        if (m.herd || m.kind === 'megumin' || m.kind === 'frieren' || m.kind === 'allmight') { m.st = 'fun'; m.leg = 0; }
         else { m.home = 1; m.st = 'near'; m.leg = 0; }
         return false;
       }
@@ -10277,6 +10295,8 @@ function stepBeast0(m, dt) {
     if (m.kind === 'gojo') { if (m.call) gjStart(m); else if (m.bad) mascStrike(m); else funBack(m); return false; }
     /* 艾莉絲（v1.290.0）同上：站定之後蹲成居合架勢（見 stepTachi） */
     if (m.kind === 'eris') { if (m.call) erStart(m); else if (m.bad) mascStrike(m); else funBack(m); return false; }
+    /* 歐爾麥特（v1.329.0）：站定之後蓄力出拳（見 stepSmash）。他不主動動手（calm），沒有命令就回去逛 */
+    if (m.kind === 'allmight') { if (m.call) amStart(m); else funBack(m); return false; }
     /* 芙莉蓮（v1.259.0）不動手：命令一律是「跑到那一點」（go，見 callAim），照理走不到這裡；走到了就回去逛 */
     if (m.kind === 'frieren') { funBack(m); return false; }
     /* 還欠著幾處的（v1.229，見 moreMascot）：砸之前先認好這一塊（砸完最近的那一塊就換人了），
@@ -11452,7 +11472,8 @@ function stepCall(m, dt, spd, stp, kp) {
      b／ax／az 是里維（v1.230）先開的，Saber 點生物（v1.238）同一套，只是點得到的那幾隻各認各的（sabCanCut） */
   if (c.b) {
     if (!levTargetOk(c.b, c.bw, m.kind === 'saber' ? sabCanCut : m.kind === 'zenitsu' ? zenCanCut
-                                : m.kind === 'gojo' ? gjCanCut : m.kind === 'eris' ? erCanCut : leviCanCut)) {
+                                : m.kind === 'gojo' ? gjCanCut : m.kind === 'eris' ? erCanCut
+                                : m.kind === 'allmight' ? amCanHit : leviCanCut)) {
       excDone(m); return false;
     }
     c.x = c.b.x; c.z = c.b.z; c.ax = c.b.x; c.az = c.b.z;
@@ -11532,7 +11553,7 @@ function callAim(m) {
   const c = m.call, dx = (c.ax !== undefined ? c.ax : c.x) - m.x, dz = (c.az !== undefined ? c.az : c.z) - m.z;
   if (Math.hypot(dx, dz) > 0.3) m.a = Math.atan2(dx, dz);
   m.st = 'act'; m.t = m.kind === 'levi' ? LEV_AIM : m.kind === 'zenitsu' ? ZEN_AIM : m.kind === 'gojo' ? GJ_AIM
-                    : m.kind === 'eris' ? ER_AIM : DOOM_AIM;
+                    : m.kind === 'eris' ? ER_AIM : m.kind === 'allmight' ? AM_AIM : DOOM_AIM;
 }
 /* 一招收完（斬完、或開斬之後被打斷）要去哪裡。排著的下一道命令先做；
    叫來的那一招收完回去逛（叫到的一定已經是吉祥物，見 ownSaber）；她自己那一招照舊（吉祥物回去逛、天災走人）。 */
@@ -11653,7 +11674,7 @@ const lvSm = f => f * f * (3 - 2 * f);
    使用者：「惠惠攻擊後倒地 調整成能被攻擊(同一般倒地)」（見 stepMegDown） */
 /* 五條悟**什麼時候都是**（v1.255.0，無下限；使用者：「無下限 什麼時候都打不動」）：不只結印、放出茈那一招 */
 /* 光之太刀出招中的艾莉絲也是（v1.290.0：居合到收刀一整段，同善逸） */
-function levBusy(m) { return !!m && (m.st === 'odm' || m.st === 'zen' || m.st === 'tachi' || m.kind === 'gojo' || !!m.dead); }
+function levBusy(m) { return !!m && (m.st === 'odm' || m.st === 'zen' || m.st === 'tachi' || m.st === 'smash' || m.kind === 'gojo' || !!m.dead); }
 /* 在地上嗎（點得到、追得到的那一條，里維與 Saber 共用）。飛龍的 sky 從進場到飛走一路是 1（連在地上那幾段也是），
    所以牠照狀態認：在草皮上走（gwalk）、摔下來趴著（down）的算在地上；其餘照 sky（獅鷲降落時歸零） */
 const onGroundBeast = m => m.kind === 'dragon' ? m.st === 'gwalk' || m.st === 'down' : !m.sky;
@@ -12005,6 +12026,7 @@ const GIA_SLAIN = {
   excal: ['被 Excalibur 斬殺', '光柱掃過，'],
   purp: ['被虛式「茈」抹消', '紫球掃過，'],            // v1.255.0（使用者選「巨人被抹消，其他甩飛」）
   tachi: ['被光之太刀斬殺', '劍氣斬過，'],              // v1.290.0（使用者選「砍倒＋斬殺巨人」）
+  detroit: ['被 DETROIT SMASH 打倒', '一拳轟過，'],     // v1.329.0（使用者選「吹飛＋巨人一拳打倒」）
   hits: ['被打死了', '挨滿三下，']                      // v1.323.0：被一般的攻擊打滿 KILL_HITS 下（見 beastHit）
 };
 function giantDie(b, by) {
@@ -14433,6 +14455,267 @@ function erLives(m, f0, f1, W2) {
   return hit;
 }
 
+/* ── 破壞道具：DETROIT SMASH（v1.329.0）────────────────────────
+   使用者：「增加破壞道具［附圖：歐爾麥特雙臂彎舉的立繪］ 也是先做造型越像越好 攻擊方式是他的超力量拳 特效是超強的拳風
+   也是當作吉祥物偶爾進村子逛逛 不主動攻擊」（造型先做過預覽，見 engine.js〈歐爾麥特〉；「站姿都不錯全部都要 動作也不錯都要 造型可以」）。
+   動手前問了四件，使用者選的：
+     · 拳風多遠多寬：**超大**（射程 ENG.AMW.L 90 格、最寬約 30 格；站在射程一半出拳，見 AM_REACH）
+     · 打到的積木：**整片往前吹飛**（照出拳的方向，離拳頭越近飛越快越遠，見 amSweep）
+     · 打到的生物：**吹飛＋巨人一拳打倒**（小人、動物吹飛；巨人與 Diablo 當場打倒，同光之太刀的斬殺）
+     · 逛村子時被打到：**不生氣，擺個姿勢繼續逛**（雙臂彎舉笑三聲，見 amFlex）
+   我定、跟使用者講過的：名字「DETROIT SMASH」、圖示 👊、分在動漫類、接在 TOOLS 最後面；三種站姿停下來就隨機換一種（見 amIdle）。
+   **走過去那一段整套是光之太刀那一套**（sendSaber／stepCall／callAim／excDone 共用）：他就是一隻吉祥物（kind 'allmight'）。
+   站定那一刻（callAim → act → amStart）轉進 smash，時間軸讀引擎那一份（ENG.AMT），姿勢照同一份擺：
+     wind  蓄力：右拳拉到胸側、手肘往後頂、扭腰、弓步（一路跟著目標轉）
+     hit   打出去：走到 AM_REL 那一刻放出拳風（amRelease：拳頭最前面那一點、往目標的方向）
+     hold  停在打直那一格
+     back  收回站姿，回去逛（excDone）
+   拳風放出去之後每一幀照 ENG.AMW.v 往前推一段，**這一幀推過的那一截錐形裡的積木吹飛**（amSweep：首尾相接，每一塊剛好被算到一次，同光之太刀）。
+   見 開發筆記〈破壞道具：DETROIT SMASH〉 */
+const AM_AIM = 0.2;                 // 站定那一下（act）多久就蓄力
+const AM_REACH = ENG.AMW.L / 2;     // 跑到離那一點多遠站定：射程一半（同 Saber）
+const AM_REL = 0.6;                 // 打出去那一段走到幾成放出拳風（拳快打直的時候）
+const AM_PITCH = [-0.12, 0.55];     // 拳風的仰角夾在這裡：點在腳邊不往地裡打、點高處最多抬 31°
+/* 吹飛的力道：v 往前多快（再乘 0.45～1，離拳頭越近越快）、lift 往上抬（再乘 0.5～1）、side 往錐形外側散開（照離中軸多遠） */
+const AM_HIT = { v: [34, 50], lift: [3, 9], side: 0.3 };
+/* 小人與生物：同一條往前，力道打個折（落地還要爬起來；生物再乘 B_BLOW） */
+const AM_LIFE = { v: [20, 28], lift: [6, 10] };
+/* 煙塵：被吹飛的那一塊 p 的機率冒一團（一拳最多 max 團）；地上沿路揚起來的，前緣每推一格 gust 團 */
+const AM_DUST = { p: 0.3, max: 500, gust: 2 };
+const AM_AFTER_R = 4;               // afterHit 震倒附近的人那一圈（同一般道具，照被打掉那一片的中心）
+const AM_FLEX_T = 2.4;              // 被打到擺姿勢：雙臂彎舉站多久
+/* 站姿三種（使用者：「站姿都不錯全部都要」）：停下來就隨機換一種；站久了 AM_POSE_T 秒也換，換的時候 AM_POSE_MIX 秒混過去 */
+const AM_POSES = ['rest', 'flex', 'hip'];
+const AM_POSE_T = [5, 9], AM_POSE_MIX = 0.45;
+function pickMight(p) {
+  let best = null, bd = Infinity;
+  if (beasts) for (const m of beasts) {
+    if (m.kind !== 'allmight') continue;
+    const d = Math.hypot(m.x - p.x, m.z - p.z) + (m.ufo ? 1e6 : 0);
+    if (d < bd) { bd = d; best = m; }
+  }
+  return best;
+}
+/* 點得到、追得到的生物：同 erCanCut（他自己、被吸走的、打不動的、天上的不算；五條悟點得到、打不動） */
+function amCanHit(m) {
+  return !!m && m.kind !== 'allmight' && !m.ufo && (m.kind === 'gojo' || !levBusy(m)) && onGroundBeast(m);
+}
+/* 點下去的那一下（useTool／game-ui.js 點生物、點小人那兩條），同 callEris。回傳被叫去的那一位（測試在讀） */
+function callMight(p, tb, isW, ground) {
+  const at = tb ? { x: tb.x, y: 0, z: tb.z, sd: AM_REACH, ax: tb.x, az: tb.z, b: tb, bw: isW ? 1 : 0 }
+           : ground ? { x: p.x, y: 0, z: p.z, sd: LEV_SD, go: 1, b: null }
+           : { x: p.x, y: p.y || 0, z: p.z, sd: AM_REACH };
+  const whom = !tb ? '' : isW ? '那個小人' : (BEAST_NM[tb.kind] || '那一隻');
+  let m = pickMight(at);
+  if (!m) {
+    const a = Math.hypot(at.x, at.z) > 1 ? Math.atan2(at.z, at.x) : Math.random() * Math.PI * 2;
+    m = spawnBeast('allmight', 1, 0, a);
+    toast(BEAST_NM.allmight + '：「我來了！」', ground ? '他跑到你點的地方待命'
+                                             : '他朝' + (whom || '你點的地方') + '跑過去，一拳轟出 DETROIT SMASH');
+  } else {
+    beastCry(m);
+    toast(BEAST_NM.allmight + '聽到了', m.st === 'smash' ? '這一拳打完就過去'
+                                       : tb ? '他轉身朝' + whom + '跑過去'
+                                       : ground ? '他轉身跑到你點的地方待命' : '他轉身朝你點的地方跑過去');
+  }
+  if (m.st === 'smash') m.cq = at;             // 正在出拳：這一拳打完再過去（同 Excalibur）
+  else sendSaber(m, at);
+  return m;
+}
+/* 轉過去面向目標（目標那一點同光之太刀，見 erTarget：點的是生物、小人就照牠這一刻在的地方） */
+function amFace(m) {
+  const p = erTarget(m);
+  if (Math.hypot(p.x - m.x, p.z - m.z) > 0.3) m.a = Math.atan2(p.x - m.x, p.z - m.z);
+}
+/* 站定那一刻：面向那一點、開始蓄力 */
+function amStart(m) {
+  const c = m.call;
+  if (c.b && !levTargetOk(c.b, c.bw, amCanHit)) { excDone(m); return; }
+  m.st = 'smash'; m.op = 'wind'; m.ot = 0; m.sw = null;
+  m.gait = 0; m.run = 0; m.flexT = 0;
+  amFace(m);
+  sndSmashCharge();
+}
+function stepSmash(m, dt) {
+  const c = m.call, T = ENG.AMT;
+  if (!c) { amEnd(m); return false; }
+  m.ot += dt;
+  m.gait = 0; m.run = 0;
+  if (m.sw) amWaveStep(m, dt);
+  if (m.op === 'wind') {
+    if (m.ot < T.wind) { amFace(m); return false; }
+    if (c.b && !levTargetOk(c.b, c.bw, amCanHit)) { amEnd(m); return false; }   // 點的那一隻不在了：收手
+    m.op = 'hit'; m.ot = 0;
+    return false;
+  }
+  if (m.op === 'hit') {
+    if (!m.sw && m.ot >= T.hit * AM_REL) amRelease(m);
+    if (m.ot >= T.hit) { m.op = 'hold'; m.ot = 0; }
+    return false;
+  }
+  if (m.op === 'hold') { if (m.ot >= T.hold) { m.op = 'back'; m.ot = 0; } return false; }
+  if (m.ot < T.back) return false;
+  amEnd(m);
+  return false;
+}
+/* 放出拳風（寫進 m.sw，引擎照它畫）：拳頭最前面那一點 h（照這一刻的姿勢，ENG.amFist）、u＝往目標（仰角夾在 AM_PITCH）、
+   t 放出去幾秒了、f 前緣推到哪了（格）、n 吹飛幾塊（測試在讀）、sm 冒了幾團煙 */
+function amRelease(m) {
+  amFace(m);
+  const P = erTarget(m), h = ENG.amFist(m);
+  let ux = P.x - h.x, uz = P.z - h.z;
+  const hd = Math.hypot(ux, uz);
+  if (hd < 1) { ux = Math.sin(m.a); uz = Math.cos(m.a); } else { ux /= hd; uz /= hd; }   // 點在他腳邊：照他面向的方向打出去
+  const pit = Math.max(AM_PITCH[0], Math.min(AM_PITCH[1], Math.atan2(P.y - h.y, Math.max(1, hd)))), c = Math.cos(pit);
+  m.sw = { hx: h.x, hy: h.y, hz: h.z, ux: ux * c, uy: Math.sin(pit), uz: uz * c, t: 0, f: 0, n: 0, shk: 0, sm: 0 };
+  sndSmash();
+  ENG.shake(1.6);
+}
+/* 拳風推一幀：前緣照 ENG.AMW.v 往前推，這一幀推過的那一截吹飛 */
+function amWaveStep(m, dt) {
+  const w = m.sw, W = ENG.AMW;
+  w.t += dt;
+  const f1 = Math.min(W.L, W.v * w.t);
+  if (f1 > w.f) { amSweep(m, w.f, f1); w.f = f1; }
+}
+/* 那一點在錐形裡、離拳頭 a 格（a0～a1 那一截）就回 a，不在回 −1。pad：離錐形表面還算多遠（人與生物給身體的半徑） */
+function amIn(w, x, y, z, a0, a1, pad) {
+  const vx = x - w.hx, vy = y - w.hy, vz = z - w.hz, a = vx * w.ux + vy * w.uy + vz * w.uz;
+  if (a < 0 || a > a1 || (a0 > 0 && a <= a0)) return -1;
+  return Math.hypot(vx - a * w.ux, vy - a * w.uy, vz - a * w.uz) <= ENG.amR(a) + (pad || 0) ? a : -1;
+}
+/* 拳風這一幀從 a0 推到 a1：那一截錐形裡的積木吹飛（還立著的算破壞；地上的碎料一起吹走但不算，同 Excalibur）。
+   往前 v（離拳頭越近越快）、往上抬 lift、往錐形外側散開一點。地上沿路揚起一片煙塵。回傳吹飛幾塊 */
+function amSweep(m, a0, a1) {
+  const w = m.sw, L = ENG.AMW.L;
+  let n = 0, own = 0, cx = 0, cy = 0, cz = 0;
+  for (const b of blocks) {
+    if (b.st !== SET && b.st !== FREE) continue;
+    const a = amIn(w, b.x, b.y, b.z, a0, a1);
+    if (a < 0) continue;
+    const ox = b.x - w.hx - a * w.ux, oy = b.y - w.hy - a * w.uy, oz = b.z - w.hz - a * w.uz, r = Math.hypot(ox, oy, oz);
+    const k = 1 - a / L, sp = rr(AM_HIT.v[0], AM_HIT.v[1]) * (0.45 + 0.55 * k);
+    const sd = r > 1e-3 ? sp * AM_HIT.side * Math.min(1, r / ENG.amR(a)) / r : 0;
+    const set = b.st === SET, ow = set && b.hh < 0;   // 同 smash：breakBlock 會把 hh 清掉，要先看
+    const bx = b.x, by = b.y, bz = b.z;
+    if (!breakBlock(b, w.ux * sp + ox * sd, w.uy * sp + oy * sd + rr(AM_HIT.lift[0], AM_HIT.lift[1]) * (0.5 + 0.5 * k),
+                    w.uz * sp + oz * sd)) continue;   // 防護罩擋下（v1.259.0）
+    if (!set) continue;
+    n++; if (ow) own++;
+    cx += bx; cy += by; cz += bz;
+    if (Math.random() < AM_DUST.p) amPuff(w, bx, by, bz, sp);
+  }
+  /* 地上的食物同地上的碎料（v1.328.0，見 foodKick）：同一截錐形、同一條力道 */
+  eachFood((f, fx, fy, fz) => {
+    const a = amIn(w, fx, fy, fz, a0, a1);
+    if (a < 0) return;
+    const sp = rr(AM_HIT.v[0], AM_HIT.v[1]) * (0.45 + 0.55 * (1 - a / L));
+    foodKick(f, w.ux * sp, w.uy * sp + rr(AM_HIT.lift[0], AM_HIT.lift[1]), w.uz * sp);
+  }, true);
+  amGust(w, a0, a1);
+  amLives(m, a0, a1);
+  if (!n) return 0;
+  /* self 給他自己：被打掉那一片的中心離他很近的話（點在他面前的牆），afterHit 震倒的那一圈可能罩到他 */
+  afterHit(n, { x: cx / n, y: cy / n, z: cz / n }, AM_AFTER_R, own, m);
+  w.n += n;
+  if (!w.shk) { w.shk = 1; ENG.shake(1.0 + Math.min(1.4, n * 0.003)); }   // 打到東西那一下再震一次
+  return n;
+}
+/* 被吹飛的那一塊原地冒一團煙，跟著拳風往前飄（借塵霧那一池，閘門同核彈的塵牆） */
+function amPuff(w, x, y, z, sp) {
+  if (w.sm >= AM_DUST.max || dust.length > WIND_DUST_CAP) return;
+  w.sm++;
+  const f = sp * rr(0.25, 0.5);
+  dust.push({
+    x: x + rr(-0.4, 0.4), y: y + rr(-0.4, 0.4), z: z + rr(-0.4, 0.4),
+    vx: w.ux * f + rr(-1, 1), vy: w.uy * f + rr(0.5, 2.5), vz: w.uz * f + rr(-1, 1),
+    rx: Math.random() * 6, ry: Math.random() * 6,
+    life: rr(0.7, 1.4), s: rr(0.35, 0.9), c: rr(0.72, 0.9), keep: 0.95
+  });
+}
+/* 地上沿路被拳風掀起來的煙塵：前緣推過的那一截，每一格 AM_DUST.gust 團，貼著地面在錐形底下、往前衝再慢下來 */
+function amGust(w, a0, a1) {
+  const n = Math.round((a1 - a0) * AM_DUST.gust), hl = Math.hypot(w.ux, w.uz) || 1;
+  for (let i = 0; i < n; i++) {
+    if (w.sm >= AM_DUST.max || dust.length > WIND_DUST_CAP) return;
+    w.sm++;
+    const a = rr(a0, a1), s = rr(-1, 1) * ENG.amR(a), sp = rr(30, 60);
+    const x = w.hx + w.ux * a - (w.uz / hl) * s, z = w.hz + w.uz * a + (w.ux / hl) * s;
+    dust.push({
+      x, y: rr(0.2, 1.4), z,
+      vx: (w.ux / hl) * sp + rr(-2, 2), vy: rr(0.5, 3), vz: (w.uz / hl) * sp + rr(-2, 2),
+      rx: 0, ry: Math.random() * 6, life: rr(0.8, 1.6), s: rr(0.6, 1.6) * CLOUD_GRAIN.k, c: rr(0.62, 0.85), keep: 0.96
+    });
+  }
+}
+/* 這一截錐形裡的人與動物（使用者選的「吹飛＋巨人一拳打倒」）：小人、動物往前吹飛，巨人與 Diablo 當場打倒。
+   小人量胸口、動物量身體中段（同光之太刀的 erLives）；天上的不算（onGroundBeast）、他自己不算 */
+function amLives(m, a0, a1) {
+  const w = m.sw, L = ENG.AMW.L;
+  let hit = 0;
+  for (const p of workers) {
+    if (p.air || p.dead) continue;
+    const a = amIn(w, p.x, (p.y || 0) + 0.9 * (p.scale || 1), p.z, a0, a1, GATE_MAN_R);
+    if (a < 0 || workerSafe(p)) continue;                          // 防護罩擋下（v1.259.0）
+    const sp = rr(AM_LIFE.v[0], AM_LIFE.v[1]) * (0.5 + 0.5 * (1 - a / L));
+    tossWorker(p, w.ux * sp + rr(-2, 2), Math.max(0, w.uy * sp) + rr(AM_LIFE.lift[0], AM_LIFE.lift[1]), w.uz * sp + rr(-2, 2), false);
+    lifeHit(p, 'detroit');
+    hit++;
+  }
+  if (beasts) for (const o of beasts) {
+    if (o === m || o.air || o.ufo || o.dead || !onGroundBeast(o)) continue;
+    const mid = ENG.BEAST_MID[o.kind] * (o.sc || 1);
+    const a = amIn(w, o.x, (o.y || 0) + mid, o.z, a0, a1, GATE_MAN_R + mid * 0.8);
+    if (a < 0) continue;
+    if (killable(o)) { if (!beastSafe(o)) { slayBeast(o, 'detroit'); hit++; } continue; }   // 罩子裡的打不倒
+    const sp = rr(AM_LIFE.v[0], AM_LIFE.v[1]) * (0.5 + 0.5 * (1 - a / L)) * B_BLOW;
+    if (tossBeast(o, w.ux * sp + rr(-2, 2), Math.max(0, w.uy * sp) + rr(AM_LIFE.lift[0], AM_LIFE.lift[1]), w.uz * sp + rr(-2, 2), false)) {
+      beastHit(o, 'detroit');
+      hit++;
+    }
+  }
+  if (hit) sndFall();
+  return hit;
+}
+/* 收完拳：m.sw 留著——氣浪要 ENG.AM_FX.end 秒才散完（比收拳慢），收完之後照樣往前推、散完才收（見 stepBeast 的 amSwAge） */
+function amEnd(m) {
+  m.op = null; m.ot = 0;
+  excDone(m);
+}
+/* 出拳那一段以外的拳風（收完拳、被叫走、被打飛都一樣）：照樣推到底、散完收掉 */
+function amSwAge(m, dt) {
+  amWaveStep(m, dt);
+  if (m.sw.t > ENG.AM_FX.end) m.sw = null;
+}
+/* 站姿（每一幀，stepBeast 叫）：第一次進來抽一種；走著、跑著、出拳中不換；停下來那一刻換一種，站久了 AM_POSE_T 秒也換。
+   換的時候記住原本那一種（sp0），spk 從 0 爬到 1，引擎照它混過去（見 engine 的 amPose）。
+   被打到擺姿勢那幾秒（flexT）不換 */
+function amIdle(m, dt) {
+  if (!m.sp) { m.sp = m.sp0 = AM_POSES[Math.floor(Math.random() * AM_POSES.length)]; m.spk = 1; m.spT = rr(AM_POSE_T[0], AM_POSE_T[1]); }
+  if (m.spk < 1) m.spk = Math.min(1, m.spk + dt / AM_POSE_MIX);
+  if (m.flexT > 0) { m.flexT -= dt; return; }
+  if (m.gait > 0.1 || m.run > 0.1 || m.st === 'smash' || m.lie || m.air) { m.spMv = 1; return; }
+  m.spT -= dt;
+  if (m.spMv || m.spT <= 0) {
+    m.spMv = 0;
+    const o = AM_POSES.filter(p => p !== m.sp);
+    amSetPose(m, o[Math.floor(Math.random() * o.length)]);
+  }
+}
+function amSetPose(m, sp) {
+  if (sp !== m.sp) { m.sp0 = m.sp; m.sp = sp; m.spk = 0; }
+  m.spT = rr(AM_POSE_T[0], AM_POSE_T[1]);
+}
+/* 逛的時候被打到（使用者選的「不生氣，擺個姿勢繼續逛」）：雙臂彎舉、笑三聲，在逛的話站著擺 AM_FLEX_T 秒再接著逛。
+   被打飛、打倒的照樣飛、照樣倒，爬起來才擺（pause 要等他站起來才開始扣） */
+function amFlex(m) {
+  m.flexT = AM_FLEX_T;
+  amSetPose(m, 'flex');
+  if (m.st === 'fun') m.pause = Math.max(m.pause || 0, AM_FLEX_T);
+  sndMightLaugh();
+  toast(BEAST_NM.allmight + '笑了', '「沒事！」他擺了個姿勢，接著逛');
+}
+
 
 /* ── 吉祥物（v1.144）─────────────────────────────────────
    使用者：「黑獼猴 白猴子 飛龍 列為吉祥物／吉祥物一段時間就會出來刷存在感
@@ -14503,7 +14786,9 @@ const MASCOTS = [
   /* 芙莉蓮（v1.268.0）：只來逛（使用者選的「她也不主動動手」——她那一把道具只有防護罩，沒有攻擊的招） */
   { id: 'frieren', calm: 1, spawn: () => spawnBeast('frieren', 1, 0) },
   /* 艾莉絲（v1.290.0）：照 v1.268.0 那條規則，來逛、偶爾動手（光之太刀只砍村子那邊，見 mascStrike）、被打到會生氣 */
-  { id: 'eris', spawn: bad => spawnBeast('eris', 1, bad) }
+  { id: 'eris', spawn: bad => spawnBeast('eris', 1, bad) },
+  /* 歐爾麥特（v1.329.0）：只來逛（使用者：「當作吉祥物偶爾進村子逛逛 不主動攻擊」），被打也不生氣（見 beastHit 的 amFlex） */
+  { id: 'allmight', calm: 1, spawn: () => spawnBeast('allmight', 1, 0) }
 ];
 /* ── 偶而動手的機率：固定邏輯（v1.268.0）────────────────────────
    使用者：「降低吉祥物出手攻擊村子的機率(因為越來越多隻 同機率下 被破壞的機會已經大幅上升 可以用一個固定邏輯
@@ -14655,11 +14940,11 @@ const MORE_WAIT = MASC_STAY[1];
 const BEAST_NM = { ape: '🐒 小獼猴', snow: '🐵 小猴子', dragon: '🐉 飛龍',
                    gryphon: '🦅 獅鷲', giant: '🗿 巨人', diablo: '😈 Diablo', saber: '⚔ Saber', levi: '🗡 里維兵長',
                    megumin: '💥 惠惠', zenitsu: '⚡ 善逸', gojo: '🟣 五條悟', frieren: '🛡 芙莉蓮', eris: '🌙 艾莉絲',
-                   general: '🎖 小人將軍' };
+                   general: '🎖 小人將軍', allmight: '👊 歐爾麥特' };
 /* 提示裡的「牠／她」（v1.222）：Saber 是人，用「她」；里維兵長（v1.230）、善逸（v1.251.0）、五條悟（v1.255.0）用「他」；
    惠惠（v1.247.0）、芙莉蓮（v1.259.0）用「她」——其餘那幾款照舊是牠 */
 const itOf = m => m.kind === 'saber' || m.kind === 'megumin' || m.kind === 'frieren' || m.kind === 'eris' ? '她'
-                : m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'general' ? '他' : '牠';
+                : m.kind === 'levi' || m.kind === 'zenitsu' || m.kind === 'gojo' || m.kind === 'general' || m.kind === 'allmight' ? '他' : '牠';
 /* 叫一聲。哪一種叫哪一聲照 spawnBeast／spawnDragon 那邊的分法，不另訂一套。 */
 function beastCry(m) {
   if (m.kind === 'dragon' || m.kind === 'gryphon') sndRoar();
@@ -14672,6 +14957,7 @@ function beastCry(m) {
   else if (m.kind === 'gojo') sndGojo();
   else if (m.kind === 'frieren') sndFrieren();
   else if (m.kind === 'eris') sndEris();
+  else if (m.kind === 'allmight') sndMight();
   else if (m.kind === 'general') sndGeneral();
   else sndBeast(m.kind === 'snow');
 }
@@ -14904,6 +15190,8 @@ function beastHit(m, src) {
      倒下、暈著、爬起來的惠惠（v1.247.0）也不算：v1.260.0 起那幾段打得到她了（被炸飛、點著），但使用者選的是
      「不算，不生氣」——爬起來照原本回去逛，不會再放一發 */
   /* 小人將軍（v1.324.0）也不生氣：他是來守護的，被打照樣倒、爬起來接著守（沒有「來意」可以改） */
+  /* 歐爾麥特（v1.329.0）也不生氣（使用者選的「不生氣，擺個姿勢繼續逛」）：冷卻照算，擺個雙臂彎舉笑三聲（見 amFlex） */
+  if (m.kind === 'allmight') { if (!m.dead && !(m.hcd > 0)) { m.hcd = BEAST_HIT_CD; amFlex(m); } return; }
   if (m.kind === 'gojo' || m.kind === 'frieren' || m.kind === 'general' || m.dead || megDown(m)) return;
   /* 動不了手的吉祥物（v1.229，表上的 spent：小猴子丟完香蕉）：照樣會倒，只是不再改主意 */
   if (mascSpent(m)) return;

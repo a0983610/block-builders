@@ -1213,7 +1213,8 @@ if (vAo.x + vAo.y > 0.5) {
     gjInit(unit);                    // 赫、蒼、茈的光球與白光、衝擊波（全部先 visible = false）
     frInit(unit);                    // 芙莉蓮（v1.259.0）與她的防護罩；打到那一點的白光借上面那一行開的球（gjSph）
     erInit();                        // 艾莉絲（v1.290.0）與她的刀光、劍氣（見〈艾莉絲〉那一節）
-    diaInit();                       // Diablo：同上自己一顆（見〈Diablo〉那一節）
+    amInit();                        // 歐爾麥特（v1.329.0）：同上自己一顆（見〈歐爾麥特〉那一節）
+    diaInit();                      // Diablo：同上自己一顆（見〈Diablo〉那一節）
     draInit();                       // 飛龍（v1.277.0）：同上自己一顆（見〈飛龍（v1.277.0 重製）〉那一節）
     gryInit();                       // 獅鷲（v1.327.0）：同上自己一顆（見〈獅鷲（v1.327.0 重製）〉那一節）
     /* 雷光（藍白）與一閃的光痕（金黃）：各一對不吃光、不投影的網格，亮芯不透明、光暈半透明（同造型預覽）。
@@ -1947,7 +1948,7 @@ if (vAo.x + vAo.y > 0.5) {
     scene.add(fadeMesh);
 
     /* 人形角色淡入淡出（v1.256.0，見 HUM_MAX）：幾何體同 fadeMesh 那一套（不切、不發光），材質共用那一份 */
-    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT, FR_SLOT, ER_SLOT, DIA_SLOT, DRA_SLOT, GRY_SLOT);
+    HUM_SLOT = Math.max(SAB_PARTS, LEV_SLOT, MEG_SLOT, ZEN_SLOT, GJ_SLOT, FR_SLOT, ER_SLOT, AM_SLOT, DIA_SLOT, DRA_SLOT, GRY_SLOT);
     const HUM_N = HUM_MAX * HUM_SLOT;
     const humGeo = new T.BoxGeometry(1, 1, 1);
     const humCut = new T.InstancedBufferAttribute(new Float32Array(HUM_N * 4), 4);
@@ -11554,6 +11555,562 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     if (n) { erMesh.instanceMatrix.needsUpdate = true; dropSphere(erMesh); }
     erTrailMesh.visible = tr; erSheetMesh.visible = sh; erGlintMesh.visible = gl;
   }
+  /* ══ 歐爾麥特（v1.329.0）════════════════════════════════════════
+     使用者：「增加破壞道具［附圖：雙臂彎舉的立繪］ 也是先做造型越像越好 攻擊方式是他的超力量拳 特效是超強的拳風
+     也是當作吉祥物偶爾進村子逛逛 不主動攻擊」。造型前問了兩件：大小「小人的 1.6 倍」、比例「折衷：頭約 1/5」。
+     **同艾莉絲自己一顆 mesh、不進 BEASTS**（kind 'allmight'，putMights 畫、amAt 對回索引）。造型表格式同 ERIS
+     （p 站直時的絕對座標、s 尺寸、c 顏色、g 掛在哪一組、r 自己的轉角；面向 +z、**右手在 −x**；k 菱形片）。
+     **手臂有手肘**（上臂、前臂、拳頭三組）：雙臂彎舉、蓄力、出拳都要彎手肘，一節的手臂擺不出來。
+     姿勢給的是方向（上臂 u、前臂 f，身體座標），手肘是鉸鏈：上臂的正面轉向前臂彎過去那一側，前臂的正面朝彎回來那一側
+     （見 amRig）；打直的時候兩邊都照 n。
+     見 開發筆記〈歐爾麥特的造型〉 */
+  /* 配色從參考圖取樣（PowerShell System.Drawing，每一點取 3×3 平均）：頭髮 #f3e774／影 #b9aa62、拳頭膚色 #e8ac81、
+     牙 #eef3f4、衣服藍 #222f76、紅 #c62623／腹肌暗紅 #981216、白 #f1f1f1、黃（護腕、腰帶、靴子）#f4da45、腰帶下面的銀 #a8a4aa。
+     藍往亮推（照抄在遊戲光下只剩剪影，同艾莉絲的大衣） */
+  const AMC = {
+    skin: 0xf0b48a, skinD: 0xc98d64, sock: 0x2b1e17, eye: 0x9fdcff, teeth: 0xf6f8f7, gap: 0xa39b94, lip: 0x5e2a21,
+    hair: 0xf4e27a, hairD: 0xc9b25a, hairL: 0xfbf0aa,
+    blu: 0x2f40a0, bluD: 0x223079, red: 0xd02b27, redD: 0x9a171b,
+    wht: 0xf3f3f3, yel: 0xf4d945, yelD: 0xc9a933, slv: 0xbcb8c0
+  };
+  const AM_UP = { hair: 0.5, hairD: 0.5, hairL: 0.5, wht: 0.5, blu: 0.3, bluD: 0.3 };
+  const AM_G = { body: 0, head: 1, armR: 2, armL: 3, foreR: 4, foreL: 5, handR: 6, handL: 7,
+                 legR: 8, legL: 9, shinR: 10, shinL: 11, footR: 12, footL: 13 };
+  const AM_NG = 14;
+  /* 骨架的尺：肩膀（±SHX, SHY）、上臂 UA、前臂 FA；胯（±HIPX, HIPY）、膝蓋、腳踝；上身繞 WAIST 前傾、頭掛在 NECK */
+  const AM_SHX = 0.38, AM_SHY = 1.40, AM_UA = 0.32, AM_FA = 0.30;
+  const AM_HIPX = 0.14, AM_HIPY = 0.90, AM_KNEE = 0.50, AM_ANK = 0.10, AM_WAIST = 1.0, AM_NECK = 1.53;
+  const AM_TH = AM_HIPY - AM_KNEE, AM_SH = AM_KNEE - AM_ANK;
+  /* 每一組的樞紐（站直、手臂打直垂下時的絕對座標）：上臂在肩膀、前臂在手肘、拳頭在手腕；大腿在胯、小腿在膝蓋、腳掌在腳踝 */
+  const AM_PIV = [[0, 0, 0], [0, AM_NECK, 0],
+                  [-AM_SHX, AM_SHY, 0], [AM_SHX, AM_SHY, 0],
+                  [-AM_SHX, AM_SHY - AM_UA, 0], [AM_SHX, AM_SHY - AM_UA, 0],
+                  [-AM_SHX, AM_SHY - AM_UA - AM_FA, 0], [AM_SHX, AM_SHY - AM_UA - AM_FA, 0],
+                  [-AM_HIPX, AM_HIPY, 0], [AM_HIPX, AM_HIPY, 0], [-AM_HIPX, AM_KNEE, 0], [AM_HIPX, AM_KNEE, 0],
+                  [-AM_HIPX, AM_ANK, 0], [AM_HIPX, AM_ANK, 0]];
+  /* 頭（連頭髮）繞脖子整顆縮成這麼大：照下面的尺寸畫，下巴到頭頂佔身高 1/4.4；使用者選的是「頭約 1/5」 */
+  const AM_HEAD_SC = 0.9;
+  const ALLMIGHT = (() => {
+    const out = [];
+    const P = (g, p, s, c, r, f) => {
+      if (g === 'head') {
+        const k = AM_HEAD_SC;
+        p = [p[0] * k, AM_NECK + (p[1] - AM_NECK) * k, p[2] * k];
+        s = [s[0] * k, s[1] * k, s[2] * k];
+      }
+      out.push(Object.assign({ g: AM_G[g], p, s, c: AMC[c], cn: c, r: r || [0, 0, 0] }, f || {}));
+    };
+    const SIDE = { arm: 1, fore: 1, hand: 1, leg: 1, shin: 1, foot: 1 };
+    const M = (g, p, s, c, r, f) => {
+      r = r || [0, 0, 0];
+      P(SIDE[g] ? g + 'L' : g, p, s, c, r, f);
+      P(SIDE[g] ? g + 'R' : g, [-p[0], p[1], p[2]], s, c, [r[0], -r[1], -r[2]], f);
+    };
+    const DIA = (fn, g, c, d, len, wid, n, t, col) => {
+      const w = wid / Math.SQRT2;
+      fn(g, c.slice(), [w, w, t], col, frBasis(d, n), { k: len / wid });
+    };
+    const SEG = (fn, g, a, b, w, t, n, col) => {
+      const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(d[0], d[1], d[2]);
+      fn(g, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2], [w, L, t], col, frBasis(d, n));
+    };
+
+    /* ── 頭（樞紐在脖子 1.53）：1.55～1.91，方下巴；臉在 z 0.16 ── */
+    P('head', [0, 1.745, 0], [0.30, 0.33, 0.32], 'skin');
+    P('head', [0, 1.595, 0.015], [0.285, 0.09, 0.29], 'skin');
+    /* 眼睛藏在眉骨的陰影裡（參考圖整片是黑的），裡面一點藍光；眉骨粗、眉頭壓低 */
+    M('head', [0.068, 1.775, 0.161], [0.095, 0.055, 0.004], 'sock');
+    M('head', [0.07, 1.771, 0.1635], [0.026, 0.022, 0.003], 'eye');
+    M('head', [0.074, 1.812, 0.164], [0.125, 0.03, 0.01], 'skinD', [0, 0, 0.18]);
+    P('head', [0, 1.725, 0.172], [0.045, 0.075, 0.03], 'skin');                         // 鼻
+    P('head', [0, 1.69, 0.177], [0.06, 0.018, 0.02], 'skinD');
+    /* 招牌的露齒笑：深色外框、上下兩排白牙、中間一條縫、幾道齒縫；兩側法令紋 */
+    P('head', [0, 1.648, 0.1615], [0.215, 0.072, 0.004], 'lip');
+    P('head', [0, 1.648, 0.163], [0.195, 0.056, 0.004], 'teeth');
+    P('head', [0, 1.648, 0.1655], [0.19, 0.007, 0.003], 'gap');
+    for (const x of [-0.064, -0.032, 0, 0.032, 0.064]) P('head', [x, 1.648, 0.1655], [0.005, 0.05, 0.003], 'gap');
+    SEG(M, 'head', [0.055, 1.705, 0.164], [0.118, 1.632, 0.162], 0.012, 0.004, [0, 0, 1], 'skinD');
+
+    /* ── 頭髮：金。頭頂、後腦、兩鬢；臉側垂下來到下巴、髮尾往外翹；額前幾撮細的；
+       頭頂兩大撮往上往外的 V（招牌）：最寬的地方剛好在頭頂，下半截埋在頭裡 ── */
+    P('head', [0, 1.94, -0.01], [0.33, 0.07, 0.35], 'hair');                            // 1.905～1.975
+    P('head', [0, 1.985, -0.03], [0.26, 0.03, 0.28], 'hair');
+    P('head', [0, 1.905, 0.155], [0.31, 0.05, 0.05], 'hair');                           // 前緣髮際
+    P('head', [0, 1.75, -0.172], [0.33, 0.36, 0.04], 'hair');                           // 後腦 1.57～1.93
+    M('head', [0.163, 1.80, -0.02], [0.035, 0.22, 0.33], 'hair');                       // 兩鬢 1.69～1.91
+    for (const [x, y, z, dx, dy, dz, len, wid, c, n] of [
+      [0.175, 1.70, 0.075, 0.35, -1, 0.05, 0.24, 0.075, 'hair', [0.3, 0, 1]],
+      [0.185, 1.69, -0.02, 0.55, -1, -0.1, 0.26, 0.08, 'hairD', [1, 0, 0.5]],
+      [0.18, 1.68, -0.11, 0.6, -1, -0.35, 0.26, 0.08, 'hair', [1, 0, 0.2]],
+      [0.11, 1.64, -0.18, 0.45, -1, -0.55, 0.24, 0.08, 'hairD', [0.4, 0, -1]]])
+      DIA(M, 'head', [x, y, z], [dx, dy, dz], len, wid, n, 0.035, c);
+    DIA(P, 'head', [0, 1.62, -0.19], [0, -1, -0.5], 0.22, 0.09, [0, 0, -1], 0.035, 'hair');   // 後頸中間那撮
+    for (const [x, dx, len, wid, c] of [[0.03, -0.25, 0.13, 0.04, 'hair'], [-0.045, 0.3, 0.11, 0.035, 'hairD'],
+                                         [0.10, 0.2, 0.10, 0.04, 'hair'], [-0.11, -0.2, 0.10, 0.04, 'hair']])
+      DIA(P, 'head', [x, 1.86, 0.176], [dx, -1, 0.1], len, wid, [0, 0, 1], 0.02, c);
+    /* 每一撮正面一片、側面再一片交叉（只有正面那片的話，側面看只剩一條線） */
+    for (const s of [1, -1]) {
+      DIA(P, 'head', [0.07 * s, 2.0, 0.09], [0.33 * s, 1, -0.03], 0.80, 0.14, [0, 0, 1], 0.05, 'hair');
+      DIA(P, 'head', [0.07 * s, 2.0, 0.09], [0.33 * s, 1, -0.03], 0.76, 0.10, [1, 0, 0], 0.05, 'hair');
+      DIA(P, 'head', [0.10 * s, 1.98, 0.05], [0.55 * s, 1, -0.15], 0.64, 0.10, [0, 0, 1], 0.04, 'hairD');
+      DIA(P, 'head', [0.10 * s, 1.98, 0.05], [0.55 * s, 1, -0.15], 0.60, 0.08, [1, 0, 0], 0.04, 'hairD');
+      DIA(P, 'head', [0.04 * s, 1.98, 0.115], [0.18 * s, 1, 0.05], 0.52, 0.07, [0, 0, 1], 0.035, 'hairL');
+    }
+
+    /* ── 身體（上身繞腰 1.0 前傾）：胯、黃腰帶（前面兩片斜的、下面一個銀色的 V）、腰（前面紅、六塊腹肌、兩側藍）、
+       胸（往上變寬成倒三角、兩大塊胸肌、胸肌中間一條紅）、斜方肌、高領；背 ── */
+    P('body', [0, 0.93, 0], [0.40, 0.14, 0.27], 'blu');                                 // 0.86～1.00
+    P('body', [0, 0.99, 0], [0.43, 0.075, 0.295], 'yel');                               // 腰帶
+    M('body', [0.10, 0.99, 0.15], [0.17, 0.085, 0.02], 'yel', [0, 0.25, -0.12]);
+    M('body', [0.10, 0.99, 0.162], [0.15, 0.012, 0.006], 'yelD', [0, 0.25, -0.12]);
+    DIA(P, 'body', [0, 0.935, 0.142], [0, -1, 0], 0.15, 0.13, [0, 0, 1], 0.02, 'slv');
+    P('body', [0, 0.975, 0.153], [0.05, 0.05, 0.02], 'yelD');
+    P('body', [0, 1.12, 0], [0.42, 0.20, 0.28], 'blu');                                 // 腰 1.02～1.22
+    P('body', [0, 1.12, 0.135], [0.29, 0.20, 0.03], 'redD');
+    for (const y of [1.06, 1.12, 1.18]) M('body', [0.06, y, 0.152], [0.105, 0.05, 0.02], 'red');
+    P('body', [0, 1.265, 0], [0.56, 0.11, 0.37], 'blu');                                // 肋下 1.21～1.32
+    P('body', [0, 1.40, 0], [0.66, 0.18, 0.42], 'blu');                                 // 胸 1.31～1.49（厚：側面才不像紙片）
+    M('body', [0.155, 1.33, 0.20], [0.29, 0.20, 0.09], 'blu', [-0.12, 0.18, 0]);        // 胸肌（下緣往前凸）
+    SEG(M, 'body', [0.02, 1.235, 0.235], [0.29, 1.255, 0.19], 0.03, 0.02, [0, -0.3, 1], 'red');   // 胸肌下緣的紅線
+    P('body', [0, 1.33, 0.225], [0.035, 0.20, 0.03], 'red');
+    DIA(P, 'body', [0, 1.425, 0.235], [0, 1, 0], 0.075, 0.065, [0, 0, 1], 0.02, 'slv');           // 胸口的銀色標記
+    SEG(M, 'body', [0.085, 1.53, 0.135], [0.0, 1.43, 0.23], 0.04, 0.02, [0, 0.4, 1], 'red');      // 領口的紅 V
+    /* 肩膀到胸口：白的一條、兩邊紅的夾著，往胸口斜下去 */
+    SEG(M, 'body', [0.33, 1.505, 0.212], [0.05, 1.415, 0.238], 0.035, 0.02, [0, 0.5, 1], 'wht');
+    SEG(M, 'body', [0.33, 1.535, 0.205], [0.055, 1.445, 0.232], 0.022, 0.02, [0, 0.5, 1], 'red');
+    SEG(M, 'body', [0.33, 1.475, 0.215], [0.045, 1.385, 0.242], 0.022, 0.02, [0, 0.5, 1], 'red');
+    P('body', [0, 1.52, -0.02], [0.42, 0.08, 0.30], 'blu');                             // 斜方肌 1.48～1.56
+    M('body', [0.21, 1.505, -0.02], [0.16, 0.06, 0.28], 'blu', [0, 0, -0.35]);
+    P('body', [0, 1.57, 0], [0.17, 0.08, 0.17], 'blu');                                 // 高領
+    P('body', [0, 1.35, -0.19], [0.60, 0.26, 0.05], 'blu');                             // 背
+    M('body', [0.24, 1.22, -0.02], [0.10, 0.22, 0.26], 'blu', [0, 0, 0.3]);             // 闊背肌：腋下斜到腰
+
+    /* ── 上臂（樞紐在肩膀）：大三角肌（上面紅白紅三條）、二頭肌、三頭肌 ── */
+    /* 三角肌兩塊十字交疊：一塊寬、一塊深又高，四個角削掉，才不像方墊肩 */
+    M('arm', [0.40, 1.41, 0], [0.29, 0.22, 0.24], 'blu');
+    M('arm', [0.40, 1.415, 0], [0.24, 0.26, 0.30], 'blu');
+    for (const [dx, c] of [[-0.05, 'red'], [-0.015, 'wht'], [0.02, 'red']])
+      M('arm', [0.40 + dx, 1.415, 0.0], [0.024, 0.268, 0.306], c);
+    M('arm', [0.385, 1.235, 0], [0.205, 0.30, 0.215], 'blu');                           // 1.085～1.385
+    M('arm', [0.385, 1.22, 0.095], [0.15, 0.17, 0.06], 'blu');                          // 二頭肌
+    M('arm', [0.39, 1.25, -0.095], [0.16, 0.20, 0.06], 'bluD');                         // 三頭肌
+    /* ── 前臂（樞紐在手肘 1.08）：上半藍；下半黃色護腕、上緣外擴、手腕一白一藍兩圈；外側兩片往手肘掃的黃翅 ── */
+    M('fore', [0.38, 1.02, 0], [0.185, 0.14, 0.19], 'blu');                             // 0.95～1.09
+    M('fore', [0.38, 0.935, 0], [0.205, 0.06, 0.205], 'yel');
+    M('fore', [0.38, 0.85, 0], [0.18, 0.12, 0.18], 'yel');                              // 0.79～0.91
+    M('fore', [0.38, 0.81, 0], [0.184, 0.016, 0.184], 'wht');
+    M('fore', [0.38, 0.795, 0], [0.184, 0.012, 0.184], 'blu');
+    DIA(M, 'fore', [0.50, 1.0, -0.01], [0.55, 1, 0], 0.46, 0.14, [0.4, 0, 1], 0.03, 'yel');
+    DIA(M, 'fore', [0.49, 0.95, 0.05], [0.85, 1, 0.25], 0.34, 0.10, [0.4, 0, 1], 0.026, 'yelD');
+    /* ── 拳頭（樞紐在手腕 0.78）：大拳頭（膚色，參考圖沒戴手套）、拇指在前內側；拳面三道指縫 ── */
+    M('hand', [0.38, 0.715, 0.005], [0.135, 0.13, 0.145], 'skin');                     // 0.65～0.78
+    M('hand', [0.345, 0.73, 0.075], [0.045, 0.07, 0.04], 'skin');
+    for (const z of [-0.035, 0, 0.035]) M('hand', [0.38, 0.6495, z], [0.11, 0.004, 0.004], 'skinD');
+
+    /* ── 大腿（樞紐在胯 0.90）：粗，外側上半一片白、白與藍之間一條紅色斜線（從胯下斜到大腿外側中段） ── */
+    M('leg', [0.14, 0.80, 0], [0.25, 0.22, 0.26], 'blu');                              // 0.69～0.91
+    M('leg', [0.14, 0.595, 0.005], [0.215, 0.21, 0.225], 'blu');                       // 0.49～0.70
+    /* 白的那一片：外側面一塊、正面兩階（階梯的內下角剛好落在紅線上），都貼在大腿表面、不凸出去 */
+    M('leg', [0.258, 0.8325, 0], [0.025, 0.145, 0.25], 'wht');
+    M('leg', [0.215, 0.87, 0.131], [0.10, 0.08, 0.008], 'wht');
+    M('leg', [0.24, 0.795, 0.131], [0.05, 0.07, 0.008], 'wht');
+    SEG(M, 'leg', [0.10, 0.905, 0.136], [0.265, 0.70, 0.136], 0.028, 0.006, [0, 0, 1], 'red');
+    /* ── 小腿（樞紐在膝蓋 0.50）：膝下一截藍、小腿肚；黃色長靴，靴口紅白紅三圈、正面一個往下的 V ── */
+    M('shin', [0.14, 0.445, 0], [0.195, 0.12, 0.20], 'blu');                            // 0.385～0.505
+    M('shin', [0.14, 0.43, -0.09], [0.17, 0.15, 0.06], 'blu');
+    M('shin', [0.14, 0.24, 0.005], [0.20, 0.30, 0.21], 'yel');                         // 0.09～0.39
+    M('shin', [0.14, 0.395, 0.005], [0.212, 0.032, 0.222], 'red');
+    M('shin', [0.14, 0.37, 0.005], [0.213, 0.022, 0.223], 'wht');
+    M('shin', [0.14, 0.352, 0.005], [0.212, 0.016, 0.222], 'red');
+    DIA(M, 'shin', [0.14, 0.355, 0.115], [0, -1, 0], 0.12, 0.11, [0, 0, 1], 0.012, 'red');
+    DIA(M, 'shin', [0.14, 0.36, 0.121], [0, -1, 0], 0.08, 0.07, [0, 0, 1], 0.01, 'wht');
+    /* ── 腳掌（樞紐在腳踝 0.10）：黃靴、白鞋底 ── */
+    M('foot', [0.14, 0.06, 0.05], [0.19, 0.10, 0.28], 'yel');
+    M('foot', [0.14, 0.006, 0.05], [0.196, 0.016, 0.29], 'wht');
+    return out;
+  })();
+  const AM_PARTS = ALLMIGHT.length;
+  const AM_SLOT = AM_PARTS;
+  const MAXAM = 2;                   // 同艾莉絲：場上只會有一位，留一格餘裕
+  const AM_CN = ALLMIGHT.map(b => b.cn);
+  const AM_LM = ALLMIGHT.map(b => {
+    const pv = AM_PIV[b.g], p = new T.Vector3(b.p[0] - pv[0], b.p[1] - pv[1], b.p[2] - pv[2]);
+    const q = new T.Quaternion().setFromEuler(new T.Euler(b.r[0], b.r[1], b.r[2]));
+    return b.k
+      ? new T.Matrix4().compose(p, q, new T.Vector3(1, 1, 1)).multiply(new T.Matrix4().makeScale(1, b.k, 1))
+          .multiply(new T.Matrix4().makeRotationZ(Math.PI / 4)).multiply(new T.Matrix4().makeScale(b.s[0], b.s[1], b.s[2]))
+      : new T.Matrix4().compose(p, q, new T.Vector3(b.s[0], b.s[1], b.s[2]));
+  });
+  /* 模型範圍（同艾莉絲）：菱形片的高度照它真的長度 */
+  {
+    let ylo = Infinity, yhi = -Infinity, zlo = 0, xhi = 0;
+    for (const b of ALLMIGHT) {
+      const hy = b.k ? b.s[0] * Math.SQRT2 * b.k / 2 : b.s[1] / 2;
+      ylo = Math.min(ylo, b.p[1] - hy);
+      yhi = Math.max(yhi, b.p[1] + hy);
+      zlo = Math.min(zlo, b.p[2] - b.s[2] / 2);
+      xhi = Math.max(xhi, Math.abs(b.p[0]) + b.s[0] / 2);
+    }
+    BEAST_FLOOR.allmight = Math.max(0, -ylo);
+    BEAST_MID.allmight = (ylo + yhi) / 2;
+    BEAST_LIFT.allmight = -zlo;
+    BEAST_SIDE.allmight = xhi;
+  }
+  /* ── 姿勢（身體座標）：上身 lift／lean／twist、頭 head；手臂 u 上臂方向、f 前臂方向、n 打直時上臂正面朝哪、r 拳頭繞前臂轉；
+       腿 lR／lL＝[大腿往後擺, 往外張, 膝蓋往後彎, 腳尖往下]（同艾莉絲；往外張兩腳都是正的）。
+       左手沒給就照右手鏡射。兩腳踩地照腿算（amPose 最後一段），lift 只給額外的上下 ── */
+  const amV = a => new T.Vector3(a[0], a[1], a[2]);
+  const amMir = a => [-a[0], a[1], a[2]];
+  const AM_KV = ['uR', 'fR', 'nR', 'uL', 'fL', 'nL'];
+  const AM_KF = ['lift', 'lean', 'twist', 'rR', 'rL'];
+  function amK(o) {
+    const nR = o.nR || [0, 0, 1];
+    return { lift: o.lift || 0, lean: o.lean || 0, twist: o.twist || 0, head: (o.head || [0, 0, 0]).slice(),
+             uR: amV(o.uR), fR: amV(o.fR), nR: amV(nR), rR: o.rR || 0,
+             uL: amV(o.uL || amMir(o.uR)), fL: amV(o.fL || amMir(o.fR)), nL: amV(o.nL || amMir(nR)),
+             rL: o.rL !== undefined ? o.rL : -(o.rR || 0),
+             lR: erL4(o.lR || []), lL: erL4(o.lL || o.lR || []) };
+  }
+  function amCopy(d, s) {
+    for (const f of AM_KF) d[f] = s[f];
+    for (const v of AM_KV) d[v].copy(s[v]);
+    for (let i = 0; i < 3; i++) d.head[i] = s.head[i];
+    for (let i = 0; i < 4; i++) { d.lR[i] = s.lR[i]; d.lL[i] = s.lL[i]; }
+    return d;
+  }
+  function amMix(d, s, t) {
+    for (const f of AM_KF) d[f] += (s[f] - d[f]) * t;
+    for (const v of AM_KV) d[v].lerp(s[v], t);
+    for (let i = 0; i < 3; i++) d.head[i] += (s.head[i] - d.head[i]) * t;
+    for (let i = 0; i < 4; i++) { d.lR[i] += (s.lR[i] - d.lR[i]) * t; d.lL[i] += (s.lL[i] - d.lL[i]) * t; }
+    return d;
+  }
+  /* 站姿三種（預覽頁上給使用者挑）：rest 挺胸站著、手臂被闊背肌撐開一點；flex 參考圖的雙臂彎舉；hip 雙手叉腰。
+     出拳兩格：wind 蓄力（右拳拉到胸側、手肘往後頂、扭腰、左手往前對著目標、弓步）、hit 打出去（右拳打直、拳面朝前、手背朝上，
+     左拳收到腰邊、往前壓）。出拳那兩格的手臂方向是照「世界裡朝正前方」反算回身體座標的（扭腰、前傾都扣掉） */
+  const AM_K = {
+    rest: amK({ lean: -0.03, head: [-0.06, 0, 0], uR: [-0.32, -1, 0.04], fR: [-0.18, -1, 0.3], lR: [0, 0.07, 0.02, 0] }),
+    flex: amK({ lean: -0.06, head: [-0.12, 0, 0], uR: [-1, 0.12, 0.08], fR: [0.18, 1, 0.12], nR: [0, 1, 0], rR: 0,
+                lR: [0, 0.13, 0.06, 0] }),
+    hip: amK({ lean: -0.07, head: [-0.14, 0, 0], uR: [-0.62, -0.62, -0.30], fR: [0.8, -0.45, 0.25], lR: [0, 0.12, 0.03, 0] }),
+    wind: amK({ lean: 0.1, twist: -0.65, head: [0.05, 0.55, 0],
+                uR: [-0.35, -0.35, -0.87], fR: [0.15, 0.35, 0.92],
+                uL: [0.685, 0.10, 0.72], fL: [0.6, 0.3, 0.75], nL: [0, 1, 0], rL: 0,
+                lR: [0.5, 0.16, 0.25, 0.25], lL: [-0.5, 0.12, 0.75, 0] }),
+    hit: amK({ lean: 0.28, twist: 0.5, head: [-0.05, -0.45, 0],
+               uR: [-0.344, 0.26, 0.90], fR: [-0.344, 0.26, 0.90], nR: [0, 1, 0], rR: -Math.PI / 2,
+               uL: [0.3, -0.5, -0.81], fL: [-0.05, 0.25, 0.97], rL: 0,
+               lR: [0.75, 0.16, 0.05, 0.35], lL: [-0.7, 0.12, 1.05, 0] })
+  };
+  /* 出拳的時間軸（秒）：wind 蓄力、hit 打出去（極快）、hold 停在打直那一格、back 收回站姿 */
+  const AMT = { wind: 0.55, hit: 0.1, hold: 0.45, back: 0.8 };
+  const AM_NFB = 0.08;               // 手臂打直時「正面朝哪」照 n 的份量（彎著的時候照鉸鏈，n 幾乎不影響）
+  const AM_STRIDE = 0.45;            // 走路大腿前後擺多少（弧度）
+  const amC = x => x < 0 ? 0 : x > 1 ? 1 : x;
+  const amE = x => { x = amC(x); return x * x * (3 - 2 * x); };
+  /* 腳踝在胯下面多深（照腿的四個角度算；XYZ 歐拉角，膝蓋是繞 x 再轉一次） */
+  const amDrop = l => AM_TH * Math.cos(l[0]) * Math.cos(l[1])
+    + AM_SH * (Math.cos(l[2]) * Math.cos(l[1]) * Math.cos(l[0]) - Math.sin(l[2]) * Math.sin(l[0]));
+  /* 手臂照擺幅給方向：sx −1 右、+1 左；sw 往前甩、ab 往外張、bd 手肘往前彎（弧度） */
+  function amSwing(u, f, sx, sw, ab, bd) {
+    u.set(sx * Math.sin(ab), -Math.cos(ab) * Math.cos(sw), Math.cos(ab) * Math.sin(sw));
+    f.set(sx * Math.sin(ab) * 0.6, -Math.cos(sw + bd), Math.sin(sw + bd));
+  }
+  const _amk = amK({ uR: [0, -1, 0], fR: [0, -1, 0] }), _amk2 = amK({ uR: [0, -1, 0], fR: [0, -1, 0] });
+  function amPose(m) {
+    /* 站姿：規則那邊換的時候記住原本那一種（sp0），spk 0～1 混過去（見 game-tools.js 的 amIdle） */
+    const kp = AM_K[m.sp] || AM_K.rest, k0 = m.spk < 1 ? AM_K[m.sp0] : null;
+    const k = amCopy(_amk, k0 || kp);
+    if (k0) amMix(k, kp, amE(m.spk));
+    const g = amC((m.gait || 0) / 0.85), ph = m.ph || 0, s = Math.sin(ph), c = Math.cos(ph);
+    if (g > 0) {
+      /* 走：大步、挺胸，手照步伐反著甩，往前甩的那一隻手肘多彎一點；擺過來的那一隻腳膝蓋彎起來 */
+      const q = amCopy(_amk2, AM_K.rest);
+      q.lean = -0.02; q.twist = 0.08 * s; q.head[1] = -0.06 * s;
+      q.lR[0] = AM_STRIDE * s; q.lL[0] = -AM_STRIDE * s;
+      q.lR[2] = 0.55 * Math.max(0, -c); q.lL[2] = 0.55 * Math.max(0, c);
+      q.lR[1] = q.lL[1] = 0.05;
+      amSwing(q.uR, q.fR, -1, 0.45 * s, 0.3, 0.3 + 0.25 * Math.max(0, s));
+      amSwing(q.uL, q.fL, 1, -0.45 * s, 0.3, 0.3 + 0.25 * Math.max(0, -s));
+      q.lift = 0.025 * Math.abs(c);
+      amMix(k, q, g);
+    }
+    const r = m.lie || m.air ? 0 : amC(m.run);
+    if (r > 0) {
+      /* 跑：上身往前壓，手肘彎成直角大力前後擺，膝蓋抬高 */
+      const q = amCopy(_amk2, AM_K.rest);
+      q.lean = 0.3; q.twist = 0.18 * s; q.head[0] = -0.3; q.head[1] = -0.12 * s;
+      q.lR[0] = 0.8 * s; q.lL[0] = -0.8 * s;
+      q.lR[2] = 0.3 + 1.1 * Math.max(0, -c); q.lL[2] = 0.3 + 1.1 * Math.max(0, c);
+      q.lR[1] = q.lL[1] = 0.05;
+      amSwing(q.uR, q.fR, -1, 0.85 * s, 0.25, 1.45);
+      amSwing(q.uL, q.fL, 1, -0.85 * s, 0.25, 1.45);
+      q.lift = 0.06 * Math.abs(c);
+      amMix(k, q, r);
+    }
+    if (m.st === 'smash') {
+      const op = m.op, u = m.ot || 0;
+      if (op === 'wind') amMix(k, AM_K.wind, amE(u / AMT.wind));
+      else if (op === 'hit') amMix(amCopy(k, AM_K.wind), AM_K.hit, amC(u / AMT.hit));
+      else if (op === 'hold') { amCopy(k, AM_K.hit); k.lean += 0.04 * amE(u / AMT.hold); }
+      else if (op === 'back') amCopy(k, amMix(amCopy(_amk2, AM_K.hit), AM_K[m.sp] || AM_K.rest, amE(u / AMT.back)));
+    }
+    /* 兩腳踩地：比較低的那一隻腳踝擺回站直時的高度 */
+    if (!m.lie && !m.air) k.lift += Math.max(amDrop(k.lR), amDrop(k.lL)) - AM_TH - AM_SH;
+    return k;
+  }
+  const _amG = Array.from({ length: AM_NG }, () => new T.Matrix4());
+  const _amHip = new T.Matrix4(), _amm = new T.Matrix4(), _ammb = new T.Matrix4();
+  const _amv = new T.Vector3(), _amu = new T.Vector3(), _amf = new T.Vector3(), _amn = new T.Vector3();
+  const _ambx = new T.Vector3(), _amby = new T.Vector3(), _ambz = new T.Vector3();
+  const _amq1 = new T.Quaternion(), _amq2 = new T.Quaternion(), _amq3 = new T.Quaternion(), _amE = new T.Euler();
+  const _amX = new T.Vector3(1, 0, 0), _amY = new T.Vector3(0, 1, 0), _amONE = new T.Vector3(1, 1, 1);
+  /* 長軸（本地 −y）朝 u、正面（本地 +z）朝 n（扳到跟 u 垂直）的轉角 */
+  function amBasis(q, u, n) {
+    _amby.copy(u).normalize().negate();
+    _ambz.copy(n).addScaledVector(_amby, -_amby.dot(n)).normalize();
+    _ambx.crossVectors(_amby, _ambz);
+    return q.setFromRotationMatrix(_ammb.makeBasis(_ambx, _amby, _ambz));
+  }
+  /* 算出這一位每一組的世界矩陣（_amG）。根同 erRig（YZX：朝向 → 打滾 → 躺平；飛在半空繞身體中段轉）；
+     上身繞腰前傾、扭腰；手臂三組照方向接起來（手肘是鉸鏈，見檔頭）；腿掛在胯、腳掌轉回來貼平地面 */
+  function amRig(m) {
+    const k = amPose(m), msc = m.sc || 1, mid = BEAST_MID.allmight;
+    scratch.rotation.set(m.spin || 0, m.a || 0, m.roll || 0, 'YZX');
+    const lift = !m.lie ? 0
+      : m.side ? BEAST_SIDE.allmight * m.lie * Math.abs(Math.sin(m.roll || 0))
+               : BEAST_LIFT.allmight * m.lie * Math.abs(Math.sin(m.spin || 0));
+    scratch.position.set(m.x || 0, (m.y || 0) + lift * msc, m.z || 0);
+    if (m.air) {
+      _amv.set(0, mid, 0).applyEuler(scratch.rotation);
+      scratch.position.x -= _amv.x * msc;
+      scratch.position.y += (mid - _amv.y) * msc;
+      scratch.position.z -= _amv.z * msc;
+    }
+    scratch.scale.setScalar(msc);
+    scratch.updateMatrix();
+    _amHip.copy(scratch.matrix).multiply(_amm.makeTranslation(0, k.lift, 0));
+    const B = _amG[AM_G.body].copy(_amHip).multiply(_amm.makeTranslation(0, AM_WAIST, 0))
+      .multiply(_amm.makeRotationY(k.twist)).multiply(_amm.makeRotationX(k.lean)).multiply(_amm.makeTranslation(0, -AM_WAIST, 0));
+    _amG[AM_G.head].multiplyMatrices(B, _amm.compose(_amv.set(0, AM_NECK, 0),
+      _amq1.setFromEuler(_amE.set(k.head[0], k.head[1], k.head[2], 'XYZ')), _amONE));
+    for (const [ga, gf, gh, sx, u, f, n, r] of [[AM_G.armR, AM_G.foreR, AM_G.handR, -1, k.uR, k.fR, k.nR, k.rR],
+                                                [AM_G.armL, AM_G.foreL, AM_G.handL, 1, k.uL, k.fL, k.nL, k.rL]]) {
+      _amu.copy(u).normalize(); _amf.copy(f).normalize();
+      /* 上臂：正面朝前臂彎過去那一側 */
+      _amn.copy(_amf).addScaledVector(_amu, -_amu.dot(_amf)).addScaledVector(n, AM_NFB);
+      amBasis(_amq1, _amu, _amn);
+      _amv.set(sx * AM_SHX, AM_SHY, 0);
+      _amG[ga].multiplyMatrices(B, _amm.compose(_amv, _amq1, _amONE));
+      _amv.addScaledVector(_amu, AM_UA);
+      /* 前臂與拳頭：正面朝彎回上臂那一側（同一個鉸鏈），再繞前臂轉 r */
+      _amn.copy(_amu).negate().addScaledVector(_amf, _amu.dot(_amf)).addScaledVector(n, AM_NFB);
+      amBasis(_amq2, _amf, _amn).multiply(_amq3.setFromAxisAngle(_amY, r));
+      _amG[gf].multiplyMatrices(B, _amm.compose(_amv, _amq2, _amONE));
+      _amv.addScaledVector(_amf, AM_FA);
+      _amG[gh].multiplyMatrices(B, _amm.compose(_amv, _amq2, _amONE));
+    }
+    for (const [g, gs, gf, sx, l] of [[AM_G.legR, AM_G.shinR, AM_G.footR, -1, k.lR], [AM_G.legL, AM_G.shinL, AM_G.footL, 1, k.lL]]) {
+      _amq1.setFromEuler(_amE.set(l[0], 0, sx * l[1], 'XYZ'));
+      _amG[g].multiplyMatrices(_amHip, _amm.compose(_amv.set(sx * AM_HIPX, AM_HIPY, 0), _amq1, _amONE));
+      _amq2.setFromAxisAngle(_amX, l[2]);
+      _amG[gs].multiplyMatrices(_amG[g], _amm.compose(_amv.set(0, AM_KNEE - AM_HIPY, 0), _amq2, _amONE));
+      _amq1.multiply(_amq2).invert().multiply(_amq2.setFromAxisAngle(_amX, l[3]));
+      _amG[gf].multiplyMatrices(_amG[gs], _amm.compose(_amv.set(0, AM_ANK - AM_KNEE, 0), _amq1, _amONE));
+    }
+  }
+  /* 拳頭最前面那一點在世界的哪裡（照這一刻的姿勢；要先 amRig 過）：拳風從這裡放出去 */
+  const amFistPt = (out, right) => out.set(0, -0.15, 0.005).applyMatrix4(_amG[right === false ? AM_G.handL : AM_G.handR]);
+
+  /* ── 拳風怎麼畫（DETROIT SMASH）。規則那邊在出拳那一刻定好、寫在他身上（m.sw）：拳頭那一點 h、往前 u、放出去幾秒了 t。
+       錐形：離拳頭 a 格處半徑 amR(a)＝r0 ＋ (R1 − r0) × a ／ L；前緣照 v 格／秒往前推。規則那邊照同一份吹飛積木
+       （game-tools.js 的 amSweep）——**畫的跟用的同一份數字**。使用者選的「超大：射程 90 格、最寬約 30 格」。
+       畫的三樣都不投影，沒在出拳整組 visible = false：
+         氣浪        積木煙的小方塊（見 amPuffs）：沿著錐形往前捲的氣流、一圈一圈往前推的煙環、拳頭前面炸開的一團
+         柔光衝擊波  拳頭前面炸開一片、跟著前緣推兩片，亮度用雜訊打散（見 amSoft）
+         拳光        拳頭那一點白光一閃
+       第一版是加法混色的光環＋速度線＋一根氣柱，使用者看過：「拳風特效感覺不夠好看 現在是一種廉價特效風格」；
+       預覽頁給了「氣浪」「氣浪＋柔光衝擊波」「第一版」三種，使用者選「氣浪＋柔光衝擊波」，第一版拿掉了。
+       位置與長相全部照 t 算（每一團的數字照索引雜湊），畫的時候不抽 Math.random。
+       見 開發筆記〈破壞道具：DETROIT SMASH〉 ── */
+  const AMW = { L: 90, r0: 3, R1: 15, v: 180 };
+  const amR = a => AMW.r0 + (AMW.R1 - AMW.r0) * Math.min(1, Math.max(0, a / AMW.L));
+  /* glow 拳光幾秒；puff／puffRing 氣浪與煙環最濃多濃；soft 柔光衝擊波最亮多亮；
+     end 拳風放出去幾秒之後整組收掉（氣浪最慢那一團約 1.8 秒散完，規則那邊照它收 m.sw） */
+  const AM_FX = { glow: 0.25, puff: 0.55, puffRing: 0.6, soft: 0.4, end: 1.9 };
+  /* 氣浪的顆數：swirl 沿著錐形往前捲的氣流、rings × ringN 煙環、burst 拳頭前面炸開那一團 */
+  const AM_PUFF = { swirl: 640, rings: 4, ringN: 44, burst: 70 };
+  const AM_PUFF_N = AM_PUFF.swirl + AM_PUFF.rings * AM_PUFF.ringN + AM_PUFF.burst;
+  const AM_SOFT_N = 3;
+  /* 氣浪的小方塊：照面分亮暗（朝上那面亮、側面暗一階），看得出一團一團的體積；一般混色（加法混色疊在草地上會泛螢光綠） */
+  const AM_PUFF_VS = 'attribute float al; varying float vA; varying vec3 vC;\n' +
+    'void main() { vA = al; vec3 n = normalize(mat3(instanceMatrix) * normal);\n' +
+    '  float l = 0.66 + 0.26 * max(dot(n, vec3(0.37, 0.86, 0.35)), 0.0) + 0.08 * n.y;\n' +
+    '#ifdef USE_INSTANCING_COLOR\n  vC = instanceColor * l;\n#else\n  vC = vec3(l);\n#endif\n' +
+    '  gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0); }';
+  const AM_PUFF_FS = 'varying float vA; varying vec3 vC;\nvoid main() { gl_FragColor = vec4(vC, vA);\n#include <colorspace_fragment>\n}';
+  /* 柔光衝擊波：一片圓環（內緣 0.5），亮度用兩層雜訊打散（不是一圈均勻的光），隨時間流動；一般混色、很淡 */
+  const AM_SOFT_FS = 'uniform vec3 c; uniform float tm; varying float vA; varying vec3 vP;\n' +
+    'float hs(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\n' +
+    'float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);\n' +
+    '  return mix(mix(hs(i), hs(i + vec2(1.0, 0.0)), f.x), mix(hs(i + vec2(0.0, 1.0)), hs(i + vec2(1.0, 1.0)), f.x), f.y); }\n' +
+    'void main() { float r = length(vP.xy); vec2 q = vP.xy / max(r, 1e-3);\n' +
+    '  float k = sin(clamp((r - 0.5) / 0.5, 0.0, 1.0) * 3.14159);\n' +
+    '  float n = 0.6 * vn(q * 3.0 + vec2(tm * 2.0, r * 5.0 - tm * 6.0)) + 0.4 * vn(q * 8.0 + vec2(r * 12.0 + tm * 9.0, -tm * 4.0));\n' +
+    '  gl_FragColor = vec4(c, vA * k * k * (0.25 + 1.1 * n * n));\n#include <colorspace_fragment>\n}';
+  const amHash = x => { const s = Math.sin(x * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  const AM_FX_VS = 'attribute float al; varying float vA; varying vec3 vP;\n' +
+    'void main() { vA = al; vP = position; gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0); }';
+  let amGlowMesh = null, amPuffMesh = null, amPuffAl = null, amSoftMesh = null, amSoftAl = null;
+  const _amU = new T.Vector3(), _amE1 = new T.Vector3(), _amE2 = new T.Vector3(), _amP = new T.Vector3(), _amS = new T.Vector3();
+  const _amQ = new T.Quaternion(), _amQ2 = new T.Quaternion(), _amZ = new T.Vector3(0, 0, 1), _amEu = new T.Euler();
+  /* 這一幀的拳風（w＝m.sw）。回 true＝有畫 */
+  function amFx(w) {
+    const t = w.t, F = AM_FX;
+    if (!(t >= 0) || t > F.end) return false;
+    _amU.set(w.ux, w.uy, w.uz).normalize();
+    _amE1.crossVectors(_amU, _amY);
+    if (_amE1.lengthSq() < 1e-6) _amE1.set(1, 0, 0);
+    _amE1.normalize();
+    _amE2.crossVectors(_amE1, _amU);
+    _amQ.setFromUnitVectors(_amZ, _amU);
+    amPuffMesh.visible = amSoftMesh.visible = true;
+    amPuffs(w, t);
+    amSoft(w, t);
+    const gk = t / F.glow;
+    amGlowMesh.visible = gk < 1;
+    if (amGlowMesh.visible) {
+      amGlowMesh.position.set(w.hx, w.hy, w.hz).addScaledVector(_amU, 0.6);
+      amGlowMesh.scale.setScalar(0.8 + 2.6 * Math.sqrt(gk));
+      amGlowMesh.material.uniforms.op.value = 1 - gk;
+    }
+    return true;
+  }
+  /* 這一格氣浪的小方塊：離拳頭 a、繞中軸 th、離中軸 rho、邊長 s、濃度 al、自轉 rx／ry。
+     沉到地底下的往上推到貼著草皮（拳風打到地面那一層攤開來，像被壓扁的一片塵） */
+  function amPuffAt(i, w, a, th, rho, s, al, rx, ry) {
+    if (!(al > 0.004) || !(s > 0)) { amPuffMesh.setMatrixAt(i, ZERO_M); amPuffAl.array[i] = 0; return; }
+    _amP.set(w.hx, w.hy, w.hz).addScaledVector(_amU, a)
+      .addScaledVector(_amE1, Math.cos(th) * rho).addScaledVector(_amE2, Math.sin(th) * rho);
+    if (_amP.y < s * 0.45) _amP.y = s * 0.45;
+    amPuffMesh.setMatrixAt(i, _amm.compose(_amP, _amQ2.setFromEuler(_amEu.set(rx, ry, 0)), _amS.set(s, s, s)));
+    amPuffAl.array[i] = al;
+  }
+  /* 氣浪：同塵霧那種積木煙（遊戲裡蘑菇雲、龍捲風的語彙），全部照 t 算——
+       swirl  沿著錐形往前捲的氣流：從拳頭噴出去，邊走邊繞著中軸轉、越走越慢、越散越大，
+              停在 0.55～1.1 倍射程（指數收斂：一開始照 v 衝、後面慢下來）
+       rings  煙環：一圈一圈積木煙沿著錐形往前推（取代第一版那幾圈光滑的光環）
+       burst  拳頭前面炸開的一團，往前那半邊為主 */
+  function amPuffs(w, t) {
+    const L = AMW.L, P = AM_PUFF, F = AM_FX;
+    let i = 0;
+    for (let j = 0; j < P.swirl; j++, i++) {
+      const b = j * 7.13, tau = t - 0.3 * amHash(b);
+      if (tau <= 0) { amPuffAt(i, w, 0, 0, 0, 0, 0); continue; }
+      const life = 0.8 + 0.7 * amHash(b + 1), A = L * (0.55 + 0.55 * amHash(b + 2)), sp = AMW.v * (0.7 + 0.3 * amHash(b + 3));
+      const a = A * (1 - Math.exp(-tau * sp / A));
+      const th = 6.2832 * amHash(b + 4) + (3 + 4 * amHash(b + 5)) * tau;
+      const rho = (0.15 + 0.85 * Math.sqrt(amHash(b + 6))) * amR(a) * (1 + 0.5 * tau);
+      const s = (0.35 + 0.85 * amHash(b + 7)) * (0.6 + 1.6 * a / L) * (1 + 0.9 * tau);
+      amPuffAt(i, w, a, th, rho, s, F.puff * Math.min(1, tau / 0.04) * (1 - amE(tau / life)),
+               6 * amHash(b + 8) + 2 * tau, 6 * amHash(b + 9) + 3 * tau);
+    }
+    for (let k = 0; k < P.rings; k++) {
+      const tau = t - k * 0.08, sp = AMW.v * (1 - 0.12 * k), a = Math.min(L, sp * Math.max(0, tau));
+      const al = tau > 0 ? F.puffRing * Math.pow(1 - a / L, 0.5) * (1 - amE((tau - L / sp) / 0.4)) : 0;
+      const rad = amR(a) * (1.02 + 0.1 * k);
+      for (let q = 0; q < P.ringN; q++, i++) {
+        const b = k * 101.7 + q * 3.31;
+        amPuffAt(i, w, a + (amHash(b + 2) - 0.5) * 1.5, 6.2832 * (q + 0.5 * amHash(b)) / P.ringN + 0.6 * tau,
+                 rad * (0.92 + 0.16 * amHash(b + 3)), (0.7 + 0.7 * amHash(b + 1)) * (0.7 + 1.4 * a / L),
+                 al * (0.7 + 0.3 * amHash(b + 4)), 6 * amHash(b + 5) + 3 * tau, 6 * amHash(b + 6));
+      }
+    }
+    for (let j = 0; j < P.burst; j++, i++) {
+      const b = j * 13.7 + 900, life = 0.45 + 0.35 * amHash(b);
+      const cz = 0.2 + 0.8 * amHash(b + 2), R = (3 + 5 * amHash(b + 3)) * (1 - Math.exp(-t * 9));
+      amPuffAt(i, w, cz * R, 6.2832 * amHash(b + 1), Math.sqrt(1 - cz * cz) * R, (0.3 + 0.5 * amHash(b + 4)) * (1 + 2 * t),
+               F.puff * 1.3 * (1 - amE(t / life)), 6 * amHash(b + 5) + 4 * t, 6 * amHash(b + 6));
+    }
+    amPuffMesh.instanceMatrix.needsUpdate = true;
+    amPuffAl.needsUpdate = true;
+  }
+  /* 柔光衝擊波：拳頭前面炸開一片、跟著前緣推兩片；雜訊打散、一般混色 */
+  function amSoft(w, t) {
+    const L = AMW.L, F = AM_FX;
+    for (let i = 0; i < AM_SOFT_N; i++) {
+      let a, rad, al = 0;
+      if (i === 0) { const k = t / 0.35; a = 1.5; rad = 1 + 10 * (1 - Math.pow(1 - Math.min(1, k), 3)); al = k < 1 ? F.soft * 1.3 * (1 - k) : 0; }
+      else {
+        const tau = t - (i - 1) * 0.1; a = AMW.v * (1 - 0.1 * i) * tau;
+        if (tau > 0 && a <= L) { rad = amR(a) * 1.15; al = F.soft * Math.pow(1 - a / L, 0.7) * Math.min(1, tau / 0.05); }
+      }
+      amSoftAl.array[i] = al;
+      if (!(al > 0.004)) { amSoftMesh.setMatrixAt(i, ZERO_M); continue; }
+      _amP.set(w.hx, w.hy, w.hz).addScaledVector(_amU, a);
+      amSoftMesh.setMatrixAt(i, _amm.compose(_amP, _amQ, _amS.set(rad, rad, 1)));
+    }
+    amSoftMesh.material.uniforms.tm.value = t;
+    amSoftMesh.instanceMatrix.needsUpdate = true;
+    amSoftAl.needsUpdate = true;
+  }
+  let amMesh = null;
+  function amInit() {
+    amMesh = new T.InstancedMesh(heroGeo(AM_SLOT, MAXAM, k => {
+      const b = ALLMIGHT[k];
+      return b.g === AM_G.head && HERO_FACE[b.cn] || b.cn === 'skin' || b.cn === 'skinD' ? GJ_FACE_UP : AM_UP[b.cn] || 0;
+    }, heroEk(AM_CN)), voxelMaterial({}, GJ_EDGE_FIX, 'voxel-edge-gojo-hair'), MAXAM * AM_SLOT);
+    amMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    amMesh.castShadow = true;
+    amMesh.count = 0;
+    amMesh.visible = false;
+    amMesh.frustumCulled = false;
+    for (let i = 0; i < MAXAM; i++)
+      for (let k = 0; k < AM_SLOT; k++) amMesh.setColorAt(i * AM_SLOT + k, tmpC.setHex(ALLMIGHT[k].c));
+    scene.add(amMesh);
+    /* 拳風（見 amFx）：拳光一顆球（加法混色，只亮一瞬間）；
+       氣浪的小方塊（每一塊自己的透明度 al、顏色白到淺灰照索引雜湊定死）、柔光衝擊波（一般混色，見 AM_SOFT_FS） */
+    amGlowMesh = new T.Mesh(new T.SphereGeometry(1, 24, 16), gjFxMat('haze', 0xffffff, 0xcfe6ff, 1));
+    amGlowMesh.material.blending = T.AdditiveBlending;
+    /* 柔光衝擊波用一片正方形（±1），環的形狀整個在著色器裡照半徑算（內緣 0.5、外緣 1，外面是 0）。
+       不用 RingGeometry：〈爆裂魔法〉那一條是在場景裡找第一個 RingGeometry 認魔法陣的 */
+    const puffGeo = new T.BoxGeometry(1, 1, 1), softGeo = new T.PlaneGeometry(2, 2);
+    amPuffAl = new T.InstancedBufferAttribute(new Float32Array(AM_PUFF_N), 1).setUsage(T.DynamicDrawUsage);
+    amSoftAl = new T.InstancedBufferAttribute(new Float32Array(AM_SOFT_N), 1).setUsage(T.DynamicDrawUsage);
+    puffGeo.setAttribute('al', amPuffAl); softGeo.setAttribute('al', amSoftAl);
+    amPuffMesh = new T.InstancedMesh(puffGeo, new T.ShaderMaterial({ vertexShader: AM_PUFF_VS, fragmentShader: AM_PUFF_FS,
+                                                                    transparent: true, depthWrite: false }), AM_PUFF_N);
+    for (let i = 0; i < AM_PUFF_N; i++) {
+      const g = 0.8 + 0.2 * amHash(i * 0.917 + 5);
+      amPuffMesh.setColorAt(i, tmpC.setRGB(g * 0.97, g * 0.98, g));
+    }
+    amSoftMesh = new T.InstancedMesh(softGeo, new T.ShaderMaterial({
+      uniforms: { c: { value: new T.Color(0xeaf6ff) }, tm: { value: 0 } }, vertexShader: AM_FX_VS, fragmentShader: AM_SOFT_FS,
+      transparent: true, depthWrite: false, side: T.DoubleSide }), AM_SOFT_N);
+    for (const z of [amGlowMesh, amPuffMesh, amSoftMesh]) {
+      if (z.isInstancedMesh) z.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      z.visible = false; z.frustumCulled = false; z.renderOrder = 3;
+      scene.add(z);
+    }
+  }
+  const amAt = [];                   // 這一幀第 n 位畫的是 beasts 的第幾隻（點選要對回去，同 erAt）
+  function putMights(list) {
+    let n = 0, fx = false;
+    for (let i = 0; i < list.length && n < MAXAM; i++) {
+      const m = list[i];
+      if (m.kind !== 'allmight') continue;
+      amAt[n] = i;
+      if (m.sw && !fx) fx = amFx(m.sw);           // 拳風：同一時間畫一道（場上只會有一位）
+      amRig(m);
+      const base = n * AM_SLOT;
+      for (let j = 0; j < AM_PARTS; j++) amMesh.setMatrixAt(base + j, _amm.multiplyMatrices(_amG[ALLMIGHT[j].g], AM_LM[j]));
+      n++;
+    }
+    amMesh.count = n * AM_SLOT;
+    amMesh.visible = n > 0;
+    if (n) { amMesh.instanceMatrix.needsUpdate = true; dropSphere(amMesh); }
+    if (!fx) amGlowMesh.visible = amPuffMesh.visible = amSoftMesh.visible = false;
+  }
   /* ══ Diablo（暗黑破壞神）════════════════════════════════════════
      使用者：「加入新天災吉祥物 diablo 攻擊方式是舊版獅鷲的噴火」，附了兩張暗黑破壞神二代的參考圖。
      第一版塞進 BEASTS（67 塊，同巨人）給使用者看：「太醜 不夠精緻 因為那是暗黑破壞神的經典角色 不能不像」。
@@ -12890,6 +13447,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     move(gjMesh, gjAt, GJ_SLOT);
     move(frMesh, frAt, FR_SLOT);
     move(erMesh, erAt, ER_SLOT);                 // 艾莉絲（v1.290.0）
+    move(amMesh, amAt, AM_SLOT);                 // 歐爾麥特（v1.329.0）
     move(diaMesh, diaAt, DIA_SLOT);              // Diablo：從林帶進出場、死了變淡都走這一顆
     move(draMesh, draAt, DRA_SLOT);              // 飛龍（v1.277.0）：從林帶飛進飛出那一段（不是人形，但同一個做法：自己一顆、整格照抄）
     move(gryMesh, gryAt, GRY_SLOT);              // 獅鷲（v1.327.0）同飛龍；被打死變淡（v1.323.0 的 m.alpha）也走這一顆
@@ -13641,6 +14199,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     if (gjMesh && gjMesh.visible) objs.push(gjMesh);      // 五條悟也算 beast（v1.255.0，見 putGojos）
     if (frMesh && frMesh.visible) objs.push(frMesh);      // 芙莉蓮也算 beast（v1.259.0，見 putFrierens）
     if (erMesh && erMesh.visible) objs.push(erMesh);      // 艾莉絲也算 beast（v1.290.0，見 putErises）
+    if (amMesh && amMesh.visible) objs.push(amMesh);      // 歐爾麥特也算 beast（v1.329.0，見 putMights）
     if (diaMesh && diaMesh.visible) objs.push(diaMesh);   // Diablo 也算 beast（見 putDiablos）
     if (draMesh && draMesh.visible) objs.push(draMesh);   // 飛龍也算 beast（v1.277.0，見 putDragons）
     if (gryMesh && gryMesh.visible) objs.push(gryMesh);   // 獅鷲也算 beast（v1.327.0，見 putGryphs）
@@ -13651,7 +14210,8 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
       const kind = h.object === blockMesh ? 'block'
                  : h.object === workerMesh ? 'worker'
                  : h.object === beastMesh || h.object === sabMesh || h.object === levMesh || h.object === megMesh ||
-                   h.object === zenMesh || h.object === gjMesh || h.object === frMesh || h.object === erMesh || h.object === diaMesh ||
+                   h.object === zenMesh || h.object === gjMesh || h.object === frMesh || h.object === erMesh || h.object === amMesh ||
+                   h.object === diaMesh ||
                    h.object === draMesh || h.object === gryMesh ? 'beast'
                  : h.object === giftMesh ? 'gift'
                  : h.object === ground ? 'ground' : null;
@@ -13668,6 +14228,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
                                       : h.object === gjMesh ? gjAt[Math.floor(h.instanceId / GJ_SLOT)]
                                       : h.object === frMesh ? frAt[Math.floor(h.instanceId / FR_SLOT)]
                                       : h.object === erMesh ? erAt[Math.floor(h.instanceId / ER_SLOT)]
+                                      : h.object === amMesh ? amAt[Math.floor(h.instanceId / AM_SLOT)]
                                       : h.object === diaMesh ? diaAt[Math.floor(h.instanceId / DIA_SLOT)]
                                       : h.object === draMesh ? draAt[Math.floor(h.instanceId / DRA_SLOT)]
                                       : h.object === gryMesh ? gryAt[Math.floor(h.instanceId / GRY_SLOT)]
@@ -14010,6 +14571,11 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putErises, ERIS, ER_PARTS, ER_SLOT, MAXER, ER_G, ERT, ERW, ER_FX, ER_GLINT, ER_SHEET_A,
     ER_HOLD: { grip: ER_GRIP, pommel: ER_GRIP - ER_POMMEL, blade: ER_BLADE },
     erBlade: (m, y, out) => { erRig(m); return erBladePt(out || new T.Vector3(), y); },
+    /* 歐爾麥特（v1.329.0）：自己一顆 mesh（putMights），拳風也在這一支畫。AM_K 是站姿與出拳那幾格、AMT 是出拳的時間軸；
+       拳風多遠多寬多快讀 AMW（規則那邊照同一份吹飛積木）、怎麼畫讀 AM_FX；
+       amFist(m, out) 照現在的姿勢算拳頭最前面那一點（拳風從那裡放出去） */
+    putMights, ALLMIGHT, AM_PARTS, AM_SLOT, MAXAM, AM_G, AM_K, AMT, AMW, AM_FX, amR,
+    amFist: (m, out) => { amRig(m); return amFistPt(out || new T.Vector3()); },
     /* Diablo：自己一顆 mesh（putDiablos）；diaMouth 是噴火的出口（世界座標，畫的跟用的同一份）。
        跪姿、趴姿與「算不算貼地」那一份遮罩（DIA_GND）也開出來：測試照它量倒在地上時每一塊離地多高 */
     putDiablos, DIABLO, DIA_PARTS, DIA_SLOT, MAXDIA, DIA_G, diaMouth, diaChest, DIA_KNEEL, DIA_PRONE, DIA_GND,
@@ -14038,14 +14604,14 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
                ape: APE, snow: SNOW, nana: NANA, torch: TORCH, dragon: DRAGON, fball: FBALL,
                cow: COW, ox: OX, sheep: SHEEP, ram: RAM, gryphon: GRY,
                deer: DEER, stag: STAG, hog: HOG, boar: BOAR, giant: GIANT, diablo: DIABLO, saber: SABER, levi: LEVI, megumin: MEGUMIN,
-               zenitsu: ZENITSU, gojo: GOJO, frieren: FRIEREN, eris: ERIS,
+               zenitsu: ZENITSU, gojo: GOJO, frieren: FRIEREN, eris: ERIS, allmight: ALLMIGHT,
                shiba: SHIBA, collie: COLLIE, horse: HORSE, grey: GREY, tabby: TABBY, blackcat: BLACKCAT,
                chiikawa: CHIIKAWA, hachiware: HACHIWARE, usagi: USAGI, emperor: EMPEROR, adelie: ADELIE,
                goose: GOOSE, charmander: CHARMANDER, bulbasaur: BULBASAUR, squirtle: SQUIRTLE, general: GENERAL };
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, hayMesh: FOOD.hay.mesh, bunchMesh: FOOD.banana.mesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, diaMesh, coinMesh, draMesh, gryMesh,
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, hayMesh: FOOD.hay.mesh, bunchMesh: FOOD.banana.mesh, fadeMesh, humMesh, ground, markMesh, poolMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, amMesh, amGlowMesh, amPuffMesh, amSoftMesh, diaMesh, coinMesh, draMesh, gryMesh,
                             stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl,
                             skyStars, skyMw, skyMoon,
                             floodMesh, floodLitMesh, floodBeamMesh, floodLamps, floodFade }; }

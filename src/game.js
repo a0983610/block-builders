@@ -23,7 +23,7 @@
 
 /* 版本號。規則：每次 commit 都要動——一般改動 patch +1，
    功能性改動 minor +1（patch 歸零）。畫面右下角會顯示。 */
-const VERSION = '1.328.0';
+const VERSION = '1.329.0';
 
 /* ── 常數 ───────────────────────────────────────────────── */
 const HB = ENG.BS / 2;              // 積木半邊長
@@ -448,6 +448,23 @@ function sndGeneral() {
   tone(392, 0.14, 'square', 0.022, 1, 'gen');
   setTimeout(() => tone(523, 0.14, 'square', 0.022, 1, 'gen2'), 130);
   setTimeout(() => tone(659, 0.34, 'square', 0.02, 1, 'gen3'), 260);
+}
+/* 歐爾麥特（v1.329.0）：登場是兩聲低沉有力的銅管往上（Do—Sol），像英雄出場的號角——
+   跟小人將軍（三聲方波往上）、五條悟（低的嗡）分得開 */
+function sndMight() {
+  tone(196, 0.16, 'sawtooth', 0.035, 1, 'might');
+  setTimeout(() => tone(294, 0.38, 'sawtooth', 0.035, 1.02, 'might2'), 150);
+}
+/* 被打到擺姿勢：三下短促往下的「哈」（笑三聲） */
+function sndMightLaugh() {
+  for (let i = 0; i < 3; i++) setTimeout(() => tone(330 - i * 20, 0.11, 'triangle', 0.035, 0.75, 'mightHa' + i), i * 130);
+}
+/* DETROIT SMASH 蓄力：低的一聲往上爬（長度讀 ENG.AMT.wind，爬到頂接上打出去那一聲） */
+function sndSmashCharge() { tone(90, ENG.AMT.wind, 'sawtooth', 0.04, 2.4, 'smashCharge', 0.2); }
+/* 打出去：一聲爆開的巨響（比核彈短、比炸彈重）＋破風的高頻一掃 */
+function sndSmash() {
+  noise(0.9, 0.32, 700); noise(0.35, 0.12, 6000);
+  tone(42, 1.1, 'sawtooth', 0.11, 0.35, 'smash'); tone(160, 0.3, 'square', 0.04, 0.4, 'smash2');
 }
 /* 居合架勢：一聲很輕、慢慢往上爬的嗡（長度讀 ENG.ERT 的 st ＋ hold，爬到頂正好接上斬下去那一聲） */
 function sndTachiCharge() {
