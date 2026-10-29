@@ -39040,8 +39040,8 @@ const toScreen = (page, sel) => page.evaluate(sel => {
       dlgFloat(o2, 1);
       for (let i = 0; i < 30; i++) { adv(dt); dlgDrift(o2, dt, top); }
       r.out = +o2.x.toFixed(1); r.E = D.E; r.fallY = +o2.dlg.y.toFixed(1); r.fs3 = o2.dlg.fs; r.ride3 = o2.dlg.ride;
-      /* 浪頭的水花（押 0 抽到的是浪頂那一種）：從前緣噴出來、跟著浪頭往前衝 */
-      D.t = 1; adv(0); D.F = 0; D.li = D.lm.length; D.em = 0;
+      /* 浪頭的水花（押 0 抽到的是浪頂那一種）：從前緣噴出來、跟著浪頭往前衝（撞上地標那一下是另一支 dlgSlam，這裡不會噴） */
+      D.t = 1; adv(0); D.F = 0; D.em = 0;
       const d0 = dust.length;
       dlgCrest(0.01);
       const sp = dust.slice(d0);
@@ -39061,6 +39061,56 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dride.out > dride.E && dride.ride3 === 0 && dride.fallY < -2 && dride.fs3 >= 0, JSON.stringify(dride));
   ok('浪頂的水花從前緣噴出來、跟著浪頭往前衝（浪速的 0.85 成以上，舊版只有四到六成、一噴出來就落在後面）',
      dride.spN === dride.spWant && dride.spN > 0 && dride.spV >= 0.85 && dride.spAt, JSON.stringify(dride));
+
+  /* ── 浪撞上地標濺水珠（v1.330.1，使用者：「浪撞上地標時加上一些水花特效如何? 代表有碰到衝擊到」，看過預覽：「我只是要有水撞到東西的簡單特效」）：
+        押 Math.random＝0（從 −x 往 +x），浪的時間與前緣自己推、直接叫 dlgSlam。
+        舊版是直線的前緣掃過貼地那一層每一格就噴兩顆：金字塔 576 格裡迎浪的只有 21 格，其餘都從建築裡面噴、被擋住 ── */
+  const dslam = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const real = Math.random, n0 = dust.length;
+    let r;
+    try {
+      Math.random = () => 0;
+      castDeluge();
+      const D = deluge, key = (x, z) => Math.round(x) + ',' + Math.round(z), ground = new Set();
+      for (const s of bp.slots) if (s.gy === 0 && s.filled) ground.add(key(s.x, s.z));
+      /* 迎浪面：貼地那一層、浪來那一邊（−x）緊鄰的那一格是空的——自己數一次對帳 */
+      const want = [...ground].filter(k => { const [x, z] = k.split(',').map(Number); return !ground.has((x - 1) + ',' + z); }).length;
+      r = { n: D.lm.length, ground: ground.size, want,
+            face: D.lm.length === want && D.lm.every(c => ground.has(key(c.x, c.z)) && !ground.has(key(c.x - 1, c.z))) };
+      /* 浪推到剛好碰到最先那一面：浪舌碰到的那幾格才濺（其餘的還沒記時刻、沒有水珠） */
+      const c0 = D.lm.reduce((a, c) => (c.q < a.q ? c : a));
+      D.t = 1; D.F = c0.q - 0.5 - D.S.lean - ENG.dlgFrontN(D.S, c0.p, D.t) + 0.01;
+      const touched = c => dlgFront(c.p) + D.S.lean >= c.q - 0.5, d0 = dust.length;
+      dlgSlam(0.05);
+      const sp = dust.slice(d0);
+      r.some = D.lm.filter(c => c.t0 >= 0).length; r.hit = D.hit;
+      r.rule = r.some > 0 && r.some < r.n && D.lm.every(c => (c.t0 >= 0) === touched(c));
+      r.spN = sp.length; r.spWant = r.some * Math.round(D.per * 0.5);
+      /* 押 0：每一顆都在被碰到那一格的牆前面 0.6 格、從那一點的水面（水位到浪頭頂之間）往回（−x）往上濺，
+         重力 DLG_SLAM_G、壽命剛好落回原本的高度 */
+      r.drop = sp.length > 0 && sp.every(d => d.vx < 0 && d.vy > 0 && d.g === DLG_SLAM_G && d.y >= D.L - 1e-9 && d.y <= D.C + 1e-9 &&
+                                             Math.abs(d.life - (2 * d.vy / DLG_SLAM_G + 0.1)) < 1e-9 &&
+                                             D.lm.some(c => c.t0 >= 0 && Math.abs(d.x - (c.x - 0.6)) < 1e-9));
+      /* 浪整個推過去：每一格都濺過，總數不超過一座地標的額度（一格 per 顆；每幀照矩形加總會多一點：dt ÷ 2T，再加每格進位的零頭） */
+      const dt = 0.05;
+      let n = 0;
+      for (let t = 1; t < DLG_IN + 0.5; t += dt) {
+        D.t = t; D.F = Math.max(D.F, -D.E - 0.4 + D.v * Math.min(t, DLG_IN));
+        const a = dust.length; dlgSlam(dt); n += dust.length - a;
+      }
+      r.allHit = D.lm.every(c => c.t0 >= 0);
+      r.total = r.spN + n; r.per = +D.per.toFixed(2);
+      r.under = D.per * D.lm.length <= DLG_SLAM + 1e-9 && r.total <= DLG_SLAM * (1 + dt / (2 * DLG_SLAM_T)) + D.lm.length;
+    } finally { Math.random = real; }
+    cleanTools();
+    dust.length = n0;
+    return r;
+  });
+  ok('浪撞上地標：只有迎浪面（貼地那一層、浪來那一邊緊鄰的那一格是空的）會濺，浪舌碰到的那幾格才濺，第一下震一下拍一聲',
+     dslam.face && dslam.n < dslam.ground && dslam.rule && dslam.hit === 1 && dslam.spN === dslam.spWant, JSON.stringify(dslam));
+  ok('撞地標的水珠從牆前面的水面往上、往回濺，照 DLG_SLAM_G 落回原本的高度就收掉；浪推過去每一格都濺過，總數不超過一座地標的額度 DLG_SLAM',
+     dslam.drop && dslam.allHit && dslam.under, JSON.stringify(dslam));
 
   /* ── 整場跑一趟：地標一塊不少；小人、牛羊、村子、碎料、箭雨隊、肉、泡泡、地上的痕跡、樹全部沖走；
         退完水小人換新的從林帶走進來、牛羊記成欠帳（補位那一支測試裡關著）、林帶重種從零長回來、水那一顆收掉 ── */

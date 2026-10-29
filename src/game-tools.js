@@ -18272,7 +18272,7 @@ function stepGen(m, dt) {
    第二輪（看過預覽，使用者：「沒有大水來的兇猛感」，四樣全選）：
      · **一道高浪牆**：浪頭比水面高一截、往後斜下去接回水面（引擎 putDeluge 畫）
      · **更快、捲得更猛**：浪頭打到的先浮上來衝出水面、在半空翻滾，落回水裡再被水流沖走（v1.330.0 換成捲進浪頭，見第五輪）
-     · **浪花水花＋畫面震動**：浪頭一路噴水花、撞上地標貼地那一層就地往上濺、房子被掃到整間濺起一片、衝出水面與落水各濺一下；
+     · **浪花水花＋畫面震動**：浪頭一路噴水花、撞上地標貼地那一層就地往上濺（v1.330.1 換成迎浪面濺水珠，見第六輪）、房子被掃到整間濺起一片、衝出水面與落水各濺一下；
        浪推進來那幾秒一直震，撞上地標那一下再重震一次
      · **水聲**：一整段轟隆聲（sndDeluge），撞上地標那一下一聲拍擊（sndDelugeHit）
    不是生物也不是房子的那幾樣也沖（使用者四樣全選）：投石機、加農砲漂走（淡掉照它自己的退場 puOut）；
@@ -18299,7 +18299,10 @@ function stepGen(m, dt) {
        沖出島邊的從島邊掉下去
      · 水花大部分跟著浪頭往前衝（原本一噴出來就落在後面，變成滿地白色小方塊），另有浪頂的水霧與貼地往前衝的浪腳
    判掃到誰也照參差的前緣（dlgFront），不然會「水還沒到、人先被捲走」。
-   見 開發筆記〈大洪水（v1.325.0）〉、〈大洪水改成海嘯：浪舌、深色海水、捲進浪頭一起沖（v1.330.0）〉 */
+
+   第六輪（v1.330.1，使用者：「浪撞上地標時加上一些水花特效如何? 代表有碰到衝擊到」，看過預覽：「我只是要有水撞到東西的簡單特效」）：
+   撞上地標那一下換成**迎浪那一面被浪舌碰到就從那裡的水面濺起一圈水珠**，往上、往回、往兩邊散開再落回水裡（見 dlgSlam）。
+   見 開發筆記〈大洪水（v1.325.0）〉、〈大洪水改成海嘯：浪舌、深色海水、捲進浪頭一起沖（v1.330.0）〉、〈浪撞上地標濺水珠（v1.330.1）〉 */
 const DLG_IN = 5, DLG_HOLD = 2.5, DLG_OUT = 3;   // 浪推過整座島幾秒（v1.330.0 使用者選 5 秒，原本 3）、推出去之後淹著停幾秒、退幾秒
 const DLG_HK = 0.5;                  // 水面是地標現在高度的幾成（使用者選「一半」）
 const DLG_HMIN = 1.5;                // 地標很矮、還沒蓋起來時水面最少多高（小人身高約 1.7）
@@ -18320,11 +18323,16 @@ const DLG_SPRAY = 2400;              // 浪頭一秒噴幾顆水花（整座島�
    施工中光是挖料、落地的煙就常常頂在那裡，照它的話水花一顆都噴不出來；水花自己一份額度（v1.330.0 2400 → 5600，加上 8600 還在 MAXDUST 以內） */
 const DLG_DUST = 5600;
 const DLG_FOAM = [0.855, 0.922, 0.956], DLG_MIST = [0.651, 0.784, 0.855];   // 白沫、水霧的顏色（0xeef6fa、0xd3e5ee 換成線性，同引擎那一份白沫）
+/* 浪撞上地標濺的水珠（v1.330.1，見 dlgSlam） */
+const DLG_SLAM = 1200, DLG_SLAM_PER = 32;   // 一座地標總共最多幾顆、每一格最多幾顆（9000 塊的巨石陣迎浪面 436 格，攤下去每格 2.8 顆）
+const DLG_SLAM_G = 30;                      // 水珠的重力：濺起來很快落回去（塵霧預設的 7 太飄，看起來像煙）
+const DLG_SLAM_T = 0.6;                     // 碰到之後那一格濺幾秒（第一下濺一半，其餘越濺越少、越濺越矮）
 const DLG_SINK = 4;                  // 推土機、消防車沉多深（整台沒進草皮底下）
 const DLG_GROW = 2.5, DLG_GROW_LAG = 1.5;   // 退完水林帶重種：一棵從零長回原本大小幾秒、起長最多晚幾秒
 /* { t 演到第幾秒, dx/dz 浪往哪推, E 島的半寬, H 水位, CR 浪頭高出水面多少, B 浪頭斜坡多長, S 浪形（engine 的 dlgShape）, v 浪速,
      F 浪的正面推到哪（沿著 dx/dz 量；前緣在那一條上下參差，見 dlgFront）, L 水面, C 浪頭頂, men 整隊捲走的兵（搬出隊伍自己漂）,
-     lm 地標貼地那一層、li 掃到第幾格, em 水花的零頭 } */
+     lm 地標的迎浪面（每一格 {x, z, p 橫的, q 沿著浪, t0 被浪舌碰到的時刻, em 水珠的零頭, side 在整座的橫向哪裡}，見 dlgSlam）,
+     per 迎浪面每一格濺幾顆, hit 撞上過了沒（第一下震一下、拍一聲）, em 水花的零頭 } */
 let deluge = null;
 const dlgEdge = () => debrisR + ENG.GROUND_PAD;    // 島的半寬（草地島是方的，見 engine 的 setGroundSize）
 /* 前緣在橫的 p 那一點推到哪（v1.330.0 前緣參差不齊，跟畫出來的同一份） */
@@ -18346,13 +18354,23 @@ function castDeluge() {
   if (deluge) return false;
   const d = [[1, 0], [-1, 0], [0, 1], [0, -1]][Math.floor(Math.random() * 4)];   // 從 −d 那一邊往 d 推
   const E = dlgEdge(), H = Math.max(DLG_HMIN, siteTopNow() * DLG_HK), CR = H * DLG_CK, B = Math.max(DLG_BMIN, CR * DLG_BK);
-  /* 地標貼地那一層照浪先掃到的順序排好：浪頭掃到哪一格就在那裡往上濺（見 dlgCrest） */
-  const lm = [];
-  if (bp) for (const s of bp.slots) if (s.gy === 0 && s.filled) lm.push({ x: s.x, z: s.z, q: s.x * d[0] + s.z * d[1] });
-  lm.sort((a, b) => a.q - b.q);
+  /* 地標的迎浪面：貼地那一層裡、浪來那一邊緊鄰的那一格是空的（每一面朝著浪的牆都算，前面那一座擋住的後面那一座也算）。
+     浪舌碰到哪一格就在那裡濺（見 dlgSlam）。side＝在整座的橫向哪裡（−1～1），兩側的水珠往外散 */
+  const lm = [], has = new Set(), key = (x, z) => Math.round(x) + ',' + Math.round(z);
+  let pmin = Infinity, pmax = -Infinity;
+  if (bp) {
+    for (const s of bp.slots) if (s.gy === 0 && s.filled) has.add(key(s.x, s.z));
+    for (const s of bp.slots) {
+      if (s.gy !== 0 || !s.filled || has.has(key(s.x - d[0], s.z - d[1]))) continue;
+      const p = s.z * d[0] - s.x * d[1];
+      lm.push({ x: s.x, z: s.z, p, q: s.x * d[0] + s.z * d[1], t0: -1, em: 0, side: 0 });
+      pmin = Math.min(pmin, p); pmax = Math.max(pmax, p);
+    }
+  }
+  for (const c of lm) c.side = (c.p - (pmin + pmax) / 2) / Math.max(1, (pmax - pmin) / 2);
   /* 浪的正面從浪來那一邊的島邊（−E）起跑，DLG_IN 秒推到對面島邊外 B 格（浪頭的斜坡整段離開島） */
   deluge = { t: 0, dx: d[0], dz: d[1], E, H, CR, B, S: ENG.dlgShape(CR, B), v: (2 * (E + 0.4) + B) / DLG_IN,
-             F: -E - 0.4, L: H, C: H + CR, men: [], lm, li: 0, em: 0 };
+             F: -E - 0.4, L: H, C: H + CR, men: [], lm, per: Math.min(DLG_SLAM_PER, DLG_SLAM / Math.max(1, lm.length)), hit: 0, em: 0 };
   stopIdleEvent();                   // 村子要被沖光了，那一件先收掉；退完重抽一件（見 dlgEnd）
   ENG.shake(0.8);
   sndDeluge(DLG_IN + DLG_HOLD);
@@ -18373,6 +18391,7 @@ function stepDeluge(dt) {
   if (D.t < DLG_IN) {
     ENG.shake(dt * 2.6);             // 浪推進來那幾秒一直在震（震幅每秒衰減到 2%，見 engine 的 updateCamera；這個量撐在 0.6 上下）
     dlgCrest(dt);
+    dlgSlam(dt);
   }
   if (D.t < DLG_IN + DLG_HOLD) dlgSweep();
   if (D.t >= DLG_IN && D.t < DLG_IN + DLG_HOLD) dlgMarks();
@@ -18452,7 +18471,7 @@ function stepDeluge(dt) {
   }
   if (D.t >= DLG_IN + DLG_HOLD + DLG_OUT) dlgEnd();
 }
-/* 浪頭這一幀：沿著參差的前緣一路噴水花；掃過地標貼地那一層就在那裡往上濺（往回彈），第一下重震一下、拍一聲。
+/* 浪頭這一幀：沿著參差的前緣一路噴水花（撞上地標那一下是 dlgSlam）。
    v1.330.0 分三種（原本只有一種、往前的速度只有浪速的四到六成，一噴出來就落在浪後面散成碎紙片）：
      浪頂的白水 55%：從浪舌噴出來、**跟著浪頭往前衝**（浪速的 0.88～1.06，阻力很小）往上噴——浪頭那一整排是一團白
      水霧 25%：大顆、往上散、慢慢落後（浪速的五到八成）、邊飄邊縮
@@ -18479,13 +18498,39 @@ function dlgCrest(dt) {
       dlgDrop(x, rr(0.2, 0.7), z, ux * k + px * lx, rr(1, 3.5), uz * k + pz * lx, rr(0.35, 0.8) * sz, rr(0.25, 0.5), 0.99, DLG_FOAM);
     }
   }
-  while (D.li < D.lm.length && D.lm[D.li].q <= D.F) {
-    const s = D.lm[D.li++];
-    if (D.li === 1) { ENG.shake(1.2); sndDelugeHit(); }
-    for (let i = 0; i < 2; i++)
-      dlgDrop(s.x + rr(-0.4, 0.4), rr(0.3, 1) * D.C, s.z + rr(-0.4, 0.4), -ux * rr(2, 5) + rr(-1.5, 1.5), rr(8, 14) * sz,
-              -uz * rr(2, 5) + rr(-1.5, 1.5), rr(0.5, 1.1) * sz, rr(0.6, 1.2), 0.97, DLG_FOAM);
+}
+/* 浪撞上地標（v1.330.1，使用者：「浪撞上地標時加上一些水花特效如何? 代表有碰到衝擊到」；預覽第一版做成衝上天的水柱＋掛著的水霧，
+   使用者：「都不像 而且我只是要有水撞到東西的簡單特效」）：浪舌碰到迎浪面那一格的牆（那一點的前緣＋浪舌往前捲的那一截 lean，
+   同 putDeluge 畫的浪舌）就從那裡的水面濺起一圈水珠：先濺一半，其餘 DLG_SLAM_T 秒裡越濺越少、越濺越矮。第一下重震一下、拍一聲。
+   原本是直線的前緣（D.F）掃過貼地那一層每一格就噴兩顆：金字塔 576 格裡迎浪的只有 21 格，其餘都從建築裡面噴、被擋住；
+   照直線算的時刻跟畫出來參差的前緣差到 13 格；0.6 秒噴完，一秒後什麼都不剩；9000 塊的扇形車庫一下要 5128 顆、頂到水花額度 */
+function dlgSlam(dt) {
+  const D = deluge;
+  for (const c of D.lm) {
+    if (c.t0 < 0) {
+      if (dlgFront(c.p) + D.S.lean < c.q - 0.5) continue;
+      c.t0 = D.t;
+      if (!D.hit) { D.hit = 1; ENG.shake(1.2); sndDelugeHit(); }
+      for (let i = Math.round(D.per * 0.5); i > 0; i--) dlgSlamDrop(c, 1);
+      continue;
+    }
+    const a = D.t - c.t0;
+    if (a >= DLG_SLAM_T) continue;
+    c.em += D.per / DLG_SLAM_T * (1 - a / DLG_SLAM_T) * dt;
+    while (c.em >= 1) { c.em--; dlgSlamDrop(c, 1 - a / DLG_SLAM_T); }
   }
+}
+/* 一顆水珠：從牆前面那一點的水面濺起來（往上、往回、往兩邊），照重力畫一道弧，落回原本的高度就收掉。k＝力道（1 是剛碰到那一下）。
+   **從水面噴**：剛碰到時迎浪面在浪舌裡面，從水裡噴的話要衝出浪頂才看得到（水九成不透明），預覽第一版就是這樣把那一下吃掉的 */
+function dlgSlamDrop(c, k) {
+  const D = deluge, sz = Math.min(2, Math.sqrt(Math.max(1, D.CR / 1.6))), w = Math.sqrt(sz);
+  const ux = D.dx, uz = D.dz, px = -D.dz, pz = D.dx;
+  const off = 0.5 + rr(0.1, 0.8), pp = rr(-0.5, 0.5);
+  const y0 = D.L + ENG.dlgCrestH(D.S, D.CR, Math.max(0, dlgFront(c.p) - c.q));                        // 那一點的水面
+  const vy = Math.sqrt(2 * DLG_SLAM_G * Math.max(D.CR, 3) * rr(0.5, 1.4) * (0.5 + 0.5 * k));        // 濺到浪頭高上下（矮的地標浪頭才兩格多，給個底）
+  const bk = rr(1.5, 5) * w, lat = (rr(-3, 3) + c.side * rr(0, 3)) * w;
+  dlgDrop(c.x - ux * off + px * pp, y0, c.z - uz * off + pz * pp, -ux * bk + px * lat, vy, -uz * bk + pz * lat,
+          rr(0.35, 0.8) * sz, 2 * vy / DLG_SLAM_G + 0.1, 0.98, DLG_FOAM, DLG_SLAM_G);
 }
 /* 一顆水花：塵霧那一池（同 digPuff 換顏色）。keep＝水平阻力（每 1/60 秒剩幾成，見 stepDust）、c 顏色、g 重力（沒給是 7）、fade 邊飄邊縮的半衰期 */
 function dlgDrop(x, y, z, vx, vy, vz, s, life, keep, c, g, fade) {
