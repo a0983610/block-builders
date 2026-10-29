@@ -18302,7 +18302,13 @@ function stepGen(m, dt) {
 
    第六輪（v1.330.1，使用者：「浪撞上地標時加上一些水花特效如何? 代表有碰到衝擊到」，看過預覽：「我只是要有水撞到東西的簡單特效」）：
    撞上地標那一下換成**迎浪那一面被浪舌碰到就從那裡的水面濺起一圈水珠**，往上、往回、往兩邊散開再落回水裡（見 dlgSlam）。
-   見 開發筆記〈大洪水（v1.325.0）〉、〈大洪水改成海嘯：浪舌、深色海水、捲進浪頭一起沖（v1.330.0）〉、〈浪撞上地標濺水珠（v1.330.1）〉 */
+
+   第七輪（v1.330.2，使用者：「水退後 水完全消失後 地面瞬間一點痕跡都沒有」，問過選的，看過預覽）：
+     · **退水先快後慢**、退到貼地，最後 DLG_FADE_K 成的時間整片水慢慢變透明（原本越退越快、沉進草皮就收掉）
+     · 露出底下**濕成深色的草地與幾灘積水**（積水在水開始淡之前就擺在水底下），**地標泡過水的那一截照淋濕那一套壓深**（見 dlgSoak）
+     · 水完全消失那一刻起 DLG_DRY 秒乾回來（同燒灼痕那一把尺），最後 DLG_DRY_FADE 秒在淡（見 dlgTraces）
+   見 開發筆記〈大洪水（v1.325.0）〉、〈大洪水改成海嘯：浪舌、深色海水、捲進浪頭一起沖（v1.330.0）〉、〈浪撞上地標濺水珠（v1.330.1）〉、
+   〈退完水留下濕地、積水、地標的水線（v1.330.2）〉 */
 const DLG_IN = 5, DLG_HOLD = 2.5, DLG_OUT = 3;   // 浪推過整座島幾秒（v1.330.0 使用者選 5 秒，原本 3）、推出去之後淹著停幾秒、退幾秒
 const DLG_HK = 0.5;                  // 水面是地標現在高度的幾成（使用者選「一半」）
 const DLG_HMIN = 1.5;                // 地標很矮、還沒蓋起來時水面最少多高（小人身高約 1.7）
@@ -18329,11 +18335,20 @@ const DLG_SLAM_G = 30;                      // 水珠的重力：濺起來很快
 const DLG_SLAM_T = 0.6;                     // 碰到之後那一格濺幾秒（第一下濺一半，其餘越濺越少、越濺越矮）
 const DLG_SINK = 4;                  // 推土機、消防車沉多深（整台沒進草皮底下）
 const DLG_GROW = 2.5, DLG_GROW_LAG = 1.5;   // 退完水林帶重種：一棵從零長回原本大小幾秒、起長最多晚幾秒
+/* 退完水留下的痕跡（v1.330.2，見 dlgSoak／dlgPuddles／dlgTraces） */
+const DLG_DRY = SEAR_LIFE, DLG_DRY_FADE = SEAR_FADE;   // 幾秒乾回來、最後幾秒在淡（使用者選「跟燒灼痕一樣 10 秒」，同那一把尺）
+const DLG_FLOOR = 0.12;              // 退到最後水面貼在地上多高（原本退到草皮底下 0.3：最後那一截只看得到草，積水要等水收掉才冒出來）
+const DLG_FADE_K = 0.2;              // 退水最後幾成的時間整片水在淡，露出底下濕的草地與積水（DLG_OUT 3 秒的最後 0.6 秒）
+const DLG_PUD = 20, DLG_PUD_R = [3, 8], DLG_PUD_OUT = 40;   // 留幾灘積水（同引擎的 PUD_MAX）、多大、離地標邊最遠幾格
 /* { t 演到第幾秒, dx/dz 浪往哪推, E 島的半寬, H 水位, CR 浪頭高出水面多少, B 浪頭斜坡多長, S 浪形（engine 的 dlgShape）, v 浪速,
      F 浪的正面推到哪（沿著 dx/dz 量；前緣在那一條上下參差，見 dlgFront）, L 水面, C 浪頭頂, men 整隊捲走的兵（搬出隊伍自己漂）,
      lm 地標的迎浪面（每一格 {x, z, p 橫的, q 沿著浪, t0 被浪舌碰到的時刻, em 水珠的零頭, side 在整座的橫向哪裡}，見 dlgSlam）,
-     per 迎浪面每一格濺幾顆, hit 撞上過了沒（第一下震一下、拍一聲）, em 水花的零頭 } */
+     per 迎浪面每一格濺幾顆, hit 撞上過了沒（第一下震一下、拍一聲）, em 水花的零頭, op 水的不透明度倍率（退水最後那一段在淡） } */
 let deluge = null;
+/* 退完水留下的痕跡（v1.330.2）：dlgPuds 積水（每一灘 {x, z, r, r0 原本多大, a 濃淡, t 乾了幾秒, life 幾秒乾完, j 輪廓}），
+   dlgDamp 草地濕幾成，dlgDampT 水完全消失之後過了幾秒（−1＝沒在乾）。deluge 收掉之後還在，所以不掛在 deluge 上 */
+const dlgPuds = [];
+let dlgDamp = 0, dlgDampT = -1;
 const dlgEdge = () => debrisR + ENG.GROUND_PAD;    // 島的半寬（草地島是方的，見 engine 的 setGroundSize）
 /* 前緣在橫的 p 那一點推到哪（v1.330.0 前緣參差不齊，跟畫出來的同一份） */
 const dlgFront = p => deluge.F + ENG.dlgFrontN(deluge.S, p, deluge.t);
@@ -18342,11 +18357,13 @@ const dlgHit = (x, z) => x * deluge.dx + z * deluge.dz <= dlgFront(z * deluge.dx
 const dlgWet = y => (y || 0) < deluge.L + 0.5;
 const dlgOff = o => Math.max(Math.abs(o.x), Math.abs(o.z)) > deluge.E;   // 沖出島外了（底下沒有水接著）
 const dlgMen = () => deluge ? deluge.men : EMPTY;
-/* 畫面那邊要的那一份（見 engine 的 putDeluge）。外緣蓋過島邊一點，水才不會跟草皮的邊緣切齊 */
-const _dlgO = { dx: 0, dz: 0, F: 0, L: 0, H: 0, CR: 0, S: null, O: 0, t: 0 };
+/* 畫面那邊要的那一份（見 engine 的 putDeluge）。外緣蓋過島邊一點，水才不會跟草皮的邊緣切齊。
+   H 給的是現在的水深（v1.330.2，湧浪照它給幅度）：淹著的時候就是 D.H；退到剩一格深還照 D.H 的話，浪谷低過草皮，
+   一塊塊草地從水裡露出來、還跟著浪滑 */
+const _dlgO = { dx: 0, dz: 0, F: 0, L: 0, H: 0, CR: 0, S: null, O: 0, t: 0, op: 1 };
 function dlgDraw() {
   const o = _dlgO, D = deluge;
-  o.dx = D.dx; o.dz = D.dz; o.F = D.F; o.L = D.L; o.H = D.H; o.CR = D.CR; o.S = D.S; o.O = D.E + 0.4; o.t = D.t;
+  o.dx = D.dx; o.dz = D.dz; o.F = D.F; o.L = D.L; o.H = Math.min(D.H, D.L); o.CR = D.CR; o.S = D.S; o.O = D.E + 0.4; o.t = D.t; o.op = D.op;
   return o;
 }
 /* 按鈕那一下。淹著的時候再按不算（按鈕也灰掉，見 game-ui.js 的 hudTick） */
@@ -18370,7 +18387,7 @@ function castDeluge() {
   for (const c of lm) c.side = (c.p - (pmin + pmax) / 2) / Math.max(1, (pmax - pmin) / 2);
   /* 浪的正面從浪來那一邊的島邊（−E）起跑，DLG_IN 秒推到對面島邊外 B 格（浪頭的斜坡整段離開島） */
   deluge = { t: 0, dx: d[0], dz: d[1], E, H, CR, B, S: ENG.dlgShape(CR, B), v: (2 * (E + 0.4) + B) / DLG_IN,
-             F: -E - 0.4, L: H, C: H + CR, men: [], lm, per: Math.min(DLG_SLAM_PER, DLG_SLAM / Math.max(1, lm.length)), hit: 0, em: 0 };
+             F: -E - 0.4, L: H, C: H + CR, men: [], lm, per: Math.min(DLG_SLAM_PER, DLG_SLAM / Math.max(1, lm.length)), hit: 0, em: 0, op: 1 };
   stopIdleEvent();                   // 村子要被沖光了，那一件先收掉；退完重抽一件（見 dlgEnd）
   ENG.shake(0.8);
   sndDeluge(DLG_IN + DLG_HOLD);
@@ -18378,16 +18395,22 @@ function castDeluge() {
   return true;
 }
 function stepDeluge(dt) {
+  dlgTraces(dt);                     // 退完水留下的痕跡在乾（deluge 收掉之後還在走）
   if (!deluge) return;
   const D = deluge;
   D.t += dt;
   D.F = -D.E - 0.4 + D.v * Math.min(D.t, DLG_IN);
   if (D.t < DLG_IN + DLG_HOLD) D.L = D.H;
   else {
-    const k = Math.min(1, (D.t - DLG_IN - DLG_HOLD) / DLG_OUT);
-    D.L = D.H - (D.H + 0.3) * k * k;                                       // 退到草皮底下（先慢後快）
+    /* 退水先快後慢、退到貼地（v1.330.2，使用者選的；原本先慢後快、退到草皮底下 0.3，最後 0.25 秒一口氣掉 1.5 格）。
+       最後 DLG_FADE_K 成的時間整片水慢慢變透明，露出底下濕的草地與積水——積水在開始淡之前就擺好 */
+    const u = 1 - Math.min(1, (D.t - DLG_IN - DLG_HOLD) / DLG_OUT);
+    D.L = DLG_FLOOR + (D.H - DLG_FLOOR) * u * u;
+    if (dlgDampT >= 0 || dlgDamp < 1) { dlgDamp = 1; dlgDampT = -1; }   // 草地在水底下先濕起來（看不到），水收掉才開始乾
+    if (u < DLG_FADE_K) { if (D.op === 1) dlgPuddles(); D.op = u / DLG_FADE_K; }
   }
   D.C = D.L + D.CR;
+  dlgSoak();
   if (D.t < DLG_IN) {
     ENG.shake(dt * 2.6);             // 浪推進來那幾秒一直在震（震幅每秒衰減到 2%，見 engine 的 updateCamera；這個量撐在 0.6 上下）
     dlgCrest(dt);
@@ -18552,6 +18575,56 @@ function dlgMarks() {
   for (const s of sears) s.t = Math.min(s.t, SEAR_FADE);
   for (const s of scorches) s.t = Math.min(s.t, SEAR_FADE);
   for (const o of bloods) o.t = Math.max(o.t, DIE_HOLD);
+}
+/* 泡到水的積木（v1.330.2，使用者選「地標泡過水的那一截變深」）：浪掃過那一點（同 dlgHit）、而且在那一點的水面以下
+   （浪頭蓋過的那一截也算）就一直是濕的，水退到它底下才開始數 DLG_DRY 秒乾；顏色照淋濕那一套壓深（WET_DARK）。
+   還在燒的照「被水噴到」那一條當場熄（同 wetBlock）。濕的點不著也是淋濕原本的規則（見 igniteBlock）。
+   預覽第一版只看水位 D.L：那從放水那一刻起就是滿的，浪還在島邊地標就先變深了（使用者：「地標建築 水還沒到就先變深色」）。
+   浪推完之後每一點都掃過了，浪頭推出島外（拖在對面島邊的那兩道小浪碰不到島中間的地標），只剩比水位 */
+function dlgSoak() {
+  const D = deluge, all = D.t >= DLG_IN;
+  for (const b of blocks) {
+    if (b.st !== SET) continue;
+    if (all) { if (b.y >= D.L) continue; }
+    else {
+      const q = b.x * D.dx + b.z * D.dz, Fp = dlgFront(b.z * D.dx - b.x * D.dz);
+      if (q > Fp || b.y >= D.L + D.CR || (b.y >= D.L && b.y >= D.L + ENG.dlgCrestH(D.S, D.CR, Fp - q))) continue;
+    }
+    if (b.burn) douse(b);
+    b.wet = DLG_DRY;
+  }
+}
+/* 積水（v1.330.2）：退水最後那一段、整片水開始淡之前擺在水底下——水淡掉就露出來，不是水收掉那一刻才冒出來
+   （預覽第一版是水收掉才擺，使用者：「水體最後消失跟地面殘留銜接有問題」）。
+   集中在地標周圍一圈（鏡頭照著的地方），地標底下不擺（看不到）；輪廓同地面痕跡（markJit）。
+   上一次還沒乾完的換掉（那幾灘已經在這一次的水底下了） */
+function dlgPuddles() {
+  const E = dlgEdge() * 0.85;
+  let R = 0;
+  if (bp) for (const s of bp.slots) R = Math.max(R, Math.abs(s.x), Math.abs(s.z));
+  dlgPuds.length = 0;
+  for (let tries = 0; dlgPuds.length < DLG_PUD && tries < 400; tries++) {
+    const r = rr(DLG_PUD_R[0], DLG_PUD_R[1]), ang = rr(0, Math.PI * 2), d = R + r + rr(1, DLG_PUD_OUT);
+    const x = Math.cos(ang) * d, z = Math.sin(ang) * d;
+    if (Math.max(Math.abs(x), Math.abs(z)) > E || dlgPuds.some(p => Math.hypot(p.x - x, p.z - z) < p.r0 + r + 3)) continue;
+    dlgPuds.push({ x, z, r, r0: r, a: 1, t: 0, life: DLG_DRY * rr(0.6, 1), j: markJit() });
+  }
+}
+/* 退完水之後每一幀（v1.330.2）：水完全消失那一刻起，草地 DLG_DRY 秒乾回來、最後 DLG_DRY_FADE 秒在淡；
+   積水各自 0.6～1 倍 DLG_DRY 秒乾完，一路縮小、最後 DLG_DRY_FADE 秒淡掉。水還在的時候不數（dlgDampT 是 −1） */
+function dlgTraces(dt) {
+  if (dlgDampT < 0) return;
+  dlgDampT += dt;
+  dlgDamp = clamp((DLG_DRY - dlgDampT) / DLG_DRY_FADE, 0, 1);
+  for (let i = dlgPuds.length - 1; i >= 0; i--) {
+    const p = dlgPuds[i];
+    p.t += dt;
+    const left = p.life - p.t;
+    if (left <= 0) { dlgPuds.splice(i, 1); continue; }
+    p.r = p.r0 * (0.35 + 0.65 * left / p.life);
+    p.a = Math.min(1, left / DLG_DRY_FADE);
+  }
+  if (dlgDamp <= 0 && !dlgPuds.length) dlgDampT = -1;
 }
 /* 這一幀浪掃到誰。泡到水的才捲：飛在半空的（被炸飛的小人、天上的飛龍）等落下來泡到水那一幀才算 */
 function dlgSweep() {
@@ -18732,4 +18805,5 @@ function dlgEnd() {
   if (trucks) { trucks.list = trucks.list.filter(m => !m.dlg); if (!trucks.list.length) trucks = null; }
   evArm = 1;
   deluge = null;
+  if (dlgDamp > 0 || dlgPuds.length) dlgDampT = 0;   // 水完全消失：草地與積水從現在開始乾（見 dlgTraces）
 }

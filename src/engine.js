@@ -23,6 +23,7 @@ const ENG = (function () {
   let poolGeo, poolPos, poolFoam, poolUni;
   let dlgMesh = null, dlgGeo, dlgPos, dlgCol, dlgFoam;   // 大洪水（v1.325.0；v1.330.0 換成會起伏的一張網格、自己一份材質，見 putDeluge）
   let markMesh, markGeo, markPos, markCol;
+  let pudMesh, pudGeo, pudPos, pudCol;       // 大洪水退完水留下的積水（v1.330.2），見 putPuddles
   let searMesh, searGeo, searPos, searCol;   // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），見 putSears
   let excFade;                               // 光柱每一格下緣／上緣的濃淡（v1.226，見 putBar）
   let groundHalf = 0;               // 草皮的半邊長（草地島是一塊方的，見 setGroundSize）
@@ -137,6 +138,9 @@ const ENG = (function () {
      48＝人數最大那一檔（60 人）一發炸彈炸死一大半也還夠；再多的那幾具就沒有血泊。 */
   const BLOOD_MAX = 48;
   const MARKV = (MARK_MAX + BLOOD_MAX) * MARK_SEG * (MARK_RING - 1) * 6;
+  /* 大洪水退完水留下的積水（v1.330.2）：同時最多幾灘（規則那邊 DLG_PUD 一樣多），一灘照痕跡那一套切 MARK_SEG 片、PUD_RING 圈 */
+  const PUD_MAX = 20, PUD_RING = 4;
+  const PUDV = PUD_MAX * MARK_SEG * (PUD_RING - 1) * 6;
   /* Excalibur 的燒灼痕（v1.224）：同時最多幾道、一道最多切幾刀（沿著長度）、橫的方向從左緣到右緣幾個點。
      一刀跟下一刀之間每一格鋪兩個三角形，所以頂點上限＝道數 × 刀數 × (點數−1) × 6。 */
   const SEAR_MAX = 3, SEAR_SEC = 100;
@@ -1054,10 +1058,12 @@ if (vAo.x + vAo.y > 0.5) {
      浪的正面那塊直立平板的泡沫又是一格一格的花紋（使用者：「水也假假的」）。
      自己一份：九成不透明的深色海水，顏色照頂點給（浪頭透光淺一點、前緣白沫、後面一條條泡沫紋，見 putDeluge）；
      面一樣是 flatShading（法線照螢幕微分算，不必傳），網格本身會起伏，所以一片一片的面就是浪。
-     **白沫自己發一點光**：浪的正面背著太陽時，光照下去只剩一片灰牆（預覽第一輪截圖），泡沫背光也是白的。 */
+     **白沫自己發一點光**：浪的正面背著太陽時，光照下去只剩一片灰牆（預覽第一輪截圖），泡沫背光也是白的。
+     不透明度 DLG_OP 是滿的那一份，退水最後那一段照規則給的 o.op 淡掉（v1.330.2，見 putDeluge）。 */
+  const DLG_OP = 0.9;
   function delugeMaterial() {
     const m = new T.MeshPhongMaterial({ vertexColors: true, flatShading: true, shininess: 60, specular: 0x5f7f8c,
-      emissive: 0x06151b, transparent: true, opacity: 0.9, side: T.DoubleSide });
+      emissive: 0x06151b, transparent: true, opacity: DLG_OP, side: T.DoubleSide });
     m.onBeforeCompile = sh => {
       const cut = injector();
       sh.vertexShader = cut(sh.vertexShader, '#include <common>', '\nattribute float aFoam;\nvarying float vFoamE;');
@@ -1498,6 +1504,25 @@ if (vAo.x + vAo.y > 0.5) {
        地上的東西一律在最底下，先畫它們才是由遠到近。 */
     markMesh.renderOrder = -2;
     scene.add(markMesh);
+    /* 大洪水退完水留下的積水（v1.330.2）：同上一套（每幀重組、逐頂點 RGBA、Lambert、排在透明物件最前面）。
+       自己一顆，不擠進上面那一池：痕跡那一池滿了擠掉最舊的，退完水小人一挖料，土痕就會把積水擠掉 */
+    pudGeo = new T.BufferGeometry();
+    pudPos = new Float32Array(PUDV * 3);
+    pudCol = new Float32Array(PUDV * 4);
+    const pudNrm = new Float32Array(PUDV * 3);
+    for (let i = 0; i < PUDV; i++) pudNrm[i * 3 + 1] = 1;
+    const pudPosAttr = new T.BufferAttribute(pudPos, 3), pudColAttr = new T.BufferAttribute(pudCol, 4);
+    pudPosAttr.setUsage(T.DynamicDrawUsage);
+    pudColAttr.setUsage(T.DynamicDrawUsage);
+    pudGeo.setAttribute('position', pudPosAttr);
+    pudGeo.setAttribute('color', pudColAttr);
+    pudGeo.setAttribute('normal', new T.BufferAttribute(pudNrm, 3));
+    pudGeo.setDrawRange(0, 0);
+    pudMesh = new T.Mesh(pudGeo, new T.MeshLambertMaterial({ vertexColors: true, transparent: true, depthWrite: false }));
+    pudMesh.receiveShadow = true;
+    pudMesh.frustumCulled = false; pudMesh.visible = false;
+    pudMesh.renderOrder = -2;
+    scene.add(pudMesh);
     /* Excalibur 的燒灼痕（v1.224）：跟上面同一套（每幀重組、逐頂點 RGBA、一顆網格一個 draw call），
        差兩件：**不吃光**（MeshBasic）——中線那一條暗紅是自己在發光，照 Lambert 算的話在建築的陰影裡
        會變成暗褐色；黑的部分吃不吃光看起來都一樣黑。**兩面都畫**：長帶的三角形是一格一格拼的，
@@ -2816,7 +2841,8 @@ if (vAo.x + vAo.y > 0.5) {
   const dlgLip = new Float32Array(DLG_NK * 2);
   const c01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
   /* 大洪水（v1.325.0，見 game-tools.js〈大洪水〉）。o ＝ {dx, dz 浪往哪個方向推（四個軸向之一）, F 浪的正面推到哪（沿著那個方向量）,
-     L 水面高, H 水位（湧浪照它給幅度）, CR 浪頭高出水面多少, S 浪形（dlgShape）, O 島的半寬（蓋過島邊一點）, t 演到第幾秒}，null＝沒在淹。
+     L 水面高, H 水深（湧浪照它給幅度；v1.330.2 起規則那邊給現在的水深，退水時浪跟著變小）, CR 浪頭高出水面多少, S 浪形（dlgShape）,
+     O 島的半寬（蓋過島邊一點）, t 演到第幾秒, op 不透明度的倍率（退水最後那一段淡掉，見 game-tools.js 的 stepDeluge）}，null＝沒在淹。
      v1.325.0 是 8 塊平板：一片半透明直直立著的浪的正面、一片平的水面（使用者：「沒有像海嘯來襲沖走的感覺 水也假假的」）。
      v1.330.0 換成一張會起伏的網格，幾何先在「浪的座標」裡組（q 沿著浪前進、p 橫的），寫進去時轉回世界座標：
        列 0           浪來那一邊的島邊，往下到草皮底
@@ -2890,9 +2916,53 @@ if (vAo.x + vAo.y > 0.5) {
       Fm[b] = Fm[a] * 0.5;
     }
     dlgMesh.visible = true;
+    dlgMesh.material.opacity = DLG_OP * o.op;
     dlgGeo.attributes.position.needsUpdate = true;
     dlgGeo.attributes.color.needsUpdate = true;
     dlgGeo.attributes.aFoam.needsUpdate = true;
+  }
+  /* 大洪水退完水留下的積水（v1.330.2，使用者：「水退後 水完全消失後 地面瞬間一點痕跡都沒有」）。
+     list 每一項 {x, z, r 半徑, a 濃淡 0–1, j 每一片的半徑倍率（生的時候抽好，同痕跡）}；半徑一直在縮，所以每幀整份重鋪（最多 PUD_MAX 灘）。
+     顏色：中間深色的水、往外淺一點，最外圈收進草裡（alpha 0） */
+  const PUD_COL = [{ r: 0, c: 0x1d5566, a: 0.88 }, { r: 0.55, c: 0x22606f, a: 0.86 }, { r: 0.82, c: 0x3d8494, a: 0.7 }, { r: 1, c: 0x5f8f6a, a: 0 }]
+    .map(o => { const c = new T.Color(o.c); return { r: o.r, a: o.a, cr: c.r, cg: c.g, cb: c.b }; });
+  const PUD_Y = 0.045;                             // 疊在地面痕跡（MARK_Y 0.04）上面
+  function putPuddles(list) {
+    const n = Math.min(list.length, PUD_MAX);
+    if (!n && !pudMesh.visible) return;
+    const P = pudPos, C = pudCol, lim = groundHalf - 0.4;
+    let v = 0;
+    const put = (p, R, ang, jj) => {
+      const rad = p.r * R.r * jj;
+      P[v * 3] = Math.max(-lim, Math.min(lim, p.x + Math.cos(ang) * rad));
+      P[v * 3 + 1] = PUD_Y;
+      P[v * 3 + 2] = Math.max(-lim, Math.min(lim, p.z + Math.sin(ang) * rad));
+      C[v * 4] = R.cr; C[v * 4 + 1] = R.cg; C[v * 4 + 2] = R.cb; C[v * 4 + 3] = R.a * p.a;
+      v++;
+    };
+    for (let i = 0; i < n; i++) {
+      const p = list[i];
+      for (let s = 0; s < MARK_SEG; s++) {
+        const a0 = s / MARK_SEG * Math.PI * 2, a1 = (s + 1) / MARK_SEG * Math.PI * 2, j0 = p.j[s], j1 = p.j[(s + 1) % MARK_SEG];
+        for (let k = 0; k + 1 < PUD_RING; k++) {
+          const A = PUD_COL[k], B = PUD_COL[k + 1];
+          put(p, A, a0, j0); put(p, A, a1, j1); put(p, B, a1, j1);   // 法線朝上的那個順序（同 putMarks）
+          put(p, A, a0, j0); put(p, B, a1, j1); put(p, B, a0, j0);
+        }
+      }
+    }
+    pudMesh.visible = v > 0;
+    pudGeo.setDrawRange(0, v);
+    pudGeo.attributes.position.needsUpdate = true;
+    pudGeo.attributes.color.needsUpdate = true;
+  }
+  /* 草地濕了幾成（v1.330.2）：草皮的顏色乘一個偏冷的暗色，k＝0 就是原本的白（貼圖原色）。沒變就不動 */
+  const WET_GROUND = [0.6, 0.66, 0.72];
+  let groundWet = 0;
+  function setGroundWet(k) {
+    if (k === groundWet) return;
+    groundWet = k;
+    ground.material.color.setRGB(1 + (WET_GROUND[0] - 1) * k, 1 + (WET_GROUND[1] - 1) * k, 1 + (WET_GROUND[2] - 1) * k);
   }
   /* 整組濃度的旋鈕（v1.88.1，使用者回饋「都淡淡的就好，太深原本的煙都看不清楚了」）。
      表裡的 a 維持原來的相對比例（中心深、外圈淡），統一乘這個數字調濃淡——
@@ -14568,6 +14638,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     putTrees, putDust, putTrebs, putRocks, putCannons, putShells, putDozers, putTrucks, putPools,
     putDeluge, get delugeOn() { return !!dlgMesh && dlgMesh.visible; },   /* 大洪水（v1.325.0）：測試看這一顆有沒有在畫 */
     dlgShape, dlgFrontN, dlgCrestH,            /* 大洪水的浪形（v1.330.0）：規則那邊判誰被掃到、捲在浪頭裡多高、水花從哪噴，跟畫出來的同一份 */
+    putPuddles, setGroundWet,                  /* 大洪水退完水留下的積水、濕的草地（v1.330.2） */
     putBalls, putBncs, putTornados, twRad, setHammer, hideHammer, hammerVisible, hammerPos,
     putBombs, putMeteors, putNukes, setRings, hideRings, putFire, putFlash,
     putMeats, MAXMEAT, MEAT_R,                 /* 肉（v1.261.0）：規則那邊的上限與站位直接讀這兩個 */
@@ -14701,7 +14772,7 @@ void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV))); gl_FragCol
     },
     /* 內部物件的門：測試從這裡讀真的畫出去的東西（頂點、材質、尺寸），
        比讀規則那邊的狀態嚴格。ground 與 markMesh 是為了驗「痕跡有沒有畫到草皮外面」。 */
-    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, hayMesh: FOOD.hay.mesh, bunchMesh: FOOD.banana.mesh, fadeMesh, humMesh, ground, markMesh, poolMesh, dlgMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, amMesh, amGlowMesh, amPuffMesh, amSoftMesh, diaMesh, coinMesh, draMesh, gryMesh,
+    get three() { return { renderer, scene, camera, blockMesh, workerMesh, beastMesh, torchMesh, meatMesh, hayMesh: FOOD.hay.mesh, bunchMesh: FOOD.banana.mesh, fadeMesh, humMesh, ground, markMesh, poolMesh, dlgMesh, pudMesh, bncMesh, emoMesh, giftMesh, dustMesh, searMesh, gateMesh, weapMesh, swordMesh, ufoMesh, ufoLitMesh, ufoBeamMesh, rockMesh, canMesh, shellMesh, trebMesh, trebFade, canFade, holeCore, holeHalos, holeDisk, holeBooms, flashShells, sabMesh, sparkMesh, excMeshes, levMesh, megMesh, megLineMesh, zenMesh, zenZapCore, zenZapGlow, zenTrailCore, zenTrailGlow, gjMesh, gjFx, purpFx, gjZapCore, gjZapGlow, frMesh, frBarCore, frBarGlow, frBarFill, erMesh, erTrailMesh, erSheetMesh, erGlintMesh, amMesh, amGlowMesh, amPuffMesh, amSoftMesh, diaMesh, coinMesh, draMesh, gryMesh,
                             stormLay, stormBall, stormLamps, boomLamps, glowLamps, gjInfMesh, hemi, sun, gloomEl, skyNightEl, skyDuskEl,
                             skyStars, skyMw, skyMoon,
                             floodMesh, floodLitMesh, floodBeamMesh, floodLamps, floodFade }; }

@@ -570,6 +570,9 @@ const installClean = page => page.evaluate(() => {
        身上掛著 dlg 的小人會一直漂著、永遠不換人 */
     if (deluge) dlgEnd();
     ENG.putDeluge(null);
+    /* 退完水留下的積水與濕的草地（v1.330.2）：留著會多吃一個 draw call、草地一直是暗的 */
+    dlgPuds.length = 0; dlgDamp = 0; dlgDampT = -1;
+    ENG.putPuddles(dlgPuds); ENG.setGroundWet(0);
     fworks = null; fwSparks = null; fwWait = null;
     clearGlows();                     // 晚上的小光源（v1.296.0）：撞擊、煙火那一下與火的那幾盞
     quake = null;
@@ -38936,7 +38939,9 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      全部是規則型：方向押 Math.random；「誰會被捲走」直接擺好場面呼叫 dlgSweep 驗；整場跑一趟驗的是一定成立的事
      （地標一塊不少、該走的都走了、該回來的都回來了、水那一顆收掉）。見 開發筆記〈大洪水（v1.325.0）〉
      v1.330.0 改成海嘯（前緣參差、捲進浪頭一起沖、水花跟著浪頭、水自己一份材質）：多四條，捲進浪頭那幾條一樣押 Math.random、直接叫那一支。
-     見 開發筆記〈大洪水改成海嘯：浪舌、深色海水、捲進浪頭一起沖（v1.330.0）〉 */
+     v1.330.1 撞上地標濺水珠多兩條、v1.330.2 退完水留下的痕跡多三條，一樣押 Math.random、直接叫那一支。
+     見 開發筆記〈大洪水改成海嘯：浪舌、深色海水、捲進浪頭一起沖（v1.330.0）〉、〈浪撞上地標濺水珠（v1.330.1）〉、
+     〈退完水留下濕地、積水、地標的水線（v1.330.2）〉 */
   SEC: { if (!(await head('大洪水', T_COMMIT))) break SEC;
   await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
   await fillAll(page);
@@ -39111,6 +39116,75 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      dslam.face && dslam.n < dslam.ground && dslam.rule && dslam.hit === 1 && dslam.spN === dslam.spWant, JSON.stringify(dslam));
   ok('撞地標的水珠從牆前面的水面往上、往回濺，照 DLG_SLAM_G 落回原本的高度就收掉；浪推過去每一格都濺過，總數不超過一座地標的額度 DLG_SLAM',
      dslam.drop && dslam.allHit && dslam.under, JSON.stringify(dslam));
+
+  /* ── 退完水留下的痕跡（v1.330.2，使用者：「水退後 水完全消失後 地面瞬間一點痕跡都沒有」，選了三樣都留、10 秒乾、退水先快後慢；
+        看過預覽：「地標建築 水還沒到就先變深色」「水體最後消失跟地面殘留銜接有問題」）。
+        押 Math.random＝0（從 −x 往 +x：沿著浪是 x、橫的 p 是 z），浪的時間自己推、直接叫 dlgSoak／stepDeluge ── */
+  const dtrace = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9;
+    const real = Math.random;
+    let r = {};
+    try {
+      Math.random = () => 0;
+      castDeluge();
+      const D = deluge, set = blocks.filter(b => b.st === SET), dt = 0.05;
+      /* ① 浪剛推到地標中間：前緣後面、那一點水面以下（浪頭蓋過的也算）的才濕；泡在水裡在燒的當場熄 */
+      D.t = 1; D.F = 0;
+      for (const b of set) b.wet = 0;
+      const wetOk = b => b.x <= dlgFront(b.z) && (b.y < D.L || b.y < D.L + ENG.dlgCrestH(D.S, D.CR, dlgFront(b.z) - b.x));
+      const lit = set.find(b => wetOk(b) && b.y < D.L && igniteBlock(b));
+      dlgSoak();
+      r.wetN = set.filter(b => b.wet > 0).length;
+      r.ahead = set.filter(b => b.x > dlgFront(b.z)).length;              // 還沒掃到的（應該都還是乾的）
+      r.above = set.filter(b => b.x <= dlgFront(b.z) && !wetOk(b)).length; // 掃到了但比那一點的水面高
+      r.soak = r.wetN > 0 && r.ahead > 0 && r.above > 0 && set.every(b => (b.wet > 0) === wetOk(b));
+      r.lit = !!lit; r.doused = !!lit && !lit.burn && lit.wet === DLG_DRY;
+      /* ② 退水：先快後慢、退到貼地；最後 DLG_FADE_K 那段整片水在淡，開始淡那一幀積水已經擺好；草地在水底下先濕；湧浪照現在的水深 */
+      for (const b of set) b.wet = 0;
+      dlgPuds.length = 0; dlgDamp = 0; dlgDampT = -1;
+      D.t = DLG_IN + DLG_HOLD; D.op = 1;
+      const Ls = [], ops = [];
+      let pudI = -1, wetMin = 1, swell = true, hold = true;
+      while (deluge) {
+        stepDeluge(dt);
+        if (!deluge) break;
+        const o = dlgDraw();
+        Ls.push(D.L); ops.push(o.op);
+        if (pudI < 0 && dlgPuds.length) pudI = ops.length - 1;
+        wetMin = Math.min(wetMin, dlgDamp); hold = hold && dlgDampT === -1;
+        swell = swell && o.H === Math.min(D.H, D.L);
+      }
+      const n = Ls.length, fadeI = ops.findIndex(o => o < 1);
+      r.n = n; r.first = +(Ls[0] - Ls[5]).toFixed(3); r.last = +(Ls[n - 6] - Ls[n - 1]).toFixed(4);
+      r.floor = +Ls[n - 1].toFixed(3); r.minL = +Math.min(...Ls).toFixed(3);
+      r.floorOk = Math.abs(Ls[n - 1] - DLG_FLOOR) < 0.05 && Math.min(...Ls) >= DLG_FLOOR - 1e-9;
+      r.fadeN = ops.filter(o => o < 1).length; r.fadeWant = Math.round(DLG_FADE_K * DLG_OUT / dt);
+      r.opLast = +ops[n - 1].toFixed(3); r.opDown = ops.every((o, i) => i === 0 || o <= ops[i - 1] + 1e-12);
+      r.pudI = pudI; r.fadeI = fadeI; r.wetMin = wetMin; r.hold = hold; r.swell = swell;
+      r.dryStart = dlgDampT === 0; r.puds = dlgPuds.length;
+      draw();
+      r.shown = ENG.three.pudMesh.visible && ENG.three.ground.material.color.r < 1;
+      /* ③ 水收掉之後：DLG_DRY − DLG_DRY_FADE 秒還是全濕、積水一路縮小；DLG_DRY 秒乾完，積水那一顆收掉、草地回原色 */
+      const p0 = dlgPuds[0], r0 = p0 ? p0.r0 : 0;
+      for (let t = 0; t < DLG_DRY - DLG_DRY_FADE - 0.1; t += dt) stepDeluge(dt);
+      r.wetHold = dlgDamp === 1; r.shrink = !!p0 && p0.r < r0;
+      for (let t = 0; t < DLG_DRY_FADE + 0.3; t += dt) stepDeluge(dt);
+      r.dry = dlgDamp === 0 && dlgPuds.length === 0 && dlgDampT === -1;
+      draw();
+      r.hidden = ENG.three.pudMesh.visible === false && ENG.three.ground.material.color.r === 1;
+    } finally { Math.random = real; }
+    cleanTools();
+    return r;
+  });
+  ok('泡到水的積木才變深：浪掃過、在那一點的水面以下（浪頭蓋過的也算）；還沒掃到的、比水面高的不濕；泡在水裡在燒的當場熄',
+     dtrace.soak && dtrace.lit && dtrace.doused, JSON.stringify(dtrace));
+  ok('退水先快後慢、退到貼地；最後 DLG_FADE_K 那段整片水慢慢變透明，開始淡那一幀積水已經擺好、草地在水底下先濕；湧浪照現在的水深',
+     dtrace.first > dtrace.last && dtrace.floorOk &&
+     Math.abs(dtrace.fadeN - dtrace.fadeWant) <= 1 && dtrace.opLast < 0.1 && dtrace.opDown &&
+     dtrace.pudI >= 0 && dtrace.pudI === dtrace.fadeI && dtrace.wetMin === 1 && dtrace.hold && dtrace.swell &&
+     dtrace.dryStart && dtrace.puds > 0 && dtrace.shown, JSON.stringify(dtrace));
+  ok('水收掉之後草地與積水 DLG_DRY 秒乾回來：最後 DLG_DRY_FADE 秒才在淡、積水一路縮小；乾完積水那一顆收掉、草地回原色',
+     dtrace.wetHold && dtrace.shrink && dtrace.dry && dtrace.hidden, JSON.stringify(dtrace));
 
   /* ── 整場跑一趟：地標一塊不少；小人、牛羊、村子、碎料、箭雨隊、肉、泡泡、地上的痕跡、樹全部沖走；
         退完水小人換新的從林帶走進來、牛羊記成欠帳（補位那一支測試裡關著）、林帶重種從零長回來、水那一顆收掉 ── */

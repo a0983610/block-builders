@@ -562,6 +562,8 @@ function draw() {
   ENG.putTrucks(trucks ? trucks.list : EMPTY);      // 沒車就是空的，那顆網格自己 visible=false
   ENG.putPools(water ? poolList() : EMPTY, water ? water.wave : 0);   // 水窪同理
   ENG.putDeluge(deluge ? dlgDraw() : null);         // 大洪水（v1.325.0；v1.330.0 起材質自己一份，不再跟水窪共用波紋相位）
+  ENG.putPuddles(dlgPuds);                          // 退完水留下的積水與濕的草地（v1.330.2；沒有就 visible=false）
+  ENG.setGroundWet(dlgDamp);
   ENG.putMarks(marks, bloods);                      // 地上的焦黑與坑洞、屍體身下的血泊（v1.240）（沒有就 visible=false）
   ENG.putSears(sears, scorches);                    // Excalibur 的燒灼痕（v1.224）與強爆炸的焦痕（v1.231），同上
   /* 王之財寶（v1.132）：門與兵器是兩份清單——門收掉之後兵器還在飛、還躺在地上慢慢淡，
