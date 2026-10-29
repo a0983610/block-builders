@@ -37662,7 +37662,13 @@ const toScreen = (page, sel) => page.evaluate(sel => {
      fcall.meat === 'hog,shiba' && fcall.hay === 'bulbasaur,cow,hog' && fcall.banana === 'chiikawa', JSON.stringify(fcall));
 
   /* ── 猴子吉祥物：香蕉叫得到來逛的那一隻；天災那一版、這一趟要來砸的不叫；被叫去那一段退場倒數停住；
-        叫去之後被打生氣（m.bad）就放掉；放掉之後倒數照扣 ── */
+        叫去之後被打生氣（m.bad）就放掉；放掉之後倒數照扣。
+        押住骰子（v1.330.2 完整輪之後）：猴子走路時每幀 `Math.random() < B_TRIP_P * dt` 會自己絆一跤，躺著那 0.8～1.4 秒
+        到不了 fun 那一段、倒數不扣——走過去那 20 步絆倒、放掉時還躺著，或放掉之後那 20 步絆倒，扣到的就不是 1 秒。
+        探針同一個場面跑 2000 次紅 79 次（約 4%，全部是絆倒：40 次在放掉之後、39 次是放掉時還躺著），
+        v1.330.0 那一輪就紅在這裡（--seed 832933117，tick 0.45＝第 9 步絆倒）。那不是這一條要守的事，
+        所以走路那兩段 Math.random 給 0.5（同〈巡路能力〉那幾條的押法：永遠不小於 B_TRIP_P × dt），叫香蕉那一下照舊用真的骰子；
+        押住之後 2000 次全部扣滿 1 秒。見 開發筆記〈香蕉叫猴子那一條在賭猴子絆不絆倒（v1.330.2 完整輪之後）〉 ── */
   const fmonk = await page.evaluate(() => {
     cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
     const X = siteR + 30;
@@ -37675,15 +37681,18 @@ const toScreen = (page, sel) => page.evaluate(sel => {
     for (let i = 0; i < MEAT_N + 2; i++) stepMeats(0.001);
     const r = { ape: ape.meat === f, doom: !doom.meat, bad: !bad.meat };
     beasts = [ape];                                                           // 底下只看這一隻（另外兩隻不跟著走）
-    const s0 = ape.stay;
-    for (let i = 0; i < 20; i++) { stepMeats(0.05); stepBeast(ape, 0.05); }
-    r.hold = ape.stay === s0 && ape.meat === f;
-    ape.bad = 1; stepMeats(0.001);
-    r.free = !ape.meat;
-    ape.bad = 0; ape.pause = 0;
-    const s1 = ape.stay;
-    for (let i = 0; i < 20; i++) stepBeast(ape, 0.05);
-    r.tick = +(s1 - ape.stay).toFixed(6);
+    const s0 = ape.stay, real = Math.random;
+    Math.random = () => 0.5;                                                  // 押死：B_TRIP_P × dt 永遠抽不到（不會絆倒）
+    try {
+      for (let i = 0; i < 20; i++) { stepMeats(0.05); stepBeast(ape, 0.05); }
+      r.hold = ape.stay === s0 && ape.meat === f;
+      ape.bad = 1; stepMeats(0.001);
+      r.free = !ape.meat;
+      ape.bad = 0; ape.pause = 0;
+      const s1 = ape.stay;
+      for (let i = 0; i < 20; i++) stepBeast(ape, 0.05);
+      r.tick = +(s1 - ape.stay).toFixed(6);
+    } finally { Math.random = real; }
     cleanTools(); beasts = null;
     return r;
   });
