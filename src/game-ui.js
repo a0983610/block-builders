@@ -218,6 +218,7 @@ function step(dt) {
   stepMeats(dt);                         // 肉（v1.261.0）：掉下來、叫最近的幾隻來吃、吃完收掉
   stepFloods(dt);                        // 燈源（v1.303.0）：燈架一塊一塊砌上去、點亮，架頂被打掉燈頭就掉下來
   stepTorches(dt);                       // 火把（v1.317.0）：一塊一塊砌上去、火冒出來，火把頭被打掉就熄
+  stepTowers(dt);                        // 箭塔（v1.331.0）：抽到的人蓋好之前一直認回來、塔頂的弓箭手射敵人、腳下沒了就摔下來
   stepMeteors(dt);
   stepFw(dt);
   stepFire(dt);
@@ -461,7 +462,9 @@ function draw() {
   const crew = crewList(), c0 = g0 + guns.length;
   /* 被大洪水整隊捲走的兵（v1.325.0）再接在後面：他們是從上面那幾隊搬出來的，人數上限裡本來就有他們的位子 */
   const dmen = dlgMen(), d0 = c0 + crew.length, dn = Math.min(dmen.length, ENG.MAXW - d0);
-  ENG.setWorkerCount(d0 + dn);
+  /* 箭塔頂上的弓箭手（v1.331.0）再接在後面，同一顆網格（引擎的 MAXW 多留了 TOW_MAX 個位子） */
+  const tmen = towerMen(), t0 = d0 + dn, tn = Math.min(tmen.length, ENG.MAXW - t0);
+  ENG.setWorkerCount(t0 + tn);
   /* 從林帶進出場那一段淡入淡出（v1.256.0，見 woodFade）：**畫之前照當下的位置算**。alpha 只是畫法，
      在 step 裡算的話畫出來的是「上一次 step 時站在哪」的濃淡——step 之後才被搬過位置的
      （測試直接把牠搬到場中間、道具直接改位置）就對不上。動物那一份在下面 putBeasts 前面。 */
@@ -471,6 +474,7 @@ function draw() {
   for (let i = 0; i < guns.length; i++) ENG.putWorker(g0 + i, guns[i]);
   for (let i = 0; i < crew.length; i++) ENG.putWorker(c0 + i, crew[i]);
   for (let i = 0; i < dn; i++) ENG.putWorker(d0 + i, dmen[i]);
+  for (let i = 0; i < tn; i++) ENG.putWorker(t0 + i, tmen[i]);
   ENG.commitWorkers();
   ENG.putEmotes(emoList());          // 頭上的表情圖示（v1.122：一片貼圖，不是小人身上的部位；v1.274.0 起猴子聊完也冒）
   /* 天災那幾隻 ＋ 飛在半空的香蕉（v1.138）。Saber（v1.222）也在這份清單裡，

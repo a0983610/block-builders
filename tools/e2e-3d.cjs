@@ -520,6 +520,7 @@ const installClean = page => page.evaluate(() => {
     meats = null; ENG.putMeats([]);                          // 肉（v1.261.0）：吃完才收，沒有動物在吃就一直擺著
     floods = null; ENG.putFloods([]);                        // 燈源（v1.303.0）：燈架的積木在 homes 上（上面 clearHomes 收了），燈頭與聚光燈在這
     torches = null;                                          // 火把（v1.317.0）：同上；火每幀照清單畫（putBeasts 先清），不必另外收
+    towers = null;                                           // 箭塔（v1.331.0）：同上；塔頂的弓箭手接在小人後面畫，下面 setWorkerCount 收回來
     meteors = null; ENG.putMeteors([]);
     nukes = null; ENG.putNukes([]);
     /* 魔法陣與蘑菇雲借去的鏡頭高度（v1.311.0 起用完要還）：同下面的 gateEnd，不還的話下一條量到的
@@ -38940,6 +38941,315 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { cleanTools(); beasts = null; archers = null; arOld = null; musket = null; mkOld = null; });
   }   // ── 〈道具：小人將軍〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 道具：箭塔（v1.331.0） ══════════
+     使用者：「增加新道具／在指定的地方(判斷能蓋的話) 讓小人建出箭塔／然後上面生成一隻弓箭小人保護村莊(發動攻擊判斷同小人將軍)」；
+     問過、看過預覽定的：點下去就抽 4 人去蓋、壞了就沒了、單發連射比箭雨準（3 成、1.1 秒）、最多 4 座、木造哨塔、閒晃事件壓到照拆。
+     全部是規則型：直接叫 useTool／placeTower／stepTowers／updWorker／towerMan，要抽骰子的押住，量完把全域還回去。見 開發筆記〈道具：箭塔〉 */
+  SEC: { if (!(await head('道具：箭塔', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await fillAll(page);
+
+  /* ── 道具表：接在 DETROIT SMASH 後面、歸「軍隊器械」、點空地也算數；說明的人數／射程／座數照常數；射程同將軍叫箭雨那一把尺；
+        小人上限多留了塔頂那幾位（同〈加農砲〉容量那條的算法，再加 TOW_MAX） ── */
+  const wtab = await page.evaluate(() => {
+    const i = TOOLS.findIndex(t => t.id === 'tower'), t = TOOLS[i], p = TOOLS[i - 1];
+    const people = Math.max(...WK_OPTS) + 2 * AR_N + 2 * MK_N + 2 * 2 * TREB_MAX + 2 * 2 * CAN_MAX + TOW_MAX;
+    return { prev: p && p.id, cat: t.cat, icon: t.k, ground: !!GROUND_TOOL.tower, step: t.lock.need - p.lock.need, LOCK_STEP,
+             tip: t.tip.indexOf('抽 ' + TOW_CREW + ' 個') >= 0 && t.tip.indexOf(TOW_RANGE + ' 格') >= 0 && t.tip.indexOf('最多 ' + TOW_MAX + ' 座') >= 0,
+             range: TOW_RANGE === GEN_ARMY.arrow.hi, maxw: ENG.MAXW, fadeW: ENG.FADE_W, people };
+  });
+  ok('道具表：接在 DETROIT SMASH 後面、歸「軍隊器械」、點空地也算數；圖示 🏰；說明的人數、射程、座數照 TOW_CREW／TOW_RANGE／TOW_MAX；' +
+     '門檻多一階；射程＝將軍叫箭雨的射程；小人上限裝得下塔頂的弓箭手',
+     wtab.prev === 'allmight' && wtab.cat === 'army' && wtab.icon === '🏰' && wtab.ground && wtab.tip && wtab.step === wtab.LOCK_STEP &&
+     wtab.range && wtab.maxw >= wtab.people && wtab.fadeW >= wtab.maxw,
+     JSON.stringify(wtab));
+
+  /* ── 蓋得下才蓋：點在工地外的空地就開工（homes.list 多一筆 tower、homeCat 9、木造哨塔 64 格、格子表對得上、還沒蓋）；
+        點在工地裡、島邊外、壓到別座塔上就跳提示、不蓋，也不挪到旁邊 ── */
+  const wplace = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const t0 = tool, keepToast = toast, said = [];
+    toast = (a) => said.push(a);
+    const click = (x, z) => useTool({ kind: 'ground', point: { x, y: 0, z }, dir: { x: 0, y: -1, z: 0 } });
+    let r;
+    try {
+      tool = 'tower';
+      const X = siteR + 25;
+      click(X, 0);
+      const t = towers && towers[0], h = t && t.h, hi = h ? homes.list.indexOf(h) : -1;
+      r = { one: !!t && towers.length === 1, at: !!t && t.x === X && t.z === 0,
+            entry: hi >= 0 && h.tower === 1 && homeCat(h) === 9 && !h.done && h.left === h.slots.length,
+            slots: h ? h.slots.length : 0,
+            map: !!h && h.slots.every((s, k) => h.at.get(s.i + ':' + s.gy + ':' + s.k) === k),
+            feet: !!h && TOW_FOOT.every(([a, b]) => h.at.get(a + ':' + TOW_H + ':' + b) !== undefined) };
+      click(0, 0); click(X + 1, 1); click(debrisR - 1, 0);
+      r.after = towers.length; r.said = said.length;
+    } finally { tool = t0; toast = keepToast; }
+    cleanTools();
+    return r;
+  });
+  ok('蓋得下才蓋：點在工地外的空地就在那一點開工（homes.list 多一筆 tower、homeCat 9、64 格、格子表對得上）；' +
+     '點在工地裡、壓到別座塔、太靠島邊都跳提示不蓋（也不挪到旁邊）',
+     wplace.one && wplace.at && wplace.entry && wplace.slots === 64 && wplace.map && wplace.feet && wplace.after === 1 && wplace.said === 3,
+     JSON.stringify(wplace));
+
+  /* ── 抽人：開工就抽 TOW_CREW 個離塔最近的（工程師不抽），每個人的 hm 都指著塔；被叫走（stopHomes 放掉、事件重新派人）下一幀就認回來；
+        完工慶祝中抽到的直接散場（不然走不到 updHome），沒抽到的照樣在慶祝 ── */
+  const wcrew = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9; beasts = null;
+    const keepPhase = phase, keep = workers.map(w => [w.eng, w.mage, w.mus]), real = Math.random;
+    let r;
+    try {
+      Math.random = () => 0.999;                                  // 不絆倒（tripWalk）
+      phase = 'build';
+      /* 魔法師隔空拋、肌肉小人喘完才開下一趟（updHome 那兩條不設 hst），這一條押成一般人 */
+      workers.forEach((w, i) => { w.eng = i === 0 ? 1 : 0; w.mage = 0; w.mus = 0; w.x = siteR + 10 + i * 3; w.z = 0; w.air = 0; w.fall = 0; w.burn = 0; w.flee = 0; });
+      workers[0].x = siteR + 26;                                   // 工程師站得最近也不抽
+      const t = placeTower({ x: siteR + 25, z: 0 }), hi = homes.list.indexOf(t.h);
+      const near = workers.filter(w => !w.eng).sort((a, b) => Math.hypot(a.x - t.x, a.z - t.z) - Math.hypot(b.x - t.x, b.z - t.z)).slice(0, TOW_CREW);
+      r = { n: t.crew.length, onIt: t.crew.every(w => w.hm === hi), nearest: near.every(w => t.crew.indexOf(w) >= 0), eng: t.crew.indexOf(workers[0]) < 0 };
+      /* 施工中抽到的人走蓋房子那條路：叫一次 updWorker，他開一趟料（grab／dig），沒抽到的照常上工 */
+      t.crew.forEach(w => updWorker(w, workers.indexOf(w), 0.01));
+      r.trip = t.crew.map(w => w.hst).join();
+      const other = workers.find(w => t.crew.indexOf(w) < 0 && !w.eng);
+      updWorker(other, workers.indexOf(other), 0.01);
+      r.other = other.hm < 0 && other.hst === '';
+      /* 被叫走：一個被別的事件派走、其餘被 stopHomes 放掉 */
+      t.crew[0].hm = -1;
+      stopHomes();
+      r.lost = t.crew.filter(w => w.hm === hi).length;
+      stepTowers(0.01);
+      r.back = t.crew.filter(w => w.hm === hi).length;
+      /* 完工慶祝中：全場都在跳（cheer 0），抽到的四個散場，其餘照跳 */
+      cleanTools(); beasts = null;
+      phase = 'done';
+      workers.forEach(w => { w.cheer = 0; });
+      const u = placeTower({ x: -(siteR + 25), z: 0 });
+      r.cheer = { crew: u.crew.every(w => !cheerOn(w)), rest: workers.filter(w => u.crew.indexOf(w) < 0).every(w => cheerOn(w)) };
+    } finally { Math.random = real; phase = keepPhase; workers.forEach((w, i) => { [w.eng, w.mage, w.mus] = keep[i]; }); }
+    cleanTools();
+    return r;
+  });
+  ok('抽人：開工就抽 TOW_CREW 個離塔最近的（工程師不抽）、hm 都指著塔；施工中他們走蓋房子那條路（開一趟料），沒抽到的照常；' +
+     '被 stopHomes 放掉、被別的事件叫走，下一幀認回來；完工慶祝中抽到的直接散場、其餘照跳',
+     wcrew.n === 4 && wcrew.onIt && wcrew.nearest && wcrew.eng && /^(grab|dig)(,(grab|dig)){3}$/.test(wcrew.trip) && wcrew.other &&
+     wcrew.lost === 0 && wcrew.back === 4 && wcrew.cheer.crew && wcrew.cheer.rest,
+     JSON.stringify(wcrew));
+
+  /* ── 蓋好：最後一塊砌上去（h.done）那一幀，蓋的人放回去（hm −1）、平台中間生出一位弓箭手（TOW_H 那一層的頂面、從 0 長到 DOOM_SC），
+        接在小人那一顆網格後面畫；蓋好之後缺一塊沒人來修（九類派工、城內補洞都不挑它，事件黏著不數它），換一件事整份清單解體時它留著 ── */
+  const wup = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const t = placeTower({ x: siteR + 25, z: 0 }), h = t.h, crew = t.crew.slice();
+    const f = { h, topB: null };
+    for (let k = 0; k < h.slots.length; k++) if (!h.slots[k].filled) floodLay(f, k);
+    const hi = homes.list.indexOf(h);
+    stepTowers(1e-6);
+    const m = t.man;
+    const r = { done: h.done, man: !!m, at: !!m && m.x === t.x && m.z === t.z && Math.abs(m.y - (TOW_H + ENG.BS)) < 1e-9,
+                freed: crew.every(w => w.hm === -1) && t.crew.length === 0, s0: m && m.scale, bow: m && m.bow };
+    stepTowers(TOW_POP * 0.5); r.half = +(m.scale / DOOM_SC).toFixed(3);
+    stepTowers(TOW_POP); r.full = m.scale === DOOM_SC;
+    draw();
+    r.drawn = ENG.three.workerMesh.count / ENG.WPARTS === workers.length + 1;
+    breakBlock(blocks.find(q => q.hh === hi && q.st === SET && h.slots[q.hk].gy === 1), 0, 1, 0);
+    r.left = h.left;
+    r.cat = [0, 1, 2, 3, 4, 5, 6, 7, 8].every(c => pickUnfinished(t.x, t.z, new Set(), c) !== hi);   // 9 是它自己那一類，沒有人照它去找
+    r.inside = pickInside(t.x, t.z, new Set(), 1e9) !== hi;
+    r.ev = IDLE_EVENTS.every(e => evBlocks(e) === 0);
+    for (let i = 0; i < 20; i++) stepTowers(0.05);
+    r.nobody = workers.every(w => w.hm !== hi);
+    const keep = [evLast, evPeak], real = Math.random;
+    evLast = IDLE_EVENTS[0];
+    Math.random = () => 0.999;
+    let e;
+    try { e = rollIdleEvent(); } finally { Math.random = real; evLast = keep[0]; evPeak = keep[1]; }
+    r.rolled = e !== IDLE_EVENTS[0];
+    r.stay = homes.list.indexOf(h) >= 0 && !t.down;
+    cleanTools(); draw();
+    return r;
+  });
+  ok('蓋好：最後一塊砌上去那一幀蓋的人放回去、平台中間生出一位拿弓的弓箭手，TOW_POP 秒從 0 長到 DOOM_SC；接在小人那一顆網格後面畫',
+     wup.done && wup.man && wup.at && wup.freed && wup.s0 < 1e-4 && wup.bow === 1 && wup.half === 0.5 && wup.full && wup.drawn,
+     JSON.stringify(wup));
+  ok('蓋好之後沒人修：缺一塊時九類派工與城內補洞都不挑它、事件黏著不數它、也沒人被叫回來；換一件事整份清單解體時它留著',
+     wup.left === 1 && wup.cat && wup.inside && wup.ev && wup.nobody && wup.rolled && wup.stay, JSON.stringify(wup));
+
+  /* ── 射：小人將軍會打的（genFoe）、離塔 TOW_RANGE 以內的才射；舉弓 AR_LIFT、拉一次弓 AR_DRAW 放第一支，之後 TOW_GAP 秒一支；
+        箭從弓的位置（塔頂）出手；落點散開押 Math.random：0 正中瞄的那一點、0.999 偏開箭雨散開半徑的 TOW_SPRAY 倍；
+        射程外、不算敵人的（來逛的吉祥物）不射，弓放下來；貼著塔腳（射出去會砸到自己的欄杆）不放。
+        塔蓋在工地外緣、敵人都擺在塔往地標那一側（genFoe 只認村子 arenaR 裡的天災，擺到塔外側可能出了村子） ── */
+  const wshoot = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const real = Math.random, keepBow = sndBow;
+    sndBow = () => {};
+    const r = { GAP: TOW_GAP };
+    try {
+      const t = placeTower({ x: siteR + 12, z: 0 }), h = t.h;
+      for (let k = 0; k < h.slots.length; k++) if (!h.slots[k].filled) floodLay({ h, topB: null }, k);
+      stepTowers(1e-6); stepTowers(TOW_POP + 1e-6);
+      const m = t.man;
+      const foe = (o) => Object.assign({ kind: 'giant', fun: 0, st: 'come', y: 0, sc: GIA_SC, hits: 0, dead: 0, a: 0 }, o);
+      const shotsAt = (f, secs) => {
+        beasts = [f]; arrows = null; t.ct = TOW_GAP - AR_DRAW; t.fo = null; m.bowUp = 0;
+        const times = [];
+        let n = 0;
+        for (let s = 0; s < secs - 1e-9; s += 0.01) {
+          stepTowers(0.01);
+          const k = arrows ? arrows.length : 0;
+          if (k > n) { times.push(+(s + 0.01).toFixed(2)); n = k; }
+        }
+        return times;
+      };
+      /* 射程內的巨人：押 0 → 正中 */
+      Math.random = () => 0;
+      const f = foe({ x: t.x - 30, z: 0 });
+      r.arena = [30, TOW_RANGE + 1].every(D => Math.abs(t.x - D) < arenaR) && t.x + 2 < arenaR;
+      const tm = shotsAt(f, 4);
+      const a = arrows[0], P = bowTip(m);
+      r.times = tm;
+      r.first = tm[0]; r.firstWant = +(AR_LIFT + AR_DRAW).toFixed(2);
+      r.gap = tm.length > 2 ? +(tm[2] - tm[1]).toFixed(2) : -1;
+      r.face = Math.abs(((m.a - Math.atan2(f.x - m.x, f.z - m.z)) + Math.PI * 3) % (Math.PI * 2) - Math.PI) < 0.05;
+      r.from = Math.hypot(a.x - P.x, a.z - P.z) < 1.5 && a.y > TOW_H + 1;
+      /* 那一支照拋物線飛（不算撞）落到瞄的那一點的高度時在哪 */
+      const land = (q, ty) => {
+        let x = q.x, y = q.y, z = q.z, vx = q.vx, vy = q.vy, vz = q.vz;
+        for (let i = 0; i < 4000; i++) { const dt = 0.001; vy -= GRAV * dt; x += vx * dt; y += vy * dt; z += vz * dt; if (vy < 0 && y <= ty) break; }
+        return { x, z };
+      };
+      const L0 = land(arrows[0], genTy(f));
+      r.dead0 = +Math.hypot(L0.x - f.x, L0.z - f.z).toFixed(3);
+      Math.random = () => 0.999;
+      shotsAt(f, AR_LIFT + AR_DRAW + 0.05);
+      const P1 = { x: arrows[0].x, z: arrows[0].z }, L1 = land(arrows[0], genTy(f));
+      const far = Math.hypot(f.x - P1.x, f.z - P1.z);
+      r.off = +Math.hypot(L1.x - f.x, L1.z - f.z).toFixed(2);
+      r.offWant = +(Math.sqrt(0.999) * (AR_SPRAY + AR_SPRAY_D * far) * TOW_SPRAY).toFixed(2);
+      /* 射程外、不算敵人的、貼著塔腳的 */
+      r.out = shotsAt(foe({ x: t.x - TOW_RANGE - 1, z: 0 }), 3).length;
+      r.in = shotsAt(foe({ x: t.x - TOW_RANGE + 1, z: 0 }), 3).length;
+      beasts = [foe({ kind: 'saber', fun: 1, st: 'fun', x: t.x - 20, z: 0, sc: 1 })]; arrows = null; m.bowUp = 1;   // 舉著弓的時候進來的是來逛的
+      for (let s = 0; s < 3; s += 0.01) stepTowers(0.01);
+      r.mascot = arrows ? arrows.length : 0;
+      r.down = +m.bowUp.toFixed(3);
+      r.foot = shotsAt(foe({ x: t.x + 1.5, z: 0.5 }), 3).length;
+      r.held = t.ct === TOW_GAP && m.draw === 1;
+    } finally { Math.random = real; sndBow = keepBow; }
+    cleanTools(); beasts = null; arrows = null;
+    return r;
+  });
+  ok('射：舉弓＋拉一次弓放第一支、之後 TOW_GAP 秒一支；轉向敵人、箭從塔頂那把弓出手；押 0 正中瞄的那一點、押 0.999 偏開箭雨散開半徑的 TOW_SPRAY 倍',
+     wshoot.arena && Math.abs(wshoot.first - wshoot.firstWant) < 0.025 && Math.abs(wshoot.gap - wshoot.GAP) < 0.015 && wshoot.face && wshoot.from &&
+     wshoot.dead0 < 0.1 && Math.abs(wshoot.off - wshoot.offWant) < 0.1,
+     JSON.stringify(wshoot));
+  ok('射程外（TOW_RANGE＋1）不射、射程內（TOW_RANGE−1）射；不算敵人的（來逛的 Saber）不射、弓放下來；貼著塔腳射出去會砸到自己的欄杆就拉滿等著不放',
+     wshoot.out === 0 && wshoot.in > 0 && wshoot.mascot === 0 && wshoot.down < 0.01 && wshoot.foot === 0 && wshoot.held,
+     JSON.stringify(wshoot));
+
+  /* ── 瞄前面一點：敵人等速走，箭落到牠的高度那一刻牠走到哪，落點就在哪（同將軍的 genLead）；不瞄前面的話差一大截 ── */
+  const wlead = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const real = Math.random, keepBow = sndBow;
+    sndBow = () => {};
+    const r = {};
+    try {
+      Math.random = () => 0;
+      const t = placeTower({ x: siteR + 12, z: 0 }), h = t.h;
+      for (let k = 0; k < h.slots.length; k++) if (!h.slots[k].filled) floodLay({ h, topB: null }, k);
+      stepTowers(1e-6); stepTowers(TOW_POP + 1e-6);
+      const V = 3, f = { kind: 'giant', fun: 0, st: 'come', x: t.x - 35, y: 0, z: -15, sc: GIA_SC, hits: 0, dead: 0, a: 0 };   // 往地標那一側（村子裡）
+      beasts = [f]; arrows = null;
+      const shots = [];
+      let n = 0, s = 0;
+      while (shots.length < 3 && s < 10) {
+        f.z += V * 0.01; s += 0.01;
+        stepTowers(0.01);
+        if (arrows && arrows.length > n) { const q = arrows[arrows.length - 1]; shots.push({ s, x: q.x, y: q.y, z: q.z, vx: q.vx, vy: q.vy, vz: q.vz }); n = arrows.length; }
+      }
+      const q = shots[2], ty = genTy(f);
+      let x = q.x, y = q.y, z = q.z, vy = q.vy, T = 0;
+      for (let i = 0; i < 5000; i++) { const dt = 0.001; vy -= GRAV * dt; x += q.vx * dt; y += vy * dt; z += q.vz * dt; T += dt; if (vy < 0 && y <= ty) break; }
+      const fz = f.z + V * T - V * (s - q.s);                  // 那一支離手之後牠又走了多久
+      r.T = +T.toFixed(2); r.miss = +Math.hypot(x - f.x, z - fz).toFixed(2); r.noLead = +(V * T).toFixed(2);
+    } finally { Math.random = real; sndBow = keepBow; }
+    cleanTools(); beasts = null; arrows = null;
+    return r;
+  });
+  ok('瞄前面一點：敵人等速走，第三支箭落到牠的高度那一刻，落點離牠不到 0.5 格（不瞄前面的話會差「速度 × 飛行時間」那麼多）',
+     wlead.miss < 0.5 && wlead.noLead > 2, JSON.stringify(wlead));
+
+  /* ── 壞了就沒了：腳下那四格打掉三格照樣站著；四格都不在了，弓箭手往旁邊摔下來、塔從清單收掉散成碎料；
+        落地躺平、躺 FL_LIE 秒才淡、淡到一半 0.5、FL_FADE 秒淡完收掉。清單被別人收掉（新工地、閒晃事件開工壓到）也一樣 ── */
+  const wfall = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const r = {};
+    const up = x => {
+      const t = placeTower({ x, z: 0 }), h = t.h;
+      for (let k = 0; k < h.slots.length; k++) if (!h.slots[k].filled) floodLay({ h, topB: null }, k);
+      stepTowers(1e-6); stepTowers(TOW_POP + 1e-6);
+      return t;
+    };
+    const t = up(siteR + 25), h = t.h, hi = homes.list.indexOf(h), own = homeOwners();
+    const feet = TOW_FOOT.map(([a, b]) => blocks[own.get(hi + ':' + h.at.get(a + ':' + TOW_H + ':' + b))]);
+    const mine = blocks.filter(q => q.hh === hi);
+    for (let i = 0; i < 3; i++) breakBlock(feet[i], 0, 3, 0);
+    stepTowers(1e-3);
+    r.three = !t.down && homes.list.indexOf(h) >= 0;
+    breakBlock(feet[3], 0, 3, 0);
+    stepTowers(1e-3);
+    const m = t.man;
+    r.down = t.down === 1 && m.air === 1 && homes.list.indexOf(h) < 0 && mine.every(q => q.st !== SET);
+    let s = 0;
+    while (m.air && s < 5) { stepTowers(0.01); s += 0.01; }
+    r.land = !m.air && m.y === 0 && m.tilt === Math.PI / 2 && Math.hypot(m.x - t.x, m.z - t.z) > 0.5;
+    stepTowers(FL_LIE * 0.9); r.lie = m.alpha;
+    stepTowers(FL_LIE * 0.1 + FL_FADE * 0.5); r.mid = +m.alpha.toFixed(3);
+    stepTowers(FL_FADE * 0.5 + 1e-3); r.gone = !towers;
+    /* 清單被別人收掉 */
+    const u = up(siteR + 25);
+    dropHomes(q => !q.tower); homeOwnAt = -1;
+    stepTowers(1e-3);
+    r.other = u.down === 1 && u.man.air === 1;
+    cleanTools();
+    return r;
+  });
+  ok('壞了就沒了：腳下四格打掉三格照樣站著；四格都不在了弓箭手往旁邊摔下來、塔從清單收掉散成碎料；清單被別人收掉也一樣',
+     wfall.three && wfall.down && wfall.other, JSON.stringify(wfall));
+  ok('摔下來：落地躺平、躺 FL_LIE 秒才開始淡、淡到一半 0.5、FL_FADE 秒淡完收掉',
+     wfall.land && wfall.lie === undefined && wfall.mid === 0.5 && wfall.gone, JSON.stringify(wfall));
+
+  /* ── 最多 TOW_MAX 座：再蓋一座就擠掉最早那一座（還沒蓋好的也算），其餘照舊；換場時工地外的照樣立著 ── */
+  const wmax = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const R = siteR + 25, at = j => { const a = j / 8 * Math.PI * 2; return { x: Math.cos(a) * R, z: Math.sin(a) * R }; };
+    const list = [];
+    for (let j = 0; j < TOW_MAX; j++) list.push(placeTower(at(j)));
+    const up = () => towers.filter(t => !t.down).length;
+    const r = { full: up(), max: TOW_MAX };
+    placeTower(at(TOW_MAX));
+    r.after = up(); r.first = list[0].down === 1; r.rest = list.slice(1).every(t => !t.down);
+    r.lists = homes.list.filter(h => h.tower).length;
+    /* 換場 */
+    cleanTools(); phase = 'done';
+    const t = placeTower({ x: siteR + 25, z: 0 }), h = t.h;
+    for (let k = 0; k < h.slots.length; k++) if (!h.slots[k].filled) floodLay({ h, topB: null }, k);
+    stepTowers(1e-6);
+    startBuild(true);
+    stepTowers(1e-3);
+    const hi = homes.list.indexOf(h);
+    r.swap = { kept: hi >= 0 && !t.down, set: blocks.filter(b => b.hh === hi && b.st === SET).length, n: h.slots.length, man: !!t.man && !t.man.air };
+    cleanTools();
+    return r;
+  });
+  ok('最多 TOW_MAX 座：再蓋一座擠掉最早那一座、其餘照舊；換場時工地外的箭塔照樣立著（積木一塊不少、弓箭手還在上面）',
+     wmax.full === wmax.max && wmax.after === wmax.max && wmax.first && wmax.rest && wmax.lists === wmax.max &&
+     wmax.swap.kept && wmax.swap.set === wmax.swap.n && wmax.swap.man,
+     JSON.stringify(wmax));
+
+  await page.evaluate(() => { cleanTools(); beasts = null; arrows = null; });
+  }   // ── 〈道具：箭塔〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 大洪水（v1.325.0） ══════════
      使用者：「立即建成旁邊增加一個按鈕 大洪水／按了會有全地圖大水 把地標建築以外的所有生物 小房子 全部沖走」，

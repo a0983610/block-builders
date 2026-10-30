@@ -2017,6 +2017,9 @@ function updWorker(w, wi, dt) {
   }
   w.y += (0 - w.y) * Math.min(1, dt * 6);
   w.cheer = 0;
+  /* 抽去蓋箭塔的人（v1.331.0，使用者選「點下去就抽 4 人」，施工中也抽）：走蓋房子那條路（挖料、搬、砌），
+     蓋好了箭塔放他回來才接著上工（見 game-tools.js 的 towerCrew／towerUp） */
+  if (w.hm >= 0 && homes && homes.list[w.hm] && homes.list[w.hm].tower) { updHome(w, wi, dt); return; }
   /* 偷懶的人不上工（v1.134）：走的是閒晃那一套，事件挑中他就去蓋自己的家。
      擺在工程師與魔法師**前面**：這一輪抽中他，他就不看圖也不發料（使用者選「全部人都算」）。
      回自己家那條路他還是用自己的方式蓋（updHome 自己分派：魔法師隔空拋、肌肉小人就地掄）。 */
@@ -3497,7 +3500,7 @@ const IDLE_EVENTS = [
    **算哪幾類照 homeCat**（v1.305.0 多了商店街，原本「是不是城牆」的真假值分不出第三件）：
    事件一算房子與樹、事件二只算城牆段（城內那幾間不算，同 v1.188）、事件三算店、事件四算樹林（5）、事件五算皇宮（6）、
    事件六算小屋、樹、營火與圖騰柱（0、1、7——小屋就是事件一的房子換款式，換事件時上一件整批解體，兩邊不會同時在場）、
-   事件七算招牌（8）；燈架（3）哪一件都不算（v1.303.0） */
+   事件七算招牌（8）；燈架（3）哪一件都不算（v1.303.0），箭塔（9）也是（v1.331.0） */
 const EV_CAT = { home: [0, 1], wall: [2], shop: [4], forest: [5], palace: [6], tribe: [0, 1, 7], sign: [8] };
 let evPeak = 0;                     // 這一件事曾經蓋到的最高塊數（換一件才歸零，見 rollIdleEvent）
 function evBlocks(e) {
@@ -3535,8 +3538,8 @@ function rollIdleEvent() {
      而 start 只跟在這裡後面跑——所以「上一件蓋的」就是整份 homes.list，城內那幾間房子
      與樹也在裡面（使用者選的「一起拆」）。解法跟廢棄、被新工地徵收同一條（dropHomes）：
      積木變成地上的碎料，下一件的人撿去用（見 開發筆記〈換成另一件事，上一件蓋的整批解體〉）。
-     **v1.303.0 起例外是燈源的燈架**（h.lamp）：玩家立的，不是哪一件事蓋的，留著 */
-  if (evLast && e !== evLast) dropHomes(h => !!h.lamp);
+     **v1.303.0 起例外是燈源的燈架**（h.lamp）：玩家立的，不是哪一件事蓋的，留著。箭塔（v1.331.0，h.tower）同理 */
+  if (evLast && e !== evLast) dropHomes(h => !!(h.lamp || h.tower));
   /* 換一件事，最高點就跟著換成「這一類現在有多少」（見 evAlive）。
      這兩個一定要一起動：只歸零 evPeak、evLast 留給呼叫端設的話，
      中間那一瞬間 evAlive 拿 peak 0 去比，什麼都會判成「還活著」。 */
@@ -5227,8 +5230,9 @@ function pickHomeSite(cx, cz, rad, capOut) {
    樹林的樹（v1.307.0）一類 5：它也是 h.tree（樹冠走得過去那一套要沿用），所以要排在 h.tree 前面。
    皇宮的每一件（v1.308.0）一類 6。
    部落的營火與圖騰柱（v1.309.0）一類 7：蓋小屋、種樹的人不會被派去接（小屋本身是 0，就是事件一的房子）。
-   求救招牌的每一段（v1.310.0）一類 8 */
-const homeCat = h => h.lamp ? 3 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.palace ? 6 : h.prop ? 7 : h.sign ? 8 : h.tree ? 1 : 0;
+   求救招牌的每一段（v1.310.0）一類 8。
+   箭塔（v1.331.0）一類 9：同燈架沒有人會照這一類去找——蓋的只有點下去那時抽到的幾個人（見 game-tools.js 的 towerCrew），蓋好了壞了就沒了 */
+const homeCat = h => h.lamp ? 3 : h.tower ? 9 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.palace ? 6 : h.prop ? 7 : h.sign ? 8 : h.tree ? 1 : 0;
 const NO_TAKEN = new Set();                        // 「誰都還沒被認走」：見 updHome 接下一段
 function pickUnfinished(cx, cz, taken, cat) {
   let best = -1, bd = Infinity;
@@ -5524,7 +5528,7 @@ function wallWant(W) {
   const want = { h: Math.min(WALL_IN_MAX, Math.round(area / WALL_IN_AREA)),
                  t: Math.min(WALL_IN_TMAX, Math.round(area / WALL_IN_TAREA)) };
   for (const h of homes.list) {
-    if (h.wall || h.lamp || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;   // 城外的不算；燈架（v1.303.0）不是房子也不是樹
+    if (h.wall || h.lamp || h.tower || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;   // 城外的不算；燈架（v1.303.0）、箭塔（v1.331.0）不是房子也不是樹
     if (h.tree) want.t--; else want.h--;
   }
   return want;
@@ -5534,8 +5538,8 @@ function pickInside(cx, cz, taken, W) {
   let best = -1, bd = Infinity;
   for (let i = 0; i < homes.list.length; i++) {
     const h = homes.list[i];
-    // 燈架（v1.303.0）壞了就沒了，不派人去補（同 homeCat 那一類沒人接）
-    if (h.wall || h.lamp || h.left <= 0 || taken.has(i) || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;
+    // 燈架（v1.303.0）壞了就沒了，不派人去補（同 homeCat 那一類沒人接）；箭塔（v1.331.0）同理，蓋的人是它自己抽的
+    if (h.wall || h.lamp || h.tower || h.left <= 0 || taken.has(i) || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;
     const d = (h.x - cx) ** 2 + (h.z - cz) ** 2;
     if (d < bd) { bd = d; best = i; }
   }

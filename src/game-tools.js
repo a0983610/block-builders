@@ -126,7 +126,11 @@ const TOOLS = [
     tip: '點一下：丟一串香蕉，40 格內最近的 3 隻吃香蕉的動物（含猴子）跑來圍著吃；丟在屋頂上吃不到' },
   { id: 'allmight', n: 'DETROIT SMASH', k: '👊', cat: 'anime',
     /* v1.329.0：點建築、地上的生物或小人就跑到射程一半，一拳轟出超強拳風，前方整片吹飛；點空地就跑到那裡待命（見 callMight） */
-    tip: '點建築、生物或小人：叫歐爾麥特跑來一拳轟出超強拳風，前方 90 格整片吹飛；點空地：跑到那裡待命' }
+    tip: '點建築、生物或小人：叫歐爾麥特跑來一拳轟出超強拳風，前方 90 格整片吹飛；點空地：跑到那裡待命' },
+  { id: 'tower', n: '箭塔', k: '🏰', cat: 'army',
+    /* v1.331.0：也不是破壞道具——點一下，抽 TOW_CREW 個小人去那裡蓋一座木造哨塔，蓋好塔頂生出一位弓箭手守村子（見 placeTower）。
+       圖示：🏹 已經給箭雨。照樣接在最後面、照等差階梯解鎖 */
+    tip: '點一下：抽 4 個小人在那裡蓋箭塔，塔頂弓箭手射 60 格內的敵人，最多 4 座、打壞就沒了' }
 ];
 /* 道具選單的分類（v1.294.0，使用者：「道具選擇頁面根據種類分類(比較好找)」）：選單與快捷鍵那九格下拉
    照這張的順序一類一組，組裡照 TOOLS 的順序（＝解鎖順序）排。每一把在 TOOLS 裡寫 `cat` 指到這裡的 id。
@@ -190,7 +194,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       torch: 1,                                                 // 火把：點哪裡都是插在那裡（v1.317.0）
                       general: 1,                                               // 小人將軍：點哪裡都是叫他騎過去（v1.324.0）
                       hay: 1, banana: 1,                                        // 草料、香蕉：同肉（v1.326.0）
-                      allmight: 1 };                                            // DETROIT SMASH：點空地＝跑到那裡（v1.329.0）
+                      allmight: 1,                                              // DETROIT SMASH：點空地＝跑到那裡（v1.329.0）
+                      tower: 1 };                                               // 箭塔：點哪裡就蓋在那裡（v1.331.0）
 let tool = 'hammer';
 
 /* ── 破壞模式（v1.262.0）──────────────────────────────────
@@ -9266,6 +9271,9 @@ function useTool(hit) {
   /* 小人將軍（v1.324.0）：點哪裡都是叫他騎到那一點（點建築就騎到旁邊站得下的地方，巡路規則在挪），之後在村子裡巡邏。
      生物、小人在點選那一層是透明的（同防禦魔法） */
   if (tool === 'general') { callGeneral(hit.point); return 0; }
+  /* 箭塔（v1.331.0）：點一下就在那一點開工，蓋不下（工地裡、太靠島邊、壓到房子／樹／城牆／燈架／別座塔）跳提示不蓋。
+     生物、小人在點選那一層是透明的（同防禦魔法）；點在建築上就是點在工地裡或房子上，照樣蓋不下 */
+  if (tool === 'tower') { placeTower(hit.point); return 0; }
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
@@ -15952,26 +15960,28 @@ function floodSlots(x, z) {
    那一點放不下就往外一圈一圈找最近放得下的；都放不下回 null。
    half＝占地半寬：燈架底座 3×3 是 1.5、火把一格是 TH_HALF（v1.317.0），跟別人之間都再留半格 */
 function floodSpot(x, z, half = 1.5) {
-  const minD = siteR + FL_SITE + half, maxD = debrisR - 3, d0 = Math.hypot(x, z), m = half + 0.5;
+  const minD = siteR + FL_SITE + half, maxD = debrisR - 3, d0 = Math.hypot(x, z);
   if (d0 < minD || d0 > maxD) {
     const e = ENG.camEye(), a = d0 < 0.01 ? Math.atan2(e.z, e.x) : Math.atan2(z, x), d = clamp(d0, minD, maxD);
     x = Math.cos(a) * d; z = Math.sin(a) * d;
   }
-  const fits = (px, pz) => {
-    const r = Math.hypot(px, pz);
-    if (r < minD - 1e-9 || r > maxD) return false;
-    if (homes) for (const h of homes.list) {
-      const s = homeSpan(h);
-      if (s.x1 > px - m && s.x0 < px + m && s.z1 > pz - m && s.z0 < pz + m) return false;
-    }
-    return true;
-  };
   for (let r = 0; r <= 18; r += 1.5)
     for (let j = 0, n = r ? Math.ceil(r * 4) : 1; j < n; j++) {
       const a = j / n * Math.PI * 2, px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
-      if (fits(px, pz)) return { x: px, z: pz };
+      if (floodFits(px, pz, half)) return { x: px, z: pz };
     }
   return null;
+}
+/* (px, pz) 放得下占地半寬 half 的東西嗎（floodSpot 那一圈一圈找的時候每一點問一次）：島內、工地外 FL_SITE 格，
+   不壓在房子、樹、城牆、別座燈架上，跟別人之間再留半格。箭塔（v1.331.0）也問這一支——它蓋不下就不蓋，不像燈架會挪 */
+function floodFits(px, pz, half) {
+  const r = Math.hypot(px, pz), m = half + 0.5;
+  if (r < siteR + FL_SITE + half - 1e-9 || r > debrisR - 3) return false;
+  if (homes) for (const h of homes.list) {
+    const s = homeSpan(h);
+    if (s.x1 > px - m && s.x0 < px + m && s.z1 > pz - m && s.z0 < pz + m) return false;
+  }
+  return true;
 }
 /* 兩點式（同投石機）：第一下記位置、畫個光環，第二下立起來照那一點；第二下點在建築上就連高度一起瞄 */
 function aimFlood(point, onBlock) {
@@ -17169,16 +17179,9 @@ function stepArchers(dt) {
 }
 /* 散場那一段先把弓放回左手（從散場那一刻舉著多高開始放，見 trDisperse 的 bu0） */
 const arStow = (m, u) => { m.bowUp = m.bu0 * (1 - mkEase(u)); };
-/* 射一支出去。出發點是**畫出來那把弓的位置**（引擎的 BOW_TIP 轉到世界座標），
-   不是小人的腳底——兩邊各寫一份的話箭會從肚子飛出去（同法杖的 WAND_TIP）。
-   身體座標 → 世界：rotation.y = a 之後 (px,py,pz) 落在
-   (px·cos a + pz·sin a, py, −px·sin a + pz·cos a)。 */
+/* 射一支出去。出發點是**畫出來那把弓的位置**（見 bowTip），不是小人的腳底。 */
 function shootArrow(g, m) {
-  const s = Math.sin(m.a), c = Math.cos(m.a), sc = m.scale || m.base;
-  const B = ENG.BOW_TIP;
-  const x = m.x + (B[0] * c + B[2] * s) * sc;
-  const y = B[1] * sc;
-  const z = m.z + (-B[0] * s + B[2] * c) * sc;
+  const { x, y, z } = bowTip(m);
   /* 落點在第二點附近散開（開根號讓分布均勻，同投石機的 fireRock）。
      散開的半徑**跟著射程走**（v1.172，見 AR_SPRAY_D）。 */
   const far = Math.hypot(g.tx - x, g.tz - z);
@@ -17186,27 +17189,38 @@ function shootArrow(g, m) {
   const rad = Math.sqrt(Math.random()) * (AR_SPRAY + AR_SPRAY_D * far);
   const tx = g.tx + Math.cos(ang) * rad, tz = g.tz + Math.sin(ang) * rad;
   /* 瞄的高度：點建築就是那一塊（v1.172），點空地是 AR_AIM_Y。 */
-  const d2 = Math.hypot(tx - x, tz - z), dh = g.ty - y;
-  let vh, vy;
+  const d2 = Math.hypot(tx - x, tz - z), v = arrowVel(d2, g.ty - y);
+  // 水平那一份按方向分給 x／z（大小 v.h），垂直是 v.y——兩支解法都湊出「剛好落在那一點」
+  pushArrow(x, y, z, (tx - x) / (d2 || 1) * v.h, v.y, (tz - z) / (d2 || 1) * v.h, 0);
+}
+/* 弓在世界的哪一點：引擎的 BOW_TIP 轉到世界座標——兩邊各寫一份的話箭會從肚子飛出去（同法杖的 WAND_TIP）。
+   身體座標 → 世界：rotation.y = a 之後 (px,py,pz) 落在
+   (px·cos a + pz·sin a, py, −px·sin a + pz·cos a)。
+   再加上他站的高度 m.y：箭雨那一隊都站在地上（0），箭塔頂上的弓箭手（v1.331.0）站在平台上。
+   v1.331.0 從 shootArrow 抽出來，箭塔共用 */
+function bowTip(m) {
+  const s = Math.sin(m.a), c = Math.cos(m.a), sc = m.scale || m.base;
+  const B = ENG.BOW_TIP;
+  return { x: m.x + (B[0] * c + B[2] * s) * sc, y: (m.y || 0) + B[1] * sc, z: m.z + (-B[0] * s + B[2] * c) * sc };
+}
+/* 拋到水平 d 遠、比出手點高 dh 的那一點要多快出手（h 水平、y 垂直）。v1.331.0 從 shootArrow 抽出來，箭塔共用 */
+function arrowVel(d, dh) {
   if (dh <= 0) {
     /* 目標不比出手點高（點空地的每一發都是這一支）：**45 度**，飛行時間由距離決定
        ——v1.171 那一條，出手角度剛好 45.00 度，見 AR_AIM_Y 那一段。 */
-    const T = Math.max(AR_T_MIN, Math.sqrt(Math.max(0, d2 - dh) / (GRAV / 2)));
-    vh = d2 / T; vy = dh / T + 0.5 * GRAV * T;
-  } else {
-    /* 目標比出手點高（點在建築上半段就是這一種）：45 度**打不到**比自己高得比距離
-       還多的點，所以改用「打得到那一點的最小初速」那一組解（最省力仰角）：
-         仰角 ＝ 45° ＋ atan(Δh ÷ d) ÷ 2　　初速² ＝ g × (Δh ＋ √(d² ＋ Δh²))
-       Δh ＝ 0 時它剛好退化成 45 度、初速² ＝ g·d，跟上面那一支接得上（點空地的行為
-       一個字都沒變）；打屋頂就自己抬到 60～70 度，弧頂剛好落在屋頂上方一點。
-       為什麼不用「45 度硬解」：那要嘛打不到（得把目標高度夾下來，等於點屋頂卻打在
-       牆上低 15 格的地方），要嘛初速爆掉（實測站 60 遠打 64 高的屋頂：96 對 62）。 */
-    const th = Math.PI / 4 + Math.atan2(dh, d2) / 2;
-    const v = Math.sqrt(GRAV * (dh + Math.hypot(d2, dh)));
-    vh = v * Math.cos(th); vy = v * Math.sin(th);
+    const T = Math.max(AR_T_MIN, Math.sqrt(Math.max(0, d - dh) / (GRAV / 2)));
+    return { h: d / T, y: dh / T + 0.5 * GRAV * T };
   }
-  // 水平那一份按方向分給 x／z（大小 vh），垂直是 vy——兩支解法都湊出「剛好落在那一點」
-  pushArrow(x, y, z, (tx - x) / (d2 || 1) * vh, vy, (tz - z) / (d2 || 1) * vh, 0);
+  /* 目標比出手點高（點在建築上半段就是這一種）：45 度**打不到**比自己高得比距離
+     還多的點，所以改用「打得到那一點的最小初速」那一組解（最省力仰角）：
+       仰角 ＝ 45° ＋ atan(Δh ÷ d) ÷ 2　　初速² ＝ g × (Δh ＋ √(d² ＋ Δh²))
+     Δh ＝ 0 時它剛好退化成 45 度、初速² ＝ g·d，跟上面那一支接得上（點空地的行為
+     一個字都沒變）；打屋頂就自己抬到 60～70 度，弧頂剛好落在屋頂上方一點。
+     為什麼不用「45 度硬解」：那要嘛打不到（得把目標高度夾下來，等於點屋頂卻打在
+     牆上低 15 格的地方），要嘛初速爆掉（實測站 60 遠打 64 高的屋頂：96 對 62）。 */
+  const th = Math.PI / 4 + Math.atan2(dh, d) / 2;
+  const v = Math.sqrt(GRAV * (dh + Math.hypot(d, dh)));
+  return { h: v * Math.cos(th), y: v * Math.sin(th) };
 }
 /* 把一支箭放進場上。兩個地方會造箭：箭雨那一隊（shootArrow）與閒著的小人玩鬧
    （playShot，v1.206）——差別只在 play 這個記號，其餘一個字都一樣，所以擺一份就好。 */
@@ -18256,6 +18270,226 @@ function stepGen(m, dt) {
   if (m.pause > 0) { m.pause -= dt; m.gait += (0 - m.gait) * Math.min(1, dt * 8); return false; }
   if (strollTo(m, dt, GEN_WALK, genStep(GEN_WALK), 0)) { m.pause = rr(GEN_STAY[0], GEN_STAY[1]); m.leg = 0; genSpot(m); }
   return false;
+}
+
+/* ── 道具：箭塔（v1.331.0）───────────────────────────────
+   使用者：「增加新道具／在指定的地方(判斷能蓋的話) 讓小人建出箭塔／然後上面生成一隻弓箭小人保護村莊(發動攻擊判斷同小人將軍)」。
+   問過、看過預覽（tools/.e2e-out/箭塔預覽.html）之後定的：**點下去就抽 TOW_CREW 個人去蓋**（地標施工中也抽，蓋好回去上工）、
+   **壞了就沒了**（同燈架：弓箭手腳下那幾格不在了，他摔下來退場、剩下的散成碎料，沒人修）、
+   **單發連射、比箭雨準**（落點散開只有箭雨的 TOW_SPRAY、TOW_GAP 秒一支，瞄「箭飛到時牠會在的地方」）、**最多 TOW_MAX 座**（再蓋擠掉最早那座）；
+   造型選**木造哨塔**；閒晃事件開工壓到它照拆（使用者：「要拆」，同燈架，見 startWall／shopGrow 那幾支）。
+   我自己定、回報時講過的：點的那一點蓋不下（工地裡、太靠島邊、壓到房子／樹／城牆／燈架／別座塔，見 floodFits）就跳提示不蓋、不自動挪；
+   敵人照小人將軍那一份（genFoe）、射程是將軍叫箭雨那一把尺；弓箭手不在小人名單裡，箭與兵器打不到他（同箭雨那一隊）。
+
+   塔是真的積木，**掛在 homes.list 上**（h.tower，同燈架那一套：支撐垮塌、每一把道具打得到、會飛的東西撞得到、換場只收新工地裡的），
+   蓋的人走小人蓋房子那一套（updHome：挖料、搬、砌）。homeCat 自己一類 9：沒有人會照這一類去找，蓋的只有抽到的那幾個。
+   **抽到的人一直是它的，直到蓋好**（towerCrew）：閒晃事件開工會各自重新派人、收工會把所有人的 hm 放掉（stopHomes），
+   七件事各自寫一份挑人，與其每一處都擋，不如這邊每一幀把被叫走的認回來。施工中他們怎麼走到 updHome 見 game-workers.js 的 updWorker。
+   弓箭手是小人那一顆網格畫的（接在小人、弓箭手、火槍兵…後面，見 game-ui.js 的 draw），只是站在平台上（m.y）。
+   見 開發筆記〈道具：箭塔〉 */
+const TOW_MAX = 4;                       // 場上最多幾座（使用者選的；引擎的 MAXW 照這個多留了位子給塔頂的弓箭手）
+const TOW_CREW = 4;                      // 抽幾個人去蓋（使用者選的「點下去就抽 4 人」）
+const TOW_H = 7;                         // 四根柱子幾格高：平台在第 TOW_H 層、欄杆在上面一層（預覽定的木造哨塔，塔頂離地 7.9）
+const TOW_HALF = 2;                      // 占地半寬（4×4）
+const TOW_RANGE = GEN_ARMY.arrow.hi;     // 射程（從塔量）：同小人將軍叫箭雨的那一把尺（60）
+const TOW_SPRAY = 0.3;                   // 落點散開是箭雨的幾成（AR_SPRAY ＋ AR_SPRAY_D × 射程，再乘這個；使用者選 3 成）
+const TOW_GAP = 1.1;                     // 幾秒一支（使用者選的；拉一次弓 AR_DRAW 在這裡面）
+const TOW_POP = FL_HEAD_T;               // 蓋好之後弓箭手冒出來要幾秒（同燈頭）
+const TOW_SCAN = 0.35;                   // 射程裡沒有敵人：慢慢轉著看四周（弧度／秒）
+const TOW_SND = 0.6;                     // 弦聲幾倍音量（箭雨八十人一人 AR_SND_K 0.3；一個人一支一支射，大聲一點）
+/* 過不過得了自己的欄杆：箭飛到離塔中心 TOW_CLEAR_D（欄杆外角 TOW_HALF·√2 ＋ 弓在身前那一截）的時候，要比欄杆頂高 TOW_CLEAR 以上。
+   敵人貼著塔腳的話 45 度拋出去會砸回自己的塔頂（預覽量到的塔下死角），那一支就不放 */
+const TOW_CLEAR_D = TOW_HALF * Math.SQRT2 + 0.6, TOW_CLEAR = 0.25;
+/* 摔下來（腳下那幾格不在了）：往旁邊多快、往上彈多快、多久倒平（落地之後躺 FL_LIE、淡 FL_FADE，同燈頭） */
+const TOW_FALL_V = 1.6, TOW_FALL_UP = 2, TOW_TIP = 3;
+const TOW_LEG = [0.4, 0.27, 0.16], TOW_BEAM = [0.5, 0.35, 0.21], TOW_PLANK = [0.64, 0.47, 0.29], TOW_RAIL = [0.53, 0.38, 0.23];   // 預覽定的木色
+const TOW_CORNER = [[0, 0], [3, 0], [0, 3], [3, 3]];
+const TOW_EDGE = [[1, 0], [2, 0], [0, 1], [0, 2], [3, 1], [3, 2], [1, 3], [2, 3]];
+const TOW_FOOT = [[1, 1], [2, 1], [1, 2], [2, 2]];       // 平台中間那四格：弓箭手站在上面，四格都不在了他就摔下來
+let towers = null;
+let towerSeq = 0;                       // 蓋的順序（擠掉最早那一座用）
+/* 格子：四根柱子（半高那一層一圈橫樑）→ 平台（四角、四邊、中間）→ 一圈欄杆。照這個順序排就是砌的順序（homeFree 挑清單上第一個放得上去的）。
+   (i, k) 是 0～3，ox／oz 1.5 讓整座的中心落在 (x, z) */
+function towerSlots(x, z) {
+  const out = [], mid = Math.floor(TOW_H / 2);
+  const add = (i, gy, k, c) => out.push({ x: x + i - 1.5, y: gy + HB, z: z + k - 1.5, c, i, k, gy, filled: false, claimed: -1 });
+  for (let gy = 0; gy < TOW_H; gy++) {
+    for (const [i, k] of TOW_CORNER) add(i, gy, k, TOW_LEG);
+    if (gy === mid) for (const [i, k] of TOW_EDGE) add(i, gy, k, TOW_BEAM);
+  }
+  for (const [i, k] of TOW_CORNER.concat(TOW_EDGE, TOW_FOOT)) add(i, TOW_H, k, TOW_PLANK);
+  for (const [i, k] of TOW_CORNER.concat(TOW_EDGE)) add(i, TOW_H + 1, k, TOW_RAIL);
+  return out;
+}
+/* 點一下（useTool）：蓋得下就開工、抽人，回傳那一座；蓋不下跳提示、回 null */
+function placeTower(p) {
+  if (!floodFits(p.x, p.z, TOW_HALF)) { toast('🏰 這裡蓋不下箭塔', '離建築、房子、樹遠一點，也別太靠島邊'); return null; }
+  towerRoom();
+  if (!towers) towers = [];
+  if (!homes) homes = { list: [] };
+  const slots = towerSlots(p.x, p.z), at = new Map();
+  slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+  const h = { id: homeSeq++, x: p.x, z: p.z, r: TOW_HALF * Math.SQRT2, kind: 'tower', at, ox: 1.5, oz: 1.5,
+              slots, left: slots.length, n: 0, tower: 1, done: false };
+  homeBox(h);
+  markHomeF6(h);
+  homes.list.push(h);
+  floodClear(p.x, p.z);
+  /* crew 蓋的人、man 塔頂的弓箭手（蓋好才有）；ct 這一支拉弓拉了多久、fo／fx／fz／vx／vz 盯著的那一隻與牠的速度（同將軍的 genTrack） */
+  const t = { h, x: p.x, z: p.z, crew: [], man: null, seq: ++towerSeq, down: 0, ut: 0, ct: 0, fo: null, fx: 0, fz: 0, vx: 0, vz: 0 };
+  towers.push(t);
+  towerCrew(t, homes.list.length - 1);
+  return t;
+}
+/* 場上滿 TOW_MAX 座就把最早那座收掉（同燈架的 lightRoom） */
+function towerRoom() {
+  let n = 0, old = null;
+  if (towers) for (const t of towers) if (!t.down) { n++; if (!old || t.seq < old.seq) old = t; }
+  if (n >= TOW_MAX) towerDown(old);
+}
+/* 蓋的人（還沒蓋好之前每一幀）：少了就補（離塔近的先；工程師、國王不抽——一個在看圖指揮、一個在皇宮當國王），
+   被叫走的認回來；倒地、飛著、燒著、逃命的等他站起來再說。
+   **抽到的人不慶祝**：完工慶祝中（cheerOn）的人走不到 updHome，抽到的這一輪直接散場（cheer 推到 CHEER_T ＋ cout；
+   預覽量到的：剛完工時點下去，4 個人圍著地標跳，48 秒一塊都沒砌） */
+function towerCrew(t, hi) {
+  if (deluge) return;                                      // 淹著的時候不派人（同閒晃事件的鐘，見 stepIdleEvent）
+  const ok = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0) && !slain(w);
+  for (let i = t.crew.length - 1; i >= 0; i--) if (workers.indexOf(t.crew[i]) < 0 || slain(t.crew[i])) t.crew.splice(i, 1);
+  if (t.crew.length < TOW_CREW) {
+    const busy = new Set();
+    for (const q of towers) for (const w of q.crew) busy.add(w);
+    const pool = workers.filter(w => ok(w) && !busy.has(w) && !w.eng && !w.king)
+                        .sort((a, b) => Math.hypot(a.x - t.x, a.z - t.z) - Math.hypot(b.x - t.x, b.z - t.z));
+    for (const w of pool) { if (t.crew.length >= TOW_CREW) break; t.crew.push(w); }
+  }
+  for (const w of t.crew) {
+    if (w.hm === hi || !ok(w)) continue;
+    releaseWorker(w);
+    w.hm = hi; w.hst = ''; w.pause = 0;
+    if (idlePhase() && cheerOn(w)) w.cheer = CHEER_T + w.cout;
+  }
+}
+/* 蓋好了（第一次 h.done）：蓋的人放回去做原本的事，平台中間生出一位弓箭手（面朝外、從小長出來 TOW_POP 秒） */
+function towerUp(t, hi) {
+  for (const w of t.crew) if (w.hm === hi) { releaseWorker(w); w.hm = -1; w.hst = ''; }
+  t.crew.length = 0;
+  t.man = { x: t.x, y: TOW_H + ENG.BS, z: t.z, a: Math.atan2(t.x, t.z), ph: 0, gait: 0, tone: t.seq, base: DOOM_SC, scale: 0,
+            bow: 1, bowUp: 0, draw: 0 };
+  t.ut = 0; t.ct = TOW_GAP - AR_DRAW;
+  spawnDust({ x: t.x, y: TOW_H + 1.5, z: t.z }, 1.2, 10);
+  sndWind();                                               // 同一隊弓箭手到位那一聲（見 stepArchers）
+}
+/* 收掉一座（擠掉、腳下沒了、清單被別人收掉）：弓箭手往旁邊摔下來（見 towerFall），剩下的散成碎料（dropHomes 也把還在蓋的人放回去） */
+function towerDown(t) {
+  if (t.down) return;
+  t.down = 1;
+  t.crew.length = 0;
+  const m = t.man;
+  if (m) {
+    const a = Math.random() * Math.PI * 2;
+    m.air = 1; m.vx = Math.cos(a) * TOW_FALL_V; m.vy = TOW_FALL_UP; m.vz = Math.sin(a) * TOW_FALL_V; m.lie = 0;
+    m.bowUp = 0; m.draw = 0;
+  }
+  if (homes && homes.list.indexOf(t.h) >= 0) { dropHomes(q => q !== t.h); homeOwnAt = -1; }   // 清單重排過（見 floodBreak）
+}
+/* 摔下來：落地、躺 FL_LIE 秒、FL_FADE 秒淡掉（同燈頭掉下來那一套）。回 true＝這一座收掉 */
+function towerFall(t, dt) {
+  const m = t.man;
+  if (!m) return true;                                     // 還沒蓋好就收掉的：沒有人要摔
+  if (m.air) {
+    m.vy -= GRAV * dt;
+    m.x += m.vx * dt; m.y += m.vy * dt; m.z += m.vz * dt;
+    m.tilt = Math.min(Math.PI / 2, (m.tilt || 0) + dt * TOW_TIP);
+    if (m.y <= 0) { m.y = 0; m.air = 0; m.tilt = Math.PI / 2; spawnDust({ x: m.x, y: 0.3, z: m.z }, 1.5, 6); sndLand(); }
+    return false;
+  }
+  m.lie += dt;
+  if (m.lie > FL_LIE) m.alpha = Math.max(0, 1 - (m.lie - FL_LIE) / FL_FADE);
+  return m.lie >= FL_LIE + FL_FADE;
+}
+/* 盯哪一隻：小人將軍會打的（genFoe），離塔 TOW_RANGE 以內最近的那一隻 */
+function towerPick(t) {
+  let best = null, bd = TOW_RANGE;
+  if (beasts) for (const f of beasts) {
+    if (!genFoe(f)) continue;
+    const d = Math.hypot(f.x - t.x, f.z - t.z);
+    if (d <= bd) { bd = d; best = f; }
+  }
+  return best;
+}
+/* 箭飛到時牠會在哪（同將軍的 genLead：飛幾秒 × 牠這一刻的速度，落點挪了飛的時間跟著變，解兩次）；飛幾秒＝水平距離 ÷ arrowVel 的水平速度 */
+function towerLead(t, f) {
+  const P = bowTip(t.man), y = genTy(f);
+  let x = f.x, z = f.z;
+  for (let k = 0; k < 2; k++) {
+    const d = Math.max(1, Math.hypot(x - P.x, z - P.z)), T = d / arrowVel(d, y - P.y).h;
+    x = f.x + t.vx * T; z = f.z + t.vz * T;
+  }
+  return { x, y, z };
+}
+/* 放一支：從弓的位置拋向 p，落點照箭雨那一套散開、只是乘 TOW_SPRAY。**過不了自己的欄杆就不放**（見 TOW_CLEAR_D），回 false */
+function towerShot(t, p) {
+  const P = bowTip(t.man);
+  const far = Math.hypot(p.x - P.x, p.z - P.z);
+  const ang = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * (AR_SPRAY + AR_SPRAY_D * far) * TOW_SPRAY;
+  const tx = p.x + Math.cos(ang) * rad, tz = p.z + Math.sin(ang) * rad;
+  const d = Math.hypot(tx - P.x, tz - P.z), v = arrowVel(d, p.y - P.y), u = TOW_CLEAR_D / Math.max(v.h, 1e-3);
+  if (P.y + v.y * u - GRAV / 2 * u * u < TOW_H + 1 + ENG.BS + TOW_CLEAR) return false;
+  pushArrow(P.x, P.y, P.z, (tx - P.x) / (d || 1) * v.h, v.y, (tz - P.z) / (d || 1) * v.h, 0);
+  sndBow(TOW_SND);
+  return true;
+}
+/* 塔頂的弓箭手一幀：冒出來 → 射程裡有敵人就轉過去、舉弓、拉弓，TOW_GAP 秒一支；沒有就把弓放下、慢慢轉著看四周 */
+function towerMan(t, dt) {
+  const m = t.man;
+  t.ut += dt;
+  m.scale = DOOM_SC * Math.min(1, t.ut / TOW_POP);
+  if (t.ut < TOW_POP) return;
+  const f = towerPick(t);
+  if (!f) {
+    t.fo = null; t.ct = TOW_GAP - AR_DRAW;                  // 下一隻一舉好弓，拉一次弓就放
+    m.bowUp += (0 - m.bowUp) * Math.min(1, dt * 3); m.draw = 0;
+    m.a += dt * TOW_SCAN;
+    return;
+  }
+  /* 牠多快：照上一幀到這一幀走了多少算（換了一隻就從 0 起算，同將軍的 genTrack） */
+  if (t.fo === f && dt > 0) {
+    const k = Math.min(1, dt * 4);
+    t.vx += ((f.x - t.fx) / dt - t.vx) * k; t.vz += ((f.z - t.fz) / dt - t.vz) * k;
+  } else { t.fo = f; t.vx = 0; t.vz = 0; }
+  t.fx = f.x; t.fz = f.z;
+  const p = towerLead(t, f);
+  m.a = mkAngLerp(m.a, Math.atan2(p.x - m.x, p.z - m.z), Math.min(1, dt * 6));
+  m.bowUp = Math.min(1, m.bowUp + dt / AR_LIFT);
+  if (m.bowUp < 1) { m.draw = 0; return; }
+  t.ct += dt;
+  m.draw = clamp(1 - (TOW_GAP - t.ct) / AR_DRAW, 0, 1);
+  if (t.ct < TOW_GAP) return;
+  if (towerShot(t, p)) { t.ct = 0; m.draw = 0; } else t.ct = TOW_GAP;   // 過不了自己的欄杆：拉滿等著
+}
+function stepTowers(dt) {
+  if (!towers) return;
+  for (let i = towers.length - 1; i >= 0; i--) {
+    const t = towers[i];
+    if (t.down) { if (towerFall(t, dt)) towers.splice(i, 1); continue; }
+    const h = t.h, hi = homes ? homes.list.indexOf(h) : -1;
+    if (hi < 0) { towerDown(t); continue; }        // 被別人收掉了（新工地徵收、剩兩成五廢棄、閒晃事件開工壓到、大洪水）
+    if (!t.man) {
+      if (!h.done) { towerCrew(t, hi); continue; }
+      towerUp(t, hi);
+    }
+    if (!TOW_FOOT.some(([a, b]) => h.slots[h.at.get(a + ':' + TOW_H + ':' + b)].filled)) { towerDown(t); continue; }   // 腳下沒了：壞了就沒了
+    towerMan(t, dt);
+  }
+  if (!towers.length) towers = null;
+}
+/* 畫面那邊要的（接在小人那一顆網格後面，見 game-ui.js 的 draw）：還在場上的弓箭手（摔下來淡掉中的也算） */
+const _twMen = [];
+function towerMen() {
+  if (!towers) return EMPTY;
+  _twMen.length = 0;
+  for (const t of towers) if (t.man) _twMen.push(t.man);
+  return _twMen;
 }
 
 /* ── 大洪水（v1.325.0）───────────────────────────────────────
