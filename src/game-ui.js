@@ -219,6 +219,7 @@ function step(dt) {
   stepFloods(dt);                        // 燈源（v1.303.0）：燈架一塊一塊砌上去、點亮，架頂被打掉燈頭就掉下來
   stepTorches(dt);                       // 火把（v1.317.0）：一塊一塊砌上去、火冒出來，火把頭被打掉就熄
   stepTowers(dt);                        // 箭塔（v1.331.0）：抽到的人蓋好之前一直認回來、塔頂的弓箭手射敵人、腳下沒了就摔下來
+  stepTaverns(dt);                       // 酒館（v1.332.0）：抽到的人蓋好之前一直認回來、蓋好開張、被收掉就散掉
   stepMeteors(dt);
   stepFw(dt);
   stepFire(dt);

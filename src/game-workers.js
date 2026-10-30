@@ -91,6 +91,9 @@ function newWorker(i) {
        rst 是這一次還要喘幾秒，tire 是畫出來的呼吸深淺（每幀重算），
        swt 是太陽穴那一滴汗滑到哪 0～1（v1.237，見 REST_DROP_T）。 */
     toil: 0, rst: 0, tire: 0, swt: 0,
+    /* 去酒館喝一杯（v1.332.0，見 game-tools.js〈道具：酒館〉）：bar 是去哪一間（null＝沒在喝）、bdt 是還要喝幾秒（−1＝還在走過去）、
+       tipsy 是喝過的效果還剩幾秒（做事快 TAV_K 倍、不會累）。mug／sip／flush 是畫出來的：手上有沒有杯子、杯子舉到哪 0～1、臉紅多深 0～1 */
+    bar: null, bdt: 0, tipsy: 0, mug: 0, sip: 0, flush: 0,
     /* 頭上的表情圖示（v1.121，見 showEmo）：emo 是哪一種（EMO_KINDS 裡的字，''＝沒有）、
        emoT 是還要冒幾秒、emoK 是畫出來的大小 0～1。 */
     emo: '', emoT: 0, emoK: 0,
@@ -1864,6 +1867,7 @@ function updWorker(w, wi, dt) {
   w.stre = 0; w.twirl = 0; w.jack = 0; w.clap = 0; w.wave = 0;
   w.bow = 0; w.draw = 0; w.tire = 0; w.lean = 0;
   w.cmd = 0; w.whip = 0;             // 國王指人、甩鞭子（v1.308.0）：被打倒的國王不要躺著還舉著鞭子
+  w.mug = 0;                         // 酒館吧台前拿著的啤酒杯（v1.332.0）：只有真的在喝那一段會撐回去（見 stepBar）
   stuckWatch(w, dt);                // 卡住了就脫困（v1.108）。擺在最前面：下面每一條分支都會 return
   /* 穿地標的牆只在搬料那兩段（v1.236，見 pick）：其餘的路（閒晃、挖料、逃命…）照地圖走 */
   if (w.st !== 'pick' && w.st !== 'build') w.lmg = 0;
@@ -1873,6 +1877,7 @@ function updWorker(w, wi, dt) {
   if (w.cast > 0) w.cast = Math.max(0, w.cast - dt * CAST_DOWN);
   if (w.chatCd > 0) w.chatCd -= dt;
   stepEmo(w, dt);                    // 表情圖示的鐘（v1.121）。同下面那段慶祝的鐘：擺在所有 return 之前
+  stepTipsy(w, dt);                  // 喝過酒的鐘（v1.332.0，見 game-tools.js〈道具：酒館〉）：同上，擺在所有 return 之前
   /* 表演的鐘（v1.178）。也擺在所有 return 之前，理由跟上面兩個鐘一樣，但這一個更要緊：
      演到一半被抓去上工（或被炸飛）的人，鐘停在那裡的話，他下次站定發呆時會**接著演**
      ——翻跟斗那一段是照剩幾秒算角度的，接下去的第一幀身體會從站直瞬間扭到半空那個角。
@@ -1982,6 +1987,7 @@ function updWorker(w, wi, dt) {
   if (w.chat > 0) { stepChat(w, wi, dt); return; }
   if (w.fig > 0) { stepFight(w, wi, dt); return; }   // 談不攏就打起來（v1.178）
   if (tripWalk(w, dt)) return;                       // 走著走著絆一跤（v1.178）
+  if (w.bar && stepBar(w, dt)) return;               // 去酒館喝一杯（v1.332.0，見 game-tools.js〈道具：酒館〉）
 
   /* 整地中（clear）**不再退場**（v1.248）：跟拆除中、完工一樣走下面這條（見 idlePhase）。
      v1.61～v1.247 這裡有一條「退到碎料場外圈（debrisR × 0.62～0.85）繞圈等」的分支，
@@ -2018,8 +2024,8 @@ function updWorker(w, wi, dt) {
   w.y += (0 - w.y) * Math.min(1, dt * 6);
   w.cheer = 0;
   /* 抽去蓋箭塔的人（v1.331.0，使用者選「點下去就抽 4 人」，施工中也抽）：走蓋房子那條路（挖料、搬、砌），
-     蓋好了箭塔放他回來才接著上工（見 game-tools.js 的 towerCrew／towerUp） */
-  if (w.hm >= 0 && homes && homes.list[w.hm] && homes.list[w.hm].tower) { updHome(w, wi, dt); return; }
+     蓋好了箭塔放他回來才接著上工（見 game-tools.js 的 toolCrew／towerUp）。v1.332.0 起酒館同一套（h.tool：道具叫人蓋的） */
+  if (w.hm >= 0 && homes && homes.list[w.hm] && homes.list[w.hm].tool) { updHome(w, wi, dt); return; }
   /* 偷懶的人不上工（v1.134）：走的是閒晃那一套，事件挑中他就去蓋自己的家。
      擺在工程師與魔法師**前面**：這一輪抽中他，他就不看圖也不發料（使用者選「全部人都算」）。
      回自己家那條路他還是用自己的方式蓋（updHome 自己分派：魔法師隔空拋、肌肉小人就地掄）。 */
@@ -2034,15 +2040,31 @@ function updWorker(w, wi, dt) {
   /* 連續工作幾秒了（v1.206，見 stepRest）：**只算真的在做事的那幾個狀態**。
      idle 不算（那一幀不是在領下一張工作單，就是根本沒工作可做在閒晃），
      rest 自己更不算。工程師與魔法師走的是上面那兩條 return，本來就數不到這裡。 */
-  if (w.st !== 'idle' && w.st !== 'rest') w.toil += dt;
+  /* 喝過酒的那 TAV_T 秒不會累（v1.332.0，使用者選的，見 game-tools.js〈道具：酒館〉）：鐘停著不走 */
+  if (w.st !== 'idle' && w.st !== 'rest' && !(w.tipsy > 0)) w.toil += dt;
   /* 做滿了就當場停下來喘（v1.237，見 tireOut）：不管這一刻在做什麼——搬著走、空手去撿、
      挖到一半、剛丟完、閒著——手上有積木就先放下。v1.206～v1.236 只在 idle 那一刻判，
      而一般工人進 idle 的那一刻剛丟完最後一塊、站在建築旁邊，所以喘的地方幾乎都貼著牆。
      唯一要等的是**站的地方走不到**（穿地標的牆進去撿料、人還在牆裡，見 lmReach）：
      走出來再停，不然人卡在牆裡彎腰、放下的積木也埋在牆裡。
      轉成 rest 之後下面的 switch 這一幀就跑到 stepRest，姿勢當場擺好，不會先站直一幀。 */
-  if (w.toil >= REST_AT && w.st !== 'rest' && lmReach(w.x, w.z)) tireOut(w);
+  if (w.toil >= REST_AT && w.st !== 'rest' && lmReach(w.x, w.z)) {
+    /* 附近有開著的酒館（v1.332.0，使用者選「累了就去喝一杯」）：手上的先放下（同 tireOut），改去喝一杯代替原地喘 */
+    if (barTired(w)) return;
+    tireOut(w);
+  }
   stepPull(w, dt);                   // 隔空拿的那塊還在飛（v1.246，見 startPull）
+  /* 喝過酒做事快 TAV_K 倍（v1.332.0，使用者選「做事整個變快」）：上工這一段照 TAV_K 倍的時間跑——走去撿、搬回來、挖、丟、
+     丟完等那一下都一起快。**拆兩步走**，每一步只有這一幀的 TAV_K／2（0.75）倍：巡路那些「一步走多遠」的假設
+     （探路的距離要比一步大，見 navAim）照一般的一幀算，4 倍速時也不會一步跨得比平常還大。
+     閒著（idle：領工作單、沒工作就閒晃）照一般的時間走——閒晃不是做事，走快了只是看起來很趕 */
+  if (!(w.tipsy > 0) || w.st === 'idle') { workStep(w, wi, dt); return; }
+  workStep(w, wi, dt * TAV_K / 2);
+  if (w.st !== 'idle') workStep(w, wi, dt * TAV_K / 2);
+}
+/* 上工的那一段（v1.332.0 從 updWorker 拆出來，喝過酒要照 TAV_K 倍的時間跑兩步，見上面那一段）：
+   領工作單 → 走去撿 → 搬回工地丟 → 等一下；缺料就挖、累了在喘 */
+function workStep(w, wi, dt) {
   switch (w.st) {
     case 'idle': {
       // 肌肉小人一趟只領一塊（v1.112，見 MUS_WIND）
@@ -2575,7 +2597,10 @@ function idleSpot(w, near) {
 }
 function wander(w, dt) {
   if (w.show || w.pause > 0) { idleWait(w, dt); return; }
-  if (strollTo(w, dt)) { strollPause(w); rollShow(w); idleSpot(w); }
+  if (strollTo(w, dt)) {
+    if (barPass(w)) return;          // 走到酒館附近：有時候進去喝一杯（v1.332.0，見 game-tools.js〈道具：酒館〉）
+    strollPause(w); rollShow(w); idleSpot(w);
+  }
 }
 
 /* ── 閒著沒事來一段（v1.178，v1.206 從兩種變八種）─────────────
@@ -2799,6 +2824,11 @@ const REST_DROP_T = 1.5;            // 太陽穴那一滴汗：冒出來、滑�
    （使用者選的；多半是他喘完自己撿回面前這幾塊）。挖到一半那一鏟也作廢，
    已經挖出來的就躺在那裡，跟 digSite 挖完回 idle 一樣讓 loadUp 照常認領。 */
 function tireOut(w) {
+  putDown(w);
+  w.st = 'rest'; w.rst = rr(REST_T[0], REST_T[1]); w.swt = 0;
+}
+/* 手上的先放下、這一趟作廢（v1.332.0 從 tireOut 拆出來：累了去酒館喝一杯也是先放下，見 game-tools.js 的 barTired） */
+function putDown(w) {
   const held = [];
   for (const j of w.load) {
     const b = blocks[j.b];
@@ -2817,7 +2847,6 @@ function tireOut(w) {
      stepRest 那條每幀收掉 gait 的話，頭幾幀上半身已經彎下去、腳還在擺（e2e 量到 0.49）——
      跟「進休息那一幀姿勢就擺好」同一個理由（見 開發筆記〈「累了在喘」三版挑一版〉）。 */
   w.gait = 0;
-  w.st = 'rest'; w.rst = rr(REST_T[0], REST_T[1]); w.swt = 0;
 }
 function stepRest(w, dt) {
   w.rst -= dt;
@@ -3262,6 +3291,7 @@ function chatFree(w) {
   if (w.chat > 0 || w.chatCd > 0 || w.air || w.burn > 0 || w.fall > 0 || w.flee > 0 ||
       w.carry) return false;
   if (w.fig > 0) return false;              // 正在打架（v1.178）
+  if (w.bar) return false;                  // 正在去酒館喝一杯（v1.332.0）
   if (w.show === 'flip') return false;      // 翻到一半被叫住會在半空停格（v1.178）
   // 正在蓋自己的家的人不算閒（蓋完了在家附近走走的才算，v1.97）
   if (w.hm >= 0 && homeBusy(w)) return false;
@@ -3423,13 +3453,14 @@ function stepFight(w, wi, dt) {
                       ③ 打完一場架（v1.178，見 stepFight）
      汗     sweat  做久了停下來喘的那幾秒（v1.237，見 stepRest）：唯一一種「掛整段」的，
                       喘多久冒多久；引擎那邊會在太陽穴旁再多畫一大滴往下滑（見 putEmotes）
+     啤酒   beer   在酒館吧台前喝完那一刻（v1.332.0，見 game-tools.js 的 barDone）
    v1.131 動了兩處（都是使用者指定）：碰到水不再生氣（見 wetWorker）、
    聊完天不再一律愛心（四分之一是生氣，見 CHAT_MAD）。
 
    冒多久：都是一兩秒。太短來不及看（鏡頭多半沒對著那個人），太長就會一直掛在頭上，
    下一件事發生時反而看不出來是在反應新的那件。 */
 /* sweat 每幀都被 stepRest 推回來，這個數字只管「喘完之後還掛多久才收」 */
-const EMO_T = { bang: 1.6, quest: 1.8, heart: 2.2, anger: 1.8, sweat: 0.3 };
+const EMO_T = { bang: 1.6, quest: 1.8, heart: 2.2, anger: 1.8, sweat: 0.3, beer: 2.2 };
 const EMO_POP = 9;                  // 冒出來／收回去的快慢（聊天泡泡是 12，圖示慢一點才看得到它長出來）
 /* 冒一個圖示。同一種連著觸發只是把倒數推回去（工作單被抽掉三筆、卡住的那一秒半每幀都在
    喊），不會重新彈一次——重彈的話那個圖會一直停在剛冒出來的大小。 */
@@ -3538,8 +3569,8 @@ function rollIdleEvent() {
      而 start 只跟在這裡後面跑——所以「上一件蓋的」就是整份 homes.list，城內那幾間房子
      與樹也在裡面（使用者選的「一起拆」）。解法跟廢棄、被新工地徵收同一條（dropHomes）：
      積木變成地上的碎料，下一件的人撿去用（見 開發筆記〈換成另一件事，上一件蓋的整批解體〉）。
-     **v1.303.0 起例外是燈源的燈架**（h.lamp）：玩家立的，不是哪一件事蓋的，留著。箭塔（v1.331.0，h.tower）同理 */
-  if (evLast && e !== evLast) dropHomes(h => !!(h.lamp || h.tower));
+     **v1.303.0 起例外是燈源的燈架**（h.lamp）：玩家立的，不是哪一件事蓋的，留著。箭塔（v1.331.0）、酒館（v1.332.0）同理（h.tool） */
+  if (evLast && e !== evLast) dropHomes(h => !!(h.lamp || h.tool));
   /* 換一件事，最高點就跟著換成「這一類現在有多少」（見 evAlive）。
      這兩個一定要一起動：只歸零 evPeak、evLast 留給呼叫端設的話，
      中間那一瞬間 evAlive 拿 peak 0 去比，什麼都會判成「還活著」。 */
@@ -5231,8 +5262,9 @@ function pickHomeSite(cx, cz, rad, capOut) {
    皇宮的每一件（v1.308.0）一類 6。
    部落的營火與圖騰柱（v1.309.0）一類 7：蓋小屋、種樹的人不會被派去接（小屋本身是 0，就是事件一的房子）。
    求救招牌的每一段（v1.310.0）一類 8。
-   箭塔（v1.331.0）一類 9：同燈架沒有人會照這一類去找——蓋的只有點下去那時抽到的幾個人（見 game-tools.js 的 towerCrew），蓋好了壞了就沒了 */
-const homeCat = h => h.lamp ? 3 : h.tower ? 9 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.palace ? 6 : h.prop ? 7 : h.sign ? 8 : h.tree ? 1 : 0;
+   箭塔（v1.331.0）一類 9：同燈架沒有人會照這一類去找——蓋的只有點下去那時抽到的幾個人（見 game-tools.js 的 toolCrew），蓋好了壞了就沒了。
+   酒館（v1.332.0）同一類（h.tool：道具叫人蓋的） */
+const homeCat = h => h.lamp ? 3 : h.tool ? 9 : h.shop ? 4 : h.wall ? 2 : h.forest ? 5 : h.palace ? 6 : h.prop ? 7 : h.sign ? 8 : h.tree ? 1 : 0;
 const NO_TAKEN = new Set();                        // 「誰都還沒被認走」：見 updHome 接下一段
 function pickUnfinished(cx, cz, taken, cat) {
   let best = -1, bd = Infinity;
@@ -5528,7 +5560,7 @@ function wallWant(W) {
   const want = { h: Math.min(WALL_IN_MAX, Math.round(area / WALL_IN_AREA)),
                  t: Math.min(WALL_IN_TMAX, Math.round(area / WALL_IN_TAREA)) };
   for (const h of homes.list) {
-    if (h.wall || h.lamp || h.tower || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;   // 城外的不算；燈架（v1.303.0）、箭塔（v1.331.0）不是房子也不是樹
+    if (h.wall || h.lamp || h.tool || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;   // 城外的不算；燈架（v1.303.0）、箭塔（v1.331.0）、酒館（v1.332.0）不是房子也不是樹
     if (h.tree) want.t--; else want.h--;
   }
   return want;
@@ -5538,8 +5570,8 @@ function pickInside(cx, cz, taken, W) {
   let best = -1, bd = Infinity;
   for (let i = 0; i < homes.list.length; i++) {
     const h = homes.list[i];
-    // 燈架（v1.303.0）壞了就沒了，不派人去補（同 homeCat 那一類沒人接）；箭塔（v1.331.0）同理，蓋的人是它自己抽的
-    if (h.wall || h.lamp || h.tower || h.left <= 0 || taken.has(i) || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;
+    // 燈架（v1.303.0）壞了就沒了，不派人去補（同 homeCat 那一類沒人接）；箭塔（v1.331.0）、酒館（v1.332.0）同理，蓋的人是它自己抽的
+    if (h.wall || h.lamp || h.tool || h.left <= 0 || taken.has(i) || Math.abs(h.x) > W || Math.abs(h.z) > W) continue;
     const d = (h.x - cx) ** 2 + (h.z - cz) ** 2;
     if (d < bd) { bd = d; best = i; }
   }

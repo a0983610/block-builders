@@ -130,7 +130,11 @@ const TOOLS = [
   { id: 'tower', n: '箭塔', k: '🏰', cat: 'army',
     /* v1.331.0：也不是破壞道具——點一下，抽 TOW_CREW 個小人去那裡蓋一座木造哨塔，蓋好塔頂生出一位弓箭手守村子（見 placeTower）。
        圖示：🏹 已經給箭雨。照樣接在最後面、照等差階梯解鎖 */
-    tip: '點一下：抽 4 個小人在那裡蓋箭塔，塔頂弓箭手射 60 格內的敵人，最多 4 座、打壞就沒了' }
+    tip: '點一下：抽 4 個小人在那裡蓋箭塔，塔頂弓箭手射 60 格內的敵人，最多 4 座、打壞就沒了' },
+  { id: 'tavern', n: '酒館', k: '🍺', cat: 'safe',
+    /* v1.332.0：也不是破壞道具——點一下，抽 TAV_CREW 個小人去那裡蓋一間酒館，開張之後附近做累了的小人去喝一杯，
+       TAV_T 秒內做事快 TAV_K 倍、不會累（見 placeTavern）。照樣接在最後面、照等差階梯解鎖 */
+    tip: '點一下：抽 4 個小人蓋酒館，附近累了的去喝一杯，60 秒內做事快 1.5 倍、不會累' }
 ];
 /* 道具選單的分類（v1.294.0，使用者：「道具選擇頁面根據種類分類(比較好找)」）：選單與快捷鍵那九格下拉
    照這張的順序一類一組，組裡照 TOOLS 的順序（＝解鎖順序）排。每一把在 TOOLS 裡寫 `cat` 指到這裡的 id。
@@ -195,7 +199,8 @@ const GROUND_TOOL = { hammer: 1, bighammer: 1, ball: 1, tornado: 1, treb: 1, fw:
                       general: 1,                                               // 小人將軍：點哪裡都是叫他騎過去（v1.324.0）
                       hay: 1, banana: 1,                                        // 草料、香蕉：同肉（v1.326.0）
                       allmight: 1,                                              // DETROIT SMASH：點空地＝跑到那裡（v1.329.0）
-                      tower: 1 };                                               // 箭塔：點哪裡就蓋在那裡（v1.331.0）
+                      tower: 1,                                                 // 箭塔：點哪裡就蓋在那裡（v1.331.0）
+                      tavern: 1 };                                              // 酒館：同箭塔（v1.332.0）
 let tool = 'hammer';
 
 /* ── 破壞模式（v1.262.0）──────────────────────────────────
@@ -9274,6 +9279,7 @@ function useTool(hit) {
   /* 箭塔（v1.331.0）：點一下就在那一點開工，蓋不下（工地裡、太靠島邊、壓到房子／樹／城牆／燈架／別座塔）跳提示不蓋。
      生物、小人在點選那一層是透明的（同防禦魔法）；點在建築上就是點在工地裡或房子上，照樣蓋不下 */
   if (tool === 'tower') { placeTower(hit.point); return 0; }
+  if (tool === 'tavern') { placeTavern(hit.point); return 0; }   // 酒館（v1.332.0）：同箭塔，點一下就在那一點開工，蓋不下跳提示不蓋
   // 箭雨（v1.171）：第一下站人、第二下是落點；點在建築上就連高度一起當目標（v1.172）
   if (tool === 'arrow') { aimArrows(hit.point, hit.kind === 'block'); return 0; }
   /* 火槍兵（v1.227）：同箭雨；第二下點在建築上就抬到那一點的高度（仰角自動抬，上限 30°）。
@@ -16021,10 +16027,11 @@ function floodAim(f, tx, ty, tz) {
   f.p = clamp(Math.atan2(-dy, hz), FL_PITCH[0], FL_PITCH[1]);
   f.d = Math.hypot(hz, dy);
 }
-/* 立的地方先清出來：底座底下的碎料往外彈開、站在上面的人與動物推到底座外面（不然會被砌在柱子裡） */
-function floodClear(x, z) {
+/* 立的地方先清出來：底座底下的碎料往外彈開、站在上面的人與動物推到底座外面（不然會被砌在柱子裡）。
+   r＝清多大（占地半寬）：燈架、火把、箭塔都是 2，酒館（v1.332.0）比較大，傳它自己的 */
+function floodClear(x, z, r = 2) {
   for (const b of blocks) {
-    if (b.st !== FREE || Math.abs(b.x - x) > 2.1 || Math.abs(b.z - z) > 2.1) continue;
+    if (b.st !== FREE || Math.abs(b.x - x) > r + 0.1 || Math.abs(b.z - z) > r + 0.1) continue;
     let dx = b.x - x, dz = b.z - z, d = Math.hypot(dx, dz);
     if (d < 0.01) { dx = 1; dz = 0; d = 1; }
     freeBlock(b);
@@ -16033,9 +16040,9 @@ function floodClear(x, z) {
     b.ax = rr(-6, 6); b.ay = rr(-6, 6); b.az = rr(-6, 6);
   }
   const push = o => {
-    if (Math.abs(o.x - x) > 2 || Math.abs(o.z - z) > 2) return;
+    if (Math.abs(o.x - x) > r || Math.abs(o.z - z) > r) return;
     const dx = o.x - x, dz = o.z - z;
-    if (Math.abs(dx) > Math.abs(dz)) o.x = x + (dx < 0 ? -2.1 : 2.1); else o.z = z + (dz < 0 ? -2.1 : 2.1);
+    if (Math.abs(dx) > Math.abs(dz)) o.x = x + (dx < 0 ? -r - 0.1 : r + 0.1); else o.z = z + (dz < 0 ? -r - 0.1 : r + 0.1);
   };
   for (const w of workers) if (!w.air) push(w);
   if (beasts) for (const m of beasts) if (m.herd && !m.air) push(m);
@@ -18283,7 +18290,7 @@ function stepGen(m, dt) {
 
    塔是真的積木，**掛在 homes.list 上**（h.tower，同燈架那一套：支撐垮塌、每一把道具打得到、會飛的東西撞得到、換場只收新工地裡的），
    蓋的人走小人蓋房子那一套（updHome：挖料、搬、砌）。homeCat 自己一類 9：沒有人會照這一類去找，蓋的只有抽到的那幾個。
-   **抽到的人一直是它的，直到蓋好**（towerCrew）：閒晃事件開工會各自重新派人、收工會把所有人的 hm 放掉（stopHomes），
+   **抽到的人一直是它的，直到蓋好**（toolCrew，v1.332.0 起酒館共用）：閒晃事件開工會各自重新派人、收工會把所有人的 hm 放掉（stopHomes），
    七件事各自寫一份挑人，與其每一處都擋，不如這邊每一幀把被叫走的認回來。施工中他們怎麼走到 updHome 見 game-workers.js 的 updWorker。
    弓箭手是小人那一顆網格畫的（接在小人、弓箭手、火槍兵…後面，見 game-ui.js 的 draw），只是站在平台上（m.y）。
    見 開發筆記〈道具：箭塔〉 */
@@ -18330,7 +18337,7 @@ function placeTower(p) {
   const slots = towerSlots(p.x, p.z), at = new Map();
   slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
   const h = { id: homeSeq++, x: p.x, z: p.z, r: TOW_HALF * Math.SQRT2, kind: 'tower', at, ox: 1.5, oz: 1.5,
-              slots, left: slots.length, n: 0, tower: 1, done: false };
+              slots, left: slots.length, n: 0, tower: 1, tool: 1, done: false };
   homeBox(h);
   markHomeF6(h);
   homes.list.push(h);
@@ -18338,7 +18345,7 @@ function placeTower(p) {
   /* crew 蓋的人、man 塔頂的弓箭手（蓋好才有）；ct 這一支拉弓拉了多久、fo／fx／fz／vx／vz 盯著的那一隻與牠的速度（同將軍的 genTrack） */
   const t = { h, x: p.x, z: p.z, crew: [], man: null, seq: ++towerSeq, down: 0, ut: 0, ct: 0, fo: null, fx: 0, fz: 0, vx: 0, vz: 0 };
   towers.push(t);
-  towerCrew(t, homes.list.length - 1);
+  toolCrew(t, homes.list.length - 1, TOW_CREW);
   return t;
 }
 /* 場上滿 TOW_MAX 座就把最早那座收掉（同燈架的 lightRoom） */
@@ -18350,17 +18357,18 @@ function towerRoom() {
 /* 蓋的人（還沒蓋好之前每一幀）：少了就補（離塔近的先；工程師、國王不抽——一個在看圖指揮、一個在皇宮當國王），
    被叫走的認回來；倒地、飛著、燒著、逃命的等他站起來再說。
    **抽到的人不慶祝**：完工慶祝中（cheerOn）的人走不到 updHome，抽到的這一輪直接散場（cheer 推到 CHEER_T ＋ cout；
-   預覽量到的：剛完工時點下去，4 個人圍著地標跳，48 秒一塊都沒砌） */
-function towerCrew(t, hi) {
+   預覽量到的：剛完工時點下去，4 個人圍著地標跳，48 秒一塊都沒砌）。
+   v1.332.0 起酒館也走這一支（n 是要幾個人；已經被別座箭塔、別間酒館抽走的不重複抽） */
+function toolCrew(t, hi, n) {
   if (deluge) return;                                      // 淹著的時候不派人（同閒晃事件的鐘，見 stepIdleEvent）
   const ok = w => !(w.air || w.burn > 0 || w.flee > 0 || w.fall > 0) && !slain(w);
   for (let i = t.crew.length - 1; i >= 0; i--) if (workers.indexOf(t.crew[i]) < 0 || slain(t.crew[i])) t.crew.splice(i, 1);
-  if (t.crew.length < TOW_CREW) {
+  if (t.crew.length < n) {
     const busy = new Set();
-    for (const q of towers) for (const w of q.crew) busy.add(w);
+    for (const L of [towers, taverns]) if (L) for (const q of L) for (const w of q.crew) busy.add(w);
     const pool = workers.filter(w => ok(w) && !busy.has(w) && !w.eng && !w.king)
                         .sort((a, b) => Math.hypot(a.x - t.x, a.z - t.z) - Math.hypot(b.x - t.x, b.z - t.z));
-    for (const w of pool) { if (t.crew.length >= TOW_CREW) break; t.crew.push(w); }
+    for (const w of pool) { if (t.crew.length >= n) break; t.crew.push(w); }
   }
   for (const w of t.crew) {
     if (w.hm === hi || !ok(w)) continue;
@@ -18475,7 +18483,7 @@ function stepTowers(dt) {
     const h = t.h, hi = homes ? homes.list.indexOf(h) : -1;
     if (hi < 0) { towerDown(t); continue; }        // 被別人收掉了（新工地徵收、剩兩成五廢棄、閒晃事件開工壓到、大洪水）
     if (!t.man) {
-      if (!h.done) { towerCrew(t, hi); continue; }
+      if (!h.done) { toolCrew(t, hi, TOW_CREW); continue; }
       towerUp(t, hi);
     }
     if (!TOW_FOOT.some(([a, b]) => h.slots[h.at.get(a + ':' + TOW_H + ':' + b)].filled)) { towerDown(t); continue; }   // 腳下沒了：壞了就沒了
@@ -18490,6 +18498,189 @@ function towerMen() {
   _twMen.length = 0;
   for (const t of towers) if (t.man) _twMen.push(t.man);
   return _twMen;
+}
+
+/* ── 道具：酒館（v1.332.0）───────────────────────────────
+   使用者：「增加道具 在指定的地點開設酒館 附近的小人會去喝酒 效果是加強工作效率／一樣要小人先去蓋出來」。
+   問過選的：效果是**做事整個變快＋不會累**（上工那一段照 TAV_K 倍的時間跑、連續工作的鐘停著，見 game-workers.js 的 updWorker）、
+   **1.5 倍、維持 60 秒**、**累了就去喝一杯**（做滿 REST_AT 要喘的那一刻，人在酒館 TAV_NEAR 以內就改去喝、喝完帶著效果回去上工；
+   閒著的人——偷懶的、完工後閒晃的——走到附近也會進去，見 barPass）、**臉紅＋頭上冒 🍺**（引擎的 w.flush 與 beer 圖示）。
+   「一樣要小人先去蓋出來」照箭塔那一套：掛在 homes.list（h.tool，homeCat 9）、點下去抽 TAV_CREW 個人去蓋（toolCrew），蓋好才開張。
+   沒問到、照箭塔的：點的那一點蓋不下就跳提示不蓋、最多 TAV_MAX 間（滿了擠掉最早那間）、沒人修、閒晃事件開工壓到照拆、不進存檔。
+   見 開發筆記〈道具：酒館〉 */
+const TAV_MAX = TOW_MAX;                 // 場上最多幾間（同箭塔）
+const TAV_CREW = TOW_CREW;               // 抽幾個人去蓋（同箭塔）
+const TAV_NEAR = SHOP_WALK;              // 多近算「附近的小人」：同逛商店街挑下一間的範圍（30）
+const TAV_K = 1.5, TAV_T = 60;           // 喝過之後上工快幾倍、維持幾秒（使用者選的）
+const TAV_PASS = 0.3;                    // 閒著的人走完一段、人在酒館附近：幾成進去喝一杯
+const TAV_DRINK = REST_T;                // 喝幾秒：同喘一口氣（喝一杯就是代替原地喘）
+const TAV_SIP = 1.7;                     // 喝一口的週期（舉起來、喝、放下）
+const TAV_FRONT = [1.4, 2.6];            // 站在吧台前多遠喝（同逛街站在店門口那一套，見 shopSpot）
+const TAV_FADE = 4;                      // 臉紅：喝的時候幾秒紅透、效果最後幾秒慢慢退
+let taverns = null;
+let tavernSeq = 0;                       // 開的順序（擠掉最早那一間用）
+/* 造型：露天酒棚（預覽三款裡使用者挑的，另外兩款是木屋酒館 101 塊、石砌一樓＋木造二樓的兩層酒館 137 塊）。
+   W×D：四角四根柱子 TAV_POST_H 層高、正面一排吧台（兩層：檯身＋檯面）、後面一排酒桶（左邊兩個疊兩層）、
+   柱頂上一整片紅白條紋棚子、棚頂正面放一個 2×2 的大啤酒杯（琥珀杯身＋白泡沫）。
+   list 一列是 [u 寬, gy 層, v 深, 顏色]，v＝D−1 是正面（吧台那一面）；照這個順序排就是砌的順序（homeFree 挑清單上第一個放得上去的），
+   所以是柱子一起長高 → 吧台、酒桶 → 棚子從柱頂往中間鋪 → 招牌 */
+const TAV_POST = [0.36, 0.24, 0.14], TAV_BAR = [0.42, 0.28, 0.17], TAV_TOP = [0.68, 0.52, 0.33], TAV_KEG = [0.52, 0.33, 0.18];
+const TAV_AWN = [[0.8, 0.2, 0.18], [0.96, 0.92, 0.82]], TAV_BEER = [0.89, 0.64, 0.2], TAV_FOAM = [0.98, 0.96, 0.9];
+const TAV_POST_H = 3;
+function tavernBody() {
+  const W = 6, D = 4, H = TAV_POST_H, list = [];
+  for (let gy = 0; gy < H; gy++) for (const [u, v] of [[0, 0], [W - 1, 0], [0, D - 1], [W - 1, D - 1]]) list.push([u, gy, v, TAV_POST]);
+  for (let gy = 0; gy < 2; gy++) for (let u = 1; u < W - 1; u++) list.push([u, gy, D - 1, gy ? TAV_TOP : TAV_BAR]);   // 吧台
+  for (let u = 1; u < W - 1; u++) list.push([u, 0, 0, TAV_KEG]);                                                   // 酒桶
+  list.push([1, 1, 0, TAV_KEG], [2, 1, 0, TAV_KEG]);
+  for (let u = 0; u < W; u++) for (let v = 0; v < D; v++) list.push([u, H, v, TAV_AWN[u % 2]]);                     // 棚子
+  for (let gy = H + 1; gy <= H + 2; gy++) for (const u of [W / 2 - 1, W / 2]) list.push([u, gy, D - 1, gy === H + 1 ? TAV_BEER : TAV_FOAM]);   // 招牌
+  return { W, D, list };
+}
+/* 格子：tavernBody 的 (u, gy, v) 轉到世界——正面（+v）朝 (fx, fz)、寬那一邊（+u）朝 (fz, −fx)。
+   (i, k) 是世界軸上的格子編號（h.at 用它查，見 homeSolid），ox／oz 是編號 0 那一格離中心多遠；中心（不算招牌）落在 (x, z)。
+   half 是占地半寬（蓋不蓋得下、清場都照它），r 是外接圓 */
+function tavernSlots(x, z, fx, fz) {
+  const B = tavernBody(), cu = (B.W - 1) / 2, cv = (B.D - 1) / 2;
+  const off = B.list.map(([u, gy, v, c]) => ({ dx: (u - cu) * fz + (v - cv) * fx, dz: -(u - cu) * fx + (v - cv) * fz, gy, c }));
+  let ox = 0, oz = 0, half = 0, r = 0;
+  for (const o of off) {
+    ox = Math.max(ox, -o.dx); oz = Math.max(oz, -o.dz);
+    half = Math.max(half, Math.abs(o.dx) + 0.5, Math.abs(o.dz) + 0.5);
+    r = Math.max(r, Math.hypot(o.dx, o.dz) + 0.71);
+  }
+  const slots = off.map(o => ({ x: x + o.dx, y: o.gy + HB, z: z + o.dz, c: o.c, i: Math.round(o.dx + ox), k: Math.round(o.dz + oz),
+                                gy: o.gy, filled: false, claimed: -1 }));
+  return { slots, ox, oz, half, r, W: B.W };
+}
+/* 點一下（useTool）：蓋得下就開工、抽人，回傳那一間；蓋不下跳提示、回 null。
+   正面朝工地中心（四個方向挑最接近的那一個）：喝酒的人多半是從工地那邊走過來的 */
+function placeTavern(p) {
+  const ax = Math.abs(p.x) > Math.abs(p.z), fx = ax ? -Math.sign(p.x) : 0, fz = ax ? 0 : (p.z > 0 ? -1 : 1);
+  const S = tavernSlots(p.x, p.z, fx, fz);
+  if (!floodFits(p.x, p.z, S.half)) { toast('🍺 這裡蓋不下酒館', '離建築、房子、樹遠一點，也別太靠島邊'); return null; }
+  tavernRoom();
+  if (!taverns) taverns = [];
+  if (!homes) homes = { list: [] };
+  const at = new Map();
+  S.slots.forEach((sl, i) => at.set(sl.i + ':' + sl.gy + ':' + sl.k, i));
+  const h = { id: homeSeq++, x: p.x, z: p.z, r: S.r, kind: 'tavern', at, ox: S.ox, oz: S.oz,
+              slots: S.slots, left: S.slots.length, n: 0, tavern: 1, tool: 1, done: false };
+  homeBox(h);
+  markHomeF6(h);
+  homes.list.push(h);
+  floodClear(p.x, p.z, S.half);
+  /* crew 蓋的人、open 開張了沒（第一次蓋好那一刻起） */
+  const t = { h, x: p.x, z: p.z, fx, fz, w: S.W, crew: [], open: 0, seq: ++tavernSeq, down: 0 };
+  taverns.push(t);
+  toolCrew(t, homes.list.length - 1, TAV_CREW);
+  return t;
+}
+/* 場上滿 TAV_MAX 間就把最早那間收掉（同箭塔的 towerRoom） */
+function tavernRoom() {
+  let n = 0, old = null;
+  if (taverns) for (const t of taverns) if (!t.down) { n++; if (!old || t.seq < old.seq) old = t; }
+  if (n >= TAV_MAX) tavernDown(old);
+}
+/* 收掉一間（擠掉、清單被別人收掉）：剩下的散成碎料（dropHomes 也把還在蓋的人放回去）；
+   正在走過去、正在喝的人下一幀自己散掉（見 stepBar） */
+function tavernDown(t) {
+  if (t.down) return;
+  t.down = 1; t.open = 0;
+  t.crew.length = 0;
+  if (homes && homes.list.indexOf(t.h) >= 0) { dropHomes(q => q !== t.h); homeOwnAt = -1; }   // 清單重排過（見 floodBreak）
+}
+function stepTaverns(dt) {
+  if (!taverns) return;
+  for (let i = taverns.length - 1; i >= 0; i--) {
+    const t = taverns[i], hi = t.down || !homes ? -1 : homes.list.indexOf(t.h);
+    /* 被擠掉、或被別人收掉了（新工地徵收、剩兩成五廢棄、閒晃事件開工壓到、大洪水） */
+    if (hi < 0) { tavernDown(t); taverns.splice(i, 1); continue; }
+    if (t.open) continue;
+    if (!t.h.done) { toolCrew(t, hi, TAV_CREW); continue; }
+    /* 蓋好了（第一次 h.done）：開張，蓋的人放回去做原本的事（同箭塔的 towerUp）。之後打壞了照開，沒人修 */
+    for (const w of t.crew) if (w.hm === hi) { releaseWorker(w); w.hm = -1; w.hst = ''; }
+    t.crew.length = 0;
+    t.open = 1;
+    spawnDust({ x: t.x + t.fx * 3, y: 1, z: t.z + t.fz * 3 }, 1.2, 10);
+  }
+  if (!taverns.length) taverns = null;
+}
+/* 離 w 最近、開著、在 TAV_NEAR 以內的那一間 */
+function tavernNear(w) {
+  let best = null, bd = TAV_NEAR;
+  if (taverns) for (const t of taverns) {
+    if (!t.open || t.down) continue;
+    const d = Math.hypot(t.x - w.x, t.z - w.z);
+    if (d <= bd) { bd = d; best = t; }
+  }
+  return best;
+}
+/* 做滿 REST_AT 要喘的那一刻（game-workers.js 的 updWorker）：附近有開著的酒館就手上的先放下、改去喝一杯。回 true＝去了 */
+function barTired(w) {
+  const t = tavernNear(w);
+  if (!t) return false;
+  putDown(w);
+  barGo(w, t);
+  return true;
+}
+/* 閒著的人（偷懶的、完工後閒晃的、沒工作在閒晃的）走完一段（wander）：喝過的效果已經退了、人在酒館附近，TAV_PASS 的機會進去喝。
+   在蓋房子、城牆那些閒晃事件的人（hm）與國王不去。回 true＝去了 */
+function barPass(w) {
+  if (!taverns || w.tipsy > 0 || w.hm >= 0 || w.king) return false;
+  const t = tavernNear(w);
+  if (!t || Math.random() >= TAV_PASS) return false;
+  barGo(w, t);
+  return true;
+}
+/* 動身：挑吧台前的一點（沿著吧台錯開，不然全擠在正中間），bdt −1＝還在走過去 */
+function barGo(w, t) {
+  endShow(w);
+  w.bar = t; w.bdt = -1; w.st = 'idle'; w.pause = 0;
+  const s = homeSpan(t.h), rx = t.fz, rz = -t.fx;
+  const edge = t.fx > 0 ? s.x1 - t.x : t.fx < 0 ? t.x - s.x0 : t.fz > 0 ? s.z1 - t.z : t.z - s.z0;   // 正面（吧台外緣）離中心多遠
+  const j = rr(-0.5, 0.5) * (t.w - 1), d = edge + rr(TAV_FRONT[0], TAV_FRONT[1]);
+  w.tx = t.x + t.fx * d + rx * j; w.tz = t.z + t.fz * d + rz * j;
+  w.lkx = t.x + t.fx * edge + rx * j; w.lkz = t.z + t.fz * edge + rz * j;   // 喝的時候面向吧台
+}
+/* 去喝一杯的那一段（updWorker 在逃命、聊天、絆倒之後接過來）。回 true＝這一幀吃掉了；false＝不喝了，照常往下走 */
+function stepBar(w, dt) {
+  /* 不喝了：酒館沒了，或完工慶祝開始了（慶祝要全員到齊，同聊天那一條，見 updWorker） */
+  if (w.bar.down || (idlePhase() && cheerOn(w))) { barEnd(w); return false; }
+  if (w.bdt < 0) {                                         // 走過去（路上走的不算閒晃里程，同 castTrip）
+    const leg = w.leg, at = strollTo(w, dt);
+    w.leg = leg;
+    if (!at) return true;
+    w.bdt = rr(TAV_DRINK[0], TAV_DRINK[1]); w.ph = 0;
+  }
+  /* 喝：面向吧台站著，一口一個 TAV_SIP——前兩成五舉到嘴前、停著喝到六成、再兩成五放下，剩下端在胸前 */
+  w.a = Math.atan2(w.lkx - w.x, w.lkz - w.z);
+  w.gait += (0 - w.gait) * Math.min(1, dt * 8);
+  w.ph += dt;
+  const u = (w.ph % TAV_SIP) / TAV_SIP, ease = q => q * q * (3 - 2 * q);
+  w.sip = u < 0.25 ? ease(u / 0.25) : u < 0.6 ? 1 : u < 0.85 ? 1 - ease((u - 0.6) / 0.25) : 0;
+  w.mug = 1;
+  w.flush = Math.min(1, w.flush + dt / TAV_FADE);
+  if ((w.bdt -= dt) <= 0) barDone(w);
+  return true;
+}
+/* 喝完：TAV_T 秒做事快、不會累（連續工作的鐘歸零，同喘完那一下），頭上冒 🍺；偷懶的喝完收心上工 */
+function barDone(w) {
+  w.tipsy = TAV_T; w.toil = 0; w.flush = 1;
+  showEmo(w, 'beer');
+  if (w.lazy && phase === 'build') quitLazy(w);
+  barEnd(w);
+}
+/* 散掉：手上的杯子收掉，接著做原本的事——上工的回去領工作單，閒著的從腳下接著閒晃（目標設在腳下，同魔法師 mw 那一招） */
+function barEnd(w) {
+  w.bar = null; w.bdt = 0; w.mug = 0; w.sip = 0;
+  w.st = 'idle'; w.tx = w.x; w.tz = w.z; w.leg = 0;
+}
+/* 喝過酒的鐘（updWorker 擺在所有 return 之前，同表情圖示的鐘）：效果倒數；臉紅照剩幾秒退（最後 TAV_FADE 秒），
+   喝到一半散掉的也慢慢退。正在喝的那一段由 stepBar 往上推 */
+function stepTipsy(w, dt) {
+  if (w.tipsy > 0) w.tipsy = Math.max(0, w.tipsy - dt);
+  if (!w.bar) w.flush = w.tipsy > 0 ? Math.min(1, w.tipsy / TAV_FADE) : Math.max(0, w.flush - dt / TAV_FADE);
 }
 
 /* ── 大洪水（v1.325.0）───────────────────────────────────────

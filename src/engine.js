@@ -760,6 +760,7 @@ const ENG = (function () {
        魔法師的袍下襬、帽帶、鬍子兩塊
      ＋ v1.227 火槍兵的火繩槍七塊（床尾、台木、槍管、金箍、火挾、火繩頭、槊杖）
      ＋ v1.308.0 國王的十四塊（頂髮、王冠六塊、紅寶石、披風、毛領、鞭柄、鞭身三截）
+     ＋ v1.332.0 酒館的啤酒杯三塊（杯身、啤酒泡、把手）
      （v1.121 曾經有表情圖示的八塊，v1.122 換成貼圖之後收掉了，見 paintEmoAtlas；
      火槍兵的陣笠四塊 v1.227～v1.251 有，v1.252 改回一般小人的安全帽之後收掉了）。
      全部共用同一個 InstancedMesh，不多一個 draw call。
@@ -772,7 +773,7 @@ const ENG = (function () {
        58 塊、跳過且條件查 REQ 表          0.79～0.86ms   ← 現在這個
      也就是**部位多了六成、一般工人畫的從 14 塊變 33 塊，每幀成本跟改版前同一個帶**。
      同一個場景的 draw 也一樣（改版前 1.61～2.01ms，現在 1.56～1.99ms）。 */
-  const WPARTS = 79;
+  const WPARTS = 82;
   /* 蘑菇雲一朵就吃掉三百多顆，420 會把爆炸的煙擠掉。
      核彈還會一次點著整棟的碎料（那些煙又是兩百多顆），兩邊要同時演得下才夠。
      v1.118 從 720 加到 900：打雷的烏雲也借這顆 mesh 畫（一朵 150 團），
@@ -4947,7 +4948,8 @@ if (vAo.x + vAo.y > 0.5) {
      是 sweat 附帶的「太陽穴旁一大滴汗」（見 putEmotes），規則那邊不會拿它當 w.emo。 */
   /* v1.304.0 再多一格 z：睡著的動物頭上一個個往上飄的 Z（見 putZzz）。它也不是一種表情
      （掛的不是 w.emo，是 w.zzK），所以不在 EMO_KINDS 裡。 */
-  const EMO_KINDS = ['bang', 'quest', 'heart', 'anger', 'sweat'];   // 規則那邊用這幾個字
+  /* v1.332.0 多一種 beer（🍺）：在酒館喝完那一刻冒一下（見 game-tools.js 的 barDone） */
+  const EMO_KINDS = ['bang', 'quest', 'heart', 'anger', 'sweat', 'beer'];   // 規則那邊用這幾個字
   const EMO_CELLS = EMO_KINDS.concat(['drop', 'z']);                // 貼圖上的順序
   const EMO_IDX = {};
   EMO_CELLS.forEach((k, i) => { EMO_IDX[k] = i; });
@@ -4963,7 +4965,7 @@ if (vAo.x + vAo.y > 0.5) {
   const DROP_SLIDE = 0.24;           // 一輪往下滑多遠
   const EMO_MAX = MAXW * 2;          // 一個人最多兩片（💦 ＋ 那一滴）
   const EMO_COL = { bang: '#ffd23c', quest: '#54c7f0', heart: '#ff5f8a', anger: '#e8342a',
-                    sweat: '#6cd2ff', drop: '#6cd2ff', z: '#e4f0ff' };
+                    sweat: '#6cd2ff', drop: '#6cd2ff', z: '#e4f0ff', beer: '#f0a530' };
   /* 一顆水滴：圓的那頭圓心在 (x, y)、半徑 r，尖端朝 ang 那個方向拉出去 2.1r（兩條切線收成尖） */
   function emoTear(g, x, y, r, ang) {
     const d = 2.1 * r, h = Math.acos(r / d);
@@ -5014,6 +5016,19 @@ if (vAo.x + vAo.y > 0.5) {
       [[-2.25, 57, 14], [-Math.PI / 2, 68, 17], [-Math.PI + 2.25, 57, 14]].forEach(([a, d, r]) => {
         emoTear(g, ox + Math.cos(a) * d, oy + Math.sin(a) * d, r, a + Math.PI);
       });
+    } else if (kind === 'beer') {
+      /* 啤酒（🍺，v1.332.0）：琥珀色的杯身 ＋ 右邊一個把手（粗線畫的口字）＋ 杯口一團白泡沫（三顆圓疊起來、往外溢一點）。
+         杯身留在 14～114 裡偏左，把手才擺得下 */
+      g.fillRect(cx - 38, 40, 58, 72);                          // 杯身
+      g.lineWidth = 13;
+      g.beginPath();
+      g.moveTo(cx + 20, 54); g.lineTo(cx + 42, 54); g.lineTo(cx + 42, 92); g.lineTo(cx + 20, 92);
+      g.stroke();
+      g.fillStyle = '#c47a14';                                  // 杯身上兩道深一點的直紋（玻璃杯的稜）
+      g.fillRect(cx - 24, 52, 8, 52); g.fillRect(cx - 2, 52, 8, 52);
+      g.fillStyle = '#fffaf0';                                  // 泡沫
+      for (const [x, y, r] of [[cx - 30, 38, 16], [cx - 9, 32, 18], [cx + 14, 38, 15]]) { g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill(); }
+      g.fillRect(cx - 44, 36, 66, 14);
     } else if (kind === 'drop') {
       emoTear(g, cx, 80, 30, -Math.PI / 2);   // 太陽穴那一大滴：尖端朝上的一顆（v1.237）
     } else if (kind === 'z') {
@@ -5073,6 +5088,8 @@ if (vAo.x + vAo.y > 0.5) {
        cloth 衣服：肌肉小人裸上半身，這幾塊他沒有
        hard  魔法師沒有的那幾塊（安全帽三塊 ＋ 工人的圍兜）
        on    掛在手臂上，沿著手臂的軸往下多遠（負的＝往上） */
+  /* 啤酒杯（v1.332.0，見 mugPose）：杯身多大、泡沫多厚 */
+  const MUG_S = [0.17, 0.21, 0.17], MUG_FOAM = 0.06;
   const BODY = [
     { p: [0, 0.535, 0], s: [0.48, 0.40, 0.36], c: 'suit', alt: 'robe', cloth: 1 },   // 身體
     { p: [0, 0.96, 0], s: [0.50, 0.44, 0.48], c: 'skin' },   // 頭（Q 版：比肩膀還寬）
@@ -5209,6 +5226,12 @@ if (vAo.x + vAo.y > 0.5) {
     { p: [ARM_X, 0.15, 0.30], s: [0.035, WHIP_SEG, 0.035], c: 'lash', king: 1, wh: 2 },     // 鞭身三截
     { p: [ARM_X, 0.05, 0.45], s: [0.035, WHIP_SEG, 0.035], c: 'lash', king: 1, wh: 3 },
     { p: [ARM_X, 0.02, 0.70], s: [0.032, WHIP_SEG, 0.032], c: 'lash', king: 1, wh: 4 },
+    /* ── 啤酒杯（v1.332.0，道具「酒館」）─────────────────────────
+       在酒館吧台前喝的那幾秒拿在右手（w.mug），其他時候縮成 0。位置與傾角在 putWorker 裡照 w.sip 重算（見 mugPose），
+       這裡寫的是預設值。泡沫借聊天泡泡的白。擺在魔法師那一段**前面**：測試靠「BODY 最後一塊是寶珠」認寶珠。 */
+    { p: [0, 0.6, 0.4], s: MUG_S, c: 'beer', mug: 1 },                          // 杯身（琥珀色的啤酒）
+    { p: [0, 0.7, 0.4], s: [MUG_S[0] + 0.03, MUG_FOAM, MUG_S[2] + 0.03], c: 'talk', mug: 2 },   // 啤酒泡（比杯口寬一圈）
+    { p: [0, 0.6, 0.4], s: [0.05, 0.13, 0.07], c: 'beer', mug: 3 },             // 把手（貼在拿杯那隻手這一側）
     /* ── 魔法師（v1.64，一樣接在最後面）───────────────────────────
        巫師帽是三塊往上收的方塊（帽簷 → 帽身 → 帽尖），voxel 世界裡的圓錐就長這樣；
        只有兩塊的話收得不夠急，遠看跟安全帽分不出來。戴這頂的人不戴安全帽
@@ -5278,7 +5301,8 @@ if (vAo.x + vAo.y > 0.5) {
     crown: [0xf2c23a],
     jewel: [0xd8263a],
     cape: [0xa82230],
-    lash: [0x3a2a1e]
+    lash: [0x3a2a1e],
+    beer: [0xe3a234]        // 酒館的啤酒杯（v1.332.0）：琥珀色
   };
   const ORB_LIT = new T.Color(0xffffff);   // 施法時寶珠往這個亮色靠（要跟金色差得夠開才看得出亮起來）
   const EMBER_HI = new T.Color(0xffd27a);  // 火繩頭明滅往這個亮色靠
@@ -5296,15 +5320,23 @@ if (vAo.x + vAo.y > 0.5) {
   const RQ_MAGE = 1, RQ_PLAIN = 2, RQ_MUS = 4, RQ_CLOTH = 8, RQ_PLAN = 16,
         RQ_BUB = 32, RQ_DIG = 64, RQ_BOW = 128, RQ_DRAW = 256,
         RQ_GUN = 512, RQ_ROD = 1024,                       // v1.227 火槍兵
-        RQ_KING = 2048;                                    // v1.308.0 國王
+        RQ_KING = 2048,                                    // v1.308.0 國王
+        RQ_MUG = 4096;                                     // v1.332.0 酒館的啤酒杯
   const REQ = new Uint16Array(WPARTS);
   for (let k = 0; k < WPARTS; k++) {
     const b = BODY[k];
     REQ[k] = (b.wiz ? RQ_MAGE : 0) | (b.hard ? RQ_PLAIN : 0) | (b.mus ? RQ_MUS : 0) |
              (b.cloth ? RQ_CLOTH : 0) | (b.plan ? RQ_PLAN : 0) | (b.bub ? RQ_BUB : 0) |
              (b.dig ? RQ_DIG : 0) | (b.bow ? RQ_BOW : 0) | (b.nock ? RQ_DRAW : 0) |
-             (b.gun ? RQ_GUN : 0) | (b.rod ? RQ_ROD : 0) | (b.king ? RQ_KING : 0);
+             (b.gun ? RQ_GUN : 0) | (b.rod ? RQ_ROD : 0) | (b.king ? RQ_KING : 0) |
+             (b.mug ? RQ_MUG : 0);
   }
+  /* 喝過酒臉紅（v1.332.0，w.flush 0～1，規則那邊給）：腮紅那兩塊往深紅靠、放大一點，整顆頭淡淡地往粉紅靠。
+     哪幾塊是腮紅開機時查一次（同 REQ：迴圈裡不碰 BODY[k] 的字串欄位） */
+  const FLUSH_P = new Uint8Array(WPARTS);
+  for (let k = 0; k < WPARTS; k++) FLUSH_P[k] = BODY[k].c === 'blush' ? 1 : k === 1 ? 2 : 0;
+  const FLUSH_RED = new T.Color(0xe0303a), FLUSH_FACE = new T.Color(0xf09080);
+  const FLUSH_FACE_K = 0.3, FLUSH_GROW = 0.5;   // 頭往粉紅靠幾成、腮紅放大幾成
   /* 國王拿鞭子的那隻手與鞭子（v1.308.0）。一個人算一次，手臂分支與鞭子那四塊都讀這幾個暫存。
      三種姿勢：甩鞭（w.whip 0～1：舉到頭頂後面 → 往前甩直 → 收回來，鞭身一截一截慢半拍跟上，
      WHIP_HIT 那一刻三截剛好都甩直往前）、指人（w.cmd：手舉起來朝前指，同工程師指揮那個角度，鞭子垂著）、
@@ -5347,6 +5379,23 @@ if (vAo.x + vAo.y > 0.5) {
       _whY[i + 1] = py + ey * WHIP_SEG / 2; _whZ[i + 1] = pz + ez * WHIP_SEG / 2; _whA[i + 1] = Math.PI - th;
       py += ey * WHIP_SEG; pz += ez * WHIP_SEG;
     }
+  }
+  /* 拿啤酒杯的右手與杯子（v1.332.0，道具「酒館」）。w.sip 0～1：0＝端在胸前，1＝舉到嘴前喝一口（規則那邊照節拍推，見 game-tools.js 的 TAV_SIP）。
+     一列是 [手臂角, 手臂中心 x, 比 ARM_Y 高多少, 手臂中心 z]，中間照 sip 內插。手臂只有 0.34 長，光轉角度搆不到嘴，
+     所以喝的時候整支往身體中線、往前挪（同拍手那一段的做法）。杯子掛在拳頭裡（離手臂中心 HAND_ON），
+     杯身在拳頭靠身體那一側、把手貼著拳頭；喝的時候杯口往臉那邊倒 MUG_TILT。 */
+  const MUG_HOLD = [-1.30, 0.24, 0.06, 0.08], MUG_SIP = [-2.10, 0.17, 0.10, 0.17];
+  const MUG_TILT = -0.75, MUG_IN = 0.05, MUG_LOW = 0.08;   // 喝的時候杯子傾多少、杯身離拳頭多遠、杯底比拳頭低多少
+  const _mg = { r: 0, x: 0, y: 0, z: 0, mx: 0, my: 0, mz: 0, t: 0 };
+  function mugPose(w) {
+    const s = w.sip || 0, f = q => MUG_HOLD[q] + (MUG_SIP[q] - MUG_HOLD[q]) * s;
+    const r = f(0);
+    _mg.r = r; _mg.y = ARM_Y + f(2); _mg.z = f(3);
+    _mg.x = w.mus ? MUS_ARM_X : f(1);                      // 肌肉小人的手臂一律掛在 MUS_ARM_X（見手臂那一段的 w.mus），杯子跟著他的手
+    _mg.mx = _mg.x - MUG_S[0] / 2 - MUG_IN;
+    _mg.my = _mg.y - Math.cos(r) * HAND_ON - MUG_LOW;
+    _mg.mz = _mg.z - Math.sin(r) * HAND_ON;
+    _mg.t = MUG_TILT * s;
   }
 
   function setWorkerCount(n) { workerMesh.count = Math.min(n, MAXW) * WPARTS; }
@@ -5450,9 +5499,10 @@ if (vAo.x + vAo.y > 0.5) {
                 (w.plan ? RQ_PLAN : 0) | (w.bub >= 0.02 ? RQ_BUB : 0) |
                 (w.dig ? RQ_DIG : 0) | (w.bow ? RQ_BOW : 0) |
                 (w.draw >= 0.05 ? RQ_DRAW : 0) |
-                (w.gun ? RQ_GUN : 0) |
+                (w.gun ? RQ_GUN : 0) | (w.mug ? RQ_MUG : 0) |
                 (w.gun && ((w.gk || 0) < 0.5 ? w.gp : w.gq || w.gp) === 'load' ? RQ_ROD : 0);
     if (w.gun) gunPose(w);
+    if (w.mug) mugPose(w);                   // v1.332.0：酒館吧台前拿著啤酒杯
     if (w.bow) bowFrame(w);                  // v1.299.0：弓拿著走／舉到一半（見 BOW_CARRY_R）
     if (w.king) whipPose(w);                 // v1.308.0：國王的鞭子
 
@@ -5499,6 +5549,10 @@ if (vAo.x + vAo.y > 0.5) {
         if (w.carry) {                      // 搬東西時雙手舉高
           scratchB.rotation.x = -2.5;
           scratchB.position.y = ARM_Y + 0.23; scratchB.position.z = -0.14;
+        } else if (w.mug && b.arm > 0) {
+          /* 拿啤酒杯（v1.332.0，見 mugPose）：右手端在胸前，喝一口的時候整支往嘴前挪、往上抬。左手照下面走路擺 */
+          scratchB.rotation.x = _mg.r;
+          scratchB.position.set(_mg.x, _mg.y, _mg.z);
         } else if (w.push > 0) {
           /* 推機台（v1.302.0，投石機與加農砲推進場，見 game-tools.js 的〈機台推進場〉）：兩隻手往前伸、
              頂在機台後面；身體前傾是 w.lean 給的，所以手要多抬一個前傾角才是平的。
@@ -5728,6 +5782,15 @@ if (vAo.x + vAo.y > 0.5) {
         scratchB.position.set(_wh.x, _whY[k], _whZ[k]);
         scratchB.rotation.x = _whA[k];
       }
+      /* 啤酒杯（v1.332.0）：杯身、泡沫、把手都在 mugPose 算好的那一個框架裡（杯底中心＋傾角），各自往上挪自己的高度 */
+      if (b.mug) {
+        const up = b.mug === 2 ? MUG_S[1] + MUG_FOAM / 2 : MUG_S[1] / 2;
+        const side = b.mug === 3 ? MUG_S[0] / 2 + 0.025 : 0;      // 把手：貼在杯身靠手那一側
+        scratchB.position.set(_mg.mx + side, _mg.my + Math.cos(_mg.t) * up, _mg.mz + Math.sin(_mg.t) * up);
+        scratchB.rotation.x = _mg.t;
+      }
+      /* 臉紅（v1.332.0，見 FLUSH_P）：腮紅放大一點 */
+      if (FLUSH_P[k] === 1 && w.flush) scratchB.scale.x *= 1 + FLUSH_GROW * w.flush;
       /* 披風（v1.308.0）：上緣釘在肩膀上，走起來下襬往後飄——繞上緣轉，不是繞中心（繞中心的話上緣會跑進身體裡） */
       if (b.cape) {
         const a = 0.06 + 0.32 * w.gait, h = b.s[1] / 2;
@@ -5761,6 +5824,7 @@ if (vAo.x + vAo.y > 0.5) {
       if (b.orb && w.cast) tmpC.lerp(ORB_LIT, w.cast * (0.55 + 0.3 * Math.sin(w.ph * 3)));
       /* 火繩頭一直在明滅（每個人錯開一點相位，一整排才不會同一拍閃） */
       if (b.ember) tmpC.lerp(EMBER_HI, 0.35 + 0.35 * Math.sin(performance.now() * 0.013 + i * 1.7));
+      if (FLUSH_P[k] && w.flush) tmpC.lerp(FLUSH_P[k] === 1 ? FLUSH_RED : FLUSH_FACE, FLUSH_P[k] === 1 ? w.flush : w.flush * FLUSH_FACE_K);
       if (w.burnK) tmpC.lerp(CHAR, w.burnK);
       // wetK：被水噴到之後整個人要乘的倍率（沒濕就不給）。深淺是規則那邊定的，不在這裡寫死
       if (w.wetK) tmpC.multiplyScalar(w.wetK);

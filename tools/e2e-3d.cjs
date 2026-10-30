@@ -521,6 +521,8 @@ const installClean = page => page.evaluate(() => {
     floods = null; ENG.putFloods([]);                        // 燈源（v1.303.0）：燈架的積木在 homes 上（上面 clearHomes 收了），燈頭與聚光燈在這
     torches = null;                                          // 火把（v1.317.0）：同上；火每幀照清單畫（putBeasts 先清），不必另外收
     towers = null;                                           // 箭塔（v1.331.0）：同上；塔頂的弓箭手接在小人後面畫，下面 setWorkerCount 收回來
+    taverns = null;                                          // 酒館（v1.332.0）：同上；去喝的人與喝過的效果在 workers 身上，見下面那一行
+    for (const w of workers) { w.bar = null; w.bdt = 0; w.tipsy = 0; w.mug = 0; w.sip = 0; w.flush = 0; }
     meteors = null; ENG.putMeteors([]);
     nukes = null; ENG.putNukes([]);
     /* 魔法陣與蘑菇雲借去的鏡頭高度（v1.311.0 起用完要還）：同下面的 gateEnd，不還的話下一條量到的
@@ -39250,6 +39252,306 @@ const toScreen = (page, sel) => page.evaluate(sel => {
 
   await page.evaluate(() => { cleanTools(); beasts = null; arrows = null; });
   }   // ── 〈道具：箭塔〉結束（--tier 跳過時從這裡出來）
+
+  /* ══════════ 道具：酒館（v1.332.0） ══════════
+     使用者：「增加道具 在指定的地點開設酒館 附近的小人會去喝酒 效果是加強工作效率／一樣要小人先去蓋出來」；
+     問過、看過預覽定的：做事整個變快＋不會累、1.5 倍 60 秒、累了就去喝一杯（閒著的人路過也進去）、臉紅＋頭上 🍺、露天酒棚。
+     全部是規則型：直接叫 useTool／placeTavern／stepTaverns／updWorker／barPass，要抽骰子的押住，量完把全域還回去。見 開發筆記〈道具：酒館〉 */
+  SEC: { if (!(await head('道具：酒館', T_COMMIT))) break SEC;
+  await reset(page, { shape: '吉薩大金字塔', cnt: 1800, workers: 6 });
+  await fillAll(page);
+
+  /* ── 道具表：接在箭塔後面、歸「不破壞」、點空地也算數；說明的人數／秒數／倍數照常數 ── */
+  const vtab = await page.evaluate(() => {
+    const i = TOOLS.findIndex(t => t.id === 'tavern'), t = TOOLS[i], p = TOOLS[i - 1];
+    return { prev: p && p.id, cat: t.cat, icon: t.k, ground: !!GROUND_TOOL.tavern, step: t.lock.need - p.lock.need, LOCK_STEP,
+             tip: t.tip.indexOf('抽 ' + TAV_CREW + ' 個') >= 0 && t.tip.indexOf(TAV_T + ' 秒') >= 0 && t.tip.indexOf(TAV_K + ' 倍') >= 0 };
+  });
+  ok('道具表：接在箭塔後面、歸「不破壞」、點空地也算數；圖示 🍺；說明的人數、秒數、倍數照 TAV_CREW／TAV_T／TAV_K；門檻多一階',
+     vtab.prev === 'tower' && vtab.cat === 'safe' && vtab.icon === '🍺' && vtab.ground && vtab.tip && vtab.step === vtab.LOCK_STEP,
+     JSON.stringify(vtab));
+
+  /* ── 蓋得下才蓋：點在工地外的空地就開工（homes.list 多一筆 tavern／tool、homeCat 9、露天酒棚 54 格、格子表對得上、正面朝工地）；
+        點在工地裡、壓到別間上、太靠島邊都跳提示不蓋，也不挪到旁邊 ── */
+  const vplace = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const t0 = tool, keepToast = toast, said = [];
+    toast = (a) => said.push(a);
+    const click = (x, z) => useTool({ kind: 'ground', point: { x, y: 0, z }, dir: { x: 0, y: -1, z: 0 } });
+    let r;
+    try {
+      tool = 'tavern';
+      const X = siteR + 25;
+      click(X, 0);
+      const t = taverns && taverns[0], h = t && t.h, hi = h ? homes.list.indexOf(h) : -1;
+      r = { one: !!t && taverns.length === 1, at: !!t && t.x === X && t.z === 0, face: !!t && t.fx === -1 && t.fz === 0,
+            entry: hi >= 0 && h.tavern === 1 && h.tool === 1 && homeCat(h) === 9 && !h.done && h.left === h.slots.length && !t.open,
+            slots: h ? h.slots.length : 0,
+            map: !!h && h.slots.every((s, k) => h.at.get(s.i + ':' + s.gy + ':' + s.k) === k) };
+      click(0, 0); click(X + 1, 1); click(debrisR - 1, 0);
+      r.after = taverns.length; r.said = said.length;
+    } finally { tool = t0; toast = keepToast; }
+    cleanTools();
+    return r;
+  });
+  ok('蓋得下才蓋：點在工地外的空地就在那一點開工（homes.list 多一筆 tavern、homeCat 9、54 格、格子表對得上、正面朝工地）；' +
+     '點在工地裡、壓到別間、太靠島邊都跳提示不蓋（也不挪到旁邊）',
+     vplace.one && vplace.at && vplace.face && vplace.entry && vplace.slots === 54 && vplace.map && vplace.after === 1 && vplace.said === 3,
+     JSON.stringify(vplace));
+
+  /* ── 抽人、開張：開工就抽 TAV_CREW 個離它最近的（工程師不抽、已經被箭塔抽走的不重複抽），hm 都指著它；
+        最後一塊砌上去那一幀開張、蓋的人放回去；之後缺一塊沒人修（九類派工、城內補洞都不挑），換一件事整份清單解體時它留著 ── */
+  const vcrew = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9; beasts = null;
+    const keepPhase = phase, keep = workers.map(w => [w.eng, w.mage, w.mus]), real = Math.random;
+    let r;
+    try {
+      phase = 'done';
+      workers.forEach((w, i) => { w.eng = i === 0 ? 1 : 0; w.mage = 0; w.mus = 0; w.x = siteR + 10 + i * 3; w.z = 0; w.air = 0; w.fall = 0; w.burn = 0; w.flee = 0; w.cheer = 99; });
+      workers[0].x = siteR + 26;                                   // 工程師站得最近也不抽
+      const tw = placeTower({ x: -(siteR + 25), z: 0 });          // 箭塔先抽走 4 個，酒館只剩 1 個可抽
+      const t = placeTavern({ x: siteR + 25, z: 0 }), hi = homes.list.indexOf(t.h);
+      r = { n: t.crew.length, onIt: t.crew.every(w => w.hm === hi), eng: t.crew.indexOf(workers[0]) < 0,
+            dup: t.crew.some(w => tw.crew.indexOf(w) >= 0), want: workers.length - 1 - TOW_CREW };
+      const crew = t.crew.slice();
+      for (let k = 0; k < t.h.slots.length; k++) if (!t.h.slots[k].filled) floodLay(t, k);
+      stepTaverns(1e-3);
+      r.open = t.open === 1 && t.h.done; r.freed = crew.every(w => w.hm === -1) && t.crew.length === 0;
+      breakBlock(blocks.find(q => q.hh === hi && q.st === SET && t.h.slots[q.hk].gy === 3), 0, 1, 0);
+      r.left = t.h.left;
+      r.cat = [0, 1, 2, 3, 4, 5, 6, 7, 8].every(c => pickUnfinished(t.x, t.z, new Set(), c) !== hi);
+      r.inside = pickInside(t.x, t.z, new Set(), 1e9) !== hi;
+      for (let i = 0; i < 20; i++) stepTaverns(0.05);
+      r.nobody = workers.every(w => w.hm !== hi) && t.open === 1;
+      const kp = [evLast, evPeak];
+      evLast = IDLE_EVENTS[0];
+      Math.random = () => 0.999;
+      let e;
+      try { e = rollIdleEvent(); } finally { evLast = kp[0]; evPeak = kp[1]; }
+      r.rolled = e !== IDLE_EVENTS[0];
+      r.stay = homes.list.indexOf(t.h) >= 0 && !t.down;
+    } finally { Math.random = real; phase = keepPhase; workers.forEach((w, i) => { [w.eng, w.mage, w.mus] = keep[i]; }); }
+    cleanTools();
+    return r;
+  });
+  ok('抽人、開張：開工就抽離它最近的（工程師不抽、被箭塔抽走的不重複抽），hm 都指著它；最後一塊砌上去那一幀開張、蓋的人放回去',
+     vcrew.n === vcrew.want && vcrew.n > 0 && vcrew.onIt && vcrew.eng && !vcrew.dup && vcrew.open && vcrew.freed, JSON.stringify(vcrew));
+  ok('開張之後沒人修：缺一塊時九類派工與城內補洞都不挑它、也沒人被叫回來（照常營業）；換一件事整份清單解體時它留著',
+     vcrew.left === 1 && vcrew.cat && vcrew.inside && vcrew.nobody && vcrew.rolled && vcrew.stay, JSON.stringify(vcrew));
+
+  /* ── 累了就去喝：施工中做滿 REST_AT 的那一刻，人在開著的酒館 TAV_NEAR 以內 → 不喘，改走去吧台前（站位在吧台外緣往外 TAV_FRONT 之間、
+        沿著吧台錯開不超出兩頭）；TAV_NEAR 外的照舊原地喘；還沒開張的不算。走到了站著喝 TAV_DRINK 秒（押 Math.random），拿著杯子、
+        一口一個 TAV_SIP（四分之一週期舉到嘴前、九成時端在胸前）、面向吧台、臉慢慢紅；喝完 TAV_T 秒的效果、連續工作的鐘歸零、冒 🍺、回去上工 ── */
+  const vgo = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9; beasts = null;
+    const keepPhase = phase, keep = workers.map(w => [w.eng, w.mage, w.mus, w.lazy, w.x, w.z]), real = Math.random;
+    const r = {};
+    try {
+      Math.random = () => 0.999;                                  // 不絆倒（tripWalk）；喝的秒數押到上限
+      phase = 'build';
+      workers.forEach(w => { w.eng = 0; w.mage = 0; w.mus = 0; w.lazy = 0; w.hm = -1; w.st = 'idle'; w.air = 0; w.fall = 0; w.burn = 0; w.flee = 0; w.chat = 0; w.fig = 0; w.show = ''; });
+      const t = placeTavern({ x: siteR + 25, z: 0 });
+      for (let k = 0; k < t.h.slots.length; k++) floodLay(t, k);
+      for (const w of t.crew) { w.hm = -1; w.hst = ''; }
+      t.crew.length = 0;
+      /* 還沒開張：同一個人做滿了照樣原地喘 */
+      const w = workers[1], wi = 1, far = workers[2];
+      w.x = t.x - 8; w.z = 1; w.toil = REST_AT;
+      updWorker(w, wi, 0.01);
+      r.closed = w.st === 'rest' && !w.bar;
+      w.st = 'idle'; w.rst = 0; w.toil = REST_AT;
+      stepTaverns(1e-3);
+      updWorker(w, wi, 0.01);
+      const s = homeSpan(t.h);
+      r.go = w.bar === t && w.bdt === -1 && w.st === 'idle';
+      r.spot = { d: +(t.x - w.tx).toFixed(2), lo: +(t.x - s.x0 + TAV_FRONT[0]).toFixed(2), hi: +(t.x - s.x0 + TAV_FRONT[1]).toFixed(2),
+                 side: +Math.abs(w.tz - t.z).toFixed(2), sideMax: +((t.w - 1) / 2).toFixed(2) };
+      far.x = t.x; far.z = TAV_NEAR + 2; far.toil = REST_AT;          // 往旁邊挪（往工地那一側挪會踩進地標裡）
+      updWorker(far, 2, 0.01);
+      r.far = far.st === 'rest' && !far.bar;
+      /* 走到了：擺到站位上，喝 */
+      w.x = w.tx; w.z = w.tz;
+      updWorker(w, wi, 0.01);
+      r.bdt = +w.bdt.toFixed(3); r.bdtWant = +(TAV_DRINK[0] + 0.999 * (TAV_DRINK[1] - TAV_DRINK[0]) - 0.01).toFixed(3);
+      const face = () => Math.abs(((w.a - Math.atan2(w.lkx - w.x, w.lkz - w.z)) + Math.PI * 3) % (Math.PI * 2) - Math.PI) < 1e-6;
+      r.face = face();
+      const at = u => { while ((w.ph % TAV_SIP) / TAV_SIP < u) updWorker(w, wi, 0.01); return { sip: w.sip, mug: w.mug }; };
+      r.up = at(0.3); r.rest = at(0.9);
+      r.flush = +w.flush.toFixed(2); r.drinking = w.bar === t && w.toil === REST_AT;
+      let n = 0;
+      while (w.bar && n < 2000) { updWorker(w, wi, 0.01); n++; }
+      r.done = { tipsy: w.tipsy, T: TAV_T, toil: w.toil, emo: w.emo, mug: w.mug, flush: w.flush, st: w.st };
+    } finally { Math.random = real; phase = keepPhase; workers.forEach((w, i) => { [w.eng, w.mage, w.mus, w.lazy, w.x, w.z] = keep[i]; }); }
+    cleanTools();
+    return r;
+  });
+  ok('累了就去喝：做滿 REST_AT 那一刻、TAV_NEAR 以內有開著的酒館就不喘、走去吧台前（離吧台外緣 TAV_FRONT 之間、沿吧台錯開不超出兩頭）；' +
+     'TAV_NEAR 外、還沒開張的照舊原地喘',
+     vgo.closed && vgo.go && vgo.spot.d >= vgo.spot.lo - 1e-6 && vgo.spot.d <= vgo.spot.hi + 1e-6 && vgo.spot.side <= vgo.spot.sideMax + 1e-6 && vgo.far,
+     JSON.stringify(vgo));
+  ok('喝：走到了站著喝 TAV_DRINK 秒、面向吧台、拿著杯子一口一個 TAV_SIP（舉到嘴前／端在胸前）、臉慢慢紅；' +
+     '喝完 TAV_T 秒的效果、連續工作的鐘歸零、頭上冒 🍺、杯子收掉、回去領工作單',
+     Math.abs(vgo.bdt - vgo.bdtWant) < 0.02 && vgo.face && vgo.up.sip === 1 && vgo.up.mug === 1 && vgo.rest.sip === 0 && vgo.rest.mug === 1 &&
+     vgo.flush > 0 && vgo.drinking && vgo.done.tipsy > vgo.done.T - 0.05 && vgo.done.toil === 0 && vgo.done.emo === 'beer' &&
+     vgo.done.mug === 0 && vgo.done.flush === 1 && vgo.done.st === 'idle',
+     JSON.stringify(vgo));
+
+  /* ── 喝過的效果：上工那一段照 TAV_K 倍的時間跑（同一個 wait 倒數，喝過的少 TAV_K 倍）、連續工作的鐘不走（不會累）；
+        閒著（idle）照一般的時間；TAV_T 秒後效果退了、鐘照走；臉紅最後 TAV_FADE 秒退（剩一半時間時一半紅）；偷懶的喝完收心上工 ── */
+  const veff = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9; beasts = null;
+    const keepPhase = phase, keep = workers.map(w => [w.eng, w.mage, w.mus, w.lazy]), real = Math.random;
+    const r = { K: TAV_K };
+    try {
+      Math.random = () => 0.999;
+      phase = 'build';
+      const a = workers[1], b = workers[2];
+      for (const w of [a, b]) Object.assign(w, { eng: 0, mage: 0, mus: 0, lazy: 0, hm: -1, air: 0, fall: 0, burn: 0, flee: 0, chat: 0, fig: 0,
+                                                 load: [], carry: false, st: 'wait', wait: 0.28, toil: 10, x: siteR + 20, z: 0 });
+      a.tipsy = TAV_T;
+      updWorker(a, 1, 0.1); updWorker(b, 2, 0.1);
+      r.used = { a: +(0.28 - a.wait).toFixed(4), b: +(0.28 - b.wait).toFixed(4) };
+      r.toil = { a: a.toil, b: +b.toil.toFixed(2) };
+      /* 退了：TAV_T 秒後 tipsy 歸零，鐘照走；臉紅：剩 TAV_FADE／2 秒時一半紅 */
+      a.tipsy = TAV_FADE / 2; a.flush = 1; stepTipsy(a, 0);
+      r.half = +a.flush.toFixed(3);
+      stepTipsy(a, TAV_FADE);
+      r.off = a.tipsy === 0 && a.flush === 0;
+      a.st = 'wait'; a.wait = 0.28; a.toil = 10;
+      updWorker(a, 1, 0.1);
+      r.after = { used: +(0.28 - a.wait).toFixed(4), toil: +a.toil.toFixed(2) };
+      /* 偷懶的喝完收心 */
+      const c = workers[3];
+      Object.assign(c, { lazy: 1, hm: -1, bar: { down: 0 }, bdt: 0.001, mug: 1 });
+      barDone(c);
+      r.lazy = c.lazy === 0 && c.tipsy === TAV_T && !c.bar;
+    } finally { Math.random = real; phase = keepPhase; workers.forEach((w, i) => { [w.eng, w.mage, w.mus, w.lazy] = keep[i]; }); }
+    cleanTools();
+    return r;
+  });
+  ok('喝過的效果：上工那一段照 TAV_K 倍的時間跑（同一段 wait 倒數用掉 TAV_K 倍）、連續工作的鐘不走；TAV_T 秒後退了照常；偷懶的喝完收心上工',
+     Math.abs(veff.used.a - veff.used.b * veff.K) < 1e-6 && veff.toil.a === 10 && veff.toil.b === 10.1 && veff.off &&
+     Math.abs(veff.after.used - veff.used.b) < 1e-6 && veff.after.toil === 10.1 && veff.lazy,
+     JSON.stringify(veff));
+  ok('臉紅：效果剩 TAV_FADE／2 秒時一半紅、退完全退', veff.half === 0.5 && veff.off, JSON.stringify(veff));
+
+  /* ── 閒著的人路過：走完一段、人在 TAV_NEAR 以內、效果退了、沒在蓋房子，押 0 進去喝、押 0.999（≥ TAV_PASS）不進去；
+        效果還在的、在蓋房子的（hm）、TAV_NEAR 外的都不進去 ── */
+  const vpass = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const real = Math.random, r = {}, keepKing = workers[1].king;
+    try {
+      const t = placeTavern({ x: siteR + 25, z: 0 });
+      for (let k = 0; k < t.h.slots.length; k++) floodLay(t, k);
+      stepTaverns(1e-3);
+      const w = workers[1];
+      const try1 = (o, rnd) => { Object.assign(w, { bar: null, tipsy: 0, hm: -1, king: 0, x: t.x - 10, z: 0 }, o); Math.random = () => rnd; const g = barPass(w); const ok = g && w.bar === t; w.bar = null; return ok; };
+      r.go = try1({}, 0);
+      r.dice = try1({}, 0.999);
+      r.edge = try1({}, TAV_PASS);
+      r.tipsy = try1({ tipsy: 1 }, 0);
+      r.home = try1({ hm: 0 }, 0);
+      r.far = try1({ x: t.x - TAV_NEAR - 1 }, 0);
+      r.king = try1({ king: 1 }, 0);
+    } finally { Math.random = real; workers[1].king = keepKing; }
+    cleanTools();
+    return r;
+  });
+  ok('閒著的人路過：TAV_NEAR 以內、效果退了，押 0 進去喝、押到 TAV_PASS 以上不進去；效果還在的、在蓋房子的、國王、太遠的不進去',
+     vpass.go && !vpass.dice && !vpass.edge && !vpass.tipsy && !vpass.home && !vpass.far && !vpass.king, JSON.stringify(vpass));
+
+  /* ── 不喝了：走到一半酒館被收掉（擠掉、清單被別人收掉）就散掉，沒有效果；完工慶祝開始了也散掉（慶祝要全員到齊）；喝的路上不被叫去聊天 ── */
+  const vquit = await page.evaluate(() => {
+    cleanTools(); doomT = 1e9; beasts = null;
+    const keepPhase = phase, real = Math.random, r = {};
+    try {
+      Math.random = () => 0.999;
+      phase = 'build';
+      const up = () => { const t = placeTavern({ x: siteR + 25, z: 0 }); for (let k = 0; k < t.h.slots.length; k++) floodLay(t, k); stepTaverns(1e-3); return t; };
+      const w = workers[1];
+      Object.assign(w, { eng: 0, mage: 0, lazy: 0, hm: -1, air: 0, fall: 0, burn: 0, flee: 0, chat: 0, fig: 0, x: siteR + 15, z: 0 });
+      let t = up();
+      barGo(w, t);
+      r.chat = !chatFree(w);
+      dropHomes(q => !q.tavern); homeOwnAt = -1;
+      stepTaverns(1e-3);
+      updWorker(w, 1, 0.01);
+      r.gone = !w.bar && w.tipsy === 0 && !taverns;
+      t = up();
+      barGo(w, t);
+      phase = 'done'; w.cheer = 0;
+      updWorker(w, 1, 0.01);
+      r.cheer = !w.bar && w.tipsy === 0;
+    } finally { Math.random = real; phase = keepPhase; }
+    cleanTools();
+    return r;
+  });
+  ok('不喝了：走到一半酒館被收掉就散掉、沒有效果；完工慶祝開始了也散掉；喝的路上不被叫去聊天',
+     vquit.chat && vquit.gone && vquit.cheer, JSON.stringify(vquit));
+
+  /* ── 畫：拿著杯子的人右手多三塊（杯身、泡沫、把手），喝一口的時候杯子舉到比端在胸前高、往臉那邊倒；臉紅時腮紅比平常紅、比平常寬 ── */
+  const vdraw = await page.evaluate(() => {
+    const w = workers[1], T = ENG.MODELS.man;
+    const keepW = { ...w };
+    const m = new THREE.Matrix4(), v = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), c = new THREE.Color();
+    const pose = extra => {
+      Object.assign(w, { x: 0, y: 0, z: 0, a: 0, gait: 0, ph: 0, carry: false, plan: 0, bub: 0, talk: 0, point: 0, hail: 0, fall: 0, tilt: 0, roll: 0,
+                         danc: 0, guard: 0, punch: 0, air: 0, flip: 0, stre: 0, twirl: 0, jack: 0, clap: 0, wave: 0, bow: 0, draw: 0, lean: 0, tire: 0,
+                         dig: 0, mage: 0, mus: 0, king: 0, whip: 0, cmd: 0, mug: 0, sip: 0, flush: 0, burnK: 0, wetK: 0 }, extra);
+      ENG.putWorker(1, w);
+      const out = [];
+      for (let k = 0; k < ENG.WPARTS; k++) {
+        ENG.three.workerMesh.getMatrixAt(ENG.WPARTS + k, m);
+        if (m.elements[0] === 0 && m.elements[5] === 0) continue;
+        m.decompose(v, q, sc);
+        ENG.three.workerMesh.getColorAt(ENG.WPARTS + k, c);
+        out.push({ k, c: T[k].c, y: v.y, z: v.z, ax: new THREE.Vector3(0, 1, 0).applyQuaternion(q), sx: sc.x, r: c.r, g: c.g });
+      }
+      return out;
+    };
+    const s = w.scale;
+    const plain = pose({}), hold = pose({ mug: 1, sip: 0 }), sip = pose({ mug: 1, sip: 1 }), red = pose({ flush: 1 });
+    Object.assign(w, keepW);
+    const beer = P => P.filter(p => p.c === 'beer'), body = P => beer(P).sort((a, b) => a.k - b.k)[0];
+    const blush = P => P.filter(p => p.c === 'blush')[0];
+    return { plain: beer(plain).length, hold: beer(hold).length + hold.filter(p => p.c === 'talk').length,
+             lift: +((body(sip).y - body(hold).y) / s).toFixed(3), tilt: +body(sip).ax.z.toFixed(3), upright: +body(hold).ax.y.toFixed(3),
+             redR: +(blush(red).r - blush(plain).r).toFixed(3), redG: +(blush(red).g - blush(plain).g).toFixed(3), wide: +(blush(red).sx / blush(plain).sx).toFixed(2) };
+  });
+  ok('畫：拿著杯子的人多杯身、泡沫、把手三塊（沒拿就沒有）；喝一口時杯子比端在胸前高、杯口往臉那邊倒；臉紅時腮紅更紅、更寬',
+     vdraw.plain === 0 && vdraw.hold === 3 && vdraw.lift > 0.15 && vdraw.tilt < -0.3 && vdraw.upright > 0.999 &&
+     vdraw.redG < -0.05 && vdraw.wide > 1.3, JSON.stringify(vdraw));
+
+  /* ── 最多 TAV_MAX 間：再開一間就擠掉最早那一間（還沒蓋好的也算）、其餘照舊；換場時工地外的照樣開著 ── */
+  const vmax = await page.evaluate(() => {
+    cleanTools(); phase = 'done'; doomT = 1e9; beasts = null;
+    const R = siteR + 25, at = j => { const a = j / 8 * Math.PI * 2; return { x: Math.cos(a) * R, z: Math.sin(a) * R }; };
+    const list = [];
+    for (let j = 0; j < TAV_MAX; j++) list.push(placeTavern(at(j)));
+    const up = () => taverns.filter(t => !t.down).length;
+    const r = { full: up(), max: TAV_MAX, made: list.every(Boolean) };
+    placeTavern(at(TAV_MAX));
+    r.after = up(); r.first = list[0].down === 1; r.rest = list.slice(1).every(t => !t.down);
+    stepTaverns(1e-3);
+    r.lists = homes.list.filter(h => h.tavern).length;
+    cleanTools(); phase = 'done';
+    const t = placeTavern({ x: siteR + 25, z: 0 }), h = t.h;
+    for (let k = 0; k < h.slots.length; k++) if (!h.slots[k].filled) floodLay(t, k);
+    stepTaverns(1e-3);
+    startBuild(true);
+    stepTaverns(1e-3);
+    const hi = homes.list.indexOf(h);
+    r.swap = { kept: hi >= 0 && !t.down && t.open === 1, set: blocks.filter(b => b.hh === hi && b.st === SET).length, n: h.slots.length };
+    cleanTools();
+    return r;
+  });
+  ok('最多 TAV_MAX 間：再開一間擠掉最早那一間、其餘照舊；換場時工地外的酒館照樣開著（積木一塊不少）',
+     vmax.made && vmax.full === vmax.max && vmax.after === vmax.max && vmax.first && vmax.rest && vmax.lists === vmax.max &&
+     vmax.swap.kept && vmax.swap.set === vmax.swap.n,
+     JSON.stringify(vmax));
+
+  await page.evaluate(() => { cleanTools(); beasts = null; });
+  }   // ── 〈道具：酒館〉結束（--tier 跳過時從這裡出來）
 
   /* ══════════ 大洪水（v1.325.0） ══════════
      使用者：「立即建成旁邊增加一個按鈕 大洪水／按了會有全地圖大水 把地標建築以外的所有生物 小房子 全部沖走」，
